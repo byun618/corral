@@ -87,8 +87,8 @@ export function reloadDialogSpec(files: string[]): MessageBoxSpec['options'] {
 export function unresponsiveDialogSpec(files: string[]): MessageBoxSpec['options'] {
   return {
     type: 'warning',
-    message: `창이 응답하지 않습니다. 저장하지 않은 파일이 ${files.length}개 있습니다.`,
-    detail: `${listOf(files)}\n\n창이 멈춰 있어 저장할 수 없습니다. 저장하지 않고 종료하면 변경 내용이 손실됩니다.`,
+    message: files.length > 0 ? `창이 응답하지 않습니다. 저장하지 않은 파일이 ${files.length}개 있습니다.` : '창이 응답하지 않습니다. 저장하지 않은 파일이 있는지 확인할 수 없습니다.',
+    detail: files.length > 0 ? `${listOf(files)}\n\n창이 멈춰 있어 저장할 수 없습니다. 저장하지 않고 종료하면 변경 내용이 손실됩니다.` : '창이 멈춰 있어 확인·저장할 수 없습니다. 저장하지 않고 종료하면 저장하지 않은 변경이 있었다면 손실됩니다.',
     buttons: ['저장하지 않고 종료', '취소'],
     defaultId: 1,
     cancelId: 1,

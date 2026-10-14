@@ -1059,6 +1059,8 @@ export type CorralApi = {
   onQuitRequested: (listener: () => void) => () => void
   /** 확인을 마쳤다(저장했거나 저장 안 함) — main 이 이제 막지 않고 종료한다. */
   confirmQuit: () => void
+  /** 종료 확인이 취소로 끝났다 — main 이 런타임 정리를 이미 시작했었으면 runtimeClosed(LIFE-591 수정 r4 R4-A ⓒ). */
+  quitCancelled: () => Promise<{ runtimeClosed: boolean }>
   /** 종료 확인 요청을 받았다(LIFE-591 수정 r1 R1-I). */
   quitAck: () => void
   /** 우클릭 직전 창을 앞으로 (Orca #14545 를 따라 하지 않기 — 배경 앱 우클릭에도 키보드·hover 대상이 선다). */

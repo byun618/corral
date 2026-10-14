@@ -1,6 +1,8 @@
 // 종료 확인 관문 (LIFE-591 E3ⓒ) — 수정된 파일 탭이 있으면 앱 종료(⌘Q·메뉴·Dock)·창 닫기를 **런타임 정리(`stopRuntime`)보다 먼저** 막고 렌더러에 확인을 맡긴다.
 //
-// 렌더러가 수정 파일 목록을 바뀔 때마다 민다(`setDirty`) — main 은 그 목록으로 **동기** 판정한다(`before-quit`·창 `close` 의 `preventDefault` 는 동기여야 한다).
+// 렌더러가 수정 파일 목록을 바뀔 때마다 민다(`setDirty`) — 그러나 그 목록은 **판정에 쓰지 않는다**(수정 r4 R4-A): 마지막 편집 직후 종료하면 새 목록이 main 에 닿기 전에
+// `before-quit` 이 와서, 낡은 빈 목록으로 「수정 없음」 을 승인하고 런타임을 닫았다. 그래서 받을 렌더러가 있으면 **늘** 막고 렌더러에 묻는다(왕복) — 렌더러가 그 순간의
+// 문서로 판정하고(수정이 없으면 묻지 않고 바로) 승인과 편집 동결을 같은 마이크로태스크에서 한 뒤 `allow` 를 부른다. 목록은 무응답 대화상자 문구·로그에만 쓴다.
 // 막으면 `requestConfirm`(렌더러에 「확인해 달라」)만 보내고 아무것도 정리하지 않는다 — 사용자가 취소하면 앱·런타임·터미널은 그대로다.
 // 렌더러가 저장/저장 안 함으로 끝내면 `allow()` 뒤 다시 `app.quit()` — 그때부터는 막지 않는다(`before-quit` → 기존 정리 순서 그대로).
 // 무응답 렌더러(수정 r1 R1-I) — 렌더러는 요청을 받자마자 `ack()` 한다. `ackTimeoutMs` 안에 오지 않으면 `onUnresponsive`(main 이 직접 「저장하지 않고 종료 / 취소」 를 묻는다)를
@@ -22,6 +24,8 @@ export type QuitGate = {
 export function createQuitGate(input: {
   requestConfirm: () => boolean
   onUnresponsive?: () => void
+  /** 시험 전용(개발 실행 계측) — 옛 판정(밀린 목록이 비면 묻지 않음)으로 왕복을 건너뛴다. 방어선(취소 뒤 복구) 회귀가 낡은 목록 경로를 일부러 만들 때만. */
+  trustPushedList?: boolean
   ackTimeoutMs?: number
   log?: (tag: string, data: Record<string, unknown>) => void
 }): QuitGate {
@@ -38,7 +42,8 @@ export function createQuitGate(input: {
     },
     dirty: () => files,
     intercept: (via) => {
-      if (allowed || files.length === 0) return false
+      if (allowed) return false
+      if (input.trustPushedList === true && files.length === 0) return false
       // 확인을 받을 렌더러가 없으면 막지 않는다(막으면 종료할 길이 없어진다) — 그때 렌더러 쪽 내용도 이미 없다.
       const asked = input.requestConfirm()
       input.log?.('quit.intercepted', { via, files: files.length, asked })

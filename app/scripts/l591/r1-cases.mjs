@@ -497,7 +497,171 @@ switch (name) {
     const disk = fs.readFileSync(file, 'utf8')
     check('C3-window-hidden-during-cleanup', visible === false, { visible })
     if (during !== null) check('C3-no-silent-late-edit', exited && during.model === disk.slice(0, 30) && during.dirty === 'false' && disk.startsWith('BEFORE-'), { during, disk: disk.slice(0, 30), exited })
-    else check('C3-exit', exited, { exited, ms: Date.now() - t0 })
+    else {
+      // 수정 r4 — 수정 없는 종료도 렌더러 왕복(확인 요청 → 승인)을 거친다. 그 시간을 남긴다(옛 코드는 왕복 없음 → null).
+      const rows = logRows()
+      const asked = rows.find((row) => row.tag === 'quit.intercepted')
+      const confirmed = rows.find((row) => row.tag === 'quit.confirmed')
+      const quitRoundTripMs = asked !== undefined && confirmed !== undefined ? confirmed.at - asked.at : null
+      check('C3-exit', exited, { exited, ms: Date.now() - t0, quitRoundTripMs })
+    }
+    break
+  }
+  case 'late-dirty':
+  case 'late-fast':
+  case 'late-fast-close':
+  case 'late-stale': {
+    // 수정 r4 R4-A — 마지막 편집 직후 종료(리뷰어 late-dirty·late-fast 조건). 수정 목록 push 가 main 에 늦게 닿아도 첫 종료 진입이 그 편집을 보고 묻는다(런타임 정리 전).
+    //   late-dirty   렌더러가 편집 직후 700 ms 바쁜 대기(React 가 새 목록을 밀기 전) — 그 사이 종료
+    //   late-fast    지연 주입 없음 — 합성 문자 입력(sendInputEvent) 직후 종료 · late-fast-close 같은 조건의 창 닫기 입구
+    //   late-stale   방어선(ⓒ) — g-up 에 `CORRAL_TEST_QUIT_TRUST_PUSHED=1`(옛 판정: 밀린 목록이 비면 묻지 않음)을 건 회차. 첫 종료가 정리·창 숨김까지 간 뒤
+    //                재진입 확인을 취소하면 창이 다시 보이고 편집 가능·수정 유지·안내가 떠야 한다
+    const fake = values.fake ?? ''
+    if (!/^\/tmp\/l591g-f[^/]+$/.test(fake)) throw new Error('--fake 는 /tmp/l591g-f* (가짜 Tailscale 상태 폴더 — 실제 Tailscale 무접촉)')
+    const rel = 'r1/edit.txt'
+    const file = path.join(repo, rel)
+    const original = fs.readFileSync(file, 'utf8')
+    await openFile(rel)
+    await exposeMonaco()
+    setFake(fake, { serve: {}, hang: [] })
+    await js(`window.corral.setSettings({ mobileEnabled: true })`)
+    await until(async () => (await ctl(root, { cmd: 'mobile-status' })).mobile?.exposure?.kind === 'exposed', { label: 'fake mobile exposed', timeoutMs: 15_000 })
+    setFake(fake, { hang: ['serve-remove'] })
+    await sleep(250)
+    await stub(['cancel', 'cancel', 'cancel'])
+    const mark = calls(fake).length
+    const socket = path.join(root, 'ud/runtime/rpc.sock')
+    const t0 = Date.now()
+    let quit
+    if (name === 'late-dirty' || name === 'late-stale') {
+      const typing = ed(`e.setPosition({ lineNumber: 1, column: 1 }); e.trigger('keyboard', 'type', { text: 'LAST-' }); const until = performance.now() + 700; while (performance.now() < until) {} return m.getValue()`)
+      await sleep(100)
+      quit = await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+      await typing
+    } else {
+      await ed('e.setPosition({ lineNumber: 1, column: 1 }); e.focus(); return true')
+      await sleep(150)
+      await ctl(root, { cmd: 'type', text: 'LAST-' })
+      quit = await ctl(root, { cmd: 'quit-entry', via: name === 'late-fast-close' ? 'close' : 'quit' })
+    }
+    await sleep(500)
+    const early = { ms: Date.now() - t0, visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible, runtimeSocket: fs.existsSync(socket), cleanupOff: calls(fake).slice(mark).some((row) => row.argv.at(-1) === 'off') }
+    // 옛 코드는 여기서 정리(가짜 serve 제거 멈춤 — Mobile 마감 약 6 s)를 지나 재진입 확인을 취소한다 — 그 뒤 상태를 본다.
+    await sleep(7000)
+    const isAlive = alive()
+    const after = isAlive
+      ? {
+          visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible,
+          model: (await ed('return m.getValue()')).slice(0, 30),
+          dirty: await dirtyOf(rel),
+          readOnly: await ed('return e.getOption(window.l591Monaco.editor.EditorOption.readOnly)'),
+          runtimeSocket: fs.existsSync(socket),
+          toast: await js(`[...document.querySelectorAll('[data-sonner-toast]')].map((el) => el.textContent).join(' | ')`),
+          asked: (await stub([])).asked,
+          quitLog: logRows().filter((row) => String(row.tag).startsWith('quit.')).map((row) => ({ tag: row.tag, via: row.via ?? null, runtimeClosed: row.runtimeClosed ?? null })),
+          cleanupOff: calls(fake).slice(mark).some((row) => row.argv.at(-1) === 'off'),
+        }
+      : null
+    // 취소 뒤에도 편집되는가(동결이 풀렸는가).
+    let typedAfter = null
+    if (isAlive) {
+      await typeAt('Q').catch(() => null)
+      await sleep(200)
+      typedAfter = (await ed('return m.getValue()')).slice(0, 30)
+    }
+    const disk = fs.readFileSync(file, 'utf8')
+    const base = isAlive && after.visible === true && after.readOnly === false && after.dirty === 'true' && after.model.startsWith('LAST-') && disk === original && typedAfter !== null && typedAfter.startsWith('Q')
+    if (name === 'late-stale') {
+      check('R4-C-stale-reached-cleanup', early.visible === false || after?.quitLog.some((row) => row.tag === 'quit.reshow') === true, { early, quitLog: after?.quitLog })
+      check('R4-C-cancel-restores', base && after.quitLog.some((row) => row.tag === 'quit.cancelled' && row.runtimeClosed === true) && after.toast.includes('런타임은 이미 정리'), { early, after, typedAfter, disk: disk.slice(0, 30), originalSame: disk === original })
+      // 안내 문구대로 런타임이 닫힌 뒤에도 저장되는가(쓰기는 main IPC — 런타임 무관).
+      if (isAlive) {
+        await key('S', ['meta'])
+        const saved = await settle(async () => fs.readFileSync(file, 'utf8').startsWith('QLAST-') && (await dirtyOf(rel)) === 'false', 4000)
+        check('R4-C-save-after-runtime-closed', saved, { disk: fs.readFileSync(file, 'utf8').slice(0, 30), dirty: await dirtyOf(rel) })
+      }
+    } else {
+      check('R4-A-first-entry-asks-before-cleanup', early.visible === true && early.runtimeSocket === true && early.cleanupOff === false, { quit, early })
+      check('R4-A-cancel-keeps-app', base && after.runtimeSocket === true && after.cleanupOff === false && after.asked.includes('close'), { after, typedAfter, disk: disk.slice(0, 30), originalSame: disk === original, alive: isAlive })
+    }
+    const leftovers = execFileSync('ps', ['-axeww', '-o', 'pid=,command='], { encoding: 'utf8' })
+      .split('\n')
+      .filter((row) => row.includes('fake-tailscale.mjs') && row.includes(`FAKE_TAILSCALE_DIR=${fake} `))
+      .map((row) => Number(row.trim().split(/\s+/)[0]))
+    for (const pid of leftovers) process.kill(pid, 'SIGKILL')
+    console.log(JSON.stringify({ fakeLeftoversKilled: leftovers }))
+    // 다음 회차를 위해 fixture 원복(디스크는 무변경이어야 하지만 확인 차 같은 바이트로).
+    if (fs.readFileSync(file, 'utf8') !== original) fs.writeFileSync(file, original)
+    break
+  }
+  case 'cancel-matrix': {
+    // 수정 r4 무회귀 — 리뷰어 r4 cancel.mjs 조건: 일반 종료 취소 / 창 close 취소 / 두 입구 저장 실패 / 무응답(렌더러 SIGSTOP) 취소 뒤 재개.
+    // 각 갈래 뒤 창 visible·readOnly=false·이어 친 글자 반영·dirty 유지.
+    const rel = 'r1/edit.txt'
+    const file = path.join(repo, rel)
+    const original = fs.readFileSync(file, 'utf8')
+    const hook = path.join(root, 'write-hook.json')
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('BEFORE-')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    const view = async () => ({
+      visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible,
+      readOnly: await ed('return e.getOption(window.l591Monaco.editor.EditorOption.readOnly)'),
+      text: (await ed('return m.getValue()')).slice(0, 40),
+      dirty: await dirtyOf(rel),
+    })
+    for (const mode of ['quit-cancel', 'close-cancel', 'quit-save-fail', 'close-save-fail', 'unresponsive-cancel']) {
+      const saveFail = mode.includes('save-fail')
+      if (saveFail) fs.writeFileSync(hook, JSON.stringify({ failWrite: 'before' }))
+      // 무응답 갈래는 답이 둘 — main 무응답 대화상자 취소 + 재개된 렌더러가 밀린 확인 요청으로 띄우는 닫기 확인 취소(실제 대화상자가 뜨지 않게).
+      await stub(mode === 'unresponsive-cancel' ? ['cancel', 'cancel'] : [saveFail ? 'save' : 'cancel'])
+      const mark = logRows().length
+      let renderer = 0
+      try {
+        if (mode === 'unresponsive-cancel') {
+          renderer = Number(execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' }).split('\n').find((row) => row.includes(`--user-data-dir=${root}/ud`) && row.includes('--type=renderer')).trim().split(/\s+/)[0])
+          process.kill(renderer, 'SIGSTOP')
+        }
+        await ctl(root, { cmd: 'quit-entry', via: mode.startsWith('close') ? 'close' : 'quit' })
+        const want = (row) => (mode === 'unresponsive-cancel' ? row.tag === 'quit.unresponsive_choice' : saveFail ? row.tag === 'file.write' && row.ok === false : row.tag === 'file.dialog')
+        await until(() => logRows().slice(mark).some(want), { label: mode, timeoutMs: 8000 })
+      } finally {
+        if (renderer > 0) process.kill(renderer, 'SIGCONT')
+        fs.rmSync(hook, { force: true })
+      }
+      await sleep(350)
+      const after = await view()
+      await typeAt(`${mode}-`)
+      await sleep(150)
+      const edited = await view()
+      check(`R4-noreg-${mode}`, after.visible === true && after.readOnly === false && edited.text.startsWith(`${mode}-`) && edited.dirty === 'true' && fs.readFileSync(file, 'utf8') === original, { after, edited, quitLog: logRows().slice(mark).filter((row) => String(row.tag).startsWith('quit.') || row.tag === 'file.dialog').map((row) => row.tag) })
+    }
+    break
+  }
+  case 'shutdown-reject': {
+    // 수정 r4 무회귀 — 리뷰어 shutdown-reject: 런타임 정리 rejection(owner.json 깨뜨림)에도 Mobile 정리를 끝내고 종료. 수정 파일은 저장 승인.
+    const fake = values.fake ?? ''
+    if (!/^\/tmp\/l591g-f[^/]+$/.test(fake)) throw new Error('--fake 는 /tmp/l591g-f* (가짜 Tailscale 상태 폴더 — 실제 Tailscale 무접촉)')
+    const rel = 'r1/edit.txt'
+    const file = path.join(repo, rel)
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('BEFORE-')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    setFake(fake, { serve: {}, hang: [] })
+    await js(`window.corral.setSettings({ mobileEnabled: true })`)
+    await until(async () => (await ctl(root, { cmd: 'mobile-status' })).mobile?.exposure?.kind === 'exposed', { label: 'fake mobile exposed', timeoutMs: 15_000 })
+    fs.writeFileSync(path.join(root, 'ud/runtime/owner.json'), '{broken fixture')
+    await sleep(200)
+    await stub(['save', 'cancel'])
+    const mark = calls(fake).length
+    const t0 = Date.now()
+    await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+    const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 15_000 }).then(() => true, () => false)
+    const disk = fs.readFileSync(file, 'utf8')
+    const shutdown = calls(fake).slice(mark).map((row) => row.argv.join(' '))
+    check('R4-noreg-shutdown-reject', exited && disk.startsWith('BEFORE-') && shutdown.some((row) => row.endsWith('off')) && JSON.stringify(fakeState(fake)?.serve ?? null) === '{}', { exited, ms: Date.now() - t0, disk: disk.slice(0, 30), shutdown, serve: fakeState(fake)?.serve ?? null })
     break
   }
   default:

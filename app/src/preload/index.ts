@@ -89,6 +89,7 @@ const EXPOSED = [
   'setDirtyFiles',
   'onQuitRequested',
   'confirmQuit',
+  'quitCancelled',
   'quitAck',
   'activateWindow',
   'reportRendered',
@@ -218,6 +219,8 @@ const api: CorralApi = {
     }
   },
   confirmQuit: () => ipcRenderer.send('corral:confirmQuit'),
+  /** 종료 확인이 취소로 끝났다(LIFE-591 수정 r4 R4-A ⓒ) — main 이 이미 런타임 정리를 시작했었는지 돌려준다. */
+  quitCancelled: (): Promise<{ runtimeClosed: boolean }> => ipcRenderer.invoke('corral:quitCancelled'),
   /** 종료 확인 요청을 받았다(LIFE-591 수정 r1 R1-I — main 의 무응답 판정 시계를 멈춘다). */
   quitAck: () => ipcRenderer.send('corral:quitAck'),
   setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),

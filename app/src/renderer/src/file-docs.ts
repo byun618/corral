@@ -146,12 +146,18 @@ export const getDoc = (key: string): FileDoc | undefined => docs.get(key)
 
 /**
  * 종료가 승인됐다(수정 r3 R3-C) — 그 순간부터 **모든 편집기를 읽기 전용**으로 둔다. 승인 뒤 main 이 런타임 정리(Mobile serve 제거 — 최대 수 초)를 기다리는 동안
- * 창이 남아 있어 친 글자가 저장도 확인도 없이 사라졌다. 되돌리는 길은 없다(승인 뒤 종료는 멈추지 않는다 — 창이 닫히며 함께 끝난다).
+ * 창이 남아 있어 친 글자가 저장도 확인도 없이 사라졌다. 보통은 되돌리지 않는다(승인 뒤 종료는 멈추지 않는다 — 창이 닫히며 함께 끝난다).
+ * 방어선(수정 r4 R4-A ⓒ): 그래도 종료 확인이 취소로 끝나면 `thawEditing` 으로 푼다.
  */
 let frozen = false
 export function freezeEditing(): void {
   if (frozen) return
   frozen = true
+  notify()
+}
+export function thawEditing(): void {
+  if (!frozen) return
+  frozen = false
   notify()
 }
 export const editingFrozen = (): boolean => frozen

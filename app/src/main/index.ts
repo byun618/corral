@@ -147,17 +147,28 @@ let window: BrowserWindow | null = null
  * LIFE-591 E3ⓒ — 수정된 파일 탭이 있으면 종료·창 닫기를 런타임 정리보다 먼저 막고 렌더러에 확인을 맡긴다(`quit-gate.ts`).
  * 렌더러가 없으면(창이 없거나 부서졌으면) 막지 않는다 — 그때는 확인할 내용도 없다.
  * 수정 r1 R1-I — 렌더러가 요청을 3 s 안에 받았다고(`corral:quitAck`) 답하지 않으면(멈춤) main 이 직접 묻는다(`confirmUnresponsiveQuit`).
+ * 수정 r4 R4-A — 밀린 수정 목록이 비어도 렌더러에 묻는다(왕복 — 렌더러가 그 순간 문서로 판정). 페이지를 싣는 중이면 문서가 없으니 묻지 않는다.
  */
 const quitGate = createQuitGate({
   requestConfirm: () => {
-    if (window === null || window.isDestroyed() || window.webContents.isCrashed()) return false
+    if (window === null || window.isDestroyed() || window.webContents.isCrashed() || window.webContents.isLoadingMainFrame()) return false
     window.webContents.send('corral:quitRequested')
     return true
   },
   onUnresponsive: () => void confirmUnresponsiveQuit(),
+  trustPushedList: measuring && !app.isPackaged && process.env.CORRAL_TEST_QUIT_TRUST_PUSHED === '1',
   ackTimeoutMs: 3000,
   log: (tag, data) => log(tag, data),
 })
+/**
+ * 방어선(수정 r4 R4-A ⓒ) — 런타임 정리를 시작해 창을 숨긴 뒤에 종료 확인을 다시 묻게 됐으면(정리 뒤 재진입 종료가 새 수정을 본 경우 등) 창을 다시 보인다.
+ * 숨은 창에 붙은 확인 대화상자는 보이지 않고, 취소하면 창이 숨은 채 남는다. 포커스는 가져가지 않는다(`showInactive`).
+ */
+function reshowForConfirm(via: string): void {
+  if (runtimeStopping === null || window === null || window.isDestroyed() || window.isVisible()) return
+  log('quit.reshow', { via, runtimeStopped })
+  window.showInactive()
+}
 let unresponsivePrompt = false
 /**
  * 무응답 렌더러 종료 확인(R1-I) — 「저장하지 않고 종료」 면 확인을 지난 것으로 치고 창을 바로 부순 뒤(멈춘 렌더러는 `beforeunload` 에 답하지 못한다 —
@@ -1497,7 +1508,10 @@ function createWindow(): void {
   window.on('ready-to-show', () => window?.show())
   // LIFE-591 E3ⓒ — 빨간 닫기 단추(창 `close`)도 ⌘Q 와 같은 확인을 거친다. 창이 닫히면 `window-all-closed` → 정리 → 종료이므로 여기서 막아야 렌더러의 수정 내용이 산다.
   window.on('close', (event) => {
-    if (quitGate.intercept('window-close')) event.preventDefault()
+    if (quitGate.intercept('window-close')) {
+      event.preventDefault()
+      reshowForConfirm('window-close')
+    }
   })
   window.on('closed', () => quitGate.setDirty([]))
   window.webContents.on('render-process-gone', () => quitGate.setDirty([]))
@@ -1950,6 +1964,15 @@ app.whenReady().then(async () => {
     if (!fromOurWindow(event)) return
     quitGate.ack()
   })
+  // 렌더러의 종료 확인이 취소로 끝났다 — 보통은 할 일이 없다(정리 전이라 앱·런타임 그대로). 방어선(R4-A ⓒ): 정리를 이미 시작했으면 창을 다시 보이고,
+  // 런타임을 닫았는지 돌려준다 — 렌더러가 편집 동결을 풀고 사용자에게 안내한다.
+  ipcMain.handle('corral:quitCancelled', (event) => {
+    if (!fromOurWindow(event)) return { runtimeClosed: false }
+    reshowForConfirm('cancelled')
+    const runtimeClosed = runtimeStopping !== null
+    log('quit.cancelled', { runtimeClosed, runtimeStopped })
+    return { runtimeClosed }
+  })
   ipcMain.on('corral:confirmQuit', (event) => {
     if (!fromOurWindow(event)) return
     log('quit.confirmed', { files: quitGate.dirty().length })
@@ -2248,6 +2271,7 @@ app.on('before-quit', event => {
   // LIFE-591 E3ⓒ — 수정된 파일 탭이 있으면 런타임 정리보다 **먼저** 막는다(취소하면 런타임·터미널이 그대로여야 한다). 확인은 렌더러가 하고 `corral:confirmQuit` 로 다시 온다.
   if (quitGate.intercept('before-quit')) {
     event.preventDefault()
+    reshowForConfirm('before-quit')
     return
   }
   // 런타임 정리(Mobile serve 제거 + 런타임 닫기)는 **한 번만** 돌리고, 정리 중 다시 온 종료 요청(창 파기 → `window-all-closed` 의 `app.quit()` 등)도

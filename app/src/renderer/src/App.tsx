@@ -70,7 +70,7 @@ import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
 import { fileTabLabel, fileTabsOf, isFileTabId, previewOf, tabKindOf, terminalKeyTarget } from './file-tabs.js'
 import { FileView, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
-import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, type FileDoc } from './file-docs.js'
+import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, thawEditing, type FileDoc } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, type SaveDeps } from './file-save.js'
 import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
 import { moveDirectionToSplit } from './components/TabContextMenu.js'
@@ -151,10 +151,18 @@ export function App(): React.JSX.Element {
         if (quitPromptRef.current) return
         quitPromptRef.current = true
         // 대상 = 모든 문서(그때그때 — 확인·저장을 기다리는 사이 새로 수정된 문서도 다시 묻는다, 수정 r2 R2-A).
+        // main 은 밀린 목록이 비어도 여기에 묻는다(수정 r4 R4-A) — 수정이 없으면 아래가 묻지 않고 같은 태스크 안에서 승인·동결까지 간다(그 사이 입력이 끼지 못한다).
         const label = (doc: FileDoc): string => (new Set(dirtyDocs().map((row) => row.root)).size > 1 ? `${doc.root.split('/').pop() ?? doc.root}/${doc.rel}` : doc.rel)
         void confirmDiscardOrSave({ targets: allDocs, deps: saveDepsRef.current, label })
           .then((ok) => {
-            if (!ok) return
+            if (!ok) {
+              // 취소 — 보통은 정리 전이라 할 일이 없다. 방어선(R4-A ⓒ): 동결돼 있었으면 풀고, main 이 이미 런타임을 정리했으면 알린다(창은 main 이 다시 보인다).
+              thawEditing()
+              void window.corral.quitCancelled().then((result) => {
+                if (result.runtimeClosed) notify('종료를 취소했지만 터미널 런타임은 이미 정리됐습니다 — 파일은 그대로 저장할 수 있습니다. 저장한 뒤 앱을 다시 시작하세요')
+              })
+              return
+            }
             // 승인 — 이 순간(같은 마이크로태스크)부터 편집을 막고 main 에 알린다. 승인 뒤 정리 대기 중 친 글자가 조용히 사라지지 않게(R3-C).
             freezeEditing()
             window.corral.confirmQuit()

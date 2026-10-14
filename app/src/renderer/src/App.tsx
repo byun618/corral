@@ -143,11 +143,15 @@ export function App(): React.JSX.Element {
   // 종료·창 닫기 확인(E3ⓒ) — main 이 런타임 정리 전에 막고 맡겼다. 저장/저장 안 함이면 다시 종료하라고 돌려준다. 취소면 아무것도 안 한다(앱·런타임 그대로).
   // 여러 worktree 의 파일이면 이름 앞에 worktree 폴더 이름을 붙인다.
   const quitPromptRef = useRef(false)
+  // 받은 요청 중 가장 새 세대(수정 r5 R5-B) — 확인이 끝날 때 이 세대로 답한다(묻는 사이 새 요청이 왔으면 그 요청에 대한 답이다).
+  // main 이 무응답 취소로 무효로 한 세대면 승인을 받지 않는다(아래 — 동결을 다시 푼다).
+  const quitGenRef = useRef(0)
   useEffect(
     () =>
-      window.corral.onQuitRequested(() => {
+      window.corral.onQuitRequested((gen) => {
+        quitGenRef.current = Math.max(quitGenRef.current, gen)
         // 받았다고 바로 알린다 — main 이 무응답(멈춘 렌더러) 판정 시계를 멈춘다(수정 r1 R1-I). 이미 묻는 중이어도 알린다.
-        window.corral.quitAck()
+        window.corral.quitAck(gen)
         if (quitPromptRef.current) return
         quitPromptRef.current = true
         // 대상 = 모든 문서(그때그때 — 확인·저장을 기다리는 사이 새로 수정된 문서도 다시 묻는다, 수정 r2 R2-A).
@@ -158,14 +162,17 @@ export function App(): React.JSX.Element {
             if (!ok) {
               // 취소 — 보통은 정리 전이라 할 일이 없다. 방어선(R4-A ⓒ): 동결돼 있었으면 풀고, main 이 이미 런타임을 정리했으면 알린다(창은 main 이 다시 보인다).
               thawEditing()
-              void window.corral.quitCancelled().then((result) => {
+              void window.corral.quitCancelled(quitGenRef.current).then((result) => {
                 if (result.runtimeClosed) notify('종료를 취소했지만 터미널 런타임은 이미 정리됐습니다 — 파일은 그대로 저장할 수 있습니다. 저장한 뒤 앱을 다시 시작하세요')
               })
               return
             }
             // 승인 — 이 순간(같은 마이크로태스크)부터 편집을 막고 main 에 알린다. 승인 뒤 정리 대기 중 친 글자가 조용히 사라지지 않게(R3-C).
             freezeEditing()
-            window.corral.confirmQuit()
+            void window.corral.confirmQuit(quitGenRef.current).then((accepted) => {
+              // 무효가 된 요청(무응답 대화상자에서 취소한 종료)에 대한 늦은 승인 — main 이 받지 않았다. 편집을 다시 연다(R5-B).
+              if (!accepted) thawEditing()
+            })
           })
           .finally(() => {
             quitPromptRef.current = false

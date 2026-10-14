@@ -1056,13 +1056,14 @@ export type CorralApi = {
   /** 수정 파일 목록 — 바뀔 때마다(종료 확인 관문이 동기 판정에 쓴다, E3ⓒ). */
   setDirtyFiles: (files: DirtyFile[]) => void
   /** main 이 종료·창 닫기를 막고 확인을 맡겼다. */
-  onQuitRequested: (listener: () => void) => () => void
-  /** 확인을 마쳤다(저장했거나 저장 안 함) — main 이 이제 막지 않고 종료한다. */
-  confirmQuit: () => void
+  /** `gen` = 요청 세대 — 응답에 그대로 돌려준다(LIFE-591 수정 r5 R5-B). */
+  onQuitRequested: (listener: (gen: number) => void) => () => void
+  /** 확인을 마쳤다(저장했거나 저장 안 함) — main 이 받으면 종료한다. 무효가 된 세대면 false. */
+  confirmQuit: (gen: number) => Promise<boolean>
   /** 종료 확인이 취소로 끝났다 — main 이 런타임 정리를 이미 시작했었으면 runtimeClosed(LIFE-591 수정 r4 R4-A ⓒ). */
-  quitCancelled: () => Promise<{ runtimeClosed: boolean }>
+  quitCancelled: (gen: number) => Promise<{ runtimeClosed: boolean }>
   /** 종료 확인 요청을 받았다(LIFE-591 수정 r1 R1-I). */
-  quitAck: () => void
+  quitAck: (gen: number) => void
   /** 우클릭 직전 창을 앞으로 (Orca #14545 를 따라 하지 않기 — 배경 앱 우클릭에도 키보드·hover 대상이 선다). */
   activateWindow: () => void
   reportRendered: (revision: number) => void

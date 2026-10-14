@@ -211,18 +211,19 @@ const api: CorralApi = {
   writeFile: (input: FileWriteInput): Promise<FileWriteResult> => ipcRenderer.invoke('corral:fileWrite', input),
   fileDialog: (request: FileDialogRequest): Promise<FileDialogChoice> => ipcRenderer.invoke('corral:fileDialog', request),
   setDirtyFiles: (files: DirtyFile[]) => ipcRenderer.send('corral:dirtyFiles', files),
-  onQuitRequested: (listener: () => void) => {
-    const handler = (): void => listener()
+  onQuitRequested: (listener: (gen: number) => void) => {
+    const handler = (_event: unknown, gen: unknown): void => listener(typeof gen === 'number' ? gen : -1)
     ipcRenderer.on('corral:quitRequested', handler)
     return () => {
       ipcRenderer.removeListener('corral:quitRequested', handler)
     }
   },
-  confirmQuit: () => ipcRenderer.send('corral:confirmQuit'),
+  /** 승인 — main 이 받았는지(무효가 된 요청 세대면 false, LIFE-591 수정 r5 R5-B). */
+  confirmQuit: (gen: number): Promise<boolean> => ipcRenderer.invoke('corral:confirmQuit', gen),
   /** 종료 확인이 취소로 끝났다(LIFE-591 수정 r4 R4-A ⓒ) — main 이 이미 런타임 정리를 시작했었는지 돌려준다. */
-  quitCancelled: (): Promise<{ runtimeClosed: boolean }> => ipcRenderer.invoke('corral:quitCancelled'),
+  quitCancelled: (gen: number): Promise<{ runtimeClosed: boolean }> => ipcRenderer.invoke('corral:quitCancelled', gen),
   /** 종료 확인 요청을 받았다(LIFE-591 수정 r1 R1-I — main 의 무응답 판정 시계를 멈춘다). */
-  quitAck: () => ipcRenderer.send('corral:quitAck'),
+  quitAck: (gen: number) => ipcRenderer.send('corral:quitAck', gen),
   setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),
   // 사용자 설정 (LIFE-512) — 동기 읽기는 부팅 때 한 번(시작 2단 resize 방지, main 주석). 쓰기는 검증된 전체 값을 돌려준다.
   getSettingsSync: (): Settings => ipcRenderer.sendSync('corral:getSettingsSync'),

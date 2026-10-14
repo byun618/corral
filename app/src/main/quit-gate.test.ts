@@ -87,9 +87,51 @@ describe('quit gate — 무응답 렌더러 (수정 r1 R1-I)', () => {
     let unresponsive = 0
     const gate = createQuitGate({ requestConfirm: () => true, onUnresponsive: () => unresponsive++, ackTimeoutMs: 20 })
     gate.setDirty([{ root: '/r', rel: 'a.txt' }])
-    gate.intercept('before-quit')
-    gate.ack()
+    let sent = -1
+    const gate2 = createQuitGate({ requestConfirm: (gen) => ((sent = gen), true), onUnresponsive: () => unresponsive++, ackTimeoutMs: 20 })
+    gate2.setDirty([{ root: '/r', rel: 'a.txt' }])
+    gate2.intercept('before-quit')
+    expect(gate2.ack(sent)).toBe(true)
     await wait(60)
     expect(unresponsive).toBe(0)
+  })
+})
+
+// 수정 r5 — R5-A 로딩 중은 밀린 목록으로 판정 · R5-B 무응답 취소로 무효가 된 세대의 늦은 응답은 버린다.
+describe('quit gate — 로딩 중 판정·요청 세대 (수정 r5)', () => {
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  it('R5-A 로딩 중 — 밀린 목록이 있으면 막고 묻는다, 비면 통과(무응답 대기 없음)', () => {
+    let asked = 0
+    const gate = createQuitGate({ requestConfirm: () => ++asked > 0, loading: () => true })
+    expect(gate.intercept('before-quit')).toBe(false)
+    expect(asked).toBe(0)
+    gate.setDirty([{ root: '/r', rel: 'a.txt' }])
+    expect(gate.intercept('before-quit')).toBe(true)
+    expect(asked).toBe(1)
+  })
+  it('R5-B 무응답 취소(invalidate) 뒤 옛 세대의 ack·승인은 무효, 새 요청은 새 세대', async () => {
+    const sent: number[] = []
+    let unresponsive = 0
+    const gate = createQuitGate({ requestConfirm: (gen) => (sent.push(gen), true), onUnresponsive: () => unresponsive++, ackTimeoutMs: 20 })
+    expect(gate.intercept('before-quit')).toBe(true)
+    await wait(60)
+    expect(unresponsive).toBe(1)
+    const old = sent[0] ?? -1
+    gate.invalidate()
+    expect(gate.isCurrent(old)).toBe(false)
+    expect(gate.ack(old)).toBe(false)
+    gate.intercept('before-quit')
+    const next = sent[1] ?? -1
+    expect(next).not.toBe(old)
+    expect(gate.isCurrent(next)).toBe(true)
+    expect(gate.ack(next)).toBe(true)
+  })
+  it('R5-B 같은 세대 안의 거듭된 요청은 같은 번호 — 진행 중 확인을 무효로 만들지 않는다', () => {
+    const sent: number[] = []
+    const gate = createQuitGate({ requestConfirm: (gen) => (sent.push(gen), true) })
+    gate.intercept('before-quit')
+    gate.intercept('window-close')
+    expect(sent[0]).toBe(sent[1])
+    expect(gate.isCurrent(sent[0] ?? -1)).toBe(true)
   })
 })

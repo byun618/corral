@@ -14,16 +14,23 @@ export type QuitGate = {
   dirty: () => DirtyFile[]
   /** 종료·창 닫기 입구가 부른다 — true 면 막았다(부른 쪽이 `preventDefault`). 막을 때마다 확인을 요청한다(중복은 렌더러가 거른다). */
   intercept: (via: string) => boolean
-  /** 렌더러가 확인 요청을 받았다(무응답 시계를 멈춘다). */
-  ack: () => void
+  /** 렌더러가 확인 요청을 받았다(무응답 시계를 멈춘다). 무효가 된 세대의 응답이면 false(아무것도 안 함). */
+  ack: (gen: number) => boolean
+  /** 렌더러 응답의 세대가 지금 요청의 것인가(수정 r5 R5-B). */
+  isCurrent: (gen: number) => boolean
+  /** 지금 요청을 무효로 — 무응답 대화상자 「취소」 뒤(R5-B). 이미 보낸 요청에 회복한 렌더러가 늦게 답해도 버린다. */
+  invalidate: () => void
   /** 렌더러가 확인을 마쳤다 — 이후 종료를 막지 않는다. */
   allow: () => void
   allowed: () => boolean
 }
 
 export function createQuitGate(input: {
-  requestConfirm: () => boolean
+  /** `gen` = 이 요청의 세대 — 렌더러가 응답(`quitAck`·`confirmQuit`·`quitCancelled`)에 돌려준다. */
+  requestConfirm: (gen: number) => boolean
   onUnresponsive?: () => void
+  /** 렌더러가 페이지를 싣는 중인가(수정 r5 R5-A) — 그때는 왕복 대신 밀린 목록으로 판정한다(비면 통과, 있으면 막고 묻는다). */
+  loading?: () => boolean
   /** 시험 전용(개발 실행 계측) — 옛 판정(밀린 목록이 비면 묻지 않음)으로 왕복을 건너뛴다. 방어선(취소 뒤 복구) 회귀가 낡은 목록 경로를 일부러 만들 때만. */
   trustPushedList?: boolean
   ackTimeoutMs?: number
@@ -31,6 +38,8 @@ export function createQuitGate(input: {
 }): QuitGate {
   let files: DirtyFile[] = []
   let allowed = false
+  // 요청 세대(수정 r5 R5-B) — 무응답 취소로 무효가 되면 올린다. 같은 세대 안의 거듭된 종료 요청은 같은 번호(진행 중 확인을 무효로 만들지 않는다).
+  let gen = 1
   let waiting: ReturnType<typeof setTimeout> | null = null
   const stopWaiting = (): void => {
     if (waiting !== null) clearTimeout(waiting)
@@ -44,9 +53,15 @@ export function createQuitGate(input: {
     intercept: (via) => {
       if (allowed) return false
       if (input.trustPushedList === true && files.length === 0) return false
+      // 페이지를 싣는 중(다시 불러오기 등) — 옛 문서가 아직 살아 있을 수 있어 「렌더러 없음」 으로 치지 않는다. 왕복은 새 페이지가 받을지 알 수 없으니
+      // main 이 받아 둔 목록으로 판정한다: 비면 통과(로딩 중 무응답 대기 없음), 있으면 아래처럼 막고 묻는다(R5-A).
+      if (input.loading?.() === true && files.length === 0) {
+        input.log?.('quit.intercepted', { via, files: 0, asked: false, loading: true })
+        return false
+      }
       // 확인을 받을 렌더러가 없으면 막지 않는다(막으면 종료할 길이 없어진다) — 그때 렌더러 쪽 내용도 이미 없다.
-      const asked = input.requestConfirm()
-      input.log?.('quit.intercepted', { via, files: files.length, asked })
+      const asked = input.requestConfirm(gen)
+      input.log?.('quit.intercepted', { via, files: files.length, asked, gen })
       // 이미 기다리는 중이면 시계를 새로 걸지 않는다(같은 무응답에 대화상자를 두 번 띄우지 않게).
       if (asked && waiting === null && input.onUnresponsive !== undefined) {
         const onUnresponsive = input.onUnresponsive
@@ -59,7 +74,16 @@ export function createQuitGate(input: {
       }
       return asked
     },
-    ack: stopWaiting,
+    ack: (replyGen) => {
+      if (replyGen !== gen) return false
+      stopWaiting()
+      return true
+    },
+    isCurrent: (replyGen) => replyGen === gen,
+    invalidate: () => {
+      gen += 1
+      stopWaiting()
+    },
     allow: () => {
       allowed = true
       stopWaiting()

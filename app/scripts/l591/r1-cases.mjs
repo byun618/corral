@@ -664,6 +664,170 @@ switch (name) {
     check('R4-noreg-shutdown-reject', exited && disk.startsWith('BEFORE-') && shutdown.some((row) => row.endsWith('off')) && JSON.stringify(fakeState(fake)?.serve ?? null) === '{}', { exited, ms: Date.now() - t0, disk: disk.slice(0, 30), shutdown, serve: fakeState(fake)?.serve ?? null })
     break
   }
+  case 'reload-stop':
+  case 'reload-busy':
+  case 'clean-unresponsive-busy':
+  case 'clean-quit':
+  case 'clean-close':
+  case 'destroy-pending':
+  case 'crash-pending': {
+    // 수정 r5 — 리뷰어 r5 extra.mjs 조건 이식. main 프로세스 inspector(g-up `L577_ELECTRON_ARGS=--inspect=0`)로 `webContents.reload()`·렌더러 pid 를 다룬다.
+    //   reload-stop  수정 문서를 연 채 렌더러를 멈추고(SIGSTOP) 다시 불러오기 시작 → 로딩 중 종료 → 재개. R5-A: 확인을 정리 전에 묻고, 취소 뒤 창·편집·dirty·디스크 원본·런타임 유지
+    //   reload-busy  같은 조건을 렌더러 700 ms 바쁜 대기로(유한 지연) — 정리 전 확인·창·런타임 유지만 본다(취소 뒤 새 문서가 실리는 것은 범위 밖 O2)
+    //   clean-unresponsive-busy  수정 없음 + 렌더러 4.3 s 바쁜 대기 중 종료 → 3 s 무응답 대화상자 「취소」 → 회복. R5-B: 늦은 승인을 받지 않고 앱·런타임 생존, 다시 종료하면 정상 종료
+    //   clean-quit · clean-close  수정 없는 정상 종료 시간(Mobile 끔)
+    //   destroy-pending · crash-pending  수정 있음 + 렌더러 멈춤 중 종료 확인 대기에서 창 파기 / 렌더러 크래시(리뷰어 r5 무회귀 표) — 파기는 종료 완료,
+    //                크래시는 무응답 확인 「취소」 면 앱이 남고 다시 종료하면 완료
+    const rel = 'r1/edit.txt'
+    const file = path.join(repo, rel)
+    const original = fs.readFileSync(file, 'utf8')
+    await openFile(rel)
+    await exposeMonaco()
+    const logFile = fs.readdirSync(root).find((item) => /^electron-.*\.log$/.test(item))
+    const inspectorUrl = logFile === undefined ? null : (fs.readFileSync(path.join(root, logFile), 'utf8').match(/Debugger listening on (ws:\/\/\S+)/)?.[1] ?? null)
+    if (inspectorUrl === null) throw new Error('main inspector 없음 — ISO_ENV 에 L577_ELECTRON_ARGS=--inspect=0')
+    const inspector = new WebSocket(inspectorUrl)
+    await new Promise((resolve, reject) => ((inspector.onopen = resolve), (inspector.onerror = reject)))
+    let inspectorSeq = 0
+    const inspectorWait = new Map()
+    inspector.onmessage = ({ data }) => {
+      const message = JSON.parse(data)
+      const waiter = inspectorWait.get(message.id)
+      if (waiter === undefined) return
+      inspectorWait.delete(message.id)
+      if (message.error !== undefined) waiter.reject(new Error(JSON.stringify(message.error)))
+      else waiter.resolve(message.result)
+    }
+    const mainEval = async (expression) => {
+      inspectorSeq += 1
+      const id = inspectorSeq
+      const result = await new Promise((resolve, reject) => {
+        inspectorWait.set(id, { resolve, reject })
+        inspector.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }))
+      })
+      if (result.exceptionDetails !== undefined) throw new Error(JSON.stringify(result.exceptionDetails))
+      return result.result.value
+    }
+    await mainEval(`globalThis.l591w = process.getBuiltinModule('module').createRequire(process.cwd() + '/package.json')('electron').BrowserWindow.getAllWindows()[0]; true`)
+    const socket = path.join(root, 'ud/runtime/rpc.sock')
+    const view = async () => ({
+      visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible,
+      readOnly: await ed('return e.getOption(window.l591Monaco.editor.EditorOption.readOnly)'),
+      model: (await ed('return m.getValue()')).slice(0, 30),
+      dirty: await dirtyOf(rel),
+      runtimeSocket: fs.existsSync(socket),
+    })
+    const quitLog = () => logRows().filter((row) => String(row.tag).startsWith('quit.') || row.tag === 'file.reload_confirm').map((row) => ({ tag: row.tag, via: row.via ?? null, files: row.files ?? null, asked: row.asked ?? null, gen: row.gen ?? null, kind: row.kind ?? null, loading: row.loading ?? null }))
+    let stopped = 0
+    try {
+      if (name === 'reload-stop' || name === 'reload-busy') {
+        await typeAt('RELOAD-')
+        await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+        await sleep(200)
+        await stub(Array(8).fill('cancel'))
+        let busy = null
+        if (name === 'reload-busy') {
+          busy = js(`(() => { const end = performance.now() + 700; while (performance.now() < end) {} return true })()`)
+          await sleep(100)
+        } else {
+          stopped = await mainEval('l591w.webContents.getOSProcessId()')
+          process.kill(stopped, 'SIGSTOP')
+        }
+        await mainEval('l591w.webContents.reload(); true')
+        await sleep(150)
+        const loading = await mainEval('l591w.webContents.isLoadingMainFrame()')
+        const quit = await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+        await sleep(150)
+        const early = { loading, visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible, runtimeSocket: fs.existsSync(socket) }
+        if (stopped > 0) {
+          process.kill(stopped, 'SIGCONT')
+          stopped = 0
+        }
+        if (busy !== null) await busy.catch(() => null)
+        await sleep(1500)
+        const isAlive = alive()
+        const after = isAlive ? { visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible, runtimeSocket: fs.existsSync(socket), asked: (await stub([])).asked, toast: await js(`[...document.querySelectorAll('[data-sonner-toast]')].map((el) => el.textContent).join(' | ')`) } : null
+        const disk = fs.readFileSync(file, 'utf8')
+        check('R5-A-asks-before-cleanup', early.loading === true && early.visible === true && early.runtimeSocket === true && quitLog().some((row) => row.tag === 'quit.intercepted' && row.asked === true), { quit, early, quitLog: quitLog() })
+        if (name === 'reload-stop') {
+          const state = isAlive ? await view() : null
+          let typedAfter = null
+          if (state !== null) {
+            await typeAt('Q').catch(() => null)
+            await sleep(150)
+            typedAfter = (await ed('return m.getValue()')).slice(0, 30)
+          }
+          check('R5-A-cancel-keeps-app', isAlive && after.visible === true && after.runtimeSocket === true && state.readOnly === false && state.dirty === 'true' && state.model.startsWith('RELOAD-') && disk === original && typedAfter?.startsWith('Q') === true, { after, state, typedAfter, originalSame: disk === original })
+        } else {
+          // 유한 지연 — 다시 불러오기 확인 취소 뒤에도 새 문서가 실려 수정이 사라지는 것은 직전 코드에도 있는 범위 밖 O2. 창·런타임만 본다.
+          check('R5-A-busy-keeps-window-runtime', isAlive && after.visible === true && after.runtimeSocket === true && disk === original, { after, originalSame: disk === original, o2Model: isAlive ? await ed('return m?.getValue()?.slice(0, 30) ?? null').catch(() => null) : null })
+        }
+      } else if (name === 'clean-unresponsive-busy') {
+        // inspector 가 붙어 있으면 main 이 끝나지 않는다 — 이 갈래는 inspector 를 쓰지 않으니 먼저 뗀다.
+        inspector.close()
+        await stub(['cancel'])
+        const busy = js(`(() => { const end = performance.now() + 4300; while (performance.now() < end) {} return true })()`)
+        await sleep(100)
+        const t0 = Date.now()
+        await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+        await until(() => logRows().some((row) => row.tag === 'quit.unresponsive_choice'), { label: 'unresponsive prompt', timeoutMs: 6000 })
+        const promptMs = Date.now() - t0
+        const cancelled = { alive: alive(), runtimeSocket: fs.existsSync(socket) }
+        await busy.catch(() => null)
+        await sleep(1500)
+        const isAlive = alive()
+        const after = isAlive ? await view() : null
+        const log = quitLog()
+        check('R5-B-cancel-survives-recovery', cancelled.alive && isAlive && after.visible === true && after.readOnly === false && after.runtimeSocket === true && !log.some((row) => row.tag === 'quit.confirmed'), { promptMs, cancelled, after, quitLog: log })
+        // 다시 종료하면 정상 종료(수정 없음 — 묻지 않는다).
+        const t1 = Date.now()
+        if (isAlive) await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+        const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 10_000 }).then(() => true, () => false)
+        check('R5-B-quit-again-exits', exited, { exited, ms: Date.now() - t1, quitLog: quitLog() })
+      } else if (name === 'destroy-pending' || name === 'crash-pending') {
+        await typeAt('PENDING-')
+        await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+        await sleep(150)
+        await stub(Array(10).fill('cancel'))
+        stopped = await mainEval('l591w.webContents.getOSProcessId()')
+        process.kill(stopped, 'SIGSTOP')
+        await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+        await mainEval(name === 'destroy-pending' ? 'l591w.destroy(); true' : 'l591w.webContents.forcefullyCrashRenderer(); true')
+        inspector.close()
+        await sleep(name === 'destroy-pending' ? 1000 : 3500)
+        try {
+          process.kill(stopped, 'SIGCONT')
+        } catch {
+          /* 이미 끝났다 */
+        }
+        stopped = 0
+        if (name === 'destroy-pending') {
+          const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 10_000 }).then(() => true, () => false)
+          check('R5-noreg-destroy-pending', exited, { exited, quitLog: quitLog() })
+        } else {
+          const survived = alive()
+          if (survived) await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+          const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 10_000 }).then(() => true, () => false)
+          check('R5-noreg-crash-pending', survived && exited, { survived, exited, quitLog: quitLog() })
+        }
+      } else {
+        inspector.close()
+        await sleep(200)
+        const t0 = Date.now()
+        await ctl(root, { cmd: 'quit-entry', via: name === 'clean-close' ? 'close' : 'quit' })
+        const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 10_000, everyMs: 20 }).then(() => true, () => false)
+        const rows = logRows()
+        const asked = rows.find((row) => row.tag === 'quit.intercepted')
+        const confirmed = rows.find((row) => row.tag === 'quit.confirmed')
+        check(`R5-noreg-${name}`, exited && !rows.some((row) => row.tag === 'file.dialog'), { exited, exitMs: Date.now() - t0, quitRoundTripMs: asked !== undefined && confirmed !== undefined ? confirmed.at - asked.at : null })
+      }
+    } finally {
+      if (stopped > 0) process.kill(stopped, 'SIGCONT')
+      inspector.close()
+    }
+    if (fs.readFileSync(file, 'utf8') !== original) fs.writeFileSync(file, original)
+    break
+  }
   default:
     throw new Error(`모르는 case: ${name}`)
 }

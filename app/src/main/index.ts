@@ -147,14 +147,17 @@ let window: BrowserWindow | null = null
  * LIFE-591 E3ⓒ — 수정된 파일 탭이 있으면 종료·창 닫기를 런타임 정리보다 먼저 막고 렌더러에 확인을 맡긴다(`quit-gate.ts`).
  * 렌더러가 없으면(창이 없거나 부서졌으면) 막지 않는다 — 그때는 확인할 내용도 없다.
  * 수정 r1 R1-I — 렌더러가 요청을 3 s 안에 받았다고(`corral:quitAck`) 답하지 않으면(멈춤) main 이 직접 묻는다(`confirmUnresponsiveQuit`).
- * 수정 r4 R4-A — 밀린 수정 목록이 비어도 렌더러에 묻는다(왕복 — 렌더러가 그 순간 문서로 판정). 페이지를 싣는 중이면 문서가 없으니 묻지 않는다.
+ * 수정 r4 R4-A — 밀린 수정 목록이 비어도 렌더러에 묻는다(왕복 — 렌더러가 그 순간 문서로 판정).
+ * 수정 r5 R5-A — 페이지를 싣는 중(다시 불러오기 등)이면 옛 문서가 아직 살아 있을 수 있다 — 왕복 대신 밀린 목록으로 판정한다(`loading`, 판정은 `quit-gate.ts`).
+ * 수정 r5 R5-B — 요청마다 세대(`gen`)를 실어 보낸다. 렌더러 응답은 그 세대를 돌려주고, 무응답 취소로 무효가 된 세대의 응답은 버린다.
  */
 const quitGate = createQuitGate({
-  requestConfirm: () => {
-    if (window === null || window.isDestroyed() || window.webContents.isCrashed() || window.webContents.isLoadingMainFrame()) return false
-    window.webContents.send('corral:quitRequested')
+  requestConfirm: (gen) => {
+    if (window === null || window.isDestroyed() || window.webContents.isCrashed()) return false
+    window.webContents.send('corral:quitRequested', gen)
     return true
   },
+  loading: () => window !== null && !window.isDestroyed() && window.webContents.isLoadingMainFrame(),
   onUnresponsive: () => void confirmUnresponsiveQuit(),
   trustPushedList: measuring && !app.isPackaged && process.env.CORRAL_TEST_QUIT_TRUST_PUSHED === '1',
   ackTimeoutMs: 3000,
@@ -187,7 +190,11 @@ async function confirmUnresponsiveQuit(): Promise<void> {
     const live = target !== null && !target.isDestroyed() ? target : null
     const quit = stubbed !== undefined ? stubbed === 'discard' : (live === null ? await dialog.showMessageBox(spec) : await dialog.showMessageBox(live, spec)).response === 0
     log('quit.unresponsive_choice', { files: files.length, quit, stubbed: stubbed !== undefined })
-    if (!quit) return
+    if (!quit) {
+      // 취소 — 이미 보낸 요청을 무효로 한다. 렌더러가 회복해 그 요청에 늦게 승인해도 종료하지 않는다(수정 r5 R5-B).
+      quitGate.invalidate()
+      return
+    }
     quitGate.allow()
     if (live !== null && !live.isDestroyed()) live.destroy()
     app.quit()
@@ -1960,24 +1967,36 @@ app.whenReady().then(async () => {
   })
   // 렌더러가 종료 확인을 마쳤다(저장했거나 저장 안 함) — 이제 막지 않고 다시 종료한다. 취소면 이 요청이 오지 않는다(앱·런타임 그대로).
   // 렌더러가 종료 확인 요청을 받았다(R1-I 무응답 시계를 멈춘다).
-  ipcMain.on('corral:quitAck', (event) => {
+  // 응답의 세대가 지금 요청의 것이 아니면(무응답 취소로 무효) 버리고 남긴다(수정 r5 R5-B).
+  const replyGen = (input: unknown): number => (typeof input === 'number' && Number.isInteger(input) ? input : -1)
+  ipcMain.on('corral:quitAck', (event, gen: unknown) => {
     if (!fromOurWindow(event)) return
-    quitGate.ack()
+    if (!quitGate.ack(replyGen(gen))) log('quit.stale_reply', { kind: 'ack', gen: replyGen(gen) })
   })
   // 렌더러의 종료 확인이 취소로 끝났다 — 보통은 할 일이 없다(정리 전이라 앱·런타임 그대로). 방어선(R4-A ⓒ): 정리를 이미 시작했으면 창을 다시 보이고,
   // 런타임을 닫았는지 돌려준다 — 렌더러가 편집 동결을 풀고 사용자에게 안내한다.
-  ipcMain.handle('corral:quitCancelled', (event) => {
+  ipcMain.handle('corral:quitCancelled', (event, gen: unknown) => {
     if (!fromOurWindow(event)) return { runtimeClosed: false }
+    if (!quitGate.isCurrent(replyGen(gen))) {
+      log('quit.stale_reply', { kind: 'cancelled', gen: replyGen(gen) })
+      return { runtimeClosed: false }
+    }
     reshowForConfirm('cancelled')
     const runtimeClosed = runtimeStopping !== null
     log('quit.cancelled', { runtimeClosed, runtimeStopped })
     return { runtimeClosed }
   })
-  ipcMain.on('corral:confirmQuit', (event) => {
-    if (!fromOurWindow(event)) return
+  // 승인 — 무효가 된 세대면 받지 않고 false(렌더러가 편집 동결을 푼다, R5-B).
+  ipcMain.handle('corral:confirmQuit', (event, gen: unknown) => {
+    if (!fromOurWindow(event)) return false
+    if (!quitGate.isCurrent(replyGen(gen))) {
+      log('quit.stale_reply', { kind: 'confirm', gen: replyGen(gen) })
+      return false
+    }
     log('quit.confirmed', { files: quitGate.dirty().length })
     quitGate.allow()
     app.quit()
+    return true
   })
   // 열린 파일 탭 감시(E5) — 렌더러가 활성 worktree 의 열린 파일 탭 집합을 통째로 준다. 패널 열림과 무관하다(탐색기 감시와 별개).
   fileWatch = createFileWatch({

@@ -755,7 +755,7 @@ cases.e4 = async () => {
     const seen = await stopNoticeSampler(root)
     const after = await modelOf(next)
     const reads = logRows().filter((r) => r.tag === 'file.read').length - reads0
-    cont.push({ i, from: rel, to: next, seen: seen.length, same: after?.value === before.value, dirty: (await tab(next))?.dirty, cursor: JSON.stringify(after?.cursor) === JSON.stringify(before.cursor), reads })
+    cont.push({ i, from: rel, to: next, seen: seen.length, seenFirst: seen[0] ?? null, seenLast: seen.at(-1) ?? null, seenKinds: [...new Set(seen.map((x) => `${x.deleted ? 'deleted' : ''}${x.banner ? 'banner' : ''}:${x.tab}`))], same: after?.value === before.value, dirty: (await tab(next))?.dirty, cursor: JSON.stringify(after?.cursor) === JSON.stringify(before.cursor), reads })
     rel = next
   }
   current.metrics = { continuous: cont }
@@ -827,6 +827,86 @@ cases.e4 = async () => {
   check('ⓔ 실행 취소로 되살리면 「삭제됨」 풀림 · 닫힌 탭은 다시 열지 않음', back.dirty !== null && back.marker === false && back.banner === false && back.clean === null && back.disk === 'dirty\n', back)
   // 되살린 내용 = 탭이 기대던 디스크 내용 그대로 — 설계(useFileOps 「되살리기」: 기준 stamp 만 옮겨 「삭제됨」·외부 변경 배너 없이 정상으로)대로 외부 변경 배너도 없어야 한다
   check('ⓔ 되살린 뒤 외부 변경 배너 없음(설계 useFileOps 7·220행)', bannerBeforeUndo === false && back.externalBanner === false, { bannerBeforeUndo, externalBanner: back.externalBanner, notices: back.notices, firstBanner, restoredAt })
+  // D1 ① 되살린 뒤 ⌘S — 충돌 대화상자 없이 저장(external none 이면 묻지 않는다 — 대화상자가 뜨면 스텁이 「취소」 로 답하고 asked 에 남는다), 디스크 = 편집기 내용
+  const conflictAsked = (asked) => JSON.stringify(asked ?? []).includes('conflict')
+  const dialogsSince = (at) => logRows().filter((r) => r.tag === 'file.dialog' && r.at >= at).map((r) => r.kind)
+  await stub(['cancel'])
+  const saveAt = Date.now()
+  await editorFocus('src/l592-e4-dirty.ts')
+  await key('S', ['meta'])
+  const savedClean = await until(async () => (await tab('src/l592-e4-dirty.ts'))?.dirty === 'false', { timeoutMs: 6000, label: 'D1 ⌘S' }).then(() => true, () => false)
+  const restoredSave = { savedClean, asked: (await stub([])).asked, dialogs: dialogsSince(saveAt), disk: fs.readFileSync(abs('src/l592-e4-dirty.ts'), 'utf8'), model: (await modelOf('src/l592-e4-dirty.ts'))?.value, externalBanner: await q(`document.querySelector('${bannerSel}') !== null`) }
+  check('D1① 되살린 뒤 ⌘S = 충돌 대화상자 없이 저장 · 디스크 = 편집기 내용 · 배너 없음', savedClean && !conflictAsked(restoredSave.asked) && !restoredSave.dialogs.includes('conflict') && restoredSave.disk === restoredSave.model && restoredSave.model === dirtyModel && !restoredSave.externalBanner, restoredSave)
+  // D1 ②·③ — 수정 중 탭의 파일을 지우고 ⌘Z 로 되살리는 한 바퀴(앞의 ⓔ 와 같은 조작)
+  const deleteAndRestore = async (target) => {
+    await stub(['trash'])
+    const at = new Date().toISOString()
+    await rowMenu(target, 'trash')
+    await until(() => Promise.resolve(!exists(target)), { label: `삭제 ${target}` })
+    noteTrash(target, '행 메뉴 삭제 → 확인(스텁) — 수정 중 탭(D1 대조)', at)
+    await stub([])
+    await sleep(800)
+    await focusRow('src')
+    await key('Z', ['meta'])
+    await until(() => Promise.resolve(exists(target)), { timeoutMs: 6000, label: `되살림 ${target}` })
+    await sleep(1200)
+  }
+  const bannerOf = (rel) => q(`document.querySelector('[data-file-view="${rel}"] [data-file-notice="external-change"]') !== null`)
+  const deletedOf = (rel) => q(`document.querySelector('[data-file-view="${rel}"] [data-file-notice="deleted"]') !== null || (document.querySelector('[data-file-tab="${rel}"]')?.matches('.is-deleted') ?? false)`)
+  const dirtyEdit = async (rel, text) => {
+    await editorFocus(rel)
+    await edOf(rel, `e.setPosition({ lineNumber: 1, column: 1 }); e.trigger('keyboard', 'type', { text: '${text}' }); return true`)
+    await until(async () => (await tab(rel))?.dirty === 'true', { label: `수정 ${rel}` })
+  }
+  // ② 양성 대조 — 되살린 뒤(다시 읽거나 저장하기 전) 외부에서 내용을 바꾸면 배너가 뜬다
+  const pc = 'src/l592-e4-pc.ts'
+  fs.writeFileSync(abs(pc), 'pc\n')
+  await until(() => hasRow(pc), { label: 'D1② 행' })
+  await openFixed(pc)
+  await dirtyEdit(pc, 'P')
+  await deleteAndRestore(pc)
+  const pcRestored = { banner: await bannerOf(pc), deleted: await deletedOf(pc), dirty: (await tab(pc))?.dirty ?? null }
+  fs.writeFileSync(abs(pc), 'pc external after restore\n')
+  const pcBanner = await until(() => bannerOf(pc), { timeoutMs: 6000, label: 'D1② 배너' }).then(() => true, () => false)
+  check('D1② 양성 대조 — 되살린 뒤(배너 없음) 외부 변경 → 배너 뜬다 · 편집 내용 유지', pcRestored.banner === false && pcRestored.deleted === false && pcRestored.dirty === 'true' && pcBanner && (await modelOf(pc))?.value === 'Ppc\n', { pcRestored, pcBanner })
+  // ② 수정 중 탭 열린 채 외부 변경(삭제 없이) — 배너 그대로
+  const nd = 'src/l592-e4-nodel.ts'
+  fs.writeFileSync(abs(nd), 'nodel\n')
+  await until(() => hasRow(nd), { label: 'D1② 삭제 없음 행' })
+  await openFixed(nd)
+  await dirtyEdit(nd, 'N')
+  await sleep(600)
+  const ndBefore = await bannerOf(nd)
+  fs.writeFileSync(abs(nd), 'nodel external\n')
+  const ndBanner = await until(() => bannerOf(nd), { timeoutMs: 6000, label: 'D1② 삭제 없음 배너' }).then(() => true, () => false)
+  check('D1② 수정 중 탭 열린 채 외부 변경(삭제 없음) → 배너', ndBefore === false && ndBanner, { ndBefore, ndBanner })
+  // ③ 삭제 전에 디스크가 이미 바뀐 경우(되살린 내용 ≠ 탭 기준) — 기존 동작: 되살린 뒤에도 외부 변경 배너 · ⌘S 는 충돌을 묻는다
+  const df = 'src/l592-e4-diff.ts'
+  fs.writeFileSync(abs(df), 'diff\n')
+  await until(() => hasRow(df), { label: 'D1③ 행' })
+  await openFixed(df)
+  await dirtyEdit(df, 'D')
+  fs.writeFileSync(abs(df), 'diff external before delete\n')
+  const dfBefore = await until(() => bannerOf(df), { timeoutMs: 6000, label: 'D1③ 삭제 전 배너' }).then(() => true, () => false)
+  await deleteAndRestore(df)
+  const dfRestored = { banner: await bannerOf(df), deleted: await deletedOf(df), disk: fs.readFileSync(abs(df), 'utf8') }
+  await stub(['cancel'])
+  const dfSaveAt = Date.now()
+  await editorFocus(df)
+  await key('S', ['meta'])
+  await sleep(1500)
+  const dfSave = { asked: (await stub([])).asked, dialogs: dialogsSince(dfSaveAt), disk: fs.readFileSync(abs(df), 'utf8'), dirty: (await tab(df))?.dirty ?? null }
+  check('D1③ 되살린 내용 ≠ 탭 기준 → 배너 그대로 · ⌘S 충돌 확인(취소 = 디스크 무변경)', dfBefore && dfRestored.banner === true && dfRestored.deleted === false && dfRestored.disk === 'diff external before delete\n' && (conflictAsked(dfSave.asked) || dfSave.dialogs.includes('conflict')) && dfSave.disk === dfRestored.disk && dfSave.dirty === 'true', { dfBefore, dfRestored, dfSave })
+  // 정리 — 대조 탭은 「덮어쓰기」 로 저장해 닫을 때 묻지 않게(뒤 사례에 영향 없게)
+  for (const rel of [pc, nd, df]) {
+    await stub(['overwrite'])
+    await click(`[data-main-tab="file:${rel}"]`)
+    await until(async () => (await tab(rel))?.active === 'true', { label: `정리 활성 ${rel}` })
+    await editorFocus(rel)
+    await key('S', ['meta'])
+    await until(async () => (await tab(rel))?.dirty === 'false', { timeoutMs: 6000, label: `정리 저장 ${rel}` }).catch(() => null)
+    await stub([])
+  }
   // ⓕ 실행 취소로 이름 변경을 되돌리면 탭도 옛 경로 — 수정 중 탭(ⓔ 와 다른 새 파일 — ⓔ 의 배너와 섞이지 않게)
   fs.writeFileSync(abs('src/l592-e4-f.ts'), 'f-line\n')
   await until(() => hasRow('src/l592-e4-f.ts'), { label: 'ⓕ 행' })

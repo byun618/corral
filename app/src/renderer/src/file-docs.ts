@@ -73,6 +73,8 @@ export type FileDoc = {
   stamp: string
   /** `stamp` 와 같은 때의 디스크 바이트 sha256(R1-C) — 같은 크기·같은 mtime 의 다른 내용을 가른다. */
   hash: string
+  /** 되살림(`rebaseDoc`)이 옮기기 전 stamp — 그 전에 찍은 같은 지문의 읽기 결과를 외부 변경으로 보지 않는다(D1). 다시 읽기·저장하면 null. */
+  rebasedFrom: string | null
   savedVersion: number
   dirty: boolean
   external: ExternalState
@@ -215,6 +217,7 @@ export function adoptDoc(input: { root: string; rel: string; model: Model; text:
     savedEols: eols.slice(),
     stamp: input.stamp,
     hash: input.hash,
+    rebasedFrom: null,
     savedVersion: input.model.getAlternativeVersionId(),
     dirty: false,
     external: { kind: 'none' },
@@ -296,6 +299,7 @@ export function reloadDoc(doc: FileDoc, input: DiskState): void {
   resetHead(doc)
   doc.stamp = input.stamp
   doc.hash = input.hash
+  doc.rebasedFrom = null
   doc.readOnly = input.readOnly
   doc.large = input.large
   doc.eols = eolsOf(doc.hiddenBom ? input.text.slice(1) : input.text)
@@ -326,6 +330,7 @@ export function revertDoc(doc: FileDoc, input: DiskState): void {
   followHead(doc)
   doc.stamp = input.stamp
   doc.hash = input.hash
+  doc.rebasedFrom = null
   doc.readOnly = input.readOnly
   doc.large = input.large
   doc.eols = eolsOf(text)
@@ -341,6 +346,7 @@ export function revertDoc(doc: FileDoc, input: DiskState): void {
 export function markSaved(doc: FileDoc, input: { stamp: string; hash: string; version: number; eols: string[] }): void {
   doc.stamp = input.stamp
   doc.hash = input.hash
+  doc.rebasedFrom = null
   doc.savedVersion = input.version
   doc.savedEols = input.eols
   doc.external = { kind: 'none' }
@@ -425,10 +431,20 @@ export function holdDocs(targets: readonly FileDoc[]): () => void {
  */
 export function rebaseDoc(doc: FileDoc, input: { stamp: string; hash: string }): boolean {
   if (doc.hash !== input.hash) return false
+  doc.rebasedFrom = doc.stamp
   doc.stamp = input.stamp
   doc.external = { kind: 'none' }
   notify()
   return true
+}
+
+/**
+ * 읽은 텍스트 결과가 문서의 디스크 기준과 같은가 — stamp·지문이 모두 같거나, 되살림이 옮기기 전 stamp·같은 지문(삭제 전에 찍은 낡은 읽기, D1).
+ * 되살린 뒤 새로 생긴 외부 변경은 새 stamp 라 같지 않다(배너 그대로).
+ */
+export function readMatchesDoc(doc: FileDoc, read: { stamp: string; hash: string }): boolean {
+  if (read.hash !== doc.hash) return false
+  return read.stamp === doc.stamp || read.stamp === doc.rebasedFrom
 }
 
 /** 모델을 버린다(닫기 확인 뒤·「저장 안 함」·수정 없는 문서의 탭이 사라짐). */

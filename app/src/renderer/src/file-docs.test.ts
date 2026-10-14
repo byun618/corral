@@ -1,7 +1,7 @@
 // LIFE-591 E1ⓒⓔⓕ·E2ⓑⓖ·E3ⓑ·E4ⓒⓓ — 문서 저장소·저장 흐름(단위). Monaco 대신 같은 모양의 가짜 모델(줄 배열 + 실행 취소 스택)을 쓴다.
 // 줄끝: 섞인 줄끝·BOM·끝 개행 없음 파일을 한 글자 고쳐 직렬화하면 그 한 글자만 다르다. 수정 여부: 버전 id(실행 취소로 저장 상태면 해제).
 import { beforeEach, describe, expect, it } from 'vitest'
-import { adoptDoc, allDocs, applyEolChange, disposeDoc, eolsOf, getDoc, holdDocs, joinLines, rebaseDoc, rekeyDocs, reloadDoc, revertDoc, serialize, setComposing, type DocModel } from './file-docs.js'
+import { adoptDoc, allDocs, applyEolChange, disposeDoc, eolsOf, getDoc, holdDocs, joinLines, readMatchesDoc, rebaseDoc, rekeyDocs, reloadDoc, revertDoc, serialize, setComposing, type DocModel } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, saveFailureMessage, type SaveDeps } from './file-save.js'
 import type { FileDialogChoice, FileDialogRequest, FileWriteInput, FileWriteResult } from '../../shared/file-view.js'
 
@@ -657,5 +657,42 @@ describe('LIFE-592 E4 경로 옮김', () => {
     expect(rebaseDoc(doc, { stamp: 's9', hash: 'h0' })).toBe(true)
     expect(doc.stamp).toBe('s9')
     expect(doc.dirty).toBe(true)
+  })
+})
+
+describe('LIFE-592 D1 — 되살린 뒤 낡은 읽기 결과(최종 관문 F10 E4ⓔ)', () => {
+  it('되살림이 기준을 옮긴 뒤, 옮기기 전 stamp·같은 지문의 읽기 결과는 지금 기준과 같다(거짓 외부 변경 아님)', () => {
+    const { doc, model } = open('abc\n', { stamp: 's0', hash: 'h0' })
+    model.type(1, 1, 'X')
+    // 삭제 전에 읽어 둔 결과(FileView readEntry) — 옛 inode stamp·같은 지문
+    const stale = { stamp: 's0', hash: 'h0' }
+    expect(readMatchesDoc(doc, stale)).toBe(true)
+    expect(rebaseDoc(doc, { stamp: 's9', hash: 'h0' })).toBe(true)
+    expect(readMatchesDoc(doc, stale)).toBe(true)
+    expect(readMatchesDoc(doc, { stamp: 's9', hash: 'h0' })).toBe(true)
+    expect(doc.external).toEqual({ kind: 'none' })
+  })
+  it('양성 대조 — 되살린 뒤 진짜 외부 변경(새 stamp 또는 다른 지문)은 같지 않다', () => {
+    const { doc, model } = open('abc\n', { stamp: 's0', hash: 'h0' })
+    model.type(1, 1, 'X')
+    rebaseDoc(doc, { stamp: 's9', hash: 'h0' })
+    expect(readMatchesDoc(doc, { stamp: 's10', hash: 'h1' })).toBe(false)
+    expect(readMatchesDoc(doc, { stamp: 's0', hash: 'h1' })).toBe(false)
+    expect(readMatchesDoc(doc, { stamp: 's10', hash: 'h0' })).toBe(false)
+  })
+  it('되살리기 전(삭제 없이) 외부 변경은 예전처럼 같지 않다 · 지문이 달라 옮기지 않은 경우도 낡은 읽기는 같지 않다', () => {
+    const { doc, model } = open('abc\n', { stamp: 's0', hash: 'h0' })
+    model.type(1, 1, 'X')
+    expect(readMatchesDoc(doc, { stamp: 's1', hash: 'h1' })).toBe(false)
+    expect(rebaseDoc(doc, { stamp: 's9', hash: 'other' })).toBe(false)
+    expect(readMatchesDoc(doc, { stamp: 's9', hash: 'other' })).toBe(false)
+    expect(readMatchesDoc(doc, { stamp: 's0', hash: 'h0' })).toBe(true)
+  })
+  it('다시 읽기·저장으로 기준이 바뀌면 옮기기 전 stamp 는 더 같지 않다', () => {
+    const { doc, model } = open('abc\n', { stamp: 's0', hash: 'h0' })
+    model.type(1, 1, 'X')
+    rebaseDoc(doc, { stamp: 's9', hash: 'h0' })
+    reloadDoc(doc, { text: 'new\n', bom: false, stamp: 's20', hash: 'h20', readOnly: null, large: false })
+    expect(readMatchesDoc(doc, { stamp: 's0', hash: 'h0' })).toBe(false)
   })
 })

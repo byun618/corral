@@ -23,7 +23,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { imageMimeOf, LARGE_FILE_BYTES, type FileReadResult, type ImageReadResult } from '../../../shared/file-view.js'
-import { adoptDoc, disposeDoc, docKey, docsVersion, editingFrozen, getDoc, reloadDoc, revertDoc, setComposing, setExternal, subscribeDocs, type DiskState, type FileDoc, type ReadOnlyReason } from '../file-docs.js'
+import { adoptDoc, disposeDoc, docKey, docsVersion, editingFrozen, getDoc, readMatchesDoc, reloadDoc, revertDoc, setComposing, setExternal, subscribeDocs, type DiskState, type FileDoc, type ReadOnlyReason } from '../file-docs.js'
 import './file-view.css'
 
 type MonacoModule = typeof import('../editor/monaco.js')
@@ -156,7 +156,7 @@ export function FileView({
     if (current === undefined || readEntry === null || current.saving) return
     const result = readEntry.result
     if (!result.ok || result.kind === 'image') return
-    const same = result.kind === 'text' && result.stamp === current.stamp && result.hash === current.hash
+    const same = result.kind === 'text' && readMatchesDoc(current, result)
     // 저장 전·중에 요청한 읽기(자기 저장의 중간 상태일 수 있다) — 판단하지 않고, 문서와 다르면 다시 읽는다.
     if (readEntry.gen !== current.saveGen) {
       if (!same) setVersion((value) => value + 1)

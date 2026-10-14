@@ -3,7 +3,7 @@
 #   SIGTERM(app.quit 경로) → 남은 helper KILL. herdr 면 그 ROOT 의 herdr 이름 세션도 멈춘다(회차 끝 정리).
 set -u
 ROOT=$1
-case "$ROOT" in /tmp/l601q-*) ;; *) echo "ROOT 는 /tmp/l601q-*"; exit 2 ;; esac
+case "$ROOT" in /tmp/l601q-*|/tmp/l601g-*) ;; *) echo "ROOT 는 /tmp/l601q-* 또는 /tmp/l601g-*(최종 관문 1단계)"; exit 2 ;; esac
 for p in $(pgrep -f -- "--user-data-dir=$ROOT/ud" | sort -n | head -1); do
   kill -TERM "$p"
   i=0; while kill -0 "$p" 2>/dev/null; do i=$((i+1)); [ $i -gt 300 ] && { echo "30초 넘음 — KILL $p"; kill -KILL "$p"; break; }; sleep 0.05; done

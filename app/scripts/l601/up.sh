@@ -9,7 +9,7 @@
 # - herdr = 레포 guard 바이너리의 이름 세션 `l601q-<ROOT 꼬리>`. 설치본 corral·그 userData·herdr 무접촉.
 set -u
 ROOT=$1; shift
-case "$ROOT" in /tmp/l601q-*) ;; *) echo "ROOT 는 /tmp/l601q-*"; exit 2 ;; esac
+case "$ROOT" in /tmp/l601q-*|/tmp/l601g-*) ;; *) echo "ROOT 는 /tmp/l601q-* 또는 /tmp/l601g-*(최종 관문 1단계)"; exit 2 ;; esac
 APP=$(pwd -P); EL="$APP/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
 KEY=$(node -e 'const fs=require("fs"),c=require("crypto");const s=JSON.parse(fs.readFileSync("backend/source.json"));console.log(c.createHash("sha256").update(Buffer.concat(s.patches.map(n=>fs.readFileSync("backend/"+n)))).digest("hex").slice(0,16))')
 GUARD="$(git rev-parse --path-format=absolute --git-common-dir)/corral-herdr-dev/$KEY/herdr-0.9.0/target/debug/herdr"

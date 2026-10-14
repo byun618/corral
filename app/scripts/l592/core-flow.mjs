@@ -5,7 +5,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { ctl, evalJs, sleep, until, repoPane, writeJson, startNoticeSampler, stopNoticeSampler, BANNER_SELECTOR, DELETED_SELECTOR } from './lib.mjs'
+import { ctl, evalJs, sleep, until, repoPane, writeJson, giveBack, giveBackLog, startNoticeSampler, stopNoticeSampler, BANNER_SELECTOR, DELETED_SELECTOR } from './lib.mjs'
 
 const [root, out] = process.argv.slice(2)
 if (!/^\/tmp\/l592g-[^/]+$/.test(root ?? '') || out === undefined) throw new Error('사용: core-flow.mjs /tmp/l592g-* OUT.json')
@@ -44,6 +44,7 @@ const trashListing = (name) => {
 }
 
 await until(() => q(`!!document.querySelector('.app-body')`), { timeoutMs: 30_000, label: '렌더러' })
+await giveBack()
 await repoPane(root)
 await sleep(1500)
 await ctl(root, { cmd: 'resize-window', width: 1280, height: 800 }).catch(() => null)
@@ -179,6 +180,7 @@ const logFile = path.join(root, 'ud/corral.ndjson')
 result.log = (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n') : []).filter((line) => /explorer\.op|file\.dialog|shortcut\.intercepted/.test(line)).slice(-40)
 result.disk = { files: fs.readdirSync(path.join(repo, 'src')).sort() }
 result.pass = Object.values(result.checks).every((value) => value === true)
+result.focus = giveBackLog
 writeJson(out, result)
 console.log(`# checks ${JSON.stringify(result.checks)} pass=${result.pass}`)
 process.exit(result.pass ? 0 : 1)

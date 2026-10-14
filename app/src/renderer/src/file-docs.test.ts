@@ -1,7 +1,7 @@
 // LIFE-591 E1ⓒⓔⓕ·E2ⓑⓖ·E3ⓑ·E4ⓒⓓ — 문서 저장소·저장 흐름(단위). Monaco 대신 같은 모양의 가짜 모델(줄 배열 + 실행 취소 스택)을 쓴다.
 // 줄끝: 섞인 줄끝·BOM·끝 개행 없음 파일을 한 글자 고쳐 직렬화하면 그 한 글자만 다르다. 수정 여부: 버전 id(실행 취소로 저장 상태면 해제).
 import { beforeEach, describe, expect, it } from 'vitest'
-import { adoptDoc, allDocs, applyEolChange, disposeDoc, eolsOf, getDoc, holdDocs, joinLines, readMatchesDoc, rebaseDoc, rekeyDocs, reloadDoc, revertDoc, serialize, setComposing, type DocModel } from './file-docs.js'
+import { adoptDoc, allDocs, applyEolChange, disposeDoc, eolsOf, getDoc, holdDocs, joinLines, markSaved, readMatchesDoc, rebaseDoc, rekeyDocs, reloadDoc, revertDoc, serialize, setComposing, type DocModel } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, saveFailureMessage, type SaveDeps } from './file-save.js'
 import type { FileDialogChoice, FileDialogRequest, FileWriteInput, FileWriteResult } from '../../shared/file-view.js'
 
@@ -657,6 +657,36 @@ describe('LIFE-592 E4 경로 옮김', () => {
     expect(rebaseDoc(doc, { stamp: 's9', hash: 'h0' })).toBe(true)
     expect(doc.stamp).toBe('s9')
     expect(doc.dirty).toBe(true)
+  })
+})
+
+describe('LIFE-592 R7-C-01 — 같은 탭의 되살림을 여러 바퀴(낡은 읽기는 처음 연 stamp 그대로)', () => {
+  it('되살림 6바퀴 연속 — 바퀴마다 처음 읽기·앞 바퀴 stamp 의 같은 지문 읽기는 같고, 다른 지문·새 stamp 는 다르다', () => {
+    const { doc, model } = open('abc\n', { stamp: 's0', hash: 'h0' })
+    model.type(1, 1, 'X')
+    for (let round = 1; round <= 6; round += 1) {
+      expect(rebaseDoc(doc, { stamp: `s${round}`, hash: 'h0' })).toBe(true)
+      for (let seen = 0; seen <= round; seen += 1) expect(readMatchesDoc(doc, { stamp: `s${seen}`, hash: 'h0' }), `바퀴 ${round} · 읽기 stamp s${seen}`).toBe(true)
+      expect(readMatchesDoc(doc, { stamp: 's0', hash: 'h1' })).toBe(false)
+      expect(readMatchesDoc(doc, { stamp: `s${round + 100}`, hash: 'h0' })).toBe(false)
+    }
+  })
+  it('상한 — 되살림이 많아도 목록이 무한히 자라지 않고, 처음 연 stamp 는 남는다', () => {
+    const { doc, model } = open('abc\n', { stamp: 's0', hash: 'h0' })
+    model.type(1, 1, 'X')
+    for (let round = 1; round <= 120; round += 1) rebaseDoc(doc, { stamp: `s${round}`, hash: 'h0' })
+    expect(doc.rebasedFrom.length).toBeLessThanOrEqual(50)
+    expect(readMatchesDoc(doc, { stamp: 's0', hash: 'h0' })).toBe(true)
+    expect(readMatchesDoc(doc, { stamp: 's119', hash: 'h0' })).toBe(true)
+  })
+  it('저장하면 목록을 비운다 — 옛 stamp 는 더 같지 않다', () => {
+    const { doc, model } = open('abc\n', { stamp: 's0', hash: 'h0' })
+    model.type(1, 1, 'X')
+    rebaseDoc(doc, { stamp: 's1', hash: 'h0' })
+    rebaseDoc(doc, { stamp: 's2', hash: 'h0' })
+    markSaved(doc, { stamp: 's3', hash: 'h3', version: model.getAlternativeVersionId(), eols: doc.eols })
+    expect(doc.rebasedFrom).toEqual([])
+    expect(readMatchesDoc(doc, { stamp: 's0', hash: 'h0' })).toBe(false)
   })
 })
 

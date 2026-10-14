@@ -4,7 +4,7 @@
 // 입력은 제어 소켓(sendInputEvent) — OS 키 입력(CGEvent)·클립보드·Finder 아님. 휴지통에는 이름에 l592 가 든 fixture 항목만 간다(trashed 목록을 결과에 남긴다).
 import fs from 'node:fs'
 import path from 'node:path'
-import { ctl, evalJs, sleep, until, repoPane, writeJson } from './lib.mjs'
+import { ctl, evalJs, sleep, until, repoPane, writeJson, giveBack, giveBackLog } from './lib.mjs'
 
 const [root, out] = process.argv.slice(2)
 if (!/^\/tmp\/l592g-[^/]+$/.test(root ?? '') || out === undefined) throw new Error('사용: chain-flow.mjs /tmp/l592g-* OUT.json')
@@ -37,6 +37,7 @@ const treeOnSrc = async () => {
 }
 
 await until(() => q(`!!document.querySelector('.app-body')`), { timeoutMs: 30_000, label: '렌더러' })
+await giveBack()
 await repoPane(root)
 await sleep(1500)
 await ctl(root, { cmd: 'resize-window', width: 1280, height: 800 }).catch(() => null)
@@ -106,6 +107,7 @@ result.checks = {
 }
 result.refusals = refusals
 result.pass = Object.values(result.checks).every(Boolean)
+result.focus = giveBackLog
 writeJson(out, result)
 console.log(JSON.stringify(result.checks))
 if (!result.pass) process.exitCode = 1

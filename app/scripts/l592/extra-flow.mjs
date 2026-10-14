@@ -7,7 +7,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { ctl, evalJs, sleep, until, repoPane, writeJson, startNoticeSampler, stopNoticeSampler } from './lib.mjs'
+import { ctl, evalJs, sleep, until, repoPane, writeJson, giveBack, giveBackLog, startNoticeSampler, stopNoticeSampler } from './lib.mjs'
 
 const [root, out] = process.argv.slice(2)
 if (!/^\/tmp\/l592g-[^/]+$/.test(root ?? '') || out === undefined) throw new Error('사용: extra-flow.mjs /tmp/l592g-* OUT.json')
@@ -40,6 +40,7 @@ const rowMenu = async (rel, action) => {
   const at = await center(`[data-explorer-row="${rel}"]`)
   await mouse('mouseDown', at, 'right')
   await mouse('mouseUp', at, 'right')
+  await giveBack()
   await until(() => q(`document.querySelector('[data-explorer-row-menu] [data-menu-action="${action}"]') !== null`), { label: `메뉴 ${action}` })
   await ctl(root, { cmd: 'click', selector: `[data-explorer-row-menu] [data-menu-action="${action}"]` })
 }
@@ -54,6 +55,7 @@ const stopSampler = () => stopNoticeSampler(root)
 const tabState = (rel) => q(`(() => { const t = document.querySelector('[data-file-tab="${rel}"]'); return t === null ? null : { dirty: t.dataset.fileDirty, preview: t.dataset.tabPreview, active: t.dataset.active } })()`)
 
 await until(() => q(`!!document.querySelector('.app-body')`), { timeoutMs: 30_000, label: '렌더러' })
+await giveBack()
 const { paneId } = await repoPane(root)
 await sleep(1500)
 await ctl(root, { cmd: 'resize-window', width: 1280, height: 800 }).catch(() => null)
@@ -136,6 +138,7 @@ const scrollRect = (await ctl(root, { cmd: 'rect', selector: '.explorer-scroll' 
 const empty = { x: Math.round(scrollRect.left + 60), y: Math.round(scrollRect.top + scrollRect.height - 20) }
 await mouse('mouseDown', empty, 'right')
 await mouse('mouseUp', empty, 'right')
+await giveBack()
 await until(() => q(`document.querySelector('[data-explorer-empty-menu] [data-menu-action="newFolder"]') !== null`), { label: '빈 영역 메뉴' })
 await ctl(root, { cmd: 'click', selector: '[data-explorer-empty-menu] [data-menu-action="newFolder"]' })
 await until(() => q(`document.activeElement?.matches('[data-explorer-input]') === true`), { label: '입력 행' })
@@ -215,6 +218,7 @@ result.checks.terminalCmdZ = termFocused === true && JSON.stringify([listing('.'
 
 result.log = fs.readFileSync(logFile, 'utf8').split('\n').filter((line) => /explorer\.op|file\.dialog|shortcut\.intercepted/.test(line)).slice(-60)
 result.pass = Object.values(result.checks).every((value) => value === true)
+result.focus = giveBackLog
 writeJson(out, result)
 console.log(`# checks ${JSON.stringify(result.checks)} pass=${result.pass}`)
 process.exit(result.pass ? 0 : 1)

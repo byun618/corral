@@ -1,6 +1,6 @@
 // LIFE-592 최종 관문 — 격리 회차(01-criteria E1~E9·E10ⓑ). 격리 개발 Electron(iso.sh 가 /tmp/l592g-* 에 띄운 것)과 그 fixture 에서만.
 // 사용(app/ 에서, iso.sh 안): node scripts/l592/final.mjs <ROOT> <OUT.json> <case>[,<case>...] <FAKE>   (FAKE = iso.sh 의 {FAKE} — 앱 재시작(E4ⓓ·E10ⓑ)에 쓴다)
-//   사례: e1 e2 e3 e4 e5 e5b e6 e7 e8 e9 e10b · e5lim(한계 확인 — DONE 미완 10) · e4c(수정 라운드 D2 — 50회 연속·고정 재현·양성 대조)
+//   사례: e1 e2 e3 e4 e5 e5b e6 e7 e8 e9 e10b · e5lim(한계 확인 — DONE 미완 10) · e4c(수정 라운드 D2 — 50회 연속·고정 재현·양성 대조) · r7(수정 라운드 R7-C-01 — 되살림 여러 바퀴)
 //   ISO_ENV='L577_ELECTRON_ARGS=--remote-debugging-port=0 CORRAL_TEST_OP_HOOK_FILE={ROOT}/op-hook.json' — CDP(합성 IME·합성 드롭)·⑩ 경쟁 주입 훅.
 // 입력: 제어 소켓 sendInputEvent · CDP(Input.imeSetComposition·Input.dispatchDragEvent·Input.dispatchKeyEvent) · DOM 값 setter(입력칸에 NUL·긴 이름 넣기만).
 //   OS 키 입력(CGEvent)·Finder 끌기·시스템 클립보드 쓰기 없음. 휴지통에는 이름에 l592 가 든 fixture 항목만 간다(결과 `trashed` 에 원래 경로·시각).
@@ -121,10 +121,29 @@ const expand = async (rel) => {
   if ((await expanded(rel)) !== 'true') await key('Right')
   await until(async () => (await expanded(rel)) === 'true', { label: `펼침 ${rel}` })
 }
+// 격리 창을 앞에 두지 않는다(R7 규칙 — 사용자 실제 키 입력이 격리 창으로 새던 N27·N29). L592_RETURN_APP = 회차 시작 때 앞에 있던 앱의 bundle id —
+// 앱이 뜰 때(ready-to-show)·오른쪽 클릭(제품 `corral:activateWindow` 가 창을 앞으로 가져옴) 뒤 그 앱을 다시 앞으로(`open -b`). 입력은 sendInputEvent·CDP 라 창 포커스와 무관.
+const returnApp = process.env.L592_RETURN_APP ?? ''
+const focusLog = { returnApp, giveBacks: 0, fronts: [] }
+const front = () => { try { return execFileSync('sh', ['-c', 'lsappinfo info -only bundleid "$(lsappinfo front)"'], { encoding: 'utf8' }).trim().replace(/^"CFBundleIdentifier"=/, '').replaceAll('"', '') } catch { return null } }
+const giveBack = async () => {
+  if (returnApp === '') return
+  const before = front()
+  let error = null
+  try { execFileSync('open', ['-b', returnApp], { encoding: 'utf8', stdio: 'pipe' }) } catch (e) { error = String(e.stderr ?? e.message).slice(0, 200) }
+  focusLog.giveBacks += 1
+  let now = front()
+  for (let i = 0; i < 20 && now !== returnApp; i += 1) {
+    await sleep(100)
+    now = front()
+  }
+  focusLog.fronts.push({ before, after: now, error })
+}
 const rowMenu = async (rel, action) => {
   const at = await center(row(rel))
   await mouse('mouseDown', at, 'right')
   await mouse('mouseUp', at, 'right')
+  await giveBack()
   await until(() => q(`document.querySelector('[data-explorer-row-menu] [data-menu-action="${action}"]') !== null`), { label: `행 메뉴 ${action}` })
   await clickUntil(`[data-explorer-row-menu] [data-menu-action="${action}"]`)
 }
@@ -133,6 +152,7 @@ const emptyMenu = async (action) => {
   const at = { x: r.left + 40, y: r.top + r.height - 12 }
   await mouse('mouseDown', at, 'right')
   await mouse('mouseUp', at, 'right')
+  await giveBack()
   await until(() => q(`document.querySelector('[data-explorer-empty-menu] [data-menu-action="${action}"]') !== null`), { label: `빈 영역 메뉴 ${action}` })
   await clickUntil(`[data-explorer-empty-menu] [data-menu-action="${action}"]`)
 }
@@ -589,6 +609,7 @@ async function restartApp() {
   const up = execFileSync('sh', ['scripts/l577/g-up.sh', root, fake, 'L577_KEEP_PAINTING=1', ...extra], { encoding: 'utf8' })
   log('restart', { down: down.trim().split('\n').slice(-2), up: up.trim().split('\n').slice(-1), appPid: fs.readFileSync(path.join(root, 'app.pid'), 'utf8').trim() })
   await until(() => q(`!!document.querySelector('.app-body')`).catch(() => false), { timeoutMs: 30_000, label: '재시작 렌더러' })
+  await giveBack()
   await sleep(1500)
   await ctl(root, { cmd: 'resize-window', width: 1400, height: 900 }).catch(() => null)
   if (!(await panelOpen())) await key('L', ['meta'])
@@ -1830,6 +1851,88 @@ cases.e4c = async () => {
   check('D2③ 양성 대조 — 이름 변경 뒤 새 경로를 밖에서 지우면 「삭제됨」', realDeleted && (await tab(st))?.dirty === 'true', { realDeleted })
 }
 
+// --- R7-C-01 (수정 라운드 — 같은 수정 중 탭의 삭제 → ⌘Z 여러 바퀴) -----------------------------------------------
+cases.r7 = async () => {
+  await exposeMonaco(root)
+  await expand('src')
+  const view = async (rel) => ({
+    marker: await q(`document.querySelector('[data-file-tab="${rel}"]')?.matches('.is-deleted') ?? null`),
+    deletedBanner: await q(`document.querySelector('[data-file-view="${rel}"] [data-file-notice="deleted"]') !== null`),
+    externalBanner: await q(`document.querySelector('[data-file-view="${rel}"] [data-file-notice="external-change"]') !== null`),
+    dirty: (await tab(rel))?.dirty ?? null,
+    disk: exists(rel) ? fs.readFileSync(abs(rel), 'utf8') : null,
+    model: (await modelOf(rel))?.value ?? null,
+  })
+  const trashOf = async (rel, via) => {
+    await stub(['trash'])
+    const at = new Date().toISOString()
+    await focusRow(rel)
+    await key('Backspace', ['meta'])
+    await until(() => Promise.resolve(!exists(rel)), { label: `삭제 ${rel}` })
+    noteTrash(rel, via, at)
+    await stub([])
+  }
+  const prepare = async (rel, body) => {
+    fs.writeFileSync(abs(rel), body)
+    await until(() => hasRow(rel), { label: `행 ${rel}` })
+    await openFixed(rel)
+    await editorFocus(rel)
+    await edOf(rel, `e.setPosition({ lineNumber: 1, column: 1 }); e.trigger('keyboard', 'type', { text: 'W' }); return true`)
+    await until(async () => (await tab(rel))?.dirty === 'true', { label: `수정 ${rel}` })
+  }
+  const reads = () => logRows().filter((x) => x.tag === 'file.read').length
+  // ① ⌘⌫ 삭제 → 트리 ⌘Z 를 4바퀴(리뷰 r7x1 과 같은 조건 — 삭제 입구만 ⌘⌫: 오른쪽 클릭이 창을 앞으로 가져오지 않게, 바퀴 수 +1)
+  const a = 'src/l592-r7-a.ts'
+  await prepare(a, 'dirty\n')
+  const cycles = []
+  for (let c = 1; c <= 4; c += 1) {
+    await trashOf(a, `R7 ① ⌘⌫ 삭제 → 확인(스텁) — 수정 중 탭 ${c}바퀴`)
+    await sleep(1200)
+    const deleted = await view(a)
+    const r0 = reads()
+    await undo('src')
+    await until(() => Promise.resolve(exists(a)), { timeoutMs: 6000, label: `되살림 ${c}` })
+    await sleep(1800)
+    cycles.push({ c, deleted: { marker: deleted.marker, banner: deleted.deletedBanner }, back: await view(a), readsDuring: reads() - r0 })
+    log(`r7 ① ${c}`, cycles.at(-1))
+  }
+  check('R7① 삭제 → ⌘Z 4바퀴 모두 「삭제됨」 풀림·외부 변경 배너 없음·디스크 = 삭제 전·모델 = 편집', cycles.every((x) => x.deleted.marker === true && x.back.marker === false && x.back.deletedBanner === false && x.back.externalBanner === false && x.back.disk === 'dirty\n' && x.back.model === 'Wdirty\n' && x.back.dirty === 'true'), cycles)
+  // ③ 양성 대조 — 여러 번 되살린 뒤 외부에서 내용을 바꾸면 배너
+  fs.writeFileSync(abs(a), 'external after restores\n')
+  const banner = await until(() => q(`document.querySelector('[data-file-view="${a}"] [data-file-notice="external-change"]') !== null`), { timeoutMs: 6000, label: 'R7③ 배너' }).then(() => true, () => false)
+  check('R7③ 양성 대조 — 4번 되살린 뒤 외부 변경 → 배너 · 편집 내용 유지', banner && (await modelOf(a))?.value === 'Wdirty\n', { banner })
+  // ② ⌘Z → ⌘⇧Z(다시 삭제) → ⌘Z 3바퀴(리뷰 r7x1b 와 같은 조건)
+  const b = 'src/l592-r7-b.ts'
+  await prepare(b, 'dirty-b\n')
+  await trashOf(b, 'R7 ② ⌘⌫ 삭제 → 확인(스텁) — 수정 중 탭')
+  await sleep(1200)
+  const out = []
+  const step = async (name, fn, wantExists) => {
+    const at = new Date().toISOString()
+    await fn()
+    await until(() => Promise.resolve(exists(b) === wantExists), { timeoutMs: 8000, label: name })
+    if (!wantExists) noteTrash(b, `R7 ② ${name}`, at)
+    await sleep(1800)
+    out.push({ name, ...(await view(b)), ops: opLogs().slice(-1).map((x) => `${x.op}:${x.ok}`) })
+    log(`r7 ② ${name}`, out.at(-1))
+  }
+  await step('undo1(restore)', () => undo('src'), true)
+  await step('redo1(trash again)', () => redo('src'), false)
+  await step('undo2(restore)', () => undo('src'), true)
+  await step('redo2(trash again)', () => redo('src'), false)
+  await step('undo3(restore)', () => undo('src'), true)
+  check('R7② ⌘Z → ⌘⇧Z → ⌘Z 3바퀴 — 되살릴 때마다 「삭제됨」 풀림·외부 변경 배너 없음 · 다시 삭제 때는 「삭제됨」', out.every((x) => (x.name.startsWith('undo') ? x.marker === false && x.externalBanner === false && x.disk === 'dirty-b\n' : x.marker === true && x.disk === null) && x.model === 'Wdirty-b\n'), out)
+  // ① 끝 — 되살린 탭 ⌘S 가 충돌을 묻지 않고 저장
+  await stub(['cancel'])
+  const saveAt = Date.now()
+  await editorFocus(b)
+  await key('S', ['meta'])
+  const saved = await until(async () => (await tab(b))?.dirty === 'false', { timeoutMs: 6000, label: 'R7 ⌘S' }).then(() => true, () => false)
+  const asked = (await stub([])).asked
+  const dialogs = logRows().filter((r) => r.tag === 'file.dialog' && r.at >= saveAt).map((r) => r.kind)
+  check('R7② 3번 되살린 뒤 ⌘S = 충돌 대화상자 없이 저장 · 디스크 = 편집기 내용', saved && !JSON.stringify(asked ?? []).includes('conflict') && !dialogs.includes('conflict') && fs.readFileSync(abs(b), 'utf8') === 'Wdirty-b\n', { saved, asked, dialogs })
+}
+
 cases.e5lim = async () => {
   await expand('src')
   await createVia(async () => { await focusRow('src'); await clickUntil('[data-explorer-new-folder]') }, { name: 'l592-lim-dir', expectRel: 'src/l592-lim-dir' })
@@ -1858,6 +1961,7 @@ cases.e5lim = async () => {
 
 // 사례 목록 실행 — 사례마다 같은 앱·fixture 를 이어 쓴다(앞 사례의 결과는 뒤 사례의 전제가 아님 — 사례는 자기 대상을 스스로 만든다).
 await until(() => q(`!!document.querySelector('.app-body')`), { timeoutMs: 30_000, label: '렌더러' })
+await giveBack()
 await repoPane(root)
 await sleep(1500)
 await ctl(root, { cmd: 'resize-window', width: 1400, height: 900 }).catch(() => null)
@@ -1877,6 +1981,7 @@ for (const name of caseArg.split(',')) {
   current.endedAt = new Date().toISOString()
   writeJson(out, result)
 }
+result.focus = focusLog
 result.pass = result.checks.every((c) => c.ok)
 result.summary = { checks: result.checks.length, failed: result.checks.filter((c) => !c.ok).map((c) => `${c.case}/${c.name}`) }
 writeJson(out, result)

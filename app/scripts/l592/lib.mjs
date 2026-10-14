@@ -114,3 +114,23 @@ export const BANNER_SELECTOR = '[data-file-notice="external-change"], .file-view
 export const startNoticeSampler = (root) =>
   evalJs(root, `(() => { window.__l592seen = []; clearInterval(window.__l592timer); window.__l592timer = setInterval(() => { const d = document.querySelector(${JSON.stringify(DELETED_SELECTOR)}); const b = document.querySelector(${JSON.stringify(BANNER_SELECTOR)}); if (d || b) window.__l592seen.push({ at: Date.now(), deleted: !!d, banner: !!b, tab: d?.getAttribute('data-file-tab') ?? null }) }, 20); return true })()`)
 export const stopNoticeSampler = (root) => evalJs(root, `(() => { clearInterval(window.__l592timer); return window.__l592seen })()`)
+
+/**
+ * 격리 창을 앞에 두지 않는다(R7 — 사용자 실제 키 입력이 격리 창으로 새던 N27·N29). L592_RETURN_APP = 회차 시작 때 앞에 있던 앱의 bundle id.
+ * 앱이 뜰 때·오른쪽 클릭(제품 `corral:activateWindow`) 뒤 그 앱을 다시 앞으로(`open -b`) — 입력은 sendInputEvent·CDP 라 창 포커스와 무관. 기록을 돌려준다.
+ */
+export const giveBackLog = { returnApp: process.env.L592_RETURN_APP ?? '', fronts: [] }
+const frontApp = () => { try { return execFileSync('sh', ['-c', 'lsappinfo info -only bundleid "$(lsappinfo front)"'], { encoding: 'utf8' }).trim().replace(/^"CFBundleIdentifier"=/, '').replaceAll('"', '') } catch { return null } }
+export async function giveBack() {
+  const target = giveBackLog.returnApp
+  if (target === '') return
+  const before = frontApp()
+  let error = null
+  try { execFileSync('open', ['-b', target], { encoding: 'utf8', stdio: 'pipe' }) } catch (e) { error = String(e.stderr ?? e.message).slice(0, 200) }
+  let after = frontApp()
+  for (let i = 0; i < 20 && after !== target; i += 1) {
+    await sleep(100)
+    after = frontApp()
+  }
+  giveBackLog.fronts.push({ before, after, error })
+}

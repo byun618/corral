@@ -73,8 +73,11 @@ export type FileDoc = {
   stamp: string
   /** `stamp` 와 같은 때의 디스크 바이트 sha256(R1-C) — 같은 크기·같은 mtime 의 다른 내용을 가른다. */
   hash: string
-  /** 되살림(`rebaseDoc`)이 옮기기 전 stamp — 그 전에 찍은 같은 지문의 읽기 결과를 외부 변경으로 보지 않는다(D1). 다시 읽기·저장하면 null. */
-  rebasedFrom: string | null
+  /**
+   * 되살림(`rebaseDoc`)마다 옮기기 전 stamp — 그 전에 찍은 같은 지문의 읽기 결과를 외부 변경으로 보지 않는다(D1). 되살림을 여러 바퀴 하면 쌓인다(R7-C-01 —
+   * 탭의 읽기 결과는 처음 연 stamp 그대로 남는다). 다시 읽기·되돌리기·저장하면 비운다. 상한 `REBASED_LIMIT`(처음 것은 남긴다).
+   */
+  rebasedFrom: string[]
   savedVersion: number
   dirty: boolean
   external: ExternalState
@@ -217,7 +220,7 @@ export function adoptDoc(input: { root: string; rel: string; model: Model; text:
     savedEols: eols.slice(),
     stamp: input.stamp,
     hash: input.hash,
-    rebasedFrom: null,
+    rebasedFrom: [],
     savedVersion: input.model.getAlternativeVersionId(),
     dirty: false,
     external: { kind: 'none' },
@@ -299,7 +302,7 @@ export function reloadDoc(doc: FileDoc, input: DiskState): void {
   resetHead(doc)
   doc.stamp = input.stamp
   doc.hash = input.hash
-  doc.rebasedFrom = null
+  doc.rebasedFrom = []
   doc.readOnly = input.readOnly
   doc.large = input.large
   doc.eols = eolsOf(doc.hiddenBom ? input.text.slice(1) : input.text)
@@ -330,7 +333,7 @@ export function revertDoc(doc: FileDoc, input: DiskState): void {
   followHead(doc)
   doc.stamp = input.stamp
   doc.hash = input.hash
-  doc.rebasedFrom = null
+  doc.rebasedFrom = []
   doc.readOnly = input.readOnly
   doc.large = input.large
   doc.eols = eolsOf(text)
@@ -346,7 +349,7 @@ export function revertDoc(doc: FileDoc, input: DiskState): void {
 export function markSaved(doc: FileDoc, input: { stamp: string; hash: string; version: number; eols: string[] }): void {
   doc.stamp = input.stamp
   doc.hash = input.hash
-  doc.rebasedFrom = null
+  doc.rebasedFrom = []
   doc.savedVersion = input.version
   doc.savedEols = input.eols
   doc.external = { kind: 'none' }
@@ -431,20 +434,25 @@ export function holdDocs(targets: readonly FileDoc[]): () => void {
  */
 export function rebaseDoc(doc: FileDoc, input: { stamp: string; hash: string }): boolean {
   if (doc.hash !== input.hash) return false
-  doc.rebasedFrom = doc.stamp
+  // 상한을 넘으면 처음 것(탭이 처음 읽은 stamp)은 두고 그다음 오래된 것을 버린다.
+  doc.rebasedFrom = [...doc.rebasedFrom, doc.stamp]
+  if (doc.rebasedFrom.length > REBASED_LIMIT) doc.rebasedFrom.splice(1, 1)
   doc.stamp = input.stamp
   doc.external = { kind: 'none' }
   notify()
   return true
 }
 
+/** 되살림이 쌓는 옛 stamp 상한 — 무한히 자라지 않게(탐색기 실행 취소 칸 상한과 같은 값). */
+const REBASED_LIMIT = 50
+
 /**
- * 읽은 텍스트 결과가 문서의 디스크 기준과 같은가 — stamp·지문이 모두 같거나, 되살림이 옮기기 전 stamp·같은 지문(삭제 전에 찍은 낡은 읽기, D1).
+ * 읽은 텍스트 결과가 문서의 디스크 기준과 같은가 — stamp·지문이 모두 같거나, 되살림들이 옮기기 전 stamp 중 하나·같은 지문(삭제 전에 찍은 낡은 읽기, D1·R7-C-01).
  * 되살린 뒤 새로 생긴 외부 변경은 새 stamp 라 같지 않다(배너 그대로).
  */
 export function readMatchesDoc(doc: FileDoc, read: { stamp: string; hash: string }): boolean {
   if (read.hash !== doc.hash) return false
-  return read.stamp === doc.stamp || read.stamp === doc.rebasedFrom
+  return read.stamp === doc.stamp || doc.rebasedFrom.includes(read.stamp)
 }
 
 /** 모델을 버린다(닫기 확인 뒤·「저장 안 함」·수정 없는 문서의 탭이 사라짐). */

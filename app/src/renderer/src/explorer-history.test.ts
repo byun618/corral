@@ -14,7 +14,7 @@ describe('역조작 짝', () => {
   it('만들기 = 처음 만든 맨 위(중간 폴더 포함)를 휴지통 · 복제·되살리기도 휴지통 — 만들기·복제는 다시 실행 재생을 싣는다(수정 r1 R1-G)', () => {
     expect(inverseOf({ ok: true, op: 'create', rel: 'a/b/c.ts', kind: 'file', created: 'a', marks: mark('a') })).toEqual({ op: 'trash', rel: 'a', expect: mark('a'), replay: { op: 'create', dir: '', name: 'a/b/c.ts', kind: 'file' } })
     expect(inverseOf({ ok: true, op: 'create', rel: 'src/n/sub/f.ts', kind: 'file', created: 'src/n/sub', marks: mark('src/n/sub') })).toEqual({ op: 'trash', rel: 'src/n/sub', expect: mark('src/n/sub'), replay: { op: 'create', dir: 'src/n', name: 'sub/f.ts', kind: 'file' } })
-    expect(inverseOf({ ok: true, op: 'duplicate', from: 'x.ts', rel: 'x copy.ts', kind: 'file', marks: mark('x copy.ts'), failed: [], source: 'src' })).toEqual({ op: 'trash', rel: 'x copy.ts', expect: mark('x copy.ts'), replay: { op: 'duplicate', rel: 'x.ts', again: { name: 'x copy.ts', source: 'src' } } })
+    expect(inverseOf({ ok: true, op: 'duplicate', from: 'x.ts', rel: 'x copy.ts', kind: 'file', marks: mark('x copy.ts'), skipped: [], failed: [], source: 'src' })).toEqual({ op: 'trash', rel: 'x copy.ts', expect: mark('x copy.ts'), replay: { op: 'duplicate', rel: 'x.ts', again: { name: 'x copy.ts', source: 'src' } } })
     expect(inverseOf({ ok: true, op: 'restore', rel: 'r.ts', marks: mark('r.ts'), hash: 'h', stamp: 's' })).toEqual({ op: 'trash', rel: 'r.ts', expect: mark('r.ts') })
   })
   it('삭제 — 사본이 있을 때만 되살리기(Q1), 없으면 항목 없음', () => {

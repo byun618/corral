@@ -5,7 +5,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from '../../../shared/explorer-ops.js'
+import type { EntryMark, ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from '../../../shared/explorer-ops.js'
 import { useFileOps, type FileOpsApi, type FileOpsDeps } from './useFileOps.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
@@ -170,7 +170,7 @@ it('R1-G — 폴더 복제를 실행 취소한 뒤 다시 실행 = 같은 원본
   respond = (input) => {
     switch (input.op) {
       case 'duplicate':
-        return { ok: true, op: 'duplicate', from: input.rel, rel: `${input.rel} copy`, kind: 'dir', marks: [{ rel: `${input.rel} copy`, stamp: 's' }], failed: [], source: 'src-stamp' }
+        return { ok: true, op: 'duplicate', from: input.rel, rel: `${input.rel} copy`, kind: 'dir', marks: [{ rel: `${input.rel} copy`, stamp: 's' }], skipped: [], failed: [], source: 'src-stamp' }
       case 'trash':
         return { ok: true, op: 'trash', rel: input.rel, kind: 'dir', snapshotId: null }
       default:
@@ -196,7 +196,7 @@ it('R1-G — 폴더 복제를 실행 취소한 뒤 다시 실행 = 같은 원본
 //   R2-F 여러 항목 가져오기의 부분 실행 취소 — 안내가 치운 것·거절된 것을 나누고, 치운 것은 다시 실행할 수 있다
 //   R2-H 다시 실행(재생) 결과의 부분 실패·덜 든 항목도 일반 조작과 같은 안내
 //   R2-E 가져오기 재생 근거 — 기록에서 빠지면(새 조작이 다시 실행 칸을 비움) main 에 놓으라고(release) 알린다
-const importResult = (rels: string[], extra: { partial?: string[]; failed?: { name: string; error: string }[] } = {}): ExplorerOpResult => ({
+const importResult = (rels: string[], extra: { marks?: EntryMark[][]; partial?: string[]; failed?: { name: string; error: string }[] } = {}): ExplorerOpResult => ({
   ok: true,
   op: 'import',
   dir: '',
@@ -257,7 +257,7 @@ it('R2-H — 다시 실행한 가져오기·복제의 부분 실패를 알린다
   respond = (input) => {
     switch (input.op) {
       case 'duplicate':
-        return { ok: true, op: 'duplicate', from: 'folder', rel: 'folder copy', kind: 'dir', marks: [{ rel: 'folder copy', stamp: 's' }], failed: [], source: 'src-stamp' }
+        return { ok: true, op: 'duplicate', from: 'folder', rel: 'folder copy', kind: 'dir', marks: [{ rel: 'folder copy', stamp: 's' }], skipped: [], failed: [], source: 'src-stamp' }
       case 'trash':
         return { ok: true, op: 'trash', rel: input.rel, kind: 'dir', snapshotId: null }
       default:
@@ -268,7 +268,7 @@ it('R2-H — 다시 실행한 가져오기·복제의 부분 실패를 알린다
   await act(async () => ops().undo())
   respond = (input) =>
     input.op === 'duplicate'
-      ? ({ ok: true, op: 'duplicate', from: 'folder', rel: 'folder copy', kind: 'dir', marks: [{ rel: 'folder copy', stamp: 's' }], failed: [{ name: 'folder/x', error: 'EACCES' }], source: 'src-stamp' })
+      ? ({ ok: true, op: 'duplicate', from: 'folder', rel: 'folder copy', kind: 'dir', marks: [{ rel: 'folder copy', stamp: 's' }], skipped: [], failed: [{ name: 'folder/x', error: 'EACCES' }], source: 'src-stamp' })
       : { ok: false, code: 'io_error', error: 'x' }
   await act(async () => ops().redo())
   expect(notes.join('\n')).toMatch(/실패 1: folder\/x — EACCES/)
@@ -303,7 +303,7 @@ it('M-3 — 바뀜을 확인할 수 없는 항목(R2-G): 가져올 때 미리 �
   respond = (input) => {
     switch (input.op) {
       case 'import':
-        return { ...importResult(['locked']), marks: [[{ rel: 'locked', stamp: 'unverifiable' }]], partial: ['locked'], failed: [{ name: 'locked', error: 'EACCES' }] }
+        return importResult(['locked'], { marks: [[{ rel: 'locked', stamp: 'unverifiable' }]], partial: ['locked'], failed: [{ name: 'locked', error: 'EACCES' }] })
       case 'trash':
         return { ok: false, code: 'modified', error: 'unverifiable' }
       default:
@@ -315,4 +315,25 @@ it('M-3 — 바뀜을 확인할 수 없는 항목(R2-G): 가져올 때 미리 �
   expect(notes[0]).toMatch(/바뀌었는지 확인할 수 없는 항목 1: locked/)
   await act(async () => ops().undo())
   expect(notes[1]).toMatch(/확인할 수 없/)
+})
+
+it('R2-E — 실행 취소 칸 상한(50)으로 가져오기 기록이 밀려나면 그 재생 근거를 놓는다', async () => {
+  respond = (input) => {
+    switch (input.op) {
+      case 'import':
+        return importResult(['a.txt'])
+      case 'create':
+        return { ok: true, op: 'create', rel: input.name, kind: input.kind, created: input.name, marks: [{ rel: input.name, stamp: 's' }] }
+      case 'release':
+        return { ok: true, op: 'release' }
+      default:
+        return { ok: false, code: 'io_error', error: 'x' }
+    }
+  }
+  await act(async () => render('/wt/a'))
+  await act(async () => ops().importDrop(dropOf('/wt/a')))
+  for (let index = 0; index < 49; index += 1) await act(async () => void (await ops().create({ dir: '', name: `l592-${index}.txt`, kind: 'file' })))
+  expect(calls.some((call) => call.op === 'release')).toBe(false)
+  await act(async () => void (await ops().create({ dir: '', name: 'l592-last.txt', kind: 'file' })))
+  expect(calls.filter((call) => call.op === 'release')).toEqual([{ op: 'release', ids: ['replay-1'] }])
 })

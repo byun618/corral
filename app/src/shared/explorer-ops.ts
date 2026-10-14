@@ -68,9 +68,10 @@ export type ExplorerOpResult =
   | { ok: true; op: 'restore'; rel: string; marks: EntryMark[]; hash: string | null; stamp: string | null }
   /**
    * `from` = 복제 원본, `source` = 복제 직전 원본 도장(다시 실행 재생이 원본이 그대로인지 본다 — R1-G·R2-D). `failed` = 폴더 안 일부 실패(만든 것은 남고 실행 취소 대상 — R1-H).
+   * `skipped` = 폴더 안 특수 파일(FIFO·소켓·장치)·하드링크 안내 — 사본에 들지 않은 것을 알린다(점검 표 M-2).
    * `marks` 의 도장이 `UNVERIFIABLE` 이면 바뀜을 확인할 수 없는 항목(R2-G) — 실행 취소는 거절된다.
    */
-  | { ok: true; op: 'duplicate'; from: string; rel: string; kind: EntryKind; marks: EntryMark[]; failed: { name: string; error: string }[]; source: string }
+  | { ok: true; op: 'duplicate'; from: string; rel: string; kind: EntryKind; marks: EntryMark[]; skipped: { name: string; reason: string }[]; failed: { name: string; error: string }[]; source: string }
   /**
    * `rels` = 이번 가져오기가 **실제로 만든** 항목만(만든 순간의 정체로 묶음 — 수정 r2 R2-A). 건너뛴 것은 `skipped` 에만.
    * `partial` = 만들었지만 도중 실패해 내용이 덜 든 항목(rels 의 부분집합 — 실행 취소 대상에 든다, R1-H).

@@ -9,7 +9,7 @@
 // · **소유 worktree 는 요청 시점에 고정한다**(수정 r1 R1-A) — 줄을 서는 동안 화면 worktree 가 바뀌어도 조작·기록·완료 뒤 반영(탭·문서·트리)은 요청한 worktree 로 간다.
 //   트리 반영(펼침·선택·다시 읽기·새 파일 열기)은 그 worktree 가 아직 화면에 있을 때만 한다.
 import { useCallback, useRef } from 'react'
-import { baseName, isAtOrUnder, remapRel, type EntryMark, type ExplorerDrop, type ExplorerOpInput, type ExplorerOpResult } from '../../../shared/explorer-ops.js'
+import { baseName, isAtOrUnder, remapRel, UNVERIFIABLE, type EntryMark, type ExplorerDrop, type ExplorerOpInput, type ExplorerOpResult } from '../../../shared/explorer-ops.js'
 import { parentRel } from '../../../shared/explorer.js'
 import { emptyHistory, inverseOf, inverseOfBatch, narrowReplay, peek, recordOp, replayIdsOf, settle, stepLabel, type History, type HistoryStep, type ReplayStep } from '../explorer-history.js'
 import { allDocs, disposeDoc, docKey, getDoc, holdDocs, rebaseDoc, rekeyDocs } from '../file-docs.js'
@@ -57,6 +57,12 @@ export type FileOpsApi = {
   importDrop: (drop: ExplorerDrop) => Promise<void>
   undo: () => Promise<void>
   redo: () => Promise<void>
+}
+
+/** 실행 취소 거절 사유 — 그 칸의 표지가 「확인 불가」(R2-G)면 그렇게 적는다(「바뀌었다」 가 아니라 「확인할 수 없다」). */
+function stepFailureMessage(step: HistoryStep, result: Refusal): string {
+  if (result.code === 'modified' && step.op === 'trash' && step.expect.some((mark) => mark.stamp === UNVERIFIABLE)) return `읽을 수 없는 하위 항목이 있어 바뀌었는지 확인할 수 없습니다 — 지우지 않았습니다(직접 정리하세요) (${result.code})`
+  return opFailureMessage(result)
 }
 
 /** 거절 사유 → 사람 말(알림). 코드는 괄호로 남긴다(회차 원자료가 어느 검사에서 났는지 본다). */
@@ -213,7 +219,7 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
         const result = await call({ op: 'duplicate', root, rel: step.rel, again: step.again })
         if (!result.ok || result.op !== 'duplicate') return { result, note: null }
         if (shown(root)) latest.current.explorer.reveal(result.rel)
-        const note = copyNotes({ made: [result.rel], partial: result.failed.length > 0 ? [result.rel] : [], skipped: [], failed: result.failed })
+        const note = copyNotes({ made: [result.rel], marks: [result.marks], partial: result.failed.length > 0 ? [result.rel] : [], skipped: result.skipped, failed: result.failed })
         return { result, note: note === null ? null : `'${baseName(step.rel)}' 복제: ${note}` }
       }
       case 'import': {
@@ -221,7 +227,7 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
         if (!result.ok || result.op !== 'import') return { result, note: null }
         const first = result.rels[0]
         if (first !== undefined && shown(root)) latest.current.explorer.reveal(first)
-        const note = copyNotes({ made: result.rels, partial: result.partial, skipped: result.skipped, failed: result.failed })
+        const note = copyNotes({ made: result.rels, marks: result.marks, partial: result.partial, skipped: result.skipped, failed: result.failed })
         return { result, note: note === null ? null : `가져오기: ${note}` }
       }
     }
@@ -257,7 +263,7 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
           const name = one.op === 'move' ? baseName(one.from) : one.op === 'trash' || one.op === 'restore' ? baseName(one.rel) : stepLabel(one)
           const failed = outcome.results.find((result): result is Refusal => !result.ok)
           if (failed === undefined) done.push(name)
-          else refused.push(`${name}(${opFailureMessage(failed)})`)
+          else refused.push(`${name}(${stepFailureMessage(one, failed)})`)
         }
         if (refused.length === 0) return { results, inverse: step.replay !== undefined ? { op: 'replay', replay: step.replay } : inverseOfBatch(results), note: null }
         // 일부만 됐다(R2-F) — 치운 것·거절된 것을 나누어 알리고, 가져오기 되돌리기면 치운 것만 다시 실행할 수 있게 재생을 좁힌다.
@@ -304,10 +310,13 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
   }
 
   /** 복제·가져오기의 부분 실패·건너뜀 안내(E7ⓑⓔ·R1-H) — 무엇이 들어왔고 무엇이 덜 들어왔는지. */
-  const copyNotes = (input: { made: string[]; partial: string[]; skipped: { name: string; reason: string }[]; failed: { name: string; error: string }[] }): string | null => {
-    if (input.partial.length === 0 && input.skipped.length === 0 && input.failed.length === 0 && input.made.length > 0) return null
+  const copyNotes = (input: { made: string[]; marks: EntryMark[][]; partial: string[]; skipped: { name: string; reason: string }[]; failed: { name: string; error: string }[] }): string | null => {
+    // 도장을 못 만든 항목(R2-G — 읽을 수 없는 하위) — 실행 취소가 지우지 않는다는 것을 미리 알린다.
+    const unverifiable = input.made.filter((_, index) => (input.marks[index] ?? []).some((mark) => mark.stamp === UNVERIFIABLE))
+    if (input.partial.length === 0 && input.skipped.length === 0 && input.failed.length === 0 && unverifiable.length === 0 && input.made.length > 0) return null
     return [
       input.made.length > 0 ? `${input.made.length}개 항목을 만들었습니다` : '만든 항목이 없습니다',
+      unverifiable.length > 0 ? `바뀌었는지 확인할 수 없는 항목 ${unverifiable.length}: ${unverifiable.slice(0, 3).join(', ')} — 실행 취소(⌘Z)로 지우지 않습니다(직접 정리하세요)` : null,
       input.partial.length > 0 ? `내용이 덜 든 채 남은 항목 ${input.partial.length}: ${input.partial.slice(0, 3).join(', ')} — 실행 취소(⌘Z)로 휴지통에 보낼 수 있습니다` : null,
       input.skipped.length > 0 ? `건너뜀 ${input.skipped.length}: ${input.skipped.slice(0, 3).map((row) => `${row.name}(${row.reason})`).join(', ')}` : null,
       input.failed.length > 0 ? `실패 ${input.failed.length}: ${input.failed.slice(0, 3).map((row) => `${row.name} — ${row.error}`).join(' / ')}` : null,
@@ -423,7 +432,7 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
         }
         record(root, result)
         if (shown(root)) latest.current.explorer.reveal(result.rel)
-        const note = copyNotes({ made: [result.rel], partial: result.failed.length > 0 ? [result.rel] : [], skipped: [], failed: result.failed })
+        const note = copyNotes({ made: [result.rel], marks: [result.marks], partial: result.failed.length > 0 ? [result.rel] : [], skipped: result.skipped, failed: result.failed })
         if (note !== null) latest.current.notify(`'${baseName(rel)}' 복제: ${note}`)
       })
     },
@@ -450,7 +459,7 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
         const first = result.rels[0]
         if (first !== undefined && shown(owner)) latest.current.explorer.reveal(first)
         // 건너뛴 것(링크·특수 파일)·실패한 것·덜 든 것은 알린다(E7ⓑⓔ·R1-H) — 무엇이 들어왔는지 사용자가 안다.
-        const note = copyNotes({ made: result.rels, partial: result.partial, skipped: result.skipped, failed: result.failed })
+        const note = copyNotes({ made: result.rels, marks: result.marks, partial: result.partial, skipped: result.skipped, failed: result.failed })
         if (note !== null) latest.current.notify(`가져오기: ${note}`)
       })
     },
@@ -472,7 +481,7 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
         if (note !== null) latest.current.notify(failed === undefined ? `${action} — ${note}` : `${action}: ${note}`)
         else if (failed !== undefined) {
           const gone = failed.code === 'bad_token' && entry.step.op === 'replay' ? ' — 다시 가져올 원본 기록이 더 이상 없습니다(앱을 다시 시작했거나 기록에서 빠짐)' : ''
-          latest.current.notify(`${action}하지 못했습니다 — ${entry.label}: ${opFailureMessage(failed)}${gone}`)
+          latest.current.notify(`${action}하지 못했습니다 — ${entry.label}: ${stepFailureMessage(entry.step, failed)}${gone}`)
         }
       })
     },

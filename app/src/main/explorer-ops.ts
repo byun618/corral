@@ -514,7 +514,8 @@ async function create(input: { roots: readonly string[]; root: unknown; dir: unk
       if (existing !== null && !existing.isDirectory()) return refuse('exists', `'${rel}' 이(가) 폴더가 아니다`)
       if (existing === null) {
         const made = await mkdirChecked({ parentAbs: currentAbs, name: part, hooks: input.hooks })
-        if (!made.ok) return made
+        // 앞서 만든 중간 폴더가 있으면 남는다 — 조용히 남기지 않고 알린다(done — 점검 표 M-1).
+        if (!made.ok) return created === null ? made : { ...made, error: `${made.error} — 중간 폴더 '${created}' 는 만들어졌다`, done: true }
         created ??= rel
         marks.push({ parentAbs: currentAbs, name: part, rel })
       }
@@ -693,7 +694,7 @@ async function duplicate(input: { roots: readonly string[]; root: unknown; rel: 
   if (made === null) return refuse('io_error', '복제한 항목이 그 자리에 없다', true)
   if ((await occupant(path.join(src.parentAbs, newName)).catch(() => null)) !== made) return refuse('changed', '복제한 자리의 항목이 만든 것과 다르다 — 실행 취소 대상에 넣지 않았다', true)
   if (refused !== null && !report.failed.some((row) => row.error === refused.error)) report.failed.push({ name: src.name, error: refused.error })
-  return { ok: true, op: 'duplicate', from: src.rel, rel, kind: src.kind, marks: [await safeMarkOf({ parentAbs: src.parentAbs, name: newName, rel })], failed: report.failed, source: source.stamp }
+  return { ok: true, op: 'duplicate', from: src.rel, rel, kind: src.kind, marks: [await safeMarkOf({ parentAbs: src.parentAbs, name: newName, rel })], skipped: report.skipped, failed: report.failed, source: source.stamp }
 }
 
 /** 가져올 원본 하나 — 새 드롭이면 `name` 은 null(충돌 이름을 고른다), 다시 실행이면 원래 만든 이름·원래 원본 도장. */

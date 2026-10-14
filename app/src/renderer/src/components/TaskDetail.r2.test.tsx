@@ -136,6 +136,11 @@ describe('r2 independent edge reproductions', () => {
   await settle(); await release()
   console.log('R2-C',{disabled:input('[data-md-editor] textarea').disabled,save:el('[data-md-save]').outerHTML,busy:q('[data-issue-busy]')!==null,error:el('[data-md-editor]').textContent})
   expect(el('[data-md-save]')).toHaveProperty('disabled',false)
+  // 수정 3 시험 감사: 풀린 저장 칸으로 다시 저장하면 새 세대에서 실제로 저장되고 편집기가 닫힌다(최종 서버 값·화면).
+  click('[data-md-save]'); await settle(16)
+  expect(r.state.items.find(i=>i.id==='m-2')?.body).toBe('DRAFT GEN')
+  expect(q('[data-md-editor]')).toBeNull()
+  expect(q('[data-issue-conflict]')).toBeNull()
  })
  it('D child success before parent refresh: immediate next save must not self conflict', async () => {
   const r=await rig(); await openCard('CORE-1'); const release=hold('getItem')
@@ -186,6 +191,9 @@ describe('r2 independent edge reproductions', () => {
   await act(async()=>{await vi.advanceTimersByTimeAsync(30001)}); vi.useRealTimers(); await release()
   console.log('R2-H',{banner:q('[data-issue-conflict]')?.textContent,toast:q('[data-toast="failed"]')?.textContent})
   expect(q('[data-issue-conflict]')).not.toBeNull()
+  // 수정 3 시험 감사: 늦은 충돌은 서버를 바꾸지 않았다(다른 곳의 제목 보존 · 우선순위 그대로).
+  expect(item.title).toBe('REMOTE CHANGE')
+  expect(item.priority).toBe('medium')
  })
 })
 
@@ -208,6 +216,7 @@ describe('r2 connection/read boundaries', () => {
   const shown=[...document.querySelectorAll('[data-activity-origin="corral"]')].map(e=>e.textContent)
   console.log('R2-J after',{records:r.activity.records.length,shown})
   expect(shown).toHaveLength(2)
+  expect(r.activity.records).toHaveLength(2) // 수정 3 시험 감사: 저장소에도 두 줄
  })
 })
 
@@ -231,13 +240,14 @@ describe('표 경로 — 같은 규칙의 다른 시작점', () => {
     expect(r.state.items.find((entry) => entry.id === 'm-2')?.body).toBe('LATE OK BODY')
   })
   it('T-body-late-typed: 30초 뒤 성공했지만 그 사이 더 고친 본문은 남는다', async () => {
-    await rig(); await openCard('CORE-2')
+    const r = await rig(); await openCard('CORE-2')
     click('[data-issue-body-edit]'); setValue(input('[data-md-editor] textarea'), 'SENT')
     const release = await late('updateItem', () => click('[data-md-save]'))
     setValue(input('[data-md-editor] textarea'), 'SENT + MORE')
     await release()
     expect(input('[data-md-editor] textarea').value).toBe('SENT + MORE')
     expect(el('[data-md-editor]').textContent).toContain('그 뒤 고친 내용은 아직 저장하지 않았습니다')
+    expect(r.state.items.find((entry) => entry.id === 'm-2')?.body).toBe('SENT') // 수정 3 시험 감사: 서버에는 보낸 값
   })
   it('T-link-late: 연결 추가가 30초 뒤 성공 — 연결 행이 생기고 키 칸이 비고 닫힌다', async () => {
     const r = await rig(); await openCard('CORE-2')

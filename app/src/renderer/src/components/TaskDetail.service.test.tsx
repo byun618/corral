@@ -479,7 +479,7 @@ describe('C9·C10 활동', () => {
 
 describe('C12 같은 잠금', () => {
   it('상세 쓰기를 출처가 확인하는 동안 그 카드는 잠기고, 상세는 확인 중을 보인다', async () => {
-    await rig({ token: 'mock_l602_delay-200' })
+    const r = await rig({ token: 'mock_l602_delay-200' })
     await wait(800)
     await openCard('CORE-2')
     await wait(800)
@@ -492,6 +492,7 @@ describe('C12 같은 잠금', () => {
     await wait(600)
     expect(q('[data-issue-busy]')).toBeNull()
     expect(q('[data-tasks-board] [data-issue-card="CORE-2"].is-locked')).toBeNull()
+    expect(r.state.items.find((entry) => entry.id === 'm-2')?.priority).toBe('high') // 수정 3 시험 감사: 확인이 끝난 뒤 서버 값
   })
 
   it('확인 중에 같은 작업을 상세에서 다시 저장 = 요청 0 · 화면은 앞 값 유지', async () => {
@@ -510,6 +511,9 @@ describe('C12 같은 잠금', () => {
     expect(writes(r.calls)).toEqual([expect.objectContaining({ op: 'updateItem', fields: { priority: 'high' } })])
     expect(el('[data-field="priority"]').textContent).toContain('높음')
     expect(q('[data-placement="board"].is-on')).not.toBeNull()
+    // 수정 3 시험 감사: 막힌 두 번째 저장은 서버에도 없다.
+    expect(r.state.items.find((entry) => entry.id === 'm-2')?.priority).toBe('high')
+    expect(r.state.items.find((entry) => entry.id === 'm-2')?.placement).toBe('board')
   })
 
   it('반대 — 보드에서 끈 쓰기를 확인하는 동안 상세가 막히고, 확인 뒤 새 상태를 그린다', async () => {

@@ -117,6 +117,29 @@ function touchedFields(call: WorkCall): ConflictField[] {
   }
 }
 
+/** 쓰기가 보낸 칸 중 `item` 에 그 값이 그대로 있는 칸 — 결과를 받지 못한 내 쓰기가 서버에 닿았는지 읽기로 알아볼 때. */
+function landedFields({ call, item }: { call: WorkCall; item: WorkItem }): ConflictField[] {
+  const sameDue = (a: string | null, b: string | null): boolean => (a === null || b === null ? a === b : Date.parse(a) === Date.parse(b))
+  switch (call.op) {
+    case 'updateItem': {
+      const fields: ConflictField[] = []
+      if (call.fields.title !== undefined && item.title === call.fields.title) fields.push('title')
+      if (call.fields.body !== undefined && (item.body ?? '') === call.fields.body) fields.push('body')
+      if (call.fields.priority !== undefined && item.priority === call.fields.priority) fields.push('priority')
+      if (call.fields.dueAt !== undefined && sameDue(item.dueAt, call.fields.dueAt)) fields.push('dueAt')
+      return fields
+    }
+    case 'changeStatus':
+      return item.statusKey === call.statusKey ? ['status'] : []
+    case 'setPlacement':
+      return item.placement === call.placement ? ['placement'] : []
+    case 'setParent':
+      return item.parentId === call.parentId ? ['parent'] : []
+    default:
+      return []
+  }
+}
+
 /** 보드 끌기의 확정이 바꿀 수 있는 칸 — 상세 밖에서 낸 내 쓰기는 연산을 모르므로 이 칸들만 내 변경으로 친다. */
 const BOARD_FIELDS: readonly ConflictField[] = ['status', 'placement']
 
@@ -149,6 +172,13 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   baseRef.current = base
   /** 칸별 편집 기준 — 초안이 있는 동안만 있다(R3-A). */
   const basesRef = useRef(new Map<EditSlot, WorkItem>())
+  /**
+   * 결과를 받지 못한 내 쓰기 — 보냈지만 회차가 바뀌어(세대 변경 등) 성공·실패를 확정하지 못한 것. 다음 읽기에서 그 칸이 내가 보낸 값이면
+   * 내 변경으로 친다(그렇지 않으면 다시 저장이 자기 충돌한다). 확정(성공·실패)되거나 읽기로 닿은 것이 보이면 지운다.
+   */
+  const unconfirmedRef = useRef<{ itemId: string; call: WorkCall }[]>([])
+  /** 읽기로 온 값에서 내 변경으로 칠 칸 — 결과를 받지 못한 내 쓰기가 보낸 값 그대로인 칸. */
+  const readOwn = useCallback((next: WorkItem): ConflictField[] => unconfirmedRef.current.filter((entry) => entry.itemId === next.id).flatMap((entry) => landedFields({ call: entry.call, item: next })), [])
   const [phase, setPhase] = useState<{ state: 'idle' | 'loading' | 'ready' | 'error'; message: string | null }>({ state: 'idle', message: null })
   const [statuses, setStatuses] = useState<WorkStatus[] | null>(null)
   const [parents, setParents] = useState<ParentRef[]>([])
@@ -206,9 +236,11 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     baseStampRef.current = stamp
     putBase(value)
     setItem(value)
-    advanceBases({ next: value, own: [] })
+    advanceBases({ next: value, own: readOwn(value) })
+    // 보낸 칸이 전부 닿은 것이 보인 쓰기는 이제 확인된 셈이다.
+    unconfirmedRef.current = unconfirmedRef.current.filter((entry) => entry.itemId !== value.id || landedFields({ call: entry.call, item: value }).length < touchedFields(entry.call).length)
     return value
-  }, [putBase, advanceBases])
+  }, [putBase, advanceBases, readOwn])
 
   /** 읽기 하나 — 같은 열쇠의 마지막 요청이고 출발 회차가 아직 살아 있을 때만 받는다. 떠난 체인은 요청도 내지 않는다(R3-C). */
   const read = useCallback(async ({ key, call, origin }: { key: string; call: WorkCall; origin: Origin }): Promise<WorkResponse | null> => {
@@ -288,6 +320,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     setRecords([])
     baseStampRef.current = 0
     basesRef.current.clear()
+    unconfirmedRef.current = []
     baseRef.current = null
     if (target === null) { setBase(null); setItem(null); setPhase({ state: 'idle', message: null }); return }
     const listed = page.rows.find((row) => row.space.connectionId === target.connectionId && row.item.id === target.itemId)?.item ?? null
@@ -368,6 +401,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   /** 확정 처리 — 즉시 결과와 늦은 결과가 같은 길로 온다(R2-F·G). `late` 면 실패 토스트는 작업 페이지가 이미 냈다. */
   const finish = useCallback(({ spec, call, current, basis, origin, outcome, late }: { spec: DetailWrite; call: WorkCall; current: WorkItem; basis: WorkItem; origin: Origin; outcome: Settled; late: boolean }): DetailFinal => {
     const started = origin.session
+    // 성공·실패·막힘은 확정 — 결과를 받지 못한 쓰기 목록에서 뺀다(stale 은 출처에 닿았는지 모르므로 둔다).
+    if (outcome.kind !== 'stale') unconfirmedRef.current = unconfirmedRef.current.filter((entry) => entry.call !== call)
     switch (outcome.kind) {
       case 'ok': {
         setConflict(null)
@@ -437,11 +472,14 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
       if (!alive(started)) return { kind: 'left' }
       // 판은 대기의 결과 값에서 직접(R3-D). 기준과 칸이 같으면(판만 오름) 새 판으로, 다른 곳의 변경이 실려 왔으면 기준 판 그대로 — 충돌 배너(R3-A).
       const candidate = fresh ?? baseRef.current
-      if (basis !== null && candidate !== null && conflictFields({ base: basis, current: candidate }).length === 0) basis = candidate
+      if (basis !== null && candidate !== null) {
+        const own = readOwn(candidate)
+        if (conflictFields({ base: basis, current: candidate }).every((field) => own.includes(field))) basis = candidate
+      }
     }
     const current = baseRef.current
     if (current === null || basis === null) return { kind: 'stale' }
-    const call = withVersion({ call: spec.call, version: spec.force === true ? null : versionOf(basis) })
+    let call = withVersion({ call: spec.call, version: spec.force === true ? null : versionOf(basis) })
     if (blockedRef.current !== null) {
       notify({ kind: 'failed', message: `${current.key} — ${blockedRef.current}` })
       return { kind: 'busy' }
@@ -451,9 +489,27 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
       setItem((value) => (value === null ? value : apply(value)))
     }
     // 쓰기 시작 — 그 전에 시작한 읽기는 이제 낡았다(R2-D).
-    baseStampRef.current = tick()
-    const outcome = await page.writeItem({ connectionId: origin.target.connectionId, spaceKey: current.spaceKey, itemId: current.id, call, optimistic: spec.optimistic })
+    const send = (sent: WorkCall): ReturnType<typeof page.writeItem> => {
+      baseStampRef.current = tick()
+      unconfirmedRef.current = [...unconfirmedRef.current.slice(-19), { itemId: current.id, call: sent }]
+      return page.writeItem({ connectionId: origin.target.connectionId, spaceKey: current.spaceKey, itemId: current.id, call: sent, optimistic: spec.optimistic })
+    }
+    let outcome = await send(call)
     if (!alive(started)) return { kind: 'left' }
+    // 자기 충돌 — 서버가 기준과 다른 칸이 전부 「결과를 받지 못한 내 쓰기가 보낸 값」 이면(세대가 바뀐 사이 앞 저장이 닿은 경우) 그 판으로 한 번만 다시 보낸다.
+    // 다른 곳의 변경이 하나라도 섞였으면 다시 보내지 않고 배너로 간다(C8).
+    const conflictNow = outcome.kind === 'failed' && outcome.error.kind === 'conflict' ? outcome.error.conflict?.current ?? null : null
+    if (conflictNow !== null && spec.force !== true) {
+      const own = readOwn(conflictNow)
+      if (conflictFields({ base: basis, current: conflictNow }).every((field) => own.includes(field)) && versionOf(conflictNow) !== null) {
+        unconfirmedRef.current = unconfirmedRef.current.filter((entry) => entry.call !== call)
+        advanceBases({ next: conflictNow, own })
+        basis = conflictNow
+        call = withVersion({ call: spec.call, version: versionOf(conflictNow) })
+        outcome = await send(call)
+        if (!alive(started)) return { kind: 'left' }
+      }
+    }
     if (outcome.kind === 'late') {
       const settled = outcome.settled.then((late): DetailFinal => {
         if (!alive(started) || late.kind === 'stale') return { kind: 'left' }
@@ -462,7 +518,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
       return { kind: 'late', settled }
     }
     return finish({ spec, call, current, basis, origin, outcome, late: false })
-  }, [here, notify, page, alive, versionOf, finish, tick])
+  }, [here, notify, page, alive, versionOf, finish, tick, readOwn, advanceBases])
   const writeRef = useRef(write)
   writeRef.current = write
 

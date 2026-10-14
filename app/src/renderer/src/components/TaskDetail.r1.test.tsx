@@ -135,7 +135,7 @@ describe('독립 재현 - 기대 결과는 기준 문구',()=>{
   expect(el('[data-issue-activity]').textContent).not.toContain('CORE-2 ONLY COMMENT')
  })
  it('B: 앞 상세 본문 저장 응답이 새 상세 편집기를 닫지 않는다',async()=>{
-  await rig(); await openCard('CORE-2')
+  const r=await rig(); await openCard('CORE-2')
   const release=hold('updateItem')
   click('[data-issue-body-edit]');setValue(input('[data-md-editor] textarea'),'CORE-2 SAVED BODY')
   click('[data-md-save]')
@@ -145,6 +145,9 @@ describe('독립 재현 - 기대 결과는 기준 문구',()=>{
   console.log('B',{detail:el('[data-issue-detail]').dataset.issueDetail,editor:q('[data-md-editor]')!==null})
   expect(q('[data-md-editor]')).not.toBeNull()
   expect(input('[data-md-editor] textarea').value).toBe('CORE-4 UNSAVED BODY')
+  // 수정 3 시험 감사: 앞 저장은 서버에 갔다(해제 뒤 서버 값) — 화면만 보던 시험에 최종 서버 값을 더한다.
+  expect(r.state.items.find(e=>e.id==='m-2')?.body).toBe('CORE-2 SAVED BODY')
+  expect(r.state.items.find(e=>e.id==='m-4')?.body).not.toBe('CORE-4 UNSAVED BODY')
  })
  it('C: 연결 떼기 되돌리기는 서버와 열린 상세를 함께 복원한다',async()=>{
   const r=await rig();await openCard('CORE-2')
@@ -181,11 +184,15 @@ describe('독립 재현 - 기대 결과는 기준 문구',()=>{
 
 describe('독립 재현 - 응답 귀속과 지연',()=>{
  it('G: 앞 상세 연결 추가 응답이 새 상세 자체를 앞 작업으로 되돌리지 않는다',async()=>{
-  await rig();await openCard('CORE-2');const release=hold('addRelation')
+  const r=await rig();await openCard('CORE-2');const release=hold('addRelation')
+  const linksBefore=r.state.links.length
   click('[data-link-add]');setValue(input('[data-link-key]'),'CORE-3');click('[data-link-submit]')
   await openCard('CORE-4');await release()
   console.log('G',{detail:el('[data-issue-detail]').dataset.issueDetail,selected:[...document.querySelectorAll('[data-issue-card].is-selected')].map(e=>e.getAttribute('data-issue-card'))})
   expect(el('[data-issue-detail]').dataset.issueDetail).toBe('CORE-4')
+  // 수정 3 시험 감사: 앞 작업의 연결 추가는 새 작업(CORE-4)에 붙지 않는다(해제 뒤 서버 — 새로 생긴 연결은 앞 작업 것뿐).
+  // (키 확인 응답 전에 떠났으면 앞 작업에도 보내지 않는다 — 떠난 회차의 체인은 후속을 시작하지 않는다, R3-C.)
+  expect(r.state.links.slice(linksBefore).filter(l=>l.from!=='m-2')).toEqual([])
  })
  it('H: 단일 30초 지연 뒤 실패는 상세 우선순위도 서버 값으로 되돌린다',async()=>{
   const r=await rig({token:'mock_l602_reject-writes'});await openCard('CORE-2')
@@ -197,6 +204,7 @@ describe('독립 재현 - 응답 귀속과 지연',()=>{
   await release()
   console.log('H',{server:r.state.items.find(e=>e.id==='m-2')?.priority,detail:el('[data-field="priority"]').textContent,toast:q('[data-toast="failed"]')?.textContent,calls:r.calls.map(c=>c.op)})
   expect(el('[data-field="priority"]').textContent).toContain('보통')
+  expect(r.state.items.find(e=>e.id==='m-2')?.priority).toBe('medium') // 수정 3 시험 감사: 거절된 쓰기는 서버 값을 바꾸지 않았다
  })
  it('H2: 본문 저장이 30초 확인 지연 뒤 거절되면 편집기와 초안이 남고 오류를 보인다(R1-C)', async () => {
   const r = await rig({ token: 'mock_l602_reject-writes' }); await openCard('CORE-2')
@@ -232,6 +240,8 @@ describe('독립 재현 - 응답 귀속과 지연',()=>{
   click('[data-field="priority"]');click('[data-priority-row="high"]');await settle(16)
   console.log('I',{conflict:q('[data-issue-conflict]')?.textContent,writes:writes(r.calls)})
   expect(q('[data-issue-conflict]')).toBeNull()
+  // 수정 3 시험 감사: 배너가 없다는 것만으로는 쓰기가 갔는지 모른다 — 서버 값이 바뀌었는지 본다.
+  expect(r.state.items.find(e=>e.id==='m-1')?.priority).toBe('high')
  })
  it('J: Esc 는 열린 상세 메뉴부터 닫고 제목 입력을 유지한다',async()=>{
   await rig();await openCard('CORE-2');click('[data-issue-status]');await settle()
@@ -351,6 +361,10 @@ describe('독립 재현 - 되돌리기 잠금',()=>{
   console.log('O',{undoStill,writes:writes(r.calls),errors:[...document.querySelectorAll('[data-toast="failed"]')].map(e=>e.textContent)})
   await release()
   expect(undoStill).toBe(true)
+  // 수정 3 시험 감사: 확인이 끝난 뒤 남긴 되돌리기가 실제로 서버를 되돌리는지까지(옛 boolean 만 보던 시험 보강).
+  undoLast('우선순위'); await settle(16)
+  expect(r.state.items.find(e=>e.id==='m-2')?.priority).toBe('medium')
+  expect(r.state.items.find(e=>e.id==='m-2')?.placement).toBe('backlog')
  })
 })
 

@@ -300,6 +300,34 @@ describe('r3 같은 모양 — 편집 기준(R3-A)', () => {
   })
 })
 
+describe('r3 같은 모양 — 결과를 받지 못한 내 쓰기(감사에서 찾은 자기 충돌)', () => {
+  it('A-gen 세대가 바뀌는 사이 앞 본문 저장이 닿았으면 다시 저장은 자기 충돌하지 않는다', async () => {
+    const r = await rig(); await openCard('CORE-2'); const held = holdWhere((call) => call.op === 'updateItem')
+    click('[data-issue-body-edit]'); setValue(input('[data-md-editor] textarea'), 'DRAFT GEN'); click('[data-md-save]')
+    await act(async () => { await r.service.addConnection({ sourceId: 'mock-jira', token: 'mock_l602_new_generation', replaceId: r.connectionId }) })
+    await settle(); await held.release()
+    click('[data-md-save]'); await settle(16)
+    expect(serverItem(r, 'm-2').body).toBe('DRAFT GEN')
+    expect(q('[data-issue-conflict]')).toBeNull()
+    expect(q('[data-md-editor]')).toBeNull()
+  })
+  it('A-gen-mixed 같은 경우라도 다른 곳의 변경(제목)이 섞였으면 다시 보내지 않고 배너(제목) — 외부 제목 보존', async () => {
+    const r = await rig(); await openCard('CORE-2'); const held = holdWhere((call) => call.op === 'updateItem')
+    click('[data-issue-body-edit]'); setValue(input('[data-md-editor] textarea'), 'DRAFT GEN'); click('[data-md-save]')
+    await act(async () => { await r.service.addConnection({ sourceId: 'mock-jira', token: 'mock_l602_new_generation', replaceId: r.connectionId }) })
+    await settle(); await held.release()
+    const server = serverItem(r, 'm-2'); server.title = 'EXTERNAL TITLE'; server.version += 1
+    setValue(input('[data-md-editor] textarea'), 'DRAFT GEN 2')
+    const sent = writes(r.calls).length
+    click('[data-md-save]'); await settle(16)
+    expect(writes(r.calls).length).toBe(sent + 1)
+    expect(server.body).toBe('DRAFT GEN')
+    expect(server.title).toBe('EXTERNAL TITLE')
+    expect(conflictFieldsShown()).toContain('title')
+    expect(input('[data-md-editor] textarea').value).toBe('DRAFT GEN 2')
+  })
+})
+
 describe('r3 같은 모양 — 덮기 후처리(R3-B)', () => {
   it('B3 대조 — 본문 덮기 중 더 고치지 않았으면 성공 뒤 편집기를 닫는다', async () => {
     const r = await rig(); await openCard('CORE-2')

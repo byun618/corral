@@ -16,9 +16,10 @@ export type FileReadRefusal = ExplorerRefusal | 'not_file'
  * `stamp` = 읽기 직전 정체·크기·mtime — 외부 변경 판정(E5)이 같은 파일인지 비교한다.
  * 텍스트(LIFE-591 E1ⓕ) — `text` 는 BOM 을 뺀 내용이고 `bom` 이 그 유무다(저장이 다시 붙인다). `utf8` = 손실 없이 UTF-8 로 디코드됐나
  * (false 면 `text` 에 대체 문자가 섞였다 — 렌더러는 읽기 전용으로 연다, 게이트 ⓪ Q4). `nlink` = 하드링크 수(1 넘으면 편집하지 않는다 — E6ⓑ⑪).
+ * `hash` = 읽은 바이트(BOM 포함) sha256 — 저장 시점 충돌 검사의 내용 지문(수정 r1 R1-C: 같은 크기·같은 mtime 의 다른 내용은 stamp 로 못 가른다).
  */
 export type FileReadResult =
-  | { ok: true; kind: 'text'; text: string; bom: boolean; utf8: boolean; nlink: number; size: number; bytesRead: number; stamp: string }
+  | { ok: true; kind: 'text'; text: string; bom: boolean; utf8: boolean; nlink: number; size: number; bytesRead: number; stamp: string; hash: string }
   | { ok: true; kind: 'binary'; size: number; bytesRead: number; stamp: string }
   | { ok: true; kind: 'too_large'; size: number; limit: number; bytesRead: number; stamp: string }
   | { ok: false; code: FileReadRefusal; error: string }
@@ -58,9 +59,10 @@ export type ImageReadResult =
 /**
  * 저장 요청(LIFE-591 E2·E6). `text` 는 줄끝까지 직렬화한 내용(BOM 제외) — main 이 `bom` 이면 EF BB BF 를 앞에 붙여 UTF-8 로 쓴다.
  * `baseStamp` = 이 내용이 기대는 디스크 정체(마지막으로 읽거나 저장한 stamp) — 디스크가 그와 다르면 `overwrite` 가 아닌 한 쓰지 않는다(E4ⓒ).
+ * `baseHash` = 그 내용의 바이트 sha256(읽기·저장이 돌려준 `hash`) — stamp 가 같아도 디스크 바이트 지문이 다르면 쓰지 않는다(수정 r1 R1-C).
  * `create` = 지워진 파일을 같은 경로에 다시 만든다(E4ⓓ — 사용자가 「다시 만들기」 를 고른 뒤에만).
  */
-export type FileWriteInput = { root: string; rel: string; text: string; bom: boolean; baseStamp: string | null; overwrite: boolean; create: boolean }
+export type FileWriteInput = { root: string; rel: string; text: string; bom: boolean; baseStamp: string | null; baseHash: string | null; overwrite: boolean; create: boolean }
 
 /** 쓰기 거절 — 읽기 가둠 사유에 쓰기 쪽을 더한다. 각 코드가 어느 검사에서 났는지가 양성 대조(E6ⓑ)의 근거다. */
 export type FileWriteRefusal =
@@ -71,10 +73,14 @@ export type FileWriteRefusal =
   | 'exists' // 다시 만들려는데 그 사이 같은 이름이 생겼다(E4ⓓ)
 
 export type FileWriteResult =
-  | { ok: true; stamp: string; size: number }
+  /** `stamp`·`hash` = 쓴 뒤 같은 fd 로 다시 읽어 **쓴 바이트와 같음을 확인한** 디스크 상태(수정 r1 R1-B). */
+  | { ok: true; stamp: string; hash: string; size: number }
   | { ok: false; code: FileWriteRefusal; error: string }
-  /** 디스크가 `baseStamp` 와 다르다 — 아무것도 쓰지 않았다(E4ⓒ). */
-  | { ok: false; code: 'conflict'; error: string; diskStamp: string }
+  /**
+   * 디스크가 `baseStamp`·`baseHash` 와 다르다 — 아무것도 쓰지 않았다(E4ⓒ). `written: true` = 썼지만 끝에 다시 읽어 보니 다른 내용이었다
+   * (쓰는 사이 외부 쓰기가 끼었다 — 수정 r1 R1-B). 어느 쪽이든 렌더러는 저장된 것으로 치지 않고 「덮어쓰기 / 취소」 를 묻는다.
+   */
+  | { ok: false; code: 'conflict'; error: string; diskStamp: string; written?: boolean }
   /** 쓰는 도중 실패 — `bytesWritten` 만큼 이미 덮었을 수 있다(E2ⓔ 「실패가 쓰기 도중이면 그 결과를 그대로 기록」). */
   | { ok: false; code: 'write_failed'; error: string; bytesWritten: number }
 

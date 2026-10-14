@@ -7,7 +7,9 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import fsp from 'node:fs/promises'
 import { loadTestHooks, O_NOFOLLOW_ANY, stampOf, writeFileContent } from './file-write.js'
+import { readFileContent } from './file-read.js'
 
 let base = ''
 let root = ''
@@ -15,7 +17,7 @@ let outside = ''
 const roots = (): string[] => [root]
 const sha = (file: string): string => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
 const stamp = (rel: string): string => stampOf(fs.statSync(path.join(root, rel)))
-const write = (input: { rel: string; text: string; bom?: boolean; baseStamp?: string | null; overwrite?: boolean; create?: boolean; root?: unknown; limit?: number; hooks?: Parameters<typeof writeFileContent>[0]['hooks'] }) =>
+const write = (input: { rel: string; text: string; bom?: boolean; baseStamp?: string | null; baseHash?: string | null; overwrite?: boolean; create?: boolean; root?: unknown; limit?: number; hooks?: Parameters<typeof writeFileContent>[0]['hooks'] }) =>
   writeFileContent({
     roots: roots(),
     root: input.root ?? root,
@@ -23,6 +25,7 @@ const write = (input: { rel: string; text: string; bom?: boolean; baseStamp?: st
     text: input.text,
     bom: input.bom ?? false,
     baseStamp: input.baseStamp ?? null,
+    baseHash: input.baseHash ?? null,
     overwrite: input.overwrite ?? false,
     create: input.create ?? false,
     ...(input.limit === undefined ? {} : { limit: input.limit }),
@@ -278,5 +281,63 @@ describe('시험 전용 주입 로더 — 제품 경로에서 꺼짐', () => {
     expect((await loadTestHooks({ packaged: false, file })).afterCheck).toBeUndefined()
     fs.writeFileSync(file, JSON.stringify({ swapDir: '/tmp/l591-x/a', linkTo: '/tmp/l591-x/b' }))
     expect(typeof (await loadTestHooks({ packaged: false, file })).afterCheck).toBe('function')
+  })
+})
+
+// 수정 r1 (Codex 리뷰 r1 `source-cases.mts` 조건) — 옛 코드(1a670faf6)에서 실패.
+describe('수정 r1 — 저장 기준의 내용 확인', () => {
+  it('R1-C 같은 inode·같은 크기·같은 mtime 의 다른 내용 — 내용 지문이 달라 conflict, 디스크는 외부 내용 그대로', async () => {
+    const file = path.join(root, 'preserved.txt')
+    fs.writeFileSync(file, 'ORIGINAL')
+    fs.utimesSync(file, 1700000000, 1700000000)
+    const before = await readFileContent({ roots: roots(), root, rel: 'preserved.txt' })
+    if (!before.ok || before.kind !== 'text') throw new Error('읽기 실패')
+    fs.writeFileSync(file, 'EXTERNAL')
+    fs.utimesSync(file, 1700000000, 1700000000)
+    expect(stamp('preserved.txt')).toBe(before.stamp)
+    const result = await write({ rel: 'preserved.txt', text: 'MY EDIT!', baseStamp: before.stamp, baseHash: before.hash })
+    expect(result).toMatchObject({ ok: false, code: 'conflict' })
+    expect(fs.readFileSync(file, 'utf8')).toBe('EXTERNAL')
+  })
+  it('R1-B 쓰기 끝(fdatasync 뒤·마지막 fstat 전)에 외부 쓰기가 끼면 자기 저장으로 기록하지 않는다 — conflict 로 알린다', async () => {
+    const file = path.join(root, 'overlap.txt')
+    fs.writeFileSync(file, 'ORIGINAL')
+    const before = await readFileContent({ roots: roots(), root, rel: 'overlap.txt' })
+    if (!before.ok || before.kind !== 'text') throw new Error('읽기 실패')
+    const originalOpen = fsp.open
+    let injected = false
+    // 리뷰어 주입과 같은 자리 — 우리 fd 의 datasync 가 돌아온 직후 외부가 같은 파일을 다시 쓴다.
+    Reflect.set(fsp, 'open', async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await originalOpen(...args)
+      if (String(args[0]).endsWith('/overlap.txt')) {
+        const sync = handle.datasync.bind(handle)
+        Reflect.set(handle, 'datasync', async () => {
+          await sync()
+          if (!injected) {
+            injected = true
+            fs.writeFileSync(file, 'EXTERNAL')
+          }
+        })
+      }
+      return handle
+    })
+    let result: Awaited<ReturnType<typeof writeFileContent>>
+    try {
+      result = await write({ rel: 'overlap.txt', text: 'MY EDIT!', baseStamp: before.stamp, baseHash: before.hash })
+    } finally {
+      Reflect.set(fsp, 'open', originalOpen)
+    }
+    expect(injected).toBe(true)
+    expect(fs.readFileSync(file, 'utf8')).toBe('EXTERNAL')
+    expect(result).toMatchObject({ ok: false, code: 'conflict' })
+  })
+  it('읽기·쓰기 지문이 같은 내용이면 같다 — 저장 뒤 다음 저장은 그 지문으로 그대로 쓴다', async () => {
+    const before = await readFileContent({ roots: roots(), root, rel: 'src/a.txt' })
+    if (!before.ok || before.kind !== 'text') throw new Error('읽기 실패')
+    const first = await write({ rel: 'src/a.txt', text: 'one\n', baseStamp: before.stamp, baseHash: before.hash })
+    if (!first.ok) throw new Error(first.code)
+    const reread = await readFileContent({ roots: roots(), root, rel: 'src/a.txt' })
+    expect(reread.ok && reread.kind === 'text' ? reread.hash : null).toBe(first.hash)
+    expect(await write({ rel: 'src/a.txt', text: 'two\n', baseStamp: first.stamp, baseHash: first.hash })).toMatchObject({ ok: true })
   })
 })

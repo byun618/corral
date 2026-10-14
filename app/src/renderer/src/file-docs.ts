@@ -10,6 +10,9 @@
 // 수정 여부(E1ⓒ) = Monaco `getAlternativeVersionId()` 가 저장(또는 읽기) 때 값과 다른가 — VS Code 와 같은 방식. 실행 취소로 저장된 상태에 돌아오면 같은 값이 된다.
 // 줄끝(E1ⓕ) — Monaco 모델은 줄끝을 하나(모델 EOL)로 정규화한다. 섞인 줄끝 파일을 한 글자 고쳐 저장해도 다른 줄의 줄끝이 바뀌지 않게, **줄마다 끝 글자**(`eols`)를
 // 따로 들고 편집 이벤트로 맞춰 간다(새로 생긴 줄바꿈 = 모델 EOL). 저장은 `줄 + 그 줄의 끝 글자` 를 잇는다. 실행 취소로 저장 상태에 돌아오면 저장 때 줄끝으로 되돌린다.
+// 숨은 BOM(수정 r1 R1-G) — main 은 파일 BOM(EF BB BF)을 떼어 `bom` 으로 준다. 그 뒤 글이 또 U+FEFF 로 시작하면 Monaco 가 그것을 모델 BOM 으로 떼어
+// 줄에 넣지 않는다(`getValue()`·`getLinesContent()` 에 없음). 그 글자를 잃지 않게 문서가 `hiddenBom` 으로 들고 직렬화 앞에 다시 붙인다.
+// 기준 내용(수정 r1 R1-B·C) — 문서는 디스크 stamp 와 **내용 지문**(`hash`, 바이트 sha256)을 같이 든다. 저장 시점 충돌 검사는 둘 다 본다.
 type Disposable = { dispose: () => void }
 type Range4 = { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number }
 
@@ -21,6 +24,8 @@ export type DocModel = {
   getAlternativeVersionId: () => number
   getLinesContent: () => string[]
   getValue: () => string
+  /** Monaco `getValueLength(eol, preserveBOM)` — `preserveBOM` 이면 모델 BOM 길이를 더한다(숨은 BOM 판정, R1-G). */
+  getValueLength: (eol?: number, preserveBOM?: boolean) => number
   getEOL: () => string
   getLineCount: () => number
   setValue: (text: string) => void
@@ -42,21 +47,31 @@ export type FileDoc = {
   readonly root: string
   readonly rel: string
   readonly model: Model
-  readonly readOnly: ReadOnlyReason | null
+  /** 읽기 전용 까닭 — 다시 읽을 때(수정 없는 문서 갱신·되돌리기) 디스크 메타데이터로 다시 잰다(수정 r1 R1-F). */
+  readOnly: ReadOnlyReason | null
+  /** 디스크가 20 MB 를 넘는다(대용량 편집기 옵션 — 읽기 전용 까닭이 비 UTF-8 등 다른 것이어도). 다시 읽을 때 같이 잰다. */
+  large: boolean
   bom: boolean
+  /** 모델이 글 맨 앞 U+FEFF 를 모델 BOM 으로 들고 있다 — 직렬화 앞에 붙인다(R1-G). */
+  hiddenBom: boolean
   /** 줄마다 끝 글자(`\n`·`\r\n`·`\r`, 마지막 줄 ''). 길이 = 모델 줄 수. */
   eols: string[]
   /** 저장(또는 읽기) 때의 `eols` — 실행 취소로 저장 상태에 돌아오면 되살린다. */
   savedEols: string[]
   /** 이 내용이 기대는 디스크 stamp(마지막으로 읽거나 저장한 것) — 저장 시점 충돌 검사의 기준(E4ⓒ). */
   stamp: string
+  /** `stamp` 와 같은 때의 디스크 바이트 sha256(R1-C) — 같은 크기·같은 mtime 의 다른 내용을 가른다. */
+  hash: string
   savedVersion: number
   dirty: boolean
   external: ExternalState
-  /** 저장 진행 중(연속 ⌘S 는 줄을 선다 — E2ⓖ). 그동안 온 감시 push 는 자기 저장의 중간 상태일 수 있어 보류한다(E2ⓒ). */
+  /** 저장 진행 중(연속 ⌘S 는 줄을 선다 — E2ⓖ). 그동안 온 감시 push·읽기 결과는 자기 저장의 중간 상태일 수 있어 보류한다(E2ⓒ). */
   saving: boolean
-  /** 저장 중에 본 감시 stamp — 저장이 끝난 뒤에도 이 값으로는 다시 읽지 않는다(자기 저장의 중간 상태). */
-  ignoredStamps: Set<string>
+  /**
+   * 저장 세대 — 저장이 시작하고 끝날 때마다 오른다. 읽기 결과는 요청할 때의 세대를 들고 오고, 세대가 다르면(저장 전·중에 찍은 읽기) 그 결과로 판단하지 않고 다시 읽는다.
+   * (수정 r1 R1-B — 옛 `ignoredStamps` 는 저장 중 본 stamp 를 **영영** 무시해, 저장과 겹친 외부 변경까지 놓쳤다.)
+   */
+  saveGen: number
   queue: Promise<unknown>
   /** 편집기 IME 조합 중인가(E5ⓑ — 저장은 조합이 끝난 뒤). */
   composing: boolean
@@ -121,10 +136,13 @@ export const getDoc = (key: string): FileDoc | undefined => docs.get(key)
 export const allDocs = (): FileDoc[] => [...docs.values()]
 export const dirtyDocs = (): FileDoc[] => allDocs().filter((doc) => doc.dirty)
 
-/** 저장할 글 — 모델 줄 + 줄마다 끝 글자. */
+/** 저장할 글 — (숨은 BOM) + 모델 줄 + 줄마다 끝 글자. */
 export function serialize(doc: FileDoc): string {
-  return joinLines(doc.model.getLinesContent(), doc.eols) ?? doc.model.getValue()
+  return (doc.hiddenBom ? '\uFEFF' : '') + (joinLines(doc.model.getLinesContent(), doc.eols) ?? doc.model.getValue())
 }
+
+/** 모델이 모델 BOM 을 들고 있나(Monaco 가 글 맨 앞 U+FEFF 를 뗐나) — 길이 두 번 재기라 글을 복사하지 않는다. */
+const hasModelBom = (model: Model): boolean => model.getValueLength(undefined, true) > model.getValueLength(undefined, false)
 
 function refreshDirty(doc: FileDoc): void {
   const current = doc.model.getAlternativeVersionId()
@@ -137,29 +155,34 @@ function refreshDirty(doc: FileDoc): void {
 }
 
 /** 모델을 맡긴다 — 같은 키가 있으면 그것을 돌려준다(새 모델은 버린다). */
-export function adoptDoc(input: { root: string; rel: string; model: Model; text: string; bom: boolean; stamp: string; readOnly: ReadOnlyReason | null }): FileDoc {
+export function adoptDoc(input: { root: string; rel: string; model: Model; text: string; bom: boolean; stamp: string; hash: string; readOnly: ReadOnlyReason | null; large: boolean }): FileDoc {
   const key = docKey(input.root, input.rel)
   const existing = docs.get(key)
   if (existing !== undefined) {
     if (existing.model !== input.model) input.model.dispose()
     return existing
   }
-  const eols = eolsOf(input.text)
+  const hiddenBom = hasModelBom(input.model)
+  // 줄끝은 모델 줄과 같은 글로 잰다(숨은 BOM 은 줄이 아니다).
+  const eols = eolsOf(hiddenBom ? input.text.slice(1) : input.text)
   const doc: FileDoc = {
     key,
     root: input.root,
     rel: input.rel,
     model: input.model,
     readOnly: input.readOnly,
+    large: input.large,
     bom: input.bom,
+    hiddenBom,
     eols,
     savedEols: eols.slice(),
     stamp: input.stamp,
+    hash: input.hash,
     savedVersion: input.model.getAlternativeVersionId(),
     dirty: false,
     external: { kind: 'none' },
     saving: false,
-    ignoredStamps: new Set(),
+    saveGen: 0,
     queue: Promise.resolve(),
     composing: false,
     compositionWaiters: [],
@@ -180,12 +203,22 @@ export function adoptDoc(input: { root: string; rel: string; model: Model; text:
   return doc
 }
 
-/** 디스크 내용으로 바꾼다(수정 없는 문서의 외부 변경 반영 — F2 와 같이 같은 모델에 `setValue`). 실행 취소 기록은 새로 시작한다. */
-export function reloadDoc(doc: FileDoc, input: { text: string; bom: boolean; stamp: string }): void {
+/** 디스크에서 다시 읽은 것 — 내용·BOM·기준(stamp·지문)·읽기 전용 까닭. */
+export type DiskState = { text: string; bom: boolean; stamp: string; hash: string; readOnly: ReadOnlyReason | null; large: boolean }
+
+/**
+ * 디스크 내용으로 바꾼다(수정 없는 문서의 외부 변경 반영 — F2 와 같이 같은 모델에 `setValue`). 실행 취소 기록은 새로 시작한다.
+ * 읽기 전용 까닭도 새 디스크 상태로 바꾼다(R1-F — 열린 뒤 20 MB 를 넘거나 비 UTF-8·하드링크가 되면 읽기 전용, 다시 작아지면 편집 가능).
+ */
+export function reloadDoc(doc: FileDoc, input: DiskState): void {
   doc.model.setValue(input.text)
   doc.bom = input.bom
+  doc.hiddenBom = hasModelBom(doc.model)
   doc.stamp = input.stamp
-  doc.eols = eolsOf(input.text)
+  doc.hash = input.hash
+  doc.readOnly = input.readOnly
+  doc.large = input.large
+  doc.eols = eolsOf(doc.hiddenBom ? input.text.slice(1) : input.text)
   doc.savedEols = doc.eols.slice()
   doc.savedVersion = doc.model.getAlternativeVersionId()
   doc.external = { kind: 'none' }
@@ -196,14 +229,23 @@ export function reloadDoc(doc: FileDoc, input: { text: string; bom: boolean; sta
 /**
  * 「디스크 내용으로 되돌리기」(E4ⓑ) — **실행 취소할 수 있게** 편집으로 넣는다(⌘Z 가 내 변경을 되살린다). 그 상태를 저장된 상태로 친다.
  * 줄끝은 디스크 글의 것으로 다시 잰다(`setValue` 와 달리 모델 EOL 은 그대로라 직렬화는 `eols` 가 맞춘다).
+ * 숨은 BOM(R1-G) — 편집으로는 모델 BOM 을 바꿀 수 없다. 모델이 BOM 을 들고 있고 디스크 글도 U+FEFF 로 시작하면 그 글자를 빼고 넣고(모델 BOM 이 맡는다),
+ * 디스크 글이 U+FEFF 로 시작하지 않으면 직렬화에서 모델 BOM 을 빼게 표시한다. 그 뒤 실행 취소로 옛 내용에 돌아가도 이 표시는 그대로다(처리 방식 기록 — 수정됨으로 남아 저장 때 보인다).
  */
-export function revertDoc(doc: FileDoc, input: { text: string; bom: boolean; stamp: string }): void {
+export function revertDoc(doc: FileDoc, input: DiskState): void {
+  const modelBom = hasModelBom(doc.model)
+  const leading = input.text.startsWith('\uFEFF')
+  const text = modelBom && leading ? input.text.slice(1) : input.text
   doc.model.pushStackElement()
-  doc.model.pushEditOperations(null, [{ range: doc.model.getFullModelRange(), text: input.text }], () => null)
+  doc.model.pushEditOperations(null, [{ range: doc.model.getFullModelRange(), text }], () => null)
   doc.model.pushStackElement()
   doc.bom = input.bom
+  doc.hiddenBom = modelBom && leading
   doc.stamp = input.stamp
-  doc.eols = eolsOf(input.text)
+  doc.hash = input.hash
+  doc.readOnly = input.readOnly
+  doc.large = input.large
+  doc.eols = eolsOf(text)
   if (doc.eols.length !== doc.model.getLineCount()) doc.eols = eolsOf(doc.model.getValue())
   doc.savedEols = doc.eols.slice()
   doc.savedVersion = doc.model.getAlternativeVersionId()
@@ -213,8 +255,9 @@ export function revertDoc(doc: FileDoc, input: { text: string; bom: boolean; sta
 }
 
 /** 저장이 끝났다 — 저장을 시작할 때의 버전·줄끝이 이제 디스크와 같다. 그 뒤에 친 글자가 있으면 여전히 수정됨. */
-export function markSaved(doc: FileDoc, input: { stamp: string; version: number; eols: string[] }): void {
+export function markSaved(doc: FileDoc, input: { stamp: string; hash: string; version: number; eols: string[] }): void {
   doc.stamp = input.stamp
+  doc.hash = input.hash
   doc.savedVersion = input.version
   doc.savedEols = input.eols
   doc.external = { kind: 'none' }
@@ -228,7 +271,7 @@ export function setExternal(doc: FileDoc, external: ExternalState): void {
 }
 
 export function setSaving(doc: FileDoc, saving: boolean): void {
-  if (saving) doc.ignoredStamps.clear()
+  doc.saveGen += 1
   doc.saving = saving
   notify()
 }
@@ -242,14 +285,17 @@ export function setComposing(doc: FileDoc, composing: boolean): void {
   for (const wake of waiters) wake()
 }
 
-/** 조합 중이면 끝날 때까지(최대 `timeoutMs`) 기다린다 — 저장이 조합 중인 글자를 반쯤 담지 않게(E5ⓑ). */
-export function untilComposed(doc: FileDoc, timeoutMs = 1000): Promise<void> {
-  if (!doc.composing) return Promise.resolve()
+/**
+ * 조합 중이면 끝날 때까지(최대 `timeoutMs`) 기다린다 — 저장이 조합 중인 글자를 반쯤 담지 않게(E5ⓑ). 끝났으면 true, **시간 초과면 false** —
+ * 시간 초과를 저장 허가로 쓰지 않는다(수정 r1 R1-H: 1 s 뒤 미확정 자모가 저장됐다). 부른 쪽이 저장을 보류하고 안내한다.
+ */
+export function untilComposed(doc: FileDoc, timeoutMs = 1000): Promise<boolean> {
+  if (!doc.composing) return Promise.resolve(true)
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, timeoutMs)
+    const timer = setTimeout(() => resolve(!doc.composing), timeoutMs)
     doc.compositionWaiters.push(() => {
       clearTimeout(timer)
-      resolve()
+      resolve(true)
     })
   })
 }

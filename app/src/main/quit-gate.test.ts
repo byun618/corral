@@ -61,3 +61,26 @@ describe('file dialogs', () => {
     expect(reloadDialogSpec(['a']).buttons).toHaveLength(2)
   })
 })
+
+// 수정 r1 R1-I — 렌더러가 확인 요청에 응답(ack)하지 않으면 main 이 스스로 묻는다(무응답 렌더러가 종료를 영영 막지 않게). 옛 코드에서 실패.
+describe('quit gate — 무응답 렌더러 (수정 r1 R1-I)', () => {
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  it('요청 뒤 ack 가 없으면 시간 초과에 onUnresponsive 를 한 번 부른다', async () => {
+    let unresponsive = 0
+    const gate = createQuitGate({ requestConfirm: () => true, onUnresponsive: () => unresponsive++, ackTimeoutMs: 20 })
+    gate.setDirty([{ root: '/r', rel: 'a.txt' }])
+    expect(gate.intercept('before-quit')).toBe(true)
+    expect(gate.intercept('before-quit')).toBe(true)
+    await wait(60)
+    expect(unresponsive).toBe(1)
+  })
+  it('ack 가 오면 부르지 않는다', async () => {
+    let unresponsive = 0
+    const gate = createQuitGate({ requestConfirm: () => true, onUnresponsive: () => unresponsive++, ackTimeoutMs: 20 })
+    gate.setDirty([{ root: '/r', rel: 'a.txt' }])
+    gate.intercept('before-quit')
+    gate.ack()
+    await wait(60)
+    expect(unresponsive).toBe(0)
+  })
+})

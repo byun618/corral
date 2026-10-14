@@ -4,13 +4,16 @@
 // 여기서는 가둠 **판정**(등록 루트·형·realpath 접두사)만 `confine` 에 맡기고, 실제 열기는 그 판정이 낸 realpath 를 **`O_NOFOLLOW_ANY`** 로 연다:
 //   ① `confine` — 등록 루트·형·realpath(루트/상대) 가 realpath(루트) 밑. 결과 `abs` 는 링크가 하나도 없는 경로다(realpath)
 //   ② lstat — 일반 파일이 아니면(폴더·FIFO·소켓·장치) 열지 않고 `not_file`(FIFO 열기 대기 방지 — F2 R1-F 와 같다)
-//   ③ `open(abs, O_WRONLY | O_NOFOLLOW_ANY | O_NONBLOCK)` — 경로의 **어느 성분이든** 그 사이 링크로 바뀌었으면 커널이 `ELOOP` 로 거절한다(macOS 11+,
+//   ③ `open(abs, O_RDWR | O_NOFOLLOW_ANY | O_NONBLOCK)`(수정 r1 — 읽기도 연다: ⑤ 지문 대조·⑥ 쓴 뒤 재확인. 편집기에 연 파일은 이미 읽을 수 있었다) — 경로의 **어느 성분이든** 그 사이 링크로 바뀌었으면 커널이 `ELOOP` 로 거절한다(macOS 11+,
 //      코디 실측 `raw/coord/c20` — Node 20·24·Electron 44). 링크 없는 절대 경로를 링크 없이 풀면 그 경로 자리의 파일이고, 그 자리는 ① 에서 루트 밑이다.
 //      그래서 ① 뒤에 무엇을 바꿔도 밖 파일이 열리는 길이 없다 — 재확인(사후 검사)이 아니라 열기 자체가 막는다
 //   ④ fstat(fd) — 일반 파일 · nlink == 1(하드링크면 `hardlink` — `O_NOFOLLOW_ANY` 는 하드링크를 못 막는다, 같은 inode 의 다른 이름이 밖일 수 있다)
 //      · 정체(dev:ino)가 ② 와 같은지(그 사이 다른 파일로 바뀌었으면 `changed`)
-//   ⑤ 저장 시점 충돌(E4ⓒ) — fd 의 stamp(dev:ino:size:mtime)가 `baseStamp` 와 다르면 `overwrite` 가 아닌 한 **쓰지 않고** `conflict`
-//   ⑥ 쓰기 — **제자리**(같은 inode): 0 부터 새 내용을 쓰고 → `ftruncate(새 길이)` → `fdatasync` → fstat 으로 새 stamp. VS Code·Orca 편집기 저장과 같은 방식이다.
+//   ⑤ 저장 시점 충돌(E4ⓒ) — fd 의 stamp(dev:ino:size:mtime)가 `baseStamp` 와 다르거나, 같아도 fd 로 읽은 바이트 sha256 이 `baseHash` 와 다르면
+//      (같은 크기·같은 mtime 의 다른 내용 — 수정 r1 R1-C) `overwrite` 가 아닌 한 **쓰지 않고** `conflict`
+//   ⑥ 쓰기 — **제자리**(같은 inode): 0 부터 새 내용을 쓰고 → `ftruncate(새 길이)` → `fdatasync` → fstat → **같은 fd 로 다시 읽어 쓴 바이트와 같은지** → fstat 이 그대로인지.
+//      같아야 그 stamp·지문을 저장 기준으로 돌려준다. 다르면(쓰는 사이 외부 쓰기가 끼었다) 자기 저장으로 기록하지 않고 `conflict`(written) — 수정 r1 R1-B.
+//      VS Code·Orca 편집기 저장과 같은 제자리 방식이다.
 //      제자리를 고른 이유(근거 `raw/claude/write-mode.md`): inode·mode·xattr·하드링크 수가 그대로고(E2ⓕ), rename 은 경로 기반이라 그 단계의 가둠을 다시
 //      설계해야 한다(Node 에 `renameat` 없음). 대가 — 쓰는 도중 실패하면 앞부분만 새 내용인 파일이 남을 수 있다(`write_failed.bytesWritten` 로 알린다).
 //      자를 때(`ftruncate`)를 쓰기 **뒤**로 둬서 「크기 0 파일」 순간을 만들지 않는다.
@@ -20,6 +23,7 @@ import fs from 'node:fs/promises'
 import { constants } from 'node:fs'
 import path from 'node:path'
 import { confine } from './explorer-fs.js'
+import { contentHash } from './file-read.js'
 import { TEXT_LIMIT_BYTES, type FileWriteResult } from '../shared/file-view.js'
 
 /** macOS `O_NOFOLLOW_ANY`(XNU `fcntl.h` — "no symlinks allowed in path", macOS 11+). `fs.constants` 에 없어 리터럴로 둔다. corral 은 macOS 전용. */
@@ -38,11 +42,13 @@ export const stampOf = (stat: { dev: number; ino: number; size: number; mtimeMs:
 
 const errorCode = (error: unknown): string => (typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '')
 
-type WriteInput = { roots: readonly string[]; root: unknown; rel: unknown; text: unknown; bom: unknown; baseStamp: unknown; overwrite: unknown; create: unknown; limit?: number; hooks?: WriteHooks }
+type WriteInput = { roots: readonly string[]; root: unknown; rel: unknown; text: unknown; bom: unknown; baseStamp: unknown; baseHash?: unknown; overwrite: unknown; create: unknown; limit?: number; hooks?: WriteHooks }
 
 export async function writeFileContent(input: WriteInput): Promise<FileWriteResult> {
   const { text, bom, baseStamp, overwrite, create } = input
-  if (typeof text !== 'string' || typeof bom !== 'boolean' || typeof overwrite !== 'boolean' || typeof create !== 'boolean' || !(baseStamp === null || typeof baseStamp === 'string')) {
+  // 지문이 없는 옛 요청(undefined)은 null 로 — stamp 검사만 한다.
+  const baseHash = input.baseHash ?? null
+  if (typeof text !== 'string' || typeof bom !== 'boolean' || typeof overwrite !== 'boolean' || typeof create !== 'boolean' || !(baseStamp === null || typeof baseStamp === 'string') || !(baseHash === null || typeof baseHash === 'string')) {
     return { ok: false, code: 'invalid_argument', error: '내용·옵션 형 위반' }
   }
   const limit = input.limit ?? TEXT_LIMIT_BYTES
@@ -50,10 +56,19 @@ export async function writeFileContent(input: WriteInput): Promise<FileWriteResu
   const data = bom ? Buffer.concat([BOM, body]) : body
   if (data.length > limit) return { ok: false, code: 'too_large', error: `내용 ${data.length} B 가 상한 ${limit} B 를 넘는다` }
   const hooks = input.hooks ?? {}
-  return create ? createAndWrite({ ...input, data, hooks }) : writeExisting({ ...input, data, hooks, baseStamp, overwrite })
+  return create ? createAndWrite({ ...input, data, hooks }) : writeExisting({ ...input, data, hooks, baseStamp, baseHash, overwrite })
 }
 
-async function writeExisting(input: { roots: readonly string[]; root: unknown; rel: unknown; data: Buffer; hooks: WriteHooks; baseStamp: string | null; overwrite: boolean }): Promise<FileWriteResult> {
+async function writeExisting(input: {
+  roots: readonly string[]
+  root: unknown
+  rel: unknown
+  data: Buffer
+  hooks: WriteHooks
+  baseStamp: string | null
+  baseHash: string | null
+  overwrite: boolean
+}): Promise<FileWriteResult> {
   const confined = await confine(input)
   if (!confined.ok) return { ok: false, code: confined.code, error: confined.error }
   let before: Awaited<ReturnType<typeof fs.lstat>>
@@ -66,7 +81,7 @@ async function writeExisting(input: { roots: readonly string[]; root: unknown; r
   await input.hooks.afterCheck?.()
   let handle: fs.FileHandle
   try {
-    handle = await fs.open(confined.abs, constants.O_WRONLY | O_NOFOLLOW_ANY | constants.O_NONBLOCK)
+    handle = await fs.open(confined.abs, constants.O_RDWR | O_NOFOLLOW_ANY | constants.O_NONBLOCK)
   } catch (error) {
     return openRefusal(error)
   }
@@ -78,6 +93,11 @@ async function writeExisting(input: { roots: readonly string[]; root: unknown; r
     const diskStamp = stampOf(stat)
     if (!input.overwrite && input.baseStamp !== null && diskStamp !== input.baseStamp) {
       return { ok: false, code: 'conflict', error: '디스크 내용이 마지막으로 읽은 뒤 바뀌었다 — 쓰지 않았다', diskStamp }
+    }
+    // stamp 가 같아도 내용이 다를 수 있다(같은 크기로 쓰고 mtime 을 되돌림 등 — R1-C). 상한 + 1 까지만 읽는다(넘으면 어차피 다른 내용).
+    if (!input.overwrite && input.baseHash !== null) {
+      const current = await readAll({ handle, size: Math.min(stat.size, TEXT_LIMIT_BYTES + 1) })
+      if (contentHash(current) !== input.baseHash) return { ok: false, code: 'conflict', error: '디스크 내용(지문)이 마지막으로 읽은 것과 다르다 — 쓰지 않았다', diskStamp }
     }
     return await writeAll({ handle, data: input.data, hooks: input.hooks })
   } finally {
@@ -102,7 +122,7 @@ async function createAndWrite(input: { roots: readonly string[]; root: unknown; 
   await input.hooks.afterCheck?.()
   let handle: fs.FileHandle
   try {
-    handle = await fs.open(path.join(parent.abs, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW_ANY | constants.O_NONBLOCK, 0o666)
+    handle = await fs.open(path.join(parent.abs, name), constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW_ANY | constants.O_NONBLOCK, 0o666)
   } catch (error) {
     return openRefusal(error)
   }
@@ -133,7 +153,19 @@ function openRefusal(error: unknown): FileWriteResult {
   }
 }
 
-/** ⑥ 제자리 쓰기 — 0 부터 다 쓰고 → 자르고 → fdatasync → 새 stamp. 도중 실패면 쓴 바이트 수를 같이 돌려준다. */
+/** fd 의 처음부터 `size` 바이트(파일이 짧으면 거기까지). */
+async function readAll(input: { handle: fs.FileHandle; size: number }): Promise<Buffer> {
+  const buffer = Buffer.alloc(input.size)
+  let offset = 0
+  while (offset < input.size) {
+    const { bytesRead } = await input.handle.read(buffer, offset, input.size - offset, offset)
+    if (bytesRead === 0) break
+    offset += bytesRead
+  }
+  return buffer.subarray(0, offset)
+}
+
+/** ⑥ 제자리 쓰기 — 0 부터 다 쓰고 → 자르고 → fdatasync → 다시 읽어 확인 → 새 stamp. 도중 실패면 쓴 바이트 수를 같이 돌려준다. */
 async function writeAll(input: { handle: fs.FileHandle; data: Buffer; hooks: WriteHooks }): Promise<FileWriteResult> {
   const { handle, data, hooks } = input
   let offset = 0
@@ -148,8 +180,15 @@ async function writeAll(input: { handle: fs.FileHandle; data: Buffer; hooks: Wri
     if (hooks.failWrite === 'mid') throw Object.assign(new Error('주입된 쓰기 오류(mid)'), { code: 'EIO' })
     await handle.truncate(data.length)
     await handle.datasync()
+    // 쓴 바이트가 지금 디스크 내용인지 확인한 뒤에만 그 stamp 를 저장 기준으로 돌려준다(R1-B) — 앞뒤 fstat 이 같고 다시 읽은 바이트가 쓴 것과 같아야 한다.
+    // 그 사이 외부가 쓰면 stamp 나 바이트 중 하나가 달라진다(같은 크기·같은 mtime 으로 되돌린 외부 쓰기도 바이트 대조가 잡는다).
     const stat = await handle.stat()
-    return { ok: true, stamp: stampOf(stat), size: stat.size }
+    const back = await readAll({ handle, size: data.length + 1 })
+    const after = await handle.stat()
+    if (stampOf(stat) !== stampOf(after) || !back.equals(data)) {
+      return { ok: false, code: 'conflict', error: '저장 직후 다른 곳에서 파일이 바뀌었다 — 내 저장으로 기록하지 않았다', diskStamp: stampOf(after), written: true }
+    }
+    return { ok: true, stamp: stampOf(after), hash: contentHash(data), size: after.size }
   } catch (error) {
     return { ok: false, code: 'write_failed', error: String(error), bytesWritten: offset }
   }

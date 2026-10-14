@@ -7,6 +7,7 @@
 // LIFE-591 — 텍스트는 BOM 유무·UTF-8 손실 여부·nlink 를 같이 돌려준다(편집 가능 판정 E1ⓕ·E6ⓑ⑪). 저장은 이 파일이 아니라 `file-write.ts`(fd 기반 쓰기 경계).
 // 남은 위험은 F1 과 같다(`explorer-fs.ts` 머리말): 중간 성분을 열기 직전에 바꿨다 되돌리는 ABA. 노출은 worktree 밖 파일 **내용**일 수 있어 F1 보다 무겁지만,
 // 바꾸는 쪽은 worktree 에 쓸 수 있는 같은 사용자 프로세스다. **쓰기 경계로 넘기지 않는다**(F3 은 fd 기반으로 따로 설계).
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { confine } from './explorer-fs.js'
@@ -72,6 +73,9 @@ async function openConfined(input: { roots: readonly string[]; root: unknown; re
   }
 }
 
+/** 내용 지문(수정 r1 R1-C) — 디스크 바이트(BOM 포함) sha256. 쓰기 경계(`file-write.ts`)가 같은 함수로 재서 저장 시점에 대조한다. */
+export const contentHash = (bytes: Uint8Array): string => crypto.createHash('sha256').update(bytes).digest('hex')
+
 /** 처음부터 `length` 바이트까지(파일이 짧으면 거기까지) 읽는다. */
 async function readUpTo(input: { handle: fs.FileHandle; buffer: Uint8Array; from: number; to: number }): Promise<number> {
   let offset = input.from
@@ -98,7 +102,8 @@ export async function readFileContent(input: { roots: readonly string[]; root: u
     bytesRead = await readUpTo({ handle, buffer, from: bytesRead, to: capacity })
     if (bytesRead > limit) return { ok: true, kind: 'too_large', size: bytesRead, limit, bytesRead, stamp }
     // 8 KB 뒤에 NUL 이 있어도 텍스트로 본다(판정 창 밖 — Orca·git 과 같다). UTF-8 아닌 바이트는 U+FFFD 로(인코딩 추정 없음) — 그때 `utf8: false`(LIFE-591 Q4).
-    return { ok: true, kind: 'text', ...decodeText(buffer.subarray(0, bytesRead)), nlink: opened.nlink, size: opened.size, bytesRead, stamp }
+    const bytes = buffer.subarray(0, bytesRead)
+    return { ok: true, kind: 'text', ...decodeText(bytes), nlink: opened.nlink, size: opened.size, bytesRead, stamp, hash: contentHash(bytes) }
   } catch (error) {
     return { ok: false, code: 'io_error', error: String(error) }
   } finally {

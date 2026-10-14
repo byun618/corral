@@ -263,6 +263,13 @@ def parse(text: str) -> Item | None:
 if __name__ == "__main__":
     print(parse("abc-12"), 0x1F, 1e-3, None, True, b"bytes")
 `)
+// LIFE-591 수정 r1 회귀(`r1-cases.mjs`) — 폴더 하나에 모은다(다른 측정의 루트 행 수를 바꾸지 않게).
+write('r1/race.txt', 'base')
+write('r1/del.txt', 'survive\n')
+write('r1/doc.md', '# initial\n')
+write('r1/grow.txt', 'initial\n')
+write('r1/edit.txt', 'alpha\nbeta\ngamma\n')
+write('r1/bom.txt', Buffer.from('efbbbfefbbbf616c7068610a', 'hex'))
 execFileSync('git', ['init', '-q', '-b', 'main', target])
 execFileSync('git', ['-C', target, 'add', '-A'])
 execFileSync('git', ['-C', target, '-c', 'user.name=l590', '-c', 'user.email=l590@example.invalid', 'commit', '-q', '-m', 'fixture'])

@@ -119,7 +119,7 @@ import { explorerAction } from './explorer-actions.js'
 import { readFileContent, readImageContent } from './file-read.js'
 import { createFileWatch, type FileWatch } from './file-watch.js'
 import { loadTestHooks, writeFileContent } from './file-write.js'
-import { fileDialogSpec, parseFileDialogRequest, reloadDialogSpec } from './file-dialogs.js'
+import { fileDialogSpec, parseFileDialogRequest, reloadDialogSpec, unresponsiveDialogSpec } from './file-dialogs.js'
 import { createQuitGate, parseDirtyFiles } from './quit-gate.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -143,6 +143,7 @@ let window: BrowserWindow | null = null
 /**
  * LIFE-591 E3ⓒ — 수정된 파일 탭이 있으면 종료·창 닫기를 런타임 정리보다 먼저 막고 렌더러에 확인을 맡긴다(`quit-gate.ts`).
  * 렌더러가 없으면(창이 없거나 부서졌으면) 막지 않는다 — 그때는 확인할 내용도 없다.
+ * 수정 r1 R1-I — 렌더러가 요청을 3 s 안에 받았다고(`corral:quitAck`) 답하지 않으면(멈춤) main 이 직접 묻는다(`confirmUnresponsiveQuit`).
  */
 const quitGate = createQuitGate({
   requestConfirm: () => {
@@ -150,8 +151,36 @@ const quitGate = createQuitGate({
     window.webContents.send('corral:quitRequested')
     return true
   },
+  onUnresponsive: () => void confirmUnresponsiveQuit(),
+  ackTimeoutMs: 3000,
   log: (tag, data) => log(tag, data),
 })
+let unresponsivePrompt = false
+/**
+ * 무응답 렌더러 종료 확인(R1-I) — 「저장하지 않고 종료」 면 확인을 지난 것으로 치고 창을 바로 부순 뒤(멈춘 렌더러는 `beforeunload` 에 답하지 못한다 —
+ * `destroy` 는 unload 처리를 건너뛴다) 기존 종료 순서로 끝낸다(`before-quit` → 런타임 정리). 「취소」 면 아무것도 안 한다(앱·런타임 그대로).
+ * 계측 실행은 `file-dialog-stub` 답(`discard` = 종료, 그 밖 = 취소)을 쓴다.
+ */
+async function confirmUnresponsiveQuit(): Promise<void> {
+  if (unresponsivePrompt) return
+  unresponsivePrompt = true
+  try {
+    const files = quitGate.dirty().map((file) => file.rel)
+    const target = window
+    const stubbed = measuring ? fileDialogAnswers.shift() : undefined
+    if (stubbed !== undefined) fileDialogAsked.push('unresponsive')
+    const spec = unresponsiveDialogSpec(files)
+    const live = target !== null && !target.isDestroyed() ? target : null
+    const quit = stubbed !== undefined ? stubbed === 'discard' : (live === null ? await dialog.showMessageBox(spec) : await dialog.showMessageBox(live, spec)).response === 0
+    log('quit.unresponsive_choice', { files: files.length, quit, stubbed: stubbed !== undefined })
+    if (!quit) return
+    quitGate.allow()
+    if (live !== null && !live.isDestroyed()) live.destroy()
+    app.quit()
+  } finally {
+    unresponsivePrompt = false
+  }
+}
 let revision = 0
 /** 소켓 경로를 든 목록은 **여기까지만** 산다 (수정 1회차 L9) — 화면으로는 이름·running 만 간다. */
 let sessions: SessionHandle[] = []
@@ -1884,6 +1913,7 @@ app.whenReady().then(async () => {
       text: field('text'),
       bom: field('bom'),
       baseStamp: field('baseStamp'),
+      baseHash: field('baseHash'),
       overwrite: field('overwrite'),
       create: field('create'),
       hooks,
@@ -1912,6 +1942,11 @@ app.whenReady().then(async () => {
     if (files !== null) quitGate.setDirty(files)
   })
   // 렌더러가 종료 확인을 마쳤다(저장했거나 저장 안 함) — 이제 막지 않고 다시 종료한다. 취소면 이 요청이 오지 않는다(앱·런타임 그대로).
+  // 렌더러가 종료 확인 요청을 받았다(R1-I 무응답 시계를 멈춘다).
+  ipcMain.on('corral:quitAck', (event) => {
+    if (!fromOurWindow(event)) return
+    quitGate.ack()
+  })
   ipcMain.on('corral:confirmQuit', (event) => {
     if (!fromOurWindow(event)) return
     log('quit.confirmed', { files: quitGate.dirty().length })

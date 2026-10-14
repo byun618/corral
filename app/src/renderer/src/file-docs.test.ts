@@ -1,7 +1,7 @@
 // LIFE-591 E1ⓒⓔⓕ·E2ⓑⓖ·E3ⓑ·E4ⓒⓓ — 문서 저장소·저장 흐름(단위). Monaco 대신 같은 모양의 가짜 모델(줄 배열 + 실행 취소 스택)을 쓴다.
 // 줄끝: 섞인 줄끝·BOM·끝 개행 없음 파일을 한 글자 고쳐 직렬화하면 그 한 글자만 다르다. 수정 여부: 버전 id(실행 취소로 저장 상태면 해제).
 import { beforeEach, describe, expect, it } from 'vitest'
-import { adoptDoc, allDocs, applyEolChange, disposeDoc, eolsOf, getDoc, joinLines, revertDoc, serialize, setComposing, type DocModel } from './file-docs.js'
+import { adoptDoc, allDocs, applyEolChange, disposeDoc, eolsOf, getDoc, joinLines, reloadDoc, revertDoc, serialize, setComposing, type DocModel } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, saveFailureMessage, type SaveDeps } from './file-save.js'
 import type { FileDialogChoice, FileDialogRequest, FileWriteInput, FileWriteResult } from '../../shared/file-view.js'
 
@@ -11,12 +11,16 @@ type Range4 = { startLineNumber: number; startColumn: number; endLineNumber: num
 class FakeModel implements DocModel {
   lines: string[]
   eol: string
+  /** Monaco 처럼 글 맨 앞 U+FEFF 하나를 모델 BOM 으로 떼어 들고 줄에는 넣지 않는다(`getValue(eol, preserveBOM)`). */
+  bomText = ''
   private listeners = new Set<(event: { changes: readonly { range: Range4; text: string }[] }) => void>()
   private nextVersion = 1
   private version = 1
   private undo: { lines: string[]; version: number }[] = []
   disposed = false
-  constructor(text: string) {
+  constructor(raw: string) {
+    const text = raw.startsWith('\uFEFF') ? raw.slice(1) : raw
+    this.bomText = raw.startsWith('\uFEFF') ? '\uFEFF' : ''
     this.lines = text.split(/\r\n|\r|\n/)
     const crlf = (text.match(/\r\n/g) ?? []).length
     const lf = (text.match(/\n/g) ?? []).length - crlf
@@ -35,6 +39,9 @@ class FakeModel implements DocModel {
   getValue(): string {
     return this.lines.join(this.eol)
   }
+  getValueLength(_eol?: number, preserveBOM?: boolean): number {
+    return this.getValue().length + (preserveBOM === true ? this.bomText.length : 0)
+  }
   getEOL(): string {
     return this.eol
   }
@@ -44,8 +51,9 @@ class FakeModel implements DocModel {
   getFullModelRange(): Range4 {
     return { startLineNumber: 1, startColumn: 1, endLineNumber: this.lines.length, endColumn: (this.lines.at(-1) ?? '').length + 1 }
   }
-  setValue(text: string): void {
-    this.replace(this.getFullModelRange(), text, false)
+  setValue(raw: string): void {
+    this.bomText = raw.startsWith('\uFEFF') ? '\uFEFF' : ''
+    this.replace(this.getFullModelRange(), raw.startsWith('\uFEFF') ? raw.slice(1) : raw, false)
     this.undo = []
   }
   pushStackElement(): void {}
@@ -86,10 +94,10 @@ async function until(check: () => boolean): Promise<void> {
 }
 
 let seq = 0
-const open = (text: string, input: { bom?: boolean; stamp?: string } = {}) => {
+const open = (text: string, input: { bom?: boolean; stamp?: string; hash?: string } = {}) => {
   seq += 1
   const model = new FakeModel(text)
-  const doc = adoptDoc({ root: '/wt', rel: `f${seq}.txt`, model, text, bom: input.bom ?? false, stamp: input.stamp ?? 's0', readOnly: null })
+  const doc = adoptDoc({ root: '/wt', rel: `f${seq}.txt`, model, text, bom: input.bom ?? false, stamp: input.stamp ?? 's0', hash: input.hash ?? 'h0', readOnly: null, large: false })
   return { doc, model }
 }
 
@@ -176,7 +184,7 @@ function fakeDeps(input: { disk: { stamp: string; text: string | null }; answers
       n += 1
       input.disk.stamp = `w${n}`
       input.disk.text = request.text
-      return { ok: true, stamp: input.disk.stamp, size: request.text.length }
+      return { ok: true, stamp: input.disk.stamp, hash: `hw${n}`, size: request.text.length }
     },
     fileDialog: async (request) => {
       dialogs.push(request)
@@ -298,7 +306,7 @@ describe('E4 충돌·삭제', () => {
   it('ⓑ 되돌리기는 실행 취소할 수 있는 편집 — 되돌린 뒤 수정 해제, 실행 취소하면 내 변경', () => {
     const { doc, model } = open('mine\n', { stamp: 's0' })
     model.type(1, 5, '!')
-    revertDoc(doc, { text: 'disk\r\n', bom: false, stamp: 's1' })
+    revertDoc(doc, { text: 'disk\r\n', bom: false, stamp: 's1', hash: 'h1', readOnly: null, large: false })
     expect(doc.dirty).toBe(false)
     expect(doc.stamp).toBe('s1')
     expect(serialize(doc)).toBe('disk\r\n')
@@ -341,5 +349,87 @@ describe('E3ⓑ 닫기 확인', () => {
     await confirmDiscardOrSave({ docs: [a.doc, b.doc], deps: fake.deps })
     expect(fake.dialogs).toEqual([{ kind: 'close', files: [a.doc.rel, b.doc.rel] }])
     expect(dirtyFilesOf(allDocs())).toHaveLength(2)
+  })
+})
+
+// --- 수정 r1 (Codex 리뷰 r1) 회귀 — 옛 코드(1a670faf6)에서 실패, 고친 코드에서 통과 -----------------------------------------
+describe('수정 r1', () => {
+  it('R1-A 닫기 「저장」 응답 전 추가 편집 — 닫는다면 그 편집까지 디스크에, 아니면 수정으로 남는다', async () => {
+    const { doc, model } = open('base', { stamp: 's0' })
+    model.type(1, 5, '-first')
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let arrived: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      arrived = resolve
+    })
+    const fake = fakeDeps({ disk: { stamp: 's0', text: 'base' }, answers: ['save'] })
+    const write = fake.deps.writeFile
+    let held = true
+    fake.deps.writeFile = async (request) => {
+      if (held) {
+        held = false
+        arrived()
+        await gate
+      }
+      return write(request)
+    }
+    const closing = confirmDiscardOrSave({ docs: [doc], deps: fake.deps })
+    await started
+    model.type(1, 11, '-LATE')
+    release()
+    const mayClose = await closing
+    if (mayClose) {
+      expect(fake.disk().text).toBe('base-first-LATE')
+      expect(doc.dirty).toBe(false)
+    } else {
+      expect(doc.dirty).toBe(true)
+      expect(getDoc(doc.key)).toBe(doc)
+    }
+  })
+  it('R1-C 저장은 문서가 기대는 내용 지문(baseHash)을 같이 보내고, 저장 뒤 새 지문을 든다', async () => {
+    const { doc, model } = open('a', { stamp: 's0', hash: 'h-read' })
+    model.type(1, 2, 'b')
+    const fake = fakeDeps({ disk: { stamp: 's0', text: 'a' } })
+    expect(await saveDoc(doc, fake.deps)).toBe('saved')
+    expect(fake.writes[0]?.baseHash).toBe('h-read')
+    expect(doc.hash).toBe('hw1')
+  })
+  it('R1-G BOM + 선두 U+FEFF — 모델이 U+FEFF 를 모델 BOM 으로 떼어도 직렬화가 되살린다(한 글자 차이만)', () => {
+    // main 이 첫 BOM(EF BB BF)을 떼고 bom: true — 글은 U+FEFF 로 시작한다. Monaco 는 그 U+FEFF 를 또 BOM 으로 뗀다.
+    const { doc, model } = open('\uFEFFalpha\n', { bom: true })
+    model.type(1, 1, 'X')
+    expect(serialize(doc)).toBe('\uFEFFXalpha\n')
+  })
+  it('R1-F 수정 없는 문서를 다시 읽으면 읽기 전용 까닭도 새 디스크 상태로 — 커지면 large, 작아지면 편집 가능', () => {
+    const { doc } = open('small\n')
+    reloadDoc(doc, { text: 'big\n', bom: false, stamp: 's1', hash: 'h1', readOnly: 'large', large: true })
+    expect(doc.readOnly).toBe('large')
+    reloadDoc(doc, { text: 'small again\n', bom: false, stamp: 's2', hash: 'h2', readOnly: null, large: false })
+    expect(doc.readOnly).toBeNull()
+    expect(doc.hash).toBe('h2')
+  })
+  it('R1-G 되돌리기·다시 읽기도 숨은 BOM 을 지킨다', () => {
+    const { doc, model } = open('\uFEFFalpha\n', { bom: true })
+    model.type(1, 1, 'X')
+    revertDoc(doc, { text: '\uFEFFdisk\n', bom: true, stamp: 's1', hash: 'h1', readOnly: null, large: false })
+    expect(serialize(doc)).toBe('\uFEFFdisk\n')
+    reloadDoc(doc, { text: 'plain\n', bom: true, stamp: 's2', hash: 'h2', readOnly: null, large: false })
+    expect(serialize(doc)).toBe('plain\n')
+    reloadDoc(doc, { text: '\uFEFFagain\n', bom: true, stamp: 's3', hash: 'h3', readOnly: null, large: false })
+    expect(serialize(doc)).toBe('\uFEFFagain\n')
+  })
+  it('R1-H 조합이 1 s 안에 안 끝나면 저장하지 않는다(미확정 자모를 쓰지 않음) — 안내만', async () => {
+    const { doc, model } = open('a', { stamp: 's0' })
+    const fake = fakeDeps({ disk: { stamp: 's0', text: 'a' } })
+    setComposing(doc, true)
+    model.type(1, 2, 'ㅎ')
+    const outcome = await saveDoc(doc, fake.deps)
+    expect(outcome).not.toBe('saved')
+    expect(fake.writes).toHaveLength(0)
+    expect(fake.notes.join('\n')).toContain('조합')
+    expect(doc.dirty).toBe(true)
   })
 })

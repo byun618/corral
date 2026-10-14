@@ -6,7 +6,9 @@ ROOT=$1; FAKE=$2; shift 2
 case "$ROOT" in /tmp/l591g-*) ;; *) echo "ROOT 는 /tmp/l591g-*"; exit 2 ;; esac
 [ -e "$ROOT" ] && { echo "ROOT 가 이미 있다 — 회차마다 새 ROOT"; exit 2; }
 node scripts/l591/fixture.mjs /tmp/l591g-t/repo > /dev/null || exit 3
-sh scripts/l577/g-up.sh "$ROOT" "$FAKE" | tail -1
+# ISO_ENV = g-up 에 덧붙일 KEY=VALUE(공백 구분, {ROOT} 치환) — 예: CORRAL_TEST_WRITE_HOOK_FILE={ROOT}/write-hook.json L577_ELECTRON_ARGS=--remote-debugging-port=0
+# shellcheck disable=SC2046
+sh scripts/l577/g-up.sh "$ROOT" "$FAKE" $(printf '%s' "${ISO_ENV:-}" | sed "s#{ROOT}#$ROOT#g") | tail -1
 CMD=$(printf '%s ' "$@" | sed "s#{ROOT}#$ROOT#g; s#{FAKE}#$FAKE#g")
 echo "# cmd: $CMD"
 sh -c "$CMD"

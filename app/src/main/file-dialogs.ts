@@ -80,6 +80,21 @@ export function reloadDialogSpec(files: string[]): MessageBoxSpec['options'] {
   }
 }
 
+/**
+ * 무응답 렌더러 종료 확인(수정 r1 R1-I) — 창이 확인 요청에 답하지 않을 때 main 이 직접 묻는다. 렌더러의 내용은 읽을 수 없으니 저장은 못 한다:
+ * 「저장하지 않고 종료」(수정 내용을 버린다) / 「취소」(앱 그대로 — 창이 살아나면 다시 종료해 보통 확인을 받는다). 기본 = 취소.
+ */
+export function unresponsiveDialogSpec(files: string[]): MessageBoxSpec['options'] {
+  return {
+    type: 'warning',
+    message: `창이 응답하지 않습니다. 저장하지 않은 파일이 ${files.length}개 있습니다.`,
+    detail: `${listOf(files)}\n\n창이 멈춰 있어 저장할 수 없습니다. 저장하지 않고 종료하면 변경 내용이 손실됩니다.`,
+    buttons: ['저장하지 않고 종료', '취소'],
+    defaultId: 1,
+    cancelId: 1,
+  }
+}
+
 /** 렌더러가 보낸 요청의 형 검사 — 모르는 모양이면 null(대화상자를 띄우지 않는다). */
 export function parseFileDialogRequest(input: unknown): FileDialogRequest | null {
   if (typeof input !== 'object' || input === null || !('kind' in input)) return null

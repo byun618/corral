@@ -89,6 +89,7 @@ const EXPOSED = [
   'setDirtyFiles',
   'onQuitRequested',
   'confirmQuit',
+  'quitAck',
   'activateWindow',
   'reportRendered',
   'selectPane',
@@ -217,6 +218,8 @@ const api: CorralApi = {
     }
   },
   confirmQuit: () => ipcRenderer.send('corral:confirmQuit'),
+  /** 종료 확인 요청을 받았다(LIFE-591 수정 r1 R1-I — main 의 무응답 판정 시계를 멈춘다). */
+  quitAck: () => ipcRenderer.send('corral:quitAck'),
   setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),
   // 사용자 설정 (LIFE-512) — 동기 읽기는 부팅 때 한 번(시작 2단 resize 방지, main 주석). 쓰기는 검증된 전체 값을 돌려준다.
   getSettingsSync: (): Settings => ipcRenderer.sendSync('corral:getSettingsSync'),

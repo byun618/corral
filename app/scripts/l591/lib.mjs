@@ -74,3 +74,11 @@ export function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n')
 }
+
+/**
+ * close-quit.mjs E3ⓖ 판별식(수정 r1 R1-K) — 다시 연 탭이 수정 아님 **이고** 첫 화면 줄이 디스크 원본 첫 줄과 **같다**.
+ * 옛 판별식(`!String(first).startsWith('Q')`)은 null·빈 문자열·틀린 내용도 통과시켰다(리뷰어 oracle-check.mjs). `expectedFirst` 는 원본 첫 줄(공백은 화면 줄처럼 nbsp→space).
+ */
+export function reopenedMatches(reopened, expectedFirst) {
+  return reopened !== null && typeof reopened === 'object' && reopened.tab === 'false' && typeof reopened.first === 'string' && reopened.first.length > 0 && reopened.first === expectedFirst
+}

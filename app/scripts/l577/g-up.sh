@@ -31,7 +31,8 @@ fi
 echo "herdr_pid=$(cat "$ROOT/herdr.pid") session=$SESSION"
 # SIGKILL 뒤엔 죽은 앱의 제어 소켓 파일이 남는다 — 지우지 않으면 아래 대기가 새 앱을 기다리지 않고 통과한다(a6 1회차).
 rm -f "$ROOT/ctl/ctl.sock"
-LAUNCH='exec "$L577_EL" "$L577_APP" --user-data-dir="$CORRAL_USER_DATA"'
+# L577_ELECTRON_ARGS(덧붙인 KEY=VALUE 로) — 시험이 Electron 인자를 더할 때(LIFE-591 r1: `--remote-debugging-port=0` 으로 CDP IME 주입).
+LAUNCH='exec "$L577_EL" "$L577_APP" --user-data-dir="$CORRAL_USER_DATA" ${L577_ELECTRON_ARGS:-}'
 N=$(ls "$ROOT"/electron-*.log 2>/dev/null | wc -l | tr -d ' ')
 date +%s000 > "$ROOT/app.started"
 # shellcheck disable=SC2086

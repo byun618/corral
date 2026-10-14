@@ -9,7 +9,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { checkRoot, ctl, evalJs, herdr, repoPane, sleep, until, writeJson } from './lib.mjs'
+import { checkRoot, ctl, evalJs, herdr, reopenedMatches, repoPane, sleep, until, writeJson } from './lib.mjs'
 
 const { values } = parseArgs({ options: { root: { type: 'string' }, repo: { type: 'string' }, out: { type: 'string' }, rel: { type: 'string', default: 'src/sample.ts' } } })
 checkRoot(values.root)
@@ -79,8 +79,13 @@ await until(async () => (await tab()) === null, { label: 'closed', timeoutMs: 50
 check('E3b-discard-closes-disk-unchanged', sha(fs.readFileSync(file)) === sha(original), { disk: sha(fs.readFileSync(file)) })
 await key('T', ['meta', 'shift'])
 await until(() => js(`document.querySelector('[data-file-view="${rel}"] [data-editor-ready]') !== null`), { label: 'reopened' })
-const reopened = await js(`({ tab: (() => { const t = document.querySelector('[data-file-tab="${rel}"]'); return t?.dataset.fileDirty ?? null })(), first: document.querySelector('[data-file-view="${rel}"] .view-line')?.textContent?.slice(0, 12) ?? null })`)
-check('E3g-reopen-disk-content', reopened.tab === 'false' && !String(reopened.first).startsWith('Q'), reopened)
+// 수정 r1 R1-K — 첫 화면 줄(위치 순 맨 위)이 그려질 때까지 기다리고(시간 초과면 스크립트가 실패한다), 디스크 원본 첫 줄과 **같은지** 본다.
+// 옛 판별식은 「Q 로 시작하지 않음」 이라 null·빈 줄·틀린 내용도 통과했다(음성 대조 `oracle-e3g.mjs`).
+const expectedFirst = original.toString('utf8').split('\n')[0]
+const firstLine = `(() => { const rows = [...document.querySelectorAll('[data-file-view="${rel}"] .view-line')]; rows.sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top)); return rows[0]?.textContent?.replace(/\\u00a0/g, ' ') ?? null })()`
+await until(async () => ((await js(firstLine)) ?? '').length > 0, { label: 'reopened first line', timeoutMs: 5000 })
+const reopened = await js(`({ tab: document.querySelector('[data-file-tab="${rel}"]')?.dataset.fileDirty ?? null, first: ${firstLine} })`)
+check('E3g-reopen-disk-content', reopenedMatches(reopened, expectedFirst), { ...reopened, expectedFirst })
 const asked1 = (await stub([])).asked
 check('E3b-dialog-asked', JSON.stringify(asked1) === JSON.stringify(['close', 'close']), asked1)
 

@@ -146,6 +146,8 @@ export function App(): React.JSX.Element {
   useEffect(
     () =>
       window.corral.onQuitRequested(() => {
+        // 받았다고 바로 알린다 — main 이 무응답(멈춘 렌더러) 판정 시계를 멈춘다(수정 r1 R1-I). 이미 묻는 중이어도 알린다.
+        window.corral.quitAck()
         if (quitPromptRef.current) return
         quitPromptRef.current = true
         const docs = dirtyDocs()
@@ -1010,21 +1012,27 @@ export function App(): React.JSX.Element {
     const targets = closeScopeTargets({ tabOrder: group.tabOrder, tabId: input.tabId, scope: input.scope, pinned: pinnedTabs })
     const files = targets.filter((tabId) => isFileTabId(tabId))
     const activeBefore = group.activeTabId
-    // 수정된 파일 탭이 섞였으면 한 번에 묻는다(E3ⓐ 여러 개 닫기 — 파일 목록). 취소면 파일 탭은 하나도 닫지 않는다.
+    // 수정된 파일 탭이 섞였으면 한 번에 묻는다(E3ⓐ 여러 개 닫기 — 파일 목록). 한 닫기 작업이라 확인을 다 마친 뒤에 닫는다 —
+    // 취소면 파일 탭도 터미널 탭도 하나도 닫지 않는다(수정 r1 R1-J: 옛 코드는 확인을 기다리지 않고 터미널 탭부터 닫았다). 수정된 파일이 없으면 지금처럼 바로 닫힌다.
+    const anchorTab = activeWorkspaceRow?.tabs.find((tab) => tab.tabId === input.tabId)
     closeFilesByUser(files, () => {
       if (isFileTabId(input.tabId) && activeBefore !== null && files.includes(activeBefore)) layout.setActiveTab({ groupId: input.groupId, tabId: input.tabId })
+      closeTabsByUser({ tabIds: targets.filter((tabId) => !isFileTabId(tabId)), ...(anchorTab === undefined ? {} : { anchor: { groupId: input.groupId, tab: anchorTab } }) })
     })
-    const anchorTab = activeWorkspaceRow?.tabs.find((tab) => tab.tabId === input.tabId)
-    closeTabsByUser({ tabIds: targets.filter((tabId) => !isFileTabId(tabId)), ...(anchorTab === undefined ? {} : { anchor: { groupId: input.groupId, tab: anchorTab } }) })
   }
 
   /**
    * LIFE-590 — 파일 탭 닫기(×·중클릭·메뉴·⌘W·팔레트 「pane / 탭 닫기」). 닫은 자리를 다시 열기 기록에 넣는다(⌘⇧T = 같은 파일).
    * LIFE-591 E3 — 수정된 탭이 있으면 먼저 묻는다(저장 / 저장 안 함 / 취소, 여러 개면 목록 한 번). 닫히면 문서(모델)도 버린다 — 「저장 안 함」 뒤 ⌘⇧T 는 디스크 내용(E3ⓖ).
+   * `onClosed` = 확인을 지나 닫은 뒤(취소면 부르지 않는다). 닫을 파일 탭이 없으면 바로 부른다.
    */
   const closeFilesByUser = (tabIds: string[], onClosed?: () => void): void => {
     const worktreePath = activeWorktreeRow?.path ?? null
-    if (worktreePath === null || tabIds.length === 0) return
+    if (tabIds.length === 0) {
+      onClosed?.()
+      return
+    }
+    if (worktreePath === null) return
     const docs = tabIds.flatMap((tabId) => {
       const kind = tabKindOf(tabId)
       const doc = kind.kind === 'file' ? getDoc(docKey(worktreePath, kind.rel)) : undefined

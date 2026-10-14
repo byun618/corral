@@ -11,6 +11,7 @@ import type {
   WorkConnectionSummary,
   WorkItem,
   WorkPriority,
+  WorkResolutionChoice,
   WorkSettingsState,
   WorkStatus,
 } from '../../shared/work.js'
@@ -496,6 +497,17 @@ export function viewDisabledReason({ capabilities, view }: { capabilities: WorkC
 }
 
 // --- 끌기 판정 (C7) ---
+
+/**
+ * 상태를 되돌릴 때 실을 완료 갈래(LIFE-602 수정 1 R1-G). 완료 분류가 아니면 갈래 없음(null). 완료함·취소함이면 그 갈래.
+ * 그 밖(LA archived·duplicate = `other`, 또는 비어 있음)은 공통 계약으로 다시 쓸 수 없다 — 되돌리면 완료함으로 바뀌므로 되돌리기를 막는다.
+ */
+export const UNRESTORABLE_RESOLUTION = '원래 완료 갈래(완료함·취소함 밖)는 복원할 수 없어 되돌리기가 없습니다'
+export function restorableResolution(item: Pick<WorkItem, 'category' | 'resolution'>): { restorable: true; resolution: WorkResolutionChoice | null } | { restorable: false } {
+  if (item.category !== 'done') return { restorable: true, resolution: null }
+  if (item.resolution === 'completed' || item.resolution === 'cancelled') return { restorable: true, resolution: item.resolution }
+  return { restorable: false }
+}
 
 export type DragIntent =
   | { kind: 'status'; statusKey: string }

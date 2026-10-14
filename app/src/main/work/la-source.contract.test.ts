@@ -17,6 +17,8 @@ workContractSuite({
     if (process.env.L601_BREAK === 'byseq-null') harness.fixture.corrupt = 'byseq-null-kind-data'
     // LIFE-602 — 새 칸(E5 resolution) 어긋남 양성 대조.
     if (process.env.L602_BREAK === 'resolution') harness.fixture.corrupt = 'resolution-unknown'
+    // LIFE-602 수정 1 — 쓰기 응답 하나(E4 issue_update)만 어긋남: 읽기 단계는 통과하고 updateItem 을 쓰는 시험만 실패해야 한다.
+    if (process.env.L602_BREAK === 'update-title') harness.fixture.corrupt = 'update-bad-title'
     return { service: harness.service, connectionId: added.connection.id, close: () => harness.fixture.stop(), visibleItems: FIXTURE_VISIBLE_ITEMS, retiredSpaceKeys: FIXTURE_RETIRED_SPACE_KEYS, missingKey: 'LIFE-99999', crossSpace: { itemId: FIXTURE_IDS.task600, otherKey: 'LIFE-20', otherSpaceKey: FIXTURE_IDS.lifeAssistant } }
   },
 })

@@ -38,6 +38,28 @@ const click = async (selector) => {
 }
 const pageOpen = () => js(`(() => { const p = document.querySelector('[data-tasks-page]'); return !!p && !p.classList.contains('is-closed') })()`)
 const readText = (file) => { try { return fs.readFileSync(file, 'utf8') } catch { return null } }
+/**
+ * 로그 누출 판정(수정 1 R1-L) — 로그를 읽지 못하면 관측이 없으므로 **실패**다. 읽었으면 로그가 실제로 쌓였다는 신호(이번 실행의 `work.request` 줄)를 먼저 보고,
+ * 줄마다 JSON 으로 읽어 `tag === 'control.cmd'`(측정 모드 제어 소켓이 받은 명령 = 이 스크립트의 eval 코드)만 구조로 뺀다. JSON 이 아닌 줄은 빼지 않는다.
+ */
+function logLeak({ file, needles }) {
+  const text = readText(file)
+  if (text === null) return { pass: false, reason: 'log-unreadable', file }
+  const lines = text.split('\n').filter((line) => line.length > 0)
+  const kept = []
+  let control = 0
+  let requests = 0
+  for (const line of lines) {
+    let tag = null
+    try { const parsed = JSON.parse(line); tag = typeof parsed?.tag === 'string' ? parsed.tag : null } catch { tag = null }
+    if (tag === 'control.cmd') { control += 1; continue }
+    if (tag === 'work.request') requests += 1
+    kept.push(line)
+  }
+  if (requests === 0) return { pass: false, reason: 'no-work-request-lines', lines: lines.length, control }
+  const hits = needles.filter((needle) => kept.some((line) => line.includes(needle)))
+  return { pass: hits.length === 0, reason: hits.length === 0 ? 'clean' : 'leak', lines: lines.length, control, requests, hits: hits.length }
+}
 
 fs.mkdirSync(ROOT, { recursive: true, mode: 0o700 })
 log(`# LIFE-602 q-entry ${new Date().toISOString()} ROOT=${ROOT}`)
@@ -102,9 +124,15 @@ try {
   const mode = activityFile === null ? null : (fs.statSync(path.join(ROOT, 'ud/work-activity.json')).mode & 0o777).toString(8)
   log('활동 파일', { version: parsed?.version, records: parsed?.records?.length, last: parsed?.records?.at(-1), mode })
   judge('C9 활동 저장소 — userData/work-activity.json v1 에 우선순위 한 줄 · 0600', parsed?.version === 1 && parsed.records.some((record) => record.itemId === 'm-1' && record.change.field === 'priority') && mode === '600', JSON.stringify({ records: parsed?.records?.length, mode }))
-  // 측정 모드 제어 소켓은 받은 명령(이 스크립트의 eval 코드)을 `control.cmd` 로 남긴다 — 그 줄은 제품 로그가 아니므로 뺀다.
-  const logText = (readText(path.join(ROOT, 'ud/corral.ndjson')) ?? '').split('\n').filter((line) => !line.includes('"tag":"control.cmd"')).join('\n')
-  judge('보안 — 로그(control.cmd 제외)에 본문 전문·토큰 원문 없음', !logText.includes('결제 흐름을 새 PG') && !logText.includes('onerror') && !logText.includes('mock_l602_demo'), JSON.stringify({ bytes: logText.length }))
+  const needles = ['결제 흐름을 새 PG', 'onerror', 'mock_l602_demo']
+  const leak = logLeak({ file: path.join(ROOT, 'ud/corral.ndjson'), needles })
+  judge('보안 — 로그를 읽었고(work.request 줄 있음) control.cmd 를 구조로 뺀 나머지에 본문 전문·토큰 원문 없음', leak.pass, JSON.stringify(leak))
+  // 판별식 양성 대조: 없는 파일은 실패, 바늘이 든 줄이 있으면 실패여야 한다.
+  const absent = logLeak({ file: path.join(ROOT, 'ud/absent.ndjson'), needles })
+  const planted = path.join(ROOT, 'planted.ndjson')
+  fs.writeFileSync(planted, JSON.stringify({ tag: 'work.request', op: 'getItem' }) + '\n' + JSON.stringify({ tag: 'x', body: '결제 흐름을 새 PG' }) + '\n' + JSON.stringify({ tag: 'control.cmd', code: 'mock_l602_demo' }) + '\n')
+  const plantedLeak = logLeak({ file: planted, needles })
+  judge('판별식 양성 대조 — 없는 로그 = 실패 · 바늘 든 제품 줄 = 실패(control.cmd 줄의 바늘은 세지 않음)', absent.pass === false && absent.reason === 'log-unreadable' && plantedLeak.pass === false && plantedLeak.hits === 1, JSON.stringify({ absent, plantedLeak }))
 
   // ⤢ 전체 → Esc 단계
   await click('[data-issue-full]')
@@ -120,6 +148,22 @@ try {
   await ctl(ROOT, { cmd: 'key', keyCode: 'Escape' })
   await until(async () => !(await pageOpen()), { timeoutMs: 5_000, label: 'Esc 페이지 닫기' })
   judge('C1 Esc 단계 — 상세 닫기 → 페이지 닫기', stillOpen === true && !(await pageOpen()))
+
+  // C9 재시작(수정 1 R1-J) — 격리 앱 종료 → 같은 격리 userData 로 재기동 → 같은 작업의 활동이 다시 보인다.
+  const recordsBefore = parsed?.records?.length ?? null
+  sh(['scripts/l602/down.sh', ROOT])
+  sh(['scripts/l602/up.sh', ROOT])
+  await until(() => js(`!!document.querySelector('[data-tasks-open]')`), { timeoutMs: 30_000, label: '재기동 사이드바' })
+  await ctl(ROOT, { cmd: 'key', keyCode: 'I', modifiers: ['meta'] })
+  await until(pageOpen, { timeoutMs: 10_000, label: '재기동 ⌘I' })
+  await until(() => js(`!!document.querySelector('[data-tasks-board] [data-issue-card="CORE-1"]')`), { timeoutMs: 15_000, label: '재기동 보드 CORE-1' })
+  await click('[data-tasks-board] [data-issue-card="CORE-1"]')
+  const shown = await until(() => js(`[...document.querySelectorAll('[data-issue-detail="CORE-1"] [data-activity-row="change"][data-activity-origin="corral"]')].filter((e) => e.textContent.includes('우선순위')).length`), { timeoutMs: 10_000, label: '재기동 활동 줄' }).then((hit) => hit.value).catch(() => 0)
+  const afterRestart = (() => { try { return JSON.parse(readText(path.join(ROOT, 'ud/work-activity.json')) ?? 'null') } catch { return null } })()
+  log('재기동 뒤', { shown, recordsBefore, recordsAfter: afterRestart?.records?.length ?? null })
+  judge('C9 재시작 — 같은 격리 userData 로 재기동 뒤 CORE-1 활동에 「나 · corral」 우선순위 줄이 다시 보임 · 파일 줄 수 그대로', shown >= 1 && afterRestart?.records?.length === recordsBefore, JSON.stringify({ shown, recordsBefore, recordsAfter: afterRestart?.records?.length ?? null }))
+  const restartShot = await ctl(ROOT, { cmd: 'shot', name: 'l602-detail-restart' })
+  log('shot', { ...restartShot, file: restartShot.file?.replaceAll(ROOT, '<ROOT>') })
 
   if (SHOT_COPY !== undefined && shot.file) fs.copyFileSync(shot.file, SHOT_COPY)
   const failed = verdicts.filter((verdict) => !verdict.pass)

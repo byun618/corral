@@ -28,7 +28,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RepoRow } from '../../../shared/types.js'
-import type { WorkCall, WorkError, WorkItem, WorkResponse, WorkResult, WorkSettingsState, WorkStatus } from '../../../shared/work.js'
+import type { WorkCall, WorkError, WorkItem, WorkResolutionChoice, WorkResponse, WorkResult, WorkSettingsState, WorkStatus } from '../../../shared/work.js'
 import {
   DEFAULT_TASKS_PREFS,
   LatestGate,
@@ -40,6 +40,7 @@ import {
   latestActivity,
   parseUid,
   readTasksPrefs,
+  restorableResolution,
   rowUid,
   rowsOf,
   sameSpace,
@@ -47,6 +48,7 @@ import {
   spaceGroups,
   spaceId,
   spaceStillValid,
+  UNRESTORABLE_RESOLUTION,
   type DragIntent,
   type SpaceData,
   type TasksPrefs,
@@ -71,6 +73,8 @@ export type TasksTransitions = { uid: string; state: 'loading' } | { uid: string
 export type MoveRequest = { row: TasksRow; intent: DragIntent }
 /** `undo` 는 받아들였으면 true — 그 카드가 잠겨 있으면 false 이고 버튼은 남는다(R4-E). */
 export type MoveNotice = { kind: 'moved'; label: string; undo: () => boolean } | { kind: 'undone'; label: string } | { kind: 'failed'; message: string } | { kind: 'delayed'; message: string }
+  /** 되돌릴 수 없는 변경(LIFE-602 수정 1 R1-G — 원래 완료 갈래를 복원할 수 없음) — 되돌리기 버튼 없이 그 사실을 보인다. */
+  | { kind: 'final'; label: string }
 
 /**
  * 상세의 쓰기 하나(LIFE-602) — 잠금 열쇠는 `(연결, itemId)`. `optimistic` 이 있으면 보드 자료에 먼저 쓰고, 실패하면 그 작업만 쓰기 전 값으로 돌린다.
@@ -78,7 +82,9 @@ export type MoveNotice = { kind: 'moved'; label: string; undo: () => boolean } |
  */
 export type ItemWrite = { connectionId: string; spaceKey: string; itemId: string; call: WorkCall; optimistic: ((item: WorkItem) => WorkItem) | null }
 /** 결과 — 성공 · 출처 실패(충돌 포함) · 잠김(앞 쓰기 확인 중 — 보내지 않았다) · 늦음(확인 지연, 실패 아님) · 버림(세대가 바뀜·더 새 요청). */
-export type ItemWriteOutcome = { kind: 'ok'; result: WorkResult } | { kind: 'failed'; error: WorkError } | { kind: 'busy' } | { kind: 'late' } | { kind: 'stale' }
+export type ItemWriteOutcome = { kind: 'ok'; result: WorkResult } | { kind: 'failed'; error: WorkError } | { kind: 'busy' } | { kind: 'late'; settled: Promise<LateSettled> } | { kind: 'stale' }
+/** 확인 지연 뒤 끝난 결과(LIFE-602 수정 1 R1-C) — 상세가 서버 정본으로 돌아가거나 초안을 남기는 데 쓴다. 세대가 바뀌었으면 stale. */
+export type LateSettled = { kind: 'ok'; result: WorkResult } | { kind: 'failed'; error: WorkError } | { kind: 'stale' }
 /** 성공한 쓰기의 서버 값 — 열린 상세가 받는다. `seq` 는 같은 값이 다시 와도 알 수 있게. */
 export type SettledWrite = { uid: string; item: WorkItem; seq: number }
 
@@ -132,9 +138,10 @@ function bannerOf(error: WorkError): TasksBanner {
 }
 
 /** 끌기 의도 → 출처 연산. 판(`ifVersion`)은 싣지 않는다 — 보드 끌기는 충돌 배너가 없는 자리다(Q7: 보드는 조용히 새 값으로). */
-function callOf({ item, intent }: { item: WorkItem; intent: DragIntent }): WorkCall | null {
+function callOf({ item, intent, restore }: { item: WorkItem; intent: DragIntent; restore: WorkResolutionChoice | null }): WorkCall | null {
   switch (intent.kind) {
-    case 'status': return { op: 'changeStatus', itemId: item.id, statusKey: intent.statusKey, ifVersion: null }
+    // 되돌리기가 완료함·취소함으로 돌아갈 때만 그 갈래를 싣는다(R1-G) — 그 밖에는 지금처럼 갈래 없이(출처 기본).
+    case 'status': return restore === null ? { op: 'changeStatus', itemId: item.id, statusKey: intent.statusKey, ifVersion: null } : { op: 'changeStatus', itemId: item.id, statusKey: intent.statusKey, ifVersion: null, resolution: restore }
     case 'reorder': return { op: 'reorder', itemId: item.id, afterId: intent.afterId }
     case 'placement': return { op: 'setPlacement', itemId: item.id, placement: intent.placement, ifVersion: null }
     case 'none': return null
@@ -577,8 +584,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       : current))
   }, [gate])
 
-  const move = useCallback(async ({ row, intent, undo }: MoveRequest & { undo: boolean }): Promise<void> => {
-    const call = callOf({ item: row.item, intent })
+  const move = useCallback(async ({ row, intent, undo, restore }: MoveRequest & { undo: boolean; restore: WorkResolutionChoice | null }): Promise<void> => {
+    const call = callOf({ item: row.item, intent, restore })
     if (call === null) return
     const { connectionId, spaceKey, statuses } = row.space
     const uid = rowUid(row)
@@ -653,6 +660,13 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       setSearchRound((value) => value + 1)
     }
     if (undo) { notify({ kind: 'undone', label: `${original.key} 를 되돌렸습니다` }); return }
+    // 원래 완료 갈래를 다시 쓸 수 없으면 되돌리기를 내지 않는다 — 완료함으로 바꿔 끼우지 않는다(R1-G).
+    const restorable = intent.kind === 'status' ? restorableResolution(original) : null
+    if (restorable !== null && !restorable.restorable) {
+      notify({ kind: 'final', label: `${describe({ item: original, intent, statuses })} · ${UNRESTORABLE_RESOLUTION}` })
+      return
+    }
+    const back = restorable !== null && restorable.restorable ? restorable.resolution : null
     notify({
       kind: 'moved',
       label: describe({ item: original, intent, statuses }),
@@ -667,7 +681,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
         const now = loadRef.current.data.find((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey)
         const at = now ?? row.space
         const item = now?.items.find((entry) => entry.id === original.id) ?? settled
-        void move({ row: { item, space: at, status: at.statuses.find((status) => status.key === item.statusKey) ?? null }, intent: reverse, undo: true })
+        void move({ row: { item, space: at, status: at.statuses.find((status) => status.key === item.statusKey) ?? null }, intent: reverse, undo: true, restore: back })
         return true
       },
     })
@@ -706,16 +720,24 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     if (asked.kind === 'late') {
       lagging.current.add(written)
       notify({ kind: 'delayed', message: `${listed?.key ?? '작업'} — 출처 확인이 늦어지고 있습니다. 답이 오면 서버 값으로 맞춥니다.` })
-      void asked.answer.then((late) => {
+      const settledLate = asked.answer.then((late): LateSettled => {
         lagging.current.delete(written)
-        if (written.generation !== currentGeneration(connectionId)) return
+        if (written.generation !== currentGeneration(connectionId)) return { kind: 'stale' }
         if (!late.ok) notify({ kind: 'failed', message: `${listed?.key ?? '작업'} — ${late.error.message}` })
         settles.current += 1
         void reloadRef.current({ quiet: true })
         setWorkingRound((value) => value + 1)
         setSearchRound((value) => value + 1)
+        if (!late.ok) return { kind: 'failed', error: late.error }
+        // 늦게 성공한 쓰기도 열린 상세가 서버 값을 받는다(R1-C).
+        const item = 'item' in late.result && late.result.item !== null && late.result.item.id === itemId ? late.result.item : null
+        if (item !== null) {
+          settledSeq.current += 1
+          setSettledWrite({ uid, item, seq: settledSeq.current })
+        }
+        return { kind: 'ok', result: late.result }
       })
-      return { kind: 'late' }
+      return { kind: 'late', settled: settledLate }
     }
     const { response } = asked
     if (response.requestId !== requestId || !gate.accepts({ key: `item:${uid}`, requestId })) {
@@ -795,7 +817,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     load, rows, banner, connectionStatus,
     reload, retry, loadMore, invalidateMore,
     hits, workingEntries, working: workingLookups, workingKeys, trees,
-    move: (request: MoveRequest) => move({ ...request, undo: false }),
+    move: (request: MoveRequest) => move({ ...request, undo: false, restore: null }),
     writeItem, settledWrite,
     /** 확인 안 된 쓰기가 있는 카드(uid) — 끌기 잠금·「확인하는 중」 표시(R2-A). */
     busy,

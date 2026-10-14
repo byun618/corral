@@ -7,6 +7,10 @@
 // - 충돌: 저장되지 않는다 — 화면 값은 `base` 로 돌리고, 오류가 실어 온 서버 현재 값과 `base` 를 칸별로 비교해 배너에 싣는다.
 //   「새로 불러오기」 = 서버 값으로 다시 읽기 · 「내 값으로 덮기」 = 같은 쓰기를 판 없이 다시.
 // - 성공한 쓰기(상세든 보드 끌기든)는 작업 페이지의 `settledWrite` 로 받아 `base`·`item` 에 쓰고 활동을 다시 읽는다.
+// - **귀속(수정 1 R1-A)**: 읽기·쓰기·후처리는 요청을 시작한 작업(uid)·연결 세대에 묶인다. 그 사이 다른 작업으로 바뀌었거나 세대가 바뀌었으면
+//   응답은 버리고 쓰기는 `left` 를 돌려준다 — 부르는 쪽(화면)은 `left` 에 아무것도 하지 않는다(새 상세의 초안·편집기·선택을 건드리지 않는다).
+// - 응답에 이 작업이 없는 쓰기(연결·자식·코멘트)는 성공 뒤 단건·활동을 다시 읽는다 — 판(base.version)과 연결 행·활동이 서버와 맞는다(R1-D·E).
+// - 확인 지연(30초) 뒤 끝난 쓰기도 상세가 서버 정본으로 돌아간다(R1-C) — 실패면 화면 값을 base 로, 어느 쪽이든 단건을 다시 읽는다.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   WorkActivityRecord,
@@ -14,14 +18,16 @@ import type {
   WorkCapabilities,
   WorkCapability,
   WorkComment,
+  WorkError,
   WorkHistoryEntry,
   WorkItem,
   WorkResponse,
+  WorkResult,
   WorkStatus,
 } from '../../../shared/work.js'
 import { conflictFields, type ConflictField } from '../task-detail-model.js'
 import { LatestGate, itemUid, writeBlock } from '../tasks-model.js'
-import { request, type ItemWriteOutcome, type MoveNotice, type TasksPageModel } from './useTasksPage.js'
+import { request, type LateSettled, type MoveNotice, type TasksPageModel } from './useTasksPage.js'
 
 export type DetailTarget = { connectionId: string; itemId: string }
 
@@ -31,6 +37,16 @@ export type Loaded<T> = { state: 'loading' } | { state: 'ready'; value: T } | { 
 export type DetailConflict = { call: WorkCall; current: WorkItem; by: string | null; fields: ConflictField[]; at: number }
 
 export type ParentRef = { id: string; key: string; title: string }
+
+/** 상세 쓰기 결과 — 작업 페이지 결과에 `left`(요청을 시작한 작업을 떠났거나 세대가 바뀜 — 부르는 쪽은 아무것도 하지 않는다)를 더했다. */
+export type DetailSettled = LateSettled | { kind: 'left' }
+export type DetailOutcome =
+  | { kind: 'ok'; result: WorkResult }
+  | { kind: 'failed'; error: WorkError }
+  | { kind: 'busy' }
+  | { kind: 'stale' }
+  | { kind: 'late'; settled: Promise<DetailSettled> }
+  | { kind: 'left' }
 
 /** 쓰기 하나 — 낙관적 화면 값, 성공 토스트 문구, 되돌리기(그때의 서버 값으로 만든 역연산). */
 export type DetailWrite = {
@@ -79,19 +95,29 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const busy = uid !== null && page.busy.has(uid)
   /** 쓰기 막힘 이유 — 연결 상태(권한·끊김·인증) → 그 작업의 앞 쓰기 확인 중. */
   const blocked = writeBlock(connection?.status ?? null)?.reason ?? (busy ? '앞 변경을 출처가 확인하는 중…' : null)
+  const blockedRef = useRef(blocked)
+  blockedRef.current = blocked
+  /** 지금 연결 세대 — 읽기·쓰기 응답이 시작 때와 같은 세대인지 본다. */
+  const generation = connection?.generation ?? 0
+  const generationRef = useRef(generation)
+  generationRef.current = generation
+  /** 요청을 시작한 작업·세대에 아직 있는가(R1-A). `at` 은 그 요청을 만든 클로저의 target 에서 — 지금 열린 작업이 아니다. */
+  const stillAt = useCallback(({ at, generation: started }: { at: string; generation: number }): boolean => uidRef.current === at && generationRef.current === started, [])
 
-  /** 읽기 하나 — 열쇠에 작업 uid 를 넣고, 마지막 요청·같은 작업일 때만 받는다. */
+  /** 읽기 하나 — 열쇠에 작업 uid 를 넣고, 마지막 요청·같은 작업·같은 세대일 때만 받는다. */
   const read = useCallback(async ({ key, call }: { key: string; call: WorkCall }): Promise<WorkResponse | null> => {
-    const at = uidRef.current
-    if (target === null || at === null) return null
+    if (target === null) return null
+    const at = itemUid(target)
+    const started = generationRef.current
+    if (uidRef.current !== at) return null
     const requestId = gate.issue(`${key}:${at}`)
     const response = await request({ requestId, connectionId: target.connectionId, call })
-    return gate.accepts({ key: `${key}:${at}`, requestId }) && uidRef.current === at ? response : null
-  }, [gate, target])
+    return gate.accepts({ key: `${key}:${at}`, requestId }) && stillAt({ at, generation: started }) ? response : null
+  }, [gate, target, stillAt])
 
   const refreshActivity = useCallback(async (): Promise<void> => {
     if (target === null) return
-    const at = uidRef.current
+    const at = itemUid(target)
     const historyGate = gateOf(capsRef.current?.history)
     const [activity, listed] = await Promise.all([
       // 활동 조회 실패는 활동만 비운다 — 상세는 그대로(preload 가 없거나 거절해도 던지지 않는다).
@@ -122,7 +148,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
 
   /** 부모 경로 — 가장 가까운 조상부터. 보드 자료에 있으면 그것, 없으면 단건으로(최대 5). */
   const loadParents = useCallback(async (start: WorkItem): Promise<void> => {
-    const at = uidRef.current
+    if (target === null) return
+    const at = itemUid(target)
     const chain: ParentRef[] = []
     let parentId = start.parentId
     for (let depth = 0; depth < 5 && parentId !== null; depth += 1) {
@@ -197,11 +224,22 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
 
   const versionOf = (current: WorkItem | null): string | null => (caps?.conflictCheck.state === 'on' ? current?.version ?? null : null)
 
-  /** 쓰기 하나 — 잠금·막힘은 보내기 전에, 실패·충돌은 화면 값을 서버 값으로 돌리고 알린다. */
-  const write = useCallback(async (spec: DetailWrite): Promise<ItemWriteOutcome> => {
+  /** 단건만 다시 — 응답에 이 작업이 없는 쓰기(연결·자식·코멘트) 뒤와 확인 지연 뒤. 첫 읽기(열쇠 item)와 열쇠를 나눠 서로 버리지 않는다. */
+  const refreshItem = useCallback(async (): Promise<void> => {
+    if (target === null) return
+    const response = await read({ key: 'refresh', call: { op: 'getItem', itemId: target.itemId } })
+    if (response === null || !response.ok || response.result.op !== 'getItem') return
+    setBase(response.result.item)
+    setItem(response.result.item)
+  }, [read, target])
+
+  /** 쓰기 하나 — 잠금·막힘은 보내기 전에, 실패·충돌은 화면 값을 서버 값으로 돌리고 알린다. 떠난 작업의 응답은 `left`(R1-A). */
+  const write = useCallback(async (spec: DetailWrite): Promise<DetailOutcome> => {
     const current = baseRef.current
     if (target === null || current === null) return { kind: 'stale' }
-    const at = uidRef.current
+    const at = itemUid(target)
+    const started = generationRef.current
+    if (uidRef.current !== at) return { kind: 'left' }
     if (blocked !== null) {
       notify({ kind: 'failed', message: `${current.key} — ${blocked}` })
       return { kind: 'busy' }
@@ -211,11 +249,18 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
       setItem((value) => (value === null ? value : apply(value)))
     }
     const outcome = await page.writeItem({ connectionId: target.connectionId, spaceKey: current.spaceKey, itemId: current.id, call: spec.call, optimistic: spec.optimistic })
-    if (uidRef.current !== at) return outcome
+    if (!stillAt({ at, generation: started })) return { kind: 'left' }
     switch (outcome.kind) {
       case 'ok': {
         setConflict(null)
+        // 응답에 이 작업이 없으면(연결·자식·코멘트) 판·연결 행·활동을 서버에서 다시 받는다(R1-D·E). 있으면 settledWrite 가 받는다.
+        const own = 'item' in outcome.result && outcome.result.item !== null && outcome.result.item.id === current.id
+        if (!own) {
+          void refreshItem()
+          void refreshActivity()
+        }
         if (spec.undoing === true) notify({ kind: 'undone', label: `${current.key} 를 되돌렸습니다` })
+        else if (spec.label !== null && spec.undo === null) notify({ kind: 'final', label: spec.label })
         else if (spec.label !== null) {
           const undo = spec.undo
           notify({
@@ -225,7 +270,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
               if (undo === null) return true
               const now = baseRef.current
               if (now === null || uidRef.current !== at) return false
-              if (page.busy.has(at ?? '')) {
+              // 지금의 막힘(잠금·연결 상태)을 본다 — 토스트를 만든 때의 값이 아니다.
+              if (blockedRef.current !== null) {
                 notify({ kind: 'failed', message: `${now.key} — 앞 변경을 출처가 확인하는 중입니다. 확인된 뒤 다시 되돌리세요.` })
                 return false
               }
@@ -236,8 +282,19 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
         }
         return outcome
       }
-      case 'late':
-        return outcome
+      case 'late': {
+        // 확인 지연 — 끝나면 이 작업에 있을 때만 서버 정본으로(R1-C). 실패면 화면 값을 먼저 base 로.
+        const settled = outcome.settled.then((late): DetailSettled => {
+          if (!stillAt({ at, generation: started })) return { kind: 'left' }
+          if (late.kind === 'failed') setItem(baseRef.current)
+          if (late.kind !== 'stale') {
+            void refreshItem()
+            void refreshActivity()
+          }
+          return late
+        })
+        return { kind: 'late', settled }
+      }
       case 'busy':
         setItem(baseRef.current)
         notify({ kind: 'failed', message: `${current.key} — 앞 변경을 출처가 확인하는 중입니다. 확인된 뒤 다시 하세요.` })
@@ -257,18 +314,18 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
         return outcome
       }
     }
-  }, [target, blocked, notify, page])
+  }, [target, blocked, notify, page, stillAt, refreshItem, refreshActivity])
   const writeRef = useRef(write)
   writeRef.current = write
 
-  /** 단건만 다시 — 연결 추가·되돌리기처럼 응답에 작업이 없는 쓰기 뒤. */
-  const refreshItem = useCallback(async (): Promise<void> => {
-    if (target === null) return
-    const response = await read({ key: 'item', call: { op: 'getItem', itemId: target.itemId } })
-    if (response === null || !response.ok || response.result.op !== 'getItem') return
-    setBase(response.result.item)
-    setItem(response.result.item)
-  }, [read, target])
+  /** 키로 그 작업이 있는지 읽어 본다 — 연결 추가 전에(R1-H, 없는 키에 쓰기를 보내지 않는다). 떠났으면 null. */
+  const lookupKey = useCallback(async (key: string): Promise<{ found: true; item: WorkItem } | { found: false; message: string } | null> => {
+    const response = await read({ key: 'lookup', call: { op: 'findByKey', key } })
+    if (response === null) return null
+    if (!response.ok) return { found: false, message: response.error.message }
+    if (response.result.op !== 'findByKey') return { found: false, message: '출처 응답 모양이 다릅니다.' }
+    return response.result.item === null ? { found: false, message: `${key} — 없는 작업입니다.` } : { found: true, item: response.result.item }
+  }, [read])
 
   /** 「새로 불러오기」 — 서버 값으로 다시 그린다(미저장 편집은 화면이 버린다). */
   const reloadFromServer = useCallback(() => {
@@ -277,7 +334,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   }, [])
 
   /** 「내 값으로 덮기」 — 같은 쓰기를 판 없이 다시. */
-  const overrideConflict = useCallback(async (): Promise<ItemWriteOutcome | null> => {
+  const overrideConflict = useCallback(async (): Promise<DetailOutcome | null> => {
     if (conflict === null) return null
     const call = conflict.call
     const forced: WorkCall = call.op === 'updateItem' || call.op === 'changeStatus' || call.op === 'setPlacement' || call.op === 'setParent' ? { ...call, ifVersion: null } : call
@@ -311,7 +368,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   return {
     target, uid, item, base, phase, statuses, parents, children, comments, history, records, conflict, transitions,
     caps, descriptor, connection, blocked, busy, commentsGate,
-    write, versionOf, reloadFromServer, overrideConflict, loadTransitions, openKey, openItem,
+    write, versionOf, reloadFromServer, overrideConflict, loadTransitions, openKey, openItem, lookupKey,
     refreshItem, refreshChildren, refreshComments, refreshActivity, setChildren, setComments, setItem,
   }
 }

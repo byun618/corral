@@ -27,7 +27,7 @@ import {
   type StatusMenuRow,
 } from '../task-detail-model.js'
 import { toggleCheckLine } from '../markdown.js'
-import { PRIORITY_GLYPH, PRIORITY_LABEL, dueTone, imeComposing } from '../tasks-model.js'
+import { PRIORITY_GLYPH, PRIORITY_LABEL, UNRESTORABLE_RESOLUTION, dueTone, imeComposing, restorableResolution } from '../tasks-model.js'
 import { MarkdownEditor } from './MarkdownEditor.js'
 import { MarkdownView } from './MarkdownView.js'
 import { KindIcon, SpaceDot, StatusCircle } from './TasksViews.js'
@@ -51,6 +51,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
   const [editing, setEditing] = useState(false)
   const [bodySaving, setBodySaving] = useState(false)
   const [bodyError, setBodyError] = useState<string | null>(null)
+  const [bodyNote, setBodyNote] = useState<string | null>(null)
   const keyPattern = descriptor?.keyPattern ?? null
   const sourceName = descriptor?.name ?? connection?.name ?? '출처'
 
@@ -59,7 +60,9 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
     setMenu(null)
     setConfirm(null)
     setEditing(false)
+    setBodySaving(false)
     setBodyError(null)
+    setBodyNote(null)
   }, [detail.uid])
 
   escapeRef.current = () => {
@@ -88,6 +91,8 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
   const space = spaceOf(item.spaceKey)
   const versionOf = detail.versionOf
   const writable = blocked === null
+  /** 상세(본문 포함)를 출처에서 받았는가 — 받기 전에는 본문 편집·체크 칸을 막는다(R1-B: 목록 값엔 본문이 없어 빈 본문을 저장할 수 있다). */
+  const bodyReady = base !== null
 
   const pickStatus = (row: StatusMenuRow): void => {
     setMenu(null)
@@ -99,16 +104,20 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
     setConfirm(null)
     const before = { statusKey: item.statusKey, category: item.category, resolution: item.resolution }
     const resolution = row.category === 'done' ? row.resolution : null
+    // 원래 완료 갈래를 다시 쓸 수 없으면(LA archived·duplicate 등) 되돌리기를 내지 않고 그 사실을 알린다 — 완료함으로 바꿔 끼우지 않는다(R1-G).
+    const restorable = restorableResolution(before)
     void detail.write({
       call: { op: 'changeStatus', itemId: item.id, statusKey: row.statusKey, ifVersion: versionOf(base), resolution: row.resolution },
       optimistic: (value) => ({ ...value, statusKey: row.statusKey, category: row.category, resolution }),
-      label: `${item.key} → ${row.label}`,
-      undo: (now) => ({
-        call: { op: 'changeStatus', itemId: item.id, statusKey: before.statusKey, ifVersion: versionOf(now), resolution: before.resolution === 'completed' || before.resolution === 'cancelled' ? before.resolution : null },
-        optimistic: (value) => ({ ...value, ...before }),
-        label: null,
-        undo: null,
-      }),
+      label: restorable.restorable ? `${item.key} → ${row.label}` : `${item.key} → ${row.label} · ${UNRESTORABLE_RESOLUTION}`,
+      undo: restorable.restorable
+        ? (now) => ({
+          call: { op: 'changeStatus', itemId: item.id, statusKey: before.statusKey, ifVersion: versionOf(now), resolution: restorable.resolution },
+          optimistic: (value) => ({ ...value, ...before }),
+          label: null,
+          undo: null,
+        })
+        : null,
     })
   }
   const saveFields = ({ fields, label, optimistic, undoFields }: { fields: WorkFieldPatch; label: string; optimistic: (value: WorkItem) => WorkItem; undoFields: WorkFieldPatch }): Promise<unknown> => detail.write({
@@ -119,24 +128,53 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
   })
 
   const toggleCheck = ({ line, checked }: { line: number; checked: boolean }): void => {
-    if (!writable) return
+    if (!writable || !bodyReady) return
     const source = item.body ?? ''
     const next = toggleCheckLine({ source, line, checked })
     if (next === null) return
     void saveFields({ fields: { body: next }, label: `${item.key} 체크 칸`, optimistic: (value) => ({ ...value, body: next }), undoFields: { body: source } })
   }
   const saveBody = async (text: string): Promise<void> => {
+    if (!bodyReady) return
     setBodySaving(true)
     setBodyError(null)
+    setBodyNote(null)
     const outcome = await detail.write({ call: fieldCall({ itemId: item.id, fields: { body: text }, ifVersion: versionOf(base) }), optimistic: (value) => ({ ...value, body: text }), label: null, undo: null, quiet: true })
+    // 떠난 작업의 응답은 지금 상세(새 작업의 편집기·초안)를 건드리지 않는다(R1-A).
+    if (outcome.kind === 'left') return
+    if (outcome.kind === 'late') {
+      // 확인 지연 — 편집기(초안)를 둔 채 기다린다. 늦게 거절되면 초안이 남는다(R1-C).
+      setBodyNote('출처 확인이 늦어지고 있습니다 — 답이 오면 닫습니다. 초안은 그대로 둡니다.')
+      const late = await outcome.settled
+      if (late.kind === 'left') return
+      setBodySaving(false)
+      setBodyNote(null)
+      if (late.kind === 'ok') setEditing(false)
+      else if (late.kind === 'failed') setBodyError(`저장하지 못했습니다 — ${late.error.message}`)
+      else setBodyError('연결이 바뀌어 저장 결과를 확인하지 못했습니다 — 다시 저장하세요.')
+      return
+    }
     setBodySaving(false)
-    if (outcome.kind === 'ok' || outcome.kind === 'late') { setEditing(false); return }
+    if (outcome.kind === 'ok') { setEditing(false); return }
     if (outcome.kind === 'failed') setBodyError(outcome.error.kind === 'conflict' ? '저장하지 않았습니다 — 위 충돌을 먼저 정하세요.' : `저장하지 못했습니다 — ${outcome.error.message}`)
     else if (outcome.kind === 'busy') setBodyError('앞 변경을 출처가 확인하는 중입니다 — 잠시 뒤 다시 저장하세요.')
+    else setBodyError('상세를 다시 받는 중입니다 — 잠시 뒤 다시 저장하세요.')
   }
 
   return (
-    <aside className={`issue-detail${full ? ' is-full' : ''}`} data-issue-detail={item.key} aria-label={`${item.key} 상세`}>
+    <aside
+      className={`issue-detail${full ? ' is-full' : ''}`}
+      data-issue-detail={item.key}
+      aria-label={`${item.key} 상세`}
+      onKeyDownCapture={(event) => {
+        // Esc 단계: 열린 메뉴·확인 팝오버가 입력보다 먼저 닫힌다 — 포커스가 제목·편집기에 있어도(R1-I). 입력 칸은 이 Esc 를 받지 않는다.
+        if (event.key !== 'Escape' || imeComposing(event.nativeEvent) || (menu === null && confirm === null)) return
+        event.preventDefault()
+        event.stopPropagation()
+        setMenu(null)
+        setConfirm(null)
+      }}
+    >
       <div className="issue-detail-head">
         <KindIcon kind={item.kind} />
         <span className="issue-detail-key">{item.key}</span>
@@ -221,22 +259,22 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
             <div className="issue-section-head">
               <span>본문</span>
               <span className="issue-detail-head-spacer" />
-              {editing ? null : <button type="button" className="issue-link-btn" data-issue-body-edit="" disabled={!writable} title={blocked ?? undefined} onClick={() => setEditing(true)}>편집</button>}
+              {editing ? null : <button type="button" className="issue-link-btn" data-issue-body-edit="" disabled={!writable || !bodyReady} title={blocked ?? (bodyReady ? undefined : '본문을 불러오는 중…')} onClick={() => setEditing(true)}>편집</button>}
             </div>
             {editing ? (
-              <MarkdownEditor initial={item.body ?? ''} keyPattern={keyPattern} saving={bodySaving} error={bodyError} onSave={(text) => void saveBody(text)} onCancel={() => { setEditing(false); setBodyError(null) }} />
+              <MarkdownEditor key={detail.uid ?? ''} initial={item.body ?? ''} keyPattern={keyPattern} saving={bodySaving} error={bodyError ?? bodyNote} onSave={(text) => void saveBody(text)} onCancel={() => { setEditing(false); setBodyError(null); setBodyNote(null) }} />
             ) : (
               <div
                 className="issue-body-view"
                 onClick={(event) => {
-                  if (!writable || (event.target instanceof Element && event.target.closest('a, input, button'))) return
+                  if (!writable || !bodyReady || (event.target instanceof Element && event.target.closest('a, input, button'))) return
                   if ((window.getSelection()?.toString() ?? '') !== '') return
                   setEditing(true)
                 }}
               >
                 {(item.body ?? '').trim().length === 0
                   ? <div className="md-empty">{base === null ? '본문을 불러오는 중…' : '본문이 없습니다 — 눌러서 쓰기'}</div>
-                  : <MarkdownView source={item.body ?? ''} keyPattern={keyPattern} onOpenKey={(key) => void detail.openKey(key)} onToggleCheck={writable ? toggleCheck : undefined} />}
+                  : <MarkdownView source={item.body ?? ''} keyPattern={keyPattern} onOpenKey={(key) => void detail.openKey(key)} onToggleCheck={writable && bodyReady ? toggleCheck : undefined} />}
               </div>
             )}
           </section>
@@ -419,7 +457,7 @@ function Relations({ detail, item, spaceOf }: { detail: TaskDetailModel; item: W
   const [key, setKey] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
-  useEffect(() => { setForm(false); setKey(''); setError(null) }, [detail.uid])
+  useEffect(() => { setForm(false); setKey(''); setError(null); setSending(false) }, [detail.uid])
   if (capability.state === 'hidden') return null
   const enabled = capability.state === 'on' && detail.blocked === null
   const relations = item.relations ?? []
@@ -431,19 +469,23 @@ function Relations({ detail, item, spaceOf }: { detail: TaskDetailModel; item: W
       optimistic: (value) => ({ ...value, relations: value.relations === null ? null : value.relations.filter((entry) => entry.id !== relation.id) }),
       label: `${item.key} 연결 뗌 · ${RELATION_LABEL[relation.kind]} ${relation.other.key}`,
       undo: () => ({ call: { op: 'addRelation', itemId: item.id, kind: relation.kind, otherKey: relation.other.key }, optimistic: null, label: null, undo: null }),
-    }).then((outcome) => { if (outcome.kind === 'ok') void detail.refreshItem() })
+    })
   }
   const submit = async (): Promise<void> => {
     const checked = checkRelationKey({ input: key, selfKey: item.key, keyPattern: detail.descriptor?.keyPattern ?? null })
     if (!checked.ok) { setError(checked.message); return }
     setSending(true)
     setError(null)
-    const outcome = await detail.write({ call: { op: 'addRelation', itemId: item.id, kind, otherKey: checked.key }, optimistic: null, label: null, undo: null, quiet: true })
+    // 대상이 있는지 읽어 본 뒤에만 쓴다 — 없는 키에는 출처 쓰기를 보내지 않는다(R1-H). 떠났으면(null) 아무것도 하지 않는다.
+    const found = await detail.lookupKey(checked.key)
+    if (found === null) return
+    if (!found.found) { setSending(false); setError(found.message); return }
+    const outcome = await detail.write({ call: { op: 'addRelation', itemId: item.id, kind, otherKey: found.item.key }, optimistic: null, label: null, undo: null, quiet: true })
+    if (outcome.kind === 'left') return
     setSending(false)
     if (outcome.kind === 'ok') {
       setKey('')
       setForm(false)
-      void detail.refreshItem()
       return
     }
     if (outcome.kind === 'failed') setError(outcome.error.message)
@@ -512,7 +554,7 @@ function Children({ detail, item }: { detail: TaskDetailModel; item: WorkItem })
   const [title, setTitle] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
-  useEffect(() => { setAdding(false); setTitle(''); setError(null) }, [detail.uid])
+  useEffect(() => { setAdding(false); setTitle(''); setError(null); setSending(false) }, [detail.uid])
   const children = detail.children
   const canAdd = item.kind.childKinds.length > 0
   const rows = children.state === 'ready' ? children.value : []
@@ -526,12 +568,13 @@ function Children({ detail, item }: { detail: TaskDetailModel; item: WorkItem })
     setSending(true)
     setError(null)
     const outcome = await detail.write({ call: { op: 'createItem', spaceKey: item.spaceKey, parentId: item.id, kindKey, title: value }, optimistic: null, label: null, undo: null, quiet: true })
+    if (outcome.kind === 'left') return
     setSending(false)
     if (outcome.kind === 'ok') {
       const created = outcome.result.op === 'createItem' ? outcome.result.item : null
       if (created !== null) detail.setChildren((current) => (current.state === 'ready' ? { state: 'ready', value: [...current.value, created] } : current))
+      // 부모 판·활동은 write 가 다시 읽는다(R1-E) — 여기서는 자식 목록만.
       void detail.refreshChildren()
-      void detail.refreshActivity()
       setTitle('')
       setAdding(false)
       return
@@ -583,7 +626,7 @@ function Activity({ detail, statuses, sourceName, now, keyPattern }: { detail: T
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
-  useEffect(() => { setDraft(''); setError(null) }, [detail.uid])
+  useEffect(() => { setDraft(''); setError(null); setSending(false) }, [detail.uid])
   const history = detail.history.state === 'ready' ? detail.history.value : []
   const comments = detail.comments.state === 'ready' ? detail.comments.value : []
   const rows = useMemo(() => activityRows({ records: detail.records, history, comments, statuses, sourceName }), [detail.records, history, comments, statuses, sourceName])
@@ -597,6 +640,8 @@ function Activity({ detail, statuses, sourceName, now, keyPattern }: { detail: T
     setSending(true)
     setError(null)
     const outcome = await detail.write({ call: { op: 'addComment', itemId: item.id, body: draft }, optimistic: null, label: null, undo: null, quiet: true })
+    // 떠난 작업의 코멘트 응답은 새 상세의 목록·초안을 건드리지 않는다(R1-A).
+    if (outcome.kind === 'left') return
     setSending(false)
     if (outcome.kind === 'ok') {
       const comment = outcome.result.op === 'addComment' ? outcome.result.comment : null
@@ -621,6 +666,7 @@ function Activity({ detail, statuses, sourceName, now, keyPattern }: { detail: T
       {gate === null ? (
         <div className="issue-composer" data-comment-composer="">
           <textarea
+            data-editor-keys=""
             className="issue-composer-input"
             placeholder="코멘트 — markdown, ⌘↵ 로 남기기"
             value={draft}

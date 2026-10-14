@@ -112,6 +112,9 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       case 'delayed':
         toast(<div className="tasks-toast" data-toast="delayed">{notice.message}</div>, { duration: 6000 })
         return
+      case 'final':
+        toast(<div className="tasks-toast" data-toast="final">{notice.label}</div>, { duration: 6000 })
+        return
     }
   }
   const page = useTasksPage({ open, repos, activeRepoRoot, notify })

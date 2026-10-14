@@ -129,6 +129,7 @@ export function MarkdownEditor({ initial, keyPattern, saving, error, onSave, onC
       {tab === 'write' ? (
         <textarea
           ref={ref}
+          data-editor-keys=""
           className="md-editor-input"
           aria-label={`${label} 편집`}
           value={value}

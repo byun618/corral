@@ -58,6 +58,13 @@ export function linkAction(href: string | undefined | null): LinkAction {
 /** 편집 하나 — [from, to) 를 text 로 바꾸고, 바꾼 뒤 선택은 [selectFrom, selectTo). */
 export type TextEdit = { from: number; to: number; text: string; selectFrom: number; selectTo: number }
 
+/**
+ * 편집 칸(`data-editor-keys` — 본문 편집기·코멘트 입력)이 직접 쓰는 단축키(LIFE-602 수정 1 R1-F). 포커스가 그 칸에 있으면
+ * 앱 전역 단축키 처리기(`useKeybindings`, document capture)가 이 조합을 가로채지 않는다 — ⌘B(사이드바)·⌘K(팔레트)가 편집기에 간다.
+ * 형식은 `bindingFromEvent` 의 정규형. main 메뉴 키 길(`menuKeyShortcut`)은 ⌘W·⌘R 만 쥐어 여기와 겹치지 않는다.
+ */
+export const EDITOR_KEYS: readonly string[] = ['Mod+B', 'Mod+Shift+I', 'Mod+E', 'Mod+K', 'Mod+Enter']
+
 export const MD_TOOLS = ['heading', 'bold', 'italic', 'code', 'link', 'bullet', 'number', 'check', 'quote', 'codeblock'] as const
 export type MdTool = (typeof MD_TOOLS)[number]
 

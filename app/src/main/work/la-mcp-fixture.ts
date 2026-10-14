@@ -34,6 +34,8 @@ export type FixtureCorrupt =
   | 'list-drop-position' | 'list-drop-dueAt' | 'list-drop-color' | 'list-drop-archivedAt' | 'list-drop-openBlockers' | 'list-bad-blocker'
   // LIFE-601 E1·E2 양성 대조 — 막은 쪽 행에서 displayId 를 지움 · `issue_by_seq` 의 data.id 를 숫자로.
   | 'blocker-no-displayId' | 'byseq-bad-id'
+  // LIFE-602 수정 1 — E4 쓰기 응답(issue_update)만 title 을 숫자로.
+  | 'update-bad-title'
   // LIFE-601 R1-P 양성 대조 — 모르는 kind · kind null 인데 data 있음.
   | 'byseq-unknown-kind' | 'byseq-null-kind-data'
   // LIFE-602 E5 양성 대조 — resolution 을 모르는 글자로.
@@ -293,6 +295,8 @@ export class LaMcpFixture {
         if ('priority' in args && (typeof args.priority === 'string' || args.priority === null)) issue.priority = args.priority
         if ('dueAt' in args && (typeof args.dueAt === 'string' || args.dueAt === null)) issue.dueAt = args.dueAt
         this.touch(issue)
+        // LIFE-602 수정 1 — 쓰기 응답(E4 issue_update) 하나만 어긋나게: 읽기(issue_get·list)는 멀쩡하다(양성 대조 범위를 쓰기 응답으로 좁힌다).
+        if (this.corrupt === 'update-bad-title') return ok({ ...this.response(issue), title: 42 })
         return ok(this.response(issue))
       }
       // LIFE-602 E6 — 부모 규칙(issue.service checkParentRule): checkpoint=부모 project 必 · bug=project|checkpoint|없음 · task=project|checkpoint|bug|없음.

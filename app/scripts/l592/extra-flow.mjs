@@ -7,7 +7,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { ctl, evalJs, sleep, until, repoPane, writeJson } from './lib.mjs'
+import { ctl, evalJs, sleep, until, repoPane, writeJson, startNoticeSampler, stopNoticeSampler } from './lib.mjs'
 
 const [root, out] = process.argv.slice(2)
 if (!/^\/tmp\/l592g-[^/]+$/.test(root ?? '') || out === undefined) throw new Error('사용: extra-flow.mjs /tmp/l592g-* OUT.json')
@@ -49,8 +49,8 @@ const editorFocus = async (rel) =>
     await sleep(200)
     return q(`document.activeElement?.closest('[data-file-editor]') !== null`)
   }, { timeoutMs: 6000, label: `편집기 포커스 ${rel}` })
-const startSampler = () => q(`(() => { window.__l592seen = []; clearInterval(window.__l592timer); window.__l592timer = setInterval(() => { const d = document.querySelector('.main-tab.is-deleted, [data-file-notice="deleted"]'); if (d) window.__l592seen.push({ at: Date.now(), tab: d.getAttribute('data-file-tab') }) }, 20); return true })()`)
-const stopSampler = () => q(`(() => { clearInterval(window.__l592timer); return window.__l592seen })()`)
+const startSampler = () => startNoticeSampler(root) // 제품 실제 표지(lib.mjs — 수정 r1 R1-I: 「삭제됨」 + 외부 변경 배너)
+const stopSampler = () => stopNoticeSampler(root)
 const tabState = (rel) => q(`(() => { const t = document.querySelector('[data-file-tab="${rel}"]'); return t === null ? null : { dirty: t.dataset.fileDirty, preview: t.dataset.tabPreview, active: t.dataset.active } })()`)
 
 await until(() => q(`!!document.querySelector('.app-body')`), { timeoutMs: 30_000, label: '렌더러' })

@@ -102,3 +102,15 @@ export function editorState(root, rel) {
     `(() => { const host = document.querySelector('[data-file-view="${rel}"] [data-file-editor]'); const e = window.l592Monaco.editor.getEditors().find((x) => host !== null && host.contains(x.getContainerDomNode())); if (e === undefined) return null; const v = e.saveViewState(); return { model: e.getModel()?.getValue() ?? null, scrollTop: e.getScrollTop(), view: v === null ? null : { first: v.viewState.firstPosition, delta: v.viewState.firstPositionDeltaTop, cursor: v.cursorState.map((c) => c.position) } } })()`,
   )
 }
+
+/**
+ * LIFE-592 수정 r1 R1-I — 화면 표지 판별식의 **제품 실제 표지**(한 곳). 회차 스크립트의 「0」 판별은 이것만 쓰고, 양성 대조(`r1-ui-probe.mjs`)가 표지가 떠 있을 때 검출함을 보인다.
+ *   「삭제됨」 = 탭 `.main-tab.is-deleted`(MainTabBar) · 본문 띠 `[data-file-notice="deleted"]`(FileView)
+ *   외부 변경 배너 = `[data-file-notice="external-change"]`(FileView `ExternalBanner`, class `file-view-conflict`)
+ */
+export const DELETED_SELECTOR = '.main-tab.is-deleted, [data-file-notice="deleted"]'
+export const BANNER_SELECTOR = '[data-file-notice="external-change"], .file-view-conflict'
+/** 20 ms 간격 표본 — 「삭제됨」·배너가 한 번이라도 보였나. */
+export const startNoticeSampler = (root) =>
+  evalJs(root, `(() => { window.__l592seen = []; clearInterval(window.__l592timer); window.__l592timer = setInterval(() => { const d = document.querySelector(${JSON.stringify(DELETED_SELECTOR)}); const b = document.querySelector(${JSON.stringify(BANNER_SELECTOR)}); if (d || b) window.__l592seen.push({ at: Date.now(), deleted: !!d, banner: !!b, tab: d?.getAttribute('data-file-tab') ?? null }) }, 20); return true })()`)
+export const stopNoticeSampler = (root) => evalJs(root, `(() => { clearInterval(window.__l592timer); return window.__l592seen })()`)

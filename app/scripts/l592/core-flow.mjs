@@ -5,7 +5,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { ctl, evalJs, sleep, until, repoPane, writeJson } from './lib.mjs'
+import { ctl, evalJs, sleep, until, repoPane, writeJson, startNoticeSampler, stopNoticeSampler, BANNER_SELECTOR, DELETED_SELECTOR } from './lib.mjs'
 
 const [root, out] = process.argv.slice(2)
 if (!/^\/tmp\/l592g-[^/]+$/.test(root ?? '') || out === undefined) throw new Error('사용: core-flow.mjs /tmp/l592g-* OUT.json')
@@ -32,9 +32,9 @@ const focusRow = async (rel) => {
   }, { timeoutMs: 6000, label: `트리 포커스 ${rel}` })
 }
 const key = (keyCode, modifiers = []) => ctl(root, { cmd: 'key', keyCode, modifiers })
-/** 「삭제됨」 표시(탭·띠)·외부 변경 배너가 한 번이라도 보였는지 20 ms 간격으로 본다. */
-const startSampler = () => q(`(() => { window.__l592seen = []; clearInterval(window.__l592timer); window.__l592timer = setInterval(() => { const d = document.querySelector('.main-tab.is-deleted, [data-file-notice="deleted"]'); const b = document.querySelector('[data-file-notice="external"], .file-view-banner.is-external'); if (d || b) window.__l592seen.push({ at: Date.now(), deleted: !!d, banner: !!b, tab: d?.getAttribute('data-file-tab') ?? null }) }, 20); return true })()`)
-const stopSampler = () => q(`(() => { clearInterval(window.__l592timer); return window.__l592seen })()`)
+/** 「삭제됨」 표시(탭·띠)·외부 변경 배너가 한 번이라도 보였는지 20 ms 간격으로 본다 — 제품 실제 표지(`lib.mjs` DELETED_SELECTOR·BANNER_SELECTOR, 수정 r1 R1-I). */
+const startSampler = () => startNoticeSampler(root)
+const stopSampler = () => stopNoticeSampler(root)
 const trashListing = (name) => {
   try {
     return fs.readdirSync(path.join(process.env.HOME, '.Trash')).filter((entry) => entry.startsWith(name.replace(/\.[^.]+$/, '')))
@@ -145,6 +145,34 @@ await until(() => disk('src/l592-renamed.ts').exists, { label: '다시 되살림
 const again = disk('src/l592-renamed.ts')
 step('undo-again', { again, sameSha: again.sha === saved.sha })
 result.checks.redo = again.sha === saved.sha
+
+// ⑨ 양성 대조(수정 r1 R1-I) — 위 「0」 판별식이 표지가 떠 있으면 검출하는가. 수정 중 탭 + 외부 쓰기 = 외부 변경 배너, 열린 파일 외부 삭제 = 「삭제됨」.
+await ctl(root, { cmd: 'dblclick', selector: '[data-explorer-row="src/l592-renamed.ts"]' })
+await until(() => q(`document.querySelector('[data-file-view="src/l592-renamed.ts"] .view-lines') !== null`), { label: '대조 탭' })
+await until(async () => {
+  await ctl(root, { cmd: 'click', selector: '[data-file-view="src/l592-renamed.ts"] [data-file-editor] .view-lines' })
+  await sleep(200)
+  return q(`document.activeElement?.closest('[data-file-editor]') !== null`)
+}, { timeoutMs: 6000, label: '대조 편집기 포커스' })
+await key('Shift')
+await ctl(root, { cmd: 'type', text: 'P' })
+await until(() => q(`document.querySelector('[data-file-tab="src/l592-renamed.ts"]')?.dataset.fileDirty === 'true'`), { label: '대조 수정' })
+await startSampler()
+fs.writeFileSync(path.join(repo, 'src/l592-renamed.ts'), 'external change for positive control\n')
+await until(() => q(`document.querySelector(${JSON.stringify(BANNER_SELECTOR)}) !== null`), { timeoutMs: 8000, label: '배너' }).catch(() => null)
+await sleep(300)
+const bannerSeen = await stopSampler()
+fs.writeFileSync(path.join(repo, 'src/l592-b.ts'), 'export const b = 2\n')
+await ctl(root, { cmd: 'dblclick', selector: '[data-explorer-row="src/l592-b.ts"]' })
+await until(() => q(`document.querySelector('[data-file-tab="src/l592-b.ts"]') !== null`), { label: '삭제 대조 탭' })
+await sleep(500)
+await startSampler()
+fs.rmSync(path.join(repo, 'src/l592-b.ts'))
+await until(() => q(`document.querySelector(${JSON.stringify(DELETED_SELECTOR)}) !== null`), { timeoutMs: 8000, label: '삭제됨' }).catch(() => null)
+await sleep(300)
+const deletedSeen = await stopSampler()
+step('positive-control', { bannerSamples: bannerSeen.filter((row) => row.banner).length, deletedSamples: deletedSeen.filter((row) => row.deleted).length })
+result.checks.samplerPositive = bannerSeen.some((row) => row.banner) && deletedSeen.some((row) => row.deleted)
 
 // 로그 — 조작 결과·대화상자.
 const logFile = path.join(root, 'ud/corral.ndjson')

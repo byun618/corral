@@ -27,7 +27,7 @@
 .issue-detail-inner { display: flex; flex-direction: column; gap: 18px; padding: 20px 24px 32px; }
 .issue-detail.is-full .issue-detail-inner { max-width: var(--w-issue-detail-full); margin: 0 auto; padding: 28px 40px 40px; }
 .issue-detail-loading, .issue-muted { color: var(--fg-dim); font-size: 12px; }
-.issue-detail-error { color: var(--st-error-hi); font-size: 12px; }
+.issue-conflict.is-error .issue-conflict-text { color: var(--st-error-hi); }
 
 /* --- 충돌 배너 (Q7) --- */
 .issue-conflict { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--bg-notice); border: 1px solid var(--line-notice); color: var(--fg-notice); font-size: 12px; }

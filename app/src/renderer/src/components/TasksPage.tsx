@@ -14,7 +14,7 @@ import type { RepoRow } from '../../../shared/types.js'
 import type { WorkCapabilities, WorkItem, WorkPriority, WorkStatus } from '../../../shared/work.js'
 import { WORK_PRIORITIES } from '../../../shared/work.js'
 import { useTaskDrag, type TaskDrop } from '../hooks/useTaskDrag.js'
-import { useTasksPage, type MoveNotice } from '../hooks/useTasksPage.js'
+import { DETAIL_READING, useTasksPage, type MoveNotice } from '../hooks/useTasksPage.js'
 import { useTaskDetail } from '../hooks/useTaskDetail.js'
 import {
   NO_FILTERS,
@@ -217,8 +217,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       dragRow.current = null
     },
   })
-  // 확인 안 된 쓰기가 있는 카드는 잠근다 — 손잡이 흐림 + 이유(R2-A).
-  const lockOf = (row: TasksRow): string | null => writeBlockOf(row.space.connectionId) ?? (page.busy.has(rowUid(row)) ? BUSY : null)
+  // 확인 안 된 쓰기가 있는 카드·상세가 다시 받는 중인 카드는 잠근다 — 손잡이 흐림 + 이유(R2-A · R6-D).
+  const lockOf = (row: TasksRow): string | null => writeBlockOf(row.space.connectionId) ?? (page.busy.has(rowUid(row)) ? BUSY : null) ?? (page.reading.has(rowUid(row)) ? `${DETAIL_READING}…` : null)
   const handleOf = (row: TasksRow): CardProps['handle'] => ({
     blocked: lockOf(row),
     onMouseDown: (event) => onMouseDown(rowUid(row), event, lockOf(row)),

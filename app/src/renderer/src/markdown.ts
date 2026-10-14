@@ -1,7 +1,7 @@
 // 작업 본문 markdown — 순수 함수 (LIFE-602 C4·C5). 화면(MarkdownView·MarkdownEditor)은 이것을 부르기만 한다.
 //
-// - 체크 칸 저장: 렌더러가 준 **소스 줄 번호**(mdast position)로 원문의 그 줄 하나의 `[ ]`↔`[x]` 만 바꾼다. 줄 끝 문자(\n·\r\n·\r)와
-//   다른 줄의 바이트는 그대로다 — 같은 글자의 체크 줄이 여럿이어도 줄 번호로 고른다(G4).
+// - 체크 칸 저장: 렌더러가 준 **소스 줄 번호**(mdast position — 항목 시작 줄)로 그 항목의 `[ ]`↔`[x]` 글자 하나만 바꾼다(칸이 다음 줄에 있어도, R6-C).
+//   줄 끝 문자(\n·\r\n·\r)와 다른 바이트는 그대로다 — 같은 글자의 체크 줄이 여럿이어도 줄 번호로 고른다(G4).
 // - 링크: 밖으로 여는 것은 절대 http·https 뿐이다(main 의 허용 목록과 같은 규칙 — 결정은 main 이 다시 한다). 상대·프로토콜 상대·그 밖 scheme 은 열지 않는다.
 // - 편집기 도구·목록 이어 쓰기: 바꿀 구간(from·to)과 넣을 글(text), 바꾼 뒤 선택을 돌려준다 — 편집기가 그 구간을 「입력」 으로 바꿔
 //   브라우저 undo 기록에 남긴다(G5).
@@ -21,17 +21,21 @@ function lineSpans(source: string): LineSpan[] {
   return spans
 }
 
-/** 목록 표지 + 체크 칸 — 인용 안의 목록(`> - [ ]`)도. 캡처 1 = 칸 앞까지, 2 = 칸 안 글자. */
-const CHECK_MARK = /^((?:[ \t]*>[ \t]?)*[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)\[([ xX])\]/
+/**
+ * 목록 항목 시작 줄 → 그 항목의 체크 칸. 캡처 1 = 칸 앞까지, 2 = 칸 안 글자. GFM 이 체크리스트로 그리는 모양 전부(R6-C):
+ * 인용 안(`> - [ ]`) · 한 줄에 표지 여럿(`- - [ ]`, 안쪽 항목이 칸을 갖는다) · 표지 다음 줄의 칸(`-⏎  [ ]`, 인용이면 다음 줄의 `>` 도).
+ * 항목은 빈 줄로 시작할 수 있어도 한 줄뿐이라 다음 줄 하나만 본다.
+ */
+const CHECK_MARK = /^((?:[ \t]*>[ \t]?)*[ \t]*(?:(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|[ \t]*(?:\r\n|\r|\n)(?:[ \t]*>[ \t]?)*[ \t]*))+)\[([ xX])\]/
 
 /**
- * 체크 칸 하나 토글 — `line` 은 1부터. 그 줄에 체크 칸이 없으면 null(보내지 않는다).
+ * 체크 칸 하나 토글 — `line` 은 그 목록 항목이 시작하는 줄(1부터, 렌더러의 소스 위치). 그 항목에 체크 칸이 없으면 null(보내지 않는다 — 보기는 그런 칸을 비활성으로 둔다).
  * `checked` 를 주면 그 값으로(이미 그 값이면 null), 없으면 뒤집는다.
  */
 export function toggleCheckLine({ source, line, checked }: { source: string; line: number; checked?: boolean }): string | null {
   const span = lineSpans(source)[line - 1]
   if (span === undefined) return null
-  const text = source.slice(span.start, span.end)
+  const text = source.slice(span.start)
   const match = CHECK_MARK.exec(text)
   if (match === null || match[1] === undefined || match[2] === undefined) return null
   const now = match[2] !== ' '

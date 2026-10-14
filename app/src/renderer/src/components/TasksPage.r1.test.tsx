@@ -493,6 +493,8 @@ describe('R1-L 화면 정체 = (연결, 작업 id)', () => {
     click(cards[1] ?? null)
     expect(host.querySelectorAll('[data-issue-card].is-selected')).toHaveLength(1)
     expect(errors.mock.calls.some((args) => String(args[0]).includes('same key'))).toBe(false)
+    // 고른 카드는 상세 첫 읽기 동안 끌기가 잠긴다(LIFE-602 R6-D) — 읽기가 끝난 뒤 끈다.
+    await settle()
     await dragTo({ handle: host.querySelectorAll('[data-issue-card]')[1] ?? null, zone: 'col:cat:in_progress' })
     expect(ops('changeStatus').map((request) => request.connectionId)).toEqual(['c2'])
   })

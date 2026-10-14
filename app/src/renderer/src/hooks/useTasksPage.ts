@@ -24,6 +24,8 @@
 // - **상세 쓰기(LIFE-602 D3)** — `writeItem` 은 끌기(`move`)와 **같은 잠금**(`pendingWrites`, 작업 uid 마다 하나)·같은 세대 귀속·같은 30초
 //   「확인 지연」 을 쓴다. 상세에서 저장 중인 작업은 보드에서 끌 수 없고, 끄는 중(확인 전)인 작업은 상세에서 저장하지 않는다(`busy`).
 //   성공한 쓰기는 보드 자료에 서버 값을 쓰고, `settled` 로 알려 열린 상세가 같은 값을 받는다(보드 끌기 결과도 상세에 들어간다).
+//   상세 단건 읽기(첫 읽기·재조회·새로 불러오기)가 진행 중인 작업도 보드에서 끌거나 되돌릴 수 없다(`reading`, R6-D — 같은 작업 직렬화).
+//   보드 쓰기가 시작되면 `startedWrite` 로 알려 열린 상세의 되돌리기 토스트가 곧바로 사라진다(R6-B).
 //   선택(열린 상세)·상세 크기는 ui-prefs 에 남긴다(C1 — 닫았다 다시 열거나 재시작해도 복원).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -105,6 +107,8 @@ const NO_SEARCH: KeySearch = { query: '', hits: [], errors: [] }
  * 이 한도는 「영원히 안 오는 응답에 잠금·불러오는 중이 갇히지 않게」 만 쓴다: 넘으면 「늦음」 이고 원래 요청은 계속 기다린다.
  */
 const REQUEST_TIMEOUT_MS = 30_000
+/** 상세가 그 작업을 다시 받는 중 — 보드 잠금 이유·막힘 알림(R6-D). */
+export const DETAIL_READING = '상세를 받는 중'
 
 /** 요청 하나의 결과 — 한도 안에 답함 · 늦음(원래 답은 `answer` 로 계속 온다). */
 type Asked = { kind: 'answered'; response: WorkResponse } | { kind: 'late'; answer: Promise<WorkResponse> }
@@ -229,6 +233,11 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   /** 쓰기 실패·완료 분류 변경 뒤 서버 재조회 — `reload` 는 아래에서 정의된다. */
   const reloadRef = useRef<(options: { quiet: boolean }) => Promise<void>>(async () => {})
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set())
+  /** 상세 단건 읽기가 진행 중인 카드(uid → 수) — 보드 쓰기(끌기·되돌리기)도 막는다(LIFE-602 R6-D). */
+  const detailReads = useRef(new Map<string, number>())
+  const [reading, setReading] = useState<ReadonlySet<string>>(new Set())
+  /** 보드 쓰기 시작 — 열린 상세가 받아 같은 작업의 되돌리기 토스트를 지운다(R6-B). */
+  const [startedWrite, setStartedWrite] = useState<{ uid: string; seq: number } | null>(null)
   /** 스페이스 자료(연결·스페이스)마다 받아 둔 쪽 수 — 다시 열 때 그만큼 다시 받는다(R1-N). */
   const pagesRef = useRef(new Map<string, number>())
 
@@ -595,6 +604,11 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       notify({ kind: 'failed', message: `${row.item.key} — 앞 변경을 출처가 확인하는 중입니다. 확인된 뒤 다시 하세요.` })
       return
     }
+    // 상세가 그 작업을 다시 받는 중이면 보내지 않는다(R6-D) — 기다렸다 보내는 길은 없다.
+    if (detailReads.current.has(uid)) {
+      notify({ kind: 'failed', message: `${row.item.key} — ${DETAIL_READING}입니다. 받은 뒤 다시 하세요.` })
+      return
+    }
     const before = loadRef.current.data.find((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey)?.items ?? [row.item]
     // 잠금 덕에 이 카드의 지금 값은 출처가 마지막으로 인정한 값이다(또는 마지막 재조회 값) — 되돌리기·원복은 이 값으로.
     const original = before.find((item) => item.id === row.item.id) ?? row.item
@@ -604,6 +618,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     pendingWrites.current.set(uid, written)
     if (intent.kind === 'reorder') reorders.current.add(written)
     setBusy(new Set(pendingWrites.current.keys()))
+    setStartedWrite({ uid, seq: written.seq })
     const requestId = gate.issue(`item:${uid}`)
     let asked: Asked | null = null
     try {
@@ -679,6 +694,10 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
           notify({ kind: 'failed', message: `${original.key} — 앞 변경을 출처가 확인하는 중입니다. 확인된 뒤 다시 되돌리세요.` })
           return false
         }
+        if (detailReads.current.has(uid)) {
+          notify({ kind: 'failed', message: `${original.key} — ${DETAIL_READING}입니다. 받은 뒤 다시 되돌리세요.` })
+          return false
+        }
         const now = loadRef.current.data.find((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey)
         const at = now ?? row.space
         const item = now?.items.find((entry) => entry.id === original.id) ?? settled
@@ -687,6 +706,21 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       },
     })
   }, [patch, gate, notify, reflect, currentGeneration])
+
+  /** 상세 단건 읽기 하나를 그 카드의 진행 중 읽기로 센다 — 돌려준 함수로 뺀다(두 번 불러도 한 번만). */
+  const holdRead = useCallback((uid: string): (() => void) => {
+    detailReads.current.set(uid, (detailReads.current.get(uid) ?? 0) + 1)
+    setReading(new Set(detailReads.current.keys()))
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      const next = (detailReads.current.get(uid) ?? 1) - 1
+      if (next <= 0) detailReads.current.delete(uid)
+      else detailReads.current.set(uid, next)
+      setReading(new Set(detailReads.current.keys()))
+    }
+  }, [])
 
   /**
    * 상세 쓰기(LIFE-602 D3) — 끌기와 같은 잠금·세대·확인 지연. 잠겨 있으면 보내지 않고 `busy`. 실패하면 그 작업만 쓰기 전 목록 값으로 돌리고
@@ -819,9 +853,11 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     reload, retry, loadMore, invalidateMore,
     hits, workingEntries, working: workingLookups, workingKeys, trees,
     move: (request: MoveRequest) => move({ ...request, undo: false, restore: null }),
-    writeItem, settledWrite,
+    writeItem, settledWrite, startedWrite, holdRead,
     /** 확인 안 된 쓰기가 있는 카드(uid) — 끌기 잠금·「확인하는 중」 표시(R2-A). */
     busy,
+    /** 상세 단건 읽기가 진행 중인 카드(uid) — 끌기 잠금(R6-D). */
+    reading,
     beginDrag, endDrag, transitions,
   }
 }

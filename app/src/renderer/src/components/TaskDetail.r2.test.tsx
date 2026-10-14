@@ -318,19 +318,28 @@ describe('표 경로 — 같은 규칙의 다른 시작점', () => {
     key(input('[data-comment-composer] textarea'), { key: 'Enter', metaKey: true }); await settle(16)
     expect(r.calls.filter((call) => call.op === 'addComment')).toHaveLength(2)
   })
-  it('T-stale-refresh-board: 상세 재조회(코멘트 뒤)를 보류한 사이 보드에서 끈 상태 변경이 확정되면, 낡은 재조회가 상태를 되돌리지 않는다', async () => {
-    const r = await rig(); await openCard('CORE-2')
-    const orig = window.corral.workRequest; let release!: () => void; const pending = new Promise<void>((resolve) => { release = resolve })
-    window.corral.workRequest = async (request: WorkRequest) => { const result = await orig(request); if (request.call.op === 'getItem' && request.call.itemId === 'm-2') await pending; return result }
-    setValue(input('[data-comment-composer] textarea'), 'c'); key(input('[data-comment-composer] textarea'), { key: 'Enter', metaKey: true }); await settle()
+  it('T-stale-refresh-board: 보드 끌기 확인 중에 연 상세의 첫 읽기를 보류한 사이 끌기가 확정되면, 낡은 읽기가 상태를 되돌리지 않는다(수정 6: 재조회 중 끌기는 막혀 순서를 바꿨다)', async () => {
+    const r = await rig()
+    const orig = window.corral.workRequest
+    let releaseWrite!: () => void; const writeHeld = new Promise<void>((resolve) => { releaseWrite = resolve })
+    let releaseRead!: () => void; const readHeld = new Promise<void>((resolve) => { releaseRead = resolve })
+    window.corral.workRequest = async (request: WorkRequest) => {
+      if (request.call.op === 'changeStatus') await writeHeld
+      // 읽기는 보내는 때의 서버 값(끌기 전)을 들고 보류된다 — 끌기 확정 뒤에 도착하는 낡은 응답.
+      const result = await orig(request)
+      if (request.call.op === 'getItem' && request.call.itemId === 'm-2') await readHeld
+      return result
+    }
     const zone = q('[data-drop-zone="col:st:core-doing"]'); const handle = q('[data-tasks-board] [data-issue-card="CORE-2"]')
     if (zone === null || handle === null) throw new Error('끌기 대상 없음')
     vi.spyOn(document, 'elementFromPoint').mockReturnValue(zone)
     const mouse = (target: EventTarget, name: string, x = 10, y = 10): void => { act(() => { target.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y })) }) }
-    mouse(handle, 'mousedown'); mouse(document, 'mousemove', 50, 500); await settle(); mouse(document, 'mousemove', 52, 502); mouse(document, 'mouseup', 52, 502); await settle(16)
+    mouse(handle, 'mousedown'); mouse(document, 'mousemove', 50, 500); await settle(); mouse(document, 'mousemove', 52, 502); mouse(document, 'mouseup', 52, 502); await settle()
+    click('[data-tasks-board] [data-issue-card="CORE-2"]'); await settle()
+    expect(q('[data-issue-detail="CORE-2"]')).not.toBeNull()
+    releaseWrite(); await settle(16)
     expect(r.state.items.find((entry) => entry.id === 'm-2')?.statusKey).toBe('core-doing')
-    expect(el('[data-issue-status]').dataset.issueStatus).toBe('core-doing')
-    release(); await settle(16)
+    releaseRead(); await settle(16)
     expect(el('[data-issue-status]').dataset.issueStatus).toBe('core-doing')
     expect(r.state.items.find((entry) => entry.id === 'm-2')?.statusKey).toBe('core-doing') // 수정 3 시험 감사: 해제 뒤 서버 값
   })

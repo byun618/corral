@@ -3,12 +3,13 @@
 // 비동기 결과를 언제 적용하는지는 이 파일 한 곳에서 정한다(규칙 원문 `specs/LIFE-602-task-detail/raw/claude/detail-async-rules.md`, 수정 5 — 범위 축소).
 // - **열기 회차(session)**: 작업(uid) 또는 연결 세대가 바뀔 때마다 하나씩 오른다. 비동기 체인은 출발점(origin = 회차 + 대상)을 끝까지 들고,
 //   결과는 그 회차가 살아 있을 때만 적용한다. 떠났으면 읽기는 버리고 쓰기는 `left`(R1-A·R2-A·R3-C).
-// - **직렬화**: 그 작업에 쓰기(보드와 같은 잠금)나 상세 단건 읽기(첫 읽기·재조회·새로 불러오기)가 진행 중이면 새 쓰기는 보내지 않는다 —
+// - **직렬화**: 그 작업에 쓰기(보드와 같은 잠금)나 상세 단건 읽기(첫 읽기·재조회·새로 불러오기)가 진행 중이면 새 쓰기(상세·보드 둘 다)는 보내지 않는다 —
 //   화면은 그 칸들을 막고(`blocked`), 그래도 온 쓰기는 `busy`. 기다렸다 보내는 길은 없다. 그래서 쓰기의 판은 언제나 「진행 중인 것이 없을 때의 base」 다.
 // - **편집 기준(basis)**: 초안(본문 편집기·제목)은 편집을 시작한 때의 base 를 기준으로 그 판으로 저장한다 — 다른 곳의 변경이 보여도 조용히 오르지 않는다(R3-A, C8).
-//   오르는 것은 셋뿐: 읽기 값과 칸이 하나도 다르지 않을 때(판만 오름) · 내 쓰기가 기준과 같은 판 위에서 성공했을 때(그 결과로) · 덮기가 성공한 그 칸.
+//   오르는 것은 셋뿐: 읽기 값과 칸이 하나도 다르지 않을 때(판만 오름) · 내 쓰기가 기준의 판을 실어 보내 성공했을 때(그 결과로) ·
+//   덮기가 성공한 그 칸(과 결과가 덮은 칸만 다른 초안). 덮기는 판 없이 가므로 다른 초안의 기준을 판 비교로 올리지 않는다(R6-A).
 // - **충돌**: 충돌 검사가 켜진 출처의 충돌 응답은 언제나 배너다(자동 재시도 없음 — 자기 충돌로 보이는 배너는 알려진 비용).
-// - **되돌리기 토스트**: 그 쓰기의 결과 판 = 지금 base 판일 때만 그 판으로 보낸다. 같은 작업에 다음 쓰기가 시작되거나 base 판이 결과 판과 달라지면 곧바로 사라진다.
+// - **되돌리기 토스트**: 그 쓰기의 결과 판 = 지금 base 판일 때만 그 판으로 보낸다. 같은 작업에 다음 쓰기(상세·보드)가 시작되거나 base 판이 결과 판과 달라지면 곧바로 사라진다.
 // - **판 최신성(stamp)**: 읽기는 시작 시각이 지금 base 의 시각보다 뒤일 때만 base 가 된다(R2-D) — 보드 끌기 확정이 낡은 재조회에 덮이지 않게.
 // - **늦은 확정**: 30초 확인 지연 뒤 온 결과는 즉시 결과와 같은 `finish` 로 간다(R2-F·G). 목록 묶음은 마지막 요청만(R2-H).
 // - 쓰기는 작업 페이지의 `writeItem` 하나로 — 보드 끌기와 같은 잠금·세대·확인 지연(D3). 판(`ifVersion`)은 충돌 검사가 켜진 출처에서만.
@@ -98,6 +99,41 @@ function slotsOf(call: WorkCall): EditSlot[] {
   return slots
 }
 
+/** 쓰기가 보낸 판 — 서버가 「지금 판 = 이것」 을 확인하고 받았다는 증거. 판 없이 간 쓰기(덮기·충돌 검사 꺼짐·판 없는 연산)는 null. */
+function sentVersion(call: WorkCall): string | null {
+  switch (call.op) {
+    case 'updateItem':
+    case 'changeStatus':
+    case 'setPlacement':
+    case 'setParent':
+      return call.ifVersion
+    default:
+      return null
+  }
+}
+
+/** 쓰기가 바꾸는 칸 — 충돌 칸 이름으로. 덮기 뒤 다른 초안의 기준이 「이 쓰기가 바꾼 칸만」 다를 때를 가린다. */
+function fieldsOf(call: WorkCall): ConflictField[] {
+  switch (call.op) {
+    case 'updateItem': {
+      const fields: ConflictField[] = []
+      if (call.fields.title !== undefined) fields.push('title')
+      if (call.fields.body !== undefined) fields.push('body')
+      if (call.fields.priority !== undefined) fields.push('priority')
+      if (call.fields.dueAt !== undefined) fields.push('dueAt')
+      return fields
+    }
+    case 'changeStatus':
+      return ['status']
+    case 'setPlacement':
+      return ['placement']
+    case 'setParent':
+      return ['parent']
+    default:
+      return []
+  }
+}
+
 /** 응답에 이 작업의 새 값이 실려 오는가 — 아니면(연결·자식·코멘트) 단건을 다시 읽어야 판이 맞는다. */
 function carriesItem({ result, itemId }: { result: WorkResult; itemId: string }): boolean {
   return 'item' in result && result.item !== null && result.item.id === itemId
@@ -157,10 +193,10 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   /** 확인하는 중 표시 — 잠금(앞 쓰기 확인 중) 또는 받은 뒤의 단건 재조회. */
   const busy = locked || (reading && base !== null)
   /**
-   * 쓰기 막힘 이유 — 연결 상태(권한·끊김·인증) → 그 작업의 앞 쓰기 확인 중 → 상세를 아직 받지 않음(R3-E) → 상세를 다시 받는 중(직렬화).
+   * 쓰기 막힘 이유 — 연결 상태(권한·끊김·인증) → 그 작업의 앞 쓰기 확인 중 → 상세를 아직 받지 않음(R3-E, 받기에 실패했으면 그 사실 — R6-E) → 상세를 다시 받는 중(직렬화).
    * 막혀 있으면 화면은 그 칸을 막고, 그래도 온 쓰기는 보내지 않는다(기다렸다 보내지 않는다).
    */
-  const blocked = writeBlock(connection?.status ?? null)?.reason ?? (locked ? '앞 변경을 출처가 확인하는 중…' : null) ?? (base === null && target !== null ? '상세를 불러오는 중…' : null) ?? (reading ? '상세를 다시 받는 중…' : null)
+  const blocked = writeBlock(connection?.status ?? null)?.reason ?? (locked ? '앞 변경을 출처가 확인하는 중…' : null) ?? (base === null && target !== null ? (phase.state === 'error' ? '상세를 받지 못했습니다 — 다시 시도하세요.' : '상세를 불러오는 중…') : null) ?? (reading ? '상세를 다시 받는 중…' : null)
   const blockedRef = useRef(blocked)
   blockedRef.current = blocked
   const versionOf = useCallback((current: WorkItem | null): string | null => (capsRef.current?.conflictCheck.state === 'on' ? current?.version ?? null : null), [])
@@ -192,7 +228,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     for (const entry of [...undosRef.current]) if (!entry.pending && entry.version !== value.version) expire(entry)
   }, [expire])
 
-  /** 단건 읽기 하나를 진행 중으로 센다 — 끝나면(버려져도) 뺀다. */
+  /** 단건 읽기 하나를 진행 중으로 센다 — 끝나면(버려져도) 뺀다. 작업 페이지에도 알려 그 카드의 보드 쓰기를 막는다(R6-D). */
+  const holdRead = page.holdRead
   const tracked = useCallback(<T,>({ origin, run }: { origin: Origin; run: () => Promise<T> }): Promise<T> => {
     const count = (delta: number): void => {
       const next = (readsRef.current.get(origin.session) ?? 0) + delta
@@ -201,8 +238,9 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
       setReadsSeen((value) => value + 1)
     }
     count(1)
-    return run().finally(() => count(-1))
-  }, [])
+    const release = holdRead(itemUid(origin.target))
+    return run().finally(() => { count(-1); release() })
+  }, [holdRead])
 
   /** 단건 값을 base 로 받는다 — 시작 시각이 지금 base 보다 뒤일 때만(R2-D). 받았으면 그 값을 돌려준다. */
   const acceptItem = useCallback(({ value, stamp }: { value: WorkItem; stamp: number }): WorkItem | null => {
@@ -339,6 +377,11 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     })()
   }, [open, session, readSeq])
 
+  // 같은 작업에 보드 쓰기(끌기·보드 되돌리기)가 시작되면 상세의 되돌리기 토스트는 곧바로 사라진다(R6-B) — 상세 쓰기의 시작은 `write` 가 지운다.
+  useEffect(() => {
+    if (page.startedWrite !== null && page.startedWrite.uid === uid) expireAll()
+  }, [page.startedWrite])
+
   // 확정된 쓰기(상세·보드 끌기, 즉시·늦게) — 서버 값을 받는다. 확정 시각을 올려 그 전에 시작한 읽기를 낡은 것으로 만든다.
   // 편집 기준은 읽기와 같은 규칙(칸이 하나도 다르지 않을 때만)으로 — 상세 쓰기의 기준은 `finish` 가 이미 옮겼다.
   useEffect(() => {
@@ -370,8 +413,16 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
         setConflict(null)
         const carried = carriesItem({ result: outcome.result, itemId: current.id }) && 'item' in outcome.result ? outcome.result.item : null
         if (carried !== null) {
-          // 내 쓰기가 기준과 같은 판 위에서 성공했으면 그 기준은 결과로(그 사이 다른 쓰기가 없었다 — 직렬화). 덮기는 덮은 칸을 결과로.
-          for (const [slot, held] of basesRef.current) if (held.version === current.version || (spec.force === true && slotsOf(call).includes(slot))) basesRef.current.set(slot, carried)
+          // 기준이 결과로 오르는 길(R6-A): 서버가 그 기준의 판을 확인하고 받은 쓰기(판을 실어 보냈고 그 판 = 기준 판 — 그 사이 다른 쓰기가 없었다).
+          // 덮기는 판 없이 가서 그 증거가 없다 — 덮은 칸만, 그리고 결과와 기준이 덮은 칸만 다른 초안만(값 비교 — 외부 변경이 덮은 칸뿐, 자기 충돌 배너를 내지 않게).
+          const sent = sentVersion(call)
+          const changed = fieldsOf(call)
+          for (const [slot, held] of basesRef.current) {
+            const proven = sent !== null && held.version === sent
+            const forced = spec.force === true && slotsOf(call).includes(slot)
+            const onlyMine = spec.force === true && held.id === carried.id && conflictFields({ base: held, current: carried }).every((field) => changed.includes(field))
+            if (proven || forced || onlyMine) basesRef.current.set(slot, carried)
+          }
         }
         const fresh = carried === null ? afterForeign({ op: call.op, origin }) : null
         if (spec.undoing === true) notify({ kind: 'undone', label: `${current.key} 를 되돌렸습니다` })
@@ -481,13 +532,16 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     return response.result.item === null ? { found: false, message: `${key} — 없는 작업입니다.` } : { found: true, item: response.result.item }
   }, [read, here])
 
-  /** 「새로 불러오기」 — 서버 값으로 다시 그린다(미저장 편집은 화면이 버린다). */
+  /** 「새로 불러오기」·「다시 시도」 — 서버 값으로 다시 그린다(미저장 편집은 화면이 버린다). 읽기가 실패하면 첫 읽기 체인이 오류를 남긴다(R6-E). */
   const reloadFromServer = useCallback(() => {
     // 진행 중인 쓰기·읽기가 있으면 하지 않는다(직렬화 — 버튼도 막혀 있다).
     if (locked || reading) return
     setConflict(null)
+    setPhase({ state: 'loading', message: null })
     setReadSeq((value) => value + 1)
   }, [locked, reading])
+  /** 다시 읽을 수 있는가 — 진행 중인 쓰기·읽기가 없을 때(「다시 시도」 버튼). */
+  const canReload = !locked && !reading
 
   /** 「내 값으로 덮기」 — 같은 쓰기를 판 없이 다시. */
   const overrideConflict = useCallback(async (): Promise<DetailFinal | null> => {
@@ -521,7 +575,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
 
   return {
     target, uid, session, item, base, phase, statuses, parents, children, comments, history, records, conflict, transitions,
-    caps, descriptor, connection, blocked, busy, commentsGate,
+    caps, descriptor, connection, blocked, busy, commentsGate, canReload,
     write, finalOf, versionOf, reloadFromServer, overrideConflict, loadTransitions, openKey, openItem, lookupKey, holdBasis, dropBasis,
   }
 }

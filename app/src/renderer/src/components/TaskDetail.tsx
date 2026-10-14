@@ -87,6 +87,16 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
     return false
   }
 
+  // 상세 단건 읽기 실패(첫 읽기·새로 불러오기) — 목록 값이 있어도 보이고 다시 읽는다(R6-E). 받기 전이면 편집은 계속 막혀 있다(이유 = 받지 못함).
+  const loadError = phase.state !== 'error' ? null : (
+    <div className="issue-conflict is-error" data-issue-load-error="" role="status">
+      <div className="issue-conflict-text">{base === null ? '작업을 열지 못했습니다' : '서버 값을 다시 받지 못했습니다'} — {phase.message}</div>
+      <div className="issue-conflict-actions">
+        <button type="button" className="issue-btn is-primary" data-issue-retry="" disabled={!detail.canReload} onClick={() => detail.reloadFromServer()}>다시 시도</button>
+      </div>
+    </div>
+  )
+
   if (item === null) {
     return (
       <aside className={`issue-detail${full ? ' is-full' : ''}`} data-issue-detail="" aria-label="작업 상세">
@@ -96,7 +106,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
         </div>
         <div className="issue-detail-scroll">
           <div className="issue-detail-inner">
-            {phase.state === 'error' ? <div className="issue-detail-error" role="status">작업을 열지 못했습니다 — {phase.message}</div> : <div className="issue-detail-loading">불러오는 중…</div>}
+            {loadError ?? <div className="issue-detail-loading">불러오는 중…</div>}
           </div>
         </div>
       </aside>
@@ -223,6 +233,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
       </div>
       <div className="issue-detail-scroll">
         <div className="issue-detail-inner" onMouseDown={(event) => { if (menu !== null && !(event.target instanceof Element && event.target.closest('[data-detail-menu]'))) setMenu(null) }}>
+          {loadError}
           {conflict === null ? null : (
             <div className="issue-conflict" data-issue-conflict="" role="status">
               <div className="issue-conflict-text">
@@ -314,7 +325,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
                 }}
               >
                 {(item.body ?? '').trim().length === 0
-                  ? <div className="md-empty">{base === null ? '본문을 불러오는 중…' : '본문이 없습니다 — 눌러서 쓰기'}</div>
+                  ? <div className="md-empty">{base === null ? (phase.state === 'error' ? '본문을 받지 못했습니다 — 위의 「다시 시도」' : '본문을 불러오는 중…') : '본문이 없습니다 — 눌러서 쓰기'}</div>
                   : <MarkdownView source={item.body ?? ''} keyPattern={keyPattern} onOpenKey={(key) => void detail.openKey(key)} onToggleCheck={writable && bodyReady ? toggleCheck : undefined} />}
               </div>
             )}

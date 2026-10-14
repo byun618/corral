@@ -337,3 +337,59 @@ it('R2-E — 실행 취소 칸 상한(50)으로 가져오기 기록이 밀려나
   await act(async () => void (await ops().create({ dir: '', name: 'l592-last.txt', kind: 'file' })))
   expect(calls.filter((call) => call.op === 'release')).toEqual([{ op: 'release', ids: ['replay-1'] }])
 })
+
+// --- 수정 r3 ------------------------------------------------------------------------------------------------
+//   R3-C 중간 폴더 만들기의 다시 실행은 원래 맨 위 자리가 비어 있을 때만(`again`)
+//   R3-D 중간 폴더가 남은 부분 실패 — 입력 행 오류·알림에 남은 폴더 이름
+//   R3-E 확인 불가 항목은 안내 하나(「⌘Z 로 지우지 않음」 — 「휴지통에 보낼 수 있다」 를 같이 내지 않는다)
+//   재생 근거 수명 — hook 이 사라지면(언마운트) 붙잡던 재생 근거를 놓는다
+it('R3-C — 중간 폴더 만들기 다시 실행 요청은 again(원래 맨 위 자리 빔 확인)을 싣는다', async () => {
+  respond = (input) => {
+    switch (input.op) {
+      case 'create':
+        return { ok: true, op: 'create', rel: `${input.dir}/${input.name}`, kind: input.kind, created: `${input.dir}/${input.name.split('/')[0]}`, marks: [{ rel: 'x', stamp: 's' }] }
+      case 'trash':
+        return { ok: true, op: 'trash', rel: input.rel, kind: 'dir', snapshotId: null }
+      default:
+        return { ok: false, code: 'io_error', error: 'x' }
+    }
+  }
+  await act(async () => render('/wt/a'))
+  await act(async () => void (await ops().create({ dir: 'src', name: 'n/sub/file.txt', kind: 'file' })))
+  expect(calls[0]).not.toHaveProperty('again')
+  await act(async () => ops().undo())
+  await act(async () => ops().redo())
+  expect(calls[2]).toMatchObject({ op: 'create', dir: 'src', name: 'n/sub/file.txt', again: true })
+})
+
+it('R3-D — 중간 폴더가 남은 부분 실패는 입력 행 오류와 알림에 남은 폴더를 적는다', async () => {
+  respond = () => ({ ok: false, code: 'permission_denied', error: "폴더 만들기: 권한 없음 — 중간 폴더 'remaining' 는 만들어졌다", done: true, remains: ['remaining'] })
+  await act(async () => render('/wt/a'))
+  let message: string | null = null
+  await act(async () => {
+    message = await ops().create({ dir: '', name: 'remaining/child/file.txt', kind: 'file' })
+  })
+  expect(message).toMatch(/remaining/)
+  expect(notes.join('\n')).toMatch(/remaining/)
+})
+
+it('R3-E — 확인 불가 항목은 「⌘Z 로 지우지 않음」 안내 하나만', async () => {
+  respond = (input) =>
+    input.op === 'import'
+      ? importResult(['good', 'locked'], { marks: [[{ rel: 'good', stamp: 's' }], [{ rel: 'locked', stamp: 'unverifiable' }]], partial: ['locked'], failed: [{ name: 'locked', error: 'EACCES' }] })
+      : { ok: false, code: 'io_error', error: 'x' }
+  await act(async () => render('/wt/a'))
+  await act(async () => ops().importDrop(dropOf('/wt/a')))
+  expect(notes).toHaveLength(1)
+  expect(notes[0]).toMatch(/바뀌었는지 확인할 수 없는 항목 1: locked/)
+  expect(notes[0]).not.toMatch(/휴지통에 보낼 수 있습니다/)
+})
+
+it('재생 근거 수명 — hook 이 언마운트되면 붙잡던 재생 근거를 main 에서 놓는다', async () => {
+  respond = (input) => (input.op === 'import' ? importResult(['a.txt']) : input.op === 'release' ? { ok: true, op: 'release' } : { ok: false, code: 'io_error', error: 'x' })
+  await act(async () => render('/wt/a'))
+  await act(async () => ops().importDrop(dropOf('/wt/a')))
+  act(() => tree.unmount())
+  tree = createRoot(host)
+  expect(calls.filter((call) => call.op === 'release')).toEqual([{ op: 'release', ids: ['replay-1'] }])
+})

@@ -89,3 +89,9 @@ describe('수정 r2', () => {
     expect(narrowReplay({ op: 'create', dir: '', name: 'a', kind: 'file' }, ['a'])).toBeNull()
   })
 })
+
+describe('수정 r3', () => {
+  it('R3-C 만들기 역조작의 재생은 again(원래 맨 위 자리가 비어 있을 때만)', () => {
+    expect(inverseOf({ ok: true, op: 'create', rel: 'n/sub/f.ts', kind: 'file', created: 'n', marks: mark('n') })).toEqual({ op: 'trash', rel: 'n', expect: mark('n'), replay: { op: 'create', dir: '', name: 'n/sub/f.ts', kind: 'file', again: true } })
+  })
+})

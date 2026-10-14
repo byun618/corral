@@ -82,9 +82,10 @@ describe('R2-A 건너뛴 가져오기 항목은 결과·실행 취소 대상이 
     fs.symlinkSync('target', path.join(src, 'skip.txt'))
     const realLstat = fsp.lstat
     let n = 0
-    // 링크 원본을 lstat 으로 두 번째 볼 때(검사 뒤·건너뛰기 전) 같은 이름에 다른 작성자가 파일을 만든다.
+    // 링크 원본 lstat 차례: ① 종류 확인 ② 가져오기 직전 원본 도장(수정 r2) ③ 복사(`copyTree`)의 lstat — 이름(`skip.txt`)을 고른 **뒤**·건너뛰기 직전.
+    // ③ 에서 같은 이름에 다른 작성자가 파일을 만든다(리뷰 r3: ② 에서 주입하면 이름 선택 전이라 「copy」 이름을 골라 원래 조건이 아니다 — 리뷰어 R04 와 같은 세 번째).
     const spy = vi.spyOn(fsp, 'lstat').mockImplementation(async (target, options) => {
-      if (target === path.join(src, 'skip.txt') && ++n === 2) await fsp.writeFile(at('skip.txt'), 'user-created concurrently', { flag: 'wx' })
+      if (target === path.join(src, 'skip.txt') && ++n === 3) await fsp.writeFile(at('skip.txt'), 'user-created concurrently', { flag: 'wx' })
       return realLstat(target, options)
     })
     let result: ExplorerOpResult
@@ -95,6 +96,7 @@ describe('R2-A 건너뛴 가져오기 항목은 결과·실행 취소 대상이 
     }
     expect(result.ok).toBe(true)
     if (!result.ok || result.op !== 'import') return
+    expect(n).toBeGreaterThanOrEqual(3)
     expect(result.skipped.map((row) => row.name)).toEqual(['skip.txt'])
     expect(result.rels).toEqual([])
     expect(result.marks).toEqual([])

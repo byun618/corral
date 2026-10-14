@@ -17,6 +17,10 @@ import {
   settleWithin,
   shouldPasteClipboardImage,
   wrapBracketedPaste,
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
+  draftPastePayload,
+  sanitizeDraftBody,
 } from './terminal-paste.js'
 
 const wrap = wrapBracketedPaste
@@ -427,5 +431,25 @@ describe('settleWithin', () => {
     enqueue(settleWithin<readonly string[]>({ pending: Promise.reject(new Error('busy')), ms: 1000, onTimeout: () => [] }))
     await enqueue(['after'])
     expect(sent).toEqual(['after'])
+  })
+})
+
+describe('LIFE-603 초안 정제 (C15)', () => {
+  const hostile = '제목\r\n본문 \u001b[201~\rrm -rf ~\r\u0003\u0004\u007f\u009b끝\t탭\n\n  '
+  it('LF·탭만 남기고 ESC·C0·DEL·C1 을 지운다 — CR·CRLF 는 LF, 끝 공백은 걷는다', () => {
+    expect(sanitizeDraftBody(hostile)).toBe('제목\n본문 [201~\nrm -rf ~\n끝\t탭')
+  })
+  it('감싼 페이로드에는 틀의 ESC 둘뿐이고 틀 뒤에 아무것도 없다', () => {
+    const payload = draftPastePayload(hostile)
+    expect(payload.split('\u001b').length - 1).toBe(2)
+    expect(payload.startsWith(BRACKETED_PASTE_START) && payload.endsWith(BRACKETED_PASTE_END)).toBe(true)
+  })
+  it('양성 대조 — 정제 없이 틀만 씌우면 본문의 끝 시퀀스가 틀을 일찍 닫고 꼬리(CR 포함)가 틀 밖 키 입력이 된다', () => {
+    const naive = `${BRACKETED_PASTE_START}${hostile.replace(/\r?\n/g, '\r')}${BRACKETED_PASTE_END}`
+    const closedAt = naive.indexOf(BRACKETED_PASTE_END)
+    const outside = naive.slice(closedAt + BRACKETED_PASTE_END.length, naive.lastIndexOf(BRACKETED_PASTE_END))
+    expect(closedAt).toBeLessThan(naive.length - BRACKETED_PASTE_END.length)
+    expect(outside).toContain('\r')
+    expect(outside).toContain('rm -rf ~')
   })
 })

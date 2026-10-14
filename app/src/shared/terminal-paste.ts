@@ -196,3 +196,28 @@ export function createOrderedSender<T>(send: (item: T) => void): (pending: Promi
     return tail
   }
 }
+
+/**
+ * 초안 본문 정제 (LIFE-603 D8 · C15) — 외부 본문(작업 제목·본문)을 **입력창에만** 넣을 글자로 만든다.
+ *
+ * 남기는 제어 문자는 줄바꿈(LF)과 탭뿐이다. CR·CRLF 는 LF 로 맞추고, ESC(붙여넣기 끝 `ESC[201~` 포함)·그 밖의
+ * C0·DEL·C1 은 **지운다** — U+241B 로 바꾸는 `wrapBracketedPaste` 의 무력화보다 한 단계 세다(본문에 보일 이유가 없는 글자다).
+ * 그래서 감싼 뒤의 틀 안에는 `ESC` 가 하나도 없고, 틀을 일찍 닫아 꼬리를 키 입력으로 돌릴 길이 없다.
+ * 끝의 빈 줄·공백은 걷는다 — 틀 안이어도 마지막 줄바꿈을 「보내기」 로 읽는 입력기가 있을 수 있어 아예 만들지 않는다.
+ */
+export function sanitizeDraftBody(text: string): string {
+  const unified = text.replace(/\r\n?/g, '\n')
+  let out = ''
+  for (const char of unified) {
+    const code = char.codePointAt(0) ?? 0
+    if (char === '\n' || char === '\t') out += char
+    else if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) continue
+    else out += char
+  }
+  return out.replace(/\s+$/u, '')
+}
+
+/** 초안 한 번에 쓸 바이트 — 정제한 본문을 강제 bracketed paste 하나로. Enter(CR) 는 틀 밖에 붙이지 않는다. */
+export function draftPastePayload(text: string): string {
+  return wrapBracketedPaste(sanitizeDraftBody(text))
+}

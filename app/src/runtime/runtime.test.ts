@@ -733,6 +733,67 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     expect(nested(shown, 'agent').phase).toBe('exited')
     expect(calls).toBeGreaterThanOrEqual(3)
   }, 30000)
+
+  // --- LIFE-603 D8 — the draft stage: typed once as a bracketed paste, never submitted ----------------
+  const DRAFT_BODY = '작업 LIFE-1 첫 줄\r\n둘째 줄 \u001b[201~ 끼어든 끝 시퀀스\r셋째 줄\u0007벨\n넷째 줄\n' + '긴 본문 '.repeat(120) + '\n\n'
+  const sendSpy = () => vi.spyOn(TerminalBackend.prototype, 'sendIfUnchanged').mockImplementation(async () => undefined)
+  it('LIFE-603: worktree create --draft types the sanitized body once, sends no Enter and never submits', async () => {
+    const f = agentFixture('claude', { git: true })
+    const send = sendSpy()
+    cleanups.push(() => { send.mockRestore() })
+    let submitted = 0
+    f.state.onPrompt = () => { submitted++ }
+    const workspace = workspaceModule(f.data)
+    await workspace.execute({ command: 'repo add', flags: { path: f.cwd }, args: [], cwd: f.cwd }, f.context(8000))
+    const requestId = `r1.${Date.now()}.${randomUUID()}`
+    const create = () => workspace.execute({ command: 'worktree create', flags: { name: 'draft-wt', repo: f.cwd, agent: 'claude', prompt: DRAFT_BODY, draft: true, 'request-id': requestId }, args: [], cwd: f.cwd }, f.context(14000))
+    const created = asObject(await create())
+    expect(nested(created, 'stages', 'prompt')).toMatchObject({ status: 'completed', mode: 'draft', submitted: false })
+    expect(submitted).toBe(0)
+    expect(send).toHaveBeenCalledTimes(1)
+    const payload = String(send.mock.calls[0]![1])
+    // One frame: the only ESC bytes are the frame's own, so the body cannot close it early.
+    expect(payload.startsWith('\u001b[200~')).toBe(true)
+    expect(payload.endsWith('\u001b[201~')).toBe(true)
+    expect(payload.split('\u001b').length - 1).toBe(2)
+    // No other control character survives, and nothing follows the frame (no Enter).
+    expect(/[\u0000-\u0008\u000b\u000c\u000e-\u001a\u001c-\u001f\u007f]/.test(payload)).toBe(false)
+    expect(payload.slice(6, -6).endsWith('\r')).toBe(false)
+    expect(payload).toContain('넷째 줄')
+    expect(send.mock.calls[0]![2]).toBe(2) // fenced on the ready observation's seq
+    // Same request id → replay: the draft is not typed a second time.
+    const again = asObject(await create())
+    expect(again.replayed).toBe(true)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(submitted).toBe(0)
+  }, 40000)
+  it('LIFE-603: a blocked or unverified agent leaves the draft not_started and types nothing (fail-closed)', async () => {
+    for (const mode of ['blocked', 'unverified'] as const) {
+      const f = agentFixture('claude', { git: true })
+      await workspaceModule(f.data).execute({ command: 'repo add', flags: { path: f.cwd }, args: [], cwd: f.cwd }, f.context(8000))
+      const send = sendSpy()
+      cleanups.push(() => { send.mockRestore() })
+      if (mode === 'blocked') f.state.info = { ...f.state.info, status: 'blocked' }
+      else f.state.manifests = []
+      const created = asObject(await f.run('terminal create', { worktree: f.cwd, agent: 'claude', prompt: DRAFT_BODY, draft: true, 'request-id': `r1.${Date.now()}.${randomUUID()}` }, 8000))
+      expect([mode, nested(created, 'stages', 'prompt').status]).toEqual([mode, 'not_started'])
+      expect(send).not.toHaveBeenCalled()
+      send.mockRestore()
+    }
+  }, 40000)
+  it('LIFE-603 positive control: without --draft the same body is submitted through agent.prompt and never typed', async () => {
+    const f = agentFixture('claude', { git: true })
+    await workspaceModule(f.data).execute({ command: 'repo add', flags: { path: f.cwd }, args: [], cwd: f.cwd }, f.context(8000))
+    const send = sendSpy()
+    cleanups.push(() => { send.mockRestore() })
+    let submitted = 0
+    f.state.onPrompt = () => { submitted++ }
+    const created = asObject(await f.run('terminal create', { worktree: f.cwd, agent: 'claude', prompt: PROMPT, 'request-id': `r1.${Date.now()}.${randomUUID()}` }, 8000))
+    expect(created.stage).toBe('agent_prompted')
+    expect(nested(created, 'stages', 'prompt').mode).toBeUndefined()
+    expect(submitted).toBe(1)
+    expect(send).not.toHaveBeenCalled()
+  }, 30000)
 })
 
 

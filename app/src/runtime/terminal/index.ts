@@ -8,6 +8,7 @@ import { validateFoundation } from '../registry.js'
 import { TerminalBackend, type TerminalIdentity, type AgentObservation } from '../../main/adapter/index.js'
 import { RepoRegistry } from '../../main/registry.js'
 import { isRecord } from '../../shared/json.js'
+import { draftPastePayload, sanitizeDraftBody } from '../../shared/terminal-paste.js'
 import { WorktreeMetadata, worktreeSelect } from '../workspace/model.js'
 import { Tokens } from './tokens.js'
 import { Receipts, REQUEST_ID } from './receipts.js'
@@ -515,6 +516,26 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           stages.prompt = { status: 'not_started', reason: ready.phase === 'blocked' ? 'agent_blocked'
             : ready.manifest !== null && !ready.manifest.verified ? 'detect_manifest_unverified' : 'agent_not_ready' }
           return { ...await done('agent_started', record, ready.views, false, null), agent: await agentBlock(created, record, ready.views, false, ready.manifest) }
+        }
+        // LIFE-603 D8: `worktree create --draft` forwards `draft` here (terminal create itself does not advertise it).
+        // The body goes into the input as one bracketed paste, fenced on the ready observation's seq, and no Enter follows.
+        // `completed` means corral wrote the sanitized body to the pane once, as a bracketed paste with no Enter, while the
+        // agent's state seq was still the ready one. It does **not** mean the body is visible or that nothing was submitted:
+        // only the provider's session record can show that, and this stage does not read it.
+        if (f.draft === true) {
+          const text = sanitizeDraftBody(prompt), identity = bodyIdentity(text), info = ready.views[ready.views.length - 1]?.info ?? null
+          if (text === '' || info === null) {
+            stages.prompt = { status: 'not_started', mode: 'draft', reason: text === '' ? 'empty_after_sanitize' : 'agent_not_ready' }
+            return done('agent_started', record, ready.views, true, null)
+          }
+          try {
+            await backend.sendIfUnchanged(created, draftPastePayload(text), info.stateChangeSeq, ctx)
+            stages.prompt = { status: 'completed', mode: 'draft', submitted: false, bytes: identity.bytes, lines: identity.lines, sha256: identity.sha256 }
+            return done('agent_drafted', record, [await observeAgent(created, record)], false, null)
+          } catch (error) {
+            stages.prompt = { ...stageFailure(error), mode: 'draft' }
+            return done('agent_started', record, [await observeAgent(created, record)], false, null)
+          }
         }
         const promptId = derivedPromptId(required('request-id'))
         const child: Invocation = { command: 'terminal prompt', flags: { terminal: terminal.handle, 'request-id': promptId, stdin: true }, args: [], cwd: inv.cwd, stdin: prompt }

@@ -11,16 +11,18 @@
 // 가져오기 재생은 main 이 붙잡은 재생 근거(`replayId`)로만 한다(R2-E) — 이 기록이 그 id 를 가리키는 동안 main 이 들고, 기록에서 빠지면 hook 이 `release` 로 놓는다(`replayIdsOf`).
 // 여러 항목 가져오기를 실행 취소하다 일부가 거절되면, 치운 것만 다시 실행할 수 있다(R2-F — `names` 를 치운 것으로 좁힌다).
 // 조작이 실패하면(그 사이 바뀜·자리에 다른 것) 그 칸은 버리고 사유를 알린다(조용히 다른 것을 지우거나 덮지 않는다 — 판단은 main).
+// 정체 잇기(수정 r4 R4-A): 실행 취소·다시 실행이 항목을 새 정체로 다시 만들어도(삭제 되살림·재생) 앞·뒤 칸은 그대로 둔다 — main 이 그 새 정체를 앱이 치운 바로 그 항목의
+// 옛 정체로 잇고 대조한다. 재생 칸은 되돌릴 때 치운 표지(`was` — 휴지통 `expect` 와 같은 것)를 실어 main 이 어느 치움에 잇는지 안다.
 import { baseName, UNDO_HISTORY_LIMIT, type EntryMark, type ExplorerOpResult } from '../../shared/explorer-ops.js'
 
 /**
  * 다시 실행으로 다시 부를 원래 조작(R1-G). 복제는 원래 사본 이름·원래 원본 도장(`again`), 가져오기는 main 재생 근거 id 와 원래 만든 이름들(`names`) — R2-D.
  */
 export type ReplayStep =
-  /** `again` — 원래 만든 맨 위 자리가 비어 있을 때만 다시 만든다(수정 r3 R3-C). */
-  | { op: 'create'; dir: string; name: string; kind: 'file' | 'dir'; again: true }
-  | { op: 'duplicate'; rel: string; again: { name: string; source: string } }
-  | { op: 'import'; dir: string; replay: string; names: string[] }
+  /** `again` — 원래 만든 맨 위 자리가 비어 있을 때만 다시 만든다(수정 r3 R3-C). `was` — 되돌릴 때 치운 표지(R4-A). */
+  | { op: 'create'; dir: string; name: string; kind: 'file' | 'dir'; again: true; was: EntryMark[] }
+  | { op: 'duplicate'; rel: string; again: { name: string; source: string }; was: EntryMark[] }
+  | { op: 'import'; dir: string; replay: string; names: string[]; was: EntryMark[] }
 
 export type HistoryStep =
   | { op: 'move'; from: string; to: string; expect: string }
@@ -68,13 +70,13 @@ export function inverseOf(result: ExplorerOpResult): HistoryStep | null {
       // 다시 실행 = 그 자리에서 같은 이름으로 다시 만들기(처음 만든 것의 부모에서 나머지 경로 — 이미 있던 중간 폴더는 그대로 둔 채).
       const dir = parentOfRel(result.created)
       const name = dir === '' ? result.rel : result.rel.slice(dir.length + 1)
-      return { op: 'trash', rel: result.created, expect: result.marks, replay: { op: 'create', dir, name, kind: result.kind, again: true } }
+      return { op: 'trash', rel: result.created, expect: result.marks, replay: { op: 'create', dir, name, kind: result.kind, again: true, was: result.marks } }
     }
     case 'duplicate':
-      return { op: 'trash', rel: result.rel, expect: result.marks, replay: { op: 'duplicate', rel: result.from, again: { name: baseName(result.rel), source: result.source } } }
+      return { op: 'trash', rel: result.rel, expect: result.marks, replay: { op: 'duplicate', rel: result.from, again: { name: baseName(result.rel), source: result.source }, was: result.marks } }
     case 'import': {
       const steps = result.rels.map((rel, index): HistoryStep => ({ op: 'trash', rel, expect: result.marks[index] ?? [] }))
-      const replay: ReplayStep | undefined = result.replayId === null ? undefined : { op: 'import', dir: result.dir, replay: result.replayId, names: result.rels.map(baseName) }
+      const replay: ReplayStep | undefined = result.replayId === null ? undefined : { op: 'import', dir: result.dir, replay: result.replayId, names: result.rels.map(baseName), was: result.marks.flat() }
       const only = steps[0]
       if (only === undefined) return null
       if (steps.length === 1 && only.op === 'trash') return replay === undefined ? only : { ...only, replay }

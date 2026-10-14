@@ -39,8 +39,9 @@ export type ExplorerOpInput =
   /**
    * 새 파일·폴더 — `name` 에 `/` 가 있으면 중간 폴더까지 만든다(VS Code 와 같다 — 이미 있는 중간 폴더는 그대로 쓴다).
    * `again` = 다시 실행 재생(수정 r3 R3-C) — 원래 만든 맨 위 자리(`name` 의 첫 성분)가 비어 있을 때만, 차 있으면 `exists`.
+   * `was` = 재생이면 실행 취소 때 치운 표지(수정 r4 R4-A) — main 이 그 표지로 실제 치운 집합을 적어 둔 것이 있을 때만 새로 만든 것을 그 정체로 잇는다.
    */
-  | { op: 'create'; root: string; dir: string; name: string; kind: 'file' | 'dir'; again?: boolean }
+  | { op: 'create'; root: string; dir: string; name: string; kind: 'file' | 'dir'; again?: boolean; was?: EntryMark[] }
   /** 이름 변경·이동(같은 연산 — 대상 자리가 비어 있어야 한다, 대소문자만 바꾸기는 허용). `expect` = 실행 취소·다시 실행이 그 항목인지 확인할 정체. */
   | { op: 'move'; root: string; from: string; to: string; expect?: string }
   /** 삭제 = 휴지통. `snapshot` 이면 파일 ≤ 5 MB 의 내용을 사본으로 남긴다(실행 취소용). `expect` = 실행 취소(만들기 되돌리기)가 확인할 도장들(바뀌었으면 거절). */
@@ -49,18 +50,21 @@ export type ExplorerOpInput =
   | { op: 'restore'; root: string; rel: string; snapshotId: string }
   /**
    * 같은 부모에 「<이름> copy」 로 복제. `again` = 다시 실행 재생(수정 r2 R2-D) — 원래 사본 이름(`name`)에만 만들고(차 있으면 `exists`),
-   * 원본 도장이 원래 복제 때(`source`)와 다르면 `modified`.
+   * 원본 도장이 원래 복제 때(`source`)와 다르면 `modified`. `was` = 만들기 재생과 같다(R4-A).
    */
-  | { op: 'duplicate'; root: string; rel: string; again?: { name: string; source: string } }
-  /** OS 드롭 가져오기 — 원본은 preload 가 main 에 직접 넘긴 표지(`token`)로만 가리킨다. */
-  | { op: 'import'; root: string; dir: string; token: string }
+  | { op: 'duplicate'; root: string; rel: string; again?: { name: string; source: string }; was?: EntryMark[] }
+  /**
+   * OS 드롭 가져오기 — 원본은 preload 가 main 에 직접 넘긴 표지(`token`)로만 가리킨다.
+   * `owner` = 요청한 hook(수정 r4 R4-B) — 그 hook 이 끝나기 전에 가져오기가 끝나야 main 이 재생 근거를 붙잡는다.
+   */
+  | { op: 'import'; root: string; dir: string; token: string; owner?: string }
   /**
    * 가져오기 다시 실행(수정 r2 R2-D·R2-E) — main 이 붙잡은 재생 근거(`replay` id)의 원본 중 `names`(원래 만든 이름)만, 그 이름 그대로 다시 가져온다.
    * 자리가 차 있으면 `exists`, 원본이 원래 가져오기 뒤 바뀌었으면 `modified` — 둘 다 아무것도 만들지 않는다.
    */
-  | { op: 'import'; root: string; dir: string; replay: string; names: string[] }
-  /** 실행 취소 기록에서 빠진 재생 근거를 main 에서 놓는다(R2-E). */
-  | { op: 'release'; ids: string[] }
+  | { op: 'import'; root: string; dir: string; replay: string; names: string[]; was?: EntryMark[] }
+  /** 실행 취소 기록에서 빠진 재생 근거를 main 에서 놓는다(R2-E). `owner` = 그 hook 이 끝났다 — 그 hook 의 근거를 전부 놓고 진행 중 가져오기도 붙잡지 않게(R4-B). */
+  | { op: 'release'; ids: string[]; owner?: string }
   /** 삭제 확인 전에 종류·크기를 본다(대화상자 문구 — 실행 취소 가능 여부). 읽기만. */
   | { op: 'inspect'; root: string; rel: string }
 

@@ -110,17 +110,20 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
   const histories = useRef(new Map<string, History>())
   /** main 이 붙잡고 있는 가져오기 재생 근거 중 기록이 가리키는 것(R2-E). */
   const heldReplays = useRef(new Set<string>())
+  /** 이 hook 의 수명 표지(수정 r4 R4-B) — 가져오기에 싣고, 언마운트 때 닫는다. main 이 진행 중 가져오기의 근거를 붙잡을지 이것으로 판정한다. */
+  const hookOwner = useRef(`hook-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`)
   const queue = useRef<Promise<unknown>>(Promise.resolve())
   const historyOf = (root: string): History => histories.current.get(root) ?? emptyHistory()
-  // hook 이 사라지면(언마운트) 기록도 사라진다 — 붙잡던 재생 근거를 main 에서 놓는다(수정 r3). 렌더러가 새로 뜨는 경우는 main 이 놓는다(`did-navigate`).
-  useEffect(
-    () => () => {
+  // hook 이 사라지면(언마운트) 기록도 사라진다 — 붙잡던 재생 근거를 main 에서 놓고, 이 hook 의 owner 를 닫는다(수정 r3·r4 — 붙잡은 것이 없어도:
+  // 진행 중인 가져오기가 뒤늦게 끝나도 main 이 붙잡지 않게). 렌더러가 새로 뜨는 경우는 main 이 놓는다(`did-navigate`).
+  useEffect(() => {
+    const self = hookOwner.current
+    return () => {
       const held = [...heldReplays.current]
       heldReplays.current = new Set()
-      if (held.length > 0) void window.corral.explorerOp({ op: 'release', ids: held }).catch(() => undefined)
-    },
-    [],
-  )
+      void window.corral.explorerOp({ op: 'release', ids: held, owner: self }).catch(() => undefined)
+    }
+  }, [])
   /** 기록을 바꾼다 — 어느 기록도 더는 가리키지 않는 재생 근거(상한으로 밀림·다시 실행 칸 비움·재생 실패로 버림)는 main 에서 놓는다(R2-E). */
   const setHistory = (root: string, history: History): void => {
     histories.current.set(root, history)
@@ -222,19 +225,19 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
   const runReplay = async (root: string, step: ReplayStep): Promise<{ result: ExplorerOpResult; note: string | null }> => {
     switch (step.op) {
       case 'create': {
-        const result = await call({ op: 'create', root, dir: step.dir, name: step.name, kind: step.kind, again: step.again })
+        const result = await call({ op: 'create', root, dir: step.dir, name: step.name, kind: step.kind, again: step.again, was: step.was })
         if (result.ok && result.op === 'create' && shown(root)) latest.current.explorer.reveal(result.rel)
         return { result, note: null }
       }
       case 'duplicate': {
-        const result = await call({ op: 'duplicate', root, rel: step.rel, again: step.again })
+        const result = await call({ op: 'duplicate', root, rel: step.rel, again: step.again, was: step.was })
         if (!result.ok || result.op !== 'duplicate') return { result, note: null }
         if (shown(root)) latest.current.explorer.reveal(result.rel)
         const note = copyNotes({ made: [result.rel], marks: [result.marks], partial: result.failed.length > 0 ? [result.rel] : [], skipped: result.skipped, failed: result.failed })
         return { result, note: note === null ? null : `'${baseName(step.rel)}' 복제: ${note}` }
       }
       case 'import': {
-        const result = await call({ op: 'import', root, dir: step.dir, replay: step.replay, names: step.names })
+        const result = await call({ op: 'import', root, dir: step.dir, replay: step.replay, names: step.names, was: step.was })
         if (!result.ok || result.op !== 'import') return { result, note: null }
         const first = result.rels[0]
         if (first !== undefined && shown(root)) latest.current.explorer.reveal(first)
@@ -462,7 +465,7 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
           return
         }
         if (owner === null) return
-        const result = await call({ op: 'import', root: owner, dir: drop.dir, token: drop.token })
+        const result = await call({ op: 'import', root: owner, dir: drop.dir, token: drop.token, owner: hookOwner.current })
         refresh(owner, [result])
         if (!result.ok || result.op !== 'import') {
           if (!result.ok) latest.current.notify(`가져오지 못했습니다: ${opFailureMessage(result)}`)

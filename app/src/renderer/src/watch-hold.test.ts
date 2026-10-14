@@ -32,3 +32,33 @@ describe('watch hold', () => {
     expect(first()).toEqual([push('a.txt', 's2')])
   })
 })
+
+describe('R2-I 겹친 붙잡기 — 해제 순서와 무관하게 경로별 가장 늦게 받은 push', () => {
+  const setup = () => {
+    const watch = createWatchHold()
+    const older = watch.hold({ root: '/wt', prefixes: ['a.txt'] })
+    expect(watch.intercept(push('a.txt', 'old'))).toBe(true)
+    const newer = watch.hold({ root: '/wt', prefixes: ['a.txt'] })
+    expect(watch.intercept(push('a.txt', 'new'))).toBe(true)
+    return { older, newer }
+  }
+  it('오래된 것부터 풀기 → 마지막에 최신(new)', () => {
+    const { older, newer } = setup()
+    expect(older()).toEqual([])
+    expect(newer()).toEqual([push('a.txt', 'new')])
+  })
+  it('새것부터 풀기 → 마지막에 최신(new)', () => {
+    const { older, newer } = setup()
+    expect(newer()).toEqual([])
+    expect(older()).toEqual([push('a.txt', 'new')])
+  })
+  it('넓은 붙잡기가 먼저 풀려도 이미 반영한 최신보다 옛 push 를 다시 내지 않는다', () => {
+    const watch = createWatchHold()
+    const wide = watch.hold({ root: '/wt', prefixes: ['dir'] })
+    expect(watch.intercept(push('dir/a.txt', 'old'))).toBe(true)
+    const narrow = watch.hold({ root: '/wt', prefixes: ['dir/a.txt'] })
+    expect(watch.intercept(push('dir/a.txt', 'new'))).toBe(true)
+    expect(narrow()).toEqual([])
+    expect(wide()).toEqual([push('dir/a.txt', 'new')])
+  })
+})

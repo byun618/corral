@@ -5,7 +5,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import type { ExplorerOpInput, ExplorerOpResult } from '../../../shared/explorer-ops.js'
+import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from '../../../shared/explorer-ops.js'
 import { useFileOps, type FileOpsApi, type FileOpsDeps } from './useFileOps.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
@@ -190,4 +190,112 @@ it('R1-G — 폴더 복제를 실행 취소한 뒤 다시 실행 = 같은 원본
   })
   expect(calls.map((call) => call.op)).toEqual(['duplicate', 'trash', 'duplicate'])
   expect(calls[2]).toMatchObject({ root: '/wt/a', rel: 'folder' })
+})
+
+// --- 수정 r2 ------------------------------------------------------------------------------------------------
+//   R2-F 여러 항목 가져오기의 부분 실행 취소 — 안내가 치운 것·거절된 것을 나누고, 치운 것은 다시 실행할 수 있다
+//   R2-H 다시 실행(재생) 결과의 부분 실패·덜 든 항목도 일반 조작과 같은 안내
+//   R2-E 가져오기 재생 근거 — 기록에서 빠지면(새 조작이 다시 실행 칸을 비움) main 에 놓으라고(release) 알린다
+const importResult = (rels: string[], extra: Partial<Record<'partial' | 'failed', unknown>> = {}): ExplorerOpResult => ({
+  ok: true,
+  op: 'import',
+  dir: '',
+  rels,
+  marks: rels.map((rel) => [{ rel, stamp: `s-${rel}` }]),
+  skipped: [],
+  failed: [],
+  partial: [],
+  replayToken: 'legacy-token',
+  replayId: 'replay-1',
+  ...extra,
+} as unknown as ExplorerOpResult)
+const dropOf = (root: string): ExplorerDrop => ({ token: 'drop-1', root, dir: '', names: ['a.txt', 'b.txt'] })
+
+it('R2-F — 두 항목 가져오기 실행 취소에서 하나만 거절되면 안내가 치움·거절을 나누고, 치운 것만 다시 실행한다', async () => {
+  respond = (input) => {
+    switch (input.op) {
+      case 'import':
+        return importResult(['a.txt', 'b.txt'])
+      case 'trash':
+        return input.rel === 'a.txt' ? { ok: true, op: 'trash', rel: input.rel, kind: 'file', snapshotId: null } : { ok: false, code: 'modified', error: 'changed after import' }
+      default:
+        return { ok: false, code: 'io_error', error: 'x' }
+    }
+  }
+  await act(async () => render('/wt/a'))
+  await act(async () => ops().importDrop(dropOf('/wt/a')))
+  await act(async () => ops().undo())
+  expect(notes).toHaveLength(1)
+  expect(notes[0]).toMatch(/치움 1: a\.txt/)
+  expect(notes[0]).toMatch(/거절 1: b\.txt/)
+  respond = (input) => (input.op === 'import' ? importResult(['a.txt']) : { ok: false, code: 'io_error', error: 'x' })
+  await act(async () => ops().redo())
+  const redo = calls[calls.length - 1]
+  expect(redo).toMatchObject({ op: 'import', root: '/wt/a', replay: 'replay-1', names: ['a.txt'] })
+})
+
+it('R2-H — 다시 실행한 가져오기·복제의 부분 실패를 알린다', async () => {
+  respond = (input) => {
+    switch (input.op) {
+      case 'import':
+        return importResult(['a.txt'])
+      case 'trash':
+        return { ok: true, op: 'trash', rel: input.rel, kind: 'file', snapshotId: null }
+      default:
+        return { ok: false, code: 'io_error', error: 'x' }
+    }
+  }
+  await act(async () => render('/wt/a'))
+  await act(async () => ops().importDrop(dropOf('/wt/a')))
+  await act(async () => ops().undo())
+  respond = (input) => (input.op === 'import' ? importResult(['a.txt'], { partial: ['a.txt'], failed: [{ name: 'a.txt', error: 'ENOSPC' }] }) : { ok: false, code: 'io_error', error: 'x' })
+  await act(async () => ops().redo())
+  expect(notes.join('\n')).toMatch(/내용이 덜 든 채 남은 항목 1: a\.txt/)
+  expect(notes.join('\n')).toMatch(/실패 1: a\.txt — ENOSPC/)
+
+  notes = []
+  gate = () => undefined
+  respond = (input) => {
+    switch (input.op) {
+      case 'duplicate':
+        return { ok: true, op: 'duplicate', from: 'folder', rel: 'folder copy', kind: 'dir', marks: [{ rel: 'folder copy', stamp: 's' }], failed: [], source: 'src-stamp' } as unknown as ExplorerOpResult
+      case 'trash':
+        return { ok: true, op: 'trash', rel: input.rel, kind: 'dir', snapshotId: null }
+      default:
+        return { ok: false, code: 'io_error', error: 'x' }
+    }
+  }
+  await act(async () => ops().duplicate('folder'))
+  await act(async () => ops().undo())
+  respond = (input) =>
+    input.op === 'duplicate'
+      ? ({ ok: true, op: 'duplicate', from: 'folder', rel: 'folder copy', kind: 'dir', marks: [{ rel: 'folder copy', stamp: 's' }], failed: [{ name: 'folder/x', error: 'EACCES' }], source: 'src-stamp' } as unknown as ExplorerOpResult)
+      : { ok: false, code: 'io_error', error: 'x' }
+  await act(async () => ops().redo())
+  expect(notes.join('\n')).toMatch(/실패 1: folder\/x — EACCES/)
+})
+
+it('R2-E — 가져오기 재생 근거가 기록에서 빠지면(다시 실행 칸 비움) main 에 놓으라고 알린다', async () => {
+  respond = (input) => {
+    switch (input.op) {
+      case 'import':
+        return importResult(['a.txt'])
+      case 'trash':
+        return { ok: true, op: 'trash', rel: input.rel, kind: 'file', snapshotId: null }
+      case 'create':
+        return { ok: true, op: 'create', rel: input.name, kind: input.kind, created: input.name, marks: [{ rel: input.name, stamp: 's' }] }
+      case 'release':
+        return { ok: true, op: 'release' }
+      default:
+        return { ok: false, code: 'io_error', error: 'x' }
+    }
+  }
+  await act(async () => render('/wt/a'))
+  await act(async () => ops().importDrop(dropOf('/wt/a')))
+  await act(async () => ops().undo())
+  expect(calls.some((call) => call.op === 'release')).toBe(false)
+  await act(async () => {
+    await ops().create({ dir: '', name: 'l592-new.txt', kind: 'file' })
+  })
+  expect(calls.find((call) => call.op === 'release')).toMatchObject({ op: 'release', ids: ['replay-1'] })
 })

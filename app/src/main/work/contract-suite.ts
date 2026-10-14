@@ -427,7 +427,8 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       expect(statusRecords.at(-1)?.change).toMatchObject({ field: 'status', statusKey: done.key, resolution: 'completed' })
       await travel({ itemId: item.id, goal: original, statuses })
       expect(await getItem(item.id)).toMatchObject({ statusKey: original.key, resolution: null })
-      expect(await send({ op: 'changeStatus', itemId: item.id, statusKey: done.key, ifVersion: null, resolution: 'wontfix' })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+      // 모르는 갈래는 경계 검증에서 거절 — 타입 밖 값이라 raw 요청으로 보낸다.
+      expect(await target.service.request({ requestId: 'req-wontfix', connectionId: target.connectionId, call: { op: 'changeStatus', itemId: item.id, statusKey: done.key, ifVersion: null, resolution: 'wontfix' } })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
     })
 
     it('자식(E6) — 자식을 받는 종류 아래 제목만으로 만들면 목록에 나오고, 잎 종류 아래는 거절', async () => {

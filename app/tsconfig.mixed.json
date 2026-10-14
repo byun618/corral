@@ -2,7 +2,7 @@
   // LIFE-601 R2-Q — 렌더러 화면과 실제 WorkService(main)를 함께 import 하는 통합 시험 전용. web·node 어느 쪽에도 둘 수 없어(TS6307·DOM/node 타입)
   // web 설정을 이어받고 node 타입을 더해 이 파일만 검사한다. `npm run typecheck` 가 부른다.
   "extends": "./tsconfig.web.json",
-  "include": ["src/renderer/src/components/TasksPage.service.test.tsx", "src/renderer/src/components/TasksPage.r4la.test.tsx", "src/renderer/src/env.d.ts"],
+  "include": ["src/renderer/src/components/TasksPage.service.test.tsx", "src/renderer/src/components/TasksPage.r4la.test.tsx", "src/renderer/src/components/TaskDetail.service.test.tsx", "src/renderer/src/env.d.ts"],
   "exclude": [],
   "compilerOptions": {
     "composite": false,

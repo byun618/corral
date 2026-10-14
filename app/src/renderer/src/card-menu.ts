@@ -20,6 +20,7 @@ export type CardMenuAction =
   | 'set-parent'
   | 'open-parent'
   | 'remove-parent'
+  | 'detach-task'
   | 'delete'
 
 export const PRIMARY_DELETE_DISABLED = '주 워크트리는 삭제할 수 없습니다 — 레포 ⋯ 의 「목록에서 프로젝트 제거」 를 쓰세요'
@@ -70,6 +71,9 @@ export function cardMenuEntries(input: {
   ]
   if (hasParent && input.parentInTree) entries.push({ kind: 'item', action: 'open-parent', label: '상위 워크트리 열기', disabled: deleting })
   if (hasParent) entries.push({ kind: 'item', action: 'remove-parent', label: '상위에서 빼기', disabled: deleting })
+  // LIFE-603 C9·C11 — 링크된 worktree 만. 명시 링크는 지우고, 자동 연결은 이 worktree 만 예외로 둔다.
+  const link = worktree.workLink ?? null
+  if (link !== null) entries.push({ kind: 'sep', key: 'sep-task' }, { kind: 'item', action: 'detach-task', label: '작업 떼기', disabled: deleting, title: `${link.key} 와의 연결을 뗍니다 — 브랜치 키로 다시 붙지 않습니다` })
   entries.push({ kind: 'sep', key: 'sep-delete' })
   if (!worktree.isLinked) {
     entries.push({ kind: 'item', action: 'delete', label: '워크트리 삭제', danger: true, disabled: true, title: PRIMARY_DELETE_DISABLED })

@@ -52,7 +52,18 @@ import {
 } from '../tasks-model.js'
 import './tasks.css'
 import './task-detail.css'
+import './work-links.css'
 import { TaskDetail } from './TaskDetail.js'
+import { StartWorkModal } from './StartWorkModal.js'
+import { WorkLinksContext, type DetailWorkActions, type WorkLinksView } from './WorkLinkChips.js'
+import { useStartWork } from '../hooks/useStartWork.js'
+import { treesFor } from '../work-links-model.js'
+import type { WorkRepoDefault } from '../../../shared/work.js'
+
+/** 사이드바 작업 줄이 여는 작업 — `itemId` 를 모르면(자동 링크) 키로 찾는다. */
+export type TasksFocus = { seq: number; connectionId: string; itemId: string | null; key: string }
+
+const NO_DEFAULTS: WorkRepoDefault[] = []
 import { Backlog, Board, ListView, MoreBar, SpaceDot, WorkingList, capabilityGate, type CardProps, type ColumnDragView, type MoreState, type WorkingView } from './TasksViews.js'
 
 type BacklogSection = { id: 'board' | 'backlog'; label: string; rows: TasksRow[] }
@@ -68,7 +79,7 @@ const EMPTY_COPY: Record<EmptyCause, { title: string; body: string }> = {
   working: { title: '작업 중인 worktree 가 없습니다', body: '브랜치 이름에 작업 키가 들어간 worktree 를 열면 여기에 모입니다.' },
 }
 
-export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree }: {
+export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus }: {
   open: boolean
   repos: RepoRow[]
   activeRepoRoot: string | null
@@ -77,7 +88,14 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   yieldKeys: boolean
   onClose: () => void
   onOpenSettings: () => void
-  onOpenWorktree: (tree: WorkingTree) => void
+  /** 작업 중 줄 · 칩 · 「열기」 · 시작 모달의 「worktree 열기」 — 모두 같은 경로(C1). */
+  onOpenWorktree: (tree: Pick<WorkingTree, 'repoRoot' | 'path'>) => void
+  /** 사이드바와 같은 안 읽음 pane 집합 — 링크된 worktree 점(LIFE-603 C10). */
+  unreadPanes?: ReadonlySet<string>
+  /** 「터미널에서 답하기」 — 페이지를 닫고 그 pane 으로. */
+  onRevealPane?: (paneId: string) => void
+  /** 사이드바 작업 줄 클릭 — 그 작업 상세를 연다(`seq` 가 바뀔 때마다 한 번). */
+  focus?: TasksFocus | null
 }): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
@@ -118,7 +136,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         return
     }
   }
-  const page = useTasksPage({ open, repos, activeRepoRoot, notify })
+  const page = useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes })
   const { prefs, setPrefs, space, settings, groups, load, rows, banner, query, setQuery, selectedId, setSelectedId } = page
   const all = space?.kind === 'all'
 
@@ -126,6 +144,25 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const detailTarget = useMemo(() => (selectedId === null ? null : parseUid(selectedId)), [selectedId])
   const detail = useTaskDetail({ open, target: detailTarget, page, notify })
   const detailEscape = useRef<(() => boolean) | null>(null)
+
+  // --- 작업에서 시작 · 링크 (LIFE-603) ---
+  const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree }), [page.linked, onOpenWorktree])
+  const detailSource = detail.descriptor?.name ?? detail.connection?.name ?? '출처'
+  const starter = useStartWork({ detail, repos, repoDefaults: settings?.repoDefaults ?? NO_DEFAULTS, activeRepoRoot, sourceName: detailSource })
+  const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })
+  const workActions = useMemo((): DetailWorkActions => ({ start: (mode) => starter.begin(mode), reveal: (paneId) => onRevealPane?.(paneId) }), [starter.begin, onRevealPane])
+  // 사이드바 작업 줄 → 그 작업 상세. 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다.
+  const focusSeq = focus?.seq ?? 0
+  useEffect(() => {
+    if (focus == null || !open) return
+    if (focus.itemId !== null) { setSelectedId(itemUid({ connectionId: focus.connectionId, itemId: focus.itemId })); return }
+    let live = true
+    void window.corral.workRequest({ requestId: `focus-${focus.seq}-${Date.now()}`, connectionId: focus.connectionId, call: { op: 'findByKey', key: focus.key } }).then((response) => {
+      if (!live || !response.ok || response.result.op !== 'findByKey' || response.result.item === null) return
+      setSelectedId(itemUid({ connectionId: focus.connectionId, itemId: response.result.item.id }))
+    })
+    return () => { live = false }
+  }, [focusSeq, open])
   /** 스페이스 키 → 이름·색 — 보이는 스페이스면 그 색 번호, 숨긴 스페이스도 설정 목록에서 이름을 찾는다. */
   const spaceOf = (spaceKey: string): { name: string; color: string | null; index: number } | null => {
     if (detailTarget === null) return null
@@ -597,9 +634,11 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         </div>
       )}
 
+      <WorkLinksContext.Provider value={links}>
       <div className="tasks-body">{body}</div>
       {selectedId === null ? null : (
         <TaskDetail
+          work={workActions}
           detail={detail}
           full={prefs.detailFull}
           now={now}
@@ -609,6 +648,10 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           spaceOf={spaceOf}
         />
       )}
+      {detail.item === null ? null : (
+        <StartWorkModal model={starter} itemKey={detail.item.key} itemTitle={detail.item.title} repos={repos} trees={detailTrees} onOpen={onOpenWorktree} />
+      )}
+      </WorkLinksContext.Provider>
       </div>
     </div>
   )

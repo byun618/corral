@@ -5,7 +5,7 @@ import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
 import type { WorktreeWorkLink } from './work-link.js'
-import type { StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
+import type { RelaunchAgentInput, StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
 import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
@@ -1106,6 +1106,8 @@ export type CorralApi = {
   startWork: (input: StartWorkInput) => Promise<StartWorkResult | null>
   /** 그 작업의 마지막 시작 시도(진행 중이면 결과 null) — 모달을 다시 열 때 이어 받는다. */
   startWorkStatus: (query: StartWorkStatusQuery) => Promise<StartAttemptView | null>
+  /** 시작 모달 「에이전트 다시 띄우기」 — 그 작업에 붙은 worktree 에 에이전트 pane 하나(프롬프트 없음). 발신자 거절이면 null. */
+  relaunchWorkAgent: (input: RelaunchAgentInput) => Promise<StartWorkResult | null>
   /** 사이드바 「작업 떼기」 — 명시 링크면 지우고 자동 연결 예외로 둔다. */
   detachWorkLink: (input: { path: string }) => Promise<DetachWorkLinkResult>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }

@@ -5,7 +5,9 @@ import { ACTIONS, bindingsFor, formatBinding, type ActionId } from '../../shared
 import { BindingLabels } from './hooks/BindingLabels.js'
 import { useKeybindings } from './hooks/useKeybindings.js'
 import { SettingsPage } from './components/SettingsPage.js'
-import { TasksPage } from './components/TasksPage.js'
+import { TasksPage, type TasksFocus } from './components/TasksPage.js'
+import type { WorktreeTaskLine } from './components/WorktreeTask.js'
+import { linkTitleId, useLinkTitles } from './hooks/useLinkTitles.js'
 import { activateWorktreeCard } from './worktree-activate.js'
 import { DEFAULT_SETTINGS_SECTION, SETTINGS_SECTIONS, type SettingsSectionId } from './settings-registry.js'
 // 화면 오케스트레이터 — `repo → worktree → tab → pane` 4단 데이터를 Orca 배치(사이드바 카드 +
@@ -17,7 +19,7 @@ import { DEFAULT_SETTINGS_SECTION, SETTINGS_SECTIONS, type SettingsSectionId } f
 // 계측이 누를 수 있게 손잡이마다 `data-*` 를 단다 — 선택자가 화면 계약이다 (C7 매핑표 참고).
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { AgentStatus, AppState, PaneDirection, PaneSplitDirection, RepoRow as RepoRowData, TabRow, WorkspaceRow } from '../../shared/types.js'
+import type { AgentStatus, AppState, PaneDirection, PaneSplitDirection, RepoRow as RepoRowData, TabRow, WorkspaceRow, WorktreeRow } from '../../shared/types.js'
 import { AddRepoModal } from './components/AddRepoModal.js'
 import { ConfirmClose } from './components/ConfirmClose.js'
 import { CreateWorktreeModal } from './components/CreateWorktreeModal.js'
@@ -448,6 +450,13 @@ export function App(): React.JSX.Element {
       ? null
       : (activeGroupTab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? pickPane(activeGroupTab)?.paneId ?? null)
   const unread = useUnread({ state, viewedPaneId, activeWorktree: activeWorktreeRow?.path ?? null })
+  // LIFE-603 C11 — 사이드바 작업 줄의 제목 캐시. 작업 페이지가 닫힐 때마다 다시 받는다(페이지에서 바꾼 제목·상태).
+  const [tasksFocus, setTasksFocus] = useState<TasksFocus | null>(null)
+  const [titleRound, setTitleRound] = useState(0)
+  useEffect(() => {
+    if (!tasksOpen) setTitleRound((value) => value + 1)
+  }, [tasksOpen])
+  const linkTitles = useLinkTitles({ repos: state?.repos ?? NO_REPOS, refresh: titleRound })
 
   /**
    * LIFE-387 A1 — 탭 드래그. 판정은 `useTabDrag`(순수 함수 `tab-drag.ts` 를 DOM 에 잇는 층)가
@@ -1027,6 +1036,25 @@ export function App(): React.JSX.Element {
     setTasksOpen(false)
     requestAnimationFrame(() => setFocusToken((value) => value + 1))
   }
+  /** 링크된 worktree 카드의 작업 줄 — 누르면 작업 페이지 + 그 작업 상세. 연결이 없거나 못 찾으면 키만. */
+  const taskLineOf = (worktree: WorktreeRow): WorktreeTaskLine | null => {
+    const link = worktree.workLink ?? null
+    if (link === null) return null
+    const found = link.connected ? linkTitles.get(linkTitleId(link)) : undefined
+    const item = found?.state === 'found' ? found.item : null
+    return {
+      key: link.key,
+      title: item?.title ?? null,
+      kindLabel: item?.kind.label ?? null,
+      statusLabel: null,
+      blocked: (item?.openBlockerCount ?? 0) > 0,
+      blockers: item?.openBlockers.map((blocker) => `${blocker.key} ${blocker.title}`) ?? [],
+      onOpen: () => {
+        openTasks()
+        setTasksFocus((current) => ({ seq: (current?.seq ?? 0) + 1, connectionId: link.connectionId, itemId: link.itemId ?? item?.id ?? null, key: link.key }))
+      },
+    }
+  }
   const toggleTasks = (): void => {
     if (tasksOpen) closeTasks()
     else openTasks()
@@ -1533,6 +1561,7 @@ export function App(): React.JSX.Element {
           view={sidebarView.view}
           onChangeView={sidebarView.change}
           onOpenSearch={openPalette}
+          taskLineOf={taskLineOf}
           tasks={{ open: tasksOpen, onToggle: toggleTasks, shortcut: ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('tasks.toggle', keymap.overrides)[0]) }}
           searchShortcut={((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('palette.search', keymap.overrides)[0])}
           isRepoCollapsed={repoCollapse.has}
@@ -1620,6 +1649,13 @@ export function App(): React.JSX.Element {
                 closeTasks()
                 if (worktree !== undefined) activateWorktreeCard({ actions: lifecycle.actions, repoRoot: tree.repoRoot, worktree, selectPane: revealPane })
               }}
+              unreadPanes={unread.panes}
+              onRevealPane={(paneId) => {
+                // 「터미널에서 답하기」 — 페이지를 닫고 그 pane 으로(사이드바 세션 클릭과 같은 길).
+                closeTasks()
+                revealPane(paneId)
+              }}
+              focus={tasksFocus}
             />
           ) : null}
         </div>

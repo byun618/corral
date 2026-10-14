@@ -1,10 +1,11 @@
 // 작업 상세 (LIFE-602 · LIFE-372 묶음 T3 · design-handoff B) — 작업 페이지 안 오른쪽 560 패널 ↔ ⤢ 페이지 전체(본문 820).
 //
 // 그리기만 한다 — 읽기·쓰기·충돌·활동은 `useTaskDetail`. 화면은 출처 이름으로 분기하지 않는다: 능력 표(`hidden` = 없음 · `disabled` = 흐림 + 이유)와
-// descriptor(이름·키 모양)만 본다. 실행 영역·「열기 / ▶ 시작」 은 그리지 않는다(게이트 ⓪ D4 — T5).
+// descriptor(이름·키 모양)만 본다. LIFE-603(T5) — 상태 줄 오른쪽 「▶ 시작 / 열기 · 하나 더 시작」 과 본문 뒤 「실행」(링크된 worktree)은
+// `WorkLinkChips` 가 그린다. 링크는 main 이 해석해 트리에 실은 것 — 여기서 고르지 않는다.
 // `Esc` 단계(C1): 열린 메뉴·확인 팝오버(여기 `escapeRef`) → 입력 blur → 상세 닫기 → 페이지 닫기(앞 셋은 작업 페이지 키 처리기가 차례로 묻는다).
 // 편집기·제목 칸의 Esc 는 그 칸이 먼저 받아 「버림」 으로 끝낸다(기본 동작을 막아 페이지가 다시 처리하지 않는다).
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { WORK_PRIORITIES, type WorkCall, type WorkFieldPatch, type WorkItem, type WorkRelation, type WorkRelationKind, type WorkStatus } from '../../../shared/work.js'
 import type { EditSlot, TaskDetailModel } from '../hooks/useTaskDetail.js'
 import {
@@ -27,6 +28,8 @@ import {
   type StatusMenuRow,
 } from '../task-detail-model.js'
 import { toggleCheckLine } from '../markdown.js'
+import { treesFor, type LinkedTree } from '../work-links-model.js'
+import { WorkButtons, WorkLinksContext, WorkRunSection, type DetailWorkActions } from './WorkLinkChips.js'
 import { PRIORITY_GLYPH, PRIORITY_LABEL, UNRESTORABLE_RESOLUTION, dueTone, imeComposing, restorableResolution } from '../tasks-model.js'
 import { MarkdownEditor } from './MarkdownEditor.js'
 import { MarkdownView } from './MarkdownView.js'
@@ -37,7 +40,9 @@ type Menu = 'status' | 'priority' | null
 /** 상세를 받기 전에 보낸 입력 — 보내지 않았음을 그 자리에 알린다(R3-E: 화면에만 남지 않게). */
 const NOT_READY = '상세를 받는 중이라 보내지 않았습니다 — 받은 뒤 다시 하세요.'
 
-export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose, spaceOf }: {
+const NO_TREES: LinkedTree[] = []
+
+export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose, spaceOf, work }: {
   detail: TaskDetailModel
   full: boolean
   now: number
@@ -47,6 +52,8 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
   onClose: () => void
   /** 스페이스 키 → 이름·색(설정의 스페이스 목록). 모르면 null. */
   spaceOf: (spaceKey: string) => { name: string; color: string | null; index: number } | null
+  /** 작업 버튼·실행 영역(LIFE-603). 없으면 그리지 않는다. */
+  work?: DetailWorkActions
 }): React.JSX.Element | null {
   const { item, base, phase, statuses, descriptor, connection, blocked, conflict } = detail
   const [menu, setMenu] = useState<Menu>(null)
@@ -57,6 +64,8 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
   const [bodyNote, setBodyNote] = useState<string | null>(null)
   const keyPattern = descriptor?.keyPattern ?? null
   const sourceName = descriptor?.name ?? connection?.name ?? '출처'
+  const links = useContext(WorkLinksContext)
+  const trees = links === null || item === null || detail.target === null ? NO_TREES : treesFor({ trees: links.trees, connectionId: detail.target.connectionId, itemId: item.id, key: item.key })
 
   // 다른 작업으로 바뀌면 열린 메뉴·편집을 버린다.
   useEffect(() => {
@@ -303,6 +312,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
               )}
             </div>
             {detail.busy ? <span className="issue-busy" data-issue-busy="">확인하는 중…</span> : null}
+            {work === undefined ? null : <><span className="issue-detail-head-spacer" /><WorkButtons trees={trees} actions={work} /></>}
           </div>
 
           <Fields detail={detail} item={item} now={now} menu={menu} setMenu={setMenu} writable={writable} saveFields={saveFields} />
@@ -331,6 +341,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
             )}
           </section>
 
+          {work === undefined ? null : <WorkRunSection trees={trees} itemKey={item.key} now={now} actions={work} />}
           <Relations detail={detail} item={item} spaceOf={spaceOf} />
           <Children detail={detail} item={item} />
           <Activity detail={detail} statuses={statuses ?? []} sourceName={sourceName} now={now} keyPattern={keyPattern} />

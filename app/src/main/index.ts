@@ -1792,6 +1792,7 @@ app.whenReady().then(async () => {
   workHandle('corral:workActivity', (input) => work?.activity(input))
   // LIFE-603 — 작업에서 시작 · 이어 받기 · 작업 떼기. 런타임 호출은 main 에서만(렌더러에 범용 런타임 다리 없음).
   ipcMain.handle('corral:startWork', async (event, input: unknown) => (fromOurWindow(event) && workStarts !== null ? workStarts.start(input) : null))
+  ipcMain.handle('corral:relaunchWorkAgent', async (event, input: unknown) => (fromOurWindow(event) && workStarts !== null ? workStarts.relaunch(input) : null))
   ipcMain.handle('corral:startWorkStatus', (event, input: unknown) => (fromOurWindow(event) && workStarts !== null ? workStarts.status(input) : null))
   ipcMain.handle('corral:detachWorkLink', async (event, input: unknown) => {
     if (!fromOurWindow(event) || workLinks === null) return { ok: false, error: '허용되지 않은 발신자' }

@@ -52,6 +52,17 @@ export type StartWorkResult = {
 
 export type StartWorkStatusQuery = { connectionId: string; itemId: string }
 
+/** 「에이전트 다시 띄우기」(C6) — 이미 만든(그 작업에 붙은) worktree 에 에이전트 pane 하나. 프롬프트는 넣지 않는다. 새 시도 id. */
+export type RelaunchAgentInput = {
+  attemptId: string
+  connectionId: string
+  itemId: string
+  path: string
+  agent: Exclude<AgentKind, 'shell'>
+  model: string
+  effort: string
+}
+
 /** 모달을 다시 열 때 이어 받는 시도 — 입력 요약 + 결과(진행 중이면 null). */
 export type StartAttemptView = {
   attemptId: string
@@ -167,6 +178,16 @@ export function readStartWorkInput(value: unknown): StartWorkInput | null {
   if (typeof submit !== 'boolean') return null
   if (startNameProblem(name) !== null) return null
   return { attemptId, connectionId, sourceId, itemId, itemKey, repoRoot, name, agent: kind, model, effort, prompt, submit }
+}
+
+export function readRelaunchAgentInput(value: unknown): RelaunchAgentInput | null {
+  if (!isRecord(value)) return null
+  const { attemptId, connectionId, itemId, path, agent, model, effort } = value
+  if (!text(attemptId, 128) || !ATTEMPT_ID.test(attemptId) || !text(connectionId, 512) || !text(itemId, 512) || !text(path, 4096)) return null
+  const kind = AGENTS.find((entry) => entry === agent)
+  if (kind === undefined || kind === 'shell') return null
+  if (typeof model !== 'string' || typeof effort !== 'string' || model.length > 200 || effort.length > 64) return null
+  return { attemptId, connectionId, itemId, path, agent: kind, model, effort }
 }
 
 export function readStartWorkStatusQuery(value: unknown): StartWorkStatusQuery | null {

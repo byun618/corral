@@ -40,6 +40,7 @@ import { SidebarFooterToolbar } from './SidebarFooterToolbar.js'
 import { SidebarSearch } from './SidebarSearch.js'
 import { CircleXIcon, ListIcon, PinIcon } from './SidebarIcons.js'
 import { WorktreeBlock, type CardNest } from './WorktreeBlock.js'
+import type { WorktreeTaskLine } from './WorktreeTask.js'
 
 /**
  * 카드 메뉴 쪽 입력 (LIFE-478) — 고정·삭제 중·대화는 App 이 갖고(단축키·대화가 App 층), 메뉴·피커·rename·Reveal 실행은 Sidebar 가 한다
@@ -90,6 +91,7 @@ export function Sidebar({
   onChangeView,
   onOpenSearch,
   tasks,
+  taskLineOf,
   searchShortcut,
   isRepoCollapsed,
   toggleRepoCollapsed,
@@ -130,6 +132,8 @@ export function Sidebar({
   onOpenSearch: () => void
   /** 사이드바 「작업」 진입 (LIFE-601) — 작업 페이지 열기/닫기. */
   tasks?: { open: boolean; onToggle: () => void; shortcut: string | null }
+  /** 링크된 worktree 카드의 작업 줄(LIFE-603 C11) — App 의 제목 캐시가 만든다. */
+  taskLineOf?: (worktree: WorktreeRow) => WorktreeTaskLine | null
   /** Search 줄 hover 키캡 — ⌘J 의 지금 조합(비켜 서 없으면 null). */
   searchShortcut: string | null
   isRepoCollapsed: (root: string) => boolean
@@ -379,6 +383,12 @@ export function Sidebar({
           if (error !== null) cards.notify(`상위에서 빼지 못했습니다: ${error}`)
         })
         return
+      case 'detach-task':
+        void window.corral.detachWorkLink({ path: worktree.path }).then((result) => {
+          if (!result.ok) cards.notify(`작업을 떼지 못했습니다: ${result.error}`)
+          else if (result.sourceLink?.state === 'failed') cards.notify(`작업을 뗐지만 출처의 링크는 지우지 못했습니다: ${result.sourceLink.message ?? ''}`)
+        })
+        return
       case 'delete':
         if (worktree.isLinked && !cards.deleting.has(worktree.path)) cards.requestDelete(worktree)
         return
@@ -433,6 +443,7 @@ export function Sidebar({
         nest={input.nest}
         worktree={worktree}
         repoLabel={input.repoLabel}
+        taskLine={taskLineOf?.(worktree) ?? null}
         layout={view.cardLayout}
         showAgents={showAgents}
         agentLayout={view.agentActivityLayout}

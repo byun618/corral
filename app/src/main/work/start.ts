@@ -15,7 +15,7 @@ import { isRecord } from '../../shared/json.js'
 import type { RepoRow } from '../../shared/types.js'
 import { effortOptions, knownOption, modelOptions } from '../../shared/agent-options.js'
 import type { StoredWorkLink } from '../../shared/work-link.js'
-import { initialStages, readStartWorkInput, readStartWorkStatusQuery, startWorktreePath, type StartAttemptView, type StartStage, type StartStageName, type StartWorkInput, type StartWorkResult } from '../../shared/work-start.js'
+import { initialStages, readRelaunchAgentInput, readStartWorkInput, readStartWorkStatusQuery, startWorktreePath, type StartAttemptView, type StartStage, type StartStageName, type StartWorkInput, type StartWorkResult } from '../../shared/work-start.js'
 import type { WorkLinks } from './links.js'
 import type { LinkWorkPort } from './links.js'
 
@@ -73,6 +73,7 @@ export function mapAgentStages(result: unknown): { stages: Record<StartStageName
 export class StartService {
   private readonly deps: StartDeps
   private readonly attempts = new Map<string, Attempt>()
+  private readonly relaunches = new Map<string, Promise<StartWorkResult>>()
   /** 작업(연결::작업 id) → 마지막 시도 id. */
   private readonly latest = new Map<string, string>()
   private inflight = 0
@@ -122,6 +123,36 @@ export class StartService {
     } finally {
       this.inflight -= 1
     }
+  }
+
+  /**
+   * 에이전트 다시 띄우기(C6) — 그 작업에 명시 링크로 붙은 worktree 에만. 런타임 `terminal create --agent`(명령 그대로, 프롬프트 없음).
+   * 새 시도 id 가 런타임 영수증 id 다 — 같은 id 연타는 pane 하나(replay).
+   */
+  async relaunch(raw: unknown): Promise<StartWorkResult> {
+    const input = readRelaunchAgentInput(raw)
+    if (input === null) return this.refused('', '다시 띄우기 입력이 잘못됐습니다.')
+    const same = this.relaunches.get(input.attemptId)
+    if (same !== undefined) return { ...(await same), joined: true }
+    const link = this.deps.repos().flatMap((repo) => repo.worktrees).find((row) => row.path === input.path)?.workLink ?? null
+    if (link === null || link.mode !== 'explicit' || link.connectionId !== input.connectionId || link.itemId !== input.itemId) return this.refused(input.attemptId, '이 작업에 붙은 worktree 가 아닙니다.')
+    if (this.deps.invoke() === null) return this.refused(input.attemptId, '런타임이 아직 서지 않았습니다.')
+    const promise = (async (): Promise<StartWorkResult> => {
+      const flags: Invocation['flags'] = { worktree: `path:${input.path}`, agent: input.agent, 'request-id': input.attemptId }
+      const model = knownOption({ options: modelOptions(input.agent), value: input.model })
+      const effort = knownOption({ options: effortOptions(input.agent), value: input.effort })
+      if (model !== '') flags.model = model
+      if (effort !== '') flags.effort = effort
+      this.deps.log('work.start_relaunch', { attemptId: input.attemptId, agent: input.agent, path: input.path })
+      const response = await this.call({ command: 'terminal create', flags, args: [], cwd: this.deps.cwd })
+      const agent = response === null ? stage('unknown', 'runtime_unavailable', '런타임이 사라졌습니다.')
+        : !response.ok ? stage(RETRY_CODES.has(response.error?.code ?? '') ? 'unknown' : 'failed', response.error?.code ?? 'operation_failed', response.error?.message ?? '에이전트를 띄우지 못했습니다.')
+          : stage('completed')
+      return { attemptId: input.attemptId, joined: false, done: true, stages: { worktree: stage('completed', 'already_linked', null), agent, prompt: stage('skipped', 'relaunch', '다시 띄운 에이전트에는 프롬프트를 넣지 않습니다.') }, worktreePath: input.path, linkSaved: true, sourceLink: null, refused: null }
+    })()
+    this.relaunches.set(input.attemptId, promise)
+    this.inflight += 1
+    try { return await promise } finally { this.inflight -= 1 }
   }
 
   private refused(attemptId: string, message: string): StartWorkResult {

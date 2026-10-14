@@ -105,6 +105,7 @@ const EXPOSED = [
   'workActivity',
   'startWork',
   'startWorkStatus',
+  'relaunchWorkAgent',
   'detachWorkLink',
   'preloadEnv',
 ]
@@ -304,6 +305,7 @@ const api: CorralApi = {
   workActivity: (query) => ipcRenderer.invoke('corral:workActivity', query),
   startWork: (input) => ipcRenderer.invoke('corral:startWork', input),
   startWorkStatus: (query) => ipcRenderer.invoke('corral:startWorkStatus', query),
+  relaunchWorkAgent: (input) => ipcRenderer.invoke('corral:relaunchWorkAgent', input),
   detachWorkLink: (input) => ipcRenderer.invoke('corral:detachWorkLink', input),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {

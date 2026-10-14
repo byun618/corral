@@ -32,6 +32,7 @@ import {
   type WorkingTree,
 } from '../tasks-model.js'
 import { AgentStateDot } from './AgentStateDot.js'
+import { WorktreeChip, WorktreeDotMark } from './WorkLinkChips.js'
 
 const IDLE_VIEW: ColumnDragView = { mode: 'idle', reason: null }
 
@@ -143,6 +144,7 @@ export function IssueCard({ row, rows, all, density, selected, dragging, now, ha
           <span className="tasks-card-title-one">{item.title}</span>
           <PriorityMark item={item} />
           {item.openBlockerCount > 0 ? <span className="tasks-blocked-dot" data-issue-blocked="" title={blockedLabel(item) ?? ''} /> : null}
+          <WorktreeDotMark connectionId={row.space.connectionId} item={item} />
         </div>
       </div>
     )
@@ -160,6 +162,7 @@ export function IssueCard({ row, rows, all, density, selected, dragging, now, ha
       <div className="tasks-card-title">{item.title}</div>
       {all ? <div className="tasks-card-status"><StatusCircle category={item.category} fill={0.5} size={8} />{row.status?.label ?? '보드에 칸이 없는 상태'}</div> : null}
       <BlockedBadge item={item} />
+      <WorktreeChip connectionId={row.space.connectionId} item={item} />
       {progress === null ? null : (
         <div className="tasks-progress" data-issue-progress="" data-progress-partial={progress.partial ? '' : undefined}>
           <button type="button" className="tasks-progress-toggle" data-no-drag="" title={progress.partial ? '이 스페이스의 작업을 아직 다 받지 않았습니다 — 받은 자식만 셉니다' : undefined} onClick={(event) => { event.stopPropagation(); setExpanded((value) => !value) }} aria-expanded={expanded}>
@@ -322,6 +325,7 @@ export function IssueRow({ row, all, now, selected, dragging, handle, onSelect, 
       {keyHit ? <span className="tasks-key-hit" data-search-hit="">키 일치</span> : null}
       <span className="tasks-row-title">{item.title}</span>
       <BlockedBadge item={item} />
+      <WorktreeChip connectionId={row.space?.connectionId ?? null} item={item} />
       {all || spaceName !== undefined ? (
         <span className="tasks-row-space">
           {row.space !== null ? <SpaceDot color={row.space.color} index={row.space.colorIndex} /> : null}

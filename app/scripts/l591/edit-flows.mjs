@@ -10,7 +10,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { checkRoot, ctl, evalJs, repoPane, sleep, until, writeJson } from './lib.mjs'
+import { checkRoot, ctl, editorState, evalJs, exposeMonaco, repoPane, sleep, until, writeJson } from './lib.mjs'
 
 const { values } = parseArgs({ options: { root: { type: 'string' }, repo: { type: 'string' }, out: { type: 'string' } } })
 checkRoot(values.root)
@@ -56,16 +56,21 @@ await until(async () => (await js(`document.querySelector('[data-explorer-row="$
 await ctl(root, { cmd: 'dblclick', selector: `[data-explorer-row="${rel}"]` })
 await until(() => js(`document.querySelector('[data-file-view="${rel}"] [data-editor-ready]') !== null`), { label: 'editor' })
 
-// ① 탭 전환 왕복
+// ① 탭 전환 왕복 — 판정(수정 r3 정정): 떠나기 전과 돌아온 뒤의 모델 글·scrollTop·view state(첫 위치·커서)가 같고 수정됨. 「첫 화면 줄」 은 떠나기 전부터
+// 스크롤이 있던 회차를 실패로 셌다(R2Q09 — 리뷰어 r3 판별). 화면 첫 줄은 참고로만 남긴다.
+await exposeMonaco(root)
 await editorTop()
 await ctl(root, { cmd: 'type', text: 'Z' })
 await until(dirty, { label: 'dirty', timeoutMs: 5000 })
+await sleep(200)
+const leaving = await editorState(root, rel)
 await click(`[data-main-tab]:not([data-file-tab])`)
 await until(() => js(`document.querySelector('[data-file-view="${rel}"]') === null`), { label: 'unmounted' })
 await click(`[data-file-tab="${rel}"]`)
 await until(() => js(`document.querySelector('[data-file-view="${rel}"] [data-editor-ready]') !== null`), { label: 'remounted' })
-const kept = await settle(async () => (await dirty()) && (await shown()).startsWith('Zalpha'))
-check('E1e-tab-switch-keeps', kept, { text: await shown(), dirty: await dirty() })
+const same = (a, b) => a !== null && b !== null && a.model === b.model && a.scrollTop === b.scrollTop && JSON.stringify(a.view) === JSON.stringify(b.view)
+const kept = await settle(async () => (await dirty()) && leaving !== null && leaving.model.startsWith('Zalpha') && same(leaving, await editorState(root, rel)))
+check('E1e-tab-switch-keeps', kept, { leaving, back: await editorState(root, rel), firstScreenLine: (await shown()).split('\n')[0], dirty: await dirty() })
 await click(`[data-file-view="${rel}"] .view-lines`)
 await key('Z', ['meta'])
 check('E1e-undo-after-switch', await settle(async () => !(await dirty()) && (await shown()).startsWith('alpha')), { text: await shown(), dirty: await dirty() })

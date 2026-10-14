@@ -4,7 +4,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { checkRoot, ctl, evalJs, repoPane, sleep, until, writeJson } from './lib.mjs'
+import { checkRoot, ctl, editorState, evalJs, exposeMonaco, repoPane, sleep, until, writeJson } from './lib.mjs'
 
 const { values } = parseArgs({ options: { root: { type: 'string' }, repo: { type: 'string' }, out: { type: 'string' }, n: { type: 'string', default: '10' } } })
 checkRoot(values.root)
@@ -24,7 +24,10 @@ if ((await js(`document.querySelector('[data-explorer-row="notes"]')?.getAttribu
 await until(async () => (await js(`document.querySelector('[data-explorer-row="${rel}"]') !== null`)), { label: 'file row' })
 await ctl(root, { cmd: 'dblclick', selector: `[data-explorer-row="${rel}"]` })
 await until(() => js(`document.querySelector('[data-file-view="${rel}"] [data-editor-ready]') !== null`), { label: 'editor' })
-const sample = () => js(`(() => { const v = document.querySelector('[data-file-view="${rel}"]'); const rows = [...(v?.querySelectorAll('.view-line') ?? [])]; rows.sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top)); const sc = v?.querySelector('.monaco-scrollable-element.editor-scrollable'); const lines = v?.querySelector('.view-lines'); return { first: rows[0]?.textContent ?? null, tops: rows.map((r) => r.style.top).slice(0, 3), linesTop: lines?.style.top ?? null, ready: v?.querySelector('[data-editor-ready]') !== null } })()`)
+await exposeMonaco(root)
+// 수정 r3 — Monaco scrollTop·view state 를 실제로 기록한다(옛 판은 찾기만 하고 넣지 않았다 — 리뷰어 r3 지적). 판정 없음(진단용, 종료 0 은 통과가 아니다).
+const sampleDom = () => js(`(() => { const v = document.querySelector('[data-file-view="${rel}"]'); const rows = [...(v?.querySelectorAll('.view-line') ?? [])]; rows.sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top)); const sc = v?.querySelector('.monaco-scrollable-element.editor-scrollable'); const lines = v?.querySelector('.view-lines'); return { first: rows[0]?.textContent ?? null, tops: rows.map((r) => r.style.top).slice(0, 3), linesTop: lines?.style.top ?? null, ready: v?.querySelector('[data-editor-ready]') !== null } })()`)
+const sample = async () => ({ ...(await sampleDom()), editor: await editorState(root, rel) })
 const rounds = []
 const n = Number(values.n)
 for (let round = 0; round < n; round += 1) {
@@ -33,6 +36,7 @@ for (let round = 0; round < n; round += 1) {
   await key('Home')
   if (round === 0) await ctl(root, { cmd: 'type', text: 'Z' })
   await sleep(200)
+  const leaving = await editorState(root, rel)
   await click(`[data-main-tab]:not([data-file-tab])`)
   await until(() => js(`document.querySelector('[data-file-view="${rel}"]') === null`), { label: 'unmounted' })
   await click(`[data-file-tab="${rel}"]`)
@@ -43,8 +47,8 @@ for (let round = 0; round < n; round += 1) {
     await sleep(50)
   }
   const last = samples.at(-1)
-  rounds.push({ round, finalFirst: last.first, finalLinesTop: last.linesTop, firstSeenZ: samples.find((s) => String(s.first).startsWith('Z'))?.ms ?? null, samples })
-  console.log(JSON.stringify({ round, finalFirst: last.first, linesTop: last.linesTop, tops: last.tops, firstSeenZ: rounds.at(-1).firstSeenZ }))
+  rounds.push({ round, leaving, finalEditor: last.editor, preserved: JSON.stringify(leaving) === JSON.stringify(last.editor), finalFirst: last.first, finalLinesTop: last.linesTop, firstSeenZ: samples.find((s) => String(s.first).startsWith('Z'))?.ms ?? null, samples })
+  console.log(JSON.stringify({ round, finalFirst: last.first, scrollTopBefore: leaving?.scrollTop ?? null, scrollTopAfter: last.editor?.scrollTop ?? null, preserved: rounds.at(-1).preserved, firstSeenZ: rounds.at(-1).firstSeenZ }))
 }
 writeJson(path.join(values.out, 'remount-probe.json'), { rel, rounds })
 await ctl(root, { cmd: 'file-dialog-stub', answers: ['discard', 'discard'] })

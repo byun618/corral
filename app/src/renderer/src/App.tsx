@@ -70,7 +70,7 @@ import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
 import { fileTabLabel, fileTabsOf, isFileTabId, previewOf, tabKindOf, terminalKeyTarget } from './file-tabs.js'
 import { FileView, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
-import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, getDoc, subscribeDocs, type FileDoc } from './file-docs.js'
+import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, type FileDoc } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, type SaveDeps } from './file-save.js'
 import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
 import { moveDirectionToSplit } from './components/TabContextMenu.js'
@@ -154,7 +154,10 @@ export function App(): React.JSX.Element {
         const label = (doc: FileDoc): string => (new Set(dirtyDocs().map((row) => row.root)).size > 1 ? `${doc.root.split('/').pop() ?? doc.root}/${doc.rel}` : doc.rel)
         void confirmDiscardOrSave({ targets: allDocs, deps: saveDepsRef.current, label })
           .then((ok) => {
-            if (ok) window.corral.confirmQuit()
+            if (!ok) return
+            // 승인 — 이 순간(같은 마이크로태스크)부터 편집을 막고 main 에 알린다. 승인 뒤 정리 대기 중 친 글자가 조용히 사라지지 않게(R3-C).
+            freezeEditing()
+            window.corral.confirmQuit()
           })
           .finally(() => {
             quitPromptRef.current = false

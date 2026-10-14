@@ -55,11 +55,15 @@ export type FileDoc = {
   /** 모델이 글 맨 앞 U+FEFF 를 모델 BOM 으로 들고 있다 — 직렬화 앞에 붙인다(R1-G). */
   hiddenBom: boolean
   /**
-   * 모델 버전(`getAlternativeVersionId`)마다 그때의 머리 바이트 상태(`bom`·`hiddenBom`) — 모델 밖 값이라 실행 취소·다시 실행이 되돌리지 않는다.
-   * 편집 이벤트마다 처음 보는 버전이면 지금 값을 적고, 아는 버전(실행 취소·다시 실행으로 돌아옴)이면 그 값으로 되돌린다(수정 r2 R2-B —
-   * 되돌리기 → 실행 취소 → 저장에서 본문 U+FEFF·파일 BOM 이 빠졌다). 다시 읽기(`setValue` — 실행 취소 기록이 새로 시작)면 비운다.
+   * 머리 바이트 상태(`bom`·`hiddenBom`)가 **바뀐 지점**만 — 모델 밖 값이라 실행 취소·다시 실행이 되돌리지 않으므로 문서가 따로 든다(수정 r2 R2-B).
+   * Monaco 실행 취소는 한 줄(선형)이고 새 편집의 버전 id 는 늘 지금까지 중 가장 크다 — 그래서 지금 경로의 버전은 id 순이고, 버전 v 의 머리 = v 이하 마지막 지점.
+   * 새 편집(처음 보는 가장 큰 id)이 오면 직전 버전보다 큰 지점(버려진 다시 실행 분기)을 회수하고, 머리가 바뀌었을 때만 지점을 더한다(수정 r3 R3-B —
+   * 옛 코드는 버전마다 기록해 편집·실행 취소를 거듭하면 편집 수만큼 쌓였다). 다시 읽기(`setValue` — 실행 취소 기록이 새로 시작)면 처음부터.
    */
-  headByVersion: Map<number, { bom: boolean; hiddenBom: boolean }>
+  headPoints: { version: number; bom: boolean; hiddenBom: boolean }[]
+  /** 마지막으로 본 모델 버전 · 지금까지 본 가장 큰 버전(새 편집 판별). */
+  seenVersion: number
+  maxVersion: number
   /** 줄마다 끝 글자(`\n`·`\r\n`·`\r`, 마지막 줄 ''). 길이 = 모델 줄 수. */
   eols: string[]
   /** 저장(또는 읽기) 때의 `eols` — 실행 취소로 저장 상태에 돌아오면 되살린다. */
@@ -139,6 +143,18 @@ export function subscribeDocs(listener: () => void): () => void {
 export const docsVersion = (): number => version
 
 export const getDoc = (key: string): FileDoc | undefined => docs.get(key)
+
+/**
+ * 종료가 승인됐다(수정 r3 R3-C) — 그 순간부터 **모든 편집기를 읽기 전용**으로 둔다. 승인 뒤 main 이 런타임 정리(Mobile serve 제거 — 최대 수 초)를 기다리는 동안
+ * 창이 남아 있어 친 글자가 저장도 확인도 없이 사라졌다. 되돌리는 길은 없다(승인 뒤 종료는 멈추지 않는다 — 창이 닫히며 함께 끝난다).
+ */
+let frozen = false
+export function freezeEditing(): void {
+  if (frozen) return
+  frozen = true
+  notify()
+}
+export const editingFrozen = (): boolean => frozen
 export const allDocs = (): FileDoc[] => [...docs.values()]
 export const dirtyDocs = (): FileDoc[] => allDocs().filter((doc) => doc.dirty)
 
@@ -180,7 +196,9 @@ export function adoptDoc(input: { root: string; rel: string; model: Model; text:
     large: input.large,
     bom: input.bom,
     hiddenBom,
-    headByVersion: new Map([[input.model.getAlternativeVersionId(), { bom: input.bom, hiddenBom }]]),
+    headPoints: [{ version: input.model.getAlternativeVersionId(), bom: input.bom, hiddenBom }],
+    seenVersion: input.model.getAlternativeVersionId(),
+    maxVersion: input.model.getAlternativeVersionId(),
     eols,
     savedEols: eols.slice(),
     stamp: input.stamp,
@@ -202,19 +220,52 @@ export function adoptDoc(input: { root: string; rel: string; model: Model; text:
       const changes = [...event.changes].sort((a, b) => b.range.startLineNumber - a.range.startLineNumber || b.range.startColumn - a.range.startColumn)
       for (const change of changes) doc.eols = applyEolChange({ eols: doc.eols, startLine: change.range.startLineNumber, endLine: change.range.endLineNumber, text: change.text, modelEol })
       if (doc.eols.length !== doc.model.getLineCount()) doc.eols = eolsOf(doc.model.getValue())
-      const version = doc.model.getAlternativeVersionId()
-      const head = doc.headByVersion.get(version)
-      if (head === undefined) doc.headByVersion.set(version, { bom: doc.bom, hiddenBom: doc.hiddenBom })
-      else {
-        doc.bom = head.bom
-        doc.hiddenBom = head.hiddenBom
-      }
+      followHead(doc)
       refreshDirty(doc)
     }),
   )
   docs.set(key, doc)
   notify()
   return doc
+}
+
+/** 버전 v 의 머리 = v 이하 마지막 지점(지점은 버전 순). */
+function headAt(doc: FileDoc, version: number): { bom: boolean; hiddenBom: boolean } | undefined {
+  let found: { bom: boolean; hiddenBom: boolean } | undefined
+  for (const point of doc.headPoints) if (point.version <= version) found = point
+  return found
+}
+
+/**
+ * 모델 버전이 움직였다 — 새 편집(가장 큰 id)이면 버려진 분기 지점을 회수하고 머리가 바뀌었으면 지점을 더한다. 실행 취소·다시 실행(아는 id)이면 그 버전의 머리로 되돌린다.
+ * 같은 버전에서 머리만 바뀐 경우(되돌리기가 같은 글을 넣어 이벤트가 없음)도 지점을 고친다.
+ */
+function followHead(doc: FileDoc): void {
+  const version = doc.model.getAlternativeVersionId()
+  if (version > doc.maxVersion) {
+    const parent = doc.seenVersion
+    doc.headPoints = doc.headPoints.filter((point) => point.version <= parent)
+    doc.maxVersion = version
+  } else if (version !== doc.seenVersion) {
+    const head = headAt(doc, version)
+    if (head !== undefined) {
+      doc.bom = head.bom
+      doc.hiddenBom = head.hiddenBom
+    }
+  }
+  doc.seenVersion = version
+  const head = headAt(doc, version)
+  if (head === undefined || head.bom !== doc.bom || head.hiddenBom !== doc.hiddenBom) {
+    doc.headPoints = doc.headPoints.filter((point) => point.version < version)
+    doc.headPoints.push({ version, bom: doc.bom, hiddenBom: doc.hiddenBom })
+  }
+}
+
+function resetHead(doc: FileDoc): void {
+  const version = doc.model.getAlternativeVersionId()
+  doc.headPoints = [{ version, bom: doc.bom, hiddenBom: doc.hiddenBom }]
+  doc.seenVersion = version
+  doc.maxVersion = Math.max(doc.maxVersion, version)
 }
 
 /** 디스크에서 다시 읽은 것 — 내용·BOM·기준(stamp·지문)·읽기 전용 까닭. */
@@ -227,10 +278,9 @@ export type DiskState = { text: string; bom: boolean; stamp: string; hash: strin
 export function reloadDoc(doc: FileDoc, input: DiskState): void {
   // 이벤트(편집 리스너)가 옛 머리 값으로 새 버전을 적지 않게, 값을 먼저 바꾸고 넣는다. 실행 취소 기록이 새로 시작하니 버전 기록도 비운다.
   doc.bom = input.bom
-  doc.headByVersion.clear()
   doc.model.setValue(input.text)
   doc.hiddenBom = hasModelBom(doc.model)
-  doc.headByVersion.set(doc.model.getAlternativeVersionId(), { bom: doc.bom, hiddenBom: doc.hiddenBom })
+  resetHead(doc)
   doc.stamp = input.stamp
   doc.hash = input.hash
   doc.readOnly = input.readOnly
@@ -247,7 +297,7 @@ export function reloadDoc(doc: FileDoc, input: DiskState): void {
  * 「디스크 내용으로 되돌리기」(E4ⓑ) — **실행 취소할 수 있게** 편집으로 넣는다(⌘Z 가 내 변경을 되살린다). 그 상태를 저장된 상태로 친다.
  * 줄끝은 디스크 글의 것으로 다시 잰다(`setValue` 와 달리 모델 EOL 은 그대로라 직렬화는 `eols` 가 맞춘다).
  * 숨은 BOM(R1-G) — 편집으로는 모델 BOM 을 바꿀 수 없다. 모델이 BOM 을 들고 있고 디스크 글도 U+FEFF 로 시작하면 그 글자를 빼고 넣고(모델 BOM 이 맡는다),
- * 디스크 글이 U+FEFF 로 시작하지 않으면 직렬화에서 모델 BOM 을 빼게 표시한다. 그 뒤 실행 취소로 옛 내용에 돌아가면 그 버전의 머리 값(`headByVersion`)이
+ * 디스크 글이 U+FEFF 로 시작하지 않으면 직렬화에서 모델 BOM 을 빼게 표시한다. 그 뒤 실행 취소로 옛 내용에 돌아가면 그 버전의 머리 값(`headPoints`)이
  * 돌아온다(수정 r2 R2-B) — 그래서 머리 값을 **편집 전에** 바꿔, 되돌린 새 버전이 새 값으로 적히게 한다.
  */
 export function revertDoc(doc: FileDoc, input: DiskState): void {
@@ -259,7 +309,8 @@ export function revertDoc(doc: FileDoc, input: DiskState): void {
   doc.model.pushStackElement()
   doc.model.pushEditOperations(null, [{ range: doc.model.getFullModelRange(), text }], () => null)
   doc.model.pushStackElement()
-  doc.headByVersion.set(doc.model.getAlternativeVersionId(), { bom: doc.bom, hiddenBom: doc.hiddenBom })
+  // 편집이 아무것도 바꾸지 않아 이벤트가 없었어도(같은 글로 되돌림) 지금 버전의 머리가 새 값이게.
+  followHead(doc)
   doc.stamp = input.stamp
   doc.hash = input.hash
   doc.readOnly = input.readOnly

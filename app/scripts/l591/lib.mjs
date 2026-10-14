@@ -82,3 +82,23 @@ export function writeJson(file, value) {
 export function reopenedMatches(reopened, expectedFirst) {
   return reopened !== null && typeof reopened === 'object' && reopened.tab === 'false' && typeof reopened.first === 'string' && reopened.first.length > 0 && reopened.first === expectedFirst
 }
+
+/**
+ * 빌드 산출물의 monaco 청크를 렌더러에서 동적 import 해 `window.l591Monaco` 로 둔다(앱은 Monaco 를 `window` 에 내놓지 않는다 — 시험 전용, 제품 무변경).
+ * 부르는 곳은 app/ 이 cwd 여야 한다(out/renderer/assets 를 읽는다).
+ */
+export async function exposeMonaco(root) {
+  const chunk = fs.readdirSync(path.join(process.cwd(), 'out/renderer/assets')).find((file) => /^monaco-.*\.js$/.test(file))
+  return evalJs(root, `(async () => { window.l591Monaco = (await import('./assets/${chunk}')).monaco; return true })()`)
+}
+
+/**
+ * 파일 뷰 `rel` 의 편집기 상태(수정 r3 E1ⓔ 오라클) — 모델 글·scrollTop·view state(첫 위치·커서). 탭 왕복 판정은 「첫 화면 줄」 이 아니라 이것이 떠나기 전과 같은지로 본다
+ * (첫 화면 줄은 떠나기 전부터 스크롤이 있던 회차를 실패로 셌다 — 리뷰어 r3 판별: 36/36 모델·스크롤 보존).
+ */
+export function editorState(root, rel) {
+  return evalJs(
+    root,
+    `(() => { const host = document.querySelector('[data-file-view="${rel}"] [data-file-editor]'); const e = window.l591Monaco.editor.getEditors().find((x) => host !== null && host.contains(x.getContainerDomNode())); if (e === undefined) return null; const v = e.saveViewState(); return { model: e.getModel()?.getValue() ?? null, scrollTop: e.getScrollTop(), view: v === null ? null : { first: v.viewState.firstPosition, delta: v.viewState.firstPositionDeltaTop, cursor: v.cursorState.map((c) => c.position) } } })()`,
+  )
+}

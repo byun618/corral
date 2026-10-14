@@ -2255,6 +2255,9 @@ app.on('before-quit', event => {
   if (runtimeStopped) return
   event.preventDefault()
   if (runtimeStopping === null) {
+    // 정리(Mobile serve 제거는 최대 수 초)를 기다리는 동안 창이 남아 있으면 그 사이 친 글자가 저장도 확인도 없이 사라진다 — 정리를 시작하는 순간 창을 숨긴다
+    // (수정 r3 R3-C. 수정 파일이 있던 종료는 렌더러가 승인 순간 편집기를 읽기 전용으로 이미 묶었다 — 이 숨김은 수정 파일 없이 바로 종료하는 경로까지 덮는다).
+    if (window !== null && !window.isDestroyed()) window.hide()
     const close = stopRuntime
     stopRuntime = null
     runtimeStopping = (close === null ? Promise.resolve() : close()).finally(() => {

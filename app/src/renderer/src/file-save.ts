@@ -57,16 +57,23 @@ async function saveOnce(doc: FileDoc, deps: SaveDeps): Promise<SaveOutcome> {
     return 'failed'
   }
   if (!doc.dirty) return 'saved'
+  // 저장 한 건 = **한 시점 스냅샷**(수정 r3 R3-A) — 본문(숨은 BOM 포함 직렬화)·파일 BOM·버전·줄끝·기준 stamp/지문을 여기서 한 번 찍고,
+  // 첫 쓰기·충돌 덮어쓰기·다시 만들기 재시도·완료 표시가 모두 이 값만 쓴다. 옛 코드는 재시도 때 `doc.bom` 현재 값을 읽어, 저장 대기 중 실행 취소·다시 실행으로
+  // 머리 바이트가 바뀌면 다른 버전의 BOM 을 섞어 썼다. (나머지 필드 점검 — root·rel 은 불변, readOnly·large·stamp·hash 는 저장 중 바뀌지 않는다: 다시 읽기 반영이
+  // 저장 중엔 보류되고 저장만 stamp·hash 를 바꾼다. 그래도 기준값은 스냅샷으로 고정한다.)
   const version = doc.model.getAlternativeVersionId()
   const eols = doc.eols.slice()
   const text = serialize(doc)
+  const bom = doc.bom
+  const baseStamp = doc.stamp
+  const baseHash = doc.hash
   let overwrite = false
   let create = false
   setSaving(doc, true)
   try {
     // 충돌 → 덮어쓰기, 삭제 → 다시 만들기, 다시 만들려는데 그 사이 생김 → 충돌로 — 갈래마다 한 번씩이라 몇 바퀴 안에 끝난다.
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      const result = await deps.writeFile({ root: doc.root, rel: doc.rel, text, bom: doc.bom, baseStamp: doc.stamp, baseHash: doc.hash, overwrite, create })
+      const result = await deps.writeFile({ root: doc.root, rel: doc.rel, text, bom, baseStamp, baseHash, overwrite, create })
       if (result.ok) {
         markSaved(doc, { stamp: result.stamp, hash: result.hash, version, eols })
         return 'saved'

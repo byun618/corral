@@ -17,6 +17,7 @@ class FakeModel implements DocModel {
   private nextVersion = 1
   private version = 1
   private undo: { lines: string[]; version: number }[] = []
+  private redo: { lines: string[]; version: number }[] = []
   disposed = false
   constructor(raw: string) {
     const text = raw.startsWith('\uFEFF') ? raw.slice(1) : raw
@@ -66,7 +67,10 @@ class FakeModel implements DocModel {
   }
   /** 한 범위 편집 — Monaco 처럼 이벤트는 편집 전 좌표. */
   replace(range: Range4, text: string, undoable = true): void {
-    if (undoable) this.undo.push({ lines: this.lines.slice(), version: this.version })
+    if (undoable) {
+      this.undo.push({ lines: this.lines.slice(), version: this.version })
+      this.redo = []
+    }
     const head = (this.lines[range.startLineNumber - 1] ?? '').slice(0, range.startColumn - 1)
     const tail = (this.lines[range.endLineNumber - 1] ?? '').slice(range.endColumn - 1)
     const inserted = (head + text + tail).split(/\r\n|\r|\n/)
@@ -75,12 +79,23 @@ class FakeModel implements DocModel {
     this.version = this.nextVersion
     for (const listener of this.listeners) listener({ changes: [{ range, text }] })
   }
+  /** 다시 실행 — Monaco 처럼 실행 취소한 버전 id 로 돌아간다. 새 편집은 다시 실행 기록을 버린다. */
+  redoLast(): void {
+    const next = this.redo.pop()
+    if (next === undefined) return
+    this.undo.push({ lines: this.lines.slice(), version: this.version })
+    const range = this.getFullModelRange()
+    this.lines = next.lines
+    this.version = next.version
+    for (const listener of this.listeners) listener({ changes: [{ range, text: next.lines.join(this.eol) }] })
+  }
   type(line: number, column: number, text: string): void {
     this.replace({ startLineNumber: line, startColumn: column, endLineNumber: line, endColumn: column }, text)
   }
   undoLast(): void {
     const last = this.undo.pop()
     if (last === undefined) return
+    this.redo.push({ lines: this.lines.slice(), version: this.version })
     const range = this.getFullModelRange()
     this.lines = last.lines
     this.version = last.version
@@ -518,5 +533,79 @@ describe('수정 r2', () => {
     model.undoLast()
     expect(doc.bom).toBe(true)
     expect(serialize(doc)).toBe('Xalpha\n')
+  })
+})
+
+// --- 수정 r3 (Codex 리뷰 r3) 회귀 — 옛 코드(9fcb0bf88)에서 실패, 고친 코드에서 통과 -----------------------------------------
+describe('수정 r3', () => {
+  it('R3-A 저장 한 건은 한 시점 스냅샷 — 쓰기 대기 중 다시 실행으로 머리 바이트가 바뀌어도 충돌 덮어쓰기 재시도가 같은 BOM 을 쓴다', async () => {
+    const { doc, model } = open('alpha\n', { bom: true, stamp: 's0' })
+    model.type(1, 1, 'X')
+    revertDoc(doc, { text: 'DISK\n', bom: false, stamp: 's1', hash: 'h1', readOnly: null, large: false })
+    model.undoLast()
+    expect(doc.bom).toBe(true)
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let arrived: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      arrived = resolve
+    })
+    // 디스크는 그 사이 다른 내용(stamp other) — 첫 쓰기는 충돌, 덮어쓰기로 다시 쓴다.
+    const fake = fakeDeps({ disk: { stamp: 'other', text: 'CONFLICT\n' }, answers: ['overwrite'] })
+    const write = fake.deps.writeFile
+    let held = true
+    fake.deps.writeFile = async (request) => {
+      if (held) {
+        held = false
+        arrived()
+        await gate
+      }
+      return write(request)
+    }
+    const saving = saveDoc(doc, fake.deps)
+    await started
+    model.redoLast()
+    expect(doc.bom).toBe(false)
+    release()
+    expect(await saving).toBe('saved')
+    expect(fake.writes.map((row) => ({ text: row.text, bom: row.bom, overwrite: row.overwrite }))).toEqual([
+      { text: 'Xalpha\n', bom: true, overwrite: false },
+      { text: 'Xalpha\n', bom: true, overwrite: true },
+    ])
+    // 저장 완료 표시는 스냅샷 버전에만 — 지금(다시 실행한 되돌리기 버전)은 수정됨, 실행 취소하면 저장 상태.
+    expect(doc.dirty).toBe(true)
+    model.undoLast()
+    expect(doc.dirty).toBe(false)
+    expect(doc.bom).toBe(true)
+  })
+  it('R3-B 편집·실행 취소를 2,000 번 — 머리 기록이 편집 수에 비례해 쌓이지 않는다(버려진 다시 실행 분기 회수)', () => {
+    const { doc, model } = open('alpha', { bom: true })
+    for (let index = 0; index < 2000; index += 1) {
+      model.type(1, 1, 'x')
+      model.undoLast()
+    }
+    expect(model.getValue()).toBe('alpha')
+    // 옛 코드(버전마다 Map) · 새 코드(바뀐 지점 배열) 어느 쪽이든 개수를 센다.
+    const legacy = Reflect.get(doc, 'headByVersion')
+    const count = legacy instanceof Map ? legacy.size : Reflect.get(doc, 'headPoints').length
+    expect(count).toBeLessThanOrEqual(2)
+  })
+  it('R3-B 지점만 보관해도 유효한 실행 취소 상태는 그대로 — 되돌리기 앞뒤를 오가도 머리가 맞다', () => {
+    const { doc, model } = open('\uFEFFalpha\n', { bom: true })
+    for (let index = 0; index < 50; index += 1) model.type(1, 1, 'x')
+    revertDoc(doc, { text: 'DISK\n', bom: false, stamp: 's1', hash: 'h1', readOnly: null, large: false })
+    for (let index = 0; index < 50; index += 1) model.type(1, 1, 'y')
+    for (let index = 0; index < 50; index += 1) model.undoLast()
+    expect(serialize(doc)).toBe('DISK\n')
+    expect(doc.bom).toBe(false)
+    model.undoLast()
+    expect(serialize(doc).startsWith('\uFEFFx')).toBe(true)
+    expect(doc.bom).toBe(true)
+    model.redoLast()
+    expect(serialize(doc)).toBe('DISK\n')
+    expect(doc.bom).toBe(false)
+    expect(Reflect.get(doc, 'headPoints').length).toBeLessThanOrEqual(3)
   })
 })

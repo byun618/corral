@@ -14,6 +14,11 @@
 //   bom-undo     (R2-B) BOM + 선두 U+FEFF 파일에 한 글자 → 외부 변경 → 「디스크 내용으로 되돌리기」 → 실행 취소 → ⌘S → 바이트 efbbbfefbbbf58616c7068610a
 //   unresponsive-cleanup (R2-C) Mobile(가짜 Tailscale — `--fake {FAKE}`) 켜고 렌더러 SIGSTOP → 종료 → main 대화상자 취소 → 다시 종료 → 저장 안 함 → 앱 종료 뒤 serve 항목 비어 있음
 //   normal-cleanup (대조) 같은 Mobile 상태에서 렌더러 정상 → 종료 → 저장 안 함 → serve 비어 있음
+// 수정 r3 (Codex 리뷰 r3 — 리뷰어 `codex-r3-raw/bom-retry-ui.mjs`·`shutdown.mjs` shutdown-late 조건):
+//   bom-retry    (R3-A) BOM 파일 편집 → BOM 없는 외부 내용으로 되돌리기 → 실행 취소 → 외부 충돌 → ⌘S(쓰기 FIFO 지연) 중 다시 실행 → 덮어쓰기 → 디스크 efbbbf58616c7068610a
+//   shutdown-late / shutdown-late-close (R3-C) Mobile(가짜, serve 제거 지연) 켜고 수정 → 종료(quit | 창 close) 「저장」 → 정리 대기 중 편집 시도 →
+//                조용히 사라지는 편집 0(편집이 막혀 모델 = 디스크) · 정리 중 창 숨김
+//   shutdown-nodirty (R3-C 같은 결) 수정 없이 종료 → 정리 대기 중 창 숨김
 //   ime 는 수정 r2 R2-D 로 전제(조합 시작·미확정 모델·dirty·EditContext·확정 전 composition-end 없음)를 판정에 넣었다 — L591_IME_OMIT_COMPOSITION=1 이 음성 대조(종료 1 이어야 함)
 // 사용(app/ 에서, iso.sh 안): node scripts/l591/r1-cases.mjs --case <이름> --root {ROOT} --repo /tmp/l591g-t/repo --out <dir>
 /* global fetch, WebSocket -- Node 22+ 내장(CDP 접속) */
@@ -406,6 +411,92 @@ switch (name) {
         }
       }
     }
+    break
+  }
+  case 'bom-retry': {
+    const rel = 'r1/undo-bom.txt'
+    const file = path.join(repo, rel)
+    const hook = path.join(root, 'write-hook.json')
+    fs.writeFileSync(file, '\ufeffalpha\n')
+    await openFile(rel)
+    await exposeMonaco()
+    await until(async () => (await ed('return m.getValue()')) === 'alpha\n', { label: 'loaded' })
+    await typeAt('X')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    fs.writeFileSync(file, 'DISK\n')
+    await until(() => js(`document.querySelector('[data-external-action="revert"]') !== null`), { label: 'banner', timeoutMs: 5000 })
+    await click('[data-external-action="revert"]')
+    await until(async () => (await ed('return m.getValue()')) === 'DISK\n', { label: 'reverted' })
+    await ed(`e.trigger('keyboard', 'undo', null); return true`)
+    await until(async () => (await ed('return m.getValue()')) === 'Xalpha\n' && (await dirtyOf(rel)) === 'true', { label: 'undone' })
+    fs.writeFileSync(file, 'CONFLICT\n')
+    fs.rmSync(hook, { force: true })
+    execFileSync('mkfifo', [hook])
+    try {
+      await stub(['overwrite'])
+      await key('S', ['meta'])
+      await sleep(300)
+      await ed(`e.trigger('keyboard', 'redo', null); return true`)
+      const during = await ed('return m.getValue()')
+      await fsp.writeFile(hook, '{}')
+      fs.rmSync(hook, { force: true })
+      fs.writeFileSync(hook, '{}')
+      const written = await settle(() => fs.readFileSync(file, 'utf8').includes('Xalpha'), 5000)
+      await sleep(300)
+      const hex = fs.readFileSync(file).toString('hex')
+      await ed(`e.trigger('keyboard', 'undo', null); return true`)
+      const clean = await settle(async () => (await ed('return m.getValue()')) === 'Xalpha\n' && (await dirtyOf(rel)) === 'false')
+      check('A3-retry-uses-snapshot-bom', during === 'DISK\n' && written && hex === 'efbbbf58616c7068610a' && clean, { during, written, hex, expected: 'efbbbf58616c7068610a', cleanAfterUndo: clean, asked: (await stub([])).asked })
+    } finally {
+      fs.rmSync(hook, { force: true })
+    }
+    break
+  }
+  case 'shutdown-late':
+  case 'shutdown-late-close':
+  case 'shutdown-nodirty': {
+    const fake = values.fake ?? ''
+    if (!/^\/tmp\/l591g-f[^/]+$/.test(fake)) throw new Error('--fake 는 /tmp/l591g-f* (가짜 Tailscale 상태 폴더 — 실제 Tailscale 무접촉)')
+    const rel = 'r1/edit.txt'
+    const file = path.join(repo, rel)
+    await openFile(rel)
+    await exposeMonaco()
+    if (name !== 'shutdown-nodirty') {
+      await typeAt('BEFORE-')
+      await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    }
+    setFake(fake, { serve: {}, hang: [] })
+    await js(`window.corral.setSettings({ mobileEnabled: true })`)
+    await until(async () => (await ctl(root, { cmd: 'mobile-status' })).mobile?.exposure?.kind === 'exposed', { label: 'fake mobile exposed', timeoutMs: 15_000 })
+    // 가짜 serve 제거를 멈춰 둔다 — 정리가 Mobile 마감(약 6 s)까지 걸린다(리뷰어 shutdown-late 조건).
+    setFake(fake, { hang: ['serve-remove'] })
+    await sleep(200)
+    await stub(name === 'shutdown-nodirty' ? [] : ['save', 'cancel'])
+    const mark = calls(fake).length
+    const t0 = Date.now()
+    await ctl(root, { cmd: 'quit-entry', via: name === 'shutdown-late-close' ? 'close' : 'quit' })
+    if (name !== 'shutdown-nodirty') await until(() => fs.readFileSync(file, 'utf8').startsWith('BEFORE-'), { label: 'saved before cleanup', timeoutMs: 8000 })
+    await until(() => calls(fake).slice(mark).some((row) => row.argv.at(-1) === 'off'), { label: 'cleanup started', timeoutMs: 8000 })
+    // 정리 대기 중 — 편집을 시도한다(창은 숨겨졌어도 계측은 렌더러에 닿는다).
+    const visible = (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible
+    let during = null
+    if (name !== 'shutdown-nodirty') {
+      await typeAt('LATE-').catch(() => null)
+      await sleep(150)
+      during = { ms: Date.now() - t0, model: (await ed('return m.getValue()')).slice(0, 30), dirty: await dirtyOf(rel), readOnly: await ed('return e.getOption(window.l591Monaco.editor.EditorOption.readOnly)') }
+    }
+    const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 20_000 }).then(() => true, () => false)
+    // 멈춰 둔 가짜 serve 제거 프로세스는 앱이 끝나도 남는다(PPID 1) — 이 회차의 FAKE 폴더를 env 로 든 것만 찾아 끝낸다(G5 PID 정리).
+    const leftovers = execFileSync('ps', ['-axeww', '-o', 'pid=,command='], { encoding: 'utf8' })
+      .split('\n')
+      .filter((row) => row.includes('fake-tailscale.mjs') && row.includes(`FAKE_TAILSCALE_DIR=${fake} `))
+      .map((row) => Number(row.trim().split(/\s+/)[0]))
+    for (const pid of leftovers) process.kill(pid, 'SIGKILL')
+    console.log(JSON.stringify({ fakeLeftoversKilled: leftovers }))
+    const disk = fs.readFileSync(file, 'utf8')
+    check('C3-window-hidden-during-cleanup', visible === false, { visible })
+    if (during !== null) check('C3-no-silent-late-edit', exited && during.model === disk.slice(0, 30) && during.dirty === 'false' && disk.startsWith('BEFORE-'), { during, disk: disk.slice(0, 30), exited })
+    else check('C3-exit', exited, { exited, ms: Date.now() - t0 })
     break
   }
   default:

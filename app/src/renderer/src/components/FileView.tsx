@@ -23,7 +23,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { imageMimeOf, LARGE_FILE_BYTES, type FileReadResult, type ImageReadResult } from '../../../shared/file-view.js'
-import { adoptDoc, disposeDoc, docKey, docsVersion, getDoc, reloadDoc, revertDoc, setComposing, setExternal, subscribeDocs, type DiskState, type FileDoc, type ReadOnlyReason } from '../file-docs.js'
+import { adoptDoc, disposeDoc, docKey, docsVersion, editingFrozen, getDoc, reloadDoc, revertDoc, setComposing, setExternal, subscribeDocs, type DiskState, type FileDoc, type ReadOnlyReason } from '../file-docs.js'
 import './file-view.css'
 
 type MonacoModule = typeof import('../editor/monaco.js')
@@ -177,7 +177,7 @@ export function FileView({
       markdown && mode === 'preview' ? (
         <MarkdownPreview source={doc?.model.getValue() ?? textRead?.text ?? ''} root={root} rel={rel} onOpenFile={onOpenFile} />
       ) : (
-        <TextBody initial={textRead} root={root} rel={rel} tabId={tabId} large={large} readOnly={readOnly} viewStates={viewStates} mountedRef={mountedRef} />
+        <TextBody initial={textRead} root={root} rel={rel} tabId={tabId} large={large} readOnly={readOnly} frozen={editingFrozen()} viewStates={viewStates} mountedRef={mountedRef} />
       )
   else if (read === null) body = <div className="file-view-notice" data-file-notice="loading" />
   else if (!read.ok)
@@ -277,6 +277,7 @@ function TextBody({
   tabId,
   large,
   readOnly,
+  frozen,
   viewStates,
   mountedRef,
 }: {
@@ -286,6 +287,8 @@ function TextBody({
   tabId: string
   large: boolean
   readOnly: ReadOnlyReason | null
+  /** 종료 승인 뒤(R3-C) — 까닭과 무관하게 읽기 전용. */
+  frozen: boolean
   viewStates: ViewStateStore
   mountedRef: React.MutableRefObject<MountedEditor | null>
 }): React.JSX.Element {
@@ -320,7 +323,7 @@ function TextBody({
         }
       }
       if (disposed) return
-      const editor = module.createEditor({ host, large, readOnly: doc.readOnly !== null })
+      const editor = module.createEditor({ host, large, readOnly: doc.readOnly !== null || editingFrozen() })
       editor.setModel(model)
       const saved = viewStates.get(tabId)
       if (saved !== undefined && saved !== null) editor.restoreViewState(saved)
@@ -349,8 +352,9 @@ function TextBody({
 
   // 읽기 전용 까닭이 바뀌었다(다시 읽은 디스크 메타데이터) — 편집기 옵션에 반영(작아져 편집 가능해지는 쪽도).
   useEffect(() => {
-    editorRef.current?.updateOptions({ readOnly: readOnly !== null, domReadOnly: readOnly !== null })
-  }, [readOnly])
+    const locked = readOnly !== null || frozen
+    editorRef.current?.updateOptions({ readOnly: locked, domReadOnly: locked })
+  }, [readOnly, frozen])
 
   return <div className="file-editor-host" data-file-editor={tabId} ref={hostRef} />
 }

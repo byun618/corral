@@ -26,7 +26,7 @@ if [ ! -S "$SOCK" ]; then
 fi
 echo "herdr_pid=$(cat "$ROOT/herdr.pid") session=$SESSION"
 rm -f "$ROOT/ctl/ctl.sock"
-LAUNCH='exec "$L601_EL" "$L601_APP" --user-data-dir="$CORRAL_USER_DATA"'
+LAUNCH='exec "$L601_EL" "$L601_APP" --user-data-dir="$CORRAL_USER_DATA" ${L601_EXTRA_ARGS:-}'
 N=$(ls "$ROOT"/electron-*.log 2>/dev/null | wc -l | tr -d ' ')
 # shellcheck disable=SC2086
 sh "$APP/scripts/l470/clean.sh" CORRAL_SESSION="$SESSION" CORRAL_BACKEND_SOCKET="$SOCK" CORRAL_HERDR_BIN="$GUARD" \

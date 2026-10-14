@@ -170,7 +170,7 @@ it('R1-G — 폴더 복제를 실행 취소한 뒤 다시 실행 = 같은 원본
   respond = (input) => {
     switch (input.op) {
       case 'duplicate':
-        return { ok: true, op: 'duplicate', from: input.rel, rel: `${input.rel} copy`, kind: 'dir', marks: [{ rel: `${input.rel} copy`, stamp: 's' }], failed: [] }
+        return { ok: true, op: 'duplicate', from: input.rel, rel: `${input.rel} copy`, kind: 'dir', marks: [{ rel: `${input.rel} copy`, stamp: 's' }], failed: [], source: 'src-stamp' }
       case 'trash':
         return { ok: true, op: 'trash', rel: input.rel, kind: 'dir', snapshotId: null }
       default:
@@ -189,14 +189,14 @@ it('R1-G — 폴더 복제를 실행 취소한 뒤 다시 실행 = 같은 원본
     await ops().redo()
   })
   expect(calls.map((call) => call.op)).toEqual(['duplicate', 'trash', 'duplicate'])
-  expect(calls[2]).toMatchObject({ root: '/wt/a', rel: 'folder' })
+  expect(calls[2]).toMatchObject({ root: '/wt/a', rel: 'folder', again: { name: 'folder copy', source: 'src-stamp' } })
 })
 
 // --- 수정 r2 ------------------------------------------------------------------------------------------------
 //   R2-F 여러 항목 가져오기의 부분 실행 취소 — 안내가 치운 것·거절된 것을 나누고, 치운 것은 다시 실행할 수 있다
 //   R2-H 다시 실행(재생) 결과의 부분 실패·덜 든 항목도 일반 조작과 같은 안내
 //   R2-E 가져오기 재생 근거 — 기록에서 빠지면(새 조작이 다시 실행 칸을 비움) main 에 놓으라고(release) 알린다
-const importResult = (rels: string[], extra: Partial<Record<'partial' | 'failed', unknown>> = {}): ExplorerOpResult => ({
+const importResult = (rels: string[], extra: { partial?: string[]; failed?: { name: string; error: string }[] } = {}): ExplorerOpResult => ({
   ok: true,
   op: 'import',
   dir: '',
@@ -205,10 +205,9 @@ const importResult = (rels: string[], extra: Partial<Record<'partial' | 'failed'
   skipped: [],
   failed: [],
   partial: [],
-  replayToken: 'legacy-token',
   replayId: 'replay-1',
   ...extra,
-} as unknown as ExplorerOpResult)
+})
 const dropOf = (root: string): ExplorerDrop => ({ token: 'drop-1', root, dir: '', names: ['a.txt', 'b.txt'] })
 
 it('R2-F — 두 항목 가져오기 실행 취소에서 하나만 거절되면 안내가 치움·거절을 나누고, 치운 것만 다시 실행한다', async () => {
@@ -258,7 +257,7 @@ it('R2-H — 다시 실행한 가져오기·복제의 부분 실패를 알린다
   respond = (input) => {
     switch (input.op) {
       case 'duplicate':
-        return { ok: true, op: 'duplicate', from: 'folder', rel: 'folder copy', kind: 'dir', marks: [{ rel: 'folder copy', stamp: 's' }], failed: [], source: 'src-stamp' } as unknown as ExplorerOpResult
+        return { ok: true, op: 'duplicate', from: 'folder', rel: 'folder copy', kind: 'dir', marks: [{ rel: 'folder copy', stamp: 's' }], failed: [], source: 'src-stamp' }
       case 'trash':
         return { ok: true, op: 'trash', rel: input.rel, kind: 'dir', snapshotId: null }
       default:
@@ -269,7 +268,7 @@ it('R2-H — 다시 실행한 가져오기·복제의 부분 실패를 알린다
   await act(async () => ops().undo())
   respond = (input) =>
     input.op === 'duplicate'
-      ? ({ ok: true, op: 'duplicate', from: 'folder', rel: 'folder copy', kind: 'dir', marks: [{ rel: 'folder copy', stamp: 's' }], failed: [{ name: 'folder/x', error: 'EACCES' }], source: 'src-stamp' } as unknown as ExplorerOpResult)
+      ? ({ ok: true, op: 'duplicate', from: 'folder', rel: 'folder copy', kind: 'dir', marks: [{ rel: 'folder copy', stamp: 's' }], failed: [{ name: 'folder/x', error: 'EACCES' }], source: 'src-stamp' })
       : { ok: false, code: 'io_error', error: 'x' }
   await act(async () => ops().redo())
   expect(notes.join('\n')).toMatch(/실패 1: folder\/x — EACCES/)

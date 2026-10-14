@@ -11,7 +11,7 @@
 import { useCallback, useRef } from 'react'
 import { baseName, isAtOrUnder, remapRel, type EntryMark, type ExplorerDrop, type ExplorerOpInput, type ExplorerOpResult } from '../../../shared/explorer-ops.js'
 import { parentRel } from '../../../shared/explorer.js'
-import { emptyHistory, inverseOf, inverseOfBatch, peek, recordOp, settle, stepLabel, type History, type HistoryStep, type ReplayStep } from '../explorer-history.js'
+import { emptyHistory, inverseOf, inverseOfBatch, narrowReplay, peek, recordOp, replayIdsOf, settle, stepLabel, type History, type HistoryStep, type ReplayStep } from '../explorer-history.js'
 import { allDocs, disposeDoc, docKey, getDoc, holdDocs, rebaseDoc, rekeyDocs } from '../file-docs.js'
 import { fileTabsUnder, tabKindOf } from '../file-tabs.js'
 import type { GroupLayoutApi } from './useGroupLayout.js'
@@ -100,8 +100,18 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
   const latest = useRef(deps)
   latest.current = deps
   const histories = useRef(new Map<string, History>())
+  /** main 이 붙잡고 있는 가져오기 재생 근거 중 기록이 가리키는 것(R2-E). */
+  const heldReplays = useRef(new Set<string>())
   const queue = useRef<Promise<unknown>>(Promise.resolve())
   const historyOf = (root: string): History => histories.current.get(root) ?? emptyHistory()
+  /** 기록을 바꾼다 — 어느 기록도 더는 가리키지 않는 재생 근거(상한으로 밀림·다시 실행 칸 비움·재생 실패로 버림)는 main 에서 놓는다(R2-E). */
+  const setHistory = (root: string, history: History): void => {
+    histories.current.set(root, history)
+    const live = new Set([...histories.current.values()].flatMap(replayIdsOf))
+    const gone = [...heldReplays.current].filter((id) => !live.has(id))
+    heldReplays.current = live
+    if (gone.length > 0) void window.corral.explorerOp({ op: 'release', ids: gone }).catch(() => undefined)
+  }
 
   /** 조작을 한 줄로 세운다. */
   const serial = useCallback(<T,>(run: () => Promise<T>): Promise<T> => {
@@ -191,53 +201,70 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
     }
   }
 
-  /** 원래 조작 다시 부르기(새 조작과 다시 실행 재생이 같은 길). 성공하면 트리에 보이게 한다. */
-  const runReplay = async (root: string, step: ReplayStep): Promise<ExplorerOpResult> => {
+  /** 원래 조작 다시 부르기(다시 실행 재생). 성공하면 트리에 보이게 하고, 부분 실패·덜 든 항목은 일반 조작과 같은 안내(`note` — R2-H). */
+  const runReplay = async (root: string, step: ReplayStep): Promise<{ result: ExplorerOpResult; note: string | null }> => {
     switch (step.op) {
       case 'create': {
         const result = await call({ op: 'create', root, dir: step.dir, name: step.name, kind: step.kind })
         if (result.ok && result.op === 'create' && shown(root)) latest.current.explorer.reveal(result.rel)
-        return result
+        return { result, note: null }
       }
       case 'duplicate': {
-        const result = await call({ op: 'duplicate', root, rel: step.rel })
-        if (result.ok && result.op === 'duplicate' && shown(root)) latest.current.explorer.reveal(result.rel)
-        return result
+        const result = await call({ op: 'duplicate', root, rel: step.rel, again: step.again })
+        if (!result.ok || result.op !== 'duplicate') return { result, note: null }
+        if (shown(root)) latest.current.explorer.reveal(result.rel)
+        const note = copyNotes({ made: [result.rel], partial: result.failed.length > 0 ? [result.rel] : [], skipped: [], failed: result.failed })
+        return { result, note: note === null ? null : `'${baseName(step.rel)}' 복제: ${note}` }
       }
       case 'import': {
-        const result = await call({ op: 'import', root, dir: step.dir, token: step.token })
-        const first = result.ok && result.op === 'import' ? result.rels[0] : undefined
+        const result = await call({ op: 'import', root, dir: step.dir, replay: step.replay, names: step.names })
+        if (!result.ok || result.op !== 'import') return { result, note: null }
+        const first = result.rels[0]
         if (first !== undefined && shown(root)) latest.current.explorer.reveal(first)
-        return result
+        const note = copyNotes({ made: result.rels, partial: result.partial, skipped: result.skipped, failed: result.failed })
+        return { result, note: note === null ? null : `가져오기: ${note}` }
       }
     }
   }
 
-  /** 기록된 조작 하나(실행 취소·다시 실행) — 결과들과 그 역조작. */
-  const runStep = async (root: string, step: HistoryStep): Promise<{ results: ExplorerOpResult[]; inverse: HistoryStep | null }> => {
+  /** 기록된 조작 하나(실행 취소·다시 실행) — 결과들과 그 역조작, 따로 알릴 것(`note`). */
+  const runStep = async (root: string, step: HistoryStep): Promise<{ results: ExplorerOpResult[]; inverse: HistoryStep | null; note: string | null }> => {
     switch (step.op) {
       case 'move': {
         const result = await doMove(root, step.from, step.to, step.expect)
-        return { results: [result], inverse: inverseOf(result) }
+        return { results: [result], inverse: inverseOf(result), note: null }
       }
       case 'trash': {
         // 만들기·복제·가져오기 되돌리기(`replay` 있음) — 다시 실행은 재생이라 사본을 뜨지 않는다(R1-G). 되살린 것을 다시 지우는 다시 실행만 사본을 뜬다.
         const result = await doTrash({ root, rel: step.rel, snapshot: step.replay === undefined, expect: step.expect })
-        return { results: [result], inverse: result.ok && step.replay !== undefined ? { op: 'replay', replay: step.replay } : inverseOf(result) }
+        return { results: [result], inverse: result.ok && step.replay !== undefined ? { op: 'replay', replay: step.replay } : inverseOf(result), note: null }
       }
       case 'restore': {
         const result = await doRestore(root, step.rel, step.snapshotId)
-        return { results: [result], inverse: inverseOf(result) }
+        return { results: [result], inverse: inverseOf(result), note: null }
       }
       case 'replay': {
-        const result = await runReplay(root, step.replay)
-        return { results: [result], inverse: inverseOf(result) }
+        const { result, note } = await runReplay(root, step.replay)
+        return { results: [result], inverse: inverseOf(result), note }
       }
       case 'batch': {
+        const done: string[] = []
+        const refused: string[] = []
         const results: ExplorerOpResult[] = []
-        for (const one of step.steps) results.push(...(await runStep(root, one)).results)
-        const allDone = results.every((result) => result.ok)
-        return { results, inverse: allDone && step.replay !== undefined ? { op: 'replay', replay: step.replay } : inverseOfBatch(results) }
+        for (const one of step.steps) {
+          const outcome = await runStep(root, one)
+          results.push(...outcome.results)
+          const name = one.op === 'move' ? baseName(one.from) : one.op === 'trash' || one.op === 'restore' ? baseName(one.rel) : stepLabel(one)
+          const failed = outcome.results.find((result): result is Refusal => !result.ok)
+          if (failed === undefined) done.push(name)
+          else refused.push(`${name}(${opFailureMessage(failed)})`)
+        }
+        if (refused.length === 0) return { results, inverse: step.replay !== undefined ? { op: 'replay', replay: step.replay } : inverseOfBatch(results), note: null }
+        // 일부만 됐다(R2-F) — 치운 것·거절된 것을 나누어 알리고, 가져오기 되돌리기면 치운 것만 다시 실행할 수 있게 재생을 좁힌다.
+        const narrowed = step.replay === undefined ? null : narrowReplay(step.replay, done)
+        const verb = step.steps.every((one) => one.op === 'trash') ? '치움' : '됨'
+        const note = done.length === 0 ? null : `${stepLabel(step)} 중 일부만 했습니다 — ${verb} ${done.length}: ${done.join(', ')} · 거절 ${refused.length}: ${refused.join(', ')}`
+        return { results, inverse: narrowed !== null ? { op: 'replay', replay: narrowed } : inverseOfBatch(results), note }
       }
     }
   }
@@ -257,6 +284,7 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
       case 'import':
         return [result.dir]
       case 'inspect':
+      case 'release':
         return []
     }
   }
@@ -272,7 +300,7 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
   /** 새 조작 하나를 기록한다(역조작이 없으면 다시 실행 칸만 비운다 — E5ⓓ). */
   const record = (root: string, result: ExplorerOpResult): void => {
     const inverse = inverseOf(result)
-    histories.current.set(root, recordOp(historyOf(root), inverse === null ? null : { label: stepLabel(inverse), step: inverse }))
+    setHistory(root, recordOp(historyOf(root), inverse === null ? null : { label: stepLabel(inverse), step: inverse }))
   }
 
   /** 복제·가져오기의 부분 실패·건너뜀 안내(E7ⓑⓔ·R1-H) — 무엇이 들어왔고 무엇이 덜 들어왔는지. */
@@ -436,13 +464,15 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
         if (root === null) return
         const entry = peek(historyOf(root), side)
         if (entry === null) return
-        const { results, inverse } = await runStep(root, entry.step)
+        const { results, inverse, note } = await runStep(root, entry.step)
         refresh(root, results)
-        histories.current.set(root, settle({ history: historyOf(root), side, inverse: inverse === null ? null : { label: stepLabel(inverse), step: inverse } }))
+        setHistory(root, settle({ history: historyOf(root), side, inverse: inverse === null ? null : { label: stepLabel(inverse), step: inverse } }))
         const failed = results.find((result): result is Refusal => !result.ok)
-        if (failed !== undefined) {
-          const expired = failed.code === 'bad_token' && entry.step.op === 'replay' ? ' — 가져오기 원본 표지가 만료돼(2 분) 다시 가져올 수 없습니다' : ''
-          latest.current.notify(`${side === 'undo' ? '실행 취소' : '다시 실행'}하지 못했습니다 — ${entry.label}: ${opFailureMessage(failed)}${expired}`)
+        const action = side === 'undo' ? '실행 취소' : '다시 실행'
+        if (note !== null) latest.current.notify(failed === undefined ? `${action} — ${note}` : `${action}: ${note}`)
+        else if (failed !== undefined) {
+          const gone = failed.code === 'bad_token' && entry.step.op === 'replay' ? ' — 다시 가져올 원본 기록이 더 이상 없습니다(앱을 다시 시작했거나 기록에서 빠짐)' : ''
+          latest.current.notify(`${action}하지 못했습니다 — ${entry.label}: ${opFailureMessage(failed)}${gone}`)
         }
       })
     },

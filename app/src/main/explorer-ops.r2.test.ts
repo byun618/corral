@@ -9,10 +9,9 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DropStore, runExplorerOp, SnapshotStore, type OpDeps } from './explorer-ops.js'
-import type { ExplorerOpResult } from '../shared/explorer-ops.js'
-import { inverseOf, type HistoryStep } from '../renderer/src/explorer-history.js'
+import { baseName, type ExplorerOpResult } from '../shared/explorer-ops.js'
 
 let base = ''
 let root = ''
@@ -25,20 +24,20 @@ const locked: string[] = []
 const op = (input: Record<string, unknown>): Promise<ExplorerOpResult> => runExplorerOp(deps, { root, ...input })
 const at = (rel: string): string => path.join(root, rel)
 const code = (result: ExplorerOpResult): string => (result.ok ? 'ok' : result.code)
-/** 역조작(휴지통)과 그 다시 실행(재생) — 실제 `inverseOf` 가 만든 것. */
-const undoOf = (result: ExplorerOpResult): Extract<HistoryStep, { op: 'trash' | 'batch' }> => {
-  const step = inverseOf(result)
-  if (step === null || (step.op !== 'trash' && step.op !== 'batch')) throw new Error(`역조작 없음 ${JSON.stringify(result)}`)
-  return step
+/**
+ * 역조작(휴지통)과 그 다시 실행(재생) 요청 — 렌더러 `inverseOf`(explorer-history.ts)가 만드는 모양 그대로(그쪽은 `explorer-history.test.ts`·hook 시험이 본다).
+ * main 시험은 node 쪽 tsconfig 라 렌더러 모듈을 직접 들이지 않는다.
+ */
+type Undo = { trash: Record<string, unknown>; replay: Record<string, unknown> }
+const undoOf = (result: ExplorerOpResult): Undo => {
+  if (result.ok && result.op === 'duplicate')
+    return { trash: { op: 'trash', rel: result.rel, expect: result.marks, snapshot: false }, replay: { op: 'duplicate', rel: result.from, again: { name: baseName(result.rel), source: result.source } } }
+  if (result.ok && result.op === 'import' && result.rels.length === 1)
+    return { trash: { op: 'trash', rel: result.rels[0], expect: result.marks[0], snapshot: false }, replay: { op: 'import', dir: result.dir, replay: result.replayId, names: result.rels.map(baseName) } }
+  throw new Error(`역조작 없음 ${JSON.stringify(result)}`)
 }
-const replayInput = (step: Extract<HistoryStep, { op: 'trash' | 'batch' }>): Record<string, unknown> => {
-  if (step.replay === undefined) throw new Error('재생 없음')
-  return { ...step.replay }
-}
-const trashInput = (step: Extract<HistoryStep, { op: 'trash' | 'batch' }>): Record<string, unknown> => {
-  if (step.op !== 'trash') throw new Error('묶음')
-  return { op: 'trash', rel: step.rel, expect: step.expect, snapshot: false }
-}
+const trashInput = (undo: Undo): Record<string, unknown> => undo.trash
+const replayInput = (undo: Undo): Record<string, unknown> => undo.replay
 
 beforeAll(() => {
   base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'l592-r2-')))
@@ -82,22 +81,23 @@ describe('R2-A 건너뛴 가져오기 항목은 결과·실행 취소 대상이 
     fs.symlinkSync('target', path.join(src, 'skip.txt'))
     const realLstat = fsp.lstat
     let n = 0
-    fsp.lstat = async function (...args: Parameters<typeof fsp.lstat>) {
-      if (args[0] === path.join(src, 'skip.txt') && ++n === 2) await fsp.writeFile(at('skip.txt'), 'user-created concurrently', { flag: 'wx' })
-      return realLstat(...args)
-    } as typeof fsp.lstat
+    // 링크 원본을 lstat 으로 두 번째 볼 때(검사 뒤·건너뛰기 전) 같은 이름에 다른 작성자가 파일을 만든다.
+    const spy = vi.spyOn(fsp, 'lstat').mockImplementation(async (target, options) => {
+      if (target === path.join(src, 'skip.txt') && ++n === 2) await fsp.writeFile(at('skip.txt'), 'user-created concurrently', { flag: 'wx' })
+      return realLstat(target, options)
+    })
     let result: ExplorerOpResult
     try {
       result = await op({ op: 'import', dir: '', token: deps.drops.register([path.join(src, 'skip.txt')]) })
     } finally {
-      fsp.lstat = realLstat
+      spy.mockRestore()
     }
     expect(result.ok).toBe(true)
     if (!result.ok || result.op !== 'import') return
     expect(result.skipped.map((row) => row.name)).toEqual(['skip.txt'])
     expect(result.rels).toEqual([])
     expect(result.marks).toEqual([])
-    expect(inverseOf(result)).toBeNull()
+    expect(result.replayId).toBeNull()
     expect(fs.readFileSync(at('skip.txt'), 'utf8')).toBe('user-created concurrently')
   })
 })

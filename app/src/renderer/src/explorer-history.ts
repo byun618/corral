@@ -7,12 +7,19 @@
 //                                          그 휴지통이 되면 다시 실행 = **같은 조작 재생**(`replay` — 만들기 그대로·같은 원본 복제·같은 원본 다시 가져오기, 수정 r1 R1-G)
 //   · 삭제(파일 ≤ 5 MB — Q1)               ↔ 사본으로 다시 만들기 → 다시 실행 = 다시 휴지통
 // Q1 의 「파일 ≤ 5 MB 만」 은 **사용자 삭제의 실행 취소**에만 걸린다 — 폴더·큰 파일 삭제는 칸을 만들지 않는다. 만들기·복제·가져오기 취소의 다시 실행은 재생이라 크기·폴더 제한이 없다.
-// 가져오기 재생은 main 이 준 재생 표지(`replayToken` — 드롭 표지와 같은 2 분·한 번)로만 한다. 지나면 다시 실행이 `bad_token` 으로 거절되고 알린다.
+// 다시 실행은 **원래 대상 이름에만** 만든다(수정 r2 R2-D) — 그 자리가 차 있거나 원본이 원래 조작 뒤 바뀌었으면 main 이 거절한다(새 이름·지금 원본으로 재생하지 않는다).
+// 가져오기 재생은 main 이 붙잡은 재생 근거(`replayId`)로만 한다(R2-E) — 이 기록이 그 id 를 가리키는 동안 main 이 들고, 기록에서 빠지면 hook 이 `release` 로 놓는다(`replayIdsOf`).
+// 여러 항목 가져오기를 실행 취소하다 일부가 거절되면, 치운 것만 다시 실행할 수 있다(R2-F — `names` 를 치운 것으로 좁힌다).
 // 조작이 실패하면(그 사이 바뀜·자리에 다른 것) 그 칸은 버리고 사유를 알린다(조용히 다른 것을 지우거나 덮지 않는다 — 판단은 main).
-import { UNDO_HISTORY_LIMIT, type EntryMark, type ExplorerOpResult } from '../../shared/explorer-ops.js'
+import { baseName, UNDO_HISTORY_LIMIT, type EntryMark, type ExplorerOpResult } from '../../shared/explorer-ops.js'
 
-/** 다시 실행으로 다시 부를 원래 조작(R1-G). */
-export type ReplayStep = { op: 'create'; dir: string; name: string; kind: 'file' | 'dir' } | { op: 'duplicate'; rel: string } | { op: 'import'; dir: string; token: string }
+/**
+ * 다시 실행으로 다시 부를 원래 조작(R1-G). 복제는 원래 사본 이름·원래 원본 도장(`again`), 가져오기는 main 재생 근거 id 와 원래 만든 이름들(`names`) — R2-D.
+ */
+export type ReplayStep =
+  | { op: 'create'; dir: string; name: string; kind: 'file' | 'dir' }
+  | { op: 'duplicate'; rel: string; again: { name: string; source: string } }
+  | { op: 'import'; dir: string; replay: string; names: string[] }
 
 export type HistoryStep =
   | { op: 'move'; from: string; to: string; expect: string }
@@ -63,10 +70,10 @@ export function inverseOf(result: ExplorerOpResult): HistoryStep | null {
       return { op: 'trash', rel: result.created, expect: result.marks, replay: { op: 'create', dir, name, kind: result.kind } }
     }
     case 'duplicate':
-      return { op: 'trash', rel: result.rel, expect: result.marks, replay: { op: 'duplicate', rel: result.from } }
+      return { op: 'trash', rel: result.rel, expect: result.marks, replay: { op: 'duplicate', rel: result.from, again: { name: baseName(result.rel), source: result.source } } }
     case 'import': {
       const steps = result.rels.map((rel, index): HistoryStep => ({ op: 'trash', rel, expect: result.marks[index] ?? [] }))
-      const replay: ReplayStep | undefined = result.replayToken === null ? undefined : { op: 'import', dir: result.dir, token: result.replayToken }
+      const replay: ReplayStep | undefined = result.replayId === null ? undefined : { op: 'import', dir: result.dir, replay: result.replayId, names: result.rels.map(baseName) }
       const only = steps[0]
       if (only === undefined) return null
       if (steps.length === 1 && only.op === 'trash') return replay === undefined ? only : { ...only, replay }
@@ -77,8 +84,28 @@ export function inverseOf(result: ExplorerOpResult): HistoryStep | null {
     case 'restore':
       return { op: 'trash', rel: result.rel, expect: result.marks }
     case 'inspect':
+    case 'release':
       return null
   }
+}
+
+/** 이 기록이 가리키는 main 가져오기 재생 근거 id 들(R2-E) — 여기서 빠진 id 는 main 에서 놓는다. */
+export function replayIdsOf(history: History): string[] {
+  const ids: string[] = []
+  const visit = (step: HistoryStep): void => {
+    const replay = step.op === 'trash' || step.op === 'batch' || step.op === 'replay' ? step.replay : undefined
+    if (replay?.op === 'import') ids.push(replay.replay)
+    if (step.op === 'batch') step.steps.forEach(visit)
+  }
+  for (const entry of [...history.undo, ...history.redo]) visit(entry.step)
+  return ids
+}
+
+/** 재생을 일부 항목(이름)으로 좁힌다 — 여러 항목 가져오기의 부분 실행 취소 뒤 치운 것만 다시 실행(R2-F). 가져오기가 아니거나 남는 것이 없으면 null. */
+export function narrowReplay(replay: ReplayStep, names: readonly string[]): ReplayStep | null {
+  if (replay.op !== 'import') return null
+  const kept = replay.names.filter((name) => names.includes(name))
+  return kept.length === 0 ? null : { ...replay, names: kept }
 }
 
 /** 묶음 역조작 — 각 결과의 역조작을 거꾸로. 하나도 없으면 null. */

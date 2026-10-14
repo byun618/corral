@@ -20,14 +20,16 @@ export const NAME_MAX_BYTES = 255
  *   not_file     일반 파일·폴더·링크가 아니다(FIFO·소켓·장치)
  *   expired      실행 취소용 내용 사본이 메모리에 없다(앱 재시작·상한 초과로 버림)
  *   modified     실행 취소 대상이 만든 뒤 바뀌었다(VS Code `confirmBeforeUndo` 대신 거절 — 휴지통으로도 보내지 않는다)
- *   bad_token    가져오기 원본 표지가 없거나 이미 썼다(렌더러가 원본 경로를 만들 수 없게 — E7ⓓ)
+ *   bad_token    가져오기 원본 표지가 없거나 이미 썼다·재생 근거를 놓았다(렌더러가 원본 경로를 만들 수 없게 — E7ⓓ)
  *   trash_failed `shell.trashItem` 실패 — 영구 삭제로 넘어가지 않는다(E3ⓒⓕ)
  *   permission_denied 쓰기 권한 없음
  */
 export type ExplorerOpRefusal = ExplorerRefusal | 'exists' | 'invalid_name' | 'protected' | 'into_self' | 'not_file' | 'expired' | 'modified' | 'bad_token' | 'trash_failed' | 'permission_denied'
 
-/** 정체(dev:ino)와 도장(dev:ino:size:mtime) — 실행 취소가 「그때 그 항목인가」·「그 뒤 바뀌었나」 를 본다. */
+/** 정체(dev:ino)와 도장(dev:ino:size:mtime:mode — 폴더는 밑 전부) — 실행 취소가 「그때 그 항목인가」·「그 뒤 바뀌었나」 를 본다. */
 export type EntryMark = { rel: string; stamp: string }
+/** 도장을 만들 수 없던 항목(읽을 수 없는 하위 폴더 등 — 수정 r2 R2-G). 이 표지의 실행 취소는 「바뀜 확인 불가」 로 거절된다. */
+export const UNVERIFIABLE = 'unverifiable'
 
 /** 항목 종류(링크는 링크 자체 — 따라가지 않는다). */
 export type EntryKind = 'file' | 'dir' | 'link'
@@ -42,10 +44,20 @@ export type ExplorerOpInput =
   | { op: 'trash'; root: string; rel: string; snapshot: boolean; expect?: EntryMark[] }
   /** 사본으로 다시 만들기(삭제 실행 취소·만들기 다시 실행) — 대상 자리가 비어 있어야 한다. */
   | { op: 'restore'; root: string; rel: string; snapshotId: string }
-  /** 같은 부모에 「<이름> copy」 로 복제. */
-  | { op: 'duplicate'; root: string; rel: string }
+  /**
+   * 같은 부모에 「<이름> copy」 로 복제. `again` = 다시 실행 재생(수정 r2 R2-D) — 원래 사본 이름(`name`)에만 만들고(차 있으면 `exists`),
+   * 원본 도장이 원래 복제 때(`source`)와 다르면 `modified`.
+   */
+  | { op: 'duplicate'; root: string; rel: string; again?: { name: string; source: string } }
   /** OS 드롭 가져오기 — 원본은 preload 가 main 에 직접 넘긴 표지(`token`)로만 가리킨다. */
   | { op: 'import'; root: string; dir: string; token: string }
+  /**
+   * 가져오기 다시 실행(수정 r2 R2-D·R2-E) — main 이 붙잡은 재생 근거(`replay` id)의 원본 중 `names`(원래 만든 이름)만, 그 이름 그대로 다시 가져온다.
+   * 자리가 차 있으면 `exists`, 원본이 원래 가져오기 뒤 바뀌었으면 `modified` — 둘 다 아무것도 만들지 않는다.
+   */
+  | { op: 'import'; root: string; dir: string; replay: string; names: string[] }
+  /** 실행 취소 기록에서 빠진 재생 근거를 main 에서 놓는다(R2-E). */
+  | { op: 'release'; ids: string[] }
   /** 삭제 확인 전에 종류·크기를 본다(대화상자 문구 — 실행 취소 가능 여부). 읽기만. */
   | { op: 'inspect'; root: string; rel: string }
 
@@ -54,13 +66,18 @@ export type ExplorerOpResult =
   | { ok: true; op: 'move'; from: string; to: string; id: string }
   | { ok: true; op: 'trash'; rel: string; kind: EntryKind; snapshotId: string | null }
   | { ok: true; op: 'restore'; rel: string; marks: EntryMark[]; hash: string | null; stamp: string | null }
-  /** `from` = 복제 원본(다시 실행 재생 — R1-G). `failed` = 폴더 안 일부 실패(만든 것은 남고 실행 취소 대상 — R1-H). */
-  | { ok: true; op: 'duplicate'; from: string; rel: string; kind: EntryKind; marks: EntryMark[]; failed: { name: string; error: string }[] }
   /**
-   * `partial` = 만들었지만 도중 실패해 내용이 덜 든 항목(rels 의 부분집합 — 실행 취소 대상에 든다, R1-H).
-   * `replayToken` = 같은 원본을 다시 가져올 표지(실행 취소 뒤 다시 실행 — R1-G). 드롭 표지와 같은 수명(2 분, 한 번)이고 지나면 다시 실행이 `bad_token` 으로 거절된다.
+   * `from` = 복제 원본, `source` = 복제 직전 원본 도장(다시 실행 재생이 원본이 그대로인지 본다 — R1-G·R2-D). `failed` = 폴더 안 일부 실패(만든 것은 남고 실행 취소 대상 — R1-H).
+   * `marks` 의 도장이 `UNVERIFIABLE` 이면 바뀜을 확인할 수 없는 항목(R2-G) — 실행 취소는 거절된다.
    */
-  | { ok: true; op: 'import'; dir: string; rels: string[]; marks: EntryMark[][]; skipped: { name: string; reason: string }[]; failed: { name: string; error: string }[]; partial: string[]; replayToken: string | null }
+  | { ok: true; op: 'duplicate'; from: string; rel: string; kind: EntryKind; marks: EntryMark[]; failed: { name: string; error: string }[]; source: string }
+  /**
+   * `rels` = 이번 가져오기가 **실제로 만든** 항목만(만든 순간의 정체로 묶음 — 수정 r2 R2-A). 건너뛴 것은 `skipped` 에만.
+   * `partial` = 만들었지만 도중 실패해 내용이 덜 든 항목(rels 의 부분집합 — 실행 취소 대상에 든다, R1-H).
+   * `replayId` = main 이 붙잡은 재생 근거(다시 실행 — R2-E). 실행 취소 기록이 그것을 가리키는 동안 남고, 기록에서 빠지면 렌더러가 `release` 로 놓는다(시간 제한 없음).
+   */
+  | { ok: true; op: 'import'; dir: string; rels: string[]; marks: EntryMark[][]; skipped: { name: string; reason: string }[]; failed: { name: string; error: string }[]; partial: string[]; replayId: string | null }
+  | { ok: true; op: 'release' }
   | { ok: true; op: 'inspect'; rel: string; kind: EntryKind; size: number; undoable: boolean }
   /** `done` = 경로 연산은 끝났지만 사후 확인이 어긋났다(Q8 잔여 — `raw/claude/residual.md`). 렌더러는 목록을 다시 읽고 안내한다. */
   | { ok: false; code: ExplorerOpRefusal; error: string; done?: boolean }

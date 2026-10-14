@@ -1,7 +1,7 @@
 // LIFE-592 수정 r1 — 리뷰 r1 지적의 main 쪽 회귀 시험(R1-B·R1-C·R1-G·R1-H). 휴지통은 가짜(시험 폴더로 옮김 — 사용자 ~/.Trash 무접촉).
 //   R1-B `.git` 보호 = 실제 위치(링크 없는 realpath)·대소문자 무시 이름 — 내부 링크·`.GIT` 표기로 메타데이터 영역 쓰기 0, `.github`·`.gitignore` 는 허용
 //   R1-C 복제·가져온 폴더 하위 변경(내용·추가·삭제) 뒤 실행 취소 = `modified` 거절
-//   R1-G 만들기·복제·가져오기 결과가 다시 실행(재생)에 필요한 것을 준다 — 복제 원본(`from`), 가져오기 재생 표지(`replayToken`)
+//   R1-G 만들기·복제·가져오기 결과가 다시 실행(재생)에 필요한 것을 준다 — 복제 원본(`from`), 가져오기 재생 근거(`replayId` — 수정 r2 에서 표지 대신)
 //   R1-H 가져오기 도중 쓰기 실패로 남은 부분 파일 = 결과·표지(실행 취소 범위)·`partial` 에 든다
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
@@ -137,16 +137,16 @@ describe('R1-G 다시 실행 재생에 필요한 것', () => {
     const dupe = await op({ op: 'duplicate', rel: 'folder' })
     expect(field(dupe, 'from')).toBe('folder')
   })
-  it('가져오기 결과의 재생 표지 — 한 번 쓸 수 있고, 같은 원본을 다시 가져온다', async () => {
+  it('가져오기 결과의 재생 근거(수정 r2 — main 이 붙잡은 id) — 원래 이름으로 같은 원본을 다시 가져오고, 자리가 차 있으면 다시 만들지 않는다', async () => {
     const token = deps.drops.register([path.join(src, 'one.txt')])
     const first = await op({ op: 'import', dir: 'src', token })
-    const replay = field(first, 'replayToken')
+    const replay = field(first, 'replayId')
     expect(typeof replay).toBe('string')
     fs.rmSync(at('src/one.txt'))
-    const again = await op({ op: 'import', dir: 'src', token: replay })
+    const again = await op({ op: 'import', dir: 'src', replay, names: ['one.txt'] })
     expect(code(again)).toBe('ok')
     expect(fs.readFileSync(at('src/one.txt'), 'utf8')).toBe('content')
-    expect(code(await op({ op: 'import', dir: 'src', token: replay }))).toBe('bad_token')
+    expect(code(await op({ op: 'import', dir: 'src', replay, names: ['one.txt'] }))).toBe('exists')
   })
 })
 

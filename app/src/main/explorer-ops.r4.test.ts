@@ -112,7 +112,7 @@ describe('R4-A 사용자 삭제 되살림 뒤 앞 기록(⌘Z 연쇄)', () => {
     expect(code(await op({ op: 'move', from: 'dest/plain.txt', to: 'plain.txt', expect: went.id }))).toBe('ok')
   })
 
-  it('빈 폴더 만들기 → 삭제 → ⌘Z → ⌘Z', async () => {
+  it('빈 폴더 만들기 → 사본 있는 삭제 → 되살림 → 만들기 되돌리기(main 경로 — UI 의 폴더 삭제는 Q1 대로 칸을 만들지 않는다)', async () => {
     const made = created(await op({ op: 'create', dir: '', name: 'empty-dir', kind: 'dir' }))
     await deleteAndRestore('empty-dir')
     expect(code(await op({ op: 'trash', rel: made.rel, expect: made.marks, snapshot: false }))).toBe('ok')
@@ -165,6 +165,15 @@ describe('R4-A 사용자 삭제 되살림 뒤 앞 기록(⌘Z 연쇄)', () => {
     const redo = moved(await op({ op: 'move', from: 'plain.txt', to: 'renamed.txt', expect: back.id }))
     expect(redo.to).toBe('renamed.txt')
     expect(code(await op({ op: 'trash', rel: 'renamed.txt', expect: marks, snapshot: true }))).toBe('ok')
+  })
+})
+
+describe('R4-A 되살린 뒤 새 조작', () => {
+  it('삭제 → ⌘Z(되살림) → 이름 변경(새 조작) → ⌘Z → ⌘⇧Z — 새 기록도 이어진 정체로 대조된다', async () => {
+    await deleteAndRestore('plain.txt')
+    const renamed = moved(await op({ op: 'move', from: 'plain.txt', to: 'after.txt' }))
+    const back = moved(await op({ op: 'move', from: 'after.txt', to: 'plain.txt', expect: renamed.id }))
+    expect(code(await op({ op: 'move', from: 'plain.txt', to: 'after.txt', expect: back.id }))).toBe('ok')
   })
 })
 

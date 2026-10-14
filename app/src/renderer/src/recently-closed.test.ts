@@ -1,6 +1,6 @@
 // LIFE-495 K6ⓕ — 닫은 탭 기록의 순수 부분(스택·상한·시작 디렉터리).
 import { describe, expect, it } from 'vitest'
-import { addPlacement, popClosed, pushClosed, RECENTLY_CLOSED_LIMIT, snapshotCwd, type ClosedTabSnapshot, type ClosedTerminalSnapshot, type RecentlyClosed, takeLivePlacements } from './recently-closed.js'
+import { addPlacement, popClosed, pushClosed, RECENTLY_CLOSED_LIMIT, remapClosedFiles, snapshotCwd, type ClosedTabSnapshot, type ClosedTerminalSnapshot, type RecentlyClosed, takeLivePlacements } from './recently-closed.js'
 
 const snap = (index: number, worktreePath = '/repo'): ClosedTerminalSnapshot => ({ worktreePath, cwd: `/repo/d${index}`, label: `n${index}`, color: null, groupId: 'g1', index })
 
@@ -64,5 +64,20 @@ describe('fix1 미확인 부기 — 연속 다시 열기의 자리·색은 탭�
     const taken = takeLivePlacements({ pending, liveTabIds: [] })
     expect(taken.ready).toEqual([])
     expect(taken.pending.get('tA')).toEqual(a)
+  })
+})
+
+describe('LIFE-592 E4ⓓ — 이름 변경·이동 뒤 닫은 파일 탭 기록', () => {
+  it('그 worktree 의 파일 기록만 새 경로로 — 터미널·다른 worktree·밖 경로는 그대로, 바뀔 것이 없으면 같은 객체', async () => {
+    const { remapRel } = await import('../../shared/explorer-ops.js')
+    let history: RecentlyClosed = {}
+    history = pushClosed({ history, snapshot: { kind: 'file', worktreePath: '/repo', rel: 'src/a.ts', preview: false, groupId: 'g1', index: 0 } })
+    history = pushClosed({ history, snapshot: { kind: 'file', worktreePath: '/repo', rel: 'other.ts', preview: false, groupId: 'g1', index: 1 } })
+    history = pushClosed({ history, snapshot: snap(1) })
+    history = pushClosed({ history, snapshot: { kind: 'file', worktreePath: '/other', rel: 'src/a.ts', preview: false, groupId: 'g1', index: 0 } })
+    const next = remapClosedFiles({ history, worktreePath: '/repo', remap: (rel) => remapRel(rel, 'src', 'lib') })
+    expect(next['/repo']?.map((item) => (item.kind === 'file' ? item.rel : 'terminal'))).toEqual(['terminal', 'other.ts', 'lib/a.ts'])
+    expect(next['/other']).toBe(history['/other'])
+    expect(remapClosedFiles({ history, worktreePath: '/repo', remap: () => null })).toBe(history)
   })
 })

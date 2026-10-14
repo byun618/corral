@@ -161,6 +161,12 @@ export function matchBinding(binding: string, overrides: Keybindings): ShortcutM
 export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'file.save']
 
 /**
+ * 편집기(파일 탭 Monaco)에 포커스가 있으면 **편집기에 양보하는** 액션 (LIFE-591). 터미널 pane 을 겨누는 단축키는 파일 탭이 활성이면 무동작이라(590 수정 r1 R1-B — `terminalKeyTarget`)
+ * 삼키기만 하면 편집기의 같은 키가 죽는다: ⌘⇧Z 다시 실행(VS Code·Monaco macOS) · ⌘D 다음 일치 항목 추가 · ⌘⌥↑↓ 커서 추가. 양보해도 잃는 앱 동작이 없다.
+ */
+export const EDITOR_YIELD_ACTIONS: readonly ActionId[] = ['terminal.zoom', 'terminal.split', 'terminal.focus']
+
+/**
  * main `before-input-event` 가 메뉴 가속키에서 가져오는 키 — `⌘W`(File ▸ Close Window)·`⌘R`(View ▸ Reload). 순수 판정.
  * `claimed` 면 main 이 늘 삼킨다(재정의로 비었다고 창 닫기·새로고침으로 되돌아가면 안 된다). `dispatch` 는 렌더러로 보낼 매칭 —
  * 반복(autoRepeat)은 **매칭된 액션**이 `NON_REPEATING_ACTIONS` 면 보내지 않는다(물리 키 기준이 아니다 — ⌘W 를 다시 열기로 재정의해도 한 번).

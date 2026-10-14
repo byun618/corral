@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { looksBinary, readFileContent, readImageContent } from './file-read.js'
+import { decodeText, looksBinary, readFileContent, readImageContent } from './file-read.js'
 import { BINARY_PROBE_BYTES } from '../shared/file-view.js'
 
 let base = ''
@@ -90,6 +90,25 @@ describe('E4ⓕ 바이너리·빈 파일·UTF-8 아님', () => {
     late.fill(1)
     late[BINARY_PROBE_BYTES] = 0
     expect(looksBinary(late)).toBe(false)
+  })
+})
+
+describe('LIFE-591 E1ⓕ·E6ⓑ⑪ 편집 판정 재료 — BOM·UTF-8 손실·nlink', () => {
+  it('UTF-8 아님 → utf8 false(렌더러가 읽기 전용으로 연다)', async () => {
+    expect(await readFileContent({ roots: roots(), root, rel: 'latin1.txt' })).toMatchObject({ ok: true, kind: 'text', utf8: false, bom: false, nlink: 1 })
+    expect(await readFileContent({ roots: roots(), root, rel: 'src/a.ts' })).toMatchObject({ ok: true, kind: 'text', utf8: true, bom: false })
+  })
+  it('BOM — 글에서 떼고 bom true', () => {
+    expect(decodeText(new Uint8Array([0xef, 0xbb, 0xbf, 0x61, 0x0d, 0x0a]))).toEqual({ text: 'a\r\n', bom: true, utf8: true })
+    expect(decodeText(new Uint8Array([0xef, 0xbb]))).toMatchObject({ bom: false, utf8: false })
+  })
+  it('정상 UTF-8 안의 U+FFFD 글자는 손실이 아니다', () => {
+    expect(decodeText(new TextEncoder().encode('a\ufffdb'))).toEqual({ text: 'a\ufffdb', bom: false, utf8: true })
+  })
+  it('하드링크면 nlink > 1', async () => {
+    fs.linkSync(path.join(root, 'src', 'a.ts'), path.join(root, 'a-hard.ts'))
+    expect(await readFileContent({ roots: roots(), root, rel: 'a-hard.ts' })).toMatchObject({ ok: true, kind: 'text', nlink: 2 })
+    fs.rmSync(path.join(root, 'a-hard.ts'))
   })
 })
 

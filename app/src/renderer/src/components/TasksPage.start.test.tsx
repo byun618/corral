@@ -109,6 +109,11 @@ function click(selector: string): void {
   const target = el(selector)
   act(() => { target.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
 }
+function inputOf(selector: string): HTMLInputElement {
+  const target = el(selector)
+  if (!(target instanceof HTMLInputElement)) throw new Error(`입력 칸 아님: ${selector}`)
+  return target
+}
 function check(selector: string): void {
   const target = el(selector)
   if (!(target instanceof HTMLInputElement)) throw new Error(selector)
@@ -176,13 +181,13 @@ describe('C2 시작 모달 — 기본값 · 입력', () => {
     click('[data-issue-start="first"]')
     await settle()
     expect(el('[data-start-work]').classList.contains('modal-start-work')).toBe(true)
-    expect((el('[data-start-name]') as HTMLInputElement).value).toBe('CORE-2')
+    expect(inputOf('[data-start-name]').value).toBe('CORE-2')
     const prompt = el('[data-start-prompt]').textContent ?? ''
     expect(prompt).toContain('작업: CORE-2 카드 저장')
     expect(prompt).toContain('부모: CORE-1 결제 개편')
     expect(prompt).toContain('<untrusted-work-item')
-    expect((el('[data-start-send] input') as HTMLInputElement).checked).toBe(false)
-    expect((el('[data-start-status] input') as HTMLInputElement).checked).toBe(false)
+    expect(inputOf('[data-start-send] input').checked).toBe(false)
+    expect(inputOf('[data-start-status] input').checked).toBe(false)
     // 레포가 하나뿐이어도 기본은 「그 스페이스를 기본으로 둔 레포 → 활성 레포」 — 둘 다 없으면 고르게 한다.
     expect(q('[data-start-repo-note]')).not.toBeNull()
     expect(el('[data-start-submit]').hasAttribute('disabled')).toBe(true)
@@ -236,7 +241,7 @@ describe('C7 연타 · 진행 중 막힘 · 다시 열어 합류', () => {
     r.status = { attemptId: 'r1.0000000000001.0b8f6a4e-7a8c-4c33-9a43-5f3c3f6d2b11', name: 'CORE-2-x', repoRoot: '/repo', agent: 'claude', model: '', effort: 'high', submit: false, result: null }
     click('[data-issue-start="first"]')
     await settle()
-    expect((el('[data-start-name]') as HTMLInputElement).value).toBe('CORE-2-x')
+    expect(inputOf('[data-start-name]').value).toBe('CORE-2-x')
     expect(el('[data-start-step="worktree"]').getAttribute('data-step-status')).toBe('running')
     r.status = { ...r.status, result: result({ attemptId: r.status.attemptId }) }
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 700)) })
@@ -292,7 +297,7 @@ describe('C5 상태 옮기기 — 기본 꺼짐 · 켜면 첫 진행 중 상태�
     await openCard('CORE-4')
     click('[data-issue-start="first"]')
     await settle()
-    expect((el('[data-start-status] input') as HTMLInputElement).disabled).toBe(true)
+    expect(inputOf('[data-start-status] input').disabled).toBe(true)
     expect(el('[data-start-status]').textContent).toContain('이미 진행 중인 작업입니다.')
   })
 })

@@ -46,7 +46,7 @@ describe('failureActions — 실패한 단계에 맞는 행동만', () => {
 
 describe('startSignature — 입력이 같으면 같은 시도', () => {
   it('하나라도 다르면 다른 지문', () => {
-    const base = { repoRoot: '/a', name: 'K-1', agent: 'claude' as const, model: '', effort: '', submit: false, prompt: 'p' }
+    const base: Parameters<typeof startSignature>[0] = { repoRoot: '/a', name: 'K-1', agent: 'claude', model: '', effort: '', submit: false, prompt: 'p' }
     expect(startSignature(base)).toBe(startSignature({ ...base }))
     expect(startSignature(base)).not.toBe(startSignature({ ...base, submit: true }))
   })

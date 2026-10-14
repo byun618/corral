@@ -735,6 +735,7 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
   }, 30000)
 
   // --- LIFE-603 D8 — the draft stage: typed once as a bracketed paste, never submitted ----------------
+  const DRAFT_REFUSALS: ('blocked' | 'unverified')[] = ['blocked', 'unverified']
   const DRAFT_BODY = '작업 LIFE-1 첫 줄\r\n둘째 줄 \u001b[201~ 끼어든 끝 시퀀스\r셋째 줄\u0007벨\n넷째 줄\n' + '긴 본문 '.repeat(120) + '\n\n'
   const sendSpy = () => vi.spyOn(TerminalBackend.prototype, 'sendIfUnchanged').mockImplementation(async () => undefined)
   it('LIFE-603: worktree create --draft types the sanitized body once, sends no Enter and never submits', async () => {
@@ -769,7 +770,7 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     expect(submitted).toBe(0)
   }, 40000)
   it('LIFE-603: a blocked or unverified agent leaves the draft not_started and types nothing (fail-closed)', async () => {
-    for (const mode of ['blocked', 'unverified'] as const) {
+    for (const mode of DRAFT_REFUSALS) {
       const f = agentFixture('claude', { git: true })
       await workspaceModule(f.data).execute({ command: 'repo add', flags: { path: f.cwd }, args: [], cwd: f.cwd }, f.context(8000))
       const send = sendSpy()

@@ -201,7 +201,7 @@ function describeRun(change: Extract<WorkActivityChange, { field: 'run' }>): str
   }
 }
 
-const OUTCOME_LABEL = { completed: '완료', interrupted: '중단', failed: '실패' } as const
+const OUTCOME_LABEL: Record<'completed' | 'interrupted' | 'failed', string> = { completed: '완료', interrupted: '중단', failed: '실패' }
 
 function describeAgent(change: Extract<WorkActivityChange, { field: 'agent' }>): string {
   const who = change.agent ?? '에이전트'

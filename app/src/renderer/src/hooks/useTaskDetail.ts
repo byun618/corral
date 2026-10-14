@@ -165,6 +165,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const [item, setItem] = useState<WorkItem | null>(null)
   const baseRef = useRef(base)
   baseRef.current = base
+  const rowsRef = useRef(page.rows)
+  rowsRef.current = page.rows
   /** 칸별 편집 기준 — 초안이 있는 동안만 있다(R3-A). */
   const basesRef = useRef(new Map<EditSlot, WorkItem>())
   /** 진행 중인 단건 읽기 수 — 회차별(떠난 회차의 늦은 읽기가 새 회차를 막지 않게). 직렬화의 「상세 재조회 중」. */
@@ -281,7 +283,11 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     const historyGate = gateOf(capsRef.current?.history)
     const [activity, listed] = await Promise.all([
       // 활동 조회 실패는 활동만 비운다 — 상세는 그대로(preload 가 없거나 거절해도 던지지 않는다).
-      Promise.resolve().then(() => window.corral.workActivity({ connectionId: target.connectionId, itemId: target.itemId })).catch(() => null),
+      // LIFE-603 — 자동 연결된 worktree 의 사건은 작업 id 를 모르고 키로 남는다. 키를 같이 묻는다(목록 행 · 받은 단건).
+      Promise.resolve().then(() => {
+        const itemKey = baseRef.current?.key ?? rowsRef.current.find((row) => row.space.connectionId === target.connectionId && row.item.id === target.itemId)?.item.key
+        return window.corral.workActivity({ connectionId: target.connectionId, itemId: target.itemId, ...(itemKey === undefined ? {} : { itemKey }) })
+      }).catch(() => null),
       historyGate === null ? request({ requestId: `history-${started}-${mine}`, connectionId: target.connectionId, call: { op: 'listHistory', itemId: target.itemId } }) : Promise.resolve(null),
     ])
     if (!alive(started) || activitySeqRef.current !== mine) return

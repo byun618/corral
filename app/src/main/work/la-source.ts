@@ -168,6 +168,9 @@ export class LaSource implements WorkSourceClient {
       case 'listComments':
       case 'addComment':
         return unsupported('comments')
+      case 'saveWorkLink':
+      case 'removeWorkLink':
+        return unsupported('workLinkStore')
     }
   }
 
@@ -436,7 +439,7 @@ function updateArgs(fields: WorkFieldPatch): Record<string, unknown> {
   return args
 }
 
-function unsupported(name: 'order' | 'cursorPaging' | 'conflictCheck' | 'comments' | 'history'): WorkOutcome {
+function unsupported(name: 'order' | 'cursorPaging' | 'conflictCheck' | 'comments' | 'history' | 'workLinkStore'): WorkOutcome {
   const capability = LA_CAPABILITIES[name]
   const reason = capability.state === 'disabled' ? capability.reason : 'LA 는 이 연산을 하지 않습니다.'
   return { ok: false, error: workError({ kind: 'unsupported', message: reason }) }

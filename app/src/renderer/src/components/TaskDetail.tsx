@@ -759,15 +759,16 @@ function Activity({ detail, statuses, sourceName, now, keyPattern }: { detail: T
       ) : gate.state === 'off' && gate.reason !== null ? (
         <div className="issue-muted issue-reason" data-comment-off="">{gate.reason}</div>
       ) : null}
-      {filter === 'agent' || filter === 'run' ? <div className="issue-muted issue-empty" data-activity-empty={filter}>아직 없습니다 — 작업을 시작하면 채워집니다.</div> : null}
+      {shown.length === 0 && (filter === 'agent' || filter === 'run') ? <div className="issue-muted issue-empty" data-activity-empty={filter}>아직 없습니다 — 작업을 시작하거나 worktree 가 연결되면 채워집니다.</div> : null}
       {shown.length === 0 && (filter === 'all' || filter === 'change' || filter === 'comment') ? <div className="issue-muted issue-empty">아직 활동이 없습니다.</div> : null}
       <ol className="issue-activity-list">
         {shown.map((row) => (
-          <li key={row.id} className={`issue-activity-row is-${row.kind}`} data-activity-row={row.kind} data-activity-origin={row.kind === 'change' ? row.origin : 'comment'}>
+          <li key={row.id} className={`issue-activity-row is-${row.kind}`} data-activity-row={row.kind} data-activity-origin={row.kind === 'change' ? row.origin : row.kind === 'comment' ? 'comment' : 'corral'}>
             <div className="issue-activity-meta"><span className="issue-activity-who">{row.who}</span> · <span title={new Date(row.at).toLocaleString()}>{relativeTime({ at: row.at, now })}</span></div>
-            {row.kind === 'change'
-              ? <div className="issue-activity-text">{row.text}</div>
-              : <div className="issue-activity-comment"><MarkdownView source={row.body} keyPattern={keyPattern} onOpenKey={(key) => void detail.openKey(key)} /></div>}
+            {row.kind === 'comment'
+              ? <div className="issue-activity-comment"><MarkdownView source={row.body} keyPattern={keyPattern} onOpenKey={(key) => void detail.openKey(key)} /></div>
+              : <div className="issue-activity-text">{row.text}</div>}
+            {(row.kind === 'agent' || row.kind === 'run') && row.quote !== null ? <div className="issue-activity-quote" data-activity-quote="">{row.quote}</div> : null}
           </li>
         ))}
       </ol>

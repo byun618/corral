@@ -3,6 +3,8 @@
 // 담는 것: corral 에서 **성공한** 작업 쓰기 하나 = 한 줄(연결 id · 작업 id · 시각 · 쓰기 id · 무엇이 바뀌었나). 기록 지점은 `WorkService` 하나다 —
 //   상세·보드·백로그 어디서 바꿨든 같은 길이라 화면마다 따로 기록하지 않는다. 실패한 쓰기는 남지 않는다.
 // 담지 않는 것: 토큰 · 본문 전문(본문 변경은 줄 수만) · 코멘트(출처가 가진다).
+// LIFE-603: 같은 v1 에 실행 갈래(시작 · 자동 연결 · 떼기)와 에이전트 갈래(질문 · 턴 결과)를 더한다 — main 이 링크된 worktree 를 보고 남긴다(`links.ts`).
+//   그 기록은 `eventKey` 로 한 번만 남는다. 모르는 칸 모양은 v1 의 규칙대로 그 줄만 버린다(옛 판은 새 갈래 줄을 버리고 나머지를 읽는다).
 //
 // 형식 v1 = `{ version: 1, records: WorkActivityRecord[] }`, 오래된 것부터. 줄마다 칸을 검증해 읽고(망가진 줄만 버림),
 // tmp → rename 원자 쓰기 · 파일 권한 0600 · 바꾸기 전에는 파일을 만들지 않는다(`store.ts` 와 같은 결).
@@ -29,8 +31,9 @@ export const ACTIVITY_PER_ITEM = 200
 export const ACTIVITY_TOTAL = 5_000
 
 export type ActivityPort = {
-  append(record: WorkActivityRecord): void
-  list(query: { connectionId: string; itemId: string }): WorkActivityRecord[]
+  /** `eventKey` 가 이미 있으면 남기지 않는다(LIFE-603 — 같은 사건은 한 번). 남겼으면 true. */
+  append(record: WorkActivityRecord): boolean
+  list(query: { connectionId: string; itemId: string; itemKey?: string }): WorkActivityRecord[]
   purgeConnection(connectionId: string): void
 }
 
@@ -70,6 +73,19 @@ function readChange(value: unknown): WorkActivityChange | null {
     }
     case 'child':
       return str(value.childKey) && str(value.childTitle) ? { field: 'child', childKey: value.childKey, childTitle: value.childTitle } : null
+    case 'run': {
+      if (!str(value.worktree)) return null
+      if (value.event === 'start') return str(value.branch) && str(value.agent) && nullableStr(value.model) ? { field: 'run', event: 'start', worktree: value.worktree, branch: value.branch, agent: value.agent, model: value.model } : null
+      return (value.event === 'auto_link' || value.event === 'detach') && nullableStr(value.branch) ? { field: 'run', event: value.event, worktree: value.worktree, branch: value.branch } : null
+    }
+    case 'agent': {
+      if (!str(value.worktree) || !nullableStr(value.agent)) return null
+      if (value.event === 'question') return nullableStr(value.question) && nullableStr(value.noBody) ? { field: 'agent', event: 'question', agent: value.agent, worktree: value.worktree, question: value.question, noBody: value.noBody } : null
+      if (value.event !== 'result') return null
+      const outcome = value.outcome === 'completed' || value.outcome === 'interrupted' || value.outcome === 'failed' ? value.outcome : null
+      const files = value.filesChanged === null || (typeof value.filesChanged === 'number' && Number.isInteger(value.filesChanged) && value.filesChanged >= 0)
+      return outcome !== null && nullableStr(value.detail) && files ? { field: 'agent', event: 'result', agent: value.agent, worktree: value.worktree, outcome, detail: value.detail, filesChanged: typeof value.filesChanged === 'number' ? value.filesChanged : null } : null
+    }
     default:
       return null
   }
@@ -81,7 +97,22 @@ export function readActivityRecord(value: unknown): WorkActivityRecord | null {
   if (!str(id) || !str(connectionId) || !str(itemId) || !str(writeId)) return null
   if (typeof at !== 'number' || !Number.isFinite(at)) return null
   const change = readChange(value.change)
-  return change === null ? null : { id, connectionId, itemId, at, writeId, change }
+  if (change === null) return null
+  if (value.itemKey !== undefined && !str(value.itemKey)) return null
+  if (value.eventKey !== undefined && !str(value.eventKey)) return null
+  return { id, connectionId, itemId, at, writeId, change, ...(str(value.itemKey) ? { itemKey: value.itemKey } : {}), ...(str(value.eventKey) ? { eventKey: value.eventKey } : {}) }
+}
+
+/** 상한·찾기의 묶음 — 작업 id, 모르면 키(LIFE-603 자동 연결 사건). */
+function groupOf(record: WorkActivityRecord): string {
+  return `${record.connectionId}\n${record.itemId === '' ? `key:${record.itemKey ?? ''}` : record.itemId}`
+}
+
+/** 그 작업의 기록인가 — 작업 id 가 같거나, 키로 남긴 기록의 키가 같다. */
+export function recordMatches({ record, query }: { record: WorkActivityRecord; query: { connectionId: string; itemId: string; itemKey?: string } }): boolean {
+  if (record.connectionId !== query.connectionId) return false
+  if (record.itemId !== '' && record.itemId === query.itemId) return true
+  return query.itemKey !== undefined && record.itemKey !== undefined && record.itemKey === query.itemKey
 }
 
 /** 상한을 지킨다 — 작업마다 최근 `perItem` 줄, 전체 최근 `total` 줄. 순서(오래된 것부터)는 그대로. */
@@ -91,7 +122,7 @@ export function capRecords({ records, perItem = ACTIVITY_PER_ITEM, total = ACTIV
   for (let index = records.length - 1; index >= 0 && kept.length < total; index -= 1) {
     const record = records[index]
     if (record === undefined) continue
-    const key = `${record.connectionId}\n${record.itemId}`
+    const key = groupOf(record)
     const count = counts.get(key) ?? 0
     if (count >= perItem) continue
     counts.set(key, count + 1)
@@ -143,13 +174,15 @@ export class WorkActivityStore implements ActivityPort {
     log('work.activity_load', { file: this.file, records: this.records.length, dropped })
   }
 
-  append(record: WorkActivityRecord): void {
+  append(record: WorkActivityRecord): boolean {
+    if (record.eventKey !== undefined && this.records.some((row) => row.eventKey === record.eventKey)) return false
     this.records = capRecords({ records: [...this.records, record] })
     this.save()
+    return true
   }
 
-  list({ connectionId, itemId }: { connectionId: string; itemId: string }): WorkActivityRecord[] {
-    return this.records.filter((record) => record.connectionId === connectionId && record.itemId === itemId).map((record) => ({ ...record, change: { ...record.change } }))
+  list(query: { connectionId: string; itemId: string; itemKey?: string }): WorkActivityRecord[] {
+    return this.records.filter((record) => recordMatches({ record, query })).map((record) => ({ ...record, change: { ...record.change } }))
   }
 
   purgeConnection(connectionId: string): void {
@@ -181,12 +214,14 @@ export class WorkActivityStore implements ActivityPort {
 export class MemoryActivity implements ActivityPort {
   records: WorkActivityRecord[] = []
 
-  append(record: WorkActivityRecord): void {
+  append(record: WorkActivityRecord): boolean {
+    if (record.eventKey !== undefined && this.records.some((row) => row.eventKey === record.eventKey)) return false
     this.records = capRecords({ records: [...this.records, record] })
+    return true
   }
 
-  list({ connectionId, itemId }: { connectionId: string; itemId: string }): WorkActivityRecord[] {
-    return this.records.filter((record) => record.connectionId === connectionId && record.itemId === itemId)
+  list(query: { connectionId: string; itemId: string; itemKey?: string }): WorkActivityRecord[] {
+    return this.records.filter((record) => recordMatches({ record, query }))
   }
 
   purgeConnection(connectionId: string): void {

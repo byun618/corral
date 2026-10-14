@@ -48,7 +48,10 @@ import {
   type WorkResponse,
   type WorkSettingsState,
   type WorkSpace,
+  type WorkLink,
 } from '../../shared/work.js'
+import type { LinkConnection } from '../../shared/work-link.js'
+import type { StartSourceLink } from '../../shared/work-start.js'
 import { log } from '../log.js'
 import { redactSecret, workError } from './errors.js'
 import type { ActivityPort } from './activity-store.js'
@@ -291,6 +294,45 @@ export class WorkService {
     const { requestId, connectionId, call } = request
     const outcome = await this.run({ connectionId, call, announce: false })
     return outcome.ok ? { requestId, connectionId, ok: true, result: outcome.result } : { requestId, connectionId, ok: false, error: this.scrub({ error: outcome.error }) }
+  }
+
+  /**
+   * LIFE-603 링크 해석 입력 — 연결마다 출처 · 키 모양(E3). 해석은 `shared/work-link.ts` 가 한다.
+   */
+  linkConnections(): LinkConnection[] {
+    const descriptors = this.deps.sources.descriptors()
+    return this.deps.store.get().connections.map((row) => ({ id: row.id, sourceId: row.sourceId, keyPattern: descriptors.find((entry) => entry.id === row.sourceId)?.keyPattern ?? null }))
+  }
+
+  /** 레포 루트 → 그 레포 기본 스페이스의 연결 id(없으면 null). */
+  repoDefaultConnection(repoRoot: string): string | null {
+    const repo = this.deps.repos().find((row) => row.root === repoRoot)
+    return repo === undefined ? null : (this.deps.store.get().repoDefaults[repo.id]?.connectionId ?? null)
+  }
+
+  /** 연결의 출처 표시 이름(첫 프롬프트 · 활동). */
+  sourceNameOf(connectionId: string): string | null {
+    const row = this.deps.store.get().connections.find((entry) => entry.id === connectionId)
+    return row === undefined ? null : (this.deps.sources.get(row.sourceId)?.descriptor.name ?? null)
+  }
+
+  /**
+   * LIFE-603 C14 — 작업 링크를 출처에도 남기거나 지운다. 능력이 꺼진 출처(LA — L1a 전)는 능력 문에서 멈춰 **요청 0**, 결과 `skipped`.
+   * 실패는 그대로 돌려준다 — 로컬 링크는 호출자가 이미 저장했고 지우지 않는다.
+   */
+  async storeLink({ connectionId, itemId, link, action }: { connectionId: string; itemId: string; link: WorkLink; action: 'save' | 'remove' }): Promise<StartSourceLink> {
+    const call: WorkCall = action === 'save' ? { op: 'saveWorkLink', itemId, link } : { op: 'removeWorkLink', itemId, link }
+    const outcome = await this.run({ connectionId, call, announce: false })
+    if (outcome.ok) return { state: 'saved', message: null }
+    if (outcome.error.kind === 'unsupported') return { state: 'skipped', message: this.scrub({ error: outcome.error }).message }
+    return { state: 'failed', message: this.scrub({ error: outcome.error }).message }
+  }
+
+  /** LIFE-603 — main 이 남기는 실행·에이전트 사건. `eventKey` 가 이미 있으면 남기지 않는다. 없는 연결이면 버린다. */
+  recordEvent({ connectionId, itemId, itemKey, eventKey, change }: { connectionId: string; itemId: string | null; itemKey: string; eventKey: string; change: WorkActivityChange }): boolean {
+    const activity = this.deps.activity
+    if (activity === undefined || !this.deps.store.get().connections.some((row) => row.id === connectionId)) return false
+    return activity.append({ id: this.newId(), connectionId, itemId: itemId ?? '', itemKey, at: this.now(), writeId: eventKey, eventKey, change })
   }
 
   /** 작업 하나의 corral 활동 기록(LIFE-602) — 오래된 것부터. 없는 연결이면 not_connected. */
@@ -552,6 +594,8 @@ function isWrite(call: WorkCall): boolean {
     case 'addComment':
     case 'updateItem':
     case 'createItem':
+    case 'saveWorkLink':
+    case 'removeWorkLink':
       return true
     case 'listSpaces':
     case 'listStatuses':
@@ -607,6 +651,8 @@ export function changesOf({ call, result, statusLabel, seen }: {
       return result.op === 'createItem' && call.parentId !== null ? [{ itemId: call.parentId, change: { field: 'child', childKey: result.item.key, childTitle: result.item.title } }] : []
     case 'reorder':
     case 'addComment':
+    case 'saveWorkLink':
+    case 'removeWorkLink':
     case 'listSpaces':
     case 'listStatuses':
     case 'listItems':

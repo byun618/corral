@@ -4,6 +4,8 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
+import type { WorktreeWorkLink } from './work-link.js'
+import type { StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
 import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
@@ -497,6 +499,11 @@ export type WorktreeRow = {
   comment: string | null
   /** 부모 워크트리 경로 — 레지스트리 `parentWorktreeId`(`<repoId>::<path>`)의 경로 부분. 없으면 null. */
   parentPath: string | null
+  /**
+   * 작업 링크(LIFE-603) — main 이 명시 링크 · 자동 연결 · 예외로 해석한 결과(`shared/work-link.ts`). 링크가 없으면 null.
+   * 칸이 없는 행(링크 해석 전의 행·시험 고정값)은 링크 없음과 같다.
+   */
+  workLink?: WorktreeWorkLink | null
 }
 
 /** 레지스트리에 등록된 레포 하나. **목록의 루트는 이것이다** (기준 N4). */
@@ -1095,5 +1102,14 @@ export type CorralApi = {
   workRequest: (request: WorkRequest) => Promise<WorkResponse>
   /** 작업 하나의 corral 활동 기록(LIFE-602) — main 이 성공한 쓰기마다 남긴 것, 오래된 것부터. */
   workActivity: (query: WorkActivityQuery) => Promise<WorkActivityResult>
+  /** 작업에서 시작(LIFE-603) — main 이 런타임 `worktree create` 를 부른다. 같은 `attemptId` 는 합류. 발신자 거절이면 null. */
+  startWork: (input: StartWorkInput) => Promise<StartWorkResult | null>
+  /** 그 작업의 마지막 시작 시도(진행 중이면 결과 null) — 모달을 다시 열 때 이어 받는다. */
+  startWorkStatus: (query: StartWorkStatusQuery) => Promise<StartAttemptView | null>
+  /** 사이드바 「작업 떼기」 — 명시 링크면 지우고 자동 연결 예외로 둔다. */
+  detachWorkLink: (input: { path: string }) => Promise<DetachWorkLinkResult>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }
+
+/** 작업 떼기 결과(LIFE-603 C9). `sourceLink` = 출처 쪽 링크 지우기(능력 없으면 skipped, 명시 링크가 아니면 null). */
+export type DetachWorkLinkResult = { ok: true; mode: 'explicit' | 'auto'; sourceLink: StartSourceLink | null } | { ok: false; error: string }

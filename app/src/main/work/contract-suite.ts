@@ -11,6 +11,7 @@ import {
   type WorkCapability,
   type WorkCapabilityName,
   type WorkItem,
+  type WorkLink,
   type WorkResponse,
   type WorkSpace,
   type WorkStatus,
@@ -29,6 +30,8 @@ export type ContractTarget = {
   missingKey: string
   /** 다른 스페이스에 있는 작업 쌍(E9 · LIFE-602) — `itemId` 에서 `otherKey` 로 연결하면 상대의 스페이스가 `otherSpaceKey` 로 보여야 한다. */
   crossSpace: { itemId: string; otherKey: string; otherSpaceKey: string }
+  /** 출처가 받은 요청 수(LIFE-603 C14 — 꺼진 능력은 요청 0). 셀 수 없는 출처는 없다. */
+  sourceRequests?: () => number
 }
 
 const CAPABILITY_NAMES: WorkCapabilityName[] = ['placement', 'relations', 'parentChange', 'order', 'cursorPaging', 'conflictCheck', 'comments', 'history', 'workLinkStore']
@@ -534,6 +537,30 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       await okResult({ op: 'addComment', itemId: item.id, body: '계약 묶음' })
       const listed = await okResult({ op: 'listComments', itemId: item.id })
       if (listed.op === 'listComments') expect(listed.comments.some((comment) => comment.body === '계약 묶음')).toBe(true)
+    })
+
+    // LIFE-603 C14 — 작업 링크 쓰기·지우기는 main 만 보낸다(`storeLink`). 렌더러 요청 모양으로는 받지 않는다.
+    it('작업 링크(C14) — 켜져 있으면 저장·지우기가 단건에 보이고, 꺼져 있으면 skipped + 이유 · 출처 요청 0', async () => {
+      const { items, capabilities } = await stage()
+      const item = items[0]
+      if (item === undefined) throw new Error('no item')
+      const link: WorkLink = { kind: 'worktree', path: '/tmp/l603-contract/wt', repoRoot: '/tmp/l603-contract' }
+      expect(await target.service.request({ requestId: `req-${++seq}`, connectionId: target.connectionId, call: { op: 'saveWorkLink', itemId: item.id, link } })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+      const before = target.sourceRequests?.() ?? null
+      const saved = await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'save' })
+      if (capabilities.workLinkStore.state !== 'on') {
+        expect(saved.state).toBe('skipped')
+        if (capabilities.workLinkStore.state === 'disabled') expect(saved.message).toBe(capabilities.workLinkStore.reason)
+        expect(await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'remove' })).toMatchObject({ state: 'skipped' })
+        if (before !== null) expect(target.sourceRequests?.()).toBe(before)
+        return
+      }
+      expect(saved).toEqual({ state: 'saved', message: null })
+      const after = await okResult({ op: 'getItem', itemId: item.id })
+      if (after.op === 'getItem') expect(after.item.workLinks).toContainEqual(link)
+      expect(await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'remove' })).toEqual({ state: 'saved', message: null })
+      const removed = await okResult({ op: 'getItem', itemId: item.id })
+      if (removed.op === 'getItem') expect(removed.item.workLinks).not.toContainEqual(link)
     })
   })
 }

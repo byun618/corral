@@ -146,6 +146,8 @@ export const ACTIVITY_FILTER_LABEL: Record<ActivityFilter, string> = { all: '전
 export type ActivityRow =
   | { kind: 'change'; id: string; at: number; who: string; text: string; origin: 'corral' | 'source' }
   | { kind: 'comment'; id: string; at: number; who: string; body: string }
+  /** LIFE-603 C13 — 에이전트 · 실행 갈래(main 이 링크된 worktree 를 보고 남긴 기록). `quote` = 질문 본문(있을 때만). */
+  | { kind: 'agent' | 'run'; id: string; at: number; who: string; text: string; quote: string | null }
 
 const HISTORY_FIELD_LABEL: Record<WorkHistoryField, string> = { status: '상태', title: '제목', body: '본문', priority: '우선순위', dueAt: '마감', placement: '배치', parent: '부모', relation: '연결', child: '자식' }
 
@@ -184,6 +186,31 @@ export function describeChange({ change, statuses }: { change: WorkActivityChang
       return change.action === 'add' ? `연결 추가 · ${what}` : `연결 뗌${what === '' ? '' : ` · ${what}`}`
     }
     case 'child': return `자식 추가 · ${change.childKey} ${change.childTitle}`
+    case 'run': return describeRun(change)
+    case 'agent': return describeAgent(change)
+  }
+}
+
+const tail = (path: string): string => path.split('/').filter((part) => part.length > 0).pop() ?? path
+
+function describeRun(change: Extract<WorkActivityChange, { field: 'run' }>): string {
+  switch (change.event) {
+    case 'start': return `작업 시작 · ${change.branch} · ${change.agent === 'shell' ? '빈 터미널' : change.agent}${change.model === null ? '' : ` · ${change.model}`}`
+    case 'auto_link': return `worktree 자동 연결 · ${change.branch ?? tail(change.worktree)}`
+    case 'detach': return `worktree 떼기 · ${change.branch ?? tail(change.worktree)}`
+  }
+}
+
+const OUTCOME_LABEL = { completed: '완료', interrupted: '중단', failed: '실패' } as const
+
+function describeAgent(change: Extract<WorkActivityChange, { field: 'agent' }>): string {
+  const who = change.agent ?? '에이전트'
+  switch (change.event) {
+    case 'question': return change.question === null ? `${who} · 질문 대기 (${change.noBody ?? '본문 없음'})` : `${who} · 질문 대기`
+    case 'result': {
+      const files = change.filesChanged === null ? '' : ` · 바뀐 파일 ${change.filesChanged}`
+      return `${who} · 턴 ${OUTCOME_LABEL[change.outcome]}${change.detail === null ? '' : ` (${change.detail})`}${files} · ${tail(change.worktree)}`
+    }
   }
 }
 
@@ -205,7 +232,12 @@ export function activityRows({ records, history, comments, statuses, sourceName 
 }): ActivityRow[] {
   const ours = new Set(records.map((record) => record.writeId))
   const rows: ActivityRow[] = [
-    ...records.map((record): ActivityRow => ({ kind: 'change', id: `a:${record.id}`, at: record.at, who: '나 · corral', text: describeChange({ change: record.change, statuses }), origin: 'corral' })),
+    ...records.map((record): ActivityRow => {
+      const text = describeChange({ change: record.change, statuses })
+      if (record.change.field === 'agent') return { kind: 'agent', id: `a:${record.id}`, at: record.at, who: 'corral', text, quote: record.change.event === 'question' ? record.change.question : null }
+      if (record.change.field === 'run') return { kind: 'run', id: `a:${record.id}`, at: record.at, who: '나 · corral', text, quote: null }
+      return { kind: 'change', id: `a:${record.id}`, at: record.at, who: '나 · corral', text, origin: 'corral' }
+    }),
     ...history
       .filter((entry) => entry.writeId === null || !ours.has(entry.writeId))
       .map((entry): ActivityRow => ({ kind: 'change', id: `h:${entry.id}`, at: Date.parse(entry.at) || 0, who: `${entry.author ?? '다른 곳'} · ${sourceName}`, text: describeHistory(entry), origin: 'source' })),
@@ -217,8 +249,8 @@ export function activityRows({ records, history, comments, statuses, sourceName 
 export function activityCounts(rows: ActivityRow[]): Record<ActivityFilter, number> {
   return {
     all: rows.length,
-    agent: 0,
-    run: 0,
+    agent: rows.filter((row) => row.kind === 'agent').length,
+    run: rows.filter((row) => row.kind === 'run').length,
     change: rows.filter((row) => row.kind === 'change').length,
     comment: rows.filter((row) => row.kind === 'comment').length,
   }
@@ -229,9 +261,8 @@ export function passesActivity({ row, filter }: { row: ActivityRow; filter: Acti
     case 'all': return true
     case 'change': return row.kind === 'change'
     case 'comment': return row.kind === 'comment'
-    case 'agent':
-    case 'run':
-      return false
+    case 'agent': return row.kind === 'agent'
+    case 'run': return row.kind === 'run'
   }
 }
 

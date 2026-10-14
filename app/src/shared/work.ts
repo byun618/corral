@@ -167,10 +167,23 @@ export type WorkActivityChange =
   | { field: 'parent'; parentId: string | null }
   | { field: 'relation'; action: 'add' | 'remove'; kind: WorkRelationKind | null; otherKey: string | null }
   | { field: 'child'; childKey: string; childTitle: string }
+  /** 실행 갈래(LIFE-603 C13) — 작업 시작 · 자동 연결 · 떼기. `worktree` 는 경로, `branch` 는 그때의 브랜치 이름. */
+  | { field: 'run'; event: 'start'; worktree: string; branch: string; agent: string; model: string | null }
+  | { field: 'run'; event: 'auto_link' | 'detach'; worktree: string; branch: string | null }
+  /**
+   * 에이전트 갈래(LIFE-603 C13) — 링크된 worktree 의 에이전트 사건. `question` 은 질문 본문(못 읽는 에이전트는 null + `noBody` 이유),
+   * `result` 는 턴 결과(완료 · 중단 · 실패)와 그때 바뀐 파일 수(git 상태, 모르면 null).
+   */
+  | { field: 'agent'; event: 'question'; agent: string | null; worktree: string; question: string | null; noBody: string | null }
+  | { field: 'agent'; event: 'result'; agent: string | null; worktree: string; outcome: 'completed' | 'interrupted' | 'failed'; detail: string | null; filesChanged: number | null }
 
-export type WorkActivityRecord = { id: string; connectionId: string; itemId: string; at: number; writeId: string; change: WorkActivityChange }
+/**
+ * `itemKey` — 작업 id 를 모르는 기록(자동 연결된 worktree 의 사건)은 키로 찾는다(LIFE-603). 그때 `itemId` 는 빈 문자열이다.
+ * `eventKey` — 같은 사건을 한 번만 남기는 열쇠(LIFE-603 C13 — 재시작 · 재방송 · 재관측에 중복 0). 쓰기 기록(LIFE-602)에는 없다.
+ */
+export type WorkActivityRecord = { id: string; connectionId: string; itemId: string; at: number; writeId: string; change: WorkActivityChange; itemKey?: string; eventKey?: string }
 
-export type WorkActivityQuery = { connectionId: string; itemId: string }
+export type WorkActivityQuery = { connectionId: string; itemId: string; itemKey?: string }
 export type WorkActivityResult = { ok: true; records: WorkActivityRecord[] } | { ok: false; error: WorkError }
 
 /** 저장 충돌(E7) — 서버의 지금 작업과, 아는 경우 마지막으로 바꾼 쪽. 화면은 연 시점 값과 칸별로 비교해 「어떤 칸」 을 계산한다. */
@@ -205,6 +218,12 @@ export type WorkCall =
   | { op: 'removeRelation'; itemId: string; relationId: string }
   | { op: 'listComments'; itemId: string }
   | { op: 'addComment'; itemId: string; body: string }
+  /**
+   * 작업 링크 쓰기·지우기(LIFE-603 C14 · L1a 대비) — 능력 `workLinkStore`. main 만 보낸다(렌더러 요청 손검증은 받지 않는다).
+   * corral 로컬 링크(`repos.json`)가 정본이고, 이 연산은 출처에도 같은 링크를 남기는 사본이다 — 실패해도 로컬 링크는 그대로다.
+   */
+  | { op: 'saveWorkLink'; itemId: string; link: WorkLink }
+  | { op: 'removeWorkLink'; itemId: string; link: WorkLink }
 
 export type WorkOp = WorkCall['op']
 
@@ -223,6 +242,7 @@ export type WorkResult =
   | { op: 'removeRelation'; relationId: string }
   | { op: 'listComments'; comments: WorkComment[] }
   | { op: 'addComment'; comment: WorkComment }
+  | { op: 'saveWorkLink' | 'removeWorkLink'; workLinks: WorkLink[] }
 
 /**
  * 오류 분류. 연결 상태를 바꾸는 것은 앞의 다섯(K2): 인증 실패 · 권한 부족 · 네트워크(연결 실패·DNS·시간 초과·5xx) · 키체인 · 저장 충돌.
@@ -365,6 +385,9 @@ export function capabilityOf(call: WorkCall): WorkCapabilityName | null {
     case 'listComments':
     case 'addComment':
       return 'comments'
+    case 'saveWorkLink':
+    case 'removeWorkLink':
+      return 'workLinkStore'
   }
 }
 
@@ -499,7 +522,9 @@ export function readWorkCall(value: unknown): WorkCall | null {
 }
 
 export function readWorkActivityQuery(value: unknown): WorkActivityQuery | null {
-  return isRecord(value) && isNonEmpty(value.connectionId) && isNonEmpty(value.itemId) ? { connectionId: value.connectionId, itemId: value.itemId } : null
+  if (!isRecord(value) || !isNonEmpty(value.connectionId) || !isNonEmpty(value.itemId)) return null
+  if (value.itemKey !== undefined && !(isNonEmpty(value.itemKey) && value.itemKey.length <= 64)) return null
+  return value.itemKey === undefined ? { connectionId: value.connectionId, itemId: value.itemId } : { connectionId: value.connectionId, itemId: value.itemId, itemKey: value.itemKey }
 }
 
 export function readWorkRequest(value: unknown): WorkRequest | null {

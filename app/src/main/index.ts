@@ -116,6 +116,9 @@ import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTai
 import { LA_DEFAULT_MCP_URL, laSourceEntry } from './work/la-source.js'
 import { mockSourceEntry, seedMockDemoState } from './work/mock-source.js'
 import { WorkService } from './work/service.js'
+import { isRecord } from '../shared/json.js'
+import { WorkLinks, linkOf } from './work/links.js'
+import { StartService } from './work/start.js'
 import { WorkActivityStore } from './work/activity-store.js'
 import { WorkSourceRegistry } from './work/source.js'
 import { WorkConnectionStore } from './work/store.js'
@@ -134,7 +137,7 @@ let lastEmittedState: AppState | null = null
 /** 종료 때 serve 항목 제거에 주는 시간 — 넘기면 tailscale 자식을 죽이고 끝낸다(A6ⓕ 10초 안). 남은 항목은 다음 기동 reconcile 이 지운다. */
 const MOBILE_SHUTDOWN_DEADLINE_MS = 6_000
 /** 런타임 디스패처 (LIFE-478) — GUI 카드 메뉴가 CLI 와 같은 `worktree set`/`worktree rm` 을 이 손으로 돈다. */
-let runtimeInvoke: ((invocation: Invocation) => Promise<RpcResponse>) | null = null
+let runtimeInvoke: ((invocation: Invocation, timeoutMs?: number) => Promise<RpcResponse>) | null = null
 let keybindings: KeybindingStore
 let shortcutRecording = false
 const measuring = (process.env.CORRAL_CONTROL_SOCKET ?? '').length > 0
@@ -177,6 +180,9 @@ let uiPrefs: UiPrefsStore | null = null
 let settings: SettingsStore | null = null
 /** 설정 › 작업 연결 (LIFE-600) — 기동 때는 저장 파일만 읽는다. 자격(키체인)은 그 연결이 처음 쓰일 때 푼다(C6). */
 let work: WorkService | null = null
+/** LIFE-603 — 작업 링크(해석·쓰기·사건)와 「작업에서 시작」. 작업 서비스와 같이 선다. */
+let workLinks: WorkLinks | null = null
+let workStarts: StartService | null = null
 /** C7 대조용 — 계측 실행(제어 소켓)에서 `CORRAL_WORK_IPC_TRACE` 가 있을 때만 작업 IPC 응답·push 를 NDJSON 으로 남긴다. */
 function traceWork({ channel, value }: { channel: string; value: unknown }): void {
   const file = process.env.CORRAL_WORK_IPC_TRACE
@@ -428,7 +434,9 @@ function registryMetadata(): Record<string, WorktreeMetadataRecord> {
 }
 
 function currentState(): AppState {
-  const tree = joinTree(skeleton, attachDigests(link.store.rows(), digests), registryMetadata())
+  const joined = joinTree(skeleton, attachDigests(link.store.rows(), digests), registryMetadata())
+  // LIFE-603 — 작업 링크를 싣는다(명시 · 자동 · 예외의 해석은 `shared/work-link.ts` 한 곳).
+  const tree = workLinks === null ? joined : { ...joined, repos: workLinks.annotate(joined.repos) }
   // 등록 목록과 그 세대는 **같은 읽기**에서 낸다 — 렌더러가 둘을 한 순간의 값으로 믿는다(R3-01).
   const registryState = registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' }
   return {
@@ -480,6 +488,8 @@ function scheduleEmit(): void {
       ...link.store.ids(),
     })
     window?.webContents.send('corral:state', state)
+    // LIFE-603 — 링크된 worktree 의 사건(자동 연결 · 질문 · 턴 결과)을 활동에 남긴다. 화면이 닫혀 있어도 여기서 남는다.
+    workLinks?.observe(state.repos)
     // 폰 목록(LIFE-580) — 방금 만든 상태를 그대로 쓴다(두 번 만들지 않는다). 구독자가 없으면 아무 일도 안 한다.
     lastEmittedState = state
     mobile?.listChanged()
@@ -1637,6 +1647,15 @@ app.whenReady().then(async () => {
       if (window !== null && !window.isDestroyed()) window.webContents.send('corral:workSettings', state)
     },
   })
+  workLinks = new WorkLinks({ registry: () => registry, work: () => work, log })
+  workStarts = new StartService({
+    invoke: () => runtimeInvoke,
+    repos: () => currentState().repos,
+    links: () => workLinks,
+    work: () => work,
+    log,
+    cwd: os.homedir(),
+  })
   log('app.ready', {
     logFile: file,
     electron: process.versions.electron,
@@ -1771,6 +1790,17 @@ app.whenReady().then(async () => {
   workHandle('corral:setRepoDefaultSpace', (input) => work?.setRepoDefault(input))
   workHandle('corral:workRequest', (input) => work?.request(input))
   workHandle('corral:workActivity', (input) => work?.activity(input))
+  // LIFE-603 — 작업에서 시작 · 이어 받기 · 작업 떼기. 런타임 호출은 main 에서만(렌더러에 범용 런타임 다리 없음).
+  ipcMain.handle('corral:startWork', async (event, input: unknown) => (fromOurWindow(event) && workStarts !== null ? workStarts.start(input) : null))
+  ipcMain.handle('corral:startWorkStatus', (event, input: unknown) => (fromOurWindow(event) && workStarts !== null ? workStarts.status(input) : null))
+  ipcMain.handle('corral:detachWorkLink', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || workLinks === null) return { ok: false, error: '허용되지 않은 발신자' }
+    const target = isRecord(input) && typeof input.path === 'string' ? linkOf({ repos: currentState().repos, path: input.path }) : null
+    if (target === null) return { ok: false, error: '등록된 워크트리가 아니다' }
+    const result = await workLinks.detach({ worktree: target.worktree, repoRoot: target.repoRoot })
+    scheduleEmit()
+    return result
+  })
 
   // --- 라이프사이클 (R3) ---
   const denied = { ok: false as const, error: '허용되지 않은 발신자' }
@@ -1823,6 +1853,8 @@ app.whenReady().then(async () => {
   // --- 카드 메뉴 (LIFE-478) — 쓰기·삭제는 런타임 디스패처(CLI 와 같은 명령), 경로는 등록된 것만 ---
   const cardDeps: CardActionDeps = {
     invoke: () => runtimeInvoke,
+    // LIFE-603 F3 — 시작이 workspace 줄을 잡고 에이전트를 기다리는 동안 카드 메뉴 쓰기는 줄 서지 않고 바로 이유를 돌려준다.
+    startBusy: () => workStarts?.busy() ?? false,
     worktrees: () => currentState().repos.flatMap((repo) => repo.worktrees.map((row) => ({ repoRoot: repo.root, path: row.path, branch: row.branch, isLinked: row.isLinked }))),
     repoRoots: () => registry?.list() ?? [],
     parentPaths: () => new Map(Object.entries(registryMetadata()).map(([target, meta]) => [target, parentPathOf(meta.parentWorktreeId)])),

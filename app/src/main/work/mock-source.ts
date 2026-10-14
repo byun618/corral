@@ -29,6 +29,7 @@ import type {
   WorkHistoryField,
   WorkItem,
   WorkKind,
+  WorkLink,
   WorkRelation,
   WorkRelationKind,
   WorkResolution,
@@ -73,7 +74,7 @@ export const PLAIN_BEHAVIOR: MockBehavior = { fault: null, delayMs: 0, rejectWri
 
 function capsOf(token: string): Partial<WorkCapabilities> {
   const caps: Partial<WorkCapabilities> = {}
-  for (const match of token.matchAll(/cap-(order|placement|cursorPaging|relations|comments|history|conflictCheck)-(off|hide)/g)) {
+  for (const match of token.matchAll(/cap-(order|placement|cursorPaging|relations|comments|history|conflictCheck|workLinkStore)-(off|hide)/g)) {
     const capability: WorkCapability = match[2] === 'hide' ? { state: 'hidden' } : { state: 'disabled', reason: `모의 출처가 이 능력을 껐습니다 (cap-${match[1]}-off).` }
     switch (match[1]) {
       case 'order': caps.order = capability; break
@@ -83,6 +84,7 @@ function capsOf(token: string): Partial<WorkCapabilities> {
       case 'comments': caps.comments = capability; break
       case 'history': caps.history = capability; break
       case 'conflictCheck': caps.conflictCheck = capability; break
+      case 'workLinkStore': caps.workLinkStore = capability; break
     }
   }
   if (token.includes('transition-any')) caps.transition = { mode: 'any' }
@@ -119,7 +121,8 @@ export const MOCK_CAPABILITIES: WorkCapabilities = {
   conflictCheck: { state: 'on' },
   comments: { state: 'on' },
   history: { state: 'on' },
-  workLinkStore: { state: 'disabled', reason: '작업 링크 저장은 T5 에서 켭니다.' },
+  // LIFE-603 C14 — 모의 출처는 켠다(L1a 가 들어온 출처의 모양). `cap-workLinkStore-off` 토큰이면 끈다.
+  workLinkStore: { state: 'on' },
 }
 
 const PAIR: Record<WorkRelationKind, WorkRelationKind> = {
@@ -151,6 +154,8 @@ export type MockState = {
   pageSize?: number
   /** 이력·충돌의 시각 — 테스트가 고정할 수 있다. */
   clock?: () => number
+  /** 받은 작업 링크 쓰기·지우기(LIFE-603 C14) — 요청 기록. */
+  linkWrites?: { op: 'saveWorkLink' | 'removeWorkLink'; itemId: string; link: WorkLink }[]
 }
 
 /** 이 모의 출처로 쓴 사람 — 이력의 author. */
@@ -508,6 +513,17 @@ export class MockSource implements WorkSourceClient {
       case 'listComments': {
         if (this.item(call.itemId) === null) return rejected('없는 작업입니다.')
         return { ok: true, result: { op: 'listComments', comments: [...(this.state.comments[call.itemId] ?? [])] } }
+      }
+      case 'saveWorkLink':
+      case 'removeWorkLink': {
+        const item = this.item(call.itemId)
+        if (item === null) return rejected('없는 작업입니다.')
+        const writes = this.state.linkWrites ?? []
+        writes.push({ op: call.op, itemId: call.itemId, link: call.link })
+        this.state.linkWrites = writes
+        const same = (link: WorkLink) => JSON.stringify(link) === JSON.stringify(call.link)
+        item.workLinks = call.op === 'saveWorkLink' ? [...item.workLinks.filter((link) => !same(link)), call.link] : item.workLinks.filter((link) => !same(link))
+        return { ok: true, result: { op: call.op, workLinks: [...item.workLinks] } }
       }
       case 'addComment': {
         if (this.item(call.itemId) === null) return rejected('없는 작업입니다.')

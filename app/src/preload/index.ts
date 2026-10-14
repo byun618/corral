@@ -103,6 +103,9 @@ const EXPOSED = [
   'setRepoDefaultSpace',
   'workRequest',
   'workActivity',
+  'startWork',
+  'startWorkStatus',
+  'detachWorkLink',
   'preloadEnv',
 ]
 
@@ -299,6 +302,9 @@ const api: CorralApi = {
   setRepoDefaultSpace: (input) => ipcRenderer.invoke('corral:setRepoDefaultSpace', input),
   workRequest: (request) => ipcRenderer.invoke('corral:workRequest', request),
   workActivity: (query) => ipcRenderer.invoke('corral:workActivity', query),
+  startWork: (input) => ipcRenderer.invoke('corral:startWork', input),
+  startWorkStatus: (query) => ipcRenderer.invoke('corral:startWorkStatus', query),
+  detachWorkLink: (input) => ipcRenderer.invoke('corral:detachWorkLink', input),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

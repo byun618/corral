@@ -36,8 +36,11 @@ export type EntryKind = 'file' | 'dir' | 'link'
 
 /** 렌더러 → main 조작 요청(경로는 전부 루트 기준 상대, `/` 구분). */
 export type ExplorerOpInput =
-  /** 새 파일·폴더 — `name` 에 `/` 가 있으면 중간 폴더까지 만든다(VS Code 와 같다). */
-  | { op: 'create'; root: string; dir: string; name: string; kind: 'file' | 'dir' }
+  /**
+   * 새 파일·폴더 — `name` 에 `/` 가 있으면 중간 폴더까지 만든다(VS Code 와 같다 — 이미 있는 중간 폴더는 그대로 쓴다).
+   * `again` = 다시 실행 재생(수정 r3 R3-C) — 원래 만든 맨 위 자리(`name` 의 첫 성분)가 비어 있을 때만, 차 있으면 `exists`.
+   */
+  | { op: 'create'; root: string; dir: string; name: string; kind: 'file' | 'dir'; again?: boolean }
   /** 이름 변경·이동(같은 연산 — 대상 자리가 비어 있어야 한다, 대소문자만 바꾸기는 허용). `expect` = 실행 취소·다시 실행이 그 항목인지 확인할 정체. */
   | { op: 'move'; root: string; from: string; to: string; expect?: string }
   /** 삭제 = 휴지통. `snapshot` 이면 파일 ≤ 5 MB 의 내용을 사본으로 남긴다(실행 취소용). `expect` = 실행 취소(만들기 되돌리기)가 확인할 도장들(바뀌었으면 거절). */
@@ -80,8 +83,8 @@ export type ExplorerOpResult =
   | { ok: true; op: 'import'; dir: string; rels: string[]; marks: EntryMark[][]; skipped: { name: string; reason: string }[]; failed: { name: string; error: string }[]; partial: string[]; replayId: string | null }
   | { ok: true; op: 'release' }
   | { ok: true; op: 'inspect'; rel: string; kind: EntryKind; size: number; undoable: boolean }
-  /** `done` = 경로 연산은 끝났지만 사후 확인이 어긋났다(Q8 잔여 — `raw/claude/residual.md`). 렌더러는 목록을 다시 읽고 안내한다. */
-  | { ok: false; code: ExplorerOpRefusal; error: string; done?: boolean }
+  /** `done` = 경로 연산은 끝났지만 사후 확인이 어긋났다(Q8 잔여 — `raw/claude/residual.md`). 렌더러는 목록을 다시 읽고 안내한다. `remains` = 도중 실패로 남은 중간 폴더(수정 r3 R3-D — 안내에 싣는다). */
+  | { ok: false; code: ExplorerOpRefusal; error: string; done?: boolean; remains?: string[] }
 
 /** preload → main: 실제 드롭에서 온 경로를 맡기고 받은 표지. */
 export type ExplorerDropRegistration = { ok: true; token: string; names: string[] } | { ok: false; error: string }

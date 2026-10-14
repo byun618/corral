@@ -12,15 +12,17 @@
 // 실행 취소용 「삭제 전 내용 사본」(Q1 — 파일 ≤ 5 MB)은 이 프로세스 메모리에만 두고 id 로만 가리킨다 — 렌더러가 되살릴 내용을 만들지 못한다.
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
-import { constants } from 'node:fs'
+import { constants, type Stats } from 'node:fs'
 import path from 'node:path'
 import { confine, isInside } from './explorer-fs.js'
 import { O_NOFOLLOW_ANY } from './file-write.js'
 import { copyName, isGitName, isProtectedRel, nameError, splitNewName, UNDO_SNAPSHOT_LIMIT, UNVERIFIABLE, type EntryKind, type EntryMark, type ExplorerOpRefusal, type ExplorerOpResult } from '../shared/explorer-ops.js'
 
 type Refused = Extract<ExplorerOpResult, { ok: false }>
-/** 만든 뒤 실패한 거절 — 만든 항목의 정체(`id`)가 있으면 싣는다(부분 파일을 결과에 넣을 때 「이번에 만든 것」 인지 묶는다 — R2-A). */
-type MadeRefused = Refused & { id?: string }
+/** 만든 뒤 실패한 거절 — 만든 파일의 fd 정체(`stat`)가 있으면 싣는다(부분 파일을 결과에 넣을 때 「이번에 만든 것」 으로 묶는다 — R2-A·R3). */
+type MadeRefused = Refused & { stat?: Stats }
+/** 결과로 내보내는 거절 — 안쪽 필드(`stat`)를 떼어 낸다. */
+const plain = (refused: Refused): Refused => refuse(refused.code, refused.error, refused.done)
 const refuse = (code: ExplorerOpRefusal, error: string, done?: boolean): Refused => (done === true ? { ok: false, code, error, done } : { ok: false, code, error })
 
 /** 시험 전용 주입(E9ⓒ⑩) — 검사 뒤·연산 호출 직전에 부른다. 제품 경로에서는 늘 비어 있다(`loadOpHooks`). */
@@ -106,6 +108,10 @@ export class DropStore {
   }
   release(ids: unknown): void {
     if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') this.held.delete(id)
+  }
+  /** 렌더러가 새로 떴다 — 그 실행 취소 기록이 없으니 재생 근거를 전부 놓는다(수정 r3). 드롭 표지(2 분)는 그대로 둔다. */
+  releaseAll(): void {
+    this.held.clear()
   }
   get heldSize(): number {
     return this.held.size
@@ -235,40 +241,82 @@ async function occupant(abs: string): Promise<string | null> {
   }
 }
 
+// --- 표지 (수정 r3 — 개념 하나) ----------------------------------------------------------------------------------
+// 표지 = **이번 조작이 실제로 만든 항목들의 정체 집합**. 항목을 만든 그 순간 만든 쪽이 쥔 것으로 기록한다 — 파일은 쓴 fd 의 fstat, 폴더는 mkdir 직후
+// 정체를 확인한(`mkdirChecked`) lstat, 링크는 symlink 직후 확인한 lstat. 조작이 끝난 뒤 경로를 다시 읽어 표지를 만들지 않는다(리뷰 r3 R3-A·B).
+// 폴더 표지는 맨 위만이 아니라 이번 조작이 만든 하위 전부의 줄(상대 경로·종류·도장)을 담는다 — 복사 실패·건너뜀·`EEXIST`(남이 먼저 만든 것)는 담지 않는다.
+// 실행 취소(`trash` 의 `expect`)는 지금 디스크를 같은 형식으로 읽어(`currentStamp`) 그 집합과 **정확히 같을 때만** 휴지통으로 보낸다 —
+// 집합에 없는 항목이 폴더 안에 있거나(남이 추가) 집합 항목의 정체·도장이 다르면 거절. 새 파일·중간 폴더·복제·가져오기·되살리기·다시 실행이 모두 이 길을 쓴다.
+// 도장: 파일·링크 = dev:ino:size:mtime:mode(`markStampOf`, 링크는 글 포함), 폴더 = dev:ino:mode(폴더 mtime 은 하위가 생길 때마다 바뀌므로 넣지 않는다 — 하위 변화는 줄 집합이 잡는다).
+
+/** 표지 한 줄 — 맨 위 기준 상대 경로(맨 위 = '')와 그 항목의 종류·도장. */
+type OwnedEntry = { rel: string; text: string }
+/** 이번 조작이 만든 항목(맨 위)과 그 밑에서 이번에 만든 것 전부. */
+type Owned = { kind: EntryKind; id: string; stamp: string; entries: OwnedEntry[] }
+const dirStampOf = (stat: { dev: number; ino: number; mode: number }): string => `${stat.dev}:${stat.ino}:${(stat.mode & 0o7777).toString(8)}`
+const ownedFile = (stat: Stats): Owned => {
+  const stamp = markStampOf(stat)
+  return { kind: 'file', id: idOf(stat), stamp, entries: [{ rel: '', text: `f\0${stamp}` }] }
+}
+const ownedLink = (input: { stat: Stats; text: string }): Owned => {
+  const stamp = markStampOf(input.stat)
+  return { kind: 'link', id: idOf(input.stat), stamp, entries: [{ rel: '', text: `l\0${input.text}\0${stamp}` }] }
+}
+const ownedDir = (stat: Stats): Owned => {
+  const stamp = dirStampOf(stat)
+  return { kind: 'dir', id: idOf(stat), stamp, entries: [{ rel: '', text: `d\0${stamp}` }] }
+}
+/** 하위에서 이번에 만든 것을 부모 집합에 싣는다(`at` = 부모 기준 상대 경로). */
+const adopt = (input: { parent: Owned; at: string; child: Owned }): void => {
+  input.parent.entries.push(...input.child.entries.map((entry) => ({ rel: entry.rel === '' ? input.at : `${input.at}/${entry.rel}`, text: entry.text })))
+}
+const treeHash = (entries: readonly OwnedEntry[]): string => `tree:${sha256(Buffer.from(entries.map((entry) => `${entry.rel}\0${entry.text}`).sort().join('\n')))}`
+/** 만든 집합의 표지 — 폴더는 줄 집합의 해시, 파일·링크는 그 도장. */
+const markOfOwned = (input: { rel: string; owned: Owned }): EntryMark => ({ rel: input.rel, stamp: input.owned.kind === 'dir' ? treeHash(input.owned.entries) : input.owned.stamp })
+
 /**
- * 폴더 도장(수정 r1 R1-C) — 폴더 밑 전부(링크는 따라가지 않는다)의 상대 경로·종류·도장(dev:ino:size:mtime:mode)·링크 글을 차례로 이은 sha256.
- * 하위 파일의 내용 변경은 최상위 폴더의 mtime 을 바꾸지 않아 최상위 도장 하나로는 못 잡는다 — 하위 추가·삭제·내용·권한 변경 어느 것이든 이 값이 바뀐다.
- * 읽을 수 없는 하위가 있으면 던진다 — 부르는 쪽은 `safeMarkOf` 로 「확인 불가」 표지를 만든다(R2-G).
+ * 지금 디스크의 도장 — 표지와 같은 형식으로 읽는다(따라가지 않음). 폴더는 밑 전부(남이 넣은 것·특수 파일 포함)의 줄 해시.
+ * 읽을 수 없는 하위가 있으면 던진다 — 실행 취소는 거절, 결과 표지는 「확인 불가」(`finalMark` — R2-G).
  */
-async function treeStamp(abs: string): Promise<string> {
-  const hash = crypto.createHash('sha256')
-  const walk = async (dir: string, rel: string): Promise<void> => {
-    const stat = await fs.lstat(dir)
-    hash.update(`${rel}\0d\0${markStampOf(stat)}\n`)
-    for (const name of (await fs.readdir(dir)).sort()) {
+async function currentStamp(abs: string): Promise<string> {
+  const top = await fs.lstat(abs)
+  if (!top.isDirectory()) return markStampOf(top)
+  const entries: OwnedEntry[] = []
+  const walk = async (dir: string, rel: string, stat: Stats): Promise<void> => {
+    entries.push({ rel, text: `d\0${dirStampOf(stat)}` })
+    for (const name of await fs.readdir(dir)) {
       const child = path.join(dir, name)
       const childRel = rel === '' ? name : `${rel}/${name}`
       const entry = await fs.lstat(child)
-      if (entry.isDirectory()) await walk(child, childRel)
-      else hash.update(`${childRel}\0${entry.isSymbolicLink() ? `l\0${await fs.readlink(child)}` : 'f'}\0${markStampOf(entry)}\n`)
+      if (entry.isDirectory()) await walk(child, childRel, entry)
+      else if (entry.isSymbolicLink()) entries.push({ rel: childRel, text: `l\0${await fs.readlink(child)}\0${markStampOf(entry)}` })
+      else if (entry.isFile()) entries.push({ rel: childRel, text: `f\0${markStampOf(entry)}` })
+      else entries.push({ rel: childRel, text: `o\0${idOf(entry)}` })
     }
   }
-  await walk(abs, '')
-  return `tree:${hash.digest('hex')}`
+  await walk(abs, '', top)
+  return treeHash(entries)
 }
 
-/** 표지 — 상대 경로의 지금 도장(따라가지 않음). 실행 취소가 「그 뒤 바뀌었나」 를 본다. 폴더는 밑 전부를 담은 도장(`treeStamp`). */
-async function markOf(input: { parentAbs: string; name: string; rel: string }): Promise<EntryMark> {
-  const abs = path.join(input.parentAbs, input.name)
-  const stat = await fs.lstat(abs)
-  return { rel: input.rel, stamp: stat.isDirectory() ? await treeStamp(abs) : markStampOf(stat) }
+/** 지금 디스크 표지(원본 도장·실행 취소 대조용). */
+async function currentMarkOf(input: { parentAbs: string; name: string; rel: string }): Promise<EntryMark> {
+  return { rel: input.rel, stamp: await currentStamp(path.join(input.parentAbs, input.name)) }
 }
+
+/** 원본 도장 — 못 읽으면 「확인 불가」(그 원본의 다시 실행은 거절된다). */
+const safeMarkOf = (input: { parentAbs: string; name: string; rel: string }): Promise<EntryMark> => currentMarkOf(input).catch(() => ({ rel: input.rel, stamp: UNVERIFIABLE }))
 
 /**
- * 표지를 못 만들면(읽을 수 없는 하위 폴더·그 사이 사라짐) 「확인 불가」 표지 — 이미 만든 항목·부분 실패 결과를 잃지 않는다(수정 r2 R2-G).
- * 그 표지의 실행 취소는 `trash` 가 거절한다(바뀜을 확인할 수 없으니 지우지 않는다).
+ * 결과 표지 — 만든 집합의 표지. 다만 지금 그 자리를 읽을 수 없으면(읽을 수 없는 하위 — R2-G) 실행 취소가 대조할 수 없으므로 「확인 불가」 로 알린다.
+ * 지금 디스크가 집합과 다른 것(복사 도중 남이 추가 — R3-A)은 표지를 바꾸지 않는다 — 실행 취소가 거절한다.
  */
-const safeMarkOf = (input: { parentAbs: string; name: string; rel: string }): Promise<EntryMark> => markOf(input).catch(() => ({ rel: input.rel, stamp: UNVERIFIABLE }))
+async function finalMark(input: { abs: string; rel: string; owned: Owned }): Promise<EntryMark> {
+  const mark = markOfOwned({ rel: input.rel, owned: input.owned })
+  return currentStamp(input.abs).then(
+    () => mark,
+    () => ({ rel: input.rel, stamp: UNVERIFIABLE }),
+  )
+}
 
 /**
  * 경로 연산 뒤 확인(Q8 (a)) — 부모 realpath 가 그대로(그 사이 부모 경로에 링크가 끼지 않았다)이고 그 자리 항목 정체가 기대와 같은가.
@@ -295,7 +343,7 @@ async function verifyAt(input: { parentAbs: string; name: string; id: string | n
 }
 
 /** 폴더 하나 만들기(경로 연산) + 사후 확인. */
-async function mkdirChecked(input: { parentAbs: string; name: string; mode?: number; hooks: OpHooks }): Promise<{ ok: true; id: string; hash: null } | Refused> {
+async function mkdirChecked(input: { parentAbs: string; name: string; mode?: number; hooks: OpHooks }): Promise<{ ok: true; id: string; hash: null; stat: Stats } | Refused> {
   const target = path.join(input.parentAbs, input.name)
   await input.hooks.afterCheck?.('mkdir')
   try {
@@ -306,11 +354,11 @@ async function mkdirChecked(input: { parentAbs: string; name: string; mode?: num
   const stat = await fs.lstat(target).catch(() => null)
   const problem = stat === null || !stat.isDirectory() ? '만든 폴더가 그 자리에 없다' : await verifyAt({ parentAbs: input.parentAbs, name: input.name, id: idOf(stat), kind: 'dir' })
   if (problem !== null || stat === null) return refuse('changed', `폴더를 만들었지만 사후 확인이 어긋났다: ${problem ?? ''}`, true)
-  return { ok: true, id: idOf(stat), hash: null }
+  return { ok: true, id: idOf(stat), hash: null, stat }
 }
 
 /** 파일 만들기(fd 연산) — 링크 없는 부모 realpath + 이름을 `O_CREAT|O_EXCL|O_NOFOLLOW_ANY`. `source` 가 있으면 그 fd 에서 내용을 옮긴다. */
-async function createFileFd(input: { parentAbs: string; name: string; bytes?: Buffer; source?: fs.FileHandle; mode?: number; hooks: OpHooks }): Promise<{ ok: true; id: string; hash: string | null } | MadeRefused> {
+async function createFileFd(input: { parentAbs: string; name: string; bytes?: Buffer; source?: fs.FileHandle; mode?: number; hooks: OpHooks }): Promise<{ ok: true; id: string; hash: string | null; stat: Stats } | MadeRefused> {
   await input.hooks.afterCheck?.('create-file')
   let handle: fs.FileHandle
   try {
@@ -318,9 +366,7 @@ async function createFileFd(input: { parentAbs: string; name: string; bytes?: Bu
   } catch (error) {
     return fsRefusal(error, '파일 만들기')
   }
-  let id: string | null = null
   try {
-    id = idOf(await handle.stat())
     let hash: string | null = null
     if (input.bytes !== undefined) {
       let offset = 0
@@ -338,11 +384,13 @@ async function createFileFd(input: { parentAbs: string; name: string; bytes?: Bu
       }
     }
     if (input.mode !== undefined) await handle.chmod(input.mode & 0o777)
+    // 표지 = 쓴 fd 의 fstat(수정 r3) — 경로를 다시 읽지 않는다.
     const stat = await handle.stat()
-    return { ok: true, id: idOf(stat), hash }
+    return { ok: true, id: idOf(stat), hash, stat }
   } catch (error) {
     const refused = refuse('io_error', `파일을 만들었지만 쓰는 도중 실패했다 — 부분 파일이 남았다: ${String(error)}`, true)
-    return id === null ? refused : { ...refused, id }
+    const stat = await handle.stat().catch(() => null)
+    return stat === null ? refused : { ...refused, stat }
   } finally {
     await handle.close().catch(() => undefined)
   }
@@ -372,10 +420,10 @@ async function takenIn(parentAbs: string): Promise<(name: string) => boolean> {
 
 type CopyReport = { skipped: { name: string; reason: string }[]; failed: { name: string; error: string }[] }
 /**
- * 복사 한 번의 결과 — `refused` = 거절(맨 위면 그 조작 거절, 하위면 경쟁 `changed` 만), `made` = 맨 위 항목을 **이번에 만든** 정체(dev:ino).
+ * 복사 한 번의 결과 — `refused` = 거절(맨 위면 그 조작 거절, 하위면 경쟁 `changed` 만), `made` = 맨 위 항목과 그 밑에서 **이번에 만든** 것의 정체 집합(수정 r3).
  * 건너뜀(링크·특수 파일)·만들기 전 거절이면 `made` 가 null — 같은 이름에 그 사이 다른 작성자가 만든 것을 결과·실행 취소 대상에 넣지 않는다(수정 r2 R2-A).
  */
-type Copied = { refused: Refused | null; made: string | null }
+type Copied = { refused: Refused | null; made: Owned | null }
 
 /**
  * 원본 하나를 `dstParentAbs/dstName` 으로 복사(재귀). 원본 파일은 `O_NOFOLLOW_ANY` fd 로만 읽는다. 원본 안 링크는 `links` 에 따라 —
@@ -413,7 +461,7 @@ async function copyTree(input: { srcAbs: string; label: string; dstParentAbs: st
     const linked = await fs.lstat(dstAbs).catch(() => null)
     const problem = linked === null ? '만든 링크가 그 자리에 없다' : await verifyAt({ parentAbs: input.dstParentAbs, name: input.dstName, id: idOf(linked), kind: 'link' })
     if (problem !== null || linked === null) return { refused: refuse('changed', `링크를 만들었지만 사후 확인이 어긋났다: ${problem ?? ''}`, true), made: null }
-    return { refused: null, made: idOf(linked) }
+    return { refused: null, made: ownedLink({ stat: linked, text }) }
   }
   if (kind === 'file') {
     const source = await openSource(srcAbs)
@@ -425,11 +473,10 @@ async function copyTree(input: { srcAbs: string; label: string; dstParentAbs: st
       const made = await createFileFd({ parentAbs: input.dstParentAbs, name: input.dstName, source: source.handle, mode: source.mode, hooks: input.hooks })
       if (!made.ok) {
         report.failed.push({ name: label, error: made.error })
-        const { id, ...refused } = made
-        return { refused: input.top || made.code === 'changed' ? refused : null, made: id ?? null }
+        return { refused: input.top || made.code === 'changed' ? plain(made) : null, made: made.stat === undefined ? null : ownedFile(made.stat) }
       }
       if (source.nlink > 1) report.skipped.push({ name: label, reason: `하드링크(nlink ${source.nlink}) — 내용을 새 파일로 복사함(링크 관계는 옮기지 않음)` })
-      return { refused: null, made: made.id }
+      return { refused: null, made: ownedFile(made.stat) }
     } finally {
       await source.handle.close().catch(() => undefined)
     }
@@ -439,18 +486,21 @@ async function copyTree(input: { srcAbs: string; label: string; dstParentAbs: st
     report.failed.push({ name: label, error: made.error })
     return { refused: input.top || made.code === 'changed' ? made : null, made: null }
   }
+  const owned = ownedDir(made.stat)
   let names: string[]
   try {
     names = await fs.readdir(srcAbs)
   } catch (error) {
     report.failed.push({ name: label, error: `폴더 읽기 실패: ${String(error)}` })
-    return { refused: null, made: made.id }
+    return { refused: null, made: owned }
   }
   for (const name of names) {
     const child = await copyTree({ ...input, srcAbs: path.join(srcAbs, name), label: `${label}/${name}`, dstParentAbs: dstAbs, dstName: name, top: false })
-    if (child.refused !== null) return { refused: child.refused, made: made.id }
+    // 하위에서 이번에 만든 것만 싣는다 — `EEXIST`(남이 먼저 만든 것)·실패·건너뜀은 `made` 가 없다(R3-A).
+    if (child.made !== null) adopt({ parent: owned, at: name, child: child.made })
+    if (child.refused !== null) return { refused: child.refused, made: owned }
   }
-  return { refused: null, made: made.id }
+  return { refused: null, made: owned }
 }
 
 // --- 조작 ------------------------------------------------------------------------------------------------
@@ -472,7 +522,7 @@ async function dispatchOp(deps: OpDeps, input: unknown): Promise<ExplorerOpResul
   const root = field('root')
   switch (field('op')) {
     case 'create':
-      return create({ roots, root, dir: field('dir'), name: field('name'), kind: field('kind'), hooks })
+      return create({ roots, root, dir: field('dir'), name: field('name'), kind: field('kind'), again: field('again') === true, hooks })
     case 'move':
       return move({ roots, root, from: field('from'), to: field('to'), expect: field('expect'), hooks })
     case 'trash':
@@ -493,7 +543,7 @@ async function dispatchOp(deps: OpDeps, input: unknown): Promise<ExplorerOpResul
   }
 }
 
-async function create(input: { roots: readonly string[]; root: unknown; dir: unknown; name: unknown; kind: unknown; hooks: OpHooks }): Promise<ExplorerOpResult> {
+async function create(input: { roots: readonly string[]; root: unknown; dir: unknown; name: unknown; kind: unknown; again: boolean; hooks: OpHooks }): Promise<ExplorerOpResult> {
   const { kind } = input
   if (typeof input.name !== 'string' || (kind !== 'file' && kind !== 'dir') || typeof input.dir !== 'string') return refuse('invalid_argument', '형 위반')
   const split = splitNewName(input.name)
@@ -501,33 +551,47 @@ async function create(input: { roots: readonly string[]; root: unknown; dir: unk
   const parent = await confineDir({ roots: input.roots, root: input.root, rel: input.dir })
   if (!parent.ok) return parent
   if (isProtectedRel(joinRel(parent.rel, split.parts[0] ?? '')) || split.parts.some(isGitName)) return refuse('protected', '.git 안에는 만들 수 없다')
+  // 다시 실행(R3-C) — 원래 조작이 만든 맨 위 자리(첫 성분)가 비어 있을 때만. 남이 그 이름으로 만든 폴더 안에 쓰지 않는다(새 만들기의 「이미 있는 중간 폴더 사용」 — E1ⓓ — 과 다르다).
+  if (input.again) {
+    const first = split.parts[0] ?? ''
+    if ((await occupant(path.join(parent.abs, first)).catch(() => 'error')) !== null) return refuse('exists', `원래 만든 '${joinRel(parent.rel, first)}' 자리에 이미 항목이 있다 — 그 안에 다시 만들지 않는다`)
+  }
   let currentAbs = parent.abs
   let currentRel = parent.rel
-  let created: string | null = null
-  const marks: { parentAbs: string; name: string; rel: string }[] = []
+  /** 처음 만든 것(중간 폴더를 만들었으면 그 맨 위)과 그 밑에서 이번에 만든 것 전부(R3-B). */
+  let created: { rel: string; abs: string; owned: Owned } | null = null
+  const took = (rel: string, abs: string, owned: Owned): void => {
+    if (created === null) created = { rel, abs, owned }
+    else adopt({ parent: created.owned, at: rel.slice(created.rel.length + 1), child: owned })
+  }
+  // 도중 실패 — 앞서 만든 중간 폴더가 남는다. 조용히 남기지 않고 남은 폴더를 싣는다(done — 점검 표 M-1·R3-D).
+  const partly = (made: Refused): Refused => (created === null ? plain(made) : { ok: false, code: made.code, error: `${made.error} — 중간 폴더 '${created.rel}' 는 만들어졌다`, done: true, remains: [created.rel] })
   for (const [index, part] of split.parts.entries()) {
     const last = index === split.parts.length - 1
     const rel = joinRel(currentRel, part)
+    const abs = path.join(currentAbs, part)
     if (!last) {
       // 중간 폴더 — 이미 있는 폴더면 그대로 내려가고(링크·파일이면 거절), 없으면 만든다.
-      const existing = await fs.lstat(path.join(currentAbs, part)).catch((error: unknown) => (errorCode(error) === 'ENOENT' ? null : Promise.reject(error)))
-      if (existing !== null && !existing.isDirectory()) return refuse('exists', `'${rel}' 이(가) 폴더가 아니다`)
+      const existing = await fs.lstat(abs).catch((error: unknown) => (errorCode(error) === 'ENOENT' ? null : Promise.reject(error)))
+      if (existing !== null && !existing.isDirectory()) return partly(refuse('exists', `'${rel}' 이(가) 폴더가 아니다`))
       if (existing === null) {
         const made = await mkdirChecked({ parentAbs: currentAbs, name: part, hooks: input.hooks })
-        // 앞서 만든 중간 폴더가 있으면 남는다 — 조용히 남기지 않고 알린다(done — 점검 표 M-1).
-        if (!made.ok) return created === null ? made : { ...made, error: `${made.error} — 중간 폴더 '${created}' 는 만들어졌다`, done: true }
-        created ??= rel
-        marks.push({ parentAbs: currentAbs, name: part, rel })
+        if (!made.ok) return partly(made)
+        took(rel, abs, ownedDir(made.stat))
       }
-      currentAbs = path.join(currentAbs, part)
+      currentAbs = abs
       currentRel = rel
       continue
     }
     const made = kind === 'dir' ? await mkdirChecked({ parentAbs: currentAbs, name: part, hooks: input.hooks }) : await createFileFd({ parentAbs: currentAbs, name: part, bytes: Buffer.alloc(0), hooks: input.hooks })
-    if (!made.ok) return created === null ? made : { ...made, error: `${made.error} — 중간 폴더 '${created}' 는 만들어졌다`, done: true }
-    created ??= rel
-    marks.push({ parentAbs: currentAbs, name: part, rel })
-    return { ok: true, op: 'create', rel, kind, created, marks: await Promise.all(marks.map(safeMarkOf)) }
+    if (!made.ok) return partly(made)
+    took(rel, abs, kind === 'dir' ? ownedDir(made.stat) : ownedFile(made.stat))
+    if (created === null) return refuse('io_error', '만든 항목이 없다', true)
+    const top: { rel: string; abs: string; owned: Owned } = created
+    // 만든 직후 그 자리가 이미 다른 항목이면(외부 원자 저장 등) 성공·표지로 기록하지 않는다 — 실행 취소가 남의 것을 치우지 않게(R3-B).
+    const mark = markOfOwned({ rel: top.rel, owned: top.owned })
+    if ((await currentStamp(top.abs).catch(() => null)) !== mark.stamp) return refuse('changed', `'${top.rel}' 을(를) 만들었지만 그 자리가 곧바로 다른 항목으로 바뀌었다 — 실행 취소 기록을 만들지 않았다`, true)
+    return { ok: true, op: 'create', rel, kind, created: top.rel, marks: [mark] }
   }
   return refuse('invalid_name', '빈 이름')
 }
@@ -593,7 +657,8 @@ async function trash(input: { deps: OpDeps; roots: readonly string[]; root: unkn
       // 폴더는 밑 전부를 담은 도장으로 견준다(R1-C — 하위 파일 편집·추가·삭제도 「바뀜」).
       // 만들 때 도장을 못 만든 항목(R2-G — 읽을 수 없는 하위)은 바뀌었는지 알 수 없다 — 지우지 않는다.
       if (stamp === UNVERIFIABLE) return refuse('modified', `'${rel}' 은(는) 바뀌었는지 확인할 수 없다(읽을 수 없는 하위 항목) — 실행 취소하지 않았다(직접 삭제하세요)`)
-      const current = now === null ? null : await markOf({ parentAbs: now.parentAbs, name: now.name, rel }).catch(() => null)
+      // 지금 디스크가 만든 집합과 정확히 같을 때만(수정 r3 — 집합에 없는 하위·정체·도장이 다르면 거절).
+      const current = now === null ? null : await currentMarkOf({ parentAbs: now.parentAbs, name: now.name, rel }).catch(() => null)
       if (current === null || current.stamp !== stamp) return refuse('modified', `'${rel}' 이(가) 만든 뒤 바뀌었다 — 실행 취소하지 않았다(직접 삭제하세요)`)
     }
   }
@@ -652,12 +717,13 @@ async function restore(input: { deps: OpDeps; roots: readonly string[]; root: un
   if (!parent.ok) return parent
   if (parent.realRoot !== snapshot.root) return refuse('invalid_argument', '사본이 다른 worktree 의 것이다')
   const made = snapshot.kind === 'file' ? await createFileFd({ parentAbs: parent.abs, name, bytes: snapshot.bytes, mode: snapshot.mode, hooks: input.hooks }) : await mkdirChecked({ parentAbs: parent.abs, name, mode: snapshot.mode, hooks: input.hooks })
-  if (!made.ok) return made
+  if (!made.ok) return plain(made)
   input.deps.snapshots.drop(input.snapshotId)
-  const mark = await safeMarkOf({ parentAbs: parent.abs, name, rel })
+  // 표지 = 되살린 fd·mkdir 의 정체(R3-B). 곧바로 그 자리가 다른 항목이면 성공·표지로 기록하지 않는다.
+  const mark = markOfOwned({ rel, owned: snapshot.kind === 'file' ? ownedFile(made.stat) : ownedDir(made.stat) })
+  if ((await currentStamp(path.join(parent.abs, name)).catch(() => null)) !== mark.stamp) return refuse('changed', `'${rel}' 을(를) 되살렸지만 그 자리가 곧바로 다른 항목으로 바뀌었다 — 실행 취소 기록을 만들지 않았다`, true)
   // 결과 `stamp` 는 문서·감시와 같은 형식(`stampOf`) — 남은 수정 중 탭의 기준을 옮긴다. 표지(`marks`)는 권한까지 담은 실행 취소용.
-  const stat = snapshot.kind === 'file' ? await fs.lstat(path.join(parent.abs, name)).catch(() => null) : null
-  return { ok: true, op: 'restore', rel, marks: [mark], hash: made.hash, stamp: stat === null || idOf(stat) !== made.id ? null : stampOf(stat) }
+  return { ok: true, op: 'restore', rel, marks: [mark], hash: made.hash, stamp: snapshot.kind === 'file' ? stampOf(made.stat) : null }
 }
 
 /** 다시 실행 재생 인자(R2-D) — 형이 맞지 않으면 'invalid'. */
@@ -692,9 +758,9 @@ async function duplicate(input: { roots: readonly string[]; root: unknown; rel: 
   // 도중 실패로 덜 만든 사본(R1-H 와 같은 규칙) — 이번에 만든 것(정체)이 그 자리에 그대로 있으면 결과·실행 취소 대상에 넣고 실패를 같이 알린다. 경쟁(`changed`)·만든 것 없음은 거절 그대로.
   if (refused !== null && (refused.code === 'changed' || refused.done !== true || made === null)) return refused
   if (made === null) return refuse('io_error', '복제한 항목이 그 자리에 없다', true)
-  if ((await occupant(path.join(src.parentAbs, newName)).catch(() => null)) !== made) return refuse('changed', '복제한 자리의 항목이 만든 것과 다르다 — 실행 취소 대상에 넣지 않았다', true)
+  if ((await occupant(path.join(src.parentAbs, newName)).catch(() => null)) !== made.id) return refuse('changed', '복제한 자리의 항목이 만든 것과 다르다 — 실행 취소 대상에 넣지 않았다', true)
   if (refused !== null && !report.failed.some((row) => row.error === refused.error)) report.failed.push({ name: src.name, error: refused.error })
-  return { ok: true, op: 'duplicate', from: src.rel, rel, kind: src.kind, marks: [await safeMarkOf({ parentAbs: src.parentAbs, name: newName, rel })], skipped: report.skipped, failed: report.failed, source: source.stamp }
+  return { ok: true, op: 'duplicate', from: src.rel, rel, kind: src.kind, marks: [await finalMark({ abs: path.join(src.parentAbs, newName), rel, owned: made })], skipped: report.skipped, failed: report.failed, source: source.stamp }
 }
 
 /** 가져올 원본 하나 — 새 드롭이면 `name` 은 null(충돌 이름을 고른다), 다시 실행이면 원래 만든 이름·원래 원본 도장. */
@@ -764,13 +830,13 @@ async function importDrop(input: { deps: OpDeps; roots: readonly string[]; root:
     // 결과·표지·실행 취소 대상 = 이번에 **만든** 항목만(R2-A). 건너뜀(링크·특수 파일)·만들기 전 거절은 만든 것이 없다 — 그 이름에 그 사이 다른 작성자가 만든 것이 있어도 넣지 않는다.
     // 만든 뒤 쓰기 도중 실패(`done`)면 부분 파일이 남는다 — 정체가 그대로면 결과·실행 취소 대상에 넣는다(R1-H).
     if (made === null) continue
-    if ((await occupant(path.join(dir.abs, dstName)).catch(() => null)) !== made) {
+    if ((await occupant(path.join(dir.abs, dstName)).catch(() => null)) !== made.id) {
       report.failed.push({ name, error: '만든 뒤 그 자리 항목이 바뀌었다 — 결과·실행 취소 대상에 넣지 않음' })
       continue
     }
     const rel = joinRel(dir.rel, dstName)
     rels.push(rel)
-    marks.push([await safeMarkOf({ parentAbs: dir.abs, name: dstName, rel })])
+    marks.push([await finalMark({ abs: path.join(dir.abs, dstName), rel, owned: made })])
     held.push({ src: srcAbs, name: dstName, source })
     if (refused !== null || report.failed.length > before) partial.push(rel)
   }

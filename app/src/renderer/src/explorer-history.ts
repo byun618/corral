@@ -17,7 +17,8 @@ import { baseName, UNDO_HISTORY_LIMIT, type EntryMark, type ExplorerOpResult } f
  * 다시 실행으로 다시 부를 원래 조작(R1-G). 복제는 원래 사본 이름·원래 원본 도장(`again`), 가져오기는 main 재생 근거 id 와 원래 만든 이름들(`names`) — R2-D.
  */
 export type ReplayStep =
-  | { op: 'create'; dir: string; name: string; kind: 'file' | 'dir' }
+  /** `again` — 원래 만든 맨 위 자리가 비어 있을 때만 다시 만든다(수정 r3 R3-C). */
+  | { op: 'create'; dir: string; name: string; kind: 'file' | 'dir'; again: true }
   | { op: 'duplicate'; rel: string; again: { name: string; source: string } }
   | { op: 'import'; dir: string; replay: string; names: string[] }
 
@@ -67,7 +68,7 @@ export function inverseOf(result: ExplorerOpResult): HistoryStep | null {
       // 다시 실행 = 그 자리에서 같은 이름으로 다시 만들기(처음 만든 것의 부모에서 나머지 경로 — 이미 있던 중간 폴더는 그대로 둔 채).
       const dir = parentOfRel(result.created)
       const name = dir === '' ? result.rel : result.rel.slice(dir.length + 1)
-      return { op: 'trash', rel: result.created, expect: result.marks, replay: { op: 'create', dir, name, kind: result.kind } }
+      return { op: 'trash', rel: result.created, expect: result.marks, replay: { op: 'create', dir, name, kind: result.kind, again: true } }
     }
     case 'duplicate':
       return { op: 'trash', rel: result.rel, expect: result.marks, replay: { op: 'duplicate', rel: result.from, again: { name: baseName(result.rel), source: result.source } } }

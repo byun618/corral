@@ -103,7 +103,8 @@ describe('E1 새 파일·새 폴더', () => {
   it('ⓓ a/b/c.ts — 중간 폴더까지 만들고 created = 처음 만든 폴더', async () => {
     const result = await op({ op: 'create', dir: 'src', name: 'x/y/z.ts', kind: 'file' })
     expect(result).toMatchObject({ ok: true, rel: 'src/x/y/z.ts', created: 'src/x' })
-    expect(result.ok && result.op === 'create' ? result.marks.map((mark) => mark.rel) : []).toEqual(['src/x', 'src/x/y', 'src/x/y/z.ts'])
+    // 표지는 맨 위(created) 하나 — 그 밑에서 이번에 만든 것 전부(y·z.ts)를 담은 집합(수정 r3).
+    expect(result.ok && result.op === 'create' ? result.marks.map((mark) => mark.rel) : []).toEqual(['src/x'])
     // 이미 있는 중간 폴더는 그대로 내려간다
     const again = await op({ op: 'create', dir: '', name: 'src/sub/d.ts', kind: 'file' })
     expect(again).toMatchObject({ ok: true, rel: 'src/sub/d.ts', created: 'src/sub/d.ts' })

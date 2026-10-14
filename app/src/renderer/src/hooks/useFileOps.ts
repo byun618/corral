@@ -8,7 +8,7 @@
 // · 실행 취소 기록은 worktree 경로별(`explorer-history.ts`). 조작은 한 줄로 선다(실행 취소·다시 실행·새 조작이 서로 끼지 않게).
 // · **소유 worktree 는 요청 시점에 고정한다**(수정 r1 R1-A) — 줄을 서는 동안 화면 worktree 가 바뀌어도 조작·기록·완료 뒤 반영(탭·문서·트리)은 요청한 worktree 로 간다.
 //   트리 반영(펼침·선택·다시 읽기·새 파일 열기)은 그 worktree 가 아직 화면에 있을 때만 한다.
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { baseName, isAtOrUnder, remapRel, UNVERIFIABLE, type EntryMark, type ExplorerDrop, type ExplorerOpInput, type ExplorerOpResult } from '../../../shared/explorer-ops.js'
 import { parentRel } from '../../../shared/explorer.js'
 import { emptyHistory, inverseOf, inverseOfBatch, narrowReplay, peek, recordOp, replayIdsOf, settle, stepLabel, type History, type HistoryStep, type ReplayStep } from '../explorer-history.js'
@@ -99,7 +99,9 @@ export function opFailureMessage(result: Refusal): string {
         return result.error
     }
   })()
-  return `${why} (${result.code})`
+  // 도중 실패로 남은 중간 폴더(R3-D) — 사용자가 직접 찾아 정리할 수 있게 이름을 적는다.
+  const remains = result.remains !== undefined && result.remains.length > 0 ? ` — 남은 폴더: ${result.remains.join(', ')}(직접 정리하세요)` : ''
+  return `${why} (${result.code})${remains}`
 }
 
 export function useFileOps(deps: FileOpsDeps): FileOpsApi {
@@ -110,6 +112,15 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
   const heldReplays = useRef(new Set<string>())
   const queue = useRef<Promise<unknown>>(Promise.resolve())
   const historyOf = (root: string): History => histories.current.get(root) ?? emptyHistory()
+  // hook 이 사라지면(언마운트) 기록도 사라진다 — 붙잡던 재생 근거를 main 에서 놓는다(수정 r3). 렌더러가 새로 뜨는 경우는 main 이 놓는다(`did-navigate`).
+  useEffect(
+    () => () => {
+      const held = [...heldReplays.current]
+      heldReplays.current = new Set()
+      if (held.length > 0) void window.corral.explorerOp({ op: 'release', ids: held }).catch(() => undefined)
+    },
+    [],
+  )
   /** 기록을 바꾼다 — 어느 기록도 더는 가리키지 않는 재생 근거(상한으로 밀림·다시 실행 칸 비움·재생 실패로 버림)는 main 에서 놓는다(R2-E). */
   const setHistory = (root: string, history: History): void => {
     histories.current.set(root, history)
@@ -211,7 +222,7 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
   const runReplay = async (root: string, step: ReplayStep): Promise<{ result: ExplorerOpResult; note: string | null }> => {
     switch (step.op) {
       case 'create': {
-        const result = await call({ op: 'create', root, dir: step.dir, name: step.name, kind: step.kind })
+        const result = await call({ op: 'create', root, dir: step.dir, name: step.name, kind: step.kind, again: step.again })
         if (result.ok && result.op === 'create' && shown(root)) latest.current.explorer.reveal(result.rel)
         return { result, note: null }
       }
@@ -313,11 +324,13 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
   const copyNotes = (input: { made: string[]; marks: EntryMark[][]; partial: string[]; skipped: { name: string; reason: string }[]; failed: { name: string; error: string }[] }): string | null => {
     // 도장을 못 만든 항목(R2-G — 읽을 수 없는 하위) — 실행 취소가 지우지 않는다는 것을 미리 알린다.
     const unverifiable = input.made.filter((_, index) => (input.marks[index] ?? []).some((mark) => mark.stamp === UNVERIFIABLE))
-    if (input.partial.length === 0 && input.skipped.length === 0 && input.failed.length === 0 && unverifiable.length === 0 && input.made.length > 0) return null
+    // 항목마다 안내 하나(R3-E) — 확인 불가 항목은 「⌘Z 로 지우지 않음」 만, 「휴지통에 보낼 수 있다」 는 그 밖의 덜 든 항목에만.
+    const partial = input.partial.filter((rel) => !unverifiable.includes(rel))
+    if (partial.length === 0 && input.skipped.length === 0 && input.failed.length === 0 && unverifiable.length === 0 && input.made.length > 0) return null
     return [
       input.made.length > 0 ? `${input.made.length}개 항목을 만들었습니다` : '만든 항목이 없습니다',
       unverifiable.length > 0 ? `바뀌었는지 확인할 수 없는 항목 ${unverifiable.length}: ${unverifiable.slice(0, 3).join(', ')} — 실행 취소(⌘Z)로 지우지 않습니다(직접 정리하세요)` : null,
-      input.partial.length > 0 ? `내용이 덜 든 채 남은 항목 ${input.partial.length}: ${input.partial.slice(0, 3).join(', ')} — 실행 취소(⌘Z)로 휴지통에 보낼 수 있습니다` : null,
+      partial.length > 0 ? `내용이 덜 든 채 남은 항목 ${partial.length}: ${partial.slice(0, 3).join(', ')} — 실행 취소(⌘Z)로 휴지통에 보낼 수 있습니다` : null,
       input.skipped.length > 0 ? `건너뜀 ${input.skipped.length}: ${input.skipped.slice(0, 3).map((row) => `${row.name}(${row.reason})`).join(', ')}` : null,
       input.failed.length > 0 ? `실패 ${input.failed.length}: ${input.failed.slice(0, 3).map((row) => `${row.name} — ${row.error}`).join(' / ')}` : null,
     ]

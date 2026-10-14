@@ -185,3 +185,28 @@ describe('R3-C 중간 폴더 만들기 다시 실행 — 원래 맨 위 자리�
     expect(fs.existsSync(at('nested/sub/file.txt'))).toBe(true)
   })
 })
+
+describe('점검 표 — 링크 복제(링크는 링크로)', () => {
+  it('링크 하나 복제 → 실행 취소 ok, 다시 실행(원래 이름) ok, 링크 글 그대로', async () => {
+    fs.symlinkSync('pack/child.txt', at('alias'))
+    const dupe = await op({ op: 'duplicate', rel: 'alias' })
+    expect(dupe).toMatchObject({ ok: true, rel: 'alias copy', kind: 'link' })
+    if (!dupe.ok || dupe.op !== 'duplicate') return
+    expect(code(await op({ op: 'trash', rel: dupe.rel, expect: dupe.marks, snapshot: false }))).toBe('ok')
+    expect(code(await op({ op: 'duplicate', rel: 'alias', again: { name: 'alias copy', source: dupe.source } }))).toBe('ok')
+    expect(fs.readlinkSync(at('alias copy'))).toBe('pack/child.txt')
+  })
+  it('복제한 링크를 다른 대상 링크로 바꿨으면 실행 취소 modified, 폴더 안 링크를 바꿔도 modified', async () => {
+    fs.symlinkSync('pack/child.txt', at('alias'))
+    const dupe = await op({ op: 'duplicate', rel: 'alias' })
+    fs.rmSync(at('alias copy'))
+    fs.symlinkSync('elsewhere', at('alias copy'))
+    if (dupe.ok && dupe.op === 'duplicate') expect(code(await op({ op: 'trash', rel: dupe.rel, expect: dupe.marks, snapshot: false }))).toBe('modified')
+    fs.symlinkSync('child.txt', at('pack/inner-link'))
+    const folder = await op({ op: 'duplicate', rel: 'pack' })
+    fs.rmSync(at('pack copy/inner-link'))
+    fs.symlinkSync('other.txt', at('pack copy/inner-link'))
+    if (folder.ok && folder.op === 'duplicate') expect(code(await op({ op: 'trash', rel: folder.rel, expect: folder.marks, snapshot: false }))).toBe('modified')
+    expect(fs.readlinkSync(at('pack copy/inner-link'))).toBe('other.txt')
+  })
+})

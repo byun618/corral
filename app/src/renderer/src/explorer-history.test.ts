@@ -12,8 +12,8 @@ describe('역조작 짝', () => {
     expect(inverseOf({ ok: true, op: 'move', from: 'a.ts', to: 'a.ts', id: '1:2' })).toBeNull()
   })
   it('만들기 = 처음 만든 맨 위(중간 폴더 포함)를 휴지통 · 복제·되살리기도 휴지통 — 만들기·복제는 다시 실행 재생을 싣는다(수정 r1 R1-G)', () => {
-    expect(inverseOf({ ok: true, op: 'create', rel: 'a/b/c.ts', kind: 'file', created: 'a', marks: mark('a') })).toEqual({ op: 'trash', rel: 'a', expect: mark('a'), replay: { op: 'create', dir: '', name: 'a/b/c.ts', kind: 'file' } })
-    expect(inverseOf({ ok: true, op: 'create', rel: 'src/n/sub/f.ts', kind: 'file', created: 'src/n/sub', marks: mark('src/n/sub') })).toEqual({ op: 'trash', rel: 'src/n/sub', expect: mark('src/n/sub'), replay: { op: 'create', dir: 'src/n', name: 'sub/f.ts', kind: 'file' } })
+    expect(inverseOf({ ok: true, op: 'create', rel: 'a/b/c.ts', kind: 'file', created: 'a', marks: mark('a') })).toEqual({ op: 'trash', rel: 'a', expect: mark('a'), replay: { op: 'create', dir: '', name: 'a/b/c.ts', kind: 'file', again: true } })
+    expect(inverseOf({ ok: true, op: 'create', rel: 'src/n/sub/f.ts', kind: 'file', created: 'src/n/sub', marks: mark('src/n/sub') })).toEqual({ op: 'trash', rel: 'src/n/sub', expect: mark('src/n/sub'), replay: { op: 'create', dir: 'src/n', name: 'sub/f.ts', kind: 'file', again: true } })
     expect(inverseOf({ ok: true, op: 'duplicate', from: 'x.ts', rel: 'x copy.ts', kind: 'file', marks: mark('x copy.ts'), skipped: [], failed: [], source: 'src' })).toEqual({ op: 'trash', rel: 'x copy.ts', expect: mark('x copy.ts'), replay: { op: 'duplicate', rel: 'x.ts', again: { name: 'x copy.ts', source: 'src' } } })
     expect(inverseOf({ ok: true, op: 'restore', rel: 'r.ts', marks: mark('r.ts'), hash: 'h', stamp: 's' })).toEqual({ op: 'trash', rel: 'r.ts', expect: mark('r.ts') })
   })
@@ -70,7 +70,7 @@ describe('기록 (E5ⓓ)', () => {
     expect(stepLabel({ op: 'move', from: 'src/a.ts', to: 'b.ts', expect: '' })).toBe("'a.ts' 이동")
     expect(stepLabel({ op: 'restore', rel: 'x/y.md', snapshotId: 'p' })).toBe("'y.md' 다시 만들기")
     expect(stepLabel({ op: 'batch', steps: [] })).toBe('0개 항목')
-    expect(stepLabel({ op: 'replay', replay: { op: 'create', dir: '', name: 'a/b.ts', kind: 'file' } })).toBe("'b.ts' 만들기")
+    expect(stepLabel({ op: 'replay', replay: { op: 'create', dir: '', name: 'a/b.ts', kind: 'file', again: true } })).toBe("'b.ts' 만들기")
   })
 })
 
@@ -86,7 +86,7 @@ describe('수정 r2', () => {
   it('R2-F 부분 실행 취소 — 치운 이름만 남긴 재생, 가져오기가 아니거나 남는 것이 없으면 null', () => {
     expect(narrowReplay({ op: 'import', dir: '', replay: 'r1', names: ['a', 'b'] }, ['a'])).toEqual({ op: 'import', dir: '', replay: 'r1', names: ['a'] })
     expect(narrowReplay({ op: 'import', dir: '', replay: 'r1', names: ['a', 'b'] }, [])).toBeNull()
-    expect(narrowReplay({ op: 'create', dir: '', name: 'a', kind: 'file' }, ['a'])).toBeNull()
+    expect(narrowReplay({ op: 'create', dir: '', name: 'a', kind: 'file', again: true }, ['a'])).toBeNull()
   })
 })
 

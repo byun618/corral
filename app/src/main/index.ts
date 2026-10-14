@@ -147,6 +147,11 @@ let shortcutRecording = false
  * 탐색기 실행 취소·다시 실행으로 가져온다 — 꺼져 있으면 손대지 않아 편집기·입력칸·터미널의 ⌘Z 와 메뉴 role 이 그대로다(`raw/claude/undo-routing.md`).
  */
 let explorerFocused = false
+/**
+ * 탐색기 드롭 원본·가져오기 재생 근거(LIFE-592 E7ⓓ·수정 r2 R2-E). 재생 근거는 렌더러 실행 취소 기록이 가리키는 동안만 쓸모가 있다 —
+ * 렌더러가 새로 뜨면(다시 읽기·프로세스 재생성) 그 기록은 사라지므로 붙잡던 근거를 전부 놓는다(수정 r3).
+ */
+const explorerDrops = new DropStore()
 const measuring = (process.env.CORRAL_CONTROL_SOCKET ?? '').length > 0
 
 let window: BrowserWindow | null = null
@@ -1611,6 +1616,8 @@ function createWindow(): void {
     explorerFocused = false
     window?.webContents.setIgnoreMenuShortcuts(false)
   })
+  // 메인 프레임이 새 문서를 실었다(다시 읽기·렌더러 재생성) — 실행 취소 기록이 사라졌으니 가져오기 재생 근거를 놓는다(LIFE-592 수정 r3).
+  window.webContents.on('did-navigate', () => explorerDrops.releaseAll())
   window.webContents.on('before-input-event', (event, input) => {
     if (instrumented && (input.type === 'keyUp' || input.control || input.meta || input.alt)) {
       log('input.raw', { type: input.type, key: input.key, control: input.control, meta: input.meta, alt: input.alt, shift: input.shift })
@@ -2066,7 +2073,6 @@ app.whenReady().then(async () => {
   // --- 탐색기 파일 조작 (LIFE-592 F4) — 쓰기 경계는 `explorer-ops.ts`(원본·대상 가둠 · fd/경로 연산 구분 · 덮어쓰기 0 · 휴지통만). 호출마다 로그 한 줄(경로 없음) ---
   // 시험 전용 경쟁 주입은 패키지 앱이면 늘 꺼진다(`loadOpHooks`) — 개발 실행에서도 `CORRAL_TEST_OP_HOOK_FILE` 이 있을 때만.
   const explorerSnapshots = new SnapshotStore()
-  const explorerDrops = new DropStore()
   ipcMain.handle('corral:explorerOp', async (event, input: unknown) => {
     if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
     const startedAt = performance.now()

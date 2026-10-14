@@ -41,6 +41,8 @@ export type WorkCapabilities = {
   /** 조건부 수정(`ifVersion`) — 꺼져 있으면 저장 충돌을 검사하지 못한다. */
   conflictCheck: WorkCapability
   comments: WorkCapability
+  /** 변경 이력(E8 · LIFE-602) — 코멘트와 별개다(Jira 는 둘 다, LA 는 L1e 뒤). 꺼져 있으면 활동은 corral 기록·코멘트만. */
+  history: WorkCapability
   /** 작업 링크(worktree·브랜치·PR·세션)를 출처 쪽에 저장. */
   workLinkStore: WorkCapability
 }
@@ -68,7 +70,16 @@ export type WorkStatus = {
   color: string | null
 }
 
-export type WorkKind = { key: string; label: string }
+/**
+ * 종류 — `childKinds` 는 이 종류 아래에 만들 수 있는 자식 종류 키(E6 · LIFE-602). 비면 자식을 만들 수 없다(「+ 자식 추가」 를 그리지 않는다).
+ * 출처의 부모 규칙(LA: task 는 잎, bug 아래에는 task 만)을 출처가 알려 준다 — 화면은 출처 이름으로 분기하지 않는다.
+ */
+export type WorkKind = { key: string; label: string; childKinds: string[] }
+
+/** 완료 갈래(E5 · LIFE-602) — 완료 분류 작업이 「완료함」 인가 「취소함」 인가. `other` = 출처의 다른 값(LA archived·duplicate) — 어느 쪽으로도 꾸미지 않는다. */
+export const WORK_RESOLUTIONS = ['completed', 'cancelled'] as const
+export type WorkResolutionChoice = (typeof WORK_RESOLUTIONS)[number]
+export type WorkResolution = WorkResolutionChoice | 'other'
 
 export type WorkItemRef = {
   id: string
@@ -76,6 +87,8 @@ export type WorkItemRef = {
   title: string
   statusLabel: string
   category: WorkCategory
+  /** 상대의 스페이스(E9 · LIFE-602) — 모르면 null(화면은 표기하지 않는다). */
+  spaceKey: string | null
 }
 
 /** 열린 막은 쪽 하나 (E1 · LIFE-601) — 목록 카드의 막힘 배지 「막힘 · KEY (외 N)」 에 쓴다. 열린 = 완료 분류가 아님(출처가 거른다). */
@@ -104,6 +117,8 @@ export type WorkItem = {
   kind: WorkKind
   statusKey: string
   category: WorkCategory
+  /** 완료 갈래(E5). 완료 분류가 아니거나 출처가 값을 주지 않으면 null. */
+  resolution: WorkResolution | null
   priority: WorkPriority | null
   dueAt: string | null
   /** 같은 스페이스 안의 부모. 스페이스 바로 아래면 null(§8.1 규칙 2). */
@@ -124,6 +139,43 @@ export type WorkItem = {
 
 export type WorkComment = { id: string; author: string | null; body: string; createdAt: string }
 
+/** 필드 부분 수정(E4 · LIFE-602) — 보낸 칸만 바꾼다. `dueAt` 은 ISO(UTC) 또는 null(지움). */
+export type WorkFieldPatch = { title?: string; body?: string; priority?: WorkPriority | null; dueAt?: string | null }
+
+/** 이력에 나오는 칸 — 출처 이력(E8)과 corral 활동 기록이 같이 쓴다. */
+export const WORK_HISTORY_FIELDS = ['status', 'title', 'body', 'priority', 'dueAt', 'placement', 'parent', 'relation', 'child'] as const
+export type WorkHistoryField = (typeof WORK_HISTORY_FIELDS)[number]
+
+/**
+ * 출처 변경 이력 한 줄(E8). `from`·`to` 는 사람이 읽는 값(출처가 정한 글) — 화면은 그대로 그린다.
+ * `writeId` = 그 변경을 낸 쓰기가 출처에 실어 보낸 corral 쓰기 id(Jira `historyMetadata` 류) — corral 활동 기록과 같은 변경을 한 번만 보이는 데 쓴다.
+ * corral 이 아닌 곳(웹·다른 클라이언트)에서 한 변경은 null 이다 — 같은 칸·같은 값이어도 지우지 않는다(G10).
+ */
+export type WorkHistoryEntry = { id: string; at: string; author: string | null; field: WorkHistoryField; from: string | null; to: string | null; writeId: string | null }
+
+/**
+ * corral 활동 기록 한 줄(D9 · LIFE-602) — main 이 성공한 쓰기마다 남긴다(`activity-store.ts`). 「누가」 는 늘 「나 · corral」.
+ * `writeId` 는 출처 이력의 같은 칸과 짝을 짓는 열쇠다.
+ */
+export type WorkActivityChange =
+  | { field: 'status'; statusKey: string; statusLabel: string | null; resolution: WorkResolution | null }
+  | { field: 'title'; to: string }
+  | { field: 'body'; lines: number }
+  | { field: 'priority'; to: WorkPriority | null }
+  | { field: 'dueAt'; to: string | null }
+  | { field: 'placement'; to: WorkPlacement }
+  | { field: 'parent'; parentId: string | null }
+  | { field: 'relation'; action: 'add' | 'remove'; kind: WorkRelationKind | null; otherKey: string | null }
+  | { field: 'child'; childKey: string; childTitle: string }
+
+export type WorkActivityRecord = { id: string; connectionId: string; itemId: string; at: number; writeId: string; change: WorkActivityChange }
+
+export type WorkActivityQuery = { connectionId: string; itemId: string }
+export type WorkActivityResult = { ok: true; records: WorkActivityRecord[] } | { ok: false; error: WorkError }
+
+/** 저장 충돌(E7) — 서버의 지금 작업과, 아는 경우 마지막으로 바꾼 쪽. 화면은 연 시점 값과 칸별로 비교해 「어떤 칸」 을 계산한다. */
+export type WorkConflict = { current: WorkItem; by: string | null }
+
 /** 출처에 보내는 연산 하나 — 연결·요청 id 는 바깥 봉투(`WorkRequest`)가 든다. */
 export type WorkCall =
   | { op: 'listSpaces' }
@@ -133,7 +185,19 @@ export type WorkCall =
   /** 키로 작업 하나 찾기 (E2 · LIFE-601) — 스페이스 무관. 키 모양 판별은 화면이 descriptor 의 `keyPattern` 으로만 한다. */
   | { op: 'findByKey'; key: string }
   | { op: 'listTransitions'; itemId: string }
-  | { op: 'changeStatus'; itemId: string; statusKey: string; ifVersion: string | null }
+  /** `resolution` — 완료 분류로 갈 때의 갈래(E5). null 이면 출처 기본(완료함). 완료 분류가 아닌 상태로 가면 무시한다. 같은 상태에 다른 갈래면 갈래만 바꾼다. */
+  | { op: 'changeStatus'; itemId: string; statusKey: string; ifVersion: string | null; resolution?: WorkResolutionChoice | null }
+  /** 필드 부분 수정(E4) — 제목·본문·우선순위·마감. */
+  | { op: 'updateItem'; itemId: string; fields: WorkFieldPatch; ifVersion: string | null }
+  /** 자식 목록(E6) — 이 작업을 부모로 둔 미보관 작업. */
+  | { op: 'listChildren'; itemId: string }
+  /**
+   * 작업 만들기(E6 최소형) — 지금은 제목·종류·부모만. T4 가 같은 연산에 본문·상태·우선순위·배치·생성 메타를 더한다.
+   * `parentId` null = 스페이스 바로 아래. 부모 종류의 `childKinds` 밖이면 출처가 거절한다.
+   */
+  | { op: 'createItem'; spaceKey: string; parentId: string | null; kindKey: string; title: string }
+  /** 변경 이력(E8) — 오래된 것부터. */
+  | { op: 'listHistory'; itemId: string }
   | { op: 'setPlacement'; itemId: string; placement: WorkPlacement; ifVersion: string | null }
   | { op: 'setParent'; itemId: string; spaceKey: string; parentId: string | null; ifVersion: string | null }
   | { op: 'reorder'; itemId: string; afterId: string | null }
@@ -152,7 +216,9 @@ export type WorkResult =
   /** 없으면 null — 「없음」 은 오류가 아니다(검색·작업 중이 「작업을 찾지 못함」 으로 그린다). */
   | { op: 'findByKey'; item: WorkItem | null }
   | { op: 'listTransitions'; statusKeys: string[] }
-  | { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'reorder'; item: WorkItem }
+  | { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'reorder' | 'updateItem' | 'createItem'; item: WorkItem }
+  | { op: 'listChildren'; items: WorkItem[] }
+  | { op: 'listHistory'; entries: WorkHistoryEntry[] }
   | { op: 'addRelation'; relation: WorkRelation }
   | { op: 'removeRelation'; relationId: string }
   | { op: 'listComments'; comments: WorkComment[] }
@@ -181,6 +247,8 @@ export type WorkError = {
   message: string
   /** HTTP 상태 — 있을 때만. */
   status: number | null
+  /** 저장 충돌(`conflict`)일 때 서버의 지금 값(E7). 출처가 모르면 없다. */
+  conflict?: WorkConflict
 }
 
 /** 렌더러 → main 봉투. `requestId` 는 늦은 응답 폐기용 — main 은 그대로 돌려준다(소비는 T2). */
@@ -274,7 +342,13 @@ export function capabilityOf(call: WorkCall): WorkCapabilityName | null {
     case 'getItem':
     case 'findByKey':
     case 'listTransitions':
+    case 'listChildren':
+    case 'createItem':
       return null
+    case 'listHistory':
+      return 'history'
+    case 'updateItem':
+      return call.ifVersion === null ? null : 'conflictCheck'
     case 'listItems':
       return call.cursor === null ? null : 'cursorPaging'
     case 'changeStatus':
@@ -324,6 +398,35 @@ export function readWorkPriority(value: unknown): WorkPriority | null {
   return pick(WORK_PRIORITIES, value)
 }
 
+/** 본문 상한 — 렌더러가 보내는 본문(편집기·체크 칸 저장). 출처 상한은 출처가 따로 거절한다. */
+export const WORK_BODY_MAX = 200_000
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z$/
+
+/** 필드 부분 수정 손검증 — 모르는 칸·빈 수정은 null. 제목은 비면 안 되고, 마감은 UTC ISO 또는 null. */
+function readFieldPatch(value: unknown): WorkFieldPatch | null {
+  if (!isRecord(value)) return null
+  const patch: WorkFieldPatch = {}
+  for (const key of Object.keys(value)) if (key !== 'title' && key !== 'body' && key !== 'priority' && key !== 'dueAt') return null
+  if ('title' in value) {
+    if (typeof value.title !== 'string' || value.title.trim().length === 0 || value.title.length > 500) return null
+    patch.title = value.title
+  }
+  if ('body' in value) {
+    if (typeof value.body !== 'string' || value.body.length > WORK_BODY_MAX) return null
+    patch.body = value.body
+  }
+  if ('priority' in value) {
+    const priority = value.priority === null ? null : readWorkPriority(value.priority)
+    if (value.priority !== null && priority === null) return null
+    patch.priority = priority
+  }
+  if ('dueAt' in value) {
+    if (value.dueAt !== null && (typeof value.dueAt !== 'string' || !ISO_UTC.test(value.dueAt) || Number.isNaN(Date.parse(value.dueAt)))) return null
+    patch.dueAt = value.dueAt
+  }
+  return Object.keys(patch).length === 0 ? null : patch
+}
+
 function readPlacement(value: unknown): WorkPlacement | null {
   return value === 'board' || value === 'backlog' ? value : null
 }
@@ -348,8 +451,26 @@ export function readWorkCall(value: unknown): WorkCall | null {
       return isNonEmpty(itemId) ? { op, itemId } : null
     case 'findByKey':
       return isNonEmpty(value.key) && value.key.length <= 64 ? { op, key: value.key } : null
-    case 'changeStatus':
-      return isNonEmpty(itemId) && isNonEmpty(value.statusKey) && isNullableString(ifVersion) ? { op, itemId, statusKey: value.statusKey, ifVersion } : null
+    case 'changeStatus': {
+      const raw = value.resolution ?? null
+      const resolution = raw === null ? null : pick(WORK_RESOLUTIONS, raw)
+      if (raw !== null && resolution === null) return null
+      return isNonEmpty(itemId) && isNonEmpty(value.statusKey) && isNullableString(ifVersion) ? { op, itemId, statusKey: value.statusKey, ifVersion, resolution } : null
+    }
+    case 'updateItem': {
+      const fields = readFieldPatch(value.fields)
+      return isNonEmpty(itemId) && fields !== null && isNullableString(ifVersion) ? { op, itemId, fields, ifVersion } : null
+    }
+    case 'listChildren':
+    case 'listHistory':
+      return isNonEmpty(itemId) ? { op, itemId } : null
+    case 'createItem': {
+      const parentId = value.parentId ?? null
+      const title = value.title
+      return isNonEmpty(value.spaceKey) && (parentId === null || isNonEmpty(parentId)) && isNonEmpty(value.kindKey) && typeof title === 'string' && title.trim().length > 0 && title.length <= 500
+        ? { op, spaceKey: value.spaceKey, parentId, kindKey: value.kindKey, title }
+        : null
+    }
     case 'setPlacement': {
       const placement = readPlacement(value.placement)
       return isNonEmpty(itemId) && placement !== null && isNullableString(ifVersion) ? { op, itemId, placement, ifVersion } : null
@@ -375,6 +496,10 @@ export function readWorkCall(value: unknown): WorkCall | null {
     default:
       return null
   }
+}
+
+export function readWorkActivityQuery(value: unknown): WorkActivityQuery | null {
+  return isRecord(value) && isNonEmpty(value.connectionId) && isNonEmpty(value.itemId) ? { connectionId: value.connectionId, itemId: value.itemId } : null
 }
 
 export function readWorkRequest(value: unknown): WorkRequest | null {

@@ -13,7 +13,7 @@ Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 const CAPS: WorkCapabilities = {
   transition: { mode: 'any' }, placement: { state: 'on' }, relations: { state: 'on' }, parentChange: { state: 'on' },
   order: { state: 'disabled', reason: '순서 도구가 없습니다 (테스트)' }, cursorPaging: { state: 'disabled', reason: '커서 없음' },
-  conflictCheck: { state: 'disabled', reason: 'x' }, comments: { state: 'disabled', reason: 'x' }, workLinkStore: { state: 'disabled', reason: 'x' },
+  conflictCheck: { state: 'disabled', reason: 'x' }, comments: { state: 'disabled', reason: 'x' }, history: { state: 'disabled', reason: 'x' }, workLinkStore: { state: 'disabled', reason: 'x' },
 }
 const STATUSES: WorkStatus[] = [
   { key: 'todo', label: '할 일', category: 'todo', order: 0, color: null },
@@ -21,8 +21,8 @@ const STATUSES: WorkStatus[] = [
   { key: 'done', label: '완료', category: 'done', order: 2, color: null },
 ]
 const item = (over: Partial<WorkItem> & { id: string; key: string }): WorkItem => ({
-  spaceKey: 's1', title: `제목 ${over.key}`, body: null, kind: { key: 'task', label: 'Task' }, statusKey: 'todo', category: 'todo', priority: 'medium', dueAt: null,
-  parentId: null, placement: 'board', rank: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [], ...over,
+  spaceKey: 's1', title: `제목 ${over.key}`, body: null, kind: { key: 'task', label: 'Task', childKinds: [] }, statusKey: 'todo', category: 'todo', priority: 'medium', dueAt: null,
+  parentId: null, placement: 'board', rank: null, resolution: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [], ...over,
 })
 
 let host: HTMLDivElement
@@ -40,7 +40,7 @@ function answer(request: WorkRequest): WorkResponse {
   const ok = (result: Extract<WorkResponse, { ok: true }>['result']): WorkResponse => ({ requestId, connectionId, ok: true, result })
   switch (call.op) {
     case 'listSpaces': return ok({ op: 'listSpaces', spaces: [], capabilities: CAPS })
-    case 'listStatuses': return ok({ op: 'listStatuses', statuses: STATUSES, kinds: [{ key: 'task', label: 'Task' }, { key: 'bug', label: 'Bug' }] })
+    case 'listStatuses': return ok({ op: 'listStatuses', statuses: STATUSES, kinds: [{ key: 'task', label: 'Task', childKinds: [] }, { key: 'bug', label: 'Bug', childKinds: [] }] })
     case 'listItems': return listError === null ? ok({ op: 'listItems', items, nextCursor: null, truncated: false }) : { requestId, connectionId, ok: false, error: listError }
     case 'findByKey': return ok({ op: 'findByKey', item: items.find((entry) => entry.key.toUpperCase() === call.key.toUpperCase()) ?? null })
     case 'changeStatus': {

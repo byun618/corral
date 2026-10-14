@@ -2,6 +2,7 @@
 // 가짜 토큰은 `life_pat_` + 고정 문자열뿐이다(킥오프 비밀값 규칙). 가짜 cipher 는 평문이 암호문에 그대로 보이지 않게 바이트를 뒤섞는다.
 
 import type { WorkSettingsState } from '../../shared/work.js'
+import { MemoryActivity } from './activity-store.js'
 import { LaMcpFixture } from './la-mcp-fixture.js'
 import { laSourceEntry } from './la-source.js'
 import { mockSourceEntry, type MockDefect } from './mock-source.js'
@@ -65,6 +66,7 @@ export type WorkHarness = {
   vault: CredentialVault
   emitted: WorkSettingsState[]
   repos: WorkRepoRef[]
+  activity: MemoryActivity
 }
 
 export function workHarness({ entries, repos = [] }: { entries: WorkSourceEntry[]; repos?: WorkRepoRef[] }): WorkHarness {
@@ -72,6 +74,7 @@ export function workHarness({ entries, repos = [] }: { entries: WorkSourceEntry[
   const cipher = new FakeCipher()
   const vault = new CredentialVault(cipher)
   const emitted: WorkSettingsState[] = []
+  const activity = new MemoryActivity()
   let n = 0
   const service = new WorkService({
     store,
@@ -79,10 +82,11 @@ export function workHarness({ entries, repos = [] }: { entries: WorkSourceEntry[
     sources: new WorkSourceRegistry(entries),
     repos: () => repos,
     onChange: (state) => emitted.push(state),
+    activity,
     now: () => 1_791_800_000_000,
     newId: () => `conn-${++n}`,
   })
-  return { service, store, cipher, vault, emitted, repos }
+  return { service, store, cipher, vault, emitted, repos, activity }
 }
 
 export async function laFixtureHarness({ timeoutMs }: { timeoutMs?: number } = {}): Promise<WorkHarness & { fixture: LaMcpFixture; url: string }> {

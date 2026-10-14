@@ -36,6 +36,8 @@ export type FixtureCorrupt =
   | 'blocker-no-displayId' | 'byseq-bad-id'
   // LIFE-601 R1-P 양성 대조 — 모르는 kind · kind null 인데 data 있음.
   | 'byseq-unknown-kind' | 'byseq-null-kind-data'
+  // LIFE-602 E5 양성 대조 — resolution 을 모르는 글자로.
+  | 'resolution-unknown'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -282,8 +284,38 @@ export class LaMcpFixture {
           issue.parentId = parentId
         }
         if ('resolution' in args && (typeof args.resolution === 'string' || args.resolution === null)) issue.resolution = args.resolution
+        // LIFE-602 E4 — PATCH: 보낸 칸만. title 은 minLength 1(스키마).
+        if ('title' in args) {
+          if (typeof args.title !== 'string' || args.title.length === 0) return fail('BAD_REQUEST', 'title')
+          issue.title = args.title
+        }
+        if ('description' in args && (typeof args.description === 'string' || args.description === null)) issue.description = args.description
+        if ('priority' in args && (typeof args.priority === 'string' || args.priority === null)) issue.priority = args.priority
+        if ('dueAt' in args && (typeof args.dueAt === 'string' || args.dueAt === null)) issue.dueAt = args.dueAt
         this.touch(issue)
         return ok(this.response(issue))
+      }
+      // LIFE-602 E6 — 부모 규칙(issue.service checkParentRule): checkpoint=부모 project 必 · bug=project|checkpoint|없음 · task=project|checkpoint|bug|없음.
+      case 'issue_create': {
+        const kind = args.kind
+        if (kind !== 'project' && kind !== 'checkpoint' && kind !== 'task' && kind !== 'bug') return fail('BAD_REQUEST', 'kind')
+        if (typeof args.title !== 'string' || args.title.length === 0) return fail('BAD_REQUEST', 'title')
+        const parentId = typeof args.parentId === 'string' ? args.parentId : null
+        const parent = parentId === null ? null : find(parentId)
+        if (parentId !== null && parent === undefined) return fail('BAD_REQUEST', '없는 부모')
+        const parentKind = parent?.kind ?? null
+        const allowed = kind === 'project' ? parentKind === null
+          : kind === 'checkpoint' ? parentKind === 'project'
+            : kind === 'bug' ? parentKind === null || parentKind === 'project' || parentKind === 'checkpoint'
+              : parentKind === null || parentKind === 'project' || parentKind === 'checkpoint' || parentKind === 'bug'
+        if (!allowed) return fail('BAD_REQUEST', '부모 규칙 위반')
+        const sequentialId = Math.max(...this.issues.map((issue) => issue.sequentialId)) + 1
+        const created: FixtureIssue = {
+          id: uuid(80000 + this.seq++), sequentialId, kind, parentId, title: args.title, description: null, priority: null, statusId: FIXTURE_STATUS.todo,
+          resolution: null, color: null, position: String(100 + sequentialId), onBoard: args.onBoard === true, dueAt: null, archivedAt: null, updatedAt: '2026-10-14T00:00:00.000Z',
+        }
+        this.issues.push(created)
+        return ok(this.response(created))
       }
       case 'issue_link_create': {
         const from = this.issues.find((issue) => issue.sequentialId === args.seq)
@@ -323,7 +355,7 @@ export class LaMcpFixture {
     const row: Record<string, unknown> = {
       id: issue.id, sequentialId: issue.sequentialId, displayId: `LIFE-${issue.sequentialId}`, kind: issue.kind, title: issue.title,
       statusId: this.corrupt === 'issue-statusId' ? 12345 : issue.statusId, statusCategoryKey: status.categoryKey, statusLabel: status.label,
-      resolution: issue.resolution, archivedAt: issue.archivedAt,
+      resolution: this.corrupt === 'resolution-unknown' ? 'wontfix' : issue.resolution, archivedAt: issue.archivedAt,
     }
     if (this.corrupt === 'drop-statusLabel') delete row.statusLabel
     return row

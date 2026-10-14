@@ -22,14 +22,23 @@
 //      목록 성공이면 받는다. 목록이 없는 후행 성공(예: listStatuses)이 먼저 시작한 목록 성공을 버리게 하지 않는다.
 //   ⑤ 설정 저장은 저장 직전 최신 행을 읽어 자기 칸만 바꾼다 — 토큰 교체는 자격 칸만, 숨김·레포 기본은 그대로(R2-H).
 // - 밖으로 나가는 오류 문구는 마지막 경계(이 파일의 IPC 응답·push)에서 금고가 아는 토큰을 한 번 더 지운다(R2-F).
+// - **활동 기록(LIFE-602 D9)** — 쓰기 연산은 보낼 때마다 쓰기 id 를 새로 만들어 출처에 메타로 싣고(`WorkCallMeta`), **성공한 쓰기만**
+//   그 id 로 활동 저장소에 남긴다. 상세·보드·백로그 어디서 바꿨든 이 한 곳을 지난다. 세대가 바뀌어 버린 결과는 남기지 않는다.
+//   상태 라벨·뗀 연결의 상대는 이 서비스를 지난 응답(상태 목록·단건)에서 기억한 값으로 채운다 — 모르면 null(화면이 「다른 상태」 등으로).
 
 import { randomUUID } from 'node:crypto'
 import { isRecord } from '../../shared/json.js'
 import {
   capabilitiesOf,
   connectionStatusOf,
+  readWorkActivityQuery,
   readWorkRequest,
   type WorkActionResult,
+  type WorkActivityChange,
+  type WorkActivityResult,
+  type WorkCall,
+  type WorkItem,
+  type WorkResult,
   type WorkCapabilities,
   type WorkConnectionAddResult,
   type WorkConnectionPending,
@@ -42,6 +51,7 @@ import {
 } from '../../shared/work.js'
 import { log } from '../log.js'
 import { redactSecret, workError } from './errors.js'
+import type { ActivityPort } from './activity-store.js'
 import type { WorkOutcome, WorkSourceClient, WorkSourceRegistry } from './source.js'
 import type { StoredConnection, WorkStoreData, WorkStoreWrite } from './store.js'
 import type { CredentialVault } from './vault.js'
@@ -56,6 +66,8 @@ export type WorkServiceDeps = {
   /** 등록된 레포 — 기본 스페이스의 키(`RepoRecord.id`) ↔ 화면의 `root`. */
   repos: () => WorkRepoRef[]
   onChange: (state: WorkSettingsState) => void
+  /** 활동 저장소(LIFE-602) — 없으면 기록하지 않는다. */
+  activity?: ActivityPort
   now?: () => number
   newId?: () => string
 }
@@ -110,6 +122,10 @@ export class WorkService {
   private progressSeq = 0
   private readonly now: () => number
   private readonly newId: () => string
+  /** 연결 → 상태 키 → 라벨 (상태 목록 응답에서) — 활동 기록의 상태 라벨. */
+  private readonly statusLabels = new Map<string, Map<string, string>>()
+  /** 연결 → 작업 id → 마지막으로 본 단건(연결 포함) — 뗀 연결의 상대를 활동에 적는 데. */
+  private readonly seenItems = new Map<string, Map<string, WorkItem>>()
 
   constructor(deps: WorkServiceDeps) {
     this.deps = deps
@@ -218,6 +234,9 @@ export class WorkService {
     this.runtime.get(id)?.client?.close()
     this.deps.vault.forget(id)
     this.runtime.delete(id)
+    this.statusLabels.delete(id)
+    this.seenItems.delete(id)
+    this.deps.activity?.purgeConnection(id)
     log('work.connection_remove', { ok: true })
     this.emit()
     return { ok: true }
@@ -274,6 +293,14 @@ export class WorkService {
     return outcome.ok ? { requestId, connectionId, ok: true, result: outcome.result } : { requestId, connectionId, ok: false, error: this.scrub({ error: outcome.error }) }
   }
 
+  /** 작업 하나의 corral 활동 기록(LIFE-602) — 오래된 것부터. 없는 연결이면 not_connected. */
+  activity(input: unknown): WorkActivityResult {
+    const query = readWorkActivityQuery(input)
+    if (query === null) return { ok: false, error: invalid('활동 요청 모양이 잘못됐습니다.') }
+    if (!this.deps.store.get().connections.some((row) => row.id === query.connectionId)) return { ok: false, error: workError({ kind: 'not_connected', message: '없는 연결입니다.' }) }
+    return { ok: true, records: this.deps.activity?.list(query) ?? [] }
+  }
+
   private async run({ connectionId, call, announce }: { connectionId: string; call: Parameters<WorkSourceClient['call']>[0]; announce: boolean }): Promise<WorkOutcome> {
     const stored = this.deps.store.get().connections.find((row) => row.id === connectionId)
     if (stored === undefined) return { ok: false, error: workError({ kind: 'not_connected', message: '없는 연결입니다.' }) }
@@ -305,7 +332,8 @@ export class WorkService {
       const lateGate = closedCapability({ capabilities: client.capabilities(), call })
       if (lateGate !== null) return { ok: false, error: lateGate }
       if (progress === null && acquired.fresh) progress = this.beginProgress({ connectionId, pending: 'network' })
-      const outcome = await client.call(call)
+      const writeId = isWrite(call) ? this.newId() : null
+      const outcome = await client.call(call, { writeId })
       if (claim.generation !== this.generation(connectionId)) {
         log('work.request', { op: call.op, ok: false, errorKind: 'not_connected', status: null, ms: this.now() - startedAt, discarded: true })
         return { ok: false, error: this.staleError(connectionId) }
@@ -314,11 +342,39 @@ export class WorkService {
         ? { ok: false, error: workError({ kind: 'invalid_response', message: `출처가 ${call.op} 에 ${outcome.result.op} 로 답했습니다.` }) }
         : outcome
       log('work.request', { op: call.op, ok: checked.ok, errorKind: checked.ok ? null : checked.error.kind, status: checked.ok ? null : checked.error.status, ms: this.now() - startedAt })
+      if (checked.ok) {
+        if (writeId !== null) this.record({ connectionId, call, result: checked.result, writeId })
+        this.remember({ connectionId, result: checked.result })
+      }
       this.settle({ claim, outcome: checked })
       return checked
     } finally {
       if (progress !== null) this.endProgress({ connectionId, progress })
     }
+  }
+
+  /** 이 서비스를 지난 응답에서 상태 라벨·단건을 기억한다(활동 기록용). */
+  private remember({ connectionId, result }: { connectionId: string; result: WorkResult }): void {
+    if (result.op === 'listStatuses') {
+      const labels = this.statusLabels.get(connectionId) ?? new Map<string, string>()
+      for (const status of result.statuses) labels.set(status.key, status.label)
+      this.statusLabels.set(connectionId, labels)
+      return
+    }
+    const item = 'item' in result ? result.item : null
+    if (item === null || item.relations === null) return
+    const items = this.seenItems.get(connectionId) ?? new Map<string, WorkItem>()
+    items.set(item.id, item)
+    this.seenItems.set(connectionId, items)
+  }
+
+  /** 성공한 쓰기 → 활동 기록(칸마다 한 줄, 같은 쓰기 id). 순서만 바꾼 것은 남기지 않는다. */
+  private record({ connectionId, call, result, writeId }: { connectionId: string; call: WorkCall; result: WorkResult; writeId: string }): void {
+    const activity = this.deps.activity
+    if (activity === undefined) return
+    const changes = changesOf({ call, result, statusLabel: (key) => this.statusLabels.get(connectionId)?.get(key) ?? null, seen: (itemId) => this.seenItems.get(connectionId)?.get(itemId) ?? null })
+    const at = this.now()
+    for (const { itemId, change } of changes) activity.append({ id: this.newId(), connectionId, itemId, at, writeId, change })
   }
 
   /**
@@ -481,6 +537,86 @@ function actionOf(error: WorkError): 'replace_token' | 'retry' | null {
       return 'retry'
     default:
       return null
+  }
+}
+
+/** 출처 상태를 바꾸는 연산 — 쓰기 id 를 싣고, 성공하면 활동에 남긴다. */
+function isWrite(call: WorkCall): boolean {
+  switch (call.op) {
+    case 'changeStatus':
+    case 'setPlacement':
+    case 'setParent':
+    case 'reorder':
+    case 'addRelation':
+    case 'removeRelation':
+    case 'addComment':
+    case 'updateItem':
+    case 'createItem':
+      return true
+    case 'listSpaces':
+    case 'listStatuses':
+    case 'listItems':
+    case 'getItem':
+    case 'findByKey':
+    case 'listTransitions':
+    case 'listComments':
+    case 'listChildren':
+    case 'listHistory':
+      return false
+  }
+}
+
+/** 줄 수 — 본문 변경은 전문을 남기지 않고 줄 수만. */
+function lineCount(text: string): number {
+  return text.length === 0 ? 0 : text.split(/\r\n|\r|\n/).length
+}
+
+/** 성공한 쓰기 하나가 남길 활동 — (작업 id, 바뀐 것) 목록. 코멘트는 출처가 가지므로 남기지 않는다. 순서 바꾸기도 남기지 않는다. */
+export function changesOf({ call, result, statusLabel, seen }: {
+  call: WorkCall
+  result: WorkResult
+  statusLabel: (statusKey: string) => string | null
+  seen: (itemId: string) => WorkItem | null
+}): { itemId: string; change: WorkActivityChange }[] {
+  switch (call.op) {
+    case 'changeStatus': {
+      if (result.op !== 'changeStatus') return []
+      const { item } = result
+      return [{ itemId: call.itemId, change: { field: 'status', statusKey: item.statusKey, statusLabel: statusLabel(item.statusKey), resolution: item.resolution } }]
+    }
+    case 'updateItem': {
+      const { fields } = call
+      const changes: { itemId: string; change: WorkActivityChange }[] = []
+      if (fields.title !== undefined) changes.push({ itemId: call.itemId, change: { field: 'title', to: fields.title } })
+      if (fields.body !== undefined) changes.push({ itemId: call.itemId, change: { field: 'body', lines: lineCount(fields.body) } })
+      if (fields.priority !== undefined) changes.push({ itemId: call.itemId, change: { field: 'priority', to: fields.priority } })
+      if (fields.dueAt !== undefined) changes.push({ itemId: call.itemId, change: { field: 'dueAt', to: fields.dueAt } })
+      return changes
+    }
+    case 'setPlacement':
+      return [{ itemId: call.itemId, change: { field: 'placement', to: call.placement } }]
+    case 'setParent':
+      return [{ itemId: call.itemId, change: { field: 'parent', parentId: call.parentId } }]
+    case 'addRelation':
+      return result.op === 'addRelation' ? [{ itemId: call.itemId, change: { field: 'relation', action: 'add', kind: result.relation.kind, otherKey: result.relation.other.key } }] : []
+    case 'removeRelation': {
+      const known = seen(call.itemId)?.relations?.find((relation) => relation.id === call.relationId) ?? null
+      return [{ itemId: call.itemId, change: { field: 'relation', action: 'remove', kind: known?.kind ?? null, otherKey: known?.other.key ?? null } }]
+    }
+    case 'createItem':
+      return result.op === 'createItem' && call.parentId !== null ? [{ itemId: call.parentId, change: { field: 'child', childKey: result.item.key, childTitle: result.item.title } }] : []
+    case 'reorder':
+    case 'addComment':
+    case 'listSpaces':
+    case 'listStatuses':
+    case 'listItems':
+    case 'getItem':
+    case 'findByKey':
+    case 'listTransitions':
+    case 'listComments':
+    case 'listChildren':
+    case 'listHistory':
+      return []
   }
 }
 

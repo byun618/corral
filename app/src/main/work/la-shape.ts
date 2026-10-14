@@ -9,7 +9,7 @@
 // 공통 칸: parentId·priority·onBoard·position·dueAt·color·archivedAt(값 null 허용, 칸 필수) · updatedAt(글자). LA 가 늘 주는 것 이상은 요구하지 않는다.
 
 import { isRecord } from '../../shared/json.js'
-import { readWorkCategory, readWorkPriority, readWorkRelationKind, type WorkCategory, type WorkPriority, type WorkRelationKind } from '../../shared/work.js'
+import { readWorkCategory, readWorkPriority, readWorkRelationKind, type WorkCategory, type WorkPriority, type WorkRelationKind, type WorkResolution } from '../../shared/work.js'
 
 export class LaShapeError extends Error {
   readonly path: string
@@ -35,8 +35,13 @@ export type LaIssueRef = {
 
 export type LaLink = { id: string; relation: WorkRelationKind; issue: LaIssueRef }
 
+/** LA resolution 값(issue_update 스키마 enum) — 그 밖의 글자는 형태 어긋남이다(LIFE-602 E5). */
+export const LA_RESOLUTIONS = ['completed', 'cancelled', 'archived', 'duplicate'] as const
+
 /** 세 응답 계약이 늘 싣는 칸. */
 export type LaIssueCore = LaIssueRef & {
+  /** 완료 갈래(E5) — 완료함·취소함만 그대로, archived·duplicate 는 `other`. 칸이 없으면 null(옛 서버). */
+  resolution: WorkResolution | null
   parentId: string | null
   priority: WorkPriority | null
   onBoard: boolean | null
@@ -155,6 +160,7 @@ function readCore(row: Record<string, unknown>, path: string): LaIssueCore {
   if (onBoard !== null && typeof onBoard !== 'boolean') throw new LaShapeError(`${path}.onBoard`)
   return {
     ...readIssueRef(row, path),
+    resolution: readResolution(row, path),
     parentId: nullableStr(row, 'parentId', path),
     priority,
     onBoard,
@@ -164,6 +170,17 @@ function readCore(row: Record<string, unknown>, path: string): LaIssueCore {
     archivedAt: nullableStr(row, 'archivedAt', path),
     updatedAt: str(row, 'updatedAt', path),
   }
+}
+
+/**
+ * resolution 칸(E5 · LIFE-602) — 칸이 없으면 null(늘 싣는 칸이 아니라고 본다). 있으면 null 또는 LA enum 글자여야 한다 — 모르는 값은 어긋남
+ * (새 값이 조용히 「없음」 이 되지 않게). archived·duplicate 는 완료함·취소함 어느 쪽으로도 꾸미지 않는 `other`(G12).
+ */
+function readResolution(row: Record<string, unknown>, path: string): WorkResolution | null {
+  if (!Object.hasOwn(row, 'resolution') || row.resolution === null) return null
+  const value = LA_RESOLUTIONS.find((entry) => entry === row.resolution)
+  if (value === undefined) throw new LaShapeError(`${path}.resolution`)
+  return value === 'completed' || value === 'cancelled' ? value : 'other'
 }
 
 /** openBlockers 원소 — `IssueBlockerRef` 의 다섯 칸이 글자여야 한다. 카드 배지에 쓰는 셋을 돌려준다(E1). */

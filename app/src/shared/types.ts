@@ -4,7 +4,7 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
-import type { WorkActionResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
+import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -1093,5 +1093,7 @@ export type CorralApi = {
   setRepoDefaultSpace: (input: { repoRoot: string; target: { connectionId: string; spaceKey: string } | null }) => Promise<WorkActionResult>
   /** 작업 계약 연산 — 요청 id 는 그대로 돌아온다(늦은 응답 폐기용, T2). */
   workRequest: (request: WorkRequest) => Promise<WorkResponse>
+  /** 작업 하나의 corral 활동 기록(LIFE-602) — main 이 성공한 쓰기마다 남긴 것, 오래된 것부터. */
+  workActivity: (query: WorkActivityQuery) => Promise<WorkActivityResult>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }

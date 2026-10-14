@@ -13,23 +13,32 @@
 //   `flip-<ms>` = **응답 배달만** 늦춤(출처는 도착 순서대로 곧바로 적용 — 서버 값은 마지막에 보낸 요청)
 //   `flipapply-<ms>` = **적용 자체를** 늦춤(늦춘 요청이 나중에 적용 — 서버 값은 먼저 보낸 요청일 수 있다).
 //   경합 관문의 기대에는 화면만이 아니라 그 뒤 서버 재조회 값도 넣는다.
+//
+// LIFE-602 — 계약 확장 E4–E9 를 모의 출처도 한다: 필드 수정(`updateItem`) · 완료 갈래(resolution) · 자식 조회·만들기(종류별 `childKinds`) ·
+// 충돌 오류의 현재 값·바꾼 쪽 · 변경 이력(`listHistory`, 쓰기 id 를 메타로 싣는다) · 연결 상대의 스페이스.
+// `foreignEdit` = 다른 곳(모의 웹)에서 고친 것처럼 상태를 바꾼다 — 판이 오르고 이력에 쓰기 id 없이 남는다(충돌·중복 제거 양성 대조).
+// 격리 실행 토큰 `drift` = 단건을 읽을 때마다(두 번째부터) 모의 웹이 우선순위를 바꾼다 — 저장 충돌 배너 재현용.
 
 import type {
   WorkCall,
   WorkCapabilities,
   WorkCapability,
   WorkComment,
+  WorkFieldPatch,
+  WorkHistoryEntry,
+  WorkHistoryField,
   WorkItem,
   WorkKind,
   WorkRelation,
   WorkRelationKind,
+  WorkResolution,
   WorkSourceDescriptor,
   WorkSpace,
   WorkStatus,
 } from '../../shared/work.js'
 import type { WorkErrorKind } from '../../shared/work.js'
 import { workError } from './errors.js'
-import type { WorkOutcome, WorkSourceClient, WorkSourceEntry } from './source.js'
+import type { WorkCallMeta, WorkOutcome, WorkSourceClient, WorkSourceEntry } from './source.js'
 
 export const MOCK_SOURCE_ID = 'mock-jira'
 export const MOCK_TOKEN_PREFIX = 'mock_'
@@ -56,18 +65,24 @@ export type MockBehavior = {
   flip: { mode: 'deliver' | 'apply'; ms: number } | null
   /** 능력 표 덮어쓰기 — 없으면 `MOCK_CAPABILITIES` 그대로. */
   caps: Partial<WorkCapabilities>
+  /** 단건을 두 번째 읽을 때부터 모의 웹이 그 작업을 고친다(LIFE-602 — 충돌 배너 재현). */
+  drift: boolean
 }
 
-export const PLAIN_BEHAVIOR: MockBehavior = { fault: null, delayMs: 0, rejectWrites: false, flip: null, caps: {} }
+export const PLAIN_BEHAVIOR: MockBehavior = { fault: null, delayMs: 0, rejectWrites: false, flip: null, caps: {}, drift: false }
 
 function capsOf(token: string): Partial<WorkCapabilities> {
   const caps: Partial<WorkCapabilities> = {}
-  for (const match of token.matchAll(/cap-(order|placement|cursorPaging)-(off|hide)/g)) {
+  for (const match of token.matchAll(/cap-(order|placement|cursorPaging|relations|comments|history|conflictCheck)-(off|hide)/g)) {
     const capability: WorkCapability = match[2] === 'hide' ? { state: 'hidden' } : { state: 'disabled', reason: `모의 출처가 이 능력을 껐습니다 (cap-${match[1]}-off).` }
     switch (match[1]) {
       case 'order': caps.order = capability; break
       case 'placement': caps.placement = capability; break
       case 'cursorPaging': caps.cursorPaging = capability; break
+      case 'relations': caps.relations = capability; break
+      case 'comments': caps.comments = capability; break
+      case 'history': caps.history = capability; break
+      case 'conflictCheck': caps.conflictCheck = capability; break
     }
   }
   if (token.includes('transition-any')) caps.transition = { mode: 'any' }
@@ -84,6 +99,7 @@ export function mockBehaviorOf(token: string): MockBehavior {
     rejectWrites: token.includes('reject-writes'),
     flip: flip === null ? null : { mode: flip[1] === undefined ? 'deliver' : 'apply', ms: Number(flip[2]) },
     caps: capsOf(token),
+    drift: token.includes('drift'),
   }
 }
 
@@ -102,6 +118,7 @@ export const MOCK_CAPABILITIES: WorkCapabilities = {
   cursorPaging: { state: 'on' },
   conflictCheck: { state: 'on' },
   comments: { state: 'on' },
+  history: { state: 'on' },
   workLinkStore: { state: 'disabled', reason: '작업 링크 저장은 T5 에서 켭니다.' },
 }
 
@@ -113,16 +130,31 @@ const PAIR: Record<WorkRelationKind, WorkRelationKind> = {
   relates_to: 'relates_to',
 }
 
-const KINDS: WorkKind[] = [{ key: 'epic', label: 'Epic' }, { key: 'story', label: 'Story' }, { key: 'bug', label: 'Bug' }]
+/** Jira 형 — Epic 아래에 Story·Bug, Story·Bug 는 잎(E6). */
+const KINDS: WorkKind[] = [{ key: 'epic', label: 'Epic', childKinds: ['story', 'bug'] }, { key: 'story', label: 'Story', childKinds: [] }, { key: 'bug', label: 'Bug', childKinds: [] }]
 const KEY_SHAPE = /^[A-Z][A-Z0-9]*-\d+$/i
 const PAGE_SIZE = 2
 
 type MockSpace = { space: WorkSpace; statuses: WorkStatus[]; transitions: Record<string, string[]> }
-type MockItem = Omit<WorkItem, 'relations' | 'version' | 'category'> & { version: number }
+type MockItem = Omit<WorkItem, 'relations' | 'version' | 'category'> & { version: number; updatedBy: string | null }
 type MockLink = { id: string; from: string; to: string; kind: WorkRelationKind }
 
 /** `pageSize` — 커서 한 쪽 크기. 계약 묶음 씨앗은 2(작업 5개로 여러 쪽), 데모 씨앗은 6(첫 쪽에 화면 재현이 다 들고 「더 불러오기」 가 남는다). */
-export type MockState = { spaces: MockSpace[]; items: MockItem[]; links: MockLink[]; comments: Record<string, WorkComment[]>; seq: number; pageSize?: number }
+export type MockState = {
+  spaces: MockSpace[]
+  items: MockItem[]
+  links: MockLink[]
+  comments: Record<string, WorkComment[]>
+  /** 작업 id → 변경 이력(오래된 것부터). */
+  history: Record<string, WorkHistoryEntry[]>
+  seq: number
+  pageSize?: number
+  /** 이력·충돌의 시각 — 테스트가 고정할 수 있다. */
+  clock?: () => number
+}
+
+/** 이 모의 출처로 쓴 사람 — 이력의 author. */
+const MOCK_AUTHOR = 'mock'
 
 function status({ key, label, category, order }: Omit<WorkStatus, 'color'>): WorkStatus {
   return { key, label, category, order, color: null }
@@ -151,8 +183,8 @@ export function seedMockState(): MockState {
     transitions: { 'web-open': ['web-closed'], 'web-closed': ['web-open'] },
   }
   const item = ({ id, key, spaceKey, title, kind, statusKey, parentId, rank, placement }: { id: string; key: string; spaceKey: string; title: string; kind: WorkKind; statusKey: string; parentId: string | null; rank: string; placement: 'board' | 'backlog' }): MockItem => ({
-    id, key, spaceKey, title, body: `${title} 본문`, kind, statusKey, priority: 'medium', dueAt: null, parentId, placement, rank, openBlockerCount: 0, openBlockers: [],
-    updatedAt: '2026-10-13T00:00:00.000Z', version: 1, workLinks: [],
+    id, key, spaceKey, title, body: `${title} 본문`, kind, statusKey, resolution: null, priority: 'medium', dueAt: null, parentId, placement, rank, openBlockerCount: 0, openBlockers: [],
+    updatedAt: '2026-10-13T00:00:00.000Z', version: 1, updatedBy: null, workLinks: [],
   })
   const [epic, story, bug] = KINDS
   if (epic === undefined || story === undefined || bug === undefined) throw new Error('mock kinds')
@@ -167,6 +199,7 @@ export function seedMockState(): MockState {
     ],
     links: [],
     comments: {},
+    history: {},
     seq: 1,
   }
 }
@@ -186,18 +219,82 @@ export function seedMockDemoState(): MockState {
   })
   const [, story, bug] = KINDS
   if (story === undefined || bug === undefined) throw new Error('mock kinds')
-  const base = { body: null, priority: 'medium' as const, dueAt: null, parentId: null, openBlockerCount: 0, openBlockers: [], updatedAt: '2026-10-13T00:00:00.000Z', version: 1, workLinks: [] }
+  const base = { body: null, resolution: null, priority: 'medium' as const, dueAt: null, parentId: null, openBlockerCount: 0, openBlockers: [], updatedAt: '2026-10-13T00:00:00.000Z', version: 1, updatedBy: null, workLinks: [] }
   const soon = new Date(Date.now() + 86_400_000).toISOString()
   state.items.push(
     { ...base, id: 'm-6', key: 'CORE-5', spaceKey: 'CORE', title: '법무 검토 대기 — 칸 없는 상태', kind: story, statusKey: 'core-legal', rank: 'e', placement: 'board' },
     { ...base, id: 'm-7', key: 'CORE-6', spaceKey: 'CORE', title: '정산 리포트', kind: story, statusKey: 'core-todo', rank: 'f', placement: 'board', priority: 'highest', dueAt: soon },
-    { ...base, id: 'm-8', key: 'CORE-7', spaceKey: 'CORE', title: '구 결제 모듈 제거', kind: bug, statusKey: 'core-done', parentId: 'm-1', rank: 'g', placement: 'board', priority: 'low' },
+    { ...base, id: 'm-8', key: 'CORE-7', spaceKey: 'CORE', title: '구 결제 모듈 제거', kind: bug, statusKey: 'core-done', resolution: 'completed', parentId: 'm-1', rank: 'g', placement: 'board', priority: 'low' },
     { ...base, id: 'm-9', key: 'CORE-8', spaceKey: 'CORE', title: '백로그 아이디어', kind: story, statusKey: 'core-todo', rank: 'h', placement: 'backlog' },
   )
   // 막힘: CORE-6 ← CORE-2(열림) · CORE-6 ← CORE-7(완료 — 배지에 안 보임) · CORE-4 ← CORE-3(열림)
+  // LIFE-602 상세 재현 — 본문 markdown(체크리스트·키 링크·외부 링크·raw HTML 은 글자로), 다른 스페이스 연결(CORE-1 ↔ WEB-1).
+  const epic = state.items.find((row) => row.id === 'm-1')
+  if (epic !== undefined) epic.body = DEMO_BODY
   state.pageSize = 6
-  state.links.push({ id: 'l-demo-1', from: 'm-2', to: 'm-7', kind: 'blocks' }, { id: 'l-demo-2', from: 'm-8', to: 'm-7', kind: 'blocks' }, { id: 'l-demo-3', from: 'm-4', to: 'm-3', kind: 'is_blocked_by' })
+  state.links.push({ id: 'l-demo-1', from: 'm-2', to: 'm-7', kind: 'blocks' }, { id: 'l-demo-2', from: 'm-8', to: 'm-7', kind: 'blocks' }, { id: 'l-demo-3', from: 'm-4', to: 'm-3', kind: 'is_blocked_by' }, { id: 'l-demo-4', from: 'm-1', to: 'm-5', kind: 'relates_to' })
+  state.comments['m-1'] = [{ id: 'c-demo-1', author: '모의 웹', body: '결제 개편 범위는 **카드 저장**까지. CORE-2 먼저.', createdAt: '2026-10-13T00:00:30.000Z' }]
+  state.history['m-1'] = [{ id: 'h-demo-1', at: '2026-10-13T00:00:10.000Z', author: '모의 웹', field: 'priority', from: 'low', to: 'medium', writeId: null }]
   return state
+}
+
+const DEMO_BODY = [
+  '## 목표',
+  '결제 흐름을 새 PG 로 옮긴다. 관련: CORE-2 · WEB-1',
+  '',
+  '- [x] PG 계약',
+  '- [ ] 카드 저장 (**CORE-2**)',
+  '- [ ] 환불 _재시도_',
+  '',
+  '> 링크: [설계 문서](https://example.com/design) · [로컬 파일](file:///etc/hosts)',
+  '',
+  '```ts',
+  'const pg = createPg()',
+  '```',
+  '',
+  '<img src=x onerror="alert(1)"> 는 글자로 보여야 한다.',
+].join('\n')
+
+/**
+ * 다른 곳(모의 웹)에서 고친 것처럼 상태를 바꾼다 — 판이 오르고, 이력에 **쓰기 id 없이** 남는다(LIFE-602 양성 대조: 충돌 · 같은 값 변경 보존).
+ * 테스트와 `drift` 행동이 쓴다.
+ */
+export function foreignEdit({ state, itemId, patch, author = '모의 웹' }: { state: MockState; itemId: string; patch: { title?: string; body?: string; priority?: WorkItem['priority']; statusKey?: string; placement?: WorkItem['placement'] }; author?: string }): void {
+  const item = state.items.find((row) => row.id === itemId)
+  if (item === undefined) throw new Error(`foreignEdit: 없는 작업 ${itemId}`)
+  const space = state.spaces.find((entry) => entry.space.key === item.spaceKey)
+  const labelOf = (key: string): string => space?.statuses.find((entry) => entry.key === key)?.label ?? key
+  const entries: { field: WorkHistoryField; from: string | null; to: string | null }[] = []
+  if (patch.title !== undefined) entries.push({ field: 'title', from: item.title, to: patch.title })
+  if (patch.body !== undefined) entries.push({ field: 'body', from: null, to: null })
+  if (patch.priority !== undefined) entries.push({ field: 'priority', from: item.priority, to: patch.priority })
+  if (patch.statusKey !== undefined) entries.push({ field: 'status', from: labelOf(item.statusKey), to: labelOf(patch.statusKey) })
+  if (patch.placement !== undefined) entries.push({ field: 'placement', from: item.placement, to: patch.placement })
+  Object.assign(item, patch)
+  bump({ state, item, author })
+  for (const entry of entries) record({ state, itemId, author, writeId: null, ...entry })
+}
+
+function now(state: MockState): number {
+  return state.clock?.() ?? Date.now()
+}
+
+function bump({ state, item, author }: { state: MockState; item: MockItem; author: string }): void {
+  item.version += 1
+  item.updatedBy = author
+  // 시각은 늘 앞으로 — 같은 밀리초 안의 연속 쓰기도 순서가 보이게 이전 값 + 1초와 지금 중 늦은 쪽.
+  item.updatedAt = new Date(Math.max(Date.parse(item.updatedAt) + 1000, now(state))).toISOString()
+}
+
+function record({ state, itemId, author, writeId, field, from, to }: { state: MockState; itemId: string; author: string; writeId: string | null; field: WorkHistoryField; from: string | null; to: string | null }): void {
+  const at = new Date(now(state)).toISOString()
+  state.history[itemId] = [...(state.history[itemId] ?? []), { id: `h-${state.seq++}`, at, author, field, from, to, writeId }]
+}
+
+/** 완료 분류로 갈 때의 갈래 — 고른 것, 없으면 완료함. */
+function resolutionFor({ category, chosen, current }: { category: WorkStatus['category']; chosen: WorkResolution | null | undefined; current: WorkResolution | null }): WorkResolution | null {
+  if (category !== 'done') return null
+  return chosen ?? current ?? 'completed'
 }
 
 export function mockSourceEntry({ state = seedMockState(), defect = 'none' }: { state?: MockState; defect?: MockDefect } = {}): WorkSourceEntry {
@@ -210,6 +307,8 @@ export class MockSource implements WorkSourceClient {
   private readonly behavior: MockBehavior
   private closed = false
   private calls = 0
+  /** `drift` — 작업마다 단건을 읽은 수. */
+  private readonly reads = new Map<string, number>()
 
   constructor({ state, defect, behavior = PLAIN_BEHAVIOR }: { state: MockState; defect: MockDefect; behavior?: MockBehavior }) {
     this.state = state
@@ -225,18 +324,18 @@ export class MockSource implements WorkSourceClient {
     this.closed = true
   }
 
-  async call(call: WorkCall): Promise<WorkOutcome> {
+  async call(call: WorkCall, meta?: WorkCallMeta): Promise<WorkOutcome> {
     this.calls += 1
     const flip = this.behavior.flip !== null && this.calls % 2 === 1 ? this.behavior.flip : null
     const before = this.behavior.delayMs + (flip?.mode === 'apply' ? flip.ms : 0)
     if (before > 0) await new Promise((resolve) => setTimeout(resolve, before))
-    const outcome = await this.decide(call)
+    const outcome = await this.decide({ call, writeId: meta?.writeId ?? null })
     if (flip?.mode === 'deliver') await new Promise((resolve) => setTimeout(resolve, flip.ms))
     return outcome
   }
 
-  private async decide(call: WorkCall): Promise<WorkOutcome> {
-    if (this.behavior.rejectWrites && (call.op === 'changeStatus' || call.op === 'setPlacement' || call.op === 'reorder')) {
+  private async decide({ call, writeId }: { call: WorkCall; writeId: string | null }): Promise<WorkOutcome> {
+    if (this.behavior.rejectWrites && (call.op === 'changeStatus' || call.op === 'setPlacement' || call.op === 'reorder' || call.op === 'updateItem' || call.op === 'createItem')) {
       return rejected('모의 출처가 이 쓰기를 거절했습니다 (reject-writes).')
     }
     const fault = this.behavior.fault
@@ -244,10 +343,21 @@ export class MockSource implements WorkSourceClient {
       const { message, status } = FAULT_MESSAGE[fault]
       return { ok: false, error: workError({ kind: fault, message, status }) }
     }
-    return this.answer(call)
+    if (this.behavior.drift && call.op === 'getItem') this.driftOn(call.itemId)
+    return this.answer({ call, writeId })
   }
 
-  private async answer(call: WorkCall): Promise<WorkOutcome> {
+  /** `drift` — 같은 작업을 두 번째 읽을 때부터, 읽은 뒤 곧 모의 웹이 우선순위를 바꾼다(다음 저장이 충돌). */
+  private driftOn(itemId: string): void {
+    const count = (this.reads.get(itemId) ?? 0) + 1
+    this.reads.set(itemId, count)
+    const item = this.item(itemId)
+    if (item === null || count < 2) return
+    const next = item.priority === 'highest' ? 'low' : 'highest'
+    setTimeout(() => foreignEdit({ state: this.state, itemId, patch: { priority: next } }), 50)
+  }
+
+  private async answer({ call, writeId }: { call: WorkCall; writeId: string | null }): Promise<WorkOutcome> {
     if (this.closed) return { ok: false, error: workError({ kind: 'not_connected', message: '연결이 해제됐거나 토큰이 바뀌어 요청을 보내지 않았습니다.' }) }
     switch (call.op) {
       case 'listSpaces':
@@ -288,18 +398,66 @@ export class MockSource implements WorkSourceClient {
         const stale = this.stale({ item, ifVersion: call.ifVersion })
         if (stale !== null) return stale
         const allowed = this.space(item.spaceKey)?.transitions[item.statusKey] ?? []
-        const known = this.space(item.spaceKey)?.statuses.some((status) => status.key === call.statusKey) ?? false
+        const target = this.space(item.spaceKey)?.statuses.find((status) => status.key === call.statusKey) ?? null
+        const resolution = resolutionFor({ category: target?.category ?? 'todo', chosen: call.resolution, current: call.statusKey === item.statusKey ? item.resolution : null })
+        // 같은 상태 — 갈래만 바꾸는 것(완료함 ↔ 취소함)은 전이가 아니다(E5).
+        if (call.statusKey === item.statusKey) {
+          if (resolution !== item.resolution && this.defect !== 'transition-ignored') this.touch({ item, patch: { resolution }, writeId, fields: [{ field: 'status', from: this.statusText(item), to: this.statusText({ ...item, resolution }) }] })
+          return { ok: true, result: { op: 'changeStatus', item: this.view({ item, withRelations: true }) } }
+        }
         // `transition-any` 면 출처도 어떤 전이든 받는다(R2-N) — 능력 표만 any 이고 출처가 거절하면 any 분기를 볼 수 없다.
-        if (this.capabilities().transition.mode === 'any' ? !known : !allowed.includes(call.statusKey)) return rejected('워크플로에 이 전이가 없습니다.')
-        if (this.defect !== 'transition-ignored') this.touch(item, { statusKey: call.statusKey })
+        if (this.capabilities().transition.mode === 'any' ? target === null : !allowed.includes(call.statusKey)) return rejected('워크플로에 이 전이가 없습니다.')
+        if (this.defect !== 'transition-ignored') {
+          const after = { ...item, statusKey: call.statusKey, resolution }
+          this.touch({ item, patch: { statusKey: call.statusKey, resolution }, writeId, fields: [{ field: 'status', from: this.statusText(item), to: this.statusText(after) }] })
+        }
         return { ok: true, result: { op: 'changeStatus', item: this.view({ item, withRelations: true }) } }
+      }
+      case 'updateItem': {
+        const item = this.item(call.itemId)
+        if (item === null) return rejected('없는 작업입니다.')
+        const stale = this.stale({ item, ifVersion: call.ifVersion })
+        if (stale !== null) return stale
+        this.touch({ item, patch: patchOf(call.fields), writeId, fields: fieldChanges({ item, fields: call.fields }) })
+        return { ok: true, result: { op: 'updateItem', item: this.view({ item, withRelations: true }) } }
+      }
+      case 'listChildren': {
+        const item = this.item(call.itemId)
+        if (item === null) return rejected('없는 작업입니다.')
+        const children = this.state.items.filter((row) => row.parentId === item.id).sort((a, b) => (a.rank ?? '').localeCompare(b.rank ?? ''))
+        return { ok: true, result: { op: 'listChildren', items: children.map((row) => this.view({ item: row, withRelations: false })) } }
+      }
+      case 'createItem': {
+        const space = this.space(call.spaceKey)
+        if (space === null) return rejected('없는 스페이스입니다.')
+        const kind = KINDS.find((entry) => entry.key === call.kindKey)
+        if (kind === undefined) return rejected('없는 종류입니다.')
+        const parent = call.parentId === null ? null : this.item(call.parentId)
+        if (call.parentId !== null && (parent === null || parent.spaceKey !== call.spaceKey)) return rejected('부모로 쓸 수 없는 작업입니다.')
+        // 종류별 자식 규칙(E6) — 부모 종류의 childKinds 밖이면 거절.
+        if (parent !== null && !(KINDS.find((entry) => entry.key === parent.kind.key)?.childKinds ?? []).includes(kind.key)) return rejected(`${parent.kind.label} 아래에는 ${kind.label} 를 만들 수 없습니다.`)
+        const first = space.statuses.find((status) => status.category === 'todo') ?? space.statuses[0]
+        if (first === undefined) return rejected('상태가 없는 스페이스입니다.')
+        const seq = this.state.items.filter((row) => row.spaceKey === call.spaceKey).length + 1
+        const created: MockItem = {
+          id: `m-new-${this.state.seq++}`, key: `${call.spaceKey}-${100 + seq}`, spaceKey: call.spaceKey, title: call.title, body: '', kind: { ...kind, childKinds: [...kind.childKinds] },
+          statusKey: first.key, resolution: null, priority: null, dueAt: null, parentId: call.parentId, placement: 'board', rank: `z${this.state.seq}`,
+          openBlockerCount: 0, openBlockers: [], updatedAt: new Date(now(this.state)).toISOString(), version: 1, updatedBy: MOCK_AUTHOR, workLinks: [],
+        }
+        this.state.items.push(created)
+        if (parent !== null) this.touch({ item: parent, patch: {}, writeId, fields: [{ field: 'child', from: null, to: `${created.key} ${created.title}` }] })
+        return { ok: true, result: { op: 'createItem', item: this.view({ item: created, withRelations: true }) } }
+      }
+      case 'listHistory': {
+        if (this.item(call.itemId) === null) return rejected('없는 작업입니다.')
+        return { ok: true, result: { op: 'listHistory', entries: [...(this.state.history[call.itemId] ?? [])] } }
       }
       case 'setPlacement': {
         const item = this.item(call.itemId)
         if (item === null) return rejected('없는 작업입니다.')
         const stale = this.stale({ item, ifVersion: call.ifVersion })
         if (stale !== null) return stale
-        this.touch(item, { placement: call.placement })
+        this.touch({ item, patch: { placement: call.placement }, writeId, fields: item.placement === call.placement ? [] : [{ field: 'placement', from: item.placement, to: call.placement }] })
         return { ok: true, result: { op: 'setPlacement', item: this.view({ item, withRelations: true }) } }
       }
       case 'setParent': {
@@ -313,7 +471,8 @@ export class MockSource implements WorkSourceClient {
           const parent = this.item(call.parentId)
           if (parent === null || parent.spaceKey !== item.spaceKey || parent.id === item.id) return rejected('부모로 쓸 수 없는 작업입니다.')
         }
-        this.touch(item, { parentId: call.parentId })
+        const keyOf = (id: string | null): string | null => (id === null ? null : this.item(id)?.key ?? id)
+        this.touch({ item, patch: { parentId: call.parentId }, writeId, fields: [{ field: 'parent', from: keyOf(item.parentId), to: keyOf(call.parentId) }] })
         return { ok: true, result: { op: 'setParent', item: this.view({ item, withRelations: true }) } }
       }
       case 'reorder': {
@@ -324,7 +483,7 @@ export class MockSource implements WorkSourceClient {
         if (call.afterId !== null && at === 0) return rejected('기준 작업이 같은 스페이스에 없습니다.')
         ordered.splice(at, 0, item)
         ordered.forEach((row, index) => { row.rank = String.fromCharCode(97 + index) })
-        this.touch(item, {})
+        this.touch({ item, patch: {}, writeId, fields: [] })
         return { ok: true, result: { op: 'reorder', item: this.view({ item, withRelations: true }) } }
       }
       case 'addRelation': {
@@ -335,12 +494,15 @@ export class MockSource implements WorkSourceClient {
         if (this.state.links.some((link) => link.from === item.id && link.to === other.id && link.kind === call.kind)) return rejected('이미 연결됐습니다.')
         const link: MockLink = { id: `l-${this.state.seq++}`, from: item.id, to: other.id, kind: call.kind }
         this.state.links.push(link)
+        record({ state: this.state, itemId: item.id, author: MOCK_AUTHOR, writeId, field: 'relation', from: null, to: `${call.kind} ${other.key}` })
         return { ok: true, result: { op: 'addRelation', relation: this.relationOf({ link, viewer: item.id }) } }
       }
       case 'removeRelation': {
         const index = this.state.links.findIndex((link) => link.id === call.relationId && (link.from === call.itemId || link.to === call.itemId))
         if (index < 0) return rejected('없는 연결입니다.')
-        this.state.links.splice(index, 1)
+        const [gone] = this.state.links.splice(index, 1)
+        const otherId = gone === undefined ? null : gone.from === call.itemId ? gone.to : gone.from
+        record({ state: this.state, itemId: call.itemId, author: MOCK_AUTHOR, writeId, field: 'relation', from: otherId === null ? null : (this.item(otherId)?.key ?? null), to: null })
         return { ok: true, result: { op: 'removeRelation', relationId: call.relationId } }
       }
       case 'listComments': {
@@ -349,7 +511,7 @@ export class MockSource implements WorkSourceClient {
       }
       case 'addComment': {
         if (this.item(call.itemId) === null) return rejected('없는 작업입니다.')
-        const comment: WorkComment = { id: `c-${this.state.seq++}`, author: 'mock', body: call.body, createdAt: new Date(0).toISOString() }
+        const comment: WorkComment = { id: `c-${this.state.seq++}`, author: MOCK_AUTHOR, body: call.body, createdAt: new Date(now(this.state)).toISOString() }
         this.state.comments[call.itemId] = [...(this.state.comments[call.itemId] ?? []), comment]
         return { ok: true, result: { op: 'addComment', comment } }
       }
@@ -372,15 +534,22 @@ export class MockSource implements WorkSourceClient {
     return this.space(item.spaceKey)?.statuses.find((entry) => entry.key === item.statusKey)?.category ?? 'todo'
   }
 
+  /** 판이 다르면 충돌 — 서버의 지금 값과 마지막으로 바꾼 쪽을 싣는다(E7). */
   private stale({ item, ifVersion }: { item: MockItem; ifVersion: string | null }): WorkOutcome | null {
     if (ifVersion === null || ifVersion === String(item.version)) return null
-    return { ok: false, error: workError({ kind: 'conflict', message: `${item.key} 이(가) 연 뒤에 바뀌었습니다 — 새로 불러오거나 덮어쓰세요.` }) }
+    const error = workError({ kind: 'conflict', message: `${item.key} 이(가) 연 뒤에 바뀌었습니다 — 새로 불러오거나 덮어쓰세요.` })
+    return { ok: false, error: { ...error, conflict: { current: this.view({ item, withRelations: true }), by: item.updatedBy } } }
   }
 
-  private touch(item: MockItem, patch: Partial<MockItem>): void {
+  private touch({ item, patch, writeId, fields }: { item: MockItem; patch: Partial<MockItem>; writeId: string | null; fields: { field: WorkHistoryField; from: string | null; to: string | null }[] }): void {
     Object.assign(item, patch)
-    item.version += 1
-    item.updatedAt = new Date(Date.parse(item.updatedAt) + 1000).toISOString()
+    bump({ state: this.state, item, author: MOCK_AUTHOR })
+    for (const entry of fields) record({ state: this.state, itemId: item.id, author: MOCK_AUTHOR, writeId, ...entry })
+  }
+
+  private statusText(item: Pick<MockItem, 'spaceKey' | 'statusKey' | 'resolution'>): string {
+    const label = this.space(item.spaceKey)?.statuses.find((entry) => entry.key === item.statusKey)?.label ?? item.statusKey
+    return item.resolution === 'cancelled' ? `${label} · 취소함` : label
   }
 
   private relationOf({ link, viewer }: { link: MockLink; viewer: string }): WorkRelation {
@@ -390,7 +559,7 @@ export class MockSource implements WorkSourceClient {
     return {
       id: link.id,
       kind: outgoing ? link.kind : PAIR[link.kind],
-      other: { id: other?.id ?? '', key: other?.key ?? '', title: other?.title ?? '', statusLabel: status?.label ?? '', category: status?.category ?? 'todo' },
+      other: { id: other?.id ?? '', key: other?.key ?? '', title: other?.title ?? '', statusLabel: status?.label ?? '', category: status?.category ?? 'todo', spaceKey: other?.spaceKey ?? null },
     }
   }
 
@@ -399,8 +568,11 @@ export class MockSource implements WorkSourceClient {
     const openBlockers = relations
       .filter((relation) => relation.kind === 'is_blocked_by' && relation.other.category !== 'done')
       .map((relation) => ({ id: relation.other.id, key: relation.other.key, title: relation.other.title }))
+    const { updatedBy: _by, ...rest } = item
+    void _by
     return {
-      ...item,
+      ...rest,
+      kind: { ...item.kind, childKinds: [...item.kind.childKinds] },
       openBlockers,
       body: withRelations ? item.body : null,
       category: this.categoryOf(item),
@@ -410,6 +582,25 @@ export class MockSource implements WorkSourceClient {
       workLinks: [...item.workLinks],
     }
   }
+}
+
+function patchOf(fields: WorkFieldPatch): Partial<MockItem> {
+  const patch: Partial<MockItem> = {}
+  if (fields.title !== undefined) patch.title = fields.title
+  if (fields.body !== undefined) patch.body = fields.body
+  if (fields.priority !== undefined) patch.priority = fields.priority
+  if (fields.dueAt !== undefined) patch.dueAt = fields.dueAt
+  return patch
+}
+
+/** 바뀐 칸만 이력으로 — 같은 값을 다시 보내면 이력이 없다. */
+function fieldChanges({ item, fields }: { item: MockItem; fields: WorkFieldPatch }): { field: WorkHistoryField; from: string | null; to: string | null }[] {
+  const changes: { field: WorkHistoryField; from: string | null; to: string | null }[] = []
+  if (fields.title !== undefined && fields.title !== item.title) changes.push({ field: 'title', from: item.title, to: fields.title })
+  if (fields.body !== undefined && fields.body !== item.body) changes.push({ field: 'body', from: null, to: null })
+  if (fields.priority !== undefined && fields.priority !== item.priority) changes.push({ field: 'priority', from: item.priority, to: fields.priority })
+  if (fields.dueAt !== undefined && fields.dueAt !== item.dueAt) changes.push({ field: 'dueAt', from: item.dueAt, to: fields.dueAt })
+  return changes
 }
 
 function rejected(message: string): WorkOutcome {

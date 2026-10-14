@@ -11,20 +11,25 @@
 // 상태: 모든 LA 스페이스가 같은 `status_list`. 앞으로 = `issue_transition`(forwardOnly) · 뒤로 = `issue_update(statusId)`(D6).
 // 능력 꺼짐(L1 대기): 순서(L1f · LIFE-612) · 커서 페이지(L1c) · 조건부 수정(L1b) · 코멘트·이력(L1e) · 작업 링크 저장(L1a).
 // 응답은 `la-shape.ts` 로 검증한 뒤에만 계약 타입으로 바꾼다(C3) — 어긋나면 `invalid_response`.
+// LIFE-602 계약 확장: 필드 수정 = `issue_update`(title·description·priority·dueAt, PATCH) · 완료 갈래 = resolution(completed·cancelled) ·
+// 자식 = `issue_list(parentId)`·`issue_create`(부모 규칙은 종류의 `childKinds` 로 알린다) · 연결 상대의 스페이스 = 상대의 부모 사슬(못 풀면 null) ·
+// 이력은 꺼짐(L1e).
 
 import type {
   WorkCall,
+  WorkFieldPatch,
   WorkCapabilities,
   WorkError,
   WorkItem,
   WorkKind,
   WorkRelation,
+  WorkResolutionChoice,
   WorkSourceDescriptor,
   WorkSpace,
   WorkStatus,
 } from '../../shared/work.js'
 import { workError } from './errors.js'
-import { readBySeq, readIssueDetail, readIssueSummaries, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
+import { readBySeq, readIssueDetail, readIssueSummaries, type LaIssueDetail, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
 import { McpHttpClient } from './mcp-http.js'
 import type { WorkOutcome, WorkSourceClient, WorkSourceEntry } from './source.js'
 
@@ -42,6 +47,10 @@ const MAX_DEPTH = 5
  * · checkpoint 의 부모 = project · project 는 부모 없음. → **자식을 가질 수 있는 것은 project·checkpoint·bug** 이고 task 만 잎이다(R1-A).
  */
 const PARENT_KINDS = new Set<LaIssue['kind']>(['project', 'checkpoint', 'bug'])
+/** 같은 규칙의 작업 쪽 모양(E6) — 종류마다 그 아래에 만들 수 있는 자식 종류. task 는 잎. */
+const CHILD_KINDS: Record<'checkpoint' | 'task' | 'bug', string[]> = { checkpoint: ['task', 'bug'], bug: ['task'], task: [] }
+/** 연결 상대의 스페이스(E9)를 푸는 상한 — 넘는 상대는 null(모름). 단건 한 번에 RPC 가 끝없이 늘지 않게. */
+const MAX_LINK_SPACES = 12
 /** LA SDK 경로의 scope 부족 — HTTP 200 · `isError: true` · text `missing scope: issue:write`(mcp.service `ensureIssueScope`). */
 const MISSING_SCOPE = /^missing scope: ([a-z_]+:[a-z_]+)$/
 /** 문구에 옮겨도 되는 범위 이름 — 원격 글을 그대로 옮기지 않는다(R2-F). 이 밖의 범위도 권한 부족이지만 이름은 싣지 않는다. */
@@ -68,12 +77,13 @@ export const LA_CAPABILITIES: WorkCapabilities = {
   order: { state: 'disabled', reason: 'LA 에는 순서를 바꾸는 MCP 도구가 없습니다 (LIFE-612).' },
   cursorPaging: { state: 'disabled', reason: 'LA 목록은 커서 페이지가 없습니다 — 한 번에 최대 200건 (L1c).' },
   conflictCheck: { state: 'disabled', reason: 'LA 는 조건부 수정을 받지 않습니다 — 동시 편집 충돌을 검사하지 못합니다 (L1b).' },
-  comments: { state: 'disabled', reason: 'LA 에는 코멘트·변경 이력이 아직 없습니다 (L1e).' },
+  comments: { state: 'disabled', reason: 'LA 에는 코멘트가 아직 없습니다 (L1e).' },
+  history: { state: 'disabled', reason: 'LA 에는 변경 이력이 아직 없습니다 (L1e).' },
   workLinkStore: { state: 'disabled', reason: 'LA 에 작업 링크를 저장할 자리가 아직 없습니다 (L1a).' },
 }
 
 const KIND_LABELS: Record<'checkpoint' | 'task' | 'bug', string> = { checkpoint: 'Checkpoint', task: 'Task', bug: 'Bug' }
-const KINDS: WorkKind[] = Object.entries(KIND_LABELS).map(([key, label]) => ({ key, label }))
+const KINDS: WorkKind[] = (['checkpoint', 'task', 'bug'] as const).map((key) => ({ key, label: KIND_LABELS[key], childKinds: [...CHILD_KINDS[key]] }))
 
 type Step<T> = { ok: true; value: T } | { ok: false; outcome: WorkOutcome }
 
@@ -128,7 +138,15 @@ export class LaSource implements WorkSourceClient {
       }
       case 'changeStatus':
         if (call.ifVersion !== null) return unsupported('conflictCheck')
-        return this.changeStatus({ itemId: call.itemId, statusKey: call.statusKey })
+        return this.changeStatus({ itemId: call.itemId, statusKey: call.statusKey, resolution: call.resolution ?? null })
+      case 'updateItem': {
+        if (call.ifVersion !== null) return unsupported('conflictCheck')
+        const updated = await this.tool({ name: 'issue_update', args: { id: call.itemId, ...updateArgs(call.fields) }, read: readIssueUpdated })
+        return updated.ok ? this.itemResult({ op: 'updateItem', itemId: call.itemId }) : updated.outcome
+      }
+      case 'listChildren': return this.listChildren(call.itemId)
+      case 'createItem': return this.createItem(call)
+      case 'listHistory': return unsupported('history')
       case 'setPlacement': {
         if (call.ifVersion !== null) return unsupported('conflictCheck')
         const updated = await this.tool({ name: 'issue_update', args: { id: call.itemId, onBoard: call.placement === 'board' }, read: readIssueUpdated })
@@ -151,6 +169,34 @@ export class LaSource implements WorkSourceClient {
       case 'addComment':
         return unsupported('comments')
     }
+  }
+
+  /** 자식(E6) — 이 일감을 부모로 둔 미보관 일감. 스페이스는 이 일감의 것(단건 경로로 푼다). */
+  private async listChildren(itemId: string): Promise<WorkOutcome> {
+    const parent = await this.item(itemId)
+    if (!parent.ok) return parent.outcome
+    const children = await this.list({ parentId: itemId, archived: 'exclude' })
+    if (!children.ok) return children.outcome
+    const items = children.value.filter((issue) => issue.kind !== 'project').map((issue) => toItem({ issue, spaceKey: parent.value.spaceKey, parentId: itemId }))
+    return { ok: true, result: { op: 'listChildren', items } }
+  }
+
+  /**
+   * 만들기(E6 최소형) — 제목·종류·부모. 부모 없음 = 스페이스 프로젝트 바로 아래(「미분류」 면 부모 없음). 보드에 올린다(LA 기본은 백로그).
+   * 부모 규칙은 LA 서버가 다시 검증한다 — 여기서는 종류의 `childKinds` 밖을 보내기 전에 거절한다.
+   */
+  private async createItem(call: Extract<WorkCall, { op: 'createItem' }>): Promise<WorkOutcome> {
+    const kind = call.kindKey === 'checkpoint' || call.kindKey === 'task' || call.kindKey === 'bug' ? call.kindKey : null
+    if (kind === null) return { ok: false, error: workError({ kind: 'rejected', message: '없는 종류입니다.' }) }
+    if (call.parentId !== null) {
+      const parent = await this.tool({ name: 'issue_get', args: { id: call.parentId }, read: readIssueDetail })
+      if (!parent.ok) return parent.outcome
+      const allowed = parent.value.kind === 'project' ? [] : CHILD_KINDS[parent.value.kind]
+      if (!allowed.includes(kind)) return { ok: false, error: workError({ kind: 'rejected', message: `${KIND_LABELS[parent.value.kind === 'project' ? 'task' : parent.value.kind]} 아래에는 ${KIND_LABELS[kind]} 를 만들 수 없습니다.` }) }
+    }
+    const parentId = call.parentId ?? (call.spaceKey === LA_CATCH_ALL_KEY ? null : call.spaceKey)
+    const created = await this.tool({ name: 'issue_create', args: { kind, title: call.title, parentId, onBoard: true }, read: readIssueUpdated })
+    return created.ok ? this.itemResult({ op: 'createItem', itemId: created.value.id }) : created.outcome
   }
 
   private async tool<T>({ name, args, read }: { name: string; args: Record<string, unknown>; read: (value: unknown, path: string) => T }): Promise<Step<T>> {
@@ -254,7 +300,8 @@ export class LaSource implements WorkSourceClient {
 
   /** 단건 — 부모 사슬을 올라가 스페이스를 찾는다(스페이스인 프로젝트를 만나면 그 프로젝트, 아니면 미분류). 표시 부모 = 가장 가까운 미보관 조상. */
   private async item(itemId: string): Promise<Step<WorkItem>> {
-    const got = await this.tool({ name: 'issue_get', args: { id: itemId }, read: readIssueDetail })
+    const memo: SpaceMemo = new Map()
+    const got = await this.get({ id: itemId, memo })
     if (!got.ok) return got
     const issue = got.value
     if (issue.kind === 'project') {
@@ -264,7 +311,7 @@ export class LaSource implements WorkSourceClient {
     let spaceKey = LA_CATCH_ALL_KEY
     let shownParent: string | null = null
     for (let depth = 0; depth < MAX_DEPTH && parentId !== null; depth += 1) {
-      const parent = await this.tool({ name: 'issue_get', args: { id: parentId }, read: readIssueDetail })
+      const parent = await this.get({ id: parentId, memo })
       if (!parent.ok) return parent
       if (parent.value.kind === 'project') {
         if (isSpace(parent.value)) spaceKey = parent.value.id
@@ -273,7 +320,35 @@ export class LaSource implements WorkSourceClient {
       if (shownParent === null && parent.value.archivedAt === null) shownParent = parent.value.id
       parentId = parent.value.parentId
     }
-    return { ok: true, value: toItem({ issue, spaceKey, parentId: shownParent }) }
+    const item = toItem({ issue, spaceKey, parentId: shownParent })
+    // 연결 상대의 스페이스(E9) — 상대마다 부모 사슬을 올라간다(사슬은 memo 로 나눠 쓴다). 못 풀면 null(모름) — 단건 자체는 실패시키지 않는다.
+    if (item.relations !== null && item.relations.length > 0) {
+      const spaces = await Promise.all(item.relations.map((relation, index) => (index < MAX_LINK_SPACES ? this.spaceKeyOf({ id: relation.other.id, memo }) : Promise.resolve(null))))
+      item.relations = item.relations.map((relation, index) => ({ ...relation, other: { ...relation.other, spaceKey: spaces[index] ?? null } }))
+    }
+    return { ok: true, value: item }
+  }
+
+  /** 단건 읽기 — 같은 연산 안에서 같은 id 를 두 번 읽지 않는다. */
+  private get({ id, memo }: { id: string; memo: SpaceMemo }): Promise<Step<LaIssueDetail>> {
+    const known = memo.get(id)
+    if (known !== undefined) return known
+    const pending = this.tool({ name: 'issue_get', args: { id }, read: readIssueDetail })
+    memo.set(id, pending)
+    return pending
+  }
+
+  /** 일감 하나의 스페이스 키 — 사슬이 스페이스 프로젝트에 닿으면 그 id, 부모 없음·스페이스 아닌 프로젝트면 미분류, 못 풀면 null. */
+  private async spaceKeyOf({ id, memo }: { id: string; memo: SpaceMemo }): Promise<string | null> {
+    let cursor: string | null = id
+    for (let depth = 0; depth <= MAX_DEPTH && cursor !== null; depth += 1) {
+      const step = await this.get({ id: cursor, memo })
+      if (!step.ok) return null
+      if (step.value.kind === 'project') return isSpace(step.value) ? step.value.id : LA_CATCH_ALL_KEY
+      if (step.value.parentId === null) return LA_CATCH_ALL_KEY
+      cursor = step.value.parentId
+    }
+    return null
   }
 
   /** 키로 찾기 (E2) — `issue_by_seq` 로 id 를 얻고 단건 경로(스페이스·표시 부모 풀기)로. 꼴이 아니거나 없으면 null(오류 아님). */
@@ -287,12 +362,13 @@ export class LaSource implements WorkSourceClient {
     return item.ok ? { ok: true, result: { op: 'findByKey', item: item.value } } : item.outcome
   }
 
-  private async itemResult({ op, itemId }: { op: 'changeStatus' | 'setPlacement' | 'setParent'; itemId: string }): Promise<WorkOutcome> {
+  private async itemResult({ op, itemId }: { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'updateItem' | 'createItem'; itemId: string }): Promise<WorkOutcome> {
     const item = await this.item(itemId)
     return item.ok ? { ok: true, result: { op, item: item.value } } : item.outcome
   }
 
-  private async changeStatus({ itemId, statusKey }: { itemId: string; statusKey: string }): Promise<WorkOutcome> {
+  /** `resolution` — 완료 분류로 갈 때의 갈래(E5). null 이면 완료함. 같은 완료 상태에서 갈래만 다르면 갈래만 바꾼다. */
+  private async changeStatus({ itemId, statusKey, resolution }: { itemId: string; statusKey: string; resolution: WorkResolutionChoice | null }): Promise<WorkOutcome> {
     const [statuses, current] = await Promise.all([this.statuses(), this.tool({ name: 'issue_get', args: { id: itemId }, read: readIssueDetail })])
     if (!statuses.ok) return statuses.outcome
     if (!current.ok) return current.outcome
@@ -301,11 +377,17 @@ export class LaSource implements WorkSourceClient {
     if (target === undefined) return { ok: false, error: workError({ kind: 'rejected', message: '없는 상태입니다.' }) }
     const from = order.findIndex((status) => status.id === current.value.statusId)
     const to = order.indexOf(target)
-    if (from === to) return this.itemResult({ op: 'changeStatus', itemId })
+    const chosen = resolution ?? 'completed'
+    if (from === to) {
+      // 같은 상태 — 완료 분류에서 갈래만 다르면 갈래만 고친다(완료함 ↔ 취소함). 그 밖은 할 일 없음.
+      if (target.categoryKey !== 'done' || resolution === null || current.value.resolution === resolution) return this.itemResult({ op: 'changeStatus', itemId })
+      const updated = await this.tool({ name: 'issue_update', args: { id: itemId, resolution }, read: readIssueUpdated })
+      return updated.ok ? this.itemResult({ op: 'changeStatus', itemId }) : updated.outcome
+    }
     const labelUnique = order.filter((status) => status.label === target.label).length === 1
     if (to > from && labelUnique) {
       const args: Record<string, unknown> = { id: itemId, toStatusLabel: target.label, forwardOnly: true }
-      if (target.categoryKey === 'done') args.resolution = 'completed'
+      if (target.categoryKey === 'done') args.resolution = chosen
       const moved = await this.tool({ name: 'issue_transition', args, read: readTransition })
       if (!moved.ok) return moved.outcome
       if (moved.value.transitioned) return this.itemResult({ op: 'changeStatus', itemId })
@@ -313,7 +395,7 @@ export class LaSource implements WorkSourceClient {
     }
     const args: Record<string, unknown> = { id: itemId, statusId: target.id }
     if (target.categoryKey !== 'done' && current.value.statusCategoryKey === 'done') args.resolution = null
-    if (target.categoryKey === 'done' && current.value.statusCategoryKey !== 'done') args.resolution = 'completed'
+    if (target.categoryKey === 'done') args.resolution = chosen
     const updated = await this.tool({ name: 'issue_update', args, read: readIssueUpdated })
     return updated.ok ? this.itemResult({ op: 'changeStatus', itemId }) : updated.outcome
   }
@@ -332,13 +414,29 @@ export class LaSource implements WorkSourceClient {
       ok: true,
       result: {
         op: 'addRelation',
-        relation: { id: link.id, kind: link.relation, other: { id: link.issue.id, key: link.issue.displayId, title: link.issue.title, statusLabel: link.issue.statusLabel, category: link.issue.statusCategoryKey } },
+        relation: {
+          id: link.id,
+          kind: link.relation,
+          other: { id: link.issue.id, key: link.issue.displayId, title: link.issue.title, statusLabel: link.issue.statusLabel, category: link.issue.statusCategoryKey, spaceKey: await this.spaceKeyOf({ id: link.issue.id, memo: new Map() }) },
+        },
       },
     }
   }
 }
 
-function unsupported(name: 'order' | 'cursorPaging' | 'conflictCheck' | 'comments'): WorkOutcome {
+type SpaceMemo = Map<string, Promise<Step<LaIssueDetail>>>
+
+/** 필드 부분 수정 → `issue_update` 인자(PATCH — 보낸 칸만). 본문은 description. */
+function updateArgs(fields: WorkFieldPatch): Record<string, unknown> {
+  const args: Record<string, unknown> = {}
+  if (fields.title !== undefined) args.title = fields.title
+  if (fields.body !== undefined) args.description = fields.body
+  if (fields.priority !== undefined) args.priority = fields.priority
+  if (fields.dueAt !== undefined) args.dueAt = fields.dueAt
+  return args
+}
+
+function unsupported(name: 'order' | 'cursorPaging' | 'conflictCheck' | 'comments' | 'history'): WorkOutcome {
   const capability = LA_CAPABILITIES[name]
   const reason = capability.state === 'disabled' ? capability.reason : 'LA 는 이 연산을 하지 않습니다.'
   return { ok: false, error: workError({ kind: 'unsupported', message: reason }) }
@@ -391,9 +489,11 @@ function toItem({ issue, spaceKey, parentId }: { issue: LaIssue; spaceKey: strin
     spaceKey,
     title: issue.title,
     body: issue.description,
-    kind: { key: kindKey, label: KIND_LABELS[kindKey] },
+    kind: { key: kindKey, label: KIND_LABELS[kindKey], childKinds: [...CHILD_KINDS[kindKey]] },
     statusKey: issue.statusId,
     category: issue.statusCategoryKey,
+    // 완료 갈래는 완료 분류일 때만 뜻이 있다 — 다른 분류에 남은 값은 버린다.
+    resolution: issue.statusCategoryKey === 'done' ? issue.resolution : null,
     priority: issue.priority,
     dueAt: issue.dueAt,
     parentId,
@@ -408,7 +508,7 @@ function toItem({ issue, spaceKey, parentId }: { issue: LaIssue; spaceKey: strin
       : issue.links.map((link) => ({
           id: link.id,
           kind: link.relation,
-          other: { id: link.issue.id, key: link.issue.displayId, title: link.issue.title, statusLabel: link.issue.statusLabel, category: link.issue.statusCategoryKey },
+          other: { id: link.issue.id, key: link.issue.displayId, title: link.issue.title, statusLabel: link.issue.statusLabel, category: link.issue.statusCategoryKey, spaceKey: null },
         })),
     workLinks: [],
   }

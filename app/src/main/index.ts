@@ -116,6 +116,7 @@ import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTai
 import { LA_DEFAULT_MCP_URL, laSourceEntry } from './work/la-source.js'
 import { mockSourceEntry, seedMockDemoState } from './work/mock-source.js'
 import { WorkService } from './work/service.js'
+import { WorkActivityStore } from './work/activity-store.js'
 import { WorkSourceRegistry } from './work/source.js'
 import { WorkConnectionStore } from './work/store.js'
 import { CredentialVault, electronCipher, measurementCipher } from './work/vault.js'
@@ -1549,6 +1550,16 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  /**
+   * 메인 창은 앱 화면 하나다 — 다른 곳으로 이동하지 않는다(LIFE-602 F12 · 보안 체크리스트 13). 본문 markdown 의 `<a href>` 를 그냥 눌러도
+   * 창이 그 주소로 가지 않게 막는다. 외부 링크는 렌더러가 `window.open` 으로 위 새 창 거절 경로(http·https 허용 목록)에 보낸다.
+   * 다시 불러오기(같은 주소)는 이 이벤트를 내지 않는다.
+   */
+  window.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault()
+    log('window.navigate.denied', { url: externalOpenLogUrl(url) })
+  })
+
   const devServer = process.env['ELECTRON_RENDERER_URL']
   if (devServer !== undefined) void window.loadURL(devServer)
   else void window.loadFile(path.join(here, '../renderer/index.html'))
@@ -1595,6 +1606,9 @@ app.whenReady().then(async () => {
   })
   const workStore = new WorkConnectionStore(app.getPath('userData'))
   workStore.load()
+  // LIFE-602 — corral 활동 저장소(성공한 작업 쓰기). 경로 오버라이드 `CORRAL_WORK_ACTIVITY`(격리 실행).
+  const workActivity = new WorkActivityStore(app.getPath('userData'))
+  workActivity.load()
   // `CORRAL_LA_MCP_URL` — 격리 실행이 모의 LA MCP 서버를 꽂을 때만. 평시는 실제 LA.
   const laUrl = process.env.CORRAL_LA_MCP_URL !== undefined && process.env.CORRAL_LA_MCP_URL.length > 0 ? process.env.CORRAL_LA_MCP_URL : LA_DEFAULT_MCP_URL
   if (laUrl !== LA_DEFAULT_MCP_URL) log('work.la_endpoint_override', { url: laUrl.slice(0, 200) })
@@ -1606,6 +1620,7 @@ app.whenReady().then(async () => {
   work = new WorkService({
     store: workStore,
     vault: new CredentialVault(testCipher ? measurementCipher() : electronCipher(safeStorage)),
+    activity: workActivity,
     sources: new WorkSourceRegistry([
       laSourceEntry({ url: laUrl, clientVersion: app.getVersion() }),
       ...(mockSource ? [mockSourceEntry({ state: seedMockDemoState() })] : []),
@@ -1755,6 +1770,7 @@ app.whenReady().then(async () => {
   workHandle('corral:setWorkSpaceHidden', (input) => work?.setSpaceHidden(input))
   workHandle('corral:setRepoDefaultSpace', (input) => work?.setRepoDefault(input))
   workHandle('corral:workRequest', (input) => work?.request(input))
+  workHandle('corral:workActivity', (input) => work?.activity(input))
 
   // --- 라이프사이클 (R3) ---
   const denied = { ok: false as const, error: '허용되지 않은 발신자' }

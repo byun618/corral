@@ -102,6 +102,7 @@ const EXPOSED = [
   'setWorkSpaceHidden',
   'setRepoDefaultSpace',
   'workRequest',
+  'workActivity',
   'preloadEnv',
 ]
 
@@ -297,6 +298,7 @@ const api: CorralApi = {
   setWorkSpaceHidden: (input) => ipcRenderer.invoke('corral:setWorkSpaceHidden', input),
   setRepoDefaultSpace: (input) => ipcRenderer.invoke('corral:setRepoDefaultSpace', input),
   workRequest: (request) => ipcRenderer.invoke('corral:workRequest', request),
+  workActivity: (query) => ipcRenderer.invoke('corral:workActivity', query),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

@@ -5,11 +5,17 @@ import type { WorkCall, WorkCapabilities, WorkError, WorkResult, WorkSourceDescr
 
 export type WorkOutcome = { ok: true; result: WorkResult } | { ok: false; error: WorkError }
 
+/**
+ * 연산에 딸린 것 (LIFE-602) — `writeId` 는 main 이 쓰기마다 새로 만든 id 다. 출처가 변경 이력에 메타를 실을 수 있으면(Jira `historyMetadata` 류)
+ * 실어 두고 이력(`listHistory`)에서 그대로 돌려준다 — corral 활동 기록과 같은 변경을 한 번만 보이게 하는 열쇠(G10). 못 실으면 무시한다.
+ */
+export type WorkCallMeta = { writeId: string | null }
+
 export interface WorkSourceClient {
   /** 능력 표 — 화면은 이것으로 켜고 끈다. 연결 하나 안에서 고정. */
   capabilities(): WorkCapabilities
   /** 연산 하나. 능력이 꺼진 연산은 main 이 먼저 막지만, 출처도 `unsupported` 로 답해야 한다(이중 방어). */
-  call(call: WorkCall): Promise<WorkOutcome>
+  call(call: WorkCall, meta?: WorkCallMeta): Promise<WorkOutcome>
   /** 해제·토큰 교체 때 — 이후 출처로 아무것도 보내지 않는다. 이미 보낸 요청은 되돌리지 못한다. */
   close(): void
 }

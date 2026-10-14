@@ -39,8 +39,8 @@ const status = (key: string, category: WorkStatus['category'], order: number): W
 const STATUSES = [status('todo', 'todo', 0), status('doing', 'in_progress', 1), status('review', 'in_progress', 2), status('done', 'done', 3)]
 
 const item = (over: Partial<WorkItem> & { id: string }): WorkItem => ({
-  key: over.id.toUpperCase(), spaceKey: 'S', title: `title ${over.id}`, body: null, kind: { key: 'task', label: 'Task' }, statusKey: 'todo', category: 'todo',
-  priority: 'medium', dueAt: null, parentId: null, placement: 'board', rank: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [],
+  key: over.id.toUpperCase(), spaceKey: 'S', title: `title ${over.id}`, body: null, kind: { key: 'task', label: 'Task', childKinds: [] }, statusKey: 'todo', category: 'todo',
+  priority: 'medium', dueAt: null, parentId: null, placement: 'board', rank: null, resolution: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [],
   ...over,
 })
 
@@ -187,7 +187,7 @@ describe('C7 끌기·늦은 응답', () => {
   })
 
   it('배치 능력 hidden 이면 백로그 보기가 없다', () => {
-    const base = { transition: { mode: 'any' as const }, relations: { state: 'on' as const }, parentChange: { state: 'on' as const }, order: { state: 'on' as const }, cursorPaging: { state: 'on' as const }, conflictCheck: { state: 'on' as const }, comments: { state: 'on' as const }, workLinkStore: { state: 'on' as const } }
+    const base = { transition: { mode: 'any' as const }, relations: { state: 'on' as const }, parentChange: { state: 'on' as const }, order: { state: 'on' as const }, cursorPaging: { state: 'on' as const }, conflictCheck: { state: 'on' as const }, comments: { state: 'on' as const }, history: { state: 'on' as const }, workLinkStore: { state: 'on' as const } }
     expect(viewsFor([{ ...base, placement: { state: 'hidden' } }])).toEqual(['board', 'list', 'working'])
     expect(viewsFor([{ ...base, placement: { state: 'disabled', reason: 'x' } }])).toContain('backlog')
   })
@@ -226,7 +226,7 @@ describe('C10 검색·필터', () => {
   })
   it('필터 칩 4 + 텍스트', () => {
     const now = Date.parse('2026-10-13T00:00:00Z')
-    const [row] = rowsOf([space([item({ id: 'a', key: 'LIFE-1', kind: { key: 'bug', label: 'Bug' }, priority: 'high', openBlockerCount: 1, dueAt: '2026-10-15T00:00:00Z' })])])
+    const [row] = rowsOf([space([item({ id: 'a', key: 'LIFE-1', kind: { key: 'bug', label: 'Bug', childKinds: [] }, priority: 'high', openBlockerCount: 1, dueAt: '2026-10-15T00:00:00Z' })])])
     if (row === undefined) throw new Error('row')
     const working = new Set(['LIFE-1'])
     expect(passesFilters({ item: row.item, filters: { ...NO_FILTERS, kinds: ['bug'], priorities: ['high'], blocked: true, working: true, dueWeek: true }, workingKeys: working, now })).toBe(true)
@@ -307,7 +307,7 @@ describe('R1-Q 보드 합계·진행률', () => {
     expect(bands.find((band) => band.id === 'todo')?.count).toBe(1)
   })
   it('자식 진행 — 같은 연결의 자식만, 다음 쪽이 남았으면 부분 수신 표시', () => {
-    const parent = item({ id: 'p', kind: { key: 'checkpoint', label: 'Checkpoint' } })
+    const parent = item({ id: 'p', kind: { key: 'checkpoint', label: 'Checkpoint', childKinds: [] } })
     const mine = space([parent, item({ id: 'k1', parentId: 'p', category: 'done', statusKey: 'done' }), item({ id: 'k2', parentId: 'p' })])
     const other: SpaceData = { ...space([item({ id: 'k3', parentId: 'p' })]), connectionId: 'c2' }
     const rows = rowsOf([mine, other])

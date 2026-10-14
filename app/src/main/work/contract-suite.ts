@@ -27,9 +27,11 @@ export type ContractTarget = {
   retiredSpaceKeys: string[]
   /** 출처 키 모양에 맞지만 없는 키 — 키로 찾기(E2)는 오류가 아니라 null 이어야 한다(LIFE-601). */
   missingKey: string
+  /** 다른 스페이스에 있는 작업 쌍(E9 · LIFE-602) — `itemId` 에서 `otherKey` 로 연결하면 상대의 스페이스가 `otherSpaceKey` 로 보여야 한다. */
+  crossSpace: { itemId: string; otherKey: string; otherSpaceKey: string }
 }
 
-const CAPABILITY_NAMES: WorkCapabilityName[] = ['placement', 'relations', 'parentChange', 'order', 'cursorPaging', 'conflictCheck', 'comments', 'workLinkStore']
+const CAPABILITY_NAMES: WorkCapabilityName[] = ['placement', 'relations', 'parentChange', 'order', 'cursorPaging', 'conflictCheck', 'comments', 'history', 'workLinkStore']
 
 export function workContractSuite({ name, setup }: { name: string; setup: () => Promise<ContractTarget> }): void {
   describe(`작업 계약 묶음 — ${name}`, () => {
@@ -103,6 +105,31 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
         if (items.length >= 2) return { space, items, statuses: await listStatuses(space.key), capabilities }
       }
       throw new Error('작업이 둘 이상인 스페이스가 없다 — 픽스처를 확인')
+    }
+
+    /** 허용 전이를 따라 목표 상태까지 — `any` 면 한 번, `allowed` 면 목표 순서 쪽으로 한 칸씩(최대 6). 끝난 작업을 돌려준다. */
+    const travel = async ({ itemId, goal, statuses }: { itemId: string; goal: WorkStatus; statuses: WorkStatus[] }): Promise<WorkItem> => {
+      for (let step = 0; step < 6; step += 1) {
+        const now = await getItem(itemId)
+        if (now.statusKey === goal.key) return now
+        const open = await transitions(itemId)
+        if (open.includes(goal.key)) {
+          await okResult({ op: 'changeStatus', itemId, statusKey: goal.key, ifVersion: null })
+          continue
+        }
+        const order = statuses.find((status) => status.key === now.statusKey)?.order ?? 0
+        const forward = goal.order > order
+        const candidates = statuses.filter((status) => open.includes(status.key) && (forward ? status.order > order && status.order <= goal.order : status.order < order && status.order >= goal.order))
+        const next = forward ? candidates.at(-1) : candidates[0]
+        if (next === undefined) throw new Error(`${goal.label} 로 가는 전이가 없다`)
+        await okResult({ op: 'changeStatus', itemId, statusKey: next.key, ifVersion: null })
+      }
+      throw new Error('전이가 끝나지 않는다')
+    }
+    const activityOf = (itemId: string) => {
+      const result = target.service.activity({ connectionId: target.connectionId, itemId })
+      if (!result.ok) throw new Error(result.error.message)
+      return result.records
     }
 
     beforeAll(async () => {
@@ -339,6 +366,134 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       const stale = await send({ op: 'changeStatus', itemId: item.id, statusKey: other.key, ifVersion: `${item.version}-old` })
       expect(stale).toMatchObject({ ok: false, error: { kind: 'conflict' } })
       expect((await getItem(item.id)).statusKey).toBe(item.statusKey)
+      // E7 — 충돌 오류는 서버의 지금 작업을 싣는다(화면이 「어떤 칸」 을 계산한다).
+      if (!stale.ok) expect(stale.error.conflict?.current).toMatchObject({ id: item.id, statusKey: item.statusKey, version: item.version })
+      const staleEdit = await send({ op: 'updateItem', itemId: item.id, fields: { title: '충돌 제목' }, ifVersion: `${item.version}-old` })
+      expect(staleEdit).toMatchObject({ ok: false, error: { kind: 'conflict' } })
+      expect((await getItem(item.id)).title).toBe(item.title)
+      // 「내 값으로 덮기」 = 판 없이 다시 — 저장된다.
+      await okResult({ op: 'updateItem', itemId: item.id, fields: { title: '덮은 제목' }, ifVersion: null })
+      expect((await getItem(item.id)).title).toBe('덮은 제목')
+      await okResult({ op: 'updateItem', itemId: item.id, fields: { title: item.title }, ifVersion: (await getItem(item.id)).version })
+      expect((await getItem(item.id)).title).toBe(item.title)
+    })
+
+    it('필드 수정(E4) — 제목·본문·우선순위·마감을 보낸 칸만 바꾸고 되돌린다, 본문은 바이트 그대로', async () => {
+      const { items, capabilities } = await stage()
+      const item = await getItem((items[0] ?? { id: '' }).id)
+      const body = '# 제목\r\n\n- [ ] 한글 체크\n- [x] 끝\n\n```\n<b>raw</b>\n```\n  끝 공백  \n'
+      const due = '2026-11-01T14:59:00.000Z'
+      const edited = await okResult({ op: 'updateItem', itemId: item.id, fields: { title: `${item.title} (수정)`, body, priority: 'highest', dueAt: due }, ifVersion: null })
+      if (edited.op !== 'updateItem') throw new Error(edited.op)
+      const after = await getItem(item.id)
+      expect(after).toMatchObject({ title: `${item.title} (수정)`, body, priority: 'highest', statusKey: item.statusKey })
+      expect(Date.parse(after.dueAt ?? '')).toBe(Date.parse(due))
+      // 보낸 칸만 — 제목만 보내면 본문은 그대로.
+      await okResult({ op: 'updateItem', itemId: item.id, fields: { title: item.title }, ifVersion: null })
+      expect((await getItem(item.id)).body).toBe(body)
+      await okResult({ op: 'updateItem', itemId: item.id, fields: { body: item.body ?? '', priority: item.priority, dueAt: item.dueAt }, ifVersion: null })
+      const back = await getItem(item.id)
+      expect(back).toMatchObject({ title: item.title, priority: item.priority, dueAt: item.dueAt })
+      expect(back.body ?? '').toBe(item.body ?? '')
+      // 빈 제목·빈 수정·모르는 칸은 보내기 전에 거절.
+      for (const fields of [{ title: '  ' }, {}, { color: 'red' }]) {
+        expect(await send({ op: 'updateItem', itemId: item.id, fields, ifVersion: null })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+      }
+      // 판(ifVersion)은 충돌 검사 능력이 켜진 출처에서만.
+      if (capabilities.conflictCheck.state !== 'on') await expectClosed({ capability: capabilities.conflictCheck, call: { op: 'updateItem', itemId: item.id, fields: { title: 'x' }, ifVersion: 'v' } })
+      // 활동(D9) — 성공한 쓰기만 「칸마다 한 줄」 로 남고, 같은 쓰기의 줄은 쓰기 id 를 나눈다.
+      const records = activityOf(item.id)
+      expect(records.filter((record) => record.change.field === 'title').map((record) => record.change.field === 'title' && record.change.to)).toEqual(expect.arrayContaining([`${item.title} (수정)`, item.title]))
+      const first = records.find((record) => record.change.field === 'priority' && record.change.to === 'highest')
+      expect(first).toBeDefined()
+      expect(records.filter((record) => record.writeId === first?.writeId).map((record) => record.change.field).sort()).toEqual(['body', 'dueAt', 'priority', 'title'])
+    })
+
+    it('완료 갈래(E5) — 완료 분류로 「취소함」·「완료함」 을 고르고, 갈래만 바꾸고, 되돌리면 갈래가 비운다', async () => {
+      const { items, statuses } = await stage()
+      const item = await getItem((items.find((entry) => entry.category !== 'done') ?? items[0] ?? { id: '' }).id)
+      const done = statuses.find((status) => status.category === 'done')
+      const original = statuses.find((status) => status.key === item.statusKey)
+      if (done === undefined || original === undefined) throw new Error('완료 상태가 없다')
+      expect(item.resolution).toBeNull()
+      // 완료 바로 앞까지 간 뒤 갈래를 실어 완료로.
+      const beforeDone = statuses.filter((status) => status.category !== 'done').at(-1)
+      if (beforeDone !== undefined && (await transitions(item.id)).includes(done.key) === false) await travel({ itemId: item.id, goal: beforeDone, statuses })
+      await okResult({ op: 'changeStatus', itemId: item.id, statusKey: done.key, ifVersion: null, resolution: 'cancelled' })
+      expect(await getItem(item.id)).toMatchObject({ statusKey: done.key, category: 'done', resolution: 'cancelled' })
+      await okResult({ op: 'changeStatus', itemId: item.id, statusKey: done.key, ifVersion: null, resolution: 'completed' })
+      expect(await getItem(item.id)).toMatchObject({ statusKey: done.key, resolution: 'completed' })
+      const statusRecords = activityOf(item.id).filter((record) => record.change.field === 'status')
+      expect(statusRecords.at(-1)?.change).toMatchObject({ field: 'status', statusKey: done.key, resolution: 'completed' })
+      await travel({ itemId: item.id, goal: original, statuses })
+      expect(await getItem(item.id)).toMatchObject({ statusKey: original.key, resolution: null })
+      expect(await send({ op: 'changeStatus', itemId: item.id, statusKey: done.key, ifVersion: null, resolution: 'wontfix' })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+    })
+
+    it('자식(E6) — 자식을 받는 종류 아래 제목만으로 만들면 목록에 나오고, 잎 종류 아래는 거절', async () => {
+      const { space, items } = await stage()
+      const kinds = (await okResult({ op: 'listStatuses', spaceKey: space.key }))
+      if (kinds.op !== 'listStatuses') throw new Error(kinds.op)
+      const childKindsOf = (key: string): string[] => kinds.kinds.find((kind) => kind.key === key)?.childKinds ?? []
+      for (const kind of kinds.kinds) for (const child of kind.childKinds) expect(kinds.kinds.map((entry) => entry.key)).toContain(child)
+      const parent = items.find((item) => childKindsOf(item.kind.key).length > 0)
+      const leaf = items.find((item) => childKindsOf(item.kind.key).length === 0)
+      if (parent === undefined || leaf === undefined) throw new Error('자식을 받는 작업·잎 작업이 다 있어야 한다 — 픽스처를 확인')
+      // 작업의 종류에도 같은 childKinds 가 실린다(상세가 목록 없이도 안다).
+      expect((await getItem(parent.id)).kind.childKinds).toEqual(childKindsOf(parent.kind.key))
+      const kindKey = childKindsOf(parent.kind.key)[0] ?? ''
+      const created = await okResult({ op: 'createItem', spaceKey: space.key, parentId: parent.id, kindKey, title: '계약 묶음 자식' })
+      if (created.op !== 'createItem') throw new Error(created.op)
+      expect(created.item).toMatchObject({ title: '계약 묶음 자식', parentId: parent.id, spaceKey: space.key, kind: { key: kindKey } })
+      const children = await okResult({ op: 'listChildren', itemId: parent.id })
+      if (children.op !== 'listChildren') throw new Error(children.op)
+      expect(children.items.map((child) => child.id)).toContain(created.item.id)
+      for (const child of children.items) expect(child.parentId).toBe(parent.id)
+      expect((await getItem(created.item.id)).parentId).toBe(parent.id)
+      expect(activityOf(parent.id).some((record) => record.change.field === 'child' && record.change.childKey === created.item.key)).toBe(true)
+      const refused = await send({ op: 'createItem', spaceKey: space.key, parentId: leaf.id, kindKey: leaf.kind.key, title: '잎 아래' })
+      expect(refused).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+      const blank = await send({ op: 'createItem', spaceKey: space.key, parentId: parent.id, kindKey, title: '   ' })
+      expect(blank).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+    })
+
+    it('변경 이력(E8) — 켜져 있으면 corral 쓰기가 쓰기 id 와 함께 나오고, 꺼져 있으면 이유와 함께 거절', async () => {
+      const { items, capabilities } = await stage()
+      const item = await getItem((items[1] ?? items[0] ?? { id: '' }).id)
+      if (capabilities.history.state !== 'on') {
+        await expectClosed({ capability: capabilities.history, call: { op: 'listHistory', itemId: item.id } })
+        return
+      }
+      await okResult({ op: 'updateItem', itemId: item.id, fields: { title: `${item.title} (이력)` }, ifVersion: null })
+      const history = await okResult({ op: 'listHistory', itemId: item.id })
+      if (history.op !== 'listHistory') throw new Error(history.op)
+      const entry = history.entries.find((row) => row.field === 'title' && row.to === `${item.title} (이력)`)
+      expect(entry?.writeId).not.toBeNull()
+      // 같은 변경의 corral 활동 기록과 쓰기 id 로 짝이 맞는다(G10 — 이 열쇠로만 합친다).
+      expect(activityOf(item.id).some((record) => record.writeId === entry?.writeId && record.change.field === 'title')).toBe(true)
+      await okResult({ op: 'updateItem', itemId: item.id, fields: { title: item.title }, ifVersion: null })
+    })
+
+    it('연결 상대의 스페이스(E9) — 다른 스페이스 상대는 그 스페이스 키, 같은 스페이스면 같은 키', async () => {
+      const { capabilities } = await stage()
+      const { itemId, otherKey, otherSpaceKey } = target.crossSpace
+      if (capabilities.relations.state !== 'on') return
+      const added = await okResult({ op: 'addRelation', itemId, kind: 'relates_to', otherKey })
+      if (added.op !== 'addRelation') throw new Error(added.op)
+      expect(added.relation.other.spaceKey).toBe(otherSpaceKey)
+      const item = await getItem(itemId)
+      expect(item.relations?.find((relation) => relation.id === added.relation.id)?.other.spaceKey).toBe(otherSpaceKey)
+      const other = await findByKey(otherKey)
+      expect(other?.relations?.find((relation) => relation.id === added.relation.id)?.other.spaceKey).toBe(item.spaceKey)
+      expect(other?.spaceKey).toBe(otherSpaceKey)
+      await okResult({ op: 'removeRelation', itemId, relationId: added.relation.id })
+      // 떼기도 활동에 남고, 실패한 연결(자기 자신)은 남지 않는다.
+      const records = activityOf(itemId).filter((record) => record.change.field === 'relation').slice(-2)
+      expect(records.map((record) => record.change.field === 'relation' && record.change.action)).toEqual(['add', 'remove'])
+      expect(records[1]?.change).toMatchObject({ otherKey, kind: 'relates_to' })
+      const self = await send({ op: 'addRelation', itemId, kind: 'relates_to', otherKey: item.key })
+      expect(self).toMatchObject({ ok: false })
+      expect(activityOf(itemId).filter((record) => record.change.field === 'relation').slice(-2)).toEqual(records)
     })
 
     it('키 모양(E3) — 출처가 정규식 소스를 주고, 목록의 모든 키가 그 모양이다', async () => {

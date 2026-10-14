@@ -16,7 +16,7 @@ Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 const BASE_CAPS: WorkCapabilities = {
   transition: { mode: 'any' }, placement: { state: 'on' }, relations: { state: 'on' }, parentChange: { state: 'on' },
   order: { state: 'on' }, cursorPaging: { state: 'disabled', reason: '커서 없음' },
-  conflictCheck: { state: 'disabled', reason: 'x' }, comments: { state: 'disabled', reason: 'x' }, workLinkStore: { state: 'disabled', reason: 'x' },
+  conflictCheck: { state: 'disabled', reason: 'x' }, comments: { state: 'disabled', reason: 'x' }, history: { state: 'disabled', reason: 'x' }, workLinkStore: { state: 'disabled', reason: 'x' },
 }
 const STATUSES: WorkStatus[] = [
   { key: 'todo', label: '할 일', category: 'todo', order: 0, color: null },
@@ -24,8 +24,8 @@ const STATUSES: WorkStatus[] = [
   { key: 'done', label: '완료', category: 'done', order: 2, color: null },
 ]
 const item = (over: Partial<WorkItem> & { id: string; key: string }): WorkItem => ({
-  spaceKey: 's1', title: `제목 ${over.key}`, body: null, kind: { key: 'task', label: 'Task' }, statusKey: 'todo', category: 'todo', priority: 'medium', dueAt: null,
-  parentId: null, placement: 'board', rank: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [], ...over,
+  spaceKey: 's1', title: `제목 ${over.key}`, body: null, kind: { key: 'task', label: 'Task', childKinds: [] }, statusKey: 'todo', category: 'todo', priority: 'medium', dueAt: null,
+  parentId: null, placement: 'board', rank: null, resolution: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [], ...over,
 })
 const GIT = { branch: 'x', upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null }
 function worktree({ path, branch }: { path: string; branch: string }): WorktreeRow {
@@ -80,7 +80,7 @@ function answer(request: WorkRequest): WorkResponse {
   }
   switch (call.op) {
     case 'listSpaces': return respond(request, { op: 'listSpaces', spaces: [], capabilities: caps })
-    case 'listStatuses': return respond(request, { op: 'listStatuses', statuses: STATUSES, kinds: [{ key: 'task', label: 'Task' }] })
+    case 'listStatuses': return respond(request, { op: 'listStatuses', statuses: STATUSES, kinds: [{ key: 'task', label: 'Task', childKinds: [] }] })
     case 'listItems': return respond(request, { op: 'listItems', items: items.map(view), nextCursor: null, truncated: false })
     case 'findByKey': {
       const found = items.find((entry) => entry.key.toUpperCase() === call.key.toUpperCase())

@@ -57,9 +57,9 @@ describe('LA 새 칸 형태 검증 (E1·E2)', () => {
 
 describe('모의 출처 — 격리 실행 행동(토큰 글자)', () => {
   it('fault·delay 를 읽는다', () => {
-    expect(mockBehaviorOf('mock_plain')).toEqual({ fault: null, delayMs: 0, rejectWrites: false, flip: null, caps: {} })
-    expect(mockBehaviorOf('mock_fault-forbidden_delay-300')).toEqual({ fault: 'forbidden', delayMs: 300, rejectWrites: false, flip: null, caps: {} })
-    expect(mockBehaviorOf('mock_reject-writes_flip-80')).toEqual({ fault: null, delayMs: 0, rejectWrites: true, flip: { mode: 'deliver', ms: 80 }, caps: {} })
+    expect(mockBehaviorOf('mock_plain')).toEqual({ fault: null, delayMs: 0, rejectWrites: false, flip: null, caps: {}, drift: false })
+    expect(mockBehaviorOf('mock_fault-forbidden_delay-300')).toEqual({ fault: 'forbidden', delayMs: 300, rejectWrites: false, flip: null, caps: {}, drift: false })
+    expect(mockBehaviorOf('mock_reject-writes_flip-80')).toEqual({ fault: null, delayMs: 0, rejectWrites: true, flip: { mode: 'deliver', ms: 80 }, caps: {}, drift: false })
     expect(mockBehaviorOf('mock_flipapply-80').flip).toEqual({ mode: 'apply', ms: 80 })
     expect(mockBehaviorOf('mock_cap-order-off_cap-placement-hide_transition-any').caps).toEqual({
       order: { state: 'disabled', reason: '모의 출처가 이 능력을 껐습니다 (cap-order-off).' }, placement: { state: 'hidden' }, transition: { mode: 'any' },

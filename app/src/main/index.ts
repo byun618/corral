@@ -11,7 +11,7 @@ import { cliTarget } from './install-cli.js'
 import { addInstallCliMenu } from './install-cli-menu.js'
 import { KeybindingStore } from './keybindings.js'
 import { withRetentionSuppressed } from './close-retention.js'
-import { menuKeyShortcut } from '../shared/keybindings.js'
+import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { closeTabsGated } from './close-tabs.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
@@ -116,6 +116,8 @@ import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTai
 import { listDir } from './explorer-fs.js'
 import { ExplorerHub } from './explorer-hub.js'
 import { explorerAction } from './explorer-actions.js'
+import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
+import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
 import { readFileContent, readImageContent } from './file-read.js'
 import { createFileWatch, type FileWatch } from './file-watch.js'
 import { loadTestHooks, writeFileContent } from './file-write.js'
@@ -140,6 +142,11 @@ const MOBILE_SHUTDOWN_DEADLINE_MS = 6_000
 let runtimeInvoke: ((invocation: Invocation) => Promise<RpcResponse>) | null = null
 let keybindings: KeybindingStore
 let shortcutRecording = false
+/**
+ * LIFE-592 — 탐색기 트리가 활성 요소인가(렌더러가 트리 focus/blur 때 민다). 켜져 있을 때만 main 이 ⌘Z·⌘⇧Z(메뉴 Edit role 이 쥔 키)를
+ * 탐색기 실행 취소·다시 실행으로 가져온다 — 꺼져 있으면 손대지 않아 편집기·입력칸·터미널의 ⌘Z 와 메뉴 role 이 그대로다(`raw/claude/undo-routing.md`).
+ */
+let explorerFocused = false
 const measuring = (process.env.CORRAL_CONTROL_SOCKET ?? '').length > 0
 
 let window: BrowserWindow | null = null
@@ -1601,6 +1608,7 @@ function createWindow(): void {
    */
   window.webContents.on('did-start-loading', () => {
     shortcutRecording = false
+    explorerFocused = false
     window?.webContents.setIgnoreMenuShortcuts(false)
   })
   window.webContents.on('before-input-event', (event, input) => {
@@ -1609,6 +1617,14 @@ function createWindow(): void {
     }
     if (shortcutRecording) return
     if (input.type !== 'keyDown') return
+    // LIFE-592 — 탐색기 트리 포커스의 ⌘Z·⌘⇧Z. 메뉴 role 과 페이지 keydown 의 순서에 기대지 않으려고 여기서(둘보다 먼저) 가져온다. ⌘W 와 같은 수(R23 — 메뉴 재구성 없음).
+    const explorerMatch = explorerKeyShortcut({ ...input, overrides: keybindings.get(), explorerFocused })
+    if (explorerMatch !== null) {
+      event.preventDefault()
+      log('shortcut.intercepted', { key: input.key.toLowerCase(), meta: true, shift: input.shift, repeat: input.isAutoRepeat, explorer: explorerMatch.id })
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:shortcut', explorerMatch)
+      return
+    }
     // 메뉴가 쥔 키 중 corral 이 가져오는 것 — `⌘W`(File ▸ Close Window)와 **`⌘R`**(View ▸ Reload, LIFE-495 F9·U2).
     // `⌘R` 을 두면 탭 이름 바꾸기 대신 **창이 새로고침**된다(화면 상태가 날아간다). Orca 는 Reload 항목에서 가속키를 빼서 피했다
     // (`register-app-menu.ts:280-290`). corral 은 ⌘W 와 같은 수(R23 — 메뉴를 다시 만들지 않는다)로 가져온다. `⌘⇧R`(Force Reload)는
@@ -2047,6 +2063,30 @@ app.whenReady().then(async () => {
         )
       : { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' },
   )
+  // --- 탐색기 파일 조작 (LIFE-592 F4) — 쓰기 경계는 `explorer-ops.ts`(원본·대상 가둠 · fd/경로 연산 구분 · 덮어쓰기 0 · 휴지통만). 호출마다 로그 한 줄(경로 없음) ---
+  // 시험 전용 경쟁 주입은 패키지 앱이면 늘 꺼진다(`loadOpHooks`) — 개발 실행에서도 `CORRAL_TEST_OP_HOOK_FILE` 이 있을 때만.
+  const explorerSnapshots = new SnapshotStore()
+  const explorerDrops = new DropStore()
+  ipcMain.handle('corral:explorerOp', async (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    const startedAt = performance.now()
+    const hooks = await loadOpHooks({ packaged: app.isPackaged, file: process.env.CORRAL_TEST_OP_HOOK_FILE })
+    const op = typeof input === 'object' && input !== null && 'op' in input && typeof input.op === 'string' ? input.op : null
+    const result = await runExplorerOp({ roots: explorerRoots, trashItem: (abs) => shell.trashItem(abs), snapshots: explorerSnapshots, drops: explorerDrops, hooks }, input)
+    log('explorer.op', { op, ok: result.ok, code: result.ok ? null : result.code, done: !result.ok && result.done === true, ms: Math.round((performance.now() - startedAt) * 10) / 10, hooks: Object.keys(hooks).length > 0, snapshots: explorerSnapshots.size })
+    return result
+  })
+  // OS 드롭 원본(E7ⓓ) — **preload 만** 부른다(렌더러 `CorralApi` 에 없다). 실제 드롭 이벤트의 `webUtils.getPathForFile` 경로를 맡기고 표지를 돌려준다.
+  ipcMain.handle('corral:explorerDropPaths', (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, error: '허용되지 않은 발신자' }
+    const paths = Array.isArray(input) && input.length > 0 && input.length <= FILE_DROP_MAX_PATHS && input.every((item) => typeof item === 'string' && path.isAbsolute(item) && !item.includes('\0')) ? input.filter((item) => typeof item === 'string') : null
+    if (paths === null) return { ok: false, error: '드롭 경로 형 위반' }
+    log('explorer.drop', { count: paths.length })
+    return { ok: true, token: explorerDrops.register(paths), names: paths.map((item) => path.basename(item)) }
+  })
+  ipcMain.on('corral:explorerFocus', (event, focused: unknown) => {
+    if (fromOurWindow(event)) explorerFocused = focused === true
+  })
   // Orca #14545 를 따라 하지 않기 — macOS 는 배경 앱 우클릭에 앱을 활성화하지 않아 메뉴가 키보드·포커스를 못 받는다.
   // 우클릭 순간 창을 앞으로 가져온다(198 뒤 수정 PR #14546 과 같은 방향).
   ipcMain.on('corral:activateWindow', (event) => {

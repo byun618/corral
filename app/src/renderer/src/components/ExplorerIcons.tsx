@@ -11,6 +11,8 @@ export const CODICON = {
   check: 0xeab2,
   'layout-sidebar-right': 0xebf4,
   'circle-filled': 0xea71,
+  'new-file': 0xea7f,
+  'new-folder': 0xea80,
 } as const
 
 export type CodiconName = keyof typeof CODICON

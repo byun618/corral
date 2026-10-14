@@ -1,0 +1,656 @@
+// 탐색기 파일 조작 (LIFE-592 F4 · E9) — **쓰기 경계**. 렌더러가 준 (루트, 상대 경로, 이름)을 열린 worktree 밑에서만 만들고·옮기고·복사하고·휴지통에 보낸다.
+//
+// 가둠 판정은 F1 `confine`(등록 루트·형·realpath 접두사)에 맡기고, 판정이 낸 **링크 없는 realpath** 위에서만 연산한다. 그 뒤가 두 갈래다:
+//   · **fd 로 되는 연산**(파일 만들기·복제/가져오기의 파일 쓰기·삭제 취소 다시 만들기 — F3 `file-write.ts` 방식):
+//       부모 realpath + 이름을 `O_CREAT | O_EXCL | O_NOFOLLOW_ANY` 로 연다. 검사 뒤 경로 어느 성분이 링크로 바뀌었으면 커널이 `ELOOP` 로 거절하고(밖에 만들어지지 않는다),
+//       이미 있으면 `EEXIST`(덮어쓰기 0). 원본 읽기도 `O_NOFOLLOW_ANY` 로 연 fd 에서만 한다(검사 뒤 링크로 바뀐 원본을 따라가지 않는다).
+//   · **경로 기반 연산**(이름 변경·이동 `rename` · 폴더 만들기 `mkdir` · 휴지통 `shell.trashItem` · 링크 복제 `symlink`): Node 에 `renameat`·`mkdirat` 이 없고
+//       `/dev/fd` 경유도 안 된다(00-analysis A2·`raw/coordinator/c10`). 게이트 ⓪ Q8 = (a) — 링크 없는 realpath 로만 부르고, 부르기 **직전**에 정체·빈 자리를 다시 재고,
+//       부른 **뒤** 결과 정체(dev:ino)·부모 realpath 를 다시 재 어긋나면 `changed`(done) 로 알린다. 남는 경쟁 창은 `raw/claude/residual.md` 에 정확히 적었다.
+// **덮어쓰기 0** — `fs.rename` 은 대상을 조용히 덮으므로 대상 자리가 비어 있을 때만 부른다(대소문자만 바꾸기 = 같은 inode 는 허용). 이 확인과 rename 사이의 경쟁도 잔여다.
+// **영구 삭제 0** — 이 파일에는 `unlink`·`rm`·`rmdir` 이 없다. 휴지통은 `deps.trashItem`(main `shell.trashItem`)뿐이고, 실패하면 안내로 끝난다(VS Code 의 「영구 삭제할까요」 폴백 없음).
+// 실행 취소용 「삭제 전 내용 사본」(Q1 — 파일 ≤ 5 MB)은 이 프로세스 메모리에만 두고 id 로만 가리킨다 — 렌더러가 되살릴 내용을 만들지 못한다.
+import crypto from 'node:crypto'
+import fs from 'node:fs/promises'
+import { constants } from 'node:fs'
+import path from 'node:path'
+import { confine, isInside } from './explorer-fs.js'
+import { O_NOFOLLOW_ANY } from './file-write.js'
+import { copyName, isProtectedRel, nameError, splitNewName, UNDO_SNAPSHOT_LIMIT, type EntryKind, type EntryMark, type ExplorerOpRefusal, type ExplorerOpResult } from '../shared/explorer-ops.js'
+
+type Refused = Extract<ExplorerOpResult, { ok: false }>
+const refuse = (code: ExplorerOpRefusal, error: string, done?: boolean): Refused => (done === true ? { ok: false, code, error, done } : { ok: false, code, error })
+
+/** 시험 전용 주입(E9ⓒ⑩) — 검사 뒤·연산 호출 직전에 부른다. 제품 경로에서는 늘 비어 있다(`loadOpHooks`). */
+export type OpHooks = { afterCheck?: (phase: string) => Promise<void> }
+
+/** 삭제 전 내용 사본(Q1) — 파일 내용 또는 빈 폴더. 메모리 상한을 넘으면 가장 오래된 것부터 버린다(그 실행 취소는 `expired`). */
+type Snapshot = { root: string; kind: 'file'; bytes: Buffer; mode: number } | { root: string; kind: 'dir'; mode: number }
+export const SNAPSHOT_MEMORY_LIMIT = 64 * 1024 * 1024
+
+export class SnapshotStore {
+  private readonly items = new Map<string, Snapshot>()
+  private bytes = 0
+  constructor(private readonly limit = SNAPSHOT_MEMORY_LIMIT) {}
+  put(snapshot: Snapshot): string {
+    const id = crypto.randomUUID()
+    this.items.set(id, snapshot)
+    this.bytes += snapshot.kind === 'file' ? snapshot.bytes.length : 0
+    for (const [oldId, old] of this.items) {
+      if (this.bytes <= this.limit || oldId === id) break
+      this.items.delete(oldId)
+      this.bytes -= old.kind === 'file' ? old.bytes.length : 0
+    }
+    return id
+  }
+  get(id: string): Snapshot | undefined {
+    return this.items.get(id)
+  }
+  drop(id: string): void {
+    const found = this.items.get(id)
+    if (found === undefined) return
+    this.items.delete(id)
+    this.bytes -= found.kind === 'file' ? found.bytes.length : 0
+  }
+  get size(): number {
+    return this.items.size
+  }
+}
+
+/**
+ * OS 드롭 원본(E7ⓓ) — preload 가 실제 드롭 이벤트에서 얻은 경로를 main 에 직접 맡기고 표지를 받는다. 렌더러는 표지만 본다(경로를 만들 수 없다).
+ * 표지는 한 번 쓰면 없어지고, 2 분이 지나면 버린다.
+ */
+export class DropStore {
+  private readonly items = new Map<string, { paths: string[]; at: number }>()
+  constructor(private readonly ttlMs = 120_000, private readonly now = () => Date.now()) {}
+  register(paths: string[]): string {
+    for (const [token, item] of this.items) if (this.now() - item.at > this.ttlMs) this.items.delete(token)
+    const token = crypto.randomUUID()
+    this.items.set(token, { paths, at: this.now() })
+    return token
+  }
+  take(token: unknown): string[] | null {
+    if (typeof token !== 'string') return null
+    const item = this.items.get(token)
+    if (item === undefined) return null
+    this.items.delete(token)
+    return this.now() - item.at > this.ttlMs ? null : item.paths
+  }
+}
+
+export type OpDeps = {
+  roots: () => readonly string[]
+  /** main `shell.trashItem` — 실패면 reject. 영구 삭제로 넘어가지 않는다. */
+  trashItem: (abs: string) => Promise<void>
+  snapshots: SnapshotStore
+  drops: DropStore
+  hooks?: OpHooks
+}
+
+const errorCode = (error: unknown): string => (typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '')
+const idOf = (stat: { dev: number; ino: number }): string => `${stat.dev}:${stat.ino}`
+const stampOf = (stat: { dev: number; ino: number; size: number; mtimeMs: number }): string => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`
+const kindOf = (stat: { isSymbolicLink: () => boolean; isDirectory: () => boolean; isFile: () => boolean }): EntryKind | null =>
+  stat.isSymbolicLink() ? 'link' : stat.isDirectory() ? 'dir' : stat.isFile() ? 'file' : null
+const joinRel = (dir: string, name: string): string => (dir === '' ? name : `${dir}/${name}`)
+const parentOf = (rel: string): string => {
+  const index = rel.lastIndexOf('/')
+  return index === -1 ? '' : rel.slice(0, index)
+}
+const sha256 = (bytes: Buffer): string => crypto.createHash('sha256').update(bytes).digest('hex')
+
+/** 시스템 오류 → 거절 코드. `ELOOP` = 검사 뒤 경로에 링크가 끼었다(fd 연산이 거절한 경쟁). */
+function fsRefusal(error: unknown, what: string): Refused {
+  switch (errorCode(error)) {
+    case 'EEXIST':
+    case 'ENOTEMPTY':
+      return refuse('exists', `${what}: 이미 있다 (${String(error)})`)
+    case 'ENOENT':
+      return refuse('not_found', `${what}: 없다 (${String(error)})`)
+    case 'ELOOP':
+      return refuse('changed', `${what}: 검사 뒤 경로에 링크가 끼었다 — 하지 않았다 (${String(error)})`)
+    case 'EACCES':
+    case 'EPERM':
+    case 'EROFS':
+      return refuse('permission_denied', `${what}: 권한 없음 (${String(error)})`)
+    case 'ENOTDIR':
+      return refuse('not_directory', `${what}: 폴더가 아니다 (${String(error)})`)
+    default:
+      return refuse('io_error', `${what}: ${String(error)}`)
+  }
+}
+
+/** 상대 경로 형 검사 — 기존 항목을 가리키는 쪽. `..` 탈출은 가둠(`outside_root`)에서 걸리게 두고, 루트 안에 머무는 `.`·`..`·빈 성분은 이름 규칙으로 거절한다. */
+function relShape(input: { realRoot: string; rel: string }): Refused | null {
+  const parts = input.rel.split('/')
+  if (!parts.some((part) => part === '' || part === '.' || part === '..')) return null
+  return isInside(input.realRoot, path.resolve(input.realRoot, input.rel)) ? refuse('invalid_name', `경로 성분 규칙 위반: ${JSON.stringify(input.rel)}`) : refuse('outside_root', '루트 밖')
+}
+
+/** 폴더 가둠 — 루트 밑 실제 폴더(링크 없는 realpath). */
+async function confineDir(input: { roots: readonly string[]; root: unknown; rel: unknown }): Promise<{ ok: true; realRoot: string; abs: string; rel: string } | Refused> {
+  const confined = await confine(input)
+  if (!confined.ok) return refuse(confined.code, confined.error)
+  try {
+    const stat = await fs.lstat(confined.abs)
+    if (!stat.isDirectory()) return refuse('not_directory', '폴더가 아니다')
+  } catch (error) {
+    return fsRefusal(error, '폴더')
+  }
+  return { ok: true, realRoot: confined.realRoot, abs: confined.abs, rel: confined.rel }
+}
+
+/**
+ * 이미 있는 항목 — **마지막 성분은 따라가지 않는다**(링크면 링크 자체). 부모만 가두고(realpath), 부모 realpath + 이름 = 링크 없는 경로.
+ * 루트 자체·`.git` 은 `protected`.
+ */
+type Entry = { realRoot: string; parentAbs: string; parentRel: string; name: string; abs: string; rel: string; kind: EntryKind; id: string; stamp: string; size: number; mode: number; nlink: number }
+async function entryAt(input: { roots: readonly string[]; root: unknown; rel: unknown }): Promise<{ ok: true; entry: Entry } | Refused> {
+  const { rel } = input
+  if (typeof rel !== 'string' || rel.includes('\0') || rel.startsWith('/') || rel.length > 4096) return refuse('invalid_argument', '상대 경로 형 위반')
+  if (typeof input.root !== 'string' || !input.roots.includes(input.root)) return refuse('not_worktree', '열린 worktree 루트가 아니다')
+  let realRoot: string
+  try {
+    realRoot = await fs.realpath(input.root)
+  } catch (error) {
+    return refuse('not_found', `루트 없음 ${String(error)}`)
+  }
+  if (rel === '') return refuse('protected', '루트 자체는 조작할 수 없다')
+  const shape = relShape({ realRoot, rel })
+  if (shape !== null) return shape
+  if (isProtectedRel(rel)) return refuse('protected', rel === '' ? '루트 자체는 조작할 수 없다' : '.git 은 조작할 수 없다')
+  const parentRel = parentOf(rel)
+  const parent = await confineDir({ roots: input.roots, root: input.root, rel: parentRel })
+  if (!parent.ok) return parent
+  const name = rel.slice(parentRel === '' ? 0 : parentRel.length + 1)
+  const abs = path.join(parent.abs, name)
+  try {
+    const stat = await fs.lstat(abs)
+    const kind = kindOf(stat)
+    if (kind === null) return refuse('not_file', '일반 파일·폴더·링크가 아니다(FIFO·소켓·장치) — 조작하지 않는다')
+    return { ok: true, entry: { realRoot: parent.realRoot, parentAbs: parent.abs, parentRel, name, abs, rel, kind, id: idOf(stat), stamp: stampOf(stat), size: stat.size, mode: stat.mode, nlink: stat.nlink } }
+  } catch (error) {
+    return fsRefusal(error, '대상')
+  }
+}
+
+/** 그 자리가 비어 있나(lstat ENOENT). 있으면 그 정체. */
+async function occupant(abs: string): Promise<string | null> {
+  try {
+    return idOf(await fs.lstat(abs))
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return null
+    throw error
+  }
+}
+
+/** 표지 — 상대 경로의 지금 도장(따라가지 않음). 실행 취소가 「그 뒤 바뀌었나」 를 본다. */
+async function markOf(input: { parentAbs: string; name: string; rel: string }): Promise<EntryMark> {
+  const stat = await fs.lstat(path.join(input.parentAbs, input.name))
+  return { rel: input.rel, stamp: stampOf(stat) }
+}
+
+/**
+ * 경로 연산 뒤 확인(Q8 (a)) — 부모 realpath 가 그대로(그 사이 부모 경로에 링크가 끼지 않았다)이고 그 자리 항목 정체가 기대와 같은가.
+ * 어긋나면 경로 연산이 이미 다른 곳을 건드렸을 수 있다 — `changed`(done)로 알리고 로그에 남긴다.
+ */
+async function verifyAt(input: { parentAbs: string; name: string; id: string | null; kind: EntryKind }): Promise<string | null> {
+  try {
+    if ((await fs.realpath(input.parentAbs)) !== input.parentAbs) return '부모 경로가 연산 중에 바뀌었다'
+    const target = path.join(input.parentAbs, input.name)
+    const stat = await fs.lstat(target)
+    if (input.id !== null && idOf(stat) !== input.id) return '결과 자리의 항목이 기대한 것과 다르다'
+    // 링크가 아니면 경로 전체를 링크 없이 열어 본다(중간 성분이 링크로 바뀌었으면 ELOOP).
+    if (input.kind !== 'link') {
+      const handle = await fs.open(target, constants.O_RDONLY | O_NOFOLLOW_ANY | constants.O_NONBLOCK).catch((error: unknown) => (errorCode(error) === 'EACCES' ? null : Promise.reject(error)))
+      if (handle !== null) {
+        const fd = await handle.stat().finally(() => handle.close().catch(() => undefined))
+        if (input.id !== null && idOf(fd) !== input.id) return '결과 자리의 항목(fd)이 기대한 것과 다르다'
+      }
+    }
+    return null
+  } catch (error) {
+    return `사후 확인 실패: ${String(error)}`
+  }
+}
+
+/** 폴더 하나 만들기(경로 연산) + 사후 확인. */
+async function mkdirChecked(input: { parentAbs: string; name: string; mode?: number; hooks: OpHooks }): Promise<{ ok: true; id: string; hash: null } | Refused> {
+  const target = path.join(input.parentAbs, input.name)
+  await input.hooks.afterCheck?.('mkdir')
+  try {
+    await fs.mkdir(target, { mode: input.mode ?? 0o777 })
+  } catch (error) {
+    return fsRefusal(error, '폴더 만들기')
+  }
+  const stat = await fs.lstat(target).catch(() => null)
+  const problem = stat === null || !stat.isDirectory() ? '만든 폴더가 그 자리에 없다' : await verifyAt({ parentAbs: input.parentAbs, name: input.name, id: idOf(stat), kind: 'dir' })
+  if (problem !== null || stat === null) return refuse('changed', `폴더를 만들었지만 사후 확인이 어긋났다: ${problem ?? ''}`, true)
+  return { ok: true, id: idOf(stat), hash: null }
+}
+
+/** 파일 만들기(fd 연산) — 링크 없는 부모 realpath + 이름을 `O_CREAT|O_EXCL|O_NOFOLLOW_ANY`. `source` 가 있으면 그 fd 에서 내용을 옮긴다. */
+async function createFileFd(input: { parentAbs: string; name: string; bytes?: Buffer; source?: fs.FileHandle; mode?: number; hooks: OpHooks }): Promise<{ ok: true; id: string; hash: string | null } | Refused> {
+  await input.hooks.afterCheck?.('create-file')
+  let handle: fs.FileHandle
+  try {
+    handle = await fs.open(path.join(input.parentAbs, input.name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW_ANY | constants.O_NONBLOCK, 0o666)
+  } catch (error) {
+    return fsRefusal(error, '파일 만들기')
+  }
+  try {
+    let hash: string | null = null
+    if (input.bytes !== undefined) {
+      let offset = 0
+      while (offset < input.bytes.length) offset += (await handle.write(input.bytes, offset, input.bytes.length - offset, offset)).bytesWritten
+      hash = sha256(input.bytes)
+    } else if (input.source !== undefined) {
+      const chunk = Buffer.alloc(1024 * 1024)
+      let position = 0
+      for (;;) {
+        const { bytesRead } = await input.source.read(chunk, 0, chunk.length, position)
+        if (bytesRead === 0) break
+        let written = 0
+        while (written < bytesRead) written += (await handle.write(chunk, written, bytesRead - written, position + written)).bytesWritten
+        position += bytesRead
+      }
+    }
+    if (input.mode !== undefined) await handle.chmod(input.mode & 0o777)
+    const stat = await handle.stat()
+    return { ok: true, id: idOf(stat), hash }
+  } catch (error) {
+    return refuse('io_error', `파일을 만들었지만 쓰는 도중 실패했다 — 부분 파일이 남았다: ${String(error)}`, true)
+  } finally {
+    await handle.close().catch(() => undefined)
+  }
+}
+
+/** 원본 파일을 `O_NOFOLLOW_ANY` 로 연다(가져오기·복제) — 검사 뒤 링크로 바뀐 원본을 따라가지 않는다. 일반 파일이 아니면 null. */
+async function openSource(abs: string): Promise<{ ok: true; handle: fs.FileHandle; mode: number; nlink: number } | Refused> {
+  let handle: fs.FileHandle
+  try {
+    handle = await fs.open(abs, constants.O_RDONLY | O_NOFOLLOW_ANY | constants.O_NONBLOCK)
+  } catch (error) {
+    return fsRefusal(error, '원본 열기')
+  }
+  const stat = await handle.stat()
+  if (!stat.isFile()) {
+    await handle.close().catch(() => undefined)
+    return refuse('not_file', '원본이 일반 파일이 아니다')
+  }
+  return { ok: true, handle, mode: stat.mode, nlink: stat.nlink }
+}
+
+/** 이름이 대소문자 무시로 그 폴더에 있나 — 복제·가져오기 새 이름 고르기(APFS 대소문자 무시). */
+async function takenIn(parentAbs: string): Promise<(name: string) => boolean> {
+  const names = new Set((await fs.readdir(parentAbs)).map((name) => name.normalize('NFC').toLowerCase()))
+  return (name: string) => names.has(name.normalize('NFC').toLowerCase())
+}
+
+type CopyReport = { skipped: { name: string; reason: string }[]; failed: { name: string; error: string }[] }
+
+/**
+ * 원본 하나를 `dstParentAbs/dstName` 으로 복사(재귀). 원본 파일은 `O_NOFOLLOW_ANY` fd 로만 읽는다. 원본 안 링크는 `links` 에 따라 —
+ * `recreate`(복제: 링크는 링크로, 대상 글 그대로) · `skip`(가져오기: 따라가지도 만들지도 않는다 — Orca 와 같다). FIFO·소켓·장치는 건너뛴다.
+ */
+async function copyTree(input: { srcAbs: string; label: string; dstParentAbs: string; dstName: string; links: 'recreate' | 'skip'; hooks: OpHooks; report: CopyReport; top: boolean }): Promise<Refused | null> {
+  const { srcAbs, label, report } = input
+  let stat: Awaited<ReturnType<typeof fs.lstat>>
+  try {
+    stat = await fs.lstat(srcAbs)
+  } catch (error) {
+    report.failed.push({ name: label, error: String(error) })
+    return input.top ? fsRefusal(error, '원본') : null
+  }
+  const kind = kindOf(stat)
+  if (kind === null) {
+    report.skipped.push({ name: label, reason: '특수 파일(FIFO·소켓·장치) — 복사하지 않음' })
+    return null
+  }
+  if (kind === 'link') {
+    if (input.links === 'skip') {
+      report.skipped.push({ name: label, reason: '심볼릭 링크 — 따라가지 않음(밖 내용을 들이지 않는다)' })
+      return null
+    }
+    const text = await fs.readlink(srcAbs)
+    await input.hooks.afterCheck?.('symlink')
+    try {
+      await fs.symlink(text, path.join(input.dstParentAbs, input.dstName))
+    } catch (error) {
+      const refused = fsRefusal(error, '링크 만들기')
+      report.failed.push({ name: label, error: refused.error })
+      return input.top ? refused : null
+    }
+    const problem = await verifyAt({ parentAbs: input.dstParentAbs, name: input.dstName, id: null, kind: 'link' })
+    if (problem !== null) return refuse('changed', `링크를 만들었지만 사후 확인이 어긋났다: ${problem}`, true)
+    return null
+  }
+  if (kind === 'file') {
+    const source = await openSource(srcAbs)
+    if (!source.ok) {
+      report.failed.push({ name: label, error: source.error })
+      return input.top ? source : null
+    }
+    try {
+      const made = await createFileFd({ parentAbs: input.dstParentAbs, name: input.dstName, source: source.handle, mode: source.mode, hooks: input.hooks })
+      if (!made.ok) {
+        report.failed.push({ name: label, error: made.error })
+        return input.top || made.code === 'changed' ? made : null
+      }
+      if (source.nlink > 1) report.skipped.push({ name: label, reason: `하드링크(nlink ${source.nlink}) — 내용을 새 파일로 복사함(링크 관계는 옮기지 않음)` })
+      return null
+    } finally {
+      await source.handle.close().catch(() => undefined)
+    }
+  }
+  const made = await mkdirChecked({ parentAbs: input.dstParentAbs, name: input.dstName, mode: stat.mode & 0o777, hooks: input.hooks })
+  if (!made.ok) {
+    report.failed.push({ name: label, error: made.error })
+    return input.top || made.code === 'changed' ? made : null
+  }
+  const dstAbs = path.join(input.dstParentAbs, input.dstName)
+  let names: string[]
+  try {
+    names = await fs.readdir(srcAbs)
+  } catch (error) {
+    report.failed.push({ name: label, error: `폴더 읽기 실패: ${String(error)}` })
+    return null
+  }
+  for (const name of names) {
+    const failed = await copyTree({ ...input, srcAbs: path.join(srcAbs, name), label: `${label}/${name}`, dstParentAbs: dstAbs, dstName: name, top: false })
+    if (failed !== null) return failed
+  }
+  return null
+}
+
+// --- 조작 ------------------------------------------------------------------------------------------------
+
+/** 조작 한 번 — 예외는 `io_error` 로 돌려준다(핸들러가 던지지 않게). */
+export async function runExplorerOp(deps: OpDeps, input: unknown): Promise<ExplorerOpResult> {
+  try {
+    return await dispatchOp(deps, input)
+  } catch (error) {
+    return refuse('io_error', String(error))
+  }
+}
+
+async function dispatchOp(deps: OpDeps, input: unknown): Promise<ExplorerOpResult> {
+  const record = typeof input === 'object' && input !== null ? input : {}
+  const field = (name: string): unknown => (name in record ? Reflect.get(record, name) : undefined)
+  const roots = deps.roots()
+  const hooks = deps.hooks ?? {}
+  const root = field('root')
+  switch (field('op')) {
+    case 'create':
+      return create({ roots, root, dir: field('dir'), name: field('name'), kind: field('kind'), hooks })
+    case 'move':
+      return move({ roots, root, from: field('from'), to: field('to'), expect: field('expect'), hooks })
+    case 'trash':
+      return trash({ deps, roots, root, rel: field('rel'), snapshot: field('snapshot') === true, expect: field('expect'), hooks })
+    case 'restore':
+      return restore({ deps, roots, root, rel: field('rel'), snapshotId: field('snapshotId'), hooks })
+    case 'duplicate':
+      return duplicate({ roots, root, rel: field('rel'), hooks })
+    case 'import':
+      return importDrop({ deps, roots, root, dir: field('dir'), token: field('token'), hooks })
+    case 'inspect':
+      return inspect({ roots, root, rel: field('rel') })
+    default:
+      return refuse('invalid_argument', '모르는 조작')
+  }
+}
+
+async function create(input: { roots: readonly string[]; root: unknown; dir: unknown; name: unknown; kind: unknown; hooks: OpHooks }): Promise<ExplorerOpResult> {
+  const { kind } = input
+  if (typeof input.name !== 'string' || (kind !== 'file' && kind !== 'dir') || typeof input.dir !== 'string') return refuse('invalid_argument', '형 위반')
+  const split = splitNewName(input.name)
+  if (!split.ok) return refuse('invalid_name', split.error)
+  const parent = await confineDir({ roots: input.roots, root: input.root, rel: input.dir })
+  if (!parent.ok) return parent
+  if (isProtectedRel(joinRel(parent.rel, split.parts[0] ?? '')) || split.parts.includes('.git')) return refuse('protected', '.git 안에는 만들 수 없다')
+  let currentAbs = parent.abs
+  let currentRel = parent.rel
+  let created: string | null = null
+  const marks: { parentAbs: string; name: string; rel: string }[] = []
+  for (const [index, part] of split.parts.entries()) {
+    const last = index === split.parts.length - 1
+    const rel = joinRel(currentRel, part)
+    if (!last) {
+      // 중간 폴더 — 이미 있는 폴더면 그대로 내려가고(링크·파일이면 거절), 없으면 만든다.
+      const existing = await fs.lstat(path.join(currentAbs, part)).catch((error: unknown) => (errorCode(error) === 'ENOENT' ? null : Promise.reject(error)))
+      if (existing !== null && !existing.isDirectory()) return refuse('exists', `'${rel}' 이(가) 폴더가 아니다`)
+      if (existing === null) {
+        const made = await mkdirChecked({ parentAbs: currentAbs, name: part, hooks: input.hooks })
+        if (!made.ok) return made
+        created ??= rel
+        marks.push({ parentAbs: currentAbs, name: part, rel })
+      }
+      currentAbs = path.join(currentAbs, part)
+      currentRel = rel
+      continue
+    }
+    const made = kind === 'dir' ? await mkdirChecked({ parentAbs: currentAbs, name: part, hooks: input.hooks }) : await createFileFd({ parentAbs: currentAbs, name: part, bytes: Buffer.alloc(0), hooks: input.hooks })
+    if (!made.ok) return created === null ? made : { ...made, error: `${made.error} — 중간 폴더 '${created}' 는 만들어졌다`, done: true }
+    created ??= rel
+    marks.push({ parentAbs: currentAbs, name: part, rel })
+    return { ok: true, op: 'create', rel, kind, created, marks: await Promise.all(marks.map(markOf)) }
+  }
+  return refuse('invalid_name', '빈 이름')
+}
+
+async function move(input: { roots: readonly string[]; root: unknown; from: unknown; to: unknown; expect: unknown; hooks: OpHooks }): Promise<ExplorerOpResult> {
+  if (typeof input.to !== 'string' || input.to.includes('\0') || input.to.startsWith('/')) return refuse('invalid_argument', '대상 경로 형 위반')
+  const found = await entryAt({ roots: input.roots, root: input.root, rel: input.from })
+  if (!found.ok) return found
+  const src = found.entry
+  if (typeof input.expect === 'string' && input.expect !== src.id) return refuse('modified', '되돌릴 항목이 그 사이 바뀌었다(다른 항목)')
+  const to = input.to
+  const toParentRel = parentOf(to)
+  const toName = to.slice(toParentRel === '' ? 0 : toParentRel.length + 1)
+  const shape = toParentRel === '' ? null : relShape({ realRoot: src.realRoot, rel: toParentRel })
+  if (shape !== null) return shape
+  const badName = nameError(toName)
+  if (badName !== null) return refuse('invalid_name', badName)
+  if (isProtectedRel(to)) return refuse('protected', '.git 으로 옮길 수 없다')
+  if (to === src.rel) return { ok: true, op: 'move', from: src.rel, to, id: src.id }
+  if (src.kind === 'dir' && to.startsWith(`${src.rel}/`)) return refuse('into_self', '폴더를 자기 자신이나 그 안으로 옮길 수 없다')
+  const dst = await confineDir({ roots: input.roots, root: input.root, rel: toParentRel })
+  if (!dst.ok) return dst
+  const dstAbs = path.join(dst.abs, toName)
+  // 실경로로도 자기 하위인지(링크 폴더를 거친 경로) 본다.
+  if (src.kind === 'dir' && (dst.abs === src.abs || dst.abs.startsWith(`${src.abs}/`))) return refuse('into_self', '폴더를 자기 자신이나 그 안으로 옮길 수 없다')
+  if (dstAbs === src.abs) return { ok: true, op: 'move', from: src.rel, to, id: src.id }
+  // 대상 자리 — 비어 있어야 한다. 같은 부모·같은 inode(대소문자만 다른 이름 — APFS 대소문자 무시)면 허용(E2ⓒ).
+  const caseOnly = dst.abs === src.parentAbs && toName.toLowerCase() === src.name.toLowerCase()
+  const checkTarget = async (): Promise<Refused | null> => {
+    const there = await occupant(dstAbs).catch(() => 'error')
+    if (there === null || (caseOnly && there === src.id)) return null
+    return refuse('exists', `'${to}' 에 이미 항목이 있다 — 덮어쓰지 않는다`)
+  }
+  const occupied = await checkTarget()
+  if (occupied !== null) return occupied
+  await input.hooks.afterCheck?.('rename')
+  // 부르기 직전 다시(창을 좁힌다) — 원본 정체 그대로·대상 자리 비어 있음.
+  const again = await occupant(src.abs).catch(() => null)
+  if (again !== src.id) return refuse('changed', '원본이 검사 뒤에 바뀌었다 — 옮기지 않았다')
+  const stillFree = await checkTarget()
+  if (stillFree !== null) return stillFree
+  try {
+    await fs.rename(src.abs, dstAbs)
+  } catch (error) {
+    return fsRefusal(error, '이름 변경')
+  }
+  const problem = (await verifyAt({ parentAbs: dst.abs, name: toName, id: src.id, kind: src.kind })) ?? (caseOnly ? null : (await occupant(src.abs).catch(() => null)) === null ? null : '원본 자리에 아직 항목이 있다')
+  if (problem !== null) return refuse('changed', `옮겼지만 사후 확인이 어긋났다: ${problem}`, true)
+  return { ok: true, op: 'move', from: src.rel, to, id: src.id }
+}
+
+async function trash(input: { deps: OpDeps; roots: readonly string[]; root: unknown; rel: unknown; snapshot: boolean; expect: unknown; hooks: OpHooks }): Promise<ExplorerOpResult> {
+  const found = await entryAt({ roots: input.roots, root: input.root, rel: input.rel })
+  if (!found.ok) return found
+  const entry = found.entry
+  // 실행 취소(만들기 되돌리기) — 만든 뒤 바뀌었으면 거절(조용히 지우지 않는다 — E5ⓒ).
+  if (Array.isArray(input.expect)) {
+    for (const mark of input.expect) {
+      const rel = typeof mark === 'object' && mark !== null && 'rel' in mark ? mark.rel : undefined
+      const stamp = typeof mark === 'object' && mark !== null && 'stamp' in mark ? mark.stamp : undefined
+      if (typeof rel !== 'string' || typeof stamp !== 'string') return refuse('invalid_argument', '표지 형 위반')
+      const now = rel === entry.rel ? entry : await entryAt({ roots: input.roots, root: input.root, rel }).then((result) => (result.ok ? result.entry : null))
+      if (now === null || now.stamp !== stamp) return refuse('modified', `'${rel}' 이(가) 만든 뒤 바뀌었다 — 실행 취소하지 않았다(직접 삭제하세요)`)
+    }
+  }
+  let snapshotId: string | null = null
+  if (input.snapshot && entry.kind === 'file' && entry.size <= UNDO_SNAPSHOT_LIMIT) {
+    const source = await openSource(entry.abs)
+    if (!source.ok) return source
+    try {
+      const stat = await source.handle.stat()
+      if (idOf(stat) !== entry.id) return refuse('changed', '검사와 읽기 사이에 다른 파일로 바뀌었다')
+      const bytes = Buffer.alloc(stat.size)
+      let offset = 0
+      while (offset < stat.size) {
+        const { bytesRead } = await source.handle.read(bytes, offset, stat.size - offset, offset)
+        if (bytesRead === 0) break
+        offset += bytesRead
+      }
+      snapshotId = input.deps.snapshots.put({ root: entry.realRoot, kind: 'file', bytes: bytes.subarray(0, offset), mode: stat.mode & 0o777 })
+    } finally {
+      await source.handle.close().catch(() => undefined)
+    }
+  } else if (input.snapshot && entry.kind === 'dir' && (await fs.readdir(entry.abs)).length === 0) {
+    snapshotId = input.deps.snapshots.put({ root: entry.realRoot, kind: 'dir', mode: entry.mode & 0o777 })
+  }
+  await input.hooks.afterCheck?.('trash')
+  const again = await occupant(entry.abs).catch(() => null)
+  if (again !== entry.id || (await fs.realpath(entry.parentAbs).catch(() => null)) !== entry.parentAbs) {
+    if (snapshotId !== null) input.deps.snapshots.drop(snapshotId)
+    return refuse('changed', '대상이 검사 뒤에 바뀌었다 — 휴지통으로 보내지 않았다')
+  }
+  try {
+    await input.deps.trashItem(entry.abs)
+  } catch (error) {
+    if (snapshotId !== null) input.deps.snapshots.drop(snapshotId)
+    return refuse('trash_failed', `휴지통으로 옮기지 못했다 — 영구 삭제하지 않았다: ${String(error)}`)
+  }
+  const left = await occupant(entry.abs).catch(() => null)
+  if (left !== null) {
+    if (snapshotId !== null) input.deps.snapshots.drop(snapshotId)
+    return refuse('changed', '휴지통으로 옮겼지만 그 자리에 항목이 남아 있다(사후 확인)', true)
+  }
+  return { ok: true, op: 'trash', rel: entry.rel, kind: entry.kind, snapshotId }
+}
+
+async function restore(input: { deps: OpDeps; roots: readonly string[]; root: unknown; rel: unknown; snapshotId: unknown; hooks: OpHooks }): Promise<ExplorerOpResult> {
+  if (typeof input.rel !== 'string' || typeof input.snapshotId !== 'string') return refuse('invalid_argument', '형 위반')
+  const snapshot = input.deps.snapshots.get(input.snapshotId)
+  if (snapshot === undefined) return refuse('expired', '되살릴 내용 사본이 메모리에 없다(앱 재시작 또는 상한 초과)')
+  const rel = input.rel
+  const parentRel = parentOf(rel)
+  const name = rel.slice(parentRel === '' ? 0 : parentRel.length + 1)
+  const badName = nameError(name)
+  if (badName !== null) return refuse('invalid_name', badName)
+  if (isProtectedRel(rel)) return refuse('protected', '.git 은 조작할 수 없다')
+  const parent = await confineDir({ roots: input.roots, root: input.root, rel: parentRel })
+  if (!parent.ok) return parent
+  if (parent.realRoot !== snapshot.root) return refuse('invalid_argument', '사본이 다른 worktree 의 것이다')
+  const made = snapshot.kind === 'file' ? await createFileFd({ parentAbs: parent.abs, name, bytes: snapshot.bytes, mode: snapshot.mode, hooks: input.hooks }) : await mkdirChecked({ parentAbs: parent.abs, name, mode: snapshot.mode, hooks: input.hooks })
+  if (!made.ok) return made
+  input.deps.snapshots.drop(input.snapshotId)
+  const mark = await markOf({ parentAbs: parent.abs, name, rel })
+  return { ok: true, op: 'restore', rel, marks: [mark], hash: made.hash, stamp: snapshot.kind === 'file' ? mark.stamp : null }
+}
+
+async function duplicate(input: { roots: readonly string[]; root: unknown; rel: unknown; hooks: OpHooks }): Promise<ExplorerOpResult> {
+  const found = await entryAt({ roots: input.roots, root: input.root, rel: input.rel })
+  if (!found.ok) return found
+  const src = found.entry
+  const taken = await takenIn(src.parentAbs)
+  const newName = copyName({ name: src.name, isDir: src.kind === 'dir', taken })
+  const report: CopyReport = { skipped: [], failed: [] }
+  const failed = await copyTree({ srcAbs: src.abs, label: src.name, dstParentAbs: src.parentAbs, dstName: newName, links: 'recreate', hooks: input.hooks, report, top: true })
+  if (failed !== null) return failed
+  const rel = joinRel(src.parentRel, newName)
+  if (report.failed.length > 0) return refuse('io_error', `일부를 복제하지 못했다: ${report.failed.map((row) => `${row.name} (${row.error})`).join(', ')}`, true)
+  return { ok: true, op: 'duplicate', rel, kind: src.kind, marks: [await markOf({ parentAbs: src.parentAbs, name: newName, rel })] }
+}
+
+async function importDrop(input: { deps: OpDeps; roots: readonly string[]; root: unknown; dir: unknown; token: unknown; hooks: OpHooks }): Promise<ExplorerOpResult> {
+  const paths = input.deps.drops.take(input.token)
+  if (paths === null) return refuse('bad_token', '가져오기 표지가 없거나 이미 썼다 — 실제 드롭에서 온 원본만 가져온다')
+  const dir = await confineDir({ roots: input.roots, root: input.root, rel: input.dir })
+  if (!dir.ok) return dir
+  if (dir.rel !== '' && isProtectedRel(dir.rel)) return refuse('protected', '.git 안으로는 가져오지 않는다')
+  const report: CopyReport = { skipped: [], failed: [] }
+  const rels: string[] = []
+  const marks: EntryMark[][] = []
+  for (const original of paths) {
+    const name = path.basename(original)
+    // 원본 부모의 링크(예: /tmp → /private/tmp)는 풀고, 원본 항목 자체는 따라가지 않는다(lstat — 링크면 건너뜀).
+    const srcParent = await fs.realpath(path.dirname(original)).catch(() => null)
+    if (srcParent === null || nameError(name) !== null) {
+      report.failed.push({ name, error: '원본 경로를 읽을 수 없다' })
+      continue
+    }
+    const srcAbs = path.join(srcParent, name)
+    // 원본이 대상 폴더 자신이거나 그 위(조상)면 끝없이 복사한다 — 거절.
+    if (dir.abs === srcAbs || dir.abs.startsWith(`${srcAbs}/`)) {
+      report.skipped.push({ name, reason: '대상 폴더가 원본 안에 있다 — 가져오지 않음' })
+      continue
+    }
+    const stat = await fs.lstat(srcAbs).catch(() => null)
+    const taken = await takenIn(dir.abs)
+    const dstName = copyName({ name, isDir: stat?.isDirectory() === true, taken })
+    const before = report.failed.length
+    const refused = await copyTree({ srcAbs, label: name, dstParentAbs: dir.abs, dstName, links: 'skip', hooks: input.hooks, report, top: true })
+    if (refused !== null && refused.code === 'changed') return { ...refused, error: `${refused.error} (가져온 것: ${rels.join(', ') || '없음'})` }
+    if (refused !== null) {
+      if (report.failed.length === before) report.failed.push({ name, error: refused.error })
+      continue
+    }
+    // 폴더 안 일부만 실패했어도 만든 항목은 남는다 — 실행 취소 항목에 싣는다(남은 것 그대로 휴지통으로 되돌릴 수 있게). 실패는 `failed` 로 알린다.
+    // 건너뛴 원본(링크·특수 파일·대상이 원본 안)은 만든 것이 없다.
+    if ((await occupant(path.join(dir.abs, dstName)).catch(() => null)) === null) continue
+    const rel = joinRel(dir.rel, dstName)
+    rels.push(rel)
+    marks.push([await markOf({ parentAbs: dir.abs, name: dstName, rel })])
+  }
+  return { ok: true, op: 'import', dir: dir.rel, rels, marks, skipped: report.skipped, failed: report.failed }
+}
+
+async function inspect(input: { roots: readonly string[]; root: unknown; rel: unknown }): Promise<ExplorerOpResult> {
+  const found = await entryAt(input)
+  if (!found.ok) return found
+  const { entry } = found
+  return { ok: true, op: 'inspect', rel: entry.rel, kind: entry.kind, size: entry.size, undoable: entry.kind === 'file' && entry.size <= UNDO_SNAPSHOT_LIMIT }
+}
+
+/**
+ * 시험 전용 주입을 읽는다 — **패키지 앱이면 늘 빈 값**, 개발 실행도 `CORRAL_TEST_OP_HOOK_FILE` 이 있을 때만(파일은 조작마다 다시 읽는다).
+ * 형식: `{ "phase": "<rename|mkdir|create-file|trash|symlink>", "swapDir": "<루트 안 폴더>", "linkTo": "<밖 폴더>" }` — 경로는 `/tmp/l592` 밑만.
+ * 그 단계의 검사 뒤·호출 직전에 `swapDir` 을 `<이름>.l592-orig` 로 옮기고 같은 자리에 `linkTo` 링크를 만든다(E9ⓒ⑩ 경쟁 주입). 한 번만 한다.
+ */
+export async function loadOpHooks(input: { packaged: boolean; file: string | undefined }): Promise<OpHooks> {
+  if (input.packaged || input.file === undefined || input.file === '') return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await fs.readFile(input.file, 'utf8'))
+  } catch {
+    return {}
+  }
+  if (typeof parsed !== 'object' || parsed === null) return {}
+  const underTmp = (value: unknown): value is string => typeof value === 'string' && /^\/(private\/)?tmp\/l592[^/]*\//.test(value)
+  const swapDir = 'swapDir' in parsed ? parsed.swapDir : undefined
+  const linkTo = 'linkTo' in parsed ? parsed.linkTo : undefined
+  const phase = 'phase' in parsed ? parsed.phase : undefined
+  if (!underTmp(swapDir) || !underTmp(linkTo)) return {}
+  let fired = false
+  return {
+    afterCheck: async (at) => {
+      if (fired || (typeof phase === 'string' && phase !== at)) return
+      fired = true
+      await fs.rename(swapDir, `${swapDir}.l592-orig`)
+      await fs.symlink(linkTo, swapDir)
+    },
+  }
+}

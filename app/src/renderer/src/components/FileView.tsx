@@ -296,16 +296,21 @@ function TextBody({
   const editorRef = useRef<Editor | null>(null)
   const initialRef = useRef(initial)
   initialRef.current = initial
+  // 지금 탭 id — 탐색기 이름 변경·이동(LIFE-592 E4)으로 탭 id 가 바뀌면 편집기를 새로 붙이는데, 떠나는 편집기의 view state 는 **새 id** 로 맡겨야 새 편집기가 되살린다.
+  const tabIdRef = useRef(tabId)
+  tabIdRef.current = tabId
   const key = docKey(root, rel)
 
   useEffect(() => {
     const host = hostRef.current
     if (host === null) return
     let disposed = false
+    // 이 편집기가 붙은 문서 — 정리 때 키(이름 변경으로 바뀌었을 수 있다)로 다시 찾지 않는다.
+    let attached: FileDoc | null = null
     void import('../editor/monaco.js').then(async (module) => {
-      // 문서가 있으면 그 모델(URI = 문서 키)에 붙는다. 없으면 이 읽기로 만들어 맡긴다 — 언어 등록(비동기) 사이 다른 마운트가 먼저 맡겼으면 그것을 쓴다.
+      // 문서가 있으면 그 모델(문서가 든 것 — URI 는 경로와 무관, LIFE-592)에 붙는다. 없으면 이 읽기로 만들어 맡긴다 — 언어 등록(비동기) 사이 다른 마운트가 먼저 맡겼으면 그것을 쓴다.
       let doc = getDoc(key)
-      let model = module.modelOf(key)
+      let model = doc === undefined ? null : module.liveModel(doc.model)
       if (doc !== undefined && model === null) {
         disposeDoc(key)
         doc = undefined
@@ -314,7 +319,7 @@ function TextBody({
         const language = large ? 'plaintext' : await module.languageFor(rel)
         if (disposed) return
         doc = getDoc(key)
-        model = module.modelOf(key)
+        model = doc === undefined ? null : module.liveModel(doc.model)
         if (doc === undefined || model === null) {
           const first = initialRef.current
           if (first === null) return
@@ -328,6 +333,7 @@ function TextBody({
       const saved = viewStates.get(tabId)
       if (saved !== undefined && saved !== null) editor.restoreViewState(saved)
       const owner = doc
+      attached = doc
       editor.onDidCompositionStart(() => setComposing(owner, true))
       editor.onDidCompositionEnd(() => setComposing(owner, false))
       editorRef.current = editor
@@ -338,10 +344,9 @@ function TextBody({
       disposed = true
       const editor = editorRef.current
       if (editor !== null) {
-        viewStates.set(tabId, editor.saveViewState())
+        viewStates.set(tabIdRef.current, editor.saveViewState())
         // 조합 중에 떠나면 조합이 끝난 것으로 친다 — 기다리던 저장이 묶이지 않게.
-        const doc = getDoc(key)
-        if (doc !== undefined && doc.composing) setComposing(doc, false)
+        if (attached !== null && attached.composing) setComposing(attached, false)
         editor.dispose()
       }
       editorRef.current = null

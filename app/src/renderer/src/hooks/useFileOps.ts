@@ -1,0 +1,401 @@
+// 탐색기 파일 조작 흐름 (LIFE-592 F4) — main 조작(`window.corral.explorerOp`)을 부르고, 그 결과를 **열린 탭·문서·탐색기 상태·실행 취소 기록**에 반영한다.
+//
+// · 이름 변경·이동(E4): 부르기 전에 ① 대상 경로에 열린 탭·문서가 있으면 거절(같은 파일 탭이 둘이 되지 않게) ② 옮길 문서 중 저장 중인 것이 있으면 거절
+//   ③ 옮길 문서의 저장을 붙잡고(`holdDocs` — 끝난 뒤 새 경로에 쓴다) ④ 그 경로들의 감시 push 를 붙잡는다(앱이 한 이동의 「삭제됨」 깜빡임 0 — Orca 와 같은 결).
+//   성공하면 같은 틱에 문서 키(모델 그대로 — 내용·수정 표시·편집 실행 취소 기록 유지)·탭 id·view state·Markdown 모드·닫은 탭 기록·탐색기 펼침/선택을 옮긴다.
+// · 삭제(E3·Q2·Q3): 확인 대화상자 → 휴지통 → 수정 없는 탭은 닫고(문서 버림), 수정 중인 탭은 남긴다(감시가 「삭제됨」 을 단다 — F2·F3 기존 경로).
+// · 되살리기(E5): 사본으로 다시 만든 파일이 남은 수정 중 탭이 기대던 내용과 같으면 그 문서의 기준 stamp 만 옮긴다(「삭제됨」 이 풀리고 배너 없음).
+// · 실행 취소 기록은 worktree 경로별(`explorer-history.ts`). 조작은 한 줄로 선다(실행 취소·다시 실행·새 조작이 서로 끼지 않게).
+import { useCallback, useRef } from 'react'
+import { baseName, isAtOrUnder, remapRel, type EntryMark, type ExplorerDrop, type ExplorerOpInput, type ExplorerOpResult } from '../../../shared/explorer-ops.js'
+import { parentRel } from '../../../shared/explorer.js'
+import { emptyHistory, inverseOf, inverseOfBatch, peek, recordOp, settle, stepLabel, type History, type HistoryStep } from '../explorer-history.js'
+import { allDocs, disposeDoc, docKey, getDoc, holdDocs, rebaseDoc, rekeyDocs } from '../file-docs.js'
+import { fileTabsUnder, tabKindOf } from '../file-tabs.js'
+import type { GroupLayoutApi } from './useGroupLayout.js'
+import type { ExplorerApi } from './useExplorer.js'
+import type { MarkdownModeStore, ViewStateStore } from '../components/FileView.js'
+import { remapClosedFiles, type RecentlyClosed } from '../recently-closed.js'
+
+type Refusal = Extract<ExplorerOpResult, { ok: false }>
+const refusal = (code: Refusal['code'], error: string): Refusal => ({ ok: false, code, error })
+
+/** 탭 id 로 묶인 저장소(view state·Markdown 모드)의 키를 옮긴다. */
+function moveKeys<V>(store: Map<string, V>, moved: readonly { from: string; to: string }[]): void {
+  for (const pair of moved) {
+    const value = store.get(pair.from)
+    if (value === undefined) continue
+    store.delete(pair.from)
+    store.set(pair.to, value)
+  }
+}
+
+export type FileOpsDeps = {
+  /** 지금 탐색기가 보이는 worktree(활성 worktree 경로). */
+  root: string | null
+  explorer: ExplorerApi
+  layout: Pick<GroupLayoutApi, 'layout' | 'closeFile' | 'retargetFiles'>
+  viewStatesOf: (root: string) => ViewStateStore
+  markdownModesOf: (root: string) => MarkdownModeStore
+  recentlyClosedRef: { current: RecentlyClosed }
+  notify: (message: string) => void
+  /** 파일 탭 열기(탐색기와 같은 길 — 새 파일은 고정 탭으로, E1ⓔ). */
+  openFile: (input: { rel: string; preview: boolean }) => void
+  /** 열린 파일 감시 push 를 붙잡는다(그 경로들) — 돌려준 함수가 풀고 그 경로들의 마지막 감시 상태를 지운다(App `fileWatchState`). */
+  holdWatch: (input: { root: string; prefixes: string[] }) => () => void
+}
+
+export type FileOpsApi = {
+  /** 새 파일·폴더 — 실패면 입력 행에 보일 문구, 성공이면 null. */
+  create: (input: { dir: string; name: string; kind: 'file' | 'dir' }) => Promise<string | null>
+  rename: (input: { rel: string; name: string }) => Promise<string | null>
+  move: (input: { from: string; toDir: string }) => Promise<void>
+  trash: (rel: string) => Promise<void>
+  duplicate: (rel: string) => Promise<void>
+  importDrop: (drop: ExplorerDrop) => Promise<void>
+  undo: () => Promise<void>
+  redo: () => Promise<void>
+}
+
+/** 거절 사유 → 사람 말(알림). 코드는 괄호로 남긴다(회차 원자료가 어느 검사에서 났는지 본다). */
+export function opFailureMessage(result: Refusal): string {
+  const why = (() => {
+    switch (result.code) {
+      case 'exists':
+        return '그 자리에 같은 이름이 이미 있습니다 — 덮어쓰지 않습니다'
+      case 'invalid_name':
+        return '쓸 수 없는 이름입니다'
+      case 'protected':
+        return 'worktree 루트와 .git 은 조작할 수 없습니다'
+      case 'into_self':
+        return '폴더를 자기 자신이나 그 안으로 옮길 수 없습니다'
+      case 'outside_root':
+        return 'worktree 밖입니다'
+      case 'not_found':
+        return '대상이 없습니다'
+      case 'not_file':
+        return '일반 파일·폴더·링크가 아닙니다'
+      case 'changed':
+        return result.done === true ? '조작은 됐지만 그 사이 경로가 바뀌어 결과를 확인하지 못했습니다' : '그 사이 경로가 바뀌어 하지 않았습니다'
+      case 'modified':
+        return '만든 뒤(또는 되돌린 뒤) 바뀌어 실행 취소하지 않았습니다'
+      case 'expired':
+        return '되살릴 내용이 더 이상 메모리에 없습니다'
+      case 'trash_failed':
+        return '휴지통으로 옮기지 못했습니다(영구 삭제하지 않았습니다)'
+      case 'permission_denied':
+        return '권한이 없습니다'
+      case 'bad_token':
+        return '가져오기 원본을 확인할 수 없습니다'
+      default:
+        return result.error
+    }
+  })()
+  return `${why} (${result.code})`
+}
+
+export function useFileOps(deps: FileOpsDeps): FileOpsApi {
+  const latest = useRef(deps)
+  latest.current = deps
+  const histories = useRef(new Map<string, History>())
+  const queue = useRef<Promise<unknown>>(Promise.resolve())
+  const historyOf = (root: string): History => histories.current.get(root) ?? emptyHistory()
+
+  /** 조작을 한 줄로 세운다. */
+  const serial = useCallback(<T,>(run: () => Promise<T>): Promise<T> => {
+    const next = queue.current.then(run, run)
+    queue.current = next.catch(() => undefined)
+    return next
+  }, [])
+
+  const call = (input: ExplorerOpInput): Promise<ExplorerOpResult> => window.corral.explorerOp(input)
+
+  /** 이름 변경·이동이 성공했다 — 같은 틱에 문서·탭·view state·Markdown 모드·닫은 탭 기록·탐색기를 옮긴다(E4ⓐⓑⓓ). */
+  const retarget = (root: string, from: string, to: string): void => {
+    const d = latest.current
+    rekeyDocs({ root, from, to })
+    const moved = d.layout.retargetFiles({ worktreePath: root, from, to })
+    moveKeys(d.viewStatesOf(root), moved)
+    moveKeys(d.markdownModesOf(root), moved)
+    d.recentlyClosedRef.current = remapClosedFiles({ history: d.recentlyClosedRef.current, worktreePath: root, remap: (rel) => remapRel(rel, from, to) })
+    if (d.explorer.root === root) d.explorer.remap({ from, to })
+  }
+
+  const doMove = async (root: string, from: string, to: string, expect?: string): Promise<ExplorerOpResult> => {
+    const d = latest.current
+    const layout = d.layout.layout
+    const caseOnly = from !== to && from.toLowerCase() === to.toLowerCase()
+    if (from !== to && !caseOnly) {
+      const taken = (layout === null ? [] : fileTabsUnder({ layout, rel: to })).length > 0 || allDocs().some((doc) => doc.root === root && isAtOrUnder(doc.rel, to))
+      if (taken) return refusal('exists', `'${to}' 경로에 열린 탭이 있습니다 — 먼저 닫으세요`)
+    }
+    const moving = allDocs().filter((doc) => doc.root === root && isAtOrUnder(doc.rel, from))
+    if (moving.some((doc) => doc.saving)) return refusal('changed', '저장 중인 파일이 있습니다 — 저장이 끝난 뒤 다시 하세요')
+    const release = holdDocs(moving)
+    const unhold = d.holdWatch({ root, prefixes: [from, to] })
+    try {
+      const result = await call({ op: 'move', root, from, to, ...(expect === undefined ? {} : { expect }) })
+      if (result.ok && result.op === 'move' && result.from !== result.to) retarget(root, result.from, result.to)
+      return result
+    } finally {
+      release()
+      unhold()
+    }
+  }
+
+  /** 휴지통으로 간 경로 밑의 탭 — 수정 없는 것은 닫고(문서 버림), 수정 중인 것은 남긴다(Q3 — 「삭제됨」 은 감시가 단다). */
+  const closeCleanTabs = (root: string, rel: string): void => {
+    const d = latest.current
+    const layout = d.layout.layout
+    if (layout === null || d.root !== root) return
+    for (const tabId of fileTabsUnder({ layout, rel })) {
+      const kind = tabKindOf(tabId)
+      if (kind.kind !== 'file') continue
+      const doc = getDoc(docKey(root, kind.rel))
+      if (doc !== undefined && doc.dirty) continue
+      d.viewStatesOf(root).delete(tabId)
+      if (doc !== undefined) disposeDoc(doc.key)
+      d.layout.closeFile({ tabId })
+    }
+  }
+
+  /** `snapshot` — 되살릴 사본을 뜰지. 실행 취소·다시 실행 경로는 늘 뜨고(빈 폴더 포함), 사용자 삭제는 Q1 대로 파일 ≤ 5 MB 만. */
+  const doTrash = async (input: { root: string; rel: string; snapshot: boolean; expect?: EntryMark[] }): Promise<ExplorerOpResult> => {
+    const { root, rel, expect } = input
+    const result = await call({ op: 'trash', root, rel, snapshot: input.snapshot, ...(expect === undefined ? {} : { expect }) })
+    if (result.ok) closeCleanTabs(root, rel)
+    return result
+  }
+
+  const doRestore = async (root: string, rel: string, snapshotId: string): Promise<ExplorerOpResult> => {
+    const unhold = latest.current.holdWatch({ root, prefixes: [rel] })
+    try {
+      const result = await call({ op: 'restore', root, rel, snapshotId })
+      if (result.ok && result.op === 'restore' && result.hash !== null && result.stamp !== null) {
+        // 남은 수정 중 탭(Q3)이 기대던 내용이 그대로 돌아왔다 — 기준 stamp 만 옮긴다(「삭제됨」·외부 변경 배너 없이 정상으로).
+        const doc = getDoc(docKey(root, rel))
+        if (doc !== undefined) rebaseDoc(doc, { stamp: result.stamp, hash: result.hash })
+      }
+      return result
+    } finally {
+      unhold()
+    }
+  }
+
+  /** 기록된 조작 하나(실행 취소·다시 실행) — 결과들과 그 역조작. */
+  const runStep = async (root: string, step: HistoryStep): Promise<{ results: ExplorerOpResult[]; inverse: HistoryStep | null }> => {
+    switch (step.op) {
+      case 'move': {
+        const result = await doMove(root, step.from, step.to, step.expect)
+        return { results: [result], inverse: inverseOf(result) }
+      }
+      case 'trash': {
+        const result = await doTrash({ root, rel: step.rel, snapshot: true, expect: step.expect })
+        return { results: [result], inverse: inverseOf(result) }
+      }
+      case 'restore': {
+        const result = await doRestore(root, step.rel, step.snapshotId)
+        return { results: [result], inverse: inverseOf(result) }
+      }
+      case 'batch': {
+        const results: ExplorerOpResult[] = []
+        for (const one of step.steps) results.push(...(await runStep(root, one)).results)
+        return { results, inverse: inverseOfBatch(results) }
+      }
+    }
+  }
+
+  /** 조작이 건드린 폴더들 — 감시 push 를 기다리지 않고 바로 다시 읽는다(E1ⓔ). */
+  const touched = (result: ExplorerOpResult): string[] => {
+    if (!result.ok) return []
+    switch (result.op) {
+      case 'move':
+        return [parentRel(result.from), parentRel(result.to)]
+      case 'create':
+        return [parentRel(result.created), parentRel(result.rel)]
+      case 'trash':
+      case 'restore':
+      case 'duplicate':
+        return [parentRel(result.rel)]
+      case 'import':
+        return [result.dir]
+      case 'inspect':
+        return []
+    }
+  }
+  const refresh = (results: readonly ExplorerOpResult[]): void => {
+    const d = latest.current
+    const dirs = results.flatMap(touched)
+    // 사후 확인이 어긋난 경로 연산(done) — 무엇이 바뀌었는지 모르니 읽어 둔 것을 다시 읽는다.
+    if (results.some((result) => !result.ok && result.done === true)) d.explorer.refresh()
+    else if (dirs.length > 0) d.explorer.reloadDirs(dirs)
+  }
+
+  /** 새 조작 하나를 기록한다(역조작이 없으면 다시 실행 칸만 비운다 — E5ⓓ). */
+  const record = (root: string, result: ExplorerOpResult): void => {
+    const inverse = inverseOf(result)
+    histories.current.set(root, recordOp(historyOf(root), inverse === null ? null : { label: stepLabel(inverse), step: inverse }))
+  }
+
+  const create = useCallback(
+    (input: { dir: string; name: string; kind: 'file' | 'dir' }): Promise<string | null> =>
+      serial(async () => {
+        const d = latest.current
+        const root = d.root
+        if (root === null) return '열린 worktree 가 없습니다'
+        const result = await call({ op: 'create', root, dir: input.dir, name: input.name, kind: input.kind })
+        refresh([result])
+        if (!result.ok) {
+          if (result.done === true) d.notify(opFailureMessage(result))
+          return opFailureMessage(result)
+        }
+        record(root, result)
+        if (result.op === 'create') {
+          d.explorer.reveal(result.rel)
+          if (result.kind === 'file') d.openFile({ rel: result.rel, preview: false })
+        }
+        return null
+      }),
+    [serial],
+  )
+
+  const rename = useCallback(
+    (input: { rel: string; name: string }): Promise<string | null> =>
+      serial(async () => {
+        const d = latest.current
+        const root = d.root
+        if (root === null) return '열린 worktree 가 없습니다'
+        const parent = parentRel(input.rel)
+        const to = parent === '' ? input.name : `${parent}/${input.name}`
+        if (to === input.rel) return null
+        const result = await doMove(root, input.rel, to)
+        refresh([result])
+        if (!result.ok) {
+          if (result.done === true) d.notify(opFailureMessage(result))
+          return opFailureMessage(result)
+        }
+        record(root, result)
+        d.explorer.select(to)
+        return null
+      }),
+    [serial],
+  )
+
+  const move = useCallback(
+    (input: { from: string; toDir: string }): Promise<void> =>
+      serial(async () => {
+        const d = latest.current
+        const root = d.root
+        if (root === null) return
+        const to = input.toDir === '' ? baseName(input.from) : `${input.toDir}/${baseName(input.from)}`
+        // 같은 부모 = 무동작(E6ⓑ).
+        if (parentRel(input.from) === input.toDir) return
+        const result = await doMove(root, input.from, to)
+        refresh([result])
+        if (!result.ok) {
+          d.notify(`'${baseName(input.from)}' 을(를) 옮기지 못했습니다: ${opFailureMessage(result)}`)
+          return
+        }
+        record(root, result)
+        d.explorer.reveal(to)
+      }),
+    [serial],
+  )
+
+  const trash = useCallback(
+    (rel: string): Promise<void> =>
+      serial(async () => {
+        const d = latest.current
+        const root = d.root
+        if (root === null) return
+        const inspected = await call({ op: 'inspect', root, rel })
+        if (!inspected.ok || inspected.op !== 'inspect') {
+          if (!inspected.ok) d.notify(`'${baseName(rel)}' 을(를) 삭제할 수 없습니다: ${opFailureMessage(inspected)}`)
+          return
+        }
+        // 확인(Q2) — 폴더면 「안의 내용까지」, 실행 취소 가능 여부(Q1), 수정 중 탭(Q3).
+        const dirty = allDocs()
+          .filter((doc) => doc.root === root && doc.dirty && isAtOrUnder(doc.rel, rel))
+          .map((doc) => doc.rel)
+        const choice = await window.corral.fileDialog({ kind: 'trash', file: rel, isDir: inspected.kind === 'dir', undoable: inspected.undoable, dirty })
+        if (choice !== 'trash') return
+        const result = await doTrash({ root, rel, snapshot: inspected.undoable })
+        refresh([result])
+        if (!result.ok) {
+          d.notify(`'${baseName(rel)}' 을(를) 휴지통으로 옮기지 못했습니다: ${opFailureMessage(result)}`)
+          return
+        }
+        // Q1 — 파일(≤ 5 MB, 사본 있음)만 실행 취소 항목. 폴더·큰 파일·링크는 사본이 없어 다시 실행 칸만 비운다.
+        record(root, result)
+      }),
+    [serial],
+  )
+
+  const duplicate = useCallback(
+    (rel: string): Promise<void> =>
+      serial(async () => {
+        const d = latest.current
+        const root = d.root
+        if (root === null) return
+        const result = await call({ op: 'duplicate', root, rel })
+        refresh([result])
+        if (!result.ok) {
+          d.notify(`'${baseName(rel)}' 을(를) 복제하지 못했습니다: ${opFailureMessage(result)}`)
+          return
+        }
+        record(root, result)
+        if (result.op === 'duplicate') d.explorer.reveal(result.rel)
+      }),
+    [serial],
+  )
+
+  const importDrop = useCallback(
+    (drop: ExplorerDrop): Promise<void> =>
+      serial(async () => {
+        const d = latest.current
+        if (drop.token === null) {
+          d.notify(`가져오지 못했습니다: ${drop.error}`)
+          return
+        }
+        if (drop.root !== d.root) return
+        const result = await call({ op: 'import', root: drop.root, dir: drop.dir, token: drop.token })
+        refresh([result])
+        if (!result.ok || result.op !== 'import') {
+          if (!result.ok) d.notify(`가져오지 못했습니다: ${opFailureMessage(result)}`)
+          return
+        }
+        record(drop.root, result)
+        const first = result.rels[0]
+        if (first !== undefined) d.explorer.reveal(first)
+        // 건너뛴 것(링크·특수 파일)·실패한 것은 알린다(E7ⓑⓔ) — 무엇이 들어왔는지 사용자가 안다.
+        const notes = [
+          result.rels.length > 0 ? `${result.rels.length}개 항목을 가져왔습니다` : '가져온 항목이 없습니다',
+          result.skipped.length > 0 ? `건너뜀 ${result.skipped.length}: ${result.skipped.slice(0, 3).map((row) => `${row.name}(${row.reason})`).join(', ')}` : null,
+          result.failed.length > 0 ? `실패 ${result.failed.length}: ${result.failed.slice(0, 3).map((row) => row.name).join(', ')}` : null,
+        ].filter((line): line is string => line !== null)
+        if (result.skipped.length > 0 || result.failed.length > 0 || result.rels.length === 0) d.notify(notes.join(' · '))
+      }),
+    [serial],
+  )
+
+  const replay = useCallback(
+    (side: 'undo' | 'redo'): Promise<void> =>
+      serial(async () => {
+        const d = latest.current
+        const root = d.root
+        if (root === null) return
+        const entry = peek(historyOf(root), side)
+        if (entry === null) return
+        const { results, inverse } = await runStep(root, entry.step)
+        refresh(results)
+        histories.current.set(root, settle({ history: historyOf(root), side, inverse: inverse === null ? null : { label: stepLabel(inverse), step: inverse } }))
+        const failed = results.find((result): result is Refusal => !result.ok)
+        if (failed !== undefined) d.notify(`${side === 'undo' ? '실행 취소' : '다시 실행'}하지 못했습니다 — ${entry.label}: ${opFailureMessage(failed)}`)
+      }),
+    [serial],
+  )
+  const undo = useCallback(() => replay('undo'), [replay])
+  const redo = useCallback(() => replay('redo'), [replay])
+
+  return { create, rename, move, trash, duplicate, importDrop, undo, redo }
+}

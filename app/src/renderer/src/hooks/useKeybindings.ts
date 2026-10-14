@@ -25,7 +25,9 @@ export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onI
         return
       }
       const binding = bindingFromEvent(event)
-      const match = binding === null ? null : matchBinding(binding, latest.current.overrides)
+      // LIFE-592 — 탐색기 트리 자체가 키를 받았으면 탐색기 범위 액션(⌘⌫·⌘Z·⌘⇧Z)을 먼저 본다. 트리 안 입력 행(새 이름·이름 변경)은 트리가 아니라 입력이다.
+      const scope = event.target instanceof Element && event.target.matches('[data-explorer-tree]') ? 'explorer' : 'global'
+      const match = binding === null ? null : matchBinding(binding, latest.current.overrides, scope)
       if (match === null) return
       // Coordinator clarification: every keyboard action yields to tab renaming, including MRU.
       // LIFE-478: 카드 인라인 rename 입력(`data-inline-rename`)에도 양보한다(K3ⓐ).

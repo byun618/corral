@@ -17,7 +17,8 @@
 //   목록 안 링크 행의 대상 실경로(`target`)나 거친 링크(`via`)가 바뀌면 그 행을 담은 목록을 다시 읽는다 — 펼치지 않은 링크의 대상이 생기거나 없어져도 `kind`·`link` 가 맞는다(R5-A·R6-B).
 // · 표시 토글(dotfile·ignored)은 전역 ui-prefs(E2ⓓⓔ — 범위 「전역」, `shared/types.ts` UiPrefs 주석).
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { ALWAYS_HIDDEN_NAMES, EXPLORER_SAFETY_NET_MS, type ExplorerEntry, type ExplorerFilter } from '../../../shared/explorer.js'
+import { ALWAYS_HIDDEN_NAMES, EXPLORER_SAFETY_NET_MS, parentRel, type ExplorerEntry, type ExplorerFilter } from '../../../shared/explorer.js'
+import { isAtOrUnder, remapRel } from '../../../shared/explorer-ops.js'
 import { fromWire, type GitSnapshot } from '../../../shared/explorer-git.js'
 
 export type ExplorerRootState = {
@@ -93,6 +94,12 @@ export type ExplorerApi = {
   collapseAll: () => void
   refresh: () => void
   setFilter: (patch: Partial<ExplorerFilter>) => void
+  /**
+   * LIFE-592 — 조작 뒤 바로 그 폴더들을 다시 읽는다(감시 push 를 기다리지 않는다 — E1ⓔ). 보이는 폴더만 읽고 안 보이는 캐시는 무효 표시.
+   */
+  reloadDirs: (dirs: readonly string[]) => void
+  /** LIFE-592 E2ⓔ — 이름 변경·이동으로 `from` 밑 펼침·선택을 `to` 쪽으로 옮기고, 옛 경로의 목록 캐시를 버린 뒤 양쪽 부모를 다시 읽는다. */
+  remap: (input: { from: string; to: string }) => void
 }
 
 export function useExplorer({ root, active }: { root: string | null; active: boolean }): ExplorerApi {
@@ -350,5 +357,35 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
     })
   }, [])
 
-  return { root, state: root === null ? null : (stores.current.get(root) ?? null), filter, version, toggle, expand, collapse, select, reveal, setScrollTop, collapseAll, refresh, setFilter }
+  const reloadDirs = useCallback(
+    (dirs: readonly string[]) =>
+      withRoot((key, store) => {
+        for (const dir of new Set(dirs)) {
+          if (isVisibleDir(store.expanded, dir)) load(key, dir)
+          else hideStale({ key, rel: dir })
+        }
+      }),
+    [withRoot, load, hideStale],
+  )
+  const remap = useCallback(
+    (input: { from: string; to: string }) =>
+      withRoot((key, store) => {
+        store.expanded = new Set([...store.expanded].map((rel) => remapRel(rel, input.from, input.to) ?? rel))
+        if (store.selected !== null) store.selected = remapRel(store.selected, input.from, input.to) ?? store.selected
+        for (const rel of [...store.listings.keys(), ...store.errors.keys()]) {
+          if (rel === '' || !isAtOrUnder(rel, input.from)) continue
+          store.listings.delete(rel)
+          store.real.delete(rel)
+          store.ids.delete(rel)
+          store.errors.delete(rel)
+          store.invalid.delete(rel)
+        }
+        for (const dir of new Set([parentRel(input.from), parentRel(input.to), ...visibleExpanded(store.expanded).filter((rel) => !store.listings.has(rel))])) {
+          if (isVisibleDir(store.expanded, dir)) load(key, dir)
+        }
+      }),
+    [withRoot, load],
+  )
+
+  return { root, state: root === null ? null : (stores.current.get(root) ?? null), filter, version, toggle, expand, collapse, select, reveal, setScrollTop, collapseAll, refresh, setFilter, reloadDirs, remap }
 }

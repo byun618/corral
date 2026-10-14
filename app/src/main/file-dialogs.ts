@@ -65,6 +65,26 @@ export function fileDialogSpec(request: FileDialogRequest): MessageBoxSpec {
         },
         choices: ['discard', 'cancel'],
       }
+    case 'trash': {
+      // VS Code `fileActions.ts` 확인(「Are you sure you want to delete '{0}'?」 · 「You can restore this file from the Trash.」) 의 한국어 결.
+      // 실행 취소 가능 여부는 Q1(파일 ≤ 5 MB 만 — 폴더·큰 파일은 휴지통에서 복원), 수정 중 탭은 Q3(탭은 「삭제됨」 으로 남는다).
+      const lines = [
+        request.isDir ? '폴더 안의 내용까지 함께 휴지통으로 이동합니다.' : null,
+        request.undoable ? '실행 취소(⌘Z)로 되돌릴 수 있습니다.' : '실행 취소로 되돌릴 수 없습니다 — 휴지통에서 복원하세요.',
+        request.dirty.length > 0 ? `저장하지 않은 변경이 있는 열린 파일:\n${listOf(request.dirty)}\n그 탭은 「삭제됨」 으로 남고 편집 내용은 그대로입니다.` : null,
+      ].filter((line): line is string => line !== null)
+      return {
+        options: {
+          type: 'warning',
+          message: `'${nameOf(request.file)}'을(를) 휴지통으로 이동할까요?`,
+          detail: lines.join('\n\n'),
+          buttons: ['휴지통으로 이동', '취소'],
+          defaultId: 0,
+          cancelId: 1,
+        },
+        choices: ['trash', 'cancel'],
+      }
+    }
   }
 }
 
@@ -110,6 +130,13 @@ export function parseFileDialogRequest(input: unknown): FileDialogRequest | null
       return typeof file === 'string' ? { kind: 'conflict', file } : null
     case 'recreate':
       return typeof file === 'string' ? { kind: 'recreate', file } : null
+    case 'trash': {
+      const isDir = 'isDir' in input ? input.isDir : undefined
+      const undoable = 'undoable' in input ? input.undoable : undefined
+      const dirty = 'dirty' in input ? input.dirty : undefined
+      const list = Array.isArray(dirty) && dirty.every((item) => typeof item === 'string') ? dirty : null
+      return typeof file === 'string' && typeof isDir === 'boolean' && typeof undoable === 'boolean' && list !== null ? { kind: 'trash', file, isDir, undoable, dirty: list } : null
+    }
     default:
       return null
   }

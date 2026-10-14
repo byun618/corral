@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, validateOverrides } from './keybindings.js'
+import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, explorerKeyShortcut, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, scopeOf, validateOverrides } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
   it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
     // LIFE-478: + workspace.rename(⌘⌥R) · workspace.delete(⌘⇧⌫)
@@ -8,12 +8,41 @@ describe('shortcut catalog and compatibility', () => {
     // LIFE-515: + terminal.newAgent(⌘⌥T)
     // LIFE-589: + rightPanel.toggle(⌘L) · explorer.show(⌘⇧E)
     // LIFE-591: + file.save(⌘S)
-    expect(ACTIONS).toHaveLength(22)
+    // LIFE-592: + explorer.delete(⌘⌫) · explorer.undo(⌘Z) · explorer.redo(⌘⇧Z) — 탐색기 범위
+    expect(ACTIONS).toHaveLength(25)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
     expect(bindingConflict({})).toBeNull()
-    for (const action of ACTIONS) action.defaultBinding.forEach((binding, index) => expect(matchBinding(binding, {})).toEqual({ id: action.id, variant: action.bindingVariants[index] }))
+    for (const action of ACTIONS) action.defaultBinding.forEach((binding, index) => expect(matchBinding(binding, {}, scopeOf(action))).toEqual({ id: action.id, variant: action.bindingVariants[index] }))
+  })
+  it('LIFE-592 탐색기 범위 — 트리 안에서만 매칭, 트리 안에서는 전역보다 앞선다, 범위가 다르면 충돌 아님', () => {
+    // 트리 밖: ⌘Z·⌘⌫ 는 아무 액션도 아니다(편집기·입력칸·터미널의 것), ⌘⇧Z 는 터미널 줌 그대로
+    expect(matchBinding('Mod+Z', {})).toBeNull()
+    expect(matchBinding('Mod+Backspace', {})).toBeNull()
+    expect(matchBinding('Mod+Shift+Z', {})).toEqual({ id: 'terminal.zoom', variant: 0 })
+    // 트리 안: 탐색기 액션이 먼저, 없으면 전역(⌘K 팔레트는 트리에서도 열린다)
+    expect(matchBinding('Mod+Z', {}, 'explorer')).toEqual({ id: 'explorer.undo', variant: 0 })
+    expect(matchBinding('Mod+Shift+Z', {}, 'explorer')).toEqual({ id: 'explorer.redo', variant: 0 })
+    expect(matchBinding('Mod+Backspace', {}, 'explorer')).toEqual({ id: 'explorer.delete', variant: 0 })
+    expect(matchBinding('Mod+K', {}, 'explorer')).toEqual({ id: 'palette.open', variant: 0 })
+    expect(bindingConflict({})).toBeNull()
+    // 같은 범위 안 겹침 — 나중 기본값(양보)이 비켜 선다(탐색기 삭제를 ⌘Z 로 바꾸면 탐색기 실행 취소는 「없음」)
+    expect(bindingsFor('explorer.undo', validateOverrides({ 'explorer.delete': ['Mod+Z'] }))).toEqual([null])
+    // 재지정 — 트리 안 다시 실행을 ⌘Y 로
+    const moved = validateOverrides({ 'explorer.redo': ['Mod+Y'] })
+    expect(matchBinding('Mod+Y', moved, 'explorer')).toEqual({ id: 'explorer.redo', variant: 0 })
+    expect(matchBinding('Mod+Shift+Z', moved, 'explorer')).toEqual({ id: 'terminal.zoom', variant: 0 })
+  })
+  it('LIFE-592 explorerKeyShortcut — 트리 포커스 표지가 켜졌을 때 ⌘Z·⌘⇧Z 만 main 이 가져온다', () => {
+    const key = (input: { key: string; shift?: boolean; focused: boolean; overrides?: object }) =>
+      explorerKeyShortcut({ key: input.key, code: `Key${input.key.toUpperCase()}`, meta: true, alt: false, control: false, shift: input.shift === true, isAutoRepeat: false, overrides: input.overrides ?? {}, explorerFocused: input.focused })
+    expect(key({ key: 'z', focused: true })).toEqual({ id: 'explorer.undo', variant: 0 })
+    expect(key({ key: 'Z', shift: true, focused: true })).toEqual({ id: 'explorer.redo', variant: 0 })
+    expect(key({ key: 'z', focused: false })).toBeNull()
+    expect(key({ key: 'k', focused: true })).toBeNull()
+    // 재지정해 ⌘Z 가 탐색기 실행 취소가 아니면 가져오지 않는다(메뉴 role 그대로)
+    expect(key({ key: 'z', focused: true, overrides: validateOverrides({ 'explorer.undo': ['Mod+U'] }) })).toBeNull()
   })
   it('LIFE-511 settings.open = ⌘, (Comma 물리 키) · 기존 재정의가 ⌘, 를 쓰면 비켜 선다', () => {
     expect(matchBinding('Mod+,', {})).toEqual({ id: 'settings.open', variant: 0 })

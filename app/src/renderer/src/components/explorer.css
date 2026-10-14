@@ -119,3 +119,25 @@
 .explorer-badge.is-link + .explorer-badge.is-git { margin-left: -8px; }
 .explorer-badge.is-bubble { width: auto; margin-right: 14px; opacity: 0.4; }
 .explorer-badge.is-bubble .codicon { font-size: 14px; }
+
+/* --- 파일 조작 (LIFE-592 F4) --------------------------------------------------------------- */
+/* 인라인 입력 — VS Code 탐색기 입력 상자(inputBackground · focusBorder 1px · 오류면 inputValidation.errorBorder 와 그 아래 안내 상자). */
+.explorer-row.is-editing { cursor: default; background: none; z-index: 2; }
+.explorer-row.is-editing:hover { background: none; }
+.explorer-input-box { position: relative; flex: 1 1 auto; min-width: 0; height: 22px; display: flex; align-items: center; padding-right: 8px; }
+.explorer-input {
+  width: 100%; height: 20px; padding: 0 3px; font: inherit; font-size: 13px; color: var(--fg);
+  background: var(--bg); border: 1px solid #0078d4; border-radius: 2px; outline: none;
+}
+.explorer-input.is-invalid { border-color: #be1100; }
+.explorer-input-message {
+  position: absolute; top: 21px; left: 0; right: 8px; z-index: 3; padding: 4px 6px; font-size: 12px; line-height: 16px; white-space: normal;
+  color: var(--fg); background: #5a1d1d; border: 1px solid #be1100;
+}
+.explorer-twistie .codicon.is-placeholder { visibility: hidden; }
+
+/* 끌어 옮기기 — 놓일 폴더 영역(VS Code list.dropBackground 류)·끄는 원본 흐림. 루트면 스크롤 영역 전체. */
+.explorer-row.is-drop-target { background: rgb(83 89 93 / 0.5); }
+.explorer-scroll.is-drop-root { background: rgb(83 89 93 / 0.5); }
+.explorer-row.is-drag-source { opacity: 0.5; }
+.explorer-scroll.is-dragging .explorer-row { cursor: grabbing; }

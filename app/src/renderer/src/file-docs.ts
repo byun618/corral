@@ -43,9 +43,10 @@ export type ReadOnlyReason = 'encoding' | 'hardlink' | 'large'
 export type ExternalState = { kind: 'none' } | { kind: 'changed'; diskStamp: string | null; deleted: boolean } | { kind: 'kept'; diskStamp: string | null }
 
 export type FileDoc = {
-  readonly key: string
+  /** 문서 키·상대 경로 — 탐색기 이름 변경·이동(LIFE-592 E4)이 `rekeyDocs` 로 바꾼다(모델·실행 취소 기록은 그대로). 그 밖에서는 바꾸지 않는다. */
+  key: string
   readonly root: string
-  readonly rel: string
+  rel: string
   readonly model: Model
   /** 읽기 전용 까닭 — 다시 읽을 때(수정 없는 문서 갱신·되돌리기) 디스크 메타데이터로 다시 잰다(수정 r1 R1-F). */
   readOnly: ReadOnlyReason | null
@@ -87,6 +88,11 @@ export type FileDoc = {
   composing: boolean
   compositionWaiters: (() => void)[]
   listeners: Disposable[]
+  /**
+   * 탐색기 조작이 이 파일 경로를 옮기는 중(LIFE-592 E4ⓑ) — 저장은 이것이 풀릴 때까지 기다렸다가 **바뀐 경로**에 쓴다(옛 경로에 다시 만들지 않게).
+   * null = 막지 않음.
+   */
+  hold: Promise<void> | null
 }
 
 // --- 줄끝 (순수 함수 — 시험 대상) ---------------------------------------------------------
@@ -218,6 +224,7 @@ export function adoptDoc(input: { root: string; rel: string; model: Model; text:
     composing: false,
     compositionWaiters: [],
     listeners: [],
+    hold: null,
   }
   doc.listeners.push(
     input.model.onDidChangeContent((event) => {
@@ -374,6 +381,54 @@ export function untilComposed(doc: FileDoc, timeoutMs = 1000): Promise<boolean> 
       resolve(true)
     })
   })
+}
+
+/**
+ * 탐색기 이름 변경·이동(LIFE-592 E4) — `root` 의 `from`(파일 또는 폴더) 밑 문서를 `to` 쪽 키·경로로 옮긴다. **같은 문서 객체·같은 모델**이라
+ * 내용·수정 표시·편집 실행 취소 기록·기준 stamp 가 그대로다(이름 변경은 inode·mtime 을 바꾸지 않는다 — 다시 읽어도 같은 stamp). 옮긴 키 쌍을 돌려준다.
+ * 대상 키에 이미 문서가 있으면 그 문서는 옮기지 않는다(부르는 쪽이 미리 거른다 — 열린 탭과 겹치는 이동은 거절).
+ */
+export function rekeyDocs(input: { root: string; from: string; to: string }): { from: string; to: string }[] {
+  const moved: { from: string; to: string }[] = []
+  for (const doc of [...docs.values()]) {
+    if (doc.root !== input.root) continue
+    const rel = doc.rel === input.from ? input.to : input.from !== '' && doc.rel.startsWith(`${input.from}/`) ? `${input.to}${doc.rel.slice(input.from.length)}` : null
+    if (rel === null) continue
+    const key = docKey(input.root, rel)
+    if (docs.has(key)) continue
+    docs.delete(doc.key)
+    moved.push({ from: doc.key, to: key })
+    doc.key = key
+    doc.rel = rel
+    docs.set(key, doc)
+  }
+  if (moved.length > 0) notify()
+  return moved
+}
+
+/** 저장을 잠시 막는다(LIFE-592 — 경로를 옮기는 동안). 돌려준 함수를 부르면 풀린다. 이미 저장 중인 문서는 부르는 쪽이 미리 거른다. */
+export function holdDocs(targets: readonly FileDoc[]): () => void {
+  let release = (): void => undefined
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  for (const doc of targets) doc.hold = gate
+  return () => {
+    for (const doc of targets) if (doc.hold === gate) doc.hold = null
+    release()
+  }
+}
+
+/**
+ * 삭제 실행 취소로 같은 내용이 다시 생겼다(LIFE-592 E4ⓔ) — 문서가 기대던 내용 지문과 같으면 새 디스크 stamp 로 기준만 옮긴다(수정 내용은 그대로).
+ * 그래야 「삭제됨」 이 풀릴 때 외부 변경 배너가 뜨지 않고, 다음 저장이 충돌로 막히지 않는다. 지문이 다르면 아무것도 안 한다(평소 외부 변경 흐름).
+ */
+export function rebaseDoc(doc: FileDoc, input: { stamp: string; hash: string }): boolean {
+  if (doc.hash !== input.hash) return false
+  doc.stamp = input.stamp
+  doc.external = { kind: 'none' }
+  notify()
+  return true
 }
 
 /** 모델을 버린다(닫기 확인 뒤·「저장 안 함」·수정 없는 문서의 탭이 사라짐). */

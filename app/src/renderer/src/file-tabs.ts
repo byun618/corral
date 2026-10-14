@@ -9,6 +9,7 @@
 // 문자열 id 를 유지하는 이유(하위 방향 E1ⓓ): 기준 commit 빌드가 새 형식 `ui-prefs.json` 을 읽으면 파일 탭 id 는 herdr 에 없는 탭으로 걸러지고
 // 터미널 탭 배치·핀·색은 그대로 남는다 — 구 앱이 죽거나 터미널 배치를 버릴 모양(객체 id 등)을 만들지 않는다.
 import { FILE_TAB_PREFIX, findGroup, groupOfTab, isFileTabId, listGroups, removeTabFromGroup, updateGroup, type GroupLayout, type TabGroup } from './group-tree.js'
+import { remapRel } from '../../shared/explorer-ops.js'
 
 export { FILE_TAB_PREFIX, isFileTabId }
 
@@ -118,4 +119,35 @@ export function fileTabsOf(layout: GroupLayout): { tabId: string; rel: string; g
       return kind.kind === 'file' ? [{ tabId, rel: kind.rel, groupId: group.groupId }] : []
     }),
   )
+}
+
+/**
+ * 탐색기 이름 변경·이동(LIFE-592 E4ⓐ) — `from`(파일 또는 폴더) 밑 파일 탭 id 를 `to` 쪽으로 바꾼다. 영역·탭 순서·활성·미리보기 여부는 그대로(문자열 id 만 바뀐다 —
+ * `groupLayouts` 영속 **형식** 무변경). 바뀐 id 쌍을 돌려준다(view state·Markdown 모드·닫은 탭 기록을 같이 옮긴다). 대상 id 가 이미 배치에 있으면 그 탭은 두고
+ * 건너뛴다(부르는 쪽이 미리 거른다 — 같은 파일 탭이 둘이 되지 않게).
+ */
+export function retargetFileTabs(input: { layout: GroupLayout; from: string; to: string }): { layout: GroupLayout; moved: { from: string; to: string }[] } {
+  const present = new Set(listGroups(input.layout.root).flatMap((group) => group.tabOrder))
+  const map = new Map<string, string>()
+  for (const tabId of present) {
+    const kind = tabKindOf(tabId)
+    if (kind.kind !== 'file') continue
+    const rel = remapRel(kind.rel, input.from, input.to)
+    if (rel === null || rel === kind.rel) continue
+    const next = fileTabId(rel)
+    if (!present.has(next)) map.set(tabId, next)
+  }
+  if (map.size === 0) return { layout: input.layout, moved: [] }
+  const swap = (tabId: string | null | undefined): string | null => (tabId === null || tabId === undefined ? null : (map.get(tabId) ?? tabId))
+  let layout = input.layout
+  for (const group of listGroups(input.layout.root)) {
+    if (!group.tabOrder.some((tabId) => map.has(tabId))) continue
+    layout = updateGroup(layout, group.groupId, (current) => ({ ...current, tabOrder: current.tabOrder.map((tabId) => map.get(tabId) ?? tabId), activeTabId: swap(current.activeTabId), previewTabId: swap(current.previewTabId) }))
+  }
+  return { layout, moved: [...map].map(([from, to]) => ({ from, to })) }
+}
+
+/** `rel`(파일 또는 폴더) 자신이거나 그 밑의 열린 파일 탭 id. */
+export function fileTabsUnder(input: { layout: GroupLayout; rel: string }): string[] {
+  return fileTabsOf(input.layout).filter((tab) => tab.rel === input.rel || tab.rel.startsWith(`${input.rel}/`)).map((tab) => tab.tabId)
 }

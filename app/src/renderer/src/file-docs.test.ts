@@ -1,7 +1,7 @@
 // LIFE-591 E1ⓒⓔⓕ·E2ⓑⓖ·E3ⓑ·E4ⓒⓓ — 문서 저장소·저장 흐름(단위). Monaco 대신 같은 모양의 가짜 모델(줄 배열 + 실행 취소 스택)을 쓴다.
 // 줄끝: 섞인 줄끝·BOM·끝 개행 없음 파일을 한 글자 고쳐 직렬화하면 그 한 글자만 다르다. 수정 여부: 버전 id(실행 취소로 저장 상태면 해제).
 import { beforeEach, describe, expect, it } from 'vitest'
-import { adoptDoc, allDocs, applyEolChange, disposeDoc, eolsOf, getDoc, joinLines, reloadDoc, revertDoc, serialize, setComposing, type DocModel } from './file-docs.js'
+import { adoptDoc, allDocs, applyEolChange, disposeDoc, eolsOf, getDoc, holdDocs, joinLines, rebaseDoc, rekeyDocs, reloadDoc, revertDoc, serialize, setComposing, type DocModel } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, saveFailureMessage, type SaveDeps } from './file-save.js'
 import type { FileDialogChoice, FileDialogRequest, FileWriteInput, FileWriteResult } from '../../shared/file-view.js'
 
@@ -607,5 +607,55 @@ describe('수정 r3', () => {
     expect(serialize(doc)).toBe('DISK\n')
     expect(doc.bom).toBe(false)
     expect(Reflect.get(doc, 'headPoints').length).toBeLessThanOrEqual(3)
+  })
+})
+
+describe('LIFE-592 E4 경로 옮김', () => {
+  it('rekeyDocs — 같은 문서 객체·모델(내용·수정·실행 취소 기록)이 새 키로, 다른 worktree·형제 접두사는 그대로', () => {
+    const { doc, model } = open('abc\n')
+    model.type(1, 1, 'X')
+    const other = adoptDoc({ root: '/other', rel: doc.rel, model: new FakeModel('q'), text: 'q', bom: false, stamp: 's', hash: 'h', readOnly: null, large: false })
+    const oldKey = doc.key
+    const oldRel = doc.rel
+    const moved = rekeyDocs({ root: '/wt', from: doc.rel, to: `moved/${doc.rel}` })
+    expect(doc.rel).toBe(`moved/${oldRel}`)
+    expect(moved).toEqual([{ from: oldKey, to: doc.key }])
+    expect(getDoc(oldKey)).toBeUndefined()
+    expect(getDoc(doc.key)).toBe(doc)
+    expect(doc.model).toBe(model)
+    expect(doc.dirty).toBe(true)
+    model.undoLast()
+    expect(doc.dirty).toBe(false)
+    expect(getDoc(other.key)).toBe(other)
+  })
+  it('rekeyDocs — 폴더 밑 문서 전부, 이름이 접두사만 같은 형제는 아니다', () => {
+    const a = adoptDoc({ root: '/wt', rel: 'src/a.ts', model: new FakeModel('a'), text: 'a', bom: false, stamp: 's', hash: 'h', readOnly: null, large: false })
+    const b = adoptDoc({ root: '/wt', rel: 'src2/b.ts', model: new FakeModel('b'), text: 'b', bom: false, stamp: 's', hash: 'h', readOnly: null, large: false })
+    rekeyDocs({ root: '/wt', from: 'src', to: 'lib' })
+    expect(a.rel).toBe('lib/a.ts')
+    expect(b.rel).toBe('src2/b.ts')
+  })
+  it('holdDocs — 옮기는 동안의 저장은 풀린 뒤 새 경로에 쓴다(옛 경로를 「다시 만들기」 로 되살리지 않는다)', async () => {
+    const { doc, model } = open('abc\n', { stamp: 's0' })
+    model.type(1, 1, 'X')
+    const fake = fakeDeps({ disk: { stamp: 's0', text: 'abc\n' } })
+    const release = holdDocs([doc])
+    const saving = saveDoc(doc, fake.deps)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(fake.writes).toHaveLength(0)
+    rekeyDocs({ root: '/wt', from: doc.rel, to: 'renamed.txt' })
+    release()
+    expect(await saving).toBe('saved')
+    expect(fake.writes.map((write) => write.rel)).toEqual(['renamed.txt'])
+    expect(fake.dialogs).toEqual([])
+  })
+  it('rebaseDoc — 기대던 지문과 같으면 stamp 만 옮기고 외부 변경 표시를 지운다, 다르면 아무것도 안 한다', () => {
+    const { doc, model } = open('abc\n', { stamp: 's0', hash: 'h0' })
+    model.type(1, 1, 'X')
+    expect(rebaseDoc(doc, { stamp: 's9', hash: 'other' })).toBe(false)
+    expect(doc.stamp).toBe('s0')
+    expect(rebaseDoc(doc, { stamp: 's9', hash: 'h0' })).toBe(true)
+    expect(doc.stamp).toBe('s9')
+    expect(doc.dirty).toBe(true)
   })
 })

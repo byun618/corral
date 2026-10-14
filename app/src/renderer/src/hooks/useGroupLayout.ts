@@ -8,7 +8,7 @@
 // 배치는 **worktree 마다 따로** 산다 — 창은 한 번에 하나만 보이지만(R3-f) 나머지도 보존된다.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { closeFileTab, keepFileTab, openFileTab, reopenFileTab } from '../file-tabs.js'
+import { closeFileTab, keepFileTab, openFileTab, reopenFileTab, retargetFileTabs } from '../file-tabs.js'
 import {
   closeGroup as closeGroupIn,
   dropDeadTabs,
@@ -74,6 +74,11 @@ export type GroupLayoutApi = {
   closeFile: (input: { tabId: string; onClosed?: (closed: { groupId: string; index: number; preview: boolean }) => void }) => void
   /** 닫은 파일 탭 다시 열기(⌘⇧T) — 같은 영역·자리·미리보기 여부. */
   reopenFile: (input: { rel: string; groupId: string; index: number; preview: boolean }) => void
+  /**
+   * LIFE-592 E4 — 탐색기 이름 변경·이동을 **그 worktree 의 배치**에 반영한다(파일 탭 id 만 바뀐다). 화면에 안 보이는 worktree 배치도 같은 규칙으로 바꾼다.
+   * 바뀐 탭 id 쌍은 지금 화면 배치로 미리 셈해 돌려준다(view state 등을 같이 옮긴다).
+   */
+  retargetFiles: (input: { worktreePath: string; from: string; to: string }) => { from: string; to: string }[]
 }
 
 const ROOT_GROUP = 'g1'
@@ -316,6 +321,23 @@ export function useGroupLayout(input: {
     [mutate],
   )
 
+  const retargetFiles = useCallback(
+    (target: { worktreePath: string; from: string; to: string }) => {
+      const shown = target.worktreePath === input.worktreePath ? layout : (byWorktree[target.worktreePath] ?? null)
+      const moved = shown === null ? [] : retargetFileTabs({ layout: shown, from: target.from, to: target.to }).moved
+      if (target.worktreePath === input.worktreePath) mutate((current) => retargetFileTabs({ layout: current, from: target.from, to: target.to }).layout)
+      else
+        setByWorktree((previous) => {
+          const value = previous[target.worktreePath]
+          if (value === undefined) return previous
+          const next = retargetFileTabs({ layout: value, from: target.from, to: target.to }).layout
+          return next === value ? previous : { ...previous, [target.worktreePath]: next }
+        })
+      return moved
+    },
+    [mutate, layout, byWorktree, input.worktreePath],
+  )
+
   return {
     layout,
     groups,
@@ -337,5 +359,6 @@ export function useGroupLayout(input: {
     keepFile,
     closeFile,
     reopenFile,
+    retargetFiles,
   }
 }

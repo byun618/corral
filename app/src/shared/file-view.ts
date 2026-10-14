@@ -93,6 +93,7 @@ export type DirtyFile = { root: string; rel: string }
  *   · conflict — 저장 시점 충돌(E4ⓒ): 덮어쓰기 / 취소
  *   · recreate — 지워진 파일 저장(E4ⓓ): 다시 만들기 / 취소
  *   · discard — worktree 삭제(E3ⓓ): 버리고 계속 / 취소(지울 파일을 저장할 수는 없다)
+ *   · trash — 탐색기 삭제 확인(LIFE-592 E3ⓑ·Q2): 휴지통으로 이동 / 취소. 폴더면 「안의 내용까지」, 실행 취소 가능 여부(Q1), 수정 중 탭이 걸리면 그 파일들(Q3)
  * 렌더러 다시 불러오기(E3ⓕ) 확인은 main 이 `will-prevent-unload` 에서 직접 띄운다(렌더러가 묻지 않는다).
  */
 export type FileDialogRequest =
@@ -100,4 +101,5 @@ export type FileDialogRequest =
   | { kind: 'conflict'; file: string }
   | { kind: 'recreate'; file: string }
   | { kind: 'discard'; files: string[] }
-export type FileDialogChoice = 'save' | 'discard' | 'cancel' | 'overwrite' | 'recreate'
+  | { kind: 'trash'; file: string; isDir: boolean; undoable: boolean; dirty: string[] }
+export type FileDialogChoice = 'save' | 'discard' | 'cancel' | 'overwrite' | 'recreate' | 'trash'

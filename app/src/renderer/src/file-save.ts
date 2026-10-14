@@ -49,6 +49,8 @@ export function saveFailureMessage(input: { rel: string; result: Extract<FileWri
 }
 
 async function saveOnce(doc: FileDoc, deps: SaveDeps): Promise<SaveOutcome> {
+  // 탐색기가 이 파일 경로를 옮기는 중이면(LIFE-592 E4ⓑ) 끝난 뒤 바뀐 경로(`doc.rel`)에 쓴다 — 옛 경로에 「다시 만들기」 로 되살리지 않게.
+  while (doc.hold !== null) await doc.hold
   const composed = await untilComposed(doc)
   // 닫기·「저장 안 함」 으로 이미 버린 문서면 할 일이 없다.
   if (getDoc(doc.key) !== doc) return 'cancelled'
@@ -59,7 +61,7 @@ async function saveOnce(doc: FileDoc, deps: SaveDeps): Promise<SaveOutcome> {
   if (!doc.dirty) return 'saved'
   // 저장 한 건 = **한 시점 스냅샷**(수정 r3 R3-A) — 본문(숨은 BOM 포함 직렬화)·파일 BOM·버전·줄끝·기준 stamp/지문을 여기서 한 번 찍고,
   // 첫 쓰기·충돌 덮어쓰기·다시 만들기 재시도·완료 표시가 모두 이 값만 쓴다. 옛 코드는 재시도 때 `doc.bom` 현재 값을 읽어, 저장 대기 중 실행 취소·다시 실행으로
-  // 머리 바이트가 바뀌면 다른 버전의 BOM 을 섞어 썼다. (나머지 필드 점검 — root·rel 은 불변, readOnly·large·stamp·hash 는 저장 중 바뀌지 않는다: 다시 읽기 반영이
+  // 머리 바이트가 바뀌면 다른 버전의 BOM 을 섞어 썼다. (나머지 필드 점검 — root 는 불변, rel 은 저장 중 바뀌지 않는다(탐색기 이동은 저장 중인 문서를 옮기지 않는다 — LIFE-592), readOnly·large·stamp·hash 는 저장 중 바뀌지 않는다: 다시 읽기 반영이
   // 저장 중엔 보류되고 저장만 stamp·hash 를 바꾼다. 그래도 기준값은 스냅샷으로 고정한다.)
   const version = doc.model.getAlternativeVersionId()
   const eols = doc.eols.slice()

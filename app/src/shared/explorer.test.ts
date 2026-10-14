@@ -83,11 +83,13 @@ describe('E2ⓙ 키보드', () => {
     expect(keyAction({ key: 'ArrowLeft', rows: open, selected: 'src' })).toEqual({ kind: 'collapse', rel: 'src' })
     expect(keyAction({ key: 'ArrowLeft', rows: open, selected: 'src/b.ts' })).toEqual({ kind: 'select', rel: 'src' })
   })
-  it('Enter·Space 는 폴더 토글, 파일은 열기(LIFE-590 F2 — Enter = 고정, Space = 미리보기)', () => {
-    expect(keyAction({ key: 'Enter', rows: collapsed, selected: 'src' })).toEqual({ kind: 'expand', rel: 'src' })
+  it('Space 는 폴더 토글·파일 미리보기, Enter 는 이름 바꾸기(LIFE-592 Q6 — F2 의 Enter = 고정 열기를 바꿨다)', () => {
+    expect(keyAction({ key: ' ', rows: collapsed, selected: 'src' })).toEqual({ kind: 'expand', rel: 'src' })
     expect(keyAction({ key: ' ', rows: open, selected: 'src' })).toEqual({ kind: 'collapse', rel: 'src' })
-    expect(keyAction({ key: 'Enter', rows: open, selected: 'a.ts' })).toEqual({ kind: 'open', rel: 'a.ts', preview: false })
     expect(keyAction({ key: ' ', rows: open, selected: 'a.ts' })).toEqual({ kind: 'open', rel: 'a.ts', preview: true })
+    expect(keyAction({ key: 'Enter', rows: open, selected: 'a.ts' })).toEqual({ kind: 'rename', rel: 'a.ts' })
+    expect(keyAction({ key: 'Enter', rows: collapsed, selected: 'src' })).toEqual({ kind: 'rename', rel: 'src' })
+    expect(keyAction({ key: 'Enter', rows: open, selected: null })).toEqual({ kind: 'none' })
   })
 })
 

@@ -71,3 +71,21 @@ export function takeLivePlacements(input: { pending: ReadonlyMap<string, Pending
   const ready = [...input.pending.values()].filter((placement) => live.has(placement.tabId))
   return { ready, pending: new Map([...input.pending].filter(([tabId]) => !live.has(tabId))) }
 }
+
+/**
+ * 탐색기 이름 변경·이동(LIFE-592 E4ⓓ) — 그 worktree 의 닫은 **파일** 탭 기록 중 `from` 밑 경로를 `to` 쪽으로. ⌘⇧T 가 새 경로를 다시 연다.
+ * `remap` 은 상대 경로 → 새 경로(밑이 아니면 null).
+ */
+export function remapClosedFiles(input: { history: RecentlyClosed; worktreePath: string; remap: (rel: string) => string | null }): RecentlyClosed {
+  const list = input.history[input.worktreePath]
+  if (list === undefined) return input.history
+  let changed = false
+  const next = list.map((snapshot) => {
+    if (snapshot.kind !== 'file') return snapshot
+    const rel = input.remap(snapshot.rel)
+    if (rel === null) return snapshot
+    changed = true
+    return { ...snapshot, rel }
+  })
+  return changed ? { ...input.history, [input.worktreePath]: next } : input.history
+}

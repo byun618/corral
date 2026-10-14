@@ -143,16 +143,24 @@ export function createEditor(input: { host: HTMLElement; large: boolean; readOnl
   })
 }
 
-const modelUri = (key: string): monaco.Uri => monaco.Uri.from({ scheme: 'corral-file', path: `/${encodeURIComponent(key)}` })
-
-/** 이미 만든 모델(문서 저장소가 맡긴 것) — 편집기를 다시 만들 때 같은 모델에 붙는다. */
-export function modelOf(key: string): monaco.editor.ITextModel | null {
-  return monaco.editor.getModel(modelUri(key))
+/**
+ * 모델 URI — **경로에서 만들지 않는다**(LIFE-592 E4). Monaco 모델 URI 는 바꿀 수 없어서, 경로로 만들면 탐색기 이름 변경·이동 뒤 새 모델을 만들어야 하고
+ * 그러면 편집 실행 취소 기록이 사라진다. 만들 때마다 새 번호를 붙여 모델과 경로를 떼고, 문서 저장소(`file-docs.ts`)가 「경로 키 → 문서 → 모델」 을 든다.
+ * (같은 상대 경로가 여러 worktree 에 열려도 모델이 서로 다르다 — LIFE-591 문서 키와 같다.)
+ */
+let modelSerial = 0
+const freshUri = (key: string): monaco.Uri => {
+  modelSerial += 1
+  const rel = key.slice(key.indexOf('\0') + 1)
+  return monaco.Uri.from({ scheme: 'corral-file', path: `/${modelSerial}/${encodeURIComponent(rel.slice(rel.lastIndexOf('/') + 1))}` })
 }
 
-/** 파일 하나의 모델 — URI 를 `(worktree 루트, 상대 경로)` 키마다 따로(같은 상대 경로가 여러 worktree 에 열릴 수 있다 — LIFE-591 문서 저장소 키와 같다). */
+/** 문서가 든 모델이 Monaco 에 아직 살아 있으면 그 모델 — 편집기를 다시 만들 때 같은 모델에 붙는다. 버려졌으면 null. */
+export function liveModel(model: unknown): monaco.editor.ITextModel | null {
+  return monaco.editor.getModels().find((item) => item === model && !item.isDisposed()) ?? null
+}
+
+/** 파일 하나의 모델 — 언어는 경로로 고르지만 URI 는 경로와 무관한 새 번호다(위). */
 export function createModel(input: { text: string; language: string; key: string }): monaco.editor.ITextModel {
-  const uri = modelUri(input.key)
-  monaco.editor.getModel(uri)?.dispose()
-  return monaco.editor.createModel(input.text, input.language, uri)
+  return monaco.editor.createModel(input.text, input.language, freshUri(input.key))
 }

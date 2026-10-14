@@ -1,7 +1,7 @@
 // LIFE-590 E1·E2 — 파일 탭 종류 구분·정리 생존·미리보기 규칙·영속 형식 양방향(단위).
 // 하위 방향(E1ⓓ)은 기준 commit `bd2fca411` 의 `group-tree.ts` 사본(`legacy/group-tree.bd2fca411.ts` — 바이트 그대로)에 새 형식을 넣어 본다.
 import { describe, expect, it } from 'vitest'
-import { closeFileTab, fileTabId, fileTabsOf, keepFileTab, openFileTab, previewOf, reopenFileTab, tabKindOf, terminalKeyTarget } from './file-tabs.js'
+import { closeFileTab, fileTabId, fileTabsOf, fileTabsUnder, keepFileTab, openFileTab, previewOf, reopenFileTab, retargetFileTabs, tabKindOf, terminalKeyTarget } from './file-tabs.js'
 import { dropDeadTabs, LAYOUT_FORMAT, listGroups, mergeTabIntoGroup, moveTabWithinTabbar, readStoredLayouts, reconcileLayout, singleLayout, splitGroup, type GroupLayout } from './group-tree.js'
 import * as legacy from './legacy/group-tree.bd2fca411.js'
 
@@ -183,5 +183,33 @@ describe('수정 r1 R1-B 터미널 대상 단축키 — 파일 탭이 활성이�
   it('터미널 탭 활성·활성 탭 없음 → 이전과 같이 selectedPane', () => {
     expect(terminalKeyTarget({ activeTabId: 'w1:t1', selectedPane: 'w1:p1' })).toBe('w1:p1')
     expect(terminalKeyTarget({ activeTabId: null, selectedPane: 'w1:p1' })).toBe('w1:p1')
+  })
+})
+
+describe('LIFE-592 E4 탭 따라감', () => {
+  it('파일 이름 변경 — 탭 id 만 바뀌고 순서·활성·미리보기·영역은 그대로', () => {
+    const layout: GroupLayout = { root: { kind: 'split', direction: 'row', ratio: 0.5, first: { kind: 'leaf', group: { groupId: 'g1', tabOrder: ['w1:t1', A, C], activeTabId: A, previewTabId: A } }, second: { kind: 'leaf', group: { groupId: 'g2', tabOrder: [B], activeTabId: B } } }, activeGroupId: 'g1' }
+    const next = retargetFileTabs({ layout, from: 'src/a.ts', to: 'src/z.ts' })
+    const Z = fileTabId('src/z.ts')
+    expect(orders(next.layout)).toEqual([['w1:t1', Z, C], [B]])
+    expect(listGroups(next.layout.root)[0]).toMatchObject({ activeTabId: Z, previewTabId: Z })
+    expect(next.layout.activeGroupId).toBe('g1')
+    expect(next.moved).toEqual([{ from: A, to: Z }])
+  })
+  it('폴더 이동 — 밑의 탭 전부, 이름이 접두사만 같은 형제는 아니다', () => {
+    const sibling = fileTabId('src2/x.ts')
+    const layout = singleLayout({ groupId: 'g1', tabOrder: [A, B, sibling, C], activeTabId: B })
+    const next = retargetFileTabs({ layout, from: 'src', to: 'lib/src' })
+    expect(orders(next.layout)).toEqual([[fileTabId('lib/src/a.ts'), fileTabId('lib/src/b.ts'), sibling, C]])
+    expect(next.moved).toHaveLength(2)
+  })
+  it('바뀔 것이 없으면 같은 배치 객체', () => {
+    const layout = singleLayout({ groupId: 'g1', tabOrder: [A], activeTabId: A })
+    expect(retargetFileTabs({ layout, from: 'nope', to: 'x' }).layout).toBe(layout)
+  })
+  it('fileTabsUnder — 그 경로 자신과 밑만', () => {
+    const layout = singleLayout({ groupId: 'g1', tabOrder: [A, B, C, fileTabId('src2/x.ts'), 'w1:t1'], activeTabId: A })
+    expect(fileTabsUnder({ layout, rel: 'src' })).toEqual([A, B])
+    expect(fileTabsUnder({ layout, rel: 'README.md' })).toEqual([C])
   })
 })

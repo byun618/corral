@@ -56,6 +56,8 @@ import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useRightPanel } from './hooks/useRightPanel.js'
 import { useExplorer } from './hooks/useExplorer.js'
+import { useFileOps } from './hooks/useFileOps.js'
+import { isAtOrUnder } from '../../shared/explorer-ops.js'
 import { RightPanel, RightPanelToggle } from './components/RightPanel.js'
 import { Explorer } from './components/Explorer.js'
 import { useCardActions } from './hooks/useCardActions.js'
@@ -109,6 +111,8 @@ const AGENT_LAUNCH_LABEL = { claude: 'Claude', codex: 'Codex', grok: 'Grok' } as
 const NO_REPOS: AppState['repos'] = []
 const NO_ROOTS: string[] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
+/** LIFE-592 — 탐색기 이동 뒤 옛·새 경로 감시 push 를 더 버리는 시간(감시 디바운스보다 길게). */
+const WATCH_HOLD_GRACE_MS = 1_000
 
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState | null>(null)
@@ -462,10 +466,34 @@ export function App(): React.JSX.Element {
   }
   /** 열린 파일 탭 감시 상태(E5) — main push 의 마지막 값, 키 = `루트\0상대 경로`. */
   const [fileWatchState, setFileWatchState] = useState<ReadonlyMap<string, { exists: boolean; stamp: string | null }>>(() => new Map())
+  /**
+   * LIFE-592 E4ⓒ — 탐색기가 옮기는(또는 되살리는) 경로의 감시 push 는 조작이 끝나고 잠시 뒤까지 버린다(앱이 한 이동의 옛 경로 「삭제됨」 깜빡임 0).
+   * 풀 때 그 경로들의 마지막 감시 상태를 지운다 — 새 경로는 감시가 다시 잡고, 옛 경로는 탭이 없다.
+   */
+  const watchHoldsRef = useRef<{ root: string; prefixes: string[] }[]>([])
+  const holdWatch = useCallback((input: { root: string; prefixes: string[] }): (() => void) => {
+    const entry = { root: input.root, prefixes: input.prefixes }
+    watchHoldsRef.current = [...watchHoldsRef.current, entry]
+    return () => {
+      // 늦게 오는 push(감시 디바운스) 몫으로 잠시 더 쥔다.
+      setTimeout(() => {
+        watchHoldsRef.current = watchHoldsRef.current.filter((held) => held !== entry)
+        setFileWatchState((previous) => {
+          const next = new Map(previous)
+          for (const key of previous.keys()) {
+            const [root, rel] = key.split('\0')
+            if (root === entry.root && rel !== undefined && entry.prefixes.some((prefix) => isAtOrUnder(rel, prefix))) next.delete(key)
+          }
+          return next.size === previous.size ? previous : next
+        })
+      }, WATCH_HOLD_GRACE_MS)
+    }
+  }, [])
   useEffect(
     () =>
       window.corral.onFileEvent((push) =>
         setFileWatchState((previous) => {
+          if (watchHoldsRef.current.some((held) => held.root === push.root && held.prefixes.some((prefix) => isAtOrUnder(push.rel, prefix)))) return previous
           const key = `${push.root}\0${push.rel}`
           const before = previous.get(key)
           if (before !== undefined && before.exists === push.exists && before.stamp === push.stamp) return previous
@@ -1104,6 +1132,21 @@ export function App(): React.JSX.Element {
     })
   }
 
+  // LIFE-592 F4 — 탐색기 파일 조작(만들기·이름 바꾸기·이동·삭제·복제·가져오기·실행 취소).
+  const fileOps = useFileOps({
+    root: activeWorktreeRow?.path ?? null,
+    explorer,
+    layout,
+    viewStatesOf: fileViewStatesOf,
+    markdownModesOf,
+    recentlyClosedRef,
+    notify,
+    openFile: openFileFromExplorer,
+    holdWatch,
+  })
+  const importDrop = fileOps.importDrop
+  useEffect(() => window.corral.onExplorerDrop((drop) => void importDrop(drop)), [importDrop])
+
   /** ⌘⇧T (K6) — 활성 worktree 의 가장 최근 닫은 탭을 같은 시작 디렉터리의 새 셸로. 파일 탭이었으면 같은 파일을 같은 자리에(LIFE-590). 비어 있으면 아무것도 안 한다. */
   const reopenClosedTab = (): void => {
     const worktreePath = activeWorktreeRow?.path ?? null
@@ -1322,6 +1365,13 @@ export function App(): React.JSX.Element {
       const doc = kind.kind === 'file' ? getDoc(docKey(root, kind.rel)) : undefined
       if (doc !== undefined) void saveDoc(doc, saveDepsRef.current)
     },
+    // LIFE-592 — 탐색기 트리 포커스에서만(범위 'explorer'). ⌘⌫ = 선택 항목 삭제(확인 뒤 휴지통), ⌘Z·⌘⇧Z = 탐색기 기록.
+    'explorer.delete': () => {
+      const selected = explorer.state?.selected ?? null
+      if (selected !== null) void fileOps.trash(selected)
+    },
+    'explorer.undo': () => void fileOps.undo(),
+    'explorer.redo': () => void fileOps.redo(),
     'explorer.show': () => {
       rightPanel.show()
       requestAnimationFrame(() => setExplorerFocusToken((value) => value + 1))
@@ -1921,7 +1971,7 @@ export function App(): React.JSX.Element {
           onToggle={rightPanel.toggle}
           onResizeStart={rightPanel.onHandleMouseDown}
         >
-          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} />
+          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} ops={fileOps} notify={notify} />
         </RightPanel>
       </div>
       {settingsView === null ? null : (

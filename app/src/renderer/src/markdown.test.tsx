@@ -182,3 +182,47 @@ describe('MarkdownView (C4)', () => {
     expect(host.querySelector('[data-md-check]')?.hasAttribute('disabled')).toBe(true)
   })
 })
+
+// LIFE-602 수정 6 (R6-C) — GFM 이 체크리스트로 그리는 모든 칸은, 누르면 그 칸의 글자 하나만 바뀐 본문이거나(매핑) 처음부터 비활성이다(활성인데 아무 일 없는 칸 금지).
+// 리뷰 r6 재현(`codex-r6-raw/markdown-extra.test.tsx` V21: nested·quoted·continuation·duplicates)에 같은 모양(표지 둘 · 번호 · 인용 안 다음 줄 · 탭 · 끝 공백)을 더했다.
+describe('R6-C 그려진 체크 칸 = 그 칸의 소스 위치', () => {
+  const clickAll = (source: string): { enabled: number; disabled: number; results: (string | null)[] } => {
+    const results: (string | null)[] = []
+    const local = document.createElement('div')
+    document.body.append(local)
+    const view = createRoot(local)
+    act(() => view.render(createElement(MarkdownView, { source, keyPattern: null, onOpenKey: () => {}, onToggleCheck: ({ line, checked }) => { results.push(toggleCheckLine({ source, line, checked })) } })))
+    try {
+      const boxes = [...local.querySelectorAll('[data-md-check]')]
+      const enabled = boxes.filter((box) => !box.hasAttribute('disabled'))
+      for (const box of enabled) act(() => { box.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })) })
+      return { enabled: enabled.length, disabled: boxes.length - enabled.length, results }
+    } finally {
+      act(() => view.unmount())
+      local.remove()
+    }
+  }
+  it.each([
+    ['nested', '- parent\r\n  - [ ] nested\r\n\t- [ ] child\r\n', 2],
+    ['quoted', '> - [ ] quote\r\n>   - [x] nested quote\r\n', 2],
+    ['continuation', '-\n  [ ] next-line task\n', 1],
+    ['duplicates', '- [ ] same\n- [ ] same\n\n```\n- [ ] code\n```\n', 2],
+    ['two markers', '- - [ ] double\n', 1],
+    ['numbered next line', '1.\n   [x] numbered next\n', 1],
+    ['quoted next line', '> -\n>   [ ] quoted next\n', 1],
+    ['markers', '* [ ] star\n+ [X] plus\n3) [ ] paren\n', 3],
+    ['tab', '-\t[ ] tab\n', 1],
+    ['crlf next line', '-\r\n  [x] crlf next\r\n', 1],
+  ])('%s — 칸마다 그 칸 글자 하나만 바뀐다', (_, source, count) => {
+    const { enabled, disabled, results } = clickAll(source)
+    expect({ enabled, disabled }).toEqual({ enabled: count, disabled: 0 })
+    for (const next of results) {
+      expect(next).not.toBeNull()
+      const diff = diffBytes(source, next ?? '')
+      expect(Buffer.byteLength(next ?? '')).toBe(Buffer.byteLength(source))
+      expect(diff.before).toMatch(/^[ xX]$/)
+      expect(diff.after).toMatch(/^[ x]$/)
+      expect(source.slice(diff.at - 1, diff.at + 2)).toMatch(/^\[[ xX]\]$/)
+    }
+  })
+})

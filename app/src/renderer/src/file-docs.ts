@@ -54,6 +54,12 @@ export type FileDoc = {
   bom: boolean
   /** 모델이 글 맨 앞 U+FEFF 를 모델 BOM 으로 들고 있다 — 직렬화 앞에 붙인다(R1-G). */
   hiddenBom: boolean
+  /**
+   * 모델 버전(`getAlternativeVersionId`)마다 그때의 머리 바이트 상태(`bom`·`hiddenBom`) — 모델 밖 값이라 실행 취소·다시 실행이 되돌리지 않는다.
+   * 편집 이벤트마다 처음 보는 버전이면 지금 값을 적고, 아는 버전(실행 취소·다시 실행으로 돌아옴)이면 그 값으로 되돌린다(수정 r2 R2-B —
+   * 되돌리기 → 실행 취소 → 저장에서 본문 U+FEFF·파일 BOM 이 빠졌다). 다시 읽기(`setValue` — 실행 취소 기록이 새로 시작)면 비운다.
+   */
+  headByVersion: Map<number, { bom: boolean; hiddenBom: boolean }>
   /** 줄마다 끝 글자(`\n`·`\r\n`·`\r`, 마지막 줄 ''). 길이 = 모델 줄 수. */
   eols: string[]
   /** 저장(또는 읽기) 때의 `eols` — 실행 취소로 저장 상태에 돌아오면 되살린다. */
@@ -174,6 +180,7 @@ export function adoptDoc(input: { root: string; rel: string; model: Model; text:
     large: input.large,
     bom: input.bom,
     hiddenBom,
+    headByVersion: new Map([[input.model.getAlternativeVersionId(), { bom: input.bom, hiddenBom }]]),
     eols,
     savedEols: eols.slice(),
     stamp: input.stamp,
@@ -195,6 +202,13 @@ export function adoptDoc(input: { root: string; rel: string; model: Model; text:
       const changes = [...event.changes].sort((a, b) => b.range.startLineNumber - a.range.startLineNumber || b.range.startColumn - a.range.startColumn)
       for (const change of changes) doc.eols = applyEolChange({ eols: doc.eols, startLine: change.range.startLineNumber, endLine: change.range.endLineNumber, text: change.text, modelEol })
       if (doc.eols.length !== doc.model.getLineCount()) doc.eols = eolsOf(doc.model.getValue())
+      const version = doc.model.getAlternativeVersionId()
+      const head = doc.headByVersion.get(version)
+      if (head === undefined) doc.headByVersion.set(version, { bom: doc.bom, hiddenBom: doc.hiddenBom })
+      else {
+        doc.bom = head.bom
+        doc.hiddenBom = head.hiddenBom
+      }
       refreshDirty(doc)
     }),
   )
@@ -211,9 +225,12 @@ export type DiskState = { text: string; bom: boolean; stamp: string; hash: strin
  * 읽기 전용 까닭도 새 디스크 상태로 바꾼다(R1-F — 열린 뒤 20 MB 를 넘거나 비 UTF-8·하드링크가 되면 읽기 전용, 다시 작아지면 편집 가능).
  */
 export function reloadDoc(doc: FileDoc, input: DiskState): void {
-  doc.model.setValue(input.text)
+  // 이벤트(편집 리스너)가 옛 머리 값으로 새 버전을 적지 않게, 값을 먼저 바꾸고 넣는다. 실행 취소 기록이 새로 시작하니 버전 기록도 비운다.
   doc.bom = input.bom
+  doc.headByVersion.clear()
+  doc.model.setValue(input.text)
   doc.hiddenBom = hasModelBom(doc.model)
+  doc.headByVersion.set(doc.model.getAlternativeVersionId(), { bom: doc.bom, hiddenBom: doc.hiddenBom })
   doc.stamp = input.stamp
   doc.hash = input.hash
   doc.readOnly = input.readOnly
@@ -230,17 +247,19 @@ export function reloadDoc(doc: FileDoc, input: DiskState): void {
  * 「디스크 내용으로 되돌리기」(E4ⓑ) — **실행 취소할 수 있게** 편집으로 넣는다(⌘Z 가 내 변경을 되살린다). 그 상태를 저장된 상태로 친다.
  * 줄끝은 디스크 글의 것으로 다시 잰다(`setValue` 와 달리 모델 EOL 은 그대로라 직렬화는 `eols` 가 맞춘다).
  * 숨은 BOM(R1-G) — 편집으로는 모델 BOM 을 바꿀 수 없다. 모델이 BOM 을 들고 있고 디스크 글도 U+FEFF 로 시작하면 그 글자를 빼고 넣고(모델 BOM 이 맡는다),
- * 디스크 글이 U+FEFF 로 시작하지 않으면 직렬화에서 모델 BOM 을 빼게 표시한다. 그 뒤 실행 취소로 옛 내용에 돌아가도 이 표시는 그대로다(처리 방식 기록 — 수정됨으로 남아 저장 때 보인다).
+ * 디스크 글이 U+FEFF 로 시작하지 않으면 직렬화에서 모델 BOM 을 빼게 표시한다. 그 뒤 실행 취소로 옛 내용에 돌아가면 그 버전의 머리 값(`headByVersion`)이
+ * 돌아온다(수정 r2 R2-B) — 그래서 머리 값을 **편집 전에** 바꿔, 되돌린 새 버전이 새 값으로 적히게 한다.
  */
 export function revertDoc(doc: FileDoc, input: DiskState): void {
   const modelBom = hasModelBom(doc.model)
   const leading = input.text.startsWith('\uFEFF')
   const text = modelBom && leading ? input.text.slice(1) : input.text
+  doc.bom = input.bom
+  doc.hiddenBom = modelBom && leading
   doc.model.pushStackElement()
   doc.model.pushEditOperations(null, [{ range: doc.model.getFullModelRange(), text }], () => null)
   doc.model.pushStackElement()
-  doc.bom = input.bom
-  doc.hiddenBom = modelBom && leading
+  doc.headByVersion.set(doc.model.getAlternativeVersionId(), { bom: doc.bom, hiddenBom: doc.hiddenBom })
   doc.stamp = input.stamp
   doc.hash = input.hash
   doc.readOnly = input.readOnly

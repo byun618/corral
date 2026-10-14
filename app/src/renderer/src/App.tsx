@@ -150,10 +150,9 @@ export function App(): React.JSX.Element {
         window.corral.quitAck()
         if (quitPromptRef.current) return
         quitPromptRef.current = true
-        const docs = dirtyDocs()
-        const roots = new Set(docs.map((doc) => doc.root))
-        const label = (doc: FileDoc): string => (roots.size > 1 ? `${doc.root.split('/').pop() ?? doc.root}/${doc.rel}` : doc.rel)
-        void confirmDiscardOrSave({ docs, deps: saveDepsRef.current, label })
+        // 대상 = 모든 문서(그때그때 — 확인·저장을 기다리는 사이 새로 수정된 문서도 다시 묻는다, 수정 r2 R2-A).
+        const label = (doc: FileDoc): string => (new Set(dirtyDocs().map((row) => row.root)).size > 1 ? `${doc.root.split('/').pop() ?? doc.root}/${doc.rel}` : doc.rel)
+        void confirmDiscardOrSave({ targets: allDocs, deps: saveDepsRef.current, label })
           .then((ok) => {
             if (ok) window.corral.confirmQuit()
           })
@@ -163,15 +162,25 @@ export function App(): React.JSX.Element {
       }),
     [],
   )
-  /** 그 worktree 의 수정된 문서들을 묻는다(worktree 닫기·마지막 터미널 탭 닫기 — E3ⓓⓔ). 없으면 묻지 않고 true. */
+  /** 그 worktree 의 수정된 문서들을 묻는다(worktree 닫기·마지막 터미널 탭 닫기 — E3ⓓⓔ). 없으면 묻지 않고 true. 대상은 그 worktree 문서 전체를 그때그때(R2-A). */
   const confirmWorktreeDocs = (root: string): Promise<boolean> =>
-    confirmDiscardOrSave({ docs: dirtyDocs().filter((doc) => doc.root === root), deps: saveDepsRef.current })
-  /** worktree 삭제(E3ⓓ) — 지울 파일을 저장할 수는 없으니 「버리고 계속 / 취소」. 계속이면 그 worktree 문서를 전부 버린다. */
+    confirmDiscardOrSave({ targets: () => allDocs().filter((doc) => doc.root === root), deps: saveDepsRef.current })
+  /**
+   * worktree 삭제(E3ⓓ) — 지울 파일을 저장할 수는 없으니 「버리고 계속 / 취소」. 계속이면 그 worktree 문서를 전부 버린다.
+   * 대화상자를 기다리는 사이 묻지 않은 문서가 새로 수정됐으면 그 목록으로 다시 묻는다(R2-A — 처음 목록만 보고 전부 버리지 않는다, 최대 3 번).
+   */
   const confirmDeleteDocs = async (root: string): Promise<boolean> => {
-    const docs = dirtyDocs().filter((doc) => doc.root === root)
-    if (docs.length > 0 && (await window.corral.fileDialog({ kind: 'discard', files: docs.map((doc) => doc.rel) })) !== 'discard') return false
-    for (const doc of allDocs()) if (doc.root === root) disposeDoc(doc.key)
-    return true
+    const asked = new Set<string>()
+    for (let ask = 0; ask < 3; ask += 1) {
+      const fresh = dirtyDocs().filter((doc) => doc.root === root && !asked.has(doc.key))
+      if (fresh.length === 0) {
+        for (const doc of allDocs()) if (doc.root === root) disposeDoc(doc.key)
+        return true
+      }
+      if ((await window.corral.fileDialog({ kind: 'discard', files: fresh.map((doc) => doc.rel) })) !== 'discard') return false
+      for (const doc of fresh) asked.add(doc.key)
+    }
+    return false
   }
   const [modalOpen, setModalOpen] = useState(false)
   const [modalNote, setModalNote] = useState<string | null>(null)
@@ -1033,12 +1042,14 @@ export function App(): React.JSX.Element {
       return
     }
     if (worktreePath === null) return
-    const docs = tabIds.flatMap((tabId) => {
-      const kind = tabKindOf(tabId)
-      const doc = kind.kind === 'file' ? getDoc(docKey(worktreePath, kind.rel)) : undefined
-      return doc === undefined ? [] : [doc]
-    })
-    void confirmDiscardOrSave({ docs, deps: saveDepsRef.current }).then((ok) => {
+    // 대상 문서는 그때그때 찾는다 — 확인·저장을 기다리는 사이 처음엔 문서가 없던 탭(한 번도 안 연 탭)을 열어 편집해도 잡힌다(R2-A).
+    const targets = (): FileDoc[] =>
+      tabIds.flatMap((tabId) => {
+        const kind = tabKindOf(tabId)
+        const doc = kind.kind === 'file' ? getDoc(docKey(worktreePath, kind.rel)) : undefined
+        return doc === undefined ? [] : [doc]
+      })
+    void confirmDiscardOrSave({ targets, deps: saveDepsRef.current }).then((ok) => {
       if (!ok) return
       for (const tabId of tabIds) closeFileNow({ worktreePath, tabId })
       onClosed?.()

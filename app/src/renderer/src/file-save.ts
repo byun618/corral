@@ -103,34 +103,41 @@ export function saveDoc(doc: FileDoc, deps: SaveDeps): Promise<SaveOutcome> {
 }
 
 /**
- * 수정된 문서들을 닫기 전에 묻는다(E3ⓑ) — 저장 / 저장 안 함 / 취소. 수정된 것이 없으면 묻지 않고 true.
- *   · 저장 → 전부 저장, 하나라도 못 하면 false(닫지 않는다). 저장을 기다리는 사이 더 친 글자가 있으면 그 버전까지 다시 저장한다(수정 r1 R1-A —
- *     옛 코드는 대화상자 응답·쓰기 IPC 사이의 추가 편집을 저장하지 않고 닫았다). 몇 번 해도 따라잡지 못하면 닫지 않는다. true 를 돌려주는 순간 문서는 수정 없음이고,
- *     부른 쪽은 같은 마이크로태스크 안에서 닫는다(입력 이벤트는 그 사이에 끼지 못한다)
- *   · 저장 안 함 → 그 문서들을 버린다(디스크 무변경 — 다시 열면 디스크 내용, E3ⓖ) → true
+ * 닫을 대상 문서들을 닫기 전에 묻는다(E3ⓑ) — 저장 / 저장 안 함 / 취소. 수정된 것이 없으면 묻지 않고 true.
+ * `targets` = **닫을 대상 전체**(수정 없는 것 포함)를 그때그때 돌려주는 함수 — 확인·저장을 기다리는 사이 대상이 새로 수정되거나 새로 문서가 생길 수 있어서
+ * 시작 때 목록에 기대지 않고 매번 다시 본다(수정 r2 R2-A — 옛 코드는 확인 시작 때의 수정 목록만 보고, 저장 대기 중 새로 수정된 대상을 그대로 버렸다).
+ *   · 저장 → 물은 문서들을 저장. 저장을 기다리는 사이 **같은 문서**에 더 친 글자는 그 버전까지 다시 저장한다(R1-A, 최대 3 바퀴 — 못 따라잡으면 닫지 않음)
+ *   · 저장 안 함 → 물은 문서들을 버린다(디스크 무변경 — 다시 열면 디스크 내용, E3ⓖ)
  *   · 취소 → false
+ *   그 뒤 대상 전체를 다시 보고, **묻지 않았던 문서가 새로 수정돼 있으면 그 문서들로 다시 묻는다**(조용히 저장하지도 버리지도 않는다). 묻기는 최대 3 번 — 그래도 남으면 닫지 않는다.
+ * true 를 돌려주는 순간 대상 전체가 수정 없음이고, 부른 쪽은 같은 마이크로태스크 안에서 닫는다(입력 이벤트는 그 사이에 끼지 못한다).
  * `label` = 대화상자에 보일 이름(여러 worktree 를 묻는 종료 확인은 worktree 이름을 붙인다).
  */
-export async function confirmDiscardOrSave(input: { docs: FileDoc[]; deps: SaveDeps; label?: (doc: FileDoc) => string }): Promise<boolean> {
-  const dirty = input.docs.filter((doc) => doc.dirty)
-  if (dirty.length === 0) return true
+export async function confirmDiscardOrSave(input: { targets: () => readonly FileDoc[]; deps: SaveDeps; label?: (doc: FileDoc) => string }): Promise<boolean> {
   const label = input.label ?? ((doc: FileDoc) => doc.rel)
-  const choice = await input.deps.fileDialog({ kind: 'close', files: dirty.map(label) })
-  if (choice === 'save') {
-    for (let round = 0; round < 3; round += 1) {
-      const pending = dirty.filter((doc) => doc.dirty)
-      if (pending.length === 0) return true
-      for (const doc of pending) if ((await saveDoc(doc, input.deps)) !== 'saved') return false
-    }
-    const behind = dirty.find((doc) => doc.dirty)
-    if (behind === undefined) return true
-    input.deps.notify(`'${nameOf(behind.rel)}' 을(를) 저장하는 동안 계속 바뀌어 닫지 않았습니다`)
-    return false
+  const dirtyNow = (): FileDoc[] => input.targets().filter((doc) => doc.dirty && getDoc(doc.key) === doc)
+  for (let ask = 0; ask < 3; ask += 1) {
+    const asked = dirtyNow()
+    if (asked.length === 0) return true
+    const choice = await input.deps.fileDialog({ kind: 'close', files: asked.map(label) })
+    if (choice === 'save') {
+      for (let round = 0; round < 3; round += 1) {
+        const pending = asked.filter((doc) => doc.dirty && getDoc(doc.key) === doc)
+        if (pending.length === 0) break
+        for (const doc of pending) if ((await saveDoc(doc, input.deps)) !== 'saved') return false
+      }
+      const behind = asked.find((doc) => doc.dirty && getDoc(doc.key) === doc)
+      if (behind !== undefined) {
+        input.deps.notify(`'${nameOf(behind.rel)}' 을(를) 저장하는 동안 계속 바뀌어 닫지 않았습니다`)
+        return false
+      }
+    } else if (choice === 'discard') {
+      for (const doc of asked) disposeDoc(doc.key)
+    } else return false
   }
-  if (choice === 'discard') {
-    for (const doc of dirty) disposeDoc(doc.key)
-    return true
-  }
+  const left = dirtyNow()
+  if (left.length === 0) return true
+  input.deps.notify(`'${nameOf(left[0]?.rel ?? '')}' 이(가) 확인하는 동안 계속 바뀌어 닫지 않았습니다`)
   return false
 }
 

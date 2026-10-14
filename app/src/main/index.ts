@@ -127,6 +127,9 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 /** 측정 실행인가 — control 소켓이 붙었을 때만 참. A4 프레임 로그 같은 계측 잡음을 여기 가둔다. */
 if (process.env.CORRAL_USER_DATA) app.setPath('userData', process.env.CORRAL_USER_DATA)
 let stopRuntime: (() => Promise<void>) | null = null
+/** 종료 정리 진행 중이면 그 Promise(재진입 종료가 같이 기다린다 — LIFE-591 수정 r2 R2-C) · 끝났으면 `runtimeStopped`. */
+let runtimeStopping: Promise<void> | null = null
+let runtimeStopped = false
 /** 설정 › Mobile (LIFE-577) — 기본 꺼짐. 종료 정리는 `stopRuntime` 체인에 합쳐 기존 `before-quit` 하나가 기다린다. */
 let mobile: MobileService | null = null
 /** 마지막으로 렌더러에 낸 상태 — 폰 목록이 같은 스냅샷을 읽는다(LIFE-580 F1). 아직 없으면 null. */
@@ -2247,10 +2250,18 @@ app.on('before-quit', event => {
     event.preventDefault()
     return
   }
-  if (!stopRuntime) return
+  // 런타임 정리(Mobile serve 제거 + 런타임 닫기)는 **한 번만** 돌리고, 정리 중 다시 온 종료 요청(창 파기 → `window-all-closed` 의 `app.quit()` 등)도
+  // 같은 정리 Promise 를 기다리게 한다(수정 r2 R2-C — 옛 코드는 첫 요청에서 `stopRuntime` 을 비워, 재진입 종료가 정리를 기다리지 않고 끝났다).
+  if (runtimeStopped) return
   event.preventDefault()
-  const close = stopRuntime; stopRuntime = null
-  void close().finally(() => app.quit())
+  if (runtimeStopping === null) {
+    const close = stopRuntime
+    stopRuntime = null
+    runtimeStopping = (close === null ? Promise.resolve() : close()).finally(() => {
+      runtimeStopped = true
+    })
+  }
+  void runtimeStopping.finally(() => app.quit())
 })
 
 app.on('window-all-closed', () => {

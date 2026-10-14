@@ -9,6 +9,12 @@
 //   ime          (R1-H) CDP Input.imeSetComposition 으로 조합 중 ⌘S → 1.2 s 뒤 디스크 무변경 → 확정 뒤 ⌘S 는 저장(리뷰어 ime-timeout.mjs) — L577_ELECTRON_ARGS=--remote-debugging-port=0 필요
 //   unresponsive (R1-I) 렌더러 SIGSTOP → 종료 → main 대화상자(스텁: 첫 회 cancel → 앱 생존, 둘째 discard → 앱 종료)(리뷰어 unresponsive.mjs)
 //   bulk-cancel  (R1-J) 터미널 탭 2개 + 수정 파일 탭 → 「다른 탭 닫기」 → 확인 취소 → 탭 하나도 안 닫힘(리뷰어 bulk-cancel.mjs)
+// 수정 r2 (Codex 리뷰 r2 — 리뷰어 `codex-r2-raw/ui-new.mjs`·`unresponsive-cleanup.mjs`·`normal-cleanup.mjs` 조건):
+//   bulk-close   (R2-A) 수정 A + 깨끗한 B 를 「다른 탭 닫기」 → 저장 → A 쓰기 지연 중 B 를 편집 → 다시 묻는다(스텁 cancel) → B 탭·수정 유지, 디스크 B 무변경
+//   bom-undo     (R2-B) BOM + 선두 U+FEFF 파일에 한 글자 → 외부 변경 → 「디스크 내용으로 되돌리기」 → 실행 취소 → ⌘S → 바이트 efbbbfefbbbf58616c7068610a
+//   unresponsive-cleanup (R2-C) Mobile(가짜 Tailscale — `--fake {FAKE}`) 켜고 렌더러 SIGSTOP → 종료 → main 대화상자 취소 → 다시 종료 → 저장 안 함 → 앱 종료 뒤 serve 항목 비어 있음
+//   normal-cleanup (대조) 같은 Mobile 상태에서 렌더러 정상 → 종료 → 저장 안 함 → serve 비어 있음
+//   ime 는 수정 r2 R2-D 로 전제(조합 시작·미확정 모델·dirty·EditContext·확정 전 composition-end 없음)를 판정에 넣었다 — L591_IME_OMIT_COMPOSITION=1 이 음성 대조(종료 1 이어야 함)
 // 사용(app/ 에서, iso.sh 안): node scripts/l591/r1-cases.mjs --case <이름> --root {ROOT} --repo /tmp/l591g-t/repo --out <dir>
 /* global fetch, WebSocket -- Node 22+ 내장(CDP 접속) */
 import fs from 'node:fs'
@@ -17,8 +23,9 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { checkRoot, ctl, evalJs, repoPane, sleep, until, writeJson } from './lib.mjs'
+import { calls, fakeState, setFake } from '../l577/g-lib.mjs'
 
-const { values } = parseArgs({ options: { case: { type: 'string' }, root: { type: 'string' }, repo: { type: 'string' }, out: { type: 'string' } } })
+const { values } = parseArgs({ options: { case: { type: 'string' }, root: { type: 'string' }, repo: { type: 'string' }, out: { type: 'string' }, fake: { type: 'string' } } })
 checkRoot(values.root)
 if (!/^\/tmp\/l591[^/]*\/repo$/.test(values.repo ?? '')) throw new Error('repo 는 /tmp/l591*/repo')
 const root = values.root
@@ -201,19 +208,37 @@ switch (name) {
     }
     try {
       await cdp('Emulation.setFocusEmulationEnabled', { enabled: true })
-      await ed('e.setPosition({ lineNumber: 1, column: 1 }); e.focus(); return true')
+      // 조합 이벤트는 편집기 API 로 센다(EditContext 경로는 DOM composition 이벤트를 입력 요소에 내지 않는다).
+      await ed(`window.l591Ime = []; e.onDidCompositionStart(() => window.l591Ime.push('start')); e.onDidCompositionEnd(() => window.l591Ime.push('end')); e.setPosition({ lineNumber: 1, column: 1 }); e.focus(); return true`)
       const original = fs.readFileSync(file, 'utf8')
-      await cdp('Input.imeSetComposition', { text: 'ㅎ', selectionStart: 1, selectionEnd: 1 })
+      const imeState = async () => ({
+        events: await js('window.l591Ime.slice()'),
+        model: (await ed('return m.getValue()')).slice(0, 20),
+        dirty: await dirtyOf(rel),
+        editContext: await js('document.activeElement !== null && "editContext" in document.activeElement && document.activeElement.editContext !== null'),
+      })
+      // 음성 대조(수정 r2 R2-D) — L591_IME_OMIT_COMPOSITION=1 이면 조합 입력을 빼고 돈다. 그때는 아래 전제 검사가 실패해야 한다(종료 1).
+      const omit = process.env.L591_IME_OMIT_COMPOSITION === '1'
+      if (!omit) await cdp('Input.imeSetComposition', { text: 'ㅎ', selectionStart: 1, selectionEnd: 1 })
+      // 전제(R2-D): 조합이 실제로 시작됐고(편집기 composition-start · 입력 경로 EditContext) 미확정 글자가 모델에 들어가 수정됨이어야 저장 요청이 「조합 중 저장」 시험이 된다.
+      const composing = await settle(async () => {
+        const state = await imeState()
+        return JSON.stringify(state.events) === '["start"]' && state.model.startsWith('ㅎ') && state.dirty === 'true' && state.editContext === true
+      }, 3000)
+      check('H-precondition-composing', composing, await imeState())
       await cmdS()
       await sleep(1500)
       const disk1 = fs.readFileSync(file, 'utf8')
-      check('H-no-save-while-composing', disk1 === original, { disk: disk1.slice(0, 20), model: (await ed('return m.getValue()')).slice(0, 20), dirty: await dirtyOf(rel) })
-      await cdp('Input.imeSetComposition', { text: '한', selectionStart: 1, selectionEnd: 1 })
+      const during = await imeState()
+      // 확정 전: 디스크 무변경 · composition-end 없음 · 미확정 글자 그대로 · 수정됨.
+      check('H-no-save-while-composing', composing && disk1 === original && JSON.stringify(during.events) === '["start"]' && during.model.startsWith('ㅎ') && during.dirty === 'true', { disk: disk1.slice(0, 20), ...during })
+      if (!omit) await cdp('Input.imeSetComposition', { text: '한', selectionStart: 1, selectionEnd: 1 })
       await cdp('Input.insertText', { text: '한' })
       await sleep(400)
       await cmdS()
       const saved = await settle(async () => fs.readFileSync(file, 'utf8') === `한${original}` && (await dirtyOf(rel)) === 'false', 4000)
-      check('H-save-after-commit', saved, { disk: fs.readFileSync(file, 'utf8').slice(0, 20), dirty: await dirtyOf(rel), model: (await ed('return m.getValue()')).slice(0, 20), versions: await ed('return { alt: m.getAlternativeVersionId(), ver: m.getVersionId() }'), writes: logRows().filter((row) => row.tag === 'file.write').map((row) => `${row.ok}:${row.code}`) })
+      const events = await js('window.l591Ime.slice()')
+      check('H-save-after-commit', composing && saved && JSON.stringify(events) === '["start","end"]', { events, disk: fs.readFileSync(file, 'utf8').slice(0, 20), dirty: await dirtyOf(rel), model: (await ed('return m.getValue()')).slice(0, 20), versions: await ed('return { alt: m.getAlternativeVersionId(), ver: m.getVersionId() }'), writes: logRows().filter((row) => row.tag === 'file.write').map((row) => `${row.ok}:${row.code}`) })
     } finally {
       socket.close()
     }
@@ -277,6 +302,110 @@ switch (name) {
     await click(`[data-file-tab="${rel}"]`).catch(() => null)
     await key('W', ['meta'])
     await sleep(500)
+    break
+  }
+  case 'bulk-close': {
+    const a = 'r1/multi-a.txt'
+    const b = 'r1/multi-b.txt'
+    const hook = path.join(root, 'write-hook.json')
+    await openFile(b)
+    await openFile(a)
+    await exposeMonaco()
+    await typeAt('FIRST-')
+    await until(async () => (await dirtyOf(a)) === 'true', { label: 'dirty a' })
+    fs.rmSync(hook, { force: true })
+    execFileSync('mkfifo', [hook])
+    try {
+      await stub(['save', 'cancel'])
+      const anchor = await js(`document.querySelector('[data-main-tab]:not([data-file-tab])').dataset.mainTab`)
+      await js(`(() => { const el = [...document.querySelectorAll('[data-main-tab]')].find((t) => t.dataset.mainTab === ${JSON.stringify(anchor)}); el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 400, clientY: 20, button: 2 })) })()`)
+      await until(() => js(`document.querySelector('[data-tab-menu-close-others="${anchor}"]') !== null`), { label: 'menu' })
+      await js(`document.querySelector('[data-tab-menu-close-others="${anchor}"]').click()`)
+      await sleep(300)
+      await click(`[data-file-tab="${b}"]`)
+      await until(() => js(`document.querySelector('[data-file-view="${b}"] [data-editor-ready]') !== null`), { label: 'b editor' })
+      const late = await typeAt('LATE-')
+      check('A2-b-edited-while-save-pending', late === 'LATE-base-multi-b.txt' && (await dirtyOf(b)) === 'true' && fs.readFileSync(path.join(repo, a), 'utf8') === 'base-multi-a.txt', { late, dirtyB: await dirtyOf(b) })
+      await fsp.writeFile(hook, '{}')
+      fs.rmSync(hook, { force: true })
+      fs.writeFileSync(hook, '{}')
+      await sleep(1500)
+      const tabs = await js(`[...document.querySelectorAll('[data-file-tab]')].map((t) => ({ rel: t.dataset.fileTab, dirty: t.dataset.fileDirty }))`)
+      const asked = (await stub([])).asked
+      const diskA = fs.readFileSync(path.join(repo, a), 'utf8')
+      const diskB = fs.readFileSync(path.join(repo, b), 'utf8')
+      // 통과 = B 의 새 편집이 살아 있다(탭 열림·수정됨) · 다시 물었다(close 두 번) · A 는 저장됐다 · B 디스크 무변경.
+      check('A2-late-member-not-discarded', tabs.some((t) => t.rel === b && t.dirty === 'true') && asked.filter((k) => k === 'close').length === 2 && diskA === 'FIRST-base-multi-a.txt' && diskB === 'base-multi-b.txt', { tabs, asked, diskA, diskB })
+    } finally {
+      fs.rmSync(hook, { force: true })
+    }
+    break
+  }
+  case 'bom-undo': {
+    const rel = 'r1/undo-bom.txt'
+    const file = path.join(repo, rel)
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('X')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    fs.writeFileSync(file, '\ufeffDISK\n')
+    await until(() => js(`document.querySelector('[data-external-action="revert"]') !== null`), { label: 'banner', timeoutMs: 5000 })
+    await click('[data-external-action="revert"]')
+    const reverted = await settle(async () => (await ed('return m.getValue()')) === 'DISK\n' && (await dirtyOf(rel)) === 'false')
+    await ed(`e.trigger('keyboard', 'undo', null); return true`)
+    const undone = await settle(async () => (await ed('return m.getValue()')) === 'Xalpha\n' && (await dirtyOf(rel)) === 'true')
+    await key('S', ['meta'])
+    const saved = await settle(async () => (await dirtyOf(rel)) === 'false', 5000)
+    const hex = fs.readFileSync(file).toString('hex')
+    check('B2-revert-undo-save-bytes', reverted && undone && saved && hex === 'efbbbfefbbbf58616c7068610a', { reverted, undone, saved, hex, expected: 'efbbbfefbbbf58616c7068610a' })
+    break
+  }
+  case 'unresponsive-cleanup':
+  case 'normal-cleanup': {
+    const fake = values.fake ?? ''
+    if (!/^\/tmp\/l591g-f[^/]+$/.test(fake)) throw new Error('--fake 는 /tmp/l591g-f* (가짜 Tailscale 상태 폴더 — 실제 Tailscale 무접촉)')
+    setFake(fake, { serve: {}, hang: [] })
+    await js(`window.corral.setSettings({ mobileEnabled: true })`)
+    await until(async () => (await ctl(root, { cmd: 'mobile-status' })).mobile?.exposure?.kind === 'exposed', { label: 'fake mobile exposed', timeoutMs: 15_000 })
+    const exposed = fakeState(fake)
+    check('C2-mobile-exposed', Object.keys(exposed?.serve ?? {}).length > 0, { serve: exposed?.serve })
+    const rel = 'r1/edit.txt'
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('unsaved-')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    await sleep(300)
+    const before = logRows().length
+    let pid = null
+    if (name === 'unresponsive-cleanup') {
+      const table = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' }).split('\n')
+      pid = Number(table.find((row) => row.includes(`--user-data-dir=${root}/ud`) && row.includes('--type=renderer')).trim().split(/\s+/)[0])
+      await stub(['cancel', 'discard'])
+    } else await stub(['discard'])
+    try {
+      if (pid !== null) {
+        process.kill(pid, 'SIGSTOP')
+        await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+        const asked = await settle(() => logRows().slice(before).some((row) => row.tag === 'quit.unresponsive_choice'), 10_000)
+        await sleep(300)
+        check('C2-cancel-keeps-app-and-mobile', asked && alive() && Object.keys(fakeState(fake)?.serve ?? {}).length > 0, { asked, alive: alive() })
+      }
+      const mark = calls(fake).length
+      await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+      const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 20_000 }).then(() => true, () => false)
+      await sleep(800)
+      const after = fakeState(fake)
+      const shutdown = calls(fake).slice(mark).map((row) => row.argv.join(' '))
+      check('C2-exit-clears-serve', exited && Object.keys(after?.serve ?? {}).length === 0, { exited, serve: after?.serve, shutdown })
+    } finally {
+      if (pid !== null) {
+        try {
+          process.kill(pid, 'SIGCONT')
+        } catch {
+          /* 이미 끝났다 */
+        }
+      }
+    }
     break
   }
   default:

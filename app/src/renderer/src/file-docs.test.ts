@@ -320,14 +320,14 @@ describe('E3ⓑ 닫기 확인', () => {
   it('수정 없으면 묻지 않고 닫는다', async () => {
     const { doc } = open('a')
     const fake = fakeDeps({ disk: { stamp: 's0', text: 'a' } })
-    expect(await confirmDiscardOrSave({ docs: [doc], deps: fake.deps })).toBe(true)
+    expect(await confirmDiscardOrSave({ targets: () => [doc], deps: fake.deps })).toBe(true)
     expect(fake.dialogs).toHaveLength(0)
   })
   it('저장 안 함 → 문서를 버린다(디스크 무변경)', async () => {
     const { doc, model } = open('a')
     model.type(1, 1, 'x')
     const fake = fakeDeps({ disk: { stamp: 's0', text: 'a' }, answers: ['discard'] })
-    expect(await confirmDiscardOrSave({ docs: [doc], deps: fake.deps })).toBe(true)
+    expect(await confirmDiscardOrSave({ targets: () => [doc], deps: fake.deps })).toBe(true)
     expect(getDoc(doc.key)).toBeUndefined()
     expect(model.disposed).toBe(true)
     expect(fake.writes).toHaveLength(0)
@@ -335,9 +335,9 @@ describe('E3ⓑ 닫기 확인', () => {
   it('취소 → 닫지 않는다 · 저장 실패 → 닫지 않는다', async () => {
     const { doc, model } = open('a')
     model.type(1, 1, 'x')
-    expect(await confirmDiscardOrSave({ docs: [doc], deps: fakeDeps({ disk: { stamp: 's0', text: 'a' }, answers: ['cancel'] }).deps })).toBe(false)
+    expect(await confirmDiscardOrSave({ targets: () => [doc], deps: fakeDeps({ disk: { stamp: 's0', text: 'a' }, answers: ['cancel'] }).deps })).toBe(false)
     const failing = fakeDeps({ disk: { stamp: 's0', text: 'a' }, answers: ['save'], fail: { ok: false, code: 'not_file', error: '' } })
-    expect(await confirmDiscardOrSave({ docs: [doc], deps: failing.deps })).toBe(false)
+    expect(await confirmDiscardOrSave({ targets: () => [doc], deps: failing.deps })).toBe(false)
     expect(getDoc(doc.key)).toBe(doc)
   })
   it('여러 개면 목록 한 번', async () => {
@@ -346,7 +346,7 @@ describe('E3ⓑ 닫기 확인', () => {
     a.model.type(1, 1, 'x')
     b.model.type(1, 1, 'y')
     const fake = fakeDeps({ disk: { stamp: 's0', text: 'a' }, answers: ['cancel'] })
-    await confirmDiscardOrSave({ docs: [a.doc, b.doc], deps: fake.deps })
+    await confirmDiscardOrSave({ targets: () => [a.doc, b.doc], deps: fake.deps })
     expect(fake.dialogs).toEqual([{ kind: 'close', files: [a.doc.rel, b.doc.rel] }])
     expect(dirtyFilesOf(allDocs())).toHaveLength(2)
   })
@@ -376,7 +376,7 @@ describe('수정 r1', () => {
       }
       return write(request)
     }
-    const closing = confirmDiscardOrSave({ docs: [doc], deps: fake.deps })
+    const closing = confirmDiscardOrSave({ targets: () => [doc], deps: fake.deps })
     await started
     model.type(1, 11, '-LATE')
     release()
@@ -431,5 +431,92 @@ describe('수정 r1', () => {
     expect(fake.writes).toHaveLength(0)
     expect(fake.notes.join('\n')).toContain('조합')
     expect(doc.dirty).toBe(true)
+  })
+})
+
+// --- 수정 r2 (Codex 리뷰 r2) 회귀 — 옛 코드(8ae2c57d0)에서 실패, 고친 코드에서 통과 -----------------------------------------
+describe('수정 r2', () => {
+  it('R2-A 여러 파일 닫기 — 저장 대기 중 처음엔 깨끗했던 대상이 수정되면 버리지 않고 다시 묻는다', async () => {
+    const a = open('base-a', { stamp: 's0' })
+    const b = open('base-b', { stamp: 's0' })
+    a.model.type(1, 1, 'FIRST-')
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let arrived: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      arrived = resolve
+    })
+    const fake = fakeDeps({ disk: { stamp: 's0', text: 'base-a' }, answers: ['save', 'cancel'] })
+    const write = fake.deps.writeFile
+    let held = true
+    fake.deps.writeFile = async (request) => {
+      if (held) {
+        held = false
+        arrived()
+        await gate
+      }
+      return write(request)
+    }
+    // 옛 코드의 인자(`docs`)와 새 인자(`targets`)를 같이 준다 — 옛 코드에서도 같은 상황을 만든다(리터럴이 아니라 남는 속성 검사가 없다).
+    const request = { docs: [a.doc, b.doc], targets: () => [a.doc, b.doc], deps: fake.deps }
+    const closing = confirmDiscardOrSave(request)
+    await started
+    b.model.type(1, 1, 'LATE-')
+    release()
+    const mayClose = await closing
+    expect(mayClose).toBe(false)
+    expect(fake.dialogs).toEqual([
+      { kind: 'close', files: [a.doc.rel] },
+      { kind: 'close', files: [b.doc.rel] },
+    ])
+    expect(getDoc(b.doc.key)).toBe(b.doc)
+    expect(b.doc.dirty).toBe(true)
+    expect(serialize(b.doc)).toBe('LATE-base-b')
+  })
+  it('R2-A 다시 물어 「저장」 이면 새로 수정된 대상도 저장한 뒤 닫는다', async () => {
+    const a = open('a', { stamp: 's0' })
+    const b = open('b', { stamp: 's0' })
+    a.model.type(1, 1, 'x')
+    // fakeDeps 의 디스크는 하나라 b 저장은 a 저장 뒤 stamp 가 달라 충돌로 온다 — 덮어쓰기로 답한다(시험 가짜의 한계).
+    const fake = fakeDeps({ disk: { stamp: 's0', text: 'a' }, answers: ['save', 'save', 'overwrite'] })
+    const dialog = fake.deps.fileDialog
+    let first = true
+    fake.deps.fileDialog = async (req) => {
+      const answer = await dialog(req)
+      if (first) {
+        first = false
+        b.model.type(1, 1, 'y')
+      }
+      return answer
+    }
+    const request = { docs: [a.doc, b.doc], targets: () => [a.doc, b.doc], deps: fake.deps }
+    expect(await confirmDiscardOrSave(request)).toBe(true)
+    expect(fake.dialogs.filter((row) => row.kind === 'close')).toEqual([
+      { kind: 'close', files: [a.doc.rel] },
+      { kind: 'close', files: [b.doc.rel] },
+    ])
+    expect(a.doc.dirty || b.doc.dirty).toBe(false)
+  })
+  it('R2-B 되돌리기 → 실행 취소 → 직렬화 — 숨은 BOM·파일 BOM 이 원래 편집 그대로', () => {
+    const { doc, model } = open('\uFEFFalpha\n', { bom: true })
+    model.type(1, 1, 'X')
+    // 디스크가 본문 U+FEFF 없는 내용으로 바뀌었다(main 이 파일 BOM 을 떼고 준 글 'DISK\n').
+    revertDoc(doc, { text: 'DISK\n', bom: true, stamp: 's1', hash: 'h1', readOnly: null, large: false })
+    expect(serialize(doc)).toBe('DISK\n')
+    model.undoLast()
+    expect(doc.dirty).toBe(true)
+    expect(serialize(doc)).toBe('\uFEFFXalpha\n')
+    expect(doc.bom).toBe(true)
+  })
+  it('R2-B 파일 BOM 없는 디스크로 되돌렸다 실행 취소하면 파일 BOM 도 돌아온다', () => {
+    const { doc, model } = open('alpha\n', { bom: true })
+    model.type(1, 1, 'X')
+    revertDoc(doc, { text: 'disk\n', bom: false, stamp: 's1', hash: 'h1', readOnly: null, large: false })
+    expect(doc.bom).toBe(false)
+    model.undoLast()
+    expect(doc.bom).toBe(true)
+    expect(serialize(doc)).toBe('Xalpha\n')
   })
 })

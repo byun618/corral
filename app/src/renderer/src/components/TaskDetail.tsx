@@ -6,7 +6,7 @@
 // 편집기·제목 칸의 Esc 는 그 칸이 먼저 받아 「버림」 으로 끝낸다(기본 동작을 막아 페이지가 다시 처리하지 않는다).
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { WORK_PRIORITIES, type WorkCall, type WorkFieldPatch, type WorkItem, type WorkRelation, type WorkRelationKind, type WorkStatus } from '../../../shared/work.js'
-import type { TaskDetailModel } from '../hooks/useTaskDetail.js'
+import type { EditSlot, TaskDetailModel } from '../hooks/useTaskDetail.js'
 import {
   ACTIVITY_FILTERS,
   ACTIVITY_FILTER_LABEL,
@@ -33,6 +33,9 @@ import { MarkdownView } from './MarkdownView.js'
 import { KindIcon, SpaceDot, StatusCircle } from './TasksViews.js'
 
 type Menu = 'status' | 'priority' | null
+
+/** 상세를 받기 전에 보낸 입력 — 보내지 않았음을 그 자리에 알린다(R3-E: 화면에만 남지 않게). */
+const NOT_READY = '상세를 받는 중이라 보내지 않았습니다 — 받은 뒤 다시 하세요.'
 
 export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose, spaceOf }: {
   detail: TaskDetailModel
@@ -75,6 +78,8 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
   }, [detail.session])
   /** 본문 편집기의 지금 초안 — 보낸 값과 비교한다(R2-B). */
   const bodyDraft = useRef('')
+  // 편집기가 닫히면 본문의 편집 기준도 놓는다(열 때 `openEditor` 가 잡는다 — R3-A).
+  useEffect(() => { if (!editing) detail.dropBasis('body') }, [editing])
 
   escapeRef.current = () => {
     if (confirm !== null) { setConfirm(null); return true }
@@ -101,9 +106,15 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
   const status = statuses?.find((entry) => entry.key === item.statusKey) ?? null
   const space = spaceOf(item.spaceKey)
   const versionOf = detail.versionOf
+  /** 쓸 수 있는가 — hook 의 막힘에는 「상세를 아직 받지 않음」 도 들어 있다(R3-E: 제목·필드·연결·자식도 받은 뒤에만). */
   const writable = blocked === null
   /** 상세(본문 포함)를 출처에서 받았는가 — 받기 전에는 본문 편집·체크 칸을 막는다(R1-B: 목록 값엔 본문이 없어 빈 본문을 저장할 수 있다). */
   const bodyReady = base !== null
+  /** 본문 편집을 연다 — 지금 서버 값을 본문의 편집 기준으로 잡는다(R3-A). */
+  const openEditor = (): void => {
+    detail.holdBasis('body')
+    setEditing(true)
+  }
 
   const pickStatus = (row: StatusMenuRow): void => {
     setMenu(null)
@@ -131,10 +142,11 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
         : null,
     })
   }
-  const saveFields = ({ fields, label, optimistic, undoFields }: { fields: WorkFieldPatch; label: string; optimistic: (value: WorkItem) => WorkItem; undoFields: WorkFieldPatch }): Promise<unknown> => detail.write({
+  const saveFields = ({ fields, label, optimistic, undoFields, basis }: { fields: WorkFieldPatch; label: string; optimistic: (value: WorkItem) => WorkItem; undoFields: WorkFieldPatch; basis?: EditSlot }): Promise<unknown> => detail.write({
     call: fieldCall({ itemId: item.id, fields, ifVersion: versionOf(base) }),
     optimistic,
     label,
+    basis,
     undo: (now) => ({ call: fieldCall({ itemId: item.id, fields: undoFields, ifVersion: versionOf(now) }), optimistic: (value) => ({ ...value, ...undoFields }), label: null, undo: null }),
   })
 
@@ -150,7 +162,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
     setBodySaving(true)
     setBodyError(null)
     setBodyNote(null)
-    const outcome = await detail.write({ call: fieldCall({ itemId: item.id, fields: { body: text }, ifVersion: versionOf(base) }), optimistic: (value) => ({ ...value, body: text }), label: null, undo: null, quiet: true })
+    const outcome = await detail.write({ call: fieldCall({ itemId: item.id, fields: { body: text }, ifVersion: versionOf(base) }), optimistic: (value) => ({ ...value, body: text }), label: null, undo: null, quiet: true, basis: 'body' })
     // 확인 지연 — 편집기(초안)를 둔 채 기다린다. 늦게 거절되면 초안이 남는다(R1-C). 늦은 결과도 아래 같은 정리로 간다.
     if (outcome.kind === 'late') setBodyNote('출처 확인이 늦어지고 있습니다 — 답이 오면 닫습니다. 초안은 그대로 둡니다.')
     const final = await detail.finalOf(outcome)
@@ -167,6 +179,19 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
     if (final.kind === 'failed') setBodyError(final.error.kind === 'conflict' ? '저장하지 않았습니다 — 위 충돌을 먼저 정하세요.' : `저장하지 못했습니다 — ${final.error.message}`)
     else if (final.kind === 'busy') setBodyError('앞 변경을 출처가 확인하는 중입니다 — 잠시 뒤 다시 저장하세요.')
     else setBodyError('상세를 다시 받는 중입니다 — 잠시 뒤 다시 저장하세요.')
+  }
+
+  /**
+   * 「내 값으로 덮기」 — 덮은 요청의 종류대로 정리한다(R3-B). 본문 덮기가 성공하면 「보낸 값 = 지금 값」 일 때만 편집기를 닫고,
+   * 다른 칸 덮기는 본문 편집(초안·편집기)을 건드리지 않는다.
+   */
+  const overrideConflict = async (): Promise<void> => {
+    const sentBody = conflict !== null && conflict.call.op === 'updateItem' ? conflict.call.fields.body : undefined
+    const final = await detail.overrideConflict()
+    if (final?.kind !== 'ok' || sentBody === undefined || !editing) return
+    setBodyError(null)
+    if (bodyDraft.current === sentBody) setEditing(false)
+    else setBodyNote('보낸 내용은 저장했습니다 — 그 뒤 고친 내용은 아직 저장하지 않았습니다.')
   }
 
   return (
@@ -206,7 +231,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
               {editing ? <div className="issue-conflict-note">새로 불러오면 편집 중인 본문은 버려집니다.</div> : null}
               <div className="issue-conflict-actions">
                 <button type="button" className="issue-btn is-primary" data-conflict-reload="" onClick={() => { setEditing(false); setBodyError(null); detail.reloadFromServer() }}>새로 불러오기</button>
-                <button type="button" className="issue-btn" data-conflict-override="" onClick={() => { void detail.overrideConflict().then((final) => { if (final?.kind === 'ok') { setEditing(false); setBodyError(null) } }) }}>내 값으로 덮기</button>
+                <button type="button" className="issue-btn" data-conflict-override="" onClick={() => { void overrideConflict() }}>내 값으로 덮기</button>
               </div>
             </div>
           )}
@@ -224,7 +249,14 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
             </nav>
           )}
 
-          <TitleField item={item} writable={writable} blocked={blocked} onSave={(title) => saveFields({ fields: { title }, label: `${item.key} 제목을 바꿨습니다`, optimistic: (value) => ({ ...value, title }), undoFields: { title: item.title } })} />
+          <TitleField
+            item={item}
+            writable={writable}
+            blocked={blocked}
+            onFocus={() => detail.holdBasis('title')}
+            onDone={() => detail.dropBasis('title')}
+            onSave={(title) => saveFields({ fields: { title }, label: `${item.key} 제목을 바꿨습니다`, optimistic: (value) => ({ ...value, title }), undoFields: { title: item.title }, basis: 'title' })}
+          />
 
           <div className="issue-status-row">
             <div className="issue-status-anchor" data-detail-menu="">
@@ -267,7 +299,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
             <div className="issue-section-head">
               <span>본문</span>
               <span className="issue-detail-head-spacer" />
-              {editing ? null : <button type="button" className="issue-link-btn" data-issue-body-edit="" disabled={!writable || !bodyReady} title={blocked ?? (bodyReady ? undefined : '본문을 불러오는 중…')} onClick={() => setEditing(true)}>편집</button>}
+              {editing ? null : <button type="button" className="issue-link-btn" data-issue-body-edit="" disabled={!writable || !bodyReady} title={blocked ?? (bodyReady ? undefined : '본문을 불러오는 중…')} onClick={openEditor}>편집</button>}
             </div>
             {editing ? (
               <MarkdownEditor key={detail.uid ?? ''} initial={item.body ?? ''} keyPattern={keyPattern} saving={bodySaving} error={bodyError ?? bodyNote} draftRef={bodyDraft} onSave={(text) => void saveBody(text)} onCancel={() => { setEditing(false); setBodyError(null); setBodyNote(null) }} />
@@ -277,7 +309,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
                 onClick={(event) => {
                   if (!writable || !bodyReady || (event.target instanceof Element && event.target.closest('a, input, button'))) return
                   if ((window.getSelection()?.toString() ?? '') !== '') return
-                  setEditing(true)
+                  openEditor()
                 }}
               >
                 {(item.body ?? '').trim().length === 0
@@ -329,7 +361,8 @@ function StatusMenu({ detail, statuses, item, onPick }: { detail: TaskDetailMode
   )
 }
 
-function TitleField({ item, writable, blocked, onSave }: { item: WorkItem; writable: boolean; blocked: string | null; onSave: (title: string) => Promise<unknown> }): React.JSX.Element {
+/** 제목 칸 — 포커스 = 편집 시작(편집 기준을 잡는다), blur = 저장 뒤 기준을 놓는다(R3-A). 상세를 받기 전에는 읽기 전용(R3-E). */
+function TitleField({ item, writable, blocked, onSave, onFocus, onDone }: { item: WorkItem; writable: boolean; blocked: string | null; onSave: (title: string) => Promise<unknown>; onFocus: () => void; onDone: () => void }): React.JSX.Element {
   const [draft, setDraft] = useState(item.title)
   const focused = useRef(false)
   useEffect(() => { if (!focused.current) setDraft(item.title) }, [item.title, item.id])
@@ -346,9 +379,9 @@ function TitleField({ item, writable, blocked, onSave }: { item: WorkItem; writa
       readOnly={!writable}
       title={blocked ?? undefined}
       aria-label="제목"
-      onFocus={() => { focused.current = true }}
+      onFocus={() => { focused.current = true; onFocus() }}
       onChange={(event) => setDraft(event.target.value)}
-      onBlur={() => { focused.current = false; if (writable) commit() }}
+      onBlur={() => { focused.current = false; if (writable) commit(); onDone() }}
       onKeyDown={(event) => {
         if (imeComposing(event.nativeEvent)) return
         if (event.key === 'Enter') {
@@ -374,7 +407,7 @@ function Fields({ detail, item, now, menu, setMenu, writable, saveFields }: {
   menu: Menu
   setMenu: (menu: Menu) => void
   writable: boolean
-  saveFields: (input: { fields: WorkFieldPatch; label: string; optimistic: (value: WorkItem) => WorkItem; undoFields: WorkFieldPatch }) => Promise<unknown>
+  saveFields: (input: { fields: WorkFieldPatch; label: string; optimistic: (value: WorkItem) => WorkItem; undoFields: WorkFieldPatch; basis?: EditSlot }) => Promise<unknown>
 }): React.JSX.Element {
   const placement = detail.caps?.placement ?? { state: 'on' as const }
   const tone = dueTone({ dueAt: item.dueAt, now })
@@ -503,6 +536,7 @@ function Relations({ detail, item, spaceOf }: { detail: TaskDetailModel; item: W
     }
     if (final.kind === 'failed') setError(final.error.message)
     else if (final.kind === 'busy') setError('앞 변경을 출처가 확인하는 중입니다.')
+    else if (final.kind === 'stale') setError(NOT_READY)
   }
 
   return (
@@ -594,6 +628,7 @@ function Children({ detail, item }: { detail: TaskDetailModel; item: WorkItem })
     }
     if (final.kind === 'failed') setError(final.error.message)
     else if (final.kind === 'busy') setError('앞 변경을 출처가 확인하는 중입니다.')
+    else if (final.kind === 'stale') setError(NOT_READY)
   }
 
   return (
@@ -666,6 +701,7 @@ function Activity({ detail, statuses, sourceName, now, keyPattern }: { detail: T
     }
     if (final.kind === 'failed') setError(`남기지 못했습니다 — ${final.error.message}`)
     else if (final.kind === 'busy') setError('앞 변경을 출처가 확인하는 중입니다.')
+    else if (final.kind === 'stale') setError(NOT_READY)
   }
 
   return (

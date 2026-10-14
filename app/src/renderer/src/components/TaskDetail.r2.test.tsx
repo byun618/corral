@@ -142,9 +142,10 @@ describe('r2 independent edge reproductions', () => {
   click('[data-child-add]'); setValue(input('[data-child-title]'),'CHILD'); key(input('[data-child-title]'),{key:'Enter'}); await settle()
   click('[data-field="priority"]'); click('[data-priority-row="high"]'); await settle()
   console.log('R2-D',{conflict:q('[data-issue-conflict]')?.textContent,writes:writes(r.calls)})
-  const hasConflict=q('[data-issue-conflict]')!==null
-  await release()
-  expect(hasConflict).toBe(false)
+  await release(); await settle(16)
+  // 수정 3(시험 감사): 해제 **뒤** 예약 쓰기가 끝난 마지막 서버 값·마지막 화면으로 판정한다 — 해제 전 boolean 은 판별력이 없었다(R3-D).
+  expect(r.state.items.find(i=>i.id==='m-1')?.priority).toBe('high')
+  expect(q('[data-issue-conflict]')).toBeNull()
  })
  it('E delayed refresh snapshot cannot overwrite subsequent successful write', async () => {
   const r=await rig(); await openCard('CORE-2')

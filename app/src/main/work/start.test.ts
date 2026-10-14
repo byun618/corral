@@ -177,3 +177,31 @@ describe('합류 · 이어 받기 (C7)', () => {
     expect(h.calls).toHaveLength(0)
   })
 })
+
+describe('에이전트 다시 띄우기 (C6) — 그 작업에 붙은 worktree 에만 · terminal create --agent · 프롬프트 없음', () => {
+  const linkedRepos = (itemId: string) => () => [testRepo({ root: ROOT, worktrees: [testWorktree({ path: PATH, branch: NAME, workLink: { mode: 'explicit', sourceId: 'mock-jira', connectionId: 'c', key: 'CORE-1', itemId, connected: true } })] })]
+  const relaunch = (patch: Record<string, unknown> = {}) => ({ attemptId: attempt(), connectionId: 'c', itemId: 'm-1', path: PATH, agent: 'claude', model: 'opus', effort: 'high', ...patch })
+  it('명령 그대로 — worktree path · agent · model · effort · 새 id, 프롬프트 플래그 없음, 같은 id 연타는 호출 1', async () => {
+    const h = harness({ answer: () => ok({ terminal: { handle: 't1.x' } }), repos: linkedRepos('m-1') })
+    const given = relaunch()
+    const results = await Promise.all(Array.from({ length: 5 }, () => h.service.relaunch(given)))
+    expect(h.calls).toHaveLength(1)
+    expect(h.calls[0]).toMatchObject({ command: 'terminal create', flags: { worktree: `path:${PATH}`, agent: 'claude', model: 'opus', effort: 'high', 'request-id': given.attemptId } })
+    expect(h.calls[0]?.flags.prompt).toBeUndefined()
+    expect(results[0]?.stages).toMatchObject({ worktree: { status: 'completed' }, agent: { status: 'completed' }, prompt: { status: 'skipped', code: 'relaunch' } })
+    expect(results.slice(1).every((entry) => entry.joined)).toBe(true)
+  })
+  it('다른 작업에 붙은 · 링크 없는 worktree 는 거절(런타임 호출 0)', async () => {
+    const other = harness({ answer: () => ok({}), repos: linkedRepos('m-other') })
+    expect((await other.service.relaunch(relaunch())).refused).not.toBeNull()
+    const none = harness({ answer: () => ok({}) })
+    expect((await none.service.relaunch(relaunch())).refused).not.toBeNull()
+    expect([...other.calls, ...none.calls]).toHaveLength(0)
+  })
+  it('빈 터미널·틀린 입력은 거절, 런타임 실패는 에이전트 단계 실패', async () => {
+    const h = harness({ answer: () => fail('agent_failed', '에이전트 기동 실패'), repos: linkedRepos('m-1') })
+    expect((await h.service.relaunch(relaunch({ agent: 'shell' }))).refused).not.toBeNull()
+    expect((await h.service.relaunch(relaunch({ attemptId: 'x' }))).refused).not.toBeNull()
+    expect((await h.service.relaunch(relaunch())).stages.agent).toEqual({ status: 'failed', code: 'agent_failed', message: '에이전트 기동 실패' })
+  })
+})

@@ -757,7 +757,8 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     expect(payload.endsWith('\u001b[201~')).toBe(true)
     expect(payload.split('\u001b').length - 1).toBe(2)
     // No other control character survives, and nothing follows the frame (no Enter).
-    expect(/[\u0000-\u0008\u000b\u000c\u000e-\u001a\u001c-\u001f\u007f]/.test(payload)).toBe(false)
+    const stray = [...payload].map((char) => char.charCodeAt(0)).filter((code) => (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d && code !== 0x1b) || code === 0x7f)
+    expect(stray).toEqual([])
     expect(payload.slice(6, -6).endsWith('\r')).toBe(false)
     expect(payload).toContain('넷째 줄')
     expect(send.mock.calls[0]![2]).toBe(2) // fenced on the ready observation's seq

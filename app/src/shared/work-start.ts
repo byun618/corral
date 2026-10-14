@@ -100,7 +100,7 @@ export function startNameProblem(name: string): string | null {
   if (name.length === 0) return '이름을 적으세요.'
   if (name.length > 200) return '이름이 너무 깁니다.'
   // 공백·제어·git 금지 글자.
-  if (/[\s\u0000-\u001f\u007f~^:?*[\\]/.test(name)) return '공백이나 ~ ^ : ? * [ \\ 는 쓸 수 없습니다.'
+  if (/[\s~^:?*[\\]/.test(name) || [...name].some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f)) return '공백이나 ~ ^ : ? * [ \\ 는 쓸 수 없습니다.'
   if (name.startsWith('-') || name.startsWith('/') || name.endsWith('/') || name.endsWith('.')) return '-·/ 로 시작하거나 / . 으로 끝날 수 없습니다.'
   if (name.includes('..') || name.includes('//') || name.includes('@{') || name === '@') return '.. // @{ 는 쓸 수 없습니다.'
   if (name.split('/').some((part) => part.startsWith('.') || part.endsWith('.lock'))) return '. 으로 시작하거나 .lock 으로 끝나는 조각은 쓸 수 없습니다.'

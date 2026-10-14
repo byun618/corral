@@ -1,12 +1,13 @@
 // 작업 링크 화면 모델 (LIFE-603 C10·C11·C12) — 순수 함수. 링크 해석은 main 이 했다(`WorktreeRow.workLink`) — 여기서는 모아서 고르기만 한다.
 //
-// - 점·라벨은 사이드바 · 탭 · 작업 중 보기와 **같은 함수**(`paneDot` → `tabStatus`)에서 온다. 여기서 새 판정을 만들지 않는다.
+// - pane 점은 사이드바 에이전트 행과 **같은 함수**(`paneDot`, 같은 안 읽음 집합)에서 온다. 여기서 새 판정을 만들지 않는다.
+//   worktree 점 = 그 pane 점들 중 급한 순 첫째 — 탭 집계(`tabStatus`)는 `unverifiable` 같은 칸 없는 점을 버려 사이드바 행과 달라진다.
 // - 급한 순서는 `AGENT_DOT_ORDER`(질문 대기 > 막힘 > 일하는 중 > … > 끝남 안 봄 > … > 쉼) 하나.
 // - 큰소리 라벨은 사람이 움직일 두 경우만 — 질문 대기(`waiting`) · 끝남 안 봄(`done` = 안 본 끝남, herdr 의 done).
 import type { RepoRow, WorktreeRow } from '../../shared/types.js'
 import { linkTargets, type WorktreeWorkLink } from '../../shared/work-link.js'
 import { AGENT_DOT_ORDER, type AgentDot } from './agent-dot.js'
-import { paneDot, tabStatus, type TabAgentKind } from './tab-status.js'
+import { paneDot, type TabAgentKind } from './tab-status.js'
 import { latestActivity, type WorkingEntry, type WorkingTree } from './tasks-model.js'
 
 /** 질문 대기 pane 하나 — 본문을 못 읽는 에이전트(grok)는 `text` null + 이유. */
@@ -30,13 +31,13 @@ function agentKindOf(agent: string | null): TabAgentKind | null {
 }
 
 /**
- * worktree 하나의 점 — 탭 선두와 같은 `tabStatus` 집계, pane 점은 사이드바 행과 같은 `paneDot`(안 읽음 집합도 사이드바와 같은 것 — `useUnread`).
+ * worktree 하나의 점 — pane 점(사이드바 행과 같은 `paneDot`, 안 읽음 집합도 사이드바와 같은 `useUnread`) 중 급한 순 첫째.
  * 에이전트 pane 이 없으면 null.
  */
 export function worktreeDot({ worktree, unreadPanes }: { worktree: WorktreeRow; unreadPanes: ReadonlySet<string> }): AgentDot | null {
   const panes = (worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes).filter((pane) => pane.agent !== null)
   const dots = panes.map((pane) => paneDot({ pane, unread: unreadPanes.has(pane.paneId) }))
-  return tabStatus(dots)?.dot ?? (dots.length > 0 ? 'idle' : null)
+  return dots.reduce<AgentDot | null>((best, dot) => (best === null || urgency(dot) < urgency(best) ? dot : best), null)
 }
 
 /** 트리의 링크된 worktree 전부(열림·닫힘). `unreadPanes` = 사이드바와 같은 안 읽음 pane 집합. */

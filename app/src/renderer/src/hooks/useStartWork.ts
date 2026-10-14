@@ -71,7 +71,8 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
     const here = round.current
     const repoRoot = defaultStartRepo({ repos, repoDefaults, connectionId: target.connectionId, spaceKey: item.spaceKey, activeRepoRoot })
     setMode(next)
-    setProceed(next === 'another')
+    // 링크가 있는 작업이면 어느 버튼으로 열든 「이미 진행 중」 상자부터(C1) — 「하나 더 시작」 은 그 상자에서 고른다.
+    setProceed(false)
     setForm({ repoRoot, name: defaultStartName({ key: item.key, title: item.title }), agent: 'claude', model: '', effort: '', submit: false, moveStatus: false })
     setResult(null)
     setMove(NO_MOVE)

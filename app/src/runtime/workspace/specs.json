@@ -346,7 +346,7 @@
     "aliases": [],
     "argumentMode": "parsed",
     "summary": "Create a new corral-managed worktree",
-    "usage": "corral worktree create --name <name> [--repo <selector>|--project <id> [--host <host-id>]|--project-host-setup <id>] [--agent claude|codex|grok] [--model <id>] [--effort <level>] [--advisor <id>] [--prompt <text>|--prompt-file <path>] [--setup run|skip|inherit] [--base-branch <ref>] [--issue <number>] [--linear-issue <identifier-or-url>] [--comment <text>] [--parent-worktree <selector>] [--no-parent] [--run-hooks] [--activate] [--request-id <id>] [--timeout-ms <ms>] [--json]",
+    "usage": "corral worktree create --name <name> [--repo <selector>|--project <id> [--host <host-id>]|--project-host-setup <id>] [--agent claude|codex|grok] [--model <id>] [--effort <level>] [--advisor <id>] [--prompt <text>|--prompt-file <path>] [--draft] [--setup run|skip|inherit] [--base-branch <ref>] [--issue <number>] [--linear-issue <identifier-or-url>] [--comment <text>] [--parent-worktree <selector>] [--no-parent] [--run-hooks] [--activate] [--request-id <id>] [--timeout-ms <ms>] [--json]",
     "flags": [
       "help",
       "json",

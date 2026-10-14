@@ -57,7 +57,7 @@ import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useRightPanel } from './hooks/useRightPanel.js'
 import { useExplorer } from './hooks/useExplorer.js'
 import { useFileOps } from './hooks/useFileOps.js'
-import { isAtOrUnder } from '../../shared/explorer-ops.js'
+import { createWatchHold, type WatchPush } from './watch-hold.js'
 import { RightPanel, RightPanelToggle } from './components/RightPanel.js'
 import { Explorer } from './components/Explorer.js'
 import { useCardActions } from './hooks/useCardActions.js'
@@ -467,40 +467,41 @@ export function App(): React.JSX.Element {
   /** 열린 파일 탭 감시 상태(E5) — main push 의 마지막 값, 키 = `루트\0상대 경로`. */
   const [fileWatchState, setFileWatchState] = useState<ReadonlyMap<string, { exists: boolean; stamp: string | null }>>(() => new Map())
   /**
-   * LIFE-592 E4ⓒ — 탐색기가 옮기는(또는 되살리는) 경로의 감시 push 는 조작이 끝나고 잠시 뒤까지 버린다(앱이 한 이동의 옛 경로 「삭제됨」 깜빡임 0).
-   * 풀 때 그 경로들의 마지막 감시 상태를 지운다 — 새 경로는 감시가 다시 잡고, 옛 경로는 탭이 없다.
+   * LIFE-592 E4ⓒ — 탐색기가 옮기는(또는 되살리는) 경로의 감시 push 는 조작이 끝나고 잠시 뒤까지 화면에 반영하지 않는다(앱이 한 이동의 옛 경로 「삭제됨」 깜빡임 0).
+   * 수정 r1 R1-D — 버리지 않고 경로별 마지막 push 를 들고 있다가 풀 때 반영한다(`watch-hold.ts`). 붙잡은 동안 온 실제 외부 변경이 영영 빠지지 않게.
    */
-  const watchHoldsRef = useRef<{ root: string; prefixes: string[] }[]>([])
-  const holdWatch = useCallback((input: { root: string; prefixes: string[] }): (() => void) => {
-    const entry = { root: input.root, prefixes: input.prefixes }
-    watchHoldsRef.current = [...watchHoldsRef.current, entry]
-    return () => {
-      // 늦게 오는 push(감시 디바운스) 몫으로 잠시 더 쥔다.
-      setTimeout(() => {
-        watchHoldsRef.current = watchHoldsRef.current.filter((held) => held !== entry)
-        setFileWatchState((previous) => {
-          const next = new Map(previous)
-          for (const key of previous.keys()) {
-            const [root, rel] = key.split('\0')
-            if (root === entry.root && rel !== undefined && entry.prefixes.some((prefix) => isAtOrUnder(rel, prefix))) next.delete(key)
-          }
-          return next.size === previous.size ? previous : next
-        })
-      }, WATCH_HOLD_GRACE_MS)
-    }
+  const watchHoldRef = useRef(createWatchHold())
+  const applyWatchPushes = useCallback((pushes: readonly WatchPush[]): void => {
+    if (pushes.length === 0) return
+    setFileWatchState((previous) => {
+      let next: Map<string, { exists: boolean; stamp: string | null }> | null = null
+      for (const push of pushes) {
+        const key = `${push.root}\0${push.rel}`
+        const before = (next ?? previous).get(key)
+        if (before !== undefined && before.exists === push.exists && before.stamp === push.stamp) continue
+        next ??= new Map(previous)
+        next.set(key, { exists: push.exists, stamp: push.stamp })
+      }
+      return next ?? previous
+    })
   }, [])
+  const holdWatch = useCallback(
+    (input: { root: string; prefixes: string[] }): (() => void) => {
+      const release = watchHoldRef.current.hold(input)
+      // 늦게 오는 push(감시 디바운스) 몫으로 잠시 더 쥐었다가, 그 사이 온 마지막 상태를 반영한다.
+      return () => {
+        setTimeout(() => applyWatchPushes(release()), WATCH_HOLD_GRACE_MS)
+      }
+    },
+    [applyWatchPushes],
+  )
   useEffect(
     () =>
-      window.corral.onFileEvent((push) =>
-        setFileWatchState((previous) => {
-          if (watchHoldsRef.current.some((held) => held.root === push.root && held.prefixes.some((prefix) => isAtOrUnder(push.rel, prefix)))) return previous
-          const key = `${push.root}\0${push.rel}`
-          const before = previous.get(key)
-          if (before !== undefined && before.exists === push.exists && before.stamp === push.stamp) return previous
-          return new Map(previous).set(key, { exists: push.exists, stamp: push.stamp })
-        }),
-      ),
-    [],
+      window.corral.onFileEvent((push) => {
+        if (watchHoldRef.current.intercept(push)) return
+        applyWatchPushes([push])
+      }),
+    [applyWatchPushes],
   )
   /** LIFE-495 — 탭 이름 편집 요청(⌘R·메뉴 「제목 바꾸기」). 토큰이 오를 때마다 그 탭이 편집을 연다. */
   const [renameRequest, setRenameRequest] = useState<{ tabId: string; token: number } | null>(null)

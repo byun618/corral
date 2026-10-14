@@ -16,7 +16,7 @@ import { constants } from 'node:fs'
 import path from 'node:path'
 import { confine, isInside } from './explorer-fs.js'
 import { O_NOFOLLOW_ANY } from './file-write.js'
-import { copyName, isProtectedRel, nameError, splitNewName, UNDO_SNAPSHOT_LIMIT, type EntryKind, type EntryMark, type ExplorerOpRefusal, type ExplorerOpResult } from '../shared/explorer-ops.js'
+import { copyName, isGitName, isProtectedRel, nameError, splitNewName, UNDO_SNAPSHOT_LIMIT, type EntryKind, type EntryMark, type ExplorerOpRefusal, type ExplorerOpResult } from '../shared/explorer-ops.js'
 
 type Refused = Extract<ExplorerOpResult, { ok: false }>
 const refuse = (code: ExplorerOpRefusal, error: string, done?: boolean): Refused => (done === true ? { ok: false, code, error, done } : { ok: false, code, error })
@@ -128,6 +128,15 @@ function relShape(input: { realRoot: string; rel: string }): Refused | null {
   return isInside(input.realRoot, path.resolve(input.realRoot, input.rel)) ? refuse('invalid_name', `경로 성분 규칙 위반: ${JSON.stringify(input.rel)}`) : refuse('outside_root', '루트 밖')
 }
 
+/**
+ * `.git` 보호를 **실제 위치**로 본다(수정 r1 R1-B) — 링크 없는 realpath(`abs`)가 루트 밑 어느 깊이에서든 `.git`(대소문자 무시 — APFS) 성분을 지나면 메타데이터 영역이다.
+ * 들어온 상대 경로 문자열(`isProtectedRel`)만 보면 `.git` 을 가리키는 내부 링크·`.GIT` 표기로 그 안에 쓸 수 있었다.
+ */
+function insideGit(realRoot: string, abs: string): boolean {
+  const rel = path.relative(realRoot, abs)
+  return rel !== '' && !rel.startsWith('..') && rel.split(path.sep).some(isGitName)
+}
+
 /** 폴더 가둠 — 루트 밑 실제 폴더(링크 없는 realpath). */
 async function confineDir(input: { roots: readonly string[]; root: unknown; rel: unknown }): Promise<{ ok: true; realRoot: string; abs: string; rel: string } | Refused> {
   const confined = await confine(input)
@@ -138,6 +147,8 @@ async function confineDir(input: { roots: readonly string[]; root: unknown; rel:
   } catch (error) {
     return fsRefusal(error, '폴더')
   }
+  // 쓰기 대상 폴더(만들기·옮겨 넣기·가져오기·되살리기의 부모)가 실제로 `.git` 안이면 거절.
+  if (insideGit(confined.realRoot, confined.abs)) return refuse('protected', '.git 안에는 쓸 수 없다')
   return { ok: true, realRoot: confined.realRoot, abs: confined.abs, rel: confined.rel }
 }
 
@@ -165,6 +176,7 @@ async function entryAt(input: { roots: readonly string[]; root: unknown; rel: un
   if (!parent.ok) return parent
   const name = rel.slice(parentRel === '' ? 0 : parentRel.length + 1)
   const abs = path.join(parent.abs, name)
+  if (insideGit(parent.realRoot, abs)) return refuse('protected', '.git 은 조작할 수 없다')
   try {
     const stat = await fs.lstat(abs)
     const kind = kindOf(stat)
@@ -185,10 +197,32 @@ async function occupant(abs: string): Promise<string | null> {
   }
 }
 
-/** 표지 — 상대 경로의 지금 도장(따라가지 않음). 실행 취소가 「그 뒤 바뀌었나」 를 본다. */
+/**
+ * 폴더 도장(수정 r1 R1-C) — 폴더 밑 전부(링크는 따라가지 않는다)의 상대 경로·종류·도장(dev:ino:size:mtime)·링크 글을 차례로 이은 sha256.
+ * 하위 파일의 내용 변경은 최상위 폴더의 mtime 을 바꾸지 않아 최상위 도장 하나로는 못 잡는다 — 하위 추가·삭제·내용 변경 어느 것이든 이 값이 바뀐다.
+ */
+async function treeStamp(abs: string): Promise<string> {
+  const hash = crypto.createHash('sha256')
+  const walk = async (dir: string, rel: string): Promise<void> => {
+    const stat = await fs.lstat(dir)
+    hash.update(`${rel}\0d\0${stampOf(stat)}\n`)
+    for (const name of (await fs.readdir(dir)).sort()) {
+      const child = path.join(dir, name)
+      const childRel = rel === '' ? name : `${rel}/${name}`
+      const entry = await fs.lstat(child)
+      if (entry.isDirectory()) await walk(child, childRel)
+      else hash.update(`${childRel}\0${entry.isSymbolicLink() ? `l\0${await fs.readlink(child)}` : 'f'}\0${stampOf(entry)}\n`)
+    }
+  }
+  await walk(abs, '')
+  return `tree:${hash.digest('hex')}`
+}
+
+/** 표지 — 상대 경로의 지금 도장(따라가지 않음). 실행 취소가 「그 뒤 바뀌었나」 를 본다. 폴더는 밑 전부를 담은 도장(`treeStamp`). */
 async function markOf(input: { parentAbs: string; name: string; rel: string }): Promise<EntryMark> {
-  const stat = await fs.lstat(path.join(input.parentAbs, input.name))
-  return { rel: input.rel, stamp: stampOf(stat) }
+  const abs = path.join(input.parentAbs, input.name)
+  const stat = await fs.lstat(abs)
+  return { rel: input.rel, stamp: stat.isDirectory() ? await treeStamp(abs) : stampOf(stat) }
 }
 
 /**
@@ -408,7 +442,7 @@ async function create(input: { roots: readonly string[]; root: unknown; dir: unk
   if (!split.ok) return refuse('invalid_name', split.error)
   const parent = await confineDir({ roots: input.roots, root: input.root, rel: input.dir })
   if (!parent.ok) return parent
-  if (isProtectedRel(joinRel(parent.rel, split.parts[0] ?? '')) || split.parts.includes('.git')) return refuse('protected', '.git 안에는 만들 수 없다')
+  if (isProtectedRel(joinRel(parent.rel, split.parts[0] ?? '')) || split.parts.some(isGitName)) return refuse('protected', '.git 안에는 만들 수 없다')
   let currentAbs = parent.abs
   let currentRel = parent.rel
   let created: string | null = null
@@ -497,7 +531,9 @@ async function trash(input: { deps: OpDeps; roots: readonly string[]; root: unkn
       const stamp = typeof mark === 'object' && mark !== null && 'stamp' in mark ? mark.stamp : undefined
       if (typeof rel !== 'string' || typeof stamp !== 'string') return refuse('invalid_argument', '표지 형 위반')
       const now = rel === entry.rel ? entry : await entryAt({ roots: input.roots, root: input.root, rel }).then((result) => (result.ok ? result.entry : null))
-      if (now === null || now.stamp !== stamp) return refuse('modified', `'${rel}' 이(가) 만든 뒤 바뀌었다 — 실행 취소하지 않았다(직접 삭제하세요)`)
+      // 폴더는 밑 전부를 담은 도장으로 견준다(R1-C — 하위 파일 편집·추가·삭제도 「바뀜」).
+      const current = now === null ? null : await markOf({ parentAbs: now.parentAbs, name: now.name, rel }).catch(() => null)
+      if (current === null || current.stamp !== stamp) return refuse('modified', `'${rel}' 이(가) 만든 뒤 바뀌었다 — 실행 취소하지 않았다(직접 삭제하세요)`)
     }
   }
   let snapshotId: string | null = null
@@ -569,10 +605,13 @@ async function duplicate(input: { roots: readonly string[]; root: unknown; rel: 
   const newName = copyName({ name: src.name, isDir: src.kind === 'dir', taken })
   const report: CopyReport = { skipped: [], failed: [] }
   const failed = await copyTree({ srcAbs: src.abs, label: src.name, dstParentAbs: src.parentAbs, dstName: newName, links: 'recreate', hooks: input.hooks, report, top: true })
-  if (failed !== null) return failed
   const rel = joinRel(src.parentRel, newName)
-  if (report.failed.length > 0) return refuse('io_error', `일부를 복제하지 못했다: ${report.failed.map((row) => `${row.name} (${row.error})`).join(', ')}`, true)
-  return { ok: true, op: 'duplicate', rel, kind: src.kind, marks: [await markOf({ parentAbs: src.parentAbs, name: newName, rel })] }
+  // 도중 실패로 덜 만든 사본(R1-H 와 같은 규칙) — 만든 것이 남아 있으면 결과·실행 취소 대상에 넣고 실패를 같이 알린다. 경쟁(`changed`)·만든 것 없음은 거절 그대로.
+  const made = await occupant(path.join(src.parentAbs, newName)).catch(() => null)
+  if (failed !== null && (failed.code === 'changed' || failed.done !== true || made === null)) return failed
+  if (made === null) return refuse('io_error', '복제한 항목이 그 자리에 없다', true)
+  if (failed !== null && !report.failed.some((row) => row.error === failed.error)) report.failed.push({ name: src.name, error: failed.error })
+  return { ok: true, op: 'duplicate', from: src.rel, rel, kind: src.kind, marks: [await markOf({ parentAbs: src.parentAbs, name: newName, rel })], failed: report.failed }
 }
 
 async function importDrop(input: { deps: OpDeps; roots: readonly string[]; root: unknown; dir: unknown; token: unknown; hooks: OpHooks }): Promise<ExplorerOpResult> {
@@ -584,6 +623,7 @@ async function importDrop(input: { deps: OpDeps; roots: readonly string[]; root:
   const report: CopyReport = { skipped: [], failed: [] }
   const rels: string[] = []
   const marks: EntryMark[][] = []
+  const partial: string[] = []
   for (const original of paths) {
     const name = path.basename(original)
     // 원본 부모의 링크(예: /tmp → /private/tmp)는 풀고, 원본 항목 자체는 따라가지 않는다(lstat — 링크면 건너뜀).
@@ -599,6 +639,11 @@ async function importDrop(input: { deps: OpDeps; roots: readonly string[]; root:
       continue
     }
     const stat = await fs.lstat(srcAbs).catch(() => null)
+    // 원본 이름이 `.git`(대소문자 무시)이면 worktree 안에 메타데이터 폴더를 들이지 않는다(R1-B).
+    if (isGitName(name)) {
+      report.skipped.push({ name, reason: '.git — 가져오지 않음' })
+      continue
+    }
     const taken = await takenIn(dir.abs)
     const dstName = copyName({ name, isDir: stat?.isDirectory() === true, taken })
     const before = report.failed.length
@@ -606,7 +651,8 @@ async function importDrop(input: { deps: OpDeps; roots: readonly string[]; root:
     if (refused !== null && refused.code === 'changed') return { ...refused, error: `${refused.error} (가져온 것: ${rels.join(', ') || '없음'})` }
     if (refused !== null) {
       if (report.failed.length === before) report.failed.push({ name, error: refused.error })
-      continue
+      // 만들기 전 거절이면 남은 것이 없다. 만든 뒤 쓰기 도중 실패(`done`)면 부분 파일이 남는다 — 아래에서 결과·실행 취소 대상에 넣는다(R1-H).
+      if (refused.done !== true) continue
     }
     // 폴더 안 일부만 실패했어도 만든 항목은 남는다 — 실행 취소 항목에 싣는다(남은 것 그대로 휴지통으로 되돌릴 수 있게). 실패는 `failed` 로 알린다.
     // 건너뛴 원본(링크·특수 파일·대상이 원본 안)은 만든 것이 없다.
@@ -614,8 +660,11 @@ async function importDrop(input: { deps: OpDeps; roots: readonly string[]; root:
     const rel = joinRel(dir.rel, dstName)
     rels.push(rel)
     marks.push([await markOf({ parentAbs: dir.abs, name: dstName, rel })])
+    if (refused !== null || report.failed.length > before) partial.push(rel)
   }
-  return { ok: true, op: 'import', dir: dir.rel, rels, marks, skipped: report.skipped, failed: report.failed }
+  // 같은 원본을 다시 가져올 표지(다시 실행 — R1-G). 원 드롭 표지처럼 한 번·2 분.
+  const replayToken = rels.length > 0 ? input.deps.drops.register(paths) : null
+  return { ok: true, op: 'import', dir: dir.rel, rels, marks, skipped: report.skipped, failed: report.failed, partial, replayToken }
 }
 
 async function inspect(input: { roots: readonly string[]; root: unknown; rel: unknown }): Promise<ExplorerOpResult> {

@@ -164,3 +164,11 @@ export function liveModel(model: unknown): monaco.editor.ITextModel | null {
 export function createModel(input: { text: string; language: string; key: string }): monaco.editor.ITextModel {
   return monaco.editor.createModel(input.text, input.language, freshUri(input.key))
 }
+
+/**
+ * LIFE-592 수정 r1 R1-F — 이름 변경으로 확장자가 바뀌면 **같은 모델**(내용·편집 실행 취소 기록 그대로)의 언어만 새 경로 것으로 바꾼다.
+ * URI 는 경로와 무관한 번호라(위) 바꾸지 않는다 — 언어는 URI 가 아니라 모델 언어 id 로 정해진다.
+ */
+export function setModelLanguage(model: monaco.editor.ITextModel, language: string): void {
+  if (model.getLanguageId() !== language) monaco.editor.setModelLanguage(model, language)
+}

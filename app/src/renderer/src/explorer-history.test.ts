@@ -11,18 +11,21 @@ describe('역조작 짝', () => {
     expect(inverseOf({ ok: true, op: 'move', from: 'a.ts', to: 'b.ts', id: '1:2' })).toEqual({ op: 'move', from: 'b.ts', to: 'a.ts', expect: '1:2' })
     expect(inverseOf({ ok: true, op: 'move', from: 'a.ts', to: 'a.ts', id: '1:2' })).toBeNull()
   })
-  it('만들기 = 처음 만든 맨 위(중간 폴더 포함)를 휴지통 · 복제·되살리기도 휴지통', () => {
-    expect(inverseOf({ ok: true, op: 'create', rel: 'a/b/c.ts', kind: 'file', created: 'a', marks: mark('a') })).toEqual({ op: 'trash', rel: 'a', expect: mark('a') })
-    expect(inverseOf({ ok: true, op: 'duplicate', rel: 'x copy.ts', kind: 'file', marks: mark('x copy.ts') })).toEqual({ op: 'trash', rel: 'x copy.ts', expect: mark('x copy.ts') })
+  it('만들기 = 처음 만든 맨 위(중간 폴더 포함)를 휴지통 · 복제·되살리기도 휴지통 — 만들기·복제는 다시 실행 재생을 싣는다(수정 r1 R1-G)', () => {
+    expect(inverseOf({ ok: true, op: 'create', rel: 'a/b/c.ts', kind: 'file', created: 'a', marks: mark('a') })).toEqual({ op: 'trash', rel: 'a', expect: mark('a'), replay: { op: 'create', dir: '', name: 'a/b/c.ts', kind: 'file' } })
+    expect(inverseOf({ ok: true, op: 'create', rel: 'src/n/sub/f.ts', kind: 'file', created: 'src/n/sub', marks: mark('src/n/sub') })).toEqual({ op: 'trash', rel: 'src/n/sub', expect: mark('src/n/sub'), replay: { op: 'create', dir: 'src/n', name: 'sub/f.ts', kind: 'file' } })
+    expect(inverseOf({ ok: true, op: 'duplicate', from: 'x.ts', rel: 'x copy.ts', kind: 'file', marks: mark('x copy.ts'), failed: [] })).toEqual({ op: 'trash', rel: 'x copy.ts', expect: mark('x copy.ts'), replay: { op: 'duplicate', rel: 'x.ts' } })
     expect(inverseOf({ ok: true, op: 'restore', rel: 'r.ts', marks: mark('r.ts'), hash: 'h', stamp: 's' })).toEqual({ op: 'trash', rel: 'r.ts', expect: mark('r.ts') })
   })
   it('삭제 — 사본이 있을 때만 되살리기(Q1), 없으면 항목 없음', () => {
     expect(inverseOf({ ok: true, op: 'trash', rel: 'a.ts', kind: 'file', snapshotId: 'p1' })).toEqual({ op: 'restore', rel: 'a.ts', snapshotId: 'p1' })
     expect(inverseOf({ ok: true, op: 'trash', rel: 'dir', kind: 'dir', snapshotId: null })).toBeNull()
   })
-  it('가져오기 = 항목마다 휴지통 묶음, 실패·확인은 없음', () => {
-    const imported: ExplorerOpResult = { ok: true, op: 'import', dir: '', rels: ['a', 'b'], marks: [mark('a'), mark('b')], skipped: [], failed: [] }
-    expect(inverseOf(imported)).toEqual({ op: 'batch', steps: [{ op: 'trash', rel: 'a', expect: mark('a') }, { op: 'trash', rel: 'b', expect: mark('b') }] })
+  it('가져오기 = 항목마다 휴지통 묶음 + 재생 표지가 있으면 다시 실행, 실패·확인은 없음', () => {
+    const imported: ExplorerOpResult = { ok: true, op: 'import', dir: '', rels: ['a', 'b'], marks: [mark('a'), mark('b')], skipped: [], failed: [], partial: [], replayToken: 't1' }
+    expect(inverseOf(imported)).toEqual({ op: 'batch', steps: [{ op: 'trash', rel: 'a', expect: mark('a') }, { op: 'trash', rel: 'b', expect: mark('b') }], replay: { op: 'import', dir: '', token: 't1' } })
+    expect(inverseOf({ ...imported, rels: ['a'], marks: [mark('a')], replayToken: null })).toEqual({ op: 'trash', rel: 'a', expect: mark('a') })
+    expect(inverseOf({ ...imported, rels: ['a'], marks: [mark('a')] })).toEqual({ op: 'trash', rel: 'a', expect: mark('a'), replay: { op: 'import', dir: '', token: 't1' } })
     expect(inverseOf({ ok: false, code: 'exists', error: '' })).toBeNull()
     expect(inverseOf({ ok: true, op: 'inspect', rel: 'a', kind: 'file', size: 1, undoable: true })).toBeNull()
   })
@@ -67,5 +70,6 @@ describe('기록 (E5ⓓ)', () => {
     expect(stepLabel({ op: 'move', from: 'src/a.ts', to: 'b.ts', expect: '' })).toBe("'a.ts' 이동")
     expect(stepLabel({ op: 'restore', rel: 'x/y.md', snapshotId: 'p' })).toBe("'y.md' 다시 만들기")
     expect(stepLabel({ op: 'batch', steps: [] })).toBe('0개 항목')
+    expect(stepLabel({ op: 'replay', replay: { op: 'create', dir: '', name: 'a/b.ts', kind: 'file' } })).toBe("'b.ts' 만들기")
   })
 })

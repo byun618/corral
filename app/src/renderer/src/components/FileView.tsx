@@ -56,6 +56,29 @@ export type ViewStateStore = Map<string, ViewState>
 /** 탭 id 별 Markdown 보기(원문/미리보기) — 탭을 오가도 유지(E4ⓓ). */
 export type MarkdownModeStore = Map<string, 'source' | 'preview'>
 
+/**
+ * 지금 붙어 있는 편집기(view state 저장소별) — LIFE-592 수정 r1 R1-E. 탐색기 이름 변경·이동은 탭 id 를 바꾸고(FileView 는 탭 id 로 다시 마운트된다),
+ * 떠나는 편집기는 정리 때 **새 id** 로 view state 를 맡겨야 새 편집기가 커서·스크롤을 되살린다. `retargetLiveEditors` 가 그 id 를 같은 틱에 바꿔 둔다.
+ */
+type LiveEditor = { tabId: string; editor: Editor }
+const liveEditors = new WeakMap<ViewStateStore, Set<LiveEditor>>()
+const liveEditorsOf = (store: ViewStateStore): Set<LiveEditor> => {
+  const found = liveEditors.get(store)
+  if (found !== undefined) return found
+  const made = new Set<LiveEditor>()
+  liveEditors.set(store, made)
+  return made
+}
+/** 탭 id 가 바뀐 편집기 — 지금 view state 를 새 id 로 맡기고, 정리 때도 새 id 로 저장하게 한다. */
+export function retargetLiveEditors(store: ViewStateStore, moved: readonly { from: string; to: string }[]): void {
+  for (const live of liveEditorsOf(store)) {
+    const pair = moved.find((item) => item.from === live.tabId)
+    if (pair === undefined) continue
+    live.tabId = pair.to
+    store.set(pair.to, live.editor.saveViewState())
+  }
+}
+
 type ReadState = FileReadResult | ImageReadResult
 
 const MARKDOWN = /\.(md|markdown|mdown|mkd|mkdn|mdwn|mdtxt|mdtext)$/i
@@ -307,6 +330,7 @@ function TextBody({
     let disposed = false
     // 이 편집기가 붙은 문서 — 정리 때 키(이름 변경으로 바뀌었을 수 있다)로 다시 찾지 않는다.
     let attached: FileDoc | null = null
+    let live: LiveEditor | null = null
     void import('../editor/monaco.js').then(async (module) => {
       // 문서가 있으면 그 모델(문서가 든 것 — URI 는 경로와 무관, LIFE-592)에 붙는다. 없으면 이 읽기로 만들어 맡긴다 — 언어 등록(비동기) 사이 다른 마운트가 먼저 맡겼으면 그것을 쓴다.
       let doc = getDoc(key)
@@ -315,9 +339,10 @@ function TextBody({
         disposeDoc(key)
         doc = undefined
       }
+      // 언어는 지금 경로로 고른다 — 이름 변경으로 확장자가 바뀐 문서의 모델(재사용)도 같은 규칙(수정 r1 R1-F).
+      const language = large ? 'plaintext' : await module.languageFor(rel)
+      if (disposed) return
       if (doc === undefined || model === null) {
-        const language = large ? 'plaintext' : await module.languageFor(rel)
-        if (disposed) return
         doc = getDoc(key)
         model = doc === undefined ? null : module.liveModel(doc.model)
         if (doc === undefined || model === null) {
@@ -327,6 +352,7 @@ function TextBody({
           doc = adoptDoc({ root, rel, model, ...diskStateOf(first) })
         }
       }
+      module.setModelLanguage(model, language)
       if (disposed) return
       const editor = module.createEditor({ host, large, readOnly: doc.readOnly !== null || editingFrozen() })
       editor.setModel(model)
@@ -336,6 +362,8 @@ function TextBody({
       attached = doc
       editor.onDidCompositionStart(() => setComposing(owner, true))
       editor.onDidCompositionEnd(() => setComposing(owner, false))
+      live = { tabId, editor }
+      liveEditorsOf(viewStates).add(live)
       editorRef.current = editor
       mountedRef.current = { editor, host }
       host.dataset.editorReady = model.getLanguageId()
@@ -343,8 +371,10 @@ function TextBody({
     return () => {
       disposed = true
       const editor = editorRef.current
+      if (live !== null) liveEditorsOf(viewStates).delete(live)
       if (editor !== null) {
-        viewStates.set(tabIdRef.current, editor.saveViewState())
+        // 떠나는 편집기의 view state 는 **지금 탭 id** 로 — 탐색기 이름 변경·이동이 탭 id 를 바꿨으면 `retargetLiveEditors` 가 옮겨 둔 새 id(R1-E).
+        viewStates.set(live?.tabId ?? tabIdRef.current, editor.saveViewState())
         // 조합 중에 떠나면 조합이 끝난 것으로 친다 — 기다리던 저장이 묶이지 않게.
         if (attached !== null && attached.composing) setComposing(attached, false)
         editor.dispose()

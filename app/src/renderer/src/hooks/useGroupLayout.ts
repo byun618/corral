@@ -79,6 +79,10 @@ export type GroupLayoutApi = {
    * 바뀐 탭 id 쌍은 지금 화면 배치로 미리 셈해 돌려준다(view state 등을 같이 옮긴다).
    */
   retargetFiles: (input: { worktreePath: string; from: string; to: string }) => { from: string; to: string }[]
+  /** LIFE-592 수정 r1 R1-A — 그 worktree 의 배치(화면에 없는 worktree 포함 — 조작을 요청한 worktree 기준으로 탭을 본다). 없으면 null. */
+  fileLayoutOf: (worktreePath: string) => GroupLayout | null
+  /** LIFE-592 수정 r1 R1-A — 그 worktree 배치에서 파일 탭들을 닫는다(삭제한 파일의 수정 없는 탭 — Q3). 닫은 탭 기록에는 넣지 않는다. */
+  closeFiles: (input: { worktreePath: string; tabIds: readonly string[] }) => void
 }
 
 const ROOT_GROUP = 'g1'
@@ -338,6 +342,26 @@ export function useGroupLayout(input: {
     [mutate, layout, byWorktree, input.worktreePath],
   )
 
+  const fileLayoutOf = useCallback((worktreePath: string) => (worktreePath === input.worktreePath ? layout : (byWorktree[worktreePath] ?? null)), [layout, byWorktree, input.worktreePath])
+
+  const closeFiles = useCallback(
+    (target: { worktreePath: string; tabIds: readonly string[] }) => {
+      if (target.tabIds.length === 0) return
+      const close = (value: GroupLayout): GroupLayout => target.tabIds.reduce((current, tabId) => closeFileTab({ layout: current, tabId }).layout, value)
+      if (target.worktreePath === input.worktreePath) {
+        mutate(close)
+        return
+      }
+      setByWorktree((previous) => {
+        const value = previous[target.worktreePath]
+        if (value === undefined) return previous
+        const next = close(value)
+        return next === value ? previous : { ...previous, [target.worktreePath]: next }
+      })
+    },
+    [mutate, input.worktreePath],
+  )
+
   return {
     layout,
     groups,
@@ -360,5 +384,7 @@ export function useGroupLayout(input: {
     closeFile,
     reopenFile,
     retargetFiles,
+    fileLayoutOf,
+    closeFiles,
   }
 }

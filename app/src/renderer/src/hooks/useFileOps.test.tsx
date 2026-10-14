@@ -44,8 +44,6 @@ const depsOf = (root: string): FileOpsDeps => ({
   root,
   explorer: explorerOf(root),
   layout: {
-    layout: null,
-    closeFile: () => undefined,
     closeFiles: () => undefined,
     fileLayoutOf: () => null,
     retargetFiles: (input) => {

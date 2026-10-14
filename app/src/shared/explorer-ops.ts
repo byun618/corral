@@ -54,8 +54,13 @@ export type ExplorerOpResult =
   | { ok: true; op: 'move'; from: string; to: string; id: string }
   | { ok: true; op: 'trash'; rel: string; kind: EntryKind; snapshotId: string | null }
   | { ok: true; op: 'restore'; rel: string; marks: EntryMark[]; hash: string | null; stamp: string | null }
-  | { ok: true; op: 'duplicate'; rel: string; kind: EntryKind; marks: EntryMark[] }
-  | { ok: true; op: 'import'; dir: string; rels: string[]; marks: EntryMark[][]; skipped: { name: string; reason: string }[]; failed: { name: string; error: string }[] }
+  /** `from` = 복제 원본(다시 실행 재생 — R1-G). `failed` = 폴더 안 일부 실패(만든 것은 남고 실행 취소 대상 — R1-H). */
+  | { ok: true; op: 'duplicate'; from: string; rel: string; kind: EntryKind; marks: EntryMark[]; failed: { name: string; error: string }[] }
+  /**
+   * `partial` = 만들었지만 도중 실패해 내용이 덜 든 항목(rels 의 부분집합 — 실행 취소 대상에 든다, R1-H).
+   * `replayToken` = 같은 원본을 다시 가져올 표지(실행 취소 뒤 다시 실행 — R1-G). 드롭 표지와 같은 수명(2 분, 한 번)이고 지나면 다시 실행이 `bad_token` 으로 거절된다.
+   */
+  | { ok: true; op: 'import'; dir: string; rels: string[]; marks: EntryMark[][]; skipped: { name: string; reason: string }[]; failed: { name: string; error: string }[]; partial: string[]; replayToken: string | null }
   | { ok: true; op: 'inspect'; rel: string; kind: EntryKind; size: number; undoable: boolean }
   /** `done` = 경로 연산은 끝났지만 사후 확인이 어긋났다(Q8 잔여 — `raw/claude/residual.md`). 렌더러는 목록을 다시 읽고 안내한다. */
   | { ok: false; code: ExplorerOpRefusal; error: string; done?: boolean }
@@ -101,9 +106,13 @@ export function splitNewName(input: string): { ok: true; parts: string[] } | { o
 /** 대소문자를 무시하고 같은 이름인가(APFS 기본 — 대소문자 무시). NFC 로 맞춘 뒤 비교한다. */
 export const sameNameIgnoringCase = (a: string, b: string): boolean => a.normalize('NFC').toLowerCase() === b.normalize('NFC').toLowerCase()
 
-/** 조작 대상이 될 수 없는 경로 — 루트 자체·`.git` 성분(어느 깊이든 — worktree 의 `.git` 파일 포함). */
+/**
+ * 조작 대상이 될 수 없는 경로 — 루트 자체·`.git` 성분(어느 깊이든 — worktree 의 `.git` 파일 포함). 이름은 **대소문자 무시**(APFS — `.GIT`·`.Git` 도 같은 곳, 수정 r1 R1-B).
+ * 이것은 들어온 문자열만 본다 — main 은 링크를 푼 실제 위치로 한 번 더 본다(`explorer-ops.ts` `insideGit`).
+ */
+export const isGitName = (name: string): boolean => sameNameIgnoringCase(name, '.git')
 export function isProtectedRel(rel: string): boolean {
-  return rel === '' || rel.split('/').some((part) => part === '.git')
+  return rel === '' || rel.split('/').some(isGitName)
 }
 
 /** 확장자 — 첫 글자 점(`.gitignore`)은 확장자가 아니다(Node `path.extname` · VS Code `extname` 과 같다). */

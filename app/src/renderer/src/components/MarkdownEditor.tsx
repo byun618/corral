@@ -13,16 +13,19 @@ import { MarkdownView } from './MarkdownView.js'
 const TOOL_GLYPH: Record<MdTool, string> = { heading: 'H', bold: 'B', italic: 'I', code: '<>', link: '🔗', bullet: '•', number: '1.', check: '☑', quote: '❝', codeblock: '{ }' }
 const TOOL_KEY: Partial<Record<MdTool, string>> = { bold: '⌘B', italic: '⌘⇧I', code: '⌘E', link: '⌘K' }
 
-export function MarkdownEditor({ initial, keyPattern, saving, error, onSave, onCancel, label = '본문' }: {
+export function MarkdownEditor({ initial, keyPattern, saving, error, onSave, onCancel, draftRef, label = '본문' }: {
   initial: string
   keyPattern: string | null
   saving: boolean
   error: string | null
   onSave: (text: string) => void
   onCancel: () => void
+  /** 지금 초안 — 부르는 쪽이 「보낸 값 vs 지금 값」 을 비교한다(LIFE-602 수정 2 R2-B: 저장 중 더 고친 초안을 성공이 지우지 않게). */
+  draftRef?: React.MutableRefObject<string>
   label?: string
 }): React.JSX.Element {
   const [value, setValue] = useState(initial)
+  if (draftRef !== undefined) draftRef.current = value
   const [tab, setTab] = useState<'write' | 'preview'>('write')
   const ref = useRef<HTMLTextAreaElement | null>(null)
   const composing = useRef(false)

@@ -1,4 +1,6 @@
 // LIFE-591 사본(l590 → l591 루트만 바꿈)
+// LIFE-591 E7ⓓ(최종 관문) — 넷째 칸 `dirty` = **수정된 1 MB 파일 탭**(`big/1mb.txt`)을 오른쪽 새 영역에 열고 한 글자 쳐서 수정 상태로 둔 채(디스크 무변경·다시 쓰기 없음) 잰다.
+//   A 로 돌아갈 때 탭을 닫으면 확인 대화상자가 뜨므로 `file-dialog-stub` 으로 「저장 안 함」 을 답한다(계측 실행). 판정 B 조건 = 탭 열림 + 수정 표시.
 // LIFE-590 E8ⓔ (l589/e3-latency.mjs 사본 — 루트 /tmp/l591g-*) · LIFE-589 E3ⓓ — 터미널 입력 지연 A/B (`l580/k9-ab.mjs` 방식). 격리 개발 Electron(g-up.sh /tmp/l589g-*) 한 실행 안에서
 //   계획(--plan)의 단계를 교대로 잰다. 단계 = `<이름>:<explorer open|closed>:<drive on|off>`.
 //   - explorer open = 패널 `[data-right-panel="open"]` + 실제 폭 > 0 · closed = `[data-right-panel="closed"]`(패널은 닫혀도 탐색기를 마운트 유지하므로
@@ -20,7 +22,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { checkRoot, ctl, evalJs, herdr, pct, repoPane, sleep, until, writeJson } from './lib.mjs'
+import { checkRoot, ctl, evalJs, exposeMonaco, herdr, pct, repoPane, sleep, until, writeJson } from './lib.mjs'
 
 const CHARS = 'abcdefghijklmnopqrstuvwxyz'
 const MIN_ROUNDS = 3
@@ -34,7 +36,7 @@ const rounds = Number(values.rounds)
 const sampleCount = Number(values.samples)
 const steps = values.plan.split(',').map((text) => {
   const [name, explorer, drive, file] = text.split(':')
-  return { name, explorer: explorer === 'open', drive: drive === 'on', file: file === 'on' }
+  return { name, explorer: explorer === 'open', drive: drive === 'on', file: file === 'on' || file === 'dirty', dirty: file === 'dirty' }
 })
 
 const termRead = async () => (await ctl(root, { cmd: 'term-read' })).term
@@ -108,7 +110,7 @@ async function setExplorer(open) {
   await until(async () => (await isOpen()) === open, { timeoutMs: 5_000, label: `탐색기 ${open ? '열기' : '닫기'}` })
 }
 
-const BIG = 'big/10mb.txt'
+const BIG = steps.some((step) => step.dirty) ? 'big/1mb.txt' : 'big/10mb.txt'
 /** 10 MB 파일 탭을 오른쪽 새 영역에 연다(이미 있으면 그대로). 탐색기를 잠깐 열어 행을 더블클릭(고정) → ⌘⌥D(활성 탭을 새 영역으로). */
 async function ensureFileTab() {
   const open = async () => evalJs(root, `!!document.querySelector('[data-file-view="${BIG}"] [data-editor-ready]')`)
@@ -125,10 +127,21 @@ async function ensureFileTab() {
   await until(open, { timeoutMs: 20_000, label: '10mb 편집기(새 영역)' })
   return true
 }
+const tabDirty = () => evalJs(root, `document.querySelector('[data-main-tab="file:${BIG}"]')?.dataset.fileDirty === 'true'`)
+/** E7ⓓ B — 편집기에 한 글자 쳐서 수정 상태로(이미 수정이면 그대로). */
+async function ensureDirty() {
+  if (await tabDirty()) return true
+  // 편집기 입력은 EditContext 라 합성 글자(type)가 편집기에 닿지 않는다 — final.mjs 와 같이 Monaco 인스턴스로 한 글자 친다(사용자 편집과 같은 type 명령).
+  await exposeMonaco(root)
+  await evalJs(root, `(() => { const host = document.querySelector('[data-file-view="${BIG}"] [data-file-editor]'); const e = window.l591Monaco.editor.getEditors().find((x) => host !== null && host.contains(x.getContainerDomNode())); e.setPosition({ lineNumber: 1, column: 1 }); e.trigger('keyboard', 'type', { text: 'Q' }); return true })()`)
+  await until(tabDirty, { timeoutMs: 5_000, label: '1mb 수정 표시' })
+  return true
+}
 async function closeFileTab() {
   if (!(await evalJs(root, `!!document.querySelector('[data-main-tab="file:${BIG}"]')`))) return
   // × 버튼으로 닫는다 — 합성 ⌘W(main before-input-event 가 가로채는 키) 뒤에는 합성 글자 입력이 문서에 닿지 않았다(Q12 A 2·3회차 놓침 36,
   // 수식키 없는 키 하나를 보내면 풀림 — 하네스 입력 상태 문제로 본다. 원자료 runs/Q12.log·DONE.md).
+  if (await tabDirty()) await ctl(root, { cmd: 'file-dialog-stub', answers: ['discard'] })
   await until(async () => (await ctl(root, { cmd: 'click', selector: `[data-main-tab="file:${BIG}"]` })).ok === true, { label: '10mb 탭' })
   await until(async () => (await ctl(root, { cmd: 'click', selector: `[data-main-tab-close="file:${BIG}"]` })).ok === true, { label: '10mb 닫기 ×' })
   await until(async () => !(await evalJs(root, `!!document.querySelector('[data-main-tab="file:${BIG}"]')`)), { label: '10mb 닫힘' })
@@ -187,13 +200,14 @@ try {
   for (let r = 1; r <= rounds; r += 1) {
     for (const step of steps) {
       const fileTabOpen = step.file ? await ensureFileTab() : (await closeFileTab(), false)
+      const fileDirty = step.dirty ? await ensureDirty() : null
       await setExplorer(step.explorer)
       const driveDir = path.join(repo, 'l589-drive')
       if (step.drive) fs.mkdirSync(driveDir, { recursive: true })
       const driveView = step.drive && step.explorer ? await expandDrive(driveDir, r) : { expanded: false, reflectMs: null }
       await attach(paneId)
       const drive = step.drive ? driver(driveDir) : null
-      const fileDrive = step.file ? fileDriver(path.join(repo, BIG)) : null
+      const fileDrive = step.file && !step.dirty ? fileDriver(path.join(repo, BIG)) : null
       try {
         await sleep(1_500)
         await ctl(root, { cmd: 'loop-delay' })
@@ -203,8 +217,8 @@ try {
         const windowEnd = Date.now()
         const changesInWindow = drive === null ? 0 : drive.changes.filter((at) => at >= windowStart && at <= windowEnd).length
         const fileChangesInWindow = fileDrive === null ? 0 : fileDrive.changes.filter((at) => at >= windowStart && at <= windowEnd).length
-        const fileUpdated = step.file ? await evalJs(root, `Number(document.querySelector('[data-file-view="${BIG}"] [data-file-editor]')?.dataset.editorUpdated ?? 0) >= ${windowStart}`) : null
-        const row = { round: r, step: step.name, explorer: step.explorer, drive: step.drive, driveExpanded: driveView.expanded, driveReflectMs: driveView.reflectMs, windowStart, windowEnd, changesPerSec: Math.round((changesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, file: step.file, fileTabOpen, fileChangesPerSec: Math.round((fileChangesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, fileUpdated, loopDelay, ...summary(samples), samples }
+        const fileUpdated = step.file && !step.dirty ? await evalJs(root, `Number(document.querySelector('[data-file-view="${BIG}"] [data-file-editor]')?.dataset.editorUpdated ?? 0) >= ${windowStart}`) : null
+        const row = { round: r, step: step.name, explorer: step.explorer, drive: step.drive, driveExpanded: driveView.expanded, driveReflectMs: driveView.reflectMs, windowStart, windowEnd, changesPerSec: Math.round((changesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, file: step.file, fileTabOpen, fileDirty: step.dirty ? await tabDirty() : null, fileDirtyBefore: fileDirty, fileChangesPerSec: Math.round((fileChangesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, fileUpdated, loopDelay, ...summary(samples), samples }
         rows.push(row)
         console.log(`회차 ${r} ${step.name} p50 ${row.p50} p95 ${row.p95} 놓침 ${row.misses} 루프 p99 ${loopDelay?.p99} 변경 ${row.changesPerSec}/s`)
       } finally {
@@ -245,6 +259,11 @@ function judge(aName, bName) {
     if (!bStep.file && (!bStep.explorer || !bStep.drive)) problems.push(`B(${bName}) 는 탐색기 열림 + drive on 또는 file on 이어야 한다`)
   }
   for (const row of stepRows(bName)) {
+    if (bStep?.dirty) {
+      if (!row.fileTabOpen) problems.push(`B 회차 ${row.round} 1 MB 파일 탭 없음`)
+      if (row.fileDirty !== true) problems.push(`B 회차 ${row.round} 측정 끝에 수정 표시 없음`)
+      continue
+    }
     if (bStep?.file) {
       if (!row.fileTabOpen) problems.push(`B 회차 ${row.round} 10 MB 파일 탭 없음`)
       if (row.fileChangesPerSec < 1) problems.push(`B 회차 ${row.round} 파일 변경 ${row.fileChangesPerSec}/s < 1`)

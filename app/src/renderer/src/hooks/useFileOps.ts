@@ -104,20 +104,26 @@ export function opFailureMessage(result: Refusal): string {
   return `${why} (${result.code})${remains}`
 }
 
+const newOwner = (): string => `hook-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+
 export function useFileOps(deps: FileOpsDeps): FileOpsApi {
   const latest = useRef(deps)
   latest.current = deps
   const histories = useRef(new Map<string, History>())
   /** main 이 붙잡고 있는 가져오기 재생 근거 중 기록이 가리키는 것(R2-E). */
   const heldReplays = useRef(new Set<string>())
-  /** 이 hook 의 수명 표지(수정 r4 R4-B) — 가져오기에 싣고, 언마운트 때 닫는다. main 이 진행 중 가져오기의 근거를 붙잡을지 이것으로 판정한다. */
-  const hookOwner = useRef(`hook-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`)
+  /**
+   * 이 hook 의 수명 표지(수정 r4 R4-B) — 가져오기에 싣고, 언마운트 때 닫는다. main 이 진행 중 가져오기의 근거를 붙잡을지 이것으로 판정한다.
+   * effect setup 마다 새로 만든다(수정 r5 R5-A — 개발 StrictMode 의 setup → cleanup → setup 에서 cleanup 이 닫은 owner 를 다시 쓰지 않게).
+   */
+  const hookOwner = useRef(newOwner())
   const queue = useRef<Promise<unknown>>(Promise.resolve())
   const historyOf = (root: string): History => histories.current.get(root) ?? emptyHistory()
   // hook 이 사라지면(언마운트) 기록도 사라진다 — 붙잡던 재생 근거를 main 에서 놓고, 이 hook 의 owner 를 닫는다(수정 r3·r4 — 붙잡은 것이 없어도:
   // 진행 중인 가져오기가 뒤늦게 끝나도 main 이 붙잡지 않게). 렌더러가 새로 뜨는 경우는 main 이 놓는다(`did-navigate`).
   useEffect(() => {
-    const self = hookOwner.current
+    const self = newOwner()
+    hookOwner.current = self
     return () => {
       const held = [...heldReplays.current]
       heldReplays.current = new Set()

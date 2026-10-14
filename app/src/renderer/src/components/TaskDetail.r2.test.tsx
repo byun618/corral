@@ -112,7 +112,7 @@ function input(selector: string): HTMLInputElement | HTMLTextAreaElement {
 
 describe('r2 independent edge reproductions', () => {
  it('A reopen same item: prior comment does not erase new draft', async () => {
-  await rig(); await openCard('CORE-2'); const release=hold('addComment')
+  const r=await rig(); await openCard('CORE-2'); const release=hold('addComment')
   setValue(input('[data-comment-composer] textarea'),'OLD COMMENT')
   key(input('[data-comment-composer] textarea'),{key:'Enter',metaKey:true})
   await openCard('CORE-4'); await openCard('CORE-2')
@@ -120,6 +120,7 @@ describe('r2 independent edge reproductions', () => {
   await release()
   console.log('R2-A', {draft:input('[data-comment-composer] textarea').value, activity:el('[data-issue-activity]').textContent})
   expect(input('[data-comment-composer] textarea').value).toBe('NEW DRAFT AFTER REOPEN')
+  expect(r.state.comments['m-2']?.filter(c=>c.body==='OLD COMMENT')).toHaveLength(1) // 수정 3 시험 감사: 앞 회차 코멘트는 서버에 한 번만
  })
  it('B body input during pending save must not silently disappear', async () => {
   const r=await rig(); await openCard('CORE-2'); const release=hold('updateItem')
@@ -281,12 +282,13 @@ describe('표 경로 — 같은 규칙의 다른 시작점', () => {
     expect([...document.querySelectorAll('[data-activity-row="comment"]')].some((row) => row.textContent?.includes('FIRST'))).toBe(true)
   })
   it('T-child-typing: 자식 만드는 중 더 쓴 제목은 성공이 지우지 않는다', async () => {
-    await rig(); await openCard('CORE-1')
+    const r = await rig(); await openCard('CORE-1')
     const release = hold('createItem')
     click('[data-child-add]'); setValue(input('[data-child-title]'), 'CHILD ONE'); key(input('[data-child-title]'), { key: 'Enter' })
     setValue(input('[data-child-title]'), 'CHILD TWO DRAFT')
     await release()
     expect(input('[data-child-title]').value).toBe('CHILD TWO DRAFT')
+    expect(r.state.items.filter((entry) => entry.parentId === 'm-1' && entry.title === 'CHILD ONE')).toHaveLength(1) // 수정 3 시험 감사: 서버에 자식 하나
     expect([...document.querySelectorAll('[data-child-row]')].some((row) => row.textContent?.includes('CHILD ONE'))).toBe(true)
   })
   it('T-comment-generation: 코멘트 보내는 중 세대가 바뀌면 보내는 중이 풀리고 초안은 남는다(앞 회차 결과는 입력을 바꾸지 않음)', async () => {
@@ -315,5 +317,6 @@ describe('표 경로 — 같은 규칙의 다른 시작점', () => {
     expect(el('[data-issue-status]').dataset.issueStatus).toBe('core-doing')
     release(); await settle(16)
     expect(el('[data-issue-status]').dataset.issueStatus).toBe('core-doing')
+    expect(r.state.items.find((entry) => entry.id === 'm-2')?.statusKey).toBe('core-doing') // 수정 3 시험 감사: 해제 뒤 서버 값
   })
 })

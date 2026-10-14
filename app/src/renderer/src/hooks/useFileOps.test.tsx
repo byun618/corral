@@ -298,3 +298,21 @@ it('R2-E — 가져오기 재생 근거가 기록에서 빠지면(다시 실행 
   })
   expect(calls.find((call) => call.op === 'release')).toMatchObject({ op: 'release', ids: ['replay-1'] })
 })
+
+it('M-3 — 바뀜을 확인할 수 없는 항목(R2-G): 가져올 때 미리 알리고, 실행 취소 거절 안내에 그 사유를 적는다', async () => {
+  respond = (input) => {
+    switch (input.op) {
+      case 'import':
+        return { ...importResult(['locked']), marks: [[{ rel: 'locked', stamp: 'unverifiable' }]], partial: ['locked'], failed: [{ name: 'locked', error: 'EACCES' }] }
+      case 'trash':
+        return { ok: false, code: 'modified', error: 'unverifiable' }
+      default:
+        return { ok: false, code: 'io_error', error: 'x' }
+    }
+  }
+  await act(async () => render('/wt/a'))
+  await act(async () => ops().importDrop(dropOf('/wt/a')))
+  expect(notes[0]).toMatch(/바뀌었는지 확인할 수 없는 항목 1: locked/)
+  await act(async () => ops().undo())
+  expect(notes[1]).toMatch(/확인할 수 없/)
+})

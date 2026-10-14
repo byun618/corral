@@ -5,6 +5,7 @@
 //   R2-D 다시 실행은 원래 대상 이름에만, 원본이 원래 조작 뒤 바뀌었으면 거절
 //   R2-E 가져오기 다시 실행 근거는 main 이 붙잡는다 — 드롭 표지 수명(2 분)이 지나도 재생, 새 드롭 표지는 그대로 짧게, 놓으면(release) 재생 불가
 //   R2-G 읽을 수 없는 하위 폴더 — 도장을 못 만들어도 결과(만든 항목·부분 실패)를 잃지 않고, 그 항목의 실행 취소는 안전 쪽(거절)
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
@@ -228,5 +229,30 @@ describe('R2-G 도장을 못 만들어도 결과를 잃지 않는다', () => {
     expect(result.failed.length).toBeGreaterThan(0)
     expect(code(await op(trashInput(undoOf(result))))).toBe('modified')
     expect(fs.existsSync(at('folder copy'))).toBe(true)
+  })
+})
+
+describe('점검 표(undo-matrix)에서 나온 칸', () => {
+  it('M-1 중간 폴더 만들기 도중 실패 — 이미 만든 중간 폴더를 알린다(done), 조용히 남기지 않는다', async () => {
+    let n = 0
+    deps.hooks = {
+      afterCheck: async (phase) => {
+        if (phase === 'mkdir' && ++n === 2) fs.mkdirSync(at('l592-a/b'))
+      },
+    }
+    const result = await op({ op: 'create', dir: '', name: 'l592-a/b/c.txt', kind: 'file' })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe('exists')
+    expect(result.done).toBe(true)
+    expect(result.error).toContain("'l592-a'")
+  })
+  it('M-2 복제 — 폴더 안 특수 파일(FIFO)을 건너뛰면 결과 skipped 에 싣는다', async () => {
+    execFileSync('mkfifo', [at('folder/pipe')])
+    const result = await op({ op: 'duplicate', rel: 'folder' })
+    expect(result.ok).toBe(true)
+    if (!result.ok || result.op !== 'duplicate') return
+    expect(result.skipped.map((row) => row.name)).toEqual(['folder/pipe'])
+    expect(fs.existsSync(at('folder copy/pipe'))).toBe(false)
   })
 })

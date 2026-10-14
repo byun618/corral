@@ -2,7 +2,7 @@
 // LIFE-592 수정 r1 — `useFileOps` 회귀(실제 hook 마운트 · main IPC 는 가짜).
 //   R1-A 대기 중인 조작은 **요청 시점의 worktree** 로 간다 — 앞 IPC 가 끝나기 전에 worktree 를 바꿔도(리뷰어 R10/R19 방식) 후속 조작의 root·완료 뒤 UI 반영이 요청한 쪽
 //   R1-G 만들기(중간 폴더 포함)·복제·가져오기를 실행 취소한 뒤 ⌘⇧Z = 같은 조작 재생
-import { act, createElement } from 'react'
+import { act, createElement, StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import type { EntryMark, ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from '../../../shared/explorer-ops.js'
@@ -443,4 +443,20 @@ it('R4-B — 가져오기는 owner 를 싣고, 붙잡은 근거가 없어도 언
   act(() => tree.unmount())
   tree = createRoot(host)
   expect(calls.filter((call) => call.op === 'release')).toEqual([{ op: 'release', ids: [], owner: id }])
+})
+
+// --- 수정 r5 ------------------------------------------------------------------------------------------------
+//   R5-A 개발 StrictMode 의 effect setup → cleanup → setup — cleanup 이 닫은 owner 를 두 번째 setup 뒤 가져오기가 다시 쓰지 않는다(setup 마다 새 owner)
+it('R5-A — StrictMode 마운트 뒤 가져오기의 owner 는 앞서 닫힌 owner 가 아니고, 언마운트가 그 owner 를 닫는다', async () => {
+  respond = (input) => (input.op === 'import' ? importResult(['a.txt']) : input.op === 'release' ? { ok: true, op: 'release' } : { ok: false, code: 'io_error', error: 'x' })
+  await act(async () => tree.render(createElement(StrictMode, null, createElement(Probe, { root: '/wt/a' }))))
+  const closedBefore = calls.flatMap((call) => (call.op === 'release' && call.owner !== undefined ? [call.owner] : []))
+  await act(async () => ops().importDrop(dropOf('/wt/a')))
+  const imported = calls.find((call) => call.op === 'import')
+  const owner = imported !== undefined && 'owner' in imported ? imported.owner : undefined
+  expect(typeof owner).toBe('string')
+  expect(closedBefore).not.toContain(owner)
+  act(() => tree.unmount())
+  tree = createRoot(host)
+  expect(calls.filter((call) => call.op === 'release' && call.owner === owner)).toHaveLength(1)
 })

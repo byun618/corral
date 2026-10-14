@@ -1,6 +1,6 @@
 // LIFE-592 최종 관문 — 격리 회차(01-criteria E1~E9·E10ⓑ). 격리 개발 Electron(iso.sh 가 /tmp/l592g-* 에 띄운 것)과 그 fixture 에서만.
 // 사용(app/ 에서, iso.sh 안): node scripts/l592/final.mjs <ROOT> <OUT.json> <case>[,<case>...] <FAKE>   (FAKE = iso.sh 의 {FAKE} — 앱 재시작(E4ⓓ·E10ⓑ)에 쓴다)
-//   사례: e1 e2 e3 e4 e5 e5b e6 e7 e8 e9 e10b · e5lim(한계 확인 — DONE 미완 10)
+//   사례: e1 e2 e3 e4 e5 e5b e6 e7 e8 e9 e10b · e5lim(한계 확인 — DONE 미완 10) · e4c(수정 라운드 D2 — 50회 연속·고정 재현·양성 대조)
 //   ISO_ENV='L577_ELECTRON_ARGS=--remote-debugging-port=0 CORRAL_TEST_OP_HOOK_FILE={ROOT}/op-hook.json' — CDP(합성 IME·합성 드롭)·⑩ 경쟁 주입 훅.
 // 입력: 제어 소켓 sendInputEvent · CDP(Input.imeSetComposition·Input.dispatchDragEvent·Input.dispatchKeyEvent) · DOM 값 setter(입력칸에 NUL·긴 이름 넣기만).
 //   OS 키 입력(CGEvent)·Finder 끌기·시스템 클립보드 쓰기 없음. 휴지통에는 이름에 l592 가 든 fixture 항목만 간다(결과 `trashed` 에 원래 경로·시각).
@@ -1772,6 +1772,64 @@ cases.e10b = async () => {
 }
 
 /** 한계 확인(DONE 미완 10 — 판정 분모 아님): 만든 폴더를 사용자가 삭제(Q1 — 폴더는 되살림 칸 없음)한 뒤 ⌘Z → not_found 안내와 함께 앞 「만들기」 칸이 버려진다. 디스크 무변화. */
+// --- D2 (수정 라운드 — E4ⓒ 연속 이름 변경 「삭제됨」) -----------------------------------------------------------
+cases.e4c = async () => {
+  await exposeMonaco(root)
+  await expand('src')
+  fs.mkdirSync(abs('src/l592-c'))
+  fs.writeFileSync(abs('src/l592-c/l592-b2.ts'), Array.from({ length: 40 }, (_, i) => `export const b${i} = ${i}\n`).join(''))
+  fs.writeFileSync(abs('src/l592-c/l592-st.ts'), 'stale\n')
+  fs.writeFileSync(abs('src/l592-c/l592-m.ts'), 'move me\n')
+  await until(() => hasRow('src/l592-c'), { label: 'e4c 폴더' })
+  await expand('src/l592-c')
+  await until(() => hasRow('src/l592-c/l592-b2.ts'), { label: 'e4c 행' })
+  // ② 50회 연속 — 수정 중 탭을 품은 파일 이름을 b2 ↔ b3 로 번갈아 바꾼다(E4ⓒ 와 같은 조작·표본, 회수만 50)
+  let rel = 'src/l592-c/l592-b2.ts'
+  await openFixed(rel)
+  await editorFocus(rel)
+  await edOf(rel, `e.setPosition({ lineNumber: 3, column: 1 }); e.trigger('keyboard', 'type', { text: 'Z' }); return true`)
+  await until(async () => (await tab(rel))?.dirty === 'true', { label: 'e4c 수정' })
+  const cont = []
+  for (let i = 0; i < 50; i += 1) {
+    const before = await modelOf(rel)
+    await startNoticeSampler(root)
+    const next = await renameVia(rel, i % 2 === 0 ? 'l592-b3.ts' : 'l592-b2.ts')
+    await until(() => tab(next), { label: `e4c 연속 ${i}` })
+    await sleep(1200)
+    const seen = await stopNoticeSampler(root)
+    const after = await modelOf(next)
+    cont.push({ i, to: next, seen: seen.length, seenKinds: [...new Set(seen.map((x) => `${x.deleted ? 'deleted' : ''}${x.banner ? 'banner' : ''}:${x.tab}`))], same: after?.value === before.value, dirty: (await tab(next))?.dirty, cursor: JSON.stringify(after?.cursor) === JSON.stringify(before.cursor) })
+    rel = next
+  }
+  current.metrics = { continuous: cont, flickers: cont.filter((c) => c.seen > 0).map((c) => c.i) }
+  check('D2② 50회 연속 이름 변경 — 「삭제됨」·배너 표본 0 · 내용·수정·커서 그대로', cont.length === 50 && cont.every((c) => c.seen === 0 && c.same && c.dirty === 'true' && c.cursor), { flickers: current.metrics.flickers, rows: cont.filter((c) => !(c.seen === 0 && c.same && c.dirty === 'true' && c.cursor)) })
+  // ① 고정 재현 — 도착 경로에 낡은 「없음」 감시 상태를 먼저 만든다(열린 수정 없는 탭의 파일을 밖에서 지워 감시가 exists:false 를 밀게 하고 그 탭을 닫는다) → 수정 중 탭을 그 이름으로 옮긴다
+  const st = 'src/l592-c/l592-st.ts'
+  await openFixed(st)
+  fs.rmSync(abs(st))
+  const stMissing = await until(() => q(`document.querySelector('[data-file-tab="${st}"]')?.matches('.is-deleted') ?? false`), { timeoutMs: 6000, label: 'st 없음 감시' }).then(() => true, () => false)
+  await click(`[data-main-tab-close="file:${st}"]`)
+  await until(async () => (await tab(st)) === null, { label: 'st 탭 닫힘' })
+  const mv = 'src/l592-c/l592-m.ts'
+  await openFixed(mv)
+  await editorFocus(mv)
+  await edOf(mv, `e.setPosition({ lineNumber: 1, column: 1 }); e.trigger('keyboard', 'type', { text: 'M' }); return true`)
+  await until(async () => (await tab(mv))?.dirty === 'true', { label: 'm 수정' })
+  const mBefore = await modelOf(mv)
+  await sleep(1500)
+  await startNoticeSampler(root)
+  await renameVia(mv, 'l592-st.ts')
+  await until(() => tab(st), { label: 'm → st 탭' })
+  await sleep(1500)
+  const seenFixed = await stopNoticeSampler(root)
+  const mAfter = await modelOf(st)
+  check('D2① 고정 재현 — 낡은 「없음」 이 남은 경로로 옮겨도 「삭제됨」·배너 표본 0 · 내용·수정 그대로', stMissing && seenFixed.length === 0 && mAfter?.value === mBefore.value && (await tab(st))?.dirty === 'true', { stMissing, seen: seenFixed.length, seenFirst: seenFixed[0] ?? null, seenLast: seenFixed.at(-1) ?? null })
+  // ③ 양성 대조 — 옮긴 뒤 새 경로를 밖에서 지우면 「삭제됨」 이 뜬다
+  fs.rmSync(abs(st))
+  const realDeleted = await until(() => q(`document.querySelector('[data-file-tab="${st}"]')?.matches('.is-deleted') ?? false`), { timeoutMs: 6000, label: '진짜 삭제 표지' }).then(() => true, () => false)
+  check('D2③ 양성 대조 — 이름 변경 뒤 새 경로를 밖에서 지우면 「삭제됨」', realDeleted && (await tab(st))?.dirty === 'true', { realDeleted })
+}
+
 cases.e5lim = async () => {
   await expand('src')
   await createVia(async () => { await focusRow('src'); await clickUntil('[data-explorer-new-folder]') }, { name: 'l592-lim-dir', expectRel: 'src/l592-lim-dir' })

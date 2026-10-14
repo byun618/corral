@@ -17,6 +17,19 @@ export type WatchHold = {
   intercept: (push: WatchPush) => boolean
 }
 
+/**
+ * 앱이 옮겨 오는 도착 경로(와 그 밑)에 남은 「없음」 감시 상태를 지운다(최종 관문 수정 D2 — E4ⓒ). 직전 이동이 그 경로를 비우며 남긴 `exists: false` 가
+ * 이번 이동으로 그 경로에 재지정된 탭을 「삭제됨」 으로 만들지 않게. 다음 감시 push 가 다시 채운다(진짜로 지워지면 다시 「없음」). 지울 것이 없으면 같은 Map.
+ */
+export function forgetMissing<T extends { exists: boolean }>(state: ReadonlyMap<string, T>, input: { root: string; prefixes: readonly string[] }): ReadonlyMap<string, T> {
+  const head = `${input.root}\0`
+  const stale = [...state].filter(([key, value]) => !value.exists && key.startsWith(head) && input.prefixes.some((prefix) => isAtOrUnder(key.slice(head.length), prefix)))
+  if (stale.length === 0) return state
+  const next = new Map(state)
+  for (const [key] of stale) next.delete(key)
+  return next
+}
+
 export function createWatchHold(): WatchHold {
   let holds: Hold[] = []
   let seq = 0

@@ -15,6 +15,7 @@ let calls: Call[] = []
 let gate: ((result: ExplorerOpResult) => void) | null = null
 let respond: (input: Call) => ExplorerOpResult = () => ({ ok: false, code: 'io_error', error: 'unset' })
 let retargets: { worktreePath: string; from: string; to: string }[] = []
+let holds: Parameters<FileOpsDeps['holdWatch']>[0][] = []
 let notes: string[] = []
 let api: FileOpsApi | null = null
 let host: HTMLDivElement
@@ -56,7 +57,10 @@ const depsOf = (root: string): FileOpsDeps => ({
   recentlyClosedRef: { current: {} },
   notify: (message) => notes.push(message),
   openFile: () => undefined,
-  holdWatch: () => () => undefined,
+  holdWatch: (input) => {
+    holds.push(input)
+    return () => undefined
+  },
 })
 function Probe({ root }: { root: string }): null {
   api = useFileOps(depsOf(root))
@@ -73,6 +77,7 @@ beforeEach(() => {
   gate = null
   retargets = []
   notes = []
+  holds = []
   Reflect.set(window, 'corral', {
     explorerOp: (input: Call) => {
       calls.push(input)
@@ -459,4 +464,13 @@ it('R5-A — StrictMode 마운트 뒤 가져오기의 owner 는 앞서 닫힌 ow
   act(() => tree.unmount())
   tree = createRoot(host)
   expect(calls.filter((call) => call.op === 'release' && call.owner === owner)).toHaveLength(1)
+})
+
+it('D2 — 이름 변경은 도착 경로를 arriving 으로 싣는다(그 자리에 남은 낡은 「없음」 감시 상태를 지우게)', async () => {
+  respond = (input) => (input.op === 'move' ? { ok: true, op: 'move', from: input.from, to: input.to, id: '1:2' } : { ok: false, code: 'io_error', error: 'x' })
+  await act(async () => render('/wt/a'))
+  await act(async () => {
+    await ops().rename({ rel: 'docs/l592-a2.ts', name: 'l592-a3.ts' })
+  })
+  expect(holds).toEqual([{ root: '/wt/a', prefixes: ['docs/l592-a2.ts', 'docs/l592-a3.ts'], arriving: ['docs/l592-a3.ts'] }])
 })

@@ -57,7 +57,7 @@ import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useRightPanel } from './hooks/useRightPanel.js'
 import { useExplorer } from './hooks/useExplorer.js'
 import { useFileOps } from './hooks/useFileOps.js'
-import { createWatchHold, type WatchPush } from './watch-hold.js'
+import { createWatchHold, forgetMissing, type WatchPush } from './watch-hold.js'
 import { RightPanel, RightPanelToggle } from './components/RightPanel.js'
 import { Explorer } from './components/Explorer.js'
 import { useCardActions } from './hooks/useCardActions.js'
@@ -486,8 +486,10 @@ export function App(): React.JSX.Element {
     })
   }, [])
   const holdWatch = useCallback(
-    (input: { root: string; prefixes: string[] }): (() => void) => {
+    (input: { root: string; prefixes: string[]; arriving?: string[] }): (() => void) => {
       const release = watchHoldRef.current.hold(input)
+      const arriving = input.arriving
+      if (arriving !== undefined) setFileWatchState((previous) => forgetMissing(previous, { root: input.root, prefixes: arriving }))
       // 늦게 오는 push(감시 디바운스) 몫으로 잠시 더 쥐었다가, 그 사이 온 마지막 상태를 반영한다.
       return () => {
         setTimeout(() => applyWatchPushes(release()), WATCH_HOLD_GRACE_MS)

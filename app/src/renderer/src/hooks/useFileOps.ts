@@ -43,8 +43,8 @@ export type FileOpsDeps = {
   notify: (message: string) => void
   /** 파일 탭 열기(탐색기와 같은 길 — 새 파일은 고정 탭으로, E1ⓔ). */
   openFile: (input: { rel: string; preview: boolean }) => void
-  /** 열린 파일 감시 push 를 붙잡는다(그 경로들) — 돌려준 함수가 풀고, 붙잡은 동안 온 마지막 상태를 반영한다(App `fileWatchState` — 수정 r1 R1-D). */
-  holdWatch: (input: { root: string; prefixes: string[] }) => () => void
+  /** 열린 파일 감시 push 를 붙잡는다(그 경로들) — 돌려준 함수가 풀고, 붙잡은 동안 온 마지막 상태를 반영한다(App `fileWatchState` — 수정 r1 R1-D). `arriving` = 이 조작이 옮겨 오는 도착 경로 — 거기 남은 「없음」 상태를 지운다(D2). */
+  holdWatch: (input: { root: string; prefixes: string[]; arriving?: string[] }) => () => void
 }
 
 export type FileOpsApi = {
@@ -175,7 +175,8 @@ export function useFileOps(deps: FileOpsDeps): FileOpsApi {
     const moving = allDocs().filter((doc) => doc.root === root && isAtOrUnder(doc.rel, from))
     if (moving.some((doc) => doc.saving)) return refusal('changed', '저장 중인 파일이 있습니다 — 저장이 끝난 뒤 다시 하세요')
     const release = holdDocs(moving)
-    const unhold = d.holdWatch({ root, prefixes: [from, to] })
+    // 도착 경로엔 열린 탭이 없다(위 `taken`) — 거기 남은 「없음」 감시 상태는 낡은 것이라 지운다(D2).
+    const unhold = d.holdWatch({ root, prefixes: [from, to], arriving: [to] })
     try {
       const result = await call({ op: 'move', root, from, to, ...(expect === undefined ? {} : { expect }) })
       if (result.ok && result.op === 'move' && result.from !== result.to) retarget(root, result.from, result.to)

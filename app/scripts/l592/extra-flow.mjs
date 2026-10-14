@@ -151,6 +151,7 @@ result.focusDuringValidate = await q(`({ sameInput: window.__l592input === docum
 await key('Return')
 await sleep(300)
 const stillOpen = await q(`document.querySelector('[data-explorer-input]') !== null`)
+result.focusAfterReturn = await q(`({ events: window.__l592focus, active: document.activeElement?.className ?? null })`)
 await key('Escape')
 await sleep(200)
 step('validate-exists', { message, stillOpenAfterEnter: stillOpen, closedAfterEsc: await q(`document.querySelector('[data-explorer-input]') === null`), diskSame: JSON.stringify(listing('.')) === JSON.stringify(before), refocused: await treeFocused() })

@@ -5,7 +5,9 @@
 // - 키(C4): `/` 검색 · `1`–`4` 보기(입력 중이면 글자) · `Esc` 단계 = 열린 메뉴 → 입력 blur → 페이지 닫기. IME 조합 중 Esc 는 조합만 끝낸다.
 //   `C`(만들기)는 T4 까지 묶지 않는다(D5). 페이지가 열린 동안 워크스페이스 단축키는 App 이 막는다(설정 페이지와 같은 규칙).
 //   페이지 키는 **페이지 안(또는 포커스 없음)에서 난 키만** 받고, 위층(설정·팔레트·모달)이 열려 있으면(`yieldKeys`) 하나도 받지 않는다(R1-G).
-// - 만들기 진입점(버튼·C·칸 「+ 추가」)은 그리지 않는다(D5). 카드 클릭 = 선택 표시만(D2).
+// - 만들기 진입점(버튼·C·칸 「+ 추가」)은 그리지 않는다(D5).
+// - LIFE-602 — 카드·행·검색 결과를 누르면 그 작업 상세(`TaskDetail`)가 오른쪽 패널로 열린다(선택 = 열린 상세, 다시 누르면 닫힘).
+//   `Esc` 단계 = 열린 메뉴 → 상세의 메뉴·확인 팝오버 → 입력 blur → 상세 닫기 → 페이지 닫기.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { RepoRow } from '../../../shared/types.js'
@@ -13,6 +15,7 @@ import type { WorkCapabilities, WorkItem, WorkPriority, WorkStatus } from '../..
 import { WORK_PRIORITIES } from '../../../shared/work.js'
 import { useTaskDrag, type TaskDrop } from '../hooks/useTaskDrag.js'
 import { useTasksPage, type MoveNotice } from '../hooks/useTasksPage.js'
+import { useTaskDetail } from '../hooks/useTaskDetail.js'
 import {
   NO_FILTERS,
   PRIORITY_LABEL,
@@ -28,6 +31,7 @@ import {
   itemUid,
   groupRows,
   imeComposing,
+  parseUid,
   passesFilters,
   passesText,
   rowUid,
@@ -47,6 +51,8 @@ import {
   type WorkingTree,
 } from '../tasks-model.js'
 import './tasks.css'
+import './task-detail.css'
+import { TaskDetail } from './TaskDetail.js'
 import { Backlog, Board, ListView, MoreBar, SpaceDot, WorkingList, capabilityGate, type CardProps, type ColumnDragView, type MoreState, type WorkingView } from './TasksViews.js'
 
 type BacklogSection = { id: 'board' | 'backlog'; label: string; rows: TasksRow[] }
@@ -111,6 +117,21 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const page = useTasksPage({ open, repos, activeRepoRoot, notify })
   const { prefs, setPrefs, space, settings, groups, load, rows, banner, query, setQuery, selectedId, setSelectedId } = page
   const all = space?.kind === 'all'
+
+  // --- 상세 (LIFE-602) ---
+  const detailTarget = useMemo(() => (selectedId === null ? null : parseUid(selectedId)), [selectedId])
+  const detail = useTaskDetail({ open, target: detailTarget, page, notify })
+  const detailEscape = useRef<(() => boolean) | null>(null)
+  /** 스페이스 키 → 이름·색 — 보이는 스페이스면 그 색 번호, 숨긴 스페이스도 설정 목록에서 이름을 찾는다. */
+  const spaceOf = (spaceKey: string): { name: string; color: string | null; index: number } | null => {
+    if (detailTarget === null) return null
+    const row = groups.flatMap((group) => group.rows).find((entry) => entry.connectionId === detailTarget.connectionId && entry.key === spaceKey)
+    if (row !== undefined) return { name: row.name, color: row.color, index: row.colorIndex }
+    const spaces = settings?.connections.find((connection) => connection.id === detailTarget.connectionId)?.spaces ?? []
+    const at = spaces.findIndex((entry) => entry.key === spaceKey)
+    const known = spaces[at]
+    return known === undefined ? null : { name: known.name, color: known.color, index: (at % 7) + 1 }
+  }
 
   // --- 능력 ---
   const capsOf = (connectionId: string): WorkCapabilities | null => settings?.connections.find((connection) => connection.id === connectionId)?.capabilities ?? null
@@ -291,8 +312,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   // --- 키 (C4) ---
   const viewsRef = useRef(views)
   viewsRef.current = views
-  const latest = useRef({ menu, onClose, setPrefs, yieldKeys, viewReason })
-  latest.current = { menu, onClose, setPrefs, yieldKeys, viewReason }
+  const latest = useRef({ menu, onClose, setPrefs, yieldKeys, viewReason, selectedId, setSelectedId })
+  latest.current = { menu, onClose, setPrefs, yieldKeys, viewReason, selectedId, setSelectedId }
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent): void => {
@@ -305,7 +326,9 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         if (imeComposing(event)) return
         event.preventDefault()
         if (latest.current.menu !== null) { setMenu(null); return }
+        if (detailEscape.current?.() === true) return
         if (typing && target instanceof HTMLElement) { target.blur(); return }
+        if (latest.current.selectedId !== null) { latest.current.setSelectedId(null); return }
         latest.current.onClose()
         return
       }
@@ -527,6 +550,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         <button type="button" className="tasks-close" data-tasks-close="" onClick={onClose} title={shortcut === null ? '닫기 (Esc)' : `닫기 (Esc · ${shortcut})`} aria-label="작업 페이지 닫기">✕</button>
       </header>
 
+      <div className="tasks-main">
       <div className="tasks-filters" data-tasks-filters="">
         <FilterMenu
           id="kind"
@@ -570,6 +594,18 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       )}
 
       <div className="tasks-body">{body}</div>
+      {selectedId === null ? null : (
+        <TaskDetail
+          detail={detail}
+          full={prefs.detailFull}
+          now={now}
+          escapeRef={detailEscape}
+          onToggleFull={() => setPrefs({ detailFull: !prefs.detailFull })}
+          onClose={() => setSelectedId(null)}
+          spaceOf={spaceOf}
+        />
+      )}
+      </div>
     </div>
   )
 }

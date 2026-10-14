@@ -47,6 +47,8 @@
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "sonner": "2.0.7",
     "string-width": "7.2.0",
     "ws": "^8.22.0"

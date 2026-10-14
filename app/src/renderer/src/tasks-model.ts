@@ -57,9 +57,13 @@ export type TasksPrefs = {
   group: TasksGroup
   density: TasksDensity
   defaultPreset: TasksPreset
+  /** 상세 크기(LIFE-602 C1 · K4 「상세 패널 크기」 의 해석) — 오른쪽 패널 / 페이지 전체. */
+  detailFull: boolean
+  /** 열린 상세 — 페이지를 닫았다 다시 열거나 재시작해도 그 작업 상세가 열린다. */
+  detail: { connectionId: string; itemId: string } | null
 }
 
-export const DEFAULT_TASKS_PREFS: TasksPrefs = { space: null, view: 'board', filters: NO_FILTERS, sort: 'rank', group: 'status', density: 'detailed', defaultPreset: 'all' }
+export const DEFAULT_TASKS_PREFS: TasksPrefs = { space: null, view: 'board', filters: NO_FILTERS, sort: 'rank', group: 'status', density: 'detailed', defaultPreset: 'all', detailFull: false, detail: null }
 
 function pick<T extends string>(list: readonly T[], value: unknown, fallback: T): T {
   return list.find((entry) => entry === value) ?? fallback
@@ -92,6 +96,10 @@ export function readTasksPrefs(value: unknown): TasksPrefs {
     group: pick(TASKS_GROUPS, value.group, DEFAULT_TASKS_PREFS.group),
     density: value.density === 'compact' ? 'compact' : 'detailed',
     defaultPreset: pick(TASKS_PRESETS, value.defaultPreset, DEFAULT_TASKS_PREFS.defaultPreset),
+    detailFull: value.detailFull === true,
+    detail: isRecord(value.detail) && typeof value.detail.connectionId === 'string' && value.detail.connectionId.length > 0 && typeof value.detail.itemId === 'string' && value.detail.itemId.length > 0
+      ? { connectionId: value.detail.connectionId, itemId: value.detail.itemId }
+      : null,
   }
 }
 
@@ -205,6 +213,13 @@ export type TasksRow = { item: WorkItem; space: SpaceData; status: WorkStatus | 
 /** 화면의 작업 정체(R1-L) — 작업 id 는 연결 안에서만 유일하다. 선택·React key·끌기 id·키 일치 중복·부모 집계가 모두 이것을 쓴다. */
 export function itemUid({ connectionId, itemId }: { connectionId: string; itemId: string }): string {
   return `${connectionId}::${itemId}`
+}
+
+/** `itemUid` 의 반대 — 연결 id 에는 `::` 가 없다(uuid·`conn-N`). 모양이 아니면 null. */
+export function parseUid(uid: string): { connectionId: string; itemId: string } | null {
+  const at = uid.indexOf('::')
+  if (at <= 0 || at + 2 >= uid.length) return null
+  return { connectionId: uid.slice(0, at), itemId: uid.slice(at + 2) }
 }
 
 export function rowUid(row: TasksRow): string {

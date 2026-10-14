@@ -21,10 +21,14 @@
 // - 키 검색은 검색어·연결 세대·키 모양이 바뀔 때만 조회한다 — 상태 push(새 settings 객체)는 조회를 다시 부르지 않는다. 닫힌 동안은 조회하지 않는다(R1-B).
 // - 영속(C3): 스페이스·보기·필터·정렬·그룹·밀도·프리셋 기본 → ui-prefs `tasksPage`. 검색어·스크롤은 페이지가 마운트를 유지해 같은 실행 안에서 남고,
 //   다시 열 때의 조용한 새로고침은 **더 받아 둔 쪽 수만큼** 다시 받는다(R1-N).
+// - **상세 쓰기(LIFE-602 D3)** — `writeItem` 은 끌기(`move`)와 **같은 잠금**(`pendingWrites`, 작업 uid 마다 하나)·같은 세대 귀속·같은 30초
+//   「확인 지연」 을 쓴다. 상세에서 저장 중인 작업은 보드에서 끌 수 없고, 끄는 중(확인 전)인 작업은 상세에서 저장하지 않는다(`busy`).
+//   성공한 쓰기는 보드 자료에 서버 값을 쓰고, `settled` 로 알려 열린 상세가 같은 값을 받는다(보드 끌기 결과도 상세에 들어간다).
+//   선택(열린 상세)·상세 크기는 ui-prefs 에 남긴다(C1 — 닫았다 다시 열거나 재시작해도 복원).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RepoRow } from '../../../shared/types.js'
-import type { WorkCall, WorkError, WorkItem, WorkResponse, WorkSettingsState, WorkStatus } from '../../../shared/work.js'
+import type { WorkCall, WorkError, WorkItem, WorkResponse, WorkResult, WorkSettingsState, WorkStatus } from '../../../shared/work.js'
 import {
   DEFAULT_TASKS_PREFS,
   LatestGate,
@@ -32,7 +36,9 @@ import {
   compareRank,
   detectWorking,
   initialSpace,
+  itemUid,
   latestActivity,
+  parseUid,
   readTasksPrefs,
   rowUid,
   rowsOf,
@@ -65,6 +71,16 @@ export type TasksTransitions = { uid: string; state: 'loading' } | { uid: string
 export type MoveRequest = { row: TasksRow; intent: DragIntent }
 /** `undo` 는 받아들였으면 true — 그 카드가 잠겨 있으면 false 이고 버튼은 남는다(R4-E). */
 export type MoveNotice = { kind: 'moved'; label: string; undo: () => boolean } | { kind: 'undone'; label: string } | { kind: 'failed'; message: string } | { kind: 'delayed'; message: string }
+
+/**
+ * 상세의 쓰기 하나(LIFE-602) — 잠금 열쇠는 `(연결, itemId)`. `optimistic` 이 있으면 보드 자료에 먼저 쓰고, 실패하면 그 작업만 쓰기 전 값으로 돌린다.
+ * 자식 만들기는 부모의 잠금을 쓴다(`itemId` = 부모).
+ */
+export type ItemWrite = { connectionId: string; spaceKey: string; itemId: string; call: WorkCall; optimistic: ((item: WorkItem) => WorkItem) | null }
+/** 결과 — 성공 · 출처 실패(충돌 포함) · 잠김(앞 쓰기 확인 중 — 보내지 않았다) · 늦음(확인 지연, 실패 아님) · 버림(세대가 바뀜·더 새 요청). */
+export type ItemWriteOutcome = { kind: 'ok'; result: WorkResult } | { kind: 'failed'; error: WorkError } | { kind: 'busy' } | { kind: 'late' } | { kind: 'stale' }
+/** 성공한 쓰기의 서버 값 — 열린 상세가 받는다. `seq` 는 같은 값이 다시 와도 알 수 있게. */
+export type SettledWrite = { uid: string; item: WorkItem; seq: number }
 
 type SpaceResult = { ok: true; data: SpaceData; pages: number } | { ok: false; error: WorkError }
 type SpaceFetch = { state: 'pending' } | { state: 'done' } | { state: 'failed'; error: WorkError }
@@ -101,7 +117,7 @@ async function ask({ requestId, connectionId, call }: { requestId: string; conne
 }
 
 /** 읽기 요청 — 늦으면 시간 초과 오류다(「다시 시도」 로 다시 받는다). 늦게 온 원래 답은 버린다. */
-async function request({ requestId, connectionId, call }: { requestId: string; connectionId: string; call: WorkCall }): Promise<WorkResponse> {
+export async function request({ requestId, connectionId, call }: { requestId: string; connectionId: string; call: WorkCall }): Promise<WorkResponse> {
   const asked = await ask({ requestId, connectionId, call })
   return asked.kind === 'answered' ? asked.response : { requestId, connectionId, ok: false, error: { kind: 'network', message: '응답이 없습니다 — 시간이 지났습니다.', status: null } }
 }
@@ -153,6 +169,11 @@ function setFields({ item }: { item: WorkItem }): (items: WorkItem[]) => WorkIte
   return (items) => items.map((entry) => (entry.id === item.id ? { ...entry, statusKey: item.statusKey, category: item.category, placement: item.placement } : entry))
 }
 
+/** 목록 자료의 작업을 서버 값으로 — 목록은 가벼운 모양(본문·연결 null)을 지킨다. */
+function replaceItem({ item }: { item: WorkItem }): (items: WorkItem[]) => WorkItem[] {
+  return (items) => items.map((entry) => (entry.id === item.id ? { ...item, body: entry.body, relations: entry.relations } : entry))
+}
+
 /** 완료 분류를 넘나들었나 — 그 작업이 막던 작업의 막힘 표시가 바뀐다(R2-J). */
 function crossesDone({ from, to }: { from: WorkItem; to: WorkItem }): boolean {
   return (from.category === 'done') !== (to.category === 'done')
@@ -177,6 +198,9 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   const [space, setSpace] = useState<TasksSpace | null>(null)
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  /** 성공한 쓰기의 서버 값 — 열린 상세가 받는다(LIFE-602). */
+  const [settledWrite, setSettledWrite] = useState<SettledWrite | null>(null)
+  const settledSeq = useRef(0)
   const [load, setLoad] = useState<TasksLoad>(EMPTY_LOAD)
   const [search, setSearch] = useState<KeySearch>(NO_SEARCH)
   const [working, setWorking] = useState<Map<string, StoredLookup>>(new Map())
@@ -217,6 +241,19 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       return next
     })
   }, [])
+  // 열린 상세(LIFE-602 C1) — 불러온 뒤 한 번 복원하고, 그 뒤 선택이 바뀌면 남긴다.
+  const detailRestored = useRef(false)
+  useEffect(() => {
+    if (!prefsReady || detailRestored.current) return
+    detailRestored.current = true
+    if (prefs.detail !== null) setSelectedId(itemUid(prefs.detail))
+  }, [prefsReady, prefs.detail])
+  useEffect(() => {
+    if (!detailRestored.current) return
+    const next = selectedId === null ? null : parseUid(selectedId)
+    const same = next === null ? prefs.detail === null : prefs.detail !== null && prefs.detail.connectionId === next.connectionId && prefs.detail.itemId === next.itemId
+    if (!same) setPrefs({ detail: next })
+  }, [selectedId, prefs.detail, setPrefs])
 
   // --- 연결·스페이스 ---
   useEffect(() => {
@@ -607,6 +644,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       patch({ connectionId, spaceKey, apply: setFields({ item: settled }) })
     }
     reflect({ connectionId, item: settled })
+    settledSeq.current += 1
+    setSettledWrite({ uid, item: settled, seq: settledSeq.current })
     // 완료 분류를 넘나들면 이 작업이 막던 작업의 막힘 자료가 바뀐다 — 목록·작업 중·키 조회를 서버에서 다시 읽는다(R2-J·R3-C).
     if (crossesDone({ from: original, to: settled })) {
       void reloadRef.current({ quiet: true })
@@ -632,6 +671,80 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
         return true
       },
     })
+  }, [patch, gate, notify, reflect, currentGeneration])
+
+  /**
+   * 상세 쓰기(LIFE-602 D3) — 끌기와 같은 잠금·세대·확인 지연. 잠겨 있으면 보내지 않고 `busy`. 실패하면 그 작업만 쓰기 전 목록 값으로 돌리고
+   * 서버를 다시 읽는다. 결과 처리(충돌 배너·되돌리기 토스트)는 부르는 쪽(상세)이 한다.
+   */
+  const writeItem = useCallback(async ({ connectionId, spaceKey, itemId, call, optimistic }: ItemWrite): Promise<ItemWriteOutcome> => {
+    const uid = itemUid({ connectionId, itemId })
+    if (pendingWrites.current.has(uid)) return { kind: 'busy' }
+    const listed = loadRef.current.data.find((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey)?.items.find((item) => item.id === itemId) ?? null
+    let written: Override
+    if (optimistic !== null && listed !== null) {
+      written = patch({ connectionId, spaceKey, apply: (items) => items.map((item) => (item.id === itemId ? optimistic(item) : item)) })
+    } else {
+      // 목록에 없는 작업(다른 스페이스·검색 결과)도 같은 잠금을 잡는다 — 다시 적용할 변경은 없다.
+      writeSeq.current += 1
+      written = { seq: writeSeq.current, connectionId, generation: currentGeneration(connectionId), spaceKey, apply: (items) => items }
+    }
+    pendingWrites.current.set(uid, written)
+    setBusy(new Set(pendingWrites.current.keys()))
+    const requestId = gate.issue(`item:${uid}`)
+    let asked: Asked | null = null
+    try {
+      asked = await ask({ requestId, connectionId, call })
+    } finally {
+      if (pendingWrites.current.get(uid) === written) pendingWrites.current.delete(uid)
+      setBusy(new Set(pendingWrites.current.keys()))
+    }
+    const revert = (): void => {
+      if (listed !== null && optimistic !== null) patch({ connectionId, spaceKey, apply: (items) => items.map((item) => (item.id === itemId ? listed : item)) })
+    }
+    if (written.generation !== currentGeneration(connectionId)) return { kind: 'stale' }
+    if (asked.kind === 'late') {
+      lagging.current.add(written)
+      notify({ kind: 'delayed', message: `${listed?.key ?? '작업'} — 출처 확인이 늦어지고 있습니다. 답이 오면 서버 값으로 맞춥니다.` })
+      void asked.answer.then((late) => {
+        lagging.current.delete(written)
+        if (written.generation !== currentGeneration(connectionId)) return
+        if (!late.ok) notify({ kind: 'failed', message: `${listed?.key ?? '작업'} — ${late.error.message}` })
+        settles.current += 1
+        void reloadRef.current({ quiet: true })
+        setWorkingRound((value) => value + 1)
+        setSearchRound((value) => value + 1)
+      })
+      return { kind: 'late' }
+    }
+    const { response } = asked
+    if (response.requestId !== requestId || !gate.accepts({ key: `item:${uid}`, requestId })) {
+      revert()
+      void reloadRef.current({ quiet: true })
+      return { kind: 'stale' }
+    }
+    if (!response.ok) {
+      revert()
+      void reloadRef.current({ quiet: true })
+      return { kind: 'failed', error: response.error }
+    }
+    const { result } = response
+    const settled = 'item' in result && result.item !== null && result.item.id === itemId ? result.item : null
+    if (settled !== null) {
+      patch({ connectionId, spaceKey, apply: replaceItem({ item: settled }) })
+      reflect({ connectionId, item: settled })
+      settledSeq.current += 1
+      setSettledWrite({ uid, item: settled, seq: settledSeq.current })
+      if (listed !== null && crossesDone({ from: listed, to: settled })) {
+        void reloadRef.current({ quiet: true })
+        setWorkingRound((value) => value + 1)
+        setSearchRound((value) => value + 1)
+      }
+    } else {
+      // 연결·자식 — 다른 작업의 막힘 배지·새 카드가 생긴다. 서버에서 다시 읽는다.
+      void reloadRef.current({ quiet: true })
+    }
+    return { kind: 'ok', result }
   }, [patch, gate, notify, reflect, currentGeneration])
 
   /** 끄기 시작 — 허용 전이만인 출처면 그 작업의 허용 전이를 받는다. 받기 전·실패면 칸은 흐림(fail-closed). */
@@ -683,6 +796,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     reload, retry, loadMore, invalidateMore,
     hits, workingEntries, working: workingLookups, workingKeys, trees,
     move: (request: MoveRequest) => move({ ...request, undo: false }),
+    writeItem, settledWrite,
     /** 확인 안 된 쓰기가 있는 카드(uid) — 끌기 잠금·「확인하는 중」 표시(R2-A). */
     busy,
     beginDrag, endDrag, transitions,

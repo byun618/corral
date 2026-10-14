@@ -1,0 +1,177 @@
+/* 작업 상세 (LIFE-602 · LIFE-372 design-handoff §2 상세 행들) — 값은 design-tokens.css 토큰만 쓴다. */
+
+/* 머리 아래 영역 — 상세 패널이 이 영역의 오른쪽(또는 전체)을 덮는다. */
+.tasks-main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+
+.issue-detail {
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 30;
+  width: min(var(--w-issue-detail), 100%);
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-raised); border-left: 1px solid var(--line-strong);
+  box-shadow: -16px 0 48px rgba(0, 0, 0, .45);
+}
+.issue-detail.is-full { left: 0; width: auto; border-left: 0; box-shadow: none; }
+
+.issue-detail-head { height: 40px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); }
+.issue-detail-key { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg); }
+.issue-detail-kind { font-size: 11px; color: var(--fg-dim); }
+.issue-detail-space {
+  display: inline-flex; align-items: center; gap: 5px; height: 18px; padding: 0 6px; border-radius: 4px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent); font-size: 10.5px; color: var(--fg-muted); max-width: 240px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.issue-detail-head-spacer { flex: 1; }
+.issue-detail-icon { width: 26px; height: 26px; border: 0; border-radius: var(--radius); background: transparent; color: var(--fg-muted); cursor: pointer; }
+.issue-detail-icon:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
+
+.issue-detail-scroll { flex: 1; min-height: 0; overflow: auto; }
+.issue-detail-inner { display: flex; flex-direction: column; gap: 18px; padding: 20px 24px 32px; }
+.issue-detail.is-full .issue-detail-inner { max-width: var(--w-issue-detail-full); margin: 0 auto; padding: 28px 40px 40px; }
+.issue-detail-loading, .issue-muted { color: var(--fg-dim); font-size: 12px; }
+.issue-detail-error { color: var(--st-error-hi); font-size: 12px; }
+
+/* --- 충돌 배너 (Q7) --- */
+.issue-conflict { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--bg-notice); border: 1px solid var(--line-notice); color: var(--fg-notice); font-size: 12px; }
+.issue-conflict-field { display: inline-block; margin-right: 6px; color: var(--fg); font-weight: 500; }
+.issue-conflict-note { color: var(--fg-muted); font-size: 11.5px; }
+.issue-conflict-actions { display: flex; gap: 8px; }
+
+/* --- 버튼 --- */
+.issue-btn { height: 26px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: transparent; color: var(--fg); cursor: pointer; font-size: 12px; }
+.issue-btn:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.issue-btn.is-primary { background: var(--accent); border-color: var(--accent); color: var(--bg-surface); font-weight: 600; }
+.issue-btn:disabled { opacity: .5; cursor: default; }
+.issue-link-btn { border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; font-size: 11.5px; }
+.issue-link-btn:hover:not(:disabled) { color: var(--fg); }
+.issue-link-btn:disabled { opacity: .4; cursor: default; }
+
+/* --- 머리: 부모 경로 · 제목 · 상태 --- */
+.issue-parents { display: flex; flex-wrap: wrap; gap: 4px; font-size: 11.5px; color: var(--fg-dim); margin-bottom: -10px; }
+.issue-parent-link { border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; padding: 0; font-size: 11.5px; max-width: 260px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.issue-parent-link:hover { color: var(--fg); text-decoration: underline; }
+.issue-parent-key { font-family: var(--font-mono); font-size: 10.5px; }
+.issue-parent-sep { margin: 0 4px; color: var(--fg-faint); }
+.issue-title {
+  width: 100%; font: inherit; font-size: 18px; font-weight: 600; color: var(--fg); background: transparent;
+  border: 1px solid transparent; border-radius: var(--radius); padding: 4px 6px; margin: 0 -7px;
+}
+.issue-title:hover:not(:read-only) { border-color: var(--line); }
+.issue-title:focus { outline: none; border-color: var(--accent); }
+.issue-status-row { display: flex; align-items: center; gap: 10px; margin-top: -8px; }
+.issue-status-anchor { position: relative; display: inline-flex; }
+.issue-status-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: transparent; color: var(--fg); cursor: pointer; font-size: 12px; }
+.issue-status-btn:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.issue-status-btn.is-blocked { opacity: .5; cursor: not-allowed; }
+.is-cancel .tasks-status-circle.cat-done { color: var(--cat-cancel); }
+.issue-status-menu { width: 220px; top: 32px; }
+.issue-status-back { margin-left: auto; font-size: 10.5px; color: var(--fg-dim); }
+.issue-status-foot { padding: 6px 8px 2px; border-top: 1px solid var(--line); margin-top: 4px; font-size: 10.5px; color: var(--fg-dim); }
+.issue-confirm { position: absolute; top: 34px; left: 0; z-index: 41; width: 260px; padding: 12px; background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: var(--shadow-menu); font-size: 12px; display: flex; flex-direction: column; gap: 10px; }
+.issue-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.issue-busy { font-size: 11px; color: var(--fg-dim); }
+
+/* --- 필드 표 (88 라벨 열 · 행 26) --- */
+.issue-fields { display: grid; grid-template-columns: 88px 1fr; row-gap: 4px; align-items: center; font-size: 12px; }
+.issue-field-label { color: var(--fg-dim); }
+.issue-field-value { min-height: 26px; display: flex; align-items: center; }
+.issue-field-btn { height: 24px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent; color: var(--fg); cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; }
+.issue-field-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.issue-field-btn:disabled { cursor: default; }
+.issue-priority-menu { width: 160px; top: 26px; }
+.issue-due { height: 24px; padding: 0 6px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--fg); font: inherit; font-size: 12px; color-scheme: dark; }
+.issue-due:hover:not(:disabled) { border-color: var(--line); }
+.issue-due.due-soon { color: var(--st-dirty); }
+.issue-due.due-over { color: var(--st-error); }
+.issue-segment { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--radius); background: color-mix(in srgb, var(--fg) 4%, transparent); flex-wrap: wrap; }
+.issue-segment > button { height: 22px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: var(--fg-muted); cursor: pointer; font-size: 11.5px; }
+.issue-segment > button.is-on { background: var(--bg-accent); color: var(--fg); }
+.issue-segment > button:disabled { cursor: default; }
+.issue-segment.is-disabled { opacity: .45; }
+
+/* --- 섹션 --- */
+.issue-section { display: flex; flex-direction: column; gap: 6px; }
+.issue-section.is-disabled { opacity: .55; }
+.issue-section-head { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 500; color: var(--fg-dim); letter-spacing: .04em; }
+.issue-count { font-size: 10.5px; color: var(--fg-faint); }
+.issue-reason { font-size: 11.5px; }
+.issue-empty { padding: 4px 0; }
+.issue-add { align-self: flex-start; border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; font-size: 12px; padding: 4px 0; }
+.issue-add:hover:not(:disabled) { color: var(--fg); }
+.issue-add:disabled { opacity: .4; cursor: default; }
+.issue-inline-input { flex: 1; min-width: 120px; height: 28px; padding: 0 8px; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--bg-input-fill); color: var(--fg); font: inherit; font-size: 12px; }
+.issue-inline-input:focus { outline: none; }
+.issue-inline-error { width: 100%; color: var(--st-error-hi); font-size: 11.5px; }
+
+/* --- 본문 --- */
+.issue-body-view { cursor: text; border-radius: var(--radius); }
+.md-empty { color: var(--fg-dim); font-size: 12px; padding: 6px 0; }
+.md-rendered { font-size: 13px; line-height: 1.6; color: var(--fg); overflow-wrap: anywhere; }
+.md-rendered > :first-child { margin-top: 0; }
+.md-rendered > :last-child { margin-bottom: 0; }
+.md-rendered h1 { font-size: 16px; margin: 14px 0 6px; }
+.md-rendered h2 { font-size: 14px; margin: 12px 0 6px; }
+.md-rendered h3, .md-rendered h4, .md-rendered h5, .md-rendered h6 { font-size: 13px; margin: 10px 0 4px; }
+.md-rendered p { margin: 6px 0; }
+.md-rendered ul, .md-rendered ol { margin: 6px 0; padding-left: 20px; }
+.md-rendered li.md-task { list-style: none; margin-left: -18px; }
+.md-rendered li.md-task:has(> .md-check:checked) { color: var(--fg-dim); text-decoration: line-through; }
+.md-check { accent-color: var(--st-ok); margin: 0 6px 0 0; vertical-align: -1px; }
+.md-rendered blockquote { margin: 6px 0; padding-left: 10px; border-left: 2px solid var(--line-strong); color: var(--fg-muted); }
+.md-rendered pre { margin: 6px 0; padding: 8px 10px; border-radius: var(--radius); background: color-mix(in srgb, var(--fg) 5%, transparent); overflow: auto; }
+.md-rendered code { font-family: var(--font-mono); font-size: 12px; }
+.md-rendered :not(pre) > code { padding: 1px 4px; border-radius: 4px; background: color-mix(in srgb, var(--fg) 7%, transparent); }
+.md-rendered hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+.md-rendered table { border-collapse: collapse; margin: 6px 0; }
+.md-rendered th, .md-rendered td { border: 1px solid var(--line); padding: 2px 6px; }
+.md-link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.md-key { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 0 3px; border-radius: 3px; text-decoration: none; font-family: var(--font-mono); font-size: 12px; }
+.md-img { color: var(--fg-dim); font-size: 12px; }
+
+/* --- 편집기 --- */
+.md-editor { display: flex; flex-direction: column; border-radius: 8px; border: 1px solid var(--accent); background: var(--bg-surface); overflow: hidden; }
+.md-editor-bar { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 6px; border-bottom: 1px solid var(--line); }
+.md-editor-tabs { display: inline-flex; gap: 2px; }
+.md-editor-tabs > button { height: 24px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: var(--fg-muted); cursor: pointer; font-size: 11.5px; }
+.md-editor-tabs > button.is-on { background: var(--bg-accent); color: var(--fg); }
+.md-editor-tools { display: inline-flex; gap: 1px; margin-left: auto; flex-wrap: wrap; }
+.md-tool { min-width: 24px; height: 24px; padding: 0 4px; border: 0; border-radius: 4px; background: transparent; color: var(--fg-muted); cursor: pointer; font-size: 11px; }
+.md-tool:hover:not(:disabled) { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
+.md-tool:disabled { opacity: .35; cursor: default; }
+.md-editor-input {
+  min-height: 220px; field-sizing: content; resize: vertical; border: 0; padding: 10px 12px; background: transparent; color: var(--fg);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.65;
+}
+.md-editor-input:focus { outline: none; }
+.md-editor-preview { min-height: 220px; padding: 10px 12px; }
+.md-editor-foot { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-top: 1px solid var(--line); }
+.md-editor-hint { font-size: 11px; color: var(--fg-dim); }
+.md-editor-spacer { flex: 1; }
+.md-editor-cancel { height: 24px; padding: 0 8px; border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; font-size: 11.5px; }
+.md-editor-save { height: 24px; padding: 0 10px; border: 0; border-radius: var(--radius); background: var(--accent); color: var(--bg-surface); cursor: pointer; font-size: 11.5px; font-weight: 600; }
+.md-editor-save:disabled { opacity: .6; cursor: default; }
+
+/* --- 연결 · 자식 (행 28) --- */
+.issue-link-group { display: flex; flex-direction: column; }
+.issue-link-group-label { font-size: 10.5px; color: var(--fg-dim); padding: 4px 0 2px; }
+.issue-link-row, .issue-child-row { height: 28px; display: flex; align-items: center; gap: 8px; padding: 0 6px; margin: 0 -6px; border-radius: 4px; }
+.issue-child-row { border: 0; background: transparent; color: var(--fg); cursor: pointer; text-align: left; font: inherit; font-size: 12.5px; }
+.issue-link-row:hover, .issue-child-row:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
+.issue-link-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--fg); cursor: pointer; padding: 0; font: inherit; font-size: 12.5px; text-align: left; }
+.issue-row-key { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); flex: 0 0 auto; }
+.issue-row-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.issue-link-row.is-resolved .issue-row-key, .issue-link-row.is-resolved .issue-row-title { color: var(--st-ok); text-decoration: line-through; }
+.issue-link-space { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--fg-muted); flex: 0 0 auto; }
+.issue-row-remove { visibility: hidden; width: 20px; height: 20px; border: 0; border-radius: 4px; background: transparent; color: var(--fg-dim); cursor: pointer; }
+.issue-link-row:hover .issue-row-remove, .issue-row-remove:focus-visible { visibility: visible; }
+.issue-row-remove:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 8%, transparent); }
+.issue-link-form, .issue-child-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+/* --- 활동 --- */
+.issue-activity { padding-top: 12px; border-top: 1px solid var(--line); }
+.issue-activity-filters { align-self: flex-start; }
+.issue-composer-input { width: 100%; min-height: 56px; field-sizing: content; resize: vertical; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--bg-input-fill); color: var(--fg); font: inherit; font-size: 12.5px; }
+.issue-composer-input:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.issue-activity-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.issue-activity-meta { font-size: 11px; color: var(--fg-dim); }
+.issue-activity-who { color: var(--fg-muted); }
+.issue-activity-text { font-size: 12.5px; color: var(--fg); }
+.issue-activity-comment { margin-top: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }

@@ -88,7 +88,7 @@ describe('C3 영속 모양', () => {
     expect(readTasksPrefs(stored)).toEqual({
       space: { kind: 'space', connectionId: 'c1', spaceKey: 'p1' }, view: 'list',
       filters: { kinds: ['bug'], priorities: ['high'], blocked: true, working: false, dueWeek: true },
-      sort: 'due', group: 'status', density: 'compact', defaultPreset: 'week',
+      sort: 'due', group: 'status', density: 'compact', defaultPreset: 'week', detailFull: false, detail: null,
     })
     expect(readTasksPrefs(undefined)).toEqual(DEFAULT_TASKS_PREFS)
     expect(readTasksPrefs({ space: { kind: 'space', connectionId: '' } }).space).toBeNull()

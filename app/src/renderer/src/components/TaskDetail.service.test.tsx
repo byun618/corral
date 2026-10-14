@@ -5,7 +5,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { Toaster, toast } from 'sonner'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkCall, WorkConnectionSummary, WorkRequest, WorkSettingsState } from '../../../shared/work.js'
 import { MemoryActivity } from '../../../main/work/activity-store.js'
 import { foreignEdit, mockSourceEntry, seedMockDemoState, type MockState } from '../../../main/work/mock-source.js'
@@ -29,6 +29,7 @@ afterEach(() => {
   act(() => { toast.dismiss() })
   act(() => root.unmount())
   host.remove()
+  vi.restoreAllMocks()
 })
 
 type Rig = { service: WorkService; state: MockState; activity: MemoryActivity; calls: WorkCall[]; savedPrefs: unknown[]; closes: number[]; connectionId: string; push: (value: WorkSettingsState) => void }
@@ -421,6 +422,21 @@ describe('C9·C10 활동', () => {
     expect(changes.some((row) => row.getAttribute('data-activity-origin') === 'source' && row.textContent?.includes('웹 제목'))).toBe(true)
   })
 
+  it('G10 — 다른 곳이 같은 칸을 같은 값으로 바꾼 이력은 지우지 않는다', async () => {
+    const r = await rig()
+    await openCard('CORE-2')
+    click('[data-field="priority"]')
+    click('[data-priority-row="high"]')
+    await settle()
+    foreignEdit({ state: r.state, itemId: 'm-2', patch: { priority: 'high' } })
+    click('[data-issue-close]')
+    await settle()
+    await openCard('CORE-2')
+    await settle()
+    const rows = [...document.querySelectorAll('[data-activity-row="change"]')].filter((row) => row.textContent?.includes('우선순위'))
+    expect(rows.map((row) => row.getAttribute('data-activity-origin')).sort()).toEqual(['corral', 'source'])
+  })
+
   it('양성 대조 — 쓰기 id 를 지우면 같은 변경이 두 줄이 된다(합침이 쓰기 id 로 돈다는 근거)', async () => {
     const r = await rig()
     await openCard('CORE-2')
@@ -476,5 +492,51 @@ describe('C12 같은 잠금', () => {
     await wait(600)
     expect(q('[data-issue-busy]')).toBeNull()
     expect(q('[data-tasks-board] [data-issue-card="CORE-2"].is-locked')).toBeNull()
+  })
+
+  it('확인 중에 같은 작업을 상세에서 다시 저장 = 요청 0 · 화면은 앞 값 유지', async () => {
+    const r = await rig({ token: 'mock_l602_delay-200' })
+    await wait(800)
+    await openCard('CORE-2')
+    await wait(800)
+    click('[data-field="priority"]')
+    click('[data-priority-row="high"]')
+    await wait(50)
+    const sent = writes(r.calls).length
+    click('[data-placement="backlog"]')
+    await wait(50)
+    expect(writes(r.calls)).toHaveLength(sent)
+    await wait(700)
+    expect(writes(r.calls)).toEqual([expect.objectContaining({ op: 'updateItem', fields: { priority: 'high' } })])
+    expect(el('[data-field="priority"]').textContent).toContain('높음')
+    expect(q('[data-placement="board"].is-on')).not.toBeNull()
+  })
+
+  it('반대 — 보드에서 끈 쓰기를 확인하는 동안 상세가 막히고, 확인 뒤 새 상태를 그린다', async () => {
+    const r = await rig({ token: 'mock_l602_delay-200' })
+    await wait(800)
+    await openCard('CORE-2')
+    await wait(800)
+    const zone = q('[data-drop-zone="col:st:core-doing"]')
+    const handle = q('[data-tasks-board] [data-issue-card="CORE-2"]')
+    if (zone === null || handle === null) throw new Error('끌기 대상 없음')
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(zone)
+    const mouse = (target: EventTarget, name: string, x = 10, y = 10): void => { act(() => { target.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y })) }) }
+    mouse(handle, 'mousedown')
+    mouse(document, 'mousemove', 50, 500)
+    // 허용 전이를 받는 동안(모의 지연 200ms) 놓을 곳이 정해지지 않는다 — 받은 뒤 한 번 더 움직이고 놓는다.
+    await wait(500)
+    mouse(document, 'mousemove', 52, 502)
+    mouse(document, 'mouseup', 52, 502)
+    await wait(50)
+    expect(writes(r.calls)).toEqual([expect.objectContaining({ op: 'changeStatus', statusKey: 'core-doing' })])
+    expect(el('[data-issue-status]').getAttribute('aria-disabled')).toBe('true')
+    expect(q('[data-issue-busy]')).not.toBeNull()
+    click('[data-field="priority"]')
+    expect(q('[data-tasks-menu="priority-field"]')).toBeNull()
+    await wait(1200)
+    expect(writes(r.calls)).toHaveLength(1)
+    expect(q('[data-issue-busy]')).toBeNull()
+    expect(el('[data-issue-status]').dataset.issueStatus).toBe('core-doing')
   })
 })

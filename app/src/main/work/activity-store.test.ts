@@ -51,6 +51,16 @@ describe('활동 저장소 파일', () => {
     expect(fs.readFileSync(`${file}.corrupt`, 'utf8')).toBe(good.slice(0, good.length - 7))
   })
 
+  it('모르는 버전 — 손상과 같이 빈 기록 + .corrupt 보존(새 앱이 쓴 파일을 옛 앱이 덮어 지우지 않게)', () => {
+    const file = path.join(dir, 'work-activity.json')
+    const future = JSON.stringify({ version: 2, records: [record()] })
+    fs.writeFileSync(file, future)
+    const store = new WorkActivityStore(dir)
+    store.load()
+    expect(store.list({ connectionId: 'c1', itemId: 'i1' })).toEqual([])
+    expect(fs.readFileSync(`${file}.corrupt`, 'utf8')).toBe(future)
+  })
+
   it('망가진 줄만 버린다 — 모르는 칸·모양', () => {
     fs.writeFileSync(path.join(dir, 'work-activity.json'), JSON.stringify({ version: 1, records: [record(), { id: 'x' }, { ...record(), change: { field: 'nope', to: 1 } }, record({ id: 'ok2' })] }))
     const store = new WorkActivityStore(dir)

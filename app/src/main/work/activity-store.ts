@@ -119,8 +119,8 @@ export class WorkActivityStore implements ActivityPort {
       return
     }
     const parsed = safeParse(text)
-    if (!isRecord(parsed) || !Array.isArray(parsed.records)) {
-      // 손상 — 빈 기록으로 시작하고 원본은 옆으로(다음 쓰기가 지우지 않게).
+    if (!isRecord(parsed) || parsed.version !== WORK_ACTIVITY_VERSION || !Array.isArray(parsed.records)) {
+      // 손상(모르는 버전 포함) — 빈 기록으로 시작하고 원본은 옆으로(다음 쓰기가 지우지 않게).
       this.records = []
       let preserved: string | null = `${this.file}.corrupt`
       try {

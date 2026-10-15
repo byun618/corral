@@ -67,7 +67,7 @@ export function QuickCreateModal({ model }: { model: QuickCreateModel }): React.
         role="dialog"
         aria-label="새 작업"
         aria-busy={locked}
-        onClick={(event) => { event.stopPropagation(); if (menu !== null && !(event.target instanceof Element && event.target.closest('[data-qc-menu]'))) setMenu(null) }}
+        onClick={(event) => { event.stopPropagation(); if (menu !== null && !(event.target instanceof Element && event.target.closest('.qc-anchor'))) setMenu(null) }}
         onKeyDown={onKeyDown}
       >
         <header className="qc-head">

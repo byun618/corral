@@ -192,6 +192,20 @@ function replaceItem({ item }: { item: WorkItem }): (items: WorkItem[]) => WorkI
   return (items) => items.map((entry) => (entry.id === item.id ? { ...item, body: entry.body, relations: entry.relations } : entry))
 }
 
+/**
+ * 만든 작업을 목록 끝에 — 받은 쪽에 이미 있으면 그 값(서버 목록)을 쓰고 기록을 지운다. 다 받았는데(다음 쪽 없음) 없으면 기록만 지운다
+ * (다른 곳으로 옮겨졌거나 지워졌다 — 화면에 남기지 않는다). 아직 받지 않은 쪽이 있으면 서버가 돌려준 값으로 끝에 둔다(LIFE-604).
+ */
+function withCreated({ data, created }: { data: SpaceData; created: Map<string, { connectionId: string; spaceKey: string; item: WorkItem }> }): WorkItem[] {
+  const extra: WorkItem[] = []
+  for (const [uid, entry] of created) {
+    if (entry.connectionId !== data.connectionId || entry.spaceKey !== data.spaceKey) continue
+    if (data.items.some((item) => item.id === entry.item.id) || data.nextCursor === null) { created.delete(uid); continue }
+    extra.push({ ...entry.item, body: null, relations: null })
+  }
+  return extra.length === 0 ? data.items : [...data.items, ...extra]
+}
+
 /** 완료 분류를 넘나들었나 — 그 작업이 막던 작업의 막힘 표시가 바뀐다(R2-J). */
 function crossesDone({ from, to }: { from: WorkItem; to: WorkItem }): boolean {
   return (from.category === 'done') !== (to.category === 'done')
@@ -248,6 +262,11 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
   const [reading, setReading] = useState<ReadonlySet<string>>(new Set())
   /** 보드 쓰기 시작 — 열린 상세가 받아 같은 작업의 되돌리기 토스트를 지운다(R6-B). */
   const [startedWrite, setStartedWrite] = useState<{ uid: string; seq: number } | null>(null)
+  /**
+   * 만든 작업(LIFE-604) — 서버가 돌려준 값(정본). 커서 페이지 출처는 새 작업이 아직 받지 않은 쪽에 있을 수 있어,
+   * 받은 쪽에 나올 때까지(또는 다 받았는데 없으면 버림) 목록 끝에 둔다. 같은 id 는 한 장만.
+   */
+  const createdRef = useRef(new Map<string, { connectionId: string; spaceKey: string; item: WorkItem }>())
   /** 스페이스 자료(연결·스페이스)마다 받아 둔 쪽 수 — 다시 열 때 그만큼 다시 받는다(R1-N). */
   const pagesRef = useRef(new Map<string, number>())
 
@@ -440,10 +459,10 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         return shown.filter((entry) => entry.connectionId === target?.connectionId && entry.spaceKey === target.spaceKey)
       }
       pagesRef.current.set(`${result.data.connectionId}::${result.data.spaceKey}`, result.pages)
-      const items = replay
+      const replayed = replay
         .filter((entry) => entry.connectionId === result.data.connectionId && entry.spaceKey === result.data.spaceKey)
         .reduce((current, entry) => entry.apply(current), result.data.items)
-      return [{ ...result.data, items }]
+      return [{ ...result.data, items: withCreated({ data: { ...result.data, items: replayed }, created: createdRef.current }) }]
     })
     setLoad({ spaceId: id, phase: error === null ? 'ready' : 'error', data, error, loadingMore: false })
   }, [space, targets, gate, currentGeneration])
@@ -831,8 +850,11 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       if (!response.ok) return { kind: 'failed', error: response.error }
       if (response.result.op !== 'createItem') return { kind: 'failed', error: { kind: 'invalid_response', message: '출처 응답 모양이 다릅니다.', status: null } }
       const { item } = response.result
+      createdRef.current.set(itemUid({ connectionId, itemId: item.id }), { connectionId, spaceKey: item.spaceKey, item })
+      setLoad((value) => ({ ...value, data: value.data.map((data) => (data.connectionId === connectionId && data.spaceKey === item.spaceKey ? { ...data, items: withCreated({ data, created: createdRef.current }) } : data)) }))
       settles.current += 1
       void reloadRef.current({ quiet: true })
+      reflect({ connectionId, item })
       return { kind: 'ok', item }
     }
     const asked = await ask({ requestId, connectionId, call })
@@ -845,7 +867,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     }
     release()
     return finish(asked.response)
-  }, [currentGeneration])
+  }, [currentGeneration, reflect])
 
   /** 끄기 시작 — 허용 전이만인 출처면 그 작업의 허용 전이를 받는다. 받기 전·실패면 칸은 흐림(fail-closed). */
   const beginDrag = useCallback(async (row: TasksRow, mode: 'any' | 'allowed') => {

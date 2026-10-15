@@ -174,6 +174,22 @@ describe('C1 작업 버튼 — 링크 없음 · 있음', () => {
   })
 })
 
+describe('LIFE-604 F10 — 시작 모달이 열린 동안 페이지 키가 새지 않는다', () => {
+  it('버튼에 포커스가 있어도 `1–4`·`/`·`C` 는 페이지에 닿지 않는다(보기·검색·만들기 그대로)', async () => {
+    await rig()
+    await openCard('CORE-2')
+    click('[data-issue-start="first"]')
+    await settle()
+    const view = el('[data-tasks-page]').getAttribute('data-tasks-view')
+    const inside = el('[data-start-work] button')
+    for (const key of ['2', '3', '/', 'c']) act(() => { inside.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })) })
+    await settle()
+    expect(el('[data-tasks-page]').getAttribute('data-tasks-view')).toBe(view)
+    expect(document.activeElement).not.toBe(q('[data-tasks-search]'))
+    expect(q('[data-quick-create]')).toBeNull()
+  })
+})
+
 describe('C2 시작 모달 — 기본값 · 입력', () => {
   it('이름 = 키(한글 제목) · 프롬프트 = 제목 + 부모 + untrusted 본문 · 바로 보내기·상태 옮기기 꺼짐 · 빈 터미널이면 모델·프롬프트 없음', async () => {
     const r = await rig()

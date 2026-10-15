@@ -15,3 +15,5 @@
 .quick-open-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-muted); font-size: var(--fs-meta); }
 .quick-open mark { color: var(--accent); background: transparent; font-weight: 600; }
 .quick-open footer span { color: var(--fg-muted); }
+/* D1 — 안내 상태에서 대화상자 자체가 포커스를 받는다. 틀 테두리로 충분하니 고리는 그리지 않는다. */
+.command-palette.quick-open:focus { outline: none; }

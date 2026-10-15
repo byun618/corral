@@ -100,12 +100,14 @@ export function QuickOpen({
   const [result, setResult] = useState<QuickOpenResult | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const toggle = useRef<HTMLButtonElement>(null)
+  const dialog = useRef<HTMLDivElement>(null)
   const executed = useRef(false)
   const previous = useRef<{ index: FileIndex; result: QuickOpenResult } | null>(null)
   /** 결과가 따라잡기 전에 누른 Enter — 그때의 질의·선택 위치. 그 질의의 결과가 오면 연다, 질의가 바뀌면 버린다. */
   const pendingEnter = useRef<{ query: string; index: number } | null>(null)
   useAnnounceDialog()
-  useEffect(() => input.current?.focus(), [])
+  // D1 — 열린 worktree 가 없으면 입력칸·토글이 꺼져 있어 포커스를 못 받는다. 그때는 대화상자 자체가 받아 Esc·키가 여기서 멈춘다.
+  useEffect(() => (root === null ? dialog.current : input.current)?.focus(), [])
 
   useEffect(() => {
     if (root === null) return
@@ -186,6 +188,8 @@ export function QuickOpen({
   return (
     <div className="palette-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(true) }}>
       <div
+        ref={dialog}
+        tabIndex={-1}
         className="command-palette quick-open"
         role="dialog"
         aria-modal="true"

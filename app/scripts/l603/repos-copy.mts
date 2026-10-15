@@ -12,7 +12,7 @@ import { WorkLinks } from '../../src/main/work/links.js'
 
 const [source, dest] = process.argv.slice(2)
 const sha = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, 16)
-if (!source || !dest?.startsWith('/tmp/l603g-')) { console.log(JSON.stringify({ ok: false, code: 'usage' })); process.exit(2) }
+if (!source || !dest?.startsWith('/tmp/l603g-') || /\.\.|\s/.test(dest)) { console.log(JSON.stringify({ ok: false, code: 'usage' })); process.exit(2) }
 const sourceSha = sha(source)
 fs.mkdirSync(dest, { recursive: true })
 const copy = path.join(dest, 'repos.json')

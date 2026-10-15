@@ -30,6 +30,6 @@ export function collect({ root, repo, name }) {
 const invokedDirectly = () => { try { return process.argv[1] !== undefined && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)) } catch { return false } }
 if (invokedDirectly()) {
   const [root, repo, name] = process.argv.slice(2)
-  if (!root?.startsWith('/tmp/l603g-') || !repo || !name) { console.log(JSON.stringify({ ok: false, code: 'usage' })); process.exit(2) }
+  if (!root?.startsWith('/tmp/l603g-') || /\.\.|\s/.test(root) || !repo || !name) { console.log(JSON.stringify({ ok: false, code: 'usage' })); process.exit(2) }
   try { console.log(JSON.stringify({ ok: true, ...collect({ root, repo, name }) })) } catch (error) { console.log(JSON.stringify({ ok: false, error: String(error?.message ?? error) })); process.exit(1) }
 }

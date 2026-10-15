@@ -33,13 +33,20 @@ if [ ! -S "$SOCK" ]; then
 fi
 echo "herdr_pid=$(cat "$ROOT/herdr.pid") session=$SESSION"
 # K1: L603_SERVE=1 이면 창 없는 런타임(`corral serve`)만 띄운다 — Electron 창이 뜰 때 앞으로 와 다른 창에서 치던 OS 키 입력을 받는다(K1 k34).
+# K1b R5-C: 같은 ROOT 에 serve 나 소켓이 이미 있으면 띄우지 않는다 — 옛 소켓으로 「up ok」 가 나가지 않게. 「up ok」 는 새 serve 가 살아 있고 그 소켓이 응답할 때만.
 if [ "${L603_SERVE:-}" = 1 ]; then
+  OLD=$(cat "$ROOT/serve.pid" 2>/dev/null || true)
+  { [ -n "$OLD" ] && kill -0 "$OLD" 2>/dev/null; } && { echo "이 ROOT 의 serve 가 이미 떠 있다 ($OLD)"; exit 3; }
+  [ -e "$ROOT/ud/runtime/rpc.sock" ] && { echo "런타임 소켓이 이미 있다 — down.sh 먼저"; exit 3; }
   # shellcheck disable=SC2086
   sh "$APP/scripts/l470/clean.sh" $ENVS CORRAL_HERDR_BIN="$GUARD" "$@" -- "exec '$(command -v node)' '$APP/cli/corral.mjs' serve --json" > "$ROOT/serve.log" 2>&1 </dev/null &
   SPID=$!; echo "$SPID" > "$ROOT/serve.pid"; echo "pid serve $SPID" >> "$ROOT/made.txt"
-  i=0; until [ -S "$ROOT/ud/runtime/rpc.sock" ]; do i=$((i+1)); [ $i -gt 300 ] && { echo "런타임 소켓 안 뜸"; exit 1; }; sleep 0.2; done
+  i=0; until [ -S "$ROOT/ud/runtime/rpc.sock" ]; do i=$((i+1)); [ $i -gt 300 ] && { echo "런타임 소켓 안 뜸"; exit 1; }; kill -0 "$SPID" 2>/dev/null || { echo "serve 가 죽었다"; exit 1; }; sleep 0.2; done
+  i=0; until CORRAL_RUNTIME_SOCKET="$ROOT/ud/runtime/rpc.sock" node "$APP/cli/corral.mjs" terminal list --json >/dev/null 2>&1; do i=$((i+1)); [ $i -gt 50 ] && { echo "런타임 소켓이 응답하지 않는다"; exit 1; }; sleep 0.2; done
+  kill -0 "$SPID" 2>/dev/null || { echo "serve 가 죽었다"; exit 1; }
   echo "serve_pid=$SPID at=$(date '+%T')"
-  ps eww -o command= -p "$SPID" | tr ' ' '\n' | grep -qE '^(CLAUDE_CODE_[A-Z_]+|CLAUDECODE)=' && { echo "✘ 워커 env 가 샜다"; exit 4; }
+  SENV=$(ps eww -o command= -p "$SPID") || { echo "✘ serve env 를 못 읽었다"; exit 4; }
+  echo "$SENV" | tr ' ' '\n' | grep -qE '^(CLAUDE_CODE_[A-Z_]+|CLAUDECODE)=' && { echo "✘ 워커 env 가 샜다"; exit 4; }
   echo "up ok"; exit 0
 fi
 rm -f "$ROOT/ctl/ctl.sock"

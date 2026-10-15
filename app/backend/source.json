@@ -18,7 +18,7 @@
   "patchSHA256": {
     "herdr-stream.patch": "d7ec2e8b6af5fc1ee2fcebaacb5861ffe2f5e67e3394fac3c3a3e7d5c5b1fdce",
     "herdr-guard.patch": "ad181838a0b042cd14bb44e6bb3989e36191944766471cae6e4ceeedf71a4861",
-    "herdr-detect.patch": "e85c6e5f3a8158cc5776e6ce1370d1eebf3d145b2e33e9ca28a9c790ebd4a69d",
+    "herdr-detect.patch": "051ccb02b5306f8c1250a7992208f9d7857f9dd3ec4563649a6c0a3fb5d8c638",
     "herdr-bundle.patch": "1eceac67e97c195ac073b37e1dba42108b420e862a70c2c84d1cc033eab38ac0",
     "herdr-shift-enter.patch": "746cbafdad7bbc8d1338fa0b4b12388a95ee6aa7dcb2406d8e932b16e8e589f1"
   },

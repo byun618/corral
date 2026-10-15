@@ -13,6 +13,11 @@ for p in $(pgrep -f -- "--user-data-dir=$ROOT/ud" | sort -n | head -1); do
   echo "stop_app pid=$p"
 done
 SPID=$(cat "$ROOT/serve.pid" 2>/dev/null || true)
+# K1b R5-C: serve.pid 의 PID 가 이 ROOT 의 `corral.mjs serve` 인지 명령줄·env 로 확인하고서만 멈춘다(재사용된 PID 를 죽이지 않는다).
+if [ -n "$SPID" ] && kill -0 "$SPID" 2>/dev/null; then
+  SCMD=$(ps eww -o command= -p "$SPID" 2>/dev/null || true)
+  case "$SCMD" in *"/cli/corral.mjs serve"*"CORRAL_USER_DATA=$ROOT/ud"*) ;; *) echo "serve.pid $SPID 는 이 ROOT 의 serve 가 아니다 — 멈추지 않는다"; SPID=""; RC=7 ;; esac
+fi
 if [ -n "$SPID" ] && kill -0 "$SPID" 2>/dev/null; then
   kill -TERM "$SPID"
   i=0; while kill -0 "$SPID" 2>/dev/null; do i=$((i+1)); [ $i -gt 600 ] && { echo "30초 넘음 — KILL $SPID"; kill -KILL "$SPID"; RC=6; break; }; sleep 0.05; done

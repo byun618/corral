@@ -76,6 +76,12 @@ async function openOn(space) {
   await click('[data-tasks-open]')
   await until(`!!${q('[data-tasks-create]')}`, { timeoutMs: 20_000, label: '머리 「만들기」' })
 }
+/** 상세 활동 목록의 「만들었음」 줄 수(R3-J — C10 렌더 단계). 활동은 받는 데 시간이 걸려 잠깐 기다린다. */
+async function createdRows() {
+  await until(`!!${q('[data-issue-detail] [data-issue-activity]')}`, { timeoutMs: 10_000, label: '상세 활동' })
+  await sleep(1000)
+  return js(`[...document.querySelectorAll('[data-issue-detail] [data-activity-row]')].filter((row) => row.textContent.includes('만들었음')).length`)
+}
 const cardsWithTitle = (title) => js(`[...document.querySelectorAll('[data-issue-card]')].filter((card) => card.textContent.includes(${JSON.stringify(title)})).length`)
 
 const STEPS = {
@@ -196,6 +202,15 @@ const STEPS = {
     judge('C5 재시작 뒤 초안 없음(메모리 전용)', (await value('[data-quick-create-title]')) === '')
     await closeModal()
     judge('C5 재시작 뒤에도 디스크에 초안 글 없음', leak(needle) === 0)
+    // R3-J — c6 에서 만든 작업의 상세 활동 「만들었음」 이 재시작 뒤에도 1줄(활동 파일을 다시 읽어 그린다).
+    if (fs.existsSync(path.join(OUT, 'c6-title.txt'))) {
+      const made = fs.readFileSync(path.join(OUT, 'c6-title.txt'), 'utf8')
+      await until(`[...document.querySelectorAll('[data-issue-card]')].some((card) => card.textContent.includes(${JSON.stringify(made)}))`, { timeoutMs: 15_000, label: '만든 카드' })
+      await js(`[...document.querySelectorAll('[data-issue-card]')].find((card) => card.textContent.includes(${JSON.stringify(made)}))?.click()`)
+      await until(`${q('[data-issue-detail] [data-issue-title]')}?.value === ${JSON.stringify(made)}`, { timeoutMs: 15_000, label: '만든 작업 상세' })
+      const rows = await createdRows()
+      judge('C10 재시작 뒤 상세 활동 「만들었음」 1줄', rows === 1, rows)
+    } else judge('C10 재시작 뒤 상세 활동(c6 제목 없음 — c6 를 먼저)', false)
   },
   async c6() {
     await openModal()
@@ -211,6 +226,9 @@ const STEPS = {
     judge('C6 끔 = 상세가 만든 작업(제목 같음) · 출처 만들기 1', detail === title && creates() - before === 1, { detail, delta: creates() - before })
     judge('C6 「만들었습니다」 토스트', (toast ?? '').includes('만들었습니다'), toast)
     judge('C6 보드에 만든 카드 1장', (await cardsWithTitle(title)) === 1)
+    const rows = await createdRows()
+    judge('C10 상세 활동 「만들었음」 1줄', rows === 1, rows)
+    fs.writeFileSync(path.join(OUT, 'c6-title.txt'), title)
     await shot('c6-detail-after-create')
     await click('[data-issue-close]'); await sleep(300)
     await openModal(); await click('[data-quick-create-another]')

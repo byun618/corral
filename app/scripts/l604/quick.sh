@@ -72,6 +72,8 @@ while IFS=$'\t' read -r name files pattern; do
   same=$?
   record $name 1 $code $([[ $same == 0 ]] && echo 같음 || echo "다름($same)")
 done < scripts/l604/pc/manifest.tsv
+# R3-H — TasksPage.create 시험이 typecheck 안에 있는가: 타입 오류 한 줄을 넣은 사본 → typecheck 실패 + 그 파일 오류 줄(장치 exit 0 = 기대대로).
+run pc-r3h-typecheck 0 bash scripts/l604/pc-typecheck.sh $APP/scripts/l604/pc/pc-r3h-typecheck.patch $OUT/pc-r3h-typecheck-run
 run build 0 npm run build
 # R2-D — C11 runtime 번들 표지 0(main 대조 ≥1) · 양성 대조 = 표지 든 파일을 함께 세면 exit 1.
 run runtime-bundle 0 node scripts/l604/check-runtime-bundle.mjs

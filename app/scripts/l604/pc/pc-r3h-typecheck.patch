@@ -1,0 +1,11 @@
+diff --git a/app/src/renderer/src/components/TasksPage.create.test.tsx b/app/src/renderer/src/components/TasksPage.create.test.tsx
+index 8b85345d8..db7b720ca 100644
+--- a/app/src/renderer/src/components/TasksPage.create.test.tsx
++++ b/app/src/renderer/src/components/TasksPage.create.test.tsx
+@@ -1208,3 +1208,6 @@ describe('수정 3 (리뷰 r3)', () => {
+     expect(call?.placement).toBeUndefined()
+   })
+ })
++
++// R3-H 양성 대조 — typecheck 가 이 파일을 보면 실패해야 한다.
++export const l604TypeProbe: number = 'typecheck 가 보는가'

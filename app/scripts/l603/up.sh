@@ -32,6 +32,16 @@ if [ ! -S "$SOCK" ]; then
   echo "pid herdr $(cat "$ROOT/herdr.pid")" >> "$ROOT/made.txt"
 fi
 echo "herdr_pid=$(cat "$ROOT/herdr.pid") session=$SESSION"
+# K1: L603_SERVE=1 이면 창 없는 런타임(`corral serve`)만 띄운다 — Electron 창이 뜰 때 앞으로 와 다른 창에서 치던 OS 키 입력을 받는다(K1 k34).
+if [ "${L603_SERVE:-}" = 1 ]; then
+  # shellcheck disable=SC2086
+  sh "$APP/scripts/l470/clean.sh" $ENVS CORRAL_HERDR_BIN="$GUARD" "$@" -- "exec '$(command -v node)' '$APP/cli/corral.mjs' serve --json" > "$ROOT/serve.log" 2>&1 </dev/null &
+  SPID=$!; echo "$SPID" > "$ROOT/serve.pid"; echo "pid serve $SPID" >> "$ROOT/made.txt"
+  i=0; until [ -S "$ROOT/ud/runtime/rpc.sock" ]; do i=$((i+1)); [ $i -gt 300 ] && { echo "런타임 소켓 안 뜸"; exit 1; }; sleep 0.2; done
+  echo "serve_pid=$SPID at=$(date '+%T')"
+  ps eww -o command= -p "$SPID" | tr ' ' '\n' | grep -qE '^(CLAUDE_CODE_[A-Z_]+|CLAUDECODE)=' && { echo "✘ 워커 env 가 샜다"; exit 4; }
+  echo "up ok"; exit 0
+fi
 rm -f "$ROOT/ctl/ctl.sock"
 LAUNCH='if [ -n "${L603_EXE:-}" ]; then exec "$L603_EXE" --user-data-dir="$CORRAL_USER_DATA" ${L603_EXTRA_ARGS:-}; else exec "$L603_EL" "$L603_APP" --user-data-dir="$CORRAL_USER_DATA" ${L603_EXTRA_ARGS:-}; fi'
 N=$(ls "$ROOT"/electron-*.log 2>/dev/null | wc -l | tr -d ' ')

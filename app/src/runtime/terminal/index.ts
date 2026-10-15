@@ -531,7 +531,9 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           try {
             await backend.sendIfUnchanged(created, draftPastePayload(text), info.stateChangeSeq, ctx)
             stages.prompt = { status: 'completed', mode: 'draft', enterSent: false, bytes: identity.bytes, lines: identity.lines, sha256: identity.sha256 }
-            return done('agent_drafted', record, [await observeAgent(created, record)], false, null)
+            // LIFE-603 K1: report the manifest the ready gate verified before the paste, not `null`.
+            const after = [await observeAgent(created, record)]
+            return { ...await done('agent_drafted', record, after, false, null), agent: await agentBlock(created, record, after, false, ready.manifest) }
           } catch (error) {
             stages.prompt = { ...stageFailure(error), mode: 'draft' }
             return done('agent_started', record, [await observeAgent(created, record)], false, null)

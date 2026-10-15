@@ -12,6 +12,13 @@ for p in $(pgrep -f -- "--user-data-dir=$ROOT/ud" | sort -n | head -1); do
   i=0; while kill -0 "$p" 2>/dev/null; do i=$((i+1)); [ $i -gt 600 ] && { echo "30초 넘음 — KILL $p"; kill -KILL "$p"; RC=6; break; }; sleep 0.05; done
   echo "stop_app pid=$p"
 done
+SPID=$(cat "$ROOT/serve.pid" 2>/dev/null || true)
+if [ -n "$SPID" ] && kill -0 "$SPID" 2>/dev/null; then
+  kill -TERM "$SPID"
+  i=0; while kill -0 "$SPID" 2>/dev/null; do i=$((i+1)); [ $i -gt 600 ] && { echo "30초 넘음 — KILL $SPID"; kill -KILL "$SPID"; RC=6; break; }; sleep 0.05; done
+  echo "stop_serve pid=$SPID"
+fi
+rm -f "$ROOT/serve.pid"
 sleep 0.5
 for p in $(pgrep -f -- "--user-data-dir=$ROOT/ud"); do echo "leftover helper $p — KILL"; kill -KILL "$p" 2>/dev/null; done
 if [ "${2:-}" = herdr ]; then

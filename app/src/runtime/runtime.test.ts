@@ -750,6 +750,8 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     const create = () => workspace.execute({ command: 'worktree create', flags: { name: 'draft-wt', repo: f.cwd, agent: 'claude', prompt: DRAFT_BODY, draft: true, 'request-id': requestId }, args: [], cwd: f.cwd }, f.context(14000))
     const created = asObject(await create())
     expect(nested(created, 'stages', 'prompt')).toMatchObject({ status: 'completed', mode: 'draft', enterSent: false })
+    // K1: the draft response carries the manifest the ready gate verified before the paste.
+    expect(nested(created, 'agent', 'evidence', 'detectManifest')).toMatchObject({ verified: true, expectedVersion: EXPECTED_MANIFESTS.claude.version })
     expect(submitted).toBe(0)
     expect(send).toHaveBeenCalledTimes(1)
     const payload = String(send.mock.calls[0]![1])

@@ -1,7 +1,7 @@
 // 작업 만들기 모델 (LIFE-604) — 빠른 생성 모달·인라인 추가가 같이 쓰는 순수 함수. 상태·요청은 `useQuickCreate`.
 //
 // - 출처 이름으로 분기하지 않는다(K3) — 「첫 상태로만 만듭니다」 각주·필수 필드 상자·상태 후보는 생성 메타(E11) 값으로만 정한다.
-// - 기본 종류 = 그 스페이스 종류 중 **자식을 받지 않는 첫 종류**(LA Task · Jira Story), 없으면 첫 종류. 출처가 정한 종류 순서를 따른다.
+// - 기본 종류 = 그 스페이스 종류 중 **자식을 받지 않는 첫 종류**(예: Task · Story), 없으면 첫 종류. 출처가 정한 종류 순서를 따른다.
 // - 부모 후보 = 같은 스페이스에서 불러온 작업 중 그 종류를 `childKinds` 로 받는 것(C2). 불러오지 않은 쪽(다음 쪽)의 작업은 후보에 없다.
 
 import type { WorkCreateFieldValue, WorkCreateMeta, WorkItem, WorkKind, WorkPlacement, WorkPriority, WorkStatus } from '../../shared/work.js'

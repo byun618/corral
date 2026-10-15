@@ -131,10 +131,11 @@ describe('실패 분기 — 그 단계에서 멈추고 이유를 준다 (C6 양�
       expect(result.linkSaved).toBe(true)
     }
   })
-  it('worktree 는 생겼는데 뒤가 던졌다(resources.path) — worktree 완료 · 에이전트 실패 · 링크 저장', async () => {
+  it('worktree 는 생겼는데 뒤가 던졌다(resources.path) — worktree 미확정(R4-D: 완료 아님) · 에이전트 실패 · 빈 자리라 링크 저장', async () => {
     const h = harness({ answer: () => fail('git_failed', 'Worktree created, follow-up failed', { path: PATH, branch: NAME }) })
     const result = await h.service.start(input())
-    expect(result.stages.worktree.status).toBe('completed')
+    expect(result.stages.worktree).toMatchObject({ status: 'unknown', code: 'git_failed' })
+    expect(result.worktreePath).toBe(PATH)
     expect(result.stages.agent).toMatchObject({ status: 'failed', code: 'git_failed' })
     expect(result.linkSaved).toBe(true)
   })
@@ -576,6 +577,90 @@ describe('R3-C 미확정에서 붙이는 갈래는 남의 명시 링크 · 떼�
     const result = await service.start(mine())
     expect(result).toMatchObject({ worktreePath: PATH, linkSaved: true })
     expect(links.saved.map((row) => row.link.itemId)).toEqual(['m-new'])
+  })
+})
+
+describe('R4-D 실패 응답에 실린 경로는 미확정 붙이기로만 — 남의 링크를 덮지 않고 완료로 그리지 않는다 (리뷰 재현 grok-r4-raw/probe-git-failed)', () => {
+  const OTHER_STORED: StoredWorkLink = { sourceId: 'mock-jira', connectionId: 'c', key: 'CORE-1', itemId: 'm-1', linkedAt: 1 }
+  const gitFailed = () => fail('git_failed', 'Git command failed', { path: PATH })
+  function rig({ held, answer }: { held?: Record<string, StoredWorkLink | 'suppressed'>; answer: () => RpcResponse }) {
+    const links = fakeLinks({ held })
+    const stores: string[] = []
+    const work: LinkWorkPort = {
+      linkConnections: () => [], repoDefaultConnection: () => null, recordEvent: () => true,
+      storeLink: async ({ action }) => { stores.push(action); return { state: 'saved', message: null } }, refreshEvent: () => false, storeAutoLink: async () => null,
+    }
+    const pending = new MemoryPending()
+    const service = new StartService({
+      invoke: () => async () => answer(), repos: () => [testRepo({ root: ROOT, worktrees: [] })],
+      links: () => links, work: () => work, log: () => {}, cwd: '/', sleep: async () => {}, pending,
+    })
+    return { service, links, stores, pending }
+  }
+  const mine = () => input({ itemId: 'm-new', itemKey: 'CORE-9' })
+  for (const [label, holder] of [['다른 작업 명시 링크', OTHER_STORED], ['떼기 예외', 'suppressed']] as const) {
+    it(`${label} 자리 + git_failed{resources.path} — 링크 유지 · held_by_other · 완료 아님(상태 옮기기 조건 거짓) · 출처 저장 0 (고침 전: 덮음 · completed)`, async () => {
+      const h = rig({ held: { [PATH]: holder }, answer: gitFailed })
+      const result = await h.service.start(mine())
+      expect(h.links.saved).toEqual([])
+      expect(h.links.table.get(PATH)).toBe(holder)
+      expect(result.stages.worktree).toMatchObject({ status: 'unknown', code: 'held_by_other' })
+      expect(result.stages.worktree.status).not.toBe('completed')
+      expect(result).toMatchObject({ worktreePath: null, linkSaved: false })
+      expect(h.stores).toEqual([])
+      expect(h.pending.entries).toEqual([])
+    })
+  }
+  it('양성 대조 — 빈 자리 + 같은 응답(added 뒤 실패와 같은 모양)은 이 작업으로 붙는다 · 단계는 미확정 · 열기/다시 띄우기', async () => {
+    const h = rig({ answer: gitFailed })
+    const result = await h.service.start(mine())
+    expect(h.links.saved.map((row) => [row.path, row.link.itemId])).toEqual([[PATH, 'm-new']])
+    expect(result).toMatchObject({ worktreePath: PATH, linkSaved: true })
+    expect(result.stages.worktree).toMatchObject({ status: 'unknown', code: 'git_failed' })
+    expect(result.stages.agent).toMatchObject({ status: 'failed', code: 'git_failed' })
+    expect(h.stores).toEqual(['save'])
+    expect(h.pending.entries).toEqual([])
+  })
+  it('무회귀 — 경로 없는 already_exists 는 실패 · 링크 없음 · 기존 링크 그대로', async () => {
+    const h = rig({ held: { [PATH]: OTHER_STORED }, answer: () => fail('already_exists') })
+    const result = await h.service.start(mine())
+    expect(result.stages.worktree).toMatchObject({ status: 'failed', code: 'already_exists' })
+    expect(h.links.saved).toEqual([])
+    expect(h.links.table.get(PATH)).toBe(OTHER_STORED)
+  })
+})
+
+describe('R4-B recover 가 붙인 링크의 출처 저장 실패는 활동 줄로 남는다 (리뷰 C4-2)', () => {
+  function rig(answer: () => Promise<{ state: 'saved' | 'failed' | 'skipped'; message: string | null }>) {
+    const pending = new MemoryPending()
+    const events: { eventKey: string; change: WorkActivityChange }[] = []
+    const work: LinkWorkPort = {
+      linkConnections: () => [], repoDefaultConnection: () => null,
+      recordEvent: ({ eventKey, change }) => { if (events.some((row) => row.eventKey === eventKey)) return false; events.push({ eventKey, change }); return true },
+      storeLink: () => answer(), refreshEvent: () => false, storeAutoLink: async () => null,
+    }
+    const service = new StartService({
+      invoke: () => async () => fail('outcome_unknown'), repos: () => [testRepo({ root: ROOT, worktrees: [] })],
+      links: () => fakeLinks(), work: () => work, log: () => {}, cwd: '/', sleep: async () => {}, pending,
+    })
+    const failures = () => events.filter((row) => row.change.field === 'run' && row.change.event === 'source_link_failed')
+    return { service, pending, failures }
+  }
+  const tree = [testRepo({ root: ROOT, worktrees: [testWorktree({ path: PATH, branch: NAME })] })]
+  it('실패 주입 → 활동 1줄(열쇠 run:srcfail:run:start:<id>) · 두 번 recover 해도 1줄 (고침 전: 0줄)', async () => {
+    const h = rig(async () => ({ state: 'failed', message: '출처에 링크를 남기지 못했습니다.' }))
+    const first = await h.service.start(input())
+    expect(await h.service.recover(tree)).toBe(1)
+    await h.service.recover(tree)
+    expect(h.failures()).toEqual([{ eventKey: `run:srcfail:run:start:${first.attemptId}`, change: { field: 'run', event: 'source_link_failed', worktree: PATH, message: '출처에 링크를 남기지 못했습니다.' } }])
+  })
+  it('양성 대조 — 출처 저장 성공 · 건너뜀이면 0줄', async () => {
+    for (const state of ['saved', 'skipped'] as const) {
+      const h = rig(async () => ({ state, message: null }))
+      await h.service.start(input())
+      expect(await h.service.recover(tree)).toBe(1)
+      expect(h.failures()).toEqual([])
+    }
   })
 })
 

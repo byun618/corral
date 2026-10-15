@@ -177,8 +177,15 @@ export class StartService {
         this.recovering.add(entry.attemptId)
         try {
           // 이 기록의 시도가 만든 것인지 모르는 자리라 남의 링크 · 떼기 예외 · 다른 시도가 붙인 링크를 덮지 않는다(R3-A·R3-C).
-          const { claim } = await this.link({ input: entry, path: entry.path, claim: true })
-          this.deps.log('work.start_recovered', { attemptId: entry.attemptId, path: entry.path, claim })
+          const { claim, sourceLink } = await this.link({ input: entry, path: entry.path, claim: true })
+          this.deps.log('work.start_recovered', { attemptId: entry.attemptId, path: entry.path, claim, sourceLink: sourceLink?.state ?? null })
+          // 복구가 붙인 링크는 결과를 볼 모달이 없다 — 출처 저장 실패를 자동 연결과 같은 활동 줄로 남긴다(R4-B · C14, 열쇠로 한 번).
+          if (sourceLink?.state === 'failed') {
+            this.deps.work()?.recordEvent({
+              connectionId: entry.connectionId, itemId: entry.itemId, itemKey: entry.itemKey, eventKey: `run:srcfail:run:start:${entry.attemptId}`,
+              change: { field: 'run', event: 'source_link_failed', worktree: entry.path, message: sourceLink.message },
+            })
+          }
           if (claim === 'saved') linked += 1
           if (claim === 'held' || claim === 'linked') pending.remove(entry.attemptId)
         } finally {
@@ -306,8 +313,12 @@ export class StartService {
         // 시도 전부터 있던 자리면(R2-A) 아래 일반 실패 갈래 — 「이름을 바꿔 다시 시작」.
         ({ path, stages } = unknown('outcome_unknown', '앞 요청이 끊긴 뒤 같은 이름이 이미 있습니다'))
       } else {
+        // 실패 응답에 실린 경로(R4-D) — 런타임은 `git worktree add` 가 실패해도 그 자리가 있으면 경로를 싣는다(같은 이름 동시 시작이면 남의 worktree).
+        // 이 시도가 만든 것인지 모르니 `completed` 로 그리지 않고(상태 옮기기 안 나감) 미확정 붙이기(`claimExplicit`)로만 — 남의 링크 · 떼기 예외면 `held`.
         path = created
-        stages = { worktree: created === null ? stage('failed', code, message) : stage('completed'), agent: stage(created === null ? 'skipped' : 'failed', created === null ? null : code, created === null ? null : message), prompt: stage('skipped') }
+        stages = created === null
+          ? { worktree: stage('failed', code, message), agent: stage('skipped'), prompt: stage('skipped') }
+          : { worktree: stage('unknown', code, 'worktree 는 있지만 런타임이 오류로 끝나 이 시도가 만든 것인지 확정하지 못했습니다.'), agent: stage('failed', code, message), prompt: stage('skipped') }
       }
     } else if (shell) {
       path = isRecord(response.result) && isRecord(response.result.worktree) && typeof response.result.worktree.path === 'string' ? response.result.worktree.path : null

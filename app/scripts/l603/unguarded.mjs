@@ -13,6 +13,7 @@
 // 실패 전파: DEST 가 /tmp/l603g-* 밖이면 exit 2 · out/ 이 없으면 exit 2 · 번들(main · runtime) 중 하나라도 **두 자리 중 하나라도** 못 찾으면 exit 3
 //   (번들 이름이 바뀌어 조용히 「가드 있는 사본」 이 되는 것을 막는다). 성공은 exit 0 + 바꾼 파일·자리 수 JSON.
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 
@@ -62,4 +63,6 @@ function main([dest]) {
   return missing.length === 0 ? 0 : 3
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) process.exit(main(process.argv.slice(2)))
+// 진입 판별은 실경로로(R4-A) — `/tmp`→`/private/tmp` 같은 심볼릭 링크 낀 경로로 부르면 문자열 비교가 거짓이라 main 이 안 돌고 출력 0줄 exit 0 이 됐다.
+const invokedDirectly = () => { try { return process.argv[1] !== undefined && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)) } catch { return false } }
+if (invokedDirectly()) process.exit(main(process.argv.slice(2)))

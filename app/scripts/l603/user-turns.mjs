@@ -14,6 +14,7 @@
 // 실패 전파: 파일이 없거나 못 읽으면 exit 2, JSON 행이 하나도 없거나 그 형식의 행을 하나도 못 알아보면 exit 3
 //   — 「0 턴」 과 「못 읽음」 이 같은 모양으로 나오지 않게(빈 결과는 양성 대조 뒤에야 근거). 성공은 exit 0 + JSON 한 줄.
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
@@ -197,4 +198,6 @@ function procedure({ mode, flag }) {
   return result.proved ? 0 : 1
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) process.exit(main(process.argv.slice(2)))
+// 진입 판별은 실경로로(R4-A) — `/tmp`→`/private/tmp` 같은 심볼릭 링크 낀 경로로 부르면 문자열 비교가 거짓이라 main 이 안 돌고 출력 0줄 exit 0 이 됐다.
+const invokedDirectly = () => { try { return process.argv[1] !== undefined && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)) } catch { return false } }
+if (invokedDirectly()) process.exit(main(process.argv.slice(2)))

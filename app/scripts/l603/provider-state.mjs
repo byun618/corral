@@ -4,7 +4,9 @@
 //   node scripts/l603/provider-state.mjs take <out.json> [--home <HOME 대신 — 자기점검용>]
 //   node scripts/l603/provider-state.mjs diff <before.json> <after.json>     # 같으면 exit 0, 다르면 exit 1 + 바뀐 파일
 //   node scripts/l603/provider-state.mjs backup <dir> [--home <h>]          # (R3-K) 허용 목록 5파일 바이트 사본 + manifest.json. dir 은 없거나 비어 있어야 한다
-//   node scripts/l603/provider-state.mjs restore <dir> [--home <h>]         # 사본으로 되돌린다(없던 파일은 지운다) → 다시 읽어 해시 대조, 모두 같으면 exit 0
+//   node scripts/l603/provider-state.mjs restore <dir> --expect-current <take.json> [--home <h>]
+//        # 사본으로 되돌린다(없던 파일은 지운다) → 다시 읽어 해시 대조, 모두 같으면 exit 0. **지금 파일이 `--expect-current` 스냅샷과 하나라도 다르면
+//        #   아무것도 쓰지 않고 exit 2**(R4-C) — 관문이 확인한 뒤에 남(다른 codex · grok · claude 세션, 사람)이 쓴 설정을 덮지 않게. 플래그는 필수.
 //   사본은 사용자 데이터다 — 레포 밖(/tmp 등)에 두고 커밋하지 않는다(validation.md 원자료 보관). 경로 · 해시만 기록한다.
 //
 // 대조 대상(허용 목록 — provider 가 사람 설정으로 읽는 파일):
@@ -19,6 +21,7 @@
 //   그래서 이 대조의 「다름」 은 곧 실패가 아니라 **원복 대상 표시**다 — 관문은 백업 바이트로 되돌린 뒤 다시 take 해 「같음」 을 확인한다.
 // 실패 전파: 읽을 수 없는 파일(권한)은 `unreadable` 로 적고 exit 2 — 「없음」 과 섞지 않는다.
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -51,6 +54,7 @@ export function diff({ a, b }) {
   return names.flatMap((name) => (JSON.stringify(a.files?.[name] ?? null) === JSON.stringify(b.files?.[name] ?? null) ? [] : [{ file: name, before: a.files?.[name] ?? null, after: b.files?.[name] ?? null }]))
 }
 
+const isRecord = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
 
 /** 허용 목록 5파일의 바이트 사본(R3-K). 실패하면 아무것도 남기지 않는다(만든 dir 은 지운다). */
@@ -79,13 +83,21 @@ export function backup({ dir, home, env }) {
  * 사본으로 되돌린다(R3-K). 먼저 전부 검증하고(같은 HOME · 같은 허용 목록 · 사본 해시) 하나라도 어긋나면 **아무것도 쓰지 않고** exit 2.
  * 있던 파일은 사본 바이트 · 권한으로(임시 파일 → rename), 없던 파일은 지운다. 끝나면 다시 읽어 해시를 대조한다 — 하나라도 다르면 exit 1.
  */
-export function restore({ dir, home, env }) {
+export function restore({ dir, home, env, expectCurrent }) {
   let manifest
   try { manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')) } catch (error) { return { ok: false, code: 'manifest_unreadable', exit: 2, error: String(error) } }
   if (manifest?.version !== 1 || !Array.isArray(manifest.entries)) return { ok: false, code: 'manifest_bad', exit: 2 }
   if (manifest.home !== home) return { ok: false, code: 'home_mismatch', exit: 2, manifest: manifest.home, home }
   const expected = watchedFiles({ home, env })
   if (JSON.stringify(manifest.entries.map((entry) => entry.file)) !== JSON.stringify(expected)) return { ok: false, code: 'file_list_mismatch', exit: 2 }
+  // 지금 파일이 관문이 확인한 스냅샷 그대로인가(R4-C) — 확인 뒤 남이 쓴 것이 있으면 멈춘다.
+  if (!isRecord(expectCurrent?.files)) return { ok: false, code: 'expect_current_bad', exit: 2 }
+  const current = take({ home, env })
+  const drifted = watchedFiles({ home, env }).filter((file) => {
+    const want = expectCurrent.files[file], got = current.files[file]
+    return !isRecord(want) || want.state !== got?.state || (want.sha256 ?? null) !== (got?.sha256 ?? null)
+  })
+  if (drifted.length > 0) return { ok: false, code: 'current_changed', exit: 2, drifted }
   const plan = []
   for (const entry of manifest.entries) {
     if (entry.state === 'absent') { plan.push({ file: entry.file, bytes: null, mode: null, sha256: null }); continue }
@@ -129,12 +141,20 @@ function main(argv) {
   }
   if ((mode === 'backup' || mode === 'restore') && first !== undefined) {
     const home = flag('home') ?? os.homedir(), env = flag('home') === undefined ? process.env : {}
-    const result = mode === 'backup' ? backup({ dir: path.resolve(first), home, env }) : restore({ dir: path.resolve(first), home, env })
+    let expected
+    if (mode === 'restore') {
+      const file = flag('expect-current')
+      if (file === undefined) { console.log(JSON.stringify({ ok: false, code: 'usage', usage: 'restore <dir> --expect-current <take.json> [--home <h>]' })); return 2 }
+      try { expected = JSON.parse(fs.readFileSync(file, 'utf8')) } catch (error) { console.log(JSON.stringify({ ok: false, code: 'expect_current_unreadable', error: String(error) })); return 2 }
+    }
+    const result = mode === 'backup' ? backup({ dir: path.resolve(first), home, env }) : restore({ dir: path.resolve(first), home, env, expectCurrent: expected })
     console.log(JSON.stringify(result))
     return result.ok ? 0 : result.exit
   }
-  console.log(JSON.stringify({ ok: false, code: 'usage', usage: 'take <out> [--home <h>] | diff <a> <b> | backup <dir> [--home <h>] | restore <dir> [--home <h>]' }))
+  console.log(JSON.stringify({ ok: false, code: 'usage', usage: 'take <out> [--home <h>] | diff <a> <b> | backup <dir> [--home <h>] | restore <dir> --expect-current <take.json> [--home <h>]' }))
   return 2
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) process.exit(main(process.argv.slice(2)))
+// 진입 판별은 실경로로(R4-A) — `/tmp`→`/private/tmp` 같은 심볼릭 링크 낀 경로로 부르면 문자열 비교가 거짓이라 main 이 안 돌고 출력 0줄 exit 0 이 됐다.
+const invokedDirectly = () => { try { return process.argv[1] !== undefined && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)) } catch { return false } }
+if (invokedDirectly()) process.exit(main(process.argv.slice(2)))

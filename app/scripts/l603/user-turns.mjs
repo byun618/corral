@@ -9,7 +9,8 @@
 //   codex  = 사람 발화 한 행이 한 턴 — 모양 둘(버전마다 한쪽): 옛 `event_msg/user_message` · 0.158 `event_msg/item_completed` 의
 //            `item.type: UserMessage`(`main/transcript-parse.ts` codexUserText 와 같은 두 모양). 질문 답 봉투
 //            (`<send_user_message_question_reply>`)는 턴이 아니다. 환경 주입 user 메시지(response_item)는 `aux` 로만 센다.
-//   grok   = `user_message_chunk` 의 **연속된 한 덩이**가 한 턴(큰 본문은 쪼개져 올 수 있다).
+//   grok   = `user_message_chunk` 의 **연속된 한 덩이**가 한 턴(큰 본문은 쪼개져 올 수 있다). `_meta.hideFromScrollback: true` 인 청크는
+//            하네스 주입이라 턴이 아니다(R3-E — 제품 `main/transcript-parse.ts` grokUpdateHumanText 와 같은 규칙). 숨김 청크는 덩이를 끊는다.
 // 실패 전파: 파일이 없거나 못 읽으면 exit 2, JSON 행이 하나도 없거나 그 형식의 행을 하나도 못 알아보면 exit 3
 //   — 「0 턴」 과 「못 읽음」 이 같은 모양으로 나오지 않게(빈 결과는 양성 대조 뒤에야 근거). 성공은 exit 0 + JSON 한 줄.
 import fs from 'node:fs'
@@ -48,6 +49,7 @@ function project(kind, row) {
   // grok 형식은 `sessionUpdate` 문자열이 있는 행으로만 알아본다(R2-E) — `type` 만 있는 다른 형식 파일을 0 턴 성공으로 읽지 않게.
   const known = update !== null && typeof update.sessionUpdate === 'string'
   if (update?.sessionUpdate !== 'user_message_chunk') return { known, user: null, chunk: false, aux: false }
+  if (isRecord(update._meta) && update._meta.hideFromScrollback === true) return { known, user: null, chunk: false, aux: false }
   const content = update.content
   const text = typeof content === 'string' ? content : Array.isArray(content) ? content.map((part) => String(part?.text ?? '')).join('') : String(content?.text ?? '')
   return { known, user: text, chunk: true, aux: false }
@@ -109,12 +111,18 @@ export function readBefore({ kind, file, root = recordsRoot({ kind }), exists = 
   return counted.ok ? { ...counted, file, state: 'present' } : { ...counted, file }
 }
 
+/** C3 ① 「초안 직후 + 30초 뒤 두 번 0 턴」 — 앞 판독은 2 회 이상, 첫 · 마지막 간격이 이만큼 이상이어야 한다(R3-B). */
+export const BEFORE_WINDOW_MS = 30_000
+
 /**
- * Enter 뒤 같은 경로에서 정확히 1 턴 · 그 턴이 기대 본문(R2-E 양성 대조). 앞 판독이 「0 턴」 이어야 하고, 같은 경로여야 한다.
- * 둘 다 맞아야 `proved` — 앞의 0 턴은 이 대조가 통과할 때만 증거다(못 보는 것과 없는 것은 같은 모양으로 나온다).
+ * Enter 뒤 같은 경로에서 정확히 1 턴 · 그 턴이 기대 본문(R2-E 양성 대조). 앞 판독이 모두 「0 턴」 이고 2 회 이상 · 30초 이상에 걸쳐야 하고(R3-B), 같은 경로여야 한다.
+ * 모두 맞아야 `proved` — 앞의 0 턴은 이 대조가 통과할 때만 증거다(못 보는 것과 없는 것은 같은 모양으로 나온다).
  */
-export function verdict({ before, after, expectedSha }) {
+export function verdict({ before, reads = [before], after, expectedSha }) {
   if (!before.ok || before.userTurns !== 0) return { proved: false, why: 'before_not_zero', before }
+  if (reads.length < 2) return { proved: false, why: 'before_reads_short', reads: reads.length, need: 2 }
+  const span = Date.parse(reads[reads.length - 1].at) - Date.parse(reads[0].at)
+  if (!Number.isFinite(span) || span < BEFORE_WINDOW_MS) return { proved: false, why: 'before_window_short', spanMs: Number.isFinite(span) ? span : null, need: BEFORE_WINDOW_MS }
   if (!after.ok) return { proved: false, why: 'after_unreadable', after }
   if (after.file !== before.file) return { proved: false, why: 'path_changed' }
   if (after.userTurns !== 1) return { proved: false, why: 'after_not_one', userTurns: after.userTurns }
@@ -157,7 +165,7 @@ function main(argv) {
  * 절차(R2-E) — 같은 기록 경로로 두 번:
  *   before --response <worktree create 응답 JSON> --state <상태 파일> [--records-root <루트>]   # 초안 직후(그리고 30초 뒤 다시). 없음이면 기록 루트 확인 후 0 턴
  *   after  --state <상태 파일> --body-file <기대 본문>                  # 사람이 Enter 를 누른 뒤. 같은 경로 · 정확히 1 턴 · 본문 sha 일치
- * after 의 exit 0 = 증명(proved). before 만으로는 증거가 아니다. 상태 파일엔 경로 · 종류 · 앞 판독만(본문 없음).
+ * after 의 exit 0 = 증명(proved) — before 가 2 회 이상 · 첫 · 마지막 30초 이상(R3-B), 기대 본문에 탭 없음(R3-I · exit 2). before 만으로는 증거가 아니다. 상태 파일엔 경로 · 종류 · 앞 판독만(본문 없음).
  */
 function procedure({ mode, flag }) {
   const stateFile = flag('state')
@@ -182,7 +190,9 @@ function procedure({ mode, flag }) {
   const worst = reads.find((read) => !read.ok || read.userTurns !== 0) ?? reads[reads.length - 1] ?? { ok: false, code: 'no_before' }
   let after
   try { after = { ...countUserTurns({ kind: state.kind, text: fs.readFileSync(state.file, 'utf8') }), file: state.file } } catch (error) { after = { ok: false, code: 'record_unreadable', file: state.file, error: String(error) } }
-  const result = { ...verdict({ before: worst, after, expectedSha: bodySha(body) }), beforeReads: reads.length, file: state.file }
+  // 최종 관문 본문은 탭 없이(R3-I) — claude · grok 기록이 탭을 공백 4칸으로 적어 sha 가 갈린다. 본문 규칙은 설계 메모 §10.
+  if (body.includes('\t')) { console.log(JSON.stringify({ ok: false, code: 'body_has_tab', message: '최종 관문 본문은 탭 없이' })); return 2 }
+  const result = { ...verdict({ before: worst, reads, after, expectedSha: bodySha(body) }), beforeReads: reads.length, file: state.file }
   console.log(JSON.stringify(result))
   return result.proved ? 0 : 1
 }

@@ -79,8 +79,9 @@ test('R2-E 인접한 두 제출 조각은 1 턴으로 합쳐지지만 sha 대조
   const merged = countUserTurns({ kind: 'grok', text: lines([grokChunk('첫 제출'), grokChunk('둘째 제출'), grokAgent]) })
   assert.equal(merged.userTurns, 1)
   const before = { ok: true, userTurns: 0, file: '/f' }
-  assert.deepEqual(verdict({ before, after: { ...merged, file: '/f' }, expectedSha: bodySha('첫 제출') }).why, 'body_mismatch')
-  assert.equal(verdict({ before, after: { ...countUserTurns({ kind: 'grok', text: lines([grokChunk('첫 제출'), grokAgent]) }), file: '/f' }, expectedSha: bodySha('첫 제출\r\n') }).proved, true)
+  const reads = [{ ...before, at: '2026-10-15T00:00:00.000Z' }, { ...before, at: '2026-10-15T00:00:31.000Z' }]
+  assert.deepEqual(verdict({ before, reads, after: { ...merged, file: '/f' }, expectedSha: bodySha('첫 제출') }).why, 'body_mismatch')
+  assert.equal(verdict({ before, after: { ...countUserTurns({ kind: 'grok', text: lines([grokChunk('첫 제출'), grokAgent]) }), file: '/f' }, expectedSha: bodySha('첫 제출\r\n'), reads }).proved, true)
 })
 
 test('R2-E readBefore — 없는 파일은 기록 루트 아래이고 루트가 있을 때만 0 턴(프로젝트 디렉터리는 없어도 된다), 아니면 실패', () => {
@@ -131,6 +132,11 @@ test('R2-E 절차 before → after — 없음(0) → Enter 뒤 같은 경로 1 �
     // Enter 전에 after — 파일이 없어 증명 불가
     assert.equal(run(['after', '--state', state, '--body-file', body]).status, 1)
     fs.writeFileSync(record, lines([claudeUser('작업 본문\n둘째 줄'), claudeAssistant]))
+    // 두 판독이 30초 안이면 증명 아님(R3-B) — 첫 판독 시각을 31초 앞으로 옮기면(시계 대신 at 조작) 증명
+    assert.equal(JSON.parse(run(['after', '--state', state, '--body-file', body]).stdout).why, 'before_window_short')
+    const saved = JSON.parse(fs.readFileSync(state, 'utf8'))
+    saved.reads[0].at = new Date(Date.parse(saved.reads[1].at) - 31_000).toISOString()
+    fs.writeFileSync(state, JSON.stringify(saved))
     const ok = run(['after', '--state', state, '--body-file', body])
     assert.equal(ok.status, 0, ok.stdout)
     assert.equal(JSON.parse(ok.stdout).beforeReads, 2)
@@ -145,5 +151,78 @@ test('R2-E 절차 before → after — 없음(0) → Enter 뒤 같은 경로 1 �
     fs.writeFileSync(record, lines([claudeUser('작업 본문\n둘째 줄'), claudeAssistant]))
     assert.equal(run(['before', '--response', response, '--state', state2, '--records-root', dir]).status, 1)
     assert.equal(JSON.parse(run(['after', '--state', state2, '--body-file', body]).stdout).why, 'before_not_zero')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+// --- fix3 R3-B · R3-E · R3-I ---------------------------------------------------------------------
+
+test('R3-B 앞 판독 1회 · 간격 부족은 proved 아님(exit 1), 2회 · 30초 이상이면 proved — 같은 기록 같은 본문', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l603-window-'))
+  const run = (args) => spawnSync(process.execPath, [path.join(here, 'user-turns.mjs'), ...args], { encoding: 'utf8' })
+  try {
+    const record = path.join(dir, 'session.jsonl')
+    const response = path.join(dir, 'create.json')
+    fs.writeFileSync(response, JSON.stringify({ ok: true, result: { agent: { kind: 'claude', sessionRecord: { path: record, exists: false } } } }))
+    const body = path.join(dir, 'body.txt'); fs.writeFileSync(body, '본문')
+    const state = path.join(dir, 'one.json')
+    assert.equal(run(['before', '--response', response, '--state', state, '--records-root', dir]).status, 0)
+    fs.writeFileSync(record, lines([claudeUser('본문'), claudeAssistant]))
+    const one = run(['after', '--state', state, '--body-file', body])
+    assert.equal(one.status, 1)
+    assert.equal(JSON.parse(one.stdout).why, 'before_reads_short')
+    const at = (ms) => (typeof ms === 'number' ? new Date(Date.UTC(2026, 9, 15) + ms).toISOString() : ms)
+    const zero = { ok: true, kind: 'claude', file: record, root: dir, state: 'absent', userTurns: 0, turnSha: [] }
+    const write = (offsets) => { fs.writeFileSync(state, JSON.stringify({ kind: 'claude', file: record, reads: offsets.map((ms) => ({ at: at(ms), ...zero })) })); return run(['after', '--state', state, '--body-file', body]) }
+    const short = write([0, 29_999])
+    assert.equal(short.status, 1)
+    assert.deepEqual(JSON.parse(short.stdout), { proved: false, why: 'before_window_short', spanMs: 29_999, need: 30_000, beforeReads: 2, file: record })
+    assert.equal(JSON.parse(write([0, 'x']).stdout).why, 'before_window_short') // 시각을 못 읽으면 간격 부족
+    const enough = write([0, 10_000, 30_000])
+    assert.equal(enough.status, 0, enough.stdout)
+    assert.equal(JSON.parse(enough.stdout).proved, true)
+    // 사이 판독 하나가 0 이 아니면 간격이 충분해도 아님
+    fs.writeFileSync(state, JSON.stringify({ kind: 'claude', file: record, reads: [{ at: at(0), ...zero }, { at: at(15_000), ...zero, userTurns: 1 }, { at: at(30_000), ...zero }] }))
+    assert.equal(JSON.parse(run(['after', '--state', state, '--body-file', body]).stdout).why, 'before_not_zero')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('R3-E grok 숨김 청크(_meta.hideFromScrollback)는 사람 턴이 아니다 — 리뷰 재현 grok-r3-raw/grok-hidden', () => {
+  const hidden = (text) => ({ params: { update: { sessionUpdate: 'user_message_chunk', content: { text }, _meta: { hideFromScrollback: true } } } })
+  // 숨김만 → 0 턴(형식은 알아봄)
+  const only = countUserTurns({ kind: 'grok', text: lines([hidden('<system-reminder>x</system-reminder>')]) })
+  assert.equal(only.ok, true)
+  assert.equal(only.userTurns, 0)
+  // 숨김 + 에이전트 + 사람 → 1 턴, 본문은 사람 것
+  const mixed = countUserTurns({ kind: 'grok', text: lines([hidden('주입'), grokAgent, grokChunk('첫 제출')]) })
+  assert.equal(mixed.userTurns, 1)
+  assert.deepEqual(mixed.turnSha, [bodySha('첫 제출')])
+  // 숨김 바로 뒤 사람(연속) → 1 턴, 숨김 본문이 붙지 않는다(고침 전: 합쳐져 body_mismatch)
+  const glued = countUserTurns({ kind: 'grok', text: lines([hidden('주입'), grokChunk('첫 '), grokChunk('제출'), grokAgent]) })
+  assert.equal(glued.userTurns, 1)
+  assert.deepEqual(glued.turnSha, [bodySha('첫 제출')])
+  // 대조 — 숨김 표시가 false 거나 없으면 사람 턴
+  const shown = { params: { update: { sessionUpdate: 'user_message_chunk', content: { text: '보임' }, _meta: { hideFromScrollback: false } } } }
+  assert.equal(countUserTurns({ kind: 'grok', text: lines([shown, grokAgent]) }).userTurns, 1)
+})
+
+test('R3-E 제품 판독과 같은 규칙 — transcript-parse.ts 의 grokUpdateHumanText 가 같은 판별을 한다(소스 대조)', () => {
+  const source = fs.readFileSync(path.join(here, '..', '..', 'src', 'main', 'transcript-parse.ts'), 'utf8')
+  assert.match(source, /export function grokUpdateHumanText[\s\S]{0,400}hideFromScrollback'\] === true\) return null/)
+})
+
+test('R3-I 기대 본문에 탭이 있으면 exit 2 「최종 관문 본문은 탭 없이」, 탭 없으면 그대로 판정', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l603-tab-'))
+  const run = (args) => spawnSync(process.execPath, [path.join(here, 'user-turns.mjs'), ...args], { encoding: 'utf8' })
+  try {
+    const record = path.join(dir, 's.jsonl'); fs.writeFileSync(record, lines([claudeUser('a    b'), claudeAssistant]))
+    const zero = { ok: true, kind: 'claude', file: record, state: 'absent', userTurns: 0, turnSha: [] }
+    const state = path.join(dir, 'st.json')
+    fs.writeFileSync(state, JSON.stringify({ kind: 'claude', file: record, reads: [{ at: '2026-10-15T00:00:00Z', ...zero }, { at: '2026-10-15T00:00:30Z', ...zero }] }))
+    const tab = path.join(dir, 'tab.txt'); fs.writeFileSync(tab, 'a\tb')
+    const refused = run(['after', '--state', state, '--body-file', tab])
+    assert.equal(refused.status, 2)
+    assert.deepEqual(JSON.parse(refused.stdout), { ok: false, code: 'body_has_tab', message: '최종 관문 본문은 탭 없이' })
+    const spaces = path.join(dir, 'sp.txt'); fs.writeFileSync(spaces, 'a    b')
+    assert.equal(run(['after', '--state', state, '--body-file', spaces]).status, 0)
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })

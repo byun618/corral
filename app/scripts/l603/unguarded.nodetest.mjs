@@ -11,6 +11,9 @@ import { patchBundle } from './unguarded.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const app = path.resolve(here, '..', '..')
+// 빌드 산출물 칸(R3-J) — 평소엔 out/ 이 없으면 건너뛰고, 관문 모드(`L603_REQUIRE_BUILD=1`)에선 건너뛰지 않고 실패한다.
+const built = () => fs.existsSync(path.join(app, 'out/runtime/cli.mjs'))
+const skipUnbuilt = () => (built() || process.env.L603_REQUIRE_BUILD === '1' ? false : 'npm run build 먼저')
 const HOSTILE = '첫 줄\u001b[201~\r!rm -rf ~\u0003‮\u{E0041}끝'
 const END = '\u001b[201~'
 
@@ -51,7 +54,8 @@ test('소스 함수 — 원판은 ESC 2 · 첫 닫힘 뒤 0바이트, 사본(두
   assert.equal(tailAfterFirstEnd(sanitizeOnly), '')
 })
 
-test('실제 빌드 산출물 — unguarded.mjs 가 main · runtime 번들의 두 자리를 바꾸고, 바꾼 cli.mjs 의 함수가 실제로 샌다', { skip: !fs.existsSync(path.join(app, 'out/runtime/cli.mjs')) && 'npm run build 먼저' }, () => {
+test('실제 빌드 산출물 — unguarded.mjs 가 main · runtime 번들의 두 자리를 바꾸고, 바꾼 cli.mjs 의 함수가 실제로 샌다', { skip: skipUnbuilt() }, () => {
+  assert.ok(built(), 'L603_REQUIRE_BUILD=1 인데 out/ 이 없다 — 빌드 산출물 없이 통과로 세지 않는다(R3-J)')
   const root = `/tmp/l603g-ug${process.pid}`
   try {
     const run = spawnSync(process.execPath, [path.join(here, 'unguarded.mjs'), `${root}/copy`], { cwd: app, encoding: 'utf8' })

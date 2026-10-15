@@ -9,7 +9,9 @@
 // 진입점 = 실제 `cli/corral.mjs`(기본). 소켓은 **환경변수 `CORRAL_RUNTIME_SOCKET`** 으로 넘긴다 — workspace 명령은 `--socket` 플래그를 받지 않는다.
 // 기본 `--request-id` 는 런타임 형식 `r1.<Date.now()>.<UUID>`(다른 모양은 효과 전에 invalid_argument).
 // 1회차: 같은 id 로 `worktree create` 를 짧은 `--timeout-ms` 로 → 호출자 기한이 끊는다. settle-ms 기다린 뒤 예정 경로(`<repo>/.claude/worktrees/<name>`)의 `.git` 을 본다.
-// 2회차: 같은 id 를 긴 기한으로 다시 → 런타임 영수증이 돌려주는 것을 원자료로 남긴다.
+// 2회차: 같은 id 를 긴 기한으로 다시 → 런타임 영수증이 돌려주는 것을 원자료로 남긴다. 판정(`judgeSecond` — R3-G):
+//   exit 0 = `already_exists`(영수증 없는 경로가 1회차 결과에 부딪힘) · `replayed`(완료 영수증) · `receipt_pending`(런타임이 답한 outcome_unknown — 진행 중 영수증)
+//   exit 5 = `fresh`(2회차가 새 실행 — 1회차 효과가 없었다는 반증) · exit 6 = 그 밖의 오류 · exit 4 = 응답 없음
 // 분류(`classify`) — **효과 시작 여부**로 가른다(R2-D):
 //   after_effect  = 취소·미확정 코드이고, **런타임이 답한** `_meta.outcome: unknown` 이거나 예정 경로에 worktree 가 생겼다 → R1-B 실측으로 센다(exit 0)
 //                   (CLI 자기 기한의 응답은 `runtimeId: 'unknown'` — 그 outcome 은 증거로 쓰지 않는다)
@@ -34,6 +36,17 @@ export function classify({ first, worktreeAppeared }) {
   const outcome = fromRuntime ? first._meta?.outcome ?? null : null
   if (!CANCEL.has(code) && outcome !== 'unknown') return 'not_started'
   return outcome === 'unknown' || worktreeAppeared ? 'after_effect' : 'before_effect'
+}
+
+/** 2회차 응답 판정(R3-G) — 1회차 효과를 뒷받침하는 답만 통과. */
+export function judgeSecond(response) {
+  if (response === null || response === undefined) return { kind: 'no_response', exit: 4 }
+  if (response.ok === true) return response.result?.replayed === true ? { kind: 'replayed', exit: 0 } : { kind: 'fresh', exit: 5 }
+  const code = response.error?.code ?? null
+  if (code === 'already_exists') return { kind: 'already_exists', exit: 0 }
+  const fromRuntime = typeof response._meta?.runtimeId === 'string' && response._meta.runtimeId !== 'unknown'
+  if (code === 'outcome_unknown' && fromRuntime) return { kind: 'receipt_pending', exit: 0 }
+  return { kind: 'unexpected', exit: 6, code }
 }
 
 export function parseExtra(text) {
@@ -82,10 +95,11 @@ function main(argv) {
   if (kind !== 'after_effect') { console.log(JSON.stringify({ ok: false, code: kind, requestId, expected, worktreeAppeared, first })); return 3 }
   const second = call({ cli, socket, args, timeoutMs: longMs, budgetMs: budget })
   if (second.timedOut) { console.log(JSON.stringify({ ok: false, code: 'child_timeout', round: 2, requestId, first, second })); return 4 }
-  // 2회차가 새 실행이었나(replay 아님 · 미확정 아님) — 그렇다면 1회차는 효과가 없었다는 반증이다. 판정표가 읽는 칸.
-  const secondFresh = second.response?.ok === true && second.response?.result?.replayed !== true
-  console.log(JSON.stringify({ ok: second.response !== null, kind, requestId, expected, worktreeAppeared, worktreeAfter: fs.existsSync(path.join(expected, '.git')), secondFresh, first, second }))
-  return second.response === null ? 4 : 0
+  // 2회차가 새 실행이었나(replay 아님 · 미확정 아님) — 그렇다면 1회차는 효과가 없었다는 반증이다(R3-G: 실패 exit 5).
+  const judged = judgeSecond(second.response)
+  const secondFresh = judged.kind === 'fresh'
+  console.log(JSON.stringify({ ok: judged.exit === 0, kind, second_kind: judged.kind, requestId, expected, worktreeAppeared, worktreeAfter: fs.existsSync(path.join(expected, '.git')), secondFresh, first, second }))
+  return judged.exit
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) process.exit(main(process.argv.slice(2)))

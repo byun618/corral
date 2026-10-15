@@ -65,6 +65,42 @@ test('R2-L 둘 다 빈 스냅샷은 기본 기대값에서 실패(exit 3) · see
     const changed = run(['diff', `${one}/snap.json`, `${two}/snap.json`])
     assert.equal(changed.status, 1)
     assert.equal(JSON.parse(changed.stdout).changes[0].section, 'seen')
-    assert.equal(run(['diff', `${one}/snap.json`, `${legacy}/snap.json`]).status, 0)
+    // fix3 R3-D: 쌍 집합 — 연결 id 가 없는 옛 문자열은 연결 id null 이라 쌍과 다르다(같은 형식끼리만 같음).
+    assert.equal(run(['diff', `${one}/snap.json`, `${legacy}/snap.json`]).status, 1)
+  } finally { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+// --- fix3 R3-D -----------------------------------------------------------------------------------
+test('R3-D --expect-* 값이 빠졌거나 정수가 아니면 exit 2 (리뷰 재현 claude-r3-raw/snap-nan2 — 고침 전: NaN 으로 빈 스냅샷 exit 0)', () => {
+  const roots = []
+  try {
+    const empty = profile('n', { registry: { version: 2, repos: [], worktrees: {} } }); roots.push(empty)
+    for (const extra of [['--expect-links'], ['--expect-links', 'abc'], ['--expect-events', '1.5'], ['--expect-links', '-1'], ['--expect-events', '']]) {
+      const out = run(['take', empty, `${empty}/snap.json`, ...extra])
+      assert.equal(out.status, 2, `${extra.join(' ')} → ${out.stdout}`)
+      assert.equal(JSON.parse(out.stdout).code, 'bad_expect')
+    }
+    // 양성 대조: 정수면 받는다
+    assert.equal(run(['take', empty, `${empty}/snap.json`, '--expect-links', '0', '--expect-events', '0']).status, 0)
+    assert.equal(run(['take', empty, `${empty}/snap.json`, '--expect-links', '2']).status, 3)
+  } finally { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+test('R3-D seen 은 [열쇠, 연결 id] 쌍으로 · 사건은 레코드 connectionId 까지 대조한다', () => {
+  const roots = []
+  try {
+    const state = (patch) => { const value = base(); patch(value); return value }
+    const take = (name, value) => { const root = profile(name, value); roots.push(root); assert.equal(run(['take', root, `${root}/snap.json`]).status, 0); return `${root}/snap.json` }
+    const a = take('o', state((value) => { value.activity.seen = [['run:start:x', 'c']]; value.activity.records[0].connectionId = 'c' }))
+    const sameAgain = take('p', state((value) => { value.activity.seen = [['run:start:x', 'c'], ['run:start:x', 'c']]; value.activity.records[0].connectionId = 'c' }))
+    assert.equal(run(['diff', a, sameAgain]).status, 0)
+    const owner = take('q', state((value) => { value.activity.seen = [['run:start:x', 'c2']]; value.activity.records[0].connectionId = 'c' }))
+    const ownerDiff = run(['diff', a, owner])
+    assert.equal(ownerDiff.status, 1)
+    assert.deepEqual(JSON.parse(ownerDiff.stdout).changes.map((row) => row.section), ['seen'])
+    const moved = take('r', state((value) => { value.activity.seen = [['run:start:x', 'c']]; value.activity.records[0].connectionId = 'c2' }))
+    const movedDiff = run(['diff', a, moved])
+    assert.equal(movedDiff.status, 1)
+    assert.deepEqual(JSON.parse(movedDiff.stdout).changes.map((row) => [row.section, row.key]), [['events', 'run:start:x']])
   } finally { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }) }
 })

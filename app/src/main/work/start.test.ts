@@ -15,7 +15,7 @@ import type { StoredWorkLink } from '../../shared/work-link.js'
 import type { WorkActivityChange } from '../../shared/work.js'
 import { StartService, mapAgentStages } from './start.js'
 import { MemoryPending } from './start-pending.js'
-import type { LinkWorkPort } from './links.js'
+import type { ClaimResult, LinkWorkPort } from './links.js'
 
 const ROOT = '/repo'
 const NAME = 'LIFE-603-start'
@@ -28,9 +28,34 @@ const ok = (result: unknown): RpcResponse => ({ id: 'x', ok: true, result, _meta
 const fail = (code: string, message = code, resources?: unknown): RpcResponse => ({ id: 'x', ok: false, error: { code, message, ...(resources === undefined ? {} : { resources }) }, _meta: { runtimeId: 'r' } })
 const created = (stages: Record<string, unknown>) => ok({ worktree: { path: PATH }, stages: { worktree: { status: 'completed', path: PATH }, terminal: { status: 'completed' }, agent: { status: 'completed' }, prompt: { status: 'completed', mode: 'draft', enterSent: false }, ...stages }, outcome: 'completed' })
 
+/**
+ * 링크 저장 가짜 — 레지스트리 한 칸(경로 → 명시 링크 · 떼기 예외)을 흉내 낸다. `claimExplicit` 는 `WorkLinks` 와 같은 규칙(실물 시험은 links.test.ts).
+ * `saved` 에는 실제로 쓴 것만 쌓인다.
+ */
+function fakeLinks({ held = {}, canSave = () => true }: { held?: Record<string, StoredWorkLink | 'suppressed'>; canSave?: () => boolean } = {}) {
+  const table = new Map<string, StoredWorkLink | 'suppressed'>(Object.entries(held))
+  const saved: { path: string; link: StoredWorkLink }[] = []
+  const write = ({ path, link }: { path: string; link: StoredWorkLink }): boolean => {
+    if (!canSave()) return false
+    table.set(path, link)
+    saved.push({ path, link })
+    return true
+  }
+  return {
+    saved,
+    table,
+    saveExplicit: write,
+    claimExplicit: ({ path, link }: { path: string; link: StoredWorkLink }): ClaimResult => {
+      const current = table.get(path)
+      if (current === 'suppressed') return 'held'
+      if (current !== undefined) return current.connectionId === link.connectionId && current.itemId === link.itemId ? 'linked' : 'held'
+      return write({ path, link }) ? 'saved' : 'failed'
+    },
+  }
+}
+
 function harness({ answer, repos, worktreeExists, pending }: { answer: (invocation: Invocation, n: number) => Promise<RpcResponse> | RpcResponse; repos?: () => RepoRow[]; worktreeExists?: (path: string) => boolean; pending?: MemoryPending }) {
   const calls: Invocation[] = []
-  const saved: { path: string; link: StoredWorkLink }[] = []
   const events: { eventKey: string; change: WorkActivityChange }[] = []
   const stores: string[] = []
   const work: LinkWorkPort = {
@@ -40,7 +65,8 @@ function harness({ answer, repos, worktreeExists, pending }: { answer: (invocati
     refreshEvent: () => false,
     storeAutoLink: async () => null,
   }
-  const links = { saveExplicit: ({ path, link }: { path: string; link: StoredWorkLink }) => { saved.push({ path, link }); return true } }
+  const links = fakeLinks()
+  const saved = links.saved
   const service = new StartService({
     invoke: () => async (invocation) => { calls.push(invocation); return answer(invocation, calls.length) },
     repos: repos ?? (() => [testRepo({ root: ROOT, worktrees: [] })]),
@@ -263,9 +289,10 @@ describe('R1-B 실제 Receipts 위에서 — 효과 시작 뒤 취소된 요청'
     }
     let clock = 1_000_000
     const pending = new MemoryPending()
-    const saved: string[] = []
+    const links = fakeLinks()
+    const saved = links.saved
     const service = new StartService({
-      invoke: () => invoke, repos: () => [testRepo({ root: ROOT, worktrees: [] })], links: () => ({ saveExplicit: ({ path: target }) => { saved.push(target); return true } }), work: () => null,
+      invoke: () => invoke, repos: () => [testRepo({ root: ROOT, worktrees: [] })], links: () => links, work: () => null,
       log: () => {}, cwd: '/', now: () => clock, sleep: async (ms) => { clock += ms }, deadlineMs: 600_000, pending, worktreeExists: () => exists && calls > 0,
     })
     // 영수증은 런타임 시작보다 오래된 id 를 request_expired 로 거절한다 — 지금 시각의 id 를 쓴다.
@@ -280,7 +307,7 @@ describe('R1-B 실제 Receipts 위에서 — 효과 시작 뒤 취소된 요청'
     expect(r.virtualMs).toBeLessThan(5_000)
     expect(r.result.stages.worktree).toMatchObject({ status: 'unknown', code: 'outcome_unknown' })
     expect(r.result).toMatchObject({ worktreePath: PATH, linkSaved: true })
-    expect(r.saved).toEqual([PATH])
+    expect(r.saved.map((row) => row.path)).toEqual([PATH])
   })
   it('worktree 가 아직 없으면 링크 없이 미확정 기록을 남긴다 — 나타나면 recover 가 붙인다', async () => {
     const r = await run({ exists: false })
@@ -332,18 +359,20 @@ describe('R1-E·R1-P 바로 보내기 — 본문 정제 · queued 는 「줄에 
 
 describe('R2-A 시도 전부터 있던 worktree 는 이 작업에 붙이지 않는다 (리뷰 재현 grok-r2-raw/repro.test.ts)', () => {
   const OTHER = { mode: 'explicit' as const, sourceId: 'mock-jira', connectionId: 'c', key: 'CORE-1', itemId: 'm-1', connected: true }
+  const OTHER_STORED: StoredWorkLink = { sourceId: 'mock-jira', connectionId: 'c', key: 'CORE-1', itemId: 'm-1', linkedAt: 1 }
   const mine = (patch: Partial<StartWorkInput> = {}): StartWorkInput => input({ itemId: 'm-new', itemKey: 'CORE-9', ...patch })
   function rig({ answer, exists = true, pending }: { answer: (n: number) => RpcResponse; exists?: boolean; pending?: MemoryPending }) {
     const calls: Invocation[] = []
-    const saved: { path: string; link: StoredWorkLink }[] = []
+    const links = fakeLinks({ held: exists ? { [PATH]: OTHER_STORED } : {} })
+    const saved = links.saved
     const repos = () => [testRepo({ root: ROOT, worktrees: exists ? [testWorktree({ path: PATH, branch: NAME, workLink: OTHER })] : [] })]
     const service = new StartService({
       invoke: () => async (invocation) => { calls.push(invocation); return answer(calls.length) },
       repos,
-      links: () => ({ saveExplicit: ({ path: target, link }) => { saved.push({ path: target, link }); return true } }),
+      links: () => links,
       work: () => null, log: () => {}, cwd: '/', sleep: async () => {}, pending, deadlineMs: 60_000,
     })
-    return { service, calls, saved }
+    return { service, calls, saved, links }
   }
   it('대조 — 재시도 없는 already_exists 는 링크하지 않는다(이름 바꾸기)', async () => {
     const h = rig({ answer: () => fail('already_exists') })
@@ -388,8 +417,10 @@ describe('R2-A 시도 전부터 있던 worktree 는 이 작업에 붙이지 않�
     expect(await h.service.recover(tree)).toBe(0)
     expect(h.saved).toEqual([])
     expect(pending.entries).toEqual([])
+    // 양성 대조는 비어 있는 자리 — 다른 작업의 링크가 있는 자리는 R3-C 로 붙이지 않는다.
+    h.links.table.delete(PATH)
     pending.add({ ...base, preexisting: false })
-    expect(await h.service.recover(tree)).toBe(1)
+    expect(await h.service.recover([testRepo({ root: ROOT, worktrees: [testWorktree({ path: PATH, branch: NAME })] })])).toBe(1)
     expect(h.saved.map((row) => row.link.itemId)).toEqual(['m-new'])
   })
 })
@@ -398,10 +429,11 @@ describe('R2-B 링크 저장 실패 — 성공으로 그리지 않고 미확정 
   it('saveExplicit=false → 단계 link_failed · 기록 유지 → 다음 recover 가 다시 붙인다', async () => {
     const pending = new MemoryPending()
     let canSave = false
+    const links = fakeLinks({ canSave: () => canSave })
     const service = new StartService({
       invoke: () => async () => ok({ worktree: { path: PATH }, stages: { worktree: { status: 'completed', path: PATH }, terminal: { status: 'completed' }, agent: { status: 'completed' }, prompt: { status: 'completed', mode: 'draft', enterSent: false } }, outcome: 'completed' }),
       repos: () => [testRepo({ root: ROOT, worktrees: [] })],
-      links: () => ({ saveExplicit: () => canSave }),
+      links: () => links,
       work: () => null, log: () => {}, cwd: '/', sleep: async () => {}, pending,
     })
     const result = await service.start(input())
@@ -414,6 +446,172 @@ describe('R2-B 링크 저장 실패 — 성공으로 그리지 않고 미확정 
     canSave = true
     expect(await service.recover([testRepo({ root: ROOT, worktrees: [testWorktree({ path: PATH, branch: NAME })] })])).toBe(1)
     expect(pending.entries).toHaveLength(0)
+  })
+})
+
+describe('R3-A 같은 경로의 앞 미확정 기록은 뒤 시도가 확정하면 끝난다 (리뷰 재현 claude-r3-raw/scratch-start2)', () => {
+  const done = created({})
+  function rig({ held }: { held?: Record<string, StoredWorkLink | 'suppressed'> } = {}) {
+    const pending = new MemoryPending()
+    const links = fakeLinks({ held })
+    const events: { eventKey: string; change: WorkActivityChange }[] = []
+    const stores: string[] = []
+    const work: LinkWorkPort = {
+      linkConnections: () => [], repoDefaultConnection: () => null,
+      recordEvent: ({ eventKey, change }) => { if (events.some((row) => row.eventKey === eventKey)) return false; events.push({ eventKey, change }); return true },
+      storeLink: async ({ action }) => { stores.push(action); return { state: 'saved', message: null } }, refreshEvent: () => false, storeAutoLink: async () => null,
+    }
+    let n = 0
+    const service = new StartService({
+      invoke: () => async () => { n += 1; return n === 1 ? fail('outcome_unknown') : done },
+      repos: () => [testRepo({ root: ROOT, worktrees: [] })],
+      links: () => links, work: () => work, log: () => {}, cwd: '/', sleep: async () => {}, pending, deadlineMs: 60_000,
+    })
+    const starts = () => events.filter((row) => row.change.field === 'run' && row.change.event === 'start')
+    return { service, pending, links, events, stores, starts }
+  }
+  const tree = [testRepo({ root: ROOT, worktrees: [testWorktree({ path: PATH, branch: NAME })] })]
+
+  it('S3 같은 작업 — 앞 시도 미확정 · 뒤 시도 성공 → recover 뒤에도 「작업 시작」 1회 · 기록 0 (고침 전: 2회)', async () => {
+    const h = rig()
+    const first = await h.service.start(input())
+    expect(first.stages.worktree.status).toBe('unknown')
+    expect(h.pending.entries).toHaveLength(1)
+    const second = await h.service.start(input())
+    expect(second.linkSaved).toBe(true)
+    expect(h.pending.entries).toEqual([])
+    expect(await h.service.recover(tree)).toBe(0)
+    expect(h.starts().map((row) => row.eventKey)).toEqual([`run:start:${second.attemptId}`])
+    expect(h.stores).toEqual(['save'])
+  })
+  it('S4 다른 작업 — 뒤 작업 링크가 남는다(고침 전: 앞 작업으로 덮음)', async () => {
+    const h = rig()
+    await h.service.start(input({ itemId: 'm-A', itemKey: 'CORE-A' }))
+    await h.service.start(input({ itemId: 'm-B', itemKey: 'CORE-B' }))
+    await h.service.recover(tree)
+    expect(h.links.saved.map((row) => row.link.key)).toEqual(['CORE-B'])
+    expect(h.pending.entries).toEqual([])
+  })
+  it('방어선 — 앞 기록이 남아 있어도(다른 프로세스가 붙임) recover 는 남의 자리 · 같은 작업이 붙인 자리를 덮지 않고 기록만 버린다', async () => {
+    const other: StoredWorkLink = { sourceId: 'mock-jira', connectionId: 'c', itemId: 'm-B', key: 'CORE-B', linkedAt: 1 }
+    const same: StoredWorkLink = { sourceId: 'mock-jira', connectionId: 'c', itemId: 'm-1', key: 'CORE-1', linkedAt: 1 }
+    for (const holder of [other, same, 'suppressed' as const]) {
+      const h = rig({ held: { [PATH]: holder } })
+      await h.service.start(input())
+      expect(h.pending.entries).toHaveLength(1)
+      expect(await h.service.recover(tree)).toBe(0)
+      expect(h.links.saved).toEqual([])
+      expect(h.starts()).toEqual([])
+      expect(h.stores).toEqual([])
+      expect(h.pending.entries).toEqual([])
+    }
+  })
+  it('양성 대조 — 비어 있는 자리면 recover 가 앞 시도로 붙이고 「작업 시작」 1회', async () => {
+    const h = rig()
+    const first = await h.service.start(input())
+    expect(await h.service.recover(tree)).toBe(1)
+    expect(h.links.saved.map((row) => row.link.itemId)).toEqual(['m-1'])
+    expect(h.starts().map((row) => row.eventKey)).toEqual([`run:start:${first.attemptId}`])
+    expect(h.pending.entries).toEqual([])
+  })
+})
+
+describe('R3-C 미확정에서 붙이는 갈래는 남의 명시 링크 · 떼기 예외를 덮지 않는다 (리뷰 재현 claude-r3-raw/scratch-start S2)', () => {
+  const OTHER = { mode: 'explicit' as const, sourceId: 'mock-jira', connectionId: 'c', key: 'CORE-1', itemId: 'm-1', connected: true }
+  const OTHER_STORED: StoredWorkLink = { sourceId: 'mock-jira', connectionId: 'c', key: 'CORE-1', itemId: 'm-1', linkedAt: 1 }
+  /** 시도 전엔 없던 자리를 첫 호출 중에 남이 만든다 — `holder` 가 그 자리에 붙은 것. */
+  function rig({ first, holder }: { first: string; holder: StoredWorkLink | 'suppressed' | null }) {
+    let appeared = false
+    let n = 0
+    const links = fakeLinks()
+    const pending = new MemoryPending()
+    const service = new StartService({
+      invoke: () => async () => {
+        n += 1
+        if (n === 1) { appeared = true; if (holder !== null) links.table.set(PATH, holder); return fail(first) }
+        return fail('already_exists')
+      },
+      repos: () => [testRepo({ root: ROOT, worktrees: appeared ? [testWorktree({ path: PATH, branch: NAME, workLink: holder === OTHER_STORED ? OTHER : null })] : [] })],
+      links: () => links, work: () => null, log: () => {}, cwd: '/', sleep: async () => {}, pending, deadlineMs: 60_000,
+    })
+    return { service, links, pending }
+  }
+  const mine = () => input({ itemId: 'm-new', itemKey: 'CORE-9' })
+  for (const first of ['request_cancelled', 'outcome_unknown']) {
+    for (const [label, holder] of [['다른 작업 명시 링크', OTHER_STORED], ['떼기 예외', 'suppressed']] as const) {
+      it(`${first} 뒤 ${label} 자리 — 덮지 않고 「다른 작업에 붙어 있어」 · 성공 아님 · 기록 0`, async () => {
+        const h = rig({ first, holder })
+        const result = await h.service.start(mine())
+        expect(h.links.saved).toEqual([])
+        expect(h.links.table.get(PATH)).toBe(holder)
+        expect(result).toMatchObject({ worktreePath: null, linkSaved: false })
+        expect(result.stages.worktree).toMatchObject({ status: 'unknown', code: 'held_by_other' })
+        expect(result.stages.worktree.message).toContain('다른 작업에 붙어 있어')
+        expect(h.pending.entries).toEqual([])
+      })
+    }
+    it(`${first} 양성 대조 — 비어 있는 자리는 붙인다`, async () => {
+      const h = rig({ first, holder: null })
+      const result = await h.service.start(mine())
+      expect(h.links.saved.map((row) => row.link.itemId)).toEqual(['m-new'])
+      expect(result).toMatchObject({ worktreePath: PATH, linkSaved: true })
+      expect(result.stages.worktree.status).toBe('unknown')
+      expect(h.pending.entries).toEqual([])
+    })
+    it(`${first} 양성 대조 — 같은 작업 링크면 그대로 붙은 것으로(다시 쓰지 않음)`, async () => {
+      const h = rig({ first, holder: { ...OTHER_STORED, itemId: 'm-new', key: 'CORE-9' } })
+      const result = await h.service.start(mine())
+      expect(h.links.saved).toEqual([])
+      expect(result).toMatchObject({ worktreePath: PATH, linkSaved: true })
+      expect(result.stages.worktree.code).not.toBe('held_by_other')
+      expect(h.pending.entries).toEqual([])
+    })
+  }
+  it('새로 만든(completed) 자리는 지금대로 덮는다', async () => {
+    const links = fakeLinks({ held: { [PATH]: OTHER_STORED } })
+    const service = new StartService({
+      invoke: () => async () => created({}), repos: () => [testRepo({ root: ROOT, worktrees: [] })],
+      links: () => links, work: () => null, log: () => {}, cwd: '/', sleep: async () => {}, pending: new MemoryPending(),
+    })
+    const result = await service.start(mine())
+    expect(result).toMatchObject({ worktreePath: PATH, linkSaved: true })
+    expect(links.saved.map((row) => row.link.itemId)).toEqual(['m-new'])
+  })
+})
+
+describe('R3-H 로컬 링크 저장이 실패한 회차엔 출처 저장을 부르지 않는다 (리뷰 재현 claude-r3-raw/scratch-start S1)', () => {
+  function rig(canSave: () => boolean) {
+    const pending = new MemoryPending()
+    const stores: string[] = []
+    const work: LinkWorkPort = {
+      linkConnections: () => [], repoDefaultConnection: () => null, recordEvent: () => true,
+      storeLink: async ({ action }) => { stores.push(action); return { state: 'saved', message: null } }, refreshEvent: () => false, storeAutoLink: async () => null,
+    }
+    const service = new StartService({
+      invoke: () => async () => created({}), repos: () => [testRepo({ root: ROOT, worktrees: [] })],
+      links: () => fakeLinks({ canSave }), work: () => work, log: () => {}, cwd: '/', sleep: async () => {}, pending,
+    })
+    return { service, pending, stores }
+  }
+  const tree = [testRepo({ root: ROOT, worktrees: [testWorktree({ path: PATH, branch: NAME })] })]
+  it('S1 시작 1 + recover 5 가 모두 실패 → storeLink 0 (고침 전: 6) · 결과 sourceLink null · 기록 유지', async () => {
+    const h = rig(() => false)
+    const result = await h.service.start(input())
+    for (let i = 0; i < 5; i += 1) await h.service.recover(tree)
+    expect(h.stores).toEqual([])
+    expect(result.sourceLink).toBeNull()
+    expect(h.pending.entries).toHaveLength(1)
+  })
+  it('양성 대조 — 실패 뒤 저장이 되는 회차에 한 번만 출처 저장', async () => {
+    let can = false
+    const h = rig(() => can)
+    await h.service.start(input())
+    await h.service.recover(tree)
+    can = true
+    await h.service.recover(tree)
+    await h.service.recover(tree)
+    expect(h.stores).toEqual(['save'])
+    expect(h.pending.entries).toEqual([])
   })
 })
 

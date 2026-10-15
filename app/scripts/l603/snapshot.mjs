@@ -4,10 +4,12 @@
 //   node scripts/l603/snapshot.mjs take <ROOT=/tmp/l603g-*> <out.json> [--expect-links N] [--expect-events N]
 //        # <ROOT>/ud 의 repos.json · work-activity.json · work-start-pending.json 을 정규화. 링크 · 사건이 N 개 미만이면 exit 3(R2-L —
 //        #   둘 다 빈 스냅샷끼리 「같음」 으로 공허하게 통과하지 않게). 기본 N = 1 · 1, 빈 것을 일부러 찍을 때만 0.
+//        #   N 이 0 이상 정수가 아니거나 값이 빠지면 exit 2(R3-D — NaN 비교가 거짓이라 빈 스냅샷이 통과하던 구멍).
 //   node scripts/l603/snapshot.mjs diff <before.json> <after.json>       # 같으면 exit 0, 다르면 exit 1 + 차이 JSON
 //
 // 정규화: worktree 경로별 `workLink`(linkedAt 은 남긴다 — 재시작이 바꾸면 안 된다) · `workLinkSuppressed`, 활동은 `eventKey` 있는 줄만
-//   (eventKey → change) 사전 + 열쇠 기억(`seen`) **집합**(R2-L — 개수만 같고 집합이 다르면 다름), 미확정 시작은 attemptId 목록. 순서·id·시각 칸(at)은 뺀다.
+//   (eventKey → { connectionId, change }) 사전 + 열쇠 기억(`seen`) **`[열쇠, 연결 id]` 쌍 집합**(R2-L · R3-D — 열쇠가 같고 연결 id 만 바뀌어도 다름,
+//   fix1 문자열은 연결 id null), 미확정 시작은 attemptId 목록. 순서·id·시각 칸(at)은 뺀다.
 // 실패 전파: 파일을 못 읽거나 JSON 이 아니면 exit 2 — 「없음 = 같음」 으로 읽지 않는다(없는 파일은 `absent` 로 적고 그 자체가 차이다).
 import fs from 'node:fs'
 import path from 'node:path'
@@ -29,10 +31,11 @@ export function normalize({ registry, activity, pending }) {
   }
   const events = {}
   for (const record of Array.isArray(activity?.records) ? activity.records : []) {
-    if (isRecord(record) && typeof record.eventKey === 'string') events[record.eventKey] = record.change
+    if (isRecord(record) && typeof record.eventKey === 'string') events[record.eventKey] = { connectionId: record.connectionId ?? null, change: record.change }
   }
-  // seen 칸: fix2 `[열쇠, 연결 id]` 쌍 · fix1 문자열 — 둘 다 열쇠 집합으로(정렬).
-  const seen = Array.isArray(activity?.seen) ? [...new Set(activity.seen.map((row) => (Array.isArray(row) ? row[0] : row)).filter((key) => typeof key === 'string'))].sort() : null
+  // seen 칸: fix2 `[열쇠, 연결 id]` 쌍 · fix1 문자열(연결 id null) — 쌍 집합으로(정렬).
+  const pairs = Array.isArray(activity?.seen) ? activity.seen.map((row) => (Array.isArray(row) ? [row[0], typeof row[1] === 'string' ? row[1] : null] : [row, null])).filter(([key]) => typeof key === 'string') : null
+  const seen = pairs === null ? null : [...new Map(pairs.map((pair) => [JSON.stringify(pair), pair])).entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, pair]) => pair)
   const attempts = (Array.isArray(pending?.entries) ? pending.entries : []).map((entry) => entry?.attemptId).filter((id) => typeof id === 'string').sort()
   return { links, events: Object.fromEntries(Object.keys(events).sort().map((key) => [key, events[key]])), seen, pending: attempts }
 }
@@ -52,10 +55,12 @@ export function diff(a, b) {
 
 function main(argv) {
   const [mode, first, second] = argv
-  const flag = (name, fallback) => { const at = argv.indexOf(`--${name}`); return at >= 0 ? Number(argv[at + 1]) : fallback }
+  // 값이 빠졌거나 0 이상 정수가 아니면 null(R3-D) — 호출자가 exit 2.
+  const flag = (name, fallback) => { const at = argv.indexOf(`--${name}`); if (at < 0) return fallback; const raw = argv[at + 1]; return typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : null }
   if (mode === 'take') {
     if (first === undefined || !/^\/tmp\/l603g-[^/.]+$/.test(first) || second === undefined) { console.log(JSON.stringify({ ok: false, code: 'usage' })); return 2 }
     const expectLinks = flag('expect-links', 1), expectEvents = flag('expect-events', 1)
+    if (expectLinks === null || expectEvents === null) { console.log(JSON.stringify({ ok: false, code: 'bad_expect', message: '--expect-links / --expect-events 는 0 이상 정수' })); return 2 }
     const ud = path.join(first, 'ud')
     const files = { registry: readJson(path.join(ud, 'repos.json')), activity: readJson(path.join(ud, 'work-activity.json')), pending: readJson(path.join(ud, 'work-start-pending.json')) }
     const broken = Object.entries(files).filter(([, read]) => read.error !== undefined)

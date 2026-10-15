@@ -20,7 +20,7 @@ import { effortOptions, knownOption, modelOptions } from '../../shared/agent-opt
 import type { StoredWorkLink } from '../../shared/work-link.js'
 import { initialStages, readRelaunchAgentInput, readStartWorkInput, readStartWorkStatusQuery, startWorktreePath, type StartAttemptView, type StartStage, type StartStageName, type StartWorkInput, type StartWorkResult } from '../../shared/work-start.js'
 import type { WorkLinks } from './links.js'
-import type { LinkWorkPort } from './links.js'
+import type { ClaimResult, LinkWorkPort } from './links.js'
 import type { PendingPort, PendingStart } from './start-pending.js'
 import { PENDING_TTL_MS } from './start-pending.js'
 import { sanitizeDraftBody } from '../../shared/terminal-paste.js'
@@ -28,7 +28,7 @@ import { sanitizeDraftBody } from '../../shared/terminal-paste.js'
 export type StartDeps = {
   invoke: () => ((invocation: Invocation, timeoutMs?: number) => Promise<RpcResponse>) | null
   repos: () => RepoRow[]
-  links: () => Pick<WorkLinks, 'saveExplicit'> | null
+  links: () => Pick<WorkLinks, 'saveExplicit' | 'claimExplicit'> | null
   work: () => LinkWorkPort | null
   log: (event: string, data: Record<string, unknown>) => void
   cwd: string
@@ -164,6 +164,8 @@ export class StartService {
     const paths = new Set(repos.flatMap((repo) => repo.worktrees.map((row) => row.path)))
     let linked = 0
     for (const entry of pending.list()) {
+      // 앞 기록이 같은 경로를 확정하며 지웠으면 건너뛴다(R3-A).
+      if (!pending.list().some((row) => row.attemptId === entry.attemptId)) continue
       const live = this.attempts.get(entry.attemptId)
       if (live !== undefined && live.result === null) continue
       if (this.recovering.has(entry.attemptId)) continue
@@ -174,9 +176,11 @@ export class StartService {
       } else if (paths.has(entry.path)) {
         this.recovering.add(entry.attemptId)
         try {
-          const { linkSaved } = await this.link({ input: entry, path: entry.path })
-          this.deps.log('work.start_recovered', { attemptId: entry.attemptId, path: entry.path, linkSaved })
-          if (linkSaved) linked += 1
+          // 이 기록의 시도가 만든 것인지 모르는 자리라 남의 링크 · 떼기 예외 · 다른 시도가 붙인 링크를 덮지 않는다(R3-A·R3-C).
+          const { claim } = await this.link({ input: entry, path: entry.path, claim: true })
+          this.deps.log('work.start_recovered', { attemptId: entry.attemptId, path: entry.path, claim })
+          if (claim === 'saved') linked += 1
+          if (claim === 'held' || claim === 'linked') pending.remove(entry.attemptId)
         } finally {
           this.recovering.delete(entry.attemptId)
         }
@@ -319,14 +323,22 @@ export class StartService {
       path = mapped.path
     }
     // 링크는 새로 만들었거나(completed) 미확정이지만 그 자리에 있을 때(unknown + 경로). 이미 붙은 합류는 다시 적지 않는다.
+    // 미확정 자리는 이 시도가 만든 것인지 모른다 — 남의 링크 · 떼기 예외를 덮지 않는다(R3-C). 새로 만든 자리는 덮는다(이 작업을 하려고 만든 것).
     const linkable = path !== null && (stages.worktree.status === 'completed' || stages.worktree.status === 'unknown')
-    const { linkSaved, sourceLink } = path === null || !linkable ? { linkSaved: stages.worktree.code === 'already_linked', sourceLink: null } : await this.link({ input, path })
-    if (linkable && !linkSaved) {
+    const claim = stages.worktree.status === 'unknown'
+    const linked = path === null || !linkable ? { linkSaved: stages.worktree.code === 'already_linked', sourceLink: null, claim: null } : await this.link({ input, path, claim })
+    const { linkSaved, sourceLink } = linked
+    const held = linked.claim === 'held'
+    if (held) {
+      // 다른 작업에 붙은(또는 떼기 예외인) 자리 — 이 작업에 붙이지 않고 성공으로도 그리지 않는다. 기록도 버린다(다시 봐도 같은 자리).
+      stages = { ...stages, worktree: stage('unknown', 'held_by_other', '이 이름의 worktree 는 다른 작업에 붙어 있어(또는 떼어 둔 자리라) 이 작업에 붙이지 않았습니다.') }
+      path = null
+    } else if (linkable && !linkSaved) {
       // 링크 저장 실패(R2-B) — 성공으로 그리지 않고, 미확정 기록을 남겨 다음 `recover` 가 다시 붙인다.
       stages = { ...stages, worktree: stage(stages.worktree.status, 'link_failed', '이 작업에 링크를 저장하지 못했습니다 — 다음 상태 갱신 때 다시 붙입니다.') }
     }
     // 기록을 남기는 경우: 미확정인데 시도 전엔 없던 자리라 나중에 나타날 수 있음 · 링크 저장 실패. 그 밖엔 지운다.
-    const keep = (stages.worktree.status === 'unknown' && path === null && !preexisting) || (linkable && !linkSaved)
+    const keep = !held && ((stages.worktree.status === 'unknown' && path === null && !preexisting) || (linkable && !linkSaved))
     if (!keep) this.deps.pending?.remove(input.attemptId)
     const result: StartWorkResult = { attemptId: input.attemptId, joined: false, done: true, stages, worktreePath: path, linkSaved, sourceLink, refused: null }
     this.deps.log('work.start_done', { attemptId: input.attemptId, stages: Object.fromEntries(Object.entries(stages).map(([key, value]) => [key, value.status])), linkSaved, sourceLink: sourceLink?.state ?? null })
@@ -339,18 +351,32 @@ export class StartService {
     return link !== null && link.mode === 'explicit' && link.connectionId === input.connectionId && link.itemId === input.itemId
   }
 
-  private async link({ input, path }: { input: LinkInput; path: string }): Promise<{ linkSaved: boolean; sourceLink: StartWorkResult['sourceLink'] }> {
+  /**
+   * 링크 · 「작업 시작」 활동 · 출처 링크. `claim` 이면 비어 있는 자리에만 쓴다(`claimExplicit` — R3-A·R3-C):
+   * 남의 자리(`held`)와 다른 시도가 이미 붙인 자리(`linked`)는 활동 · 출처 저장 없이 끝낸다(같은 작업의 「작업 시작」 이 두 번 남지 않게).
+   * 링크를 확정하면 같은 경로의 다른 미확정 기록도 지운다(R3-A). 로컬 링크를 저장하지 못한 회차엔 출처 저장을 부르지 않는다(R3-H).
+   */
+  private async link({ input, path, claim }: { input: LinkInput; path: string; claim: boolean }): Promise<{ linkSaved: boolean; sourceLink: StartWorkResult['sourceLink']; claim: ClaimResult | null }> {
     const stored: StoredWorkLink = { sourceId: input.sourceId, connectionId: input.connectionId, itemId: input.itemId, key: input.itemKey, linkedAt: this.now() }
-    const linkSaved = this.deps.links()?.saveExplicit({ path, link: stored }) ?? false
+    const links = this.deps.links()
+    const result: ClaimResult = links === null ? 'failed' : claim ? links.claimExplicit({ path, link: stored }) : links.saveExplicit({ path, link: stored }) ? 'saved' : 'failed'
+    if (result === 'held' || result === 'linked') {
+      this.deps.log('work.start_link_claim', { attemptId: input.attemptId, path, claim: result })
+      return { linkSaved: result === 'linked', sourceLink: null, claim: result }
+    }
+    const linkSaved = result === 'saved'
     const work = this.deps.work()
     work?.recordEvent({
       connectionId: input.connectionId, itemId: input.itemId, itemKey: input.itemKey, eventKey: `run:start:${input.attemptId}`,
       change: { field: 'run', event: 'start', worktree: path, branch: input.name, agent: input.agent, model: input.agent === 'shell' || input.model === '' ? null : input.model },
     })
-    // 링크와 활동을 적었으면 미확정 기록은 끝 — 출처 저장 결과와 무관(출처 실패는 결과에 보인다).
-    if (linkSaved) this.deps.pending?.remove(input.attemptId)
-    const sourceLink = work === null ? null : await work.storeLink({ connectionId: input.connectionId, itemId: input.itemId, link: { kind: 'worktree', path, repoRoot: input.repoRoot }, action: 'save' })
-    return { linkSaved, sourceLink }
+    if (linkSaved) {
+      // 링크와 활동을 적었으면 미확정 기록은 끝 — 출처 저장 결과와 무관(출처 실패는 결과에 보인다). 같은 경로의 앞 시도 기록도 끝이다(R3-A).
+      const pending = this.deps.pending
+      for (const row of pending?.list() ?? []) if (row.attemptId === input.attemptId || row.path === path) pending?.remove(row.attemptId)
+    }
+    const sourceLink = work === null || !linkSaved ? null : await work.storeLink({ connectionId: input.connectionId, itemId: input.itemId, link: { kind: 'worktree', path, repoRoot: input.repoRoot }, action: 'save' })
+    return { linkSaved, sourceLink, claim: claim ? result : null }
   }
 }
 

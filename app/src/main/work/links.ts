@@ -17,6 +17,9 @@ import { resolveWorkLink, type LinkConnection, type StoredWorkLink, type Worktre
 import type { StartSourceLink } from '../../shared/work-start.js'
 import type { DroppedLink, WorktreeMetadataRecord } from '../registry.js'
 
+/** 미확정 시작의 붙이기 결과(R3-A·R3-C) — `claimExplicit`. */
+export type ClaimResult = 'saved' | 'linked' | 'held' | 'failed'
+
 export type LinkRegistryPort = {
   metadata(): Record<string, WorktreeMetadataRecord>
   droppedLinks(): DroppedLink[]
@@ -90,7 +93,7 @@ export class WorkLinks {
   private droppedSeen = ''
   /** 출처 저장을 기다리는 자동 연결(R1-I) — 열쇠 = 사건 열쇠. 메모리만(재시작하면 그 회차는 출처에 안 남는다 — 설계 메모 §4). */
   /** 본문 없는 질문 대기를 처음 본 시각 — 열쇠 = 사건 열쇠(R2-C). */
-  private readonly noBodySince = new Map<string, number>()
+  private readonly noBodySince = new Map<string, { since: number; recorded: boolean }>()
   private lastRepos: RepoRow[] | null = null
   /** 세대 캐시 — 트리에서 사라진 경로는 지운다(다시 나타나면 새로 읽는다). */
   private readonly generations = new Map<string, string | null>()
@@ -158,6 +161,30 @@ export class WorkLinks {
   }
 
   /**
+   * 미확정 시작에서 붙이기(R3-A·R3-C) — 이 시도가 만든 것인지 모르는 자리라 남의 것을 덮지 않는다. 잠금 안에서 보고 쓴다.
+   * - `held`: 다른 작업의 명시 링크 · 떼기 예외가 있다 — 쓰지 않는다.
+   * - `linked`: 같은 작업의 명시 링크가 이미 있다 — 쓰지 않는다(다른 시도가 붙였다).
+   * - `saved` / `failed`: 비어 있어 썼다 / 쓰지 못했다.
+   */
+  claimExplicit({ path, link }: { path: string; link: StoredWorkLink }): ClaimResult {
+    const registry = this.deps.registry()
+    if (registry === null) return 'failed'
+    try {
+      return registry.change((data): ClaimResult => {
+        const current = data.worktrees[path] ?? {}
+        const existing = current.workLink ?? null
+        if (existing !== null) return existing.connectionId === link.connectionId && existing.itemId === link.itemId ? 'linked' : 'held'
+        if (current.workLinkSuppressed === true) return 'held'
+        data.worktrees[path] = { ...current, workLink: link, workLinkSuppressed: false }
+        return 'saved'
+      })
+    } catch (error) {
+      this.deps.log('work.link_save_failed', { path, error: String(error) })
+      return 'failed'
+    }
+  }
+
+  /**
    * 사이드바 「작업 떼기」 — 명시 링크면 지우고, 어느 쪽이든 그 worktree 를 자동 연결 예외로 둔다(명시 링크를 지운 뒤 브랜치 키로 다시 붙지 않게).
    * 실행 갈래에 「떼기」 를 남기고, 출처가 링크를 저장하는 능력이 있으면 출처의 링크도 지운다(실패해도 로컬 떼기는 그대로).
    */
@@ -215,7 +242,8 @@ export class WorkLinks {
     }
     // 사라진 대기(답했거나 본문이 왔다)는 잊는다. 아직 기다리는 것이 있으면 창이 지난 뒤 한 번 더 본다 — 트리가 안 바뀌어도 남게.
     for (const key of [...this.noBodySince.keys()]) if (!waiting.has(key)) this.noBodySince.delete(key)
-    if (this.noBodySince.size > 0 && !this.settleArmed) {
+    // 이미 「본문 없음」 을 남긴 대기는 다시 볼 것이 없다 — 타이머를 다시 걸지 않는다(R3-F).
+    if ([...this.noBodySince.values()].some((entry) => !entry.recorded) && !this.settleArmed) {
       this.settleArmed = true
       const schedule = this.deps.schedule ?? ((run: () => void, ms: number) => { setTimeout(run, ms).unref?.() })
       schedule(() => { this.settleArmed = false; if (this.lastRepos !== null) this.observe(this.lastRepos) }, QUESTION_SETTLE_MS)
@@ -275,9 +303,12 @@ export class WorkLinks {
         const pendingKey = `${scope}:${session}:${pane.paneId}`
         waiting.add(pendingKey)
         const now = (this.deps.now ?? Date.now)()
-        const since = this.noBodySince.get(pendingKey) ?? now
-        this.noBodySince.set(pendingKey, since)
-        if (now - since < QUESTION_SETTLE_MS) return this.observeOutcome({ pane, worktree, scope, session, record, refresh })
+        const since = this.noBodySince.get(pendingKey)?.since ?? now
+        if (now - since < QUESTION_SETTLE_MS) {
+          this.noBodySince.set(pendingKey, { since, recorded: false })
+          return this.observeOutcome({ pane, worktree, scope, session, record, refresh })
+        }
+        this.noBodySince.set(pendingKey, { since, recorded: true })
       }
       record(eventKey, {
         field: 'agent', event: 'question', agent: pane.agent, worktree: worktree.path, question: text, noBody: reason,

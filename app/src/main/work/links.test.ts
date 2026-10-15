@@ -141,6 +141,30 @@ describe('떼기 — 자동 연결 예외 (C9)', () => {
   })
 })
 
+describe('R3-A·R3-C claimExplicit — 실제 레지스트리 위에서 남의 자리를 덮지 않는다', () => {
+  const OTHER: StoredWorkLink = { ...LINK, itemId: 'uuid-other', key: 'LIFE-9' }
+  it('빈 자리 saved · 같은 작업 linked(쓰지 않음) · 다른 작업 held · 떼기 예외 held — 기존 값 그대로', async () => {
+    const { registry } = tempRegistry()
+    const links = new WorkLinks({ registry, work: () => fakeWork(), log: () => {} })
+    expect(links.claimExplicit({ path: '/r/a', link: LINK })).toBe('saved')
+    expect(registry().metadata()['/r/a']).toEqual({ workLink: LINK, workLinkSuppressed: false })
+    expect(links.claimExplicit({ path: '/r/a', link: { ...LINK, linkedAt: 5 } })).toBe('linked')
+    expect(registry().metadata()['/r/a']?.workLink).toEqual(LINK)
+    expect(links.claimExplicit({ path: '/r/a', link: OTHER })).toBe('held')
+    expect(registry().metadata()['/r/a']?.workLink).toEqual(LINK)
+    links.saveExplicit({ path: '/r/b', link: OTHER })
+    await links.detach({ worktree: testWorktree({ path: '/r/b', branch: 'scratch' }), repoRoot: '/r' })
+    expect(links.claimExplicit({ path: '/r/b', link: LINK })).toBe('held')
+    expect(registry().metadata()['/r/b']).toEqual({ workLinkSuppressed: true })
+    // 대조: saveExplicit(새로 만든 자리)은 지금대로 덮는다.
+    expect(links.saveExplicit({ path: '/r/b', link: LINK })).toBe(true)
+    expect(registry().metadata()['/r/b']).toEqual({ workLink: LINK, workLinkSuppressed: false })
+  })
+  it('레지스트리가 없으면 failed', () => {
+    expect(new WorkLinks({ registry: () => null, work: () => null, log: () => {} }).claimExplicit({ path: '/r/a', link: LINK })).toBe('failed')
+  })
+})
+
 describe('사건 기록 — 같은 사건은 한 번 (C13)', () => {
   const QUESTION = [{ question: '이 파일을 지울까요?', header: null, options: [{ label: 'Yes', description: null }], multiSelect: false }]
   const linked = (panes: ReturnType<typeof testPane>[]) => [testRepo({ root: '/r', worktrees: [testWorktree({ path: '/r/wt', branch: 'LIFE-603-start', panes, git: { unstaged: 2, untracked: 1 } })] })]
@@ -304,6 +328,53 @@ describe('R2-C 질문 상태가 본문보다 먼저 와도 한 질문 = 한 줄 
     clock += QUESTION_SETTLE_MS
     links.observe(links.annotate(tree(testDigest({ questions: null, lastActivityAt: 10 }))))
     expect(agentRows(work)).toHaveLength(1)
+  })
+})
+
+describe('R3-F 「본문 없음」 을 남긴 대기는 타이머를 다시 걸지 않는다 · 창 뒤 본문은 두 줄(설계 메모 §10 대가) (리뷰 재현 grok-r3-raw/late-body.test.ts)', () => {
+  const asked = [{ question: '지울까요?', header: null, options: [], multiSelect: null }]
+  const tree = (questions: typeof asked | null) => [testRepo({ root: '/r', worktrees: [testWorktree({ path: '/r/wt', branch: 'LIFE-603-x', panes: [testPane({ paneId: 'p', status: 'blocked', reason: 'question', digest: testDigest({ questions, lastActivityAt: 10 }) })] })] })]
+  function rig() {
+    const { registry } = tempRegistry()
+    const work = fakeWork()
+    let clock = 0
+    const timers: (() => void)[] = []
+    const links = new WorkLinks({ registry, work: () => work, log: () => {}, now: () => clock, schedule: (run) => { timers.push(run) } })
+    const rows = () => work.activity.records.map((record) => record.change).filter((change) => change.field === 'agent')
+    return { links, timers, rows, tick: (ms: number) => { clock += ms } }
+  }
+  it('창 안 — 타이머 1, 창 뒤 콜백이 「본문 없음」 을 남기면 다시 걸지 않는다(고침 전: 대기 동안 3초마다)', () => {
+    const h = rig()
+    h.links.observe(h.links.annotate(tree(null)))
+    expect(h.rows()).toEqual([])
+    expect(h.timers).toHaveLength(1)
+    h.tick(QUESTION_SETTLE_MS)
+    h.timers.shift()?.()
+    expect(h.rows()).toEqual([expect.objectContaining({ question: null })])
+    expect(h.timers).toHaveLength(0)
+    // 대기가 이어져 상태가 몇 번 더 와도 줄도 타이머도 늘지 않는다.
+    for (let i = 0; i < 3; i += 1) { h.tick(QUESTION_SETTLE_MS); h.links.observe(h.links.annotate(tree(null))) }
+    expect(h.rows()).toHaveLength(1)
+    expect(h.timers).toHaveLength(0)
+  })
+  it('창 뒤 본문 — 「본문 없음」 줄 + 본문 줄 두 줄로 고정(그때 본 것을 지우지 않는다), 타이머 0', () => {
+    const h = rig()
+    h.links.observe(h.links.annotate(tree(null)))
+    h.tick(QUESTION_SETTLE_MS)
+    h.timers.shift()?.()
+    h.links.observe(h.links.annotate(tree(asked)))
+    expect(h.rows()).toEqual([expect.objectContaining({ question: null }), expect.objectContaining({ question: '지울까요?', noBody: null })])
+    expect(h.timers).toHaveLength(0)
+  })
+  it('양성 대조 — 대기가 끝난 뒤 새 본문 없는 대기는 다시 창을 센다(타이머 1)', () => {
+    const h = rig()
+    h.links.observe(h.links.annotate(tree(null)))
+    h.tick(QUESTION_SETTLE_MS)
+    h.timers.shift()?.()
+    h.links.observe(h.links.annotate([testRepo({ root: '/r', worktrees: [testWorktree({ path: '/r/wt', branch: 'LIFE-603-x', panes: [testPane({ paneId: 'p', status: 'working', digest: testDigest({ lastActivityAt: 20 }) })] })] })]))
+    expect(h.timers).toHaveLength(0)
+    h.links.observe(h.links.annotate(tree(null)))
+    expect(h.timers).toHaveLength(1)
   })
 })
 

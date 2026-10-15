@@ -2,6 +2,8 @@
 # LIFE-593 수정 r2 — 느린 git shim(격리 회차 전용). `ls-files` 만 느리게: 자기 pid·손주 pid 를 L593_SHIM_PIDS 에 적고, 손주(SIGTERM 무시 sleep)를 띄워 기다린다.
 # 자신도 SIGTERM 을 무시한다 — 그룹 SIGKILL 만 끝낼 수 있다. 그 밖의 git 명령은 /usr/bin/git 으로 넘긴다.
 case "$*" in *ls-files*) ;; *) exec /usr/bin/git "$@" ;; esac
+# 최종 관문 E6ⓕ — L593_SHIM_ONLY 가 있으면 그 글자가 든 호출만 느리게(예: --ignored = 무시 파일 목록만 시간 초과로), 나머지는 /usr/bin/git.
+if [ -n "${L593_SHIM_ONLY:-}" ]; then case "$*" in *"$L593_SHIM_ONLY"*) ;; *) exec /usr/bin/git "$@" ;; esac; fi
 P=${L593_SHIM_PIDS:?L593_SHIM_PIDS 필요}
 echo "$$ git $*" >> "$P"
 sh -c "trap '' TERM; exec sleep 120" &

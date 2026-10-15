@@ -1,4 +1,7 @@
 // LIFE-593 사본(l592/latency.mjs → 루트 /tmp/l593g-* 만 바꿈). E7ⓔ 「전」(기준 빌드 A 단계)·최종 관문 A/B 에 쓴다
+// LIFE-593 최종 관문 E7ⓔ — 여섯째 칸 `f5` = `quick`(⌘P 직후: 회차마다 측정 직전 ⌘P → 목록 준비 → 질의 → Esc) · `filter`(이름 필터 입력 중: 탐색기 열림 + 필터 열고
+//   측정 동안 0.25~0.35 s 마다 필터 입력칸 값을 DOM setter 로 바꾼다 — 포커스는 터미널에 둔 채). 판정 B 조건 = quick 은 회차마다 ⌘P 준비 확인, filter 는 필터 변경 ≥ 2회/초.
+//   예: --plan a:closed:off:off,b:closed:off:off::quick,c:open:off:off::filter --a a --b b
 // LIFE-592 E10ⓓ(최종 관문) — 다섯째 칸 `op` = **탐색기 열림 + 조작 직후**: 측정 직전 탐색기 조작 4회(실제 창 → preload → ipcMain `explorerOp` — 새 파일·이름 변경)를 몰아서 하고
 //   측정 동안에도 0.8~1.2 s 마다 1회씩 계속한다(레포 `l593-lat/`). 판정 B 조건 = 탐색기 열림 + 측정 구간 조작 ≥ 0.5회/초. 예: --plan a:closed:off:off,b:open:off:off:op --a a --b b
 //   글자 주입 전 Shift keyDown 하나(main 이 막은 keyDown 뒤 char 버림 — residual.md 하네스 주의) · 측정 전 터미널 화면 클릭으로 xterm 포커스 확인(`focusTerm` —
@@ -39,8 +42,8 @@ const root = values.root
 const rounds = Number(values.rounds)
 const sampleCount = Number(values.samples)
 const steps = values.plan.split(',').map((text) => {
-  const [name, explorer, drive, file, op] = text.split(':')
-  return { name, explorer: explorer === 'open', drive: drive === 'on', file: file === 'on' || file === 'dirty', dirty: file === 'dirty', op: op === 'op' }
+  const [name, explorer, drive, file, op, f5] = text.split(':')
+  return { name, explorer: explorer === 'open', drive: drive === 'on', file: file === 'on' || file === 'dirty', dirty: file === 'dirty', op: op === 'op', f5: f5 === 'quick' || f5 === 'filter' ? f5 : null }
 })
 
 const termRead = async () => (await ctl(root, { cmd: 'term-read' })).term
@@ -191,6 +194,43 @@ function opDriver() {
   return { ops, stop: async () => { stop = true; await done } }
 }
 
+/** E7ⓔ B(quick) — ⌘P → 목록 준비(ready) → 질의 → Esc. 준비까지 ms 를 돌려준다. */
+async function quickOnce() {
+  await ctl(root, { cmd: 'key', keyCode: 'Shift' })
+  const t0 = Date.now()
+  await ctl(root, { cmd: 'key', keyCode: 'P', modifiers: ['meta'] })
+  await until(async () => (await evalJs(root, `document.querySelector('[data-quick-open]')?.dataset.quickOpenState ?? null`)) === 'ready', { timeoutMs: 15_000, label: '⌘P 준비' })
+  const readyMs = Date.now() - t0
+  await ctl(root, { cmd: 'type', text: 'l593' })
+  await sleep(300)
+  await ctl(root, { cmd: 'key', keyCode: 'Escape' })
+  await until(async () => !(await evalJs(root, `!!document.querySelector('[data-quick-open]')`)), { timeoutMs: 5_000, label: '⌘P 닫힘' })
+  return readyMs
+}
+/** E7ⓔ B(filter) — 필터를 열고(툴바 단추) 질의를 넣어 걸러진 트리가 보일 때까지. */
+async function ensureFilter() {
+  if (!(await evalJs(root, `!!document.querySelector('[data-explorer-filter-input]')`))) await until(async () => (await ctl(root, { cmd: 'click', selector: '[data-explorer-filter-toggle]' })).ok === true, { label: '필터 단추' })
+  await until(async () => evalJs(root, `!!document.querySelector('[data-explorer-filter-input]')`), { label: '필터 입력칸' })
+  await setFilterText('needle')
+  await until(async () => evalJs(root, `/개|일치 없음/.test(document.querySelector('[data-explorer-filter-status]')?.textContent ?? '')`), { timeoutMs: 15_000, label: '필터 결과' })
+  return true
+}
+const setFilterText = (value) => evalJs(root, `(() => { const el = document.querySelector('[data-explorer-filter-input]'); if (el === null) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(value)}); el.dispatchEvent(new Event('input', { bubbles: true })); return true })()`)
+function filterDriver() {
+  const changes = []
+  let stop = false
+  const words = ['needle', 'needl', 'need', 'l593', 'l593-n', 'needle']
+  const done = (async () => {
+    let i = 0
+    while (!stop) {
+      if (await setFilterText(words[i % words.length])) changes.push(Date.now())
+      i += 1
+      await sleep(250 + Math.floor(Math.random() * 100))
+    }
+  })()
+  return { changes, stop: async () => { stop = true; await done } }
+}
+
 /**
  * 터미널에 키 포커스 — 탭 클릭(attach)은 이미 활성인 탭이면 포커스를 옮기지 않는다. `⌘⇧E`(탐색기 보이기)가 트리에 포커스를 준 뒤엔 글자가 트리로 간다
  * (F28 회차 3 b·기준 B07 회차 3 b 놓침 36 — dev27 진단: activeElement = explorer-tree). 측정 전 터미널 화면을 눌러 xterm 입력칸 포커스를 확인한다.
@@ -257,6 +297,10 @@ try {
         fs.mkdirSync(path.join(repo, 'l593-lat'), { recursive: true })
         for (let i = 0; i < 4; i += 1) await explorerOpOnce()
       }
+      const quickReadyMs = step.f5 === 'quick' ? await quickOnce() : null
+      const filterOpen = step.f5 === 'filter' ? await ensureFilter() : null
+      if (step.f5 === 'quick' || step.f5 === 'filter') await attach(paneId)
+      const filterDrive = step.f5 === 'filter' ? filterDriver() : null
       const opDrive = step.op ? opDriver() : null
       const drive = step.drive ? driver(driveDir) : null
       const fileDrive = step.file && !step.dirty ? fileDriver(path.join(repo, BIG)) : null
@@ -271,11 +315,13 @@ try {
         const changesInWindow = drive === null ? 0 : drive.changes.filter((at) => at >= windowStart && at <= windowEnd).length
         const fileChangesInWindow = fileDrive === null ? 0 : fileDrive.changes.filter((at) => at >= windowStart && at <= windowEnd).length
         const opsInWindow = opDrive === null ? 0 : opDrive.ops.filter((at) => at >= windowStart && at <= windowEnd).length
+        const filterChangesInWindow = filterDrive === null ? 0 : filterDrive.changes.filter((at) => at >= windowStart && at <= windowEnd).length
         const fileUpdated = step.file && !step.dirty ? await evalJs(root, `Number(document.querySelector('[data-file-view="${BIG}"] [data-file-editor]')?.dataset.editorUpdated ?? 0) >= ${windowStart}`) : null
-        const row = { round: r, step: step.name, explorer: step.explorer, drive: step.drive, driveExpanded: driveView.expanded, driveReflectMs: driveView.reflectMs, windowStart, windowEnd, changesPerSec: Math.round((changesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, file: step.file, fileTabOpen, fileDirty: step.dirty ? await tabDirty() : null, fileDirtyBefore: fileDirty, fileChangesPerSec: Math.round((fileChangesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, fileUpdated, terminalFocused, op: step.op, opsPerSec: Math.round((opsInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, loopDelay, ...summary(samples), samples }
+        const row = { round: r, step: step.name, explorer: step.explorer, drive: step.drive, driveExpanded: driveView.expanded, driveReflectMs: driveView.reflectMs, windowStart, windowEnd, changesPerSec: Math.round((changesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, file: step.file, fileTabOpen, fileDirty: step.dirty ? await tabDirty() : null, fileDirtyBefore: fileDirty, fileChangesPerSec: Math.round((fileChangesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, fileUpdated, terminalFocused, op: step.op, opsPerSec: Math.round((opsInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, f5: step.f5, quickReadyMs, filterOpen, filterChangesPerSec: Math.round((filterChangesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, loopDelay, ...summary(samples), samples }
         rows.push(row)
         console.log(`회차 ${r} ${step.name} p50 ${row.p50} p95 ${row.p95} 놓침 ${row.misses} 루프 p99 ${loopDelay?.p99} 변경 ${row.changesPerSec}/s`)
       } finally {
+        if (filterDrive !== null) await filterDrive.stop()
         if (opDrive !== null) await opDrive.stop()
         if (drive !== null) await drive.stop()
         if (fileDrive !== null) await fileDrive.stop()
@@ -311,9 +357,19 @@ function judge(aName, bName) {
   if (aStep === undefined || bStep === undefined) problems.push('A/B 단계 이름이 계획에 없다')
   else {
     if (aStep.explorer || aStep.file) problems.push(`A(${aName}) 는 탐색기 닫힘·파일 탭 없음이어야 한다`)
-    if (!bStep.file && (!bStep.explorer || (!bStep.drive && !bStep.op))) problems.push(`B(${bName}) 는 탐색기 열림 + drive on·op, 또는 file on 이어야 한다`)
+    if (bStep.f5 === 'filter' && !bStep.explorer) problems.push(`B(${bName}) filter 는 탐색기 열림이어야 한다`)
+    if (bStep.f5 === null && !bStep.file && (!bStep.explorer || (!bStep.drive && !bStep.op))) problems.push(`B(${bName}) 는 탐색기 열림 + drive on·op, 또는 file on, 또는 f5 quick·filter 여야 한다`)
   }
   for (const row of stepRows(bName)) {
+    if (bStep?.f5 === 'quick') {
+      if (!Number.isFinite(row.quickReadyMs)) problems.push(`B 회차 ${row.round} ⌘P 준비 확인 없음`)
+      continue
+    }
+    if (bStep?.f5 === 'filter') {
+      if (row.filterOpen !== true) problems.push(`B 회차 ${row.round} 필터 안 열림`)
+      if (row.filterChangesPerSec < 2) problems.push(`B 회차 ${row.round} 필터 변경 ${row.filterChangesPerSec}/s < 2`)
+      continue
+    }
     if (bStep?.dirty) {
       if (!row.fileTabOpen) problems.push(`B 회차 ${row.round} 1 MB 파일 탭 없음`)
       if (row.fileDirty !== true) problems.push(`B 회차 ${row.round} 측정 끝에 수정 표시 없음`)

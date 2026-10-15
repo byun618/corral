@@ -547,3 +547,45 @@ describe('수정 r3 — skip-worktree 디스크 확인을 덩이로(R3-C-01·R3-
     expect({ maxInFlight, ticks, bounded: maxInFlight <= CHUNK, yielded: ticks >= Math.floor(COUNT / CHUNK) - 1 }).toMatchObject({ bounded: true, yielded: true })
   })
 })
+
+describe('최종 관문 — 추적 중인 링크 디스크 확인도 덩이로(리뷰 r4 R4-C-01)', () => {
+  const COUNT = 257
+  const CHUNK = 256
+  let links = ''
+  /** 짝수 = 폴더 링크(빠짐), 홀수 = 파일 링크(남음). 마지막(256)은 둘째 덩이에 들어가는 폴더 링크다. */
+  const relOf = (index: number): string => `l/link${index}`
+  beforeAll(() => {
+    links = path.join(base, 'links')
+    fs.mkdirSync(path.join(links, 'l'), { recursive: true })
+    fs.mkdirSync(path.join(links, 'target-dir'))
+    fs.writeFileSync(path.join(links, 'target.txt'), 't')
+    git(['init', '-q'], links)
+    for (let index = 0; index < COUNT; index += 1) fs.symlinkSync(index % 2 === 0 ? '../target-dir' : '../target.txt', path.join(links, relOf(index)))
+    git(['add', '.'], links)
+    git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], links)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+  it('링크 257개(덩이 경계를 넘음) — 폴더 링크만 빠지고 파일 링크는 남는다(둘째 덩이 포함)', async () => {
+    const all = Array.from({ length: COUNT }, (_, index) => relOf(index))
+    const drop = await notOnDiskAsFiles({ realRoot: links, links: all, skipped: [], signal: new AbortController().signal })
+    expect([...drop].sort()).toEqual(all.filter((_, index) => index % 2 === 0).sort())
+    expect(drop.has(relOf(256))).toBe(true)
+    const result = await lister(() => [links]).list({ root: links, includeIgnored: false, requestId: 'r4-links' })
+    expect(new Set(filesOf(result))).toEqual(new Set(['target.txt', ...all.filter((_, index) => index % 2 === 1)]))
+  })
+  it('링크 257개 실행 중 취소 — 첫 stat 뒤 다음 틱에 취소하면 둘째 덩이를 보지 않고 cancelled', async () => {
+    const one = lister(() => [links])
+    let calls = 0
+    vi.spyOn(fs.promises, 'stat').mockImplementation(async () => {
+      calls += 1
+      if (calls === 1) setImmediate(() => one.cancel('r4-cancel'))
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    })
+    const result = await one.list({ root: links, includeIgnored: false, requestId: 'r4-cancel' })
+    expect(result).toMatchObject({ ok: false, code: 'cancelled' })
+    expect(calls).toBeGreaterThan(0)
+    expect(calls).toBeLessThanOrEqual(CHUNK)
+  })
+})

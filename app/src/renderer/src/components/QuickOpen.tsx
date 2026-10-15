@@ -74,6 +74,17 @@ function Row({ row, index, selected, onOpen }: { row: QuickOpenRow; index: numbe
   )
 }
 
+/** 포커스가 대화상자 안의 켜진 요소에 있다(꺼진 입력칸에 남은 포커스는 밖으로 본다). */
+function focusInside(dialog: HTMLElement | null): boolean {
+  const active = document.activeElement
+  return dialog !== null && active !== null && dialog.contains(active) && !active.matches(':disabled')
+}
+
+/** 옮기지 않을 포커스 — 대화상자 안 켜진 요소 중 컨테이너가 아닌 것(사용자가 둔 자리). */
+function focusKept(dialog: HTMLElement | null): boolean {
+  return focusInside(dialog) && document.activeElement !== dialog
+}
+
 export function QuickOpen({
   root,
   recent,
@@ -106,8 +117,26 @@ export function QuickOpen({
   /** 결과가 따라잡기 전에 누른 Enter — 그때의 질의·선택 위치. 그 질의의 결과가 오면 연다, 질의가 바뀌면 버린다. */
   const pendingEnter = useRef<{ query: string; index: number } | null>(null)
   useAnnounceDialog()
+  const noRoot = root === null
   // D1 — 열린 worktree 가 없으면 입력칸·토글이 꺼져 있어 포커스를 못 받는다. 그때는 대화상자 자체가 받아 Esc·키가 여기서 멈춘다.
-  useEffect(() => (root === null ? dialog.current : input.current)?.focus(), [])
+  // R5-C-01·02 — 열린 동안 root 가 값 ↔ null 로 바뀌어도 다시 맞춘다. 대화상자 안 켜진 요소(토글 등)에 있는 포커스는 빼앗지 않는다.
+  useEffect(() => {
+    if (focusKept(dialog.current)) return
+    ;(noRoot ? dialog.current : input.current)?.focus()
+  }, [noRoot])
+  // R5-C-01 — 포커스가 대화상자 밖(BODY 등)으로 떨어져도 Esc 로 닫는다. 안에 있으면 대화상자 onKeyDown 이 받는다(조합 판정 그대로).
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229 || focusInside(dialog.current)) return
+      event.preventDefault()
+      event.stopPropagation()
+      closeRef.current(true)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [])
 
   useEffect(() => {
     if (root === null) return

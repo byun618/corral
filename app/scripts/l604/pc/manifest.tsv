@@ -1,0 +1,9 @@
+# LIFE-604 양성 대조 목록 — 탭 구분: 이름 · vitest 파일(공백 구분, app/ 기준) · -t 패턴(없으면 빈 칸).
+# 패치 = pc/<이름>.patch, 기대 실패 시험 = expect/<이름>.txt. quick.sh 가 positive-control.sh 로 돌리고 실패 목록이 기대와 같아야 통과.
+p01-overlay-guard	src/renderer/src/components/TasksPage.start.test.tsx src/renderer/src/components/TasksPage.create.test.tsx	F10|페이지 키
+pc-a-reread-fallback	src/main/work/create.test.ts	R1-A
+pc-a-unknown-outcome	src/main/work/create.test.ts	R1-A
+pc-a-renderer-unknown	src/renderer/src/components/TasksPage.create.test.tsx	R1-A
+pc-b-refresh	src/renderer/src/components/TasksPage.create.test.tsx	R1-B
+pc-b-both	src/renderer/src/components/TasksPage.create.test.tsx	R1-B
+pc-f-draft-discard	src/renderer/src/hooks/useQuickCreate.test.tsx	

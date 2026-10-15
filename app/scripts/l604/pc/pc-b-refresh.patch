@@ -1,0 +1,13 @@
+diff --git a/app/src/renderer/src/hooks/useTasksPage.ts b/app/src/renderer/src/hooks/useTasksPage.ts
+index bc99a5043..bddbc5b13 100644
+--- a/app/src/renderer/src/hooks/useTasksPage.ts
++++ b/app/src/renderer/src/hooks/useTasksPage.ts
+@@ -507,7 +507,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes
+       return [{ ...result.data, items: withCreated({ data: { ...result.data, items: replayed }, created: createdRef.current }) }]
+     })
+     setLoad({ spaceId: id, phase: error === null ? 'ready' : 'error', data, error, loadingMore: false })
+-    void refreshCreated(data)
++    void refreshCreated
+   }, [space, targets, gate, currentGeneration, refreshCreated])
+   reloadRef.current = reload
+ 

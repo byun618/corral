@@ -1,0 +1,6 @@
+# pc-a-unknown-outcome — 가드를 뺀 사본에서 실패해야 하는 시험(raw/claude/f1/pc/pc-a-unknown-outcome.txt 에서 뽑음)
+src/main/work/create.test.ts > LA 만들기 결과를 모를 때 (R1-A) > unknownWriteOutcome — network·invalid_response 만, unsent 면 그대로
+src/main/work/create.test.ts > LA 만들기 결과를 모를 때 (R1-A) > ⓑ issue_create 가 처리된 뒤 답이 끊기면 「만들어졌을 수 있음」(maybeApplied) — 분류는 network 그대로, 다시 보내지 않는다
+src/main/work/create.test.ts > LA 만들기 결과를 모를 때 (R1-A) > ⓑ 시간 초과(요청은 닿았다)도 「만들어졌을 수 있음」
+src/main/work/create.test.ts > LA 만들기 결과를 모를 때 (R1-A) > ⓑ 연결 뒤 끊김(ECONNRESET)은 닿았을 수 있음 · 대조 — 연결 전 실패(ECONNREFUSED·DNS)는 보통 실패(maybeApplied 없음)
+src/main/work/create.test.ts > LA 만들기 결과를 모를 때 (R1-A) > 모의 출처 create-lost — 적용하고 답을 잃는다(화면 시험용)

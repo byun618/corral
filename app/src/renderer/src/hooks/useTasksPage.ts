@@ -258,7 +258,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
   /** 다시 적용할 기록이 없는 확정(순서 성공·늦은 답) 수 — 목록 요청 뒤 이 값이 바뀌었으면 그 응답은 버리고 다시 읽는다(R4-C). */
   const settles = useRef(0)
   /** 쓰기 실패·완료 분류 변경 뒤 서버 재조회 — `reload` 는 아래에서 정의된다. */
-  const reloadRef = useRef<(options: { quiet: boolean }) => Promise<void>>(async () => {})
+  const reloadRef = useRef<(options: { quiet: boolean }) => Promise<string[]>>(async () => [])
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set())
   /** 상세 단건 읽기가 진행 중인 카드(uid → 수) — 보드 쓰기(끌기·되돌리기)도 막는다(LIFE-602 R6-D). */
   const detailReads = useRef(new Map<string, number>())
@@ -440,8 +440,12 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     return entry
   }, [])
 
-  const reload = useCallback(async ({ quiet }: { quiet: boolean }) => {
-    if (space === null) { setLoad(EMPTY_LOAD); return }
+  /**
+   * 목록 다시 받기 — 돌려주는 값 = 이번에 **실제로 받아 화면에 쓴** (연결, 스페이스) 열쇠(`연결::스페이스`). 실패한 대상·버려진 응답(겹친 재조회·세대 바뀜)은 없다.
+   * 「목록 다시 확인」(LIFE-604 R2-A)이 이걸로 확인 여부를 가른다.
+   */
+  const reload = useCallback(async ({ quiet }: { quiet: boolean }): Promise<string[]> => {
+    if (space === null) { setLoad(EMPTY_LOAD); return [] }
     const id = spaceId(space)
     gate.invalidate('more')
     const token = gate.issue('load')
@@ -451,6 +455,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     setLoad((current) => (quiet && current.spaceId === id
       ? { ...current, loadingMore: false }
       : { spaceId: id, phase: 'loading', data: current.spaceId === id ? current.data : [], error: null, loadingMore: false }))
+    const generations = new Map(targets.map((target) => [target.connectionId, currentGeneration(target.connectionId)]))
     const results = await Promise.all(targets.map(async (target): Promise<SpaceResult> => {
       const at = `${token}/${target.connectionId}/${target.spaceKey}`
       const [statuses, first] = await Promise.all([
@@ -481,9 +486,9 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       }
       return { ok: true, data, pages }
     }))
-    if (!gate.accepts({ key: 'load', requestId: token })) return
+    if (!gate.accepts({ key: 'load', requestId: token })) return []
     // 요청 뒤에 순서 쓰기가 성공했거나 늦은 답이 왔으면 이 응답은 그 전 값일 수 있다 — 버리고 다시 읽는다(R4-C). 화면은 지금 그대로라 옛 순서로 깜빡이지 않는다.
-    if (settles.current !== startSettles) { void reloadRef.current({ quiet }); return }
+    if (settles.current !== startSettles) return reloadRef.current({ quiet })
     // 다시 적용할 변경 = 이 목록 요청 **전에** 시작해 아직 확인 안 된 쓰기(R2-C) + 요청 **뒤에** 화면에 쓴 변경(옮기기·원복·응답 반영, R1-F) — 순번 순.
     const later = overrides.current.filter((entry) => entry.seq > startSeq)
     overrides.current = later
@@ -508,6 +513,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     })
     setLoad({ spaceId: id, phase: error === null ? 'ready' : 'error', data, error, loadingMore: false })
     void refreshCreated(data)
+    return results.flatMap((result) => (result.ok && generations.get(result.data.connectionId) === currentGeneration(result.data.connectionId) ? [`${result.data.connectionId}::${result.data.spaceKey}`] : []))
   }, [space, targets, gate, currentGeneration, refreshCreated])
   reloadRef.current = reload
 

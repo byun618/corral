@@ -505,7 +505,11 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
         const fields = fillRequired(meta)
         if (fields === null) continue
         const statusKey = meta.statusKeys.at(-1) ?? meta.defaultStatusKey
-        const placement = capabilities.placement.state === 'on' ? 'backlog' : undefined
+        // 배치는 능력이 켜졌고 그 종류에 적용될 때만(R2-H). 적용 안 되는 종류에 실으면 거절이어야 한다(받는 척 금지).
+        const placement = capabilities.placement.state === 'on' && meta.placement === 'applies' ? 'backlog' : undefined
+        if (capabilities.placement.state === 'on' && meta.placement === 'ignored') {
+          expect(await send({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.key, title: '배치 실음', placement: 'backlog', ...(fields.length === 0 ? {} : { fields }) })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+        }
         const created = await okResult({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.key, title: `계약 만들기 ${kind.key}`, body: '## 본문\n- [ ] 하나', statusKey, priority: 'high', ...(placement === undefined ? {} : { placement }), ...(fields.length === 0 ? {} : { fields }) })
         if (created.op !== 'createItem') throw new Error(created.op)
         const again = await getItem(created.item.id)
@@ -523,8 +527,8 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       const { space, capabilities } = await stage()
       const kinds = await okResult({ op: 'listStatuses', spaceKey: space.key })
       if (kinds.op !== 'listStatuses') throw new Error(kinds.op)
-      const kind = (await Promise.all(kinds.kinds.map(async (entry) => ({ entry, meta: await createMeta({ spaceKey: space.key, kindKey: entry.key }) })))).find(({ meta }) => meta.fields.length === 0)
-      if (kind === undefined) throw new Error('필수 필드 없는 종류가 하나는 있어야 한다 — 픽스처를 확인')
+      const kind = (await Promise.all(kinds.kinds.map(async (entry) => ({ entry, meta: await createMeta({ spaceKey: space.key, kindKey: entry.key }) })))).find(({ meta }) => meta.fields.length === 0 && meta.placement === 'applies')
+      if (kind === undefined) throw new Error('필수 필드 없고 배치가 적용되는 종류가 하나는 있어야 한다 — 픽스처를 확인')
       const call: WorkCall = { op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.entry.key, title: '계약 보드 만들기', placement: 'board' }
       if (capabilities.placement.state !== 'on') {
         await expectClosed({ capability: capabilities.placement, call })

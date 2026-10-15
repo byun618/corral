@@ -66,7 +66,8 @@ export type LaIssue = LaIssueCore & {
 /** 단건 — description 칸(null 허용)과 links 배열이 반드시 있다. */
 export type LaIssueDetail = LaIssue & { links: LaLink[] }
 
-export type LaStatus = { id: string; categoryKey: WorkCategory; label: string; color: string | null; position: number }
+/** `isDefault` = 그 분류의 기본 단계(LIFE-604 R2-G) — 칸이 없는 서버면 null. */
+export type LaStatus = { id: string; categoryKey: WorkCategory; label: string; color: string | null; position: number; isDefault: boolean | null }
 
 function record(value: unknown, path: string): Record<string, unknown> {
   if (!isRecord(value)) throw new LaShapeError(path)
@@ -264,8 +265,17 @@ export function readStatuses(value: unknown, path: string): LaStatus[] {
       label: str(row, 'label', at),
       color: optionalStr(row, 'color', at),
       position: position(row, at),
+      isDefault: optionalBool(row, 'isDefault', at),
     }
   })
+}
+
+/** 칸이 없으면 null(옛 서버), 있으면 참·거짓만. */
+function optionalBool(source: Record<string, unknown>, key: string, path: string): boolean | null {
+  if (!Object.hasOwn(source, key)) return null
+  const value = source[key]
+  if (typeof value !== 'boolean') throw new LaShapeError(`${path}.${key}`)
+  return value
 }
 
 export function readTransition(value: unknown, path: string): { transitioned: boolean; reason: string | null } {

@@ -15,8 +15,9 @@
 // - **「전체」 스페이스**: 만들 스페이스를 모달 머리에 보이고 고르게 한다. 기본값 = 이 실행에서 마지막으로 만든 스페이스(아직 보이면) → 보이는 첫 스페이스.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { WorkCall, WorkItem, WorkKind, WorkPlacement, WorkStatus } from '../../../shared/work.js'
+import type { WorkCall, WorkCapability, WorkItem, WorkKind, WorkPlacement, WorkStatus } from '../../../shared/work.js'
 import {
+  RECHECK_HINT,
   UNKNOWN_CREATE,
   checkParent,
   chosenStatus,
@@ -100,6 +101,8 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
   const drafts = useRef(new Map<string, CreateForm>())
   /** 결과를 모르는 만들기가 있었던 (연결, 스페이스) — 목록을 다시 확인하면 빠진다(R1-A). */
   const uncertain = useRef(new Set<string>())
+  /** 나가는 중인 인라인 만들기의 잠금 열쇠 — 같은 틱 두 번째 Enter 를 조용히 버린다(R2-F). */
+  const inlineSending = useRef(new Set<string>())
   /** 칸 인라인 입력에 친 글 — 열쇠 = (연결, 스페이스, 칸)(R1-O). */
   const inlineTexts = useRef(new Map<string, string>())
   const lastTarget = useRef<CreateTarget | null>(null)
@@ -299,10 +302,10 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
         const message = settled.kind === 'stale' ? '연결이 바뀌어 결과를 확인하지 못했습니다.' : createErrorText(settled.error)
         const key = draftKey(sent.target)
         if (unknown) uncertain.current.add(key)
-        if (here) { setModal({ ...current, phase: unknown ? 'unknown' : 'idle', error: unknown ? `${message} ${UNKNOWN_CREATE}` : message }); return }
+        if (here) { setModal({ ...current, phase: unknown ? 'unknown' : 'idle', error: unknown ? `${message} ${RECHECK_HINT}` : message }); return }
         // 닫은 뒤 끝남 — 보낸 값(고친 값 그대로)을 초안으로 돌린다(R1-H). 진입점 값으로 연 폼이었고 초안이 따로 있으면 그 초안을 지킨다(R1-C).
         if (!sent.keepDraft || !drafts.current.has(key)) drafts.current.set(key, sent.form)
-        notifyFailure(unknown ? `${message} ${UNKNOWN_CREATE} (초안으로 남겼습니다)` : `만들지 못했습니다 — ${message} (초안으로 남겼습니다)`)
+        notifyFailure(unknown ? `${message} ${RECHECK_HINT} (초안으로 남겼습니다)` : `만들지 못했습니다 — ${message} (초안으로 남겼습니다)`)
       }
     }
   }, [draftKey, onCreated, openItem, notifyFailure])
@@ -310,6 +313,9 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
   const submit = useCallback(async () => {
     const current = modalRef.current
     if (current === null || current.phase !== 'idle') return
+    // 같은 틱에 두 번 보냄(Enter·⌘↵ 를 한 번에) — 화면 상태가 아직 idle 이어도 이 회차의 요청이 나가는 중이면 조용히 무시한다(R2-F).
+    // 둘째를 페이지 잠금까지 보내면 그 실패가 첫 회차의 「보내는 중」 을 idle 로 풀어 버린다.
+    if (pending.current !== null && pending.current.session === current.session) return
     const block = writeBlockOf(current.target.connectionId)
     if (block !== null) { setModal({ ...current, error: block }); return }
     const meta = metaOf({ target: current.target, kindKey: current.form.kindKey })
@@ -325,7 +331,8 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     }
     if (current.form.body.trim().length > 0) call.body = current.form.body
     if (current.form.priority !== null) call.priority = current.form.priority
-    if (caps?.placement.state === 'on') call.placement = current.form.placement
+    // 배치는 출처가 켰고(능력) 이 종류에 적용될 때만 싣는다(R2-H) — 적용 안 되는 종류에 실으면 출처가 거절한다.
+    if (caps?.placement.state === 'on' && meta.meta.placement === 'applies') call.placement = current.form.placement
     if (fields.length > 0) call.fields = fields
     const sent: Pending = { session: current.session, target: current.target, form: current.form, keepDraft: current.keepDraft }
     setModal({ ...current, phase: 'sending', error: null, notice: null })
@@ -337,14 +344,22 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     settleModal({ settled: await outcome.settled, sent })
   }, [writeBlockOf, metaOf, settings, dataOf, page, settleModal])
 
-  /** 「목록 다시 확인」(R1-A) — 목록을 다시 받은 뒤 그 스페이스의 「모름」 을 푼다. 같은 작업이 이미 보이면 다시 만들지 않으면 된다. */
+  /**
+   * 「목록 다시 확인」(R1-A) — 그 스페이스 목록을 **실제로 받았을 때만** 「모름」 을 푼다(R2-A). 재조회 실패·응답이 버려짐(겹친 재조회·세대 바뀜)이면
+   * 「확인하지 못했습니다」 로 남기고 계속 막는다 — 확인하지 않은 채 다시 만들면 중복이 된다.
+   */
   const recheck = useCallback(async (target: CreateTarget) => {
-    await page.reload({ quiet: true })
     const key = draftKey(target)
-    uncertain.current.delete(key)
-    const notice = '목록을 다시 읽었습니다 — 같은 작업이 이미 보이면 다시 만들지 마세요.'
-    setModal((current) => (current !== null && current.phase === 'unknown' && draftKey(current.target) === key ? { ...current, phase: 'idle', error: null, notice } : current))
-    setInline((current) => (current !== null && current.phase === 'unknown' && draftKey(current.target) === key ? { ...current, phase: 'idle', error: notice } : current))
+    const loaded = await page.reload({ quiet: true })
+    const confirmed = loaded.includes(key)
+    if (confirmed) uncertain.current.delete(key)
+    const notice = confirmed ? '목록을 다시 읽었습니다 — 같은 작업이 이미 보이면 다시 만들지 마세요.' : '목록을 받지 못해 확인하지 못했습니다 — 다시 확인하세요.'
+    const same = (current: { phase: ModalPhase; target: CreateTarget }): boolean => current.phase === 'unknown' && draftKey(current.target) === key
+    setModal((current) => {
+      if (current === null || !same(current)) return current
+      return confirmed ? { ...current, phase: 'idle', error: null, notice } : { ...current, error: notice }
+    })
+    setInline((current) => (current === null || !same(current) ? current : { ...current, phase: confirmed ? 'idle' : 'unknown', error: notice }))
   }, [page, draftKey])
 
   // 다른 회차(닫았다 다시 연 모달)가 「확인 중」 이면 잠금이 풀릴 때 보통으로 돌린다 — 앞 회차 결과를 모르면 「모름」 으로(R1-A).
@@ -414,10 +429,13 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     }
     const caps = settings?.connections.find((connection) => connection.id === current.target.connectionId)?.capabilities ?? null
     const call: Extract<WorkCall, { op: 'createItem' }> = { op: 'createItem', spaceKey: current.target.spaceKey, parentId: null, kindKey: kind.key, title: current.text.trim(), statusKey: current.statusKey }
-    if (caps?.placement.state === 'on') call.placement = 'board'
-    setInline({ ...current, phase: 'sending', error: null })
+    if (caps?.placement.state === 'on' && meta.meta.placement === 'applies') call.placement = 'board'
     const lockKey = `create:inline:${targetKey(current.target)}`
+    if (inlineSending.current.has(lockKey)) return
+    inlineSending.current.add(lockKey)
+    setInline({ ...current, phase: 'sending', error: null })
     const outcome = await page.createItem({ lockKey, connectionId: current.target.connectionId, call })
+    if (outcome.kind !== 'late') inlineSending.current.delete(lockKey)
     const same = (): InlineAdd | null => {
       const now = inlineRef.current
       return now !== null && now.columnId === current.columnId && targetKey(now.target) === targetKey(current.target) ? now : null
@@ -436,7 +454,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
       const unknown = settled.kind === 'stale' || settled.error.maybeApplied === true
       const message = settled.kind === 'stale' ? '연결이 바뀌어 결과를 확인하지 못했습니다.' : createErrorText(settled.error)
       if (unknown) uncertain.current.add(targetKey(current.target))
-      const shown = unknown ? `${message} ${UNKNOWN_CREATE}` : message
+      const shown = unknown ? `${message} ${RECHECK_HINT}` : message
       // 친 글은 남는다 — 열려 있으면 그 자리에, 닫혔으면 다음에 열 때.
       if (now !== null) { setInline({ ...now, phase: unknown ? 'unknown' : 'idle', error: shown }); return }
       inlineTexts.current.set(textKey, current.text)
@@ -445,7 +463,9 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     if (outcome.kind !== 'late') { settle(outcome); return }
     const now = same()
     if (now !== null) setInline({ ...now, phase: 'late' })
-    settle(await outcome.settled)
+    const settled = await outcome.settled
+    inlineSending.current.delete(lockKey)
+    settle(settled)
   }, [kindsOf, metaOf, writeBlockOf, openModal, settings, page, onCreated, notifyFailure, prepareInline])
 
   // --- 모달 그림 자료 ---
@@ -465,7 +485,10 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
         : modal.phase === 'unknown' ? '만들어졌는지 모릅니다 — 목록을 다시 확인하세요'
           : block ?? submitProblem({ form: modal.form, meta })
     const info = targets.find((entry) => entry.connectionId === modal.target.connectionId && entry.spaceKey === modal.target.spaceKey)
-    return { kinds, statuses, meta, parents, parent, placement: caps?.placement ?? null, problem, info, chooseTarget: space?.kind === 'all' }
+    // 이 종류에 배치가 적용되지 않으면(메타) 칩은 흐림 + 이유(R2-H). 능력이 숨김이면 그대로 숨김.
+    const ignored = meta.state === 'ready' && meta.meta.placement === 'ignored' && caps !== null && caps.placement.state !== 'hidden'
+    const placement: WorkCapability | null = ignored ? { state: 'disabled', reason: '이 종류는 보드/백로그 배치를 받지 않습니다' } : caps?.placement ?? null
+    return { kinds, statuses, meta, parents, parent, placement, problem, info, chooseTarget: space?.kind === 'all' }
   }, [modal, dataOf, metaOf, settings, writeBlockOf, targets, space])
 
   return {

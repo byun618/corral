@@ -184,6 +184,34 @@ describe('LA 만들기 결과를 모를 때 (R1-A)', () => {
   })
 })
 
+describe('LA 기본 상태·배치 적용 (R2-G·R2-H)', () => {
+  const second = '00000000-0000-4000-8000-000000009099'
+
+  it('R2-G 기본 상태 = 할 일 분류의 isDefault 단계(위치 첫째가 아니어도) · 칸이 없는 옛 서버면 위치 첫 할 일', async () => {
+    const { fixture, send } = await laSetup()
+    fixture.statuses = [
+      ...fixture.statuses.map((status) => (status.categoryKey === 'todo' ? { ...status, isDefault: false } : status)),
+      { id: second, categoryKey: 'todo', label: '대기', color: null, position: 1, isDefault: true },
+    ]
+    expect(await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'task' })).toMatchObject({ ok: true, result: { meta: { defaultStatusKey: second } } })
+    fixture.corrupt = 'status-no-default'
+    expect(await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'task' })).toMatchObject({ ok: true, result: { meta: { defaultStatusKey: FIXTURE_STATUS.todo } } })
+  })
+
+  it('R2-H task·checkpoint = 배치 적용(onBoard 명시) · bug = 적용 안 됨: onBoard 를 싣지 않고, 배치를 실어 보내면 보내기 전에 거절', async () => {
+    const { fixture, send } = await laSetup()
+    expect(await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'task' })).toMatchObject({ ok: true, result: { meta: { placement: 'applies' } } })
+    expect(await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'checkpoint' })).toMatchObject({ ok: true, result: { meta: { placement: 'applies' } } })
+    expect(await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'bug' })).toMatchObject({ ok: true, result: { meta: { placement: 'ignored' } } })
+    const bug = await send({ op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: null, kindKey: 'bug', title: '버그' })
+    expect(bug.ok).toBe(true)
+    expect(fixture.createArgs.at(-1)).toEqual({ kind: 'bug', title: '버그', parentId: FIXTURE_IDS.corral })
+    const withPlacement = await send({ op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: null, kindKey: 'bug', title: '배치 실음', placement: 'backlog' })
+    expect(withPlacement).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('배치') } })
+    expect(fixture.createArgs).toHaveLength(1)
+  })
+})
+
 describe('모의 출처(Jira 형) — 첫 상태만 · 필수 필드 (C3·C8)', () => {
   it('생성 메타 — 상태는 워크플로 첫 상태 하나 · Bug 만 Customer impact(고르기) 필수', async () => {
     const { send } = await mockSetup()
@@ -246,7 +274,7 @@ describe('main 의 생성 메타 검증 (E11 — 양성 대조)', () => {
       },
     }),
   })
-  const good: WorkCreateMeta = { spaceKey: 'S', kindKey: 'k', statusKeys: ['a', 'b'], defaultStatusKey: 'a', fields: [{ key: 'f', label: 'F', shape: 'option', options: [{ id: 'o', label: 'O' }] }] }
+  const good: WorkCreateMeta = { spaceKey: 'S', kindKey: 'k', statusKeys: ['a', 'b'], defaultStatusKey: 'a', placement: 'applies', fields: [{ key: 'f', label: 'F', shape: 'option', options: [{ id: 'o', label: 'O' }] }] }
   const cases: { name: string; meta: unknown }[] = [
     { name: '상태 없음', meta: { ...good, statusKeys: [] } },
     { name: '기본 상태가 목록 밖', meta: { ...good, defaultStatusKey: 'z' } },
@@ -254,6 +282,7 @@ describe('main 의 생성 메타 검증 (E11 — 양성 대조)', () => {
     { name: '선택지 없는 고르기', meta: { ...good, fields: [{ key: 'f', label: 'F', shape: 'option', options: [] }] } },
     { name: '필드 키 겹침', meta: { ...good, fields: [{ key: 'f', label: 'F', shape: 'text' }, { key: 'f', label: 'G', shape: 'text' }] } },
     { name: '다른 종류의 메타', meta: { ...good, kindKey: 'other' } },
+    { name: '배치 적용 값 모름(R2-H)', meta: { ...good, placement: 'maybe' } },
   ]
   for (const { name, meta } of cases) {
     it(`${name} → invalid_response`, async () => {

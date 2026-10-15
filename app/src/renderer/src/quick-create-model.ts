@@ -106,6 +106,8 @@ export function nextForm(form: CreateForm): CreateForm {
 
 /** 결과를 모르는 만들기(R1-A) 뒤의 안내 — 목록을 다시 확인하기 전에는 다시 만들지 못한다. */
 export const UNKNOWN_CREATE = '만들어졌는지 모릅니다 — 「목록 다시 확인」 뒤에 다시 만들 수 있습니다.'
+/** 이미 「만들어졌는지 모릅니다」 를 말한 오류 문구 뒤에 붙이는 안내 — 같은 말을 두 번 하지 않는다(R2-I). */
+export const RECHECK_HINT = '「목록 다시 확인」 뒤에 다시 만들 수 있습니다.'
 
 /** 오류 분류 문구(T1 K2) — 인증·권한·네트워크는 앞에 갈래를 붙인다. */
 export function createErrorText(error: { kind: string; message: string }): string {

@@ -579,7 +579,7 @@ export class MockSource implements WorkSourceClient {
     if (first === undefined) return { ok: false, outcome: rejected('상태가 없는 스페이스입니다.') }
     const base = (this.state.createFields ?? MOCK_CREATE_FIELDS)[kindKey] ?? []
     const fields = this.behavior.createMeta === 'unsupported' && kindKey === 'epic' ? [...base, MOCK_UNSUPPORTED_FIELD] : base
-    return { ok: true, meta: { spaceKey, kindKey, statusKeys: [first.key], defaultStatusKey: first.key, fields: fields.map(copyField) } }
+    return { ok: true, meta: { spaceKey, kindKey, statusKeys: [first.key], defaultStatusKey: first.key, placement: 'applies', fields: fields.map(copyField) } }
   }
 
   private space(key: string): MockSpace | null {

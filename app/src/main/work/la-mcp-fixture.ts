@@ -29,7 +29,7 @@ export type FixtureFault = { kind: 'http'; status: number; body: string } | { ki
  * · `rpc-error-string`: result 옆에 error: 'failed' 를 같이 · `list-drop-<칸>`: 목록 행에서 그 칸 삭제 · `list-bad-blocker`: openBlockers 를 [null, 42] 로(R2-D).
  */
 export type FixtureCorrupt =
-  | 'issue-statusId' | 'tool-error' | 'drop-statusLabel'
+  | 'issue-statusId' | 'tool-error' | 'drop-statusLabel' | 'status-no-default'
   | 'drop-links' | 'drop-description' | 'drop-onBoard' | 'drop-priority'
   | 'isError-string' | 'rpc-wrong-version' | 'rpc-error-string'
   | 'list-drop-position' | 'list-drop-dueAt' | 'list-drop-color' | 'list-drop-archivedAt' | 'list-drop-openBlockers' | 'list-bad-blocker'
@@ -244,7 +244,8 @@ export class LaMcpFixture {
     const fail = (code: string, message: string): { isError: boolean; text: string } => ({ isError: true, text: JSON.stringify({ code, message }) })
     const find = (id: unknown): FixtureIssue | undefined => this.issues.find((issue) => issue.id === id)
     switch (tool) {
-      case 'status_list': return ok(this.statuses)
+      // `status-no-default` — 옛 서버처럼 isDefault 칸이 없다(R2-G 대조).
+      case 'status_list': return ok(this.corrupt === 'status-no-default' ? this.statuses.map(({ isDefault: _gone, ...rest }) => rest) : this.statuses)
       case 'issue_list': {
         const archived = args.archived ?? 'exclude'
         const limit = typeof args.limit === 'number' ? args.limit : 50

@@ -45,6 +45,8 @@ type Harness = {
   service: WorkService; state: MockState; requests: WorkRequest[]; hold: { create: boolean; release: (() => void)[] }; closed: number[]; connectionId: string
   /** `setUiPrefs` 로 나간 값(디스크에 쓰이는 것) — 초안 글이 섞이지 않는지 본다(R1-M). */
   prefsWrites: unknown[]
+  /** 켜면 목록 읽기(listItems)가 `invalid_response` 로 실패한다(R2-A — 「목록 다시 확인」 이 확인하지 못한 경우). */
+  failLists: { on: boolean }
 }
 
 async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(), prefs = { view: 'board' } }: { token?: string; state?: MockState; prefs?: Record<string, unknown> } = {}): Promise<Harness> {
@@ -56,6 +58,7 @@ async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(),
   const hold: Harness['hold'] = { create: false, release: [] }
   const closed: number[] = []
   const prefsWrites: unknown[] = []
+  const failLists = { on: false }
   Reflect.set(window, 'corral', {
     getUiPrefs: async () => ({ tasksPage: { space: { kind: 'space', connectionId: '', spaceKey: 'CORE' }, ...prefs } }),
     setUiPrefs: (value: unknown) => { prefsWrites.push(value) },
@@ -64,6 +67,7 @@ async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(),
     workActivity: async () => ({ ok: true, records: [] }),
     workRequest: (request: WorkRequest): Promise<WorkResponse> => {
       requests.push(request)
+      if (request.call.op === 'listItems' && failLists.on) return Promise.resolve({ requestId: request.requestId, connectionId: request.connectionId, ok: false, error: { kind: 'invalid_response', message: '목록 모양이 깨졌습니다.', status: null } })
       if (request.call.op === 'createItem' && hold.create) {
         return new Promise((resolve) => { hold.release.push(() => { void service.request(request).then(resolve) }) })
       }
@@ -74,7 +78,7 @@ async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(),
   if (!added.ok) throw new Error(added.error.message)
   // 첫 스페이스 = CORE 로 열리게 저장값의 연결 id 를 맞춘다.
   Reflect.set(window.corral, 'getUiPrefs', async () => ({ tasksPage: { space: { kind: 'space', connectionId: added.connection.id, spaceKey: 'CORE' }, ...prefs } }))
-  return { service, state, requests, hold, closed, connectionId: added.connection.id, prefsWrites }
+  return { service, state, requests, hold, closed, connectionId: added.connection.id, prefsWrites, failLists }
 }
 
 async function renderPage(harness: Harness, { open = true }: { open?: boolean } = {}): Promise<void> {
@@ -587,6 +591,8 @@ describe('수정 1 (리뷰 r1)', () => {
     await settle(12)
     expect(el('[data-quick-create]').getAttribute('data-quick-create-phase')).toBe('unknown')
     expect(el('[data-quick-create-error]').textContent).toContain('만들어졌는지 모릅니다')
+    // R2-I — 같은 말을 두 번 하지 않는다.
+    expect((el('[data-quick-create-error]').textContent ?? '').split('만들어졌는지 모릅니다').length - 1).toBe(1)
     expect(el('[data-quick-create-submit]').hasAttribute('disabled')).toBe(true)
     key(el('[data-quick-create-title]'), { key: 'Enter' })
     key(el('[data-quick-create-title]'), { key: 'Enter', metaKey: true })
@@ -924,5 +930,83 @@ describe('수정 1 (리뷰 r1)', () => {
     } finally {
       spy.mockRestore()
     }
+  })
+})
+
+describe('수정 2 (리뷰 r2)', () => {
+  it('R2-A 「목록 다시 확인」 이 목록을 받지 못하면 「모름」 을 풀지 않는다 — 다시 만들기 0, 받은 뒤에야 풀림', async () => {
+    const state = seedMockDemoState()
+    state.pageSize = 100
+    const harness = await setup({ token: 'mock_create-lost', state })
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '확인 못 함')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    expect(el('[data-quick-create]').getAttribute('data-quick-create-phase')).toBe('unknown')
+    harness.failLists.on = true
+    click('[data-quick-create-recheck]')
+    await settle(12)
+    expect(el('[data-quick-create]').getAttribute('data-quick-create-phase')).toBe('unknown')
+    expect(el('[data-quick-create-error]').textContent).toContain('확인하지 못했습니다')
+    expect(q('[data-quick-create-notice]')?.textContent ?? '').not.toContain('다시 읽었습니다')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    click('[data-quick-create-submit]')
+    await settle()
+    expect(harness.requests.filter((request) => request.call.op === 'createItem')).toHaveLength(1)
+    // 목록이 다시 받아지면 풀린다.
+    harness.failLists.on = false
+    click('[data-quick-create-recheck]')
+    await settle(12)
+    expect(el('[data-quick-create]').getAttribute('data-quick-create-phase')).toBe('idle')
+  })
+
+  it('R2-F 같은 틱에 두 번 보낸 모달 — 요청 1건, 첫 회차는 「보내는 중」 그대로(idle 로 풀리지 않음)', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '같은 틱')
+    harness.hold.create = true
+    const title = el('[data-quick-create-title]')
+    act(() => {
+      title.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      title.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }))
+    })
+    await settle()
+    expect(harness.requests.filter((request) => request.call.op === 'createItem')).toHaveLength(1)
+    expect(el('[data-quick-create]').getAttribute('data-quick-create-phase')).toBe('sending')
+    expect(q('[data-quick-create-error]')).toBeNull()
+    harness.hold.create = false
+    await act(async () => { for (const release of harness.hold.release.splice(0)) release() })
+    await settle(12)
+    expect(creates(harness)).toBe(1)
+  })
+
+  it('R2-F 같은 틱에 두 번 Enter 한 인라인 — 요청 1건, 「보내는 중」 그대로', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    const todo = el('[data-board-column="st:core-todo"]')
+    act(() => { todo.querySelector<HTMLElement>('[data-inline-add-open]')?.click() })
+    await settle()
+    const input = todo.querySelector('[data-inline-add]')
+    if (!(input instanceof HTMLInputElement)) throw new Error('입력 없음')
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, '인라인 같은 틱')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    harness.hold.create = true
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    await settle()
+    expect(harness.requests.filter((request) => request.call.op === 'createItem')).toHaveLength(1)
+    expect(el('[data-board-column="st:core-todo"] [data-inline-add]').getAttribute('data-inline-add-phase')).toBe('sending')
+    harness.hold.create = false
+    await act(async () => { for (const release of harness.hold.release.splice(0)) release() })
+    await settle(12)
+    expect(creates(harness)).toBe(1)
   })
 })

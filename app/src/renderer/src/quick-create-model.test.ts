@@ -12,7 +12,7 @@ const item = (id: string, kind: WorkKind): WorkItem => ({
   rank: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [],
 })
 const form = (patch: Partial<CreateForm> = {}): CreateForm => ({ kindKey: 'story', title: '제목', body: '', parentId: null, statusKey: null, priority: null, placement: 'board', values: {}, ...patch })
-const meta = (patch: Partial<WorkCreateMeta> = {}): WorkCreateMeta => ({ spaceKey: 'S', kindKey: 'story', statusKeys: ['todo'], defaultStatusKey: 'todo', fields: [], ...patch })
+const meta = (patch: Partial<WorkCreateMeta> = {}): WorkCreateMeta => ({ spaceKey: 'S', kindKey: 'story', statusKeys: ['todo'], defaultStatusKey: 'todo', placement: 'applies', fields: [], ...patch })
 
 describe('quick-create-model', () => {
   it('기본 종류 = 자식을 받지 않는 첫 종류, 없으면 첫 종류', () => {

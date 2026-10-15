@@ -206,8 +206,12 @@ export type WorkCreateField =
 /** 필수 필드 값 — `text` 면 글, `option` 이면 고른 `options[].id`. */
 export type WorkCreateFieldValue = { key: string; value: string }
 
-/** 생성 메타(E11) — `statusKeys` = 만들 때 고를 수 있는 상태(완료 분류 제외, 출처가 첫 상태만 받으면 하나), `defaultStatusKey` 는 그 안. */
-export type WorkCreateMeta = { spaceKey: string; kindKey: string; statusKeys: string[]; defaultStatusKey: string; fields: WorkCreateField[] }
+/**
+ * 생성 메타(E11) — `statusKeys` = 만들 때 고를 수 있는 상태(완료 분류 제외, 출처가 첫 상태만 받으면 하나), `defaultStatusKey` 는 그 안.
+ * `placement` = 이 (스페이스, 종류)에 보드/백로그 배치가 적용되는가(LIFE-604 R2-H) — `ignored` 면 화면은 배치 칩을 흐리고 `placement` 를 싣지 않는다
+ * (실어 보내면 출처가 거절 — 받는 척 금지). 예: LA 는 task·checkpoint 만 `onBoard` 를 쓴다.
+ */
+export type WorkCreateMeta = { spaceKey: string; kindKey: string; statusKeys: string[]; defaultStatusKey: string; placement: 'applies' | 'ignored'; fields: WorkCreateField[] }
 
 /** 필수 필드 상한 — 값 하나의 길이·필드 수. */
 export const WORK_CREATE_FIELD_VALUE_MAX = 10_000
@@ -551,6 +555,7 @@ export function readCreateMeta(value: unknown): WorkCreateMeta | null {
   const statusKeys = value.statusKeys
   if (!Array.isArray(statusKeys) || statusKeys.length === 0 || !statusKeys.every(isNonEmpty) || new Set(statusKeys).size !== statusKeys.length) return null
   if (!statusKeys.includes(value.defaultStatusKey)) return null
+  if (value.placement !== 'applies' && value.placement !== 'ignored') return null
   if (!Array.isArray(value.fields) || value.fields.length > WORK_CREATE_FIELDS_MAX) return null
   const fields: WorkCreateField[] = []
   for (const raw of value.fields) {
@@ -558,7 +563,7 @@ export function readCreateMeta(value: unknown): WorkCreateMeta | null {
     if (field === null || fields.some((entry) => entry.key === field.key)) return null
     fields.push(field)
   }
-  return { spaceKey: value.spaceKey, kindKey: value.kindKey, statusKeys: [...statusKeys], defaultStatusKey: value.defaultStatusKey, fields }
+  return { spaceKey: value.spaceKey, kindKey: value.kindKey, statusKeys: [...statusKeys], defaultStatusKey: value.defaultStatusKey, placement: value.placement, fields }
 }
 
 function readCreateField(value: unknown): WorkCreateField | null {
@@ -588,6 +593,7 @@ function readCreateField(value: unknown): WorkCreateField | null {
  */
 export function createFieldsProblem({ call, meta }: { call: Extract<WorkCall, { op: 'createItem' }>; meta: WorkCreateMeta }): string | null {
   if (call.statusKey !== undefined && !meta.statusKeys.includes(call.statusKey)) return '이 상태로는 만들 수 없습니다 — 만들 수 있는 상태를 고르세요.'
+  if (call.placement !== undefined && meta.placement === 'ignored') return '이 종류는 보드/백로그 배치를 받지 않습니다.'
   const given = call.fields ?? []
   for (const value of given) if (!meta.fields.some((field) => field.key === value.key)) return `이 종류에 없는 필드입니다 (${value.key.slice(0, 64)}).`
   for (const field of meta.fields) {

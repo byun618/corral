@@ -31,6 +31,7 @@ import { isRecord } from '../../shared/json.js'
 import {
   capabilitiesOf,
   connectionStatusOf,
+  readCreateMeta,
   readWorkActivityQuery,
   readWorkRequest,
   type WorkActionResult,
@@ -404,7 +405,7 @@ export class WorkService {
       }
       const checked: WorkOutcome = outcome.ok && !resultMatches({ call: call.op, result: outcome.result.op })
         ? { ok: false, error: workError({ kind: 'invalid_response', message: `출처가 ${call.op} 에 ${outcome.result.op} 로 답했습니다.` }) }
-        : outcome
+        : checkCreateMeta({ call, outcome })
       log('work.request', { op: call.op, ok: checked.ok, errorKind: checked.ok ? null : checked.error.kind, status: checked.ok ? null : checked.error.status, ms: this.now() - startedAt })
       if (checked.ok) {
         if (writeId !== null) this.record({ connectionId, call, result: checked.result, writeId })
@@ -628,8 +629,21 @@ function isWrite(call: WorkCall): boolean {
     case 'listComments':
     case 'listChildren':
     case 'listHistory':
+    case 'getCreateMeta':
       return false
   }
+}
+
+/**
+ * 생성 메타(E11) 응답 검증 — 출처가 준 메타를 계약 모양으로 다시 읽는다. 모양이 어긋나거나 다른 (스페이스, 종류)의 메타면 `invalid_response`.
+ * 다른 연산은 그대로 둔다.
+ */
+function checkCreateMeta({ call, outcome }: { call: WorkCall; outcome: WorkOutcome }): WorkOutcome {
+  if (call.op !== 'getCreateMeta' || !outcome.ok || outcome.result.op !== 'getCreateMeta') return outcome
+  const meta = readCreateMeta(outcome.result.meta)
+  if (meta === null) return { ok: false, error: workError({ kind: 'invalid_response', message: '출처의 생성 메타 모양이 잘못됐습니다.' }) }
+  if (meta.spaceKey !== call.spaceKey || meta.kindKey !== call.kindKey) return { ok: false, error: workError({ kind: 'invalid_response', message: '출처가 다른 스페이스·종류의 생성 메타로 답했습니다.' }) }
+  return { ok: true, result: { op: 'getCreateMeta', meta } }
 }
 
 /** 줄 수 — 본문 변경은 전문을 남기지 않고 줄 수만. */
@@ -669,8 +683,12 @@ export function changesOf({ call, result, statusLabel, seen }: {
       const known = seen(call.itemId)?.relations?.find((relation) => relation.id === call.relationId) ?? null
       return [{ itemId: call.itemId, change: { field: 'relation', action: 'remove', kind: known?.kind ?? null, otherKey: known?.other.key ?? null } }]
     }
-    case 'createItem':
-      return result.op === 'createItem' && call.parentId !== null ? [{ itemId: call.parentId, change: { field: 'child', childKey: result.item.key, childTitle: result.item.title } }] : []
+    case 'createItem': {
+      // 새 작업 자신에 「만들었음」 한 줄(C10) + 부모가 있으면 부모에 child 한 줄(그대로). 같은 쓰기 id 라 한 번만 남는다.
+      if (result.op !== 'createItem') return []
+      const created: { itemId: string; change: WorkActivityChange } = { itemId: result.item.id, change: { field: 'created', kindLabel: result.item.kind.label } }
+      return call.parentId === null ? [created] : [created, { itemId: call.parentId, change: { field: 'child', childKey: result.item.key, childTitle: result.item.title } }]
+    }
     case 'reorder':
     case 'addComment':
     case 'saveWorkLink':
@@ -684,6 +702,7 @@ export function changesOf({ call, result, statusLabel, seen }: {
     case 'listComments':
     case 'listChildren':
     case 'listHistory':
+    case 'getCreateMeta':
       return []
   }
 }

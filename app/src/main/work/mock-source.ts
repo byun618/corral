@@ -19,9 +19,12 @@
 // `foreignEdit` = 다른 곳(모의 웹)에서 고친 것처럼 상태를 바꾼다 — 판이 오르고 이력에 쓰기 id 없이 남는다(충돌·중복 제거 양성 대조).
 // 격리 실행 토큰 `drift` = 단건을 읽을 때마다(두 번째부터) 모의 웹이 우선순위를 바꾼다 — 저장 충돌 배너 재현용.
 
+import { createFieldsProblem } from '../../shared/work.js'
 import type {
   WorkCall,
   WorkCapabilities,
+  WorkCreateField,
+  WorkCreateMeta,
   WorkCapability,
   WorkComment,
   WorkFieldPatch,
@@ -68,9 +71,14 @@ export type MockBehavior = {
   caps: Partial<WorkCapabilities>
   /** 단건을 두 번째 읽을 때부터 모의 웹이 그 작업을 고친다(LIFE-602 — 충돌 배너 재현). */
   drift: boolean
+  /**
+   * 생성 메타(LIFE-604) — `unsupported` = Epic 에 corral 이 채울 수 없는 모양의 필수 필드를 더함(양성 대조) ·
+   * `fail` = 생성 메타 요청을 출처가 거절(메타 실패 → 다시 시도).
+   */
+  createMeta: 'plain' | 'unsupported' | 'fail'
 }
 
-export const PLAIN_BEHAVIOR: MockBehavior = { fault: null, delayMs: 0, rejectWrites: false, flip: null, caps: {}, drift: false }
+export const PLAIN_BEHAVIOR: MockBehavior = { fault: null, delayMs: 0, rejectWrites: false, flip: null, caps: {}, drift: false, createMeta: 'plain' }
 
 function capsOf(token: string): Partial<WorkCapabilities> {
   const caps: Partial<WorkCapabilities> = {}
@@ -102,6 +110,7 @@ export function mockBehaviorOf(token: string): MockBehavior {
     flip: flip === null ? null : { mode: flip[1] === undefined ? 'deliver' : 'apply', ms: Number(flip[2]) },
     caps: capsOf(token),
     drift: token.includes('drift'),
+    createMeta: token.includes('createmeta-unsupported') ? 'unsupported' : token.includes('createmeta-fail') ? 'fail' : 'plain',
   }
 }
 
@@ -136,6 +145,16 @@ const PAIR: Record<WorkRelationKind, WorkRelationKind> = {
 /** Jira 형 — Epic 아래에 Story·Bug, Story·Bug 는 잎(E6). */
 const KINDS: WorkKind[] = [{ key: 'epic', label: 'Epic', childKinds: ['story', 'bug'] }, { key: 'story', label: 'Story', childKinds: [] }, { key: 'bug', label: 'Bug', childKinds: [] }]
 const KEY_SHAPE = /^[A-Z][A-Z0-9]*-\d+$/i
+
+/**
+ * Jira 형 필수 필드(LIFE-604 E11) — Bug 는 「Customer impact」(고르기 하나)가 필수. 목업의 「Customer impact」 흉내.
+ * Story·Epic 은 필수 필드 없음. 상태는 워크플로의 첫 상태로만 만든다(Jira 생성은 첫 상태 고정).
+ */
+export const MOCK_CREATE_FIELDS: Record<string, WorkCreateField[]> = {
+  bug: [{ key: 'customfield_impact', label: 'Customer impact', shape: 'option', options: [{ id: 'impact-low', label: 'Low' }, { id: 'impact-medium', label: 'Medium' }, { id: 'impact-high', label: 'High' }] }],
+}
+/** `createmeta-unsupported` 가 Epic 에 더하는 필드 — 사람 고르기는 corral 이 채우지 못한다(지원 밖 모양 양성 대조). */
+export const MOCK_UNSUPPORTED_FIELD: WorkCreateField = { key: 'customfield_team', label: 'Team', shape: 'unsupported', sourceType: 'user' }
 const PAGE_SIZE = 2
 
 type MockSpace = { space: WorkSpace; statuses: WorkStatus[]; transitions: Record<string, string[]> }
@@ -156,6 +175,10 @@ export type MockState = {
   clock?: () => number
   /** 받은 작업 링크 쓰기·지우기(LIFE-603 C14) — 요청 기록. */
   linkWrites?: { op: 'saveWorkLink' | 'removeWorkLink'; itemId: string; link: WorkLink }[]
+  /** 받은 만들기 요청(LIFE-604 C9 — 연타에 생성 호출 1회를 센다). 거절된 요청도 쌓는다. */
+  createCalls?: Extract<WorkCall, { op: 'createItem' }>[]
+  /** 종류 → 필수 필드. 없으면 `MOCK_CREATE_FIELDS`. 테스트가 바꿀 수 있다. */
+  createFields?: Record<string, WorkCreateField[]>
 }
 
 /** 이 모의 출처로 쓴 사람 — 이력의 author. */
@@ -340,6 +363,7 @@ export class MockSource implements WorkSourceClient {
   }
 
   private async decide({ call, writeId }: { call: WorkCall; writeId: string | null }): Promise<WorkOutcome> {
+    if (call.op === 'createItem') this.state.createCalls = [...(this.state.createCalls ?? []), call]
     if (this.behavior.rejectWrites && (call.op === 'changeStatus' || call.op === 'setPlacement' || call.op === 'reorder' || call.op === 'updateItem' || call.op === 'createItem')) {
       return rejected('모의 출처가 이 쓰기를 거절했습니다 (reject-writes).')
     }
@@ -432,21 +456,29 @@ export class MockSource implements WorkSourceClient {
         const children = this.state.items.filter((row) => row.parentId === item.id).sort((a, b) => (a.rank ?? '').localeCompare(b.rank ?? ''))
         return { ok: true, result: { op: 'listChildren', items: children.map((row) => this.view({ item: row, withRelations: false })) } }
       }
+      case 'getCreateMeta': {
+        if (this.behavior.createMeta === 'fail') return rejected('모의 출처가 생성 메타를 주지 않았습니다 (createmeta-fail).')
+        const meta = this.createMeta({ spaceKey: call.spaceKey, kindKey: call.kindKey })
+        return meta.ok ? { ok: true, result: { op: 'getCreateMeta', meta: meta.meta } } : meta.outcome
+      }
       case 'createItem': {
+        const meta = this.createMeta({ spaceKey: call.spaceKey, kindKey: call.kindKey })
+        if (!meta.ok) return meta.outcome
         const space = this.space(call.spaceKey)
-        if (space === null) return rejected('없는 스페이스입니다.')
         const kind = KINDS.find((entry) => entry.key === call.kindKey)
-        if (kind === undefined) return rejected('없는 종류입니다.')
+        if (space === null || kind === undefined) return rejected('없는 스페이스·종류입니다.')
         const parent = call.parentId === null ? null : this.item(call.parentId)
         if (call.parentId !== null && (parent === null || parent.spaceKey !== call.spaceKey)) return rejected('부모로 쓸 수 없는 작업입니다.')
         // 종류별 자식 규칙(E6) — 부모 종류의 childKinds 밖이면 거절.
         if (parent !== null && !(KINDS.find((entry) => entry.key === parent.kind.key)?.childKinds ?? []).includes(kind.key)) return rejected(`${parent.kind.label} 아래에는 ${kind.label} 를 만들 수 없습니다.`)
-        const first = space.statuses.find((status) => status.category === 'todo') ?? space.statuses[0]
-        if (first === undefined) return rejected('상태가 없는 스페이스입니다.')
+        // 메타 밖의 상태·필드, 빠진 필수 필드는 거절(E10 — 받는 척하지 않는다).
+        const problem = createFieldsProblem({ call, meta: meta.meta })
+        if (problem !== null) return rejected(problem)
+        if (call.placement !== undefined && this.capabilities().placement.state !== 'on') return { ok: false, error: workError({ kind: 'unsupported', message: '이 출처는 배치를 받지 않습니다.' }) }
         const seq = this.state.items.filter((row) => row.spaceKey === call.spaceKey).length + 1
         const created: MockItem = {
-          id: `m-new-${this.state.seq++}`, key: `${call.spaceKey}-${100 + seq}`, spaceKey: call.spaceKey, title: call.title, body: '', kind: { ...kind, childKinds: [...kind.childKinds] },
-          statusKey: first.key, resolution: null, priority: null, dueAt: null, parentId: call.parentId, placement: 'board', rank: `z${this.state.seq}`,
+          id: `m-new-${this.state.seq++}`, key: `${call.spaceKey}-${100 + seq}`, spaceKey: call.spaceKey, title: call.title, body: call.body ?? '', kind: { ...kind, childKinds: [...kind.childKinds] },
+          statusKey: call.statusKey ?? meta.meta.defaultStatusKey, resolution: null, priority: call.priority ?? null, dueAt: null, parentId: call.parentId, placement: call.placement ?? 'board', rank: `z${this.state.seq}`,
           openBlockerCount: 0, openBlockers: [], updatedAt: new Date(now(this.state)).toISOString(), version: 1, updatedBy: MOCK_AUTHOR, workLinks: [],
         }
         this.state.items.push(created)
@@ -534,6 +566,18 @@ export class MockSource implements WorkSourceClient {
     }
   }
 
+  /** 생성 메타 — 상태는 워크플로의 첫 상태(첫 todo) 하나만, 필수 필드는 종류별. */
+  private createMeta({ spaceKey, kindKey }: { spaceKey: string; kindKey: string }): { ok: true; meta: WorkCreateMeta } | { ok: false; outcome: WorkOutcome } {
+    const space = this.space(spaceKey)
+    if (space === null) return { ok: false, outcome: rejected('없는 스페이스입니다.') }
+    if (!KINDS.some((entry) => entry.key === kindKey)) return { ok: false, outcome: rejected('없는 종류입니다.') }
+    const first = space.statuses.find((status) => status.category === 'todo') ?? space.statuses[0]
+    if (first === undefined) return { ok: false, outcome: rejected('상태가 없는 스페이스입니다.') }
+    const base = (this.state.createFields ?? MOCK_CREATE_FIELDS)[kindKey] ?? []
+    const fields = this.behavior.createMeta === 'unsupported' && kindKey === 'epic' ? [...base, MOCK_UNSUPPORTED_FIELD] : base
+    return { ok: true, meta: { spaceKey, kindKey, statusKeys: [first.key], defaultStatusKey: first.key, fields: fields.map(copyField) } }
+  }
+
   private space(key: string): MockSpace | null {
     return this.state.spaces.find((entry) => entry.space.key === key) ?? null
   }
@@ -598,6 +642,10 @@ export class MockSource implements WorkSourceClient {
       workLinks: [...item.workLinks],
     }
   }
+}
+
+function copyField(field: WorkCreateField): WorkCreateField {
+  return field.shape === 'option' ? { ...field, options: field.options.map((option) => ({ ...option })) } : { ...field }
 }
 
 function patchOf(fields: WorkFieldPatch): Partial<MockItem> {

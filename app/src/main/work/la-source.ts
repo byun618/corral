@@ -14,9 +14,12 @@
 // LIFE-602 계약 확장: 필드 수정 = `issue_update`(title·description·priority·dueAt, PATCH) · 완료 갈래 = resolution(completed·cancelled) ·
 // 자식 = `issue_list(parentId)`·`issue_create`(부모 규칙은 종류의 `childKinds` 로 알린다) · 연결 상대의 스페이스 = 상대의 부모 사슬(못 풀면 null) ·
 // 이력은 꺼짐(L1e).
+// LIFE-604 E10·E11: 만들기 = `issue_create`(description·statusId·priority·onBoard 명시) · 생성 메타 = 열린 상태 아무거나 · 필수 필드 없음.
 
+import { createFieldsProblem } from '../../shared/work.js'
 import type {
   WorkCall,
+  WorkCreateMeta,
   WorkFieldPatch,
   WorkCapabilities,
   WorkError,
@@ -146,6 +149,10 @@ export class LaSource implements WorkSourceClient {
       }
       case 'listChildren': return this.listChildren(call.itemId)
       case 'createItem': return this.createItem(call)
+      case 'getCreateMeta': {
+        const meta = await this.createMeta({ spaceKey: call.spaceKey, kindKey: call.kindKey })
+        return meta.ok ? { ok: true, result: { op: 'getCreateMeta', meta: meta.value } } : meta.outcome
+      }
       case 'listHistory': return unsupported('history')
       case 'setPlacement': {
         if (call.ifVersion !== null) return unsupported('conflictCheck')
@@ -185,12 +192,18 @@ export class LaSource implements WorkSourceClient {
   }
 
   /**
-   * 만들기(E6 최소형) — 제목·종류·부모. 부모 없음 = 스페이스 프로젝트 바로 아래(「미분류」 면 부모 없음). 보드에 올린다(LA 기본은 백로그).
-   * 부모 규칙은 LA 서버가 다시 검증한다 — 여기서는 종류의 `childKinds` 밖을 보내기 전에 거절한다.
+   * 만들기(E6 · E10 LIFE-604). 부모 없음 = 스페이스 프로젝트 바로 아래(「미분류」 면 부모 없음).
+   * 칸 전달: 본문 → description · 상태 → statusId · 우선순위 → priority · 배치 → onBoard. **onBoard 는 늘 명시한다** — LA 기본이 백로그라
+   * 미지정이면 보드 생성이 조용히 백로그로 간다(배치를 안 보낸 만들기 = 보드, T3 자식 추가 그대로). 상태를 안 보내면 LA 기본 상태.
+   * 부모 규칙은 LA 서버가 다시 검증한다 — 여기서는 종류의 `childKinds` 밖·메타 밖 상태·필드를 보내기 전에 거절한다.
    */
   private async createItem(call: Extract<WorkCall, { op: 'createItem' }>): Promise<WorkOutcome> {
-    const kind = call.kindKey === 'checkpoint' || call.kindKey === 'task' || call.kindKey === 'bug' ? call.kindKey : null
+    const kind = laKind(call.kindKey)
     if (kind === null) return { ok: false, error: workError({ kind: 'rejected', message: '없는 종류입니다.' }) }
+    const meta = await this.createMeta({ spaceKey: call.spaceKey, kindKey: kind })
+    if (!meta.ok) return meta.outcome
+    const problem = createFieldsProblem({ call, meta: meta.value })
+    if (problem !== null) return { ok: false, error: workError({ kind: 'rejected', message: problem }) }
     if (call.parentId !== null) {
       const parent = await this.tool({ name: 'issue_get', args: { id: call.parentId }, read: readIssueDetail })
       if (!parent.ok) return parent.outcome
@@ -198,8 +211,19 @@ export class LaSource implements WorkSourceClient {
       if (!allowed.includes(kind)) return { ok: false, error: workError({ kind: 'rejected', message: `${KIND_LABELS[parent.value.kind === 'project' ? 'task' : parent.value.kind]} 아래에는 ${KIND_LABELS[kind]} 를 만들 수 없습니다.` }) }
     }
     const parentId = call.parentId ?? (call.spaceKey === LA_CATCH_ALL_KEY ? null : call.spaceKey)
-    const created = await this.tool({ name: 'issue_create', args: { kind, title: call.title, parentId, onBoard: true }, read: readIssueUpdated })
+    const created = await this.tool({ name: 'issue_create', args: createArgs({ call, kind, parentId }), read: readIssueUpdated })
     return created.ok ? this.itemResult({ op: 'createItem', itemId: created.value.id }) : created.outcome
+  }
+
+  /** 생성 메타(E11) — LA 는 열린(완료 분류가 아닌) 상태 아무거나 · 기본 = 첫 할 일 상태 · 추가 필수 필드 없음. 종류만 확인한다. */
+  private async createMeta({ spaceKey, kindKey }: { spaceKey: string; kindKey: string }): Promise<Step<WorkCreateMeta>> {
+    if (laKind(kindKey) === null) return { ok: false, outcome: { ok: false, error: workError({ kind: 'rejected', message: '없는 종류입니다.' }) } }
+    const statuses = await this.statuses()
+    if (!statuses.ok) return statuses
+    const open = statuses.value.filter((status) => status.categoryKey !== 'done')
+    const first = open.find((status) => status.categoryKey === 'todo') ?? open[0]
+    if (first === undefined) return { ok: false, outcome: { ok: false, error: workError({ kind: 'rejected', message: '만들 수 있는 상태가 없습니다.' }) } }
+    return { ok: true, value: { spaceKey, kindKey, statusKeys: open.map((status) => status.id), defaultStatusKey: first.id, fields: [] } }
   }
 
   private async tool<T>({ name, args, read }: { name: string; args: Record<string, unknown>; read: (value: unknown, path: string) => T }): Promise<Step<T>> {
@@ -428,6 +452,19 @@ export class LaSource implements WorkSourceClient {
 }
 
 type SpaceMemo = Map<string, Promise<Step<LaIssueDetail>>>
+
+function laKind(key: string): 'checkpoint' | 'task' | 'bug' | null {
+  return key === 'checkpoint' || key === 'task' || key === 'bug' ? key : null
+}
+
+/** 만들기 → `issue_create` 인자. 보낸 칸만 옮기고 onBoard 는 늘(배치 없음 = 보드). 필수 필드는 메타 검사에서 이미 막혔다(LA 는 없음). */
+function createArgs({ call, kind, parentId }: { call: Extract<WorkCall, { op: 'createItem' }>; kind: 'checkpoint' | 'task' | 'bug'; parentId: string | null }): Record<string, unknown> {
+  const args: Record<string, unknown> = { kind, title: call.title, parentId, onBoard: (call.placement ?? 'board') === 'board' }
+  if (call.body !== undefined) args.description = call.body
+  if (call.statusKey !== undefined) args.statusId = call.statusKey
+  if (call.priority !== undefined) args.priority = call.priority
+  return args
+}
 
 /** 필드 부분 수정 → `issue_update` 인자(PATCH — 보낸 칸만). 본문은 description. */
 function updateArgs(fields: WorkFieldPatch): Record<string, unknown> {

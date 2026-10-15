@@ -167,6 +167,8 @@ export type WorkActivityChange =
   | { field: 'parent'; parentId: string | null }
   | { field: 'relation'; action: 'add' | 'remove'; kind: WorkRelationKind | null; otherKey: string | null }
   | { field: 'child'; childKey: string; childTitle: string }
+  /** 만들었음(LIFE-604 C10) — 새 작업 자신에 한 줄. 부모의 `child` 줄과 별개다. */
+  | { field: 'created'; kindLabel: string }
   /** 실행 갈래(LIFE-603 C13) — 작업 시작 · 자동 연결 · 떼기. `worktree` 는 경로, `branch` 는 그때의 브랜치 이름. */
   | { field: 'run'; event: 'start'; worktree: string; branch: string; agent: string; model: string | null }
   | { field: 'run'; event: 'auto_link' | 'detach'; worktree: string; branch: string | null }
@@ -191,6 +193,26 @@ export type WorkActivityResult = { ok: true; records: WorkActivityRecord[] } | {
 /** 저장 충돌(E7) — 서버의 지금 작업과, 아는 경우 마지막으로 바꾼 쪽. 화면은 연 시점 값과 칸별로 비교해 「어떤 칸」 을 계산한다. */
 export type WorkConflict = { current: WorkItem; by: string | null }
 
+/**
+ * 생성 메타의 필수 필드 하나(E11 · LIFE-604). corral 이 채울 수 있는 값 모양은 좁다 — 글(`text`)·고르기 하나(`option`).
+ * 그 밖 모양(사람·여러 개 고르기·날짜 …)은 `unsupported` 로 내려 화면이 「corral 에서 채울 수 없음」 을 보이고 만들기를 막는다(빈 값 전송 금지).
+ * 메타에 실린 필드는 전부 **필수**다 — 선택 필드는 싣지 않는다.
+ */
+export type WorkCreateField =
+  | { key: string; label: string; shape: 'text' }
+  | { key: string; label: string; shape: 'option'; options: { id: string; label: string }[] }
+  | { key: string; label: string; shape: 'unsupported'; sourceType: string }
+
+/** 필수 필드 값 — `text` 면 글, `option` 이면 고른 `options[].id`. */
+export type WorkCreateFieldValue = { key: string; value: string }
+
+/** 생성 메타(E11) — `statusKeys` = 만들 때 고를 수 있는 상태(완료 분류 제외, 출처가 첫 상태만 받으면 하나), `defaultStatusKey` 는 그 안. */
+export type WorkCreateMeta = { spaceKey: string; kindKey: string; statusKeys: string[]; defaultStatusKey: string; fields: WorkCreateField[] }
+
+/** 필수 필드 상한 — 값 하나의 길이·필드 수. */
+export const WORK_CREATE_FIELD_VALUE_MAX = 10_000
+export const WORK_CREATE_FIELDS_MAX = 50
+
 /** 출처에 보내는 연산 하나 — 연결·요청 id 는 바깥 봉투(`WorkRequest`)가 든다. */
 export type WorkCall =
   | { op: 'listSpaces' }
@@ -207,10 +229,14 @@ export type WorkCall =
   /** 자식 목록(E6) — 이 작업을 부모로 둔 미보관 작업. */
   | { op: 'listChildren'; itemId: string }
   /**
-   * 작업 만들기(E6 최소형) — 지금은 제목·종류·부모만. T4 가 같은 연산에 본문·상태·우선순위·배치·생성 메타를 더한다.
+   * 작업 만들기(E6 · E10 LIFE-604) — 제목·종류·부모는 늘, 나머지 칸은 **보낸 것만**(없으면 출처 기본).
    * `parentId` null = 스페이스 바로 아래. 부모 종류의 `childKinds` 밖이면 출처가 거절한다.
+   * `statusKey` 는 생성 메타(`getCreateMeta`)의 `statusKeys` 안이어야 하고, `fields` 는 메타의 필수 필드 값이다 —
+   * 메타 밖의 상태·필드, 빠진 필수 필드는 출처가 거절한다(조용히 버리지 않는다). `placement` 를 보내면 배치 능력이 켜져 있어야 한다.
    */
-  | { op: 'createItem'; spaceKey: string; parentId: string | null; kindKey: string; title: string }
+  | { op: 'createItem'; spaceKey: string; parentId: string | null; kindKey: string; title: string; body?: string; statusKey?: string; priority?: WorkPriority | null; placement?: WorkPlacement; fields?: WorkCreateFieldValue[] }
+  /** 생성 메타(E11 · LIFE-604) — (스페이스, 종류) 로 만들 수 있는 상태·기본 상태·필수 필드. 종류마다 다르다(Jira createmeta). */
+  | { op: 'getCreateMeta'; spaceKey: string; kindKey: string }
   /** 변경 이력(E8) — 오래된 것부터. */
   | { op: 'listHistory'; itemId: string }
   | { op: 'setPlacement'; itemId: string; placement: WorkPlacement; ifVersion: string | null }
@@ -239,6 +265,7 @@ export type WorkResult =
   | { op: 'listTransitions'; statusKeys: string[] }
   | { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'reorder' | 'updateItem' | 'createItem'; item: WorkItem }
   | { op: 'listChildren'; items: WorkItem[] }
+  | { op: 'getCreateMeta'; meta: WorkCreateMeta }
   | { op: 'listHistory'; entries: WorkHistoryEntry[] }
   | { op: 'addRelation'; relation: WorkRelation }
   | { op: 'removeRelation'; relationId: string }
@@ -366,6 +393,7 @@ export function capabilityOf(call: WorkCall): WorkCapabilityName | null {
     case 'listTransitions':
     case 'listChildren':
     case 'createItem':
+    case 'getCreateMeta':
       return null
     case 'listHistory':
       return 'history'
@@ -398,6 +426,8 @@ export function capabilitiesOf(call: WorkCall): WorkCapabilityName[] {
   const own = capabilityOf(call)
   const list: WorkCapabilityName[] = own === null ? [] : [own]
   if ((call.op === 'setPlacement' || call.op === 'setParent') && call.ifVersion !== null) list.push('conflictCheck')
+  // 배치를 실은 만들기 — 배치 능력이 꺼진 출처에 「받는 척」 보내지 않는다(LIFE-604 E10).
+  if (call.op === 'createItem' && call.placement !== undefined) list.push('placement')
   return list
 }
 
@@ -456,6 +486,114 @@ function readPlacement(value: unknown): WorkPlacement | null {
   return value === 'board' || value === 'backlog' ? value : null
 }
 
+const CREATE_KEYS = new Set(['op', 'spaceKey', 'parentId', 'kindKey', 'title', 'body', 'statusKey', 'priority', 'placement', 'fields'])
+
+/**
+ * 만들기 손검증(E10) — 모르는 칸이 하나라도 있으면 null(= `invalid_request`). 조용히 버리지 않는다(F1).
+ * 값이 `undefined` 인 칸은 없는 칸으로 본다(IPC 구조 복제가 남기는 빈 자리).
+ */
+function readCreateCall(value: Record<string, unknown>): Extract<WorkCall, { op: 'createItem' }> | null {
+  for (const key of Object.keys(value)) if (value[key] !== undefined && !CREATE_KEYS.has(key)) return null
+  const parentId = value.parentId ?? null
+  const title = value.title
+  if (!isNonEmpty(value.spaceKey) || !(parentId === null || isNonEmpty(parentId)) || !isNonEmpty(value.kindKey)) return null
+  if (typeof title !== 'string' || title.trim().length === 0 || title.length > 500) return null
+  const call: Extract<WorkCall, { op: 'createItem' }> = { op: 'createItem', spaceKey: value.spaceKey, parentId, kindKey: value.kindKey, title }
+  if (value.body !== undefined) {
+    if (typeof value.body !== 'string' || value.body.length > WORK_BODY_MAX) return null
+    call.body = value.body
+  }
+  if (value.statusKey !== undefined) {
+    if (!isNonEmpty(value.statusKey)) return null
+    call.statusKey = value.statusKey
+  }
+  if (value.priority !== undefined) {
+    const priority = value.priority === null ? null : readWorkPriority(value.priority)
+    if (value.priority !== null && priority === null) return null
+    call.priority = priority
+  }
+  if (value.placement !== undefined) {
+    const placement = readPlacement(value.placement)
+    if (placement === null) return null
+    call.placement = placement
+  }
+  if (value.fields !== undefined) {
+    const fields = readFieldValues(value.fields)
+    if (fields === null) return null
+    call.fields = fields
+  }
+  return call
+}
+
+function readFieldValues(value: unknown): WorkCreateFieldValue[] | null {
+  if (!Array.isArray(value) || value.length > WORK_CREATE_FIELDS_MAX) return null
+  const fields: WorkCreateFieldValue[] = []
+  for (const entry of value) {
+    if (!isRecord(entry) || Object.keys(entry).some((key) => key !== 'key' && key !== 'value')) return null
+    if (!isNonEmpty(entry.key) || typeof entry.value !== 'string' || entry.value.length > WORK_CREATE_FIELD_VALUE_MAX) return null
+    if (fields.some((field) => field.key === entry.key)) return null
+    fields.push({ key: entry.key, value: entry.value })
+  }
+  return fields
+}
+
+/**
+ * 출처가 준 생성 메타 검증(E11) — main 이 출처 응답을 이것으로 본다. 어긋나면 null(= `invalid_response`).
+ * 상태는 하나 이상·겹치지 않음·기본 상태가 그 안 · 필드 키 겹치지 않음 · 고르기 필드는 선택지 하나 이상(id 겹치지 않음).
+ */
+export function readCreateMeta(value: unknown): WorkCreateMeta | null {
+  if (!isRecord(value) || !isNonEmpty(value.spaceKey) || !isNonEmpty(value.kindKey) || !isNonEmpty(value.defaultStatusKey)) return null
+  const statusKeys = value.statusKeys
+  if (!Array.isArray(statusKeys) || statusKeys.length === 0 || !statusKeys.every(isNonEmpty) || new Set(statusKeys).size !== statusKeys.length) return null
+  if (!statusKeys.includes(value.defaultStatusKey)) return null
+  if (!Array.isArray(value.fields) || value.fields.length > WORK_CREATE_FIELDS_MAX) return null
+  const fields: WorkCreateField[] = []
+  for (const raw of value.fields) {
+    const field = readCreateField(raw)
+    if (field === null || fields.some((entry) => entry.key === field.key)) return null
+    fields.push(field)
+  }
+  return { spaceKey: value.spaceKey, kindKey: value.kindKey, statusKeys: [...statusKeys], defaultStatusKey: value.defaultStatusKey, fields }
+}
+
+function readCreateField(value: unknown): WorkCreateField | null {
+  if (!isRecord(value) || !isNonEmpty(value.key) || !isNonEmpty(value.label)) return null
+  switch (value.shape) {
+    case 'text':
+      return { key: value.key, label: value.label, shape: 'text' }
+    case 'option': {
+      if (!Array.isArray(value.options) || value.options.length === 0) return null
+      const options: { id: string; label: string }[] = []
+      for (const option of value.options) {
+        if (!isRecord(option) || !isNonEmpty(option.id) || !isNonEmpty(option.label) || options.some((entry) => entry.id === option.id)) return null
+        options.push({ id: option.id, label: option.label })
+      }
+      return { key: value.key, label: value.label, shape: 'option', options }
+    }
+    case 'unsupported':
+      return isNonEmpty(value.sourceType) ? { key: value.key, label: value.label, shape: 'unsupported', sourceType: value.sourceType } : null
+    default:
+      return null
+  }
+}
+
+/**
+ * 만들기 칸이 메타에 맞는가(E10·E11) — 출처가 보내기 전에 쓴다(두 출처 같은 규칙). 맞으면 null, 아니면 거절 문구.
+ * 상태는 메타 안 · 필드는 메타에 있는 키만 · 필수 필드는 전부 값(공백만 = 없음) · 고르기는 선택지 id · 채울 수 없는 모양이 있으면 거절.
+ */
+export function createFieldsProblem({ call, meta }: { call: Extract<WorkCall, { op: 'createItem' }>; meta: WorkCreateMeta }): string | null {
+  if (call.statusKey !== undefined && !meta.statusKeys.includes(call.statusKey)) return '이 상태로는 만들 수 없습니다 — 만들 수 있는 상태를 고르세요.'
+  const given = call.fields ?? []
+  for (const value of given) if (!meta.fields.some((field) => field.key === value.key)) return `이 종류에 없는 필드입니다 (${value.key.slice(0, 64)}).`
+  for (const field of meta.fields) {
+    if (field.shape === 'unsupported') return `${field.label} 은(는) corral 에서 채울 수 없습니다 — 출처에서 만드세요.`
+    const value = given.find((entry) => entry.key === field.key)?.value ?? ''
+    if (value.trim().length === 0) return `필수 필드 ${field.label} 이(가) 비었습니다.`
+    if (field.shape === 'option' && !field.options.some((option) => option.id === value)) return `${field.label} 에 없는 값입니다.`
+  }
+  return null
+}
+
 export function readWorkCall(value: unknown): WorkCall | null {
   if (!isRecord(value)) return null
   const op = value.op
@@ -489,13 +627,10 @@ export function readWorkCall(value: unknown): WorkCall | null {
     case 'listChildren':
     case 'listHistory':
       return isNonEmpty(itemId) ? { op, itemId } : null
-    case 'createItem': {
-      const parentId = value.parentId ?? null
-      const title = value.title
-      return isNonEmpty(value.spaceKey) && (parentId === null || isNonEmpty(parentId)) && isNonEmpty(value.kindKey) && typeof title === 'string' && title.trim().length > 0 && title.length <= 500
-        ? { op, spaceKey: value.spaceKey, parentId, kindKey: value.kindKey, title }
-        : null
-    }
+    case 'createItem':
+      return readCreateCall(value)
+    case 'getCreateMeta':
+      return isNonEmpty(value.spaceKey) && isNonEmpty(value.kindKey) ? { op, spaceKey: value.spaceKey, kindKey: value.kindKey } : null
     case 'setPlacement': {
       const placement = readPlacement(value.placement)
       return isNonEmpty(itemId) && placement !== null && isNullableString(ifVersion) ? { op, itemId, placement, ifVersion } : null

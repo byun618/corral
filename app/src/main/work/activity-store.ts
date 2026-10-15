@@ -120,6 +120,8 @@ function readChange(value: unknown): WorkActivityChange | null {
     }
     case 'child':
       return str(value.childKey) && str(value.childTitle) ? { field: 'child', childKey: value.childKey, childTitle: value.childTitle } : null
+    case 'created':
+      return str(value.kindLabel) ? { field: 'created', kindLabel: value.kindLabel } : null
     case 'run': {
       if (!str(value.worktree)) return null
       if (value.event === 'source_link_failed') return nullableStr(value.message) ? { field: 'run', event: 'source_link_failed', worktree: value.worktree, message: value.message } : null

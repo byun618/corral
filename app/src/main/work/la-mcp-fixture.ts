@@ -40,6 +40,8 @@ export type FixtureCorrupt =
   | 'byseq-unknown-kind' | 'byseq-null-kind-data'
   // LIFE-602 E5 양성 대조 — resolution 을 모르는 글자로.
   | 'resolution-unknown'
+  // LIFE-604 C4 양성 대조 — issue_create 가 T3 까지의 모의처럼 description·priority·statusId 를 무시하고 고정값으로 만든다.
+  | 'create-ignore-fields'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -69,6 +71,9 @@ const INVERSE: Record<WorkRelationKind, WorkRelationKind> = {
   is_blocked_by: 'blocks', blocks: 'is_blocked_by', duplicates: 'is_duplicated_by', is_duplicated_by: 'duplicates', relates_to: 'relates_to',
 }
 const WRITE_TOOLS = new Set(['issue_update', 'issue_transition', 'issue_link_create', 'issue_link_delete', 'issue_create'])
+/** 실제 LA `issue_create` 입력 칸(LIFE-604 — life-assistant MCP 도구 정의). */
+const CREATE_ARGS = new Set(['kind', 'title', 'description', 'priority', 'statusId', 'categoryKey', 'onBoard', 'dueAt', 'parentId', 'goalId', 'color'])
+const PRIORITIES = new Set(['highest', 'high', 'medium', 'low', 'lowest'])
 
 const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 
@@ -134,6 +139,8 @@ function seedIssues(): FixtureIssue[] {
 export class LaMcpFixture {
   readonly tokens = new Map<string, FixtureScope>()
   readonly requests: FixtureRequest[] = []
+  /** 받은 `issue_create` 인자(LIFE-604 C4) — 칸마다 무엇을 받았는지 본다. 토큰은 인자에 없다. */
+  readonly createArgs: Record<string, unknown>[] = []
   statuses = seedStatuses()
   issues = seedIssues()
   links: FixtureLink[] = []
@@ -301,9 +308,19 @@ export class LaMcpFixture {
       }
       // LIFE-602 E6 — 부모 규칙(issue.service checkParentRule): checkpoint=부모 project 必 · bug=project|checkpoint|없음 · task=project|checkpoint|bug|없음.
       case 'issue_create': {
+        // LIFE-604 C4 — 실제 LA `issue_create` 스키마대로 칸을 받는다: kind·title(필수) · description · priority(5단|null) · statusId(uuid, categoryKey 보다 우선)
+        // · categoryKey · onBoard(기본 false = 백로그) · dueAt · parentId · goalId · color. 모르는 칸은 BAD_REQUEST(받는 척 금지 — 이름이 틀린 칸이 조용히 사라지지 않게).
+        this.createArgs.push({ ...args })
+        const unknown = Object.keys(args).find((key) => !CREATE_ARGS.has(key))
+        if (unknown !== undefined) return fail('BAD_REQUEST', `모르는 칸 ${unknown}`)
         const kind = args.kind
         if (kind !== 'project' && kind !== 'checkpoint' && kind !== 'task' && kind !== 'bug') return fail('BAD_REQUEST', 'kind')
         if (typeof args.title !== 'string' || args.title.length === 0) return fail('BAD_REQUEST', 'title')
+        if ('description' in args && typeof args.description !== 'string' && args.description !== null) return fail('BAD_REQUEST', 'description')
+        if ('priority' in args && args.priority !== null && !PRIORITIES.has(String(args.priority))) return fail('BAD_REQUEST', 'priority')
+        if ('onBoard' in args && typeof args.onBoard !== 'boolean') return fail('BAD_REQUEST', 'onBoard')
+        if ('statusId' in args && !this.statuses.some((status) => status.id === args.statusId)) return fail('BAD_REQUEST', '없는 statusId')
+        if ('categoryKey' in args && !this.statuses.some((status) => status.categoryKey === args.categoryKey)) return fail('BAD_REQUEST', 'categoryKey')
         const parentId = typeof args.parentId === 'string' ? args.parentId : null
         const parent = parentId === null ? null : find(parentId)
         if (parentId !== null && parent === undefined) return fail('BAD_REQUEST', '없는 부모')
@@ -313,10 +330,15 @@ export class LaMcpFixture {
             : kind === 'bug' ? parentKind === null || parentKind === 'project' || parentKind === 'checkpoint'
               : parentKind === null || parentKind === 'project' || parentKind === 'checkpoint' || parentKind === 'bug'
         if (!allowed) return fail('BAD_REQUEST', '부모 규칙 위반')
+        // 상태: statusId 우선 → categoryKey 의 기본 → todo 기본(LA issue.service 순서).
+        const byCategory = (key: unknown): FixtureStatus | undefined => this.statuses.find((status) => status.categoryKey === key && status.isDefault) ?? this.statuses.find((status) => status.categoryKey === key)
+        const ignore = this.corrupt === 'create-ignore-fields'
+        const statusId = !ignore && typeof args.statusId === 'string' ? args.statusId : (byCategory(args.categoryKey ?? 'todo')?.id ?? FIXTURE_STATUS.todo)
         const sequentialId = Math.max(...this.issues.map((issue) => issue.sequentialId)) + 1
         const created: FixtureIssue = {
-          id: uuid(80000 + this.seq++), sequentialId, kind, parentId, title: args.title, description: null, priority: null, statusId: FIXTURE_STATUS.todo,
-          resolution: null, color: null, position: String(100 + sequentialId), onBoard: args.onBoard === true, dueAt: null, archivedAt: null, updatedAt: '2026-10-14T00:00:00.000Z',
+          id: uuid(80000 + this.seq++), sequentialId, kind, parentId, title: args.title,
+          description: !ignore && typeof args.description === 'string' ? args.description : null, priority: !ignore && typeof args.priority === 'string' ? args.priority : null, statusId,
+          resolution: null, color: null, position: String(100 + sequentialId), onBoard: args.onBoard === true, dueAt: typeof args.dueAt === 'string' ? args.dueAt : null, archivedAt: null, updatedAt: '2026-10-14T00:00:00.000Z',
         }
         this.issues.push(created)
         return ok(this.response(created))

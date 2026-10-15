@@ -186,6 +186,7 @@ export function describeChange({ change, statuses }: { change: WorkActivityChang
       return change.action === 'add' ? `연결 추가 · ${what}` : `연결 뗌${what === '' ? '' : ` · ${what}`}`
     }
     case 'child': return `자식 추가 · ${change.childKey} ${change.childTitle}`
+    case 'created': return `만들었음 · ${change.kindLabel}`
     case 'run': return describeRun(change)
     case 'agent': return describeAgent(change)
   }

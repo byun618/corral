@@ -10,6 +10,8 @@ import {
   type WorkCapabilities,
   type WorkCapability,
   type WorkCapabilityName,
+  type WorkCreateFieldValue,
+  type WorkCreateMeta,
   type WorkItem,
   type WorkLink,
   type WorkResponse,
@@ -459,6 +461,111 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       expect(refused).toMatchObject({ ok: false, error: { kind: 'rejected' } })
       const blank = await send({ op: 'createItem', spaceKey: space.key, parentId: parent.id, kindKey, title: '   ' })
       expect(blank).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+    })
+
+    /** 메타의 필수 필드를 채운 값 — 글은 '계약 값', 고르기는 첫 선택지. 채울 수 없는 모양이 있으면 null. */
+    const fillRequired = (meta: WorkCreateMeta): WorkCreateFieldValue[] | null => {
+      const values: WorkCreateFieldValue[] = []
+      for (const field of meta.fields) {
+        if (field.shape === 'unsupported') return null
+        values.push({ key: field.key, value: field.shape === 'text' ? '계약 값' : (field.options[0]?.id ?? '') })
+      }
+      return values
+    }
+    const createMeta = async ({ spaceKey, kindKey }: { spaceKey: string; kindKey: string }): Promise<WorkCreateMeta> => {
+      const result = await okResult({ op: 'getCreateMeta', spaceKey, kindKey })
+      if (result.op !== 'getCreateMeta') throw new Error(result.op)
+      return result.meta
+    }
+
+    it('생성 메타(E11) — 종류마다 상태(완료 분류 제외)·기본 상태·필수 필드, 모르는 종류는 거절', async () => {
+      const { space, statuses } = await stage()
+      const kinds = await okResult({ op: 'listStatuses', spaceKey: space.key })
+      if (kinds.op !== 'listStatuses') throw new Error(kinds.op)
+      for (const kind of kinds.kinds) {
+        const meta = await createMeta({ spaceKey: space.key, kindKey: kind.key })
+        expect(meta).toMatchObject({ spaceKey: space.key, kindKey: kind.key })
+        expect(meta.statusKeys.length).toBeGreaterThan(0)
+        expect(meta.statusKeys).toContain(meta.defaultStatusKey)
+        for (const key of meta.statusKeys) {
+          const status = statuses.find((entry) => entry.key === key)
+          expect(status, `메타 상태 ${key} 는 그 스페이스 상태 목록에 있어야 한다`).toBeDefined()
+          expect(status?.category).not.toBe('done')
+        }
+      }
+      expect(await send({ op: 'getCreateMeta', spaceKey: space.key, kindKey: 'no-such-kind' })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+    })
+
+    it('만들기 칸(E10) — 본문·상태·우선순위·배치·필수 필드가 그대로 들어가고, 「만들었음」 활동 1건', async () => {
+      const { space, capabilities } = await stage()
+      const kinds = await okResult({ op: 'listStatuses', spaceKey: space.key })
+      if (kinds.op !== 'listStatuses') throw new Error(kinds.op)
+      for (const kind of kinds.kinds) {
+        const meta = await createMeta({ spaceKey: space.key, kindKey: kind.key })
+        const fields = fillRequired(meta)
+        if (fields === null) continue
+        const statusKey = meta.statusKeys.at(-1) ?? meta.defaultStatusKey
+        const placement = capabilities.placement.state === 'on' ? 'backlog' : undefined
+        const created = await okResult({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.key, title: `계약 만들기 ${kind.key}`, body: '## 본문\n- [ ] 하나', statusKey, priority: 'high', ...(placement === undefined ? {} : { placement }), ...(fields.length === 0 ? {} : { fields }) })
+        if (created.op !== 'createItem') throw new Error(created.op)
+        const again = await getItem(created.item.id)
+        expect(again).toMatchObject({ title: `계약 만들기 ${kind.key}`, body: '## 본문\n- [ ] 하나', statusKey, priority: 'high', parentId: null, spaceKey: space.key, kind: { key: kind.key } })
+        if (placement !== undefined) expect(again.placement).toBe('backlog')
+        const records = activityOf(created.item.id).filter((record) => record.change.field === 'created')
+        expect(records).toHaveLength(1)
+        expect(records[0]?.change).toEqual({ field: 'created', kindLabel: kind.label })
+        // 목록 재조회에도 서버 값으로 나온다(낙관 행 아님).
+        expect((await listAll(space.key)).items.find((item) => item.id === created.item.id)).toMatchObject({ statusKey, priority: 'high' })
+      }
+    })
+
+    it('만들기 배치(E10) — 보드로 만들면 보드, 배치 능력이 꺼져 있으면 배치를 실은 만들기는 unsupported', async () => {
+      const { space, capabilities } = await stage()
+      const kinds = await okResult({ op: 'listStatuses', spaceKey: space.key })
+      if (kinds.op !== 'listStatuses') throw new Error(kinds.op)
+      const kind = (await Promise.all(kinds.kinds.map(async (entry) => ({ entry, meta: await createMeta({ spaceKey: space.key, kindKey: entry.key }) })))).find(({ meta }) => meta.fields.length === 0)
+      if (kind === undefined) throw new Error('필수 필드 없는 종류가 하나는 있어야 한다 — 픽스처를 확인')
+      const call: WorkCall = { op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.entry.key, title: '계약 보드 만들기', placement: 'board' }
+      if (capabilities.placement.state !== 'on') {
+        await expectClosed({ capability: capabilities.placement, call })
+        return
+      }
+      const created = await okResult(call)
+      if (created.op !== 'createItem') throw new Error(created.op)
+      expect((await getItem(created.item.id)).placement).toBe('board')
+    })
+
+    it('만들기 거절(E10) — 메타 밖 상태·모르는 필드·빠진 필수 필드는 rejected, 모르는 칸·잘못된 값은 invalid_request(조용히 버리지 않는다)', async () => {
+      const { space, statuses } = await stage()
+      const kinds = await okResult({ op: 'listStatuses', spaceKey: space.key })
+      if (kinds.op !== 'listStatuses') throw new Error(kinds.op)
+      const kind = kinds.kinds[0]
+      if (kind === undefined) throw new Error('종류가 없다')
+      const meta = await createMeta({ spaceKey: space.key, kindKey: kind.key })
+      const fields = fillRequired(meta) ?? []
+      const base: Extract<WorkCall, { op: 'createItem' }> = { op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.key, title: '거절돼야 함', ...(fields.length === 0 ? {} : { fields }) }
+      const done = statuses.find((status) => status.category === 'done')
+      if (done !== undefined) expect(await send({ ...base, statusKey: done.key })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+      const outside = statuses.find((status) => !meta.statusKeys.includes(status.key) && status.category !== 'done')
+      if (outside !== undefined) expect(await send({ ...base, statusKey: outside.key })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+      expect(await send({ ...base, fields: [...fields, { key: 'no-such-field', value: 'x' }] })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+      // 필수 필드가 있는 종류면 빠뜨린 만들기는 거절, 공백만 값도 거절.
+      for (const entry of kinds.kinds) {
+        const kindMeta = await createMeta({ spaceKey: space.key, kindKey: entry.key })
+        const required = kindMeta.fields[0]
+        if (required === undefined) continue
+        expect(await send({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: entry.key, title: '필수 빠짐' })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+        expect(await send({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: entry.key, title: '필수 공백', fields: [{ key: required.key, value: '   ' }] })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+      }
+      const raw = (call: Record<string, unknown>) => target.service.request({ requestId: `req-raw-${++seq}`, connectionId: target.connectionId, call })
+      expect(await raw({ ...base, dueAt: '2026-11-01T00:00:00.000Z' })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+      expect(await raw({ ...base, assignee: 'me' })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+      expect(await raw({ ...base, priority: 'urgent' })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+      expect(await raw({ ...base, placement: 'sideways' })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+      expect(await raw({ ...base, fields: [{ key: 'a', value: 'x', extra: 1 }] })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+      expect(await raw({ ...base, fields: [{ key: 'a', value: 'x' }, { key: 'a', value: 'y' }] })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+      // 어떤 거절도 작업을 만들지 않았다.
+      expect((await listAll(space.key)).items.some((item) => item.title === '거절돼야 함' || item.title.startsWith('필수 '))).toBe(false)
     })
 
     it('변경 이력(E8) — 켜져 있으면 corral 쓰기가 쓰기 id 와 함께 나오고, 꺼져 있으면 이유와 함께 거절', async () => {

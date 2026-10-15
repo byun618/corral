@@ -18,3 +18,7 @@ pc-r4a-move-draft	src/renderer/src/components/TasksPage.create.test.tsx	R4-A
 pc-r4b-yield-esc	src/renderer/src/components/TasksPage.create.test.tsx	R4-B
 pc-r4d-truncated	src/renderer/src/components/TasksPage.create.test.tsx	R4-D
 pc-r4g-inert	src/renderer/src/components/TasksPage.create.test.tsx src/renderer/src/components/TasksPage.start.test.tsx	R4-G
+pc-r5b-inline-unavailable	src/renderer/src/hooks/useQuickCreate.test.tsx	인라인 갈래
+pc-r5b-inline-refetch	src/renderer/src/hooks/useQuickCreate.test.tsx	인라인 갈래
+pc-r5c-space-mismatch	src/main/work/create.test.ts	생성 메타 검증
+pc-r5c-unavailable-length	src/main/work/create.test.ts	생성 메타 검증

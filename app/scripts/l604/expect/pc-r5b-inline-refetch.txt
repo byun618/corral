@@ -1,0 +1,2 @@
+# pc-r5b-inline-refetch — 인라인 거절 뒤 메타 재요청을 지운 사본에서 실패해야 하는 시험(raw/claude/final/pc/)
+src/renderer/src/hooks/useQuickCreate.test.tsx > 인라인 갈래 (R5-B — 수정 4 R4-C·R4-F 의 인라인 쪽) > R4-C 인라인 — 출처가 만들기를 거절하면 그 종류 메타를 다시 받는다 · 「모름」(maybeApplied)이면 다시 받지 않는다(대조)

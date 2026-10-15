@@ -1,0 +1,12 @@
+diff --git a/app/src/renderer/src/hooks/useQuickCreate.ts b/app/src/renderer/src/hooks/useQuickCreate.ts
+index dca53d020..4c86dd0dc 100644
+--- a/app/src/renderer/src/hooks/useQuickCreate.ts
++++ b/app/src/renderer/src/hooks/useQuickCreate.ts
+@@ -469,7 +469,6 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
+     const meta = metaOf({ target: current.target, kindKey: kind.key })
+     if (meta.state === 'loading') { setInline({ ...current, error: '만들기 정보를 받는 중… 잠시 뒤 다시 Enter' }); return }
+     if (meta.state === 'error') { prepareInline(); setInline({ ...current, error: `만들기 정보를 받지 못했습니다 — ${meta.message} (다시 Enter 로 재시도)` }); return }
+-    if (meta.meta.unavailable !== undefined) { setInline({ ...current, error: meta.meta.unavailable }); return }
+     if (!meta.meta.statusKeys.includes(current.statusKey)) { setInline({ ...current, error: INLINE_STATUS_BLOCKED }); return }
+     const long = titleTooLong(current.text)
+     if (long !== null) { setInline({ ...current, error: long }); return }

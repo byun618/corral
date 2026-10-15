@@ -89,6 +89,8 @@ run build 0 npm run build
 run runtime-bundle 0 node scripts/l604/check-runtime-bundle.mjs
 print -r -- 'export const marker = "createItem"' > $OUT/runtime-marker-sample.mjs
 run_grep pc-runtime-bundle 1 'runtime-marker-sample.mjs"],"perMarker":{"createItem":1,' node scripts/l604/check-runtime-bundle.mjs --extra $OUT/runtime-marker-sample.mjs
+# R4-H — run_grep 자체의 판별력(문구 없음·종료코드 다름 → fail).
+run run-grep-check 0 zsh scripts/l604/run-grep-check.zsh $OUT/run-grep-check
 # R2-E·R1-G 장치 자기점검(양성 대조 내장).
 run st-draft-leak 0 node scripts/l604/draft-leak.mjs --self-test
 run st-count-creates 0 node scripts/l604/count-creates.mjs --self-test

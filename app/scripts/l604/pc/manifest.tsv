@@ -14,3 +14,7 @@ pc-r2f-same-tick	src/renderer/src/components/TasksPage.create.test.tsx	같은 �
 pc-r3a-keycode	src/renderer/src/components/TasksPage.create.test.tsx	R3-A
 pc-r3g-late-release	src/renderer/src/components/TasksPage.create.test.tsx	R3-G\(a\)
 pc-r3g-inline-placement	src/renderer/src/components/TasksPage.create.test.tsx	R3-G\(b\)
+pc-r4a-move-draft	src/renderer/src/components/TasksPage.create.test.tsx	R4-A
+pc-r4b-yield-esc	src/renderer/src/components/TasksPage.create.test.tsx	R4-B
+pc-r4d-truncated	src/renderer/src/components/TasksPage.create.test.tsx	R4-D
+pc-r4g-inert	src/renderer/src/components/TasksPage.create.test.tsx src/renderer/src/components/TasksPage.start.test.tsx	R4-G

@@ -1,0 +1,13 @@
+diff --git a/app/src/renderer/src/hooks/useTasksPage.ts b/app/src/renderer/src/hooks/useTasksPage.ts
+index 481076df2..269ffe2e3 100644
+--- a/app/src/renderer/src/hooks/useTasksPage.ts
++++ b/app/src/renderer/src/hooks/useTasksPage.ts
+@@ -204,7 +204,7 @@ function withCreated({ data, created }: { data: SpaceData; created: Map<string,
+   const extra: WorkItem[] = []
+   for (const [uid, entry] of created) {
+     if (entry.connectionId !== data.connectionId || entry.spaceKey !== data.spaceKey) continue
+-    if (data.items.some((item) => item.id === entry.item.id) || (data.nextCursor === null && !data.truncated)) { created.delete(uid); continue }
++    if (data.items.some((item) => item.id === entry.item.id) || data.nextCursor === null) { created.delete(uid); continue }
+     extra.push({ ...entry.item, body: null, relations: null })
+   }
+   return extra.length === 0 ? data.items : [...data.items, ...extra]

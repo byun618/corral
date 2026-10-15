@@ -1,6 +1,6 @@
 // LIFE-593 최종 관문 — 격리 회차(01-criteria E1~E6·E8). 격리 개발 Electron(iso.sh 가 /tmp/l593g-* 에 띄운 것)과 그 fixture 에서만.
 // 사용(app/ 에서, iso.sh 안): node scripts/l593/final.mjs <ROOT> <OUT.json> <case>[,<case>...] <FAKE>
-//   사례: e1 e2 e2q e3 e4 e5 e5r e6 e8   (e2q 는 L593_Q_REPO=<corral fd1664c4d 트리 레포> 필요 · e4·e5r 는 앱을 다시 띄운다 — FAKE 필요)
+//   사례: e1 e2 e2q e3 e4 e5 e5r e6 e8 e9k   (e2q 는 L593_Q_REPO=<corral fd1664c4d 트리 레포> 필요 · e4·e5r 는 앱을 다시 띄운다 — FAKE 필요)
 //   ISO_ENV='L577_ELECTRON_ARGS=--remote-debugging-port=0' — CDP(합성 IME 조합).
 // 입력: 제어 소켓 sendInputEvent · CDP(Input.imeSetComposition·dispatchKeyEvent·insertText) · DOM 값 setter(필터 입력칸에 한꺼번에 넣기만)·DOM focus(사이드바 포커스).
 //   OS 키 입력(CGEvent)·시스템 클립보드 쓰기 없음. 휴지통에는 이름에 l593 이 든 fixture 항목만 간다(결과 `trashed`).
@@ -35,7 +35,12 @@ const limit = (name, data) => {
 
 // --- 화면 ----------------------------------------------------------------------------------------------
 const q = (js) => evalJs(root, js)
-const key = (keyCode, modifiers = []) => ctl(root, { cmd: 'key', keyCode, modifiers })
+/** D1 — 하네스가 보낸 키 수. 격리 corral.ndjson 의 input.raw(keyUp·수식키) 수와 대조해 사용자 입력 혼입을 본다. */
+const sent = { key: 0, imeKeyUp: 0 }
+const key = (keyCode, modifiers = []) => {
+  sent.key += 1
+  return ctl(root, { cmd: 'key', keyCode, modifiers })
+}
 const type = async (text) => {
   await key('Shift')
   return ctl(root, { cmd: 'type', text })
@@ -198,6 +203,7 @@ const imeKey = async (keyName, code) => {
   await cdp('Input.imeSetComposition', { text: '하', selectionStart: 1, selectionEnd: 1 })
   await cdp('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Process', code, windowsVirtualKeyCode: 229 })
   await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: keyName, code, windowsVirtualKeyCode: 229 })
+  sent.imeKeyUp += 1
   await sleep(300)
 }
 const imeCommit = async (text) => {
@@ -237,12 +243,16 @@ const cases = {}
 cases.e1 = async () => {
   // ⓔ — 레포를 등록하기 전(열린 worktree 없음)
   const listBefore = logRows().filter((r) => r.tag === 'file.list').length
+  // D1 — 연 자리가 BODY 면 복귀 판정이 거저 통과하므로 사이드바 단추에 포커스를 두고 연다.
+  const noRootFrom = await q(`(() => { const el = [...document.querySelectorAll('aside button, .sidebar button, [data-sidebar] button')].find((e) => e.offsetParent !== null); el?.focus(); const a = document.activeElement; return { tag: a?.tagName ?? null, text: String(a?.textContent ?? '').slice(0, 40), label: a?.getAttribute?.('aria-label') ?? null } })()`)
   await pressQuick()
   await sleep(800)
   const noRoot = await q(`(() => ({ state: document.querySelector('[data-quick-open]')?.dataset.quickOpenState ?? null, empty: document.querySelector('[data-quick-open-empty]')?.dataset.quickOpenEmpty ?? null, text: document.querySelector('[data-quick-open-empty]')?.textContent ?? null, inputDisabled: document.querySelector('[data-quick-open-input]')?.disabled ?? null }))()`)
   const noRootActive = await q(`(() => { const a = document.activeElement; return { tag: a?.tagName ?? null, cls: String(a?.className ?? '').slice(0, 60), inDialog: a?.closest?.('[data-quick-open]') != null } })()`)
   await key('Escape')
   const escClosed = await until(async () => !(await qoOpen()), { timeoutMs: 2000, label: '닫힘(no-root) Esc' }).then(() => true, () => false)
+  await sleep(300)
+  const noRootBack = await q(`(() => { const a = document.activeElement; return { tag: a?.tagName ?? null, text: String(a?.textContent ?? '').slice(0, 40), label: a?.getAttribute?.('aria-label') ?? null } })()`)
   let noRootOutside = null
   if (!escClosed) {
     const box = await rect('[data-quick-open]')
@@ -253,7 +263,9 @@ cases.e1 = async () => {
   }
   const listAfter = logRows().filter((r) => r.tag === 'file.list').length
   check('ⓔ 열린 worktree 없음 = 안내만·입력 비활성·file.list IPC 0', noRoot.state === 'no-root' && noRoot.empty === 'no-root' && noRoot.inputDisabled === true && listAfter === listBefore, { noRoot, listBefore, listAfter })
+  check('ⓒ(no-root) 열린 동안 포커스가 대화상자 안', noRootActive.inDialog === true, { noRootActive })
   check('ⓒ(no-root) 안내 상태에서도 Esc 로 닫힘', escClosed, { escClosed, noRootActive, noRootOutside })
+  check('ⓒ(no-root) Esc 뒤 연 자리(사이드바 단추)로 포커스', escClosed && noRootFrom.tag === 'BUTTON' && JSON.stringify(noRootBack) === JSON.stringify(noRootFrom), { noRootFrom, noRootBack })
   if (await qoOpen()) throw new Error('no-root 대화상자가 닫히지 않음')
 
   await terminalPane()
@@ -978,6 +990,31 @@ cases.e6big = async () => {
 }
 
 // E8 — ⓐ 루트 양성 대조 · ⓑ -/--·NUL · ⓓ 밖 링크(폴더 미추적·파일 열기 거절) · ⓔ 최근 기록 상대·재가둠  (ⓒ 심은 git 은 e8git 사례)
+// D1 수정 — E9ⓑ ⌘K·⌘J 팔레트 무회귀 1회(같은 대화상자 계열). 터미널에서 열기 → 입력칸 포커스·뒤 inert·⌘P 대화상자 아님 → 글자로 거르기 → Esc → 터미널 복귀 · PTY 표지 0.
+cases.e9k = async () => {
+  await terminalPane()
+  await sleep(1500)
+  for (const [name, letter] of [['cmdK', 'K'], ['cmdJ', 'J']]) {
+    await showTerminal()
+    const before = await termText()
+    await key(letter, ['meta'])
+    const opened = await until(() => q(`!!document.querySelector('[data-command-palette]')`), { timeoutMs: 4000, label: name }).then(() => true, () => false)
+    await sleep(300)
+    const state = await q(`(() => { const p = document.querySelector('[data-command-palette]'); const a = document.activeElement; return { inputFocused: a === p?.querySelector('input'), inert: document.querySelector('.app-body')?.inert === true, quickOpen: !!document.querySelector('[data-quick-open]'), rows: p?.querySelectorAll('[data-palette-entry]').length ?? 0 } })()`)
+    const mark = `zq${name}`
+    await type(mark)
+    await sleep(300)
+    const typed = await q(`(() => { const p = document.querySelector('[data-command-palette]'); return { value: p?.querySelector('input')?.value ?? null, rows: p?.querySelectorAll('[data-palette-entry]').length ?? 0 } })()`)
+    await key('Escape')
+    const closed = await until(async () => !(await q(`!!document.querySelector('[data-command-palette]')`)), { timeoutMs: 3000, label: `${name} 닫힘` }).then(() => true, () => false)
+    await sleep(300)
+    const back = await activeInfo()
+    const after = await termText()
+    const leaked = after.split(mark).length > before.split(mark).length
+    check(`ⓑ ${name} = 팔레트·입력칸 포커스·뒤 inert·⌘P 아님 → 거르기 → Esc 닫힘·터미널 복귀·PTY 0`, opened && state.inputFocused && state.inert && !state.quickOpen && state.rows > 0 && typed.value === mark && typed.rows < state.rows && closed && back.xterm && !leaked, { opened, state, typed, closed, back, leaked })
+  }
+}
+
 cases.e8 = async () => {
   write('-l593-dash.ts')
   write('--l593-ddash.ts')
@@ -1118,6 +1155,10 @@ try {
 } finally {
   cdpSocket?.close()
   result.giveBack = giveBackLog
+  const rows = logRows()
+  const raw = rows.filter((r) => r.tag === 'input.raw')
+  result.inputMix = { harnessKeyCalls: sent.key, harnessImeKeyUps: sent.imeKeyUp, inputRaw: raw.length, inputRawKeyUp: raw.filter((r) => r.type === 'keyUp').length, windowFocus: rows.filter((r) => JSON.stringify(r).includes('window-focus')).length }
+  console.log(`# inputMix ${JSON.stringify(result.inputMix)}`)
   result.exitCode = exitCode
   result.summary = { pass: result.checks.filter((c) => c.ok).length, fail: result.checks.filter((c) => !c.ok).length, limits: result.limits.length }
   writeJson(path.resolve(out), result)

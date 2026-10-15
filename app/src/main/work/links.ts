@@ -8,6 +8,8 @@
 //    같은 사건은 `eventKey` 로 한 번만(재시작 · 상태 재방송 · 같은 질문 재관측). 열쇠는 설계 메모 §4.
 
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import type { DetachWorkLinkResult, RepoRow, WorktreeRow, PaneRow } from '../../shared/types.js'
 import type { WorkActivityChange, WorkLink } from '../../shared/work.js'
 import { waitingQuestion } from '../../shared/agent-dot.js'
@@ -39,7 +41,31 @@ export type LinkDeps = {
   registry: () => LinkRegistryPort | null
   work: () => LinkWorkPort | null
   log: (event: string, data: Record<string, unknown>) => void
+  /** 시계 · 다시 보기 타이머 — 시험이 바꾼다. 기본 `Date.now` · `setTimeout`(unref). */
+  now?: () => number
+  schedule?: (run: () => void, ms: number) => void
+  /**
+   * worktree 의 세대(R2-J ⓑ) — 같은 경로를 지웠다 다시 만들면 바뀌는 값. 자동 연결 열쇠에 넣어 다시 만든 worktree 의 자동 연결도 남게 한다.
+   * 기본 = `<path>/.git` 의 생성 시각(ms, 정수). 못 읽으면 null(열쇠의 세대 칸은 `na`).
+   */
+  generation?: (worktreePath: string) => string | null
 }
+
+function gitBirth(worktreePath: string): string | null {
+  try {
+    const stat = fs.statSync(path.join(worktreePath, '.git'))
+    return String(Math.trunc(stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.ctimeMs))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 본문 없는 질문 대기를 남기기 전에 기다리는 시간(R2-C). 지문 계약은 「질문이 없으면 null」 하나라(`SessionDigest.pendingQuestions` —
+ * 빈 배열은 오지 않는다) 「기록을 아직 안 읽음」 과 「읽었는데 본문 없음」 이 같은 값이다. herdr 의 막힘 사유는 곧장 오고 기록 판독은
+ * 1.5초 폴링이므로, 판독 두 번(3초) 동안 그대로 본문이 없을 때만 「본문 없음」 으로 남긴다. 그 사이 본문이 오면 본문 줄 하나만 남는다.
+ */
+export const QUESTION_SETTLE_MS = 3_000
 
 
 const sha8 = (text: string): string => createHash('sha256').update(text).digest('hex').slice(0, 16)
@@ -63,6 +89,12 @@ export class WorkLinks {
   private readonly deps: LinkDeps
   private droppedSeen = ''
   /** 출처 저장을 기다리는 자동 연결(R1-I) — 열쇠 = 사건 열쇠. 메모리만(재시작하면 그 회차는 출처에 안 남는다 — 설계 메모 §4). */
+  /** 본문 없는 질문 대기를 처음 본 시각 — 열쇠 = 사건 열쇠(R2-C). */
+  private readonly noBodySince = new Map<string, number>()
+  private lastRepos: RepoRow[] | null = null
+  /** 세대 캐시 — 트리에서 사라진 경로는 지운다(다시 나타나면 새로 읽는다). */
+  private readonly generations = new Map<string, string | null>()
+  private settleArmed = false
   private readonly autoStores = new Map<string, { connectionId: string; itemId: string | null; key: string; worktree: string; repoRoot: string; inFlight: boolean }>()
 
   constructor(deps: LinkDeps) {
@@ -164,20 +196,36 @@ export class WorkLinks {
   observe(repos: RepoRow[]): void {
     const work = this.deps.work()
     if (work === null) return
+    this.lastRepos = repos
+    const waiting = new Set<string>()
+    const present = new Set(repos.flatMap((repo) => repo.worktrees.map((row) => row.path)))
+    for (const known of [...this.generations.keys()]) if (!present.has(known)) this.generations.delete(known)
     for (const repo of repos) {
       for (const worktree of repo.worktrees) {
         const link = worktree.workLink ?? null
         if (link === null || !link.connected) continue
         const scope = `${link.connectionId}:${link.key}`
         const record = (eventKey: string, change: WorkActivityChange) => work.recordEvent({ connectionId: link.connectionId, itemId: link.itemId, itemKey: link.key, eventKey, change })
-        const autoKey = `run:auto:${scope}:${worktree.path}`
+        const autoKey = `run:auto:${scope}:${worktree.path}:${link.mode === 'auto' ? this.generationOf(worktree.path) ?? 'na' : ''}`
         if (link.mode === 'auto' && record(autoKey, { field: 'run', event: 'auto_link', worktree: worktree.path, branch: branchName(worktree.branch) })) {
           this.autoStores.set(autoKey, { connectionId: link.connectionId, itemId: link.itemId, key: link.key, worktree: worktree.path, repoRoot: repo.root, inFlight: false })
         }
-        for (const pane of (worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes)) this.observePane({ pane, worktree, scope, record, refresh: work.refreshEvent.bind(work) })
+        for (const pane of (worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes)) this.observePane({ pane, worktree, scope, record, refresh: work.refreshEvent.bind(work), waiting })
       }
     }
+    // 사라진 대기(답했거나 본문이 왔다)는 잊는다. 아직 기다리는 것이 있으면 창이 지난 뒤 한 번 더 본다 — 트리가 안 바뀌어도 남게.
+    for (const key of [...this.noBodySince.keys()]) if (!waiting.has(key)) this.noBodySince.delete(key)
+    if (this.noBodySince.size > 0 && !this.settleArmed) {
+      this.settleArmed = true
+      const schedule = this.deps.schedule ?? ((run: () => void, ms: number) => { setTimeout(run, ms).unref?.() })
+      schedule(() => { this.settleArmed = false; if (this.lastRepos !== null) this.observe(this.lastRepos) }, QUESTION_SETTLE_MS)
+    }
     this.flushAutoStores(work)
+  }
+
+  private generationOf(worktreePath: string): string | null {
+    if (!this.generations.has(worktreePath)) this.generations.set(worktreePath, (this.deps.generation ?? gitBirth)(worktreePath))
+    return this.generations.get(worktreePath) ?? null
   }
 
   /** 자동 연결을 출처에도 남긴다(C14 · R1-I). 닫힌 출처(LA)는 서비스가 요청 0 으로 skipped. 실패는 활동에 「출처 저장 실패」 로 남긴다. */
@@ -202,12 +250,13 @@ export class WorkLinks {
     }
   }
 
-  private observePane({ pane, worktree, scope, record, refresh }: {
+  private observePane({ pane, worktree, scope, record, refresh, waiting }: {
     pane: PaneRow
     worktree: WorktreeRow
     scope: string
     record: (eventKey: string, change: WorkActivityChange) => boolean
     refresh: (input: { eventKey: string; change: WorkActivityChange }) => boolean
+    waiting: Set<string>
   }): void {
     if (pane.agent === null) return
     const digest = pane.digest
@@ -220,10 +269,33 @@ export class WorkLinks {
       // 열쇠(R1-L): 본문이 있으면 세션 + 본문 — 기다리는 동안 기록이 자라 시각이 움직여도 같다(같은 세션의 같은 본문 재질문은 하나로 합친다).
       // 본문이 없으면(grok · 권한) 기댈 것이 기록 시각뿐이다 — 세션 + 사유 + 마지막 활동 시각. 최종 관문 C13 실측 항목.
       const identity = text === null ? `${blockedReason ?? 'na'}:${digest.lastActivityAt ?? 'na'}` : `b:${sha8(text)}`
-      record(`agent:q:${scope}:${session}:${identity}`, {
+      const eventKey = `agent:q:${scope}:${session}:${identity}`
+      if (text === null) {
+        // 본문 없음은 판독 창(QUESTION_SETTLE_MS)이 지난 뒤에만(R2-C) — 그 전엔 기록 판독이 아직일 수 있다.
+        const pendingKey = `${scope}:${session}:${pane.paneId}`
+        waiting.add(pendingKey)
+        const now = (this.deps.now ?? Date.now)()
+        const since = this.noBodySince.get(pendingKey) ?? now
+        this.noBodySince.set(pendingKey, since)
+        if (now - since < QUESTION_SETTLE_MS) return this.observeOutcome({ pane, worktree, scope, session, record, refresh })
+      }
+      record(eventKey, {
         field: 'agent', event: 'question', agent: pane.agent, worktree: worktree.path, question: text, noBody: reason,
       })
     }
+    this.observeOutcome({ pane, worktree, scope, session, record, refresh })
+  }
+
+  private observeOutcome({ pane, worktree, scope, session, record, refresh }: {
+    pane: PaneRow
+    worktree: WorktreeRow
+    scope: string
+    session: string
+    record: (eventKey: string, change: WorkActivityChange) => boolean
+    refresh: (input: { eventKey: string; change: WorkActivityChange }) => boolean
+  }): void {
+    if (pane.agent === null) return
+    const digest = pane.digest
     const outcome = digest.turnOutcome
     // 결과 시각이 없으면 같은 결과를 다시 알아볼 열쇠가 없다 — 남기지 않는다(중복보다 빠짐이 낫다).
     if (outcome !== null && digest.turnOutcomeAt !== null && pane.agentStatus !== 'working') {

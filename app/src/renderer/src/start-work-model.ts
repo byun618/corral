@@ -74,12 +74,14 @@ export function failureActions(result: StartWorkResult | null): FailureAction[] 
   if (worktree.status === 'failed' || worktree.status === 'unknown') return atPath ? [{ kind: 'open' }, { kind: 'relaunch' }] : [{ kind: 'rename' }]
   if (agent.status === 'failed' || agent.status === 'unknown') return atPath ? [{ kind: 'relaunch' }, { kind: 'open' }] : []
   if (prompt.status === 'failed' || prompt.status === 'unknown') return atPath ? [{ kind: 'open' }] : []
+  // 링크 저장 실패(R2-B) — 만든 것은 다 됐지만 작업에 안 붙었다. 성공으로 그리지 않고 열기만 남긴다(다음 상태 갱신이 다시 붙인다).
+  if (!result.linkSaved && atPath) return [{ kind: 'open' }]
   return []
 }
 
-/** 끝까지 갔나 — worktree 를 이번에 만들었고(합류 아님) 실패·미확정 단계가 없다. 「줄에 넣음」 은 실패가 아니다. */
+/** 끝까지 갔나 — worktree 를 이번에 만들었고(합류 아님) 링크도 저장했고(R2-B) 실패·미확정 단계가 없다. 「줄에 넣음」 은 실패가 아니다. */
 export function startSucceeded(result: StartWorkResult | null): boolean {
-  if (result === null || result.refused !== null || result.stages.worktree.status !== 'completed') return false
+  if (result === null || result.refused !== null || result.stages.worktree.status !== 'completed' || !result.linkSaved) return false
   return Object.values(result.stages).every((entry) => entry.status === 'completed' || entry.status === 'skipped' || entry.status === 'queued')
 }
 
@@ -97,4 +99,14 @@ export function uniqueStartName({ base, repos }: { base: string; repos: RepoRow[
 /** 입력 지문 — 바뀌면 새 시도(새 id), 같으면 같은 id 로 다시 보낸다(연타·재시도). */
 export function startSignature(input: { repoRoot: string; name: string; agent: StartAgent; model: string; effort: string; submit: boolean; prompt: string }): string {
   return JSON.stringify([input.repoRoot, input.name, input.agent, input.model, input.effort, input.submit, input.prompt])
+}
+
+/**
+ * 초안(또는 보내기)이 들어가지 못한 결과인가(R2-I) — 그때 모달이 「프롬프트 복사」 출구를 준다(다시 넣기는 하지 않는다 — 재량).
+ * 빈 터미널 · 거절 · 프롬프트 완료/줄에 넣음은 아니다.
+ */
+export function promptUndelivered({ result, agent }: { result: StartWorkResult | null; agent: StartAgent }): boolean {
+  if (result === null || result.refused !== null || agent === 'shell') return false
+  const status = result.stages.prompt.status
+  return status !== 'completed' && status !== 'queued'
 }

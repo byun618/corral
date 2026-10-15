@@ -35,22 +35,40 @@ export const ACTIVITY_TOTAL = 5_000
  */
 export const ACTIVITY_SEEN_KEYS = 20_000
 
-/** 열쇠 기억 — 넣은 순서를 지키고 상한을 넘으면 오래된 것부터 버린다. */
+/**
+ * 열쇠 기억 — 열쇠 → 그 사건의 연결 id. 넣은 순서를 지키고 상한을 넘으면 오래된 것부터 버린다.
+ * 연결 id 를 같이 두는 이유(R2-J ⓒ): 연결 해제 때 **줄이 밀려난 열쇠까지** 그 연결의 것을 지운다(`run:start:<attemptId>` 처럼 열쇠에 연결 id 가 없는 것도).
+ * 파일 형식: `seen: [[열쇠, 연결 id], …]`. fix1 판의 문자열 배열은 연결 id 를 모르는 열쇠로 읽고(null), 해제 때 열쇠 안의 `:<연결 id>:` 로 가린다.
+ */
 export class SeenKeys {
-  private readonly keys = new Set<string>()
+  private readonly keys = new Map<string, string | null>()
   private readonly limit: number
   constructor(limit: number = ACTIVITY_SEEN_KEYS) { this.limit = limit }
   has(key: string): boolean { return this.keys.has(key) }
-  add(key: string): void {
+  add({ key, connectionId }: { key: string; connectionId: string | null }): void {
     this.keys.delete(key)
-    this.keys.add(key)
-    for (const oldest of this.keys) {
+    this.keys.set(key, connectionId)
+    for (const oldest of this.keys.keys()) {
       if (this.keys.size <= this.limit) break
       this.keys.delete(oldest)
     }
   }
-  list(): string[] { return [...this.keys] }
-  dropAll(keys: Iterable<string>): void { for (const key of keys) this.keys.delete(key) }
+  entries(): [string, string | null][] { return [...this.keys.entries()] }
+  list(): string[] { return [...this.keys.keys()] }
+  /** 그 연결의 열쇠를 전부 잊는다 — 연결 id 를 아는 것은 그 값으로, 모르는 옛 열쇠는 열쇠 안의 `:<연결 id>:` 로. */
+  dropConnection(connectionId: string): void {
+    for (const [key, owner] of [...this.keys.entries()]) {
+      if (owner === connectionId || (owner === null && key.includes(`:${connectionId}:`))) this.keys.delete(key)
+    }
+  }
+  /** 파일의 `seen` 칸 읽기 — `[열쇠, 연결 id]` 쌍 또는 옛 문자열. */
+  load(value: unknown): void {
+    if (!Array.isArray(value)) return
+    for (const row of value) {
+      if (typeof row === 'string' && row.length > 0) this.add({ key: row, connectionId: null })
+      else if (Array.isArray(row) && typeof row[0] === 'string' && row[0].length > 0) this.add({ key: row[0], connectionId: typeof row[1] === 'string' ? row[1] : null })
+    }
+  }
 }
 
 function sameChange({ a, b }: { a: WorkActivityChange; b: WorkActivityChange }): boolean {
@@ -203,15 +221,15 @@ export class WorkActivityStore implements ActivityPort {
     }
     this.records = capRecords({ records })
     // 열쇠 기억(R1-K) — 옛 파일엔 `seen` 이 없다. 그때는 남은 줄의 열쇠로 시작한다.
-    if (Array.isArray(parsed.seen)) for (const key of parsed.seen) if (typeof key === 'string' && key.length > 0) this.seen.add(key)
-    for (const record of this.records) if (record.eventKey !== undefined) this.seen.add(record.eventKey)
+    this.seen.load(parsed.seen)
+    for (const record of this.records) if (record.eventKey !== undefined && !this.seen.has(record.eventKey)) this.seen.add({ key: record.eventKey, connectionId: record.connectionId })
     log('work.activity_load', { file: this.file, records: this.records.length, dropped })
   }
 
   append(record: WorkActivityRecord): boolean {
     if (record.eventKey !== undefined) {
       if (this.seen.has(record.eventKey)) return false
-      this.seen.add(record.eventKey)
+      this.seen.add({ key: record.eventKey, connectionId: record.connectionId })
     }
     this.records = capRecords({ records: [...this.records, record] })
     this.save()
@@ -233,15 +251,16 @@ export class WorkActivityStore implements ActivityPort {
 
   purgeConnection(connectionId: string): void {
     const next = this.records.filter((record) => record.connectionId !== connectionId)
-    if (next.length === this.records.length) return
-    // 열쇠는 연결 id 를 품는다(`…:<연결>:<키>:…`) — 지운 줄의 열쇠도 잊는다. 해제한 계정의 흔적을 남기지 않는다.
-    this.seen.dropAll(this.records.flatMap((record) => (record.connectionId === connectionId && record.eventKey !== undefined ? [record.eventKey] : [])))
+    const before = this.seen.list().length
+    // 그 연결의 열쇠는 줄이 남았든 밀려났든 잊는다(R2-J ⓒ) — 해제한 계정의 흔적을 남기지 않는다.
+    this.seen.dropConnection(connectionId)
+    if (next.length === this.records.length && this.seen.list().length === before) return
     this.records = next
     this.save()
   }
 
   private save(): void {
-    const payload = JSON.stringify({ version: WORK_ACTIVITY_VERSION, records: this.records, seen: this.seen.list() }) + '\n'
+    const payload = JSON.stringify({ version: WORK_ACTIVITY_VERSION, records: this.records, seen: this.seen.entries() }) + '\n'
     const tmp = `${this.file}.${process.pid}.tmp`
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true })
@@ -268,7 +287,7 @@ export class MemoryActivity implements ActivityPort {
   append(record: WorkActivityRecord): boolean {
     if (record.eventKey !== undefined) {
       if (this.seen.has(record.eventKey)) return false
-      this.seen.add(record.eventKey)
+      this.seen.add({ key: record.eventKey, connectionId: record.connectionId })
     }
     this.records = capRecords({ records: [...this.records, record] })
     return true
@@ -288,5 +307,9 @@ export class MemoryActivity implements ActivityPort {
 
   purgeConnection(connectionId: string): void {
     this.records = this.records.filter((record) => record.connectionId !== connectionId)
+    this.seen.dropConnection(connectionId)
   }
+
+  /** 시험용 — 기억하는 열쇠. */
+  seenKeys(): string[] { return this.seen.list() }
 }

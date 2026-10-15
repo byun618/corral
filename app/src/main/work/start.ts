@@ -58,6 +58,8 @@ function stageOf(value: unknown): { status: string; error: string | null; messag
   return { status: read('status') ?? 'unknown', error: read('error'), message: read('message'), reason: read('reason') }
 }
 
+export const DRAFT_WRITTEN = '붙여넣기를 한 번 썼습니다 — 입력창에서 확인하세요.'
+
 const PROMPT_REASON: Record<string, string> = {
   agent_blocked: '에이전트가 막는 화면(신뢰·로그인·권한)을 띄웠습니다 — 터미널에서 풀어 주세요.',
   detect_manifest_unverified: '에이전트 상태 판독을 확인하지 못해 초안을 넣지 않았습니다.',
@@ -77,7 +79,8 @@ export function mapAgentStages(result: unknown): { stages: Record<StartStageName
   else if (agent.status === 'completed') stages.agent = stage('completed')
   else stages.agent = stage(agent.status === 'unknown' ? 'unknown' : 'failed', agent.error, agent.message)
   if (stages.agent.status !== 'completed') stages.prompt = stage('skipped')
-  else if (prompt.status === 'completed') stages.prompt = stage('completed', isRecord(raw.prompt) && raw.prompt.mode === 'draft' ? 'draft' : null)
+  // 초안 완료는 「corral 이 붙여넣기를 한 번 썼다」 는 관측이다(R2-K) — 입력창에 남았다거나 제출되지 않았다는 증명으로 읽히지 않게 그대로 적는다.
+  else if (prompt.status === 'completed') stages.prompt = isRecord(raw.prompt) && raw.prompt.mode === 'draft' ? stage('completed', 'draft', DRAFT_WRITTEN) : stage('completed')
   // 바로 보내기의 `queued` = 런타임 줄이 받았다는 뜻(D9) — 전달 확인이 아니라 「줄에 넣음」 으로 따로 그린다(R1-P).
   else if (prompt.status === 'queued') stages.prompt = stage('queued')
   else if (prompt.status === 'not_started') stages.prompt = stage('failed', prompt.reason ?? 'not_started', PROMPT_REASON[prompt.reason ?? ''] ?? '초안을 넣지 않았습니다.')
@@ -152,7 +155,8 @@ export class StartService {
 
   /**
    * 미확정 시작 맞추기(R1-C) — 상태를 내보낼 때마다 부른다. 이번 실행에서 진행 중인 시도는 건너뛴다.
-   * 예정 경로의 worktree 가 트리에 있으면 링크 · 「작업 시작」 활동 · 출처 링크를 적고 기록을 지운다. 하루 넘게 안 나타나면 버린다.
+   * 예정 경로의 worktree 가 트리에 있으면 링크 · 「작업 시작」 활동 · 출처 링크를 적고 기록을 지운다(링크 저장이 실패하면 남겨 다음에 다시 — R2-B).
+   * 시도 전부터 그 경로가 있었던 기록은 붙이지 않고 버린다(R2-A). 하루 넘게 안 나타나면 버린다.
    */
   async recover(repos: RepoRow[]): Promise<number> {
     const pending = this.deps.pending
@@ -163,12 +167,16 @@ export class StartService {
       const live = this.attempts.get(entry.attemptId)
       if (live !== undefined && live.result === null) continue
       if (this.recovering.has(entry.attemptId)) continue
-      if (paths.has(entry.path)) {
+      if (entry.preexisting) {
+        // 시도 전부터 있던 자리 — 거기 있는 worktree 가 이 시도의 것인지 알 길이 없다. 붙이지 않고 기록만 버린다(R2-A).
+        pending.remove(entry.attemptId)
+        this.deps.log('work.start_pending_preexisting', { attemptId: entry.attemptId, path: entry.path })
+      } else if (paths.has(entry.path)) {
         this.recovering.add(entry.attemptId)
         try {
-          await this.link({ input: entry, path: entry.path })
-          this.deps.log('work.start_recovered', { attemptId: entry.attemptId, path: entry.path })
-          linked += 1
+          const { linkSaved } = await this.link({ input: entry, path: entry.path })
+          this.deps.log('work.start_recovered', { attemptId: entry.attemptId, path: entry.path, linkSaved })
+          if (linkSaved) linked += 1
         } finally {
           this.recovering.delete(entry.attemptId)
         }
@@ -256,17 +264,22 @@ export class StartService {
       if (!input.submit) flags.draft = true
     }
     const expected = startWorktreePath({ repoRoot: input.repoRoot, name: input.name })
-    this.deps.pending?.add(pendingOf({ input, path: expected, now: this.now() }))
+    // 시도 전에 그 자리가 이미 있었나(R2-A) — 있었으면 끊긴 뒤에 그 자리를 보더라도 이 시도가 만든 것이라고 볼 수 없다.
+    const preexisting = this.exists(expected)
+    this.deps.pending?.add(pendingOf({ input, path: expected, now: this.now(), preexisting }))
     const { response, retried } = await this.call({ command: 'worktree create', flags, args: [], cwd: this.deps.cwd })
     let stages = initialStages()
     let path: string | null = null
     const unknown = (code: string, message: string): { path: string | null; stages: Record<StartStageName, StartStage> } => {
       // 결과 미확정 — 예정 경로에 worktree 가 있으면 그것을 이 시도의 것으로 링크하고 「worktree 열기」 를 준다(R1-B).
-      const found = this.exists(expected) ? expected : null
+      // 시도 전부터 있던 자리면 붙이지 않는다(R2-A) — 다른 작업의 링크 · 떼기 예외일 수 있다.
+      const found = !preexisting && this.exists(expected) ? expected : null
+      const note = preexisting ? `${message} — 이 이름의 worktree 는 시작 전부터 있어 이 작업에 붙이지 않았습니다.`
+        : found === null ? `${message} — worktree 가 나타나면 이 작업에 붙입니다.` : `${message} — worktree 는 만들어졌습니다.`
       return {
         path: found,
         stages: {
-          worktree: stage('unknown', code, found === null ? `${message} — worktree 가 나타나면 이 작업에 붙입니다.` : `${message} — worktree 는 만들어졌습니다.`),
+          worktree: stage('unknown', code, note),
           agent: stage('unknown', code, '에이전트 단계 결과를 받지 못했습니다.'),
           prompt: stage('unknown', code, null),
         },
@@ -284,8 +297,9 @@ export class StartService {
         path = expected
         const note = '이 작업에 이미 만든 worktree 입니다 — 새로 만들지 않았습니다.'
         stages = { worktree: stage('skipped', 'already_linked', note), agent: stage('skipped', 'already_linked', input.agent === 'shell' ? '터미널을 열지 않았습니다.' : '에이전트를 띄우지 않았습니다.'), prompt: stage('skipped', 'already_linked', null) }
-      } else if (code === 'already_exists' && retried) {
-        // 끊긴 뒤의 재시도가 자기 결과에 부딪혔다(빈 터미널은 영수증이 없다) — 이 시도가 만든 것일 수 있어 미확정으로 링크한다.
+      } else if (code === 'already_exists' && retried && !preexisting) {
+        // 끊긴 뒤의 재시도가 자기 결과에 부딪혔다(빈 터미널은 영수증이 없다) — 시도 전엔 없던 자리라 이 시도가 만든 것일 수 있어 미확정으로 링크한다.
+        // 시도 전부터 있던 자리면(R2-A) 아래 일반 실패 갈래 — 「이름을 바꿔 다시 시작」.
         ({ path, stages } = unknown('outcome_unknown', '앞 요청이 끊긴 뒤 같은 이름이 이미 있습니다'))
       } else {
         path = created
@@ -307,8 +321,13 @@ export class StartService {
     // 링크는 새로 만들었거나(completed) 미확정이지만 그 자리에 있을 때(unknown + 경로). 이미 붙은 합류는 다시 적지 않는다.
     const linkable = path !== null && (stages.worktree.status === 'completed' || stages.worktree.status === 'unknown')
     const { linkSaved, sourceLink } = path === null || !linkable ? { linkSaved: stages.worktree.code === 'already_linked', sourceLink: null } : await this.link({ input, path })
-    // 미확정인데 worktree 를 못 찾았으면 기록을 남긴다 — 나중에 나타나면 `recover` 가 붙인다. 그 밖엔 지운다.
-    if (!(stages.worktree.status === 'unknown' && path === null)) this.deps.pending?.remove(input.attemptId)
+    if (linkable && !linkSaved) {
+      // 링크 저장 실패(R2-B) — 성공으로 그리지 않고, 미확정 기록을 남겨 다음 `recover` 가 다시 붙인다.
+      stages = { ...stages, worktree: stage(stages.worktree.status, 'link_failed', '이 작업에 링크를 저장하지 못했습니다 — 다음 상태 갱신 때 다시 붙입니다.') }
+    }
+    // 기록을 남기는 경우: 미확정인데 시도 전엔 없던 자리라 나중에 나타날 수 있음 · 링크 저장 실패. 그 밖엔 지운다.
+    const keep = (stages.worktree.status === 'unknown' && path === null && !preexisting) || (linkable && !linkSaved)
+    if (!keep) this.deps.pending?.remove(input.attemptId)
     const result: StartWorkResult = { attemptId: input.attemptId, joined: false, done: true, stages, worktreePath: path, linkSaved, sourceLink, refused: null }
     this.deps.log('work.start_done', { attemptId: input.attemptId, stages: Object.fromEntries(Object.entries(stages).map(([key, value]) => [key, value.status])), linkSaved, sourceLink: sourceLink?.state ?? null })
     return result
@@ -338,6 +357,6 @@ export class StartService {
 /** 링크·활동에 필요한 시도 정보 — 진행 중 시도(`StartWorkInput`)와 미확정 기록(`PendingStart`)이 같이 쓴다. */
 type LinkInput = Pick<StartWorkInput, 'attemptId' | 'connectionId' | 'sourceId' | 'itemId' | 'itemKey' | 'repoRoot' | 'name' | 'agent' | 'model'>
 
-function pendingOf({ input, path, now }: { input: StartWorkInput; path: string; now: number }): PendingStart {
-  return { attemptId: input.attemptId, connectionId: input.connectionId, sourceId: input.sourceId, itemId: input.itemId, itemKey: input.itemKey, repoRoot: input.repoRoot, name: input.name, path, agent: input.agent, model: input.model, startedAt: now }
+function pendingOf({ input, path, now, preexisting }: { input: StartWorkInput; path: string; now: number; preexisting: boolean }): PendingStart {
+  return { attemptId: input.attemptId, connectionId: input.connectionId, sourceId: input.sourceId, itemId: input.itemId, itemKey: input.itemKey, repoRoot: input.repoRoot, name: input.name, path, agent: input.agent, model: input.model, startedAt: now, preexisting }
 }

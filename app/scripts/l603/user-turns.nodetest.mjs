@@ -58,3 +58,92 @@ test('실패 전파 — 빈 파일 · 모르는 형식은 0 턴이 아니라 실
     assert.equal(run(['--response', noRecord]).status, 2)
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
+
+// --- fix2 R2-E -----------------------------------------------------------------------------------
+import { bodySha, readBefore, verdict } from './user-turns.mjs'
+
+test('R2-E grok 형식 판별 — claude 기록 · type 만 있는 파일은 0 턴 성공이 아니라 format_unrecognized', () => {
+  assert.equal(countUserTurns({ kind: 'grok', text: lines([claudeUser('본문'), claudeAssistant]) }).code, 'format_unrecognized')
+  assert.equal(countUserTurns({ kind: 'grok', text: lines([{ type: 'not-a-session' }]) }).code, 'format_unrecognized')
+  assert.equal(countUserTurns({ kind: 'grok', text: lines([grokAgent]) }).ok, true)
+})
+
+test('R2-E claude 사람 턴 content 가 배열이어도 턴으로 센다(도구 결과는 여전히 아님)', () => {
+  const arrayTurn = { type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: [{ type: 'text', text: '그림과 함께' }, { type: 'image', source: {} }] } }
+  const counted = countUserTurns({ kind: 'claude', text: lines([arrayTurn, claudeTool, claudeAssistant]) })
+  assert.equal(counted.userTurns, 1)
+  assert.deepEqual(counted.turnSha, [bodySha('그림과 함께')])
+})
+
+test('R2-E 인접한 두 제출 조각은 1 턴으로 합쳐지지만 sha 대조가 거른다', () => {
+  const merged = countUserTurns({ kind: 'grok', text: lines([grokChunk('첫 제출'), grokChunk('둘째 제출'), grokAgent]) })
+  assert.equal(merged.userTurns, 1)
+  const before = { ok: true, userTurns: 0, file: '/f' }
+  assert.deepEqual(verdict({ before, after: { ...merged, file: '/f' }, expectedSha: bodySha('첫 제출') }).why, 'body_mismatch')
+  assert.equal(verdict({ before, after: { ...countUserTurns({ kind: 'grok', text: lines([grokChunk('첫 제출'), grokAgent]) }), file: '/f' }, expectedSha: bodySha('첫 제출\r\n') }).proved, true)
+})
+
+test('R2-E readBefore — 없는 파일은 기록 루트 아래이고 루트가 있을 때만 0 턴(프로젝트 디렉터리는 없어도 된다), 아니면 실패', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l603-before-'))
+  try {
+    const file = path.join(dir, '-tmp-repo-wt', 's.jsonl') // claude 처럼 프로젝트 디렉터리도 아직 없음
+    assert.deepEqual(readBefore({ kind: 'claude', file, root: dir }), { ok: true, kind: 'claude', file, root: dir, state: 'absent', userTurns: 0, turnSha: [] })
+    assert.equal(readBefore({ kind: 'claude', file, root: path.join(dir, 'other-root') }).code, 'outside_records_root')
+    assert.equal(readBefore({ kind: 'claude', file: path.join(dir, 'gone', 'x', 's.jsonl'), root: path.join(dir, 'gone') }).code, 'records_root_missing')
+    fs.writeFileSync(path.join(dir, 'p.jsonl'), lines([claudeUser('이미 제출'), claudeAssistant]))
+    assert.equal(readBefore({ kind: 'claude', file: path.join(dir, 'p.jsonl'), root: dir }).userTurns, 1)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('R2-E 실제 런타임 응답(리뷰 격리 실측 rt-draft1.json) — 경로 · 종류를 읽고 그 경로가 claude 기록 루트 규칙과 맞다', () => {
+  const real = path.join(here, 'fixtures', 'rt-draft1.json')
+  const run = spawnSync(process.execPath, [path.join(here, 'user-turns.mjs'), '--response', real], { encoding: 'utf8' })
+  const out = JSON.parse(run.stdout)
+  // 기록 파일은 없다(초안 전 · 신뢰 화면) — 옛 모드는 읽기 실패(exit 2)
+  assert.equal(run.status, 2)
+  assert.equal(out.code, 'record_unreadable')
+  assert.match(out.file, /\/\.claude\/projects\/-private-tmp-l603r2c-repo--claude-worktrees-draft1\/90002283-f288-40f9-bb14-78ef40d96a42\.jsonl$/)
+  // 같은 응답을 before 절차로 — 루트를 그 경로의 claude 루트로 두면 없음 = 0 턴(루트는 시험용 임시 디렉터리로 대신, 실제 사용자 디렉터리 무접촉)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l603-real-'))
+  try {
+    const value = JSON.parse(fs.readFileSync(real, 'utf8'))
+    const projects = path.join(dir, '.claude', 'projects')
+    fs.mkdirSync(projects, { recursive: true })
+    value.result.agent.sessionRecord.path = value.result.agent.sessionRecord.path.replace(/^.*\/\.claude\/projects/, projects)
+    const response = path.join(dir, 'resp.json'); fs.writeFileSync(response, JSON.stringify(value))
+    const before = spawnSync(process.execPath, [path.join(here, 'user-turns.mjs'), 'before', '--response', response, '--state', path.join(dir, 'st.json'), '--records-root', projects], { encoding: 'utf8' })
+    assert.equal(before.status, 0, before.stdout)
+    assert.equal(JSON.parse(before.stdout).state, 'absent')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('R2-E 절차 before → after — 없음(0) → Enter 뒤 같은 경로 1 턴 · 본문 일치면 proved, 어긋나면 비0', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l603-proc-'))
+  const run = (args) => spawnSync(process.execPath, [path.join(here, 'user-turns.mjs'), ...args], { encoding: 'utf8' })
+  try {
+    const record = path.join(dir, 'session.jsonl')
+    const response = path.join(dir, 'create.json')
+    fs.writeFileSync(response, JSON.stringify({ ok: true, result: { agent: { kind: 'claude', sessionRecord: { path: record, exists: false } } } }))
+    const state = path.join(dir, 'state.json')
+    const body = path.join(dir, 'body.txt'); fs.writeFileSync(body, '작업 본문\n둘째 줄\n')
+    assert.equal(run(['before', '--response', response, '--state', state, '--records-root', dir]).status, 0)
+    assert.equal(run(['before', '--response', response, '--state', state, '--records-root', dir]).status, 0) // 30초 뒤 재판독 자리
+    // Enter 전에 after — 파일이 없어 증명 불가
+    assert.equal(run(['after', '--state', state, '--body-file', body]).status, 1)
+    fs.writeFileSync(record, lines([claudeUser('작업 본문\n둘째 줄'), claudeAssistant]))
+    const ok = run(['after', '--state', state, '--body-file', body])
+    assert.equal(ok.status, 0, ok.stdout)
+    assert.equal(JSON.parse(ok.stdout).beforeReads, 2)
+    // 다른 본문이 들어갔으면 증명 아님
+    fs.writeFileSync(record, lines([claudeUser('다른 글'), claudeAssistant]))
+    assert.equal(JSON.parse(run(['after', '--state', state, '--body-file', body]).stdout).why, 'body_mismatch')
+    // 두 번 제출됐으면 증명 아님
+    fs.writeFileSync(record, lines([claudeUser('작업 본문\n둘째 줄'), claudeAssistant, claudeUser('작업 본문\n둘째 줄')]))
+    assert.equal(JSON.parse(run(['after', '--state', state, '--body-file', body]).stdout).why, 'after_not_one')
+    // 앞 판독에서 이미 1 턴이었으면(초안이 제출됨) 증명 아님
+    const state2 = path.join(dir, 'state2.json')
+    fs.writeFileSync(record, lines([claudeUser('작업 본문\n둘째 줄'), claudeAssistant]))
+    assert.equal(run(['before', '--response', response, '--state', state2, '--records-root', dir]).status, 1)
+    assert.equal(JSON.parse(run(['after', '--state', state2, '--body-file', body]).stdout).why, 'before_not_zero')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})

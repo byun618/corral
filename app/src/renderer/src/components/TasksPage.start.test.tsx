@@ -460,3 +460,53 @@ describe('fix1 R1-A·D — 합류 표시 · 복구 행동 유지 · 이름 겹�
     expect(el('[data-toast="failed"]').textContent).toContain('CORE-2 — 시작하는 동안 다른 작업을 열어 상태를')
   })
 })
+
+describe('fix2 R2-B·H·I — 링크 저장 실패 · 끝난 비성공 이어받기 · 프롬프트 복사', () => {
+  async function openModal(): Promise<void> {
+    await openCard('CORE-2')
+    click('[data-issue-start="first"]')
+    await settle()
+  }
+  it('R2-H 끝난 비성공 시도를 이어받아도 이름은 덮지 않는다 — 결과 안내만, 진행 중일 때만 그 이름으로 합류', async () => {
+    const r = await rig()
+    r.status = { attemptId: 'r1.0000000000001.0b8f6a4e-7a8c-4c33-9a43-5f3c3f6d2b11', name: 'CORE-2-old', repoRoot: '/repo', agent: 'codex', model: '', effort: '', submit: false,
+      result: result({ attemptId: 'r1.0000000000001.0b8f6a4e-7a8c-4c33-9a43-5f3c3f6d2b11', stages: { worktree: stage('completed'), agent: stage('failed', 'agent_exited', '끝남'), prompt: stage('skipped') }, worktreePath: '/repo/wt/old' }) }
+    await openModal()
+    expect(inputOf('[data-start-name]').value).toBe('CORE-2')
+    expect(q('[data-start-action="relaunch"]')).not.toBeNull()
+    click('[data-start-action="relaunch"]')
+    await settle()
+    expect(r.relaunches).toMatchObject([{ path: '/repo/wt/old', agent: 'codex' }])
+  })
+  it('R2-I 초안이 들어가지 못하면 「프롬프트 복사」 — 미리보기 그 글을 복사, 초안이 들어갔으면 없음(양성 대조)', async () => {
+    const r = await rig()
+    const copied: string[] = []
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { copied.push(text) } } })
+    r.next = async (input) => result({ attemptId: input.attemptId, stages: { worktree: stage('completed'), agent: stage('completed'), prompt: stage('failed', 'agent_blocked', '막는 화면') }, worktreePath: '/repo/wt/b' })
+    await openModal()
+    click('[data-start-repo-option="repo"]')
+    click('[data-start-submit]')
+    await settle()
+    const preview = el('[data-start-prompt]').textContent ?? ''
+    click('[data-start-action="copy-prompt"]')
+    await settle()
+    expect(copied).toEqual([preview])
+    expect(q('[data-start-copy-state="done"]')).not.toBeNull()
+    r.next = async (input) => result({ attemptId: input.attemptId })
+    setName('CORE-2-ok')
+    click('[data-start-submit]')
+    await settle()
+    expect(q('[data-start-action="copy-prompt"]')).toBeNull()
+  })
+  it('R2-B 링크 저장 실패는 성공으로 그리지 않는다 — 단계 문구 · 열기만', async () => {
+    const r = await rig()
+    r.next = async (input) => result({ attemptId: input.attemptId, linkSaved: false, stages: { worktree: stage('completed', 'link_failed', '이 작업에 링크를 저장하지 못했습니다 — 다음 상태 갱신 때 다시 붙입니다.'), agent: stage('completed'), prompt: stage('completed') }, worktreePath: '/repo/wt/l' })
+    await openModal()
+    click('[data-start-repo-option="repo"]')
+    click('[data-start-submit]')
+    await settle()
+    expect(el('[data-start-step="worktree"]').textContent).toContain('링크를 저장하지 못했습니다')
+    expect(q('[data-start-action="open"]')).not.toBeNull()
+    expect(q('[data-start-open]')).toBeNull()
+  })
+})

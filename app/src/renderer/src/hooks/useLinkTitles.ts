@@ -46,7 +46,11 @@ export function useLinkTitles({ repos, refresh }: { repos: RepoRow[]; refresh: n
   }, [refresh])
 
   const mounted = useRef(true)
-  useEffect(() => () => { mounted.current = false }, [])
+  // 마운트마다 다시 세운다(R2-G) — StrictMode 개발 실행의 마운트 → 정리 → 재마운트에서 정리가 남긴 false 가 요청을 영원히 막지 않게.
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   useEffect(() => {
     const pump = (): void => {

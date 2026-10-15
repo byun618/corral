@@ -61,7 +61,7 @@ describe('worktree create 단계 → 모달 3단계', () => {
     const h = harness({ answer: () => created({}) })
     const given = input()
     const result = await h.service.start(given)
-    expect(result.stages).toEqual({ worktree: { status: 'completed', code: null, message: null }, agent: { status: 'completed', code: null, message: null }, prompt: { status: 'completed', code: 'draft', message: null } })
+    expect(result.stages).toEqual({ worktree: { status: 'completed', code: null, message: null }, agent: { status: 'completed', code: null, message: null }, prompt: { status: 'completed', code: 'draft', message: '붙여넣기를 한 번 썼습니다 — 입력창에서 확인하세요.' } })
     expect(h.calls[0]?.flags).toMatchObject({ name: NAME, repo: ROOT, agent: 'claude', model: 'opus', effort: 'high', prompt: '작업 본문', draft: true, 'request-id': given.attemptId })
     expect(result).toMatchObject({ worktreePath: PATH, linkSaved: true, sourceLink: { state: 'saved' } })
     expect(h.saved[0]).toMatchObject({ path: PATH, link: { sourceId: 'mock-jira', connectionId: 'c', itemId: 'm-1', key: 'CORE-1' } })
@@ -173,7 +173,9 @@ describe('합류 · 이어 받기 (C7)', () => {
   })
   it('R1-B 미확정(outcome_unknown) 은 다시 묻지 않는다 — 단계 unknown, 예정 경로에 worktree 가 있으면 링크 · 없으면 미확정 기록을 남긴다', async () => {
     const pending = new MemoryPending()
-    const found = harness({ answer: () => fail('outcome_unknown'), worktreeExists: (path) => path === PATH, pending })
+    // worktree 는 런타임 호출 뒤에 생긴다(시도 전부터 있던 자리는 R2-A — 붙이지 않는다).
+    let called = false
+    const found = harness({ answer: () => { called = true; return fail('outcome_unknown') }, worktreeExists: (path) => called && path === PATH, pending })
     const result = await found.service.start(input())
     expect(found.calls).toHaveLength(1)
     expect(result.stages.worktree).toMatchObject({ status: 'unknown', code: 'outcome_unknown' })
@@ -264,7 +266,7 @@ describe('R1-B 실제 Receipts 위에서 — 효과 시작 뒤 취소된 요청'
     const saved: string[] = []
     const service = new StartService({
       invoke: () => invoke, repos: () => [testRepo({ root: ROOT, worktrees: [] })], links: () => ({ saveExplicit: ({ path: target }) => { saved.push(target); return true } }), work: () => null,
-      log: () => {}, cwd: '/', now: () => clock, sleep: async (ms) => { clock += ms }, deadlineMs: 600_000, pending, worktreeExists: () => exists,
+      log: () => {}, cwd: '/', now: () => clock, sleep: async (ms) => { clock += ms }, deadlineMs: 600_000, pending, worktreeExists: () => exists && calls > 0,
     })
     // 영수증은 런타임 시작보다 오래된 id 를 request_expired 로 거절한다 — 지금 시각의 id 를 쓴다.
     const result = await service.start(input({ attemptId: newAttemptId({ now: Date.now(), uuid: randomUUID() }) }))
@@ -325,5 +327,106 @@ describe('R1-E·R1-P 바로 보내기 — 본문 정제 · queued 는 「줄에 
     expect(h.calls[0]?.flags.prompt).toBe('첫 줄[201~\n!rm -rf ~끝')
     expect(h.calls[0]?.flags.draft).toBeUndefined()
     expect(result.stages.prompt.status).toBe('queued')
+  })
+})
+
+describe('R2-A 시도 전부터 있던 worktree 는 이 작업에 붙이지 않는다 (리뷰 재현 grok-r2-raw/repro.test.ts)', () => {
+  const OTHER = { mode: 'explicit' as const, sourceId: 'mock-jira', connectionId: 'c', key: 'CORE-1', itemId: 'm-1', connected: true }
+  const mine = (patch: Partial<StartWorkInput> = {}): StartWorkInput => input({ itemId: 'm-new', itemKey: 'CORE-9', ...patch })
+  function rig({ answer, exists = true, pending }: { answer: (n: number) => RpcResponse; exists?: boolean; pending?: MemoryPending }) {
+    const calls: Invocation[] = []
+    const saved: { path: string; link: StoredWorkLink }[] = []
+    const repos = () => [testRepo({ root: ROOT, worktrees: exists ? [testWorktree({ path: PATH, branch: NAME, workLink: OTHER })] : [] })]
+    const service = new StartService({
+      invoke: () => async (invocation) => { calls.push(invocation); return answer(calls.length) },
+      repos,
+      links: () => ({ saveExplicit: ({ path: target, link }) => { saved.push({ path: target, link }); return true } }),
+      work: () => null, log: () => {}, cwd: '/', sleep: async () => {}, pending, deadlineMs: 60_000,
+    })
+    return { service, calls, saved }
+  }
+  it('대조 — 재시도 없는 already_exists 는 링크하지 않는다(이름 바꾸기)', async () => {
+    const h = rig({ answer: () => fail('already_exists') })
+    const result = await h.service.start(mine())
+    expect(result.stages.worktree.status).toBe('failed')
+    expect(h.saved).toEqual([])
+  })
+  it('취소 뒤 already_exists — 다른 작업에 붙은 기존 worktree 를 덮지 않는다(고침 전: m-new 로 덮음)', async () => {
+    const pending = new MemoryPending()
+    const h = rig({ answer: (n) => (n === 1 ? fail('request_cancelled') : fail('already_exists')), pending })
+    const result = await h.service.start(mine())
+    expect(h.calls).toHaveLength(2)
+    expect(h.saved).toEqual([])
+    expect(result).toMatchObject({ worktreePath: null, linkSaved: false })
+    expect(result.stages.worktree).toMatchObject({ status: 'failed', code: 'already_exists' })
+    expect(pending.entries).toEqual([])
+  })
+  it('미확정(outcome_unknown) 이어도 시도 전부터 있던 자리는 붙이지 않고 그 사실을 적는다', async () => {
+    const pending = new MemoryPending()
+    const h = rig({ answer: () => fail('outcome_unknown'), pending })
+    const result = await h.service.start(mine())
+    expect(h.saved).toEqual([])
+    expect(result.worktreePath).toBeNull()
+    expect(result.stages.worktree.message).toContain('시작 전부터 있어')
+    expect(pending.entries).toEqual([])
+  })
+  it('대조 — 경로가 없으면 링크 없이 미확정 기록만(기록에 preexisting=false)', async () => {
+    const pending = new MemoryPending()
+    const h = rig({ answer: (n) => (n === 1 ? fail('request_cancelled') : fail('already_exists')), exists: false, pending })
+    const result = await h.service.start(mine())
+    expect(result).toMatchObject({ worktreePath: null, linkSaved: false })
+    expect(h.saved).toEqual([])
+    expect(pending.entries.map((entry) => entry.preexisting)).toEqual([false])
+  })
+  it('recover — 시도 전부터 있던 자리의 기록은 붙이지 않고 버린다(양성 대조: 없던 자리는 붙인다)', async () => {
+    const pending = new MemoryPending()
+    const given = mine()
+    const base = { attemptId: given.attemptId, connectionId: 'c', sourceId: 'mock-jira', itemId: 'm-new', itemKey: 'CORE-9', repoRoot: ROOT, name: NAME, path: PATH, agent: 'claude' as const, model: 'opus', startedAt: 1_760_000_000_000 }
+    pending.add({ ...base, preexisting: true })
+    const h = rig({ answer: () => fail('already_exists'), pending })
+    const tree = [testRepo({ root: ROOT, worktrees: [testWorktree({ path: PATH, branch: NAME, workLink: OTHER })] })]
+    expect(await h.service.recover(tree)).toBe(0)
+    expect(h.saved).toEqual([])
+    expect(pending.entries).toEqual([])
+    pending.add({ ...base, preexisting: false })
+    expect(await h.service.recover(tree)).toBe(1)
+    expect(h.saved.map((row) => row.link.itemId)).toEqual(['m-new'])
+  })
+})
+
+describe('R2-B 링크 저장 실패 — 성공으로 그리지 않고 미확정 기록을 남긴다 (리뷰 재현 claude-r2-raw/repro-linkfail)', () => {
+  it('saveExplicit=false → 단계 link_failed · 기록 유지 → 다음 recover 가 다시 붙인다', async () => {
+    const pending = new MemoryPending()
+    let canSave = false
+    const service = new StartService({
+      invoke: () => async () => ok({ worktree: { path: PATH }, stages: { worktree: { status: 'completed', path: PATH }, terminal: { status: 'completed' }, agent: { status: 'completed' }, prompt: { status: 'completed', mode: 'draft', enterSent: false } }, outcome: 'completed' }),
+      repos: () => [testRepo({ root: ROOT, worktrees: [] })],
+      links: () => ({ saveExplicit: () => canSave }),
+      work: () => null, log: () => {}, cwd: '/', sleep: async () => {}, pending,
+    })
+    const result = await service.start(input())
+    expect(result.linkSaved).toBe(false)
+    expect(result.stages.worktree).toMatchObject({ status: 'completed', code: 'link_failed' })
+    expect(pending.entries).toHaveLength(1)
+    // 저장이 다시 되면 recover 가 붙이고 기록을 지운다.
+    expect(await service.recover([testRepo({ root: ROOT, worktrees: [testWorktree({ path: PATH, branch: NAME })] })])).toBe(0)
+    expect(pending.entries).toHaveLength(1)
+    canSave = true
+    expect(await service.recover([testRepo({ root: ROOT, worktrees: [testWorktree({ path: PATH, branch: NAME })] })])).toBe(1)
+    expect(pending.entries).toHaveLength(0)
+  })
+})
+
+describe('R2-K 초안 단계 문구 · 넣지 못한 이유', () => {
+  const draftStages = (prompt: Record<string, unknown>) => ({ stages: { worktree: { status: 'completed', path: PATH }, terminal: { status: 'completed' }, agent: { status: 'completed' }, prompt }, worktree: { path: PATH } })
+  it('초안 완료는 「붙여넣기를 한 번 썼습니다 — 입력창에서 확인하세요.」 — 입력창에 있다 · 제출 안 됨이라고 쓰지 않는다', () => {
+    const { stages } = mapAgentStages(draftStages({ status: 'completed', mode: 'draft', enterSent: false }))
+    expect(stages.prompt).toEqual({ status: 'completed', code: 'draft', message: '붙여넣기를 한 번 썼습니다 — 입력창에서 확인하세요.' })
+    expect(stages.prompt.message).not.toMatch(/제출되지|입력창에 있/)
+    expect(mapAgentStages(draftStages({ status: 'completed' })).stages.prompt).toEqual({ status: 'completed', code: null, message: null })
+  })
+  it('empty_after_sanitize · agent_not_ready 는 그 이유로 실패 단계', () => {
+    expect(mapAgentStages(draftStages({ status: 'not_started', mode: 'draft', reason: 'empty_after_sanitize' })).stages.prompt).toEqual({ status: 'failed', code: 'empty_after_sanitize', message: '정제한 뒤 남은 본문이 없습니다.' })
+    expect(mapAgentStages(draftStages({ status: 'not_started', mode: 'draft', reason: 'agent_not_ready' })).stages.prompt).toEqual({ status: 'failed', code: 'agent_not_ready', message: '에이전트가 준비되지 않아 초안을 넣지 않았습니다.' })
   })
 })

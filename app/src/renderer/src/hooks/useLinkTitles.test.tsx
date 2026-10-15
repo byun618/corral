@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // LIFE-603 R1-Q·R — 제목 요청 동시성 상한(4) · 오류 키 재요청(30초 뒤) · 못 찾음은 다시 묻지 않음.
-import { act } from 'react'
+import { StrictMode, act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RepoRow } from '../../../shared/types.js'
@@ -71,4 +71,16 @@ describe('useLinkTitles', () => {
     expect(requests.filter((key) => key === 'M-1')).toHaveLength(1)
     expect(seen.get('c1::E-1')?.state).toBe('missing')
   })
+  // R2-G 리뷰 재현(claude-r2-raw/repro-strictmode-linktitles) — 고치기 전엔 strict 에서 요청 1회(낡은 회차) 뒤 `loading` 에 멈췄다.
+  for (const strict of [false, true]) {
+    it(`StrictMode=${strict} — 제목 상태가 loading 에 멈추지 않는다`, async () => {
+      vi.useRealTimers()
+      const calls: string[] = []
+      Reflect.set(window, 'corral', { workRequest: async (request: WorkRequest): Promise<WorkResponse> => { calls.push(request.requestId); return missing(request) } })
+      await act(async () => root.render(strict ? <StrictMode><Probe repos={repoWith(['K-1'])} /></StrictMode> : <Probe repos={repoWith(['K-1'])} />))
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+      expect(seen.get('c1::K-1')?.state).toBe('missing')
+      expect(calls.length).toBeGreaterThanOrEqual(1)
+    })
+  }
 })

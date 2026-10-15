@@ -23,6 +23,11 @@ export type PendingStart = {
   agent: AgentKind
   model: string
   startedAt: number
+  /**
+   * 시도 **전에** 그 경로에 worktree 가 이미 있었나(R2-A). 참이면 그 자리의 worktree 는 이 시도가 만든 것이 아니다 —
+   * 미확정 갈래 · `recover` 어디서도 이 작업으로 링크하지 않는다(다른 작업의 명시 링크 · 떼기 예외를 덮지 않게). 옛 기록엔 없다 → 거짓.
+   */
+  preexisting: boolean
 }
 
 export type PendingPort = {
@@ -39,11 +44,11 @@ const AGENTS: readonly AgentKind[] = ['claude', 'codex', 'grok', 'shell']
 
 export function readPendingStart(value: unknown): PendingStart | null {
   if (!isRecord(value)) return null
-  const { attemptId, connectionId, sourceId, itemId, itemKey, repoRoot, name, path: target, agent, model, startedAt } = value
+  const { attemptId, connectionId, sourceId, itemId, itemKey, repoRoot, name, path: target, agent, model, startedAt, preexisting } = value
   const kind = AGENTS.find((entry) => entry === agent)
   if (!str(attemptId) || !str(connectionId) || !str(sourceId) || !str(itemId) || !str(itemKey) || !str(repoRoot) || !str(name) || !str(target)) return null
   if (kind === undefined || typeof model !== 'string' || typeof startedAt !== 'number') return null
-  return { attemptId, connectionId, sourceId, itemId, itemKey, repoRoot, name, path: target, agent: kind, model, startedAt }
+  return { attemptId, connectionId, sourceId, itemId, itemKey, repoRoot, name, path: target, agent: kind, model, startedAt, preexisting: preexisting === true }
 }
 
 export class PendingStartStore implements PendingPort {

@@ -89,12 +89,16 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
     void window.corral.startWorkStatus({ connectionId: target.connectionId, itemId: item.id }).then((view) => {
       if (view === null || here !== round.current) return
       if (view.result !== null && startSucceeded(view.result)) return
-      setProceed(true)
-      setForm((current) => (current === null ? current : { ...current, repoRoot: view.repoRoot, name: view.name, agent: view.agent, model: view.model, effort: view.effort, submit: view.submit }))
       if (view.result !== null) {
+        // 끝난 비성공 시도(R2-H) — 결과 안내(복구 행동)만 보이고 이름은 새로 정한 값을 둔다. 「이미 진행 중」 상자도 건너뛰지 않는다 —
+        // 옛 이름으로 폼을 덮으면 ▶ 시작이 또 그 worktree 에 합류한다(R1-A 「하나 더 시작」 보호 우회). 다시 띄우기가 같은 에이전트로 가게 에이전트 칸은 옮긴다.
+        setForm((current) => (current === null ? current : { ...current, repoRoot: view.repoRoot, agent: view.agent, model: view.model, effort: view.effort, submit: view.submit }))
         setResult(view.result)
         return
       }
+      // 진행 중 — 그 시도에 합류한다(같은 입력 그대로).
+      setProceed(true)
+      setForm((current) => (current === null ? current : { ...current, repoRoot: view.repoRoot, name: view.name, agent: view.agent, model: view.model, effort: view.effort, submit: view.submit }))
       attempt.current = { id: view.attemptId, signature: '' }
       setRunning(true)
       void join({ attemptId: view.attemptId, here })

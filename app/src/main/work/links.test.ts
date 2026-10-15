@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { RepoRegistry } from '../registry.js'
 import { MemoryActivity } from './activity-store.js'
-import { WorkLinks, type LinkWorkPort } from './links.js'
+import { QUESTION_SETTLE_MS, WorkLinks, type LinkWorkPort } from './links.js'
 import { testDigest, testPane, testRepo, testWorktree } from '../../shared/test-rows.js'
 import type { WorkActivityChange, WorkLink } from '../../shared/work.js'
 import type { StoredWorkLink } from '../../shared/work-link.js'
@@ -44,6 +44,13 @@ function fakeWork({ autoResult = { state: 'skipped', message: 'L1a' } }: { autoR
       activity.append({ id: `r${++n}`, connectionId, itemId: itemId ?? '', itemKey, at: n, writeId: eventKey, eventKey, change }),
     storeLink: async ({ link, action }) => { stores.push({ link, action }); return { state: 'skipped', message: 'L1a' } },
   }
+}
+
+/** 시계를 손으로 넘기는 WorkLinks — 본문 없는 질문은 판독 창(QUESTION_SETTLE_MS) 뒤에만 남는다(R2-C). */
+function timedLinks({ registry, work }: { registry: () => RepoRegistry; work: LinkWorkPort }): { links: WorkLinks; settle: (repos: RepoRow[]) => void; tick: (ms: number) => void } {
+  let clock = 1_000_000
+  const links = new WorkLinks({ registry, work: () => work, log: () => {}, now: () => clock, schedule: () => {} })
+  return { links, tick: (ms) => { clock += ms }, settle: (repos) => { links.observe(repos); clock += QUESTION_SETTLE_MS; links.observe(repos) } }
 }
 
 const LINK: StoredWorkLink = { sourceId: 'la', connectionId: 'c-la', itemId: 'uuid-603', key: 'LIFE-603', linkedAt: 1_760_000_000_000 }
@@ -159,8 +166,8 @@ describe('사건 기록 — 같은 사건은 한 번 (C13)', () => {
   it('질문 본문을 못 읽는 에이전트는 본문 null + 이유, 새 턴 결과는 새 사건', () => {
     const { registry } = tempRegistry()
     const work = fakeWork()
-    const links = new WorkLinks({ registry, work: () => work, log: () => {} })
-    links.observe(links.annotate(linked([testPane({ paneId: 'g', agent: 'grok', status: 'blocked', reason: 'question' })])))
+    const { links, settle } = timedLinks({ registry, work })
+    settle(links.annotate(linked([testPane({ paneId: 'g', agent: 'grok', status: 'blocked', reason: 'question' })])))
     links.observe(links.annotate(linked([testPane({ paneId: 'g', agent: 'grok', status: 'idle', digest: testDigest({ outcome: { outcome: 'failed', error: 'rate_limit' }, outcomeAt: 10 }) })])))
     links.observe(links.annotate(linked([testPane({ paneId: 'g', agent: 'grok', status: 'idle', digest: testDigest({ outcome: { outcome: 'completed' }, outcomeAt: 20 }) })])))
     expect(work.activity.records.map((record) => record.change).filter((change) => change.field === 'agent')).toEqual([
@@ -198,15 +205,15 @@ describe('fix1 — 질문 표기 · 바뀐 파일 수 · 자동 연결 출처 �
   it('R1-T grok 지문에 질문이 없으면 본문 null + 이유', () => {
     const { registry } = tempRegistry()
     const work = fakeWork()
-    const links = new WorkLinks({ registry, work: () => work, log: () => {} })
-    links.observe(links.annotate(linkedWith({ panes: [testPane({ paneId: 'g', agent: 'grok', status: 'blocked', reason: 'question', digest: testDigest({ questions: null }) })] })))
+    const { links, settle } = timedLinks({ registry, work })
+    settle(links.annotate(linkedWith({ panes: [testPane({ paneId: 'g', agent: 'grok', status: 'blocked', reason: 'question', digest: testDigest({ questions: null }) })] })))
     expect(questions(work)).toEqual([{ field: 'agent', event: 'question', agent: 'grok', worktree: '/r/wt', question: null, noBody: '이 에이전트의 질문 본문은 읽지 못합니다.' }])
   })
   it('R1-N 권한 대기는 권한 문구, 빈 질문 목록(`[]`)은 질문이 아니다(사유가 question 이면 본문 없음 이유)', () => {
     const { registry } = tempRegistry()
     const work = fakeWork()
-    const links = new WorkLinks({ registry, work: () => work, log: () => {} })
-    links.observe(links.annotate(linkedWith({ panes: [
+    const { links, settle } = timedLinks({ registry, work })
+    settle(links.annotate(linkedWith({ panes: [
       testPane({ paneId: 'a', status: 'blocked', reason: 'permission', digest: testDigest({ lastActivityAt: 1 }) }),
       testPane({ paneId: 'b', status: 'idle', digest: testDigest({ questions: [], lastActivityAt: 2 }) }),
       testPane({ paneId: 'c', status: 'blocked', reason: 'question', digest: testDigest({ questions: [], lastActivityAt: 3 }) }),
@@ -266,5 +273,56 @@ describe('fix1 — 질문 표기 · 바뀐 파일 수 · 자동 연결 출처 �
     links.observe(links.annotate(linkedWith({ panes: [] })))
     expect(work.autoStores).toHaveLength(1)
     expect(work.activity.records.map((record) => record.change.field === 'run' ? record.change.event : null)).toEqual(['auto_link'])
+  })
+})
+
+describe('R2-C 질문 상태가 본문보다 먼저 와도 한 질문 = 한 줄 (리뷰 재현 claude-r2-raw/repro-question-lag)', () => {
+  const asked = [{ question: '지울까요?', header: null, options: [], multiSelect: null }]
+  const tree = (digest: ReturnType<typeof testDigest>) => [testRepo({ root: '/r', worktrees: [testWorktree({ path: '/r/wt', branch: 'LIFE-603-x', panes: [testPane({ paneId: 'p', status: 'blocked', reason: 'question', digest })] })] })]
+  const agentRows = (work: ReturnType<typeof fakeWork>) => work.activity.records.map((record) => record.change).filter((change) => change.field === 'agent')
+  it('판독 전(null) → 본문 도착: 본문 줄 하나만, 틀린 「못 읽음」 이유 줄 없음', () => {
+    const { registry } = tempRegistry()
+    const work = fakeWork()
+    const links = new WorkLinks({ registry, work: () => work, log: () => {} })
+    links.observe(links.annotate(tree(testDigest({ questions: null, lastActivityAt: 10 }))))
+    links.observe(links.annotate(tree(testDigest({ questions: asked, lastActivityAt: 10 }))))
+    expect(agentRows(work)).toEqual([{ field: 'agent', event: 'question', agent: 'claude', worktree: '/r/wt', question: '지울까요?', noBody: null }])
+  })
+  it('본문이 판독 창 내내 안 오면 그때 한 번 「본문 없음」 — 타이머가 트리 변화 없이도 다시 본다', () => {
+    const { registry } = tempRegistry()
+    const work = fakeWork()
+    let clock = 0
+    const timers: (() => void)[] = []
+    const links = new WorkLinks({ registry, work: () => work, log: () => {}, now: () => clock, schedule: (run, ms) => { expect(ms).toBe(QUESTION_SETTLE_MS); timers.push(run) } })
+    links.observe(links.annotate(tree(testDigest({ questions: null, lastActivityAt: 10 }))))
+    expect(agentRows(work)).toEqual([])
+    expect(timers).toHaveLength(1)
+    clock += QUESTION_SETTLE_MS
+    timers.shift()?.()
+    expect(agentRows(work)).toHaveLength(1)
+    expect(agentRows(work)[0]).toMatchObject({ question: null, noBody: '이 에이전트의 질문 본문은 읽지 못합니다.' })
+    clock += QUESTION_SETTLE_MS
+    links.observe(links.annotate(tree(testDigest({ questions: null, lastActivityAt: 10 }))))
+    expect(agentRows(work)).toHaveLength(1)
+  })
+})
+
+describe('R2-J ⓑ 같은 경로를 지웠다 다시 만들면 자동 연결을 다시 남긴다(열쇠에 세대)', () => {
+  it('세대가 바뀌면 새 자동 연결 사건 + 출처 저장, 같은 세대 재관측은 하나(양성 대조)', async () => {
+    const { registry } = tempRegistry()
+    const work = fakeWork()
+    let generation = 'g1'
+    const links = new WorkLinks({ registry, work: () => work, log: () => {}, generation: () => generation })
+    const tree = (present: boolean) => [testRepo({ root: '/r', worktrees: present ? [testWorktree({ path: '/r/wt', branch: 'LIFE-603-start' })] : [] })]
+    const autos = () => work.activity.records.filter((record) => record.change.field === 'run' && record.change.event === 'auto_link').length
+    links.observe(links.annotate(tree(true)))
+    links.observe(links.annotate(tree(true)))
+    expect(autos()).toBe(1)
+    links.observe(links.annotate(tree(false)))
+    generation = 'g2'
+    links.observe(links.annotate(tree(true)))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(autos()).toBe(2)
+    expect(work.autoStores).toHaveLength(2)
   })
 })

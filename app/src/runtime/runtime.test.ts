@@ -783,6 +783,23 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
       send.mockRestore()
     }
   }, 40000)
+  it('LIFE-603 R2-K: a body that is empty after sanitizing leaves the draft not_started (empty_after_sanitize) and types nothing', async () => {
+    const f = agentFixture('claude', { git: true })
+    await workspaceModule(f.data).execute({ command: 'repo add', flags: { path: f.cwd }, args: [], cwd: f.cwd }, f.context(8000))
+    const send = sendSpy()
+    cleanups.push(() => { send.mockRestore() })
+    let submitted = 0
+    f.state.onPrompt = () => { submitted++ }
+    // Only control bytes, invisible code points and whitespace: nothing survives sanitizeDraftBody.
+    const created = asObject(await f.run('terminal create', { worktree: f.cwd, agent: 'claude', prompt: '\u0007\u001b\u200b\u202e\u{E0041}\r\n  \t', draft: true, 'request-id': `r1.${Date.now()}.${randomUUID()}` }, 8000))
+    expect(nested(created, 'stages', 'prompt')).toEqual({ status: 'not_started', mode: 'draft', reason: 'empty_after_sanitize' })
+    expect(send).not.toHaveBeenCalled()
+    expect(submitted).toBe(0)
+    // Positive control: one visible character is enough to type the draft once.
+    const control = asObject(await f.run('terminal create', { worktree: f.cwd, agent: 'claude', prompt: '\u0007x', draft: true, 'request-id': `r1.${Date.now()}.${randomUUID()}` }, 8000))
+    expect(nested(control, 'stages', 'prompt')).toMatchObject({ status: 'completed', mode: 'draft' })
+    expect(send).toHaveBeenCalledTimes(1)
+  }, 40000)
   it('LIFE-603 positive control: without --draft the same body is submitted through agent.prompt and never typed', async () => {
     const f = agentFixture('claude', { git: true })
     await workspaceModule(f.data).execute({ command: 'repo add', flags: { path: f.cwd }, args: [], cwd: f.cwd }, f.context(8000))

@@ -3,12 +3,12 @@
 // 폭 600(`--w-modal-start-work`) · 머리(제목 + 키) · 이미 작업 중 상자 · 96 라벨 표(레포 · 이름 · 에이전트 · 모델 · effort) ·
 // 첫 프롬프트 미리보기(≤180) + 바로 보내기(기본 꺼짐) · 상태 옮기기(기본 꺼짐) · 진행 3단계 · 취소/시작.
 // 진행 중에는 Esc · 바깥 클릭 · 취소 · 시작이 막힌다.
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { effortOptions, modelOptions, type StartAgent } from '../../../shared/agent-options.js'
 import type { RepoRow } from '../../../shared/types.js'
 import { AGENT_ICON } from '../session-glyphs.js'
 import type { StartWorkModel } from '../hooks/useStartWork.js'
-import { alreadyLinked, failureActions, progressRows, type ProgressRow } from '../start-work-model.js'
+import { alreadyLinked, failureActions, progressRows, promptUndelivered, type ProgressRow } from '../start-work-model.js'
 import type { LinkedTree } from '../work-links-model.js'
 import { AgentIcon } from './AgentIcon.js'
 
@@ -31,6 +31,8 @@ export function StartWorkModal({ model, itemKey, itemTitle, repos, trees, onOpen
   onOpen: (tree: LinkedTree | { repoRoot: string; path: string }) => void
 }): React.JSX.Element | null {
   const { form, running, result } = model
+  const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle')
+  useEffect(() => setCopied('idle'), [result])
   // Esc — 진행 중이면 막는다. 캡처 단계에서 받아 작업 페이지의 Esc 단계로 내려가지 않게 한다.
   useEffect(() => {
     if (!model.open) return
@@ -147,6 +149,16 @@ export function StartWorkModal({ model, itemKey, itemTitle, repos, trees, onOpen
                   {row.note === null ? null : <span className="start-step-note">{row.note}</span>}
                 </div>
               ))}
+              {promptUndelivered({ result, agent: form.agent }) && model.prompt !== null ? (
+                <div className="start-actions" data-start-copy-prompt="">
+                  <button type="button" className="issue-btn" data-start-action="copy-prompt" onClick={() => {
+                    const text = model.prompt?.text ?? ''
+                    void navigator.clipboard.writeText(text).then(() => setCopied('done'), () => setCopied('failed'))
+                  }}>프롬프트 복사</button>
+                  {copied === 'done' ? <span className="start-note" data-start-copy-state="done">복사했습니다 — 에이전트 입력창에 붙여 넣으세요.</span> : null}
+                  {copied === 'failed' ? <span className="start-note is-error" data-start-copy-state="failed">복사하지 못했습니다 — 위 미리보기에서 직접 선택해 복사하세요.</span> : null}
+                </div>
+              ) : null}
               {result?.sourceLink?.state === 'failed' ? <div className="start-note" data-start-source-link="failed">출처에 링크를 남기지 못했습니다 — {result.sourceLink.message}</div> : null}
               {actions.length === 0 ? null : (
                 <div className="start-actions" data-start-failure={alreadyLinked(result) ? 'already-linked' : ''}>

@@ -28,23 +28,43 @@ const base = () => ({
 test('같음 · 다름 · 실패', () => {
   const roots = []
   try {
-    const take = (name, state) => { const root = profile(name, state); roots.push(root); const out = `${root}/snap.json`; assert.equal(run(['take', root, out]).status, 0); return out }
+    const take = (name, state, extra = []) => { const root = profile(name, state); roots.push(root); const out = `${root}/snap.json`; assert.equal(run(['take', root, out, ...extra]).status, 0); return out }
     const a = take('a', base())
     const shuffled = base(); shuffled.activity.records.reverse(); shuffled.activity.records[0].at = 99; shuffled.activity.records[1].id = 'other'
     assert.equal(run(['diff', a, take('b', shuffled)]).status, 0)
     const unlinked = base(); delete unlinked.registry.worktrees['/r/a'].workLink
-    const r1 = run(['diff', a, take('c', unlinked)])
+    const r1 = run(['diff', a, take('c', unlinked, ['--expect-links', '0'])])
     assert.equal(r1.status, 1)
     assert.equal(JSON.parse(r1.stdout).changes[0].key, '/r/a')
     const unsuppressed = base(); unsuppressed.registry.worktrees['/r/b'] = {}
     assert.equal(run(['diff', a, take('d', unsuppressed)]).status, 1)
     const lostEvent = base(); lostEvent.activity.records = lostEvent.activity.records.slice(1)
-    assert.equal(run(['diff', a, take('e', lostEvent)]).status, 1)
+    assert.equal(run(['diff', a, take('e', lostEvent, ['--expect-events', '0'])]).status, 1)
     const noPending = base(); delete noPending.pending
     assert.equal(run(['diff', a, take('f', noPending)]).status, 1)
     const broken = profile('g', { ...base(), registry: '{not json' }); roots.push(broken)
     assert.equal(run(['take', broken, `${broken}/snap.json`]).status, 2)
     assert.equal(run(['take', '/Users/x', '/tmp/l603w/x.json']).status, 2)
     assert.equal(run(['diff', a, '/tmp/l603g-none/none.json']).status, 2)
+  } finally { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+test('R2-L 둘 다 빈 스냅샷은 기본 기대값에서 실패(exit 3) · seen 은 집합으로 비교 · 쌍 형식도 읽는다', () => {
+  const roots = []
+  try {
+    const empty = profile('h', { registry: { version: 2, repos: [], worktrees: {} } }); roots.push(empty)
+    const thin = run(['take', empty, `${empty}/snap.json`])
+    assert.equal(thin.status, 3)
+    assert.equal(JSON.parse(thin.stdout).code, 'below_expected')
+    assert.equal(run(['take', empty, `${empty}/snap0.json`, '--expect-links', '0', '--expect-events', '0']).status, 0)
+    const withSeen = (seen) => { const state = base(); state.activity.seen = seen; return state }
+    const one = profile('i', withSeen([['run:start:x', 'c'], ['agent:q:c:K:s:b:1', 'c']])); roots.push(one)
+    const two = profile('j', withSeen([['run:start:x', 'c'], ['agent:q:c:K:s:b:2', 'c']])); roots.push(two)
+    const legacy = profile('k', withSeen(['agent:q:c:K:s:b:1', 'run:start:x'])); roots.push(legacy)
+    for (const root of [one, two, legacy]) assert.equal(run(['take', root, `${root}/snap.json`]).status, 0)
+    const changed = run(['diff', `${one}/snap.json`, `${two}/snap.json`])
+    assert.equal(changed.status, 1)
+    assert.equal(JSON.parse(changed.stdout).changes[0].section, 'seen')
+    assert.equal(run(['diff', `${one}/snap.json`, `${legacy}/snap.json`]).status, 0)
   } finally { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }) }
 })

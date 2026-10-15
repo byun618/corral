@@ -9,7 +9,7 @@ const run = (input: { query: string; showDotfiles?: boolean; collapsed?: string[
     words: filterWords(input.query),
     collapsed: new Set(input.collapsed ?? []),
     opened: new Set(input.opened ?? []),
-    isIgnored: () => false,
+    ignored: null,
   })
 
 describe('E6ⓑ 걸러냄 — 맞은 항목 + 조상, 조상 펼침, 안 읽은 폴더 안도', () => {
@@ -29,7 +29,11 @@ describe('E6ⓑ 걸러냄 — 맞은 항목 + 조상, 조상 펼침, 안 읽은 
     expect(run({ query: 'target' }).rows.map((row) => row.rel)).toEqual(['deep', 'deep/a', 'deep/a/b', 'deep/a/b/c', 'deep/a/b/c/target.txt'])
   })
   it('맞은 글자 강조 범위', () => {
-    expect(run({ query: 'fs' }).highlights.get('src/main/explorer-fs.ts')).toEqual([[9, 11]])
+    const result = run({ query: 'fs' })
+    const row = result.rows.find((item) => item.rel === 'src/main/explorer-fs.ts')
+    expect(row === undefined ? null : result.highlight(row)).toEqual([[9, 11]])
+    const ancestor = result.rows.find((item) => item.rel === 'src/main')
+    expect(ancestor === undefined ? 'missing' : result.highlight(ancestor)).toBeNull()
   })
   it('사용자가 접은 조상은 접힌다(필터 안에서만)', () => {
     expect(run({ query: 'explorer', collapsed: ['src/main'] }).rows.map((row) => row.rel)).toEqual(['src', 'src/main', 'src/renderer', 'src/renderer/Explorer.tsx'])
@@ -54,6 +58,14 @@ describe('E6ⓒ 매칭·토글', () => {
   })
   it('ⓖ 일치 0', () => {
     expect(run({ query: 'zzzz' })).toMatchObject({ rows: [], matchCount: 0, firstMatch: null })
+  })
+  it('git 무시 경로는 자신·조상에서 물려받아 흐림', () => {
+    const result = filterRows({ tree: buildFilterTree({ files, showDotfiles: true }), words: filterWords('explorer'), collapsed: new Set(), opened: new Set(), ignored: new Set(['src/main']) })
+    expect(result.rows.filter((row) => row.ignored).map((row) => row.rel)).toEqual(['src/main', 'src/main/explorer-fs.ts'])
+  })
+  it('트리와 같은 정렬 — 폴더 먼저·숫자 인식', () => {
+    const tree = buildFilterTree({ files: ['x/file10.ts', 'x/file2.ts', 'x/sub/a.ts', 'x/File1.ts'], showDotfiles: true })
+    expect(filterRows({ tree, words: ['x'], collapsed: new Set(), opened: new Set(['x']), ignored: null }).rows.map((row) => row.rel)).toEqual(['x', 'x/sub', 'x/File1.ts', 'x/file2.ts', 'x/file10.ts'])
   })
   it('nameMatch — 단어 하나라도 없으면 null', () => {
     expect(nameMatch({ name: 'ab', lowerName: 'ab', words: ['a', 'z'] })).toBeNull()

@@ -17,7 +17,7 @@ import { isAtOrUnder, nameError, splitNewName } from '../../../shared/explorer-o
 import { folderMarks, GIT_DECORATION, isIgnoredPath, type GitMark } from '../../../shared/explorer-git.js'
 import type { ExplorerApi } from '../hooks/useExplorer.js'
 import { requestFileList, type FileListOk } from '../file-list-client.js'
-import { buildFilterTree, filterRows, filterWords } from '../explorer-filter.js'
+import { buildFilterTree, filterRows, filterWords, sortFilterTree } from '../explorer-filter.js'
 import { ContextMenu, type MenuEntry } from './ContextMenu.js'
 import { Codicon, FileIcon } from './ExplorerIcons.js'
 import './explorer.css'
@@ -220,9 +220,16 @@ export function Explorer({
   }, [filterToken])
   const filterReady = filterList !== null && filterList.root === root && filterList.includeIgnored === filter.showIgnored
   const filterTree = useMemo(() => (filterReady && filterList !== null ? buildFilterTree({ files: filterList.files, showDotfiles: filter.showDotfiles }) : null), [filterReady, filterList, filter.showDotfiles])
+  // 자식 정렬은 목록을 받은 직후 다음 틱에 미리 — 첫 키 입력이 정렬 값을 치르지 않게(E7ⓕ). 그 전에 입력이 오면 `filterRows` 가 그때 정렬한다.
+  useEffect(() => {
+    if (filterTree === null) return
+    const timer = setTimeout(() => sortFilterTree(filterTree), 0)
+    return () => clearTimeout(timer)
+  }, [filterTree])
+  const gitIgnored = git?.ignored ?? null
   const filtered = useMemo(
-    () => (filterActive && filterTree !== null ? filterRows({ tree: filterTree, words, collapsed: filterCollapsed, opened: filterOpened, isIgnored }) : null),
-    [filterActive, filterTree, words, filterCollapsed, filterOpened, isIgnored],
+    () => (filterActive && filterTree !== null ? filterRows({ tree: filterTree, words, collapsed: filterCollapsed, opened: filterOpened, ignored: gitIgnored }) : null),
+    [filterActive, filterTree, words, filterCollapsed, filterOpened, gitIgnored],
   )
   const rows = filterActive ? (filtered?.rows ?? []) : treeRows
   /** 펼치기·접기 — 필터 중이면 필터 안 집합만 바꾼다(트리 펼침 상태는 그대로 — E6ⓔ). */
@@ -747,7 +754,7 @@ export function Explorer({
               activeGuideParent={activeGuideParent}
               error={state?.errors.get(row.rel) ?? null}
               mark={git?.marks.get(row.rel) ?? (row.kind === 'dir' ? (folders.get(row.rel) ?? null) : null)}
-              highlight={filtered?.highlights.get(row.rel) ?? null}
+              highlight={filtered === null ? null : filtered.highlight(row)}
               dropTarget={highlightDir !== null && highlightDir !== '' && isAtOrUnder(row.rel, highlightDir)}
               dragSource={drag?.phase === 'dragging' && drag.rel === row.rel}
               editor={

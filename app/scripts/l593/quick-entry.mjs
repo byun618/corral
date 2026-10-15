@@ -64,10 +64,17 @@ try {
   if (!(await panelOpen())) await key('L', ['meta'])
   await until(panelOpen, { label: '탐색기' })
   await until(() => q(`document.querySelectorAll('[data-explorer-row]').length > 0`), { label: '탐색기 행' })
-  // auto reveal 이 연 탭 조상을 펼쳤다 — 모두 접어 「안 읽은·접힌 폴더 안도 찾는다」 를 본다.
-  await ctl(root, { cmd: 'click', selector: '[data-explorer-collapse-all]' })
-  await sleep(300)
-  const expandedBefore = await q(`[...document.querySelectorAll('[data-explorer-row][aria-expanded="true"]')].map((e) => e.dataset.explorerRow)`)
+  // auto reveal 이 연 탭 조상을 펼친다 — 그 행이 보일 때까지(reveal 끝) 기다린 뒤 모두 접어 「안 읽은·접힌 폴더 안도 찾는다」 를 본다.
+  // (q02 실패: reveal 이 「모두 접기」 뒤에 끝나 조상이 펼쳐진 채 남았다 — 하네스 경합, 제품 판정과 무관)
+  await until(() => q(`document.querySelector('[data-explorer-row="src/deep/a/b/l593-target.ts"]') !== null`), { timeoutMs: 8_000, label: 'auto reveal 끝' })
+  const expandedBefore = (
+    await until(async () => {
+      await ctl(root, { cmd: 'click', selector: '[data-explorer-collapse-all]' })
+      await sleep(300)
+      const open = await q(`[...document.querySelectorAll('[data-explorer-row][aria-expanded="true"]')].map((e) => e.dataset.explorerRow)`)
+      return open.length === 0 ? open : null
+    }, { timeoutMs: 6_000, everyMs: 300, label: '모두 접기' })
+  ).value
   await until(async () => {
     await ctl(root, { cmd: 'click', selector: '[data-explorer-row="README.md"]' })
     await sleep(200)

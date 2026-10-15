@@ -216,6 +216,8 @@ export function App(): React.JSX.Element {
   const [quickOpenIgnored, setQuickOpenIgnored] = useState(false)
   /** 최근 연 파일(E5 — worktree 별, ui-prefs 영속). 첫 getUiPrefs 에서 읽는다. */
   const [recentFiles, setRecentFiles] = useState<RecentFiles>({})
+  /** 기록 거울 — 저장할지(바뀌었는지)를 상태 갱신 밖에서 가린다. */
+  const recentFilesRef = useRef<RecentFiles>({})
   const recentReady = useRef(false)
   /** 탐색기 이름 필터 열기 요청(⌥⌘F — Q7). 바뀌면 탐색기가 머리 입력칸을 연다. */
   const [explorerFilterToken, setExplorerFilterToken] = useState(0)
@@ -322,7 +324,8 @@ export function App(): React.JSX.Element {
         setTabMarks(marks)
         sidebarCollapsedRef.current = prefs.sidebarCollapsed
         setSidebarCollapsed(prefs.sidebarCollapsed)
-        setRecentFiles(readRecentFiles(prefs.recentFiles))
+        recentFilesRef.current = readRecentFiles(prefs.recentFiles)
+        setRecentFiles(recentFilesRef.current)
       })
       .catch(() => {
         // 읽기 실패 — 빈 배정표로 간다.
@@ -769,11 +772,11 @@ export function App(): React.JSX.Element {
   const recentRoot = activeWorktreeRow?.path ?? null
   useEffect(() => {
     if (recentRoot === null || activeFileRel === null || !recentReady.current) return
-    setRecentFiles((previous) => {
-      const next = pushRecentFile({ recent: previous, root: recentRoot, rel: activeFileRel })
-      if (next !== previous) window.corral.setUiPrefs({ recentFiles: next })
-      return next
-    })
+    const next = pushRecentFile({ recent: recentFilesRef.current, root: recentRoot, rel: activeFileRel })
+    if (next === recentFilesRef.current) return
+    recentFilesRef.current = next
+    setRecentFiles(next)
+    window.corral.setUiPrefs({ recentFiles: next })
   }, [recentRoot, activeFileRel, ordinalsReady])
 
   /** 키 핸들러가 읽는 배치 거울 — 핸들러를 매 렌더 다시 달지 않으려고 ref 로 둔다. */

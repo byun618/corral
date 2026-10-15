@@ -250,4 +250,6 @@
   --w-issue-detail-full: 820px;
   /* LIFE-603 작업 시작(D) — 시작 모달 폭(design-handoff §3). */
   --w-modal-start-work: 600px;
+  /* LIFE-604 작업 만들기(C) — 빠른 생성 모달 폭(design-handoff §2 「빠른 생성」 560 · 위 12vh). */
+  --w-modal-quick-create: 560px;
 }

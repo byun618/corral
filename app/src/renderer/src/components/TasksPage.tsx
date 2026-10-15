@@ -3,9 +3,10 @@
 // - 열고 닫기는 App 이 한다(사이드바 「작업」·⌘I). 이 컴포넌트는 처음 열 때 마운트되고 **닫혀도 마운트를 유지**한다 —
 //   닫힌 동안은 `visibility:hidden` + `inert`. 그래서 검색어·스크롤·펼침이 같은 실행 안에서 그대로 남는다(C3). 재시작 뒤 복원은 ui-prefs.
 // - 키(C4): `/` 검색 · `1`–`4` 보기(입력 중이면 글자) · `Esc` 단계 = 열린 메뉴 → 입력 blur → 페이지 닫기. IME 조합 중 Esc 는 조합만 끝낸다.
-//   `C`(만들기)는 T4 까지 묶지 않는다(D5). 페이지가 열린 동안 워크스페이스 단축키는 App 이 막는다(설정 페이지와 같은 규칙).
+//   `C`(만들기, LIFE-604)는 단축키 레지스트리가 아니라 이 페이지 처리기 몫이다(수정키 없는 키 — F9). 페이지가 열린 동안 워크스페이스 단축키는 App 이 막는다.
 //   페이지 키는 **페이지 안(또는 포커스 없음)에서 난 키만** 받고, 위층(설정·팔레트·모달)이 열려 있으면(`yieldKeys`) 하나도 받지 않는다(R1-G).
-// - 만들기 진입점(버튼·C·칸 「+ 추가」)은 그리지 않는다(D5).
+// - LIFE-604 만들기 진입점 — 머리 「만들기」 · `C` · 보드 칸 「+ 추가」(인라인) · 백로그 섹션 「추가」. 쓰기가 막히면 흐림 + 이유, `C` 는 안 열림.
+//   만들기·시작 모달이 열린 동안 페이지 키(`C`·`/`·`1–4`)는 받지 않는다(F10).
 // - LIFE-602 — 카드·행·검색 결과를 누르면 그 작업 상세(`TaskDetail`)가 오른쪽 패널로 열린다(선택 = 열린 상세, 다시 누르면 닫힘).
 //   `Esc` 단계 = 열린 메뉴 → 상세의 메뉴·확인 팝오버 → 입력 blur → 상세 닫기 → 페이지 닫기.
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -59,6 +60,8 @@ import { WorkLinksContext, type DetailWorkActions, type WorkLinksView } from './
 import { useStartWork } from '../hooks/useStartWork.js'
 import { treesFor } from '../work-links-model.js'
 import type { WorkRepoDefault } from '../../../shared/work.js'
+import { InlineAddSlot, QuickCreateModal } from './QuickCreate.js'
+import { useQuickCreate } from '../hooks/useQuickCreate.js'
 
 /** 사이드바 작업 줄이 여는 작업 — `itemId` 를 모르면(자동 링크) 키로 찾는다. */
 export type TasksFocus = { seq: number; connectionId: string; itemId: string | null; key: string }
@@ -235,6 +238,26 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     if (banner !== null && (banner.kind === 'forbidden' || banner.kind === 'offline' || banner.kind === 'auth')) return writeBlock(banner.kind === 'offline' ? 'offline' : banner.kind)?.reason ?? null
     return writeBlock(status)?.reason ?? null
   }
+  // --- 만들기 (LIFE-604) ---
+  const creator = useQuickCreate({
+    page,
+    space,
+    writeBlockOf,
+    openItem: (target) => setSelectedId(itemUid(target)),
+    notifyFailure: (message) => notify({ kind: 'failed', message }),
+    onCreated: ({ connectionId, item }) => {
+      const uid = itemUid({ connectionId, itemId: item.id })
+      const id = toast(
+        <div className="tasks-toast" data-toast="created">
+          <span className="tasks-toast-label">{item.key} 를 만들었습니다</span>
+          <button type="button" className="tasks-toast-undo" data-toast-open="" onClick={() => { setSelectedId(uid); toast.dismiss(id) }}>열기</button>
+        </div>,
+        { duration: 6000 },
+      )
+    },
+  })
+  const createBlocked = creator.blockedReason()
+
   // 끄는 행 — 끌기 id 는 `(연결, 작업 id)`(R1-L). 놓기 판정은 이 행을 **인자로** 받는다(R1-A: 놓기 전에 지우면 판정이 idle 로 끝났다).
   const dragRow = useRef<TasksRow | null>(null)
   const { drag, onMouseDown } = useTaskDrag({
@@ -353,12 +376,15 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   // --- 키 (C4) ---
   const viewsRef = useRef(views)
   viewsRef.current = views
-  const latest = useRef({ menu, onClose, setPrefs, yieldKeys, viewReason, selectedId, setSelectedId })
-  latest.current = { menu, onClose, setPrefs, yieldKeys, viewReason, selectedId, setSelectedId }
+  const overlay = creator.modal !== null || starter.open
+  const latest = useRef({ menu, onClose, setPrefs, yieldKeys, viewReason, selectedId, setSelectedId, overlay, openCreate: creator.openModal })
+  latest.current = { menu, onClose, setPrefs, yieldKeys, viewReason, selectedId, setSelectedId, overlay, openCreate: creator.openModal }
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || latest.current.yieldKeys) return
+      // 페이지 안 모달(만들기·시작)이 열린 동안은 페이지 키가 새지 않는다(F10) — Esc 는 모달이 capture 로 먼저 받는다.
+      if (latest.current.overlay) return
       const target = event.target
       // 페이지 밖(사이드바 입력·위층)에서 난 키는 그쪽 몫이다 — 포커스가 없을 때(body)만 페이지가 받는다(R1-G).
       if (target instanceof Node && target !== document.body && target !== document.documentElement && !(rootRef.current?.contains(target) ?? false)) return
@@ -374,6 +400,12 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         return
       }
       if (typing || event.metaKey || event.ctrlKey || event.altKey) return
+      // `C` = 만들기(LIFE-604). 수정키·입력 중·IME 조합·열린 메뉴·위층이면 무시, 쓰기가 막혀 있으면 열리지 않는다(openCreate 가 거절).
+      if ((event.key === 'c' || event.key === 'C') && !event.shiftKey && !imeComposing(event)) {
+        if (latest.current.menu !== null) return
+        if (latest.current.openCreate()) event.preventDefault()
+        return
+      }
       if (event.key === '/') {
         event.preventDefault()
         searchRef.current?.focus()
@@ -456,7 +488,10 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         return (
           <div className="tasks-scroll" data-tasks-scroll="board">
             {hits.length > 0 ? <KeyHits hits={hits} selectedId={selectedId} onSelect={toggleSelect} /> : null}
-            <Board bands={bands} rows={rows} all={all} density={prefs.density} selectedId={selectedId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))} />
+            <Board
+              bands={bands} rows={rows} all={all} density={prefs.density} selectedId={selectedId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
+              columnFooter={(column) => (column.statusKey === null ? null : <InlineAddSlot view={creator.inlineView({ statusKey: column.statusKey, columnId: column.id, unmapped: column.unmapped })} model={creator} statusKey={column.statusKey} columnId={column.id} />)}
+            />
             <MoreBar more={more} onLoadMore={() => void page.loadMore()} />
           </div>
         )
@@ -464,7 +499,19 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         return (
           <div className="tasks-scroll" data-tasks-scroll="backlog">
             {hits.length > 0 ? <KeyHits hits={hits} selectedId={selectedId} onSelect={toggleSelect} /> : null}
-            <Backlog sections={backlogSections} all={all} selectedId={selectedId} drag={drag} now={now} sectionView={sectionView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))} />
+            <Backlog
+              sections={backlogSections} all={all} selectedId={selectedId} drag={drag} now={now} sectionView={sectionView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
+              sectionAdd={(id) => (
+                <button
+                  type="button"
+                  className={`tasks-section-add${createBlocked === null ? '' : ' is-disabled'}`}
+                  data-section-add={id}
+                  aria-disabled={createBlocked === null ? undefined : true}
+                  title={createBlocked ?? `${id === 'board' ? '보드' : '백로그'}에 새 작업`}
+                  onClick={() => { if (createBlocked === null) creator.openModal({ placement: id }) }}
+                >+ 추가</button>
+              )}
+            />
             <MoreBar more={more} onLoadMore={() => void page.loadMore()} />
           </div>
         )
@@ -588,6 +635,16 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           onChange={(event) => setQuery(event.target.value)}
           spellCheck={false}
         />
+        <button
+          type="button"
+          className={`tasks-create${createBlocked === null ? '' : ' is-disabled'}`}
+          data-tasks-create=""
+          aria-disabled={createBlocked === null ? undefined : true}
+          title={createBlocked ?? '새 작업 (C)'}
+          onClick={() => { if (createBlocked === null) creator.openModal() }}
+        >
+          <span aria-hidden>+</span><span>만들기</span><span className="tasks-create-kbd">C</span>
+        </button>
         <button type="button" className="tasks-close" data-tasks-close="" onClick={onClose} title={shortcut === null ? '닫기 (Esc)' : `닫기 (Esc · ${shortcut})`} aria-label="작업 페이지 닫기">✕</button>
       </header>
 
@@ -648,6 +705,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           spaceOf={spaceOf}
         />
       )}
+      <QuickCreateModal model={creator} />
       {detail.item === null ? null : (
         <StartWorkModal model={starter} itemKey={detail.item.key} itemTitle={detail.item.title} repos={repos} trees={detailTrees} onOpen={onOpenWorktree} />
       )}

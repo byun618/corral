@@ -113,8 +113,9 @@ describe('그리기 (C6·C13 계측)', () => {
     expect([...host.querySelectorAll('[data-board-column]')].map((element) => element.getAttribute('data-board-column'))).toEqual(['st:todo', 'st:doing', 'st:done', 'st:__unmapped'])
     expect(q('[data-board-column="st:__unmapped"] [data-issue-card="K-3"]')).not.toBeNull()
     expect(q('[data-issue-card="K-2"] [data-issue-blocked]')?.textContent).toContain('막힘 · K-1')
-    // 만들기 진입점은 그리지 않는다(D5).
-    expect(q('[data-tasks-create]')).toBeNull()
+    // 만들기 진입점(LIFE-604 — D5 해제): 머리 「만들기」 · 칸 「+ 추가」 는 있고, 한 줄 입력은 누르기 전엔 없다.
+    expect(q('[data-tasks-create]')).not.toBeNull()
+    expect(q('[data-inline-add-open]')).not.toBeNull()
     expect(q('[data-inline-add]')).toBeNull()
   })
 

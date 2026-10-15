@@ -10,6 +10,7 @@ import type {
   WorkCategory,
   WorkConnectionSummary,
   WorkItem,
+  WorkKind,
   WorkPriority,
   WorkResolutionChoice,
   WorkSettingsState,
@@ -203,7 +204,8 @@ export type SpaceData = {
   colorIndex: number
   color: string | null
   statuses: WorkStatus[]
-  kinds: { key: string; label: string }[]
+  /** 종류 — `childKinds` 까지(LIFE-604 만들기의 기본 종류·부모 후보). */
+  kinds: WorkKind[]
   items: WorkItem[]
   nextCursor: string | null
   truncated: boolean

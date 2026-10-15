@@ -85,6 +85,15 @@ export type ItemWrite = { connectionId: string; spaceKey: string; itemId: string
 export type ItemWriteOutcome = { kind: 'ok'; result: WorkResult } | { kind: 'failed'; error: WorkError } | { kind: 'busy' } | { kind: 'late'; settled: Promise<LateSettled> } | { kind: 'stale' }
 /** 확인 지연 뒤 끝난 결과(LIFE-602 수정 1 R1-C) — 상세가 서버 정본으로 돌아가거나 초안을 남기는 데 쓴다. 세대가 바뀌었으면 stale. */
 export type LateSettled = { kind: 'ok'; result: WorkResult } | { kind: 'failed'; error: WorkError } | { kind: 'stale' }
+/**
+ * 만들기(LIFE-604) — 진입 하나(빠른 생성 모달 · 인라인 입력 하나)가 `lockKey` 를 갖고, 그 열쇠의 만들기는 **끝날 때까지 하나**다(C9 — 출처에 멱등이 없다, F6).
+ * `late`(30초 확인 지연)는 실패가 아니다 — 잠금은 답이 올 때까지 남고(다시 보내지 못함), `settled` 가 확정을 준다. 자동 재전송은 없다.
+ * `stale` = 연결 세대가 바뀐 뒤 온 답 — 화면에 덧씌우지 않는다.
+ */
+export type CreateRequest = { lockKey: string; connectionId: string; call: Extract<WorkCall, { op: 'createItem' }> }
+export type CreateSettled = { kind: 'ok'; item: WorkItem } | { kind: 'failed'; error: WorkError } | { kind: 'stale' }
+export type CreateOutcome = CreateSettled | { kind: 'busy' } | { kind: 'late'; settled: Promise<CreateSettled> }
+
 /** 성공한 쓰기의 서버 값 — 열린 상세가 받는다. `seq` 는 같은 값이 다시 와도 알 수 있게. */
 export type SettledWrite = { uid: string; item: WorkItem; seq: number }
 
@@ -798,6 +807,46 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     return { kind: 'ok', result }
   }, [patch, gate, notify, reflect, currentGeneration])
 
+  // --- 만들기 (LIFE-604) ---
+  const creating = useRef(new Set<string>())
+  const [createBusy, setCreateBusy] = useState<ReadonlySet<string>>(new Set())
+  const createSeq = useRef(0)
+  /**
+   * 만들기 하나 — 잠금은 `lockKey`(진입마다). 성공하면 서버에서 다시 읽어 새 작업이 정본으로 들어온다(낙관 행을 만들지 않는다 — 둘로 보일 일이 없다).
+   * 늦으면 잠금을 쥔 채 `late` 를 돌려주고, 원래 답이 오면 잠금을 풀고 확정한다.
+   */
+  const createItem = useCallback(async ({ lockKey, connectionId, call }: CreateRequest): Promise<CreateOutcome> => {
+    if (creating.current.has(lockKey)) return { kind: 'busy' }
+    creating.current.add(lockKey)
+    setCreateBusy(new Set(creating.current))
+    const generation = currentGeneration(connectionId)
+    createSeq.current += 1
+    const requestId = `create:${lockKey}:${createSeq.current}`
+    const release = (): void => {
+      creating.current.delete(lockKey)
+      setCreateBusy(new Set(creating.current))
+    }
+    const finish = (response: WorkResponse): CreateSettled => {
+      if (generation !== currentGeneration(connectionId)) return { kind: 'stale' }
+      if (!response.ok) return { kind: 'failed', error: response.error }
+      if (response.result.op !== 'createItem') return { kind: 'failed', error: { kind: 'invalid_response', message: '출처 응답 모양이 다릅니다.', status: null } }
+      const { item } = response.result
+      settles.current += 1
+      void reloadRef.current({ quiet: true })
+      return { kind: 'ok', item }
+    }
+    const asked = await ask({ requestId, connectionId, call })
+    if (asked.kind === 'late') {
+      const settled = asked.answer.then((late) => {
+        release()
+        return finish(late)
+      })
+      return { kind: 'late', settled }
+    }
+    release()
+    return finish(asked.response)
+  }, [currentGeneration])
+
   /** 끄기 시작 — 허용 전이만인 출처면 그 작업의 허용 전이를 받는다. 받기 전·실패면 칸은 흐림(fail-closed). */
   const beginDrag = useCallback(async (row: TasksRow, mode: 'any' | 'allowed') => {
     if (mode === 'any') { setTransitions(null); return }
@@ -848,6 +897,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     hits, workingEntries, working: workingLookups, workingKeys, linked,
     move: (request: MoveRequest) => move({ ...request, undo: false, restore: null }),
     writeItem, settledWrite, startedWrite, holdRead,
+    /** 만들기(LIFE-604) — 진입마다 잠금 하나. `createBusy` = 지금 확정을 기다리는 잠금 열쇠. */
+    createItem, createBusy,
     /** 확인 안 된 쓰기가 있는 카드(uid) — 끌기 잠금·「확인하는 중」 표시(R2-A). */
     busy,
     /** 상세 단건 읽기가 진행 중인 카드(uid) — 끌기 잠금(R6-D). */

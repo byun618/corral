@@ -1,10 +1,12 @@
 // LIFE-593 빠른 확인 — 핵심 진입점 1회(격리 Electron, fixture 만). 01-criteria 「빠른 확인」:
 //   ① 터미널 포커스에서 ⌘P → 대화상자(별도 — 팔레트 아님) → 질의 → Enter → 고정 탭 + 편집기 포커스, PTY 로 글자 0
+//      수정 r1 R1-C-11 — 편집기 포커스 오라클 = **친 글자가 그 파일 모델에 들어갔는가**(Monaco 0.57 은 EditContext — 활성 요소 `.native-edit-context`). 옛 오라클(`closest('[data-file-editor]')`)은 약했다.
 //   ② 탐색기 트리 포커스에서 ⌥⌘F → 머리 입력칸 → 입력 → 트리가 걸러짐(맞은 항목 + 조상, 안 읽은 폴더 안도) → 입력칸 Enter = 이름 바꾸기 아님(첫 일치 선택 + 트리 포커스)
+//   ③ (수정 r1 R1-C-02) NFD 이름 교차 열기 — 탐색기 트리(readdir = NFD)로 `nfd/노트.md` 를 연 뒤 ⌘P(git = NFC)로 같은 파일 → 그 파일 탭은 1개(NFC 로 같은 탭 수)
 // 사용(app/ 에서, iso.sh 안): node scripts/l593/quick-entry.mjs <ROOT> <OUT.json>
 // 입력은 제어 소켓(sendInputEvent) — OS 키 입력(CGEvent)·클립보드 아님. 창이 앞에 뜨면 L593_RETURN_APP 으로 앞 앱을 돌려준다(giveBack).
 import path from 'node:path'
-import { ctl, evalJs, sleep, until, repoPane, writeJson, giveBack, giveBackLog, herdr } from './lib.mjs'
+import { ctl, evalJs, sleep, until, repoPane, writeJson, giveBack, giveBackLog, herdr, exposeMonaco } from './lib.mjs'
 
 const [root, out] = process.argv.slice(2)
 if (!/^\/tmp\/l593g-[^/]+$/.test(root ?? '') || out === undefined) throw new Error('사용: quick-entry.mjs /tmp/l593g-* OUT.json')
@@ -50,14 +52,24 @@ try {
   step('quickOpen.query', { query: 'l593 target', top5: top.value, marks })
   await key('Return')
   const tab = await until(() => q(`(() => { const t = document.querySelector('[data-file-tab="src/deep/a/b/l593-target.ts"]'); return t === null ? null : { preview: t.dataset.tabPreview ?? null, active: t.dataset.active ?? null } })()`), { timeoutMs: 8_000, label: '파일 탭' })
-  const editorFocus = await until(() => q(`document.activeElement?.closest('[data-file-editor]') !== null ? true : null`), { timeoutMs: 5_000, label: '편집기 포커스' }).then(() => true, () => false)
+  // 편집기가 붙을 때까지(모델이 생길 때까지) 기다린 뒤, 활성 요소를 기록하고 표지 글자를 친다 — 모델에 들어가야 통과(R1-C-11).
+  const TARGET = 'src/deep/a/b/l593-target.ts'
+  await exposeMonaco(root)
+  const editorOf = `(() => { const host = document.querySelector('[data-file-view="${TARGET}"] [data-file-editor]'); return host === null ? null : (window.l593Monaco.editor.getEditors().find((x) => host.contains(x.getContainerDomNode())) ?? null) })()`
+  await until(() => q(`${editorOf} !== null`), { timeoutMs: 8_000, label: '편집기 붙음' })
+  await sleep(400)
+  const active = await q(`(() => { const a = document.activeElement; return { tag: a?.tagName ?? null, cls: String(a?.className ?? '').slice(0, 80), inEditorHost: a?.closest('[data-file-editor]') !== null && a?.closest('[data-file-editor]') !== undefined, nativeEditContext: a?.classList?.contains('native-edit-context') === true } })()`)
+  const MARK = 'Q593'
+  await ctl(root, { cmd: 'key', keyCode: 'Shift' })
+  await ctl(root, { cmd: 'type', text: MARK })
+  const typed = await until(() => q(`(${editorOf})?.getModel()?.getValue().includes('${MARK}') === true ? true : null`), { timeoutMs: 3_000, label: '편집기 입력' }).then(() => true, () => false)
   const closed = await q(`!document.querySelector('[data-quick-open]')`)
   await sleep(300)
   const termAfter = await termText()
-  const leaked = ['l593', 'target'].filter((word) => termAfter.split(word).length > termBefore.split(word).length)
-  step('quickOpen.enter', { tab: tab.value, editorFocus, closed, ptyLeak: leaked })
+  const leaked = ['l593', 'target', MARK].filter((word) => termAfter.split(word).length > termBefore.split(word).length)
+  step('quickOpen.enter', { tab: tab.value, active, typedIntoModel: typed, closed, ptyLeak: leaked })
   result.checks.quickOpen =
-    dialog.quickOpen && !dialog.palette && dialog.inputFocused && dialog.bodyInert && tab.value.preview === 'false' && editorFocus && closed && leaked.length === 0
+    dialog.quickOpen && !dialog.palette && dialog.inputFocused && dialog.bodyInert && tab.value.preview === 'false' && typed && closed && leaked.length === 0
 
   // ② 이름 필터
   const panelOpen = async () => (await q(`document.querySelector('[data-right-panel]')?.dataset.rightPanel ?? null`)) === 'open'
@@ -99,6 +111,32 @@ try {
   step('filter.enter', afterEnter)
   result.checks.filter =
     JSON.stringify(rows.value) === JSON.stringify(expected) && expandedBefore.length === 0 && highlighted.every((text) => text.toLowerCase() === 'needle') && !afterEnter.renameInput && afterEnter.treeFocused && afterEnter.selected === 'docs/guide/l593-needle-guide.md'
+
+  // ③ NFD 교차 열기(R1-C-02) — 필터를 닫고 트리에서 `nfd` 를 펼쳐 NFD 이름 행을 연 뒤(미리보기 탭), ⌘P 로 같은 파일을 연다.
+  const NFC_REL = 'nfd/노트.md'
+  const NFD_REL = 'nfd/' + '노트'.normalize('NFD') + '.md'
+  await ctl(root, { cmd: 'click', selector: '[data-explorer-filter-close]' })
+  await until(() => q(`!document.querySelector('[data-explorer-filter-input]') && !!document.querySelector('[data-explorer-row="nfd"]')`), { timeoutMs: 5_000, label: '필터 닫힘' })
+  await until(async () => {
+    if (await q(`!!document.querySelector('[data-explorer-row="${NFD_REL}"]')`)) return true
+    await ctl(root, { cmd: 'click', selector: '[data-explorer-row="nfd"]' })
+    await sleep(400)
+    return q(`!!document.querySelector('[data-explorer-row="${NFD_REL}"]')`)
+  }, { timeoutMs: 6_000, everyMs: 300, label: 'nfd 펼침' })
+  await ctl(root, { cmd: 'click', selector: `[data-explorer-row="${NFD_REL}"]` })
+  const tabsOf = `[...document.querySelectorAll('[data-file-tab]')].map((t) => t.dataset.fileTab).filter((rel) => rel.normalize('NFC') === '${NFC_REL}')`
+  const fromTree = (await until(() => q(`(() => { const t = ${tabsOf}; return t.length > 0 ? t.map((rel) => rel === '${NFD_REL}' ? 'nfd' : rel === '${NFC_REL}' ? 'nfc' : 'other') : null })()`), { timeoutMs: 6_000, label: '트리로 연 탭' })).value
+  await giveBack()
+  await ctl(root, { cmd: 'key', keyCode: 'Shift' })
+  await key('P', ['meta'])
+  await until(() => q(`document.querySelector('[data-quick-open]')?.dataset.quickOpenState === 'ready' ? true : null`), { timeoutMs: 10_000, label: '⌘P 준비(NFD)' })
+  await ctl(root, { cmd: 'type', text: 'nfd 노트' })
+  await until(() => q(`(() => { const r = document.querySelector('[data-quick-open-row]')?.dataset.quickOpenRow ?? null; return r !== null && r.normalize('NFC') === '${NFC_REL}' ? true : null })()`), { timeoutMs: 5_000, label: '⌘P 노트' })
+  await key('Return')
+  await sleep(1000)
+  const afterQuick = await q(`(() => { const t = ${tabsOf}; return { count: t.length, forms: t.map((rel) => rel === '${NFD_REL}' ? 'nfd' : rel === '${NFC_REL}' ? 'nfc' : 'other'), active: document.querySelector('[data-file-tab][data-active="true"]')?.dataset.fileTab?.normalize('NFC') ?? null } })()`)
+  step('nfd.crossOpen', { fromTree, afterQuick })
+  result.checks.nfd = afterQuick.count === 1 && afterQuick.active === NFC_REL
   exitCode = Object.values(result.checks).every(Boolean) ? 0 : 1
 } catch (error) {
   result.error = String(error?.stack ?? error)

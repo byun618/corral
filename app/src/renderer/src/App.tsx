@@ -73,7 +73,7 @@ import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type 
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
 import { fileTabId, fileTabLabel, fileTabsOf, isFileTabId, previewOf, tabKindOf, terminalKeyTarget } from './file-tabs.js'
-import { FileView, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
+import { FileView, focusLiveEditor, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
 import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, thawEditing, type FileDoc } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, type SaveDeps } from './file-save.js'
 import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
@@ -115,6 +115,11 @@ const NO_ROOTS: string[] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
 /** LIFE-592 — 탐색기 이동 뒤 옛·새 경로 감시 push 를 더 버리는 시간(감시 디바운스보다 길게). */
 const WATCH_HOLD_GRACE_MS = 1_000
+/** LIFE-593 수정 r1 R1-C-09 — worktree 를 열거나(앱 시작 복원 포함) 바꾼 직후 이만큼은 활성 파일 탭을 최근 기록에 넣지 않는다(복원된 탭은 사용자가 연 것이 아니다). */
+const RECENT_RESTORE_HOLD_MS = 1_000
+/** 최근 기록 `ui-prefs.json` 쓰기 뭉침. */
+const RECENT_SAVE_DEBOUNCE_MS = 500
+const NO_RECENT: readonly string[] = []
 
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState | null>(null)
@@ -574,6 +579,9 @@ export function App(): React.JSX.Element {
         .find((worktree) => worktree.openWorkspaceId !== null && worktree.openWorkspaceId === lifecycle.activeWorkspaceId) ?? null
     )
   }, [state, lifecycle.activeWorkspaceId])
+  /** 비동기 응답이 그 사이 worktree 가 바뀌었는지 보는 거울(LIFE-593 수정 r1 — ⌘P 열기 전 폴더 확인). */
+  const activeWorktreeRowRef = useRef(activeWorktreeRow)
+  activeWorktreeRowRef.current = activeWorktreeRow
 
   const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: rightPanel.open })
 
@@ -769,14 +777,38 @@ export function App(): React.JSX.Element {
 
   // LIFE-593 E5ⓐ — 어느 경로로 열든(탐색기·⌘P·편집기 링크·⌘⇧T·탭 클릭) 활성 영역의 활성 탭이 파일 탭이 되면 그 worktree 기록 맨 앞에 둔다(ui-prefs 영속 — Q5).
   // 첫 ui-prefs 읽기 전에는 적지 않는다(저장된 기록을 빈 기록으로 덮지 않게).
+  // 수정 r1 R1-C-09 — worktree 를 열거나 바꾼 직후(복원된 활성 탭)는 넣지 않는다. 탭 전환은 그대로 넣는다. 저장은 뭉쳐서(디바운스) 쓰고, 창이 닫힐 때 남은 것을 쓴다.
   const recentRoot = activeWorktreeRow?.path ?? null
+  const recentHoldUntil = useRef(0)
+  const recentSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flushRecentSave = useCallback(() => {
+    if (recentSaveTimer.current === null) return
+    clearTimeout(recentSaveTimer.current)
+    recentSaveTimer.current = null
+    window.corral.setUiPrefs({ recentFiles: recentFilesRef.current })
+  }, [])
+  useEffect(() => {
+    window.addEventListener('beforeunload', flushRecentSave)
+    return () => {
+      window.removeEventListener('beforeunload', flushRecentSave)
+      flushRecentSave()
+    }
+  }, [flushRecentSave])
+  useEffect(() => {
+    recentHoldUntil.current = performance.now() + RECENT_RESTORE_HOLD_MS
+  }, [recentRoot, ordinalsReady])
   useEffect(() => {
     if (recentRoot === null || activeFileRel === null || !recentReady.current) return
+    if (performance.now() < recentHoldUntil.current) return
     const next = pushRecentFile({ recent: recentFilesRef.current, root: recentRoot, rel: activeFileRel })
     if (next === recentFilesRef.current) return
     recentFilesRef.current = next
     setRecentFiles(next)
-    window.corral.setUiPrefs({ recentFiles: next })
+    if (recentSaveTimer.current !== null) clearTimeout(recentSaveTimer.current)
+    recentSaveTimer.current = setTimeout(() => {
+      recentSaveTimer.current = null
+      window.corral.setUiPrefs({ recentFiles: recentFilesRef.current })
+    }, RECENT_SAVE_DEBOUNCE_MS)
   }, [recentRoot, activeFileRel, ordinalsReady])
 
   /** 키 핸들러가 읽는 배치 거울 — 핸들러를 매 렌더 다시 달지 않으려고 ref 로 둔다. */
@@ -1166,22 +1198,48 @@ export function App(): React.JSX.Element {
 
   /**
    * LIFE-593 E3 — ⌘P 로 고른 파일. **고정 탭**으로 연다(Q2 — 이미 열려 있으면 그 탭으로, 미리보기였으면 고정 — `openFileTab`). 여는 경로는 탐색기와 같다(우회 IPC 없음).
-   * 연 뒤 포커스는 편집기로(E3ⓑ) — 편집기는 비동기로 붙으므로 붙을 때까지 몇 프레임 기다린다(최대 약 2 s). 편집기가 없는 보기(이미지·바이너리·오류)면 탭 보기 자리에 둔다.
+   * 수정 r1 R1-C-02 — NFC 로 같은 파일 탭이 이미 있으면 그 경로로 연다(같은 탭). R1-C-05 — 부모 폴더 목록에서 그 이름이 폴더(폴더 링크)면 열지 않고 안내만 한다
+   * (git 목록은 untracked·무시된 링크의 종류를 모른다). 연 뒤 포커스는 `focusOpenedFile`.
    */
   const openFromQuickOpen = (rel: string): void => {
-    openFileFromExplorer({ rel, preview: false })
-    const tabId = fileTabId(rel)
-    const startedAt = performance.now()
-    const focusEditor = (): void => {
-      const host = document.querySelector<HTMLElement>(`[data-file-editor="${CSS.escape(tabId)}"]`)
-      const textarea = host?.dataset.editorReady === undefined ? null : host.querySelector<HTMLTextAreaElement>('textarea')
-      if (textarea !== null && textarea !== undefined) {
-        textarea.focus({ preventScroll: true })
+    const worktreePath = activeWorktreeRow?.path ?? null
+    if (worktreePath === null) return
+    const nfc = rel.normalize('NFC')
+    let target = rel
+    for (const group of layout.groups)
+      for (const tabId of group.tabOrder) {
+        const kind = tabKindOf(tabId)
+        if (kind.kind === 'file' && kind.rel !== rel && kind.rel.normalize('NFC') === nfc) target = kind.rel
+      }
+    const slash = target.lastIndexOf('/')
+    const name = target.slice(slash + 1)
+    void window.corral.explorerList({ root: worktreePath, rel: slash === -1 ? '' : target.slice(0, slash) }).then((listing) => {
+      if ((activeWorktreeRowRef.current?.path ?? null) !== worktreePath) return
+      const entry = listing.ok ? listing.entries.find((item) => item.name === name || item.name.normalize('NFC') === name.normalize('NFC')) : undefined
+      if (entry?.kind === 'dir') {
+        notify(`${target} 은(는) 폴더(링크)라 파일로 열지 않습니다`)
         return
       }
-      if (performance.now() - startedAt < 2_000) requestAnimationFrame(focusEditor)
+      openFileFromExplorer({ rel: target, preview: false })
+      focusOpenedFile({ worktreePath, rel: target })
+    })
+  }
+  /**
+   * 연 파일 탭에 포커스(수정 r1 R1-C-01·R1-C-06) — 편집기가 붙으면 편집기 핸들의 `focus()`(Monaco 0.57 은 EditContext — 입력 요소가 textarea 가 아니다).
+   * 편집기가 없는 보기(이미지·바이너리·상한 초과·오류·Markdown 미리보기)면 그 보기 자리(`[data-file-view]`, tabIndex -1)에. 편집기는 비동기로 붙으므로 프레임마다 다시 본다(최대 약 2 s).
+   */
+  const focusOpenedFile = (input: { worktreePath: string; rel: string }): void => {
+    const tabId = fileTabId(input.rel)
+    const startedAt = performance.now()
+    const attempt = (): void => {
+      if (focusLiveEditor({ store: fileViewStatesOf(input.worktreePath), tabId })) return
+      const view = document.querySelector<HTMLElement>(`.file-group[data-file-view="${CSS.escape(input.rel)}"]`)
+      const waiting = view === null || view.querySelector('[data-file-editor], [data-file-notice="loading"]') !== null
+      if (!waiting) view.focus({ preventScroll: true })
+      else if (performance.now() - startedAt < 2_000) requestAnimationFrame(attempt)
+      else view?.focus({ preventScroll: true })
     }
-    requestAnimationFrame(focusEditor)
+    requestAnimationFrame(attempt)
   }
 
   // LIFE-592 F4 — 탐색기 파일 조작(만들기·이름 바꾸기·이동·삭제·복제·가져오기·실행 취소).
@@ -2037,7 +2095,7 @@ export function App(): React.JSX.Element {
           onToggle={rightPanel.toggle}
           onResizeStart={rightPanel.onHandleMouseDown}
         >
-          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} ops={fileOps} notify={notify} />
+          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={rightPanel.open} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} ops={fileOps} notify={notify} />
         </RightPanel>
       </div>
       {settingsView === null ? null : (
@@ -2072,7 +2130,7 @@ export function App(): React.JSX.Element {
       {quickOpenOpen ? (
         <QuickOpen
           root={activeWorktreeRow?.path ?? null}
-          recent={activeWorktreeRow === null ? [] : (recentFiles[activeWorktreeRow.path] ?? [])}
+          recent={activeWorktreeRow === null ? NO_RECENT : (recentFiles[activeWorktreeRow.path] ?? NO_RECENT)}
           includeIgnored={quickOpenIgnored}
           onIncludeIgnored={setQuickOpenIgnored}
           onOpen={openFromQuickOpen}

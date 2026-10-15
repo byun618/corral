@@ -67,6 +67,21 @@ describe('E5ⓑ 최근 연 파일 (Q6)', () => {
   })
 })
 
+describe('수정 r1 R1-C-02 — 최근 기록은 NFC 로 맞춘다', () => {
+  it('목록은 디스크 이름(NFD)·최근 기록은 NFC(또는 반대)여도 같은 파일이 최근 묶음에 한 번', () => {
+    const nfd = 'nfd/' + '노트'.normalize('NFD') + '.md'
+    const index = buildFileIndex(['a.ts', nfd])
+    for (const recent of [['nfd/노트.md'], [nfd]]) {
+      const rows = searchFiles({ index, query: '', recent }).rows
+      expect(rows.map((row) => [row.rel, row.group])).toEqual([
+        [nfd, 'recent'],
+        ['a.ts', 'file'],
+      ])
+      expect(searchFiles({ index, query: '노트', recent }).rows.map((row) => [row.rel, row.group])).toEqual([[nfd, 'recent']])
+    }
+  })
+})
+
 describe('E7ⓑ 좁혀 찾기', () => {
   it('narrows — 마지막 단어를 늘리거나 단어를 더하면 좁힘', () => {
     expect(narrows('exp', 'expl')).toBe(true)
@@ -117,8 +132,19 @@ const TABLE: { id: string; query: string; expected: string; within: number }[] =
   { id: 'q11', query: '00-project', expected: 'specs/00-project.md', within: 2 },
   { id: 'q12', query: 'EXPLORER-FS', expected: 'app/src/main/explorer-fs.ts', within: 3 },
 ]
-describe.skipIf(baseFiles === null)(`E2ⓑ 질의 표 (corral 레포 ${BASE})`, () => {
-  const index = buildFileIndex(baseFiles ?? [])
+// 수정 r1 R1-C-11 — 기준 commit 이 없는 체크아웃에서 조용히 건너뛰지 않는다: 실패로 알린다. 일부러 건너뛸 때만 L593_ALLOW_NO_E2_TABLE=1(사유를 크게 남긴다).
+describe(`E2ⓑ 질의 표 (corral 레포 ${BASE})`, () => {
+  if (baseFiles === null) {
+    if (process.env.L593_ALLOW_NO_E2_TABLE === '1') {
+      console.warn(`[E2ⓑ 건너뜀] 기준 commit ${BASE} 이 이 체크아웃에 없다 — L593_ALLOW_NO_E2_TABLE=1 로 건너뛴다. 판정 회차로 세지 않는다.`)
+      it.skip(`기준 commit ${BASE} 없음 — 건너뜀(L593_ALLOW_NO_E2_TABLE=1)`, () => undefined)
+    } else
+      it(`기준 commit ${BASE} 이 있어야 한다`, () => {
+        throw new Error(`E2ⓑ 질의 표의 기준 트리 ${BASE} 를 읽지 못했다 — 작업 브랜치를 fetch 하거나(L593_ALLOW_NO_E2_TABLE=1 로만 건너뛴다)`)
+      })
+    return
+  }
+  const index = buildFileIndex(baseFiles)
   for (const row of TABLE) {
     it(`${row.id} ${row.query} → ${row.expected} 상위 ${row.within}`, () => {
       const rels = searchFiles({ index, query: row.query, recent: [] }).rows.map((item) => item.rel)

@@ -1,6 +1,6 @@
 // LIFE-593 E4·E8ⓓ — git 출력 → 목록(순수).
 import { describe, expect, it } from 'vitest'
-import { isSafeRel, mergeFileLists, underExcludedDir } from './file-list.js'
+import { isSafeRel, mergeFileLists, parseStagedListing, underExcludedDir } from './file-list.js'
 
 describe('isSafeRel', () => {
   it('루트 상대·빈 성분/./.. 없음·NUL 없음만', () => {
@@ -25,5 +25,12 @@ describe('mergeFileLists', () => {
     expect(underExcludedDir('node_modules/x')).toBe(true)
     expect(underExcludedDir('a/.git/x')).toBe(true)
     expect(underExcludedDir('node_modules')).toBe(false)
+  })
+})
+
+describe('parseStagedListing (수정 r1 R1-C-05)', () => {
+  it('skip-worktree(S)·gitlink(160000)는 빼고, 링크(120000)는 links 로도 낸다. untracked(?)는 그대로', () => {
+    const out = ['? untr.ts', 'H 100644 4bcf 0\tdel.ts', 'H 120000 e831 0\tld', 'S 100644 b478 0\tsp.ts', 'H 160000 1111 0\tsub', 'H 100644 7898 0\tsrc/a b.ts', 'M 100644 aaaa 1\tconf.ts', 'M 100644 bbbb 2\tconf.ts', ''].join('\0')
+    expect(parseStagedListing(out)).toEqual({ listed: ['untr.ts', 'del.ts', 'ld', 'src/a b.ts', 'conf.ts', 'conf.ts'].join('\0'), links: ['ld'] })
   })
 })

@@ -18,6 +18,8 @@
 
 /* 본문 — 터미널 본문(`.term-group`) 자리. 편집기 바탕은 corral `--bg-surface`(테마도 같은 값). */
 .file-group { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); position: relative; }
+/* LIFE-593 수정 r1 — 편집기 없는 보기가 포커스를 받을 때(⌘P 로 연 뒤) 테두리를 그리지 않는다. */
+.file-group:focus { outline: none; }
 .file-editor-host { flex: 1; min-height: 0; min-width: 0; }
 .file-view-notice {
   flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center;

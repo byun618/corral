@@ -8,7 +8,12 @@
 // · 폴더는 파일 경로에서 나온다 — 빈 폴더는 필터에 나오지 않는다(git 목록의 한계 — 대조표에 적는다).
 // 속도(E7ⓕ): 항목을 번호로 들고(부모 번호·폴더 여부·소문자 이름을 미리), 키 입력마다 이름만 훑어 맞은 것과 조상을 표시한 뒤 표시된 가지만 내려간다.
 // 자식 정렬(폴더 먼저·숫자 인식 — 트리와 같은 순서)은 한 번만 — `sortFilterTree` 를 목록을 받은 뒤 미리 부르면 첫 키 입력이 정렬 값을 치르지 않는다.
+// 수정 r1 R1-C-10 — 만들기·정렬은 생성기(`filterTreeSteps`)로 나눠 돌릴 수 있다(`sliced.ts drainSliced` — 20만 목록에서 한 덩이 긴 작업이 되지 않게).
 import { ALWAYS_HIDDEN_NAMES, isDotfile, joinRel, type ExplorerRow } from '../../shared/explorer.js'
+import { drain, type Steps } from './sliced.js'
+
+/** 이만큼 처리할 때마다 한 번 양보 지점(`yield`)을 둔다. */
+const STEP = 2048
 
 export type FilterTree = {
   /** 항목 번호별 — 경로·원래 이름·소문자 NFC 이름·부모 번호(루트의 자식은 -1)·폴더 여부. */
@@ -23,8 +28,19 @@ export type FilterTree = {
   sorted: boolean
 }
 
-/** 목록 → 트리. `showDotfiles` 가 꺼져 있으면 점 성분이 있는 경로를 뺀다. */
+/** 목록 → 트리(정렬 전). `showDotfiles` 가 꺼져 있으면 점 성분이 있는 경로를 뺀다. */
 export function buildFilterTree(input: { files: readonly string[]; showDotfiles: boolean }): FilterTree {
+  return drain(buildSteps(input))
+}
+
+/** 목록 → 정렬까지 끝난 트리 — 나눠 돌릴 생성기. */
+export function* filterTreeSteps(input: { files: readonly string[]; showDotfiles: boolean }): Steps<FilterTree> {
+  const tree = yield* buildSteps(input)
+  yield* sortSteps(tree)
+  return tree
+}
+
+function* buildSteps(input: { files: readonly string[]; showDotfiles: boolean }): Steps<FilterTree> {
   const rels: string[] = []
   const names: string[] = []
   const lower: string[] = []
@@ -50,7 +66,10 @@ export function buildFilterTree(input: { files: readonly string[]; showDotfiles:
     return at
   }
   const hidden = (part: string): boolean => ALWAYS_HIDDEN_NAMES.includes(part) || (!input.showDotfiles && isDotfile(part))
+  let done = 0
   outer: for (const file of input.files) {
+    done += 1
+    if (done % STEP === 0) yield
     const parts = file.split('/')
     for (const part of parts) if (hidden(part)) continue outer
     let dir = ''
@@ -74,6 +93,10 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'bas
 
 /** 자식 정렬 — 폴더 먼저, 숫자 인식 자연 정렬, 같으면 코드 단위(`shared/explorer.ts compareEntries` 와 같은 순서). 한 번만 한다. */
 export function sortFilterTree(tree: FilterTree): void {
+  drain(sortSteps(tree))
+}
+
+function* sortSteps(tree: FilterTree): Steps<void> {
   if (tree.sorted) return
   const compare = (a: number, b: number): number => {
     const ad = tree.isDir[a] ?? 0
@@ -86,7 +109,15 @@ export function sortFilterTree(tree: FilterTree): void {
     return an < bn ? -1 : an > bn ? 1 : 0
   }
   tree.root.sort(compare)
-  for (const list of tree.children.values()) list.sort(compare)
+  let sorted = tree.root.length
+  for (const list of tree.children.values()) {
+    list.sort(compare)
+    sorted += list.length
+    if (sorted >= STEP) {
+      sorted = 0
+      yield
+    }
+  }
   tree.sorted = true
 }
 

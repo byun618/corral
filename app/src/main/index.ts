@@ -1929,16 +1929,17 @@ app.whenReady().then(async () => {
     log,
   })
   // --- 전체 파일 목록 (LIFE-593 F5) — 읽기 전용, 루트는 탐색기와 같은 「지금 열린 worktree」 만(`file-list.ts` — confine 루트 대조 · 셸 없는 git · 취소) ---
-  // git 절대 경로는 처음 쓸 때 한 번 고른다(PATH 의 절대 항목만 — `resolveGit`).
+  // git 절대 경로는 부를 때마다 그때 열린 루트로 고른다(PATH 의 절대 항목만, 열린 worktree 아래는 건너뜀 — `resolveGit` · 수정 r1 R1-C-04). 바뀔 때만 적는다.
   let listGit: string | null = null
   fileLister = new FileLister({
     roots: explorerRoots,
-    git: () => {
-      if (listGit === null) {
-        listGit = resolveGit({ pathEnv: process.env.PATH })
-        log('file.list_git', { git: listGit })
+    git: (roots) => {
+      const picked = resolveGit({ pathEnv: process.env.PATH, roots })
+      if (picked !== listGit) {
+        listGit = picked
+        log('file.list_git', { git: picked })
       }
-      return listGit
+      return picked
     },
     log,
   })

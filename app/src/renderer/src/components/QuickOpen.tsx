@@ -5,10 +5,13 @@
 // · 목록은 열 때 새로 읽는다. 같은 (루트, 토글)의 마지막 목록이 있으면 먼저 그것으로 보인다(`file-list-client.ts`). 닫히면 진행 중 요청을 끝낸다(E7ⓓ).
 // · Enter·클릭 = 고정 탭으로 열기(Q2) — 여는 일은 App 의 `openFileTab` 경로가 한다. 조합(IME) 중 Enter·화살표는 대화상자 동작을 하지 않는다(E1ⓓ).
 // · 「무시 파일 포함」 토글(Q3)은 Tab 으로 닿는다(입력 ↔ 토글 순회). 상태는 App 이 앱 실행 동안 들고 있다(영속 안 함).
-import { useEffect, useMemo, useRef, useState } from 'react'
+// · 수정 r1 R1-C-10 — 색인·검색은 나눠 돌린다(`drainSliced`). 새 질의가 오면 앞 검색을 버리고, 결과가 올 때까지 앞 결과를 보인다.
+//   결과가 아직 지금 질의의 것이 아닐 때 Enter 를 누르면 그 질의의 결과가 오는 대로 연다(묵은 행을 열지 않는다).
+import { useEffect, useRef, useState } from 'react'
 import { useAnnounceDialog } from '../menu-bus.js'
 import { cachedFileList, requestFileList, type FileListOk } from '../file-list-client.js'
-import { buildFileIndex, searchFiles, type FileIndex, type QuickOpenResult, type QuickOpenRow } from '../quick-open-search.js'
+import { fileIndexSteps, searchSteps, type FileIndex, type QuickOpenResult, type QuickOpenRow } from '../quick-open-search.js'
+import { drainSliced } from '../sliced.js'
 import { FileIcon } from './ExplorerIcons.js'
 import './command-palette.css'
 // 파일 아이콘 글꼴(Seti)·`.explorer-file-icon` — 탐색기 패널이 닫혀 있어도 대화상자에서 그린다.
@@ -17,13 +20,6 @@ import './quick-open.css'
 
 /** 목록 객체마다 색인 하나 — 다시 열어도 같은 목록이면 색인을 다시 만들지 않는다. */
 const indexes = new WeakMap<FileListOk, FileIndex>()
-const indexOf = (list: FileListOk): FileIndex => {
-  const hit = indexes.get(list)
-  if (hit !== undefined) return hit
-  const made = buildFileIndex(list.files)
-  indexes.set(list, made)
-  return made
-}
 
 /** 강조 조각 — [start, end) 범위의 글자를 맞은 위치 집합으로 나눈다. */
 function Highlighted({ text, start, end, hits }: { text: string; start: number; end: number; hits: ReadonlySet<number> }): React.JSX.Element {
@@ -99,10 +95,18 @@ export function QuickOpen({
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(root !== null)
   const [selected, setSelected] = useState(0)
+  const [index, setIndex] = useState<FileIndex | null>(() => (list === null ? null : (indexes.get(list) ?? null)))
+  const [result, setResult] = useState<QuickOpenResult | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const toggle = useRef<HTMLButtonElement>(null)
   const executed = useRef(false)
   const previous = useRef<{ index: FileIndex; result: QuickOpenResult } | null>(null)
+  /** 결과가 지금 질의를 따라잡기 전에 누른 Enter — 따라잡으면 연다. */
+  const pendingEnter = useRef(false)
+  const queryRef = useRef(query)
+  queryRef.current = query
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
   useAnnounceDialog()
   useEffect(() => input.current?.focus(), [])
 
@@ -125,19 +129,24 @@ export function QuickOpen({
     }
   }, [root, includeIgnored])
 
-  const index = useMemo(() => (list === null ? null : indexOf(list)), [list])
-  const result = useMemo(() => {
-    if (index === null) return null
-    const before = previous.current !== null && previous.current.index === index ? previous.current.result : null
-    const next = searchFiles({ index, query, recent, previous: before })
-    previous.current = { index, result: next }
-    return next
-  }, [index, query, recent])
-  const rows = result?.rows ?? []
-  const current = Math.min(selected, Math.max(0, rows.length - 1))
+  // 색인 — 목록마다 한 번, 나눠 만든다. 만드는 동안은 앞 색인(있으면)으로 찾는다.
   useEffect(() => {
-    document.getElementById(`quick-open-result-${current}`)?.scrollIntoView({ block: 'nearest' })
-  }, [current])
+    if (list === null) return
+    const hit = indexes.get(list)
+    if (hit !== undefined) {
+      setIndex(hit)
+      return
+    }
+    const signal = { aborted: false }
+    void drainSliced({ steps: fileIndexSteps(list.files), signal }).then((made) => {
+      if (made === null) return
+      indexes.set(list, made)
+      setIndex(made)
+    })
+    return () => {
+      signal.aborted = true
+    }
+  }, [list])
 
   const open = (row: QuickOpenRow | undefined): void => {
     if (row === undefined || executed.current) return
@@ -145,7 +154,34 @@ export function QuickOpen({
     onClose(false)
     onOpen(row.rel)
   }
-  const state = root === null ? 'no-root' : error !== null ? 'error' : index === null ? 'loading' : 'ready'
+  const openRef = useRef(open)
+  openRef.current = open
+
+  // 검색 — 질의·색인·최근 기록이 바뀌면 앞 검색을 버리고 나눠 찾는다. 앞 결과를 늘린 질의면 그 안에서만(좁혀 찾기).
+  useEffect(() => {
+    if (index === null) return
+    const before = previous.current !== null && previous.current.index === index ? previous.current.result : null
+    const signal = { aborted: false }
+    void drainSliced({ steps: searchSteps({ index, query, recent, previous: before }), signal }).then((next) => {
+      if (next === null) return
+      previous.current = { index, result: next }
+      setResult(next)
+      if (pendingEnter.current && next.query === queryRef.current) {
+        pendingEnter.current = false
+        openRef.current(next.rows[Math.min(selectedRef.current, Math.max(0, next.rows.length - 1))])
+      }
+    })
+    return () => {
+      signal.aborted = true
+    }
+  }, [index, query, recent])
+  const rows = result?.rows ?? []
+  const current = Math.min(selected, Math.max(0, rows.length - 1))
+  useEffect(() => {
+    document.getElementById(`quick-open-result-${current}`)?.scrollIntoView({ block: 'nearest' })
+  }, [current])
+
+  const state = root === null ? 'no-root' : error !== null ? 'error' : index === null || result === null ? 'loading' : 'ready'
   const firstFile = rows.findIndex((row) => row.group === 'file')
   const hasRecent = rows.length > 0 && rows[0]?.group === 'recent'
 
@@ -175,7 +211,8 @@ export function QuickOpen({
             setSelected((current + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length)
           } else if (event.key === 'Enter' && event.target === input.current) {
             event.preventDefault()
-            open(rows[current])
+            if (result !== null && result.query === query) open(rows[current])
+            else if (index !== null) pendingEnter.current = true
           }
         }}
       >

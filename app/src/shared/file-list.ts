@@ -14,8 +14,12 @@ export const LIST_EXCLUDED_DIRS: readonly string[] = ['.git', 'node_modules']
 
 export type FileListInput = { root: string; includeIgnored: boolean; requestId: string }
 
+/**
+ * 성공 응답의 경로는 **NUL 로 이은 문자열 하나**(`paths`, `count` 개)다(수정 r1 R1-C-10) — 20만 개 문자열 배열을 IPC 로 받으면 렌더러가 그 배열을 풀어 만드는 데
+ * 한 덩어리로 긴 작업을 치른다. 문자열 하나는 복사 한 번이고, 렌더러가 `split('\0')` 로 나눈다(`file-list-client.ts`).
+ */
 export type FileListResult =
-  | { ok: true; root: string; includeIgnored: boolean; files: string[]; truncated: boolean; ms: number }
+  | { ok: true; root: string; includeIgnored: boolean; paths: string; count: number; truncated: boolean; ms: number }
   | { ok: false; code: ExplorerRefusal | 'cancelled' | 'git_failed' | 'timeout'; error: string }
 
 /** 응답에 실어도 되는 경로인가 — 루트 상대·`/` 구분·빈 성분/`.`/`..` 없음·NUL·절대 경로 없음(E8ⓓ). */
@@ -30,6 +34,31 @@ export function underExcludedDir(rel: string): boolean {
   const parts = rel.split('/')
   for (let index = 0; index < parts.length - 1; index += 1) if (LIST_EXCLUDED_DIRS.includes(parts[index] ?? '')) return true
   return false
+}
+
+/**
+ * `git ls-files -z --cached --others -s -t` 출력 → 고를 수 있는 경로(NUL 로 이음) + 확인할 링크(수정 r1 R1-C-05).
+ * 추적 항목 = `<태그> <모드> <sha> <stage>\t<경로>`, untracked = `? <경로>`. 디스크에 파일로 없는 추적 항목은 뺀다:
+ * 태그 `S`(skip-worktree — sparse checkout 으로 디스크에 없음)·모드 `160000`(gitlink — 서브모듈 폴더). 모드 `120000`(링크)은 `links` 로도 내 main 이 폴더 링크인지 본다.
+ */
+export function parseStagedListing(stdout: string): { listed: string; links: string[] } {
+  const paths: string[] = []
+  const links: string[] = []
+  for (const entry of stdout.split('\0')) {
+    if (entry === '') continue
+    if (entry.startsWith('? ')) {
+      paths.push(entry.slice(2))
+      continue
+    }
+    const tab = entry.indexOf('\t')
+    if (tab === -1) continue
+    const [tag, mode] = entry.slice(0, tab).split(' ')
+    const rel = entry.slice(tab + 1)
+    if (tag === 'S' || mode === '160000') continue
+    if (mode === '120000') links.push(rel)
+    paths.push(rel)
+  }
+  return { listed: paths.join('\0'), links }
 }
 
 /**

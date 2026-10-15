@@ -17,7 +17,8 @@ import { isAtOrUnder, nameError, splitNewName } from '../../../shared/explorer-o
 import { folderMarks, GIT_DECORATION, isIgnoredPath, type GitMark } from '../../../shared/explorer-git.js'
 import type { ExplorerApi } from '../hooks/useExplorer.js'
 import { requestFileList, type FileListOk } from '../file-list-client.js'
-import { buildFilterTree, filterRows, filterWords, sortFilterTree } from '../explorer-filter.js'
+import { filterRows, filterTreeSteps, filterWords, type FilterTree } from '../explorer-filter.js'
+import { drainSliced } from '../sliced.js'
 import { ContextMenu, type MenuEntry } from './ContextMenu.js'
 import { Codicon, FileIcon } from './ExplorerIcons.js'
 import './explorer.css'
@@ -33,6 +34,8 @@ const HOVER_EXPAND_MS = 500
 const EDGE_SCROLL_BAND = 22
 /** 이름 필터 중 감시 변경(F1)이 오면 목록을 다시 읽기까지 뭉치는 시간(E6ⓕ). */
 const FILTER_RELOAD_MS = 500
+/** 필터 목록 다시 읽기 사이 최소 간격(수정 r1 R1-C-08 — 변경이 잦아도 git 을 몰아 부르지 않는다). 한 번에 하나만 돈다. */
+const FILTER_RELOAD_GAP_MS = 2_000
 
 type ViewMenuAction = 'toggle-dotfiles' | 'toggle-ignored'
 type FileOpMenuAction = 'newFile' | 'newFolder' | 'rename' | 'duplicate' | 'trash'
@@ -111,6 +114,7 @@ export function Explorer({
   title,
   focusToken,
   filterToken = 0,
+  visible = true,
   revealRequest,
   onOpenFile,
   ops,
@@ -126,6 +130,8 @@ export function Explorer({
   focusToken: number
   /** 바뀌면 이름 필터 입력칸을 연다(⌥⌘F — LIFE-593 Q7). */
   filterToken?: number
+  /** 오른쪽 패널이 열려 있나 — 닫혀 있으면 필터 목록을 읽지 않는다(수정 r1 R1-C-08, 패널은 닫혀도 탐색기를 마운트 유지한다). */
+  visible?: boolean
   /** 파일 열기(LIFE-590 E2) — 한 번 클릭·Space = 미리보기, 더블클릭·Enter·⌘↓ = 고정. 폴더는 부르지 않는다. */
   onOpenFile: (input: { rel: string; preview: boolean }) => void
   /**
@@ -167,48 +173,72 @@ export function Explorer({
   const [filterOpened, setFilterOpened] = useState<ReadonlySet<string>>(new Set())
   const [filterList, setFilterList] = useState<FileListOk | null>(null)
   const [filterError, setFilterError] = useState<string | null>(null)
+  /** 목록이 온전하지 않을 때 안내(상한 초과·무시 파일 포함 실패로 무시 파일 없이 찾음 — R1-C-08). */
+  const [filterNote, setFilterNote] = useState<string | null>(null)
+  /** 무시 파일 포함이 실패해 무시 파일 없이 받은 목록인가. */
+  const [filterFallback, setFilterFallback] = useState(false)
   const [filterReload, setFilterReload] = useState(0)
   const filterInputRef = useRef<HTMLInputElement | null>(null)
   const root = explorer.root
   const words = useMemo(() => filterWords(filterText), [filterText])
   const filterActive = filterOpen && words.length > 0
-  // 목록 — 열려 있는 동안 (루트, 무시 파일 보임)마다 읽는다. 닫히거나 루트·토글이 바뀌면 진행 중 요청을 끝낸다(E7ⓓ).
+  // 목록 — 필터가 열려 있고 패널이 보이는 동안 (루트, 무시 파일 보임)마다 읽는다. 닫히거나 루트·토글이 바뀌면 진행 중 요청을 끝낸다(E7ⓓ).
+  // 필터 중 외부 변경(F1 감시 push)이 오면 다시 읽는다(E6ⓕ) — 수정 r1 R1-C-08: 한 번에 하나만(읽는 중에 온 변경은 끝난 뒤로 미룬다), 앞 읽기 시작에서
+  // `FILTER_RELOAD_GAP_MS` 가 지나야 다음을 시작한다. 무시 파일 포함이 실패(시간 초과·출력 상한)하면 무시 파일 없이 다시 읽고 안내한다.
   useEffect(() => {
-    if (!filterOpen || root === null) return
+    if (!filterOpen || !visible || root === null) return
     let live = true
-    setFilterError(null)
-    const request = requestFileList({ root, includeIgnored: filter.showIgnored })
+    let inFlight = true
+    let dirty = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const startedAt = performance.now()
+    let request = requestFileList({ root, includeIgnored: filter.showIgnored })
+    const schedule = (): void => {
+      if (!live || !dirty || inFlight || timer !== null) return
+      timer = setTimeout(() => {
+        timer = null
+        if (live) setFilterReload((value) => value + 1)
+      }, Math.max(FILTER_RELOAD_MS, startedAt + FILTER_RELOAD_GAP_MS - performance.now()))
+    }
+    const settle = (value: Awaited<typeof request.result>, fellBack: boolean): void => {
+      if (!live) return
+      if (value.ok) {
+        setFilterError(null)
+        setFilterList(value)
+        setFilterFallback(fellBack)
+        setFilterNote(fellBack ? '무시 파일이 너무 많아 무시 파일 없이 찾습니다' : value.truncated ? '목록 상한에 걸려 일부만 찾습니다' : null)
+      } else if (value.code !== 'cancelled') setFilterError(`목록을 읽지 못했습니다 (${value.code})`)
+      inFlight = false
+      schedule()
+    }
     void request.result.then((value) => {
       if (!live) return
-      if (value.ok) setFilterList(value)
-      else if (value.code !== 'cancelled') setFilterError(`목록을 읽지 못했습니다 (${value.code})`)
+      if (!value.ok && filter.showIgnored && (value.code === 'timeout' || value.code === 'git_failed')) {
+        request = requestFileList({ root, includeIgnored: false })
+        void request.result.then((fallback) => settle(fallback, true))
+        return
+      }
+      settle(value, false)
+    })
+    const off = window.corral.onExplorerEvent((event) => {
+      if (event.root !== root || event.kind === 'git') return
+      dirty = true
+      schedule()
     })
     return () => {
       live = false
-      request.cancel()
-    }
-  }, [filterOpen, root, filter.showIgnored, filterReload])
-  // 필터 중 외부 변경(F1 감시 push)이 오면 뭉쳐서 목록을 다시 읽는다(E6ⓕ).
-  useEffect(() => {
-    if (!filterOpen || root === null) return
-    let timer: ReturnType<typeof setTimeout> | null = null
-    const off = window.corral.onExplorerEvent((event) => {
-      if (event.root !== root || event.kind === 'git' || timer !== null) return
-      timer = setTimeout(() => {
-        timer = null
-        setFilterReload((value) => value + 1)
-      }, FILTER_RELOAD_MS)
-    })
-    return () => {
       off()
       if (timer !== null) clearTimeout(timer)
+      request.cancel()
     }
-  }, [filterOpen, root])
+  }, [filterOpen, visible, root, filter.showIgnored, filterReload])
   // worktree 를 바꾸면 필터를 닫는다(다른 트리의 질의를 들고 가지 않는다).
   useEffect(() => {
     setFilterOpen(false)
     setFilterText('')
     setFilterList(null)
+    setFilterNote(null)
+    setFilterFallback(false)
   }, [root])
   useEffect(() => {
     if (filterToken <= 0) return
@@ -218,14 +248,24 @@ export function Explorer({
       filterInputRef.current?.select()
     })
   }, [filterToken])
-  const filterReady = filterList !== null && filterList.root === root && filterList.includeIgnored === filter.showIgnored
-  const filterTree = useMemo(() => (filterReady && filterList !== null ? buildFilterTree({ files: filterList.files, showDotfiles: filter.showDotfiles }) : null), [filterReady, filterList, filter.showDotfiles])
-  // 자식 정렬은 목록을 받은 직후 다음 틱에 미리 — 첫 키 입력이 정렬 값을 치르지 않게(E7ⓕ). 그 전에 입력이 오면 `filterRows` 가 그때 정렬한다.
+  // 무시 파일 포함 실패로 무시 파일 없이 받은 목록도 받는다(안내가 함께 보인다).
+  const filterReady = filterList !== null && filterList.root === root && (filterList.includeIgnored === filter.showIgnored || (filter.showIgnored && filterFallback && !filterList.includeIgnored))
+  // 필터 트리 — 목록마다 한 번, 정렬까지 나눠 만든다(수정 r1 R1-C-10 — 20만 목록에서 한 덩이 긴 작업이 되지 않게). 만드는 동안은 앞 트리로 거른다.
+  const [filterTree, setFilterTree] = useState<FilterTree | null>(null)
+  const filterFiles = filterReady && filterList !== null ? filterList.files : null
   useEffect(() => {
-    if (filterTree === null) return
-    const timer = setTimeout(() => sortFilterTree(filterTree), 0)
-    return () => clearTimeout(timer)
-  }, [filterTree])
+    if (filterFiles === null) {
+      setFilterTree(null)
+      return
+    }
+    const signal = { aborted: false }
+    void drainSliced({ steps: filterTreeSteps({ files: filterFiles, showDotfiles: filter.showDotfiles }), signal }).then((tree) => {
+      if (tree !== null) setFilterTree(tree)
+    })
+    return () => {
+      signal.aborted = true
+    }
+  }, [filterFiles, filter.showDotfiles])
   const gitIgnored = git?.ignored ?? null
   const filtered = useMemo(
     () => (filterActive && filterTree !== null ? filterRows({ tree: filterTree, words, collapsed: filterCollapsed, opened: filterOpened, ignored: gitIgnored }) : null),
@@ -668,7 +708,13 @@ export function Explorer({
             }}
           />
           <span className="explorer-filter-status" data-explorer-filter-status="" aria-live="polite">
-            {!filterActive ? '' : filterError !== null ? filterError : filtered === null ? '읽는 중…' : filtered.matchCount === 0 ? '일치 없음' : `${filtered.matchCount.toLocaleString()}개`}
+            {filterError !== null
+              ? filterError
+              : !filterActive
+                ? (filterNote ?? '')
+                : filtered === null
+                  ? '읽는 중…'
+                  : `${filtered.matchCount === 0 ? '일치 없음' : `${filtered.matchCount.toLocaleString()}개`}${filterNote === null ? '' : ` · ${filterNote}`}`}
           </span>
           <button type="button" className="explorer-tool" data-explorer-filter-close="" title="필터 닫기 (Esc)" aria-label="필터 닫기" onClick={closeFilter}>
             <Codicon name="close" />

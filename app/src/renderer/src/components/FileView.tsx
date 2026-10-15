@@ -69,6 +69,18 @@ const liveEditorsOf = (store: ViewStateStore): Set<LiveEditor> => {
   liveEditors.set(store, made)
   return made
 }
+/**
+ * 그 탭의 편집기에 포커스(LIFE-593 수정 r1 R1-C-01) — 붙어 있으면 편집기 핸들의 `focus()` 를 부르고 참. Monaco 0.57 의 입력 요소는 EditContext(`.native-edit-context`)라
+ * DOM 에서 textarea 를 찾아 포커스하면 글자가 모델로 가지 않는다. 아직 붙지 않았으면 거짓.
+ */
+export function focusLiveEditor(input: { store: ViewStateStore; tabId: string }): boolean {
+  for (const live of liveEditorsOf(input.store)) {
+    if (live.tabId !== input.tabId) continue
+    live.editor.focus()
+    return true
+  }
+  return false
+}
 /** 탭 id 가 바뀐 편집기 — 지금 view state 를 새 id 로 맡기고, 정리 때도 새 id 로 저장하게 한다. */
 export function retargetLiveEditors(store: ViewStateStore, moved: readonly { from: string; to: string }[]): void {
   for (const live of liveEditorsOf(store)) {
@@ -225,7 +237,9 @@ export function FileView({
   else body = <div className="file-view-notice" data-file-notice="loading" />
 
   return (
-    <div className="file-group" data-file-group={groupId} data-file-view={rel} data-file-dirty={doc?.dirty === true ? 'true' : 'false'} onMouseDown={() => onActivate()}>
+    // tabIndex -1 — 편집기가 없는 보기(이미지·바이너리·안내·Markdown 미리보기)에서 ⌘P 로 연 뒤 포커스가 머물 자리(수정 r1 R1-C-06). Tab 순회에는 들지 않는다.
+    // 편집기가 있으면 두지 않는다 — 편집기 안을 누를 때 브라우저 기본 포커스가 이 상자로 가지 않게.
+    <div className="file-group" tabIndex={editable && !(markdown && mode === 'preview') ? undefined : -1} data-file-group={groupId} data-file-view={rel} data-file-dirty={doc?.dirty === true ? 'true' : 'false'} onMouseDown={() => onActivate()}>
       {markdown && editable ? (
         <div className="file-view-toolbar">
           <button

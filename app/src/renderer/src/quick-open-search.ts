@@ -8,6 +8,12 @@
 //   · 한글: 경로·질의를 NFC 로 맞춘 뒤 비교한다(macOS 디스크 이름은 NFD 일 수 있다 — E2ⓒ). 여는 경로는 원래 문자열 그대로.
 // 최근 연 파일(Q6): 질의에 맞는 최근 파일을 최근 순으로 먼저(묶음 `recent`), 나머지를 점수 순(`file`). 빈 입력이면 최근 순 → 경로 순.
 // 속도(E7ⓑ): 질의가 앞 질의를 늘린 것이면(같은 단어에 글자를 더하거나 단어를 더함) 앞 결과 안에서만 찾는다 — 늘린 질의에 맞으면 앞 질의에도 맞기 때문이다.
+//   수정 r1 R1-C-10 — 색인·검색은 생성기(`fileIndexSteps`·`searchSteps`)로도 쓴다. 대화상자는 `sliced.ts drainSliced` 로 나눠 돌린다(20만 목록에서 긴 작업 0).
+// 최근 기록 조회는 NFC 로 맞춘다(수정 r1 R1-C-02 — 목록은 디스크 이름(NFD 일 수 있음), 예전 기록은 NFC 일 수 있다).
+import { drain, type Steps } from './sliced.js'
+
+/** 이만큼 처리할 때마다 한 번 양보 지점(`yield`). */
+const STEP = 2048
 
 /** 결과 표시 상한(E2ⓓ — Orca 50 과 같다). 넘으면 「더 있음」. */
 export const QUICK_OPEN_LIMIT = 50
@@ -21,24 +27,32 @@ export type FileIndex = {
   lower: readonly string[]
   /** 파일명 시작 위치(마지막 `/` 다음). */
   nameStart: Int32Array
-  byRel: ReadonlyMap<string, number>
+  /** NFC 경로 → 번호(최근 기록 조회 — 기록의 정규화 형태와 상관없이 같은 파일). */
+  byNfc: ReadonlyMap<string, number>
 }
 
 export function buildFileIndex(files: readonly string[]): FileIndex {
+  return drain(fileIndexSteps(files))
+}
+
+export function* fileIndexSteps(files: readonly string[]): Steps<FileIndex> {
   const display: string[] = new Array<string>(files.length)
   const lower: string[] = new Array<string>(files.length)
   const nameStart = new Int32Array(files.length)
-  const byRel = new Map<string, number>()
+  const byNfc = new Map<string, number>()
   for (let index = 0; index < files.length; index += 1) {
+    if (index % STEP === STEP - 1) yield
     const rel = files[index] ?? ''
-    const shown = rel.normalize('NFC')
+    const shown = NON_ASCII.test(rel) ? rel.normalize('NFC') : rel
     display[index] = shown
     lower[index] = shown.toLowerCase()
     nameStart[index] = shown.lastIndexOf('/') + 1
-    byRel.set(rel, index)
+    byNfc.set(shown, index)
   }
-  return { rels: files, display, lower, nameStart, byRel }
+  return { rels: files, display, lower, nameStart, byNfc }
 }
+
+const NON_ASCII = /[\u0080-\uffff]/
 
 /** 질의 → 단어들(NFC·소문자·공백 분리). */
 export function queryTerms(query: string): string[] {
@@ -154,14 +168,24 @@ const toRow = (index: FileIndex, item: { index: number; positions: number[] }, g
 /**
  * 검색. `recent` = 그 worktree 의 최근 연 파일(최근이 앞) — 목록에 없는 것은 보이지 않는다(E5ⓓ). `previous` 가 있고 질의가 그것을 늘린 것이면 그 후보 안에서만 찾는다.
  */
-export function searchFiles(input: { index: FileIndex; query: string; recent: readonly string[]; limit?: number; previous?: QuickOpenResult | null }): QuickOpenResult {
+export function searchFiles(input: SearchInput): QuickOpenResult {
+  return drain(searchSteps(input))
+}
+
+type SearchInput = { index: FileIndex; query: string; recent: readonly string[]; limit?: number; previous?: QuickOpenResult | null }
+
+export function* searchSteps(input: SearchInput): Steps<QuickOpenResult> {
   const { index } = input
   const limit = input.limit ?? QUICK_OPEN_LIMIT
   const terms = queryTerms(input.query)
   const recentIndexes: number[] = []
+  const recentSeen = new Set<number>()
   for (const rel of input.recent) {
-    const at = index.byRel.get(rel)
-    if (at !== undefined) recentIndexes.push(at)
+    const at = index.byNfc.get(NON_ASCII.test(rel) ? rel.normalize('NFC') : rel)
+    if (at !== undefined && !recentSeen.has(at)) {
+      recentSeen.add(at)
+      recentIndexes.push(at)
+    }
   }
   if (terms.length === 0) {
     const recentSet = new Set(recentIndexes)
@@ -171,6 +195,7 @@ export function searchFiles(input: { index: FileIndex; query: string; recent: re
       // 경로 순 위 `room` 개 — 전체 정렬 없이 고른다.
       const top: number[] = []
       for (let at = 0; at < index.lower.length; at += 1) {
+        if (at % STEP === STEP - 1) yield
         if (recentSet.has(at)) continue
         const value = index.lower[at] ?? ''
         if (top.length >= room && value >= (index.lower[top[top.length - 1] ?? 0] ?? '')) continue
@@ -204,8 +229,11 @@ export function searchFiles(input: { index: FileIndex; query: string; recent: re
     if (recentSet.has(at)) recentHits.set(at, positions)
     else insertTop({ index, top, item: { index: at, score, positions }, limit })
   }
-  if (candidates === null) for (let at = 0; at < index.lower.length; at += 1) consider(at)
-  else for (const at of candidates) consider(at)
+  const count = candidates === null ? index.lower.length : candidates.length
+  for (let step = 0; step < count; step += 1) {
+    if (step % STEP === STEP - 1) yield
+    consider(candidates === null ? step : (candidates[step] ?? 0))
+  }
   const rows: QuickOpenRow[] = []
   for (const at of recentIndexes) {
     const positions = recentHits.get(at)

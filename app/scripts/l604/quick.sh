@@ -41,6 +41,16 @@ run_expect() {
   local same=$?
   record $id $want $code $([[ $same == 0 ]] && echo 같음 || echo "다름($same)")
 }
+# 종료코드에 더해 기대한 실패 문구(고정 문자열)가 출력에 있어야 하는 행(R4-H) — 다른 이유(인자·경로 오류)로 같은 종료코드가 나도 통과로 읽지 않는다.
+# 목록 칸 = 같음(문구 있음) | 다름(문구 없음). 대조 결과는 <id>.expect.txt.
+run_grep() {
+  local id=$1 want=$2 needle=$3; shift 3
+  "$@" > $OUT/$id.txt 2>&1
+  local code=$?
+  echo $code > $OUT/$id.code
+  if grep -qF -- "$needle" $OUT/$id.txt; then print -r -- "기대 문구 있음: $needle" > $OUT/$id.expect.txt; record $id $want $code 같음
+  else print -r -- "기대 문구 없음: $needle" > $OUT/$id.expect.txt; record $id $want $code "다름(문구)"; fi
+}
 
 # 바꾼 파일 = 기준 commit 대비 바뀐 src·scripts/l604 의 ts·tsx·mjs(지운 파일 제외).
 touched=(${(f)"$(git diff --name-only --diff-filter=d $BASE_COMMIT -- src scripts/l604 | sed 's#^app/##' | grep -E '\.(ts|tsx|mjs)$')"})
@@ -57,10 +67,10 @@ L604_BREAK=create-fields run_expect pc-create-fields 1 vitest scripts/l604/expec
 run create-renderer 0 npx vitest run src/renderer/src/components/TasksPage.create.test.tsx src/renderer/src/components/TasksPage.start.test.tsx src/renderer/src/quick-create-model.test.ts src/renderer/src/hooks/useQuickCreate.test.tsx src/renderer/src/hooks/useTasksPage.create.test.tsx src/renderer/src/components/TasksPage.test.tsx src/shared/keybindings.test.ts src/renderer/src/components/ShortcutsSection.test.tsx
 run data-attrs 0 node scripts/l604/check-data-attrs.mjs
 # 검사 장치의 양성 대조 — 일부러 틀린 입력을 주면 실패해야 한다.
-run pc-data-attrs 1 node scripts/l604/check-data-attrs.mjs --extra scripts/l604/expect/branch-sample.tsx.txt
+run_grep pc-data-attrs 1 'BAD  출처 이름 분기 없음 — scripts/l604/expect/branch-sample.tsx.txt' node scripts/l604/check-data-attrs.mjs --extra scripts/l604/expect/branch-sample.tsx.txt
 { cat $BASE_RAW/b-lint.txt; print -r -- '/x/app/src/l604-fake.ts'; print -r -- '  1:1  error  양성 대조로 넣은 가짜 오류  no-undef'; } > $OUT/lint-extra-sample.txt
-run pc-expect-lint 1 node scripts/l604/expect-failures.mjs lint $OUT/lint-extra-sample.txt $BASE_RAW/b-lint.txt
-run pc-expect-empty 2 node scripts/l604/expect-failures.mjs lint /dev/null $BASE_RAW/b-lint.txt
+run_grep pc-expect-lint 1 'src/l604-fake.ts :: no-undef: 기준 0 → 이번 1' node scripts/l604/expect-failures.mjs lint $OUT/lint-extra-sample.txt $BASE_RAW/b-lint.txt
+run_grep pc-expect-empty 2 '묶음을 못 뽑음 — 이번 0' node scripts/l604/expect-failures.mjs lint /dev/null $BASE_RAW/b-lint.txt
 # 가드를 뺀 사본 — 실패 시험 목록이 기대와 같아야 한다.
 while IFS=$'\t' read -r name files pattern; do
   [[ -z $name || $name == \#* ]] && continue
@@ -78,15 +88,15 @@ run build 0 npm run build
 # R2-D — C11 runtime 번들 표지 0(main 대조 ≥1) · 양성 대조 = 표지 든 파일을 함께 세면 exit 1.
 run runtime-bundle 0 node scripts/l604/check-runtime-bundle.mjs
 print -r -- 'export const marker = "createItem"' > $OUT/runtime-marker-sample.mjs
-run pc-runtime-bundle 1 node scripts/l604/check-runtime-bundle.mjs --extra $OUT/runtime-marker-sample.mjs
+run_grep pc-runtime-bundle 1 'runtime-marker-sample.mjs"],"perMarker":{"createItem":1,' node scripts/l604/check-runtime-bundle.mjs --extra $OUT/runtime-marker-sample.mjs
 # R2-E·R1-G 장치 자기점검(양성 대조 내장).
 run st-draft-leak 0 node scripts/l604/draft-leak.mjs --self-test
 run st-count-creates 0 node scripts/l604/count-creates.mjs --self-test
 # R2-B — up.sh 창 모드 가드(아무것도 띄우지 않는 길만): 손 넘김 없음 exit 9 · 맨 앞 앱 빈 값(가짜 lsappinfo) exit 2 · 마른 실행 0. ROOT 는 만들어지지 않아야 한다.
 mkdir -p $OUT/fakebin; print -r -- $'#!/bin/sh\nexit 0' > $OUT/fakebin/lsappinfo; chmod +x $OUT/fakebin/lsappinfo
 UROOT=/tmp/l604g-q$$
-run st-up-handoff 9 sh scripts/l604/up.sh $UROOT
-L604_HANDOFF=quick PATH="$OUT/fakebin:$PATH" run st-up-front 2 sh scripts/l604/up.sh $UROOT
+run_grep st-up-handoff 9 'handoff_required' sh scripts/l604/up.sh $UROOT
+L604_HANDOFF=quick PATH="$OUT/fakebin:$PATH" run_grep st-up-front 2 '맨 앞 앱을 못 읽는다' sh scripts/l604/up.sh $UROOT
 L604_DRY=1 run st-up-dry 0 sh scripts/l604/up.sh $UROOT
 run st-up-nothing-made 1 test -e $UROOT
 # R2-B — 창 없는 작업 하네스(C9·C5·C10). 실행마다 새 ROOT, 결과 JSON 은 OUT 에 옮기고 ROOT 는 지운다(이 실행이 만든 경로만).

@@ -7,7 +7,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { Toaster, toast } from 'sonner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkRequest, WorkResponse, WorkSettingsState } from '../../../shared/work.js'
-import { mockSourceEntry, seedMockDemoState, type MockState } from '../../../main/work/mock-source.js'
+import { MOCK_CREATE_FIELDS, mockSourceEntry, seedMockDemoState, type MockState } from '../../../main/work/mock-source.js'
 import { WorkService } from '../../../main/work/service.js'
 import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
@@ -49,6 +49,8 @@ type Harness = {
   failLists: { on: boolean }
   /** 켜면 목록 읽기(listItems)를 붙잡아 둔다 — `release` 로 푼다(R3-C 목록 받기 전에 연 모달). */
   holdLists: { on: boolean; release: (() => void)[] }
+  /** 제목이 `hide` 인 작업을 목록에서 빼고 `truncated: true`(커서 없음)로 돌려준다 — 상한에 잘린 목록(R4-D, LA 부모당 200). `truncated: false` 면 빼기만. */
+  cutLists: { hide: string | null; truncated: boolean }
 }
 
 async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(), prefs = { view: 'board' } }: { token?: string; state?: MockState; prefs?: Record<string, unknown> } = {}): Promise<Harness> {
@@ -62,6 +64,7 @@ async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(),
   const prefsWrites: unknown[] = []
   const failLists = { on: false }
   const holdLists: Harness['holdLists'] = { on: false, release: [] }
+  const cutLists: Harness['cutLists'] = { hide: null, truncated: true }
   Reflect.set(window, 'corral', {
     getUiPrefs: async () => ({ tasksPage: { space: { kind: 'space', connectionId: '', spaceKey: 'CORE' }, ...prefs } }),
     setUiPrefs: (value: unknown) => { prefsWrites.push(value) },
@@ -77,6 +80,11 @@ async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(),
       if (request.call.op === 'createItem' && hold.create) {
         return new Promise((resolve) => { hold.release.push(() => { void service.request(request).then(resolve) }) })
       }
+      if (request.call.op === 'listItems' && cutLists.hide !== null) {
+        const hide = cutLists.hide
+        return service.request(request).then((response) => (!response.ok || response.result.op !== 'listItems' ? response
+          : { ...response, result: { ...response.result, items: response.result.items.filter((item) => item.title !== hide), nextCursor: null, truncated: cutLists.truncated } }))
+      }
       return service.request(request)
     },
   })
@@ -84,11 +92,11 @@ async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(),
   if (!added.ok) throw new Error(added.error.message)
   // 첫 스페이스 = CORE 로 열리게 저장값의 연결 id 를 맞춘다.
   Reflect.set(window.corral, 'getUiPrefs', async () => ({ tasksPage: { space: { kind: 'space', connectionId: added.connection.id, spaceKey: 'CORE' }, ...prefs } }))
-  return { service, state, requests, hold, closed, connectionId: added.connection.id, prefsWrites, failLists, holdLists }
+  return { service, state, requests, hold, closed, connectionId: added.connection.id, prefsWrites, failLists, holdLists, cutLists }
 }
 
-async function renderPage(harness: Harness, { open = true }: { open?: boolean } = {}): Promise<void> {
-  const page = createElement(TasksPage, { open, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => harness.closed.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} })
+async function renderPage(harness: Harness, { open = true, yieldKeys = false }: { open?: boolean; yieldKeys?: boolean } = {}): Promise<void> {
+  const page = createElement(TasksPage, { open, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys, onClose: () => harness.closed.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} })
   act(() => root.render(createElement('div', null, page, createElement(Toaster))))
   await settle()
 }
@@ -1206,5 +1214,212 @@ describe('수정 3 (리뷰 r3)', () => {
     const call = harness.state.createCalls?.at(-1)
     expect(call).toMatchObject({ title: '배치 없는 인라인' })
     expect(call?.placement).toBeUndefined()
+  })
+})
+
+describe('수정 4 (리뷰 r4)', () => {
+  const allSpaces = async (harness: Harness): Promise<void> => {
+    Reflect.set(window.corral, 'getUiPrefs', async () => ({ tasksPage: { space: { kind: 'all' }, view: 'board' } }))
+    await renderPage(harness)
+  }
+  const chooseTarget = async (spaceKey: string): Promise<void> => {
+    click('[data-quick-create-target]')
+    click(`[data-quick-create-target-row="${spaceKey}"]`)
+    await settle()
+  }
+  const metaRequests = (harness: Harness, kindKey: string): number => harness.requests.filter((request) => request.call.op === 'getCreateMeta' && request.call.kindKey === kindKey).length
+
+  it('R4-A 「전체」 — 글을 다른 스페이스로 옮겨 만들면 옛 스페이스에 같은 글이 초안으로 남지 않는다(P4)', async () => {
+    const harness = await setup()
+    await allSpaces(harness)
+    pressC()
+    await settle()
+    expect(el('[data-quick-create-target]').textContent).toContain('Core Platform')
+    setValue('[data-quick-create-title]', '옮긴 글')
+    await chooseTarget('WEB')
+    expect(valueOf('[data-quick-create-title]')).toBe('옮긴 글')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    expect(harness.state.createCalls?.at(-1)).toMatchObject({ spaceKey: 'WEB', title: '옮긴 글' })
+    // 다시 열어 옛 스페이스(CORE)로 — 방금 만든 글이 초안으로 돌아오면 같은 작업을 또 만들 수 있다.
+    pressC()
+    await settle()
+    await chooseTarget('CORE')
+    expect(valueOf('[data-quick-create-title]')).toBe('')
+    expect(q('[data-quick-create-draft]')).toBeNull()
+  })
+
+  it('R4-A 「전체」 — 복원한 초안을 비우고 스페이스를 갔다 오면 비운 초안이 되살아나지 않는다(P4b)', async () => {
+    const harness = await setup()
+    await allSpaces(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '초안 A')
+    key(document.body, { key: 'Escape' })
+    await settle()
+    pressC()
+    await settle()
+    expect(valueOf('[data-quick-create-title]')).toBe('초안 A')
+    setValue('[data-quick-create-title]', '')
+    await chooseTarget('WEB')
+    await chooseTarget('CORE')
+    expect(valueOf('[data-quick-create-title]')).toBe('')
+    key(document.body, { key: 'Escape' })
+    await settle()
+    pressC()
+    await settle()
+    expect(valueOf('[data-quick-create-title]')).toBe('')
+  })
+
+  it('R4-A 대조 — 스페이스에 초안이 있으면 그 초안을 열고, 지금 글은 옛 스페이스 초안으로 남는다', async () => {
+    const harness = await setup()
+    await allSpaces(harness)
+    pressC()
+    await settle()
+    await chooseTarget('WEB')
+    setValue('[data-quick-create-title]', '웹 초안')
+    key(document.body, { key: 'Escape' })
+    await settle()
+    pressC()
+    await settle()
+    await chooseTarget('CORE')
+    setValue('[data-quick-create-title]', '코어 글')
+    await chooseTarget('WEB')
+    expect(valueOf('[data-quick-create-title]')).toBe('웹 초안')
+    await chooseTarget('CORE')
+    expect(valueOf('[data-quick-create-title]')).toBe('코어 글')
+  })
+
+  it('R4-B 위층(설정·팔레트)이 모달 위에 열려 있으면 모달은 Esc 를 먹지 않는다 — 위층이 받고 모달은 그대로 · 위층이 닫히면 모달이 닫힌다', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '위층 아래')
+    let upper = 0
+    const onUpper = (event: KeyboardEvent): void => { if (event.key === 'Escape') upper += 1 }
+    document.addEventListener('keydown', onUpper)
+    try {
+      await renderPage(harness, { yieldKeys: true })
+      key(document.body, { key: 'Escape' })
+      await settle()
+      expect(upper).toBe(1)
+      expect(q('[data-quick-create]')).not.toBeNull()
+      await renderPage(harness, { yieldKeys: false })
+      key(document.body, { key: 'Escape' })
+      await settle()
+      expect(upper).toBe(1)
+      expect(q('[data-quick-create]')).toBeNull()
+    } finally {
+      document.removeEventListener('keydown', onUpper)
+    }
+  })
+
+  it('R4-C 출처가 만들기를 거절하면 그 종류 메타를 다시 받는다 — 바뀐 필수 필드가 나타나고 채우면 만들어진다(재연결 없이)', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '메타가 바뀜')
+    const before = metaRequests(harness, 'story')
+    expect(q('[data-quick-create-field="sev"]')).toBeNull()
+    // 앱이 도는 사이 출처에서 Story 에 필수 필드가 생겼다 — 받아 둔 메타는 낡았다.
+    harness.state.createFields = { ...MOCK_CREATE_FIELDS, story: [{ key: 'sev', label: '심각도', shape: 'text' }] }
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    expect(harness.state.items.some((item) => item.title === '메타가 바뀜')).toBe(false)
+    expect(metaRequests(harness, 'story')).toBe(before + 1)
+    expect(q('[data-quick-create-field="sev"]')).not.toBeNull()
+    expect(valueOf('[data-quick-create-title]')).toBe('메타가 바뀜')
+    setValue('[data-quick-create-field="sev"] input', '높음')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    expect(harness.state.items.some((item) => item.title === '메타가 바뀜')).toBe(true)
+  })
+
+  it('R4-D 상한에 잘린 목록(truncated)에 새 작업이 없어도 만든 카드는 남는다 · 잘리지 않은 목록에 없으면 빠진다(대조)', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    harness.cutLists.hide = '잘린 목록'
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '잘린 목록')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    const made = harness.state.items.find((item) => item.title === '잘린 목록')
+    if (made === undefined) throw new Error('없음')
+    const reread = async (): Promise<void> => {
+      click('[data-space-switch]')
+      click('[data-space-row="WEB"]')
+      await settle()
+      click('[data-space-switch]')
+      click('[data-space-row="CORE"]')
+      await settle(12)
+    }
+    await reread()
+    expect(qa(`[data-issue-card="${made.key}"]`)).toHaveLength(1)
+    harness.cutLists.truncated = false
+    await reread()
+    expect(qa(`[data-issue-card="${made.key}"]`)).toHaveLength(0)
+  })
+
+  it('R4-E 제목 길이 한도(계약 500자)를 넘으면 보내기 전에 막고 한도를 보인다 — 모달·인라인 요청 0, 500자는 만든다', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', 'ㄱ'.repeat(501))
+    expect(el('[data-quick-create-submit]').hasAttribute('disabled')).toBe(true)
+    expect(el('[data-quick-create-problem]').textContent).toContain('제목은 500자까지입니다 (지금 501자)')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    expect(creates(harness)).toBe(0)
+    setValue('[data-quick-create-body]', 'x'.repeat(200_001))
+    setValue('[data-quick-create-title]', 'ㄱ'.repeat(500))
+    expect(el('[data-quick-create-problem]').textContent).toContain('설명은 200,000자까지입니다')
+    setValue('[data-quick-create-body]', '')
+    expect(el('[data-quick-create-submit]').hasAttribute('disabled')).toBe(false)
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    expect(creates(harness)).toBe(1)
+    act(() => { el('[data-board-column="st:core-todo"]').querySelector<HTMLElement>('[data-inline-add-open]')?.click() })
+    await settle()
+    const input = el('[data-board-column="st:core-todo"] [data-inline-add]')
+    setValue('[data-board-column="st:core-todo"] [data-inline-add]', 'ㄴ'.repeat(501))
+    key(input, { key: 'Enter' })
+    await settle(12)
+    expect(creates(harness)).toBe(1)
+    expect(el('[data-board-column="st:core-todo"]').textContent).toContain('제목은 500자까지입니다')
+  })
+
+  it('R4-F 메타가 이 스페이스에서는 못 만든다고 한 종류는 고를 수 없다 — 흐림 + 이유, 다른 종류는 그대로(대조)', async () => {
+    const harness = await setup({ token: 'mock_l604_createmeta-unavailable' })
+    await renderPage(harness)
+    pressC()
+    await settle(12)
+    const epic = el('[data-quick-create-kind="epic"]')
+    expect(epic.hasAttribute('disabled')).toBe(true)
+    expect(epic.hasAttribute('data-quick-create-kind-unavailable')).toBe(true)
+    expect(epic.getAttribute('title')).toContain('Epic 을 만들 수 없습니다')
+    expect(el('[data-quick-create-kind="story"]').hasAttribute('disabled')).toBe(false)
+    expect(el('[data-quick-create-kind="bug"]').hasAttribute('data-quick-create-kind-unavailable')).toBe(false)
+    click('[data-quick-create-kind="epic"]')
+    expect(el('[data-quick-create-kind="epic"]').getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('R4-G 모달이 열린 동안 뒤 페이지(머리·본문)는 inert — 모달은 아님, Tab 이 카드·「+ 추가」 에 닿지 않는다 · 닫으면 풀린다', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    expect(el('.tasks-main').hasAttribute('inert')).toBe(false)
+    pressC()
+    await settle()
+    expect(el('.tasks-main').hasAttribute('inert')).toBe(true)
+    expect(el('.tasks-head').hasAttribute('inert')).toBe(true)
+    expect(el('[data-inline-add-open]').closest('[inert]')).not.toBeNull()
+    expect(el('[data-quick-create]').closest('[inert]')).toBeNull()
+    key(document.body, { key: 'Escape' })
+    await settle()
+    expect(el('.tasks-main').hasAttribute('inert')).toBe(false)
+    expect(el('.tasks-head').hasAttribute('inert')).toBe(false)
   })
 })

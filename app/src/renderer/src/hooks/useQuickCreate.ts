@@ -2,6 +2,8 @@
 //
 // - **생성 메타(E11)** 는 (연결 세대, 스페이스, 종류)마다 한 번 받아 둔다. 열쇠에 종류가 들어가 늦게 온 다른 종류의 응답이 지금 종류 칸을
 //   덮지 못한다(C8 — 늦은 메타 응답은 버림과 같다). 실패는 그 칸에 남고 「다시 시도」 가 지운 뒤 다시 받는다.
+//   출처가 만들기를 **거절**(`rejected`)하면 그 칸 메타를 다시 받는다(R4-C) — 받아 둔 메타가 낡았을 수 있다(상태·필수 필드가 바뀜).
+//   모달을 열면 그 스페이스의 종류 메타를 모두 받는다 — 메타가 「여기서는 못 만든다」(`unavailable`)는 종류를 고르기 전에 흐린다(R4-F).
 // - **중복 방지(C9)** 는 `page.createItem` 의 잠금(진입마다 하나)이 한다 — 모달 `create:modal`, 인라인 `create:inline:<스페이스>`.
 //   `late` 면 「확인 중」 으로 두고 다시 보내지 못한다. 모달을 닫아도 잠금은 답이 올 때까지 남는다(닫았다 다시 열어 또 보내지 못함).
 // - **결과를 모르는 만들기(R1-A)**: 출처가 「만들어졌을 수 있음」(`maybeApplied`)·세대 바뀜(`stale`)으로 끝나면 그 스페이스는 `unknown` —
@@ -26,11 +28,13 @@ import {
   fieldValues,
   hasDraftContent,
   keepParent,
+  kindUnavailable,
   metaFieldKeys,
   nextForm,
   parentCandidates,
   submitProblem,
   targetKey,
+  titleTooLong,
   type CreateForm,
   type CreateMetaState,
   type CreateTarget,
@@ -144,10 +148,11 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
   const kindsOf = useCallback((target: CreateTarget): WorkKind[] => dataOf(target)?.kinds ?? [], [dataOf])
 
   // --- 생성 메타 ---
-  const fetchMeta = useCallback(({ target, kindKey }: { target: CreateTarget; kindKey: string }) => {
+  /** `force` — 받아 둔 메타가 있어도 다시 받는다(만들기가 거절된 뒤, R4-C). */
+  const fetchMeta = useCallback(({ target, kindKey, force = false }: { target: CreateTarget; kindKey: string; force?: boolean }) => {
     const key = metaKey({ target, kindKey })
     const known = metasRef.current.get(key)
-    if (inflight.current.has(key) || (known !== undefined && known.state !== 'error')) return
+    if (inflight.current.has(key) || (!force && known !== undefined && known.state !== 'error')) return
     inflight.current.add(key)
     setMetas((current) => new Map(current).set(key, { state: 'loading' }))
     void window.corral.workRequest({ requestId: `meta:${key}:${Date.now()}`, connectionId: target.connectionId, call: { op: 'getCreateMeta', spaceKey: target.spaceKey, kindKey } })
@@ -168,15 +173,18 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     // 실패 칸만 다시 보낸다 — fetchMeta 는 error 칸을 다시 받는다.
     fetchMeta({ target: current.target, kindKey: current.form.kindKey })
   }, [fetchMeta])
-  // 모달의 (스페이스, 종류) 메타를 받는다 — 종류를 바꾸면 다시.
+  // 모달의 (스페이스, 종류) 메타를 받는다 — 종류를 바꾸면 다시. 그 스페이스의 다른 종류는 아직 없는 칸만 받는다(R4-F — 고르기 전에 흐림).
   const modalMetaKey = modal === null ? null : metaKey({ target: modal.target, kindKey: modal.form.kindKey })
+  const modalKinds = modal === null ? null : kindsOf(modal.target).map((kind) => kind.key).join('|')
   useEffect(() => {
     const current = modalRef.current
-    if (current === null || current.form.kindKey === '') return
-    fetchMeta({ target: current.target, kindKey: current.form.kindKey })
-  }, [modalMetaKey, fetchMeta])
+    if (current === null) return
+    if (current.form.kindKey !== '') fetchMeta({ target: current.target, kindKey: current.form.kindKey })
+    for (const kind of kindsOf(current.target)) {
+      if (!metasRef.current.has(metaKey({ target: current.target, kindKey: kind.key }))) fetchMeta({ target: current.target, kindKey: kind.key })
+    }
+  }, [modalMetaKey, modalKinds, fetchMeta, kindsOf, metaKey])
   // 목록을 받기 전에 연 모달(종류 없음) — 스페이스 자료가 오면 기본 종류로 채운다(R3-C). 「다시 시도」 로는 낫지 않는 막다른 문구를 남기지 않는다.
-  const modalKinds = modal === null ? null : kindsOf(modal.target).map((kind) => kind.key).join('|')
   useEffect(() => {
     if (modalKinds === null || modalKinds === '') return
     setModal((current) => {
@@ -261,6 +269,8 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
   const setKind = useCallback((kindKey: string) => {
     setModal((current) => {
       if (current === null || current.form.kindKey === kindKey) return current
+      // 메타가 이 스페이스에서는 못 만든다고 한 종류는 고르지 않는다(R4-F — 버튼도 흐림).
+      if (kindUnavailable(metasRef.current.get(metaKey({ target: current.target, kindKey })) ?? { state: 'loading' }) !== null) return current
       const kind = kindsOf(current.target).find((entry) => entry.key === kindKey)
       const parent = current.form.parentId === null ? null : (dataOf(current.target)?.items.find((item) => item.id === current.form.parentId) ?? null)
       const kept = parent === null && current.form.parentId !== null
@@ -268,7 +278,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
         : keepParent({ parent, kindKey, kindLabel: kind?.label ?? kindKey })
       return { ...current, form: { ...current.form, kindKey, parentId: kept.parentId }, notice: kept.notice, error: null }
     })
-  }, [kindsOf, dataOf])
+  }, [kindsOf, dataOf, metaKey])
 
   /** 「전체」 에서 만들 스페이스 바꾸기 — 그 스페이스 초안이 있으면 그것, 없으면 지금 글은 두고 종류·부모·상태를 새 스페이스 기준으로. */
   const setTarget = useCallback((target: CreateTarget) => {
@@ -278,7 +288,14 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
       const unknown = uncertain.current.has(draftKey(target))
       const phase: ModalPhase = unknown ? 'unknown' : 'idle'
       const fieldKeys = metaFieldKeys(metaOf({ target: current.target, kindKey: current.form.kindKey }))
-      if (hasDraftContent({ form: current.form, fieldKeys }) && !current.keepDraft) drafts.current.set(draftKey(current.target), current.form)
+      // 옛 스페이스 초안(R4-A) — 새 스페이스에 초안이 있어 그것을 열 때만 지금 글을 옛 스페이스 초안으로 둔다. 새 스페이스로 글을 옮길 때(초안 없음)는
+      // 옛 쪽에 남기지 않는다(옮김 — 새 쪽에서 만들면 옛 쪽에 같은 글이 남지 않게). 남기지 않을 때는 연 때의 초안만 지운다(비운 초안이 되살아나지 않게,
+      // 그 사이 닫은 뒤 실패로 돌아온 초안은 남긴다 — R3-B). 진입점 값으로 연 폼이면 옛 초안을 건드리지 않는다(R1-C).
+      if (!current.keepDraft) {
+        const oldKey = draftKey(current.target)
+        if (draft !== null && hasDraftContent({ form: current.form, fieldKeys })) drafts.current.set(oldKey, current.form)
+        else if (drafts.current.get(oldKey) === (current.draftAtOpen ?? undefined)) drafts.current.delete(oldKey)
+      }
       const fresh = freshForm({ target, statusKey: null, placement: current.form.placement })
       if (draft === null) {
         const form = { ...fresh, title: current.form.title, body: current.form.body }
@@ -325,13 +342,15 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
         const message = settled.kind === 'stale' ? '연결이 바뀌어 결과를 확인하지 못했습니다.' : createErrorText(settled.error)
         const key = draftKey(sent.target)
         if (unknown) uncertain.current.add(key)
+        // 출처가 거절했다 — 받아 둔 메타가 낡았을 수 있으니 그 칸을 다시 받는다(R4-C). 재연결이 아니어도 고친 메타로 다시 만들 수 있다.
+        if (settled.kind === 'failed' && settled.error.kind === 'rejected' && !unknown) fetchMeta({ target: sent.target, kindKey: sent.form.kindKey, force: true })
         if (here) { setModal({ ...current, phase: unknown ? 'unknown' : 'idle', error: unknown ? `${message} ${RECHECK_HINT}` : message }); return }
         // 닫은 뒤 끝남 — 보낸 값(고친 값 그대로)을 초안으로 돌린다(R1-H). 진입점 값으로 연 폼이었고 초안이 따로 있으면 그 초안을 지킨다(R1-C).
         if (!sent.keepDraft || !drafts.current.has(key)) drafts.current.set(key, sent.form)
         notifyFailure(unknown ? `${message} ${RECHECK_HINT} (초안으로 남겼습니다)` : `만들지 못했습니다 — ${message} (초안으로 남겼습니다)`)
       }
     }
-  }, [draftKey, onCreated, openItem, notifyFailure])
+  }, [draftKey, onCreated, openItem, notifyFailure, fetchMeta])
 
   const submit = useCallback(async () => {
     const current = modalRef.current
@@ -450,7 +469,10 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     const meta = metaOf({ target: current.target, kindKey: kind.key })
     if (meta.state === 'loading') { setInline({ ...current, error: '만들기 정보를 받는 중… 잠시 뒤 다시 Enter' }); return }
     if (meta.state === 'error') { prepareInline(); setInline({ ...current, error: `만들기 정보를 받지 못했습니다 — ${meta.message} (다시 Enter 로 재시도)` }); return }
+    if (meta.meta.unavailable !== undefined) { setInline({ ...current, error: meta.meta.unavailable }); return }
     if (!meta.meta.statusKeys.includes(current.statusKey)) { setInline({ ...current, error: INLINE_STATUS_BLOCKED }); return }
+    const long = titleTooLong(current.text)
+    if (long !== null) { setInline({ ...current, error: long }); return }
     const block = writeBlockOf(current.target.connectionId)
     if (block !== null) { setInline({ ...current, error: block }); return }
     // 기본 종류에 필수 필드가 있으면 그 값으로 모달을 연다 — 빈 값을 보내지 않는다(C7).
@@ -488,6 +510,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
       const unknown = settled.kind === 'stale' || settled.error.maybeApplied === true
       const message = settled.kind === 'stale' ? '연결이 바뀌어 결과를 확인하지 못했습니다.' : createErrorText(settled.error)
       if (unknown) uncertain.current.add(targetKey(current.target))
+      if (settled.kind === 'failed' && settled.error.kind === 'rejected' && !unknown) fetchMeta({ target: current.target, kindKey: kind.key, force: true })
       const shown = unknown ? `${message} ${RECHECK_HINT}` : message
       // 친 글은 남는다 — 열려 있으면 그 자리에, 닫혔으면 다음에 열 때.
       if (now !== null) { setInline({ ...now, phase: unknown ? 'unknown' : 'idle', error: shown, closeRequested: false }); return }
@@ -500,7 +523,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     const settled = await outcome.settled
     inlineSending.current.delete(lockKey)
     settle(settled)
-  }, [kindsOf, metaOf, writeBlockOf, openModal, settings, page, onCreated, notifyFailure, prepareInline])
+  }, [kindsOf, metaOf, writeBlockOf, openModal, settings, page, onCreated, notifyFailure, prepareInline, fetchMeta])
 
   // --- 모달 그림 자료 ---
   const modalView = useMemo(() => {
@@ -522,7 +545,13 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     // 이 종류에 배치가 적용되지 않으면(메타) 칩은 흐림 + 이유(R2-H). 능력이 숨김이면 그대로 숨김.
     const ignored = meta.state === 'ready' && meta.meta.placement === 'ignored' && caps !== null && caps.placement.state !== 'hidden'
     const placement: WorkCapability | null = ignored ? { state: 'disabled', reason: '이 종류는 보드/백로그 배치를 받지 않습니다' } : caps?.placement ?? null
-    return { kinds, statuses, meta, parents, parent, placement, problem, info, chooseTarget: space?.kind === 'all' }
+    // 메타가 여기서는 못 만든다고 한 종류 → 이유(R4-F). 종류 버튼이 흐림 + 이유가 된다.
+    const unavailableKinds = new Map<string, string>()
+    for (const kind of kinds) {
+      const reason = kindUnavailable(metaOf({ target: modal.target, kindKey: kind.key }))
+      if (reason !== null) unavailableKinds.set(kind.key, reason)
+    }
+    return { kinds, unavailableKinds, statuses, meta, parents, parent, placement, problem, info, chooseTarget: space?.kind === 'all' }
   }, [modal, dataOf, metaOf, settings, writeBlockOf, targets, space])
 
   return {

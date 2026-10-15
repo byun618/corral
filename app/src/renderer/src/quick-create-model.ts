@@ -4,7 +4,10 @@
 // - 기본 종류 = 그 스페이스 종류 중 **자식을 받지 않는 첫 종류**(예: Task · Story), 없으면 첫 종류. 출처가 정한 종류 순서를 따른다.
 // - 부모 후보 = 같은 스페이스에서 불러온 작업 중 그 종류를 `childKinds` 로 받는 것(C2). 불러오지 않은 쪽(다음 쪽)의 작업은 후보에 없다.
 
-import type { WorkCreateFieldValue, WorkCreateMeta, WorkItem, WorkKind, WorkPlacement, WorkPriority, WorkStatus } from '../../shared/work.js'
+import {
+  WORK_BODY_MAX, WORK_CREATE_FIELD_VALUE_MAX, WORK_TITLE_MAX,
+  type WorkCreateFieldValue, type WorkCreateMeta, type WorkItem, type WorkKind, type WorkPlacement, type WorkPriority, type WorkStatus,
+} from '../../shared/work.js'
 
 export type CreateTarget = { connectionId: string; spaceKey: string }
 
@@ -76,22 +79,40 @@ export function fieldValues({ form, meta }: { form: CreateForm; meta: WorkCreate
   return meta.fields.map((field) => ({ key: field.key, value: form.values[field.key] ?? '' }))
 }
 
+/** 제목 길이 — 보내는 값(앞뒤 공백 뺀 것)이 계약 상한(`WORK_TITLE_MAX`)을 넘으면 이유(R4-E). 인라인 추가도 같이 쓴다. */
+export function titleTooLong(title: string): string | null {
+  const length = title.trim().length
+  return length > WORK_TITLE_MAX ? `제목은 ${WORK_TITLE_MAX}자까지입니다 (지금 ${length}자)` : null
+}
+
 /**
- * 만들기를 막는 이유 — 없으면 null. 순서: 메타 받는 중·실패 → 지원 밖 필수 필드 → 제목 → 빈 필수 필드.
+ * 만들기를 막는 이유 — 없으면 null. 순서: 메타 받는 중·실패 → 이 종류를 만들 수 없음 → 지원 밖 필수 필드 → 제목 → 길이 한도 → 빈 필수 필드.
+ * 길이 한도는 계약 손검증과 같은 상수다(R4-E) — 넘긴 채 보내 「요청 모양이 잘못됐습니다」 로만 알리지 않는다.
  * 진행 중(보내는 중·확인 중)·쓰기 막힘은 부르는 쪽이 앞에 둔다.
  */
 export function submitProblem({ form, meta }: { form: CreateForm; meta: CreateMetaState }): string | null {
   if (meta.state === 'loading') return '만들기 정보를 받는 중…'
   if (meta.state === 'error') return `만들기 정보를 받지 못했습니다 — ${meta.message}`
+  if (meta.meta.unavailable !== undefined) return meta.meta.unavailable
   const unsupported = meta.meta.fields.find((field) => field.shape === 'unsupported')
   if (unsupported !== undefined) return `${unsupported.label} 은(는) corral 에서 채울 수 없음 — 출처에서 만드세요`
   if (form.title.trim().length === 0) return '제목을 입력하세요'
+  const long = titleTooLong(form.title)
+  if (long !== null) return long
+  if (form.body.length > WORK_BODY_MAX) return `설명은 ${WORK_BODY_MAX.toLocaleString('en-US')}자까지입니다 (지금 ${form.body.length.toLocaleString('en-US')}자)`
+  const tooLong = meta.meta.fields.find((field) => (form.values[field.key] ?? '').length > WORK_CREATE_FIELD_VALUE_MAX)
+  if (tooLong !== undefined) return `${tooLong.label} 은(는) ${WORK_CREATE_FIELD_VALUE_MAX.toLocaleString('en-US')}자까지입니다`
   const empty = meta.meta.fields.find((field) => {
     const value = form.values[field.key] ?? ''
     if (field.shape === 'option') return !field.options.some((option) => option.id === value)
     return value.trim().length === 0
   })
   return empty === undefined ? null : `필수 필드 ${empty.label} 을(를) 채우세요`
+}
+
+/** 메타가 이 (스페이스, 종류)로는 만들 수 없다고 했으면 그 이유(R4-F) — 종류 버튼을 흐린다. 받는 중·실패면 null(고를 수 있다). */
+export function kindUnavailable(meta: CreateMetaState): string | null {
+  return meta.state === 'ready' ? (meta.meta.unavailable ?? null) : null
 }
 
 /**

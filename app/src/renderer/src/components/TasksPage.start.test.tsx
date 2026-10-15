@@ -188,6 +188,21 @@ describe('LIFE-604 F10 — 시작 모달이 열린 동안 페이지 키가 새�
     expect(document.activeElement).not.toBe(q('[data-tasks-search]'))
     expect(q('[data-quick-create]')).toBeNull()
   })
+
+  it('R4-G(LIFE-604) 시작 모달이 열린 동안 뒤 페이지(머리·본문)는 inert — 모달은 아님 · Esc 로 닫으면 풀린다', async () => {
+    await rig()
+    await openCard('CORE-2')
+    expect(el('.tasks-main').hasAttribute('inert')).toBe(false)
+    click('[data-issue-start="first"]')
+    await settle()
+    expect(el('.tasks-main').hasAttribute('inert')).toBe(true)
+    expect(el('.tasks-head').hasAttribute('inert')).toBe(true)
+    expect(el('[data-start-work]').closest('[inert]')).toBeNull()
+    act(() => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
+    await settle()
+    expect(q('[data-start-work]')).toBeNull()
+    expect(el('.tasks-main').hasAttribute('inert')).toBe(false)
+  })
 })
 
 describe('C2 시작 모달 — 기본값 · 입력', () => {

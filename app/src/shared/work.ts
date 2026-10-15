@@ -210,8 +210,10 @@ export type WorkCreateFieldValue = { key: string; value: string }
  * 생성 메타(E11) — `statusKeys` = 만들 때 고를 수 있는 상태(완료 분류 제외, 출처가 첫 상태만 받으면 하나), `defaultStatusKey` 는 그 안.
  * `placement` = 이 (스페이스, 종류)에 보드/백로그 배치가 적용되는가(LIFE-604 R2-H) — `ignored` 면 화면은 배치 칩을 흐리고 `placement` 를 싣지 않는다
  * (실어 보내면 출처가 거절 — 받는 척 금지). 예: LA 는 task·checkpoint 만 `onBoard` 를 쓴다.
+ * `unavailable` = 이 (스페이스, 종류)로는 만들 수 없다 — 이유 글(LIFE-604 R4-F). 화면은 그 종류를 흐림 + 이유로 두고, 출처는 만들기를 거절한다.
+ * 예: LA 「미분류」 의 Checkpoint(부모 프로젝트 필수). 없으면 만들 수 있다.
  */
-export type WorkCreateMeta = { spaceKey: string; kindKey: string; statusKeys: string[]; defaultStatusKey: string; placement: 'applies' | 'ignored'; fields: WorkCreateField[] }
+export type WorkCreateMeta = { spaceKey: string; kindKey: string; statusKeys: string[]; defaultStatusKey: string; placement: 'applies' | 'ignored'; fields: WorkCreateField[]; unavailable?: string }
 
 /** 필수 필드 상한 — 값 하나의 길이·필드 수. */
 export const WORK_CREATE_FIELD_VALUE_MAX = 10_000
@@ -464,6 +466,8 @@ export function readWorkPriority(value: unknown): WorkPriority | null {
 
 /** 본문 상한 — 렌더러가 보내는 본문(편집기·체크 칸 저장). 출처 상한은 출처가 따로 거절한다. */
 export const WORK_BODY_MAX = 200_000
+/** 제목 상한 — 수정(E4)·만들기(E10) 손검증과 만들기 화면이 같은 값을 쓴다(R4-E). */
+export const WORK_TITLE_MAX = 500
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z$/
 
 /** 필드 부분 수정 손검증 — 모르는 칸·빈 수정은 null. 제목은 비면 안 되고, 마감은 UTC ISO 또는 null. */
@@ -472,7 +476,7 @@ function readFieldPatch(value: unknown): WorkFieldPatch | null {
   const patch: WorkFieldPatch = {}
   for (const key of Object.keys(value)) if (key !== 'title' && key !== 'body' && key !== 'priority' && key !== 'dueAt') return null
   if ('title' in value) {
-    if (typeof value.title !== 'string' || value.title.trim().length === 0 || value.title.length > 500) return null
+    if (typeof value.title !== 'string' || value.title.trim().length === 0 || value.title.length > WORK_TITLE_MAX) return null
     patch.title = value.title
   }
   if ('body' in value) {
@@ -506,7 +510,7 @@ function readCreateCall(value: Record<string, unknown>): Extract<WorkCall, { op:
   const parentId = value.parentId ?? null
   const title = value.title
   if (!isNonEmpty(value.spaceKey) || !(parentId === null || isNonEmpty(parentId)) || !isNonEmpty(value.kindKey)) return null
-  if (typeof title !== 'string' || title.trim().length === 0 || title.length > 500) return null
+  if (typeof title !== 'string' || title.trim().length === 0 || title.length > WORK_TITLE_MAX) return null
   const call: Extract<WorkCall, { op: 'createItem' }> = { op: 'createItem', spaceKey: value.spaceKey, parentId, kindKey: value.kindKey, title }
   if (value.body !== undefined) {
     if (typeof value.body !== 'string' || value.body.length > WORK_BODY_MAX) return null
@@ -548,7 +552,7 @@ function readFieldValues(value: unknown): WorkCreateFieldValue[] | null {
 
 /**
  * 출처가 준 생성 메타 검증(E11) — main 이 출처 응답을 이것으로 본다. 어긋나면 null(= `invalid_response`).
- * 상태는 하나 이상·겹치지 않음·기본 상태가 그 안 · 필드 키 겹치지 않음 · 고르기 필드는 선택지 하나 이상(id 겹치지 않음).
+ * 상태는 하나 이상·겹치지 않음·기본 상태가 그 안 · 필드 키 겹치지 않음 · 고르기 필드는 선택지 하나 이상(id 겹치지 않음) · `unavailable` 은 있으면 빈 글 아님.
  */
 export function readCreateMeta(value: unknown): WorkCreateMeta | null {
   if (!isRecord(value) || !isNonEmpty(value.spaceKey) || !isNonEmpty(value.kindKey) || !isNonEmpty(value.defaultStatusKey)) return null
@@ -563,7 +567,12 @@ export function readCreateMeta(value: unknown): WorkCreateMeta | null {
     if (field === null || fields.some((entry) => entry.key === field.key)) return null
     fields.push(field)
   }
-  return { spaceKey: value.spaceKey, kindKey: value.kindKey, statusKeys: [...statusKeys], defaultStatusKey: value.defaultStatusKey, placement: value.placement, fields }
+  const meta: WorkCreateMeta = { spaceKey: value.spaceKey, kindKey: value.kindKey, statusKeys: [...statusKeys], defaultStatusKey: value.defaultStatusKey, placement: value.placement, fields }
+  if (value.unavailable !== undefined) {
+    if (!isNonEmpty(value.unavailable) || value.unavailable.length > 500) return null
+    meta.unavailable = value.unavailable
+  }
+  return meta
 }
 
 function readCreateField(value: unknown): WorkCreateField | null {
@@ -592,6 +601,7 @@ function readCreateField(value: unknown): WorkCreateField | null {
  * 상태는 메타 안 · 필드는 메타에 있는 키만 · 필수 필드는 전부 값(공백만 = 없음) · 고르기는 선택지 id · 채울 수 없는 모양이 있으면 거절.
  */
 export function createFieldsProblem({ call, meta }: { call: Extract<WorkCall, { op: 'createItem' }>; meta: WorkCreateMeta }): string | null {
+  if (meta.unavailable !== undefined) return meta.unavailable
   if (call.statusKey !== undefined && !meta.statusKeys.includes(call.statusKey)) return '이 상태로는 만들 수 없습니다 — 만들 수 있는 상태를 고르세요.'
   if (call.placement !== undefined && meta.placement === 'ignored') return '이 종류는 보드/백로그 배치를 받지 않습니다.'
   const given = call.fields ?? []

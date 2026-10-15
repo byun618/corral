@@ -196,14 +196,15 @@ function replaceItem({ item }: { item: WorkItem }): (items: WorkItem[]) => WorkI
 const CREATED_CAP = 20
 
 /**
- * 만든 작업을 목록 끝에 — 받은 쪽에 이미 있으면 그 값(서버 목록)을 쓰고 기록을 지운다. 다 받았는데(다음 쪽 없음) 없으면 기록만 지운다
- * (다른 곳으로 옮겨졌거나 지워졌다 — 화면에 남기지 않는다). 아직 받지 않은 쪽이 있으면 서버가 돌려준 값으로 끝에 둔다(LIFE-604).
+ * 만든 작업을 목록 끝에 — 받은 쪽에 이미 있으면 그 값(서버 목록)을 쓰고 기록을 지운다. 다 받았는데(다음 쪽 없음 · 상한에 잘리지 않음) 없으면
+ * 기록만 지운다(다른 곳으로 옮겨졌거나 지워졌다 — 화면에 남기지 않는다). 아직 받지 않은 쪽이 있거나 목록이 상한에 잘렸으면(`truncated`, R4-D —
+ * LA 부모당 200) 다 받은 목록이 아니므로 서버가 돌려준 값으로 끝에 둔다(LIFE-604).
  */
 function withCreated({ data, created }: { data: SpaceData; created: Map<string, { connectionId: string; spaceKey: string; item: WorkItem }> }): WorkItem[] {
   const extra: WorkItem[] = []
   for (const [uid, entry] of created) {
     if (entry.connectionId !== data.connectionId || entry.spaceKey !== data.spaceKey) continue
-    if (data.items.some((item) => item.id === entry.item.id) || data.nextCursor === null) { created.delete(uid); continue }
+    if (data.items.some((item) => item.id === entry.item.id) || (data.nextCursor === null && !data.truncated)) { created.delete(uid); continue }
     extra.push({ ...entry.item, body: null, relations: null })
   }
   return extra.length === 0 ? data.items : [...data.items, ...extra]

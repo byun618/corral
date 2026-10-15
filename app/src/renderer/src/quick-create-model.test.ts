@@ -1,7 +1,7 @@
 // LIFE-604 — 만들기 모델 순수 함수: 기본 종류 · 부모 규칙 · 상태 후보·각주 · 만들기 막는 이유 · 초안 · 하나 더 · 활동 글.
 import { describe, expect, it } from 'vitest'
 import type { WorkCreateMeta, WorkItem, WorkKind, WorkStatus } from '../../shared/work.js'
-import { chosenStatus, defaultKind, fieldValues, hasDraftContent, keepParent, nextForm, parentCandidates, statusNote, statusOptions, submitProblem, type CreateForm } from './quick-create-model.js'
+import { chosenStatus, defaultKind, fieldValues, hasDraftContent, keepParent, kindUnavailable, nextForm, parentCandidates, statusNote, statusOptions, submitProblem, titleTooLong, type CreateForm, type CreateMetaState } from './quick-create-model.js'
 import { describeChange } from './task-detail-model.js'
 
 const kinds: WorkKind[] = [{ key: 'epic', label: 'Epic', childKinds: ['story', 'bug'] }, { key: 'story', label: 'Story', childKinds: [] }, { key: 'bug', label: 'Bug', childKinds: [] }]
@@ -52,6 +52,25 @@ describe('quick-create-model', () => {
     expect(submitProblem({ form: form({ values: { e: '  ' } }), meta: { state: 'ready', meta: meta({ fields: [{ key: 'e', label: 'Env', shape: 'text' }] }) } })).toContain('Env')
     // 메타에 없는 키의 값은 보내지 않는다.
     expect(fieldValues({ form: form({ values: { i: 'hi', stale: 'x' } }), meta: option })).toEqual([{ key: 'i', value: 'hi' }])
+  })
+
+  it('R4-E 길이 한도 — 계약 상수(제목 500 · 설명 200,000 · 필수 값 10,000)로 보내기 전에 막고 한도를 말한다, 앞뒤 공백은 빼고 센다', () => {
+    const ready: CreateMetaState = { state: 'ready', meta: meta({ fields: [{ key: 'e', label: 'Env', shape: 'text' }] }) }
+    expect(submitProblem({ form: form({ title: 'a'.repeat(501), values: { e: 'x' } }), meta: ready })).toBe('제목은 500자까지입니다 (지금 501자)')
+    expect(submitProblem({ form: form({ title: ` ${'a'.repeat(500)} `, values: { e: 'x' } }), meta: ready })).toBeNull()
+    expect(submitProblem({ form: form({ body: 'b'.repeat(200_001), values: { e: 'x' } }), meta: ready })).toContain('설명은 200,000자까지입니다')
+    expect(submitProblem({ form: form({ values: { e: 'v'.repeat(10_001) } }), meta: ready })).toBe('Env 은(는) 10,000자까지입니다')
+    expect(titleTooLong('a'.repeat(500))).toBeNull()
+    expect(titleTooLong('a'.repeat(501))).toContain('500자까지')
+  })
+
+  it('R4-F 메타가 만들 수 없다고 한 종류 — 막는 이유 = 출처 글 · 종류 흐림 이유, 받는 중·실패면 고를 수 있다', () => {
+    const ready: CreateMetaState = { state: 'ready', meta: meta({ unavailable: '여기서는 못 만듭니다' }) }
+    expect(submitProblem({ form: form(), meta: ready })).toBe('여기서는 못 만듭니다')
+    expect(kindUnavailable(ready)).toBe('여기서는 못 만듭니다')
+    expect(kindUnavailable({ state: 'ready', meta: meta() })).toBeNull()
+    expect(kindUnavailable({ state: 'loading' })).toBeNull()
+    expect(kindUnavailable({ state: 'error', message: 'x' })).toBeNull()
   })
 
   it('초안·하나 더 — 글이 있으면 초안, 하나 더는 제목·설명·필수 값만 비운다', () => {

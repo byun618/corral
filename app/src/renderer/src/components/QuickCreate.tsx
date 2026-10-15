@@ -1,7 +1,7 @@
 // 작업 만들기 화면 (LIFE-604 · 목업 C) — 빠른 생성 모달과 칸 인라인 추가. 상태는 `useQuickCreate`, 이 파일은 그리기·키만.
 //
 // - 키: ⌘↵(또는 Ctrl+↵, 모달 어디서나) · 제목에서 Enter = 만들기. IME 조합 중 Enter 는 조합만. Esc = 열린 메뉴 → 모달 닫기 —
-//   document capture 로 받아 페이지 Esc 단계로 내려가지 않는다(StartWorkModal 선례). 페이지 키(`C`·`/`·`1–4`)는 TasksPage 가 모달이 열린 동안 받지 않는다.
+//   document capture 로 받아 페이지 Esc 단계로 내려가지 않는다(StartWorkModal 선례). 위층(설정·팔레트)이 열려 있으면 Esc 를 받지 않는다(R4-B). 페이지 키(`C`·`/`·`1–4`)는 TasksPage 가 모달이 열린 동안 받지 않는다.
 // - 출처 이름으로 분기하지 않는다 — 상태 각주·필수 필드 상자는 생성 메타로만 그린다.
 import { useEffect, useRef, useState } from 'react'
 import type { WorkCreateField, WorkPlacement, WorkPriority } from '../../../shared/work.js'
@@ -14,8 +14,11 @@ import './quick-create.css'
 const PLACEMENTS: WorkPlacement[] = ['board', 'backlog']
 const priorityText = (priority: WorkPriority | null): string => (priority === null ? '우선순위 없음' : PRIORITY_LABEL[priority])
 
-export function QuickCreateModal({ model }: { model: QuickCreateModel }): React.JSX.Element | null {
+/** `yieldKeys` — 위층(설정·팔레트 등)이 열려 있다. 그동안 Esc 는 위층 몫이라 받지 않는다(R4-B). */
+export function QuickCreateModal({ model, yieldKeys }: { model: QuickCreateModel; yieldKeys: boolean }): React.JSX.Element | null {
   const { modal, modalView } = model
+  const yieldRef = useRef(yieldKeys)
+  yieldRef.current = yieldKeys
   const [menu, setMenu] = useState<'parent' | 'status' | 'target' | null>(null)
   const titleRef = useRef<HTMLInputElement | null>(null)
   const menuRef = useRef(menu)
@@ -29,7 +32,8 @@ export function QuickCreateModal({ model }: { model: QuickCreateModel }): React.
   useEffect(() => {
     if (!open) { setMenu(null); return }
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
+      // 위층이 모달 위에 열렸으면 그 Esc 를 먹지 않는다 — 위층 리스너(설정 등)가 받아 위층만 닫는다(R4-B).
+      if (event.key !== 'Escape' || yieldRef.current) return
       // 조합 중 Esc 는 조합만 끝낸다 — 그래도 페이지 Esc 로는 내려가지 않는다.
       event.stopPropagation()
       if (imeComposing(event)) return
@@ -104,11 +108,15 @@ export function QuickCreateModal({ model }: { model: QuickCreateModel }): React.
 
         <div className="qc-body">
           <div className="qc-kinds" role="radiogroup" aria-label="종류">
-            {kinds.map((kind) => (
-              <button key={kind.key} type="button" role="radio" aria-checked={form.kindKey === kind.key} className={`qc-kind${form.kindKey === kind.key ? ' is-on' : ''}`} data-quick-create-kind={kind.key} disabled={locked} onClick={() => model.setKind(kind.key)}>
-                <KindIcon kind={kind} />{kind.label}
-              </button>
-            ))}
+            {kinds.map((kind) => {
+              // 메타가 이 스페이스에서는 못 만든다고 한 종류 — 흐림 + 이유(R4-F).
+              const unavailable = modalView.unavailableKinds.get(kind.key) ?? null
+              return (
+                <button key={kind.key} type="button" role="radio" aria-checked={form.kindKey === kind.key} className={`qc-kind${form.kindKey === kind.key ? ' is-on' : ''}`} data-quick-create-kind={kind.key} data-quick-create-kind-unavailable={unavailable === null ? undefined : ''} disabled={locked || unavailable !== null} title={unavailable ?? undefined} onClick={() => model.setKind(kind.key)}>
+                  <KindIcon kind={kind} />{kind.label}
+                </button>
+              )
+            })}
           </div>
           <input
             ref={titleRef}

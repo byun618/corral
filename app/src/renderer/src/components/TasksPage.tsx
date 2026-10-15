@@ -570,7 +570,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       onMouseDown={(event) => { if (menu !== null && !(event.target instanceof Element && event.target.closest('[data-tasks-menu]'))) setMenu(null) }}
     >
       <div className="tasks-drag-strip" aria-hidden />
-      <header className="tasks-head">
+      {/* 모달이 열린 동안 뒤 페이지(머리·본문)는 inert — Tab 이 scrim 뒤 카드·「+ 추가」 에 닿지 않는다(R4-G). 모달은 그 바깥 형제. */}
+      <header className="tasks-head" inert={overlay}>
         <span className="tasks-title">작업</span>
         <div className="tasks-space-anchor">
           <button type="button" className="tasks-space-btn" data-space-switch="" onClick={() => setMenu(menu === 'space' ? null : 'space')} aria-expanded={menu === 'space'}>
@@ -658,7 +659,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         <button type="button" className="tasks-close" data-tasks-close="" onClick={onClose} title={shortcut === null ? '닫기 (Esc)' : `닫기 (Esc · ${shortcut})`} aria-label="작업 페이지 닫기">✕</button>
       </header>
 
-      <div className="tasks-main">
+      <div className="tasks-main" inert={overlay}>
       <div className="tasks-filters" data-tasks-filters="">
         <FilterMenu
           id="kind"
@@ -715,12 +716,12 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           spaceOf={spaceOf}
         />
       )}
-      <QuickCreateModal model={creator} />
+      </WorkLinksContext.Provider>
+      </div>
+      <QuickCreateModal model={creator} yieldKeys={yieldKeys} />
       {detail.item === null ? null : (
         <StartWorkModal model={starter} itemKey={detail.item.key} itemTitle={detail.item.title} repos={repos} trees={detailTrees} onOpen={onOpenWorktree} />
       )}
-      </WorkLinksContext.Provider>
-      </div>
     </div>
   )
 }

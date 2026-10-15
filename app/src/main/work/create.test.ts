@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { WorkCall, WorkCreateMeta, WorkErrorKind, WorkResponse } from '../../shared/work.js'
 import { WorkActivityStore, readActivityRecord } from './activity-store.js'
 import { FIXTURE_IDS, FIXTURE_STATUS, LaMcpFixture } from './la-mcp-fixture.js'
-import { laSourceEntry } from './la-source.js'
+import { LA_CATCH_ALL_KEY, laSourceEntry } from './la-source.js'
 import { MOCK_CAPABILITIES, MOCK_DESCRIPTOR, mockSourceEntry, seedMockState, type MockState } from './mock-source.js'
 import type { WorkOutcome, WorkSourceEntry } from './source.js'
 import { FAKE_LA_TOKEN, FAKE_MOCK_TOKEN, laFixtureHarness, workHarness, type WorkHarness } from './test-kit.js'
@@ -73,6 +73,19 @@ describe('LA 칸 전달 (C4 — 모의 MCP 가 받은 인자)', () => {
     const { send } = await laSetup()
     const response = await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'bug' })
     expect(response).toMatchObject({ ok: true, result: { op: 'getCreateMeta', meta: { spaceKey: FIXTURE_IDS.corral, kindKey: 'bug', statusKeys: [FIXTURE_STATUS.todo, FIXTURE_STATUS.analysis, FIXTURE_STATUS.dev], defaultStatusKey: FIXTURE_STATUS.todo, fields: [] } } })
+  })
+
+  it('R4-F 「미분류」 의 Checkpoint — 메타가 만들 수 없다고 말하고(unavailable) 만들기는 보내기 전에 거절 · Task 와 프로젝트 스페이스의 Checkpoint 는 그대로(대조)', async () => {
+    const { fixture, send } = await laSetup()
+    const meta = await send({ op: 'getCreateMeta', spaceKey: LA_CATCH_ALL_KEY, kindKey: 'checkpoint' })
+    expect(meta).toMatchObject({ ok: true, result: { op: 'getCreateMeta', meta: { kindKey: 'checkpoint', unavailable: expect.stringContaining('부모 프로젝트가 필요합니다') } } })
+    const made = await send({ op: 'createItem', spaceKey: LA_CATCH_ALL_KEY, parentId: null, kindKey: 'checkpoint', title: '미분류 체크포인트' })
+    expect(made).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('「미분류」 에는 Checkpoint') } })
+    expect(fixture.requests.filter((request) => request.tool === 'issue_create')).toHaveLength(0)
+    const task = await send({ op: 'getCreateMeta', spaceKey: LA_CATCH_ALL_KEY, kindKey: 'task' })
+    expect(task.ok && task.result.op === 'getCreateMeta' ? task.result.meta.unavailable : 'x').toBeUndefined()
+    const inProject = await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'checkpoint' })
+    expect(inProject.ok && inProject.result.op === 'getCreateMeta' ? inProject.result.meta.unavailable : 'x').toBeUndefined()
   })
 
   it('양성 대조 — 모의 MCP 가 모르는 칸을 받으면 BAD_REQUEST(이름이 틀린 칸이 조용히 사라지지 않는다)', async () => {
@@ -283,6 +296,8 @@ describe('main 의 생성 메타 검증 (E11 — 양성 대조)', () => {
     { name: '필드 키 겹침', meta: { ...good, fields: [{ key: 'f', label: 'F', shape: 'text' }, { key: 'f', label: 'G', shape: 'text' }] } },
     { name: '다른 종류의 메타', meta: { ...good, kindKey: 'other' } },
     { name: '배치 적용 값 모름(R2-H)', meta: { ...good, placement: 'maybe' } },
+    { name: '만들 수 없음 이유가 빈 글(R4-F)', meta: { ...good, unavailable: '' } },
+    { name: '만들 수 없음 이유가 글이 아님(R4-F)', meta: { ...good, unavailable: true } },
   ]
   for (const { name, meta } of cases) {
     it(`${name} → invalid_response`, async () => {
@@ -299,6 +314,14 @@ describe('main 의 생성 메타 검증 (E11 — 양성 대조)', () => {
     if (!added.ok) throw new Error(added.error.message)
     const response = await harness.service.request({ requestId: 'm', connectionId: added.connection.id, call: { op: 'getCreateMeta', spaceKey: 'S', kindKey: 'k' } })
     expect(response).toMatchObject({ ok: true, result: { op: 'getCreateMeta', meta: good } })
+  })
+  it('만들 수 없음 이유가 있는 메타도 통과(대조, R4-F)', async () => {
+    const meta: WorkCreateMeta = { ...good, unavailable: '여기서는 못 만듭니다' }
+    const harness = workHarness({ entries: [fakeEntry(meta)] })
+    const added = await harness.service.addConnection({ sourceId: 'fake-meta', token: 'mock_x', replaceId: null })
+    if (!added.ok) throw new Error(added.error.message)
+    const response = await harness.service.request({ requestId: 'm', connectionId: added.connection.id, call: { op: 'getCreateMeta', spaceKey: 'S', kindKey: 'k' } })
+    expect(response).toMatchObject({ ok: true, result: { op: 'getCreateMeta', meta } })
   })
 })
 

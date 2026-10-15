@@ -241,7 +241,10 @@ export class LaSource implements WorkSourceClient {
     if (first === undefined) return { ok: false, outcome: { ok: false, error: workError({ kind: 'rejected', message: '만들 수 있는 상태가 없습니다.' }) } }
     // 배치(R2-H): LA `onBoard` 는 task·checkpoint 만 의미(issue_create 스키마 설명) — bug 는 적용되지 않는다.
     const placement = kindKey === 'bug' ? 'ignored' : 'applies'
-    return { ok: true, value: { spaceKey, kindKey, statusKeys: open.map((status) => status.id), defaultStatusKey: first.id, placement, fields: [] } }
+    const meta: WorkCreateMeta = { spaceKey, kindKey, statusKeys: open.map((status) => status.id), defaultStatusKey: first.id, placement, fields: [] }
+    // 「미분류」 의 Checkpoint — LA 는 checkpoint 의 부모로 project 를 요구하는데 미분류에는 부모 프로젝트가 없다(R4-F). 화면은 그 종류를 흐린다.
+    if (kindKey === 'checkpoint' && spaceKey === LA_CATCH_ALL_KEY) meta.unavailable = '「미분류」 에는 Checkpoint 를 만들 수 없습니다 — 부모 프로젝트가 필요합니다. 프로젝트 스페이스에서 만드세요.'
+    return { ok: true, value: meta }
   }
 
   private async tool<T>({ name, args, read }: { name: string; args: Record<string, unknown>; read: (value: unknown, path: string) => T }): Promise<Step<T>> {

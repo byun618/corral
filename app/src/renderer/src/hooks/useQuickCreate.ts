@@ -289,6 +289,8 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     const outcome = await page.createItem({ lockKey: MODAL_LOCK, connectionId: current.target.connectionId, call })
     switch (outcome.kind) {
       case 'busy': {
+        // 앞 회차의 만들기가 아직 잠금을 쥐고 있다 — 이 회차는 보내지 않았다. 「확인 중」 으로 두고, 잠금이 풀리면 아래 효과가 보통으로 돌린다.
+        if (pending.current === sent) pending.current = null
         const now = modalRef.current
         if (now !== null && now.session === sent.session) setModal({ ...now, phase: 'late', error: null })
         return

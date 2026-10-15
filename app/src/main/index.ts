@@ -115,6 +115,7 @@ import { MobileService } from './mobile/service.js'
 import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
 import { listDir } from './explorer-fs.js'
 import { ExplorerHub } from './explorer-hub.js'
+import { FileLister, resolveGit } from './file-list.js'
 import { explorerAction } from './explorer-actions.js'
 import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
 import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
@@ -249,6 +250,8 @@ let registry: RepoRegistry | null = null
 let uiPrefs: UiPrefsStore | null = null
 /** 탐색기 감시·git 허브 (LIFE-589) — 감시는 utility process 안에서 돈다. */
 let explorerHub: ExplorerHub | null = null
+/** LIFE-593 — ⌘P·탐색기 이름 필터의 전체 파일 목록(git). 종료 때 진행 중 자식을 끝낸다. */
+let fileLister: FileLister | null = null
 let fileWatch: FileWatch | null = null
 /** 사용자 설정 (LIFE-512 S11) — 외관. ui-prefs(화면 상태)와 다른 파일·다른 칸이다(U8). */
 let settings: SettingsStore | null = null
@@ -1925,6 +1928,27 @@ app.whenReady().then(async () => {
     roots: explorerRoots,
     log,
   })
+  // --- 전체 파일 목록 (LIFE-593 F5) — 읽기 전용, 루트는 탐색기와 같은 「지금 열린 worktree」 만(`file-list.ts` — confine 루트 대조 · 셸 없는 git · 취소) ---
+  // git 절대 경로는 처음 쓸 때 한 번 고른다(PATH 의 절대 항목만 — `resolveGit`).
+  let listGit: string | null = null
+  fileLister = new FileLister({
+    roots: explorerRoots,
+    git: () => {
+      if (listGit === null) {
+        listGit = resolveGit({ pathEnv: process.env.PATH })
+        log('file.list_git', { git: listGit })
+      }
+      return listGit
+    },
+    log,
+  })
+  ipcMain.handle('corral:fileList', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || fileLister === null) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    return fileLister.list(input)
+  })
+  ipcMain.on('corral:fileListCancel', (event, requestId: unknown) => {
+    if (fromOurWindow(event)) fileLister?.cancel(requestId)
+  })
   // --- 파일 탭 (LIFE-590 F2) — 내용 읽기 전용. 루트는 탐색기와 같은 「지금 열린 worktree」 만, 가둠은 F1 `confine`(읽기). 쓰기 핸들러는 없다(F3) ---
   ipcMain.handle('corral:fileRead', async (event, input: unknown) => {
     if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
@@ -2358,6 +2382,7 @@ app.on('before-quit', event => {
 
 app.on('window-all-closed', () => {
   explorerHub?.dispose()
+  fileLister?.cancelAll()
   fileWatch?.dispose()
   if (digestTimer !== null) clearInterval(digestTimer)
   digestTimer = null

@@ -9,11 +9,15 @@
 // 파일 한 번 클릭 = 미리보기 탭, 더블클릭 = 고정 탭(LIFE-590 F2 — `onOpenFile`). 폴더는 펼치기·접기.
 // 파일 조작(LIFE-592 F4): 인라인 입력 행(새 파일·새 폴더·이름 바꾸기 — VS Code 처럼 트리 안), 행·빈 영역 우클릭 메뉴, 툴바 새 파일·새 폴더,
 // 트리 안 끌어 옮기기(포인터 방식 — 탭 끌기와 같은 결, 시작 문턱 `DRAG_THRESHOLD`), OS 드롭 대상 표지(`data-explorer-root`·`data-explorer-drop-dir` — preload 가 읽는다).
+// 이름 필터(LIFE-593 E6 · Q7): 툴바 「필터」 단추·트리 포커스 ⌥⌘F → 머리 입력칸. 입력하면 ⌘P 와 같은 전체 목록으로 트리를 걸러낸다(`explorer-filter.ts`).
+// 입력칸은 트리 밖이라 그 키(Enter·화살표·Esc)는 트리 `onKeyDown`(Enter = 이름 바꾸기)으로 가지 않는다 — Enter·↓ = 첫 일치 선택 + 트리 포커스, Esc = 지우기 → 닫기.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { depthOf, keyAction, parentRel, projectRows, visibleRange, type ExplorerAction, type ExplorerRow } from '../../../shared/explorer.js'
 import { isAtOrUnder, nameError, splitNewName } from '../../../shared/explorer-ops.js'
 import { folderMarks, GIT_DECORATION, isIgnoredPath, type GitMark } from '../../../shared/explorer-git.js'
 import type { ExplorerApi } from '../hooks/useExplorer.js'
+import { requestFileList, type FileListOk } from '../file-list-client.js'
+import { buildFilterTree, filterRows, filterWords } from '../explorer-filter.js'
 import { ContextMenu, type MenuEntry } from './ContextMenu.js'
 import { Codicon, FileIcon } from './ExplorerIcons.js'
 import './explorer.css'
@@ -27,6 +31,8 @@ export const DRAG_THRESHOLD = 6
 const HOVER_EXPAND_MS = 500
 /** 끌기 중 가장자리 자동 스크롤 띠(px). */
 const EDGE_SCROLL_BAND = 22
+/** 이름 필터 중 감시 변경(F1)이 오면 목록을 다시 읽기까지 뭉치는 시간(E6ⓕ). */
+const FILTER_RELOAD_MS = 500
 
 type ViewMenuAction = 'toggle-dotfiles' | 'toggle-ignored'
 type FileOpMenuAction = 'newFile' | 'newFolder' | 'rename' | 'duplicate' | 'trash'
@@ -104,6 +110,7 @@ export function Explorer({
   explorer,
   title,
   focusToken,
+  filterToken = 0,
   revealRequest,
   onOpenFile,
   ops,
@@ -117,6 +124,8 @@ export function Explorer({
   title: string | null
   /** 바뀌면 트리에 포커스를 준다(⌘⇧E — 「탐색기 보이기」 는 열고 포커스). */
   focusToken: number
+  /** 바뀌면 이름 필터 입력칸을 연다(⌥⌘F — LIFE-593 Q7). */
+  filterToken?: number
   /** 파일 열기(LIFE-590 E2) — 한 번 클릭·Space = 미리보기, 더블클릭·Enter·⌘↓ = 고정. 폴더는 부르지 않는다. */
   onOpenFile: (input: { rel: string; preview: boolean }) => void
   /**
@@ -144,11 +153,111 @@ export function Explorer({
   const folders = useMemo(() => (git === null ? new Map<string, GitMark>() : folderMarks(git.marks)), [git])
   const isIgnored = useCallback((rel: string) => git !== null && isIgnoredPath(git.ignored, rel), [git])
 
-  const rows = useMemo<ExplorerRow[]>(
+  const treeRows = useMemo<ExplorerRow[]>(
     () => (state === null ? [] : projectRows({ listings: state.listings, expanded: state.expanded, filter, isIgnored })),
     // explorer.version 이 바뀌면 같은 Map 객체 안 내용이 바뀐 것이다(그래서 의존성에 둔다).
     [state, filter, isIgnored, explorer.version],
   )
+
+  // --- 이름 필터 (LIFE-593 E6) -----------------------------------------------------------------------------------------
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [filterText, setFilterText] = useState('')
+  /** 필터 안에서만 사는 펼침·접힘(E6ⓔ — 지우면 필터 전 펼침으로). 단어가 바뀌면 비운다. */
+  const [filterCollapsed, setFilterCollapsed] = useState<ReadonlySet<string>>(new Set())
+  const [filterOpened, setFilterOpened] = useState<ReadonlySet<string>>(new Set())
+  const [filterList, setFilterList] = useState<FileListOk | null>(null)
+  const [filterError, setFilterError] = useState<string | null>(null)
+  const [filterReload, setFilterReload] = useState(0)
+  const filterInputRef = useRef<HTMLInputElement | null>(null)
+  const root = explorer.root
+  const words = useMemo(() => filterWords(filterText), [filterText])
+  const filterActive = filterOpen && words.length > 0
+  // 목록 — 열려 있는 동안 (루트, 무시 파일 보임)마다 읽는다. 닫히거나 루트·토글이 바뀌면 진행 중 요청을 끝낸다(E7ⓓ).
+  useEffect(() => {
+    if (!filterOpen || root === null) return
+    let live = true
+    setFilterError(null)
+    const request = requestFileList({ root, includeIgnored: filter.showIgnored })
+    void request.result.then((value) => {
+      if (!live) return
+      if (value.ok) setFilterList(value)
+      else if (value.code !== 'cancelled') setFilterError(`목록을 읽지 못했습니다 (${value.code})`)
+    })
+    return () => {
+      live = false
+      request.cancel()
+    }
+  }, [filterOpen, root, filter.showIgnored, filterReload])
+  // 필터 중 외부 변경(F1 감시 push)이 오면 뭉쳐서 목록을 다시 읽는다(E6ⓕ).
+  useEffect(() => {
+    if (!filterOpen || root === null) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const off = window.corral.onExplorerEvent((event) => {
+      if (event.root !== root || event.kind === 'git' || timer !== null) return
+      timer = setTimeout(() => {
+        timer = null
+        setFilterReload((value) => value + 1)
+      }, FILTER_RELOAD_MS)
+    })
+    return () => {
+      off()
+      if (timer !== null) clearTimeout(timer)
+    }
+  }, [filterOpen, root])
+  // worktree 를 바꾸면 필터를 닫는다(다른 트리의 질의를 들고 가지 않는다).
+  useEffect(() => {
+    setFilterOpen(false)
+    setFilterText('')
+    setFilterList(null)
+  }, [root])
+  useEffect(() => {
+    if (filterToken <= 0) return
+    setFilterOpen(true)
+    requestAnimationFrame(() => {
+      filterInputRef.current?.focus({ preventScroll: true })
+      filterInputRef.current?.select()
+    })
+  }, [filterToken])
+  const filterReady = filterList !== null && filterList.root === root && filterList.includeIgnored === filter.showIgnored
+  const filterTree = useMemo(() => (filterReady && filterList !== null ? buildFilterTree({ files: filterList.files, showDotfiles: filter.showDotfiles }) : null), [filterReady, filterList, filter.showDotfiles])
+  const filtered = useMemo(
+    () => (filterActive && filterTree !== null ? filterRows({ tree: filterTree, words, collapsed: filterCollapsed, opened: filterOpened, isIgnored }) : null),
+    [filterActive, filterTree, words, filterCollapsed, filterOpened, isIgnored],
+  )
+  const rows = filterActive ? (filtered?.rows ?? []) : treeRows
+  /** 펼치기·접기 — 필터 중이면 필터 안 집합만 바꾼다(트리 펼침 상태는 그대로 — E6ⓔ). */
+  const fold = (rel: string, open: boolean): void => {
+    if (filtered === null) {
+      if (open) explorer.expand(rel)
+      else explorer.collapse(rel)
+      return
+    }
+    const target = filtered.toggles.get(rel)
+    if (target === undefined) return
+    const update = (set: ReadonlySet<string>, add: boolean): ReadonlySet<string> => {
+      const next = new Set(set)
+      if (add) next.add(rel)
+      else next.delete(rel)
+      return next
+    }
+    if (target === 'collapsed') setFilterCollapsed((set) => update(set, !open))
+    else setFilterOpened((set) => update(set, open))
+  }
+  const toggleFold = (row: ExplorerRow): void => fold(row.rel, !row.expanded)
+  const closeFilter = (): void => {
+    setFilterOpen(false)
+    setFilterText('')
+    focusTree()
+  }
+  /** 입력칸 Enter·↓ — 첫 일치 행을 고르고 트리로(E6ⓓ). 이름 바꾸기·열기는 하지 않는다. */
+  const enterTree = (): void => {
+    const first = filtered?.firstMatch ?? null
+    if (first !== null) {
+      explorer.select(first)
+      revealIndex(rows.findIndex((row) => row.rel === first))
+    }
+    focusTree()
+  }
 
   // worktree 를 바꾸면 그 worktree 의 스크롤 위치로 돌아간다(E2ⓘ). 패널을 다시 열 때도 같다(E1ⓔ).
   useLayoutEffect(() => {
@@ -374,7 +483,7 @@ export function Explorer({
   const runRowAction = (action: RowMenuAction, row: ExplorerRow): void => {
     switch (action) {
       case 'collapse':
-        explorer.collapse(row.rel)
+        fold(row.rel, false)
         return
       case 'newFile':
       case 'newFolder':
@@ -424,11 +533,11 @@ export function Explorer({
       }
       case 'expand':
         explorer.select(action.rel)
-        explorer.expand(action.rel)
+        fold(action.rel, true)
         return
       case 'collapse':
         explorer.select(action.rel)
-        explorer.collapse(action.rel)
+        fold(action.rel, false)
         return
       case 'open':
         onOpenFile({ rel: action.rel, preview: action.preview })
@@ -478,6 +587,24 @@ export function Explorer({
           >
             <Codicon name="new-folder" />
           </button>
+          <button
+            type="button"
+            className={`explorer-tool${filterOpen ? ' is-active' : ''}`}
+            data-explorer-filter-toggle=""
+            title="이름으로 거르기 (⌥⌘F)"
+            aria-label="이름 필터"
+            aria-pressed={filterOpen}
+            disabled={explorer.root === null}
+            onClick={() => {
+              if (filterOpen) closeFilter()
+              else {
+                setFilterOpen(true)
+                requestAnimationFrame(() => filterInputRef.current?.focus({ preventScroll: true }))
+              }
+            }}
+          >
+            <Codicon name="filter" />
+          </button>
           <button type="button" className="explorer-tool" data-explorer-refresh="" title="새로고침" aria-label="새로고침" disabled={explorer.root === null} onClick={explorer.refresh}>
             <Codicon name="refresh" />
           </button>
@@ -500,6 +627,47 @@ export function Explorer({
           </button>
         </div>
       </div>
+      {filterOpen ? (
+        <div className="explorer-filter" data-explorer-filter="">
+          <input
+            ref={filterInputRef}
+            className="explorer-filter-input"
+            data-explorer-filter-input=""
+            placeholder="이름으로 거르기"
+            aria-label="이름 필터"
+            value={filterText}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(event) => {
+              setFilterText(event.target.value)
+              setFilterCollapsed(new Set())
+              setFilterOpened(new Set())
+            }}
+            onKeyDown={(event) => {
+              // 트리 키(Enter = 이름 바꾸기 등)로 올라가지 않는다 — 입력칸은 트리 밖이지만 겹쳐 막아 둔다.
+              event.stopPropagation()
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return
+              if (event.key === 'Enter' || event.key === 'ArrowDown') {
+                event.preventDefault()
+                enterTree()
+              } else if (event.key === 'Escape') {
+                event.preventDefault()
+                if (filterText !== '') {
+                  setFilterText('')
+                  setFilterCollapsed(new Set())
+                  setFilterOpened(new Set())
+                } else closeFilter()
+              }
+            }}
+          />
+          <span className="explorer-filter-status" data-explorer-filter-status="" aria-live="polite">
+            {!filterActive ? '' : filterError !== null ? filterError : filtered === null ? '읽는 중…' : filtered.matchCount === 0 ? '일치 없음' : `${filtered.matchCount.toLocaleString()}개`}
+          </span>
+          <button type="button" className="explorer-tool" data-explorer-filter-close="" title="필터 닫기 (Esc)" aria-label="필터 닫기" onClick={closeFilter}>
+            <Codicon name="close" />
+          </button>
+        </div>
+      ) : null}
       <div
         className={`explorer-scroll${highlightDir === '' ? ' is-drop-root' : ''}${drag?.phase === 'dragging' ? ' is-dragging' : ''}`}
         ref={scrollRef}
@@ -579,6 +747,7 @@ export function Explorer({
               activeGuideParent={activeGuideParent}
               error={state?.errors.get(row.rel) ?? null}
               mark={git?.marks.get(row.rel) ?? (row.kind === 'dir' ? (folders.get(row.rel) ?? null) : null)}
+              highlight={filtered?.highlights.get(row.rel) ?? null}
               dropTarget={highlightDir !== null && highlightDir !== '' && isAtOrUnder(row.rel, highlightDir)}
               dragSource={drag?.phase === 'dragging' && drag.rel === row.rel}
               editor={
@@ -601,7 +770,7 @@ export function Explorer({
               onClick={() => {
                 if (suppressClick.current) return
                 explorer.select(row.rel)
-                if (row.kind === 'dir') explorer.toggle(row.rel)
+                if (row.kind === 'dir') toggleFold(row)
                 else onOpenFile({ rel: row.rel, preview: true })
               }}
               onDoubleClick={() => {
@@ -618,6 +787,9 @@ export function Explorer({
             />
           ))}
         </div>
+        {filterActive && filtered !== null && filtered.matchCount === 0 ? (
+          <div className="explorer-empty" data-explorer-filter-empty="">일치 없음</div>
+        ) : null}
         {explorer.root !== null && state !== null && !state.listings.has('') && state.errors.has('') ? (
           <div className="explorer-empty" data-explorer-error="">{state.errors.get('')}</div>
         ) : null}
@@ -679,6 +851,7 @@ function ExplorerRowView({
   activeGuideParent,
   error,
   mark,
+  highlight,
   dropTarget,
   dragSource,
   editor,
@@ -694,6 +867,8 @@ function ExplorerRowView({
   error: string | null
   /** git 상태 — 파일은 자기 것, 폴더는 하위 전파(우선순위). ignored 는 행 흐림으로 따로. */
   mark: GitMark | null
+  /** 이름 필터 강조 범위(LIFE-593 E6ⓑ) — 없으면 null. */
+  highlight: [number, number][] | null
   /** 끌기 중 놓일 폴더 영역(E6ⓐ). */
   dropTarget: boolean
   dragSource: boolean
@@ -740,7 +915,7 @@ function ExplorerRowView({
       {row.kind === 'file' ? <FileIcon name={row.name} /> : null}
       {editor ?? (
         <span className="explorer-label" style={decoration === null || row.ignored ? undefined : { color: decoration.color }}>
-          {row.name}
+          {highlight === null || highlight.length === 0 ? row.name : <HighlightedName name={row.name} ranges={highlight} />}
         </span>
       )}
       {row.link === 'none' ? null : (
@@ -759,6 +934,22 @@ function ExplorerRowView({
       )}
     </div>
   )
+}
+
+/** 이름 필터 강조 — 범위 안 글자를 `mark` 로. 겹치는 범위는 합친다. */
+function HighlightedName({ name, ranges }: { name: string; ranges: [number, number][] }): React.JSX.Element {
+  const hit = new Array<boolean>(name.length).fill(false)
+  for (const [start, end] of ranges) for (let index = start; index < end && index < name.length; index += 1) hit[index] = true
+  const parts: React.ReactNode[] = []
+  let start = 0
+  for (let index = 1; index <= name.length; index += 1) {
+    if (index === name.length || hit[index] !== hit[start]) {
+      const text = name.slice(start, index)
+      parts.push(hit[start] === true ? <mark key={start} className="explorer-filter-hit">{text}</mark> : <span key={start}>{text}</span>)
+      start = index
+    }
+  }
+  return <>{parts}</>
 }
 
 /**

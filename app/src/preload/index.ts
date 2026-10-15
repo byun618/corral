@@ -38,6 +38,7 @@ import type { WindowChrome } from '../shared/window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
 import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerOpResult } from '../shared/explorer-ops.js'
+import type { FileListInput, FileListResult } from '../shared/file-list.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
 
 const EXPOSED = [
@@ -81,6 +82,8 @@ const EXPOSED = [
   'explorerRefreshGit',
   'explorerAction',
   'onExplorerEvent',
+  'fileList',
+  'fileListCancel',
   'readFile',
   'fileWatch',
   'readImage',
@@ -230,6 +233,8 @@ const api: CorralApi = {
   explorerAction: (input: ExplorerActionInput): Promise<ExplorerActionResult> => ipcRenderer.invoke('corral:explorerAction', input),
   explorerOp: (input: ExplorerOpInput): Promise<ExplorerOpResult> => ipcRenderer.invoke('corral:explorerOp', input),
   explorerFocus: (focused: boolean) => ipcRenderer.send('corral:explorerFocus', focused),
+  fileList: (input: FileListInput): Promise<FileListResult> => ipcRenderer.invoke('corral:fileList', input),
+  fileListCancel: (requestId: string) => ipcRenderer.send('corral:fileListCancel', requestId),
   onExplorerDrop: (listener: (drop: ExplorerDrop) => void) => {
     explorerDropListeners.add(listener)
     return () => {

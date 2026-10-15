@@ -1,4 +1,6 @@
 import { CommandPalette } from './components/CommandPalette.js'
+import { QuickOpen } from './components/QuickOpen.js'
+import { pushRecentFile, readRecentFiles, type RecentFiles } from '../../shared/recent-files.js'
 import type { PaletteEntry } from './palette-search.js'
 import type { ShortcutHandlers } from './hooks/useKeybindings.js'
 import { ACTIONS, bindingsFor, formatBinding } from '../../shared/keybindings.js'
@@ -70,7 +72,7 @@ import { agentPanes, sessionTitle, userLabel } from './session-title.js'
 import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
-import { fileTabLabel, fileTabsOf, isFileTabId, previewOf, tabKindOf, terminalKeyTarget } from './file-tabs.js'
+import { fileTabId, fileTabLabel, fileTabsOf, isFileTabId, previewOf, tabKindOf, terminalKeyTarget } from './file-tabs.js'
 import { FileView, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
 import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, thawEditing, type FileDoc } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, type SaveDeps } from './file-save.js'
@@ -208,6 +210,15 @@ export function App(): React.JSX.Element {
   const [modalNote, setModalNote] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const paletteReturn = useRef<HTMLElement | null>(null)
+  // LIFE-593 — ⌘P 빠른 열기(팔레트와 별도 대화상자 — Q1). 열기·닫기·포커스 복귀는 팔레트와 같은 방식. 「무시 파일 포함」 은 앱 실행 동안만 기억한다(Q3).
+  const [quickOpenOpen, setQuickOpenOpen] = useState(false)
+  const quickOpenReturn = useRef<HTMLElement | null>(null)
+  const [quickOpenIgnored, setQuickOpenIgnored] = useState(false)
+  /** 최근 연 파일(E5 — worktree 별, ui-prefs 영속). 첫 getUiPrefs 에서 읽는다. */
+  const [recentFiles, setRecentFiles] = useState<RecentFiles>({})
+  const recentReady = useRef(false)
+  /** 탐색기 이름 필터 열기 요청(⌥⌘F — Q7). 바뀌면 탐색기가 머리 입력칸을 연다. */
+  const [explorerFilterToken, setExplorerFilterToken] = useState(0)
   /**
    * 설정 페이지 (LIFE-511) — 열려 있으면 그 섹션. 워크스페이스는 언마운트도 `display:none` 도 하지 않고 **크기 그대로 덮는다**
    * (`.app-body.is-covered` = visibility:hidden + inert). `display:none` 이면 영역 상자가 0 으로 재져 모든 영역이 cols 2·rows 1 로
@@ -311,13 +322,16 @@ export function App(): React.JSX.Element {
         setTabMarks(marks)
         sidebarCollapsedRef.current = prefs.sidebarCollapsed
         setSidebarCollapsed(prefs.sidebarCollapsed)
+        setRecentFiles(readRecentFiles(prefs.recentFiles))
       })
       .catch(() => {
         // 읽기 실패 — 빈 배정표로 간다.
         manualOrder.hydrate(null)
       })
       .finally(() => {
-        if (!cancelled) setOrdinalsReady(true)
+        if (cancelled) return
+        recentReady.current = true
+        setOrdinalsReady(true)
       })
     return () => {
       cancelled = true
@@ -750,6 +764,18 @@ export function App(): React.JSX.Element {
     if (revealFile(activeFileRel)) setRevealRequest((previous) => ({ rel: activeFileRel, token: (previous?.token ?? 0) + 1 }))
   }, [rightPanel.open, activeFileRel, revealFile])
 
+  // LIFE-593 E5ⓐ — 어느 경로로 열든(탐색기·⌘P·편집기 링크·⌘⇧T·탭 클릭) 활성 영역의 활성 탭이 파일 탭이 되면 그 worktree 기록 맨 앞에 둔다(ui-prefs 영속 — Q5).
+  // 첫 ui-prefs 읽기 전에는 적지 않는다(저장된 기록을 빈 기록으로 덮지 않게).
+  const recentRoot = activeWorktreeRow?.path ?? null
+  useEffect(() => {
+    if (recentRoot === null || activeFileRel === null || !recentReady.current) return
+    setRecentFiles((previous) => {
+      const next = pushRecentFile({ recent: previous, root: recentRoot, rel: activeFileRel })
+      if (next !== previous) window.corral.setUiPrefs({ recentFiles: next })
+      return next
+    })
+  }, [recentRoot, activeFileRel, ordinalsReady])
+
   /** 키 핸들러가 읽는 배치 거울 — 핸들러를 매 렌더 다시 달지 않으려고 ref 로 둔다. */
   const layoutMirror = {
     activeGroupId: layout.activeGroupId,
@@ -1135,6 +1161,26 @@ export function App(): React.JSX.Element {
     })
   }
 
+  /**
+   * LIFE-593 E3 — ⌘P 로 고른 파일. **고정 탭**으로 연다(Q2 — 이미 열려 있으면 그 탭으로, 미리보기였으면 고정 — `openFileTab`). 여는 경로는 탐색기와 같다(우회 IPC 없음).
+   * 연 뒤 포커스는 편집기로(E3ⓑ) — 편집기는 비동기로 붙으므로 붙을 때까지 몇 프레임 기다린다(최대 약 2 s). 편집기가 없는 보기(이미지·바이너리·오류)면 탭 보기 자리에 둔다.
+   */
+  const openFromQuickOpen = (rel: string): void => {
+    openFileFromExplorer({ rel, preview: false })
+    const tabId = fileTabId(rel)
+    const startedAt = performance.now()
+    const focusEditor = (): void => {
+      const host = document.querySelector<HTMLElement>(`[data-file-editor="${CSS.escape(tabId)}"]`)
+      const textarea = host?.dataset.editorReady === undefined ? null : host.querySelector<HTMLTextAreaElement>('textarea')
+      if (textarea !== null && textarea !== undefined) {
+        textarea.focus({ preventScroll: true })
+        return
+      }
+      if (performance.now() - startedAt < 2_000) requestAnimationFrame(focusEditor)
+    }
+    requestAnimationFrame(focusEditor)
+  }
+
   // LIFE-592 F4 — 탐색기 파일 조작(만들기·이름 바꾸기·이동·삭제·복제·가져오기·실행 취소).
   const fileOps = useFileOps({
     root: activeWorktreeRow?.path ?? null,
@@ -1293,6 +1339,13 @@ export function App(): React.JSX.Element {
 
   // A single action lookup serves renderer keys and the existing main Cmd+W channel.
   const modalBlocked = settingsView !== null || modalOpen || pendingRemove !== null || lifecycle.pendingClose !== null || lifecycle.worktreeModal !== null || cardActions.blocked
+  const openQuickOpen = (): void => {
+    // 팔레트 항목에서 오면 팔레트가 막 닫히는 중이다(이 렌더의 paletteOpen 은 아직 true) — 팔레트 열림은 단축키 쪽(useKeybindings blocked)이 막는다.
+    if (modalBlocked || quickOpenOpen || document.querySelector('.main-tab-rename.is-editing')) return
+    quickOpenReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    mruCancel()
+    setQuickOpenOpen(true)
+  }
   const openPalette = (): void => {
     if (modalBlocked || document.querySelector('.main-tab-rename.is-editing')) return
     paletteReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -1314,6 +1367,13 @@ export function App(): React.JSX.Element {
   const terminalTarget = (): string | null => terminalKeyTarget({ activeTabId: layoutRef.current.activeTabId, selectedPane: lifecycle.selectedPane })
   const handlers: ShortcutHandlers = {
     'palette.open': openPalette,
+    'quickOpen.open': openQuickOpen,
+    // 트리 포커스에서만 온다(범위 'explorer') — 탐색기 머리 입력칸을 연다.
+    // 팔레트에서 고르면 패널이 닫혀 있을 수 있다 — 열고 연다.
+    'explorer.filter': () => {
+      rightPanel.show()
+      setExplorerFilterToken((value) => value + 1)
+    },
     'terminal.new': () => lifecycle.createShell(),
     'mru.open': (variant) => stepMruHold(variant === 1),
     'terminal.split': (variant) => void splitPaneAt({ paneId: terminalTarget(), direction: variant === 1 ? 'down' : 'right' }),
@@ -1392,7 +1452,7 @@ export function App(): React.JSX.Element {
       }
     },
   }
-  const keymap = useKeybindings(handlers, modalBlocked || paletteOpen, () => {
+  const keymap = useKeybindings(handlers, modalBlocked || paletteOpen || quickOpenOpen, () => {
     if (mruRef.current === null) return false
     mruCancel()
     return true
@@ -1680,8 +1740,8 @@ export function App(): React.JSX.Element {
                   <TerminalPane
                     paneId={groupPane.paneId}
                     diagnostics={state.diagnostics}
-                    focusable={isActiveGroup && !paletteOpen && !modalBlocked}
-                    focusToken={isActiveGroup && !paletteOpen && !modalBlocked ? focusToken : 0}
+                    focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked}
+                    focusToken={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked ? focusToken : 0}
                     /* 비활성 영역은 herdr 세션 포커스를 가져가지 않는다 (S2-b — PaneLayout 과 같은 규칙). */
                     announceFocus={isActiveGroup}
                   />
@@ -1693,7 +1753,7 @@ export function App(): React.JSX.Element {
                 cell={cell}
                 zoomedPaneId={groupState.zoomedPaneId}
                 selectedPaneId={groupSelectedPaneId}
-                focusable={isActiveGroup && !paletteOpen && !modalBlocked}
+                focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked}
                 focusToken={focusToken}
                 diagnostics={state.diagnostics}
                 onSelect={(paneId) => activateGroup({ groupId: group.groupId, paneId })}
@@ -1807,7 +1867,7 @@ export function App(): React.JSX.Element {
       const id = action.id
       paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
         shortcut: bindingsFor(id, keymap.overrides).flatMap((binding, index) => (binding !== null && action.bindingVariants[index] === variant ? [formatBinding(binding)] : [])).join(' / '),
-        disabled: id === 'sidebar.toggle' || id === 'settings.open' ? undefined : !connected ? '연결된 세션이 없습니다' : !palettePaneAlive ? '선택된 pane이 없습니다' : activeFileRel !== null && TERMINAL_PANE_ACTIONS.has(id) ? '파일 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
+        disabled: id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : !palettePaneAlive ? '선택된 pane이 없습니다' : activeFileRel !== null && TERMINAL_PANE_ACTIONS.has(id) ? '파일 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
         run: () => {
           if (id === 'mru.open') {
             const other = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanes.map(pane => pane.paneId) }).filter(id => id !== lifecycle.selectedPane)
@@ -1847,7 +1907,7 @@ export function App(): React.JSX.Element {
     <BindingLabels.Provider value={keymap.overrides}>
     <div className="app">
       <div className="app-stack">
-      <div className={`app-body${settingsView === null ? '' : ' is-covered'}`} inert={paletteOpen || settingsView !== null}>
+      <div className={`app-body${settingsView === null ? '' : ' is-covered'}`} inert={paletteOpen || quickOpenOpen || settingsView !== null}>
         {/* LIFE-527 D4·D5 — 사이드바 칸 = 머리(36px, 신호등·앱 이름·토글) + 사이드바. 접히면 머리만 왼쪽 위에 떠서 첫 탭 줄과 겹친다
             (Orca `AppWorkspaceShell.tsx` — 폭 0 칸 안의 absolute 머리). 머리는 DOM 에서 main-area 보다 앞이다 — drag 히트테스트 순서가 Orca 와 같다. */}
         {sidebarCollapsed ? (
@@ -1974,7 +2034,7 @@ export function App(): React.JSX.Element {
           onToggle={rightPanel.toggle}
           onResizeStart={rightPanel.onHandleMouseDown}
         >
-          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} ops={fileOps} notify={notify} />
+          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} ops={fileOps} notify={notify} />
         </RightPanel>
       </div>
       {settingsView === null ? null : (
@@ -1989,7 +2049,7 @@ export function App(): React.JSX.Element {
       </div>
 
       <StatusBar
-        inert={paletteOpen}
+        inert={paletteOpen || quickOpenOpen}
         activeWorktreeLabel={activeWorktree === undefined ? null : (activeWorktree.branch ?? worktreeDisplayName(activeWorktree))}
         dirtyTotal={dirtyTotal}
         aheadTotal={aheadTotal}
@@ -2006,6 +2066,19 @@ export function App(): React.JSX.Element {
         setPaletteOpen(false)
         if (restore) requestAnimationFrame(() => { if (paletteReturn.current?.isConnected) paletteReturn.current.focus(); else setFocusToken(value => value + 1) })
       }} /> : null}
+      {quickOpenOpen ? (
+        <QuickOpen
+          root={activeWorktreeRow?.path ?? null}
+          recent={activeWorktreeRow === null ? [] : (recentFiles[activeWorktreeRow.path] ?? [])}
+          includeIgnored={quickOpenIgnored}
+          onIncludeIgnored={setQuickOpenIgnored}
+          onOpen={openFromQuickOpen}
+          onClose={(restore) => {
+            setQuickOpenOpen(false)
+            if (restore) requestAnimationFrame(() => { if (quickOpenReturn.current?.isConnected) quickOpenReturn.current.focus(); else setFocusToken((value) => value + 1) })
+          }}
+        />
+      ) : null}
       {cardActions.dialogs}
       {modalOpen ? (
         <AddRepoModal browsing={browsing} note={modalNote} onBrowse={() => void browse()} onClose={() => setModalOpen(false)} />

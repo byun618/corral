@@ -13,6 +13,9 @@ export const CODICON = {
   'circle-filled': 0xea71,
   'new-file': 0xea7f,
   'new-folder': 0xea80,
+  // LIFE-593 — 이름 필터 단추·닫기.
+  filter: 0xeaf1,
+  close: 0xea76,
 } as const
 
 export type CodiconName = keyof typeof CODICON

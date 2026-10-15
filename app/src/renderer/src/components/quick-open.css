@@ -1,0 +1,17 @@
+/* ⌘P 빠른 열기 (LIFE-593) — 틀은 command-palette.css(.palette-backdrop·.command-palette·.palette-entry), 여기는 파일 행·토글만.
+   행 모양은 VS Code Quick Open(아이콘 · 파일명 · 흐린 폴더 경로 한 줄), 바탕·글꼴은 corral 토큰. */
+.quick-open-head { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); background: var(--bg-input); }
+.quick-open-head input { flex: 1; min-width: 0; border-bottom: 0; background: transparent; }
+.quick-open-toggle { flex-shrink: 0; align-self: center; margin: 0 12px; padding: 4px 8px; font: inherit; font-size: var(--fs-meta); color: var(--fg-muted); background: transparent; border: 1px solid var(--line-strong); border-radius: 4px; cursor: pointer; }
+.quick-open-toggle:hover { background: var(--bg-row-hover); }
+.quick-open-toggle:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.quick-open-toggle.is-on { color: var(--fg); background: var(--bg-accent); border-color: var(--accent); }
+.quick-open-toggle:disabled { opacity: .5; cursor: default; }
+.quick-open-group { padding: 8px 12px 4px; font-size: var(--fs-meta); color: var(--fg-dim); }
+.quick-open-row { gap: 0; padding: 4px 10px; }
+.quick-open-row .explorer-file-icon { flex-shrink: 0; line-height: 20px; }
+.quick-open-label { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; }
+.quick-open-name { flex-shrink: 0; color: var(--fg); }
+.quick-open-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-muted); font-size: var(--fs-meta); }
+.quick-open mark { color: var(--accent); background: transparent; font-weight: 600; }
+.quick-open footer span { color: var(--fg-muted); }

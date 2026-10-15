@@ -4,6 +4,7 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
+import type { FileListInput, FileListResult } from './file-list.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
@@ -755,6 +756,12 @@ export type UiPrefs = {
   rightPanelWidth: number | null
   explorerShowDotfiles: boolean
   explorerShowIgnored: boolean
+  /**
+   * 최근 연 파일 (LIFE-593 E5 · Q5) — worktree 경로 → 루트 상대 경로 목록(최근이 앞, worktree 마다 50). 어느 경로로 열든 파일 탭이 활성이 되면 맨 앞에 온다.
+   * 키 경로인 이유는 `groupLayouts` 와 같다. 모양 검사는 main `ui-prefs.ts` 가 읽을 때 한다(상대 경로만 — 열 때 `file-read.ts` 가 다시 가둔다).
+   * 기준 빌드는 이 칸을 모르고 읽고, 다음 저장 때 버린다(다른 칸은 그대로 — 589 인계).
+   */
+  recentFiles: Record<string, string[]>
 } & SidebarViewPrefs
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
@@ -1043,6 +1050,10 @@ export type CorralApi = {
   /** 우클릭 메뉴 동작(E6) — 경로 복사·상대 경로 복사·Finder·터미널에서 열기. */
   explorerAction: (input: ExplorerActionInput) => Promise<ExplorerActionResult>
   onExplorerEvent: (listener: (event: ExplorerPush) => void) => () => void
+  // --- 전체 파일 목록 (LIFE-593 F5) — 읽기 전용. 루트는 열린 worktree 만, 넘기는 것은 루트·무시 파일 포함·요청 id 뿐(main `file-list.ts`) ---
+  fileList: (input: FileListInput) => Promise<FileListResult>
+  /** 진행 중 목록 작업을 끝낸다(대화상자 닫기·worktree 전환 — E7ⓓ). */
+  fileListCancel: (requestId: string) => void
   // --- 탐색기 파일 조작 (LIFE-592 F4) — 만들기·이름 변경/이동·휴지통·되살리기·복제·가져오기. 가둠·덮어쓰기 금지·휴지통은 main(`explorer-ops.ts`) ---
   explorerOp: (input: ExplorerOpInput) => Promise<ExplorerOpResult>
   /** 탐색기 트리가 활성 요소가 됐다/떠났다 — main 이 그동안만 ⌘Z·⌘⇧Z 를 탐색기 실행 취소로 가져온다(`raw/claude/undo-routing.md`). */

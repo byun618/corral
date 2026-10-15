@@ -9,7 +9,8 @@ describe('shortcut catalog and compatibility', () => {
     // LIFE-589: + rightPanel.toggle(⌘L) · explorer.show(⌘⇧E)
     // LIFE-591: + file.save(⌘S)
     // LIFE-592: + explorer.delete(⌘⌫) · explorer.undo(⌘Z) · explorer.redo(⌘⇧Z) — 탐색기 범위
-    expect(ACTIONS).toHaveLength(25)
+    // LIFE-593: + quickOpen.open(⌘P) · explorer.filter(⌘⌥F — 탐색기 범위)
+    expect(ACTIONS).toHaveLength(27)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -311,5 +312,26 @@ describe('LIFE-589 오른쪽 패널·탐색기 단축키', () => {
     expect(bindingsFor('rightPanel.toggle', legacy)).toEqual([null])
     expect(bindingsFor('explorer.show', legacy)).toEqual([null])
     expect(bindingConflict(legacy)).toBeNull()
+  })
+})
+
+describe('LIFE-593 ⌘P 빠른 열기 · ⌥⌘F 이름 필터', () => {
+  it('E1ⓐ ⌘P = quickOpen.open(전역), ⌥⌘F 는 트리 안에서만 explorer.filter', () => {
+    expect(matchBinding('Mod+P', {})).toEqual({ id: 'quickOpen.open', variant: 0 })
+    expect(matchBinding('Mod+Alt+F', {})).toBeNull()
+    expect(matchBinding('Mod+Alt+F', {}, 'explorer')).toEqual({ id: 'explorer.filter', variant: 0 })
+  })
+  it('나중에 생긴 기본값이라 양보한다 — ⌘P 를 이미 다른 액션에 재정의한 설정이 버려지지 않는다', () => {
+    const overrides = validateOverrides({ 'sidebar.toggle': ['Mod+P'] })
+    expect(overrides['sidebar.toggle']).toEqual(['Mod+P'])
+    expect(bindingsFor('quickOpen.open', overrides)).toEqual([null])
+    expect(matchBinding('Mod+P', overrides)).toEqual({ id: 'sidebar.toggle', variant: 0 })
+  })
+  it('재지정·충돌 검사', () => {
+    expect(bindingConflict({ 'quickOpen.open': ['Mod+K'] })).not.toBeNull()
+    expect(validateOverrides({ 'quickOpen.open': ['Mod+Shift+O'] })['quickOpen.open']).toEqual(['Mod+Shift+O'])
+  })
+  it('키를 누르고 있어도 한 번', () => {
+    expect(NON_REPEATING_ACTIONS).toContain('quickOpen.open')
   })
 })

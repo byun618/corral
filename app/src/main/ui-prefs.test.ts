@@ -19,7 +19,8 @@ import { UiPrefsStore, type UiPrefs } from './ui-prefs.js'
 // LIFE-495: 탭 핀·색 칸(`tabMarks`)도 옛 파일에서는 빈 목록으로 선다.
 // LIFE-576: 접은 「N 하위」 칸(`collapsedLineage`)도 옛 파일에서는 빈 목록(= 전부 펼침)으로 선다.
 // LIFE-589: 오른쪽 패널·탐색기 칸도 옛 파일에서는 닫힘·기본 폭·점 파일/ignored 보임으로 선다.
-const L589_DEFAULTS = { rightPanelOpen: false, rightPanelWidth: null, explorerShowDotfiles: true, explorerShowIgnored: true }
+// LIFE-593: 최근 연 파일 칸(`recentFiles`)도 옛 파일에서는 빈 기록으로 선다.
+const L589_DEFAULTS = { rightPanelOpen: false, rightPanelWidth: null, explorerShowDotfiles: true, explorerShowIgnored: true, recentFiles: {} }
 const L470_DEFAULTS = { manualFlatOrder: [], pinnedWorktrees: [], collapsedLineage: [], unreadWorktrees: [], tabMarks: [], ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW), ...L589_DEFAULTS }
 
 let dir = ''
@@ -524,5 +525,46 @@ describe('오른쪽 패널·탐색기 영속 (LIFE-589 E1ⓒ·E2ⓓⓔ)', () => 
     const store = new UiPrefsStore(dir)
     store.load()
     expect(store.get()).toMatchObject({ rightPanelOpen: false, rightPanelWidth: null, explorerShowDotfiles: true, explorerShowIgnored: false, sidebarWidth: 300 })
+  })
+})
+
+describe('최근 연 파일 영속 (LIFE-593 E5ⓓⓔ)', () => {
+  it('쓰고 → 새 스토어로 읽으면 같은 순서다(재시작)', () => {
+    const one = new UiPrefsStore(dir)
+    one.load()
+    one.update({ recentFiles: { '/wt/a': ['src/b.ts', 'src/a.ts'], '/wt/b': ['README.md'] } })
+    const two = new UiPrefsStore(dir)
+    two.load()
+    expect(two.get().recentFiles).toEqual({ '/wt/a': ['src/b.ts', 'src/a.ts'], '/wt/b': ['README.md'] })
+  })
+  it('ⓔ E8ⓔ 상대 경로만 — 절대 경로·.. ·NUL·상대 키는 버리고 다른 칸은 그대로', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ version: 1, sidebarWidth: 300, recentFiles: { '/wt/a': ['/etc/passwd', '../x', 'a\u0000b', 'ok.ts', 'ok.ts', 7], relative: ['x.ts'], '/wt/c': 'nope' } }),
+    )
+    const store = new UiPrefsStore(dir)
+    store.load()
+    expect(store.get().recentFiles).toEqual({ '/wt/a': ['ok.ts'] })
+    expect(store.get().sidebarWidth).toBe(300)
+  })
+  it('ⓓ 칸이 깨져도(배열·문자열) 앱은 뜨고 빈 기록이다', () => {
+    fs.writeFileSync(file, JSON.stringify({ version: 1, sidebarCollapsed: true, recentFiles: ['broken'] }))
+    const store = new UiPrefsStore(dir)
+    store.load()
+    expect(store.get().recentFiles).toEqual({})
+    expect(store.get().sidebarCollapsed).toBe(true)
+  })
+  it('렌더러가 준 기록도 저장 전에 같은 규칙으로 거른다', () => {
+    const store = new UiPrefsStore(dir)
+    store.load()
+    store.update({ recentFiles: { '/wt/a': ['../../etc/passwd', 'fine.ts'] } })
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).recentFiles).toEqual({ '/wt/a': ['fine.ts'] })
+  })
+  it('ⓔ 새 칸은 기존 칸 형식을 바꾸지 않는다(최상위 키 하나 추가 — 기준 빌드 실물 대조는 최종 관문)', () => {
+    const store = new UiPrefsStore(dir)
+    store.load()
+    store.update({ sidebarWidth: 280, explorerShowDotfiles: false, recentFiles: { '/wt/a': ['x.ts'] } })
+    const raw: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+    expect(raw).toMatchObject({ sidebarWidth: 280, explorerShowDotfiles: false })
   })
 })

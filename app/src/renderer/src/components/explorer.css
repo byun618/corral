@@ -141,3 +141,11 @@
 .explorer-scroll.is-drop-root { background: rgb(83 89 93 / 0.5); }
 .explorer-row.is-drag-source { opacity: 0.5; }
 .explorer-scroll.is-dragging .explorer-row { cursor: grabbing; }
+
+/* 이름 필터 (LIFE-593 E6 · Q7) — 섹션 머리 아래 입력칸 한 줄. VS Code 목록 찾기 위젯 크기 감각(높이 26 · 입력 테두리 = 포커스 강조), corral 토큰. */
+.explorer-tool.is-active { color: var(--fg); background: var(--bg-accent); }
+.explorer-filter { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 8px; border-bottom: 1px solid var(--line); }
+.explorer-filter-input { flex: 1 1 auto; min-width: 0; height: 20px; padding: 0 6px; font: inherit; font-size: 12px; color: var(--fg); background: var(--bg-input); border: 1px solid var(--line-strong); border-radius: 3px; outline: none; }
+.explorer-filter-input:focus { border-color: var(--accent); }
+.explorer-filter-status { flex: 0 0 auto; font-size: var(--fs-meta); color: var(--fg-muted); white-space: nowrap; }
+.explorer-filter-hit { color: var(--accent); background: transparent; font-weight: 600; }

@@ -1,0 +1,13 @@
+diff --git a/app/src/renderer/src/hooks/useQuickCreate.ts b/app/src/renderer/src/hooks/useQuickCreate.ts
+index 89f982952..7496ecc38 100644
+--- a/app/src/renderer/src/hooks/useQuickCreate.ts
++++ b/app/src/renderer/src/hooks/useQuickCreate.ts
+@@ -322,7 +322,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
+     if (submitProblem({ form: current.form, meta }) !== null || meta.state !== 'ready') return
+     // 부모가 지금 목록에 없거나 규칙 밖이면 보내지 않고 비운다 — 칩과 요청이 어긋나지 않게(R1-D).
+     const checked = checkParent({ form: current.form, items: dataOf(current.target)?.items ?? [] })
+-    if (checked.notice !== null) { setModal({ ...current, form: checked.form, notice: checked.notice }); return }
++    void checked
+     const caps = settings?.connections.find((connection) => connection.id === current.target.connectionId)?.capabilities ?? null
+     const fields = fieldValues({ form: current.form, meta: meta.meta })
+     const call: Extract<WorkCall, { op: 'createItem' }> = {

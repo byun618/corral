@@ -7,3 +7,7 @@ pc-a-renderer-unknown	src/renderer/src/components/TasksPage.create.test.tsx	R1-A
 pc-b-refresh	src/renderer/src/components/TasksPage.create.test.tsx	R1-B
 pc-b-both	src/renderer/src/components/TasksPage.create.test.tsx	R1-B
 pc-f-draft-discard	src/renderer/src/hooks/useQuickCreate.test.tsx	
+pc-r2a-recheck	src/renderer/src/components/TasksPage.create.test.tsx	R2-A
+pc-r2f-lock	src/renderer/src/hooks/useTasksPage.create.test.tsx	
+pc-r2f-submit-parent	src/renderer/src/hooks/useQuickCreate.test.tsx	제출 직전
+pc-r2f-same-tick	src/renderer/src/components/TasksPage.create.test.tsx	같은 틱

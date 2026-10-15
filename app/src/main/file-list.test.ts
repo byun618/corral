@@ -3,8 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { FileLister, LS_LISTED, resolveGit, toDiskNames } from './file-list.js'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { FileLister, LS_LISTED, notOnDiskAsFiles, resolveGit, toDiskNames } from './file-list.js'
 import type { FileListResult } from '../shared/file-list.js'
 
 let base = ''
@@ -473,11 +473,77 @@ describe('수정 r2 — 종료 때 동기 정리(R2-C-01)·탈출한 자손(R2-C
       fs.rmSync(path.join(root, 'mid-link'))
     }
   })
-  it('R2-C-06 취소되면 바꾸던 중에 멈춘다', async () => {
+  // 관측 — 이미 취소된 신호만 준다(실행 중 취소가 아니고, 이 확인은 수정 전에도 있었다 — 리뷰 r3 R3-C-02). 실행 중 취소는 아래 수정 r3 시험.
+  it('R2-C-06 (관측) 이미 취소된 신호면 바꾸지 않는다', async () => {
     const controller = new AbortController()
     controller.abort()
     const files = ['nfd/한글.md']
     await toDiskNames({ realRoot: root, files, signal: controller.signal })
     expect(files).toEqual(['nfd/한글.md'])
+  })
+})
+
+describe('수정 r3 — skip-worktree 디스크 확인을 덩이로(R3-C-01·R3-C-02)', () => {
+  const COUNT = 3000
+  const CHUNK = 256
+  let sparse = ''
+  const enoent = (): Error => Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+  beforeAll(() => {
+    // sparse 로 디스크에 없는 S 3000 + 디스크에 있는 파일 하나.
+    sparse = path.join(base, 'sparse')
+    fs.mkdirSync(sparse)
+    git(['init', '-q'], sparse)
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: sparse, input: 'x', encoding: 'utf8' }).trim()
+    const rows = ['keep/a.ts', ...Array.from({ length: COUNT }, (_, index) => `gone/d${index % 30}/f${index}.ts`)].map((rel) => `100644 ${blob}\t${rel}`)
+    execFileSync('git', ['update-index', '--index-info'], { cwd: sparse, input: `${rows.join('\n')}\n` })
+    git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], sparse)
+    git(['sparse-checkout', 'set', 'keep'], sparse)
+    git(['checkout', '-q', '--', 'keep'], sparse)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+  it('기준 — 디스크에 있는 것만 나온다(S 3000 은 빠진다)', async () => {
+    const result = await lister(() => [sparse]).list({ root: sparse, includeIgnored: false, requestId: 'r3-base' })
+    expect(filesOf(result)).toEqual(['keep/a.ts'])
+  })
+  it('R3-C-02 실행 중 취소 — 첫 lstat 뒤 다음 틱에 취소하면 남은 stat 을 하지 않고 cancelled', async () => {
+    const one = lister(() => [sparse])
+    let calls = 0
+    vi.spyOn(fs.promises, 'lstat').mockImplementation(async () => {
+      calls += 1
+      // 같은 틱 취소는 각 작업 시작 때의 확인으로도 잡힌다 — 이미 시작된 뒤(다음 틱)에 오는 취소를 본다.
+      if (calls === 1) setImmediate(() => one.cancel('r3-cancel'))
+      throw enoent()
+    })
+    const result = await one.list({ root: sparse, includeIgnored: false, requestId: 'r3-cancel' })
+    expect(result).toMatchObject({ ok: false, code: 'cancelled' })
+    expect(calls).toBeGreaterThan(0)
+    expect(calls).toBeLessThanOrEqual(CHUNK)
+  })
+  it('R3-C-01 대량 S — 동시에 열린 lstat 은 덩이 크기 이하이고, 덩이 사이에 다른 작업(setImmediate)이 돈다', async () => {
+    let inFlight = 0
+    let maxInFlight = 0
+    vi.spyOn(fs.promises, 'lstat').mockImplementation(async () => {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await Promise.resolve()
+      inFlight -= 1
+      throw enoent()
+    })
+    // 마이크로태스크로만 끝나는 lstat — 양보가 없으면 끝날 때까지 이 틱커는 한 번도 돌지 못한다.
+    let ticks = 0
+    let running = true
+    const tick = (): void => {
+      if (!running) return
+      ticks += 1
+      setImmediate(tick)
+    }
+    setImmediate(tick)
+    const skipped = Array.from({ length: COUNT }, (_, index) => `gone/f${index}.ts`)
+    const drop = await notOnDiskAsFiles({ realRoot: sparse, links: [], skipped, signal: new AbortController().signal })
+    running = false
+    expect(drop.size).toBe(COUNT)
+    expect({ maxInFlight, ticks, bounded: maxInFlight <= CHUNK, yielded: ticks >= Math.floor(COUNT / CHUNK) - 1 }).toMatchObject({ bounded: true, yielded: true })
   })
 })

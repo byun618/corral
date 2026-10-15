@@ -30,6 +30,8 @@ const KILL_GRACE_MS = 500
 const STOP_CLOSE_MS = 1_500
 /** `toDiskNames` 가 이만큼 일하면 이벤트 루프에 한 번 양보한다(R2-C-06). */
 const YIELD_BUDGET_MS = 8
+/** 디스크 확인 한 덩이(동시에 열린 stat 수의 상한) — 수정 r3 R3-C-01. */
+const DISK_CHECK_CHUNK = 256
 /** 등록 전에 온 취소를 기억하는 시간·개수(요청 id 는 매번 새것이라 늦게 온 같은 id 목록 요청만 막는다). */
 const TOMBSTONE_MS = 30_000
 const TOMBSTONE_MAX = 64
@@ -252,7 +254,7 @@ export async function toDiskNames(input: { realRoot: string; files: string[]; si
  * `links`(추적 중인 링크): 따라간 stat 이 폴더면 뺀다. 깨진 링크는 남긴다(열면 안내).
  * `skipped`(skip-worktree): lstat 이 없거나 폴더면 뺀다. 링크면 따라간 대상이 폴더일 때 뺀다 — 디스크에 파일(또는 파일 링크)로 있으면 남긴다.
  */
-async function notOnDiskAsFiles(input: { realRoot: string; links: readonly string[]; skipped: readonly string[]; signal: AbortSignal }): Promise<Set<string>> {
+export async function notOnDiskAsFiles(input: { realRoot: string; links: readonly string[]; skipped: readonly string[]; signal: AbortSignal }): Promise<Set<string>> {
   const drop = new Set<string>()
   const pointsToDir = async (rel: string): Promise<boolean> => {
     try {
@@ -261,22 +263,27 @@ async function notOnDiskAsFiles(input: { realRoot: string; links: readonly strin
       return false
     }
   }
-  await Promise.all([
-    ...input.links.map(async (rel) => {
-      if (input.signal.aborted) return
-      if (await pointsToDir(rel)) drop.add(rel)
-    }),
-    ...input.skipped.map(async (rel) => {
-      if (input.signal.aborted) return
-      try {
-        const stat = await fs.promises.lstat(path.join(input.realRoot, rel))
-        if (stat.isFile()) return
-        if (!stat.isSymbolicLink() || (await pointsToDir(rel))) drop.add(rel)
-      } catch {
-        drop.add(rel)
-      }
-    }),
-  ])
+  const checkLink = async (rel: string): Promise<void> => {
+    if (await pointsToDir(rel)) drop.add(rel)
+  }
+  const checkSkipped = async (rel: string): Promise<void> => {
+    try {
+      const stat = await fs.promises.lstat(path.join(input.realRoot, rel))
+      if (stat.isFile()) return
+      if (!stat.isSymbolicLink() || (await pointsToDir(rel))) drop.add(rel)
+    } catch {
+      drop.add(rel)
+    }
+  }
+  // 수정 r3 R3-C-01 — sparse 로 디스크에 없는 S 가 수만이면 한꺼번에 건 stat 이 main 루프를 막는다. 덩이로 나눠 열린 요청 수를 묶고, 덩이마다 양보·취소 확인.
+  const inChunks = async (chunked: { items: readonly string[]; check: (rel: string) => Promise<void> }): Promise<void> => {
+    for (let start = 0; start < chunked.items.length && !input.signal.aborted; start += DISK_CHECK_CHUNK) {
+      await Promise.all(chunked.items.slice(start, start + DISK_CHECK_CHUNK).map(chunked.check))
+      await nextTurn()
+    }
+  }
+  await inChunks({ items: input.links, check: checkLink })
+  await inChunks({ items: input.skipped, check: checkSkipped })
   return drop
 }
 

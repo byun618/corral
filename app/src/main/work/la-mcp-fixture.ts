@@ -245,7 +245,7 @@ export class LaMcpFixture {
     const find = (id: unknown): FixtureIssue | undefined => this.issues.find((issue) => issue.id === id)
     switch (tool) {
       // `status-no-default` — 옛 서버처럼 isDefault 칸이 없다(R2-G 대조).
-      case 'status_list': return ok(this.corrupt === 'status-no-default' ? this.statuses.map(({ isDefault: _gone, ...rest }) => rest) : this.statuses)
+      case 'status_list': return ok(this.corrupt === 'status-no-default' ? this.statuses.map((status) => { const { isDefault: _gone, ...rest } = status; void _gone; return rest }) : this.statuses)
       case 'issue_list': {
         const archived = args.archived ?? 'exclude'
         const limit = typeof args.limit === 'number' ? args.limit : 50

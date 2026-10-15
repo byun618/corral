@@ -674,6 +674,38 @@ describe('수정 1 (리뷰 r1)', () => {
     expect(el(`[data-issue-card="${made.key}"]`).closest('[data-board-column]')?.getAttribute('data-board-column')).toBe('st:core-doing')
   })
 
+  it('R1-B 커서 쪽 밖에 만든 작업 — 출처(앱 밖)에서 상태가 바뀌거나 지워지면 재조회 뒤 그 값을 따른다', async () => {
+    const state = seedMockDemoState()
+    state.pageSize = 3
+    const harness = await setup({ state })
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '밖에서 바뀜')
+    click('[data-quick-create-another]')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    setValue('[data-quick-create-title]', '밖에서 지워짐')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    click('[data-quick-create-cancel]')
+    const changed = harness.state.items.find((item) => item.title === '밖에서 바뀜')
+    const removed = harness.state.items.find((item) => item.title === '밖에서 지워짐')
+    if (changed === undefined || removed === undefined) throw new Error('없음')
+    expect(qa(`[data-issue-card="${removed.key}"]`)).toHaveLength(1)
+    // 앱을 거치지 않고 출처 값을 바꾼다(다른 클라이언트).
+    harness.state.items = harness.state.items.filter((item) => item.id !== removed.id).map((item) => (item.id === changed.id ? { ...item, statusKey: 'core-doing' } : item))
+    click('[data-space-switch]')
+    click('[data-space-row="WEB"]')
+    await settle()
+    click('[data-space-switch]')
+    click('[data-space-row="CORE"]')
+    await settle(16)
+    expect(q('[data-tasks-more-button]')).not.toBeNull()
+    expect(el(`[data-issue-card="${changed.key}"]`).closest('[data-board-column]')?.getAttribute('data-board-column')).toBe('st:core-doing')
+    expect(qa(`[data-issue-card="${removed.key}"]`)).toHaveLength(0)
+  })
+
   it('R1-C 진입점 값으로 연 모달(섹션 추가·인라인→모달)을 닫아도 기존 초안은 그대로', async () => {
     const harness = await setup({ prefs: { view: 'backlog' } })
     await renderPage(harness)

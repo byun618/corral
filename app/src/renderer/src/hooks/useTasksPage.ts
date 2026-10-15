@@ -401,6 +401,37 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
   const targetsId = targets.map((target) => `${target.connectionId}#${generationOf(target.connectionId)}::${target.spaceKey}`).join('|')
 
   /** 화면 자료에 변경 하나를 쓰고, 순번을 달아 남긴다(R1-F). */
+  /**
+   * 목록 끝에 붙들어 둔 만든 작업(받은 쪽 밖)을 단건으로 다시 읽는다(R1-B) — 출처에서 바뀌었으면 그 값으로, 다른 스페이스로 옮겨졌으면 이 목록에서 빼고,
+   * 없어졌으면(거절) 기록을 버린다. 확인 안 된 쓰기가 있는 작업·그사이 새 값이 들어온 기록·세대가 바뀐 연결은 건드리지 않는다.
+   */
+  const refreshCreated = useCallback(async (data: SpaceData[]) => {
+    // 남은 기록 = 받은 쪽 밖이라 `withCreated` 가 끝에 붙인 것(받은 쪽에 나왔거나 다 받았으면 거기서 지워졌다).
+    const held = [...createdRef.current.entries()].filter(([, entry]) => data.some((space) => space.connectionId === entry.connectionId && space.spaceKey === entry.spaceKey))
+    await Promise.all(held.map(async ([uid, entry]) => {
+      const generation = currentGeneration(entry.connectionId)
+      const response = await request({ requestId: `created:${uid}`, connectionId: entry.connectionId, call: { op: 'getItem', itemId: entry.item.id } })
+      if (createdRef.current.get(uid) !== entry || pendingWrites.current.has(uid) || generation !== currentGeneration(entry.connectionId)) return
+      if (!response.ok) {
+        if (response.error.kind !== 'rejected') return
+        createdRef.current.delete(uid)
+        setLoad((value) => ({ ...value, data: value.data.map((space) => (space.connectionId === entry.connectionId && space.spaceKey === entry.spaceKey ? { ...space, items: space.items.filter((item) => item.id !== entry.item.id) } : space)) }))
+        return
+      }
+      if (response.result.op !== 'getItem') return
+      const fresh = response.result.item
+      createdRef.current.set(uid, { connectionId: entry.connectionId, spaceKey: fresh.spaceKey, item: fresh })
+      const shown = { ...fresh, body: null, relations: null }
+      setLoad((value) => ({
+        ...value,
+        data: value.data.map((space) => {
+          if (space.connectionId !== entry.connectionId || !space.items.some((item) => item.id === fresh.id)) return space
+          return { ...space, items: space.spaceKey === fresh.spaceKey ? space.items.map((item) => (item.id === fresh.id ? shown : item)) : space.items.filter((item) => item.id !== fresh.id) }
+        }),
+      }))
+    }))
+  }, [currentGeneration])
+
   const patch = useCallback(({ connectionId, spaceKey, apply }: { connectionId: string; spaceKey: string; apply: (items: WorkItem[]) => WorkItem[] }): Override => {
     writeSeq.current += 1
     const entry: Override = { seq: writeSeq.current, connectionId, generation: currentGeneration(connectionId), spaceKey, apply }
@@ -476,7 +507,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       return [{ ...result.data, items: withCreated({ data: { ...result.data, items: replayed }, created: createdRef.current }) }]
     })
     setLoad({ spaceId: id, phase: error === null ? 'ready' : 'error', data, error, loadingMore: false })
-  }, [space, targets, gate, currentGeneration])
+    void refreshCreated(data)
+  }, [space, targets, gate, currentGeneration, refreshCreated])
   reloadRef.current = reload
 
   // 스페이스가 바뀌면 다시 짓고, 다시 열면 조용히 새로 받는다(지금 그림은 둔 채).
@@ -874,7 +906,9 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         if (createdRef.current.size <= CREATED_CAP) break
         createdRef.current.delete(uid)
       }
-      setLoad((value) => ({ ...value, data: value.data.map((data) => (data.connectionId === connectionId && data.spaceKey === item.spaceKey ? { ...data, items: withCreated({ data, created: createdRef.current }) } : data)) }))
+      // 지금 목록에 붙이기만 한다 — `withCreated` 는 서버에서 막 받은 목록에만 쓴다(지금 목록에는 앞서 붙인 만든 작업이 섞여 있어 「받은 쪽에 나왔다」 로 오인한다).
+      const shown = { ...item, body: null, relations: null }
+      setLoad((value) => ({ ...value, data: value.data.map((data) => (data.connectionId === connectionId && data.spaceKey === item.spaceKey && !data.items.some((entry) => entry.id === item.id) ? { ...data, items: [...data.items, shown] } : data)) }))
       settles.current += 1
       void reloadRef.current({ quiet: true })
       reflect({ connectionId, item })

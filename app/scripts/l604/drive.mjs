@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// LIFE-604 R1-G ① — 최종 관문 격리 앱 구동기(CDP). **수정 1 에서는 만들기만 하고 돌리지 않았다** — 최종 관문 일감이 돈다(final-gate-plan.md).
-//   먼저: npm run build → sh scripts/l604/up.sh <ROOT> L604_EXTRA_ARGS=--remote-debugging-port=<PORT>(포커스 증거 exit 8 이면 『질의응답』 손 넘김)
-//   node scripts/l604/drive.mjs <ROOT=/tmp/l604g-*> <OUT 폴더> [단계…]     단계 기본 = 전부: setup c1 c2 c9 c5 c6 c7 frames
+// LIFE-604 R1-G ① — 최종 관문 격리 앱 구동기(CDP). **수정 1·2 에서는 만들기만 하고 돌리지 않았다** — 최종 관문(창 회차, 손 넘김 뒤)이 돈다(final-gate-plan.md).
+//   먼저: npm run build → L604_HANDOFF=<질의응답 답 id> sh scripts/l604/up.sh <ROOT> L604_EXTRA_ARGS=--remote-debugging-port=<PORT>
+//   node scripts/l604/drive.mjs <ROOT=/tmp/l604g-*> <OUT 폴더> [단계…]     단계 기본 = 전부: setup c1 c1blocked c2 c8 all c9 c5 c6 c7 frames
+// 판정은 모두 화면·로그에서 읽은 값이다(R2-C — 상수 참 판정 없음). 스페이스 바꾸기 = ui-prefs 에 쓰고 렌더러를 다시 싣는다(prefs 는 첫 싣기에만 읽힌다).
 //   node scripts/l604/drive.mjs <ROOT> <OUT> after-restart                 — down.sh·up.sh 재기동 뒤 C5 「재시작 뒤 초안 없음」 만
 // 입력은 **렌더러 안의 DOM setter·합성 이벤트만**(element.click · 네이티브 value setter + input · dispatchEvent(KeyboardEvent)) — OS 키 입력·CGEvent·osascript 없음.
 // 합성 KeyboardEvent 는 IME 를 거치지 않는다 — 한글 자판 `C`·Enter·Esc 의 실제 입력은 사람 단계(native-checklist N12–N14).
@@ -62,20 +63,36 @@ const leak = (needle) => {
 const openModal = async () => { await click('[data-tasks-create]'); await until(`!!${q('[data-quick-create]')}`, { label: '모달' }) }
 const closeModal = async () => { await key(null, { key: 'Escape' }); await until(`!${q('[data-quick-create]')}`, { label: '모달 닫힘' }) }
 const phase = () => js(`${q('[data-quick-create]')}?.getAttribute('data-quick-create-phase') ?? null`)
+/** 연결 id — setup·c1blocked·c8 이 더한다. 판정에 쓰는 「연결 하나의 CORE 스페이스」 를 고르는 데 쓴다. */
+const conns = {}
+const addConnection = async (token) => js(`window.corral.addWorkConnection({ sourceId: 'mock-jira', token: ${JSON.stringify(token)}, replaceId: null }).then((r) => ({ ok: r.ok, id: r.ok ? r.connection.id : null }))`)
+/** 스페이스를 ui-prefs 에 쓰고 렌더러를 다시 실어 작업 페이지를 그 스페이스로 연다. space = { kind: 'all' } | { kind: 'space', connectionId, spaceKey }. */
+async function openOn(space) {
+  await js(`(window.corral.setUiPrefs({ tasksPage: { space: ${JSON.stringify(space)}, view: 'board' } }), true)`)
+  await sleep(500)
+  await js('(location.reload(), true)')
+  await sleep(1500)
+  await until(`!!${q('[data-tasks-open]')}`, { timeoutMs: 30_000, label: '다시 실은 뒤 사이드바' })
+  await click('[data-tasks-open]')
+  await until(`!!${q('[data-tasks-create]')}`, { timeoutMs: 20_000, label: '머리 「만들기」' })
+}
+const cardsWithTitle = (title) => js(`[...document.querySelectorAll('[data-issue-card]')].filter((card) => card.textContent.includes(${JSON.stringify(title)})).length`)
 
 const STEPS = {
   async setup() {
     await until(`!!${q('[data-tasks-open]')}`, { timeoutMs: 30_000, label: '사이드바 「작업」' })
-    const added = await js(`window.corral.addWorkConnection({ sourceId: 'mock-jira', token: 'mock_l604_gate_delay-1500', replaceId: null }).then((r) => ({ ok: r.ok }))`)
+    const added = await addConnection('mock_l604_gate_delay-1500')
     judge('setup 모의 연결(가짜 토큰, 1.5초 지연 — 연타 관측용)', added?.ok === true, added)
-    await click('[data-tasks-open]')
+    conns.main = added?.id ?? null
+    await openOn({ kind: 'space', connectionId: conns.main, spaceKey: 'CORE' })
     await until(`!!${q('[data-tasks-board] [data-issue-card]')}`, { timeoutMs: 20_000, label: '보드 카드' })
   },
   async c1() {
     const order = await js(`[...${q('.tasks-head')}.children].map((c) => c.hasAttribute('data-tasks-search') ? 's' : c.hasAttribute('data-tasks-create') ? 'c' : c.hasAttribute('data-tasks-close') ? 'x' : '').filter(Boolean).join('')`)
     judge('C1① 머리 「만들기」 검색과 닫기 사이', order === 'scx', order)
     await shot('c1-head')
-    await openModal(); judge('C1① 누르면 모달', true); await closeModal()
+    await click('[data-tasks-create]'); await sleep(400)
+    judge('C1① 누르면 모달', await exists('[data-quick-create]')); await closeModal()
     await key(null, { key: 'c', code: 'KeyC' }); judge('C1② C(합성)', await exists('[data-quick-create]')); await closeModal()
     await key(null, { key: 'ㅊ', code: 'KeyC' }); judge('C1② KeyC(ㅊ, 합성 — 실제 IME 는 사람 단계)', await exists('[data-quick-create]')); await closeModal()
     await key(null, { key: 'c', code: 'KeyC', metaKey: true }); judge('C1② ⌘C 무시', !(await exists('[data-quick-create]')))
@@ -89,6 +106,49 @@ const STEPS = {
     await closeModal()
     await click('[data-tasks-view-tab="board"]'); await sleep(500)
   },
+  async c1blocked() {
+    // 쓰기 막힘 — 권한 부족 연결(fault-forbidden)의 스페이스: 머리 「만들기」 흐림 + 이유, 누르거나 C 를 쳐도 모달이 안 열린다.
+    const added = await addConnection('mock_l604_gate_fault-forbidden')
+    conns.forbidden = added?.id ?? null
+    await openOn({ kind: 'space', connectionId: conns.forbidden, spaceKey: 'CORE' })
+    await until(`!!${q('[data-tasks-banner]')}`, { timeoutMs: 15_000, label: '권한 배너' })
+    const head = await js(`(() => { const el = ${q('[data-tasks-create]')}; return el ? { disabled: el.getAttribute('aria-disabled'), dim: el.classList.contains('is-disabled'), title: el.getAttribute('title') } : null })()`)
+    judge('C1 쓰기 막힘 = 머리 「만들기」 흐림(aria-disabled·is-disabled) + 이유(권한)', head?.disabled === 'true' && head.dim === true && (head.title ?? '').includes('권한'), head)
+    await shot('c1-write-blocked')
+    await click('[data-tasks-create]'); await key(null, { key: 'c', code: 'KeyC' }); await sleep(400)
+    judge('C1 쓰기 막힘 = 누름·C 로 모달 안 열림', !(await exists('[data-quick-create]')))
+    await openOn({ kind: 'space', connectionId: conns.main, spaceKey: 'CORE' })
+  },
+  async c8() {
+    // 지원 밖 필수 필드 — createmeta-unsupported 연결의 Epic: 「corral 에서 채울 수 없음」 + 만들기 막힘 + 연타해도 출처 만들기 0.
+    const added = await addConnection('mock_l604_gate_createmeta-unsupported')
+    conns.unsupported = added?.id ?? null
+    await openOn({ kind: 'space', connectionId: conns.unsupported, spaceKey: 'CORE' })
+    await openModal()
+    await setValue('[data-quick-create-title]', `에픽 ${Date.now()}`)
+    await click('[data-quick-create-kind="epic"]'); await sleep(600)
+    const before = creates()
+    const shape = await js(`({ text: ${q('[data-quick-create-unsupported]')}?.textContent ?? null, submitDisabled: ${q('[data-quick-create-submit]')}?.hasAttribute('disabled') ?? null })`)
+    await key('[data-quick-create-title]', { key: 'Enter' }); await sleep(1000)
+    judge('C8 지원 밖 필수 필드 = 「corral 에서 채울 수 없음」 · 만들기 막힘 · Enter 로도 출처 만들기 0', (shape?.text ?? '').includes('corral 에서 채울 수 없음') && shape.submitDisabled === true && creates() - before === 0, shape)
+    await shot('c8-unsupported')
+    await closeModal()
+    await openOn({ kind: 'space', connectionId: conns.main, spaceKey: 'CORE' })
+  },
+  async all() {
+    // 「전체」 스페이스 — 모달 머리에 만들 스페이스가 보이고 고를 수 있다 · 보드 분류 칸에는 「+ 추가」 가 없다.
+    await openOn({ kind: 'all' })
+    await sleep(1500)
+    judge('「전체」 보드 칸 「+ 추가」 없음', !(await exists('[data-inline-add-open]')))
+    await openModal()
+    const target = await text('[data-quick-create-target]')
+    await click('[data-quick-create-target]'); await sleep(300)
+    const rows = await js(`[...document.querySelectorAll('[data-quick-create-target-row]')].map((row) => row.getAttribute('data-quick-create-target-row'))`)
+    judge('「전체」 모달 머리 = 만들 스페이스 표시 + 고르기 목록', typeof target === 'string' && target.length > 0 && Array.isArray(rows) && rows.length >= 1, { target, rows })
+    await shot('c1-all-target')
+    await closeModal()
+    await openOn({ kind: 'space', connectionId: conns.main, spaceKey: 'CORE' })
+  },
   async c2() {
     await openModal()
     await shot('c2-modal-empty')
@@ -97,6 +157,8 @@ const STEPS = {
     await click('[data-quick-create-status]')
     await click('[data-quick-create-kind="bug"]'); await sleep(400)
     judge('C8 Bug 필수 필드 상자', await exists('[data-quick-create-required]'))
+    // R2-H — 모의 출처는 배치를 받는다(applies): 배치 칩이 켜져 있어야 한다(LA bug 의 흐림은 단위 시험·N8).
+    judge('R2-H 모의 Bug 배치 칩 켜짐', (await js(`${q('[data-quick-create-placement]')}?.hasAttribute('disabled') ?? null`)) === false)
     await shot('c8-required')
     await closeModal()
   },
@@ -139,15 +201,25 @@ const STEPS = {
     await openModal()
     const title = `상세로 ${Date.now()}`
     await setValue('[data-quick-create-title]', title)
+    const before = creates()
     await key('[data-quick-create-title]', { key: 'Enter' })
     await until(`!${q('[data-quick-create]')}`, { timeoutMs: 15_000, label: '닫힘(끔)' })
-    await until(`!!${q('[data-issue-detail]')}`, { timeoutMs: 15_000, label: '상세' })
+    await until(`!!${q('[data-issue-detail] [data-issue-title]')}`, { timeoutMs: 15_000, label: '상세' })
+    await sleep(800)
+    const detail = await value('[data-issue-detail] [data-issue-title]')
+    const toast = await text('[data-toast="created"]')
+    judge('C6 끔 = 상세가 만든 작업(제목 같음) · 출처 만들기 1', detail === title && creates() - before === 1, { detail, delta: creates() - before })
+    judge('C6 「만들었습니다」 토스트', (toast ?? '').includes('만들었습니다'), toast)
+    judge('C6 보드에 만든 카드 1장', (await cardsWithTitle(title)) === 1)
     await shot('c6-detail-after-create')
-    judge('C6 끔 = 상세 열림', true)
+    await click('[data-issue-close]'); await sleep(300)
     await openModal(); await click('[data-quick-create-another]')
-    await setValue('[data-quick-create-title]', `하나 더 ${Date.now()}`)
+    const another = `하나 더 ${Date.now()}`
+    const beforeAnother = creates()
+    await setValue('[data-quick-create-title]', another)
     await key('[data-quick-create-title]', { key: 'Enter' }); await sleep(4000)
     judge('C6 켬 = 모달 유지·제목 비움', (await exists('[data-quick-create]')) && (await value('[data-quick-create-title]')) === '')
+    judge('C6 켬 = 출처 만들기 1 · 보드 카드 1장', creates() - beforeAnother === 1 && (await cardsWithTitle(another)) === 1, { delta: creates() - beforeAnother })
     await shot('c6-another-on')
     await click('[data-quick-create-another]'); await closeModal()
   },
@@ -173,7 +245,7 @@ const STEPS = {
   },
 }
 
-const order = picked.length > 0 ? picked : ['setup', 'c1', 'c2', 'c9', 'c5', 'c6', 'c7', 'frames']
+const order = picked.length > 0 ? picked : ['setup', 'c1', 'c1blocked', 'c2', 'c8', 'all', 'c9', 'c5', 'c6', 'c7', 'frames']
 try {
   for (const step of order) {
     const run = STEPS[step]

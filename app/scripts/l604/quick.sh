@@ -54,7 +54,7 @@ run_expect test 1 vitest scripts/l604/expect/test.txt npm test
 run nodetest 0 node scripts/run-nodetest.mjs
 run create-main 0 npx vitest run src/main/work/create.test.ts src/main/work/mock-source.contract.test.ts src/main/work/la-source.contract.test.ts src/main/work/activity-store.test.ts src/main/work/contract-e123.test.ts src/main/work/service.test.ts
 L604_BREAK=create-fields run_expect pc-create-fields 1 vitest scripts/l604/expect/pc-create-fields.txt npx vitest run src/main/work/la-source.contract.test.ts
-run create-renderer 0 npx vitest run src/renderer/src/components/TasksPage.create.test.tsx src/renderer/src/components/TasksPage.start.test.tsx src/renderer/src/quick-create-model.test.ts src/renderer/src/hooks/useQuickCreate.test.tsx src/renderer/src/components/TasksPage.test.tsx src/shared/keybindings.test.ts src/renderer/src/components/ShortcutsSection.test.tsx
+run create-renderer 0 npx vitest run src/renderer/src/components/TasksPage.create.test.tsx src/renderer/src/components/TasksPage.start.test.tsx src/renderer/src/quick-create-model.test.ts src/renderer/src/hooks/useQuickCreate.test.tsx src/renderer/src/hooks/useTasksPage.create.test.tsx src/renderer/src/components/TasksPage.test.tsx src/shared/keybindings.test.ts src/renderer/src/components/ShortcutsSection.test.tsx
 run data-attrs 0 node scripts/l604/check-data-attrs.mjs
 # 검사 장치의 양성 대조 — 일부러 틀린 입력을 주면 실패해야 한다.
 run pc-data-attrs 1 node scripts/l604/check-data-attrs.mjs --extra scripts/l604/expect/branch-sample.tsx.txt
@@ -73,5 +73,30 @@ while IFS=$'\t' read -r name files pattern; do
   record $name 1 $code $([[ $same == 0 ]] && echo 같음 || echo "다름($same)")
 done < scripts/l604/pc/manifest.tsv
 run build 0 npm run build
+# R2-D — C11 runtime 번들 표지 0(main 대조 ≥1) · 양성 대조 = 표지 든 파일을 함께 세면 exit 1.
+run runtime-bundle 0 node scripts/l604/check-runtime-bundle.mjs
+print -r -- 'export const marker = "createItem"' > $OUT/runtime-marker-sample.mjs
+run pc-runtime-bundle 1 node scripts/l604/check-runtime-bundle.mjs --extra $OUT/runtime-marker-sample.mjs
+# R2-E·R1-G 장치 자기점검(양성 대조 내장).
+run st-draft-leak 0 node scripts/l604/draft-leak.mjs --self-test
+run st-count-creates 0 node scripts/l604/count-creates.mjs --self-test
+# R2-B — up.sh 창 모드 가드(아무것도 띄우지 않는 길만): 손 넘김 없음 exit 9 · 맨 앞 앱 빈 값(가짜 lsappinfo) exit 2 · 마른 실행 0. ROOT 는 만들어지지 않아야 한다.
+mkdir -p $OUT/fakebin; print -r -- $'#!/bin/sh\nexit 0' > $OUT/fakebin/lsappinfo; chmod +x $OUT/fakebin/lsappinfo
+UROOT=/tmp/l604g-q$$
+run st-up-handoff 9 sh scripts/l604/up.sh $UROOT
+L604_HANDOFF=quick PATH="$OUT/fakebin:$PATH" run st-up-front 2 sh scripts/l604/up.sh $UROOT
+L604_DRY=1 run st-up-dry 0 sh scripts/l604/up.sh $UROOT
+run st-up-nothing-made 1 test -e $UROOT
+# R2-B — 창 없는 작업 하네스(C9·C5·C10). 실행마다 새 ROOT, 결과 JSON 은 OUT 에 옮기고 ROOT 는 지운다(이 실행이 만든 경로만).
+WROOT=/tmp/l604w-q$$
+L604_ROOT=$WROOT L604_PHASE=first run windowless-first 0 npx vitest run scripts/l604/windowless.test.tsx
+L604_ROOT=$WROOT L604_PHASE=restart run windowless-restart 0 npx vitest run scripts/l604/windowless.test.tsx
+cp $WROOT/windowless-*.json $OUT/ 2>/dev/null
+[[ $WROOT == /tmp/l604w-q* ]] && rm -rf $WROOT
+for pc in c9-extra c5-leak; do
+  L604_PC=$pc L604_ROOT=$WROOT-$pc L604_PHASE=first run pc-windowless-$pc 1 npx vitest run scripts/l604/windowless.test.tsx
+  cp $WROOT-$pc/windowless-first.json $OUT/pc-windowless-$pc.json 2>/dev/null
+  [[ $WROOT == /tmp/l604w-q* ]] && rm -rf $WROOT-$pc
+done
 print -r -- "$([[ $failed == 0 ]] && echo pass || echo "fail $failed")" > $OUT/ALL
 cat $OUT/ALL

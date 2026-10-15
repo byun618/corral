@@ -10,3 +10,6 @@ c6-detail-after-create	하나 더 끔 — 만든 뒤 상세	c6	생성 뒤	상세
 c6-another-on	하나 더 켬 — 만든 뒤 빈 제목	c6	하나 더	스위치 켬 · 종류·부모·상태·우선순위·배치 유지
 c12-modal-dark	빈 모달 — 다크 테마	frames	모달 틀	다크 토큰
 c12-modal-light	빈 모달 — 라이트 테마	frames	모달 틀	라이트 토큰
+c1-write-blocked	쓰기 막힘(권한 부족) — 머리 「만들기」 흐림	c1blocked	머리 「만들기」	흐림 · 권한 배너 · 이유 title(R2-C)
+c8-unsupported	지원 밖 필수 필드(Epic)	c8	필수 필드 상자	「corral 에서 채울 수 없음 — 출처에서 만드세요」 · 만들기 흐림(R2-C)
+c1-all-target	「전체」 스페이스 — 모달 머리 만들 스페이스 메뉴	all	모달 머리 40	대상 스페이스 버튼 · 메뉴 행(R2-C)

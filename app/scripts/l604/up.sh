@@ -6,11 +6,13 @@
 # - 만든 경로·PID 는 <ROOT>/made.txt 에 한 줄씩(down.sh 와 회차 기록이 읽는다).
 # - L604_HERDR_ENV="K=V ..." 는 격리 herdr 서버(→ pane 셸) env 에 더한다(최종 관문: DISABLE_AUTO_UPDATE=true — omz 업데이트 질문이 에이전트 명령 첫 글자를 먹는다).
 # - L604_DRY=1 이면 아무것도 띄우지 않고 쓸 환경만 찍고 끝난다(자기점검용).
-# - **포커스 증거(R1-G, 01-criteria 「GUI 회차」)**: 창 모드는 띄우기 전·뒤의 맨 앞 앱을 `lsappinfo front` 로 <ROOT>/focus.txt 에 적는다(OS 입력 없음 —
-#   읽기만). 맨 앞 앱이 바뀌면(창이 포커스를 가져감) exit 8 「focus_stolen」 — 그 회차는 『질의응답』 으로 손 넘김(사용자가 입력을 멈춘다는 답)을
-#   받은 뒤에만 이어 간다(L604_HANDOFF=<질의응답 id> 를 주면 바뀌어도 exit 0 으로 계속하고 id 를 focus.txt 에 남긴다).
-#   지금 제품에는 창을 비활성으로 띄우는 길이 없다(main `ready-to-show → show()`) — 그래서 증거로 막고, 못 막으면 손 넘김이다.
-# 실패 전파: 가드 위반 exit 2·5 · 이미 떠 있음 3 · env 누수 4 · 소켓 안 뜸 1 · 포커스 뺏김 8. 성공만 마지막 줄 「up ok」.
+# - **창 모드는 손 넘김 뒤에만(R2-B)**: 지금 제품에는 창을 비활성으로 띄우는 길이 없다(main `ready-to-show → show()` — 바꾸지 않는다). 첫 실행에서
+#   포커스를 뺏고 나서 막는 것은 늦다 — 그래서 **띄우기 전에** `L604_HANDOFF=<코디가 준 『질의응답』 답 id>` 가 없으면 herdr 도 띄우지 않고 exit 9.
+#   창 없는 회차(C9·C5·C10)는 `windowless.test.tsx`(vitest) 몫이고, 런타임만 필요하면 `L604_SERVE=1`(창 없음 — 손 넘김 불필요).
+# - **포커스 증거(R1-G)**: 창 모드는 띄우기 전·뒤의 맨 앞 앱을 `lsappinfo front` 로 <ROOT>/focus.txt 에 적는다(OS 입력 없음 — 읽기만).
+#   띄우기 전 맨 앞 앱을 못 읽으면(빈 값) 비교가 무의미하다 — 띄우지 않고 exit 2. 관찰 창 = 제어 소켓 뒤 최대 30초(창 show 까지 넉넉히),
+#   바뀌면 그 시각을 적고 멈춘다. 손 넘김 id 와 stolen 여부는 focus.txt 에 남는다(뺏김은 손 넘김 아래라 실패가 아니다 — 증거다).
+# 실패 전파: 가드 위반 exit 2·5 · 이미 떠 있음 3 · env 누수 4 · 소켓 안 뜸 1 · 손 넘김 없음 9. 성공만 마지막 줄 「up ok」.
 set -u
 ROOT=${1:-}; [ $# -gt 0 ] && shift
 case "$ROOT" in /tmp/l604g-*) ;; *) echo "ROOT 는 /tmp/l604g-*"; exit 2 ;; esac
@@ -22,6 +24,13 @@ case "$SESSION" in default|corral|'') echo "✘ herdr 세션 이름이 기본값
 SOCK="$HOME/.config/herdr-dev/sessions/$SESSION/herdr.sock"
 ENVS="CORRAL_SESSION=$SESSION CORRAL_BACKEND_SOCKET=$SOCK CORRAL_USER_DATA=$ROOT/ud CORRAL_CONTROL_SOCKET=$ROOT/ctl/ctl.sock CORRAL_SHOT_DIR=$ROOT/shots CORRAL_LA_MCP_URL=http://127.0.0.1:9/mcp CORRAL_WORK_MOCK=1 CORRAL_WORK_TEST_CIPHER=1 CORRAL_WORK_IPC_TRACE=$ROOT/ipc-trace.ndjson CORRAL_SETTINGS=$ROOT/ud/settings.json CORRAL_LOG=$ROOT/ud/corral.ndjson CORRAL_WORK_CONNECTIONS=$ROOT/ud/work-connections.json CORRAL_WORK_ACTIVITY=$ROOT/ud/work-activity.json CORRAL_WORK_START_PENDING=$ROOT/ud/work-start-pending.json CORRAL_UI_PREFS=$ROOT/ud/ui-prefs.json CORRAL_REGISTRY=$ROOT/ud/repos.json"
 if [ "${L604_DRY:-}" = 1 ]; then echo "$ENVS" | tr ' ' '\n'; echo "dry ok"; exit 0; fi
+if [ "${L604_SERVE:-}" != 1 ] && [ -z "${L604_HANDOFF:-}" ]; then
+  echo "handoff_required — 창 모드는 『질의응답』 손 넘김 답 id(L604_HANDOFF=<id>) 뒤에만 띄운다. 창 없는 회차는 windowless.test.tsx · 런타임만은 L604_SERVE=1"; exit 9
+fi
+# 앱을 못 읽으면 빈 글 — 그때 비교는 늘 「바뀜」 이거나 늘 「같음」 이라 증거가 아니다.
+front() { A=$(lsappinfo front 2>/dev/null); [ -n "$A" ] || return 0; echo "$A pid=$(lsappinfo info -only pid "$A" 2>/dev/null | sed 's/.*=//') $(lsappinfo info -only name "$A" 2>/dev/null | sed 's/.*=//')"; }
+# 창 모드는 herdr 를 띄우기 전에도 한 번 본다 — 못 읽는 환경이면 아무것도 띄우지 않고 끝난다.
+if [ "${L604_SERVE:-}" != 1 ] && [ -z "$(front)" ]; then echo "✘ 맨 앞 앱을 못 읽는다(lsappinfo) — 포커스 증거 없음, 띄우지 않는다"; exit 2; fi
 APP=$(pwd -P); EL="$APP/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
 KEY=$(node -e 'const fs=require("fs"),c=require("crypto");const s=JSON.parse(fs.readFileSync("backend/source.json"));console.log(c.createHash("sha256").update(Buffer.concat(s.patches.map(n=>fs.readFileSync("backend/"+n)))).digest("hex").slice(0,16))')
 GUARD="$(git rev-parse --path-format=absolute --git-common-dir)/corral-herdr-dev/$KEY/herdr-0.9.0/target/debug/herdr"
@@ -55,8 +64,8 @@ if [ "${L604_SERVE:-}" = 1 ]; then
 fi
 rm -f "$ROOT/ctl/ctl.sock"
 # 맨 앞 앱 = ASN(앱 인스턴스마다 다름 — 이름이 같은 설치본 corral 과 격리 앱을 가른다) + pid + 이름.
-front() { A=$(lsappinfo front 2>/dev/null); echo "$A pid=$(lsappinfo info -only pid "$A" 2>/dev/null | sed 's/.*=//') $(lsappinfo info -only name "$A" 2>/dev/null | sed 's/.*=//')"; }
-FRONT_BEFORE=$(front); echo "before $(date '+%T') ${FRONT_BEFORE:-?}" >> "$ROOT/focus.txt"
+FRONT_BEFORE=$(front); echo "before $(date '+%T') ${FRONT_BEFORE:-?} handoff=$L604_HANDOFF" >> "$ROOT/focus.txt"
+[ -n "$FRONT_BEFORE" ] || { echo "✘ 띄우기 전 맨 앞 앱을 못 읽었다 — 포커스 증거 없음, 띄우지 않는다"; exit 2; }
 LAUNCH='if [ -n "${L604_EXE:-}" ]; then exec "$L604_EXE" --user-data-dir="$CORRAL_USER_DATA" ${L604_EXTRA_ARGS:-}; else exec "$L604_EL" "$L604_APP" --user-data-dir="$CORRAL_USER_DATA" ${L604_EXTRA_ARGS:-}; fi'
 N=$(ls "$ROOT"/electron-*.log 2>/dev/null | wc -l | tr -d ' ')
 # shellcheck disable=SC2086
@@ -66,9 +75,8 @@ i=0; until [ -S "$ROOT/ctl/ctl.sock" ]; do i=$((i+1)); [ $i -gt 300 ] && { echo 
 APID=$(pgrep -f -- "--user-data-dir=$ROOT/ud" | sort -n | head -1); echo "$APID" > "$ROOT/app.pid"
 echo "pid app $APID" >> "$ROOT/made.txt"
 echo "app_pid=$APID launch=$N at=$(date '+%T')"
-# 창이 그려진 뒤(ready-to-show)까지 5초 동안 맨 앞 앱을 본다.
-STOLEN=0; i=0; while [ $i -lt 25 ]; do i=$((i+1)); NOW=$(front); [ "$NOW" != "$FRONT_BEFORE" ] && { STOLEN=1; break; }; sleep 0.2; done
-echo "after $(date '+%T') ${NOW:-?} stolen=$STOLEN handoff=${L604_HANDOFF:-}" >> "$ROOT/focus.txt"
-if [ $STOLEN = 1 ] && [ -z "${L604_HANDOFF:-}" ]; then echo "focus_stolen — 맨 앞 앱 ${FRONT_BEFORE:-?} → ${NOW:-?}. 『질의응답』 손 넘김 뒤 L604_HANDOFF=<id> 로 다시"; exit 8; fi
+# 창이 그려질(ready-to-show → show) 때까지 최대 30초 맨 앞 앱을 본다 — 5초는 첫 빌드·느린 기동에서 show 전에 끝났다(리뷰 r2).
+STOLEN=0; i=0; while [ $i -lt 150 ]; do i=$((i+1)); NOW=$(front); [ "$NOW" != "$FRONT_BEFORE" ] && { STOLEN=1; break; }; sleep 0.2; done
+echo "after $(date '+%T') ${NOW:-?} stolen=$STOLEN waited=$((i * 2 / 10))s handoff=$L604_HANDOFF" >> "$ROOT/focus.txt"
 ps eww -o command= -p "$APID" | tr ' ' '\n' | grep -qE '^(CLAUDE_CODE_[A-Z_]+|CLAUDECODE)=' && { echo "✘ 워커 env 가 샜다"; exit 4; }
 echo "up ok"

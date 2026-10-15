@@ -58,6 +58,8 @@ lines=$(git diff $BASE_COMMIT HEAD -- app/src/shared/keybindings.ts app/src/rend
 row actions-registry $([[ $lines == 0 ]] && echo pass || echo fail) "keybindings.ts·ShortcutsSection.tsx diff ${lines}줄"
 { cat $OUT/base/lint.txt; print -r -- '/x/app/src/l604-fake.ts'; print -r -- '  1:1  error  양성 대조로 넣은 가짜 오류  no-undef'; } > $OUT/lint-extra-sample.txt
 node scripts/l604/expect-failures.mjs lint $OUT/lint-extra-sample.txt $OUT/base/lint.txt > $OUT/pc-lint-compare.txt 2>&1
-row pc-lint-compare $([[ $? == 1 ]] && echo pass || echo fail) "가짜 오류 한 줄 → 「다름」 이어야 함"
+pc=$?
+# 종료코드 + 기대 문구(가짜 오류 묶음이 「기준 0 → 이번 1」 로 잡힘) — 다른 이유의 exit 1 을 대조 통과로 읽지 않는다(R4-H 와 같은 방식).
+row pc-lint-compare $([[ $pc == 1 ]] && grep -qF 'src/l604-fake.ts :: no-undef: 기준 0 → 이번 1' $OUT/pc-lint-compare.txt && echo pass || echo fail) "가짜 오류 한 줄 → 「다름」(exit 1 + 그 묶음 문구) 이어야 함"
 print -r -- "$([[ $failed == 0 ]] && echo pass || echo "fail $failed")" > $OUT/ALL
 cat $OUT/ALL

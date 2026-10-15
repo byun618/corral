@@ -9,7 +9,9 @@
 //              L604_ROOT=/tmp/l604w-<n> L604_PHASE=restart npx vitest run scripts/l604/windowless.test.tsx   → 새 프로세스 = 재시작 뒤
 // 양성 대조(판정이 늘 참이 아님을 보인다 — 시험이 실패해야 한다): L604_PC=c9-extra(같은 만들기 요청을 출처에 한 번 더 → 증가 2) ·
 // L604_PC=c5-leak(초안 글을 main 로그에 한 줄 → draft-leak 적중).
-// L604_ROOT 가 없으면 건너뛴다(npm test 에서는 skipped). 결과 = ROOT/windowless-<phase>.json(판정 verdict 포함) · 판정이 틀리면 시험 실패(exit 1).
+// L604_ROOT·L604_PHASE 가 **둘 다** 없을 때만 건너뛴다(npm test 에서는 skipped). 하나라도 있으면 하네스를 부른 회차다 — ROOT 가 `/tmp/l604w-*` 가 아니거나
+// PHASE 가 first·restart 가 아니면(빈 값 포함) 건너뛰지 않고 실패한다(R5-F). 최종 관문은 「1 passed」 를 본다 — 「skipped」 는 무효(final-gate-plan ⑦).
+// 결과 = ROOT/windowless-<phase>.json(판정 verdict 포함) · 판정이 틀리면 시험 실패(exit 1).
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -29,9 +31,11 @@ import { CredentialVault, measurementCipher } from '../../src/main/work/vault.js
 import { TasksPage } from '../../src/renderer/src/components/TasksPage.js'
 
 const ROOT = process.env.L604_ROOT ?? ''
-const PHASE = process.env.L604_PHASE ?? 'first'
+const PHASE = process.env.L604_PHASE ?? ''
 const PC = process.env.L604_PC ?? ''
 const enabled = ROOT.startsWith('/tmp/l604w-') && !ROOT.includes('..')
+/** 하네스를 부른 회차인가 — 환경변수 하나라도 있으면 그렇다(R5-F). */
+const requested = ROOT !== '' || PHASE !== ''
 const UD = path.join(ROOT, 'ud')
 const APP = path.resolve(import.meta.dirname, '../..')
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
@@ -109,8 +113,10 @@ const leakFree = (run: unknown): boolean => {
 }
 const flushLog = async (): Promise<void> => { closeLog(); await new Promise((resolve) => setTimeout(resolve, 100)) }
 
-describe.runIf(enabled)('LIFE-604 창 없는 작업 하네스', () => {
+describe.runIf(requested)('LIFE-604 창 없는 작업 하네스', () => {
   it(`phase ${PHASE}`, async () => {
+    // 빈·모르는 PHASE 를 first 로 읽거나 건너뛰지 않는다 — 아무것도 안 하고 통과하는 길을 막는다(R5-F).
+    expect({ root: enabled, phase: PHASE === 'first' || PHASE === 'restart' }, `L604_ROOT=/tmp/l604w-* · L604_PHASE=first|restart 가 필요하다 (지금 ROOT='${ROOT}' PHASE='${PHASE}')`).toEqual({ root: true, phase: true })
     const result: Record<string, unknown> = { phase: PHASE, at: new Date().toISOString() }
     const parts = boot()
     bridge(parts)

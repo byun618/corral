@@ -4,8 +4,9 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { WorkCall, WorkCapabilities, WorkConnectionSummary, WorkItem, WorkKind, WorkRequest, WorkResponse, WorkSettingsState } from '../../../shared/work.js'
+import type { WorkCall, WorkCapabilities, WorkConnectionSummary, WorkCreateMeta, WorkItem, WorkKind, WorkRequest, WorkResponse, WorkSettingsState } from '../../../shared/work.js'
 import type { SpaceData } from '../tasks-model.js'
+import type { CreateSettled } from './useTasksPage.js'
 import { useQuickCreate, type QuickCreateModel, type QuickCreatePage } from './useQuickCreate.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
@@ -29,13 +30,15 @@ const connection = ({ id, generation }: { id: string; generation: number }): Wor
 const settingsOf = (connections: WorkConnectionSummary[]): WorkSettingsState => ({ sources: [], connections, repoDefaults: [] })
 
 const sentCreates: WorkCall[] = []
+/** 가짜 페이지의 만들기 결과 — 기본 `stale`. 시험이 바꾼다(R5-B 인라인 거절). */
+let createResult: CreateSettled = { kind: 'stale' }
 function page(settings: WorkSettingsState | null, data: SpaceData[] = []): QuickCreatePage {
   return {
     settings,
     groups: [],
     load: { spaceId: null, phase: 'ready', data, error: null, loadingMore: false },
     createBusy: new Set(),
-    createItem: async ({ call }) => { sentCreates.push(call); return { kind: 'stale' } },
+    createItem: async ({ call }) => { sentCreates.push(call); return createResult },
     reload: async () => [],
   }
 }
@@ -158,5 +161,66 @@ describe('배치가 적용되지 않는 종류 (R2-H)', () => {
     const applies = await run('applies')
     expect(applies.chip).toEqual({ state: 'on' })
     expect(applies.sent).toMatchObject({ placement: 'backlog' })
+  })
+})
+
+describe('인라인 갈래 (R5-B — 수정 4 R4-C·R4-F 의 인라인 쪽)', () => {
+  const story: WorkKind = { key: 'story', label: 'Story', childKinds: [] }
+  const space: SpaceData = {
+    connectionId: 'c1', spaceKey: 'CORE', spaceName: 'Core', colorIndex: 0, color: null, statuses: [{ key: 'todo', label: 'todo', category: 'todo', order: 0, color: null }],
+    kinds: [story], items: [], nextCursor: null, truncated: false,
+  }
+  const metaRequests: WorkRequest[] = []
+  const serveMeta = (unavailable: string | null): void => {
+    metaRequests.length = 0
+    Reflect.set(window, 'corral', {
+      workRequest: async (request: WorkRequest): Promise<WorkResponse> => {
+        metaRequests.push(request)
+        const meta: WorkCreateMeta = { spaceKey: 'CORE', kindKey: 'story', statusKeys: ['todo'], defaultStatusKey: 'todo', placement: 'applies', fields: [] }
+        return { requestId: request.requestId, connectionId: request.connectionId, ok: true, result: { op: 'getCreateMeta', meta: unavailable === null ? meta : { ...meta, unavailable } } }
+      },
+    })
+  }
+  const tick = async (): Promise<void> => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) }) }
+  const openWithText = async (text: string): Promise<void> => {
+    act(() => root.render(createElement(Probe, { settings: settingsOf([connection({ id: 'c1', generation: 1 })]), connectionId: 'c1', data: [space] })))
+    act(() => { current().openInline({ statusKey: 'todo', columnId: 'st:todo' }) })
+    await tick()
+    act(() => { current().setInlineText(text) })
+  }
+
+  it('R4-F 인라인 — 기본 종류 메타가 unavailable 이면 Enter 는 보내지 않고 그 이유를 보인다(출처 거절에 기대지 않음)', async () => {
+    serveMeta('여기서는 Story 를 만들 수 없습니다')
+    sentCreates.length = 0
+    await openWithText('못 만드는 인라인')
+    await act(async () => { await current().submitInline() })
+    expect(sentCreates).toHaveLength(0)
+    expect(current().inline?.error).toBe('여기서는 Story 를 만들 수 없습니다')
+    expect(current().inline?.text).toBe('못 만드는 인라인')
+  })
+
+  it('R4-C 인라인 — 출처가 만들기를 거절하면 그 종류 메타를 다시 받는다 · 「모름」(maybeApplied)이면 다시 받지 않는다(대조)', async () => {
+    serveMeta(null)
+    sentCreates.length = 0
+    try {
+      createResult = { kind: 'failed', error: { kind: 'rejected', message: '없는 상태입니다', status: null } }
+      await openWithText('거절될 인라인')
+      const before = metaRequests.length
+      await act(async () => { await current().submitInline() })
+      await tick()
+      expect(sentCreates).toHaveLength(1)
+      expect(metaRequests.length).toBe(before + 1)
+      act(() => root.unmount())
+      root = createRoot(host)
+      serveMeta(null)
+      createResult = { kind: 'failed', error: { kind: 'network', message: '끊김', status: null, maybeApplied: true } }
+      await openWithText('모르는 인라인')
+      const unknownBefore = metaRequests.length
+      await act(async () => { await current().submitInline() })
+      await tick()
+      expect(metaRequests.length).toBe(unknownBefore)
+    } finally {
+      createResult = { kind: 'stale' }
+    }
   })
 })

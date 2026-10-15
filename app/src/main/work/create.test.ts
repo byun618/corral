@@ -298,6 +298,8 @@ describe('main 의 생성 메타 검증 (E11 — 양성 대조)', () => {
     { name: '배치 적용 값 모름(R2-H)', meta: { ...good, placement: 'maybe' } },
     { name: '만들 수 없음 이유가 빈 글(R4-F)', meta: { ...good, unavailable: '' } },
     { name: '만들 수 없음 이유가 글이 아님(R4-F)', meta: { ...good, unavailable: true } },
+    { name: '다른 스페이스의 메타(R5-C)', meta: { ...good, spaceKey: 'OTHER' } },
+    { name: '만들 수 없음 이유가 500자 넘음(R5-C)', meta: { ...good, unavailable: 'x'.repeat(501) } },
   ]
   for (const { name, meta } of cases) {
     it(`${name} → invalid_response`, async () => {
@@ -315,8 +317,8 @@ describe('main 의 생성 메타 검증 (E11 — 양성 대조)', () => {
     const response = await harness.service.request({ requestId: 'm', connectionId: added.connection.id, call: { op: 'getCreateMeta', spaceKey: 'S', kindKey: 'k' } })
     expect(response).toMatchObject({ ok: true, result: { op: 'getCreateMeta', meta: good } })
   })
-  it('만들 수 없음 이유가 있는 메타도 통과(대조, R4-F)', async () => {
-    const meta: WorkCreateMeta = { ...good, unavailable: '여기서는 못 만듭니다' }
+  it('만들 수 없음 이유가 있는 메타도 통과(대조, R4-F) · 이유 500자까지(대조, R5-C)', async () => {
+    const meta: WorkCreateMeta = { ...good, unavailable: 'y'.repeat(500) }
     const harness = workHarness({ entries: [fakeEntry(meta)] })
     const added = await harness.service.addConnection({ sourceId: 'fake-meta', token: 'mock_x', replaceId: null })
     if (!added.ok) throw new Error(added.error.message)

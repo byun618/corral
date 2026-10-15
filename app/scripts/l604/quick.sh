@@ -103,14 +103,20 @@ L604_DRY=1 run st-up-dry 0 sh scripts/l604/up.sh $UROOT
 run st-up-nothing-made 1 test -e $UROOT
 # R2-B — 창 없는 작업 하네스(C9·C5·C10). 실행마다 새 ROOT, 결과 JSON 은 OUT 에 옮기고 ROOT 는 지운다(이 실행이 만든 경로만).
 WROOT=/tmp/l604w-q$$
-L604_ROOT=$WROOT L604_PHASE=first run windowless-first 0 npx vitest run scripts/l604/windowless.test.tsx
-L604_ROOT=$WROOT L604_PHASE=restart run windowless-restart 0 npx vitest run scripts/l604/windowless.test.tsx
+# 「1 passed」 문구까지 본다 — 건너뜀(skipped)·0건은 통과가 아니다(R5-F).
+L604_ROOT=$WROOT L604_PHASE=first run_grep windowless-first 0 'Tests  1 passed' npx vitest run scripts/l604/windowless.test.tsx
+L604_ROOT=$WROOT L604_PHASE=restart run_grep windowless-restart 0 'Tests  1 passed' npx vitest run scripts/l604/windowless.test.tsx
 cp $WROOT/windowless-*.json $OUT/ 2>/dev/null
 [[ $WROOT == /tmp/l604w-q* ]] && rm -rf $WROOT
+# 양성 대조는 그 판정 칸이 뒤집혀 실패해야 한다(R5-A — 다른 이유로 죽은 exit 1 을 대조 통과로 읽지 않는다): c9-extra → "c9": false · c5-leak → "c5": false.
 for pc in c9-extra c5-leak; do
-  L604_PC=$pc L604_ROOT=$WROOT-$pc L604_PHASE=first run pc-windowless-$pc 1 npx vitest run scripts/l604/windowless.test.tsx
+  [[ $pc == c9-extra ]] && flip='+   "c9": false,' || flip='+   "c5": false,'
+  L604_PC=$pc L604_ROOT=$WROOT-$pc L604_PHASE=first run_grep pc-windowless-$pc 1 "$flip" npx vitest run scripts/l604/windowless.test.tsx
   cp $WROOT-$pc/windowless-first.json $OUT/pc-windowless-$pc.json 2>/dev/null
   [[ $WROOT == /tmp/l604w-q* ]] && rm -rf $WROOT-$pc
 done
+# R5-F — ROOT 만 주고 PHASE 를 비우면 건너뛰지 않고 실패한다(ROOT 는 만들어지지 않는다 — PHASE 판정이 먼저).
+L604_ROOT=$WROOT-nophase run_grep st-windowless-empty-phase 1 'L604_PHASE=first|restart 가 필요하다' npx vitest run scripts/l604/windowless.test.tsx
+[[ $WROOT == /tmp/l604w-q* ]] && rm -rf $WROOT-nophase
 print -r -- "$([[ $failed == 0 ]] && echo pass || echo "fail $failed")" > $OUT/ALL
 cat $OUT/ALL

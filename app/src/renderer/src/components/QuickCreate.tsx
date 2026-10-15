@@ -190,6 +190,9 @@ export function QuickCreateModal({ model }: { model: QuickCreateModel }): React.
           ) : null}
           {modal.notice === null ? null : <div className="qc-notice" data-quick-create-notice="">{modal.notice}</div>}
           {modal.error === null ? null : <div className="qc-error" data-quick-create-error="" role="alert">{modal.error}</div>}
+          {modal.phase === 'unknown' ? (
+            <button type="button" className="qc-link" data-quick-create-recheck="" onClick={() => void model.recheck(modal.target)}>목록 다시 확인</button>
+          ) : null}
         </div>
 
         <footer className="qc-foot">
@@ -253,7 +256,7 @@ export function InlineAddSlot({ view, model, statusKey, columnId }: { view: Inli
             // 페이지 Esc 단계로 내려가지 않는다 — 입력만 닫는다(보내는 중이면 결과를 보일 때까지 남는다).
             event.preventDefault()
             event.nativeEvent.stopPropagation()
-            model.closeInline({ force: !busy })
+            model.closeInline()
             return
           }
           if (event.key === 'Enter') {
@@ -261,10 +264,14 @@ export function InlineAddSlot({ view, model, statusKey, columnId }: { view: Inli
             void model.submitInline()
           }
         }}
-        onBlur={() => { if (draft.text.trim().length === 0) model.closeInline({ force: false }) }}
+        onBlur={() => model.closeInline()}
       />
-      {busy ? <div className="qc-inline-note" data-inline-add-busy="">{draft.phase === 'late' ? '확인 중 — 출처 답을 기다립니다' : '만드는 중…'}</div> : null}
+      {draft.phase === 'sending' || draft.phase === 'late' ? <div className="qc-inline-note" data-inline-add-busy="">{draft.phase === 'late' ? '확인 중 — 출처 답을 기다립니다' : '만드는 중…'}</div> : null}
       {draft.error === null ? null : <div className="qc-inline-error" data-inline-add-error="" role="alert">{draft.error}</div>}
+      {draft.phase === 'unknown' ? (
+        // 누르는 동안 입력의 blur 가 먼저 와도 「모름」 은 닫힘을 막지 않는다 — 누름이 입력을 빼앗지 않게 mousedown 기본 동작을 막는다.
+        <button type="button" className="qc-link" data-inline-add-recheck="" onMouseDown={(event) => event.preventDefault()} onClick={() => void model.recheck(draft.target)}>목록 다시 확인</button>
+      ) : null}
     </div>
   )
 }

@@ -31,8 +31,9 @@ import type {
   WorkSpace,
   WorkStatus,
 } from '../../shared/work.js'
-import { workError } from './errors.js'
-import { readBySeq, readIssueDetail, readIssueSummaries, type LaIssueDetail, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
+import { unknownWriteOutcome, workError } from './errors.js'
+import { readBySeq, readIssueCreated, readIssueDetail, readIssueSummaries, type LaIssueDetail, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
+import { log } from '../log.js'
 import { McpHttpClient } from './mcp-http.js'
 import type { WorkOutcome, WorkSourceClient, WorkSourceEntry } from './source.js'
 
@@ -211,8 +212,21 @@ export class LaSource implements WorkSourceClient {
       if (!allowed.includes(kind)) return { ok: false, error: workError({ kind: 'rejected', message: `${KIND_LABELS[parent.value.kind === 'project' ? 'task' : parent.value.kind]} 아래에는 ${KIND_LABELS[kind]} 를 만들 수 없습니다.` }) }
     }
     const parentId = call.parentId ?? (call.spaceKey === LA_CATCH_ALL_KEY ? null : call.spaceKey)
-    const created = await this.tool({ name: 'issue_create', args: createArgs({ call, kind, parentId }), read: readIssueUpdated })
-    return created.ok ? this.itemResult({ op: 'createItem', itemId: created.value.id }) : created.outcome
+    // 생성 요청은 다시 보내지 않는다 — 결과를 모르는 실패(시간 초과·끊김·깨진 답)는 「만들어졌을 수 있음」 으로 돌려준다(R1-A ⓑ).
+    const sent = await this.mcp.callTool({ name: 'issue_create', args: createArgs({ call, kind, parentId }) })
+    if (!sent.ok) return { ok: false, error: unknownWriteOutcome({ error: sent.error, unsent: sent.unsent === true }) }
+    let created: LaIssue
+    try {
+      created = readIssueCreated(sent.value, 'issue_create')
+    } catch (error) {
+      if (error instanceof LaShapeError) return { ok: false, error: unknownWriteOutcome({ error: workError({ kind: 'invalid_response', message: error.message }), unsent: false }) }
+      throw error
+    }
+    const item = await this.item(created.id)
+    if (item.ok) return { ok: true, result: { op: 'createItem', item: item.value } }
+    // 만들었는데 다시 읽지 못했다(R1-A ⓐ) — 실패로 돌려주면 사용자가 다시 만든다. 생성 응답과 보낸 스페이스·부모로 최소 작업을 돌려준다.
+    log('work.create_reread_failed', { errorKind: item.outcome.ok ? null : item.outcome.error.kind })
+    return { ok: true, result: { op: 'createItem', item: toItem({ issue: created, spaceKey: call.spaceKey, parentId: call.parentId }) } }
   }
 
   /** 생성 메타(E11) — LA 는 열린(완료 분류가 아닌) 상태 아무거나 · 기본 = 첫 할 일 상태 · 추가 필수 필드 없음. 종류만 확인한다. */
@@ -389,7 +403,7 @@ export class LaSource implements WorkSourceClient {
     return item.ok ? { ok: true, result: { op: 'findByKey', item: item.value } } : item.outcome
   }
 
-  private async itemResult({ op, itemId }: { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'updateItem' | 'createItem'; itemId: string }): Promise<WorkOutcome> {
+  private async itemResult({ op, itemId }: { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'updateItem'; itemId: string }): Promise<WorkOutcome> {
     const item = await this.item(itemId)
     return item.ok ? { ok: true, result: { op, item: item.value } } : item.outcome
   }

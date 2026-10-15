@@ -4,6 +4,7 @@
 // 렌더러와 main 을 함께 import 하므로 web 타입 검사(tsconfig.web.json)에서 뺀다.
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { Toaster, toast } from 'sonner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkRequest, WorkResponse, WorkSettingsState } from '../../../shared/work.js'
 import { mockSourceEntry, seedMockDemoState, type MockState } from '../../../main/work/mock-source.js'
@@ -25,6 +26,7 @@ beforeEach(() => {
   root = createRoot(host)
 })
 afterEach(() => {
+  act(() => { toast.dismiss() })
   act(() => root.unmount())
   host.remove()
   vi.useRealTimers()
@@ -39,7 +41,11 @@ const settle = async (rounds = 8): Promise<void> => {
   }
 }
 
-type Harness = { service: WorkService; state: MockState; requests: WorkRequest[]; hold: { create: boolean; release: (() => void)[] }; closed: number[]; connectionId: string }
+type Harness = {
+  service: WorkService; state: MockState; requests: WorkRequest[]; hold: { create: boolean; release: (() => void)[] }; closed: number[]; connectionId: string
+  /** `setUiPrefs` 로 나간 값(디스크에 쓰이는 것) — 초안 글이 섞이지 않는지 본다(R1-M). */
+  prefsWrites: unknown[]
+}
 
 async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(), prefs = { view: 'board' } }: { token?: string; state?: MockState; prefs?: Record<string, unknown> } = {}): Promise<Harness> {
   const service = new WorkService({
@@ -49,9 +55,10 @@ async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(),
   const requests: WorkRequest[] = []
   const hold: Harness['hold'] = { create: false, release: [] }
   const closed: number[] = []
+  const prefsWrites: unknown[] = []
   Reflect.set(window, 'corral', {
     getUiPrefs: async () => ({ tasksPage: { space: { kind: 'space', connectionId: '', spaceKey: 'CORE' }, ...prefs } }),
-    setUiPrefs: () => {},
+    setUiPrefs: (value: unknown) => { prefsWrites.push(value) },
     getWorkSettings: async () => service.settings(),
     onWorkSettings: (listener: (value: WorkSettingsState) => void) => { settingsListener = listener; return () => {} },
     workActivity: async () => ({ ok: true, records: [] }),
@@ -67,13 +74,15 @@ async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(),
   if (!added.ok) throw new Error(added.error.message)
   // 첫 스페이스 = CORE 로 열리게 저장값의 연결 id 를 맞춘다.
   Reflect.set(window.corral, 'getUiPrefs', async () => ({ tasksPage: { space: { kind: 'space', connectionId: added.connection.id, spaceKey: 'CORE' }, ...prefs } }))
-  return { service, state, requests, hold, closed, connectionId: added.connection.id }
+  return { service, state, requests, hold, closed, connectionId: added.connection.id, prefsWrites }
 }
 
 async function renderPage(harness: Harness, { open = true }: { open?: boolean } = {}): Promise<void> {
-  act(() => root.render(createElement(TasksPage, { open, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => harness.closed.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} })))
+  const page = createElement(TasksPage, { open, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => harness.closed.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} })
+  act(() => root.render(createElement('div', null, page, createElement(Toaster))))
   await settle()
 }
+const toastText = (kind: string): string => qa(`[data-toast="${kind}"]`).map((node) => node.textContent ?? '').join(' | ')
 
 const q = (selector: string): Element | null => host.querySelector(selector)
 const qa = (selector: string): Element[] => [...host.querySelectorAll(selector)]
@@ -329,7 +338,8 @@ describe('C5 스페이스별 초안', () => {
     if (!again.ok) throw new Error('re-add')
     await act(async () => { settingsListener(harness.service.settings()) })
     await settle(12)
-    if (q('[data-tasks-create]')?.getAttribute('aria-disabled') === 'true') return
+    // 판별은 훅 시험(`useQuickCreate.test.tsx` — 해제 뒤 초안 맵이 빈다)이 한다. 여기서는 다시 붙인 연결에서 실제로 모달이 열려 빈 폼인지까지 본다.
+    expect(q('[data-tasks-create]')?.getAttribute('aria-disabled')).not.toBe('true')
     pressC()
     await settle()
     const title = q('[data-quick-create-title]')
@@ -544,5 +554,343 @@ describe('「전체」 스페이스', () => {
     key(el('[data-quick-create-title]'), { key: 'Enter' })
     await settle(12)
     expect(harness.state.createCalls?.at(-1)).toMatchObject({ spaceKey: 'WEB', statusKey: 'web-open' })
+  })
+})
+
+describe('수정 1 (리뷰 r1)', () => {
+  const typeInline = (column: HTMLElement, text: string): HTMLInputElement => {
+    const input = column.querySelector('[data-inline-add]')
+    if (!(input instanceof HTMLInputElement)) throw new Error('입력 없음')
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, text)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    return input
+  }
+  const openTodoInline = async (): Promise<HTMLElement> => {
+    const todo = el('[data-board-column="st:core-todo"]')
+    act(() => { todo.querySelector<HTMLElement>('[data-inline-add-open]')?.click() })
+    await settle()
+    return todo
+  }
+
+  it('R1-A 결과를 모르는 만들기(모달) — 「모름」: 다시 보내지 못함(재전송 0) · 「목록 다시 확인」 뒤에야 다시 만들 수 있다', async () => {
+    // 한 쪽에 다 들어오게 — 다시 확인한 목록에 출처에 생긴 작업이 보이는지까지 본다(커서 쪽 밖이면 「더 불러오기」 몫).
+    const state = seedMockDemoState()
+    state.pageSize = 100
+    const harness = await setup({ token: 'mock_create-lost', state })
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '잃은 답')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    expect(el('[data-quick-create]').getAttribute('data-quick-create-phase')).toBe('unknown')
+    expect(el('[data-quick-create-error]').textContent).toContain('만들어졌는지 모릅니다')
+    expect(el('[data-quick-create-submit]').hasAttribute('disabled')).toBe(true)
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    key(el('[data-quick-create-title]'), { key: 'Enter', metaKey: true })
+    click('[data-quick-create-submit]')
+    await settle()
+    expect(harness.requests.filter((request) => request.call.op === 'createItem')).toHaveLength(1)
+    // 닫았다 다시 열어도 「모름」 이 남는다(값은 초안으로).
+    click('[data-quick-create-cancel]')
+    pressC()
+    await settle()
+    expect(el('[data-quick-create]').getAttribute('data-quick-create-phase')).toBe('unknown')
+    expect(valueOf('[data-quick-create-title]')).toBe('잃은 답')
+    // 확인 — 목록을 다시 받으면 출처에 생긴 작업이 보이고, 그 뒤에는 보낼 수 있다.
+    const lists = harness.requests.filter((request) => request.call.op === 'listItems').length
+    click('[data-quick-create-recheck]')
+    await settle(12)
+    expect(harness.requests.filter((request) => request.call.op === 'listItems').length).toBeGreaterThan(lists)
+    expect(el('[data-quick-create]').getAttribute('data-quick-create-phase')).toBe('idle')
+    expect(el('[data-quick-create-notice]').textContent).toContain('목록을 다시 읽었습니다')
+    const made = harness.state.items.find((item) => item.title === '잃은 답')
+    expect(qa(`[data-issue-card="${made?.key ?? '-'}"]`)).toHaveLength(1)
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    expect(harness.requests.filter((request) => request.call.op === 'createItem')).toHaveLength(2)
+  })
+
+  it('R1-A 대조 — 거절(결과를 앎)은 「모름」 이 아니다: 바로 다시 만들 수 있다', async () => {
+    const harness = await setup({ token: 'mock_reject-writes' })
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '거절')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle()
+    expect(el('[data-quick-create]').getAttribute('data-quick-create-phase')).toBe('idle')
+    expect(q('[data-quick-create-recheck]')).toBeNull()
+  })
+
+  it('R1-A 결과를 모르는 만들기(인라인) — 「모름」 + 글 보존 · Enter 재전송 0 · 확인 뒤 다시', async () => {
+    const harness = await setup({ token: 'mock_create-lost' })
+    await renderPage(harness)
+    const todo = await openTodoInline()
+    const input = typeInline(todo, '인라인 잃은 답')
+    key(input, { key: 'Enter' })
+    await settle(12)
+    expect(input.getAttribute('data-inline-add-phase')).toBe('unknown')
+    expect(input.value).toBe('인라인 잃은 답')
+    expect(el('[data-inline-add-error]').textContent).toContain('만들어졌는지 모릅니다')
+    key(input, { key: 'Enter' })
+    await settle()
+    expect(harness.requests.filter((request) => request.call.op === 'createItem')).toHaveLength(1)
+    click('[data-inline-add-recheck]')
+    await settle(12)
+    expect(el('[data-board-column="st:core-todo"] [data-inline-add]').getAttribute('data-inline-add-phase')).toBe('idle')
+  })
+
+  it('R1-B 커서 쪽 밖에 만든 작업 — 상세에서 상태를 바꾼 뒤 재조회해도 옛 값으로 덮지 않는다', async () => {
+    const state = seedMockDemoState()
+    state.pageSize = 3
+    const harness = await setup({ state })
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '쪽 밖')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    const made = harness.state.items.find((item) => item.title === '쪽 밖')
+    if (made === undefined) throw new Error('없음')
+    expect(el(`[data-issue-card="${made.key}"]`).closest('[data-board-column]')?.getAttribute('data-board-column')).toBe('st:core-todo')
+    // 상세(생성 뒤 열림)에서 상태를 바꾼다.
+    click('[data-issue-status]')
+    await settle()
+    click('[data-status-row="core-doing"]')
+    await settle(12)
+    expect(harness.state.items.find((item) => item.id === made.id)?.statusKey).toBe('core-doing')
+    // 스페이스를 갔다 와서 다시 읽는다 — 새 작업은 아직 받지 않은 쪽에 있다.
+    click('[data-space-switch]')
+    click('[data-space-row="WEB"]')
+    await settle()
+    click('[data-space-switch]')
+    click('[data-space-row="CORE"]')
+    await settle(12)
+    expect(q('[data-tasks-more-button]')).not.toBeNull()
+    expect(qa(`[data-issue-card="${made.key}"]`)).toHaveLength(1)
+    expect(el(`[data-issue-card="${made.key}"]`).closest('[data-board-column]')?.getAttribute('data-board-column')).toBe('st:core-doing')
+  })
+
+  it('R1-C 진입점 값으로 연 모달(섹션 추가·인라인→모달)을 닫아도 기존 초안은 그대로', async () => {
+    const harness = await setup({ prefs: { view: 'backlog' } })
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '남겨야 할 초안')
+    click('[data-quick-create-cancel]')
+    click('[data-section-add="backlog"]')
+    await settle()
+    expect(valueOf('[data-quick-create-title]')).toBe('')
+    click('[data-quick-create-cancel]')
+    pressC()
+    await settle()
+    expect(valueOf('[data-quick-create-title]')).toBe('남겨야 할 초안')
+    click('[data-quick-create-cancel]')
+  })
+
+  it('R1-C 인라인 → 모달(필수 필드) 경로도 기존 초안을 덮지 않는다', async () => {
+    const state = seedMockDemoState()
+    state.createFields = { story: [{ key: 'customfield_env', label: 'Environment', shape: 'text' }] }
+    const harness = await setup({ state })
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '원래 초안')
+    click('[data-quick-create-cancel]')
+    const todo = await openTodoInline()
+    const input = typeInline(todo, '인라인 제목')
+    key(input, { key: 'Enter' })
+    await settle()
+    expect(valueOf('[data-quick-create-title]')).toBe('인라인 제목')
+    click('[data-quick-create-cancel]')
+    pressC()
+    await settle()
+    expect(valueOf('[data-quick-create-title]')).toBe('원래 초안')
+  })
+
+  it('R1-D 초안의 부모가 목록에서 사라지면 비우고 알린다 — 칩과 요청이 같다(부모 없이 만든다)', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '부모 있던 초안')
+    click('[data-quick-create-parent]')
+    click('[data-quick-create-parent-row="CORE-1"]')
+    click('[data-quick-create-cancel]')
+    // 출처에서 CORE-1 이 사라진다(자식 CORE-2·4·7 은 부모 없음으로).
+    harness.state.items = harness.state.items.filter((item) => item.id !== 'm-1').map((item) => (item.parentId === 'm-1' ? { ...item, parentId: null } : item))
+    click('[data-space-switch]')
+    click('[data-space-row="WEB"]')
+    await settle()
+    click('[data-space-switch]')
+    click('[data-space-row="CORE"]')
+    await settle(12)
+    pressC()
+    await settle()
+    expect(el('[data-quick-create-parent]').textContent).toContain('부모 없음')
+    expect(el('[data-quick-create-notice]').textContent).toContain('부모가 지금 목록에 없어')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle(12)
+    expect(harness.state.createCalls?.at(-1)).toMatchObject({ title: '부모 있던 초안', parentId: null })
+  })
+
+  it('R1-E 한글 자판 — `key: ㅊ, code: KeyC` 로도 열린다 · Shift 면 무시', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    key(document.body, { key: 'ㅊ', code: 'KeyC', shiftKey: true })
+    await settle()
+    expect(q('[data-quick-create]')).toBeNull()
+    key(document.body, { key: 'ㅊ', code: 'KeyC', isComposing: true })
+    await settle()
+    expect(q('[data-quick-create]')).toBeNull()
+    key(document.body, { key: 'ㅊ', code: 'KeyC' })
+    await settle()
+    expect(q('[data-quick-create]')).not.toBeNull()
+  })
+
+  it('R1-H 복원한 초안을 고쳐 보내다 닫고 실패하면 고친 값이 초안으로 돌아온다 + 토스트', async () => {
+    const harness = await setup({ token: 'mock_reject-writes' })
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', 'A 초안')
+    click('[data-quick-create-cancel]')
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', 'B 고침')
+    harness.hold.create = true
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle()
+    click('[data-quick-create-cancel]')
+    harness.hold.create = false
+    await act(async () => { for (const release of harness.hold.release.splice(0)) release() })
+    await settle(12)
+    expect(toastText('failed')).toContain('초안으로 남겼습니다')
+    pressC()
+    await settle()
+    expect(valueOf('[data-quick-create-title]')).toBe('B 고침')
+  })
+
+  it('R1-I 모달이 열린 채 페이지가 닫히면 모달도 닫힌다 — 밖의 Esc 를 가로채지 않는다(글은 초안으로)', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    pressC()
+    await settle()
+    setValue('[data-quick-create-title]', '닫힐 때 남김')
+    await renderPage(harness, { open: false })
+    expect(q('[data-quick-create]')).toBeNull()
+    const outside = document.createElement('textarea')
+    document.body.append(outside)
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    let reached = false
+    outside.addEventListener('keydown', () => { reached = true })
+    act(() => { outside.dispatchEvent(event) })
+    outside.remove()
+    expect(reached).toBe(true)
+    expect(event.defaultPrevented).toBe(false)
+    await renderPage(harness)
+    pressC()
+    await settle()
+    expect(valueOf('[data-quick-create-title]')).toBe('닫힐 때 남김')
+  })
+
+  it('R1-J 연결 세대가 바뀐 뒤 온 늦은 응답 — 결과를 확인하지 못함(「모름」), 출처 생성 1건', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    pressC()
+    await settle()
+    harness.hold.create = true
+    setValue('[data-quick-create-title]', '세대 바뀜')
+    key(el('[data-quick-create-title]'), { key: 'Enter' })
+    await settle()
+    // 토큰 교체(같은 연결, 세대 +1).
+    const replaced = await harness.service.addConnection({ sourceId: 'mock-jira', token: 'mock_l604_fixture', replaceId: harness.connectionId })
+    if (!replaced.ok) throw new Error('replace')
+    await act(async () => { settingsListener(harness.service.settings()) })
+    await settle()
+    harness.hold.create = false
+    await act(async () => { for (const release of harness.hold.release.splice(0)) release() })
+    await settle(12)
+    expect(el('[data-quick-create]').getAttribute('data-quick-create-phase')).toBe('unknown')
+    expect(el('[data-quick-create-error]').textContent).toContain('연결이 바뀌어')
+    expect(creates(harness)).toBe(1)
+  })
+
+  it('R1-J 인라인 실패 — 값 보존 + 분류 문구 · 보내는 중 Esc·blur 로 닫히지 않음 · late 는 「확인 중」', async () => {
+    const harness = await setup({ token: 'mock_reject-writes' })
+    await renderPage(harness)
+    const todo = await openTodoInline()
+    const input = typeInline(todo, '인라인 거절')
+    harness.hold.create = true
+    vi.useFakeTimers()
+    key(input, { key: 'Enter' })
+    await settle()
+    expect(input.getAttribute('data-inline-add-phase')).toBe('sending')
+    key(input, { key: 'Escape' })
+    act(() => { input.dispatchEvent(new FocusEvent('blur')) ; input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })) })
+    await settle()
+    expect(todo.querySelector('[data-inline-add]')).not.toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
+    await settle()
+    expect(el('[data-board-column="st:core-todo"] [data-inline-add]').getAttribute('data-inline-add-phase')).toBe('late')
+    expect(el('[data-inline-add-busy]').textContent).toContain('확인 중')
+    harness.hold.create = false
+    await act(async () => { for (const release of harness.hold.release.splice(0)) release() })
+    await settle(12)
+    const after = el('[data-board-column="st:core-todo"] [data-inline-add]')
+    expect(after.getAttribute('data-inline-add-phase')).toBe('idle')
+    expect(after instanceof HTMLInputElement ? after.value : '').toBe('인라인 거절')
+    expect(el('[data-inline-add-error]').textContent).toContain('출처가 거절했습니다')
+    expect(creates(harness)).toBe(1)
+  })
+
+  it('R1-O 인라인 — blur 로 닫히고(C7) 친 글은 칸에 남아 다시 열면 돌아온다', async () => {
+    const harness = await setup()
+    await renderPage(harness)
+    const todo = await openTodoInline()
+    const input = typeInline(todo, '쓰다 만 글')
+    act(() => { input.dispatchEvent(new FocusEvent('blur')); input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })) })
+    await settle()
+    expect(todo.querySelector('[data-inline-add]')).toBeNull()
+    act(() => { todo.querySelector<HTMLElement>('[data-inline-add-open]')?.click() })
+    await settle()
+    const again = todo.querySelector('[data-inline-add]')
+    expect(again instanceof HTMLInputElement ? again.value : '').toBe('쓰다 만 글')
+    expect(creates(harness)).toBe(0)
+  })
+
+  it('R1-M 초안 글은 디스크(ui-prefs)·로그로 나가지 않는다 — 출처 만들기 요청에만', async () => {
+    const lines: string[] = []
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true })
+    try {
+      const harness = await setup()
+      await renderPage(harness)
+      pressC()
+      await settle()
+      setValue('[data-quick-create-title]', '비밀스러운초안제목')
+      setValue('[data-quick-create-body]', '비밀스러운초안본문')
+      click('[data-quick-create-cancel]')
+      click('[data-space-switch]')
+      click('[data-space-row="WEB"]')
+      await settle()
+      click('[data-space-switch]')
+      click('[data-space-row="CORE"]')
+      await settle()
+      pressC()
+      await settle()
+      key(el('[data-quick-create-title]'), { key: 'Enter' })
+      await settle(12)
+      expect(harness.state.createCalls?.at(-1)).toMatchObject({ title: '비밀스러운초안제목' })
+      // 양성 대조 — 기록기가 실제로 줄을 받았고(작업 요청 로그), ui-prefs 쓰기도 일어났다.
+      expect(lines.some((line) => line.includes('"op":"createItem"'))).toBe(true)
+      expect(harness.prefsWrites.length).toBeGreaterThan(0)
+      const written = JSON.stringify(harness.prefsWrites) + lines.join('')
+      expect(written).not.toContain('비밀스러운초안')
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

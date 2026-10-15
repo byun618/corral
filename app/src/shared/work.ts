@@ -298,6 +298,11 @@ export type WorkError = {
   status: number | null
   /** 저장 충돌(`conflict`)일 때 서버의 지금 값(E7). 출처가 모르면 없다. */
   conflict?: WorkConflict
+  /**
+   * 쓰기가 출처에 닿았을 수 있는데 결과를 모른다(LIFE-604 R1-A) — 시간 초과·응답 끊김·응답 모양 깨짐. 분류(`kind`)는 그대로 두고 덧붙인다(K2).
+   * 화면은 실패로 읽지 않는다 — 목록을 다시 확인하기 전에는 같은 쓰기를 다시 보내게 하지 않는다. 보내기 전 실패(DNS·연결 거부)·출처의 거절에는 없다.
+   */
+  maybeApplied?: true
 }
 
 /** 렌더러 → main 봉투. `requestId` 는 늦은 응답 폐기용 — main 은 그대로 돌려준다(소비는 T2). */

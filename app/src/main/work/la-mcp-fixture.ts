@@ -21,7 +21,8 @@ import { isRecord, safeParse } from '../../shared/json.js'
 import { readWorkRelationKind, type WorkCategory, type WorkRelationKind } from '../../shared/work.js'
 
 export type FixtureScope = 'write' | 'read'
-export type FixtureFault = { kind: 'http'; status: number; body: string } | { kind: 'drop' } | { kind: 'delay'; ms: number }
+/** `drop-after` = 도구를 처리한 **뒤** 소켓을 끊는다 — 요청은 닿았는데 답이 사라진 경우(LIFE-604 R1-A ⓑ). */
+export type FixtureFault = { kind: 'http'; status: number; body: string } | { kind: 'drop' } | { kind: 'delay'; ms: number } | { kind: 'drop-after' }
 /**
  * 양성 대조용 깨기 — `issue-statusId`: 일감 행의 statusId 를 숫자로 · `tool-error`: 도구 결과를 isError 로 · `drop-statusLabel`: statusLabel 칸 삭제
  * · `drop-<칸>`: 단건·목록 행에서 그 칸 삭제 · `isError-string`: isError 를 글자 'true' 로 · `rpc-wrong-version`: jsonrpc 를 'broken' 으로
@@ -145,6 +146,8 @@ export class LaMcpFixture {
   issues = seedIssues()
   links: FixtureLink[] = []
   fault: FixtureFault | null = null
+  /** 도구 이름별 고장(LIFE-604 R1-A) — 그 도구 요청에만. 예: `issue_get` 만 끊어 생성 뒤 재조회 실패를 만든다. */
+  readonly toolFaults = new Map<string, FixtureFault>()
   corrupt: FixtureCorrupt | null = null
   echo: FixtureEcho | null = null
   holdStream = false
@@ -181,8 +184,8 @@ export class LaMcpFixture {
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
     this.requests.push({ method, tool, bearer: token === '' ? 'none' : token.startsWith('life_pat_') ? 'life_pat' : 'other' })
 
-    const fault = this.fault
-    if (fault !== null) {
+    const fault = (tool === null ? undefined : this.toolFaults.get(tool)) ?? this.fault
+    if (fault !== null && fault.kind !== 'drop-after') {
       if (fault.kind === 'drop') { request.socket.destroy(); return }
       if (fault.kind === 'http') { this.json({ response, status: fault.status, value: safeParse(fault.body) ?? fault.body }); return }
       await new Promise((resolve) => setTimeout(resolve, fault.ms))
@@ -220,6 +223,7 @@ export class LaMcpFixture {
     if (this.corrupt === 'isError-string') toolResult.isError = 'true'
     const rpc: Record<string, unknown> = { jsonrpc: this.corrupt === 'rpc-wrong-version' ? 'broken' : '2.0', id, result: toolResult }
     if (this.corrupt === 'rpc-error-string') rpc.error = 'failed'
+    if (fault?.kind === 'drop-after') { request.socket.destroy(); return }
     this.sse({ response, value: rpc })
   }
 

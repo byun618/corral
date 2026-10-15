@@ -15,7 +15,7 @@
 import { isRecord, safeParse } from '../../shared/json.js'
 import type { WorkError } from '../../shared/work.js'
 import { log } from '../log.js'
-import { classifyHttpStatus, classifyThrown, classifyToolError, redactSecret, workError } from './errors.js'
+import { classifyHttpStatus, classifyThrown, classifyToolError, failedBeforeConnect, redactSecret, workError } from './errors.js'
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18'
 const SUPPORTED_VERSIONS = new Set(['2025-06-18', '2025-03-26'])
@@ -23,7 +23,8 @@ const MAX_BODY_BYTES = 16 * 1024 * 1024
 /** HTTP 오류 본문에서 코드 힌트를 찾을 때 읽는 상한. */
 const HINT_BYTES = 64 * 1024
 
-export type McpOutcome = { ok: true; value: unknown } | { ok: false; error: WorkError }
+/** `unsent` = 도구 요청을 보내지 않았다(닫힘·초기화 실패·연결 전 실패) — 쓰기가 출처에 닿지 않았음이 확실하다(LIFE-604 R1-A). */
+export type McpOutcome = { ok: true; value: unknown } | { ok: false; error: WorkError; unsent?: true }
 
 export type McpHttpOptions = {
   url: string
@@ -118,7 +119,7 @@ export class McpHttpClient {
   /** 도구 하나를 부르고 결과 JSON 을 돌려준다. `isError` 는 분류된 오류가 된다(C3). */
   async callTool({ name, args }: { name: string; args: Record<string, unknown> }): Promise<McpOutcome> {
     const ready = await this.ensureInitialized()
-    if (!ready.ok) return ready
+    if (!ready.ok) return { ...ready, unsent: true }
     const response = await this.rpc({ method: 'tools/call', params: { name, arguments: args } })
     if (!response.ok) return response
     return this.clean(readToolResult({ value: response.value, tool: name, toolError: this.toolError }))
@@ -170,7 +171,7 @@ export class McpHttpClient {
   }
 
   private async send({ body, id }: { body: Record<string, unknown>; id: number | null }): Promise<McpOutcome> {
-    if (this.closed) return { ok: false, error: closedError() }
+    if (this.closed) return { ok: false, error: closedError(), unsent: true }
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
@@ -196,13 +197,14 @@ export class McpHttpClient {
       return readEnvelope({ reply, host: this.host, status: response.status })
     } catch (error) {
       if (error instanceof BodyTooLarge) return { ok: false, error: workError({ kind: 'invalid_response', message: `${this.host} 응답이 너무 큽니다 (${MAX_BODY_BYTES} bytes 초과).` }) }
-      return { ok: false, error: classifyThrown({ error, host: this.host, timeoutMs: this.timeoutMs }) }
+      const classified = classifyThrown({ error, host: this.host, timeoutMs: this.timeoutMs })
+      return failedBeforeConnect(error) ? { ok: false, error: classified, unsent: true } : { ok: false, error: classified }
     }
   }
 
   /** 나가는 문구에서 이 클라이언트의 토큰을 지운다 — 코드만 옮기는 분류 위의 두 번째 칸막이. */
   private clean(outcome: McpOutcome): McpOutcome {
-    return outcome.ok ? outcome : { ok: false, error: { ...outcome.error, message: redactSecret({ text: outcome.error.message, secret: this.token }) } }
+    return outcome.ok ? outcome : { ...outcome, error: { ...outcome.error, message: redactSecret({ text: outcome.error.message, secret: this.token }) } }
   }
 }
 

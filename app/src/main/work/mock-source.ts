@@ -41,7 +41,7 @@ import type {
   WorkStatus,
 } from '../../shared/work.js'
 import type { WorkErrorKind } from '../../shared/work.js'
-import { workError } from './errors.js'
+import { unknownWriteOutcome, workError } from './errors.js'
 import type { WorkCallMeta, WorkOutcome, WorkSourceClient, WorkSourceEntry } from './source.js'
 
 export const MOCK_SOURCE_ID = 'mock-jira'
@@ -76,9 +76,11 @@ export type MockBehavior = {
    * `fail` = 생성 메타 요청을 출처가 거절(메타 실패 → 다시 시도).
    */
   createMeta: 'plain' | 'unsupported' | 'fail'
+  /** `create-lost`(LIFE-604 R1-A) — 만들기는 적용하고 답을 잃는다(결과를 모르는 실패, `maybeApplied`). */
+  createLost: boolean
 }
 
-export const PLAIN_BEHAVIOR: MockBehavior = { fault: null, delayMs: 0, rejectWrites: false, flip: null, caps: {}, drift: false, createMeta: 'plain' }
+export const PLAIN_BEHAVIOR: MockBehavior = { fault: null, delayMs: 0, rejectWrites: false, flip: null, caps: {}, drift: false, createMeta: 'plain', createLost: false }
 
 function capsOf(token: string): Partial<WorkCapabilities> {
   const caps: Partial<WorkCapabilities> = {}
@@ -111,6 +113,7 @@ export function mockBehaviorOf(token: string): MockBehavior {
     caps: capsOf(token),
     drift: token.includes('drift'),
     createMeta: token.includes('createmeta-unsupported') ? 'unsupported' : token.includes('createmeta-fail') ? 'fail' : 'plain',
+    createLost: token.includes('create-lost'),
   }
 }
 
@@ -483,6 +486,7 @@ export class MockSource implements WorkSourceClient {
         }
         this.state.items.push(created)
         if (parent !== null) this.touch({ item: parent, patch: {}, writeId, fields: [{ field: 'child', from: null, to: `${created.key} ${created.title}` }] })
+        if (this.behavior.createLost) return { ok: false, error: unknownWriteOutcome({ error: workError({ kind: 'network', message: '모의 출처의 답이 끊겼습니다 (create-lost).' }), unsent: false }) }
         return { ok: true, result: { op: 'createItem', item: this.view({ item: created, withRelations: true }) } }
       }
       case 'listHistory': {

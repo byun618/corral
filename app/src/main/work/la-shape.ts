@@ -207,6 +207,16 @@ export function readIssueUpdated(value: unknown, path: string): LaIssueCore {
   return readCore(row, path)
 }
 
+/**
+ * 생성 응답(`IssueResponse`, LIFE-604 R1-A) — 단건 재조회가 실패했을 때 이 값으로 최소 작업을 만든다. 막 만든 일감은 연결·막힘이 없다
+ * (`issue_create` 는 연결을 받지 않는다) — 막힘 0 · 연결 빈 배열로 둔다.
+ */
+export function readIssueCreated(value: unknown, path: string): LaIssue {
+  const row = record(value, path)
+  const description = nullableStr(row, 'description', path)
+  return { ...readCore(row, path), description, openBlockerCount: 0, openBlockers: [], links: [] }
+}
+
 /** 단건(`IssueResponse & { links }`) — description 칸·links 배열 필수. 미해소 막힘은 links 에서 센다. */
 export function readIssueDetail(value: unknown, path: string): LaIssueDetail {
   const row = record(value, path)

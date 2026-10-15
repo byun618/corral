@@ -5,12 +5,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { WorkCall, WorkCreateMeta, WorkResponse } from '../../shared/work.js'
+import type { WorkCall, WorkCreateMeta, WorkErrorKind, WorkResponse } from '../../shared/work.js'
 import { WorkActivityStore, readActivityRecord } from './activity-store.js'
-import { FIXTURE_IDS, FIXTURE_STATUS } from './la-mcp-fixture.js'
+import { FIXTURE_IDS, FIXTURE_STATUS, LaMcpFixture } from './la-mcp-fixture.js'
+import { laSourceEntry } from './la-source.js'
 import { MOCK_CAPABILITIES, MOCK_DESCRIPTOR, mockSourceEntry, seedMockState, type MockState } from './mock-source.js'
 import type { WorkOutcome, WorkSourceEntry } from './source.js'
 import { FAKE_LA_TOKEN, FAKE_MOCK_TOKEN, laFixtureHarness, workHarness, type WorkHarness } from './test-kit.js'
+import { unknownWriteOutcome, workError } from './errors.js'
 
 let seq = 0
 const sender = ({ harness, connectionId }: { harness: WorkHarness; connectionId: string }) => (call: WorkCall | Record<string, unknown>): Promise<WorkResponse> =>
@@ -21,8 +23,8 @@ afterEach(async () => {
   while (stops.length > 0) await stops.pop()?.()
 })
 
-async function laSetup() {
-  const harness = await laFixtureHarness()
+async function laSetup({ timeoutMs }: { timeoutMs?: number } = {}) {
+  const harness = await laFixtureHarness({ timeoutMs })
   stops.push(() => harness.fixture.stop())
   const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
   if (!added.ok) throw new Error(added.error.message)
@@ -86,6 +88,99 @@ describe('LA 칸 전달 (C4 — 모의 MCP 가 받은 인자)', () => {
     expect(text).toContain('isError')
     expect(text).toContain('모르는 칸 body')
     expect(harness.fixture.issues.some((issue) => issue.title === 't')).toBe(false)
+  })
+})
+
+/** `issue_create` 요청만 던지게 하는 fetch — 던질 오류의 코드를 고른다(연결 전 실패 대 연결 뒤 끊김). */
+function failingCreateFetch(code: string): typeof fetch {
+  return async (input, init) => {
+    if (typeof init?.body === 'string' && init.body.includes('"name":"issue_create"')) throw new TypeError('fetch failed', { cause: { code } })
+    return fetch(input, init)
+  }
+}
+
+async function laWithFetch(fetchImpl: typeof fetch) {
+  const fixture = new LaMcpFixture()
+  fixture.tokens.set(FAKE_LA_TOKEN, 'write')
+  const url = await fixture.start()
+  stops.push(() => fixture.stop())
+  const harness = workHarness({ entries: [laSourceEntry({ url, clientVersion: 'test', fetchImpl })] })
+  const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
+  if (!added.ok) throw new Error(added.error.message)
+  return { fixture, send: sender({ harness, connectionId: added.connection.id }) }
+}
+
+describe('LA 만들기 결과를 모를 때 (R1-A)', () => {
+  const call = { op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: null, kindKey: 'task', title: '재조회 끊김' }
+
+  it('ⓐ issue_create 성공 뒤 재조회(issue_get)가 끊기면 실패가 아니라 만든 작업(최소 값)을 돌려준다', async () => {
+    const { fixture, send } = await laSetup()
+    fixture.toolFaults.set('issue_get', { kind: 'drop' })
+    const response = await send({ ...call, body: '본문', priority: 'high', placement: 'backlog' })
+    expect(fixture.createArgs).toHaveLength(1)
+    const made = fixture.issues.find((issue) => issue.title === '재조회 끊김')
+    expect(response).toMatchObject({ ok: true, result: { op: 'createItem', item: { id: made?.id, key: `LIFE-${made?.sequentialId}`, title: '재조회 끊김', body: '본문', priority: 'high', placement: 'backlog', spaceKey: FIXTURE_IDS.corral, parentId: null, openBlockerCount: 0, relations: [] } } })
+  })
+
+  it('ⓑ issue_create 가 처리된 뒤 답이 끊기면 「만들어졌을 수 있음」(maybeApplied) — 분류는 network 그대로, 다시 보내지 않는다', async () => {
+    const { fixture, send } = await laSetup()
+    fixture.toolFaults.set('issue_create', { kind: 'drop-after' })
+    const response = await send(call)
+    expect(response).toMatchObject({ ok: false, error: { kind: 'network', maybeApplied: true, message: expect.stringContaining('만들어졌는지 모릅니다') } })
+    expect(fixture.createArgs).toHaveLength(1)
+    expect(fixture.requests.filter((request) => request.tool === 'issue_create')).toHaveLength(1)
+  })
+
+  it('ⓑ 시간 초과(요청은 닿았다)도 「만들어졌을 수 있음」', async () => {
+    const { fixture, send } = await laSetup({ timeoutMs: 200 })
+    fixture.toolFaults.set('issue_create', { kind: 'delay', ms: 600 })
+    const response = await send(call)
+    expect(response).toMatchObject({ ok: false, error: { kind: 'network', maybeApplied: true } })
+    expect(fixture.requests.filter((request) => request.tool === 'issue_create')).toHaveLength(1)
+  })
+
+  it('ⓑ 연결 뒤 끊김(ECONNRESET)은 닿았을 수 있음 · 대조 — 연결 전 실패(ECONNREFUSED·DNS)는 보통 실패(maybeApplied 없음)', async () => {
+    const reset = await laWithFetch(failingCreateFetch('ECONNRESET'))
+    expect(await reset.send(call)).toMatchObject({ ok: false, error: { kind: 'network', maybeApplied: true } })
+    for (const code of ['ECONNREFUSED', 'ENOTFOUND']) {
+      const refused = await laWithFetch(failingCreateFetch(code))
+      const response = await refused.send(call)
+      expect(response).toMatchObject({ ok: false, error: { kind: 'network' } })
+      if (response.ok) throw new Error('ok')
+      expect(response.error.maybeApplied).toBeUndefined()
+      expect(response.error.message).not.toContain('만들어졌는지 모릅니다')
+      expect(refused.fixture.createArgs).toHaveLength(0)
+    }
+  })
+
+  it('대조 — 출처가 거절한 만들기(HTTP 403 · 도구 오류)는 maybeApplied 가 없다', async () => {
+    const { fixture, send } = await laSetup()
+    fixture.toolFaults.set('issue_create', { kind: 'http', status: 403, body: '{"code":"FORBIDDEN"}' })
+    const forbidden = await send(call)
+    expect(forbidden).toMatchObject({ ok: false, error: { kind: 'forbidden' } })
+    if (forbidden.ok) throw new Error('ok')
+    expect(forbidden.error.maybeApplied).toBeUndefined()
+    fixture.toolFaults.clear()
+    const rejected = await send({ ...call, parentId: FIXTURE_IDS.checkpoint, kindKey: 'checkpoint' })
+    expect(rejected).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+    if (rejected.ok) throw new Error('ok')
+    expect(rejected.error.maybeApplied).toBeUndefined()
+  })
+
+  it('unknownWriteOutcome — network·invalid_response 만, unsent 면 그대로', () => {
+    expect(unknownWriteOutcome({ error: workError({ kind: 'network', message: 'm' }), unsent: false })).toMatchObject({ kind: 'network', maybeApplied: true })
+    expect(unknownWriteOutcome({ error: workError({ kind: 'invalid_response', message: 'm' }), unsent: false })).toMatchObject({ maybeApplied: true })
+    expect(unknownWriteOutcome({ error: workError({ kind: 'network', message: 'm' }), unsent: true })).toEqual(workError({ kind: 'network', message: 'm' }))
+    const refused: WorkErrorKind[] = ['auth', 'forbidden', 'rejected']
+    for (const kind of refused) expect(unknownWriteOutcome({ error: workError({ kind, message: 'm' }), unsent: false })).toEqual(workError({ kind, message: 'm' }))
+  })
+
+  it('모의 출처 create-lost — 적용하고 답을 잃는다(화면 시험용)', async () => {
+    const { send, state } = await mockSetup({ token: `${FAKE_MOCK_TOKEN}_create-lost` })
+    const before = state.items.length
+    const response = await send({ op: 'createItem', spaceKey: 'CORE', parentId: null, kindKey: 'story', title: '잃은 답' })
+    expect(response).toMatchObject({ ok: false, error: { kind: 'network', maybeApplied: true } })
+    expect(state.items.length).toBe(before + 1)
   })
 })
 

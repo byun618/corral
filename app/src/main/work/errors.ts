@@ -54,6 +54,14 @@ function errorName(error: unknown): string | null {
   return error instanceof Error ? error.name : null
 }
 
+/** 연결을 맺기 전에 실패했나 — 요청이 출처에 닿지 않았다(DNS·연결 거부·연결 시간 초과). 그 밖의 끊김·시간 초과는 닿았을 수 있다(LIFE-604 R1-A). */
+const PRE_CONNECT_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT'])
+
+export function failedBeforeConnect(error: unknown): boolean {
+  const code = errorCode(error)
+  return code !== null && PRE_CONNECT_CODES.has(code)
+}
+
 /** `fetch` 가 던진 것 — 시간 초과·DNS·연결 거부·끊김은 네트워크. 모르는 것도 네트워크 갈래지만 코드를 그대로 적는다. */
 export function classifyThrown({ error, host, timeoutMs }: { error: unknown; host: string; timeoutMs: number }): WorkError {
   const name = errorName(error)
@@ -74,4 +82,13 @@ export function classifyToolError({ text }: { text: string }): WorkError {
   if (code === 'UNAUTHORIZED' || statusCode === 401) return workError({ kind: 'auth', status: 401, message: '토큰이 거부됐습니다. 토큰이 만료됐거나 폐기됐습니다.' })
   if (code === 'FORBIDDEN' || statusCode === 403) return workError({ kind: 'forbidden', status: 403, message: '연결은 됐지만 이 작업을 할 권한이 없습니다. 토큰 범위(scope)를 확인하세요.' })
   return workError({ kind: 'rejected', status: statusCode, message: code === null ? '작업 출처가 요청을 거절했습니다.' : `작업 출처가 요청을 거절했습니다 (${code}).` })
+}
+
+/**
+ * 쓰기 실패를 「닿았을 수 있음」 으로(LIFE-604 R1-A) — 출처가 답하지 않았거나(시간 초과·끊김·5xx) 답이 깨졌을 때만. 출처가 분명히 거절했거나
+ * (인증·권한·거절) 보내지 않은 실패(`unsent`)는 그대로. 분류(`kind`)는 바꾸지 않는다(K2) — 문구 앞에 결과를 모른다는 말을 붙인다.
+ */
+export function unknownWriteOutcome({ error, unsent }: { error: WorkError; unsent: boolean }): WorkError {
+  if (unsent || (error.kind !== 'network' && error.kind !== 'invalid_response')) return error
+  return { ...error, message: `만들어졌는지 모릅니다 — ${error.message}`, maybeApplied: true }
 }

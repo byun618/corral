@@ -42,6 +42,18 @@ export function keepParent({ parent, kindKey, kindLabel }: { parent: WorkItem | 
   return { parentId: null, notice: `${parent.key} 은(는) ${kindLabel} 를 자식으로 받지 않아 부모를 비웠습니다.` }
 }
 
+/**
+ * 폼의 부모가 지금 쓸 수 있는가(R1-D) — 불러온 목록에 있고 그 종류를 자식으로 받아야 한다. 아니면 비우고 알림 글.
+ * 칩은 불러온 작업에서 부모를 찾아 그리므로, 목록에 없는 부모 id 를 남기면 칩(「부모 없음」)과 요청이 어긋난다.
+ */
+export function checkParent({ form, items }: { form: CreateForm; items: WorkItem[] }): { form: CreateForm; notice: string | null } {
+  if (form.parentId === null) return { form, notice: null }
+  const parent = items.find((item) => item.id === form.parentId)
+  if (parent !== undefined && parent.kind.childKinds.includes(form.kindKey)) return { form, notice: null }
+  const notice = parent === undefined ? '부모가 지금 목록에 없어 비웠습니다.' : `${parent.key} 은(는) 이 종류를 자식으로 받지 않아 부모를 비웠습니다.`
+  return { form: { ...form, parentId: null }, notice }
+}
+
 /** 상태 후보 — 메타가 허용한 상태만, 스페이스 상태 순서대로. */
 export function statusOptions({ statuses, meta }: { statuses: WorkStatus[]; meta: WorkCreateMeta }): WorkStatus[] {
   return statuses.filter((status) => meta.statusKeys.includes(status.key))
@@ -91,6 +103,9 @@ export function hasDraftContent(form: CreateForm): boolean {
 export function nextForm(form: CreateForm): CreateForm {
   return { ...form, title: '', body: '', values: {} }
 }
+
+/** 결과를 모르는 만들기(R1-A) 뒤의 안내 — 목록을 다시 확인하기 전에는 다시 만들지 못한다. */
+export const UNKNOWN_CREATE = '만들어졌는지 모릅니다 — 「목록 다시 확인」 뒤에 다시 만들 수 있습니다.'
 
 /** 오류 분류 문구(T1 K2) — 인증·권한·네트워크는 앞에 갈래를 붙인다. */
 export function createErrorText(error: { kind: string; message: string }): string {

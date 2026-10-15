@@ -92,7 +92,7 @@ export type LateSettled = { kind: 'ok'; result: WorkResult } | { kind: 'failed';
  */
 export type CreateRequest = { lockKey: string; connectionId: string; call: Extract<WorkCall, { op: 'createItem' }> }
 export type CreateSettled = { kind: 'ok'; item: WorkItem } | { kind: 'failed'; error: WorkError } | { kind: 'stale' }
-export type CreateOutcome = CreateSettled | { kind: 'busy' } | { kind: 'late'; settled: Promise<CreateSettled> }
+export type CreateOutcome = CreateSettled | { kind: 'late'; settled: Promise<CreateSettled> }
 
 /** 성공한 쓰기의 서버 값 — 열린 상세가 받는다. `seq` 는 같은 값이 다시 와도 알 수 있게. */
 export type SettledWrite = { uid: string; item: WorkItem; seq: number }
@@ -192,6 +192,9 @@ function replaceItem({ item }: { item: WorkItem }): (items: WorkItem[]) => WorkI
   return (items) => items.map((entry) => (entry.id === item.id ? { ...item, body: entry.body, relations: entry.relations } : entry))
 }
 
+/** 목록 끝에 붙들어 두는 만든 작업 수 상한(R1-B). */
+const CREATED_CAP = 20
+
 /**
  * 만든 작업을 목록 끝에 — 받은 쪽에 이미 있으면 그 값(서버 목록)을 쓰고 기록을 지운다. 다 받았는데(다음 쪽 없음) 없으면 기록만 지운다
  * (다른 곳으로 옮겨졌거나 지워졌다 — 화면에 남기지 않는다). 아직 받지 않은 쪽이 있으면 서버가 돌려준 값으로 끝에 둔다(LIFE-604).
@@ -267,6 +270,14 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
    * 받은 쪽에 나올 때까지(또는 다 받았는데 없으면 버림) 목록 끝에 둔다. 같은 id 는 한 장만.
    */
   const createdRef = useRef(new Map<string, { connectionId: string; spaceKey: string; item: WorkItem }>())
+  /**
+   * 만든 작업의 서버 값이 새로 오면(쓰기 확정·늦은 답) 기록도 그 값으로(R1-B) — 옛 스냅샷이 재조회 뒤 서버가 바꾼 값을 덮지 않는다.
+   * 다른 스페이스로 옮겨졌으면 그 스페이스 몫이 된다(이 스페이스 목록에는 남지 않는다).
+   */
+  const keepCreated = useCallback(({ connectionId, item }: { connectionId: string; item: WorkItem }) => {
+    const uid = itemUid({ connectionId, itemId: item.id })
+    if (createdRef.current.has(uid)) createdRef.current.set(uid, { connectionId, spaceKey: item.spaceKey, item })
+  }, [])
   /** 스페이스 자료(연결·스페이스)마다 받아 둔 쪽 수 — 다시 열 때 그만큼 다시 받는다(R1-N). */
   const pagesRef = useRef(new Map<string, number>())
 
@@ -597,6 +608,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
   // 쓰기 직후엔 그 키의 진행 중 작업 중 조회 응답을 버린다(R3-B) — 쓰기 전에 잡은 옛 값이 늦게 와서 덮지 않게. 찾는 중·없음이던 항목도 서버 값으로.
   // 키 조회도 같다(R4-B) — 진행 중이면 그 응답을 버리고 다시 보낸다.
   const reflect = useCallback(({ connectionId, item }: { connectionId: string; item: WorkItem }) => {
+    keepCreated({ connectionId, item })
     const id = `${connectionId}::${item.key}`
     gate.invalidate(`working:${id}`)
     if (finding.current) setSearchRound((value) => value + 1)
@@ -614,7 +626,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     setSearch((current) => (current.hits.some((hit) => hit.connectionId === connectionId && hit.item.id === item.id)
       ? { ...current, hits: current.hits.map((hit) => (hit.connectionId === connectionId && hit.item.id === item.id ? { connectionId, item: { ...hit.item, ...item } } : hit)) }
       : current))
-  }, [gate])
+  }, [gate, keepCreated])
 
   const move = useCallback(async ({ row, intent, undo, restore }: MoveRequest & { undo: boolean; restore: WorkResolutionChoice | null }): Promise<void> => {
     const call = callOf({ item: row.item, intent, restore })
@@ -789,6 +801,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         // 늦게 성공한 쓰기도 열린 상세가 서버 값을 받는다(R1-C).
         const item = 'item' in late.result && late.result.item !== null && late.result.item.id === itemId ? late.result.item : null
         if (item !== null) {
+          keepCreated({ connectionId, item })
           settledSeq.current += 1
           setSettledWrite({ uid, item, seq: settledSeq.current })
         }
@@ -824,7 +837,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       void reloadRef.current({ quiet: true })
     }
     return { kind: 'ok', result }
-  }, [patch, gate, notify, reflect, currentGeneration])
+  }, [patch, gate, notify, reflect, currentGeneration, keepCreated])
 
   // --- 만들기 (LIFE-604) ---
   const creating = useRef(new Set<string>())
@@ -835,7 +848,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
    * 늦으면 잠금을 쥔 채 `late` 를 돌려주고, 원래 답이 오면 잠금을 풀고 확정한다.
    */
   const createItem = useCallback(async ({ lockKey, connectionId, call }: CreateRequest): Promise<CreateOutcome> => {
-    if (creating.current.has(lockKey)) return { kind: 'busy' }
+    // 같은 진입의 앞 만들기가 아직 확정 전이면 보내지 않는다 — 화면은 그동안 「확인 중」 이라 여기 닿지 않는다(마지막 칸막이).
+    if (creating.current.has(lockKey)) return { kind: 'failed', error: { kind: 'invalid_request', message: '앞 만들기를 확인하는 중입니다 — 답이 온 뒤 다시 만드세요.', status: null } }
     creating.current.add(lockKey)
     setCreateBusy(new Set(creating.current))
     const generation = currentGeneration(connectionId)
@@ -847,10 +861,19 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     }
     const finish = (response: WorkResponse): CreateSettled => {
       if (generation !== currentGeneration(connectionId)) return { kind: 'stale' }
-      if (!response.ok) return { kind: 'failed', error: response.error }
+      if (!response.ok) {
+        // 만들어졌을 수 있다(R1-A) — 목록을 다시 받아 새 작업이 있으면 보이게 한다. 다시 보내지는 않는다.
+        if (response.error.maybeApplied === true) void reloadRef.current({ quiet: true })
+        return { kind: 'failed', error: response.error }
+      }
       if (response.result.op !== 'createItem') return { kind: 'failed', error: { kind: 'invalid_response', message: '출처 응답 모양이 다릅니다.', status: null } }
       const { item } = response.result
       createdRef.current.set(itemUid({ connectionId, itemId: item.id }), { connectionId, spaceKey: item.spaceKey, item })
+      // 상한 — 오래된 것부터 버린다(받은 쪽에 나오면 어차피 지워진다).
+      for (const uid of createdRef.current.keys()) {
+        if (createdRef.current.size <= CREATED_CAP) break
+        createdRef.current.delete(uid)
+      }
       setLoad((value) => ({ ...value, data: value.data.map((data) => (data.connectionId === connectionId && data.spaceKey === item.spaceKey ? { ...data, items: withCreated({ data, created: createdRef.current }) } : data)) }))
       settles.current += 1
       void reloadRef.current({ quiet: true })

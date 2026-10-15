@@ -257,6 +257,14 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     },
   })
   const createBlocked = creator.blockedReason()
+  // 페이지가 닫히면 만들기 모달·인라인 입력도 닫는다 — 보이지 않는 모달이 앱의 Esc 를 가로채지 않게(R1-I). 글은 초안으로 남는다.
+  const closeCreate = creator.close
+  const closeInline = creator.closeInline
+  useEffect(() => {
+    if (open) return
+    closeCreate()
+    closeInline()
+  }, [open, closeCreate, closeInline])
 
   // 끄는 행 — 끌기 id 는 `(연결, 작업 id)`(R1-L). 놓기 판정은 이 행을 **인자로** 받는다(R1-A: 놓기 전에 지우면 판정이 idle 로 끝났다).
   const dragRow = useRef<TasksRow | null>(null)
@@ -401,7 +409,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       }
       if (typing || event.metaKey || event.ctrlKey || event.altKey) return
       // `C` = 만들기(LIFE-604). 수정키·입력 중·IME 조합·열린 메뉴·위층이면 무시, 쓰기가 막혀 있으면 열리지 않는다(openCreate 가 거절).
-      if ((event.key === 'c' || event.key === 'C') && !event.shiftKey && !imeComposing(event)) {
+      // 자판 배열과 무관하게 물리 키(`KeyC`)도 받는다 — 한글 자판이면 `key` 가 `ㅊ` 다(R1-E, keybindings.ts 관례).
+      if ((event.key === 'c' || event.key === 'C' || event.code === 'KeyC') && !event.shiftKey && !imeComposing(event)) {
         if (latest.current.menu !== null) return
         if (latest.current.openCreate()) event.preventDefault()
         return

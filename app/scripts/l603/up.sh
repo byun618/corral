@@ -4,6 +4,7 @@
 # - userData = <ROOT>/ud(런타임 소켓 = <ROOT>/ud/runtime/rpc.sock — transport.ts 기본값이 userData 아래) · 제어 소켓 = <ROOT>/ctl/ctl.sock
 # - herdr = 레포 guard 바이너리의 이름 세션 `l603g-<ROOT 꼬리>`. 설치본 corral · 그 userData · 사용자 herdr 세션 · 기본 소켓 무접촉.
 # - 만든 경로·PID 는 <ROOT>/made.txt 에 한 줄씩(down.sh 와 회차 기록이 읽는다).
+# - L603_HERDR_ENV="K=V ..." 는 격리 herdr 서버(→ pane 셸) env 에 더한다(최종 관문: DISABLE_AUTO_UPDATE=true — omz 업데이트 질문이 에이전트 명령 첫 글자를 먹는다).
 # - L603_DRY=1 이면 아무것도 띄우지 않고 쓸 환경만 찍고 끝난다(자기점검용 — up.nodetest.mjs).
 # 실패 전파: 가드 위반 exit 2·5 · 이미 떠 있음 3 · env 누수 4 · 소켓 안 뜸 1. 성공만 마지막 줄 「up ok」.
 set -u
@@ -25,7 +26,7 @@ pgrep -f -- "--user-data-dir=$ROOT/ud" >/dev/null && { echo "이 ROOT 의 앱이
 mkdir -p "$ROOT/ud" "$ROOT/shots" "$ROOT/ctl"; chmod 700 "$ROOT" "$ROOT/ud" "$ROOT/ctl"
 echo "path $ROOT" >> "$ROOT/made.txt"
 if [ ! -S "$SOCK" ]; then
-  sh "$APP/scripts/l470/clean.sh" -- "nohup '$GUARD' --session $SESSION server > '$ROOT/herdr-server.out' 2>&1 & echo \$! > '$ROOT/herdr.pid'" </dev/null
+  sh "$APP/scripts/l470/clean.sh" ${L603_HERDR_ENV:-} -- "nohup '$GUARD' --session $SESSION server > '$ROOT/herdr-server.out' 2>&1 & echo \$! > '$ROOT/herdr.pid'" </dev/null
   i=0; until [ -S "$SOCK" ]; do i=$((i+1)); [ $i -gt 150 ] && { echo "herdr 세션 소켓 안 뜸"; exit 1; }; sleep 0.2; done
   echo "path $(dirname "$SOCK")" >> "$ROOT/made.txt"
   echo "pid herdr $(cat "$ROOT/herdr.pid")" >> "$ROOT/made.txt"

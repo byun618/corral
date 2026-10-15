@@ -23,6 +23,16 @@ const KINDS = ['claude', 'codex', 'grok']
 const isRecord = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
 const sha16 = (text) => createHash('sha256').update(text).digest('hex').slice(0, 16)
 
+/**
+ * claude 2.1.x 는 붙여넣은 본문을 기록에 `<pasted_content id="…">\n본문\n</pasted_content id="…">` 봉투로 적는다(최종 관문 g26 실측).
+ * 턴 전체가 그 봉투 하나일 때만 벗긴다 — 봉투 밖에 다른 글이 있으면 그대로 둬 sha 가 갈리게(합쳐진 두 제출을 하나로 읽지 않게).
+ */
+const PASTED = /^\s*<pasted_content id="([^"]+)">\n([\s\S]*)\n<\/pasted_content id="\1">\s*$/
+export function unwrapPasted(text) {
+  const match = PASTED.exec(text)
+  return match === null ? text : match[2]
+}
+
 /** 한 행 → { known, user: string|null, chunk: boolean, aux: boolean } */
 function project(kind, row) {
   if (kind === 'claude') {
@@ -33,7 +43,7 @@ function project(kind, row) {
     const content = human ? row.message.content : null
     const text = typeof content === 'string' ? content
       : Array.isArray(content) ? content.map((part) => (isRecord(part) && part.type === 'text' && typeof part.text === 'string' ? part.text : '')).join('') : null
-    return { known, user: human ? text ?? '' : null, chunk: false, aux: false }
+    return { known, user: human ? unwrapPasted(text ?? '') : null, chunk: false, aux: false }
   }
   if (kind === 'codex') {
     const payload = isRecord(row.payload) ? row.payload : null

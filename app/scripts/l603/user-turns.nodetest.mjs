@@ -226,3 +226,20 @@ test('R3-I 기대 본문에 탭이 있으면 exit 2 「최종 관문 본문은 �
     assert.equal(run(['after', '--state', state, '--body-file', spaces]).status, 0)
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
+
+// --- 최종 관문 g26: claude 붙여넣기 봉투 -------------------------------------------------------------
+import { unwrapPasted } from './user-turns.mjs'
+test('claude <pasted_content> 봉투 — 턴 전체가 봉투 하나면 벗겨 본문 sha 와 맞고, 봉투 밖 글이 있으면 그대로(합친 두 제출은 안 맞음)', () => {
+  const body = '첫 줄\n둘째 줄 '
+  const wrapped = `\n\n<pasted_content id="b75b">\n${body}\n</pasted_content id="b75b">\n`
+  assert.equal(unwrapPasted(wrapped), body)
+  const counted = countUserTurns({ kind: 'claude', text: lines([claudeUser(wrapped), claudeAssistant]) })
+  assert.deepEqual(counted.turnSha, [bodySha(body)])
+  // 음성: 봉투 앞에 사람이 친 글 · id 가 안 맞는 닫힘 · 봉투 둘
+  assert.notEqual(unwrapPasted(`덧붙임${wrapped}`), body)
+  assert.equal(unwrapPasted(`<pasted_content id="a">\nx\n</pasted_content id="b">`), `<pasted_content id="a">\nx\n</pasted_content id="b">`)
+  const two = `${wrapped}${wrapped}`
+  assert.notEqual(bodySha(unwrapPasted(two)), bodySha(body))
+  // codex · grok 판독엔 적용하지 않는다
+  assert.notDeepEqual(countUserTurns({ kind: 'codex', text: lines([{ type: 'session_meta', payload: {} }, codexUser(wrapped)]) }).turnSha, [bodySha(body)])
+})

@@ -38,9 +38,10 @@ describe('페이지 생성 잠금 (R2-F)', () => {
       onWorkSettings: () => () => {},
       workRequest: (request: WorkRequest): Promise<WorkResponse> => {
         sent.push(request)
-        return new Promise((resolve) => {
-          release.push(() => resolve({ requestId: request.requestId, connectionId: request.connectionId, ok: false, error: { kind: 'rejected', message: '거절', status: null } }))
-        })
+        const answer: WorkResponse = { requestId: request.requestId, connectionId: request.connectionId, ok: false, error: { kind: 'rejected', message: '거절', status: null } }
+        // 첫 요청만 붙잡는다 — 잠금을 빼도 둘째가 바로 끝나 시험이 매달리지 않고 「출처 요청 1건」 단언에서 실패한다(R3-G(c)).
+        if (sent.length > 1) return Promise.resolve(answer)
+        return new Promise((resolve) => { release.push(() => resolve(answer)) })
       },
     })
     act(() => root.render(createElement(Probe)))

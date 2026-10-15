@@ -26,6 +26,7 @@ import {
   fieldValues,
   hasDraftContent,
   keepParent,
+  metaFieldKeys,
   nextForm,
   parentCandidates,
   submitProblem,
@@ -38,6 +39,8 @@ import type { SpaceData, TasksSpace } from '../tasks-model.js'
 import type { CreateSettled, TasksPageModel } from './useTasksPage.js'
 
 export const MODAL_LOCK = 'create:modal'
+/** 메타가 이 칸 상태로 만들 수 없다고 할 때(첫 상태만 받는 출처 등) — 칸 「+ 추가」 흐림·열린 입력의 이유. */
+const INLINE_STATUS_BLOCKED = '이 출처는 이 상태로 바로 만들 수 없습니다 — 만들 수 있는 칸에서 추가하세요.'
 
 /** `unknown` = 앞 만들기의 결과를 모른다(R1-A) — 「목록 다시 확인」 전에는 보내지 못한다. */
 export type ModalPhase = 'idle' | 'sending' | 'late' | 'unknown'
@@ -55,6 +58,11 @@ export type QuickCreateModal = {
   focusSeq: number
   /** 진입점 값으로 새 폼을 열었고 그 스페이스에 초안이 이미 있다 — 닫거나 만들어도 그 초안을 덮거나 지우지 않는다(R1-C). */
   keepDraft: boolean
+  /**
+   * 열 때(또는 스페이스를 바꿀 때) 그 스페이스의 초안 — 빈 폼으로 닫을 때 **이것과 같을 때만** 초안을 지운다(R3-B).
+   * 그 사이 닫은 뒤 실패가 보낸 값을 초안으로 돌려놨으면 지우지 않는다(보내는 중 닫고 다시 연 빈 모달).
+   */
+  draftAtOpen: CreateForm | null
 }
 
 export type InlineAdd = {
@@ -64,6 +72,8 @@ export type InlineAdd = {
   text: string
   phase: ModalPhase
   error: string | null
+  /** 보내는 중·확인 중에 닫으려 했다(blur·Esc) — 성공하면 닫는다(R3-E, C7 「blur = 닫기」). 실패면 결과를 보이려 남는다. */
+  closeRequested: boolean
 }
 
 /** 칸 「+ 추가」 의 모양 — 숨김 · 흐림(이유) · 켜짐. */
@@ -165,6 +175,16 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     if (current === null || current.form.kindKey === '') return
     fetchMeta({ target: current.target, kindKey: current.form.kindKey })
   }, [modalMetaKey, fetchMeta])
+  // 목록을 받기 전에 연 모달(종류 없음) — 스페이스 자료가 오면 기본 종류로 채운다(R3-C). 「다시 시도」 로는 낫지 않는 막다른 문구를 남기지 않는다.
+  const modalKinds = modal === null ? null : kindsOf(modal.target).map((kind) => kind.key).join('|')
+  useEffect(() => {
+    if (modalKinds === null || modalKinds === '') return
+    setModal((current) => {
+      if (current === null || current.form.kindKey !== '') return current
+      const kind = defaultKind(kindsOf(current.target))
+      return kind === null ? current : { ...current, form: { ...current.form, kindKey: kind.key } }
+    })
+  }, [modalKinds, kindsOf])
   // 단일 스페이스의 기본 종류 — 칸 「+ 추가」 가 그 칸 상태로 만들 수 있는지는 이 메타로 안다(C7).
   // 메타는 **만들 뜻을 보일 때만** 받는다(칸 「+ 추가」 에 포인터·포커스·누름) — 페이지를 열 때마다 출처에 요청을 더하지 않는다
   // (LA 생성 메타 = status_list 한 번). 받기 전에는 칸 진입점이 켜져 있고, 받은 뒤 만들 수 없는 칸은 흐림 + 이유가 된다.
@@ -212,7 +232,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     sessionSeq.current += 1
     setModal({
       session: sessionSeq.current, target, form: checked.form, another: anotherPref.current, notice: checked.notice, error: unknown ? UNKNOWN_CREATE : null,
-      phase: page.createBusy.has(MODAL_LOCK) ? 'late' : unknown ? 'unknown' : 'idle', focusSeq: 1, keepDraft: entry && draft !== null,
+      phase: page.createBusy.has(MODAL_LOCK) ? 'late' : unknown ? 'unknown' : 'idle', focusSeq: 1, keepDraft: entry && draft !== null, draftAtOpen: draft,
     })
     return true
   }, [defaultTarget, writeBlockOf, draftKey, freshForm, dataOf, page.createBusy])
@@ -226,11 +246,13 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     if (current === null) return
     if ((current.phase === 'idle' || current.phase === 'unknown') && !current.keepDraft) {
       const key = draftKey(current.target)
-      if (hasDraftContent(current.form)) drafts.current.set(key, current.form)
-      else drafts.current.delete(key)
+      const fieldKeys = metaFieldKeys(metaOf({ target: current.target, kindKey: current.form.kindKey }))
+      if (hasDraftContent({ form: current.form, fieldKeys })) drafts.current.set(key, current.form)
+      // 비었으면 연 때의 초안만 지운다 — 그 사이 닫은 뒤 실패로 돌아온 초안은 남긴다(R3-B).
+      else if (drafts.current.get(key) === (current.draftAtOpen ?? undefined)) drafts.current.delete(key)
     }
     setModal(null)
-  }, [draftKey])
+  }, [draftKey, metaOf])
 
   const update = useCallback((patch: Partial<CreateForm>) => {
     setModal((current) => (current === null ? current : { ...current, form: { ...current.form, ...patch }, notice: null, error: null }))
@@ -255,17 +277,18 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
       const draft = drafts.current.get(draftKey(target)) ?? null
       const unknown = uncertain.current.has(draftKey(target))
       const phase: ModalPhase = unknown ? 'unknown' : 'idle'
-      if (hasDraftContent(current.form) && !current.keepDraft) drafts.current.set(draftKey(current.target), current.form)
+      const fieldKeys = metaFieldKeys(metaOf({ target: current.target, kindKey: current.form.kindKey }))
+      if (hasDraftContent({ form: current.form, fieldKeys }) && !current.keepDraft) drafts.current.set(draftKey(current.target), current.form)
       const fresh = freshForm({ target, statusKey: null, placement: current.form.placement })
       if (draft === null) {
         const form = { ...fresh, title: current.form.title, body: current.form.body }
-        return { ...current, target, form, keepDraft: false, phase, notice: current.form.parentId === null ? null : '스페이스를 바꿔 부모를 비웠습니다.', error: unknown ? UNKNOWN_CREATE : null }
+        return { ...current, target, form, keepDraft: false, draftAtOpen: null, phase, notice: current.form.parentId === null ? null : '스페이스를 바꿔 부모를 비웠습니다.', error: unknown ? UNKNOWN_CREATE : null }
       }
       // 그 스페이스 초안 — 부모가 지금 목록에 없으면 비운다(R1-D).
       const checked = checkParent({ form: draft, items: dataOf(target)?.items ?? [] })
-      return { ...current, target, form: checked.form, keepDraft: false, phase, notice: checked.notice, error: unknown ? UNKNOWN_CREATE : null }
+      return { ...current, target, form: checked.form, keepDraft: false, draftAtOpen: draft, phase, notice: checked.notice, error: unknown ? UNKNOWN_CREATE : null }
     })
-  }, [draftKey, freshForm, dataOf])
+  }, [draftKey, freshForm, dataOf, metaOf])
 
   const toggleAnother = useCallback(() => {
     setModal((current) => {
@@ -380,8 +403,12 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     if (block !== null) return { state: 'disabled', reason: block }
     if (singleKind === null) return { state: 'disabled', reason: '만들 수 있는 종류가 없습니다.' }
     const meta = metas.get(metaKey({ target: single, kindKey: singleKind.key })) ?? null
-    if (meta?.state === 'ready' && !meta.meta.statusKeys.includes(statusKey)) return { state: 'disabled', reason: '이 출처는 이 상태로 바로 만들 수 없습니다 — 만들 수 있는 칸에서 추가하세요.' }
     const current = inline !== null && inline.columnId === columnId && targetKey(inline.target) === targetKey(single) ? inline : null
+    if (meta?.state === 'ready' && !meta.meta.statusKeys.includes(statusKey)) {
+      // 메타 전에 연 입력이면 조용히 사라지지 않는다(R3-D) — 열린 채 이유를 보이고 친 글을 둔다. 닫으면 흐림 + 이유.
+      if (current === null) return { state: 'disabled', reason: INLINE_STATUS_BLOCKED }
+      return { state: 'on', open: true, draft: { ...current, error: current.error ?? INLINE_STATUS_BLOCKED } }
+    }
     return { state: 'on', open: current !== null, draft: current }
   }, [single?.connectionId, single?.spaceKey, singleKind?.key, writeBlockOf, metas, metaKey, inline])
 
@@ -394,14 +421,21 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     const unknown = uncertain.current.has(key)
     setInline({
       target: single, statusKey, columnId, text: inlineTexts.current.get(`${key}::${columnId}`) ?? '',
-      phase: page.createBusy.has(`create:inline:${key}`) ? 'late' : unknown ? 'unknown' : 'idle', error: unknown ? UNKNOWN_CREATE : null,
+      phase: page.createBusy.has(`create:inline:${key}`) ? 'late' : unknown ? 'unknown' : 'idle', error: unknown ? UNKNOWN_CREATE : null, closeRequested: false,
     })
   }, [single?.connectionId, single?.spaceKey, page.createBusy, prepareInline])
   const setInlineText = useCallback((text: string) => setInline((current) => (current === null || current.phase !== 'idle' ? current : { ...current, text, error: null })), [])
-  /** Esc·blur·페이지 닫힘 — 닫고 친 글은 칸마다 기억한다(R1-O). 보내는 중·확인 중이면 닫지 않는다(결과를 그 자리에 보인다). */
+  /**
+   * Esc·blur·페이지 닫힘 — 닫고 친 글은 칸마다 기억한다(R1-O). 보내는 중·확인 중이면 바로 닫지 않고 「닫기 요청」 만 남긴다 —
+   * 성공하면 닫고(R3-E — 포커스 없는 빈 입력이 남지 않게), 실패면 결과를 그 자리에 보인다.
+   */
   const closeInline = useCallback(() => {
     const current = inlineRef.current
-    if (current === null || (current.phase !== 'idle' && current.phase !== 'unknown')) return
+    if (current === null) return
+    if (current.phase !== 'idle' && current.phase !== 'unknown') {
+      if (!current.closeRequested) setInline({ ...current, closeRequested: true })
+      return
+    }
     const key = `${targetKey(current.target)}::${current.columnId}`
     if (current.text.trim().length > 0) inlineTexts.current.set(key, current.text)
     else inlineTexts.current.delete(key)
@@ -416,7 +450,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     const meta = metaOf({ target: current.target, kindKey: kind.key })
     if (meta.state === 'loading') { setInline({ ...current, error: '만들기 정보를 받는 중… 잠시 뒤 다시 Enter' }); return }
     if (meta.state === 'error') { prepareInline(); setInline({ ...current, error: `만들기 정보를 받지 못했습니다 — ${meta.message} (다시 Enter 로 재시도)` }); return }
-    if (!meta.meta.statusKeys.includes(current.statusKey)) return
+    if (!meta.meta.statusKeys.includes(current.statusKey)) { setInline({ ...current, error: INLINE_STATUS_BLOCKED }); return }
     const block = writeBlockOf(current.target.connectionId)
     if (block !== null) { setInline({ ...current, error: block }); return }
     // 기본 종류에 필수 필드가 있으면 그 값으로 모달을 연다 — 빈 값을 보내지 않는다(C7).
@@ -447,8 +481,8 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
         lastTarget.current = current.target
         inlineTexts.current.delete(textKey)
         onCreated({ connectionId: current.target.connectionId, item: settled.item })
-        // 연속 추가 — 입력은 비우고 열린 채.
-        if (now !== null) setInline({ ...now, text: '', phase: 'idle', error: null })
+        // 연속 추가 — 입력은 비우고 열린 채. 보내는 동안 닫으려 했으면(blur·Esc) 닫는다(R3-E).
+        if (now !== null) setInline(now.closeRequested ? null : { ...now, text: '', phase: 'idle', error: null })
         return
       }
       const unknown = settled.kind === 'stale' || settled.error.maybeApplied === true
@@ -456,7 +490,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
       if (unknown) uncertain.current.add(targetKey(current.target))
       const shown = unknown ? `${message} ${RECHECK_HINT}` : message
       // 친 글은 남는다 — 열려 있으면 그 자리에, 닫혔으면 다음에 열 때.
-      if (now !== null) { setInline({ ...now, phase: unknown ? 'unknown' : 'idle', error: shown }); return }
+      if (now !== null) { setInline({ ...now, phase: unknown ? 'unknown' : 'idle', error: shown, closeRequested: false }); return }
       inlineTexts.current.set(textKey, current.text)
       notifyFailure(unknown ? shown : `만들지 못했습니다 — ${message}`)
     }

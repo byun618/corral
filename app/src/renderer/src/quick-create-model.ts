@@ -94,9 +94,17 @@ export function submitProblem({ form, meta }: { form: CreateForm; meta: CreateMe
   return empty === undefined ? null : `필수 필드 ${empty.label} 을(를) 채우세요`
 }
 
-/** 초안으로 남길 만한가 — 제목·설명·필수 필드 값 중 하나라도 있으면(C5). */
-export function hasDraftContent(form: CreateForm): boolean {
-  return form.title.trim().length > 0 || form.body.trim().length > 0 || Object.values(form.values).some((value) => value.trim().length > 0)
+/**
+ * 초안으로 남길 만한가 — 제목·설명·필수 필드 값 중 하나라도 있으면(C5). 필수 필드는 **지금 종류 메타의 필드 키**(`fieldKeys`)만 센다(R3-F) —
+ * 다른 종류에서 고른 값은 폼에 남아도 화면에 보이지 않으니 그것만으로 「초안이 남습니다」 가 되지 않는다. 메타를 아직 못 받았으면 빈 목록.
+ */
+export function hasDraftContent({ form, fieldKeys }: { form: CreateForm; fieldKeys: string[] }): boolean {
+  return form.title.trim().length > 0 || form.body.trim().length > 0 || fieldKeys.some((key) => (form.values[key] ?? '').trim().length > 0)
+}
+
+/** 메타가 있으면 그 필드 키 — 없으면(받는 중·실패) 빈 목록. */
+export function metaFieldKeys(meta: CreateMetaState): string[] {
+  return meta.state === 'ready' ? meta.meta.fields.map((field) => field.key) : []
 }
 
 /** 「하나 더」 — 제목·설명·필수 필드 값만 비우고 나머지(종류·부모·상태·우선순위·배치)는 그대로(C6). */

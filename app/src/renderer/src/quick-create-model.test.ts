@@ -55,9 +55,12 @@ describe('quick-create-model', () => {
   })
 
   it('초안·하나 더 — 글이 있으면 초안, 하나 더는 제목·설명·필수 값만 비운다', () => {
-    expect(hasDraftContent(form({ title: '' }))).toBe(false)
-    expect(hasDraftContent(form({ title: '', body: '본문' }))).toBe(true)
-    expect(hasDraftContent(form({ title: '', values: { i: 'hi' } }))).toBe(true)
+    expect(hasDraftContent({ form: form({ title: '' }), fieldKeys: [] })).toBe(false)
+    expect(hasDraftContent({ form: form({ title: '', body: '본문' }), fieldKeys: [] })).toBe(true)
+    expect(hasDraftContent({ form: form({ title: '', values: { i: 'hi' } }), fieldKeys: ['i'] })).toBe(true)
+    // R3-F — 지금 종류 메타에 없는 키의 값만 있으면 초안이 아니다.
+    expect(hasDraftContent({ form: form({ title: '', values: { i: 'hi' } }), fieldKeys: [] })).toBe(false)
+    expect(hasDraftContent({ form: form({ title: '', values: { i: 'hi' } }), fieldKeys: ['other'] })).toBe(false)
     const kept = form({ kindKey: 'bug', parentId: 'e1', statusKey: 'todo', priority: 'high', placement: 'backlog', body: 'b', values: { i: 'hi' } })
     expect(nextForm(kept)).toEqual({ ...kept, title: '', body: '', values: {} })
   })

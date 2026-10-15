@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { WorkCreateField, WorkPlacement, WorkPriority } from '../../../shared/work.js'
 import type { InlineAddView, QuickCreateModel } from '../hooks/useQuickCreate.js'
-import { PRIORITY_CYCLE, hasDraftContent, statusNote, statusOptions } from '../quick-create-model.js'
+import { PRIORITY_CYCLE, hasDraftContent, metaFieldKeys, statusNote, statusOptions } from '../quick-create-model.js'
 import { PRIORITY_GLYPH, PRIORITY_LABEL, imeComposing } from '../tasks-model.js'
 import { KindIcon, SpaceDot, StatusCircle } from './TasksViews.js'
 import './quick-create.css'
@@ -99,7 +99,7 @@ export function QuickCreateModal({ model }: { model: QuickCreateModel }): React.
           <span className="qc-crumb">{info?.sourceName ?? ''} ›</span>
           <span>새 작업</span>
           <span className="tasks-head-spacer" />
-          {hasDraftContent(form) ? <span className="qc-draft-note" data-quick-create-draft="">닫아도 초안이 남습니다</span> : null}
+          {hasDraftContent({ form, fieldKeys: metaFieldKeys(modalView.meta) }) ? <span className="qc-draft-note" data-quick-create-draft="">닫아도 초안이 남습니다</span> : null}
         </header>
 
         <div className="qc-body">

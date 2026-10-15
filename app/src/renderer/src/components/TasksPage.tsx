@@ -410,7 +410,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       if (typing || event.metaKey || event.ctrlKey || event.altKey) return
       // `C` = 만들기(LIFE-604). 수정키·입력 중·IME 조합·열린 메뉴·위층이면 무시, 쓰기가 막혀 있으면 열리지 않는다(openCreate 가 거절).
       // 자판 배열과 무관하게 물리 키(`KeyC`)도 받는다 — 한글 자판이면 `key` 가 `ㅊ` 다(R1-E, keybindings.ts 관례).
-      if ((event.key === 'c' || event.key === 'C' || event.code === 'KeyC') && !event.shiftKey && !imeComposing(event)) {
+      // 조합은 `isComposing` 만 본다(R3-A) — 입력 칸 밖(`typing` 은 위에서 걸렀다)이라 조합 중일 수 없고, 한글 자판 keydown 은 `keyCode 229` 로 올 수 있다.
+      if ((event.key === 'c' || event.key === 'C' || event.code === 'KeyC') && !event.shiftKey && !event.isComposing) {
         if (latest.current.menu !== null) return
         if (latest.current.openCreate()) event.preventDefault()
         return

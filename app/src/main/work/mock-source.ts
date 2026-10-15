@@ -73,9 +73,9 @@ export type MockBehavior = {
   drift: boolean
   /**
    * 생성 메타(LIFE-604) — `unsupported` = Epic 에 corral 이 채울 수 없는 모양의 필수 필드를 더함(양성 대조) ·
-   * `fail` = 생성 메타 요청을 출처가 거절(메타 실패 → 다시 시도).
+   * `fail` = 생성 메타 요청을 출처가 거절(메타 실패 → 다시 시도) · `placement-ignored` = 모든 종류에 배치가 적용되지 않음(R3-G — 인라인 배치 가드 시험용).
    */
-  createMeta: 'plain' | 'unsupported' | 'fail'
+  createMeta: 'plain' | 'unsupported' | 'fail' | 'placement-ignored'
   /** `create-lost`(LIFE-604 R1-A) — 만들기는 적용하고 답을 잃는다(결과를 모르는 실패, `maybeApplied`). */
   createLost: boolean
 }
@@ -112,7 +112,7 @@ export function mockBehaviorOf(token: string): MockBehavior {
     flip: flip === null ? null : { mode: flip[1] === undefined ? 'deliver' : 'apply', ms: Number(flip[2]) },
     caps: capsOf(token),
     drift: token.includes('drift'),
-    createMeta: token.includes('createmeta-unsupported') ? 'unsupported' : token.includes('createmeta-fail') ? 'fail' : 'plain',
+    createMeta: token.includes('createmeta-unsupported') ? 'unsupported' : token.includes('createmeta-fail') ? 'fail' : token.includes('createmeta-placement-ignored') ? 'placement-ignored' : 'plain',
     createLost: token.includes('create-lost'),
   }
 }
@@ -579,7 +579,7 @@ export class MockSource implements WorkSourceClient {
     if (first === undefined) return { ok: false, outcome: rejected('상태가 없는 스페이스입니다.') }
     const base = (this.state.createFields ?? MOCK_CREATE_FIELDS)[kindKey] ?? []
     const fields = this.behavior.createMeta === 'unsupported' && kindKey === 'epic' ? [...base, MOCK_UNSUPPORTED_FIELD] : base
-    return { ok: true, meta: { spaceKey, kindKey, statusKeys: [first.key], defaultStatusKey: first.key, placement: 'applies', fields: fields.map(copyField) } }
+    return { ok: true, meta: { spaceKey, kindKey, statusKeys: [first.key], defaultStatusKey: first.key, placement: this.behavior.createMeta === 'placement-ignored' ? 'ignored' : 'applies', fields: fields.map(copyField) } }
   }
 
   private space(key: string): MockSpace | null {

@@ -562,5 +562,27 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       const removed = await okResult({ op: 'getItem', itemId: item.id })
       if (removed.op === 'getItem') expect(removed.item.workLinks).not.toContainEqual(link)
     })
+
+    // LIFE-603 R1-I — 자동 연결(브랜치 키로 붙은 링크)도 출처에 남긴다. 키로 작업을 찾아 저장 · 꺼진 출처는 키 찾기도 보내지 않는다.
+    it('자동 연결 출처 저장(C14 · R1-I) — 켜져 있으면 키로 찾아 저장, 없는 키는 failed, 꺼져 있으면 skipped · 출처 요청 0', async () => {
+      const { items, capabilities } = await stage()
+      const item = items[0]
+      if (item === undefined) throw new Error('no item')
+      const link: WorkLink = { kind: 'worktree', path: '/tmp/l603-contract/auto', repoRoot: '/tmp/l603-contract' }
+      const before = target.sourceRequests?.() ?? null
+      const saved = await target.service.storeAutoLink({ connectionId: target.connectionId, key: item.key, link })
+      const missing = await target.service.storeAutoLink({ connectionId: target.connectionId, key: target.missingKey, link })
+      if (capabilities.workLinkStore.state !== 'on') {
+        expect(saved?.state).toBe('skipped')
+        expect(missing?.state).toBe('skipped')
+        if (before !== null) expect(target.sourceRequests?.()).toBe(before)
+        return
+      }
+      expect(saved).toEqual({ state: 'saved', message: null })
+      expect(missing?.state).toBe('failed')
+      const after = await okResult({ op: 'getItem', itemId: item.id })
+      if (after.op === 'getItem') expect(after.item.workLinks).toContainEqual(link)
+      await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'remove' })
+    })
   })
 }

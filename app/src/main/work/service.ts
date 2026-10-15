@@ -328,11 +328,33 @@ export class WorkService {
     return { state: 'failed', message: this.scrub({ error: outcome.error }).message }
   }
 
+  /**
+   * 자동 연결의 출처 저장(C14 · R1-I). 능력이 닫힌 출처(LA)는 요청 0 으로 `skipped` — 키 찾기도 보내지 않는다.
+   * 열린 출처는 키로 작업을 찾아(`findByKey`) 그 작업에 저장한다. 못 찾으면 `failed`. 능력을 아직 모르면 null(나중에 다시).
+   */
+  async storeAutoLink({ connectionId, key, link }: { connectionId: string; key: string; link: WorkLink }): Promise<StartSourceLink | null> {
+    // 능력을 아직 모르면(그 연결의 클라이언트를 아직 안 만듦) 보내지 않고 null — 다음 관측에서 다시(LA 의 「요청 0」 을 지킨다).
+    const known = this.runtime.get(connectionId)
+    const capabilities = known?.capabilities ?? known?.client?.capabilities() ?? null
+    if (capabilities === null) return null
+    const gate = closedCapability({ capabilities, call: { op: 'saveWorkLink', itemId: '', link } })
+    if (gate !== null) return { state: 'skipped', message: this.scrub({ error: gate }).message }
+    const found = await this.run({ connectionId, call: { op: 'findByKey', key }, announce: false })
+    if (!found.ok) return found.error.kind === 'unsupported' ? { state: 'skipped', message: this.scrub({ error: found.error }).message } : { state: 'failed', message: this.scrub({ error: found.error }).message }
+    if (found.result.op !== 'findByKey' || found.result.item === null) return { state: 'failed', message: `출처에서 ${key} 를 찾지 못했습니다.` }
+    return this.storeLink({ connectionId, itemId: found.result.item.id, link, action: 'save' })
+  }
+
   /** LIFE-603 — main 이 남기는 실행·에이전트 사건. `eventKey` 가 이미 있으면 남기지 않는다. 없는 연결이면 버린다. */
   recordEvent({ connectionId, itemId, itemKey, eventKey, change }: { connectionId: string; itemId: string | null; itemKey: string; eventKey: string; change: WorkActivityChange }): boolean {
     const activity = this.deps.activity
     if (activity === undefined || !this.deps.store.get().connections.some((row) => row.id === connectionId)) return false
     return activity.append({ id: this.newId(), connectionId, itemId: itemId ?? '', itemKey, at: this.now(), writeId: eventKey, eventKey, change })
+  }
+
+  /** LIFE-603 R1-M — 남긴 사건의 내용 고치기(턴 결과의 바뀐 파일 수). */
+  refreshEvent({ eventKey, change }: { eventKey: string; change: WorkActivityChange }): boolean {
+    return this.deps.activity?.refresh({ eventKey, change }) ?? false
   }
 
   /** 작업 하나의 corral 활동 기록(LIFE-602) — 오래된 것부터. 없는 연결이면 not_connected. */

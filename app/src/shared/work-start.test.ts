@@ -77,3 +77,20 @@ describe('readStartWorkInput — main 손검증', () => {
   })
   it('빈 터미널은 프롬프트 없이', () => { expect(readStartWorkInput({ ...good, agent: 'shell', prompt: '' })).toMatchObject({ agent: 'shell' }) })
 })
+
+describe('fix1 R1-E·Q — 미리보기 정제 · 막힘 많은 작업의 상한', () => {
+  it('본문의 비가시 문자 · 제어 문자는 미리보기에서도 빠진다(미리보기 = 보내는 글)', () => {
+    const { text } = composeStartPrompt({ item: { key: 'K-1', title: '제목\u202e', body: '본문\u200b\u001b[201~끝' }, parent: null, blockers: [], sourceName: 'S' })
+    for (const hidden of ['\u200b', '\u202e', '\u001b']) expect(text.includes(hidden)).toBe(false)
+    expect(text).toContain('본문[201~끝')
+  })
+  it('막힘 500개 · 긴 제목이어도 입력 상한 안 — 막힘은 10개 + 「외 N건」, 손검증을 통과한다', () => {
+    const long = 'x'.repeat(5_000)
+    const blockers = Array.from({ length: 500 }, (_, index) => ({ id: `b${index}`, key: `B-${index}`, title: long }))
+    const { text } = composeStartPrompt({ item: { key: 'K-1', title: long, body: 'y'.repeat(20_000) }, parent: { key: 'P-1', title: long }, blockers, sourceName: 'S' })
+    expect(text.length).toBeLessThanOrEqual(START_PROMPT_MAX + 4_000)
+    expect(text).toContain('외 490건')
+    const input = { attemptId: newAttemptId({ now: Date.now(), uuid: '0b8f6a4e-7a8c-4c33-9a43-5f3c3f6d2b11' }), connectionId: 'c', sourceId: 's', itemId: 'i', itemKey: 'K-1', repoRoot: '/r', name: 'K-1', agent: 'claude', model: '', effort: '', prompt: text, submit: false }
+    expect(readStartWorkInput(input)).not.toBeNull()
+  })
+})

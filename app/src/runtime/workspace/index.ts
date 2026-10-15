@@ -276,7 +276,7 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
     try {
       await git(repo.path, ['worktree', 'add', '-b', name, target, base], ctx.signal)
       added = true
-      metadata.put(target, { ...update, repoId: repo.id, createdBranch: true })
+      metadata.create(target, { ...update, repoId: repo.id, createdBranch: true })
       const activated = f.activate ? await desktop!.activate(repo.path, target) : undefined
       const worktree = (await metadata.list(repos, ctx.signal)).find(row => row.path === target)!
       const created = { worktree, lineage: { parentWorktreeId: worktree.parentWorktreeId, childWorktreeIds: worktree.childWorktreeIds }, warnings: [], setupReceipt: { policy: flag('setup') ?? 'inherit', status: 'skipped', ...(activated ?? {}) } }

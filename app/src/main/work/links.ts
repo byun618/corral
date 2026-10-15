@@ -10,6 +10,7 @@
 import { createHash } from 'node:crypto'
 import type { DetachWorkLinkResult, RepoRow, WorktreeRow, PaneRow } from '../../shared/types.js'
 import type { WorkActivityChange, WorkLink } from '../../shared/work.js'
+import { waitingQuestion } from '../../shared/agent-dot.js'
 import { resolveWorkLink, type LinkConnection, type StoredWorkLink, type WorktreeWorkLink } from '../../shared/work-link.js'
 import type { StartSourceLink } from '../../shared/work-start.js'
 import type { DroppedLink, WorktreeMetadataRecord } from '../registry.js'
@@ -24,8 +25,15 @@ export type LinkWorkPort = {
   linkConnections(): LinkConnection[]
   repoDefaultConnection(repoRoot: string): string | null
   recordEvent(input: { connectionId: string; itemId: string | null; itemKey: string; eventKey: string; change: WorkActivityChange }): boolean
+  /** 이미 남긴 사건의 내용을 고친다(R1-M — 턴 결과의 바뀐 파일 수). 그 열쇠가 없거나 같으면 false. */
+  refreshEvent(input: { eventKey: string; change: WorkActivityChange }): boolean
   storeLink(input: { connectionId: string; itemId: string; link: WorkLink; action: 'save' | 'remove' }): Promise<StartSourceLink>
+  /** 자동 연결의 출처 저장(R1-I). 능력을 아직 모르면 null — 다음 관측에서 다시. */
+  storeAutoLink(input: { connectionId: string; key: string; link: WorkLink }): Promise<StartSourceLink | null>
 }
+
+/** 턴 결과 뒤 이 시간 안에는 바뀐 파일 수를 다시 읽어 고친다(R1-M — git 상태 폴링이 결과보다 늦게 올 수 있다). */
+export const FILES_SETTLE_MS = 60_000
 
 export type LinkDeps = {
   registry: () => LinkRegistryPort | null
@@ -54,6 +62,8 @@ function filesChanged(worktree: WorktreeRow): number | null {
 export class WorkLinks {
   private readonly deps: LinkDeps
   private droppedSeen = ''
+  /** 출처 저장을 기다리는 자동 연결(R1-I) — 열쇠 = 사건 열쇠. 메모리만(재시작하면 그 회차는 출처에 안 남는다 — 설계 메모 §4). */
+  private readonly autoStores = new Map<string, { connectionId: string; itemId: string | null; key: string; worktree: string; repoRoot: string; inFlight: boolean }>()
 
   constructor(deps: LinkDeps) {
     this.deps = deps
@@ -160,34 +170,71 @@ export class WorkLinks {
         if (link === null || !link.connected) continue
         const scope = `${link.connectionId}:${link.key}`
         const record = (eventKey: string, change: WorkActivityChange) => work.recordEvent({ connectionId: link.connectionId, itemId: link.itemId, itemKey: link.key, eventKey, change })
-        if (link.mode === 'auto') record(`run:auto:${scope}:${worktree.path}`, { field: 'run', event: 'auto_link', worktree: worktree.path, branch: branchName(worktree.branch) })
-        for (const pane of (worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes)) this.observePane({ pane, worktree, scope, record })
+        const autoKey = `run:auto:${scope}:${worktree.path}`
+        if (link.mode === 'auto' && record(autoKey, { field: 'run', event: 'auto_link', worktree: worktree.path, branch: branchName(worktree.branch) })) {
+          this.autoStores.set(autoKey, { connectionId: link.connectionId, itemId: link.itemId, key: link.key, worktree: worktree.path, repoRoot: repo.root, inFlight: false })
+        }
+        for (const pane of (worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes)) this.observePane({ pane, worktree, scope, record, refresh: work.refreshEvent.bind(work) })
       }
+    }
+    this.flushAutoStores(work)
+  }
+
+  /** 자동 연결을 출처에도 남긴다(C14 · R1-I). 닫힌 출처(LA)는 서비스가 요청 0 으로 skipped. 실패는 활동에 「출처 저장 실패」 로 남긴다. */
+  private flushAutoStores(work: LinkWorkPort): void {
+    for (const [eventKey, entry] of this.autoStores) {
+      if (entry.inFlight) continue
+      entry.inFlight = true
+      void work.storeAutoLink({ connectionId: entry.connectionId, key: entry.key, link: { kind: 'worktree', path: entry.worktree, repoRoot: entry.repoRoot } }).then((result) => {
+        entry.inFlight = false
+        if (result === null) return
+        this.autoStores.delete(eventKey)
+        if (result.state !== 'failed') return
+        this.deps.log('work.auto_link_source_failed', { connectionId: entry.connectionId, key: entry.key, worktree: entry.worktree })
+        work.recordEvent({
+          connectionId: entry.connectionId, itemId: entry.itemId, itemKey: entry.key, eventKey: `run:srcfail:${eventKey}`,
+          change: { field: 'run', event: 'source_link_failed', worktree: entry.worktree, message: result.message },
+        })
+      }, (error: unknown) => {
+        entry.inFlight = false
+        this.deps.log('work.auto_link_source_error', { connectionId: entry.connectionId, key: entry.key, error: String(error) })
+      })
     }
   }
 
-  private observePane({ pane, worktree, scope, record }: { pane: PaneRow; worktree: WorktreeRow; scope: string; record: (eventKey: string, change: WorkActivityChange) => boolean }): void {
+  private observePane({ pane, worktree, scope, record, refresh }: {
+    pane: PaneRow
+    worktree: WorktreeRow
+    scope: string
+    record: (eventKey: string, change: WorkActivityChange) => boolean
+    refresh: (input: { eventKey: string; change: WorkActivityChange }) => boolean
+  }): void {
     if (pane.agent === null) return
     const digest = pane.digest
     const session = sessionOf(pane)
-    const questions = digest.pendingQuestions
-    const asking = questions !== null || (pane.agentStatus === 'blocked' && pane.agentState.blockedReason === 'question')
-    if (asking) {
-      const text = questions === null ? null : questions.map((entry) => entry.question).join('\n')
-      // 열쇠: 세션 + 기록의 마지막 활동 시각 + 본문 — 기다리는 동안 기록이 자라지 않으므로 재시작·재관측에도 같다.
-      record(`agent:q:${scope}:${session}:${digest.lastActivityAt ?? 'na'}:${sha8(text ?? '')}`, {
-        field: 'agent', event: 'question', agent: pane.agent, worktree: worktree.path, question: text,
-        noBody: text === null ? '이 에이전트의 질문 본문은 읽지 못합니다.' : null,
+    const blockedReason = pane.agentStatus === 'blocked' ? pane.agentState.blockedReason : null
+    const hasQuestions = digest.pendingQuestions !== null && digest.pendingQuestions.length > 0
+    // 질문 대기 판정은 `agentDot` 과 같다 — 빈 목록은 질문이 아니다(R1-N). 권한 대기도 사람이 답할 대기라 남기되 이유를 다르게 단다.
+    if (hasQuestions || blockedReason === 'question' || blockedReason === 'permission') {
+      const { text, reason } = waitingQuestion({ blockedReason, pendingQuestions: digest.pendingQuestions })
+      // 열쇠(R1-L): 본문이 있으면 세션 + 본문 — 기다리는 동안 기록이 자라 시각이 움직여도 같다(같은 세션의 같은 본문 재질문은 하나로 합친다).
+      // 본문이 없으면(grok · 권한) 기댈 것이 기록 시각뿐이다 — 세션 + 사유 + 마지막 활동 시각. 최종 관문 C13 실측 항목.
+      const identity = text === null ? `${blockedReason ?? 'na'}:${digest.lastActivityAt ?? 'na'}` : `b:${sha8(text)}`
+      record(`agent:q:${scope}:${session}:${identity}`, {
+        field: 'agent', event: 'question', agent: pane.agent, worktree: worktree.path, question: text, noBody: reason,
       })
     }
     const outcome = digest.turnOutcome
     // 결과 시각이 없으면 같은 결과를 다시 알아볼 열쇠가 없다 — 남기지 않는다(중복보다 빠짐이 낫다).
     if (outcome !== null && digest.turnOutcomeAt !== null && pane.agentStatus !== 'working') {
-      record(`agent:t:${scope}:${session}:${digest.turnOutcomeAt}:${outcome.outcome}`, {
+      const eventKey = `agent:t:${scope}:${session}:${digest.turnOutcomeAt}:${outcome.outcome}`
+      const change: WorkActivityChange = {
         field: 'agent', event: 'result', agent: pane.agent, worktree: worktree.path, outcome: outcome.outcome,
         detail: outcome.outcome === 'interrupted' ? outcome.reason : outcome.outcome === 'failed' ? outcome.error : null,
         filesChanged: filesChanged(worktree),
-      })
+      }
+      // 바뀐 파일 수는 첫 관측으로 굳히지 않는다(R1-M) — 결과 뒤 FILES_SETTLE_MS 안에는 git 상태가 따라오면 고친다.
+      if (!record(eventKey, change) && Date.now() - digest.turnOutcomeAt < FILES_SETTLE_MS) refresh({ eventKey, change })
     }
   }
 }

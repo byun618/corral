@@ -5,7 +5,10 @@
 // - **한 시도 = 요청 id 하나**(`attemptId`). 같은 id 의 두 번째 요청은 진행 중이면 그 약속에 합류하고, 끝났으면 기록을 돌려준다(main 메모리).
 //   런타임도 같은 id 를 영수증으로 replay 한다(에이전트 경로) — 앱을 다시 띄운 뒤의 같은 id 도 하나다.
 //   같은 작업 · 같은 레포 · 같은 이름의 진행 중 시도가 있으면 id 가 달라도 그것에 합류한다(빈 터미널은 영수증이 없어 이 합류가 유일한 방패다).
-// - **호출자 timeout 은 실패가 아니다**: `request_cancelled`·`outcome_unknown` 이면 같은 id 로 다시 묻는다(런타임이 그 id 를 replay 하거나 줄에서 기다린다).
+// - **호출자 timeout 은 실패가 아니다**: `request_cancelled` 면 같은 id 로 다시 묻는다(줄에서 기다리다 끊긴 요청은 영수증이 풀려 다시 돈다).
+//   `outcome_unknown`(효과가 시작된 뒤 끊겨 영수증이 pending)은 **다시 묻지 않는다** — 같은 답이 영원히 온다(R1-B). 단계는 `unknown` 이고,
+//   예정 경로에 worktree 가 있으면 그것을 링크한다(없으면 미확정 기록이 남아 나중에 나타나면 붙인다 — `recover`).
+// - **시작 의도를 먼저 적는다**(R1-C): 런타임을 부르기 전에 미확정 기록(`start-pending.ts`), 링크를 저장하면 지운다.
 // - worktree 가 생겼으면(뒤 단계가 실패해도) 명시 링크를 저장하고 실행 갈래에 「작업 시작」 을 남긴다. 출처 링크 저장은 능력이 켜진 출처만.
 // - 첫 프롬프트 본문은 로그에 남기지 않는다(외부 본문 — 킥오프 비밀값 규칙).
 
@@ -18,6 +21,9 @@ import type { StoredWorkLink } from '../../shared/work-link.js'
 import { initialStages, readRelaunchAgentInput, readStartWorkInput, readStartWorkStatusQuery, startWorktreePath, type StartAttemptView, type StartStage, type StartStageName, type StartWorkInput, type StartWorkResult } from '../../shared/work-start.js'
 import type { WorkLinks } from './links.js'
 import type { LinkWorkPort } from './links.js'
+import type { PendingPort, PendingStart } from './start-pending.js'
+import { PENDING_TTL_MS } from './start-pending.js'
+import { sanitizeDraftBody } from '../../shared/terminal-paste.js'
 
 export type StartDeps = {
   invoke: () => ((invocation: Invocation, timeoutMs?: number) => Promise<RpcResponse>) | null
@@ -28,13 +34,20 @@ export type StartDeps = {
   cwd: string
   now?: () => number
   sleep?: (ms: number) => Promise<void>
+  /** 미확정 시작 기록(R1-C). 없으면 기록하지 않는다(시험). */
+  pending?: PendingPort
+  /** 그 경로에 git worktree 가 있나 — 결과 미확정 뒤 찾기(R1-B). 기본은 트리만 본다. */
+  worktreeExists?: (path: string) => boolean
   /** 한 시도의 전체 기한 — 기본 10분(에이전트 ready 대기 포함). */
   deadlineMs?: number
 }
 
 type Attempt = { input: StartWorkInput; promise: Promise<StartWorkResult>; result: StartWorkResult | null }
 
-const RETRY_CODES = new Set(['request_cancelled', 'outcome_unknown'])
+const RETRY_CODES = new Set(['request_cancelled'])
+const UNKNOWN_CODES = new Set(['request_cancelled', 'outcome_unknown'])
+/** 끝난 시도를 몇 개까지 기억하나(R1-Q) — 작업마다 마지막 시도는 늘 남긴다. */
+const KEEP_FINISHED = 50
 const INVOKE_TIMEOUT_MS = 600_000
 
 const stage = (status: StartStage['status'], code: string | null = null, message: string | null = null): StartStage => ({ status, code, message })
@@ -64,7 +77,9 @@ export function mapAgentStages(result: unknown): { stages: Record<StartStageName
   else if (agent.status === 'completed') stages.agent = stage('completed')
   else stages.agent = stage(agent.status === 'unknown' ? 'unknown' : 'failed', agent.error, agent.message)
   if (stages.agent.status !== 'completed') stages.prompt = stage('skipped')
-  else if (prompt.status === 'completed' || prompt.status === 'queued') stages.prompt = stage('completed')
+  else if (prompt.status === 'completed') stages.prompt = stage('completed', isRecord(raw.prompt) && raw.prompt.mode === 'draft' ? 'draft' : null)
+  // 바로 보내기의 `queued` = 런타임 줄이 받았다는 뜻(D9) — 전달 확인이 아니라 「줄에 넣음」 으로 따로 그린다(R1-P).
+  else if (prompt.status === 'queued') stages.prompt = stage('queued')
   else if (prompt.status === 'not_started') stages.prompt = stage('failed', prompt.reason ?? 'not_started', PROMPT_REASON[prompt.reason ?? ''] ?? '초안을 넣지 않았습니다.')
   else stages.prompt = stage(prompt.status === 'unknown' ? 'unknown' : 'failed', prompt.error, prompt.message)
   return { stages, path }
@@ -74,6 +89,7 @@ export class StartService {
   private readonly deps: StartDeps
   private readonly attempts = new Map<string, Attempt>()
   private readonly relaunches = new Map<string, Promise<StartWorkResult>>()
+  private readonly recovering = new Set<string>()
   /** 작업(연결::작업 id) → 마지막 시도 id. */
   private readonly latest = new Map<string, string>()
   private inflight = 0
@@ -119,10 +135,49 @@ export class StartService {
     try {
       const result = await promise
       attempt.result = result
+      this.prune()
       return result
     } finally {
       this.inflight -= 1
     }
+  }
+
+  /** 끝난 시도는 최근 `KEEP_FINISHED` 개만(작업마다 마지막 시도는 이어 받기용으로 남긴다). */
+  private prune(): void {
+    const latest = new Set(this.latest.values())
+    const finished = [...this.attempts.entries()].filter(([id, attempt]) => attempt.result !== null && !latest.has(id))
+    for (const [id] of finished.slice(0, Math.max(0, finished.length - KEEP_FINISHED))) this.attempts.delete(id)
+    for (const id of [...this.relaunches.keys()].slice(0, Math.max(0, this.relaunches.size - KEEP_FINISHED))) this.relaunches.delete(id)
+  }
+
+  /**
+   * 미확정 시작 맞추기(R1-C) — 상태를 내보낼 때마다 부른다. 이번 실행에서 진행 중인 시도는 건너뛴다.
+   * 예정 경로의 worktree 가 트리에 있으면 링크 · 「작업 시작」 활동 · 출처 링크를 적고 기록을 지운다. 하루 넘게 안 나타나면 버린다.
+   */
+  async recover(repos: RepoRow[]): Promise<number> {
+    const pending = this.deps.pending
+    if (pending === undefined) return 0
+    const paths = new Set(repos.flatMap((repo) => repo.worktrees.map((row) => row.path)))
+    let linked = 0
+    for (const entry of pending.list()) {
+      const live = this.attempts.get(entry.attemptId)
+      if (live !== undefined && live.result === null) continue
+      if (this.recovering.has(entry.attemptId)) continue
+      if (paths.has(entry.path)) {
+        this.recovering.add(entry.attemptId)
+        try {
+          await this.link({ input: entry, path: entry.path })
+          this.deps.log('work.start_recovered', { attemptId: entry.attemptId, path: entry.path })
+          linked += 1
+        } finally {
+          this.recovering.delete(entry.attemptId)
+        }
+      } else if (this.now() - entry.startedAt > PENDING_TTL_MS) {
+        pending.remove(entry.attemptId)
+        this.deps.log('work.start_pending_expired', { attemptId: entry.attemptId })
+      }
+    }
+    return linked
   }
 
   /**
@@ -138,17 +193,22 @@ export class StartService {
     if (link === null || link.mode !== 'explicit' || link.connectionId !== input.connectionId || link.itemId !== input.itemId) return this.refused(input.attemptId, '이 작업에 붙은 worktree 가 아닙니다.')
     if (this.deps.invoke() === null) return this.refused(input.attemptId, '런타임이 아직 서지 않았습니다.')
     const promise = (async (): Promise<StartWorkResult> => {
-      const flags: Invocation['flags'] = { worktree: `path:${input.path}`, agent: input.agent, 'request-id': input.attemptId }
-      const model = knownOption({ options: modelOptions(input.agent), value: input.model })
-      const effort = knownOption({ options: effortOptions(input.agent), value: input.effort })
-      if (model !== '') flags.model = model
-      if (effort !== '') flags.effort = effort
+      // 빈 터미널이면 에이전트 플래그 없이 터미널만 다시 연다(R1-A).
+      const flags: Invocation['flags'] = { worktree: `path:${input.path}`, 'request-id': input.attemptId }
+      if (input.agent !== 'shell') {
+        flags.agent = input.agent
+        const model = knownOption({ options: modelOptions(input.agent), value: input.model })
+        const effort = knownOption({ options: effortOptions(input.agent), value: input.effort })
+        if (model !== '') flags.model = model
+        if (effort !== '') flags.effort = effort
+      }
       this.deps.log('work.start_relaunch', { attemptId: input.attemptId, agent: input.agent, path: input.path })
-      const response = await this.call({ command: 'terminal create', flags, args: [], cwd: this.deps.cwd })
+      const { response } = await this.call({ command: 'terminal create', flags, args: [], cwd: this.deps.cwd })
+      const failed = input.agent === 'shell' ? '터미널을 열지 못했습니다.' : '에이전트를 띄우지 못했습니다.'
       const agent = response === null ? stage('unknown', 'runtime_unavailable', '런타임이 사라졌습니다.')
-        : !response.ok ? stage(RETRY_CODES.has(response.error?.code ?? '') ? 'unknown' : 'failed', response.error?.code ?? 'operation_failed', response.error?.message ?? '에이전트를 띄우지 못했습니다.')
-          : stage('completed')
-      return { attemptId: input.attemptId, joined: false, done: true, stages: { worktree: stage('completed', 'already_linked', null), agent, prompt: stage('skipped', 'relaunch', '다시 띄운 에이전트에는 프롬프트를 넣지 않습니다.') }, worktreePath: input.path, linkSaved: true, sourceLink: null, refused: null }
+        : !response.ok ? stage(UNKNOWN_CODES.has(response.error?.code ?? '') ? 'unknown' : 'failed', response.error?.code ?? 'operation_failed', response.error?.message ?? failed)
+          : stage('completed', 'relaunched')
+      return { attemptId: input.attemptId, joined: false, done: true, stages: { worktree: stage('completed', 'relaunch', '이미 있는 worktree 에 다시 열었습니다.'), agent, prompt: stage('skipped', 'relaunch', input.agent === 'shell' ? null : '다시 띄운 에이전트에는 프롬프트를 넣지 않습니다.') }, worktreePath: input.path, linkSaved: true, sourceLink: null, refused: null }
     })()
     this.relaunches.set(input.attemptId, promise)
     this.inflight += 1
@@ -159,19 +219,26 @@ export class StartService {
     return { attemptId, joined: false, done: true, stages: { worktree: stage('failed', 'refused', message), agent: stage('skipped'), prompt: stage('skipped') }, worktreePath: null, linkSaved: false, sourceLink: null, refused: message }
   }
 
-  /** 같은 id 로 이어 묻는다 — 호출자 timeout · 결과 미확정은 실패로 읽지 않는다. 기한이 지나면 마지막 응답 그대로. */
-  private async call(invocation: Invocation): Promise<RpcResponse | null> {
+  /**
+   * 같은 id 로 이어 묻는다 — `request_cancelled`(호출자 timeout)만. 기한이 지나면 마지막 응답 그대로.
+   * `retried` = 한 번이라도 끊겼다 — 그 뒤의 `already_exists`(빈 터미널은 영수증이 없다)는 이 시도가 만든 것일 수 있다.
+   */
+  private async call(invocation: Invocation): Promise<{ response: RpcResponse | null; retried: boolean }> {
     const deadline = this.now() + (this.deps.deadlineMs ?? INVOKE_TIMEOUT_MS)
     let last: RpcResponse | null = null
     for (let round = 0; ; round += 1) {
       const invoke = this.deps.invoke()
-      if (invoke === null) return last
+      if (invoke === null) return { response: last, retried: round > 0 }
       last = await invoke({ ...invocation, args: [], cwd: this.deps.cwd }, Math.max(1_000, Math.min(INVOKE_TIMEOUT_MS, deadline - this.now())))
       const code = last.ok ? null : (last.error?.code ?? null)
-      if (code === null || !RETRY_CODES.has(code) || this.now() >= deadline) return last
+      if (code === null || !RETRY_CODES.has(code) || this.now() >= deadline) return { response: last, retried: round > 0 }
       this.deps.log('work.start_retry', { requestId: invocation.flags['request-id'] ?? null, code, round })
       await this.sleep(Math.min(5_000, 500 * (round + 1)))
     }
+  }
+
+  private exists(path: string): boolean {
+    return this.deps.repos().some((repo) => repo.worktrees.some((row) => row.path === path)) || (this.deps.worktreeExists?.(path) ?? false)
   }
 
   private async run(input: StartWorkInput): Promise<StartWorkResult> {
@@ -184,34 +251,52 @@ export class StartService {
       const effort = knownOption({ options: effortOptions(input.agent), value: input.effort })
       if (model !== '') flags.model = model
       if (effort !== '') flags.effort = effort
-      flags.prompt = input.prompt
+      // 외부 본문 정제는 바로 보내기에도(R1-E) — 초안은 런타임이 한 번 더 정제한다(같은 함수, 멱등).
+      flags.prompt = sanitizeDraftBody(input.prompt)
       if (!input.submit) flags.draft = true
     }
-    const response = await this.call({ command: 'worktree create', flags, args: [], cwd: this.deps.cwd })
+    const expected = startWorktreePath({ repoRoot: input.repoRoot, name: input.name })
+    this.deps.pending?.add(pendingOf({ input, path: expected, now: this.now() }))
+    const { response, retried } = await this.call({ command: 'worktree create', flags, args: [], cwd: this.deps.cwd })
     let stages = initialStages()
     let path: string | null = null
+    const unknown = (code: string, message: string): { path: string | null; stages: Record<StartStageName, StartStage> } => {
+      // 결과 미확정 — 예정 경로에 worktree 가 있으면 그것을 이 시도의 것으로 링크하고 「worktree 열기」 를 준다(R1-B).
+      const found = this.exists(expected) ? expected : null
+      return {
+        path: found,
+        stages: {
+          worktree: stage('unknown', code, found === null ? `${message} — worktree 가 나타나면 이 작업에 붙입니다.` : `${message} — worktree 는 만들어졌습니다.`),
+          agent: stage('unknown', code, '에이전트 단계 결과를 받지 못했습니다.'),
+          prompt: stage('unknown', code, null),
+        },
+      }
+    }
     if (response === null) {
-      stages = { worktree: stage('unknown', 'runtime_unavailable', '런타임이 사라졌습니다.'), agent: stage('skipped'), prompt: stage('skipped') }
+      ({ path, stages } = unknown('runtime_unavailable', '런타임이 사라졌습니다'))
     } else if (!response.ok) {
       const code = response.error?.code ?? 'operation_failed', message = response.error?.message ?? '알 수 없는 오류'
       const resources = response.error?.resources
       const created = isRecord(resources) && typeof resources.path === 'string' ? resources.path : null
-      const expected = startWorktreePath({ repoRoot: input.repoRoot, name: input.name })
-      const mine = code === 'already_exists' ? this.linkedTo({ path: expected, input }) : false
-      if (mine) {
-        // 같은 작업에 이미 붙은 worktree(앞 시도·재시작 뒤 같은 이름) — 실패가 아니라 합류다. 에이전트는 다시 띄우지 않는다.
+      if (UNKNOWN_CODES.has(code)) ({ path, stages } = unknown(code, '런타임이 이 요청의 결과를 확정하지 못했습니다'))
+      else if (code === 'already_exists' && this.linkedTo({ path: expected, input })) {
+        // 같은 작업에 이미 붙은 worktree — 새로 만든 것이 없다. 성공이 아니라 「이미 있음」(R1-A): 열기 · 다시 띄우기로.
         path = expected
-        stages = { worktree: stage('completed', 'already_linked', '이 작업에 이미 만든 worktree 입니다.'), agent: stage('skipped', 'already_linked', '에이전트는 다시 띄우지 않았습니다.'), prompt: stage('skipped') }
+        const note = '이 작업에 이미 만든 worktree 입니다 — 새로 만들지 않았습니다.'
+        stages = { worktree: stage('skipped', 'already_linked', note), agent: stage('skipped', 'already_linked', input.agent === 'shell' ? '터미널을 열지 않았습니다.' : '에이전트를 띄우지 않았습니다.'), prompt: stage('skipped', 'already_linked', null) }
+      } else if (code === 'already_exists' && retried) {
+        // 끊긴 뒤의 재시도가 자기 결과에 부딪혔다(빈 터미널은 영수증이 없다) — 이 시도가 만든 것일 수 있어 미확정으로 링크한다.
+        ({ path, stages } = unknown('outcome_unknown', '앞 요청이 끊긴 뒤 같은 이름이 이미 있습니다'))
       } else {
         path = created
-        stages = { worktree: created === null ? stage(RETRY_CODES.has(code) ? 'unknown' : 'failed', code, message) : stage('completed'), agent: stage(created === null ? 'skipped' : 'failed', created === null ? null : code, created === null ? null : message), prompt: stage('skipped') }
+        stages = { worktree: created === null ? stage('failed', code, message) : stage('completed'), agent: stage(created === null ? 'skipped' : 'failed', created === null ? null : code, created === null ? null : message), prompt: stage('skipped') }
       }
     } else if (shell) {
       path = isRecord(response.result) && isRecord(response.result.worktree) && typeof response.result.worktree.path === 'string' ? response.result.worktree.path : null
       stages.worktree = stage('completed')
       stages.prompt = stage('skipped')
       if (path !== null) {
-        const terminal = await this.call({ command: 'terminal create', flags: { worktree: `path:${path}`, 'request-id': derivedRequestId(input.attemptId, 'shell') }, args: [], cwd: this.deps.cwd })
+        const { response: terminal } = await this.call({ command: 'terminal create', flags: { worktree: `path:${path}`, 'request-id': derivedRequestId(input.attemptId, 'shell') }, args: [], cwd: this.deps.cwd })
         stages.agent = terminal?.ok ? stage('completed') : stage('failed', terminal?.error?.code ?? 'runtime_unavailable', terminal?.error?.message ?? '터미널을 열지 못했습니다.')
       } else stages.agent = stage('unknown', 'no_path', 'worktree 경로를 받지 못했습니다.')
     } else {
@@ -219,7 +304,11 @@ export class StartService {
       stages = mapped.stages
       path = mapped.path
     }
-    const { linkSaved, sourceLink } = path === null || stages.worktree.status !== 'completed' ? { linkSaved: false, sourceLink: null } : await this.link({ input, path })
+    // 링크는 새로 만들었거나(completed) 미확정이지만 그 자리에 있을 때(unknown + 경로). 이미 붙은 합류는 다시 적지 않는다.
+    const linkable = path !== null && (stages.worktree.status === 'completed' || stages.worktree.status === 'unknown')
+    const { linkSaved, sourceLink } = path === null || !linkable ? { linkSaved: stages.worktree.code === 'already_linked', sourceLink: null } : await this.link({ input, path })
+    // 미확정인데 worktree 를 못 찾았으면 기록을 남긴다 — 나중에 나타나면 `recover` 가 붙인다. 그 밖엔 지운다.
+    if (!(stages.worktree.status === 'unknown' && path === null)) this.deps.pending?.remove(input.attemptId)
     const result: StartWorkResult = { attemptId: input.attemptId, joined: false, done: true, stages, worktreePath: path, linkSaved, sourceLink, refused: null }
     this.deps.log('work.start_done', { attemptId: input.attemptId, stages: Object.fromEntries(Object.entries(stages).map(([key, value]) => [key, value.status])), linkSaved, sourceLink: sourceLink?.state ?? null })
     return result
@@ -231,7 +320,7 @@ export class StartService {
     return link !== null && link.mode === 'explicit' && link.connectionId === input.connectionId && link.itemId === input.itemId
   }
 
-  private async link({ input, path }: { input: StartWorkInput; path: string }): Promise<{ linkSaved: boolean; sourceLink: StartWorkResult['sourceLink'] }> {
+  private async link({ input, path }: { input: LinkInput; path: string }): Promise<{ linkSaved: boolean; sourceLink: StartWorkResult['sourceLink'] }> {
     const stored: StoredWorkLink = { sourceId: input.sourceId, connectionId: input.connectionId, itemId: input.itemId, key: input.itemKey, linkedAt: this.now() }
     const linkSaved = this.deps.links()?.saveExplicit({ path, link: stored }) ?? false
     const work = this.deps.work()
@@ -239,7 +328,16 @@ export class StartService {
       connectionId: input.connectionId, itemId: input.itemId, itemKey: input.itemKey, eventKey: `run:start:${input.attemptId}`,
       change: { field: 'run', event: 'start', worktree: path, branch: input.name, agent: input.agent, model: input.agent === 'shell' || input.model === '' ? null : input.model },
     })
+    // 링크와 활동을 적었으면 미확정 기록은 끝 — 출처 저장 결과와 무관(출처 실패는 결과에 보인다).
+    if (linkSaved) this.deps.pending?.remove(input.attemptId)
     const sourceLink = work === null ? null : await work.storeLink({ connectionId: input.connectionId, itemId: input.itemId, link: { kind: 'worktree', path, repoRoot: input.repoRoot }, action: 'save' })
     return { linkSaved, sourceLink }
   }
+}
+
+/** 링크·활동에 필요한 시도 정보 — 진행 중 시도(`StartWorkInput`)와 미확정 기록(`PendingStart`)이 같이 쓴다. */
+type LinkInput = Pick<StartWorkInput, 'attemptId' | 'connectionId' | 'sourceId' | 'itemId' | 'itemKey' | 'repoRoot' | 'name' | 'agent' | 'model'>
+
+function pendingOf({ input, path, now }: { input: StartWorkInput; path: string; now: number }): PendingStart {
+  return { attemptId: input.attemptId, connectionId: input.connectionId, sourceId: input.sourceId, itemId: input.itemId, itemKey: input.itemKey, repoRoot: input.repoRoot, name: input.name, path, agent: input.agent, model: input.model, startedAt: now }
 }

@@ -73,3 +73,19 @@ describe('C12 작업 중 보기 = 링크 모델', () => {
     expect(workingFromLinks(trees).map((entry) => [entry.key, entry.trees.map((tree) => tree.path)])).toEqual([['LIFE-5', ['/r/explicit']]])
   })
 })
+
+describe('fix1 R1-N·T — 질문 칩 본문·이유', () => {
+  const one = (pane: ReturnType<typeof testPane>) => linkedTrees({ repos: [testRepo({ root: '/r', worktrees: [testWorktree({ path: '/r/q', branch: 'LIFE-4', panes: [pane], workLink: auto('LIFE-4') })] })], unreadPanes: new Set() })[0]?.question
+  it('grok 지문에 질문이 있으면 본문을 보인다(숨기지 않는다)', () => {
+    expect(one(testPane({ paneId: 'g', agent: 'grok', status: 'blocked', reason: 'question', digest: testDigest({ questions: [{ question: '어느 쪽?', header: null, options: [], multiSelect: null }] }) }))).toEqual({ paneId: 'g', text: '어느 쪽?', reason: null })
+  })
+  it('grok 지문에 질문이 없으면 본문 null + 이유', () => {
+    expect(one(testPane({ paneId: 'g', agent: 'grok', status: 'blocked', reason: 'question', digest: testDigest({ questions: null }) }))).toEqual({ paneId: 'g', text: null, reason: '이 에이전트의 질문 본문은 읽지 못합니다.' })
+  })
+  it('권한 대기는 권한 문구 — 「질문 본문을 못 읽음」 이 아니다', () => {
+    expect(one(testPane({ paneId: 'p', status: 'blocked', reason: 'permission' }))).toEqual({ paneId: 'p', text: null, reason: '권한 승인을 기다립니다 — 에이전트 화면에서 확인하세요.' })
+  })
+  it('빈 질문 목록(`[]`)은 본문 없음과 같다 — 이유가 붙는다', () => {
+    expect(one(testPane({ paneId: 'p', status: 'blocked', reason: 'question', digest: testDigest({ questions: [] }) }))).toEqual({ paneId: 'p', text: null, reason: '이 에이전트의 질문 본문은 읽지 못합니다.' })
+  })
+})

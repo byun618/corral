@@ -9,6 +9,7 @@ import { WorkLinks, type LinkWorkPort } from './links.js'
 import { testDigest, testPane, testRepo, testWorktree } from '../../shared/test-rows.js'
 import type { WorkActivityChange, WorkLink } from '../../shared/work.js'
 import type { StoredWorkLink } from '../../shared/work-link.js'
+import type { StartSourceLink } from '../../shared/work-start.js'
 import type { RepoRow } from '../../shared/types.js'
 
 const env = { ...process.env }
@@ -26,13 +27,17 @@ function tempRegistry(): { dir: string; file: string; registry: () => RepoRegist
 }
 
 /** 실제 활동 저장소 대신 메모리 — `recordEvent` 는 WorkService 와 같은 규칙(같은 eventKey 는 한 번). */
-function fakeWork(): LinkWorkPort & { activity: MemoryActivity; stores: { link: WorkLink; action: string }[] } {
+function fakeWork({ autoResult = { state: 'skipped', message: 'L1a' } }: { autoResult?: StartSourceLink | null } = {}): LinkWorkPort & { activity: MemoryActivity; stores: { link: WorkLink; action: string }[]; autoStores: { key: string; link: WorkLink }[] } {
   const activity = new MemoryActivity()
   const stores: { link: WorkLink; action: string }[] = []
+  const autoStores: { key: string; link: WorkLink }[] = []
   let n = 0
   return {
     activity,
     stores,
+    autoStores,
+    refreshEvent: (input) => activity.refresh(input),
+    storeAutoLink: async ({ key, link }) => { autoStores.push({ key, link }); return autoResult },
     linkConnections: () => [{ id: 'c-la', sourceId: 'la', keyPattern: 'LIFE-\\d+' }],
     repoDefaultConnection: () => null,
     recordEvent: ({ connectionId, itemId, itemKey, eventKey, change }: { connectionId: string; itemId: string | null; itemKey: string; eventKey: string; change: WorkActivityChange }) =>
@@ -175,5 +180,91 @@ describe('사건 기록 — 같은 사건은 한 번 (C13)', () => {
     ])))
     links.observe(links.annotate([testRepo({ root: '/r', worktrees: [testWorktree({ path: '/r/main', branch: 'main', panes: [testPane({ status: 'blocked', reason: 'question' })] })] })]))
     expect(work.activity.records.map((record) => record.change.field)).toEqual(['run'])
+  })
+})
+
+describe('fix1 — 질문 표기 · 바뀐 파일 수 · 자동 연결 출처 저장', () => {
+  const linkedWith = ({ panes, unstaged = 0 }: { panes: ReturnType<typeof testPane>[]; unstaged?: number }) =>
+    [testRepo({ root: '/r', worktrees: [testWorktree({ path: '/r/wt', branch: 'LIFE-603-start', panes, git: { unstaged } })] })]
+  const questions = (work: ReturnType<typeof fakeWork>) => work.activity.records.map((record) => record.change).filter((change) => change.field === 'agent' && change.event === 'question')
+  it('R1-T grok 지문에 질문이 있으면 본문을 그대로 남긴다(숨기지 않는다)', () => {
+    const { registry } = tempRegistry()
+    const work = fakeWork()
+    const links = new WorkLinks({ registry, work: () => work, log: () => {} })
+    const asked = [{ question: '어느 브랜치로?', header: null, options: [], multiSelect: null }]
+    links.observe(links.annotate(linkedWith({ panes: [testPane({ paneId: 'g', agent: 'grok', status: 'blocked', reason: 'question', digest: testDigest({ questions: asked }) })] })))
+    expect(questions(work)).toEqual([{ field: 'agent', event: 'question', agent: 'grok', worktree: '/r/wt', question: '어느 브랜치로?', noBody: null }])
+  })
+  it('R1-T grok 지문에 질문이 없으면 본문 null + 이유', () => {
+    const { registry } = tempRegistry()
+    const work = fakeWork()
+    const links = new WorkLinks({ registry, work: () => work, log: () => {} })
+    links.observe(links.annotate(linkedWith({ panes: [testPane({ paneId: 'g', agent: 'grok', status: 'blocked', reason: 'question', digest: testDigest({ questions: null }) })] })))
+    expect(questions(work)).toEqual([{ field: 'agent', event: 'question', agent: 'grok', worktree: '/r/wt', question: null, noBody: '이 에이전트의 질문 본문은 읽지 못합니다.' }])
+  })
+  it('R1-N 권한 대기는 권한 문구, 빈 질문 목록(`[]`)은 질문이 아니다(사유가 question 이면 본문 없음 이유)', () => {
+    const { registry } = tempRegistry()
+    const work = fakeWork()
+    const links = new WorkLinks({ registry, work: () => work, log: () => {} })
+    links.observe(links.annotate(linkedWith({ panes: [
+      testPane({ paneId: 'a', status: 'blocked', reason: 'permission', digest: testDigest({ lastActivityAt: 1 }) }),
+      testPane({ paneId: 'b', status: 'idle', digest: testDigest({ questions: [], lastActivityAt: 2 }) }),
+      testPane({ paneId: 'c', status: 'blocked', reason: 'question', digest: testDigest({ questions: [], lastActivityAt: 3 }) }),
+    ] })))
+    expect(questions(work).map((change) => (change.field === 'agent' && change.event === 'question' ? change.noBody : null))).toEqual([
+      '권한 승인을 기다립니다 — 에이전트 화면에서 확인하세요.',
+      '이 에이전트의 질문 본문은 읽지 못합니다.',
+    ])
+  })
+  it('R1-L 본문 있는 질문은 기다리는 동안 기록 시각이 움직여도 한 번', () => {
+    const { registry } = tempRegistry()
+    const work = fakeWork()
+    const links = new WorkLinks({ registry, work: () => work, log: () => {} })
+    const asked = [{ question: '지울까요?', header: null, options: [], multiSelect: null }]
+    for (const at of [10, 20, 30]) links.observe(links.annotate(linkedWith({ panes: [testPane({ paneId: 'p', status: 'blocked', reason: 'question', digest: testDigest({ questions: asked, lastActivityAt: at }) })] })))
+    expect(questions(work)).toHaveLength(1)
+  })
+  it('R1-M 결과 뒤 창 안에서는 바뀐 파일 수를 고치고, 창 밖에서는 굳힌다', () => {
+    const { registry } = tempRegistry()
+    const work = fakeWork()
+    const links = new WorkLinks({ registry, work: () => work, log: () => {} })
+    const fresh = Date.now()
+    const pane = (outcomeAt: number) => testPane({ paneId: 'p', status: 'idle', digest: testDigest({ outcome: { outcome: 'completed' }, outcomeAt }) })
+    links.observe(links.annotate(linkedWith({ panes: [pane(fresh)], unstaged: 0 })))
+    links.observe(links.annotate(linkedWith({ panes: [pane(fresh)], unstaged: 4 })))
+    const old = fresh - 120_000
+    links.observe(links.annotate(linkedWith({ panes: [pane(old)], unstaged: 1 })))
+    links.observe(links.annotate(linkedWith({ panes: [pane(old)], unstaged: 9 })))
+    const results = work.activity.records.map((record) => record.change).flatMap((change) => (change.field === 'agent' && change.event === 'result' ? [change.filesChanged] : []))
+    expect(results).toEqual([4, 1])
+  })
+  it('R1-I 자동 연결은 출처 저장을 한 번 부른다 — 결과 미정(null)이면 다음 관측에서 다시, 실패면 활동에 남긴다', async () => {
+    const { registry } = tempRegistry()
+    let answer: StartSourceLink | null = null
+    const work = fakeWork()
+    const calls: string[] = []
+    work.storeAutoLink = async ({ key, link }) => { calls.push(`${key}:${link.kind === 'worktree' ? link.path : ''}`); return answer }
+    const links = new WorkLinks({ registry, work: () => work, log: () => {} })
+    const tick = async () => { links.observe(links.annotate(linkedWith({ panes: [] }))); await new Promise((resolve) => setTimeout(resolve, 0)) }
+    await tick()
+    expect(calls).toEqual(['LIFE-603:/r/wt'])
+    answer = { state: 'failed', message: '출처에서 LIFE-603 를 찾지 못했습니다.' }
+    await tick()
+    await tick()
+    expect(calls).toEqual(['LIFE-603:/r/wt', 'LIFE-603:/r/wt'])
+    expect(work.activity.records.map((record) => record.change).filter((change) => change.field === 'run')).toEqual([
+      { field: 'run', event: 'auto_link', worktree: '/r/wt', branch: 'LIFE-603-start' },
+      { field: 'run', event: 'source_link_failed', worktree: '/r/wt', message: '출처에서 LIFE-603 를 찾지 못했습니다.' },
+    ])
+  })
+  it('R1-I 출처가 저장했거나 닫혀 있으면(skipped) 실패 사건이 없다', async () => {
+    const { registry } = tempRegistry()
+    const work = fakeWork({ autoResult: { state: 'saved', message: null } })
+    const links = new WorkLinks({ registry, work: () => work, log: () => {} })
+    links.observe(links.annotate(linkedWith({ panes: [] })))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    links.observe(links.annotate(linkedWith({ panes: [] })))
+    expect(work.autoStores).toHaveLength(1)
+    expect(work.activity.records.map((record) => record.change.field === 'run' ? record.change.event : null)).toEqual(['auto_link'])
   })
 })

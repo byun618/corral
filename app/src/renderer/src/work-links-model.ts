@@ -6,7 +6,7 @@
 // - 큰소리 라벨은 사람이 움직일 두 경우만 — 질문 대기(`waiting`) · 끝남 안 봄(`done` = 안 본 끝남, herdr 의 done).
 import type { RepoRow, WorktreeRow } from '../../shared/types.js'
 import { linkTargets, type WorktreeWorkLink } from '../../shared/work-link.js'
-import { AGENT_DOT_ORDER, type AgentDot } from './agent-dot.js'
+import { AGENT_DOT_ORDER, waitingQuestion, type AgentDot } from './agent-dot.js'
 import { paneDot, type TabAgentKind } from './tab-status.js'
 import { latestActivity, type WorkingEntry, type WorkingTree } from './tasks-model.js'
 
@@ -23,8 +23,6 @@ export type LinkedTree = WorkingTree & {
   /** 「터미널에서 답하기」 · 칩 클릭이 고를 pane — 질문 대기면 그 pane, 아니면 null(첫 세션 선택 규칙). */
   focusPane: string | null
 }
-
-const NO_QUESTION_BODY = '이 에이전트의 질문 본문은 읽지 못합니다.'
 
 function agentKindOf(agent: string | null): TabAgentKind | null {
   return agent === 'claude' || agent === 'codex' || agent === 'grok' ? agent : null
@@ -48,7 +46,6 @@ export function linkedTrees({ repos, unreadPanes }: { repos: RepoRow[]; unreadPa
     const panes = (worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes)
     const agents = panes.filter((pane) => pane.agent !== null)
     const asking = agents.find((pane) => paneDot({ pane, unread: unreadPanes.has(pane.paneId) }) === 'waiting')
-    const questions = asking?.digest.pendingQuestions ?? null
     return [{
       path: worktree.path,
       repoRoot: repo.root,
@@ -61,8 +58,7 @@ export function linkedTrees({ repos, unreadPanes }: { repos: RepoRow[]; unreadPa
       agent: agentKindOf(agents[0]?.agent ?? null),
       question: asking === undefined ? null : {
         paneId: asking.paneId,
-        text: questions === null ? null : questions.map((entry) => entry.question).join('\n'),
-        reason: questions === null ? NO_QUESTION_BODY : null,
+        ...waitingQuestion({ blockedReason: asking.agentState.blockedReason, pendingQuestions: asking.digest.pendingQuestions }),
       },
       focusPane: asking?.paneId ?? null,
     }]

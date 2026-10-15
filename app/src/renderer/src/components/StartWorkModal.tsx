@@ -8,7 +8,7 @@ import { effortOptions, modelOptions, type StartAgent } from '../../../shared/ag
 import type { RepoRow } from '../../../shared/types.js'
 import { AGENT_ICON } from '../session-glyphs.js'
 import type { StartWorkModel } from '../hooks/useStartWork.js'
-import { failureActions, progressRows, type ProgressRow } from '../start-work-model.js'
+import { alreadyLinked, failureActions, progressRows, type ProgressRow } from '../start-work-model.js'
 import type { LinkedTree } from '../work-links-model.js'
 import { AgentIcon } from './AgentIcon.js'
 
@@ -19,7 +19,7 @@ const AGENTS: { value: StartAgent; label: string }[] = [
   { value: 'shell', label: '빈 터미널' },
 ]
 
-const STATUS_MARK: Record<ProgressRow['status'], string> = { pending: '○', running: '◌', completed: '✓', failed: '✕', skipped: '–', unknown: '?' }
+const STATUS_MARK: Record<ProgressRow['status'], string> = { pending: '○', running: '◌', completed: '✓', queued: '⋯', failed: '✕', skipped: '–', unknown: '?' }
 
 export function StartWorkModal({ model, itemKey, itemTitle, repos, trees, onOpen }: {
   model: StartWorkModel
@@ -149,13 +149,13 @@ export function StartWorkModal({ model, itemKey, itemTitle, repos, trees, onOpen
               ))}
               {result?.sourceLink?.state === 'failed' ? <div className="start-note" data-start-source-link="failed">출처에 링크를 남기지 못했습니다 — {result.sourceLink.message}</div> : null}
               {actions.length === 0 ? null : (
-                <div className="start-actions" data-start-failure="">
+                <div className="start-actions" data-start-failure={alreadyLinked(result) ? 'already-linked' : ''}>
                   {actions.map((action) => {
                     switch (action.kind) {
                       case 'rename':
                         return <span key="rename" className="start-note" data-start-action="rename">이름을 바꿔 다시 시작하세요.</span>
                       case 'relaunch':
-                        return shell ? null : <button key="relaunch" type="button" className="issue-btn" data-start-action="relaunch" disabled={running} onClick={() => void model.relaunch()}>에이전트 다시 띄우기</button>
+                        return <button key="relaunch" type="button" className="issue-btn" data-start-action="relaunch" disabled={running} onClick={() => void model.relaunch()}>{shell ? '터미널 다시 열기' : '에이전트 다시 띄우기'}</button>
                       case 'open':
                         return <button key="open" type="button" className="issue-btn" data-start-action="open" disabled={running} onClick={() => { const path = result?.worktreePath; if (path != null && form.repoRoot !== null && model.close()) onOpen({ repoRoot: form.repoRoot, path }) }}>worktree 열기</button>
                     }

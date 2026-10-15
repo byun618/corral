@@ -119,6 +119,7 @@ import { WorkService } from './work/service.js'
 import { isRecord } from '../shared/json.js'
 import { WorkLinks, linkOf } from './work/links.js'
 import { StartService } from './work/start.js'
+import { PendingStartStore } from './work/start-pending.js'
 import { WorkActivityStore } from './work/activity-store.js'
 import { WorkSourceRegistry } from './work/source.js'
 import { WorkConnectionStore } from './work/store.js'
@@ -490,6 +491,8 @@ function scheduleEmit(): void {
     window?.webContents.send('corral:state', state)
     // LIFE-603 — 링크된 worktree 의 사건(자동 연결 · 질문 · 턴 결과)을 활동에 남긴다. 화면이 닫혀 있어도 여기서 남는다.
     workLinks?.observe(state.repos)
+    // 응답 전에 끝났거나 결과가 미확정이던 시작을 트리와 맞춰 링크한다(R1-C·R1-B).
+    void workStarts?.recover(state.repos).catch((error: unknown) => log('work.start_recover_failed', { error: String(error) }))
     // 폰 목록(LIFE-580) — 방금 만든 상태를 그대로 쓴다(두 번 만들지 않는다). 구독자가 없으면 아무 일도 안 한다.
     lastEmittedState = state
     mobile?.listChanged()
@@ -1655,6 +1658,9 @@ app.whenReady().then(async () => {
     work: () => work,
     log,
     cwd: os.homedir(),
+    pending: new PendingStartStore(app.getPath('userData')),
+    // git worktree 는 그 자리에 `.git` 파일을 둔다 — 트리에 아직 안 올라온 경로도 찾는다(R1-B).
+    worktreeExists: (target) => fs.existsSync(path.join(target, '.git')),
   })
   log('app.ready', {
     logFile: file,

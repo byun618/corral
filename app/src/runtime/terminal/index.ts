@@ -530,7 +530,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           }
           try {
             await backend.sendIfUnchanged(created, draftPastePayload(text), info.stateChangeSeq, ctx)
-            stages.prompt = { status: 'completed', mode: 'draft', submitted: false, bytes: identity.bytes, lines: identity.lines, sha256: identity.sha256 }
+            stages.prompt = { status: 'completed', mode: 'draft', enterSent: false, bytes: identity.bytes, lines: identity.lines, sha256: identity.sha256 }
             return done('agent_drafted', record, [await observeAgent(created, record)], false, null)
           } catch (error) {
             stages.prompt = { ...stageFailure(error), mode: 'draft' }

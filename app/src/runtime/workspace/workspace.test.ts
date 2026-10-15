@@ -64,6 +64,21 @@ describe('workspace commands against real git and local socket', () => {
     await call('worktree', 'set', '--worktree', `path:${repo}`, '--display-name', 'line\nname')
     expect((await call('worktree', 'show', '--worktree', 'name:line\nname')).error?.code).toBe('ambiguous_target')
   })
+  it('LIFE-603 R1-J: a new worktree at a reused path does not inherit a stale work link or detach exception', async () => {
+    const { data, repo, call } = await fixture()
+    expect((await call('repo', 'add', '--path', repo)).ok).toBe(true)
+    const target = path.join(fs.realpathSync(repo), '.claude/worktrees/reuse')
+    // Left behind by a worktree removed outside corral (git worktree remove / rm -rf) — corral never cleaned the metadata.
+    const registry = new RepoRegistry(data)
+    registry.change(state => { state.worktrees[target] = { comment: 'kept', workLink: { sourceId: 'la', connectionId: 'c', itemId: 'old', key: 'LIFE-1', linkedAt: 1 }, workLinkSuppressed: true } })
+    expect((await call('worktree', 'create', '--name', 'reuse')).ok).toBe(true)
+    const stored = registry.metadata()[target]
+    expect(stored?.workLink).toBeUndefined()
+    expect(stored?.workLinkSuppressed).toBeUndefined()
+    // Positive control: the other stale keys still merge as before (behaviour of `put` is unchanged).
+    expect(stored?.comment).toBe('kept')
+    expect(stored?.createdBranch).toBe(true)
+  })
   it('serializes creation, persists metadata and shares the GUI registry across restart', async () => {
     const { data, repo, git, call, restart } = await fixture()
     fs.chmodSync(data, 0o755)

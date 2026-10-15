@@ -29,10 +29,39 @@ import { log } from '../log.js'
 export const WORK_ACTIVITY_VERSION = 1
 export const ACTIVITY_PER_ITEM = 200
 export const ACTIVITY_TOTAL = 5_000
+/**
+ * 남긴 사건 열쇠의 기억 상한(R1-K) — 줄이 보존 상한으로 밀려나도 열쇠는 따로 남아 같은 사건이 되살아나지 않는다.
+ * 열쇠 하나 ~100바이트라 파일이 수 MB 를 넘지 않는다. 넘으면 오래된 열쇠부터 잊는다(그때는 아주 오래된 사건이 다시 남을 수 있다).
+ */
+export const ACTIVITY_SEEN_KEYS = 20_000
+
+/** 열쇠 기억 — 넣은 순서를 지키고 상한을 넘으면 오래된 것부터 버린다. */
+export class SeenKeys {
+  private readonly keys = new Set<string>()
+  private readonly limit: number
+  constructor(limit: number = ACTIVITY_SEEN_KEYS) { this.limit = limit }
+  has(key: string): boolean { return this.keys.has(key) }
+  add(key: string): void {
+    this.keys.delete(key)
+    this.keys.add(key)
+    for (const oldest of this.keys) {
+      if (this.keys.size <= this.limit) break
+      this.keys.delete(oldest)
+    }
+  }
+  list(): string[] { return [...this.keys] }
+  dropAll(keys: Iterable<string>): void { for (const key of keys) this.keys.delete(key) }
+}
+
+function sameChange({ a, b }: { a: WorkActivityChange; b: WorkActivityChange }): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
 
 export type ActivityPort = {
   /** `eventKey` 가 이미 있으면 남기지 않는다(LIFE-603 — 같은 사건은 한 번). 남겼으면 true. */
   append(record: WorkActivityRecord): boolean
+  /** 이미 남긴 사건의 내용을 바꾼다(R1-M). 그 열쇠의 줄이 없거나(밀려났거나) 같으면 false. */
+  refresh(input: { eventKey: string; change: WorkActivityChange }): boolean
   list(query: { connectionId: string; itemId: string; itemKey?: string }): WorkActivityRecord[]
   purgeConnection(connectionId: string): void
 }
@@ -75,6 +104,7 @@ function readChange(value: unknown): WorkActivityChange | null {
       return str(value.childKey) && str(value.childTitle) ? { field: 'child', childKey: value.childKey, childTitle: value.childTitle } : null
     case 'run': {
       if (!str(value.worktree)) return null
+      if (value.event === 'source_link_failed') return nullableStr(value.message) ? { field: 'run', event: 'source_link_failed', worktree: value.worktree, message: value.message } : null
       if (value.event === 'start') return str(value.branch) && str(value.agent) && nullableStr(value.model) ? { field: 'run', event: 'start', worktree: value.worktree, branch: value.branch, agent: value.agent, model: value.model } : null
       return (value.event === 'auto_link' || value.event === 'detach') && nullableStr(value.branch) ? { field: 'run', event: value.event, worktree: value.worktree, branch: value.branch } : null
     }
@@ -134,6 +164,7 @@ export function capRecords({ records, perItem = ACTIVITY_PER_ITEM, total = ACTIV
 export class WorkActivityStore implements ActivityPort {
   readonly file: string
   private records: WorkActivityRecord[] = []
+  private readonly seen = new SeenKeys()
 
   constructor(userDataDir: string) {
     const fromEnv = process.env.CORRAL_WORK_ACTIVITY
@@ -171,12 +202,27 @@ export class WorkActivityStore implements ActivityPort {
       else records.push(record)
     }
     this.records = capRecords({ records })
+    // 열쇠 기억(R1-K) — 옛 파일엔 `seen` 이 없다. 그때는 남은 줄의 열쇠로 시작한다.
+    if (Array.isArray(parsed.seen)) for (const key of parsed.seen) if (typeof key === 'string' && key.length > 0) this.seen.add(key)
+    for (const record of this.records) if (record.eventKey !== undefined) this.seen.add(record.eventKey)
     log('work.activity_load', { file: this.file, records: this.records.length, dropped })
   }
 
   append(record: WorkActivityRecord): boolean {
-    if (record.eventKey !== undefined && this.records.some((row) => row.eventKey === record.eventKey)) return false
+    if (record.eventKey !== undefined) {
+      if (this.seen.has(record.eventKey)) return false
+      this.seen.add(record.eventKey)
+    }
     this.records = capRecords({ records: [...this.records, record] })
+    this.save()
+    return true
+  }
+
+  refresh({ eventKey, change }: { eventKey: string; change: WorkActivityChange }): boolean {
+    const index = this.records.findIndex((row) => row.eventKey === eventKey)
+    const current = this.records[index]
+    if (current === undefined || sameChange({ a: current.change, b: change })) return false
+    this.records = this.records.map((row, at) => (at === index ? { ...row, change } : row))
     this.save()
     return true
   }
@@ -188,12 +234,14 @@ export class WorkActivityStore implements ActivityPort {
   purgeConnection(connectionId: string): void {
     const next = this.records.filter((record) => record.connectionId !== connectionId)
     if (next.length === this.records.length) return
+    // 열쇠는 연결 id 를 품는다(`…:<연결>:<키>:…`) — 지운 줄의 열쇠도 잊는다. 해제한 계정의 흔적을 남기지 않는다.
+    this.seen.dropAll(this.records.flatMap((record) => (record.connectionId === connectionId && record.eventKey !== undefined ? [record.eventKey] : [])))
     this.records = next
     this.save()
   }
 
   private save(): void {
-    const payload = JSON.stringify({ version: WORK_ACTIVITY_VERSION, records: this.records }) + '\n'
+    const payload = JSON.stringify({ version: WORK_ACTIVITY_VERSION, records: this.records, seen: this.seen.list() }) + '\n'
     const tmp = `${this.file}.${process.pid}.tmp`
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true })
@@ -213,10 +261,24 @@ export class WorkActivityStore implements ActivityPort {
 /** 메모리 판 — 테스트용(파일 없음). */
 export class MemoryActivity implements ActivityPort {
   records: WorkActivityRecord[] = []
+  private readonly seen: SeenKeys
+
+  constructor(limit?: number) { this.seen = new SeenKeys(limit) }
 
   append(record: WorkActivityRecord): boolean {
-    if (record.eventKey !== undefined && this.records.some((row) => row.eventKey === record.eventKey)) return false
+    if (record.eventKey !== undefined) {
+      if (this.seen.has(record.eventKey)) return false
+      this.seen.add(record.eventKey)
+    }
     this.records = capRecords({ records: [...this.records, record] })
+    return true
+  }
+
+  refresh({ eventKey, change }: { eventKey: string; change: WorkActivityChange }): boolean {
+    const index = this.records.findIndex((row) => row.eventKey === eventKey)
+    const current = this.records[index]
+    if (current === undefined || sameChange({ a: current.change, b: change })) return false
+    this.records = this.records.map((row, at) => (at === index ? { ...row, change } : row))
     return true
   }
 

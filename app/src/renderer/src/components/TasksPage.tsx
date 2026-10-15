@@ -148,7 +148,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   // --- 작업에서 시작 · 링크 (LIFE-603) ---
   const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree }), [page.linked, onOpenWorktree])
   const detailSource = detail.descriptor?.name ?? detail.connection?.name ?? '출처'
-  const starter = useStartWork({ detail, repos, repoDefaults: settings?.repoDefaults ?? NO_DEFAULTS, activeRepoRoot, sourceName: detailSource })
+  const starter = useStartWork({ detail, repos, repoDefaults: settings?.repoDefaults ?? NO_DEFAULTS, activeRepoRoot, sourceName: detailSource, notifyFailure: (message) => notify({ kind: 'failed', message }) })
   const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })
   const workActions = useMemo((): DetailWorkActions => ({ start: (mode) => starter.begin(mode), reveal: (paneId) => onRevealPane?.(paneId) }), [starter.begin, onRevealPane])
   // 사이드바 작업 줄 → 그 작업 상세. 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다.

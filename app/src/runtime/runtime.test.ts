@@ -738,7 +738,7 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
   const DRAFT_REFUSALS: ('blocked' | 'unverified')[] = ['blocked', 'unverified']
   const DRAFT_BODY = '작업 LIFE-1 첫 줄\r\n둘째 줄 \u001b[201~ 끼어든 끝 시퀀스\r셋째 줄\u0007벨\n넷째 줄\n' + '긴 본문 '.repeat(120) + '\n\n'
   const sendSpy = () => vi.spyOn(TerminalBackend.prototype, 'sendIfUnchanged').mockImplementation(async () => undefined)
-  it('LIFE-603: worktree create --draft types the sanitized body once, sends no Enter and never submits', async () => {
+  it('LIFE-603: worktree create --draft types the sanitized body once, sends no Enter (enterSent false) and never takes the agent.prompt path', async () => {
     const f = agentFixture('claude', { git: true })
     const send = sendSpy()
     cleanups.push(() => { send.mockRestore() })
@@ -749,7 +749,7 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     const requestId = `r1.${Date.now()}.${randomUUID()}`
     const create = () => workspace.execute({ command: 'worktree create', flags: { name: 'draft-wt', repo: f.cwd, agent: 'claude', prompt: DRAFT_BODY, draft: true, 'request-id': requestId }, args: [], cwd: f.cwd }, f.context(14000))
     const created = asObject(await create())
-    expect(nested(created, 'stages', 'prompt')).toMatchObject({ status: 'completed', mode: 'draft', submitted: false })
+    expect(nested(created, 'stages', 'prompt')).toMatchObject({ status: 'completed', mode: 'draft', enterSent: false })
     expect(submitted).toBe(0)
     expect(send).toHaveBeenCalledTimes(1)
     const payload = String(send.mock.calls[0]![1])

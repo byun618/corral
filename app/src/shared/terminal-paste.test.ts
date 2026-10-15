@@ -21,6 +21,7 @@ import {
   BRACKETED_PASTE_START,
   draftPastePayload,
   sanitizeDraftBody,
+  invisibleCodePoint,
 } from './terminal-paste.js'
 
 const wrap = wrapBracketedPaste
@@ -451,5 +452,19 @@ describe('LIFE-603 초안 정제 (C15)', () => {
     expect(closedAt).toBeLessThan(naive.length - BRACKETED_PASTE_END.length)
     expect(outside).toContain('\r')
     expect(outside).toContain('rm -rf ~')
+  })
+})
+
+describe('LIFE-603 R1-F 비가시 유니코드', () => {
+  it('태그 문자 · 양방향 제어 · 제로폭 · BOM · 소프트 하이픈을 지운다', () => {
+    const tags = [...'ignore'].map((char) => String.fromCodePoint(0xe0000 + (char.codePointAt(0) ?? 0))).join('')
+    const body = `보이는 글${tags}\u202e거꾸로\u202c\u2066격리\u2069\u200b\u200c\u200d\u2060\ufeff\u00ad\u061c\u200e\u200f\u{E0100}끝`
+    expect(sanitizeDraftBody(body)).toBe('보이는 글거꾸로격리끝')
+  })
+  it('경계 — 범위 밖 이웃 코드포인트는 남긴다(양성 대조)', () => {
+    for (const code of [0x2029, 0x2030, 0x2075, 0x200a, 0xe0080, 0xe01f0, 0x0041]) {
+      expect([code, invisibleCodePoint(code)]).toEqual([code, false])
+    }
+    for (const code of [0xe0000, 0xe007f, 0x202a, 0x202e, 0x2066, 0x2069, 0x200b, 0x200d, 0x2064, 0xe01ef]) expect([code, invisibleCodePoint(code)]).toEqual([code, true])
   })
 })

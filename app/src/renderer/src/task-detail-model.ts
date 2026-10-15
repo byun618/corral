@@ -198,6 +198,7 @@ function describeRun(change: Extract<WorkActivityChange, { field: 'run' }>): str
     case 'start': return `작업 시작 · ${change.branch} · ${change.agent === 'shell' ? '빈 터미널' : change.agent}${change.model === null ? '' : ` · ${change.model}`}`
     case 'auto_link': return `worktree 자동 연결 · ${change.branch ?? tail(change.worktree)}`
     case 'detach': return `worktree 떼기 · ${change.branch ?? tail(change.worktree)}`
+    case 'source_link_failed': return `출처에 링크를 남기지 못함 · ${tail(change.worktree)}${change.message === null ? '' : ` — ${change.message}`}`
   }
 }
 

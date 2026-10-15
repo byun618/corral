@@ -1,8 +1,8 @@
 // LIFE-603 C2·C6 — 시작 모달 순수 모델: 기본 레포 고르는 순서 · 진행 단계 · 실패 행동.
 import { describe, expect, it } from 'vitest'
-import { testRepo } from '../../shared/test-rows.js'
+import { testRepo, testWorktree } from '../../shared/test-rows.js'
 import type { StartWorkResult } from '../../shared/work-start.js'
-import { defaultStartRepo, failureActions, progressRows, startSignature } from './start-work-model.js'
+import { alreadyLinked, defaultStartRepo, failureActions, progressRows, startSignature, startSucceeded, uniqueStartName } from './start-work-model.js'
 
 const repos = [testRepo({ root: '/a', worktrees: [] }), testRepo({ root: '/b', worktrees: [] })]
 const done = (patch: Partial<StartWorkResult['stages']> = {}, worktreePath: string | null = '/a/w'): StartWorkResult => ({
@@ -49,5 +49,29 @@ describe('startSignature — 입력이 같으면 같은 시도', () => {
     const base: Parameters<typeof startSignature>[0] = { repoRoot: '/a', name: 'K-1', agent: 'claude', model: '', effort: '', submit: false, prompt: 'p' }
     expect(startSignature(base)).toBe(startSignature({ ...base }))
     expect(startSignature(base)).not.toBe(startSignature({ ...base, submit: true }))
+  })
+})
+
+describe('fix1 R1-A·B·P — 합류 · 미확정 · 줄에 넣음 · 이름 유일화', () => {
+  const joined = done({ worktree: { status: 'skipped', code: 'already_linked', message: null }, agent: { status: 'skipped', code: 'already_linked', message: null }, prompt: { status: 'skipped', code: 'already_linked', message: null } })
+  it('합류는 성공이 아니고 열기 · 다시 띄우기', () => {
+    expect(alreadyLinked(joined)).toBe(true)
+    expect(startSucceeded(joined)).toBe(false)
+    expect(failureActions(joined)).toEqual([{ kind: 'open' }, { kind: 'relaunch' }])
+    expect(alreadyLinked(done())).toBe(false)
+  })
+  it('worktree 미확정인데 경로가 보이면 열기, 없으면 이름 바꾸기', () => {
+    expect(failureActions(done({ worktree: { status: 'unknown', code: 'outcome_unknown', message: null } }, '/a/w'))).toEqual([{ kind: 'open' }, { kind: 'relaunch' }])
+    expect(failureActions(done({ worktree: { status: 'unknown', code: 'outcome_unknown', message: null } }, null))).toEqual([{ kind: 'rename' }])
+  })
+  it('줄에 넣음(queued)은 실패가 아니고 이유 문구가 붙는다', () => {
+    const queued = done({ prompt: { status: 'queued', code: null, message: null } })
+    expect(startSucceeded(queued)).toBe(true)
+    expect(progressRows({ result: queued, running: false, agent: 'claude', submit: true, worktreeSeen: true })[2]).toMatchObject({ status: 'queued', note: '줄에 넣음 — 에이전트가 받았는지는 아직 모릅니다.' })
+  })
+  it('uniqueStartName — 브랜치 · 폴더 이름과 겹치면 -2, -3', () => {
+    const taken = [testRepo({ root: '/a', worktrees: [testWorktree({ path: '/a/wt/K-1', branch: 'refs/heads/K-1' }), testWorktree({ path: '/a/wt/K-1-2', branch: 'other' })] })]
+    expect(uniqueStartName({ base: 'K-1', repos: taken })).toBe('K-1-3')
+    expect(uniqueStartName({ base: 'K-9', repos: taken })).toBe('K-9')
   })
 })

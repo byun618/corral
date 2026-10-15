@@ -74,6 +74,16 @@ export class WorktreeMetadata {
   put(target: string, update: Metadata): void {
     this.registry.change(data => { data.worktrees[target] = { ...data.worktrees[target], ...update } })
   }
+  /** LIFE-603 R1-J: a newly created worktree does not inherit a stale work link or detach exception left at the same path
+   *  (e.g. a worktree removed outside corral). Other existing keys merge as `put` does. */
+  create(target: string, update: Metadata): void {
+    this.registry.change(data => {
+      const next: Metadata = { ...data.worktrees[target], ...update }
+      delete next.workLink
+      delete next.workLinkSuppressed
+      data.worktrees[target] = next
+    })
+  }
   remove(target: WorktreeRecord): void {
     this.registry.change(data => {
       delete data.worktrees[target.path]

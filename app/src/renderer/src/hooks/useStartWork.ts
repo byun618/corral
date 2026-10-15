@@ -9,7 +9,7 @@ import { effortOptions, modelOptions, type StartAgent } from '../../../shared/ag
 import type { RepoRow } from '../../../shared/types.js'
 import { composeStartPrompt, defaultStartName, newAttemptId, startNameProblem, startStatusTarget, type StartStatusTarget, type StartWorkInput, type StartWorkResult } from '../../../shared/work-start.js'
 import type { WorkRepoDefault } from '../../../shared/work.js'
-import { defaultStartRepo, startSignature, startSucceeded } from '../start-work-model.js'
+import { defaultStartRepo, startSignature, startSucceeded, uniqueStartName } from '../start-work-model.js'
 import type { TaskDetailModel } from './useTaskDetail.js'
 
 export type StartMode = 'first' | 'another'
@@ -27,19 +27,25 @@ export type StartForm = {
 export type StatusMove = { state: 'idle' } | { state: 'writing' } | { state: 'done'; label: string } | { state: 'failed'; message: string }
 
 const NO_MOVE: StatusMove = { state: 'idle' }
+const JOIN_TRIES = 1_200
 
 function uuid(): string {
   return crypto.randomUUID()
 }
 
-export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sourceName }: {
+export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sourceName, notifyFailure }: {
   detail: TaskDetailModel
   repos: RepoRow[]
   repoDefaults: WorkRepoDefault[]
   activeRepoRoot: string | null
   sourceName: string
+  /** 모달이 닫힌 뒤 알릴 실패(R1-D — 시작 중 다른 작업으로 옮겨 상태를 못 옮긴 것). */
+  notifyFailure: (message: string) => void
 }) {
   const { item, target } = detail
+  // 상태 쓰기는 시작이 끝난 시점의 상세로 한다(R1-D) — 시작 시점의 클로저는 판이 낡아 충돌로 떨어진다.
+  const detailRef = useRef(detail)
+  detailRef.current = detail
   const [mode, setMode] = useState<StartMode | null>(null)
   /** 이미 작업 중 상자를 지나 「하나 더 시작」 을 골랐나. */
   const [proceed, setProceed] = useState(false)
@@ -73,7 +79,7 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
     setMode(next)
     // 링크가 있는 작업이면 어느 버튼으로 열든 「이미 진행 중」 상자부터(C1) — 「하나 더 시작」 은 그 상자에서 고른다.
     setProceed(false)
-    setForm({ repoRoot, name: defaultStartName({ key: item.key, title: item.title }), agent: 'claude', model: '', effort: '', submit: false, moveStatus: false })
+    setForm({ repoRoot, name: uniqueStartName({ base: defaultStartName({ key: item.key, title: item.title }), repos }), agent: 'claude', model: '', effort: '', submit: false, moveStatus: false })
     setResult(null)
     setMove(NO_MOVE)
     setRunning(false)
@@ -95,10 +101,14 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
     })
   }, [item, target, repos, repoDefaults, activeRepoRoot, detail])
 
-  /** 진행 중 시도에 합류 — main 은 같은 id 를 입력 없이 받지 않으므로 시도 상태를 다시 묻는다. */
+  /**
+   * 진행 중 시도에 합류 — main 은 같은 id 를 입력 없이 받지 않으므로 시도 상태를 다시 묻는다.
+   * 상한(R1-Q) = main 의 시작 기한(10분)과 같은 1,200회 × 500ms. 넘으면 묻기를 멈추고 진행 표시를 푼다 — 다시 열면 다시 이어 받는다.
+   */
   const join = async ({ attemptId, here }: { attemptId: string; here: number }): Promise<void> => {
     if (item === null || target === null) return
-    for (;;) {
+    for (let tries = 0; ; tries += 1) {
+      if (tries >= JOIN_TRIES) { setRunning(false); return }
       await new Promise((resolve) => setTimeout(resolve, 500))
       if (here !== round.current) return
       const view = await window.corral.startWorkStatus({ connectionId: target.connectionId, itemId: item.id })
@@ -111,18 +121,19 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
   const nameProblem = form === null ? null : startNameProblem(form.name)
   const canStart = form !== null && item !== null && target !== null && !running && form.repoRoot !== null && nameProblem === null && (form.agent === 'shell' || prompt !== null)
 
-  const writeStatus = async (statusKey: string, label: string): Promise<void> => {
-    if (item === null) return
+  const writeStatus = async ({ itemId, statusKey, label }: { itemId: string; statusKey: string; label: string }): Promise<void> => {
+    const current = detailRef.current
+    if (current.item?.id !== itemId) return
     setMove({ state: 'writing' })
-    const outcome = await detail.write({
-      call: { op: 'changeStatus', itemId: item.id, statusKey, ifVersion: detail.versionOf(detail.base), resolution: null },
+    const outcome = await current.write({
+      call: { op: 'changeStatus', itemId, statusKey, ifVersion: current.versionOf(current.base), resolution: null },
       optimistic: null,
       label: null,
       undo: null,
       quiet: true,
     })
     const final = outcome.kind === 'late' ? await outcome.settled : outcome
-    setMove(final.kind === 'ok' ? { state: 'done', label } : { state: 'failed', message: final.kind === 'failed' ? final.error.message : final.kind === 'busy' ? (detail.blocked ?? '앞 변경을 출처가 확인하는 중입니다.') : '작업 화면이 바뀌어 상태를 옮기지 않았습니다.' })
+    setMove(final.kind === 'ok' ? { state: 'done', label } : { state: 'failed', message: final.kind === 'failed' ? final.error.message : final.kind === 'busy' ? (detailRef.current.blocked ?? '앞 변경을 출처가 확인하는 중입니다.') : '작업 화면이 바뀌어 상태를 옮기지 않았습니다.' })
   }
 
   const start = async (): Promise<void> => {
@@ -142,14 +153,19 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
     setResult(null)
     setMove(NO_MOVE)
     const outcome = await window.corral.startWork(input)
-    if (here !== round.current) return
+    const wantsMove = outcome !== null && outcome.stages.worktree.status === 'completed' && moveTo !== null
+    if (here !== round.current) {
+      // 시작하는 동안 다른 작업으로 옮겨 모달이 닫혔다 — 상태 쓰기를 조용히 버리지 않고 알린다(R1-D).
+      if (wantsMove) notifyFailure(`${item.key} — 시작하는 동안 다른 작업을 열어 상태를 「${moveTo.label}」 로 옮기지 않았습니다. worktree·에이전트는 그대로입니다.`)
+      return
+    }
     setRunning(false)
     setResult(outcome)
-    if (outcome !== null && outcome.stages.worktree.status === 'completed' && moveTo !== null) await writeStatus(moveTo.statusKey, moveTo.label)
+    if (wantsMove) await writeStatus({ itemId: item.id, statusKey: moveTo.statusKey, label: moveTo.label })
   }
 
   const relaunch = async (): Promise<void> => {
-    if (form === null || form.agent === 'shell' || result?.worktreePath == null || item === null || target === null || running) return
+    if (form === null || result?.worktreePath == null || item === null || target === null || running) return
     const here = round.current
     setRunning(true)
     const outcome = await window.corral.relaunchWorkAgent({ attemptId: newAttemptId({ now: Date.now(), uuid: uuid() }), connectionId: target.connectionId, itemId: item.id, path: result.worktreePath, agent: form.agent, model: form.model, effort: form.effort })

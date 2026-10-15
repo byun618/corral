@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { WorkActivityRecord } from '../../shared/work.js'
+import type { WorkActivityChange, WorkActivityRecord } from '../../shared/work.js'
 import { WorkActivityStore, capRecords, readActivityRecord } from './activity-store.js'
 import { mockSourceEntry, seedMockState } from './mock-source.js'
 import { FAKE_MOCK_TOKEN, workHarness } from './test-kit.js'
@@ -155,5 +155,45 @@ describe('WorkService 기록 지점', () => {
       { field: 'relation', action: 'add', kind: 'blocks', otherKey: 'CORE-3' },
       { field: 'relation', action: 'remove', kind: 'blocks', otherKey: 'CORE-3' },
     ])
+  })
+})
+
+describe('LIFE-603 R1-K·M — 사건 열쇠 기억 · 내용 고치기', () => {
+  it('보존 상한으로 줄이 밀려나도 같은 열쇠는 다시 남지 않는다 — 재시작 뒤에도(양성 대조: 새 열쇠는 남는다)', () => {
+    const first = new WorkActivityStore(dir)
+    first.load()
+    expect(first.append(record({ eventKey: 'agent:q:old', itemKey: 'K-1' }))).toBe(true)
+    for (let index = 0; index < 205; index += 1) first.append(record({ eventKey: `agent:t:${index}`, itemKey: 'K-1' }))
+    expect(first.list({ connectionId: 'c1', itemId: 'i1' }).some((row) => row.eventKey === 'agent:q:old')).toBe(false)
+    expect(first.append(record({ eventKey: 'agent:q:old', itemKey: 'K-1' }))).toBe(false)
+    const second = new WorkActivityStore(dir)
+    second.load()
+    expect(second.append(record({ eventKey: 'agent:q:old', itemKey: 'K-1' }))).toBe(false)
+    expect(second.append(record({ eventKey: 'agent:q:new', itemKey: 'K-1' }))).toBe(true)
+  })
+  it('옛 파일(seen 없음)은 남은 줄의 열쇠로 시작한다', () => {
+    fs.writeFileSync(path.join(dir, 'work-activity.json'), JSON.stringify({ version: 1, records: [record({ eventKey: 'run:start:a' })] }))
+    const store = new WorkActivityStore(dir)
+    store.load()
+    expect(store.append(record({ eventKey: 'run:start:a' }))).toBe(false)
+  })
+  it('연결 해제는 그 연결의 열쇠도 잊는다', () => {
+    const store = new WorkActivityStore(dir)
+    store.load()
+    store.append(record({ eventKey: 'run:start:c1' }))
+    store.purgeConnection('c1')
+    expect(store.append(record({ eventKey: 'run:start:c1' }))).toBe(true)
+  })
+  it('refresh — 같은 열쇠의 줄 내용을 바꾸고 재시작 뒤에도 남는다, 같은 내용·없는 열쇠는 false', () => {
+    const store = new WorkActivityStore(dir)
+    store.load()
+    const result = (filesChanged: number): WorkActivityChange => ({ field: 'agent', event: 'result', agent: 'claude', worktree: '/w', outcome: 'completed', detail: null, filesChanged })
+    store.append(record({ eventKey: 'agent:t:1', change: result(0) }))
+    expect(store.refresh({ eventKey: 'agent:t:1', change: result(3) })).toBe(true)
+    expect(store.refresh({ eventKey: 'agent:t:1', change: result(3) })).toBe(false)
+    expect(store.refresh({ eventKey: 'agent:t:none', change: result(0) })).toBe(false)
+    const again = new WorkActivityStore(dir)
+    again.load()
+    expect(again.list({ connectionId: 'c1', itemId: 'i1' })[0]?.change).toEqual(result(3))
   })
 })

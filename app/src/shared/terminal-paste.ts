@@ -212,9 +212,22 @@ export function sanitizeDraftBody(text: string): string {
     const code = char.codePointAt(0) ?? 0
     if (char === '\n' || char === '\t') out += char
     else if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) continue
+    else if (invisibleCodePoint(code)) continue
     else out += char
   }
   return out.replace(/\s+$/u, '')
+}
+
+/**
+ * 사람 눈에 안 보이고 모델은 읽는 글자(LIFE-603 R1-F) — 초안의 안전장치(「사람이 보고 Enter」)를 비껴간다. 지운다.
+ * 태그 U+E0000–E007F(숨긴 ASCII) · 양방향 제어 U+061C·U+200E·U+200F·U+202A–202E·U+2066–2069 ·
+ * 제로폭 U+200B–200D·U+2060–2064·U+FEFF · 변형 선택자 보충 U+E0100–E01EF · 소프트 하이픈 U+00AD.
+ * 대가: 이모지 결합(ZWJ U+200D)이 낱자로 풀린다 — 본문의 뜻은 그대로다.
+ */
+export function invisibleCodePoint(code: number): boolean {
+  return (code >= 0xe0000 && code <= 0xe007f) || (code >= 0xe0100 && code <= 0xe01ef)
+    || code === 0x061c || code === 0x200e || code === 0x200f || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069)
+    || (code >= 0x200b && code <= 0x200d) || (code >= 0x2060 && code <= 0x2064) || code === 0xfeff || code === 0x00ad
 }
 
 /** 초안 한 번에 쓸 바이트 — 정제한 본문을 강제 bracketed paste 하나로. Enter(CR) 는 틀 밖에 붙이지 않는다. */

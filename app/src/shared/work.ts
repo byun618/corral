@@ -170,6 +170,8 @@ export type WorkActivityChange =
   /** 실행 갈래(LIFE-603 C13) — 작업 시작 · 자동 연결 · 떼기. `worktree` 는 경로, `branch` 는 그때의 브랜치 이름. */
   | { field: 'run'; event: 'start'; worktree: string; branch: string; agent: string; model: string | null }
   | { field: 'run'; event: 'auto_link' | 'detach'; worktree: string; branch: string | null }
+  /** LIFE-603 R1-I — 자동 연결을 출처에 저장하지 못했다(로컬 링크는 그대로). */
+  | { field: 'run'; event: 'source_link_failed'; worktree: string; message: string | null }
   /**
    * 에이전트 갈래(LIFE-603 C13) — 링크된 worktree 의 에이전트 사건. `question` 은 질문 본문(못 읽는 에이전트는 null + `noBody` 이유),
    * `result` 는 턴 결과(완료 · 중단 · 실패)와 그때 바뀐 파일 수(git 상태, 모르면 null).

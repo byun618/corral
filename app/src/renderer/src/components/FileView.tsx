@@ -93,6 +93,9 @@ export function retargetLiveEditors(store: ViewStateStore, moved: readonly { fro
 
 type ReadState = FileReadResult | ImageReadResult
 
+/** 최근 기록에 남기지 않을 읽기 결과 — 파일이 아님(폴더·폴더 링크 포함)·가둠 거절. 없음·입출력 오류·바뀜은 일시적일 수 있어 두지 않는다. */
+const REFUSED_READS: ReadonlySet<string> = new Set(['not_file', 'outside_root', 'not_worktree', 'invalid_argument', 'not_directory'])
+
 const MARKDOWN = /\.(md|markdown|mdown|mkd|mkdn|mdwn|mdtxt|mdtext)$/i
 
 const formatBytes = (size: number): string =>
@@ -108,6 +111,7 @@ export function FileView({
   watched,
   onActivate,
   onOpenFile,
+  onRefused,
 }: {
   root: string
   rel: string
@@ -121,6 +125,8 @@ export function FileView({
   onActivate: () => void
   /** Markdown 미리보기 안 상대 링크 — worktree 안 파일을 미리보기 탭으로. */
   onOpenFile: (rel: string) => void
+  /** 읽기가 거절됐다(파일 아님·폴더·가둠 밖 — LIFE-593 수정 r2 R2-C-03). 최근 기록에서 뺄 때 쓴다. */
+  onRefused?: () => void
 }): React.JSX.Element {
   const image = imageMimeOf(rel) !== null
   const markdown = MARKDOWN.test(rel)
@@ -129,6 +135,8 @@ export function FileView({
   const read = readEntry?.result ?? null
   const [version, setVersion] = useState(0)
   const mountedRef = useRef<MountedEditor | null>(null)
+  const onRefusedRef = useRef(onRefused)
+  onRefusedRef.current = onRefused
   const [mode, setModeState] = useState<'source' | 'preview'>(() => markdownModes.get(tabId) ?? 'source')
   const setMode = (next: 'source' | 'preview'): void => {
     markdownModes.set(tabId, next)
@@ -142,7 +150,9 @@ export function FileView({
     const gen = getDoc(key)?.saveGen ?? 0
     const request = image ? window.corral.readImage({ root, rel }) : window.corral.readFile({ root, rel })
     void request.then((result) => {
-      if (!cancelled) setReadEntry({ result, gen })
+      if (cancelled) return
+      setReadEntry({ result, gen })
+      if (!result.ok && REFUSED_READS.has(result.code)) onRefusedRef.current?.()
     })
     return () => {
       cancelled = true

@@ -1,6 +1,6 @@
 // LIFE-593 E5ⓐⓒ — 최근 연 파일 기록 규칙(순수).
 import { describe, expect, it } from 'vitest'
-import { pushRecentFile, readRecentFiles, RECENT_FILES_PER_ROOT, RECENT_FILES_ROOTS } from './recent-files.js'
+import { dropRecentFile, pushRecentFile, readRecentFiles, RECENT_FILES_PER_ROOT, RECENT_FILES_ROOTS } from './recent-files.js'
 
 describe('pushRecentFile', () => {
   it('ⓐ 연 파일이 맨 앞 — 이미 있으면 앞으로 옮긴다', () => {
@@ -32,5 +32,14 @@ describe('pushRecentFile', () => {
   it('E8ⓔ 안전하지 않은 경로는 기록하지 않는다', () => {
     const recent = {}
     for (const rel of ['/etc/passwd', '../x', 'a/../b', '', 'a\0b']) expect(pushRecentFile({ recent, root: '/wt', rel })).toBe(recent)
+  })
+})
+
+describe('dropRecentFile (수정 r2 R2-C-03)', () => {
+  it('그 경로만 빼고, 없으면 같은 객체, 비면 worktree 칸을 지운다', () => {
+    const recent = { '/a': ['x.ts', 'y.ts'], '/b': ['z.ts'] }
+    expect(dropRecentFile({ recent, root: '/a', rel: 'x.ts' })).toEqual({ '/a': ['y.ts'], '/b': ['z.ts'] })
+    expect(dropRecentFile({ recent, root: '/a', rel: 'nope.ts' })).toBe(recent)
+    expect(dropRecentFile({ recent, root: '/b', rel: 'z.ts' })).toEqual({ '/a': ['x.ts', 'y.ts'] })
   })
 })

@@ -2364,6 +2364,8 @@ app.on('before-quit', event => {
     reshowForConfirm('before-quit')
     return
   }
+  // LIFE-593 수정 r2 R2-C-01 — 가로챔을 지난 종료(⌘Q·창 닫힘)에서는 `window-all-closed` 가 오지 않는다. 진행 중 목록 git 그룹을 여기서 동기로 끝낸다(타이머 없이 SIGKILL).
+  fileLister?.killAll()
   // 런타임 정리(Mobile serve 제거 + 런타임 닫기)는 **한 번만** 돌리고, 정리 중 다시 온 종료 요청(창 파기 → `window-all-closed` 의 `app.quit()` 등)도
   // 같은 정리 Promise 를 기다리게 한다(수정 r2 R2-C — 옛 코드는 첫 요청에서 `stopRuntime` 을 비워, 재진입 종료가 정리를 기다리지 않고 끝났다).
   if (runtimeStopped) return
@@ -2383,7 +2385,7 @@ app.on('before-quit', event => {
 
 app.on('window-all-closed', () => {
   explorerHub?.dispose()
-  fileLister?.cancelAll()
+  fileLister?.killAll()
   fileWatch?.dispose()
   if (digestTimer !== null) clearInterval(digestTimer)
   digestTimer = null

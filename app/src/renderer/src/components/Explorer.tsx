@@ -117,6 +117,7 @@ export function Explorer({
   visible = true,
   revealRequest,
   onOpenFile,
+  onOpenListed,
   ops,
   notify,
 }: {
@@ -134,6 +135,11 @@ export function Explorer({
   visible?: boolean
   /** 파일 열기(LIFE-590 E2) — 한 번 클릭·Space = 미리보기, 더블클릭·Enter·⌘↓ = 고정. 폴더는 부르지 않는다. */
   onOpenFile: (input: { rel: string; preview: boolean }) => void
+  /**
+   * 이름 필터 행 열기(LIFE-593 수정 r2 R2-C-03) — 필터 행은 git 전체 목록에서 와 항목 종류(폴더 링크인지)를 모른다. ⌘P 와 같은 확인을 거치는 열기.
+   * 없으면 `onOpenFile`.
+   */
+  onOpenListed?: (input: { rel: string; preview: boolean }) => void
   /**
    * auto reveal(LIFE-590 E6) — 바뀌면 그 행이 보이는 곳으로 스크롤한다(조상 펼침·선택은 `explorer.reveal` 이 이미 했다). 조상 목록을 읽는 동안은 행이 없으니
    * 행이 생길 때까지 기다렸다가 한 번만 스크롤한다. **포커스는 옮기지 않는다**(VS Code `revealInExplorer` 아닌 auto reveal 과 같다).
@@ -272,6 +278,8 @@ export function Explorer({
     [filterActive, filterTree, words, filterCollapsed, filterOpened, gitIgnored],
   )
   const rows = filterActive ? (filtered?.rows ?? []) : treeRows
+  /** 행 열기 — 필터 중이면 목록 행 열기(폴더 링크 확인), 아니면 트리 열기. */
+  const openRow = (input: { rel: string; preview: boolean }): void => (filterActive ? (onOpenListed ?? onOpenFile) : onOpenFile)(input)
   /** 펼치기·접기 — 필터 중이면 필터 안 집합만 바꾼다(트리 펼침 상태는 그대로 — E6ⓔ). */
   const fold = (rel: string, open: boolean): void => {
     if (filtered === null) {
@@ -564,7 +572,7 @@ export function Explorer({
       if (row === undefined || row.kind !== 'file') return
       event.preventDefault()
       event.stopPropagation()
-      onOpenFile({ rel: row.rel, preview: false })
+      openRow({ rel: row.rel, preview: false })
       return
     }
     if (event.metaKey || event.ctrlKey || event.altKey) return
@@ -587,7 +595,7 @@ export function Explorer({
         fold(action.rel, false)
         return
       case 'open':
-        onOpenFile({ rel: action.rel, preview: action.preview })
+        openRow({ rel: action.rel, preview: action.preview })
         return
       case 'rename': {
         const row = rows.find((item) => item.rel === action.rel)
@@ -824,11 +832,11 @@ export function Explorer({
                 if (suppressClick.current) return
                 explorer.select(row.rel)
                 if (row.kind === 'dir') toggleFold(row)
-                else onOpenFile({ rel: row.rel, preview: true })
+                else openRow({ rel: row.rel, preview: true })
               }}
               onDoubleClick={() => {
                 if (suppressClick.current) return
-                if (row.kind === 'file') onOpenFile({ rel: row.rel, preview: false })
+                if (row.kind === 'file') openRow({ rel: row.rel, preview: false })
               }}
               onContextMenu={(event) => {
                 event.preventDefault()

@@ -12,23 +12,30 @@
 //   하나가 실패하면 나머지를 바로 끝내고 첫 실제 실패 코드를 낸다. 취소된 요청은 git 이 끝나 있어도 `cancelled` 로 답한다(R1-G-02 — 늦은 성공이 새 목록을 덮지 않게).
 // · 경로 모양(수정 r1 R1-C-02) — git 은 경로를 NFC 로 주지만(macOS `core.precomposeunicode`) 디스크 이름은 NFD 일 수 있다. 비 ASCII 경로는 부모 폴더를 읽어
 //   NFC 가 같은 **디스크 이름**으로 바꿔 준다 — 탐색기(readdir)로 연 것과 같은 경로라 같은 탭·같은 최근 기록·같은 reveal 이 된다.
-// · 고를 수 없는 추적 항목(수정 r1 R1-C-05) — sparse(skip-worktree)·gitlink 는 빼고, 추적 중인 링크가 폴더를 가리키면 뺀다(`parseStagedListing`).
+// · 고를 수 없는 추적 항목(수정 r1 R1-C-05 · 수정 r2 R2-C-02) — gitlink 는 빼고, 추적 중인 링크가 폴더를 가리키면 뺀다. skip-worktree(`S`)는 디스크에 파일(또는 파일 링크)로
+//   있을 때만 넣는다 — sparse 로 디스크에 없는 것뿐 아니라 「로컬 변경 무시」 로 표시한 디스크에 있는 파일에도 붙는 태그다(`parseStagedListing`).
+// · 앱 종료(수정 r2 R2-C-01) — quit-gate 를 지난 `before-quit` 에서 `killAll()` 이 진행 중 git 그룹에 **동기로** SIGKILL 을 보낸다(종료 중에는 500 ms 타이머가 돌지 못한다).
+//   정지를 정한 뒤 `STOP_CLOSE_MS` 안에 `close` 가 없으면(그룹을 벗어난 자손이 출력을 쥠) 스트림을 닫고 끝낸다(R2-C-05).
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { confine } from './explorer-fs.js'
-import { FILE_LIST_MAX, FILE_LIST_REQUEST_ID, mergeFileLists, parseStagedListing, type FileListResult } from '../shared/file-list.js'
+import { FILE_LIST_MAX, FILE_LIST_REQUEST_ID, mergeFileListsSteps, parseStagedListing, type FileListResult } from '../shared/file-list.js'
 
 const GIT_TIMEOUT_MS = 10_000
 const GIT_MAX_BYTES = 128 * 1024 * 1024
 /** SIGTERM 뒤 이만큼 기다려도 남아 있으면 그룹에 SIGKILL. */
 const KILL_GRACE_MS = 500
+/** 정지(취소·시간 초과·상한)를 정한 뒤 이만큼 지나도 `close` 가 없으면 출력 스트림을 닫고 그 결과로 끝낸다. */
+const STOP_CLOSE_MS = 1_500
+/** `toDiskNames` 가 이만큼 일하면 이벤트 루프에 한 번 양보한다(R2-C-06). */
+const YIELD_BUDGET_MS = 8
 /** 등록 전에 온 취소를 기억하는 시간·개수(요청 id 는 매번 새것이라 늦게 온 같은 id 목록 요청만 막는다). */
 const TOMBSTONE_MS = 30_000
 const TOMBSTONE_MAX = 64
 /** git 이 레포 설정으로 외부 명령을 부르지 않게(fsmonitor 훅) · 경로를 따옴표로 감싸지 않게(-z 라 원래 안 감싸지만 명시). */
 const GIT_SAFE_CONFIG = ['-c', 'core.fsmonitor=false', '-c', 'core.quotePath=false']
-/** 추적(+ untracked) — `-s -t` 로 태그·모드를 받아 sparse·gitlink·폴더 링크를 가린다(`parseStagedListing`). */
+/** 추적(+ untracked) — `-s -t` 로 태그·모드를 받아 gitlink·폴더 링크·디스크에 없는 skip-worktree 를 가린다(`parseStagedListing`). */
 export const LS_LISTED = ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '-s', '-t']
 export const LS_DELETED = ['ls-files', '-z', '--deleted']
 export const LS_IGNORED = ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--', '.', ':(exclude,glob)**/node_modules/**', ':(exclude,glob)**/.git/**']
@@ -104,6 +111,8 @@ function runGit(input: { git: string; cwd: string; args: readonly string[]; sign
     let stopped: 'cancelled' | 'timeout' | 'too_large' | null = null
     let spawnError: string | null = null
     let killTimer: NodeJS.Timeout | null = null
+    let closeTimer: NodeJS.Timeout | null = null
+    let finished = false
     const killGroup = (signal: NodeJS.Signals): void => {
       if (child.pid === undefined) return
       try {
@@ -112,11 +121,32 @@ function runGit(input: { git: string; cwd: string; args: readonly string[]; sign
         // 그룹이 이미 없다.
       }
     }
+    const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      if (killTimer !== null) clearTimeout(killTimer)
+      if (closeTimer !== null) clearTimeout(closeTimer)
+      input.signal.removeEventListener('abort', onAbort)
+      input.children.delete(child)
+      if (stopped === 'cancelled' || (stopped === null && input.signal.aborted)) resolve({ ok: false, code: 'cancelled', error: '취소됨' })
+      else if (stopped === 'timeout') resolve({ ok: false, code: 'timeout', error: `git 시간 초과 ${input.timeoutMs} ms` })
+      else if (stopped === 'too_large') resolve({ ok: false, code: 'git_failed', error: `git 출력 상한 ${input.maxBytes} B 초과` })
+      else if (spawnError !== null) resolve({ ok: false, code: 'git_failed', error: spawnError })
+      else if (code !== 0) resolve({ ok: false, code: 'git_failed', error: `git 종료 ${code ?? signal} ${stderr.trim()}`.slice(0, 300) })
+      else resolve({ ok: true, stdout: Buffer.concat(chunks).toString('utf8') })
+    }
     const stop = (why: 'cancelled' | 'timeout' | 'too_large'): void => {
       if (stopped !== null) return
       stopped = why
       killGroup('SIGTERM')
       killTimer = setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS)
+      // 그룹을 벗어난 자손이 출력을 쥐면 close 가 오지 않는다 — 스트림을 닫고 끝낸다(R2-C-05).
+      closeTimer = setTimeout(() => {
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        finish(null, null)
+      }, STOP_CLOSE_MS)
     }
     const onAbort = (): void => stop('cancelled')
     input.signal.addEventListener('abort', onAbort, { once: true })
@@ -135,46 +165,77 @@ function runGit(input: { git: string; cwd: string; args: readonly string[]; sign
     })
     // 자식이 끝났는데 손주가 출력을 쥐고 있으면 close 가 오지 않는다 — 그룹을 끝낸다.
     child.on('exit', () => killGroup('SIGKILL'))
-    child.on('close', (code, signal) => {
-      clearTimeout(timer)
-      if (killTimer !== null) clearTimeout(killTimer)
-      input.signal.removeEventListener('abort', onAbort)
-      input.children.delete(child)
-      if (stopped === 'cancelled' || (stopped === null && input.signal.aborted)) resolve({ ok: false, code: 'cancelled', error: '취소됨' })
-      else if (stopped === 'timeout') resolve({ ok: false, code: 'timeout', error: `git 시간 초과 ${input.timeoutMs} ms` })
-      else if (stopped === 'too_large') resolve({ ok: false, code: 'git_failed', error: `git 출력 상한 ${input.maxBytes} B 초과` })
-      else if (spawnError !== null) resolve({ ok: false, code: 'git_failed', error: spawnError })
-      else if (code !== 0) resolve({ ok: false, code: 'git_failed', error: `git 종료 ${code ?? signal} ${stderr.trim()}`.slice(0, 300) })
-      else resolve({ ok: true, stdout: Buffer.concat(chunks).toString('utf8') })
-    })
+    child.on('close', (code, signal) => finish(code, signal))
   })
+}
+
+/** 진행 중 git 그룹에 지금 바로 SIGKILL(앱 종료 — 타이머를 기다릴 수 없다). */
+function killNow(children: ReadonlySet<ChildProcess>): void {
+  for (const child of children) {
+    if (child.pid === undefined) continue
+    for (const target of [-child.pid, child.pid]) {
+      try {
+        process.kill(target, 'SIGKILL')
+      } catch {
+        // 이미 없다.
+      }
+    }
+  }
 }
 
 const NON_ASCII = /[\u0080-\uffff]/
 
+const nextTurn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
+
+/** 생성기를 `YIELD_BUDGET_MS` 덩이로 돌리며 사이사이 이벤트 루프에 양보한다(수정 r2 R2-C-06). 취소되면 null. */
+async function drainYielding<T>(steps: Generator<void, T, void>, signal: AbortSignal): Promise<T | null> {
+  let sliceStart = performance.now()
+  for (;;) {
+    if (signal.aborted) return null
+    const next = steps.next()
+    if (next.done === true) return next.value
+    if (performance.now() - sliceStart >= YIELD_BUDGET_MS) {
+      await nextTurn()
+      sliceStart = performance.now()
+    }
+  }
+}
+
 /**
  * 비 ASCII 경로 → 디스크 이름(수정 r1 R1-C-02). 성분마다 부모 폴더를 한 번씩 읽어(폴더별 기억) NFC 가 같은 항목 이름으로 바꾼다. 못 찾으면 git 이 준 이름 그대로.
- * 읽기 전용(readdir)이고 루트 아래만 읽는다(성분은 `isSafeRel` 을 지난 것 — `..` 없음).
+ * 읽기 전용(readdir). 수정 r2 R2-C-06 — 부모 폴더의 실경로가 루트 아래일 때만 읽는다(중간 성분이 밖을 가리키는 링크로 바뀌었으면 git 이름 그대로).
+ * `YIELD_BUDGET_MS` 마다 이벤트 루프에 양보하고(한글 12만 경로에서 main 이 한 덩이로 막히지 않게), 취소되면 멈춘다.
  */
-async function toDiskNames(input: { realRoot: string; files: string[]; signal: AbortSignal }): Promise<void> {
+export async function toDiskNames(input: { realRoot: string; files: string[]; signal: AbortSignal }): Promise<void> {
   const dirs = new Map<string, Promise<Map<string, string> | null>>()
+  const rootPrefix = input.realRoot.endsWith(path.sep) ? input.realRoot : input.realRoot + path.sep
   const namesOf = (dir: string): Promise<Map<string, string> | null> => {
     const known = dirs.get(dir)
     if (known !== undefined) return known
-    const made = fs.promises.readdir(path.join(input.realRoot, dir)).then(
-      (names) => {
-        const byNfc = new Map<string, string>()
-        for (const name of names) if (NON_ASCII.test(name)) byNfc.set(name.normalize('NFC'), name)
-        return byNfc
-      },
-      () => null,
-    )
+    const full = path.join(input.realRoot, dir)
+    const made = fs.promises
+      .realpath(full)
+      .then((real) => (real === input.realRoot || real.startsWith(rootPrefix) ? fs.promises.readdir(real) : null))
+      .then(
+        (names) => {
+          if (names === null) return null
+          const byNfc = new Map<string, string>()
+          for (const name of names) if (NON_ASCII.test(name)) byNfc.set(name.normalize('NFC'), name)
+          return byNfc
+        },
+        () => null,
+      )
     dirs.set(dir, made)
     return made
   }
+  let sliceStart = performance.now()
   for (let index = 0; index < input.files.length; index += 1) {
     const rel = input.files[index] ?? ''
     if (!NON_ASCII.test(rel)) continue
+    if (performance.now() - sliceStart >= YIELD_BUDGET_MS) {
+      await nextTurn()
+      sliceStart = performance.now()
+    }
     if (input.signal.aborted) return
     let disk = ''
     for (const part of rel.split('/')) {
@@ -186,19 +247,37 @@ async function toDiskNames(input: { realRoot: string; files: string[]; signal: A
   }
 }
 
-/** 추적 중인 링크 중 폴더를 가리키는 것(따라간 stat 이 디렉터리) — 파일 행으로 내지 않는다(수정 r1 R1-C-05). 깨진 링크는 남긴다(열면 안내). */
-async function directoryLinks(input: { realRoot: string; links: readonly string[] }): Promise<Set<string>> {
-  const dirs = new Set<string>()
-  await Promise.all(
-    input.links.map(async (rel) => {
+/**
+ * 디스크로 가를 추적 항목(수정 r1 R1-C-05 · 수정 r2 R2-C-02·R2-C-06) — 빼야 할 경로 집합을 돌려준다. 취소되면 남은 것은 보지 않는다.
+ * `links`(추적 중인 링크): 따라간 stat 이 폴더면 뺀다. 깨진 링크는 남긴다(열면 안내).
+ * `skipped`(skip-worktree): lstat 이 없거나 폴더면 뺀다. 링크면 따라간 대상이 폴더일 때 뺀다 — 디스크에 파일(또는 파일 링크)로 있으면 남긴다.
+ */
+async function notOnDiskAsFiles(input: { realRoot: string; links: readonly string[]; skipped: readonly string[]; signal: AbortSignal }): Promise<Set<string>> {
+  const drop = new Set<string>()
+  const pointsToDir = async (rel: string): Promise<boolean> => {
+    try {
+      return (await fs.promises.stat(path.join(input.realRoot, rel))).isDirectory()
+    } catch {
+      return false
+    }
+  }
+  await Promise.all([
+    ...input.links.map(async (rel) => {
+      if (input.signal.aborted) return
+      if (await pointsToDir(rel)) drop.add(rel)
+    }),
+    ...input.skipped.map(async (rel) => {
+      if (input.signal.aborted) return
       try {
-        if ((await fs.promises.stat(path.join(input.realRoot, rel))).isDirectory()) dirs.add(rel)
+        const stat = await fs.promises.lstat(path.join(input.realRoot, rel))
+        if (stat.isFile()) return
+        if (!stat.isSymbolicLink() || (await pointsToDir(rel))) drop.add(rel)
       } catch {
-        // 깨진 링크 — 파일 행으로 둔다.
+        drop.add(rel)
       }
     }),
-  )
-  return dirs
+  ])
+  return drop
 }
 
 export type FileListDeps = {
@@ -246,6 +325,12 @@ export class FileLister {
   cancelAll(): void {
     for (const controller of this.running.values()) controller.abort()
     this.running.clear()
+  }
+
+  /** 앱 종료(수정 r2 R2-C-01) — 모두 취소하고, 남은 git 그룹에 지금 바로 SIGKILL(종료 중에는 SIGTERM 뒤 500 ms 타이머를 기다릴 수 없다). */
+  killAll(): void {
+    this.cancelAll()
+    killNow(this.children)
   }
 
   private remember(requestId: string): void {
@@ -296,9 +381,13 @@ export class FileLister {
       }
       if (!listed.ok || !deleted.ok || (ignored !== null && !ignored.ok)) return { ok: false, code: 'git_failed', error: 'git 실패' }
       const staged = parseStagedListing(listed.stdout)
-      const dirLinks = staged.links.length === 0 ? null : await directoryLinks({ realRoot: confined.realRoot, links: staged.links })
-      const merged = mergeFileLists({ listed: staged.listed, deleted: deleted.stdout, ignored: ignored === null ? null : ignored.stdout, max: FILE_LIST_MAX })
-      const files = dirLinks === null || dirLinks.size === 0 ? merged.files : merged.files.filter((rel) => !dirLinks.has(rel))
+      const drop = staged.links.length === 0 && staged.skipped.length === 0 ? null : await notOnDiskAsFiles({ realRoot: confined.realRoot, links: staged.links, skipped: staged.skipped, signal: controller.signal })
+      if (controller.signal.aborted) return cancelled
+      const keptSkipped = staged.skipped.filter((rel) => drop === null || !drop.has(rel))
+      const listedAll = keptSkipped.length === 0 ? staged.listed : [staged.listed, ...keptSkipped].filter((part) => part !== '').join('\0')
+      const merged = await drainYielding(mergeFileListsSteps({ listed: listedAll, deleted: deleted.stdout, ignored: ignored === null ? null : ignored.stdout, max: FILE_LIST_MAX }), controller.signal)
+      if (merged === null || controller.signal.aborted) return cancelled
+      const files = drop === null || drop.size === 0 ? merged.files : merged.files.filter((rel) => !drop.has(rel))
       await toDiskNames({ realRoot: confined.realRoot, files, signal: controller.signal })
       if (controller.signal.aborted) return cancelled
       this.deps.log('file.list', { ok: true, includeIgnored, count: files.length, truncated: merged.truncated, ms: ms() })

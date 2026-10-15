@@ -3,8 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { FileLister, LS_LISTED, resolveGit } from './file-list.js'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { FileLister, LS_LISTED, resolveGit, toDiskNames } from './file-list.js'
 import type { FileListResult } from '../shared/file-list.js'
 
 let base = ''
@@ -62,6 +62,12 @@ beforeAll(() => {
   git(['add', 'gone.ts'])
   git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'gone'])
   fs.rmSync(path.join(root, 'gone.ts'))
+  // 수정 r2 R2-C-02 — skip-worktree 이지만 디스크에 있는 파일(「로컬 변경 무시」 용도). 목록에 들어야 한다.
+  write('skip-present.txt', 'v1')
+  git(['add', 'skip-present.txt'])
+  git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'skip'])
+  write('skip-present.txt', 'local edit')
+  git(['update-index', '--skip-worktree', 'skip-present.txt'])
 })
 
 afterAll(() => {
@@ -72,12 +78,32 @@ const logs: { event: string; data?: Record<string, unknown> }[] = []
 const lister = (roots: () => readonly string[] = () => [root], gitPath = resolveGit({ pathEnv: process.env.PATH })): FileLister =>
   new FileLister({ roots, git: () => gitPath, log: (event, data) => logs.push({ event, data }) })
 
-/** 오라클(01-criteria) — 끔: ls-files -co --exclude-standard − 지워진 추적 파일. 켬: 위 + -oi(.git/·node_modules/ 아래 제외). */
-// 수정 r1 R1-C-05 — 디스크에 파일로 없는 추적 항목(sparse·gitlink)과 **폴더를 가리키는 추적 링크**는 고를 수 있는 파일 행이 아니다. 오라클에서도 뺀다(이 fixture 에선 `link-dir`).
-const NOT_FILE_ROWS = new Set(['link-dir'])
+/**
+ * 오라클(01-criteria E4 + 「해석 기록」) — 제품 규칙의 역이 아니라 **독립 규칙**으로 계산한다(수정 r2 R2-C-02·R2-C-07).
+ * 집합 = `ls-files -co --exclude-standard`(켬이면 + `-oi`, .git/·node_modules/ 아래 제외) 가운데 디스크에서 파일로 열 수 있는 항목.
+ * 추적 항목(`-c`)은 디스크로 가른다: `lstat` 이 일반 파일이거나, 링크인데 따라간 대상이 폴더가 아니면 넣는다(없음·폴더·gitlink 폴더·디스크에 없는 skip-worktree 는 빠진다).
+ * untracked·무시 항목은 git 이 방금 디스크에서 읽은 것이라 그대로 넣는다(해석 기록이 빼는 것은 추적 중인 폴더 링크뿐 — untracked 폴더 링크는 열기 때 거절).
+ * 비교는 NFC 로(제품은 디스크 이름 — 수정 r1 R1-C-02).
+ */
+const openableOnDisk = (rel: string): boolean => {
+  const full = path.join(root, rel)
+  try {
+    const stat = fs.lstatSync(full)
+    if (stat.isFile()) return true
+    if (!stat.isSymbolicLink()) return false
+  } catch {
+    return false
+  }
+  try {
+    return !fs.statSync(full).isDirectory()
+  } catch {
+    return true // 깨진 링크 — 트리와 같은 파일 행
+  }
+}
 function oracle(includeIgnored: boolean): Set<string> {
-  const deleted = new Set(split(git(['ls-files', '-z', '--deleted'])))
-  const off = split(git(['ls-files', '-z', '--cached', '--others', '--exclude-standard'])).filter((rel) => !deleted.has(rel) && !NOT_FILE_ROWS.has(rel))
+  const tracked = split(git(['ls-files', '-z', '--cached'])).filter(openableOnDisk)
+  const untracked = split(git(['ls-files', '-z', '--others', '--exclude-standard']))
+  const off = [...tracked, ...untracked]
   if (!includeIgnored) return nfcSet(off)
   const ignored = split(git(['ls-files', '-z', '--others', '--ignored', '--exclude-standard'])).filter((rel) => !rel.split('/').slice(0, -1).some((part) => part === '.git' || part === 'node_modules'))
   return nfcSet([...off, ...ignored])
@@ -93,6 +119,7 @@ describe('E4 오라클 대조', () => {
     expect(filesOf(result)).toContain('src/new.ts')
     expect(filesOf(result)).toContain('forced.txt') // 추적 중인데 패턴에 걸린 파일
     expect(filesOf(result)).toContain('keep.log') // ! 부정
+    expect(filesOf(result)).toContain('skip-present.txt') // skip-worktree 이지만 디스크에 있음(수정 r2 R2-C-02)
     expect(filesOf(result)).not.toContain('debug.log')
     expect(filesOf(result)).not.toContain('excluded-by-info.txt')
     expect(filesOf(result)).not.toContain('src/sub/local-only.txt') // 중첩 .gitignore
@@ -267,7 +294,8 @@ function fakeGit(input: { fail?: string; sleep?: number } = {}): { git: string; 
   fs.mkdirSync(dir)
   const pids = path.join(dir, 'pids')
   const fail = input.fail === undefined ? '' : `case "$*" in *'${input.fail}'*) echo boom >&2; exit 3;; esac\n`
-  fs.writeFileSync(path.join(dir, 'git'), `#!/bin/sh\necho $$ >> '${pids}'\n${fail}sleep ${input.sleep ?? 5} &\necho $! >> '${pids}'\nwait\n`, { mode: 0o755 })
+  // 손주는 SIGTERM 을 무시한다(수정 r2 R2-G-07 — 그룹 SIGKILL 이 있어야 끝난다).
+  fs.writeFileSync(path.join(dir, 'git'), `#!/bin/sh\necho $$ >> '${pids}'\n${fail}sh -c "trap '' TERM; exec sleep ${input.sleep ?? 5}" &\necho $! >> '${pids}'\nwait\n`, { mode: 0o755 })
   return { git: path.join(dir, 'git'), pids }
 }
 const waitPids = async (file: string, count: number): Promise<void> => {
@@ -319,7 +347,7 @@ describe('수정 r1 — 취소·실패·시간 초과 뒤 자식(손주 포함) 
   })
   it('R1-G-01 시간 초과 — timeout 이고 손주까지 끝난다', { timeout: 15_000 }, async () => {
     const fake = fakeGit()
-    const one = new FileLister({ roots: () => [root], git: () => fake.git, log: () => undefined, timeoutMs: 300 })
+    const one = new FileLister({ roots: () => [root], git: () => fake.git, log: () => undefined, timeoutMs: 1_500 }) // 손주가 TERM 무시를 건 뒤에 닿게(수정 r2 — 300 ms 는 그 전에 닿아 SIGKILL 없이도 통과했다)
     const result = await one.list({ root, includeIgnored: false, requestId: 'slow' })
     expect(result).toMatchObject({ ok: false, code: 'timeout' })
     expect(await waitDead(fake.pids)).toEqual([])
@@ -356,19 +384,20 @@ describe('수정 r1 — 고를 수 없는 추적 항목(R1-C-05)·worktree 안 g
     git(['init', '-q'], wt2)
     fs.writeFileSync(path.join(wt2, 'src', 'a.ts'), 'a')
     fs.writeFileSync(path.join(wt2, 'sparse.ts'), 's')
+    fs.writeFileSync(path.join(wt2, 'skip-on-disk.ts'), 'k')
     fs.symlinkSync('src', path.join(wt2, 'link-dir'))
     fs.symlinkSync('src/a.ts', path.join(wt2, 'link-file'))
     git(['add', '.'], wt2)
     git(['update-index', '--add', '--cacheinfo', `160000,${'1'.repeat(40)},sub`], wt2)
     git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], wt2)
-    git(['update-index', '--skip-worktree', 'sparse.ts'], wt2)
+    git(['update-index', '--skip-worktree', 'sparse.ts', 'skip-on-disk.ts'], wt2)
     fs.rmSync(path.join(wt2, 'sparse.ts'))
   })
-  it('gitlink·폴더 링크·sparse(디스크에 없음)는 파일 행으로 나오지 않는다. 파일 링크·보통 파일은 나온다', async () => {
+  it('gitlink·폴더 링크·sparse(디스크에 없음)는 파일 행으로 나오지 않는다. 파일 링크·보통 파일·디스크에 있는 skip-worktree 는 나온다', async () => {
     const result = await lister(() => [wt2]).list({ root: wt2, includeIgnored: true, requestId: 'c05' })
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(filesOf(result).sort()).toEqual(['link-file', 'src/a.ts'])
+    expect(filesOf(result).sort()).toEqual(['link-file', 'skip-on-disk.ts', 'src/a.ts'])
   })
   it('R1-C-04 PATH 에 열린 worktree 안 폴더가 있어도 그 안 git 은 고르지 않는다(실경로 대조)', () => {
     const bin = path.join(root, 'tools', 'bin')
@@ -387,5 +416,68 @@ describe('수정 r1 — 고를 수 없는 추적 항목(R1-C-05)·worktree 안 g
       fs.rmSync(path.join(root, 'tools'), { recursive: true, force: true })
       fs.rmSync(linked)
     }
+  })
+})
+
+describe('수정 r2 — 종료 때 동기 정리(R2-C-01)·탈출한 자손(R2-C-05)·디스크 이름 변환(R2-C-06)', () => {
+  it('R2-C-01 killAll — 타이머를 기다리지 않고 그룹에 SIGKILL(SIGTERM 무시 손주까지 100 ms 안)', { timeout: 15_000 }, async () => {
+    const fake = fakeGit()
+    const one = lister(() => [root], fake.git)
+    const pending = one.list({ root, includeIgnored: false, requestId: 'quit' })
+    await waitPids(fake.pids, 4)
+    one.killAll()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(await waitDead(fake.pids, 0)).toEqual([])
+    expect(await pending).toMatchObject({ ok: false, code: 'cancelled' })
+  })
+  it('R2-C-05 그룹을 벗어난 자손이 출력을 쥐어도 취소 뒤 끝난다(close 를 기다리지 않고 스트림을 닫음)', { timeout: 15_000 }, async () => {
+    const dir = path.join(base, 'fakegit-escape')
+    fs.mkdirSync(dir)
+    const pids = path.join(dir, 'pids')
+    // perl setsid — 새 세션(그룹 밖)으로 나가 stdout 을 쥔 채 30 s 산다.
+    fs.writeFileSync(path.join(dir, 'git'), `#!/bin/sh\nperl -MPOSIX -e 'POSIX::setsid(); open(F, ">>", $ARGV[0]); print F "$$\\n"; close F; sleep 30' '${pids}' &\nwait\n`, { mode: 0o755 })
+    const one = new FileLister({ roots: () => [root], git: () => path.join(dir, 'git'), log: () => undefined })
+    try {
+      const pending = one.list({ root, includeIgnored: false, requestId: 'escape' })
+      await waitPids(pids, 2)
+      const startedAt = Date.now()
+      one.cancel('escape')
+      expect(await pending).toMatchObject({ ok: false, code: 'cancelled' })
+      expect(Date.now() - startedAt).toBeLessThan(5_000)
+      expect(one.liveChildren).toBe(0)
+    } finally {
+      for (const pid of pidsOf(pids)) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // 이미 없음
+        }
+      }
+    }
+  })
+  it('R2-C-06 중간 성분이 루트 밖을 가리키는 링크면 밖 폴더를 읽지 않고 git 이름 그대로', async () => {
+    const outsideDir = path.join(base, 'outside-kor')
+    fs.mkdirSync(outsideDir, { recursive: true })
+    fs.writeFileSync(path.join(outsideDir, '한글.md'.normalize('NFD')), 'x')
+    fs.symlinkSync(outsideDir, path.join(root, 'mid-link'))
+    const spy = vi.spyOn(fs.promises, 'readdir')
+    try {
+      const files = ['mid-link/한글.md']
+      await toDiskNames({ realRoot: root, files, signal: new AbortController().signal })
+      const outsideReads = spy.mock.calls.map((call) => String(call[0])).filter((dir) => !dir.startsWith(root + path.sep) && dir !== root)
+      expect(outsideReads).toEqual([])
+      expect(spy.mock.calls.map((call) => String(call[0]))).not.toContain(path.join(root, 'mid-link'))
+      expect(files).toEqual(['mid-link/한글.md'])
+    } finally {
+      spy.mockRestore()
+      fs.rmSync(path.join(root, 'mid-link'))
+    }
+  })
+  it('R2-C-06 취소되면 바꾸던 중에 멈춘다', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const files = ['nfd/한글.md']
+    await toDiskNames({ realRoot: root, files, signal: controller.signal })
+    expect(files).toEqual(['nfd/한글.md'])
   })
 })

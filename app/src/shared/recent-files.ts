@@ -36,3 +36,14 @@ export function pushRecentFile(input: { recent: RecentFiles; root: string; rel: 
   if (overflow > 0) for (const key of Object.keys(next).slice(0, overflow)) delete next[key]
   return next
 }
+
+/** 한 파일을 그 worktree 기록에서 뺀다(수정 r2 R2-C-03 — 열어 보니 거절된 경로). 없으면 같은 객체를 돌려준다(저장 생략). 비면 그 worktree 칸을 지운다. */
+export function dropRecentFile(input: { recent: RecentFiles; root: string; rel: string }): RecentFiles {
+  const current = input.recent[input.root]
+  if (current === undefined || !current.includes(input.rel)) return input.recent
+  const next: RecentFiles = { ...input.recent }
+  const rest = current.filter((item) => item !== input.rel)
+  if (rest.length === 0) delete next[input.root]
+  else next[input.root] = rest
+  return next
+}

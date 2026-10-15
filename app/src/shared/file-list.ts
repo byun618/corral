@@ -37,13 +37,15 @@ export function underExcludedDir(rel: string): boolean {
 }
 
 /**
- * `git ls-files -z --cached --others -s -t` 출력 → 고를 수 있는 경로(NUL 로 이음) + 확인할 링크(수정 r1 R1-C-05).
- * 추적 항목 = `<태그> <모드> <sha> <stage>\t<경로>`, untracked = `? <경로>`. 디스크에 파일로 없는 추적 항목은 뺀다:
- * 태그 `S`(skip-worktree — sparse checkout 으로 디스크에 없음)·모드 `160000`(gitlink — 서브모듈 폴더). 모드 `120000`(링크)은 `links` 로도 내 main 이 폴더 링크인지 본다.
+ * `git ls-files -z --cached --others -s -t` 출력 → 고를 수 있는 경로(NUL 로 이음) + main 이 디스크로 가를 항목(수정 r1 R1-C-05 · 수정 r2 R2-C-02).
+ * 추적 항목 = `<태그> <모드> <sha> <stage>\t<경로>`, untracked = `? <경로>`. 모드 `160000`(gitlink — 서브모듈 폴더)은 뺀다.
+ * 태그 `S` 는 **skip-worktree** 다 — sparse checkout 으로 디스크에 없는 파일에도, `update-index --skip-worktree`(「로컬 변경 무시」)로 표시한 **디스크에 있는** 파일에도 붙는다.
+ * 그래서 버리지 않고 `skipped` 로 내 main 이 디스크에 파일(또는 파일 링크)로 있을 때만 넣는다. 모드 `120000`(링크)은 `links` 로 내 main 이 폴더 링크인지 본다.
  */
-export function parseStagedListing(stdout: string): { listed: string; links: string[] } {
+export function parseStagedListing(stdout: string): { listed: string; links: string[]; skipped: string[] } {
   const paths: string[] = []
   const links: string[] = []
+  const skipped: string[] = []
   for (const entry of stdout.split('\0')) {
     if (entry === '') continue
     if (entry.startsWith('? ')) {
@@ -54,18 +56,35 @@ export function parseStagedListing(stdout: string): { listed: string; links: str
     if (tab === -1) continue
     const [tag, mode] = entry.slice(0, tab).split(' ')
     const rel = entry.slice(tab + 1)
-    if (tag === 'S' || mode === '160000') continue
+    if (mode === '160000') continue
+    if (tag === 'S') {
+      skipped.push(rel)
+      continue
+    }
     if (mode === '120000') links.push(rel)
     paths.push(rel)
   }
-  return { listed: paths.join('\0'), links }
+  return { listed: paths.join('\0'), links, skipped }
 }
 
 /**
  * `git ls-files -z` 출력들 → 목록. `listed` = 추적(+ untracked), `deleted` = 지워졌지만 아직 추적 중(뺀다 — 오라클 「끔」), `ignored` = 무시 파일(켬일 때만, 제외 폴더 아래는 뺀다).
  * 끝이 `/` 인 항목(중첩 저장소·빈 디렉터리 — 파일이 아니다)과 안전하지 않은 경로는 버린다. 순서는 git 출력 순서(정렬은 렌더러), 중복 없음.
  */
-export function mergeFileLists(input: { listed: string; deleted: string; ignored: string | null; max: number }): { files: string[]; truncated: boolean } {
+export function mergeFileLists(input: MergeInput): { files: string[]; truncated: boolean } {
+  const steps = mergeFileListsSteps(input)
+  for (;;) {
+    const next = steps.next()
+    if (next.done === true) return next.value
+  }
+}
+
+type MergeInput = { listed: string; deleted: string; ignored: string | null; max: number }
+/** 이만큼 넣을 때마다 한 번 양보 지점(`yield`) — main 이 큰 목록을 덩이로 나눠 돌린다(수정 r2 R2-C-06). */
+const MERGE_STEP = 4096
+
+/** `mergeFileLists` 의 생성기 판 — 같은 결과, 중간중간 `yield`. */
+export function* mergeFileListsSteps(input: MergeInput): Generator<void, { files: string[]; truncated: boolean }, void> {
   const gone = new Set(input.deleted.split('\0'))
   const seen = new Set<string>()
   const files: string[] = []
@@ -79,7 +98,17 @@ export function mergeFileLists(input: { listed: string; deleted: string; ignored
     seen.add(rel)
     files.push(rel)
   }
-  for (const rel of input.listed.split('\0')) add(rel)
-  if (input.ignored !== null) for (const rel of input.ignored.split('\0')) if (!underExcludedDir(rel)) add(rel)
+  let done = 0
+  for (const rel of input.listed.split('\0')) {
+    add(rel)
+    done += 1
+    if (done % MERGE_STEP === 0) yield
+  }
+  if (input.ignored !== null)
+    for (const rel of input.ignored.split('\0')) {
+      if (!underExcludedDir(rel)) add(rel)
+      done += 1
+      if (done % MERGE_STEP === 0) yield
+    }
   return { files, truncated }
 }

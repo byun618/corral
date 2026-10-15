@@ -7,6 +7,7 @@
 // · 「무시 파일 포함」 토글(Q3)은 Tab 으로 닿는다(입력 ↔ 토글 순회). 상태는 App 이 앱 실행 동안 들고 있다(영속 안 함).
 // · 수정 r1 R1-C-10 — 색인·검색은 나눠 돌린다(`drainSliced`). 새 질의가 오면 앞 검색을 버리고, 결과가 올 때까지 앞 결과를 보인다.
 //   결과가 아직 지금 질의의 것이 아닐 때 Enter 를 누르면 그 질의의 결과가 오는 대로 연다(묵은 행을 열지 않는다).
+//   수정 r2 R2-C-04·R2-G-05 — 보류는 **Enter 를 누른 시점의 질의**를 들고, 그 질의의 결과일 때만 연다. 그 뒤 질의가 바뀌면 보류를 버린다. 색인 전 Enter 도 같게 보류한다.
 import { useEffect, useRef, useState } from 'react'
 import { useAnnounceDialog } from '../menu-bus.js'
 import { cachedFileList, requestFileList, type FileListOk } from '../file-list-client.js'
@@ -101,12 +102,8 @@ export function QuickOpen({
   const toggle = useRef<HTMLButtonElement>(null)
   const executed = useRef(false)
   const previous = useRef<{ index: FileIndex; result: QuickOpenResult } | null>(null)
-  /** 결과가 지금 질의를 따라잡기 전에 누른 Enter — 따라잡으면 연다. */
-  const pendingEnter = useRef(false)
-  const queryRef = useRef(query)
-  queryRef.current = query
-  const selectedRef = useRef(selected)
-  selectedRef.current = selected
+  /** 결과가 따라잡기 전에 누른 Enter — 그때의 질의·선택 위치. 그 질의의 결과가 오면 연다, 질의가 바뀌면 버린다. */
+  const pendingEnter = useRef<{ query: string; index: number } | null>(null)
   useAnnounceDialog()
   useEffect(() => input.current?.focus(), [])
 
@@ -166,9 +163,10 @@ export function QuickOpen({
       if (next === null) return
       previous.current = { index, result: next }
       setResult(next)
-      if (pendingEnter.current && next.query === queryRef.current) {
-        pendingEnter.current = false
-        openRef.current(next.rows[Math.min(selectedRef.current, Math.max(0, next.rows.length - 1))])
+      const pending = pendingEnter.current
+      if (pending !== null && next.query === pending.query) {
+        pendingEnter.current = null
+        openRef.current(next.rows[Math.min(pending.index, Math.max(0, next.rows.length - 1))])
       }
     })
     return () => {
@@ -211,8 +209,8 @@ export function QuickOpen({
             setSelected((current + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length)
           } else if (event.key === 'Enter' && event.target === input.current) {
             event.preventDefault()
-            if (result !== null && result.query === query) open(rows[current])
-            else if (index !== null) pendingEnter.current = true
+            if (index !== null && result !== null && result.query === query) open(rows[current])
+            else pendingEnter.current = { query, index: current }
           }
         }}
       >
@@ -232,6 +230,7 @@ export function QuickOpen({
             spellCheck={false}
             autoComplete="off"
             onChange={(event) => {
+              pendingEnter.current = null
               setQuery(event.target.value)
               setSelected(0)
             }}

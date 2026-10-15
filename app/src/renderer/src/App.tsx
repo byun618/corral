@@ -1,6 +1,6 @@
 import { CommandPalette } from './components/CommandPalette.js'
 import { QuickOpen } from './components/QuickOpen.js'
-import { pushRecentFile, readRecentFiles, type RecentFiles } from '../../shared/recent-files.js'
+import { dropRecentFile, pushRecentFile, readRecentFiles, type RecentFiles } from '../../shared/recent-files.js'
 import type { PaletteEntry } from './palette-search.js'
 import type { ShortcutHandlers } from './hooks/useKeybindings.js'
 import { ACTIONS, bindingsFor, formatBinding } from '../../shared/keybindings.js'
@@ -78,7 +78,7 @@ import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, get
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, type SaveDeps } from './file-save.js'
 import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
 import { moveDirectionToSplit } from './components/TabContextMenu.js'
-import { groupOfTab } from './group-tree.js'
+import { groupOfTab, listGroups, readStoredLayouts } from './group-tree.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
 import { updateSettings, useSettings } from './settings-store.js'
 import { resolveNewAgentTab } from './tab-create-menu.js'
@@ -115,8 +115,16 @@ const NO_ROOTS: string[] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
 /** LIFE-592 — 탐색기 이동 뒤 옛·새 경로 감시 push 를 더 버리는 시간(감시 디바운스보다 길게). */
 const WATCH_HOLD_GRACE_MS = 1_000
-/** LIFE-593 수정 r1 R1-C-09 — worktree 를 열거나(앱 시작 복원 포함) 바꾼 직후 이만큼은 활성 파일 탭을 최근 기록에 넣지 않는다(복원된 탭은 사용자가 연 것이 아니다). */
-const RECENT_RESTORE_HOLD_MS = 1_000
+/** LIFE-593 수정 r2 R2-G-04 — 저장된 배치(앱 시작 복원)에서 worktree 별 활성 파일 탭 경로. 처음 보일 때 한 번 최근 기록을 건너뛴다(사용자가 연 것이 아니다). */
+function restoredActiveFiles(stored: unknown): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const row of readStoredLayouts(stored)) {
+    const group = listGroups(row.layout.root).find((item) => item.groupId === row.layout.activeGroupId)
+    const kind = group?.activeTabId === undefined || group.activeTabId === null ? null : tabKindOf(group.activeTabId)
+    if (kind?.kind === 'file') out.set(row.worktreePath, kind.rel)
+  }
+  return out
+}
 /** 최근 기록 `ui-prefs.json` 쓰기 뭉침. */
 const RECENT_SAVE_DEBOUNCE_MS = 500
 const NO_RECENT: readonly string[] = []
@@ -224,6 +232,8 @@ export function App(): React.JSX.Element {
   /** 기록 거울 — 저장할지(바뀌었는지)를 상태 갱신 밖에서 가린다. */
   const recentFilesRef = useRef<RecentFiles>({})
   const recentReady = useRef(false)
+  /** 앱 시작 때 되살릴 worktree 별 활성 파일 탭(수정 r2 R2-G-04) — 그 worktree 에서 처음 보인 활성 파일 하나로 쓰고 버린다. */
+  const recentRestored = useRef(new Map<string, string>())
   /** 탐색기 이름 필터 열기 요청(⌥⌘F — Q7). 바뀌면 탐색기가 머리 입력칸을 연다. */
   const [explorerFilterToken, setExplorerFilterToken] = useState(0)
   /**
@@ -324,6 +334,7 @@ export function App(): React.JSX.Element {
         manualOrder.hydrate(prefs)
         sidebarView.hydrate(prefs)
         setStoredLayouts(prefs.groupLayouts)
+        recentRestored.current = restoredActiveFiles(prefs.groupLayouts)
         const marks = readTabMarks(prefs.tabMarks)
         savedTabMarks.current = JSON.stringify(marks)
         setTabMarks(marks)
@@ -777,9 +788,11 @@ export function App(): React.JSX.Element {
 
   // LIFE-593 E5ⓐ — 어느 경로로 열든(탐색기·⌘P·편집기 링크·⌘⇧T·탭 클릭) 활성 영역의 활성 탭이 파일 탭이 되면 그 worktree 기록 맨 앞에 둔다(ui-prefs 영속 — Q5).
   // 첫 ui-prefs 읽기 전에는 적지 않는다(저장된 기록을 빈 기록으로 덮지 않게).
-  // 수정 r1 R1-C-09 — worktree 를 열거나 바꾼 직후(복원된 활성 탭)는 넣지 않는다. 탭 전환은 그대로 넣는다. 저장은 뭉쳐서(디바운스) 쓰고, 창이 닫힐 때 남은 것을 쓴다.
+  // 수정 r1 R1-C-09 · 수정 r2 R2-G-04 — 복원된 활성 탭만 넣지 않는다(시간 유예 없음 — 그 사이 사용자가 연 파일은 넣는다). 복원 = ① worktree 를 바꾼(또는 처음 본) 그 렌더에
+  // 보인 활성 탭(그 worktree 배치가 되살린 것) ② 앱 시작 때 저장된 배치의 활성 파일 탭이 그 worktree 에서 처음 보일 때. 탭 전환은 그대로 넣는다.
+  // 저장은 뭉쳐서(디바운스) 쓰고, 창이 닫힐 때 남은 것을 쓴다. 열어 보니 거절된 경로(파일 아님·가둠 밖)는 빼낸다(`forgetRecent` — R2-C-03).
   const recentRoot = activeWorktreeRow?.path ?? null
-  const recentHoldUntil = useRef(0)
+  const recentSeenRoot = useRef<{ root: string | null } | null>(null)
   const recentSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const flushRecentSave = useCallback(() => {
     if (recentSaveTimer.current === null) return
@@ -794,14 +807,7 @@ export function App(): React.JSX.Element {
       flushRecentSave()
     }
   }, [flushRecentSave])
-  useEffect(() => {
-    recentHoldUntil.current = performance.now() + RECENT_RESTORE_HOLD_MS
-  }, [recentRoot, ordinalsReady])
-  useEffect(() => {
-    if (recentRoot === null || activeFileRel === null || !recentReady.current) return
-    if (performance.now() < recentHoldUntil.current) return
-    const next = pushRecentFile({ recent: recentFilesRef.current, root: recentRoot, rel: activeFileRel })
-    if (next === recentFilesRef.current) return
+  const saveRecent = (next: RecentFiles): void => {
     recentFilesRef.current = next
     setRecentFiles(next)
     if (recentSaveTimer.current !== null) clearTimeout(recentSaveTimer.current)
@@ -809,7 +815,28 @@ export function App(): React.JSX.Element {
       recentSaveTimer.current = null
       window.corral.setUiPrefs({ recentFiles: recentFilesRef.current })
     }, RECENT_SAVE_DEBOUNCE_MS)
+  }
+  const saveRecentRef = useRef(saveRecent)
+  saveRecentRef.current = saveRecent
+  useEffect(() => {
+    if (!recentReady.current) return
+    const seen = recentSeenRoot.current
+    recentSeenRoot.current = { root: recentRoot }
+    if (recentRoot === null || activeFileRel === null) return
+    const restored = recentRestored.current.get(recentRoot)
+    if (restored !== undefined) {
+      recentRestored.current.delete(recentRoot)
+      if (restored === activeFileRel) return
+    }
+    if (seen === null || seen.root !== recentRoot) return
+    const next = pushRecentFile({ recent: recentFilesRef.current, root: recentRoot, rel: activeFileRel })
+    if (next !== recentFilesRef.current) saveRecentRef.current(next)
   }, [recentRoot, activeFileRel, ordinalsReady])
+  /** 열어 보니 거절된 경로 — 그 worktree 기록에서 뺀다(어느 경로로 열었든 — 수정 r2 R2-C-03). */
+  const forgetRecent = (input: { root: string; rel: string }): void => {
+    const next = dropRecentFile({ recent: recentFilesRef.current, root: input.root, rel: input.rel })
+    if (next !== recentFilesRef.current) saveRecent(next)
+  }
 
   /** 키 핸들러가 읽는 배치 거울 — 핸들러를 매 렌더 다시 달지 않으려고 ref 로 둔다. */
   const layoutMirror = {
@@ -1197,19 +1224,19 @@ export function App(): React.JSX.Element {
   }
 
   /**
-   * LIFE-593 E3 — ⌘P 로 고른 파일. **고정 탭**으로 연다(Q2 — 이미 열려 있으면 그 탭으로, 미리보기였으면 고정 — `openFileTab`). 여는 경로는 탐색기와 같다(우회 IPC 없음).
+   * LIFE-593 — 전체 목록(git)에서 고른 파일 열기: ⌘P(E3 — 고정 탭·편집기 포커스)·이름 필터 행(수정 r2 R2-C-03). 여는 경로는 탐색기와 같다(우회 IPC 없음).
    * 수정 r1 R1-C-02 — NFC 로 같은 파일 탭이 이미 있으면 그 경로로 연다(같은 탭). R1-C-05 — 부모 폴더 목록에서 그 이름이 폴더(폴더 링크)면 열지 않고 안내만 한다
-   * (git 목록은 untracked·무시된 링크의 종류를 모른다). 연 뒤 포커스는 `focusOpenedFile`.
+   * (git 목록은 untracked·무시된 링크의 종류를 모른다). `focus` 면 연 뒤 포커스는 `focusOpenedFile`.
    */
-  const openFromQuickOpen = (rel: string): void => {
+  const openListedFile = (input: { rel: string; preview: boolean; focus: boolean }): void => {
     const worktreePath = activeWorktreeRow?.path ?? null
     if (worktreePath === null) return
-    const nfc = rel.normalize('NFC')
-    let target = rel
+    const nfc = input.rel.normalize('NFC')
+    let target = input.rel
     for (const group of layout.groups)
       for (const tabId of group.tabOrder) {
         const kind = tabKindOf(tabId)
-        if (kind.kind === 'file' && kind.rel !== rel && kind.rel.normalize('NFC') === nfc) target = kind.rel
+        if (kind.kind === 'file' && kind.rel !== input.rel && kind.rel.normalize('NFC') === nfc) target = kind.rel
       }
     const slash = target.lastIndexOf('/')
     const name = target.slice(slash + 1)
@@ -1220,10 +1247,11 @@ export function App(): React.JSX.Element {
         notify(`${target} 은(는) 폴더(링크)라 파일로 열지 않습니다`)
         return
       }
-      openFileFromExplorer({ rel: target, preview: false })
-      focusOpenedFile({ worktreePath, rel: target })
+      openFileFromExplorer({ rel: target, preview: input.preview })
+      if (input.focus) focusOpenedFile({ worktreePath, rel: target })
     })
   }
+  const openFromQuickOpen = (rel: string): void => openListedFile({ rel, preview: false, focus: true })
   /**
    * 연 파일 탭에 포커스(수정 r1 R1-C-01·R1-C-06) — 편집기가 붙으면 편집기 핸들의 `focus()`(Monaco 0.57 은 EditContext — 입력 요소가 textarea 가 아니다).
    * 편집기가 없는 보기(이미지·바이너리·상한 초과·오류·Markdown 미리보기)면 그 보기 자리(`[data-file-view]`, tabIndex -1)에. 편집기는 비동기로 붙으므로 프레임마다 다시 본다(최대 약 2 s).
@@ -1736,6 +1764,7 @@ export function App(): React.JSX.Element {
             watched={fileWatchState.get(`${activeWorktreeRow.path}\0${activeFile.rel}`) ?? null}
             onActivate={() => activateGroup({ groupId: group.groupId, paneId: null })}
             onOpenFile={(rel) => openFileFromExplorer({ rel, preview: true })}
+            onRefused={() => forgetRecent({ root: activeWorktreeRow.path, rel: activeFile.rel })}
           />
         ) : groupPane === null ? (
           <EmptyGroup
@@ -2095,7 +2124,7 @@ export function App(): React.JSX.Element {
           onToggle={rightPanel.toggle}
           onResizeStart={rightPanel.onHandleMouseDown}
         >
-          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={rightPanel.open} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} ops={fileOps} notify={notify} />
+          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={rightPanel.open} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} ops={fileOps} notify={notify} />
         </RightPanel>
       </div>
       {settingsView === null ? null : (

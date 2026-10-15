@@ -3,7 +3,8 @@
 //      밖을 가리키는 링크(`link-outside-dir`)는 탐색기 트리에서도 파일 행(`link: 'outside'`)이고 열면 가둠이 `outside_root` 로 거절한다 — ⌘P 도 같은지 기록한다(트리와 같은 결과).
 //      (a06 회차는 밖 링크에 「열지 않음」 을 기대해 실패 — 기대가 트리 동작과 어긋났다. 원자료는 남긴다)
 //   ② R1-C-06 — 편집기 없는 보기(바이너리 `bin/l593.bin`)를 ⌘P 로 열면 포커스가 그 보기 자리(`.file-group[data-file-view]`)에 간다.
-//   ③ R1-C-08 — 이름 필터 다시 읽기: 패널이 열려 있으면 잦은 변경에도 최소 간격(2 s)으로 몰아 읽고(main 로그 `file.list` 수), 패널을 닫으면 읽지 않으며, 다시 열면 읽는다.
+//   ③ R1-C-08 — 이름 필터 다시 읽기: 패널이 열려 있으면 잦은 변경에도 최소 간격(2 s)으로 몰아 읽고(main 로그 `file.list` 수), 다시 열면 읽는다.
+//      패널을 닫았을 때 읽지 않는 것은 관측으로만 적는다(수정 r2 R2-C-07 — 고치기 전에도 0 이라 판별력이 없다).
 // 사용(app/ 에서, iso.sh 안): node scripts/l593/fix-r1-probe.mjs <ROOT> <OUT.json>
 import fs from 'node:fs'
 import path from 'node:path'
@@ -131,7 +132,9 @@ try {
   const filterStill = await q(`!!document.querySelector('[data-explorer-filter-input]')`)
   step('c08.panelReopen', { fileListCalls: reopenLists.length, filterStill })
   // 20 번 변경(3 s) + 2.5 s 안에 다시 읽기는 최소 간격 2 s 로 몰아야 한다 — 1~4 번(변경마다 읽으면 수 번 넘게).
-  result.checks.filterReload = openLists.length >= 1 && openLists.length <= 4 && closedLists.length === 0 && reopenLists.length >= 1
+  // 수정 r2 R2-C-07 — 「패널 닫힘 → 재읽기 0」 은 고치기 전 코드에서도 0 이었다(리뷰 r2 — 판별력 없음). 판정 칸에서 빼고 관측으로만 남긴다.
+  result.checks.filterReload = openLists.length >= 1 && openLists.length <= 4 && reopenLists.length >= 1
+  result.observed = { ...(result.observed ?? {}), panelClosedFileListCalls: closedLists.length }
   exitCode = Object.values(result.checks).every(Boolean) ? 0 : 1
 } catch (error) {
   result.error = String(error?.stack ?? error)

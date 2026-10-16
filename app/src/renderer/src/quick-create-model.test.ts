@@ -1,18 +1,18 @@
 // LIFE-604 — 만들기 모델 순수 함수: 기본 종류 · 부모 규칙 · 상태 후보·각주 · 만들기 막는 이유 · 초안 · 하나 더 · 활동 글.
 import { describe, expect, it } from 'vitest'
 import type { WorkCreateMeta, WorkItem, WorkKind, WorkStatus } from '../../shared/work.js'
-import { chosenStatus, defaultKind, fieldValues, hasDraftContent, keepParent, kindUnavailable, nextForm, parentCandidates, statusNote, statusOptions, submitProblem, titleTooLong, type CreateForm, type CreateMetaState } from './quick-create-model.js'
+import { chosenStatus, defaultKind, fieldValues, hasDraftContent, keepParent, kindUnavailable, nextForm, parentCandidates, statusNote, statusOptions, submitProblem, titleTooLong, CREATE_NO_BODY, CREATE_NO_PRIORITY, type CreateForm, type CreateMetaState } from './quick-create-model.js'
 import { describeChange } from './task-detail-model.js'
 
 const kinds: WorkKind[] = [{ key: 'epic', label: 'Epic', childKinds: ['story', 'bug'] }, { key: 'story', label: 'Story', childKinds: [] }, { key: 'bug', label: 'Bug', childKinds: [] }]
 const status = (key: string, category: WorkStatus['category'], order: number): WorkStatus => ({ key, label: key, category, order, color: null })
 const statuses = [status('todo', 'todo', 0), status('doing', 'in_progress', 1), status('review', 'in_progress', 2), status('done', 'done', 3)]
-const item = (id: string, kind: WorkKind): WorkItem => ({
+const item = (id: string, kind: WorkKind): WorkItem => ({ bodyLock: null, 
   id, key: id.toUpperCase(), spaceKey: 'S', title: id, body: null, kind, statusKey: 'todo', category: 'todo', resolution: null, priority: null, dueAt: null, parentId: null, placement: 'board',
   rank: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [],
 })
 const form = (patch: Partial<CreateForm> = {}): CreateForm => ({ kindKey: 'story', title: '제목', body: '', parentId: null, statusKey: null, priority: null, placement: 'board', values: {}, ...patch })
-const meta = (patch: Partial<WorkCreateMeta> = {}): WorkCreateMeta => ({ spaceKey: 'S', kindKey: 'story', statusKeys: ['todo'], defaultStatusKey: 'todo', placement: 'applies', fields: [], ...patch })
+const meta = (patch: Partial<WorkCreateMeta> = {}): WorkCreateMeta => ({ accepts: { body: true, priority: true }, spaceKey: 'S', kindKey: 'story', statusKeys: ['todo'], defaultStatusKey: 'todo', placement: 'applies', fields: [], ...patch })
 
 describe('quick-create-model', () => {
   it('기본 종류 = 자식을 받지 않는 첫 종류, 없으면 첫 종류', () => {
@@ -86,5 +86,15 @@ describe('quick-create-model', () => {
 
   it('활동 「만들었음」 글', () => {
     expect(describeChange({ change: { field: 'created', kindLabel: 'Story' }, statuses: [] })).toBe('만들었음 · Story')
+  })
+})
+
+describe('LIFE-605 C8 받지 않는 칸(accepts)', () => {
+  it('설명·우선순위를 받지 않는 종류에 값이 있으면 보내지 않는다 · 비우면 보낸다', () => {
+    const filled = form({ body: '설명', priority: 'high' })
+    const ready = (accepts: WorkCreateMeta['accepts']): CreateMetaState => ({ state: 'ready', meta: meta({ accepts }) })
+    expect(submitProblem({ form: filled, meta: ready({ body: false, priority: true }) })).toContain(CREATE_NO_BODY)
+    expect(submitProblem({ form: { ...filled, body: '' }, meta: ready({ body: false, priority: false }) })).toContain(CREATE_NO_PRIORITY)
+    expect(submitProblem({ form: { ...filled, body: '', priority: null }, meta: ready({ body: false, priority: false }) })).toBeNull()
   })
 })

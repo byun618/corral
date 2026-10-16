@@ -186,8 +186,9 @@ try {
   await shot('keychain')
 
   log('dom', dom)
-  judge('E 선택자 — nav·add=la·form·card·error·space-row·repo-default 존재, add=jira 숨김(T6)',
-    dom.empty.nav && dom.empty.addLa && !dom.empty.addJira && dom.form.form && dom.ok.card && dom.auth.error && dom.ok.spaceRows > 0 && dom.ok.repoDefault > 0,
+  // LIFE-605 C12 — T6(Jira Cloud 출처)가 들어와 「add=jira 숨김」 을 「존재」 로 뒤집었다(사유: 숨김은 T6 전까지의 임시 경계).
+  judge('E 선택자 — nav·add=la·add=jira·form·card·error·space-row·repo-default 존재(LIFE-605 뒤집음)',
+    dom.empty.nav && dom.empty.addLa && dom.empty.addJira && dom.form.form && dom.ok.card && dom.auth.error && dom.ok.spaceRows > 0 && dom.ok.repoDefault > 0,
     JSON.stringify({ nav: dom.empty.nav, addLa: dom.empty.addLa, addJira: dom.empty.addJira, form: dom.form.form, card: dom.ok.card, error: dom.auth.error, spaceRows: dom.ok.spaceRows, repoDefault: dom.ok.repoDefault }))
   judge('data-connection-status 6종 관측 — ok·testing·auth·forbidden·offline·keychain', ['ok', 'testing', 'auth', 'forbidden', 'offline', 'keychain'].every((value) => seen.has(value)), [...seen].join(','))
   judge('실패 줄 ① 누른 테스트 invalid_response — pill ok + 로컬 오류 줄', dom.testInvalid.pill === 'ok' && typeof dom.testInvalid.line === 'string', JSON.stringify(dom.testInvalid))

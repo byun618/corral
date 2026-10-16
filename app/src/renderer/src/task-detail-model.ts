@@ -40,14 +40,15 @@ export type StatusMenuRow = {
 }
 
 /** 상태 메뉴 행 — `allowed` 가 null 이면 전체(`any`), 배열이면 그 상태들 + 지금 상태만. */
-export function statusMenuRows({ statuses, item, allowed }: { statuses: WorkStatus[]; item: Pick<WorkItem, 'statusKey' | 'category' | 'resolution'>; allowed: string[] | null }): StatusMenuRow[] {
+/** `picks` = 완료 갈래를 고를 수 있나(능력 `resolution`). 꺼져 있으면 완료 상태도 한 줄(갈래 null — 출처가 상태에서 정한다, LIFE-605). */
+export function statusMenuRows({ statuses, item, allowed, picks }: { statuses: WorkStatus[]; item: Pick<WorkItem, 'statusKey' | 'category' | 'resolution'>; allowed: string[] | null; picks: boolean }): StatusMenuRow[] {
   const ordered = [...statuses].sort((a, b) => CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category] || a.order - b.order)
   const shown = allowed === null ? ordered : ordered.filter((status) => status.key === item.statusKey || allowed.includes(status.key))
   const doneCount = ordered.filter((status) => status.category === 'done').length
   const rank = CATEGORY_RANK[item.category]
   return shown.flatMap((status): StatusMenuRow[] => {
     const back = CATEGORY_RANK[status.category] < rank
-    if (status.category !== 'done') return [{ statusKey: status.key, resolution: null, label: status.label, category: status.category, back, current: status.key === item.statusKey }]
+    if (status.category !== 'done' || !picks) return [{ statusKey: status.key, resolution: null, label: status.label, category: status.category, back, current: status.key === item.statusKey }]
     return (['completed', 'cancelled'] as const).map((resolution) => ({
       statusKey: status.key,
       resolution,

@@ -17,7 +17,8 @@
 // - **「전체」 스페이스**: 만들 스페이스를 모달 머리에 보이고 고르게 한다. 기본값 = 이 실행에서 마지막으로 만든 스페이스(아직 보이면) → 보이는 첫 스페이스.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { WorkCall, WorkCapability, WorkItem, WorkKind, WorkPlacement, WorkStatus } from '../../../shared/work.js'
+import type { WorkCall, WorkCapabilities, WorkCapability, WorkItem, WorkKind, WorkPlacement, WorkStatus } from '../../../shared/work.js'
+import { spaceCapabilities } from '../../../shared/work.js'
 import {
   RECHECK_HINT,
   UNKNOWN_CREATE,
@@ -86,6 +87,13 @@ export type InlineAddView = { state: 'hidden' } | { state: 'disabled'; reason: s
 type Pending = { session: number; target: CreateTarget; form: CreateForm; keepDraft: boolean }
 
 /** 만들기가 쓰는 페이지 모델 몫 — 시험이 이것만 갖춘 가짜 페이지로 훅을 돌릴 수 있다. */
+/** 만들 스페이스의 능력(LIFE-605 C7) — 연결 능력을 그 스페이스 칸으로 좁힌다. */
+function capsOfTarget({ settings, target }: { settings: QuickCreatePage['settings']; target: { connectionId: string; spaceKey: string } }): WorkCapabilities | null {
+  const connection = settings?.connections.find((entry) => entry.id === target.connectionId)
+  if (connection === undefined || connection.capabilities === null) return null
+  return spaceCapabilities({ capabilities: connection.capabilities, space: connection.spaces?.find((entry) => entry.key === target.spaceKey) ?? null })
+}
+
 export type QuickCreatePage = Pick<TasksPageModel, 'settings' | 'groups' | 'load' | 'createBusy' | 'createItem' | 'reload'>
 
 export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem, notifyFailure }: {
@@ -365,7 +373,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     // 부모가 지금 목록에 없거나 규칙 밖이면 보내지 않고 비운다 — 칩과 요청이 어긋나지 않게(R1-D).
     const checked = checkParent({ form: current.form, items: dataOf(current.target)?.items ?? [] })
     if (checked.notice !== null) { setModal({ ...current, form: checked.form, notice: checked.notice }); return }
-    const caps = settings?.connections.find((connection) => connection.id === current.target.connectionId)?.capabilities ?? null
+    const caps = capsOfTarget({ settings, target: current.target })
     const fields = fieldValues({ form: current.form, meta: meta.meta })
     const call: Extract<WorkCall, { op: 'createItem' }> = {
       op: 'createItem', spaceKey: current.target.spaceKey, parentId: current.form.parentId, kindKey: current.form.kindKey, title: current.form.title.trim(),
@@ -483,7 +491,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
       }
       return
     }
-    const caps = settings?.connections.find((connection) => connection.id === current.target.connectionId)?.capabilities ?? null
+    const caps = capsOfTarget({ settings, target: current.target })
     const call: Extract<WorkCall, { op: 'createItem' }> = { op: 'createItem', spaceKey: current.target.spaceKey, parentId: null, kindKey: kind.key, title: current.text.trim(), statusKey: current.statusKey }
     if (caps?.placement.state === 'on' && meta.meta.placement === 'applies') call.placement = 'board'
     const lockKey = `create:inline:${targetKey(current.target)}`
@@ -535,7 +543,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
     const meta = modal.form.kindKey === '' ? noKind : metaOf({ target: modal.target, kindKey: modal.form.kindKey })
     const parents = parentCandidates({ items: data?.items ?? [], kindKey: modal.form.kindKey })
     const parent = modal.form.parentId === null ? null : (data?.items.find((item) => item.id === modal.form.parentId) ?? null)
-    const caps = settings?.connections.find((connection) => connection.id === modal.target.connectionId)?.capabilities ?? null
+    const caps = capsOfTarget({ settings, target: modal.target })
     const block = writeBlockOf(modal.target.connectionId)
     const problem = modal.phase === 'sending' ? '만드는 중…'
       : modal.phase === 'late' ? '확인 중 — 출처 답을 기다립니다'

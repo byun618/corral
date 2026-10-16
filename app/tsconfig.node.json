@@ -6,7 +6,7 @@
   // node 프로젝트에 렌더러를 끌어들이지 않으려고 여기서만 뺀다. 같은 대조가
   // `session-activity.test.ts` 에 박혀 있고 그쪽은 web 프로젝트가 타입 검사한다.
   // LIFE-576 사본 기하 픽스처 렌더러도 같은 이유(렌더러 Sidebar 를 띄운다) — esbuild 로만 묶는다.
-  "exclude": ["src/main/adapter/internal/vendor/*.test.ts", "scripts/l366/27-r7-elapsed.mts", "scripts/l576/preview-geometry/renderer.tsx", "scripts/l581/reconnect.ts", "scripts/l581/r5a1-fixture.tsx", "scripts/l604/windowless.test.tsx"],
+  "exclude": ["src/main/adapter/internal/vendor/*.test.ts", "scripts/l366/27-r7-elapsed.mts", "scripts/l576/preview-geometry/renderer.tsx", "scripts/l581/reconnect.ts", "scripts/l581/r5a1-fixture.tsx", "scripts/l604/windowless.test.tsx", "scripts/l605/windowless.test.tsx"],
   "compilerOptions": {
     "composite": true,
     "target": "ES2022",

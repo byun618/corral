@@ -34,7 +34,17 @@ export type ContractTarget = {
   crossSpace: { itemId: string; otherKey: string; otherSpaceKey: string }
   /** 출처가 받은 요청 수(LIFE-603 C14 — 꺼진 능력은 요청 0). 셀 수 없는 출처는 없다. */
   sourceRequests?: () => number
+  /**
+   * 본문 왕복(LIFE-605 C6) — `exact` = 출처가 markdown 을 바이트 그대로 둔다(LA·모의, 기본). `canonical` = 출처 서식으로 바꿔 둔다(Jira ADF) —
+   * 묶음은 정규형 본문(지원 표 안, CRLF·줄 끝 공백 없음)을 보내고 그 바이트가 그대로 돌아오는지 본다.
+   */
+  bodyRoundTrip?: 'exact' | 'canonical'
+  /** 질의 검색(LIFE-605 C5) — 능력이 켜진 출처의 시험 질의: 맞는 질의와 그 결과 키 · 출처가 거부하는 질의와 텍스트로 찾히는 키. */
+  querySearch?: { query: string; expectKey: string; badQuery: string; textHitKey: string }
 }
+
+/** 정규형 본문(지원 표 안) — 출처 서식으로 바꿔 두는 출처도 바이트로 되돌려야 하는 꼴. */
+const CANONICAL_BODY = '# 제목\n\n- [ ] 한글 체크\n- [x] 끝\n\n```\n<b>raw</b>\n```\n\n끝 줄'
 
 const CAPABILITY_NAMES: WorkCapabilityName[] = ['placement', 'relations', 'parentChange', 'order', 'cursorPaging', 'conflictCheck', 'comments', 'history', 'workLinkStore']
 
@@ -364,7 +374,8 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       if (capabilities.conflictCheck.state !== 'on') {
         expect(item.version).toBeNull()
         await expectClosed({ capability: capabilities.conflictCheck, call: { op: 'changeStatus', itemId: item.id, statusKey: other.key, ifVersion: 'stale' } })
-        await expectClosed({ capability: capabilities.conflictCheck, call: { op: 'setPlacement', itemId: item.id, placement: 'board', ifVersion: 'stale' } })
+        // 배치가 꺼진 출처는 배치 능력 이유가 먼저 온다(능력 문 순서) — 판 거절은 배치가 켜진 출처에서만 본다.
+        if (capabilities.placement.state === 'on') await expectClosed({ capability: capabilities.conflictCheck, call: { op: 'setPlacement', itemId: item.id, placement: 'board', ifVersion: 'stale' } })
         return
       }
       expect(item.version).not.toBeNull()
@@ -386,8 +397,9 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
     it('필드 수정(E4) — 제목·본문·우선순위·마감을 보낸 칸만 바꾸고 되돌린다, 본문은 바이트 그대로', async () => {
       const { items, capabilities } = await stage()
       const item = await getItem((items[0] ?? { id: '' }).id)
-      const body = '# 제목\r\n\n- [ ] 한글 체크\n- [x] 끝\n\n```\n<b>raw</b>\n```\n  끝 공백  \n'
-      const due = '2026-11-01T14:59:00.000Z'
+      const body = target.bodyRoundTrip === 'canonical' ? CANONICAL_BODY : '# 제목\r\n\n- [ ] 한글 체크\n- [x] 끝\n\n```\n<b>raw</b>\n```\n  끝 공백  \n'
+      // 마감 = 그날 로컬 23:59:59(화면 날짜 칸 규칙) — 날짜만 두는 출처(Jira duedate)도 되돌린다.
+      const due = new Date(2026, 10, 1, 23, 59, 59).toISOString()
       const edited = await okResult({ op: 'updateItem', itemId: item.id, fields: { title: `${item.title} (수정)`, body, priority: 'highest', dueAt: due }, ifVersion: null })
       if (edited.op !== 'updateItem') throw new Error(edited.op)
       const after = await getItem(item.id)
@@ -414,13 +426,24 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       expect(records.filter((record) => record.writeId === first?.writeId).map((record) => record.change.field).sort()).toEqual(['body', 'dueAt', 'priority', 'title'])
     })
 
-    it('완료 갈래(E5) — 완료 분류로 「취소함」·「완료함」 을 고르고, 갈래만 바꾸고, 되돌리면 갈래가 비운다', async () => {
-      const { items, statuses } = await stage()
+    it('완료 갈래(E5) — 완료 분류로 「취소함」·「완료함」 을 고르고, 갈래만 바꾸고, 되돌리면 갈래가 비운다 · 갈래 능력이 꺼졌으면 갈래를 실은 변경은 이유와 함께 거절', async () => {
+      const { items, statuses, capabilities } = await stage()
       const item = await getItem((items.find((entry) => entry.category !== 'done') ?? items[0] ?? { id: '' }).id)
       const done = statuses.find((status) => status.category === 'done')
       const original = statuses.find((status) => status.key === item.statusKey)
       if (done === undefined || original === undefined) throw new Error('완료 상태가 없다')
       expect(item.resolution).toBeNull()
+      if (capabilities.resolution.state !== 'on') {
+        // LIFE-605 C4⑥ — 갈래를 고르지 못하는 출처: 갈래를 실으면 출처에 닿기 전에 거절, 갈래 없이 완료로 가면 출처가 정한 값(또는 null)을 그대로 읽는다.
+        await expectClosed({ capability: capabilities.resolution, call: { op: 'changeStatus', itemId: item.id, statusKey: done.key, ifVersion: null, resolution: 'cancelled' } })
+        await travel({ itemId: item.id, goal: done, statuses })
+        const finished = await getItem(item.id)
+        expect(finished).toMatchObject({ statusKey: done.key, category: 'done' })
+        expect([null, 'completed', 'cancelled', 'other']).toContain(finished.resolution)
+        await travel({ itemId: item.id, goal: original, statuses })
+        expect(await getItem(item.id)).toMatchObject({ statusKey: original.key, resolution: null })
+        return
+      }
       // 완료 바로 앞까지 간 뒤 갈래를 실어 완료로.
       const beforeDone = statuses.filter((status) => status.category !== 'done').at(-1)
       if (beforeDone !== undefined && (await transitions(item.id)).includes(done.key) === false) await travel({ itemId: item.id, goal: beforeDone, statuses })
@@ -500,26 +523,37 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       const { space, capabilities } = await stage()
       const kinds = await okResult({ op: 'listStatuses', spaceKey: space.key })
       if (kinds.op !== 'listStatuses') throw new Error(kinds.op)
+      const createBody = target.bodyRoundTrip === 'canonical' ? '## 본문\n\n- [ ] 하나' : '## 본문\n- [ ] 하나'
       for (const kind of kinds.kinds) {
         const meta = await createMeta({ spaceKey: space.key, kindKey: kind.key })
         const fields = fillRequired(meta)
         if (fields === null) continue
+        // 이 (스페이스, 종류)로는 못 만든다(LA 「미분류」 Checkpoint · Jira 하위 작업 맨 위) — 만들기는 거절이어야 한다.
+        if (meta.unavailable !== undefined) {
+          expect(await send({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.key, title: '못 만듦', ...(fields.length === 0 ? {} : { fields }) })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+          continue
+        }
+        // 받지 않는 칸(LIFE-605 · T4 §14-1)은 싣지 않는다 — 실으면 거절이어야 한다(받는 척 금지).
+        if (!meta.accepts.body) expect(await send({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.key, title: '본문 실음', body: 'x', ...(fields.length === 0 ? {} : { fields }) })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+        if (!meta.accepts.priority) expect(await send({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.key, title: '우선순위 실음', priority: 'high', ...(fields.length === 0 ? {} : { fields }) })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
         const statusKey = meta.statusKeys.at(-1) ?? meta.defaultStatusKey
         // 배치는 능력이 켜졌고 그 종류에 적용될 때만(R2-H). 적용 안 되는 종류에 실으면 거절이어야 한다(받는 척 금지).
         const placement = capabilities.placement.state === 'on' && meta.placement === 'applies' ? 'backlog' : undefined
         if (capabilities.placement.state === 'on' && meta.placement === 'ignored') {
           expect(await send({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.key, title: '배치 실음', placement: 'backlog', ...(fields.length === 0 ? {} : { fields }) })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
         }
-        const created = await okResult({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.key, title: `계약 만들기 ${kind.key}`, body: '## 본문\n- [ ] 하나', statusKey, priority: 'high', ...(placement === undefined ? {} : { placement }), ...(fields.length === 0 ? {} : { fields }) })
+        const body = meta.accepts.body ? { body: createBody } : {}
+        const priority = meta.accepts.priority ? { priority: 'high' as const } : {}
+        const created = await okResult({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.key, title: `계약 만들기 ${kind.key}`, ...body, statusKey, ...priority, ...(placement === undefined ? {} : { placement }), ...(fields.length === 0 ? {} : { fields }) })
         if (created.op !== 'createItem') throw new Error(created.op)
         const again = await getItem(created.item.id)
-        expect(again).toMatchObject({ title: `계약 만들기 ${kind.key}`, body: '## 본문\n- [ ] 하나', statusKey, priority: 'high', parentId: null, spaceKey: space.key, kind: { key: kind.key } })
+        expect(again).toMatchObject({ title: `계약 만들기 ${kind.key}`, ...body, statusKey, ...priority, parentId: null, spaceKey: space.key, kind: { key: kind.key } })
         if (placement !== undefined) expect(again.placement).toBe('backlog')
         const records = activityOf(created.item.id).filter((record) => record.change.field === 'created')
         expect(records).toHaveLength(1)
         expect(records[0]?.change).toEqual({ field: 'created', kindLabel: kind.label })
         // 목록 재조회에도 서버 값으로 나온다(낙관 행 아님).
-        expect((await listAll(space.key)).items.find((item) => item.id === created.item.id)).toMatchObject({ statusKey, priority: 'high' })
+        expect((await listAll(space.key)).items.find((item) => item.id === created.item.id)).toMatchObject({ statusKey, ...priority })
       }
     })
 
@@ -527,6 +561,12 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       const { space, capabilities } = await stage()
       const kinds = await okResult({ op: 'listStatuses', spaceKey: space.key })
       if (kinds.op !== 'listStatuses') throw new Error(kinds.op)
+      if (capabilities.placement.state !== 'on') {
+        const first = kinds.kinds[0]
+        if (first === undefined) throw new Error('종류가 없다')
+        await expectClosed({ capability: capabilities.placement, call: { op: 'createItem', spaceKey: space.key, parentId: null, kindKey: first.key, title: '계약 보드 만들기', placement: 'board' } })
+        return
+      }
       const kind = (await Promise.all(kinds.kinds.map(async (entry) => ({ entry, meta: await createMeta({ spaceKey: space.key, kindKey: entry.key }) })))).find(({ meta }) => meta.fields.length === 0 && meta.placement === 'applies')
       if (kind === undefined) throw new Error('필수 필드 없고 배치가 적용되는 종류가 하나는 있어야 한다 — 픽스처를 확인')
       const call: WorkCall = { op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.entry.key, title: '계약 보드 만들기', placement: 'board' }
@@ -648,6 +688,50 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       await okResult({ op: 'addComment', itemId: item.id, body: '계약 묶음' })
       const listed = await okResult({ op: 'listComments', itemId: item.id })
       if (listed.op === 'listComments') expect(listed.comments.some((comment) => comment.body === '계약 묶음')).toBe(true)
+    })
+
+    it('질의 검색(LIFE-605 C5) — 켜져 있으면 질의로 찾고, 거부된 질의는 텍스트로 다시 찾아 사유를 준다 · 꺼져 있으면 이유와 함께 거절', async () => {
+      const { space, capabilities } = await stage()
+      if (capabilities.querySearch.state !== 'on') {
+        await expectClosed({ capability: capabilities.querySearch, call: { op: 'searchItems', spaceKeys: [space.key], query: 'x = y' } })
+        return
+      }
+      const plan = target.querySearch
+      if (plan === undefined) throw new Error('질의 검색이 켜진 출처는 시험 질의를 줘야 한다 — ContractTarget.querySearch')
+      const { spaces } = await listSpaces()
+      const keys = spaces.map((entry) => entry.key)
+      const queried = await okResult({ op: 'searchItems', spaceKeys: keys, query: plan.query })
+      if (queried.op !== 'searchItems') throw new Error(queried.op)
+      expect(queried).toMatchObject({ mode: 'query', note: null })
+      expect(queried.items.map((item) => item.key)).toContain(plan.expectKey)
+      for (const item of queried.items) expect(keys).toContain(item.spaceKey)
+      const fallback = await okResult({ op: 'searchItems', spaceKeys: keys, query: plan.badQuery })
+      if (fallback.op !== 'searchItems') throw new Error(fallback.op)
+      expect(fallback.mode).toBe('text')
+      expect(fallback.note?.length ?? 0).toBeGreaterThan(0)
+      expect(fallback.items.map((item) => item.key)).toContain(plan.textHitKey)
+      expect(await send({ op: 'searchItems', spaceKeys: [], query: 'x' })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+    })
+
+    it('스페이스별 능력(LIFE-605 C7) — 스페이스는 연결 능력을 좁히기만 하고, 좁힌 스페이스의 작업 순서는 그 이유로 거절', async () => {
+      const { spaces, capabilities } = await listSpaces()
+      for (const space of spaces) {
+        for (const name of ['order', 'placement'] as const) {
+          const own = space.capabilities[name]
+          if (own === undefined) continue
+          // 연결에서 꺼진 능력을 스페이스가 켜지 않는다.
+          if (capabilities[name].state !== 'on') expect(own.state).not.toBe('on')
+          if (own.state === 'disabled') expect(own.reason.length).toBeGreaterThan(0)
+        }
+        const order = space.capabilities.order
+        if (capabilities.order.state !== 'on' || order === undefined || order.state === 'on') continue
+        const { items } = await listAll(space.key)
+        const [first, second] = items
+        if (first === undefined) continue
+        const refused = await send({ op: 'reorder', itemId: first.id, afterId: second?.id ?? null })
+        expect(refused).toMatchObject({ ok: false, error: { kind: 'unsupported' } })
+        if (!refused.ok && order.state === 'disabled') expect(refused.error.message).toBe(order.reason)
+      }
     })
 
     // LIFE-603 C14 — 작업 링크 쓰기·지우기는 main 만 보낸다(`storeLink`). 렌더러 요청 모양으로는 받지 않는다.

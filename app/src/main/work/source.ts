@@ -20,9 +20,21 @@ export interface WorkSourceClient {
   close(): void
 }
 
+/** 연결 자격 (LIFE-605 C1) — 토큰(비밀) + descriptor `accountFields` 의 값(비밀 아님, 출처가 정규화한 값). LA 는 `account` 가 빈 객체. */
+export type WorkCredentials = { token: string; account: Record<string, string> }
+
+export type WorkAccountCheck = { ok: true; account: Record<string, string> } | { ok: false; message: string }
+
 export type WorkSourceEntry = {
   descriptor: WorkSourceDescriptor
-  create: (token: string) => WorkSourceClient
+  create: (credentials: WorkCredentials) => WorkSourceClient
+  /**
+   * 비밀 아닌 칸 검증·정규화(LIFE-605 C1②) — **네트워크 전에** service 가 부른다. 칸이 없는 출처는 생략(빈 객체만 받는다).
+   * 거절 문구에 입력값을 싣지 않는다(이메일이 오류 문구에 남지 않게).
+   */
+  checkAccount?: (account: Record<string, string>) => WorkAccountCheck
+  /** 이 자격에서 나오는 비밀 글(토큰 말고 — Jira Basic 헤더 값·이메일). 밖으로 나가는 문구에서 지운다(F2). */
+  secretsOf?: (credentials: WorkCredentials) => string[]
 }
 
 export class WorkSourceRegistry {

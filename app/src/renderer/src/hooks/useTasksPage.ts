@@ -30,7 +30,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RepoRow } from '../../../shared/types.js'
-import type { WorkCall, WorkError, WorkItem, WorkResolutionChoice, WorkResponse, WorkResult, WorkSettingsState, WorkStatus } from '../../../shared/work.js'
+import { WORK_SEARCH_SPACES_MAX, type WorkCall, type WorkError, type WorkItem, type WorkResolutionChoice, type WorkResponse, type WorkResult, type WorkSettingsState, type WorkStatus } from '../../../shared/work.js'
 import {
   DEFAULT_TASKS_PREFS,
   LatestGate,
@@ -40,6 +40,7 @@ import {
   itemUid,
   parseUid,
   readTasksPrefs,
+  picksResolution,
   restorableResolution,
   rowUid,
   rowsOf,
@@ -61,13 +62,13 @@ export type TasksBanner = { kind: 'auth' | 'forbidden' | 'offline' | 'error'; me
 
 export type TasksLoad = { spaceId: string | null; phase: 'idle' | 'loading' | 'ready' | 'error'; data: SpaceData[]; error: WorkError | null; loadingMore: boolean }
 
-export type SearchHit = { connectionId: string; item: WorkItem; spaceName: string }
+export type SearchHit = { connectionId: string; item: WorkItem; spaceName: string; via: 'key' | 'query' }
 /** 작업 중 항목의 조회 결과 — 찾는 중 · 찾음 · 출처에 없음 · 실패. */
 export type WorkingLookup = { state: 'loading' } | { state: 'found'; item: WorkItem; spaceName: string } | { state: 'missing' } | { state: 'error'; message: string }
 type StoredLookup = { state: 'loading' } | { state: 'found'; item: WorkItem } | { state: 'missing' } | { state: 'error'; message: string }
 
 /** 끄는 작업의 허용 전이(`allowed` 모드) — 받는 중 · 받음 · 실패. 받기 전·실패면 다른 칸은 흐림(fail-closed, C7). */
-export type TasksTransitions = { uid: string; state: 'loading' } | { uid: string; state: 'ready'; keys: string[] } | { uid: string; state: 'error'; message: string } | null
+export type TasksTransitions = { uid: string; state: 'loading' } | { uid: string; state: 'ready'; keys: string[]; blocked: { statusKey: string; reason: string }[] } | { uid: string; state: 'error'; message: string } | null
 
 export type MoveRequest = { row: TasksRow; intent: DragIntent }
 /** `undo` 는 받아들였으면 true — 그 카드가 잠겨 있으면 false 이고 버튼은 남는다(R4-E). */
@@ -100,12 +101,13 @@ export type SettledWrite = { uid: string; item: WorkItem; seq: number }
 type SpaceResult = { ok: true; data: SpaceData; pages: number } | { ok: false; error: WorkError }
 type SpaceFetch = { state: 'pending' } | { state: 'done' } | { state: 'failed'; error: WorkError }
 /** 키 조회 결과 — 그 결과를 낸 검색어에 귀속한다. 검색어가 바뀌면 새 응답 전까지 옛 결과를 보이지 않는다(R3-I). */
-type KeySearch = { query: string; hits: { connectionId: string; item: WorkItem }[]; errors: { connectionId: string; error: WorkError }[] }
+/** `via` = 키 일치(`findByKey`) 또는 출처 질의(`searchItems` — LIFE-605 C5). `notes` = 출처가 준 검색 안내(질의를 거부하고 텍스트로 찾은 사유 등). */
+type KeySearch = { query: string; hits: { connectionId: string; item: WorkItem; via: 'key' | 'query' }[]; errors: { connectionId: string; error: WorkError }[]; notes: { connectionId: string; text: string }[] }
 /** 화면에 쓴 변경 하나 — 그보다 먼저 시작한 목록 응답에 다시 적용한다(R1-F). 확인 안 된 쓰기도 이 모양으로 남긴다(R2-C). */
 type Override = { seq: number; connectionId: string; generation: number; spaceKey: string; apply: (items: WorkItem[]) => WorkItem[] }
 
 const EMPTY_LOAD: TasksLoad = { spaceId: null, phase: 'idle', data: [], error: null, loadingMore: false }
-const NO_SEARCH: KeySearch = { query: '', hits: [], errors: [] }
+const NO_SEARCH: KeySearch = { query: '', hits: [], errors: [], notes: [] }
 
 /**
  * 렌더러 쪽 기다림 한도 — **출처 연산 전체의 시간 제한이 아니다**(R4-A). main 의 MCP 15초(`mcp-http.ts`)는 RPC 한 번의 한도이고, 연산 하나가
@@ -217,6 +219,36 @@ function crossesDone({ from, to }: { from: WorkItem; to: WorkItem }): boolean {
 
 function patternOf({ settings, sourceId }: { settings: WorkSettingsState; sourceId: string }): string | null {
   return settings.sources.find((source) => source.id === sourceId)?.keyPattern ?? null
+}
+
+/** 출처 질의 모양(LIFE-605 C5) — descriptor `queryPattern` 이 있고 능력 `querySearch` 가 켜진 연결만. 아니면 null(글로 거른다). */
+function queryPatternOf({ settings, connectionId }: { settings: WorkSettingsState; connectionId: string }): string | null {
+  const connection = settings.connections.find((entry) => entry.id === connectionId)
+  if (connection === undefined || connection.capabilities?.querySearch.state !== 'on') return null
+  return settings.sources.find((source) => source.id === connection.sourceId)?.queryPattern ?? null
+}
+
+/** 질의 검색을 보내기 전 입력이 멈춰야 하는 시간(R1-D). */
+export const SEARCH_DEBOUNCE_MS = 300
+
+/** 질의 검색 스페이스를 계약 상한(`WORK_SEARCH_SPACES_MAX`)씩 나눈다(R1-D) — 넘으면 출처가 invalid_request 로 거절한다. 다른 호출은 그대로. */
+export function splitSearchCalls(calls: { connectionId: string; call: WorkCall }[]): { connectionId: string; call: WorkCall }[] {
+  return calls.flatMap(({ connectionId, call }) => {
+    if (call.op !== 'searchItems') return [{ connectionId, call }]
+    const out: { connectionId: string; call: WorkCall }[] = []
+    for (let index = 0; index < call.spaceKeys.length; index += WORK_SEARCH_SPACES_MAX) out.push({ connectionId, call: { ...call, spaceKeys: call.spaceKeys.slice(index, index + WORK_SEARCH_SPACES_MAX) } })
+    return out
+  })
+}
+
+/** 검색어가 출처 질의 모양인가 — 모양 글이 잘못된 정규식이면 질의로 보지 않는다(글로 거른다). */
+export function looksLikeQuery({ query, pattern }: { query: string; pattern: string | null }): boolean {
+  if (pattern === null || query.trim().length === 0) return false
+  try {
+    return new RegExp(pattern, 'i').test(query)
+  } catch {
+    return false
+  }
 }
 
 const NO_UNREAD: ReadonlySet<string> = new Set()
@@ -566,45 +598,76 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
 
   // --- 키 검색 (E2·E3) ---
   // 조회는 「검색어 · 연결(세대) · 키 모양」 이 바뀔 때만(R1-B). settings 객체는 상태 push 마다 새로 오므로 의존하지 않는다.
-  const patternsId = settings === null ? '' : settings.connections.map((connection) => `${connection.id}#${connection.generation}#${patternOf({ settings, sourceId: connection.sourceId }) ?? ''}`).join('|')
+  // 질의 검색은 보이는 스페이스 안에서만 — 스페이스 열기·숨기기·고른 스페이스가 바뀌면 다시 찾는다.
+  const scopeOf = (current: WorkSettingsState, connectionId: string): string[] => {
+    if (space?.kind === 'space') return space.connectionId === connectionId ? [space.spaceKey] : []
+    return (current.connections.find((entry) => entry.id === connectionId)?.spaces ?? []).filter((entry) => !entry.hidden).map((entry) => entry.key)
+  }
+  const patternsId = settings === null ? '' : settings.connections.map((connection) => `${connection.id}#${connection.generation}#${patternOf({ settings, sourceId: connection.sourceId }) ?? ''}#${queryPatternOf({ settings, connectionId: connection.id }) ?? ''}#${scopeOf(settings, connection.id).join(',')}`).join('|')
   /** 「다시 시도」 가 키 조회도 다시 보내게 하는 번호(R2-G). */
   const [searchRound, setSearchRound] = useState(0)
   /** 진행 중인 키 조회 — 그동안 쓰기가 성공하면 그 응답은 쓰기 전 값일 수 있어 다시 보낸다(R4-B). */
   const finding = useRef(false)
   const patterns = useMemo(() => {
     const current = settingsRef.current
-    return current === null ? [] : current.connections.map((connection) => ({ connectionId: connection.id, pattern: patternOf({ settings: current, sourceId: connection.sourceId }) }))
+    return current === null ? [] : current.connections.map((connection) => ({ connectionId: connection.id, pattern: patternOf({ settings: current, sourceId: connection.sourceId }), queryPattern: queryPatternOf({ settings: current, connectionId: connection.id }), spaceKeys: scopeOf(current, connection.id) }))
   }, [patternsId])
   useEffect(() => {
     if (!open) { gate.invalidate('find'); finding.current = false; return }
-    const candidates = patterns.flatMap(({ connectionId, pattern }) => {
+    // 키 모양이면 키 찾기, 출처 질의 모양이면(그 연결이 질의를 받을 때) 질의 검색 — 둘 다 아니면 글로만 거른다.
+    const candidates = patterns.flatMap(({ connectionId, pattern, queryPattern, spaceKeys }): { connectionId: string; call: WorkCall }[] => {
       const key = searchKey({ query, pattern })
-      return key === null ? [] : [{ connectionId, key }]
+      if (key !== null) return [{ connectionId, call: { op: 'findByKey', key } }]
+      if (spaceKeys.length > 0 && looksLikeQuery({ query, pattern: queryPattern })) return [{ connectionId, call: { op: 'searchItems', spaceKeys, query: query.trim() } }]
+      return []
     })
     if (candidates.length === 0) { gate.invalidate('find'); finding.current = false; setSearch(NO_SEARCH); return }
-    const token = gate.issue('find')
-    finding.current = true
-    void Promise.all(candidates.map(({ connectionId, key }) =>
-      request({ requestId: `${token}/${connectionId}`, connectionId, call: { op: 'findByKey', key } }).then((response) => ({ connectionId, response })),
-    )).then((answers) => {
-      if (!gate.accepts({ key: 'find', requestId: token })) return
-      finding.current = false
-      // 조회 오류는 「결과 없음」 이 아니다 — 따로 모아 배너로(R1-K).
-      setSearch({
-        query,
-        hits: answers.flatMap(({ connectionId, response }) => (response.ok && response.result.op === 'findByKey' && response.result.item !== null ? [{ connectionId, item: response.result.item }] : [])),
-        errors: answers.flatMap(({ connectionId, response }) => {
-          if (!response.ok) return [{ connectionId, error: response.error }]
-          return response.result.op === 'findByKey' ? [] : [{ connectionId, error: { kind: 'invalid_response', message: '출처 응답 모양이 다릅니다.', status: null } }]
-        }),
+    // 질의 검색은 입력이 멈춘 뒤에만 보낸다(R1-D) — 글자마다 원격 JQL 을 보내지 않는다. 늦게 온 옛 응답은 gate 가 버린다.
+    // 스페이스가 계약 상한(50)을 넘으면 50개씩 나눠 보내고 결과를 합친다.
+    const calls = splitSearchCalls(candidates)
+    const queried = calls.some(({ call }) => call.op === 'searchItems')
+    gate.invalidate('find')
+    finding.current = false
+    const send = (): void => {
+      const token = gate.issue('find')
+      finding.current = true
+      void Promise.all(calls.map(({ connectionId, call }, index) =>
+        request({ requestId: `${token}/${connectionId}/${index}`, connectionId, call }).then((response) => ({ connectionId, response })),
+      )).then((answers) => {
+        if (!gate.accepts({ key: 'find', requestId: token })) return
+        finding.current = false
+        // 조회 오류는 「결과 없음」 이 아니다 — 따로 모아 배너로(R1-K).
+        setSearch({
+          query,
+          hits: answers.flatMap(({ connectionId, response }): KeySearch['hits'] => {
+            if (!response.ok) return []
+            if (response.result.op === 'findByKey') return response.result.item === null ? [] : [{ connectionId, item: response.result.item, via: 'key' }]
+            if (response.result.op === 'searchItems') return response.result.items.map((item) => ({ connectionId, item, via: 'query' }))
+            return []
+          }),
+          errors: answers.flatMap(({ connectionId, response }) => {
+            if (!response.ok) return [{ connectionId, error: response.error }]
+            return response.result.op === 'findByKey' || response.result.op === 'searchItems' ? [] : [{ connectionId, error: { kind: 'invalid_response', message: '출처 응답 모양이 다릅니다.', status: null } }]
+          }),
+          notes: answers.flatMap(({ connectionId, response }) => {
+            if (!response.ok || response.result.op !== 'searchItems') return []
+            const truncated = response.result.truncated ? '결과가 많아 앞부분만 보입니다.' : null
+            const text = [response.result.note, truncated].filter((part) => part !== null).join(' ')
+            return text.length === 0 ? [] : [{ connectionId, text }]
+          }).filter((note, index, all) => all.findIndex((other) => other.connectionId === note.connectionId && other.text === note.text) === index),
+        })
       })
-    })
+    }
+    if (!queried) { send(); return }
+    const timer = setTimeout(send, SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
   }, [open, query, patterns, gate, searchRound])
   const spaceNameOf = useCallback(({ connectionId, spaceKey }: { connectionId: string; spaceKey: string }): string =>
     settings?.connections.find((connection) => connection.id === connectionId)?.spaces?.find((entry) => entry.key === spaceKey)?.name ?? spaceKey, [settings])
   // 지금 검색어의 결과만 보인다 — 새 검색어의 응답이 오기 전에는 옛 키 일치·오류를 보이지 않는다(R3-I).
   const shownSearch = search.query === query ? search : NO_SEARCH
   const hits = useMemo((): SearchHit[] => shownSearch.hits.map((hit) => ({ ...hit, spaceName: spaceNameOf({ connectionId: hit.connectionId, spaceKey: hit.item.spaceKey }) })), [shownSearch, spaceNameOf])
+  const searchNotes = shownSearch.notes
 
   // --- 작업 중 (C11 · LIFE-603 C12) ---
   // 링크 모델(명시 + 자동 − 예외, main 이 해석해 싣는다)을 읽는다 — T2 의 키 감지 읽기는 이제 쓰지 않는다. 점은 사이드바와 같은 안 읽음 집합으로.
@@ -663,7 +726,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       return changed ? next : current
     })
     setSearch((current) => (current.hits.some((hit) => hit.connectionId === connectionId && hit.item.id === item.id)
-      ? { ...current, hits: current.hits.map((hit) => (hit.connectionId === connectionId && hit.item.id === item.id ? { connectionId, item: { ...hit.item, ...item } } : hit)) }
+      ? { ...current, hits: current.hits.map((hit) => (hit.connectionId === connectionId && hit.item.id === item.id ? { ...hit, item: { ...hit.item, ...item } } : hit)) }
       : current))
   }, [gate, keepCreated])
 
@@ -750,7 +813,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     }
     if (undo) { notify({ kind: 'undone', label: `${original.key} 를 되돌렸습니다` }); return }
     // 원래 완료 갈래를 다시 쓸 수 없으면 되돌리기를 내지 않는다 — 완료함으로 바꿔 끼우지 않는다(R1-G).
-    const restorable = intent.kind === 'status' ? restorableResolution(original) : null
+    const restorable = intent.kind === 'status' ? restorableResolution({ item: original, picks: picksResolution(settingsRef.current?.connections.find((connection) => connection.id === connectionId)?.capabilities ?? null) }) : null
     if (restorable !== null && !restorable.restorable) {
       notify({ kind: 'final', label: `${describe({ item: original, intent, statuses })} · ${UNRESTORABLE_RESOLUTION}` })
       return
@@ -941,7 +1004,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     const { accepted, response } = await send({ key: 'transitions', connectionId: row.space.connectionId, call: { op: 'listTransitions', itemId: row.item.id } })
     if (!accepted) return
     if (!response.ok) { setTransitions({ uid, state: 'error', message: response.error.message }); return }
-    setTransitions(response.result.op === 'listTransitions' ? { uid, state: 'ready', keys: response.result.statusKeys } : { uid, state: 'error', message: '출처 응답 모양이 다릅니다.' })
+    setTransitions(response.result.op === 'listTransitions' ? { uid, state: 'ready', keys: response.result.statusKeys, blocked: response.result.blocked } : { uid, state: 'error', message: '출처 응답 모양이 다릅니다.' })
   }, [send])
   const endDrag = useCallback(() => {
     gate.invalidate('transitions')
@@ -980,7 +1043,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     query, setQuery, selectedId, setSelectedId,
     load, rows, banner, connectionStatus,
     reload, retry, loadMore, invalidateMore,
-    hits, workingEntries, working: workingLookups, workingKeys, linked,
+    hits, searchNotes, workingEntries, working: workingLookups, workingKeys, linked,
     move: (request: MoveRequest) => move({ ...request, undo: false, restore: null }),
     writeItem, settledWrite, startedWrite, holdRead,
     /** 만들기(LIFE-604) — 진입마다 잠금 하나. `createBusy` = 지금 확정을 기다리는 잠금 열쇠. */

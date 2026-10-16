@@ -360,6 +360,8 @@
   outline: none; color: var(--fg); font-family: var(--font-mono); font-size: 12px;
 }
 .connection-field input:focus { border-color: var(--accent); }
+.connection-field input[readonly] { color: var(--fg-dim); }
+.connection-field-hint { font-size: 11.5px; line-height: 1.5; color: var(--fg-dim); }
 .connection-form-hint { font-size: 11.5px; line-height: 1.5; color: var(--fg-dim); }
 .connection-form-error { font-size: 12px; line-height: 1.5; color: var(--st-error); }
 .connection-form-actions { display: flex; justify-content: flex-end; gap: 8px; }

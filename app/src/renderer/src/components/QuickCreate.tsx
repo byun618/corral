@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { WorkCreateField, WorkPlacement, WorkPriority } from '../../../shared/work.js'
 import type { InlineAddView, QuickCreateModel } from '../hooks/useQuickCreate.js'
-import { PRIORITY_CYCLE, hasDraftContent, metaFieldKeys, statusNote, statusOptions } from '../quick-create-model.js'
+import { CREATE_NO_BODY, CREATE_NO_PRIORITY, PRIORITY_CYCLE, hasDraftContent, metaFieldKeys, statusNote, statusOptions } from '../quick-create-model.js'
 import { PRIORITY_GLYPH, PRIORITY_LABEL, imeComposing } from '../tasks-model.js'
 import { KindIcon, SpaceDot, StatusCircle } from './TasksViews.js'
 import './quick-create.css'
@@ -49,6 +49,8 @@ export function QuickCreateModal({ model, yieldKeys }: { model: QuickCreateModel
   const { form } = modal
   const { kinds, statuses, meta, parents, parent, placement, problem, info } = modalView
   const ready = meta.state === 'ready' ? meta.meta : null
+  const noBody = ready !== null && !ready.accepts.body
+  const noPriority = ready !== null && !ready.accepts.priority
   const options = ready === null ? [] : statusOptions({ statuses, meta: ready })
   const note = ready === null ? null : statusNote({ statuses, meta: ready })
   const statusKey = ready === null ? form.statusKey : (form.statusKey !== null && ready.statusKeys.includes(form.statusKey) ? form.statusKey : ready.defaultStatusKey)
@@ -128,7 +130,7 @@ export function QuickCreateModal({ model, yieldKeys }: { model: QuickCreateModel
             onChange={(event) => model.update({ title: event.target.value })}
             spellCheck={false}
           />
-          <textarea className="qc-desc" data-quick-create-body="" placeholder="설명 (markdown, 비워도 됩니다)" rows={3} value={form.body} readOnly={locked} onChange={(event) => model.update({ body: event.target.value })} />
+          <textarea className={`qc-desc${noBody ? ' is-disabled' : ''}`} data-quick-create-body="" data-quick-create-unaccepted={noBody ? '' : undefined} title={noBody ? CREATE_NO_BODY : undefined} placeholder={noBody ? CREATE_NO_BODY : '설명 (markdown, 비워도 됩니다)'} rows={3} value={form.body} readOnly={locked || (noBody && form.body.length === 0)} onChange={(event) => model.update({ body: event.target.value })} />
           <div className="qc-chips">
             <span className="qc-anchor">
               <button type="button" className="qc-chip qc-chip-parent" data-quick-create-parent="" disabled={locked} onClick={() => setMenu(menu === 'parent' ? null : 'parent')}>
@@ -166,11 +168,13 @@ export function QuickCreateModal({ model, yieldKeys }: { model: QuickCreateModel
             </span>
             <button
               type="button"
-              className="qc-chip"
+              className={`qc-chip${noPriority ? ' is-disabled' : ''}`}
               data-quick-create-priority={form.priority ?? 'none'}
-              title="누를 때마다 바뀜"
-              disabled={locked}
-              onClick={() => model.update({ priority: PRIORITY_CYCLE[(PRIORITY_CYCLE.indexOf(form.priority) + 1) % PRIORITY_CYCLE.length] ?? null })}
+              data-quick-create-unaccepted={noPriority ? '' : undefined}
+              title={noPriority ? CREATE_NO_PRIORITY : '누를 때마다 바뀜'}
+              disabled={locked || (noPriority && form.priority === null)}
+              // 받지 않는 종류로 바꾼 뒤 남은 값은 눌러 비운다(보내지 않는다 — submitProblem).
+              onClick={() => model.update({ priority: noPriority ? null : PRIORITY_CYCLE[(PRIORITY_CYCLE.indexOf(form.priority) + 1) % PRIORITY_CYCLE.length] ?? null })}
             >
               <span className="qc-prio-glyph">{form.priority === null ? '–' : (PRIORITY_GLYPH[form.priority] ?? '=')}</span>{priorityText(form.priority)}
             </button>

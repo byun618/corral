@@ -38,7 +38,7 @@ import {
 const status = (key: string, category: WorkStatus['category'], order: number): WorkStatus => ({ key, label: key.toUpperCase(), category, order, color: null })
 const STATUSES = [status('todo', 'todo', 0), status('doing', 'in_progress', 1), status('review', 'in_progress', 2), status('done', 'done', 3)]
 
-const item = (over: Partial<WorkItem> & { id: string }): WorkItem => ({
+const item = (over: Partial<WorkItem> & { id: string }): WorkItem => ({ bodyLock: null, 
   key: over.id.toUpperCase(), spaceKey: 'S', title: `title ${over.id}`, body: null, kind: { key: 'task', label: 'Task', childKinds: [] }, statusKey: 'todo', category: 'todo',
   priority: 'medium', dueAt: null, parentId: null, placement: 'board', rank: null, resolution: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [],
   ...over,
@@ -46,7 +46,7 @@ const item = (over: Partial<WorkItem> & { id: string }): WorkItem => ({
 
 const space = (items: WorkItem[]): SpaceData => ({ connectionId: 'c1', spaceKey: 'S', spaceName: 'Space', colorIndex: 1, color: null, statuses: STATUSES, kinds: [], items, nextCursor: null, truncated: false })
 
-const connection = (over: Partial<WorkConnectionSummary> & { id: string }): WorkConnectionSummary => ({
+const connection = (over: Partial<WorkConnectionSummary> & { id: string }): WorkConnectionSummary => ({ account: {}, 
   sourceId: 'la', name: 'LA', mono: 'LA', tokenTail: 'abcd', addedAt: 0, generation: 1, status: 'ok', pending: null, error: null, checkedAt: null,
   spaces: [], hiddenSpaceKeys: [], capabilities: null, ...over,
 })
@@ -55,8 +55,8 @@ describe('C2 스페이스 목록', () => {
   const settings: WorkSettingsState = {
     sources: [],
     connections: [
-      connection({ id: 'c1', tokenTail: '1111', spaces: [{ key: 'p1', name: 'corral', color: '#c7b28a', openCount: 3, hidden: false }, { key: 'p2', name: '숨김', color: null, openCount: 1, hidden: true }] }),
-      connection({ id: 'c2', tokenTail: '2222', spaces: [{ key: 'q1', name: 'other', color: null, openCount: null, hidden: false }], hiddenSpaceKeys: [] }),
+      connection({ id: 'c1', tokenTail: '1111', spaces: [{ key: 'p1', name: 'corral', color: '#c7b28a', openCount: 3, hidden: false, capabilities: {} }, { capabilities: {}, key: 'p2', name: '숨김', color: null, openCount: 1, hidden: true }] }),
+      connection({ id: 'c2', tokenTail: '2222', spaces: [{ capabilities: {}, key: 'q1', name: 'other', color: null, openCount: null, hidden: false }], hiddenSpaceKeys: [] }),
       connection({ id: 'c3', sourceId: 'mock', name: 'Mock', mono: 'MJ', spaces: null }),
     ],
     repoDefaults: [{ repoRoot: '/r/corral', connectionId: 'c1', spaceKey: 'p1' }],
@@ -188,8 +188,8 @@ describe('C7 끌기·늦은 응답', () => {
 
   it('배치 능력 hidden 이면 백로그 보기가 없다', () => {
     const base = { transition: { mode: 'any' as const }, relations: { state: 'on' as const }, parentChange: { state: 'on' as const }, order: { state: 'on' as const }, cursorPaging: { state: 'on' as const }, conflictCheck: { state: 'on' as const }, comments: { state: 'on' as const }, history: { state: 'on' as const }, workLinkStore: { state: 'on' as const } }
-    expect(viewsFor([{ ...base, placement: { state: 'hidden' } }])).toEqual(['board', 'list', 'working'])
-    expect(viewsFor([{ ...base, placement: { state: 'disabled', reason: 'x' } }])).toContain('backlog')
+    expect(viewsFor([{ resolution: { state: 'on' }, querySearch: { state: 'hidden' }, ...base, placement: { state: 'hidden' } }])).toEqual(['board', 'list', 'working'])
+    expect(viewsFor([{ resolution: { state: 'on' }, querySearch: { state: 'hidden' }, ...base, placement: { state: 'disabled', reason: 'x' } }])).toContain('backlog')
   })
 })
 
@@ -282,7 +282,7 @@ describe('R1-D 스페이스 선택 — 기다림 · 유효성', () => {
     expect(initialSpace({ groups, settings, repoRoot: '/r', last: null, failed: new Set(['c1']) })).toEqual({ kind: 'pick', space: { kind: 'all' } })
   })
   it('숨기거나 없어진 스페이스는 유효하지 않다 · 받는 중인 연결의 스페이스는 유효', () => {
-    const settings = base([{ key: 'p1', name: 'a', color: null, openCount: 0, hidden: false }])
+    const settings = base([{ capabilities: {}, key: 'p1', name: 'a', color: null, openCount: 0, hidden: false }])
     const groups = spaceGroups({ settings, repoRoot: null })
     expect(spaceStillValid({ groups, settings, space: { kind: 'space', connectionId: 'c1', spaceKey: 'p1' }, failed: new Set() })).toBe(true)
     expect(spaceStillValid({ groups, settings, space: { kind: 'space', connectionId: 'c1', spaceKey: 'gone' }, failed: new Set() })).toBe(false)

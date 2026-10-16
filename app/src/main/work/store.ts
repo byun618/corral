@@ -25,6 +25,11 @@ export type StoredConnection = {
   tokenTail: string
   sealed: string
   hiddenSpaceKeys: string[]
+  /**
+   * 비밀 아닌 연결 칸(LIFE-605 — Jira 사이트 호스트·이메일) — **카드 표시용**. 클라이언트를 만드는 값은 암호문 안에 같이 싼 것을 쓴다
+   * (이 칸을 모르는 이전 판 앱이 파일을 다시 쓰면 이 칸만 떨어진다 — 그래도 연결은 돈다, design-notes §1). 없는 행은 빈 객체.
+   */
+  account: Record<string, string>
 }
 
 export type StoredRepoDefault = { connectionId: string; spaceKey: string }
@@ -46,7 +51,8 @@ function readConnection(value: unknown): StoredConnection | null {
   if (typeof tokenTail !== 'string' || tokenTail.length > 4) return null
   if (typeof sealed !== 'string' || sealed.length === 0) return null
   const hidden = Array.isArray(hiddenSpaceKeys) ? hiddenSpaceKeys.filter((key): key is string => typeof key === 'string') : []
-  return { id, sourceId, addedAt, tokenTail, sealed, hiddenSpaceKeys: hidden }
+  const account = isRecord(value.account) ? Object.fromEntries(Object.entries(value.account).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : {}
+  return { id, sourceId, addedAt, tokenTail, sealed, hiddenSpaceKeys: hidden, account }
 }
 
 function readRepoDefaults(value: unknown): Record<string, StoredRepoDefault> {
@@ -77,7 +83,7 @@ export function readWorkStore(value: unknown): WorkStoreData {
 
 function copy(data: WorkStoreData): WorkStoreData {
   return {
-    connections: data.connections.map((connection) => ({ ...connection, hiddenSpaceKeys: [...connection.hiddenSpaceKeys] })),
+    connections: data.connections.map((connection) => ({ ...connection, hiddenSpaceKeys: [...connection.hiddenSpaceKeys], account: { ...connection.account } })),
     repoDefaults: Object.fromEntries(Object.entries(data.repoDefaults).map(([key, entry]) => [key, { ...entry }])),
   }
 }

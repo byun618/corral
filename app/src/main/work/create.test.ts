@@ -287,7 +287,7 @@ describe('main 의 생성 메타 검증 (E11 — 양성 대조)', () => {
       },
     }),
   })
-  const good: WorkCreateMeta = { spaceKey: 'S', kindKey: 'k', statusKeys: ['a', 'b'], defaultStatusKey: 'a', placement: 'applies', fields: [{ key: 'f', label: 'F', shape: 'option', options: [{ id: 'o', label: 'O' }] }] }
+  const good: WorkCreateMeta = { accepts: { body: true, priority: true }, spaceKey: 'S', kindKey: 'k', statusKeys: ['a', 'b'], defaultStatusKey: 'a', placement: 'applies', fields: [{ key: 'f', label: 'F', shape: 'option', options: [{ id: 'o', label: 'O' }] }] }
   const cases: { name: string; meta: unknown }[] = [
     { name: '상태 없음', meta: { ...good, statusKeys: [] } },
     { name: '기본 상태가 목록 밖', meta: { ...good, defaultStatusKey: 'z' } },

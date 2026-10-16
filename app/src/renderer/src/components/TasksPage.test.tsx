@@ -10,7 +10,7 @@ import { TasksPage } from './TasksPage.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
-const CAPS: WorkCapabilities = {
+const CAPS: WorkCapabilities = { resolution: { state: 'on' }, querySearch: { state: 'hidden' }, 
   transition: { mode: 'any' }, placement: { state: 'on' }, relations: { state: 'on' }, parentChange: { state: 'on' },
   order: { state: 'disabled', reason: '순서 도구가 없습니다 (테스트)' }, cursorPaging: { state: 'disabled', reason: '커서 없음' },
   conflictCheck: { state: 'disabled', reason: 'x' }, comments: { state: 'disabled', reason: 'x' }, history: { state: 'disabled', reason: 'x' }, workLinkStore: { state: 'disabled', reason: 'x' },
@@ -20,7 +20,7 @@ const STATUSES: WorkStatus[] = [
   { key: 'doing', label: '개발 중', category: 'in_progress', order: 1, color: null },
   { key: 'done', label: '완료', category: 'done', order: 2, color: null },
 ]
-const item = (over: Partial<WorkItem> & { id: string; key: string }): WorkItem => ({
+const item = (over: Partial<WorkItem> & { id: string; key: string }): WorkItem => ({ bodyLock: null, 
   spaceKey: 's1', title: `제목 ${over.key}`, body: null, kind: { key: 'task', label: 'Task', childKinds: [] }, statusKey: 'todo', category: 'todo', priority: 'medium', dueAt: null,
   parentId: null, placement: 'board', rank: null, resolution: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [], ...over,
 })
@@ -57,10 +57,10 @@ beforeEach(() => {
   document.body.append(host)
   root = createRoot(host)
   settings = {
-    sources: [{ id: 'src-a', name: 'Source A', mono: 'SA', addLabel: '', formTitle: '', tokenLabel: '', tokenPrefix: null, keyPattern: 'K-\\d+' }],
-    connections: [{
+    sources: [{ accountFields: [], tokenHint: null, queryPattern: null, id: 'src-a', name: 'Source A', mono: 'SA', addLabel: '', formTitle: '', tokenLabel: '', tokenPrefix: null, keyPattern: 'K-\\d+' }],
+    connections: [{ account: {}, 
       id: 'c1', sourceId: 'src-a', name: 'Source A', mono: 'SA', tokenTail: 'wxyz', addedAt: 0, generation: 1, status: 'ok', pending: null, error: null, checkedAt: 0,
-      spaces: [{ key: 's1', name: 'corral', color: null, openCount: 2, hidden: false }], hiddenSpaceKeys: [], capabilities: CAPS,
+      spaces: [{ key: 's1', name: 'corral', color: null, openCount: 2, hidden: false, capabilities: {} }], hiddenSpaceKeys: [], capabilities: CAPS,
     }],
     repoDefaults: [],
   }

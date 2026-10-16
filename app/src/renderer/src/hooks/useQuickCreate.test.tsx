@@ -23,7 +23,7 @@ afterEach(() => {
   host.remove()
 })
 
-const connection = ({ id, generation }: { id: string; generation: number }): WorkConnectionSummary => ({
+const connection = ({ id, generation }: { id: string; generation: number }): WorkConnectionSummary => ({ account: {}, 
   id, sourceId: 'mock-jira', name: 'Mock', mono: 'M', tokenTail: '0000', addedAt: 0, generation, status: 'ok', pending: null, error: null, checkedAt: null,
   spaces: null, hiddenSpaceKeys: [], capabilities: null,
 })
@@ -87,7 +87,7 @@ describe('초안 수명 (R1-F·R1-M)', () => {
 describe('제출 직전 부모 검사 (R2-F)', () => {
   const epic: WorkKind = { key: 'epic', label: 'Epic', childKinds: ['story'] }
   const story: WorkKind = { key: 'story', label: 'Story', childKinds: [] }
-  const item = (id: string, kind: WorkKind): WorkItem => ({
+  const item = (id: string, kind: WorkKind): WorkItem => ({ bodyLock: null, 
     id, key: id.toUpperCase(), spaceKey: 'CORE', title: id, body: null, kind, statusKey: 'todo', category: 'todo', resolution: null, priority: null, dueAt: null, parentId: null,
     placement: 'board', rank: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [],
   })
@@ -100,7 +100,7 @@ describe('제출 직전 부모 검사 (R2-F)', () => {
     Reflect.set(window, 'corral', {
       workRequest: async (request: WorkRequest): Promise<WorkResponse> => ({
         requestId: request.requestId, connectionId: request.connectionId, ok: true,
-        result: { op: 'getCreateMeta', meta: { spaceKey: 'CORE', kindKey: 'story', statusKeys: ['todo'], defaultStatusKey: 'todo', placement: 'applies', fields: [] } },
+        result: { op: 'getCreateMeta', meta: { accepts: { body: true, priority: true }, spaceKey: 'CORE', kindKey: 'story', statusKeys: ['todo'], defaultStatusKey: 'todo', placement: 'applies', fields: [] } },
       }),
     })
     sentCreates.length = 0
@@ -123,7 +123,7 @@ describe('제출 직전 부모 검사 (R2-F)', () => {
 })
 
 describe('배치가 적용되지 않는 종류 (R2-H)', () => {
-  const on: WorkCapabilities = {
+  const on: WorkCapabilities = { resolution: { state: 'on' }, querySearch: { state: 'hidden' }, 
     transition: { mode: 'any' }, placement: { state: 'on' }, relations: { state: 'on' }, parentChange: { state: 'on' }, order: { state: 'on' }, cursorPaging: { state: 'on' },
     conflictCheck: { state: 'on' }, comments: { state: 'on' }, history: { state: 'on' }, workLinkStore: { state: 'on' },
   }
@@ -136,7 +136,7 @@ describe('배치가 적용되지 않는 종류 (R2-H)', () => {
     Reflect.set(window, 'corral', {
       workRequest: async (request: WorkRequest): Promise<WorkResponse> => ({
         requestId: request.requestId, connectionId: request.connectionId, ok: true,
-        result: { op: 'getCreateMeta', meta: { spaceKey: 'CORE', kindKey: 'bug', statusKeys: ['todo'], defaultStatusKey: 'todo', placement, fields: [] } },
+        result: { op: 'getCreateMeta', meta: { accepts: { body: true, priority: true }, spaceKey: 'CORE', kindKey: 'bug', statusKeys: ['todo'], defaultStatusKey: 'todo', placement, fields: [] } },
       }),
     })
     sentCreates.length = 0
@@ -176,7 +176,7 @@ describe('인라인 갈래 (R5-B — 수정 4 R4-C·R4-F 의 인라인 쪽)', ()
     Reflect.set(window, 'corral', {
       workRequest: async (request: WorkRequest): Promise<WorkResponse> => {
         metaRequests.push(request)
-        const meta: WorkCreateMeta = { spaceKey: 'CORE', kindKey: 'story', statusKeys: ['todo'], defaultStatusKey: 'todo', placement: 'applies', fields: [] }
+        const meta: WorkCreateMeta = { accepts: { body: true, priority: true }, spaceKey: 'CORE', kindKey: 'story', statusKeys: ['todo'], defaultStatusKey: 'todo', placement: 'applies', fields: [] }
         return { requestId: request.requestId, connectionId: request.connectionId, ok: true, result: { op: 'getCreateMeta', meta: unavailable === null ? meta : { ...meta, unavailable } } }
       },
     })

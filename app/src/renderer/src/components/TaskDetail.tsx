@@ -30,7 +30,7 @@ import {
 import { toggleCheckLine } from '../markdown.js'
 import { treesFor, type LinkedTree } from '../work-links-model.js'
 import { WorkButtons, WorkLinksContext, WorkRunSection, type DetailWorkActions } from './WorkLinkChips.js'
-import { PRIORITY_GLYPH, PRIORITY_LABEL, UNRESTORABLE_RESOLUTION, dueTone, imeComposing, restorableResolution } from '../tasks-model.js'
+import { PRIORITY_GLYPH, PRIORITY_LABEL, UNRESTORABLE_RESOLUTION, dueTone, imeComposing, picksResolution, restorableResolution } from '../tasks-model.js'
 import { MarkdownEditor } from './MarkdownEditor.js'
 import { MarkdownView } from './MarkdownView.js'
 import { KindIcon, SpaceDot, StatusCircle } from './TasksViews.js'
@@ -129,6 +129,8 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
   const writable = blocked === null
   /** 상세(본문 포함)를 출처에서 받았는가 — 받기 전에는 본문 편집·체크 칸을 막는다(R1-B: 목록 값엔 본문이 없어 빈 본문을 저장할 수 있다). */
   const bodyReady = base !== null
+  /** 본문에 corral 이 바꿀 수 없는 요소가 있으면(LIFE-605 C6 — 출처가 준 이유) 편집을 열지 않는다. 체크 칸은 그 상태만 바꾸므로 열어 둔다. */
+  const bodyLock = item.bodyLock
   /** 본문 편집을 연다 — 지금 서버 값을 본문의 편집 기준으로 잡는다(R3-A). */
   const openEditor = (): void => {
     detail.holdBasis('body')
@@ -146,7 +148,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
     const before = { statusKey: item.statusKey, category: item.category, resolution: item.resolution }
     const resolution = row.category === 'done' ? row.resolution : null
     // 원래 완료 갈래를 다시 쓸 수 없으면(LA archived·duplicate 등) 되돌리기를 내지 않고 그 사실을 알린다 — 완료함으로 바꿔 끼우지 않는다(R1-G).
-    const restorable = restorableResolution(before)
+    const restorable = restorableResolution({ item: before, picks: picksResolution(detail.caps) })
     void detail.write({
       call: { op: 'changeStatus', itemId: item.id, statusKey: row.statusKey, ifVersion: versionOf(base), resolution: row.resolution },
       optimistic: (value) => ({ ...value, statusKey: row.statusKey, category: row.category, resolution }),
@@ -321,15 +323,16 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
             <div className="issue-section-head">
               <span>본문</span>
               <span className="issue-detail-head-spacer" />
-              {editing ? null : <button type="button" className="issue-link-btn" data-issue-body-edit="" disabled={!writable || !bodyReady} title={blocked ?? (bodyReady ? undefined : '본문을 불러오는 중…')} onClick={openEditor}>편집</button>}
+              {editing ? null : <button type="button" className="issue-link-btn" data-issue-body-edit="" disabled={!writable || !bodyReady || bodyLock !== null} title={blocked ?? bodyLock ?? (bodyReady ? undefined : '본문을 불러오는 중…')} onClick={openEditor}>편집</button>}
             </div>
+            {bodyLock === null || editing ? null : <div className="issue-body-lock" data-issue-body-lock="">{bodyLock}</div>}
             {editing ? (
               <MarkdownEditor key={detail.uid ?? ''} initial={item.body ?? ''} keyPattern={keyPattern} saving={bodySaving} error={bodyError ?? bodyNote} draftRef={bodyDraft} onSave={(text) => void saveBody(text)} onCancel={() => { setEditing(false); setBodyError(null); setBodyNote(null) }} />
             ) : (
               <div
                 className="issue-body-view"
                 onClick={(event) => {
-                  if (!writable || !bodyReady || (event.target instanceof Element && event.target.closest('a, input, button'))) return
+                  if (!writable || !bodyReady || bodyLock !== null || (event.target instanceof Element && event.target.closest('a, input, button'))) return
                   if ((window.getSelection()?.toString() ?? '') !== '') return
                   openEditor()
                 }}
@@ -359,7 +362,7 @@ function StatusMenu({ detail, statuses, item, onPick }: { detail: TaskDetailMode
   const mode = detail.caps?.transition.mode ?? 'any'
   const known = detail.transitions
   const allowed = mode === 'allowed' ? (known?.state === 'ready' ? known.value : []) : null
-  const rows = statusMenuRows({ statuses, item, allowed })
+  const rows = statusMenuRows({ statuses, item, allowed, picks: picksResolution(detail.caps) })
   return (
     <div className="tasks-menu issue-status-menu" data-tasks-menu="status" data-detail-menu="" role="menu">
       {mode === 'allowed' && known?.state === 'loading' ? <div className="tasks-menu-note">허용 전이를 받는 중…</div> : null}
@@ -379,6 +382,19 @@ function StatusMenu({ detail, statuses, item, onPick }: { detail: TaskDetailMode
           {row.back ? <span className="issue-status-back">되돌리기</span> : null}
         </button>
       ))}
+      {mode === 'allowed' && known?.state === 'ready'
+        ? detail.transitionBlocks.flatMap((entry) => {
+          const status = statuses.find((candidate) => candidate.key === entry.statusKey)
+          if (status === undefined || rows.some((row) => row.statusKey === entry.statusKey)) return []
+          return [(
+            <div key={`blocked:${entry.statusKey}`} className="tasks-menu-row is-blocked" role="menuitem" aria-disabled="true" title={entry.reason} data-status-blocked={entry.statusKey}>
+              <StatusCircle category={status.category} fill={statusFill({ statuses, statusKey: status.key })} />
+              <span className="tasks-menu-name">{status.label}</span>
+              <span className="issue-status-blocked-reason" data-status-blocked-reason="">{entry.reason}</span>
+            </div>
+          )]
+        })
+        : null}
       {mode === 'allowed' && known?.state === 'ready' ? <div className="issue-status-foot" data-status-foot="">허용 전이 {known.value.length}개만</div> : null}
     </div>
   )

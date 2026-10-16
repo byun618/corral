@@ -18,7 +18,9 @@ afterEach(() => {
   }
 })
 
-const row = { id: 'c1', sourceId: 'la', addedAt: 1, tokenTail: 'abcd', sealed: 'c2VhbGVk', hiddenSpaceKeys: ['s1'] }
+// LIFE-605 C1⑥ — 이전 판(LIFE-600) 행은 `account` 칸이 없다. 읽으면 빈 객체로 무손실.
+const legacyRow = { id: 'c1', sourceId: 'la', addedAt: 1, tokenTail: 'abcd', sealed: 'c2VhbGVk', hiddenSpaceKeys: ['s1'] }
+const row = { ...legacyRow, account: {} }
 
 describe('WorkConnectionStore', () => {
   it('바꾸기 전에는 파일이 없다 · 쓰면 0600 · 다시 읽힌다', () => {
@@ -35,7 +37,7 @@ describe('WorkConnectionStore', () => {
 
   it('망가진 행만 버린다', () => {
     const dir = tempDir()
-    fs.writeFileSync(path.join(dir, 'work-connections.json'), JSON.stringify({ version: 1, connections: [row, { id: 'bad' }, { ...row, id: 'c2', tokenTail: 'toolong' }], repoDefaults: { r1: 'x' } }))
+    fs.writeFileSync(path.join(dir, 'work-connections.json'), JSON.stringify({ version: 1, connections: [legacyRow, { id: 'bad' }, { ...legacyRow, id: 'c2', tokenTail: 'toolong' }], repoDefaults: { r1: 'x' } }))
     const store = new WorkConnectionStore(dir)
     store.load()
     expect(store.get()).toEqual({ connections: [row], repoDefaults: {} })

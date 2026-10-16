@@ -90,6 +90,10 @@ export function titleTooLong(title: string): string | null {
  * 길이 한도는 계약 손검증과 같은 상수다(R4-E) — 넘긴 채 보내 「요청 모양이 잘못됐습니다」 로만 알리지 않는다.
  * 진행 중(보내는 중·확인 중)·쓰기 막힘은 부르는 쪽이 앞에 둔다.
  */
+/** 출처가 이 종류에서 받지 않는 칸(LIFE-605 C8 — 생성 메타 `accepts`). 화면은 칸을 흐리고, 값이 남아 있으면 보내지 않는다. */
+export const CREATE_NO_BODY = '이 종류는 설명 칸을 받지 않습니다'
+export const CREATE_NO_PRIORITY = '이 종류는 우선순위 칸을 받지 않습니다'
+
 export function submitProblem({ form, meta }: { form: CreateForm; meta: CreateMetaState }): string | null {
   if (meta.state === 'loading') return '만들기 정보를 받는 중…'
   if (meta.state === 'error') return `만들기 정보를 받지 못했습니다 — ${meta.message}`
@@ -97,6 +101,8 @@ export function submitProblem({ form, meta }: { form: CreateForm; meta: CreateMe
   const unsupported = meta.meta.fields.find((field) => field.shape === 'unsupported')
   if (unsupported !== undefined) return `${unsupported.label} 은(는) corral 에서 채울 수 없음 — 출처에서 만드세요`
   if (form.title.trim().length === 0) return '제목을 입력하세요'
+  if (!meta.meta.accepts.body && form.body.trim().length > 0) return `${CREATE_NO_BODY} — 설명을 비우세요`
+  if (!meta.meta.accepts.priority && form.priority !== null) return `${CREATE_NO_PRIORITY} — 우선순위를 없음으로 두세요`
   const long = titleTooLong(form.title)
   if (long !== null) return long
   if (form.body.length > WORK_BODY_MAX) return `설명은 ${WORK_BODY_MAX.toLocaleString('en-US')}자까지입니다 (지금 ${form.body.length.toLocaleString('en-US')}자)`

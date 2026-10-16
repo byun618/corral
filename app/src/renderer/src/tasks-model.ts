@@ -505,8 +505,13 @@ export function viewDisabledReason({ capabilities, view }: { capabilities: WorkC
  * 그 밖(LA archived·duplicate = `other`, 또는 비어 있음)은 공통 계약으로 다시 쓸 수 없다 — 되돌리면 완료함으로 바뀌므로 되돌리기를 막는다.
  */
 export const UNRESTORABLE_RESOLUTION = '원래 완료 갈래(완료함·취소함 밖)는 복원할 수 없어 되돌리기가 없습니다'
-export function restorableResolution(item: Pick<WorkItem, 'category' | 'resolution'>): { restorable: true; resolution: WorkResolutionChoice | null } | { restorable: false } {
-  if (item.category !== 'done') return { restorable: true, resolution: null }
+/** 완료 갈래를 고를 수 있나 — 능력을 모르면(받기 전) 계약 기본대로 고를 수 있다고 본다. */
+export function picksResolution(capabilities: WorkCapabilities | null): boolean {
+  return capabilities === null || capabilities.resolution.state === 'on'
+}
+export function restorableResolution({ item, picks }: { item: Pick<WorkItem, 'category' | 'resolution'>; picks: boolean }): { restorable: true; resolution: WorkResolutionChoice | null } | { restorable: false } {
+  // 갈래를 고르지 않는 출처(능력 `resolution` 꺼짐 — LIFE-605 Jira)는 상태만 되돌린다 — 갈래는 출처가 상태에서 정한다.
+  if (item.category !== 'done' || !picks) return { restorable: true, resolution: null }
   if (item.resolution === 'completed' || item.resolution === 'cancelled') return { restorable: true, resolution: item.resolution }
   return { restorable: false }
 }

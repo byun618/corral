@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { RepoRow } from '../../../shared/types.js'
 import type { WorkCapabilities, WorkItem, WorkPriority, WorkStatus } from '../../../shared/work.js'
-import { WORK_PRIORITIES } from '../../../shared/work.js'
+import { spaceCapabilities, WORK_PRIORITIES } from '../../../shared/work.js'
 import { useTaskDrag, type TaskDrop } from '../hooks/useTaskDrag.js'
 import { DETAIL_READING, useTasksPage, type MoveNotice } from '../hooks/useTasksPage.js'
 import { useTaskDetail } from '../hooks/useTaskDetail.js'
@@ -179,6 +179,12 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
 
   // --- 능력 ---
   const capsOf = (connectionId: string): WorkCapabilities | null => settings?.connections.find((connection) => connection.id === connectionId)?.capabilities ?? null
+  /** 스페이스 하나의 능력(LIFE-605 C7) — 연결 능력을 그 스페이스 칸으로 좁힌다(같은 연결 안에서도 보드 없는 스페이스는 순서 흐림). */
+  const spaceCapsOf = (row: TasksRow): WorkCapabilities | null => {
+    const connection = settings?.connections.find((entry) => entry.id === row.space.connectionId)
+    if (connection === undefined || connection.capabilities === null) return null
+    return spaceCapabilities({ capabilities: connection.capabilities, space: connection.spaces?.find((entry) => entry.key === row.space.spaceKey) ?? null })
+  }
   const shownCaps = useMemo(() => {
     if (settings === null || space === null) return []
     const ids = space.kind === 'all' ? settings.connections.map((connection) => connection.id) : [space.connectionId]
@@ -297,7 +303,9 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     const known = page.transitions
     if (known === null || known.uid !== rowUid(row) || known.state === 'loading') return '허용 전이를 받는 중…'
     if (known.state === 'error') return `허용 전이를 받지 못했습니다 — ${known.message}`
-    return known.keys.includes(statusKey) ? null : NO_TRANSITION
+    if (known.keys.includes(statusKey)) return null
+    // 출처가 이유를 준 막힌 전이(LIFE-605 — 필수 필드를 묻는 전이)는 그 이유를.
+    return known.blocked.find((entry) => entry.statusKey === statusKey)?.reason ?? NO_TRANSITION
   }
   const statusesOf = (row: TasksRow): WorkStatus[] => row.space.statuses
   const columnView = (column: BoardColumn): ColumnDragView => (dragRow.current === null ? IDLE : columnViewFor({ row: dragRow.current, column }))
@@ -311,7 +319,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         return reason === null ? { mode: 'target', reason: null } : { mode: 'blocked', reason }
       }
       case 'reorder': {
-        const order = capabilityGate(capsOf(row.space.connectionId), 'order')
+        const order = capabilityGate(spaceCapsOf(row), 'order')
         if (order.state === 'on') return { mode: 'target', reason: null }
         return order.state === 'disabled' ? { mode: 'blocked', reason: `순서를 바꿀 수 없습니다 — ${order.reason}` } : { mode: 'source', reason: null }
       }
@@ -322,7 +330,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const sectionView = (id: 'board' | 'backlog'): ColumnDragView => (dragRow.current === null ? IDLE : sectionViewFor({ row: dragRow.current, id }))
   const sectionViewFor = ({ row, id }: { row: TasksRow; id: 'board' | 'backlog' }): ColumnDragView => {
     const same = (row.item.placement ?? 'board') === id
-    const gate = capabilityGate(capsOf(row.space.connectionId), same ? 'order' : 'placement')
+    const gate = capabilityGate(spaceCapsOf(row), same ? 'order' : 'placement')
     if (gate.state === 'on') return { mode: 'target', reason: null }
     if (gate.state === 'hidden') return { mode: 'source', reason: null }
     return { mode: 'blocked', reason: same ? `순서를 바꿀 수 없습니다 — ${gate.reason}` : gate.reason }
@@ -686,6 +694,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         <button type="button" className={`tasks-filter${prefs.filters.working ? ' is-on' : ''}`} data-filter="working" aria-pressed={prefs.filters.working} onClick={() => setFilters({ ...prefs.filters, working: !prefs.filters.working })}>작업 중</button>
         {prefs.filters.dueWeek ? <span className="tasks-filter is-on is-static" data-filter="due-week">이번 주 마감</span> : null}
         {filtersActive(prefs.filters) ? <button type="button" className="tasks-clear" data-clear-filters="" onClick={() => setFilters(NO_FILTERS)}>필터 지우기</button> : null}
+        {/* 출처 질의 검색의 안내(LIFE-605 C5 — 질의를 거부해 텍스트로 찾은 사유 등). 출처가 준 글 그대로. */}
+        {page.searchNotes.map((note) => <span key={note.connectionId} className="tasks-search-note" data-search-note={note.connectionId} title={note.text}>{note.text}</span>)}
         <span className="tasks-head-spacer" />
         {load.phase === 'loading' && load.data.length > 0 ? <span className="tasks-refreshing" data-tasks-refreshing="">새로 받는 중…</span> : null}
       </div>
@@ -726,14 +736,14 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   )
 }
 
-function KeyHits({ hits, selectedId, onSelect }: { hits: { connectionId: string; item: WorkItem; spaceName: string }[]; selectedId: string | null; onSelect: (uid: string) => void }): React.JSX.Element {
+function KeyHits({ hits, selectedId, onSelect }: { hits: { connectionId: string; item: WorkItem; spaceName: string; via: 'key' | 'query' }[]; selectedId: string | null; onSelect: (uid: string) => void }): React.JSX.Element {
   return (
     <div className="tasks-key-hits" data-search-hits="">
       {hits.map((hit) => {
         const uid = itemUid({ connectionId: hit.connectionId, itemId: hit.item.id })
         return (
           <button key={uid} type="button" className={`tasks-key-hit-row${selectedId === uid ? ' is-selected' : ''}`} data-issue-row={hit.item.key} onClick={() => onSelect(uid)}>
-            <span className="tasks-key-hit" data-search-hit="">키 일치</span>
+            <span className="tasks-key-hit" data-search-hit={hit.via === 'key' ? '' : hit.via}>{hit.via === 'key' ? '키 일치' : '질의'}</span>
             <span className="tasks-row-key">{hit.item.key}</span>
             <span className="tasks-row-title">{hit.item.title}</span>
             <span className="tasks-row-space">{hit.spaceName}</span>

@@ -9,13 +9,13 @@ import { ConnectionsSection } from './ConnectionsSection.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
-const SOURCE = { id: 'src-a', name: 'Source A', mono: 'SA', addLabel: '+ A 토큰', formTitle: 'A 연결', tokenLabel: 'A 토큰', tokenPrefix: 'a_pat_', keyPattern: null }
-const CONNECTION: WorkConnectionSummary = {
+const SOURCE = { id: 'src-a', name: 'Source A', mono: 'SA', addLabel: '+ A 토큰', formTitle: 'A 연결', tokenLabel: 'A 토큰', tokenPrefix: 'a_pat_', keyPattern: null, accountFields: [], tokenHint: null, queryPattern: null }
+const CONNECTION: WorkConnectionSummary = { account: {}, 
   id: 'c1', sourceId: 'src-a', name: 'Source A', mono: 'SA', tokenTail: 'wxyz', addedAt: Date.UTC(2026, 9, 8), generation: 0, status: 'ok', pending: null, error: null,
   checkedAt: Date.now(), hiddenSpaceKeys: ['s2'], capabilities: null,
   spaces: [
-    { key: 's1', name: 'corral', color: null, openCount: 14, hidden: false },
-    { key: 's2', name: '숨긴 스페이스', color: '#123456', openCount: 0, hidden: true },
+    { capabilities: {}, key: 's1', name: 'corral', color: null, openCount: 14, hidden: false },
+    { capabilities: {}, key: 's2', name: '숨긴 스페이스', color: '#123456', openCount: 0, hidden: true },
   ],
 }
 
@@ -245,4 +245,65 @@ it('[R4-B] 같은 세대에서도 앞선 테스트의 늦은 결과는 최신 �
   expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('최신 테스트 어긋남')
   await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
   expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('최신 테스트 어긋남')
+})
+
+function field(selector: string): HTMLInputElement {
+  const found = q(selector)
+  if (!(found instanceof HTMLInputElement)) throw new Error(`${selector} 입력칸 아님`)
+  return found
+}
+
+// LIFE-605 C1 — 칸 여러 개 출처(중립 이름 `src-b`). 칸 목록·이름·각주·카드 자리는 descriptor 가 준다.
+const SOURCE_B = {
+  id: 'src-b', name: 'Source B', mono: 'SB', addLabel: '+ B', formTitle: 'B 연결', tokenLabel: 'B 토큰', tokenPrefix: null, keyPattern: null, queryPattern: null,
+  tokenHint: 'B 토큰 각주',
+  accountFields: [
+    { key: 'site', label: '사이트 URL', placeholder: 'https://x.example', hint: '사이트 각주', input: 'url' as const, shownIn: 'title' as const, fixedOnReplace: true },
+    { key: 'email', label: '이메일', placeholder: 'you@x', hint: null, input: 'email' as const, shownIn: 'meta' as const, fixedOnReplace: false },
+  ],
+}
+const CONNECTION_B: WorkConnectionSummary = { ...CONNECTION, id: 'c2', sourceId: 'src-b', name: 'Source B', mono: 'SB', tokenTail: '7c2e', account: { site: 'b.example', email: 'dev@b.example' } }
+
+it('칸 여러 개 폼 — descriptor 칸 순서대로 그리고, 칸이 다 차야 저장 · 보낸 입력에 칸 값', async () => {
+  state = { ...state, sources: [SOURCE, SOURCE_B] }
+  await mount()
+  act(() => q('[data-connection-add="src-b"]').click())
+  const form = q('[data-connection-form="src-b"]')
+  expect([...form.querySelectorAll('label')].map((label) => label.firstChild?.textContent)).toEqual(['사이트 URL', '이메일', 'B 토큰'])
+  expect(q('[data-connection-account-hint="site"]').textContent).toBe('사이트 각주')
+  expect(q('[data-connection-token-hint]').textContent).toBe('B 토큰 각주')
+  const save = q('[data-connection-save]')
+  type(field('[data-connection-token]'), 'secret-b')
+  expect(save.hasAttribute('disabled')).toBe(true)
+  type(field('[data-connection-account="site"]'), ' b.example ')
+  type(field('[data-connection-account="email"]'), 'dev@b.example')
+  expect(save.hasAttribute('disabled')).toBe(false)
+  await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  expect(added).toEqual([{ sourceId: 'src-b', token: 'secret-b', account: { site: 'b.example', email: 'dev@b.example' }, replaceId: null }])
+})
+
+it('카드 — 제목 「이름 · 사이트」, 메타 「이메일 · 토큰 이름 ••••끝」 · 칸 없는 출처는 전과 같다', async () => {
+  state = { ...state, sources: [SOURCE, SOURCE_B], connections: [CONNECTION, CONNECTION_B] }
+  await mount()
+  const card = q('[data-connection-card="c2"]')
+  expect(card.querySelector('.connection-name')?.textContent).toBe('Source B · b.example')
+  expect(card.querySelector('.connection-meta')?.textContent).toMatch(/^dev@b\.example · B 토큰 ••••7c2e · /)
+  expect(q('[data-connection-card="c1"]').querySelector('.connection-name')?.textContent).toBe('Source A')
+  expect(host.querySelectorAll('[data-connection-card="c1"] [data-connection-card-account]')).toHaveLength(0)
+})
+
+it('토큰 바꾸기 — 바꿀 수 없는 칸은 지금 값으로 읽기 전용, 바꿀 수 있는 칸은 미리 채워 고칠 수 있다', async () => {
+  state = { ...state, sources: [SOURCE, SOURCE_B], connections: [{ ...CONNECTION_B, status: 'auth', error: { message: '거부', action: 'replace_token' } }] }
+  await mount()
+  act(() => q('[data-connection-error] .connection-link').click())
+  const site = field('[data-connection-account="site"]')
+  expect(site.readOnly).toBe(true)
+  expect(site.value).toBe('b.example')
+  expect(site.hasAttribute('data-connection-account-locked')).toBe(true)
+  const email = field('[data-connection-account="email"]')
+  expect(email.readOnly).toBe(false)
+  expect(email.value).toBe('dev@b.example')
+  type(field('[data-connection-token]'), 'new-b')
+  await act(async () => { q('[data-connection-form="src-b"]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  expect(added.at(-1)).toEqual({ sourceId: 'src-b', token: 'new-b', account: { site: 'b.example', email: 'dev@b.example' }, replaceId: 'c2' })
 })

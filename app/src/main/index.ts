@@ -115,6 +115,7 @@ import { MobileService } from './mobile/service.js'
 import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
 import { LA_DEFAULT_MCP_URL, laSourceEntry } from './work/la-source.js'
 import { mockSourceEntry, seedMockDemoState } from './work/mock-source.js'
+import { jiraFixtureBaseFromEnv, jiraSourceEntry } from './work/jira-source.js'
 import { WorkService } from './work/service.js'
 import { isRecord } from '../shared/json.js'
 import { WorkLinks, linkOf } from './work/links.js'
@@ -1630,12 +1631,16 @@ app.whenReady().then(async () => {
   // LIFE-601 — 격리 실행(측정 모드)에서만 모의 Jira 형 출처를 레지스트리에 더한다. 평시 앱에는 없다.
   const mockSource = measuring && process.env.CORRAL_WORK_MOCK === '1'
   if (mockSource) log('work.mock_source', { reason: 'CORRAL_CONTROL_SOCKET + CORRAL_WORK_MOCK — 작업 페이지 격리 실행' })
+  const jiraFixture = jiraFixtureBaseFromEnv(process.env)
+  if (jiraFixture !== null) log('work.jira_fixture', { url: jiraFixture, reason: 'CORRAL_CONTROL_SOCKET + CORRAL_JIRA_FIXTURE_URL — Jira fixture 격리 실행' })
   work = new WorkService({
     store: workStore,
     vault: new CredentialVault(testCipher ? measurementCipher() : electronCipher(safeStorage)),
     activity: workActivity,
     sources: new WorkSourceRegistry([
       laSourceEntry({ url: laUrl, clientVersion: app.getVersion() }),
+      // LIFE-605 — Jira Cloud. fixture 주소는 측정 모드(제어 소켓) + 127.0.0.1 일 때만 열린다(평시 앱은 검증한 *.atlassian.net 만).
+      jiraSourceEntry(jiraFixture === null ? {} : { baseUrlOf: () => jiraFixture }),
       ...(mockSource ? [mockSourceEntry({ state: seedMockDemoState() })] : []),
     ]),
     repos: () => {

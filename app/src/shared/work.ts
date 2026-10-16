@@ -45,7 +45,20 @@ export type WorkCapabilities = {
   history: WorkCapability
   /** 작업 링크(worktree·브랜치·PR·세션)를 출처 쪽에 저장. */
   workLinkStore: WorkCapability
+  /**
+   * 완료 갈래 고르기(E5 · LIFE-605) — 꺼져 있으면 완료 분류로 갈 때 「완료함/취소함」 을 고르지 못한다(출처가 정한 해결 값을 읽기만 한다).
+   * 화면은 완료 상태를 한 줄로 그리고 갈래를 싣지 않는다 · main 은 갈래를 실은 상태 변경을 출처에 닿기 전에 막는다.
+   */
+  resolution: WorkCapability
+  /** 질의 검색(LIFE-605 C5) — 검색어가 descriptor `queryPattern` 모양이면 출처 질의(Jira JQL)로 찾는다. 꺼져 있으면 화면은 받은 목록을 글로 거른다. */
+  querySearch: WorkCapability
 }
+
+/**
+ * 스페이스별 능력 (LIFE-605 C7 · F10) — 연결 능력이 켜져 있어도 스페이스마다 못 할 수 있다(Jira: 보드·Rank 는 Jira Software · 프로젝트의 보드).
+ * 칸이 없으면 연결 능력 그대로. **좁히기만 한다** — 연결에서 꺼진 능력을 스페이스가 켜지 못한다(`spaceCapabilities`).
+ */
+export type WorkSpaceCapabilities = { order?: WorkCapability; placement?: WorkCapability }
 
 export type WorkCapabilityName = Exclude<keyof WorkCapabilities, 'transition'>
 
@@ -59,6 +72,15 @@ export type WorkSpace = {
   openCount: number | null
   /** `catch_all` = 어느 스페이스에도 속하지 않는 작업을 모으는 자리(LA 「미분류」). */
   role: 'regular' | 'catch_all'
+  /** 이 스페이스에서만 다른 능력(LIFE-605 C7). 빈 객체 = 연결 능력 그대로. */
+  capabilities: WorkSpaceCapabilities
+}
+
+/** 스페이스에서 실제로 쓰는 능력 — 연결에서 켜진 능력만 스페이스 칸이 좁힌다. 화면·main 이 같은 규칙을 쓴다. */
+export function spaceCapabilities({ capabilities, space }: { capabilities: WorkCapabilities; space: { capabilities: WorkSpaceCapabilities } | null }): WorkCapabilities {
+  if (space === null) return capabilities
+  const narrow = (base: WorkCapability, own: WorkCapability | undefined): WorkCapability => (base.state !== 'on' || own === undefined ? base : own)
+  return { ...capabilities, order: narrow(capabilities.order, space.capabilities.order), placement: narrow(capabilities.placement, space.capabilities.placement) }
 }
 
 export type WorkStatus = {
@@ -135,6 +157,11 @@ export type WorkItem = {
   /** 연결 — 단건에서만 채운다(목록은 null). */
   relations: WorkRelation[] | null
   workLinks: WorkLink[]
+  /**
+   * 본문 편집 잠금(LIFE-605 C6) — 출처 본문에 markdown 으로 바꿀 수 없는 요소(Jira 멘션·패널·표 …)가 있으면 그 이유 글. 화면은 **편집을 열기 전에** 보이고
+   * 본문 편집을 막는다(저장이 그 요소를 조용히 지우지 않게). 체크 칸 바로 저장은 열어 둔다 — 출처가 그 칸 상태만 바꾼다. 없으면 null(목록 행도 null).
+   */
+  bodyLock: string | null
 }
 
 export type WorkComment = { id: string; author: string | null; body: string; createdAt: string }
@@ -213,7 +240,13 @@ export type WorkCreateFieldValue = { key: string; value: string }
  * `unavailable` = 이 (스페이스, 종류)로는 만들 수 없다 — 이유 글(LIFE-604 R4-F). 화면은 그 종류를 흐림 + 이유로 두고, 출처는 만들기를 거절한다.
  * 예: LA 「미분류」 의 Checkpoint(부모 프로젝트 필수). 없으면 만들 수 있다.
  */
-export type WorkCreateMeta = { spaceKey: string; kindKey: string; statusKeys: string[]; defaultStatusKey: string; placement: 'applies' | 'ignored'; fields: WorkCreateField[]; unavailable?: string }
+/**
+ * `accepts` (LIFE-605 · T4 §14-1) = 이 종류가 만들 때 받는 계약 칸 — Jira 는 종류마다 만들기 화면에 본문(description)·우선순위가 없을 수 있다.
+ * 받지 않는 칸은 화면이 흐리고 싣지 않는다 · 실으면 출처가 거절한다(`createFieldsProblem`, 받는 척 금지).
+ */
+export type WorkCreateAccepts = { body: boolean; priority: boolean }
+
+export type WorkCreateMeta = { spaceKey: string; kindKey: string; statusKeys: string[]; defaultStatusKey: string; placement: 'applies' | 'ignored'; accepts: WorkCreateAccepts; fields: WorkCreateField[]; unavailable?: string }
 
 /** 필수 필드 상한 — 값 하나의 길이·필드 수. */
 export const WORK_CREATE_FIELD_VALUE_MAX = 10_000
@@ -245,6 +278,11 @@ export type WorkCall =
   | { op: 'getCreateMeta'; spaceKey: string; kindKey: string }
   /** 변경 이력(E8) — 오래된 것부터. */
   | { op: 'listHistory'; itemId: string }
+  /**
+   * 질의 검색(LIFE-605 C5) — 능력 `querySearch`. `query` 는 사용자가 친 글 그대로. 출처가 질의로 보내고, 출처가 그 질의를 거부하면 **텍스트 검색으로 다시 찾고**
+   * 거부 사유를 `note` 로 돌려준다(화면이 필터 줄에 보인다). `spaceKeys` 안에서만 찾는다.
+   */
+  | { op: 'searchItems'; spaceKeys: string[]; query: string }
   | { op: 'setPlacement'; itemId: string; placement: WorkPlacement; ifVersion: string | null }
   | { op: 'setParent'; itemId: string; spaceKey: string; parentId: string | null; ifVersion: string | null }
   | { op: 'reorder'; itemId: string; afterId: string | null }
@@ -268,11 +306,14 @@ export type WorkResult =
   | { op: 'getItem'; item: WorkItem }
   /** 없으면 null — 「없음」 은 오류가 아니다(검색·작업 중이 「작업을 찾지 못함」 으로 그린다). */
   | { op: 'findByKey'; item: WorkItem | null }
-  | { op: 'listTransitions'; statusKeys: string[] }
+  /** `blocked` = 갈 수 있는 전이가 있지만 corral 이 채울 수 없는 필수 필드를 묻는 상태(LIFE-605 C4) — `statusKeys` 에 없고 이유와 함께 흐린다. */
+  | { op: 'listTransitions'; statusKeys: string[]; blocked: { statusKey: string; reason: string }[] }
   | { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'reorder' | 'updateItem' | 'createItem'; item: WorkItem }
   | { op: 'listChildren'; items: WorkItem[] }
   | { op: 'getCreateMeta'; meta: WorkCreateMeta }
   | { op: 'listHistory'; entries: WorkHistoryEntry[] }
+  /** `mode` = 실제로 찾은 방식 · `note` = 질의가 거부돼 텍스트로 찾았을 때의 사유(출처 글, 길이 상한·자격 지움) · `truncated` = 상한에서 끊음. */
+  | { op: 'searchItems'; items: WorkItem[]; mode: 'query' | 'text'; note: string | null; truncated: boolean }
   | { op: 'addRelation'; relation: WorkRelation }
   | { op: 'removeRelation'; relationId: string }
   | { op: 'listComments'; comments: WorkComment[] }
@@ -324,6 +365,23 @@ export type WorkConnectionStatus = 'unchecked' | 'testing' | 'ok' | 'auth' | 'fo
 /** 확인 중일 때 무엇을 기다리나 — 키체인이면 화면이 「macOS 가 허용을 물을 수 있다」 를 보인다. */
 export type WorkConnectionPending = 'keychain' | 'network' | null
 
+/**
+ * 연결에 토큰 말고 더 필요한 칸 하나(LIFE-605 C1 — Jira 사이트·이메일). **비밀이 아니다** — 연결 파일에 그대로 두고 카드에 보인다.
+ * 화면은 이 목록으로 폼 칸을 그린다(출처 이름으로 분기하지 않는다). 값 검증·정규화는 main(출처)이 네트워크 전에 한다.
+ */
+export type WorkAccountField = {
+  key: string
+  label: string
+  placeholder: string
+  /** 칸 아래 각주. 없으면 null. */
+  hint: string | null
+  input: 'url' | 'email' | 'text'
+  /** 카드 어디에 보이나 — 제목 뒤(「Jira Cloud · acme.atlassian.net」) 또는 메타 줄 앞(「dev@acme.com · API 토큰 ••••7c2e」). */
+  shownIn: 'title' | 'meta'
+  /** 토큰을 바꿀 때 고칠 수 없다 — 다른 값이면 다른 연결이다. 화면은 읽기 전용으로 미리 채운다. */
+  fixedOnReplace: boolean
+}
+
 /** 출처 하나의 표시 정보 — 화면은 이것만 그린다(출처 이름으로 분기하지 않는다). */
 export type WorkSourceDescriptor = {
   id: string
@@ -332,7 +390,11 @@ export type WorkSourceDescriptor = {
   mono: string
   addLabel: string
   formTitle: string
+  /** 토큰 앞에 받는 칸(LIFE-605). 비면 토큰 하나(LA). */
+  accountFields: WorkAccountField[]
   tokenLabel: string
+  /** 토큰 칸 각주(어디서 만드나). 없으면 null. */
+  tokenHint: string | null
   /** 토큰이 이 접두사로 시작해야 한다 — 화면은 보내기 전에, main 은 네트워크 전에 다시 거절한다. 없으면 null. */
   tokenPrefix: string | null
   /**
@@ -340,9 +402,14 @@ export type WorkSourceDescriptor = {
    * 키를 알아본다(출처 이름으로 분기하지 않는다 — K3). 없으면 null — 키 우선 검색·작업 중 감지를 하지 않는다.
    */
   keyPattern: string | null
+  /**
+   * 질의 모양 (LIFE-605 C5) — 정규식 소스, 대소문자 무시. 검색어가 이 모양이고 연결의 `querySearch` 가 켜져 있으면 화면이 `searchItems` 로 보낸다.
+   * 없으면 null.
+   */
+  queryPattern: string | null
 }
 
-export type WorkSpaceToggle = { key: string; name: string; color: string | null; openCount: number | null; hidden: boolean }
+export type WorkSpaceToggle = { key: string; name: string; color: string | null; openCount: number | null; hidden: boolean; capabilities: WorkSpaceCapabilities }
 
 export type WorkConnectionSummary = {
   id: string
@@ -350,6 +417,8 @@ export type WorkConnectionSummary = {
   name: string
   mono: string
   tokenTail: string
+  /** 비밀 아닌 연결 칸 값(LIFE-605 — Jira 사이트 호스트·이메일). 키는 descriptor `accountFields[].key`. LA 는 빈 객체. */
+  account: Record<string, string>
   addedAt: number
   /** 자격 세대 — 토큰 교체·해제 때 오른다. 화면이 이전 자격의 로컬 결과(누른 테스트의 실패 줄)를 버리는 데 쓴다(R3-C). */
   generation: number
@@ -372,7 +441,8 @@ export type WorkSettingsState = {
   repoDefaults: WorkRepoDefault[]
 }
 
-export type WorkConnectionAddInput = { sourceId: string; token: string; replaceId: string | null }
+/** `account` = descriptor `accountFields` 의 값(키 → 글). 없는 출처는 생략하거나 빈 객체. */
+export type WorkConnectionAddInput = { sourceId: string; token: string; account?: Record<string, string>; replaceId: string | null }
 export type WorkConnectionAddResult = { ok: true; connection: WorkConnectionSummary } | { ok: false; error: WorkError }
 export type WorkActionResult = { ok: true } | { ok: false; error: WorkError }
 
@@ -408,6 +478,8 @@ export function capabilityOf(call: WorkCall): WorkCapabilityName | null {
       return null
     case 'listHistory':
       return 'history'
+    case 'searchItems':
+      return 'querySearch'
     case 'updateItem':
       return call.ifVersion === null ? null : 'conflictCheck'
     case 'listItems':
@@ -439,6 +511,8 @@ export function capabilitiesOf(call: WorkCall): WorkCapabilityName[] {
   if ((call.op === 'setPlacement' || call.op === 'setParent') && call.ifVersion !== null) list.push('conflictCheck')
   // 배치를 실은 만들기 — 배치 능력이 꺼진 출처에 「받는 척」 보내지 않는다(LIFE-604 E10).
   if (call.op === 'createItem' && call.placement !== undefined) list.push('placement')
+  // 갈래를 실은 상태 변경 — 갈래 고르기 능력이 꺼진 출처에 보내지 않는다(LIFE-605 C4⑥).
+  if (call.op === 'changeStatus' && call.resolution !== undefined && call.resolution !== null) list.push('resolution')
   return list
 }
 
@@ -463,6 +537,10 @@ export function readWorkRelationKind(value: unknown): WorkRelationKind | null {
 export function readWorkPriority(value: unknown): WorkPriority | null {
   return pick(WORK_PRIORITIES, value)
 }
+
+/** 질의 검색 상한(LIFE-605) — 검색어 길이 · 한 번에 묻는 스페이스 수. */
+export const WORK_QUERY_MAX = 500
+export const WORK_SEARCH_SPACES_MAX = 50
 
 /** 본문 상한 — 렌더러가 보내는 본문(편집기·체크 칸 저장). 출처 상한은 출처가 따로 거절한다. */
 export const WORK_BODY_MAX = 200_000
@@ -560,6 +638,8 @@ export function readCreateMeta(value: unknown): WorkCreateMeta | null {
   if (!Array.isArray(statusKeys) || statusKeys.length === 0 || !statusKeys.every(isNonEmpty) || new Set(statusKeys).size !== statusKeys.length) return null
   if (!statusKeys.includes(value.defaultStatusKey)) return null
   if (value.placement !== 'applies' && value.placement !== 'ignored') return null
+  const accepts = value.accepts
+  if (!isRecord(accepts) || typeof accepts.body !== 'boolean' || typeof accepts.priority !== 'boolean') return null
   if (!Array.isArray(value.fields) || value.fields.length > WORK_CREATE_FIELDS_MAX) return null
   const fields: WorkCreateField[] = []
   for (const raw of value.fields) {
@@ -567,7 +647,7 @@ export function readCreateMeta(value: unknown): WorkCreateMeta | null {
     if (field === null || fields.some((entry) => entry.key === field.key)) return null
     fields.push(field)
   }
-  const meta: WorkCreateMeta = { spaceKey: value.spaceKey, kindKey: value.kindKey, statusKeys: [...statusKeys], defaultStatusKey: value.defaultStatusKey, placement: value.placement, fields }
+  const meta: WorkCreateMeta = { spaceKey: value.spaceKey, kindKey: value.kindKey, statusKeys: [...statusKeys], defaultStatusKey: value.defaultStatusKey, placement: value.placement, accepts: { body: accepts.body, priority: accepts.priority }, fields }
   if (value.unavailable !== undefined) {
     if (!isNonEmpty(value.unavailable) || value.unavailable.length > 500) return null
     meta.unavailable = value.unavailable
@@ -604,6 +684,8 @@ export function createFieldsProblem({ call, meta }: { call: Extract<WorkCall, { 
   if (meta.unavailable !== undefined) return meta.unavailable
   if (call.statusKey !== undefined && !meta.statusKeys.includes(call.statusKey)) return '이 상태로는 만들 수 없습니다 — 만들 수 있는 상태를 고르세요.'
   if (call.placement !== undefined && meta.placement === 'ignored') return '이 종류는 보드/백로그 배치를 받지 않습니다.'
+  if (call.body !== undefined && call.body.length > 0 && !meta.accepts.body) return '이 종류는 만들 때 본문을 받지 않습니다 — 만든 뒤 본문을 쓰세요.'
+  if (call.priority !== undefined && call.priority !== null && !meta.accepts.priority) return '이 종류는 만들 때 우선순위를 받지 않습니다.'
   const given = call.fields ?? []
   for (const value of given) if (!meta.fields.some((field) => field.key === value.key)) return `이 종류에 없는 필드입니다 (${value.key.slice(0, 64)}).`
   for (const field of meta.fields) {
@@ -674,6 +756,11 @@ export function readWorkCall(value: unknown): WorkCall | null {
       return isNonEmpty(itemId) && isNonEmpty(value.relationId) ? { op, itemId, relationId: value.relationId } : null
     case 'addComment':
       return isNonEmpty(itemId) && isString(value.body) && value.body.length > 0 && value.body.length <= 65_536 ? { op, itemId, body: value.body } : null
+    case 'searchItems': {
+      const keys = value.spaceKeys
+      if (!Array.isArray(keys) || keys.length === 0 || keys.length > WORK_SEARCH_SPACES_MAX || !keys.every(isNonEmpty) || new Set(keys).size !== keys.length) return null
+      return isString(value.query) && value.query.trim().length > 0 && value.query.length <= WORK_QUERY_MAX ? { op, spaceKeys: [...keys], query: value.query } : null
+    }
     default:
       return null
   }

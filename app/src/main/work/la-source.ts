@@ -68,9 +68,12 @@ export const LA_DESCRIPTOR: WorkSourceDescriptor = {
   mono: 'LA',
   addLabel: '+ LA 토큰',
   formTitle: 'LA 연결',
+  accountFields: [],
   tokenLabel: 'LA 개인 토큰',
+  tokenHint: null,
   tokenPrefix: LA_TOKEN_PREFIX,
   keyPattern: 'LIFE-\\d+',
+  queryPattern: null,
 }
 
 export const LA_CAPABILITIES: WorkCapabilities = {
@@ -84,6 +87,8 @@ export const LA_CAPABILITIES: WorkCapabilities = {
   comments: { state: 'disabled', reason: 'LA 에는 코멘트가 아직 없습니다 (L1e).' },
   history: { state: 'disabled', reason: 'LA 에는 변경 이력이 아직 없습니다 (L1e).' },
   workLinkStore: { state: 'disabled', reason: 'LA 에 작업 링크를 저장할 자리가 아직 없습니다 (L1a).' },
+  resolution: { state: 'on' },
+  querySearch: { state: 'hidden' },
 }
 
 const KIND_LABELS: Record<'checkpoint' | 'task' | 'bug', string> = { checkpoint: 'Checkpoint', task: 'Task', bug: 'Bug' }
@@ -94,7 +99,7 @@ type Step<T> = { ok: true; value: T } | { ok: false; outcome: WorkOutcome }
 export function laSourceEntry({ url, clientVersion, fetchImpl, timeoutMs }: { url: string; clientVersion: string; fetchImpl?: typeof fetch; timeoutMs?: number }): WorkSourceEntry {
   return {
     descriptor: LA_DESCRIPTOR,
-    create: (token) => new LaSource(new McpHttpClient({ url, token, clientVersion, fetchImpl, timeoutMs, toolError: laToolError })),
+    create: ({ token }) => new LaSource(new McpHttpClient({ url, token, clientVersion, fetchImpl, timeoutMs, toolError: laToolError })),
   }
 }
 
@@ -138,7 +143,7 @@ export class LaSource implements WorkSourceClient {
       case 'findByKey': return this.findByKey(call.key)
       case 'listTransitions': {
         const statuses = await this.statuses()
-        return statuses.ok ? { ok: true, result: { op: 'listTransitions', statusKeys: statuses.value.map((status) => status.id) } } : statuses.outcome
+        return statuses.ok ? { ok: true, result: { op: 'listTransitions', statusKeys: statuses.value.map((status) => status.id), blocked: [] } } : statuses.outcome
       }
       case 'changeStatus':
         if (call.ifVersion !== null) return unsupported('conflictCheck')
@@ -179,6 +184,8 @@ export class LaSource implements WorkSourceClient {
       case 'saveWorkLink':
       case 'removeWorkLink':
         return unsupported('workLinkStore')
+      case 'searchItems':
+        return unsupported('querySearch')
     }
   }
 
@@ -241,7 +248,7 @@ export class LaSource implements WorkSourceClient {
     if (first === undefined) return { ok: false, outcome: { ok: false, error: workError({ kind: 'rejected', message: '만들 수 있는 상태가 없습니다.' }) } }
     // 배치(R2-H): LA `onBoard` 는 task·checkpoint 만 의미(issue_create 스키마 설명) — bug 는 적용되지 않는다.
     const placement = kindKey === 'bug' ? 'ignored' : 'applies'
-    const meta: WorkCreateMeta = { spaceKey, kindKey, statusKeys: open.map((status) => status.id), defaultStatusKey: first.id, placement, fields: [] }
+    const meta: WorkCreateMeta = { spaceKey, kindKey, statusKeys: open.map((status) => status.id), defaultStatusKey: first.id, placement, accepts: { body: true, priority: true }, fields: [] }
     // 「미분류」 의 Checkpoint — LA 는 checkpoint 의 부모로 project 를 요구하는데 미분류에는 부모 프로젝트가 없다(R4-F). 화면은 그 종류를 흐린다.
     if (kindKey === 'checkpoint' && spaceKey === LA_CATCH_ALL_KEY) meta.unavailable = '「미분류」 에는 Checkpoint 를 만들 수 없습니다 — 부모 프로젝트가 필요합니다. 프로젝트 스페이스에서 만드세요.'
     return { ok: true, value: meta }
@@ -294,8 +301,8 @@ export class LaSource implements WorkSourceClient {
     const openCount = (key: string): number | null => (countable ? counts.get(key) ?? 0 : null)
     const spaces: WorkSpace[] = projects
       .filter(isSpace)
-      .map((project) => ({ key: project.id, name: project.title, color: project.color, description: null, openCount: openCount(project.id), role: 'regular' }))
-    spaces.push({ key: LA_CATCH_ALL_KEY, name: '미분류', color: null, description: '어느 프로젝트에도 속하지 않은 작업', openCount: openCount(LA_CATCH_ALL_KEY), role: 'catch_all' })
+      .map((project) => ({ key: project.id, name: project.title, color: project.color, description: null, openCount: openCount(project.id), role: 'regular', capabilities: {} }))
+    spaces.push({ key: LA_CATCH_ALL_KEY, name: '미분류', color: null, description: '어느 프로젝트에도 속하지 않은 작업', openCount: openCount(LA_CATCH_ALL_KEY), role: 'catch_all', capabilities: {} })
     return { ok: true, result: { op: 'listSpaces', spaces, capabilities: LA_CAPABILITIES } }
   }
 
@@ -499,7 +506,7 @@ function updateArgs(fields: WorkFieldPatch): Record<string, unknown> {
   return args
 }
 
-function unsupported(name: 'order' | 'cursorPaging' | 'conflictCheck' | 'comments' | 'history' | 'workLinkStore'): WorkOutcome {
+function unsupported(name: 'order' | 'cursorPaging' | 'conflictCheck' | 'comments' | 'history' | 'workLinkStore' | 'querySearch'): WorkOutcome {
   const capability = LA_CAPABILITIES[name]
   const reason = capability.state === 'disabled' ? capability.reason : 'LA 는 이 연산을 하지 않습니다.'
   return { ok: false, error: workError({ kind: 'unsupported', message: reason }) }
@@ -574,5 +581,6 @@ function toItem({ issue, spaceKey, parentId }: { issue: LaIssue; spaceKey: strin
           other: { id: link.issue.id, key: link.issue.displayId, title: link.issue.title, statusLabel: link.issue.statusLabel, category: link.issue.statusCategoryKey, spaceKey: null },
         })),
     workLinks: [],
+    bodyLock: null,
   }
 }

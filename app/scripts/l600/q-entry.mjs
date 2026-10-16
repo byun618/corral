@@ -77,7 +77,8 @@ try {
     repo: document.querySelectorAll('[data-repo-default-space]').length,
   })`)
   log('selectors', selectors)
-  judge('E 진입 — data-settings-nav=connections · data-connection-add=la 있음 · jira 숨김(T6)', selectors.nav && selectors.addLa && !selectors.addJira, JSON.stringify(selectors))
+  // LIFE-605 C12 — T6(Jira Cloud 출처)가 들어와 「jira 숨김」 단언을 「jira 있음」 으로 뒤집었다(사유: 그 숨김은 T6 전까지의 임시 경계였다 — LIFE-600 00-project 결정).
+  judge('E 진입 — data-settings-nav=connections · data-connection-add=la · jira 있음(LIFE-605 뒤집음)', selectors.nav && selectors.addLa && selectors.addJira, JSON.stringify(selectors))
 
   // 형식 틀린 토큰 — 보내기 전에 거절(저장 버튼 꺼짐 + 사유).
   await click('[data-connection-add="la"]')

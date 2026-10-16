@@ -183,6 +183,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const [records, setRecords] = useState<WorkActivityRecord[]>([])
   const [conflict, setConflict] = useState<DetailConflict | null>(null)
   const [transitions, setTransitions] = useState<Loaded<string[]> | null>(null)
+  /** 출처가 이유를 준 막힌 전이(LIFE-605 — corral 이 채울 수 없는 필수 필드를 묻는 전이). 메뉴에 흐린 행 + 이유. */
+  const [transitionBlocks, setTransitionBlocks] = useState<{ statusKey: string; reason: string }[]>([])
   const [readSeq, setReadSeq] = useState(0)
   const activitySeqRef = useRef(0)
 
@@ -558,11 +560,13 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   }, [conflict, write, finalOf])
 
   const loadTransitions = useCallback(async (): Promise<void> => {
-    if (here === null || caps?.transition.mode !== 'allowed') { setTransitions(null); return }
+    if (here === null || caps?.transition.mode !== 'allowed') { setTransitions(null); setTransitionBlocks([]); return }
     setTransitions({ state: 'loading' })
+    setTransitionBlocks([])
     const response = await read({ key: 'transitions', call: { op: 'listTransitions', itemId: here.target.itemId }, origin: here })
     if (response === null) return
     setTransitions(response.ok && response.result.op === 'listTransitions' ? { state: 'ready', value: response.result.statusKeys } : { state: 'error', message: response.ok ? '출처 응답 모양이 다릅니다.' : response.error.message })
+    setTransitionBlocks(response.ok && response.result.op === 'listTransitions' ? response.result.blocked : [])
   }, [here, caps, read])
 
   /** 키 링크·연결 행 → 그 작업 상세. 키만 아는 것은 출처에서 찾는다. */
@@ -580,7 +584,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const commentsGate = useMemo(() => gateOf(caps?.comments), [caps])
 
   return {
-    target, uid, session, item, base, phase, statuses, parents, children, comments, history, records, conflict, transitions,
+    target, uid, session, item, base, phase, statuses, parents, children, comments, history, records, conflict, transitions, transitionBlocks,
     caps, descriptor, connection, blocked, busy, commentsGate, canReload,
     write, finalOf, versionOf, reloadFromServer, overrideConflict, loadTransitions, openKey, openItem, lookupKey, holdBasis, dropBasis,
   }

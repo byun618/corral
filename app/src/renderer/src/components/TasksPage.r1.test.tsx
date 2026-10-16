@@ -12,7 +12,7 @@ import { TasksPage } from './TasksPage.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
-const BASE_CAPS: WorkCapabilities = {
+const BASE_CAPS: WorkCapabilities = { resolution: { state: 'on' }, querySearch: { state: 'hidden' }, 
   transition: { mode: 'any' }, placement: { state: 'on' }, relations: { state: 'on' }, parentChange: { state: 'on' },
   order: { state: 'on' }, cursorPaging: { state: 'disabled', reason: '커서 없음' },
   conflictCheck: { state: 'disabled', reason: 'x' }, comments: { state: 'disabled', reason: 'x' }, history: { state: 'disabled', reason: 'x' }, workLinkStore: { state: 'disabled', reason: 'x' },
@@ -22,7 +22,7 @@ const STATUSES: WorkStatus[] = [
   { key: 'doing', label: '개발 중', category: 'in_progress', order: 1, color: null },
   { key: 'done', label: '완료', category: 'done', order: 2, color: null },
 ]
-const item = (over: Partial<WorkItem> & { id: string; key: string }): WorkItem => ({
+const item = (over: Partial<WorkItem> & { id: string; key: string }): WorkItem => ({ bodyLock: null, 
   spaceKey: 's1', title: `제목 ${over.key}`, body: null, kind: { key: 'task', label: 'Task', childKinds: [] }, statusKey: 'todo', category: 'todo', priority: 'medium', dueAt: null,
   parentId: null, placement: 'board', rank: null, resolution: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [], ...over,
 })
@@ -61,7 +61,7 @@ function answer(request: WorkRequest): WorkResponse {
     case 'listStatuses': return respond(request, { op: 'listStatuses', statuses: STATUSES, kinds: [{ key: 'task', label: 'Task', childKinds: [] }] })
     case 'listItems': return respond(request, { op: 'listItems', items, nextCursor: null, truncated: false })
     case 'findByKey': return respond(request, { op: 'findByKey', item: items.find((entry) => entry.key.toUpperCase() === call.key.toUpperCase()) ?? null })
-    case 'listTransitions': return respond(request, { op: 'listTransitions', statusKeys: ['doing'] })
+    case 'listTransitions': return respond(request, { blocked: [], op: 'listTransitions', statusKeys: ['doing'] })
     case 'changeStatus': {
       const current = found(call.itemId)
       return current === undefined ? reject(request) : respond(request, { op: 'changeStatus', item: { ...current, statusKey: call.statusKey, category: statusOf(call.statusKey) } })
@@ -79,9 +79,9 @@ function answer(request: WorkRequest): WorkResponse {
 }
 
 function connection(id: string, tail: string): WorkSettingsState['connections'][number] {
-  return {
+  return { account: {}, 
     id, sourceId: 'src-a', name: 'Source A', mono: 'SA', tokenTail: tail, addedAt: 0, generation: 1, status: 'ok', pending: null, error: null, checkedAt: 0,
-    spaces: [{ key: 's1', name: 'corral', color: null, openCount: 2, hidden: false }], hiddenSpaceKeys: [], capabilities: caps,
+    spaces: [{ key: 's1', name: 'corral', color: null, openCount: 2, hidden: false, capabilities: {} }], hiddenSpaceKeys: [], capabilities: caps,
   }
 }
 
@@ -91,7 +91,7 @@ beforeEach(() => {
   root = createRoot(host)
   caps = BASE_CAPS
   settings = {
-    sources: [{ id: 'src-a', name: 'Source A', mono: 'SA', addLabel: '', formTitle: '', tokenLabel: '', tokenPrefix: null, keyPattern: 'K-\\d+' }],
+    sources: [{ accountFields: [], tokenHint: null, queryPattern: null, id: 'src-a', name: 'Source A', mono: 'SA', addLabel: '', formTitle: '', tokenLabel: '', tokenPrefix: null, keyPattern: 'K-\\d+' }],
     connections: [connection('c1', 'wxyz')],
     repoDefaults: [],
   }
@@ -190,7 +190,7 @@ function row(id = 'i1'): TasksPageModel['rows'][number] {
   return found
 }
 function addSpace(): void {
-  settings.connections[0]?.spaces?.push({ key: 's2', name: 'second', color: null, openCount: 0, hidden: false })
+  settings.connections[0]?.spaces?.push({ capabilities: {}, key: 's2', name: 'second', color: null, openCount: 0, hidden: false })
 }
 function pending(op: WorkCall['op']): { request: WorkRequest; resolve: (response: WorkResponse) => void }[] {
   const list: { request: WorkRequest; resolve: (response: WorkResponse) => void }[] = []

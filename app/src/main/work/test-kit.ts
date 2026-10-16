@@ -5,6 +5,8 @@ import type { WorkSettingsState } from '../../shared/work.js'
 import { MemoryActivity } from './activity-store.js'
 import { LaMcpFixture } from './la-mcp-fixture.js'
 import { laSourceEntry } from './la-source.js'
+import { JiraRestFixture } from './jira-rest-fixture.js'
+import { jiraSourceEntry, type JiraSourceOptions } from './jira-source.js'
 import { mockSourceEntry, type MockDefect } from './mock-source.js'
 import { WorkService, type WorkRepoRef } from './service.js'
 import { WorkSourceRegistry, type WorkSourceEntry } from './source.js'
@@ -14,6 +16,10 @@ import { CredentialVault, type SecretCipher } from './vault.js'
 export const FAKE_LA_TOKEN = 'life_pat_fixture000000000000000000000000000000000000'
 export const FAKE_LA_READ_TOKEN = 'life_pat_fixtureread0000000000000000000000000000000'
 export const FAKE_MOCK_TOKEN = 'mock_fixture_token_0000'
+/** LIFE-605 — 가짜 Jira 자격. 사이트는 `*.atlassian.net` 모양(검증을 지난다)이지만 요청은 fixture 주소로만 간다(`baseUrlOf`). 이메일은 `.invalid` 도메인. */
+export const FAKE_JIRA_SITE = 'fixture.atlassian.net'
+export const FAKE_JIRA_EMAIL = 'fixture-user@fixture.invalid'
+export const FAKE_JIRA_TOKEN = 'ATATTfixture0000000000000000000000000000jira'
 
 export class MemoryStore {
   data: WorkStoreData = { connections: [], repoDefaults: {} }
@@ -101,3 +107,14 @@ export async function laFixtureHarness({ timeoutMs }: { timeoutMs?: number } = {
 export function mockHarness({ defect = 'none' }: { defect?: MockDefect } = {}): WorkHarness {
   return workHarness({ entries: [mockSourceEntry({ defect })] })
 }
+
+/** LIFE-605 — Jira REST fixture 위의 하네스. `pageSize` 2 = 프로젝트·이슈 목록이 여러 쪽. 연결은 시험이 만든다(`addConnection` 의 자격 3칸). */
+export async function jiraFixtureHarness(options: Omit<JiraSourceOptions, 'baseUrlOf'> = {}): Promise<WorkHarness & { fixture: JiraRestFixture; url: string }> {
+  const fixture = new JiraRestFixture()
+  fixture.allow({ email: FAKE_JIRA_EMAIL, token: FAKE_JIRA_TOKEN })
+  const url = await fixture.start()
+  const harness = workHarness({ entries: [jiraSourceEntry({ pageSize: 2, sleep: async () => {}, ...options, baseUrlOf: () => url })] })
+  return { ...harness, fixture, url }
+}
+
+export const JIRA_ACCOUNT = { site: FAKE_JIRA_SITE, email: FAKE_JIRA_EMAIL }

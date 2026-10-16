@@ -58,10 +58,10 @@ it('LA-TIME 실제 adapter 연산이 44초(RPC 넷 × 11초)에 성공 → 30초
     const seed: WorkItem = got.result.item
     const placementOf = (): 'board' | 'backlog' => (fixture.issues.find((issue) => issue.id === seed.id)?.onBoard === true ? 'board' : 'backlog')
     const settings: WorkSettingsState = {
-      sources: [{ id: 'la', name: 'LA', mono: 'LA', addLabel: '', formTitle: '', tokenLabel: '', tokenPrefix: null, keyPattern: null }],
-      connections: [{
+      sources: [{ accountFields: [], tokenHint: null, queryPattern: null, id: 'la', name: 'LA', mono: 'LA', addLabel: '', formTitle: '', tokenLabel: '', tokenPrefix: null, keyPattern: null }],
+      connections: [{ account: {}, 
         id: 'c1', sourceId: 'la', name: 'LA', mono: 'LA', tokenTail: 'xxxx', addedAt: 0, generation: 1, status: 'ok', pending: null, error: null, checkedAt: 0,
-        spaces: [{ key: seed.spaceKey, name: 'corral', color: null, openCount: 1, hidden: false }], hiddenSpaceKeys: [], capabilities: null,
+        spaces: [{ key: seed.spaceKey, name: 'corral', color: null, openCount: 1, hidden: false, capabilities: {} }], hiddenSpaceKeys: [], capabilities: null,
       }],
       repoDefaults: [],
     }

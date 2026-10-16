@@ -292,7 +292,7 @@ describe('[R2-F] 오류 문구 — 원격 글을 넣지 않고, 마지막 경계
       },
       }
     }
-    const h = workHarness({ entries: [{ descriptor: LA_DESCRIPTOR, create: echoing }] })
+    const h = workHarness({ entries: [{ descriptor: LA_DESCRIPTOR, create: ({ token }) => echoing(token) }] })
     const added = await h.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
     if (!added.ok) throw new Error('add')
     const rejected = await h.service.request({ requestId: 'r', connectionId: added.connection.id, call: { op: 'getItem', itemId: 'x' } })

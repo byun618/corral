@@ -54,6 +54,8 @@ const KEYCHAIN_UNAVAILABLE = 'macOS 키체인 암호화를 쓸 수 없습니다 
 export class CredentialVault {
   private readonly cipher: SecretCipher
   private readonly open = new Map<string, string>()
+  /** 연결마다 토큰 말고 지울 글(LIFE-605 F2 — Basic 헤더 값·이메일). 풀린 동안만. */
+  private readonly extra = new Map<string, string[]>()
   private readonly opening = new Map<string, Promise<OpenResult>>()
 
   constructor(cipher: SecretCipher) {
@@ -72,8 +74,15 @@ export class CredentialVault {
   }
 
   /** 저장 성공 뒤 — 방금 쓴 토큰을 메모리에 둬서 바로 다시 풀지 않게 한다. */
-  remember({ connectionId, token }: { connectionId: string; token: string }): void {
+  remember({ connectionId, token, secrets = [] }: { connectionId: string; token: string; secrets?: string[] }): void {
     this.open.set(connectionId, token)
+    this.noteSecrets({ connectionId, secrets })
+  }
+
+  /** 풀린 자격에서 나온 비밀 글을 지울 목록에 더한다(LIFE-605) — 푼 뒤 service 가 부른다. */
+  noteSecrets({ connectionId, secrets }: { connectionId: string; secrets: string[] }): void {
+    const kept = secrets.filter((secret) => secret.length >= 4)
+    if (kept.length > 0) this.extra.set(connectionId, kept)
   }
 
   isOpen(connectionId: string): boolean {
@@ -99,6 +108,7 @@ export class CredentialVault {
 
   forget(connectionId: string): void {
     this.open.delete(connectionId)
+    this.extra.delete(connectionId)
     this.opening.delete(connectionId)
   }
 
@@ -106,6 +116,7 @@ export class CredentialVault {
   redact(text: string): string {
     let out = text
     for (const token of this.open.values()) out = redactSecret({ text: out, secret: token })
+    for (const secrets of this.extra.values()) for (const secret of secrets) out = redactSecret({ text: out, secret })
     return out
   }
 

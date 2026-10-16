@@ -80,7 +80,7 @@ export function parseSseMessages(body: string): unknown[] {
   return [...parser.push(body), ...parser.end()]
 }
 
-class BodyTooLarge extends Error {}
+export class BodyTooLarge extends Error {}
 
 export class McpHttpClient {
   private readonly url: string
@@ -213,7 +213,7 @@ function closedError(): WorkError {
 }
 
 /** HTTP 오류 본문 — 코드 힌트용 보조 단계. 상한(64 KiB)·끊김·시간 초과는 모두 「힌트 없음」(빈 글)이다. 던지지 않는다. */
-async function readHint(response: Response): Promise<string> {
+export async function readHint(response: Response): Promise<string> {
   try {
     return await readCapped({ response, limit: HINT_BYTES })
   } catch {
@@ -222,7 +222,7 @@ async function readHint(response: Response): Promise<string> {
 }
 
 /** 본문을 상한 안에서 읽는다 — 상한을 넘으면 그 자리에서 멈춘다. */
-async function readCapped({ response, limit = MAX_BODY_BYTES }: { response: Response; limit?: number }): Promise<string> {
+export async function readCapped({ response, limit = MAX_BODY_BYTES }: { response: Response; limit?: number }): Promise<string> {
   const declared = Number(response.headers.get('content-length') ?? '0')
   if (declared > limit) throw new BodyTooLarge()
   const body = response.body

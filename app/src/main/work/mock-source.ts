@@ -55,9 +55,12 @@ export const MOCK_DESCRIPTOR: WorkSourceDescriptor = {
   mono: 'MJ',
   addLabel: '+ Mock',
   formTitle: 'Mock 연결',
+  accountFields: [],
   tokenLabel: 'Mock 토큰',
+  tokenHint: null,
   tokenPrefix: MOCK_TOKEN_PREFIX,
   keyPattern: '[A-Z][A-Z0-9]*-\\d+',
+  queryPattern: null,
 }
 
 /** 토큰에서 읽는 행동 (LIFE-601) — 격리 실행 전용. 없으면 평시. */
@@ -137,6 +140,9 @@ export const MOCK_CAPABILITIES: WorkCapabilities = {
   history: { state: 'on' },
   // LIFE-603 C14 — 모의 출처는 켠다(L1a 가 들어온 출처의 모양). `cap-workLinkStore-off` 토큰이면 끈다.
   workLinkStore: { state: 'on' },
+  resolution: { state: 'on' },
+  // LIFE-605 — 질의 검색은 Jira 출처만(모의는 숨김, 계약 묶음이 꺼진 쪽을 본다).
+  querySearch: { state: 'hidden' },
 }
 
 const PAIR: Record<WorkRelationKind, WorkRelationKind> = {
@@ -163,7 +169,7 @@ export const MOCK_UNSUPPORTED_FIELD: WorkCreateField = { key: 'customfield_team'
 const PAGE_SIZE = 2
 
 type MockSpace = { space: WorkSpace; statuses: WorkStatus[]; transitions: Record<string, string[]> }
-type MockItem = Omit<WorkItem, 'relations' | 'version' | 'category'> & { version: number; updatedBy: string | null }
+type MockItem = Omit<WorkItem, 'relations' | 'version' | 'category' | 'bodyLock'> & { version: number; updatedBy: string | null }
 type MockLink = { id: string; from: string; to: string; kind: WorkRelationKind }
 
 /** `pageSize` — 커서 한 쪽 크기. 계약 묶음 씨앗은 2(작업 5개로 여러 쪽), 데모 씨앗은 6(첫 쪽에 화면 재현이 다 들고 「더 불러오기」 가 남는다). */
@@ -195,7 +201,7 @@ function status({ key, label, category, order }: Omit<WorkStatus, 'color'>): Wor
 
 export function seedMockState(): MockState {
   const core: MockSpace = {
-    space: { key: 'CORE', name: 'Core Platform', color: null, description: null, openCount: null, role: 'regular' },
+    space: { key: 'CORE', name: 'Core Platform', color: null, description: null, openCount: null, role: 'regular', capabilities: {} },
     statuses: [
       status({ key: 'core-todo', label: 'To Do', category: 'todo', order: 0 }),
       status({ key: 'core-doing', label: 'In Progress', category: 'in_progress', order: 1 }),
@@ -211,7 +217,7 @@ export function seedMockState(): MockState {
     },
   }
   const web: MockSpace = {
-    space: { key: 'WEB', name: 'Web', color: null, description: null, openCount: null, role: 'regular' },
+    space: { key: 'WEB', name: 'Web', color: null, description: null, openCount: null, role: 'regular', capabilities: {} },
     statuses: [status({ key: 'web-open', label: 'Open', category: 'todo', order: 0 }), status({ key: 'web-closed', label: 'Closed', category: 'done', order: 1 })],
     transitions: { 'web-open': ['web-closed'], 'web-closed': ['web-open'] },
   }
@@ -246,7 +252,7 @@ export function seedMockDemoState(): MockState {
   const core = state.spaces[0]
   if (core !== undefined) core.transitions['core-legal'] = ['core-todo']
   state.spaces.push({
-    space: { key: 'EMPTY', name: 'Empty Space', color: null, description: null, openCount: null, role: 'regular' },
+    space: { key: 'EMPTY', name: 'Empty Space', color: null, description: null, openCount: null, role: 'regular', capabilities: {} },
     statuses: [status({ key: 'empty-todo', label: 'To Do', category: 'todo', order: 0 }), status({ key: 'empty-done', label: 'Done', category: 'done', order: 1 })],
     transitions: { 'empty-todo': ['empty-done'], 'empty-done': ['empty-todo'] },
   })
@@ -331,7 +337,7 @@ function resolutionFor({ category, chosen, current }: { category: WorkStatus['ca
 }
 
 export function mockSourceEntry({ state = seedMockState(), defect = 'none' }: { state?: MockState; defect?: MockDefect } = {}): WorkSourceEntry {
-  return { descriptor: MOCK_DESCRIPTOR, create: (token) => new MockSource({ state, defect, behavior: mockBehaviorOf(token) }) }
+  return { descriptor: MOCK_DESCRIPTOR, create: ({ token }) => new MockSource({ state, defect, behavior: mockBehaviorOf(token) }) }
 }
 
 export class MockSource implements WorkSourceClient {
@@ -424,7 +430,7 @@ export class MockSource implements WorkSourceClient {
       case 'listTransitions': {
         const item = this.item(call.itemId)
         if (item === null) return rejected('없는 작업입니다.')
-        return { ok: true, result: { op: 'listTransitions', statusKeys: [...(this.space(item.spaceKey)?.transitions[item.statusKey] ?? [])] } }
+        return { ok: true, result: { op: 'listTransitions', statusKeys: [...(this.space(item.spaceKey)?.transitions[item.statusKey] ?? [])], blocked: [] } }
       }
       case 'changeStatus': {
         const item = this.item(call.itemId)
@@ -491,6 +497,8 @@ export class MockSource implements WorkSourceClient {
         if (this.behavior.createLost) return { ok: false, error: unknownWriteOutcome({ error: workError({ kind: 'network', message: '모의 출처의 답이 끊겼습니다 (create-lost).' }), unsent: false }) }
         return { ok: true, result: { op: 'createItem', item: this.view({ item: created, withRelations: true }) } }
       }
+      case 'searchItems':
+        return { ok: false, error: workError({ kind: 'unsupported', message: '모의 출처에는 질의 검색이 없습니다.' }) }
       case 'listHistory': {
         if (this.item(call.itemId) === null) return rejected('없는 작업입니다.')
         return { ok: true, result: { op: 'listHistory', entries: [...(this.state.history[call.itemId] ?? [])] } }
@@ -581,7 +589,7 @@ export class MockSource implements WorkSourceClient {
     if (first === undefined) return { ok: false, outcome: rejected('상태가 없는 스페이스입니다.') }
     const base = (this.state.createFields ?? MOCK_CREATE_FIELDS)[kindKey] ?? []
     const fields = this.behavior.createMeta === 'unsupported' && kindKey === 'epic' ? [...base, MOCK_UNSUPPORTED_FIELD] : base
-    const meta: WorkCreateMeta = { spaceKey, kindKey, statusKeys: [first.key], defaultStatusKey: first.key, placement: this.behavior.createMeta === 'placement-ignored' ? 'ignored' : 'applies', fields: fields.map(copyField) }
+    const meta: WorkCreateMeta = { spaceKey, kindKey, statusKeys: [first.key], defaultStatusKey: first.key, placement: this.behavior.createMeta === 'placement-ignored' ? 'ignored' : 'applies', accepts: { body: true, priority: true }, fields: fields.map(copyField) }
     if (this.behavior.createMeta === 'unavailable' && kindKey === 'epic') meta.unavailable = '이 스페이스에는 Epic 을 만들 수 없습니다 (createmeta-unavailable).'
     return { ok: true, meta }
   }
@@ -648,6 +656,7 @@ export class MockSource implements WorkSourceClient {
       openBlockerCount: openBlockers.length,
       relations: withRelations ? relations : null,
       workLinks: [...item.workLinks],
+      bodyLock: null,
     }
   }
 }

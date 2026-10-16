@@ -27,13 +27,14 @@
 //   상태 라벨·뗀 연결의 상대는 이 서비스를 지난 응답(상태 목록·단건)에서 기억한 값으로 채운다 — 모르면 null(화면이 「다른 상태」 등으로).
 
 import { randomUUID } from 'node:crypto'
-import { isRecord } from '../../shared/json.js'
+import { isRecord, safeParse } from '../../shared/json.js'
 import {
   capabilitiesOf,
   connectionStatusOf,
   readCreateMeta,
   readWorkActivityQuery,
   readWorkRequest,
+  spaceCapabilities,
   type WorkActionResult,
   type WorkActivityChange,
   type WorkActivityResult,
@@ -56,7 +57,7 @@ import type { StartSourceLink } from '../../shared/work-start.js'
 import { log } from '../log.js'
 import { redactSecret, workError } from './errors.js'
 import type { ActivityPort } from './activity-store.js'
-import type { WorkOutcome, WorkSourceClient, WorkSourceRegistry } from './source.js'
+import type { WorkCredentials, WorkOutcome, WorkSourceClient, WorkSourceEntry, WorkSourceRegistry } from './source.js'
 import type { StoredConnection, WorkStoreData, WorkStoreWrite } from './store.js'
 import type { CredentialVault } from './vault.js'
 
@@ -103,6 +104,7 @@ type Acquired = { ok: true; client: WorkSourceClient; fresh: boolean } | { ok: f
 type Claim = { connectionId: string; generation: number; ticket: number }
 
 const MAX_TOKEN_LENGTH = 512
+const MAX_ACCOUNT_LENGTH = 256
 const LAST_SPACE_REASON = '마지막 스페이스는 끌 수 없습니다 — 연결을 해제하세요'
 
 function freshRuntime(): Runtime {
@@ -165,6 +167,19 @@ export class WorkService {
     if (token.length > MAX_TOKEN_LENGTH || /\s/.test(token)) return { ok: false, error: invalid('토큰 모양이 아닙니다 — 공백 없이 한 줄이어야 합니다.') }
     const prefix = entry.descriptor.tokenPrefix
     if (prefix !== null && !token.startsWith(prefix)) return { ok: false, error: invalid(`${entry.descriptor.tokenLabel}은 ${prefix} 로 시작합니다. 보내지 않았습니다.`) }
+    // 비밀 아닌 칸(LIFE-605 C1) — descriptor 칸만, 출처가 네트워크 전에 정규화·검증(Jira: 사이트 호스트 제한). 교체 때 고정 칸은 그대로여야 한다.
+    const checkedAccount = readAccount({ entry, value: input.account })
+    if (!checkedAccount.ok) return { ok: false, error: invalid(checkedAccount.message) }
+    const account = checkedAccount.account
+    if (existing !== null) {
+      for (const field of entry.descriptor.accountFields) {
+        if (field.fixedOnReplace && existing.account[field.key] !== undefined && existing.account[field.key] !== account[field.key]) {
+          return { ok: false, error: invalid(`토큰을 바꿀 때 ${field.label}은(는) 바꿀 수 없습니다 — 다른 ${field.label}은(는) 새 연결로 추가하세요.`) }
+        }
+      }
+    }
+    const credentials: WorkCredentials = { token, account }
+    const secrets = [token, ...(entry.secretsOf?.(credentials) ?? [])]
 
     // 교체가 실패하면 자기 진행 표시만 거둔다(R1-D·R3-B) — 확정 상태는 건드리지 않으므로, 그사이 다른 요청이 정한 더 새 상태를 되돌리지 않는다.
     const generation = existing === null ? null : this.generation(existing.id)
@@ -173,21 +188,21 @@ export class WorkService {
       client?.close()
       if (existing !== null && progress !== null) this.endProgress({ connectionId: existing.id, progress })
       log('work.connection_add', { source: entry.descriptor.id, replace: existing !== null, ok: false, errorKind: error.kind, status: error.status })
-      // 붙여넣은 토큰은 아직 금고에 없다 — 그것까지 지운다.
-      return { ok: false, error: this.scrub({ error, secret: token }) }
+      // 붙여넣은 토큰(과 거기서 나온 비밀 글)은 아직 금고에 없다 — 그것까지 지운다.
+      return { ok: false, error: this.scrub({ error, secrets }) }
     }
     // 교체하는 동안 그 연결이 해제·다시 교체됐으면 이 교체는 버린다.
     const superseded = (): boolean => existing !== null && generation !== this.generation(existing.id)
     const supersededError = workError({ kind: 'not_connected', message: '토큰을 바꾸는 동안 연결이 해제됐거나 다시 바뀌었습니다. 저장하지 않았습니다.' })
 
-    const client = entry.create(token)
+    const client = entry.create(credentials)
     const tested = await client.call({ op: 'listSpaces' })
     if (superseded()) return fail({ error: supersededError, client })
     if (!tested.ok || tested.result.op !== 'listSpaces') {
       const error = tested.ok ? workError({ kind: 'invalid_response', message: '연결 테스트 응답이 스페이스 목록이 아닙니다.' }) : tested.error
       return fail({ error, client })
     }
-    const sealed = await this.deps.vault.seal(token)
+    const sealed = await this.deps.vault.seal(sealedText(credentials))
     if (superseded()) return fail({ error: supersededError, client })
     if (!sealed.ok) return fail({ error: sealed.error, client })
     // 저장 직전 최신 행 — 교체를 기다리는 동안 바뀐 비자격 설정(숨김 스페이스)을 보존하고 자격 칸만 바꾼다(R2-H).
@@ -202,6 +217,7 @@ export class WorkService {
       tokenTail: token.slice(-4),
       sealed: sealed.sealed,
       hiddenSpaceKeys: latest === null ? [] : [...latest.hiddenSpaceKeys],
+      account: { ...account },
     }
     const next: WorkStoreData = { ...data, connections: existing === null ? [...data.connections, stored] : data.connections.map((row) => (row.id === id ? stored : row)) }
     const written = this.deps.store.write(next)
@@ -210,7 +226,7 @@ export class WorkService {
     this.bump(id)
     this.runtime.get(id)?.client?.close()
     this.deps.vault.forget(id)
-    this.deps.vault.remember({ connectionId: id, token })
+    this.deps.vault.remember({ connectionId: id, token: sealedText(credentials), secrets })
     // 새 세대 — 확정 상태는 ok 하나로 시작한다(옛 세대의 진행 표시·오류는 함께 버린다).
     this.runtime.set(id, { ...freshRuntime(), settled: { status: 'ok', error: null, checkedAt: this.now() }, settledTicket: this.ticketSeq, authFloor: this.ticketSeq, spacesTicket: this.ticketSeq, spaces: tested.result.spaces, capabilities: tested.result.capabilities, client })
     log('work.connection_add', { source: entry.descriptor.id, replace: existing !== null, ok: true, spaces: tested.result.spaces.length })
@@ -374,7 +390,7 @@ export class WorkService {
     // 능력 문 — 꺼진 능력은 출처에 닿지 않는다(이유를 그대로 돌려준다).
     const known = this.runtime.get(connectionId)
     const capabilities = known?.capabilities ?? known?.client?.capabilities() ?? null
-    const gate = capabilities === null ? null : closedCapability({ capabilities, call })
+    const gate = capabilities === null ? null : closedCapability({ capabilities: this.callCapabilities({ connectionId, capabilities, call }), call })
     if (gate !== null) return { ok: false, error: gate }
     // 인증 실패(확정) — 일반 요청은 같은 자격을 다시 보내지 않는다. 사용자가 누른 연결 테스트(announce)만 다시 보낸다(R1-K).
     // 확정 상태가 아니라 자격 무효 축을 본다 — 재시험이 network 등으로 실패해 상태가 offline 이어도 차단은 그대로(R4-A).
@@ -386,7 +402,7 @@ export class WorkService {
     // 누른 테스트는 시작부터 진행 표시. 일반 요청은 이 요청이 클라이언트를 처음 만든 경우에만(첫 사용).
     let progress = announce ? this.beginProgress({ connectionId, pending: 'network' }) : null
     try {
-      const acquired = await this.acquire({ claim, sealed: stored.sealed, create: entry.create })
+      const acquired = await this.acquire({ claim, sealed: stored.sealed, entry })
       if (!acquired.ok) {
         // 획득 중 해제·교체 — 옛 자격으로 클라이언트를 만들지 않았고, 상태도 건드리지 않는다(R1-C).
         if (acquired.stale) return { ok: false, error: this.staleError(connectionId) }
@@ -394,7 +410,7 @@ export class WorkService {
         return { ok: false, error: acquired.error }
       }
       const client = acquired.client
-      const lateGate = closedCapability({ capabilities: client.capabilities(), call })
+      const lateGate = closedCapability({ capabilities: this.callCapabilities({ connectionId, capabilities: client.capabilities(), call }), call })
       if (lateGate !== null) return { ok: false, error: lateGate }
       if (progress === null && acquired.fresh) progress = this.beginProgress({ connectionId, pending: 'network' })
       const writeId = isWrite(call) ? this.newId() : null
@@ -416,6 +432,17 @@ export class WorkService {
     } finally {
       if (progress !== null) this.endProgress({ connectionId, progress })
     }
+  }
+
+  /**
+   * 연산이 기대는 능력 표 — 스페이스를 실은 연산은 그 스페이스의 능력으로 좁힌다(LIFE-605 C7). 작업 id 만 실은 연산(순서·배치)은
+   * 스페이스를 여기서 모른다 — 출처가 작업의 스페이스로 다시 막는다(이중 방어).
+   */
+  private callCapabilities({ connectionId, capabilities, call }: { connectionId: string; capabilities: WorkCapabilities; call: WorkCall }): WorkCapabilities {
+    const spaceKey = 'spaceKey' in call ? call.spaceKey : null
+    if (spaceKey === null) return capabilities
+    const space = this.runtime.get(connectionId)?.spaces?.find((entry) => entry.key === spaceKey) ?? null
+    return spaceCapabilities({ capabilities, space })
   }
 
   /** 이 서비스를 지난 응답에서 상태 라벨·단건을 기억한다(활동 기록용). */
@@ -447,7 +474,7 @@ export class WorkService {
    * 획득은 자기 진행 표시(키체인 대기 또는 네트워크)를 하나 넣고 끝나면 뺀다. 푸는 동안 세대가 바뀌었으면 만들지 않는다(stale).
    * 실패한 획득은 지워 다음 요청이 다시 푼다(암호문은 그대로 — C6).
    */
-  private acquire({ claim, sealed, create }: { claim: Claim; sealed: string; create: (token: string) => WorkSourceClient }): Promise<Acquired> {
+  private acquire({ claim, sealed, entry }: { claim: Claim; sealed: string; entry: WorkSourceEntry }): Promise<Acquired> {
     const { connectionId, generation } = claim
     const current = this.runtime.get(connectionId)
     if (current?.client) return Promise.resolve({ ok: true, client: current.client, fresh: false })
@@ -460,7 +487,9 @@ export class WorkService {
         if (this.runtime.get(connectionId)?.acquiring === acquiring) this.patchRuntime(connectionId, { acquiring: null })
         return { ok: false, stale: false, error: opened.error }
       }
-      const client = create(opened.token)
+      const credentials = openCredentials(opened.token)
+      this.deps.vault.noteSecrets({ connectionId, secrets: entry.secretsOf?.(credentials) ?? [] })
+      const client = entry.create(credentials)
       this.patchRuntime(connectionId, { client, capabilities: client.capabilities(), acquiring: null })
       return { ok: true, client, fresh: true }
     })
@@ -534,9 +563,11 @@ export class WorkService {
     this.emit()
   }
 
-  /** 밖으로 나가는 오류의 마지막 경계 — 금고가 아는 토큰(과 아직 금고에 없는 붙여넣은 토큰)을 지운다(R2-F). */
-  private scrub({ error, secret = '' }: { error: WorkError; secret?: string }): WorkError {
-    return { ...error, message: redactSecret({ text: this.deps.vault.redact(error.message), secret }) }
+  /** 밖으로 나가는 오류의 마지막 경계 — 금고가 아는 토큰(과 아직 금고에 없는 붙여넣은 자격의 비밀 글)을 지운다(R2-F · LIFE-605 F2). */
+  private scrub({ error, secrets = [] }: { error: WorkError; secrets?: string[] }): WorkError {
+    let message = this.deps.vault.redact(error.message)
+    for (const secret of secrets) message = redactSecret({ text: message, secret })
+    return { ...error, message }
   }
 
   private generation(connectionId: string): number {
@@ -574,6 +605,7 @@ export class WorkService {
       name: entry.descriptor.name,
       mono: entry.descriptor.mono,
       tokenTail: stored.tokenTail,
+      account: { ...stored.account },
       addedAt: stored.addedAt,
       generation: this.generation(stored.id),
       status,
@@ -582,7 +614,7 @@ export class WorkService {
       checkedAt: runtime.settled.checkedAt,
       spaces: runtime.spaces === null
         ? null
-        : runtime.spaces.map((space) => ({ key: space.key, name: space.name, color: space.color, openCount: space.openCount, hidden: stored.hiddenSpaceKeys.includes(space.key) })),
+        : runtime.spaces.map((space) => ({ key: space.key, name: space.name, color: space.color, openCount: space.openCount, hidden: stored.hiddenSpaceKeys.includes(space.key), capabilities: { ...space.capabilities } })),
       hiddenSpaceKeys: [...stored.hiddenSpaceKeys],
       capabilities: runtime.capabilities,
     }
@@ -591,6 +623,42 @@ export class WorkService {
   private emit(): void {
     this.deps.onChange(this.settings())
   }
+}
+
+/**
+ * 연결 칸 입력 → 출처가 정규화한 값(LIFE-605 C1). descriptor 칸만 받는다 — 모르는 칸·글 아닌 값·빈 필수 칸은 거절. 칸이 없는 출처(LA)는 빈 객체만.
+ * 거절 문구에 입력값을 싣지 않는다.
+ */
+function readAccount({ entry, value }: { entry: WorkSourceEntry; value: unknown }): { ok: true; account: Record<string, string> } | { ok: false; message: string } {
+  const fields = entry.descriptor.accountFields
+  const raw = value ?? {}
+  if (!isRecord(raw)) return { ok: false, message: '연결 칸 입력이 잘못됐습니다.' }
+  const account: Record<string, string> = {}
+  for (const [key, entryValue] of Object.entries(raw)) {
+    if (!fields.some((field) => field.key === key)) return { ok: false, message: '이 출처에 없는 연결 칸입니다.' }
+    if (typeof entryValue !== 'string' || entryValue.length > MAX_ACCOUNT_LENGTH) return { ok: false, message: '연결 칸 값이 잘못됐습니다.' }
+    account[key] = entryValue.trim()
+  }
+  for (const field of fields) if ((account[field.key] ?? '').length === 0) return { ok: false, message: `${field.label}을(를) 입력하세요.` }
+  if (fields.length === 0) return { ok: true, account: {} }
+  if (entry.checkAccount === undefined) return { ok: false, message: '이 출처가 연결 칸을 검증하지 않습니다.' }
+  return entry.checkAccount(account)
+}
+
+/**
+ * 금고에 싸는 글 — 칸이 없는 출처(LA)는 토큰 그대로(이전 판과 같은 암호문 모양), 칸이 있으면 토큰과 칸을 함께 싼 JSON.
+ * 칸을 같이 싸는 이유: 이 칸을 모르는 이전 판 앱이 연결 파일을 다시 써 표시용 `account` 가 떨어져도 연결이 돈다(design-notes §1).
+ */
+function sealedText(credentials: WorkCredentials): string {
+  return Object.keys(credentials.account).length === 0 ? credentials.token : JSON.stringify({ v: 1, token: credentials.token, account: credentials.account })
+}
+
+function openCredentials(text: string): WorkCredentials {
+  if (!text.startsWith('{')) return { token: text, account: {} }
+  const parsed = safeParse(text)
+  if (!isRecord(parsed) || parsed.v !== 1 || typeof parsed.token !== 'string' || !isRecord(parsed.account)) return { token: text, account: {} }
+  const account = Object.fromEntries(Object.entries(parsed.account).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+  return { token: parsed.token, account }
 }
 
 function actionOf(error: WorkError): 'replace_token' | 'retry' | null {
@@ -630,6 +698,7 @@ function isWrite(call: WorkCall): boolean {
     case 'listChildren':
     case 'listHistory':
     case 'getCreateMeta':
+    case 'searchItems':
       return false
   }
 }
@@ -703,6 +772,7 @@ export function changesOf({ call, result, statusLabel, seen }: {
     case 'listChildren':
     case 'listHistory':
     case 'getCreateMeta':
+    case 'searchItems':
       return []
   }
 }

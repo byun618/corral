@@ -7,6 +7,7 @@
 //   `pending: keychain` 이면 이유를 먼저 보인다(ad-hoc 서명이라 새로 설치할 때마다 다시 물을 수 있다).
 import { useEffect, useRef, useState } from 'react'
 import type {
+  WorkAccountField,
   WorkConnectionStatus,
   WorkConnectionSummary,
   WorkError,
@@ -64,23 +65,35 @@ function spaceColor({ color, index }: { color: string | null; index: number }): 
 
 type Adding = { sourceId: string; replaceId: string | null }
 
-function ConnectionForm({ source, adding, onDone, onCancel }: { source: WorkSourceDescriptor; adding: Adding; onDone: () => void; onCancel: () => void }): React.JSX.Element {
+/** 폼 칸 처음 값 — 토큰 바꾸기면 지금 연결의 값(바꿀 수 없는 칸은 읽기 전용으로), 새 연결이면 빈 칸. */
+function initialAccount({ source, replacing }: { source: WorkSourceDescriptor; replacing: WorkConnectionSummary | null }): Record<string, string> {
+  return Object.fromEntries(source.accountFields.map((field) => [field.key, replacing?.account[field.key] ?? '']))
+}
+
+function ConnectionForm({ source, adding, replacing, onDone, onCancel }: { source: WorkSourceDescriptor; adding: Adding; replacing: WorkConnectionSummary | null; onDone: () => void; onCancel: () => void }): React.JSX.Element {
   const [token, setToken] = useState('')
+  const [account, setAccount] = useState<Record<string, string>>(() => initialAccount({ source, replacing }))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<WorkError | null>(null)
-  const input = useRef<HTMLInputElement>(null)
+  const firstInput = useRef<HTMLInputElement>(null)
   useEffect(() => {
-    input.current?.focus()
+    firstInput.current?.focus()
   }, [])
   const trimmed = token.trim()
-  // 접두사가 맞지 않으면 보내지 않는다 — main 도 네트워크 전에 다시 거절한다(C5).
+  const locked = (field: WorkAccountField): boolean => adding.replaceId !== null && field.fixedOnReplace
+  // 접두사가 맞지 않으면 보내지 않는다 — main 도 네트워크 전에 다시 거절한다(C5). 칸 값 검증·정규화(사이트 호스트 등)는 main 이 한다(LIFE-605 C1).
   const prefixWrong = source.tokenPrefix !== null && trimmed.length > 0 && !trimmed.startsWith(source.tokenPrefix)
-  const ready = trimmed.length > 0 && !prefixWrong && !busy
+  const accountReady = source.accountFields.every((field) => (account[field.key] ?? '').trim().length > 0)
+  const ready = trimmed.length > 0 && accountReady && !prefixWrong && !busy
+  // 처음 포커스 = 고칠 수 있는 첫 칸(토큰 바꾸기면 바꿀 수 없는 칸을 건너뛴다).
+  const focusKey = source.accountFields.find((field) => !locked(field))?.key ?? null
   const submit = async (): Promise<void> => {
     if (!ready) return
     setBusy(true)
     setError(null)
-    const result = await window.corral.addWorkConnection({ sourceId: source.id, token: trimmed, replaceId: adding.replaceId })
+    // 칸 없는 출처(LA)는 전과 같은 입력 — `account` 를 싣지 않는다.
+    const sentAccount = Object.fromEntries(source.accountFields.map((field) => [field.key, (account[field.key] ?? '').trim()]))
+    const result = await window.corral.addWorkConnection(source.accountFields.length === 0 ? { sourceId: source.id, token: trimmed, replaceId: adding.replaceId } : { sourceId: source.id, token: trimmed, account: sentAccount, replaceId: adding.replaceId })
     setBusy(false)
     if (result.ok) {
       setToken('')
@@ -97,10 +110,32 @@ function ConnectionForm({ source, adding, onDone, onCancel }: { source: WorkSour
       }}
     >
       <div className="connection-form-title">{adding.replaceId === null ? source.formTitle : `${source.formTitle} — 토큰 바꾸기`}</div>
+      {source.accountFields.map((field) => (
+        <label key={field.key} className="connection-field">
+          {field.label}
+          <input
+            ref={field.key === focusKey ? firstInput : undefined}
+            type={field.input === 'email' ? 'email' : 'text'}
+            inputMode={field.input === 'url' ? 'url' : undefined}
+            autoComplete="off"
+            spellCheck={false}
+            data-connection-account={field.key}
+            data-connection-account-locked={locked(field) ? '' : undefined}
+            readOnly={locked(field)}
+            value={account[field.key] ?? ''}
+            placeholder={field.placeholder}
+            onChange={(event) => {
+              const value = event.target.value
+              setAccount((current) => ({ ...current, [field.key]: value }))
+            }}
+          />
+          {locked(field) ? <span className="connection-field-hint" data-connection-account-hint={field.key}>토큰을 바꿀 때는 고칠 수 없습니다 — 다른 {field.label}이면 새 연결로 추가하세요.</span> : field.hint === null ? null : <span className="connection-field-hint" data-connection-account-hint={field.key}>{field.hint}</span>}
+        </label>
+      ))}
       <label className="connection-field">
         {source.tokenLabel}
         <input
-          ref={input}
+          ref={focusKey === null ? firstInput : undefined}
           type="password"
           autoComplete="off"
           spellCheck={false}
@@ -109,6 +144,7 @@ function ConnectionForm({ source, adding, onDone, onCancel }: { source: WorkSour
           placeholder="붙여넣기"
           onChange={(event) => setToken(event.target.value)}
         />
+        {source.tokenHint === null ? null : <span className="connection-field-hint" data-connection-token-hint>{source.tokenHint}</span>}
       </label>
       {prefixWrong ? <div className="connection-form-error" data-connection-form-error="prefix">{source.tokenLabel}은 {source.tokenPrefix} 로 시작합니다.</div> : null}
       {error === null ? null : <div className="connection-form-error" data-connection-form-error={error.kind}>{error.message}</div>}
@@ -119,6 +155,16 @@ function ConnectionForm({ source, adding, onDone, onCancel }: { source: WorkSour
       </div>
     </form>
   )
+}
+
+/** 카드 제목·메타 줄 — descriptor 가 정한 자리(`shownIn`)에 칸 값을 붙인다(「Jira Cloud · acme.atlassian.net」 · 「dev@acme.com · API 토큰 ••••7c2e」). */
+function accountLine({ source, connection, shownIn }: { source: WorkSourceDescriptor | null; connection: WorkConnectionSummary; shownIn: WorkAccountField['shownIn'] }): { key: string; value: string }[] {
+  return (source?.accountFields ?? [])
+    .filter((field) => field.shownIn === shownIn)
+    .flatMap((field) => {
+      const value = connection.account[field.key]
+      return value === undefined || value.length === 0 ? [] : [{ key: field.key, value }]
+    })
 }
 
 function StatusPill({ connection }: { connection: WorkConnectionSummary }): React.JSX.Element {
@@ -154,7 +200,7 @@ function SpaceRow({ connection, space, index, visibleCount }: { connection: Work
   )
 }
 
-function ConnectionCard({ connection, onReplaceToken, onRemove }: { connection: WorkConnectionSummary; onReplaceToken: () => void; onRemove: () => void }): React.JSX.Element {
+function ConnectionCard({ connection, source, onReplaceToken, onRemove }: { connection: WorkConnectionSummary; source: WorkSourceDescriptor | null; onReplaceToken: () => void; onRemove: () => void }): React.JSX.Element {
   // 사용자가 누른 연결 테스트의 실패는 연결 상태로 남지 않는 것(invalid_response·rejected 등)까지 이 카드에 보인다(R2-E).
   // 일반 작업 요청의 실패는 연결 상태 정책을 따른다 — 이 줄은 누른 테스트의 결과만.
   // 수명 = 누른 순간의 자격 세대(R3-C) — 토큰을 바꾸면(세대가 오르면) 이전 자격의 실패 줄은 버린다. 늦게 끝난 옛 테스트도 같은 규칙.
@@ -182,10 +228,16 @@ function ConnectionCard({ connection, onReplaceToken, onRemove }: { connection: 
         <div className="connection-mono" aria-hidden>{connection.mono}</div>
         <div className="connection-card-text">
           <div className="connection-card-title">
-            <span className="connection-name">{connection.name}</span>
+            <span className="connection-name">
+              {connection.name}
+              {accountLine({ source, connection, shownIn: 'title' }).map((entry) => <span key={entry.key} data-connection-card-account={entry.key}> · {entry.value}</span>)}
+            </span>
             <StatusPill connection={connection} />
           </div>
-          <div className="connection-meta">토큰 ••••{connection.tokenTail} · {formatDate(connection.addedAt)} 추가 · {formatChecked(connection.checkedAt)}</div>
+          <div className="connection-meta">
+            {accountLine({ source, connection, shownIn: 'meta' }).map((entry) => <span key={entry.key} data-connection-card-account={entry.key}>{entry.value} · </span>)}
+            {source?.tokenLabel ?? '토큰'} ••••{connection.tokenTail} · {formatDate(connection.addedAt)} 추가 · {formatChecked(connection.checkedAt)}
+          </div>
         </div>
         <button type="button" className="connection-btn" data-connection-test onClick={() => void test()} disabled={connection.status === 'testing'}>연결 테스트</button>
         <button type="button" className="connection-btn is-danger" data-connection-remove onClick={onRemove}>해제</button>
@@ -325,12 +377,13 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
           }
         />
         <div className="connection-list">
-          {addingSource === null || adding === null ? null : <ConnectionForm key={`${adding.sourceId}:${adding.replaceId ?? ''}`} source={addingSource} adding={adding} onDone={() => setAdding(null)} onCancel={() => setAdding(null)} />}
+          {addingSource === null || adding === null ? null : <ConnectionForm key={`${adding.sourceId}:${adding.replaceId ?? ''}`} source={addingSource} adding={adding} replacing={state.connections.find((connection) => connection.id === adding.replaceId) ?? null} onDone={() => setAdding(null)} onCancel={() => setAdding(null)} />}
           {state.connections.length === 0 && adding === null ? <p className="connection-empty" data-connection-empty>아직 연결이 없습니다. 토큰을 붙여넣어 작업 관리 서비스를 연결하세요.</p> : null}
           {state.connections.map((connection) => (
             <ConnectionCard
               key={connection.id}
               connection={connection}
+              source={state.sources.find((source) => source.id === connection.sourceId) ?? null}
               onReplaceToken={() => setAdding({ sourceId: connection.sourceId, replaceId: connection.id })}
               onRemove={() => setRemoving(connection.id)}
             />

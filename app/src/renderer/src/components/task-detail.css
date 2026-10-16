@@ -64,6 +64,8 @@
 .is-cancel .tasks-status-circle.cat-done { color: var(--cat-cancel); }
 .issue-status-menu { width: 220px; top: 32px; }
 .issue-status-back { margin-left: auto; font-size: 10.5px; color: var(--fg-dim); }
+.tasks-menu-row.is-blocked { opacity: 0.5; cursor: not-allowed; }
+.issue-status-blocked-reason { margin-left: auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--fg-dim); }
 .issue-status-foot { padding: 6px 8px 2px; border-top: 1px solid var(--line); margin-top: 4px; font-size: 10.5px; color: var(--fg-dim); }
 .issue-confirm { position: absolute; top: 34px; left: 0; z-index: 41; width: 260px; padding: 12px; background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: var(--shadow-menu); font-size: 12px; display: flex; flex-direction: column; gap: 10px; }
 .issue-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
@@ -175,3 +177,6 @@
 .issue-activity-who { color: var(--fg-muted); }
 .issue-activity-text { font-size: 12.5px; color: var(--fg); }
 .issue-activity-comment { margin-top: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+
+/* LIFE-605 C6 — 본문에 바꿀 수 없는 요소가 있을 때 편집 전 안내. */
+.issue-body-lock { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; background: var(--bg-input); font-size: 12px; line-height: 1.5; color: var(--fg-muted); }

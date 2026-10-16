@@ -12,7 +12,7 @@ import { compareRank, moveAfter } from '../tasks-model.js'
 import { TasksPage } from './TasksPage.js'
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
-const BASE_CAPS: WorkCapabilities = {
+const BASE_CAPS: WorkCapabilities = { resolution: { state: 'on' }, querySearch: { state: 'hidden' }, 
   transition: { mode: 'any' }, placement: { state: 'on' }, relations: { state: 'on' }, parentChange: { state: 'on' },
   order: { state: 'on' }, cursorPaging: { state: 'disabled', reason: '커서 없음' },
   conflictCheck: { state: 'disabled', reason: 'x' }, comments: { state: 'disabled', reason: 'x' }, history: { state: 'disabled', reason: 'x' }, workLinkStore: { state: 'disabled', reason: 'x' },
@@ -22,7 +22,7 @@ const STATUSES: WorkStatus[] = [
   { key: 'doing', label: '개발 중', category: 'in_progress', order: 1, color: null },
   { key: 'done', label: '완료', category: 'done', order: 2, color: null },
 ]
-const item = (over: Partial<WorkItem> & { id: string; key: string }): WorkItem => ({
+const item = (over: Partial<WorkItem> & { id: string; key: string }): WorkItem => ({ bodyLock: null, 
   spaceKey: 's1', title: `제목 ${over.key}`, body: null, kind: { key: 'task', label: 'Task', childKinds: [] }, statusKey: 'todo', category: 'todo', priority: 'medium', dueAt: null,
   parentId: null, placement: 'board', rank: null, resolution: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [], ...over,
 })
@@ -80,7 +80,7 @@ function answer(request: WorkRequest): WorkResponse {
       const found = items.find((entry) => entry.key.toUpperCase() === call.key.toUpperCase())
       return respond(request, { op: 'findByKey', item: found === undefined ? null : view(found) })
     }
-    case 'listTransitions': return respond(request, { op: 'listTransitions', statusKeys: ['doing'] })
+    case 'listTransitions': return respond(request, { blocked: [], op: 'listTransitions', statusKeys: ['doing'] })
     case 'changeStatus': {
       const item = write(call.itemId, (entry) => ({ ...entry, statusKey: call.statusKey, category: statusOf(call.statusKey) }))
       return item === undefined ? reject(request) : respond(request, { op: 'changeStatus', item })
@@ -103,9 +103,9 @@ const serverOrder = (): string[] => [...items].sort(compareRank).map((entry) => 
 const shownOrder = (): string[] => probeModel.rows.map((entry) => entry.item).sort(compareRank).map((entry) => entry.id)
 
 function connection(id: string, tail: string): WorkSettingsState['connections'][number] {
-  return {
+  return { account: {}, 
     id, sourceId: 'src-a', name: 'Source A', mono: 'SA', tokenTail: tail, addedAt: 0, generation: 1, status: 'ok', pending: null, error: null, checkedAt: 0,
-    spaces: [{ key: 's1', name: 'corral', color: null, openCount: 2, hidden: false }], hiddenSpaceKeys: [], capabilities: caps,
+    spaces: [{ key: 's1', name: 'corral', color: null, openCount: 2, hidden: false, capabilities: {} }], hiddenSpaceKeys: [], capabilities: caps,
   }
 }
 
@@ -115,7 +115,7 @@ beforeEach(() => {
   root = createRoot(host)
   caps = BASE_CAPS
   settings = {
-    sources: [{ id: 'src-a', name: 'Source A', mono: 'SA', addLabel: '', formTitle: '', tokenLabel: '', tokenPrefix: null, keyPattern: 'K-\\d+' }],
+    sources: [{ accountFields: [], tokenHint: null, queryPattern: null, id: 'src-a', name: 'Source A', mono: 'SA', addLabel: '', formTitle: '', tokenLabel: '', tokenPrefix: null, keyPattern: 'K-\\d+' }],
     connections: [connection('c1', 'wxyz')],
     repoDefaults: [],
   }
@@ -410,7 +410,7 @@ describe('R3-F 놓는 자리가 창 밖이거나 칸이 없으면 쓰기 0', () 
     expect(writes()).toHaveLength(1)
   })
   it('F4 끄는 중 스페이스를 바꾸면 취소 — 옛 맥락의 칸에 쓰지 않는다', async () => {
-    settings.connections[0]?.spaces?.push({ key: 's2', name: 'Second', hidden: false, color: null, openCount: 1 })
+    settings.connections[0]?.spaces?.push({ capabilities: {}, key: 's2', name: 'Second', hidden: false, color: null, openCount: 1 })
     await renderPage()
     startDrag({ handle: q('[data-issue-card="K-1"]'), zone: 'col:st:doing' })
     await settle()
@@ -425,7 +425,7 @@ describe('R3-F 놓는 자리가 창 밖이거나 칸이 없으면 쓰기 0', () 
 
 describe('R3-G 「전체 → 작업 중」 에 숨긴 스페이스의 작업이 없다', () => {
   it('G1 숨긴 s2 의 K-9 worktree 는 빠지고, 보이는 s1 의 K-1 은 남는다', async () => {
-    settings.connections[0]?.spaces?.push({ key: 's2', name: 'Hidden', hidden: false, color: null, openCount: 1 })
+    settings.connections[0]?.spaces?.push({ capabilities: {}, key: 's2', name: 'Hidden', hidden: false, color: null, openCount: 1 })
     const first = settings.connections[0]
     if (first !== undefined) first.hiddenSpaceKeys = ['s2']
     items.push(item({ id: 'ih', key: 'K-9', spaceKey: 's2' }))
@@ -443,7 +443,7 @@ describe('R3-G 「전체 → 작업 중」 에 숨긴 스페이스의 작업이 
 
 describe('R3-H 고른 스페이스에 작업 중 항목이 없으면 「작업 중 없음」', () => {
   it('H1 worktree 는 s1 에만 · s2 를 고르면 빈 상태 working(필터 탓 아님)', async () => {
-    settings.connections[0]?.spaces?.push({ key: 's2', name: 'Second', hidden: false, color: null, openCount: 0 })
+    settings.connections[0]?.spaces?.push({ capabilities: {}, key: 's2', name: 'Second', hidden: false, color: null, openCount: 0 })
     const repos: RepoRow[] = [{ root: '/repo', name: 'repo', error: null, worktrees: [worktree({ path: '/repo/wt', branch: 'K-1-test' })] }]
     await renderPage({ repos })
     click(q('[data-space-switch]'))

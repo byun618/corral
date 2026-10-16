@@ -31,8 +31,14 @@ const UNSUPPORTED_LABEL: Record<string, string> = {
   breakout: '넓게 보기', [MARK_ATTRS]: '서식 속성(링크 제목 등)', [ROUNDTRIP]: '편집기 서식(markdown 으로 오가면 바뀌는 모양)',
 }
 
-/** 사람 이름 — 모르는 원격 이름은 제어 글자를 빼고 40자까지(원격 글이 안내 문구를 키우지 않게, R1-X). */
+const BLOCK_LABEL: Record<string, string> = {
+  paragraph: '문단', heading: '제목', bulletList: '글머리 목록', orderedList: '번호 목록', taskList: '할 일 목록', codeBlock: '코드 블록', blockquote: '인용', rule: '가로줄',
+}
+
+/** 사람 이름 — 모르는 원격 이름은 제어 글자를 빼고 40자까지(원격 글이 안내 문구를 키우지 않게, R1-X). 왕복 잠금은 「N번째 블록(종류)」 까지(R2-D). */
 export function unsupportedLabel(type: string): string {
+  const roundtrip = new RegExp(`^${ROUNDTRIP}:(\\d+):(.*)$`).exec(type)
+  if (roundtrip !== null) return `편집기 서식 — ${roundtrip[1]}번째 블록 ${BLOCK_LABEL[roundtrip[2] ?? ''] ?? '블록'}`
   return UNSUPPORTED_LABEL[type] ?? ([...type].filter((char) => { const code = char.codePointAt(0) ?? 0; return code > 0x1f && code !== 0x7f }).join('').slice(0, 40) || '알 수 없는 요소')
 }
 
@@ -79,7 +85,12 @@ export function adfView(doc: AdfDoc): AdfToMd {
   const shown = adfToMarkdown(doc)
   if (shown.unsupported.length > 0) return shown
   if (sameAdf({ a: markdownToAdf(shown.markdown), b: doc })) return shown
-  return { markdown: shown.markdown, unsupported: [ROUNDTRIP] }
+  // 무엇이 잠갔는지(R2-D) — 혼자 왕복해도 바뀌는 첫 블록의 자리와 종류. 블록마다는 맞고 이어 붙일 때만 바뀌면 자리 없이.
+  const at = doc.content.findIndex((block) => {
+    const one: AdfDoc = { type: 'doc', version: 1, content: [block] }
+    return !sameAdf({ a: markdownToAdf(adfToMarkdown(one).markdown), b: one })
+  })
+  return { markdown: shown.markdown, unsupported: [at === -1 ? ROUNDTRIP : `${ROUNDTRIP}:${at + 1}:${doc.content[at]?.type ?? ''}`] }
 }
 
 export function sameAdf({ a, b }: { a: AdfDoc; b: AdfDoc }): boolean {
@@ -89,7 +100,8 @@ export function sameAdf({ a, b }: { a: AdfDoc; b: AdfDoc }): boolean {
 /**
  * 비교용 정규형 — 뜻이 같은 모양을 하나로: `localId`·null 값 속성·빈 attrs·코드 블록 빈 언어를 빼고, 번호 목록 시작 1 을 기본으로, 빈 글을 빼고, 제목 양끝 공백을 빼고,
  * 같은 마크의 이웃 글을 잇고, **공백 글자의 굵게·기울임·취소선은 뺀다**(보이는 차이 없음 — writer 가 경계 공백을 마크 밖으로 옮긴다).
- * 그 밖의 차이(속성·마크 속성·노드 마크·순서)는 전부 다르다로 남긴다.
+ * 보이는 차이 없는 빈 모양도 하나로(R2-D): 내용 없는 문단은 빼고(writer 도 쓰지 않는다), 빈 `content` 와 `content` 없음은 같고,
+ * `hardBreak` 의 `attrs.text: "\n"`(Jira 편집기가 붙인다)은 뺀다. 그 밖의 차이(속성·마크 속성·노드 마크·순서)는 전부 다르다로 남긴다.
  */
 export function canonicalAdf(nodes: AdfNode[]): unknown[] {
   const out: Record<string, unknown>[] = []
@@ -103,8 +115,10 @@ export function canonicalAdf(nodes: AdfNode[]): unknown[] {
       }
       continue
     }
-    const attrs = Object.fromEntries(Object.entries(node.attrs ?? {}).filter(([key, value]) => key !== 'localId' && value !== null && value !== undefined && !(node.type === 'orderedList' && key === 'order' && value === 1) && !(node.type === 'codeBlock' && key === 'language' && value === '')))
-    const content = node.content === undefined ? undefined : canonicalAdf(node.content)
+    const attrs = Object.fromEntries(Object.entries(node.attrs ?? {}).filter(([key, value]) => key !== 'localId' && value !== null && value !== undefined && !(node.type === 'orderedList' && key === 'order' && value === 1) && !(node.type === 'codeBlock' && key === 'language' && value === '') && !(node.type === 'hardBreak' && key === 'text' && value === '\n')))
+    const inner = node.content === undefined ? [] : canonicalAdf(node.content)
+    const content = inner.length === 0 ? undefined : inner
+    if (node.type === 'paragraph' && content === undefined && Object.keys(attrs).length === 0 && (node.marks ?? []).length === 0) continue
     out.push({
       type: node.type,
       ...(Object.keys(attrs).length === 0 ? {} : { attrs }),
@@ -133,7 +147,8 @@ function canonicalMark(mark: AdfMark): Record<string, unknown> {
 }
 
 function writeBlocks({ nodes, unsupported }: { nodes: AdfNode[]; unsupported: Set<string> }): string {
-  return nodes.map((node) => writeBlock({ node, unsupported })).join('\n\n')
+  // 내용 없는 문단은 md 에 자리가 없다(빈 줄은 블록 사이일 뿐) — 쓰지 않는다. 정규형도 빼고 본다(R2-D).
+  return nodes.map((node) => writeBlock({ node, unsupported })).filter((text, index) => !(text === '' && nodes[index]?.type === 'paragraph')).join('\n\n')
 }
 
 function writeBlock({ node, unsupported }: { node: AdfNode; unsupported: Set<string> }): string {

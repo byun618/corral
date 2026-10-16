@@ -128,7 +128,7 @@ const flushLog = async (): Promise<void> => { closeLog(); await new Promise((res
 const SECOND_TOKEN = 'ATATTwindowless0second00000000000000jira'
 const WRONG_TOKEN = 'ATATTwindowless0wrong000000000000000jira'
 function secretGrep(): { status: number | null; out: unknown } {
-  const needles = [FAKE_JIRA_TOKEN, SECOND_TOKEN, WRONG_TOKEN].flatMap((token, index) => {
+  const needles: { label: string; value: string; allowIn?: string[] }[] = [FAKE_JIRA_TOKEN, SECOND_TOKEN, WRONG_TOKEN].flatMap((token, index) => {
     const basic = basicHeader({ email: FAKE_JIRA_EMAIL, token })
     return [
       { label: `token${index}`, value: token },

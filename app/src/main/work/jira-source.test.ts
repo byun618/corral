@@ -808,6 +808,24 @@ describe('수정 1 — 질의 범위·쪽 순회 (R1-C·R1-E·N12·N13)', () => 
 })
 
 describe('C6 본문 ADF', () => {
+  it('R2-D·Y25 지원 표 안이어도 왕복에서 바뀌는 본문(줄 끝 공백 둘 + 줄바꿈)은 bodyLock — 안내가 몇 번째 어떤 블록인지 말하고, 저장은 거절(PUT 0) · 끝 빈 문단만 있는 본문은 잠그지 않는다', async () => {
+    const h = await connected()
+    const issue = h.fixture.issue('20002')
+    if (issue === null) throw new Error('seed')
+    issue.description = { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: '첫' }] }, { type: 'paragraph', content: [{ type: 'text', text: 'line one  ' }, { type: 'hardBreak' }, { type: 'text', text: 'line two' }] }] }
+    const got = await h.send({ op: 'getItem', itemId: '20002' })
+    if (!got.ok || got.result.op !== 'getItem') throw new Error('get')
+    expect(got.result.item.bodyLock).toContain('편집기 서식 — 2번째 블록 문단')
+    const edited = await h.send({ op: 'updateItem', itemId: '20002', fields: { body: `${got.result.item.body ?? ''}\n\n덧붙임` }, ifVersion: null })
+    expect(edited).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+    expect(h.fixture.requests.filter((request) => request.method === 'PUT' && request.path === '/rest/api/3/issue/20002')).toHaveLength(0)
+    issue.description = { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: '본문' }] }, { type: 'paragraph' }] }
+    const plain = await h.send({ op: 'getItem', itemId: '20002' })
+    if (!plain.ok || plain.result.op !== 'getItem') throw new Error('get')
+    expect(plain.result.item.bodyLock).toBeNull()
+    expect(plain.result.item.body).toBe('본문')
+  })
+
   it('바꿀 수 없는 요소(멘션·패널)가 있으면 bodyLock 이유 · 본문 저장은 거절(PUT 0) · 체크 칸만 바꾸면 그 상태만 바뀐 ADF 를 보낸다', async () => {
     const h = await connected()
     const got = await h.send({ op: 'getItem', itemId: '20003' })

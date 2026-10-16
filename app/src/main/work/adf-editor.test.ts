@@ -10,6 +10,49 @@ const p = (...content: AdfNode[]): AdfNode => ({ type: 'paragraph', content })
 const doc = (...content: AdfNode[]): AdfDoc => ({ type: 'doc', version: 1, content })
 const link = (href: string, extra: Record<string, unknown> = {}): AdfMark => ({ type: 'link', attrs: { href, ...extra } })
 
+/**
+ * 독립 투영 오라클(R2-B) — `canonicalAdf` 를 쓰지 않고 사람이 보는 것만 꺼낸다: 블록 구조(종류 · 제목 수준 · 목록 시작 · 코드 언어 · 할 일 상태)와
+ * 글 조각마다 보이는 글 · 마크 집합 · 링크 href. 정규형이 약해져도(마크·속성을 같게 보면) 이 비교가 깬다. 보이지 않는 차이만 같게 본다 —
+ * 공백 글자의 굵게·기울임·취소선 · 제목 양끝 공백 · 내용 없는 문단 · 조각 나눔.
+ */
+type Seen = { text: string; marks: string } | { block: string } | { end: string }
+
+export function visible(nodes: AdfNode[] | undefined): Seen[] {
+  const out: Seen[] = []
+  let runs: { text: string; marks: string }[] = []
+  const flush = (): void => {
+    out.push(...runs.filter((run) => run.text !== ''))
+    runs = []
+  }
+  for (const node of nodes ?? []) {
+    if (node.type === 'text' || node.type === 'hardBreak') {
+      for (const char of node.type === 'hardBreak' ? '\n' : (node.text ?? '')) {
+        const marks = (node.marks ?? []).filter((mark) => !(/^\s$/u.test(char) && ['strong', 'em', 'strike'].includes(mark.type))).map((mark) => (mark.type === 'link' ? `link(${String(mark.attrs?.href)})` : mark.type)).sort().join('+')
+        const last = runs.at(-1)
+        if (last !== undefined && last.marks === marks) last.text += char
+        else runs.push({ text: char, marks })
+      }
+      continue
+    }
+    flush()
+    const block = node.type === 'heading' ? `heading${String(node.attrs?.level)}` : node.type === 'orderedList' ? `orderedList${String(node.attrs?.order ?? 1)}` : node.type === 'codeBlock' ? `codeBlock:${String(node.attrs?.language ?? '')}` : node.type === 'taskItem' ? `taskItem:${String(node.attrs?.state)}` : node.type
+    const inner = visible(node.content)
+    if (node.type === 'heading') {
+      const first = inner[0]
+      if (first !== undefined && 'text' in first) first.text = first.text.replace(/^\s+/u, '')
+      const last = inner.at(-1)
+      if (last !== undefined && 'text' in last) last.text = last.text.replace(/\s+$/u, '')
+    }
+    const shown = inner.filter((entry) => !('text' in entry && entry.text === ''))
+    if (node.type === 'paragraph' && shown.length === 0) continue
+    out.push({ block }, ...shown, { end: node.type })
+  }
+  flush()
+  return out
+}
+
+const sameVisible = ({ a, b }: { a: AdfNode[]; b: AdfNode[] }): boolean => JSON.stringify(visible(a)) === JSON.stringify(visible(b))
+
 /** 편집할 수 있어야 하는 모양 — 왕복이 원래와 같다(잠그지 않는다). */
 export const EDITABLE: Record<string, AdfDoc> = {
   wikiUrl: doc(p(t('see '), t('Foo (bar)', [link('https://en.wikipedia.org/wiki/Foo_(bar)')]))),
@@ -45,6 +88,16 @@ export const EDITABLE: Record<string, AdfDoc> = {
   // Jira 새 편집기는 문단·목록에 localId 를 붙이고 빈 attrs 를 둔다 — 뜻이 없는 속성이라 잠그지 않는다.
   localIds: doc({ type: 'paragraph', attrs: { localId: 'p-1' }, content: [t('글')] }, { type: 'taskList', attrs: { localId: 'tl' }, content: [{ type: 'taskItem', attrs: { localId: 'ti', state: 'TODO' }, content: [t('할 일')] }] }),
   nullAttr: doc(p(t('링크', [link('https://e.x', { title: null })]))),
+  // R2-D — 보이는 차이 없는 빈 모양(리뷰 r2 A1-LIST). 잠그지 않는다 — 그대로 저장하면 보내지 않고, 고쳐 저장하면 빈 문단만 빠진다(보이지 않음).
+  trailingEmptyParagraph: doc(p(t('안녕')), { type: 'paragraph' }),
+  trailingEmptyParagraphContent: doc(p(t('안녕')), { type: 'paragraph', content: [] }),
+  emptyParagraphBetween: doc(p(t('a')), { type: 'paragraph' }, p(t('b'))),
+  hardBreakAttrs: doc(p(t('a'), { type: 'hardBreak', attrs: { text: '\n' } }, t('b'))),
+  codeBlockEmpty: doc({ type: 'codeBlock' }),
+  listItemEmptyPara: doc({ type: 'bulletList', content: [{ type: 'listItem', content: [p(t('a'))] }, { type: 'listItem', content: [{ type: 'paragraph' }] }] }),
+  taskListEmptyItem: doc({ type: 'taskList', attrs: { localId: 'x' }, content: [{ type: 'taskItem', attrs: { localId: 'y', state: 'TODO' } }] }),
+  headingEmpty: doc({ type: 'heading', attrs: { level: 2 } }),
+  quoteEmptyParagraph: doc({ type: 'blockquote', content: [{ type: 'paragraph' }] }, p(t('뒤'))),
 }
 
 /** 잠가야 하는 모양 — 저장하면 원래 요소가 사라지거나 바뀐다. 값 = 안내에 나와야 할 이름. */
@@ -68,10 +121,12 @@ describe('R1-A·R1-G Jira 편집기 모양 출발 말뭉치', () => {
       const view = adfView(original)
       expect(view.unsupported, name).toEqual([])
       expect(sameAdf({ a: markdownToAdf(view.markdown), b: original }), `${name}: ${view.markdown}`).toBe(true)
+      expect(sameVisible({ a: markdownToAdf(view.markdown).content, b: original.content }), `${name} 투영: ${view.markdown}`).toBe(true)
       expect(bodyUpdate({ current: original, next: view.markdown }), name).toEqual({ ok: true })
       const edited = bodyUpdate({ current: original, next: `${view.markdown}\n\n덧붙임` })
       if (!edited.ok || edited.doc === undefined || edited.doc === null) throw new Error(`${name}: 저장 안 됨`)
       expect(JSON.stringify(canonicalAdf(edited.doc.content.slice(0, -1))), name).toBe(JSON.stringify(canonicalAdf(original.content)))
+      expect(sameVisible({ a: edited.doc.content.slice(0, -1), b: original.content }), `${name} 투영`).toBe(true)
     }
   })
 
@@ -187,13 +242,51 @@ function fuzzRun({ seed, words, rounds }: { seed: number; words: readonly string
     if (exotic) silent.push(`exotic-not-locked #${round}: ${view.markdown.slice(0, 80)}`)
     editable += 1
     if (!sameAdf({ a: markdownToAdf(view.markdown), b: original })) silent.push(`roundtrip #${round}`)
+    if (!sameVisible({ a: markdownToAdf(view.markdown).content, b: original.content })) silent.push(`visible #${round}: ${view.markdown.slice(0, 80)}`)
     if (adfView(markdownToAdf(view.markdown)).markdown !== view.markdown) silent.push(`not-fixed-point #${round}: ${view.markdown.slice(0, 80)}`)
     const edited = bodyUpdate({ current: original, next: `${view.markdown}\n\n덧붙임` })
     if (!edited.ok || edited.doc === undefined || edited.doc === null) silent.push(`edit-refused #${round}`)
     else if (JSON.stringify(canonicalAdf(edited.doc.content.slice(0, -1))) !== JSON.stringify(canonicalAdf(original.content))) silent.push(`edit-changed #${round}: ${view.markdown.slice(0, 80)}`)
+    else if (!sameVisible({ a: edited.doc.content.slice(0, -1), b: original.content })) silent.push(`edit-visible #${round}: ${view.markdown.slice(0, 80)}`)
   }
   return { editable, locked, exoticLocked, silent }
 }
+
+describe('R2-B·R2-D 독립 투영 오라클 · 빈 모양 · 잠금 안내', () => {
+  it('투영은 마크 종류·href·제목 수준·목록 시작·코드 언어·할 일 상태가 다르면 다르고, 보이지 않는 차이(조각 나눔·공백 굵게·빈 문단·localId)는 같다', () => {
+    const base = doc(p(t('굵게', [{ type: 'strong' }]), t(' 링크', [link('https://a.x')])))
+    const differs: AdfDoc[] = [
+      doc(p(t('굵게', [{ type: 'em' }]), t(' 링크', [link('https://a.x')]))),
+      doc(p(t('굵게', [{ type: 'strong' }]), t(' 링크', [link('https://b.x')]))),
+      doc(p(t('굵게', [{ type: 'strong' }]), t(' 링크'))),
+      doc(p(t('굵게', [{ type: 'strong' }]), t(' 링크', [link('https://a.x'), { type: 'code' }]))),
+    ]
+    for (const other of differs) expect(sameVisible({ a: base.content, b: other.content }), JSON.stringify(other)).toBe(false)
+    const same = doc({ type: 'paragraph', attrs: { localId: 'q' }, content: [t('굵'), t('게', [{ type: 'strong' }]), t(' ', [{ type: 'strong' }, link('https://a.x')]), t('링크', [link('https://a.x')])] }, { type: 'paragraph' })
+    const shifted = doc(p(t('굵'), t('게', [{ type: 'strong' }]), t(' 링크', [link('https://a.x')])))
+    expect(sameVisible({ a: same.content, b: shifted.content })).toBe(true)
+    const blocks: [AdfNode, AdfNode][] = [
+      [{ type: 'heading', attrs: { level: 2 }, content: [t('제')] }, { type: 'heading', attrs: { level: 3 }, content: [t('제')] }],
+      [{ type: 'orderedList', attrs: { order: 2 }, content: [] }, { type: 'orderedList', content: [] }],
+      [{ type: 'codeBlock', attrs: { language: 'ts' }, content: [t('x')] }, { type: 'codeBlock', content: [t('x')] }],
+      [{ type: 'taskItem', attrs: { state: 'DONE' }, content: [t('x')] }, { type: 'taskItem', attrs: { state: 'TODO' }, content: [t('x')] }],
+    ]
+    for (const [a, b] of blocks) expect(sameVisible({ a: [a], b: [b] }), a.type).toBe(false)
+  })
+
+  it('R2-D 빈 모양은 그대로 저장하면 보내지 않는다(원래 ADF 보존) · 왕복 잠금 안내는 몇 번째 어떤 블록인지 말한다', () => {
+    for (const name of ['trailingEmptyParagraph', 'emptyParagraphBetween', 'hardBreakAttrs', 'codeBlockEmpty', 'listItemEmptyPara', 'taskListEmptyItem', 'headingEmpty', 'quoteEmptyParagraph']) {
+      const original = EDITABLE[name] ?? doc()
+      expect(bodyUpdate({ current: original, next: adfView(original).markdown }), name).toEqual({ ok: true })
+    }
+    // 둘째 블록(문단)만 왕복에서 바뀐다(줄 끝 공백 둘 + 줄바꿈) — 안내에 자리·종류.
+    const locked = doc(p(t('첫')), p(t('line one  '), { type: 'hardBreak' }, t('line two')))
+    expect(adfView(locked).unsupported).toEqual(['#roundtrip:2:paragraph'])
+    const saved = bodyUpdate({ current: locked, next: `${adfView(locked).markdown}\n\n덧붙임` })
+    expect(saved.ok).toBe(false)
+    if (!saved.ok) expect(saved.message).toContain('편집기 서식 — 2번째 블록 문단')
+  })
+})
 
 describe('R1-G 고정 씨앗 왕복 퍼즈', () => {
   it('적대적 낱말 · 씨앗 605 · 2000 문서 — 조용한 변경 0(잠기지 않은 문서: 그대로/덧붙여 저장해도 원래 요소 같음 · md 고정점) · 이국 요소 든 문서는 전부 잠김', () => {
@@ -202,6 +295,34 @@ describe('R1-G 고정 씨앗 왕복 퍼즈', () => {
     expect(run.editable).toBeGreaterThan(500)
     expect(run.exoticLocked).toBeGreaterThan(0)
     process.stdout.write(`L605_FUZZ adversarial editable=${run.editable} locked=${run.locked} exoticLocked=${run.exoticLocked}\n`)
+  })
+
+  it('정규형 대 독립 투영(R2-B) · 씨앗 6052 · 1000 쌍 — 퍼즈 문서와 보이는 것 한 군데(마크 종류·href·글)를 바꾼 사본을 `sameAdf` 가 다르다고 본다(투영과 같은 답) · 그대로 사본은 같다', () => {
+    const random = prng(6052)
+    const disagree: string[] = []
+    let perturbed = 0
+    for (let round = 0; round < 1000; round += 1) {
+      const { doc: original } = fuzzDoc({ random, words: WORDS })
+      const copy: AdfDoc = JSON.parse(JSON.stringify(original))
+      if (!sameAdf({ a: copy, b: original }) || !sameVisible({ a: copy.content, b: original.content })) disagree.push(`copy #${round}`)
+      const texts: AdfNode[] = []
+      const walk = (nodes: AdfNode[] | undefined): void => { for (const node of nodes ?? []) { if (node.type === 'text' && /\S/u.test(node.text ?? '')) texts.push(node); walk(node.content) } }
+      walk(copy.content)
+      const target = texts[Math.floor(random() * texts.length)]
+      if (target === undefined) continue
+      const marks = target.marks ?? []
+      const roll = random()
+      const linked = marks.find((mark) => mark.type === 'link')
+      if (roll < 0.3 && linked !== undefined) target.marks = marks.map((mark) => (mark === linked ? link(`${String(linked.attrs?.href)}z`) : mark))
+      else if (roll < 0.6) target.marks = marks.some((mark) => mark.type === 'strong') ? marks.filter((mark) => mark.type !== 'strong') : [...marks, { type: 'strong' }]
+      else if (roll < 0.8) target.marks = marks.some((mark) => mark.type === 'em') ? marks.map((mark) => (mark.type === 'em' ? { type: 'strike' } : mark)) : [...marks, { type: 'em' }]
+      else target.text = `${target.text ?? ''}q`
+      perturbed += 1
+      const visibleSame = sameVisible({ a: copy.content, b: original.content })
+      if (visibleSame || sameAdf({ a: copy, b: original }) !== visibleSame) disagree.push(`perturbed #${round}: visible=${visibleSame}`)
+    }
+    expect(disagree.slice(0, 10)).toEqual([])
+    expect(perturbed).toBeGreaterThan(900)
   })
 
   it('평범한 낱말 · 씨앗 6051 · 2000 문서 — 조용한 변경 0 · 이국 요소 없는 문서의 95% 이상이 편집 가능(잠금 남용 대조)', () => {

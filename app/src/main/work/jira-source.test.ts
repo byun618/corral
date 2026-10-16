@@ -349,6 +349,23 @@ describe('수정 1 — 순서 능력 (R1-N·R1-O·N20)', () => {
   })
 })
 
+describe('R1-X 쓰기 뒤 다시 읽기 실패', () => {
+  it('쓰기는 적용됐다 — 일반 실패가 아니라 maybeApplied(다시 보내지 않게) + 「적용됐지만」 문구 · 수정·상태·순서', async () => {
+    const h = await connected()
+    const wrote = (method: string, path: string): boolean => h.fixture.requests.some((request) => request.method === method && request.path === path)
+    h.fixture.faults.push({ match: (request) => request.method === 'GET' && request.path === '/rest/api/3/issue/20002' && wrote('PUT', '/rest/api/3/issue/20002'), status: 502, once: true })
+    const edited = await h.send({ op: 'updateItem', itemId: '20002', fields: { title: '다시 못 읽음' }, ifVersion: null })
+    expect(edited).toMatchObject({ ok: false, error: { kind: 'network', maybeApplied: true, message: expect.stringContaining('적용됐지만') } })
+    expect(h.fixture.issue('20002')?.summary).toBe('다시 못 읽음')
+    h.fixture.faults.push({ match: (request) => request.method === 'GET' && request.path === '/rest/api/3/issue/20002' && wrote('POST', '/rest/api/3/issue/20002/transitions'), status: 502, once: true })
+    expect(await h.send({ op: 'changeStatus', itemId: '20002', statusKey: '10001', ifVersion: null })).toMatchObject({ ok: false, error: { maybeApplied: true } })
+    expect(h.fixture.issue('20002')?.statusId).toBe('10001')
+    h.fixture.faults.push({ match: (request) => request.method === 'GET' && request.path === '/rest/api/3/issue/20003' && wrote('PUT', '/rest/agile/1.0/issue/rank'), status: 502, once: true })
+    expect(await h.send({ op: 'reorder', itemId: '20003', afterId: '20001' })).toMatchObject({ ok: false, error: { maybeApplied: true } })
+    expect(h.fixture.requests.filter((request) => request.path === '/rest/agile/1.0/issue/rank')).toHaveLength(1)
+  })
+})
+
 describe('R1-U 이슈 id 모양', () => {
   it('숫자 밖 id(`..`·`/`·키)는 경로에 넣기 전에 거절 — 요청 0 · 숫자 id 는 그대로(양성 대조)', async () => {
     const h = await connected()

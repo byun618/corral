@@ -480,6 +480,17 @@ export class JiraSource implements WorkSourceClient {
     return op === 'getItem' ? { ok: true, result: { op, item: item.value } } : { ok: true, result: { op, item: item.value } }
   }
 
+  /**
+   * 쓰기가 성공한 **뒤** 다시 읽기 — 읽기가 실패해도 쓰기는 이미 적용됐다(R1-X, createItem 규칙 준용).
+   * 일반 실패로 돌려주면 사용자가 같은 쓰기를 다시 보낸다 — `maybeApplied` 를 붙여 화면이 다시 보내지 않고 목록을 새로 받게 한다.
+   */
+  private async writtenResult({ op, itemId }: { op: 'changeStatus' | 'updateItem' | 'setParent' | 'reorder'; itemId: string }): Promise<WorkOutcome> {
+    const item = await this.item(itemId)
+    if (item.ok) return { ok: true, result: { op, item: item.value } }
+    const error = item.outcome.ok ? workError({ kind: 'invalid_response', message: '출처 응답 모양이 다릅니다.' }) : item.outcome.error
+    return { ok: false, error: { ...error, message: `${WRITTEN_PREFIX}${error.message}`, maybeApplied: true } }
+  }
+
   private async findByKey(key: string): Promise<WorkOutcome> {
     const upper = key.trim().toUpperCase()
     if (!JIRA_KEY.test(upper)) return { ok: true, result: { op: 'findByKey', item: null } }
@@ -555,7 +566,7 @@ export class JiraSource implements WorkSourceClient {
     }
     const sent = await this.write({ method: 'POST', path: `/rest/api/3/issue/${encodeURIComponent(itemId)}/transitions`, body: { transition: { id: transition.id }, ...historyOf(writeId) }, refused: `Jira 가 전이 「${transition.name.slice(0, 40)}」 를 거절했습니다 — 전이 조건·필수 필드를 Jira 에서 확인하세요.` })
     if (!sent.ok) return sent.outcome
-    return this.itemResult({ op: 'changeStatus', itemId })
+    return this.writtenResult({ op: 'changeStatus', itemId })
   }
 
   // --- 수정 ---
@@ -581,7 +592,7 @@ export class JiraSource implements WorkSourceClient {
       const sent = await this.write({ method: 'PUT', path: `/rest/api/3/issue/${encodeURIComponent(call.itemId)}`, body: { fields, ...historyOf(writeId) }, refused: 'Jira 가 수정을 거절했습니다 — 그 칸이 이 종류의 수정 화면에 없거나 값이 맞지 않습니다.' })
       if (!sent.ok) return sent.outcome
     }
-    return this.itemResult({ op: 'updateItem', itemId: call.itemId })
+    return this.writtenResult({ op: 'updateItem', itemId: call.itemId })
   }
 
   /** 계약 5단 ↔ 사이트 우선순위 이름(대소문자 무시), 이름이 없으면 기본 id(R1-J). 대응 없는 값은 거절 — 비우기(null)는 Jira 가 받지 않는다(T4 §14-2). */
@@ -635,7 +646,7 @@ export class JiraSource implements WorkSourceClient {
     }
     const sent = await this.write({ method: 'PUT', path: `/rest/api/3/issue/${encodeURIComponent(itemId)}`, body: { fields: { parent: parentId === null ? null : { id: parentId } }, ...historyOf(writeId) }, refused: 'Jira 가 부모 변경을 거절했습니다.' })
     if (!sent.ok) return sent.outcome
-    return this.itemResult({ op: 'setParent', itemId })
+    return this.writtenResult({ op: 'setParent', itemId })
   }
 
   // --- 만들기 ---
@@ -764,7 +775,7 @@ export class JiraSource implements WorkSourceClient {
         return rejected(`Jira 가 ${names} 의 순서를 바꾸지 못했습니다(207) — 잠시 후 다시 시도하세요.`, 207)
       }
     }
-    return this.itemResult({ op: 'reorder', itemId })
+    return this.writtenResult({ op: 'reorder', itemId })
   }
 
   // --- 연결 ---
@@ -951,6 +962,7 @@ export function splitOrderBy(query: string): { where: string; orderBy: string | 
 }
 
 const ISSUE_ID = /^\d{1,18}$/
+const WRITTEN_PREFIX = 'Jira 에는 적용됐지만 바뀐 작업을 다시 읽지 못했습니다 — 다시 보내지 말고 목록을 새로 고치세요. '
 
 /** 경로·본문에 들어가는 이슈 id 칸 — `itemId` · `afterId` · `parentId`(null 은 뺀다). */
 function issueIdsOf(call: WorkCall): string[] {

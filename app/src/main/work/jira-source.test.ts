@@ -489,7 +489,10 @@ describe('수정 4 — 리뷰 r4 (R4-A·R4-B·R4-C·R4-D·R4-E·R4-F)', () => {
     clock += 5 * 60 * 1000 - 1
     expect(await h.send({ op: 'getCreateMeta', spaceKey: 'WEB', kindKey: '10001' })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
     expect(await orderOf()).toContain('ORDER BY created ASC')
+    expect(await h.send({ op: 'reorder', itemId: '20101', afterId: null })).toMatchObject({ ok: false, error: { kind: 'unsupported' } })
     clock += 1
+    // 수명 뒤 첫 호출이 순서 바꾸기(프로젝트 캐시를 거치지 않는 길 — `orderFor` 자신이 수명을 본다).
+    expect(await h.send({ op: 'reorder', itemId: '20101', afterId: null })).not.toMatchObject({ ok: false, error: { kind: 'unsupported' } })
     expect(await h.send({ op: 'getCreateMeta', spaceKey: 'WEB', kindKey: '10001' })).toMatchObject({ ok: true })
     expect(await orderOf()).toContain('ORDER BY Rank ASC')
   })

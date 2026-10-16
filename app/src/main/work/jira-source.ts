@@ -430,7 +430,7 @@ export class JiraSource implements WorkSourceClient {
    * 모르는 분류 키는 **그 상태만** 목록에서 뺀다(R1-I — 스페이스 전체를 막지 않는다). 그 상태에 있는 작업은 `toItems` 가 응답 어긋남으로(어느 분류로도 넣지 않는다).
    */
   private async statuses(spaceKey: string): Promise<Step<StatusInfo>> {
-    this.expireMeta()
+    // 수명 검사는 부르는 쪽이 먼저 부른 `project()` 가 한다(R4-E — 같은 `clearMeta` 가 이 캐시도 비운다). 부르는 곳 = listStatuses·createMeta, 둘 다 project() 뒤.
     const cached = this.statusCache.get(spaceKey)
     if (cached !== undefined) return { ok: true, value: cached }
     const step = await this.read({ path: `/rest/api/3/project/${encodeURIComponent(spaceKey)}/statuses`, parse: readProjectStatuses, notFound: '스페이스가 아닙니다 — 없거나 볼 권한이 없는 프로젝트입니다.' })

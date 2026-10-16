@@ -447,6 +447,60 @@ describe('수정 1 R1-K — 리뷰어 생존 뮤테이션을 죽이는 시험', 
   })
 })
 
+describe('수정 3 — 리뷰 r3 (R3-A·R3-B·R3-C·R3-E)', () => {
+  it('R3-B 상태·연결 종류 캐시는 5분 뒤 다시 받는다 — 작업 페이지에는 스페이스 목록 새로 고침이 없다', async () => {
+    let clock = 1_000_000
+    const h = await connected({ now: () => clock })
+    const count = async (): Promise<number> => {
+      const listed = await h.send({ op: 'listStatuses', spaceKey: 'WEB' })
+      if (!listed.ok || listed.result.op !== 'listStatuses') throw new Error('statuses')
+      return listed.result.statuses.length
+    }
+    expect(await count()).toBe(2)
+    const web = h.fixture.projects.find((project) => project.key === 'WEB')
+    if (web === undefined) throw new Error('seed')
+    for (const typeId of Object.keys(web.statusesByType)) web.statusesByType[typeId]?.push('10001')
+    clock += 5 * 60 * 1000 - 1
+    expect(await count()).toBe(2)
+    clock += 1
+    expect(await count()).toBe(3)
+  })
+
+  it('R3-C 연결 종류 캐시도 새로 고침(스페이스 목록)·수명으로 비운다 — 사이트에 종류가 생기면 다시 받은 뒤 쓸 수 있다', async () => {
+    let clock = 0
+    const h = await connected({ now: () => clock })
+    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/issueLinkType', status: 200, body: { issueLinkTypes: [{ id: '10002', name: 'Relates', inward: 'relates to', outward: 'relates to', self: 'https://fixture.invalid/rest/api/3/issueLinkType/10002' }] }, once: true })
+    expect(await h.send({ op: 'addRelation', itemId: '20001', kind: 'blocks', otherKey: 'CORE-2' })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+    expect(await h.send({ op: 'addRelation', itemId: '20001', kind: 'blocks', otherKey: 'CORE-2' })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+    expect((await h.send({ op: 'listSpaces' })).ok).toBe(true)
+    expect((await h.send({ op: 'addRelation', itemId: '20001', kind: 'blocks', otherKey: 'CORE-2' })).ok).toBe(true)
+    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/issueLinkType', status: 200, body: { issueLinkTypes: [{ id: '10002', name: 'Relates', inward: 'relates to', outward: 'relates to', self: 'https://fixture.invalid/rest/api/3/issueLinkType/10002' }] }, once: true })
+    clock += 5 * 60 * 1000
+    expect(await h.send({ op: 'addRelation', itemId: '20001', kind: 'duplicates', otherKey: 'CORE-4' })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+  })
+
+  it('R3-E 따옴표 밖 역슬래시가 든 JQL 은 질의로 보내지 않고 텍스트로 찾는다', async () => {
+    expect(splitOrderBy('summary = abc\\" OR x = 1 ) OR ( y = "z')).toBeNull()
+    expect(splitOrderBy('summary ~ "a \\" b"')).toEqual({ where: 'summary ~ "a \\" b"', orderBy: null })
+    const h = await connected()
+    const found = await h.send({ op: 'searchItems', spaceKeys: ['CORE'], query: 'summary = a\\b' })
+    if (!found.ok || found.result.op !== 'searchItems') throw new Error('search')
+    expect(found.result.mode).toBe('text')
+    expect(h.fixture.requests.some((request) => (request.query.jql ?? '').includes('summary = a'))).toBe(false)
+  })
+
+  it('R3-A Jira 문서 규칙 밖 markdown(인용 안 제목) — 코멘트·만들기 설명은 보내지 않고 이유(POST 0)', async () => {
+    const h = await connected()
+    const posts = (path: string): number => h.fixture.requests.filter((request) => request.method === 'POST' && request.path === path).length
+    const comment = await h.send({ op: 'addComment', itemId: '20002', body: '> # 제목' })
+    expect(comment).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('인용 안에는 제목') } })
+    expect(posts('/rest/api/3/issue/20002/comment')).toBe(0)
+    const made = await h.send({ op: 'createItem', spaceKey: 'CORE', kindKey: '10001', title: '규칙', body: '- a\n\n  > q', parentId: null, statusKey: undefined, placement: undefined, priority: undefined, fields: [] })
+    expect(made).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('목록 항목 안에는 인용') } })
+    expect(posts('/rest/api/3/issue')).toBe(0)
+  })
+})
+
 describe('수정 2 — 리뷰 r2 (R2-C 생존 뮤테이션 · R2-E · R2-F · R2-I)', () => {
   it('R2-E 새로 고침(스페이스 목록)이 상태·우선순위 캐시를 비운다 — Jira 에서 상태를 더하면 새로 고친 뒤 보인다', async () => {
     const h = await connected()

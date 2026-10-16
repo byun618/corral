@@ -22,13 +22,14 @@ const MARKS = new Set(['strong', 'em', 'code', 'strike', 'link'])
 /** 지원 마크에 href 밖 속성(링크 title 등)이 붙은 경우 · 지원 표 안이어도 왕복하면 바뀌는 경우의 가짜 요소 이름(R1-A·R1-G). */
 const MARK_ATTRS = '#markAttrs'
 const ROUNDTRIP = '#roundtrip'
+const RULES = '#rules'
 /** 바꿀 수 없는 요소의 사람 이름 — 안내 글에 쓴다. 목록 밖은 노드 이름 그대로. */
 const UNSUPPORTED_LABEL: Record<string, string> = {
   mention: '멘션', emoji: '이모지', panel: '패널', mediaSingle: '첨부', mediaGroup: '첨부', mediaInline: '첨부', media: '첨부', status: '상태 배지',
   table: '표', expand: '펼치기', nestedExpand: '펼치기', inlineCard: '링크 카드', blockCard: '링크 카드', embedCard: '링크 카드', date: '날짜',
   extension: '확장', bodiedExtension: '확장', inlineExtension: '확장', decisionList: '결정 목록', layoutSection: '레이아웃', placeholder: '자리 표시',
   underline: '밑줄', textColor: '글자 색', backgroundColor: '배경 색', subsup: '위·아래 첨자', alignment: '정렬', indentation: '들여쓰기', annotation: '주석', border: '테두리',
-  breakout: '넓게 보기', [MARK_ATTRS]: '서식 속성(링크 제목 등)', [ROUNDTRIP]: '편집기 서식(markdown 으로 오가면 바뀌는 모양)',
+  breakout: '넓게 보기', [MARK_ATTRS]: '서식 속성(링크 제목 등)', [ROUNDTRIP]: '편집기 서식(markdown 으로 오가면 바뀌는 모양)', [RULES]: '편집기 서식(저장하면 Jira 문서 규칙에 맞지 않는 모양)',
 }
 
 const BLOCK_LABEL: Record<string, string> = {
@@ -84,13 +85,52 @@ export function adfToMarkdown(doc: AdfDoc): AdfToMd {
 export function adfView(doc: AdfDoc): AdfToMd {
   const shown = adfToMarkdown(doc)
   if (shown.unsupported.length > 0) return shown
-  if (sameAdf({ a: markdownToAdf(shown.markdown), b: doc })) return shown
+  const back = markdownToAdf(shown.markdown)
+  if (sameAdf({ a: back, b: doc })) {
+    // 고쳐 저장하면 나갈 ADF 가 문서 규칙을 어기면(R3-A — 지금 코덱은 내지 않는다, 마지막 그물) 잠근다 — 보내고 Jira 의 거절을 받는 대신 이유를 먼저.
+    return adfRuleProblem(back) === null ? shown : { markdown: shown.markdown, unsupported: [RULES] }
+  }
   // 무엇이 잠갔는지(R2-D) — 혼자 왕복해도 바뀌는 첫 블록의 자리와 종류. 블록마다는 맞고 이어 붙일 때만 바뀌면 자리 없이.
-  const at = doc.content.findIndex((block) => {
+  // 번호는 **md 에 보이는 블록 순서**(R3-D) — md 에 쓰지 않는 빈 문단은 세지 않는다.
+  const shownBlocks = doc.content.filter((block) => !(block.type === 'paragraph' && adfToMarkdown({ type: 'doc', version: 1, content: [block] }).markdown === ''))
+  const at = shownBlocks.findIndex((block) => {
     const one: AdfDoc = { type: 'doc', version: 1, content: [block] }
     return !sameAdf({ a: markdownToAdf(adfToMarkdown(one).markdown), b: one })
   })
-  return { markdown: shown.markdown, unsupported: [at === -1 ? ROUNDTRIP : `${ROUNDTRIP}:${at + 1}:${doc.content[at]?.type ?? ''}`] }
+  return { markdown: shown.markdown, unsupported: [at === -1 ? ROUNDTRIP : `${ROUNDTRIP}:${at + 1}:${shownBlocks[at]?.type ?? ''}`] }
+}
+
+const QUOTE_CHILDREN = new Set(['paragraph', 'bulletList', 'orderedList', 'codeBlock'])
+const ITEM_CHILDREN = new Set(['paragraph', 'bulletList', 'orderedList', 'taskList', 'codeBlock'])
+const BLOCK_NAME: Record<string, string> = { heading: '제목', rule: '가로줄', blockquote: '인용', taskList: '할 일 목록', bulletList: '목록', orderedList: '번호 목록' }
+
+/**
+ * 저장할 ADF 가 Jira 문서 규칙(공식 ADF 스키마 — `@atlaskit/adf-schema` v1 full.json, design-notes §8)을 어기는가 — 어기면 사람이 읽을 이유, 아니면 null.
+ * markdown 이 만들 수 있는데 ADF 가 받지 않는 모양만 본다: 인용 안의 제목·가로줄·인용·할 일 목록, 목록 항목 안의 제목·가로줄·인용, 빈 인용·빈 목록·첫 자식이 문단·코드가 아닌 목록 항목.
+ * markdown 에서 온 글은 보내기 전에 이것으로 거절한다(받는 척 금지 — Jira 가 거절하거나 조용히 바꾸기 전에).
+ */
+export function adfRuleProblem(doc: AdfDoc): string | null {
+  const walk = (nodes: AdfNode[]): string | null => {
+    for (const node of nodes) {
+      const content = node.content ?? []
+      if (node.type === 'blockquote') {
+        if (content.length === 0) return '빈 인용은 Jira 문서 규칙에 맞지 않습니다.'
+        const bad = content.find((child) => !QUOTE_CHILDREN.has(child.type))
+        if (bad !== undefined) return `인용 안에는 ${BLOCK_NAME[bad.type] ?? bad.type}을(를) 넣을 수 없습니다(Jira 문서 규칙).`
+      }
+      if ((node.type === 'bulletList' || node.type === 'orderedList' || node.type === 'taskList') && content.length === 0) return '빈 목록은 Jira 문서 규칙에 맞지 않습니다.'
+      if (node.type === 'listItem') {
+        const first = content[0]
+        if (first === undefined || (first.type !== 'paragraph' && first.type !== 'codeBlock')) return '목록 항목은 글로 시작해야 합니다(Jira 문서 규칙).'
+        const bad = content.find((child) => !ITEM_CHILDREN.has(child.type))
+        if (bad !== undefined) return `목록 항목 안에는 ${BLOCK_NAME[bad.type] ?? bad.type}을(를) 넣을 수 없습니다(Jira 문서 규칙).`
+      }
+      const inner = walk(content)
+      if (inner !== null) return inner
+    }
+    return null
+  }
+  return walk(doc.content)
 }
 
 export function sameAdf({ a, b }: { a: AdfDoc; b: AdfDoc }): boolean {
@@ -493,7 +533,9 @@ function parseBlocks(lines: string[]): AdfNode[] {
         body.push(QUOTE.exec(lines[index] ?? '')?.[1] ?? '')
         index += 1
       }
-      out.push({ type: 'blockquote', content: parseBlocks(body) })
+      // ADF 규칙(R3-A): 인용은 자식이 하나 이상 — `>` 만 친 줄은 빈 문단 하나.
+      const inner = parseBlocks(body)
+      out.push({ type: 'blockquote', content: inner.length === 0 ? [{ type: 'paragraph', content: [] }] : inner })
       continue
     }
     if (LIST.test(line)) {
@@ -598,7 +640,9 @@ function buildLists(items: ListItemLines[]): AdfNode[] {
 
 function listItem(item: ListItemLines): AdfNode {
   const blocks = parseBlocks(item.lines)
-  return { type: 'listItem', content: blocks.length === 0 ? [{ type: 'paragraph', content: [] }] : blocks }
+  // ADF 규칙(R3-A): 목록 항목의 첫 자식은 문단·코드 블록 — 빈 부모 항목 뒤 바로 중첩 목록이면(`- ` 다음 줄 `  - x`) 빈 문단을 첫 자식으로 둔다.
+  const first = blocks[0]
+  return { type: 'listItem', content: first === undefined || (first.type !== 'paragraph' && first.type !== 'codeBlock') ? [{ type: 'paragraph', content: [] }, ...blocks] : blocks }
 }
 
 /** 할 일 항목 — 글은 인라인(ADF taskItem 은 문단을 안 쓴다), 하위 할 일 목록은 형제 taskList 로. 그 밖 하위 블록은 글로 잇는다. */
@@ -660,7 +704,8 @@ function walkInline({ text, marks, nodes }: { text: string; marks: Mark[]; nodes
         flush()
         let code = text.slice(index + run.length, close).replaceAll('\n', ' ')
         if (code.length >= 2 && code.startsWith(' ') && code.endsWith(' ') && code.trim().length > 0) code = code.slice(1, -1)
-        nodes.push({ type: 'text', text: code, marks: [...marks.map((mark) => ({ ...mark })), { type: 'code' }] })
+        // ADF 규칙(R3-A): 코드 글자에는 링크 마크만 함께 둘 수 있다 — 굵게·기울임·취소선 안의 코드는 코드로만(md 로만 나타낼 수 있는 모양).
+        if (code.length > 0) nodes.push({ type: 'text', text: code, marks: [...marks.filter((mark) => mark.type === 'link').map((mark) => ({ ...mark })), { type: 'code' }] })
         index = close + run.length
         continue
       }

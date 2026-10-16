@@ -312,8 +312,8 @@ export class JiraRestFixture {
         const type = LINK_TYPES.find((entry) => entry.id === link.typeId)
         if (type === undefined) return []
         // 「inward A · outward B」 = A <outward 글> B. A 의 목록에는 outwardIssue B, B 의 목록에는 inwardIssue A.
-        if (link.inward === issue.id) { const other = this.issue(link.outward); return other === null ? [] : [{ id: link.id, self: `https://fixture.invalid/rest/api/3/issueLink/${link.id}`, type: { ...type, self: '' }, outwardIssue: this.linkedBean(other) }] }
-        if (link.outward === issue.id) { const other = this.issue(link.inward); return other === null ? [] : [{ id: link.id, self: `https://fixture.invalid/rest/api/3/issueLink/${link.id}`, type: { ...type, self: '' }, inwardIssue: this.linkedBean(other) }] }
+        if (link.inward === issue.id) { const other = this.issue(link.outward); return other === null ? [] : [{ id: link.id, self: `https://fixture.invalid/rest/api/3/issueLink/${link.id}`, type: { ...type, self: `https://fixture.invalid/rest/api/3/issueLinkType/${type.id}` }, outwardIssue: this.linkedBean(other) }] }
+        if (link.outward === issue.id) { const other = this.issue(link.inward); return other === null ? [] : [{ id: link.id, self: `https://fixture.invalid/rest/api/3/issueLink/${link.id}`, type: { ...type, self: `https://fixture.invalid/rest/api/3/issueLinkType/${type.id}` }, inwardIssue: this.linkedBean(other) }] }
         return []
       }),
       ...issue.fieldValues,
@@ -375,7 +375,7 @@ export class JiraRestFixture {
   }
 
   private historyBean(entry: FxHistory): Record<string, unknown> {
-    const bean: Record<string, unknown> = { id: entry.id, author: { accountId: 'acc-1', displayName: 'Fixture User', active: true }, created: new Date(entry.created).toISOString().replace('Z', '+0000'), items: entry.items.map((item) => ({ ...item, fieldtype: 'jira', from: null, to: null })) }
+    const bean: Record<string, unknown> = { id: entry.id, author: { accountId: 'acc-1', displayName: 'Fixture User', active: true }, created: new Date(entry.created).toISOString().replace('Z', '+0000'), items: entry.items.map((item) => ({ ...item, fieldtype: 'jira' })) } // from·to(id)는 싣지 않는다 — 명세 `ChangeDetails.from/to` 는 string(nullable 아님, R3-H). 실제 Jira 의 null 여부는 F19
     if (entry.historyMetadata !== null) bean.historyMetadata = entry.historyMetadata
     return bean
   }
@@ -522,8 +522,8 @@ export class JiraRestFixture {
   }
 
   private boards(query: Record<string, string>): Reply {
-    const list = this.projects.filter((project) => project.boards > 0).flatMap((project) => Array.from({ length: project.boards }, (_, index) => ({ id: Number(project.id) + index, self: '', name: `${project.key} board`, type: 'scrum', location: { projectId: Number(project.id), projectKey: project.key, projectName: project.name, displayName: project.name } })))
-    return offsetPage({ list, query, key: 'values', limit: 50, isLast: true })
+    const list = this.projects.filter((project) => project.boards > 0).flatMap((project) => Array.from({ length: project.boards }, (_, index) => ({ id: Number(project.id) + index, self: `https://fixture.invalid/rest/agile/1.0/board/${Number(project.id) + index}`, name: `${project.key} board`, type: 'scrum', location: { projectId: Number(project.id), projectKey: project.key, projectName: project.name, displayName: project.name } })))
+    return offsetPage({ list, query, key: 'values', limit: 50, isLast: true, rootSelf: false })
   }
 
   private rank(body: unknown): Reply {
@@ -576,11 +576,12 @@ function fieldList(value: string | undefined): string[] | null {
 }
 
 /** offset 페이지 — 명세 `PageBean*`(`startAt`·`maxResults`·`total`·`isLast`·`values`) 또는 `PageOf*`(`isLast` 없음). */
-function offsetPage({ list, query, key, limit, isLast }: { list: unknown[]; query: Record<string, string>; key: string; limit: number; isLast?: boolean }): Reply {
+/** offset 쪽 — v3 `PageBean*` 은 루트 `self` 가 있고 agile `PageBeanBoard` 는 없다(`rootSelf: false`, R3-H). */
+function offsetPage({ list, query, key, limit, isLast, rootSelf = true }: { list: unknown[]; query: Record<string, string>; key: string; limit: number; isLast?: boolean; rootSelf?: boolean }): Reply {
   const startAt = Math.max(0, Number(query.startAt ?? '0') || 0)
   const maxResults = Math.min(limit, Math.max(1, Number(query.maxResults ?? String(limit)) || limit))
   const values = list.slice(startAt, startAt + maxResults)
-  const body: Record<string, unknown> = { self: 'https://fixture.invalid/page', maxResults, startAt, total: list.length, [key]: values }
+  const body: Record<string, unknown> = { ...(rootSelf ? { self: 'https://fixture.invalid/page' } : {}), maxResults, startAt, total: list.length, [key]: values }
   if (isLast === true || key === 'values') body.isLast = startAt + values.length >= list.length
   return { status: 200, body }
 }

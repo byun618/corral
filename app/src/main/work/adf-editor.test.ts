@@ -2,7 +2,7 @@
 // 지켜야 할 것: **조용한 변경 0** — 잠기지 않은 본문은 「보이는 md 를 그대로(또는 덧붙여) 저장해도 원래 요소가 같다」, 못 지키는 모양은 잠긴다.
 // 말뭉치 = 리뷰 r1 재현(`raw/review/claude-r1-raw/scratch/zz-review-adf-real.test.ts` · E5) + Jira 편집기가 실제로 내는 노드 마크·링크 속성 모양.
 import { describe, expect, it } from 'vitest'
-import { adfView, canonicalAdf, markdownToAdf, sameAdf, type AdfDoc, type AdfMark, type AdfNode } from './adf.js'
+import { adfRuleProblem, adfView, canonicalAdf, markdownToAdf, sameAdf, type AdfDoc, type AdfMark, type AdfNode } from './adf.js'
 import { bodyUpdate } from './jira-source.js'
 
 const t = (text: string, marks?: AdfMark[]): AdfNode => (marks === undefined ? { type: 'text', text } : { type: 'text', text, marks })
@@ -53,6 +53,113 @@ export function visible(nodes: AdfNode[] | undefined): Seen[] {
 
 const sameVisible = ({ a, b }: { a: AdfNode[]; b: AdfNode[] }): boolean => JSON.stringify(visible(a)) === JSON.stringify(visible(b))
 
+/**
+ * ADF 스키마 오라클(R3-A) — 공식 ADF JSON Schema(`@atlaskit/adf-schema@40.10.0` `json-schema/v1/full.json`, sha256 앞 16자 `d1e48e901f5b5436`, Apache-2.0)의
+ * 이 코덱이 내는 노드(문단·제목·목록·할 일·코드·인용·가로줄·글·줄바꿈 + 마크 strong·em·strike·code·link) 규칙을 시험 쪽에 옮겨 적은 작은 검사기다 — 제품의 `adfRuleProblem` 과 따로 썼다.
+ * 라이브러리(ajv·adf-schema)는 넣지 않았다(의존성 0 — design-notes §8). 옮긴 규칙: 칸 이름(additionalProperties false) · 필수 칸 · 자식 종류(목록 항목은 첫 자식 문단·코드, 뒤는 문단·목록·할 일·코드 /
+ * 인용은 문단·목록·코드 · 할 일 목록은 첫 자식 할 일) · minItems 1(목록·인용·목록 항목·할 일 목록) · 글 minLength 1 · 코드 글자 마크는 code·link 만 · 코드 블록 글자는 마크 없음 · 문단·제목은 목록 항목·인용 안에서 마크 없음.
+ * 스키마 튜플(`items: [첫, 둘째]`)은 셋째 뒤를 묶지 않지만 여기서는 둘째 규칙을 뒤 전부에 건다(더 엄격).
+ */
+export function schemaProblems(value: AdfDoc): string[] {
+  const out: string[] = []
+  const keys = ({ node, allowed, at }: { node: object; allowed: string[]; at: string }): void => {
+    for (const key of Object.keys(node)) if (!allowed.includes(key)) out.push(`${at}: 칸 ${key}`)
+  }
+  const attrsOk = ({ node, allowed, required, at }: { node: AdfNode; allowed: Record<string, (v: unknown) => boolean>; required: string[]; at: string }): void => {
+    if (node.attrs === undefined) { if (required.length > 0) out.push(`${at}: attrs 없음`); return }
+    for (const [key, v] of Object.entries(node.attrs)) if (allowed[key] === undefined || !(allowed[key] ?? (() => false))(v)) out.push(`${at}: attrs.${key}`)
+    for (const key of required) if (node.attrs[key] === undefined) out.push(`${at}: attrs.${key} 없음`)
+  }
+  const isString = (v: unknown): boolean => typeof v === 'string'
+  const inline = (nodes: AdfNode[] | undefined, at: string): void => {
+    for (const [index, node] of (nodes ?? []).entries()) {
+      const here = `${at}/${index}`
+      if (node.type === 'hardBreak') { keys({ node, allowed: ['type', 'attrs'], at: here }); attrsOk({ node, allowed: { text: (v) => v === '\n' }, required: [], at: here }); continue }
+      if (node.type !== 'text') { out.push(`${here}: 인라인 ${node.type}`); continue }
+      keys({ node, allowed: ['type', 'text', 'marks'], at: here })
+      if (typeof node.text !== 'string' || node.text.length === 0) out.push(`${here}: 빈 글`)
+      const marks = node.marks ?? []
+      const types = marks.map((mark) => mark.type)
+      const formatted = types.every((type) => ['link', 'em', 'strong', 'strike'].includes(type))
+      const code = types.every((type) => ['code', 'link'].includes(type))
+      if (!formatted && !code) out.push(`${here}: 마크 조합 ${types.join('+')}`)
+      for (const mark of marks) {
+        if (mark.type === 'link') {
+          keys({ node: mark, allowed: ['type', 'attrs'], at: `${here} link` })
+          const attrs = mark.attrs ?? {}
+          if (typeof attrs.href !== 'string') out.push(`${here}: link href`)
+          for (const [key, v] of Object.entries(attrs)) if (!['href', 'title', 'id', 'collection', 'occurrenceKey'].includes(key) || typeof v !== 'string') out.push(`${here}: link attrs.${key}`)
+        } else keys({ node: mark, allowed: ['type'], at: `${here} ${mark.type}` })
+      }
+    }
+  }
+  const noMarks = (node: AdfNode, at: string): void => { if ((node.marks ?? []).length > 0) out.push(`${at}: 블록 마크`) }
+  const block = ({ node, at, nested }: { node: AdfNode; at: string; nested: boolean }): void => {
+    const content = node.content ?? []
+    const kids = ({ allowed, first, min }: { allowed: string[]; first?: string[]; min: number }): void => {
+      if (node.content === undefined && min > 0) out.push(`${at}: content 없음`)
+      if (content.length < min) out.push(`${at}: 자식 ${content.length} < ${min}`)
+      content.forEach((child, index) => {
+        const ok = index === 0 && first !== undefined ? first : allowed
+        if (!ok.includes(child.type)) out.push(`${at}/${index}: ${node.type} 안 ${child.type}`)
+        block({ node: child, at: `${at}/${index}`, nested: true })
+      })
+    }
+    switch (node.type) {
+      case 'paragraph':
+        keys({ node, allowed: ['type', 'marks', 'attrs', 'content'], at })
+        attrsOk({ node, allowed: { localId: isString }, required: [], at })
+        if (nested) noMarks(node, at)
+        return inline(node.content, at)
+      case 'heading':
+        keys({ node, allowed: ['type', 'marks', 'attrs', 'content'], at })
+        attrsOk({ node, allowed: { level: (v) => typeof v === 'number' && v >= 1 && v <= 6, localId: isString }, required: ['level'], at })
+        if (nested) noMarks(node, at)
+        return inline(node.content, at)
+      case 'bulletList':
+        keys({ node, allowed: ['type', 'content'], at })
+        return kids({ allowed: ['listItem'], min: 1 })
+      case 'orderedList':
+        keys({ node, allowed: ['type', 'attrs', 'content'], at })
+        attrsOk({ node, allowed: { order: (v) => typeof v === 'number' && v >= 0 }, required: [], at })
+        return kids({ allowed: ['listItem'], min: 1 })
+      case 'listItem':
+        keys({ node, allowed: ['type', 'content'], at })
+        return kids({ first: ['paragraph', 'codeBlock'], allowed: ['paragraph', 'bulletList', 'orderedList', 'taskList', 'codeBlock'], min: 1 })
+      case 'taskList':
+        keys({ node, allowed: ['type', 'attrs', 'content'], at })
+        attrsOk({ node, allowed: { localId: isString }, required: ['localId'], at })
+        return kids({ first: ['taskItem'], allowed: ['taskItem', 'taskList'], min: 1 })
+      case 'taskItem':
+        keys({ node, allowed: ['type', 'attrs', 'content'], at })
+        attrsOk({ node, allowed: { localId: isString, state: (v) => v === 'TODO' || v === 'DONE' }, required: ['localId', 'state'], at })
+        return inline(node.content, at)
+      case 'codeBlock':
+        keys({ node, allowed: ['type', 'marks', 'attrs', 'content'], at })
+        attrsOk({ node, allowed: { language: isString }, required: [], at })
+        if (nested) noMarks(node, at)
+        for (const [index, child] of content.entries()) {
+          if (child.type !== 'text' || typeof child.text !== 'string' || child.text.length === 0 || (child.marks ?? []).length > 0) out.push(`${at}/${index}: 코드 블록 글`)
+        }
+        return
+      case 'blockquote':
+        keys({ node, allowed: ['type', 'content'], at })
+        return kids({ allowed: ['paragraph', 'orderedList', 'bulletList', 'codeBlock'], min: 1 })
+      case 'rule':
+        return keys({ node, allowed: ['type'], at })
+      default:
+        out.push(`${at}: 오라클 밖 노드 ${node.type}`)
+    }
+  }
+  keys({ node: value, allowed: ['type', 'version', 'content'], at: 'doc' })
+  if (value.type !== 'doc' || value.version !== 1) out.push('doc: type·version')
+  value.content.forEach((node, index) => {
+    if (!['paragraph', 'heading', 'bulletList', 'orderedList', 'taskList', 'codeBlock', 'blockquote', 'rule'].includes(node.type)) out.push(`doc/${index}: 최상위 ${node.type}`)
+    block({ node, at: `doc/${index}`, nested: false })
+  })
+  return out
+}
+
 /** 편집할 수 있어야 하는 모양 — 왕복이 원래와 같다(잠그지 않는다). */
 export const EDITABLE: Record<string, AdfDoc> = {
   wikiUrl: doc(p(t('see '), t('Foo (bar)', [link('https://en.wikipedia.org/wiki/Foo_(bar)')]))),
@@ -98,6 +205,10 @@ export const EDITABLE: Record<string, AdfDoc> = {
   taskListEmptyItem: doc({ type: 'taskList', attrs: { localId: 'x' }, content: [{ type: 'taskItem', attrs: { localId: 'y', state: 'TODO' } }] }),
   headingEmpty: doc({ type: 'heading', attrs: { level: 2 } }),
   quoteEmptyParagraph: doc({ type: 'blockquote', content: [{ type: 'paragraph' }] }, p(t('뒤'))),
+  // R3-A — 리뷰 r3 zz-a: 잠기지 않는데 고쳐 저장하면 스키마를 어기던 모양(빈 부모 항목 + 중첩 목록).
+  emptyItemWithNestedList: doc({ type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'paragraph' }, { type: 'bulletList', content: [{ type: 'listItem', content: [p(t('child'))] }] }] }] }),
+  orderedEmptyFirst: doc({ type: 'orderedList', attrs: { order: 1 }, content: [{ type: 'listItem', content: [{ type: 'paragraph', content: [] }, { type: 'orderedList', attrs: { order: 1 }, content: [{ type: 'listItem', content: [p(t('z'))] }] }] }] }),
+  emptyCodeInQuote: doc({ type: 'blockquote', content: [{ type: 'codeBlock', content: [] }] }),
 }
 
 /** 잠가야 하는 모양 — 저장하면 원래 요소가 사라지거나 바뀐다. 값 = 안내에 나와야 할 이름. */
@@ -118,8 +229,11 @@ export const LOCKED: Record<string, { doc: AdfDoc; label: string }> = {
 describe('R1-A·R1-G Jira 편집기 모양 출발 말뭉치', () => {
   it(`편집 가능 ${Object.keys(EDITABLE).length}개 — 잠그지 않고, 보이는 md 를 다시 ADF 로 하면 원래와 같고, 덧붙여 저장해도 원래 부분이 그대로`, () => {
     for (const [name, original] of Object.entries(EDITABLE)) {
+      // 원문도 스키마 안(말뭉치 점검) — `nullAttr` 만 예외: Jira API 응답의 null 속성(`title: null`)을 본뜬 모양이라 스키마(문자열)와 다르다. 오라클은 **나가는 쪽**에 건다.
+      if (name !== 'nullAttr') expect(schemaProblems(original), `${name} 원문 스키마`).toEqual([])
       const view = adfView(original)
       expect(view.unsupported, name).toEqual([])
+      expect(schemaProblems(markdownToAdf(view.markdown)), `${name} md→ADF 스키마`).toEqual([])
       expect(sameAdf({ a: markdownToAdf(view.markdown), b: original }), `${name}: ${view.markdown}`).toBe(true)
       expect(sameVisible({ a: markdownToAdf(view.markdown).content, b: original.content }), `${name} 투영: ${view.markdown}`).toBe(true)
       expect(bodyUpdate({ current: original, next: view.markdown }), name).toEqual({ ok: true })
@@ -127,6 +241,7 @@ describe('R1-A·R1-G Jira 편집기 모양 출발 말뭉치', () => {
       if (!edited.ok || edited.doc === undefined || edited.doc === null) throw new Error(`${name}: 저장 안 됨`)
       expect(JSON.stringify(canonicalAdf(edited.doc.content.slice(0, -1))), name).toBe(JSON.stringify(canonicalAdf(original.content)))
       expect(sameVisible({ a: edited.doc.content.slice(0, -1), b: original.content }), `${name} 투영`).toBe(true)
+      expect(schemaProblems(edited.doc), `${name} 고쳐 저장 스키마`).toEqual([])
     }
   })
 
@@ -204,17 +319,30 @@ function fuzzDoc({ random, words }: { random: () => number; words: readonly stri
     const roll = random()
     if (roll < 0.45) {
       const node = p(...inline())
-      if (random() < 0.05) { node.marks = [{ type: 'alignment', attrs: { align: 'center' } }]; exotic = true }
+      // 블록 마크는 최상위 문단에만(스키마 — 목록 항목·인용 안 문단은 마크 없음).
+      if (depth === 0 && random() < 0.05) { node.marks = [{ type: 'alignment', attrs: { align: 'center' } }]; exotic = true }
       return node
     }
     if (roll < 0.55) return { type: 'heading', attrs: { level: 1 + Math.floor(random() * 6) }, content: words === PLAIN_WORDS ? inline().filter((node) => node.type !== 'hardBreak') : inline() }
-    if (roll < 0.68 && depth < 2) return { type: 'bulletList', content: Array.from({ length: 1 + Math.floor(random() * 3) }, () => ({ type: 'listItem', content: [words === PLAIN_WORDS ? p(...inline()) : block(depth + 1)] })) }
+    // 목록 항목은 문단으로 시작하고 뒤에 중첩 목록·코드가 올 수 있다(스키마 — R3-A 로 생성기도 규칙 안).
+    if (roll < 0.68 && depth < 2) return { type: 'bulletList', content: Array.from({ length: 1 + Math.floor(random() * 3) }, () => ({ type: 'listItem', content: words === PLAIN_WORDS || random() < 0.5 ? [p(...inline())] : [p(...inline()), itemChild(depth + 1)] })) }
     if (roll < 0.76 && depth < 2) return { type: 'orderedList', attrs: { order: 1 + Math.floor(random() * 3) }, content: Array.from({ length: 1 + Math.floor(random() * 3) }, () => ({ type: 'listItem', content: [p(...inline())] })) }
     if (roll < 0.84) return { type: 'taskList', attrs: { localId: 'tl' }, content: [{ type: 'taskItem', attrs: { localId: 'ti', state: random() < 0.5 ? 'DONE' : 'TODO' }, content: inline().filter((node) => node.type !== 'hardBreak') }] }
     if (roll < 0.9) return { type: 'codeBlock', attrs: { language: pick(['ts', 'python', '']) }, content: [t(Array.from({ length: 2 }, () => pick(words)).join('\n'))] }
-    if (roll < 0.95 && depth < 2) return { type: 'blockquote', content: [block(depth + 1)] }
+    if (roll < 0.95 && depth < 2) return { type: 'blockquote', content: [quoteChild(depth + 1)] }
     return { type: 'rule' }
   }
+  /** 스키마가 받는 자식만 — 목록 항목 뒤 자식(문단·목록·할 일·코드) · 인용 자식(문단·목록·코드). */
+  const childOf = ({ depth, allowed }: { depth: number; allowed: string[] }): AdfNode => {
+    for (;;) {
+      const before = exotic
+      const node = block(depth)
+      if (allowed.includes(node.type)) return node
+      exotic = before // 버린 후보의 이국 표지는 되돌린다.
+    }
+  }
+  const itemChild = (depth: number): AdfNode => childOf({ depth, allowed: ['paragraph', 'bulletList', 'orderedList', 'taskList', 'codeBlock'] })
+  const quoteChild = (depth: number): AdfNode => childOf({ depth, allowed: ['paragraph', 'bulletList', 'orderedList', 'codeBlock'] })
   return { doc: doc(...Array.from({ length: 1 + Math.floor(random() * 4) }, () => block(0))), exotic }
 }
 
@@ -226,6 +354,7 @@ function fuzzRun({ seed, words, rounds }: { seed: number; words: readonly string
   const silent: string[] = []
   for (let round = 0; round < rounds; round += 1) {
     const { doc: original, exotic } = fuzzDoc({ random, words })
+    if (!exotic && schemaProblems(original).length > 0) silent.push(`generator-invalid #${round}: ${schemaProblems(original)[0]}`)
     const view = adfView(original)
     if (view.unsupported.length > 0) {
       locked += 1
@@ -243,11 +372,14 @@ function fuzzRun({ seed, words, rounds }: { seed: number; words: readonly string
     editable += 1
     if (!sameAdf({ a: markdownToAdf(view.markdown), b: original })) silent.push(`roundtrip #${round}`)
     if (!sameVisible({ a: markdownToAdf(view.markdown).content, b: original.content })) silent.push(`visible #${round}: ${view.markdown.slice(0, 80)}`)
+    const parsedProblems = schemaProblems(markdownToAdf(view.markdown))
+    if (parsedProblems.length > 0) silent.push(`md-schema #${round}: ${parsedProblems[0]}`)
     if (adfView(markdownToAdf(view.markdown)).markdown !== view.markdown) silent.push(`not-fixed-point #${round}: ${view.markdown.slice(0, 80)}`)
     const edited = bodyUpdate({ current: original, next: `${view.markdown}\n\n덧붙임` })
     if (!edited.ok || edited.doc === undefined || edited.doc === null) silent.push(`edit-refused #${round}`)
     else if (JSON.stringify(canonicalAdf(edited.doc.content.slice(0, -1))) !== JSON.stringify(canonicalAdf(original.content))) silent.push(`edit-changed #${round}: ${view.markdown.slice(0, 80)}`)
     else if (!sameVisible({ a: edited.doc.content.slice(0, -1), b: original.content })) silent.push(`edit-visible #${round}: ${view.markdown.slice(0, 80)}`)
+    else if (schemaProblems(edited.doc).length > 0) silent.push(`edit-schema #${round}: ${schemaProblems(edited.doc)[0]}`)
   }
   return { editable, locked, exoticLocked, silent }
 }
@@ -331,5 +463,128 @@ describe('R1-G 고정 씨앗 왕복 퍼즈', () => {
     const plain = 2000 - run.exoticLocked
     expect(run.editable / plain).toBeGreaterThan(0.95)
     process.stdout.write(`L605_FUZZ plain editable=${run.editable} locked=${run.locked} exoticLocked=${run.exoticLocked}\n`)
+  })
+})
+
+describe('R3-A ADF 스키마 오라클 — 나가는 ADF 가 문서 규칙 안', () => {
+  it('오라클 자기시험 — 리뷰 r3 zz-a 의 위반 저장본(첫 자식이 목록인 항목 · 빈 인용)과 코드+굵게 · 빈 글 · 모르는 칸은 잡고, 규칙 안 문서는 통과', () => {
+    const bad: AdfDoc[] = [
+      doc({ type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'bulletList', content: [{ type: 'listItem', content: [p(t('child'))] }] }] }] }),
+      doc({ type: 'blockquote', content: [] }, p(t('뒤'))),
+      doc(p(t('x', [{ type: 'code' }, { type: 'strong' }]))),
+      doc(p(t(''))),
+      doc({ type: 'bulletList', attrs: { localId: 'x' }, content: [{ type: 'listItem', content: [p(t('a'))] }] }),
+      doc({ type: 'blockquote', content: [{ type: 'heading', attrs: { level: 1 }, content: [t('h')] }] }),
+      doc({ type: 'codeBlock', content: [t('x', [{ type: 'strong' }])] }),
+      doc({ type: 'taskList', attrs: { localId: 'l' }, content: [{ type: 'taskList', attrs: { localId: 'm' }, content: [{ type: 'taskItem', attrs: { localId: 'i', state: 'TODO' } }] }] }),
+    ]
+    for (const value of bad) expect(schemaProblems(value).length, JSON.stringify(value)).toBeGreaterThan(0)
+    for (const [name, value] of Object.entries(EDITABLE)) if (name !== 'nullAttr') expect(schemaProblems(value), name).toEqual([])
+  })
+
+  it('R3-A 빈 모양 섞은 생성기 · 씨앗 305 · 5000 문서(리뷰 r3 zz-d 본뜸, 원문은 전부 스키마 안) — 잠기지 않은 문서를 고쳐 저장한 ADF 가 스키마 안 · 보이는 것 그대로 · 그대로 저장은 보내지 않음', () => {
+    let state = 305
+    const r = (): number => { state = (state * 1664525 + 1013904223) % 4294967296; return state / 4294967296 }
+    const pick = <T,>(list: readonly T[]): T => { const value = list[Math.floor(r() * list.length)]; if (value === undefined) throw new Error('빈 목록'); return value }
+    const words = ['alpha', 'beta', 'gamma', 'one', 'x1']
+    const text = (): AdfNode => {
+      const marks: AdfMark[] | undefined = r() < 0.2 ? [{ type: pick(['strong', 'em', 'strike', 'code']) }] : r() < 0.1 ? [link(`https://e.x/${pick(words)}`)] : undefined
+      return t(`${pick(words)}${r() < 0.3 ? ` ${pick(words)}` : ''}`, marks)
+    }
+    const inline = (): AdfNode[] => {
+      if (r() < 0.12) return []
+      const out: AdfNode[] = [text()]
+      while (r() < 0.3) { if (r() < 0.2) out.push(r() < 0.5 ? { type: 'hardBreak' } : { type: 'hardBreak', attrs: { text: '\n' } }); out.push(text()) }
+      return out
+    }
+    const para = (): AdfNode => (r() < 0.2 ? (r() < 0.5 ? { type: 'paragraph' } : { type: 'paragraph', content: [] }) : p(...inline()))
+    const list = (depth: number): AdfNode => {
+      const items = Array.from({ length: 1 + Math.floor(r() * 3) }, (): AdfNode => {
+        const content: AdfNode[] = [para()]
+        if (depth < 2 && r() < 0.35) content.push(list(depth + 1))
+        if (r() < 0.1) content.push(para())
+        return { type: 'listItem', content }
+      })
+      return r() < 0.5 ? { type: 'bulletList', content: items } : { type: 'orderedList', ...(r() < 0.3 ? { attrs: { order: 3 } } : {}), content: items }
+    }
+    const block = (): AdfNode => {
+      const k = r()
+      if (k < 0.35) return para()
+      if (k < 0.5) return { type: 'heading', attrs: { level: 1 + Math.floor(r() * 3) }, ...(r() < 0.85 ? { content: inline() } : {}) }
+      if (k < 0.72) return list(0)
+      if (k < 0.82) return { type: 'blockquote', content: Array.from({ length: 1 + Math.floor(r() * 2) }, para) }
+      if (k < 0.9) return { type: 'codeBlock', ...(r() < 0.5 ? { attrs: { language: 'ts' } } : {}), ...(r() < 0.8 ? { content: [t(`code ${pick(words)}`)] } : {}) }
+      if (k < 0.95) return { type: 'rule' }
+      return { type: 'taskList', attrs: { localId: 'l' }, content: [{ type: 'taskItem', attrs: { localId: 'i', state: pick(['TODO', 'DONE']) }, ...(r() < 0.8 ? { content: inline() } : {}) }] }
+    }
+    const bad: string[] = []
+    let unlocked = 0
+    for (let round = 0; round < 5000; round += 1) {
+      const original = doc(...Array.from({ length: 1 + Math.floor(r() * 4) }, block))
+      if (schemaProblems(original).length > 0) { bad.push(`generator #${round}: ${schemaProblems(original)[0]}`); continue }
+      const view = adfView(original)
+      if (view.unsupported.length > 0) continue
+      unlocked += 1
+      const same = bodyUpdate({ current: original, next: view.markdown })
+      if (!same.ok || same.doc !== undefined) bad.push(`same-save-sent #${round}`)
+      const edited = bodyUpdate({ current: original, next: `${view.markdown}\n\n덧붙임` })
+      if (!edited.ok || edited.doc === undefined || edited.doc === null) { bad.push(`refused #${round}`); continue }
+      const problems = schemaProblems(edited.doc)
+      if (problems.length > 0) bad.push(`edit-schema #${round}: ${problems[0]} · ${view.markdown.slice(0, 60)}`)
+      if (!sameVisible({ a: edited.doc.content.slice(0, -1), b: original.content })) bad.push(`visible #${round}`)
+    }
+    expect(bad.slice(0, 10)).toEqual([])
+    expect(unlocked).toBeGreaterThan(4000)
+    process.stdout.write(`L605_FUZZ empties unlocked=${unlocked}/5000\n`)
+  })
+
+  it('R3-A md 퍼즈 · 씨앗 6053 · 5000 글 — `markdownToAdf` 출력은 스키마 안이거나 `adfRuleProblem` 이 이유를 낸다(둘이 어긋나지 않음) · 본문 저장·코멘트 경로는 규칙 밖이면 거절', () => {
+    const random = prng(6053)
+    const pieces = ['- ', '  - ', '1. ', '   1. ', '> ', '>', '# ', '## ', '---', '```', '- [ ] ', '  - [x] ', '**', '*', '_', '~~', '`', '[a](https://e.x)', 'word', '한글', ' ', '\\', '|', '']
+    const disagree: string[] = []
+    let ruled = 0
+    for (let round = 0; round < 5000; round += 1) {
+      const lines = Array.from({ length: 1 + Math.floor(random() * 6) }, () => Array.from({ length: 1 + Math.floor(random() * 4) }, () => pieces[Math.floor(random() * pieces.length)] ?? '').join(''))
+      const md = lines.join('\n')
+      const parsed = markdownToAdf(md)
+      const problems = schemaProblems(parsed)
+      const rule = adfRuleProblem(parsed)
+      if (rule !== null) ruled += 1
+      if (rule === null && problems.length > 0) disagree.push(`schema-miss #${round}: ${problems[0]} · ${JSON.stringify(md).slice(0, 80)}`)
+      if (rule !== null && problems.length === 0) disagree.push(`rule-overreach #${round}: ${rule} · ${JSON.stringify(md).slice(0, 80)}`)
+      const saved = bodyUpdate({ current: doc(p(t('원래'))), next: md })
+      if (saved.ok && saved.doc !== undefined && saved.doc !== null && schemaProblems(saved.doc).length > 0) disagree.push(`saved-invalid #${round}`)
+      if (!saved.ok && rule === null) disagree.push(`refused-without-rule #${round}: ${saved.message}`)
+    }
+    expect(disagree.slice(0, 10)).toEqual([])
+    expect(ruled).toBeGreaterThan(0)
+    process.stdout.write(`L605_FUZZ md ruled=${ruled}/5000\n`)
+  })
+
+  it('R3-A 규칙 밖 markdown(인용 안 제목·목록 항목 안 인용)은 보내지 않고 이유 · 코드는 굵게 안에서도 코드로만(스키마) · `>` 만 친 줄은 빈 문단 든 인용', () => {
+    const quoted = bodyUpdate({ current: doc(p(t('원래'))), next: '> # 제목' })
+    expect(quoted.ok).toBe(false)
+    if (!quoted.ok) expect(quoted.message).toContain('인용 안에는 제목')
+    const item = bodyUpdate({ current: doc(p(t('원래'))), next: '- a\n\n  > q' })
+    expect(item.ok).toBe(false)
+    if (!item.ok) expect(item.message).toContain('목록 항목 안에는 인용')
+    expect(markdownToAdf('**a `b` c**').content[0]?.content?.find((node) => node.text === 'b')?.marks).toEqual([{ type: 'code' }])
+    expect(markdownToAdf('>').content).toEqual([{ type: 'blockquote', content: [{ type: 'paragraph', content: [] }] }])
+    expect(markdownToAdf('- \n  - x').content[0]?.content?.[0]?.content?.[0]).toEqual({ type: 'paragraph', content: [] })
+  })
+
+  it('R3-A 마지막 그물 — 받은 문서가 이미 규칙 밖(인용 안 제목)이면 고쳐 저장해도 규칙 밖이라 잠그고 이유(「Jira 문서 규칙」)를 미리 말한다', () => {
+    const original = doc({ type: 'blockquote', content: [{ type: 'heading', attrs: { level: 2 }, content: [t('제목')] }] })
+    expect(adfView(original).unsupported).toEqual(['#rules'])
+    const saved = bodyUpdate({ current: original, next: `${adfView(original).markdown}\n\n덧붙임` })
+    expect(saved.ok).toBe(false)
+    if (!saved.ok) expect(saved.message).toContain('Jira 문서 규칙')
+  })
+
+  it('R3-D 왕복 잠금 안내 번호는 md 에 보이는 블록 순서 — 빈 문단은 세지 않는다 · Z08·Z09 정규형 경계(마크 든 빈 문단·줄바꿈의 다른 text 값은 같지 않다)', () => {
+    const locked = doc(p(t('A')), { type: 'paragraph' }, p(t('line one  '), { type: 'hardBreak' }, t('line two')))
+    expect(adfView(locked).unsupported).toEqual(['#roundtrip:2:paragraph'])
+    expect(sameAdf({ a: doc(p(t('a')), { type: 'paragraph', marks: [{ type: 'alignment', attrs: { align: 'center' } }] }), b: doc(p(t('a'))) })).toBe(false)
+    expect(sameAdf({ a: doc(p(t('a'), { type: 'hardBreak', attrs: { text: 'x' } }, t('b'))), b: doc(p(t('a'), { type: 'hardBreak' }, t('b'))) })).toBe(false)
   })
 })

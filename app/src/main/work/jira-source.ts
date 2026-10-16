@@ -34,7 +34,7 @@ import {
   type WorkSpace,
   type WorkStatus,
 } from '../../shared/work.js'
-import { adfToMarkdown, adfView, markdownToAdf, taskStates, unsupportedLabel, withTaskStates, type AdfDoc, type AdfNode } from './adf.js'
+import { adfRuleProblem, adfToMarkdown, adfView, markdownToAdf, taskStates, unsupportedLabel, withTaskStates, type AdfDoc, type AdfNode } from './adf.js'
 import { workError } from './errors.js'
 import { errorText, JiraHttp, type JiraMethod, type JiraReply } from './jira-http.js'
 import {
@@ -191,7 +191,12 @@ export type JiraSourceOptions = {
   pageSize?: number
   maxConcurrent?: number
   sleep?: (ms: number) => Promise<void>
+  /** 지금 시각(ms) — 메타 캐시 수명(R3-B). 시험만 바꾼다. 기본 `Date.now`. */
+  now?: () => number
 }
+
+/** 상태·우선순위·연결 종류 캐시 수명(R3-B) — 작업 페이지에는 스페이스 목록 새로 고침이 없어, Jira 에서 바꾼 워크플로가 이만큼 뒤에는 보이게. */
+const META_CACHE_MS = 5 * 60 * 1000
 
 export function jiraSourceEntry(options: JiraSourceOptions = {}): WorkSourceEntry {
   return {
@@ -221,12 +226,16 @@ export class JiraSource implements WorkSourceClient {
   private readonly orderOf = new Map<string, WorkCapability>()
   private priorities: { id: string; name: string }[] | null = null
   private linkTypes: JiraLinkType[] | null = null
+  private readonly now: () => number
+  private metaSince: number
 
   constructor({ credentials, options }: { credentials: WorkCredentials; options: JiraSourceOptions }) {
     // 손검증을 다시 — 연결 파일·암호문이 어떤 값을 들고 와도 사이트 밖으로 보내지 않는다.
     const checked = checkJiraAccount(credentials.account)
     this.siteProblem = checked.ok ? null : checked.message
     this.pageSize = options.pageSize ?? 50
+    this.now = options.now ?? Date.now
+    this.metaSince = this.now()
     this.http = !checked.ok
       ? null
       : new JiraHttp({ baseUrl: (options.baseUrlOf ?? ((host) => `https://${host}`))(checked.account.site ?? ''), email: checked.account.email ?? '', token: credentials.token, timeoutMs: options.timeoutMs, fetchImpl: options.fetchImpl, maxConcurrent: options.maxConcurrent, sleep: options.sleep })
@@ -334,11 +343,21 @@ export class JiraSource implements WorkSourceClient {
 
   // --- 스페이스 · 상태 ---
 
-  private async listSpaces(): Promise<WorkOutcome> {
-    // 새로 고침 = 스페이스 목록 — 상태·우선순위·연결 종류 캐시도 비운다(R2-E: Jira 에서 워크플로·이름을 바꾸면 재시작 전에도 보이게).
+  private clearMeta(): void {
     this.statusCache.clear()
     this.priorities = null
     this.linkTypes = null
+    this.metaSince = this.now()
+  }
+
+  /** 메타 캐시가 수명(`META_CACHE_MS`)을 넘었으면 비운다(R3-B — 작업 페이지 다시 불러오기가 스페이스 목록을 다시 부르지 않는다). */
+  private expireMeta(): void {
+    if (this.now() - this.metaSince >= META_CACHE_MS) this.clearMeta()
+  }
+
+  private async listSpaces(): Promise<WorkOutcome> {
+    // 새로 고침 = 스페이스 목록 — 상태·우선순위·연결 종류 캐시도 비운다(R2-E: Jira 에서 워크플로·이름을 바꾸면 재시작 전에도 보이게).
+    this.clearMeta()
     const me = await this.read({ path: '/rest/api/3/myself', parse: readMyself, notFound: 'Jira 사용자 정보를 찾지 못했습니다.' })
     if (!me.ok) return me.outcome
     const projects = await this.pages({ path: '/rest/api/3/project/search', query: { expand: 'issueTypes', orderBy: 'key' }, parse: readProjectPage, notFound: '프로젝트 목록을 찾지 못했습니다.', maxResults: Math.min(this.pageSize, 100) })
@@ -405,6 +424,7 @@ export class JiraSource implements WorkSourceClient {
    * 모르는 분류 키는 **그 상태만** 목록에서 뺀다(R1-I — 스페이스 전체를 막지 않는다). 그 상태에 있는 작업은 `toItems` 가 응답 어긋남으로(어느 분류로도 넣지 않는다).
    */
   private async statuses(spaceKey: string): Promise<Step<StatusInfo>> {
+    this.expireMeta()
     const cached = this.statusCache.get(spaceKey)
     if (cached !== undefined) return { ok: true, value: cached }
     const step = await this.read({ path: `/rest/api/3/project/${encodeURIComponent(spaceKey)}/statuses`, parse: readProjectStatuses, notFound: '스페이스가 아닙니다 — 없거나 볼 권한이 없는 프로젝트입니다.' })
@@ -618,6 +638,7 @@ export class JiraSource implements WorkSourceClient {
   /** 계약 5단 ↔ 사이트 우선순위 이름(대소문자 무시), 이름이 없으면 기본 id(R1-J). 대응 없는 값은 거절 — 비우기(null)는 Jira 가 받지 않는다(T4 §14-2). */
   private async priorityId(priority: WorkPriority | null): Promise<Step<string>> {
     if (priority === null) return { ok: false, outcome: rejected('Jira 는 우선순위를 비울 수 없습니다.') }
+    this.expireMeta()
     if (this.priorities === null) {
       const step = await this.pages({ path: '/rest/api/3/priority/search', parse: readPriorityPage, notFound: '우선순위 목록을 찾지 못했습니다.', maxResults: 50 })
       if (!step.ok) return step
@@ -716,7 +737,11 @@ export class JiraSource implements WorkSourceClient {
     if (problem !== null) return rejected(problem)
     const fields: Record<string, unknown> = { project: { key: call.spaceKey }, issuetype: { id: type.id }, summary: call.title }
     if (call.parentId !== null) fields.parent = { id: call.parentId }
-    if (call.body !== undefined && call.body.length > 0) fields.description = withLocalIds(markdownToAdf(call.body))
+    if (call.body !== undefined && call.body.length > 0) {
+      const description = writableAdf(call.body)
+      if (!description.ok) return rejected(description.message)
+      fields.description = description.doc
+    }
     if (call.priority !== undefined && call.priority !== null) {
       const priority = await this.priorityId(call.priority)
       if (!priority.ok) return priority.outcome
@@ -725,7 +750,11 @@ export class JiraSource implements WorkSourceClient {
     for (const value of call.fields ?? []) {
       const field = meta.value.meta.fields.find((entry) => entry.key === value.key)
       if (field === undefined) return rejected('이 종류에 없는 필드입니다.')
-      fields[value.key] = field.shape === 'option' ? { id: value.value } : meta.value.textareas.has(value.key) ? withLocalIds(markdownToAdf(value.value)) : value.value
+      if (field.shape !== 'option' && meta.value.textareas.has(value.key)) {
+        const text = writableAdf(value.value)
+        if (!text.ok) return rejected(`${field.label}: ${text.message}`)
+        fields[value.key] = text.doc
+      } else fields[value.key] = field.shape === 'option' ? { id: value.value } : value.value
     }
     const sent = await this.write({ method: 'POST', path: '/rest/api/3/issue', body: { fields, ...historyOf(writeId) }, refused: 'Jira 가 만들기를 거절했습니다 — 필수 필드·값을 Jira 에서 확인하세요.' })
     if (!sent.ok) {
@@ -803,6 +832,7 @@ export class JiraSource implements WorkSourceClient {
   // --- 연결 ---
 
   private async linkTypeList(): Promise<Step<JiraLinkType[]>> {
+    this.expireMeta()
     if (this.linkTypes !== null) return { ok: true, value: this.linkTypes }
     const step = await this.read({ path: '/rest/api/3/issueLinkType', parse: readLinkTypes, notFound: '연결 종류를 찾지 못했습니다 — 이 사이트는 이슈 연결을 껐습니다.' })
     if (!step.ok) return step
@@ -854,7 +884,9 @@ export class JiraSource implements WorkSourceClient {
   }
 
   private async addComment({ itemId, body }: { itemId: string; body: string }): Promise<WorkOutcome> {
-    const sent = await this.write({ method: 'POST', path: `/rest/api/3/issue/${encodeURIComponent(itemId)}/comment`, body: { body: withLocalIds(markdownToAdf(body)) }, refused: 'Jira 가 코멘트를 거절했습니다.' })
+    const doc = writableAdf(body)
+    if (!doc.ok) return rejected(doc.message)
+    const sent = await this.write({ method: 'POST', path: `/rest/api/3/issue/${encodeURIComponent(itemId)}/comment`, body: { body: doc.doc }, refused: 'Jira 가 코멘트를 거절했습니다.' })
     if (!sent.ok) return sent.outcome
     return this.afterWrite({ prefix: MADE_PREFIX, work: async () => ({ ok: true, result: { op: 'addComment', comment: commentOf(readComment(sent.value.json)) } }) })
   }
@@ -969,6 +1001,8 @@ export function splitOrderBy(query: string): { where: string; orderBy: string | 
       continue
     }
     if (char === '"' || char === "'") quote = char
+    // 따옴표 밖 역슬래시(R3-E) — Jira 가 다음 글자를 이스케이프로 읽으면(`\"`) 짝 검사와 해석이 갈린다. 믿을 수 없어 보내지 않는다(텍스트 폴백).
+    else if (char === '\\') return null
     else if (char === '(') depth += 1
     else if (char === ')') {
       depth -= 1
@@ -1095,7 +1129,16 @@ export function bodyUpdate({ current, next }: { current: AdfDoc; next: string })
   const toggled = withTaskStates({ doc: current, states: taskStates(markdownToAdf(next)) })
   if (toggled !== null && adfToMarkdown(toggled).markdown === next) return { ok: true, doc: toggled }
   if (shown.unsupported.length > 0) return { ok: false, message: lockReason(shown.unsupported) }
-  return { ok: true, doc: next.trim().length === 0 ? null : withLocalIds(markdownToAdf(next)) }
+  if (next.trim().length === 0) return { ok: true, doc: null }
+  const doc = writableAdf(next)
+  return doc.ok ? { ok: true, doc: doc.doc } : doc
+}
+
+/** markdown → 보낼 ADF(R3-A) — Jira 문서 규칙에 맞지 않으면 보내지 않고 이유(`adfRuleProblem`). */
+function writableAdf(markdown: string): { ok: true; doc: AdfDoc } | { ok: false; message: string } {
+  const doc = withLocalIds(markdownToAdf(markdown))
+  const problem = adfRuleProblem(doc)
+  return problem === null ? { ok: true, doc } : { ok: false, message: `보내지 않았습니다 — ${problem}` }
 }
 
 /** ADF 할 일 목록의 빈 `localId` 를 채운다(Jira 가 요구). */

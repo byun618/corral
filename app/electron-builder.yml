@@ -38,6 +38,9 @@ extraResources:
     to: licenses/codicons/LICENSE
   - from: src/renderer/src/assets/codicons/LICENSE-CODE
     to: licenses/codicons/LICENSE-CODE
+  # LIFE-572 — 편집기 TextMate 문법·테마 고지(LIFE-590 반입, vscode MIT + 문법별 원저작 cgmanifest). 문법·테마 자체는 렌더러 번들에 든다.
+  - from: src/renderer/src/assets/textmate/notices
+    to: licenses/textmate
 # 렌더러·main 번들 외 네이티브 모듈 없음
 npmRebuild: false
 mac:

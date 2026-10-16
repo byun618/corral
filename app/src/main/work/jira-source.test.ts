@@ -419,8 +419,8 @@ describe('C4 스페이스·상태·전이', () => {
     h.fixture.corrupt = 'unknown-category'
     const listed = await h.send({ op: 'listStatuses', spaceKey: 'WEB' })
     if (!listed.ok || listed.result.op !== 'listStatuses') throw new Error('statuses')
-    expect(listed.result.statuses.map((status) => status.category)).not.toContain('done')
-    expect(listed.result.statuses.length).toBeGreaterThan(0)
+    // 모르는 분류의 Closed(10011)는 할 일로도 넣지 않고 뺀다 — Open(10010)은 그대로.
+    expect(listed.result.statuses.map((status) => status.key)).toEqual(['10010'])
     // 완료 상태의 작업(CORE-6)은 분류를 지어내지 않는다.
     const done = await h.send({ op: 'getItem', itemId: '20006' })
     expect(done).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })

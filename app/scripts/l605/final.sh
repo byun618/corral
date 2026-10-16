@@ -1,0 +1,51 @@
+#!/bin/zsh
+# LIFE-605 최종 관문 장치(수정 1 R1-Y) — **수정 1 에서는 만들고 자기점검만 했다. 돌리는 것은 최종 관문(리뷰 수렴 뒤 1회)이다.**
+#   app/ 에서: scripts/l605/final.sh <OUT>
+# 창 없는 부분만(격리 Electron 창 금지 — LIFE-603 K1): build → 런타임 번들·data-attrs(기준 대조)·main 게이트 동작(각 양성 대조) · boundary-diff 전후(기준 af6d8d068) ·
+# 자격 grep 검사기 자기시험 · 계약 묶음 3출처 + ADF 출발 말뭉치·퍼즈 + Jira 단위 1회 · 창 없는 Jira 하네스 first·restart(「1 passed」) + 양성 대조 2(일부러 새게 한 빌드 = 토큰 로그 · 디바운스 건너뜀 = 요청 수 2) + 빈 PHASE 실패.
+# 전후 비교(C14)는 before-after.sh 가 따로 돈다. 판정 = quick.sh 의 record·run·run_grep(그 파일에서 그대로 떼어 옴). 결과 = OUT/VERDICT · OUT/ALL.
+set -u
+OUT=${1:A}; mkdir -p $OUT
+export PATH="$HOME/.nvm/versions/node/v24.14.1/bin:$PATH"
+export TMPDIR=/tmp/l605t; mkdir -p $TMPDIR
+cd "$(dirname $0)/../.."
+BASE_COMMIT=af6d8d068
+git rev-parse --short HEAD > $OUT/head.txt
+git status --porcelain > $OUT/porcelain.txt
+: > $OUT/VERDICT
+failed=0
+eval "$(awk '/^record\(\) \{/,/^\}/' scripts/l605/quick.sh)"
+eval "$(awk '/^run\(\) \{/,/^\}/' scripts/l605/quick.sh)"
+eval "$(awk '/^run_grep\(\) \{/,/^\}/' scripts/l605/quick.sh)"
+
+run build 0 npm run build
+run runtime-bundle 0 node scripts/l605/check-runtime-bundle.mjs
+print -r -- 'export const marker = "/rest/api/3/search/jql"' > $OUT/runtime-marker-sample.mjs
+run_grep pc-runtime-bundle 1 '"/rest/api/3/search/jql":1' node scripts/l605/check-runtime-bundle.mjs --extra $OUT/runtime-marker-sample.mjs
+run data-attrs 0 node scripts/l605/check-data-attrs.mjs --base $BASE_COMMIT
+run_grep pc-data-attrs-base 1 'BASE data-connection-account ' node scripts/l605/check-data-attrs.mjs --base HEAD
+run main-registry 0 node scripts/l605/check-main-registry.mjs
+sed 's#if (socket.length === 0 || !/^http:\\/\\/127\\.0\\.0\\.1:\\d{2,5}$/.test(url)) return null;#if (url.length === 0) return null;#' out/main/index.js > $OUT/leaky-main.js
+run_grep pc-main-registry 1 '"ok": false' node scripts/l605/check-main-registry.mjs --bundle $OUT/leaky-main.js
+# C12 전후 — CSP·보안 옵션·CLI 번들·runtime import·renderer/preload 통신 수·의존성(기준 commit 대비).
+run boundary-diff 0 sh scripts/l600/boundary-diff.sh $BASE_COMMIT
+run st-secret-grep 0 node scripts/l605/secret-grep.mjs --self-test
+# C3·C6 — 계약 묶음 3출처 · ADF 말뭉치(출발 말뭉치 32 + 잠금 11 + 고정 씨앗 퍼즈 2) · Jira 단위 1회.
+run_grep contract-adf 0 'Test Files  6 passed (6)' npx vitest run src/main/work/jira-source.contract.test.ts src/main/work/la-source.contract.test.ts src/main/work/mock-source.contract.test.ts src/main/work/adf.test.ts src/main/work/adf-editor.test.ts src/main/work/jira-source.test.ts
+# C1④⑤·C5 — 창 없는 Jira 하네스. 실행마다 새 ROOT(이 실행이 만든 경로만 지운다), 결과 JSON 은 OUT 으로.
+WROOT=/tmp/l605w-f$$
+L605_ROOT=$WROOT L605_PHASE=first run_grep windowless-first 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
+L605_ROOT=$WROOT L605_PHASE=restart run_grep windowless-restart 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
+cp $WROOT/windowless-*.json $OUT/ 2>/dev/null
+[[ $WROOT == /tmp/l605w-f* ]] && rm -rf $WROOT
+for pc in leak search-twice; do
+  [[ $pc == leak ]] && flip='+   "c1Secrets": false,' || flip='+     "requests": 2,'
+  L605_PC=$pc L605_ROOT=$WROOT-$pc L605_PHASE=first run_grep pc-windowless-$pc 1 "$flip" npx vitest run scripts/l605/windowless.test.tsx
+  cp $WROOT-$pc/windowless-first.json $OUT/pc-windowless-$pc.json 2>/dev/null
+  [[ $WROOT == /tmp/l605w-f* ]] && rm -rf $WROOT-$pc
+done
+L605_ROOT=$WROOT-nophase run_grep st-windowless-empty-phase 1 'L605_PHASE=first|restart 가 필요하다' npx vitest run scripts/l605/windowless.test.tsx
+[[ $WROOT == /tmp/l605w-f* ]] && rm -rf $WROOT-nophase
+print -r -- "$WROOT $WROOT-leak $WROOT-search-twice $WROOT-nophase" > $OUT/tmp-roots.txt
+print -r -- "$([[ $failed == 0 ]] && echo pass || echo "fail $failed")" > $OUT/ALL
+cat $OUT/ALL

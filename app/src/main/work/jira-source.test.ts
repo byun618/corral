@@ -2,7 +2,7 @@
 // 자격은 가짜만(`test-kit.ts`). 요청 수·본문은 fixture 의 `requests`(자격 없음)로 본다.
 import { createServer } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { WorkCall, WorkResponse } from '../../shared/work.js'
+import { spaceCapabilities, type WorkCall, type WorkCapabilities, type WorkResponse } from '../../shared/work.js'
 import { basicHeader, errorText, JiraHttp, parseRetryAfter } from './jira-http.js'
 import { JiraRestFixture } from './jira-rest-fixture.js'
 import { bodyUpdate, checkJiraAccount, jiraFixtureBaseFromEnv, jiraSourceEntry, jqlString, normalizeJiraSite, splitOrderBy, textSearchWords, transitionPlan } from './jira-source.js'
@@ -293,7 +293,7 @@ describe('C2 오류 분류', () => {
     expect(broken).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
     if (!broken.ok) expect(broken.error.message).toContain('fields.status')
     h.fixture.corrupt = 'none'
-    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/issue/20001', status: 302, headers: { Location: 'https://evil.example/steal' }, once: true })
+    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/issue/20001', status: 302, headers: { Location: 'http://127.0.0.1:9/steal' }, once: true })
     expect(await h.send({ op: 'getItem', itemId: '20001' })).toMatchObject({ ok: false, error: { kind: 'invalid_response', status: 302 } })
   })
 
@@ -363,6 +363,83 @@ describe('수정 1 — 순서 능력 (R1-N·R1-O·N20)', () => {
     const sent = h.fixture.requests.slice(before)
     expect(sent.some((request) => request.path === '/rest/api/3/project/search')).toBe(false)
     expect(sent.filter((request) => request.path === '/rest/api/3/search/jql').map((request) => request.query.jql)).toEqual(['project = "CORE" ORDER BY Rank ASC'])
+  })
+})
+
+describe('수정 1 R1-K — 리뷰어 생존 뮤테이션을 죽이는 시험', () => {
+  it('N01 close 뒤에는 보내지 않는다 — 클라이언트 close 다음 요청은 fixture 에 닿지 않는다(not_connected)', async () => {
+    const h = await connected()
+    const client = jiraSourceEntry({ pageSize: 2, sleep: async () => {}, baseUrlOf: () => h.url }).create({ token: FAKE_JIRA_TOKEN, account: { site: 'fixture.atlassian.net', email: FAKE_JIRA_EMAIL } })
+    expect((await client.call({ op: 'listStatuses', spaceKey: 'CORE' })).ok).toBe(true)
+    client.close()
+    const before = h.fixture.requests.length
+    expect(await client.call({ op: 'getItem', itemId: '20001' })).toMatchObject({ ok: false, error: { kind: 'not_connected' } })
+    expect(h.fixture.requests.length).toBe(before)
+  })
+
+  it('N03 지금 못 하는 전이(isAvailable false)는 허용 목록에 넣지 않는다 · 되는 전이는 넣는다(양성 대조)', async () => {
+    const h = await connected()
+    const status = (id: string, name: string, key: string): Record<string, unknown> => ({ id, name, statusCategory: { id: 4, key, name: key } })
+    h.fixture.faults.push({ match: (request) => request.method === 'GET' && request.path === '/rest/api/3/issue/20002/transitions', status: 200, once: true, body: { transitions: [
+      { id: '11', name: 'Start', to: status('10001', 'In Progress', 'indeterminate'), hasScreen: false, isGlobal: false, isInitial: false, isAvailable: false, isConditional: true, looped: false, fields: {} },
+      { id: '21', name: 'Review', to: status('10002', 'In Review', 'indeterminate'), hasScreen: false, isGlobal: false, isInitial: false, isAvailable: true, isConditional: false, looped: false, fields: {} },
+    ] } })
+    const listed = await h.send({ op: 'listTransitions', itemId: '20002' })
+    if (!listed.ok || listed.result.op !== 'listTransitions') throw new Error('transitions')
+    expect(listed.result.statusKeys).toEqual(['10002'])
+  })
+
+  it('N06 우선순위 비우기(null)는 보내기 전에 거절 — PUT 0', async () => {
+    const h = await connected()
+    const puts = (): number => h.fixture.requests.filter((request) => request.method === 'PUT' && request.path === '/rest/api/3/issue/20002').length
+    const before = puts()
+    expect(await h.send({ op: 'updateItem', itemId: '20002', fields: { priority: null }, ifVersion: null })).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('비울 수 없습니다') } })
+    expect(puts()).toBe(before)
+  })
+
+  it('N07 이력의 corralWriteId 는 모양이 맞을 때만 쓰기 id — 모양 밖이면 null(지어낸 id 로 corral 기록을 지우지 않는다)', async () => {
+    const h = await connected()
+    const entry = (id: string, writeId: string): Record<string, unknown> => ({ id, created: '2026-10-10T00:00:00.000+0000', author: { accountId: 'acc-1', displayName: 'Fixture User' }, items: [{ field: 'summary', fieldId: 'summary', fromString: 'a', toString: 'b' }], historyMetadata: { extraData: { corralWriteId: writeId } } })
+    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/issue/20002/changelog', status: 200, once: true, body: { values: [entry('1', '../bad id'), entry('2', 'w-ok_1')], isLast: true, startAt: 0, maxResults: 100, total: 2 } })
+    const history = await h.send({ op: 'listHistory', itemId: '20002' })
+    if (!history.ok || history.result.op !== 'listHistory') throw new Error('history')
+    expect(history.result.entries.map((row) => row.writeId)).toEqual([null, 'w-ok_1'])
+  })
+
+  it('N10 이 출처에 없는 연결 칸은 받지 않는다 — 네트워크 전 거절', async () => {
+    const h = await connected()
+    const before = h.fixture.requests.length
+    expect(await h.service.addConnection({ sourceId: 'jira', token: FAKE_JIRA_TOKEN, account: { ...JIRA_ACCOUNT, password: 'x' }, replaceId: null })).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+    expect(h.fixture.requests.length).toBe(before)
+  })
+
+  it('N14 하위 작업의 부모 지우기는 거절 · M20 다른 스페이스로 옮기기는 첫 가드에서 거절 — 둘 다 PUT 0', async () => {
+    const h = await connected()
+    const puts = (): number => h.fixture.requests.filter((request) => request.method === 'PUT').length
+    const before = puts()
+    expect(await h.send({ op: 'setParent', itemId: '20005', spaceKey: 'CORE', parentId: null, ifVersion: null })).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('하위 작업') } })
+    // 다른 스페이스 키 — 부모 없음(null)이면 부모 쪽 가드를 지나므로 첫 가드만이 막는다.
+    expect(await h.send({ op: 'setParent', itemId: '20002', spaceKey: 'WEB', parentId: null, ifVersion: null })).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('다른 스페이스') } })
+    expect(puts()).toBe(before)
+    expect(h.fixture.issue('20002')?.parentId).toBe('20001')
+  })
+
+  it('N17 기본값 있는 필수 필드(hasDefaultValue)는 묻지 않는다 — 기본값 없는 필수만 칸으로', async () => {
+    const h = await connected()
+    const field = (fieldId: string, hasDefaultValue: boolean): Record<string, unknown> => ({ fieldId, key: fieldId, name: fieldId, required: true, hasDefaultValue, operations: ['set'], schema: { type: 'string', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:textfield', customId: 1 } })
+    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/issue/createmeta/CORE/issuetypes/10001', status: 200, once: true, body: { fields: [field('summary', false), field('customfield_20001', true), field('customfield_20002', false)], startAt: 0, maxResults: 50, total: 3, isLast: true } })
+    const meta = await h.send({ op: 'getCreateMeta', spaceKey: 'CORE', kindKey: '10001' })
+    if (!meta.ok || meta.result.op !== 'getCreateMeta') throw new Error('meta')
+    expect(meta.result.meta.fields.map((entry) => entry.key)).toEqual(['customfield_20002'])
+  })
+
+  it('M18 스페이스 능력은 연결 능력을 좁히기만 — 연결이 꺼진 능력을 스페이스가 켜지 못한다', () => {
+    const off = { state: 'disabled', reason: '연결 전체 꺼짐' } as const
+    const base: WorkCapabilities = { ...jiraSourceEntry({}).create({ token: FAKE_JIRA_TOKEN, account: { site: 'fixture.atlassian.net', email: FAKE_JIRA_EMAIL } }).capabilities(), order: off }
+    expect(spaceCapabilities({ capabilities: base, space: { capabilities: { order: { state: 'on' } } } }).order).toEqual(off)
+    // 양성 대조 — 연결이 켠 능력은 스페이스가 끈다.
+    const on: WorkCapabilities = { ...base, order: { state: 'on' } }
+    expect(spaceCapabilities({ capabilities: on, space: { capabilities: { order: { state: 'disabled', reason: '보드 없음' } } } }).order).toEqual({ state: 'disabled', reason: '보드 없음' })
   })
 })
 
@@ -580,10 +657,13 @@ describe('수정 1 — 질의 범위·쪽 순회 (R1-C·R1-E·N12·N13)', () => 
     expect(h.fixture.requests.length - issueBean).toBeLessThanOrEqual(4)
   })
 
-  it('R1-E 오프셋 쪽(프로젝트 목록)이 빈 쪽인데 「더 있음」 이면 응답 어긋남 — 조용히 자르지 않는다', async () => {
+  it('R1-E 오프셋 쪽(프로젝트 목록)이 빈 쪽인데 「더 있음」 이면 응답 어긋남 — 조용히 자르지 않고, 그 쪽에서 바로 멈춘다(요청 1)', async () => {
     const h = await connected()
-    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/project/search', status: 200, body: { values: [], isLast: false, startAt: 0, maxResults: 2, total: 9 } })
+    const projects = (request: { path: string }): boolean => request.path === '/rest/api/3/project/search'
+    h.fixture.faults.push({ match: projects, status: 200, body: { values: [], isLast: false, startAt: 0, maxResults: 2, total: 9 } })
+    const before = h.fixture.requests.filter(projects).length
     expect(await h.send({ op: 'listSpaces' })).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    expect(h.fixture.requests.filter(projects).length - before).toBe(1)
   })
 
   it('N13 검색 결과 상한 100 — 넘으면 앞 100건 + truncated', async () => {

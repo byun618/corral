@@ -2,7 +2,7 @@
 # LIFE-605 수정 1 R1-K — 리뷰어 r1 뮤테이션(claude-r1-raw/scratch/mut.py·mut2.py·mut3.py)을 이 worktree 코드에 옮겨 다시 돌린다.
 #   python3 -I scripts/l605/mut.py <OUT> [이름…]   (app/ 에서, **커밋된 깨끗한 트리에서만** — 끝나면 `git checkout -- <파일>` 로 되돌린다)
 # 행 = (이름, 파일, 바꿀 글, 바꾼 글). 리뷰어 원문 앵커가 수정 1 로 바뀐 행은 같은 뜻의 패치로 옮기고 이름에 `@moved` 를 붙였다.
-# 바꿀 글이 None = 코드가 사라져 해당 없음(사유 칸). `X…` 행 = 수정 1 의 새 규칙마다 하나씩 더한 뮤테이션.
+# 바꿀 글이 None = 코드가 사라져 해당 없음(사유 칸). M01 은 원문 앵커가 머리 주석의 `redirect: 'manual'` 에 먼저 걸려 코드를 안 바꿨다(mut1 회차 생존) — 코드 줄로 옮겼다. `X…` 행 = 수정 1 의 새 규칙마다 하나씩 더한 뮤테이션.
 # 판정: vitest 가 실패(exit≠0)면 KILLED, 통과면 SURVIVED, 앵커가 없으면 NO-MATCH(실패로 센다 — 옮기기를 빠뜨린 것).
 # 결과: OUT/<이름>.txt(출력 끝 6000자) · OUT/RESULTS.jsonl · OUT/SUMMARY. 생존·NO-MATCH 가 0 이면 exit 0.
 import json, os, re, subprocess, sys
@@ -11,7 +11,7 @@ APP = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 env = dict(os.environ, PATH=os.path.expanduser('~/.nvm/versions/node/v24.14.1/bin') + ':' + os.environ['PATH'], TMPDIR='/tmp/l605t')
 TESTS = ['src/main/work/jira-source.test.ts', 'src/main/work/adf.test.ts', 'src/main/work/adf-editor.test.ts', 'src/main/work/jira-source.contract.test.ts', 'src/main/work/service.test.ts', 'src/main/work/store.test.ts',
          'src/renderer/src/components/ConnectionsSection.test.tsx', 'src/renderer/src/components/TasksPage.jira.test.tsx', 'src/renderer/src/markdown.test.tsx']
-M = [('M01-redirect-follow', 'src/main/work/jira-http.ts', "redirect: 'manual'", "redirect: 'follow'"),
+M = [('M01-redirect-follow@moved', 'src/main/work/jira-http.ts', "JSON.stringify(body), redirect: 'manual', signal", "JSON.stringify(body), redirect: 'follow', signal"),
  ('M02-no-historyMetadata', 'src/main/work/jira-source.ts', 'return writeId === null ? {} : { historyMetadata:', 'return true ? {} : { historyMetadata:'),
  ('M03-userinfo-allowed', 'src/main/work/jira-source.ts', "if (url.username !== '' || url.password !== '' || url.port !== '')", 'if (false)'),
  ('M04-jql-no-backslash-escape', 'src/main/work/jira-source.ts', 'replace(/[\\\\"]/g, (char) => `\\\\${char}`)', 'replace(/["]/g, (char) => `\\\\${char}`)'),

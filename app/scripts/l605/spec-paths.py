@@ -9,7 +9,6 @@ USED = [('platform', 'get', '/rest/api/3/myself'), ('platform', 'get', '/rest/ap
   ('platform', 'get', '/rest/api/3/issue/{issueIdOrKey}/transitions'), ('platform', 'post', '/rest/api/3/issue/{issueIdOrKey}/transitions'), ('platform', 'get', '/rest/api/3/issue/{issueIdOrKey}/changelog'),
   ('platform', 'get', '/rest/api/3/issue/{issueIdOrKey}/comment'), ('platform', 'post', '/rest/api/3/issue/{issueIdOrKey}/comment'), ('platform', 'get', '/rest/api/3/issue/createmeta/{projectIdOrKey}/issuetypes/{issueTypeId}'),
   ('platform', 'get', '/rest/api/3/priority/search'), ('platform', 'get', '/rest/api/3/issueLinkType'), ('platform', 'post', '/rest/api/3/issueLink'), ('platform', 'delete', '/rest/api/3/issueLink/{linkId}'),
-  ('platform', 'get', '/rest/api/3/issue/{issueIdOrKey}/remotelink'), ('platform', 'post', '/rest/api/3/issue/{issueIdOrKey}/remotelink'), ('platform', 'delete', '/rest/api/3/issue/{issueIdOrKey}/remotelink'),
   ('software', 'get', '/rest/agile/1.0/board'), ('software', 'put', '/rest/agile/1.0/issue/rank')]
 LEGACY = [('platform', 'get', '/rest/api/3/search'), ('platform', 'get', '/rest/api/3/issue/createmeta')]
 bad = 0

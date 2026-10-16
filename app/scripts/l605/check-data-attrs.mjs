@@ -30,7 +30,8 @@ const ATTRS = [
 ]
 let failed = 0
 for (const attr of ATTRS) {
-  const pattern = new RegExp(`${attr}(?=[="'\\s])`)
+  // 이름 뒤에 = · 따옴표 · 공백 · 태그 끝(값 없는 속성 `data-x>`)이 와야 한다 — 접두사만 같은 이름을 세지 않는다(q1 회차: `>` 를 빠뜨려 값 없는 속성을 MISS 로 셌다).
+  const pattern = new RegExp(`${attr}(?=[="'\\s>/])`)
   const hits = [...text].filter(([, body]) => pattern.test(body)).map(([file]) => path.relative(root, file))
   console.log(`${hits.length > 0 ? 'ok  ' : 'MISS'} ${attr} — ${hits.join(', ') || '없음'}`)
   if (hits.length === 0) failed += 1

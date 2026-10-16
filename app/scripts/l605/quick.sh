@@ -68,6 +68,8 @@ run jira-renderer 0 npx vitest run src/renderer/src/components/ConnectionsSectio
 for brk in issue-no-status transition-no-to unknown-category rank-207 project-no-key search-issues-object; do
   L605_BREAK=$brk run_grep pc-$brk 1 'failed | ' npx vitest run src/main/work/jira-source.contract.test.ts
 done
+# fixture·출처가 쓰는 경로가 공식 명세(받아 둔 사본 — 커밋 안 함)에 있고 옛 경로는 deprecated 인가.
+run spec-paths 0 python3 -I scripts/l605/spec-paths.py /tmp/l605t/spec
 run data-attrs 0 node scripts/l605/check-data-attrs.mjs
 print -r -- 'export const nothing = 1' > $OUT/data-attrs-empty-sample.tsx
 run_grep pc-data-attrs 1 'MISS data-connection-account ' node scripts/l605/check-data-attrs.mjs --extra $OUT/data-attrs-empty-sample.tsx

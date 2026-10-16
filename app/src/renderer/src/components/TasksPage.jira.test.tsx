@@ -171,6 +171,24 @@ describe('LIFE-605 작업 페이지 × Jira fixture', () => {
     expect(q('[data-issue-body-lock]')).toBeNull()
   })
 
+  it('R4-B 상세 — 빈 문단이 든 본문은 편집하는 동안 「빈 줄 간격이 빠진다」 안내, 편집 전·빈 문단 없는 본문은 안내 없음', async () => {
+    await rig({ seed: (server) => {
+      const issue = server.issue('20001')
+      if (issue !== null) issue.description = { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: '위' }] }, { type: 'paragraph' }, { type: 'paragraph', content: [{ type: 'text', text: '아래' }] }] }
+    } })
+    click('[data-issue-card="CORE-1"]')
+    await settle()
+    expect(q('[data-issue-body-save-note]')).toBeNull()
+    click('[data-issue-body-edit]')
+    await settle()
+    expect(el('[data-issue-body-save-note]').textContent).toContain('빈 줄 간격(빈 문단)이 빠집니다')
+    click('[data-issue-card="CORE-2"]')
+    await settle()
+    click('[data-issue-body-edit]')
+    await settle()
+    expect(q('[data-issue-body-save-note]')).toBeNull()
+  })
+
   it('상태 메뉴 — 완료는 갈래 없이 한 줄 · 필수 필드 전이는 흐린 행 + 이유(누를 수 없다)', async () => {
     const r = await rig()
     const moved = await r.service.request({ requestId: 'pre', connectionId: r.connectionId, call: { op: 'changeStatus', itemId: '20002', statusKey: '10001', ifVersion: null } })

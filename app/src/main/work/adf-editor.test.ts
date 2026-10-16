@@ -2,7 +2,7 @@
 // 지켜야 할 것: **조용한 변경 0** — 잠기지 않은 본문은 「보이는 md 를 그대로(또는 덧붙여) 저장해도 원래 요소가 같다」, 못 지키는 모양은 잠긴다.
 // 말뭉치 = 리뷰 r1 재현(`raw/review/claude-r1-raw/scratch/zz-review-adf-real.test.ts` · E5) + Jira 편집기가 실제로 내는 노드 마크·링크 속성 모양.
 import { describe, expect, it } from 'vitest'
-import { adfRuleProblem, adfView, canonicalAdf, markdownToAdf, sameAdf, type AdfDoc, type AdfMark, type AdfNode } from './adf.js'
+import { adfRuleProblem, adfToMarkdown, adfView, canonicalAdf, losesGaps, markdownToAdf, sameAdf, type AdfDoc, type AdfMark, type AdfNode } from './adf.js'
 import { bodyUpdate } from './jira-source.js'
 
 const t = (text: string, marks?: AdfMark[]): AdfNode => (marks === undefined ? { type: 'text', text } : { type: 'text', text, marks })
@@ -561,14 +561,14 @@ describe('R3-A ADF 스키마 오라클 — 나가는 ADF 가 문서 규칙 안',
     process.stdout.write(`L605_FUZZ md ruled=${ruled}/5000\n`)
   })
 
-  it('R3-A 규칙 밖 markdown(인용 안 제목·목록 항목 안 인용)은 보내지 않고 이유 · 코드는 굵게 안에서도 코드로만(스키마) · `>` 만 친 줄은 빈 문단 든 인용', () => {
+  it('R3-A 규칙 밖 markdown(인용 안 제목·목록 항목 안 인용)은 보내지 않고 이유 · 굵게 안의 코드는 마크를 그대로 실어 규칙 그물이 거절(R4-A) · `>` 만 친 줄은 빈 문단 든 인용', () => {
     const quoted = bodyUpdate({ current: doc(p(t('원래'))), next: '> # 제목' })
     expect(quoted.ok).toBe(false)
     if (!quoted.ok) expect(quoted.message).toContain('인용 안에는 제목')
     const item = bodyUpdate({ current: doc(p(t('원래'))), next: '- a\n\n  > q' })
     expect(item.ok).toBe(false)
     if (!item.ok) expect(item.message).toContain('목록 항목 안에는 인용')
-    expect(markdownToAdf('**a `b` c**').content[0]?.content?.find((node) => node.text === 'b')?.marks).toEqual([{ type: 'code' }])
+    expect(markdownToAdf('**a `b` c**').content[0]?.content?.find((node) => node.text === 'b')?.marks).toEqual([{ type: 'strong' }, { type: 'code' }])
     expect(markdownToAdf('>').content).toEqual([{ type: 'blockquote', content: [{ type: 'paragraph', content: [] }] }])
     expect(markdownToAdf('- \n  - x').content[0]?.content?.[0]?.content?.[0]).toEqual({ type: 'paragraph', content: [] })
   })
@@ -586,5 +586,85 @@ describe('R3-A ADF 스키마 오라클 — 나가는 ADF 가 문서 규칙 안',
     expect(adfView(locked).unsupported).toEqual(['#roundtrip:2:paragraph'])
     expect(sameAdf({ a: doc(p(t('a')), { type: 'paragraph', marks: [{ type: 'alignment', attrs: { align: 'center' } }] }), b: doc(p(t('a'))) })).toBe(false)
     expect(sameAdf({ a: doc(p(t('a'), { type: 'hardBreak', attrs: { text: 'x' } }, t('b'))), b: doc(p(t('a'), { type: 'hardBreak' }, t('b'))) })).toBe(false)
+  })
+})
+
+describe('수정 4 — 리뷰 r4 (R4-A·R4-B·R4-G)', () => {
+  it('R4-A 굵게·기울임·취소선 안의 코드는 조용히 서식을 잃지 않는다 — 둘러싼 마크 조합 전부(깊이 2)에서 보내지 않고 이유, 링크만 둘러싸면 마크 그대로 보낸다(조용한 변경 0)', () => {
+    const wraps = [
+      { mark: 'strong', open: '**', close: '**' },
+      { mark: 'em', open: '*', close: '*' },
+      { mark: 'em', open: '_', close: '_' },
+      { mark: 'strike', open: '~~', close: '~~' },
+      { mark: 'link', open: '[', close: '](https://e.x/a)' },
+    ]
+    const silent: string[] = []
+    let refused = 0
+    let sent = 0
+    for (const outer of [null, ...wraps]) {
+      for (const inner of [null, ...wraps]) {
+        // `***` 처럼 같은 글자 표지가 붙으면 md 해석이 갈린다 — 조합에서 뺀다(같은 마크 겹침도).
+        if (outer !== null && inner !== null && (outer.mark === inner.mark || outer.open[0] === inner.open[0])) continue
+        for (const [before, after] of [['', ''], ['a ', ' b']]) {
+          let md = `${before}\`c\`${after}`
+          if (inner !== null) md = `${inner.open}${md}${inner.close}`
+          if (outer !== null) md = `x ${outer.open}${md}${outer.close} y`
+          const around = new Set([outer?.mark, inner?.mark].filter((mark): mark is string => mark !== undefined))
+          const saved = bodyUpdate({ current: doc(p(t('원래'))), next: md })
+          const code = markdownToAdf(md).content[0]?.content?.find((node) => node.text === 'c')
+          const marks = new Set((code?.marks ?? []).map((mark) => mark.type))
+          // 실은 마크 = 둘러싼 마크 + 코드(빼지 않는다).
+          if ([...around].some((mark) => !marks.has(mark)) || !marks.has('code')) silent.push(`dropped ${JSON.stringify(md)} → ${[...marks].join(',')}`)
+          const formatted = [...around].some((mark) => mark !== 'link')
+          if (formatted) {
+            refused += 1
+            if (saved.ok) silent.push(`sent ${JSON.stringify(md)}`)
+            else if (!saved.message.includes('굵게·기울임·취소선 안의 코드')) silent.push(`reason ${JSON.stringify(md)}: ${saved.message}`)
+          } else {
+            sent += 1
+            if (!saved.ok || saved.doc === undefined || saved.doc === null) silent.push(`refused ${JSON.stringify(md)}`)
+            else if (schemaProblems(saved.doc).length > 0) silent.push(`schema ${JSON.stringify(md)}`)
+          }
+        }
+      }
+    }
+    expect(silent).toEqual([])
+    expect(refused).toBeGreaterThan(30)
+    expect(sent).toBe(6)
+  })
+
+  it('R4-B 고쳐 저장하면 빈 문단 간격이 빠지는 본문만 참 — 사이·끝 빈 문단은 참, 빈 문단 없는 본문·md 가 다시 만드는 빈 항목 머리 문단은 거짓', () => {
+    const gaps = doc(p(t('a')), { type: 'paragraph' }, { type: 'paragraph', content: [] }, p(t('b')), { type: 'paragraph', attrs: { localId: 'z' } })
+    expect(losesGaps(gaps)).toBe(true)
+    const saved = bodyUpdate({ current: gaps, next: 'a\n\nb\n\nc' })
+    if (!saved.ok || saved.doc === undefined || saved.doc === null) throw new Error('saved')
+    expect(saved.doc.content.filter((node) => node.type === 'paragraph' && (node.content ?? []).length === 0)).toHaveLength(0)
+    expect(losesGaps(doc(p(t('끝')), { type: 'paragraph' }))).toBe(true)
+    expect(losesGaps(doc({ type: 'blockquote', content: [p(t('q')), { type: 'paragraph' }] }))).toBe(true)
+    expect(losesGaps(doc(p(t('a')), p(t('b'))))).toBe(false)
+    expect(losesGaps(doc())).toBe(false)
+    const head = doc({ type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'paragraph', content: [] }, { type: 'bulletList', content: [{ type: 'listItem', content: [p(t('x'))] }] }] }] })
+    expect(adfToMarkdown(head).markdown).toBe('- \n  - x')
+    expect(losesGaps(head)).toBe(false)
+  })
+
+  it('R4-G 규칙 그물을 받은 문서 모양으로 직접 — 빈 인용·빈 목록 셋·첫 자식이 목록·빈 항목·코드+굵게는 이유, 규칙 안 문서는 null · md 는 이 모양을 만들지 않는다(md 퍼즈가 스키마로 확인)', () => {
+    const cases: [string, AdfDoc, string][] = [
+      ['empty quote', doc({ type: 'blockquote', content: [] }), '빈 인용'],
+      ['empty bullet', doc({ type: 'bulletList', content: [] }), '빈 목록'],
+      ['empty ordered', doc({ type: 'orderedList', content: [] }), '빈 목록'],
+      ['empty task', doc({ type: 'taskList', attrs: { localId: 'l' }, content: [] }), '빈 목록'],
+      ['item first list', doc({ type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'bulletList', content: [{ type: 'listItem', content: [p(t('x'))] }] }] }] }), '글로 시작'],
+      ['empty item', doc({ type: 'orderedList', content: [{ type: 'listItem', content: [] }] }), '글로 시작'],
+      ['code strong', doc(p(t('x', [{ type: 'strong' }, { type: 'code' }]))), '굵게·기울임·취소선 안의 코드'],
+      ['code em in quote', doc({ type: 'blockquote', content: [p(t('x', [{ type: 'code' }, { type: 'em' }]))] }), '굵게·기울임·취소선 안의 코드'],
+    ]
+    for (const [name, value, reason] of cases) {
+      expect(adfRuleProblem(value), name).toContain(reason)
+      expect(schemaProblems(value).length, name).toBeGreaterThan(0)
+    }
+    expect(adfRuleProblem(doc(p(t('x', [link('https://e.x'), { type: 'code' }]))))).toBeNull()
+    expect(adfRuleProblem(doc({ type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'codeBlock', content: [t('c')] }] }] }))).toBeNull()
+    for (const [name, value] of Object.entries(EDITABLE)) expect(adfRuleProblem(value), name).toBeNull()
   })
 })

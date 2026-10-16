@@ -8,7 +8,9 @@
 //              L605_ROOT=/tmp/l605w-<n> L605_PHASE=restart npx vitest run scripts/l605/windowless.test.tsx   → 새 프로세스 = 재시작 뒤 연결 유지·카드 표시 칸·grep
 //              L605_ROOT=/tmp/l605w-<n> L605_PHASE=lifecycle …   → (restart 뒤) 실패한 추가 · 토큰 교체 · 해제를 지날 때마다 grep(R2-K). L605_PC=leak 이면 교체 뒤 새 토큰을 로그에. 렌더러로 가는 반환값도 같은 바늘로 훑는다(R3-G — L605_PC=leak-ipc 이면 반환값 쪽에 새 토큰).
 // 양성 대조(판정이 늘 참이 아님을 보인다 — 시험이 실패해야 한다): L605_PC=leak(일부러 새게 한 빌드 — 토큰·Basic 값을 main 로그에 한 줄 → grep 적중) ·
-// L605_PC=search-twice(디바운스를 건너뛴 것처럼 같은 질의를 한 번 더 보냄 → 요청 수 2).
+// L605_PC=search-twice(디바운스를 건너뛴 것처럼 같은 질의를 한 번 더 보냄 → 요청 수 2) ·
+// L605_PC=leak-note(R4-H — Jira 응답 글의 자격 지움을 끈 빌드: 자격을 되울리는 질의 거부 사유가 서비스 → IPC → 화면으로 → 반환값 훑기 적중).
+// first 단계도 렌더러로 간 모든 IPC 응답(검색 안내·오류 문구)과 화면 글을 같은 바늘로 훑는다(R4-H — fixture 가 자격을 되울리는 거부 사유·쓰기 오류를 낸다).
 // L605_ROOT·L605_PHASE 가 **둘 다** 없을 때만 건너뛴다(npm test 에서는 skipped). 하나라도 있으면 ROOT 가 `/tmp/l605w-*` 이고 PHASE 가 first·restart 여야 한다(빈 값 포함 실패).
 // 결과 = ROOT/windowless-<phase>.json(판정 verdict 포함) · 판정이 틀리면 시험 실패(exit 1). 최종 관문은 「1 passed」 를 본다 — 「skipped」 는 무효.
 import { spawnSync } from 'node:child_process'
@@ -17,12 +19,12 @@ import { request as httpRequest } from 'node:http'
 import path from 'node:path'
 import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { WorkRequest, WorkResponse, WorkSettingsState } from '../../src/shared/work.js'
 import { closeLog, log, openLog } from '../../src/main/log.js'
 import { UiPrefsStore, type UiPrefs } from '../../src/main/ui-prefs.js'
 import { WorkActivityStore } from '../../src/main/work/activity-store.js'
-import { basicHeader } from '../../src/main/work/jira-http.js'
+import { basicHeader, JiraHttp } from '../../src/main/work/jira-http.js'
 import { JiraRestFixture } from '../../src/main/work/jira-rest-fixture.js'
 import { jiraSourceEntry } from '../../src/main/work/jira-source.js'
 import { laSourceEntry } from '../../src/main/work/la-source.js'
@@ -73,6 +75,10 @@ const nodeFetch: typeof fetch = async (input, init) => {
 }
 
 let listener: (value: WorkSettingsState) => void = () => {}
+/** 렌더러로 간 IPC 응답 전부(R4-H — 반환값 훑기 대상). */
+const ipcReturns: WorkResponse[] = []
+/** preload 의 workRequest 자리 — 렌더러와 하네스가 같은 길로 부른다. */
+let workRequest: (request: WorkRequest) => Promise<WorkResponse> = () => Promise.reject(new Error('bridge 전'))
 
 /** index.ts 의 작업 배선과 같은 부품 — 경로만 ROOT 아래, Jira 주소만 fixture. */
 async function boot(): Promise<{ service: WorkService; prefs: UiPrefsStore; fixture: JiraRestFixture }> {
@@ -98,13 +104,18 @@ async function boot(): Promise<{ service: WorkService; prefs: UiPrefsStore; fixt
 }
 
 function bridge({ service, prefs }: { service: WorkService; prefs: UiPrefsStore }): void {
+  workRequest = async (request) => {
+    const response = await service.request(request)
+    ipcReturns.push(response)
+    return response
+  }
   Reflect.set(window, 'corral', {
     getUiPrefs: async () => prefs.get(),
     setUiPrefs: (patch: Partial<UiPrefs>) => prefs.update(patch),
     getWorkSettings: async () => service.settings(),
     onWorkSettings: (next: (value: WorkSettingsState) => void) => { listener = next; return () => {} },
     workActivity: async () => ({ ok: true, records: [] }),
-    workRequest: (request: WorkRequest): Promise<WorkResponse> => service.request(request),
+    workRequest: (request: WorkRequest): Promise<WorkResponse> => workRequest(request),
   })
 }
 
@@ -168,6 +179,8 @@ describe.runIf(requested)('LIFE-605 창 없는 Jira 하네스', () => {
   it(`phase ${PHASE}`, async () => {
     expect({ root: enabled, phase: PHASE === 'first' || PHASE === 'restart' || PHASE === 'lifecycle' }, `L605_ROOT=/tmp/l605w-* · L605_PHASE=first|restart|lifecycle 가 필요하다 (지금 ROOT='${ROOT}' PHASE='${PHASE}')`).toEqual({ root: true, phase: true })
     const result: Record<string, unknown> = { phase: PHASE, at: new Date().toISOString() }
+    // 일부러 새게 한 빌드(R4-H 양성 대조) — Jira 응답 글의 자격 지움을 끈다. 제품 코드는 그대로, 이 프로세스의 그 함수만.
+    if (PC === 'leak-note') vi.spyOn(JiraHttp.prototype, 'redact').mockImplementation((text) => text)
     const parts = await boot()
     bridge(parts)
     try {
@@ -189,15 +202,26 @@ describe.runIf(requested)('LIFE-605 창 없는 Jira 하네스', () => {
         typeSearch(host, '랜딩 ==')
         await settleQuery()
         result.c5Fallback = { note: host.querySelector('[data-search-note]')?.textContent?.includes('텍스트') === true }
+        // R4-H — 자격을 되울리는 Jira(거부 사유·쓰기 오류 글에 토큰·Basic 값) — 그 글이 서비스를 지나 화면으로 간다. 반환값·화면 훑기가 본다.
+        const echo = `${FAKE_JIRA_TOKEN} ${basicHeader({ email: FAKE_JIRA_EMAIL, token: FAKE_JIRA_TOKEN })}`
+        parts.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/search/jql' && (request.query.jql ?? '').includes('echoes'), status: 400, body: { errorMessages: [`Error in the JQL Query: echoes ${echo}`], errors: {} }, once: true })
+        typeSearch(host, 'summary ~ echoes')
+        await settleQuery()
+        result.c5Echo = { note: host.querySelector('[data-search-note]')?.textContent?.includes('Jira 가 질의를 받지 않아') === true }
+        parts.fixture.faults.push({ match: (request) => request.method === 'POST' && request.path === '/rest/api/3/issue/20001/comment', status: 400, body: { errorMessages: [`Comment rejected: ${echo}`], errors: {} }, once: true })
+        const echoed = await workRequest({ requestId: 'l605-echo', connectionId: added.connection.id, call: { op: 'addComment', itemId: '20001', body: '되울림' } })
+        result.c1EchoRefused = !echoed.ok
         // 쓰기 한 번(코멘트) — 쓰기 경로의 로그·활동도 grep 대상에 든다.
         const comment = await parts.service.request({ requestId: 'l605-comment', connectionId: added.connection.id, call: { op: 'addComment', itemId: '20001', body: '하네스 코멘트' } })
         result.write = comment.ok
+        const returns = returnsHits([...ipcReturns, host.textContent ?? ''])
+        result.c1Returns = { responses: ipcReturns.length, hits: returns }
         unmount()
         if (PC === 'leak') log('l605.pc', { leaked: `${FAKE_JIRA_TOKEN} ${basicHeader({ email: FAKE_JIRA_EMAIL, token: FAKE_JIRA_TOKEN })}` })
         await flushLog()
         const secrets = secretGrep()
         result.c1Secrets = secrets
-        result.verdict = { c1Card: result.c1Card, c5Query: result.c5Query, c5Fallback: result.c5Fallback, write: result.write, c1Secrets: grepClean(secrets) }
+        result.verdict = { c1Card: result.c1Card, c5Query: result.c5Query, c5Fallback: result.c5Fallback, c5Echo: result.c5Echo, c1EchoRefused: result.c1EchoRefused, write: result.write, c1Secrets: grepClean(secrets), c1Returns: returns.length === 0 && ipcReturns.length > 0 }
       } else if (PHASE === 'lifecycle') {
         // R2-K — 오류 문구가 새는 길(실패한 추가 · 토큰 교체 · 해제)을 지난 뒤마다 grep. restart 뒤에 돈다(연결 파일이 있다).
         const connection = parts.service.settings().connections.find((entry) => entry.sourceId === 'jira')
@@ -239,7 +263,7 @@ describe.runIf(requested)('LIFE-605 창 없는 Jira 하네스', () => {
     fs.writeFileSync(path.join(ROOT, `windowless-${PHASE}.json`), JSON.stringify(result, null, 2))
     const account = { site: 'fixture.atlassian.net', email: FAKE_JIRA_EMAIL }
     const want = {
-      first: { c1Card: true, c5Query: { requests: 1, hits: expect.any(Number) }, c5Fallback: { note: true }, write: true, c1Secrets: true },
+      first: { c1Card: true, c5Query: { requests: 1, hits: expect.any(Number) }, c5Fallback: { note: true }, c5Echo: { note: true }, c1EchoRefused: true, write: true, c1Secrets: true, c1Returns: true },
       restart: { c1Restart: { found: true, account }, c1Card: true, c1Secrets: true },
       lifecycle: { c1Lifecycle: { failedAdd: false, replaced: true, listed: true, removed: true, left: 0 }, c1Secrets: { afterFailedAdd: true, afterReplace: true, afterRemove: true }, c1Returns: true },
     }

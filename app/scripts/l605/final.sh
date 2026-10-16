@@ -2,7 +2,7 @@
 # LIFE-605 최종 관문 장치(수정 1 R1-Y) — **수정 1 에서는 만들고 자기점검만 했다. 돌리는 것은 최종 관문(리뷰 수렴 뒤 1회)이다.**
 #   app/ 에서: scripts/l605/final.sh <OUT>
 # 창 없는 부분만(격리 Electron 창 금지 — LIFE-603 K1): build → 런타임 번들·data-attrs(기준 대조)·main 게이트 동작(각 양성 대조) · boundary-diff 전후(기준 af6d8d068) ·
-# 자격 grep 검사기 자기시험 · 계약 묶음 3출처 + ADF 출발 말뭉치·퍼즈 + Jira 단위 1회 · 창 없는 Jira 하네스 first·restart(「1 passed」) + 양성 대조 2(일부러 새게 한 빌드 = 토큰 로그 · 디바운스 건너뜀 = 요청 수 2) + 빈 PHASE 실패.
+# 자격 grep 검사기 자기시험 · 계약 묶음 3출처 + ADF 출발 말뭉치·퍼즈 + Jira 단위 1회 · 창 없는 Jira 하네스 first·restart(「1 passed」) + 양성 대조 3(일부러 새게 한 빌드 = 토큰 로그 · 디바운스 건너뜀 = 요청 수 2 · 응답 글 자격 지움 끔 = 반환값 적중, R4-H) + 빈 PHASE 실패.
 # 전후 비교(C14)는 before-after.sh 가 따로 돈다. 판정 = quick.sh 의 record·run·run_grep(그 파일에서 그대로 떼어 옴). 결과 = OUT/VERDICT · OUT/ALL.
 set -u
 OUT=${1:A}; mkdir -p $OUT
@@ -54,8 +54,9 @@ L605_ROOT=$WROOT-ipc L605_PHASE=restart run_grep pc-ipc-setup-restart 0 'Tests  
 L605_PC=leak-ipc L605_ROOT=$WROOT-ipc L605_PHASE=lifecycle run_grep pc-windowless-lifecycle-leak-ipc 1 '+   "c1Returns": false,' npx vitest run scripts/l605/windowless.test.tsx
 cp $WROOT/windowless-*.json $OUT/ 2>/dev/null
 [[ $WROOT == /tmp/l605w-f* ]] && rm -rf $WROOT
-for pc in leak search-twice; do
-  [[ $pc == leak ]] && flip='+   "c1Secrets": false,' || flip='+     "requests": 2,'
+# leak-note(R4-H) = Jira 응답 글의 자격 지움을 끈 빌드 — 되울린 자격이 서비스 → IPC → 화면으로 가면 반환값 훑기가 잡아야 한다.
+for pc in leak search-twice leak-note; do
+  case $pc in leak) flip='+   "c1Secrets": false,' ;; search-twice) flip='+     "requests": 2,' ;; leak-note) flip='+   "c1Returns": false,' ;; esac
   L605_PC=$pc L605_ROOT=$WROOT-$pc L605_PHASE=first run_grep pc-windowless-$pc 1 "$flip" npx vitest run scripts/l605/windowless.test.tsx
   cp $WROOT-$pc/windowless-first.json $OUT/pc-windowless-$pc.json 2>/dev/null
   [[ $WROOT == /tmp/l605w-f* ]] && rm -rf $WROOT-$pc
@@ -63,5 +64,5 @@ done
 L605_ROOT=$WROOT-nophase run_grep st-windowless-empty-phase 1 'L605_PHASE=first|restart|lifecycle 가 필요하다' npx vitest run scripts/l605/windowless.test.tsx
 [[ $WROOT == /tmp/l605w-f* ]] && rm -rf $WROOT-nophase
 [[ $WROOT == /tmp/l605w-* ]] && rm -rf $WROOT-life $WROOT-ipc
-print -r -- "$WROOT $WROOT-life $WROOT-ipc $WROOT-leak $WROOT-search-twice $WROOT-nophase" > $OUT/tmp-roots.txt
-judge_close 25
+print -r -- "$WROOT $WROOT-life $WROOT-ipc $WROOT-leak $WROOT-search-twice $WROOT-leak-note $WROOT-nophase" > $OUT/tmp-roots.txt
+judge_close 26

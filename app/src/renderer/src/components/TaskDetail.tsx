@@ -326,6 +326,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
               {editing ? null : <button type="button" className="issue-link-btn" data-issue-body-edit="" disabled={!writable || !bodyReady || bodyLock !== null} title={blocked ?? bodyLock ?? (bodyReady ? undefined : '본문을 불러오는 중…')} onClick={openEditor}>편집</button>}
             </div>
             {bodyLock === null || editing ? null : <div className="issue-body-lock" data-issue-body-lock="">{bodyLock}</div>}
+            {editing && item.bodySaveNote !== undefined ? <div className="issue-body-lock" data-issue-body-save-note="">{item.bodySaveNote}</div> : null}
             {editing ? (
               <MarkdownEditor key={detail.uid ?? ''} initial={item.body ?? ''} keyPattern={keyPattern} saving={bodySaving} error={bodyError ?? bodyNote} draftRef={bodyDraft} onSave={(text) => void saveBody(text)} onCancel={() => { setEditing(false); setBodyError(null); setBodyNote(null) }} />
             ) : (

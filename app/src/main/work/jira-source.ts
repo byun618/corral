@@ -34,7 +34,7 @@ import {
   type WorkSpace,
   type WorkStatus,
 } from '../../shared/work.js'
-import { adfRuleProblem, adfToMarkdown, adfView, markdownToAdf, taskStates, unsupportedLabel, withTaskStates, type AdfDoc, type AdfNode } from './adf.js'
+import { adfRuleProblem, adfToMarkdown, adfView, losesGaps, markdownToAdf, taskStates, unsupportedLabel, withTaskStates, type AdfDoc, type AdfNode } from './adf.js'
 import { workError } from './errors.js'
 import { errorText, JiraHttp, type JiraMethod, type JiraReply } from './jira-http.js'
 import {
@@ -195,8 +195,10 @@ export type JiraSourceOptions = {
   now?: () => number
 }
 
-/** 상태·우선순위·연결 종류 캐시 수명(R3-B) — 작업 페이지에는 스페이스 목록 새로 고침이 없어, Jira 에서 바꾼 워크플로가 이만큼 뒤에는 보이게. */
+/** 상태·우선순위·연결 종류(R3-B)·프로젝트(종류·계층)·보드 순서 능력(R4-E) 캐시 수명 — 작업 페이지에는 스페이스 목록 새로 고침이 없어, Jira 에서 바꾼 워크플로·종류·보드가 이만큼 뒤에는 보이게. */
 const META_CACHE_MS = 5 * 60 * 1000
+/** 빈 문단이 든 본문을 편집할 때 보이는 안내(R4-B, design-notes §8). */
+export const GAP_NOTE = '저장하면 이 본문의 빈 줄 간격(빈 문단)이 빠집니다 — 글은 그대로입니다. markdown 은 빈 문단을 나타내지 못합니다.'
 
 export function jiraSourceEntry(options: JiraSourceOptions = {}): WorkSourceEntry {
   return {
@@ -344,6 +346,8 @@ export class JiraSource implements WorkSourceClient {
   // --- 스페이스 · 상태 ---
 
   private clearMeta(): void {
+    this.projects.clear()
+    this.orderOf.clear()
     this.statusCache.clear()
     this.priorities = null
     this.linkTypes = null
@@ -400,6 +404,7 @@ export class JiraSource implements WorkSourceClient {
 
   /** 스페이스 순서 능력 — 아직 모르면(스페이스 목록 전에 목록·순서를 부른 경우) 보드를 먼저 확인한다(R1-O). */
   private async orderFor(spaceKey: string): Promise<WorkCapability> {
+    this.expireMeta()
     const known = this.orderOf.get(spaceKey)
     if (known !== undefined) return known
     const boards = await this.boardsByProject()
@@ -409,6 +414,7 @@ export class JiraSource implements WorkSourceClient {
   }
 
   private async project(spaceKey: string): Promise<Step<ProjectInfo>> {
+    this.expireMeta()
     const known = this.projects.get(spaceKey)
     if (known !== undefined) return { ok: true, value: known }
     if (!PROJECT_KEY.test(spaceKey)) return { ok: false, outcome: rejected('스페이스가 아닙니다.') }
@@ -576,6 +582,8 @@ export class JiraSource implements WorkSourceClient {
         relations,
         workLinks: [],
         bodyLock: body === null || body.unsupported.length === 0 ? null : lockReason(body.unsupported),
+        // 고쳐 저장하면 빈 문단 간격이 빠진다(R4-B — 사용자 결정 「수용하고 안내」) — 잠그지 않은 본문에만, 화면이 편집할 때 보인다.
+        ...(body !== null && body.unsupported.length === 0 && losesGaps(issue.description ?? { type: 'doc', version: 1, content: [] }) ? { bodySaveNote: GAP_NOTE } : {}),
       })
     }
     return { ok: true, value: items }
@@ -1000,7 +1008,11 @@ export function splitOrderBy(query: string): { where: string; orderBy: string | 
       else if (char === quote) quote = null
       continue
     }
-    if (char === '"' || char === "'") quote = char
+    if (char === '"' || char === "'") {
+      // 낱말 한가운데 따옴표(R4-C — `it's`) — Jira 어휘가 그것을 낱말 글자로 읽으면 짝 검사와 해석이 갈린다. 낱말 시작(맨 앞·공백·괄호·쉼표·연산자 뒤)이 아니면 보내지 않는다(텍스트 폴백).
+      if (index > 0 && !/[\s(),=~!<>]/.test(query[index - 1] ?? '')) return null
+      quote = char
+    }
     // 따옴표 밖 역슬래시(R3-E) — Jira 가 다음 글자를 이스케이프로 읽으면(`\"`) 짝 검사와 해석이 갈린다. 믿을 수 없어 보내지 않는다(텍스트 폴백).
     else if (char === '\\') return null
     else if (char === '(') depth += 1

@@ -447,6 +447,123 @@ describe('수정 1 R1-K — 리뷰어 생존 뮤테이션을 죽이는 시험', 
   })
 })
 
+describe('수정 4 — 리뷰 r4 (R4-A·R4-B·R4-C·R4-D·R4-E·R4-F)', () => {
+  it('R4-D 우선순위 캐시도 5분 뒤 다시 받는다(쓰기 경로의 호출처) · 비운 뒤에는 시계를 다시 잡아 매 호출마다 비우지 않는다', async () => {
+    let clock = 1_000_000
+    const h = await connected({ now: () => clock })
+    const searches = (): number => h.fixture.requests.filter((request) => request.path === '/rest/api/3/priority/search').length
+    const statusReads = (): number => h.fixture.requests.filter((request) => request.path === '/rest/api/3/project/WEB/statuses').length
+    expect((await h.send({ op: 'updateItem', itemId: '20002', fields: { priority: 'low' }, ifVersion: null })).ok).toBe(true)
+    const first = searches()
+    expect((await h.send({ op: 'updateItem', itemId: '20002', fields: { priority: 'high' }, ifVersion: null })).ok).toBe(true)
+    expect(searches()).toBe(first)
+    clock += 5 * 60 * 1000
+    expect((await h.send({ op: 'updateItem', itemId: '20002', fields: { priority: 'low' }, ifVersion: null })).ok).toBe(true)
+    expect(searches()).toBe(first + 1)
+    expect((await h.send({ op: 'updateItem', itemId: '20002', fields: { priority: 'high' }, ifVersion: null })).ok).toBe(true)
+    expect(searches()).toBe(first + 1)
+    // 수명이 지나 한 번 비운 뒤 같은 시각에 다시 부르면 캐시를 쓴다(R4-10 — 시계를 다시 잡지 않으면 매번 다시 받는다).
+    expect((await h.send({ op: 'listStatuses', spaceKey: 'WEB' })).ok).toBe(true)
+    const reads = statusReads()
+    expect((await h.send({ op: 'listStatuses', spaceKey: 'WEB' })).ok).toBe(true)
+    clock += 1
+    expect((await h.send({ op: 'listStatuses', spaceKey: 'WEB' })).ok).toBe(true)
+    expect(statusReads()).toBe(reads)
+  })
+
+  it('R4-E 프로젝트(종류)·보드(순서 능력) 캐시도 5분 수명 — Jira 에서 종류·보드를 더하면 수명 뒤에는 만들기·순서가 따라온다', async () => {
+    let clock = 0
+    const h = await connected({ now: () => clock })
+    const web = h.fixture.projects.find((project) => project.key === 'WEB')
+    if (web === undefined) throw new Error('seed')
+    expect(await h.send({ op: 'getCreateMeta', spaceKey: 'WEB', kindKey: '10001' })).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('없는 종류') } })
+    const orderOf = async (): Promise<string> => {
+      const before = h.fixture.requests.length
+      expect((await h.send({ op: 'listItems', spaceKey: 'WEB', cursor: null })).ok).toBe(true)
+      return h.fixture.requests.slice(before).filter((request) => request.path === '/rest/api/3/search/jql').map((request) => request.query.jql ?? '').join(' ')
+    }
+    expect(await orderOf()).toContain('ORDER BY created ASC')
+    web.types.push({ id: '10001', name: 'Story', subtask: false, hierarchyLevel: 0 })
+    web.statusesByType['10001'] = ['10010', '10011']
+    web.boards = 1
+    clock += 5 * 60 * 1000 - 1
+    expect(await h.send({ op: 'getCreateMeta', spaceKey: 'WEB', kindKey: '10001' })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+    expect(await orderOf()).toContain('ORDER BY created ASC')
+    clock += 1
+    expect(await h.send({ op: 'getCreateMeta', spaceKey: 'WEB', kindKey: '10001' })).toMatchObject({ ok: true })
+    expect(await orderOf()).toContain('ORDER BY Rank ASC')
+  })
+
+  it('R4-F 만들기의 필수 여러 줄 글 커스텀 필드(textarea)는 ADF 로 보낸다 · 규칙 밖 markdown 이면 필드 이름과 이유로 거절(POST 0)', async () => {
+    const h = await connected()
+    h.fixture.textareaField = true
+    const posts = () => h.fixture.requests.filter((request) => request.method === 'POST' && request.path === '/rest/api/3/issue')
+    const meta = await h.send({ op: 'getCreateMeta', spaceKey: 'CORE', kindKey: '10002' })
+    expect(meta).toMatchObject({ ok: true, result: { meta: { fields: [{ key: 'customfield_10050', shape: 'option' }, { key: 'customfield_10070', label: 'Steps to reproduce', shape: 'text' }] } } })
+    const refused = await h.send({ op: 'createItem', spaceKey: 'CORE', parentId: null, kindKey: '10002', title: '규칙 밖', fields: [{ key: 'customfield_10050', value: '10101' }, { key: 'customfield_10070', value: '> # 제목' }] })
+    expect(refused).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('Steps to reproduce: 보내지 않았습니다 — 인용 안에는 제목') } })
+    expect(posts()).toHaveLength(0)
+    const made = await h.send({ op: 'createItem', spaceKey: 'CORE', parentId: null, kindKey: '10002', title: '재현 단계', fields: [{ key: 'customfield_10050', value: '10101' }, { key: 'customfield_10070', value: '1. 열기\n2. **누르기**' }] })
+    expect(made.ok).toBe(true)
+    expect(posts().at(-1)?.body).toMatchObject({ fields: { customfield_10070: { type: 'doc', version: 1, content: [{ type: 'orderedList' }] } } })
+  })
+
+  it('R4-A 굵게·기울임·취소선 안의 코드는 코멘트·본문 저장에서 보내지 않고 이유(조용히 서식을 버리지 않는다) · 링크 안의 코드는 그대로', async () => {
+    const h = await connected()
+    const comments = (): number => h.fixture.requests.filter((request) => request.method === 'POST' && request.path === '/rest/api/3/issue/20002/comment').length
+    for (const body of ['**`y`**', 'a *`z`* b', '~~`w`~~']) {
+      expect(await h.send({ op: 'addComment', itemId: '20002', body }), body).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('굵게·기울임·취소선 안의 코드') } })
+    }
+    expect(comments()).toBe(0)
+    expect(await h.send({ op: 'updateItem', itemId: '20002', fields: { body: '본문 **`y`**' }, ifVersion: null })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+    expect(h.fixture.requests.filter((request) => request.method === 'PUT' && request.path === '/rest/api/3/issue/20002')).toHaveLength(0)
+    expect((await h.send({ op: 'addComment', itemId: '20002', body: '[`x`](https://e.x/a)' })).ok).toBe(true)
+    const sent = h.fixture.requests.filter((request) => request.method === 'POST' && request.path === '/rest/api/3/issue/20002/comment').at(-1)?.body
+    expect(sent).toMatchObject({ body: { content: [{ content: [{ text: 'x', marks: [{ type: 'link', attrs: { href: 'https://e.x/a' } }, { type: 'code' }] }] }] } })
+  })
+
+  it('R4-B 빈 문단이 든 본문만 편집 안내(bodySaveNote) — 사이·끝 빈 문단은 안내, 빈 문단 없는 본문·잠긴 본문은 안내 없음 · 저장은 그대로(간격이 빠진 ADF)', async () => {
+    const h = await connected()
+    const issue = h.fixture.issue('20002')
+    if (issue === null) throw new Error('seed')
+    const item = async () => {
+      const got = await h.send({ op: 'getItem', itemId: '20002' })
+      if (!got.ok || got.result.op !== 'getItem') throw new Error('get')
+      return got.result.item
+    }
+    issue.description = { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'a' }] }, { type: 'paragraph' }, { type: 'paragraph', content: [{ type: 'text', text: 'b' }] }] }
+    const gapped = await item()
+    expect(gapped.bodySaveNote).toContain('빈 줄 간격(빈 문단)이 빠집니다')
+    expect(gapped.bodyLock).toBeNull()
+    expect((await h.send({ op: 'updateItem', itemId: '20002', fields: { body: 'a\n\nb\n\nc' }, ifVersion: null })).ok).toBe(true)
+    const put = h.fixture.requests.filter((request) => request.method === 'PUT' && request.path === '/rest/api/3/issue/20002').at(-1)?.body
+    expect(put).toMatchObject({ fields: { description: { content: [{ type: 'paragraph' }, { type: 'paragraph' }, { type: 'paragraph' }] } } })
+    issue.description = { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: '끝' }] }, { type: 'paragraph', content: [] }] }
+    expect((await item()).bodySaveNote).toContain('빈 문단')
+    issue.description = { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'a' }] }, { type: 'paragraph', content: [{ type: 'text', text: 'b' }] }] }
+    expect((await item()).bodySaveNote).toBeUndefined()
+    issue.description = { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'mention', attrs: { id: 'x', text: '@x' } }] }, { type: 'paragraph' }] }
+    const locked = await item()
+    expect(locked.bodyLock).not.toBeNull()
+    expect(locked.bodySaveNote).toBeUndefined()
+  })
+
+  it('R4-C 낱말 한가운데 따옴표(it\'s · a"b)는 짝 검사를 믿을 수 없어 질의로 보내지 않는다(텍스트 폴백) · 낱말 시작의 따옴표는 그대로', async () => {
+    expect(splitOrderBy("summary ~ it's ) OR project = OTHER OR ( x ~ 'y")).toBeNull()
+    expect(splitOrderBy('summary ~ a"b ) OR project = OTHER OR ( x ~ "c')).toBeNull()
+    for (const ok of ['summary ~ "x"', "summary ~ 'x'", 'a in ("x","y")', 'a=("x")', 'a!="x"', '(summary ~ \'x\')', '"Story Points" > 3', 'a ~"x"', 'a <"b"', 'a >"b"', 'labels in ( "x" )']) {
+      expect(splitOrderBy(ok), ok).not.toBeNull()
+    }
+    const h = await connected()
+    const before = h.fixture.requests.length
+    const found = await h.send({ op: 'searchItems', spaceKeys: ['CORE'], query: "summary ~ it's ) OR project = WEB OR ( x ~ 'y" })
+    expect(found).toMatchObject({ ok: true, result: { mode: 'text', note: expect.stringContaining('따옴표') } })
+    const sent = h.fixture.requests.slice(before).filter((request) => request.path === '/rest/api/3/search/jql').map((request) => request.query.jql ?? '')
+    expect(sent.length).toBeGreaterThan(0)
+    for (const jql of sent) expect(jql).toMatch(/^project in \("CORE"\) AND text ~ /)
+  })
+})
+
 describe('수정 3 — 리뷰 r3 (R3-A·R3-B·R3-C·R3-E)', () => {
   it('R3-B 상태·연결 종류 캐시는 5분 뒤 다시 받는다 — 작업 페이지에는 스페이스 목록 새로 고침이 없다', async () => {
     let clock = 1_000_000

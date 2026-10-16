@@ -88,6 +88,8 @@ export class JiraRestFixture {
   echoHistory = true
   /** `/search/jql` 응답에 `isLast` 를 싣나 — 기본 싣지 않는다(F5 사례). */
   sendIsLast = false
+  /** 버그 만들기 화면에 필수 여러 줄 글 커스텀 필드(`textarea` — v3 은 값으로 ADF 를 받는다)가 있나(R4-F). 기본 없음. */
+  textareaField = false
   active = 0
   maxActive = 0
   private readonly accounts = new Map<string, { accountId: string; email: string }>()
@@ -456,6 +458,7 @@ export class JiraRestFixture {
     if (typeId === BUG.id) {
       fields.push(system('customfield_10050', 'Severity', true, { type: 'option', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:select', customId: 10050 }, { allowedValues: [{ id: '10100', value: 'S1' }, { id: '10101', value: 'S2' }, { id: '10102', value: 'S3' }] }))
       fields.push(system('environment', 'Environment', false, { type: 'string', system: 'environment' }))
+      if (this.textareaField) fields.push(system('customfield_10070', 'Steps to reproduce', true, { type: 'string', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:textarea', customId: 10070 }))
     }
     void project
     return fields
@@ -490,6 +493,11 @@ export class JiraRestFixture {
     if (severity !== undefined) {
       if (!isRecord(severity) || !['10100', '10101', '10102'].includes(String(severity.id))) return { status: 400, body: { errorMessages: [], errors: { customfield_10050: 'Specify a valid value for Severity' } } }
       fieldValues.customfield_10050 = { id: String(severity.id), value: { 10100: 'S1', 10101: 'S2', 10102: 'S3' }[String(severity.id)] }
+    }
+    const steps = fields.customfield_10070
+    if (steps !== undefined) {
+      if (!isAdf(steps)) return { status: 400, body: { errorMessages: [], errors: { customfield_10070: 'Operation value must be an Atlassian Document (see the Atlassian Document Format).' } } }
+      fieldValues.customfield_10070 = steps
     }
     const priorityId = isRecord(fields.priority) && typeof fields.priority.id === 'string' ? fields.priority.id : '3'
     const seq = this.issues.filter((issue) => issue.projectKey === project.key).length + 100

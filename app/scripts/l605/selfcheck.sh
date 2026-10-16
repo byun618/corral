@@ -1,7 +1,7 @@
 #!/bin/zsh
 # LIFE-605 수정 1 R1-Y — 최종 관문 장치의 **자기점검**(장치가 돌고, 양성 대조가 실패를 내는지). 최종 관문 판정이 아니다 — 판정은 final.sh·before-after.sh 를 최종 관문에서 돌린다.
 #   app/ 에서: scripts/l605/selfcheck.sh <OUT>   (먼저 npm run build — main 게이트·런타임 번들 검사가 out/ 를 읽는다)
-# 행: 문법(final.sh·before-after.sh) · 자격 grep 검사기 자기시험 · 창 없는 하네스 first·restart · 양성 대조(leak·search-twice) · 빈 PHASE 실패 · env 없음 = 건너뜀 · boundary-diff 기준 대조.
+# 행: 문법(final.sh·before-after.sh) · 자격 grep 검사기 자기시험 · 창 없는 하네스 first·restart · 양성 대조(leak·search-twice·leak-note) · 빈 PHASE 실패 · env 없음 = 건너뜀 · boundary-diff 기준 대조.
 set -u
 OUT=${1:A}; mkdir -p $OUT
 # 이전 실행의 ALL 을 「미완」 으로 먼저 덮는다(R3-F) — 중간에 멈춘 재실행이 옛 pass 를 남기지 않게. 끝의 판정만 이것을 바꾼다.
@@ -45,8 +45,9 @@ L605_ROOT=$WROOT-ipc L605_PHASE=restart run_grep st-pc-ipc-setup-restart 0 'Test
 L605_PC=leak-ipc L605_ROOT=$WROOT-ipc L605_PHASE=lifecycle run_grep st-pc-windowless-lifecycle-leak-ipc 1 '+   "c1Returns": false,' npx vitest run scripts/l605/windowless.test.tsx
 cp $WROOT/windowless-*.json $OUT/ 2>/dev/null
 [[ $WROOT == /tmp/l605w-s* ]] && rm -rf $WROOT
-for pc in leak search-twice; do
-  [[ $pc == leak ]] && flip='+   "c1Secrets": false,' || flip='+     "requests": 2,'
+# leak-note(R4-H) = Jira 응답 글의 자격 지움을 끈 빌드 — 되울린 자격이 서비스 → IPC → 화면으로 가면 반환값 훑기가 잡아야 한다.
+for pc in leak search-twice leak-note; do
+  case $pc in leak) flip='+   "c1Secrets": false,' ;; search-twice) flip='+     "requests": 2,' ;; leak-note) flip='+   "c1Returns": false,' ;; esac
   L605_PC=$pc L605_ROOT=$WROOT-$pc L605_PHASE=first run_grep st-pc-windowless-$pc 1 "$flip" npx vitest run scripts/l605/windowless.test.tsx
   cp $WROOT-$pc/windowless-first.json $OUT/pc-windowless-$pc.json 2>/dev/null
   [[ $WROOT == /tmp/l605w-s* ]] && rm -rf $WROOT-$pc
@@ -56,6 +57,6 @@ L605_ROOT=$WROOT-nophase run_grep st-windowless-empty-phase 1 'L605_PHASE=first|
 run_grep st-windowless-skip 0 'Tests  1 skipped' npx vitest run scripts/l605/windowless.test.tsx
 run st-boundary-diff 0 sh scripts/l600/boundary-diff.sh af6d8d068
 [[ $WROOT == /tmp/l605w-* ]] && rm -rf $WROOT-life $WROOT-ipc
-print -r -- "$WROOT $WROOT-life $WROOT-ipc $WROOT-leak $WROOT-search-twice $WROOT-nophase" > $OUT/tmp-roots.txt
+print -r -- "$WROOT $WROOT-life $WROOT-ipc $WROOT-leak $WROOT-search-twice $WROOT-leak-note $WROOT-nophase" > $OUT/tmp-roots.txt
 python3 -I scripts/l605/scrub-raw.py $OUT > $OUT/scrub.txt
-judge_close 25
+judge_close 26

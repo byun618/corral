@@ -106,13 +106,17 @@ const BLOCK_NAME: Record<string, string> = { heading: '제목', rule: '가로줄
 
 /**
  * 저장할 ADF 가 Jira 문서 규칙(공식 ADF 스키마 — `@atlaskit/adf-schema` v1 full.json, design-notes §8)을 어기는가 — 어기면 사람이 읽을 이유, 아니면 null.
- * markdown 이 만들 수 있는데 ADF 가 받지 않는 모양만 본다: 인용 안의 제목·가로줄·인용·할 일 목록, 목록 항목 안의 제목·가로줄·인용, 빈 인용·빈 목록·첫 자식이 문단·코드가 아닌 목록 항목.
+ * markdown 이 만들 수 있는데 ADF 가 받지 않는 모양만 본다: 인용 안의 제목·가로줄·인용·할 일 목록, 목록 항목 안의 제목·가로줄·인용, 굵게·기울임·취소선과 함께 쓴 코드 글자(R4-A),
+ * 빈 인용·빈 목록·첫 자식이 문단·코드가 아닌 목록 항목(뒤 셋은 `markdownToAdf` 가 고쳐 만들어 지금은 닿지 않는다 — 코덱이 바뀌어도 보내지 않게 남긴 그물, 직접 시험 R4-G).
  * markdown 에서 온 글은 보내기 전에 이것으로 거절한다(받는 척 금지 — Jira 가 거절하거나 조용히 바꾸기 전에).
  */
 export function adfRuleProblem(doc: AdfDoc): string | null {
   const walk = (nodes: AdfNode[]): string | null => {
     for (const node of nodes) {
       const content = node.content ?? []
+      if (node.type === 'text' && (node.marks ?? []).some((mark) => mark.type === 'code') && (node.marks ?? []).some((mark) => mark.type !== 'code' && mark.type !== 'link')) {
+        return '굵게·기울임·취소선 안의 코드는 Jira 문서 규칙상 함께 저장할 수 없습니다 — 서식을 코드 밖으로 옮기거나 하나만 쓰세요.'
+      }
       if (node.type === 'blockquote') {
         if (content.length === 0) return '빈 인용은 Jira 문서 규칙에 맞지 않습니다.'
         const bad = content.find((child) => !QUOTE_CHILDREN.has(child.type))
@@ -131,6 +135,20 @@ export function adfRuleProblem(doc: AdfDoc): string | null {
     return null
   }
   return walk(doc.content)
+}
+
+/**
+ * 고쳐 저장하면 빈 문단 간격이 빠지는가(R4-B — 사용자 결정 「수용하고 안내」) — 받은 문서의 빈 문단이 그 md 를 다시 만든 ADF 보다 많으면 참.
+ * md 는 빈 문단을 나타내지 못해(design-notes §8) 저장한 본문에서 그 간격이 빠진다(글은 그대로). 화면은 편집할 때 이것을 알린다.
+ */
+export function losesGaps(doc: AdfDoc): boolean {
+  const count = (nodes: AdfNode[]): number => nodes.reduce((sum, node) => sum + (isEmptyParagraph(node) ? 1 : count(node.content ?? [])), 0)
+  return count(doc.content) > count(markdownToAdf(adfToMarkdown(doc).markdown).content)
+}
+
+/** `canonicalAdf` 가 빼는 빈 문단 — 글·속성(localId 밖)·마크가 없다. */
+function isEmptyParagraph(node: AdfNode): boolean {
+  return node.type === 'paragraph' && canonicalAdf([node]).length === 0
 }
 
 export function sameAdf({ a, b }: { a: AdfDoc; b: AdfDoc }): boolean {
@@ -704,8 +722,9 @@ function walkInline({ text, marks, nodes }: { text: string; marks: Mark[]; nodes
         flush()
         let code = text.slice(index + run.length, close).replaceAll('\n', ' ')
         if (code.length >= 2 && code.startsWith(' ') && code.endsWith(' ') && code.trim().length > 0) code = code.slice(1, -1)
-        // ADF 규칙(R3-A): 코드 글자에는 링크 마크만 함께 둘 수 있다 — 굵게·기울임·취소선 안의 코드는 코드로만(md 로만 나타낼 수 있는 모양).
-        if (code.length > 0) nodes.push({ type: 'text', text: code, marks: [...marks.filter((mark) => mark.type === 'link').map((mark) => ({ ...mark })), { type: 'code' }] })
+        // 둘러싼 마크를 그대로 싣는다(R4-A) — ADF 규칙상 코드 글자에는 링크 마크만 함께 둘 수 있어, 굵게·기울임·취소선 안의 코드는 `adfRuleProblem` 이 보내기 전에 거절한다(조용히 서식을 버리지 않는다).
+        // 코드 글자는 비지 않는다 — 닫는 표지는 여는 표지 바로 뒤에 올 수 없고(`findCodeClose`), 양끝 공백은 안에 글이 있을 때만 걷는다.
+        nodes.push({ type: 'text', text: code, marks: [...marks.map((mark) => ({ ...mark })), { type: 'code' }] })
         index = close + run.length
         continue
       }

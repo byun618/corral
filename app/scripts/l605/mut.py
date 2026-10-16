@@ -2,7 +2,7 @@
 # LIFE-605 수정 1 R1-K — 리뷰어 r1 뮤테이션(claude-r1-raw/scratch/mut.py·mut2.py·mut3.py)을 이 worktree 코드에 옮겨 다시 돌린다.
 #   python3 -I scripts/l605/mut.py <OUT> [이름…]   (app/ 에서, **커밋된 깨끗한 트리에서만** — 끝나면 `git checkout -- <파일>` 로 되돌린다)
 # 행 = (이름, 파일, 바꿀 글, 바꾼 글). 리뷰어 원문 앵커가 수정 1 로 바뀐 행은 같은 뜻의 패치로 옮기고 이름에 `@moved` 를 붙였다.
-# 바꿀 글이 None = 코드가 사라져 해당 없음(사유 칸). `Y…` 행 = 리뷰 r2 의 34행(수정 2 R2-C). X10 은 R2-G 로 규칙이 되돌려져 반대 방향(대소문자 구분)으로 바꿨다. `Z…` 행 = 리뷰 r3 의 12행(수정 3). M01 은 원문 앵커가 머리 주석의 `redirect: 'manual'` 에 먼저 걸려 코드를 안 바꿨다(mut1 회차 생존) — 코드 줄로 옮겼다. `X…` 행 = 수정 1 의 새 규칙마다 하나씩 더한 뮤테이션.
+# 바꿀 글이 None = 코드가 사라져 해당 없음(사유 칸). `Y…` 행 = 리뷰 r2 의 34행(수정 2 R2-C). X10 은 R2-G 로 규칙이 되돌려져 반대 방향(대소문자 구분)으로 바꿨다. `Z…` 행 = 리뷰 r3 의 12행(수정 3). `R4-…` 행 = 리뷰 r4 의 16행(수정 4). X30 은 R4-A 로 규칙이 바뀌어(마크를 그대로 싣고 규칙 그물이 거절) 반대 방향(마크를 버림)으로 바꿨다. M01 은 원문 앵커가 머리 주석의 `redirect: 'manual'` 에 먼저 걸려 코드를 안 바꿨다(mut1 회차 생존) — 코드 줄로 옮겼다. `X…` 행 = 수정 1 의 새 규칙마다 하나씩 더한 뮤테이션.
 # 판정: vitest 가 실패(exit≠0)면 KILLED, 통과면 SURVIVED, 앵커가 없으면 NO-MATCH(실패로 센다 — 옮기기를 빠뜨린 것).
 # 결과: OUT/<이름>.txt(출력 끝 6000자) · OUT/RESULTS.jsonl · OUT/SUMMARY. 생존·NO-MATCH 가 0 이면 exit 0.
 import json, os, re, subprocess, sys
@@ -123,7 +123,7 @@ M = [('M01-redirect-follow@moved', 'src/main/work/jira-http.ts', "JSON.stringify
  ('Y30-priority-fallback-ignore-name', 'src/main/work/jira-source.ts', "?? this.priorities.find((entry) => entry.id === PRIORITY_DEFAULT_ID[priority] && priorityOf({ id: entry.id, name: entry.name }) === priority)", '?? undefined'),
  ('Y31-split-orderby-case', 'src/main/work/jira-source.ts', "/^order\\s+by\\b/i.exec", "/^order\\s+by\\b/.exec"),
  ('Y32-quote-backslash', 'src/main/work/jira-source.ts', "if (char === '\\\\') index += 1\n      else if (char === quote) quote = null", "if (char === quote) quote = null"),
- ('Y33-single-quote-track', 'src/main/work/jira-source.ts', 'if (char === \'"\' || char === "\'") quote = char', 'if (char === \'"\') quote = char'),
+ ('Y33-single-quote-track@moved', 'src/main/work/jira-source.ts', 'if (char === \'"\' || char === "\'") {', 'if (char === \'"\') {'),
  ('Y34-dueFromJira-tz', 'src/main/work/jira-source.ts', 'new Date(year, month - 1, day, 23, 59, 59).toISOString()', 'new Date(Date.UTC(year, month - 1, day, 23, 59, 59)).toISOString()'), # 리뷰 r3 리뷰어 자체 뮤테이션 12행(raw/review/claude-r3-raw/mut-r3-own.py) 편입 — 앵커가 수정 3 으로 바뀐 행은 @moved.
  ('Z01-linkTypes-cache-kept@moved', 'src/main/work/jira-source.ts', '    this.linkTypes = null\n    this.metaSince = this.now()\n', '    this.metaSince = this.now()\n'),
  ('Z02-writeBlocks-keeps-empty', 'src/main/work/adf.ts', ".filter((text, index) => !(text === '' && nodes[index]?.type === 'paragraph'))", ''),
@@ -140,13 +140,38 @@ M = [('M01-redirect-follow@moved', 'src/main/work/jira-http.ts', "JSON.stringify
  # 수정 3 의 새 규칙마다 하나(R3-A·R3-B·R3-D·R3-E).
  ('X28-R3A-item-first-paragraph-off', 'src/main/work/adf.ts', "first === undefined || (first.type !== 'paragraph' && first.type !== 'codeBlock') ? [{ type: 'paragraph', content: [] }, ...blocks] : blocks }", "blocks.length === 0 ? [{ type: 'paragraph', content: [] }] : blocks }"),
  ('X29-R3A-empty-quote-kept', 'src/main/work/adf.ts', "content: inner.length === 0 ? [{ type: 'paragraph', content: [] }] : inner })", 'content: inner })'),
- ('X30-R3A-code-keeps-marks', 'src/main/work/adf.ts', "marks: [...marks.filter((mark) => mark.type === 'link').map((mark) => ({ ...mark })), { type: 'code' }] })", "marks: [...marks.map((mark) => ({ ...mark })), { type: 'code' }] })"),
+ ('X30-R3A-code-keeps-marks@moved', 'src/main/work/adf.ts', "marks: [...marks.map((mark) => ({ ...mark })), { type: 'code' }] })", "marks: [...marks.filter((mark) => mark.type === 'link').map((mark) => ({ ...mark })), { type: 'code' }] })"),
  ('X31-R3A-rules-lock-off', 'src/main/work/adf.ts', 'return adfRuleProblem(back) === null ? shown : { markdown: shown.markdown, unsupported: [RULES] }', 'return shown'),
  ('X32-R3A-write-guard-off', 'src/main/work/jira-source.ts', 'return problem === null ? { ok: true, doc } : { ok: false, message: `보내지 않았습니다 — ${problem}` }', 'return { ok: true, doc }'),
  ('X33-R3A-quote-allows-heading', 'src/main/work/adf.ts', "const QUOTE_CHILDREN = new Set(['paragraph', 'bulletList', 'orderedList', 'codeBlock'])", "const QUOTE_CHILDREN = new Set(['paragraph', 'bulletList', 'orderedList', 'codeBlock', 'heading'])"),
  ('X34-R3B-ttl-off', 'src/main/work/jira-source.ts', '    if (this.now() - this.metaSince >= META_CACHE_MS) this.clearMeta()\n', ''),
  ('X35-R3D-number-counts-empty', 'src/main/work/adf.ts', "const shownBlocks = doc.content.filter((block) => !(block.type === 'paragraph' && adfToMarkdown({ type: 'doc', version: 1, content: [block] }).markdown === ''))", 'const shownBlocks = doc.content'),
- ('X36-R3E-backslash-sent', 'src/main/work/jira-source.ts', "    else if (char === '\\\\') return null\n", '')]
+ ('X36-R3E-backslash-sent', 'src/main/work/jira-source.ts', "    else if (char === '\\\\') return null\n", ''),
+ # 리뷰 r4 의 16행(수정 4 — 리뷰어 scratch/mymut.py 그대로, R4-09 는 가드를 지워 해당 없음).
+ ('R4-01-addComment-bypass', 'src/main/work/jira-source.ts', "    const doc = writableAdf(body)\n    if (!doc.ok) return rejected(doc.message)\n    const sent = await this.write({ method: 'POST', path: `/rest/api/3/issue/${encodeURIComponent(itemId)}/comment`, body: { body: doc.doc }", "    const doc = { ok: true as const, doc: withLocalIds(markdownToAdf(body)) }\n    const sent = await this.write({ method: 'POST', path: `/rest/api/3/issue/${encodeURIComponent(itemId)}/comment`, body: { body: doc.doc }"),
+ ('R4-02-create-desc-bypass', 'src/main/work/jira-source.ts', '      const description = writableAdf(call.body)\n      if (!description.ok) return rejected(description.message)\n      fields.description = description.doc', '      fields.description = withLocalIds(markdownToAdf(call.body))'),
+ ('R4-03-create-textarea-bypass', 'src/main/work/jira-source.ts', '        const text = writableAdf(value.value)\n        if (!text.ok) return rejected(`${field.label}: ${text.message}`)\n        fields[value.key] = text.doc', '        fields[value.key] = withLocalIds(markdownToAdf(value.value))'),
+ ('R4-04-priority-no-expire', 'src/main/work/jira-source.ts', "    if (priority === null) return { ok: false, outcome: rejected('Jira 는 우선순위를 비울 수 없습니다.') }\n    this.expireMeta()\n", "    if (priority === null) return { ok: false, outcome: rejected('Jira 는 우선순위를 비울 수 없습니다.') }\n"),
+ ('R4-05-linktypes-no-expire', 'src/main/work/jira-source.ts', '  private async linkTypeList(): Promise<Step<JiraLinkType[]>> {\n    this.expireMeta()\n', '  private async linkTypeList(): Promise<Step<JiraLinkType[]>> {\n'),
+ ('R4-06-statuses-no-expire', 'src/main/work/jira-source.ts', '  private async statuses(spaceKey: string): Promise<Step<StatusInfo>> {\n    this.expireMeta()\n', '  private async statuses(spaceKey: string): Promise<Step<StatusInfo>> {\n'),
+ ('R4-07-item-allows-quote', 'src/main/work/adf.ts', "const ITEM_CHILDREN = new Set(['paragraph', 'bulletList', 'orderedList', 'taskList', 'codeBlock'])", "const ITEM_CHILDREN = new Set(['paragraph', 'bulletList', 'orderedList', 'taskList', 'codeBlock', 'blockquote', 'heading', 'rule'])"),
+ ('R4-08-item-first-check-off', 'src/main/work/adf.ts', "if (first === undefined || (first.type !== 'paragraph' && first.type !== 'codeBlock')) return '목록 항목은 글로 시작해야 합니다(Jira 문서 규칙).'", ''),
+ ('R4-09-empty-code-kept', 'src/main/work/adf.ts', None, '수정 4 R4-G — 닿지 않는 빈 코드 가드를 지웠다(닫는 표지는 여는 표지 바로 뒤에 올 수 없어 코드 글자가 비지 않는다, adf.ts walkInline 주석)'),
+ ('R4-10-meta-since-not-reset', 'src/main/work/jira-source.ts', '    this.linkTypes = null\n    this.metaSince = this.now()\n  }', '    this.linkTypes = null\n  }'),
+ ('R4-11-ttl-gt', 'src/main/work/jira-source.ts', 'if (this.now() - this.metaSince >= META_CACHE_MS) this.clearMeta()', 'if (this.now() - this.metaSince > META_CACHE_MS * 10) this.clearMeta()'),
+ ('R4-12-quote-empty-rule-off', 'src/main/work/adf.ts', "if (content.length === 0) return '빈 인용은 Jira 문서 규칙에 맞지 않습니다.'", ''),
+ ('R4-13-list-empty-rule-off', 'src/main/work/adf.ts', "&& content.length === 0) return '빈 목록은 Jira 문서 규칙에 맞지 않습니다.'", "&& false) return '빈 목록은 Jira 문서 규칙에 맞지 않습니다.'"),
+ ('R4-14-bodyUpdate-no-writable', 'src/main/work/jira-source.ts', '  const doc = writableAdf(next)\n  return doc.ok ? { ok: true, doc: doc.doc } : doc', '  return { ok: true, doc: withLocalIds(markdownToAdf(next)) }'),
+ ('R4-15-qdepth-backslash-in-quote', 'src/main/work/jira-source.ts', "if (char === '\\\\') index += 1\n      else if (char === quote) quote = null", 'if (char === quote) quote = null'),
+ ('R4-16-adfView-rules-label', 'src/main/work/adf.ts', "[RULES]: '편집기 서식(저장하면 Jira 문서 규칙에 맞지 않는 모양)',", ''),
+ ('X37-R4A-code-marks-rule-off', 'src/main/work/adf.ts', "      if (node.type === 'text' && (node.marks ?? []).some((mark) => mark.type === 'code') && (node.marks ?? []).some((mark) => mark.type !== 'code' && mark.type !== 'link')) {", '      if (false) {'),
+ ('X38-R4B-note-off', 'src/main/work/jira-source.ts', '        ...(body !== null && body.unsupported.length === 0 && losesGaps(', '        ...(false && losesGaps('),
+ ('X39-R4B-gaps-any-empty', 'src/main/work/adf.ts', '  return count(doc.content) > count(markdownToAdf(adfToMarkdown(doc).markdown).content)', '  return count(doc.content) > 0'),
+ ('X40-R4B-render-off', 'src/renderer/src/components/TaskDetail.tsx', '{editing && item.bodySaveNote !== undefined ?', '{false && item.bodySaveNote !== undefined ?'),
+ ('X41-R4C-midword-quote-sent', 'src/main/work/jira-source.ts', "      if (index > 0 && !/[\\s(),=~!<>]/.test(query[index - 1] ?? '')) return null\n", ''),
+ ('X42-R4E-project-no-expire', 'src/main/work/jira-source.ts', '  private async project(spaceKey: string): Promise<Step<ProjectInfo>> {\n    this.expireMeta()\n', '  private async project(spaceKey: string): Promise<Step<ProjectInfo>> {\n'),
+ ('X43-R4E-order-no-expire', 'src/main/work/jira-source.ts', '  private async orderFor(spaceKey: string): Promise<WorkCapability> {\n    this.expireMeta()\n', '  private async orderFor(spaceKey: string): Promise<WorkCapability> {\n'),
+ ('X44-R4E-clear-keeps-projects', 'src/main/work/jira-source.ts', '    this.projects.clear()\n    this.orderOf.clear()\n', '')]
 
 def main():
     out = os.path.abspath(sys.argv[1])

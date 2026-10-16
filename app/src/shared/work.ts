@@ -162,6 +162,8 @@ export type WorkItem = {
    * 본문 편집을 막는다(저장이 그 요소를 조용히 지우지 않게). 체크 칸 바로 저장은 열어 둔다 — 출처가 그 칸 상태만 바꾼다. 없으면 null(목록 행도 null).
    */
   bodyLock: string | null
+  /** 본문을 고쳐 저장하면 바뀌는 모양의 안내(LIFE-605 R4-B — Jira 의 빈 문단 간격). 화면은 편집하는 동안 보인다. 없으면 바뀌는 것이 없다. */
+  bodySaveNote?: string
 }
 
 export type WorkComment = { id: string; author: string | null; body: string; createdAt: string }

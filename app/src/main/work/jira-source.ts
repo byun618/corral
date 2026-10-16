@@ -10,8 +10,7 @@
 // - 질의 검색 = JQL, 400 이면 텍스트(`text ~`)로 다시 찾고 거부 사유를 `note` 로
 // **자격은 검증한 `*.atlassian.net` 사이트에만** 보낸다(`normalizeJiraSite`) — 측정 실행만 `baseUrlOf` 로 fixture 주소를 쓴다.
 
-import { createHash, randomUUID } from 'node:crypto'
-import { safeParse, isRecord } from '../../shared/json.js'
+import { randomUUID } from 'node:crypto'
 import {
   createFieldsProblem,
   WORK_PRIORITIES,
@@ -27,7 +26,6 @@ import {
   type WorkHistoryField,
   type WorkItem,
   type WorkKind,
-  type WorkLink,
   type WorkPriority,
   type WorkRelation,
   type WorkRelationKind,
@@ -36,7 +34,7 @@ import {
   type WorkSpace,
   type WorkStatus,
 } from '../../shared/work.js'
-import { adfToMarkdown, markdownToAdf, taskStates, unsupportedLabel, withTaskStates, type AdfDoc, type AdfNode } from './adf.js'
+import { adfToMarkdown, adfView, markdownToAdf, taskStates, unsupportedLabel, withTaskStates, type AdfDoc, type AdfNode } from './adf.js'
 import { workError } from './errors.js'
 import { errorText, JiraHttp, type JiraMethod, type JiraReply } from './jira-http.js'
 import {
@@ -55,7 +53,6 @@ import {
   readProjectPage,
   readProjectStatuses,
   readRankEntries,
-  readRemoteLinks,
   readSearch,
   readTransitions,
   type JiraFieldMeta,
@@ -107,7 +104,7 @@ export const JIRA_CAPABILITIES: WorkCapabilities = {
   conflictCheck: { state: 'disabled', reason: 'Jira 는 조건부 수정을 받지 않습니다 — 동시 편집 충돌을 검사하지 못합니다(마지막 저장이 남습니다).' },
   comments: { state: 'on' },
   history: { state: 'on' },
-  workLinkStore: { state: 'on' },
+  workLinkStore: { state: 'disabled', reason: 'Jira 에는 작업 링크(worktree·브랜치)를 남기지 않습니다 — 로컬 경로가 팀이 보는 이슈에 자동으로 기록되기 때문입니다. 링크는 이 Mac 의 corral 에만 있습니다.' },
   resolution: { state: 'disabled', reason: 'Jira 의 해결(resolution) 값은 워크플로가 정합니다 — corral 은 「완료함/취소함」 을 고르지 않습니다.' },
   querySearch: { state: 'on' },
 }
@@ -130,7 +127,6 @@ const RELATION_TYPES: { name: string; outward: string; inward: string; outwardKi
 const SYSTEM_CREATE_FIELDS = new Set(['project', 'issuetype', 'summary', 'description', 'priority', 'parent'])
 const TEXT_FIELD = 'com.atlassian.jira.plugin.system.customfieldtypes:textfield'
 const TEXTAREA_FIELD = 'com.atlassian.jira.plugin.system.customfieldtypes:textarea'
-const LINK_APP = 'dev.corral'
 
 // --- 사이트 · 계정 ---
 
@@ -277,7 +273,7 @@ export class JiraSource implements WorkSourceClient {
       case 'addComment': return this.addComment({ itemId: call.itemId, body: call.body })
       case 'saveWorkLink':
       case 'removeWorkLink':
-        return this.workLink({ itemId: call.itemId, link: call.link, save: call.op === 'saveWorkLink' })
+        return closed('workLinkStore')
       case 'searchItems': return this.searchItems({ spaceKeys: call.spaceKeys, query: call.query })
     }
   }
@@ -435,9 +431,7 @@ export class JiraSource implements WorkSourceClient {
     if (!items.ok) return items
     const item = items.value[0]
     if (item === undefined) return { ok: false, outcome: rejected('없는 작업입니다.') }
-    const links = await this.read({ path: `/rest/api/3/issue/${encodeURIComponent(issue.id)}/remotelink`, parse: readRemoteLinks, notFound: '없는 작업입니다.' })
-    if (!links.ok) return links
-    return { ok: true, value: { ...item, workLinks: workLinksOf(links.value) } }
+    return { ok: true, value: item }
   }
 
   private async itemResult({ op, itemId }: { op: 'getItem' | 'changeStatus' | 'updateItem' | 'setParent' | 'reorder' | 'createItem'; itemId: string }): Promise<WorkOutcome> {
@@ -464,7 +458,7 @@ export class JiraSource implements WorkSourceClient {
       if (!project.ok) return project
       const category = CATEGORY[issue.status.categoryKey]
       if (category === undefined) return { ok: false, outcome: { ok: false, error: workError({ kind: 'invalid_response', message: `${issue.key} 상태의 분류(${issue.status.categoryKey.slice(0, 20)})를 모릅니다.` }) } }
-      const body = withBody ? adfToMarkdown(issue.description ?? { type: 'doc', version: 1, content: [] }) : null
+      const body = withBody ? adfView(issue.description ?? { type: 'doc', version: 1, content: [] }) : null
       const relations = withBody ? relationsOf(issue) : null
       const openBlockers = issue.links
         .filter((link) => relationKindOf(link) === 'is_blocked_by' && link.other.status !== null && CATEGORY[link.other.status.categoryKey] !== 'done')
@@ -778,25 +772,6 @@ export class JiraSource implements WorkSourceClient {
     return { ok: true, result: { op: 'addComment', comment: commentOf(readComment(sent.value.json)) } }
   }
 
-  // --- 작업 링크 (remote link) ---
-
-  private async workLink({ itemId, link, save }: { itemId: string; link: WorkLink; save: boolean }): Promise<WorkOutcome> {
-    const globalId = linkGlobalId(link)
-    const path = `/rest/api/3/issue/${encodeURIComponent(itemId)}/remotelink`
-    if (save) {
-      // 같은 globalId 면 Jira 가 갱신한다 — 다시 보내도 링크는 하나(멱등).
-      const sent = await this.write({ method: 'POST', path, body: remoteLinkBody({ link, globalId }), refused: 'Jira 가 작업 링크를 거절했습니다.' })
-      if (!sent.ok) return sent.outcome
-    } else {
-      const sent = await this.send({ method: 'DELETE', path, query: { globalId }, write: true })
-      // 이미 없으면(404) 지운 것과 같다.
-      if (!sent.ok && sent.status !== 404) return { ok: false, error: maybeApplied({ error: sent.error, unsent: sent.unsent }) }
-    }
-    const links = await this.read({ path, parse: readRemoteLinks, notFound: '없는 작업입니다.' })
-    if (!links.ok) return links.outcome
-    return { ok: true, result: { op: save ? 'saveWorkLink' : 'removeWorkLink', workLinks: workLinksOf(links.value) } }
-  }
-
   // --- 질의 검색 ---
 
   private async searchItems({ spaceKeys, query }: { spaceKeys: string[]; query: string }): Promise<WorkOutcome> {
@@ -839,7 +814,7 @@ export class JiraSource implements WorkSourceClient {
 
 // --- 도움 ---
 
-function closed(name: 'conflictCheck' | 'placement' | 'resolution'): WorkOutcome {
+function closed(name: 'conflictCheck' | 'placement' | 'resolution' | 'workLinkStore'): WorkOutcome {
   const capability = JIRA_CAPABILITIES[name]
   return { ok: false, error: workError({ kind: 'unsupported', message: capability.state === 'disabled' ? capability.reason : `Jira 에는 ${name} 능력이 없습니다.` }) }
 }
@@ -948,7 +923,7 @@ function lockReason(unsupported: string[]): string {
  * 그 밖의 바꿈은 바꿀 수 없는 요소가 없을 때만 새 ADF 로(있으면 거절 — 조용히 지우지 않는다).
  */
 export function bodyUpdate({ current, next }: { current: AdfDoc; next: string }): { ok: true; doc?: AdfDoc | null } | { ok: false; message: string } {
-  const shown = adfToMarkdown(current)
+  const shown = adfView(current)
   if (shown.markdown === next) return { ok: true }
   const toggled = withTaskStates({ doc: current, states: taskStates(markdownToAdf(next)) })
   if (toggled !== null && adfToMarkdown(toggled).markdown === next) return { ok: true, doc: toggled }
@@ -1005,47 +980,6 @@ function minimalItem({ created, call, type, types, statusKey }: { created: { id:
     id: created.id, key: created.key, spaceKey: call.spaceKey, title: call.title, body: call.body ?? '', kind: kindOf({ type, types }), statusKey, category: 'todo', resolution: null,
     priority: call.priority ?? null, dueAt: null, parentId: call.parentId, placement: null, rank: null, openBlockerCount: 0, openBlockers: [], updatedAt: new Date().toISOString(), version: null,
     relations: [], workLinks: [], bodyLock: null,
-  }
-}
-
-// --- 작업 링크 ↔ remote link ---
-
-export function linkGlobalId(link: WorkLink): string {
-  return `corral:link:${createHash('sha256').update(JSON.stringify(link)).digest('hex').slice(0, 40)}`
-}
-
-function linkTitle(link: WorkLink): string {
-  switch (link.kind) {
-    case 'worktree': return `corral worktree · ${link.path}`
-    case 'branch': return `corral 브랜치 · ${link.name}`
-    case 'pull_request': return `PR · ${link.url}`
-    case 'agent_session': return `corral 세션 · ${link.agent ?? 'agent'}`
-  }
-}
-
-function remoteLinkBody({ link, globalId }: { link: WorkLink; globalId: string }): Record<string, unknown> {
-  const url = link.kind === 'pull_request' && /^https:\/\//.test(link.url) ? link.url : `https://corral.invalid/${link.kind}`
-  return { globalId, application: { type: LINK_APP, name: 'corral' }, relationship: 'corral', object: { url, title: linkTitle(link).slice(0, 255), summary: JSON.stringify(link) } }
-}
-
-/** corral 이 남긴 remote link 만 읽는다(`application.type` · `globalId` 접두사 · 요약 JSON 이 계약 모양). */
-function workLinksOf(links: { globalId: string | null; applicationType: string | null; summary: string | null }[]): WorkLink[] {
-  return links.flatMap((link) => {
-    if (link.applicationType !== LINK_APP || link.globalId === null || !link.globalId.startsWith('corral:link:') || link.summary === null) return []
-    const parsed = readWorkLink(safeParse(link.summary))
-    return parsed === null || linkGlobalId(parsed) !== link.globalId ? [] : [parsed]
-  })
-}
-
-function readWorkLink(value: unknown): WorkLink | null {
-  if (!isRecord(value)) return null
-  const nullableString = (entry: unknown): entry is string | null => entry === null || typeof entry === 'string'
-  switch (value.kind) {
-    case 'worktree': return typeof value.path === 'string' && nullableString(value.repoRoot) ? { kind: 'worktree', path: value.path, repoRoot: value.repoRoot } : null
-    case 'branch': return typeof value.name === 'string' && nullableString(value.repoRoot) ? { kind: 'branch', name: value.name, repoRoot: value.repoRoot } : null
-    case 'pull_request': return typeof value.url === 'string' && (value.state === null || value.state === 'open' || value.state === 'merged' || value.state === 'closed') ? { kind: 'pull_request', url: value.url, state: value.state } : null
-    case 'agent_session': return typeof value.sessionId === 'string' && nullableString(value.agent) ? { kind: 'agent_session', sessionId: value.sessionId, agent: value.agent } : null
-    default: return null
   }
 }
 

@@ -320,18 +320,6 @@ export function readLinkTypes(value: unknown): JiraLinkType[] {
   })
 }
 
-export type JiraRemoteLink = { id: string; globalId: string | null; applicationType: string | null; summary: string | null }
-
-export function readRemoteLinks(value: unknown): JiraRemoteLink[] {
-  return arr(value, 'remotelinks').map((entry, index) => {
-    const path = `remotelinks[${index}]`
-    const link = obj(entry, path)
-    const application = link.application === undefined || link.application === null ? null : obj(link.application, `${path}.application`)
-    const object = obj(link.object, `${path}.object`)
-    return { id: id(link.id, `${path}.id`), globalId: optStr(link.globalId, `${path}.globalId`), applicationType: application === null ? null : optStr(application.type, `${path}.application.type`), summary: optStr(object.summary, `${path}.object.summary`) }
-  })
-}
-
 export function readPriorityPage({ value, startAt }: { value: unknown; startAt: number }): OffsetPage<{ id: string; name: string }> {
   const page = obj(value, 'priorities')
   const values = arr(page.values, 'priorities.values').map((entry, index) => {

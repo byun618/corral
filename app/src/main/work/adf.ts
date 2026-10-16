@@ -19,16 +19,21 @@ export type AdfToMd = { markdown: string; unsupported: string[] }
 const BLOCKS = new Set(['paragraph', 'heading', 'bulletList', 'orderedList', 'listItem', 'taskList', 'taskItem', 'codeBlock', 'blockquote', 'rule'])
 const INLINES = new Set(['text', 'hardBreak'])
 const MARKS = new Set(['strong', 'em', 'code', 'strike', 'link'])
+/** 지원 마크에 href 밖 속성(링크 title 등)이 붙은 경우 · 지원 표 안이어도 왕복하면 바뀌는 경우의 가짜 요소 이름(R1-A·R1-G). */
+const MARK_ATTRS = '#markAttrs'
+const ROUNDTRIP = '#roundtrip'
 /** 바꿀 수 없는 요소의 사람 이름 — 안내 글에 쓴다. 목록 밖은 노드 이름 그대로. */
 const UNSUPPORTED_LABEL: Record<string, string> = {
   mention: '멘션', emoji: '이모지', panel: '패널', mediaSingle: '첨부', mediaGroup: '첨부', mediaInline: '첨부', media: '첨부', status: '상태 배지',
   table: '표', expand: '펼치기', nestedExpand: '펼치기', inlineCard: '링크 카드', blockCard: '링크 카드', embedCard: '링크 카드', date: '날짜',
   extension: '확장', bodiedExtension: '확장', inlineExtension: '확장', decisionList: '결정 목록', layoutSection: '레이아웃', placeholder: '자리 표시',
   underline: '밑줄', textColor: '글자 색', backgroundColor: '배경 색', subsup: '위·아래 첨자', alignment: '정렬', indentation: '들여쓰기', annotation: '주석', border: '테두리',
+  breakout: '넓게 보기', [MARK_ATTRS]: '서식 속성(링크 제목 등)', [ROUNDTRIP]: '편집기 서식(markdown 으로 오가면 바뀌는 모양)',
 }
 
+/** 사람 이름 — 모르는 원격 이름은 제어 글자를 빼고 40자까지(원격 글이 안내 문구를 키우지 않게, R1-X). */
 export function unsupportedLabel(type: string): string {
-  return UNSUPPORTED_LABEL[type] ?? type
+  return UNSUPPORTED_LABEL[type] ?? ([...type].filter((char) => { const code = char.codePointAt(0) ?? 0; return code > 0x1f && code !== 0x7f }).join('').slice(0, 40) || '알 수 없는 요소')
 }
 
 /** ADF 를 읽는다 — 문서 모양(`type: doc` · 배열 content)이 아니면 null. 노드 하나하나의 모양은 변환하면서 본다. */
@@ -65,18 +70,83 @@ export function adfToMarkdown(doc: AdfDoc): AdfToMd {
   return { markdown, unsupported: [...unsupported] }
 }
 
+/**
+ * 편집용 보기(R1-A·R1-G) — `adfToMarkdown` 에 **왕복 검사**를 더한다: 지원 표 안 요소만 있어도 그 md 를 다시 ADF 로 만들었을 때
+ * 원래와 같지 않으면(`canonicalAdf` 비교) 「편집기 서식」 으로 잠근다. 저장이 원래 ADF 를 조용히 바꾸는 길을 구조로 닫는다 —
+ * 잠그지 않은 본문은 「보이는 md 를 그대로 저장하면 원래 ADF 와 같다」 가 늘 참이다(퍼즈 시험).
+ */
+export function adfView(doc: AdfDoc): AdfToMd {
+  const shown = adfToMarkdown(doc)
+  if (shown.unsupported.length > 0) return shown
+  if (sameAdf({ a: markdownToAdf(shown.markdown), b: doc })) return shown
+  return { markdown: shown.markdown, unsupported: [ROUNDTRIP] }
+}
+
+export function sameAdf({ a, b }: { a: AdfDoc; b: AdfDoc }): boolean {
+  return JSON.stringify(canonicalAdf(a.content)) === JSON.stringify(canonicalAdf(b.content))
+}
+
+/**
+ * 비교용 정규형 — 뜻이 같은 모양을 하나로: `localId`·null 값 속성·빈 attrs·코드 블록 빈 언어를 빼고, 번호 목록 시작 1 을 기본으로, 빈 글을 빼고, 제목 양끝 공백을 빼고,
+ * 같은 마크의 이웃 글을 잇고, **공백 글자의 굵게·기울임·취소선은 뺀다**(보이는 차이 없음 — writer 가 경계 공백을 마크 밖으로 옮긴다).
+ * 그 밖의 차이(속성·마크 속성·노드 마크·순서)는 전부 다르다로 남긴다.
+ */
+export function canonicalAdf(nodes: AdfNode[]): unknown[] {
+  const out: Record<string, unknown>[] = []
+  for (const node of nodes) {
+    if (node.type === 'text') {
+      for (const char of [...(node.text ?? '')]) {
+        const marks = (node.marks ?? []).filter((mark) => !(/^\s$/u.test(char) && SPACE_FREE_MARKS.has(mark.type))).map(canonicalMark).sort((x, y) => JSON.stringify(x).localeCompare(JSON.stringify(y)))
+        const last = out.at(-1)
+        if (last !== undefined && last.type === 'text' && JSON.stringify(last.marks) === JSON.stringify(marks)) last.text = `${String(last.text)}${char}`
+        else out.push({ type: 'text', text: char, marks })
+      }
+      continue
+    }
+    const attrs = Object.fromEntries(Object.entries(node.attrs ?? {}).filter(([key, value]) => key !== 'localId' && value !== null && value !== undefined && !(node.type === 'orderedList' && key === 'order' && value === 1) && !(node.type === 'codeBlock' && key === 'language' && value === '')))
+    const content = node.content === undefined ? undefined : canonicalAdf(node.content)
+    out.push({
+      type: node.type,
+      ...(Object.keys(attrs).length === 0 ? {} : { attrs }),
+      ...(node.marks === undefined || node.marks.length === 0 ? {} : { marks: node.marks.map(canonicalMark) }),
+      ...(content === undefined ? {} : { content: node.type === 'heading' ? trimEdges(content) : content }),
+    })
+  }
+  return out
+}
+
+const SPACE_FREE_MARKS = new Set(['strong', 'em', 'strike'])
+
+/** 제목 양끝 공백은 보이지 않고 md 제목이 버린다 — 비교에서 뺀다(정규형의 글 조각 배열에 쓴다). */
+function trimEdges(content: unknown[]): unknown[] {
+  const out = content.map((entry) => (isRecord(entry) ? { ...entry } : entry))
+  const first = out[0]
+  if (isRecord(first) && first.type === 'text' && typeof first.text === 'string') first.text = first.text.replace(/^\s+/u, '')
+  const last = out.at(-1)
+  if (isRecord(last) && last.type === 'text' && typeof last.text === 'string') last.text = last.text.replace(/\s+$/u, '')
+  return out.filter((entry) => !(isRecord(entry) && entry.type === 'text' && entry.text === ''))
+}
+
+function canonicalMark(mark: AdfMark): Record<string, unknown> {
+  const attrs = Object.fromEntries(Object.entries(mark.attrs ?? {}).filter(([, value]) => value !== null && value !== undefined))
+  return Object.keys(attrs).length === 0 ? { type: mark.type } : { type: mark.type, attrs }
+}
+
 function writeBlocks({ nodes, unsupported }: { nodes: AdfNode[]; unsupported: Set<string> }): string {
   return nodes.map((node) => writeBlock({ node, unsupported })).join('\n\n')
 }
 
 function writeBlock({ node, unsupported }: { node: AdfNode; unsupported: Set<string> }): string {
   const content = node.content ?? []
+  // 블록 노드 마크(정렬·들여쓰기·넓게 보기)는 markdown 에 자리가 없다 — 잠근다(R1-A). 글은 그대로 보인다.
+  for (const mark of node.marks ?? []) unsupported.add(mark.type)
   switch (node.type) {
     case 'paragraph':
       return escapeLineStarts(writeInline({ nodes: content, unsupported }))
     case 'heading': {
       const level = clampLevel(node.attrs?.level)
-      return `${'#'.repeat(level)} ${writeInline({ nodes: content, unsupported }).replaceAll('\n', ' ')}`
+      // md 제목은 양끝 공백을 버린다 — 쓸 때도 버려 고정점을 지킨다(뜻은 같다 — `canonicalAdf` 제목 규칙).
+      return `${'#'.repeat(level)} ${writeInline({ nodes: content, unsupported }).replaceAll('\n', ' ').trim()}`
     }
     case 'bulletList':
       return content.map((item) => writeListItem({ item, marker: '- ', unsupported })).join('\n')
@@ -167,15 +237,17 @@ function placeholderInline({ node, unsupported }: { node: AdfNode; unsupported: 
   unsupported.add(node.type)
   const attrs = node.attrs ?? {}
   const text = typeof attrs.text === 'string' ? attrs.text : typeof attrs.shortName === 'string' ? attrs.shortName : typeof attrs.url === 'string' ? attrs.url : null
-  if (node.type === 'mention') return escapeText(text ?? '@멘션')
+  if (node.type === 'mention') return escapeText({ text: text ?? '@멘션' })
   if (node.type === 'date' && typeof attrs.timestamp === 'string' && /^\d{1,15}$/.test(attrs.timestamp)) return new Date(Number(attrs.timestamp)).toISOString().slice(0, 10)
-  return `[${escapeText(text ?? unsupportedLabel(node.type))}]`
+  return `[${escapeText({ text: text ?? unsupportedLabel(node.type) })}]`
 }
 
 type Open = { type: string; href: string | null; delim?: string }
 
 /** 인라인 — 마크는 열고 닫기를 이어 쓴다(같은 마크가 이어진 글 조각을 한 번만 감싼다). 순서: 링크 바깥 · 굵게 · 기울임 · 취소선 · 코드 안쪽. */
-function writeInline({ nodes, unsupported }: { nodes: AdfNode[]; unsupported: Set<string> }): string {
+function writeInline({ nodes: raw, unsupported }: { nodes: AdfNode[]; unsupported: Set<string> }): string {
+  const nodes = spacesOutsideMarks(raw)
+  const stars = nodes.reduce((sum, node) => sum + (node.type === 'text' && !(node.marks ?? []).some((mark) => mark.type === 'code') ? [...(node.text ?? '')].filter((char) => char === '*').length : 0), 0)
   let out = ''
   const stack: Open[] = []
   const closeTo = (depth: number): void => {
@@ -184,7 +256,7 @@ function writeInline({ nodes, unsupported }: { nodes: AdfNode[]; unsupported: Se
       if (top !== undefined) out += closer(top)
     }
   }
-  for (const node of nodes) {
+  for (const [index, node] of nodes.entries()) {
     if (node.type === 'hardBreak') {
       closeTo(0)
       out += '\n'
@@ -204,14 +276,62 @@ function writeInline({ nodes, unsupported }: { nodes: AdfNode[]; unsupported: Se
     const code = marks.some((mark) => mark.type === 'code')
     for (const mark of marks.slice(keep)) {
       if (mark.type === 'code') continue
-      const open = { ...mark, delim: opener({ mark, before: out.at(-1) ?? '' }) }
+      const open = { ...mark, delim: opener({ mark, before: out.at(-1) ?? '', after: charAfterRun({ nodes, from: index, type: mark.type }) }) }
       stack.push(open)
       out += open.delim
     }
-    out += code ? codeSpan(text) : escapeText(text)
+    out += code ? codeSpan(text) : escapeText({ text, before: rawNeighbor({ nodes, index, step: -1 }), after: rawNeighbor({ nodes, index, step: 1 }), stars })
   }
   closeTo(0)
   return out
+}
+
+/** 이웃 글 조각의 맞닿은 글자(코드 조각도 글자로 본다) — 줄바꿈·자리글·끝이면 빈 글. */
+function rawNeighbor({ nodes, index, step }: { nodes: AdfNode[]; index: number; step: 1 | -1 }): string {
+  const node = nodes[index + step]
+  if (node === undefined || node.type !== 'text' || node.text === undefined || node.text === '') return ''
+  return step === 1 ? node.text[0] ?? '' : node.text.at(-1) ?? ''
+}
+
+/**
+ * 굵게·기울임·취소선 조각의 앞뒤 공백을 마크 밖으로(R1-G) — `**Steps: **` 는 CommonMark 에서 굵게가 아니다.
+ * 보이는 모양은 같고(공백의 굵게는 안 보인다) 왕복 비교도 같게 본다(`canonicalAdf`).
+ */
+function spacesOutsideMarks(nodes: AdfNode[]): AdfNode[] {
+  const has = (node: AdfNode | undefined, type: string): boolean => node?.type === 'text' && (node.marks ?? []).some((mark) => mark.type === type)
+  return nodes.flatMap((node, index): AdfNode[] => {
+    if (node.type !== 'text' || node.text === undefined || (node.marks ?? []).some((mark) => mark.type === 'code')) return [node]
+    const marks = node.marks ?? []
+    // 구간의 처음(앞 조각에 그 마크가 없음)의 앞 공백 · 구간의 끝(뒤 조각에 없음)의 뒤 공백에서만 그 마크를 뺀다 — 구간 가운데는 그대로.
+    const dropLead = marks.filter((mark) => SPACE_FREE_MARKS.has(mark.type) && !has(nodes[index - 1], mark.type)).map((mark) => mark.type)
+    const dropTail = marks.filter((mark) => SPACE_FREE_MARKS.has(mark.type) && !has(nodes[index + 1], mark.type)).map((mark) => mark.type)
+    if (dropLead.length === 0 && dropTail.length === 0) return [node]
+    const match = /^(\s*)([\s\S]*?)(\s*)$/u.exec(node.text)
+    let [lead, core, tail] = [match?.[1] ?? '', match?.[2] ?? node.text, match?.[3] ?? '']
+    if (dropLead.length === 0) { core = lead + core; lead = '' }
+    if (dropTail.length === 0) { core = core + tail; tail = '' }
+    if (lead === '' && tail === '') return [node]
+    const piece = ({ text, drop }: { text: string; drop: string[] }): AdfNode[] => {
+      if (text === '') return []
+      const kept = marks.filter((mark) => !drop.includes(mark.type))
+      return [kept.length === 0 ? { type: 'text', text } : { type: 'text', text, marks: kept }]
+    }
+    // 글 전체가 공백이면 앞·뒤 규칙을 함께 적용한다.
+    if (core === '') return piece({ text: lead + tail, drop: [...new Set([...dropLead, ...dropTail])] })
+    return [...piece({ text: lead, drop: dropLead }), { ...node, text: core }, ...piece({ text: tail, drop: dropTail })]
+  })
+}
+
+/** 이 마크가 이어지는 조각들이 끝난 바로 뒤 글자 — 기울임 표지를 고르는 데 쓴다(단어 앞이면 `_` 가 닫히지 않는다). */
+function charAfterRun({ nodes, from, type }: { nodes: AdfNode[]; from: number; type: string }): string {
+  for (let at = from; at < nodes.length; at += 1) {
+    const node = nodes[at]
+    if (node === undefined) return ''
+    if (node.type === 'text' && (node.marks ?? []).some((mark) => mark.type === type)) continue
+    if (node.type === 'text') return node.text?.[0] ?? ''
+    return ''
+  }
+  return ''
 }
 
 function sameOpen(a: Open | undefined, b: Open | undefined): boolean {
@@ -229,25 +349,28 @@ function orderedMarks({ marks, unsupported }: { marks: AdfMark[]; unsupported: S
     }
     const href = mark.type === 'link' && typeof mark.attrs?.href === 'string' ? mark.attrs.href : null
     if (mark.type === 'link' && href === null) continue
+    // 링크의 href 밖 속성(title·collection·occurrenceKey …)·다른 마크의 속성은 markdown 에 자리가 없다 — 잠근다(R1-A).
+    if (Object.entries(mark.attrs ?? {}).some(([key, value]) => !(mark.type === 'link' && key === 'href') && value !== null && value !== undefined)) unsupported.add(MARK_ATTRS)
     if (!known.some((entry) => entry.type === mark.type)) known.push({ type: mark.type, href })
   }
   return known.sort((a, b) => MARK_ORDER.indexOf(a.type) - MARK_ORDER.indexOf(b.type))
 }
 
-function opener({ mark, before }: { mark: Open; before: string }): string {
+function opener({ mark, before, after }: { mark: Open; before: string; after: string }): string {
   switch (mark.type) {
     case 'link': return '['
     case 'strong': return '**'
     case 'strike': return '~~'
-    // 기울임은 `_` — 굵게와 붙어도(`**_x_**`) 갈리지 않는다. 단어 안에서 시작하면 `_` 가 기울임이 아니므로 `*`.
-    case 'em': return /[\p{L}\p{N}]/u.test(before) ? '*' : '_'
+    // 기울임은 `_` — 굵게와 붙어도(`**_x_**`) 갈리지 않는다. 단어 안에서 시작하거나 끝나면(앞·뒤가 단어 글자) `_` 가 기울임이 아니므로 `*`.
+    case 'em': return /[\p{L}\p{N}]/u.test(before) || /[\p{L}\p{N}]/u.test(after) ? '*' : '_'
     default: return ''
   }
 }
 
 function closer(mark: Open): string {
   switch (mark.type) {
-    case 'link': return `](${(mark.href ?? '').replaceAll(' ', '%20').replaceAll(')', '%29')})`
+    // 괄호·공백이 든 주소는 `<…>` 로 감싼다(CommonMark 링크 대상) — 주소를 바꾸지 않는다(R1-G). `<` `>` 줄바꿈이 든 주소는 왕복 검사가 잠근다.
+    case 'link': return `](${/[\s()<>]/.test(mark.href ?? '') && !/[<>\n]/.test(mark.href ?? '') ? `<${mark.href ?? ''}>` : mark.href ?? ''})`
     case 'strong': return '**'
     case 'strike': return '~~'
     case 'em': return mark.delim ?? '_'
@@ -263,19 +386,23 @@ function codeSpan(text: string): string {
   return `${ticks}${pad}${text}${pad}${ticks}`
 }
 
-/** 글 조각의 md 특수 글자를 막는다 — `\` `*` `` ` `` `[` `]` `~~`, 단어 경계의 `_`. 줄 첫머리 표지는 `escapeLineStarts` 가. */
-function escapeText(text: string): string {
+/**
+ * 글 조각의 md 특수 글자를 막는다 — `\` `*` `` ` `` `[` `]` `~~` `_` `<태그`. 줄 첫머리 표지는 `escapeLineStarts` 가.
+ * 판단은 **조각이 아니라 문단 글자 흐름**으로(R1-G 고정점): `before`·`after` = 이웃 조각의 맞닿은 글자, `stars` = 그 인라인 묶음의 `*` 수.
+ * - `*` 는 묶음에 하나뿐이고 양옆이 공백이 아닐 때만 그대로(2*3), 나머지는 막는다. `_` 는 양옆이 단어 글자(snake_case)일 때만 그대로.
+ */
+function escapeText({ text, before = '', after = '', stars = 2 }: { text: string; before?: string; after?: string; stars?: number }): string {
   let out = ''
-  // `*` 하나가 글 조각 가운데에만 있으면(2*3) 짝이 없어 표지가 아니다 — 그대로 둔다. 둘 이상이거나 조각 끝이면 막는다.
-  const stars = [...text].filter((char) => char === '*').length
+  const word = (char: string): boolean => /[\p{L}\p{N}]/u.test(char)
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index] ?? ''
-    const prev = index === 0 ? '' : text[index - 1] ?? ''
-    const loneStar = char === '*' && stars === 1 && index > 0 && index < text.length - 1
+    const prev = index === 0 ? before : text[index - 1] ?? ''
+    const next = index === text.length - 1 ? after : text[index + 1] ?? ''
+    const loneStar = char === '*' && stars === 1 && prev !== '' && next !== '' && !/\s/.test(prev) && !/\s/.test(next)
     if (char === '\\' || (char === '*' && !loneStar) || char === '`' || char === '[' || char === ']') out += `\\${char}`
-    else if (char === '~' && (text[index + 1] === '~' || prev === '~')) out += '\\~'
-    else if (char === '_' && !/[\p{L}\p{N}]/u.test(prev)) out += '\\_'
-    else if (char === '<' && /[A-Za-z/]/.test(text[index + 1] ?? '')) out += '\\<'
+    else if (char === '~' && (next === '~' || prev === '~')) out += '\\~'
+    else if (char === '_' && !(word(prev) && word(next))) out += '\\_'
+    else if (char === '<' && /[A-Za-z/]/.test(next)) out += '\\<'
     else out += char
   }
   return out
@@ -284,7 +411,10 @@ function escapeText(text: string): string {
 /** 문단 줄 첫머리가 블록 표지로 읽히지 않게 — `#` `>` `-` `+` `1.` 펜스·가로줄. */
 function escapeLineStarts(text: string): string {
   return text.split('\n').map((line) => {
-    if (/^(#{1,6}(\s|$)|>|[-+](\s|$)|\d+[.)](\s|$)|~~~|-{3,}|={3,})/.test(line)) return `\\${line}`
+    // 번호 목록 모양은 숫자가 아니라 `.`·`)` 를 막는다 — 숫자 앞 `\` 는 CommonMark 이스케이프가 아니라 글에 남는다(R1-G).
+    const numbered = /^(\d+)([.)])(\s|$)/.exec(line)
+    if (numbered !== null) return `${numbered[1] ?? ''}\\${line.slice((numbered[1] ?? '').length)}`
+    if (/^(#{1,6}(\s|$)|>|[-+](\s|$)|~~~|-{3,}|={3,})/.test(line)) return `\\${line}`
     return line
   }).join('\n')
 }
@@ -624,6 +754,13 @@ function findLink({ text, from }: { text: string; from: number }): { label: stri
       depth -= 1
       if (depth === 0) {
         if (text[index + 1] !== '(') return null
+        if (text[index + 2] === '<') {
+          const end = text.indexOf('>', index + 3)
+          if (end < 0 || text[end + 1] !== ')') return null
+          const href = text.slice(index + 3, end)
+          if (href.length === 0 || /[<\n]/.test(href)) return null
+          return { label: text.slice(from + 1, index), href, end: end + 2 }
+        }
         const close = text.indexOf(')', index + 2)
         if (close < 0) return null
         const href = text.slice(index + 2, close).trim()

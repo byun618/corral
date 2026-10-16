@@ -22,7 +22,6 @@ type FxIssue = {
 type FxLink = { id: string; typeId: string; inward: string; outward: string }
 type FxHistory = { id: string; created: number; historyMetadata: Record<string, unknown> | null; items: { field: string; fieldId: string; fromString: string | null; toString: string | null }[] }
 type FxComment = { id: string; body: Adf; created: number }
-type FxRemote = { id: string; globalId: string; application: Record<string, unknown>; relationship: string; object: Record<string, unknown> }
 type FxCreateField = { fieldId: string; name: string; required: boolean; hasDefaultValue: boolean; schema: Record<string, unknown>; allowedValues?: { id: string; value: string }[] }
 
 export type JiraFault = { match: (request: JiraFixtureRequest) => boolean; status?: number; headers?: Record<string, string>; body?: unknown; delayMs?: number; destroy?: 'before' | 'after'; once?: boolean }
@@ -95,7 +94,6 @@ export class JiraRestFixture {
   links: FxLink[] = []
   history = new Map<string, FxHistory[]>()
   comments = new Map<string, FxComment[]>()
-  remote = new Map<string, FxRemote[]>()
 
   constructor() {
     this.seed()
@@ -227,11 +225,6 @@ export class JiraRestFixture {
       if (issue === null) return notFound('Issue does not exist or you do not have permission to see it.')
       if (method === 'GET') return commentPage({ list: (this.comments.get(issue.id) ?? []).map(commentBean), query: request.query })
       if (method === 'POST') return this.addComment(issue, request.body)
-    }
-    if ((match = /^\/rest\/api\/3\/issue\/([^/]+)\/remotelink$/.exec(path)) !== null) {
-      const issue = this.issue(decodeURIComponent(match[1] ?? ''))
-      if (issue === null) return notFound('Issue does not exist or you do not have permission to see it.')
-      return this.remoteLinks(issue, request)
     }
     if (method === 'GET' && path === '/rest/api/3/issueLinkType') return { status: 200, body: { issueLinkTypes: LINK_TYPES.map((type) => ({ ...type, self: `https://fixture.invalid/rest/api/3/issueLinkType/${type.id}` })) } }
     if (method === 'POST' && path === '/rest/api/3/issueLink') return this.addLink(request.body)
@@ -520,29 +513,6 @@ export class JiraRestFixture {
     if (inward === null || outward === null) return notFound('Issue does not exist or you do not have permission to see it.')
     this.links.push({ id: String(this.seq++), typeId: type.id, inward: inward.id, outward: outward.id })
     return { status: 201, body: null }
-  }
-
-  private remoteLinks(issue: FxIssue, request: JiraFixtureRequest): Reply {
-    const list = this.remote.get(issue.id) ?? []
-    const bean = (link: FxRemote) => ({ ...link, self: `https://fixture.invalid/rest/api/3/issue/${issue.id}/remotelink/${link.id}` })
-    if (request.method === 'GET') return { status: 200, body: list.map(bean) }
-    if (request.method === 'DELETE') {
-      const globalId = request.query.globalId
-      const at = list.findIndex((link) => link.globalId === globalId)
-      if (at < 0) return notFound('No remote link with the given globalId.')
-      list.splice(at, 1)
-      return { status: 204, body: null }
-    }
-    if (request.method === 'POST') {
-      const body = request.body
-      if (!isRecord(body) || !isRecord(body.object) || typeof body.object.url !== 'string' || typeof body.object.title !== 'string') return { status: 400, body: { errorMessages: [], errors: { object: 'Object url and title are required.' } } }
-      const globalId = typeof body.globalId === 'string' ? body.globalId : ''
-      const existing = list.find((link) => globalId !== '' && link.globalId === globalId)
-      const next: FxRemote = { id: existing?.id ?? String(this.seq++), globalId, application: isRecord(body.application) ? body.application : {}, relationship: typeof body.relationship === 'string' ? body.relationship : '', object: body.object }
-      this.remote.set(issue.id, existing === undefined ? [...list, next] : list.map((link) => (link === existing ? next : link)))
-      return { status: existing === undefined ? 201 : 200, body: { id: Number(next.id), self: `https://fixture.invalid/rest/api/3/issue/${issue.id}/remotelink/${next.id}` } }
-    }
-    return notFound('no route')
   }
 
   private boards(query: Record<string, string>): Reply {

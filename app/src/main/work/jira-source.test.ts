@@ -479,17 +479,21 @@ describe('C9 이력·연결·부모', () => {
 })
 
 describe('C10·C11 작업 링크·쓰기 안전', () => {
-  it('remote link — 같은 링크는 globalId 로 하나(멱등) · 지우면 사라진다 · corral 링크만 읽는다', async () => {
+  it('R1-H 작업 링크 저장 — 능력 꺼짐(이유) · 저장·지우기·자동 연결 모두 Jira 요청 0 · 단건은 remote link 를 읽지 않는다', async () => {
     const h = await connected()
-    const link = { kind: 'branch' as const, name: 'CORE-1-pay', repoRoot: '/tmp/l605-repo' }
-    expect(await h.service.storeLink({ connectionId: h.connectionId, itemId: '20001', link, action: 'save' })).toEqual({ state: 'saved', message: null })
-    expect(await h.service.storeLink({ connectionId: h.connectionId, itemId: '20001', link, action: 'save' })).toEqual({ state: 'saved', message: null })
-    expect(h.fixture.remote.get('20001')).toHaveLength(1)
-    h.fixture.remote.set('20001', [...(h.fixture.remote.get('20001') ?? []), { id: '9', globalId: 'other:1', application: { type: 'com.github' }, relationship: 'mentioned', object: { url: 'https://x', title: 'x', summary: '{"kind":"branch","name":"evil","repoRoot":null}' } }])
+    const caps = h.service.settings().connections[0]?.capabilities
+    expect(caps?.workLinkStore).toEqual({ state: 'disabled', reason: expect.stringContaining('로컬 경로') })
+    const before = h.fixture.requests.length
+    const link = { kind: 'worktree' as const, path: '/Users/someone/repo/.claude/worktrees/CORE-1-pay', repoRoot: '/Users/someone/repo' }
+    for (const action of ['save', 'remove'] as const) {
+      expect(await h.service.storeLink({ connectionId: h.connectionId, itemId: '20001', link, action })).toEqual({ state: 'skipped', message: expect.stringContaining('로컬 경로') })
+    }
+    // 브랜치 키 자동 감지 경로(links.ts flushAutoStores → storeAutoLink) — 키 찾기조차 보내지 않는다.
+    expect(await h.service.storeAutoLink({ connectionId: h.connectionId, key: 'CORE-1', link })).toEqual({ state: 'skipped', message: expect.stringContaining('로컬 경로') })
+    expect(h.fixture.requests.slice(before)).toEqual([])
     const got = await h.send({ op: 'getItem', itemId: '20001' })
-    expect(got).toMatchObject({ ok: true, result: { item: { workLinks: [link] } } })
-    expect(await h.service.storeLink({ connectionId: h.connectionId, itemId: '20001', link, action: 'remove' })).toEqual({ state: 'saved', message: null })
-    expect(await h.service.storeLink({ connectionId: h.connectionId, itemId: '20001', link, action: 'remove' })).toEqual({ state: 'saved', message: null })
+    expect(got).toMatchObject({ ok: true, result: { item: { workLinks: [] } } })
+    expect(h.fixture.requests.some((request) => request.path.includes('remotelink'))).toBe(false)
   })
 
   it('동시 요청 상한 — 스무 개를 한꺼번에 보내도 fixture 가 본 동시 요청은 4 이하', async () => {

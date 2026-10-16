@@ -172,8 +172,15 @@ export class WorkService {
     if (!checkedAccount.ok) return { ok: false, error: invalid(checkedAccount.message) }
     const account = checkedAccount.account
     if (existing !== null) {
+      // 고정 칸이 행에서 떨어졌으면(이전 판 앱이 다시 쓴 파일) 봉인 안 칸과 대조한다(R1-P) — 빈 칸이라고 다른 사이트로 바꾸게 두지 않는다.
+      let fixed: Record<string, string> = existing.account
+      if (entry.descriptor.accountFields.some((field) => field.fixedOnReplace && existing.account[field.key] === undefined)) {
+        const opened = await this.deps.vault.unseal({ connectionId: existing.id, sealed: existing.sealed })
+        if (!opened.ok) return { ok: false, error: this.scrub({ error: opened.error, secrets: [token] }) }
+        fixed = { ...openCredentials(opened.token).account, ...existing.account }
+      }
       for (const field of entry.descriptor.accountFields) {
-        if (field.fixedOnReplace && existing.account[field.key] !== undefined && existing.account[field.key] !== account[field.key]) {
+        if (field.fixedOnReplace && fixed[field.key] !== undefined && fixed[field.key] !== account[field.key]) {
           return { ok: false, error: invalid(`토큰을 바꿀 때 ${field.label}은(는) 바꿀 수 없습니다 — 다른 ${field.label}은(는) 새 연결로 추가하세요.`) }
         }
       }
@@ -490,12 +497,27 @@ export class WorkService {
       const credentials = openCredentials(opened.token)
       // 맨 토큰도 지울 목록에 — 봉인이 칸 JSON 이면 금고가 기억한 「토큰」 은 JSON 전체라 맨 토큰을 못 지운다(R1-B, add 경로와 같은 목록).
       this.deps.vault.noteSecrets({ connectionId, secrets: [credentials.token, ...(entry.secretsOf?.(credentials) ?? [])] })
+      this.restoreAccount({ connectionId, account: credentials.account })
       const client = entry.create(credentials)
       this.patchRuntime(connectionId, { client, capabilities: client.capabilities(), acquiring: null })
       return { ok: true, client, fresh: true }
     })
     this.patchRuntime(connectionId, { acquiring })
     return acquiring
+  }
+
+  /**
+   * 표시용 `account` 칸이 행에서 떨어졌으면(이 칸을 모르는 이전 판 앱이 파일을 다시 씀) 봉인 안 칸으로 채워 다시 쓴다(R1-P) —
+   * 카드 제목·메타와 토큰 교체 폼(고정 칸)이 빈 채로 남지 않게. 행에 있는 값은 덮지 않는다. 저장 실패는 다음 획득에서 다시.
+   */
+  private restoreAccount({ connectionId, account }: { connectionId: string; account: Record<string, string> }): void {
+    const data = this.deps.store.get()
+    const row = data.connections.find((entry) => entry.id === connectionId)
+    if (row === undefined || Object.keys(account).every((key) => row.account[key] !== undefined)) return
+    const restored: StoredConnection = { ...row, account: { ...account, ...row.account } }
+    const written = this.deps.store.write({ ...data, connections: data.connections.map((entry) => (entry.id === connectionId ? restored : entry)) })
+    log('work.account_restore', { source: row.sourceId, ok: written.ok, fields: Object.keys(account).length })
+    if (written.ok) this.emit()
   }
 
   /** 확정 상태를 바꿔도 되는 결과인가 — 같은 세대이고, 확정 상태를 마지막으로 정한 순번보다 **뒤에** 시작한 요청. */

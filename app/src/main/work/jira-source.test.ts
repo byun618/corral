@@ -169,6 +169,23 @@ describe('C1 사이트·자격', () => {
     restarted.cipher.mode = 'ok'
     const response = await restarted.service.request({ requestId: 'r', connectionId: h.connectionId, call: { op: 'listStatuses', spaceKey: 'CORE' } })
     expect(response.ok).toBe(true)
+    // R1-P 표시 칸은 봉인 안 칸으로 복원된다 — 카드 제목·메타와 교체 폼이 빈 채로 남지 않는다.
+    expect(restarted.store.data.connections[0]?.account).toEqual(row.account)
+    expect(restarted.service.settings().connections[0]?.account).toEqual(row.account)
+  })
+
+  it('R1-P 표시 칸이 떨어진 행의 토큰 교체 — 다른 사이트는 봉인 안 칸과 대조해 거절(요청 0), 같은 사이트는 바뀐다', async () => {
+    const h = await connected()
+    const row = h.store.data.connections[0]
+    if (row === undefined) throw new Error('row')
+    h.store.data = { ...h.store.data, connections: [{ ...row, account: {} }] }
+    const before = h.fixture.requests.length
+    const moved = await h.service.addConnection({ sourceId: 'jira', token: FAKE_JIRA_TOKEN, account: { site: 'other.atlassian.net', email: FAKE_JIRA_EMAIL }, replaceId: h.connectionId })
+    expect(moved).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
+    expect(h.fixture.requests.length).toBe(before)
+    const same = await h.service.addConnection({ sourceId: 'jira', token: FAKE_JIRA_TOKEN, account: JIRA_ACCOUNT, replaceId: h.connectionId })
+    expect(same.ok).toBe(true)
+    expect(h.store.data.connections[0]?.account).toEqual(row.account)
   })
 })
 

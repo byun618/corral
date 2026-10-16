@@ -140,7 +140,7 @@ export function sameAdf({ a, b }: { a: AdfDoc; b: AdfDoc }): boolean {
 /**
  * 비교용 정규형 — 뜻이 같은 모양을 하나로: `localId`·null 값 속성·빈 attrs·코드 블록 빈 언어를 빼고, 번호 목록 시작 1 을 기본으로, 빈 글을 빼고, 제목 양끝 공백을 빼고,
  * 같은 마크의 이웃 글을 잇고, **공백 글자의 굵게·기울임·취소선은 뺀다**(보이는 차이 없음 — writer 가 경계 공백을 마크 밖으로 옮긴다).
- * 보이는 차이 없는 빈 모양도 하나로(R2-D): 내용 없는 문단은 빼고(writer 도 쓰지 않는다), 빈 `content` 와 `content` 없음은 같고,
+ * 빈 모양도 하나로(R2-D): 내용 없는 문단은 빼고(writer 도 쓰지 않는다 — 고쳐 저장하면 Jira 의 빈 문단 간격은 빠진다, 내용은 그대로 — R3-D), 빈 `content` 와 `content` 없음은 같고,
  * `hardBreak` 의 `attrs.text: "\n"`(Jira 편집기가 붙인다)은 뺀다. 그 밖의 차이(속성·마크 속성·노드 마크·순서)는 전부 다르다로 남긴다.
  */
 export function canonicalAdf(nodes: AdfNode[]): unknown[] {

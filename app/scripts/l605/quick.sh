@@ -75,6 +75,7 @@ run data-attrs 0 node scripts/l605/check-data-attrs.mjs --base $BASE_COMMIT
 run_grep pc-data-attrs-base 1 'BASE data-connection-account ' node scripts/l605/check-data-attrs.mjs --base HEAD
 print -r -- 'export const nothing = 1' > $OUT/data-attrs-empty-sample.tsx
 run_grep pc-data-attrs 1 'MISS data-connection-account ' node scripts/l605/check-data-attrs.mjs --extra $OUT/data-attrs-empty-sample.tsx
+run st-secret-grep 0 node scripts/l605/secret-grep.mjs --self-test
 run build 0 npm run build
 run runtime-bundle 0 node scripts/l605/check-runtime-bundle.mjs
 print -r -- 'export const marker = "/rest/api/3/search/jql"' > $OUT/runtime-marker-sample.mjs
@@ -84,5 +85,6 @@ run main-registry 0 node scripts/l605/check-main-registry.mjs
 # 양성 대조 — 게이트를 일부러 연 사본(소켓·호스트 검사 제거)이면 실패해야 한다.
 sed 's#if (socket.length === 0 || !/^http:\\/\\/127\\.0\\.0\\.1:\\d{2,5}$/.test(url)) return null;#if (url.length === 0) return null;#' out/main/index.js > $OUT/leaky-main.js
 run_grep pc-main-registry 1 '"ok": false' node scripts/l605/check-main-registry.mjs --bundle $OUT/leaky-main.js
+python3 -I scripts/l605/scrub-raw.py $OUT > $OUT/scrub.txt
 print -r -- "$([[ $failed == 0 ]] && echo pass || echo "fail $failed")" > $OUT/ALL
 cat $OUT/ALL

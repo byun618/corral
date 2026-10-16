@@ -6,6 +6,7 @@
 //
 //   app/ 에서: L605_ROOT=/tmp/l605w-<n> L605_PHASE=first   npx vitest run scripts/l605/windowless.test.tsx   → 연결·목록·질의 검색(요청 수)·폴백·쓰기 · 디스크·로그 grep
 //              L605_ROOT=/tmp/l605w-<n> L605_PHASE=restart npx vitest run scripts/l605/windowless.test.tsx   → 새 프로세스 = 재시작 뒤 연결 유지·카드 표시 칸·grep
+//              L605_ROOT=/tmp/l605w-<n> L605_PHASE=lifecycle …   → (restart 뒤) 실패한 추가 · 토큰 교체 · 해제를 지날 때마다 grep(R2-K). L605_PC=leak 이면 교체 뒤 새 토큰을 로그에.
 // 양성 대조(판정이 늘 참이 아님을 보인다 — 시험이 실패해야 한다): L605_PC=leak(일부러 새게 한 빌드 — 토큰·Basic 값을 main 로그에 한 줄 → grep 적중) ·
 // L605_PC=search-twice(디바운스를 건너뛴 것처럼 같은 질의를 한 번 더 보냄 → 요청 수 2).
 // L605_ROOT·L605_PHASE 가 **둘 다** 없을 때만 건너뛴다(npm test 에서는 skipped). 하나라도 있으면 ROOT 가 `/tmp/l605w-*` 이고 PHASE 가 first·restart 여야 한다(빈 값 포함 실패).
@@ -80,6 +81,7 @@ async function boot(): Promise<{ service: WorkService; prefs: UiPrefsStore; fixt
   openLog(UD)
   const fixture = new JiraRestFixture()
   fixture.allow({ email: FAKE_JIRA_EMAIL, token: FAKE_JIRA_TOKEN })
+  fixture.allow({ email: FAKE_JIRA_EMAIL, token: SECOND_TOKEN })
   const url = await fixture.start()
   const prefs = new UiPrefsStore(UD)
   prefs.load()
@@ -122,15 +124,20 @@ const typeSearch = (host: HTMLElement, value: string): void => {
 const flushLog = async (): Promise<void> => { closeLog(); await new Promise((resolve) => setTimeout(resolve, 100)) }
 
 /** 자격 글 grep — 토큰 · Basic 값 · base64 · `이메일:토큰` 은 어디에도, 이메일은 연결 파일 표시 칸 밖에. 글은 needles.json(ROOT 아래, ud 밖)에만. */
+/** lifecycle 단계가 쓰는 두 번째(교체) 토큰·틀린 토큰 — 가짜. 둘 다 grep 바늘에 든다. */
+const SECOND_TOKEN = 'ATATTwindowless0second00000000000000jira'
+const WRONG_TOKEN = 'ATATTwindowless0wrong000000000000000jira'
 function secretGrep(): { status: number | null; out: unknown } {
-  const basic = basicHeader({ email: FAKE_JIRA_EMAIL, token: FAKE_JIRA_TOKEN })
-  const needles = [
-    { label: 'token', value: FAKE_JIRA_TOKEN },
-    { label: 'basic', value: basic },
-    { label: 'basic64', value: basic.slice('Basic '.length) },
-    { label: 'email-token', value: `${FAKE_JIRA_EMAIL}:${FAKE_JIRA_TOKEN}` },
-    { label: 'email', value: FAKE_JIRA_EMAIL, allowIn: ['work-connections.json'] },
-  ]
+  const needles = [FAKE_JIRA_TOKEN, SECOND_TOKEN, WRONG_TOKEN].flatMap((token, index) => {
+    const basic = basicHeader({ email: FAKE_JIRA_EMAIL, token })
+    return [
+      { label: `token${index}`, value: token },
+      { label: `basic${index}`, value: basic },
+      { label: `basic64-${index}`, value: basic.slice('Basic '.length) },
+      { label: `email-token${index}`, value: `${FAKE_JIRA_EMAIL}:${token}` },
+    ]
+  })
+  needles.push({ label: 'email', value: FAKE_JIRA_EMAIL, allowIn: ['work-connections.json'] })
   const file = path.join(ROOT, 'needles.json')
   fs.writeFileSync(file, JSON.stringify(needles))
   const run = spawnSync(process.execPath, [path.join(APP, 'scripts/l605/secret-grep.mjs'), UD, file], { encoding: 'utf8' })
@@ -147,7 +154,7 @@ const grepClean = (run: { status: number | null; out: unknown }): boolean => {
 
 describe.runIf(requested)('LIFE-605 창 없는 Jira 하네스', () => {
   it(`phase ${PHASE}`, async () => {
-    expect({ root: enabled, phase: PHASE === 'first' || PHASE === 'restart' }, `L605_ROOT=/tmp/l605w-* · L605_PHASE=first|restart 가 필요하다 (지금 ROOT='${ROOT}' PHASE='${PHASE}')`).toEqual({ root: true, phase: true })
+    expect({ root: enabled, phase: PHASE === 'first' || PHASE === 'restart' || PHASE === 'lifecycle' }, `L605_ROOT=/tmp/l605w-* · L605_PHASE=first|restart|lifecycle 가 필요하다 (지금 ROOT='${ROOT}' PHASE='${PHASE}')`).toEqual({ root: true, phase: true })
     const result: Record<string, unknown> = { phase: PHASE, at: new Date().toISOString() }
     const parts = await boot()
     bridge(parts)
@@ -179,6 +186,24 @@ describe.runIf(requested)('LIFE-605 창 없는 Jira 하네스', () => {
         const secrets = secretGrep()
         result.c1Secrets = secrets
         result.verdict = { c1Card: result.c1Card, c5Query: result.c5Query, c5Fallback: result.c5Fallback, write: result.write, c1Secrets: grepClean(secrets) }
+      } else if (PHASE === 'lifecycle') {
+        // R2-K — 오류 문구가 새는 길(실패한 추가 · 토큰 교체 · 해제)을 지난 뒤마다 grep. restart 뒤에 돈다(연결 파일이 있다).
+        const connection = parts.service.settings().connections.find((entry) => entry.sourceId === 'jira')
+        if (connection === undefined) throw new Error('restart 뒤에 돌린다')
+        const failedAdd = await parts.service.addConnection({ sourceId: 'jira', token: WRONG_TOKEN, account: JIRA_ACCOUNT, replaceId: null })
+        await flushLog(); openLog(UD)
+        const afterFailedAdd = secretGrep()
+        const replaced = await parts.service.addConnection({ sourceId: 'jira', token: SECOND_TOKEN, account: JIRA_ACCOUNT, replaceId: connection.id })
+        const listed = await parts.service.request({ requestId: 'l605-life-list', connectionId: connection.id, call: { op: 'listSpaces' } })
+        if (PC === 'leak') log('l605.pc', { leaked: SECOND_TOKEN })
+        await flushLog(); openLog(UD)
+        const afterReplace = secretGrep()
+        const removed = parts.service.removeConnection({ connectionId: connection.id })
+        await flushLog()
+        const afterRemove = secretGrep()
+        result.c1Lifecycle = { failedAdd: failedAdd.ok, replaced: replaced.ok, listed: listed.ok, removed: removed.ok, left: parts.service.settings().connections.length }
+        result.c1Secrets = { afterFailedAdd, afterReplace, afterRemove }
+        result.verdict = { c1Lifecycle: result.c1Lifecycle, c1Secrets: { afterFailedAdd: grepClean(afterFailedAdd), afterReplace: grepClean(afterReplace), afterRemove: grepClean(afterRemove) } }
       } else {
         // 재시작 = 새 프로세스 — 연결 파일·봉인에서 연결이 돌아오고, 카드 표시 칸(사이트·이메일)이 그대로, 조회가 된다.
         const connection = parts.service.settings().connections.find((entry) => entry.sourceId === 'jira')
@@ -197,8 +222,11 @@ describe.runIf(requested)('LIFE-605 창 없는 Jira 하네스', () => {
     }
     fs.writeFileSync(path.join(ROOT, `windowless-${PHASE}.json`), JSON.stringify(result, null, 2))
     const account = { site: 'fixture.atlassian.net', email: FAKE_JIRA_EMAIL }
-    expect(result.verdict).toEqual(PHASE === 'first'
-      ? { c1Card: true, c5Query: { requests: 1, hits: expect.any(Number) }, c5Fallback: { note: true }, write: true, c1Secrets: true }
-      : { c1Restart: { found: true, account }, c1Card: true, c1Secrets: true })
+    const want = {
+      first: { c1Card: true, c5Query: { requests: 1, hits: expect.any(Number) }, c5Fallback: { note: true }, write: true, c1Secrets: true },
+      restart: { c1Restart: { found: true, account }, c1Card: true, c1Secrets: true },
+      lifecycle: { c1Lifecycle: { failedAdd: false, replaced: true, listed: true, removed: true, left: 0 }, c1Secrets: { afterFailedAdd: true, afterReplace: true, afterRemove: true } },
+    }
+    expect(result.verdict).toEqual(PHASE === 'first' ? want.first : PHASE === 'restart' ? want.restart : want.lifecycle)
   }, 120_000)
 })

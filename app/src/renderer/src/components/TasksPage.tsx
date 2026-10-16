@@ -695,7 +695,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         {prefs.filters.dueWeek ? <span className="tasks-filter is-on is-static" data-filter="due-week">이번 주 마감</span> : null}
         {filtersActive(prefs.filters) ? <button type="button" className="tasks-clear" data-clear-filters="" onClick={() => setFilters(NO_FILTERS)}>필터 지우기</button> : null}
         {/* 출처 질의 검색의 안내(LIFE-605 C5 — 질의를 거부해 텍스트로 찾은 사유 등). 출처가 준 글 그대로. */}
-        {page.searchNotes.map((note) => <span key={note.connectionId} className="tasks-search-note" data-search-note={note.connectionId} title={note.text}>{note.text}</span>)}
+        {page.searchNotes.map((note) => <span key={`${note.connectionId}:${note.text}`} className="tasks-search-note" data-search-note={note.connectionId} title={note.text}>{note.text}</span>)}
         <span className="tasks-head-spacer" />
         {load.phase === 'loading' && load.data.length > 0 ? <span className="tasks-refreshing" data-tasks-refreshing="">새로 받는 중…</span> : null}
       </div>

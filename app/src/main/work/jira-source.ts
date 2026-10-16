@@ -335,6 +335,10 @@ export class JiraSource implements WorkSourceClient {
   // --- 스페이스 · 상태 ---
 
   private async listSpaces(): Promise<WorkOutcome> {
+    // 새로 고침 = 스페이스 목록 — 상태·우선순위·연결 종류 캐시도 비운다(R2-E: Jira 에서 워크플로·이름을 바꾸면 재시작 전에도 보이게).
+    this.statusCache.clear()
+    this.priorities = null
+    this.linkTypes = null
     const me = await this.read({ path: '/rest/api/3/myself', parse: readMyself, notFound: 'Jira 사용자 정보를 찾지 못했습니다.' })
     if (!me.ok) return me.outcome
     const projects = await this.pages({ path: '/rest/api/3/project/search', query: { expand: 'issueTypes', orderBy: 'key' }, parse: readProjectPage, notFound: '프로젝트 목록을 찾지 못했습니다.', maxResults: Math.min(this.pageSize, 100) })
@@ -485,10 +489,26 @@ export class JiraSource implements WorkSourceClient {
    * 일반 실패로 돌려주면 사용자가 같은 쓰기를 다시 보낸다 — `maybeApplied` 를 붙여 화면이 다시 보내지 않고 목록을 새로 받게 한다.
    */
   private async writtenResult({ op, itemId }: { op: 'changeStatus' | 'updateItem' | 'setParent' | 'reorder'; itemId: string }): Promise<WorkOutcome> {
-    const item = await this.item(itemId)
-    if (item.ok) return { ok: true, result: { op, item: item.value } }
-    const error = item.outcome.ok ? workError({ kind: 'invalid_response', message: '출처 응답 모양이 다릅니다.' }) : item.outcome.error
-    return { ok: false, error: { ...error, message: `${WRITTEN_PREFIX}${error.message}`, maybeApplied: true } }
+    return this.afterWrite({ prefix: WRITTEN_PREFIX, work: async () => {
+      const item = await this.item(itemId)
+      return item.ok ? { ok: true, result: { op, item: item.value } } : item.outcome
+    } })
+  }
+
+  /**
+   * 쓰기가 2xx 로 끝난 **뒤**의 일(응답 읽기·다시 읽기) — 여기서 난 실패(응답 모양 어긋남 포함)는 일반 실패가 아니다: 쓰기는 이미 적용됐다.
+   * 한 곳에서 `maybeApplied` + 「적용됐지만」 을 붙인다(R1-X·R2-F) — 화면이 같은 쓰기를 다시 보내 중복을 만들지 않게.
+   */
+  private async afterWrite({ prefix, work }: { prefix: string; work: () => Promise<WorkOutcome> }): Promise<WorkOutcome> {
+    let outcome: WorkOutcome
+    try {
+      outcome = await work()
+    } catch (error) {
+      if (!(error instanceof JiraShapeError)) throw error
+      outcome = { ok: false, error: workError({ kind: 'invalid_response', message: `Jira 응답 모양이 다릅니다 (${error.path.slice(0, 120)}).` }) }
+    }
+    if (outcome.ok || outcome.error.maybeApplied === true) return outcome
+    return { ok: false, error: { ...outcome.error, message: `${prefix}${outcome.error.message}`, maybeApplied: true } }
   }
 
   private async findByKey(key: string): Promise<WorkOutcome> {
@@ -712,11 +732,13 @@ export class JiraSource implements WorkSourceClient {
       const error = sent.outcome.ok ? null : sent.outcome.error
       return error !== null && error.maybeApplied === true ? { ok: false, error: { ...error, message: error.message.replace(APPLIED_PREFIX, CREATED_PREFIX) } } : sent.outcome
     }
-    const created = readCreated(sent.value.json)
-    const item = await this.item(created.id)
-    if (item.ok) return { ok: true, result: { op: 'createItem', item: item.value } }
-    // 만들었지만 다시 읽지 못했다 — 만든 응답으로 최소 작업(LIFE-604 규칙). 실패로 돌려주면 사용자가 다시 만든다.
-    return { ok: true, result: { op: 'createItem', item: minimalItem({ created, call, type, types: project.value.types, statusKey: meta.value.meta.defaultStatusKey }) } }
+    return this.afterWrite({ prefix: MADE_PREFIX, work: async () => {
+      const created = readCreated(sent.value.json)
+      const item = await this.item(created.id)
+      if (item.ok) return { ok: true, result: { op: 'createItem', item: item.value } }
+      // 만들었지만 다시 읽지 못했다 — 만든 응답으로 최소 작업(LIFE-604 규칙). 실패로 돌려주면 사용자가 다시 만든다.
+      return { ok: true, result: { op: 'createItem', item: minimalItem({ created, call, type, types: project.value.types, statusKey: meta.value.meta.defaultStatusKey }) } }
+    } })
   }
 
   // --- 이력 ---
@@ -808,11 +830,13 @@ export class JiraSource implements WorkSourceClient {
     const body = { type: { id: type.id }, inwardIssue: { id: outward ? issue.value.id : other.value.id }, outwardIssue: { id: outward ? other.value.id : issue.value.id } }
     const sent = await this.write({ method: 'POST', path: '/rest/api/3/issueLink', body, refused: 'Jira 가 연결을 거절했습니다.' })
     if (!sent.ok) return sent.outcome
-    const after = await this.fetchIssue(itemId)
-    if (!after.ok) return after.outcome
-    const relation = relationsOf(after.value).find((entry) => entry.kind === kind && entry.other.id === other.value.id)
-    if (relation === undefined) return { ok: false, error: workError({ kind: 'invalid_response', message: 'Jira 가 연결을 받았다고 했지만 이슈에 보이지 않습니다.' }) }
-    return { ok: true, result: { op: 'addRelation', relation } }
+    return this.afterWrite({ prefix: WRITTEN_PREFIX, work: async () => {
+      const after = await this.fetchIssue(itemId)
+      if (!after.ok) return after.outcome
+      const relation = relationsOf(after.value).find((entry) => entry.kind === kind && entry.other.id === other.value.id)
+      if (relation === undefined) return { ok: false, error: workError({ kind: 'invalid_response', message: 'Jira 가 연결을 받았다고 했지만 이슈에 보이지 않습니다.' }) }
+      return { ok: true, result: { op: 'addRelation', relation } }
+    } })
   }
 
   private async removeRelation(relationId: string): Promise<WorkOutcome> {
@@ -832,7 +856,7 @@ export class JiraSource implements WorkSourceClient {
   private async addComment({ itemId, body }: { itemId: string; body: string }): Promise<WorkOutcome> {
     const sent = await this.write({ method: 'POST', path: `/rest/api/3/issue/${encodeURIComponent(itemId)}/comment`, body: { body: withLocalIds(markdownToAdf(body)) }, refused: 'Jira 가 코멘트를 거절했습니다.' })
     if (!sent.ok) return sent.outcome
-    return { ok: true, result: { op: 'addComment', comment: commentOf(readComment(sent.value.json)) } }
+    return this.afterWrite({ prefix: MADE_PREFIX, work: async () => ({ ok: true, result: { op: 'addComment', comment: commentOf(readComment(sent.value.json)) } }) })
   }
 
   // --- 질의 검색 ---
@@ -844,7 +868,7 @@ export class JiraSource implements WorkSourceClient {
     let note: string
     if (user === null) {
       // 괄호·따옴표 짝이 맞지 않는 질의는 보내지 않는다 — `) OR (` 로 스페이스 조건을 벗어날 수 있다(R1-C). 텍스트로 찾는다.
-      note = 'JQL 의 괄호·따옴표 짝이 맞지 않아 질의로 보내지 않고 텍스트로 찾았습니다.'
+      note = 'JQL 의 괄호·따옴표 짝이 맞지 않거나(둥근 따옴표 포함) 확인할 수 없어 질의로 보내지 않고 텍스트로 찾았습니다.'
     } else {
       const queried = await this.collect(`${scope} AND (${user.where})${user.orderBy === null ? ' ORDER BY updated DESC' : ` ORDER BY ${user.orderBy}`}`)
       if (queried.ok) return { ok: true, result: { op: 'searchItems', items: queried.items, mode: 'query', note: null, truncated: queried.truncated } }
@@ -931,6 +955,8 @@ export function textSearchWords(query: string): string {
  * `ORDER BY` 도 따옴표 밖·깊이 0 에서만 찾는다(`summary ~ "order by"` 는 글).
  */
 export function splitOrderBy(query: string): { where: string; orderBy: string | null } | null {
+  // 둥근 따옴표(“ ” ‘ ’)를 Jira 가 문자열 구분자로 읽는지 모른다(R2-I — F19) — 짝 검사를 믿을 수 없어 질의로 보내지 않는다(텍스트 폴백).
+  if (/[\u2018\u2019\u201c\u201d]/.test(query)) return null
   let depth = 0
   let quote: string | null = null
   let orderAt = -1
@@ -962,6 +988,7 @@ export function splitOrderBy(query: string): { where: string; orderBy: string | 
 }
 
 const ISSUE_ID = /^\d{1,18}$/
+const MADE_PREFIX = 'Jira 에 만들어졌지만 응답을 읽지 못했습니다 — 다시 보내지 말고 목록을 새로 고치세요. '
 const WRITTEN_PREFIX = 'Jira 에는 적용됐지만 바뀐 작업을 다시 읽지 못했습니다 — 다시 보내지 말고 목록을 새로 고치세요. '
 
 /** 경로·본문에 들어가는 이슈 id 칸 — `itemId` · `afterId` · `parentId`(null 은 뺀다). */

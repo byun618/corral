@@ -58,8 +58,8 @@ function remarkKeyLinks(keyPattern: string | null) {
     if (keyPattern === null) return
     let pattern: RegExp
     try {
-      // 대소문자 구분(R1-R) — 키 모양은 출처가 대문자로 준다. 대소문자를 무시하면 `utf-8`·`sha-256` 같은 낱말까지 키 링크가 된다.
-      pattern = new RegExp(`(?<![A-Za-z0-9_-])(?:${keyPattern})(?![A-Za-z0-9_])`, 'g')
+      // 대소문자 무시(계약 `keyPattern` 문구 그대로 — LIFE-605 R2-G 로 R1-R 의 구분을 되돌렸다). `UTF-8` 류 오탐은 눌러도 「없음」 일 뿐이라 알려진 낮음.
+      pattern = new RegExp(`(?<![A-Za-z0-9_-])(?:${keyPattern})(?![A-Za-z0-9_])`, 'gi')
     } catch {
       return
     }

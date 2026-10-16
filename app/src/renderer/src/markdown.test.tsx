@@ -162,18 +162,12 @@ describe('MarkdownView (C4)', () => {
     const keys: string[] = []
     render('K-1 과 k-22 · `K-3` · [K-4](https://e.com) · AK-5', { onOpenKey: (key) => keys.push(key) })
     const found = [...host.querySelectorAll('[data-issue-key]')].map((node) => node.getAttribute('data-issue-key'))
-    // 대소문자 그대로(R1-R) — 브랜치 자동 연결(`work-link.ts`)과 같은 규칙. 소문자 `k-22` 는 키가 아니다.
-    expect(found).toEqual(['K-1'])
+    expect(found).toEqual(['K-1', 'K-22'])
     const first = host.querySelector('[data-issue-key="K-1"]')
     if (first !== null) act(() => { first.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })) })
     expect(keys).toEqual(['K-1'])
     render('K-1', { keyPattern: null })
     expect(host.querySelector('[data-issue-key]')).toBeNull()
-  })
-
-  it('R1-R Jira 키 모양 — utf-8·sha-256·iso-8601 같은 소문자 낱말은 링크가 아니다 · CORE-12 는 링크(양성 대조)', () => {
-    render('utf-8 · sha-256 · iso-8601 · Utf-8 · CORE-12', { keyPattern: '[A-Z][A-Z0-9_]+-\\d+' })
-    expect([...host.querySelectorAll('[data-issue-key]')].map((node) => node.getAttribute('data-issue-key'))).toEqual(['CORE-12'])
   })
 
   it('체크 칸 — 누르면 그 항목의 소스 줄 번호와 바꿀 값', () => {

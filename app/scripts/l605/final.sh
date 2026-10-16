@@ -14,9 +14,13 @@ git rev-parse --short HEAD > $OUT/head.txt
 git status --porcelain > $OUT/porcelain.txt
 : > $OUT/VERDICT
 failed=0
-eval "$(awk '/^record\(\) \{/,/^\}/' scripts/l605/quick.sh)"
-eval "$(awk '/^run\(\) \{/,/^\}/' scripts/l605/quick.sh)"
-eval "$(awk '/^run_grep\(\) \{/,/^\}/' scripts/l605/quick.sh)"
+# 판정 함수를 quick.sh 에서 끌어온다 — 없으면 exit 2, 끝에서 VERDICT 행 수 대조(R2-A).
+source scripts/l605/judge.zsh
+# R2-A 양성 대조 — 판정 함수가 없는 원본이면 이 스크립트들이 아무것도 안 돌고 통과하지 않는다(exit 2) · 행이 모자라면 ALL=fail.
+run st-judge 0 zsh scripts/l605/judge-selftest.zsh $OUT/judge-selftest
+print -r -- 'echo 함수 없음' > $OUT/no-fn-quick.sh
+L605_JUDGE_SRC=$OUT/no-fn-quick.sh run_grep pc-final-missing-fn 2 '판정 함수(record·run·run_grep)가' zsh scripts/l605/final.sh $OUT/pc-final-missing-fn
+L605_JUDGE_SRC=$OUT/no-fn-quick.sh run_grep pc-selfcheck-missing-fn 2 '판정 함수(record·run·run_grep)가' zsh scripts/l605/selfcheck.sh $OUT/pc-selfcheck-missing-fn
 
 run build 0 npm run build
 run runtime-bundle 0 node scripts/l605/check-runtime-bundle.mjs
@@ -36,6 +40,11 @@ run_grep contract-adf 0 'Test Files  6 passed (6)' npx vitest run src/main/work/
 WROOT=/tmp/l605w-f$$
 L605_ROOT=$WROOT L605_PHASE=first run_grep windowless-first 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
 L605_ROOT=$WROOT L605_PHASE=restart run_grep windowless-restart 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
+L605_ROOT=$WROOT L605_PHASE=lifecycle run_grep windowless-lifecycle 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
+# lifecycle 양성 대조 — 따로 ROOT 를 first·restart 로 채운 뒤 교체한 토큰을 로그에 흘리면 「교체 뒤 grep」 이 잡아야 한다(R2-K).
+L605_ROOT=$WROOT-life L605_PHASE=first run_grep pc-life-setup-first 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
+L605_ROOT=$WROOT-life L605_PHASE=restart run_grep pc-life-setup-restart 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
+L605_PC=leak L605_ROOT=$WROOT-life L605_PHASE=lifecycle run_grep pc-windowless-lifecycle-leak 1 '+     "afterReplace": false,' npx vitest run scripts/l605/windowless.test.tsx
 cp $WROOT/windowless-*.json $OUT/ 2>/dev/null
 [[ $WROOT == /tmp/l605w-f* ]] && rm -rf $WROOT
 for pc in leak search-twice; do
@@ -44,8 +53,8 @@ for pc in leak search-twice; do
   cp $WROOT-$pc/windowless-first.json $OUT/pc-windowless-$pc.json 2>/dev/null
   [[ $WROOT == /tmp/l605w-f* ]] && rm -rf $WROOT-$pc
 done
-L605_ROOT=$WROOT-nophase run_grep st-windowless-empty-phase 1 'L605_PHASE=first|restart 가 필요하다' npx vitest run scripts/l605/windowless.test.tsx
+L605_ROOT=$WROOT-nophase run_grep st-windowless-empty-phase 1 'L605_PHASE=first|restart|lifecycle 가 필요하다' npx vitest run scripts/l605/windowless.test.tsx
 [[ $WROOT == /tmp/l605w-f* ]] && rm -rf $WROOT-nophase
-print -r -- "$WROOT $WROOT-leak $WROOT-search-twice $WROOT-nophase" > $OUT/tmp-roots.txt
-print -r -- "$([[ $failed == 0 ]] && echo pass || echo "fail $failed")" > $OUT/ALL
-cat $OUT/ALL
+[[ $WROOT == /tmp/l605w-* ]] && rm -rf $WROOT-life
+print -r -- "$WROOT $WROOT-life $WROOT-leak $WROOT-search-twice $WROOT-nophase" > $OUT/tmp-roots.txt
+judge_close 22

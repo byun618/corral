@@ -34,7 +34,6 @@ import {
   readCreateMeta,
   readWorkActivityQuery,
   readWorkRequest,
-  spaceCapabilities,
   type WorkActionResult,
   type WorkActivityChange,
   type WorkActivityResult,
@@ -397,7 +396,7 @@ export class WorkService {
     // 능력 문 — 꺼진 능력은 출처에 닿지 않는다(이유를 그대로 돌려준다).
     const known = this.runtime.get(connectionId)
     const capabilities = known?.capabilities ?? known?.client?.capabilities() ?? null
-    const gate = capabilities === null ? null : closedCapability({ capabilities: this.callCapabilities({ connectionId, capabilities, call }), call })
+    const gate = capabilities === null ? null : closedCapability({ capabilities, call })
     if (gate !== null) return { ok: false, error: gate }
     // 인증 실패(확정) — 일반 요청은 같은 자격을 다시 보내지 않는다. 사용자가 누른 연결 테스트(announce)만 다시 보낸다(R1-K).
     // 확정 상태가 아니라 자격 무효 축을 본다 — 재시험이 network 등으로 실패해 상태가 offline 이어도 차단은 그대로(R4-A).
@@ -417,7 +416,7 @@ export class WorkService {
         return { ok: false, error: acquired.error }
       }
       const client = acquired.client
-      const lateGate = closedCapability({ capabilities: this.callCapabilities({ connectionId, capabilities: client.capabilities(), call }), call })
+      const lateGate = closedCapability({ capabilities: client.capabilities(), call })
       if (lateGate !== null) return { ok: false, error: lateGate }
       if (progress === null && acquired.fresh) progress = this.beginProgress({ connectionId, pending: 'network' })
       const writeId = isWrite(call) ? this.newId() : null
@@ -439,17 +438,6 @@ export class WorkService {
     } finally {
       if (progress !== null) this.endProgress({ connectionId, progress })
     }
-  }
-
-  /**
-   * 연산이 기대는 능력 표 — 스페이스를 실은 연산은 그 스페이스의 능력으로 좁힌다(LIFE-605 C7). 작업 id 만 실은 연산(순서·배치)은
-   * 스페이스를 여기서 모른다 — 출처가 작업의 스페이스로 다시 막는다(이중 방어).
-   */
-  private callCapabilities({ connectionId, capabilities, call }: { connectionId: string; capabilities: WorkCapabilities; call: WorkCall }): WorkCapabilities {
-    const spaceKey = 'spaceKey' in call ? call.spaceKey : null
-    if (spaceKey === null) return capabilities
-    const space = this.runtime.get(connectionId)?.spaces?.find((entry) => entry.key === spaceKey) ?? null
-    return spaceCapabilities({ capabilities, space })
   }
 
   /** 이 서비스를 지난 응답에서 상태 라벨·단건을 기억한다(활동 기록용). */

@@ -161,14 +161,15 @@ export function parseRetryAfter(value: string | null): number | null {
  * Jira 오류 본문의 사람 글(질의 거부 사유) — `errorMessages[0]` 또는 `errors` 의 첫 값. 제어 글자를 빼고 한 줄로, 상한 200자.
  * 이 글은 **질의 검색의 거부 사유 하나**에만 화면으로 나간다(C2 · C5) — 부르는 쪽이 자격을 지운다.
  */
-export function errorText(body: unknown): string | null {
+/** `redact` 를 **자르기 전에** 적용한다 — 200자 경계에 걸린 토큰 조각이 남지 않게(R1-S). */
+export function errorText({ body, redact = (text) => text }: { body: unknown; redact?: (text: string) => string }): string | null {
   if (!isRecord(body)) return null
   const messages = Array.isArray(body.errorMessages) ? body.errorMessages.filter((entry): entry is string => typeof entry === 'string') : []
   const fields = isRecord(body.errors) ? Object.values(body.errors).filter((entry): entry is string => typeof entry === 'string') : []
   const first = messages[0] ?? fields[0] ?? null
   if (first === null) return null
   // eslint-disable-next-line no-control-regex
-  const flat = first.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
+  const flat = redact(first).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
   return flat.length === 0 ? null : flat.length > 200 ? `${flat.slice(0, 199)}…` : flat
 }
 

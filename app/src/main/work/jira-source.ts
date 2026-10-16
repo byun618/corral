@@ -115,6 +115,7 @@ const CATEGORY_RANK: Record<WorkCategory, number> = { todo: 0, in_progress: 1, d
 const LIST_FIELDS = ['summary', 'status', 'issuetype', 'parent', 'priority', 'duedate', 'resolution', 'project', 'updated', 'issuelinks']
 const ITEM_FIELDS = [...LIST_FIELDS, 'description']
 const PAGE_GUARD = 100
+const CHILD_PAGE_GUARD = 20
 const SEARCH_LIMIT = 100
 const PRIORITY_NAME: Record<WorkPriority, string> = { highest: 'highest', high: 'high', medium: 'medium', low: 'low', lowest: 'lowest' }
 /** 계약 연결 5종 ↔ Jira 기본 연결 종류(바깥·안쪽 글). 사이트가 바꾼 이름은 바깥·안쪽 글로 다시 찾는다(F14). */
@@ -309,9 +310,11 @@ export class JiraSource implements WorkSourceClient {
       if (!step.ok) return step
       out.push(...step.value.values)
       if (!step.value.more) return { ok: true, value: out }
+      if (step.value.values.length === 0) return { ok: false, outcome: { ok: false, error: pagingError(path) } }
       startAt += step.value.values.length
     }
-    return { ok: true, value: out }
+    // 쪽 수 상한까지 끝나지 않으면 조용히 자르지 않는다(R1-E).
+    return { ok: false, outcome: { ok: false, error: pagingError(path) } }
   }
 
   // --- 스페이스 · 상태 ---
@@ -562,12 +565,17 @@ export class JiraSource implements WorkSourceClient {
     if (!/^\d{1,18}$/.test(itemId)) return rejected('없는 작업입니다.')
     const issues: JiraIssue[] = []
     let cursor: string | null = null
-    for (let page = 0; page < 20; page += 1) {
+    const seen = new Set<string>()
+    for (let page = 0; ; page += 1) {
+      // 같은 규칙(R1-E) — 빈 쪽 + 다음 표지 · 같은 표지 반복 · 쪽 수 상한은 조용히 자르지 않고 응답 어긋남.
+      if (page >= CHILD_PAGE_GUARD) return { ok: false, error: pagingError('자식 목록') }
       const found = await this.search({ jql: `parent = ${itemId} ORDER BY created ASC`, cursor, maxResults: this.pageSize })
       if (!found.ok) return { ok: false, error: found.reply.status === 400 ? rejectedError('Jira 가 자식 질의를 거절했습니다.', 400) : found.reply.error }
       issues.push(...found.issues)
       cursor = found.next
       if (cursor === null) break
+      if (found.issues.length === 0 || seen.has(cursor)) return { ok: false, error: pagingError('자식 목록') }
+      seen.add(cursor)
     }
     const items = await this.toItems({ issues, withBody: false })
     return items.ok ? { ok: true, result: { op: 'listChildren', items: items.value } } : items.outcome
@@ -778,12 +786,18 @@ export class JiraSource implements WorkSourceClient {
     if (!spaceKeys.every((key) => PROJECT_KEY.test(key))) return rejected('스페이스 키 모양이 아닙니다.')
     const scope = `project in (${spaceKeys.map(jqlString).join(', ')})`
     const user = splitOrderBy(query.trim())
-    const queried = await this.collect(`${scope} AND (${user.where})${user.orderBy === null ? ' ORDER BY updated DESC' : ` ORDER BY ${user.orderBy}`}`)
-    if (queried.ok) return { ok: true, result: { op: 'searchItems', items: queried.items, mode: 'query', note: null, truncated: queried.truncated } }
-    if (queried.status !== 400) return { ok: false, error: queried.error }
-    // 질의 거부 — 텍스트로 다시 찾고 사유를 보인다(C5③). 사유는 Jira 글이라 길이 상한·자격 지움을 거친다.
-    const reason = errorText(queried.body)
-    const note = `Jira 가 질의를 받지 않아 텍스트로 찾았습니다${reason === null ? '.' : ` — ${this.http?.redact(reason) ?? ''}`}`
+    let note: string
+    if (user === null) {
+      // 괄호·따옴표 짝이 맞지 않는 질의는 보내지 않는다 — `) OR (` 로 스페이스 조건을 벗어날 수 있다(R1-C). 텍스트로 찾는다.
+      note = 'JQL 의 괄호·따옴표 짝이 맞지 않아 질의로 보내지 않고 텍스트로 찾았습니다.'
+    } else {
+      const queried = await this.collect(`${scope} AND (${user.where})${user.orderBy === null ? ' ORDER BY updated DESC' : ` ORDER BY ${user.orderBy}`}`)
+      if (queried.ok) return { ok: true, result: { op: 'searchItems', items: queried.items, mode: 'query', note: null, truncated: queried.truncated } }
+      if (queried.status !== 400) return { ok: false, error: queried.error }
+      // 질의 거부 — 텍스트로 다시 찾고 사유를 보인다(C5③). 사유는 Jira 글이라 자격 지움 → 길이 상한 순서(R1-S).
+      const reason = queried.reason
+      note = `Jira 가 질의를 받지 않아 텍스트로 찾았습니다${reason === null ? '.' : ` — ${reason}`}`
+    }
     const words = textSearchWords(query)
     if (words.length === 0) return { ok: true, result: { op: 'searchItems', items: [], mode: 'text', note, truncated: false } }
     const texted = await this.collect(`${scope} AND text ~ ${jqlString(words)} ORDER BY updated DESC`)
@@ -791,23 +805,33 @@ export class JiraSource implements WorkSourceClient {
     return { ok: true, result: { op: 'searchItems', items: texted.items, mode: 'text', note, truncated: texted.truncated } }
   }
 
-  private async collect(jql: string): Promise<{ ok: true; items: WorkItem[]; truncated: boolean } | { ok: false; status: number | null; body: unknown; error: WorkError }> {
+  /** Jira 가 준 거부 사유 — 자격을 먼저 지우고 그다음 자른다(자른 뒤 지우면 경계의 토큰 조각이 남는다, R1-S). */
+  private remoteReason(body: unknown): string | null {
+    return errorText({ body, redact: (text) => this.http?.redact(text) ?? text })
+  }
+
+  private async collect(jql: string): Promise<{ ok: true; items: WorkItem[]; truncated: boolean } | { ok: false; status: number | null; reason: string | null; error: WorkError }> {
     const issues: JiraIssue[] = []
     let cursor: string | null = null
     let truncated = false
-    for (;;) {
+    const seen = new Set<string>()
+    // 쪽 상한 — 쪽마다 적어도 1건이면 SEARCH_LIMIT 쪽 안에 끝난다. 빈 쪽 + 다음 토큰 · 같은 토큰 반복은 응답 어긋남(R1-E — 무한 순회 금지).
+    for (let page = 0; ; page += 1) {
+      if (page >= SEARCH_LIMIT) return { ok: false, status: null, reason: null, error: pagingError('검색') }
       const found = await this.search({ jql, cursor, maxResults: Math.min(this.pageSize, SEARCH_LIMIT) })
-      if (!found.ok) return { ok: false, status: found.reply.status, body: found.reply.body, error: found.reply.error }
+      if (!found.ok) return { ok: false, status: found.reply.status, reason: found.reply.status === 400 ? this.remoteReason(found.reply.body) : null, error: found.reply.error }
       issues.push(...found.issues)
       cursor = found.next
       if (cursor === null) break
+      if (found.issues.length === 0 || seen.has(cursor)) return { ok: false, status: null, reason: null, error: pagingError('검색') }
+      seen.add(cursor)
       if (issues.length >= SEARCH_LIMIT) {
         truncated = true
         break
       }
     }
     const items = await this.toItems({ issues: issues.slice(0, SEARCH_LIMIT), withBody: false })
-    if (!items.ok) return { ok: false, status: null, body: null, error: items.outcome.ok ? workError({ kind: 'invalid_response', message: '검색 결과를 읽지 못했습니다.' }) : items.outcome.error }
+    if (!items.ok) return { ok: false, status: null, reason: null, error: items.outcome.ok ? workError({ kind: 'invalid_response', message: '검색 결과를 읽지 못했습니다.' }) : items.outcome.error }
     return { ok: true, items: items.value, truncated }
   }
 }
@@ -846,12 +870,44 @@ export function textSearchWords(query: string): string {
   return query.replace(/[+\-&|!(){}[\]^~*?:\\/"=<>]/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
-/** 사용자 질의의 `ORDER BY` 를 떼어 스페이스 조건 뒤에 붙인다(괄호 안의 ORDER BY 는 JQL 문법 오류). */
-function splitOrderBy(query: string): { where: string; orderBy: string | null } {
-  const match = /\border\s+by\b/i.exec(query)
-  if (match === null) return { where: query, orderBy: null }
-  const where = query.slice(0, match.index).trim()
-  return { where: where.length === 0 ? 'issuekey IS NOT EMPTY' : where, orderBy: query.slice(match.index + match[0].length).trim() || 'updated DESC' }
+/**
+ * 사용자 질의를 조건과 `ORDER BY` 로 나눈다(괄호 안의 ORDER BY 는 JQL 문법 오류라 스페이스 조건 뒤로 옮긴다).
+ * **따옴표 밖** 괄호가 균형이고 깊이가 0 아래로 내려가지 않으며 따옴표가 닫혀야 한다 — 아니면 null(보내지 않는다, R1-C).
+ * `ORDER BY` 도 따옴표 밖·깊이 0 에서만 찾는다(`summary ~ "order by"` 는 글).
+ */
+export function splitOrderBy(query: string): { where: string; orderBy: string | null } | null {
+  let depth = 0
+  let quote: string | null = null
+  let orderAt = -1
+  let orderLength = 0
+  for (let index = 0; index < query.length; index += 1) {
+    const char = query[index] ?? ''
+    if (quote !== null) {
+      if (char === '\\') index += 1
+      else if (char === quote) quote = null
+      continue
+    }
+    if (char === '"' || char === "'") quote = char
+    else if (char === '(') depth += 1
+    else if (char === ')') {
+      depth -= 1
+      if (depth < 0) return null
+    } else if (depth === 0 && orderAt < 0 && /[oO]/.test(char) && (index === 0 || /\s/.test(query[index - 1] ?? ''))) {
+      const match = /^order\s+by\b/i.exec(query.slice(index))
+      if (match !== null) {
+        orderAt = index
+        orderLength = match[0].length
+      }
+    }
+  }
+  if (depth !== 0 || quote !== null) return null
+  if (orderAt < 0) return { where: query, orderBy: null }
+  const where = query.slice(0, orderAt).trim()
+  return { where: where.length === 0 ? 'issuekey IS NOT EMPTY' : where, orderBy: query.slice(orderAt + orderLength).trim() || 'updated DESC' }
+}
+
+function pagingError(what: string): WorkError {
+  return workError({ kind: 'invalid_response', message: `Jira ${what} 쪽이 끝나지 않습니다(빈 쪽·같은 다음 쪽 표지·쪽 수 상한) — 응답 모양이 다릅니다.` })
 }
 
 function categoryOf(status: JiraStatus): WorkCategory {

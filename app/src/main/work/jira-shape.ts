@@ -56,11 +56,11 @@ function id(value: unknown, path: string): string {
   return str(value, path)
 }
 
-/** offset 페이지(`startAt`·`maxResults`·`total`·`isLast`) — 다음 쪽이 있나. 칸이 없으면 받은 수로 판단한다(빈 쪽이면 끝). */
+/** offset 페이지(`startAt`·`maxResults`·`total`·`isLast`) — 다음 쪽이 있나. 칸이 없으면 끝으로 본다.
+ * 빈 쪽인데 `isLast: false`·`total` 이 더 있다고 하면 「더 있음」 그대로 돌려준다 — 순회 쪽이 응답 어긋남으로 멈춘다(R1-E). */
 export type OffsetPage<T> = { values: T[]; more: boolean }
 
 function offsetMore({ page, startAt, count, path }: { page: Obj; startAt: number; count: number; path: string }): boolean {
-  if (count === 0) return false
   const isLast = optBool(page.isLast, `${path}.isLast`)
   if (isLast !== null) return !isLast
   const total = optNum(page.total, `${path}.total`)

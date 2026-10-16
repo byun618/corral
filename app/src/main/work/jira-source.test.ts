@@ -5,9 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorkCall, WorkResponse } from '../../shared/work.js'
 import { basicHeader, errorText, JiraHttp, parseRetryAfter } from './jira-http.js'
 import { JiraRestFixture } from './jira-rest-fixture.js'
-import { bodyUpdate, checkJiraAccount, jiraFixtureBaseFromEnv, jiraSourceEntry, jqlString, normalizeJiraSite, textSearchWords, transitionPlan } from './jira-source.js'
+import { bodyUpdate, checkJiraAccount, jiraFixtureBaseFromEnv, jiraSourceEntry, jqlString, normalizeJiraSite, splitOrderBy, textSearchWords, transitionPlan } from './jira-source.js'
 import { markdownToAdf } from './adf.js'
 import { FAKE_JIRA_EMAIL, FAKE_JIRA_TOKEN, JIRA_ACCOUNT, jiraFixtureHarness, workHarness } from './test-kit.js'
+import type { WorkSourceEntry } from './source.js'
 
 type Harness = Awaited<ReturnType<typeof jiraFixtureHarness>>
 const opened: Harness[] = []
@@ -101,6 +102,46 @@ describe('C1 사이트·자격', () => {
     // 양성 대조 — 같은 검사가 심은 값을 잡는다.
     expect(leaks(`x ${FAKE_JIRA_TOKEN} y`)).toEqual([FAKE_JIRA_TOKEN])
     expect(leaks(`Authorization: Basic ${BASIC_VALUE}`)).toEqual([BASIC_VALUE])
+  })
+
+  it('R1-B 출처가 자격을 되울려도 지운다 — 추가(연결 테스트) 경로 · 재시작(봉인 JSON 복원) 경로 둘 다: 맨 토큰·URL 인코딩 토큰·Basic 값·이메일:토큰·이메일', async () => {
+    const leakToken = 'ATATT+leak/=00000000000000000000'
+    const leaky = (base: WorkSourceEntry, state: { leak: boolean }): WorkSourceEntry => ({
+      ...base,
+      create: (credentials) => {
+        const real = base.create(credentials)
+        const basic = Buffer.from(`${credentials.account.email ?? ''}:${credentials.token}`, 'utf8').toString('base64')
+        const message = `echo ${credentials.token} ${encodeURIComponent(credentials.token)} Basic ${basic} ${credentials.account.email}:${credentials.token} ${credentials.account.email}`
+        return { capabilities: () => real.capabilities(), close: () => real.close(), call: async (call, meta) => (state.leak ? { ok: false, error: { kind: 'invalid_response', message, status: null } } : real.call(call, meta)) }
+      },
+    })
+    const fixture = new JiraRestFixture()
+    fixture.allow({ email: FAKE_JIRA_EMAIL, token: leakToken })
+    const url = await fixture.start()
+    try {
+      const secretsIn = (text: string): string[] => [leakToken, encodeURIComponent(leakToken), basicHeader({ email: FAKE_JIRA_EMAIL, token: leakToken }).slice(6), FAKE_JIRA_EMAIL].filter((secret) => text.includes(secret))
+      const base = jiraSourceEntry({ pageSize: 2, sleep: async () => {}, baseUrlOf: () => url })
+      // 추가 경로 — 연결 테스트가 되울린다(아직 금고에 비밀이 없다: service 가 넘긴 목록만으로 지운다).
+      const first = { leak: true }
+      const adding = workHarness({ entries: [leaky(base, first)] })
+      const refused = await adding.service.addConnection({ sourceId: 'jira', token: leakToken, account: JIRA_ACCOUNT, replaceId: null })
+      expect(refused.ok).toBe(false)
+      expect(secretsIn(JSON.stringify(refused))).toEqual([])
+      expect(secretsIn('x ' + leakToken)).toEqual([leakToken])
+      // 재시작 경로 — 저장한 뒤 새 서비스가 봉인을 풀어 만든 클라이언트가 되울린다.
+      first.leak = false
+      const added = await adding.service.addConnection({ sourceId: 'jira', token: leakToken, account: JIRA_ACCOUNT, replaceId: null })
+      if (!added.ok) throw new Error(added.error.message)
+      const second = { leak: true }
+      const restarted = workHarness({ entries: [leaky(base, second)] })
+      restarted.store.data = structuredClone(adding.store.data)
+      const response = await restarted.service.request({ requestId: 'r', connectionId: added.connection.id, call: { op: 'listStatuses', spaceKey: 'CORE' } })
+      expect(response.ok).toBe(false)
+      expect(response.ok ? '' : response.error.message).toContain('echo')
+      expect(secretsIn(JSON.stringify(response))).toEqual([])
+    } finally {
+      await fixture.stop()
+    }
   })
 
   it('토큰 다시 붙여넣기 — 사이트는 바꿀 수 없고(거절·요청 0), 이메일·토큰은 바뀐다 · 숨긴 스페이스 유지', async () => {
@@ -212,9 +253,14 @@ describe('C2 오류 분류', () => {
   })
 
   it('원격 글은 질의 거부 사유에만 — 제어 글자를 빼고 200자 상한', () => {
-    expect(errorText({ errorMessages: ['a\u0000b\n  c'] })).toBe('a b c')
-    expect(errorText({ errorMessages: [], errors: { jql: 'x'.repeat(500) } })?.length).toBe(200)
-    expect(errorText('plain')).toBeNull()
+    expect(errorText({ body: { errorMessages: ['a\u0000b\n  c'] } })).toBe('a b c')
+    expect(errorText({ body: { errorMessages: [], errors: { jql: 'x'.repeat(500) } } })?.length).toBe(200)
+    expect(errorText({ body: 'plain' })).toBeNull()
+    // R1-S — 경계에 걸린 비밀도 자르기 전에 지운다(자른 뒤 지우면 앞 조각이 남는다).
+    const secret = 'S'.repeat(40)
+    const cut = errorText({ body: { errorMessages: [`${'x'.repeat(180)}${secret}`] }, redact: (text) => text.replaceAll(secret, '••••') })
+    expect(cut).toBe(`${'x'.repeat(180)}••••`)
+    expect(cut).not.toContain('SSSS')
   })
 })
 
@@ -321,6 +367,79 @@ describe('C5 목록·페이지·질의 검색', () => {
     // 질의는 스페이스 안에서만 — 사용자 ORDER BY 는 스페이스 조건 뒤로.
     await h.send({ op: 'searchItems', spaceKeys: ['CORE'], query: 'summary ~ "카드" ORDER BY created DESC' })
     expect(h.fixture.requests.filter((request) => request.path === '/rest/api/3/search/jql').at(-1)?.query.jql).toBe('project in ("CORE") AND (summary ~ "카드") ORDER BY created DESC')
+  })
+})
+
+describe('수정 1 — 질의 범위·쪽 순회 (R1-C·R1-E·N12·N13)', () => {
+  const jqls = (h: { fixture: JiraRestFixture }): string[] => h.fixture.requests.filter((request) => request.path === '/rest/api/3/search/jql').map((request) => request.query.jql ?? '')
+
+  it('R1-C 괄호로 스페이스 조건을 벗어나는 질의는 보내지 않고 텍스트로 — WEB 작업이 CORE 검색에 섞이지 않는다', async () => {
+    const h = await connected()
+    const before = jqls(h).length
+    const escaped = await h.send({ op: 'searchItems', spaceKeys: ['CORE'], query: 'status = "To Do") OR (project = WEB' })
+    if (!escaped.ok || escaped.result.op !== 'searchItems') throw new Error('search')
+    expect(escaped.result.mode).toBe('text')
+    expect(escaped.result.note).toContain('괄호')
+    expect(escaped.result.items.some((item) => item.spaceKey === 'WEB')).toBe(false)
+    const sent = jqls(h).slice(before)
+    expect(sent.some((jql) => jql.includes('OR (project = WEB'))).toBe(false)
+    expect(sent.every((jql) => jql.startsWith('project in ("CORE") AND text ~ '))).toBe(true)
+    // 양성 대조 — 균형 잡힌 OR 는 괄호 안에 갇혀 그대로 질의로 간다.
+    await h.send({ op: 'searchItems', spaceKeys: ['CORE'], query: 'status = "To Do" OR project = WEB' })
+    expect(jqls(h).at(-1)).toBe('project in ("CORE") AND (status = "To Do" OR project = WEB) ORDER BY updated DESC')
+  })
+
+  it('splitOrderBy — 따옴표 안 괄호·ORDER BY 는 글 · 닫히지 않은 따옴표·깊이 음수는 null · 빈 조건은 issuekey IS NOT EMPTY(N12)', () => {
+    expect(splitOrderBy('summary ~ "a ) OR (b" ORDER BY created DESC')).toEqual({ where: 'summary ~ "a ) OR (b"', orderBy: 'created DESC' })
+    expect(splitOrderBy('summary ~ "order by me"')).toEqual({ where: 'summary ~ "order by me"', orderBy: null })
+    expect(splitOrderBy('a = 1) OR (b = 2')).toBeNull()
+    expect(splitOrderBy('summary ~ "open')).toBeNull()
+    expect(splitOrderBy('(a = 1')).toBeNull()
+    expect(splitOrderBy('ORDER BY created DESC')).toEqual({ where: 'issuekey IS NOT EMPTY', orderBy: 'created DESC' })
+    expect(splitOrderBy('status = Done order by')).toEqual({ where: 'status = Done', orderBy: 'updated DESC' })
+  })
+
+  it('N12 ORDER BY 만 있는 질의 — 스페이스 조건 뒤 빈 괄호를 보내지 않는다', async () => {
+    const h = await connected()
+    await h.send({ op: 'searchItems', spaceKeys: ['CORE'], query: 'ORDER BY created DESC' })
+    expect(jqls(h).at(-1)).toBe('project in ("CORE") AND (issuekey IS NOT EMPTY) ORDER BY created DESC')
+  })
+
+  it('R1-E 빈 쪽 + 같은 다음 쪽 표지를 계속 주면 끝없이 돌지 않고 응답 어긋남 — 검색·자식 목록 둘 다(요청 수 상한)', async () => {
+    const h = await connected()
+    const loop = { status: 200, body: { issues: [], nextPageToken: 'SAME', isLast: false } }
+    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/search/jql', ...loop })
+    const before = jqls(h).length
+    expect(await h.send({ op: 'searchItems', spaceKeys: ['CORE'], query: 'status = Done' })).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    expect(jqls(h).length - before).toBeLessThanOrEqual(3)
+    const mid = jqls(h).length
+    expect(await h.send({ op: 'listChildren', itemId: '20001' })).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    expect(jqls(h).length - mid).toBeLessThanOrEqual(3)
+    // 같은 표지 반복(쪽마다 1건 이상이어도) — 두 번째 같은 표지에서 멈춘다.
+    h.fixture.faults.splice(0)
+    const one = await h.send({ op: 'getItem', itemId: '20002' })
+    if (!one.ok) throw new Error('get')
+    const issueBean = h.fixture.requests.length
+    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/search/jql', status: 200, body: { issues: [{ id: '20002', key: 'CORE-2', fields: {} }], nextPageToken: 'SAME' } })
+    expect(await h.send({ op: 'listChildren', itemId: '20001' })).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    expect(h.fixture.requests.length - issueBean).toBeLessThanOrEqual(4)
+  })
+
+  it('R1-E 오프셋 쪽(프로젝트 목록)이 빈 쪽인데 「더 있음」 이면 응답 어긋남 — 조용히 자르지 않는다', async () => {
+    const h = await connected()
+    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/project/search', status: 200, body: { values: [], isLast: false, startAt: 0, maxResults: 2, total: 9 } })
+    expect(await h.send({ op: 'listSpaces' })).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+  })
+
+  it('N13 검색 결과 상한 100 — 넘으면 앞 100건 + truncated', async () => {
+    const h = await connected()
+    const template = h.fixture.issue('20101')
+    if (template === null) throw new Error('seed')
+    for (let index = 0; index < 120; index += 1) h.fixture.issues.push({ ...template, id: String(40000 + index), key: `WEB-${100 + index}`, summary: `대량 ${index}`, rank: 1000 + index, created: template.created + index })
+    const found = await h.send({ op: 'searchItems', spaceKeys: ['WEB'], query: 'summary ~ "대량"' })
+    if (!found.ok || found.result.op !== 'searchItems') throw new Error('search')
+    expect(found.result.items).toHaveLength(100)
+    expect(found.result.truncated).toBe(true)
   })
 })
 

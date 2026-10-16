@@ -488,7 +488,8 @@ export class WorkService {
         return { ok: false, stale: false, error: opened.error }
       }
       const credentials = openCredentials(opened.token)
-      this.deps.vault.noteSecrets({ connectionId, secrets: entry.secretsOf?.(credentials) ?? [] })
+      // 맨 토큰도 지울 목록에 — 봉인이 칸 JSON 이면 금고가 기억한 「토큰」 은 JSON 전체라 맨 토큰을 못 지운다(R1-B, add 경로와 같은 목록).
+      this.deps.vault.noteSecrets({ connectionId, secrets: [credentials.token, ...(entry.secretsOf?.(credentials) ?? [])] })
       const client = entry.create(credentials)
       this.patchRuntime(connectionId, { client, capabilities: client.capabilities(), acquiring: null })
       return { ok: true, client, fresh: true }

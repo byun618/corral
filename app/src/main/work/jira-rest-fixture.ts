@@ -37,7 +37,7 @@ const STATUS: Record<string, FxStatus> = {
   '10010': { id: '10010', name: 'Open', category: 'new' },
   '10011': { id: '10011', name: 'Closed', category: 'done' },
 }
-const CATEGORY_ID: Record<string, number> = { new: 2, indeterminate: 4, done: 3 }
+const CATEGORY_ID: Record<string, number> = { undefined: 1, new: 2, indeterminate: 4, done: 3 }
 const PRIORITIES = [{ id: '1', name: 'Highest' }, { id: '2', name: 'High' }, { id: '3', name: 'Medium' }, { id: '4', name: 'Low' }, { id: '5', name: 'Lowest' }]
 const LINK_TYPES = [
   { id: '10000', name: 'Blocks', inward: 'is blocked by', outward: 'blocks' },
@@ -76,6 +76,10 @@ function simpleProject({ id, key, name }: { id: string; key: string; name: strin
 export class JiraRestFixture {
   readonly requests: JiraFixtureRequest[] = []
   readonly faults: JiraFault[] = []
+  /** 분류가 「No Category」(`undefined`) 인 상태 id — 옛 워크플로·마이그레이션 사이트(R1-I). */
+  readonly noCategory = new Set<string>()
+  /** 사이트 우선순위 — 기본 id 1–5 · 영어 이름. 로케일 사이트(이름이 번역된) 시험은 이름만 바꾼다(R1-J). */
+  readonly priorities: { id: string; name: string }[] = PRIORITIES.map((priority) => ({ ...priority }))
   corrupt: JiraCorrupt = 'none'
   captcha = false
   /** Jira Software(agile API) 가 있는 사이트인가 — 없으면 `/rest/agile/*` 가 404. */
@@ -234,7 +238,7 @@ export class JiraRestFixture {
       this.links.splice(at, 1)
       return { status: 204, body: null }
     }
-    if (method === 'GET' && path === '/rest/api/3/priority/search') return offsetPage({ list: PRIORITIES.map((priority) => ({ ...priority, self: `https://fixture.invalid/rest/api/3/priority/${priority.id}`, statusColor: '#999999' })), query: request.query, key: 'values', limit: 50, isLast: true })
+    if (method === 'GET' && path === '/rest/api/3/priority/search') return offsetPage({ list: this.priorities.map((priority) => ({ ...priority, self: `https://fixture.invalid/rest/api/3/priority/${priority.id}`, statusColor: '#999999' })), query: request.query, key: 'values', limit: 50, isLast: true })
     if (method === 'GET' && (match = /^\/rest\/api\/3\/issue\/createmeta\/([^/]+)\/issuetypes\/([^/]+)$/.exec(path)) !== null) return this.createMeta(decodeURIComponent(match[1] ?? ''), decodeURIComponent(match[2] ?? ''), request.query)
     if (method === 'GET' && path === '/rest/agile/1.0/board') return this.boards(request.query)
     if (method === 'PUT' && path === '/rest/agile/1.0/issue/rank') return this.rank(request.body)
@@ -271,7 +275,8 @@ export class JiraRestFixture {
 
   private statusBean(statusId: string): Record<string, unknown> {
     const status = STATUS[statusId] ?? { id: statusId, name: statusId, category: 'new' }
-    const category = this.corrupt === 'unknown-category' && status.category === 'done' ? 'undefined' : status.category
+    // `undefined` = 명세의 「No Category」 분류(id 1) — 깨진 응답이 아니다. 깨기는 명세에 없는 키로(R1-I).
+    const category = this.corrupt === 'unknown-category' && status.category === 'done' ? 'mystery' : this.noCategory.has(status.id) ? 'undefined' : status.category
     return { self: `https://fixture.invalid/rest/api/3/status/${status.id}`, id: status.id, name: status.name, description: '', iconUrl: '', statusCategory: { self: `https://fixture.invalid/rest/api/3/statuscategory/${CATEGORY_ID[category] ?? 1}`, id: CATEGORY_ID[category] ?? 1, key: category, name: category, colorName: 'blue-gray' } }
   }
 
@@ -285,7 +290,7 @@ export class JiraRestFixture {
   }
 
   private priorityBean(id: string | null): Record<string, unknown> | null {
-    const priority = PRIORITIES.find((entry) => entry.id === id)
+    const priority = this.priorities.find((entry) => entry.id === id)
     return priority === undefined ? null : { self: `https://fixture.invalid/rest/api/3/priority/${priority.id}`, id: priority.id, name: priority.name, iconUrl: '' }
   }
 
@@ -347,14 +352,14 @@ export class JiraRestFixture {
   private view(issue: FxIssue): JqlRow {
     const status = STATUS[issue.statusId]
     const plain = JSON.stringify(issue.description ?? '').replace(/"type":"[^"]*"|"attrs":\{[^}]*\}|[{}[\]",:]/g, ' ')
-    return { project: issue.projectKey, parent: issue.parentId ?? '', key: issue.key, id: issue.id, summary: issue.summary, text: `${issue.summary} ${plain}`, status: status?.name ?? '', statusCategory: status?.category ?? '', type: issue.typeId, priority: PRIORITIES.find((entry) => entry.id === issue.priorityId)?.name ?? '', rank: issue.rank, created: issue.created, updated: issue.updated }
+    return { project: issue.projectKey, parent: issue.parentId ?? '', key: issue.key, id: issue.id, summary: issue.summary, text: `${issue.summary} ${plain}`, status: status?.name ?? '', statusCategory: status?.category ?? '', type: issue.typeId, priority: this.priorities.find((entry) => entry.id === issue.priorityId)?.name ?? '', rank: issue.rank, created: issue.created, updated: issue.updated }
   }
 
   private transitions(issue: FxIssue, withFields: boolean): unknown[] {
     const project = this.project(issue.projectKey)
     const list = project?.workflow[issue.statusId] ?? []
     return list.map((transition) => {
-      const bean: Record<string, unknown> = { id: transition.id, name: transition.name, to: this.statusBean(transition.to), hasScreen: (transition.required ?? []).length > 0, isGlobal: false, isInitial: false, isAvailable: true, isConditional: false, isLooped: false, looped: false }
+      const bean: Record<string, unknown> = { id: transition.id, name: transition.name, to: this.statusBean(transition.to), hasScreen: (transition.required ?? []).length > 0, isGlobal: false, isInitial: false, isAvailable: true, isConditional: false, looped: false }
       if (withFields) bean.fields = Object.fromEntries((transition.required ?? []).map((field) => [field.key, { required: true, schema: { type: 'string', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:textfield', customId: 10060 }, name: field.name, key: field.key, hasDefaultValue: false, operations: ['set'] }]))
       if (this.corrupt === 'transition-no-to') delete bean.to
       return bean
@@ -411,8 +416,8 @@ export class JiraRestFixture {
           break
         case 'priority': {
           const id = isRecord(value) && typeof value.id === 'string' ? value.id : null
-          if (id === null || !PRIORITIES.some((entry) => entry.id === id)) return { status: 400, body: { errorMessages: [], errors: { priority: 'Specify a valid priority.' } } }
-          items.push({ field: 'priority', fieldId: 'priority', fromString: PRIORITIES.find((entry) => entry.id === issue.priorityId)?.name ?? null, toString: PRIORITIES.find((entry) => entry.id === id)?.name ?? null })
+          if (id === null || !this.priorities.some((entry) => entry.id === id)) return { status: 400, body: { errorMessages: [], errors: { priority: 'Specify a valid priority.' } } }
+          items.push({ field: 'priority', fieldId: 'priority', fromString: this.priorities.find((entry) => entry.id === issue.priorityId)?.name ?? null, toString: this.priorities.find((entry) => entry.id === id)?.name ?? null })
           issue.priorityId = id
           break
         }
@@ -443,13 +448,14 @@ export class JiraRestFixture {
       system('issuetype', 'Issue Type', true, { type: 'issuetype', system: 'issuetype' }),
       system('project', 'Project', true, { type: 'project', system: 'project' }),
       system('description', 'Description', false, { type: 'string', system: 'description' }),
-      system('reporter', 'Reporter', true, { type: 'user', system: 'reporter' }, { hasDefaultValue: true }),
+      // 보고자 — 필수지만 안 보내면 Jira 가 부른 사람으로 채운다. 실제 사이트의 `hasDefaultValue` 값은 모른다(F19) — 출처는 그 값에 기대지 않고 시스템 칸으로 뺀다(R1-F).
+      system('reporter', 'Reporter', true, { type: 'user', system: 'reporter' }),
     ]
-    if (typeId !== EPIC.id) fields.push(system('priority', 'Priority', false, { type: 'priority', system: 'priority' }, { allowedValues: PRIORITIES.map((entry) => ({ id: entry.id, value: entry.name })) }))
+    if (typeId !== EPIC.id) fields.push(system('priority', 'Priority', false, { type: 'priority', system: 'priority' }, { allowedValues: this.priorities.map((entry) => ({ id: entry.id, value: entry.name })) }))
     if (typeId !== EPIC.id) fields.push(system('parent', 'Parent', typeId === SUBTASK.id, { type: 'issuelink', system: 'parent' }))
     if (typeId === BUG.id) {
       fields.push(system('customfield_10050', 'Severity', true, { type: 'option', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:select', customId: 10050 }, { allowedValues: [{ id: '10100', value: 'S1' }, { id: '10101', value: 'S2' }, { id: '10102', value: 'S3' }] }))
-      fields.push(system('environment', 'Environment', true, { type: 'string', system: 'environment' }, { hasDefaultValue: true }))
+      fields.push(system('environment', 'Environment', false, { type: 'string', system: 'environment' }))
     }
     void project
     return fields
@@ -473,7 +479,7 @@ export class JiraRestFixture {
     if (type === undefined) return { status: 400, body: { errorMessages: [], errors: { issuetype: 'valid issue type is required' } } }
     const meta = this.createFields(project, typeId)
     for (const key of Object.keys(fields)) if (!meta.some((field) => field.fieldId === key)) return { status: 400, body: { errorMessages: [], errors: { [key]: `Field '${key}' cannot be set. It is not on the appropriate screen, or unknown.` } } }
-    for (const field of meta) if (field.required && !field.hasDefaultValue && (fields[field.fieldId] === undefined || fields[field.fieldId] === null || fields[field.fieldId] === '')) return { status: 400, body: { errorMessages: [], errors: { [field.fieldId]: `${field.name} is required.` } } }
+    for (const field of meta) if (field.required && !field.hasDefaultValue && field.fieldId !== 'reporter' && (fields[field.fieldId] === undefined || fields[field.fieldId] === null || fields[field.fieldId] === '')) return { status: 400, body: { errorMessages: [], errors: { [field.fieldId]: `${field.name} is required.` } } }
     if (typeof fields.summary !== 'string' || fields.summary.trim() === '') return { status: 400, body: { errorMessages: [], errors: { summary: 'You must specify a summary of the issue.' } } }
     if (fields.description !== undefined && !isAdf(fields.description)) return { status: 400, body: { errorMessages: [], errors: { description: 'Operation value must be an Atlassian Document (see the Atlassian Document Format).' } } }
     const parentId = isRecord(fields.parent) && typeof fields.parent.id === 'string' ? fields.parent.id : null

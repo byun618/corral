@@ -131,7 +131,8 @@ export type JiraIssue = {
   issueType: JiraIssueType
   status: JiraStatus
   resolution: string | null
-  priority: string | null
+  /** 우선순위 — id 는 기본 우선순위(1–5) 대응에 쓴다(이름은 사이트 로케일 따라 바뀐다, R1-J). */
+  priority: { id: string | null; name: string } | null
   duedate: string | null
   parentId: string | null
   updated: string
@@ -171,7 +172,8 @@ export function readIssue(value: unknown, path = 'issue'): JiraIssue {
   const project = obj(fields.project, `${path}.fields.project`)
   const parent = fields.parent === undefined || fields.parent === null ? null : obj(fields.parent, `${path}.fields.parent`)
   const resolution = fields.resolution === undefined || fields.resolution === null ? null : str(obj(fields.resolution, `${path}.fields.resolution`).name, `${path}.fields.resolution.name`)
-  const priority = fields.priority === undefined || fields.priority === null ? null : str(obj(fields.priority, `${path}.fields.priority`).name, `${path}.fields.priority.name`)
+  const priorityBean = fields.priority === undefined || fields.priority === null ? null : obj(fields.priority, `${path}.fields.priority`)
+  const priority = priorityBean === null ? null : { id: priorityBean.id === undefined || priorityBean.id === null ? null : id(priorityBean.id, `${path}.fields.priority.id`), name: str(priorityBean.name, `${path}.fields.priority.name`) }
   const hasDescription = Object.hasOwn(fields, 'description')
   let description: AdfDoc | null = null
   if (hasDescription) {

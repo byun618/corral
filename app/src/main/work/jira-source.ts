@@ -110,7 +110,11 @@ export const JIRA_CAPABILITIES: WorkCapabilities = {
   querySearch: { state: 'on' },
 }
 
-const CATEGORY: Record<string, WorkCategory> = { new: 'todo', indeterminate: 'in_progress', done: 'done' }
+/**
+ * 상태 분류 키 → 계약 분류. `undefined` 는 명세의 상태 분류 「No Category」(id 1) — 분류 없이 만든 옛 상태로, Jira 보드도 할 일 쪽에 둔다.
+ * 그래서 명시 규칙으로 `todo`(R1-I). 이 넷 밖의 키는 정말 모르는 값이라 그 상태만 뺀다(아래 `statuses`).
+ */
+const CATEGORY: Record<string, WorkCategory> = { undefined: 'todo', new: 'todo', indeterminate: 'in_progress', done: 'done' }
 const CATEGORY_RANK: Record<WorkCategory, number> = { todo: 0, in_progress: 1, done: 2 }
 /** 목록·검색이 받는 칸 — `/search/jql` 은 `fields` 기본이 `id` 뿐이다(F5). */
 const LIST_FIELDS = ['summary', 'status', 'issuetype', 'parent', 'priority', 'duedate', 'resolution', 'project', 'updated', 'issuelinks']
@@ -119,6 +123,8 @@ const PAGE_GUARD = 100
 const CHILD_PAGE_GUARD = 20
 const SEARCH_LIMIT = 100
 const PRIORITY_NAME: Record<WorkPriority, string> = { highest: 'highest', high: 'high', medium: 'medium', low: 'low', lowest: 'lowest' }
+/** Jira Cloud 기본 우선순위 id(1 Highest … 5 Lowest) — 이름은 사이트 언어로 번역돼 오므로(R1-J) 이름이 안 맞으면 id 로 대응한다. 실제 로케일 응답 대조는 F19. */
+const PRIORITY_DEFAULT_ID: Record<WorkPriority, string> = { highest: '1', high: '2', medium: '3', low: '4', lowest: '5' }
 /** 계약 연결 5종 ↔ Jira 기본 연결 종류(바깥·안쪽 글). 사이트가 바꾼 이름은 바깥·안쪽 글로 다시 찾는다(F14). */
 const RELATION_TYPES: { name: string; outward: string; inward: string; outwardKind: WorkRelationKind; inwardKind: WorkRelationKind }[] = [
   { name: 'Blocks', outward: 'blocks', inward: 'is blocked by', outwardKind: 'blocks', inwardKind: 'is_blocked_by' },
@@ -126,7 +132,7 @@ const RELATION_TYPES: { name: string; outward: string; inward: string; outwardKi
   { name: 'Relates', outward: 'relates to', inward: 'relates to', outwardKind: 'relates_to', inwardKind: 'relates_to' },
 ]
 /** 만들기에서 계약 칸으로 다루는 시스템 필드 — 메타의 필수 필드에서 뺀다(T4 §14 · C8②). */
-const SYSTEM_CREATE_FIELDS = new Set(['project', 'issuetype', 'summary', 'description', 'priority', 'parent'])
+const SYSTEM_CREATE_FIELDS = new Set(['project', 'issuetype', 'summary', 'description', 'priority', 'parent', 'reporter'])
 const TEXT_FIELD = 'com.atlassian.jira.plugin.system.customfieldtypes:textfield'
 const TEXTAREA_FIELD = 'com.atlassian.jira.plugin.system.customfieldtypes:textarea'
 
@@ -363,7 +369,10 @@ export class JiraSource implements WorkSourceClient {
     return { ok: true, value: info }
   }
 
-  /** 스페이스 상태 = 종류별 상태 합집합(같은 id 하나) · 순서 = 분류(할 일 → 진행 → 완료) 다음 처음 나온 순. 모르는 분류 키는 그 스페이스 전체를 응답 어긋남으로. */
+  /**
+   * 스페이스 상태 = 종류별 상태 합집합(같은 id 하나) · 순서 = 분류(할 일 → 진행 → 완료) 다음 처음 나온 순.
+   * 모르는 분류 키는 **그 상태만** 목록에서 뺀다(R1-I — 스페이스 전체를 막지 않는다). 그 상태에 있는 작업은 `toItems` 가 응답 어긋남으로(어느 분류로도 넣지 않는다).
+   */
   private async statuses(spaceKey: string): Promise<Step<StatusInfo>> {
     const cached = this.statusCache.get(spaceKey)
     if (cached !== undefined) return { ok: true, value: cached }
@@ -375,7 +384,7 @@ export class JiraSource implements WorkSourceClient {
     for (const entry of step.value) {
       byType.set(entry.typeId, entry.statuses)
       for (const status of entry.statuses) {
-        if (CATEGORY[status.categoryKey] === undefined) return { ok: false, outcome: { ok: false, error: workError({ kind: 'invalid_response', message: `상태 「${status.name.slice(0, 40)}」 의 분류(${status.categoryKey.slice(0, 20)})를 모릅니다 — 할 일·진행·완료 어디로도 넣지 않았습니다.` }) } }
+        if (CATEGORY[status.categoryKey] === undefined) continue
         if (!seen.has(status.id)) seen.set(status.id, { status, first: at++ })
       }
     }
@@ -548,7 +557,7 @@ export class JiraSource implements WorkSourceClient {
     return this.itemResult({ op: 'updateItem', itemId: call.itemId })
   }
 
-  /** 계약 5단 ↔ 사이트 우선순위 이름(대소문자 무시). 대응 없는 값은 거절 — 비우기(null)는 Jira 가 받지 않는다(T4 §14-2). */
+  /** 계약 5단 ↔ 사이트 우선순위 이름(대소문자 무시), 이름이 없으면 기본 id(R1-J). 대응 없는 값은 거절 — 비우기(null)는 Jira 가 받지 않는다(T4 §14-2). */
   private async priorityId(priority: WorkPriority | null): Promise<Step<string>> {
     if (priority === null) return { ok: false, outcome: rejected('Jira 는 우선순위를 비울 수 없습니다.') }
     if (this.priorities === null) {
@@ -556,7 +565,8 @@ export class JiraSource implements WorkSourceClient {
       if (!step.ok) return step
       this.priorities = step.value
     }
-    const found = this.priorities.find((entry) => entry.name.toLowerCase() === PRIORITY_NAME[priority])
+    const found = this.priorities.find((entry) => entry.name.trim().toLowerCase() === PRIORITY_NAME[priority])
+      ?? this.priorities.find((entry) => entry.id === PRIORITY_DEFAULT_ID[priority] && priorityOf({ id: entry.id, name: entry.name }) === priority)
     return found === undefined ? { ok: false, outcome: rejected(`이 사이트에는 「${priority}」 우선순위가 없습니다.`) } : { ok: true, value: found.id }
   }
 
@@ -930,10 +940,11 @@ function resolutionOf(name: string | null): WorkResolution | null {
   return 'other'
 }
 
-function priorityOf(name: string | null): WorkPriority | null {
-  if (name === null) return null
-  const lower = name.trim().toLowerCase()
-  return WORK_PRIORITIES.find((priority) => PRIORITY_NAME[priority] === lower) ?? null
+/** 이름(영어 기본 이름) → 없으면 기본 id 1–5(로케일 사이트, R1-J) → 둘 다 아니면 null(꾸미지 않는다). */
+function priorityOf(priority: { id: string | null; name: string } | null): WorkPriority | null {
+  if (priority === null) return null
+  const lower = priority.name.trim().toLowerCase()
+  return WORK_PRIORITIES.find((known) => PRIORITY_NAME[known] === lower) ?? WORK_PRIORITIES.find((known) => PRIORITY_DEFAULT_ID[known] === priority.id) ?? null
 }
 
 /** Jira 마감은 날짜만 — 그날 로컬 23:59:59(화면 `dueFromInput` 과 같은 규칙). */

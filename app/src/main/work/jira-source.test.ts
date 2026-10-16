@@ -277,12 +277,30 @@ describe('C4 스페이스·상태·전이', () => {
     expect(Object.fromEntries(statuses.result.kinds.map((kind) => [kind.label, kind.childKinds]))).toEqual({ Epic: ['10001', '10002'], Story: ['10003'], Bug: ['10003'], Subtask: [] })
   })
 
-  it('모르는 분류 키는 어느 분류로도 넣지 않는다 — 그 스페이스 응답 어긋남', async () => {
+  it('R1-I 모르는 분류 키는 어느 분류로도 넣지 않는다 — 그 상태만 목록에서 빠지고(스페이스는 쓸 수 있다), 그 상태의 작업은 응답 어긋남', async () => {
     const h = await connected()
     h.fixture.corrupt = 'unknown-category'
-    const refused = await h.send({ op: 'listStatuses', spaceKey: 'WEB' })
-    expect(refused).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
-    if (!refused.ok) expect(refused.error.message).toContain('분류')
+    const listed = await h.send({ op: 'listStatuses', spaceKey: 'WEB' })
+    if (!listed.ok || listed.result.op !== 'listStatuses') throw new Error('statuses')
+    expect(listed.result.statuses.map((status) => status.category)).not.toContain('done')
+    expect(listed.result.statuses.length).toBeGreaterThan(0)
+    // 완료 상태의 작업(CORE-6)은 분류를 지어내지 않는다.
+    const done = await h.send({ op: 'getItem', itemId: '20006' })
+    expect(done).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    if (!done.ok) expect(done.error.message).toContain('분류')
+    // 다른 상태 작업은 그대로 읽힌다.
+    expect((await h.send({ op: 'getItem', itemId: '20101' })).ok).toBe(true)
+  })
+
+  it('R1-I 분류 `undefined`(명세의 No Category) 는 명시 규칙으로 할 일 — 거절하지 않는다', async () => {
+    const h = await connected()
+    h.fixture.noCategory.add('10010')
+    const listed = await h.send({ op: 'listStatuses', spaceKey: 'WEB' })
+    if (!listed.ok || listed.result.op !== 'listStatuses') throw new Error('statuses')
+    expect(listed.result.statuses.find((status) => status.key === '10010')?.category).toBe('todo')
+    const item = await h.send({ op: 'getItem', itemId: '20101' })
+    if (!item.ok || item.result.op !== 'getItem') throw new Error('item')
+    expect(item.result.item.category).toBe('todo')
   })
 
   it('필수 필드를 묻는 전이는 이유와 함께 막는다 — 허용 목록에 없고, 보내지 않는다(POST 0) · 같은 상태로 가는 전이가 여럿이면 채울 수 있는 첫 것', async () => {
@@ -521,8 +539,26 @@ describe('C7 순서·스페이스별 능력', () => {
   })
 })
 
+describe('R1-J 우선순위 로케일', () => {
+  it('이름이 번역된 사이트 — 기본 id(1–5)로 읽고 쓴다 · 이름도 id 도 기본이 아니면 읽기 null · 쓰기 거절', async () => {
+    const h = await connected()
+    const names: Record<string, string> = { '1': '가장 높음', '2': '높음', '3': '보통', '4': '낮음', '5': '가장 낮음' }
+    for (const priority of h.fixture.priorities) priority.name = names[priority.id] ?? priority.name
+    const item = await h.send({ op: 'getItem', itemId: '20003' })
+    if (!item.ok || item.result.op !== 'getItem') throw new Error('item')
+    expect(item.result.item.priority).toBe('highest')
+    expect(await h.send({ op: 'updateItem', itemId: '20003', fields: { priority: 'low' }, ifVersion: null })).toMatchObject({ ok: true })
+    const put = h.fixture.requests.filter((request) => request.method === 'PUT' && request.path === '/rest/api/3/issue/20003').at(-1)
+    expect(put?.body).toMatchObject({ fields: { priority: { id: '4' } } })
+    // 사이트 고유 우선순위(id 도 이름도 기본 밖) — 지어내지 않는다.
+    const fresh = await connected()
+    fresh.fixture.priorities.splice(0, fresh.fixture.priorities.length, { id: '10100', name: 'P0' })
+    expect(await fresh.send({ op: 'updateItem', itemId: '20003', fields: { priority: 'high' }, ifVersion: null })).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('high') } })
+  })
+})
+
 describe('C8 생성 메타', () => {
-  it('새 경로(종류별)만 · 시스템 필드 제외 · 기본값 있는 필수 제외 · 받는 칸 · 고르기 필드 · 하위 작업은 부모 필요', async () => {
+  it('새 경로(종류별)만 · 시스템 필드 제외(보고자 포함 — R1-F, Jira 가 부른 사람으로 채운다) · 받는 칸 · 고르기 필드 · 하위 작업은 부모 필요', async () => {
     const h = await connected()
     const bug = await h.send({ op: 'getCreateMeta', spaceKey: 'CORE', kindKey: '10002' })
     expect(bug).toMatchObject({ ok: true, result: { meta: { accepts: { body: true, priority: true }, statusKeys: ['10000'], placement: 'ignored', fields: [{ key: 'customfield_10050', label: 'Severity', shape: 'option', options: [{ id: '10100', label: 'S1' }, { id: '10101', label: 'S2' }, { id: '10102', label: 'S3' }] }] } } })

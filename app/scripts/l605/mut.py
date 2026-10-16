@@ -2,7 +2,7 @@
 # LIFE-605 수정 1 R1-K — 리뷰어 r1 뮤테이션(claude-r1-raw/scratch/mut.py·mut2.py·mut3.py)을 이 worktree 코드에 옮겨 다시 돌린다.
 #   python3 -I scripts/l605/mut.py <OUT> [이름…]   (app/ 에서, **커밋된 깨끗한 트리에서만** — 끝나면 `git checkout -- <파일>` 로 되돌린다)
 # 행 = (이름, 파일, 바꿀 글, 바꾼 글). 리뷰어 원문 앵커가 수정 1 로 바뀐 행은 같은 뜻의 패치로 옮기고 이름에 `@moved` 를 붙였다.
-# 바꿀 글이 None = 코드가 사라져 해당 없음(사유 칸). M01 은 원문 앵커가 머리 주석의 `redirect: 'manual'` 에 먼저 걸려 코드를 안 바꿨다(mut1 회차 생존) — 코드 줄로 옮겼다. `X…` 행 = 수정 1 의 새 규칙마다 하나씩 더한 뮤테이션.
+# 바꿀 글이 None = 코드가 사라져 해당 없음(사유 칸). `Y…` 행 = 리뷰 r2 의 34행(수정 2 R2-C). X10 은 R2-G 로 규칙이 되돌려져 반대 방향(대소문자 구분)으로 바꿨다. M01 은 원문 앵커가 머리 주석의 `redirect: 'manual'` 에 먼저 걸려 코드를 안 바꿨다(mut1 회차 생존) — 코드 줄로 옮겼다. `X…` 행 = 수정 1 의 새 규칙마다 하나씩 더한 뮤테이션.
 # 판정: vitest 가 실패(exit≠0)면 KILLED, 통과면 SURVIVED, 앵커가 없으면 NO-MATCH(실패로 센다 — 옮기기를 빠뜨린 것).
 # 결과: OUT/<이름>.txt(출력 끝 6000자) · OUT/RESULTS.jsonl · OUT/SUMMARY. 생존·NO-MATCH 가 0 이면 exit 0.
 import json, os, re, subprocess, sys
@@ -66,11 +66,11 @@ M = [('M01-redirect-follow@moved', 'src/main/work/jira-http.ts', "JSON.stringify
  ('X03-R1D-debounce-off', 'src/renderer/src/hooks/useTasksPage.ts', '    if (!queried) { send(); return }', '    if (true) { send(); return }'),
  ('X04-R1D-split-off', 'src/renderer/src/hooks/useTasksPage.ts', 'index += WORK_SEARCH_SPACES_MAX) out.push({ connectionId, call: { ...call, spaceKeys: call.spaceKeys.slice(index, index + WORK_SEARCH_SPACES_MAX) } })', 'index += call.spaceKeys.length) out.push({ connectionId, call })'),
  ('X05-R1U-id-check-off', 'src/main/work/jira-source.ts', "if (!issueIdsOf(call).every((value) => ISSUE_ID.test(value))) return rejected('없는 작업입니다.')", ''),
- ('X06-R1X-written-plain-error', 'src/main/work/jira-source.ts', 'return { ok: false, error: { ...error, message: `${WRITTEN_PREFIX}${error.message}`, maybeApplied: true } }', 'return { ok: false, error }'),
+ ('X06-R1X-written-plain-error@moved', 'src/main/work/jira-source.ts', 'return { ok: false, error: { ...outcome.error, message: `${prefix}${outcome.error.message}`, maybeApplied: true } }', 'return outcome'),
  ('X07-R1M-429-maybeApplied', 'src/main/work/jira-source.ts', '    if (reply.status === 429) return', '    if (false) return'),
  ('X08-R1T-captcha-401-only', 'src/main/work/jira-http.ts', "if ((headers.get('x-seraph-loginreason') ?? '').toUpperCase().includes('AUTHENTICATION_DENIED')) {", "if (status === 401 && (headers.get('x-seraph-loginreason') ?? '').toUpperCase().includes('AUTHENTICATION_DENIED')) {"),
  ('X09-R1P-restore-off', 'src/main/work/service.ts', '      this.restoreAccount({ connectionId, account: credentials.account })\n', ''),
- ('X10-R1R-case-insensitive', 'src/renderer/src/components/MarkdownView.tsx', "(?![A-Za-z0-9_])`, 'g')", "(?![A-Za-z0-9_])`, 'gi')"),
+ ('X10-R2G-case-sensitive', 'src/renderer/src/components/MarkdownView.tsx', "(?![A-Za-z0-9_])`, 'gi')", "(?![A-Za-z0-9_])`, 'g')"),
  ('X11-R1J-id-fallback-off', 'src/main/work/jira-source.ts', '?? WORK_PRIORITIES.find((known) => PRIORITY_DEFAULT_ID[known] === priority.id) ?? null', '?? null'),
  ('X12-R1I-no-category-dropped', 'src/main/work/jira-source.ts', "{ undefined: 'todo', new: 'todo',", "{ new: 'todo',"),
  ('X13-R1F-reporter-required', 'src/main/work/jira-source.ts', "'priority', 'parent', 'reporter'])", "'priority', 'parent'])"),
@@ -79,7 +79,52 @@ M = [('M01-redirect-follow@moved', 'src/main/work/jira-http.ts', "JSON.stringify
  ('X16-R1L-207-names-remote', 'src/main/work/jira-source.ts', 'return rejected(`Jira 가 ${names} 의 순서를 바꾸지 못했습니다(207) — 잠시 후 다시 시도하세요.`, 207)', "return rejected('Jira 가 순서를 바꾸지 못했습니다(207).', 207)"),
  ('X17-R1B-acquire-token-off', 'src/main/work/service.ts', 'secrets: [credentials.token, ...(entry.secretsOf?.(credentials) ?? [])] })', 'secrets: [...(entry.secretsOf?.(credentials) ?? [])] })'),
  ('X18-R1S-truncate-before-redact', 'src/main/work/jira-http.ts', 'const flat = redact(first).replace(', 'const flat = first.slice(0, 120).replace('),
- ('X19-R1E-offset-empty-more-ok', 'src/main/work/jira-source.ts', '      if (step.value.values.length === 0) return { ok: false, outcome: { ok: false, error: pagingError(path) } }\n', '')]
+ ('X19-R1E-offset-empty-more-ok', 'src/main/work/jira-source.ts', '      if (step.value.values.length === 0) return { ok: false, outcome: { ok: false, error: pagingError(path) } }\n', ''),
+ # 수정 2 의 새 규칙마다 하나(R2-D·R2-E·R2-F·R2-I·R2-J).
+ ('X20-R2E-status-cache-kept', 'src/main/work/jira-source.ts', '    this.statusCache.clear()\n', ''),
+ ('X21-R2E-priorities-kept', 'src/main/work/jira-source.ts', '    this.priorities = null\n', ''),
+ ('X22-R2F-shape-error-throws', 'src/main/work/jira-source.ts', '      if (!(error instanceof JiraShapeError)) throw error\n      outcome =', '      throw error\n      outcome ='),
+ ('X23-R2I-curly-quotes-sent', 'src/main/work/jira-source.ts', '  if (/[\\u2018\\u2019\\u201c\\u201d]/.test(query)) return null\n', ''),
+ ('X24-R2D-empty-paragraph-kept', 'src/main/work/adf.ts', "    if (node.type === 'paragraph' && content === undefined && Object.keys(attrs).length === 0 && (node.marks ?? []).length === 0) continue\n", ''),
+ ('X25-R2D-hardbreak-text-attr', 'src/main/work/adf.ts', " && !(node.type === 'hardBreak' && key === 'text' && value === '\\n')", ''),
+ ('X26-R2D-lock-no-place', 'src/main/work/adf.ts', 'unsupported: [at === -1 ? ROUNDTRIP : `${ROUNDTRIP}:${at + 1}:${doc.content[at]?.type ?? \'\'}`]', 'unsupported: [ROUNDTRIP]'),
+ ('X27-R2J-note-key-connection', 'src/renderer/src/components/TasksPage.tsx', 'key={`${note.connectionId}:${note.text}`}', 'key={note.connectionId}'),
+ # 리뷰 r2 리뷰어 자체 뮤테이션 34행(raw/review/claude-r2-raw/mut-r2-own.py) 편입 — R2-C.
+
+ ('Y01-errortext-limit', 'src/main/work/jira-http.ts', 'flat.length > 200 ? `${flat.slice(0, 199)}…`', 'flat.length > 2000 ? `${flat.slice(0, 1999)}…`'),
+ ('Y02-adfview-net-off', 'src/main/work/adf.ts', 'if (sameAdf({ a: markdownToAdf(shown.markdown), b: doc })) return shown', 'if (true) return shown'),
+ ('Y03-canonical-drop-text-marks', 'src/main/work/adf.ts', ".map(canonicalMark).sort((x, y) => JSON.stringify(x).localeCompare(JSON.stringify(y)))", ".map(canonicalMark).map(() => ({ type: 'x' })).sort((x, y) => JSON.stringify(x).localeCompare(JSON.stringify(y)))"),
+ ('Y04-canonicalMark-drop-attrs', 'src/main/work/adf.ts', "  const attrs = Object.fromEntries(Object.entries(mark.attrs ?? {}).filter(([, value]) => value !== null && value !== undefined))\n  return Object.keys(attrs).length === 0 ? { type: mark.type } : { type: mark.type, attrs }", "  return { type: mark.type }"),
+ ('Y05-canonical-drop-node-attrs', 'src/main/work/adf.ts', "const attrs = Object.fromEntries(Object.entries(node.attrs ?? {}).filter(([key, value]) => key !== 'localId'", "const attrs = Object.fromEntries(Object.entries(node.attrs ?? {}).filter(([key, value]) => key !== 'localId' && key !== 'level' && key !== 'language'"),
+ ('Y06-toggle-no-text-check', 'src/main/work/jira-source.ts', 'if (toggled !== null && adfToMarkdown(toggled).markdown === next) return', 'if (toggled !== null) return'),
+ ('Y07-withTaskStates-count-off', 'src/main/work/adf.ts', 'if (taskStates(doc).length !== states.length) return null', ''),
+ ('Y08-markattrs-lock-off', 'src/main/work/adf.ts', 'unsupported.add(MARK_ATTRS)', 'void 0'),
+ ('Y09-blocklevel-marks-off', 'src/main/work/adf.ts', 'for (const mark of node.marks ?? []) unsupported.add(mark.type)', ''),
+ ('Y10-restore-overwrite', 'src/main/work/service.ts', 'account: { ...account, ...row.account } }', 'account: { ...row.account, ...account } }'),
+ ('Y11-order-capped-as-nobd', 'src/main/work/jira-source.ts', 'reason: boards.complete ? ORDER_OFF_NO_BOARD : ORDER_OFF_CAPPED', 'reason: ORDER_OFF_NO_BOARD'),
+ ('Y12-child-guard', 'src/main/work/jira-source.ts', 'const CHILD_PAGE_GUARD = 20', 'const CHILD_PAGE_GUARD = 2000'),
+ ('Y13-read-retries', 'src/main/work/jira-http.ts', 'const READ_RETRIES = 2', 'const READ_RETRIES = 6'),
+ ('Y14-jqlstring-newline', 'src/main/work/jira-source.ts', "value.replace(/[\\r\\n]+/g, ' ').replace(", 'value.replace('),
+ ('Y15-scheme-check-off', 'src/main/work/jira-source.ts', "if (url.protocol !== 'https:' && url.protocol !== 'http:')", 'if (false)'),
+ ('Y16-transitionplan-dup', 'src/main/work/jira-source.ts', '    if (open.has(statusKey)) continue\n', ''),
+ ('Y17-history-description', 'src/main/work/jira-source.ts', "    case 'description': return 'body'\n", ''),
+ ('Y18-search-scope-off', 'src/main/work/jira-source.ts', '`${scope} AND (${user.where})', '`(${user.where})'),
+ ('Y19-text-scope-off', 'src/main/work/jira-source.ts', '`${scope} AND text ~ ${jqlString(words)}', '`text ~ ${jqlString(words)}'),
+ ('Y20-looksLikeQuery-true', 'src/renderer/src/hooks/useTasksPage.ts', "if (pattern === null || query.trim().length === 0) return false", "if (query.trim().length === 0) return false\n  if (pattern === null) return true"),
+ ('Y21-callCapabilities-nonarrow', 'src/main/work/service.ts', None, 'R2-C 로 서비스 쪽 스페이스 좁히기(callCapabilities)를 걷어냄 — 해당 없음(좁히기는 shared spaceCapabilities 한 곳, Y22 가 덮는다)'),
+ ('Y22-placement-narrow-off', 'src/shared/work.ts', 'placement: narrow(capabilities.placement, space.capabilities.placement) }', 'placement: capabilities.placement }'),
+ ('Y23-account-trim', 'src/main/work/service.ts', 'account[key] = entryValue.trim()', 'account[key] = entryValue'),
+ ('Y24-label-slice', 'src/main/work/adf.ts', '.slice(0, 40) ||', '.slice(0, 4000) ||'),
+ ('Y25-roundtrip-lock-ignored@moved', 'src/main/work/jira-source.ts', 'bodyLock: body === null || body.unsupported.length === 0 ? null : lockReason(body.unsupported)', "bodyLock: body === null || body.unsupported.filter((x) => !x.startsWith('#roundtrip')).length === 0 ? null : lockReason(body.unsupported)"),
+ ('Y26-captcha-ci', 'src/main/work/jira-http.ts', ".toUpperCase().includes('AUTHENTICATION_DENIED')", ".includes('AUTHENTICATION_DENIED')"),
+ ('Y27-retryafter-date', 'src/main/work/jira-http.ts', 'const at = Date.parse(value)', 'const at = NaN'),
+ ('Y28-redirect-body-cancel', 'src/main/work/jira-http.ts', "await response.body?.cancel().catch(() => undefined)\n", ''),
+ ('Y29-shape-created-id', 'src/main/work/jira-shape.ts', "return { id: id(root.id, 'created.id'), key: str(root.key, 'created.key') }", "return { id: String(root.id ?? ''), key: String(root.key ?? '') }"),
+ ('Y30-priority-fallback-ignore-name', 'src/main/work/jira-source.ts', "?? this.priorities.find((entry) => entry.id === PRIORITY_DEFAULT_ID[priority] && priorityOf({ id: entry.id, name: entry.name }) === priority)", '?? undefined'),
+ ('Y31-split-orderby-case', 'src/main/work/jira-source.ts', "/^order\\s+by\\b/i.exec", "/^order\\s+by\\b/.exec"),
+ ('Y32-quote-backslash', 'src/main/work/jira-source.ts', "if (char === '\\\\') index += 1\n      else if (char === quote) quote = null", "if (char === quote) quote = null"),
+ ('Y33-single-quote-track', 'src/main/work/jira-source.ts', 'if (char === \'"\' || char === "\'") quote = char', 'if (char === \'"\') quote = char'),
+ ('Y34-dueFromJira-tz', 'src/main/work/jira-source.ts', 'new Date(year, month - 1, day, 23, 59, 59).toISOString()', 'new Date(Date.UTC(year, month - 1, day, 23, 59, 59)).toISOString()')]
 
 def main():
     out = os.path.abspath(sys.argv[1])

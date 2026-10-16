@@ -93,6 +93,9 @@ export const JIRA_DESCRIPTOR: WorkSourceDescriptor = {
 const ORDER_OFF_NO_SOFTWARE = '이 사이트에는 Jira Software(보드·Rank)가 없어 순서를 바꿀 수 없습니다.'
 const ORDER_OFF_NO_BOARD = '이 스페이스(프로젝트)에 보드가 없어 순서(Rank)를 바꿀 수 없습니다 — Jira 에서 보드를 만들면 켜집니다.'
 const ORDER_OFF_FORBIDDEN = '보드를 볼 권한이 없어 이 사이트의 순서(Rank)를 쓸 수 없습니다.'
+const ORDER_OFF_UNAVAILABLE = '보드 목록을 지금 받지 못해 순서(Rank)를 쓸 수 있는지 모릅니다 — 다시 불러오면 다시 확인합니다.'
+const ORDER_OFF_CAPPED = '이 사이트의 보드가 너무 많아(1000개 넘음) 이 스페이스의 보드를 다 확인하지 못했습니다 — 순서(Rank)를 켜지 않습니다.'
+const BOARD_PAGE_GUARD = 20
 
 export const JIRA_CAPABILITIES: WorkCapabilities = {
   transition: { mode: 'allowed' },
@@ -240,6 +243,8 @@ export class JiraSource implements WorkSourceClient {
   async call(call: WorkCall, meta?: WorkCallMeta): Promise<WorkOutcome> {
     if (this.http === null) return { ok: false, error: workError({ kind: 'invalid_request', message: this.siteProblem ?? '연결 칸이 잘못됐습니다.' }) }
     const writeId = meta?.writeId ?? null
+    // 이슈 id 는 숫자 — 경로에 들어가기 전에 모양을 본다(R1-U: `..`·`/` 가 REST 경로를 바꾸지 않게). 키는 `findByKey`·`otherKey` 로만 온다.
+    if (!issueIdsOf(call).every((value) => ISSUE_ID.test(value))) return rejected('없는 작업입니다.')
     try {
       return await this.answer({ call, writeId })
     } catch (error) {
@@ -337,28 +342,47 @@ export class JiraSource implements WorkSourceClient {
     for (const project of projects.value) this.projects.set(project.key, { project, types: project.issueTypes ?? [] })
     const boards = await this.boardsByProject()
     const spaces: WorkSpace[] = projects.value.map((project) => {
-      const order: WorkCapability = boards.state === 'ok'
-        ? ((boards.counts.get(project.key) ?? 0) > 0 ? { state: 'on' } : { state: 'disabled', reason: ORDER_OFF_NO_BOARD })
-        : { state: 'disabled', reason: boards.state === 'absent' ? ORDER_OFF_NO_SOFTWARE : ORDER_OFF_FORBIDDEN }
-      this.orderOf.set(project.key, order)
+      const order = orderFrom({ boards, spaceKey: project.key })
+      if (boards.state !== 'unavailable') this.orderOf.set(project.key, order)
       return { key: project.key, name: project.name, color: null, description: project.description, openCount: null, role: 'regular', capabilities: order.state === 'on' ? {} : { order } }
     })
     return { ok: true, result: { op: 'listSpaces', spaces, capabilities: JIRA_CAPABILITIES } }
   }
 
-  /** 프로젝트별 보드 수 — agile API 가 없으면(Jira Software 없음 · 404) `absent`, 권한 없음(401·403 밖)은 `forbidden`. */
-  private async boardsByProject(): Promise<{ state: 'ok'; counts: Map<string, number> } | { state: 'absent' | 'forbidden' }> {
+  /**
+   * 프로젝트별 보드 수 — agile API 가 없으면(Jira Software 없음 · 404) `absent`, 401·403 은 `forbidden`,
+   * 그 밖의 실패(네트워크·5xx·429·모양 어긋남)는 `unavailable`(일시 — 기억하지 않고 다음에 다시 묻는다, R1-N).
+   * 쪽 상한(20쪽)까지 끝나지 않으면 `complete: false` — 못 본 보드가 있을 수 있어 보드 0 인 스페이스는 「상한 도달」 이유로 끈다.
+   */
+  private async boardsByProject(): Promise<BoardScan> {
     const counts = new Map<string, number>()
     let startAt = 0
-    for (let page = 0; page < 20; page += 1) {
+    for (let page = 0; page < BOARD_PAGE_GUARD; page += 1) {
       const reply = await this.send({ method: 'GET', path: '/rest/agile/1.0/board', query: { startAt: String(startAt), maxResults: String(Math.min(this.pageSize, 50)) } })
-      if (!reply.ok) return { state: reply.status === 404 ? 'absent' : 'forbidden' }
-      const boards = readBoardPage({ value: reply.json, startAt })
+      if (!reply.ok) return { state: reply.status === 404 ? 'absent' : reply.status === 401 || reply.status === 403 ? 'forbidden' : 'unavailable' }
+      let boards: OffsetPage<{ projectKey: string | null }>
+      try {
+        boards = readBoardPage({ value: reply.json, startAt })
+      } catch (error) {
+        if (error instanceof JiraShapeError) return { state: 'unavailable' }
+        throw error
+      }
       for (const board of boards.values) if (board.projectKey !== null) counts.set(board.projectKey, (counts.get(board.projectKey) ?? 0) + 1)
-      if (!boards.more) break
+      if (!boards.more) return { state: 'ok', counts, complete: true }
+      if (boards.values.length === 0) return { state: 'unavailable' }
       startAt += boards.values.length
     }
-    return { state: 'ok', counts }
+    return { state: 'ok', counts, complete: false }
+  }
+
+  /** 스페이스 순서 능력 — 아직 모르면(스페이스 목록 전에 목록·순서를 부른 경우) 보드를 먼저 확인한다(R1-O). */
+  private async orderFor(spaceKey: string): Promise<WorkCapability> {
+    const known = this.orderOf.get(spaceKey)
+    if (known !== undefined) return known
+    const boards = await this.boardsByProject()
+    const order = orderFrom({ boards, spaceKey })
+    if (boards.state !== 'unavailable') this.orderOf.set(spaceKey, order)
+    return order
   }
 
   private async project(spaceKey: string): Promise<Step<ProjectInfo>> {
@@ -417,15 +441,15 @@ export class JiraSource implements WorkSourceClient {
     return { ok: true, issues: page.issues, next: page.nextPageToken }
   }
 
-  private orderClause(spaceKey: string): string {
-    // Rank 는 Jira Software 필드 — 보드가 있는 스페이스만 Rank 로, 나머지는 만든 순.
-    return this.orderOf.get(spaceKey)?.state === 'on' ? 'ORDER BY Rank ASC' : 'ORDER BY created ASC'
+  private async orderClause(spaceKey: string): Promise<string> {
+    // Rank 는 Jira Software 필드 — 보드가 있는 스페이스만 Rank 로, 나머지는 만든 순. 스페이스 목록을 먼저 안 불렀어도 같은 순서(R1-O).
+    return (await this.orderFor(spaceKey)).state === 'on' ? 'ORDER BY Rank ASC' : 'ORDER BY created ASC'
   }
 
   private async listItems({ spaceKey, cursor }: { spaceKey: string; cursor: string | null }): Promise<WorkOutcome> {
     const project = await this.project(spaceKey)
     if (!project.ok) return project.outcome
-    const found = await this.search({ jql: `project = ${jqlString(spaceKey)} ${this.orderClause(spaceKey)}`, cursor, maxResults: this.pageSize })
+    const found = await this.search({ jql: `project = ${jqlString(spaceKey)} ${await this.orderClause(spaceKey)}`, cursor, maxResults: this.pageSize })
     if (!found.ok) return { ok: false, error: found.reply.status === 400 ? rejectedError('스페이스 목록 질의를 Jira 가 거절했습니다 — 커서가 만료됐으면 처음부터 다시 불러오세요.', 400) : found.reply.error }
     const items = await this.toItems({ issues: found.issues, withBody: false })
     if (!items.ok) return items.outcome
@@ -576,7 +600,6 @@ export class JiraSource implements WorkSourceClient {
   // --- 부모 · 자식 ---
 
   private async listChildren(itemId: string): Promise<WorkOutcome> {
-    if (!/^\d{1,18}$/.test(itemId)) return rejected('없는 작업입니다.')
     const issues: JiraIssue[] = []
     let cursor: string | null = null
     const seen = new Set<string>()
@@ -709,11 +732,7 @@ export class JiraSource implements WorkSourceClient {
     const issue = await this.fetchIssue(itemId)
     if (!issue.ok) return issue.outcome
     const spaceKey = issue.value.projectKey
-    if (!this.orderOf.has(spaceKey)) {
-      const spaces = await this.listSpaces()
-      if (!spaces.ok) return spaces
-    }
-    const order = this.orderOf.get(spaceKey) ?? { state: 'disabled', reason: ORDER_OFF_NO_BOARD }
+    const order = await this.orderFor(spaceKey)
     if (order.state !== 'on') return { ok: false, error: workError({ kind: 'unsupported', message: order.state === 'disabled' ? order.reason : ORDER_OFF_NO_BOARD }) }
     let body: Record<string, unknown>
     if (afterId === null) {
@@ -929,6 +948,33 @@ export function splitOrderBy(query: string): { where: string; orderBy: string | 
   if (orderAt < 0) return { where: query, orderBy: null }
   const where = query.slice(0, orderAt).trim()
   return { where: where.length === 0 ? 'issuekey IS NOT EMPTY' : where, orderBy: query.slice(orderAt + orderLength).trim() || 'updated DESC' }
+}
+
+const ISSUE_ID = /^\d{1,18}$/
+
+/** 경로·본문에 들어가는 이슈 id 칸 — `itemId` · `afterId` · `parentId`(null 은 뺀다). */
+function issueIdsOf(call: WorkCall): string[] {
+  const out: string[] = []
+  if ('itemId' in call) out.push(call.itemId)
+  if ('afterId' in call && call.afterId !== null) out.push(call.afterId)
+  if ('parentId' in call && call.parentId !== null && call.parentId !== undefined) out.push(call.parentId)
+  return out
+}
+
+type BoardScan = { state: 'ok'; counts: Map<string, number>; complete: boolean } | { state: 'absent' | 'forbidden' | 'unavailable' }
+
+function orderFrom({ boards, spaceKey }: { boards: BoardScan; spaceKey: string }): WorkCapability {
+  switch (boards.state) {
+    case 'ok':
+      if ((boards.counts.get(spaceKey) ?? 0) > 0) return { state: 'on' }
+      return { state: 'disabled', reason: boards.complete ? ORDER_OFF_NO_BOARD : ORDER_OFF_CAPPED }
+    case 'absent':
+      return { state: 'disabled', reason: ORDER_OFF_NO_SOFTWARE }
+    case 'forbidden':
+      return { state: 'disabled', reason: ORDER_OFF_FORBIDDEN }
+    case 'unavailable':
+      return { state: 'disabled', reason: ORDER_OFF_UNAVAILABLE }
+  }
 }
 
 function pagingError(what: string): WorkError {

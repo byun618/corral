@@ -300,6 +300,73 @@ describe('C2 오류 분류', () => {
   })
 })
 
+describe('수정 1 — 순서 능력 (R1-N·R1-O·N20)', () => {
+  const orderOf = async (h: Awaited<ReturnType<typeof connected>>, key: string): Promise<unknown> => {
+    const spaces = await h.send({ op: 'listSpaces' })
+    if (!spaces.ok || spaces.result.op !== 'listSpaces') throw new Error('spaces')
+    return spaces.result.spaces.find((space) => space.key === key)?.capabilities.order ?? { state: 'on' }
+  }
+  const board = (request: { path: string }): boolean => request.path === '/rest/agile/1.0/board'
+
+  it('N20 보드 조회 404(Software 없음) · 401/403(권한) · 그 밖(5xx) 은 사유가 다르다 — 일시 오류는 「권한 없음」 이 아니고 다시 물으면 켜진다(R1-N)', async () => {
+    const h = await connected()
+    h.fixture.faults.push({ match: board, status: 404, once: true })
+    expect(await orderOf(h, 'CORE')).toMatchObject({ state: 'disabled', reason: expect.stringContaining('Jira Software') })
+    h.fixture.faults.push({ match: board, status: 403, once: true })
+    expect(await orderOf(h, 'CORE')).toMatchObject({ state: 'disabled', reason: expect.stringContaining('권한') })
+    h.fixture.faults.push({ match: board, status: 401, once: true })
+    expect(await orderOf(h, 'CORE')).toMatchObject({ state: 'disabled', reason: expect.stringContaining('권한') })
+    h.fixture.faults.push({ match: board, status: 502, once: true })
+    const transient = await orderOf(h, 'CORE')
+    expect(transient).toMatchObject({ state: 'disabled', reason: expect.stringContaining('지금 받지 못해') })
+    expect(JSON.stringify(transient)).not.toContain('권한')
+    expect(await orderOf(h, 'CORE')).toEqual({ state: 'on' })
+  })
+
+  it('R1-N 보드 쪽 상한(20쪽)에 닿으면 보드 0 스페이스는 「상한 도달」 이유로 끈다 — 보드 수를 다 못 봤다고 알린다', async () => {
+    const h = await connected()
+    const core = h.fixture.projects.find((project) => project.key === 'CORE')
+    if (core === undefined) throw new Error('seed')
+    core.boards = 60
+    const before = h.fixture.requests.filter(board).length
+    expect(await orderOf(h, 'WEB')).toMatchObject({ state: 'disabled', reason: expect.stringContaining('1000개') })
+    expect(await orderOf(h, 'CORE')).toEqual({ state: 'on' })
+    // 쪽 크기 2 × 20쪽 = 한 번의 목록에 보드 요청 20번까지 — 두 번 불렀다.
+    expect(h.fixture.requests.filter(board).length - before).toBe(40)
+  })
+
+  it('R1-O 스페이스 목록 전에 목록을 불러도 순서가 같다 — 보드 있는 스페이스는 Rank 순(재시작 직후)', async () => {
+    const h = await connected()
+    const restarted = workHarness({ entries: [jiraSourceEntry({ pageSize: 2, sleep: async () => {}, baseUrlOf: () => h.url })] })
+    restarted.store.data = structuredClone(h.store.data)
+    restarted.cipher.mode = 'ok'
+    const before = h.fixture.requests.length
+    const listed = await restarted.service.request({ requestId: 'r', connectionId: h.connectionId, call: { op: 'listItems', spaceKey: 'CORE', cursor: null } })
+    expect(listed.ok).toBe(true)
+    const sent = h.fixture.requests.slice(before)
+    expect(sent.some((request) => request.path === '/rest/api/3/project/search')).toBe(false)
+    expect(sent.filter((request) => request.path === '/rest/api/3/search/jql').map((request) => request.query.jql)).toEqual(['project = "CORE" ORDER BY Rank ASC'])
+  })
+})
+
+describe('R1-U 이슈 id 모양', () => {
+  it('숫자 밖 id(`..`·`/`·키)는 경로에 넣기 전에 거절 — 요청 0 · 숫자 id 는 그대로(양성 대조)', async () => {
+    const h = await connected()
+    const before = h.fixture.requests.length
+    for (const call of [
+      { op: 'getItem', itemId: '..' },
+      { op: 'getItem', itemId: '../../myself' },
+      { op: 'listComments', itemId: '20001/..' },
+      { op: 'getItem', itemId: 'CORE-1' },
+      { op: 'reorder', itemId: '20001', afterId: '..' },
+      { op: 'setParent', itemId: '20002', spaceKey: 'CORE', parentId: '%2e%2e', ifVersion: null },
+      { op: 'updateItem', itemId: ' 20001', fields: { title: 'x' }, ifVersion: null },
+    ] satisfies WorkCall[]) expect(await h.send(call)).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+    expect(h.fixture.requests.length).toBe(before)
+    expect((await h.send({ op: 'getItem', itemId: '20001' })).ok).toBe(true)
+  })
+})
+
 describe('C4 스페이스·상태·전이', () => {
   it('프로젝트 목록 모든 쪽(쪽 크기 2 → 3쪽) · 상태 합집합(같은 id 하나) · 분류 → 처음 나온 순 · 종류 계층', async () => {
     const h = await connected()

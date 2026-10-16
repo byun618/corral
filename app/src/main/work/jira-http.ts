@@ -3,7 +3,7 @@
 // - 보내는 곳 = 출처가 정규화한 `https://<이름>.atlassian.net` 하나(F3). 측정 실행만 `baseUrl` 을 fixture 로 바꾼다(`jira-source.ts` `jiraFixtureBaseFromEnv`).
 // - **리다이렉트를 따라가지 않는다**(`redirect: 'manual'`) — 자격을 실은 요청이 다른 호스트로 가지 않게. 3xx 는 응답 모양 어긋남.
 // - 시간 제한(기본 15 s) · 본문 상한(16 MiB, `mcp-http.ts` 와 같은 읽기) · 동시 요청 상한(기본 4 — 넘치면 차례를 기다린다).
-// - 오류 분류(`errors.ts` 재사용): 401 = 인증(CAPTCHA 표지 `X-Seraph-LoginReason: AUTHENTICATION_DENIED` 면 「웹에서 한 번 로그인」) · 403 · 404(부르는 쪽이 정한다) ·
+// - 오류 분류(`errors.ts` 재사용): 401 = 인증(CAPTCHA 표지 `X-Seraph-LoginReason: AUTHENTICATION_DENIED` 면 상태와 상관없이 「웹에서 한 번 로그인」) · 403 · 404(부르는 쪽이 정한다) ·
 //   429/503 = 네트워크 + `Retry-After` · 5xx · DNS/연결 거부(보내기 전 — `unsent`). **원격 글은 문구에 넣지 않는다** — 질의 거부 사유만 부르는 쪽이 따로 꺼낸다(`errorText`).
 // - **읽기만 다시 보낸다**: 429·503 이고 `Retry-After` 가 상한(5 s) 안이면 최대 2번. 쓰기는 한 번만(C11 — 시간 초과·429·5xx 모두).
 // - 나가는 문구에서 이 자격(토큰·이메일·Basic 값)을 지운다. `close()` 뒤에는 보내지 않는다(`not_connected` + `unsent`).
@@ -26,13 +26,13 @@ export type JiraHttpOptions = {
 
 export type JiraMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
 
-/** `unsent` = 요청이 Jira 에 닿지 않았음이 확실하다(닫힘·연결 전 실패). `status`·`body` 는 받은 응답(2xx 가 아니어도 404·400·207 은 부르는 쪽이 본다). */
+/** `unsent` = 요청이 Jira 에 닿지 않았음이 확실하다(닫힘·연결 전 실패). `status`·`body` 는 받은 응답(2xx 가 아니어도 404·400 은 부르는 쪽이 본다). */
 export type JiraReply = { ok: true; status: number; json: unknown; headers: Headers } | { ok: false; error: WorkError; unsent: boolean; status: number | null; body: unknown; retryAfterMs: number | null }
 
 const RETRY_AFTER_CAP_MS = 5_000
 const READ_RETRIES = 2
-/** 받은 응답을 그대로 부르는 쪽에 넘기는 상태 — 400(검증·JQL 거부) · 404(없음 = 인증 실패 아님) · 207(부분 실패). */
-const PASS_THROUGH = new Set([400, 404, 207])
+/** 받은 응답을 그대로 부르는 쪽에 넘기는 상태 — 400(검증·JQL 거부) · 404(없음 = 인증 실패 아님). 207(이슈별 결과)은 2xx 본문으로 받아 부르는 쪽이 읽는다(R1-L — 한 경로). */
+const PASS_THROUGH = new Set([400, 404])
 
 export function basicHeader({ email, token }: { email: string; token: string }): string {
   return `Basic ${Buffer.from(`${email}:${token}`, 'utf8').toString('base64')}`
@@ -117,7 +117,8 @@ export class JiraHttp {
   }
 
   private classify({ status, headers, retryAfterMs }: { status: number; headers: Headers; retryAfterMs: number | null }): WorkError {
-    if (status === 401 && (headers.get('x-seraph-loginreason') ?? '').toUpperCase().includes('AUTHENTICATION_DENIED')) {
+    // CAPTCHA 표지는 상태와 상관없이 본다(R1-T) — 403 으로 오는 사이트도 있다.
+    if ((headers.get('x-seraph-loginreason') ?? '').toUpperCase().includes('AUTHENTICATION_DENIED')) {
       return workError({ kind: 'auth', status, message: `${this.host} 가 로그인 확인(CAPTCHA)을 요구해 API 요청을 거부했습니다 — 브라우저로 Jira 에 한 번 로그인한 뒤 「연결 테스트」 를 누르세요.` })
     }
     if (status === 401) return workError({ kind: 'auth', status, message: `${this.host} 가 이메일·API 토큰을 거부했습니다 (401). 토큰이 만료·폐기됐거나 스코프가 있는 토큰입니다 — 스코프 없는 API 토큰을 다시 붙여넣으세요.` })

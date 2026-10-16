@@ -305,6 +305,9 @@ export class JiraSource implements WorkSourceClient {
     const reply = await this.send({ method, path, query, body, write: true })
     if (reply.ok) return { ok: true, value: reply }
     if (reply.status === 400 || reply.status === 404 || reply.status === 409 || reply.status === 422) return { ok: false, outcome: { ok: false, error: rejectedError(refused, reply.status) } }
+    // 429 = 처리하기 전에 받지 않았다는 응답(RFC 6585 §4) — 「적용 안 됨」(R1-M). 다시 보내지는 않는다.
+    // 503 은 게이트웨이·과부하 어디서 났는지 응답만으로 모른다 — 처리 뒤 끊긴 경우를 배제할 수 없어 「적용됐는지 모름」 으로 둔다.
+    if (reply.status === 429) return { ok: false, outcome: { ok: false, error: { ...reply.error, message: `${reply.error.message} 이 변경은 적용되지 않았습니다.` } } }
     return { ok: false, outcome: { ok: false, error: maybeApplied({ error: reply.error, unsent: reply.unsent }) } }
   }
 
@@ -727,9 +730,20 @@ export class JiraSource implements WorkSourceClient {
     const sent = await this.write({ method: 'PUT', path: '/rest/agile/1.0/issue/rank', body, refused: 'Jira 가 순서 변경을 거절했습니다.' })
     if (!sent.ok) return sent.outcome
     if (sent.value.status === 207) {
-      // 207 = 이슈별 결과 — 하나라도 실패면 실패(성공으로 읽지 않는다, C7①).
-      const entries = readRankEntries(sent.value.json)
-      if (entries.length === 0 || entries.some((entry) => entry.status < 200 || entry.status >= 300)) return rejected('Jira 가 순서를 바꾸지 못했습니다(일부 실패 207) — 잠시 후 다시 시도하세요.', 207)
+      // 207 = 이슈별 결과 — 하나라도 실패면 실패(성공으로 읽지 않는다, C7①). 문구는 이슈마다 키·상태만(원격 글은 넣지 않는다).
+      let entries: { issueId: string; status: number }[]
+      try {
+        entries = readRankEntries(sent.value.json)
+      } catch (error) {
+        if (error instanceof JiraShapeError) return { ok: false, error: workError({ kind: 'invalid_response', message: `Jira 순서 응답(207) 모양이 다릅니다 (${error.path.slice(0, 120)}).` }) }
+        throw error
+      }
+      const failed = entries.filter((entry) => entry.status < 200 || entry.status >= 300)
+      if (entries.length === 0) return rejected('Jira 가 순서 결과를 하나도 주지 않았습니다(207) — 순서가 바뀌었는지 Jira 에서 확인하세요.', 207)
+      if (failed.length > 0) {
+        const names = failed.slice(0, 5).map((entry) => `${entry.issueId === itemId ? issue.value.key : entry.issueId}(${entry.status})`).join(', ')
+        return rejected(`Jira 가 ${names} 의 순서를 바꾸지 못했습니다(207) — 잠시 후 다시 시도하세요.`, 207)
+      }
     }
     return this.itemResult({ op: 'reorder', itemId })
   }

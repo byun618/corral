@@ -189,6 +189,35 @@ describe('C2 오류 분류', () => {
     expect(h.fixture.requests.length).toBe(before)
   })
 
+  it('R1-K C2 공백 — 읽기 시간 초과 · 쓰기 시간 초과(maybeApplied, 한 번만) · DNS 실패(보내기 전) · 쓰기 403(적용 안 됨) · CAPTCHA 표지 403', async () => {
+    const h = await connected({ timeoutMs: 150 })
+    h.fixture.faults.push({ match: (request) => request.path.endsWith('/statuses'), delayMs: 400, once: true })
+    const slowRead = await h.send({ op: 'listStatuses', spaceKey: 'CORE' })
+    expect(slowRead).toMatchObject({ ok: false, error: { kind: 'network' } })
+    if (!slowRead.ok) { expect(slowRead.error.message).toContain('초과'); expect(slowRead.error.maybeApplied).toBeUndefined() }
+    h.fixture.faults.push({ match: (request) => request.method === 'POST' && request.path.endsWith('/comment'), delayMs: 400, once: true })
+    const slowWrite = await h.send({ op: 'addComment', itemId: '20001', body: '늦은 코멘트' })
+    expect(slowWrite).toMatchObject({ ok: false, error: { kind: 'network', maybeApplied: true } })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(h.fixture.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/comment'))).toHaveLength(1)
+    h.fixture.faults.push({ match: (request) => request.method === 'PUT' && request.path === '/rest/api/3/issue/20002', status: 403, once: true })
+    const denied = await h.send({ op: 'updateItem', itemId: '20002', fields: { title: '권한 없음' }, ifVersion: null })
+    expect(denied).toMatchObject({ ok: false, error: { kind: 'forbidden', status: 403 } })
+    if (!denied.ok) expect(denied.error.maybeApplied).toBeUndefined()
+    expect(h.fixture.requests.filter((request) => request.method === 'PUT' && request.path === '/rest/api/3/issue/20002')).toHaveLength(1)
+    // CAPTCHA 표지가 403 으로 와도 「웹에서 한 번 로그인」(R1-T).
+    h.fixture.faults.push({ match: (request) => request.path.endsWith('/project/WEB/statuses'), status: 403, headers: { 'X-Seraph-LoginReason': 'AUTHENTICATION_DENIED' }, once: true })
+    const captcha = await h.send({ op: 'listStatuses', spaceKey: 'WEB' })
+    expect(captcha).toMatchObject({ ok: false, error: { kind: 'auth', status: 403 } })
+    if (!captcha.ok) expect(captcha.error.message).toContain('CAPTCHA')
+    // DNS — undici 가 던지는 모양(cause.code ENOTFOUND). 보내기 전 실패라 쓰기여도 maybeApplied 없음.
+    const dns: typeof fetch = async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND acme.atlassian.net'), { code: 'ENOTFOUND' }) }) }
+    const lost = new JiraHttp({ baseUrl: 'https://acme.atlassian.net', email: FAKE_JIRA_EMAIL, token: FAKE_JIRA_TOKEN, fetchImpl: dns })
+    const unreachable = await lost.request({ method: 'POST', path: '/rest/api/3/issue', body: {}, write: true })
+    expect(unreachable).toMatchObject({ ok: false, unsent: true, error: { kind: 'network' } })
+    if (!unreachable.ok) expect(unreachable.error.message).toContain('DNS')
+  })
+
   it('404 — 없는/못 보는 이슈: 단건은 거절(인증 실패 아님), 키 찾기는 null', async () => {
     const h = await connected()
     expect(await h.send({ op: 'getItem', itemId: '99999' })).toMatchObject({ ok: false, error: { kind: 'rejected', status: 404 } })
@@ -203,8 +232,15 @@ describe('C2 오류 분류', () => {
     expect(h.fixture.requests.filter((request) => request.path === '/rest/api/3/project/CORE/statuses')).toHaveLength(2)
     h.fixture.faults.push({ match: (request) => request.method === 'POST' && request.path.endsWith('/comment'), status: 429, headers: { 'Retry-After': '1' } })
     const write = await h.send({ op: 'addComment', itemId: '20001', body: '한 번만' })
-    expect(write).toMatchObject({ ok: false, error: { kind: 'network', status: 429, maybeApplied: true } })
+    // 429 = 처리 전에 받지 않음 — 「적용 안 됨」(R1-M), 다시 보내지 않는다.
+    expect(write).toMatchObject({ ok: false, error: { kind: 'network', status: 429 } })
+    if (!write.ok) { expect(write.error.maybeApplied).toBeUndefined(); expect(write.error.message).toContain('적용되지 않았습니다') }
     expect(h.fixture.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/comment'))).toHaveLength(1)
+    // 503 은 어디서 났는지 모른다 — 「적용됐는지 모름」, 한 번만.
+    h.fixture.faults.splice(0)
+    h.fixture.faults.push({ match: (request) => request.method === 'POST' && request.path.endsWith('/comment'), status: 503, headers: { 'Retry-After': '1' } })
+    expect(await h.send({ op: 'addComment', itemId: '20001', body: '503' })).toMatchObject({ ok: false, error: { kind: 'network', status: 503, maybeApplied: true } })
+    expect(h.fixture.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/comment'))).toHaveLength(2)
     // 긴 Retry-After 는 기다리지 않는다(상한 5 s) — 한 번만.
     h.fixture.faults.push({ match: (request) => request.path.endsWith('/project/WEB/statuses'), status: 429, headers: { 'Retry-After': '120' } })
     const slow = await h.send({ op: 'listStatuses', spaceKey: 'WEB' })
@@ -528,7 +564,18 @@ describe('C7 순서·스페이스별 능력', () => {
     expect((await h.send({ op: 'reorder', itemId: '20003', afterId: null })).ok).toBe(true)
     expect(h.fixture.requests.filter((request) => request.path === '/rest/agile/1.0/issue/rank').at(-1)?.body).toEqual({ issues: ['20003'], rankBeforeIssue: '20001' })
     h.fixture.corrupt = 'rank-207'
+    const partial = await h.send({ op: 'reorder', itemId: '20001', afterId: '20002' })
+    expect(partial).toMatchObject({ ok: false, error: { kind: 'rejected', status: 207 } })
+    // R1-L 한 경로(2xx 본문)로 읽고 이슈별로 적는다 — 키 · 상태, 원격 글 없음.
+    if (!partial.ok) { expect(partial.error.message).toContain('CORE-1(503)'); expect(partial.error.message).not.toContain('JIRA Agile'); expect(partial.error.maybeApplied).toBeUndefined() }
+    h.fixture.corrupt = 'none'
+    const rank = (request: { path: string }): boolean => request.path === '/rest/agile/1.0/issue/rank'
+    h.fixture.faults.push({ match: rank, status: 207, body: { entries: [] }, once: true })
     expect(await h.send({ op: 'reorder', itemId: '20001', afterId: '20002' })).toMatchObject({ ok: false, error: { kind: 'rejected', status: 207 } })
+    h.fixture.faults.push({ match: rank, status: 207, body: { entries: [{ issueId: 20001 }] }, once: true })
+    expect(await h.send({ op: 'reorder', itemId: '20001', afterId: '20002' })).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    h.fixture.faults.push({ match: rank, status: 207, body: { entries: [{ issueId: 20001, status: 200 }] }, once: true })
+    expect(await h.send({ op: 'reorder', itemId: '20001', afterId: '20002' })).toMatchObject({ ok: true })
   })
 
   it('배치는 켜지 않는다 — 출처에 닿기 전 이유와 함께 거절', async () => {

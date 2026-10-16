@@ -549,6 +549,10 @@ describe('수정 2 — 리뷰 r2 (R2-C 생존 뮤테이션 · R2-E · R2-F · R2
     const added = await fresh.service.addConnection({ sourceId: 'jira', token: FAKE_JIRA_TOKEN, account: { site: JIRA_ACCOUNT.site, email: `  ${FAKE_JIRA_EMAIL}  ` }, replaceId: null })
     expect(added.ok).toBe(true)
     expect(fresh.store.data.connections[0]?.account.email).toBe(FAKE_JIRA_EMAIL)
+    // 공백만 든 필수 칸은 「비었다」 — 출처 검증(모양 아님)까지 가지 않는다(mut3 Y23 생존 → 이 단언).
+    const blank = await fresh.service.addConnection({ sourceId: 'jira', token: FAKE_JIRA_TOKEN, account: { site: JIRA_ACCOUNT.site, email: '   ' }, replaceId: null })
+    expect(blank.ok).toBe(false)
+    if (!blank.ok) expect(blank.error.message).toContain('입력하세요')
   })
 
   it('Y26 CAPTCHA 표지 값은 대소문자 무시 · Y27 Retry-After 는 HTTP 날짜도 읽는다', async () => {

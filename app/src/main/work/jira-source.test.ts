@@ -6,6 +6,7 @@ import { spaceCapabilities, type WorkCall, type WorkCapabilities, type WorkRespo
 import { basicHeader, errorText, JiraHttp, parseRetryAfter } from './jira-http.js'
 import { JiraRestFixture } from './jira-rest-fixture.js'
 import { bodyUpdate, checkJiraAccount, jiraFixtureBaseFromEnv, jiraSourceEntry, jqlString, normalizeJiraSite, splitOrderBy, textSearchWords, transitionPlan } from './jira-source.js'
+import { readTransitions } from './jira-shape.js'
 import { markdownToAdf } from './adf.js'
 import { FAKE_JIRA_EMAIL, FAKE_JIRA_TOKEN, JIRA_ACCOUNT, jiraFixtureHarness, workHarness } from './test-kit.js'
 import type { WorkSourceEntry } from './source.js'
@@ -440,6 +441,134 @@ describe('수정 1 R1-K — 리뷰어 생존 뮤테이션을 죽이는 시험', 
     // 양성 대조 — 연결이 켠 능력은 스페이스가 끈다.
     const on: WorkCapabilities = { ...base, order: { state: 'on' } }
     expect(spaceCapabilities({ capabilities: on, space: { capabilities: { order: { state: 'disabled', reason: '보드 없음' } } } }).order).toEqual({ state: 'disabled', reason: '보드 없음' })
+    // 배치도 같은 규칙(Y22) — 켠 연결에서 스페이스가 끄면 꺼진다.
+    const placementOn: WorkCapabilities = { ...base, placement: { state: 'on' } }
+    expect(spaceCapabilities({ capabilities: placementOn, space: { capabilities: { placement: { state: 'disabled', reason: '스크럼' } } } }).placement).toEqual({ state: 'disabled', reason: '스크럼' })
+  })
+})
+
+describe('수정 2 — 리뷰 r2 (R2-C 생존 뮤테이션 · R2-E · R2-F · R2-I)', () => {
+  it('R2-E 새로 고침(스페이스 목록)이 상태·우선순위 캐시를 비운다 — Jira 에서 상태를 더하면 새로 고친 뒤 보인다', async () => {
+    const h = await connected()
+    const count = async (): Promise<number> => {
+      const listed = await h.send({ op: 'listStatuses', spaceKey: 'WEB' })
+      if (!listed.ok || listed.result.op !== 'listStatuses') throw new Error('statuses')
+      return listed.result.statuses.length
+    }
+    expect(await count()).toBe(2)
+    const web = h.fixture.projects.find((project) => project.key === 'WEB')
+    if (web === undefined) throw new Error('seed')
+    for (const typeId of Object.keys(web.statusesByType)) web.statusesByType[typeId]?.push('10001')
+    expect(await count()).toBe(2)
+    expect((await h.send({ op: 'listSpaces' })).ok).toBe(true)
+    expect(await count()).toBe(3)
+    // 우선순위 — 쓴 뒤 이름이 바뀌어도 새로 고친 뒤에는 새 목록으로 고른다.
+    expect((await h.send({ op: 'updateItem', itemId: '20002', fields: { priority: 'low' }, ifVersion: null })).ok).toBe(true)
+    const searches = (): number => h.fixture.requests.filter((request) => request.path === '/rest/api/3/priority/search').length
+    const before = searches()
+    expect((await h.send({ op: 'listSpaces' })).ok).toBe(true)
+    expect((await h.send({ op: 'updateItem', itemId: '20002', fields: { priority: 'high' }, ifVersion: null })).ok).toBe(true)
+    expect(searches()).toBe(before + 1)
+  })
+
+  it('R2-F 쓰기 2xx 뒤 응답 모양 어긋남(만들기·코멘트)·연결 추가 뒤 다시 읽기 실패는 maybeApplied + 「…지만」 — 다시 보내지 않는다(Y29)', async () => {
+    const h = await connected()
+    h.fixture.faults.push({ match: (request) => request.method === 'POST' && request.path === '/rest/api/3/issue', status: 201, body: {}, once: true })
+    const made = await h.send({ op: 'createItem', spaceKey: 'CORE', parentId: null, kindKey: '10001', title: '모양 어긋난 만들기' })
+    expect(made).toMatchObject({ ok: false, error: { kind: 'invalid_response', maybeApplied: true, message: expect.stringContaining('만들어졌지만') } })
+    expect(h.fixture.requests.filter((request) => request.method === 'POST' && request.path === '/rest/api/3/issue')).toHaveLength(1)
+    h.fixture.faults.push({ match: (request) => request.method === 'POST' && request.path === '/rest/api/3/issue/20001/comment', status: 201, body: { id: '1' }, once: true })
+    expect(await h.send({ op: 'addComment', itemId: '20001', body: '모양 어긋난 코멘트' })).toMatchObject({ ok: false, error: { maybeApplied: true, message: expect.stringContaining('만들어졌지만') } })
+    const linked = (): boolean => h.fixture.requests.some((request) => request.method === 'POST' && request.path === '/rest/api/3/issueLink')
+    h.fixture.faults.push({ match: (request) => request.method === 'GET' && request.path === '/rest/api/3/issue/20001' && linked(), status: 502, once: true })
+    expect(await h.send({ op: 'addRelation', itemId: '20001', kind: 'relates_to', otherKey: 'CORE-4' })).toMatchObject({ ok: false, error: { maybeApplied: true, message: expect.stringContaining('적용됐지만') } })
+    expect(h.fixture.requests.filter((request) => request.method === 'POST' && request.path === '/rest/api/3/issueLink')).toHaveLength(1)
+  })
+
+  it('R2-I 둥근 따옴표가 든 질의는 짝 검사를 믿을 수 없어 질의로 보내지 않는다(텍스트 폴백) · Y32 따옴표 안 역슬래시 · Y33 작은따옴표도 따옴표', async () => {
+    expect(splitOrderBy('a = “(” ) OR ( project = WEB ) OR ( b = “)”')).toBeNull()
+    expect(splitOrderBy('summary ~ ‘x’')).toBeNull()
+    expect(splitOrderBy('summary ~ "a \\" (b"')).toEqual({ where: 'summary ~ "a \\" (b"', orderBy: null })
+    expect(splitOrderBy("summary ~ 'a ) b'")).toEqual({ where: "summary ~ 'a ) b'", orderBy: null })
+    const h = await connected()
+    const searched = await h.send({ op: 'searchItems', spaceKeys: ['CORE'], query: 'a = “(” ) OR ( project = WEB ) OR ( b = “)”' })
+    expect(searched).toMatchObject({ ok: true, result: { mode: 'text', note: expect.stringContaining('둥근 따옴표') } })
+  })
+
+  it('Y13 읽기 재시도는 2번까지 — 429 가 계속이면 요청 3번에서 멈춘다', async () => {
+    const h = await connected()
+    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/project/CORE/statuses', status: 429, headers: { 'Retry-After': '1' } })
+    expect(await h.send({ op: 'listStatuses', spaceKey: 'CORE' })).toMatchObject({ ok: false, error: { kind: 'network', status: 429 } })
+    expect(h.fixture.requests.filter((request) => request.path === '/rest/api/3/project/CORE/statuses')).toHaveLength(3)
+  })
+
+  it('Y12 자식 목록 쪽 상한 20 — 표지가 매번 달라도 끝없이 돌지 않는다', async () => {
+    const h = await connected()
+    let page = 0
+    // 실제 이슈 모양(fixture 의 단건 응답 그대로)을 쪽마다 하나씩 — 모양 어긋남이 아니라 쪽 상한으로 멈추는지 본다.
+    const bean: unknown = await (await fetch(`${h.url}/rest/api/3/issue/20002`, { headers: { authorization: basicHeader({ email: FAKE_JIRA_EMAIL, token: FAKE_JIRA_TOKEN }) } })).json()
+    const body: Record<string, unknown> = { issues: [bean], nextPageToken: 'T0' }
+    h.fixture.faults.push({ match: (request) => {
+      if (request.path !== '/rest/api/3/search/jql' || !(request.query.jql ?? '').startsWith('parent = 20001')) return false
+      page += 1
+      body.nextPageToken = `T${page}`
+      return true
+    }, status: 200, body })
+    expect(await h.send({ op: 'listChildren', itemId: '20001' })).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    expect(page).toBe(20)
+  })
+
+  it('Y14 jqlString 은 줄바꿈을 공백으로 · Y16 같은 상태로 가는 전이가 여럿이면 Jira 순서의 첫 것', () => {
+    expect(jqlString('a\nb\r\nc')).toBe('"a b c"')
+    const to = { id: '10003', name: 'Done', statusCategory: { key: 'done' } }
+    const plan = transitionPlan(readTransitions({ transitions: [{ id: '31', name: 'First', to, isAvailable: true, looped: false }, { id: '41', name: 'Second', to, isAvailable: true, looped: false }] }))
+    expect(plan.open.get('10003')?.id).toBe('31')
+  })
+
+  it('Y17 이력의 description 은 본문(body) 칸 — 원문은 싣지 않는다', async () => {
+    const h = await connected()
+    h.fixture.faults.push({ match: (request) => request.path === '/rest/api/3/issue/20002/changelog', status: 200, once: true, body: { values: [{ id: '1', created: '2026-10-10T00:00:00.000+0000', items: [{ field: 'description', fieldId: 'description', fromString: '옛 본문', toString: '새 본문' }] }], isLast: true, startAt: 0, maxResults: 100, total: 1 } })
+    const history = await h.send({ op: 'listHistory', itemId: '20002' })
+    if (!history.ok || history.result.op !== 'listHistory') throw new Error('history')
+    expect(history.result.entries.map((entry) => ({ field: entry.field, from: entry.from, to: entry.to }))).toEqual([{ field: 'body', from: null, to: null }])
+  })
+
+  it('Y10 표시 칸 복원은 행에 있는 값을 덮지 않는다 · Y23 연결 칸 앞뒤 공백은 저장 전에 다듬는다', async () => {
+    const h = await connected()
+    const row = h.store.data.connections[0]
+    if (row === undefined) throw new Error('row')
+    h.store.data = { ...h.store.data, connections: [{ ...row, account: { email: 'shown@fixture.invalid' } }] }
+    h.vault.forget(h.connectionId)
+    const restarted = workHarness({ entries: [jiraSourceEntry({ pageSize: 2, sleep: async () => {}, baseUrlOf: () => h.url })] })
+    restarted.store.data = structuredClone(h.store.data)
+    restarted.cipher.mode = 'ok'
+    expect((await restarted.service.request({ requestId: 'r', connectionId: h.connectionId, call: { op: 'listStatuses', spaceKey: 'CORE' } })).ok).toBe(true)
+    expect(restarted.store.data.connections[0]?.account).toEqual({ site: row.account.site, email: 'shown@fixture.invalid' })
+    const fresh = await jiraFixtureHarness()
+    opened.push(fresh)
+    const added = await fresh.service.addConnection({ sourceId: 'jira', token: FAKE_JIRA_TOKEN, account: { site: JIRA_ACCOUNT.site, email: `  ${FAKE_JIRA_EMAIL}  ` }, replaceId: null })
+    expect(added.ok).toBe(true)
+    expect(fresh.store.data.connections[0]?.account.email).toBe(FAKE_JIRA_EMAIL)
+  })
+
+  it('Y26 CAPTCHA 표지 값은 대소문자 무시 · Y27 Retry-After 는 HTTP 날짜도 읽는다', async () => {
+    const h = await connected()
+    h.fixture.faults.push({ match: (request) => request.path.endsWith('/statuses'), status: 401, headers: { 'X-Seraph-LoginReason': 'authentication_denied' }, once: true })
+    const captcha = await h.send({ op: 'listStatuses', spaceKey: 'CORE' })
+    if (captcha.ok) throw new Error('captcha')
+    expect(captcha.error.message).toContain('CAPTCHA')
+    const wait = parseRetryAfter(new Date(Date.now() + 4000).toUTCString())
+    expect(wait).not.toBeNull()
+    expect(wait ?? 0).toBeGreaterThan(1000)
+    expect(wait ?? 0).toBeLessThanOrEqual(4000)
+  })
+
+  it('Y28 리다이렉트 응답 본문은 읽지 않고 닫는다(연결을 붙잡지 않는다)', async () => {
+    let cancelled = false
+    const fetchImpl: typeof fetch = async () => new Response(new ReadableStream({ cancel: () => { cancelled = true } }), { status: 302, headers: { Location: 'http://127.0.0.1:9/x' } })
+    const http = new JiraHttp({ baseUrl: 'https://acme.atlassian.net', email: FAKE_JIRA_EMAIL, token: FAKE_JIRA_TOKEN, fetchImpl })
+    expect(await http.request({ method: 'GET', path: '/rest/api/3/myself', write: false })).toMatchObject({ ok: false, error: { kind: 'invalid_response', status: 302 } })
+    expect(cancelled).toBe(true)
   })
 })
 

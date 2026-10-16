@@ -68,7 +68,7 @@ const settle = async (rounds = 10): Promise<void> => {
   for (let index = 0; index < rounds; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)) })
 }
 
-async function rig({ spaceKey = 'CORE', seed }: { spaceKey?: string; seed?: (server: JiraRestFixture) => void } = {}): Promise<Rig> {
+async function rig({ spaceKey = 'CORE', seed, all = false }: { spaceKey?: string; seed?: (server: JiraRestFixture) => void; all?: boolean } = {}): Promise<Rig> {
   const server = new JiraRestFixture()
   fixture = server
   seed?.(server)
@@ -86,7 +86,7 @@ async function rig({ spaceKey = 'CORE', seed }: { spaceKey?: string; seed?: (ser
   const connectionId = added.connection.id
   const result: Rig = { service, fixture: server, calls: [], connectionId }
   Reflect.set(window, 'corral', {
-    getUiPrefs: async () => ({ tasksPage: { space: { kind: 'space', connectionId, spaceKey } } }),
+    getUiPrefs: async () => ({ tasksPage: { space: all ? { kind: 'all' } : { kind: 'space', connectionId, spaceKey } } }),
     setUiPrefs: () => {},
     getWorkSettings: async () => service.settings(),
     onWorkSettings: (next: (value: WorkSettingsState) => void) => { listener = next; return () => {} },
@@ -212,6 +212,8 @@ describe('LIFE-605 작업 페이지 × Jira fixture', () => {
     const pattern = jiraSourceEntry({ baseUrlOf: () => 'http://127.0.0.1:1' }).descriptor.queryPattern
     for (const query of ['project in (CORE, WEB)', 'assignee is EMPTY', 'resolution IS NOT null', 'text ~ x order by created', 'status = Done']) expect(looksLikeQuery({ query, pattern })).toBe(true)
     for (const query of ['this is broken', 'login in progress', '영수증 정리', 'empty inbox']) expect(looksLikeQuery({ query, pattern })).toBe(false)
+    // 질의 모양이 없는 출처(LA·모의)는 연산자가 든 글도 질의로 보내지 않는다(Y20 — T2 무회귀).
+    for (const query of ['a = b', 'x < 3', 'summary ~ y']) expect(looksLikeQuery({ query, pattern: null })).toBe(false)
     const keys = Array.from({ length: 120 }, (_, index) => `P${index}`)
     const split = splitSearchCalls([{ connectionId: 'c1', call: { op: 'searchItems', spaceKeys: keys, query: 'a = b' } }, { connectionId: 'c2', call: { op: 'findByKey', key: 'A-1' } }])
     expect(split.map(({ call }) => call.op === 'searchItems' ? call.spaceKeys.length : call.op)).toEqual([50, 50, 20, 'findByKey'])
@@ -250,5 +252,28 @@ describe('LIFE-605 작업 페이지 × Jira fixture', () => {
     expect(column.classList.contains('drag-blocked')).toBe(false)
     mouse(document, 'mouseup', 50, 500)
     await settle()
+  })
+
+  it('R2-J 스페이스 50 초과로 나눠 보낸 질의가 같은 연결에서 다른 안내를 두 줄 내도 React key 가 겹치지 않는다', async () => {
+    const errors = vi.spyOn(console, 'error')
+    const r = await rig({
+      all: true,
+      seed: (server) => {
+        const web = server.projects.find((project) => project.key === 'WEB')
+        if (web === undefined) throw new Error('seed')
+        for (let index = 0; index < 50; index += 1) server.projects.push({ ...web, id: String(30000 + index), key: `P${String(index).padStart(2, '0')}`, name: `P${index}` })
+        const jql = (request: { path: string; query: Record<string, string> }, key: string): boolean => request.path === '/rest/api/3/search/jql' && (request.query.jql ?? '').includes('AND (status') && (request.query.jql ?? '').includes(`"${key}"`)
+        server.faults.push({ match: (request) => jql(request, 'CORE'), status: 400, body: { errorMessages: ['첫 묶음 사유'] }, once: true })
+        server.faults.push({ match: (request) => jql(request, 'WEB'), status: 400, body: { errorMessages: ['둘째 묶음 사유'] }, once: true })
+      },
+    })
+    typeSearch('status = Done')
+    await settleQuery()
+    const sent = r.calls.filter((call) => call.op === 'searchItems')
+    expect(sent.length).toBe(2)
+    const notes = [...document.querySelectorAll('[data-search-note]')].map((node) => node.textContent ?? '')
+    expect(notes).toHaveLength(2)
+    expect(notes.some((text) => text.includes('첫 묶음 사유')) && notes.some((text) => text.includes('둘째 묶음 사유'))).toBe(true)
+    expect(errors.mock.calls.some((call) => String(call[0]).includes('same key'))).toBe(false)
   })
 })

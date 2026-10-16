@@ -5,6 +5,9 @@
 # 기준 = af6d8d068(raw/claude/u1-base — lint·test 출력). 최종 관문(창 없는 하네스 재시작·grep·dmg·캡처)은 이 장치 밖이다.
 set -u
 OUT=${1:A}; mkdir -p $OUT
+# 이전 실행의 ALL 을 「미완」 으로 먼저 덮는다(R3-F) — 중간에 멈춘 재실행이 옛 pass 를 남기지 않게. 끝의 판정만 이것을 바꾼다.
+print -r -- 'fail incomplete' > $OUT/ALL
+[[ -n ${L605_STOP_AFTER_MARK:-} ]] && exit 3 # 자기점검 전용(R3-F 양성 대조 — 표지만 쓰고 멈춘다)
 export PATH="$HOME/.nvm/versions/node/v24.14.1/bin:$PATH"
 export TMPDIR=/tmp/l605t; mkdir -p $TMPDIR
 cd "$(dirname $0)/../.."

@@ -10,6 +10,9 @@
 # 결과 = OUT/VERDICT(행마다 판정) · OUT/ALL(pass | fail n). 기준 worktree 는 지우지 않는다(다음 회차 재사용) — 정리는 `git worktree remove` 로 손수.
 set -u
 OUT=${1:A}; mkdir -p $OUT/base $OUT/head
+# 이전 실행의 ALL 을 「미완」 으로 먼저 덮는다(R3-F) — 중간에 멈춘 재실행이 옛 pass 를 남기지 않게. 끝의 판정만 이것을 바꾼다.
+print -r -- 'fail incomplete' > $OUT/ALL
+[[ -n ${L605_STOP_AFTER_MARK:-} ]] && exit 3 # 자기점검 전용(R3-F 양성 대조 — 표지만 쓰고 멈춘다)
 export PATH="$HOME/.nvm/versions/node/v24.14.1/bin:$PATH"
 export TMPDIR=/tmp/l605t; mkdir -p $TMPDIR
 cd "$(dirname $0)/../.."

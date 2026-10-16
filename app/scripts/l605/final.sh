@@ -6,6 +6,9 @@
 # 전후 비교(C14)는 before-after.sh 가 따로 돈다. 판정 = quick.sh 의 record·run·run_grep(그 파일에서 그대로 떼어 옴). 결과 = OUT/VERDICT · OUT/ALL.
 set -u
 OUT=${1:A}; mkdir -p $OUT
+# 이전 실행의 ALL 을 「미완」 으로 먼저 덮는다(R3-F) — 중간에 멈춘 재실행이 옛 pass 를 남기지 않게. 끝의 판정만 이것을 바꾼다.
+print -r -- 'fail incomplete' > $OUT/ALL
+[[ -n ${L605_STOP_AFTER_MARK:-} ]] && exit 3 # 자기점검 전용(R3-F 양성 대조 — 표지만 쓰고 멈춘다)
 export PATH="$HOME/.nvm/versions/node/v24.14.1/bin:$PATH"
 export TMPDIR=/tmp/l605t; mkdir -p $TMPDIR
 cd "$(dirname $0)/../.."
@@ -45,6 +48,10 @@ L605_ROOT=$WROOT L605_PHASE=lifecycle run_grep windowless-lifecycle 0 'Tests  1 
 L605_ROOT=$WROOT-life L605_PHASE=first run_grep pc-life-setup-first 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
 L605_ROOT=$WROOT-life L605_PHASE=restart run_grep pc-life-setup-restart 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
 L605_PC=leak L605_ROOT=$WROOT-life L605_PHASE=lifecycle run_grep pc-windowless-lifecycle-leak 1 '+     "afterReplace": false,' npx vitest run scripts/l605/windowless.test.tsx
+# R3-G 양성 대조 — 렌더러로 가는 반환값에 새 토큰을 끼우면 반환값 훑기가 잡아야 한다(디스크 grep 과 따로, 새 ROOT).
+L605_ROOT=$WROOT-ipc L605_PHASE=first run_grep pc-ipc-setup-first 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
+L605_ROOT=$WROOT-ipc L605_PHASE=restart run_grep pc-ipc-setup-restart 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
+L605_PC=leak-ipc L605_ROOT=$WROOT-ipc L605_PHASE=lifecycle run_grep pc-windowless-lifecycle-leak-ipc 1 '+   "c1Returns": false,' npx vitest run scripts/l605/windowless.test.tsx
 cp $WROOT/windowless-*.json $OUT/ 2>/dev/null
 [[ $WROOT == /tmp/l605w-f* ]] && rm -rf $WROOT
 for pc in leak search-twice; do
@@ -55,6 +62,6 @@ for pc in leak search-twice; do
 done
 L605_ROOT=$WROOT-nophase run_grep st-windowless-empty-phase 1 'L605_PHASE=first|restart|lifecycle 가 필요하다' npx vitest run scripts/l605/windowless.test.tsx
 [[ $WROOT == /tmp/l605w-f* ]] && rm -rf $WROOT-nophase
-[[ $WROOT == /tmp/l605w-* ]] && rm -rf $WROOT-life
-print -r -- "$WROOT $WROOT-life $WROOT-leak $WROOT-search-twice $WROOT-nophase" > $OUT/tmp-roots.txt
-judge_close 22
+[[ $WROOT == /tmp/l605w-* ]] && rm -rf $WROOT-life $WROOT-ipc
+print -r -- "$WROOT $WROOT-life $WROOT-ipc $WROOT-leak $WROOT-search-twice $WROOT-nophase" > $OUT/tmp-roots.txt
+judge_close 25

@@ -6,7 +6,7 @@
 //
 //   app/ 에서: L605_ROOT=/tmp/l605w-<n> L605_PHASE=first   npx vitest run scripts/l605/windowless.test.tsx   → 연결·목록·질의 검색(요청 수)·폴백·쓰기 · 디스크·로그 grep
 //              L605_ROOT=/tmp/l605w-<n> L605_PHASE=restart npx vitest run scripts/l605/windowless.test.tsx   → 새 프로세스 = 재시작 뒤 연결 유지·카드 표시 칸·grep
-//              L605_ROOT=/tmp/l605w-<n> L605_PHASE=lifecycle …   → (restart 뒤) 실패한 추가 · 토큰 교체 · 해제를 지날 때마다 grep(R2-K). L605_PC=leak 이면 교체 뒤 새 토큰을 로그에.
+//              L605_ROOT=/tmp/l605w-<n> L605_PHASE=lifecycle …   → (restart 뒤) 실패한 추가 · 토큰 교체 · 해제를 지날 때마다 grep(R2-K). L605_PC=leak 이면 교체 뒤 새 토큰을 로그에. 렌더러로 가는 반환값도 같은 바늘로 훑는다(R3-G — L605_PC=leak-ipc 이면 반환값 쪽에 새 토큰).
 // 양성 대조(판정이 늘 참이 아님을 보인다 — 시험이 실패해야 한다): L605_PC=leak(일부러 새게 한 빌드 — 토큰·Basic 값을 main 로그에 한 줄 → grep 적중) ·
 // L605_PC=search-twice(디바운스를 건너뛴 것처럼 같은 질의를 한 번 더 보냄 → 요청 수 2).
 // L605_ROOT·L605_PHASE 가 **둘 다** 없을 때만 건너뛴다(npm test 에서는 skipped). 하나라도 있으면 ROOT 가 `/tmp/l605w-*` 이고 PHASE 가 first·restart 여야 한다(빈 값 포함 실패).
@@ -127,7 +127,7 @@ const flushLog = async (): Promise<void> => { closeLog(); await new Promise((res
 /** lifecycle 단계가 쓰는 두 번째(교체) 토큰·틀린 토큰 — 가짜. 둘 다 grep 바늘에 든다. */
 const SECOND_TOKEN = 'ATATTwindowless0second00000000000000jira'
 const WRONG_TOKEN = 'ATATTwindowless0wrong000000000000000jira'
-function secretGrep(): { status: number | null; out: unknown } {
+function needleList(): { label: string; value: string; allowIn?: string[] }[] {
   const needles: { label: string; value: string; allowIn?: string[] }[] = [FAKE_JIRA_TOKEN, SECOND_TOKEN, WRONG_TOKEN].flatMap((token, index) => {
     const basic = basicHeader({ email: FAKE_JIRA_EMAIL, token })
     return [
@@ -138,6 +138,18 @@ function secretGrep(): { status: number | null; out: unknown } {
     ]
   })
   needles.push({ label: 'email', value: FAKE_JIRA_EMAIL, allowIn: ['work-connections.json'] })
+  return needles
+}
+/**
+ * 서비스가 렌더러에 돌려주는 값(IPC 응답·설정) 훑기(R3-G) — 디스크 grep 과 같은 바늘. 이메일은 카드 표시 칸이라 뺀다(settings 의 account.email).
+ * 결과에는 바늘 이름만 싣는다(글 자체는 싣지 않는다).
+ */
+function returnsHits(values: unknown[]): string[] {
+  const text = JSON.stringify(values)
+  return needleList().filter((needle) => needle.label !== 'email' && text.includes(needle.value)).map((needle) => needle.label)
+}
+function secretGrep(): { status: number | null; out: unknown } {
+  const needles = needleList()
   const file = path.join(ROOT, 'needles.json')
   fs.writeFileSync(file, JSON.stringify(needles))
   const run = spawnSync(process.execPath, [path.join(APP, 'scripts/l605/secret-grep.mjs'), UD, file], { encoding: 'utf8' })
@@ -198,12 +210,16 @@ describe.runIf(requested)('LIFE-605 창 없는 Jira 하네스', () => {
         if (PC === 'leak') log('l605.pc', { leaked: SECOND_TOKEN })
         await flushLog(); openLog(UD)
         const afterReplace = secretGrep()
+        const settingsBefore = parts.service.settings()
         const removed = parts.service.removeConnection({ connectionId: connection.id })
         await flushLog()
         const afterRemove = secretGrep()
+        // R3-G — 렌더러로 가는 값(실패한 추가의 오류 문구 · 교체 · 목록 · 해제 결과 · 설정 앞뒤)도 같은 바늘로. L605_PC=leak-ipc 면 일부러 새 토큰을 끼워 넣는다(양성 대조).
+        const returned: unknown[] = [failedAdd, replaced, listed, removed, settingsBefore, parts.service.settings(), ...(PC === 'leak-ipc' ? [{ leaked: SECOND_TOKEN }] : [])]
+        const returns = returnsHits(returned)
         result.c1Lifecycle = { failedAdd: failedAdd.ok, replaced: replaced.ok, listed: listed.ok, removed: removed.ok, left: parts.service.settings().connections.length }
-        result.c1Secrets = { afterFailedAdd, afterReplace, afterRemove }
-        result.verdict = { c1Lifecycle: result.c1Lifecycle, c1Secrets: { afterFailedAdd: grepClean(afterFailedAdd), afterReplace: grepClean(afterReplace), afterRemove: grepClean(afterRemove) } }
+        result.c1Secrets = { afterFailedAdd, afterReplace, afterRemove, returns }
+        result.verdict = { c1Lifecycle: result.c1Lifecycle, c1Secrets: { afterFailedAdd: grepClean(afterFailedAdd), afterReplace: grepClean(afterReplace), afterRemove: grepClean(afterRemove) }, c1Returns: returns.length === 0 }
       } else {
         // 재시작 = 새 프로세스 — 연결 파일·봉인에서 연결이 돌아오고, 카드 표시 칸(사이트·이메일)이 그대로, 조회가 된다.
         const connection = parts.service.settings().connections.find((entry) => entry.sourceId === 'jira')
@@ -225,7 +241,7 @@ describe.runIf(requested)('LIFE-605 창 없는 Jira 하네스', () => {
     const want = {
       first: { c1Card: true, c5Query: { requests: 1, hits: expect.any(Number) }, c5Fallback: { note: true }, write: true, c1Secrets: true },
       restart: { c1Restart: { found: true, account }, c1Card: true, c1Secrets: true },
-      lifecycle: { c1Lifecycle: { failedAdd: false, replaced: true, listed: true, removed: true, left: 0 }, c1Secrets: { afterFailedAdd: true, afterReplace: true, afterRemove: true } },
+      lifecycle: { c1Lifecycle: { failedAdd: false, replaced: true, listed: true, removed: true, left: 0 }, c1Secrets: { afterFailedAdd: true, afterReplace: true, afterRemove: true }, c1Returns: true },
     }
     expect(result.verdict).toEqual(PHASE === 'first' ? want.first : PHASE === 'restart' ? want.restart : want.lifecycle)
   }, 120_000)

@@ -4,6 +4,9 @@
 # 행: 문법(final.sh·before-after.sh) · 자격 grep 검사기 자기시험 · 창 없는 하네스 first·restart · 양성 대조(leak·search-twice) · 빈 PHASE 실패 · env 없음 = 건너뜀 · boundary-diff 기준 대조.
 set -u
 OUT=${1:A}; mkdir -p $OUT
+# 이전 실행의 ALL 을 「미완」 으로 먼저 덮는다(R3-F) — 중간에 멈춘 재실행이 옛 pass 를 남기지 않게. 끝의 판정만 이것을 바꾼다.
+print -r -- 'fail incomplete' > $OUT/ALL
+[[ -n ${L605_STOP_AFTER_MARK:-} ]] && exit 3 # 자기점검 전용(R3-F 양성 대조 — 표지만 쓰고 멈춘다)
 export PATH="$HOME/.nvm/versions/node/v24.14.1/bin:$PATH"
 export TMPDIR=/tmp/l605t; mkdir -p $TMPDIR
 cd "$(dirname $0)/../.."
@@ -19,6 +22,12 @@ print -r -- 'echo 함수 없음' > $OUT/no-fn-quick.sh
 L605_JUDGE_SRC=$OUT/no-fn-quick.sh run_grep pc-final-missing-fn 2 '판정 함수(record·run·run_grep)가' zsh scripts/l605/final.sh $OUT/pc-final-missing-fn
 L605_JUDGE_SRC=$OUT/no-fn-quick.sh run_grep pc-selfcheck-missing-fn 2 '판정 함수(record·run·run_grep)가' zsh scripts/l605/selfcheck.sh $OUT/pc-selfcheck-missing-fn
 
+# R3-F — 네 관문 스크립트 모두 첫머리에서 옛 ALL 을 「미완」 으로 덮는다 · 양성 대조: 그 줄을 뺀 사본은 옛 pass 를 남긴다(exit 1).
+for gate in final selfcheck before-after quick; do
+  run_grep st-stale-all-$gate 0 stale-all-ok zsh scripts/l605/stale-all-check.zsh scripts/l605/$gate.sh $OUT/stale-all-$gate
+done
+grep -vxF "print -r -- 'fail incomplete' > \$OUT/ALL" scripts/l605/final.sh > $OUT/final-unmarked.sh
+run_grep pc-stale-all-unmarked 1 stale-all-left zsh scripts/l605/stale-all-check.zsh $OUT/final-unmarked.sh $OUT/stale-all-unmarked
 run st-syntax-final 0 zsh -n scripts/l605/final.sh
 run st-syntax-before-after 0 zsh -n scripts/l605/before-after.sh
 run st-secret-grep 0 node scripts/l605/secret-grep.mjs --self-test
@@ -30,6 +39,10 @@ L605_ROOT=$WROOT L605_PHASE=lifecycle run_grep st-windowless-lifecycle 0 'Tests 
 L605_ROOT=$WROOT-life L605_PHASE=first run_grep st-pc-life-setup-first 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
 L605_ROOT=$WROOT-life L605_PHASE=restart run_grep st-pc-life-setup-restart 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
 L605_PC=leak L605_ROOT=$WROOT-life L605_PHASE=lifecycle run_grep st-pc-windowless-lifecycle-leak 1 '+     "afterReplace": false,' npx vitest run scripts/l605/windowless.test.tsx
+# R3-G 양성 대조 — 렌더러로 가는 반환값에 새 토큰을 끼우면 반환값 훑기가 잡아야 한다(디스크 grep 과 따로, 새 ROOT).
+L605_ROOT=$WROOT-ipc L605_PHASE=first run_grep st-pc-ipc-setup-first 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
+L605_ROOT=$WROOT-ipc L605_PHASE=restart run_grep st-pc-ipc-setup-restart 0 'Tests  1 passed' npx vitest run scripts/l605/windowless.test.tsx
+L605_PC=leak-ipc L605_ROOT=$WROOT-ipc L605_PHASE=lifecycle run_grep st-pc-windowless-lifecycle-leak-ipc 1 '+   "c1Returns": false,' npx vitest run scripts/l605/windowless.test.tsx
 cp $WROOT/windowless-*.json $OUT/ 2>/dev/null
 [[ $WROOT == /tmp/l605w-s* ]] && rm -rf $WROOT
 for pc in leak search-twice; do
@@ -42,7 +55,7 @@ L605_ROOT=$WROOT-nophase run_grep st-windowless-empty-phase 1 'L605_PHASE=first|
 [[ $WROOT == /tmp/l605w-s* ]] && rm -rf $WROOT-nophase
 run_grep st-windowless-skip 0 'Tests  1 skipped' npx vitest run scripts/l605/windowless.test.tsx
 run st-boundary-diff 0 sh scripts/l600/boundary-diff.sh af6d8d068
-[[ $WROOT == /tmp/l605w-* ]] && rm -rf $WROOT-life
-print -r -- "$WROOT $WROOT-life $WROOT-leak $WROOT-search-twice $WROOT-nophase" > $OUT/tmp-roots.txt
+[[ $WROOT == /tmp/l605w-* ]] && rm -rf $WROOT-life $WROOT-ipc
+print -r -- "$WROOT $WROOT-life $WROOT-ipc $WROOT-leak $WROOT-search-twice $WROOT-nophase" > $OUT/tmp-roots.txt
 python3 -I scripts/l605/scrub-raw.py $OUT > $OUT/scrub.txt
-judge_close 17
+judge_close 25

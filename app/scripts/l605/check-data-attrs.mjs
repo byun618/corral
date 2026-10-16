@@ -31,7 +31,7 @@ const text = new Map(files.map((file) => [file, stripComments(fs.readFileSync(fi
 const ATTRS = [
   'data-connection-add', 'data-connection-form', 'data-connection-account', 'data-connection-account-locked', 'data-connection-account-hint',
   'data-connection-token', 'data-connection-token-hint', 'data-connection-card-account',
-  'data-status-blocked', 'data-status-blocked-reason', 'data-issue-body-lock', 'data-search-note', 'data-search-hit', 'data-quick-create-unaccepted',
+  'data-status-blocked', 'data-status-blocked-reason', 'data-issue-body-lock', 'data-issue-body-save-note', 'data-search-note', 'data-search-hit', 'data-quick-create-unaccepted',
 ]
 /** 기준에 이미 있던 속성 — 이 작업이 값·자리를 더해 다시 쓴다. 나머지는 이 작업이 새로 켠다. */
 const REUSED = new Set(['data-connection-add', 'data-connection-form', 'data-connection-token', 'data-search-hit'])

@@ -2,7 +2,7 @@
 # LIFE-605 수정 1 R1-K — 리뷰어 r1 뮤테이션(claude-r1-raw/scratch/mut.py·mut2.py·mut3.py)을 이 worktree 코드에 옮겨 다시 돌린다.
 #   python3 -I scripts/l605/mut.py <OUT> [이름…]   (app/ 에서, **커밋된 깨끗한 트리에서만** — 끝나면 `git checkout -- <파일>` 로 되돌린다)
 # 행 = (이름, 파일, 바꿀 글, 바꾼 글). 리뷰어 원문 앵커가 수정 1 로 바뀐 행은 같은 뜻의 패치로 옮기고 이름에 `@moved` 를 붙였다.
-# 바꿀 글이 None = 코드가 사라져 해당 없음(사유 칸). `Y…` 행 = 리뷰 r2 의 34행(수정 2 R2-C). X10 은 R2-G 로 규칙이 되돌려져 반대 방향(대소문자 구분)으로 바꿨다. M01 은 원문 앵커가 머리 주석의 `redirect: 'manual'` 에 먼저 걸려 코드를 안 바꿨다(mut1 회차 생존) — 코드 줄로 옮겼다. `X…` 행 = 수정 1 의 새 규칙마다 하나씩 더한 뮤테이션.
+# 바꿀 글이 None = 코드가 사라져 해당 없음(사유 칸). `Y…` 행 = 리뷰 r2 의 34행(수정 2 R2-C). X10 은 R2-G 로 규칙이 되돌려져 반대 방향(대소문자 구분)으로 바꿨다. `Z…` 행 = 리뷰 r3 의 12행(수정 3). M01 은 원문 앵커가 머리 주석의 `redirect: 'manual'` 에 먼저 걸려 코드를 안 바꿨다(mut1 회차 생존) — 코드 줄로 옮겼다. `X…` 행 = 수정 1 의 새 규칙마다 하나씩 더한 뮤테이션.
 # 판정: vitest 가 실패(exit≠0)면 KILLED, 통과면 SURVIVED, 앵커가 없으면 NO-MATCH(실패로 센다 — 옮기기를 빠뜨린 것).
 # 결과: OUT/<이름>.txt(출력 끝 6000자) · OUT/RESULTS.jsonl · OUT/SUMMARY. 생존·NO-MATCH 가 0 이면 exit 0.
 import json, os, re, subprocess, sys
@@ -87,12 +87,12 @@ M = [('M01-redirect-follow@moved', 'src/main/work/jira-http.ts', "JSON.stringify
  ('X23-R2I-curly-quotes-sent', 'src/main/work/jira-source.ts', '  if (/[\\u2018\\u2019\\u201c\\u201d]/.test(query)) return null\n', ''),
  ('X24-R2D-empty-paragraph-kept', 'src/main/work/adf.ts', "    if (node.type === 'paragraph' && content === undefined && Object.keys(attrs).length === 0 && (node.marks ?? []).length === 0) continue\n", ''),
  ('X25-R2D-hardbreak-text-attr', 'src/main/work/adf.ts', " && !(node.type === 'hardBreak' && key === 'text' && value === '\\n')", ''),
- ('X26-R2D-lock-no-place', 'src/main/work/adf.ts', 'unsupported: [at === -1 ? ROUNDTRIP : `${ROUNDTRIP}:${at + 1}:${doc.content[at]?.type ?? \'\'}`]', 'unsupported: [ROUNDTRIP]'),
+ ('X26-R2D-lock-no-place@moved', 'src/main/work/adf.ts', 'unsupported: [at === -1 ? ROUNDTRIP : `${ROUNDTRIP}:${at + 1}:${shownBlocks[at]?.type ?? \'\'}`]', 'unsupported: [ROUNDTRIP]'),
  ('X27-R2J-note-key-connection', 'src/renderer/src/components/TasksPage.tsx', 'key={`${note.connectionId}:${note.text}`}', 'key={note.connectionId}'),
  # 리뷰 r2 리뷰어 자체 뮤테이션 34행(raw/review/claude-r2-raw/mut-r2-own.py) 편입 — R2-C.
 
  ('Y01-errortext-limit', 'src/main/work/jira-http.ts', 'flat.length > 200 ? `${flat.slice(0, 199)}…`', 'flat.length > 2000 ? `${flat.slice(0, 1999)}…`'),
- ('Y02-adfview-net-off', 'src/main/work/adf.ts', 'if (sameAdf({ a: markdownToAdf(shown.markdown), b: doc })) return shown', 'if (true) return shown'),
+ ('Y02-adfview-net-off@moved', 'src/main/work/adf.ts', '  if (sameAdf({ a: back, b: doc })) {', '  if (true) {'),
  ('Y03-canonical-drop-text-marks', 'src/main/work/adf.ts', ".map(canonicalMark).sort((x, y) => JSON.stringify(x).localeCompare(JSON.stringify(y)))", ".map(canonicalMark).map(() => ({ type: 'x' })).sort((x, y) => JSON.stringify(x).localeCompare(JSON.stringify(y)))"),
  ('Y04-canonicalMark-drop-attrs', 'src/main/work/adf.ts', "  const attrs = Object.fromEntries(Object.entries(mark.attrs ?? {}).filter(([, value]) => value !== null && value !== undefined))\n  return Object.keys(attrs).length === 0 ? { type: mark.type } : { type: mark.type, attrs }", "  return { type: mark.type }"),
  ('Y05-canonical-drop-node-attrs', 'src/main/work/adf.ts', "const attrs = Object.fromEntries(Object.entries(node.attrs ?? {}).filter(([key, value]) => key !== 'localId'", "const attrs = Object.fromEntries(Object.entries(node.attrs ?? {}).filter(([key, value]) => key !== 'localId' && key !== 'level' && key !== 'language'"),
@@ -124,7 +124,29 @@ M = [('M01-redirect-follow@moved', 'src/main/work/jira-http.ts', "JSON.stringify
  ('Y31-split-orderby-case', 'src/main/work/jira-source.ts', "/^order\\s+by\\b/i.exec", "/^order\\s+by\\b/.exec"),
  ('Y32-quote-backslash', 'src/main/work/jira-source.ts', "if (char === '\\\\') index += 1\n      else if (char === quote) quote = null", "if (char === quote) quote = null"),
  ('Y33-single-quote-track', 'src/main/work/jira-source.ts', 'if (char === \'"\' || char === "\'") quote = char', 'if (char === \'"\') quote = char'),
- ('Y34-dueFromJira-tz', 'src/main/work/jira-source.ts', 'new Date(year, month - 1, day, 23, 59, 59).toISOString()', 'new Date(Date.UTC(year, month - 1, day, 23, 59, 59)).toISOString()')]
+ ('Y34-dueFromJira-tz', 'src/main/work/jira-source.ts', 'new Date(year, month - 1, day, 23, 59, 59).toISOString()', 'new Date(Date.UTC(year, month - 1, day, 23, 59, 59)).toISOString()'), # 리뷰 r3 리뷰어 자체 뮤테이션 12행(raw/review/claude-r3-raw/mut-r3-own.py) 편입 — 앵커가 수정 3 으로 바뀐 행은 @moved.
+ ('Z01-linkTypes-cache-kept@moved', 'src/main/work/jira-source.ts', '    this.linkTypes = null\n    this.metaSince = this.now()\n', '    this.metaSince = this.now()\n'),
+ ('Z02-writeBlocks-keeps-empty', 'src/main/work/adf.ts', ".filter((text, index) => !(text === '' && nodes[index]?.type === 'paragraph'))", ''),
+ ('Z03-canonical-empty-content-differs', 'src/main/work/adf.ts', "const content = inner.length === 0 ? undefined : inner", "const content = node.content === undefined ? undefined : inner"),
+ ('Z04-lock-place-offbyone@moved', 'src/main/work/adf.ts', '`${ROUNDTRIP}:${at + 1}:${shownBlocks[at]?.type', '`${ROUNDTRIP}:${at}:${shownBlocks[at]?.type'),
+ ('Z05-curly-only-left-double', 'src/main/work/jira-source.ts', '[\\u2018\\u2019\\u201c\\u201d]', '[\\u201c]'),
+ ('Z06-afterWrite-addRelation-no-prefix', 'src/main/work/jira-source.ts', "return this.afterWrite({ prefix: WRITTEN_PREFIX, work: async () => {\n      const after = await this.fetchIssue(itemId)", "return this.afterWrite({ prefix: '', work: async () => {\n      const after = await this.fetchIssue(itemId)"),
+ ('Z07-afterWrite-create-uses-written-prefix', 'src/main/work/jira-source.ts', 'return this.afterWrite({ prefix: MADE_PREFIX, work: async () => {\n      const created', 'return this.afterWrite({ prefix: WRITTEN_PREFIX, work: async () => {\n      const created'),
+ ('Z08-canonical-paragraph-with-marks-dropped', 'src/main/work/adf.ts', "&& (node.marks ?? []).length === 0) continue", ") continue"),
+ ('Z09-hardbreak-text-attr-any', 'src/main/work/adf.ts', "key === 'text' && value === '\\n')))", "key === 'text')))"),
+ ('Z10-label-roundtrip-regex', 'src/main/work/adf.ts', '(\\\\d+):(.*)$`).exec(type)', '(\\\\d+):(.*)$`).exec("")'),
+ ('Z11-statuses-cache-key', 'src/main/work/jira-source.ts', 'this.statusCache.set(spaceKey, info)', 'this.statusCache.set("x", info)'),
+ ('Z12-visible-sort-off(test oracle)', 'src/main/work/adf-editor.test.ts', ".map((mark) => (mark.type === 'link' ? `link(${String(mark.attrs?.href)})` : mark.type)).sort().join('+')", ".map((mark) => (mark.type === 'link' ? 'link' : mark.type)).sort().join('+')"),
+ # 수정 3 의 새 규칙마다 하나(R3-A·R3-B·R3-D·R3-E).
+ ('X28-R3A-item-first-paragraph-off', 'src/main/work/adf.ts', "first === undefined || (first.type !== 'paragraph' && first.type !== 'codeBlock') ? [{ type: 'paragraph', content: [] }, ...blocks] : blocks }", "blocks.length === 0 ? [{ type: 'paragraph', content: [] }] : blocks }"),
+ ('X29-R3A-empty-quote-kept', 'src/main/work/adf.ts', "content: inner.length === 0 ? [{ type: 'paragraph', content: [] }] : inner })", 'content: inner })'),
+ ('X30-R3A-code-keeps-marks', 'src/main/work/adf.ts', "marks: [...marks.filter((mark) => mark.type === 'link').map((mark) => ({ ...mark })), { type: 'code' }] })", "marks: [...marks.map((mark) => ({ ...mark })), { type: 'code' }] })"),
+ ('X31-R3A-rules-lock-off', 'src/main/work/adf.ts', 'return adfRuleProblem(back) === null ? shown : { markdown: shown.markdown, unsupported: [RULES] }', 'return shown'),
+ ('X32-R3A-write-guard-off', 'src/main/work/jira-source.ts', 'return problem === null ? { ok: true, doc } : { ok: false, message: `보내지 않았습니다 — ${problem}` }', 'return { ok: true, doc }'),
+ ('X33-R3A-quote-allows-heading', 'src/main/work/adf.ts', "const QUOTE_CHILDREN = new Set(['paragraph', 'bulletList', 'orderedList', 'codeBlock'])", "const QUOTE_CHILDREN = new Set(['paragraph', 'bulletList', 'orderedList', 'codeBlock', 'heading'])"),
+ ('X34-R3B-ttl-off', 'src/main/work/jira-source.ts', '    if (this.now() - this.metaSince >= META_CACHE_MS) this.clearMeta()\n', ''),
+ ('X35-R3D-number-counts-empty', 'src/main/work/adf.ts', "const shownBlocks = doc.content.filter((block) => !(block.type === 'paragraph' && adfToMarkdown({ type: 'doc', version: 1, content: [block] }).markdown === ''))", 'const shownBlocks = doc.content'),
+ ('X36-R3E-backslash-sent', 'src/main/work/jira-source.ts', "    else if (char === '\\\\') return null\n", '')]
 
 def main():
     out = os.path.abspath(sys.argv[1])

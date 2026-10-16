@@ -30,7 +30,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RepoRow } from '../../../shared/types.js'
-import type { WorkCall, WorkError, WorkItem, WorkResolutionChoice, WorkResponse, WorkResult, WorkSettingsState, WorkStatus } from '../../../shared/work.js'
+import { WORK_SEARCH_SPACES_MAX, type WorkCall, type WorkError, type WorkItem, type WorkResolutionChoice, type WorkResponse, type WorkResult, type WorkSettingsState, type WorkStatus } from '../../../shared/work.js'
 import {
   DEFAULT_TASKS_PREFS,
   LatestGate,
@@ -226,6 +226,19 @@ function queryPatternOf({ settings, connectionId }: { settings: WorkSettingsStat
   const connection = settings.connections.find((entry) => entry.id === connectionId)
   if (connection === undefined || connection.capabilities?.querySearch.state !== 'on') return null
   return settings.sources.find((source) => source.id === connection.sourceId)?.queryPattern ?? null
+}
+
+/** 질의 검색을 보내기 전 입력이 멈춰야 하는 시간(R1-D). */
+export const SEARCH_DEBOUNCE_MS = 300
+
+/** 질의 검색 스페이스를 계약 상한(`WORK_SEARCH_SPACES_MAX`)씩 나눈다(R1-D) — 넘으면 출처가 invalid_request 로 거절한다. 다른 호출은 그대로. */
+export function splitSearchCalls(calls: { connectionId: string; call: WorkCall }[]): { connectionId: string; call: WorkCall }[] {
+  return calls.flatMap(({ connectionId, call }) => {
+    if (call.op !== 'searchItems') return [{ connectionId, call }]
+    const out: { connectionId: string; call: WorkCall }[] = []
+    for (let index = 0; index < call.spaceKeys.length; index += WORK_SEARCH_SPACES_MAX) out.push({ connectionId, call: { ...call, spaceKeys: call.spaceKeys.slice(index, index + WORK_SEARCH_SPACES_MAX) } })
+    return out
+  })
 }
 
 /** 검색어가 출처 질의 모양인가 — 모양 글이 잘못된 정규식이면 질의로 보지 않는다(글로 거른다). */
@@ -609,34 +622,45 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       return []
     })
     if (candidates.length === 0) { gate.invalidate('find'); finding.current = false; setSearch(NO_SEARCH); return }
-    const token = gate.issue('find')
-    finding.current = true
-    void Promise.all(candidates.map(({ connectionId, call }) =>
-      request({ requestId: `${token}/${connectionId}`, connectionId, call }).then((response) => ({ connectionId, response })),
-    )).then((answers) => {
-      if (!gate.accepts({ key: 'find', requestId: token })) return
-      finding.current = false
-      // 조회 오류는 「결과 없음」 이 아니다 — 따로 모아 배너로(R1-K).
-      setSearch({
-        query,
-        hits: answers.flatMap(({ connectionId, response }): KeySearch['hits'] => {
-          if (!response.ok) return []
-          if (response.result.op === 'findByKey') return response.result.item === null ? [] : [{ connectionId, item: response.result.item, via: 'key' }]
-          if (response.result.op === 'searchItems') return response.result.items.map((item) => ({ connectionId, item, via: 'query' }))
-          return []
-        }),
-        errors: answers.flatMap(({ connectionId, response }) => {
-          if (!response.ok) return [{ connectionId, error: response.error }]
-          return response.result.op === 'findByKey' || response.result.op === 'searchItems' ? [] : [{ connectionId, error: { kind: 'invalid_response', message: '출처 응답 모양이 다릅니다.', status: null } }]
-        }),
-        notes: answers.flatMap(({ connectionId, response }) => {
-          if (!response.ok || response.result.op !== 'searchItems') return []
-          const truncated = response.result.truncated ? '결과가 많아 앞부분만 보입니다.' : null
-          const text = [response.result.note, truncated].filter((part) => part !== null).join(' ')
-          return text.length === 0 ? [] : [{ connectionId, text }]
-        }),
+    // 질의 검색은 입력이 멈춘 뒤에만 보낸다(R1-D) — 글자마다 원격 JQL 을 보내지 않는다. 늦게 온 옛 응답은 gate 가 버린다.
+    // 스페이스가 계약 상한(50)을 넘으면 50개씩 나눠 보내고 결과를 합친다.
+    const calls = splitSearchCalls(candidates)
+    const queried = calls.some(({ call }) => call.op === 'searchItems')
+    gate.invalidate('find')
+    finding.current = false
+    const send = (): void => {
+      const token = gate.issue('find')
+      finding.current = true
+      void Promise.all(calls.map(({ connectionId, call }, index) =>
+        request({ requestId: `${token}/${connectionId}/${index}`, connectionId, call }).then((response) => ({ connectionId, response })),
+      )).then((answers) => {
+        if (!gate.accepts({ key: 'find', requestId: token })) return
+        finding.current = false
+        // 조회 오류는 「결과 없음」 이 아니다 — 따로 모아 배너로(R1-K).
+        setSearch({
+          query,
+          hits: answers.flatMap(({ connectionId, response }): KeySearch['hits'] => {
+            if (!response.ok) return []
+            if (response.result.op === 'findByKey') return response.result.item === null ? [] : [{ connectionId, item: response.result.item, via: 'key' }]
+            if (response.result.op === 'searchItems') return response.result.items.map((item) => ({ connectionId, item, via: 'query' }))
+            return []
+          }),
+          errors: answers.flatMap(({ connectionId, response }) => {
+            if (!response.ok) return [{ connectionId, error: response.error }]
+            return response.result.op === 'findByKey' || response.result.op === 'searchItems' ? [] : [{ connectionId, error: { kind: 'invalid_response', message: '출처 응답 모양이 다릅니다.', status: null } }]
+          }),
+          notes: answers.flatMap(({ connectionId, response }) => {
+            if (!response.ok || response.result.op !== 'searchItems') return []
+            const truncated = response.result.truncated ? '결과가 많아 앞부분만 보입니다.' : null
+            const text = [response.result.note, truncated].filter((part) => part !== null).join(' ')
+            return text.length === 0 ? [] : [{ connectionId, text }]
+          }).filter((note, index, all) => all.findIndex((other) => other.connectionId === note.connectionId && other.text === note.text) === index),
+        })
       })
-    })
+    }
+    if (!queried) { send(); return }
+    const timer = setTimeout(send, SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
   }, [open, query, patterns, gate, searchRound])
   const spaceNameOf = useCallback(({ connectionId, spaceKey }: { connectionId: string; spaceKey: string }): string =>
     settings?.connections.find((connection) => connection.id === connectionId)?.spaces?.find((entry) => entry.key === spaceKey)?.name ?? spaceKey, [settings])

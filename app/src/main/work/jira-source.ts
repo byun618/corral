@@ -86,7 +86,8 @@ export const JIRA_DESCRIPTOR: WorkSourceDescriptor = {
   tokenHint: 'id.atlassian.com › 보안 › API 토큰에서 만든 스코프 없는 토큰. 기본 만료 1년.',
   tokenPrefix: null,
   keyPattern: '[A-Z][A-Z0-9_]+-\\d+',
-  queryPattern: '[=~<>]',
+  // 비교 연산자 · `in (` · `is [not] empty|null` · `order by` (R1-D — `project in (A, B)`·`assignee is EMPTY` 도 질의로). 글자만 있는 검색은 글로.
+  queryPattern: '[=~<>]|\\b(?:not\\s+)?in\\s*\\(|\\bis\\s+(?:not\\s+)?(?:empty|null)\\b|\\border\\s+by\\b',
 }
 
 const ORDER_OFF_NO_SOFTWARE = '이 사이트에는 Jira Software(보드·Rank)가 없어 순서를 바꿀 수 없습니다.'

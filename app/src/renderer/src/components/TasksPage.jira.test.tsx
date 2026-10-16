@@ -5,7 +5,7 @@
 import { request as httpRequest } from 'node:http'
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkCall, WorkRequest, WorkSettingsState } from '../../../shared/work.js'
 import { MemoryActivity } from '../../../main/work/activity-store.js'
 import { JiraRestFixture } from '../../../main/work/jira-rest-fixture.js'
@@ -14,6 +14,7 @@ import { WorkService } from '../../../main/work/service.js'
 import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
 import { FAKE_JIRA_EMAIL, FAKE_JIRA_TOKEN, FakeCipher, JIRA_ACCOUNT, MemoryStore } from '../../../main/work/test-kit.js'
+import { SEARCH_DEBOUNCE_MS, looksLikeQuery, splitSearchCalls } from '../hooks/useTasksPage.js'
 import { TasksPage } from './TasksPage.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
@@ -28,6 +29,7 @@ beforeEach(() => {
   root = createRoot(host)
 })
 afterEach(async () => {
+  vi.restoreAllMocks()
   act(() => root.unmount())
   host.remove()
   await fixture?.stop()
@@ -66,9 +68,10 @@ const settle = async (rounds = 10): Promise<void> => {
   for (let index = 0; index < rounds; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)) })
 }
 
-async function rig({ spaceKey = 'CORE' }: { spaceKey?: string } = {}): Promise<Rig> {
+async function rig({ spaceKey = 'CORE', seed }: { spaceKey?: string; seed?: (server: JiraRestFixture) => void } = {}): Promise<Rig> {
   const server = new JiraRestFixture()
   fixture = server
+  seed?.(server)
   server.allow({ email: FAKE_JIRA_EMAIL, token: FAKE_JIRA_TOKEN })
   const url = await server.start()
   let seq = 0
@@ -105,6 +108,20 @@ function click(selector: string): void {
   const target = el(selector)
   act(() => { target.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
 }
+function mouse(target: EventTarget, name: string, x = 10, y = 10): void {
+  act(() => { target.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y })) })
+}
+/** 끌기 시작 — 손잡이 mousedown → 문턱 넘는 move(놓을 영역은 elementFromPoint). 놓기는 부른 쪽이 mouseup. */
+function startDrag({ handle, zone }: { handle: string; zone: string }): Element {
+  const target = q(`[data-drop-zone="${zone}"]`)
+  if (target === null) throw new Error(`끌기 대상 없음 ${zone}`)
+  vi.spyOn(document, 'elementFromPoint').mockReturnValue(target)
+  mouse(el(handle), 'mousedown')
+  mouse(document, 'mousemove', 50, 500)
+  return target
+}
+/** 질의 검색은 입력이 멈춘 뒤에 간다(R1-D) — 디바운스를 넘겨 기다린다. */
+const settleQuery = (): Promise<void> => settle(Math.ceil(SEARCH_DEBOUNCE_MS / 5) + 20)
 function typeSearch(value: string): void {
   const input = el('[data-tasks-search]')
   if (!(input instanceof HTMLInputElement)) throw new Error('검색 칸')
@@ -125,17 +142,17 @@ describe('LIFE-605 작업 페이지 × Jira fixture', () => {
   it('질의 검색 — JQL 모양이면 searchItems 로 찾아 「질의」 결과 · 거부되면 텍스트로 찾고 사유 줄(data-search-note)', async () => {
     const r = await rig()
     typeSearch('summary ~ "영수증"')
-    await settle()
+    await settleQuery()
     expect(r.calls.some((call) => call.op === 'searchItems' && call.query === 'summary ~ "영수증"' && call.spaceKeys.join() === 'CORE')).toBe(true)
     expect(el('[data-search-hit="query"]').closest('[data-issue-row]')?.getAttribute('data-issue-row')).toBe('CORE-4')
     expect(q('[data-search-note]')).toBeNull()
     typeSearch('랜딩 ==')
-    await settle()
+    await settleQuery()
     expect(el('[data-search-note]').textContent).toContain('텍스트')
     // 키 모양은 전과 같이 키 찾기(질의로 보내지 않는다).
     const before = r.calls.filter((call) => call.op === 'searchItems').length
     typeSearch('CORE-2')
-    await settle()
+    await settleQuery()
     expect(r.calls.some((call) => call.op === 'findByKey' && call.key === 'CORE-2')).toBe(true)
     expect(r.calls.filter((call) => call.op === 'searchItems')).toHaveLength(before)
   })
@@ -177,5 +194,61 @@ describe('LIFE-605 작업 페이지 × Jira fixture', () => {
     const doneRows = [...document.querySelectorAll('[data-status-row="10003"]')]
     expect(doneRows).toHaveLength(1)
     expect(doneRows[0]?.getAttribute('data-status-resolution')).toBe('')
+  })
+
+  it('R1-D 질의 검색 디바운스 — 이어 치는 동안은 보내지 않고, 멈춘 뒤 마지막 검색어 하나만 보낸다', async () => {
+    const r = await rig()
+    for (const value of ['status =', 'status = D', 'status = Do', 'status = Done']) {
+      typeSearch(value)
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    }
+    expect(r.calls.filter((call) => call.op === 'searchItems')).toHaveLength(0)
+    await settleQuery()
+    const sent = r.calls.filter((call) => call.op === 'searchItems')
+    expect(sent.map((call) => call.op === 'searchItems' ? call.query : '')).toEqual(['status = Done'])
+  })
+
+  it('R1-D 질의 모양 — `in (`·`is EMPTY`·`order by` 도 질의, 글자만은 글 · 스페이스 50 초과는 50개씩 나눠 보낸다', () => {
+    const pattern = jiraSourceEntry({ baseUrlOf: () => 'http://127.0.0.1:1' }).descriptor.queryPattern
+    for (const query of ['project in (CORE, WEB)', 'assignee is EMPTY', 'resolution IS NOT null', 'text ~ x order by created', 'status = Done']) expect(looksLikeQuery({ query, pattern })).toBe(true)
+    for (const query of ['this is broken', 'login in progress', '영수증 정리', 'empty inbox']) expect(looksLikeQuery({ query, pattern })).toBe(false)
+    const keys = Array.from({ length: 120 }, (_, index) => `P${index}`)
+    const split = splitSearchCalls([{ connectionId: 'c1', call: { op: 'searchItems', spaceKeys: keys, query: 'a = b' } }, { connectionId: 'c2', call: { op: 'findByKey', key: 'A-1' } }])
+    expect(split.map(({ call }) => call.op === 'searchItems' ? call.spaceKeys.length : call.op)).toEqual([50, 50, 20, 'findByKey'])
+    expect(split.flatMap(({ call }) => call.op === 'searchItems' ? call.spaceKeys : [])).toEqual(keys)
+  })
+
+  it('R1-K 보드 끌기 — 보드 없는 스페이스(WEB)는 같은 칸 순서가 흐림 + 이유, 놓아도 rank 0', async () => {
+    const r = await rig({
+      spaceKey: 'WEB',
+      seed: (server) => {
+        const web = server.issue('20101')
+        if (web === null) throw new Error('seed')
+        server.issues.push({ ...web, id: '20102', key: 'WEB-2', summary: '랜딩 두 번째', rank: 2 })
+      },
+    })
+    const column = el('[data-issue-card="WEB-1"]').closest('[data-board-column]')
+    const zone = column?.querySelector('[data-drop-zone]')?.getAttribute('data-drop-zone')
+    if (column === null || column === undefined || zone === null || zone === undefined) throw new Error('칸')
+    startDrag({ handle: '[data-issue-card="WEB-1"]', zone })
+    await settle()
+    expect(column.classList.contains('drag-blocked')).toBe(true)
+    expect(column.querySelector('[data-column-reason]')?.textContent).toContain('순서를 바꿀 수 없습니다')
+    mouse(document, 'mouseup', 50, 500)
+    await settle()
+    expect(r.calls.filter((call) => call.op === 'reorder')).toHaveLength(0)
+    expect(r.fixture.requests.filter((request) => request.path === '/rest/agile/1.0/issue/rank')).toHaveLength(0)
+  })
+
+  it('R1-K 보드 끌기 양성 대조 — 보드 있는 CORE 는 같은 칸 순서가 열려 있다', async () => {
+    await rig()
+    const column = el('[data-issue-card="CORE-1"]').closest('[data-board-column]')
+    const zone = column?.querySelector('[data-drop-zone]')?.getAttribute('data-drop-zone')
+    if (column === null || column === undefined || zone === null || zone === undefined) throw new Error('칸')
+    startDrag({ handle: '[data-issue-card="CORE-1"]', zone })
+    await settle()
+    expect(column.classList.contains('drag-blocked')).toBe(false)
+    mouse(document, 'mouseup', 50, 500)
+    await settle()
   })
 })

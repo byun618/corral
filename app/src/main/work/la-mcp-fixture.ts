@@ -164,6 +164,11 @@ export class LaMcpFixture {
   corrupt: FixtureCorrupt | null = null
   echo: FixtureEcho | null = null
   holdStream = false
+  /**
+   * `false` = 조건부 수정 이전 LA(LIFE-607 전) — `ifVersion` 을 받아도 견주지 않는다(판은 그대로 싣는다). 판과 무관한 순서 가드 시험(LIFE-623 r7)이
+   * 켜짐 전 서버 모양에서 그대로 돌게 할 때만 쓴다 — 켜진 LA 의 계약은 기본값(true)이 본다.
+   */
+  checksVersion = true
   /** 서버가 전진 전이를 「뒤로」 로 읽는 경우(순서 해석 갈림, LIFE-622 C2 ②) — 전이는 no-op(판 소비 없음)으로 답하고 corral 은 `issue_update(statusId)` 로 이어 간다. */
   transitionNoop = false
   scopeStyle: 'sdk' | 'http' = 'sdk'
@@ -401,7 +406,7 @@ export class LaMcpFixture {
    * isError text = `JSON.stringify(body, null, 2)`, current = 수정 응답 모양. 닮은 다른 오류(`conflict-*` 깨기)는 판독이 오분류하지 않는지 본다.
    */
   private stale({ issue, args }: { issue: FixtureIssue; args: Record<string, unknown> }): { isError: boolean; text: string } | null {
-    if (args.ifVersion === undefined) return null
+    if (args.ifVersion === undefined || !this.checksVersion) return null
     if (typeof args.ifVersion !== 'string') return { isError: true, text: JSON.stringify({ code: 'BAD_REQUEST', message: 'ifVersion' }) }
     if (args.ifVersion === String(issue.version)) return null
     const body: Record<string, unknown> = {

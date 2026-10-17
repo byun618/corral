@@ -15,6 +15,13 @@
 //   원복하지도 않는다(늦게 온 그 응답은 버린다).
 // - 출처 요청은 `ask` 하나로 — preload Promise 의 reject 는 `network` 실패 응답으로 바꾼다(R3-E). 30초 안에 답이 없으면 **확정 실패가 아니라 「늦음」** 이다(R4-A):
 //   읽기는 시간 초과 오류(다시 시도)로, 쓰기는 「확인 지연」 — 잠금만 풀고 낙관적 값은 둔 채, 원래 요청이 끝나면(성공·실패 무관) 서버를 다시 읽어 맞춘다.
+// - **카드 하나의 정합화 단위(LIFE-622 R5-A)** — 늦음으로 잠금이 풀린 뒤 같은 카드에 새 쓰기가 나가면, 답이 안 온 그 카드의 쓰기들(보드·상세)을 한 단위로 본다:
+//   ① 재조회 위에는 그 카드·그 갈래(연산 — 상태·배치·순서…)의 **가장 나중에 시작한** 미확인 쓰기만 다시 적용한다 — 같은 갈래에 뒤에 나간 쓰기가 있으면
+//   옛 의도는 버린다(답이 어떤 순서로 와도 옛 의도가 새 의도를 덮지 않는다) ② 단위의 마지막 답이 오면 서버를 다시 읽어 맞춘다(응답 순서 ≠ 서버 적용 순서라
+//   마지막 응답 값을 믿지 않는다).
+// - **늦은 성공(R5-B · R4-B)** — 30초를 넘겨 성공한 상태·배치 쓰기도 되돌리기를 주고, 열린 상세에는 확정 경로(`settledWrite` — LIFE-623 `sent` 순서 가드·미확인 막힘)로
+//   서버 값을 보낸다. 되돌리기는 그 카드·그 갈래·그 쓰기에 묶인다: 같은 카드의 같은 갈래에 그 뒤 쓰기가 시작됐으면(진행 중이든 끝났든) 옛 쓰기의 되돌리기는
+//   내지 않고, 이미 낸 것은 눌러도 보내지 않는다 — 되돌리기가 후행 쓰기를 덮는 길이 없다. 다른 갈래(상태 뒤 배치·코멘트)는 덮지 않으므로 그대로(R4-E). 세대가 바뀌면 없다.
 // - 스페이스 목록 조회(연결별 · 세대별)는 시도·실패를 보존한다 — 실패하면 「다시 시도」 까지 다시 보내지 않는다(R1-C).
 // - 스페이스 선택(R1-D): 첫 선택(이 실행에서 처음 열 때 — 레포 기본 → 마지막 → 첫 스페이스, 목록을 받는 중이면 기다림) · 재열기는 그대로 ·
 //   설정이 바뀌어 고른 스페이스가 없어지면(숨김·연결 제거) 다시 고른다.
@@ -188,6 +195,11 @@ function describe({ item, intent, statuses }: { item: WorkItem; intent: DragInte
   }
 }
 
+/** 정합화·되돌리기 수명의 갈래(LIFE-622) — 카드 하나 안에서 연산마다. */
+function laneOf({ uid, op }: { uid: string; op: WorkCall['op'] }): string {
+  return `${uid}|${op}`
+}
+
 /** 작업 하나의 상태·분류·배치를 그 값으로(순서 값은 둔다). */
 function setFields({ item }: { item: WorkItem }): (items: WorkItem[]) => WorkItem[] {
   return (items) => items.map((entry) => (entry.id === item.id ? { ...entry, statusKey: item.statusKey, category: item.category, placement: item.placement } : entry))
@@ -302,6 +314,13 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
   const lagging = useRef(new Set<Override>())
   /** 다시 적용할 기록이 없는 확정(순서 성공·늦은 답) 수 — 목록 요청 뒤 이 값이 바뀌었으면 그 응답은 버리고 다시 읽는다(R4-C). */
   const settles = useRef(0)
+  /** 정합화 단위(LIFE-622 R5-A) — 카드(uid)마다 답이 안 온 쓰기(보드·상세, 잠금 중·늦음). */
+  const outstanding = useRef(new Map<string, Set<Override>>())
+  /** 단위 안에서 쓰기가 겹친 카드 — 마지막 답이 오면 서버를 다시 읽는다. */
+  const overlapped = useRef(new Set<string>())
+  /** 카드·갈래(`uid|연산`)마다 가장 나중에 시작한 쓰기 — 재조회 재적용·되돌리기 수명이 이것과 견준다(R5-A·B). */
+  const latestWrite = useRef(new Map<string, Override>())
+  const writeLane = useRef(new WeakMap<Override, string>())
   /** 쓰기 실패·완료 분류 변경 뒤 서버 재조회 — `reload` 는 아래에서 정의된다. */
   const reloadRef = useRef<(options: { quiet: boolean }) => Promise<string[]>>(async () => [])
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set())
@@ -439,6 +458,10 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     const stale = [...pendingWrites.current].filter(([, entry]) => entry.generation !== currentGeneration(entry.connectionId))
     overrides.current = overrides.current.filter((entry) => entry.generation === currentGeneration(entry.connectionId))
     for (const entry of lagging.current) if (entry.generation !== currentGeneration(entry.connectionId)) lagging.current.delete(entry)
+    for (const [uid, open] of outstanding.current) {
+      for (const entry of open) if (entry.generation !== currentGeneration(entry.connectionId)) open.delete(entry)
+      if (open.size === 0) { outstanding.current.delete(uid); overlapped.current.delete(uid) }
+    }
     if (stale.length === 0) return
     for (const [uid] of stale) pendingWrites.current.delete(uid)
     setBusy(new Set(pendingWrites.current.keys()))
@@ -476,6 +499,36 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       }))
     }))
   }, [currentGeneration])
+
+  /** 그 카드의 가장 나중 쓰기인가(카드에 묶이지 않은 변경은 늘 참). */
+  const isLatest = (entry: Override): boolean => {
+    const lane = writeLane.current.get(entry)
+    return lane === undefined || latestWrite.current.get(lane) === entry
+  }
+  /** 쓰기 시작 — 정합화 단위에 넣는다. 이미 답이 안 온 쓰기가 있으면 겹침으로 적는다. 갈래 = 연산 이름. */
+  const beginWrite = useCallback(({ uid, written, op }: { uid: string; written: Override; op: WorkCall['op'] }): void => {
+    const open = outstanding.current.get(uid) ?? new Set<Override>()
+    if (open.size > 0) overlapped.current.add(uid)
+    open.add(written)
+    outstanding.current.set(uid, open)
+    latestWrite.current.set(laneOf({ uid, op }), written)
+    writeLane.current.set(written, laneOf({ uid, op }))
+  }, [])
+  /** 쓰기의 답(즉시·늦게·버림) — 단위에서 뺀다. 단위의 마지막 답이고 겹쳤으면 true(부르는 쪽이 서버를 다시 읽는다). */
+  const endWrite = useCallback(({ uid, written }: { uid: string; written: Override }): boolean => {
+    const open = outstanding.current.get(uid)
+    open?.delete(written)
+    if (open !== undefined && open.size > 0) return false
+    outstanding.current.delete(uid)
+    return overlapped.current.delete(uid)
+  }, [])
+  /** 단위 정합화 — 서버 정본으로(목록·작업 중·키 조회). 이미 나간 목록 요청은 그 전 값일 수 있어 버린다(R4-C). */
+  const reconcileUnit = useCallback((): void => {
+    settles.current += 1
+    void reloadRef.current({ quiet: true })
+    setWorkingRound((value) => value + 1)
+    setSearchRound((value) => value + 1)
+  }, [])
 
   const patch = useCallback(({ connectionId, spaceKey, apply }: { connectionId: string; spaceKey: string; apply: (items: WorkItem[]) => WorkItem[] }): Override => {
     writeSeq.current += 1
@@ -538,7 +591,10 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     const later = overrides.current.filter((entry) => entry.seq > startSeq)
     overrides.current = later
     // 다른 세대의 변경은 새 자료에 다시 적용하지 않는다(R3-D).
-    const unsettled = [...pendingWrites.current.values(), ...lagging.current].filter((entry) => entry.seq <= startSeq).sort((a, b) => a.seq - b.seq)
+    // 같은 카드에 뒤에 시작한 쓰기가 있으면 옛 미확인 의도는 다시 적용하지 않는다(LIFE-622 R5-A) — 그 카드의 의도는 마지막 쓰기 하나다.
+    const unsettled = [...pendingWrites.current.values(), ...lagging.current]
+      .filter((entry) => entry.seq <= startSeq && isLatest(entry))
+      .sort((a, b) => a.seq - b.seq)
     const replay = [...unsettled, ...later]
       .filter((entry) => entry.generation === currentGeneration(entry.connectionId))
     if (!same) pagesRef.current = new Map()
@@ -764,6 +820,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     const apply = (items: WorkItem[]): WorkItem[] => applyIntent({ items, itemId: row.item.id, intent, statuses })
     const written = patch({ connectionId, spaceKey, apply })
     pendingWrites.current.set(uid, written)
+    beginWrite({ uid, written, op: call.op })
+    const lane = laneOf({ uid, op: call.op })
     if (intent.kind === 'reorder') reorders.current.add(written)
     setBusy(new Set(pendingWrites.current.keys()))
     setStartedWrite({ uid, seq: written.seq })
@@ -777,26 +835,73 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       if (pendingWrites.current.get(uid) === written) pendingWrites.current.delete(uid)
       setBusy(new Set(pendingWrites.current.keys()))
     }
+    /**
+     * 성공 확정 뒤(즉시·늦게) — 열린 상세에 서버 값(확정 경로, R4-B), 되돌리기 토스트(R5-B). 되돌리기는 이 쓰기가 그 카드의 마지막 쓰기일 때만 내고,
+     * 누를 때 다시 본다 — 그 사이 같은 카드에 새 쓰기가 시작됐으면 보내지 않는다(후행 쓰기를 덮지 않는다).
+     */
+    const confirmed = (settled: WorkItem): void => {
+      settledSeq.current += 1
+      setSettledWrite({ uid, item: settled, seq: settledSeq.current, sent })
+      if (latestWrite.current.get(lane) !== written) return
+      if (undo) { notify({ kind: 'undone', label: `${original.key} 를 되돌렸습니다` }); return }
+      // 원래 완료 갈래를 다시 쓸 수 없으면 되돌리기를 내지 않는다 — 완료함으로 바꿔 끼우지 않는다(R1-G).
+      const restorable = intent.kind === 'status' ? restorableResolution({ item: original, picks: picksResolution(settingsRef.current?.connections.find((connection) => connection.id === connectionId)?.capabilities ?? null) }) : null
+      if (restorable !== null && !restorable.restorable) {
+        notify({ kind: 'final', label: `${describe({ item: original, intent, statuses })} · ${UNRESTORABLE_RESOLUTION}` })
+        return
+      }
+      const back = restorable !== null && restorable.restorable ? restorable.resolution : null
+      notify({
+        kind: 'moved',
+        label: describe({ item: original, intent, statuses }),
+        // 되돌리기는 옮긴 맥락(연결·스페이스·작업·이전 값)을 들고 간다 — 다른 스페이스로 옮겨 가도 역요청을 보낸다(R1-E).
+        // 보내는 값 = 이 쓰기 직전 출처가 인정한 값(`reverse`) — 거절된 낙관적 값이 끼어들 수 없다(R2-A).
+        // 이 카드에 확인 안 된 쓰기가 있으면 받지 않는다 — 버튼은 남아 잠금이 풀린 뒤 다시 누를 수 있다(R4-E).
+        undo: () => {
+          if (pendingWrites.current.has(uid)) {
+            notify({ kind: 'failed', message: `${original.key} — 앞 변경을 출처가 확인하는 중입니다. 확인된 뒤 다시 되돌리세요.` })
+            return false
+          }
+          if (detailReads.current.has(uid)) {
+            notify({ kind: 'failed', message: `${original.key} — ${DETAIL_READING}입니다. 받은 뒤 다시 되돌리세요.` })
+            return false
+          }
+          // 이 쓰기 뒤 같은 카드·갈래에 새 쓰기가 있었거나 세대가 바뀌었다(LIFE-622 R5-B) — 되돌리면 그 쓰기를 덮는다. 보내지 않고 버튼을 거둔다.
+          if (latestWrite.current.get(lane) !== written || written.generation !== currentGeneration(connectionId)) {
+            notify({ kind: 'failed', message: `${original.key} — 그 뒤 바뀐 것이 있어 되돌리지 않습니다.` })
+            return true
+          }
+          const now = loadRef.current.data.find((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey)
+          const at = now ?? row.space
+          const item = now?.items.find((entry) => entry.id === original.id) ?? settled
+          void move({ row: { item, space: at, status: at.statuses.find((status) => status.key === item.statusKey) ?? null }, intent: reverse, undo: true, restore: back })
+          return true
+        },
+      })
+    }
     // 세대가 바뀐 뒤 온 응답은 버린다(R3-D) — 새 자료에 반영하지도 원복하지도 않는다.
-    if (written.generation !== currentGeneration(connectionId)) return
+    if (written.generation !== currentGeneration(connectionId)) { endWrite({ uid, written }); return }
     if (asked.kind === 'late') {
       // 늦음은 실패가 아니다(R4-A) — 원복·실패 토스트 없이 「확인 지연」 만 알리고 낙관적 값을 둔다. 답이 오면(성공·실패 무관) 서버를 다시 읽어 맞춘다.
       lagging.current.add(written)
       notify({ kind: 'delayed', message: `${original.key} — 출처 확인이 늦어지고 있습니다. 답이 오면 서버 값으로 맞춥니다.` })
       void asked.answer.then((late) => {
         lagging.current.delete(written)
+        endWrite({ uid, written })
         if (written.generation !== currentGeneration(connectionId)) return
         // 늦게 온 실패는 알린다 — 화면은 아래 재조회가 서버 값으로 되돌린다(원복을 따로 쓰지 않는다).
         if (!late.ok) notify({ kind: 'failed', message: `${original.key} — ${late.error.message}` })
         if (!late.ok) markUnsure({ uid, error: late.error })
-        settles.current += 1
-        void reloadRef.current({ quiet: true })
-        setWorkingRound((value) => value + 1)
-        setSearchRound((value) => value + 1)
+        reconcileUnit()
+        // 늦은 성공(R5-B · R4-B) — 화면 값은 재조회가 정한다(이 답이 옛 값일 수 있다). 상세 확정·되돌리기만 즉시 성공과 같은 규칙으로.
+        const settled = late.ok && (late.result.op === 'changeStatus' || late.result.op === 'setPlacement' || late.result.op === 'reorder') && late.result.item.id === row.item.id ? late.result.item : null
+        if (settled !== null) confirmed(settled)
       })
       return
     }
     const { response } = asked
+    // 단위의 마지막 답이고 쓰기가 겹쳤으면 서버를 다시 읽어 맞춘다(R5-A) — 이 답이 마지막에 왔다고 서버의 마지막 값은 아니다.
+    const lastOfUnit = endWrite({ uid, written })
     const accepted = response.requestId === requestId && gate.accepts({ key: `item:${uid}`, requestId })
     const settled = response.ok && (response.result.op === 'changeStatus' || response.result.op === 'setPlacement' || response.result.op === 'reorder') ? response.result.item : null
     if (!accepted || settled === null) {
@@ -804,7 +909,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       patch({ connectionId, spaceKey, apply: (items) => applyIntent({ items, itemId: row.item.id, intent: reverse, statuses }) })
       notify({ kind: 'failed', message: `${original.key} — ${response.ok ? '출처 응답을 확인하지 못했습니다.' : response.error.message}` })
       if (!response.ok) markUnsure({ uid, error: response.error })
-      void reloadRef.current({ quiet: true })
+      if (lastOfUnit) reconcileUnit()
+      else void reloadRef.current({ quiet: true })
       return
     }
     if (intent.kind === 'reorder') {
@@ -818,45 +924,15 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       patch({ connectionId, spaceKey, apply: setFields({ item: settled }) })
     }
     reflect({ connectionId, item: settled })
-    settledSeq.current += 1
-    setSettledWrite({ uid, item: settled, seq: settledSeq.current, sent })
     // 완료 분류를 넘나들면 이 작업이 막던 작업의 막힘 자료가 바뀐다 — 목록·작업 중·키 조회를 서버에서 다시 읽는다(R2-J·R3-C).
-    if (crossesDone({ from: original, to: settled })) {
+    if (lastOfUnit) reconcileUnit()
+    else if (crossesDone({ from: original, to: settled })) {
       void reloadRef.current({ quiet: true })
       setWorkingRound((value) => value + 1)
       setSearchRound((value) => value + 1)
     }
-    if (undo) { notify({ kind: 'undone', label: `${original.key} 를 되돌렸습니다` }); return }
-    // 원래 완료 갈래를 다시 쓸 수 없으면 되돌리기를 내지 않는다 — 완료함으로 바꿔 끼우지 않는다(R1-G).
-    const restorable = intent.kind === 'status' ? restorableResolution({ item: original, picks: picksResolution(settingsRef.current?.connections.find((connection) => connection.id === connectionId)?.capabilities ?? null) }) : null
-    if (restorable !== null && !restorable.restorable) {
-      notify({ kind: 'final', label: `${describe({ item: original, intent, statuses })} · ${UNRESTORABLE_RESOLUTION}` })
-      return
-    }
-    const back = restorable !== null && restorable.restorable ? restorable.resolution : null
-    notify({
-      kind: 'moved',
-      label: describe({ item: original, intent, statuses }),
-      // 되돌리기는 옮긴 맥락(연결·스페이스·작업·이전 값)을 들고 간다 — 다른 스페이스로 옮겨 가도 역요청을 보낸다(R1-E).
-      // 보내는 값 = 이 쓰기 직전 출처가 인정한 값(`reverse`) — 거절된 낙관적 값이 끼어들 수 없다(R2-A).
-      // 이 카드에 확인 안 된 쓰기가 있으면 받지 않는다 — 버튼은 남아 잠금이 풀린 뒤 다시 누를 수 있다(R4-E).
-      undo: () => {
-        if (pendingWrites.current.has(uid)) {
-          notify({ kind: 'failed', message: `${original.key} — 앞 변경을 출처가 확인하는 중입니다. 확인된 뒤 다시 되돌리세요.` })
-          return false
-        }
-        if (detailReads.current.has(uid)) {
-          notify({ kind: 'failed', message: `${original.key} — ${DETAIL_READING}입니다. 받은 뒤 다시 되돌리세요.` })
-          return false
-        }
-        const now = loadRef.current.data.find((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey)
-        const at = now ?? row.space
-        const item = now?.items.find((entry) => entry.id === original.id) ?? settled
-        void move({ row: { item, space: at, status: at.statuses.find((status) => status.key === item.statusKey) ?? null }, intent: reverse, undo: true, restore: back })
-        return true
-      },
-    })
-  }, [patch, gate, notify, reflect, currentGeneration, markUnsure])
+    confirmed(settled)
+  }, [patch, gate, notify, reflect, currentGeneration, markUnsure, beginWrite, endWrite, reconcileUnit])
 
   /** 상세 단건 읽기 하나를 그 카드의 진행 중 읽기로 센다 — 돌려준 함수로 뺀다(두 번 불러도 한 번만). */
   const holdRead = useCallback((uid: string): (() => void) => {
@@ -890,6 +966,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       written = { seq: writeSeq.current, connectionId, generation: currentGeneration(connectionId), spaceKey, apply: (items) => items }
     }
     pendingWrites.current.set(uid, written)
+    // 상세 쓰기도 그 카드의 정합화 단위에 든다(LIFE-622 R5-A) — 늦은 보드 쓰기 뒤의 상세 쓰기가 옛 보드 의도에 덮이지 않는다.
+    beginWrite({ uid, written, op: call.op })
     setBusy(new Set(pendingWrites.current.keys()))
     const requestId = gate.issue(`item:${uid}`)
     const sent = nextWorkStamp()
@@ -903,12 +981,13 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     const revert = (): void => {
       if (listed !== null && optimistic !== null) patch({ connectionId, spaceKey, apply: (items) => items.map((item) => (item.id === itemId ? listed : item)) })
     }
-    if (written.generation !== currentGeneration(connectionId)) return { kind: 'stale' }
+    if (written.generation !== currentGeneration(connectionId)) { endWrite({ uid, written }); return { kind: 'stale' } }
     if (asked.kind === 'late') {
       lagging.current.add(written)
       notify({ kind: 'delayed', message: `${listed?.key ?? '작업'} — 출처 확인이 늦어지고 있습니다. 답이 오면 서버 값으로 맞춥니다.` })
       const settledLate = asked.answer.then((late): LateSettled => {
         lagging.current.delete(written)
+        endWrite({ uid, written })
         if (written.generation !== currentGeneration(connectionId)) return { kind: 'stale' }
         if (!late.ok) notify({ kind: 'failed', message: `${listed?.key ?? '작업'} — ${late.error.message}` })
         if (!late.ok) markUnsure({ uid, error: late.error })
@@ -929,6 +1008,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       return { kind: 'late', settled: settledLate }
     }
     const { response } = asked
+    // 단위의 마지막 답이고 쓰기가 겹쳤으면 끝에 서버를 다시 읽는다(R5-A).
+    if (endWrite({ uid, written })) reconcileUnit()
     if (response.requestId !== requestId || !gate.accepts({ key: `item:${uid}`, requestId })) {
       revert()
       void reloadRef.current({ quiet: true })
@@ -957,7 +1038,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       void reloadRef.current({ quiet: true })
     }
     return { kind: 'ok', result }
-  }, [patch, gate, notify, reflect, currentGeneration, keepCreated, markUnsure])
+  }, [patch, gate, notify, reflect, currentGeneration, keepCreated, markUnsure, beginWrite, endWrite, reconcileUnit])
 
   // --- 만들기 (LIFE-604) ---
   const creating = useRef(new Set<string>())

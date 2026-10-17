@@ -72,6 +72,10 @@ async function rig({ entry }: { entry?: (state: MockState) => WorkSourceEntry } 
 /** 실제 `LaSource` + `LaMcpFixture`(충돌 검사 꺼짐). 응답도 모아 쓰기 결과의 본문이 정본 그대로 오는지 본다(V17 상당). */
 async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[]; responses: WorkResponse[]; service: WorkService; connectionId: string; emitSettings: () => void }> {
   const fixture = new LaMcpFixture()
+  // LIFE-622 — LA 충돌 검사가 켜졌다. 이 파일의 시험은 판과 무관한 **확정 순서 가드**(623 `sent`·미확인 막힘)를 본다 — 켜진 LA 에서는 같은 장면의 B 가
+  // 앞 쓰기 A 가 소비한 판 때문에 충돌 배너로 끝나 B 성공 역전 자체가 생기지 않는다(F8 — specs/LIFE-622-reconcile-conflict/raw/claude/design-notes.md §5).
+  // 그래서 서버는 조건부 수정 이전 모양(판을 견주지 않음)으로 둔다. 켜진 LA 계약은 la-conflict.test.ts · 계약 묶음 · TaskDetail.board-late 가 본다.
+  fixture.checksVersion = false
   const fetchImpl = async (_url: unknown, options?: RequestInit): Promise<Response> => {
     const body: { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } } = JSON.parse(String(options?.body))
     if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })

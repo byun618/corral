@@ -6,7 +6,8 @@
 //   - 목록 `issue_list` = `IssueSummary`(`toIssueSummary`) — 공통 칸 + `openBlockers`(원소 `{id, displayId, title, statusId, statusLabel}`), description 없음 → `readIssueSummary`
 //   - 수정 `issue_update` = `IssueResponse`(`toIssueResponse`) — 공통 칸 + description, links·openBlockers 없음 → `readIssueUpdated`
 //   - 단건 `issue_get` = `IssueResponse & { links }` — 공통 칸 + description + links → `readIssueDetail`
-// 공통 칸: parentId·priority·onBoard·position·dueAt·color·archivedAt(값 null 허용, 칸 필수) · updatedAt(글자). LA 가 늘 주는 것 이상은 요구하지 않는다.
+// 공통 칸: parentId·priority·onBoard·position·dueAt·color·archivedAt(값 null 허용, 칸 필수) · updatedAt(글자) · version(글자 — LIFE-622, LA LIFE-607).
+// LA 가 늘 주는 것 이상은 요구하지 않는다.
 
 import { isRecord } from '../../shared/json.js'
 import { readWorkCategory, readWorkPriority, readWorkRelationKind, type WorkCategory, type WorkPriority, type WorkRelationKind, type WorkResolution } from '../../shared/work.js'
@@ -50,6 +51,8 @@ export type LaIssueCore = LaIssueRef & {
   color: string | null
   archivedAt: string | null
   updatedAt: string
+  /** 판(LIFE-622) — LA `issue.mapper` 의 `String(issue.version)`. 불투명 글자: 산술·비교 없이 받은 그대로 `ifVersion` 으로 돌려보낸다. */
+  version: string
 }
 
 /** 작업으로 바꿀 수 있는 일감 — 목록 행이면 description·links 가 null, 단건이면 채워진다. */
@@ -170,6 +173,8 @@ function readCore(row: Record<string, unknown>, path: string): LaIssueCore {
     color: nullableStr(row, 'color', path),
     archivedAt: nullableStr(row, 'archivedAt', path),
     updatedAt: str(row, 'updatedAt', path),
+    // 칸이 없거나 글자가 아니면 어긋남 — 조용히 null(판 없음 = 무조건 저장)로 접지 않는다(C1).
+    version: str(row, 'version', path),
   }
 }
 

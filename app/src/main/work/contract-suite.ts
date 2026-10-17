@@ -400,6 +400,32 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       expect((await getItem(item.id)).title).toBe(item.title)
     })
 
+    it('저장 충돌(LIFE-622 C3) — 같은 상태 요청·배치·부모 변경의 낡은 판도 conflict(저장 0), 꺼져 있으면 판을 거절', async () => {
+      const { space, items, capabilities } = await stage()
+      const item = await getItem((items[0] ?? { id: '' }).id)
+      const child = items.find((entry) => entry.parentId !== null)
+      if (capabilities.conflictCheck.state !== 'on') {
+        await expectClosed({ capability: capabilities.conflictCheck, call: { op: 'changeStatus', itemId: item.id, statusKey: item.statusKey, ifVersion: 'stale' } })
+        if (capabilities.parentChange.state === 'on' && child !== undefined) await expectClosed({ capability: capabilities.conflictCheck, call: { op: 'setParent', itemId: child.id, spaceKey: space.key, parentId: null, ifVersion: 'stale' } })
+        return
+      }
+      // F7 — 쓰기가 없는 같은 상태 요청도 낡은 판이면 성공으로 지나가지 않는다. 맞는 판이면 그대로 성공.
+      expect(await send({ op: 'changeStatus', itemId: item.id, statusKey: item.statusKey, ifVersion: `${item.version}-old` })).toMatchObject({ ok: false, error: { kind: 'conflict' } })
+      expect(await send({ op: 'changeStatus', itemId: item.id, statusKey: item.statusKey, ifVersion: item.version })).toMatchObject({ ok: true })
+      if (capabilities.placement.state === 'on' && item.placement !== null) {
+        const fresh = await getItem(item.id)
+        expect(await send({ op: 'setPlacement', itemId: item.id, placement: item.placement === 'board' ? 'backlog' : 'board', ifVersion: `${fresh.version}-old` })).toMatchObject({ ok: false, error: { kind: 'conflict' } })
+        expect((await getItem(item.id)).placement).toBe(item.placement)
+      }
+      if (capabilities.parentChange.state === 'on' && child !== undefined) {
+        const fresh = await getItem(child.id)
+        const stale = await send({ op: 'setParent', itemId: child.id, spaceKey: space.key, parentId: null, ifVersion: `${fresh.version}-old` })
+        expect(stale).toMatchObject({ ok: false, error: { kind: 'conflict' } })
+        if (!stale.ok) expect(stale.error.conflict?.current).toMatchObject({ id: child.id, parentId: fresh.parentId, version: fresh.version })
+        expect((await getItem(child.id)).parentId).toBe(fresh.parentId)
+      }
+    })
+
     it('필드 수정(E4) — 제목·본문·우선순위·마감을 보낸 칸만 바꾸고 되돌린다, 본문은 바이트 그대로', async () => {
       const { items, capabilities } = await stage()
       const item = await getItem((items[0] ?? { id: '' }).id)

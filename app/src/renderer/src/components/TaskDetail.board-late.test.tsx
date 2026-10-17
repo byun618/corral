@@ -163,11 +163,17 @@ it('대조 — 늦은 보드 성공 전에 상세 쓰기가 확정됐으면 늦�
   expect(held.captured()).toBe(true)
   await timer.fire()
   vi.restoreAllMocks()
-  // 늦음으로 잠금이 풀렸다 — 상세에서 우선순위를 바꾼다(판을 싣는 상세 쓰기, 바로 확정).
+  // 늦음으로 잠금이 풀렸다 — 상세에서 우선순위를 바꾼다(판을 싣는 상세 쓰기). 서버에는 보드 쓰기가 이미 적용돼 판이 올랐고 상세는 그 판을 아직 모른다 —
+  // 충돌 검사 켜짐에서는 배너(조용히 덮지 않는다). 「내 값으로 덮기」 로 상세 쓰기를 확정한다(늦은 보드 결과보다 나중에 보낸 쓰기).
   click('[data-field="priority"]')
   click('[data-priority-row="lowest"]')
   await settle(30)
+  expect(q('[data-issue-conflict]')).not.toBeNull()
+  expect(issue.priority).toBe('high')
+  click('[data-conflict-override]')
+  await settle(30)
   expect(issue.priority).toBe('lowest')
+  expect(q('[data-issue-conflict]')).toBeNull()
   await held.release()
   // 옛 보드 결과(우선순위 high · 옛 판)가 base 를 되감았으면 다음 저장이 자기 판과 충돌한다.
   click('[data-issue-body-edit]')

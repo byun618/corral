@@ -298,16 +298,19 @@ async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[]; stop
 }
 
 describe('LA 모의 MCP 화면 (R1-H · R1-G)', () => {
-  it('K: 충돌 검사 꺼진 LA — 나중 저장이 이기고 배너 0 · 없는 키 연결은 issue_link_create 0회(R1-H)', async () => {
+  // LIFE-622 — LA 충돌 검사가 켜져(L1b) 기대값을 바꿨다: 전에는 「꺼진 LA — 나중 저장이 이기고 배너 0 · ifVersion null」. 이제 외부 변경(판 +1) 뒤 저장은
+  // 판을 싣고(ifVersion = 연 때의 판) 저장 0 · 충돌 배너다. 연결 갈래(R1-H)는 그대로.
+  it('K: 충돌 검사 켜진 LA — 외부 변경 뒤 저장은 판을 싣고 충돌 배너(저장 0) · 없는 키 연결은 issue_link_create 0회(R1-H)', async () => {
     const la = await laRig()
     try {
       await openCard('LIFE-600'); await settle(20)
       const issue = la.fixture.issues.find((entry) => entry.sequentialId === 600)
       if (issue === undefined) throw new Error('LIFE-600 없음')
-      issue.priority = 'low'; issue.updatedAt = '2026-10-14T12:00:00Z'
+      const opened = String(issue.version)
+      issue.priority = 'low'; issue.updatedAt = '2026-10-14T12:00:00Z'; issue.version += 1
       click('[data-field="priority"]'); click('[data-priority-row="highest"]'); await settle(30)
-      expect(issue.priority).toBe('highest'); expect(q('[data-issue-conflict]')).toBeNull()
-      expect(writes(la.calls)).toContainEqual(expect.objectContaining({ op: 'updateItem', ifVersion: null }))
+      expect(issue.priority).toBe('low'); expect(q('[data-issue-conflict]')).not.toBeNull()
+      expect(writes(la.calls)).toContainEqual(expect.objectContaining({ op: 'updateItem', ifVersion: opened }))
       const before = writes(la.calls).length
       click('[data-link-add]'); setValue(input('[data-link-key]'), 'LIFE-99999'); click('[data-link-submit]'); await settle(30)
       const linkTools = la.fixture.requests.filter((entry) => entry.tool === 'issue_link_create')

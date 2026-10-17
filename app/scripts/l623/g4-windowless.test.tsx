@@ -232,16 +232,17 @@ it('G4 drift — 다른 곳의 우선순위 변경 뒤 제목 저장 = 저장 �
   expect(last.title).not.toBe('DRIFT TITLE')
 })
 
-// g4la — LA(충돌 검사 꺼짐): 같은 외부 변경 뒤 저장 = 배너 0 · 나중 저장(내 값)이 이김. 제목 · 우선순위 · 본문.
-it('G4 LA 모의 MCP — 제목·우선순위·본문 외부 변경 뒤 저장: 배너 0 · 나중 저장이 이김', async () => {
+// g4la — LA. LIFE-622 로 충돌 검사가 켜져 기대값을 바꿨다(전: 「꺼짐 — 배너 0 · 나중 저장이 이김」): 같은 외부 변경 뒤 저장 = 그 칸 충돌 배너 · 저장 0,
+// 「내 값으로 덮기」 를 누르면 내 값이 이긴다. 제목 · 우선순위 · 본문.
+it('G4 LA 모의 MCP — 제목·우선순위·본문 외부 변경 뒤 저장: 충돌 배너 · 저장 0 → 덮기로 내 값', async () => {
   const gate = await laGate()
   const issue = gate.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
   if (issue === undefined) throw new Error('fixture')
   await openCard(`LIFE-${issue.sequentialId}`)
-  const steps: { name: string; fields: WorkFieldPatch; save: () => Promise<void>; mine: (item: WorkItem) => boolean }[] = [
-    { name: '제목', fields: { title: 'EXT LA TITLE' }, save: async () => { setValue('[data-issue-title]', 'MY LA TITLE'); blur('[data-issue-title]'); await settle(20) }, mine: (item) => item.title === 'MY LA TITLE' },
-    { name: '우선순위', fields: { priority: 'low' }, save: async () => { click('[data-field="priority"]'); click('[data-priority-row="highest"]'); await settle(20) }, mine: (item) => item.priority === 'highest' },
-    { name: '본문', fields: { body: 'EXT LA BODY' }, save: async () => { await editBody('MY LA BODY') }, mine: (item) => item.body === 'MY LA BODY' },
+  const steps: { name: string; field: string; fields: WorkFieldPatch; save: () => Promise<void>; mine: (item: WorkItem) => boolean }[] = [
+    { name: '제목', field: 'title', fields: { title: 'EXT LA TITLE' }, save: async () => { setValue('[data-issue-title]', 'MY LA TITLE'); blur('[data-issue-title]'); await settle(20) }, mine: (item) => item.title === 'MY LA TITLE' },
+    { name: '우선순위', field: 'priority', fields: { priority: 'low' }, save: async () => { click('[data-field="priority"]'); click('[data-priority-row="highest"]'); await settle(20) }, mine: (item) => item.priority === 'highest' },
+    { name: '본문', field: 'body', fields: { body: 'EXT LA BODY' }, save: async () => { await editBody('MY LA BODY') }, mine: (item) => item.body === 'MY LA BODY' },
   ]
   const log: unknown[] = []
   for (const step of steps) {
@@ -250,8 +251,12 @@ it('G4 LA 모의 MCP — 제목·우선순위·본문 외부 변경 뒤 저장: 
     const shown = banner()
     const last = await serverItem({ gate, itemId: issue.id })
     log.push({ step: step.name, shown, title: last.title, priority: last.priority, body: last.body })
-    expect(shown).toBeNull()
-    expect(step.mine(last)).toBe(true)
+    expect(shown).toContain(step.field)
+    expect(step.mine(last)).toBe(false)
+    click('[data-conflict-override]')
+    await settle(20)
+    expect(banner()).toBeNull()
+    expect(step.mine(await serverItem({ gate, itemId: issue.id }))).toBe(true)
   }
   console.log('G4 LA', JSON.stringify(log))
 })

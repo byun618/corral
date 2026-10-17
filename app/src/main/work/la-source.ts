@@ -9,13 +9,16 @@
 //     스페이스가 아닌 프로젝트(보관·완료) 아래 일감은 「미분류」 로 간다(01-criteria C9, 2026-10-13 사용자 재승인 — R3-D). 열린 수도 같은 규칙.
 //     스페이스가 아니게 된 옛 프로젝트 키로 목록을 부르면 「스페이스 아님」(rejected).
 // 상태: 모든 LA 스페이스가 같은 `status_list`. 앞으로 = `issue_transition`(forwardOnly) · 뒤로 = `issue_update(statusId)`(D6).
-// 능력 꺼짐(L1 대기): 순서(L1f · LIFE-612) · 커서 페이지(L1c) · 조건부 수정(L1b) · 코멘트·이력(L1e) · 작업 링크 저장(L1a).
+// 능력 꺼짐(L1 대기): 순서(L1f · LIFE-612) · 커서 페이지(L1c) · 코멘트·이력(L1e) · 작업 링크 저장(L1a).
+// 조건부 수정(L1b) 켜짐(LIFE-622 · LA LIFE-607): 응답 `version` = 판(불투명 글자) · 네 쓰기(필드·상태·배치·부모)에 `ifVersion` · 다르면 LA 가
+// isError text JSON `{statusCode:409, code:"CONFLICT", current, …}` 로 거절(저장 0) → `conflict` + 단건 경로로 다시 읽은 지금 작업(by = null → 「다른 곳에서」).
 // 응답은 `la-shape.ts` 로 검증한 뒤에만 계약 타입으로 바꾼다(C3) — 어긋나면 `invalid_response`.
 // LIFE-602 계약 확장: 필드 수정 = `issue_update`(title·description·priority·dueAt, PATCH) · 완료 갈래 = resolution(completed·cancelled) ·
 // 자식 = `issue_list(parentId)`·`issue_create`(부모 규칙은 종류의 `childKinds` 로 알린다) · 연결 상대의 스페이스 = 상대의 부모 사슬(못 풀면 null) ·
 // 이력은 꺼짐(L1e).
 // LIFE-604 E10·E11: 만들기 = `issue_create`(description·statusId·priority·onBoard 명시) · 생성 메타 = 열린 상태 아무거나 · 필수 필드 없음.
 
+import { isRecord, safeParse } from '../../shared/json.js'
 import { createFieldsProblem } from '../../shared/work.js'
 import type {
   WorkCall,
@@ -83,7 +86,7 @@ export const LA_CAPABILITIES: WorkCapabilities = {
   parentChange: { state: 'on' },
   order: { state: 'disabled', reason: 'LA 에는 순서를 바꾸는 MCP 도구가 없습니다 (LIFE-612).' },
   cursorPaging: { state: 'disabled', reason: 'LA 목록은 커서 페이지가 없습니다 — 한 번에 최대 200건 (L1c).' },
-  conflictCheck: { state: 'disabled', reason: 'LA 는 조건부 수정을 받지 않습니다 — 동시 편집 충돌을 검사하지 못합니다 (L1b).' },
+  conflictCheck: { state: 'on' },
   comments: { state: 'disabled', reason: 'LA 에는 코멘트가 아직 없습니다 (L1e).' },
   history: { state: 'disabled', reason: 'LA 에는 변경 이력이 아직 없습니다 (L1e).' },
   workLinkStore: { state: 'disabled', reason: 'LA 에 작업 링크를 저장할 자리가 아직 없습니다 (L1a).' },
@@ -103,8 +106,17 @@ export function laSourceEntry({ url, clientVersion, fetchImpl, timeoutMs }: { ur
   }
 }
 
-/** LA 도구 오류 중 아는 모양 — scope 부족은 권한 부족(R1-B). 범위 이름은 정해진 꼴(`issue:write`)만 문구에 옮긴다. 나머지는 공통 분류로. */
+/**
+ * LA 도구 오류 중 아는 모양 — scope 부족은 권한 부족(R1-B). 범위 이름은 정해진 꼴(`issue:write`)만 문구에 옮긴다.
+ * 저장 충돌(LIFE-622) = text JSON 의 `code: "CONFLICT"` **와** `statusCode: 409` **와** 레코드 `current` — 셋이 다 맞을 때만(닮은 다른 오류 —
+ * 연결 중복의 CONFLICT 등 — 는 지금처럼 공통 분류). 원격 message 는 옮기지 않는다. 지금 작업(`conflict.current`)은 출처가 단건 경로로 붙인다(F4·F9).
+ * 나머지는 공통 분류로.
+ */
 export function laToolError(text: string): WorkError | null {
+  const parsed = safeParse(text)
+  if (isRecord(parsed) && parsed.code === 'CONFLICT' && parsed.statusCode === 409 && isRecord(parsed.current)) {
+    return workError({ kind: 'conflict', status: 409, message: '다른 곳에서 먼저 바뀌었습니다 — 새로 불러오거나 덮어쓰세요.' })
+  }
   const match = MISSING_SCOPE.exec(text.trim())
   if (match === null) return null
   const scope = match[1] !== undefined && KNOWN_SCOPES.has(match[1]) ? `${match[1]} ` : ''
@@ -146,12 +158,10 @@ export class LaSource implements WorkSourceClient {
         return statuses.ok ? { ok: true, result: { op: 'listTransitions', statusKeys: statuses.value.map((status) => status.id), blocked: [] } } : statuses.outcome
       }
       case 'changeStatus':
-        if (call.ifVersion !== null) return unsupported('conflictCheck')
-        return this.changeStatus({ itemId: call.itemId, statusKey: call.statusKey, resolution: call.resolution ?? null })
+        return this.changeStatus({ itemId: call.itemId, statusKey: call.statusKey, resolution: call.resolution ?? null, ifVersion: call.ifVersion })
       case 'updateItem': {
-        if (call.ifVersion !== null) return unsupported('conflictCheck')
-        const updated = await this.tool({ name: 'issue_update', args: { id: call.itemId, ...updateArgs(call.fields) }, read: readIssueUpdated })
-        return updated.ok ? this.itemResult({ op: 'updateItem', itemId: call.itemId }) : updated.outcome
+        const updated = await this.tool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, ...updateArgs(call.fields) }, ifVersion: call.ifVersion }), read: readIssueUpdated })
+        return this.written({ op: 'updateItem', itemId: call.itemId, step: updated })
       }
       case 'listChildren': return this.listChildren(call.itemId)
       case 'createItem': return this.createItem(call)
@@ -161,16 +171,14 @@ export class LaSource implements WorkSourceClient {
       }
       case 'listHistory': return unsupported('history')
       case 'setPlacement': {
-        if (call.ifVersion !== null) return unsupported('conflictCheck')
-        const updated = await this.tool({ name: 'issue_update', args: { id: call.itemId, onBoard: call.placement === 'board' }, read: readIssueUpdated })
-        return updated.ok ? this.itemResult({ op: 'setPlacement', itemId: call.itemId }) : updated.outcome
+        const updated = await this.tool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, onBoard: call.placement === 'board' }, ifVersion: call.ifVersion }), read: readIssueUpdated })
+        return this.written({ op: 'setPlacement', itemId: call.itemId, step: updated })
       }
       case 'setParent': {
-        if (call.ifVersion !== null) return unsupported('conflictCheck')
         // 스페이스 바로 아래(null) = 그 프로젝트가 부모. 「미분류」 바로 아래 = 부모 없음.
         const parentId = call.parentId ?? (call.spaceKey === LA_CATCH_ALL_KEY ? null : call.spaceKey)
-        const updated = await this.tool({ name: 'issue_update', args: { id: call.itemId, parentId }, read: readIssueUpdated })
-        return updated.ok ? this.itemResult({ op: 'setParent', itemId: call.itemId }) : updated.outcome
+        const updated = await this.tool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, parentId }, ifVersion: call.ifVersion }), read: readIssueUpdated })
+        return this.written({ op: 'setParent', itemId: call.itemId, step: updated })
       }
       case 'addRelation': return this.addRelation({ itemId: call.itemId, kind: call.kind, otherKey: call.otherKey })
       case 'removeRelation': {
@@ -422,8 +430,30 @@ export class LaSource implements WorkSourceClient {
     return item.ok ? { ok: true, result: { op, item: item.value } } : item.outcome
   }
 
-  /** `resolution` — 완료 분류로 갈 때의 갈래(E5). null 이면 완료함. 같은 완료 상태에서 갈래만 다르면 갈래만 바꾼다. */
-  private async changeStatus({ itemId, statusKey, resolution }: { itemId: string; statusKey: string; resolution: WorkResolutionChoice | null }): Promise<WorkOutcome> {
+  /** 쓰기 한 단계의 끝 — 성공이면 단건으로 결과를, 실패면 충돌에 지금 작업을 붙여 그대로. */
+  private written({ op, itemId, step }: { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'updateItem'; itemId: string; step: Step<unknown> }): Promise<WorkOutcome> {
+    return step.ok ? this.itemResult({ op, itemId }) : this.withCurrent({ itemId, outcome: step.outcome })
+  }
+
+  /**
+   * 저장 충돌이면 서버의 지금 작업을 **단건 경로로 다시 읽어** 싣는다(F4) — LA CONFLICT 의 `current` 는 수정 응답 모양이라 연결·막힘이 없고
+   * 스페이스·표시 부모도 부모 사슬로 풀어야 한다. 다시 읽은 값이 충돌 뒤 더 바뀌었어도 그것이 「지금 서버 값」 이다. 다시 읽지 못하면 current 없이
+   * conflict 그대로(화면은 실패로 알린다 — 성공으로 넘기지 않는다). 충돌이 아닌 실패는 손대지 않는다.
+   */
+  private async withCurrent({ itemId, outcome }: { itemId: string; outcome: WorkOutcome }): Promise<WorkOutcome> {
+    if (outcome.ok || outcome.error.kind !== 'conflict') return outcome
+    const current = await this.item(itemId)
+    if (!current.ok) return outcome
+    return { ok: false, error: { ...outcome.error, message: conflictMessage(current.value.key), conflict: { current: current.value, by: null } } }
+  }
+
+  /**
+   * `resolution` — 완료 분류로 갈 때의 갈래(E5). null 이면 완료함. 같은 완료 상태에서 갈래만 다르면 갈래만 바꾼다.
+   * `ifVersion`(LIFE-622) — 모든 쓰기 갈래에 싣는다: 전진 `issue_transition` · 서버 no-op 뒤 이어지는 `issue_update(statusId)`(no-op 전이는 판을
+   * 소비하지 않으므로 같은 판, F5) · 뒤로 `issue_update(statusId)`(D6) · 갈래만 `issue_update(resolution)`. **쓰기가 없는 갈래**(같은 상태·같은 갈래)는
+   * 서버가 판을 볼 기회가 없다(F7) — 이 연산이 막 읽은 단건의 판과 글자로 견줘 다르면 충돌로 돌려준다(낡은 판을 성공으로 넘기지 않는다).
+   */
+  private async changeStatus({ itemId, statusKey, resolution, ifVersion }: { itemId: string; statusKey: string; resolution: WorkResolutionChoice | null; ifVersion: string | null }): Promise<WorkOutcome> {
     const [statuses, current] = await Promise.all([this.statuses(), this.tool({ name: 'issue_get', args: { id: itemId }, read: readIssueDetail })])
     if (!statuses.ok) return statuses.outcome
     if (!current.ok) return current.outcome
@@ -435,24 +465,27 @@ export class LaSource implements WorkSourceClient {
     const chosen = resolution ?? 'completed'
     if (from === to) {
       // 같은 상태 — 완료 분류에서 갈래만 다르면 갈래만 고친다(완료함 ↔ 취소함). 그 밖은 할 일 없음.
-      if (target.categoryKey !== 'done' || resolution === null || current.value.resolution === resolution) return this.itemResult({ op: 'changeStatus', itemId })
-      const updated = await this.tool({ name: 'issue_update', args: { id: itemId, resolution }, read: readIssueUpdated })
-      return updated.ok ? this.itemResult({ op: 'changeStatus', itemId }) : updated.outcome
+      if (target.categoryKey !== 'done' || resolution === null || current.value.resolution === resolution) {
+        if (ifVersion !== null && ifVersion !== current.value.version) return this.withCurrent({ itemId, outcome: { ok: false, error: workError({ kind: 'conflict', status: 409, message: conflictMessage(current.value.displayId) }) } })
+        return this.itemResult({ op: 'changeStatus', itemId })
+      }
+      const updated = await this.tool({ name: 'issue_update', args: versioned({ args: { id: itemId, resolution }, ifVersion }), read: readIssueUpdated })
+      return this.written({ op: 'changeStatus', itemId, step: updated })
     }
     const labelUnique = order.filter((status) => status.label === target.label).length === 1
     if (to > from && labelUnique) {
       const args: Record<string, unknown> = { id: itemId, toStatusLabel: target.label, forwardOnly: true }
       if (target.categoryKey === 'done') args.resolution = chosen
-      const moved = await this.tool({ name: 'issue_transition', args, read: readTransition })
-      if (!moved.ok) return moved.outcome
+      const moved = await this.tool({ name: 'issue_transition', args: versioned({ args, ifVersion }), read: readTransition })
+      if (!moved.ok) return this.withCurrent({ itemId, outcome: moved.outcome })
       if (moved.value.transitioned) return this.itemResult({ op: 'changeStatus', itemId })
       // 서버가 「뒤로」 라고 보면(순서 해석이 갈림) 되돌리기 경로로 — D6 은 둘 다 허용한다.
     }
     const args: Record<string, unknown> = { id: itemId, statusId: target.id }
     if (target.categoryKey !== 'done' && current.value.statusCategoryKey === 'done') args.resolution = null
     if (target.categoryKey === 'done') args.resolution = chosen
-    const updated = await this.tool({ name: 'issue_update', args, read: readIssueUpdated })
-    return updated.ok ? this.itemResult({ op: 'changeStatus', itemId }) : updated.outcome
+    const updated = await this.tool({ name: 'issue_update', args: versioned({ args, ifVersion }), read: readIssueUpdated })
+    return this.written({ op: 'changeStatus', itemId, step: updated })
   }
 
   private async addRelation({ itemId, kind, otherKey }: { itemId: string; kind: WorkRelation['kind']; otherKey: string }): Promise<WorkOutcome> {
@@ -506,7 +539,17 @@ function updateArgs(fields: WorkFieldPatch): Record<string, unknown> {
   return args
 }
 
-function unsupported(name: 'order' | 'cursorPaging' | 'conflictCheck' | 'comments' | 'history' | 'workLinkStore' | 'querySearch'): WorkOutcome {
+/** 조건부 쓰기 인자 — 판이 있으면 `ifVersion` 으로 받은 그대로 싣고, 없으면(null) 칸을 뺀다(LA: 생략 = 무조건 저장 — 「내 값으로 덮기」). */
+function versioned({ args, ifVersion }: { args: Record<string, unknown>; ifVersion: string | null }): Record<string, unknown> {
+  return ifVersion === null ? args : { ...args, ifVersion }
+}
+
+/** 충돌 문구 — 원격 message 를 옮기지 않고 이쪽 말로(모의 출처와 같은 꼴). */
+function conflictMessage(key: string): string {
+  return `${key} 이(가) 연 뒤에 바뀌었습니다 — 새로 불러오거나 덮어쓰세요.`
+}
+
+function unsupported(name: 'order' | 'cursorPaging' | 'comments' | 'history' | 'workLinkStore' | 'querySearch'): WorkOutcome {
   const capability = LA_CAPABILITIES[name]
   const reason = capability.state === 'disabled' ? capability.reason : 'LA 는 이 연산을 하지 않습니다.'
   return { ok: false, error: workError({ kind: 'unsupported', message: reason }) }
@@ -572,7 +615,7 @@ function toItem({ issue, spaceKey, parentId }: { issue: LaIssue; spaceKey: strin
     openBlockerCount: issue.openBlockerCount,
     openBlockers: issue.openBlockers.map((blocker) => ({ id: blocker.id, key: blocker.displayId, title: blocker.title })),
     updatedAt: issue.updatedAt,
-    version: null,
+    version: issue.version,
     relations: issue.links === null
       ? null
       : issue.links.map((link) => ({

@@ -209,6 +209,8 @@ describe('[R1-F] 봉투·단건 모양을 엄격히', () => {
     const row = {
       id: 'i', sequentialId: 1, displayId: 'LIFE-1', kind: 'task', title: 't', statusId: 's', statusCategoryKey: 'todo', statusLabel: '할 일',
       parentId: null, priority: null, onBoard: null, position: '1', dueAt: null, color: null, archivedAt: null, updatedAt: '2026-10-13T00:00:00.000Z',
+      // LIFE-622 — LA 응답은 판(version)을 늘 싣는다. 이 시험이 보는 칸 갈래와 무관하므로 행에 더한다.
+      version: '1',
     }
     expect(readIssueSummary({ ...row, openBlockers: [] }, 'x').links).toBeNull()
     expect(() => readIssueSummary(row, 'x')).toThrow()

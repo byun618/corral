@@ -9,6 +9,11 @@
 //   - 완료 프로젝트 아래 열린 task 하나(R3-D — 미분류로, 옛 프로젝트 키 목록은 「스페이스 아님」).
 //   - 보관(issue.service `archive`)은 그 행만 바꾼다 — 씨앗에 보관된 checkpoint 아래 미보관 task, 보관된 부모 없는 bug 아래 미보관 task 를 둔다(R2-C).
 //   - 응답 계약(issue.mapper): 목록 = IssueSummary(openBlockers, description 없음) · 수정 = IssueResponse(description, links 없음) · 단건 = + links.
+//   - 조건부 수정(LIFE-622 · LA LIFE-607 — 코디 실측 `specs/LIFE-622-reconcile-conflict/raw/coordinator/c12-la-conflict-probe.md` + LA 코드 대조):
+//     목록·단건·수정 응답에 `version`(불투명 글자, 저장마다 +1). `issue_update`·`issue_transition` 의 `ifVersion` 이 다르면 저장 0 ·
+//     isError + text JSON `{statusCode:409, code:"CONFLICT", message, current(수정 응답 모양 — links·openBlockers 없음), lastModifiedBy:null}`(structuredContent 없음).
+//     transition 은 버전 비교 → 방향 판정 → no-op(same·backward)이면 저장 없이(판 소비 없음). ifVersion 이 실린 update 는 값이 안 바뀌어도 판을 소비한다(F8).
+//     ifVersion 생략 = 무조건 저장(무변경이면 판 그대로).
 //
 // 제어: `fault`(다음 요청들의 HTTP 상태 강제 · 소켓 끊기 · 지연) · `corrupt`(응답 한 칸 깨기 — 양성 대조) · `protocolVersion`
 //   · `echo`(원격 오류 글에 받은 토큰을 되울리기 — R1-E 양성 대조) · `holdStream`(결과를 쓰고 스트림을 닫지 않기 — R1-H).
@@ -43,6 +48,12 @@ export type FixtureCorrupt =
   | 'resolution-unknown'
   // LIFE-604 C4 양성 대조 — issue_create 가 T3 까지의 모의처럼 description·priority·statusId 를 무시하고 고정값으로 만든다.
   | 'create-ignore-fields'
+  // LIFE-622 C1 양성 대조 — 단건·수정 응답에서 version 칸 삭제 · 목록 행에서 삭제 · 숫자로.
+  | 'drop-version' | 'list-drop-version' | 'version-number'
+  // LIFE-622 C2 ⑤ — CONFLICT 와 닮았지만 다른 isError(statusCode 409 없음 · code 다름)를 쓰기 도구가 준다.
+  | 'conflict-no-status' | 'conflict-other-code'
+  // LIFE-622 수정 1 R1-D — code·409 는 맞고 current 가 없거나 레코드가 아님(null · 글자 · 배열).
+  | 'conflict-no-current' | 'conflict-current-null' | 'conflict-current-string' | 'conflict-current-array'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -63,6 +74,8 @@ type FixtureIssue = {
   dueAt: string | null
   archivedAt: string | null
   updatedAt: string
+  /** LA `issue.version`(정수) — 응답에는 글자로 나간다. */
+  version: number
 }
 type FixtureLink = { id: string; from: string; to: string; relation: WorkRelationKind }
 
@@ -110,7 +123,7 @@ export const FIXTURE_VISIBLE_ITEMS = [
 ]
 
 function seedIssues(): FixtureIssue[] {
-  const base = { description: null, priority: 'medium', resolution: null, color: null, onBoard: true, dueAt: null, archivedAt: null, updatedAt: '2026-10-13T00:00:00.000Z' }
+  const base = { description: null, priority: 'medium', resolution: null, color: null, onBoard: true, dueAt: null, archivedAt: null, updatedAt: '2026-10-13T00:00:00.000Z', version: 1 }
   return [
     { ...base, id: FIXTURE_IDS.corral, sequentialId: 337, kind: 'project', parentId: null, title: 'corral', statusId: FIXTURE_STATUS.dev, color: '#c7b28a', position: '1', onBoard: false },
     { ...base, id: FIXTURE_IDS.lifeAssistant, sequentialId: 2, kind: 'project', parentId: null, title: 'life-assistant', statusId: FIXTURE_STATUS.dev, position: '2', onBoard: false },
@@ -142,6 +155,8 @@ export class LaMcpFixture {
   readonly requests: FixtureRequest[] = []
   /** 받은 `issue_create` 인자(LIFE-604 C4) — 칸마다 무엇을 받았는지 본다. 토큰은 인자에 없다. */
   readonly createArgs: Record<string, unknown>[] = []
+  /** 받은 쓰기 도구 인자(LIFE-622 C2 ②) — `ifVersion` 이 실렸는지 본다. 토큰은 인자에 없다. */
+  readonly writeArgs: { tool: string; args: Record<string, unknown> }[] = []
   statuses = seedStatuses()
   issues = seedIssues()
   links: FixtureLink[] = []
@@ -151,6 +166,13 @@ export class LaMcpFixture {
   corrupt: FixtureCorrupt | null = null
   echo: FixtureEcho | null = null
   holdStream = false
+  /**
+   * `false` = 조건부 수정 이전 LA(LIFE-607 전) — `ifVersion` 을 받아도 견주지 않는다(판은 그대로 싣는다). 판과 무관한 순서 가드 시험(LIFE-623 r7)이
+   * 켜짐 전 서버 모양에서 그대로 돌게 할 때만 쓴다 — 켜진 LA 의 계약은 기본값(true)이 본다.
+   */
+  checksVersion = true
+  /** 서버가 전진 전이를 「뒤로」 로 읽는 경우(순서 해석 갈림, LIFE-622 C2 ②) — 전이는 no-op(판 소비 없음)으로 답하고 corral 은 `issue_update(statusId)` 로 이어 간다. */
+  transitionNoop = false
   scopeStyle: 'sdk' | 'http' = 'sdk'
   protocolVersion = '2025-06-18'
   private server: http.Server | null = null
@@ -243,6 +265,7 @@ export class LaMcpFixture {
     const ok = (value: unknown): { isError: boolean; text: string } => ({ isError: false, text: JSON.stringify(value) })
     const fail = (code: string, message: string): { isError: boolean; text: string } => ({ isError: true, text: JSON.stringify({ code, message }) })
     const find = (id: unknown): FixtureIssue | undefined => this.issues.find((issue) => issue.id === id)
+    if (tool === 'issue_update' || tool === 'issue_transition') this.writeArgs.push({ tool, args: { ...args } })
     switch (tool) {
       // `status-no-default` — 옛 서버처럼 isDefault 칸이 없다(R2-G 대조).
       case 'status_list': return ok(this.corrupt === 'status-no-default' ? this.statuses.map((status) => { const { isDefault: _gone, ...rest } = status; void _gone; return rest }) : this.statuses)
@@ -272,21 +295,28 @@ export class LaMcpFixture {
       case 'issue_transition': {
         const issue = find(args.id)
         if (issue === undefined) return fail('NOT_FOUND', '일감을 찾을 수 없어요')
+        // 버전 비교가 방향 판정보다 먼저(no-op 대상이어도 CONFLICT) — c12 실측.
+        const stale = this.stale({ issue, args })
+        if (stale !== null) return stale
         const target = this.statuses.find((status) => status.label === args.toStatusLabel)
         if (target === undefined) return fail('BAD_REQUEST', `없는 label — ${this.statuses.map((status) => status.label).join(', ')}`)
         const from = this.status(issue)
         const order = (status: FixtureStatus): number => ({ todo: 0, in_progress: 1, done: 2 })[status.categoryKey] * 100 + status.position
         const fromLabel = { label: from.label, categoryKey: from.categoryKey }
         if (target.id === from.id) return ok({ transitioned: false, reason: 'same', from: fromLabel, to: fromLabel, issue: this.full(issue) })
-        if (args.forwardOnly !== false && order(target) < order(from)) return ok({ transitioned: false, reason: 'backward', from: fromLabel, to: { label: target.label, categoryKey: target.categoryKey }, issue: this.full(issue) })
+        if (args.forwardOnly !== false && (this.transitionNoop || order(target) < order(from))) return ok({ transitioned: false, reason: 'backward', from: fromLabel, to: { label: target.label, categoryKey: target.categoryKey }, issue: this.full(issue) })
         issue.statusId = target.id
         if (typeof args.resolution === 'string' || args.resolution === null) issue.resolution = args.resolution
         this.touch(issue)
+        issue.version += 1
         return ok({ transitioned: true, from: fromLabel, to: { label: target.label, categoryKey: target.categoryKey }, issue: this.full(issue) })
       }
       case 'issue_update': {
         const issue = find(args.id)
         if (issue === undefined) return fail('NOT_FOUND', '일감을 찾을 수 없어요')
+        const stale = this.stale({ issue, args })
+        if (stale !== null) return stale
+        const before = JSON.stringify(issue)
         if (typeof args.statusId === 'string') {
           if (!this.statuses.some((status) => status.id === args.statusId)) return fail('BAD_REQUEST', '없는 statusId')
           issue.statusId = args.statusId
@@ -306,6 +336,8 @@ export class LaMcpFixture {
         if ('description' in args && (typeof args.description === 'string' || args.description === null)) issue.description = args.description
         if ('priority' in args && (typeof args.priority === 'string' || args.priority === null)) issue.priority = args.priority
         if ('dueAt' in args && (typeof args.dueAt === 'string' || args.dueAt === null)) issue.dueAt = args.dueAt
+        // 조건부 저장은 값이 같아도 판을 소비한다(F8). 무조건 저장의 무변경은 판 그대로.
+        if (args.ifVersion !== undefined || JSON.stringify(issue) !== before) issue.version += 1
         this.touch(issue)
         // LIFE-602 수정 1 — 쓰기 응답(E4 issue_update) 하나만 어긋나게: 읽기(issue_get·list)는 멀쩡하다(양성 대조 범위를 쓰기 응답으로 좁힌다).
         if (this.corrupt === 'update-bad-title') return ok({ ...this.response(issue), title: 42 })
@@ -343,7 +375,7 @@ export class LaMcpFixture {
         const created: FixtureIssue = {
           id: uuid(80000 + this.seq++), sequentialId, kind, parentId, title: args.title,
           description: !ignore && typeof args.description === 'string' ? args.description : null, priority: !ignore && typeof args.priority === 'string' ? args.priority : null, statusId,
-          resolution: null, color: null, position: String(100 + sequentialId), onBoard: args.onBoard === true, dueAt: typeof args.dueAt === 'string' ? args.dueAt : null, archivedAt: null, updatedAt: '2026-10-14T00:00:00.000Z',
+          resolution: null, color: null, position: String(100 + sequentialId), onBoard: args.onBoard === true, dueAt: typeof args.dueAt === 'string' ? args.dueAt : null, archivedAt: null, updatedAt: '2026-10-14T00:00:00.000Z', version: 1,
         }
         this.issues.push(created)
         return ok(this.response(created))
@@ -369,6 +401,27 @@ export class LaMcpFixture {
       default:
         return fail('NOT_FOUND', `없는 도구 ${tool}`)
     }
+  }
+
+  /**
+   * 조건부 수정(LIFE-622) — `ifVersion` 이 실렸고 지금 판과 글자가 다르면 CONFLICT(LA `isVersionConflict` 는 문자열 동등만). 실측 모양 그대로:
+   * isError text = `JSON.stringify(body, null, 2)`, current = 수정 응답 모양. 닮은 다른 오류(`conflict-*` 깨기)는 판독이 오분류하지 않는지 본다.
+   */
+  private stale({ issue, args }: { issue: FixtureIssue; args: Record<string, unknown> }): { isError: boolean; text: string } | null {
+    if (args.ifVersion === undefined || !this.checksVersion) return null
+    if (typeof args.ifVersion !== 'string') return { isError: true, text: JSON.stringify({ code: 'BAD_REQUEST', message: 'ifVersion' }) }
+    if (args.ifVersion === String(issue.version)) return null
+    const body: Record<string, unknown> = {
+      statusCode: 409, code: 'CONFLICT', message: `LIFE-${issue.sequentialId} 이(가) 연 뒤에 바뀌었습니다 (ifVersion=${args.ifVersion}, 현재 version=${issue.version}).`,
+      current: this.response(issue), lastModifiedBy: null,
+    }
+    if (this.corrupt === 'conflict-no-status') delete body.statusCode
+    if (this.corrupt === 'conflict-other-code') body.code = 'PRECONDITION'
+    if (this.corrupt === 'conflict-no-current') delete body.current
+    if (this.corrupt === 'conflict-current-null') body.current = null
+    if (this.corrupt === 'conflict-current-string') body.current = 'LIFE-600'
+    if (this.corrupt === 'conflict-current-array') body.current = [body.current]
+    return { isError: true, text: JSON.stringify(body, null, 2) }
   }
 
   private touch(issue: FixtureIssue): void {
@@ -399,7 +452,8 @@ export class LaMcpFixture {
       .map(({ displayId, ...rest }) => (this.corrupt === 'blocker-no-displayId' ? rest : { ...rest, displayId }))
     return {
       ...this.ref(issue), goalId: null, parentId: issue.parentId, priority: issue.priority, color: issue.color, position: issue.position, onBoard: issue.onBoard,
-      startedAt: null, dueAt: issue.dueAt, doneAt: null, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: issue.updatedAt, openBlockers,
+      startedAt: null, dueAt: issue.dueAt, doneAt: null, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: issue.updatedAt,
+      version: this.corrupt === 'version-number' ? issue.version : String(issue.version), openBlockers,
     }
   }
 

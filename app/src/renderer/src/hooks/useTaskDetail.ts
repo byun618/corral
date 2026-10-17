@@ -140,6 +140,12 @@ function carriesItem({ result, itemId }: { result: WorkResult; itemId: string })
   return 'item' in result && result.item !== null && result.item.id === itemId
 }
 
+type DetailPhase = { state: 'idle' | 'loading' | 'ready' | 'error'; message: string | null }
+/** 정본을 받았다 — 지난 읽기 오류(「서버 값을 다시 받지 못했습니다」)를 걷는다(LIFE-623 R4-C). 불러오는 중·빈 상태는 그대로. */
+function recovered(phase: DetailPhase): DetailPhase {
+  return phase.state === 'error' ? { state: 'ready', message: null } : phase
+}
+
 type Settled = { kind: 'ok'; result: WorkResult } | { kind: 'failed'; error: WorkError } | { kind: 'busy' } | { kind: 'stale' }
 
 export function useTaskDetail({ open, target, page, notify }: { open: boolean; target: DetailTarget | null; page: TasksPageModel; notify: (notice: MoveNotice) => void }) {
@@ -165,7 +171,10 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
    * 늦게 온 확정 쓰기의 순서 가드는 이 시각과 비교한다 — 무효화 시각과 비교하면 실패한 후속 쓰기 때문에 유효한 늦은 결과를 버린다.
    */
   const confirmedRef = useRef(0)
-  /** 미확인(R3-A) — 순서 가드가 늦은 결과를 버렸는데 정본을 아직 다시 받지 못함. 그동안 상세 쓰기는 막힌다(옛 base 로 저장하지 않게). 정본을 받으면 풀린다. */
+  /**
+   * 미확인(R3-A) — 순서 가드가 늦은 결과를 버렸거나 쓰기가 「적용됐을 수 있음」 으로 실패했는데(R4-A) 정본을 아직 다시 받지 못함.
+   * 그동안 상세 쓰기는 막힌다(옛 base 로 저장하지 않게). 정본을 받으면 풀린다 — 지난 읽기 오류 표시도 함께 걷는다(R4-C).
+   */
   const [unconfirmed, setUnconfirmed] = useState(false)
   // 확정 시각은 작업 페이지의 쓰기 「보낸 시각」 과 같은 시계(LIFE-623 R2-A, `work-clock`) — 늦게 온 옛 쓰기 결과를 base 의 근거와 비교한다.
   const tick = useCallback((): number => nextWorkStamp(), [])
@@ -183,7 +192,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const [, setReadsSeen] = useState(0)
   /** 살아 있는 되돌리기 토스트 — 다음 쓰기·판 변화에 사라진다. */
   const undosRef = useRef<UndoEntry[]>([])
-  const [phase, setPhase] = useState<{ state: 'idle' | 'loading' | 'ready' | 'error'; message: string | null }>({ state: 'idle', message: null })
+  const [phase, setPhase] = useState<DetailPhase>({ state: 'idle', message: null })
   const [statuses, setStatuses] = useState<WorkStatus[] | null>(null)
   const [parents, setParents] = useState<ParentRef[]>([])
   const [children, setChildren] = useState<Loaded<WorkItem[]>>({ state: 'loading' })
@@ -262,6 +271,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     baseStampRef.current = stamp
     confirmedRef.current = stamp
     setUnconfirmed(false)
+    setPhase(recovered)
     putBase(value)
     setItem(value)
     slideBases(value)
@@ -438,12 +448,22 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     baseStampRef.current = tick()
     confirmedRef.current = settled.sent
     setUnconfirmed(false)
+    setPhase(recovered)
     const next = settled.item
     putBase(next)
     setItem(next)
     slideBases(next)
     void refreshActivity(here)
   }, [page.settledWrite])
+
+  // 「적용됐을 수 있음」 으로 끝난 쓰기(상세·보드, 즉시·늦게 — LIFE-623 R4-A) — 서버 값이 지금 base 와 다를 수 있다(외부 비우기·교체 뒤 우리 쓰기가 적용됐는데 결과를 못 받음).
+  // 옛 base 를 편집 기준으로 두지 않는다 — 미확인으로 두고 정본을 다시 받는다(순서 가드와 같은 막힘·「다시 시도」). 적용되지 않은 확정 실패는 base 그대로.
+  useEffect(() => {
+    const unsure = page.unsureWrite
+    if (unsure === null || unsure.uid !== uid || here === null) return
+    setUnconfirmed(true)
+    void reconcile(here)
+  }, [page.unsureWrite])
 
   /** 응답에 이 작업이 없는 쓰기 뒤 — 단건(판)을 다시 읽고(진행 중 = 다음 쓰기 막힘), 연산에 따라 목록을 다시 읽는다(R1-D·E · R2-E·F). 쓰기의 출발점으로. */
   const afterForeign = useCallback(({ op, origin }: { op: WorkCall['op']; origin: Origin }): Promise<WorkItem | null> => {
@@ -523,8 +543,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
           setConflict({ call, current: conflictInfo.current, by: conflictInfo.by, fields: conflictFields({ base: basis, current: conflictInfo.current }), at: Date.parse(conflictInfo.current.updatedAt) || Date.now() })
         } else {
           if (spec.quiet !== true && !late) notify({ kind: 'failed', message: `${current.key} — ${outcome.error.message}` })
-          // 늦은 실패는 그 사이 화면이 움직였을 수 있다 — 서버 정본을 다시 읽는다(R1-C).
-          if (late) void refreshItem(origin)
+          // 늦은 실패는 그 사이 화면이 움직였을 수 있다 — 서버 정본을 다시 읽는다(R1-C). 적용됐을 수 있는 실패는 작업 페이지 신호로 미확인 재조회가 맡는다(R4-A).
+          if (late && outcome.error.maybeApplied !== true) void refreshItem(origin)
         }
         return outcome
       }

@@ -99,6 +99,8 @@ export type CreateOutcome = CreateSettled | { kind: 'late'; settled: Promise<Cre
 /** 성공한 쓰기의 서버 값 — 열린 상세가 받는다. `seq` 는 같은 값이 다시 와도 알 수 있게. */
 /** 확정된 쓰기 결과. `sent` = 그 쓰기를 보낸 시각(`work-clock` — 상세 「확정 시각」 과 같은 시계, LIFE-623 R2-A). 늦게 도착한 옛 쓰기를 상세가 가려낸다. */
 export type SettledWrite = { uid: string; item: WorkItem; seq: number; sent: number }
+/** 「적용됐을 수 있음」(`maybeApplied`) 으로 끝난 쓰기(상세·보드, 즉시·늦게) — 열린 상세가 받아 미확인으로 두고 단건을 다시 읽는다(LIFE-623 R4-A). */
+export type UnsureWrite = { uid: string; seq: number }
 
 type SpaceResult = { ok: true; data: SpaceData; pages: number } | { ok: false; error: WorkError }
 type SpaceFetch = { state: 'pending' } | { state: 'done' } | { state: 'failed'; error: WorkError }
@@ -275,6 +277,14 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
   /** 성공한 쓰기의 서버 값 — 열린 상세가 받는다(LIFE-602). */
   const [settledWrite, setSettledWrite] = useState<SettledWrite | null>(null)
   const settledSeq = useRef(0)
+  /** 적용됐을 수 있는 실패 — 서버 값이 쓰기 전 base 와 다를 수 있다. 열린 상세가 정본을 다시 받을 때까지 쓰기를 막는다(LIFE-623 R4-A). */
+  const [unsureWrite, setUnsureWrite] = useState<UnsureWrite | null>(null)
+  const unsureSeq = useRef(0)
+  const markUnsure = useCallback(({ uid, error }: { uid: string; error: WorkError }): void => {
+    if (error.maybeApplied !== true) return
+    unsureSeq.current += 1
+    setUnsureWrite({ uid, seq: unsureSeq.current })
+  }, [])
   const [load, setLoad] = useState<TasksLoad>(EMPTY_LOAD)
   const [search, setSearch] = useState<KeySearch>(NO_SEARCH)
   const [working, setWorking] = useState<Map<string, StoredLookup>>(new Map())
@@ -778,6 +788,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         if (written.generation !== currentGeneration(connectionId)) return
         // 늦게 온 실패는 알린다 — 화면은 아래 재조회가 서버 값으로 되돌린다(원복을 따로 쓰지 않는다).
         if (!late.ok) notify({ kind: 'failed', message: `${original.key} — ${late.error.message}` })
+        if (!late.ok) markUnsure({ uid, error: late.error })
         settles.current += 1
         void reloadRef.current({ quiet: true })
         setWorkingRound((value) => value + 1)
@@ -792,6 +803,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       // 실패·버린 응답·모양이 다른 응답 = 그 카드 하나만 옮기기 전 자리로(순서는 그 카드만 되돌린다, R2-B), 그리고 서버를 다시 읽어 수렴한다.
       patch({ connectionId, spaceKey, apply: (items) => applyIntent({ items, itemId: row.item.id, intent: reverse, statuses }) })
       notify({ kind: 'failed', message: `${original.key} — ${response.ok ? '출처 응답을 확인하지 못했습니다.' : response.error.message}` })
+      if (!response.ok) markUnsure({ uid, error: response.error })
       void reloadRef.current({ quiet: true })
       return
     }
@@ -844,7 +856,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         return true
       },
     })
-  }, [patch, gate, notify, reflect, currentGeneration])
+  }, [patch, gate, notify, reflect, currentGeneration, markUnsure])
 
   /** 상세 단건 읽기 하나를 그 카드의 진행 중 읽기로 센다 — 돌려준 함수로 뺀다(두 번 불러도 한 번만). */
   const holdRead = useCallback((uid: string): (() => void) => {
@@ -899,6 +911,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         lagging.current.delete(written)
         if (written.generation !== currentGeneration(connectionId)) return { kind: 'stale' }
         if (!late.ok) notify({ kind: 'failed', message: `${listed?.key ?? '작업'} — ${late.error.message}` })
+        if (!late.ok) markUnsure({ uid, error: late.error })
         settles.current += 1
         void reloadRef.current({ quiet: true })
         setWorkingRound((value) => value + 1)
@@ -923,6 +936,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     }
     if (!response.ok) {
       revert()
+      markUnsure({ uid, error: response.error })
       void reloadRef.current({ quiet: true })
       return { kind: 'failed', error: response.error }
     }
@@ -943,7 +957,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       void reloadRef.current({ quiet: true })
     }
     return { kind: 'ok', result }
-  }, [patch, gate, notify, reflect, currentGeneration, keepCreated])
+  }, [patch, gate, notify, reflect, currentGeneration, keepCreated, markUnsure])
 
   // --- 만들기 (LIFE-604) ---
   const creating = useRef(new Set<string>())
@@ -1049,7 +1063,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     reload, retry, loadMore, invalidateMore,
     hits, searchNotes, workingEntries, working: workingLookups, workingKeys, linked,
     move: (request: MoveRequest) => move({ ...request, undo: false, restore: null }),
-    writeItem, settledWrite, startedWrite, holdRead,
+    writeItem, settledWrite, unsureWrite, startedWrite, holdRead,
     /** 만들기(LIFE-604) — 진입마다 잠금 하나. `createBusy` = 지금 확정을 기다리는 잠금 열쇠. */
     createItem, createBusy,
     /** 확인 안 된 쓰기가 있는 카드(uid) — 끌기 잠금·「확인하는 중」 표시(R2-A). */

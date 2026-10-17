@@ -9,7 +9,7 @@ import { Toaster, toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { WorkCall, WorkRequest, WorkResponse, WorkSettingsState } from '../../../shared/work.js'
 import { MemoryActivity } from '../../../main/work/activity-store.js'
-import { FIXTURE_IDS, LaMcpFixture } from '../../../main/work/la-mcp-fixture.js'
+import { FIXTURE_IDS, FIXTURE_STATUS, LaMcpFixture } from '../../../main/work/la-mcp-fixture.js'
 import { laSourceEntry } from '../../../main/work/la-source.js'
 import { mockSourceEntry, seedMockDemoState, type MockState } from '../../../main/work/mock-source.js'
 import type { WorkSourceEntry } from '../../../main/work/source.js'
@@ -70,7 +70,7 @@ async function rig({ entry }: { entry?: (state: MockState) => WorkSourceEntry } 
 }
 
 /** 실제 `LaSource` + `LaMcpFixture`(충돌 검사 꺼짐). 응답도 모아 쓰기 결과의 본문이 정본 그대로 오는지 본다(V17 상당). */
-async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[]; responses: WorkResponse[] }> {
+async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[]; responses: WorkResponse[]; service: WorkService; connectionId: string; emitSettings: () => void }> {
   const fixture = new LaMcpFixture()
   const fetchImpl = async (_url: unknown, options?: RequestInit): Promise<Response> => {
     const body: { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } } = JSON.parse(String(options?.body))
@@ -79,19 +79,22 @@ async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[]; resp
     const result = reply === null ? { protocolVersion: '2025-06-18' } : { content: [{ type: 'text', text: reply.text }], ...(reply.isError ? { isError: true } : {}) }
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), { headers: { 'content-type': 'application/json' } })
   }
+  // 설정 변경(연결 세대 교체)은 `emitSettings` 로 화면 listener 에 직접 넘긴다 — 하네스 서비스의 onChange 는 기록만 한다.
+  let listener: (value: WorkSettingsState) => void = () => {}
   const harness = workHarness({ entries: [laSourceEntry({ url: 'http://127.0.0.1:9/not-networked', clientVersion: 'test', fetchImpl })] })
   const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
   if (!added.ok) throw new Error('LA 모의 연결 실패')
   const calls: WorkCall[] = []
   const responses: WorkResponse[] = []
   Reflect.set(window, 'corral', {
-    getUiPrefs: async () => ({}), setUiPrefs: () => {}, getWorkSettings: async () => harness.service.settings(), onWorkSettings: () => () => {},
+    getUiPrefs: async () => ({}), setUiPrefs: () => {}, getWorkSettings: async () => harness.service.settings(),
+    onWorkSettings: (next: (value: WorkSettingsState) => void) => { listener = next; return () => {} },
     workRequest: async (request: WorkRequest) => { calls.push(request.call); const response = await harness.service.request(request); responses.push(response); return response },
     workActivity: async (query: unknown) => harness.service.activity(query),
   })
   renderPage()
   await settle(30)
-  return { fixture, calls, responses }
+  return { fixture, calls, responses, service: harness.service, connectionId: added.connection.id, emitSettings: () => listener(harness.service.settings()) }
 }
 
 const q = (selector: string): Element | null => document.querySelector(selector)
@@ -488,4 +491,39 @@ it('R3-A B 성공 역전 + 재조회 지연 — 받는 동안 막힘, 받은 뒤
   expect(bodyEditDisabled()).toBe(false)
   click('[data-issue-body-edit]')
   expect(input('[data-md-editor] textarea').value).toBe('')
+})
+
+// LIFE-623 R4-C — 미확인(순서 가드 재조회 실패)이 어느 정본 수용 경로로 풀리든 지난 읽기 오류 표시도 걷힌다: 다시 시도 · 닫고 다시 열기 · 작업 전환 · 연결 세대 교체 · 보드 쓰기 성공.
+// 리뷰 r4 X4-3(`codex-r4-raw/probes/TaskDetail.x4recovery.test.tsx` 이식) — 수정 전에는 보드 성공만 배너가 남았다.
+it.each(['retry', 'reopen', 'switch', 'generation', 'board'] as const)('R4-C 미확인 회복 %s — 쓰기 풀림·빈 본문 저장·오류 표시 없음', async (mode) => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD RECOVERY BODY'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(20)
+  const release = await captureLateA()
+  issue.description = null
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(30)
+  const restore = wrapTool(la.fixture, (inner) => (value) => (value.tool === 'issue_get' && value.args.id === issue.id ? refused('fixture reconcile refused') : inner(value)))
+  await act(async () => { release() })
+  await settle(30)
+  expect(bodyEditDisabled()).toBe(true)
+  expect(q('[data-issue-load-error]')).not.toBeNull()
+  restore()
+  if (mode === 'retry') click('[data-issue-retry]')
+  if (mode === 'reopen') { click('[data-issue-close]'); await settle(10); await openCard(`LIFE-${issue.sequentialId}`) }
+  if (mode === 'switch') { await openCard('LIFE-601'); await openCard(`LIFE-${issue.sequentialId}`) }
+  if (mode === 'generation') await act(async () => { await la.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: la.connectionId }); la.emitSettings() })
+  if (mode === 'board') await dragTo({ card: `LIFE-${issue.sequentialId}`, zone: `col:st:${FIXTURE_STATUS.analysis}` })
+  await settle(35)
+  expect(bodyEditDisabled()).toBe(false)
+  expect(q('[data-issue-load-error]')).toBeNull()
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(30)
+  expect(issue.description ?? '').toBe('')
 })

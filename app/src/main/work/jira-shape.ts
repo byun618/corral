@@ -137,6 +137,8 @@ export type JiraIssue = {
   parentId: string | null
   updated: string
   links: JiraLink[]
+  /** `issuelinks` 칸을 받았나(LIFE-623 R2-B) — 없으면 `links` 의 빈 배열은 「연결 없음」 이 아니라 「안 실음」 이다. */
+  hasLinks: boolean
 }
 
 function readLinked(value: unknown, path: string): JiraLinked {
@@ -199,6 +201,7 @@ export function readIssue(value: unknown, path = 'issue'): JiraIssue {
     parentId: parent === null ? null : id(parent.id, `${path}.fields.parent.id`),
     updated,
     links: fields.issuelinks === undefined ? [] : arr(fields.issuelinks, `${path}.fields.issuelinks`).map((entry, index) => readLink(entry, `${path}.fields.issuelinks[${index}]`)),
+    hasLinks: Object.hasOwn(fields, 'issuelinks'),
   }
 }
 

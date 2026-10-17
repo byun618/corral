@@ -659,6 +659,60 @@ describe('수정 2 — 리뷰 r2 (R2-C 생존 뮤테이션 · R2-E · R2-F · R2
     expect(h.fixture.requests.filter((request) => request.method === 'POST' && request.path === '/rest/api/3/issueLink')).toHaveLength(1)
   })
 
+  it('LIFE-623 R2-C 만들었지만 첫 다시 읽기가 502 면 최소 작업 — 본문은 직후 정상 단건과 같은 정본(보낸 글 그대로가 아님) · POST 1회', async () => {
+    const h = await connected()
+    const posted = (): boolean => h.fixture.requests.some((request) => request.method === 'POST' && request.path === '/rest/api/3/issue')
+    h.fixture.faults.push({ match: (request) => request.method === 'GET' && /^\/rest\/api\/3\/issue\/\d+$/.test(request.path) && posted(), status: 502, once: true })
+    const made = await h.send({ op: 'createItem', spaceKey: 'CORE', parentId: null, kindKey: '10001', title: '다시 읽기 실패', body: 'a\n\n\nb' })
+    if (!made.ok || made.result.op !== 'createItem') throw new Error(JSON.stringify(made))
+    expect(h.fixture.requests.filter((request) => request.method === 'POST' && request.path === '/rest/api/3/issue')).toHaveLength(1)
+    const read = await h.send({ op: 'getItem', itemId: made.result.item.id })
+    if (!read.ok || read.result.op !== 'getItem') throw new Error(JSON.stringify(read))
+    expect(made.result.item.body).toBe(read.result.item.body)
+    expect(made.result.item.body).not.toBe('a\n\n\nb')
+    expect(made.result.item.relations).toEqual(read.result.item.relations)
+    expect(made.result.item.bodyLock).toBe(read.result.item.bodyLock)
+  })
+
+  it('LIFE-623 R3-B 본문 저장 전 조회에 description 칸이 없으면 PUT 전에 invalid_response(maybeApplied 없음) · 같은 호출의 다른 칸도 보내지 않는다 · 본문 없는 수정은 그대로', async () => {
+    const h = await connected()
+    const before = JSON.stringify(h.fixture.issues.find((entry) => entry.id === '20003')?.description)
+    const puts = (): number => h.fixture.requests.filter((request) => request.method === 'PUT').length
+    const start = puts()
+    h.fixture.omitOnce.set('20003', ['description'])
+    const refusedSave = await h.send({ op: 'updateItem', itemId: '20003', fields: { body: '- [x] 아무 글', priority: 'high' }, ifVersion: null })
+    expect(refusedSave).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    expect(!refusedSave.ok && refusedSave.error.maybeApplied).toBeFalsy()
+    expect(puts()).toBe(start)
+    expect(JSON.stringify(h.fixture.issues.find((entry) => entry.id === '20003')?.description)).toBe(before)
+    expect(h.fixture.issues.find((entry) => entry.id === '20003')?.priorityId).not.toBe('2')
+    // 본문을 쓰지 않는 수정은 저장 전 조회가 없다 — 칸 누락과 무관하게 그대로.
+    h.fixture.omitOnce.set('20002', ['description', 'issuelinks'])
+    const titled = await h.send({ op: 'updateItem', itemId: '20002', fields: { title: '제목만' }, ifVersion: null })
+    // 쓰기 뒤 읽기가 그 누락을 만나면 R2-B 규칙(maybeApplied) — 저장 전 조회가 없었다는 뜻.
+    expect(titled).toMatchObject({ ok: false, error: { kind: 'invalid_response', maybeApplied: true } })
+    expect(h.fixture.issues.find((entry) => entry.id === '20002')?.summary).toBe('제목만')
+  })
+
+  it('LIFE-623 R2-B 단건·쓰기 뒤 읽기 응답에 description·issuelinks 칸이 없으면 invalid_response(쓰기 뒤면 maybeApplied) — 칸이 있고 null 이면 빈 정본', async () => {
+    const h = await connected()
+    h.fixture.omitOnce.set('20002', ['description'])
+    expect(await h.send({ op: 'getItem', itemId: '20002' })).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    h.fixture.omitOnce.set('20002', ['issuelinks'])
+    expect(await h.send({ op: 'getItem', itemId: '20002' })).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    h.fixture.omitOnce.set('20002', ['description', 'issuelinks'])
+    const written = await h.send({ op: 'updateItem', itemId: '20002', fields: { priority: 'high' }, ifVersion: null })
+    expect(written).toMatchObject({ ok: false, error: { kind: 'invalid_response', maybeApplied: true } })
+    // 쓰기는 적용됐다 — 다음 정상 단건이 그 값.
+    const after = await h.send({ op: 'getItem', itemId: '20002' })
+    expect(after).toMatchObject({ ok: true, result: { item: { priority: 'high' } } })
+    // 칸이 있고 null(CORE-4) = 빈 정본 '' — 거르지 않는다.
+    expect(await h.send({ op: 'getItem', itemId: '20004' })).toMatchObject({ ok: true, result: { item: { body: '' } } })
+    // 목록은 가벼운 응답 그대로(본문 칸 없음 → 안 실음 null).
+    const listed = await h.send({ op: 'listItems', spaceKey: 'CORE', cursor: null })
+    expect(listed.ok && listed.result.op === 'listItems' ? listed.result.items.every((item) => item.body === null) : false).toBe(true)
+  })
+
   it('R2-I 둥근 따옴표가 든 질의는 짝 검사를 믿을 수 없어 질의로 보내지 않는다(텍스트 폴백) · Y32 따옴표 안 역슬래시 · Y33 작은따옴표도 따옴표', async () => {
     expect(splitOrderBy('a = “(” ) OR ( project = WEB ) OR ( b = “)”')).toBeNull()
     expect(splitOrderBy('summary ~ ‘x’')).toBeNull()

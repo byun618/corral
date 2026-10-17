@@ -134,7 +134,10 @@ export type WorkItem = {
   key: string
   spaceKey: string
   title: string
-  /** 본문(markdown). 목록에서는 null(가벼움) — 단건(`getItem`)에서만 채운다. */
+  /**
+   * 본문(markdown). **단건 모양**(`getItem`·`findByKey`·쓰기 결과 — `WorkResult` 참고)에서는 정본이다: null = 출처의 빈 본문(LA `description:null`)이지 「안 실음」 이 아니다.
+   * **목록 모양**(`listItems`·`listChildren`·`searchItems`)의 null 은 「안 실음」(가벼움). 어느 모양인지는 연산이 정한다 — 목록 행의 null 을 정본으로 쓰지 않는다(LIFE-623).
+   */
   body: string | null
   kind: WorkKind
   statusKey: string
@@ -154,7 +157,7 @@ export type WorkItem = {
   updatedAt: string
   /** 조건부 수정용 판(`ifVersion`). 충돌 검사 능력이 꺼져 있으면 null. */
   version: string | null
-  /** 연결 — 단건에서만 채운다(목록은 null). */
+  /** 연결 — 단건 모양에서는 정본(빈 연결 = 빈 배열), 목록 모양에서는 null(안 실음). 모양 규칙은 `body` 와 같다. */
   relations: WorkRelation[] | null
   workLinks: WorkLink[]
   /**
@@ -310,6 +313,10 @@ export type WorkResult =
   | { op: 'findByKey'; item: WorkItem | null }
   /** `blocked` = 갈 수 있는 전이가 있지만 corral 이 채울 수 없는 필수 필드를 묻는 상태(LIFE-605 C4) — `statusKeys` 에 없고 이유와 함께 흐린다. */
   | { op: 'listTransitions'; statusKeys: string[]; blocked: { statusKey: string; reason: string }[] }
+  /**
+   * 쓰기 결과는 **단건 모양**이다(LIFE-623) — `body`·`relations` 가 직후 `getItem` 과 같은 정본(본문 null = 빈 본문). 화면은 이 값을 그대로 기준으로 쓰고
+   * 옛 값으로 보충하지 않는다. 출처는 쓰기 뒤 단건을 다시 읽어 싣는다(계약 묶음 「쓰기 결과는 단건 모양」 이 세 출처를 검사한다).
+   */
   | { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'reorder' | 'updateItem' | 'createItem'; item: WorkItem }
   | { op: 'listChildren'; items: WorkItem[] }
   | { op: 'getCreateMeta'; meta: WorkCreateMeta }

@@ -28,6 +28,7 @@ import type {
   WorkStatus,
 } from '../../../shared/work.js'
 import { conflictFields, type ConflictField } from '../task-detail-model.js'
+import { nextWorkStamp } from '../work-clock.js'
 import { LatestGate, itemUid, writeBlock } from '../tasks-model.js'
 import { request, type MoveNotice, type TasksPageModel } from './useTasksPage.js'
 
@@ -139,6 +140,12 @@ function carriesItem({ result, itemId }: { result: WorkResult; itemId: string })
   return 'item' in result && result.item !== null && result.item.id === itemId
 }
 
+type DetailPhase = { state: 'idle' | 'loading' | 'ready' | 'error'; message: string | null }
+/** 정본을 받았다 — 지난 읽기 오류(「서버 값을 다시 받지 못했습니다」)를 걷는다(LIFE-623 R4-C). 불러오는 중·빈 상태는 그대로. */
+function recovered(phase: DetailPhase): DetailPhase {
+  return phase.state === 'error' ? { state: 'ready', message: null } : phase
+}
+
 type Settled = { kind: 'ok'; result: WorkResult } | { kind: 'failed'; error: WorkError } | { kind: 'busy' } | { kind: 'stale' }
 
 export function useTaskDetail({ open, target, page, notify }: { open: boolean; target: DetailTarget | null; page: TasksPageModel; notify: (notice: MoveNotice) => void }) {
@@ -157,9 +164,20 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const here = useMemo<Origin | null>(() => (target === null ? null : { session, target }), [session, target])
 
   // 판 최신성 시계 — 읽기 시작·쓰기 시작·쓰기 확정마다 오른다. base 는 자기를 만든 사건의 시각을 갖는다.
-  const clockRef = useRef(0)
+  /** 읽기 무효화 시각 — 이보다 먼저 시작한 읽기는 base 가 되지 못한다. 쓰기 시작(성공 여부 무관)·확정·읽기 수용에서 오른다. */
   const baseStampRef = useRef(0)
-  const tick = useCallback((): number => { clockRef.current += 1; return clockRef.current }, [])
+  /**
+   * 확인된 base 의 근거 시각(LIFE-623 R3-A) — 지금 base 를 만든 읽기의 시작 시각 또는 확정 쓰기를 **보낸** 시각. 성공해 받은 것만 올린다(실패한 쓰기는 올리지 않는다).
+   * 늦게 온 확정 쓰기의 순서 가드는 이 시각과 비교한다 — 무효화 시각과 비교하면 실패한 후속 쓰기 때문에 유효한 늦은 결과를 버린다.
+   */
+  const confirmedRef = useRef(0)
+  /**
+   * 미확인(R3-A) — 순서 가드가 늦은 결과를 버렸거나 쓰기가 「적용됐을 수 있음」 으로 실패했는데(R4-A) 정본을 아직 다시 받지 못함.
+   * 그동안 상세 쓰기는 막힌다(옛 base 로 저장하지 않게). 정본을 받으면 풀린다 — 지난 읽기 오류 표시도 함께 걷는다(R4-C).
+   */
+  const [unconfirmed, setUnconfirmed] = useState(false)
+  // 확정 시각은 작업 페이지의 쓰기 「보낸 시각」 과 같은 시계(LIFE-623 R2-A, `work-clock`) — 늦게 온 옛 쓰기 결과를 base 의 근거와 비교한다.
+  const tick = useCallback((): number => nextWorkStamp(), [])
 
   const [base, setBase] = useState<WorkItem | null>(null)
   const [item, setItem] = useState<WorkItem | null>(null)
@@ -174,7 +192,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const [, setReadsSeen] = useState(0)
   /** 살아 있는 되돌리기 토스트 — 다음 쓰기·판 변화에 사라진다. */
   const undosRef = useRef<UndoEntry[]>([])
-  const [phase, setPhase] = useState<{ state: 'idle' | 'loading' | 'ready' | 'error'; message: string | null }>({ state: 'idle', message: null })
+  const [phase, setPhase] = useState<DetailPhase>({ state: 'idle', message: null })
   const [statuses, setStatuses] = useState<WorkStatus[] | null>(null)
   const [parents, setParents] = useState<ParentRef[]>([])
   const [children, setChildren] = useState<Loaded<WorkItem[]>>({ state: 'loading' })
@@ -201,6 +219,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
    * 막혀 있으면 화면은 그 칸을 막고, 그래도 온 쓰기는 보내지 않는다(기다렸다 보내지 않는다).
    */
   const blocked = writeBlock(connection?.status ?? null)?.reason ?? (locked ? '앞 변경을 출처가 확인하는 중…' : null) ?? (base === null && target !== null ? (phase.state === 'error' ? '상세를 받지 못했습니다 — 다시 시도하세요.' : '상세를 불러오는 중…') : null) ?? (reading ? '상세를 다시 받는 중…' : null)
+    ?? (unconfirmed ? (phase.state === 'error' ? '서버 값을 다시 받지 못했습니다 — 다시 시도해 받은 뒤 고치세요.' : '서버 값을 다시 맞추는 중…') : null)
   const blockedRef = useRef(blocked)
   blockedRef.current = blocked
   const versionOf = useCallback((current: WorkItem | null): string | null => (capsRef.current?.conflictCheck.state === 'on' ? current?.version ?? null : null), [])
@@ -250,6 +269,9 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const acceptItem = useCallback(({ value, stamp }: { value: WorkItem; stamp: number }): WorkItem | null => {
     if (stamp <= baseStampRef.current) return null
     baseStampRef.current = stamp
+    confirmedRef.current = stamp
+    setUnconfirmed(false)
+    setPhase(recovered)
     putBase(value)
     setItem(value)
     slideBases(value)
@@ -272,6 +294,21 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
       const response = await read({ key: 'refresh', call: { op: 'getItem', itemId: origin.target.itemId }, origin })
       if (response === null || !response.ok || response.result.op !== 'getItem') return null
       return acceptItem({ value: response.result.item, stamp })
+    },
+  }), [read, acceptItem, tick, tracked])
+
+  /** 순서 가드 뒤 정본 다시 받기(R3-A) — `refreshItem` 과 같되 실패를 상세 오류로 남긴다(「다시 시도」). 받으면 `acceptItem` 이 미확인을 푼다. */
+  const reconcile = useCallback((origin: Origin): Promise<void> => tracked({
+    origin,
+    run: async () => {
+      const stamp = tick()
+      const response = await read({ key: 'refresh', call: { op: 'getItem', itemId: origin.target.itemId }, origin })
+      if (response === null) return
+      if (!response.ok || response.result.op !== 'getItem') {
+        setPhase({ state: 'error', message: response.ok ? '출처 응답 모양이 다릅니다.' : response.error.message })
+        return
+      }
+      acceptItem({ value: response.result.item, stamp })
     },
   }), [read, acceptItem, tick, tracked])
 
@@ -340,6 +377,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     setParents([])
     setRecords([])
     baseStampRef.current = 0
+    confirmedRef.current = 0
+    setUnconfirmed(false)
     basesRef.current.clear()
     baseRef.current = null
     if (target === null) { setBase(null); setItem(null); setPhase({ state: 'idle', message: null }); return }
@@ -392,17 +431,39 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
 
   // 확정된 쓰기(상세·보드 끌기, 즉시·늦게) — 서버 값을 받는다. 확정 시각을 올려 그 전에 시작한 읽기를 낡은 것으로 만든다.
   // 편집 기준은 읽기와 같은 규칙(칸이 하나도 다르지 않을 때만)으로 — 상세 쓰기의 기준은 `finish` 가 이미 옮겼다.
+  // 쓰기 결과는 단건 모양이다(계약 `WorkResult` · LIFE-623) — 본문·연결의 null 은 정본의 빈 값이지 「안 실음」 이 아니다. 옛 값으로 보충하지 않는다:
+  // 보충하면 옛 본문 + 새 판이 한 snapshot 이 되고 `slideBases` 가 그것을 열린 초안의 기준으로 올려 외부 비우기를 배너 없이 덮는다(R7-A).
+  // 그 쓰기를 **보낸 시각**이 지금 base 의 근거(읽기 시작·상세 쓰기 시작·앞 확정 — 같은 시계) 이하면 이 결과는 base 보다 옛 근거다(먼저 보내 늦게 온 성공 —
+  // 그 사이 더 새 확정·읽기가 base 가 됐다). 올리지 않고 단건을 다시 읽는다 — 정본은 읽기가 정한다(LIFE-623 R2-A). 보드 목록 정합화는 작업 페이지 몫이라 그대로다.
   useEffect(() => {
     const settled = page.settledWrite
     if (settled === null || settled.uid !== uid || here === null) return
+    if (settled.sent <= confirmedRef.current) {
+      // 미확인으로 두고 정본을 다시 받는다 — 실패하면 오류 + 「다시 시도」, 받기 전에는 쓰기 막힘(R3-A).
+      setUnconfirmed(true)
+      void reconcile(here)
+      void refreshActivity(here)
+      return
+    }
     baseStampRef.current = tick()
-    const merge = (current: WorkItem | null): WorkItem => ({ ...settled.item, body: settled.item.body ?? current?.body ?? null, relations: settled.item.relations ?? current?.relations ?? null })
-    const next = merge(baseRef.current)
+    confirmedRef.current = settled.sent
+    setUnconfirmed(false)
+    setPhase(recovered)
+    const next = settled.item
     putBase(next)
-    setItem(merge)
+    setItem(next)
     slideBases(next)
     void refreshActivity(here)
   }, [page.settledWrite])
+
+  // 「적용됐을 수 있음」 으로 끝난 쓰기(상세·보드, 즉시·늦게 — LIFE-623 R4-A) — 서버 값이 지금 base 와 다를 수 있다(외부 비우기·교체 뒤 우리 쓰기가 적용됐는데 결과를 못 받음).
+  // 옛 base 를 편집 기준으로 두지 않는다 — 미확인으로 두고 정본을 다시 받는다(순서 가드와 같은 막힘·「다시 시도」). 적용되지 않은 확정 실패는 base 그대로.
+  useEffect(() => {
+    const unsure = page.unsureWrite
+    if (unsure === null || unsure.uid !== uid || here === null) return
+    setUnconfirmed(true)
+    void reconcile(here)
+  }, [page.unsureWrite])
 
   /** 응답에 이 작업이 없는 쓰기 뒤 — 단건(판)을 다시 읽고(진행 중 = 다음 쓰기 막힘), 연산에 따라 목록을 다시 읽는다(R1-D·E · R2-E·F). 쓰기의 출발점으로. */
   const afterForeign = useCallback(({ op, origin }: { op: WorkCall['op']; origin: Origin }): Promise<WorkItem | null> => {
@@ -482,8 +543,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
           setConflict({ call, current: conflictInfo.current, by: conflictInfo.by, fields: conflictFields({ base: basis, current: conflictInfo.current }), at: Date.parse(conflictInfo.current.updatedAt) || Date.now() })
         } else {
           if (spec.quiet !== true && !late) notify({ kind: 'failed', message: `${current.key} — ${outcome.error.message}` })
-          // 늦은 실패는 그 사이 화면이 움직였을 수 있다 — 서버 정본을 다시 읽는다(R1-C).
-          if (late) void refreshItem(origin)
+          // 늦은 실패는 그 사이 화면이 움직였을 수 있다 — 서버 정본을 다시 읽는다(R1-C). 적용됐을 수 있는 실패는 작업 페이지 신호로 미확인 재조회가 맡는다(R4-A).
+          if (late && outcome.error.maybeApplied !== true) void refreshItem(origin)
         }
         return outcome
       }

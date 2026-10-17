@@ -105,8 +105,11 @@ export type CreateSettled = { kind: 'ok'; item: WorkItem } | { kind: 'failed'; e
 export type CreateOutcome = CreateSettled | { kind: 'late'; settled: Promise<CreateSettled> }
 
 /** 성공한 쓰기의 서버 값 — 열린 상세가 받는다. `seq` 는 같은 값이 다시 와도 알 수 있게. */
-/** 확정된 쓰기 결과. `sent` = 그 쓰기를 보낸 시각(`work-clock` — 상세 「확정 시각」 과 같은 시계, LIFE-623 R2-A). 늦게 도착한 옛 쓰기를 상세가 가려낸다. */
-export type SettledWrite = { uid: string; item: WorkItem; seq: number; sent: number }
+/**
+ * 확정된 쓰기 결과. `sent` = 그 쓰기를 보낸 시각(`work-clock` — 상세 「확정 시각」 과 같은 시계, LIFE-623 R2-A). 늦게 도착한 옛 쓰기를 상세가 가려낸다.
+ * `call` = 보낸 쓰기 — 상세가 「이 쓰기가 바꾼 칸」 을 알아 열린 초안의 기준을 자기 쓰기 때문에 묶어 두지 않는다(LIFE-632 C5 ①).
+ */
+export type SettledWrite = { uid: string; item: WorkItem; seq: number; sent: number; call: WorkCall }
 /** 「적용됐을 수 있음」(`maybeApplied`) 으로 끝난 쓰기(상세·보드, 즉시·늦게) — 열린 상세가 받아 미확인으로 두고 단건을 다시 읽는다(LIFE-623 R4-A). */
 export type UnsureWrite = { uid: string; seq: number }
 
@@ -875,7 +878,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     const confirmed = (settled: WorkItem): void => {
       succeeded.current.add(written)
       settledSeq.current += 1
-      setSettledWrite({ uid, item: settled, seq: settledSeq.current, sent })
+      setSettledWrite({ uid, item: settled, seq: settledSeq.current, sent, call })
       if (latestWrite.current.get(lane) !== written) return
       if (undo) { notify({ kind: 'undone', label: `${original.key} 를 되돌렸습니다` }); return }
       // 앞 변경이 확인되기 전에 시작한 쓰기 — 「옮기기 전 값」 이 서버가 인정한 적 없는 값일 수 있다. 되돌리기로 그 값을 저장하지 않는다(R1-B, R2-A 보장).
@@ -1044,7 +1047,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         if (item !== null) {
           keepCreated({ connectionId, item })
           settledSeq.current += 1
-          setSettledWrite({ uid, item, seq: settledSeq.current, sent })
+          setSettledWrite({ uid, item, seq: settledSeq.current, sent, call })
         }
         return { kind: 'ok', result: late.result }
       })
@@ -1078,7 +1081,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       patch({ connectionId, spaceKey, apply: replaceItem({ item: settled }) })
       reflect({ connectionId, item: settled })
       settledSeq.current += 1
-      setSettledWrite({ uid, item: settled, seq: settledSeq.current, sent })
+      setSettledWrite({ uid, item: settled, seq: settledSeq.current, sent, call })
       if (lastOfUnit) reconcileUnit()
       else if (listed !== null && crossesDone({ from: listed, to: settled })) {
         void reloadRef.current({ quiet: true })

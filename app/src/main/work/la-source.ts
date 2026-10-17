@@ -34,7 +34,7 @@ import type {
   WorkSpace,
   WorkStatus,
 } from '../../shared/work.js'
-import { unknownWriteOutcome, workError } from './errors.js'
+import { appliedUnread, unknownWriteOutcome, workError } from './errors.js'
 import { readBySeq, readIssueCreated, readIssueDetail, readIssueSummaries, type LaIssueDetail, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
 import { log } from '../log.js'
 import { McpHttpClient } from './mcp-http.js'
@@ -64,6 +64,10 @@ const MISSING_SCOPE = /^missing scope: ([a-z_]+:[a-z_]+)$/
 const KNOWN_SCOPES = new Set(['issue:read', 'issue:write'])
 /** LA 사람 키 (E3) — `LIFE-<seq>`. 화면에는 descriptor 로 소스만 나간다. */
 const LA_KEY = /^LIFE-(\d+)$/i
+/** 쓰기는 저장됐는데 바뀐 작업을 다시 읽지 못함(LIFE-632 R5-B) — Jira `WRITTEN_PREFIX` 와 같은 뜻. */
+const WRITTEN_PREFIX = 'LA 에는 적용됐지만 바뀐 작업을 다시 읽지 못했습니다 — 다시 보내지 말고 새로 고치세요. '
+/** 쓰기 호출 자체의 결과를 모름(F11) — 만들기의 「만들어졌는지 모릅니다」 와 같은 자리. */
+const UNKNOWN_PREFIX = '적용됐는지 모릅니다'
 
 export const LA_DESCRIPTOR: WorkSourceDescriptor = {
   id: LA_SOURCE_ID,
@@ -160,7 +164,7 @@ export class LaSource implements WorkSourceClient {
       case 'changeStatus':
         return this.changeStatus({ itemId: call.itemId, statusKey: call.statusKey, resolution: call.resolution ?? null, ifVersion: call.ifVersion })
       case 'updateItem': {
-        const updated = await this.tool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, ...updateArgs(call.fields) }, ifVersion: call.ifVersion }), read: readIssueUpdated })
+        const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, ...updateArgs(call.fields) }, ifVersion: call.ifVersion }), read: readIssueUpdated })
         return this.written({ op: 'updateItem', itemId: call.itemId, step: updated })
       }
       case 'listChildren': return this.listChildren(call.itemId)
@@ -171,13 +175,13 @@ export class LaSource implements WorkSourceClient {
       }
       case 'listHistory': return unsupported('history')
       case 'setPlacement': {
-        const updated = await this.tool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, onBoard: call.placement === 'board' }, ifVersion: call.ifVersion }), read: readIssueUpdated })
+        const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, onBoard: call.placement === 'board' }, ifVersion: call.ifVersion }), read: readIssueUpdated })
         return this.written({ op: 'setPlacement', itemId: call.itemId, step: updated })
       }
       case 'setParent': {
         // 스페이스 바로 아래(null) = 그 프로젝트가 부모. 「미분류」 바로 아래 = 부모 없음.
         const parentId = call.parentId ?? (call.spaceKey === LA_CATCH_ALL_KEY ? null : call.spaceKey)
-        const updated = await this.tool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, parentId }, ifVersion: call.ifVersion }), read: readIssueUpdated })
+        const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, parentId }, ifVersion: call.ifVersion }), read: readIssueUpdated })
         return this.written({ op: 'setParent', itemId: call.itemId, step: updated })
       }
       case 'addRelation': return this.addRelation({ itemId: call.itemId, kind: call.kind, otherKey: call.otherKey })
@@ -269,6 +273,21 @@ export class LaSource implements WorkSourceClient {
       return { ok: true, value: read(outcome.value, name) }
     } catch (error) {
       if (error instanceof LaShapeError) return { ok: false, outcome: { ok: false, error: workError({ kind: 'invalid_response', message: error.message }) } }
+      throw error
+    }
+  }
+
+  /**
+   * 쓰기 도구(`issue_update`·`issue_transition`) — 보낸 뒤 결과를 모르는 실패(시간 초과·연결 뒤 끊김·깨진 답)는 「적용됐는지 모름」(LIFE-632 F11 —
+   * 만들기 `unknownWriteOutcome` 과 같은 규칙). 보내지 않은 실패(`unsent`)·출처의 거절(권한·검증·충돌)은 그대로. 다시 보내지 않는다.
+   */
+  private async writeTool<T>({ name, args, read }: { name: string; args: Record<string, unknown>; read: (value: unknown, path: string) => T }): Promise<Step<T>> {
+    const sent = await this.mcp.callTool({ name, args })
+    if (!sent.ok) return { ok: false, outcome: { ok: false, error: unknownWriteOutcome({ error: sent.error, unsent: sent.unsent === true, prefix: UNKNOWN_PREFIX }) } }
+    try {
+      return { ok: true, value: read(sent.value, name) }
+    } catch (error) {
+      if (error instanceof LaShapeError) return { ok: false, outcome: { ok: false, error: unknownWriteOutcome({ error: workError({ kind: 'invalid_response', message: error.message }), unsent: false, prefix: UNKNOWN_PREFIX }) } }
       throw error
     }
   }
@@ -425,14 +444,20 @@ export class LaSource implements WorkSourceClient {
     return item.ok ? { ok: true, result: { op: 'findByKey', item: item.value } } : item.outcome
   }
 
-  private async itemResult({ op, itemId }: { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'updateItem'; itemId: string }): Promise<WorkOutcome> {
+  /**
+   * 결과 단건 읽기. `applied` = 이 연산이 방금 쓰기를 저장했다(LIFE-632 R5-B) — 그 뒤 읽기 실패는 「적용됐지만 정본 없음」 이라 `maybeApplied`.
+   * 쓰기 없는 갈래(같은 상태·같은 갈래)는 `applied: false` — 읽기 실패는 그냥 실패다(적용할 것이 없었다). 읽기 함수는 앞의 쓰기를 모르므로 부르는 쪽이 넘긴다.
+   */
+  private async itemResult({ op, itemId, applied }: { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'updateItem'; itemId: string; applied: boolean }): Promise<WorkOutcome> {
     const item = await this.item(itemId)
-    return item.ok ? { ok: true, result: { op, item: item.value } } : item.outcome
+    if (item.ok) return { ok: true, result: { op, item: item.value } }
+    if (!applied || item.outcome.ok) return item.outcome
+    return { ok: false, error: appliedUnread({ error: item.outcome.error, prefix: WRITTEN_PREFIX }) }
   }
 
-  /** 쓰기 한 단계의 끝 — 성공이면 단건으로 결과를, 실패면 충돌에 지금 작업을 붙여 그대로. */
+  /** 쓰기 한 단계의 끝 — 성공이면 단건으로 결과를(쓰기는 저장됐다), 실패면 충돌에 지금 작업을 붙여 그대로. */
   private written({ op, itemId, step }: { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'updateItem'; itemId: string; step: Step<unknown> }): Promise<WorkOutcome> {
-    return step.ok ? this.itemResult({ op, itemId }) : this.withCurrent({ itemId, outcome: step.outcome })
+    return step.ok ? this.itemResult({ op, itemId, applied: true }) : this.withCurrent({ itemId, outcome: step.outcome })
   }
 
   /**
@@ -467,24 +492,24 @@ export class LaSource implements WorkSourceClient {
       // 같은 상태 — 완료 분류에서 갈래만 다르면 갈래만 고친다(완료함 ↔ 취소함). 그 밖은 할 일 없음.
       if (target.categoryKey !== 'done' || resolution === null || current.value.resolution === resolution) {
         if (ifVersion !== null && ifVersion !== current.value.version) return this.withCurrent({ itemId, outcome: { ok: false, error: workError({ kind: 'conflict', status: 409, message: conflictMessage(current.value.displayId) }) } })
-        return this.itemResult({ op: 'changeStatus', itemId })
+        return this.itemResult({ op: 'changeStatus', itemId, applied: false })
       }
-      const updated = await this.tool({ name: 'issue_update', args: versioned({ args: { id: itemId, resolution }, ifVersion }), read: readIssueUpdated })
+      const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: itemId, resolution }, ifVersion }), read: readIssueUpdated })
       return this.written({ op: 'changeStatus', itemId, step: updated })
     }
     const labelUnique = order.filter((status) => status.label === target.label).length === 1
     if (to > from && labelUnique) {
       const args: Record<string, unknown> = { id: itemId, toStatusLabel: target.label, forwardOnly: true }
       if (target.categoryKey === 'done') args.resolution = chosen
-      const moved = await this.tool({ name: 'issue_transition', args: versioned({ args, ifVersion }), read: readTransition })
+      const moved = await this.writeTool({ name: 'issue_transition', args: versioned({ args, ifVersion }), read: readTransition })
       if (!moved.ok) return this.withCurrent({ itemId, outcome: moved.outcome })
-      if (moved.value.transitioned) return this.itemResult({ op: 'changeStatus', itemId })
+      if (moved.value.transitioned) return this.itemResult({ op: 'changeStatus', itemId, applied: true })
       // 서버가 「뒤로」 라고 보면(순서 해석이 갈림) 되돌리기 경로로 — D6 은 둘 다 허용한다.
     }
     const args: Record<string, unknown> = { id: itemId, statusId: target.id }
     if (target.categoryKey !== 'done' && current.value.statusCategoryKey === 'done') args.resolution = null
     if (target.categoryKey === 'done') args.resolution = chosen
-    const updated = await this.tool({ name: 'issue_update', args: versioned({ args, ifVersion }), read: readIssueUpdated })
+    const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args, ifVersion }), read: readIssueUpdated })
     return this.written({ op: 'changeStatus', itemId, step: updated })
   }
 

@@ -173,6 +173,22 @@ export class LaMcpFixture {
   checksVersion = true
   /** 서버가 전진 전이를 「뒤로」 로 읽는 경우(순서 해석 갈림, LIFE-622 C2 ②) — 전이는 no-op(판 소비 없음)으로 답하고 corral 은 `issue_update(statusId)` 로 이어 간다. */
   transitionNoop = false
+  /**
+   * 쓰기 **뒤** 정본 읽기 고장(LIFE-632 R5-B) — 쓰기 도구(`issue_update`·`issue_transition`)가 한 번 저장한 뒤부터 `issue_get` 을 `times` 번 깨뜨린다.
+   * 쓰기 앞의 읽기(`changeStatus` 의 현재 값 읽기)는 그대로라 「쓰기 전 읽기 실패」 와 「쓰기 뒤 정본 미확보」 를 가를 수 있다.
+   * `partial` = description 칸 삭제 · `malformed` = 결과 전체가 일감 모양이 아님 · `refused` = 도구 거절 · `drop` = 소켓 끊기(HTTP 경로에서만).
+   * `skip` = 그 전에 그대로 보낼 `issue_get` 수(앞서 한 쓰기 뒤 「쓰기 없는」 연산의 두 번째 읽기만 깨뜨릴 때).
+   */
+  afterWrite: { mode: 'partial' | 'malformed' | 'refused' | 'drop'; times: number; skip?: number } | null = null
+  /** 쓰기 뒤 읽기 고장을 이번 `issue_get` 에 쓰는가 — `skip` 을 먼저 소진한다. */
+  private brokenRead(tool: string | null): NonNullable<LaMcpFixture['afterWrite']> | null {
+    const plan = this.afterWrite
+    if (tool !== 'issue_get' || !this.wrote || plan === null || plan.times <= 0) return null
+    if ((plan.skip ?? 0) > 0) { plan.skip = (plan.skip ?? 0) - 1; return null }
+    plan.times -= 1
+    return plan
+  }
+  private wrote = false
   scopeStyle: 'sdk' | 'http' = 'sdk'
   protocolVersion = '2025-06-18'
   private server: http.Server | null = null
@@ -206,6 +222,7 @@ export class LaMcpFixture {
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
     this.requests.push({ method, tool, bearer: token === '' ? 'none' : token.startsWith('life_pat_') ? 'life_pat' : 'other' })
 
+    if (this.afterWrite?.mode === 'drop' && this.brokenRead(tool) !== null) { request.socket.destroy(); return }
     const fault = (tool === null ? undefined : this.toolFaults.get(tool)) ?? this.fault
     if (fault !== null && fault.kind !== 'drop-after') {
       if (fault.kind === 'drop') { request.socket.destroy(); return }
@@ -264,8 +281,24 @@ export class LaMcpFixture {
   private tool({ tool, args }: { tool: string; args: Record<string, unknown> }): { isError: boolean; text: string } {
     const ok = (value: unknown): { isError: boolean; text: string } => ({ isError: false, text: JSON.stringify(value) })
     const fail = (code: string, message: string): { isError: boolean; text: string } => ({ isError: true, text: JSON.stringify({ code, message }) })
-    const find = (id: unknown): FixtureIssue | undefined => this.issues.find((issue) => issue.id === id)
     if (tool === 'issue_update' || tool === 'issue_transition') this.writeArgs.push({ tool, args: { ...args } })
+    const broken = this.afterWrite?.mode === 'drop' ? null : this.brokenRead(tool)
+    if (broken !== null) {
+      if (broken.mode === 'refused') return fail('BAD_REQUEST', 'fixture post-write read refused')
+      if (broken.mode === 'malformed') return ok({ broken: true })
+      const whole: unknown = JSON.parse(this.answer({ tool, args }).text)
+      if (isRecord(whole)) delete whole.description
+      return ok(whole)
+    }
+    const result = this.answer({ tool, args })
+    if ((tool === 'issue_update' || tool === 'issue_transition') && !result.isError) this.wrote = true
+    return result
+  }
+
+  private answer({ tool, args }: { tool: string; args: Record<string, unknown> }): { isError: boolean; text: string } {
+    const ok = (value: unknown): { isError: boolean; text: string } => ({ isError: false, text: JSON.stringify(value) })
+    const fail = (code: string, message: string): { isError: boolean; text: string } => ({ isError: true, text: JSON.stringify({ code, message }) })
+    const find = (id: unknown): FixtureIssue | undefined => this.issues.find((issue) => issue.id === id)
     switch (tool) {
       // `status-no-default` — 옛 서버처럼 isDefault 칸이 없다(R2-G 대조).
       case 'status_list': return ok(this.corrupt === 'status-no-default' ? this.statuses.map((status) => { const { isDefault: _gone, ...rest } = status; void _gone; return rest }) : this.statuses)

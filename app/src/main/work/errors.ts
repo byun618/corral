@@ -88,7 +88,16 @@ export function classifyToolError({ text }: { text: string }): WorkError {
  * 쓰기 실패를 「닿았을 수 있음」 으로(LIFE-604 R1-A) — 출처가 답하지 않았거나(시간 초과·끊김·5xx) 답이 깨졌을 때만. 출처가 분명히 거절했거나
  * (인증·권한·거절) 보내지 않은 실패(`unsent`)는 그대로. 분류(`kind`)는 바꾸지 않는다(K2) — 문구 앞에 결과를 모른다는 말을 붙인다.
  */
-export function unknownWriteOutcome({ error, unsent }: { error: WorkError; unsent: boolean }): WorkError {
+export function unknownWriteOutcome({ error, unsent, prefix = '만들어졌는지 모릅니다' }: { error: WorkError; unsent: boolean; prefix?: string }): WorkError {
   if (unsent || (error.kind !== 'network' && error.kind !== 'invalid_response')) return error
-  return { ...error, message: `만들어졌는지 모릅니다 — ${error.message}`, maybeApplied: true }
+  return { ...error, message: `${prefix} — ${error.message}`, maybeApplied: true }
+}
+
+/**
+ * 쓰기가 출처에 **닿은 뒤** 정본을 받지 못함(LIFE-632 R5-B) — 다시 읽기 실패·응답 모양 어긋남. 쓰기는 적용됐다: 일반 실패로 돌려주면 화면이 같은 쓰기를 다시 보낸다.
+ * `maybeApplied`(「다시 보내지 말고 새로 읽어라」)를 붙이고 분류는 그대로(K2). 이미 붙어 있으면 그대로. Jira `afterWrite` 와 같은 뜻.
+ */
+export function appliedUnread({ error, prefix }: { error: WorkError; prefix: string }): WorkError {
+  if (error.maybeApplied === true) return error
+  return { ...error, message: `${prefix}${error.message}`, maybeApplied: true }
 }

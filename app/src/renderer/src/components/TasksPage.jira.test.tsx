@@ -499,3 +499,149 @@ it('LIFE-623 R4-A 늦은 상세 쓰기 실패(maybeApplied) + 재조회 거절 �
   const saved = await saveFresh(issue)
   expect(saved.server).toEqual(canonical)
 })
+
+// LIFE-632 C1 — 미확인 경계(R5-A). 623 리뷰 r5 `codex-r5-raw/probes/TasksPage.x5probe.test.tsx` 이식.
+// 「적용됐을 수 있음」 실패 B 로 상세가 미확인이 된 뒤, 그보다 **먼저** 보낸 쓰기 A 의 늦은 성공·먼저 시작한 최초 단건 읽기가 도착해도
+// 막힘·오류를 풀지 않고 base 가 되지 않는다(옛 본문으로 외부 비우기를 되살리지 않는다). 경계 **뒤** 근거(재조회·쓰기 확정)는 푼다(양성 대조).
+/** 다른 상태 칸 하나(CORE-2 가 없는 칸). */
+function otherZone(): string {
+  const zone = [...document.querySelectorAll('[data-tasks-board] [data-drop-zone^="col:"]')].map((entry) => entry.getAttribute('data-drop-zone')).find((value) => value !== null && el('[data-tasks-board] [data-issue-card="CORE-2"]').closest('[data-board-column]')?.querySelector(`[data-drop-zone="${value}"]`) === null)
+  if (zone === undefined || zone === null) throw new Error('다른 칸 없음')
+  return zone
+}
+const loadError = (): string | null => q('[data-issue-load-error]')?.textContent ?? null
+const reread400 = (r: Rig): void => { r.fixture.faults.push({ match: (value) => value.method === 'GET' && value.path === '/rest/api/3/issue/20002', status: 400 }) }
+
+it.each([false, true])('LIFE-632 C1 ① 옛 쓰기 A 의 늦은 성공 — 더 새 B 가 미확인(재조회 거절=%s)이면 A 가 막힘·오류를 풀지 않고 외부 비우기를 되살리지 않는다', async (failRead) => {
+  const { r, issue } = await openExternal({ mode: 'unchanged' })
+  const original = window.corral.workRequest
+  let deliver: () => void = () => {}
+  const delivery = new Promise<void>((resolve) => { deliver = resolve })
+  const box: { a: WorkResponse | null; b: WorkResponse | null } = { a: null, b: null }
+  window.corral.workRequest = async (value: WorkRequest) => {
+    const response = await original(value)
+    if (value.call.op === 'updateItem' && value.call.fields.priority === 'highest' && box.a === null) { box.a = response; await delivery }
+    if (value.call.op === 'updateItem' && value.call.fields.priority === 'low') { box.b = response; if (failRead) reread400(r) }
+    return response
+  }
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  click('[data-field="priority"]'); click('[data-priority-row="highest"]')
+  await act(async () => { await vi.advanceTimersByTimeAsync(30001) })
+  vi.useRealTimers(); await settle(30)
+  expect(box.a !== null && box.a.ok).toBe(true)
+  // 외부가 본문을 비운 뒤 B — 쓰기는 적용, 뒤 GET 부분 응답이라 maybeApplied.
+  issue.description = null
+  r.fixture.omitOnce.set('20002', ['description', 'issuelinks'])
+  click('[data-field="priority"]'); click('[data-priority-row="low"]')
+  await settle(30)
+  const b = box.b
+  expect(b !== null && !b.ok && b.error.maybeApplied === true).toBe(true)
+  expect(bodyEditDisabled()).toBe(failRead)
+  // 양성 대조 ⓐ — 경계 뒤 시작한 재조회가 성공하면(거절 아님) 막힘이 풀리고 빈 본문이 base.
+  if (!failRead) expect(el('[data-issue-body]').textContent).not.toContain('OLD JIRA BODY')
+  await act(async () => { deliver() }); await settle(30)
+  if (failRead) {
+    // A(경계 전 보냄)의 늦은 성공은 미확인을 풀지 않는다 — 막힘·오류 그대로, 옛 본문을 base 로 올리지 않는다.
+    expect(bodyEditDisabled()).toBe(true)
+    expect(loadError()).not.toBeNull()
+    r.fixture.faults.length = 0
+    click('[data-issue-retry]'); await settle(30)
+  }
+  expect(bodyEditDisabled()).toBe(false)
+  expect(loadError()).toBeNull()
+  const saved = await saveFresh(issue)
+  expect(saved.editor).toBe('')
+  expect(issue.description).toBeNull()
+})
+
+it('LIFE-632 C1 ② 옛 최초 읽기 — 미확인 전에 시작한 최초 단건 GET 이 늦게 와도 막힘·오류를 풀지 않는다, 다시 시도 뒤 빈 본문', async () => {
+  const { r, issue } = await openExternal({ mode: 'unchanged' })
+  const original = window.corral.workRequest
+  let runWrite: () => void = () => {}
+  const writeGate = new Promise<void>((resolve) => { runWrite = resolve })
+  let deliverRead: () => void = () => {}
+  const readGate = new Promise<void>((resolve) => { deliverRead = resolve })
+  const box: { capture: boolean; captured: boolean; oldRead: string | null; failed: WorkResponse | null } = { capture: false, captured: false, oldRead: null, failed: null }
+  window.corral.workRequest = async (value: WorkRequest) => {
+    const heldWrite = value.call.op === 'updateItem' && value.call.fields.priority === 'highest'
+    if (heldWrite) await writeGate
+    const response = await original(value)
+    if (box.capture && value.call.op === 'getItem' && value.call.itemId === '20002' && !box.captured) {
+      box.captured = true
+      if (response.ok && response.result.op === 'getItem') box.oldRead = response.result.item.body
+      await readGate
+    }
+    if (heldWrite) { box.failed = response; reread400(r) }
+    return response
+  }
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  click('[data-field="priority"]'); click('[data-priority-row="highest"]')
+  await act(async () => { await vi.advanceTimersByTimeAsync(30001) })
+  vi.useRealTimers(); await settle(20)
+  // 다시 연다 — 최초 단건 GET 이 옛 본문을 읽은 채 배달을 붙든다.
+  click('[data-issue-close]'); await settle(10)
+  box.capture = true
+  click('[data-tasks-board] [data-issue-card="CORE-2"]'); await settle(20)
+  expect(box.captured).toBe(true)
+  expect(box.oldRead).toBe('OLD JIRA BODY')
+  issue.description = null
+  r.fixture.omitOnce.set('20002', ['description', 'issuelinks'])
+  await act(async () => { runWrite() }); await settle(30)
+  const failed = box.failed
+  expect(failed !== null && !failed.ok && failed.error.maybeApplied === true).toBe(true)
+  expect(loadError()).not.toBeNull()
+  await act(async () => { deliverRead() }); await settle(30)
+  expect(bodyEditDisabled()).toBe(true)
+  expect(loadError()).not.toBeNull()
+  r.fixture.faults.length = 0
+  click('[data-issue-retry]'); await settle(30)
+  expect(bodyEditDisabled()).toBe(false)
+  const saved = await saveFresh(issue)
+  expect(saved.editor).toBe('')
+  expect(issue.description).toBeNull()
+})
+
+it('LIFE-632 C1 양성 대조 ⓑ — 경계 뒤 보낸 쓰기(보드 상태 변경)의 확정은 미확인을 푼다, 저장은 빈 본문', async () => {
+  const { r, issue } = await openExternal({ mode: 'unchanged' })
+  const original = window.corral.workRequest
+  window.corral.workRequest = async (value: WorkRequest) => {
+    const response = await original(value)
+    if (value.call.op === 'updateItem' && value.call.fields.priority === 'low') reread400(r)
+    return response
+  }
+  issue.description = null
+  r.fixture.omitOnce.set('20002', ['description', 'issuelinks'])
+  click('[data-field="priority"]'); click('[data-priority-row="low"]')
+  await settle(30)
+  expect(bodyEditDisabled()).toBe(true)
+  expect(loadError()).not.toBeNull()
+  r.fixture.faults.length = 0
+  startDrag({ handle: '[data-tasks-board] [data-issue-card="CORE-2"]', zone: otherZone() })
+  await settle()
+  mouse(document, 'mousemove', 52, 502); mouse(document, 'mouseup', 52, 502)
+  await settle(30)
+  expect(bodyEditDisabled()).toBe(false)
+  expect(loadError()).toBeNull()
+  const saved = await saveFresh(issue)
+  expect(saved.editor).toBe('')
+  expect(issue.description).toBeNull()
+})
+
+// LIFE-632 C4 — 첫 읽기 복구(R5-C). 623 리뷰 r5 `probes/TasksPage.x5initial.test.tsx` 이식. 첫 단건 GET 이 실패한 뒤 같은 카드의 보드 상태 변경이 성공하면
+// 상세는 그 값을 받는다 — 그때 부가 읽기(상태 목록·자식·부모·활동)가 이어져 정상 최초 읽기와 같은 화면이 된다(「다시 시도」 없이 메뉴 0·자식 0 으로 남지 않는다).
+it.each([false, true])('LIFE-632 C4 첫 단건 실패=%s 뒤 보드 성공 — 상태 메뉴·자식·상태 라벨이 정상 최초 읽기와 같다', async (failed) => {
+  const r = await rig()
+  if (failed) r.fixture.faults.push({ match: (value) => value.method === 'GET' && value.path === '/rest/api/3/issue/20002', status: 400, once: true })
+  click('[data-tasks-board] [data-issue-card="CORE-2"]'); await settle(30)
+  expect(loadError() !== null).toBe(failed)
+  startDrag({ handle: '[data-tasks-board] [data-issue-card="CORE-2"]', zone: otherZone() })
+  await settle()
+  mouse(document, 'mousemove', 52, 502); mouse(document, 'mouseup', 52, 502)
+  await settle(30)
+  expect(bodyEditDisabled()).toBe(false)
+  click('[data-issue-status]'); await settle(30)
+  const shown = { statusRows: document.querySelectorAll('[data-status-row]').length, children: document.querySelectorAll('[data-child-row]').length, status: q('[data-issue-status]')?.textContent ?? null }
+  // 정상 대조 값(623 r5 `x5-initial-recovery.log` failed=false): 상태 행 3 · 자식 1 · 「In Progress▾」.
+  expect(shown).toEqual({ statusRows: 3, children: 1, status: 'In Progress▾' })
+  expect(loadError()).toBeNull()
+})

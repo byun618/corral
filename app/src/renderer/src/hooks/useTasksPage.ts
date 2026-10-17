@@ -4,8 +4,9 @@
 //   `load`(스페이스 자료) · `more`(다음 쪽) · `find`(키 검색) · `item:<연결>::<id>`(작업 하나의 쓰기) · `transitions`(끄는 작업의 허용 전이).
 // - 작업 정체는 `(연결, 작업 id)`(R1-L) — 작업 id 는 연결 안에서만 유일하다.
 // - 끌기 = 즉시 반영 → 요청 → 성공이면 되돌리기 토스트(6초) / 실패면 그 카드만 옮기기 전으로 + 오류 토스트 + 서버 재조회.
-//   **경합 표면을 줄인다(수정 r2)**: 한 카드에 확인 안 된 쓰기는 하나뿐이다 — 그동안 그 카드의 끌기·되돌리기는 잠긴다(「확인하는 중」).
-//   그래서 같은 카드의 응답 순서가 뒤집힐 일이 없고, 「옮기기 전 값」 은 언제나 출처가 마지막으로 인정한 값이다(되돌리기는 그 값을 보낸다).
+//   **경합 표면을 줄인다(수정 r2)**: 한 카드에 잠금 중인(30초 안) 쓰기는 하나뿐이다 — 그동안 그 카드의 끌기·되돌리기는 잠긴다(「확인하는 중」).
+//   단 30초를 넘기면 「확인 지연」 으로 잠금이 풀려(R4-A) 같은 카드에 답이 안 온 쓰기가 겹칠 수 있다 — 그때 「옮기기 전 값」 은 겹친 미확인 의도일 수 있어
+//   정합화 단위·되돌리기 기준 검사(아래 LIFE-622 · `beginWrite`/`unsureBase`)가 맡는다. 겹침이 없으면 옮기기 전 값은 출처가 마지막으로 인정한 값이다.
 //   실패·버린 응답이면 그 카드 하나만 옮기기 전 자리로 돌리고(다른 카드의 순서는 건드리지 않는다) 서버를 다시 읽어 수렴한다.
 //   목록 응답이 오면 확인 안 된 쓰기(시작 시점과 무관하게)와 그 요청 뒤에 화면에 쓴 변경을 그 위에 다시 적용한다(R1-F·R2-C).
 // - **수렴 규칙(수정 r3) — 서버가 정본이다.** 순서 쓰기는 성공해도 의도를 다시 적용하지 않는다: 같은 스페이스의 순서 쓰기가 모두 끝나면
@@ -844,7 +845,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       return
     }
     const before = loadRef.current.data.find((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey)?.items ?? [row.item]
-    // 잠금 덕에 이 카드의 지금 값은 출처가 마지막으로 인정한 값이다(또는 마지막 재조회 값) — 되돌리기·원복은 이 값으로.
+    // 겹친 쓰기가 없으면 이 카드의 지금 값은 출처가 마지막으로 인정한 값(또는 마지막 재조회 값)이다 — 되돌리기·원복은 이 값으로.
+    // 30초 늦음으로 잠금이 풀린 뒤 겹친 쓰기면 미확인 의도일 수 있다 — 되돌리기는 확정 때 `unsureBase()` 가 걸러 낸다(R1-B).
     const original = before.find((item) => item.id === row.item.id) ?? row.item
     const reverse = inverseOf({ item: original, intent, items: before })
     const apply = (items: WorkItem[]): WorkItem[] => applyIntent({ items, itemId: row.item.id, intent, statuses })
@@ -892,7 +894,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         kind: 'moved',
         label: describe({ item: original, intent, statuses }),
         // 되돌리기는 옮긴 맥락(연결·스페이스·작업·이전 값)을 들고 간다 — 다른 스페이스로 옮겨 가도 역요청을 보낸다(R1-E).
-        // 보내는 값 = 이 쓰기 직전 출처가 인정한 값(`reverse`) — 거절된 낙관적 값이 끼어들 수 없다(R2-A).
+        // 보내는 값 = 이 쓰기 직전 값(`reverse`) — 위 `unsureBase()` 를 지난 되돌리기만 여기 오므로 그 값은 출처가 인정한 값이다(R2-A · LIFE-622 R1-B).
         // 이 카드에 확인 안 된 쓰기가 있으면 받지 않는다 — 버튼은 남아 잠금이 풀린 뒤 다시 누를 수 있다(R4-E).
         undo: () => {
           if (pendingWrites.current.has(uid)) {

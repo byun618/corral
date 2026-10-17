@@ -42,7 +42,7 @@ function renderPage(): void {
 
 
 
-/** 실제 `LaSource` + `LaMcpFixture`(충돌 검사 꺼짐). 응답도 모아 쓰기 결과의 본문이 정본 그대로 오는지 본다(V17 상당). */
+/** 실제 `LaSource` + `LaMcpFixture`(**충돌 검사 켜짐** — `checksVersion = true`, 조건부 수정 이후 서버 모양). 응답도 모아 쓰기 결과의 본문이 정본 그대로 오는지 본다(V17 상당). */
 async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[]; responses: WorkResponse[]; service: WorkService; connectionId: string; emitSettings: () => void }> {
   const fixture = new LaMcpFixture()
   // LIFE-622 — LA 충돌 검사가 켜졌다. 이 파일의 시험은 판과 무관한 **확정 순서 가드**(623 `sent`·미확인 막힘)를 본다 — 켜진 LA 에서는 같은 장면의 B 가

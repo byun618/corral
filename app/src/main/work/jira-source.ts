@@ -496,7 +496,16 @@ export class JiraSource implements WorkSourceClient {
     return this.fullItem(issue.value)
   }
 
+  /**
+   * 단건 모양(getItem·findByKey·쓰기 뒤 읽기) — 본문·연결이 정본이어야 한다(`WorkResult` 계약 · LIFE-623 R2-B). 응답에 `description`·`issuelinks` 칸이
+   * **없으면**(부분 응답) 빈 doc·빈 연결로 만들지 않고 `invalid_response` — 칸이 있고 값이 null·빈 ADF 면 그것이 빈 정본(`''`)이다. 목록(`toItems` 직접)은 가벼운 응답 그대로.
+   * 쓰기 뒤 읽기에서 나면 `afterWrite` 가 「적용됐지만」 + `maybeApplied` 를 붙인다.
+   */
   private async fullItem(issue: JiraIssue): Promise<Step<WorkItem>> {
+    if (!issue.hasDescription || !issue.hasLinks) {
+      const missing = [issue.hasDescription ? null : 'description', issue.hasLinks ? null : 'issuelinks'].filter((name) => name !== null).join('·')
+      return { ok: false, outcome: { ok: false, error: workError({ kind: 'invalid_response', message: `${issue.key} 단건 응답에 ${missing} 칸이 없습니다 — 본문·연결을 알 수 없어 정본으로 쓰지 않습니다.` }) } }
+    }
     const items = await this.toItems({ issues: [issue], withBody: true })
     if (!items.ok) return items
     const item = items.value[0]
@@ -745,10 +754,12 @@ export class JiraSource implements WorkSourceClient {
     if (problem !== null) return rejected(problem)
     const fields: Record<string, unknown> = { project: { key: call.spaceKey }, issuetype: { id: type.id }, summary: call.title }
     if (call.parentId !== null) fields.parent = { id: call.parentId }
+    let sentBody: AdfDoc | null = null
     if (call.body !== undefined && call.body.length > 0) {
       const description = writableAdf(call.body)
       if (!description.ok) return rejected(description.message)
       fields.description = description.doc
+      sentBody = description.doc
     }
     if (call.priority !== undefined && call.priority !== null) {
       const priority = await this.priorityId(call.priority)
@@ -774,7 +785,7 @@ export class JiraSource implements WorkSourceClient {
       const item = await this.item(created.id)
       if (item.ok) return { ok: true, result: { op: 'createItem', item: item.value } }
       // 만들었지만 다시 읽지 못했다 — 만든 응답으로 최소 작업(LIFE-604 규칙). 실패로 돌려주면 사용자가 다시 만든다.
-      return { ok: true, result: { op: 'createItem', item: minimalItem({ created, call, type, types: project.value.types, statusKey: meta.value.meta.defaultStatusKey }) } }
+      return { ok: true, result: { op: 'createItem', item: minimalItem({ created, call, sentBody, type, types: project.value.types, statusKey: meta.value.meta.defaultStatusKey }) } }
     } })
   }
 
@@ -1197,11 +1208,16 @@ function createFieldOf(field: JiraFieldMeta): WorkCreateField {
   return { key: field.key, label: field.name, shape: 'unsupported', sourceType: (field.schemaCustom ?? field.schemaSystem ?? field.schemaType ?? 'unknown').slice(0, 120) }
 }
 
-function minimalItem({ created, call, type, types, statusKey }: { created: { id: string; key: string }; call: Extract<WorkCall, { op: 'createItem' }>; type: JiraIssueType; types: JiraIssueType[]; statusKey: string }): WorkItem {
+/**
+ * 만들었지만 다시 읽지 못했을 때의 최소 작업(LIFE-604 규칙). 본문은 **보낸 ADF 를 읽기와 같은 변환(`adfView`)으로 되돌린 글** — 단건 읽기가 줄 정본과 같다
+ * (LIFE-623 R2-C — 보낸 markdown 그대로가 아니다: `a\n\n\nb` 는 읽으면 `a\n\nb`). 막 만든 이슈라 연결은 없다(`[]`).
+ */
+function minimalItem({ created, call, sentBody, type, types, statusKey }: { created: { id: string; key: string }; call: Extract<WorkCall, { op: 'createItem' }>; sentBody: AdfDoc | null; type: JiraIssueType; types: JiraIssueType[]; statusKey: string }): WorkItem {
+  const shown = adfView(sentBody ?? { type: 'doc', version: 1, content: [] })
   return {
-    id: created.id, key: created.key, spaceKey: call.spaceKey, title: call.title, body: call.body ?? '', kind: kindOf({ type, types }), statusKey, category: 'todo', resolution: null,
+    id: created.id, key: created.key, spaceKey: call.spaceKey, title: call.title, body: shown.markdown, kind: kindOf({ type, types }), statusKey, category: 'todo', resolution: null,
     priority: call.priority ?? null, dueAt: null, parentId: call.parentId, placement: null, rank: null, openBlockerCount: 0, openBlockers: [], updatedAt: new Date().toISOString(), version: null,
-    relations: [], workLinks: [], bodyLock: null,
+    relations: [], workLinks: [], bodyLock: shown.unsupported.length === 0 ? null : lockReason(shown.unsupported),
   }
 }
 

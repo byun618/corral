@@ -295,3 +295,26 @@ describe('LIFE-605 작업 페이지 × Jira fixture', () => {
     expect(errors.mock.calls.some((call) => String(call[0]).includes('same key'))).toBe(false)
   })
 })
+
+// LIFE-623 R2-B — 쓰기 뒤 단건 GET 한 번이 `description`·`issuelinks` 를 빼고 오면(부분 응답) 그 값을 빈 정본으로 만들지 않는다:
+// 화면 본문이 빈 본문으로 바뀌지 않고, 새로 연 편집기·저장이 서버 본문을 지우지 않는다(리뷰 r2 X2-2, `codex-r2-raw/TasksPage.x2jira.test.tsx` 이식).
+it('LIFE-623 R2-B 쓰기 뒤 부분 응답(description·issuelinks 없음)은 빈 정본이 아니다 — 화면·저장이 서버 본문을 지우지 않는다', async () => {
+  const live = { type: 'doc' as const, version: 1 as const, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'LIVE JIRA BODY' }] }] }
+  const r = await rig({ seed: (server) => { const issue = server.issues.find((entry) => entry.id === '20002'); if (issue !== undefined) issue.description = live } })
+  click('[data-tasks-board] [data-issue-card="CORE-2"]')
+  await settle(30)
+  expect(el('[data-issue-body]').textContent).toContain('LIVE JIRA BODY')
+  r.fixture.omitOnce.set('20002', ['description', 'issuelinks'])
+  click('[data-field="priority"]')
+  click('[data-priority-row="highest"]')
+  await settle(30)
+  expect(r.fixture.omitOnce.has('20002')).toBe(false)
+  expect(el('[data-issue-body]').textContent).toContain('LIVE JIRA BODY')
+  click('[data-issue-body-edit]')
+  const editor = q('[data-md-editor] textarea')
+  expect(editor instanceof HTMLTextAreaElement ? editor.value : null).toBe('LIVE JIRA BODY')
+  click('[data-md-save]')
+  await settle(30)
+  expect(r.fixture.issues.find((entry) => entry.id === '20002')?.description).not.toBeNull()
+  expect(JSON.stringify(r.fixture.issues.find((entry) => entry.id === '20002')?.description)).toContain('LIVE JIRA BODY')
+})

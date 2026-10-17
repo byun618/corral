@@ -76,6 +76,8 @@ function simpleProject({ id, key, name }: { id: string; key: string; name: strin
 export class JiraRestFixture {
   readonly requests: JiraFixtureRequest[] = []
   readonly faults: JiraFault[] = []
+  /** 다음 단건 GET 한 번에서 뺄 필드(LIFE-623 R2-B — 부분 응답 주입). 이슈 id → 필드 이름. 한 번 쓰면 지운다. */
+  readonly omitOnce = new Map<string, string[]>()
   /** 분류가 「No Category」(`undefined`) 인 상태 id — 옛 워크플로·마이그레이션 사이트(R1-I). */
   readonly noCategory = new Set<string>()
   /** 사이트 우선순위 — 기본 id 1–5 · 영어 이름. 로케일 사이트(이름이 번역된) 시험은 이름만 바꾼다(R1-J). */
@@ -212,7 +214,15 @@ export class JiraRestFixture {
     if ((match = /^\/rest\/api\/3\/issue\/([^/]+)$/.exec(path)) !== null) {
       const issue = this.issue(decodeURIComponent(match[1] ?? ''))
       if (issue === null) return notFound('Issue does not exist or you do not have permission to see it.')
-      if (method === 'GET') return { status: 200, body: this.issueBean(issue, fieldList(request.query.fields)) }
+      if (method === 'GET') {
+        const bean = this.issueBean(issue, fieldList(request.query.fields))
+        const omit = this.omitOnce.get(issue.id)
+        if (omit !== undefined && typeof bean.fields === 'object' && bean.fields !== null) {
+          this.omitOnce.delete(issue.id)
+          for (const name of omit) Reflect.deleteProperty(bean.fields, name)
+        }
+        return { status: 200, body: bean }
+      }
       if (method === 'PUT') return this.editIssue(issue, request.body)
     }
     if ((match = /^\/rest\/api\/3\/issue\/([^/]+)\/transitions$/.exec(path)) !== null) {

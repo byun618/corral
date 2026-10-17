@@ -28,6 +28,7 @@ import type {
   WorkStatus,
 } from '../../../shared/work.js'
 import { conflictFields, type ConflictField } from '../task-detail-model.js'
+import { nextWorkStamp } from '../work-clock.js'
 import { LatestGate, itemUid, writeBlock } from '../tasks-model.js'
 import { request, type MoveNotice, type TasksPageModel } from './useTasksPage.js'
 
@@ -157,9 +158,9 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const here = useMemo<Origin | null>(() => (target === null ? null : { session, target }), [session, target])
 
   // 판 최신성 시계 — 읽기 시작·쓰기 시작·쓰기 확정마다 오른다. base 는 자기를 만든 사건의 시각을 갖는다.
-  const clockRef = useRef(0)
   const baseStampRef = useRef(0)
-  const tick = useCallback((): number => { clockRef.current += 1; return clockRef.current }, [])
+  // 확정 시각은 작업 페이지의 쓰기 「보낸 시각」 과 같은 시계(LIFE-623 R2-A, `work-clock`) — 늦게 온 옛 쓰기 결과를 base 의 근거와 비교한다.
+  const tick = useCallback((): number => nextWorkStamp(), [])
 
   const [base, setBase] = useState<WorkItem | null>(null)
   const [item, setItem] = useState<WorkItem | null>(null)
@@ -394,9 +395,16 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   // 편집 기준은 읽기와 같은 규칙(칸이 하나도 다르지 않을 때만)으로 — 상세 쓰기의 기준은 `finish` 가 이미 옮겼다.
   // 쓰기 결과는 단건 모양이다(계약 `WorkResult` · LIFE-623) — 본문·연결의 null 은 정본의 빈 값이지 「안 실음」 이 아니다. 옛 값으로 보충하지 않는다:
   // 보충하면 옛 본문 + 새 판이 한 snapshot 이 되고 `slideBases` 가 그것을 열린 초안의 기준으로 올려 외부 비우기를 배너 없이 덮는다(R7-A).
+  // 그 쓰기를 **보낸 시각**이 지금 base 의 근거(읽기 시작·상세 쓰기 시작·앞 확정 — 같은 시계) 이하면 이 결과는 base 보다 옛 근거다(먼저 보내 늦게 온 성공 —
+  // 그 사이 더 새 확정·읽기가 base 가 됐다). 올리지 않고 단건을 다시 읽는다 — 정본은 읽기가 정한다(LIFE-623 R2-A). 보드 목록 정합화는 작업 페이지 몫이라 그대로다.
   useEffect(() => {
     const settled = page.settledWrite
     if (settled === null || settled.uid !== uid || here === null) return
+    if (settled.sent <= baseStampRef.current) {
+      void refreshItem(here)
+      void refreshActivity(here)
+      return
+    }
     baseStampRef.current = tick()
     const next = settled.item
     putBase(next)

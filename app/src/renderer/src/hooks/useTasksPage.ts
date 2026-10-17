@@ -57,6 +57,7 @@ import {
   type TasksSpace,
 } from '../tasks-model.js'
 import { linkedTrees, workingFromLinks } from '../work-links-model.js'
+import { nextWorkStamp } from '../work-clock.js'
 
 export type TasksBanner = { kind: 'auth' | 'forbidden' | 'offline' | 'error'; message: string }
 
@@ -96,7 +97,8 @@ export type CreateSettled = { kind: 'ok'; item: WorkItem } | { kind: 'failed'; e
 export type CreateOutcome = CreateSettled | { kind: 'late'; settled: Promise<CreateSettled> }
 
 /** 성공한 쓰기의 서버 값 — 열린 상세가 받는다. `seq` 는 같은 값이 다시 와도 알 수 있게. */
-export type SettledWrite = { uid: string; item: WorkItem; seq: number }
+/** 확정된 쓰기 결과. `sent` = 그 쓰기를 보낸 시각(`work-clock` — 상세 「확정 시각」 과 같은 시계, LIFE-623 R2-A). 늦게 도착한 옛 쓰기를 상세가 가려낸다. */
+export type SettledWrite = { uid: string; item: WorkItem; seq: number; sent: number }
 
 type SpaceResult = { ok: true; data: SpaceData; pages: number } | { ok: false; error: WorkError }
 type SpaceFetch = { state: 'pending' } | { state: 'done' } | { state: 'failed'; error: WorkError }
@@ -756,6 +758,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     setBusy(new Set(pendingWrites.current.keys()))
     setStartedWrite({ uid, seq: written.seq })
     const requestId = gate.issue(`item:${uid}`)
+    const sent = nextWorkStamp()
     let asked: Asked | null = null
     try {
       asked = await ask({ requestId, connectionId, call })
@@ -804,7 +807,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     }
     reflect({ connectionId, item: settled })
     settledSeq.current += 1
-    setSettledWrite({ uid, item: settled, seq: settledSeq.current })
+    setSettledWrite({ uid, item: settled, seq: settledSeq.current, sent })
     // 완료 분류를 넘나들면 이 작업이 막던 작업의 막힘 자료가 바뀐다 — 목록·작업 중·키 조회를 서버에서 다시 읽는다(R2-J·R3-C).
     if (crossesDone({ from: original, to: settled })) {
       void reloadRef.current({ quiet: true })
@@ -877,6 +880,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     pendingWrites.current.set(uid, written)
     setBusy(new Set(pendingWrites.current.keys()))
     const requestId = gate.issue(`item:${uid}`)
+    const sent = nextWorkStamp()
     let asked: Asked | null = null
     try {
       asked = await ask({ requestId, connectionId, call })
@@ -905,7 +909,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         if (item !== null) {
           keepCreated({ connectionId, item })
           settledSeq.current += 1
-          setSettledWrite({ uid, item, seq: settledSeq.current })
+          setSettledWrite({ uid, item, seq: settledSeq.current, sent })
         }
         return { kind: 'ok', result: late.result }
       })
@@ -928,7 +932,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       patch({ connectionId, spaceKey, apply: replaceItem({ item: settled }) })
       reflect({ connectionId, item: settled })
       settledSeq.current += 1
-      setSettledWrite({ uid, item: settled, seq: settledSeq.current })
+      setSettledWrite({ uid, item: settled, seq: settledSeq.current, sent })
       if (listed !== null && crossesDone({ from: listed, to: settled })) {
         void reloadRef.current({ quiet: true })
         setWorkingRound((value) => value + 1)

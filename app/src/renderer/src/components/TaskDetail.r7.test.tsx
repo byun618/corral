@@ -294,3 +294,70 @@ it('R1-A 목록 모양 쓰기 결과는 main 이 거른다 — maybeApplied, 상
   expect(input('[data-md-editor] textarea').value).toBe('LIVE SERVER BODY')
   expect(server.body).toBe('LIVE SERVER BODY')
 })
+
+// R2-A — 먼저 보낸 쓰기의 늦은 결과가 더 새 결과 뒤에 도착하는 길(리뷰 r2 X2-1 「late captured」, `codex-r2-raw/TaskDetail.x2probe.test.tsx` 이식).
+// R1-D 와 다르게 **요청은 실행되고 응답 배달만 붙든다** — A 의 결과는 외부 비우기 전 snapshot(옛 본문)이다. 그 사이 외부 비우기 → B 성공(빈 본문) → A 를 풀어도
+// 상세·새 편집기·저장이 옛 본문으로 되감기지 않는다. `''` 대조 함께.
+it.each([null, ''])('R2-A 먼저 보낸 쓰기 A 의 늦은 결과(외부 비우기 %j 전 snapshot)가 더 새 B 뒤에 와도 상세를 되감지 않는다', async (empty) => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD CAPTURED BODY'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(25)
+  const original = window.corral.workRequest
+  let release: () => void = () => {}
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  let captured = false
+  window.corral.workRequest = async (request: WorkRequest) => {
+    const response = await original(request)
+    if (request.call.op === 'updateItem' && !captured) { captured = true; await pending }
+    return response
+  }
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  click('[data-field="priority"]')
+  click('[data-priority-row="highest"]')
+  await act(async () => { await vi.advanceTimersByTimeAsync(30001) })
+  vi.useRealTimers()
+  expect(captured).toBe(true)
+  issue.description = empty
+  issue.updatedAt = '2026-10-14T14:05:00Z'
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(30)
+  expect(el('[data-issue-body]').textContent).not.toContain('OLD CAPTURED BODY')
+  await act(async () => { release() })
+  await settle(35)
+  expect(el('[data-issue-body]').textContent).not.toContain('OLD CAPTURED BODY')
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(30)
+  expect(issue.description ?? '').toBe('')
+  // 서버는 B 의 값 — 늦은 A 는 화면을 되감지 않았다(서버에서는 A 다음에 B 가 실행됐다).
+  expect(issue.priority).toBe('low')
+  expect(el('[data-field="priority"]').textContent).toContain('낮음')
+})
+
+// R2-A 유지 대조(R1-C) — 늦은 성공이 **가장 최신**이면(그 사이 다른 확정·읽기 없음) 상세는 그 결과를 그대로 받는다: 화면 = 결과, 받은 뒤 단건 재조회 0,
+// 다음 저장이 자기 충돌하지 않는다(충돌 검사 켜진 모의).
+it('R2-A 유지 — 가장 최신인 늦은 성공은 그대로 상세 base 가 된다(재조회 없이), 다음 저장은 충돌 없음', async () => {
+  const r = await rig()
+  await openCard('CORE-2')
+  const release = hold('updateItem')
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  click('[data-field="priority"]')
+  click('[data-priority-row="high"]')
+  await act(async () => { await vi.advanceTimersByTimeAsync(30001) })
+  vi.useRealTimers()
+  const before = r.calls.length
+  await release()
+  await settle(16)
+  expect(el('[data-field="priority"]').textContent).toContain('높음')
+  expect(r.calls.slice(before).filter((call) => call.op === 'getItem')).toHaveLength(0)
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(16)
+  expect(q('[data-issue-conflict]')).toBeNull()
+  expect(serverItem(r, 'm-2').priority).toBe('low')
+})

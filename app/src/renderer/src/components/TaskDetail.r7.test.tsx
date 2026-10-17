@@ -1,0 +1,206 @@
+// @vitest-environment happy-dom
+// LIFE-623 — Codex 리뷰 r7 R7-A 재현(`specs/LIFE-602-task-detail/raw/review/codex-r7-raw/probes/null-reorder.test.tsx` V22 · `async-extra.test.tsx` V08 ·
+// `null-la.test.tsx` V11 · `electron-null.mts` V17)을 제품 시험으로 옮긴다. 외부에서 본문을 null 로 비운 뒤 보드 쓰기 결과가 오면 상세가 옛 본문을 보충하지 않는다.
+// 각 시나리오에 빈 글 `''` 대조(기존 보호)를 함께 둔다. 실제 경로 React `TasksPage` → hook → `WorkService` → 출처(모의 · 실제 `LaSource` + `LaMcpFixture`).
+// 렌더러와 main 을 함께 import 하므로 web 타입 검사에서 빼고 mixed 검사(tsconfig.mixed.json)에 둔다. LA 는 네트워크 없이 가짜 fetch 가 fixture 도구 처리기를 부른다(TasksPage.r4la 와 같은 방식).
+import { act, createElement } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { Toaster, toast } from 'sonner'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import type { WorkCall, WorkRequest, WorkResponse, WorkSettingsState } from '../../../shared/work.js'
+import { MemoryActivity } from '../../../main/work/activity-store.js'
+import { FIXTURE_IDS, LaMcpFixture } from '../../../main/work/la-mcp-fixture.js'
+import { laSourceEntry } from '../../../main/work/la-source.js'
+import { mockSourceEntry, seedMockDemoState, type MockState } from '../../../main/work/mock-source.js'
+import { WorkService } from '../../../main/work/service.js'
+import { WorkSourceRegistry } from '../../../main/work/source.js'
+import { CredentialVault } from '../../../main/work/vault.js'
+import { FAKE_LA_TOKEN, FakeCipher, MemoryStore, workHarness } from '../../../main/work/test-kit.js'
+import { TasksPage } from './TasksPage.js'
+
+Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
+
+let host: HTMLDivElement
+let root: Root
+
+beforeEach(() => {
+  host = document.createElement('div')
+  document.body.append(host)
+  root = createRoot(host)
+})
+afterEach(() => {
+  act(() => { toast.dismiss() })
+  act(() => root.unmount())
+  host.remove()
+  vi.restoreAllMocks()
+})
+
+const settle = async (rounds = 8): Promise<void> => {
+  for (let index = 0; index < rounds; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+}
+
+function renderPage(): void {
+  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+}
+
+type Rig = { state: MockState; calls: WorkCall[] }
+
+/** 모의 출처(충돌 검사 켜짐) — 외부 편집은 서버 fixture 에 직접 가한다. */
+async function rig(): Promise<Rig> {
+  const state = seedMockDemoState()
+  let seq = 0
+  let listener: (value: WorkSettingsState) => void = () => {}
+  const service = new WorkService({
+    store: new MemoryStore(), vault: new CredentialVault(new FakeCipher()), sources: new WorkSourceRegistry([mockSourceEntry({ state })]), activity: new MemoryActivity(),
+    repos: () => [], onChange: (value) => listener(value), now: () => Date.now(), newId: () => `id-${(seq += 1)}`,
+  })
+  const added = await service.addConnection({ sourceId: 'mock-jira', token: 'mock_l623_fixture', replaceId: null })
+  if (!added.ok) throw new Error('연결 실패')
+  const result: Rig = { state, calls: [] }
+  Reflect.set(window, 'corral', {
+    getUiPrefs: async () => ({}), setUiPrefs: () => {}, getWorkSettings: async () => service.settings(),
+    onWorkSettings: (next: (value: WorkSettingsState) => void) => { listener = next; return () => {} },
+    workRequest: (request: WorkRequest) => { result.calls.push(request.call); return service.request(request) },
+    workActivity: async (query: unknown) => service.activity(query),
+  })
+  renderPage()
+  await settle()
+  return result
+}
+
+/** 실제 `LaSource` + `LaMcpFixture`(충돌 검사 꺼짐). 응답도 모아 쓰기 결과의 본문이 정본 그대로 오는지 본다(V17 상당). */
+async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[]; responses: WorkResponse[] }> {
+  const fixture = new LaMcpFixture()
+  const fetchImpl = async (_url: unknown, options?: RequestInit): Promise<Response> => {
+    const body: { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } } = JSON.parse(String(options?.body))
+    if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
+    const reply: { isError: boolean; text: string } | null = body.method === 'initialize' ? null : Reflect.get(fixture, 'tool').call(fixture, { tool: body.params?.name, args: body.params?.arguments ?? {} })
+    const result = reply === null ? { protocolVersion: '2025-06-18' } : { content: [{ type: 'text', text: reply.text }], ...(reply.isError ? { isError: true } : {}) }
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), { headers: { 'content-type': 'application/json' } })
+  }
+  const harness = workHarness({ entries: [laSourceEntry({ url: 'http://127.0.0.1:9/not-networked', clientVersion: 'test', fetchImpl })] })
+  const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
+  if (!added.ok) throw new Error('LA 모의 연결 실패')
+  const calls: WorkCall[] = []
+  const responses: WorkResponse[] = []
+  Reflect.set(window, 'corral', {
+    getUiPrefs: async () => ({}), setUiPrefs: () => {}, getWorkSettings: async () => harness.service.settings(), onWorkSettings: () => () => {},
+    workRequest: async (request: WorkRequest) => { calls.push(request.call); const response = await harness.service.request(request); responses.push(response); return response },
+    workActivity: async (query: unknown) => harness.service.activity(query),
+  })
+  renderPage()
+  await settle(30)
+  return { fixture, calls, responses }
+}
+
+const q = (selector: string): Element | null => document.querySelector(selector)
+function el(selector: string): HTMLElement {
+  const found = q(selector)
+  if (!(found instanceof HTMLElement)) throw new Error(`없음: ${selector}`)
+  return found
+}
+function click(selector: string): void {
+  const target = el(selector)
+  act(() => { target.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+}
+function input(selector: string): HTMLInputElement | HTMLTextAreaElement {
+  const target = el(selector)
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) throw new Error(selector)
+  return target
+}
+function setValue(target: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  const proto = target instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  act(() => {
+    Object.getOwnPropertyDescriptor(proto, 'value')?.set?.call(target, value)
+    target.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+async function openCard(itemKey: string): Promise<void> {
+  click(`[data-tasks-board] [data-issue-card="${itemKey}"]`)
+  await settle()
+  expect(q(`[data-issue-detail="${itemKey}"]`)).not.toBeNull()
+}
+function serverItem(r: Rig, id: string): MockState['items'][number] {
+  const found = r.state.items.find((entry) => entry.id === id)
+  if (found === undefined) throw new Error(`서버에 없음: ${id}`)
+  return found
+}
+const conflictFieldsShown = (): string[] => [...document.querySelectorAll('[data-conflict-field]')].map((entry) => entry.getAttribute('data-conflict-field') ?? '')
+
+/** 실제 끌기 경로 — 손잡이 mousedown → 문턱 넘는 move(놓을 영역은 elementFromPoint) → mouseup. */
+async function dragTo({ card, zone }: { card: string; zone: string }): Promise<void> {
+  const target = q(`[data-drop-zone="${zone}"]`); const handle = el(`[data-tasks-board] [data-issue-card="${card}"]`)
+  vi.spyOn(document, 'elementFromPoint').mockReturnValue(target)
+  const mouse = (at: EventTarget, name: string, x = 10, y = 10): void => { act(() => { at.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y })) }) }
+  mouse(handle, 'mousedown'); mouse(document, 'mousemove', 50, 500); await settle(); mouse(document, 'mousemove', 52, 502); mouse(document, 'mouseup', 52, 502); await settle(16)
+}
+
+// ① V22 — 충돌 검사 켜짐: 본문 초안을 연 채 외부가 본문을 비우고 판을 올림 → 같은 열 재정렬 → 일반 저장 = 저장 안 됨 + 본문 충돌 배너.
+it.each([null, ''])('V22 열린 본문 초안 + 외부 비우기 %j → 같은 열 재정렬 → 일반 저장은 배너, 서버 빈 본문 유지', async (empty) => {
+  const r = await rig()
+  const server = serverItem(r, 'm-2')
+  server.body = 'OLD'
+  await openCard('CORE-2')
+  click('[data-issue-body-edit]')
+  setValue(input('[data-md-editor] textarea'), 'MY DRAFT')
+  server.body = empty
+  server.version += 1
+  const before = r.calls.length
+  await dragTo({ card: 'CORE-2', zone: 'col:st:core-todo' })
+  expect(r.calls.slice(before).filter((call) => call.op === 'reorder')).toHaveLength(1)
+  click('[data-md-save]')
+  await settle(16)
+  expect(server.body).toBe(empty)
+  expect(conflictFieldsShown()).toContain('body')
+  // 초안은 버리지 않는다.
+  expect(input('[data-md-editor] textarea').value).toBe('MY DRAFT')
+})
+
+// ② V08 — 외부 비우기 → 보드 상태 변경 → 본문 편집기를 새로 열어 저장해도 옛 본문이 화면·편집기·서버 어디에도 되살아나지 않는다.
+it.each([null, ''])('V08 외부 비우기 %j → 보드 상태 변경 → 새로 연 편집기·저장에 옛 본문이 없다', async (empty) => {
+  const r = await rig()
+  const server = serverItem(r, 'm-2')
+  server.body = 'OLD NONEMPTY'
+  await openCard('CORE-2')
+  expect(el('[data-issue-body]').textContent).toContain('OLD NONEMPTY')
+  server.body = empty
+  server.version += 1
+  await dragTo({ card: 'CORE-2', zone: 'col:st:core-doing' })
+  expect(server.statusKey).toBe('core-doing')
+  expect(el('[data-issue-body]').textContent).not.toContain('OLD NONEMPTY')
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(16)
+  expect(server.body ?? '').toBe('')
+  expect(document.body.textContent).not.toContain('OLD NONEMPTY')
+})
+
+// ③ V11 · ④ V17 상당 — 실제 LaSource + LaMcpFixture(`description:null`) → 우선순위 변경. 쓰기 결과 본문이 정본(null) 그대로 상세까지 오고,
+// 상세는 빈 본문을 보이며 옛 본문을 저장으로 되살리지 않는다. LA 는 충돌 검사가 꺼져 있다 — 배너 0(T3 C8 그대로).
+it.each([null, ''])('V11·V17 LA 외부 description %j → 우선순위 변경 → 쓰기 결과 본문 = 정본, 상세 빈 본문, 저장이 옛 본문을 되살리지 않는다', async (empty) => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD LA BODY'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(25)
+  expect(el('[data-issue-body]').textContent).toContain('OLD LA BODY')
+  issue.description = empty
+  issue.updatedAt = '2026-10-14T14:05:00Z'
+  const before = la.responses.length
+  click('[data-field="priority"]')
+  click('[data-priority-row="highest"]')
+  await settle(35)
+  // ④ 쓰기 결과(updateItem)의 본문이 정본 그대로 — null 이면 null.
+  const written = la.responses.slice(before).find((response) => response.ok && response.result.op === 'updateItem')
+  expect(written?.ok === true && written.result.op === 'updateItem' ? written.result.item.body : 'none').toBe(empty)
+  expect(issue.priority).toBe('highest')
+  expect(el('[data-issue-body]').textContent).not.toContain('OLD LA BODY')
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(30)
+  expect(issue.description ?? '').toBe('')
+  expect(q('[data-issue-conflict]')).toBeNull()
+})

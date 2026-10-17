@@ -41,6 +41,11 @@ export type ContractTarget = {
   bodyRoundTrip?: 'exact' | 'canonical'
   /** 질의 검색(LIFE-605 C5) — 능력이 켜진 출처의 시험 질의: 맞는 질의와 그 결과 키 · 출처가 거부하는 질의와 텍스트로 찾히는 키. */
   querySearch?: { query: string; expectKey: string; badQuery: string; textHitKey: string }
+  /**
+   * 외부 본문 바꾸기(LIFE-623 C2) — 다른 편집기가 출처에서 본문을 바꾼 것처럼 픽스처를 직접 고친다. `null` = 출처가 주는 빈 본문(LA `description:null` ·
+   * Jira description null · 모의 `body:null`), `''` = 빈 글, 그 밖 = 글. 묶음은 그 뒤 쓰기 결과의 본문·연결이 직후 단건과 같은지 본다.
+   */
+  externalBody: ({ itemId, body }: { itemId: string; body: string | null }) => void
 }
 
 /** 정규형 본문(지원 표 안) — 출처 서식으로 바꿔 두는 출처도 바이트로 되돌려야 하는 꼴. */
@@ -424,6 +429,43 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       const first = records.find((record) => record.change.field === 'priority' && record.change.to === 'highest')
       expect(first).toBeDefined()
       expect(records.filter((record) => record.writeId === first?.writeId).map((record) => record.change.field).sort()).toEqual(['body', 'dueAt', 'priority', 'title'])
+    })
+
+    it.each([null, '', '외부 본문'])('쓰기 결과는 단건 모양(LIFE-623) — 외부 본문 %j 뒤 모든 쓰기 결과의 본문·연결 = 직후 단건, 「안 실음」 null 이 없다', async (external) => {
+      const { space, items, statuses, capabilities } = await stage()
+      const item = items.find((entry) => entry.category !== 'done' && entry.parentId === null) ?? items[0]
+      const child = items.find((entry) => entry.parentId !== null)
+      if (item === undefined) throw new Error('no item')
+      const writes: { call: WorkCall; itemId: string }[] = [{ call: { op: 'updateItem', itemId: item.id, fields: { title: `${item.title} ·` }, ifVersion: null }, itemId: item.id }]
+      const allowed = await transitions(item.id)
+      const forward = statuses.find((status) => status.key !== item.statusKey && status.category !== 'done' && allowed.includes(status.key)) ?? statuses.find((status) => status.key !== item.statusKey && allowed.includes(status.key))
+      if (forward !== undefined) writes.push({ call: { op: 'changeStatus', itemId: item.id, statusKey: forward.key, ifVersion: null }, itemId: item.id })
+      if (capabilities.placement.state === 'on') writes.push({ call: { op: 'setPlacement', itemId: item.id, placement: item.placement === 'board' ? 'backlog' : 'board', ifVersion: null }, itemId: item.id })
+      if (capabilities.order.state === 'on') {
+        const other = items.find((entry) => entry.id !== item.id)
+        if (other !== undefined) writes.push({ call: { op: 'reorder', itemId: item.id, afterId: other.id }, itemId: item.id })
+      }
+      if (capabilities.parentChange.state === 'on' && child !== undefined) writes.push({ call: { op: 'setParent', itemId: child.id, spaceKey: space.key, parentId: child.parentId, ifVersion: null }, itemId: child.id })
+      for (const { call, itemId } of writes) {
+        target.externalBody({ itemId, body: external })
+        const result = await okResult(call)
+        if (!('item' in result) || result.item === null) throw new Error(`${call.op} 결과에 작업이 없다`)
+        const canonical = await getItem(itemId)
+        expect({ op: call.op, body: result.item.body }).toEqual({ op: call.op, body: canonical.body })
+        expect({ op: call.op, relations: result.item.relations }).toEqual({ op: call.op, relations: canonical.relations })
+        // 단건의 연결은 「안 실음」 이 아니다 — 빈 연결은 빈 배열.
+        expect(canonical.relations).not.toBeNull()
+        if (external !== null && external !== '') expect(canonical.body).toBe(external)
+        else expect(canonical.body ?? '').toBe('')
+      }
+      // 본문 쓰기 자체도 — 보낸 글이 결과에 그대로(빈 글 포함).
+      target.externalBody({ itemId: item.id, body: external })
+      const cleared = await okResult({ op: 'updateItem', itemId: item.id, fields: { body: '' }, ifVersion: null })
+      if (cleared.op !== 'updateItem') throw new Error(cleared.op)
+      expect(cleared.item.body).toEqual((await getItem(item.id)).body)
+      await okResult({ op: 'updateItem', itemId: item.id, fields: { title: item.title, body: item.body ?? '' }, ifVersion: null })
+      if (forward !== undefined) await travel({ itemId: item.id, goal: statuses.find((status) => status.key === item.statusKey) ?? forward, statuses })
+      if (capabilities.placement.state === 'on' && item.placement !== null) await okResult({ op: 'setPlacement', itemId: item.id, placement: item.placement, ifVersion: null })
     })
 
     it('완료 갈래(E5) — 완료 분류로 「취소함」·「완료함」 을 고르고, 갈래만 바꾸고, 되돌리면 갈래가 비운다 · 갈래 능력이 꺼졌으면 갈래를 실은 변경은 이유와 함께 거절', async () => {

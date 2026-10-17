@@ -1,7 +1,7 @@
 {
   "include": ["src/renderer/src/**/*", "src/shared/**/*"],
   // LIFE-601 R1-B — 실제 WorkService(main)를 렌더러 화면에 잇는 통합 시험은 두 층을 함께 import 해 이 프로젝트에 둘 수 없다 — `tsconfig.mixed.json` 이 따로 검사한다(R2-Q).
-  "exclude": ["src/renderer/src/components/TasksPage.service.test.tsx", "src/renderer/src/components/TasksPage.r4la.test.tsx", "src/renderer/src/components/TaskDetail.service.test.tsx", "src/renderer/src/components/TaskDetail.r1.test.tsx", "src/renderer/src/components/TaskDetail.r2.test.tsx", "src/renderer/src/components/TaskDetail.r3.test.tsx", "src/renderer/src/components/TaskDetail.r4.test.tsx", "src/renderer/src/components/TaskDetail.r5.test.tsx", "src/renderer/src/components/TaskDetail.r6.test.tsx", "src/renderer/src/components/TasksPage.start.test.tsx", "src/renderer/src/components/TasksPage.create.test.tsx", "src/renderer/src/components/TasksPage.jira.test.tsx"],
+  "exclude": ["src/renderer/src/components/TaskDetail.r7.test.tsx", "src/renderer/src/components/TasksPage.service.test.tsx", "src/renderer/src/components/TasksPage.r4la.test.tsx", "src/renderer/src/components/TaskDetail.service.test.tsx", "src/renderer/src/components/TaskDetail.r1.test.tsx", "src/renderer/src/components/TaskDetail.r2.test.tsx", "src/renderer/src/components/TaskDetail.r3.test.tsx", "src/renderer/src/components/TaskDetail.r4.test.tsx", "src/renderer/src/components/TaskDetail.r5.test.tsx", "src/renderer/src/components/TaskDetail.r6.test.tsx", "src/renderer/src/components/TasksPage.start.test.tsx", "src/renderer/src/components/TasksPage.create.test.tsx", "src/renderer/src/components/TasksPage.jira.test.tsx"],
   "compilerOptions": {
     "composite": true,
     "target": "ES2022",

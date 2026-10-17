@@ -392,14 +392,15 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
 
   // 확정된 쓰기(상세·보드 끌기, 즉시·늦게) — 서버 값을 받는다. 확정 시각을 올려 그 전에 시작한 읽기를 낡은 것으로 만든다.
   // 편집 기준은 읽기와 같은 규칙(칸이 하나도 다르지 않을 때만)으로 — 상세 쓰기의 기준은 `finish` 가 이미 옮겼다.
+  // 쓰기 결과는 단건 모양이다(계약 `WorkResult` · LIFE-623) — 본문·연결의 null 은 정본의 빈 값이지 「안 실음」 이 아니다. 옛 값으로 보충하지 않는다:
+  // 보충하면 옛 본문 + 새 판이 한 snapshot 이 되고 `slideBases` 가 그것을 열린 초안의 기준으로 올려 외부 비우기를 배너 없이 덮는다(R7-A).
   useEffect(() => {
     const settled = page.settledWrite
     if (settled === null || settled.uid !== uid || here === null) return
     baseStampRef.current = tick()
-    const merge = (current: WorkItem | null): WorkItem => ({ ...settled.item, body: settled.item.body ?? current?.body ?? null, relations: settled.item.relations ?? current?.relations ?? null })
-    const next = merge(baseRef.current)
+    const next = settled.item
     putBase(next)
-    setItem(merge)
+    setItem(next)
     slideBases(next)
     void refreshActivity(here)
   }, [page.settledWrite])

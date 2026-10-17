@@ -67,6 +67,8 @@ export type DetailWrite = {
   quiet?: boolean
   /** 판을 싣지 않는다 — 「내 값으로 덮기」. */
   force?: boolean
+  /** 덮기를 고를 때 배너가 보인 서버 값(`DetailConflict.current`) — 덮은 칸의 기준은 이 값에서 결과까지가 덮기로 설명될 때만 오른다(LIFE-632 리뷰 r3 X3-1). */
+  seen?: WorkItem
   /** 초안의 저장 — 그 칸의 편집 기준 판으로 보낸다(R3-A). 없으면 지금 base 의 판. */
   basis?: EditSlot
 }
@@ -581,13 +583,14 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
           // 기준이 결과로 오르는 길(R6-A): 서버가 그 기준의 판을 확인하고 받은 쓰기(판을 실어 보냈고 그 판 = 기준 판 — **쓰기 직전까지** 다른 쓰기가 없었다).
           // 그것만으로는 결과까지 아무도 안 썼다는 증거가 아니다 — 결과는 쓰기 뒤 따로 읽은 단건일 수 있고(LA), 그 사이 외부 쓰기가 실린다(LIFE-632 리뷰 r2 X2-2).
           // 그래서 결과와 그 기준의 칸 차이가 **전부 이 쓰기로 설명될 때만**(칸·값, `explainedBy` — 확정 effect 의 기준 이동과 같은 대조) 오른다. 설명 안 되는 차이가 있으면 두어 다음 저장이 배너.
-          // 덮기는 판 없이 가서 그 증거가 없다 — 덮은 칸만, 그리고 결과와 기준이 덮은 칸만 다른 초안만(값 비교 — 외부 변경이 덮은 칸뿐, 자기 충돌 배너를 내지 않게).
+          // 덮기는 판 없이 가서 그 증거가 없다 — 같은 값 대조로 가른다(리뷰 r3 X3-1, 덮기 쓰기 뒤·결과 읽기 앞 외부 변경이 결과에 실려도 기준으로 올리지 않게):
+          // 덮은 칸은 사용자가 배너에서 본 서버 값(`seen`)을 확인했으니 그 값 → 결과가 덮기로 설명되면(`forced`), 다른 칸의 초안은 자기 기준 → 결과가 덮기로 설명되면(`onlyMine`).
           const sent = sentVersion(call)
-          const changed = fieldsOf(call)
+          const statuses = statusesRef.current
           for (const [slot, held] of basesRef.current) {
-            const proven = sent !== null && held.version === sent && explainedBy({ basis: held, next: carried, mine: call, statuses: statusesRef.current })
-            const forced = spec.force === true && slotsOf(call).includes(slot)
-            const onlyMine = spec.force === true && held.id === carried.id && conflictFields({ base: held, current: carried }).every((field) => changed.includes(field))
+            const proven = sent !== null && held.version === sent && explainedBy({ basis: held, next: carried, mine: call, statuses })
+            const forced = spec.force === true && spec.seen !== undefined && slotsOf(call).includes(slot) && explainedBy({ basis: spec.seen, next: carried, mine: call, statuses })
+            const onlyMine = spec.force === true && explainedBy({ basis: held, next: carried, mine: call, statuses })
             if (proven || forced || onlyMine) basesRef.current.set(slot, carried)
           }
         }
@@ -713,7 +716,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   /** 「내 값으로 덮기」 — 같은 쓰기를 판 없이 다시. */
   const overrideConflict = useCallback(async (): Promise<DetailFinal | null> => {
     if (conflict === null) return null
-    const final = await finalOf(await write({ call: conflict.call, optimistic: null, label: null, undo: null, force: true }))
+    const final = await finalOf(await write({ call: conflict.call, optimistic: null, label: null, undo: null, force: true, seen: conflict.current }))
     if (final.kind === 'ok') setReadSeq((value) => value + 1)
     return final
   }, [conflict, write, finalOf])

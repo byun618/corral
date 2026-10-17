@@ -461,3 +461,100 @@ describe('LIFE-632 C5 — 열린 본문 초안 + 결과 수용(리뷰 r2)', () =
     expect(issue.priority).toBe('highest')
   })
 })
+
+// X3-1 — 덮기 결과의 기준 승격(리뷰 r3). 출발점: 리뷰 r3 `codex-r3-raw/TaskDetail.review-r3.test.tsx`(FORCED-CONTINUED 두 장면 · ONLYMINE-READBACK) — 인용·이식.
+// 덮기 쓰기 도구가 저장한 뒤·결과 issue_get 앞에 외부 쓰기를 넣고, 그 결과의 배달을 붙든 동안 초안을 더 고쳐 편집기를 연 채 다음 일반 저장을 본다.
+describe('LIFE-632 C5 — 덮기 결과 수용(리뷰 r3 X3-1)', () => {
+  type Change = { body?: string; title?: string }
+  function apply(issue: ReturnType<typeof task600>, change: Change): void {
+    if (change.body !== undefined) issue.description = change.body
+    if (change.title !== undefined) issue.title = change.title
+    issue.version += 1
+  }
+  /** 본문 초안 MY A → 외부 `before` → 저장 충돌 배너 → 덮기(쓰기 뒤·읽기 앞 외부 `after`, 없으면 null) → 답을 붙든 동안 MY B → 답 → 편집기 연 채 다음 저장. */
+  async function forceThenContinue({ before, after }: { before: Change; after: Change | null }) {
+    const la = await laRig()
+    const issue = task600(la.fixture)
+    issue.description = 'BEFORE'
+    const originalTitle = issue.title
+    await openCard(`LIFE-${issue.sequentialId}`)
+    click('[data-issue-body-edit]')
+    setValue(input('[data-md-editor] textarea'), 'MY A')
+    apply(issue, before)
+    click('[data-md-save]')
+    await settle(30)
+    expect(banner()).not.toBeNull()
+    const tool = Reflect.get(la.fixture, 'tool').bind(la.fixture)
+    let injected = false
+    Reflect.set(la.fixture, 'tool', (value: { tool: string; args: Record<string, unknown> }) => {
+      const result = tool(value)
+      if (!injected && after !== null && value.tool === 'issue_update' && value.args.description === 'MY A') { injected = true; apply(issue, after) }
+      return result
+    })
+    const release = await holdLate({ match: (call) => call.op === 'updateItem' && call.fields.body === 'MY A' && call.ifVersion === null, trigger: () => click('[data-conflict-override]') })
+    expect(injected).toBe(after !== null)
+    setValue(input('[data-md-editor] textarea'), 'MY B')
+    await release()
+    expect(q('[data-md-editor]')).not.toBeNull()
+    expect(banner()).toBeNull()
+    const afterForce = { body: issue.description, title: issue.title }
+    click('[data-md-save]')
+    await settle(30)
+    return { issue, originalTitle, afterForce }
+  }
+
+  it('FORCED-CONTINUED 본문 — 덮기 뒤·결과 읽기 앞 외부 본문 → 다음 저장 = 배너, 외부 본문 보존', async () => {
+    const { issue } = await forceThenContinue({ before: { body: 'EXTERNAL BEFORE FORCE' }, after: { body: 'EXTERNAL AFTER FORCE' } })
+    expect(banner()).not.toBeNull()
+    expect(issue.description).toBe('EXTERNAL AFTER FORCE')
+  })
+
+  it('FORCED-CONTINUED 제목(덮은 칸 밖) — 덮기 뒤·결과 읽기 앞 외부 제목 → 다음 본문 저장 = 배너, 제목·본문 보존', async () => {
+    const { issue, afterForce } = await forceThenContinue({ before: { body: 'EXTERNAL BEFORE FORCE' }, after: { title: 'EXTERNAL TITLE AFTER FORCE' } })
+    expect(banner()).not.toBeNull()
+    expect(issue.description).toBe(afterForce.body)
+    expect(issue.title).toBe('EXTERNAL TITLE AFTER FORCE')
+  })
+
+  it('대조 — 덮기 뒤 외부 변경 없음 → 다음 저장 배너 없음(자기 충돌 없음)', async () => {
+    const { issue } = await forceThenContinue({ before: { body: 'EXTERNAL BEFORE FORCE' }, after: null })
+    expect(banner()).toBeNull()
+    expect(issue.description).toBe('MY B')
+  })
+
+  it('대조 — 배너에서 본 외부 변경(본문 + 덮은 칸 밖 제목)을 덮은 뒤 다음 저장 배너 없음, 본 제목 보존', async () => {
+    const { issue } = await forceThenContinue({ before: { body: 'EXTERNAL BEFORE FORCE', title: 'EXTERNAL TITLE SEEN' }, after: null })
+    expect(banner()).toBeNull()
+    expect(issue.description).toBe('MY B')
+    expect(issue.title).toBe('EXTERNAL TITLE SEEN')
+  })
+
+  it('ONLYMINE-READBACK — 본문 초안을 연 채 우선순위 덮기 뒤·결과 읽기 앞 외부가 다른 우선순위 → 본문 저장 = 배너', async () => {
+    const la = await laRig()
+    const issue = task600(la.fixture)
+    issue.description = 'BEFORE'
+    await openCard(`LIFE-${issue.sequentialId}`)
+    click('[data-issue-body-edit]')
+    setValue(input('[data-md-editor] textarea'), 'MY BODY')
+    issue.priority = 'low'; issue.version += 1
+    click('[data-field="priority"]'); click('[data-priority-row="highest"]')
+    await settle(30)
+    expect(banner()).not.toBeNull()
+    const tool = Reflect.get(la.fixture, 'tool').bind(la.fixture)
+    let injected = false
+    Reflect.set(la.fixture, 'tool', (value: { tool: string; args: Record<string, unknown> }) => {
+      const result = tool(value)
+      if (!injected && value.tool === 'issue_update' && value.args.priority === 'highest') { injected = true; issue.priority = 'lowest'; issue.version += 1 }
+      return result
+    })
+    click('[data-conflict-override]')
+    await settle(30)
+    expect(injected).toBe(true)
+    expect(q('[data-md-editor]')).not.toBeNull()
+    click('[data-md-save]')
+    await settle(30)
+    expect(banner()).not.toBeNull()
+    expect(issue.description).toBe('BEFORE')
+    expect(issue.priority).toBe('lowest')
+  })
+})

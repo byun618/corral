@@ -1,0 +1,934 @@
+{
+ "source": "microsoft/vscode 1.142.0 (959031245eb) extensions/{typescript-basics,javascript,json,markdown-basics,css,scss,less,html,yaml,shellscript,python,rust,go,xml,sql,docker,ini,make,diff,java}/package.json contributes.grammars·languages",
+ "languages": [
+  {
+   "id": "typescript",
+   "scopeName": "source.ts",
+   "extensions": [
+    ".ts",
+    ".cts",
+    ".mts"
+   ],
+   "filenames": [],
+   "configuration": "typescript.json"
+  },
+  {
+   "id": "typescriptreact",
+   "scopeName": "source.tsx",
+   "extensions": [
+    ".tsx"
+   ],
+   "filenames": [],
+   "configuration": "typescriptreact.json"
+  },
+  {
+   "id": "javascriptreact",
+   "scopeName": "source.js.jsx",
+   "extensions": [
+    ".jsx"
+   ],
+   "filenames": [],
+   "configuration": "javascriptreact.json"
+  },
+  {
+   "id": "javascript",
+   "scopeName": "source.js",
+   "extensions": [
+    ".js",
+    ".es6",
+    ".mjs",
+    ".cjs",
+    ".pac"
+   ],
+   "filenames": [
+    "jakefile"
+   ],
+   "configuration": "javascript.json"
+  },
+  {
+   "id": "json",
+   "scopeName": "source.json",
+   "extensions": [
+    ".json",
+    ".bowerrc",
+    ".jscsrc",
+    ".webmanifest",
+    ".js.map",
+    ".css.map",
+    ".ts.map",
+    ".har",
+    ".jslintrc",
+    ".jsonld",
+    ".geojson",
+    ".ipynb",
+    ".vuerc"
+   ],
+   "filenames": [
+    "composer.lock",
+    ".watchmanconfig"
+   ],
+   "configuration": "json.json"
+  },
+  {
+   "id": "jsonc",
+   "scopeName": "source.json.comments",
+   "extensions": [
+    ".jsonc",
+    ".eslintrc",
+    ".eslintrc.json",
+    ".jsfmtrc",
+    ".jshintrc",
+    ".swcrc",
+    ".hintrc",
+    ".babelrc",
+    ".toolset.jsonc"
+   ],
+   "filenames": [
+    "babel.config.json",
+    "bun.lock",
+    ".babelrc.json",
+    ".ember-cli",
+    "typedoc.json"
+   ],
+   "configuration": "jsonc.json"
+  },
+  {
+   "id": "jsonl",
+   "scopeName": "source.json.lines",
+   "extensions": [
+    ".jsonl",
+    ".ndjson"
+   ],
+   "filenames": [],
+   "configuration": "jsonl.json"
+  },
+  {
+   "id": "snippets",
+   "scopeName": "source.json.comments.snippets",
+   "extensions": [
+    ".code-snippets"
+   ],
+   "filenames": [],
+   "configuration": "snippets.json"
+  },
+  {
+   "id": "markdown",
+   "scopeName": "text.html.markdown",
+   "extensions": [
+    ".md",
+    ".mkd",
+    ".mkdn",
+    ".mdwn",
+    ".mdown",
+    ".markdown",
+    ".markdn",
+    ".mdtxt",
+    ".mdtext",
+    ".litcoffee",
+    ".ron",
+    ".ronn",
+    ".workbook"
+   ],
+   "filenames": [],
+   "configuration": "markdown.json"
+  },
+  {
+   "id": "css",
+   "scopeName": "source.css",
+   "extensions": [
+    ".css"
+   ],
+   "filenames": [],
+   "configuration": "css.json"
+  },
+  {
+   "id": "scss",
+   "scopeName": "source.css.scss",
+   "extensions": [
+    ".scss"
+   ],
+   "filenames": [],
+   "configuration": "scss.json"
+  },
+  {
+   "id": "less",
+   "scopeName": "source.css.less",
+   "extensions": [
+    ".less"
+   ],
+   "filenames": [],
+   "configuration": "less.json"
+  },
+  {
+   "id": "html",
+   "scopeName": "text.html.derivative",
+   "extensions": [
+    ".html",
+    ".htm",
+    ".shtml",
+    ".xhtml",
+    ".xht",
+    ".mdoc",
+    ".jsp",
+    ".asp",
+    ".aspx",
+    ".jshtm",
+    ".volt",
+    ".ejs",
+    ".rhtml"
+   ],
+   "filenames": [],
+   "configuration": "html.json"
+  },
+  {
+   "id": "dockercompose",
+   "scopeName": "source.yaml",
+   "extensions": [],
+   "filenames": [],
+   "configuration": "dockercompose.json"
+  },
+  {
+   "id": "yaml",
+   "scopeName": "source.yaml",
+   "extensions": [
+    ".yaml",
+    ".yml",
+    ".eyaml",
+    ".eyml",
+    ".cff",
+    ".yaml-tmlanguage",
+    ".yaml-tmpreferences",
+    ".yaml-tmtheme",
+    ".winget"
+   ],
+   "filenames": [],
+   "configuration": "yaml.json"
+  },
+  {
+   "id": "shellscript",
+   "scopeName": "source.shell",
+   "extensions": [
+    ".sh",
+    ".bash",
+    ".bashrc",
+    ".bash_aliases",
+    ".bash_profile",
+    ".bash_login",
+    ".ebuild",
+    ".eclass",
+    ".profile",
+    ".bash_logout",
+    ".xprofile",
+    ".xsession",
+    ".xsessionrc",
+    ".zsh",
+    ".zshrc",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".zshenv",
+    ".zsh-theme",
+    ".fish",
+    ".ksh",
+    ".csh",
+    ".cshrc",
+    ".tcshrc",
+    ".yashrc",
+    ".yash_profile"
+   ],
+   "filenames": [
+    "APKBUILD",
+    "PKGBUILD",
+    ".envrc",
+    ".hushlogin",
+    "zshrc",
+    "zshenv",
+    "zlogin",
+    "zprofile",
+    "zlogout",
+    "bashrc_Apple_Terminal",
+    "zshrc_Apple_Terminal"
+   ],
+   "configuration": "shellscript.json"
+  },
+  {
+   "id": "python",
+   "scopeName": "source.python",
+   "extensions": [
+    ".py",
+    ".rpy",
+    ".pyw",
+    ".cpy",
+    ".gyp",
+    ".gypi",
+    ".pyi",
+    ".ipy",
+    ".pyt"
+   ],
+   "filenames": [
+    "SConstruct",
+    "SConscript"
+   ],
+   "configuration": "python.json"
+  },
+  {
+   "id": "rust",
+   "scopeName": "source.rust",
+   "extensions": [
+    ".rs"
+   ],
+   "filenames": [],
+   "configuration": "rust.json"
+  },
+  {
+   "id": "go",
+   "scopeName": "source.go",
+   "extensions": [
+    ".go"
+   ],
+   "filenames": [],
+   "configuration": "go.json"
+  },
+  {
+   "id": "xml",
+   "scopeName": "text.xml",
+   "extensions": [
+    ".xml",
+    ".xsd",
+    ".ascx",
+    ".atom",
+    ".axml",
+    ".axaml",
+    ".bpmn",
+    ".cpt",
+    ".csl",
+    ".csproj",
+    ".csproj.user",
+    ".dita",
+    ".ditamap",
+    ".dtd",
+    ".ent",
+    ".mod",
+    ".dtml",
+    ".fsproj",
+    ".fxml",
+    ".iml",
+    ".isml",
+    ".jmx",
+    ".launch",
+    ".menu",
+    ".mxml",
+    ".nuspec",
+    ".opml",
+    ".owl",
+    ".proj",
+    ".props",
+    ".pt",
+    ".publishsettings",
+    ".pubxml",
+    ".pubxml.user",
+    ".rbxlx",
+    ".rbxmx",
+    ".rdf",
+    ".rng",
+    ".rss",
+    ".shproj",
+    ".slnx",
+    ".storyboard",
+    ".svg",
+    ".targets",
+    ".tld",
+    ".tmx",
+    ".vbproj",
+    ".vbproj.user",
+    ".vcxproj",
+    ".vcxproj.filters",
+    ".wixproj",
+    ".wsdl",
+    ".wxi",
+    ".wxl",
+    ".wxs",
+    ".xaml",
+    ".xbl",
+    ".xib",
+    ".xlf",
+    ".xliff",
+    ".xpdl",
+    ".xul",
+    ".xoml"
+   ],
+   "filenames": [],
+   "configuration": "xml.json"
+  },
+  {
+   "id": "xsl",
+   "scopeName": "text.xml.xsl",
+   "extensions": [
+    ".xsl",
+    ".xslt"
+   ],
+   "filenames": [],
+   "configuration": "xsl.json"
+  },
+  {
+   "id": "sql",
+   "scopeName": "source.sql",
+   "extensions": [
+    ".sql",
+    ".dsql"
+   ],
+   "filenames": [],
+   "configuration": "sql.json"
+  },
+  {
+   "id": "dockerfile",
+   "scopeName": "source.dockerfile",
+   "extensions": [
+    ".dockerfile",
+    ".containerfile"
+   ],
+   "filenames": [
+    "Dockerfile",
+    "Containerfile"
+   ],
+   "configuration": "dockerfile.json"
+  },
+  {
+   "id": "ini",
+   "scopeName": "source.ini",
+   "extensions": [
+    ".ini"
+   ],
+   "filenames": [],
+   "configuration": "ini.json"
+  },
+  {
+   "id": "properties",
+   "scopeName": "source.ini",
+   "extensions": [
+    ".conf",
+    ".properties",
+    ".cfg",
+    ".directory",
+    ".gitattributes",
+    ".gitconfig",
+    ".gitmodules",
+    ".editorconfig",
+    ".repo"
+   ],
+   "filenames": [
+    "gitconfig"
+   ],
+   "configuration": "properties.json"
+  },
+  {
+   "id": "makefile",
+   "scopeName": "source.makefile",
+   "extensions": [
+    ".mak",
+    ".mk"
+   ],
+   "filenames": [
+    "Makefile",
+    "makefile",
+    "GNUmakefile",
+    "OCamlMakefile"
+   ],
+   "configuration": "makefile.json"
+  },
+  {
+   "id": "diff",
+   "scopeName": "source.diff",
+   "extensions": [
+    ".diff",
+    ".patch",
+    ".rej"
+   ],
+   "filenames": [],
+   "configuration": "diff.json"
+  },
+  {
+   "id": "java",
+   "scopeName": "source.java",
+   "extensions": [
+    ".java",
+    ".jav"
+   ],
+   "filenames": [],
+   "configuration": "java.json"
+  }
+ ],
+ "grammars": [
+  {
+   "scopeName": "source.ts",
+   "file": "source.ts.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {
+    "punctuation.definition.template-expression": "other",
+    "entity.name.type.instance.jsdoc": "other",
+    "entity.name.function.tagged-template": "other",
+    "meta.import string.quoted": "other",
+    "variable.other.jsdoc": "other"
+   },
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": [
+    "keyword.operator.relational",
+    "storage.type.function.arrow",
+    "keyword.operator.bitwise.shift",
+    "meta.brace.angle",
+    "punctuation.definition.tag",
+    "keyword.operator.assignment.compound.bitwise.ts"
+   ]
+  },
+  {
+   "scopeName": "source.tsx",
+   "file": "source.tsx.json",
+   "injectTo": [],
+   "embeddedLanguages": {
+    "meta.tag.tsx": "jsx-tags",
+    "meta.tag.without-attributes.tsx": "jsx-tags",
+    "meta.tag.attributes.tsx": "typescriptreact",
+    "meta.embedded.expression.tsx": "typescriptreact"
+   },
+   "tokenTypes": {
+    "punctuation.definition.template-expression": "other",
+    "entity.name.type.instance.jsdoc": "other",
+    "entity.name.function.tagged-template": "other",
+    "meta.import string.quoted": "other",
+    "variable.other.jsdoc": "other"
+   },
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": [
+    "keyword.operator.relational",
+    "storage.type.function.arrow",
+    "keyword.operator.bitwise.shift",
+    "punctuation.definition.tag",
+    "keyword.operator.assignment.compound.bitwise.ts"
+   ]
+  },
+  {
+   "scopeName": "documentation.injection.ts",
+   "file": "documentation.injection.ts.json",
+   "injectTo": [
+    "source.ts",
+    "source.tsx"
+   ],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "documentation.injection.js.jsx",
+   "file": "documentation.injection.js.jsx.json",
+   "injectTo": [
+    "source.js",
+    "source.js.jsx"
+   ],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.js.jsx",
+   "file": "source.js.jsx.json",
+   "injectTo": [],
+   "embeddedLanguages": {
+    "meta.tag.js": "jsx-tags",
+    "meta.tag.without-attributes.js": "jsx-tags",
+    "meta.tag.attributes.js.jsx": "javascriptreact",
+    "meta.embedded.expression.js": "javascriptreact"
+   },
+   "tokenTypes": {
+    "punctuation.definition.template-expression": "other",
+    "entity.name.type.instance.jsdoc": "other",
+    "entity.name.function.tagged-template": "other",
+    "meta.import string.quoted": "other",
+    "variable.other.jsdoc": "other"
+   },
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.js",
+   "file": "source.js.json",
+   "injectTo": [],
+   "embeddedLanguages": {
+    "meta.tag.js": "jsx-tags",
+    "meta.tag.without-attributes.js": "jsx-tags",
+    "meta.tag.attributes.js": "javascript",
+    "meta.embedded.expression.js": "javascript"
+   },
+   "tokenTypes": {
+    "punctuation.definition.template-expression": "other",
+    "entity.name.type.instance.jsdoc": "other",
+    "entity.name.function.tagged-template": "other",
+    "meta.import string.quoted": "other",
+    "variable.other.jsdoc": "other"
+   },
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.json",
+   "file": "source.json.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.json.comments",
+   "file": "source.json.comments.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.json.lines",
+   "file": "source.json.lines.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.json.comments.snippets",
+   "file": "source.json.comments.snippets.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "text.html.markdown",
+   "file": "text.html.markdown.json",
+   "injectTo": [],
+   "embeddedLanguages": {
+    "meta.embedded.block.html": "html",
+    "source.js": "javascript",
+    "source.css": "css",
+    "meta.embedded.block.frontmatter": "yaml",
+    "meta.embedded.block.css": "css",
+    "meta.embedded.block.ini": "ini",
+    "meta.embedded.block.java": "java",
+    "meta.embedded.block.lua": "lua",
+    "meta.embedded.block.makefile": "makefile",
+    "meta.embedded.block.perl": "perl",
+    "meta.embedded.block.r": "r",
+    "meta.embedded.block.ruby": "ruby",
+    "meta.embedded.block.php": "php",
+    "meta.embedded.block.sql": "sql",
+    "meta.embedded.block.vs_net": "vs_net",
+    "meta.embedded.block.xml": "xml",
+    "meta.embedded.block.xsl": "xsl",
+    "meta.embedded.block.yaml": "yaml",
+    "meta.embedded.block.dosbatch": "dosbatch",
+    "meta.embedded.block.clojure": "clojure",
+    "meta.embedded.block.coffee": "coffee",
+    "meta.embedded.block.c": "c",
+    "meta.embedded.block.cpp": "cpp",
+    "meta.embedded.block.diff": "diff",
+    "meta.embedded.block.dockerfile": "dockerfile",
+    "meta.embedded.block.go": "go",
+    "meta.embedded.block.groovy": "groovy",
+    "meta.embedded.block.pug": "jade",
+    "meta.embedded.block.ignore": "ignore",
+    "meta.embedded.block.javascript": "javascript",
+    "meta.embedded.block.json": "json",
+    "meta.embedded.block.jsonc": "jsonc",
+    "meta.embedded.block.jsonl": "jsonl",
+    "meta.embedded.block.latex": "latex",
+    "meta.embedded.block.less": "less",
+    "meta.embedded.block.objc": "objc",
+    "meta.embedded.block.scss": "scss",
+    "meta.embedded.block.perl6": "perl6",
+    "meta.embedded.block.powershell": "powershell",
+    "meta.embedded.block.python": "python",
+    "meta.embedded.block.restructuredtext": "restructuredtext",
+    "meta.embedded.block.rust": "rust",
+    "meta.embedded.block.scala": "scala",
+    "meta.embedded.block.shellscript": "shellscript",
+    "meta.embedded.block.typescript": "typescript",
+    "meta.embedded.block.typescriptreact": "typescriptreact",
+    "meta.embedded.block.csharp": "csharp",
+    "meta.embedded.block.fsharp": "fsharp"
+   },
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": [
+    "markup.underline.link.markdown",
+    "punctuation.definition.list.begin.markdown",
+    "keyword.operator.relational.cs",
+    "keyword.operator.arrow.cs",
+    "punctuation.accessor.pointer.cs",
+    "keyword.operator.bitwise.shift.cs",
+    "keyword.operator.assignment.compound.bitwise.cs",
+    "keyword.operator.relational.ts",
+    "storage.type.function.arrow.ts",
+    "keyword.operator.bitwise.shift.ts",
+    "keyword.operator.assignment.compound.bitwise.ts",
+    "keyword.operator.relational.tsx",
+    "storage.type.function.arrow.tsx",
+    "keyword.operator.bitwise.shift.tsx",
+    "keyword.operator.assignment.compound.bitwise.tsx"
+   ]
+  },
+  {
+   "scopeName": "source.css",
+   "file": "source.css.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {
+    "meta.function.url string.quoted": "other"
+   },
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.css.scss",
+   "file": "source.css.scss.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.sassdoc",
+   "file": "source.sassdoc.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.css.less",
+   "file": "source.css.less.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "text.html.basic",
+   "file": "text.html.basic.json",
+   "injectTo": [],
+   "embeddedLanguages": {
+    "text.html": "html",
+    "source.css": "css",
+    "source.js": "javascript",
+    "source.python": "python",
+    "source.smarty": "smarty"
+   },
+   "tokenTypes": {
+    "meta.tag string.quoted": "other"
+   },
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "text.html.derivative",
+   "file": "text.html.derivative.json",
+   "injectTo": [],
+   "embeddedLanguages": {
+    "text.html": "html",
+    "source.css": "css",
+    "source.js": "javascript",
+    "source.python": "python",
+    "source.smarty": "smarty"
+   },
+   "tokenTypes": {
+    "meta.tag string.quoted": "other"
+   },
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.yaml",
+   "file": "source.yaml.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.yaml.1.3",
+   "file": "source.yaml.1.3.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.yaml.1.2",
+   "file": "source.yaml.1.2.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.yaml.1.1",
+   "file": "source.yaml.1.1.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.yaml.1.0",
+   "file": "source.yaml.1.0.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.yaml.embedded",
+   "file": "source.yaml.embedded.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.shell",
+   "file": "source.shell.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": [
+    "*"
+   ],
+   "unbalancedBracketScopes": [
+    "meta.scope.case-pattern.shell"
+   ]
+  },
+  {
+   "scopeName": "source.python",
+   "file": "source.python.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.regexp.python",
+   "file": "source.regexp.python.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.rust",
+   "file": "source.rust.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.go",
+   "file": "source.go.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "text.xml",
+   "file": "text.xml.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "text.xml.xsl",
+   "file": "text.xml.xsl.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.sql",
+   "file": "source.sql.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.dockerfile",
+   "file": "source.dockerfile.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.ini",
+   "file": "source.ini.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.makefile",
+   "file": "source.makefile.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {
+    "string.interpolated": "other"
+   },
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.diff",
+   "file": "source.diff.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  },
+  {
+   "scopeName": "source.java",
+   "file": "source.java.json",
+   "injectTo": [],
+   "embeddedLanguages": {},
+   "tokenTypes": {},
+   "balancedBracketScopes": null,
+   "unbalancedBracketScopes": null
+  }
+ ]
+}

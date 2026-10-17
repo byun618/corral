@@ -4,6 +4,10 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
+import type { FileListInput, FileListResult } from './file-list.js'
+import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
+import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
+import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -744,6 +748,20 @@ export type UiPrefs = {
    * 여기서는 실어 나르기만 한다). 키가 herdr tab id 라 herdr 가 재기동하면 배치·폴백 번호와 같이 잃는다(00-analysis F13).
    */
   tabMarks: unknown[]
+  /**
+   * 오른쪽 패널·탐색기 (LIFE-589 E1ⓑ·E2ⓓⓔ) — 열림·폭과 표시 토글. 범위는 **전역**(worktree 별이 아니다 — VS Code `files.exclude`·
+   * Orca 「Show Git Ignored Files」 처럼 보기 설정이라 worktree 를 바꿔도 같은 눈으로 본다). 기본: 닫힘 · 폭 null(토큰) · dotfile 보임 · ignored 보임(흐림).
+   */
+  rightPanelOpen: boolean
+  rightPanelWidth: number | null
+  explorerShowDotfiles: boolean
+  explorerShowIgnored: boolean
+  /**
+   * 최근 연 파일 (LIFE-593 E5 · Q5) — worktree 경로 → 루트 상대 경로 목록(최근이 앞, worktree 마다 50). 어느 경로로 열든 파일 탭이 활성이 되면 맨 앞에 온다.
+   * 키 경로인 이유는 `groupLayouts` 와 같다. 모양 검사는 main `ui-prefs.ts` 가 읽을 때 한다(상대 경로만 — 열 때 `file-read.ts` 가 다시 가둔다).
+   * 기준 빌드는 이 칸을 모르고 읽고, 다음 저장 때 버린다(다른 칸은 그대로 — 589 인계).
+   */
+  recentFiles: Record<string, string[]>
 } & SidebarViewPrefs
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
@@ -1023,6 +1041,47 @@ export type CorralApi = {
   revealInFinder: (input: { path: string; kind: 'worktree' | 'repo' }) => Promise<ShellActionResult>
   openInEditor: (input: { path: string }) => Promise<ShellActionResult>
   copyPath: (input: { path: string }) => Promise<ShellActionResult>
+  // --- 탐색기 (LIFE-589 F1) — 읽기 전용. root = 열린 worktree 경로, rel = 루트 기준 상대 경로('' = 루트). main 이 가둔다 ---
+  explorerList: (input: { root: string; rel: string }) => Promise<ExplorerListResult>
+  /** 감시 구독 켜기·끄기 — 렌더러는 「패널 열림 + 활성 worktree」 하나만 켠다. 결과·변경은 `onExplorerEvent` 로 온다. */
+  explorerWatch: (input: { root: string; on: boolean }) => Promise<{ ok: true } | { ok: false; code: string }>
+  /** 안전망·새로고침 — git 상태를 바로 다시 읽게 한다. */
+  explorerRefreshGit: (root: string) => void
+  /** 우클릭 메뉴 동작(E6) — 경로 복사·상대 경로 복사·Finder·터미널에서 열기. */
+  explorerAction: (input: ExplorerActionInput) => Promise<ExplorerActionResult>
+  onExplorerEvent: (listener: (event: ExplorerPush) => void) => () => void
+  // --- 전체 파일 목록 (LIFE-593 F5) — 읽기 전용. 루트는 열린 worktree 만, 넘기는 것은 루트·무시 파일 포함·요청 id 뿐(main `file-list.ts`) ---
+  fileList: (input: FileListInput) => Promise<FileListResult>
+  /** 진행 중 목록 작업을 끝낸다(대화상자 닫기·worktree 전환 — E7ⓓ). */
+  fileListCancel: (requestId: string) => void
+  // --- 탐색기 파일 조작 (LIFE-592 F4) — 만들기·이름 변경/이동·휴지통·되살리기·복제·가져오기. 가둠·덮어쓰기 금지·휴지통은 main(`explorer-ops.ts`) ---
+  explorerOp: (input: ExplorerOpInput) => Promise<ExplorerOpResult>
+  /** 탐색기 트리가 활성 요소가 됐다/떠났다 — main 이 그동안만 ⌘Z·⌘⇧Z 를 탐색기 실행 취소로 가져온다(`raw/claude/undo-routing.md`). */
+  explorerFocus: (focused: boolean) => void
+  /** OS 에서 탐색기에 파일을 떨어뜨렸다(preload 가 원본 경로를 main 에 직접 맡기고 표지만 넘긴다 — E7ⓓ). */
+  onExplorerDrop: (listener: (drop: ExplorerDrop) => void) => () => void
+  // --- 파일 탭 (LIFE-590 F2) — 읽기 전용 내용. root = 열린 worktree 경로, rel = 루트 기준 상대 경로. main 이 가두고 상한·바이너리를 판정한다 ---
+  readFile: (input: { root: string; rel: string }) => Promise<FileReadResult>
+  /** 이미지 바이트(LIFE-590 E4ⓔ) — 렌더러가 createImageBitmap·인라인 SVG 로 그린다(URL 없음 — CSP 무변경). */
+  readImage: (input: { root: string; rel: string }) => Promise<ImageReadResult>
+  /** 열린 파일 탭 감시 집합(LIFE-590 E5) — 통째로 바꾼다. */
+  fileWatch: (input: { root: string; rels: string[] }) => Promise<{ ok: boolean; count: number }>
+  onFileEvent: (listener: (event: FileWatchPush) => void) => () => void
+  /** LIFE-591 F3 — 파일 탭 저장(쓰기 경계는 main `file-write.ts`). */
+  writeFile: (input: FileWriteInput) => Promise<FileWriteResult>
+  /** 확인 대화상자(OS 기본) — 문구는 main 이 만든다. 고른 답. */
+  fileDialog: (request: FileDialogRequest) => Promise<FileDialogChoice>
+  /** 수정 파일 목록 — 바뀔 때마다(종료 확인 관문이 동기 판정에 쓴다, E3ⓒ). */
+  setDirtyFiles: (files: DirtyFile[]) => void
+  /** main 이 종료·창 닫기를 막고 확인을 맡겼다. */
+  /** `gen` = 요청 세대 — 응답에 그대로 돌려준다(LIFE-591 수정 r5 R5-B). */
+  onQuitRequested: (listener: (gen: number) => void) => () => void
+  /** 확인을 마쳤다(저장했거나 저장 안 함) — main 이 받으면 종료한다. 무효가 된 세대면 false. */
+  confirmQuit: (gen: number) => Promise<boolean>
+  /** 종료 확인이 취소로 끝났다 — main 이 런타임 정리를 이미 시작했었으면 runtimeClosed(LIFE-591 수정 r4 R4-A ⓒ). */
+  quitCancelled: (gen: number) => Promise<{ runtimeClosed: boolean }>
+  /** 종료 확인 요청을 받았다(LIFE-591 수정 r1 R1-I). */
+  quitAck: (gen: number) => void
   /** 우클릭 직전 창을 앞으로 (Orca #14545 를 따라 하지 않기 — 배경 앱 우클릭에도 키보드·hover 대상이 선다). */
   activateWindow: () => void
   reportRendered: (revision: number) => void

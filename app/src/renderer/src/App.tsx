@@ -1,4 +1,6 @@
 import { CommandPalette } from './components/CommandPalette.js'
+import { QuickOpen } from './components/QuickOpen.js'
+import { dropRecentFile, pushRecentFile, readRecentFiles, type RecentFiles } from '../../shared/recent-files.js'
 import type { PaletteEntry } from './palette-search.js'
 import type { ShortcutHandlers } from './hooks/useKeybindings.js'
 import { ACTIONS, bindingsFor, formatBinding } from '../../shared/keybindings.js'
@@ -14,7 +16,7 @@ import { DEFAULT_SETTINGS_SECTION, SETTINGS_SECTIONS, type SettingsSectionId } f
 //
 // 계측이 누를 수 있게 손잡이마다 `data-*` 를 단다 — 선택자가 화면 계약이다 (C7 매핑표 참고).
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentStatus, AppState, PaneDirection, PaneSplitDirection, RepoRow as RepoRowData, TabRow, WorkspaceRow } from '../../shared/types.js'
 import { AddRepoModal } from './components/AddRepoModal.js'
 import { ConfirmClose } from './components/ConfirmClose.js'
@@ -23,13 +25,13 @@ import { DropZoneOverlay } from './components/DropZoneOverlay.js'
 import { EmptyGroup } from './components/EmptyGroup.js'
 import { BackendBanner, BackendCard, backendBlocksTerminal } from './components/BackendCard.js'
 import { InlineNotice } from './components/InlineNotice.js'
-import { GroupHeader } from './components/MainTabBar.js'
+import { GroupHeader, type GroupTabItem } from './components/MainTabBar.js'
 import { MruSwitcher, type MruRow } from './components/MruSwitcher.js'
 import { groupGlyphs, MRU_LIMIT, openMru, orderMru, stepMru, touchMru } from './mru-order.js'
 import { numbersOf } from './pane-geometry.js'
 import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
-import { ONE_TAB_IN_GROUP } from './group-tree.js'
+import { ONE_TAB_IN_GROUP, topRightGroupId } from './group-tree.js'
 import type { TabGroup } from './group-tree.js'
 import type { LifecycleNotice } from './lifecycle-types.js'
 import { paneTitleFrames, stabilizePaneTitles } from './pane-title-frames.js'
@@ -54,6 +56,12 @@ import { useManualOrder } from './hooks/useManualOrder.js'
 import { useSidebarView } from './hooks/useSidebarView.js'
 import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
+import { useRightPanel } from './hooks/useRightPanel.js'
+import { useExplorer } from './hooks/useExplorer.js'
+import { useFileOps } from './hooks/useFileOps.js'
+import { createWatchHold, forgetMissing, type WatchPush } from './watch-hold.js'
+import { RightPanel, RightPanelToggle } from './components/RightPanel.js'
+import { Explorer } from './components/Explorer.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
 import { pickPane } from './pane-utils.js'
@@ -64,9 +72,13 @@ import { agentPanes, sessionTitle, userLabel } from './session-title.js'
 import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
+import { fileTabId, fileTabLabel, fileTabsOf, isFileTabId, previewOf, tabKindOf, terminalKeyTarget } from './file-tabs.js'
+import { FileView, focusLiveEditor, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
+import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, thawEditing, type FileDoc } from './file-docs.js'
+import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, type SaveDeps } from './file-save.js'
 import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
 import { moveDirectionToSplit } from './components/TabContextMenu.js'
-import { groupOfTab } from './group-tree.js'
+import { groupOfTab, listGroups, readStoredLayouts } from './group-tree.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
 import { updateSettings, useSettings } from './settings-store.js'
 import { resolveNewAgentTab } from './tab-create-menu.js'
@@ -101,6 +113,21 @@ const AGENT_LAUNCH_LABEL = { claude: 'Claude', codex: 'Codex', grok: 'Grok' } as
 const NO_REPOS: AppState['repos'] = []
 const NO_ROOTS: string[] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
+/** LIFE-592 — 탐색기 이동 뒤 옛·새 경로 감시 push 를 더 버리는 시간(감시 디바운스보다 길게). */
+const WATCH_HOLD_GRACE_MS = 1_000
+/** LIFE-593 수정 r2 R2-G-04 — 저장된 배치(앱 시작 복원)에서 worktree 별 활성 파일 탭 경로. 처음 보일 때 한 번 최근 기록을 건너뛴다(사용자가 연 것이 아니다). */
+function restoredActiveFiles(stored: unknown): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const row of readStoredLayouts(stored)) {
+    const group = listGroups(row.layout.root).find((item) => item.groupId === row.layout.activeGroupId)
+    const kind = group?.activeTabId === undefined || group.activeTabId === null ? null : tabKindOf(group.activeTabId)
+    if (kind?.kind === 'file') out.set(row.worktreePath, kind.rel)
+  }
+  return out
+}
+/** 최근 기록 `ui-prefs.json` 쓰기 뭉침. */
+const RECENT_SAVE_DEBOUNCE_MS = 500
+const NO_RECENT: readonly string[] = []
 
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState | null>(null)
@@ -108,10 +135,107 @@ export function App(): React.JSX.Element {
   const notify = (message: string): void => {
     toast(message)
   }
+  // --- LIFE-591 F3 파일 편집 — 문서 저장소(`file-docs.ts`)가 수정 여부의 진실이다. 바뀌면 탭 점·종료 관문 목록이 따라온다 ---
+  const docsVer = useSyncExternalStore(subscribeDocs, docsVersion)
+  const saveDeps: SaveDeps = { writeFile: window.corral.writeFile, fileDialog: window.corral.fileDialog, notify }
+  const saveDepsRef = useRef(saveDeps)
+  saveDepsRef.current = saveDeps
+  // 수정 파일 목록을 main 에 민다(E3ⓒ — 종료 확인 관문이 동기 판정에 쓴다). 바뀐 때만.
+  const sentDirty = useRef('[]')
+  useEffect(() => {
+    const files = dirtyFilesOf(allDocs())
+    const serialized = JSON.stringify(files)
+    if (serialized === sentDirty.current) return
+    sentDirty.current = serialized
+    window.corral.setDirtyFiles(files)
+  }, [docsVer])
+  // 렌더러 다시 불러오기(E3ⓕ) — 수정 파일이 있으면 막는다. main(`will-prevent-unload`)이 묻고, 고르면 그래도 내린다. 종료 확인을 지난 뒤면 main 이 묻지 않고 내린다.
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+      if (dirtyDocs().length === 0) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
+  // 종료·창 닫기 확인(E3ⓒ) — main 이 런타임 정리 전에 막고 맡겼다. 저장/저장 안 함이면 다시 종료하라고 돌려준다. 취소면 아무것도 안 한다(앱·런타임 그대로).
+  // 여러 worktree 의 파일이면 이름 앞에 worktree 폴더 이름을 붙인다.
+  const quitPromptRef = useRef(false)
+  // 받은 요청 중 가장 새 세대(수정 r5 R5-B) — 확인이 끝날 때 이 세대로 답한다(묻는 사이 새 요청이 왔으면 그 요청에 대한 답이다).
+  // main 이 무응답 취소로 무효로 한 세대면 승인을 받지 않는다(아래 — 동결을 다시 푼다).
+  const quitGenRef = useRef(0)
+  useEffect(
+    () =>
+      window.corral.onQuitRequested((gen) => {
+        quitGenRef.current = Math.max(quitGenRef.current, gen)
+        // 받았다고 바로 알린다 — main 이 무응답(멈춘 렌더러) 판정 시계를 멈춘다(수정 r1 R1-I). 이미 묻는 중이어도 알린다.
+        window.corral.quitAck(gen)
+        if (quitPromptRef.current) return
+        quitPromptRef.current = true
+        // 대상 = 모든 문서(그때그때 — 확인·저장을 기다리는 사이 새로 수정된 문서도 다시 묻는다, 수정 r2 R2-A).
+        // main 은 밀린 목록이 비어도 여기에 묻는다(수정 r4 R4-A) — 수정이 없으면 아래가 묻지 않고 같은 태스크 안에서 승인·동결까지 간다(그 사이 입력이 끼지 못한다).
+        const label = (doc: FileDoc): string => (new Set(dirtyDocs().map((row) => row.root)).size > 1 ? `${doc.root.split('/').pop() ?? doc.root}/${doc.rel}` : doc.rel)
+        void confirmDiscardOrSave({ targets: allDocs, deps: saveDepsRef.current, label })
+          .then((ok) => {
+            if (!ok) {
+              // 취소 — 보통은 정리 전이라 할 일이 없다. 방어선(R4-A ⓒ): 동결돼 있었으면 풀고, main 이 이미 런타임을 정리했으면 알린다(창은 main 이 다시 보인다).
+              thawEditing()
+              void window.corral.quitCancelled(quitGenRef.current).then((result) => {
+                if (result.runtimeClosed) notify('종료를 취소했지만 터미널 런타임은 이미 정리됐습니다 — 파일은 그대로 저장할 수 있습니다. 저장한 뒤 앱을 다시 시작하세요')
+              })
+              return
+            }
+            // 승인 — 이 순간(같은 마이크로태스크)부터 편집을 막고 main 에 알린다. 승인 뒤 정리 대기 중 친 글자가 조용히 사라지지 않게(R3-C).
+            freezeEditing()
+            void window.corral.confirmQuit(quitGenRef.current).then((accepted) => {
+              // 무효가 된 요청(무응답 대화상자에서 취소한 종료)에 대한 늦은 승인 — main 이 받지 않았다. 편집을 다시 연다(R5-B).
+              if (!accepted) thawEditing()
+            })
+          })
+          .finally(() => {
+            quitPromptRef.current = false
+          })
+      }),
+    [],
+  )
+  /** 그 worktree 의 수정된 문서들을 묻는다(worktree 닫기·마지막 터미널 탭 닫기 — E3ⓓⓔ). 없으면 묻지 않고 true. 대상은 그 worktree 문서 전체를 그때그때(R2-A). */
+  const confirmWorktreeDocs = (root: string): Promise<boolean> =>
+    confirmDiscardOrSave({ targets: () => allDocs().filter((doc) => doc.root === root), deps: saveDepsRef.current })
+  /**
+   * worktree 삭제(E3ⓓ) — 지울 파일을 저장할 수는 없으니 「버리고 계속 / 취소」. 계속이면 그 worktree 문서를 전부 버린다.
+   * 대화상자를 기다리는 사이 묻지 않은 문서가 새로 수정됐으면 그 목록으로 다시 묻는다(R2-A — 처음 목록만 보고 전부 버리지 않는다, 최대 3 번).
+   */
+  const confirmDeleteDocs = async (root: string): Promise<boolean> => {
+    const asked = new Set<string>()
+    for (let ask = 0; ask < 3; ask += 1) {
+      const fresh = dirtyDocs().filter((doc) => doc.root === root && !asked.has(doc.key))
+      if (fresh.length === 0) {
+        for (const doc of allDocs()) if (doc.root === root) disposeDoc(doc.key)
+        return true
+      }
+      if ((await window.corral.fileDialog({ kind: 'discard', files: fresh.map((doc) => doc.rel) })) !== 'discard') return false
+      for (const doc of fresh) asked.add(doc.key)
+    }
+    return false
+  }
   const [modalOpen, setModalOpen] = useState(false)
   const [modalNote, setModalNote] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const paletteReturn = useRef<HTMLElement | null>(null)
+  // LIFE-593 — ⌘P 빠른 열기(팔레트와 별도 대화상자 — Q1). 열기·닫기·포커스 복귀는 팔레트와 같은 방식. 「무시 파일 포함」 은 앱 실행 동안만 기억한다(Q3).
+  const [quickOpenOpen, setQuickOpenOpen] = useState(false)
+  const quickOpenReturn = useRef<HTMLElement | null>(null)
+  const [quickOpenIgnored, setQuickOpenIgnored] = useState(false)
+  /** 최근 연 파일(E5 — worktree 별, ui-prefs 영속). 첫 getUiPrefs 에서 읽는다. */
+  const [recentFiles, setRecentFiles] = useState<RecentFiles>({})
+  /** 기록 거울 — 저장할지(바뀌었는지)를 상태 갱신 밖에서 가린다. */
+  const recentFilesRef = useRef<RecentFiles>({})
+  const recentReady = useRef(false)
+  /** 앱 시작 때 되살릴 worktree 별 활성 파일 탭(수정 r2 R2-G-04) — 그 worktree 에서 처음 보인 활성 파일 하나로 쓰고 버린다. */
+  const recentRestored = useRef(new Map<string, string>())
+  /** 탐색기 이름 필터 열기 요청(⌥⌘F — Q7). 바뀌면 탐색기가 머리 입력칸을 연다. */
+  const [explorerFilterToken, setExplorerFilterToken] = useState(0)
   /**
    * 설정 페이지 (LIFE-511) — 열려 있으면 그 섹션. 워크스페이스는 언마운트도 `display:none` 도 하지 않고 **크기 그대로 덮는다**
    * (`.app-body.is-covered` = visibility:hidden + inert). `display:none` 이면 영역 상자가 0 으로 재져 모든 영역이 cols 2·rows 1 로
@@ -147,6 +271,10 @@ export function App(): React.JSX.Element {
   }, [])
   const sidebarRef = useRef<HTMLDivElement | null>(null)
   const { width, onHandleMouseDown } = useSidebarResize(sidebarRef)
+  // LIFE-589 — 오른쪽 패널(⌘L)·탐색기(⌘⇧E). 패널을 닫아도 탐색기 상태는 여기 남는다(E1ⓔ).
+  const rightPanelRef = useRef<HTMLDivElement | null>(null)
+  const rightPanel = useRightPanel(rightPanelRef)
+  const [explorerFocusToken, setExplorerFocusToken] = useState(0)
   const repoCollapse = usePersistentCollapse('collapsedRepos')
   // LIFE-467: 알약은 기본 **접힘**(Orca 와 같다) — 펼친 worktree 만 영속한다. 옛 `collapsedGroups`(기본 펼침)는 안 읽는다.
   const groupExpand = usePersistentCollapse('expandedAgentGroups')
@@ -206,18 +334,23 @@ export function App(): React.JSX.Element {
         manualOrder.hydrate(prefs)
         sidebarView.hydrate(prefs)
         setStoredLayouts(prefs.groupLayouts)
+        recentRestored.current = restoredActiveFiles(prefs.groupLayouts)
         const marks = readTabMarks(prefs.tabMarks)
         savedTabMarks.current = JSON.stringify(marks)
         setTabMarks(marks)
         sidebarCollapsedRef.current = prefs.sidebarCollapsed
         setSidebarCollapsed(prefs.sidebarCollapsed)
+        recentFilesRef.current = readRecentFiles(prefs.recentFiles)
+        setRecentFiles(recentFilesRef.current)
       })
       .catch(() => {
         // 읽기 실패 — 빈 배정표로 간다.
         manualOrder.hydrate(null)
       })
       .finally(() => {
-        if (!cancelled) setOrdinalsReady(true)
+        if (cancelled) return
+        recentReady.current = true
+        setOrdinalsReady(true)
       })
     return () => {
       cancelled = true
@@ -346,6 +479,65 @@ export function App(): React.JSX.Element {
   const pendingPlacementsRef = useRef<Map<string, PendingPlacement>>(new Map())
   /** LIFE-495 K6 — 닫은 탭 기록(worktree 경로별 최근 10개, 비영속). 렌더 대상이 아니라 ref 다. */
   const recentlyClosedRef = useRef<RecentlyClosed>({})
+  /** LIFE-590 E3ⓕ — 파일 탭 스크롤·선택 위치(Monaco view state). worktree 경로 → 탭 id 별. 비영속(재시작 복원은 열린 탭·순서·활성·미리보기까지). */
+  const fileViewStatesRef = useRef<Map<string, ViewStateStore>>(new Map())
+  const fileViewStatesOf = (worktreePath: string): ViewStateStore => {
+    const found = fileViewStatesRef.current.get(worktreePath)
+    if (found !== undefined) return found
+    const made: ViewStateStore = new Map()
+    fileViewStatesRef.current.set(worktreePath, made)
+    return made
+  }
+  /** Markdown 원문/미리보기 기억 — view state 와 같이 worktree 마다 탭 id 별(E4ⓓ). */
+  const markdownModesRef = useRef<Map<string, MarkdownModeStore>>(new Map())
+  const markdownModesOf = (worktreePath: string): MarkdownModeStore => {
+    const found = markdownModesRef.current.get(worktreePath)
+    if (found !== undefined) return found
+    const made: MarkdownModeStore = new Map()
+    markdownModesRef.current.set(worktreePath, made)
+    return made
+  }
+  /** 열린 파일 탭 감시 상태(E5) — main push 의 마지막 값, 키 = `루트\0상대 경로`. */
+  const [fileWatchState, setFileWatchState] = useState<ReadonlyMap<string, { exists: boolean; stamp: string | null }>>(() => new Map())
+  /**
+   * LIFE-592 E4ⓒ — 탐색기가 옮기는(또는 되살리는) 경로의 감시 push 는 조작이 끝나고 잠시 뒤까지 화면에 반영하지 않는다(앱이 한 이동의 옛 경로 「삭제됨」 깜빡임 0).
+   * 수정 r1 R1-D — 버리지 않고 경로별 마지막 push 를 들고 있다가 풀 때 반영한다(`watch-hold.ts`). 붙잡은 동안 온 실제 외부 변경이 영영 빠지지 않게.
+   */
+  const watchHoldRef = useRef(createWatchHold())
+  const applyWatchPushes = useCallback((pushes: readonly WatchPush[]): void => {
+    if (pushes.length === 0) return
+    setFileWatchState((previous) => {
+      let next: Map<string, { exists: boolean; stamp: string | null }> | null = null
+      for (const push of pushes) {
+        const key = `${push.root}\0${push.rel}`
+        const before = (next ?? previous).get(key)
+        if (before !== undefined && before.exists === push.exists && before.stamp === push.stamp) continue
+        next ??= new Map(previous)
+        next.set(key, { exists: push.exists, stamp: push.stamp })
+      }
+      return next ?? previous
+    })
+  }, [])
+  const holdWatch = useCallback(
+    (input: { root: string; prefixes: string[]; arriving?: string[] }): (() => void) => {
+      const release = watchHoldRef.current.hold(input)
+      const arriving = input.arriving
+      if (arriving !== undefined) setFileWatchState((previous) => forgetMissing(previous, { root: input.root, prefixes: arriving }))
+      // 늦게 오는 push(감시 디바운스) 몫으로 잠시 더 쥐었다가, 그 사이 온 마지막 상태를 반영한다.
+      return () => {
+        setTimeout(() => applyWatchPushes(release()), WATCH_HOLD_GRACE_MS)
+      }
+    },
+    [applyWatchPushes],
+  )
+  useEffect(
+    () =>
+      window.corral.onFileEvent((push) => {
+        if (watchHoldRef.current.intercept(push)) return
+        applyWatchPushes([push])
+      }),
+    [applyWatchPushes],
+  )
   /** LIFE-495 — 탭 이름 편집 요청(⌘R·메뉴 「제목 바꾸기」). 토큰이 오를 때마다 그 탭이 편집을 연다. */
   const [renameRequest, setRenameRequest] = useState<{ tabId: string; token: number } | null>(null)
   const requestRename = useCallback((tabId: string) => setRenameRequest((previous) => ({ tabId, token: (previous?.token ?? 0) + 1 })), [])
@@ -398,6 +590,11 @@ export function App(): React.JSX.Element {
         .find((worktree) => worktree.openWorkspaceId !== null && worktree.openWorkspaceId === lifecycle.activeWorkspaceId) ?? null
     )
   }, [state, lifecycle.activeWorkspaceId])
+  /** 비동기 응답이 그 사이 worktree 가 바뀌었는지 보는 거울(LIFE-593 수정 r1 — ⌘P 열기 전 폴더 확인). */
+  const activeWorktreeRowRef = useRef(activeWorktreeRow)
+  activeWorktreeRowRef.current = activeWorktreeRow
+
+  const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: rightPanel.open })
 
   const activeWorkspaceRow = useMemo(
     () => (state === null ? null : findWorkspace(state, lifecycle.activeWorkspaceId)),
@@ -557,6 +754,90 @@ export function App(): React.JSX.Element {
 
   const termSync = useTermGroupSync({ groups: termGroups, cell })
 
+  // LIFE-590 E5 — 활성 worktree 의 열린 파일 탭 전부(모든 영역·활성 여부 무관)를 main 감시에 맡긴다. 집합이 바뀔 때만 보낸다(통째로).
+  // 패널 열림과 무관하다 — 탐색기 감시(F1)는 패널이 닫히면 멈추지만 이 감시는 탭이 열려 있는 동안 돈다(E5ⓑ).
+  const watchRoot = activeWorktreeRow?.path ?? null
+  const watchRels = layout.layout === null ? '' : fileTabsOf(layout.layout).map((tab) => tab.rel).sort().join('\n')
+  useEffect(() => {
+    if (watchRoot === null) return
+    void window.corral.fileWatch({ root: watchRoot, rels: watchRels === '' ? [] : watchRels.split('\n') })
+  }, [watchRoot, watchRels])
+
+  // LIFE-591 E1ⓓ — 미리보기 탭을 편집하면 고정한다(VS Code `enablePreview`) — 수정 중인 탭이 다른 파일 한 번 클릭으로 교체되지 않게.
+  const keepFileTab = layout.keepFile
+  useEffect(() => {
+    if (watchRoot === null) return
+    for (const group of layout.groups) {
+      const preview = previewOf(group)
+      const kind = preview === null ? null : tabKindOf(preview)
+      if (preview !== null && kind?.kind === 'file' && getDoc(docKey(watchRoot, kind.rel))?.dirty === true) keepFileTab(preview)
+    }
+  }, [docsVer, layout.groups, watchRoot, keepFileTab])
+
+  // LIFE-590 E6 auto reveal — 활성 영역의 활성 탭이 파일 탭이면 탐색기가 그 파일을 따라간다(조상 펼침·선택·스크롤, 포커스는 그대로).
+  // 패널이 닫혀 있으면 아무것도 안 하고, 열리면 그때 활성 파일을 보인다(open 이 의존성). 숨김 경로(`.git`·`node_modules`)는 `reveal` 이 거른다.
+  const activeTabIdForReveal = layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null
+  const activeTabKind = activeTabIdForReveal === null ? null : tabKindOf(activeTabIdForReveal)
+  const activeFileRel = activeTabKind?.kind === 'file' ? activeTabKind.rel : null
+  const [revealRequest, setRevealRequest] = useState<{ rel: string; token: number } | null>(null)
+  const revealFile = explorer.reveal
+  useEffect(() => {
+    if (!rightPanel.open || activeFileRel === null) return
+    if (revealFile(activeFileRel)) setRevealRequest((previous) => ({ rel: activeFileRel, token: (previous?.token ?? 0) + 1 }))
+  }, [rightPanel.open, activeFileRel, revealFile])
+
+  // LIFE-593 E5ⓐ — 어느 경로로 열든(탐색기·⌘P·편집기 링크·⌘⇧T·탭 클릭) 활성 영역의 활성 탭이 파일 탭이 되면 그 worktree 기록 맨 앞에 둔다(ui-prefs 영속 — Q5).
+  // 첫 ui-prefs 읽기 전에는 적지 않는다(저장된 기록을 빈 기록으로 덮지 않게).
+  // 수정 r1 R1-C-09 · 수정 r2 R2-G-04 — 복원된 활성 탭만 넣지 않는다(시간 유예 없음 — 그 사이 사용자가 연 파일은 넣는다). 복원 = ① worktree 를 바꾼(또는 처음 본) 그 렌더에
+  // 보인 활성 탭(그 worktree 배치가 되살린 것) ② 앱 시작 때 저장된 배치의 활성 파일 탭이 그 worktree 에서 처음 보일 때. 탭 전환은 그대로 넣는다.
+  // 저장은 뭉쳐서(디바운스) 쓰고, 창이 닫힐 때 남은 것을 쓴다. 열어 보니 거절된 경로(파일 아님·가둠 밖)는 빼낸다(`forgetRecent` — R2-C-03).
+  const recentRoot = activeWorktreeRow?.path ?? null
+  const recentSeenRoot = useRef<{ root: string | null } | null>(null)
+  const recentSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flushRecentSave = useCallback(() => {
+    if (recentSaveTimer.current === null) return
+    clearTimeout(recentSaveTimer.current)
+    recentSaveTimer.current = null
+    window.corral.setUiPrefs({ recentFiles: recentFilesRef.current })
+  }, [])
+  useEffect(() => {
+    window.addEventListener('beforeunload', flushRecentSave)
+    return () => {
+      window.removeEventListener('beforeunload', flushRecentSave)
+      flushRecentSave()
+    }
+  }, [flushRecentSave])
+  const saveRecent = (next: RecentFiles): void => {
+    recentFilesRef.current = next
+    setRecentFiles(next)
+    if (recentSaveTimer.current !== null) clearTimeout(recentSaveTimer.current)
+    recentSaveTimer.current = setTimeout(() => {
+      recentSaveTimer.current = null
+      window.corral.setUiPrefs({ recentFiles: recentFilesRef.current })
+    }, RECENT_SAVE_DEBOUNCE_MS)
+  }
+  const saveRecentRef = useRef(saveRecent)
+  saveRecentRef.current = saveRecent
+  useEffect(() => {
+    if (!recentReady.current) return
+    const seen = recentSeenRoot.current
+    recentSeenRoot.current = { root: recentRoot }
+    if (recentRoot === null || activeFileRel === null) return
+    const restored = recentRestored.current.get(recentRoot)
+    if (restored !== undefined) {
+      recentRestored.current.delete(recentRoot)
+      if (restored === activeFileRel) return
+    }
+    if (seen === null || seen.root !== recentRoot) return
+    const next = pushRecentFile({ recent: recentFilesRef.current, root: recentRoot, rel: activeFileRel })
+    if (next !== recentFilesRef.current) saveRecentRef.current(next)
+  }, [recentRoot, activeFileRel, ordinalsReady])
+  /** 열어 보니 거절된 경로 — 그 worktree 기록에서 뺀다(어느 경로로 열었든 — 수정 r2 R2-C-03). */
+  const forgetRecent = (input: { root: string; rel: string }): void => {
+    const next = dropRecentFile({ recent: recentFilesRef.current, root: input.root, rel: input.rel })
+    if (next !== recentFilesRef.current) saveRecent(next)
+  }
+
   /** 키 핸들러가 읽는 배치 거울 — 핸들러를 매 렌더 다시 달지 않으려고 ref 로 둔다. */
   const layoutMirror = {
     activeGroupId: layout.activeGroupId,
@@ -604,6 +885,7 @@ export function App(): React.JSX.Element {
     revealPane,
     mruHistory: () => mruHistoryRef.current,
     notify,
+    guardDelete: confirmDeleteDocs,
   })
 
   /**
@@ -783,10 +1065,15 @@ export function App(): React.JSX.Element {
    * 키는 main 이 메뉴에서 뺏어 오므로(R23) 뜻이 IPC 로 늦게 도착한다. 그 사이 렌더가 몇 번
    * 돌든 **가장 최근 화면**을 겨눠야 해서 ref 로 둔다 — `layoutRef` 와 같은 결이다.
    */
-  const closeTargetRef = useRef<{ tabId: string | null; paneIds: string[] }>({ tabId: null, paneIds: [] })
+  const closeTargetRef = useRef<{ tabId: string | null; paneIds: string[]; file: boolean }>({ tabId: null, paneIds: [], file: false })
   {
-    const tab = tabById(layoutRef.current.activeTabId)
-    closeTargetRef.current = { tabId: tab?.tabId ?? null, paneIds: tab?.panes.map((pane) => pane.paneId) ?? [] }
+    const activeId = layoutRef.current.activeTabId
+    // LIFE-590 E3ⓐ — 활성 탭이 파일 탭이면 ⌘W 가 그 파일 탭을 닫는다.
+    if (activeId !== null && isFileTabId(activeId)) closeTargetRef.current = { tabId: activeId, paneIds: [], file: true }
+    else {
+      const tab = tabById(activeId)
+      closeTargetRef.current = { tabId: tab?.tabId ?? null, paneIds: tab?.panes.map((pane) => pane.paneId) ?? [], file: false }
+    }
   }
   // --- LIFE-495 탭 닫기·다시 열기·탭 단축키 ----------------------------------------
 
@@ -831,8 +1118,19 @@ export function App(): React.JSX.Element {
    * 사용자가 탭을 닫는다 (×·중클릭·메뉴·⌘W·bulk) — 실행 중 확인은 대상 전부를 모아 한 번, 핀 탭이 있으면 확인을 거친다(K3ⓒ).
    * 실제로 닫힌 탭만 다시 열기 기록에 넣는다(탭마다 1건). `anchor` = 「다른/오른쪽/왼쪽 탭 닫기」의 기준 탭 — 활성 탭이 닫혔으면 그 탭이 활성이 된다(K2ⓓ).
    */
-  const closeTabsByUser = (input: { tabIds: string[]; anchor?: { groupId: string; tab: TabRow } }): void => {
+  const closeTabsByUser = (input: { tabIds: string[]; anchor?: { groupId: string; tab: TabRow }; guarded?: boolean }): void => {
     if (input.tabIds.length === 0) return
+    // LIFE-591 E3ⓔ — 이 닫기로 그 worktree 의 터미널 탭이 하나도 안 남으면 herdr workspace 가 닫히고 파일 탭이 화면에서 사라진다(F2 알려진 한계).
+    // 그 worktree 에 수정된 파일이 있으면 먼저 묻는다(저장 / 저장 안 함 / 취소). 묻지 않고 닫히는 경로(셸 `exit` 등)에서는 문서가 저장소에 남아
+    // 다시 열면 같은 수정 내용으로 돌아오고, 앱 종료 확인에도 잡힌다.
+    const owner = (state?.repos ?? []).flatMap((repo) => repo.worktrees).find((row) => row.workspace?.tabs.some((tab) => input.tabIds.includes(tab.tabId)))
+    const closesAll = owner?.workspace?.tabs.every((tab) => input.tabIds.includes(tab.tabId)) === true
+    if (owner !== undefined && closesAll && dirtyDocs().some((doc) => doc.root === owner.path) && !input.guarded) {
+      void confirmWorktreeDocs(owner.path).then((ok) => {
+        if (ok) closeTabsByUser({ ...input, guarded: true })
+      })
+      return
+    }
     const snapshots = input.tabIds.flatMap((tabId) => {
       const snapshot = snapshotOf(tabId)
       return snapshot === null ? [] : [{ tabId, snapshot }]
@@ -850,14 +1148,144 @@ export function App(): React.JSX.Element {
     })
   }
 
-  const closeScope = (input: { groupId: string; tab: TabRow; scope: CloseScope }): void => {
+  /**
+   * 「다른/오른쪽/왼쪽 탭 닫기」 — 영역에 파일 탭이 섞여 있으면 **종류별로 나눠** 닫는다: 터미널 탭만 herdr 닫기(어댑터)로, 파일 탭은 배치에서만(LIFE-590 — 파일 탭은 herdr 를 부르지 않는다).
+   * 기준 탭이 파일 탭이면 터미널 쪽 anchor 대신 닫은 뒤 그 파일 탭을 활성으로 둔다.
+   */
+  const closeScope = (input: { groupId: string; tabId: string; scope: CloseScope }): void => {
     const group = layout.groups.find((row) => row.groupId === input.groupId)
     if (group === undefined) return
-    const targets = closeScopeTargets({ tabOrder: group.tabOrder, tabId: input.tab.tabId, scope: input.scope, pinned: pinnedTabs })
-    closeTabsByUser({ tabIds: targets, anchor: { groupId: input.groupId, tab: input.tab } })
+    const targets = closeScopeTargets({ tabOrder: group.tabOrder, tabId: input.tabId, scope: input.scope, pinned: pinnedTabs })
+    const files = targets.filter((tabId) => isFileTabId(tabId))
+    const activeBefore = group.activeTabId
+    // 수정된 파일 탭이 섞였으면 한 번에 묻는다(E3ⓐ 여러 개 닫기 — 파일 목록). 한 닫기 작업이라 확인을 다 마친 뒤에 닫는다 —
+    // 취소면 파일 탭도 터미널 탭도 하나도 닫지 않는다(수정 r1 R1-J: 옛 코드는 확인을 기다리지 않고 터미널 탭부터 닫았다). 수정된 파일이 없으면 지금처럼 바로 닫힌다.
+    const anchorTab = activeWorkspaceRow?.tabs.find((tab) => tab.tabId === input.tabId)
+    closeFilesByUser(files, () => {
+      if (isFileTabId(input.tabId) && activeBefore !== null && files.includes(activeBefore)) layout.setActiveTab({ groupId: input.groupId, tabId: input.tabId })
+      closeTabsByUser({ tabIds: targets.filter((tabId) => !isFileTabId(tabId)), ...(anchorTab === undefined ? {} : { anchor: { groupId: input.groupId, tab: anchorTab } }) })
+    })
   }
 
-  /** ⌘⇧T (K6) — 활성 worktree 의 가장 최근 닫은 탭을 같은 시작 디렉터리의 새 셸로. 비어 있으면 아무것도 안 한다. */
+  /**
+   * LIFE-590 — 파일 탭 닫기(×·중클릭·메뉴·⌘W·팔레트 「pane / 탭 닫기」). 닫은 자리를 다시 열기 기록에 넣는다(⌘⇧T = 같은 파일).
+   * LIFE-591 E3 — 수정된 탭이 있으면 먼저 묻는다(저장 / 저장 안 함 / 취소, 여러 개면 목록 한 번). 닫히면 문서(모델)도 버린다 — 「저장 안 함」 뒤 ⌘⇧T 는 디스크 내용(E3ⓖ).
+   * `onClosed` = 확인을 지나 닫은 뒤(취소면 부르지 않는다). 닫을 파일 탭이 없으면 바로 부른다.
+   */
+  const closeFilesByUser = (tabIds: string[], onClosed?: () => void): void => {
+    const worktreePath = activeWorktreeRow?.path ?? null
+    if (tabIds.length === 0) {
+      onClosed?.()
+      return
+    }
+    if (worktreePath === null) return
+    // 대상 문서는 그때그때 찾는다 — 확인·저장을 기다리는 사이 처음엔 문서가 없던 탭(한 번도 안 연 탭)을 열어 편집해도 잡힌다(R2-A).
+    const targets = (): FileDoc[] =>
+      tabIds.flatMap((tabId) => {
+        const kind = tabKindOf(tabId)
+        const doc = kind.kind === 'file' ? getDoc(docKey(worktreePath, kind.rel)) : undefined
+        return doc === undefined ? [] : [doc]
+      })
+    void confirmDiscardOrSave({ targets, deps: saveDepsRef.current }).then((ok) => {
+      if (!ok) return
+      for (const tabId of tabIds) closeFileNow({ worktreePath, tabId })
+      onClosed?.()
+    })
+  }
+  const closeFileByUser = (tabId: string): void => closeFilesByUser([tabId])
+  const closeFileNow = (input: { worktreePath: string; tabId: string }): void => {
+    const { worktreePath, tabId } = input
+    const kind = tabKindOf(tabId)
+    if (kind.kind !== 'file') return
+    fileViewStatesOf(worktreePath).delete(tabId)
+    disposeDoc(docKey(worktreePath, kind.rel))
+    layout.closeFile({
+      tabId,
+      onClosed: (closed) => {
+        recentlyClosedRef.current = pushClosed({ history: recentlyClosedRef.current, snapshot: { kind: 'file', worktreePath, rel: kind.rel, ...closed } })
+      },
+    })
+  }
+
+  /** LIFE-590 E2 — 탐색기에서 파일 열기. 미리보기 교체로 밀려난 파일은 닫은 탭 기록에(Orca 와 같다 — ⌘⇧T 로 돌아온다). */
+  const openFileFromExplorer = (input: { rel: string; preview: boolean }): void => {
+    const worktreePath = activeWorktreeRow?.path ?? null
+    if (worktreePath === null) return
+    layout.openFile({
+      rel: input.rel,
+      preview: input.preview,
+      onReplaced: (replaced) => {
+        // 교체로 밀려난 미리보기 탭의 문서 — 수정된 미리보기는 고정돼 교체되지 않으므로(E1ⓓ) 여기 오는 것은 수정 없는 문서다.
+        const replacedDoc = getDoc(docKey(worktreePath, replaced.rel))
+        if (replacedDoc !== undefined && !replacedDoc.dirty) disposeDoc(replacedDoc.key)
+        recentlyClosedRef.current = pushClosed({ history: recentlyClosedRef.current, snapshot: { kind: 'file', worktreePath, rel: replaced.rel, preview: true, groupId: replaced.groupId, index: replaced.index } })
+      },
+    })
+  }
+
+  /**
+   * LIFE-593 — 전체 목록(git)에서 고른 파일 열기: ⌘P(E3 — 고정 탭·편집기 포커스)·이름 필터 행(수정 r2 R2-C-03). 여는 경로는 탐색기와 같다(우회 IPC 없음).
+   * 수정 r1 R1-C-02 — NFC 로 같은 파일 탭이 이미 있으면 그 경로로 연다(같은 탭). R1-C-05 — 부모 폴더 목록에서 그 이름이 폴더(폴더 링크)면 열지 않고 안내만 한다
+   * (git 목록은 untracked·무시된 링크의 종류를 모른다). `focus` 면 연 뒤 포커스는 `focusOpenedFile`.
+   */
+  const openListedFile = (input: { rel: string; preview: boolean; focus: boolean }): void => {
+    const worktreePath = activeWorktreeRow?.path ?? null
+    if (worktreePath === null) return
+    const nfc = input.rel.normalize('NFC')
+    let target = input.rel
+    for (const group of layout.groups)
+      for (const tabId of group.tabOrder) {
+        const kind = tabKindOf(tabId)
+        if (kind.kind === 'file' && kind.rel !== input.rel && kind.rel.normalize('NFC') === nfc) target = kind.rel
+      }
+    const slash = target.lastIndexOf('/')
+    const name = target.slice(slash + 1)
+    void window.corral.explorerList({ root: worktreePath, rel: slash === -1 ? '' : target.slice(0, slash) }).then((listing) => {
+      if ((activeWorktreeRowRef.current?.path ?? null) !== worktreePath) return
+      const entry = listing.ok ? listing.entries.find((item) => item.name === name || item.name.normalize('NFC') === name.normalize('NFC')) : undefined
+      if (entry?.kind === 'dir') {
+        notify(`${target} 은(는) 폴더(링크)라 파일로 열지 않습니다`)
+        return
+      }
+      openFileFromExplorer({ rel: target, preview: input.preview })
+      if (input.focus) focusOpenedFile({ worktreePath, rel: target })
+    })
+  }
+  const openFromQuickOpen = (rel: string): void => openListedFile({ rel, preview: false, focus: true })
+  /**
+   * 연 파일 탭에 포커스(수정 r1 R1-C-01·R1-C-06) — 편집기가 붙으면 편집기 핸들의 `focus()`(Monaco 0.57 은 EditContext — 입력 요소가 textarea 가 아니다).
+   * 편집기가 없는 보기(이미지·바이너리·상한 초과·오류·Markdown 미리보기)면 그 보기 자리(`[data-file-view]`, tabIndex -1)에. 편집기는 비동기로 붙으므로 프레임마다 다시 본다(최대 약 2 s).
+   */
+  const focusOpenedFile = (input: { worktreePath: string; rel: string }): void => {
+    const tabId = fileTabId(input.rel)
+    const startedAt = performance.now()
+    const attempt = (): void => {
+      if (focusLiveEditor({ store: fileViewStatesOf(input.worktreePath), tabId })) return
+      const view = document.querySelector<HTMLElement>(`.file-group[data-file-view="${CSS.escape(input.rel)}"]`)
+      const waiting = view === null || view.querySelector('[data-file-editor], [data-file-notice="loading"]') !== null
+      if (!waiting) view.focus({ preventScroll: true })
+      else if (performance.now() - startedAt < 2_000) requestAnimationFrame(attempt)
+      else view?.focus({ preventScroll: true })
+    }
+    requestAnimationFrame(attempt)
+  }
+
+  // LIFE-592 F4 — 탐색기 파일 조작(만들기·이름 바꾸기·이동·삭제·복제·가져오기·실행 취소).
+  const fileOps = useFileOps({
+    root: activeWorktreeRow?.path ?? null,
+    explorer,
+    layout,
+    viewStatesOf: fileViewStatesOf,
+    markdownModesOf,
+    recentlyClosedRef,
+    notify,
+    openFile: openFileFromExplorer,
+    holdWatch,
+  })
+  const importDrop = fileOps.importDrop
+  useEffect(() => window.corral.onExplorerDrop((drop) => void importDrop(drop)), [importDrop])
+
+  /** ⌘⇧T (K6) — 활성 worktree 의 가장 최근 닫은 탭을 같은 시작 디렉터리의 새 셸로. 파일 탭이었으면 같은 파일을 같은 자리에(LIFE-590). 비어 있으면 아무것도 안 한다. */
   const reopenClosedTab = (): void => {
     const worktreePath = activeWorktreeRow?.path ?? null
     const workspaceId = activeWorkspaceRow?.workspaceId ?? null
@@ -866,6 +1294,10 @@ export function App(): React.JSX.Element {
     if (popped.snapshot === null) return
     recentlyClosedRef.current = popped.history
     const snapshot = popped.snapshot
+    if (snapshot.kind === 'file') {
+      layout.reopenFile({ rel: snapshot.rel, groupId: snapshot.groupId, index: snapshot.index, preview: snapshot.preview })
+      return
+    }
     lifecycle.actions.reopenTab({
       workspaceId,
       cwd: snapshot.cwd,
@@ -890,8 +1322,15 @@ export function App(): React.JSX.Element {
   const selectTabInActiveGroup = (pick: (input: { tabOrder: readonly string[]; activeTabId: string | null }) => string | null): void => {
     const { activeGroupId, activeTabId, activeTabOrder } = layoutRef.current
     if (activeGroupId === null) return
-    const tab = tabById(pick({ tabOrder: activeTabOrder, activeTabId }))
-    if (tab === null || tab.tabId === activeTabId) return
+    const picked = pick({ tabOrder: activeTabOrder, activeTabId })
+    if (picked === null || picked === activeTabId) return
+    // LIFE-590 E3ⓐ — 순환·⌃1–9 는 파일 탭도 센다(시각 순서 그대로). 파일 탭은 pane 이 없어 영역 활성 탭만 바꾼다.
+    if (isFileTabId(picked)) {
+      layout.setActiveTab({ groupId: activeGroupId, tabId: picked })
+      return
+    }
+    const tab = tabById(picked)
+    if (tab === null) return
     activateTab({ groupId: activeGroupId, tab })
   }
 
@@ -989,6 +1428,13 @@ export function App(): React.JSX.Element {
 
   // A single action lookup serves renderer keys and the existing main Cmd+W channel.
   const modalBlocked = settingsView !== null || modalOpen || pendingRemove !== null || lifecycle.pendingClose !== null || lifecycle.worktreeModal !== null || cardActions.blocked
+  const openQuickOpen = (): void => {
+    // 팔레트 항목에서 오면 팔레트가 막 닫히는 중이다(이 렌더의 paletteOpen 은 아직 true) — 팔레트 열림은 단축키 쪽(useKeybindings blocked)이 막는다.
+    if (modalBlocked || quickOpenOpen || document.querySelector('.main-tab-rename.is-editing')) return
+    quickOpenReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    mruCancel()
+    setQuickOpenOpen(true)
+  }
   const openPalette = (): void => {
     if (modalBlocked || document.querySelector('.main-tab-rename.is-editing')) return
     paletteReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -1006,11 +1452,20 @@ export function App(): React.JSX.Element {
     setSettingsView(null)
     requestAnimationFrame(() => setFocusToken((value) => value + 1))
   }
+  // 터미널 pane 대상 단축키의 대상 — 파일 탭이 활성이면 null(무동작, 수정 r1 R1-B). ⌘W 는 `closeTargetRef` 가 종류를 따로 본다.
+  const terminalTarget = (): string | null => terminalKeyTarget({ activeTabId: layoutRef.current.activeTabId, selectedPane: lifecycle.selectedPane })
   const handlers: ShortcutHandlers = {
     'palette.open': openPalette,
+    'quickOpen.open': openQuickOpen,
+    // 트리 포커스에서만 온다(범위 'explorer') — 탐색기 머리 입력칸을 연다.
+    // 팔레트에서 고르면 패널이 닫혀 있을 수 있다 — 열고 연다.
+    'explorer.filter': () => {
+      rightPanel.show()
+      setExplorerFilterToken((value) => value + 1)
+    },
     'terminal.new': () => lifecycle.createShell(),
     'mru.open': (variant) => stepMruHold(variant === 1),
-    'terminal.split': (variant) => void splitPaneAt({ paneId: lifecycle.selectedPane, direction: variant === 1 ? 'down' : 'right' }),
+    'terminal.split': (variant) => void splitPaneAt({ paneId: terminalTarget(), direction: variant === 1 ? 'down' : 'right' }),
     'group.split': (variant) => {
       const { activeGroupId: groupId, activeTabId: tabId, activeTabCount } = layoutRef.current
       if (groupId === null || tabId === null) return
@@ -1018,18 +1473,20 @@ export function App(): React.JSX.Element {
       setGroupHint(null)
       layoutRef.current.splitGroup({ groupId, tabId, direction: variant === 1 ? 'column' : 'row' })
     },
-    'terminal.focus': (variant) => void focusNeighbor({ paneId: lifecycle.selectedPane, direction: (['left', 'right', 'up', 'down'] as const)[variant]! }),
+    'terminal.focus': (variant) => void focusNeighbor({ paneId: terminalTarget(), direction: (['left', 'right', 'up', 'down'] as const)[variant]! }),
     'group.close': () => {
       const groupId = layoutRef.current.activeGroupId
       if (groupId !== null) layoutRef.current.closeGroup(groupId)
     },
     'terminal.zoom': () => {
       const groupId = layoutRef.current.activeGroupId
-      if (groupId !== null) toggleZoom({ groupId, paneId: lifecycle.selectedPane })
+      const activeTabId = layoutRef.current.activeTabId
+      if (groupId !== null && !(activeTabId !== null && isFileTabId(activeTabId))) toggleZoom({ groupId, paneId: lifecycle.selectedPane })
     },
     'terminal.close': () => {
       const target = closeTargetRef.current
       if (target.tabId === null) return
+      if (target.file) { closeFileByUser(target.tabId); return }
       if (target.paneIds.length <= 1) { closeTabsByUser({ tabIds: [target.tabId] }); return }
       void closePaneAt(target.paneIds.find((id) => id === lifecycle.selectedPane) ?? target.paneIds[0] ?? null)
     },
@@ -1049,6 +1506,28 @@ export function App(): React.JSX.Element {
     'tab.cycle': (variant) => selectTabInActiveGroup(({ tabOrder, activeTabId }) => cycleTabTarget({ tabOrder, activeTabId, direction: variant === 1 ? -1 : 1 })),
     'tab.selectByIndex': (variant) => selectTabInActiveGroup(({ tabOrder }) => tabAtIndex({ tabOrder, index: variant })),
     'settings.open': () => openSettings(),
+    'rightPanel.toggle': () => rightPanel.toggle(),
+    // VS Code `workbench.view.explorer` — 닫혀 있으면 열고, 트리에 포커스(키가 터미널로 새지 않게 keydown 은 캡처 단계에서 이미 삼켰다).
+    // LIFE-591 E2ⓐⓓ — 활성 영역의 활성 탭이 파일 탭이면 그 파일을 저장(편집기·탭바·탐색기 어디에 포커스가 있든). 터미널 탭이면 무동작 — 키는 이미 캡처 단계에서 삼켰다.
+    'file.save': () => {
+      const tabId = layoutRef.current.activeTabId
+      const root = activeWorktreeRow?.path ?? null
+      if (tabId === null || root === null) return
+      const kind = tabKindOf(tabId)
+      const doc = kind.kind === 'file' ? getDoc(docKey(root, kind.rel)) : undefined
+      if (doc !== undefined) void saveDoc(doc, saveDepsRef.current)
+    },
+    // LIFE-592 — 탐색기 트리 포커스에서만(범위 'explorer'). ⌘⌫ = 선택 항목 삭제(확인 뒤 휴지통), ⌘Z·⌘⇧Z = 탐색기 기록.
+    'explorer.delete': () => {
+      const selected = explorer.state?.selected ?? null
+      if (selected !== null) void fileOps.trash(selected)
+    },
+    'explorer.undo': () => void fileOps.undo(),
+    'explorer.redo': () => void fileOps.redo(),
+    'explorer.show': () => {
+      rightPanel.show()
+      requestAnimationFrame(() => setExplorerFocusToken((value) => value + 1))
+    },
     // LIFE-515 — 기본 Agent 로 새 탭. ⌘T 와 같은 대상 workspace·같은 생성 경로(createRow), 에이전트 갈래는 Quick-launch 와 같은 launchAgent(워치독).
     'terminal.newAgent': () => {
       const target = resolveNewAgentTab(settings.defaultAgent)
@@ -1062,7 +1541,7 @@ export function App(): React.JSX.Element {
       }
     },
   }
-  const keymap = useKeybindings(handlers, modalBlocked || paletteOpen, () => {
+  const keymap = useKeybindings(handlers, modalBlocked || paletteOpen || quickOpenOpen, () => {
     if (mruRef.current === null) return false
     mruCancel()
     return true
@@ -1127,6 +1606,25 @@ export function App(): React.JSX.Element {
 
   const renderGroup = ({ group, workspaceId }: { group: TabGroup; workspaceId: string }): React.JSX.Element => {
     const groupTabs = group.tabOrder.map((tabId) => tabById(tabId)).filter((tab): tab is TabRow => tab !== null)
+    // LIFE-590 — 탭바는 배치 순서대로 터미널·파일 탭을 섞어 그린다. herdr 에 아직 없는 터미널 id 는 빠진다(기존과 같다).
+    const groupPreview = previewOf(group)
+    const groupItems: GroupTabItem[] = group.tabOrder.flatMap((tabId): GroupTabItem[] => {
+      const kind = tabKindOf(tabId)
+      if (kind.kind === 'file')
+        return [
+          {
+            kind: 'file',
+            tabId,
+            rel: kind.rel,
+            preview: groupPreview === tabId,
+            deleted: activeWorktreeRow !== null && fileWatchState.get(`${activeWorktreeRow.path}\0${kind.rel}`)?.exists === false,
+            dirty: activeWorktreeRow !== null && getDoc(docKey(activeWorktreeRow.path, kind.rel))?.dirty === true,
+          },
+        ]
+      const tab = tabById(tabId)
+      return tab === null ? [] : [{ kind: 'terminal', tab }]
+    })
+    const activeFile = group.activeTabId === null ? null : tabKindOf(group.activeTabId)
     const groupActiveTab = tabById(group.activeTabId)
     const groupPane = groupActiveTab === null ? null : pickPane(groupActiveTab)
     const isActiveGroup = group.groupId === layout.activeGroupId
@@ -1161,7 +1659,20 @@ export function App(): React.JSX.Element {
         <GroupHeader
           groupId={group.groupId}
           headSpacer={sidebarCollapsed && settingsView === null && layout.groups[0]?.groupId === group.groupId}
+          tailToggle={
+            rightPanel.ready && !rightPanel.open && layout.layout !== null && topRightGroupId(layout.layout.root) === group.groupId ? (
+              <RightPanelToggle label="오른쪽 패널 열기" shortcut={rightPanelToggleShortcut} onToggle={rightPanel.toggle} placement="tabbar" />
+            ) : null
+          }
           tabs={groupTabs}
+          items={groupItems}
+          onSelectFileTab={(tabId) => {
+            if (tabDrag.consumeClick()) return
+            layout.setActiveTab({ groupId: group.groupId, tabId })
+          }}
+          onCloseFileTab={closeFileByUser}
+          onKeepFileTab={layout.keepFile}
+          onCloseFileScope={({ tabId, scope }) => closeScope({ groupId: group.groupId, tabId, scope })}
           workspaceTabCount={activeWorkspaceRow?.tabs.length ?? groupTabs.length}
           home={state.home}
           selectedPane={groupSelectedPaneId}
@@ -1213,7 +1724,7 @@ export function App(): React.JSX.Element {
           renameRequest={renameRequest}
           onRequestRename={requestRename}
           onTogglePin={togglePin}
-          onCloseScope={({ tab, scope }) => closeScope({ groupId: group.groupId, tab, scope })}
+          onCloseScope={({ tab, scope }) => closeScope({ groupId: group.groupId, tabId: tab.tabId, scope })}
           onSetTabColor={({ tab, color }) => setTabMarks((marks) => setTabColor({ marks, tabId: tab.tabId, workspaceId: tab.workspaceId, color }))}
           onZoom={() => toggleZoom({ groupId: group.groupId, paneId: groupSelectedPaneId })}
           onClosePane={() => void closePaneAt(groupSelectedPaneId)}
@@ -1223,7 +1734,10 @@ export function App(): React.JSX.Element {
           // 이 정도로 충분하다는 판단, 03-result.md 에 단순화로 기록).
           otherGroups={layout.groups
             .filter((other) => other.groupId !== group.groupId)
-            .map((other) => ({ groupId: other.groupId, label: tabById(other.activeTabId)?.label ?? '비어 있음' }))}
+            .map((other) => {
+              const kind = other.activeTabId === null ? null : tabKindOf(other.activeTabId)
+              return { groupId: other.groupId, label: kind?.kind === 'file' ? fileTabLabel(kind.rel) : (tabById(other.activeTabId)?.label ?? '비어 있음') }
+            })}
           onMoveToOtherGroup={({ tabId, targetGroupId }) =>
             layout.mergeTabIntoGroup({ tabId, fromGroupId: group.groupId, toGroupId: targetGroupId })
           }
@@ -1238,7 +1752,21 @@ export function App(): React.JSX.Element {
             }}
           />
         ) : null}
-        {groupPane === null ? (
+        {activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (
+          <FileView
+            key={activeFile.tabId}
+            root={activeWorktreeRow.path}
+            rel={activeFile.rel}
+            tabId={activeFile.tabId}
+            groupId={group.groupId}
+            viewStates={fileViewStatesOf(activeWorktreeRow.path)}
+            markdownModes={markdownModesOf(activeWorktreeRow.path)}
+            watched={fileWatchState.get(`${activeWorktreeRow.path}\0${activeFile.rel}`) ?? null}
+            onActivate={() => activateGroup({ groupId: group.groupId, paneId: null })}
+            onOpenFile={(rel) => openFileFromExplorer({ rel, preview: true })}
+            onRefused={() => forgetRecent({ root: activeWorktreeRow.path, rel: activeFile.rel })}
+          />
+        ) : groupPane === null ? (
           <EmptyGroup
             groupId={group.groupId}
             activeGroup={isActiveGroup}
@@ -1302,8 +1830,8 @@ export function App(): React.JSX.Element {
                   <TerminalPane
                     paneId={groupPane.paneId}
                     diagnostics={state.diagnostics}
-                    focusable={isActiveGroup && !paletteOpen && !modalBlocked}
-                    focusToken={isActiveGroup && !paletteOpen && !modalBlocked ? focusToken : 0}
+                    focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked}
+                    focusToken={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked ? focusToken : 0}
                     /* 비활성 영역은 herdr 세션 포커스를 가져가지 않는다 (S2-b — PaneLayout 과 같은 규칙). */
                     announceFocus={isActiveGroup}
                   />
@@ -1315,7 +1843,7 @@ export function App(): React.JSX.Element {
                 cell={cell}
                 zoomedPaneId={groupState.zoomedPaneId}
                 selectedPaneId={groupSelectedPaneId}
-                focusable={isActiveGroup && !paletteOpen && !modalBlocked}
+                focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked}
                 focusToken={focusToken}
                 diagnostics={state.diagnostics}
                 onSelect={(paneId) => activateGroup({ groupId: group.groupId, paneId })}
@@ -1419,6 +1947,8 @@ export function App(): React.JSX.Element {
 
   const paletteEntries: PaletteEntry[] = []
   const connected = state.link.phase === 'live'
+  // 수정 r1 R1-B — 파일 탭이 활성이면 pane 대상 명령은 무동작이라 팔레트에서도 막아 둔다.
+  const TERMINAL_PANE_ACTIONS = new Set<string>(['terminal.split', 'terminal.focus', 'terminal.zoom'])
   const palettePaneAlive = !!activeWorkspace?.tabs.some(tab => tab.panes.some(pane => pane.paneId === lifecycle.selectedPane))
   for (const action of ACTIONS) {
     // ⌘⇧⌫ 는 hover 중인 카드가 대상이라 팔레트에서 부를 대상이 없다.
@@ -1427,7 +1957,7 @@ export function App(): React.JSX.Element {
       const id = action.id
       paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
         shortcut: bindingsFor(id, keymap.overrides).flatMap((binding, index) => (binding !== null && action.bindingVariants[index] === variant ? [formatBinding(binding)] : [])).join(' / '),
-        disabled: id === 'sidebar.toggle' || id === 'settings.open' ? undefined : !connected ? '연결된 세션이 없습니다' : !palettePaneAlive ? '선택된 pane이 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
+        disabled: id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : !palettePaneAlive ? '선택된 pane이 없습니다' : activeFileRel !== null && TERMINAL_PANE_ACTIONS.has(id) ? '파일 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
         run: () => {
           if (id === 'mru.open') {
             const other = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanes.map(pane => pane.paneId) }).filter(id => id !== lifecycle.selectedPane)
@@ -1461,12 +1991,13 @@ export function App(): React.JSX.Element {
 
   // 사이드바 토글의 단축키 표시 — 비운 칸(null, fix2 R2-01)이면 툴팁에 단축키를 싣지 않는다.
   const sidebarToggleShortcut = ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('sidebar.toggle', keymap.overrides)[0])
+  const rightPanelToggleShortcut = ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('rightPanel.toggle', keymap.overrides)[0])
 
   return (
     <BindingLabels.Provider value={keymap.overrides}>
     <div className="app">
       <div className="app-stack">
-      <div className={`app-body${settingsView === null ? '' : ' is-covered'}`} inert={paletteOpen || settingsView !== null}>
+      <div className={`app-body${settingsView === null ? '' : ' is-covered'}`} inert={paletteOpen || quickOpenOpen || settingsView !== null}>
         {/* LIFE-527 D4·D5 — 사이드바 칸 = 머리(36px, 신호등·앱 이름·토글) + 사이드바. 접히면 머리만 왼쪽 위에 떠서 첫 탭 줄과 겹친다
             (Orca `AppWorkspaceShell.tsx` — 폭 0 칸 안의 absolute 머리). 머리는 DOM 에서 main-area 보다 앞이다 — drag 히트테스트 순서가 Orca 와 같다. */}
         {sidebarCollapsed ? (
@@ -1490,7 +2021,20 @@ export function App(): React.JSX.Element {
             if (route.kind === 'tab') closeTabsByUser({ tabIds: [route.tabId] })
             else void closePaneAt(paneId)
           }}
-          actions={lifecycle.actions}
+          actions={{
+            ...lifecycle.actions,
+            // LIFE-591 E3ⓓ — 사이드바 카드 닫기: 그 worktree 에 수정된 파일이 있으면 먼저 묻는다(저장 / 저장 안 함 / 취소). 취소면 닫지 않는다.
+            closeWorktree: (workspaceId) => {
+              const row = state.repos.flatMap((repo) => repo.worktrees).find((worktree) => worktree.openWorkspaceId === workspaceId)
+              if (row === undefined) {
+                lifecycle.actions.closeWorktree(workspaceId)
+                return
+              }
+              void confirmWorktreeDocs(row.path).then((ok) => {
+                if (ok) lifecycle.actions.closeWorktree(workspaceId)
+              })
+            },
+          }}
           manualOrder={manualOrder.order}
           onReorder={({ commit, layout }) => {
             // 비-manual 모드에서 카드를 끌어 **순서가 바뀌면** Sort by → Manual(198 `use-status-mutations.ts:135-160`, K7ⓐ).
@@ -1572,6 +2116,16 @@ export function App(): React.JSX.Element {
             />
           )}
         </div>
+        <RightPanel
+          open={rightPanel.open}
+          title="탐색기"
+          panelRef={rightPanelRef}
+          toggleShortcut={rightPanelToggleShortcut}
+          onToggle={rightPanel.toggle}
+          onResizeStart={rightPanel.onHandleMouseDown}
+        >
+          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={rightPanel.open} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} ops={fileOps} notify={notify} />
+        </RightPanel>
       </div>
       {settingsView === null ? null : (
         // LIFE-527 D12 — Orca 설정 뷰는 전폭 36px 타이틀바(신호등 여백 + drag)를 유지한다. 설정 페이지는 그 아래에 선다.
@@ -1585,7 +2139,7 @@ export function App(): React.JSX.Element {
       </div>
 
       <StatusBar
-        inert={paletteOpen}
+        inert={paletteOpen || quickOpenOpen}
         activeWorktreeLabel={activeWorktree === undefined ? null : (activeWorktree.branch ?? worktreeDisplayName(activeWorktree))}
         dirtyTotal={dirtyTotal}
         aheadTotal={aheadTotal}
@@ -1602,6 +2156,19 @@ export function App(): React.JSX.Element {
         setPaletteOpen(false)
         if (restore) requestAnimationFrame(() => { if (paletteReturn.current?.isConnected) paletteReturn.current.focus(); else setFocusToken(value => value + 1) })
       }} /> : null}
+      {quickOpenOpen ? (
+        <QuickOpen
+          root={activeWorktreeRow?.path ?? null}
+          recent={activeWorktreeRow === null ? NO_RECENT : (recentFiles[activeWorktreeRow.path] ?? NO_RECENT)}
+          includeIgnored={quickOpenIgnored}
+          onIncludeIgnored={setQuickOpenIgnored}
+          onOpen={openFromQuickOpen}
+          onClose={(restore) => {
+            setQuickOpenOpen(false)
+            if (restore) requestAnimationFrame(() => { if (quickOpenReturn.current?.isConnected) quickOpenReturn.current.focus(); else setFocusToken((value) => value + 1) })
+          }}
+        />
+      ) : null}
       {cardActions.dialogs}
       {modalOpen ? (
         <AddRepoModal browsing={browsing} note={modalNote} onBrowse={() => void browse()} onClose={() => setModalOpen(false)} />

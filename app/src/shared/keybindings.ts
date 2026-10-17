@@ -44,8 +44,29 @@ export const ACTIONS = [
   // LIFE-515 — 198 `tab.newAgent`(darwin Mod+Alt+T). 설정 › AI 기능 › 에이전트의 기본 Agent 로 새 탭을 연다(agent 없음이면 빈 터미널 — D2).
   // id 는 `terminal.` 접두로 둔다(`terminal.new` 와 같은 줄기) — 지을 때는 `tab.*` 가 경계 검사 R4 오탐에 걸렸다(LIFE-518 이 해소: 액션 id 는 요청 envelope 자리에서만 걸린다). 나중에 생긴 기본값이라 양보한다.
   { id: 'terminal.newAgent', group: '탭', title: '새 에이전트 탭', defaultBinding: ['Mod+Alt+T'], bindingVariants: [0], variants: ['기본 Agent'] },
+  // LIFE-589 — Orca `sidebar.right.toggle`(Mod+L) · `sidebar.explorer.toggle`(Mod+Shift+E). ⌘⇧E 는 「탐색기 보이기」(닫혀 있으면 열고 포커스) —
+  // VS Code `workbench.view.explorer` 와 같은 뜻이다. 나중에 생긴 기본값이라 양보한다(아래 YIELDING_DEFAULTS).
+  { id: 'rightPanel.toggle', group: '전역', title: '오른쪽 패널 열기 / 닫기', defaultBinding: ['Mod+L'], bindingVariants: [0], variants: ['전환'] },
+  { id: 'explorer.show', group: '전역', title: '탐색기 보이기', defaultBinding: ['Mod+Shift+E'], bindingVariants: [0], variants: ['보이기'] },
+  // LIFE-591 F3 — VS Code·Orca `Mod+S`. 활성 영역의 활성 탭이 파일 탭일 때만 그 파일을 저장한다(터미널 탭이면 무동작 — 키는 캡처 단계에서 삼켜 PTY 로 가지 않는다).
+  // 나중에 생긴 기본값이라 양보한다(아래 YIELDING_DEFAULTS) — ⌘S 를 이미 다른 액션에 재정의한 사용자의 설정이 버려지지 않게.
+  { id: 'file.save', group: '탭', title: '파일 저장', defaultBinding: ['Mod+S'], bindingVariants: [0], variants: ['활성 파일 탭'] },
+  // LIFE-592 F4 — **탐색기 트리 포커스에서만** 도는 액션(`scope: 'explorer'` — VS Code `when: filesExplorerFocus` 와 같은 결). 트리 밖에서는 매칭되지 않아
+  // 같은 조합이 편집기·입력칸·터미널의 것으로 그대로 간다(⌘Z·⌘⌫ 를 삼키지 않는다). 트리 안에서는 같은 조합의 전역 액션보다 앞선다(⌘⇧Z = 다시 실행, 밖 = 터미널 줌).
+  // VS Code macOS 탐색기 기본값: ⌘⌫ `moveFileToTrash` · ⌘Z `undo`·⌘⇧Z `redo`(탐색기 포커스 — `explorer.enableUndo`). ⌘Z 는 기본 메뉴 Edit ▸ Undo(role)가 쥐고 있어
+  // main `before-input-event` 가 트리 포커스일 때만 가져온다(`raw/claude/undo-routing.md`). 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
+  { id: 'explorer.delete', group: '탐색기', title: '휴지통으로 이동', defaultBinding: ['Mod+Backspace'], bindingVariants: [0], variants: ['선택 항목'], scope: 'explorer' },
+  { id: 'explorer.undo', group: '탐색기', title: '파일 조작 실행 취소', defaultBinding: ['Mod+Z'], bindingVariants: [0], variants: ['실행 취소'], scope: 'explorer' },
+  { id: 'explorer.redo', group: '탐색기', title: '파일 조작 다시 실행', defaultBinding: ['Mod+Shift+Z'], bindingVariants: [0], variants: ['다시 실행'], scope: 'explorer' },
+  // LIFE-593 F5 — VS Code·Orca `Mod+P`(Quick Open). 커맨드 팔레트와 **별도 대화상자**(Q1). 어느 포커스에서든(터미널·편집기·트리) 캡처 단계에서 삼켜 PTY·Monaco 로 가지 않는다.
+  // 이름 필터는 VS Code macOS 목록 찾기 키 ⌥⌘F(`list.find`) — 트리 포커스에서만(Q7). 둘 다 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
+  { id: 'quickOpen.open', group: '전역', title: '빠른 열기 (파일)', defaultBinding: ['Mod+P'], bindingVariants: [0], variants: ['열기'] },
+  { id: 'explorer.filter', group: '탐색기', title: '이름 필터', defaultBinding: ['Mod+Alt+F'], bindingVariants: [0], variants: ['열기'], scope: 'explorer' },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
+/** 액션이 매칭되는 자리 — `global` 어디서나 · `explorer` 탐색기 트리 포커스에서만(LIFE-592). */
+export type ActionScope = 'global' | 'explorer'
+export const scopeOf = (action: (typeof ACTIONS)[number]): ActionScope => ('scope' in action ? action.scope : 'global')
 /** 칸 위치 = `defaultBinding` 칸. `null` = 그 칸 조합 없음(비켜 선 칸을 그대로 둔 채 다른 칸만 고쳐 저장한 경우 — LIFE-495 fix2 R2-01). */
 export type Keybindings = Partial<Record<ActionId, (string | null)[]>>
 export type ShortcutMatch = { id: ActionId; variant: number }
@@ -79,7 +100,7 @@ export function bindingFromEvent(event: KeyInput): string | null {
  * 재정의해 둔 사용자의 `keybindings.json` 이 충돌로 버려지지 않게 한다(재정의가 이기고, 이 액션은 조합 없음으로 남는다 —
  * 단축키 설정에서 다시 배정할 수 있다). 처음부터 있던 액션의 기본값은 지금처럼 재정의보다 앞선다.
  */
-const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent']
+const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'file.save', 'explorer.delete', 'explorer.undo', 'explorer.redo', 'quickOpen.open', 'explorer.filter']
 
 /**
  * 기본 조합 **개수가 바뀐** 액션의 옛 기본값 (LIFE-495 K7ⓘ). 칸 수가 다른 재정의는 아래 검사에서 버려지므로, 옛 칸 수 그대로인 재정의를
@@ -119,9 +140,16 @@ function normalizeSlots(value: unknown): (string | null)[] | null {
   return slots
 }
 
+/** 같은 범위끼리만 겹침으로 본다(탐색기 범위 액션은 트리 안에서 전역 액션을 가린다 — 충돌이 아니다). */
+const scopeOfId = (id: string): ActionScope => {
+  const action = ACTIONS.find((row) => row.id === id)
+  return action === undefined ? 'global' : scopeOf(action)
+}
+
 function claimedByOtherOverrides(input: { id: ActionId; overrides: Keybindings }): Set<string> {
   const claimed = new Set<string>()
-  for (const [owner, bindings] of Object.entries(input.overrides)) if (owner !== input.id && Array.isArray(bindings)) for (const binding of bindings) if (binding !== null) claimed.add(binding)
+  const scope = scopeOfId(input.id)
+  for (const [owner, bindings] of Object.entries(input.overrides)) if (owner !== input.id && scopeOfId(owner) === scope && Array.isArray(bindings)) for (const binding of bindings) if (binding !== null) claimed.add(binding)
   return claimed
 }
 
@@ -141,23 +169,48 @@ export function bindingsFor(id: ActionId, overrides: Keybindings): readonly (str
   return defaults.map((binding) => (claimed.has(binding) ? null : binding))
 }
 
-/** Matching and collision checks use exactly the displayed/stored chords. */
-export function matchBinding(binding: string, overrides: Keybindings): ShortcutMatch | null {
-  for (const action of ACTIONS) {
-    const index = bindingsFor(action.id, overrides).indexOf(binding)
-    const variant = action.bindingVariants[index]
-    if (variant !== undefined) return { id: action.id, variant }
+/**
+ * Matching and collision checks use exactly the displayed/stored chords.
+ * `scope` = 키가 난 자리(LIFE-592). `explorer` 면 탐색기 범위 액션을 먼저 보고 없으면 전역 액션, 그 밖(기본 `global`)이면 전역 액션만 본다.
+ */
+export function matchBinding(binding: string, overrides: Keybindings, scope: ActionScope = 'global'): ShortcutMatch | null {
+  const order: ActionScope[] = scope === 'explorer' ? ['explorer', 'global'] : ['global']
+  for (const wanted of order) {
+    for (const action of ACTIONS) {
+      if (scopeOf(action) !== wanted) continue
+      const index = bindingsFor(action.id, overrides).indexOf(binding)
+      const variant = action.bindingVariants[index]
+      if (variant !== undefined) return { id: action.id, variant }
+    }
   }
   return null
 }
 /** 누르고 있어도 한 번만 도는 액션 (LIFE-495 K6ⓔ) — 렌더러 keydown·main 메뉴 키 두 길이 같은 목록을 본다(fix1 R1-06). */
-export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename', 'terminal.newAgent']
+export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'file.save', 'explorer.delete', 'quickOpen.open', 'explorer.filter']
+
+/**
+ * 편집기(파일 탭 Monaco)에 포커스가 있으면 **편집기에 양보하는** 액션 (LIFE-591). 터미널 pane 을 겨누는 단축키는 파일 탭이 활성이면 무동작이라(590 수정 r1 R1-B — `terminalKeyTarget`)
+ * 삼키기만 하면 편집기의 같은 키가 죽는다: ⌘⇧Z 다시 실행(VS Code·Monaco macOS) · ⌘D 다음 일치 항목 추가 · ⌘⌥↑↓ 커서 추가. 양보해도 잃는 앱 동작이 없다.
+ */
+export const EDITOR_YIELD_ACTIONS: readonly ActionId[] = ['terminal.zoom', 'terminal.split', 'terminal.focus']
 
 /**
  * main `before-input-event` 가 메뉴 가속키에서 가져오는 키 — `⌘W`(File ▸ Close Window)·`⌘R`(View ▸ Reload). 순수 판정.
  * `claimed` 면 main 이 늘 삼킨다(재정의로 비었다고 창 닫기·새로고침으로 되돌아가면 안 된다). `dispatch` 는 렌더러로 보낼 매칭 —
  * 반복(autoRepeat)은 **매칭된 액션**이 `NON_REPEATING_ACTIONS` 면 보내지 않는다(물리 키 기준이 아니다 — ⌘W 를 다시 열기로 재정의해도 한 번).
  */
+/**
+ * main `before-input-event` 가 **탐색기 트리 포커스일 때만** 가져오는 키(LIFE-592 — `raw/claude/undo-routing.md`). 메뉴 Edit ▸ Undo·Redo(role)가 ⌘Z·⌘⇧Z 를 쥐고 있어
+ * 렌더러 keydown 이 메뉴보다 먼저라는 보장이 없다 — 트리 포커스 표지가 켜져 있고 이 키가 탐색기 실행 취소·다시 실행 조합이면 main 이 삼키고 액션을 렌더러로 보낸다.
+ * 표지가 꺼져 있으면(편집기·입력칸·터미널) 손대지 않는다. 순수 판정.
+ */
+export function explorerKeyShortcut(input: { key: string; code: string; meta: boolean; alt: boolean; control: boolean; shift: boolean; isAutoRepeat: boolean; overrides: Keybindings; explorerFocused: boolean }): ShortcutMatch | null {
+  if (!input.explorerFocused) return null
+  const binding = bindingFromEvent({ key: input.key, code: input.code, metaKey: input.meta, ctrlKey: input.control, altKey: input.alt, shiftKey: input.shift })
+  const match = binding === null ? null : matchBinding(binding, input.overrides, 'explorer')
+  return match !== null && (match.id === 'explorer.undo' || match.id === 'explorer.redo') ? match : null
+}
+
 export function menuKeyShortcut(input: { key: string; code: string; meta: boolean; alt: boolean; control: boolean; shift: boolean; isAutoRepeat: boolean; overrides: Keybindings }): {
   claimed: 'W' | 'R' | null
   dispatch: ShortcutMatch | null
@@ -175,9 +228,11 @@ function findConflict(overrides: Keybindings) {
   for (const action of ACTIONS) {
     for (const binding of bindingsFor(action.id, overrides)) {
       if (binding === null) continue
-      const owner = owners.get(binding)
+      // 범위가 다르면 같은 조합이어도 겹치지 않는다(탐색기 범위가 트리 안에서 앞선다).
+      const key = `${scopeOf(action)}\0${binding}`
+      const owner = owners.get(key)
       if (owner) return { first: owner.id, second: action.id, message: `${formatBinding(binding)}: ${owner.title} · ${action.title} 충돌` }
-      owners.set(binding, action)
+      owners.set(key, action)
     }
   }
   return null

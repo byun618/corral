@@ -17,6 +17,21 @@ export type TabGroup = {
   tabOrder: string[]
   /** 영역마다 독립된 활성 탭 (R3-a) — 포커스 pane 에서 파생시키지 않는다. */
   activeTabId: string | null
+  /**
+   * 이 영역의 **미리보기 파일 탭**(LIFE-590 E2 — 영역당 하나, 이탤릭, 다른 파일 한 번 클릭이 이 자리를 교체한다). 없으면 null·생략.
+   * `tabOrder` 에 없는 값은 미리보기가 아니다(`file-tabs.ts` `previewOf` 가 확인한다). 터미널 탭은 미리보기가 될 수 없다.
+   */
+  previewTabId?: string | null
+}
+
+/**
+ * 파일 탭 id 접두사 (LIFE-590 — 종류 구분은 `file-tabs.ts`). 여기 두는 이유: 살아 있는 탭 추리기(`reconcileLayout`·`dropDeadTabs`)가
+ * 파일 탭을 herdr 와 무관하게 살려 둬야 한다 — 파일 탭은 **배치에 있으면 열려 있다**.
+ */
+export const FILE_TAB_PREFIX = 'file:'
+
+export function isFileTabId(tabId: string): boolean {
+  return tabId.startsWith(FILE_TAB_PREFIX) && tabId.length > FILE_TAB_PREFIX.length
 }
 
 export type GroupNode =
@@ -36,6 +51,16 @@ export const RATIO_MAX = 0.85
 export function clampRatio(ratio: number): number {
   if (!Number.isFinite(ratio)) return 0.5
   return Math.min(RATIO_MAX, Math.max(RATIO_MIN, ratio))
+}
+
+/** 오른쪽 위 모서리 영역 — 오른쪽 패널을 여는 버튼이 그 영역 탭 줄 끝에 선다(LIFE-589). row = 좌우(뒤가 오른쪽), column = 위아래(앞이 위). */
+export function topRightGroupId(node: GroupNode): string {
+  switch (node.kind) {
+    case 'leaf':
+      return node.group.groupId
+    case 'split':
+      return topRightGroupId(node.direction === 'row' ? node.second : node.first)
+  }
 }
 
 export function leaf(group: TabGroup): GroupNode {
@@ -125,6 +150,7 @@ export function splitGroup(input: {
         if (node.group.groupId !== input.groupId) return node
         const stayed = leaf({
           ...node.group,
+          ...(node.group.previewTabId === input.tabId ? { previewTabId: null } : {}),
           tabOrder: remaining,
           // 빠져나간 탭이 활성이었으면 남은 것 중 앞쪽을 활성으로 (§4 "인접 탭 활성" 과 같은 결).
           activeTabId: node.group.activeTabId === input.tabId ? (remaining[0] ?? null) : node.group.activeTabId,
@@ -234,6 +260,8 @@ export function removeTabFromGroup(layout: GroupLayout, groupId: string, tabId: 
     ...g,
     tabOrder: remaining,
     activeTabId: g.activeTabId === tabId ? (remaining[0] ?? null) : g.activeTabId,
+    // 미리보기 탭이 영역을 떠나면 그 영역의 미리보기 표시도 걷는다 — 옮긴 곳에서는 고정 탭이다(LIFE-590, 이동 = 고정).
+    ...(g.previewTabId === tabId ? { previewTabId: null } : {}),
   }))
   if (remaining.length > 0) return updated
   return collapseEmptyGroup(updated, groupId)
@@ -254,7 +282,8 @@ export function moveTabWithinTabbar(
     return updateGroup(layout, input.toGroupId, (g) => {
       const without = g.tabOrder.filter((id) => id !== input.tabId)
       const at = Math.max(0, Math.min(input.index, without.length))
-      return { ...g, tabOrder: [...without.slice(0, at), input.tabId, ...without.slice(at)], activeTabId: input.tabId }
+      // 같은 탭바 안에서 끌어도 미리보기는 고정된다(VS Code·E10 답 ⑤ — 수정 r1 R1-C). 다른 영역 이동은 `removeTabFromGroup` 이 걷는다.
+      return { ...g, tabOrder: [...without.slice(0, at), input.tabId, ...without.slice(at)], activeTabId: input.tabId, ...(g.previewTabId === input.tabId ? { previewTabId: null } : {}) }
     })
   }
   const from = findGroup(layout.root, input.fromGroupId)
@@ -384,12 +413,17 @@ function firstGroupId(node: GroupNode): string {
 export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string[] }): GroupLayout {
   const live = new Set(input.liveTabIds)
   const seen = new Set<string>()
+  /** 맞은 **터미널** 탭 수 — 복원 실패 판정은 herdr 탭으로만 한다(파일 탭은 herdr 재기동과 무관하게 늘 맞는다 — LIFE-590). */
+  let matchedTerminals = 0
   const prune = (node: GroupNode): GroupNode => {
     switch (node.kind) {
       case 'leaf': {
+        // 파일 탭(LIFE-590)은 herdr 목록과 무관하게 남긴다 — 배치에 있으면 열려 있다. 중복만 걷는다.
         const tabOrder = node.group.tabOrder.filter((tabId) => {
-          if (!live.has(tabId) || seen.has(tabId)) return false
+          const file = isFileTabId(tabId)
+          if ((!file && !live.has(tabId)) || seen.has(tabId)) return false
           seen.add(tabId)
+          if (!file) matchedTerminals += 1
           return true
         })
         const activeTabId = node.group.activeTabId !== null && tabOrder.includes(node.group.activeTabId)
@@ -417,7 +451,7 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
    * 안 맞은 회차**(herdr 재기동으로 tabId 가 통째로 바뀐 경우)는 "새 탭이 왔다"가 아니라
    * "복원이 실패했다" 이므로 R3-d 의 뒷문장대로 **첫 영역**으로 모은다.
    */
-  const restoreFailed = seen.size === 0 && orphans.length > 0
+  const restoreFailed = matchedTerminals === 0 && orphans.length > 0
   const landing = restoreFailed
     ? head
     : (groups.find((group) => group.groupId === input.layout.activeGroupId) ?? head)
@@ -477,7 +511,8 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
  */
 export function dropDeadTabs(input: { layout: GroupLayout; herdrTabIds: ReadonlySet<string> }): GroupLayout | null {
   const held = listGroups(input.layout.root).flatMap((group) => group.tabOrder)
-  const kept = held.filter((tabId) => input.herdrTabIds.has(tabId))
+  // 파일 탭(LIFE-590)은 herdr 에 없어도 산다 — 파일 탭만 남은 worktree 배치도 버리지 않는다(E1ⓐ).
+  const kept = held.filter((tabId) => input.herdrTabIds.has(tabId) || isFileTabId(tabId))
   if (kept.length === 0) return null
   if (kept.length === held.length) return input.layout
   return reconcileLayout({ layout: input.layout, liveTabIds: kept })
@@ -485,8 +520,19 @@ export function dropDeadTabs(input: { layout: GroupLayout; herdrTabIds: Readonly
 
 // --- 영속 (R3-h — worktree 단위) ------------------------------------------------
 
-/** 저장 모양. 트리를 그대로 싣는다 — 읽을 때 모양을 확인한다(손으로 고친 파일 대비). */
-export type StoredGroupLayout = { worktreePath: string; layout: GroupLayout }
+/**
+ * 저장 모양. 트리를 그대로 싣는다 — 읽을 때 모양을 확인한다(손으로 고친 파일 대비).
+ *
+ * **형식 2 (LIFE-590)** — `tabOrder` 에 파일 탭 id(`file:<상대 경로>`)가 섞이고 리프 영역에 `previewTabId` 가 붙는다. 행마다 `layoutFormat: 2` 표지를 쓴다.
+ *   · 구 형식(표지 없음 = 1)을 새 코드가 읽으면 그대로다 — 파일 탭이 없을 뿐 모양이 같다(E1ⓒ)
+ *   · 새 형식을 **구 코드**(기준 `bd2fca411` 빌드)가 읽으면: `readNode` 가 모르는 칸(`previewTabId`·`layoutFormat`)을 버리고, 파일 탭 id 는 herdr 에 없는
+ *     탭이라 `reconcileLayout`·`dropDeadTabs` 가 걷는다 — 터미널 탭 배치·핀·색(`tabMarks` 는 따로 산다)은 그대로다(E1ⓓ). 그래서 id 를 문자열로 유지했다
+ *   · 표지는 읽을 때 쓰지 않는다(형식 1·2 가 같은 읽기로 풀린다) — 다음 형식 변경이 갈래를 나눌 자리다
+ */
+export type StoredGroupLayout = { worktreePath: string; layout: GroupLayout; layoutFormat?: number }
+
+/** 지금 쓰는 저장 형식(위 주석). */
+export const LAYOUT_FORMAT = 2
 
 function readNode(value: unknown): GroupNode | null {
   if (value === null || typeof value !== 'object') return null
@@ -499,10 +545,14 @@ function readNode(value: unknown): GroupNode | null {
     const activeTabId = Reflect.get(group, 'activeTabId')
     if (typeof groupId !== 'string' || groupId.length === 0) return null
     if (!Array.isArray(tabOrder)) return null
+    const ids = tabOrder.filter((item): item is string => typeof item === 'string')
+    const previewTabId = Reflect.get(group, 'previewTabId')
     return leaf({
       groupId,
-      tabOrder: tabOrder.filter((item): item is string => typeof item === 'string'),
+      tabOrder: ids,
       activeTabId: typeof activeTabId === 'string' ? activeTabId : null,
+      // 미리보기는 그 영역에 있는 파일 탭일 때만 싣는다(LIFE-590).
+      ...(typeof previewTabId === 'string' && isFileTabId(previewTabId) && ids.includes(previewTabId) ? { previewTabId } : {}),
     })
   }
   if (kind === 'split') {

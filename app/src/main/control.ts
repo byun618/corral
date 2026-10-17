@@ -57,6 +57,26 @@ export type ControlHandlers = {
     createPairing: () => unknown
     revoke: (id: string) => unknown
   }
+  /** LIFE-589 E4 — 탐색기 감시 상태(pid·구독·계수)와 장애 주입. 계측 실행에만 열린다. */
+  explorer: {
+    status: () => unknown
+    crash: () => boolean
+  }
+  /** LIFE-590 E5 — 열린 파일 탭 감시 상태(파일·폴더 감시 수)와 감시 유실 주입(폴더 감시를 끊는다 — 안전망 주기는 계속). 계측 실행에만 열린다. */
+  fileWatch: {
+    status: () => unknown
+    drop: () => void
+  }
+  /**
+   * LIFE-591 — 파일 탭 확인 대화상자(OS 기본 `showMessageBox` — `sendInputEvent` 가 안 닿는다)의 **답만** 갈아끼운다(`browse-stub` 과 같은 결).
+   * 답 목록을 앞에서부터 하나씩 쓰고, 비면 진짜 창이 뜬다. 렌더러 → IPC → main 문구 → 답 → 렌더러 흐름은 그대로 지난다. 계측 실행에만 열린다.
+   */
+  setFileDialogStub: (answers: string[]) => { asked: string[] }
+  /**
+   * LIFE-591 E3ⓒ — 종료 입구를 계측에서 부른다: `quit` = `app.quit()`(메뉴 Quit·⌘Q 의 role quit 과 같은 함수) · `close` = 창 `close()`(빨간 닫기 단추와 같은 이벤트).
+   * SIGTERM 은 첫 신호 뒤 Chromium 이 기본 처리로 되돌려 두 번째 신호가 확인 없이 프로세스를 끝낸다 — 사용자 입구가 아니라 반복 회차에 못 쓴다.
+   */
+  quitEntry: (via: 'quit' | 'close') => void
 }
 
 /**
@@ -225,6 +245,19 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
        * **main 이벤트 루프 지연** (LIFE-580 J6 — K9 A/B). 첫 요청에서 히스토그램(해상도 10 ms)을 켜고, 요청마다 지난 요청 이후의
        * 분포(ms)를 돌려준 뒤 비운다 — 구간 앞에서 한 번(비우기), 뒤에서 한 번(읽기). 계측 소켓이 있는 실행에만 있다.
        */
+      case 'explorer-status':
+        reply({ ok: true, at: Date.now(), explorer: handlers.explorer.status() })
+        return
+      case 'explorer-crash':
+        reply({ ok: true, at: Date.now(), injected: handlers.explorer.crash() })
+        return
+      case 'file-watch-status':
+        reply({ ok: true, at: Date.now(), fileWatch: handlers.fileWatch.status() })
+        return
+      case 'file-watch-drop':
+        handlers.fileWatch.drop()
+        reply({ ok: true, at: Date.now(), fileWatch: handlers.fileWatch.status() })
+        return
       case 'loop-delay':
         reply({ ok: true, at: Date.now(), loopDelay: readLoopDelay() })
         return
@@ -264,6 +297,22 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         const value = raw !== null ? { path: raw } : parsed['canceled'] === true ? ({ canceled: true } as const) : null
         handlers.setDialogStub(value)
         reply({ ok: true, stub: value, at: Date.now() })
+        return
+      }
+      case 'file-dialog-stub': {
+        // `answers` = 다음 대화상자들에 줄 답(단추 이름이 아니라 답 — save·discard·cancel·overwrite·recreate·reload). 빈 배열이면 스텁을 뗀다.
+        // 돌려주는 `asked` = 지금까지 스텁이 받은 대화상자 갈래(회차 원자료 — 무엇을 물었나).
+        const raw = parsed['answers']
+        const answers = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : []
+        const { asked } = handlers.setFileDialogStub(answers)
+        reply({ ok: true, answers, asked, at: Date.now() })
+        return
+      }
+      case 'quit-entry': {
+        const via = readString(parsed, 'via')
+        if (via !== 'quit' && via !== 'close') throw new Error('via 는 quit · close')
+        reply({ ok: true, via, at: Date.now() })
+        handlers.quitEntry(via)
         return
       }
       case 'rebuild-tree': {

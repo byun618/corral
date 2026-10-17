@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { bindingFromEvent, matchBinding, NON_REPEATING_ACTIONS, type ActionId, type Keybindings, type ShortcutMatch } from '../../../shared/keybindings.js'
+import { bindingFromEvent, EDITOR_YIELD_ACTIONS, matchBinding, NON_REPEATING_ACTIONS, type ActionId, type Keybindings, type ShortcutMatch } from '../../../shared/keybindings.js'
 
 export type ShortcutHandlers = Record<ActionId, (variant: number) => void>
 export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onInterceptDuringHold: () => boolean) {
@@ -25,11 +25,15 @@ export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onI
         return
       }
       const binding = bindingFromEvent(event)
-      const match = binding === null ? null : matchBinding(binding, latest.current.overrides)
+      // LIFE-592 — 탐색기 트리 자체가 키를 받았으면 탐색기 범위 액션(⌘⌫·⌘Z·⌘⇧Z)을 먼저 본다. 트리 안 입력 행(새 이름·이름 변경)은 트리가 아니라 입력이다.
+      const scope = event.target instanceof Element && event.target.matches('[data-explorer-tree]') ? 'explorer' : 'global'
+      const match = binding === null ? null : matchBinding(binding, latest.current.overrides, scope)
       if (match === null) return
       // Coordinator clarification: every keyboard action yields to tab renaming, including MRU.
       // LIFE-478: 카드 인라인 rename 입력(`data-inline-rename`)에도 양보한다(K3ⓐ).
       if (event.target instanceof Element && event.target.closest('.main-tab-rename, [data-inline-rename]')) return
+      // LIFE-591 — 파일 탭 편집기 안이면 터미널 pane 대상 단축키(파일 탭에서 무동작)를 편집기에 넘긴다(⌘⇧Z 다시 실행 등 — `EDITOR_YIELD_ACTIONS`).
+      if (EDITOR_YIELD_ACTIONS.includes(match.id) && event.target instanceof Element && event.target.closest('[data-file-editor]')) return
       event.preventDefault()
       event.stopPropagation()
       // 누르고 있어도 한 번만 도는 액션(LIFE-495 K6ⓔ) — 반복 keydown 은 삼킨다. main 메뉴 키 길(`menuKeyShortcut`)과 같은 목록(fix1 R1-06).

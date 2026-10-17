@@ -15,6 +15,7 @@ import path from 'node:path'
 import { isRecord, safeParse } from '../shared/json.js'
 import { DEFAULT_SIDEBAR_VIEW, readSidebarView, sidebarViewToPrefs, type SidebarViewPrefs } from '../shared/sidebar-view.js'
 import { log } from './log.js'
+import { readRecentFiles, type RecentFiles } from '../shared/recent-files.js'
 
 /** 폴백 번호 배정 한 칸 (LIFE-366 C13) — `shared/types.ts` 의 `TabOrdinal` 과 같은 모양이다. */
 export type TabOrdinal = { tabId: string; groupId: string; ordinal: number }
@@ -71,6 +72,13 @@ export type UiPrefs = {
    * 여기서는 실어 나르기만 한다). 키가 herdr tab id 라 herdr 가 재기동하면 배치·폴백 번호와 같이 잃는다(00-analysis F13).
    */
   tabMarks: unknown[]
+  /** 오른쪽 패널·탐색기 (LIFE-589) — `shared/types.ts` 의 같은 칸 주석. */
+  rightPanelOpen: boolean
+  rightPanelWidth: number | null
+  explorerShowDotfiles: boolean
+  explorerShowIgnored: boolean
+  /** 최근 연 파일 (LIFE-593) — `shared/types.ts` 의 같은 칸 주석. 읽을 때 `readRecentFiles` 로 모양을 본다. */
+  recentFiles: RecentFiles
 } & SidebarViewPrefs
 
 const VERSION = 1
@@ -89,6 +97,11 @@ const DEFAULT_PREFS: UiPrefs = {
   collapsedLineage: [],
   unreadWorktrees: [],
   tabMarks: [],
+  rightPanelOpen: false,
+  rightPanelWidth: null,
+  explorerShowDotfiles: true,
+  explorerShowIgnored: true,
+  recentFiles: {},
   // Workspace options (LIFE-470) — 칸 이름·기본값·읽기 규칙은 `shared/sidebar-view.ts` 한 곳.
   ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW),
 }
@@ -159,6 +172,13 @@ export class UiPrefsStore {
         collapsedLineage: readKeyList(parsed['collapsedLineage']),
         unreadWorktrees: readKeyList(parsed['unreadWorktrees']),
         tabMarks: Array.isArray(parsed['tabMarks']) ? parsed['tabMarks'] : [],
+        // LIFE-589 — 칸마다 형을 보고, 아니면 기본값(닫힘·토큰 폭·둘 다 보임).
+        rightPanelOpen: parsed['rightPanelOpen'] === true,
+        rightPanelWidth: typeof parsed['rightPanelWidth'] === 'number' && Number.isFinite(parsed['rightPanelWidth']) ? parsed['rightPanelWidth'] : null,
+        explorerShowDotfiles: parsed['explorerShowDotfiles'] !== false,
+        explorerShowIgnored: parsed['explorerShowIgnored'] !== false,
+        // LIFE-593 — 칸 모양이 틀리면 그 칸(또는 그 worktree)만 버린다. 다른 칸은 그대로.
+        recentFiles: readRecentFiles(parsed['recentFiles']),
         // 칸마다 따로 기본값으로 떨어진다 — 손상된 모드 문자열이 다른 칸을 버리지 않게(LIFE-470 K9ⓓ).
         ...sidebarViewToPrefs(readSidebarView(parsed)),
       }
@@ -184,6 +204,7 @@ export class UiPrefsStore {
       collapsedLineage: [...this.prefs.collapsedLineage],
       unreadWorktrees: [...this.prefs.unreadWorktrees],
       tabMarks: [...this.prefs.tabMarks],
+      recentFiles: Object.fromEntries(Object.entries(this.prefs.recentFiles).map(([key, list]) => [key, [...list]])),
       sidebarRepoFilter: [...this.prefs.sidebarRepoFilter],
       sidebarCardProperties: [...this.prefs.sidebarCardProperties],
     }
@@ -192,6 +213,8 @@ export class UiPrefsStore {
   /** 부분 갱신 — 준 필드만 덮는다(레지스트리처럼 즉시 원자적 쓰기, 디바운스 없음 — 쓰기 빈도가 낮다). */
   update(patch: Partial<UiPrefs>): void {
     this.prefs = { ...this.prefs, ...patch }
+    // LIFE-593 — 렌더러가 준 최근 기록도 저장 전에 같은 규칙으로 거른다(상대 경로만 — E8ⓔ).
+    if (patch.recentFiles !== undefined) this.prefs.recentFiles = readRecentFiles(patch.recentFiles)
     const payload = JSON.stringify({ version: VERSION, ...this.prefs }, null, 2) + '\n'
     const tmp = `${this.file}.${process.pid}.tmp`
     try {

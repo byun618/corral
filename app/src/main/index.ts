@@ -11,7 +11,7 @@ import { cliTarget } from './install-cli.js'
 import { addInstallCliMenu } from './install-cli-menu.js'
 import { KeybindingStore } from './keybindings.js'
 import { withRetentionSuppressed } from './close-retention.js'
-import { menuKeyShortcut } from '../shared/keybindings.js'
+import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { closeTabsGated } from './close-tabs.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
@@ -20,7 +20,7 @@ import { closeTabsGated } from './close-tabs.js'
 //
 // 이 파일은 **어댑터의 공개 입구만** import 한다 (`./adapter/index.js`). internal 은 모른다.
 
-import { app, BrowserWindow, type BrowserWindowConstructorOptions, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, type BrowserWindowConstructorOptions, clipboard, dialog, ipcMain, nativeImage, shell, utilityProcess } from 'electron'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -113,12 +113,26 @@ import { observePanes } from '../runtime/orchestration/index.js'
 import { OrchestrationStore } from '../runtime/orchestration/store.js'
 import { MobileService } from './mobile/service.js'
 import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
+import { listDir } from './explorer-fs.js'
+import { ExplorerHub } from './explorer-hub.js'
+import { FileLister, resolveGit } from './file-list.js'
+import { explorerAction } from './explorer-actions.js'
+import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
+import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
+import { readFileContent, readImageContent } from './file-read.js'
+import { createFileWatch, type FileWatch } from './file-watch.js'
+import { loadTestHooks, writeFileContent } from './file-write.js'
+import { fileDialogSpec, parseFileDialogRequest, reloadDialogSpec, unresponsiveDialogSpec } from './file-dialogs.js'
+import { createQuitGate, parseDirtyFiles } from './quit-gate.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
 /** 측정 실행인가 — control 소켓이 붙었을 때만 참. A4 프레임 로그 같은 계측 잡음을 여기 가둔다. */
 if (process.env.CORRAL_USER_DATA) app.setPath('userData', process.env.CORRAL_USER_DATA)
 let stopRuntime: (() => Promise<void>) | null = null
+/** 종료 정리 진행 중이면 그 Promise(재진입 종료가 같이 기다린다 — LIFE-591 수정 r2 R2-C) · 끝났으면 `runtimeStopped`. */
+let runtimeStopping: Promise<void> | null = null
+let runtimeStopped = false
 /** 설정 › Mobile (LIFE-577) — 기본 꺼짐. 종료 정리는 `stopRuntime` 체인에 합쳐 기존 `before-quit` 하나가 기다린다. */
 let mobile: MobileService | null = null
 /** 마지막으로 렌더러에 낸 상태 — 폰 목록이 같은 스냅샷을 읽는다(LIFE-580 F1). 아직 없으면 null. */
@@ -129,9 +143,78 @@ const MOBILE_SHUTDOWN_DEADLINE_MS = 6_000
 let runtimeInvoke: ((invocation: Invocation) => Promise<RpcResponse>) | null = null
 let keybindings: KeybindingStore
 let shortcutRecording = false
+/**
+ * LIFE-592 — 탐색기 트리가 활성 요소인가(렌더러가 트리 focus/blur 때 민다). 켜져 있을 때만 main 이 ⌘Z·⌘⇧Z(메뉴 Edit role 이 쥔 키)를
+ * 탐색기 실행 취소·다시 실행으로 가져온다 — 꺼져 있으면 손대지 않아 편집기·입력칸·터미널의 ⌘Z 와 메뉴 role 이 그대로다(`raw/claude/undo-routing.md`).
+ */
+let explorerFocused = false
+/**
+ * 탐색기 드롭 원본·가져오기 재생 근거(LIFE-592 E7ⓓ·수정 r2 R2-E). 재생 근거는 렌더러 실행 취소 기록이 가리키는 동안만 쓸모가 있다 —
+ * 렌더러가 새로 뜨면(다시 읽기·프로세스 재생성) 그 기록은 사라지므로 붙잡던 근거를 전부 놓는다(수정 r3).
+ */
+const explorerDrops = new DropStore()
 const measuring = (process.env.CORRAL_CONTROL_SOCKET ?? '').length > 0
 
 let window: BrowserWindow | null = null
+/**
+ * LIFE-591 E3ⓒ — 수정된 파일 탭이 있으면 종료·창 닫기를 런타임 정리보다 먼저 막고 렌더러에 확인을 맡긴다(`quit-gate.ts`).
+ * 렌더러가 없으면(창이 없거나 부서졌으면) 막지 않는다 — 그때는 확인할 내용도 없다.
+ * 수정 r1 R1-I — 렌더러가 요청을 3 s 안에 받았다고(`corral:quitAck`) 답하지 않으면(멈춤) main 이 직접 묻는다(`confirmUnresponsiveQuit`).
+ * 수정 r4 R4-A — 밀린 수정 목록이 비어도 렌더러에 묻는다(왕복 — 렌더러가 그 순간 문서로 판정).
+ * 수정 r5 R5-A — 페이지를 싣는 중(다시 불러오기 등)이면 옛 문서가 아직 살아 있을 수 있다 — 왕복 대신 밀린 목록으로 판정한다(`loading`, 판정은 `quit-gate.ts`).
+ * 수정 r5 R5-B — 요청마다 세대(`gen`)를 실어 보낸다. 렌더러 응답은 그 세대를 돌려주고, 무응답 취소로 무효가 된 세대의 응답은 버린다.
+ */
+const quitGate = createQuitGate({
+  requestConfirm: (gen) => {
+    if (window === null || window.isDestroyed() || window.webContents.isCrashed()) return false
+    window.webContents.send('corral:quitRequested', gen)
+    return true
+  },
+  loading: () => window !== null && !window.isDestroyed() && window.webContents.isLoadingMainFrame(),
+  onUnresponsive: () => void confirmUnresponsiveQuit(),
+  trustPushedList: measuring && !app.isPackaged && process.env.CORRAL_TEST_QUIT_TRUST_PUSHED === '1',
+  ackTimeoutMs: 3000,
+  log: (tag, data) => log(tag, data),
+})
+/**
+ * 방어선(수정 r4 R4-A ⓒ) — 런타임 정리를 시작해 창을 숨긴 뒤에 종료 확인을 다시 묻게 됐으면(정리 뒤 재진입 종료가 새 수정을 본 경우 등) 창을 다시 보인다.
+ * 숨은 창에 붙은 확인 대화상자는 보이지 않고, 취소하면 창이 숨은 채 남는다. 포커스는 가져가지 않는다(`showInactive`).
+ */
+function reshowForConfirm(via: string): void {
+  if (runtimeStopping === null || window === null || window.isDestroyed() || window.isVisible()) return
+  log('quit.reshow', { via, runtimeStopped })
+  window.showInactive()
+}
+let unresponsivePrompt = false
+/**
+ * 무응답 렌더러 종료 확인(R1-I) — 「저장하지 않고 종료」 면 확인을 지난 것으로 치고 창을 바로 부순 뒤(멈춘 렌더러는 `beforeunload` 에 답하지 못한다 —
+ * `destroy` 는 unload 처리를 건너뛴다) 기존 종료 순서로 끝낸다(`before-quit` → 런타임 정리). 「취소」 면 아무것도 안 한다(앱·런타임 그대로).
+ * 계측 실행은 `file-dialog-stub` 답(`discard` = 종료, 그 밖 = 취소)을 쓴다.
+ */
+async function confirmUnresponsiveQuit(): Promise<void> {
+  if (unresponsivePrompt) return
+  unresponsivePrompt = true
+  try {
+    const files = quitGate.dirty().map((file) => file.rel)
+    const target = window
+    const stubbed = measuring ? fileDialogAnswers.shift() : undefined
+    if (stubbed !== undefined) fileDialogAsked.push('unresponsive')
+    const spec = unresponsiveDialogSpec(files)
+    const live = target !== null && !target.isDestroyed() ? target : null
+    const quit = stubbed !== undefined ? stubbed === 'discard' : (live === null ? await dialog.showMessageBox(spec) : await dialog.showMessageBox(live, spec)).response === 0
+    log('quit.unresponsive_choice', { files: files.length, quit, stubbed: stubbed !== undefined })
+    if (!quit) {
+      // 취소 — 이미 보낸 요청을 무효로 한다. 렌더러가 회복해 그 요청에 늦게 승인해도 종료하지 않는다(수정 r5 R5-B).
+      quitGate.invalidate()
+      return
+    }
+    quitGate.allow()
+    if (live !== null && !live.isDestroyed()) live.destroy()
+    app.quit()
+  } finally {
+    unresponsivePrompt = false
+  }
+}
 let revision = 0
 /** 소켓 경로를 든 목록은 **여기까지만** 산다 (수정 1회차 L9) — 화면으로는 이름·running 만 간다. */
 let sessions: SessionHandle[] = []
@@ -165,6 +248,11 @@ let lastBackendLog = ''
 let scanState: BackendInput['scan'] = 'pending'
 let registry: RepoRegistry | null = null
 let uiPrefs: UiPrefsStore | null = null
+/** 탐색기 감시·git 허브 (LIFE-589) — 감시는 utility process 안에서 돈다. */
+let explorerHub: ExplorerHub | null = null
+/** LIFE-593 — ⌘P·탐색기 이름 필터의 전체 파일 목록(git). 종료 때 진행 중 자식을 끝낸다. */
+let fileLister: FileLister | null = null
+let fileWatch: FileWatch | null = null
 /** 사용자 설정 (LIFE-512 S11) — 외관. ui-prefs(화면 상태)와 다른 파일·다른 칸이다(U8). */
 let settings: SettingsStore | null = null
 /** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
@@ -463,6 +551,8 @@ function scheduleEmit(): void {
     // 폰 목록(LIFE-580) — 방금 만든 상태를 그대로 쓴다(두 번 만들지 않는다). 구독자가 없으면 아무 일도 안 한다.
     lastEmittedState = state
     mobile?.listChanged()
+    // LIFE-589 — 닫힌 worktree 의 탐색기 감시를 푼다(감시 자원은 열린 worktree 만).
+    explorerHub?.prune()
   }, 0)
 }
 
@@ -618,6 +708,9 @@ function removeRepo(input: string): RemoveRepoResult {
  * 거기서 멈췄다 (수정 5회차 실측).
  */
 let dialogStub: { canceled: true } | { path: string } | null = null
+/** LIFE-591 — 파일 탭 확인 대화상자 답 스텁(계측 실행만, 제어 소켓 `file-dialog-stub`). 비면 진짜 창. `fileDialogAsked` = 스텁이 받은 갈래 기록. */
+let fileDialogAnswers: string[] = []
+const fileDialogAsked: string[] = []
 
 /** 다이얼로그가 떠 있는 동안 두 번째 클릭이 창을 하나 더 띄우지 않게. */
 let browsing = false
@@ -1435,6 +1528,34 @@ function createWindow(): void {
   })
 
   window.on('ready-to-show', () => window?.show())
+  // LIFE-591 E3ⓒ — 빨간 닫기 단추(창 `close`)도 ⌘Q 와 같은 확인을 거친다. 창이 닫히면 `window-all-closed` → 정리 → 종료이므로 여기서 막아야 렌더러의 수정 내용이 산다.
+  window.on('close', (event) => {
+    if (quitGate.intercept('window-close')) {
+      event.preventDefault()
+      reshowForConfirm('window-close')
+    }
+  })
+  window.on('closed', () => quitGate.setDirty([]))
+  window.webContents.on('render-process-gone', () => quitGate.setDirty([]))
+  /**
+   * LIFE-591 E3ⓕ — 렌더러 다시 불러오기(기본 메뉴 View ▸ Force Reload ⌘⇧R 등 — ⌘R 은 위 `before-input-event` 가 가져간다). 렌더러는 수정 파일이 있으면
+   * `beforeunload` 를 막는다 → 여기서 묻고, 「다시 불러오기」 면 막음을 무시한다(`preventDefault` = 그래도 내린다 — Electron 문서 패턴). 종료 확인을 이미 지났으면 묻지 않는다.
+   */
+  window.webContents.on('will-prevent-unload', (event) => {
+    if (quitGate.allowed()) {
+      event.preventDefault()
+      return
+    }
+    const target = window
+    const files = quitGate.dirty().map((file) => file.rel)
+    const options = reloadDialogSpec(files.length > 0 ? files : ['(수정된 파일)'])
+    // 계측 스텁(`file-dialog-stub` 의 `reload` = 다시 불러오기, 그 밖 = 취소).
+    const stubbed = measuring ? fileDialogAnswers.shift() : undefined
+    if (stubbed !== undefined) fileDialogAsked.push('reload')
+    const choice = stubbed !== undefined ? (stubbed === 'reload' ? 0 : 1) : target === null || target.isDestroyed() ? 1 : dialog.showMessageBoxSync(target, options)
+    log('file.reload_confirm', { files: files.length, reload: choice === 0 })
+    if (choice === 0) event.preventDefault()
+  })
   // LIFE-527 D3 — 전체화면이면 신호등이 창 위에 없다. 렌더러가 신호등 여백을 걷도록 상태를 민다.
   window.on('enter-full-screen', pushWindowChrome)
   window.on('leave-full-screen', pushWindowChrome)
@@ -1495,14 +1616,25 @@ function createWindow(): void {
    */
   window.webContents.on('did-start-loading', () => {
     shortcutRecording = false
+    explorerFocused = false
     window?.webContents.setIgnoreMenuShortcuts(false)
   })
+  // 메인 프레임이 새 문서를 실었다(다시 읽기·렌더러 재생성) — 실행 취소 기록이 사라졌으니 가져오기 재생 근거를 놓는다(LIFE-592 수정 r3).
+  window.webContents.on('did-navigate', () => explorerDrops.releaseAll())
   window.webContents.on('before-input-event', (event, input) => {
     if (instrumented && (input.type === 'keyUp' || input.control || input.meta || input.alt)) {
       log('input.raw', { type: input.type, key: input.key, control: input.control, meta: input.meta, alt: input.alt, shift: input.shift })
     }
     if (shortcutRecording) return
     if (input.type !== 'keyDown') return
+    // LIFE-592 — 탐색기 트리 포커스의 ⌘Z·⌘⇧Z. 메뉴 role 과 페이지 keydown 의 순서에 기대지 않으려고 여기서(둘보다 먼저) 가져온다. ⌘W 와 같은 수(R23 — 메뉴 재구성 없음).
+    const explorerMatch = explorerKeyShortcut({ ...input, overrides: keybindings.get(), explorerFocused })
+    if (explorerMatch !== null) {
+      event.preventDefault()
+      log('shortcut.intercepted', { key: input.key.toLowerCase(), meta: true, shift: input.shift, repeat: input.isAutoRepeat, explorer: explorerMatch.id })
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:shortcut', explorerMatch)
+      return
+    }
     // 메뉴가 쥔 키 중 corral 이 가져오는 것 — `⌘W`(File ▸ Close Window)와 **`⌘R`**(View ▸ Reload, LIFE-495 F9·U2).
     // `⌘R` 을 두면 탭 이름 바꾸기 대신 **창이 새로고침**된다(화면 상태가 날아간다). Orca 는 Reload 항목에서 가속키를 빼서 피했다
     // (`register-app-menu.ts:280-290`). corral 은 ⌘W 와 같은 수(R23 — 메뉴를 다시 만들지 않는다)로 가져온다. `⌘⇧R`(Force Reload)는
@@ -1761,6 +1893,231 @@ app.whenReady().then(async () => {
   ipcMain.handle('corral:revealInFinder', (event, input) => (fromOurWindow(event) ? revealInFinder(cardDeps, input) : cardDenied))
   ipcMain.handle('corral:openInEditor', (event, input) => (fromOurWindow(event) ? openInEditor(cardDeps, input) : cardDenied))
   ipcMain.handle('corral:copyPath', (event, input) => (fromOurWindow(event) ? copyPath(cardDeps, input) : cardDenied))
+  // --- 탐색기 (LIFE-589 F1) — 읽기 전용, 루트는 **지금 열린** worktree 만(`explorer-fs.ts` 가둠). 호출마다 로그 한 줄(E1ⓓ·E2ⓐ 계수) ---
+  const explorerRoots = (): string[] => currentState().repos.flatMap((repo) => repo.worktrees.filter((row) => row.openWorkspaceId !== null).map((row) => row.path))
+  ipcMain.handle('corral:explorerList', async (event, input: unknown) => {
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const rel = typeof input === 'object' && input !== null && 'rel' in input ? input.rel : undefined
+    if (!fromOurWindow(event)) return { ok: false, dir: '', code: 'not_worktree', error: '허용되지 않은 발신자' }
+    const startedAt = performance.now()
+    // 허브를 거쳐 읽는다 — 허브가 준 목록의 도장을 적어 두었다가 감시 시작 때 그 사이 바뀐 폴더만 가린다(상태 모델 fix-r3).
+    const result = explorerHub === null ? await listDir({ roots: explorerRoots(), root, rel }) : await explorerHub.list({ roots: explorerRoots(), root, rel })
+    log('explorer.list', { rel: typeof rel === 'string' ? rel : null, ok: result.ok, code: result.ok ? null : result.code, count: result.ok ? result.entries.length : 0, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
+    return result
+  })
+  explorerHub = new ExplorerHub({
+    // 감시 프로세스 — 같은 번들 폴더의 `explorer-watcher.js`(electron.vite.config 의 main 입력 둘째). asar 안에서도 utilityProcess 가 읽는다.
+    fork: () => {
+      const child = utilityProcess.fork(path.join(here, 'explorer-watcher.js'), [], { serviceName: 'corral-explorer-watcher', stdio: 'ignore' })
+      return {
+        get pid() {
+          return child.pid
+        },
+        postMessage: (message) => child.postMessage(message),
+        on: (event, listener) => {
+          if (event === 'message') child.on('message', listener)
+          else child.on('exit', listener)
+        },
+        kill: () => child.kill(),
+      }
+    },
+    push: (event) => {
+      log('explorer.push', { kind: event.kind, root: event.root, dirs: event.kind === 'changed' ? event.dirs.length : null })
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:explorerEvent', event)
+    },
+    roots: explorerRoots,
+    log,
+  })
+  // --- 전체 파일 목록 (LIFE-593 F5) — 읽기 전용, 루트는 탐색기와 같은 「지금 열린 worktree」 만(`file-list.ts` — confine 루트 대조 · 셸 없는 git · 취소) ---
+  // git 절대 경로는 부를 때마다 그때 열린 루트로 고른다(PATH 의 절대 항목만, 열린 worktree 아래는 건너뜀 — `resolveGit` · 수정 r1 R1-C-04). 바뀔 때만 적는다.
+  let listGit: string | null = null
+  fileLister = new FileLister({
+    roots: explorerRoots,
+    git: (roots) => {
+      const picked = resolveGit({ pathEnv: process.env.PATH, roots })
+      if (picked !== listGit) {
+        listGit = picked
+        log('file.list_git', { git: picked })
+      }
+      return picked
+    },
+    log,
+  })
+  ipcMain.handle('corral:fileList', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || fileLister === null) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    return fileLister.list(input)
+  })
+  ipcMain.on('corral:fileListCancel', (event, requestId: unknown) => {
+    if (fromOurWindow(event)) fileLister?.cancel(requestId)
+  })
+  // --- 파일 탭 (LIFE-590 F2) — 내용 읽기 전용. 루트는 탐색기와 같은 「지금 열린 worktree」 만, 가둠은 F1 `confine`(읽기). 쓰기 핸들러는 없다(F3) ---
+  ipcMain.handle('corral:fileRead', async (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const rel = typeof input === 'object' && input !== null && 'rel' in input ? input.rel : undefined
+    const startedAt = performance.now()
+    const result = await readFileContent({ roots: explorerRoots(), root, rel })
+    // 읽은 바이트를 남긴다(E4ⓕ 「상한 넘게 읽지 않음」 계측) — 경로는 남기지 않는다(상대 경로 길이만).
+    log('file.read', { ok: result.ok, kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok ? result.size : null, bytesRead: result.ok ? result.bytesRead : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
+    return result
+  })
+  // 이미지 바이트(E4ⓔ) — 확장자 목록·가둠·상한은 `readImageContent`. 경로는 남기지 않는다.
+  ipcMain.handle('corral:fileReadImage', async (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const rel = typeof input === 'object' && input !== null && 'rel' in input ? input.rel : undefined
+    const startedAt = performance.now()
+    const result = await readImageContent({ roots: explorerRoots(), root, rel })
+    log('file.read_image', { ok: result.ok, kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok ? result.size : null, bytesRead: result.ok ? result.bytesRead : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
+    return result
+  })
+  // --- 파일 탭 편집 (LIFE-591 F3) — 쓰기는 `file-write.ts`(fd 기반 쓰기 경계 — 등록 루트·이미 있는 일반 파일·`O_NOFOLLOW_ANY`). 내용 상한도 거기서 다시 잰다 ---
+  // 시험 전용 주입은 패키지 앱이면 늘 꺼진다(`loadTestHooks`) — 개발 실행에서도 `CORRAL_TEST_WRITE_HOOK_FILE` 이 있을 때만.
+  ipcMain.handle('corral:fileWrite', async (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    const field = (name: string): unknown => (typeof input === 'object' && input !== null && name in input ? Reflect.get(input, name) : undefined)
+    const startedAt = performance.now()
+    const hooks = await loadTestHooks({ packaged: app.isPackaged, file: process.env.CORRAL_TEST_WRITE_HOOK_FILE })
+    const result = await writeFileContent({
+      roots: explorerRoots(),
+      root: field('root'),
+      rel: field('rel'),
+      text: field('text'),
+      bom: field('bom'),
+      baseStamp: field('baseStamp'),
+      baseHash: field('baseHash'),
+      overwrite: field('overwrite'),
+      create: field('create'),
+      hooks,
+    })
+    // 경로·내용은 남기지 않는다 — 결과 코드·크기·걸린 시간만(읽기 로그와 같은 결).
+    log('file.write', { ok: result.ok, code: result.ok ? null : result.code, size: result.ok ? result.size : null, ms: Math.round((performance.now() - startedAt) * 10) / 10, hooks: Object.keys(hooks).length > 0 })
+    return result
+  })
+  // 확인 대화상자(E3ⓑ·E4ⓒⓓ·E3ⓓ) — 문구·단추는 main(`file-dialogs.ts`), 렌더러는 갈래와 파일 이름만 준다. 고른 답을 돌려준다(모르는 요청 = 취소).
+  ipcMain.handle('corral:fileDialog', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || window === null || window.isDestroyed()) return 'cancel'
+    const request = parseFileDialogRequest(input)
+    if (request === null) return 'cancel'
+    const spec = fileDialogSpec(request)
+    // 계측 스텁 — 답이 이 갈래에 있는 것이면 쓴다(없는 답이면 취소로 — 스텁이 다른 갈래를 조용히 고르지 않게).
+    const stubbed = measuring ? fileDialogAnswers.shift() : undefined
+    if (stubbed !== undefined) fileDialogAsked.push(request.kind)
+    const choice = stubbed !== undefined ? (spec.choices.find((item) => item === stubbed) ?? 'cancel') : (spec.choices[(await dialog.showMessageBox(window, spec.options)).response] ?? 'cancel')
+    log('file.dialog', { kind: request.kind, choice, stubbed: stubbed !== undefined, files: request.kind === 'close' || request.kind === 'discard' ? request.files.length : 1, ...(request.kind === 'trash' ? { isDir: request.isDir, undoable: request.undoable, dirty: request.dirty.length } : {}) })
+    return choice
+  })
+  // 수정 파일 목록(E3ⓒ) — 바뀔 때마다 렌더러가 민다. 종료 확인 관문이 이것으로 동기 판정한다.
+  ipcMain.on('corral:dirtyFiles', (event, input: unknown) => {
+    if (!fromOurWindow(event)) return
+    const files = parseDirtyFiles(input)
+    if (files !== null) quitGate.setDirty(files)
+  })
+  // 렌더러가 종료 확인을 마쳤다(저장했거나 저장 안 함) — 이제 막지 않고 다시 종료한다. 취소면 이 요청이 오지 않는다(앱·런타임 그대로).
+  // 렌더러가 종료 확인 요청을 받았다(R1-I 무응답 시계를 멈춘다).
+  // 응답의 세대가 지금 요청의 것이 아니면(무응답 취소로 무효) 버리고 남긴다(수정 r5 R5-B).
+  const replyGen = (input: unknown): number => (typeof input === 'number' && Number.isInteger(input) ? input : -1)
+  ipcMain.on('corral:quitAck', (event, gen: unknown) => {
+    if (!fromOurWindow(event)) return
+    if (!quitGate.ack(replyGen(gen))) log('quit.stale_reply', { kind: 'ack', gen: replyGen(gen) })
+  })
+  // 렌더러의 종료 확인이 취소로 끝났다 — 보통은 할 일이 없다(정리 전이라 앱·런타임 그대로). 방어선(R4-A ⓒ): 정리를 이미 시작했으면 창을 다시 보이고,
+  // 런타임을 닫았는지 돌려준다 — 렌더러가 편집 동결을 풀고 사용자에게 안내한다.
+  ipcMain.handle('corral:quitCancelled', (event, gen: unknown) => {
+    if (!fromOurWindow(event)) return { runtimeClosed: false }
+    if (!quitGate.isCurrent(replyGen(gen))) {
+      log('quit.stale_reply', { kind: 'cancelled', gen: replyGen(gen) })
+      return { runtimeClosed: false }
+    }
+    reshowForConfirm('cancelled')
+    const runtimeClosed = runtimeStopping !== null
+    log('quit.cancelled', { runtimeClosed, runtimeStopped })
+    return { runtimeClosed }
+  })
+  // 승인 — 무효가 된 세대면 받지 않고 false(렌더러가 편집 동결을 푼다, R5-B).
+  ipcMain.handle('corral:confirmQuit', (event, gen: unknown) => {
+    if (!fromOurWindow(event)) return false
+    if (!quitGate.isCurrent(replyGen(gen))) {
+      log('quit.stale_reply', { kind: 'confirm', gen: replyGen(gen) })
+      return false
+    }
+    log('quit.confirmed', { files: quitGate.dirty().length })
+    quitGate.allow()
+    app.quit()
+    return true
+  })
+  // 열린 파일 탭 감시(E5) — 렌더러가 활성 worktree 의 열린 파일 탭 집합을 통째로 준다. 패널 열림과 무관하다(탐색기 감시와 별개).
+  fileWatch = createFileWatch({
+    roots: explorerRoots,
+    push: (push) => {
+      log('file.changed', { exists: push.exists })
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:fileEvent', push)
+    },
+    log,
+    // 확인·push 기록은 계측 실행(제어 소켓 opt-in)에서만 쌓는다(수정 r3 R3-B).
+    trace: measuring,
+  })
+  ipcMain.handle('corral:fileWatch', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || fileWatch === null) return { ok: false, count: 0 }
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const rels = typeof input === 'object' && input !== null && 'rels' in input ? input.rels : undefined
+    return fileWatch.set({ root, rels })
+  })
+  ipcMain.handle('corral:explorerWatch', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || explorerHub === null) return { ok: false, code: 'not_worktree' }
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const on = typeof input === 'object' && input !== null && 'on' in input && input.on === true
+    if (!on) {
+      explorerHub.unsubscribe(root)
+      return { ok: true }
+    }
+    return explorerHub.subscribe(root)
+  })
+  ipcMain.on('corral:explorerRefreshGit', (event, root: unknown) => {
+    if (fromOurWindow(event)) explorerHub?.refreshGit(root)
+  })
+  ipcMain.handle('corral:explorerAction', (event, input: unknown) =>
+    fromOurWindow(event)
+      ? explorerAction(
+          {
+            roots: explorerRoots,
+            writeClipboard: (text) => clipboard.writeText(text),
+            showItemInFolder: (target) => shell.showItemInFolder(target),
+            openShell: async ({ root, cwd }) => {
+              const workspaceId = currentState().repos.flatMap((repo) => repo.worktrees).find((row) => row.path === root)?.openWorkspaceId ?? null
+              if (workspaceId === null) return '열린 workspace 가 없다'
+              const created = await createRowInWorkspace({ workspaceId, kind: 'shell', cwd })
+              log('explorer.open_terminal', { root, cwd, ok: created.ok, paneId: created.paneId })
+              return created.ok ? null : (created.error ?? '탭을 못 만들었다')
+            },
+          },
+          input,
+        )
+      : { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' },
+  )
+  // --- 탐색기 파일 조작 (LIFE-592 F4) — 쓰기 경계는 `explorer-ops.ts`(원본·대상 가둠 · fd/경로 연산 구분 · 덮어쓰기 0 · 휴지통만). 호출마다 로그 한 줄(경로 없음) ---
+  // 시험 전용 경쟁 주입은 패키지 앱이면 늘 꺼진다(`loadOpHooks`) — 개발 실행에서도 `CORRAL_TEST_OP_HOOK_FILE` 이 있을 때만.
+  const explorerSnapshots = new SnapshotStore()
+  ipcMain.handle('corral:explorerOp', async (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    const startedAt = performance.now()
+    const hooks = await loadOpHooks({ packaged: app.isPackaged, file: process.env.CORRAL_TEST_OP_HOOK_FILE })
+    const op = typeof input === 'object' && input !== null && 'op' in input && typeof input.op === 'string' ? input.op : null
+    const result = await runExplorerOp({ roots: explorerRoots, trashItem: (abs) => shell.trashItem(abs), snapshots: explorerSnapshots, drops: explorerDrops, hooks }, input)
+    log('explorer.op', { op, ok: result.ok, code: result.ok ? null : result.code, done: !result.ok && result.done === true, ms: Math.round((performance.now() - startedAt) * 10) / 10, hooks: Object.keys(hooks).length > 0, snapshots: explorerSnapshots.size })
+    return result
+  })
+  // OS 드롭 원본(E7ⓓ) — **preload 만** 부른다(렌더러 `CorralApi` 에 없다). 실제 드롭 이벤트의 `webUtils.getPathForFile` 경로를 맡기고 표지를 돌려준다.
+  ipcMain.handle('corral:explorerDropPaths', (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, error: '허용되지 않은 발신자' }
+    const paths = Array.isArray(input) && input.length > 0 && input.length <= FILE_DROP_MAX_PATHS && input.every((item) => typeof item === 'string' && path.isAbsolute(item) && !item.includes('\0')) ? input.filter((item) => typeof item === 'string') : null
+    if (paths === null) return { ok: false, error: '드롭 경로 형 위반' }
+    log('explorer.drop', { count: paths.length })
+    return { ok: true, token: explorerDrops.register(paths), names: paths.map((item) => path.basename(item)) }
+  })
+  ipcMain.on('corral:explorerFocus', (event, focused: unknown) => {
+    if (fromOurWindow(event)) explorerFocused = focused === true
+  })
   // Orca #14545 를 따라 하지 않기 — macOS 는 배경 앱 우클릭에 앱을 활성화하지 않아 메뉴가 키보드·포커스를 못 받는다.
   // 우클릭 순간 창을 앞으로 가져온다(198 뒤 수정 PR #14546 과 같은 방향).
   ipcMain.on('corral:activateWindow', (event) => {
@@ -1975,6 +2332,24 @@ app.whenReady().then(async () => {
       createPairing: () => mobileService.createPairing(),
       revoke: (id) => mobileService.revoke(id),
     },
+    // LIFE-589 E4ⓓⓕⓖ — 감시 프로세스 pid·구독·계수(읽기) · 장애 주입(감시 프로세스만 끝낸다).
+    explorer: {
+      status: () => explorerHub?.status() ?? null,
+      crash: () => explorerHub?.injectCrash() ?? false,
+    },
+    fileWatch: {
+      status: () => (fileWatch === null ? null : { ...fileWatch.stats(), recent: fileWatch.recentChecks(), pushes: fileWatch.recentPushes() }),
+      drop: () => fileWatch?.dropWatchers(),
+    },
+    quitEntry: (via) => {
+      if (via === 'quit') app.quit()
+      else window?.close()
+    },
+    setFileDialogStub: (answers) => {
+      fileDialogAnswers = answers
+      log('file.dialog_stub', { answers })
+      return { asked: [...fileDialogAsked] }
+    },
   })
 
   app.on('activate', () => {
@@ -1983,13 +2358,35 @@ app.whenReady().then(async () => {
 }).catch(error => { log('runtime.start_failed', { error: String(error) }); app.exit(1) })
 
 app.on('before-quit', event => {
-  if (!stopRuntime) return
+  // LIFE-591 E3ⓒ — 수정된 파일 탭이 있으면 런타임 정리보다 **먼저** 막는다(취소하면 런타임·터미널이 그대로여야 한다). 확인은 렌더러가 하고 `corral:confirmQuit` 로 다시 온다.
+  if (quitGate.intercept('before-quit')) {
+    event.preventDefault()
+    reshowForConfirm('before-quit')
+    return
+  }
+  // LIFE-593 수정 r2 R2-C-01 — 가로챔을 지난 종료(⌘Q·창 닫힘)에서는 `window-all-closed` 가 오지 않는다. 진행 중 목록 git 그룹을 여기서 동기로 끝낸다(타이머 없이 SIGKILL).
+  fileLister?.killAll()
+  // 런타임 정리(Mobile serve 제거 + 런타임 닫기)는 **한 번만** 돌리고, 정리 중 다시 온 종료 요청(창 파기 → `window-all-closed` 의 `app.quit()` 등)도
+  // 같은 정리 Promise 를 기다리게 한다(수정 r2 R2-C — 옛 코드는 첫 요청에서 `stopRuntime` 을 비워, 재진입 종료가 정리를 기다리지 않고 끝났다).
+  if (runtimeStopped) return
   event.preventDefault()
-  const close = stopRuntime; stopRuntime = null
-  void close().finally(() => app.quit())
+  if (runtimeStopping === null) {
+    // 정리(Mobile serve 제거는 최대 수 초)를 기다리는 동안 창이 남아 있으면 그 사이 친 글자가 저장도 확인도 없이 사라진다 — 정리를 시작하는 순간 창을 숨긴다
+    // (수정 r3 R3-C. 수정 파일이 있던 종료는 렌더러가 승인 순간 편집기를 읽기 전용으로 이미 묶었다 — 이 숨김은 수정 파일 없이 바로 종료하는 경로까지 덮는다).
+    if (window !== null && !window.isDestroyed()) window.hide()
+    const close = stopRuntime
+    stopRuntime = null
+    runtimeStopping = (close === null ? Promise.resolve() : close()).finally(() => {
+      runtimeStopped = true
+    })
+  }
+  void runtimeStopping.finally(() => app.quit())
 })
 
 app.on('window-all-closed', () => {
+  explorerHub?.dispose()
+  fileLister?.killAll()
+  fileWatch?.dispose()
   if (digestTimer !== null) clearInterval(digestTimer)
   digestTimer = null
   worktreePoller.stop()

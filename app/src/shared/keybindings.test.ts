@@ -1,17 +1,49 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, validateOverrides } from './keybindings.js'
+import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, explorerKeyShortcut, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, scopeOf, validateOverrides } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
   it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
     // LIFE-478: + workspace.rename(⌘⌥R) · workspace.delete(⌘⇧⌫)
     // LIFE-495: + tab.reopenClosed(⌘⇧T) · tab.rename(⌘R) · tab.cycle(⌘⇧[ ] · ⌘⌥[ ] · ⌃PgUp/Dn) · tab.selectByIndex(⌃1–9)
     // LIFE-511: + settings.open(⌘,)
     // LIFE-515: + terminal.newAgent(⌘⌥T)
-    expect(ACTIONS).toHaveLength(19)
+    // LIFE-589: + rightPanel.toggle(⌘L) · explorer.show(⌘⇧E)
+    // LIFE-591: + file.save(⌘S)
+    // LIFE-592: + explorer.delete(⌘⌫) · explorer.undo(⌘Z) · explorer.redo(⌘⇧Z) — 탐색기 범위
+    // LIFE-593: + quickOpen.open(⌘P) · explorer.filter(⌘⌥F — 탐색기 범위)
+    expect(ACTIONS).toHaveLength(27)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
     expect(bindingConflict({})).toBeNull()
-    for (const action of ACTIONS) action.defaultBinding.forEach((binding, index) => expect(matchBinding(binding, {})).toEqual({ id: action.id, variant: action.bindingVariants[index] }))
+    for (const action of ACTIONS) action.defaultBinding.forEach((binding, index) => expect(matchBinding(binding, {}, scopeOf(action))).toEqual({ id: action.id, variant: action.bindingVariants[index] }))
+  })
+  it('LIFE-592 탐색기 범위 — 트리 안에서만 매칭, 트리 안에서는 전역보다 앞선다, 범위가 다르면 충돌 아님', () => {
+    // 트리 밖: ⌘Z·⌘⌫ 는 아무 액션도 아니다(편집기·입력칸·터미널의 것), ⌘⇧Z 는 터미널 줌 그대로
+    expect(matchBinding('Mod+Z', {})).toBeNull()
+    expect(matchBinding('Mod+Backspace', {})).toBeNull()
+    expect(matchBinding('Mod+Shift+Z', {})).toEqual({ id: 'terminal.zoom', variant: 0 })
+    // 트리 안: 탐색기 액션이 먼저, 없으면 전역(⌘K 팔레트는 트리에서도 열린다)
+    expect(matchBinding('Mod+Z', {}, 'explorer')).toEqual({ id: 'explorer.undo', variant: 0 })
+    expect(matchBinding('Mod+Shift+Z', {}, 'explorer')).toEqual({ id: 'explorer.redo', variant: 0 })
+    expect(matchBinding('Mod+Backspace', {}, 'explorer')).toEqual({ id: 'explorer.delete', variant: 0 })
+    expect(matchBinding('Mod+K', {}, 'explorer')).toEqual({ id: 'palette.open', variant: 0 })
+    expect(bindingConflict({})).toBeNull()
+    // 같은 범위 안 겹침 — 나중 기본값(양보)이 비켜 선다(탐색기 삭제를 ⌘Z 로 바꾸면 탐색기 실행 취소는 「없음」)
+    expect(bindingsFor('explorer.undo', validateOverrides({ 'explorer.delete': ['Mod+Z'] }))).toEqual([null])
+    // 재지정 — 트리 안 다시 실행을 ⌘Y 로
+    const moved = validateOverrides({ 'explorer.redo': ['Mod+Y'] })
+    expect(matchBinding('Mod+Y', moved, 'explorer')).toEqual({ id: 'explorer.redo', variant: 0 })
+    expect(matchBinding('Mod+Shift+Z', moved, 'explorer')).toEqual({ id: 'terminal.zoom', variant: 0 })
+  })
+  it('LIFE-592 explorerKeyShortcut — 트리 포커스 표지가 켜졌을 때 ⌘Z·⌘⇧Z 만 main 이 가져온다', () => {
+    const key = (input: { key: string; shift?: boolean; focused: boolean; overrides?: object }) =>
+      explorerKeyShortcut({ key: input.key, code: `Key${input.key.toUpperCase()}`, meta: true, alt: false, control: false, shift: input.shift === true, isAutoRepeat: false, overrides: input.overrides ?? {}, explorerFocused: input.focused })
+    expect(key({ key: 'z', focused: true })).toEqual({ id: 'explorer.undo', variant: 0 })
+    expect(key({ key: 'Z', shift: true, focused: true })).toEqual({ id: 'explorer.redo', variant: 0 })
+    expect(key({ key: 'z', focused: false })).toBeNull()
+    expect(key({ key: 'k', focused: true })).toBeNull()
+    // 재지정해 ⌘Z 가 탐색기 실행 취소가 아니면 가져오지 않는다(메뉴 role 그대로)
+    expect(key({ key: 'z', focused: true, overrides: validateOverrides({ 'explorer.undo': ['Mod+U'] }) })).toBeNull()
   })
   it('LIFE-511 settings.open = ⌘, (Comma 물리 키) · 기존 재정의가 ⌘, 를 쓰면 비켜 선다', () => {
     expect(matchBinding('Mod+,', {})).toEqual({ id: 'settings.open', variant: 0 })
@@ -264,5 +296,42 @@ describe('LIFE-515 K3 — terminal.newAgent(⌘⌥T)', () => {
   })
   it('누르고 있어도 한 번만 — NON_REPEATING_ACTIONS 에 든다(Orca `event.repeat` 무시)', () => {
     expect(NON_REPEATING_ACTIONS).toContain('terminal.newAgent')
+  })
+})
+describe('LIFE-589 오른쪽 패널·탐색기 단축키', () => {
+  it('기본 ⌘L 패널 토글 · ⌘⇧E 탐색기 열고 포커스, 길게 눌러도 반복하지 않는다', () => {
+    expect(matchBinding('Mod+L', {})).toEqual({ id: 'rightPanel.toggle', variant: 0 })
+    expect(matchBinding('Mod+Shift+E', {})).toEqual({ id: 'explorer.show', variant: 0 })
+    expect(NON_REPEATING_ACTIONS).toEqual(expect.arrayContaining(['rightPanel.toggle', 'explorer.show']))
+  })
+  it('기존 재정의가 ⌘L·⌘⇧E 를 쓰면 비켜 선다 — 사용자 파일을 버리지 않는다', () => {
+    const legacy = { 'sidebar.toggle': ['Mod+L'], 'palette.open': ['Mod+Shift+E'] }
+    expect(validateOverrides(legacy, true)).toEqual(legacy)
+    expect(matchBinding('Mod+L', legacy)?.id).toBe('sidebar.toggle')
+    expect(matchBinding('Mod+Shift+E', legacy)?.id).toBe('palette.open')
+    expect(bindingsFor('rightPanel.toggle', legacy)).toEqual([null])
+    expect(bindingsFor('explorer.show', legacy)).toEqual([null])
+    expect(bindingConflict(legacy)).toBeNull()
+  })
+})
+
+describe('LIFE-593 ⌘P 빠른 열기 · ⌥⌘F 이름 필터', () => {
+  it('E1ⓐ ⌘P = quickOpen.open(전역), ⌥⌘F 는 트리 안에서만 explorer.filter', () => {
+    expect(matchBinding('Mod+P', {})).toEqual({ id: 'quickOpen.open', variant: 0 })
+    expect(matchBinding('Mod+Alt+F', {})).toBeNull()
+    expect(matchBinding('Mod+Alt+F', {}, 'explorer')).toEqual({ id: 'explorer.filter', variant: 0 })
+  })
+  it('나중에 생긴 기본값이라 양보한다 — ⌘P 를 이미 다른 액션에 재정의한 설정이 버려지지 않는다', () => {
+    const overrides = validateOverrides({ 'sidebar.toggle': ['Mod+P'] })
+    expect(overrides['sidebar.toggle']).toEqual(['Mod+P'])
+    expect(bindingsFor('quickOpen.open', overrides)).toEqual([null])
+    expect(matchBinding('Mod+P', overrides)).toEqual({ id: 'sidebar.toggle', variant: 0 })
+  })
+  it('재지정·충돌 검사', () => {
+    expect(bindingConflict({ 'quickOpen.open': ['Mod+K'] })).not.toBeNull()
+    expect(validateOverrides({ 'quickOpen.open': ['Mod+Shift+O'] })['quickOpen.open']).toEqual(['Mod+Shift+O'])
+  })
+  it('키를 누르고 있어도 한 번', () => {
+    expect(NON_REPEATING_ACTIONS).toContain('quickOpen.open')
   })
 })

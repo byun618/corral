@@ -1,0 +1,70 @@
+/* 파일 탭·편집기 본문 (LIFE-590 F2 — D10 B: 탭·편집기 모양과 토큰 색은 VS Code, 바탕·글꼴은 corral 토큰).
+   칸 크기·활성 표시·닫기는 터미널 탭 `.main-tab` 그대로(한 탭바 안에서 같은 띠), 안쪽만 VS Code 편집기 탭이다. */
+
+/* 아이콘 — 탐색기와 같은 Seti(`.explorer-file-icon` 16px + 오른쪽 6px), 탭 줄 높이에 맞춘다. */
+.main-tab-file .explorer-file-icon { height: 100%; line-height: inherit; display: inline-flex; align-items: center; justify-content: center; }
+.main-tab-file:not(.is-active) .explorer-file-icon { opacity: 0.7; }
+/* 미리보기 = 이탤릭(VS Code `.monaco-icon-label.italic` — 고정되지 않은 탭). */
+.main-tab-file.is-preview .main-tab-file-label { font-style: italic; }
+/* 외부에서 지워진 파일 — 취소선(Orca `EditorFileTab` line-through, E5ⓒ). */
+.main-tab-file.is-deleted .main-tab-file-label { text-decoration: line-through; }
+/* 수정 점(LIFE-591 E1ⓑ) — 닫기 단추(16px) 자리에 채운 원 8px(VS Code 수정 탭 · Orca `size-1.5 rounded-full` 류), 비활성 탭에서도 보인다.
+   탭 hover · 단추 키보드 포커스면 점을 걷고 닫기(×)를 보인다 — VS Code·Orca 와 같다. */
+.main-tab-file.is-dirty .main-tab-close { color: var(--fg-muted); }
+.main-tab-file.is-dirty .main-tab-close::before { content: ''; display: block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.main-tab-file.is-dirty .main-tab-close svg { display: none; }
+.main-tab-file.is-dirty:hover .main-tab-close::before, .main-tab-file.is-dirty .main-tab-close:focus-visible::before { display: none; }
+.main-tab-file.is-dirty:hover .main-tab-close svg, .main-tab-file.is-dirty .main-tab-close:focus-visible svg { display: block; }
+
+/* 본문 — 터미널 본문(`.term-group`) 자리. 편집기 바탕은 corral `--bg-surface`(테마도 같은 값). */
+.file-group { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); position: relative; }
+/* LIFE-593 수정 r1 — 편집기 없는 보기가 포커스를 받을 때(⌘P 로 연 뒤) 테두리를 그리지 않는다. */
+.file-group:focus { outline: none; }
+.file-editor-host { flex: 1; min-height: 0; min-width: 0; }
+.file-view-notice {
+  flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center;
+  font-family: var(--font-ui); font-size: var(--fs-ui); color: var(--fg-muted);
+}
+
+/* Markdown 원문/미리보기 전환 — 본문 위 한 줄(22px, VS Code breadcrumbs 줄 높이). VS Code 는 편집기 제목 줄 「미리보기 열기」 버튼이지만 corral 은
+   편집기 제목 줄이 없다. 편집기 위에 띄우면 미니맵·스크롤바와 겹쳐 눌리지 않는다(격리 회차에서 확인) — 그래서 줄을 따로 둔다. */
+.file-view-toolbar { flex: none; height: 22px; display: flex; align-items: center; justify-content: flex-end; gap: 4px; padding: 0 12px; }
+.file-view-toolbar-button {
+  font-family: var(--font-ui); font-size: var(--fs-meta); color: var(--fg-muted); background: var(--bg-raised);
+  border: 1px solid var(--bg-chip); border-radius: 4px; padding: 0 8px; line-height: 16px; cursor: pointer;
+}
+.file-view-toolbar-button:hover { color: var(--fg); background: var(--bg-row-hover); }
+/* 대용량(20 MB 초과) 안내 띠 — 위 한 줄. */
+.file-view-banner { flex: none; padding: 4px 12px; font-family: var(--font-ui); font-size: var(--fs-meta); color: var(--fg-notice); background: var(--bg-notice); }
+
+/* 이미지 — 가운데, 창보다 크면 맞춤(VS Code 이미지 미리보기 기본 「맞춤」). 아래 한 줄에 크기. */
+.file-image-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.file-image-stage { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.file-image { max-width: 100%; max-height: 100%; object-fit: contain; }
+.file-image-svg { display: flex; align-items: center; justify-content: center; max-width: 100%; max-height: 100%; }
+.file-image-svg > svg { max-width: 100%; max-height: 100%; }
+.file-image-info { flex: none; padding: 4px 12px; text-align: right; font-family: var(--font-ui); font-size: var(--fs-meta); color: var(--fg-muted); }
+
+/* Markdown 미리보기 — 치수는 VS Code `markdown-language-features/media/markdown.css`(본문 14px/22px · 좌우 26px · 제목 크기), 바탕·글꼴은 corral 토큰. */
+.file-markdown-preview {
+  flex: 1; min-height: 0; overflow: auto; padding: 0 26px 26px; font-family: var(--font-ui); font-size: 14px; line-height: 22px; color: var(--fg);
+  word-wrap: break-word; user-select: text;
+}
+.file-markdown-preview h1 { font-size: 2em; margin-top: 0; padding-bottom: 0.3em; border-bottom: 1px solid var(--bg-chip); line-height: 1.2; }
+.file-markdown-preview h2 { font-size: 1.5em; padding-bottom: 0.3em; border-bottom: 1px solid var(--bg-chip); line-height: 1.2; }
+.file-markdown-preview h3 { font-size: 1.25em; line-height: 1.2; }
+.file-markdown-preview h4 { font-size: 1em; }
+.file-markdown-preview code { font-family: var(--font-mono); font-size: 1em; line-height: 1.357em; }
+.file-markdown-preview :not(pre) > code { background: var(--bg-raised); padding: 1px 3px; border-radius: 4px; }
+.file-markdown-preview pre { background: var(--bg-raised); padding: 16px; border-radius: 3px; overflow: auto; }
+.file-markdown-preview blockquote { margin: 0 7px 0 5px; padding: 0 16px 0 10px; border-left: 5px solid var(--bg-chip); color: var(--fg-muted); }
+.file-markdown-preview table { border-collapse: collapse; margin-bottom: 0.7em; }
+.file-markdown-preview th, .file-markdown-preview td { padding: 5px 10px; border: 1px solid var(--bg-chip); }
+.file-markdown-preview [data-md-href] { color: var(--accent); cursor: pointer; text-decoration: none; }
+.file-markdown-preview [data-md-href]:hover { text-decoration: underline; }
+.file-markdown-preview .md-image { max-width: 100%; height: auto; }
+.md-image-refused { color: var(--fg-muted); font-style: italic; }
+
+/* LIFE-591 F3 — 수정 중 외부 변경 배너(E4ⓑ): 위 한 줄, 글 + 단추 둘(「디스크 내용으로 되돌리기」·「내 변경 유지」). 색은 안내 띠(`--bg-notice`)와 같다. */
+.file-view-conflict { display: flex; align-items: center; gap: 8px; }
+.file-view-conflict-text { flex: 1; min-width: 0; }

@@ -32,6 +32,10 @@ function handlers(createPairing: () => unknown): Handlers {
     readClipboard: async () => '',
     counters: () => null,
     mobile: { status: () => null, createPairing, revoke: () => false },
+    explorer: { status: () => null, crash: () => false },
+    fileWatch: { status: () => null, drop: () => undefined },
+    setFileDialogStub: () => ({ asked: [] }),
+    quitEntry: () => undefined,
   }
 }
 

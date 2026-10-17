@@ -1,0 +1,840 @@
+// LIFE-591 수정 r1 회귀(격리 개발 Electron) — Codex 리뷰 r1 지적을 화면 흐름으로 재현한다. 한 회차 = 한 `--case`. 옛 코드(1a670faf6)에서 실패, 고친 코드에서 통과해야 한다.
+// 리뷰어 재현 스크립트(`/tmp/l591-review-r1/*.mjs`, 읽기만)의 조건을 옮겼다 — 출처는 case 마다 적는다. Monaco 는 앱이 `window` 에 내놓지 않으므로
+// 리뷰어처럼 빌드 산출물의 monaco 청크를 렌더러에서 동적 import 해 같은 모듈 인스턴스를 얻는다(시험 전용 — 제품 코드 무변경).
+//   close-race   (R1-A) 닫기 「저장」 의 쓰기 IPC 를 지연(시험 주입 파일을 FIFO 로 — 리뷰어 close-save-race.mjs) → 그 사이 추가 편집 → 탭이 닫히면 디스크 = 추가 편집까지, 닫히지 않으면 수정 유지
+//   deleted      (R1-D) 수정 중 디스크에서 삭제 → 터미널 탭 → 돌아오기: 편집기 + 수정 내용 + 「삭제됨」 안내(리뷰어 ui-cases.mjs delete 갈래)
+//   md-preview   (R1-E) Markdown 저장(문서 생성) → 미리보기 → 외부 변경 → 2 s 안에 미리보기 갱신(리뷰어 ui-model-cases.mjs)
+//   grow         (R1-F) 수정 없는 탭 파일이 20 MB 를 넘게 커짐 → 편집기 읽기 전용 → 다시 작아짐 → 편집 가능(리뷰어 ui-model-cases.mjs large)
+//   bom          (R1-G) BOM + 선두 U+FEFF 파일에 한 글자 → ⌘S → 바이트 차이 = 그 한 글자(리뷰어 ui-model-cases.mjs double-bom)
+//   ime          (R1-H) CDP Input.imeSetComposition 으로 조합 중 ⌘S → 1.2 s 뒤 디스크 무변경 → 확정 뒤 ⌘S 는 저장(리뷰어 ime-timeout.mjs) — L577_ELECTRON_ARGS=--remote-debugging-port=0 필요
+//   unresponsive (R1-I) 렌더러 SIGSTOP → 종료 → main 대화상자(스텁: 첫 회 cancel → 앱 생존, 둘째 discard → 앱 종료)(리뷰어 unresponsive.mjs)
+//   bulk-cancel  (R1-J) 터미널 탭 2개 + 수정 파일 탭 → 「다른 탭 닫기」 → 확인 취소 → 탭 하나도 안 닫힘(리뷰어 bulk-cancel.mjs)
+// 수정 r2 (Codex 리뷰 r2 — 리뷰어 `codex-r2-raw/ui-new.mjs`·`unresponsive-cleanup.mjs`·`normal-cleanup.mjs` 조건):
+//   bulk-close   (R2-A) 수정 A + 깨끗한 B 를 「다른 탭 닫기」 → 저장 → A 쓰기 지연 중 B 를 편집 → 다시 묻는다(스텁 cancel) → B 탭·수정 유지, 디스크 B 무변경
+//   bom-undo     (R2-B) BOM + 선두 U+FEFF 파일에 한 글자 → 외부 변경 → 「디스크 내용으로 되돌리기」 → 실행 취소 → ⌘S → 바이트 efbbbfefbbbf58616c7068610a
+//   unresponsive-cleanup (R2-C) Mobile(가짜 Tailscale — `--fake {FAKE}`) 켜고 렌더러 SIGSTOP → 종료 → main 대화상자 취소 → 다시 종료 → 저장 안 함 → 앱 종료 뒤 serve 항목 비어 있음
+//   normal-cleanup (대조) 같은 Mobile 상태에서 렌더러 정상 → 종료 → 저장 안 함 → serve 비어 있음
+// 수정 r3 (Codex 리뷰 r3 — 리뷰어 `codex-r3-raw/bom-retry-ui.mjs`·`shutdown.mjs` shutdown-late 조건):
+//   bom-retry    (R3-A) BOM 파일 편집 → BOM 없는 외부 내용으로 되돌리기 → 실행 취소 → 외부 충돌 → ⌘S(쓰기 FIFO 지연) 중 다시 실행 → 덮어쓰기 → 디스크 efbbbf58616c7068610a
+//   shutdown-late / shutdown-late-close (R3-C) Mobile(가짜, serve 제거 지연) 켜고 수정 → 종료(quit | 창 close) 「저장」 → 정리 대기 중 편집 시도 →
+//                조용히 사라지는 편집 0(편집이 막혀 모델 = 디스크) · 정리 중 창 숨김
+//   shutdown-nodirty (R3-C 같은 결) 수정 없이 종료 → 정리 대기 중 창 숨김
+//   ime 는 수정 r2 R2-D 로 전제(조합 시작·미확정 모델·dirty·EditContext·확정 전 composition-end 없음)를 판정에 넣었다 — L591_IME_OMIT_COMPOSITION=1 이 음성 대조(종료 1 이어야 함)
+// 사용(app/ 에서, iso.sh 안): node scripts/l591/r1-cases.mjs --case <이름> --root {ROOT} --repo /tmp/l591g-t/repo --out <dir>
+/* global fetch, WebSocket -- Node 22+ 내장(CDP 접속) */
+import fs from 'node:fs'
+import fsp from 'node:fs/promises'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { parseArgs } from 'node:util'
+import { checkRoot, ctl, evalJs, repoPane, sleep, until, writeJson } from './lib.mjs'
+import { calls, fakeState, setFake } from '../l577/g-lib.mjs'
+
+const { values } = parseArgs({ options: { case: { type: 'string' }, root: { type: 'string' }, repo: { type: 'string' }, out: { type: 'string' }, fake: { type: 'string' } } })
+checkRoot(values.root)
+if (!/^\/tmp\/l591[^/]*\/repo$/.test(values.repo ?? '')) throw new Error('repo 는 /tmp/l591*/repo')
+const root = values.root
+const repo = values.repo
+const name = values.case
+fs.mkdirSync(values.out, { recursive: true })
+const checks = []
+const check = (id, pass, value) => {
+  checks.push({ id, pass: Boolean(pass), value })
+  console.log(`${pass ? 'PASS' : 'FAIL'} ${id} ${JSON.stringify(value).slice(0, 400)}`)
+}
+const js = (expression) => evalJs(root, expression)
+const click = (selector) => until(async () => (await ctl(root, { cmd: 'click', selector })).ok === true, { timeoutMs: 10_000, everyMs: 200, label: `click ${selector}` })
+const key = (keyCode, modifiers = []) => ctl(root, { cmd: 'key', keyCode, modifiers })
+const stub = (answers) => ctl(root, { cmd: 'file-dialog-stub', answers })
+const settle = (condition, timeoutMs = 3000) => until(condition, { label: 'settle', timeoutMs, everyMs: 50 }).then(() => true, () => false)
+const logRows = () => fs.readFileSync(path.join(root, 'ud/corral.ndjson'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+const appPid = Number(fs.readFileSync(path.join(root, 'app.pid'), 'utf8').trim())
+const alive = () => {
+  try {
+    process.kill(appPid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+const expanded = async (row) => (await js(`document.querySelector('[data-explorer-row="${row}"]')?.getAttribute('aria-expanded') ?? null`)) === 'true'
+const openFile = async (rel) => {
+  const parts = rel.split('/')
+  for (let i = 1; i < parts.length; i += 1) {
+    const dir = parts.slice(0, i).join('/')
+    await until(() => js(`document.querySelector('[data-explorer-row="${dir}"]') !== null`), { label: `row ${dir}` })
+    if (!(await expanded(dir))) await click(`[data-explorer-row="${dir}"]`)
+    await until(() => expanded(dir), { label: `expand ${dir}` })
+  }
+  await until(() => js(`document.querySelector('[data-explorer-row="${rel}"]') !== null`), { label: `row ${rel}` })
+  await ctl(root, { cmd: 'dblclick', selector: `[data-explorer-row="${rel}"]` })
+  await until(() => js(`document.querySelector('[data-file-view="${rel}"] [data-editor-ready]') !== null`), { label: `editor ${rel}` })
+}
+// 빌드 산출물의 monaco 청크 — 렌더러 페이지(out/renderer/index.html) 기준 상대 경로.
+const monacoChunk = fs.readdirSync(path.join(process.cwd(), 'out/renderer/assets')).find((file) => /^monaco-.*\.js$/.test(file))
+const exposeMonaco = () => js(`(async () => { window.l591Monaco = (await import('./assets/${monacoChunk}')).monaco; return window.l591Monaco.editor.getEditors().length })()`)
+/** 보이는 편집기(파일 뷰 안) 기준으로 식을 돈다 — `e` = 편집기, `m` = 모델. */
+const ed = (body) => js(`(() => { const host = document.querySelector('[data-file-editor]'); const e = window.l591Monaco.editor.getEditors().find((x) => host !== null && host.contains(x.getContainerDomNode())); const m = e?.getModel() ?? null; ${body} })()`)
+const typeAt = (text, where = 'start') =>
+  ed(`e.focus(); e.setPosition(${where === 'start' ? '{ lineNumber: 1, column: 1 }' : '{ lineNumber: 1, column: m.getLineMaxColumn(1) }'}); e.trigger('keyboard', 'type', { text: ${JSON.stringify(text)} }); return m.getValue()`)
+const dirtyOf = (rel) => js(`document.querySelector('[data-file-tab="${rel}"]')?.dataset.fileDirty ?? null`)
+
+await repoPane(root, { repo })
+await ctl(root, { cmd: 'resize-window', width: 1280, height: 800 }).catch(() => null)
+if ((await js(`document.querySelector('[data-right-panel]')?.dataset.rightPanel ?? null`)) !== 'open') await key('L', ['meta'])
+await until(async () => (await js(`document.querySelectorAll('[data-explorer-row]').length`)) > 0, { label: 'rows' })
+
+switch (name) {
+  case 'close-race': {
+    const rel = 'r1/race.txt'
+    const file = path.join(repo, rel)
+    const hook = process.env.CORRAL_TEST_WRITE_HOOK_FILE_FOR_CASE ?? path.join(root, 'write-hook.json')
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('-first', 'end')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    // main 이 저장마다 시험 주입 파일을 읽는다(`loadTestHooks`) — FIFO 면 쓰는 쪽이 올 때까지 읽기가 막혀 쓰기 IPC 가 응답하지 않는다.
+    fs.rmSync(hook, { force: true })
+    execFileSync('mkfifo', [hook])
+    try {
+      await stub(['save'])
+      await key('W', ['meta'])
+      const asked = await settle(async () => (await stub(['save'])).asked.includes('close'), 3000)
+      await stub([])
+      const late = await typeAt('-LATE', 'end')
+      check('A-dialog-asked-write-pending', asked && fs.readFileSync(file, 'utf8') === 'base', { asked, disk: fs.readFileSync(file, 'utf8'), late })
+      await fsp.writeFile(hook, '{}')
+      // 첫 저장을 풀어 준 뒤엔 일반 파일로 — FIFO 가 남아 있으면 추가 편집을 따라잡는 다음 저장이 또 막힌다(시험 주입의 한계). 그 사이 다음 저장이 먼저 읽으면
+      // 막힌 채로 남고, 그때는 「닫히지 않고 수정 유지」 갈래로 판정된다(어느 쪽이든 추가 편집이 사라지면 실패).
+      fs.rmSync(hook, { force: true })
+      fs.writeFileSync(hook, '{}')
+      await sleep(1500)
+      const tabOpen = await js(`document.querySelector('[data-file-tab="${rel}"]') !== null`)
+      const disk = fs.readFileSync(file, 'utf8')
+      const dirty = await dirtyOf(rel)
+      // 통과 = 닫혔다면 디스크에 추가 편집까지 있다 · 닫히지 않았다면 추가 편집이 수정으로 남아 있다(어느 쪽이든 추가 편집이 사라지지 않는다).
+      check('A-late-edit-not-lost', tabOpen ? dirty === 'true' && (await ed('return m.getValue()')) === 'base-first-LATE' : disk === 'base-first-LATE', { tabOpen, disk, dirty })
+    } finally {
+      fs.rmSync(hook, { force: true })
+    }
+    break
+  }
+  case 'deleted': {
+    const rel = 'r1/del.txt'
+    const file = path.join(repo, rel)
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('dirty-')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    fs.rmSync(file)
+    await until(() => js(`document.querySelector('[data-file-tab="${rel}"]')?.classList.contains('is-deleted') === true`), { label: 'deleted mark', timeoutMs: 5000 })
+    await click(`[data-main-tab]:not([data-file-tab])`)
+    await until(() => js(`document.querySelector('[data-file-view="${rel}"]') === null`), { label: 'unmounted' })
+    await click(`[data-file-tab="${rel}"]`)
+    const editor = await settle(() => js(`document.querySelector('[data-file-view="${rel}"] [data-editor-ready]') !== null`), 4000)
+    const view = await js(`(() => { const v = document.querySelector('[data-file-view="${rel}"]'); return v === null ? null : { notices: [...v.querySelectorAll('[data-file-notice]')].map((n) => n.dataset.fileNotice), dirty: v.dataset.fileDirty } })()`)
+    const text = editor ? await ed('return m?.getValue() ?? null') : null
+    check('D-editor-after-roundtrip', editor && text === 'dirty-survive\n' && view?.dirty === 'true', { editor, text, view })
+    check('D-deleted-notice', Array.isArray(view?.notices) && view.notices.includes('deleted') && !view.notices.includes('not_found'), view)
+    break
+  }
+  case 'md-preview': {
+    const rel = 'r1/doc.md'
+    const file = path.join(repo, rel)
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('Z')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    await key('S', ['meta'])
+    await until(async () => (await dirtyOf(rel)) === 'false', { label: 'saved', timeoutMs: 5000 })
+    await click('[data-markdown-toggle="preview"]')
+    await until(() => js(`document.querySelector('[data-markdown-preview="${rel}"]')?.dataset.markdownReady === 'true'`), { label: 'preview' })
+    const before = await js(`document.querySelector('[data-markdown-preview="${rel}"]').textContent`)
+    const t0 = Date.now()
+    fs.writeFileSync(file, '# external heading\n')
+    const ms = await until(() => js(`document.querySelector('[data-markdown-preview="${rel}"]')?.textContent.includes('external heading') === true`), { label: 'preview update', timeoutMs: 4000, everyMs: 50 }).then(() => Date.now() - t0, () => null)
+    check('E-preview-reflects-external-2s', ms !== null && ms <= 2000, { ms, before, after: await js(`document.querySelector('[data-markdown-preview="${rel}"]')?.textContent ?? null`) })
+    break
+  }
+  case 'grow': {
+    const rel = 'r1/grow.txt'
+    const file = path.join(repo, rel)
+    await openFile(rel)
+    await exposeMonaco()
+    const readOnlyNow = () => ed('return e?.getOption(window.l591Monaco.editor.EditorOption.readOnly) ?? null')
+    check('F-start-editable', (await readOnlyNow()) === false, { readOnly: await readOnlyNow() })
+    fs.writeFileSync(file, 'large\n'.repeat(Math.ceil((21 * 1024 * 1024) / 6)))
+    const grew = await settle(async () => (await readOnlyNow()) === true && (await ed('return m.getValue().length')) > 20 * 1024 * 1024, 6000)
+    const typed = await typeAt('X')
+    check('F-grown-readonly', grew && !typed.startsWith('X') && (await dirtyOf(rel)) === 'false', { grew, readOnly: await readOnlyNow(), head: typed.slice(0, 12), dirty: await dirtyOf(rel) })
+    fs.writeFileSync(file, 'small again\n')
+    const shrank = await settle(async () => (await readOnlyNow()) === false && (await ed('return m.getValue()')) === 'small again\n', 6000)
+    check('F-shrunk-editable', shrank, { readOnly: await readOnlyNow(), text: (await ed('return m.getValue()')).slice(0, 20) })
+    break
+  }
+  case 'bom': {
+    const rel = 'r1/bom.txt'
+    const file = path.join(repo, rel)
+    const before = fs.readFileSync(file).toString('hex')
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('X')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    await key('S', ['meta'])
+    await until(async () => (await dirtyOf(rel)) === 'false', { label: 'saved', timeoutMs: 5000 })
+    const after = fs.readFileSync(file).toString('hex')
+    check('G-double-bom-one-char', before === 'efbbbfefbbbf616c7068610a' && after === 'efbbbfefbbbf58616c7068610a', { before, after })
+    break
+  }
+  case 'ime': {
+    const rel = 'r1/edit.txt'
+    const file = path.join(repo, rel)
+    await openFile(rel)
+    await exposeMonaco()
+    const port = Number(fs.readFileSync(path.join(root, 'ud/DevToolsActivePort'), 'utf8').split('\n')[0])
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
+    const page = pages.find((item) => item.type === 'page' && item.url.includes('/out/renderer/'))
+    const socket = new WebSocket(page.webSocketDebuggerUrl)
+    await new Promise((resolve) => (socket.onopen = resolve))
+    let seq = 0
+    const pending = new Map()
+    socket.onmessage = ({ data }) => {
+      const message = JSON.parse(data)
+      const waiter = pending.get(message.id)
+      if (waiter === undefined) return
+      pending.delete(message.id)
+      if (message.error) waiter.reject(new Error(JSON.stringify(message.error)))
+      else waiter.resolve(message.result)
+    }
+    const cdp = (method, params = {}) => new Promise((resolve, reject) => { seq += 1; pending.set(seq, { resolve, reject }); socket.send(JSON.stringify({ id: seq, method, params })) })
+    const cmdS = async () => {
+      await cdp('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 's', code: 'KeyS', windowsVirtualKeyCode: 83, modifiers: 4 })
+      await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 's', code: 'KeyS', windowsVirtualKeyCode: 83, modifiers: 4 })
+    }
+    try {
+      await cdp('Emulation.setFocusEmulationEnabled', { enabled: true })
+      // 조합 이벤트는 편집기 API 로 센다(EditContext 경로는 DOM composition 이벤트를 입력 요소에 내지 않는다).
+      await ed(`window.l591Ime = []; e.onDidCompositionStart(() => window.l591Ime.push('start')); e.onDidCompositionEnd(() => window.l591Ime.push('end')); e.setPosition({ lineNumber: 1, column: 1 }); e.focus(); return true`)
+      const original = fs.readFileSync(file, 'utf8')
+      const imeState = async () => ({
+        events: await js('window.l591Ime.slice()'),
+        model: (await ed('return m.getValue()')).slice(0, 20),
+        dirty: await dirtyOf(rel),
+        editContext: await js('document.activeElement !== null && "editContext" in document.activeElement && document.activeElement.editContext !== null'),
+      })
+      // 음성 대조(수정 r2 R2-D) — L591_IME_OMIT_COMPOSITION=1 이면 조합 입력을 빼고 돈다. 그때는 아래 전제 검사가 실패해야 한다(종료 1).
+      const omit = process.env.L591_IME_OMIT_COMPOSITION === '1'
+      if (!omit) await cdp('Input.imeSetComposition', { text: 'ㅎ', selectionStart: 1, selectionEnd: 1 })
+      // 전제(R2-D): 조합이 실제로 시작됐고(편집기 composition-start · 입력 경로 EditContext) 미확정 글자가 모델에 들어가 수정됨이어야 저장 요청이 「조합 중 저장」 시험이 된다.
+      const composing = await settle(async () => {
+        const state = await imeState()
+        return JSON.stringify(state.events) === '["start"]' && state.model.startsWith('ㅎ') && state.dirty === 'true' && state.editContext === true
+      }, 3000)
+      check('H-precondition-composing', composing, await imeState())
+      await cmdS()
+      await sleep(1500)
+      const disk1 = fs.readFileSync(file, 'utf8')
+      const during = await imeState()
+      // 확정 전: 디스크 무변경 · composition-end 없음 · 미확정 글자 그대로 · 수정됨.
+      check('H-no-save-while-composing', composing && disk1 === original && JSON.stringify(during.events) === '["start"]' && during.model.startsWith('ㅎ') && during.dirty === 'true', { disk: disk1.slice(0, 20), ...during })
+      if (!omit) await cdp('Input.imeSetComposition', { text: '한', selectionStart: 1, selectionEnd: 1 })
+      await cdp('Input.insertText', { text: '한' })
+      await sleep(400)
+      await cmdS()
+      const saved = await settle(async () => fs.readFileSync(file, 'utf8') === `한${original}` && (await dirtyOf(rel)) === 'false', 4000)
+      const events = await js('window.l591Ime.slice()')
+      check('H-save-after-commit', composing && saved && JSON.stringify(events) === '["start","end"]', { events, disk: fs.readFileSync(file, 'utf8').slice(0, 20), dirty: await dirtyOf(rel), model: (await ed('return m.getValue()')).slice(0, 20), versions: await ed('return { alt: m.getAlternativeVersionId(), ver: m.getVersionId() }'), writes: logRows().filter((row) => row.tag === 'file.write').map((row) => `${row.ok}:${row.code}`) })
+    } finally {
+      socket.close()
+    }
+    break
+  }
+  case 'unresponsive': {
+    const rel = 'r1/edit.txt'
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('unsaved-')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    await sleep(300)
+    const table = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' }).split('\n')
+    const renderer = table.find((row) => row.includes(`--user-data-dir=${root}/ud`) && row.includes('--type=renderer'))
+    const pid = Number(renderer.trim().split(/\s+/)[0])
+    await stub(['cancel', 'discard'])
+    const before = logRows().length
+    process.kill(pid, 'SIGSTOP')
+    try {
+      await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+      const asked = await settle(() => logRows().slice(before).some((row) => row.tag === 'quit.unresponsive'), 10_000)
+      await sleep(500)
+      check('I-main-dialog-cancel-alive', asked && alive(), { asked, alive: alive(), tags: logRows().slice(before).map((row) => row.tag) })
+      await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+      const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 20_000 }).then(() => true, () => false)
+      check('I-main-dialog-discard-exits', exited, { exited, tags: logRows().slice(before).map((row) => `${row.tag}${row.choice ? ':' + row.choice : ''}`) })
+    } finally {
+      try {
+        process.kill(pid, 'SIGCONT')
+      } catch {
+        /* 이미 끝났다 */
+      }
+    }
+    break
+  }
+  case 'bulk-cancel': {
+    const rel = 'r1/edit.txt'
+    const state = await js('window.corral.getState()')
+    const real = fs.realpathSync(repo)
+    const worktree = state.repos.flatMap((row) => row.worktrees).find((row) => fs.realpathSync(row.path) === real)
+    await js(`window.corral.createRow(${JSON.stringify({ workspaceId: worktree.openWorkspaceId, kind: 'shell', cwd: worktree.path })})`)
+    await until(async () => (await js(`document.querySelectorAll('[data-main-tab]:not([data-file-tab])').length`)) >= 2, { label: 'two terminals', timeoutMs: 10_000 })
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('bulk-')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    const tabsOf = () => js(`[...document.querySelectorAll('[data-main-tab]')].map((t) => ({ id: t.dataset.mainTab, file: t.dataset.fileTab ?? null, dirty: t.dataset.fileDirty ?? null }))`)
+    const before = await tabsOf()
+    const anchor = before.find((tab) => tab.file === null).id
+    await stub(['cancel'])
+    await js(`(() => { const el = [...document.querySelectorAll('[data-main-tab]')].find((t) => t.dataset.mainTab === ${JSON.stringify(anchor)}); el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 400, clientY: 20, button: 2 })) })()`)
+    const action = `[data-tab-menu-close-others="${anchor}"]`
+    await until(() => js(`document.querySelector(${JSON.stringify(action)}) !== null`), { label: 'menu' })
+    await js(`document.querySelector(${JSON.stringify(action)}).click()`)
+    await sleep(1500)
+    const after = await tabsOf()
+    const asked = (await stub([])).asked
+    check('J-cancel-closes-nothing', asked.includes('close') && after.length === before.length && after.every((tab) => before.some((row) => row.id === tab.id)), { before, after, asked })
+    // 정리 — g-down 이 확인에 막히지 않게 수정 상태를 버린다.
+    await stub(['discard'])
+    await click(`[data-file-tab="${rel}"]`).catch(() => null)
+    await key('W', ['meta'])
+    await sleep(500)
+    break
+  }
+  case 'bulk-close': {
+    const a = 'r1/multi-a.txt'
+    const b = 'r1/multi-b.txt'
+    const hook = path.join(root, 'write-hook.json')
+    await openFile(b)
+    await openFile(a)
+    await exposeMonaco()
+    await typeAt('FIRST-')
+    await until(async () => (await dirtyOf(a)) === 'true', { label: 'dirty a' })
+    fs.rmSync(hook, { force: true })
+    execFileSync('mkfifo', [hook])
+    try {
+      await stub(['save', 'cancel'])
+      const anchor = await js(`document.querySelector('[data-main-tab]:not([data-file-tab])').dataset.mainTab`)
+      await js(`(() => { const el = [...document.querySelectorAll('[data-main-tab]')].find((t) => t.dataset.mainTab === ${JSON.stringify(anchor)}); el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 400, clientY: 20, button: 2 })) })()`)
+      await until(() => js(`document.querySelector('[data-tab-menu-close-others="${anchor}"]') !== null`), { label: 'menu' })
+      await js(`document.querySelector('[data-tab-menu-close-others="${anchor}"]').click()`)
+      await sleep(300)
+      await click(`[data-file-tab="${b}"]`)
+      await until(() => js(`document.querySelector('[data-file-view="${b}"] [data-editor-ready]') !== null`), { label: 'b editor' })
+      const late = await typeAt('LATE-')
+      check('A2-b-edited-while-save-pending', late === 'LATE-base-multi-b.txt' && (await dirtyOf(b)) === 'true' && fs.readFileSync(path.join(repo, a), 'utf8') === 'base-multi-a.txt', { late, dirtyB: await dirtyOf(b) })
+      await fsp.writeFile(hook, '{}')
+      fs.rmSync(hook, { force: true })
+      fs.writeFileSync(hook, '{}')
+      await sleep(1500)
+      const tabs = await js(`[...document.querySelectorAll('[data-file-tab]')].map((t) => ({ rel: t.dataset.fileTab, dirty: t.dataset.fileDirty }))`)
+      const asked = (await stub([])).asked
+      const diskA = fs.readFileSync(path.join(repo, a), 'utf8')
+      const diskB = fs.readFileSync(path.join(repo, b), 'utf8')
+      // 통과 = B 의 새 편집이 살아 있다(탭 열림·수정됨) · 다시 물었다(close 두 번) · A 는 저장됐다 · B 디스크 무변경.
+      check('A2-late-member-not-discarded', tabs.some((t) => t.rel === b && t.dirty === 'true') && asked.filter((k) => k === 'close').length === 2 && diskA === 'FIRST-base-multi-a.txt' && diskB === 'base-multi-b.txt', { tabs, asked, diskA, diskB })
+    } finally {
+      fs.rmSync(hook, { force: true })
+    }
+    break
+  }
+  case 'bom-undo': {
+    const rel = 'r1/undo-bom.txt'
+    const file = path.join(repo, rel)
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('X')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    fs.writeFileSync(file, '\ufeffDISK\n')
+    await until(() => js(`document.querySelector('[data-external-action="revert"]') !== null`), { label: 'banner', timeoutMs: 5000 })
+    await click('[data-external-action="revert"]')
+    const reverted = await settle(async () => (await ed('return m.getValue()')) === 'DISK\n' && (await dirtyOf(rel)) === 'false')
+    await ed(`e.trigger('keyboard', 'undo', null); return true`)
+    const undone = await settle(async () => (await ed('return m.getValue()')) === 'Xalpha\n' && (await dirtyOf(rel)) === 'true')
+    await key('S', ['meta'])
+    const saved = await settle(async () => (await dirtyOf(rel)) === 'false', 5000)
+    const hex = fs.readFileSync(file).toString('hex')
+    check('B2-revert-undo-save-bytes', reverted && undone && saved && hex === 'efbbbfefbbbf58616c7068610a', { reverted, undone, saved, hex, expected: 'efbbbfefbbbf58616c7068610a' })
+    break
+  }
+  case 'unresponsive-cleanup':
+  case 'normal-cleanup': {
+    const fake = values.fake ?? ''
+    if (!/^\/tmp\/l591g-f[^/]+$/.test(fake)) throw new Error('--fake 는 /tmp/l591g-f* (가짜 Tailscale 상태 폴더 — 실제 Tailscale 무접촉)')
+    setFake(fake, { serve: {}, hang: [] })
+    await js(`window.corral.setSettings({ mobileEnabled: true })`)
+    await until(async () => (await ctl(root, { cmd: 'mobile-status' })).mobile?.exposure?.kind === 'exposed', { label: 'fake mobile exposed', timeoutMs: 15_000 })
+    const exposed = fakeState(fake)
+    check('C2-mobile-exposed', Object.keys(exposed?.serve ?? {}).length > 0, { serve: exposed?.serve })
+    const rel = 'r1/edit.txt'
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('unsaved-')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    await sleep(300)
+    const before = logRows().length
+    let pid = null
+    if (name === 'unresponsive-cleanup') {
+      const table = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' }).split('\n')
+      pid = Number(table.find((row) => row.includes(`--user-data-dir=${root}/ud`) && row.includes('--type=renderer')).trim().split(/\s+/)[0])
+      await stub(['cancel', 'discard'])
+    } else await stub(['discard'])
+    try {
+      if (pid !== null) {
+        process.kill(pid, 'SIGSTOP')
+        await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+        const asked = await settle(() => logRows().slice(before).some((row) => row.tag === 'quit.unresponsive_choice'), 10_000)
+        await sleep(300)
+        check('C2-cancel-keeps-app-and-mobile', asked && alive() && Object.keys(fakeState(fake)?.serve ?? {}).length > 0, { asked, alive: alive() })
+      }
+      const mark = calls(fake).length
+      await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+      const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 20_000 }).then(() => true, () => false)
+      await sleep(800)
+      const after = fakeState(fake)
+      const shutdown = calls(fake).slice(mark).map((row) => row.argv.join(' '))
+      check('C2-exit-clears-serve', exited && Object.keys(after?.serve ?? {}).length === 0, { exited, serve: after?.serve, shutdown })
+    } finally {
+      if (pid !== null) {
+        try {
+          process.kill(pid, 'SIGCONT')
+        } catch {
+          /* 이미 끝났다 */
+        }
+      }
+    }
+    break
+  }
+  case 'bom-retry': {
+    const rel = 'r1/undo-bom.txt'
+    const file = path.join(repo, rel)
+    const hook = path.join(root, 'write-hook.json')
+    fs.writeFileSync(file, '\ufeffalpha\n')
+    await openFile(rel)
+    await exposeMonaco()
+    await until(async () => (await ed('return m.getValue()')) === 'alpha\n', { label: 'loaded' })
+    await typeAt('X')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    fs.writeFileSync(file, 'DISK\n')
+    await until(() => js(`document.querySelector('[data-external-action="revert"]') !== null`), { label: 'banner', timeoutMs: 5000 })
+    await click('[data-external-action="revert"]')
+    await until(async () => (await ed('return m.getValue()')) === 'DISK\n', { label: 'reverted' })
+    await ed(`e.trigger('keyboard', 'undo', null); return true`)
+    await until(async () => (await ed('return m.getValue()')) === 'Xalpha\n' && (await dirtyOf(rel)) === 'true', { label: 'undone' })
+    fs.writeFileSync(file, 'CONFLICT\n')
+    fs.rmSync(hook, { force: true })
+    execFileSync('mkfifo', [hook])
+    try {
+      await stub(['overwrite'])
+      await key('S', ['meta'])
+      await sleep(300)
+      await ed(`e.trigger('keyboard', 'redo', null); return true`)
+      const during = await ed('return m.getValue()')
+      await fsp.writeFile(hook, '{}')
+      fs.rmSync(hook, { force: true })
+      fs.writeFileSync(hook, '{}')
+      const written = await settle(() => fs.readFileSync(file, 'utf8').includes('Xalpha'), 5000)
+      await sleep(300)
+      const hex = fs.readFileSync(file).toString('hex')
+      await ed(`e.trigger('keyboard', 'undo', null); return true`)
+      const clean = await settle(async () => (await ed('return m.getValue()')) === 'Xalpha\n' && (await dirtyOf(rel)) === 'false')
+      const afterUndo = { model: await ed('return m.getValue()'), dirty: await dirtyOf(rel), alt: await ed('return m.getAlternativeVersionId()'), banner: await js(`document.querySelector('[data-file-notice="external-change"]') !== null`) }
+      check('A3-retry-uses-snapshot-bom', during === 'DISK\n' && written && hex === 'efbbbf58616c7068610a' && clean, { during, written, hex, expected: 'efbbbf58616c7068610a', cleanAfterUndo: clean, afterUndo, asked: (await stub([])).asked, writes: logRows().filter((row) => row.tag === 'file.write').map((row) => `${row.ok}:${row.code}`) })
+    } finally {
+      fs.rmSync(hook, { force: true })
+    }
+    break
+  }
+  case 'shutdown-late':
+  case 'shutdown-late-close':
+  case 'shutdown-nodirty': {
+    const fake = values.fake ?? ''
+    if (!/^\/tmp\/l591g-f[^/]+$/.test(fake)) throw new Error('--fake 는 /tmp/l591g-f* (가짜 Tailscale 상태 폴더 — 실제 Tailscale 무접촉)')
+    const rel = 'r1/edit.txt'
+    const file = path.join(repo, rel)
+    await openFile(rel)
+    await exposeMonaco()
+    if (name !== 'shutdown-nodirty') {
+      await typeAt('BEFORE-')
+      await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    }
+    setFake(fake, { serve: {}, hang: [] })
+    await js(`window.corral.setSettings({ mobileEnabled: true })`)
+    await until(async () => (await ctl(root, { cmd: 'mobile-status' })).mobile?.exposure?.kind === 'exposed', { label: 'fake mobile exposed', timeoutMs: 15_000 })
+    // 가짜 serve 제거를 멈춰 둔다 — 정리가 Mobile 마감(약 6 s)까지 걸린다(리뷰어 shutdown-late 조건).
+    setFake(fake, { hang: ['serve-remove'] })
+    await sleep(200)
+    await stub(name === 'shutdown-nodirty' ? [] : ['save', 'cancel'])
+    const mark = calls(fake).length
+    const t0 = Date.now()
+    await ctl(root, { cmd: 'quit-entry', via: name === 'shutdown-late-close' ? 'close' : 'quit' })
+    if (name !== 'shutdown-nodirty') await until(() => fs.readFileSync(file, 'utf8').startsWith('BEFORE-'), { label: 'saved before cleanup', timeoutMs: 8000 })
+    await until(() => calls(fake).slice(mark).some((row) => row.argv.at(-1) === 'off'), { label: 'cleanup started', timeoutMs: 8000 })
+    // 정리 대기 중 — 편집을 시도한다(창은 숨겨졌어도 계측은 렌더러에 닿는다).
+    const visible = (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible
+    let during = null
+    if (name !== 'shutdown-nodirty') {
+      await typeAt('LATE-').catch(() => null)
+      await sleep(150)
+      during = { ms: Date.now() - t0, model: (await ed('return m.getValue()')).slice(0, 30), dirty: await dirtyOf(rel), readOnly: await ed('return e.getOption(window.l591Monaco.editor.EditorOption.readOnly)') }
+    }
+    const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 20_000 }).then(() => true, () => false)
+    // 멈춰 둔 가짜 serve 제거 프로세스는 앱이 끝나도 남는다(PPID 1) — 이 회차의 FAKE 폴더를 env 로 든 것만 찾아 끝낸다(G5 PID 정리).
+    const leftovers = execFileSync('ps', ['-axeww', '-o', 'pid=,command='], { encoding: 'utf8' })
+      .split('\n')
+      .filter((row) => row.includes('fake-tailscale.mjs') && row.includes(`FAKE_TAILSCALE_DIR=${fake} `))
+      .map((row) => Number(row.trim().split(/\s+/)[0]))
+    for (const pid of leftovers) process.kill(pid, 'SIGKILL')
+    console.log(JSON.stringify({ fakeLeftoversKilled: leftovers }))
+    const disk = fs.readFileSync(file, 'utf8')
+    check('C3-window-hidden-during-cleanup', visible === false, { visible })
+    if (during !== null) check('C3-no-silent-late-edit', exited && during.model === disk.slice(0, 30) && during.dirty === 'false' && disk.startsWith('BEFORE-'), { during, disk: disk.slice(0, 30), exited })
+    else {
+      // 수정 r4 — 수정 없는 종료도 렌더러 왕복(확인 요청 → 승인)을 거친다. 그 시간을 남긴다(옛 코드는 왕복 없음 → null).
+      const rows = logRows()
+      const asked = rows.find((row) => row.tag === 'quit.intercepted')
+      const confirmed = rows.find((row) => row.tag === 'quit.confirmed')
+      const quitRoundTripMs = asked !== undefined && confirmed !== undefined ? confirmed.at - asked.at : null
+      check('C3-exit', exited, { exited, ms: Date.now() - t0, quitRoundTripMs })
+    }
+    break
+  }
+  case 'late-dirty':
+  case 'late-fast':
+  case 'late-fast-close':
+  case 'late-stale': {
+    // 수정 r4 R4-A — 마지막 편집 직후 종료(리뷰어 late-dirty·late-fast 조건). 수정 목록 push 가 main 에 늦게 닿아도 첫 종료 진입이 그 편집을 보고 묻는다(런타임 정리 전).
+    //   late-dirty   렌더러가 편집 직후 700 ms 바쁜 대기(React 가 새 목록을 밀기 전) — 그 사이 종료
+    //   late-fast    지연 주입 없음 — 합성 문자 입력(sendInputEvent) 직후 종료 · late-fast-close 같은 조건의 창 닫기 입구
+    //   late-stale   방어선(ⓒ) — g-up 에 `CORRAL_TEST_QUIT_TRUST_PUSHED=1`(옛 판정: 밀린 목록이 비면 묻지 않음)을 건 회차. 첫 종료가 정리·창 숨김까지 간 뒤
+    //                재진입 확인을 취소하면 창이 다시 보이고 편집 가능·수정 유지·안내가 떠야 한다
+    const fake = values.fake ?? ''
+    if (!/^\/tmp\/l591g-f[^/]+$/.test(fake)) throw new Error('--fake 는 /tmp/l591g-f* (가짜 Tailscale 상태 폴더 — 실제 Tailscale 무접촉)')
+    const rel = 'r1/edit.txt'
+    const file = path.join(repo, rel)
+    const original = fs.readFileSync(file, 'utf8')
+    await openFile(rel)
+    await exposeMonaco()
+    setFake(fake, { serve: {}, hang: [] })
+    await js(`window.corral.setSettings({ mobileEnabled: true })`)
+    await until(async () => (await ctl(root, { cmd: 'mobile-status' })).mobile?.exposure?.kind === 'exposed', { label: 'fake mobile exposed', timeoutMs: 15_000 })
+    setFake(fake, { hang: ['serve-remove'] })
+    await sleep(250)
+    await stub(['cancel', 'cancel', 'cancel'])
+    const mark = calls(fake).length
+    const socket = path.join(root, 'ud/runtime/rpc.sock')
+    const t0 = Date.now()
+    let quit
+    if (name === 'late-dirty' || name === 'late-stale') {
+      const typing = ed(`e.setPosition({ lineNumber: 1, column: 1 }); e.trigger('keyboard', 'type', { text: 'LAST-' }); const until = performance.now() + 700; while (performance.now() < until) {} return m.getValue()`)
+      await sleep(100)
+      quit = await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+      await typing
+    } else {
+      await ed('e.setPosition({ lineNumber: 1, column: 1 }); e.focus(); return true')
+      await sleep(150)
+      await ctl(root, { cmd: 'type', text: 'LAST-' })
+      quit = await ctl(root, { cmd: 'quit-entry', via: name === 'late-fast-close' ? 'close' : 'quit' })
+    }
+    await sleep(500)
+    const early = { ms: Date.now() - t0, visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible, runtimeSocket: fs.existsSync(socket), cleanupOff: calls(fake).slice(mark).some((row) => row.argv.at(-1) === 'off') }
+    // 옛 코드는 여기서 정리(가짜 serve 제거 멈춤 — Mobile 마감 약 6 s)를 지나 재진입 확인을 취소한다 — 그 뒤 상태를 본다.
+    await sleep(7000)
+    const isAlive = alive()
+    const after = isAlive
+      ? {
+          visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible,
+          model: (await ed('return m.getValue()')).slice(0, 30),
+          dirty: await dirtyOf(rel),
+          readOnly: await ed('return e.getOption(window.l591Monaco.editor.EditorOption.readOnly)'),
+          runtimeSocket: fs.existsSync(socket),
+          toast: await js(`[...document.querySelectorAll('[data-sonner-toast]')].map((el) => el.textContent).join(' | ')`),
+          asked: (await stub([])).asked,
+          quitLog: logRows().filter((row) => String(row.tag).startsWith('quit.')).map((row) => ({ tag: row.tag, via: row.via ?? null, runtimeClosed: row.runtimeClosed ?? null })),
+          cleanupOff: calls(fake).slice(mark).some((row) => row.argv.at(-1) === 'off'),
+        }
+      : null
+    // 취소 뒤에도 편집되는가(동결이 풀렸는가).
+    let typedAfter = null
+    if (isAlive) {
+      await typeAt('Q').catch(() => null)
+      await sleep(200)
+      typedAfter = (await ed('return m.getValue()')).slice(0, 30)
+    }
+    const disk = fs.readFileSync(file, 'utf8')
+    const base = isAlive && after.visible === true && after.readOnly === false && after.dirty === 'true' && after.model.startsWith('LAST-') && disk === original && typedAfter !== null && typedAfter.startsWith('Q')
+    if (name === 'late-stale') {
+      check('R4-C-stale-reached-cleanup', early.visible === false || after?.quitLog.some((row) => row.tag === 'quit.reshow') === true, { early, quitLog: after?.quitLog })
+      check('R4-C-cancel-restores', base && after.quitLog.some((row) => row.tag === 'quit.cancelled' && row.runtimeClosed === true) && after.toast.includes('런타임은 이미 정리'), { early, after, typedAfter, disk: disk.slice(0, 30), originalSame: disk === original })
+      // 안내 문구대로 런타임이 닫힌 뒤에도 저장되는가(쓰기는 main IPC — 런타임 무관).
+      if (isAlive) {
+        await key('S', ['meta'])
+        const saved = await settle(async () => fs.readFileSync(file, 'utf8').startsWith('QLAST-') && (await dirtyOf(rel)) === 'false', 4000)
+        check('R4-C-save-after-runtime-closed', saved, { disk: fs.readFileSync(file, 'utf8').slice(0, 30), dirty: await dirtyOf(rel) })
+      }
+    } else {
+      check('R4-A-first-entry-asks-before-cleanup', early.visible === true && early.runtimeSocket === true && early.cleanupOff === false, { quit, early })
+      check('R4-A-cancel-keeps-app', base && after.runtimeSocket === true && after.cleanupOff === false && after.asked.includes('close'), { after, typedAfter, disk: disk.slice(0, 30), originalSame: disk === original, alive: isAlive })
+    }
+    const leftovers = execFileSync('ps', ['-axeww', '-o', 'pid=,command='], { encoding: 'utf8' })
+      .split('\n')
+      .filter((row) => row.includes('fake-tailscale.mjs') && row.includes(`FAKE_TAILSCALE_DIR=${fake} `))
+      .map((row) => Number(row.trim().split(/\s+/)[0]))
+    for (const pid of leftovers) process.kill(pid, 'SIGKILL')
+    console.log(JSON.stringify({ fakeLeftoversKilled: leftovers }))
+    // 다음 회차를 위해 fixture 원복(디스크는 무변경이어야 하지만 확인 차 같은 바이트로).
+    if (fs.readFileSync(file, 'utf8') !== original) fs.writeFileSync(file, original)
+    break
+  }
+  case 'cancel-matrix': {
+    // 수정 r4 무회귀 — 리뷰어 r4 cancel.mjs 조건: 일반 종료 취소 / 창 close 취소 / 두 입구 저장 실패 / 무응답(렌더러 SIGSTOP) 취소 뒤 재개.
+    // 각 갈래 뒤 창 visible·readOnly=false·이어 친 글자 반영·dirty 유지.
+    const rel = 'r1/edit.txt'
+    const file = path.join(repo, rel)
+    const original = fs.readFileSync(file, 'utf8')
+    const hook = path.join(root, 'write-hook.json')
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('BEFORE-')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    const view = async () => ({
+      visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible,
+      readOnly: await ed('return e.getOption(window.l591Monaco.editor.EditorOption.readOnly)'),
+      text: (await ed('return m.getValue()')).slice(0, 40),
+      dirty: await dirtyOf(rel),
+    })
+    for (const mode of ['quit-cancel', 'close-cancel', 'quit-save-fail', 'close-save-fail', 'unresponsive-cancel']) {
+      const saveFail = mode.includes('save-fail')
+      if (saveFail) fs.writeFileSync(hook, JSON.stringify({ failWrite: 'before' }))
+      // 무응답 갈래는 답이 둘 — main 무응답 대화상자 취소 + 재개된 렌더러가 밀린 확인 요청으로 띄우는 닫기 확인 취소(실제 대화상자가 뜨지 않게).
+      await stub(mode === 'unresponsive-cancel' ? ['cancel', 'cancel'] : [saveFail ? 'save' : 'cancel'])
+      const mark = logRows().length
+      let renderer = 0
+      try {
+        if (mode === 'unresponsive-cancel') {
+          renderer = Number(execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' }).split('\n').find((row) => row.includes(`--user-data-dir=${root}/ud`) && row.includes('--type=renderer')).trim().split(/\s+/)[0])
+          process.kill(renderer, 'SIGSTOP')
+        }
+        await ctl(root, { cmd: 'quit-entry', via: mode.startsWith('close') ? 'close' : 'quit' })
+        const want = (row) => (mode === 'unresponsive-cancel' ? row.tag === 'quit.unresponsive_choice' : saveFail ? row.tag === 'file.write' && row.ok === false : row.tag === 'file.dialog')
+        await until(() => logRows().slice(mark).some(want), { label: mode, timeoutMs: 8000 })
+      } finally {
+        if (renderer > 0) process.kill(renderer, 'SIGCONT')
+        fs.rmSync(hook, { force: true })
+      }
+      await sleep(350)
+      const after = await view()
+      await typeAt(`${mode}-`)
+      await sleep(150)
+      const edited = await view()
+      check(`R4-noreg-${mode}`, after.visible === true && after.readOnly === false && edited.text.startsWith(`${mode}-`) && edited.dirty === 'true' && fs.readFileSync(file, 'utf8') === original, { after, edited, quitLog: logRows().slice(mark).filter((row) => String(row.tag).startsWith('quit.') || row.tag === 'file.dialog').map((row) => row.tag) })
+    }
+    break
+  }
+  case 'shutdown-reject': {
+    // 수정 r4 무회귀 — 리뷰어 shutdown-reject: 런타임 정리 rejection(owner.json 깨뜨림)에도 Mobile 정리를 끝내고 종료. 수정 파일은 저장 승인.
+    const fake = values.fake ?? ''
+    if (!/^\/tmp\/l591g-f[^/]+$/.test(fake)) throw new Error('--fake 는 /tmp/l591g-f* (가짜 Tailscale 상태 폴더 — 실제 Tailscale 무접촉)')
+    const rel = 'r1/edit.txt'
+    const file = path.join(repo, rel)
+    await openFile(rel)
+    await exposeMonaco()
+    await typeAt('BEFORE-')
+    await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+    setFake(fake, { serve: {}, hang: [] })
+    await js(`window.corral.setSettings({ mobileEnabled: true })`)
+    await until(async () => (await ctl(root, { cmd: 'mobile-status' })).mobile?.exposure?.kind === 'exposed', { label: 'fake mobile exposed', timeoutMs: 15_000 })
+    fs.writeFileSync(path.join(root, 'ud/runtime/owner.json'), '{broken fixture')
+    await sleep(200)
+    await stub(['save', 'cancel'])
+    const mark = calls(fake).length
+    const t0 = Date.now()
+    await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+    const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 15_000 }).then(() => true, () => false)
+    const disk = fs.readFileSync(file, 'utf8')
+    const shutdown = calls(fake).slice(mark).map((row) => row.argv.join(' '))
+    check('R4-noreg-shutdown-reject', exited && disk.startsWith('BEFORE-') && shutdown.some((row) => row.endsWith('off')) && JSON.stringify(fakeState(fake)?.serve ?? null) === '{}', { exited, ms: Date.now() - t0, disk: disk.slice(0, 30), shutdown, serve: fakeState(fake)?.serve ?? null })
+    break
+  }
+  case 'reload-stop':
+  case 'reload-busy':
+  case 'clean-unresponsive-busy':
+  case 'clean-quit':
+  case 'clean-close':
+  case 'destroy-pending':
+  case 'crash-pending': {
+    // 수정 r5 — 리뷰어 r5 extra.mjs 조건 이식. main 프로세스 inspector(g-up `L577_ELECTRON_ARGS=--inspect=0`)로 `webContents.reload()`·렌더러 pid 를 다룬다.
+    //   reload-stop  수정 문서를 연 채 렌더러를 멈추고(SIGSTOP) 다시 불러오기 시작 → 로딩 중 종료 → 재개. R5-A: 확인을 정리 전에 묻고, 취소 뒤 창·편집·dirty·디스크 원본·런타임 유지
+    //   reload-busy  같은 조건을 렌더러 700 ms 바쁜 대기로(유한 지연) — 정리 전 확인·창·런타임 유지만 본다(취소 뒤 새 문서가 실리는 것은 범위 밖 O2)
+    //   clean-unresponsive-busy  수정 없음 + 렌더러 4.3 s 바쁜 대기 중 종료 → 3 s 무응답 대화상자 「취소」 → 회복. R5-B: 늦은 승인을 받지 않고 앱·런타임 생존, 다시 종료하면 정상 종료
+    //   clean-quit · clean-close  수정 없는 정상 종료 시간(Mobile 끔)
+    //   destroy-pending · crash-pending  수정 있음 + 렌더러 멈춤 중 종료 확인 대기에서 창 파기 / 렌더러 크래시(리뷰어 r5 무회귀 표) — 파기는 종료 완료,
+    //                크래시는 무응답 확인 「취소」 면 앱이 남고 다시 종료하면 완료
+    const rel = 'r1/edit.txt'
+    const file = path.join(repo, rel)
+    const original = fs.readFileSync(file, 'utf8')
+    await openFile(rel)
+    await exposeMonaco()
+    const logFile = fs.readdirSync(root).find((item) => /^electron-.*\.log$/.test(item))
+    const inspectorUrl = logFile === undefined ? null : (fs.readFileSync(path.join(root, logFile), 'utf8').match(/Debugger listening on (ws:\/\/\S+)/)?.[1] ?? null)
+    if (inspectorUrl === null) throw new Error('main inspector 없음 — ISO_ENV 에 L577_ELECTRON_ARGS=--inspect=0')
+    const inspector = new WebSocket(inspectorUrl)
+    await new Promise((resolve, reject) => ((inspector.onopen = resolve), (inspector.onerror = reject)))
+    let inspectorSeq = 0
+    const inspectorWait = new Map()
+    inspector.onmessage = ({ data }) => {
+      const message = JSON.parse(data)
+      const waiter = inspectorWait.get(message.id)
+      if (waiter === undefined) return
+      inspectorWait.delete(message.id)
+      if (message.error !== undefined) waiter.reject(new Error(JSON.stringify(message.error)))
+      else waiter.resolve(message.result)
+    }
+    const mainEval = async (expression) => {
+      inspectorSeq += 1
+      const id = inspectorSeq
+      const result = await new Promise((resolve, reject) => {
+        inspectorWait.set(id, { resolve, reject })
+        inspector.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }))
+      })
+      if (result.exceptionDetails !== undefined) throw new Error(JSON.stringify(result.exceptionDetails))
+      return result.result.value
+    }
+    await mainEval(`globalThis.l591w = process.getBuiltinModule('module').createRequire(process.cwd() + '/package.json')('electron').BrowserWindow.getAllWindows()[0]; true`)
+    const socket = path.join(root, 'ud/runtime/rpc.sock')
+    const view = async () => ({
+      visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible,
+      readOnly: await ed('return e.getOption(window.l591Monaco.editor.EditorOption.readOnly)'),
+      model: (await ed('return m.getValue()')).slice(0, 30),
+      dirty: await dirtyOf(rel),
+      runtimeSocket: fs.existsSync(socket),
+    })
+    const quitLog = () => logRows().filter((row) => String(row.tag).startsWith('quit.') || row.tag === 'file.reload_confirm').map((row) => ({ tag: row.tag, via: row.via ?? null, files: row.files ?? null, asked: row.asked ?? null, gen: row.gen ?? null, kind: row.kind ?? null, loading: row.loading ?? null }))
+    let stopped = 0
+    try {
+      if (name === 'reload-stop' || name === 'reload-busy') {
+        await typeAt('RELOAD-')
+        await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+        await sleep(200)
+        await stub(Array(8).fill('cancel'))
+        let busy = null
+        if (name === 'reload-busy') {
+          busy = js(`(() => { const end = performance.now() + 700; while (performance.now() < end) {} return true })()`)
+          await sleep(100)
+        } else {
+          stopped = await mainEval('l591w.webContents.getOSProcessId()')
+          process.kill(stopped, 'SIGSTOP')
+        }
+        await mainEval('l591w.webContents.reload(); true')
+        await sleep(150)
+        const loading = await mainEval('l591w.webContents.isLoadingMainFrame()')
+        const quit = await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+        await sleep(150)
+        const early = { loading, visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible, runtimeSocket: fs.existsSync(socket) }
+        if (stopped > 0) {
+          process.kill(stopped, 'SIGCONT')
+          stopped = 0
+        }
+        if (busy !== null) await busy.catch(() => null)
+        await sleep(1500)
+        const isAlive = alive()
+        const after = isAlive ? { visible: (await ctl(root, { cmd: 'window-visibility', action: 'read' })).visible, runtimeSocket: fs.existsSync(socket), asked: (await stub([])).asked, toast: await js(`[...document.querySelectorAll('[data-sonner-toast]')].map((el) => el.textContent).join(' | ')`) } : null
+        const disk = fs.readFileSync(file, 'utf8')
+        check('R5-A-asks-before-cleanup', early.loading === true && early.visible === true && early.runtimeSocket === true && quitLog().some((row) => row.tag === 'quit.intercepted' && row.asked === true), { quit, early, quitLog: quitLog() })
+        if (name === 'reload-stop') {
+          const state = isAlive ? await view() : null
+          let typedAfter = null
+          if (state !== null) {
+            await typeAt('Q').catch(() => null)
+            await sleep(150)
+            typedAfter = (await ed('return m.getValue()')).slice(0, 30)
+          }
+          check('R5-A-cancel-keeps-app', isAlive && after.visible === true && after.runtimeSocket === true && state.readOnly === false && state.dirty === 'true' && state.model.startsWith('RELOAD-') && disk === original && typedAfter?.startsWith('Q') === true, { after, state, typedAfter, originalSame: disk === original })
+        } else {
+          // 유한 지연 — 다시 불러오기 확인 취소 뒤에도 새 문서가 실려 수정이 사라지는 것은 직전 코드에도 있는 범위 밖 O2. 창·런타임만 본다.
+          check('R5-A-busy-keeps-window-runtime', isAlive && after.visible === true && after.runtimeSocket === true && disk === original, { after, originalSame: disk === original, o2Model: isAlive ? await ed('return m?.getValue()?.slice(0, 30) ?? null').catch(() => null) : null })
+        }
+      } else if (name === 'clean-unresponsive-busy') {
+        // inspector 가 붙어 있으면 main 이 끝나지 않는다 — 이 갈래는 inspector 를 쓰지 않으니 먼저 뗀다.
+        inspector.close()
+        await stub(['cancel'])
+        const busy = js(`(() => { const end = performance.now() + 4300; while (performance.now() < end) {} return true })()`)
+        await sleep(100)
+        const t0 = Date.now()
+        await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+        await until(() => logRows().some((row) => row.tag === 'quit.unresponsive_choice'), { label: 'unresponsive prompt', timeoutMs: 6000 })
+        const promptMs = Date.now() - t0
+        const cancelled = { alive: alive(), runtimeSocket: fs.existsSync(socket) }
+        await busy.catch(() => null)
+        await sleep(1500)
+        const isAlive = alive()
+        const after = isAlive ? await view() : null
+        const log = quitLog()
+        check('R5-B-cancel-survives-recovery', cancelled.alive && isAlive && after.visible === true && after.readOnly === false && after.runtimeSocket === true && !log.some((row) => row.tag === 'quit.confirmed'), { promptMs, cancelled, after, quitLog: log })
+        // 다시 종료하면 정상 종료(수정 없음 — 묻지 않는다).
+        const t1 = Date.now()
+        if (isAlive) await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+        const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 10_000 }).then(() => true, () => false)
+        check('R5-B-quit-again-exits', exited, { exited, ms: Date.now() - t1, quitLog: quitLog() })
+      } else if (name === 'destroy-pending' || name === 'crash-pending') {
+        await typeAt('PENDING-')
+        await until(async () => (await dirtyOf(rel)) === 'true', { label: 'dirty' })
+        await sleep(150)
+        await stub(Array(10).fill('cancel'))
+        stopped = await mainEval('l591w.webContents.getOSProcessId()')
+        process.kill(stopped, 'SIGSTOP')
+        await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+        await mainEval(name === 'destroy-pending' ? 'l591w.destroy(); true' : 'l591w.webContents.forcefullyCrashRenderer(); true')
+        inspector.close()
+        await sleep(name === 'destroy-pending' ? 1000 : 3500)
+        try {
+          process.kill(stopped, 'SIGCONT')
+        } catch {
+          /* 이미 끝났다 */
+        }
+        stopped = 0
+        if (name === 'destroy-pending') {
+          const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 10_000 }).then(() => true, () => false)
+          check('R5-noreg-destroy-pending', exited, { exited, quitLog: quitLog() })
+        } else {
+          const survived = alive()
+          if (survived) await ctl(root, { cmd: 'quit-entry', via: 'quit' })
+          const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 10_000 }).then(() => true, () => false)
+          check('R5-noreg-crash-pending', survived && exited, { survived, exited, quitLog: quitLog() })
+        }
+      } else {
+        inspector.close()
+        await sleep(200)
+        const t0 = Date.now()
+        await ctl(root, { cmd: 'quit-entry', via: name === 'clean-close' ? 'close' : 'quit' })
+        const exited = await until(() => !alive(), { label: 'exit', timeoutMs: 10_000, everyMs: 20 }).then(() => true, () => false)
+        const rows = logRows()
+        const asked = rows.find((row) => row.tag === 'quit.intercepted')
+        const confirmed = rows.find((row) => row.tag === 'quit.confirmed')
+        check(`R5-noreg-${name}`, exited && !rows.some((row) => row.tag === 'file.dialog'), { exited, exitMs: Date.now() - t0, quitRoundTripMs: asked !== undefined && confirmed !== undefined ? confirmed.at - asked.at : null })
+      }
+    } finally {
+      if (stopped > 0) process.kill(stopped, 'SIGCONT')
+      inspector.close()
+    }
+    if (fs.readFileSync(file, 'utf8') !== original) fs.writeFileSync(file, original)
+    break
+  }
+  default:
+    throw new Error(`모르는 case: ${name}`)
+}
+
+const failed = checks.filter((row) => !row.pass)
+writeJson(path.join(values.out, `${name}.json`), { case: name, checks })
+// 정리 — 남은 수정 문서가 있으면 g-down(종료)이 확인에 막히지 않게 저장 안 함 답을 걸어 둔다.
+if (alive()) await stub(['discard', 'discard', 'discard']).catch(() => null)
+console.log(failed.length === 0 && checks.length > 0 ? 'ALL PASS' : `FAILED ${failed.map((row) => row.id).join(',')}`)
+process.exit(failed.length === 0 && checks.length > 0 ? 0 : 1)

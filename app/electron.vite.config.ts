@@ -8,7 +8,8 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   main: {
-    build: { rollupOptions: { input: resolve(__dirname, 'src/main/index.ts') } },
+    // LIFE-589 — 탐색기 감시 프로세스(utility process) 입구를 같은 폴더에 따로 낸다(`out/main/explorer-watcher.js`).
+    build: { rollupOptions: { input: { index: resolve(__dirname, 'src/main/index.ts'), 'explorer-watcher': resolve(__dirname, 'src/main/explorer-watcher.ts') } } },
   },
   preload: {
     // sandbox:true 인 렌더러의 preload 는 **단일 CJS 번들**이어야 로드된다 (ESM preload 는 조용히 실패).

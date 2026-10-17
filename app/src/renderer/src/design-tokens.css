@@ -171,6 +171,10 @@
   --sidebar-w: 280px;
   --sidebar-min: 220px;
   --sidebar-max: 500px;
+  /* 오른쪽 패널(LIFE-589 E1ⓑ) — 기본 300(VS Code 보조 사이드바 기본 폭 근처) · 최소 220(Orca `right-sidebar-width.ts` MIN) · 최대 640. */
+  --right-panel-w: 300px;
+  --right-panel-min: 220px;
+  --right-panel-max: 640px;
   /* **명시적 편차** (09-gate1-fix.md A 에서 유지 결정) — 핸드오프 §4 는 `--resizer-w: 3px`
      단일이지만, 히트존(집기)과 가시선(보이기)을 분리하면 *보이는 선은 1px* 이라 "테두리 최소"
      기조에 오히려 더 맞고 집기는 더 쉽다. 편차인 채로 결과 문서에 기록한다.

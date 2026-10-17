@@ -488,6 +488,8 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
             await okResult({ op: 'changeStatus', itemId: item.id, statusKey: next.key, ifVersion: null })
           }
           await expectCanonical({ call: { op: 'changeStatus', itemId: item.id, statusKey: done.key, ifVersion: null, ...(capabilities.resolution.state === 'on' ? { resolution: 'cancelled' as const } : {}) }, itemId: item.id })
+          // 같은 완료 상태에서 갈래만 바꾸기(R3-C — 전이가 아닌 갈래만 바꾸는 길, 출처마다 따로 있다) — 결과 본문·연결 = 직후 단건.
+          if (capabilities.resolution.state === 'on') await expectCanonical({ call: { op: 'changeStatus', itemId: item.id, statusKey: done.key, ifVersion: null, resolution: 'completed' }, itemId: item.id })
         }
         // 본문 쓰기 자체도 — 보낸 글이 결과에 그대로(빈 글 포함).
         putExternal(item.id)

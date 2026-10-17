@@ -361,3 +361,131 @@ it('R2-A 유지 — 가장 최신인 늦은 성공은 그대로 상세 base 가 
   expect(q('[data-issue-conflict]')).toBeNull()
   expect(serverItem(r, 'm-2').priority).toBe('low')
 })
+
+// ── R3-A — 실패한 쓰기는 base 의 근거를 올리지 않는다 · 순서 가드가 버린 뒤 다시 받지 못하면 상세는 미확인(쓰기 막힘) ──────────────────
+// 출발점: 리뷰 r3 X3-1 `codex-r3-raw/TaskDetail.x3failed-safety.test.tsx`(이식). 실제 React → hook → WorkService → LaSource → LaMcpFixture.
+// LA 도구 응답에 오류를 넣는다(fixture `tool` 을 감싼다) — 쓰기 B 거절 · 재조회(issue_get) 거절.
+
+/** A(우선순위 highest)를 실제로 실행해 성공 응답(외부 비우기 뒤 — 본문 null)을 만든 뒤 배달만 붙든다. 30초 지나 늦음으로. 푸는 함수를 돌려준다. */
+async function captureLateA(): Promise<() => void> {
+  const original = window.corral.workRequest
+  let release: () => void = () => {}
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  let captured = false
+  window.corral.workRequest = async (request: WorkRequest) => {
+    const response = await original(request)
+    if (request.call.op === 'updateItem' && !captured) { captured = true; await pending }
+    return response
+  }
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  click('[data-field="priority"]')
+  click('[data-priority-row="highest"]')
+  await act(async () => { await vi.advanceTimersByTimeAsync(30001) })
+  vi.useRealTimers()
+  expect(captured).toBe(true)
+  return release
+}
+type LaTool = (value: { tool: string; args: Record<string, unknown> }) => { isError: boolean; text: string }
+function wrapTool(fixture: LaMcpFixture, wrap: (inner: LaTool) => LaTool): () => void {
+  const inner: LaTool = Reflect.get(fixture, 'tool').bind(fixture)
+  Reflect.set(fixture, 'tool', wrap(inner))
+  return () => { Reflect.set(fixture, 'tool', inner) }
+}
+const refused = (message: string): { isError: boolean; text: string } => ({ isError: true, text: JSON.stringify({ code: 'BAD_REQUEST', message }) })
+const bodyEditDisabled = (): boolean => { const button = el('[data-issue-body-edit]'); return button instanceof HTMLButtonElement && button.disabled }
+
+// B 실패 — 실패한 B 는 base 의 근거를 올리지 않으므로 A(본문 null 정본)는 그대로 받는다. 재조회가 실패해도(일어나지 않아야) 결과는 같다.
+it.each([false, true])('R3-A B 실패 — 늦은 A(외부 비우기 반영)를 버리지 않는다, 재조회 거절=%s 여도 새 편집기·저장은 빈 본문', async (failRead) => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD BEFORE CLEAR'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(20)
+  issue.description = null
+  const release = await captureLateA()
+  let reread = false
+  const restore = wrapTool(la.fixture, (inner) => (value) => {
+    if (value.tool === 'issue_update' && value.args.priority === 'low') return refused('fixture newer write refused')
+    if (reread && failRead && value.tool === 'issue_get' && value.args.id === issue.id) return refused('fixture reread refused')
+    return inner(value)
+  })
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(25)
+  expect(la.responses.some((response) => !response.ok && response.error.kind === 'rejected')).toBe(true)
+  reread = true
+  await act(async () => { release() })
+  await settle(30)
+  reread = false
+  restore()
+  expect(el('[data-issue-body]').textContent).not.toContain('OLD BEFORE CLEAR')
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(30)
+  expect(issue.description ?? '').toBe('')
+  expect(issue.priority).toBe('highest')
+})
+
+// B 성공 역전 + 재조회 실패 — 늦은 A 는 옛 근거라 버린다. 재조회가 거절되면 상세는 미확인: 본문 편집·필드 쓰기 막힘 + 「다시 시도」. 다시 받으면 풀리고 정본(빈 본문).
+it('R3-A B 성공 역전 + 재조회 실패 — 상세 미확인(쓰기 막힘·다시 시도), 다시 받으면 풀리고 빈 본문', async () => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD CAPTURED BODY'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(20)
+  const release = await captureLateA()
+  issue.description = null
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(30)
+  expect(issue.priority).toBe('low')
+  let failReads = true
+  const restore = wrapTool(la.fixture, (inner) => (value) => (failReads && value.tool === 'issue_get' && value.args.id === issue.id ? refused('fixture reread refused') : inner(value)))
+  await act(async () => { release() })
+  await settle(35)
+  // 미확인 — 옛 본문을 정본처럼 보이지 않고, 본문·필드 쓰기를 막는다.
+  expect(bodyEditDisabled()).toBe(true)
+  const priorityButton = el('[data-field="priority"]')
+  expect(priorityButton instanceof HTMLButtonElement && priorityButton.disabled).toBe(true)
+  expect(q('[data-issue-load-error]')).not.toBeNull()
+  // 다시 시도 — 이번엔 받는다.
+  failReads = false
+  restore()
+  click('[data-issue-retry]')
+  await settle(35)
+  expect(bodyEditDisabled()).toBe(false)
+  expect(q('[data-issue-load-error]')).toBeNull()
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(30)
+  expect(issue.description ?? '').toBe('')
+  expect(issue.priority).toBe('low')
+})
+
+// B 성공 역전 + 재조회 지연 — 재조회가 끝날 때까지 상세 쓰기는 막혀 있고, 끝나면 정본(빈 본문)으로 풀린다.
+it('R3-A B 성공 역전 + 재조회 지연 — 받는 동안 막힘, 받은 뒤 빈 본문', async () => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD CAPTURED BODY'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(20)
+  const releaseA = await captureLateA()
+  issue.description = null
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(30)
+  const releaseRead = hold('getItem')
+  await act(async () => { releaseA() })
+  await settle(20)
+  expect(bodyEditDisabled()).toBe(true)
+  await releaseRead()
+  await settle(30)
+  expect(bodyEditDisabled()).toBe(false)
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+})

@@ -641,6 +641,9 @@ export class JiraSource implements WorkSourceClient {
     if (patch.body !== undefined) {
       const current = await this.fetchIssue(call.itemId)
       if (!current.ok) return current.outcome
+      // 저장 전 조회는 원본 ADF 를 보존·변환하는 근거다 — 응답에 description 칸이 없으면 빈 doc 로 보지 않고 PUT 전에 멈춘다(LIFE-623 R3-B).
+      // 보내지 않았으므로 `maybeApplied` 없음(같은 호출의 다른 칸도 보내지 않았다). 다른 저장 전 조회(전이 대체·부모·순서·연결)는 상태·프로젝트·종류·키만 쓴다.
+      if (!current.value.hasDescription) return { ok: false, error: workError({ kind: 'invalid_response', message: `${current.value.key} 저장 전 조회에 description 칸이 없습니다 — 원본 본문을 확인하지 못해 보내지 않았습니다. 다시 시도하세요.` }) }
       const description = bodyUpdate({ current: current.value.description ?? { type: 'doc', version: 1, content: [] }, next: patch.body })
       if (!description.ok) return rejected(description.message)
       if (description.doc !== undefined) fields.description = description.doc

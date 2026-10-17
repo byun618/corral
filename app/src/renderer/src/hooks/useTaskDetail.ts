@@ -158,7 +158,15 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const here = useMemo<Origin | null>(() => (target === null ? null : { session, target }), [session, target])
 
   // 판 최신성 시계 — 읽기 시작·쓰기 시작·쓰기 확정마다 오른다. base 는 자기를 만든 사건의 시각을 갖는다.
+  /** 읽기 무효화 시각 — 이보다 먼저 시작한 읽기는 base 가 되지 못한다. 쓰기 시작(성공 여부 무관)·확정·읽기 수용에서 오른다. */
   const baseStampRef = useRef(0)
+  /**
+   * 확인된 base 의 근거 시각(LIFE-623 R3-A) — 지금 base 를 만든 읽기의 시작 시각 또는 확정 쓰기를 **보낸** 시각. 성공해 받은 것만 올린다(실패한 쓰기는 올리지 않는다).
+   * 늦게 온 확정 쓰기의 순서 가드는 이 시각과 비교한다 — 무효화 시각과 비교하면 실패한 후속 쓰기 때문에 유효한 늦은 결과를 버린다.
+   */
+  const confirmedRef = useRef(0)
+  /** 미확인(R3-A) — 순서 가드가 늦은 결과를 버렸는데 정본을 아직 다시 받지 못함. 그동안 상세 쓰기는 막힌다(옛 base 로 저장하지 않게). 정본을 받으면 풀린다. */
+  const [unconfirmed, setUnconfirmed] = useState(false)
   // 확정 시각은 작업 페이지의 쓰기 「보낸 시각」 과 같은 시계(LIFE-623 R2-A, `work-clock`) — 늦게 온 옛 쓰기 결과를 base 의 근거와 비교한다.
   const tick = useCallback((): number => nextWorkStamp(), [])
 
@@ -202,6 +210,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
    * 막혀 있으면 화면은 그 칸을 막고, 그래도 온 쓰기는 보내지 않는다(기다렸다 보내지 않는다).
    */
   const blocked = writeBlock(connection?.status ?? null)?.reason ?? (locked ? '앞 변경을 출처가 확인하는 중…' : null) ?? (base === null && target !== null ? (phase.state === 'error' ? '상세를 받지 못했습니다 — 다시 시도하세요.' : '상세를 불러오는 중…') : null) ?? (reading ? '상세를 다시 받는 중…' : null)
+    ?? (unconfirmed ? (phase.state === 'error' ? '서버 값을 다시 받지 못했습니다 — 다시 시도해 받은 뒤 고치세요.' : '서버 값을 다시 맞추는 중…') : null)
   const blockedRef = useRef(blocked)
   blockedRef.current = blocked
   const versionOf = useCallback((current: WorkItem | null): string | null => (capsRef.current?.conflictCheck.state === 'on' ? current?.version ?? null : null), [])
@@ -251,6 +260,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const acceptItem = useCallback(({ value, stamp }: { value: WorkItem; stamp: number }): WorkItem | null => {
     if (stamp <= baseStampRef.current) return null
     baseStampRef.current = stamp
+    confirmedRef.current = stamp
+    setUnconfirmed(false)
     putBase(value)
     setItem(value)
     slideBases(value)
@@ -273,6 +284,21 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
       const response = await read({ key: 'refresh', call: { op: 'getItem', itemId: origin.target.itemId }, origin })
       if (response === null || !response.ok || response.result.op !== 'getItem') return null
       return acceptItem({ value: response.result.item, stamp })
+    },
+  }), [read, acceptItem, tick, tracked])
+
+  /** 순서 가드 뒤 정본 다시 받기(R3-A) — `refreshItem` 과 같되 실패를 상세 오류로 남긴다(「다시 시도」). 받으면 `acceptItem` 이 미확인을 푼다. */
+  const reconcile = useCallback((origin: Origin): Promise<void> => tracked({
+    origin,
+    run: async () => {
+      const stamp = tick()
+      const response = await read({ key: 'refresh', call: { op: 'getItem', itemId: origin.target.itemId }, origin })
+      if (response === null) return
+      if (!response.ok || response.result.op !== 'getItem') {
+        setPhase({ state: 'error', message: response.ok ? '출처 응답 모양이 다릅니다.' : response.error.message })
+        return
+      }
+      acceptItem({ value: response.result.item, stamp })
     },
   }), [read, acceptItem, tick, tracked])
 
@@ -341,6 +367,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     setParents([])
     setRecords([])
     baseStampRef.current = 0
+    confirmedRef.current = 0
+    setUnconfirmed(false)
     basesRef.current.clear()
     baseRef.current = null
     if (target === null) { setBase(null); setItem(null); setPhase({ state: 'idle', message: null }); return }
@@ -400,12 +428,16 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   useEffect(() => {
     const settled = page.settledWrite
     if (settled === null || settled.uid !== uid || here === null) return
-    if (settled.sent <= baseStampRef.current) {
-      void refreshItem(here)
+    if (settled.sent <= confirmedRef.current) {
+      // 미확인으로 두고 정본을 다시 받는다 — 실패하면 오류 + 「다시 시도」, 받기 전에는 쓰기 막힘(R3-A).
+      setUnconfirmed(true)
+      void reconcile(here)
       void refreshActivity(here)
       return
     }
     baseStampRef.current = tick()
+    confirmedRef.current = settled.sent
+    setUnconfirmed(false)
     const next = settled.item
     putBase(next)
     setItem(next)

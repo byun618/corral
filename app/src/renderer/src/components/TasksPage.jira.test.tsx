@@ -318,3 +318,29 @@ it('LIFE-623 R2-B 쓰기 뒤 부분 응답(description·issuelinks 없음)은 �
   expect(r.fixture.issues.find((entry) => entry.id === '20002')?.description).not.toBeNull()
   expect(JSON.stringify(r.fixture.issues.find((entry) => entry.id === '20002')?.description)).toContain('LIVE JIRA BODY')
 })
+
+// LIFE-623 R3-B — 잠긴 서식 본문(멘션·패널, CORE-3)의 체크 칸 하나를 누를 때, 저장 전 조회 응답에 description 칸이 빠지면 PUT 을 보내지 않는다(원본 ADF 유지).
+// 정상 응답이면 전처럼 PUT 1회·멘션·패널 보존(리뷰 r3 X3-2, `codex-r3-raw/TasksPage.x3-safety.test.tsx` 이식).
+it.each([false, true])('LIFE-623 R3-B 잠긴 본문 체크 칸 — 저장 전 조회 description 누락=%s 이면 PUT 0, 원본 서식 유지', async (omit) => {
+  const r = await rig()
+  click('[data-tasks-board] [data-issue-card="CORE-3"]')
+  await settle(25)
+  expect(el('[data-issue-body-lock]').textContent).toContain('멘션')
+  const issue = r.fixture.issues.find((entry) => entry.id === '20003')
+  if (issue === undefined) throw new Error('fixture')
+  const before = JSON.stringify(issue.description)
+  expect(before).toContain('mention')
+  expect(before).toContain('panel')
+  if (omit) r.fixture.omitOnce.set(issue.id, ['description'])
+  const count = r.fixture.requests.length
+  const check = document.querySelectorAll('[data-issue-body] input[type="checkbox"]')[1]
+  if (!(check instanceof HTMLInputElement)) throw new Error('체크 칸 없음')
+  expect(check.disabled).toBe(false)
+  act(() => { check.click() })
+  await settle(30)
+  const after = JSON.stringify(issue.description)
+  expect(r.fixture.requests.slice(count).filter((request) => request.method === 'PUT')).toHaveLength(omit ? 0 : 1)
+  expect(after.includes('mention')).toBe(true)
+  expect(after.includes('panel')).toBe(true)
+  if (omit) expect(after).toBe(before)
+})

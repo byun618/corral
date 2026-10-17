@@ -674,6 +674,26 @@ describe('수정 2 — 리뷰 r2 (R2-C 생존 뮤테이션 · R2-E · R2-F · R2
     expect(made.result.item.bodyLock).toBe(read.result.item.bodyLock)
   })
 
+  it('LIFE-623 R3-B 본문 저장 전 조회에 description 칸이 없으면 PUT 전에 invalid_response(maybeApplied 없음) · 같은 호출의 다른 칸도 보내지 않는다 · 본문 없는 수정은 그대로', async () => {
+    const h = await connected()
+    const before = JSON.stringify(h.fixture.issues.find((entry) => entry.id === '20003')?.description)
+    const puts = (): number => h.fixture.requests.filter((request) => request.method === 'PUT').length
+    const start = puts()
+    h.fixture.omitOnce.set('20003', ['description'])
+    const refusedSave = await h.send({ op: 'updateItem', itemId: '20003', fields: { body: '- [x] 아무 글', priority: 'high' }, ifVersion: null })
+    expect(refusedSave).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    expect(!refusedSave.ok && refusedSave.error.maybeApplied).toBeFalsy()
+    expect(puts()).toBe(start)
+    expect(JSON.stringify(h.fixture.issues.find((entry) => entry.id === '20003')?.description)).toBe(before)
+    expect(h.fixture.issues.find((entry) => entry.id === '20003')?.priorityId).not.toBe('2')
+    // 본문을 쓰지 않는 수정은 저장 전 조회가 없다 — 칸 누락과 무관하게 그대로.
+    h.fixture.omitOnce.set('20002', ['description', 'issuelinks'])
+    const titled = await h.send({ op: 'updateItem', itemId: '20002', fields: { title: '제목만' }, ifVersion: null })
+    // 쓰기 뒤 읽기가 그 누락을 만나면 R2-B 규칙(maybeApplied) — 저장 전 조회가 없었다는 뜻.
+    expect(titled).toMatchObject({ ok: false, error: { kind: 'invalid_response', maybeApplied: true } })
+    expect(h.fixture.issues.find((entry) => entry.id === '20002')?.summary).toBe('제목만')
+  })
+
   it('LIFE-623 R2-B 단건·쓰기 뒤 읽기 응답에 description·issuelinks 칸이 없으면 invalid_response(쓰기 뒤면 maybeApplied) — 칸이 있고 null 이면 빈 정본', async () => {
     const h = await connected()
     h.fixture.omitOnce.set('20002', ['description'])

@@ -52,6 +52,8 @@ export type FixtureCorrupt =
   | 'drop-version' | 'list-drop-version' | 'version-number'
   // LIFE-622 C2 ⑤ — CONFLICT 와 닮았지만 다른 isError(statusCode 409 없음 · code 다름)를 쓰기 도구가 준다.
   | 'conflict-no-status' | 'conflict-other-code'
+  // LIFE-622 수정 1 R1-D — code·409 는 맞고 current 가 없거나 레코드가 아님(null · 글자 · 배열).
+  | 'conflict-no-current' | 'conflict-current-null' | 'conflict-current-string' | 'conflict-current-array'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -415,6 +417,10 @@ export class LaMcpFixture {
     }
     if (this.corrupt === 'conflict-no-status') delete body.statusCode
     if (this.corrupt === 'conflict-other-code') body.code = 'PRECONDITION'
+    if (this.corrupt === 'conflict-no-current') delete body.current
+    if (this.corrupt === 'conflict-current-null') body.current = null
+    if (this.corrupt === 'conflict-current-string') body.current = 'LIFE-600'
+    if (this.corrupt === 'conflict-current-array') body.current = [body.current]
     return { isError: true, text: JSON.stringify(body, null, 2) }
   }
 

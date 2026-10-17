@@ -352,3 +352,117 @@ describe('R5-B 30초를 넘겨 성공이 확정된 상태·배치 변경에도 �
     } finally { vi.useRealTimers() }
   })
 })
+
+// LIFE-622 수정 1 — 리뷰 r1 X1-1(R1-A)·X1-2(R1-B). 출발점: `specs/LIFE-622-reconcile-conflict/raw/review/codex-r1-raw/TasksPage.codex-probe.test.tsx`(X1 detail-last · X2).
+/** 상세 쓰기(writeItem) — 화면 경로와 같은 낙관 갱신을 싣는다. */
+const writeNow = (call: Extract<WorkCall, { op: 'changeStatus' | 'setPlacement' }>): void => {
+  const optimistic = (entry: WorkItem): WorkItem => (call.op === 'changeStatus' ? { ...entry, statusKey: call.statusKey, category: STATUSES.find((status) => status.key === call.statusKey)?.category ?? 'todo' } : { ...entry, placement: call.placement })
+  act(() => { void probeModel.writeItem({ connectionId: 'c1', spaceKey: 's1', itemId: 'i1', call, optimistic }) })
+}
+
+describe('R1-A 보드·상세가 섞인 단위 — 마지막 답이 어느 쪽이든 마지막 정합화는 그 답의 반영 뒤', () => {
+  const detailCalls: { name: string; board: Parameters<TasksPageModel['move']>[0]['intent']; detail: Extract<WorkCall, { op: 'changeStatus' | 'setPlacement' }> }[] = [
+    { name: '보드 배치 · 상세 상태', board: { kind: 'placement', placement: 'backlog' }, detail: { op: 'changeStatus', itemId: 'i1', statusKey: 'doing', ifVersion: null } },
+    { name: '보드 상태 · 상세 배치', board: { kind: 'status', statusKey: 'doing' }, detail: { op: 'setPlacement', itemId: 'i1', placement: 'backlog', ifVersion: null } },
+  ]
+  for (const { name, board, detail } of detailCalls) {
+    for (const last of ['detail', 'board'] as const) {
+      it(`${name} — ${last === 'detail' ? '상세' : '보드'} 답이 마지막(서버 적용은 반대 순서) → 최종 화면 = 서버`, async () => {
+        await probe()
+        const waits: { request: WorkRequest; resolve: (response: WorkResponse) => void; snapshot?: WorkResponse }[] = []
+        // 둘째 쓰기(상세)는 보낼 때 서버에 적용, 첫째(보드)는 답할 때 적용.
+        hold = (request) => (request.call.op === 'changeStatus' || request.call.op === 'setPlacement' ? new Promise((resolve) => { const snapshot = waits.length === 1 ? answer(request) : undefined; waits.push({ request, resolve, snapshot }) }) : null)
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        try {
+          moveNow({ row: row(), intent: board })
+          await pass(30_001)
+          writeNow(detail)
+          await pass(1)
+          expect(waits).toHaveLength(2)
+          const boardAnswer = (): Promise<void> => act(async () => waits[0]?.resolve(answer(waits[0].request)))
+          const detailAnswer = (): Promise<void> => act(async () => waits[1]?.resolve(waits[1].snapshot ?? reject(waits[1].request)))
+          if (last === 'detail') { await boardAnswer(); await pass(1); await detailAnswer() } else { await detailAnswer(); await pass(1); await boardAnswer() }
+          await pass(100)
+          expect({ status: row().item.statusKey, placement: row().item.placement }).toEqual({ status: server()?.statusKey, placement: server()?.placement })
+        } finally { vi.useRealTimers() }
+      })
+    }
+  }
+})
+
+describe('R1-B 되돌리기 기준은 확인된 값일 때만 — 겹친 미확인 의도 위에서 시작한 쓰기는 거절된 값을 되살리지 않는다', () => {
+  const restored = (): string[] => writes().slice(2).map((request) => (request.call.op === 'changeStatus' ? request.call.statusKey : ''))
+
+  it('X2 늦은 성공 — 앞 쓰기 A 거절 · 뒤 쓰기 B 늦은 성공: B 의 되돌리기가 A 의 값(doing)을 저장하지 않는다', async () => {
+    await probe()
+    const waits = pending('changeStatus')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      moveNow({ row: row(), intent: { kind: 'status', statusKey: 'doing' } })
+      await pass(30_001)
+      moveNow({ row: row(), intent: { kind: 'status', statusKey: 'done' } })
+      await pass(30_001)
+      await act(async () => waits[0]?.resolve(reject(waits[0].request)))
+      await pass(1)
+      await act(async () => waits[1]?.resolve(answer(waits[1].request)))
+      await pass(10)
+      expect(server()?.statusKey).toBe('done')
+      hold = null
+      const moved = notices.find((notice) => notice.kind === 'moved')
+      act(() => { if (moved?.kind === 'moved') moved.undo() })
+      await pass(10)
+      expect(restored()).not.toContain('doing')
+      expect(server()?.statusKey).not.toBe('doing')
+      expect(row().item.statusKey).toBe(server()?.statusKey)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('즉시 성공 — 늦은 A 가 답하기 전에 B 가 바로 성공, 그 뒤 A 거절: B 의 되돌리기가 A 의 값을 저장하지 않는다', async () => {
+    await probe()
+    const waits: { request: WorkRequest; resolve: (response: WorkResponse) => void }[] = []
+    hold = (request) => (request.call.op === 'changeStatus' && waits.length === 0 ? new Promise((resolve) => waits.push({ request, resolve })) : null)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      moveNow({ row: row(), intent: { kind: 'status', statusKey: 'doing' } })
+      await pass(30_001)
+      moveNow({ row: row(), intent: { kind: 'status', statusKey: 'done' } })
+      await pass(10)
+      await act(async () => waits[0]?.resolve(reject(waits[0].request)))
+      await pass(10)
+      hold = null
+      const moved = notices.find((notice) => notice.kind === 'moved')
+      act(() => { if (moved?.kind === 'moved') moved.undo() })
+      await pass(10)
+      expect(restored()).not.toContain('doing')
+      expect(server()?.statusKey).not.toBe('doing')
+    } finally { vi.useRealTimers() }
+  })
+
+  it('앞 쓰기가 늦게 실패한 뒤 재조회 전에 시작한 쓰기도 그 실패 값을 기준으로 삼지 않는다', async () => {
+    await probe()
+    const waits: { request: WorkRequest; resolve: (response: WorkResponse) => void }[] = []
+    let holdList = false
+    hold = (request) => {
+      if (request.call.op === 'changeStatus' && waits.length === 0) return new Promise((resolve) => waits.push({ request, resolve }))
+      // A 실패 뒤 재조회를 붙든다 — 그동안 화면엔 A 의 낙관 값(doing)이 남아 있다.
+      if (request.call.op === 'listItems' && holdList) return new Promise(() => {})
+      return null
+    }
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      moveNow({ row: row(), intent: { kind: 'status', statusKey: 'doing' } })
+      await pass(30_001)
+      holdList = true
+      await act(async () => waits[0]?.resolve(reject(waits[0].request)))
+      await pass(1)
+      expect(row().item.statusKey).toBe('doing')
+      moveNow({ row: row(), intent: { kind: 'status', statusKey: 'done' } })
+      await pass(10)
+      hold = null
+      const moved = notices.find((notice) => notice.kind === 'moved')
+      act(() => { if (moved?.kind === 'moved') moved.undo() })
+      await pass(10)
+      expect(restored()).not.toContain('doing')
+    } finally { vi.useRealTimers() }
+  })
+})

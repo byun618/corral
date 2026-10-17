@@ -199,7 +199,8 @@ describe('C2 ⑤ CONFLICT 판독이 다른 오류를 삼키지 않는다', () =>
     const h = await connected({ token: FAKE_LA_READ_TOKEN })
     expect(await h.send({ op: 'updateItem', itemId: FIXTURE_IDS.task600, fields: { title: 'x' }, ifVersion: '0' })).toMatchObject({ ok: false, error: { kind: 'forbidden' } })
   })
-  for (const corrupt of ['conflict-no-status', 'conflict-other-code'] as const) {
+  // R1-D(리뷰 r1 변이 m09) — code·409 는 맞아도 current 가 레코드가 아니면 conflict 가 아니다. current 검사를 빼면 이 넷이 conflict 로 바뀐다.
+  for (const corrupt of ['conflict-no-status', 'conflict-other-code', 'conflict-no-current', 'conflict-current-null', 'conflict-current-string', 'conflict-current-array'] as const) {
     it(`${corrupt} — CONFLICT 와 닮은 다른 isError 는 conflict 가 아니다(지금 분류 그대로)`, async () => {
       const h = await connected()
       h.fixture.corrupt = corrupt

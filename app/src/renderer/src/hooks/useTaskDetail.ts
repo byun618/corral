@@ -25,6 +25,7 @@ import type {
   WorkError,
   WorkHistoryEntry,
   WorkItem,
+  WorkResolutionChoice,
   WorkResponse,
   WorkResult,
   WorkStatus,
@@ -137,12 +138,22 @@ function fieldsOf(call: WorkCall): ConflictField[] {
   }
 }
 
+/** 갈래를 보내지 않은 완료 이동의 갈래 — 계약 기본(`WorkCall.changeStatus` 「null 이면 출처 기본(완료함)」). */
+const DEFAULT_RESOLUTION: WorkResolutionChoice = 'completed'
+
+/** 기준 → 결과의 다른 칸이 **전부** 내 쓰기 `mine` 이 보낸 칸이고 결과 값 = 보낸 값인가(`proves`). 설명되지 않는 칸이 하나라도 있으면 false. */
+function explainedBy({ basis, next, mine, statuses }: { basis: WorkItem; next: WorkItem; mine: WorkCall | null; statuses: WorkStatus[] | null }): boolean {
+  if (basis.id !== next.id) return false
+  return conflictFields({ base: basis, current: next }).every((field) => mine !== null && fieldsOf(mine).includes(field) && proves({ call: mine, field, current: next, statuses }))
+}
+
 /**
  * 내 쓰기가 그 칸을 지금 값으로 만들었다고 볼 수 있는가 — 그 칸을 보냈고 결과 값이 보낸 값과 같다(LIFE-632 C5 ① · 리뷰 r1 X1-2).
- * 상태는 완료 갈래(resolution)까지 — 갈래를 보내지 않았으면 결과 갈래가 비어 있을 때만(출처가 정한 갈래는 내가 보낸 값이 아니다, X1-3).
+ * 상태는 완료 갈래(resolution)까지(X1-3). 갈래를 보내지 않았으면 계약(`WorkCall.changeStatus` — null 이면 출처 기본 완료함)대로 기대한다:
+ * 완료 분류 상태면 완료함, 아니면 갈래 없음(LIFE-632 리뷰 r2 X2-1). 분류는 상세가 아는 상태 목록(`statuses`)에서 — 모르는 상태면 설명하지 않는다(배너, 보수적).
  * 부모는 보낸 값과 표시 부모가 달라 견주지 않는다(설명 안 됨). 값이 같은지만 본다 — 외부가 같은 값을 넣은 것과 구별하지 못한다(ABA 한계, design-notes §4).
  */
-function proves({ call, field, current }: { call: WorkCall; field: ConflictField; current: WorkItem }): boolean {
+function proves({ call, field, current, statuses }: { call: WorkCall; field: ConflictField; current: WorkItem; statuses: WorkStatus[] | null }): boolean {
   switch (call.op) {
     case 'updateItem': {
       const fields = call.fields
@@ -152,8 +163,13 @@ function proves({ call, field, current }: { call: WorkCall; field: ConflictField
       if (field === 'dueAt') return fields.dueAt !== undefined && (fields.dueAt === null || current.dueAt === null ? fields.dueAt === current.dueAt : Date.parse(fields.dueAt) === Date.parse(current.dueAt))
       return false
     }
-    case 'changeStatus':
-      return field === 'status' && call.statusKey === current.statusKey && (call.resolution === undefined || call.resolution === null ? current.resolution === null : current.resolution === call.resolution)
+    case 'changeStatus': {
+      if (field !== 'status' || call.statusKey !== current.statusKey) return false
+      if (call.resolution !== undefined && call.resolution !== null) return current.resolution === call.resolution
+      const category = statuses?.find((status) => status.key === call.statusKey)?.category
+      if (category === undefined) return false
+      return current.resolution === (category === 'done' ? DEFAULT_RESOLUTION : null)
+    }
     case 'setPlacement':
       return field === 'placement' && call.placement === current.placement
     default:
@@ -230,6 +246,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const undosRef = useRef<UndoEntry[]>([])
   const [phase, setPhase] = useState<DetailPhase>({ state: 'idle', message: null })
   const [statuses, setStatuses] = useState<WorkStatus[] | null>(null)
+  const statusesRef = useRef(statuses)
+  statusesRef.current = statuses
   const [parents, setParents] = useState<ParentRef[]>([])
   const [children, setChildren] = useState<Loaded<WorkItem[]>>({ state: 'loading' })
   const [comments, setComments] = useState<Loaded<WorkComment[]>>({ state: 'loading' })
@@ -277,8 +295,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
    * 하나라도 있으면(다른 칸 · 같은 칸 다른 값 — 결과 읽기 앞 외부 변경, 리뷰 r1 X1-2) 두어 저장이 배너가 되게.
    */
   const slideBases = useCallback(({ next, mine }: { next: WorkItem; mine: WorkCall | null }): void => {
-    const explained = (field: ConflictField): boolean => mine !== null && fieldsOf(mine).includes(field) && proves({ call: mine, field, current: next })
-    for (const [slot, basis] of basesRef.current) if (basis.id === next.id && conflictFields({ base: basis, current: next }).every(explained)) basesRef.current.set(slot, next)
+    for (const [slot, basis] of basesRef.current) if (explainedBy({ basis, next, mine, statuses: statusesRef.current })) basesRef.current.set(slot, next)
   }, [])
 
   /** 되돌리기 토스트 하나를 끝낸다 — 토스트도 지운다. */
@@ -561,12 +578,14 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
         setConflict(null)
         const carried = carriesItem({ result: outcome.result, itemId: current.id }) && 'item' in outcome.result ? outcome.result.item : null
         if (carried !== null) {
-          // 기준이 결과로 오르는 길(R6-A): 서버가 그 기준의 판을 확인하고 받은 쓰기(판을 실어 보냈고 그 판 = 기준 판 — 그 사이 다른 쓰기가 없었다).
+          // 기준이 결과로 오르는 길(R6-A): 서버가 그 기준의 판을 확인하고 받은 쓰기(판을 실어 보냈고 그 판 = 기준 판 — **쓰기 직전까지** 다른 쓰기가 없었다).
+          // 그것만으로는 결과까지 아무도 안 썼다는 증거가 아니다 — 결과는 쓰기 뒤 따로 읽은 단건일 수 있고(LA), 그 사이 외부 쓰기가 실린다(LIFE-632 리뷰 r2 X2-2).
+          // 그래서 결과와 그 기준의 칸 차이가 **전부 이 쓰기로 설명될 때만**(칸·값, `explainedBy` — 확정 effect 의 기준 이동과 같은 대조) 오른다. 설명 안 되는 차이가 있으면 두어 다음 저장이 배너.
           // 덮기는 판 없이 가서 그 증거가 없다 — 덮은 칸만, 그리고 결과와 기준이 덮은 칸만 다른 초안만(값 비교 — 외부 변경이 덮은 칸뿐, 자기 충돌 배너를 내지 않게).
           const sent = sentVersion(call)
           const changed = fieldsOf(call)
           for (const [slot, held] of basesRef.current) {
-            const proven = sent !== null && held.version === sent
+            const proven = sent !== null && held.version === sent && explainedBy({ basis: held, next: carried, mine: call, statuses: statusesRef.current })
             const forced = spec.force === true && slotsOf(call).includes(slot)
             const onlyMine = spec.force === true && held.id === carried.id && conflictFields({ base: held, current: carried }).every((field) => changed.includes(field))
             if (proven || forced || onlyMine) basesRef.current.set(slot, carried)

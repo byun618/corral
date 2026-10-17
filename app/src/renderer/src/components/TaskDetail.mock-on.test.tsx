@@ -172,3 +172,29 @@ it('앞 쓰기 거절 + 외부가 같은 값(모의, 리뷰 r1 m15) — 기다�
   expect(server.priority).toBe('highest')
   expect(server.body).toBe('B 본문')
 })
+
+/** 실제 끌기 경로 — 손잡이 mousedown → 문턱 넘는 move(놓을 영역은 elementFromPoint) → mouseup. */
+async function dragTo({ card, zone }: { card: string; zone: string }): Promise<void> {
+  const target = q(`[data-drop-zone="${zone}"]`); const handle = el(`[data-tasks-board] [data-issue-card="${card}"]`)
+  const spy = vi.spyOn(document, 'elementFromPoint').mockReturnValue(target)
+  const mouse = (at: EventTarget, name: string, x = 10, y = 10): void => { act(() => { at.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y })) }) }
+  mouse(handle, 'mousedown'); mouse(document, 'mousemove', 50, 500); await settle(); mouse(document, 'mousemove', 52, 502); mouse(document, 'mouseup', 52, 502); await settle(16)
+  spy.mockRestore()
+}
+
+// LIFE-632 수정 2 — 리뷰 r2 X2-1(모의): 본문 초안을 연 채 보드에서 완료로(갈래 생략 → 출처 기본 완료함) → 본문 저장 = 배너 없음.
+it('X2-1(모의) — 본문 초안 + 보드 완료 이동 → 본문 저장 = 배너 없음', async () => {
+  const r = await rig()
+  const server = serverItem(r, 'm-2')
+  server.body = 'BEFORE'
+  // 모의 CORE 의 전이 규칙은 Review → Done 만 허용한다 — 서버에서 Review 로 두고 연다(상세는 서버 값을 읽는다).
+  server.statusKey = 'core-review'
+  click('[data-tasks-board] [data-issue-card="CORE-2"]'); await settle()
+  click('[data-issue-body-edit]'); setValue(input('[data-md-editor] textarea'), 'MY BODY')
+  await dragTo({ card: 'CORE-2', zone: 'col:st:core-done' })
+  expect(server.statusKey).toBe('core-done')
+  expect(server.resolution).toBe('completed')
+  click('[data-md-save]'); await settle(30)
+  expect(banner()).toBeNull()
+  expect(server.body).toBe('MY BODY')
+})

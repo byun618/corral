@@ -383,3 +383,81 @@ describe('LIFE-632 C5 ② 같은 카드에 답이 안 온 내 쓰기(30초 늦�
     expect(issue.description).toBe('B 본문')
   })
 })
+
+// LIFE-632 수정 2 — 리뷰 r2 X2-1·X2-2·X2-3. 출발점: `codex-r2-raw/TaskDetail.review-r2.test.tsx`(이식). 모두 본문 초안을 연 채 결과를 받는다 —
+// 결과 수용 때 열린 초안의 기준을 옮기는지(`proves`·`explainedBy`) 자체를 판별한다(X2-3: 새 편집기를 결과 뒤에 열면 판별하지 못한다).
+describe('LIFE-632 C5 — 열린 본문 초안 + 결과 수용(리뷰 r2)', () => {
+  async function openDraft(la: Awaited<ReturnType<typeof laRig>>) {
+    const issue = task600(la.fixture)
+    issue.description = 'BEFORE'
+    await openCard(`LIFE-${issue.sequentialId}`)
+    await settle(20)
+    click('[data-issue-body-edit]')
+    setValue(input('[data-md-editor] textarea'), 'MY BODY')
+    return issue
+  }
+  /** 쓰기 도구가 저장한 **뒤**, 결과 issue_get **앞**에 외부 쓰기를 넣는다. */
+  function afterWriteTool(la: Awaited<ReturnType<typeof laRig>>, { match, external }: { match: (value: { tool: string; args: Record<string, unknown> }) => boolean; external: () => void }): () => boolean {
+    const tool = Reflect.get(la.fixture, 'tool').bind(la.fixture)
+    let injected = false
+    Reflect.set(la.fixture, 'tool', (value: { tool: string; args: Record<string, unknown> }) => {
+      const result = tool(value)
+      if (!injected && match(value)) { injected = true; external() }
+      return result
+    })
+    return () => injected
+  }
+
+  it.each(['analysis', 'done'] as const)('① X2-1 보드 상태 이동(%s, 정상 속도·갈래 생략) → 본문 저장 = 배너 없음', async (target) => {
+    const la = await laRig()
+    const issue = await openDraft(la)
+    const statusKey = target === 'done' ? FIXTURE_STATUS.done : FIXTURE_STATUS.analysis
+    await dragTo({ card: `LIFE-${issue.sequentialId}`, zone: `col:st:${statusKey}` })
+    expect(issue.statusId).toBe(statusKey)
+    if (target === 'done') expect(issue.resolution).toBe('completed')
+    click('[data-md-save]')
+    await settle(30)
+    expect(banner()).toBeNull()
+    expect(issue.description).toBe('MY BODY')
+  })
+
+  it('② X2-3 보드 완료 쓰기 뒤·결과 읽기 앞 외부가 갈래를 cancelled 로 → 본문 저장 = 배너', async () => {
+    const la = await laRig()
+    const issue = await openDraft(la)
+    const injected = afterWriteTool(la, {
+      match: (value) => (value.tool === 'issue_transition' || value.tool === 'issue_update') && value.args.id === issue.id,
+      external: () => { issue.resolution = 'cancelled'; issue.version += 1 },
+    })
+    await dragTo({ card: `LIFE-${issue.sequentialId}`, zone: `col:st:${FIXTURE_STATUS.done}` })
+    expect(injected()).toBe(true)
+    click('[data-md-save]')
+    await settle(30)
+    expect(banner()).not.toBeNull()
+    expect(issue.description).toBe('BEFORE')
+    expect(issue.resolution).toBe('cancelled')
+  })
+
+  it.each([true, false])('③④ X2-2 상세 우선순위 저장 뒤·결과 읽기 앞 외부 본문 변경=%s → 본문 저장', async (external) => {
+    const la = await laRig()
+    const issue = await openDraft(la)
+    const injected = afterWriteTool(la, {
+      match: (value) => value.tool === 'issue_update' && value.args.priority === 'highest',
+      external: () => { if (external) { issue.description = 'EXTERNAL BODY'; issue.version += 1 } },
+    })
+    click('[data-field="priority"]'); click('[data-priority-row="highest"]')
+    await settle(30)
+    expect(injected()).toBe(true)
+    click('[data-md-save]')
+    await settle(30)
+    if (external) {
+      // ③ 결과에 실린 외부 본문은 이 쓰기로 설명되지 않는다 — 초안 기준을 올리지 않아 배너, 외부 글 보존.
+      expect(banner()).not.toBeNull()
+      expect(issue.description).toBe('EXTERNAL BODY')
+    } else {
+      // ④ 대조 — 외부 변경이 없으면 결과 차이는 우선순위(내 값)뿐: 배너 없이 저장.
+      expect(banner()).toBeNull()
+      expect(issue.description).toBe('MY BODY')
+    }
+    expect(issue.priority).toBe('highest')
+  })
+})

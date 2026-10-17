@@ -8,8 +8,8 @@
 // - **편집 기준(basis)**: 초안(본문 편집기·제목)은 편집을 시작한 때의 base 를 기준으로 그 판으로 저장한다 — 다른 곳의 변경이 보여도 조용히 오르지 않는다(R3-A, C8).
 //   오르는 것은 셋뿐: 읽기 값과 칸이 하나도 다르지 않을 때(판만 오름) · 내 쓰기가 기준의 판을 실어 보내 성공했을 때(그 결과로) ·
 //   덮기가 성공한 그 칸(과 결과가 덮은 칸만 다른 초안). 덮기는 판 없이 가므로 다른 초안의 기준을 판 비교로 올리지 않는다(R6-A).
-// - **충돌**: 충돌 검사가 켜진 출처의 충돌 응답은 배너다. 예외 하나(LIFE-632 C5 ②) — 기준과 서버 값의 차이가 **전부** 이 카드에 앞서 보낸 내 늦은 상세 쓰기로
-//   설명되고(그 칸·그 값) 이 쓰기가 그 칸을 보내지 않으면 자기 충돌이다: 서버 지금 판으로 한 번만 다시 보낸다. 설명되지 않는 칸이 하나라도 있으면 배너.
+// - **충돌**: 충돌 검사가 켜진 출처의 충돌 응답은 언제나 배너다(자동 재시도 없음). 자기 충돌은 막아서 피한다(LIFE-632 C5): 같은 카드에 답이 안 온 쓰기(보드·상세,
+//   30초 늦음 포함)가 있으면 상세 쓰기는 「앞 변경을 출처가 확인하는 중」 으로 기다린다 — 그 답을 받아 base 가 새 판이 된 뒤 보낸다.
 // - **미확인 경계(LIFE-632 R5-A)**: 「적용됐을 수 있음」 신호를 받은 시각이 경계다. 그 시각 이하에 시작한 근거(읽기 시작·쓰기 보냄)는 미확인을 풀지 못하고 base 가 되지 않는다.
 // - **되돌리기 토스트**: 그 쓰기의 결과 판 = 지금 base 판일 때만 그 판으로 보낸다. 같은 작업에 다음 쓰기(상세·보드)가 시작되거나 base 판이 결과 판과 달라지면 곧바로 사라진다.
 // - **판 최신성(stamp)**: 읽기는 시작 시각이 지금 base 의 시각보다 뒤일 때만 base 가 된다(R2-D) — 보드 끌기 확정이 낡은 재조회에 덮이지 않게.
@@ -137,7 +137,11 @@ function fieldsOf(call: WorkCall): ConflictField[] {
   }
 }
 
-/** 앞선 내 쓰기가 그 칸을 지금 서버 값으로 만들었다고 볼 수 있는가 — 그 칸을 보냈고 서버 값이 보낸 값과 같다(LIFE-632 C5 ②). 부모는 보낸 값과 표시 부모가 달라 견주지 않는다. */
+/**
+ * 내 쓰기가 그 칸을 지금 값으로 만들었다고 볼 수 있는가 — 그 칸을 보냈고 결과 값이 보낸 값과 같다(LIFE-632 C5 ① · 리뷰 r1 X1-2).
+ * 상태는 완료 갈래(resolution)까지 — 갈래를 보내지 않았으면 결과 갈래가 비어 있을 때만(출처가 정한 갈래는 내가 보낸 값이 아니다, X1-3).
+ * 부모는 보낸 값과 표시 부모가 달라 견주지 않는다(설명 안 됨). 값이 같은지만 본다 — 외부가 같은 값을 넣은 것과 구별하지 못한다(ABA 한계, design-notes §4).
+ */
 function proves({ call, field, current }: { call: WorkCall; field: ConflictField; current: WorkItem }): boolean {
   switch (call.op) {
     case 'updateItem': {
@@ -149,27 +153,12 @@ function proves({ call, field, current }: { call: WorkCall; field: ConflictField
       return false
     }
     case 'changeStatus':
-      return field === 'status' && call.statusKey === current.statusKey
+      return field === 'status' && call.statusKey === current.statusKey && (call.resolution === undefined || call.resolution === null ? current.resolution === null : current.resolution === call.resolution)
     case 'setPlacement':
       return field === 'placement' && call.placement === current.placement
     default:
       return false
   }
-}
-
-/**
- * 자기 충돌이면 다시 보낼 쓰기(LIFE-632 C5 ②), 아니면 null. 판을 실은 쓰기가 충돌했고, 기준 → 서버 지금 값의 바뀐 칸이 **전부** 이 쓰기를 보낼 때 아직 답이 없던
- * 내 상세 쓰기(`mine`)로 설명되며(`proves`), 이 쓰기는 그 칸을 보내지 않는다 — 다시 보내도 덮을 외부 값이 없다. 판은 서버 지금 판(불투명 글자 그대로).
- * 바뀐 칸이 없거나(판만 오름 — 무엇이 바뀌었는지 모른다) 설명 안 되는 칸이 하나라도 있으면 null(배너).
- */
-function selfRetry({ error, call, basis, mine }: { error: WorkError; call: WorkCall; basis: WorkItem; mine: WorkCall[] }): WorkCall | null {
-  const current = error.kind === 'conflict' ? error.conflict?.current : undefined
-  if (current === undefined || mine.length === 0 || current.id !== basis.id || sentVersion(call) === null) return null
-  const changed = conflictFields({ base: basis, current })
-  if (changed.length === 0) return null
-  const own = fieldsOf(call)
-  if (changed.some((field) => own.includes(field) || !mine.some((prior) => proves({ call: prior, field, current })))) return null
-  return withVersion({ call, version: current.version })
 }
 
 /** 응답에 이 작업의 새 값이 실려 오는가 — 아니면(연결·자식·코멘트) 단건을 다시 읽어야 판이 맞는다. */
@@ -216,8 +205,6 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const fenceRef = useRef(0)
   /** 첫 읽기 체인이 단건에서 실패한 출발점(LIFE-632 R5-C) — 그 뒤 다른 길(보드 확정·재조회)로 정본을 받으면 부가 읽기를 그 출발점으로 이어 시작한다. */
   const extrasDueRef = useRef<Origin | null>(null)
-  /** 확인이 늦어 아직 답이 없는 내 상세 쓰기 — 카드(uid)마다(LIFE-632 C5 ②). 다음 쓰기의 충돌이 자기 충돌인지 가리는 근거. */
-  const lateMineRef = useRef(new Map<string, WorkCall[]>())
   /**
    * 미확인(R3-A) — 순서 가드가 늦은 결과를 버렸거나 쓰기가 「적용됐을 수 있음」 으로 실패했는데(R4-A) 정본을 아직 다시 받지 못함.
    * 그동안 상세 쓰기는 막힌다(옛 base 로 저장하지 않게). 정본을 받으면 풀린다 — 지난 읽기 오류 표시도 함께 걷는다(R4-C).
@@ -260,14 +247,19 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const capsRef = useRef(caps)
   capsRef.current = caps
   const locked = uid !== null && page.busy.has(uid)
+  /**
+   * 같은 카드에 답이 안 온 쓰기(보드·상세, 늦음 포함)가 있다 — 상세 쓰기는 기다린다(LIFE-632 C5, 자기 충돌 배너 대신). 충돌 검사가 켜진 출처에서만 —
+   * 꺼진 출처는 판을 싣지 않아 자기 충돌이 없고, 늦은 쓰기 뒤 순서는 확정 순서 가드·미확인이 맡는다(LIFE-623).
+   */
+  const waiting = uid !== null && page.unanswered.has(uid) && caps?.conflictCheck.state === 'on'
   const reading = (readsRef.current.get(session) ?? 0) > 0
   /** 확인하는 중 표시 — 잠금(앞 쓰기 확인 중) 또는 받은 뒤의 단건 재조회. */
-  const busy = locked || (reading && base !== null)
+  const busy = locked || waiting || (reading && base !== null)
   /**
    * 쓰기 막힘 이유 — 연결 상태(권한·끊김·인증) → 그 작업의 앞 쓰기 확인 중 → 상세를 아직 받지 않음(R3-E, 받기에 실패했으면 그 사실 — R6-E) → 상세를 다시 받는 중(직렬화).
    * 막혀 있으면 화면은 그 칸을 막고, 그래도 온 쓰기는 보내지 않는다(기다렸다 보내지 않는다).
    */
-  const blocked = writeBlock(connection?.status ?? null)?.reason ?? (locked ? '앞 변경을 출처가 확인하는 중…' : null) ?? (base === null && target !== null ? (phase.state === 'error' ? '상세를 받지 못했습니다 — 다시 시도하세요.' : '상세를 불러오는 중…') : null) ?? (reading ? '상세를 다시 받는 중…' : null)
+  const blocked = writeBlock(connection?.status ?? null)?.reason ?? (locked || waiting ? '앞 변경을 출처가 확인하는 중…' : null) ?? (base === null && target !== null ? (phase.state === 'error' ? '상세를 받지 못했습니다 — 다시 시도하세요.' : '상세를 불러오는 중…') : null) ?? (reading ? '상세를 다시 받는 중…' : null)
     ?? (unconfirmed ? (phase.state === 'error' ? '서버 값을 다시 받지 못했습니다 — 다시 시도해 받은 뒤 고치세요.' : '서버 값을 다시 맞추는 중…') : null)
   const blockedRef = useRef(blocked)
   blockedRef.current = blocked
@@ -281,10 +273,12 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const dropBasis = useCallback((slot: EditSlot): void => { basesRef.current.delete(slot) }, [])
   /**
    * 서버 값이 기준과 칸이 하나도 다르지 않으면(판만 오름 — 코멘트·연결·자식 뒤) 그 기준을 새 값으로. 다른 칸이 있으면 두어 저장이 배너가 되게.
-   * `mine` = 이 값을 만든 내 쓰기가 바꾼 칸(LIFE-632 C5 ①) — 다른 칸이 그 칸뿐이면 그 차이는 내 쓰기다(외부 변경이 아니다). 다른 칸이 하나라도 섞이면 두어 배너.
+   * `mine` = 이 값을 만든 내 쓰기(LIFE-632 C5 ①) — 다른 칸이 전부 그 쓰기가 보낸 칸이고 결과 값 = 보낸 값이면 그 차이는 내 쓰기다(`proves`). 설명되지 않는 칸이
+   * 하나라도 있으면(다른 칸 · 같은 칸 다른 값 — 결과 읽기 앞 외부 변경, 리뷰 r1 X1-2) 두어 저장이 배너가 되게.
    */
-  const slideBases = useCallback(({ next, mine }: { next: WorkItem; mine: ConflictField[] }): void => {
-    for (const [slot, basis] of basesRef.current) if (basis.id === next.id && conflictFields({ base: basis, current: next }).every((field) => mine.includes(field))) basesRef.current.set(slot, next)
+  const slideBases = useCallback(({ next, mine }: { next: WorkItem; mine: WorkCall | null }): void => {
+    const explained = (field: ConflictField): boolean => mine !== null && fieldsOf(mine).includes(field) && proves({ call: mine, field, current: next })
+    for (const [slot, basis] of basesRef.current) if (basis.id === next.id && conflictFields({ base: basis, current: next }).every(explained)) basesRef.current.set(slot, next)
   }, [])
 
   /** 되돌리기 토스트 하나를 끝낸다 — 토스트도 지운다. */
@@ -332,7 +326,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     setPhase(recovered)
     putBase(value)
     setItem(value)
-    slideBases({ next: value, mine: [] })
+    slideBases({ next: value, mine: null })
     resumeRef.current(value)
     return value
   }, [putBase, slideBases])
@@ -535,7 +529,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     putBase(next)
     setItem(next)
     // 이 값은 내 쓰기의 결과다 — 기준과 다른 칸이 그 쓰기가 바꾼 칸뿐이면 열린 초안의 기준을 옮긴다(LIFE-632 C5 ① — 본문 편집 중 보드 끌기가 자기 충돌 배너가 되지 않게).
-    slideBases({ next, mine: fieldsOf(settled.call) })
+    slideBases({ next, mine: settled.call })
     if (!resumeExtras(next)) void refreshActivity(here)
   }, [page.settledWrite])
 
@@ -657,39 +651,18 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
       const apply = spec.optimistic
       setItem((value) => (value === null ? value : apply(value)))
     }
-    // 이 쓰기를 보낼 때 아직 답이 없는 내 상세 쓰기(C5 ②) — 충돌하면 그것들로 설명되는지 본다.
-    const mineKey = itemUid(origin.target)
-    const mine = [...(lateMineRef.current.get(mineKey) ?? [])]
-    const send = (sending: WorkCall) => page.writeItem({ connectionId: origin.target.connectionId, spaceKey: current.spaceKey, itemId: current.id, call: sending, optimistic: spec.optimistic })
     // 쓰기 시작 — 그 전에 시작한 읽기는 이제 낡았다(R2-D).
     baseStampRef.current = tick()
-    let sent = call
-    let outcome = await send(sent)
+    const outcome = await page.writeItem({ connectionId: origin.target.connectionId, spaceKey: current.spaceKey, itemId: current.id, call, optimistic: spec.optimistic })
     if (!alive(started)) return { kind: 'left' }
-    const retry = outcome.kind === 'failed' ? selfRetry({ error: outcome.error, call: sent, basis, mine }) : null
-    if (retry !== null) {
-      // 자기 충돌 — 서버 지금 판으로 한 번만 다시 보낸다(그 판도 충돌하면 배너).
-      sent = retry
-      baseStampRef.current = tick()
-      outcome = await send(sent)
-      if (!alive(started)) return { kind: 'left' }
-    }
     if (outcome.kind === 'late') {
-      const lateCall = sent
-      lateMineRef.current.set(mineKey, [...(lateMineRef.current.get(mineKey) ?? []), lateCall])
-      const forget = (): void => {
-        const left = (lateMineRef.current.get(mineKey) ?? []).filter((entry) => entry !== lateCall)
-        if (left.length === 0) lateMineRef.current.delete(mineKey)
-        else lateMineRef.current.set(mineKey, left)
-      }
       const settled = outcome.settled.then((late): DetailFinal => {
-        forget()
         if (!alive(started) || late.kind === 'stale') return { kind: 'left' }
-        return finish({ spec, call: lateCall, current, basis, origin, outcome: late, late: true })
+        return finish({ spec, call, current, basis, origin, outcome: late, late: true })
       })
       return { kind: 'late', settled }
     }
-    return finish({ spec, call: sent, current, basis, origin, outcome, late: false })
+    return finish({ spec, call, current, basis, origin, outcome, late: false })
   }, [here, notify, page, alive, versionOf, finish, tick, expireAll])
   const writeRef = useRef(write)
   writeRef.current = write

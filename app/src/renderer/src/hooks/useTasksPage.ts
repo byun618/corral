@@ -336,6 +336,11 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
   /** 쓰기 실패·완료 분류 변경 뒤 서버 재조회 — `reload` 는 아래에서 정의된다. */
   const reloadRef = useRef<(options: { quiet: boolean }) => Promise<string[]>>(async () => [])
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set())
+  /**
+   * 답이 안 온 쓰기가 있는 카드(uid) — 잠금 중이든 30초 늦음이든(정합화 단위 `outstanding` 그대로, LIFE-632 C5). 열린 상세는 이 카드의 쓰기를 막고 기다린다:
+   * 앞 쓰기의 새 판을 모르는 쓰기가 나가 자기 충돌 배너가 되지 않게. 앞 쓰기의 답(성공·실패·버림)·세대 교체로 빠진다 — 출처 호출은 시간 초과가 있어 유한하다.
+   */
+  const [unanswered, setUnanswered] = useState<ReadonlySet<string>>(new Set())
   /** 상세 단건 읽기가 진행 중인 카드(uid → 수) — 보드 쓰기(끌기·되돌리기)도 막는다(LIFE-602 R6-D). */
   const detailReads = useRef(new Map<string, number>())
   const [reading, setReading] = useState<ReadonlySet<string>>(new Set())
@@ -474,6 +479,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       for (const entry of open) if (entry.generation !== currentGeneration(entry.connectionId)) open.delete(entry)
       if (open.size === 0) { outstanding.current.delete(uid); overlapped.current.delete(uid) }
     }
+    setUnanswered(new Set(outstanding.current.keys()))
     // 옛 세대의 마지막 쓰기 기록은 쓸 데가 없다(그 되돌리기는 세대 검사가 막는다) — 놓아 준다(R1-F).
     for (const [lane, entry] of latestWrite.current) if (entry.generation !== currentGeneration(entry.connectionId)) latestWrite.current.delete(lane)
     if (stale.length === 0) return
@@ -534,6 +540,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     if (open.size > 0) overlapped.current.add(uid)
     open.add(written)
     outstanding.current.set(uid, open)
+    setUnanswered(new Set(outstanding.current.keys()))
     latestWrite.current.set(lane, written)
     writeLane.current.set(written, lane)
     return unsure
@@ -551,6 +558,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     open?.delete(written)
     if (open !== undefined && open.size > 0) return false
     outstanding.current.delete(uid)
+    setUnanswered(new Set(outstanding.current.keys()))
     return overlapped.current.delete(uid)
   }, [])
   /** 단위 정합화 — 서버 정본으로(목록·작업 중·키 조회). 이미 나간 목록 요청은 그 전 값일 수 있어 버린다(R4-C). */
@@ -1204,6 +1212,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     createItem, createBusy,
     /** 확인 안 된 쓰기가 있는 카드(uid) — 끌기 잠금·「확인하는 중」 표시(R2-A). */
     busy,
+    /** 답이 안 온 쓰기(늦음 포함)가 있는 카드(uid) — 상세 쓰기 기다림(LIFE-632 C5). */
+    unanswered,
     /** 상세 단건 읽기가 진행 중인 카드(uid) — 끌기 잠금(R6-D). */
     reading,
     beginDrag, endDrag, transitions,

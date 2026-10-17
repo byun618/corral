@@ -7,7 +7,7 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { Toaster, toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { WorkCall, WorkRequest, WorkResponse, WorkSettingsState } from '../../../shared/work.js'
+import type { WorkCall, WorkCapabilities, WorkRequest, WorkResponse, WorkSettingsState } from '../../../shared/work.js'
 import { MemoryActivity } from '../../../main/work/activity-store.js'
 import { FIXTURE_IDS, FIXTURE_STATUS, LaMcpFixture } from '../../../main/work/la-mcp-fixture.js'
 import { laSourceEntry } from '../../../main/work/la-source.js'
@@ -69,12 +69,34 @@ async function rig({ entry }: { entry?: (state: MockState) => WorkSourceEntry } 
   return result
 }
 
+/** 출처의 능력 표에서 충돌 검사만 꺼짐으로(LIFE-632) — 연결 확인(`listSpaces`)과 `capabilities()` 둘 다. 연산은 실제 출처 그대로. */
+function checksOff(entry: WorkSourceEntry): WorkSourceEntry {
+  return {
+    ...entry,
+    create: (credentials) => {
+      const client = entry.create(credentials)
+      const capabilities: WorkCapabilities = { ...client.capabilities(), conflictCheck: { state: 'hidden' } }
+      return {
+        capabilities: () => capabilities,
+        call: async (call, meta) => {
+          const outcome = await client.call(call, meta)
+          return outcome.ok && outcome.result.op === 'listSpaces' ? { ...outcome, result: { ...outcome.result, capabilities } } : outcome
+        },
+        close: () => client.close(),
+      }
+    },
+  }
+}
+
 /** 실제 `LaSource` + `LaMcpFixture`(충돌 검사 꺼짐). 응답도 모아 쓰기 결과의 본문이 정본 그대로 오는지 본다(V17 상당). */
 async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[]; responses: WorkResponse[]; service: WorkService; connectionId: string; emitSettings: () => void }> {
   const fixture = new LaMcpFixture()
   // LIFE-622 — LA 충돌 검사가 켜졌다. 이 파일의 시험은 판과 무관한 **확정 순서 가드**(623 `sent`·미확인 막힘)를 본다 — 켜진 LA 에서는 같은 장면의 B 가
   // 앞 쓰기 A 가 소비한 판 때문에 충돌 배너로 끝나 B 성공 역전 자체가 생기지 않는다(F8 — specs/LIFE-622-reconcile-conflict/raw/claude/design-notes.md §5).
   // 그래서 서버는 조건부 수정 이전 모양(판을 견주지 않음)으로 둔다. 켜진 LA 계약은 la-conflict.test.ts · 계약 묶음 · TaskDetail.board-late 가 본다.
+  // LIFE-632 C5 — 능력도 서버 모양에 맞춰 충돌 검사 **꺼짐**으로 알린다(판을 견주지 않는 서버 = 판을 싣지 않는 연결). 켜짐 연결에서는 같은 카드에 답이 안 온
+  // 쓰기가 있으면 상세 쓰기가 기다리므로 「상세 A 늦음 → 상세 B」 장면이 생기지 않는다 — 이 파일의 순서 가드(R2-A·R3-A)·미확인(R4-A·R4-C)은 그 장면이 실제로
+  // 나는 꺼짐 연결(Jira·판 없는 출처)에서 본다. 단언은 그대로다. 켜짐의 같은 순서 가드는 B = 보드 쓰기로 `TaskDetail.r7on.test.tsx` 가 본다.
   fixture.checksVersion = false
   const fetchImpl = async (_url: unknown, options?: RequestInit): Promise<Response> => {
     const body: { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } } = JSON.parse(String(options?.body))
@@ -85,7 +107,7 @@ async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[]; resp
   }
   // 설정 변경(연결 세대 교체)은 `emitSettings` 로 화면 listener 에 직접 넘긴다 — 하네스 서비스의 onChange 는 기록만 한다.
   let listener: (value: WorkSettingsState) => void = () => {}
-  const harness = workHarness({ entries: [laSourceEntry({ url: 'http://127.0.0.1:9/not-networked', clientVersion: 'test', fetchImpl })] })
+  const harness = workHarness({ entries: [checksOff(laSourceEntry({ url: 'http://127.0.0.1:9/not-networked', clientVersion: 'test', fetchImpl }))] })
   const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
   if (!added.ok) throw new Error('LA 모의 연결 실패')
   const calls: WorkCall[] = []

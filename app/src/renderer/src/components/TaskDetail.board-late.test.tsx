@@ -104,10 +104,11 @@ async function dragTo({ card, zone }: { card: string; zone: string }): Promise<v
 function captureTimeout(): { fire: () => Promise<void>; caught: () => boolean } {
   let timeout: (() => void) | null = null
   const originalTimer = globalThis.setTimeout
-  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...args: unknown[]) => {
-    if (ms === 30000) { timeout = fn; return originalTimer(() => {}, 120000) }
-    return originalTimer(fn, ms, ...args)
-  }) as typeof setTimeout)
+  // 렌더러 30초 한도만 손에 쥐고 나머지 타이머는 그대로 둔다(타입 단언 없이 — 인자를 그대로 넘긴다).
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation((handler, ms, ...args) => {
+    if (ms === 30000 && typeof handler === 'function') { timeout = () => handler(); return originalTimer(() => {}, 120000) }
+    return originalTimer(handler, ms, ...args)
+  })
   return { caught: () => timeout !== null, fire: async () => { await act(async () => { timeout?.() }); await settle(15) } }
 }
 /** 그 연산은 출처에서 끝낸 뒤(정본 결과) 배달만 붙든다. */

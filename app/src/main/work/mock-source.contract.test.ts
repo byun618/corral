@@ -12,7 +12,13 @@ workContractSuite({
     if (!added.ok) throw new Error(`연결 실패: ${added.error.kind} ${added.error.message}`)
     return {
       service: harness.service, connectionId: added.connection.id, close: async () => {}, visibleItems: ['m-1', 'm-2', 'm-3', 'm-4', 'm-5'], retiredSpaceKeys: [], missingKey: 'CORE-999', crossSpace: { itemId: 'm-1', otherKey: 'WEB-1', otherSpaceKey: 'WEB' },
-      externalBody: ({ itemId, body }) => { const item = state.items.find((entry) => entry.id === itemId); if (item !== undefined) item.body = body },
+      externalBody: ({ itemId, body }) => {
+        const item = state.items.find((entry) => entry.id === itemId)
+        if (item === undefined) throw new Error(`픽스처에 없음: ${itemId}`)
+        const before = item.body
+        item.body = body
+        return () => { item.body = before }
+      },
     }
   },
 })

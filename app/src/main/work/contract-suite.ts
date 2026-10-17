@@ -44,8 +44,9 @@ export type ContractTarget = {
   /**
    * 외부 본문 바꾸기(LIFE-623 C2) — 다른 편집기가 출처에서 본문을 바꾼 것처럼 픽스처를 직접 고친다. `null` = 출처가 주는 빈 본문(LA `description:null` ·
    * Jira description null · 모의 `body:null`), `''` = 빈 글, 그 밖 = 글. 묶음은 그 뒤 쓰기 결과의 본문·연결이 직후 단건과 같은지 본다.
+   * 돌려주는 함수는 픽스처 본문을 바꾸기 전 원래 값(출처 서식 그대로 — Jira ADF)으로 되돌린다.
    */
-  externalBody: ({ itemId, body }: { itemId: string; body: string | null }) => void
+  externalBody: ({ itemId, body }: { itemId: string; body: string | null }) => () => void
 }
 
 /** 정규형 본문(지원 표 안) — 출처 서식으로 바꿔 두는 출처도 바이트로 되돌려야 하는 꼴. */
@@ -431,23 +432,24 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       expect(records.filter((record) => record.writeId === first?.writeId).map((record) => record.change.field).sort()).toEqual(['body', 'dueAt', 'priority', 'title'])
     })
 
+    // 공유 픽스처를 쓰는 검사라 끝에 픽스처 본문을 처음 값(출처 서식 그대로)으로 되돌리고, 시작 때 단건 본문과 같은지 본다
+    // (R1-C — 목록 행 `item.body` 는 「안 실음」 null 이라 되돌릴 값이 아니다).
+    // 만든 임시 작업(`createItem`)은 남긴다 — 계약에 지우기 연산이 없다(E6 「계약 묶음 자식」 과 같다). 이름 「단건 모양 검사」 로 알아볼 수 있다.
     it.each([null, '', '외부 본문'])('쓰기 결과는 단건 모양(LIFE-623) — 외부 본문 %j 뒤 모든 쓰기 결과의 본문·연결 = 직후 단건, 「안 실음」 null 이 없다', async (external) => {
       const { space, items, statuses, capabilities } = await stage()
-      const item = items.find((entry) => entry.category !== 'done' && entry.parentId === null) ?? items[0]
-      const child = items.find((entry) => entry.parentId !== null)
-      if (item === undefined) throw new Error('no item')
-      const writes: { call: WorkCall; itemId: string }[] = [{ call: { op: 'updateItem', itemId: item.id, fields: { title: `${item.title} ·` }, ifVersion: null }, itemId: item.id }]
-      const allowed = await transitions(item.id)
-      const forward = statuses.find((status) => status.key !== item.statusKey && status.category !== 'done' && allowed.includes(status.key)) ?? statuses.find((status) => status.key !== item.statusKey && allowed.includes(status.key))
-      if (forward !== undefined) writes.push({ call: { op: 'changeStatus', itemId: item.id, statusKey: forward.key, ifVersion: null }, itemId: item.id })
-      if (capabilities.placement.state === 'on') writes.push({ call: { op: 'setPlacement', itemId: item.id, placement: item.placement === 'board' ? 'backlog' : 'board', ifVersion: null }, itemId: item.id })
-      if (capabilities.order.state === 'on') {
-        const other = items.find((entry) => entry.id !== item.id)
-        if (other !== undefined) writes.push({ call: { op: 'reorder', itemId: item.id, afterId: other.id }, itemId: item.id })
+      const listed = items.find((entry) => entry.category !== 'done' && entry.parentId === null) ?? items[0]
+      const listedChild = items.find((entry) => entry.parentId !== null)
+      if (listed === undefined) throw new Error('no item')
+      const item = await getItem(listed.id)
+      const child = listedChild === undefined ? undefined : await getItem(listedChild.id)
+      const restores = new Map<string, () => void>()
+      const putExternal = (itemId: string): void => {
+        const restore = target.externalBody({ itemId, body: external })
+        if (!restores.has(itemId)) restores.set(itemId, restore)
       }
-      if (capabilities.parentChange.state === 'on' && child !== undefined) writes.push({ call: { op: 'setParent', itemId: child.id, spaceKey: space.key, parentId: child.parentId, ifVersion: null }, itemId: child.id })
-      for (const { call, itemId } of writes) {
-        target.externalBody({ itemId, body: external })
+      /** 쓰기 하나 — 외부 본문을 가한 뒤 보내고, 결과 본문·연결 = 직후 단건. */
+      const expectCanonical = async ({ call, itemId }: { call: WorkCall; itemId: string }): Promise<void> => {
+        putExternal(itemId)
         const result = await okResult(call)
         if (!('item' in result) || result.item === null) throw new Error(`${call.op} 결과에 작업이 없다`)
         const canonical = await getItem(itemId)
@@ -458,14 +460,61 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
         if (external !== null && external !== '') expect(canonical.body).toBe(external)
         else expect(canonical.body ?? '').toBe('')
       }
-      // 본문 쓰기 자체도 — 보낸 글이 결과에 그대로(빈 글 포함).
-      target.externalBody({ itemId: item.id, body: external })
-      const cleared = await okResult({ op: 'updateItem', itemId: item.id, fields: { body: '' }, ifVersion: null })
-      if (cleared.op !== 'updateItem') throw new Error(cleared.op)
-      expect(cleared.item.body).toEqual((await getItem(item.id)).body)
-      await okResult({ op: 'updateItem', itemId: item.id, fields: { title: item.title, body: item.body ?? '' }, ifVersion: null })
-      if (forward !== undefined) await travel({ itemId: item.id, goal: statuses.find((status) => status.key === item.statusKey) ?? forward, statuses })
-      if (capabilities.placement.state === 'on' && item.placement !== null) await okResult({ op: 'setPlacement', itemId: item.id, placement: item.placement, ifVersion: null })
+      const original = statuses.find((status) => status.key === item.statusKey)
+      try {
+        const writes: { call: WorkCall; itemId: string }[] = [{ call: { op: 'updateItem', itemId: item.id, fields: { title: `${item.title} ·` }, ifVersion: null }, itemId: item.id }]
+        const allowed = await transitions(item.id)
+        const forward = statuses.find((status) => status.key !== item.statusKey && status.category !== 'done' && allowed.includes(status.key)) ?? statuses.find((status) => status.key !== item.statusKey && allowed.includes(status.key))
+        if (forward !== undefined) writes.push({ call: { op: 'changeStatus', itemId: item.id, statusKey: forward.key, ifVersion: null }, itemId: item.id })
+        if (capabilities.placement.state === 'on') writes.push({ call: { op: 'setPlacement', itemId: item.id, placement: item.placement === 'board' ? 'backlog' : 'board', ifVersion: null }, itemId: item.id })
+        if (capabilities.order.state === 'on') {
+          const other = items.find((entry) => entry.id !== item.id)
+          if (other !== undefined) writes.push({ call: { op: 'reorder', itemId: item.id, afterId: other.id }, itemId: item.id })
+        }
+        if (capabilities.parentChange.state === 'on' && child !== undefined) writes.push({ call: { op: 'setParent', itemId: child.id, spaceKey: space.key, parentId: child.parentId, ifVersion: null }, itemId: child.id })
+        for (const write of writes) await expectCanonical(write)
+        // 완료 갈래 전이(R1-B) — 완료 바로 앞까지 간 뒤 완료로(갈래 능력이 켜졌으면 「취소함」 을 실어). 결과 본문·연결 = 직후 단건.
+        const done = statuses.find((status) => status.category === 'done')
+        if (done !== undefined && original !== undefined) {
+          // 완료로 가는 전이가 열릴 때까지 완료 아닌 상태로 한 칸씩(허용 전이만인 출처 — 들른 상태는 다시 가지 않는다).
+          const seen = new Set<string>()
+          for (let step = 0; step < 6; step += 1) {
+            const now = await getItem(item.id)
+            seen.add(now.statusKey)
+            const open = await transitions(item.id)
+            if (open.includes(done.key)) break
+            const next = statuses.find((status) => status.category !== 'done' && open.includes(status.key) && !seen.has(status.key))
+            if (next === undefined) throw new Error('완료로 가는 길이 없다')
+            await okResult({ op: 'changeStatus', itemId: item.id, statusKey: next.key, ifVersion: null })
+          }
+          await expectCanonical({ call: { op: 'changeStatus', itemId: item.id, statusKey: done.key, ifVersion: null, ...(capabilities.resolution.state === 'on' ? { resolution: 'cancelled' as const } : {}) }, itemId: item.id })
+        }
+        // 본문 쓰기 자체도 — 보낸 글이 결과에 그대로(빈 글 포함).
+        putExternal(item.id)
+        const cleared = await okResult({ op: 'updateItem', itemId: item.id, fields: { body: '' }, ifVersion: null })
+        if (cleared.op !== 'updateItem') throw new Error(cleared.op)
+        expect(cleared.item.body).toEqual((await getItem(item.id)).body)
+        // 만들기(R1-B) — 자식을 받는 종류 아래 임시 작업. 본문 = 이 경우의 외부 본문(null 이면 본문 칸 없이). 결과 본문·연결 = 직후 단건.
+        const kinds = await okResult({ op: 'listStatuses', spaceKey: space.key })
+        if (kinds.op !== 'listStatuses') throw new Error(kinds.op)
+        const parent = items.find((entry) => (kinds.kinds.find((kind) => kind.key === entry.kind.key)?.childKinds.length ?? 0) > 0)
+        const kindKey = parent === undefined ? undefined : kinds.kinds.find((kind) => kind.key === parent.kind.key)?.childKinds[0]
+        if (parent === undefined || kindKey === undefined) throw new Error('자식을 받는 작업이 없다 — 픽스처를 확인')
+        const made = await okResult({ op: 'createItem', spaceKey: space.key, parentId: parent.id, kindKey, title: `단건 모양 검사 ${JSON.stringify(external)}`, ...(external === null ? {} : { body: external }) })
+        if (made.op !== 'createItem') throw new Error(made.op)
+        const madeCanonical = await getItem(made.item.id)
+        expect({ op: 'createItem', body: made.item.body, relations: made.item.relations }).toEqual({ op: 'createItem', body: madeCanonical.body, relations: madeCanonical.relations })
+        expect(madeCanonical.relations).not.toBeNull()
+      } finally {
+        // 되돌리기(실패해도 — 다음 경우가 같은 픽스처를 쓴다) — 제목·상태·배치, 그리고 본문은 픽스처를 시작 때 단건 본문으로(R1-C).
+        await okResult({ op: 'updateItem', itemId: item.id, fields: { title: item.title }, ifVersion: null })
+        if (original !== undefined) await travel({ itemId: item.id, goal: original, statuses })
+        if (capabilities.placement.state === 'on' && item.placement !== null) await okResult({ op: 'setPlacement', itemId: item.id, placement: item.placement, ifVersion: null })
+        for (const restore of restores.values()) restore()
+        expect((await getItem(item.id)).body).toBe(item.body)
+        if (child !== undefined) expect((await getItem(child.id)).body).toBe(child.body)
+      }
+      expect((await getItem(item.id)).resolution).toBe(item.resolution)
     })
 
     it('완료 갈래(E5) — 완료 분류로 「취소함」·「완료함」 을 고르고, 갈래만 바꾸고, 되돌리면 갈래가 비운다 · 갈래 능력이 꺼졌으면 갈래를 실은 변경은 이유와 함께 거절', async () => {

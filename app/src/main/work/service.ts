@@ -427,7 +427,7 @@ export class WorkService {
       }
       const checked: WorkOutcome = outcome.ok && !resultMatches({ call: call.op, result: outcome.result.op })
         ? { ok: false, error: workError({ kind: 'invalid_response', message: `출처가 ${call.op} 에 ${outcome.result.op} 로 답했습니다.` }) }
-        : checkCreateMeta({ call, outcome })
+        : checkWriteShape(checkCreateMeta({ call, outcome }))
       log('work.request', { op: call.op, ok: checked.ok, errorKind: checked.ok ? null : checked.error.kind, status: checked.ok ? null : checked.error.status, ms: this.now() - startedAt })
       if (checked.ok) {
         if (writeId !== null) this.record({ connectionId, call, result: checked.result, writeId })
@@ -724,6 +724,28 @@ function checkCreateMeta({ call, outcome }: { call: WorkCall; outcome: WorkOutco
   if (meta === null) return { ok: false, error: workError({ kind: 'invalid_response', message: '출처의 생성 메타 모양이 잘못됐습니다.' }) }
   if (meta.spaceKey !== call.spaceKey || meta.kindKey !== call.kindKey) return { ok: false, error: workError({ kind: 'invalid_response', message: '출처가 다른 스페이스·종류의 생성 메타로 답했습니다.' }) }
   return { ok: true, result: { op: 'getCreateMeta', meta } }
+}
+
+/**
+ * 쓰기 결과 모양 검증(LIFE-623 R1-A) — 쓰기 결과는 단건 모양이어야 한다(`WorkResult` 계약). 목록 모양(`relations === null` — `remember` 와 같은 판별)이면
+ * 화면이 「안 실음」 null 을 정본 빈 본문으로 기준에 올리므로 `invalid_response` 로 거른다. 쓰기는 이미 출처에 갔으므로 「적용됐을 수 있음」(`maybeApplied`)
+ * — 출처 쓰기 오류 규칙(`unknownWriteOutcome` · Jira `maybeApplied`: 보낸 뒤 답이 깨짐 = 닿았을 수 있음, 분류는 그대로 · 문구 앞에 모른다는 말)과 같다.
+ */
+function checkWriteShape(outcome: WorkOutcome): WorkOutcome {
+  if (!outcome.ok) return outcome
+  const { result } = outcome
+  switch (result.op) {
+    case 'changeStatus':
+    case 'setPlacement':
+    case 'setParent':
+    case 'reorder':
+    case 'updateItem':
+    case 'createItem':
+      if (result.item.relations !== null) return outcome
+      return { ok: false, error: { ...workError({ kind: 'invalid_response', message: `${result.op === 'createItem' ? '만들어졌는지' : '적용됐는지'} 모릅니다 — 출처의 결과가 단건 모양이 아닙니다(본문·연결을 싣지 않음). 다시 보내지 말고 새로 읽으세요.` }), maybeApplied: true } }
+    default:
+      return outcome
+  }
 }
 
 /** 줄 수 — 본문 변경은 전문을 남기지 않고 줄 수만. */

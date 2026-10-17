@@ -32,8 +32,10 @@ workContractSuite({
       // Jira 빈 본문 두 모양 — description null · 빈 ADF. 둘 다 단건에서 '' 로 읽힌다(F9).
       externalBody: ({ itemId, body }) => {
         const issue = harness.fixture.issues.find((entry) => entry.id === itemId)
-        if (issue === undefined) return
+        if (issue === undefined) throw new Error(`픽스처에 없음: ${itemId}`)
+        const before = issue.description
         issue.description = body === null ? null : { type: 'doc', version: 1, content: body === '' ? [] : [{ type: 'paragraph', content: [{ type: 'text', text: body }] }] }
+        return () => { issue.description = before }
       },
     }
   },

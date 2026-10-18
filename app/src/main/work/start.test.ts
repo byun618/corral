@@ -54,14 +54,14 @@ function fakeLinks({ held = {}, canSave = () => true }: { held?: Record<string, 
   }
 }
 
-function harness({ answer, repos, worktreeExists, pending }: { answer: (invocation: Invocation, n: number) => Promise<RpcResponse> | RpcResponse; repos?: () => RepoRow[]; worktreeExists?: (path: string) => boolean; pending?: MemoryPending }) {
+function harness({ answer, repos, worktreeExists, pending, storeState = 'saved' }: { answer: (invocation: Invocation, n: number) => Promise<RpcResponse> | RpcResponse; repos?: () => RepoRow[]; worktreeExists?: (path: string) => boolean; pending?: MemoryPending; storeState?: 'saved' | 'failed' }) {
   const calls: Invocation[] = []
   const events: { eventKey: string; change: WorkActivityChange }[] = []
   const stores: string[] = []
   const work: LinkWorkPort = {
     linkConnections: () => [], repoDefaultConnection: () => null,
     recordEvent: ({ eventKey, change }) => { events.push({ eventKey, change }); return true },
-    storeLink: async ({ action }) => { stores.push(action); return { state: 'saved', message: null } },
+    storeLink: async ({ action }) => { stores.push(action); return storeState === 'saved' ? { state: 'saved', message: null } : { state: 'failed', message: 'LA 에 닿지 않습니다 (ECONNRESET).' } },
     refreshEvent: () => false,
     storeAutoLink: async () => null,
   }
@@ -711,5 +711,23 @@ describe('R2-K 초안 단계 문구 · 넣지 못한 이유', () => {
   it('empty_after_sanitize · agent_not_ready 는 그 이유로 실패 단계', () => {
     expect(mapAgentStages(draftStages({ status: 'not_started', mode: 'draft', reason: 'empty_after_sanitize' })).stages.prompt).toEqual({ status: 'failed', code: 'empty_after_sanitize', message: '정제한 뒤 남은 본문이 없습니다.' })
     expect(mapAgentStages(draftStages({ status: 'not_started', mode: 'draft', reason: 'agent_not_ready' })).stages.prompt).toEqual({ status: 'failed', code: 'agent_not_ready', message: '에이전트가 준비되지 않아 초안을 넣지 않았습니다.' })
+  })
+})
+
+describe('LIFE-635 C6 일반 시작 — 출처 링크 저장 실패', () => {
+  it('로컬 링크 저장 · 시작 단계 완료(진행 막힘 없음) · 결과 failed + 이쪽 말 · 활동에 출처 저장 실패 1줄', async () => {
+    const h = harness({ answer: () => created({}), storeState: 'failed' })
+    const given = input()
+    const result = await h.service.start(given)
+    expect(result.stages.worktree.status).toBe('completed')
+    expect(result.stages.agent.status).toBe('completed')
+    expect(result).toMatchObject({ linkSaved: true, sourceLink: { state: 'failed', message: 'LA 에 닿지 않습니다 (ECONNRESET).' } })
+    expect(h.saved).toHaveLength(1)
+    expect(h.events.map((row) => row.eventKey)).toEqual([`run:start:${given.attemptId}`, `run:srcfail:run:start:${given.attemptId}`])
+  })
+  it('양성 대조 — 저장 성공이면 출처 실패 줄 0', async () => {
+    const h = harness({ answer: () => created({}) })
+    await h.service.start(input())
+    expect(h.events.filter((row) => row.change.field === 'run' && row.change.event === 'source_link_failed')).toEqual([])
   })
 })

@@ -36,7 +36,16 @@ type Slot = {
   failures: number
   backoffUntil: number
   retryAfterUntil: number
-  inflight: { controller: AbortController; promise: Promise<void> } | null
+  inflight: Inflight | null
+}
+
+type Inflight = { controller: AbortController; timeout: ReturnType<typeof setTimeout>; promise: Promise<void> }
+
+/** 진행 중 요청을 버린다 — 타임아웃 타이머도 지금 지운다(수집기가 abort 를 무시하고 매달려도 타이머가 남지 않게, ⓖ). */
+function cancel(inflight: Inflight | null): void {
+  if (inflight === null) return
+  clearTimeout(inflight.timeout)
+  inflight.controller.abort()
 }
 
 type Reason = 'start' | 'tick' | 'focus' | 'manual' | 'enabled'
@@ -98,7 +107,7 @@ export class UsageService {
       if (!enabled && slot.usage.status !== 'disabled') {
         const inflight = slot.inflight
         slot.inflight = null
-        inflight?.controller.abort()
+        cancel(inflight)
         Object.assign(slot, { usage: { status: 'disabled' }, failures: 0, backoffUntil: 0, retryAfterUntil: 0 })
         changed = true
       } else if (enabled && slot.usage.status === 'disabled') {
@@ -130,7 +139,7 @@ export class UsageService {
     for (const slot of this.slots) {
       const inflight = slot.inflight
       slot.inflight = null
-      inflight?.controller.abort()
+      cancel(inflight)
     }
   }
 
@@ -158,7 +167,7 @@ export class UsageService {
       this.apply({ slot, outcome })
       this.emit()
     })()
-    slot.inflight = { controller, promise }
+    slot.inflight = { controller, timeout, promise }
     this.options.log('usage.request', { provider: slot.collector.id, reason })
     this.emit()
     return promise

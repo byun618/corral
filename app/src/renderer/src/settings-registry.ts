@@ -65,7 +65,7 @@ export const SETTINGS_SECTIONS = [
     id: 'appearance',
     group: 'interface',
     title: '외관',
-    description: '터미널 글꼴·테마·커서·pane 모양, 사이드바 카드 레이아웃, 상태바 사용량.',
+    description: '터미널 글꼴·테마·커서·pane 모양과 사이드바 카드 레이아웃.',
     searchEntries: [
       { title: '터미널', description: '터미널 외관 — 글꼴, 테마, 커서, pane.', keywords: ['terminal', 'appearance', '외관', '터미널', '모양'] },
       { title: '글꼴 크기', description: '새 창 및 라이브 업데이트의 기본 terminal 글꼴 크기입니다.', keywords: ['terminal', 'typography', 'font', 'font size', 'size', '글꼴', '크기', '폰트'] },

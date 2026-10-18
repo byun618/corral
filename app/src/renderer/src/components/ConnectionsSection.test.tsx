@@ -519,3 +519,35 @@ it('[F3-2] 확정 상태가 그대로인 채 끝난 실패(invalid_response)는 
   await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
   expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('응답 모양이 어긋났습니다')
 })
+
+// LIFE-615 F4-1 — 확정 시각 비교(F3-2)는 연결 상태로 남는 종류의 실패에만. 상태를 바꾸지 않는 실패는 그 사이 다른 요청이 성공해도 보인다.
+it('[F4-1] 테스트 도중 다른 요청이 확정 상태를 ok 로 다시 정해도, 늦게 온 invalid_response 실패는 줄로 남는다', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: false, error: { kind: 'invalid_response', status: null, message: '응답 모양이 어긋났습니다' } }
+  const checkedAt = Date.now()
+  state = withConnection({ checkedAt })
+  await mount()
+  act(() => q('[data-connection-test]').click())
+  push(withConnection({ checkedAt: checkedAt + 1000 }))
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('[data-connection-status]').getAttribute('data-connection-status')).toBe('ok')
+  expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('응답 모양이 어긋났습니다')
+})
+
+// LIFE-615 F4-2 — 실패 뒤 확정 시각을 다시 읽지 못하면(거부) 「모름」 — 실패 줄을 보이고, 거부가 새지 않는다.
+it('[F4-2] 실패 뒤 설정 읽기가 거부되면 실패 줄을 보이고 미처리 거부가 없다', async () => {
+  const unhandled: unknown[] = []
+  const onUnhandled = (reason: unknown): void => { unhandled.push(reason) }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    testResult = { ok: false, error: { kind: 'network', status: null, message: '닿지 않습니다' } }
+    await mount()
+    Reflect.set(Reflect.get(window, 'corral'), 'getWorkSettings', async () => { throw new Error('ipc closed') })
+    await act(async () => { q('[data-connection-test]').click(); for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(q('[data-connection-test-error="network"]').textContent).toContain('닿지 않습니다')
+    expect(unhandled).toEqual([])
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+})

@@ -15,6 +15,7 @@ import type {
   WorkSourceDescriptor,
   WorkSpaceToggle,
 } from '../../../shared/work.js'
+import { connectionStatusOf } from '../../../shared/work.js'
 import { SettingsSubsectionHeader, SettingsSwitch } from './SettingsControls.js'
 
 export type ConnectionsRepo = { root: string; name: string }
@@ -203,10 +204,14 @@ function SpaceRow({ connection, space, index, visibleCount }: { connection: Work
   )
 }
 
-/** main 이 지금 아는 이 연결의 확정 시각(`checkedAt`) — 설정을 못 읽거나 연결이 없으면 undefined(모름). */
+/** main 이 지금 아는 이 연결의 확정 시각(`checkedAt`) — 설정을 못 읽거나(거부 포함) 연결이 없으면 undefined(모름). */
 async function settledAt(connectionId: string): Promise<number | null | undefined> {
-  const settings = await window.corral.getWorkSettings()
-  return settings?.connections.find((connection) => connection.id === connectionId)?.checkedAt
+  try {
+    const settings = await window.corral.getWorkSettings()
+    return settings?.connections.find((connection) => connection.id === connectionId)?.checkedAt
+  } catch {
+    return undefined
+  }
 }
 
 function ConnectionCard({ connection, source, claimAutoTest, onReplaceToken, onRemove }: { connection: WorkConnectionSummary; source: WorkSourceDescriptor | null; claimAutoTest: (connectionId: string) => boolean; onReplaceToken: () => void; onRemove: () => void }): React.JSX.Element {
@@ -226,14 +231,15 @@ function ConnectionCard({ connection, source, claimAutoTest, onReplaceToken, onR
     setTestError(null)
     // 확정 상태를 정한 시각(`checkedAt`)을 누른 순간(화면 값)과 실패가 돌아온 뒤(main 에서 다시 읽음) 비교한다(LIFE-615 F3-2).
     // 그 사이 다른 결과가 확정 상태를 다시 정했으면 이 테스트의 실패는 지금 상태보다 오래된 것이다(main 이 그 실패로 상태를 바꾸지 않았다) —
-    // 줄로 남기지 않는다. 종류로 가르지 않는다 — 상태를 바꾸지 않는 실패(invalid_response 등)는 확정 시각도 그대로라 줄이 보인다.
+    // 줄로 남기지 않는다. 연결 상태로 남는 종류(auth·offline 등 — `connectionStatusOf`)의 실패에만 적용한다(F4-1) —
+    // 상태를 바꾸지 않는 실패(invalid_response 등)는 지금 상태와 어긋날 수 없어, 그 사이 다른 요청이 성공했어도 줄이 보인다.
     const before = connection.checkedAt
     const result = await window.corral.testWorkConnection({ connectionId: connection.id })
     if (result.ok) {
       if (mine === latestTest.current && generation === currentGeneration.current) setTestError(null)
       return
     }
-    const after = await settledAt(connection.id)
+    const after = connectionStatusOf(result.error.kind) === null ? undefined : await settledAt(connection.id)
     if (mine !== latestTest.current || generation !== currentGeneration.current) return
     setTestError(after !== undefined && after !== before ? null : { error: result.error, generation })
   }

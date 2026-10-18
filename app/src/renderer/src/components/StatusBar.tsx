@@ -13,7 +13,7 @@ export function StatusBar({
   zoomed,
   agentCount,
   termSize,
-  memoryLabel,
+  resourceSegment,
 }: {
   inert?: boolean
   activeWorktreeLabel: string | null
@@ -28,7 +28,7 @@ export function StatusBar({
   zoomed: boolean
   agentCount: number
   termSize: { cols: number; rows: number } | null
-  memoryLabel: string | null
+  resourceSegment: React.ReactNode
 }): React.JSX.Element {
   return (
     <div className="statusbar" data-statusbar inert={inert}>
@@ -43,7 +43,7 @@ export function StatusBar({
       </span>
       <span>{agentCount} agents</span>
       <span>{termSize === null ? 'xterm —' : `xterm ${termSize.cols}×${termSize.rows}`}</span>
-      {memoryLabel === null ? null : <span>{memoryLabel}</span>}
+      {resourceSegment}
     </div>
   )
 }

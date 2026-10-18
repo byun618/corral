@@ -5,7 +5,7 @@
 // - 상태는 main push(`corral:workSettings`)만 진실로 쓴다. 토큰은 입력칸 상태에만 잠깐 있고, 보낸 뒤 지운다. 화면에는 끝 4자만.
 // - 자격은 main 이 필요할 때 푼다 — 이 화면이 열릴 때 아직 안 읽은 연결은 한 번 연결 테스트를 한다. 그때 macOS 가 키체인 허용을 물을 수 있어,
 //   `pending: keychain` 이면 이유를 먼저 보인다(ad-hoc 서명이라 새로 설치할 때마다 다시 물을 수 있다).
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   WorkAccountField,
   WorkConnectionStatus,
@@ -15,6 +15,7 @@ import type {
   WorkSourceDescriptor,
   WorkSpaceToggle,
 } from '../../../shared/work.js'
+import { connectionStatusOf } from '../../../shared/work.js'
 import { SettingsSubsectionHeader, SettingsSwitch } from './SettingsControls.js'
 
 export type ConnectionsRepo = { root: string; name: string }
@@ -63,14 +64,15 @@ function spaceColor({ color, index }: { color: string | null; index: number }): 
   return color ?? `var(--space-${(index % 7) + 1})`
 }
 
-type Adding = { sourceId: string; replaceId: string | null }
+/** 열린 폼 — `openId` 는 열 때마다 새 값이라 같은 출처·같은 연결로 다시 열어도 새 폼으로 시작한다(LIFE-615 F2-2). */
+type Adding = { sourceId: string; replaceId: string | null; openId: number }
 
 /** 폼 칸 처음 값 — 토큰 바꾸기면 지금 연결의 값(바꿀 수 없는 칸은 읽기 전용으로), 새 연결이면 빈 칸. */
 function initialAccount({ source, replacing }: { source: WorkSourceDescriptor; replacing: WorkConnectionSummary | null }): Record<string, string> {
   return Object.fromEntries(source.accountFields.map((field) => [field.key, replacing?.account[field.key] ?? '']))
 }
 
-function ConnectionForm({ source, adding, replacing, onDone, onCancel }: { source: WorkSourceDescriptor; adding: Adding; replacing: WorkConnectionSummary | null; onDone: () => void; onCancel: () => void }): React.JSX.Element {
+function ConnectionForm({ source, adding, replacing, onSaving, onDone, onCancel }: { source: WorkSourceDescriptor; adding: Adding; replacing: WorkConnectionSummary | null; onSaving: (saving: boolean) => void; onDone: () => void; onCancel: () => void }): React.JSX.Element {
   const [token, setToken] = useState('')
   const [account, setAccount] = useState<Record<string, string>>(() => initialAccount({ source, replacing }))
   const [busy, setBusy] = useState(false)
@@ -90,11 +92,13 @@ function ConnectionForm({ source, adding, replacing, onDone, onCancel }: { sourc
   const submit = async (): Promise<void> => {
     if (!ready) return
     setBusy(true)
+    onSaving(true)
     setError(null)
     // 칸 없는 출처(LA)는 전과 같은 입력 — `account` 를 싣지 않는다.
     const sentAccount = Object.fromEntries(source.accountFields.map((field) => [field.key, (account[field.key] ?? '').trim()]))
     const result = await window.corral.addWorkConnection(source.accountFields.length === 0 ? { sourceId: source.id, token: trimmed, replaceId: adding.replaceId } : { sourceId: source.id, token: trimmed, account: sentAccount, replaceId: adding.replaceId })
     setBusy(false)
+    onSaving(false)
     if (result.ok) {
       setToken('')
       onDone()
@@ -191,16 +195,26 @@ function SpaceRow({ connection, space, index, visibleCount }: { connection: Work
     <div className={`connection-space${on ? '' : ' is-hidden'}`} data-space-row={space.key}>
       <span className="connection-space-dot" style={{ background: spaceColor({ color: space.color, index }) }} />
       <span className="connection-space-name">{space.name}</span>
-      {error === null ? null : <span className="connection-space-error" role="alert">{error}</span>}
       <span className="connection-space-count">{space.openCount === null ? '' : `열린 작업 ${space.openCount}`}</span>
       <span className={`connection-space-switch${last ? ' is-locked' : ''}`} title={title} data-space-locked={last ? '' : undefined}>
         <SettingsSwitch checked={on} label={`${space.name} 보이기`} disabled={last} onChange={(next) => void toggle(next)} />
       </span>
+      {error === null ? null : <span className="connection-space-error" role="alert">{error}</span>}
     </div>
   )
 }
 
-function ConnectionCard({ connection, source, onReplaceToken, onRemove }: { connection: WorkConnectionSummary; source: WorkSourceDescriptor | null; onReplaceToken: () => void; onRemove: () => void }): React.JSX.Element {
+/** main 이 지금 아는 이 연결의 확정 시각(`checkedAt`) — 설정을 못 읽거나(거부 포함) 연결이 없으면 undefined(모름). */
+async function settledAt(connectionId: string): Promise<number | null | undefined> {
+  try {
+    const settings = await window.corral.getWorkSettings()
+    return settings?.connections.find((connection) => connection.id === connectionId)?.checkedAt
+  } catch {
+    return undefined
+  }
+}
+
+function ConnectionCard({ connection, source, claimAutoTest, onReplaceToken, onRemove }: { connection: WorkConnectionSummary; source: WorkSourceDescriptor | null; claimAutoTest: (connectionId: string) => boolean; onReplaceToken: () => void; onRemove: () => void }): React.JSX.Element {
   // 사용자가 누른 연결 테스트의 실패는 연결 상태로 남지 않는 것(invalid_response·rejected 등)까지 이 카드에 보인다(R2-E).
   // 일반 작업 요청의 실패는 연결 상태 정책을 따른다 — 이 줄은 누른 테스트의 결과만.
   // 수명 = 누른 순간의 자격 세대(R3-C) — 토큰을 바꾸면(세대가 오르면) 이전 자격의 실패 줄은 버린다. 늦게 끝난 옛 테스트도 같은 규칙.
@@ -215,10 +229,32 @@ function ConnectionCard({ connection, source, onReplaceToken, onRemove }: { conn
     const mine = latestTest.current
     const generation = connection.generation
     setTestError(null)
+    // 확정 상태를 정한 시각(`checkedAt`)을 누른 순간(화면 값)과 실패가 돌아온 뒤(main 에서 다시 읽음) 비교한다(LIFE-615 F3-2).
+    // 그 사이 다른 결과가 확정 상태를 다시 정했으면 이 테스트의 실패는 지금 상태보다 오래된 것이다(main 이 그 실패로 상태를 바꾸지 않았다) —
+    // 줄로 남기지 않는다. 연결 상태로 남는 종류(auth·offline 등 — `connectionStatusOf`)의 실패에만 적용한다(F4-1) —
+    // 상태를 바꾸지 않는 실패(invalid_response 등)는 지금 상태와 어긋날 수 없어, 그 사이 다른 요청이 성공했어도 줄이 보인다.
+    const before = connection.checkedAt
     const result = await window.corral.testWorkConnection({ connectionId: connection.id })
+    if (result.ok) {
+      if (mine === latestTest.current && generation === currentGeneration.current) setTestError(null)
+      return
+    }
+    const after = connectionStatusOf(result.error.kind) === null ? undefined : await settledAt(connection.id)
     if (mine !== latestTest.current || generation !== currentGeneration.current) return
-    setTestError(result.ok ? null : { error: result.error, generation })
+    setTestError(after !== undefined && after !== before ? null : { error: result.error, generation })
   }
+  // 화면이 열릴 때 아직 안 읽은 연결의 자동 테스트도 같은 `test()` 를 탄다(R5-B) — 실패 줄·수명 규칙(R3-C·R4-B)이 누른 테스트와 같다.
+  // 한 번만 = 화면(ConnectionsSection)이 연결마다 한 번 허락한다.
+  const autoTest = useRef(test)
+  autoTest.current = test
+  useEffect(() => {
+    if (connection.status === 'unchecked' && claimAutoTest(connection.id)) void autoTest.current()
+  }, [connection.status, connection.id, claimAutoTest])
+  // 연결 상태가 오류를 들고 있으면 그 줄이 같은 실패를 보인다 — 테스트 줄은 버린다(LIFE-615 F2-1).
+  // 숨기기만 하면 뒤에 일반 요청 성공으로 상태가 ok 로 돌아올 때 옛 「연결 테스트 실패」 줄이 되살아난다.
+  useEffect(() => {
+    if (connection.error !== null && testError !== null) setTestError(null)
+  }, [connection.error, testError])
   const shownTestError = testError !== null && testError.generation === connection.generation ? testError.error : null
   const spaces = connection.spaces
   const visibleCount = spaces?.filter((space) => !space.hidden).length ?? 0
@@ -324,7 +360,8 @@ function RepoDefaultRow({ repo, state, first }: { repo: ConnectionsRepo; state: 
         <span className="connection-space-dot" style={{ background: chosen === null ? 'var(--fg-faint)' : spaceColor({ color: chosen.color, index: chosenIndex }) }} />
         {label}
       </button>
-      {error === null ? null : <span className="connection-space-error" role="alert" data-repo-default-error>저장하지 못했습니다: {error}</span>}
+      {/* main 문구가 이미 「저장하지 못했습니다 (…)」 — 접두사를 다시 붙이지 않는다(LIFE-615). 줄은 행 아래 전폭(settings.css). */}
+      {error === null ? null : <span className="connection-space-error" role="alert" data-repo-default-error>{error}</span>}
       {open ? (
         <div className="repo-default-menu" role="menu">
           <button type="button" role="menuitem" className="repo-default-option" onClick={() => void pick(null)}>
@@ -347,16 +384,28 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
   const state = useWorkSettings() ?? EMPTY
   const [adding, setAdding] = useState<Adding | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
+  const openSeq = useRef(0)
+  // 저장을 기다리는 폼의 `openId` — 같은 버튼을 다시 누를 때 그 폼이 저장 중이면 새 폼으로(C1ⓔ), 아니면 쓰던 폼·초안을 그대로 둔다(LIFE-615 F3-1).
+  const savingOpenId = useRef<number | null>(null)
+  const openForm = (target: { sourceId: string; replaceId: string | null }): void => {
+    if (adding !== null && adding.sourceId === target.sourceId && adding.replaceId === target.replaceId && savingOpenId.current !== adding.openId) return
+    openSeq.current += 1
+    setAdding({ ...target, openId: openSeq.current })
+  }
+  const formSaving = (target: Adding, saving: boolean): void => {
+    if (saving) savingOpenId.current = target.openId
+    else if (savingOpenId.current === target.openId) savingOpenId.current = null
+  }
   const autoTested = useRef(new Set<string>())
-
-  // 이 화면이 열렸는데 이번 실행에서 아직 안 읽은 연결 — 한 번만 테스트해 스페이스 목록을 받는다(자격은 이때 풀린다).
-  useEffect(() => {
-    for (const connection of state.connections) {
-      if (connection.status !== 'unchecked' || autoTested.current.has(connection.id)) continue
-      autoTested.current.add(connection.id)
-      void window.corral.testWorkConnection({ connectionId: connection.id })
-    }
-  }, [state.connections])
+  // 이 화면이 열렸는데 이번 실행에서 아직 안 읽은 연결 — 한 번만 테스트해 스페이스 목록을 받는다(자격은 이때 풀린다). 테스트는 카드가 한다.
+  const claimAutoTest = useCallback((connectionId: string): boolean => {
+    if (autoTested.current.has(connectionId)) return false
+    autoTested.current.add(connectionId)
+    return true
+  }, [])
+  // 폼 완료는 자기가 연 그 폼이 아직 열려 있을 때만 닫는다(R5-A) — 저장을 기다리는 동안 다른 폼을 열었으면(같은 출처·연결로 다시 연 것 포함) 그 폼·초안을 둔다.
+  // 다시 연 폼은 key(`openId`)가 달라 새 인스턴스라, 옛 저장의 결과(토큰 비우기·오류)도 새 폼에 닿지 않는다.
+  const closeForm = (target: Adding): void => setAdding((current) => (current === target ? null : current))
 
   const addingSource = adding === null ? null : state.sources.find((source) => source.id === adding.sourceId) ?? null
   const removingConnection = removing === null ? null : state.connections.find((connection) => connection.id === removing) ?? null
@@ -369,7 +418,7 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
           action={
             <div className="connection-add-buttons">
               {state.sources.map((source) => (
-                <button key={source.id} type="button" className="connection-btn" data-connection-add={source.id} onClick={() => setAdding({ sourceId: source.id, replaceId: null })}>
+                <button key={source.id} type="button" className="connection-btn" data-connection-add={source.id} onClick={() => openForm({ sourceId: source.id, replaceId: null })}>
                   {source.addLabel}
                 </button>
               ))}
@@ -377,14 +426,15 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
           }
         />
         <div className="connection-list">
-          {addingSource === null || adding === null ? null : <ConnectionForm key={`${adding.sourceId}:${adding.replaceId ?? ''}`} source={addingSource} adding={adding} replacing={state.connections.find((connection) => connection.id === adding.replaceId) ?? null} onDone={() => setAdding(null)} onCancel={() => setAdding(null)} />}
+          {addingSource === null || adding === null ? null : <ConnectionForm key={adding.openId} source={addingSource} adding={adding} replacing={state.connections.find((connection) => connection.id === adding.replaceId) ?? null} onSaving={(saving) => formSaving(adding, saving)} onDone={() => closeForm(adding)} onCancel={() => setAdding(null)} />}
           {state.connections.length === 0 && adding === null ? <p className="connection-empty" data-connection-empty>아직 연결이 없습니다. 토큰을 붙여넣어 작업 관리 서비스를 연결하세요.</p> : null}
           {state.connections.map((connection) => (
             <ConnectionCard
               key={connection.id}
               connection={connection}
               source={state.sources.find((source) => source.id === connection.sourceId) ?? null}
-              onReplaceToken={() => setAdding({ sourceId: connection.sourceId, replaceId: connection.id })}
+              claimAutoTest={claimAutoTest}
+              onReplaceToken={() => openForm({ sourceId: connection.sourceId, replaceId: connection.id })}
               onRemove={() => setRemoving(connection.id)}
             />
           ))}

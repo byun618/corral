@@ -28,6 +28,7 @@ const tested: string[] = []
 const hidden: Array<{ spaceKey: string; hidden: boolean }> = []
 const defaults: Array<{ repoRoot: string; target: { connectionId: string; spaceKey: string } | null }> = []
 let addResult: WorkConnectionAddResult
+let addGate: Promise<void>
 let testResult: WorkActionResult
 let testGate: Promise<void>
 let defaultResult: WorkActionResult
@@ -45,6 +46,7 @@ beforeEach(() => {
   listeners = []
   for (const list of [added, tested, hidden, defaults]) list.length = 0
   addResult = { ok: true, connection: CONNECTION }
+  addGate = Promise.resolve()
   const ok: WorkActionResult = { ok: true }
   testResult = ok
   testGate = Promise.resolve()
@@ -52,7 +54,7 @@ beforeEach(() => {
   Reflect.set(window, 'corral', {
     getWorkSettings: async () => state,
     onWorkSettings: (listener: (next: WorkSettingsState) => void) => { listeners.push(listener); return () => {} },
-    addWorkConnection: async (input: WorkConnectionAddInput) => { added.push(input); return addResult },
+    addWorkConnection: async (input: WorkConnectionAddInput) => { added.push(input); const result = addResult; const gate = addGate; addGate = Promise.resolve(); await gate; return result },
     testWorkConnection: async (input: { connectionId: string }) => { tested.push(input.connectionId); const result = testResult; const gate = testGate; testGate = Promise.resolve(); await gate; return result },
     removeWorkConnection: async () => ok,
     setWorkSpaceHidden: async (input: { spaceKey: string; hidden: boolean }) => { hidden.push({ spaceKey: input.spaceKey, hidden: input.hidden }); return ok },
@@ -306,4 +308,246 @@ it('토큰 바꾸기 — 바꿀 수 없는 칸은 지금 값으로 읽기 전용
   type(field('[data-connection-token]'), 'new-b')
   await act(async () => { q('[data-connection-form="src-b"]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
   expect(added.at(-1)).toEqual({ sourceId: 'src-b', token: 'new-b', account: { site: 'b.example', email: 'dev@b.example' }, replaceId: 'c2' })
+})
+
+// LIFE-615 R5-A — 토큰 교체 저장을 기다리는 동안 연 새 추가 폼·초안은 옛 교체의 완료가 닫지 않는다.
+async function replaceThenOpenAdd(): Promise<{ release: () => void; draft: HTMLInputElement }> {
+  let release = (): void => {}
+  addGate = new Promise<void>((resolve) => { release = resolve })
+  state = withConnection({ status: 'auth', error: { message: '거부됨 (401)', action: 'replace_token' } })
+  await mount()
+  act(() => q('[data-connection-error] .connection-link').click())
+  type(field('[data-connection-token]'), 'a_pat_replace000')
+  act(() => { q('[data-connection-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  act(() => q('[data-connection-add="src-a"]').click())
+  expect(q('.connection-form-title').textContent).toBe('A 연결')
+  const draft = field('[data-connection-token]')
+  type(draft, 'a_pat_new_draft_0000')
+  return { release, draft }
+}
+
+it('[R5-A] 옛 교체가 성공으로 끝나도 그 사이 연 새 추가 폼·초안은 남는다', async () => {
+  const { release } = await replaceThenOpenAdd()
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(added.map((input) => input.replaceId)).toEqual(['c1'])
+  expect(q('.connection-form-title').textContent).toBe('A 연결')
+  expect(field('[data-connection-token]').value).toBe('a_pat_new_draft_0000')
+})
+
+it('[R5-A] 옛 교체가 실패로 끝나도 새 추가 폼·초안은 남고 옛 폼의 오류가 끼어들지 않는다', async () => {
+  addResult = { ok: false, error: { kind: 'auth', status: 401, message: '토큰을 거부했습니다 (401)' } }
+  const { release } = await replaceThenOpenAdd()
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('.connection-form-title').textContent).toBe('A 연결')
+  expect(field('[data-connection-token]').value).toBe('a_pat_new_draft_0000')
+  expect(host.querySelector('[data-connection-form-error]')).toBeNull()
+})
+
+// LIFE-615 R5-B — 화면 진입 자동 테스트도 누른 테스트와 같은 실패 줄·수명 규칙.
+it('[R5-B] 재시작 뒤 자동 테스트의 invalid_response 를 카드에 보인다', async () => {
+  testResult = { ok: false, error: { kind: 'invalid_response', status: null, message: '응답 모양이 어긋났습니다' } }
+  state = withConnection({ status: 'unchecked', spaces: null, checkedAt: null })
+  await mount()
+  expect(tested).toEqual(['c1'])
+  expect(q('[data-connection-status]').getAttribute('data-connection-status')).toBe('unchecked')
+  expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('응답 모양이 어긋났습니다')
+  // 세대가 오르면 옛 자동 실패 줄은 사라진다(R3-C).
+  push(withConnection({ status: 'ok', generation: 1, tokenTail: 'new4' }))
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[R5-B] 늦게 끝난 자동 테스트 실패가 뒤에 누른 테스트 결과를 덮지 않는다(R4-B)', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: false, error: { kind: 'invalid_response', status: null, message: '자동 테스트 어긋남' } }
+  state = withConnection({ status: 'unchecked', spaces: null, checkedAt: null })
+  await mount()
+  push(withConnection({ status: 'ok' }))
+  testResult = { ok: true }
+  await act(async () => { q('[data-connection-test]').click() })
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(tested).toEqual(['c1', 'c1'])
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[R5-B] 연결 상태로 남는 실패(auth)는 연결 오류 줄 하나만 — 테스트 실패 줄을 겹치지 않는다', async () => {
+  testResult = { ok: false, error: { kind: 'auth', status: 401, message: '토큰이 만료됐거나 폐기됐습니다' } }
+  state = withConnection({ status: 'unchecked', spaces: null, checkedAt: null })
+  await mount()
+  push(withConnection({ status: 'auth', spaces: null, error: { message: '토큰이 만료됐거나 폐기됐습니다', action: 'replace_token' } }))
+  expect(host.querySelectorAll('[data-connection-error]')).toHaveLength(1)
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[LIFE-615] 레포 기본 저장 실패 — 「저장하지 못했습니다」 를 한 번만', async () => {
+  defaultResult = { ok: false, error: { kind: 'local_write', status: null, message: '저장하지 못했습니다 (EACCES)' } }
+  await mount()
+  const row = q('[data-repo-default-space="corral"]')
+  act(() => row.querySelector<HTMLButtonElement>('button')?.click())
+  await act(async () => { [...row.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')][0]?.click() })
+  expect(q('[data-repo-default-error]').textContent?.split('저장하지 못했습니다').length).toBe(2)
+})
+
+// LIFE-615 F1-1 — 저장을 기다리는 사이 **같은 key** 의 폼을 다시 열어 넣은 초안은 옛 저장 성공이 지우거나 닫지 않는다.
+it('[F1-1] 교체 저장 중 같은 연결의 「토큰 다시 붙여넣기」 를 다시 눌러 넣은 초안이 옛 저장 성공 뒤에도 남는다', async () => {
+  let release = (): void => {}
+  addGate = new Promise<void>((resolve) => { release = resolve })
+  state = withConnection({ status: 'auth', error: { message: '거부됨 (401)', action: 'replace_token' } })
+  await mount()
+  act(() => q('[data-connection-error] .connection-link').click())
+  type(field('[data-connection-token]'), 'a_pat_replace000')
+  act(() => { q('[data-connection-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  act(() => q('[data-connection-error] .connection-link').click())
+  type(field('[data-connection-token]'), 'a_pat_reopened_draft')
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(added.map((input) => input.replaceId)).toEqual(['c1'])
+  expect(q('.connection-form-title').textContent).toContain('토큰 바꾸기')
+  expect(field('[data-connection-token]').value).toBe('a_pat_reopened_draft')
+})
+
+it('[F1-1] 추가 저장 중 같은 출처의 「+ 토큰」 을 다시 눌러 넣은 초안이 옛 저장 성공 뒤에도 남는다', async () => {
+  let release = (): void => {}
+  addGate = new Promise<void>((resolve) => { release = resolve })
+  await mount()
+  act(() => q('[data-connection-add="src-a"]').click())
+  type(field('[data-connection-token]'), 'a_pat_first0000')
+  act(() => { q('[data-connection-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  act(() => q('[data-connection-add="src-a"]').click())
+  type(field('[data-connection-token]'), 'a_pat_reopened_draft')
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(added.map((input) => input.replaceId)).toEqual([null])
+  expect(q('.connection-form-title').textContent).toBe('A 연결')
+  expect(field('[data-connection-token]').value).toBe('a_pat_reopened_draft')
+})
+
+// LIFE-615 F2-1 — 연결 상태로 남는 실패로 끝난 테스트 뒤, 일반 요청 성공으로 상태가 ok 가 돼도 옛 테스트 줄이 되살아나지 않는다.
+it('[F2-1] 자동 테스트가 offline 으로 실패한 뒤 상태가 ok 로 돌아와도 「연결 테스트 실패」 줄이 없다', async () => {
+  testResult = { ok: false, error: { kind: 'network', status: null, message: '닿지 않습니다' } }
+  state = withConnection({ status: 'unchecked', spaces: null, checkedAt: null })
+  await mount()
+  push(withConnection({ status: 'offline', error: { message: '닿지 않습니다', action: 'retry' } }))
+  expect(host.querySelectorAll('[data-connection-error]')).toHaveLength(1)
+  push(withConnection({ status: 'ok', error: null }))
+  expect(q('[data-connection-status]').getAttribute('data-connection-status')).toBe('ok')
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[F2-1] 누른 테스트가 forbidden 으로 실패해 상태가 먼저 바뀐 뒤 결과가 와도, 복구 뒤 줄이 없다', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: false, error: { kind: 'forbidden', status: 403, message: '권한이 없습니다' } }
+  await mount()
+  act(() => q('[data-connection-test]').click())
+  push(withConnection({ status: 'forbidden', error: { message: '권한이 없습니다', action: null } }))
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  push(withConnection({ status: 'ok', error: null }))
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+// LIFE-615 F2-2 — 저장 진행 중 같은 key 로 다시 연 폼은 새 폼으로 시작한다(옛 토큰이 칸에 남지 않는다).
+it('[F2-2] 교체 저장 중 「토큰 다시 붙여넣기」 로 다시 연 폼은 칸이 비어 있고, 옛 저장 성공 뒤에도 비어 있다', async () => {
+  let release = (): void => {}
+  addGate = new Promise<void>((resolve) => { release = resolve })
+  state = withConnection({ status: 'auth', error: { message: '거부됨 (401)', action: 'replace_token' } })
+  await mount()
+  act(() => q('[data-connection-error] .connection-link').click())
+  type(field('[data-connection-token]'), 'a_pat_replace000')
+  act(() => { q('[data-connection-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  act(() => q('[data-connection-error] .connection-link').click())
+  expect(field('[data-connection-token]').value).toBe('')
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('.connection-form-title').textContent).toContain('토큰 바꾸기')
+  expect(field('[data-connection-token]').value).toBe('')
+  expect(q('[data-connection-save]').hasAttribute('disabled')).toBe(true)
+})
+
+it('[F2-2] 추가 저장 중 「+ 토큰」 으로 다시 연 폼은 칸이 비어 있고, 옛 저장 실패의 오류가 끼어들지 않는다', async () => {
+  let release = (): void => {}
+  addGate = new Promise<void>((resolve) => { release = resolve })
+  addResult = { ok: false, error: { kind: 'auth', status: 401, message: '토큰을 거부했습니다 (401)' } }
+  await mount()
+  act(() => q('[data-connection-add="src-a"]').click())
+  type(field('[data-connection-token]'), 'a_pat_first0000')
+  act(() => { q('[data-connection-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  act(() => q('[data-connection-add="src-a"]').click())
+  expect(field('[data-connection-token]').value).toBe('')
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('.connection-form-title').textContent).toBe('A 연결')
+  expect(field('[data-connection-token]').value).toBe('')
+  expect(host.querySelector('[data-connection-form-error]')).toBeNull()
+})
+
+// LIFE-615 F3-1 — 저장 중이 아닐 때 같은 버튼을 다시 눌러도 쓰던 초안은 남는다(기준 동작). 저장 중 재오픈은 F2-2 대로 새 폼.
+it('[F3-1] 저장 전 같은 「+ 토큰」·「토큰 다시 붙여넣기」 재클릭은 쓰던 초안을 지우지 않는다', async () => {
+  state = withConnection({ status: 'auth', error: { message: '거부됨 (401)', action: 'replace_token' } })
+  await mount()
+  act(() => q('[data-connection-add="src-a"]').click())
+  type(field('[data-connection-token]'), 'a_pat_draft_add')
+  act(() => q('[data-connection-add="src-a"]').click())
+  expect(field('[data-connection-token]').value).toBe('a_pat_draft_add')
+  act(() => q('[data-connection-error] .connection-link').click())
+  expect(q('.connection-form-title').textContent).toContain('토큰 바꾸기')
+  type(field('[data-connection-token]'), 'a_pat_draft_replace')
+  act(() => q('[data-connection-error] .connection-link').click())
+  expect(field('[data-connection-token]').value).toBe('a_pat_draft_replace')
+  expect(added).toEqual([])
+})
+
+// LIFE-615 F3-2 — 늦게 끝난 테스트의 실패가, 그 사이 다른 결과가 확정 상태를 다시 정한(main 이 그 실패로 상태를 안 바꾼) 카드에 남지 않는다.
+it('[F3-2] 테스트 도중 다른 요청이 확정 상태를 ok 로 다시 정했으면, 늦게 온 network 실패는 줄로 남지 않는다', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: false, error: { kind: 'network', status: null, message: '닿지 않습니다' } }
+  const checkedAt = Date.now()
+  state = withConnection({ checkedAt })
+  await mount()
+  act(() => q('[data-connection-test]').click())
+  push(withConnection({ checkedAt: checkedAt + 1000 }))
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(tested).toEqual(['c1'])
+  expect(q('[data-connection-status]').getAttribute('data-connection-status')).toBe('ok')
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[F3-2] 확정 상태가 그대로인 채 끝난 실패(invalid_response)는 줄로 남는다 — 같은 실패가 늦게 와도', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: false, error: { kind: 'invalid_response', status: null, message: '응답 모양이 어긋났습니다' } }
+  await mount()
+  act(() => q('[data-connection-test]').click())
+  push(withConnection({ spaces: CONNECTION.spaces }))
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('응답 모양이 어긋났습니다')
+})
+
+// LIFE-615 F4-1 — 확정 시각 비교(F3-2)는 연결 상태로 남는 종류의 실패에만. 상태를 바꾸지 않는 실패는 그 사이 다른 요청이 성공해도 보인다.
+it('[F4-1] 테스트 도중 다른 요청이 확정 상태를 ok 로 다시 정해도, 늦게 온 invalid_response 실패는 줄로 남는다', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: false, error: { kind: 'invalid_response', status: null, message: '응답 모양이 어긋났습니다' } }
+  const checkedAt = Date.now()
+  state = withConnection({ checkedAt })
+  await mount()
+  act(() => q('[data-connection-test]').click())
+  push(withConnection({ checkedAt: checkedAt + 1000 }))
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('[data-connection-status]').getAttribute('data-connection-status')).toBe('ok')
+  expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('응답 모양이 어긋났습니다')
+})
+
+// LIFE-615 F4-2 — 실패 뒤 확정 시각을 다시 읽지 못하면(거부) 「모름」 — 실패 줄을 보이고, 거부가 새지 않는다.
+it('[F4-2] 실패 뒤 설정 읽기가 거부되면 실패 줄을 보이고 미처리 거부가 없다', async () => {
+  const unhandled: unknown[] = []
+  const onUnhandled = (reason: unknown): void => { unhandled.push(reason) }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    testResult = { ok: false, error: { kind: 'network', status: null, message: '닿지 않습니다' } }
+    await mount()
+    Reflect.set(Reflect.get(window, 'corral'), 'getWorkSettings', async () => { throw new Error('ipc closed') })
+    await act(async () => { q('[data-connection-test]').click(); for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(q('[data-connection-test-error="network"]').textContent).toContain('닿지 않습니다')
+    expect(unhandled).toEqual([])
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
 })

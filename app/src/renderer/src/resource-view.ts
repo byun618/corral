@@ -87,6 +87,31 @@ export function groupPanes(input: { panes: readonly ResourcePaneRow[]; sort: Res
   return sorted.sort((a, b) => compareUsage({ a: a.usage, b: b.usage, key: input.sort }))
 }
 
+/** 패널이 열린 동안 얼려 둔 행 순서(J1) — 보인 순서 그대로의 묶음 열쇠·pane id. */
+export type PanelOrder = { groups: readonly string[]; panes: readonly string[] }
+
+export function orderOf(groups: readonly ResourceGroup[]): PanelOrder {
+  return { groups: groups.map((group) => group.key), panes: groups.flatMap((group) => group.panes.map((pane) => pane.paneId)) }
+}
+
+/** 얼린 자리 순, 처음 보는 것은 (들어온 순서대로) 끝에. */
+function byFrozen<T>(input: { items: readonly T[]; keyOf: (item: T) => string; frozen: readonly string[] }): T[] {
+  const rank = new Map(input.frozen.map((key, index) => [key, index]))
+  return input.items
+    .map((item, index) => ({ item, index, rank: rank.get(input.keyOf(item)) ?? input.frozen.length }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((entry) => entry.item)
+}
+
+/**
+ * 정렬된 묶음을 얼린 순서로 되돌린다(J1) — 값은 새 스냅샷 그대로, 자리만 열 때(또는 정렬을 바꿀 때) 본 순서.
+ * 새 pane 은 그 묶음 끝에, 새 묶음은 맨 끝에 붙고, 사라진 것은 빠진다.
+ */
+export function keepOrder(input: { groups: readonly ResourceGroup[]; order: PanelOrder }): ResourceGroup[] {
+  const groups = byFrozen({ items: input.groups, keyOf: (group) => group.key, frozen: input.order.groups })
+  return groups.map((group) => ({ ...group, panes: byFrozen({ items: group.panes, keyOf: (pane) => pane.paneId, frozen: input.order.panes }) }))
+}
+
 /** 패널 맨 위 시스템 한 줄 — 시스템 사용/전체 메모리. */
 export function hostLine(snapshot: ResourceSnapshot): string {
   return `시스템 메모리 ${formatGb(snapshot.host.usedMemory)} / ${formatGb(snapshot.host.totalMemory)} · 코어 ${snapshot.host.cpuCoreCount}개`

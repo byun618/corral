@@ -66,5 +66,8 @@ export type ResourceCloseRoute =
   | { kind: 'tab'; tabId: string; worktreePath: string; lastInWorktree: boolean }
   | { kind: 'missing' }
 
-/** 패널 「닫기」 — 기존 실행 중 확인 게이트(`closeTabsGated`)의 결과를 그대로 쓴다. */
-export type ResourceCloseResult = CloseTabsResult
+/**
+ * 패널 「닫기」 — 기존 실행 중 확인 게이트(`closeTabsGated`)의 결과를 그대로 쓴다.
+ * `route-changed` = 대상이 지금 그 탭의 마지막 pane 이라 pane 게이트로 닫지 않았다(J2) — 렌더러가 길을 다시 묻는다.
+ */
+export type ResourceCloseResult = CloseTabsResult | { outcome: 'route-changed'; closed: string[] }

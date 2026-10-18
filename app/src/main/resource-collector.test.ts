@@ -46,6 +46,8 @@ describe('parsePsTable', () => {
   it('로캘 콤마·칸 수 다름·같은 pid 두 줄은 malformed 로 센다', () => {
     expect(parsePsTable('  301 300 50,0 10240\n').malformed).toBe(1)
     expect(parsePsTable('  301 300 10240\n').malformed).toBe(1)
+    // 칸이 남는 줄도(J3 X9 — 모자란 쪽만 보던 시험).
+    expect(parsePsTable('  301 300 1.0 10240 9\n').malformed).toBe(1)
     expect(parsePsTable('  301 300 1.0 10\n  301 300 1.0 10\n').malformed).toBe(1)
     expect(parsePsTable('').malformed).toBe(0)
   })
@@ -188,5 +190,28 @@ describe('attribute — H9 herdr 사유는 경우별로', () => {
     const result = attribute({ table: parsePsTable(appChild), panes: [{ paneId: 'A', shellPid: 300, expectedParent: null }], appRoots: [100, 101] })
     expect(result.herdr).toEqual({ state: 'unavailable', reason: '측정된 pane 셸의 부모가 앱 프로세스라 herdr 서버를 따로 세지 않는다' })
     expect(usage(result.app).pids).toEqual([100, 101, 102])
+  })
+})
+
+describe('attribute — J3 herdr·앱 가지의 순환·귀속', () => {
+  it('herdr 루트가 ppid 순환 위면 herdr 는 측정 불가, pane 은 그대로 (Q1)', () => {
+    const cyclic = TABLE.replace('  200     1   3.0  40960', '  200   250   3.0  40960')
+    const result = attribute({ table: parsePsTable(cyclic), panes: PANES, appRoots: [100] })
+    expect(result.herdr).toEqual({ state: 'unavailable', reason: 'ppid 순환' })
+    expect(usage(result.panes.get('A')).pids).toEqual([300, 301])
+    expect(usage(result.app).pids).toEqual([100, 101, 102])
+  })
+  it('앱 루트가 ppid 순환 위면 앱은 측정 불가 (Q2)', () => {
+    const cyclic = TABLE.replace('  100     1   1.5 204800', '  100   101   1.5 204800')
+    const result = attribute({ table: parsePsTable(cyclic), panes: PANES, appRoots: [100] })
+    expect(result.app).toEqual({ state: 'unavailable', reason: 'ppid 순환' })
+    expect(usage(result.herdr).pids).toEqual([200, 250])
+  })
+  it('셸 부모가 이미 다른 pane 의 자손이면 herdr 로 다시 세지 않는다 — 0 이 아니라 측정 불가 (Q6)', () => {
+    // pane B 셸(400)의 부모 200 이 pane A 셸(300)의 자식이다. B 를 먼저 세고, A 가 200 을 가져간다.
+    const nested = TABLE.replace('  200     1   3.0  40960', '  200   300   3.0  40960').replace('  300   200   0.0   2048', '  300     1   0.0   2048')
+    const result = attribute({ table: parsePsTable(nested), panes: [PANES[1], PANES[0]].flatMap((pane) => (pane === undefined ? [] : [pane])), appRoots: [100] })
+    expect(usage(result.panes.get('A')).pids).toEqual([200, 250, 300, 301])
+    expect(result.herdr).toEqual({ state: 'unavailable', reason: '셸 부모 pid(200)가 이미 pane 몫으로 귀속됐다' })
   })
 })

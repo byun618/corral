@@ -171,7 +171,11 @@ export function attribute(input: { table: PsTable; panes: readonly PaneRoot[]; a
         : '측정된 pane 셸의 부모가 앱 프로세스라 herdr 서버를 따로 세지 않는다'
     herdr = { state: 'unavailable', reason }
   } else if (herdrLive.length === 0) {
-    herdr = { state: 'unavailable', reason: `셸 부모 pid(${[...herdrRoots].join(', ')})가 ps 표에 없다` }
+    // 표에 없음과 이미 pane 몫(셸 부모가 다른 pane 의 자손)을 가른다.
+    const parents = [...herdrRoots].join(', ')
+    herdr = [...herdrRoots].some((pid) => table.rows.has(pid))
+      ? { state: 'unavailable', reason: `셸 부모 pid(${parents})가 이미 pane 몫으로 귀속됐다` }
+      : { state: 'unavailable', reason: `셸 부모 pid(${parents})가 ps 표에 없다` }
   } else {
     const result = walk({ rows: table.rows, children, roots: herdrLive, owned })
     if (result.kind === 'cycle') herdr = { state: 'unavailable', reason: 'ppid 순환' }

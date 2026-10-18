@@ -3,7 +3,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ResourceCloseResult, ResourceCloseRoute, ResourceSnapshot } from '../../../shared/resource.js'
+import type { ResourceCloseResult, ResourceCloseRoute, ResourcePaneRow, ResourceSnapshot } from '../../../shared/resource.js'
 import type { CloseTabsResult } from '../../../shared/types.js'
 import { StatusBar } from './StatusBar.js'
 import { ResourceSegment } from './ResourceSegment.js'
@@ -588,5 +588,248 @@ describe('행 동작 (R5)', () => {
     act(() => root.unmount())
     expect(push).toBeNull()
     root = createRoot(host)
+  })
+})
+
+// ── 수정 r3 (J1·J2·J3·J4·J6) ──
+const ids = (selector: string, attr: string): string[] => [...document.querySelectorAll<HTMLElement>(selector)].map((element) => element.getAttribute(attr) ?? '')
+const closeOrder = (): string[] => ids('[data-statusbar-resource-close]', 'data-statusbar-resource-close')
+const rowEl = (paneId: string): HTMLElement => {
+  const found = q<HTMLElement>(`[data-statusbar-resource-row="${paneId}"]`)
+  if (found === null) throw new Error(`행 없음 ${paneId}`)
+  return found
+}
+const withMemory = (input: { paneId: string; memory: number }): ResourceSnapshot => ({
+  ...SNAPSHOT,
+  panes: SNAPSHOT.panes.map((pane) => (pane.paneId === input.paneId ? { ...pane, measure: { state: 'measured', usage: { cpu: 1, memory: input.memory }, pids: [1] } } : pane)),
+})
+/** /wt/a 묶음에 새로 생긴 pane. */
+const newPane = (memory: number): ResourcePaneRow => ({
+  paneId: 'p-new', tabId: 't4', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'codex 1', agent: 'codex', measure: { state: 'measured', usage: { cpu: 1, memory }, pids: [9] },
+})
+function openR3(): void {
+  mount()
+  act(() => push?.(SNAPSHOT))
+  click(segment())
+}
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => {}
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+describe('행 순서는 열린 동안 얼린다 (J1)', () => {
+  it('순위가 바뀌는 푸시를 받아도 ✕ 순서가 그대로이고 포커스는 같은 pane — 값은 갱신, 다시 열면 새 순서', () => {
+    openR3()
+    expect(closeOrder()).toEqual(['p-big', 'p-small', 'p-gone'])
+    act(() => rowEl('p-small').focus())
+    // 리뷰 r3 C3-1 재현: 순위가 뒤집히는 푸시.
+    act(() => push?.(withMemory({ paneId: 'p-small', memory: 2 * GB })))
+    expect(closeOrder()).toEqual(['p-big', 'p-small', 'p-gone'])
+    expect(document.activeElement).toBe(rowEl('p-small'))
+    expect(rowEl('p-small').querySelector('[data-statusbar-resource-memory]')?.textContent).toBe('2.0 GB')
+    key(document.activeElement ?? document.body, 'Escape')
+    click(segment())
+    expect(closeOrder()).toEqual(['p-small', 'p-big', 'p-gone'])
+  })
+  it('새 pane 은 그 묶음 끝에, 사라진 pane 은 빠진다', () => {
+    openR3()
+    act(() => push?.({ ...SNAPSHOT, panes: [...SNAPSHOT.panes.filter((pane) => pane.paneId !== 'p-small'), newPane(9 * GB)] }))
+    expect(closeOrder()).toEqual(['p-big', 'p-new', 'p-gone'])
+  })
+  it('정렬을 바꾸면 다시 매긴다', () => {
+    openR3()
+    act(() => push?.(withMemory({ paneId: 'p-small', memory: 2 * GB })))
+    const cpuSort = q('[data-statusbar-resource-sort="cpu"]')
+    const memorySort = q('[data-statusbar-resource-sort="memory"]')
+    if (cpuSort === null || memorySort === null) throw new Error('정렬 버튼 없음')
+    click(cpuSort)
+    click(memorySort)
+    expect(closeOrder()).toEqual(['p-small', 'p-big', 'p-gone'])
+  })
+  it('포커스 복구는 자리가 아니라 직전 pane — 앞에 행이 늘어도 같은 pane 으로', () => {
+    openR3()
+    act(() => rowEl('p-gone').focus())
+    const grown = { ...SNAPSHOT, panes: [...SNAPSHOT.panes, newPane(1 * MB)] }
+    act(() => push?.(grown))
+    expect(closeOrder()).toEqual(['p-big', 'p-small', 'p-new', 'p-gone'])
+    act(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined))
+    act(() => push?.({ ...grown, collectedAt: 2 }))
+    expect(document.activeElement).toBe(rowEl('p-gone'))
+  })
+})
+
+describe('확인 뒤 길을 다시 묻는다 (J2)', () => {
+  it('확인 창에 머무는 사이 옆 pane 이 끝나 탭의 마지막 pane 이 됐으면 — pane 게이트로 닫지 않고 탭 닫기를 처음부터(수정 문서 확인)', async () => {
+    corral.closeResourcePane.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 't1', paneId: 'p-small', foreground: ['yes'] }] })
+    openR3()
+    click(q('[data-statusbar-resource-close="p-small"]') ?? document.body)
+    await flush()
+    expect(q('[data-confirm-close-modal]')).not.toBeNull()
+    corral.getResourceCloseRoute.mockResolvedValueOnce({ kind: 'tab', tabId: 't1', worktreePath: '/wt/a', lastInWorktree: true })
+    click(q('[data-close-confirm-ok]') ?? document.body)
+    await flush()
+    await flush()
+    await flush()
+    expect(corral.getResourceCloseRoute).toHaveBeenCalledTimes(2)
+    expect(corral.closeResourcePane).toHaveBeenCalledTimes(1)
+    expect(docs.confirm).toHaveBeenCalledTimes(1)
+    expect(corral.closeTabs).toHaveBeenCalledWith({ tabIds: ['t1'], confirmed: false, alwaysConfirm: false, confirmedPaneIds: [] })
+  })
+  it('같은 탭이어도 그 사이 worktree 의 마지막 터미널 탭이 됐으면 수정 문서 확인부터 다시', async () => {
+    corral.closeTabs.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 't2', paneId: 'p-big', foreground: ['yes'] }] })
+    openR3()
+    click(q('[data-statusbar-resource-close="p-big"]') ?? document.body)
+    await flush()
+    await flush()
+    expect(q('[data-confirm-close-modal]')).not.toBeNull()
+    expect(docs.confirm).not.toHaveBeenCalled()
+    corral.getResourceCloseRoute.mockResolvedValueOnce({ kind: 'tab', tabId: 't2', worktreePath: '/wt/a', lastInWorktree: true })
+    click(q('[data-close-confirm-ok]') ?? document.body)
+    await flush()
+    await flush()
+    await flush()
+    expect(docs.confirm).toHaveBeenCalledTimes(1)
+    expect(corral.closeTabs).toHaveBeenLastCalledWith({ tabIds: ['t2'], confirmed: false, alwaysConfirm: false, confirmedPaneIds: [] })
+  })
+  it('길이 같으면 확인한 대로 다시 부른다', async () => {
+    corral.closeResourcePane.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 't1', paneId: 'p-small', foreground: ['yes'] }] })
+    openR3()
+    click(q('[data-statusbar-resource-close="p-small"]') ?? document.body)
+    await flush()
+    click(q('[data-close-confirm-ok]') ?? document.body)
+    await flush()
+    await flush()
+    expect(corral.getResourceCloseRoute).toHaveBeenCalledTimes(2)
+    expect(corral.closeResourcePane).toHaveBeenLastCalledWith({ paneId: 'p-small', confirmed: true, confirmedPaneIds: ['p-small'] })
+  })
+  it('main 이 route-changed 를 주면 지금 길로 처음부터', async () => {
+    corral.closeResourcePane.mockResolvedValueOnce({ outcome: 'route-changed', closed: [] })
+    corral.closeTabs.mockResolvedValueOnce({ outcome: 'closed', closed: ['t1'] })
+    openR3()
+    corral.getResourceCloseRoute.mockResolvedValueOnce({ kind: 'pane' }).mockResolvedValueOnce({ kind: 'tab', tabId: 't1', worktreePath: '/wt/a', lastInWorktree: false })
+    click(q('[data-statusbar-resource-close="p-small"]') ?? document.body)
+    await flush()
+    await flush()
+    await flush()
+    expect(corral.closeTabs).toHaveBeenCalledWith({ tabIds: ['t1'], confirmed: false, alwaysConfirm: false, confirmedPaneIds: [] })
+    expect(q('[data-statusbar-resource-error]')?.textContent ?? null).toBeNull()
+  })
+})
+
+describe('호스트가 inert 면 패널은 동작하지 않는다 (J4)', () => {
+  it('열린 채 상태바에 inert 가 붙으면 ✕ 는 IPC 를 부르지 않고 패널은 닫힌다', async () => {
+    openR3()
+    const close = q('[data-statusbar-resource-close="p-small"]')
+    if (close === null) throw new Error('닫기 없음')
+    act(() => host.setAttribute('inert', ''))
+    click(close)
+    await flush()
+    expect(corral.getResourceCloseRoute).not.toHaveBeenCalled()
+    expect(corral.closeResourcePane).not.toHaveBeenCalled()
+    expect(q('[data-statusbar-resource-panel]')).toBeNull()
+  })
+  it('inert 가 붙은 그 순간(관찰 전)의 클릭도 무시한다 — 이동·닫기', async () => {
+    openR3()
+    act(() => {
+      host.setAttribute('inert', '')
+      rowEl('p-small').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      q('[data-statusbar-resource-close="p-big"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+    expect(corral.revealResourcePane).not.toHaveBeenCalled()
+    expect(corral.getResourceCloseRoute).not.toHaveBeenCalled()
+  })
+  it('열 때 이미 inert 면 곧바로 닫는다 — 행 이동도 없다', async () => {
+    mount()
+    act(() => push?.(SNAPSHOT))
+    act(() => host.setAttribute('inert', ''))
+    click(segment())
+    await flush()
+    expect(q('[data-statusbar-resource-panel]')).toBeNull()
+    expect(corral.revealResourcePane).not.toHaveBeenCalled()
+  })
+})
+
+describe('같은 행 닫기는 한 번에 하나 (J6)', () => {
+  it('진행 중 두 번째 ✕ 는 IPC 0회', async () => {
+    const route = deferred<ResourceCloseRoute>()
+    corral.getResourceCloseRoute.mockReturnValueOnce(route.promise)
+    openR3()
+    const close = q('[data-statusbar-resource-close="p-small"]')
+    if (close === null) throw new Error('닫기 없음')
+    click(close)
+    click(close)
+    await flush()
+    expect(corral.getResourceCloseRoute).toHaveBeenCalledTimes(1)
+    route.resolve({ kind: 'pane' })
+    await flush()
+    await flush()
+    expect(corral.closeResourcePane).toHaveBeenCalledTimes(1)
+    // 끝난 뒤에는 다시 닫을 수 있다.
+    click(close)
+    await flush()
+    expect(corral.getResourceCloseRoute).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('판별력 보강 (J3)', () => {
+  it('첫 getResourceSnapshot 이 늦게 와도 먼저 온 푸시를 덮어쓰지 않는다 (Y9)', async () => {
+    const first = deferred<ResourceSnapshot | null>()
+    corral.getResourceSnapshot.mockReturnValueOnce(first.promise)
+    mount()
+    act(() => push?.(SNAPSHOT))
+    first.resolve({ ...SNAPSHOT, total: { cpu: 1, memory: 1 * GB } })
+    await flush()
+    expect(segment().textContent).toBe('CPU 62% · 메모리 2.3 GB')
+  })
+  it('열린 패널은 세그먼트 버튼으로 닫힌다 — 버튼 누름이 바깥 클릭이 되어 다시 열리지 않는다 (Y11)', () => {
+    openR3()
+    expect(q('[data-statusbar-resource-panel]')).not.toBeNull()
+    click(segment())
+    expect(q('[data-statusbar-resource-panel]')).toBeNull()
+  })
+  it('aria-expanded 가 열림을 따른다 (Y12)', () => {
+    mount()
+    expect(segment().getAttribute('aria-expanded')).toBe('false')
+    click(segment())
+    expect(segment().getAttribute('aria-expanded')).toBe('true')
+  })
+  it('확인 창이 떠 있는 동안은 포커스를 행으로 끌어오지 않는다 (Y8)', async () => {
+    corral.closeResourcePane.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 't1', paneId: 'p-small', foreground: ['yes'] }] })
+    openR3()
+    click(q('[data-statusbar-resource-close="p-small"]') ?? document.body)
+    await flush()
+    act(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined))
+    act(() => push?.({ ...SNAPSHOT, collectedAt: 2 }))
+    expect(document.activeElement).toBe(document.body)
+  })
+  it('Home 은 첫 행으로 (Y2)', () => {
+    openR3()
+    act(() => rowEl('p-gone').focus())
+    key(rowEl('p-gone'), 'Home')
+    expect(document.activeElement).toBe(rowEl('p-big'))
+  })
+  it('IME 조합 중 Esc 는 패널을 닫지 않는다 — 패널 안(Y4)·body(Y5)', () => {
+    openR3()
+    act(() => {
+      rowEl('p-big').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, isComposing: true }))
+    })
+    expect(q('[data-statusbar-resource-panel]')).not.toBeNull()
+    act(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined))
+    act(() => {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, isComposing: true }))
+    })
+    expect(q('[data-statusbar-resource-panel]')).not.toBeNull()
+  })
+  it('이동이 실패하면 다음에 열 때 오류가 보인다 (S1)', async () => {
+    corral.revealResourcePane.mockResolvedValueOnce(false)
+    openR3()
+    click(rowEl('p-small'))
+    await flush()
+    click(segment())
+    expect(q('[data-statusbar-resource-error]')?.textContent).toBe('그 pane 을 찾지 못했다')
   })
 })

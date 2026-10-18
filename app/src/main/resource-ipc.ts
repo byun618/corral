@@ -5,6 +5,7 @@
 //   · 닫기(split 탭의 pane) = 기존 실행 중 확인 게이트 `closeTabsGated` 를 pane 하나 단위로 지난다(설정 `skipCloseTerminalWithRunningProcessConfirm` 존중).
 //     닫는 동작은 기존 `pane.close` 경로(`closePane`) 그대로 — 새 프로세스 kill 경로는 없다.
 //     탭의 마지막 pane 은 렌더러가 기존 탭 닫기 IPC(`corral:closeTabs`)로 보낸다(핀·수정 문서 확인, F7) — 여기를 지나지 않는다.
+//     렌더러가 길을 정한 뒤(확인 창 체류 중 등) 옆 pane 이 사라져 대상이 그 탭의 마지막 pane 이 됐으면 닫지 않고 `route-changed`(J2).
 import { execFile } from 'node:child_process'
 import os from 'node:os'
 import { promisify } from 'node:util'
@@ -60,19 +61,27 @@ export async function readPsWith(input: { exec: ExecPs; env: NodeJS.ProcessEnv }
 /**
  * store 의 열린 pane → 패널 행의 표시 칸. worktree 에 매달린 workspace 만 상태 트리에 있다.
  * 제목은 사이드바와 같은 스피너 정규화(`normalizeDecorativeTitle`)를 거친 뒤 `paneSessionTitle` 로 만든다(F2 — 2초마다 글리프가 바뀌지 않는다).
+ * 폴백 제목의 ordinal 은 사이드바(`buildAgentRows`)와 같은 규칙(J5): 에이전트 pane 은 그 worktree 의 에이전트 pane 중 몇 번째, 셸 pane 은 셸 pane 중 몇 번째.
  */
 export function paneSources(state: Pick<AppState, 'repos' | 'home'>): ResourcePaneSource[] {
   return state.repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => {
     const workspace = worktree.workspace
     if (workspace === null) return []
     const groupLabel = distinctWorktreeName(worktree)
-    return workspace.tabs.flatMap((tab) => tab.panes).map((pane, index) => ({
+    const panes = workspace.tabs.flatMap((tab) => tab.panes)
+    const agentPanes = panes.filter((pane) => pane.agent !== null)
+    const shellPanes = panes.filter((pane) => pane.agent === null)
+    return panes.map((pane) => ({
       paneId: pane.paneId,
       tabId: pane.tabId,
       workspaceId: pane.workspaceId,
       groupKey: worktree.path,
       groupLabel,
-      title: paneSessionTitle({ pane: { ...pane, title: normalizeDecorativeTitle(pane.title) }, ordinal: index + 1, home: state.home }),
+      title: paneSessionTitle({
+        pane: { ...pane, title: normalizeDecorativeTitle(pane.title) },
+        ordinal: (pane.agent === null ? shellPanes : agentPanes).indexOf(pane) + 1,
+        home: state.home,
+      }),
       agent: pane.agent,
     }))
   })
@@ -156,6 +165,11 @@ export async function closeResourcePane(input: { deps: ResourceIpcDeps; paneId: 
   const socketPath = deps.socketPath()
   if (socketPath === null) return { outcome: 'error', closed: [], error: '세션이 없다' }
   if (!deps.paneIds().includes(paneId)) return { outcome: 'error', closed: [], error: '그 pane 이 없다(이미 닫혔다)' }
+  // J2 — pane 게이트는 split 탭의 pane 만. 지금 그 탭의 마지막 pane 이면 핀·수정 문서 확인을 지나는 탭 닫기 길로 돌려보낸다.
+  if (closeRouteOf({ state: deps.state(), paneId }).kind !== 'pane') {
+    deps.log('resource.close_pane', { paneId, confirmed: input.confirmed, outcome: 'route-changed' })
+    return { outcome: 'route-changed', closed: [] }
+  }
   const tabOf = (id: string): string => deps.state().repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? [])
     .find((tab) => tab.panes.some((pane) => pane.paneId === id))?.tabId ?? ''
   let result: ResourceCloseResult

@@ -26,6 +26,7 @@ vi.mock('node:child_process', () => ({
 }))
 
 const { closeResourcePane, closeRouteOf, paneSources, readPsWith, registerResourceIpc } = await import('./resource-ipc.js')
+const { buildAgentRows } = await import('../shared/sidebar-agents.js')
 type Deps = Parameters<typeof closeResourcePane>[0]['deps']
 
 const pane = (input: { paneId: string; tabId: string; title?: string; agent?: string | null }) => ({
@@ -120,6 +121,31 @@ describe('closeResourcePane — 기존 실행 중 확인 게이트', () => {
   })
 })
 
+describe('closeResourcePane — 길이 바뀌면 닫지 않는다 (J2)', () => {
+  // 리뷰 r3 C3-2 재현(probe-results.log): 길을 물을 때는 split(p1·p2), 확인 창에 머무는 사이 p2 가 끝났다.
+  const afterSiblingGone = (): Pick<AppState, 'repos' | 'home'> => {
+    const now = state()
+    const tab = now.repos[0]?.worktrees[0]?.workspace?.tabs[0]
+    if (tab === undefined) throw new Error('모양')
+    tab.panes = tab.panes.filter((row) => row.paneId === 'p1')
+    return now
+  }
+  it('확인을 마치고 다시 불러도 대상이 지금 그 탭의 마지막 pane 이면 pane.close 하지 않고 route-changed', async () => {
+    expect(closeRouteOf({ state: state(), paneId: 'p1' })).toEqual({ kind: 'pane' })
+    const d = deps({ state: afterSiblingGone, paneIds: () => ['p1', 'p3'] })
+    const result = await closeResourcePane({ deps: d, paneId: 'p1', confirmed: true, confirmedPaneIds: ['p1'] })
+    expect(result).toEqual({ outcome: 'route-changed', closed: [] })
+    expect(d.closed).toEqual([])
+    expect(d.probed).toEqual([])
+  })
+  it('닫으면 결과를 로그로 남긴다 (P4)', async () => {
+    const logs: [string, Record<string, unknown>][] = []
+    const d = deps({ log: (tag, data) => logs.push([tag, data]) })
+    await closeResourcePane({ deps: d, paneId: 'p2', confirmed: true, confirmedPaneIds: ['p2'] })
+    expect(logs).toContainEqual(['resource.close_pane', { paneId: 'p2', confirmed: true, outcome: 'closed' }])
+  })
+})
+
 describe('readPsWith — R1ⓓ 가 실제 실행에 닿는다', () => {
   it('execFile 에 LC_ALL=C env 를 그대로 넘긴다', async () => {
     const exec = vi.fn(async () => ({ stdout: 'OUT' }))
@@ -138,6 +164,19 @@ describe('paneSources', () => {
     if (tab === undefined || first === undefined) throw new Error('모양')
     tab.panes[0] = { ...first, title: '⠙ Fix login bug' }
     expect(paneSources(next)[0]?.title).toBe('Fix login bug')
+  })
+  it('제목이 없을 때의 ordinal 은 사이드바와 같다 — 셸 pane 이 앞에 있어도 둘 다 claude 1 (J5)', () => {
+    const now = state()
+    const workspace = now.repos[0]?.worktrees[0]?.workspace
+    if (workspace === undefined || workspace === null) throw new Error('모양')
+    const tab = workspace.tabs[0]
+    if (tab === undefined) throw new Error('모양')
+    tab.panes = [pane({ paneId: 'sh', tabId: 't1', title: '' }), pane({ paneId: 'cl', tabId: 't1', title: '', agent: 'claude' })]
+    workspace.tabs = [tab]
+    const rows = paneSources(now)
+    expect(rows.map((row) => row.title)).toEqual(['terminal 1', 'claude 1'])
+    const sidebar = buildAgentRows({ tabs: workspace.tabs, retained: [], lineage: { state: 'ready', entries: [] }, livePaneIds: new Set(['sh', 'cl']), integrations: [], home: '/home', unreadPanes: new Set() })
+    expect(sidebar.map((node) => node.full.label)).toEqual(['claude 1'])
   })
 })
 
@@ -258,6 +297,17 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     windowEvents.get(name)?.()
     await settle()
     expect(ps.calls).toHaveLength(2)
+  })
+  it('수집이 끝날 때 창이 파괴됐으면 그 창에 보내지 않는다 (P3)', async () => {
+    win.visible = true
+    const goneSent: unknown[][] = []
+    const gone = { ...fakeWindow, isDestroyed: () => true, webContents: { send: (...args: unknown[]) => goneSent.push(args) } }
+    // ps 를 부르기 전(보임 판정)에는 살아 있는 창, 부른 뒤(보낼 때)에는 파괴된 창.
+    register({ window: () => (ps.calls.length === 0 ? fakeWindow : gone) })
+    await settle()
+    expect(ps.calls).toHaveLength(1)
+    expect(goneSent).toEqual([])
+    expect(sent).toEqual([])
   })
   it('닫기 IPC — 남의 창이면 판정도 닫기도 하지 않는다', async () => {
     const d = register({ fromOurWindow: () => false })

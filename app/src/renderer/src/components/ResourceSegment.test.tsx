@@ -788,7 +788,13 @@ describe('판별력 보강 (J3)', () => {
   it('열린 패널은 세그먼트 버튼으로 닫힌다 — 버튼 누름이 바깥 클릭이 되어 다시 열리지 않는다 (Y11)', () => {
     openR3()
     expect(q('[data-statusbar-resource-panel]')).not.toBeNull()
-    click(segment())
+    // 브라우저처럼 mousedown 과 click 사이에 렌더가 끝난다(React 는 이산 이벤트를 곧바로 그린다) — 한 act 로 묶으면 그 사이 상태를 못 본다.
+    act(() => {
+      segment().dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    })
+    act(() => {
+      segment().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
     expect(q('[data-statusbar-resource-panel]')).toBeNull()
   })
   it('aria-expanded 가 열림을 따른다 (Y12)', () => {

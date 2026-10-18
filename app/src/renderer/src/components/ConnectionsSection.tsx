@@ -5,7 +5,7 @@
 // - 상태는 main push(`corral:workSettings`)만 진실로 쓴다. 토큰은 입력칸 상태에만 잠깐 있고, 보낸 뒤 지운다. 화면에는 끝 4자만.
 // - 자격은 main 이 필요할 때 푼다 — 이 화면이 열릴 때 아직 안 읽은 연결은 한 번 연결 테스트를 한다. 그때 macOS 가 키체인 허용을 물을 수 있어,
 //   `pending: keychain` 이면 이유를 먼저 보인다(ad-hoc 서명이라 새로 설치할 때마다 다시 물을 수 있다).
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   WorkAccountField,
   WorkConnectionStatus,
@@ -191,16 +191,16 @@ function SpaceRow({ connection, space, index, visibleCount }: { connection: Work
     <div className={`connection-space${on ? '' : ' is-hidden'}`} data-space-row={space.key}>
       <span className="connection-space-dot" style={{ background: spaceColor({ color: space.color, index }) }} />
       <span className="connection-space-name">{space.name}</span>
-      {error === null ? null : <span className="connection-space-error" role="alert">{error}</span>}
       <span className="connection-space-count">{space.openCount === null ? '' : `열린 작업 ${space.openCount}`}</span>
       <span className={`connection-space-switch${last ? ' is-locked' : ''}`} title={title} data-space-locked={last ? '' : undefined}>
         <SettingsSwitch checked={on} label={`${space.name} 보이기`} disabled={last} onChange={(next) => void toggle(next)} />
       </span>
+      {error === null ? null : <span className="connection-space-error" role="alert">{error}</span>}
     </div>
   )
 }
 
-function ConnectionCard({ connection, source, onReplaceToken, onRemove }: { connection: WorkConnectionSummary; source: WorkSourceDescriptor | null; onReplaceToken: () => void; onRemove: () => void }): React.JSX.Element {
+function ConnectionCard({ connection, source, claimAutoTest, onReplaceToken, onRemove }: { connection: WorkConnectionSummary; source: WorkSourceDescriptor | null; claimAutoTest: (connectionId: string) => boolean; onReplaceToken: () => void; onRemove: () => void }): React.JSX.Element {
   // 사용자가 누른 연결 테스트의 실패는 연결 상태로 남지 않는 것(invalid_response·rejected 등)까지 이 카드에 보인다(R2-E).
   // 일반 작업 요청의 실패는 연결 상태 정책을 따른다 — 이 줄은 누른 테스트의 결과만.
   // 수명 = 누른 순간의 자격 세대(R3-C) — 토큰을 바꾸면(세대가 오르면) 이전 자격의 실패 줄은 버린다. 늦게 끝난 옛 테스트도 같은 규칙.
@@ -219,6 +219,13 @@ function ConnectionCard({ connection, source, onReplaceToken, onRemove }: { conn
     if (mine !== latestTest.current || generation !== currentGeneration.current) return
     setTestError(result.ok ? null : { error: result.error, generation })
   }
+  // 화면이 열릴 때 아직 안 읽은 연결의 자동 테스트도 같은 `test()` 를 탄다(R5-B) — 실패 줄·수명 규칙(R3-C·R4-B)이 누른 테스트와 같다.
+  // 한 번만 = 화면(ConnectionsSection)이 연결마다 한 번 허락한다.
+  const autoTest = useRef(test)
+  autoTest.current = test
+  useEffect(() => {
+    if (connection.status === 'unchecked' && claimAutoTest(connection.id)) void autoTest.current()
+  }, [connection.status, connection.id, claimAutoTest])
   const shownTestError = testError !== null && testError.generation === connection.generation ? testError.error : null
   const spaces = connection.spaces
   const visibleCount = spaces?.filter((space) => !space.hidden).length ?? 0
@@ -324,7 +331,8 @@ function RepoDefaultRow({ repo, state, first }: { repo: ConnectionsRepo; state: 
         <span className="connection-space-dot" style={{ background: chosen === null ? 'var(--fg-faint)' : spaceColor({ color: chosen.color, index: chosenIndex }) }} />
         {label}
       </button>
-      {error === null ? null : <span className="connection-space-error" role="alert" data-repo-default-error>저장하지 못했습니다: {error}</span>}
+      {/* main 문구가 이미 「저장하지 못했습니다 (…)」 — 접두사를 다시 붙이지 않는다(LIFE-615). 줄은 행 아래 전폭(settings.css). */}
+      {error === null ? null : <span className="connection-space-error" role="alert" data-repo-default-error>{error}</span>}
       {open ? (
         <div className="repo-default-menu" role="menu">
           <button type="button" role="menuitem" className="repo-default-option" onClick={() => void pick(null)}>
@@ -348,15 +356,14 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
   const [adding, setAdding] = useState<Adding | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
   const autoTested = useRef(new Set<string>())
-
-  // 이 화면이 열렸는데 이번 실행에서 아직 안 읽은 연결 — 한 번만 테스트해 스페이스 목록을 받는다(자격은 이때 풀린다).
-  useEffect(() => {
-    for (const connection of state.connections) {
-      if (connection.status !== 'unchecked' || autoTested.current.has(connection.id)) continue
-      autoTested.current.add(connection.id)
-      void window.corral.testWorkConnection({ connectionId: connection.id })
-    }
-  }, [state.connections])
+  // 이 화면이 열렸는데 이번 실행에서 아직 안 읽은 연결 — 한 번만 테스트해 스페이스 목록을 받는다(자격은 이때 풀린다). 테스트는 카드가 한다.
+  const claimAutoTest = useCallback((connectionId: string): boolean => {
+    if (autoTested.current.has(connectionId)) return false
+    autoTested.current.add(connectionId)
+    return true
+  }, [])
+  // 폼 완료는 자기가 연 그 폼이 아직 열려 있을 때만 닫는다(R5-A) — 저장을 기다리는 동안 다른 폼을 열었으면 그 폼·초안을 둔다.
+  const closeForm = (target: Adding): void => setAdding((current) => (current === target ? null : current))
 
   const addingSource = adding === null ? null : state.sources.find((source) => source.id === adding.sourceId) ?? null
   const removingConnection = removing === null ? null : state.connections.find((connection) => connection.id === removing) ?? null
@@ -377,13 +384,14 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
           }
         />
         <div className="connection-list">
-          {addingSource === null || adding === null ? null : <ConnectionForm key={`${adding.sourceId}:${adding.replaceId ?? ''}`} source={addingSource} adding={adding} replacing={state.connections.find((connection) => connection.id === adding.replaceId) ?? null} onDone={() => setAdding(null)} onCancel={() => setAdding(null)} />}
+          {addingSource === null || adding === null ? null : <ConnectionForm key={`${adding.sourceId}:${adding.replaceId ?? ''}`} source={addingSource} adding={adding} replacing={state.connections.find((connection) => connection.id === adding.replaceId) ?? null} onDone={() => closeForm(adding)} onCancel={() => setAdding(null)} />}
           {state.connections.length === 0 && adding === null ? <p className="connection-empty" data-connection-empty>아직 연결이 없습니다. 토큰을 붙여넣어 작업 관리 서비스를 연결하세요.</p> : null}
           {state.connections.map((connection) => (
             <ConnectionCard
               key={connection.id}
               connection={connection}
               source={state.sources.find((source) => source.id === connection.sourceId) ?? null}
+              claimAutoTest={claimAutoTest}
               onReplaceToken={() => setAdding({ sourceId: connection.sourceId, replaceId: connection.id })}
               onRemove={() => setRemoving(connection.id)}
             />

@@ -28,6 +28,7 @@ const tested: string[] = []
 const hidden: Array<{ spaceKey: string; hidden: boolean }> = []
 const defaults: Array<{ repoRoot: string; target: { connectionId: string; spaceKey: string } | null }> = []
 let addResult: WorkConnectionAddResult
+let addGate: Promise<void>
 let testResult: WorkActionResult
 let testGate: Promise<void>
 let defaultResult: WorkActionResult
@@ -45,6 +46,7 @@ beforeEach(() => {
   listeners = []
   for (const list of [added, tested, hidden, defaults]) list.length = 0
   addResult = { ok: true, connection: CONNECTION }
+  addGate = Promise.resolve()
   const ok: WorkActionResult = { ok: true }
   testResult = ok
   testGate = Promise.resolve()
@@ -52,7 +54,7 @@ beforeEach(() => {
   Reflect.set(window, 'corral', {
     getWorkSettings: async () => state,
     onWorkSettings: (listener: (next: WorkSettingsState) => void) => { listeners.push(listener); return () => {} },
-    addWorkConnection: async (input: WorkConnectionAddInput) => { added.push(input); return addResult },
+    addWorkConnection: async (input: WorkConnectionAddInput) => { added.push(input); const result = addResult; const gate = addGate; addGate = Promise.resolve(); await gate; return result },
     testWorkConnection: async (input: { connectionId: string }) => { tested.push(input.connectionId); const result = testResult; const gate = testGate; testGate = Promise.resolve(); await gate; return result },
     removeWorkConnection: async () => ok,
     setWorkSpaceHidden: async (input: { spaceKey: string; hidden: boolean }) => { hidden.push({ spaceKey: input.spaceKey, hidden: input.hidden }); return ok },
@@ -306,4 +308,82 @@ it('토큰 바꾸기 — 바꿀 수 없는 칸은 지금 값으로 읽기 전용
   type(field('[data-connection-token]'), 'new-b')
   await act(async () => { q('[data-connection-form="src-b"]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
   expect(added.at(-1)).toEqual({ sourceId: 'src-b', token: 'new-b', account: { site: 'b.example', email: 'dev@b.example' }, replaceId: 'c2' })
+})
+
+// LIFE-615 R5-A — 토큰 교체 저장을 기다리는 동안 연 새 추가 폼·초안은 옛 교체의 완료가 닫지 않는다.
+async function replaceThenOpenAdd(): Promise<{ release: () => void; draft: HTMLInputElement }> {
+  let release = (): void => {}
+  addGate = new Promise<void>((resolve) => { release = resolve })
+  state = withConnection({ status: 'auth', error: { message: '거부됨 (401)', action: 'replace_token' } })
+  await mount()
+  act(() => q('[data-connection-error] .connection-link').click())
+  type(field('[data-connection-token]'), 'a_pat_replace000')
+  act(() => { q('[data-connection-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  act(() => q('[data-connection-add="src-a"]').click())
+  expect(q('.connection-form-title').textContent).toBe('A 연결')
+  const draft = field('[data-connection-token]')
+  type(draft, 'a_pat_new_draft_0000')
+  return { release, draft }
+}
+
+it('[R5-A] 옛 교체가 성공으로 끝나도 그 사이 연 새 추가 폼·초안은 남는다', async () => {
+  const { release } = await replaceThenOpenAdd()
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(added.map((input) => input.replaceId)).toEqual(['c1'])
+  expect(q('.connection-form-title').textContent).toBe('A 연결')
+  expect(field('[data-connection-token]').value).toBe('a_pat_new_draft_0000')
+})
+
+it('[R5-A] 옛 교체가 실패로 끝나도 새 추가 폼·초안은 남고 옛 폼의 오류가 끼어들지 않는다', async () => {
+  addResult = { ok: false, error: { kind: 'auth', status: 401, message: '토큰을 거부했습니다 (401)' } }
+  const { release } = await replaceThenOpenAdd()
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('.connection-form-title').textContent).toBe('A 연결')
+  expect(field('[data-connection-token]').value).toBe('a_pat_new_draft_0000')
+  expect(host.querySelector('[data-connection-form-error]')).toBeNull()
+})
+
+// LIFE-615 R5-B — 화면 진입 자동 테스트도 누른 테스트와 같은 실패 줄·수명 규칙.
+it('[R5-B] 재시작 뒤 자동 테스트의 invalid_response 를 카드에 보인다', async () => {
+  testResult = { ok: false, error: { kind: 'invalid_response', status: null, message: '응답 모양이 어긋났습니다' } }
+  state = withConnection({ status: 'unchecked', spaces: null, checkedAt: null })
+  await mount()
+  expect(tested).toEqual(['c1'])
+  expect(q('[data-connection-status]').getAttribute('data-connection-status')).toBe('unchecked')
+  expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('응답 모양이 어긋났습니다')
+  // 세대가 오르면 옛 자동 실패 줄은 사라진다(R3-C).
+  push(withConnection({ status: 'ok', generation: 1, tokenTail: 'new4' }))
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[R5-B] 늦게 끝난 자동 테스트 실패가 뒤에 누른 테스트 결과를 덮지 않는다(R4-B)', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: false, error: { kind: 'invalid_response', status: null, message: '자동 테스트 어긋남' } }
+  state = withConnection({ status: 'unchecked', spaces: null, checkedAt: null })
+  await mount()
+  push(withConnection({ status: 'ok' }))
+  testResult = { ok: true }
+  await act(async () => { q('[data-connection-test]').click() })
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(tested).toEqual(['c1', 'c1'])
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[R5-B] 연결 상태로 남는 실패(auth)는 연결 오류 줄 하나만 — 테스트 실패 줄을 겹치지 않는다', async () => {
+  testResult = { ok: false, error: { kind: 'auth', status: 401, message: '토큰이 만료됐거나 폐기됐습니다' } }
+  state = withConnection({ status: 'unchecked', spaces: null, checkedAt: null })
+  await mount()
+  push(withConnection({ status: 'auth', spaces: null, error: { message: '토큰이 만료됐거나 폐기됐습니다', action: 'replace_token' } }))
+  expect(host.querySelectorAll('[data-connection-error]')).toHaveLength(1)
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[LIFE-615] 레포 기본 저장 실패 — 「저장하지 못했습니다」 를 한 번만', async () => {
+  defaultResult = { ok: false, error: { kind: 'local_write', status: null, message: '저장하지 못했습니다 (EACCES)' } }
+  await mount()
+  const row = q('[data-repo-default-space="corral"]')
+  act(() => row.querySelector<HTMLButtonElement>('button')?.click())
+  await act(async () => { [...row.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')][0]?.click() })
+  expect(q('[data-repo-default-error]').textContent?.split('저장하지 못했습니다').length).toBe(2)
 })

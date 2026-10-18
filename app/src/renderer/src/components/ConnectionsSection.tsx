@@ -63,7 +63,8 @@ function spaceColor({ color, index }: { color: string | null; index: number }): 
   return color ?? `var(--space-${(index % 7) + 1})`
 }
 
-type Adding = { sourceId: string; replaceId: string | null }
+/** 열린 폼 — `openId` 는 열 때마다 새 값이라 같은 출처·같은 연결로 다시 열어도 새 폼으로 시작한다(LIFE-615 F2-2). */
+type Adding = { sourceId: string; replaceId: string | null; openId: number }
 
 /** 폼 칸 처음 값 — 토큰 바꾸기면 지금 연결의 값(바꿀 수 없는 칸은 읽기 전용으로), 새 연결이면 빈 칸. */
 function initialAccount({ source, replacing }: { source: WorkSourceDescriptor; replacing: WorkConnectionSummary | null }): Record<string, string> {
@@ -76,9 +77,6 @@ function ConnectionForm({ source, adding, replacing, onDone, onCancel }: { sourc
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<WorkError | null>(null)
   const firstInput = useRef<HTMLInputElement>(null)
-  // 지금 열린 폼(같은 key 로 다시 열면 새 `adding` 객체) — 저장을 기다리는 사이 다시 열었으면 옛 저장의 결과가 새 초안·폼을 건드리지 않는다(LIFE-615 F1-1).
-  const openedAs = useRef(adding)
-  openedAs.current = adding
   useEffect(() => {
     firstInput.current?.focus()
   }, [])
@@ -96,10 +94,8 @@ function ConnectionForm({ source, adding, replacing, onDone, onCancel }: { sourc
     setError(null)
     // 칸 없는 출처(LA)는 전과 같은 입력 — `account` 를 싣지 않는다.
     const sentAccount = Object.fromEntries(source.accountFields.map((field) => [field.key, (account[field.key] ?? '').trim()]))
-    const submittedAs = adding
     const result = await window.corral.addWorkConnection(source.accountFields.length === 0 ? { sourceId: source.id, token: trimmed, replaceId: adding.replaceId } : { sourceId: source.id, token: trimmed, account: sentAccount, replaceId: adding.replaceId })
     setBusy(false)
-    if (openedAs.current !== submittedAs) return
     if (result.ok) {
       setToken('')
       onDone()
@@ -231,6 +227,11 @@ function ConnectionCard({ connection, source, claimAutoTest, onReplaceToken, onR
   useEffect(() => {
     if (connection.status === 'unchecked' && claimAutoTest(connection.id)) void autoTest.current()
   }, [connection.status, connection.id, claimAutoTest])
+  // 연결 상태가 오류를 들고 있으면 그 줄이 같은 실패를 보인다 — 테스트 줄은 버린다(LIFE-615 F2-1).
+  // 숨기기만 하면 뒤에 일반 요청 성공으로 상태가 ok 로 돌아올 때 옛 「연결 테스트 실패」 줄이 되살아난다.
+  useEffect(() => {
+    if (connection.error !== null && testError !== null) setTestError(null)
+  }, [connection.error, testError])
   const shownTestError = testError !== null && testError.generation === connection.generation ? testError.error : null
   const spaces = connection.spaces
   const visibleCount = spaces?.filter((space) => !space.hidden).length ?? 0
@@ -360,6 +361,11 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
   const state = useWorkSettings() ?? EMPTY
   const [adding, setAdding] = useState<Adding | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
+  const openSeq = useRef(0)
+  const openForm = (target: { sourceId: string; replaceId: string | null }): void => {
+    openSeq.current += 1
+    setAdding({ ...target, openId: openSeq.current })
+  }
   const autoTested = useRef(new Set<string>())
   // 이 화면이 열렸는데 이번 실행에서 아직 안 읽은 연결 — 한 번만 테스트해 스페이스 목록을 받는다(자격은 이때 풀린다). 테스트는 카드가 한다.
   const claimAutoTest = useCallback((connectionId: string): boolean => {
@@ -367,7 +373,8 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
     autoTested.current.add(connectionId)
     return true
   }, [])
-  // 폼 완료는 자기가 연 그 폼이 아직 열려 있을 때만 닫는다(R5-A) — 저장을 기다리는 동안 다른 폼을 열었으면 그 폼·초안을 둔다.
+  // 폼 완료는 자기가 연 그 폼이 아직 열려 있을 때만 닫는다(R5-A) — 저장을 기다리는 동안 다른 폼을 열었으면(같은 출처·연결로 다시 연 것 포함) 그 폼·초안을 둔다.
+  // 다시 연 폼은 key(`openId`)가 달라 새 인스턴스라, 옛 저장의 결과(토큰 비우기·오류)도 새 폼에 닿지 않는다.
   const closeForm = (target: Adding): void => setAdding((current) => (current === target ? null : current))
 
   const addingSource = adding === null ? null : state.sources.find((source) => source.id === adding.sourceId) ?? null
@@ -381,7 +388,7 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
           action={
             <div className="connection-add-buttons">
               {state.sources.map((source) => (
-                <button key={source.id} type="button" className="connection-btn" data-connection-add={source.id} onClick={() => setAdding({ sourceId: source.id, replaceId: null })}>
+                <button key={source.id} type="button" className="connection-btn" data-connection-add={source.id} onClick={() => openForm({ sourceId: source.id, replaceId: null })}>
                   {source.addLabel}
                 </button>
               ))}
@@ -389,7 +396,7 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
           }
         />
         <div className="connection-list">
-          {addingSource === null || adding === null ? null : <ConnectionForm key={`${adding.sourceId}:${adding.replaceId ?? ''}`} source={addingSource} adding={adding} replacing={state.connections.find((connection) => connection.id === adding.replaceId) ?? null} onDone={() => closeForm(adding)} onCancel={() => setAdding(null)} />}
+          {addingSource === null || adding === null ? null : <ConnectionForm key={adding.openId} source={addingSource} adding={adding} replacing={state.connections.find((connection) => connection.id === adding.replaceId) ?? null} onDone={() => closeForm(adding)} onCancel={() => setAdding(null)} />}
           {state.connections.length === 0 && adding === null ? <p className="connection-empty" data-connection-empty>아직 연결이 없습니다. 토큰을 붙여넣어 작업 관리 서비스를 연결하세요.</p> : null}
           {state.connections.map((connection) => (
             <ConnectionCard
@@ -397,7 +404,7 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
               connection={connection}
               source={state.sources.find((source) => source.id === connection.sourceId) ?? null}
               claimAutoTest={claimAutoTest}
-              onReplaceToken={() => setAdding({ sourceId: connection.sourceId, replaceId: connection.id })}
+              onReplaceToken={() => openForm({ sourceId: connection.sourceId, replaceId: connection.id })}
               onRemove={() => setRemoving(connection.id)}
             />
           ))}

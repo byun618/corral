@@ -419,3 +419,60 @@ it('[F1-1] 추가 저장 중 같은 출처의 「+ 토큰」 을 다시 눌러 �
   expect(q('.connection-form-title').textContent).toBe('A 연결')
   expect(field('[data-connection-token]').value).toBe('a_pat_reopened_draft')
 })
+
+// LIFE-615 F2-1 — 연결 상태로 남는 실패로 끝난 테스트 뒤, 일반 요청 성공으로 상태가 ok 가 돼도 옛 테스트 줄이 되살아나지 않는다.
+it('[F2-1] 자동 테스트가 offline 으로 실패한 뒤 상태가 ok 로 돌아와도 「연결 테스트 실패」 줄이 없다', async () => {
+  testResult = { ok: false, error: { kind: 'network', status: null, message: '닿지 않습니다' } }
+  state = withConnection({ status: 'unchecked', spaces: null, checkedAt: null })
+  await mount()
+  push(withConnection({ status: 'offline', error: { message: '닿지 않습니다', action: 'retry' } }))
+  expect(host.querySelectorAll('[data-connection-error]')).toHaveLength(1)
+  push(withConnection({ status: 'ok', error: null }))
+  expect(q('[data-connection-status]').getAttribute('data-connection-status')).toBe('ok')
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[F2-1] 누른 테스트가 forbidden 으로 실패해 상태가 먼저 바뀐 뒤 결과가 와도, 복구 뒤 줄이 없다', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: false, error: { kind: 'forbidden', status: 403, message: '권한이 없습니다' } }
+  await mount()
+  act(() => q('[data-connection-test]').click())
+  push(withConnection({ status: 'forbidden', error: { message: '권한이 없습니다', action: null } }))
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  push(withConnection({ status: 'ok', error: null }))
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+// LIFE-615 F2-2 — 저장 진행 중 같은 key 로 다시 연 폼은 새 폼으로 시작한다(옛 토큰이 칸에 남지 않는다).
+it('[F2-2] 교체 저장 중 「토큰 다시 붙여넣기」 로 다시 연 폼은 칸이 비어 있고, 옛 저장 성공 뒤에도 비어 있다', async () => {
+  let release = (): void => {}
+  addGate = new Promise<void>((resolve) => { release = resolve })
+  state = withConnection({ status: 'auth', error: { message: '거부됨 (401)', action: 'replace_token' } })
+  await mount()
+  act(() => q('[data-connection-error] .connection-link').click())
+  type(field('[data-connection-token]'), 'a_pat_replace000')
+  act(() => { q('[data-connection-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  act(() => q('[data-connection-error] .connection-link').click())
+  expect(field('[data-connection-token]').value).toBe('')
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('.connection-form-title').textContent).toContain('토큰 바꾸기')
+  expect(field('[data-connection-token]').value).toBe('')
+  expect(q('[data-connection-save]').hasAttribute('disabled')).toBe(true)
+})
+
+it('[F2-2] 추가 저장 중 「+ 토큰」 으로 다시 연 폼은 칸이 비어 있고, 옛 저장 실패의 오류가 끼어들지 않는다', async () => {
+  let release = (): void => {}
+  addGate = new Promise<void>((resolve) => { release = resolve })
+  addResult = { ok: false, error: { kind: 'auth', status: 401, message: '토큰을 거부했습니다 (401)' } }
+  await mount()
+  act(() => q('[data-connection-add="src-a"]').click())
+  type(field('[data-connection-token]'), 'a_pat_first0000')
+  act(() => { q('[data-connection-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  act(() => q('[data-connection-add="src-a"]').click())
+  expect(field('[data-connection-token]').value).toBe('')
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('.connection-form-title').textContent).toBe('A 연결')
+  expect(field('[data-connection-token]').value).toBe('')
+  expect(host.querySelector('[data-connection-form-error]')).toBeNull()
+})

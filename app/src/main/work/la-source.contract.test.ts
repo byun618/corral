@@ -6,7 +6,8 @@ import { FAKE_LA_TOKEN, laFixtureHarness } from './test-kit.js'
 workContractSuite({
   name: 'LA (모의 MCP 서버)',
   setup: async () => {
-    const harness = await laFixtureHarness()
+    // LIFE-638 — 쪽 크기 3: 커서 시험의 첫 쪽이 스페이스 전체보다 작다(여러 쪽을 이어 붙이는 길을 묶음 전체가 탄다).
+    const harness = await laFixtureHarness({ pageSize: 3 })
     const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
     if (!added.ok) throw new Error(`연결 실패: ${added.error.kind} ${added.error.message}`)
     if (process.env.L600_BREAK === 'la-field') harness.fixture.corrupt = 'drop-statusLabel'
@@ -33,6 +34,7 @@ workContractSuite({
       },
       // LIFE-635 — LA 웹·폰·다른 Mac 이 남긴 링크(같은 판별 규칙으로 fixture 에 직접).
       workLinkStore: 'on',
+      declared: { cursorPaging: 'on', comments: 'on', history: 'on' },
       plantWorkLink: ({ itemId, link, machine, repo }) => harness.fixture.plantWorkLink({ issueId: itemId, link, machine, repo }),
     }
   },

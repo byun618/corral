@@ -23,6 +23,16 @@
 //     `{workLinks:[{id, link, machine, repo, createdAt}]}`(createdAt 순). 판별 = 종류 + 핵심 값(trim) + machine(''·공백·생략 = null).
 //     같은 판별 재추가 = 한 행(부가 값·repo 를 통째로 덮음 — repo 생략 = null, createdAt·machine 유지) · 없는 링크 remove = 오류 아님(목록 그대로) ·
 //     scope 부족 = `missing scope: issue:write`(쓰기 두 도구). 일감 `version` 을 바꾸지 않는다(609 C5). 단건(`issue_get`·`issue_by_seq`)에 `workLinks`.
+//   - 커서 페이지(LIFE-638 — LA LIFE-610 mcp-schema·코디 실측 c02 P2–P4): `issue_list` 의 `rootId`(그 일감의 모든 자손 — 보관·종류 무관하게 내려가고,
+//     나머지 필터는 결과 행에만) · `paginate`/`cursor` → `{items, nextCursor}`(seq 내림차순 고정, 커서 = base64url `{"seq":N}`, 커서에 필터 없음, `nextCursor:null` = 끝,
+//     빈 마지막 쪽 없음). 비커서는 배열 그대로. `rootId`+`parentId` = isError `rootId와 parentId는 함께 쓸 수 없습니다.` · 없는 rootId = `Not Found` ·
+//     해석 못 하는 커서 = `잘못된 cursor입니다.`(평문). `strictCursors`(기본) = 이 서버가 내준 커서만 받는다 — corral 이 커서를 만들거나 고치면 거절된다(C1).
+//     빈 글자 cursor·범위 밖 limit = JSON-RPC -32602(입력 검증 — `cursor` minLength 1 · limit 1~200).
+//   - 코멘트·이력(LIFE-638 — LA LIFE-611 mcp-schema·api-changes·코드 `issue-history.writer`·`issue-comment.service` 대조): `issue_history_list`·`issue_comment_list`
+//     = `{items, nextCursor}` 최신순(at·createdAt desc, id desc), 커서 base64url `{at, id}` · `issue_comment_add({issueId, body})` → 코멘트(공백만 본문 = isError
+//     `코멘트 본문이 비어 있습니다.` · 65 536자 초과 거절 · 본문 trim 없음 · 판 안 올림). 이력은 쓰기와 같은 「트랜잭션」 — 성공한 쓰기의 바뀐 칸만 1칸 1행(거절 = 0행,
+//     값이 안 바뀐 쓰기 = 0행), 한 쓰기의 행은 같은 `at`·`writeId`. 만들기 = 부모 `child` 행에만 · 연결 = 양쪽 `relation` 행 · 부모 바꾸기 = `parent` + 옛·새 부모 `child`.
+//     코멘트·작업 링크는 이력에 없다. author = PAT 이름(`authorName`). 쓰기 7툴의 `clientWriteId` 가 패턴(`^[A-Za-z0-9_-]{1,64}$`) 밖이면 JSON-RPC -32602(저장 0).
 // 제어: `fault`(다음 요청들의 HTTP 상태 강제 · 소켓 끊기 · 지연) · `corrupt`(응답 한 칸 깨기 — 양성 대조) · `protocolVersion`
 //   · `echo`(원격 오류 글에 받은 토큰을 되울리기 — R1-E 양성 대조) · `holdStream`(결과를 쓰고 스트림을 닫지 않기 — R1-H).
 // `requests` 에 받은 요청(메서드·도구 이름·토큰 접두사 여부)을 쌓는다 — 「보내기 전에 거절」 을 요청 0건으로 확인한다.
@@ -65,6 +75,12 @@ export type FixtureCorrupt =
   // LIFE-635 C1 양성 대조 — 링크 행을 깨기: 모르는 종류 · 핵심 값 삭제 · machine 을 숫자로 · createdAt 삭제 · 링크 응답의 workLinks 를 객체로.
   // `drop-workLinks` = 단건 응답의 workLinks 칸 삭제(일반 `drop-<칸>` 경로).
   | 'worklink-unknown-kind' | 'worklink-drop-path' | 'worklink-machine-number' | 'worklink-drop-createdAt' | 'worklink-not-array' | 'drop-workLinks'
+  // LIFE-638 C1·C5·C7 양성 대조 — 커서 쪽의 nextCursor 를 숫자로 · 빈 글자로 · 칸 삭제 · items 를 객체로 · 이력 행 from 을 숫자로 · 코멘트 본문을 숫자로.
+  | 'page-cursor-number' | 'page-cursor-empty' | 'page-cursor-missing' | 'page-items-object' | 'history-from-number' | 'comment-body-number'
+  // LIFE-638 f1 S1-4 — 이력 행 at 을 날짜가 아닌 글자로 · writeId 를 숫자로.
+  | 'history-at-invalid' | 'history-writeId-number'
+  // LIFE-638 g1 S2-2 — 코멘트 createdAt 을 날짜가 아닌 글자로.
+  | 'comment-createdAt-invalid'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -93,11 +109,27 @@ type FixtureLink = { id: string; from: string; to: string; relation: WorkRelatio
 export type FixtureWorkLink = { id: string; issueId: string; kind: 'worktree' | 'branch' | 'pull_request' | 'agent_session'; key: string; extra: Record<string, string | null>; machine: string | null; repo: string | null; createdAt: string }
 
 export type FixtureRequest = { method: string; tool: string | null; bearer: 'none' | 'life_pat' | 'other' }
+/** LA `issue_history` 한 행(611). `origin` = web·mobile·mcp. */
+export type FixtureHistory = { id: string; issueId: string; at: string; author: string; field: string; from: string | null; to: string | null; writeId: string | null; origin: 'web' | 'mobile' | 'mcp' }
+/** LA `issue_comment` 한 행(611). */
+export type FixtureComment = { id: string; issueId: string; author: string | null; body: string; origin: 'web' | 'mobile' | 'mcp'; createdAt: string; updatedAt: string }
+/**
+ * 끝나지 않는 쪽(LIFE-638 C8) — `repeat` = 받은 커서를 그대로 다음으로 · `empty` = 둘째 쪽부터 빈 쪽 + 다음 커서 · `endless` = 늘 새 커서(같은 행).
+ * `when` 이 있으면 그 인자에만(예: 구조 목록이 아닌 본 목록).
+ */
+export type FixturePagingFault = { tool: string; mode: 'repeat' | 'empty' | 'endless'; when?: (args: Record<string, unknown>) => boolean }
 
 const INVERSE: Record<WorkRelationKind, WorkRelationKind> = {
   is_blocked_by: 'blocks', blocks: 'is_blocked_by', duplicates: 'is_duplicated_by', is_duplicated_by: 'duplicates', relates_to: 'relates_to',
 }
-const WRITE_TOOLS = new Set(['issue_update', 'issue_transition', 'issue_link_create', 'issue_link_delete', 'issue_create', 'issue_work_link_add', 'issue_work_link_remove'])
+const WRITE_TOOLS = new Set(['issue_update', 'issue_transition', 'issue_link_create', 'issue_link_delete', 'issue_create', 'issue_work_link_add', 'issue_work_link_remove', 'issue_comment_add'])
+/** `clientWriteId` 를 받는 쓰기 7툴(611). 코멘트·작업 링크 툴은 받지 않는다. */
+const CLIENT_WRITE_ID_TOOLS = new Set(['issue_create', 'issue_update', 'issue_transition', 'issue_archive', 'issue_unarchive', 'issue_link_create', 'issue_link_delete'])
+const CLIENT_WRITE_ID = /^[A-Za-z0-9_-]{1,64}$/
+/** 커서 모드를 받는 읽기 도구(610·611) — 빈 글자 cursor·범위 밖 limit 은 입력 검증(-32602). */
+const PAGED_TOOLS = new Set(['issue_list', 'issue_history_list', 'issue_comment_list'])
+const INVALID_CURSOR = '잘못된 cursor입니다.'
+const COMMENT_BODY_MAX = 65536
 /** LA `WORK_LINK_KEY_FIELD` — 종류 → 핵심 값 칸. */
 const WORK_LINK_KEY = { worktree: 'path', branch: 'name', pull_request: 'url', agent_session: 'sessionId' } as const
 const WORK_LINK_EXTRA: Record<FixtureWorkLink['kind'], string> = { worktree: 'repoRoot', branch: 'repoRoot', pull_request: 'state', agent_session: 'agent' }
@@ -133,7 +165,7 @@ function optionalText({ value, field }: { value: unknown; field: keyof typeof WO
   return { ok: true, value: trimmed }
 }
 /** 실제 LA `issue_create` 입력 칸(LIFE-604 — life-assistant MCP 도구 정의). */
-const CREATE_ARGS = new Set(['kind', 'title', 'description', 'priority', 'statusId', 'categoryKey', 'onBoard', 'dueAt', 'parentId', 'goalId', 'color'])
+const CREATE_ARGS = new Set(['kind', 'title', 'description', 'priority', 'statusId', 'categoryKey', 'onBoard', 'dueAt', 'parentId', 'goalId', 'color', 'clientWriteId'])
 const PRIORITIES = new Set(['highest', 'high', 'medium', 'low', 'lowest'])
 
 const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
@@ -211,6 +243,20 @@ export class LaMcpFixture {
   workLinks: FixtureWorkLink[] = []
   /** 받은 작업 링크 도구 인자(LIFE-635 C2) — machine·repo 가 실렸는지 본다. 토큰은 인자에 없다. */
   readonly workLinkArgs: { tool: string; args: Record<string, unknown> }[] = []
+  /** 받은 모든 도구 호출 인자(LIFE-638) — 목록 인자·쓰기 id·코멘트 호출 수를 본다. 입력 검증 거절(-32602)도 받은 것으로 남긴다. */
+  readonly toolCalls: { tool: string; args: Record<string, unknown> }[] = []
+  /** 이력 행(LIFE-638 · LA 611) — 쓰기가 남기고, 시험이 다른 곳 변경을 심는다(`plantHistory`). */
+  history: FixtureHistory[] = []
+  comments: FixtureComment[] = []
+  /** 이력 author(PAT 이름) — corral 전용 PAT 이름을 흉내 낸다. */
+  authorName = 'fixture-pat'
+  /** 이 서버가 내준 커서만 받는다(C1 — corral 이 커서를 만들거나 고치면 거절). false = LA 처럼 꼴만 맞으면 받는다. */
+  strictCursors = true
+  pagingFault: FixturePagingFault | null = null
+  /** 낡은·깨진 커서의 도구 오류 글(LA 고정 문구) — C3 양성 대조가 이 글만 바꿔 분류가 갈리는지 본다. */
+  invalidCursorText = INVALID_CURSOR
+  private readonly issuedCursors = new Set<string>()
+  private clock = Date.parse('2026-10-18T00:00:00.000Z')
   /** 폐기한 토큰(LIFE-635 C7) — 처음엔 통과하던 토큰이 이 뒤로 401 `invalid_token`. */
   private readonly revoked = new Set<string>()
   fault: FixtureFault | null = null
@@ -250,6 +296,21 @@ export class LaMcpFixture {
   /** 토큰 폐기(LA 웹에서 PAT revoke) — 그 뒤 같은 토큰의 요청은 401 `invalid_token`. */
   revoke(token: string): void {
     this.revoked.add(token)
+  }
+
+  /** 다른 곳(LA 웹·폰·다른 MCP 클라이언트)이 남긴 이력 행을 심는다 — `at` 을 안 주면 서버 시계로(이 뒤의 쓰기보다 앞). */
+  plantHistory(row: Omit<FixtureHistory, 'id' | 'at'> & { at?: string }): FixtureHistory {
+    const planted: FixtureHistory = { ...row, id: uuid(50000 + this.seq++), at: row.at ?? this.tick() }
+    this.history.push(planted)
+    return planted
+  }
+
+  /** 다른 곳이 남긴 코멘트를 심는다. */
+  plantComment({ issueId, author, body, origin = 'web' }: { issueId: string; author: string | null; body: string; origin?: FixtureComment['origin'] }): FixtureComment {
+    const at = this.tick()
+    const comment: FixtureComment = { id: uuid(40000 + this.seq++), issueId, author, body, origin, createdAt: at, updatedAt: at }
+    this.comments.push(comment)
+    return comment
   }
 
   /** 다른 곳(LA 웹·폰·다른 Mac)이 남긴 링크를 심는다 — 판별이 같은 행이 있으면 덮는다(LA 재추가와 같다). */
@@ -321,6 +382,13 @@ export class LaMcpFixture {
       return
     }
     const args = isRecord(params.arguments) ? params.arguments : {}
+    // 입력 검증(MCP SDK 의 zod — 도구 처리 전, 저장 0): 패턴 밖 clientWriteId · 빈 글자 cursor · 범위 밖 limit = JSON-RPC -32602.
+    const invalid = inputProblem({ tool, args })
+    if (invalid !== null) {
+      this.toolCalls.push({ tool, args: structuredClone(args) })
+      this.sse({ response, value: { jsonrpc: '2.0', id, error: { code: -32602, message: `Input validation error: ${invalid}` } } })
+      return
+    }
     const result = this.corrupt === 'tool-error' ? { isError: true, text: JSON.stringify({ code: 'INTERNAL', message: '깨진 도구' }) } : this.tool({ tool, args })
     const toolResult: Record<string, unknown> = { content: [{ type: 'text', text: result.text }] }
     if (result.isError) toolResult.isError = true
@@ -347,6 +415,7 @@ export class LaMcpFixture {
     const ok = (value: unknown): { isError: boolean; text: string } => ({ isError: false, text: JSON.stringify(value) })
     const fail = (code: string, message: string): { isError: boolean; text: string } => ({ isError: true, text: JSON.stringify({ code, message }) })
     if (tool === 'issue_update' || tool === 'issue_transition') this.writeArgs.push({ tool, args: { ...args } })
+    this.toolCalls.push({ tool, args: structuredClone(args) })
     const broken = this.afterWrite?.mode === 'drop' ? null : this.brokenRead(tool)
     if (broken !== null) {
       if (broken.mode === 'refused') return fail('BAD_REQUEST', 'fixture post-write read refused')
@@ -370,13 +439,52 @@ export class LaMcpFixture {
       case 'issue_list': {
         const archived = args.archived ?? 'exclude'
         const limit = typeof args.limit === 'number' ? args.limit : 50
-        const rows = this.issues
+        if (args.rootId !== undefined && args.parentId !== undefined) return plain('rootId와 parentId는 함께 쓸 수 없습니다.')
+        // rootId = 모든 자손(루트 자신 제외) — 탐색은 보관·종류·상태 무관(610). 나머지 필터는 결과 행에만.
+        let scope = this.issues
+        if (args.rootId !== undefined) {
+          if (find(args.rootId) === undefined) return plain('Not Found')
+          scope = this.descendants(String(args.rootId))
+        }
+        const rows = scope
           .filter((issue) => (archived === 'all' ? true : archived === 'only' ? issue.archivedAt !== null : issue.archivedAt === null))
           .filter((issue) => args.kind === undefined || issue.kind === args.kind)
           .filter((issue) => args.parentId === undefined || issue.parentId === args.parentId)
           .filter((issue) => args.categoryKey === undefined || this.status(issue).categoryKey === args.categoryKey)
-          .slice(0, limit)
-        return ok(rows.map((issue) => this.listRow(issue)))
+        if (args.paginate !== true && args.cursor === undefined) return ok(rows.slice(0, limit).map((issue) => this.listRow(issue)))
+        // 커서 모드 — seq 내림차순 고정(orderBy 무시), 커서 = 마지막 행의 seq.
+        const sorted = [...rows].sort((a, b) => b.sequentialId - a.sequentialId)
+        return this.paged({
+          tool, args, rows: sorted, limit, position: (issue) => ({ seq: issue.sequentialId }),
+          after: ({ row, key }) => typeof key.seq === 'number' && row.sequentialId < key.seq, valid: (key) => typeof key.seq === 'number' && Number.isSafeInteger(key.seq),
+          render: (issue) => this.listRow(issue),
+        })
+      }
+      // LIFE-638 — 이력·코멘트(611). 최신순(at desc, id desc) 고정 · 커서 = 마지막 행의 {at(epoch ms), id}.
+      case 'issue_history_list':
+      case 'issue_comment_list': {
+        if (find(args.issueId) === undefined) return fail('NOT_FOUND', '일감을 찾을 수 없어요')
+        const limit = typeof args.limit === 'number' ? args.limit : 50
+        const source: (FixtureHistory | FixtureComment)[] = tool === 'issue_history_list' ? this.history : this.comments
+        const stamp = (row: FixtureHistory | FixtureComment): number => Date.parse('at' in row ? row.at : row.createdAt)
+        const sorted = source.filter((row) => row.issueId === args.issueId).sort((a, b) => stamp(b) - stamp(a) || b.id.localeCompare(a.id))
+        return this.paged({
+          tool, args, rows: sorted, limit, position: (row) => ({ at: stamp(row), id: row.id }),
+          after: ({ row, key }) => typeof key.at === 'number' && typeof key.id === 'string' && (stamp(row) < key.at || (stamp(row) === key.at && row.id < key.id)),
+          valid: (key) => typeof key.at === 'number' && typeof key.id === 'string',
+          render: (row) => ('at' in row ? this.historyRow(row) : this.commentRow(row)),
+        })
+      }
+      case 'issue_comment_add': {
+        const issue = find(args.issueId)
+        if (issue === undefined) return fail('NOT_FOUND', '일감을 찾을 수 없어요')
+        // LA parseCommentBody — 글자가 아니거나 공백만 = 거절 · 상한 초과 = 거절 · 통과면 원문 그대로(trim 없음). 판(version)·이력 무변경.
+        if (typeof args.body !== 'string' || args.body.trim() === '') return plain('코멘트 본문이 비어 있습니다.')
+        if (args.body.length > COMMENT_BODY_MAX) return plain(`코멘트 본문이 너무 깁니다(최대 ${COMMENT_BODY_MAX}자).`)
+        const at = this.tick()
+        const comment: FixtureComment = { id: uuid(40000 + this.seq++), issueId: issue.id, author: this.authorName, body: args.body, origin: 'mcp', createdAt: at, updatedAt: at }
+        this.comments.push(comment)
+        return ok(this.commentRow(comment))
       }
       case 'issue_get': {
         const issue = find(args.id)
@@ -403,10 +511,12 @@ export class LaMcpFixture {
         const fromLabel = { label: from.label, categoryKey: from.categoryKey }
         if (target.id === from.id) return ok({ transitioned: false, reason: 'same', from: fromLabel, to: fromLabel, issue: this.full(issue) })
         if (args.forwardOnly !== false && (this.transitionNoop || order(target) < order(from))) return ok({ transitioned: false, reason: 'backward', from: fromLabel, to: { label: target.label, categoryKey: target.categoryKey }, issue: this.full(issue) })
+        const before = this.snapshot(issue)
         issue.statusId = target.id
         if (typeof args.resolution === 'string' || args.resolution === null) issue.resolution = args.resolution
         this.touch(issue)
         issue.version += 1
+        this.recordChanges({ issue, before, args })
         return ok({ transitioned: true, from: fromLabel, to: { label: target.label, categoryKey: target.categoryKey }, issue: this.full(issue) })
       }
       case 'issue_update': {
@@ -415,6 +525,8 @@ export class LaMcpFixture {
         const stale = this.stale({ issue, args })
         if (stale !== null) return stale
         const before = JSON.stringify(issue)
+        const shown = this.snapshot(issue)
+        const oldParent = issue.parentId
         if (typeof args.statusId === 'string') {
           if (!this.statuses.some((status) => status.id === args.statusId)) return fail('BAD_REQUEST', '없는 statusId')
           issue.statusId = args.statusId
@@ -437,6 +549,14 @@ export class LaMcpFixture {
         // 조건부 저장은 값이 같아도 판을 소비한다(F8). 무조건 저장의 무변경은 판 그대로.
         if (args.ifVersion !== undefined || JSON.stringify(issue) !== before) issue.version += 1
         this.touch(issue)
+        // 이력 — 저장이 성공한 뒤에만, 바뀐 칸만(같은 값 = 0행). 부모가 바뀌면 옛·새 부모에 child 행.
+        this.recordChanges({ issue, before: shown, args })
+        if (issue.parentId !== oldParent) {
+          const at = this.lastAt
+          const writeId = writeIdOf(args)
+          if (oldParent !== null) this.pushHistory({ issueId: oldParent, at, field: 'child', from: this.titled(issue), to: null, writeId })
+          if (issue.parentId !== null) this.pushHistory({ issueId: issue.parentId, at, field: 'child', from: null, to: this.titled(issue), writeId })
+        }
         // LIFE-602 수정 1 — 쓰기 응답(E4 issue_update) 하나만 어긋나게: 읽기(issue_get·list)는 멀쩡하다(양성 대조 범위를 쓰기 응답으로 좁힌다).
         if (this.corrupt === 'update-bad-title') return ok({ ...this.response(issue), title: 42 })
         return ok(this.response(issue))
@@ -476,6 +596,8 @@ export class LaMcpFixture {
           resolution: null, color: null, position: String(100 + sequentialId), onBoard: args.onBoard === true, dueAt: typeof args.dueAt === 'string' ? args.dueAt : null, archivedAt: null, updatedAt: '2026-10-14T00:00:00.000Z', version: 1,
         }
         this.issues.push(created)
+        // 만들기 — 일감 자신엔 이력 행이 없고, 부모의 child 행에만 쓰기 id(611).
+        if (parentId !== null) this.pushHistory({ issueId: parentId, at: this.tick(), field: 'child', from: null, to: this.titled(created), writeId: writeIdOf(args) })
         return ok(this.response(created))
       }
       case 'issue_link_create': {
@@ -488,6 +610,7 @@ export class LaMcpFixture {
         if (this.links.some((link) => link.from === from.id && link.to === to.id && link.relation === kind)) return fail('CONFLICT', '이미 연결됨')
         const link: FixtureLink = { id: uuid(70000 + this.seq++), from: from.id, to: to.id, relation: kind }
         this.links.push(link)
+        this.recordRelation({ link, added: true, writeId: writeIdOf(args) })
         return ok({ id: link.id, relation: kind, issue: this.ref(to), createdAt: '2026-10-13T00:00:00.000Z' })
       }
       case 'issue_work_link_add': {
@@ -511,7 +634,8 @@ export class LaMcpFixture {
       case 'issue_link_delete': {
         const index = this.links.findIndex((link) => link.id === args.linkId)
         if (index < 0) return fail('NOT_FOUND', '없는 링크')
-        this.links.splice(index, 1)
+        const [removed] = this.links.splice(index, 1)
+        if (removed !== undefined) this.recordRelation({ link: removed, added: false, writeId: writeIdOf(args) })
         return ok({ deleted: true, linkId: args.linkId })
       }
       default:
@@ -616,6 +740,127 @@ export class LaMcpFixture {
       })
   }
 
+  /**
+   * 커서 쪽 하나(610·611) — 커서 해석(base64url JSON) → 그 뒤 행부터 limit 개. 빈 마지막 쪽은 내지 않는다(마지막 행에서 nextCursor null).
+   * `strictCursors` 면 이 서버가 내준 커서만. `pagingFault`·`page-*` 깨기는 여기서 건다.
+   */
+  private paged<T>({ tool, args, rows, limit, position, after, valid, render }: {
+    tool: string; args: Record<string, unknown>; rows: T[]; limit: number; position: (row: T) => Record<string, unknown>
+    after: (input: { row: T; key: Record<string, unknown> }) => boolean; valid: (key: Record<string, unknown>) => boolean; render: (row: T) => Record<string, unknown>
+  }): { isError: boolean; text: string } {
+    let start = 0
+    if (args.cursor !== undefined) {
+      const key = typeof args.cursor === 'string' ? decodeCursor(args.cursor) : null
+      if (key === null || !valid(key) || (this.strictCursors && !this.issuedCursors.has(String(args.cursor)))) return plain(this.invalidCursorText)
+      start = rows.findIndex((row) => after({ row, key }))
+      if (start < 0) start = rows.length
+    }
+    const fault = this.pagingFault !== null && this.pagingFault.tool === tool && (this.pagingFault.when?.(args) ?? true) ? this.pagingFault.mode : null
+    let items = rows.slice(start, start + limit)
+    const last = items.at(-1)
+    let nextCursor = last !== undefined && start + limit < rows.length ? encodeCursor(position(last)) : null
+    if (fault === 'repeat' && typeof args.cursor === 'string') nextCursor = args.cursor
+    // 끝나지 않는 쪽 — 다음 커서는 첫 행 자리(+ 매번 다른 표지)라 받으면 다시 처음부터 준다.
+    const first = rows[0]
+    const restart = (mark: string): string => encodeCursor({ ...(first === undefined ? {} : position(first)), [mark]: this.seq++ })
+    if (fault === 'empty' && args.cursor !== undefined) { items = []; nextCursor = restart('empty') }
+    if (fault === 'endless') { items = rows.slice(0, limit); nextCursor = restart('loop') }
+    if (nextCursor !== null) this.issuedCursors.add(nextCursor)
+    const page: Record<string, unknown> = { items: items.map(render), nextCursor }
+    if (this.corrupt === 'page-cursor-number') page.nextCursor = 42
+    if (this.corrupt === 'page-cursor-empty') page.nextCursor = ''
+    if (this.corrupt === 'page-cursor-missing') delete page.nextCursor
+    if (this.corrupt === 'page-items-object') page.items = { rows: page.items }
+    return { isError: false, text: JSON.stringify(page) }
+  }
+
+  /** rootId 의 모든 자손(루트 제외) — 보관·종류 무관하게 내려간다(610, 서버 깊이 상한 10). */
+  private descendants(rootId: string): FixtureIssue[] {
+    const out: FixtureIssue[] = []
+    let frontier = [rootId]
+    for (let depth = 0; depth < 10 && frontier.length > 0; depth += 1) {
+      const next = this.issues.filter((issue) => issue.parentId !== null && frontier.includes(issue.parentId))
+      out.push(...next)
+      frontier = next.map((issue) => issue.id)
+    }
+    return out
+  }
+
+  /** 이력에 남는 칸의 사람이 읽는 값(611 표) — 쓰기 전·후를 견준다. body 는 「바뀌었다」 만(값은 늘 null) — 원문으로 견주고 행에는 null. */
+  private snapshot(issue: FixtureIssue): Record<string, string | null> {
+    const status = this.status(issue)
+    return {
+      status: issue.resolution === 'cancelled' && status.categoryKey === 'done' ? `${status.label} · 취소함` : status.label,
+      title: issue.title, body: issue.description, priority: issue.priority, dueAt: issue.dueAt, placement: issue.onBoard ? '보드' : '백로그',
+      parent: issue.parentId === null ? null : this.titledId(issue.parentId),
+    }
+  }
+
+  /** 성공한 쓰기 하나의 이력 — 바뀐 칸마다 1행, 같은 at·writeId. 아무 칸도 안 바뀌면 0행(at 도 안 흐른다). */
+  private recordChanges({ issue, before, args }: { issue: FixtureIssue; before: Record<string, string | null>; args: Record<string, unknown> }): void {
+    const after = this.snapshot(issue)
+    const changed = Object.keys(after).filter((field) => after[field] !== before[field])
+    if (changed.length === 0) return
+    const at = this.tick()
+    for (const field of changed) {
+      const body = field === 'body'
+      this.pushHistory({ issueId: issue.id, at, field, from: body ? null : before[field] ?? null, to: body ? null : after[field] ?? null, writeId: writeIdOf(args) })
+    }
+  }
+
+  /** 연결 추가·제거 — 양쪽 일감에 그 일감 기준 문장(`is blocked by LIFE-71`) 1행씩. */
+  private recordRelation({ link, added, writeId }: { link: FixtureLink; added: boolean; writeId: string | null }): void {
+    const at = this.tick()
+    const from = this.issues.find((issue) => issue.id === link.from)
+    const to = this.issues.find((issue) => issue.id === link.to)
+    if (from === undefined || to === undefined) return
+    const sentence = (relation: WorkRelationKind, other: FixtureIssue): string => `${relation.replaceAll('_', ' ')} LIFE-${other.sequentialId}`
+    for (const [self, relation, other] of [[from, link.relation, to], [to, INVERSE[link.relation], from]] as const) {
+      const text = sentence(relation, other)
+      this.pushHistory({ issueId: self.id, at, field: 'relation', from: added ? null : text, to: added ? text : null, writeId })
+    }
+  }
+
+  private pushHistory({ issueId, at, field, from, to, writeId }: { issueId: string; at: string; field: string; from: string | null; to: string | null; writeId: string | null }): void {
+    this.history.push({ id: uuid(50000 + this.seq++), issueId, at, author: this.authorName, field, from, to, writeId, origin: 'mcp' })
+  }
+
+  private titled(issue: FixtureIssue): string {
+    return `LIFE-${issue.sequentialId} ${issue.title}`
+  }
+
+  private titledId(id: string): string | null {
+    const issue = this.issues.find((row) => row.id === id)
+    return issue === undefined ? null : this.titled(issue)
+  }
+
+  /** 서버 시계 — 쓰기·코멘트마다 1초. 한 쓰기의 이력 행은 같은 값(`lastAt`). */
+  private tick(): string {
+    this.clock += 1000
+    return new Date(this.clock).toISOString()
+  }
+
+  private get lastAt(): string {
+    return new Date(this.clock).toISOString()
+  }
+
+  /** 이력 행 응답 — `{id, at, author, field, from, to, writeId, origin}`(611). */
+  private historyRow(row: FixtureHistory): Record<string, unknown> {
+    const { issueId: _issue, ...rest } = row
+    void _issue
+    if (this.corrupt === 'history-from-number') return { ...rest, from: 7 }
+    if (this.corrupt === 'history-at-invalid') return { ...rest, at: '어제쯤' }
+    if (this.corrupt === 'history-writeId-number') return { ...rest, writeId: 7 }
+    return rest
+  }
+
+  /** 코멘트 응답 — `{id, issueId, author, body, origin, createdAt, updatedAt}`(611). */
+  private commentRow(row: FixtureComment): Record<string, unknown> {
+    if (this.corrupt === 'comment-body-number') return { ...row, body: 7 }
+    if (this.corrupt === 'comment-createdAt-invalid') return { ...row, createdAt: '방금' }
+    return { ...row }
+  }
+
   private touch(issue: FixtureIssue): void {
     issue.updatedAt = new Date(Date.parse(issue.updatedAt) + 1000).toISOString()
   }
@@ -696,4 +941,31 @@ export class LaMcpFixture {
       return other === undefined ? [] : [{ id: link.id, relation: outgoing ? link.relation : INVERSE[link.relation], other }]
     })
   }
+}
+
+/** LA 의 평문 도구 오류(BadRequest 고정 문구 — 610·611 `잘못된 cursor입니다.` 등). JSON 이 아니다. */
+function plain(text: string): { isError: boolean; text: string } {
+  return { isError: true, text }
+}
+
+function writeIdOf(args: Record<string, unknown>): string | null {
+  return typeof args.clientWriteId === 'string' ? args.clientWriteId : null
+}
+
+function encodeCursor(key: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(key), 'utf8').toString('base64url')
+}
+
+function decodeCursor(cursor: string): Record<string, unknown> | null {
+  const parsed = safeParse(Buffer.from(cursor, 'base64url').toString('utf8'))
+  return isRecord(parsed) ? parsed : null
+}
+
+/** MCP SDK 입력 검증 흉내(zod) — 문제가 있으면 칸 이름, 없으면 null. 값은 문구에 넣지 않는다. */
+function inputProblem({ tool, args }: { tool: string; args: Record<string, unknown> }): string | null {
+  if (CLIENT_WRITE_ID_TOOLS.has(tool) && args.clientWriteId !== undefined && (typeof args.clientWriteId !== 'string' || !CLIENT_WRITE_ID.test(args.clientWriteId))) return 'clientWriteId'
+  if (!PAGED_TOOLS.has(tool)) return null
+  if (args.cursor !== undefined && (typeof args.cursor !== 'string' || args.cursor.length === 0)) return 'cursor'
+  if (args.limit !== undefined && (typeof args.limit !== 'number' || !Number.isInteger(args.limit) || args.limit < 1 || args.limit > 200)) return 'limit'
+  return null
 }

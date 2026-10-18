@@ -98,12 +98,13 @@ export function workHarness({ entries, repos = [] }: { entries: WorkSourceEntry[
   return { service, store, cipher, vault, emitted, repos, activity }
 }
 
-export async function laFixtureHarness({ timeoutMs }: { timeoutMs?: number } = {}): Promise<WorkHarness & { fixture: LaMcpFixture; url: string }> {
+/** `pageSize` = LA 정규 스페이스 목록 쪽 크기(LIFE-638) — 여러 쪽을 만들 때만. */
+export async function laFixtureHarness({ timeoutMs, pageSize }: { timeoutMs?: number; pageSize?: number } = {}): Promise<WorkHarness & { fixture: LaMcpFixture; url: string }> {
   const fixture = new LaMcpFixture()
   fixture.tokens.set(FAKE_LA_TOKEN, 'write')
   fixture.tokens.set(FAKE_LA_READ_TOKEN, 'read')
   const url = await fixture.start()
-  const harness = workHarness({ entries: [laSourceEntry({ url, clientVersion: 'test', timeoutMs })] })
+  const harness = workHarness({ entries: [laSourceEntry({ url, clientVersion: 'test', timeoutMs, pageSize })] })
   return { ...harness, fixture, url }
 }
 

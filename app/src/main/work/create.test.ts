@@ -1,6 +1,6 @@
 // LIFE-604 — 만들기 계약 E10·E11 의 출처별 사정. 공통 규칙은 계약 묶음(`contract-suite.ts`)이 두 출처에 같이 돌린다.
 // 여기서는: LA 칸 전달(모의 MCP 가 받은 인자 기록 — C4) · 모의 출처(Jira 형) 첫 상태·필수 필드(C3·C8) · main 의 생성 메타 검증(양성 대조) ·
-// 「만들었음」 활동(C10)의 재시작 유지.
+// 「만들었음」 활동(C10)의 재시작 유지. LIFE-638 D5 — LA 만들기 인자에 쓰기 id(하네스 `conn-N`)가 `clientWriteId` 로 같이 실린다(칸 전달 규칙은 그대로).
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -43,7 +43,7 @@ describe('LA 칸 전달 (C4 — 모의 MCP 가 받은 인자)', () => {
     const { fixture, send } = await laSetup()
     const response = await send({ op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: null, kindKey: 'task', title: '칸 전달', body: '본문 **굵게**', statusKey: FIXTURE_STATUS.dev, priority: 'highest', placement: 'backlog' })
     expect(response.ok).toBe(true)
-    expect(fixture.createArgs.at(-1)).toEqual({ kind: 'task', title: '칸 전달', parentId: FIXTURE_IDS.corral, onBoard: false, description: '본문 **굵게**', statusId: FIXTURE_STATUS.dev, priority: 'highest' })
+    expect(fixture.createArgs.at(-1)).toEqual({ kind: 'task', title: '칸 전달', parentId: FIXTURE_IDS.corral, onBoard: false, description: '본문 **굵게**', statusId: FIXTURE_STATUS.dev, priority: 'highest', clientWriteId: expect.stringMatching(/^conn-\d+$/) })
     if (!response.ok || response.result.op !== 'createItem') throw new Error('createItem')
     const again = await send({ op: 'getItem', itemId: response.result.item.id })
     if (!again.ok || again.result.op !== 'getItem') throw new Error('getItem')
@@ -56,7 +56,7 @@ describe('LA 칸 전달 (C4 — 모의 MCP 가 받은 인자)', () => {
     expect(fixture.createArgs.at(-1)).toMatchObject({ onBoard: true })
     const child = await send({ op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: FIXTURE_IDS.checkpoint, kindKey: 'task', title: '자식' })
     expect(child.ok).toBe(true)
-    expect(fixture.createArgs.at(-1)).toEqual({ kind: 'task', title: '자식', parentId: FIXTURE_IDS.checkpoint, onBoard: true })
+    expect(fixture.createArgs.at(-1)).toEqual({ kind: 'task', title: '자식', parentId: FIXTURE_IDS.checkpoint, onBoard: true, clientWriteId: expect.stringMatching(/^conn-\d+$/) })
   })
 
   it('LA 가 받지 않는 칸(필수 필드)·완료 상태는 보내기 전에 거절 — issue_create 0건', async () => {
@@ -218,7 +218,7 @@ describe('LA 기본 상태·배치 적용 (R2-G·R2-H)', () => {
     expect(await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'bug' })).toMatchObject({ ok: true, result: { meta: { placement: 'ignored' } } })
     const bug = await send({ op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: null, kindKey: 'bug', title: '버그' })
     expect(bug.ok).toBe(true)
-    expect(fixture.createArgs.at(-1)).toEqual({ kind: 'bug', title: '버그', parentId: FIXTURE_IDS.corral })
+    expect(fixture.createArgs.at(-1)).toEqual({ kind: 'bug', title: '버그', parentId: FIXTURE_IDS.corral, clientWriteId: expect.stringMatching(/^conn-\d+$/) })
     const withPlacement = await send({ op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: null, kindKey: 'bug', title: '배치 실음', placement: 'backlog' })
     expect(withPlacement).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('배치') } })
     expect(fixture.createArgs).toHaveLength(1)

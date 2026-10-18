@@ -58,6 +58,11 @@ export type ContractTarget = {
    * 링크 시험이 「꺼짐 갈래」 로 조용히 통과하지 않고 여기서 실패한다.
    */
   workLinkStore: 'on' | 'off'
+  /**
+   * 이 출처가 켠 커서·코멘트·이력 능력(LIFE-638 D9) — 묶음은 능력 표가 이 선언과 같은지 먼저 본다. 세 시험은 꺼진 출처를 「거절」 갈래로 통과시키므로,
+   * 켜짐 출처가 실수로 능력을 끄면(옛 동작으로 돌아가면) 여기서 실패한다(635 `workLinkStore` 꼴).
+   */
+  declared: { cursorPaging: 'on' | 'off'; comments: 'on' | 'off'; history: 'on' | 'off' }
 }
 
 /** 정규형 본문(지원 표 안) — 출처 서식으로 바꿔 두는 출처도 바이트로 되돌려야 하는 꼴. */
@@ -862,6 +867,12 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
         expect(refused).toMatchObject({ ok: false, error: { kind: 'unsupported' } })
         if (!refused.ok && order.state === 'disabled') expect(refused.error.message).toBe(order.reason)
       }
+    })
+
+    it('커서·코멘트·이력 능력(LIFE-638) — 능력 표가 이 출처의 선언과 같다(켜짐 출처가 꺼짐 갈래로 통과하지 않게)', async () => {
+      const { capabilities } = await stage()
+      const state = (capability: WorkCapability): 'on' | 'off' => (capability.state === 'on' ? 'on' : 'off')
+      expect({ cursorPaging: state(capabilities.cursorPaging), comments: state(capabilities.comments), history: state(capabilities.history) }).toEqual(target.declared)
     })
 
     it('작업 링크 능력(LIFE-635) — 능력 표의 workLinkStore 가 이 출처의 선언과 같다(켜짐 출처가 꺼짐 갈래로 통과하지 않게)', async () => {

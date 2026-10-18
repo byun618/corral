@@ -2,29 +2,39 @@
 //
 // 행 동작(R5, 게이트 ⓪ Q3):
 //   · 이동 = 기존 `corral:revealPane` 푸시(CLI `worktree activate` 와 같은 길) — 렌더러가 worktree·탭 전환까지 한다.
-//   · 닫기 = 기존 실행 중 확인 게이트 `closeTabsGated` 를 pane 하나 단위로 지난다(설정 `skipCloseTerminalWithRunningProcessConfirm` 존중).
+//   · 닫기(split 탭의 pane) = 기존 실행 중 확인 게이트 `closeTabsGated` 를 pane 하나 단위로 지난다(설정 `skipCloseTerminalWithRunningProcessConfirm` 존중).
 //     닫는 동작은 기존 `pane.close` 경로(`closePane`) 그대로 — 새 프로세스 kill 경로는 없다.
+//     탭의 마지막 pane 은 렌더러가 기존 탭 닫기 IPC(`corral:closeTabs`)로 보낸다(핀·수정 문서 확인, F7) — 여기를 지나지 않는다.
 import { execFile } from 'node:child_process'
 import os from 'node:os'
 import { promisify } from 'node:util'
-import { ipcMain, type BrowserWindow } from 'electron'
+import { app, ipcMain } from 'electron'
 import type { CloseTabOutcome } from './close-tabs.js'
 import { closeTabsGated } from './close-tabs.js'
 import { psInvocation } from './resource-collector.js'
 import { createResourceMonitor, RESOURCE_INTERVAL_MS, type ResourcePaneSource } from './resource-monitor.js'
 import type { ResourceCloseResult, ResourceSnapshot } from '../shared/resource.js'
 import type { AppState, RunningPane } from '../shared/types.js'
+import { normalizeDecorativeTitle } from '../shared/decorative-title.js'
 import { paneSessionTitle } from '../shared/session-title.js'
 import { distinctWorktreeName } from '../shared/worktree-name.js'
 
-const exec = promisify(execFile)
-
 type PaneCloseOutcome = { outcome: 'ok' } | { outcome: 'rejected'; rejection: { code: string; message: string } }
 
+/** 이 배선이 창에서 쓰는 것만 — 시험이 가짜 창을 넣을 수 있게. */
+export type ResourceWindow = {
+  isDestroyed: () => boolean
+  isVisible: () => boolean
+  isMinimized: () => boolean
+  on(event: 'show', listener: () => void): unknown
+  on(event: 'restore', listener: () => void): unknown
+  webContents: { send: (channel: string, ...args: unknown[]) => void }
+}
+
 export type ResourceIpcDeps = {
-  window: () => BrowserWindow | null
+  window: () => ResourceWindow | null
   fromOurWindow: (event: Electron.IpcMainInvokeEvent) => boolean
-  state: () => AppState
+  state: () => Pick<AppState, 'repos' | 'home'>
   socketPath: () => string | null
   paneIds: () => string[]
   /** herdr 가 준 그 pane 의 셸 pid(어댑터 `probeForeground`). */
@@ -39,31 +49,43 @@ export type ResourceIpcDeps = {
   log: (tag: string, data: Record<string, unknown>) => void
 }
 
-/** store 의 열린 pane → 패널 행의 표시 칸. worktree 에 매달린 workspace 만 상태 트리에 있다. */
-export function paneSources(state: AppState): ResourcePaneSource[] {
+type ExecPs = (file: string, args: string[], options: { timeout: number; env: NodeJS.ProcessEnv }) => Promise<{ stdout: string }>
+
+/** `LC_ALL=C ps …` 를 실제로 부른다 — env 를 그대로 넘기는지가 R1ⓓ 의 실제 보장이다(F5). */
+export async function readPsWith(input: { exec: ExecPs; env: NodeJS.ProcessEnv }): Promise<string> {
+  const ps = psInvocation(input.env)
+  return (await input.exec(ps.file, ps.args, { timeout: 5000, env: ps.env })).stdout
+}
+
+/**
+ * store 의 열린 pane → 패널 행의 표시 칸. worktree 에 매달린 workspace 만 상태 트리에 있다.
+ * 제목은 사이드바와 같은 스피너 정규화(`normalizeDecorativeTitle`)를 거친 뒤 `paneSessionTitle` 로 만든다(F2 — 2초마다 글리프가 바뀌지 않는다).
+ */
+export function paneSources(state: Pick<AppState, 'repos' | 'home'>): ResourcePaneSource[] {
   return state.repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => {
     const workspace = worktree.workspace
     if (workspace === null) return []
     const groupLabel = distinctWorktreeName(worktree)
-    return workspace.tabs.flatMap((tab) => tab.panes).map((pane, index) => ({
+    const worktreeTabCount = workspace.tabs.length
+    return workspace.tabs.flatMap((tab) => tab.panes.map((pane) => ({ pane, tabPaneCount: tab.panes.length }))).map(({ pane, tabPaneCount }, index) => ({
       paneId: pane.paneId,
       tabId: pane.tabId,
       workspaceId: pane.workspaceId,
       groupKey: worktree.path,
       groupLabel,
-      title: paneSessionTitle({ pane, ordinal: index + 1, home: state.home }),
+      title: paneSessionTitle({ pane: { ...pane, title: normalizeDecorativeTitle(pane.title) }, ordinal: index + 1, home: state.home }),
       agent: pane.agent,
+      tabPaneCount,
+      worktreeTabCount,
     }))
   })
 }
 
 export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void } {
+  const exec = promisify(execFile)
   const monitor = createResourceMonitor({
     intervalMs: RESOURCE_INTERVAL_MS,
-    readPs: async () => {
-      const ps = psInvocation(process.env)
-      return (await exec(ps.file, ps.args, { timeout: 5000, env: ps.env })).stdout
-    },
+    readPs: () => readPsWith({ exec, env: process.env }),
     panes: () => paneSources(deps.state()),
     probeShellPid: async (paneId) => {
       const socketPath = deps.socketPath()
@@ -99,35 +121,55 @@ export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void }
     })
   })
 
+  // F10 — 창이 다시 보이면 다음 타이머(≤2초)를 기다리지 않는다. 창은 다시 만들어질 수 있어(macOS activate) 생길 때마다 단다.
+  const watch = (window: ResourceWindow): void => {
+    window.on('show', monitor.wake)
+    window.on('restore', monitor.wake)
+  }
+  const current = deps.window()
+  if (current !== null) watch(current)
+  app.on('browser-window-created', (_event, window) => watch(window))
+  app.once('will-quit', monitor.stop)
+
   monitor.start()
   return { stop: monitor.stop }
 }
 
-/** pane 하나를 기존 게이트로 닫는다 — 게이트 단위(「탭」 칸)에 pane id 를 넣는다. */
-async function closeResourcePane(input: { deps: ResourceIpcDeps; paneId: string; confirmed: boolean; confirmedPaneIds: readonly string[] }): Promise<ResourceCloseResult> {
+/**
+ * pane 하나를 기존 게이트로 닫는다 — 게이트 단위(「탭」 칸)에 pane id 를 넣는다.
+ * 모르는 pane 은 닫지 않고 오류(F6 — 빈 `closed` 를 성공으로 돌려주지 않는다). 판정·닫기가 던지면 오류 결과로 돌려준다(F6).
+ */
+export async function closeResourcePane(input: { deps: ResourceIpcDeps; paneId: string; confirmed: boolean; confirmedPaneIds: readonly string[] }): Promise<ResourceCloseResult> {
   const { deps, paneId } = input
   const socketPath = deps.socketPath()
   if (socketPath === null) return { outcome: 'error', closed: [], error: '세션이 없다' }
+  if (!deps.paneIds().includes(paneId)) return { outcome: 'error', closed: [], error: '그 pane 이 없다(이미 닫혔다)' }
   const tabOf = (id: string): string => deps.state().repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? [])
     .find((tab) => tab.panes.some((pane) => pane.paneId === id))?.tabId ?? ''
-  const result = await closeTabsGated({
-    tabIds: [paneId],
-    confirmed: input.confirmed,
-    alwaysConfirm: false,
-    confirmRunning: deps.confirmRunning(),
-    confirmedPaneIds: input.confirmedPaneIds,
-    panesOf: (id) => (deps.paneIds().includes(id) ? [id] : null),
-    probe: (panes) => deps.probeRunning({ socketPath, panes: panes.map((pane) => ({ tabId: tabOf(pane.paneId), paneId: pane.paneId })), subject: { close: 'resource-pane', paneId } }),
-    close: async (id): Promise<CloseTabOutcome> => {
-      const outcome = await deps.closePane({ socketPath, paneId: id })
-      switch (outcome.outcome) {
-        case 'ok':
-          return { outcome: 'closed' }
-        case 'rejected':
-          return { outcome: 'rejected', rejection: outcome.rejection }
-      }
-    },
-  })
+  let result: ResourceCloseResult
+  try {
+    result = await closeTabsGated({
+      tabIds: [paneId],
+      confirmed: input.confirmed,
+      alwaysConfirm: false,
+      confirmRunning: deps.confirmRunning(),
+      confirmedPaneIds: input.confirmedPaneIds,
+      panesOf: (id) => (deps.paneIds().includes(id) ? [id] : null),
+      probe: (panes) => deps.probeRunning({ socketPath, panes: panes.map((pane) => ({ tabId: tabOf(pane.paneId), paneId: pane.paneId })), subject: { close: 'resource-pane', paneId } }),
+      close: async (id): Promise<CloseTabOutcome> => {
+        const outcome = await deps.closePane({ socketPath, paneId: id })
+        switch (outcome.outcome) {
+          case 'ok':
+            return { outcome: 'closed' }
+          case 'rejected':
+            return { outcome: 'rejected', rejection: outcome.rejection }
+        }
+      },
+    })
+  } catch (error) {
+    deps.log('resource.close_pane_failed', { paneId, error: String(error) })
+    return { outcome: 'error', closed: [], error: `닫기 확인에 실패했다: ${error instanceof Error ? error.message : String(error)}` }
+  }
   deps.log('resource.close_pane', { paneId, confirmed: input.confirmed, outcome: result.outcome })
   return result
 }

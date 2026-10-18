@@ -2,13 +2,15 @@
 //
 // 비용 규칙(R6):
 //   ⓐ 주기 ≥ 2초 — 한 주기가 끝난 뒤 다음 주기를 건다(겹치지 않는다).
-//   ⓒ 창이 숨김·최소화면 그 주기는 ps 도 herdr 요청도 하지 않는다(`skippedHidden` 만 는다).
-//   ⓓ 셸 pid 는 pane 수명 동안 변하지 않는다 — pane 별로 한 번만 묻고 캐시한다. pane 변화가 없는 주기의 herdr 요청은 0.
-//      묻기에 실패한 pane 만 `PROBE_RETRY_MS` 뒤에 다시 묻는다.
-// CPU = `ps %cpu` 그대로(누적 시간 차분 아님) — 실측에서 macOS `ps %cpu` 가 2초 안에 따라와(00-analysis a03) 주기 2초 표본이면
-// 차분과 크게 다르지 않고, 차분은 pid 별 이전 값 보관·pid 재사용 처리가 더 든다.
+//   ⓒ 창이 숨김·최소화면 그 주기는 ps 도 herdr 요청도 하지 않는다(`skippedHidden` 만 는다). 다시 보이면(`wake`) 곧바로 한 주기.
+//   ⓓ 셸 pid 는 pane 별로 한 번 묻고 캐시한다. pane 변화도 루트 변화도 없는 주기의 herdr 요청은 0.
+// 캐시 자가 치유(F1): herdr 는 같은 pane id 에 새 셸을 넣을 수 있다(handoff respawn·snapshot restore — 리뷰 r1 G1-2).
+//   캐시한 셸 pid 가 ps 표에서 사라졌거나 그 ppid 가 처음 본 값과 달라지면, 직전 주기까지 맞던 pane 은 그 주기에 한 번 다시 묻는다.
+//   다시 물어도 안 맞으면(또는 처음부터 안 맞으면) `PROBE_RETRY_MS` 뒤에만 다시 묻는다 — pane 당 주기당 1회 이하, 끝없는 재질의 없음.
+//   ppid 가 바뀐 pid 를 herdr 가 그대로 주면 처음 본 부모를 유지해 그 pane 은 측정 불가(재사용 의심)로 둔다.
+// CPU = `ps %cpu` 그대로(누적 시간 차분 아님) — RESULT 결정 1.
 import type { ResourceMeasure, ResourcePaneRow, ResourceSnapshot, ResourceStats } from '../shared/resource.js'
-import { attribute, parsePsTable, totalOf } from './resource-collector.js'
+import { attribute, parsePsTable, totalOf, type PsTable } from './resource-collector.js'
 
 export const RESOURCE_INTERVAL_MS = 2000
 export const PROBE_RETRY_MS = 30_000
@@ -34,11 +36,17 @@ export type ResourceMonitorDeps = {
   log: (tag: string, data: Record<string, unknown>) => void
 }
 
-type CachedRoot = { shellPid: number | null; probedAt: number }
+/**
+ * pane 하나의 셸 루트 캐시. `parentPid` = 이 셸 pid 를 ps 표에서 처음 봤을 때의 ppid(아직 못 봤으면 null).
+ * `healthy` = 직전 주기에 표와 맞았는가 — 맞다가 어긋난 첫 주기에만 바로 다시 묻는다.
+ */
+type CachedRoot = { shellPid: number | null; parentPid: number | null; probedAt: number; healthy: boolean }
 
 export function createResourceMonitor(deps: ResourceMonitorDeps): {
   start: () => void
   stop: () => void
+  /** 창이 다시 보였다 — 다음 타이머를 기다리지 않고 곧바로 한 주기(F10). 진행 중이면 그 주기가 끝난 뒤 한 번 더. */
+  wake: () => void
   tick: () => Promise<void>
   latest: () => ResourceSnapshot | null
   stats: () => ResourceStats
@@ -49,22 +57,59 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
   let latest: ResourceSnapshot | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
   let running = false
+  let inFlight = false
+  let wakePending = false
 
-  const refreshRoots = async (panes: readonly ResourcePaneSource[]): Promise<void> => {
-    const live = new Set(panes.map((pane) => pane.paneId))
+  const probe = async (paneId: string): Promise<number | null> => {
+    stats.processInfoRequests += 1
+    return deps.probeShellPid(paneId).catch(() => null)
+  }
+
+  /** 새 pane 과 셸 pid 를 못 얻은 pane(재시도 시각이 된 것)만 묻는다. */
+  const refreshRoots = async (input: { panes: readonly ResourcePaneSource[]; asked: Set<string> }): Promise<void> => {
+    const live = new Set(input.panes.map((pane) => pane.paneId))
     for (const paneId of [...roots.keys()]) if (!live.has(paneId)) roots.delete(paneId)
     const now = deps.now()
-    const asks = panes.filter((pane) => {
+    const asks = input.panes.filter((pane) => {
       const cached = roots.get(pane.paneId)
       return cached === undefined || (cached.shellPid === null && now - cached.probedAt >= PROBE_RETRY_MS)
     })
-    if (asks.length === 0) return
     for (const pane of asks) {
-      stats.processInfoRequests += 1
-      const shellPid = await deps.probeShellPid(pane.paneId).catch(() => null)
-      roots.set(pane.paneId, { shellPid, probedAt: deps.now() })
+      const shellPid = await probe(pane.paneId)
+      input.asked.add(pane.paneId)
+      roots.set(pane.paneId, { shellPid, parentPid: null, probedAt: deps.now(), healthy: false })
     }
-    deps.log('resource.probe', { asked: asks.length, total: stats.processInfoRequests })
+    if (asks.length > 0) deps.log('resource.probe', { asked: asks.length, reason: 'new-or-retry', total: stats.processInfoRequests })
+  }
+
+  /** 캐시한 루트를 이번 ps 표와 대조하고, 어긋난 pane 은 규칙대로 다시 묻는다(F1). */
+  const verifyRoots = async (input: { panes: readonly ResourcePaneSource[]; table: PsTable; asked: Set<string> }): Promise<void> => {
+    let reasked = 0
+    for (const pane of input.panes) {
+      const cached = roots.get(pane.paneId)
+      if (cached === undefined || cached.shellPid === null) continue
+      const row = input.table.rows.get(cached.shellPid)
+      if (row !== undefined && (cached.parentPid === null || row.ppid === cached.parentPid)) {
+        roots.set(pane.paneId, { ...cached, parentPid: cached.parentPid ?? row.ppid, healthy: true })
+        continue
+      }
+      const due = cached.healthy || deps.now() - cached.probedAt >= PROBE_RETRY_MS
+      if (input.asked.has(pane.paneId) || !due) {
+        roots.set(pane.paneId, { ...cached, healthy: false })
+        continue
+      }
+      const shellPid = await probe(pane.paneId)
+      input.asked.add(pane.paneId)
+      reasked += 1
+      const fresh = shellPid === null ? undefined : input.table.rows.get(shellPid)
+      roots.set(
+        pane.paneId,
+        shellPid === cached.shellPid
+          ? { ...cached, probedAt: deps.now(), healthy: false }
+          : { shellPid, parentPid: fresh?.ppid ?? null, probedAt: deps.now(), healthy: fresh !== undefined },
+      )
+    }
+    if (reasked > 0) deps.log('resource.probe', { asked: reasked, reason: 'root-changed', total: stats.processInfoRequests })
   }
 
   const tick = async (): Promise<void> => {
@@ -74,17 +119,28 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
     }
     const startedAt = deps.now()
     const panes = deps.panes()
-    await refreshRoots(panes)
+    const asked = new Set<string>()
+    await refreshRoots({ panes, asked })
     let stdout: string | null = null
     try {
       stdout = await deps.readPs()
     } catch (error) {
       deps.log('resource.ps_failed', { error: String(error) })
     }
+    const table = stdout === null ? null : parsePsTable(stdout)
+    // 표가 없거나 이상하면 대조하지 않는다 — 깨진 표로 캐시를 지우면 멀쩡한 pane 을 다시 묻게 된다.
+    if (table !== null && table.malformed === 0) await verifyRoots({ panes, table, asked })
     const unavailable: ResourceMeasure = { state: 'unavailable', reason: 'ps 실행 실패' }
-    const attribution = stdout === null
+    const attribution = table === null
       ? { panes: new Map(panes.map((pane) => [pane.paneId, unavailable])), herdr: unavailable, app: unavailable }
-      : attribute({ table: parsePsTable(stdout), panes: panes.map((pane) => ({ paneId: pane.paneId, shellPid: roots.get(pane.paneId)?.shellPid ?? null })), appRoots: deps.appRoots() })
+      : attribute({
+          table,
+          panes: panes.map((pane) => {
+            const cached = roots.get(pane.paneId)
+            return { paneId: pane.paneId, shellPid: cached?.shellPid ?? null, expectedParent: cached?.parentPid ?? null }
+          }),
+          appRoots: deps.appRoots(),
+        })
     const rows: ResourcePaneRow[] = panes.map((pane) => ({ ...pane, measure: attribution.panes.get(pane.paneId) ?? unavailable }))
     const { total, unavailableCount } = totalOf([attribution.app, attribution.herdr, ...rows.map((row) => row.measure)])
     stats.collections += 1
@@ -104,10 +160,18 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
 
   // 한 주기가 끝난 뒤에 다음 주기를 건다 — ps 가 느려도 주기가 겹치지 않는다.
   const cycle = (): void => {
+    inFlight = true
     void tick()
       .catch((error: unknown) => deps.log('resource.tick_failed', { error: String(error) }))
       .finally(() => {
-        if (running) timer = setTimeout(cycle, intervalMs)
+        inFlight = false
+        if (!running) return
+        if (wakePending) {
+          wakePending = false
+          cycle()
+          return
+        }
+        timer = setTimeout(cycle, intervalMs)
       })
   }
 
@@ -119,8 +183,19 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
     },
     stop: () => {
       running = false
+      wakePending = false
       if (timer !== null) clearTimeout(timer)
       timer = null
+    },
+    wake: () => {
+      if (!running) return
+      if (inFlight) {
+        wakePending = true
+        return
+      }
+      if (timer !== null) clearTimeout(timer)
+      timer = null
+      cycle()
     },
     tick,
     latest: () => latest,

@@ -27,8 +27,8 @@ const TABLE = `
 `
 const KB = 1024
 const PANES = [
-  { paneId: 'A', shellPid: 300 },
-  { paneId: 'B', shellPid: 400 },
+  { paneId: 'A', shellPid: 300, expectedParent: null },
+  { paneId: 'B', shellPid: 400, expectedParent: null },
 ]
 
 function usage(measure: ResourceMeasure | undefined): { cpu: number; memory: number; pids: number[] } {
@@ -83,7 +83,7 @@ describe('attribute — R1ⓑ 한 pid 는 한 곳에만', () => {
     expect(usage(result.herdr).pids).toEqual([200, 250])
   })
   it('두 pane 이 같은 셸 pid 를 가리키면 뒤의 것은 측정 불가', () => {
-    const result = attribute({ table: parsePsTable(TABLE), panes: [{ paneId: 'A', shellPid: 300 }, { paneId: 'A2', shellPid: 300 }], appRoots: [100] })
+    const result = attribute({ table: parsePsTable(TABLE), panes: [{ paneId: 'A', shellPid: 300, expectedParent: null }, { paneId: 'A2', shellPid: 300, expectedParent: null }], appRoots: [100] })
     expect(usage(result.panes.get('A')).pids).toEqual([300, 301])
     expect(result.panes.get('A2')?.state).toBe('unavailable')
   })
@@ -91,23 +91,23 @@ describe('attribute — R1ⓑ 한 pid 는 한 곳에만', () => {
 
 describe('attribute — R1ⓒ 이상 입력에서 예외 없이 측정 불가', () => {
   it('사라진 루트 pid — 그 pane 만', () => {
-    const result = attribute({ table: parsePsTable(TABLE), panes: [...PANES, { paneId: 'gone', shellPid: 4242 }], appRoots: [100] })
+    const result = attribute({ table: parsePsTable(TABLE), panes: [...PANES, { paneId: 'gone', shellPid: 4242, expectedParent: null }], appRoots: [100] })
     expect(result.panes.get('gone')).toEqual({ state: 'unavailable', reason: '셸 프로세스(pid 4242)가 없다' })
     expect(usage(result.panes.get('A')).pids).toEqual([300, 301])
   })
   it('셸 pid 를 모름(herdr 실패)', () => {
-    const result = attribute({ table: parsePsTable(TABLE), panes: [{ paneId: 'x', shellPid: null }], appRoots: [100] })
+    const result = attribute({ table: parsePsTable(TABLE), panes: [{ paneId: 'x', shellPid: null, expectedParent: null }], appRoots: [100] })
     expect(result.panes.get('x')?.state).toBe('unavailable')
     expect(result.herdr.state).toBe('unavailable')
   })
   it('ppid 순환 — 그 pane 측정 불가, 다른 pane 은 그대로', () => {
     const cyclic = `${TABLE}\n  500   501   1.0  100\n  501   500   1.0  100\n`
-    const result = attribute({ table: parsePsTable(cyclic), panes: [...PANES, { paneId: 'loop', shellPid: 500 }], appRoots: [100] })
+    const result = attribute({ table: parsePsTable(cyclic), panes: [...PANES, { paneId: 'loop', shellPid: 500, expectedParent: null }], appRoots: [100] })
     expect(result.panes.get('loop')).toEqual({ state: 'unavailable', reason: 'ppid 순환' })
     expect(usage(result.panes.get('B')).pids).toEqual([400, 401, 402, 403])
   })
   it('자기 자신이 부모인 루트도 순환', () => {
-    const result = attribute({ table: parsePsTable('  600 600 0.0 10\n'), panes: [{ paneId: 'self', shellPid: 600 }], appRoots: [] })
+    const result = attribute({ table: parsePsTable('  600 600 0.0 10\n'), panes: [{ paneId: 'self', shellPid: 600, expectedParent: null }], appRoots: [] })
     expect(result.panes.get('self')?.state).toBe('unavailable')
   })
   it('빈 표 — 전부 측정 불가, 전체 null', () => {
@@ -131,5 +131,38 @@ describe('psInvocation — R1ⓓ LC_ALL=C', () => {
     expect(invocation.file).toBe('ps')
     expect(invocation.args).toEqual(['-axo', 'pid=,ppid=,pcpu=,rss='])
     expect(invocation.env).toEqual({ PATH: '/usr/bin', LC_ALL: 'C', LANG: 'de_DE.UTF-8' })
+  })
+})
+
+describe('attribute — F1 셸 pid 재사용 의심', () => {
+  it('처음 본 부모와 지금 ppid 가 다르면 그 pane 은 측정 불가 — 다른 프로세스를 그 pane 으로 세지 않는다 (리뷰 P5)', () => {
+    // 300 이 ppid 1 의 무관 프로세스로 재사용됐다.
+    const reused = TABLE.replace('  300   200   0.0   2048', '  300     1  77.0 900000').replace('  301   300  50.0  10240\n', '')
+    const result = attribute({ table: parsePsTable(reused), panes: [{ paneId: 'A', shellPid: 300, expectedParent: 200 }, { paneId: 'B', shellPid: 400, expectedParent: 200 }], appRoots: [100] })
+    expect(result.panes.get('A')).toEqual({ state: 'unavailable', reason: '셸 pid 300 의 부모가 바뀌었다(200 → 1) — pid 재사용 의심' })
+    expect(usage(result.panes.get('B')).pids).toEqual([400, 401, 402, 403])
+  })
+  it('부모가 같으면 그대로 측정', () => {
+    const result = attribute({ table: parsePsTable(TABLE), panes: [{ paneId: 'A', shellPid: 300, expectedParent: 200 }], appRoots: [100] })
+    expect(usage(result.panes.get('A')).pids).toEqual([300, 301])
+  })
+})
+
+describe('attribute — F9 걸러진 루트 0개는 측정 불가', () => {
+  it('셸 부모(herdr)가 표에 없으면 herdr 는 0 이 아니라 측정 불가 (리뷰 G1-6)', () => {
+    const noHerdr = TABLE.replace('  200     1   3.0  40960\n', '')
+    const result = attribute({ table: parsePsTable(noHerdr), panes: PANES, appRoots: [100] })
+    expect(result.herdr).toEqual({ state: 'unavailable', reason: '셸 부모 pid(200)가 ps 표에 없다' })
+    expect(usage(result.panes.get('A')).pids).toEqual([300, 301])
+  })
+  it('앱 루트가 pane 자손으로 이미 귀속됐으면 앱은 측정 불가 (리뷰 P2 — corral 개발 실행을 pane 안에서 띄운 경우)', () => {
+    const nested = TABLE.replace('  100     1   1.5 204800', '  100   401   1.5 204800')
+    const result = attribute({ table: parsePsTable(nested), panes: PANES, appRoots: [100, 101] })
+    expect(result.app).toEqual({ state: 'unavailable', reason: '앱 프로세스가 이미 pane·herdr 몫으로 귀속됐다' })
+    expect(usage(result.panes.get('B')).pids).toContain(100)
+  })
+  it('앱 루트가 표에 없으면 측정 불가', () => {
+    const result = attribute({ table: parsePsTable(TABLE), panes: PANES, appRoots: [4242] })
+    expect(result.app).toEqual({ state: 'unavailable', reason: '앱 프로세스가 ps 표에 없다' })
   })
 })

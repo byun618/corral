@@ -4,7 +4,7 @@ import type { ResourceSnapshot } from '../shared/resource.js'
 import { createResourceMonitor, PROBE_RETRY_MS, RESOURCE_INTERVAL_MS, type ResourceMonitorDeps, type ResourcePaneSource } from './resource-monitor.js'
 
 const PS = '  100 1 1.0 100\n  200 1 2.0 200\n  300 200 3.0 300\n  400 200 4.0 400\n'
-const pane = (paneId: string): ResourcePaneSource => ({ paneId, tabId: `t-${paneId}`, workspaceId: 'w', groupKey: '/wt', groupLabel: 'wt', title: paneId, agent: null })
+const pane = (paneId: string): ResourcePaneSource => ({ paneId, tabId: `t-${paneId}`, workspaceId: 'w', groupKey: '/wt', groupLabel: 'wt', title: paneId, agent: null, tabPaneCount: 1, worktreeTabCount: 1 })
 
 function harness(input: { panes: ResourcePaneSource[]; shellPids: Record<string, number | null>; visible?: boolean; intervalMs?: number }) {
   const state = { panes: input.panes, visible: input.visible ?? true, now: 1000, ps: PS, psFails: false }
@@ -122,5 +122,78 @@ describe('resource monitor', () => {
     h.monitor.stop()
     await vi.advanceTimersByTimeAsync(RESOURCE_INTERVAL_MS * 3)
     expect(h.monitor.stats().collections).toBe(2)
+  })
+})
+
+describe('셸 pid 캐시 자가 치유 (F1)', () => {
+  it('캐시한 셸이 표에서 사라지면 그 주기에 한 번 다시 묻고 새 셸로 잰다 (리뷰 P1)', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300 } })
+    await h.monitor.tick()
+    expect(h.emitted.at(-1)?.panes[0]?.measure).toMatchObject({ state: 'measured', pids: [300] })
+    // herdr 가 같은 pane id 에 새 셸 700 을 넣었다.
+    h.state.ps = '  100 1 1.0 100\n  200 1 2.0 200\n  700 200 7.0 700\n'
+    h.probe.mockImplementation(async () => 700)
+    await h.monitor.tick()
+    expect(h.monitor.stats().processInfoRequests).toBe(2)
+    expect(h.emitted.at(-1)?.panes[0]?.measure).toMatchObject({ state: 'measured', pids: [700] })
+    // 그 뒤 변화 없는 주기는 다시 0 건.
+    await h.monitor.tick()
+    await h.monitor.tick()
+    expect(h.monitor.stats().processInfoRequests).toBe(2)
+  })
+
+  it('다시 물어도 같은 죽은 pid 면 측정 불가로 두고 PROBE_RETRY_MS 뒤에만 다시 묻는다 — 매 주기 재질의 없음', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300 } })
+    await h.monitor.tick()
+    h.state.ps = '  100 1 1.0 100\n  200 1 2.0 200\n'
+    for (let index = 0; index < 5; index += 1) await h.monitor.tick()
+    expect(h.monitor.stats().processInfoRequests).toBe(2)
+    expect(h.emitted.at(-1)?.panes[0]?.measure).toEqual({ state: 'unavailable', reason: '셸 프로세스(pid 300)가 없다' })
+    h.state.now += PROBE_RETRY_MS
+    await h.monitor.tick()
+    expect(h.monitor.stats().processInfoRequests).toBe(3)
+  })
+
+  it('셸 pid 가 무관한 프로세스로 재사용되면(ppid 가 바뀜) 다시 묻고, herdr 가 같은 pid 를 주면 측정 불가 (리뷰 P5)', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300 } })
+    await h.monitor.tick()
+    h.state.ps = '  100 1 1.0 100\n  200 1 2.0 200\n  300 1 77.0 900000\n'
+    await h.monitor.tick()
+    expect(h.monitor.stats().processInfoRequests).toBe(2)
+    expect(h.emitted.at(-1)?.panes[0]?.measure).toEqual({ state: 'unavailable', reason: '셸 pid 300 의 부모가 바뀌었다(200 → 1) — pid 재사용 의심' })
+    await h.monitor.tick()
+    expect(h.monitor.stats().processInfoRequests).toBe(2)
+  })
+
+  it('표가 이상한 주기에는 캐시를 건드리지 않는다(재질의 0)', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300 } })
+    await h.monitor.tick()
+    h.state.ps = '  100 1 1,0 100\n'
+    await h.monitor.tick()
+    expect(h.monitor.stats().processInfoRequests).toBe(1)
+  })
+})
+
+describe('다시 보임 (F10)', () => {
+  it('wake — 다음 타이머를 기다리지 않고 곧바로 한 주기', async () => {
+    vi.useFakeTimers()
+    const h = harness({ panes: [], shellPids: {} })
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.monitor.stats().collections).toBe(1)
+    h.monitor.wake()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.monitor.stats().collections).toBe(2)
+    h.monitor.stop()
+  })
+  it('stop 뒤 wake 는 아무것도 하지 않는다', async () => {
+    vi.useFakeTimers()
+    const h = harness({ panes: [], shellPids: {} })
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    h.monitor.stop()
+    h.monitor.wake()
+    await vi.advanceTimersByTimeAsync(RESOURCE_INTERVAL_MS * 2)
+    expect(h.monitor.stats().collections).toBe(1)
   })
 })

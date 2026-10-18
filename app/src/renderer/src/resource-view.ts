@@ -3,6 +3,8 @@
 // 세그먼트 = `CPU n% · 메모리 x.x GB`(「전체」 = 앱 + herdr + 모든 pane 자손, RSS). 하나도 못 재면 `—` — 가짜 숫자를 보이지 않는다.
 // 패널 = worktree 묶음(합계 행 + pane 행) · 앱·herdr 행 따로. 기본 정렬은 메모리 내림차순, 측정 불가는 맨 뒤.
 import type { ResourceMeasure, ResourcePaneRow, ResourceSnapshot, ResourceUsage } from '../../shared/resource.js'
+import type { RunningPane } from '../../shared/types.js'
+import { closeCopy, type CloseCopy } from './close-copy.js'
 
 export const RESOURCE_EMPTY = '—'
 export const RESOURCE_TOOLTIP = 'corral 앱 + herdr 서버 + 모든 pane 자손 합 · 메모리 = RSS(공유 메모리 중복 포함) · CPU = ps %cpu 합(코어 하나 = 100%)'
@@ -86,4 +88,28 @@ export function groupPanes(input: { panes: readonly ResourcePaneRow[]; sort: Res
 /** 패널 맨 위 시스템 한 줄 — 시스템 사용/전체 메모리. */
 export function hostLine(snapshot: ResourceSnapshot): string {
   return `시스템 메모리 ${formatGb(snapshot.host.usedMemory)} / ${formatGb(snapshot.host.totalMemory)} · 코어 ${snapshot.host.cpuCoreCount}개`
+}
+
+/** herdr 행 이름·툴팁 (F9) — 셸 부모(herdr) 아래에서 pane 행이 가져가지 않은 것이 전부 이 행으로 온다. */
+export const HERDR_ROW_LABEL = 'herdr (서버 + 목록 밖 pane)'
+export const HERDR_ROW_TOOLTIP = 'herdr 서버와, 패널 목록에 없는 pane(셸 pid 를 아직 모르는 pane·worktree 에 매달리지 않은 workspace)의 프로세스'
+
+/**
+ * pane 닫기 확인 문구 (F7) — 뜻·체크박스(「다시 묻지 않기」 = 같은 설정 패치)는 기존 `closeCopy` 를 따르고 말만 pane 기준으로 바꾼다.
+ * `pinned` = 이 pane 을 닫으면 고정된 탭이 닫힌다(탭의 마지막 pane). 실행 중이 비었는데 핀도 아니면 핀 문구로 떨어지지 않는다.
+ */
+export function paneCloseCopy(input: { running: readonly RunningPane[]; agentPaneIds: ReadonlySet<string>; pinned: boolean }): CloseCopy {
+  const base = closeCopy({ kind: 'tabs', tabCount: 1, running: input.running, agentPaneIds: input.agentPaneIds, pinnedCount: input.pinned ? 1 : 0 })
+  const pinnedNote = input.pinned ? ['이 pane 은 고정된 탭의 마지막 pane 이라 탭이 같이 닫힌다.'] : []
+  switch (base.kind) {
+    case 'agent':
+      return { ...base, body: ['이 pane 을 닫으면 에이전트의 현재 작업이 멈춘다.', '닫은 터미널은 자동으로 재개되지 않는다.', ...pinnedNote] }
+    case 'command':
+      return { ...base, body: ['이 pane 을 닫으면 안에서 실행 중인 명령이 멈춘다.', ...pinnedNote] }
+    case 'pinned':
+      if (!input.pinned) return { kind: 'command', title: '이 pane 을 닫을까', body: ['다시 확인했을 때 실행 중인 프로세스가 보이지 않았다.'], confirm: '닫기', dontAskAgain: null }
+      return { ...base, body: pinnedNote }
+    case 'worktree':
+      return base
+  }
 }

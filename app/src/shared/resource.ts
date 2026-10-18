@@ -20,12 +20,16 @@ export type ResourcePaneRow = {
   paneId: string
   tabId: string
   workspaceId: string
-  /** worktree 묶음 열쇠 — worktree 경로, 없으면 workspace id. */
+  /** worktree 묶음 열쇠 = worktree 경로. */
   groupKey: string
   groupLabel: string
   title: string
   /** herdr 가 감지한 에이전트 이름. 셸이면 null. */
   agent: string | null
+  /** 그 탭의 pane 수 — 1 이면 이 pane 을 닫는 것이 곧 탭 닫기다(기존 탭 닫기 확인을 탄다, F7). */
+  tabPaneCount: number
+  /** 그 worktree 의 터미널 탭 수 — 1 이면 그 탭을 닫으면 worktree 의 터미널이 다 없어진다(수정 문서 확인, F7). */
+  worktreeTabCount: number
   measure: ResourceMeasure
 }
 

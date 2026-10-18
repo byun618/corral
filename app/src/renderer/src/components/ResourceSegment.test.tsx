@@ -4,10 +4,15 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ResourceCloseResult, ResourceSnapshot } from '../../../shared/resource.js'
+import type { CloseTabsResult } from '../../../shared/types.js'
 import { StatusBar } from './StatusBar.js'
 import { ResourceSegment } from './ResourceSegment.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
+
+// 수정 문서 확인은 기존 함수(`confirmDiscardOrSave`) 그대로다 — 여기서는 「불렸는가·무엇을 물었는가·취소면 닫지 않는가」 만 본다.
+const docs = vi.hoisted(() => ({ confirm: vi.fn(async (): Promise<boolean> => true) }))
+vi.mock('../file-save.js', () => ({ confirmDiscardOrSave: docs.confirm }))
 
 const GB = 1024 ** 3
 const MB = 1024 ** 2
@@ -18,9 +23,9 @@ const SNAPSHOT: ResourceSnapshot = {
   app: { state: 'measured', usage: { cpu: 4, memory: 700 * MB }, pids: [100] },
   herdr: { state: 'measured', usage: { cpu: 1, memory: 40 * MB }, pids: [200] },
   panes: [
-    { paneId: 'p-small', tabId: 't1', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'grok 1', agent: 'grok', measure: { state: 'measured', usage: { cpu: 50, memory: 100 * MB }, pids: [300, 301] } },
-    { paneId: 'p-big', tabId: 't2', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'claude 1', agent: 'claude', measure: { state: 'measured', usage: { cpu: 6, memory: 1.2 * GB }, pids: [400] } },
-    { paneId: 'p-gone', tabId: 't3', workspaceId: 'w2', groupKey: '/wt/b', groupLabel: 'main', title: 'zsh', agent: null, measure: { state: 'unavailable', reason: '셸 프로세스(pid 9)가 없다' } },
+    { paneId: 'p-small', tabId: 't1', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'grok 1', agent: 'grok', tabPaneCount: 2, worktreeTabCount: 2, measure: { state: 'measured', usage: { cpu: 50, memory: 100 * MB }, pids: [300, 301] } },
+    { paneId: 'p-big', tabId: 't2', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'claude 1', agent: 'claude', tabPaneCount: 1, worktreeTabCount: 2, measure: { state: 'measured', usage: { cpu: 6, memory: 1.2 * GB }, pids: [400] } },
+    { paneId: 'p-gone', tabId: 't3', workspaceId: 'w2', groupKey: '/wt/b', groupLabel: 'main', title: 'zsh', agent: null, tabPaneCount: 1, worktreeTabCount: 1, measure: { state: 'unavailable', reason: '셸 프로세스(pid 9)가 없다' } },
   ],
   host: { totalMemory: 24 * GB, usedMemory: 20 * GB, cpuCoreCount: 12 },
   stats: { intervalMs: 2000, collections: 3, skippedHidden: 0, processInfoRequests: 3, recentDurationsMs: [120] },
@@ -38,7 +43,11 @@ const corral = {
     }
   }),
   revealResourcePane: vi.fn(async () => true),
-  closeResourcePane: vi.fn(async (): Promise<ResourceCloseResult> => ({ outcome: 'closed', closed: ['p-big'] })),
+  closeResourcePane: vi.fn(async (): Promise<ResourceCloseResult> => ({ outcome: 'closed', closed: ['p-small'] })),
+  closeTabs: vi.fn(async (): Promise<CloseTabsResult> => ({ outcome: 'closed', closed: ['t2'] })),
+  getUiPrefs: vi.fn(async (): Promise<{ tabMarks: unknown[] }> => ({ tabMarks: [] })),
+  writeFile: vi.fn(),
+  fileDialog: vi.fn(),
 }
 
 const q = <T extends Element = HTMLElement>(selector: string): T | null => document.querySelector<T>(selector)
@@ -68,6 +77,7 @@ beforeEach(() => {
   push = null
   Reflect.set(window, 'corral', corral)
   for (const fn of Object.values(corral)) fn.mockClear()
+  docs.confirm.mockClear()
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -136,6 +146,9 @@ describe('패널 (R4)', () => {
     expect(panel.querySelector('[data-statusbar-resource-host]')?.textContent).toBe('시스템 메모리 20.0 GB / 24.0 GB · 코어 12개')
     expect(panel.querySelector('[data-statusbar-resource-app] [data-statusbar-resource-memory]')?.textContent).toBe('700 MB')
     expect(panel.querySelector('[data-statusbar-resource-herdr] [data-statusbar-resource-memory]')?.textContent).toBe('40 MB')
+    // F9 — herdr 행은 서버 + 목록 밖 pane 이라고 밝힌다.
+    expect(panel.querySelector('[data-statusbar-resource-herdr] .statusbar-resource-name')?.textContent).toBe('herdr (서버 + 목록 밖 pane)')
+    expect(panel.querySelector<HTMLElement>('[data-statusbar-resource-herdr]')?.title).toContain('패널 목록에 없는 pane')
     const groups = [...panel.querySelectorAll<HTMLElement>('[data-statusbar-resource-group]')]
     expect(groups.map((group) => group.dataset.statusbarResourceGroup)).toEqual(['/wt/a', '/wt/b'])
     expect(groups[0]?.querySelector('.statusbar-resource-group-head [data-statusbar-resource-memory]')?.textContent).toBe('1.3 GB')
@@ -206,6 +219,11 @@ describe('행 동작 (R5)', () => {
     if (panel === null) throw new Error('패널 없음')
     return panel
   }
+  function closeButton(paneId: string): Element {
+    const found = q(`[data-statusbar-resource-close="${paneId}"]`)
+    if (found === null) throw new Error('닫기 없음')
+    return found
+  }
 
   it('행 클릭 = 그 pane 으로 이동(revealResourcePane), 패널 닫힘', () => {
     const panel = openPanel()
@@ -216,48 +234,166 @@ describe('행 동작 (R5)', () => {
     expect(q('[data-statusbar-resource-panel]')).toBeNull()
   })
 
-  it('닫기 — 게이트가 실행 중이라 하면 기존 확인 창, 확인하면 confirmed + 확인한 pane 으로 다시', async () => {
-    corral.closeResourcePane.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 't2', paneId: 'p-big', foreground: ['claude --resume'] }] })
-    const panel = openPanel()
-    const close = panel.querySelector('[data-statusbar-resource-close="p-big"]')
-    if (close === null) throw new Error('닫기 없음')
-    click(close)
+  it('split 탭의 pane 닫기 — pane 게이트, 확인 전에는 confirmed:false·빈 확인 목록', async () => {
+    openPanel()
+    click(closeButton('p-small'))
     await flush()
-    expect(corral.closeResourcePane).toHaveBeenLastCalledWith({ paneId: 'p-big', confirmed: false, confirmedPaneIds: [] })
+    expect(corral.closeResourcePane).toHaveBeenCalledWith({ paneId: 'p-small', confirmed: false, confirmedPaneIds: [] })
+    expect(corral.closeTabs).not.toHaveBeenCalled()
+    expect(q('[data-statusbar-resource-error]')).toBeNull()
+  })
+
+  it('실행 중이면 확인 창(pane 문구) — 취소 버튼에 포커스, 확인하면 confirmed + 확인한 pane 으로 다시 (F3)', async () => {
+    corral.closeResourcePane.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 't1', paneId: 'p-small', foreground: ['grok'] }] })
+    openPanel()
+    click(closeButton('p-small'))
+    await flush()
     const modal = q('[data-confirm-close-modal]')
     expect(modal?.getAttribute('data-confirm-close-kind')).toBe('agent')
-    expect(modal?.textContent).toContain('claude --resume')
-    // 확인 창이 떠 있는 동안 바깥(창) 클릭은 패널을 닫지 않는다.
+    expect(modal?.textContent).toContain('이 pane 을 닫으면')
+    expect(modal?.textContent).not.toContain('탭을 닫으면')
+    expect(document.activeElement).toBe(q('[data-close-confirm-cancel]'))
+    // 확인 창이 떠 있는 동안 바깥 클릭은 패널을 닫지 않는다.
     expect(q('[data-statusbar-resource-panel]')).not.toBeNull()
     const ok = q('[data-close-confirm-ok]')
     if (ok === null) throw new Error('확인 없음')
     click(ok)
     await flush()
-    expect(corral.closeResourcePane).toHaveBeenLastCalledWith({ paneId: 'p-big', confirmed: true, confirmedPaneIds: ['p-big'] })
+    await flush()
+    expect(corral.closeResourcePane).toHaveBeenLastCalledWith({ paneId: 'p-small', confirmed: true, confirmedPaneIds: ['p-small'] })
     expect(q('[data-confirm-close-modal]')).toBeNull()
   })
 
-  it('닫기 취소 — 다시 부르지 않는다', async () => {
+  it('확인 창에서 Esc = 취소 — 패널은 남고 다시 부르지 않으며, 포커스는 그 행으로 (F3)', async () => {
     corral.closeResourcePane.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 't1', paneId: 'p-small', foreground: ['yes'] }] })
-    const panel = openPanel()
-    const close = panel.querySelector('[data-statusbar-resource-close="p-small"]')
-    if (close === null) throw new Error('닫기 없음')
-    click(close)
+    openPanel()
+    click(closeButton('p-small'))
     await flush()
-    const cancel = q('[data-close-confirm-cancel]')
-    if (cancel === null) throw new Error('취소 없음')
-    click(cancel)
+    key(document.activeElement ?? document.body, 'Escape')
     expect(q('[data-confirm-close-modal]')).toBeNull()
+    expect(q('[data-statusbar-resource-panel]')).not.toBeNull()
+    expect(corral.closeResourcePane).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(document.activeElement).toBe(q('[data-statusbar-resource-row="p-small"]'))
+  })
+
+  it('확인 창에서 Enter(포커스된 취소 버튼) — 닫지도 이동하지도 않는다 (F3)', async () => {
+    corral.closeResourcePane.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 't1', paneId: 'p-small', foreground: ['yes'] }] })
+    openPanel()
+    click(closeButton('p-small'))
+    await flush()
+    const active = document.activeElement
+    if (active === null) throw new Error('포커스 없음')
+    click(active)
+    expect(q('[data-confirm-close-modal]')).toBeNull()
+    expect(corral.revealResourcePane).not.toHaveBeenCalled()
     expect(corral.closeResourcePane).toHaveBeenCalledTimes(1)
   })
 
-  it('Delete 키 = 닫기, 거절은 패널에 그대로 보인다', async () => {
+  it('탭의 마지막 pane 닫기 = 기존 탭 닫기(closeTabs), 핀이면 alwaysConfirm (F7)', async () => {
+    corral.getUiPrefs.mockResolvedValueOnce({ tabMarks: [{ tabId: 't2', workspaceId: 'w1', pinned: true }] })
+    corral.closeTabs.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [] })
+    openPanel()
+    click(closeButton('p-big'))
+    await flush()
+    await flush()
+    expect(corral.closeResourcePane).not.toHaveBeenCalled()
+    expect(corral.closeTabs).toHaveBeenCalledWith({ tabIds: ['t2'], confirmed: false, alwaysConfirm: true, confirmedPaneIds: [] })
+    const modal = q('[data-confirm-close-modal]')
+    expect(modal?.getAttribute('data-confirm-close-kind')).toBe('pinned')
+    expect(modal?.textContent).toContain('고정된 탭의 마지막 pane')
+    // worktree 의 탭이 2개라 수정 문서 확인은 묻지 않는다.
+    expect(docs.confirm).not.toHaveBeenCalled()
+  })
+
+  it('핀이 아니면 alwaysConfirm:false — 빈 running 의 재확인은 핀 문구로 떨어지지 않는다 (F7)', async () => {
+    corral.closeTabs.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [] })
+    openPanel()
+    click(closeButton('p-big'))
+    await flush()
+    await flush()
+    expect(corral.closeTabs).toHaveBeenCalledWith({ tabIds: ['t2'], confirmed: false, alwaysConfirm: false, confirmedPaneIds: [] })
+    const modal = q('[data-confirm-close-modal]')
+    expect(modal?.textContent).not.toContain('고정')
+    expect(modal?.textContent).toContain('이 pane 을 닫을까')
+  })
+
+  it('worktree 의 마지막 터미널 탭이면 수정 문서 확인을 먼저 — 취소면 닫지 않는다 (F7)', async () => {
+    docs.confirm.mockResolvedValueOnce(false)
+    openPanel()
+    click(closeButton('p-gone'))
+    await flush()
+    await flush()
+    expect(docs.confirm).toHaveBeenCalledTimes(1)
+    expect(corral.closeTabs).not.toHaveBeenCalled()
+    expect(corral.closeResourcePane).not.toHaveBeenCalled()
+  })
+
+  it('수정 문서 확인을 지나면 그 탭을 기존 탭 닫기로 (F7)', async () => {
+    corral.closeTabs.mockResolvedValueOnce({ outcome: 'closed', closed: ['t3'] })
+    openPanel()
+    click(closeButton('p-gone'))
+    await flush()
+    await flush()
+    expect(docs.confirm).toHaveBeenCalledTimes(1)
+    expect(corral.closeTabs).toHaveBeenCalledWith({ tabIds: ['t3'], confirmed: false, alwaysConfirm: false, confirmedPaneIds: [] })
+  })
+
+  it('닫힌 목록에 대상이 없으면 성공으로 보이지 않는다 (F6)', async () => {
+    corral.closeResourcePane.mockResolvedValueOnce({ outcome: 'closed', closed: [] })
+    openPanel()
+    click(closeButton('p-small'))
+    await flush()
+    expect(q('[data-statusbar-resource-error]')?.textContent).toContain('닫힌 것이 없다')
+  })
+
+  it('IPC 가 던지면 패널 오류 칸에 보인다 (F6)', async () => {
+    corral.closeResourcePane.mockRejectedValueOnce(new Error('소켓 시간 초과'))
+    openPanel()
+    click(closeButton('p-small'))
+    await flush()
+    expect(q('[data-statusbar-resource-error]')?.textContent).toBe('닫지 못했다: 소켓 시간 초과')
+  })
+
+  it('거절은 패널에 그대로 보인다', async () => {
     corral.closeResourcePane.mockResolvedValueOnce({ outcome: 'rejected', closed: [], rejection: { code: 'pane_not_found', message: '' } })
-    const panel = openPanel()
-    const row = panel.querySelector('[data-statusbar-resource-row="p-gone"]')
-    if (row === null) throw new Error('행 없음')
-    key(row, 'Delete')
+    openPanel()
+    click(closeButton('p-small'))
     await flush()
     expect(q('[data-statusbar-resource-error]')?.textContent).toBe('pane_not_found')
+  })
+
+  it('Delete·Backspace 한 키로는 닫지 않는다 (F8)', async () => {
+    const panel = openPanel()
+    const row = panel.querySelector('[data-statusbar-resource-row="p-small"]')
+    if (row === null) throw new Error('행 없음')
+    key(row, 'Delete')
+    key(row, 'Backspace')
+    await flush()
+    expect(corral.closeResourcePane).not.toHaveBeenCalled()
+    expect(corral.closeTabs).not.toHaveBeenCalled()
+  })
+
+  it('포커스된 행이 사라지면 이웃 행으로, 그 뒤 Esc 로 패널이 닫힌다 (F4)', async () => {
+    const panel = openPanel()
+    const rows = [...panel.querySelectorAll<HTMLElement>('[data-statusbar-resource-row]')]
+    act(() => rows[1]?.focus())
+    expect(document.activeElement?.getAttribute('data-statusbar-resource-row')).toBe('p-small')
+    act(() => push?.({ ...SNAPSHOT, panes: SNAPSHOT.panes.filter((pane) => pane.paneId !== 'p-small') }))
+    expect(document.activeElement?.getAttribute('data-statusbar-resource-row')).toBe('p-gone')
+    act(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined))
+    expect(document.activeElement).toBe(document.body)
+    key(document.body, 'Escape')
+    expect(q('[data-statusbar-resource-panel]')).toBeNull()
+  })
+
+  it('언마운트하면 스냅샷 구독을 푼다', () => {
+    mount()
+    expect(push).not.toBeNull()
+    act(() => root.unmount())
+    expect(push).toBeNull()
+    root = createRoot(host)
   })
 })

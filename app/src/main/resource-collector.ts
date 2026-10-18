@@ -44,7 +44,11 @@ export function parsePsTable(stdout: string): PsTable {
   return { rows, malformed }
 }
 
-export type PaneRoot = { paneId: string; shellPid: number | null }
+/**
+ * `expectedParent` = 이 셸 pid 를 처음 봤을 때의 ppid(herdr). 지금 ppid 가 다르면 pid 가 다른 프로세스에 재사용된 것으로 보고
+ * 측정 불가로 낸다(F1 — 다른 프로세스를 그 pane 으로 세지 않는다). null 이면 대조하지 않는다.
+ */
+export type PaneRoot = { paneId: string; shellPid: number | null; expectedParent: number | null }
 
 export type Attribution = {
   panes: Map<string, ResourceMeasure>
@@ -128,6 +132,10 @@ export function attribute(input: { table: PsTable; panes: readonly PaneRoot[]; a
       panes.set(pane.paneId, { state: 'unavailable', reason: `셸 프로세스(pid ${root})가 없다` })
       continue
     }
+    if (pane.expectedParent !== null && row.ppid !== pane.expectedParent) {
+      panes.set(pane.paneId, { state: 'unavailable', reason: `셸 pid ${root} 의 부모가 바뀌었다(${pane.expectedParent} → ${row.ppid}) — pid 재사용 의심` })
+      continue
+    }
     if (owned.has(root)) {
       panes.set(pane.paneId, { state: 'unavailable', reason: `셸 pid ${root} 가 다른 곳에 이미 귀속됐다` })
       continue
@@ -145,14 +153,17 @@ export function attribute(input: { table: PsTable; panes: readonly PaneRoot[]; a
     }
   }
 
-  const appRoots = input.appRoots.filter((pid) => table.rows.has(pid))
   // herdr 가 앱의 자식으로 떠 있어도(앱이 띄운 서버) herdr 몫으로 먼저 센다. 앱 pid 자체는 herdr 로 세지 않는다.
   for (const pid of input.appRoots) herdrRoots.delete(pid)
+  // 걸러 낸 뒤 루트가 하나도 없으면 0 이 아니라 측정 불가다(F9 — 가짜 숫자를 내지 않는다).
+  const herdrLive = [...herdrRoots].filter((pid) => table.rows.has(pid) && !owned.has(pid))
   let herdr: ResourceMeasure
   if (herdrRoots.size === 0) {
-    herdr = { state: 'unavailable', reason: '살아 있는 pane 이 없어 herdr 서버 pid 를 모른다' }
+    herdr = { state: 'unavailable', reason: '측정된 pane 이 없어 herdr 서버 pid 를 모른다' }
+  } else if (herdrLive.length === 0) {
+    herdr = { state: 'unavailable', reason: `셸 부모 pid(${[...herdrRoots].join(', ')})가 ps 표에 없다` }
   } else {
-    const result = walk({ rows: table.rows, children, roots: [...herdrRoots].filter((pid) => table.rows.has(pid)), owned })
+    const result = walk({ rows: table.rows, children, roots: herdrLive, owned })
     if (result.kind === 'cycle') herdr = { state: 'unavailable', reason: 'ppid 순환' }
     else {
       claim(result.pids)
@@ -160,11 +171,15 @@ export function attribute(input: { table: PsTable; panes: readonly PaneRoot[]; a
     }
   }
 
+  const appInTable = input.appRoots.filter((pid) => table.rows.has(pid))
+  const appLive = appInTable.filter((pid) => !owned.has(pid))
   let app: ResourceMeasure
-  if (appRoots.length === 0) {
+  if (appInTable.length === 0) {
     app = { state: 'unavailable', reason: '앱 프로세스가 ps 표에 없다' }
+  } else if (appLive.length === 0) {
+    app = { state: 'unavailable', reason: '앱 프로세스가 이미 pane·herdr 몫으로 귀속됐다' }
   } else {
-    const result = walk({ rows: table.rows, children, roots: appRoots, owned })
+    const result = walk({ rows: table.rows, children, roots: appLive, owned })
     if (result.kind === 'cycle') app = { state: 'unavailable', reason: 'ppid 순환' }
     else {
       claim(result.pids)

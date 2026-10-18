@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- Electron CJS 진입점(main·preload)이라 require 를 쓴다 */
+/* global require, process, __dirname, setTimeout */
 // LIFE-636 E10 첫 화면 캡처 — **화면에 뜨지 않는** Electron(show:false · dock 숨김 · accessory)으로 실제 렌더러 번들을 열고
 // 사용량 칩·팝오버를 capturePage 로 찍는다. OS 포커스를 뺏지 않는다(LIFE-603 K1). 제품 main 은 돌리지 않는다 — 사용량 값은
 // `usage-probe.ts` 가 실제 자격 증명으로 받은 결과 JSON(인자 --probe)이고, stale·error 장면은 그 값에서 만든 합성 상태다(설명 파일에 표시).
@@ -11,7 +13,6 @@ const probe = JSON.parse(fs.readFileSync(arg('--probe'), 'utf8'))
 const out = arg('--out')
 fs.mkdirSync(out, { recursive: true })
 const NAMES = { claude: 'Claude', codex: 'Codex', grok: 'Grok' }
-const probedAt = Date.parse(probe.at)
 const entry = (result) => {
   const outcome = result.outcome
   const usage = outcome.kind === 'ok' ? { status: 'ok', windows: outcome.windows, updatedAt: Date.parse(result.finishedAt) }

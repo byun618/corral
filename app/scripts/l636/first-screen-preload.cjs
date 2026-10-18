@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- Electron CJS 진입점(main·preload)이라 require 를 쓴다 */
+/* global require, window */
 // LIFE-636 E10 첫 화면 캡처용 preload 대역 — 실제 렌더러 번들(out/renderer)에 window.corral 을 채운다(contextIsolation:false).
 // 사용량 스냅숏은 main 쪽 스크립트가 넘긴 값(실제 수집기 결과)이고, 나머지 앱 상태는 빈 상태(App.settings.test.mjs 와 같은 모양)다.
 const { ipcRenderer } = require('electron')

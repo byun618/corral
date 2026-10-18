@@ -11,13 +11,15 @@ const fail = (kind: 'network' | 'rate_limited' = 'network', retryAfterMs: number
 /** 결과를 차례로 내는 가짜 수집기. `hold` 면 풀어 줄 때까지 기다린다. */
 function collector(id: string): UsageCollector & { calls: number; next: FetchOutcome[]; hold: boolean; release: () => void; signals: AbortSignal[] } {
   let waiting: (() => void)[] = []
+  const next: FetchOutcome[] = []
+  const signals: AbortSignal[] = []
   const self = {
     id,
     name: id.toUpperCase(),
     calls: 0,
-    next: [] as FetchOutcome[],
+    next,
     hold: false,
-    signals: [] as AbortSignal[],
+    signals,
     release: () => { for (const resolve of waiting.splice(0)) resolve() },
     fetch: async (deps: CollectorDeps): Promise<FetchOutcome> => {
       self.calls += 1

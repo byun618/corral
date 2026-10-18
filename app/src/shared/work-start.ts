@@ -36,7 +36,8 @@ export type StartWorkInput = {
 }
 
 /** 출처 쪽 링크 저장(C14) — 능력이 꺼진 출처는 `skipped`(요청 0). */
-export type StartSourceLink = { state: 'saved' | 'skipped' | 'failed'; message: string | null }
+/** 출처 링크 쓰기 결과. `later` = 보내지 않고 미뤘다(LIFE-635 X3-3 — 이 Mac 이름 미확정, 확정되면 이관이 보낸다). */
+export type StartSourceLink = { state: 'saved' | 'skipped' | 'later' | 'failed'; message: string | null }
 
 export type StartWorkResult = {
   attemptId: string

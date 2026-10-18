@@ -185,7 +185,7 @@ export type MockState = {
   /** 이력·충돌의 시각 — 테스트가 고정할 수 있다. */
   clock?: () => number
   /** 받은 작업 링크 쓰기·지우기(LIFE-603 C14) — 요청 기록. */
-  linkWrites?: { op: 'saveWorkLink' | 'removeWorkLink'; itemId: string; link: WorkLink }[]
+  linkWrites?: { op: 'saveWorkLink' | 'removeWorkLink'; itemId: string; link: WorkLink; machine: string; repo: string | null }[]
   /** 받은 만들기 요청(LIFE-604 C9 — 연타에 생성 호출 1회를 센다). 거절된 요청도 쌓는다. */
   createCalls?: Extract<WorkCall, { op: 'createItem' }>[]
   /** 종류 → 필수 필드. 없으면 `MOCK_CREATE_FIELDS`. 테스트가 바꿀 수 있다. */
@@ -565,11 +565,15 @@ export class MockSource implements WorkSourceClient {
         const item = this.item(call.itemId)
         if (item === null) return rejected('없는 작업입니다.')
         const writes = this.state.linkWrites ?? []
-        writes.push({ op: call.op, itemId: call.itemId, link: call.link })
+        writes.push({ op: call.op, itemId: call.itemId, link: call.link, machine: call.machine, repo: call.op === 'saveWorkLink' ? call.repo : null })
         this.state.linkWrites = writes
-        const same = (link: WorkLink) => JSON.stringify(link) === JSON.stringify(call.link)
-        item.workLinks = call.op === 'saveWorkLink' ? [...item.workLinks.filter((link) => !same(link)), call.link] : item.workLinks.filter((link) => !same(link))
-        return { ok: true, result: { op: call.op, workLinks: [...item.workLinks] } }
+        // LIFE-635 — LA 와 같은 판별(종류 + 핵심 값 + machine). 재저장 = 한 행(부가 값·repo 덮음, createdAt 유지) · 다른 machine 의 같은 경로는 별개 행.
+        const id = workLinkIdentity({ link: call.link, machine: call.machine })
+        const existing = item.workLinks.find((row) => workLinkIdentity(row) === id)
+        if (call.op === 'removeWorkLink') item.workLinks = item.workLinks.filter((row) => workLinkIdentity(row) !== id)
+        else if (existing !== undefined) item.workLinks = item.workLinks.map((row) => (row === existing ? { ...row, link: call.link, repo: call.repo } : row))
+        else item.workLinks = [...item.workLinks, { link: call.link, machine: call.machine, repo: call.repo, createdAt: new Date(now(this.state)).toISOString() }]
+        return { ok: true, result: { op: call.op, workLinks: item.workLinks.map((row) => ({ ...row })) } }
       }
       case 'addComment': {
         if (this.item(call.itemId) === null) return rejected('없는 작업입니다.')
@@ -655,10 +659,17 @@ export class MockSource implements WorkSourceClient {
       version: String(item.version),
       openBlockerCount: openBlockers.length,
       relations: withRelations ? relations : null,
-      workLinks: [...item.workLinks],
+      workLinks: item.workLinks.map((row) => ({ ...row })),
       bodyLock: null,
     }
   }
+}
+
+/** 작업 링크 판별 키(LIFE-635) — 종류 + 핵심 값 + machine. LA 판별과 같은 축·같은 정규화(X1-7: 핵심 값·machine trim, 빈 machine = null). */
+function workLinkIdentity({ link, machine }: { link: WorkLink; machine: string | null }): string {
+  const value = link.kind === 'worktree' ? link.path : link.kind === 'branch' ? link.name : link.kind === 'pull_request' ? link.url : link.sessionId
+  const who = machine?.trim() ?? ''
+  return JSON.stringify([link.kind, value.trim(), who.length > 0 ? who : null])
 }
 
 function copyField(field: WorkCreateField): WorkCreateField {

@@ -28,7 +28,7 @@ import { sanitizeDraftBody } from '../../shared/terminal-paste.js'
 export type StartDeps = {
   invoke: () => ((invocation: Invocation, timeoutMs?: number) => Promise<RpcResponse>) | null
   repos: () => RepoRow[]
-  links: () => Pick<WorkLinks, 'saveExplicit' | 'claimExplicit'> | null
+  links: () => Pick<WorkLinks, 'saveExplicit' | 'claimExplicit' | 'sourceSave'> | null
   work: () => LinkWorkPort | null
   log: (event: string, data: Record<string, unknown>) => void
   cwd: string
@@ -179,13 +179,7 @@ export class StartService {
           // 이 기록의 시도가 만든 것인지 모르는 자리라 남의 링크 · 떼기 예외 · 다른 시도가 붙인 링크를 덮지 않는다(R3-A·R3-C).
           const { claim, sourceLink } = await this.link({ input: entry, path: entry.path, claim: true })
           this.deps.log('work.start_recovered', { attemptId: entry.attemptId, path: entry.path, claim, sourceLink: sourceLink?.state ?? null })
-          // 복구가 붙인 링크는 결과를 볼 모달이 없다 — 출처 저장 실패를 자동 연결과 같은 활동 줄로 남긴다(R4-B · C14, 열쇠로 한 번).
-          if (sourceLink?.state === 'failed') {
-            this.deps.work()?.recordEvent({
-              connectionId: entry.connectionId, itemId: entry.itemId, itemKey: entry.itemKey, eventKey: `run:srcfail:run:start:${entry.attemptId}`,
-              change: { field: 'run', event: 'source_link_failed', worktree: entry.path, message: sourceLink.message },
-            })
-          }
+          // 복구가 붙인 링크의 출처 저장 실패는 `link` 가 활동 줄로 남긴다(R4-B · C14 — 열쇠로 한 번, LIFE-635 에서 일반 시작과 한 자리로).
           if (claim === 'saved') linked += 1
           if (claim === 'held' || claim === 'linked') pending.remove(entry.attemptId)
         } finally {
@@ -386,7 +380,17 @@ export class StartService {
       const pending = this.deps.pending
       for (const row of pending?.list() ?? []) if (row.attemptId === input.attemptId || row.path === path) pending?.remove(row.attemptId)
     }
-    const sourceLink = work === null || !linkSaved ? null : await work.storeLink({ connectionId: input.connectionId, itemId: input.itemId, link: { kind: 'worktree', path, repoRoot: input.repoRoot }, action: 'save' })
+    // 출처 저장은 그 경로의 출처 쓰기 줄에 선다(X2-1) — 로컬 링크를 적은 같은 틱. 그 뒤 떼기가 오면 이 add 를 기다렸다 지우거나, 아직 안 나갔으면 빼낸다.
+    const sourceLink = work === null || links === null || !linkSaved ? null
+      : await links.sourceSave({ path, send: () => work.storeLink({ connectionId: input.connectionId, itemId: input.itemId, link: { kind: 'worktree', path, repoRoot: input.repoRoot }, action: 'save' }) })
+    // 출처 저장 실패는 활동 줄로도 남긴다 — 복구(R4-B, 결과를 볼 모달이 없다)와 일반 시작(LIFE-635 C6) 모두. 열쇠는 시도마다 하나라 두 번 남지 않는다.
+    // 로컬 링크는 그대로, 시작 진행은 막지 않는다.
+    if (sourceLink?.state === 'failed') {
+      work?.recordEvent({
+        connectionId: input.connectionId, itemId: input.itemId, itemKey: input.itemKey, eventKey: `run:srcfail:run:start:${input.attemptId}`,
+        change: { field: 'run', event: 'source_link_failed', worktree: path, message: sourceLink.message },
+      })
+    }
     return { linkSaved, sourceLink, claim: claim ? result : null }
   }
 }

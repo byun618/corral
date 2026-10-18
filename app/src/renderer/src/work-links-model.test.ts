@@ -4,7 +4,7 @@ import type { AgentStatus, BlockedReason } from '../../shared/types.js'
 import { testDigest, testPane, testRepo, testWorktree } from '../../shared/test-rows.js'
 import type { WorktreeWorkLink } from '../../shared/work-link.js'
 import { buildAgentRows } from './sidebar-agents.js'
-import { chipOf, linkedTrees, loudLabel, treesFor, workingFromLinks, worktreeDot } from './work-links-model.js'
+import { chipOf, linkedTrees, loudLabel, remoteLinks, treesFor, workingFromLinks, worktreeDot, type LinkedTree } from './work-links-model.js'
 
 const auto = (key: string): WorktreeWorkLink => ({ mode: 'auto', sourceId: 'la', connectionId: 'c1', key, itemId: null, connected: true })
 const explicit = (key: string, itemId: string): WorktreeWorkLink => ({ mode: 'explicit', sourceId: 'la', connectionId: 'c1', key, itemId, connected: true })
@@ -87,5 +87,20 @@ describe('fix1 R1-N·T — 질문 칩 본문·이유', () => {
   })
   it('빈 질문 목록(`[]`)은 본문 없음과 같다 — 이유가 붙는다', () => {
     expect(one(testPane({ paneId: 'p', status: 'blocked', reason: 'question', digest: testDigest({ questions: [] }) }))).toEqual({ paneId: 'p', text: null, reason: '이 에이전트의 질문 본문은 읽지 못합니다.' })
+  })
+})
+
+// LIFE-635 X1-5 — 합치기 비교는 LA 판별과 같은 정규화(경로·machine trim, 빈 machine = null). 대소문자는 가르고 null machine 은 이 Mac 이 아니다.
+describe('LIFE-635 X1-5 원격/로컬 합치기 정규화', () => {
+  const WT = '/r/.claude/worktrees/LIFE-600-x'
+  const tree: LinkedTree = { path: WT, repoRoot: '/r', repoName: 'r', branch: 'LIFE-600-x', dot: null, activityAt: null, link: { mode: 'explicit', sourceId: 'la', connectionId: 'c', key: 'LIFE-600', itemId: 'i', connected: true }, open: false, agent: null, question: null, focusPane: null }
+  const record = ({ machine, path = WT }: { machine: string | null; path?: string }) => ({ link: { kind: 'worktree' as const, path, repoRoot: null }, machine, repo: null, createdAt: null })
+  it('LA 가 trim 한 machine(63자) ↔ 끝 공백 있는 이 Mac 이름(64자) — 같은 링크로 합친다(리뷰 P12)', () => {
+    const local = `${'A'.repeat(63)} `
+    expect(remoteLinks({ records: [record({ machine: 'A'.repeat(63) })], trees: [tree], machine: local })).toEqual([])
+    expect(remoteLinks({ records: [record({ machine: ' mac ', path: ` ${WT} ` })], trees: [tree], machine: 'mac' })).toEqual([])
+  })
+  it('대조 — 대소문자 다른 machine · null machine · 다른 경로는 원격에 남는다', () => {
+    expect(remoteLinks({ records: [record({ machine: 'MAC' }), record({ machine: null }), record({ machine: 'mac', path: `${WT}-2` })], trees: [tree], machine: 'mac' })).toHaveLength(3)
   })
 })

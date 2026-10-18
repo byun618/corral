@@ -149,7 +149,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const detailEscape = useRef<(() => boolean) | null>(null)
 
   // --- 작업에서 시작 · 링크 (LIFE-603) ---
-  const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree }), [page.linked, onOpenWorktree])
+  const machine = settings?.machine ?? null
+  const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree, machine }), [page.linked, onOpenWorktree, machine])
   const detailSource = detail.descriptor?.name ?? detail.connection?.name ?? '출처'
   const starter = useStartWork({ detail, repos, repoDefaults: settings?.repoDefaults ?? NO_DEFAULTS, activeRepoRoot, sourceName: detailSource, notifyFailure: (message) => notify({ kind: 'failed', message }) })
   const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })

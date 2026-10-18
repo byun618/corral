@@ -14,6 +14,7 @@ import {
   type WorkCreateMeta,
   type WorkItem,
   type WorkLink,
+  type WorkLinkRecord,
   type WorkResponse,
   type WorkSpace,
   type WorkStatus,
@@ -47,6 +48,16 @@ export type ContractTarget = {
    * 돌려주는 함수는 픽스처 본문을 바꾸기 전 원래 값(출처 서식 그대로 — Jira ADF)으로 되돌린다.
    */
   externalBody: ({ itemId, body }: { itemId: string; body: string | null }) => () => void
+  /**
+   * 다른 곳(폰·웹·다른 Mac)이 남긴 작업 링크를 출처에 직접 심는다(LIFE-635) — `workLinkStore` 가 켜진 출처는 있어야 한다(없으면 그 시험이 실패한다).
+   * 꺼진 출처(Jira)는 없어도 된다.
+   */
+  plantWorkLink?: (input: { itemId: string; link: WorkLink; machine: string; repo: string | null }) => void
+  /**
+   * 이 출처가 작업 링크를 저장하는가(LIFE-635 X1-7) — 묶음은 능력 표가 이 값과 같은지 먼저 본다. 켜짐 출처가 능력을 끄면(옛 동작으로 돌아가면)
+   * 링크 시험이 「꺼짐 갈래」 로 조용히 통과하지 않고 여기서 실패한다.
+   */
+  workLinkStore: 'on' | 'off'
 }
 
 /** 정규형 본문(지원 표 안) — 출처 서식으로 바꿔 두는 출처도 바이트로 되돌려야 하는 꼴. */
@@ -853,6 +864,11 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       }
     })
 
+    it('작업 링크 능력(LIFE-635) — 능력 표의 workLinkStore 가 이 출처의 선언과 같다(켜짐 출처가 꺼짐 갈래로 통과하지 않게)', async () => {
+      const { capabilities } = await stage()
+      expect(capabilities.workLinkStore.state === 'on' ? 'on' : 'off').toBe(target.workLinkStore)
+    })
+
     // LIFE-603 C14 — 작업 링크 쓰기·지우기는 main 만 보낸다(`storeLink`). 렌더러 요청 모양으로는 받지 않는다.
     it('작업 링크(C14) — 켜져 있으면 저장·지우기가 단건에 보이고, 꺼져 있으면 skipped + 이유 · 출처 요청 0', async () => {
       const { items, capabilities } = await stage()
@@ -870,11 +886,36 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
         return
       }
       expect(saved).toEqual({ state: 'saved', message: null })
-      const after = await okResult({ op: 'getItem', itemId: item.id })
-      if (after.op === 'getItem') expect(after.item.workLinks).toContainEqual(link)
+      // LIFE-635 — 단건에 그 링크가 이 Mac 의 이름·레포 표시 이름과 함께 보인다(계약 모양 `WorkLinkRecord`).
+      const machine = await target.service.machine()
+      const mine = (records: { link: WorkLink; machine: string | null }[]) => records.filter((record) => JSON.stringify(record.link) === JSON.stringify(link) && record.machine === machine)
+      const after = await getItem(item.id)
+      expect(mine(after.workLinks)).toEqual([expect.objectContaining({ link, machine, repo: 'l603-contract' })])
+      expect(after.workLinks.every((record) => record.createdAt === null || Number.isFinite(Date.parse(record.createdAt)))).toBe(true)
       expect(await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'remove' })).toEqual({ state: 'saved', message: null })
-      const removed = await okResult({ op: 'getItem', itemId: item.id })
-      if (removed.op === 'getItem') expect(removed.item.workLinks).not.toContainEqual(link)
+      expect(mine((await getItem(item.id)).workLinks)).toEqual([])
+    })
+
+    // LIFE-635 C3 — 판별 = 종류 + 핵심 값 + machine. 같은 링크 재저장은 한 행, 다른 machine 의 같은 경로는 이 Mac 의 떼기로 지워지지 않는다.
+    it('작업 링크 판별(LIFE-635) — 재저장은 한 행 · 다른 machine 의 같은 경로 링크는 이 Mac 의 떼기로 지워지지 않는다', async () => {
+      const { items, capabilities } = await stage()
+      const item = items[0]
+      if (item === undefined) throw new Error('no item')
+      if (capabilities.workLinkStore.state !== 'on') return
+      const plant = target.plantWorkLink
+      if (plant === undefined) throw new Error('workLinkStore 가 켜진 출처는 plantWorkLink 가 있어야 한다')
+      const link: WorkLink = { kind: 'worktree', path: '/tmp/l635-contract/shared', repoRoot: '/tmp/l635-contract' }
+      const same = (records: WorkLinkRecord[]) => records.filter((record) => record.link.kind === 'worktree' && record.link.path === link.path)
+      plant({ itemId: item.id, link, machine: 'l635-other-mac', repo: 'other' })
+      expect(await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'save' })).toEqual({ state: 'saved', message: null })
+      expect(await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'save' })).toEqual({ state: 'saved', message: null })
+      const machine = await target.service.machine()
+      const both = same((await getItem(item.id)).workLinks)
+      expect(both.map((record) => record.machine).sort()).toEqual([machine, 'l635-other-mac'].sort())
+      expect(await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'remove' })).toEqual({ state: 'saved', message: null })
+      // 없는 링크를 다시 지워도 오류가 아니다.
+      expect(await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'remove' })).toEqual({ state: 'saved', message: null })
+      expect(same((await getItem(item.id)).workLinks)).toEqual([expect.objectContaining({ link, machine: 'l635-other-mac', repo: 'other' })])
     })
 
     // LIFE-603 R1-I — 자동 연결(브랜치 키로 붙은 링크)도 출처에 남긴다. 키로 작업을 찾아 저장 · 꺼진 출처는 키 찾기도 보내지 않는다.
@@ -894,8 +935,8 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       }
       expect(saved).toEqual({ state: 'saved', message: null })
       expect(missing?.state).toBe('failed')
-      const after = await okResult({ op: 'getItem', itemId: item.id })
-      if (after.op === 'getItem') expect(after.item.workLinks).toContainEqual(link)
+      const machine = await target.service.machine()
+      expect((await getItem(item.id)).workLinks).toContainEqual(expect.objectContaining({ link, machine }))
       await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'remove' })
     })
   })

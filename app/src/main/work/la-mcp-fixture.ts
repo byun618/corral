@@ -2,7 +2,11 @@
 //
 // 실측(00-analysis §3 · raw/coordinator/m01·m02)을 따른 것:
 //   - 응답은 SSE(`text/event-stream`) 한 이벤트, protocol `2025-06-18`, 세션 헤더 없음(무상태).
-//   - 토큰 없음·`life_pat_` 가 아닌 토큰 = 500 `INTERNAL_ERROR` · 형식 맞는 모르는 토큰 = 401 `UNAUTHORIZED`.
+//   - 인증(LIFE-635 L1d — LA LIFE-608 배포 뒤 코디 실측 `specs/LIFE-635-la-link-auth/raw/coord/c10-la-401-probe.txt`): 토큰 없음 = 401
+//     `WWW-Authenticate: Bearer realm="life-assistant"` · 무효 토큰(형식 맞는 모르는 토큰 · `life_pat_` 아닌 토큰 · 폐기한 토큰) = 401 +
+//     `WWW-Authenticate: Bearer realm="life-assistant", error="invalid_token"` — 본문은 셋 다 `{code:"UNAUTHORIZED", message:"인증이 필요해요"}`.
+//     옛 500(무인증·형식 다른 토큰) 경로는 prod 에서 사라졌다. 남은 500 은 서버 오류(PAT 조회 예외 — 608 분기표)뿐이라 `fault` 로만 만든다.
+//     폐기 = `revoke(token)` — 그 뒤 같은 토큰은 401.
 //   - scope 부족 = **HTTP 200 · SSE `result.isError: true` · text `missing scope: issue:write`**(LA 소스 mcp.service `ensureIssueScope` →
 //     SDK 가 도구 오류로 감싼다 — 리뷰 r1 sdk-permission 와이어 실측). `scopeStyle: 'http'` 면 HTTP 403 `FORBIDDEN`(다른 서버 꼴 대조용).
 //   - 부모 규칙(issue.service `checkParentRule`): task 의 부모 = project·checkpoint·bug — 씨앗에 bug 아래 task 를 둔다(R1-A).
@@ -15,6 +19,10 @@
 //     transition 은 버전 비교 → 방향 판정 → no-op(same·backward)이면 저장 없이(판 소비 없음). ifVersion 이 실린 update 는 값이 안 바뀌어도 판을 소비한다(F8).
 //     ifVersion 생략 = 무조건 저장(무변경이면 판 그대로).
 //
+//   - 작업 링크(LIFE-635 L1a — LA LIFE-609 `issue-work-link.rules`·`mcp.service` 대조): `issue_work_link_add`·`_remove`·`_list` →
+//     `{workLinks:[{id, link, machine, repo, createdAt}]}`(createdAt 순). 판별 = 종류 + 핵심 값(trim) + machine(''·공백·생략 = null).
+//     같은 판별 재추가 = 한 행(부가 값·repo 를 통째로 덮음 — repo 생략 = null, createdAt·machine 유지) · 없는 링크 remove = 오류 아님(목록 그대로) ·
+//     scope 부족 = `missing scope: issue:write`(쓰기 두 도구). 일감 `version` 을 바꾸지 않는다(609 C5). 단건(`issue_get`·`issue_by_seq`)에 `workLinks`.
 // 제어: `fault`(다음 요청들의 HTTP 상태 강제 · 소켓 끊기 · 지연) · `corrupt`(응답 한 칸 깨기 — 양성 대조) · `protocolVersion`
 //   · `echo`(원격 오류 글에 받은 토큰을 되울리기 — R1-E 양성 대조) · `holdStream`(결과를 쓰고 스트림을 닫지 않기 — R1-H).
 // `requests` 에 받은 요청(메서드·도구 이름·토큰 접두사 여부)을 쌓는다 — 「보내기 전에 거절」 을 요청 0건으로 확인한다.
@@ -54,6 +62,9 @@ export type FixtureCorrupt =
   | 'conflict-no-status' | 'conflict-other-code'
   // LIFE-622 수정 1 R1-D — code·409 는 맞고 current 가 없거나 레코드가 아님(null · 글자 · 배열).
   | 'conflict-no-current' | 'conflict-current-null' | 'conflict-current-string' | 'conflict-current-array'
+  // LIFE-635 C1 양성 대조 — 링크 행을 깨기: 모르는 종류 · 핵심 값 삭제 · machine 을 숫자로 · createdAt 삭제 · 링크 응답의 workLinks 를 객체로.
+  // `drop-workLinks` = 단건 응답의 workLinks 칸 삭제(일반 `drop-<칸>` 경로).
+  | 'worklink-unknown-kind' | 'worklink-drop-path' | 'worklink-machine-number' | 'worklink-drop-createdAt' | 'worklink-not-array' | 'drop-workLinks'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -78,13 +89,49 @@ type FixtureIssue = {
   version: number
 }
 type FixtureLink = { id: string; from: string; to: string; relation: WorkRelationKind }
+/** 작업 링크 한 행 — LA `issue_work_link` 테이블 모양(kind·key·extra·machine·repo·createdAt). */
+export type FixtureWorkLink = { id: string; issueId: string; kind: 'worktree' | 'branch' | 'pull_request' | 'agent_session'; key: string; extra: Record<string, string | null>; machine: string | null; repo: string | null; createdAt: string }
 
 export type FixtureRequest = { method: string; tool: string | null; bearer: 'none' | 'life_pat' | 'other' }
 
 const INVERSE: Record<WorkRelationKind, WorkRelationKind> = {
   is_blocked_by: 'blocks', blocks: 'is_blocked_by', duplicates: 'is_duplicated_by', is_duplicated_by: 'duplicates', relates_to: 'relates_to',
 }
-const WRITE_TOOLS = new Set(['issue_update', 'issue_transition', 'issue_link_create', 'issue_link_delete', 'issue_create'])
+const WRITE_TOOLS = new Set(['issue_update', 'issue_transition', 'issue_link_create', 'issue_link_delete', 'issue_create', 'issue_work_link_add', 'issue_work_link_remove'])
+/** LA `WORK_LINK_KEY_FIELD` — 종류 → 핵심 값 칸. */
+const WORK_LINK_KEY = { worktree: 'path', branch: 'name', pull_request: 'url', agent_session: 'sessionId' } as const
+const WORK_LINK_EXTRA: Record<FixtureWorkLink['kind'], string> = { worktree: 'repoRoot', branch: 'repoRoot', pull_request: 'state', agent_session: 'agent' }
+const LA_UNAUTHORIZED = { code: 'UNAUTHORIZED', message: '인증이 필요해요' }
+/** LA `WORK_LINK_LIMITS` — 길이 상한(issue-work-link.rules.ts). */
+const WORK_LINK_LIMITS = { path: 1024, repoRoot: 1024, name: 255, url: 2048, sessionId: 255, agent: 100, machine: 100, repo: 200 } as const
+/** LA 의 제어 문자 거부(U+0000–U+001F · U+007F) — 글자 코드로 본다(정규식 제어 문자 범위는 lint no-control-regex). */
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code <= 0x1f || code === 0x7f) return true
+  }
+  return false
+}
+
+/** LA `isHttpUrl` — `new URL` 로 읽어 http·https 만. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/** LA `parseOptionalText` — undefined·null → null · 글자는 trim('' → null) · 그 밖 = 거절 · 상한 초과 = 거절. */
+function optionalText({ value, field }: { value: unknown; field: keyof typeof WORK_LINK_LIMITS }): { ok: true; value: string | null } | { ok: false; message: string } {
+  if (value === undefined || value === null) return { ok: true, value: null }
+  if (typeof value !== 'string') return { ok: false, message: `${field} 은 문자열이어야 합니다.` }
+  const trimmed = value.trim()
+  if (trimmed === '') return { ok: true, value: null }
+  if (trimmed.length > WORK_LINK_LIMITS[field]) return { ok: false, message: `${field} 가 너무 깁니다(최대 ${WORK_LINK_LIMITS[field]}자).` }
+  return { ok: true, value: trimmed }
+}
 /** 실제 LA `issue_create` 입력 칸(LIFE-604 — life-assistant MCP 도구 정의). */
 const CREATE_ARGS = new Set(['kind', 'title', 'description', 'priority', 'statusId', 'categoryKey', 'onBoard', 'dueAt', 'parentId', 'goalId', 'color'])
 const PRIORITIES = new Set(['highest', 'high', 'medium', 'low', 'lowest'])
@@ -160,6 +207,12 @@ export class LaMcpFixture {
   statuses = seedStatuses()
   issues = seedIssues()
   links: FixtureLink[] = []
+  /** 작업 링크 행(LIFE-635). 시험이 다른 machine 의 행을 직접 심을 수 있다(`plantWorkLink`). */
+  workLinks: FixtureWorkLink[] = []
+  /** 받은 작업 링크 도구 인자(LIFE-635 C2) — machine·repo 가 실렸는지 본다. 토큰은 인자에 없다. */
+  readonly workLinkArgs: { tool: string; args: Record<string, unknown> }[] = []
+  /** 폐기한 토큰(LIFE-635 C7) — 처음엔 통과하던 토큰이 이 뒤로 401 `invalid_token`. */
+  private readonly revoked = new Set<string>()
   fault: FixtureFault | null = null
   /** 도구 이름별 고장(LIFE-604 R1-A) — 그 도구 요청에만. 예: `issue_get` 만 끊어 생성 뒤 재조회 실패를 만든다. */
   readonly toolFaults = new Map<string, FixtureFault>()
@@ -193,6 +246,17 @@ export class LaMcpFixture {
   protocolVersion = '2025-06-18'
   private server: http.Server | null = null
   private seq = 1
+
+  /** 토큰 폐기(LA 웹에서 PAT revoke) — 그 뒤 같은 토큰의 요청은 401 `invalid_token`. */
+  revoke(token: string): void {
+    this.revoked.add(token)
+  }
+
+  /** 다른 곳(LA 웹·폰·다른 Mac)이 남긴 링크를 심는다 — 판별이 같은 행이 있으면 덮는다(LA 재추가와 같다). */
+  plantWorkLink({ issueId, link, machine, repo }: { issueId: string; link: Record<string, unknown>; machine: unknown; repo: unknown }): void {
+    const outcome = this.addWorkLink({ args: { issueId, link, machine, repo } })
+    if (outcome.isError) throw new Error(`plantWorkLink: ${outcome.text}`)
+  }
 
   async start(): Promise<string> {
     const server = http.createServer((request, response) => void this.handle(request, response))
@@ -237,9 +301,10 @@ export class LaMcpFixture {
       return
     }
     if (request.method !== 'POST' || request.url !== '/mcp') { this.json({ response, status: 404, value: { code: 'NOT_FOUND' } }); return }
-    if (!token.startsWith('life_pat_')) { this.json({ response, status: 500, value: { code: 'INTERNAL_ERROR', message: '잠시 후 다시 시도해주세요' } }); return }
-    const scope = this.tokens.get(token)
-    if (scope === undefined) { this.json({ response, status: 401, value: { code: 'UNAUTHORIZED', message: '인증이 필요해요' } }); return }
+    // L1d 실측(c10): 자격 없음 = 401 + error 없는 challenge · 무효(모르는 토큰 · life_pat_ 아님 · 폐기) = 401 + invalid_token. 500 은 주지 않는다.
+    if (token === '') { this.json({ response, status: 401, value: LA_UNAUTHORIZED, headers: { 'www-authenticate': 'Bearer realm="life-assistant"' } }); return }
+    const scope = this.revoked.has(token) ? undefined : this.tokens.get(token)
+    if (scope === undefined) { this.json({ response, status: 401, value: LA_UNAUTHORIZED, headers: { 'www-authenticate': 'Bearer realm="life-assistant", error="invalid_token"' } }); return }
     if (tool !== null && scope === 'read' && WRITE_TOOLS.has(tool)) {
       if (this.scopeStyle === 'http') this.json({ response, status: 403, value: { code: 'FORBIDDEN', message: '권한이 없어요' } })
       else this.sse({ response, value: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'missing scope: issue:write' }], isError: true } } })
@@ -266,8 +331,8 @@ export class LaMcpFixture {
     this.sse({ response, value: rpc })
   }
 
-  private json({ response, status, value }: { response: http.ServerResponse; status: number; value: unknown }): void {
-    response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify(value))
+  private json({ response, status, value, headers = {} }: { response: http.ServerResponse; status: number; value: unknown; headers?: Record<string, string> }): void {
+    response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers }).end(JSON.stringify(value))
   }
 
   private sse({ response, value }: { response: http.ServerResponse; value: unknown }): void {
@@ -425,6 +490,24 @@ export class LaMcpFixture {
         this.links.push(link)
         return ok({ id: link.id, relation: kind, issue: this.ref(to), createdAt: '2026-10-13T00:00:00.000Z' })
       }
+      case 'issue_work_link_add': {
+        this.workLinkArgs.push({ tool, args: structuredClone(args) })
+        if (find(args.issueId) === undefined) return fail('NOT_FOUND', '일감을 찾을 수 없어요')
+        return this.addWorkLink({ args })
+      }
+      case 'issue_work_link_remove': {
+        this.workLinkArgs.push({ tool, args: structuredClone(args) })
+        if (find(args.issueId) === undefined) return fail('NOT_FOUND', '일감을 찾을 수 없어요')
+        const identity = this.workLinkIdentity({ link: args.link, machine: args.machine })
+        if (!identity.ok) return { isError: true, text: identity.message }
+        // 없는 링크여도 오류 없이 현재 목록 — 다른 machine 의 같은 경로는 판별이 달라 지우지 않는다.
+        this.workLinks = this.workLinks.filter((row) => !(row.issueId === args.issueId && row.kind === identity.kind && row.key === identity.key && row.machine === identity.machine))
+        return ok(this.workLinkList(String(args.issueId)))
+      }
+      case 'issue_work_link_list': {
+        if (find(args.issueId) === undefined) return fail('NOT_FOUND', '일감을 찾을 수 없어요')
+        return ok(this.workLinkList(String(args.issueId)))
+      }
       case 'issue_link_delete': {
         const index = this.links.findIndex((link) => link.id === args.linkId)
         if (index < 0) return fail('NOT_FOUND', '없는 링크')
@@ -455,6 +538,82 @@ export class LaMcpFixture {
     if (this.corrupt === 'conflict-current-string') body.current = 'LIFE-600'
     if (this.corrupt === 'conflict-current-array') body.current = [body.current]
     return { isError: true, text: JSON.stringify(body, null, 2) }
+  }
+
+  /**
+   * LA `parseWorkLinkIdentity`(issue-work-link.rules.ts) — 종류 · 핵심 값(trim, 비지 않음, 길이 상한, 제어 문자 거부, PR = `new URL` 의 http(s)) ·
+   * machine(선택 글자 — 비문자열 거부, trim, ''→null, 100자 상한, 제어 문자 거부). 오류는 isError 평문(필드명·상한만, 값 미포함).
+   */
+  private workLinkIdentity({ link, machine }: { link: unknown; machine: unknown }): { ok: true; kind: FixtureWorkLink['kind']; key: string; machine: string | null } | { ok: false; message: string } {
+    if (!isRecord(link)) return { ok: false, message: 'Input validation error: link' }
+    const kind = link.kind === 'worktree' || link.kind === 'branch' || link.kind === 'pull_request' || link.kind === 'agent_session' ? link.kind : null
+    if (kind === null) return { ok: false, message: 'Input validation error: 알 수 없는 작업 링크 종류입니다.' }
+    const field = WORK_LINK_KEY[kind]
+    const raw = link[field]
+    if (typeof raw !== 'string' || raw.trim() === '') return { ok: false, message: `${kind} 링크에는 ${field} 가 필요합니다.` }
+    const key = raw.trim()
+    if (key.length > WORK_LINK_LIMITS[field]) return { ok: false, message: `${field} 가 너무 깁니다(최대 ${WORK_LINK_LIMITS[field]}자).` }
+    if (hasControlCharacter(key)) return { ok: false, message: `${field} 에 제어 문자가 들어 있습니다.` }
+    if (kind === 'pull_request' && !isHttpUrl(key)) return { ok: false, message: 'pull_request url 은 http(s) URL 이어야 합니다.' }
+    const parsedMachine = optionalText({ value: machine, field: 'machine' })
+    if (!parsedMachine.ok) return parsedMachine
+    if (parsedMachine.value !== null && hasControlCharacter(parsedMachine.value)) return { ok: false, message: 'machine 에 제어 문자가 들어 있습니다.' }
+    return { ok: true, kind, key, machine: parsedMachine.value }
+  }
+
+  /**
+   * LA `IssueWorkLinkService.add` + `parseWorkLinkInput` — 부가 값(repoRoot|state|agent)·repo 도 검증(비문자열·상한 초과 = 거절, 자르거나 버리지 않는다).
+   * 판별이 같으면 extra·repo 를 **통째로** 덮는다(생략 = null). createdAt·machine 은 유지. 새 행은 createdAt 을 남긴다.
+   */
+  private addWorkLink({ args }: { args: Record<string, unknown> }): { isError: boolean; text: string } {
+    const identity = this.workLinkIdentity({ link: args.link, machine: args.machine })
+    if (!identity.ok) return { isError: true, text: identity.message }
+    const link = isRecord(args.link) ? args.link : {}
+    const extraField = WORK_LINK_EXTRA[identity.kind]
+    let extraValue: string | null
+    if (identity.kind === 'pull_request') {
+      const raw = link.state
+      const known = typeof raw === 'string' && ['open', 'merged', 'closed'].includes(raw) ? raw : null
+      if (raw !== undefined && raw !== null && known === null) return { isError: true, text: 'pull_request state 가 올바르지 않습니다.' }
+      extraValue = known
+    } else {
+      const parsed = optionalText({ value: link[extraField], field: extraField === 'repoRoot' ? 'repoRoot' : 'agent' })
+      if (!parsed.ok) return { isError: true, text: parsed.message }
+      extraValue = parsed.value
+    }
+    const repo = optionalText({ value: args.repo, field: 'repo' })
+    if (!repo.ok) return { isError: true, text: repo.message }
+    const issueId = String(args.issueId)
+    const existing = this.workLinks.find((row) => row.issueId === issueId && row.kind === identity.kind && row.key === identity.key && row.machine === identity.machine)
+    if (existing !== undefined) {
+      existing.extra = { [extraField]: extraValue }
+      existing.repo = repo.value
+    } else {
+      const createdAt = new Date(Date.parse('2026-10-18T00:00:00.000Z') + this.seq * 1000).toISOString()
+      this.workLinks.push({ id: uuid(60000 + this.seq++), issueId, kind: identity.kind, key: identity.key, extra: { [extraField]: extraValue }, machine: identity.machine, repo: repo.value, createdAt })
+    }
+    return { isError: false, text: JSON.stringify(this.workLinkList(issueId)) }
+  }
+
+  /** 링크 도구 응답 `{workLinks}` — createdAt 순. `worklink-*` 깨기를 건다. */
+  private workLinkList(issueId: string): Record<string, unknown> {
+    const rows = this.workLinkRows(issueId)
+    return { workLinks: this.corrupt === 'worklink-not-array' ? { rows } : rows }
+  }
+
+  /** LA `toWorkLink` 모양의 행들(단건·도구 응답 공용). */
+  private workLinkRows(issueId: string): Record<string, unknown>[] {
+    return this.workLinks
+      .filter((row) => row.issueId === issueId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+      .map((row) => {
+        const link: Record<string, unknown> = { kind: row.kind, [WORK_LINK_KEY[row.kind]]: row.key, [WORK_LINK_EXTRA[row.kind]]: row.extra[WORK_LINK_EXTRA[row.kind]] ?? null }
+        if (this.corrupt === 'worklink-unknown-kind') link.kind = 'commit'
+        if (this.corrupt === 'worklink-drop-path') delete link[WORK_LINK_KEY[row.kind]]
+        const out: Record<string, unknown> = { id: row.id, link, machine: this.corrupt === 'worklink-machine-number' ? 42 : row.machine, repo: row.repo, createdAt: row.createdAt }
+        if (this.corrupt === 'worklink-drop-createdAt') delete out.createdAt
+        return out
+      })
   }
 
   private touch(issue: FixtureIssue): void {
@@ -501,10 +660,11 @@ export class LaMcpFixture {
     return rest
   }
 
-  /** 수정 응답(IssueResponse) — 단건에서 links 를 뺀 모양. */
+  /** 수정 응답(IssueResponse) — 단건에서 links·workLinks 를 뺀 모양. */
   private response(issue: FixtureIssue): Record<string, unknown> {
-    const { links: _links, ...rest } = this.full(issue)
+    const { links: _links, workLinks: _workLinks, ...rest } = this.full(issue)
     void _links
+    void _workLinks
     return rest
   }
 
@@ -524,6 +684,7 @@ export class LaMcpFixture {
       ...summary,
       description: issue.description,
       links: this.linksOf(issue).map((link) => ({ id: link.id, relation: link.relation, issue: this.ref(link.other), createdAt: '2026-10-13T00:00:00.000Z' })),
+      workLinks: this.workLinkRows(issue.id),
     })
   }
 

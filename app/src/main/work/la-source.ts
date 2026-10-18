@@ -9,7 +9,10 @@
 //     스페이스가 아닌 프로젝트(보관·완료) 아래 일감은 「미분류」 로 간다(01-criteria C9, 2026-10-13 사용자 재승인 — R3-D). 열린 수도 같은 규칙.
 //     스페이스가 아니게 된 옛 프로젝트 키로 목록을 부르면 「스페이스 아님」(rejected).
 // 상태: 모든 LA 스페이스가 같은 `status_list`. 앞으로 = `issue_transition`(forwardOnly) · 뒤로 = `issue_update(statusId)`(D6).
-// 능력 꺼짐(L1 대기): 순서(L1f · LIFE-612) · 커서 페이지(L1c) · 코멘트·이력(L1e) · 작업 링크 저장(L1a).
+// 능력 꺼짐(L1 대기): 순서(L1f · LIFE-612) · 커서 페이지(L1c) · 코멘트·이력(L1e).
+// 작업 링크 저장(L1a) 켜짐(LIFE-635 · LA LIFE-609): 저장 = `issue_work_link_add({issueId, link, machine, repo})` · 지우기 = `issue_work_link_remove({issueId, link, machine})`.
+// LA 판별 = 종류 + 핵심 값 + machine — 같은 링크 재저장 = 한 행(repo·부가 값은 통째로 덮음), 없는 링크 지우기 = 오류 아님, 다른 machine 의 같은 경로는 별개 행.
+// 결과 = 응답의 그 일감 링크 목록 전체. 단건(`issue_get`) 응답의 `workLinks` 가 `WorkItem.workLinks`(단건 모양에서만 — 목록 행에는 없다, LIFE-609 D2).
 // 조건부 수정(L1b) 켜짐(LIFE-622 · LA LIFE-607): 응답 `version` = 판(불투명 글자) · 네 쓰기(필드·상태·배치·부모)에 `ifVersion` · 다르면 LA 가
 // isError text JSON `{statusCode:409, code:"CONFLICT", current, …}` 로 거절(저장 0) → `conflict` + 단건 경로로 다시 읽은 지금 작업(by = null → 「다른 곳에서」).
 // 응답은 `la-shape.ts` 로 검증한 뒤에만 계약 타입으로 바꾼다(C3) — 어긋나면 `invalid_response`.
@@ -35,7 +38,7 @@ import type {
   WorkStatus,
 } from '../../shared/work.js'
 import { appliedUnread, unknownWriteOutcome, workError } from './errors.js'
-import { readBySeq, readIssueCreated, readIssueDetail, readIssueSummaries, type LaIssueDetail, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
+import { readBySeq, readIssueCreated, readIssueDetail, readIssueSummaries, type LaIssueDetail, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, readWorkLinks, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
 import { log } from '../log.js'
 import { McpHttpClient } from './mcp-http.js'
 import type { WorkOutcome, WorkSourceClient, WorkSourceEntry } from './source.js'
@@ -93,7 +96,7 @@ export const LA_CAPABILITIES: WorkCapabilities = {
   conflictCheck: { state: 'on' },
   comments: { state: 'disabled', reason: 'LA 에는 코멘트가 아직 없습니다 (L1e).' },
   history: { state: 'disabled', reason: 'LA 에는 변경 이력이 아직 없습니다 (L1e).' },
-  workLinkStore: { state: 'disabled', reason: 'LA 에 작업 링크를 저장할 자리가 아직 없습니다 (L1a).' },
+  workLinkStore: { state: 'on' },
   resolution: { state: 'on' },
   querySearch: { state: 'hidden' },
 }
@@ -193,9 +196,15 @@ export class LaSource implements WorkSourceClient {
       case 'listComments':
       case 'addComment':
         return unsupported('comments')
-      case 'saveWorkLink':
-      case 'removeWorkLink':
-        return unsupported('workLinkStore')
+      case 'saveWorkLink': {
+        // repo 는 늘 싣는다(null 이어도) — 생략하면 LA 가 기존 repo 를 null 로 덮는 것과 같지만, 무엇을 보냈는지가 인자에 드러나게(F7).
+        const saved = await this.tool({ name: 'issue_work_link_add', args: { issueId: call.itemId, link: call.link, machine: call.machine, repo: call.repo }, read: readWorkLinks })
+        return saved.ok ? { ok: true, result: { op: 'saveWorkLink', workLinks: saved.value } } : saved.outcome
+      }
+      case 'removeWorkLink': {
+        const removed = await this.tool({ name: 'issue_work_link_remove', args: { issueId: call.itemId, link: call.link, machine: call.machine }, read: readWorkLinks })
+        return removed.ok ? { ok: true, result: { op: 'removeWorkLink', workLinks: removed.value } } : removed.outcome
+      }
       case 'searchItems':
         return unsupported('querySearch')
     }
@@ -574,7 +583,7 @@ function conflictMessage(key: string): string {
   return `${key} 이(가) 연 뒤에 바뀌었습니다 — 새로 불러오거나 덮어쓰세요.`
 }
 
-function unsupported(name: 'order' | 'cursorPaging' | 'comments' | 'history' | 'workLinkStore' | 'querySearch'): WorkOutcome {
+function unsupported(name: 'order' | 'cursorPaging' | 'comments' | 'history' | 'querySearch'): WorkOutcome {
   const capability = LA_CAPABILITIES[name]
   const reason = capability.state === 'disabled' ? capability.reason : 'LA 는 이 연산을 하지 않습니다.'
   return { ok: false, error: workError({ kind: 'unsupported', message: reason }) }
@@ -619,7 +628,7 @@ function visibleParent({ issue, byId }: { issue: LaIssue; byId: Map<string, LaIs
   return null
 }
 
-function toItem({ issue, spaceKey, parentId }: { issue: LaIssue; spaceKey: string; parentId: string | null }): WorkItem {
+function toItem({ issue, spaceKey, parentId }: { issue: LaIssue | LaIssueDetail; spaceKey: string; parentId: string | null }): WorkItem {
   const kindKey = issue.kind === 'project' ? 'task' : issue.kind
   return {
     id: issue.id,
@@ -648,7 +657,8 @@ function toItem({ issue, spaceKey, parentId }: { issue: LaIssue; spaceKey: strin
           kind: link.relation,
           other: { id: link.issue.id, key: link.issue.displayId, title: link.issue.title, statusLabel: link.issue.statusLabel, category: link.issue.statusCategoryKey, spaceKey: null },
         })),
-    workLinks: [],
+    // 단건만 링크를 싣는다 — 목록 행·생성 응답은 링크가 없다(빈 배열 = 안 실음, `WorkItem.workLinks` 주석).
+    workLinks: 'workLinks' in issue ? issue.workLinks : [],
     bodyLock: null,
   }
 }

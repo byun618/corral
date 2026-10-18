@@ -5,6 +5,7 @@
 // - 급한 순서는 `AGENT_DOT_ORDER`(질문 대기 > 막힘 > 일하는 중 > … > 끝남 안 봄 > … > 쉼) 하나.
 // - 큰소리 라벨은 사람이 움직일 두 경우만 — 질문 대기(`waiting`) · 끝남 안 봄(`done` = 안 본 끝남, herdr 의 done).
 import type { RepoRow, WorktreeRow } from '../../shared/types.js'
+import type { WorkLinkRecord } from '../../shared/work.js'
 import { linkTargets, type WorktreeWorkLink } from '../../shared/work-link.js'
 import { AGENT_DOT_ORDER, waitingQuestion, type AgentDot } from './agent-dot.js'
 import { paneDot, type TabAgentKind } from './tab-status.js'
@@ -99,4 +100,60 @@ export function workingFromLinks(trees: LinkedTree[]): WorkingEntry[] {
     entries.set(id, entry)
   }
   return [...entries.values()]
+}
+
+/** 원격 링크 한 줄(LIFE-635 C5) — 출처에 있는데 이 Mac 의 로컬 worktree 로 합쳐지지 않는 링크. 읽기 전용. */
+export type RemoteLinkRow = {
+  id: string
+  kindLabel: string
+  value: string
+  /** PR 만 — `http(s)` 일 때만 링크 주소, 그 밖(`javascript:` 등)은 null 이라 글자로만 그린다. */
+  href: string | null
+  machine: string | null
+  repo: string | null
+  createdAt: string | null
+}
+
+const REMOTE_KIND_LABEL: Record<WorkLinkRecord['link']['kind'], string> = { worktree: 'worktree', branch: '브랜치', pull_request: 'PR', agent_session: '세션' }
+
+/** 외부로 열어도 되는 주소 — http·https 만(main 의 `isExternalOpenAllowed` 와 같은 축). 못 읽으면 null. */
+export function safeHref(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 원격 링크 목록(LIFE-635 C5 · D3·D6) — 출처 링크 중 **이 Mac 의 로컬 worktree 와 같은 링크**(종류 worktree · 같은 경로 · 같은 machine — 출처 판별과 같은 축)는
+ * 로컬 칩 쪽으로 합쳐 빼고 나머지를 돌려준다(다른 machine · 다른 종류 · 로컬에 없는 경로). `machine` 을 아직 모르면 null — 내 링크를 남의 것으로
+ * 잘못 보이지 않게 목록을 그리지 않는다. 출처 이름으로 가르지 않는다(데이터로만).
+ */
+export function remoteLinks({ records, trees, machine }: { records: WorkLinkRecord[]; trees: LinkedTree[]; machine: string | null }): RemoteLinkRow[] | null {
+  if (machine === null) return null
+  // LA 판별과 같은 정규화(X1-5) — 경로·machine 은 앞뒤 공백을 떼고 견준다(빈 machine = null). 대소문자는 가른다 · null machine 은 이 Mac 이 아니다.
+  const mine = trimmed(machine)
+  const local = new Set(trees.map((tree) => tree.path.trim()))
+  return records
+    .filter((record) => !(record.link.kind === 'worktree' && mine !== null && trimmed(record.machine) === mine && local.has(record.link.path.trim())))
+    .map((record, index) => {
+      const link = record.link
+      const value = link.kind === 'worktree' ? link.path : link.kind === 'branch' ? link.name : link.kind === 'pull_request' ? link.url : link.sessionId
+      return {
+        id: `${link.kind}:${record.machine ?? ''}:${value}:${index}`,
+        kindLabel: REMOTE_KIND_LABEL[link.kind],
+        value,
+        href: link.kind === 'pull_request' ? safeHref(link.url) : null,
+        machine: record.machine,
+        repo: record.repo,
+        createdAt: record.createdAt,
+      }
+    })
+}
+
+function trimmed(value: string | null): string | null {
+  const text = value?.trim() ?? ''
+  return text.length > 0 ? text : null
 }

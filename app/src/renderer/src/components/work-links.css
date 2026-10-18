@@ -27,6 +27,10 @@
 .issue-work-auto { color: var(--fg-dim); font-size: 10.5px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 .issue-work-where { color: var(--fg-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .issue-work-repo { color: var(--fg-dim); }
+/* LIFE-635 C5 — 다른 곳의 링크(읽기 전용). 값은 실행 줄의 브랜치 글꼴 · 링크는 기존 강조색. */
+.issue-remote-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); }
+a.issue-remote-value { color: var(--accent); text-decoration: none; }
+a.issue-remote-value:hover { text-decoration: underline; }
 .issue-work-question { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; padding: 6px 8px; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .issue-work-question-text { white-space: pre-wrap; font-size: 12px; color: var(--fg); max-height: 160px; overflow: auto; }
 .issue-work-question .issue-link-btn { align-self: flex-start; padding: 0; }

@@ -129,6 +129,13 @@ export type WorkLink =
   | { kind: 'pull_request'; url: string; state: 'open' | 'merged' | 'closed' | null }
   | { kind: 'agent_session'; sessionId: string; agent: string | null }
 
+/**
+ * 출처에 저장된 작업 링크 한 행(LIFE-635 L1a — LA `IssueWorkLinkResponse`). 판별 = 종류 + 핵심 값 + `machine` — 같은 경로라도 machine 이 다르면 다른 행이다.
+ * `machine` = 링크를 남긴 기기 이름(corral 은 이 Mac 의 고정 이름을 싣는다) · `repo` = 레포 표시 이름 · `createdAt` = 출처가 처음 저장한 시각(ISO).
+ * 출처가 모르는 값은 null.
+ */
+export type WorkLinkRecord = { link: WorkLink; machine: string | null; repo: string | null; createdAt: string | null }
+
 export type WorkItem = {
   id: string
   key: string
@@ -159,7 +166,11 @@ export type WorkItem = {
   version: string | null
   /** 연결 — 단건 모양에서는 정본(빈 연결 = 빈 배열), 목록 모양에서는 null(안 실음). 모양 규칙은 `body` 와 같다. */
   relations: WorkRelation[] | null
-  workLinks: WorkLink[]
+  /**
+   * 출처에 저장된 작업 링크(LIFE-635 C1) — **단건 모양에서만 정본**이다. 목록 모양의 빈 배열은 「안 실음」 이지 「없음」 이 아니다
+   * (LA `issue_list` 행에는 링크가 없다 — LIFE-609 D2). 목록 행의 빈 배열로 「링크 없음」 을 그리지 않는다.
+   */
+  workLinks: WorkLinkRecord[]
   /**
    * 본문 편집 잠금(LIFE-605 C6) — 출처 본문에 markdown 으로 바꿀 수 없는 요소(Jira 멘션·패널·표 …)가 있으면 그 이유 글. 화면은 **편집을 열기 전에** 보이고
    * 본문 편집을 막는다(저장이 그 요소를 조용히 지우지 않게). 체크 칸 바로 저장은 열어 둔다 — 출처가 그 칸 상태만 바꾼다. 없으면 null(목록 행도 null).
@@ -299,8 +310,10 @@ export type WorkCall =
    * 작업 링크 쓰기·지우기(LIFE-603 C14 · L1a 대비) — 능력 `workLinkStore`. main 만 보낸다(렌더러 요청 손검증은 받지 않는다).
    * corral 로컬 링크(`repos.json`)가 정본이고, 이 연산은 출처에도 같은 링크를 남기는 사본이다 — 실패해도 로컬 링크는 그대로다.
    */
-  | { op: 'saveWorkLink'; itemId: string; link: WorkLink }
-  | { op: 'removeWorkLink'; itemId: string; link: WorkLink }
+  // LIFE-635: `machine` = 이 Mac 의 고정 이름(저장·지우기·재기동에 같은 값 — 다르면 지우기가 그 행을 못 찾는다) ·
+  // `repo` = 레포 표시 이름 — 저장마다 함께 싣는다(LA 는 같은 링크를 다시 저장하면 repo 를 통째로 덮는다 — 생략 = null 로 덮음, LIFE-609 R2-F1).
+  | { op: 'saveWorkLink'; itemId: string; link: WorkLink; machine: string; repo: string | null }
+  | { op: 'removeWorkLink'; itemId: string; link: WorkLink; machine: string }
 
 export type WorkOp = WorkCall['op']
 
@@ -327,7 +340,8 @@ export type WorkResult =
   | { op: 'removeRelation'; relationId: string }
   | { op: 'listComments'; comments: WorkComment[] }
   | { op: 'addComment'; comment: WorkComment }
-  | { op: 'saveWorkLink' | 'removeWorkLink'; workLinks: WorkLink[] }
+  /** 그 작업의 출처 링크 목록 전체(LA 응답 그대로 — 다른 machine 의 행 포함). */
+  | { op: 'saveWorkLink' | 'removeWorkLink'; workLinks: WorkLinkRecord[] }
 
 /**
  * 오류 분류. 연결 상태를 바꾸는 것은 앞의 다섯(K2): 인증 실패 · 권한 부족 · 네트워크(연결 실패·DNS·시간 초과·5xx) · 키체인 · 저장 충돌.
@@ -448,6 +462,11 @@ export type WorkSettingsState = {
   sources: WorkSourceDescriptor[]
   connections: WorkConnectionSummary[]
   repoDefaults: WorkRepoDefault[]
+  /**
+   * 이 Mac 의 이름(LIFE-635) — 출처 링크의 `machine` 과 견줘 로컬 worktree 와 같은 링크를 가른다. 아직 못 읽었으면 null · 칸 없음도 null 과 같다
+   * (화면은 모를 때 원격 링크 목록을 그리지 않는다 — 내 링크를 남의 것으로 잘못 보이지 않게).
+   */
+  machine?: string | null
 }
 
 /** `account` = descriptor `accountFields` 의 값(키 → 글). 없는 출처는 생략하거나 빈 객체. */

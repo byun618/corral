@@ -76,6 +76,9 @@ function ConnectionForm({ source, adding, replacing, onDone, onCancel }: { sourc
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<WorkError | null>(null)
   const firstInput = useRef<HTMLInputElement>(null)
+  // 지금 열린 폼(같은 key 로 다시 열면 새 `adding` 객체) — 저장을 기다리는 사이 다시 열었으면 옛 저장의 결과가 새 초안·폼을 건드리지 않는다(LIFE-615 F1-1).
+  const openedAs = useRef(adding)
+  openedAs.current = adding
   useEffect(() => {
     firstInput.current?.focus()
   }, [])
@@ -93,8 +96,10 @@ function ConnectionForm({ source, adding, replacing, onDone, onCancel }: { sourc
     setError(null)
     // 칸 없는 출처(LA)는 전과 같은 입력 — `account` 를 싣지 않는다.
     const sentAccount = Object.fromEntries(source.accountFields.map((field) => [field.key, (account[field.key] ?? '').trim()]))
+    const submittedAs = adding
     const result = await window.corral.addWorkConnection(source.accountFields.length === 0 ? { sourceId: source.id, token: trimmed, replaceId: adding.replaceId } : { sourceId: source.id, token: trimmed, account: sentAccount, replaceId: adding.replaceId })
     setBusy(false)
+    if (openedAs.current !== submittedAs) return
     if (result.ok) {
       setToken('')
       onDone()

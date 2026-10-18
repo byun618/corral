@@ -387,3 +387,35 @@ it('[LIFE-615] 레포 기본 저장 실패 — 「저장하지 못했습니다�
   await act(async () => { [...row.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')][0]?.click() })
   expect(q('[data-repo-default-error]').textContent?.split('저장하지 못했습니다').length).toBe(2)
 })
+
+// LIFE-615 F1-1 — 저장을 기다리는 사이 **같은 key** 의 폼을 다시 열어 넣은 초안은 옛 저장 성공이 지우거나 닫지 않는다.
+it('[F1-1] 교체 저장 중 같은 연결의 「토큰 다시 붙여넣기」 를 다시 눌러 넣은 초안이 옛 저장 성공 뒤에도 남는다', async () => {
+  let release = (): void => {}
+  addGate = new Promise<void>((resolve) => { release = resolve })
+  state = withConnection({ status: 'auth', error: { message: '거부됨 (401)', action: 'replace_token' } })
+  await mount()
+  act(() => q('[data-connection-error] .connection-link').click())
+  type(field('[data-connection-token]'), 'a_pat_replace000')
+  act(() => { q('[data-connection-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  act(() => q('[data-connection-error] .connection-link').click())
+  type(field('[data-connection-token]'), 'a_pat_reopened_draft')
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(added.map((input) => input.replaceId)).toEqual(['c1'])
+  expect(q('.connection-form-title').textContent).toContain('토큰 바꾸기')
+  expect(field('[data-connection-token]').value).toBe('a_pat_reopened_draft')
+})
+
+it('[F1-1] 추가 저장 중 같은 출처의 「+ 토큰」 을 다시 눌러 넣은 초안이 옛 저장 성공 뒤에도 남는다', async () => {
+  let release = (): void => {}
+  addGate = new Promise<void>((resolve) => { release = resolve })
+  await mount()
+  act(() => q('[data-connection-add="src-a"]').click())
+  type(field('[data-connection-token]'), 'a_pat_first0000')
+  act(() => { q('[data-connection-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  act(() => q('[data-connection-add="src-a"]').click())
+  type(field('[data-connection-token]'), 'a_pat_reopened_draft')
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(added.map((input) => input.replaceId)).toEqual([null])
+  expect(q('.connection-form-title').textContent).toBe('A 연결')
+  expect(field('[data-connection-token]').value).toBe('a_pat_reopened_draft')
+})

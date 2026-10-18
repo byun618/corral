@@ -217,7 +217,9 @@ describe('[R1-F] 봉투·단건 모양을 엄격히', () => {
     expect(readIssueUpdated({ ...row, description: null }, 'x').id).toBe('i')
     expect(() => readIssueUpdated(row, 'x')).toThrow()
     expect(() => readIssueDetail(row, 'x')).toThrow()
-    expect(readIssueDetail({ ...row, description: null, links: [] }, 'x').description).toBeNull()
+    // LIFE-635 — 단건은 작업 링크(`workLinks`, LA LIFE-609)도 늘 싣는다: 칸이 없으면 어긋남(빈 배열로 접지 않는다 — C1).
+    expect(() => readIssueDetail({ ...row, description: null, links: [] }, 'x')).toThrow()
+    expect(readIssueDetail({ ...row, description: null, links: [], workLinks: [] }, 'x').description).toBeNull()
     const { priority: _priority, ...withoutPriority } = row
     void _priority
     expect(() => readIssueSummary({ ...withoutPriority, openBlockers: [] }, 'x')).toThrow()

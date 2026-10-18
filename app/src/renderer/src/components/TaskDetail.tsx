@@ -29,7 +29,7 @@ import {
 } from '../task-detail-model.js'
 import { toggleCheckLine } from '../markdown.js'
 import { treesFor, type LinkedTree } from '../work-links-model.js'
-import { WorkButtons, WorkLinksContext, WorkRunSection, type DetailWorkActions } from './WorkLinkChips.js'
+import { RemoteLinksSection, WorkButtons, WorkLinksContext, WorkRunSection, type DetailWorkActions } from './WorkLinkChips.js'
 import { PRIORITY_GLYPH, PRIORITY_LABEL, UNRESTORABLE_RESOLUTION, dueTone, imeComposing, picksResolution, restorableResolution } from '../tasks-model.js'
 import { MarkdownEditor } from './MarkdownEditor.js'
 import { MarkdownView } from './MarkdownView.js'
@@ -346,6 +346,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
           </section>
 
           {work === undefined ? null : <WorkRunSection trees={trees} itemKey={item.key} now={now} actions={work} />}
+          {work === undefined ? null : <RemoteLinksSection item={item} trees={trees} now={now} />}
           <Relations detail={detail} item={item} spaceOf={spaceOf} />
           <Children detail={detail} item={item} />
           <Activity detail={detail} statuses={statuses ?? []} sourceName={sourceName} now={now} keyPattern={keyPattern} />

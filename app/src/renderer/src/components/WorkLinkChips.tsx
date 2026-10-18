@@ -8,13 +8,16 @@ import { elapsedLabel } from '../../../shared/session-activity.js'
 import type { WorkItem } from '../../../shared/work.js'
 import { AGENT_DOT_LABEL } from '../agent-dot.js'
 import { AGENT_ICON } from '../session-glyphs.js'
-import { chipOf, loudLabel, treesFor, type LinkedTree } from '../work-links-model.js'
+import { relativeTime } from '../task-detail-model.js'
+import { chipOf, loudLabel, remoteLinks, treesFor, type LinkedTree } from '../work-links-model.js'
 import { AgentIcon } from './AgentIcon.js'
 import { AgentStateDot } from './AgentStateDot.js'
 
 export type WorkLinksView = {
   trees: LinkedTree[]
   open: (tree: LinkedTree) => void
+  /** 이 Mac 의 이름(LIFE-635) — 원격 링크를 로컬과 가른다. 모르면 null(원격 목록을 그리지 않는다). */
+  machine: string | null
 }
 
 export const WorkLinksContext = createContext<WorkLinksView | null>(null)
@@ -95,6 +98,39 @@ export function WorkButtons({ trees, actions }: { trees: LinkedTree[]; actions: 
       </button>
       <button type="button" className="issue-btn is-ghost" data-issue-start="another" onClick={() => actions.start('another')}>하나 더 시작</button>
     </span>
+  )
+}
+
+/**
+ * 다른 곳의 링크(LIFE-635 C5) — 출처에 있는데 이 Mac 의 로컬 worktree 로 합쳐지지 않는 링크(폰·웹·에이전트·다른 Mac). **읽기 전용** — 편집·떼기 없음.
+ * PR 은 `http(s)` 주소만 바깥 링크(새 창 → main 이 http·https 만 연다), 그 밖은 글자. 없으면 아무것도 그리지 않는다(목록 행의 빈 배열을 「없음」 으로 그리지 않는다).
+ */
+export function RemoteLinksSection({ item, trees, now }: { item: WorkItem; trees: LinkedTree[]; now: number }): React.JSX.Element | null {
+  const view = useContext(WorkLinksContext)
+  const rows = remoteLinks({ records: item.workLinks, trees, machine: view?.machine ?? null })
+  if (rows === null || rows.length === 0) return null
+  return (
+    <section className="issue-section" data-issue-remote-links="">
+      <div className="issue-section-head"><span>다른 곳의 링크</span></div>
+      {rows.map((row) => {
+        const at = row.createdAt === null ? Number.NaN : Date.parse(row.createdAt)
+        return (
+          <div key={row.id} className="issue-work-box" data-remote-link={row.kindLabel}>
+            <div className="issue-work-line">
+              <span className="issue-work-auto">{row.kindLabel}</span>
+              {row.href === null
+                ? <span className="issue-work-branch issue-remote-value" data-remote-value="">{row.value}</span>
+                : <a className="issue-work-branch issue-remote-value" data-remote-href="" href={row.href} target="_blank" rel="noopener noreferrer">{row.value}</a>}
+            </div>
+            <div className="issue-work-where">
+              <span className="issue-work-repo" data-remote-machine="">{row.machine ?? '기기 모름'}</span>
+              {row.repo === null ? null : <> · <span data-remote-repo="">{row.repo}</span></>}
+              {Number.isFinite(at) ? <> · <span className="issue-work-time" data-remote-at="">{relativeTime({ at, now })}</span></> : null}
+            </div>
+          </div>
+        )
+      })}
+    </section>
   )
 }
 

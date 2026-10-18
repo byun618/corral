@@ -21,6 +21,8 @@ workContractSuite({
     if (process.env.L602_BREAK === 'update-title') harness.fixture.corrupt = 'update-bad-title'
     // LIFE-604 C4 — 만들기 칸을 무시하는 모의(T3 까지의 모양) 양성 대조: 만들기 칸 시험이 실패해야 한다.
     if (process.env.L604_BREAK === 'create-fields') harness.fixture.corrupt = 'create-ignore-fields'
+    // LIFE-635 C1 — 작업 링크 행 어긋남 양성 대조: 링크를 읽는 단건 시험이 실패해야 한다.
+    if (process.env.L635_BREAK === 'worklink-kind') harness.fixture.corrupt = 'worklink-unknown-kind'
     return { service: harness.service, connectionId: added.connection.id, close: () => harness.fixture.stop(), visibleItems: FIXTURE_VISIBLE_ITEMS, retiredSpaceKeys: FIXTURE_RETIRED_SPACE_KEYS, missingKey: 'LIFE-99999', crossSpace: { itemId: FIXTURE_IDS.task600, otherKey: 'LIFE-20', otherSpaceKey: FIXTURE_IDS.lifeAssistant }, sourceRequests: () => harness.fixture.requests.length,
       externalBody: ({ itemId, body }) => {
         const issue = harness.fixture.issues.find((entry) => entry.id === itemId)
@@ -29,6 +31,8 @@ workContractSuite({
         issue.description = body
         return () => { issue.description = before }
       },
+      // LIFE-635 — LA 웹·폰·다른 Mac 이 남긴 링크(같은 판별 규칙으로 fixture 에 직접).
+      plantWorkLink: ({ itemId, link, machine, repo }) => harness.fixture.plantWorkLink({ issueId: itemId, link, machine, repo }),
     }
   },
 })

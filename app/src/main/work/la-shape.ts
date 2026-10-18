@@ -5,12 +5,13 @@
 // 응답 계약은 셋이다(LA `issue.mapper.ts` · shared-types, 로컬 LA 4f8e273 대조):
 //   - 목록 `issue_list` = `IssueSummary`(`toIssueSummary`) — 공통 칸 + `openBlockers`(원소 `{id, displayId, title, statusId, statusLabel}`), description 없음 → `readIssueSummary`
 //   - 수정 `issue_update` = `IssueResponse`(`toIssueResponse`) — 공통 칸 + description, links·openBlockers 없음 → `readIssueUpdated`
-//   - 단건 `issue_get` = `IssueResponse & { links }` — 공통 칸 + description + links → `readIssueDetail`
+//   - 단건 `issue_get` = `IssueResponse & { links, workLinks }` — 공통 칸 + description + links + 작업 링크(LIFE-609) → `readIssueDetail`
+//   - 작업 링크 `issue_work_link_add`·`_remove`·`_list` = `{ workLinks: IssueWorkLinkResponse[] }` → `readWorkLinks`(LIFE-635 C1)
 // 공통 칸: parentId·priority·onBoard·position·dueAt·color·archivedAt(값 null 허용, 칸 필수) · updatedAt(글자) · version(글자 — LIFE-622, LA LIFE-607).
 // LA 가 늘 주는 것 이상은 요구하지 않는다.
 
 import { isRecord } from '../../shared/json.js'
-import { readWorkCategory, readWorkPriority, readWorkRelationKind, type WorkCategory, type WorkPriority, type WorkRelationKind, type WorkResolution } from '../../shared/work.js'
+import { readWorkCategory, readWorkPriority, readWorkRelationKind, type WorkCategory, type WorkLink, type WorkLinkRecord, type WorkPriority, type WorkRelationKind, type WorkResolution } from '../../shared/work.js'
 
 export class LaShapeError extends Error {
   readonly path: string
@@ -66,8 +67,8 @@ export type LaIssue = LaIssueCore & {
   links: LaLink[] | null
 }
 
-/** 단건 — description 칸(null 허용)과 links 배열이 반드시 있다. */
-export type LaIssueDetail = LaIssue & { links: LaLink[] }
+/** 단건 — description 칸(null 허용)과 links·workLinks 배열이 반드시 있다. */
+export type LaIssueDetail = LaIssue & { links: LaLink[]; workLinks: WorkLinkRecord[] }
 
 /** `isDefault` = 그 분류의 기본 단계(LIFE-604 R2-G) — 칸이 없는 서버면 null. */
 export type LaStatus = { id: string; categoryKey: WorkCategory; label: string; color: string | null; position: number; isDefault: boolean | null }
@@ -223,7 +224,53 @@ export function readIssueCreated(value: unknown, path: string): LaIssue {
   return { ...readCore(row, path), description, openBlockerCount: 0, openBlockers: [], links: [] }
 }
 
-/** 단건(`IssueResponse & { links }`) — description 칸·links 배열 필수. 미해소 막힘은 links 에서 센다. */
+const PULL_REQUEST_STATES = ['open', 'merged', 'closed'] as const
+
+/**
+ * 작업 링크 하나(LIFE-609 corral `WorkLink` 사본) — 종류마다 핵심 값(글자, 비지 않음) + 부가 값(칸 필수, null 허용). 모르는 종류·빠진 핵심 값·잘못된 타입은
+ * 어긋남이다 — 조용히 버리지 않는다(LIFE-635 C1). 부가 값 칸이 없으면 어긋남(LA `toWorkLink` 는 늘 싣는다).
+ */
+function readWorkLink(value: unknown, path: string): WorkLink {
+  const row = record(value, path)
+  const key = (name: string): string => {
+    const text = str(row, name, path)
+    if (text.length === 0) throw new LaShapeError(`${path}.${name}`)
+    return text
+  }
+  switch (row.kind) {
+    case 'worktree': return { kind: 'worktree', path: key('path'), repoRoot: nullableStr(row, 'repoRoot', path) }
+    case 'branch': return { kind: 'branch', name: key('name'), repoRoot: nullableStr(row, 'repoRoot', path) }
+    case 'pull_request': {
+      const state = present(row, 'state', path)
+      const known = PULL_REQUEST_STATES.find((entry) => entry === state)
+      if (state !== null && known === undefined) throw new LaShapeError(`${path}.state`)
+      return { kind: 'pull_request', url: key('url'), state: known ?? null }
+    }
+    case 'agent_session': return { kind: 'agent_session', sessionId: key('sessionId'), agent: nullableStr(row, 'agent', path) }
+    default: throw new LaShapeError(`${path}.kind`)
+  }
+}
+
+/** 작업 링크 행(`IssueWorkLinkResponse`) — `{id, link, machine, repo, createdAt}`. machine·repo 는 칸 필수(null 허용) · createdAt 은 글자. */
+function readWorkLinkRecord(value: unknown, path: string): WorkLinkRecord {
+  const row = record(value, path)
+  str(row, 'id', path)
+  return { link: readWorkLink(row.link, `${path}.link`), machine: nullableStr(row, 'machine', path), repo: nullableStr(row, 'repo', path), createdAt: str(row, 'createdAt', path) }
+}
+
+/** `workLinks` 배열 칸 — 칸이 없거나 배열이 아니면 어긋남(빈 배열로 접지 않는다). 원소 하나라도 어긋나면 전체가 어긋남. */
+function workLinksOf(row: Record<string, unknown>, path: string): WorkLinkRecord[] {
+  const raw = present(row, 'workLinks', path)
+  if (!Array.isArray(raw)) throw new LaShapeError(`${path}.workLinks`)
+  return raw.map((entry, index) => readWorkLinkRecord(entry, `${path}.workLinks[${index}]`))
+}
+
+/** 작업 링크 도구 응답(`issue_work_link_add`·`_remove`·`_list`) — `{ workLinks: [...] }`. */
+export function readWorkLinks(value: unknown, path: string): WorkLinkRecord[] {
+  return workLinksOf(record(value, path), path)
+}
+
+/** 단건(`IssueResponse & { links, workLinks }`) — description 칸·links·workLinks 배열 필수. 미해소 막힘은 links 에서 센다. */
 export function readIssueDetail(value: unknown, path: string): LaIssueDetail {
   const row = record(value, path)
   const core = readCore(row, path)
@@ -234,7 +281,7 @@ export function readIssueDetail(value: unknown, path: string): LaIssueDetail {
   const openBlockers = links
     .filter((link) => link.relation === 'is_blocked_by' && link.issue.statusCategoryKey !== 'done')
     .map((link) => ({ id: link.issue.id, displayId: link.issue.displayId, title: link.issue.title }))
-  return { ...core, openBlockerCount: openBlockers.length, openBlockers, description, links }
+  return { ...core, openBlockerCount: openBlockers.length, openBlockers, description, links, workLinks: workLinksOf(row, path) }
 }
 
 /**

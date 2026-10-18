@@ -27,6 +27,7 @@
 //   상태 라벨·뗀 연결의 상대는 이 서비스를 지난 응답(상태 목록·단건)에서 기억한 값으로 채운다 — 모르면 null(화면이 「다른 상태」 등으로).
 
 import { randomUUID } from 'node:crypto'
+import path from 'node:path'
 import { isRecord, safeParse } from '../../shared/json.js'
 import {
   capabilitiesOf,
@@ -54,6 +55,7 @@ import {
 import type { LinkConnection } from '../../shared/work-link.js'
 import type { StartSourceLink } from '../../shared/work-start.js'
 import { log } from '../log.js'
+import { fallbackMacName } from '../mobile/mac-name.js'
 import { redactSecret, workError } from './errors.js'
 import type { ActivityPort } from './activity-store.js'
 import type { WorkCredentials, WorkOutcome, WorkSourceClient, WorkSourceEntry, WorkSourceRegistry } from './source.js'
@@ -61,7 +63,17 @@ import type { StoredConnection, WorkStoreData, WorkStoreWrite } from './store.js
 import type { CredentialVault } from './vault.js'
 
 export type WorkStorePort = { get(): WorkStoreData; write(next: WorkStoreData): WorkStoreWrite }
-export type WorkRepoRef = { id: string; root: string }
+/** `name` = 레포 표시 이름(`RepoRecord.name`) — 출처 링크의 `repo` 칸(LIFE-635). 없으면 루트 폴더 이름. */
+export type WorkRepoRef = { id: string; root: string; name?: string }
+
+/**
+ * 기존 로컬 링크 이관 한 건의 결과(LIFE-635 C4 · D4) — `later` = 그 연결의 능력을 아직 모름(클라이언트 전 — 금고·네트워크 0, 다음 관측에서).
+ * `failed.retry` = 같은 자격으로 다시 보내도 되는 실패(네트워크·5xx·응답 깨짐)만 true — 인증·권한·거절은 false(RFC 9110 §15.5.4 · R1-K).
+ * `generation` = 실패를 본 자격 세대 — 토큰을 바꾸면(새 세대) 멈춘 이관을 다시 시작한다.
+ */
+export type LinkMigrateOutcome =
+  | { state: 'saved' | 'skipped' | 'later' }
+  | { state: 'failed'; retry: boolean; message: string; generation: number }
 
 export type WorkServiceDeps = {
   store: WorkStorePort
@@ -74,6 +86,11 @@ export type WorkServiceDeps = {
   activity?: ActivityPort
   now?: () => number
   newId?: () => string
+  /**
+   * 이 Mac 의 이름(LIFE-635 — 출처 링크의 `machine`). 한 번만 읽어 프로세스 동안 같은 값을 쓴다 — 저장·지우기가 같은 값이어야 지우기가 그 행을 찾는다.
+   * 앱은 `readMacName`(컴퓨터 이름 → hostname). 기본 = hostname 에서 `.local` 을 뗀 값(시험이 scutil 을 부르지 않게).
+   */
+  machine?: () => Promise<string>
 }
 
 type SettledStatus = Exclude<WorkConnectionStatus, 'testing'>
@@ -131,11 +148,26 @@ export class WorkService {
   private readonly statusLabels = new Map<string, Map<string, string>>()
   /** 연결 → 작업 id → 마지막으로 본 단건(연결 포함) — 뗀 연결의 상대를 활동에 적는 데. */
   private readonly seenItems = new Map<string, Map<string, WorkItem>>()
+  /** 이 Mac 의 이름 — 첫 요청 때 한 번 읽는다(LIFE-635). 읽은 뒤 `machineName` 에 두고 설정 상태로 알린다. */
+  private machinePending: Promise<string> | null = null
+  private machineName: string | null = null
 
   constructor(deps: WorkServiceDeps) {
     this.deps = deps
     this.now = deps.now ?? Date.now
     this.newId = deps.newId ?? randomUUID
+  }
+
+  /** 이 Mac 의 이름(출처 링크의 `machine`) — 프로세스 동안 같은 값. 못 읽으면 hostname 대체값. */
+  machine(): Promise<string> {
+    if (this.machinePending !== null) return this.machinePending
+    const read = this.deps.machine ?? (async () => fallbackMacName())
+    this.machinePending = read().catch(() => fallbackMacName()).then((name) => {
+      this.machineName = name
+      this.emit()
+      return name
+    })
+    return this.machinePending
   }
 
   settings(): WorkSettingsState {
@@ -149,7 +181,7 @@ export class WorkService {
       const repo = repos.find((row) => row.id === repoId)
       return repo === undefined ? [] : [{ repoRoot: repo.root, connectionId: entry.connectionId, spaceKey: entry.spaceKey }]
     })
-    return { sources: this.deps.sources.descriptors(), connections, repoDefaults }
+    return { sources: this.deps.sources.descriptors(), connections, repoDefaults, machine: this.machineName }
   }
 
   async addConnection(input: unknown): Promise<WorkConnectionAddResult> {
@@ -340,32 +372,87 @@ export class WorkService {
   }
 
   /**
-   * LIFE-603 C14 — 작업 링크를 출처에도 남기거나 지운다. 능력이 꺼진 출처(LA — L1a 전)는 능력 문에서 멈춰 **요청 0**, 결과 `skipped`.
+   * LIFE-603 C14 — 작업 링크를 출처에도 남기거나 지운다. 능력이 꺼진 출처(Jira)는 능력 문에서 멈춰 **요청 0**, 결과 `skipped`.
    * 실패는 그대로 돌려준다 — 로컬 링크는 호출자가 이미 저장했고 지우지 않는다.
+   * LIFE-635: 저장·지우기에 이 Mac 의 이름(`machine`)을, 저장에는 레포 표시 이름(`repo`)을 늘 싣는다(F7).
    */
   async storeLink({ connectionId, itemId, link, action }: { connectionId: string; itemId: string; link: WorkLink; action: 'save' | 'remove' }): Promise<StartSourceLink> {
-    const call: WorkCall = action === 'save' ? { op: 'saveWorkLink', itemId, link } : { op: 'removeWorkLink', itemId, link }
-    const outcome = await this.run({ connectionId, call, announce: false })
+    const outcome = await this.sendLink({ connectionId, itemId, link, action })
     if (outcome.ok) return { state: 'saved', message: null }
     if (outcome.error.kind === 'unsupported') return { state: 'skipped', message: this.scrub({ error: outcome.error }).message }
     return { state: 'failed', message: this.scrub({ error: outcome.error }).message }
   }
 
   /**
-   * 자동 연결의 출처 저장(C14 · R1-I). 능력이 닫힌 출처(LA)는 요청 0 으로 `skipped` — 키 찾기도 보내지 않는다.
+   * 자동 연결의 출처 저장(C14 · R1-I). 능력이 닫힌 출처(Jira)는 요청 0 으로 `skipped` — 키 찾기도 보내지 않는다.
    * 열린 출처는 키로 작업을 찾아(`findByKey`) 그 작업에 저장한다. 못 찾으면 `failed`. 능력을 아직 모르면 null(나중에 다시).
    */
   async storeAutoLink({ connectionId, key, link }: { connectionId: string; key: string; link: WorkLink }): Promise<StartSourceLink | null> {
-    // 능력을 아직 모르면(그 연결의 클라이언트를 아직 안 만듦) 보내지 않고 null — 다음 관측에서 다시(LA 의 「요청 0」 을 지킨다).
+    const found = await this.resolveLinkTarget({ connectionId, key, link })
+    if (found.state === 'later') return null
+    if (found.state !== 'item') return { state: found.state, message: found.message }
+    return this.storeLink({ connectionId, itemId: found.itemId, link, action: 'save' })
+  }
+
+  /**
+   * 기존 로컬 링크 이관 한 건(LIFE-635 C4 · D4) — **덧붙이기만**(출처 저장은 멱등: 같은 링크 = 한 행). 로컬은 읽지도 쓰지도 않는다(부르는 쪽이 트리에서 읽었다).
+   * 능력을 모르면(클라이언트 전) 요청 0 으로 `later` — 이관이 금고를 열거나 네트워크를 먼저 쓰지 않는다. 명시 링크는 작업 id 로, 자동 연결은 키로 찾아 저장.
+   */
+  async migrateLink({ connectionId, itemId, key, link }: { connectionId: string; itemId: string | null; key: string; link: WorkLink }): Promise<LinkMigrateOutcome> {
+    const generation = this.generation(connectionId)
+    const failed = (error: WorkError): LinkMigrateOutcome => ({ state: 'failed', retry: retryableLinkError(error), message: this.scrub({ error }).message, generation })
+    let target = itemId
+    if (target === null) {
+      const found = await this.resolveLinkTarget({ connectionId, key, link })
+      if (found.state === 'later' || found.state === 'skipped') return { state: found.state }
+      if (found.state === 'failed') return found.error === null ? { state: 'failed', retry: false, message: found.message, generation } : failed(found.error)
+      target = found.itemId
+    } else if (this.knownCapabilities(connectionId) === null) {
+      return { state: 'later' }
+    }
+    const outcome = await this.sendLink({ connectionId, itemId: target, link, action: 'save' })
+    if (outcome.ok) return { state: 'saved' }
+    return outcome.error.kind === 'unsupported' ? { state: 'skipped' } : failed(outcome.error)
+  }
+
+  /** 자격 세대(LIFE-635) — 토큰 교체·해제 때만 오른다. 이관이 「같은 자격」 인지 가르는 데 쓴다. */
+  credentialGeneration(connectionId: string): number {
+    return this.generation(connectionId)
+  }
+
+  /** 링크 쓰기 호출 — 이 Mac 의 이름·레포 표시 이름을 붙여 보낸다. */
+  private async sendLink({ connectionId, itemId, link, action }: { connectionId: string; itemId: string; link: WorkLink; action: 'save' | 'remove' }): Promise<WorkOutcome> {
+    const machine = await this.machine()
+    const call: WorkCall = action === 'save' ? { op: 'saveWorkLink', itemId, link, machine, repo: this.repoNameOf(link) } : { op: 'removeWorkLink', itemId, link, machine }
+    return this.run({ connectionId, call, announce: false })
+  }
+
+  /** 링크의 레포 표시 이름 — 등록된 레포의 이름, 모르면 루트 폴더 이름, 레포가 없는 링크는 null. */
+  private repoNameOf(link: WorkLink): string | null {
+    const root = link.kind === 'worktree' || link.kind === 'branch' ? link.repoRoot : null
+    if (root === null) return null
+    const name = this.deps.repos().find((repo) => repo.root === root)?.name ?? path.basename(root)
+    return name.length > 0 ? name : null
+  }
+
+  private knownCapabilities(connectionId: string): WorkCapabilities | null {
     const known = this.runtime.get(connectionId)
-    const capabilities = known?.capabilities ?? known?.client?.capabilities() ?? null
-    if (capabilities === null) return null
-    const gate = closedCapability({ capabilities, call: { op: 'saveWorkLink', itemId: '', link } })
+    return known?.capabilities ?? known?.client?.capabilities() ?? null
+  }
+
+  /** 자동 연결 링크를 남길 작업 찾기 — 능력 모름 = later(요청 0) · 닫힘 = skipped(요청 0) · 키 찾기 실패·없음 = failed. */
+  private async resolveLinkTarget({ connectionId, key, link }: { connectionId: string; key: string; link: WorkLink }): Promise<
+    { state: 'later' } | { state: 'item'; itemId: string } | { state: 'skipped'; message: string } | { state: 'failed'; message: string; error: WorkError | null }
+  > {
+    // 능력을 아직 모르면(그 연결의 클라이언트를 아직 안 만듦) 보내지 않는다 — 다음 관측에서 다시(앱 기동이 금고를 건드리지 않는다).
+    const capabilities = this.knownCapabilities(connectionId)
+    if (capabilities === null) return { state: 'later' }
+    const gate = closedCapability({ capabilities, call: { op: 'saveWorkLink', itemId: '', link, machine: '', repo: null } })
     if (gate !== null) return { state: 'skipped', message: this.scrub({ error: gate }).message }
     const found = await this.run({ connectionId, call: { op: 'findByKey', key }, announce: false })
-    if (!found.ok) return found.error.kind === 'unsupported' ? { state: 'skipped', message: this.scrub({ error: found.error }).message } : { state: 'failed', message: this.scrub({ error: found.error }).message }
-    if (found.result.op !== 'findByKey' || found.result.item === null) return { state: 'failed', message: `출처에서 ${key} 를 찾지 못했습니다.` }
-    return this.storeLink({ connectionId, itemId: found.result.item.id, link, action: 'save' })
+    if (!found.ok) return found.error.kind === 'unsupported' ? { state: 'skipped', message: this.scrub({ error: found.error }).message } : { state: 'failed', message: this.scrub({ error: found.error }).message, error: found.error }
+    if (found.result.op !== 'findByKey' || found.result.item === null) return { state: 'failed', message: `출처에서 ${key} 를 찾지 못했습니다.`, error: null }
+    return { state: 'item', itemId: found.result.item.id }
   }
 
   /** LIFE-603 — main 이 남기는 실행·에이전트 사건. `eventKey` 가 이미 있으면 남기지 않는다. 없는 연결이면 버린다. */
@@ -682,6 +769,14 @@ function actionOf(error: WorkError): 'replace_token' | 'retry' | null {
     default:
       return null
   }
+}
+
+/**
+ * 링크 이관을 같은 자격으로 다시 보내도 되는 실패(LIFE-635 C4 ⓒⓓ) — 출처가 답하지 않았거나(네트워크·시간 초과·5xx) 답이 깨졌거나,
+ * 보내는 사이 연결이 바뀐 것(`not_connected` — 새 세대로 다시). 인증·권한·거절·키체인은 같은 자격으로 다시 보내지 않는다.
+ */
+function retryableLinkError(error: WorkError): boolean {
+  return error.kind === 'network' || error.kind === 'invalid_response' || error.kind === 'not_connected'
 }
 
 /** 출처 상태를 바꾸는 연산 — 쓰기 id 를 싣고, 성공하면 활동에 남긴다. */

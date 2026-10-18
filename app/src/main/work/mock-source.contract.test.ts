@@ -19,6 +19,12 @@ workContractSuite({
         item.body = body
         return () => { item.body = before }
       },
+      // LIFE-635 — 다른 machine 의 링크를 상태에 직접(모의 출처의 판별 규칙 = LA 와 같은 축).
+      plantWorkLink: ({ itemId, link, machine, repo }) => {
+        const item = state.items.find((entry) => entry.id === itemId)
+        if (item === undefined) throw new Error(`픽스처에 없음: ${itemId}`)
+        item.workLinks = [...item.workLinks, { link, machine, repo, createdAt: '2026-10-18T00:00:00.000Z' }]
+      },
     }
   },
 })

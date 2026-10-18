@@ -16,6 +16,8 @@ import { CredentialVault, type SecretCipher } from './vault.js'
 export const FAKE_LA_TOKEN = 'life_pat_fixture000000000000000000000000000000000000'
 export const FAKE_LA_READ_TOKEN = 'life_pat_fixtureread0000000000000000000000000000000'
 export const FAKE_MOCK_TOKEN = 'mock_fixture_token_0000'
+/** LIFE-635 — 시험의 이 Mac 이름(출처 링크의 machine). 실제 scutil·hostname 을 읽지 않는다. */
+export const FAKE_MACHINE = 'corral-test-mac'
 /** LIFE-605 — 가짜 Jira 자격. 사이트는 `*.atlassian.net` 모양(검증을 지난다)이지만 요청은 fixture 주소로만 간다(`baseUrlOf`). 이메일은 `.invalid` 도메인. */
 export const FAKE_JIRA_SITE = 'fixture.atlassian.net'
 export const FAKE_JIRA_EMAIL = 'fixture-user@fixture.invalid'
@@ -91,6 +93,7 @@ export function workHarness({ entries, repos = [] }: { entries: WorkSourceEntry[
     activity,
     now: () => 1_791_800_000_000,
     newId: () => `conn-${++n}`,
+    machine: async () => FAKE_MACHINE,
   })
   return { service, store, cipher, vault, emitted, repos, activity }
 }

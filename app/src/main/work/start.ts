@@ -387,6 +387,13 @@ export class StartService {
       for (const row of pending?.list() ?? []) if (row.attemptId === input.attemptId || row.path === path) pending?.remove(row.attemptId)
     }
     const sourceLink = work === null || !linkSaved ? null : await work.storeLink({ connectionId: input.connectionId, itemId: input.itemId, link: { kind: 'worktree', path, repoRoot: input.repoRoot }, action: 'save' })
+    // 출처 저장 실패는 결과에 더해 활동에도 남긴다(LIFE-635 C6) — 로컬 링크는 그대로, 시작 진행은 막지 않는다.
+    if (sourceLink?.state === 'failed') {
+      work?.recordEvent({
+        connectionId: input.connectionId, itemId: input.itemId, itemKey: input.itemKey, eventKey: `run:srcfail:start:${input.attemptId}`,
+        change: { field: 'run', event: 'source_link_failed', worktree: path, message: sourceLink.message },
+      })
+    }
     return { linkSaved, sourceLink, claim: claim ? result : null }
   }
 }

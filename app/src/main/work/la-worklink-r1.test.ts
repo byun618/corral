@@ -606,10 +606,15 @@ describe('X3-1 첫 응답 대기 중 빈 트리 → 복귀해도 이력은 그 �
       run.links.observe(run.links.annotate(tree.repos))
       await until(() => held.holds.length === 1)
       for (let index = 0; index < 3; index += 1) { run.links.observe([]); run.links.observe(run.links.annotate(tree.repos)) }
-      held.holds.splice(0).forEach((release) => release())
-      await run.links.migrationsSettled()
-      for (let index = 0; index < 3; index += 1) { await run.observe([]); await run.observe(tree.repos); held.holds.splice(0).forEach((release) => release()) }
-      await run.links.migrationsSettled()
+      // 잡아 둔 응답을 풀면서 끝나길 기다린다 — 옛 동작(대기 중 항목 삭제)이면 다시 만든 항목이 add 를 더 보내 수 비교에서 실패한다(시간 초과가 아니라 — 최종 C8).
+      const settleReleasing = async (): Promise<void> => {
+        let done = false
+        const settled = run.links.migrationsSettled().then(() => { done = true })
+        for (let index = 0; index < 400 && !done; index += 1) { held.holds.splice(0).forEach((release) => release()); await new Promise((resolve) => setTimeout(resolve, 5)) }
+        await settled
+      }
+      await settleReleasing()
+      for (let index = 0; index < 3; index += 1) { run.links.observe([]); run.links.observe(run.links.annotate(tree.repos)); await settleReleasing() }
       expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(1)
       expect(r.service.credentialGeneration(r.connectionId)).toBe(generation)
       expect(fs.readFileSync(tree.file).equals(before)).toBe(true)

@@ -14,6 +14,7 @@ import {
   type WorkCreateMeta,
   type WorkItem,
   type WorkLink,
+  type WorkLinkRecord,
   type WorkResponse,
   type WorkSpace,
   type WorkStatus,
@@ -894,7 +895,7 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       const plant = target.plantWorkLink
       if (plant === undefined) throw new Error('workLinkStore 가 켜진 출처는 plantWorkLink 가 있어야 한다')
       const link: WorkLink = { kind: 'worktree', path: '/tmp/l635-contract/shared', repoRoot: '/tmp/l635-contract' }
-      const same = (records: { link: WorkLink }[]) => records.filter((record) => record.link.kind === 'worktree' && record.link.path === link.path)
+      const same = (records: WorkLinkRecord[]) => records.filter((record) => record.link.kind === 'worktree' && record.link.path === link.path)
       plant({ itemId: item.id, link, machine: 'l635-other-mac', repo: 'other' })
       expect(await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'save' })).toEqual({ state: 'saved', message: null })
       expect(await target.service.storeLink({ connectionId: target.connectionId, itemId: item.id, link, action: 'save' })).toEqual({ state: 'saved', message: null })

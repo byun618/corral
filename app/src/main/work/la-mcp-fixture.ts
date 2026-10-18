@@ -63,8 +63,8 @@ export type FixtureCorrupt =
   // LIFE-622 수정 1 R1-D — code·409 는 맞고 current 가 없거나 레코드가 아님(null · 글자 · 배열).
   | 'conflict-no-current' | 'conflict-current-null' | 'conflict-current-string' | 'conflict-current-array'
   // LIFE-635 C1 양성 대조 — 링크 행을 깨기: 모르는 종류 · 핵심 값 삭제 · machine 을 숫자로 · createdAt 삭제 · 링크 응답의 workLinks 를 객체로.
-  // 단건 응답의 workLinks 칸 삭제는 `drop-workLinks`(일반 `drop-<칸>`).
-  | 'worklink-unknown-kind' | 'worklink-drop-path' | 'worklink-machine-number' | 'worklink-drop-createdAt' | 'worklink-not-array'
+  // `drop-workLinks` = 단건 응답의 workLinks 칸 삭제(일반 `drop-<칸>` 경로).
+  | 'worklink-unknown-kind' | 'worklink-drop-path' | 'worklink-machine-number' | 'worklink-drop-createdAt' | 'worklink-not-array' | 'drop-workLinks'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 

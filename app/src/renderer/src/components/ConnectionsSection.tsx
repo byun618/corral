@@ -71,7 +71,7 @@ function initialAccount({ source, replacing }: { source: WorkSourceDescriptor; r
   return Object.fromEntries(source.accountFields.map((field) => [field.key, replacing?.account[field.key] ?? '']))
 }
 
-function ConnectionForm({ source, adding, replacing, onDone, onCancel }: { source: WorkSourceDescriptor; adding: Adding; replacing: WorkConnectionSummary | null; onDone: () => void; onCancel: () => void }): React.JSX.Element {
+function ConnectionForm({ source, adding, replacing, onSaving, onDone, onCancel }: { source: WorkSourceDescriptor; adding: Adding; replacing: WorkConnectionSummary | null; onSaving: (saving: boolean) => void; onDone: () => void; onCancel: () => void }): React.JSX.Element {
   const [token, setToken] = useState('')
   const [account, setAccount] = useState<Record<string, string>>(() => initialAccount({ source, replacing }))
   const [busy, setBusy] = useState(false)
@@ -91,11 +91,13 @@ function ConnectionForm({ source, adding, replacing, onDone, onCancel }: { sourc
   const submit = async (): Promise<void> => {
     if (!ready) return
     setBusy(true)
+    onSaving(true)
     setError(null)
     // 칸 없는 출처(LA)는 전과 같은 입력 — `account` 를 싣지 않는다.
     const sentAccount = Object.fromEntries(source.accountFields.map((field) => [field.key, (account[field.key] ?? '').trim()]))
     const result = await window.corral.addWorkConnection(source.accountFields.length === 0 ? { sourceId: source.id, token: trimmed, replaceId: adding.replaceId } : { sourceId: source.id, token: trimmed, account: sentAccount, replaceId: adding.replaceId })
     setBusy(false)
+    onSaving(false)
     if (result.ok) {
       setToken('')
       onDone()
@@ -201,6 +203,12 @@ function SpaceRow({ connection, space, index, visibleCount }: { connection: Work
   )
 }
 
+/** main 이 지금 아는 이 연결의 확정 시각(`checkedAt`) — 설정을 못 읽거나 연결이 없으면 undefined(모름). */
+async function settledAt(connectionId: string): Promise<number | null | undefined> {
+  const settings = await window.corral.getWorkSettings()
+  return settings?.connections.find((connection) => connection.id === connectionId)?.checkedAt
+}
+
 function ConnectionCard({ connection, source, claimAutoTest, onReplaceToken, onRemove }: { connection: WorkConnectionSummary; source: WorkSourceDescriptor | null; claimAutoTest: (connectionId: string) => boolean; onReplaceToken: () => void; onRemove: () => void }): React.JSX.Element {
   // 사용자가 누른 연결 테스트의 실패는 연결 상태로 남지 않는 것(invalid_response·rejected 등)까지 이 카드에 보인다(R2-E).
   // 일반 작업 요청의 실패는 연결 상태 정책을 따른다 — 이 줄은 누른 테스트의 결과만.
@@ -216,9 +224,18 @@ function ConnectionCard({ connection, source, claimAutoTest, onReplaceToken, onR
     const mine = latestTest.current
     const generation = connection.generation
     setTestError(null)
+    // 확정 상태를 정한 시각(`checkedAt`)을 누른 순간(화면 값)과 실패가 돌아온 뒤(main 에서 다시 읽음) 비교한다(LIFE-615 F3-2).
+    // 그 사이 다른 결과가 확정 상태를 다시 정했으면 이 테스트의 실패는 지금 상태보다 오래된 것이다(main 이 그 실패로 상태를 바꾸지 않았다) —
+    // 줄로 남기지 않는다. 종류로 가르지 않는다 — 상태를 바꾸지 않는 실패(invalid_response 등)는 확정 시각도 그대로라 줄이 보인다.
+    const before = connection.checkedAt
     const result = await window.corral.testWorkConnection({ connectionId: connection.id })
+    if (result.ok) {
+      if (mine === latestTest.current && generation === currentGeneration.current) setTestError(null)
+      return
+    }
+    const after = await settledAt(connection.id)
     if (mine !== latestTest.current || generation !== currentGeneration.current) return
-    setTestError(result.ok ? null : { error: result.error, generation })
+    setTestError(after !== undefined && after !== before ? null : { error: result.error, generation })
   }
   // 화면이 열릴 때 아직 안 읽은 연결의 자동 테스트도 같은 `test()` 를 탄다(R5-B) — 실패 줄·수명 규칙(R3-C·R4-B)이 누른 테스트와 같다.
   // 한 번만 = 화면(ConnectionsSection)이 연결마다 한 번 허락한다.
@@ -362,9 +379,16 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
   const [adding, setAdding] = useState<Adding | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
   const openSeq = useRef(0)
+  // 저장을 기다리는 폼의 `openId` — 같은 버튼을 다시 누를 때 그 폼이 저장 중이면 새 폼으로(C1ⓔ), 아니면 쓰던 폼·초안을 그대로 둔다(LIFE-615 F3-1).
+  const savingOpenId = useRef<number | null>(null)
   const openForm = (target: { sourceId: string; replaceId: string | null }): void => {
+    if (adding !== null && adding.sourceId === target.sourceId && adding.replaceId === target.replaceId && savingOpenId.current !== adding.openId) return
     openSeq.current += 1
     setAdding({ ...target, openId: openSeq.current })
+  }
+  const formSaving = (target: Adding, saving: boolean): void => {
+    if (saving) savingOpenId.current = target.openId
+    else if (savingOpenId.current === target.openId) savingOpenId.current = null
   }
   const autoTested = useRef(new Set<string>())
   // 이 화면이 열렸는데 이번 실행에서 아직 안 읽은 연결 — 한 번만 테스트해 스페이스 목록을 받는다(자격은 이때 풀린다). 테스트는 카드가 한다.
@@ -396,7 +420,7 @@ export function ConnectionsSection({ repos }: { repos: readonly ConnectionsRepo[
           }
         />
         <div className="connection-list">
-          {addingSource === null || adding === null ? null : <ConnectionForm key={adding.openId} source={addingSource} adding={adding} replacing={state.connections.find((connection) => connection.id === adding.replaceId) ?? null} onDone={() => closeForm(adding)} onCancel={() => setAdding(null)} />}
+          {addingSource === null || adding === null ? null : <ConnectionForm key={adding.openId} source={addingSource} adding={adding} replacing={state.connections.find((connection) => connection.id === adding.replaceId) ?? null} onSaving={(saving) => formSaving(adding, saving)} onDone={() => closeForm(adding)} onCancel={() => setAdding(null)} />}
           {state.connections.length === 0 && adding === null ? <p className="connection-empty" data-connection-empty>아직 연결이 없습니다. 토큰을 붙여넣어 작업 관리 서비스를 연결하세요.</p> : null}
           {state.connections.map((connection) => (
             <ConnectionCard

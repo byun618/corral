@@ -476,3 +476,46 @@ it('[F2-2] 추가 저장 중 「+ 토큰」 으로 다시 연 폼은 칸이 비�
   expect(field('[data-connection-token]').value).toBe('')
   expect(host.querySelector('[data-connection-form-error]')).toBeNull()
 })
+
+// LIFE-615 F3-1 — 저장 중이 아닐 때 같은 버튼을 다시 눌러도 쓰던 초안은 남는다(기준 동작). 저장 중 재오픈은 F2-2 대로 새 폼.
+it('[F3-1] 저장 전 같은 「+ 토큰」·「토큰 다시 붙여넣기」 재클릭은 쓰던 초안을 지우지 않는다', async () => {
+  state = withConnection({ status: 'auth', error: { message: '거부됨 (401)', action: 'replace_token' } })
+  await mount()
+  act(() => q('[data-connection-add="src-a"]').click())
+  type(field('[data-connection-token]'), 'a_pat_draft_add')
+  act(() => q('[data-connection-add="src-a"]').click())
+  expect(field('[data-connection-token]').value).toBe('a_pat_draft_add')
+  act(() => q('[data-connection-error] .connection-link').click())
+  expect(q('.connection-form-title').textContent).toContain('토큰 바꾸기')
+  type(field('[data-connection-token]'), 'a_pat_draft_replace')
+  act(() => q('[data-connection-error] .connection-link').click())
+  expect(field('[data-connection-token]').value).toBe('a_pat_draft_replace')
+  expect(added).toEqual([])
+})
+
+// LIFE-615 F3-2 — 늦게 끝난 테스트의 실패가, 그 사이 다른 결과가 확정 상태를 다시 정한(main 이 그 실패로 상태를 안 바꾼) 카드에 남지 않는다.
+it('[F3-2] 테스트 도중 다른 요청이 확정 상태를 ok 로 다시 정했으면, 늦게 온 network 실패는 줄로 남지 않는다', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: false, error: { kind: 'network', status: null, message: '닿지 않습니다' } }
+  const checkedAt = Date.now()
+  state = withConnection({ checkedAt })
+  await mount()
+  act(() => q('[data-connection-test]').click())
+  push(withConnection({ checkedAt: checkedAt + 1000 }))
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(tested).toEqual(['c1'])
+  expect(q('[data-connection-status]').getAttribute('data-connection-status')).toBe('ok')
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[F3-2] 확정 상태가 그대로인 채 끝난 실패(invalid_response)는 줄로 남는다 — 같은 실패가 늦게 와도', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: false, error: { kind: 'invalid_response', status: null, message: '응답 모양이 어긋났습니다' } }
+  await mount()
+  act(() => q('[data-connection-test]').click())
+  push(withConnection({ spaces: CONNECTION.spaces }))
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('응답 모양이 어긋났습니다')
+})

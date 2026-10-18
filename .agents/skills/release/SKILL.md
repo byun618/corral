@@ -15,6 +15,8 @@ description: >-
 
 - `gh pr list` 로 대기열을 보이고, 사용자가 고른 PR 과 순서를 그대로 쓴다. 고르지 않았으면 묻는다.
 - `scripts/release.sh --prs "<번호…>" --dry-run` — 대상·순서·다음 버전·태그·dmg·APK 계획(APK 전제 점검 결과 포함)을 확인한다. 거절(exit 2 등)이면 멈추고 원문을 보고한다.
+- 버전: 지정이 없으면 `release.sh` 는 patch 를 올린다. 고른 PR 에 새 기능이 있으면(노트에 `## 새 기능` 이 생기면) 실행 전에
+  patch / minor 를 묻고, minor 면 `--bump minor`. 버그 수정·개선만이면 patch 로 진행한다 (LIFE-572 가 0.3.0 대신 v0.2.3 으로 나간 전례).
 - APK 는 **매 출고** 만든다(모바일이 안 바뀐 출고도 — 폰 버전 = 맥 버전). APK 전제(JDK·Android SDK·`eas` 로그인)가 이 맥에 없으면 사용자에게 묻고,
   빼기로 하면 `--skip-apk` — 보고에 「APK 없음」을 적는다. 브랜치 APK 는 dev 빌드, 정식본은 출고 태그 빌드다.
 

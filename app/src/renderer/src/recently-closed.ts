@@ -6,7 +6,16 @@
 
 export const RECENTLY_CLOSED_LIMIT = 10
 
-export type ClosedTabSnapshot = {
+/**
+ * LIFE-590 — 닫은 **파일 탭**. 다시 열기 = 같은 파일을 같은 영역·자리에, 미리보기였으면 미리보기로(E3ⓓ). 셸을 만들지 않는다(herdr 무관).
+ */
+export type ClosedFileSnapshot = { kind: 'file'; worktreePath: string; rel: string; preview: boolean; groupId: string; index: number }
+
+/** 닫은 탭 하나 — 터미널(`kind` 생략 = 터미널, 기존 기록 모양 그대로) 또는 파일. */
+export type ClosedTabSnapshot = ClosedTerminalSnapshot | ClosedFileSnapshot
+
+export type ClosedTerminalSnapshot = {
+  kind?: 'terminal'
   /** 기록 묶음의 키 — 배치(`groupLayouts`)와 같이 worktree **경로**다(workspace id 는 herdr 재기동에 안 산다). */
   worktreePath: string
   /** 새 셸의 시작 디렉터리. 모르면 null — 다시 열 때 herdr 기본(워크스페이스 디렉터리)에 맡긴다. */
@@ -19,17 +28,18 @@ export type ClosedTabSnapshot = {
   index: number
 }
 
-export type RecentlyClosed = Record<string, ClosedTabSnapshot[]>
+/** worktree 경로 → 최근 닫은 탭(앞이 최근). 기록 모양은 시험이 좁혀 쓸 수 있게 열어 둔다. */
+export type RecentlyClosed<T extends { worktreePath: string } = ClosedTabSnapshot> = Record<string, T[]>
 
 /** 앞이 최근. 상한을 넘은 오래된 것은 버린다. */
-export function pushClosed(input: { history: RecentlyClosed; snapshot: ClosedTabSnapshot }): RecentlyClosed {
+export function pushClosed<T extends { worktreePath: string }>(input: { history: RecentlyClosed<T>; snapshot: T }): RecentlyClosed<T> {
   const { history, snapshot } = input
   const list = [snapshot, ...(history[snapshot.worktreePath] ?? [])].slice(0, RECENTLY_CLOSED_LIMIT)
   return { ...history, [snapshot.worktreePath]: list }
 }
 
 /** 가장 최근 것을 꺼낸다. 비어 있으면 아무것도 안 한다(K6ⓔ) — `snapshot: null`. */
-export function popClosed(input: { history: RecentlyClosed; worktreePath: string }): { history: RecentlyClosed; snapshot: ClosedTabSnapshot | null } {
+export function popClosed<T extends { worktreePath: string }>(input: { history: RecentlyClosed<T>; worktreePath: string }): { history: RecentlyClosed<T>; snapshot: T | null } {
   const { history, worktreePath } = input
   const [snapshot, ...rest] = history[worktreePath] ?? []
   if (snapshot === undefined) return { history, snapshot: null }
@@ -60,4 +70,22 @@ export function takeLivePlacements(input: { pending: ReadonlyMap<string, Pending
   const live = new Set(input.liveTabIds)
   const ready = [...input.pending.values()].filter((placement) => live.has(placement.tabId))
   return { ready, pending: new Map([...input.pending].filter(([tabId]) => !live.has(tabId))) }
+}
+
+/**
+ * 탐색기 이름 변경·이동(LIFE-592 E4ⓓ) — 그 worktree 의 닫은 **파일** 탭 기록 중 `from` 밑 경로를 `to` 쪽으로. ⌘⇧T 가 새 경로를 다시 연다.
+ * `remap` 은 상대 경로 → 새 경로(밑이 아니면 null).
+ */
+export function remapClosedFiles(input: { history: RecentlyClosed; worktreePath: string; remap: (rel: string) => string | null }): RecentlyClosed {
+  const list = input.history[input.worktreePath]
+  if (list === undefined) return input.history
+  let changed = false
+  const next = list.map((snapshot) => {
+    if (snapshot.kind !== 'file') return snapshot
+    const rel = input.remap(snapshot.rel)
+    if (rel === null) return snapshot
+    changed = true
+    return { ...snapshot, rel }
+  })
+  return changed ? { ...input.history, [input.worktreePath]: next } : input.history
 }

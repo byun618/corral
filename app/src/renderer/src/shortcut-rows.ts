@@ -3,11 +3,11 @@
 //   그룹 안 순서는 `ACTIONS` 순서다. 액션 id 를 여기 적지 않는다 — 경계 검사(check:boundary R4)가 'tab.*'·'workspace.*' 를 herdr 메서드로 본다.
 // - 필터: All / Modified(재정의 있음) / Unassigned(모든 칸이 「없음」) / Conflicts(지금 조합이 다른 칸과 겹침 — 검증된 파일이면 0).
 // - 저장 전 충돌: 실제 저장 검증(`validateOverrides`)을 그대로 돌려 본다. 거절이면 그 문구를 보이고 저장 버튼을 막는다.
-import { ACTIONS, bindingsFor, formatBinding, matchBinding, validateOverrides, type ActionId, type Keybindings } from '../../shared/keybindings.js'
+import { ACTIONS, bindingsFor, formatBinding, matchBinding, scopeOf, validateOverrides, type ActionId, type Keybindings } from '../../shared/keybindings.js'
 
 type Action = (typeof ACTIONS)[number]
 
-const GROUP_ORDER: readonly Action['group'][] = ['전역', '탭', '탭 이동', '터미널 pane']
+const GROUP_ORDER: readonly Action['group'][] = ['전역', '탭', '탭 이동', '터미널 pane', '탐색기']
 export const SHORTCUT_GROUPS: readonly { title: string; ids: readonly ActionId[] }[] = GROUP_ORDER.map((title) => ({
   title,
   ids: ACTIONS.filter((action) => action.group === title).map((action) => action.id),
@@ -31,7 +31,9 @@ function actionOf(id: ActionId): Action {
 export function shortcutRows(overrides: Keybindings): ShortcutRow[] {
   // 칸마다 지금 쥔 조합 → 그 조합을 쥔 칸 수. 둘 이상이면 겹친다.
   const holders = new Map<string, number>()
-  for (const action of ACTIONS) for (const binding of bindingsFor(action.id, overrides)) if (binding !== null) holders.set(binding, (holders.get(binding) ?? 0) + 1)
+  // 범위(전역·탐색기 — LIFE-592)가 다르면 같은 조합이어도 겹치지 않는다(`findConflict` 와 같은 규칙).
+  const holderKey = (action: Action, binding: string): string => `${scopeOf(action)}\0${binding}`
+  for (const action of ACTIONS) for (const binding of bindingsFor(action.id, overrides)) if (binding !== null) holders.set(holderKey(action, binding), (holders.get(holderKey(action, binding)) ?? 0) + 1)
   return SHORTCUT_GROUPS.flatMap((group) => group.ids.map((id) => {
     const action = actionOf(id)
     const current = bindingsFor(id, overrides)
@@ -47,7 +49,7 @@ export function shortcutRows(overrides: Keybindings): ShortcutRow[] {
       slots,
       modified: overrides[id] !== undefined,
       unassigned: slots.every((slot) => slot.binding === null),
-      conflicts: slots.flatMap((slot) => (slot.binding !== null && (holders.get(slot.binding) ?? 0) > 1 ? [formatBinding(slot.binding)] : [])),
+      conflicts: slots.flatMap((slot) => (slot.binding !== null && (holders.get(holderKey(action, slot.binding)) ?? 0) > 1 ? [formatBinding(slot.binding)] : [])),
     }
   }))
 }
@@ -118,7 +120,9 @@ export function candidateStatus(input: { overrides: Keybindings; id: ActionId; v
   } catch (error) {
     return { kind: 'conflict', message: error instanceof Error ? error.message : String(error) }
   }
-  const holder = matchBinding(input.binding, input.overrides)
-  if (holder !== null && holder.id !== input.id) return { kind: 'displaces', next, title: actionOf(holder.id).title }
+  // 비켜 서는 것은 같은 범위의 액션뿐이다(탐색기 범위 ⌘⇧Z 는 전역 터미널 줌을 비키게 하지 않는다 — LIFE-592).
+  const scope = scopeOf(actionOf(input.id))
+  const holder = matchBinding(input.binding, input.overrides, scope)
+  if (holder !== null && holder.id !== input.id && scopeOf(actionOf(holder.id)) === scope) return { kind: 'displaces', next, title: actionOf(holder.id).title }
   return { kind: 'ok', next }
 }

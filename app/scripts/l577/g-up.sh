@@ -8,8 +8,8 @@
 # - 로그인 셸·실제 HOME(l470/clean.sh) — 워커 세션 env(CLAUDE_CODE_* 등)는 넘기지 않는다. 설치본 corral·그 userData 무접촉.
 set -u
 ROOT=$1; FAKE=$2; shift 2
-case "$ROOT" in /tmp/l577g-*|/tmp/l578g-*|/tmp/l580g-*|/tmp/l581g-*|/tmp/l582g-*) ;; *) echo "ROOT 는 /tmp/l577g-* · /tmp/l578g-*(LIFE-578) · /tmp/l580g-*(LIFE-580 측정) · /tmp/l581g-*(LIFE-581 대화) · /tmp/l582g-*(LIFE-582 쓰기)"; exit 2 ;; esac
-case "$FAKE" in /tmp/l577g-f*|/tmp/l578g-f*|/tmp/l580g-f*|/tmp/l581g-f*|/tmp/l582g-f*) ;; *) echo "FAKE 는 /tmp/l577g-f* · /tmp/l578g-f* · /tmp/l580g-f* · /tmp/l581g-f* · /tmp/l582g-f*"; exit 2 ;; esac
+case "$ROOT" in /tmp/l577g-*|/tmp/l578g-*|/tmp/l580g-*|/tmp/l581g-*|/tmp/l582g-*|/tmp/l589g-*|/tmp/l590g-*|/tmp/l591g-*|/tmp/l592g-*|/tmp/l593g-*) ;; *) echo "ROOT 는 /tmp/l577g-* · /tmp/l578g-*(LIFE-578) · /tmp/l580g-*(LIFE-580 측정) · /tmp/l581g-*(LIFE-581 대화) · /tmp/l582g-*(LIFE-582 쓰기) · /tmp/l589g-*(LIFE-589 탐색기) · /tmp/l590g-*(LIFE-590 파일 탭) · /tmp/l591g-*(LIFE-591 편집)"; exit 2 ;; esac
+case "$FAKE" in /tmp/l577g-f*|/tmp/l578g-f*|/tmp/l580g-f*|/tmp/l581g-f*|/tmp/l582g-f*|/tmp/l589g-f*|/tmp/l590g-f*|/tmp/l591g-f*|/tmp/l592g-f*|/tmp/l593g-f*) ;; *) echo "FAKE 는 /tmp/l577g-f* · /tmp/l578g-f* · /tmp/l580g-f* · /tmp/l581g-f* · /tmp/l582g-f* · /tmp/l589g-f* · /tmp/l590g-f* · /tmp/l591g-f*"; exit 2 ;; esac
 APP=$(pwd -P); EL="$APP/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
 KEY=$(node -e 'const fs=require("fs"),c=require("crypto");const s=JSON.parse(fs.readFileSync("backend/source.json"));console.log(c.createHash("sha256").update(Buffer.concat(s.patches.map(n=>fs.readFileSync("backend/"+n)))).digest("hex").slice(0,16))')
 GUARD="$(git rev-parse --path-format=absolute --git-common-dir)/corral-herdr-dev/$KEY/herdr-0.9.0/target/debug/herdr"
@@ -31,7 +31,11 @@ fi
 echo "herdr_pid=$(cat "$ROOT/herdr.pid") session=$SESSION"
 # SIGKILL 뒤엔 죽은 앱의 제어 소켓 파일이 남는다 — 지우지 않으면 아래 대기가 새 앱을 기다리지 않고 통과한다(a6 1회차).
 rm -f "$ROOT/ctl/ctl.sock"
-LAUNCH='exec "$L577_EL" "$L577_APP" --user-data-dir="$CORRAL_USER_DATA"'
+# L577_ELECTRON_ARGS(덧붙인 KEY=VALUE 로) — 시험이 Electron 인자를 더할 때(LIFE-591 r1: `--remote-debugging-port=0` 으로 CDP IME 주입).
+# L577_KEEP_PAINTING=1 — 격리 창이 다른 창에 가려져도 렌더러가 그리게(Chromium `--disable-backgrounding-occluded-windows`). 사용자가 다른 창을 쓰는 동안
+# 가려진 격리 창은 document hidden·rAF 정지라 Monaco 가 다시 마운트 뒤 줄을 그리지 않는다(LIFE-591 r3 진단 — 창을 앞으로 가져오는 것은 사용자 화면 침범이라 쓰지 않는다).
+# L593_PATH(덧붙인 KEY=VALUE 로) — 앱 PATH 를 그 값으로(LIFE-593 수정 r2: 느린 git shim). 로그인 셸이 PATH 를 다시 짜므로 exec 직전에 env 로 준다.
+LAUNCH='exec env PATH="${L593_PATH:-$PATH}" "$L577_EL" "$L577_APP" --user-data-dir="$CORRAL_USER_DATA" ${L577_ELECTRON_ARGS:-} ${L577_KEEP_PAINTING:+--disable-backgrounding-occluded-windows}'
 N=$(ls "$ROOT"/electron-*.log 2>/dev/null | wc -l | tr -d ' ')
 date +%s000 > "$ROOT/app.started"
 # shellcheck disable=SC2086

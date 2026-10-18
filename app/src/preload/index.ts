@@ -37,6 +37,10 @@ import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
 import type { WorkSettingsState } from '../shared/work.js'
+import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
+import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerOpResult } from '../shared/explorer-ops.js'
+import type { FileListInput, FileListResult } from '../shared/file-list.js'
+import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
 
 const EXPOSED = [
   'getMobileStatus',
@@ -74,6 +78,24 @@ const EXPOSED = [
   'revealInFinder',
   'openInEditor',
   'copyPath',
+  'explorerList',
+  'explorerWatch',
+  'explorerRefreshGit',
+  'explorerAction',
+  'onExplorerEvent',
+  'fileList',
+  'fileListCancel',
+  'readFile',
+  'fileWatch',
+  'readImage',
+  'onFileEvent',
+  'writeFile',
+  'fileDialog',
+  'setDirtyFiles',
+  'onQuitRequested',
+  'confirmQuit',
+  'quitCancelled',
+  'quitAck',
   'activateWindow',
   'reportRendered',
   'selectPane',
@@ -118,8 +140,11 @@ const EXPOSED = [
  * - `drop` 은 **파일이면 어디서든** `preventDefault` 한다. Chromium 기본 동작은 파일을 창에 여는 것이라
  *   pane 밖(사이드바·탭바)에 떨어뜨려도 창이 파일로 이탈하면 안 된다 (K3ⓒ). 탭 DnD 는 포인터 이벤트라 여기 안 걸린다.
  * - 대상은 **드롭 지점의 pane** 상자(`data-term-pane-box`)다 — 포커스 pane 이 아니다. pane 밖이면 버린다.
+ * - LIFE-592 — 탐색기 트리(`data-explorer-root` 안 `data-explorer-drop-dir`)도 대상이다. 그때는 경로를 렌더러에 주지 않고 main 에 맡겨 표지로 넘긴다.
+ *   트리 안 끌어 옮기기는 포인터 이벤트(탭 끌기와 같은 방식)라 여기 걸리지 않는다(파일이 실린 드래그만 여기 온다).
  */
 const fileDropListeners = new Set<(drop: TerminalFileDrop) => void>()
+const explorerDropListeners = new Set<(drop: ExplorerDrop) => void>()
 const carriesFiles = (event: DragEvent): boolean => event.dataTransfer?.types.includes('Files') === true
 const dropPaneOf = (event: DragEvent): string | null => {
   for (const entry of event.composedPath()) {
@@ -127,15 +152,31 @@ const dropPaneOf = (event: DragEvent): string | null => {
   }
   return null
 }
+/**
+ * LIFE-592 E7 — 탐색기 대상. 드롭 지점에서 가장 가까운 `data-explorer-drop-dir`(폴더 행 = 그 폴더, 파일 행 = 그 부모, 빈 영역 = 루트 '')과
+ * 그 트리의 `data-explorer-root`. 루트·폴더 값은 렌더러 DOM 이 정하지만 main 이 다시 가둔다 — 여기서 정하는 것은 **원본 경로**뿐이다.
+ */
+const dropExplorerOf = (event: DragEvent): { root: string; dir: string } | null => {
+  let dir: string | null = null
+  for (const entry of event.composedPath()) {
+    if (!(entry instanceof HTMLElement)) continue
+    if (dir === null && entry.dataset.explorerDropDir !== undefined) dir = entry.dataset.explorerDropDir
+    if (dir !== null && entry.dataset.explorerRoot !== undefined) return entry.dataset.explorerRoot === '' ? null : { root: entry.dataset.explorerRoot, dir }
+  }
+  return null
+}
 const emitFileDrop = (drop: TerminalFileDrop): void => {
   for (const listener of [...fileDropListeners]) listener(drop)
+}
+const emitExplorerDrop = (drop: ExplorerDrop): void => {
+  for (const listener of [...explorerDropListeners]) listener(drop)
 }
 document.addEventListener(
   'dragover',
   (event) => {
     if (!carriesFiles(event)) return
     event.preventDefault()
-    if (event.dataTransfer !== null) event.dataTransfer.dropEffect = dropPaneOf(event) === null ? 'none' : 'copy'
+    if (event.dataTransfer !== null) event.dataTransfer.dropEffect = dropPaneOf(event) === null && dropExplorerOf(event) === null ? 'none' : 'copy'
   },
   true,
 )
@@ -145,8 +186,26 @@ document.addEventListener(
     if (!carriesFiles(event)) return
     event.preventDefault()
     event.stopPropagation()
-    const paneId = dropPaneOf(event)
     const files = event.dataTransfer?.files
+    const explorer = dropExplorerOf(event)
+    // 탐색기 가져오기(LIFE-592 E7) — 실제 드롭(isTrusted)의 경로만 main 에 직접 맡긴다. 렌더러는 표지만 받는다(원본 경로를 만들 수 없다 — E7ⓓ).
+    if (explorer !== null) {
+      if (!event.isTrusted || files === undefined || files.length === 0) return
+      if (files.length > FILE_DROP_MAX_PATHS) {
+        emitExplorerDrop({ token: null, ...explorer, error: `한 번에 ${FILE_DROP_MAX_PATHS}개까지 가져올 수 있습니다(${files.length}개)` })
+        return
+      }
+      const paths = [...files].map((file) => webUtils.getPathForFile(file)).filter((one) => one.length > 0)
+      if (paths.length === 0) {
+        emitExplorerDrop({ token: null, ...explorer, error: '경로를 읽을 수 없는 항목입니다(약속 파일·가상 파일)' })
+        return
+      }
+      void ipcRenderer.invoke('corral:explorerDropPaths', paths).then((registered: ExplorerDropRegistration) => {
+        emitExplorerDrop(registered.ok ? { token: registered.token, ...explorer, names: registered.names } : { token: null, ...explorer, error: registered.error })
+      })
+      return
+    }
+    const paneId = dropPaneOf(event)
     if (paneId === null || files === undefined || files.length === 0) return
     if (files.length > FILE_DROP_MAX_PATHS) {
       emitFileDrop({ status: 'rejected', paneId, reason: 'too-many-paths', count: files.length })
@@ -182,6 +241,54 @@ const api: CorralApi = {
   refreshSessions: () => ipcRenderer.invoke('corral:refreshSessions'),
   startBackend: () => ipcRenderer.invoke('corral:startBackend'),
   getUiPrefs: (): Promise<UiPrefs> => ipcRenderer.invoke('corral:getUiPrefs'),
+  explorerList: (input: { root: string; rel: string }): Promise<ExplorerListResult> => ipcRenderer.invoke('corral:explorerList', input),
+  explorerWatch: (input: { root: string; on: boolean }) => ipcRenderer.invoke('corral:explorerWatch', input),
+  explorerRefreshGit: (root: string) => ipcRenderer.send('corral:explorerRefreshGit', root),
+  explorerAction: (input: ExplorerActionInput): Promise<ExplorerActionResult> => ipcRenderer.invoke('corral:explorerAction', input),
+  explorerOp: (input: ExplorerOpInput): Promise<ExplorerOpResult> => ipcRenderer.invoke('corral:explorerOp', input),
+  explorerFocus: (focused: boolean) => ipcRenderer.send('corral:explorerFocus', focused),
+  fileList: (input: FileListInput): Promise<FileListResult> => ipcRenderer.invoke('corral:fileList', input),
+  fileListCancel: (requestId: string) => ipcRenderer.send('corral:fileListCancel', requestId),
+  onExplorerDrop: (listener: (drop: ExplorerDrop) => void) => {
+    explorerDropListeners.add(listener)
+    return () => {
+      explorerDropListeners.delete(listener)
+    }
+  },
+  onExplorerEvent: (listener: (event: ExplorerPush) => void) => {
+    const handler = (_event: unknown, push: ExplorerPush): void => listener(push)
+    ipcRenderer.on('corral:explorerEvent', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:explorerEvent', handler)
+    }
+  },
+  readFile: (input: { root: string; rel: string }): Promise<FileReadResult> => ipcRenderer.invoke('corral:fileRead', input),
+  readImage: (input: { root: string; rel: string }): Promise<ImageReadResult> => ipcRenderer.invoke('corral:fileReadImage', input),
+  fileWatch: (input: { root: string; rels: string[] }): Promise<{ ok: boolean; count: number }> => ipcRenderer.invoke('corral:fileWatch', input),
+  onFileEvent: (listener: (event: FileWatchPush) => void) => {
+    const handler = (_event: unknown, push: FileWatchPush): void => listener(push)
+    ipcRenderer.on('corral:fileEvent', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:fileEvent', handler)
+    }
+  },
+  // LIFE-591 F3 — 저장·확인 대화상자·수정 목록·종료 확인. 쓰기 가둠·상한·문구는 전부 main.
+  writeFile: (input: FileWriteInput): Promise<FileWriteResult> => ipcRenderer.invoke('corral:fileWrite', input),
+  fileDialog: (request: FileDialogRequest): Promise<FileDialogChoice> => ipcRenderer.invoke('corral:fileDialog', request),
+  setDirtyFiles: (files: DirtyFile[]) => ipcRenderer.send('corral:dirtyFiles', files),
+  onQuitRequested: (listener: (gen: number) => void) => {
+    const handler = (_event: unknown, gen: unknown): void => listener(typeof gen === 'number' ? gen : -1)
+    ipcRenderer.on('corral:quitRequested', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:quitRequested', handler)
+    }
+  },
+  /** 승인 — main 이 받았는지(무효가 된 요청 세대면 false, LIFE-591 수정 r5 R5-B). */
+  confirmQuit: (gen: number): Promise<boolean> => ipcRenderer.invoke('corral:confirmQuit', gen),
+  /** 종료 확인이 취소로 끝났다(LIFE-591 수정 r4 R4-A ⓒ) — main 이 이미 런타임 정리를 시작했었는지 돌려준다. */
+  quitCancelled: (gen: number): Promise<{ runtimeClosed: boolean }> => ipcRenderer.invoke('corral:quitCancelled', gen),
+  /** 종료 확인 요청을 받았다(LIFE-591 수정 r1 R1-I — main 의 무응답 판정 시계를 멈춘다). */
+  quitAck: (gen: number) => ipcRenderer.send('corral:quitAck', gen),
   setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),
   // 사용자 설정 (LIFE-512) — 동기 읽기는 부팅 때 한 번(시작 2단 resize 방지, main 주석). 쓰기는 검증된 전체 값을 돌려준다.
   getSettingsSync: (): Settings => ipcRenderer.sendSync('corral:getSettingsSync'),

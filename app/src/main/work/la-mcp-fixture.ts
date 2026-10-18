@@ -99,9 +99,32 @@ const INVERSE: Record<WorkRelationKind, WorkRelationKind> = {
 }
 const WRITE_TOOLS = new Set(['issue_update', 'issue_transition', 'issue_link_create', 'issue_link_delete', 'issue_create', 'issue_work_link_add', 'issue_work_link_remove'])
 /** LA `WORK_LINK_KEY_FIELD` — 종류 → 핵심 값 칸. */
-const WORK_LINK_KEY: Record<FixtureWorkLink['kind'], string> = { worktree: 'path', branch: 'name', pull_request: 'url', agent_session: 'sessionId' }
+const WORK_LINK_KEY = { worktree: 'path', branch: 'name', pull_request: 'url', agent_session: 'sessionId' } as const
 const WORK_LINK_EXTRA: Record<FixtureWorkLink['kind'], string> = { worktree: 'repoRoot', branch: 'repoRoot', pull_request: 'state', agent_session: 'agent' }
 const LA_UNAUTHORIZED = { code: 'UNAUTHORIZED', message: '인증이 필요해요' }
+/** LA `WORK_LINK_LIMITS` — 길이 상한(issue-work-link.rules.ts). */
+const WORK_LINK_LIMITS = { path: 1024, repoRoot: 1024, name: 255, url: 2048, sessionId: 255, agent: 100, machine: 100, repo: 200 } as const
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/
+
+/** LA `isHttpUrl` — `new URL` 로 읽어 http·https 만. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/** LA `parseOptionalText` — undefined·null → null · 글자는 trim('' → null) · 그 밖 = 거절 · 상한 초과 = 거절. */
+function optionalText({ value, field }: { value: unknown; field: keyof typeof WORK_LINK_LIMITS }): { ok: true; value: string | null } | { ok: false; message: string } {
+  if (value === undefined || value === null) return { ok: true, value: null }
+  if (typeof value !== 'string') return { ok: false, message: `${field} 은 문자열이어야 합니다.` }
+  const trimmed = value.trim()
+  if (trimmed === '') return { ok: true, value: null }
+  if (trimmed.length > WORK_LINK_LIMITS[field]) return { ok: false, message: `${field} 가 너무 깁니다(최대 ${WORK_LINK_LIMITS[field]}자).` }
+  return { ok: true, value: trimmed }
+}
 /** 실제 LA `issue_create` 입력 칸(LIFE-604 — life-assistant MCP 도구 정의). */
 const CREATE_ARGS = new Set(['kind', 'title', 'description', 'priority', 'statusId', 'categoryKey', 'onBoard', 'dueAt', 'parentId', 'goalId', 'color'])
 const PRIORITIES = new Set(['highest', 'high', 'medium', 'low', 'lowest'])
@@ -223,7 +246,7 @@ export class LaMcpFixture {
   }
 
   /** 다른 곳(LA 웹·폰·다른 Mac)이 남긴 링크를 심는다 — 판별이 같은 행이 있으면 덮는다(LA 재추가와 같다). */
-  plantWorkLink({ issueId, link, machine, repo }: { issueId: string; link: Record<string, unknown>; machine: string | null; repo: string | null }): void {
+  plantWorkLink({ issueId, link, machine, repo }: { issueId: string; link: Record<string, unknown>; machine: unknown; repo: unknown }): void {
     const outcome = this.addWorkLink({ args: { issueId, link, machine, repo } })
     if (outcome.isError) throw new Error(`plantWorkLink: ${outcome.text}`)
   }
@@ -510,7 +533,10 @@ export class LaMcpFixture {
     return { isError: true, text: JSON.stringify(body, null, 2) }
   }
 
-  /** LA `parseWorkLinkIdentity` — 종류·핵심 값(trim, 비지 않음, 제어 문자·PR http(s))·machine(''·공백 = null). 오류는 isError 평문(값 미포함). */
+  /**
+   * LA `parseWorkLinkIdentity`(issue-work-link.rules.ts) — 종류 · 핵심 값(trim, 비지 않음, 길이 상한, 제어 문자 거부, PR = `new URL` 의 http(s)) ·
+   * machine(선택 글자 — 비문자열 거부, trim, ''→null, 100자 상한, 제어 문자 거부). 오류는 isError 평문(필드명·상한만, 값 미포함).
+   */
   private workLinkIdentity({ link, machine }: { link: unknown; machine: unknown }): { ok: true; kind: FixtureWorkLink['kind']; key: string; machine: string | null } | { ok: false; message: string } {
     if (!isRecord(link)) return { ok: false, message: 'Input validation error: link' }
     const kind = link.kind === 'worktree' || link.kind === 'branch' || link.kind === 'pull_request' || link.kind === 'agent_session' ? link.kind : null
@@ -519,33 +545,45 @@ export class LaMcpFixture {
     const raw = link[field]
     if (typeof raw !== 'string' || raw.trim() === '') return { ok: false, message: `${kind} 링크에는 ${field} 가 필요합니다.` }
     const key = raw.trim()
-    if (/[\u0000-\u001f\u007f]/.test(key)) return { ok: false, message: `${field} 에 제어 문자가 들어 있습니다.` }
-    if (kind === 'pull_request' && !/^https?:\/\//.test(key)) return { ok: false, message: 'pull_request url 은 http(s) URL 이어야 합니다.' }
-    if (machine !== undefined && machine !== null && typeof machine !== 'string') return { ok: false, message: 'machine 은 문자열이어야 합니다.' }
-    const trimmed = typeof machine === 'string' ? machine.trim() : ''
-    if (trimmed.length > 100) return { ok: false, message: 'machine 가 너무 깁니다(최대 100자).' }
-    return { ok: true, kind, key, machine: trimmed === '' ? null : trimmed }
+    if (key.length > WORK_LINK_LIMITS[field]) return { ok: false, message: `${field} 가 너무 깁니다(최대 ${WORK_LINK_LIMITS[field]}자).` }
+    if (CONTROL_CHARACTER.test(key)) return { ok: false, message: `${field} 에 제어 문자가 들어 있습니다.` }
+    if (kind === 'pull_request' && !isHttpUrl(key)) return { ok: false, message: 'pull_request url 은 http(s) URL 이어야 합니다.' }
+    const parsedMachine = optionalText({ value: machine, field: 'machine' })
+    if (!parsedMachine.ok) return parsedMachine
+    if (parsedMachine.value !== null && CONTROL_CHARACTER.test(parsedMachine.value)) return { ok: false, message: 'machine 에 제어 문자가 들어 있습니다.' }
+    return { ok: true, kind, key, machine: parsedMachine.value }
   }
 
-  /** LA `IssueWorkLinkService.add` — 판별이 같으면 extra·repo 만 덮는다(repo 생략 = null). 새 행은 createdAt 을 남긴다. */
+  /**
+   * LA `IssueWorkLinkService.add` + `parseWorkLinkInput` — 부가 값(repoRoot|state|agent)·repo 도 검증(비문자열·상한 초과 = 거절, 자르거나 버리지 않는다).
+   * 판별이 같으면 extra·repo 를 **통째로** 덮는다(생략 = null). createdAt·machine 은 유지. 새 행은 createdAt 을 남긴다.
+   */
   private addWorkLink({ args }: { args: Record<string, unknown> }): { isError: boolean; text: string } {
     const identity = this.workLinkIdentity({ link: args.link, machine: args.machine })
     if (!identity.ok) return { isError: true, text: identity.message }
     const link = isRecord(args.link) ? args.link : {}
     const extraField = WORK_LINK_EXTRA[identity.kind]
-    const extraRaw = link[extraField]
-    const extraValue = typeof extraRaw === 'string' && extraRaw.trim() !== '' ? extraRaw.trim() : null
-    if (identity.kind === 'pull_request' && extraValue !== null && !['open', 'merged', 'closed'].includes(extraValue)) return { isError: true, text: 'pull_request state 가 올바르지 않습니다.' }
-    if (args.repo !== undefined && args.repo !== null && typeof args.repo !== 'string') return { isError: true, text: 'repo 은 문자열이어야 합니다.' }
-    const repo = typeof args.repo === 'string' && args.repo.trim() !== '' ? args.repo.trim().slice(0, 200) : null
+    let extraValue: string | null
+    if (identity.kind === 'pull_request') {
+      const raw = link.state
+      const known = typeof raw === 'string' && ['open', 'merged', 'closed'].includes(raw) ? raw : null
+      if (raw !== undefined && raw !== null && known === null) return { isError: true, text: 'pull_request state 가 올바르지 않습니다.' }
+      extraValue = known
+    } else {
+      const parsed = optionalText({ value: link[extraField], field: extraField === 'repoRoot' ? 'repoRoot' : 'agent' })
+      if (!parsed.ok) return { isError: true, text: parsed.message }
+      extraValue = parsed.value
+    }
+    const repo = optionalText({ value: args.repo, field: 'repo' })
+    if (!repo.ok) return { isError: true, text: repo.message }
     const issueId = String(args.issueId)
     const existing = this.workLinks.find((row) => row.issueId === issueId && row.kind === identity.kind && row.key === identity.key && row.machine === identity.machine)
     if (existing !== undefined) {
       existing.extra = { [extraField]: extraValue }
-      existing.repo = repo
+      existing.repo = repo.value
     } else {
       const createdAt = new Date(Date.parse('2026-10-18T00:00:00.000Z') + this.seq * 1000).toISOString()
-      this.workLinks.push({ id: uuid(60000 + this.seq++), issueId, kind: identity.kind, key: identity.key, extra: { [extraField]: extraValue }, machine: identity.machine, repo, createdAt })
+      this.workLinks.push({ id: uuid(60000 + this.seq++), issueId, kind: identity.kind, key: identity.key, extra: { [extraField]: extraValue }, machine: identity.machine, repo: repo.value, createdAt })
     }
     return { isError: false, text: JSON.stringify(this.workLinkList(issueId)) }
   }

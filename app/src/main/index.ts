@@ -113,6 +113,7 @@ import { observePanes } from '../runtime/orchestration/index.js'
 import { OrchestrationStore } from '../runtime/orchestration/store.js'
 import { MobileService } from './mobile/service.js'
 import { readMacName } from './mobile/mac-name.js'
+import { persistedMachine } from './work/machine.js'
 import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
 import { LA_DEFAULT_MCP_URL, laSourceEntry } from './work/la-source.js'
 import { mockSourceEntry, seedMockDemoState } from './work/mock-source.js'
@@ -1787,8 +1788,9 @@ app.whenReady().then(async () => {
       traceWork({ channel: 'corral:workSettings', value: state })
       if (window !== null && !window.isDestroyed()) window.webContents.send('corral:workSettings', state)
     },
-    // LIFE-635 — 출처 링크의 machine = 이 Mac 의 컴퓨터 이름(모바일 `macName` 과 같은 원천). 한 번 읽어 프로세스 동안 같은 값.
-    machine: () => readMacName(),
+    // LIFE-635 — 출처 링크의 machine = 이 Mac 의 컴퓨터 이름(모바일 `macName` 과 같은 원천).
+    // 처음 정한 값을 userData `work-machine.json` 에 두고 재기동에도 그 값(X1-3 — 조회 일시 실패가 판별 키를 바꾸지 않게).
+    machine: persistedMachine({ dir: app.getPath('userData'), read: () => readMacName(), log }),
   })
   // 화면이 원격 링크를 가르려면 이 Mac 의 이름이 필요하다 — 기동 때 미리 읽는다(scutil 하나, 금고·네트워크 무접촉).
   void work.machine()

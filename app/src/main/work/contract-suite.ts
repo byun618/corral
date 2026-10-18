@@ -53,6 +53,11 @@ export type ContractTarget = {
    * 꺼진 출처(Jira)는 없어도 된다.
    */
   plantWorkLink?: (input: { itemId: string; link: WorkLink; machine: string; repo: string | null }) => void
+  /**
+   * 이 출처가 작업 링크를 저장하는가(LIFE-635 X1-7) — 묶음은 능력 표가 이 값과 같은지 먼저 본다. 켜짐 출처가 능력을 끄면(옛 동작으로 돌아가면)
+   * 링크 시험이 「꺼짐 갈래」 로 조용히 통과하지 않고 여기서 실패한다.
+   */
+  workLinkStore: 'on' | 'off'
 }
 
 /** 정규형 본문(지원 표 안) — 출처 서식으로 바꿔 두는 출처도 바이트로 되돌려야 하는 꼴. */
@@ -857,6 +862,11 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
         expect(refused).toMatchObject({ ok: false, error: { kind: 'unsupported' } })
         if (!refused.ok && order.state === 'disabled') expect(refused.error.message).toBe(order.reason)
       }
+    })
+
+    it('작업 링크 능력(LIFE-635) — 능력 표의 workLinkStore 가 이 출처의 선언과 같다(켜짐 출처가 꺼짐 갈래로 통과하지 않게)', async () => {
+      const { capabilities } = await stage()
+      expect(capabilities.workLinkStore.state === 'on' ? 'on' : 'off').toBe(target.workLinkStore)
     })
 
     // LIFE-603 C14 — 작업 링크 쓰기·지우기는 main 만 보낸다(`storeLink`). 렌더러 요청 모양으로는 받지 않는다.

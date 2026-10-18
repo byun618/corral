@@ -32,6 +32,7 @@ workContractSuite({
         return () => { issue.description = before }
       },
       // LIFE-635 — LA 웹·폰·다른 Mac 이 남긴 링크(같은 판별 규칙으로 fixture 에 직접).
+      workLinkStore: 'on',
       plantWorkLink: ({ itemId, link, machine, repo }) => harness.fixture.plantWorkLink({ issueId: itemId, link, machine, repo }),
     }
   },

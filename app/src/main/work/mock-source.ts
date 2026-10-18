@@ -665,10 +665,11 @@ export class MockSource implements WorkSourceClient {
   }
 }
 
-/** 작업 링크 판별 키(LIFE-635) — 종류 + 핵심 값 + machine. LA 판별과 같은 축. */
+/** 작업 링크 판별 키(LIFE-635) — 종류 + 핵심 값 + machine. LA 판별과 같은 축·같은 정규화(X1-7: 핵심 값·machine trim, 빈 machine = null). */
 function workLinkIdentity({ link, machine }: { link: WorkLink; machine: string | null }): string {
   const value = link.kind === 'worktree' ? link.path : link.kind === 'branch' ? link.name : link.kind === 'pull_request' ? link.url : link.sessionId
-  return JSON.stringify([link.kind, value, machine])
+  const who = machine?.trim() ?? ''
+  return JSON.stringify([link.kind, value.trim(), who.length > 0 ? who : null])
 }
 
 function copyField(field: WorkCreateField): WorkCreateField {

@@ -28,6 +28,8 @@ workContractSuite({
       crossSpace: { itemId: JIRA_FIXTURE_IDS.epic, otherKey: 'WEB-1', otherSpaceKey: 'WEB' },
       sourceRequests: () => harness.fixture.requests.length,
       bodyRoundTrip: 'canonical',
+      // LIFE-635 — Jira 는 작업 링크를 남기지 않는다(능력 꺼짐 유지 · 요청 0).
+      workLinkStore: 'off',
       querySearch: { query: 'summary ~ "영수증"', expectKey: 'CORE-4', badQuery: '랜딩 ==', textHitKey: 'WEB-1' },
       // Jira 빈 본문 두 모양 — description null · 빈 ADF. 둘 다 단건에서 '' 로 읽힌다(F9).
       externalBody: ({ itemId, body }) => {

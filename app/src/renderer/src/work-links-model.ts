@@ -133,9 +133,11 @@ export function safeHref(url: string): string | null {
  */
 export function remoteLinks({ records, trees, machine }: { records: WorkLinkRecord[]; trees: LinkedTree[]; machine: string | null }): RemoteLinkRow[] | null {
   if (machine === null) return null
-  const local = new Set(trees.map((tree) => tree.path))
+  // LA 판별과 같은 정규화(X1-5) — 경로·machine 은 앞뒤 공백을 떼고 견준다(빈 machine = null). 대소문자는 가른다 · null machine 은 이 Mac 이 아니다.
+  const mine = trimmed(machine)
+  const local = new Set(trees.map((tree) => tree.path.trim()))
   return records
-    .filter((record) => !(record.link.kind === 'worktree' && record.machine === machine && local.has(record.link.path)))
+    .filter((record) => !(record.link.kind === 'worktree' && mine !== null && trimmed(record.machine) === mine && local.has(record.link.path.trim())))
     .map((record, index) => {
       const link = record.link
       const value = link.kind === 'worktree' ? link.path : link.kind === 'branch' ? link.name : link.kind === 'pull_request' ? link.url : link.sessionId
@@ -149,4 +151,9 @@ export function remoteLinks({ records, trees, machine }: { records: WorkLinkReco
         createdAt: record.createdAt,
       }
     })
+}
+
+function trimmed(value: string | null): string | null {
+  const text = value?.trim() ?? ''
+  return text.length > 0 ? text : null
 }

@@ -1,5 +1,6 @@
 // LIFE-635 fix r1 — Codex r1 지적 X1-1–X1-7 의 재현 조건을 회귀 시험으로(리뷰 프로브 P1·P2·P3·P7·P8·P10·P12·P14 의 조건을 이식).
 // fix r2 — Codex r2 X2-1–X2-4(리뷰 R12 복구 경합 · Q3/Q4 관측 누락 · R09 프로세스 경합 · R07 낡은 트리)도 이 파일 끝에.
+// fix r3 — Codex r3 X3-1–X3-4(리뷰 P1 응답 대기 중 누락 · P2 상한 경계 · P3 잔류 잠금 · M20 실제 sourceSave 실패 전달)는 맨 끝에.
 // 실제 경로: WorkLinks → WorkService → LaSource → McpHttpClient → LaMcpFixture(127.0.0.1 HTTP). 토큰은 가짜뿐 · 실제 Mac 이름·설정 무접촉(조회 함수 주입).
 import { fork } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -16,8 +17,8 @@ import type { RpcResponse } from '../../runtime/contracts.js'
 import type { RepoRow } from '../../shared/types.js'
 import { laSourceEntry } from './la-source.js'
 import { FIXTURE_IDS, LaMcpFixture } from './la-mcp-fixture.js'
-import { MIGRATE_RETRY_MS, WorkLinks } from './links.js'
-import { MACHINE_FILE, persistedMachine } from './machine.js'
+import { MIGRATE_MAX_ENTRIES, MIGRATE_RETRY_MS, WorkLinks } from './links.js'
+import { MACHINE_FILE, MACHINE_LOCK_STALE_MS, MACHINE_LOCK_WAIT_MS, persistedMachine } from './machine.js'
 import { mockSourceEntry, seedMockState } from './mock-source.js'
 import { WorkService } from './service.js'
 import { WorkSourceRegistry } from './source.js'
@@ -47,7 +48,7 @@ const WT = `${ROOT}/.claude/worktrees/LIFE-600-x`
 type Rig = { fixture: LaMcpFixture; url: string; service: WorkService; store: MemoryStore; cipher: FakeCipher; activity: MemoryActivity; connectionId: string }
 
 /** 손으로 만든 서비스 — machine 원천·저장소를 시험이 고른다. */
-async function rig({ machine = async () => 'corral-test-mac' }: { machine?: () => Promise<string> } = {}): Promise<Rig> {
+async function rig({ machine = async () => 'corral-test-mac', fetchImpl }: { machine?: () => Promise<string>; fetchImpl?: typeof fetch } = {}): Promise<Rig> {
   const fixture = new LaMcpFixture()
   fixture.tokens.set(FAKE_LA_TOKEN, 'write')
   fixture.tokens.set(FAKE_LA_READ_TOKEN, 'read')
@@ -57,7 +58,7 @@ async function rig({ machine = async () => 'corral-test-mac' }: { machine?: () =
   const cipher = new FakeCipher()
   const activity = new MemoryActivity()
   let n = 0
-  const service = new WorkService({ store, vault: new CredentialVault(cipher), sources: new WorkSourceRegistry([laSourceEntry({ url, clientVersion: 'test' })]), repos: () => [], onChange: () => {}, activity, machine, newId: () => `id-${++n}` })
+  const service = new WorkService({ store, vault: new CredentialVault(cipher), sources: new WorkSourceRegistry([laSourceEntry({ url, clientVersion: 'test', fetchImpl })]), repos: () => [], onChange: () => {}, activity, machine, newId: () => `id-${++n}` })
   const added = await service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
   if (!added.ok) throw new Error(`연결 실패: ${added.error.kind}`)
   return { fixture, url, service, store, cipher, activity, connectionId: added.connection.id }
@@ -553,5 +554,200 @@ describe('X2-3 work-machine.json 최초 확정은 프로세스 사이에서도 �
     fs.rmSync(lock, { recursive: true })
     expect(await waiting).toBe('review-host')
     expect(stored(dir)).toEqual({ version: 1, machine: 'review-host' })
+  })
+})
+
+// ─── fix r3 ───────────────────────────────────────────────────────────────
+
+/** add 응답의 전달을 붙잡는 fetch — 서버는 이미 처리했고(요청 수에 든다) 응답만 늦게 건넨다(리뷰 P1 의 방식). */
+function heldAdds(): { fetchImpl: typeof fetch; holds: (() => void)[] } {
+  const holds: (() => void)[] = []
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const response = await fetch(input, init)
+    const body: unknown = JSON.parse(String(init?.body))
+    const tool = typeof body === 'object' && body !== null && 'params' in body && typeof body.params === 'object' && body.params !== null && 'name' in body.params ? body.params.name : null
+    if (tool === 'issue_work_link_add') await new Promise<void>((resolve) => { holds.push(resolve) })
+    return response
+  }
+  return { fetchImpl, holds }
+}
+
+/** 기존 명시 링크 n 개를 가진 repos.json + 그 트리. */
+function manyLinks({ connectionId, count }: { connectionId: string; count: number }): { registry: () => RepoRegistry; repos: RepoRow[]; file: string } {
+  const dir = tempDir('l635r3-reg-')
+  const worktrees: Record<string, unknown> = {}
+  const rowsOut = []
+  for (let index = 0; index < count; index += 1) {
+    const wt = `${ROOT}/.claude/worktrees/wt-${index}`
+    worktrees[wt] = { repoId: 'repo-1', workLink: { sourceId: 'la', connectionId, itemId: FIXTURE_IDS.task600, key: 'LIFE-600', linkedAt: 1_700_000_000_000 }, workLinkSuppressed: false }
+    rowsOut.push(testWorktree({ path: wt, branch: 'refs/heads/scratch' }))
+  }
+  const file = path.join(dir, 'repos.json')
+  fs.writeFileSync(file, JSON.stringify({ version: 2, repos: [{ id: 'repo-1', path: ROOT, name: 'corral', projectId: 'repo:repo-1', baseRef: 'main', method: 'imported-existing-folder' }], setups: [], worktrees }))
+  return { registry: () => new RepoRegistry(dir), repos: [testRepo({ root: ROOT, worktrees: rowsOut })], file }
+}
+
+describe('X3-1 첫 응답 대기 중 빈 트리 → 복귀해도 이력은 그 항목에 — 정지·간격·상한 유지(리뷰 P1)', () => {
+  for (const fault of [
+    { name: 'HTTP 403', set: (r: Rig) => r.fixture.toolFaults.set('issue_work_link_add', { kind: 'http', status: 403, body: '{}' }), retry: false },
+    { name: '200 isError scope(읽기 토큰)', set: (r: Rig) => r.fixture.tokens.set(FAKE_LA_TOKEN, 'read'), retry: false },
+    { name: 'HTTP 503', set: (r: Rig) => r.fixture.toolFaults.set('issue_work_link_add', { kind: 'http', status: 503, body: '{}' }), retry: true },
+  ]) {
+    it(`${fault.name} — 응답 대기 중 빈 트리/복귀 3회 → 응답 뒤에도 add 1 · 시계 그대로 · 로컬 바이트 그대로`, async () => {
+      const held = heldAdds()
+      const r = await rig({ fetchImpl: held.fetchImpl })
+      fault.set(r)
+      const generation = r.service.credentialGeneration(r.connectionId)
+      const tree = manyLinks({ connectionId: r.connectionId, count: 1 })
+      const before = fs.readFileSync(tree.file)
+      const run = clocked({ registry: tree.registry, service: r.service })
+      run.links.observe(run.links.annotate(tree.repos))
+      await until(() => held.holds.length === 1)
+      for (let index = 0; index < 3; index += 1) { run.links.observe([]); run.links.observe(run.links.annotate(tree.repos)) }
+      held.holds.splice(0).forEach((release) => release())
+      await run.links.migrationsSettled()
+      for (let index = 0; index < 3; index += 1) { await run.observe([]); await run.observe(tree.repos); held.holds.splice(0).forEach((release) => release()) }
+      await run.links.migrationsSettled()
+      expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(1)
+      expect(r.service.credentialGeneration(r.connectionId)).toBe(generation)
+      expect(fs.readFileSync(tree.file).equals(before)).toBe(true)
+      if (fault.retry) {
+        // 503 은 간격 뒤 한 번 더 — 상한 3 에서 끝(간격 30s → 60s).
+        for (const ms of [MIGRATE_RETRY_MS, MIGRATE_RETRY_MS * 2, MIGRATE_RETRY_MS * 8]) {
+          run.tick(ms)
+          const sending = run.observe(tree.repos)
+          await new Promise((resolve) => setTimeout(resolve, 20))
+          held.holds.splice(0).forEach((release) => release())
+          await sending
+          await run.observe([])
+          await run.observe(tree.repos)
+        }
+        expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(3)
+      }
+    })
+  }
+})
+
+describe('X3-2 메모리 상한은 잊기가 아니라 보류 — 이력 있는 링크를 지우지 않는다(리뷰 P2 · 상한·상한+1 경계)', () => {
+  for (const count of [MIGRATE_MAX_ENTRIES, MIGRATE_MAX_ENTRIES + 1]) {
+    it(`읽기 토큰 · 기존 명시 링크 ${count}개 → add ${Math.min(count, MIGRATE_MAX_ENTRIES)} 회(넘는 것은 보류) · 빈 트리/복귀 3회에도 그대로`, async () => {
+      const r = await rig()
+      await r.service.addConnection({ sourceId: 'la', token: FAKE_LA_READ_TOKEN, replaceId: r.connectionId })
+      const tree = manyLinks({ connectionId: r.connectionId, count })
+      const before = fs.readFileSync(tree.file)
+      const run = clocked({ registry: tree.registry, service: r.service })
+      await run.observe(tree.repos)
+      const counts = [toolCount(r.fixture, 'issue_work_link_add')]
+      for (let index = 0; index < 3; index += 1) { await run.observe([]); await run.observe(tree.repos); counts.push(toolCount(r.fixture, 'issue_work_link_add')) }
+      const sent = Math.min(count, MIGRATE_MAX_ENTRIES)
+      expect(counts).toEqual([sent, sent, sent, sent])
+      expect(fs.readFileSync(tree.file).equals(before)).toBe(true)
+    }, 60_000)
+  }
+
+  it('양성 대조 — 상한이어도 자격을 바꾸면(규칙 ③) 이력 있는 링크는 다시 보낸다 · 보류된 링크는 이번 실행에서 그대로 보류', async () => {
+    const r = await rig()
+    await r.service.addConnection({ sourceId: 'la', token: FAKE_LA_READ_TOKEN, replaceId: r.connectionId })
+    const tree = manyLinks({ connectionId: r.connectionId, count: MIGRATE_MAX_ENTRIES + 1 })
+    const run = clocked({ registry: tree.registry, service: r.service })
+    await run.observe(tree.repos)
+    await r.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: r.connectionId })
+    await run.observe(tree.repos)
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(MIGRATE_MAX_ENTRIES * 2)
+    expect(remoteRows(r.fixture, `${ROOT}/.claude/worktrees/wt-${MIGRATE_MAX_ENTRIES}`)).toHaveLength(0)
+  }, 60_000)
+})
+
+describe('X3-3 영속되지 않은 machine 으로 출처 쓰기를 하지 않는다 · 잔류 잠금은 한 번의 확정 안에서 치운다(리뷰 P3)', () => {
+  const recentLock = (dir: string): void => { fs.mkdirSync(path.join(dir, `${MACHINE_FILE}.lock`)) }
+
+  it('최근 잔류 잠금 → 첫 실행이 잠금이 오래되길 기다려 치우고 확정 · add 와 재기동 remove 가 같은 machine · 원격 0', async () => {
+    const dir = tempDir('l635r3-ud-')
+    recentLock(dir)
+    // 제품 기본값도 같은 관계(대기 상한 > 잔류 판정) — 방금 남은 잠금도 한 번의 확정 시도 안에서 치워진다.
+    expect(MACHINE_LOCK_WAIT_MS).toBeGreaterThan(MACHINE_LOCK_STALE_MS)
+    const timing = { staleMs: 150, waitMs: 1_000 }
+    const a = await rig({ machine: persistedMachine({ dir, read: async () => 'review-host', timing }) })
+    await a.service.storeLink({ connectionId: a.connectionId, itemId: FIXTURE_IDS.task600, link: { kind: 'worktree', path: WT, repoRoot: ROOT }, action: 'save' })
+    expect(JSON.parse(fs.readFileSync(path.join(dir, MACHINE_FILE), 'utf8'))).toEqual({ version: 1, machine: 'review-host' })
+    const service = restart({ r: a, machine: persistedMachine({ dir, read: async () => 'Review Mac', timing }) })
+    expect(await service.storeLink({ connectionId: a.connectionId, itemId: FIXTURE_IDS.task600, link: { kind: 'worktree', path: WT, repoRoot: ROOT }, action: 'remove' })).toEqual({ state: 'saved', message: null })
+    expect(a.fixture.workLinkArgs.map((row) => row.args.machine)).toEqual(['review-host', 'review-host'])
+    expect(remoteRows(a.fixture, WT)).toHaveLength(0)
+  })
+
+  it('확정 실패(잠금 대기 상한) → 시작은 진행 · 로컬 링크 유지 · 출처 add 0 · 결과 later · 확정되면 이관이 그 machine 으로 보낸다 · 재기동 remove 같은 machine', async () => {
+    const dir = tempDir('l635r3-ud-')
+    recentLock(dir)
+    const timing = { staleMs: 60_000, waitMs: 50 }
+    const r = await rig({ machine: persistedMachine({ dir, read: async () => 'review-host', timing }) })
+    const run = clocked({ registry: registryFor({ connectionId: r.connectionId, explicit: false }), service: r.service })
+    const invoke = async () => ok({ worktree: { path: WT }, stages: { worktree: { status: 'completed', path: WT }, terminal: { status: 'completed' }, agent: { status: 'completed' }, prompt: { status: 'completed', mode: 'draft', enterSent: false } }, outcome: 'completed' })
+    const start = startOf({ r, links: run.links, pending: new MemoryPending(), invoke })
+    await run.observe(SCRATCH)
+    const result = await start.start(startInput({ r }))
+    expect(result.stages.agent).toMatchObject({ status: 'completed' })
+    expect(result.linkSaved).toBe(true)
+    expect(result.sourceLink?.state).toBe('later')
+    await run.observe(SCRATCH)
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(0)
+    expect(run.links.annotate(SCRATCH)[0]?.worktrees[0]?.workLink).toMatchObject({ mode: 'explicit', key: 'LIFE-600' })
+    expect(fs.existsSync(path.join(dir, MACHINE_FILE))).toBe(false)
+    // 잠금이 풀리면(소유자가 끝냄) 다음 관측의 이관이 확정된 이름으로 보낸다.
+    fs.rmSync(path.join(dir, `${MACHINE_FILE}.lock`), { recursive: true })
+    await run.observe(SCRATCH)
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(1)
+    expect(remoteRows(r.fixture, WT).map((row) => row.machine)).toEqual(['review-host'])
+    const service = restart({ r, machine: persistedMachine({ dir, read: async () => 'Review Mac', timing }) })
+    await service.storeLink({ connectionId: r.connectionId, itemId: FIXTURE_IDS.task600, link: { kind: 'worktree', path: WT, repoRoot: ROOT }, action: 'remove' })
+    expect(remoteRows(r.fixture, WT)).toHaveLength(0)
+  })
+
+  it('미확정이면 떼기의 remove 도 보내지 않는다 — failed(출처 링크 남음) · 로컬 떼기는 끝 · 쓰기 못하는 디렉터리도 같다', async () => {
+    const dir = tempDir('l635r3-ud-')
+    const blocker = path.join(dir, 'not-a-dir')
+    fs.writeFileSync(blocker, '')
+    const r = await rig({ machine: persistedMachine({ dir: blocker, read: async () => 'review-host' }) })
+    expect(await r.service.storeLink({ connectionId: r.connectionId, itemId: FIXTURE_IDS.task600, link: { kind: 'worktree', path: WT, repoRoot: ROOT }, action: 'save' })).toMatchObject({ state: 'later' })
+    const registry = registryFor({ connectionId: r.connectionId, explicit: true })
+    const run = clocked({ registry, service: r.service })
+    const detached = await run.links.detach({ worktree: testWorktree({ path: WT, branch: 'refs/heads/LIFE-600-x' }), repoRoot: ROOT })
+    expect(detached).toMatchObject({ ok: true, sourceLink: { state: 'failed' } })
+    expect(registry().metadata()[WT]).toMatchObject({ workLinkSuppressed: true })
+    expect(r.fixture.workLinkArgs).toEqual([])
+    expect(r.service.settings().machine).toBe('review-host')
+  })
+})
+
+describe('X3-4 실제 WorkLinks.sourceSave 를 잇는 시작·복구 실패 — failed · 실패 활동 정확히 1 · 로컬 유지 · 런타임 시작 완료(리뷰 M20)', () => {
+  const failures = (r: Rig) => r.activity.list({ connectionId: r.connectionId, itemId: FIXTURE_IDS.task600, itemKey: 'LIFE-600' }).filter((row) => row.change.field === 'run' && row.change.event === 'source_link_failed')
+
+  it('일반 시작 — add 503 → sourceLink failed · 실패 활동 1 · 로컬 링크 유지 · 에이전트 단계 완료', async () => {
+    const r = await rig()
+    const run = clocked({ registry: registryFor({ connectionId: r.connectionId, explicit: false }), service: r.service })
+    let calls = 0
+    const invoke = async () => { calls += 1; return ok({ worktree: { path: WT }, stages: { worktree: { status: 'completed', path: WT }, terminal: { status: 'completed' }, agent: { status: 'completed' }, prompt: { status: 'completed', mode: 'draft', enterSent: false } }, outcome: 'completed' }) }
+    const start = startOf({ r, links: run.links, pending: new MemoryPending(), invoke })
+    r.fixture.toolFaults.set('issue_work_link_add', { kind: 'http', status: 503, body: '{}' })
+    const result = await start.start(startInput({ r }))
+    expect(calls).toBe(1)
+    expect(result.stages.agent).toMatchObject({ status: 'completed' })
+    expect(result.linkSaved).toBe(true)
+    expect(result.sourceLink?.state).toBe('failed')
+    expect(failures(r)).toHaveLength(1)
+    expect(run.links.annotate(SCRATCH)[0]?.worktrees[0]?.workLink).toMatchObject({ mode: 'explicit', itemId: FIXTURE_IDS.task600 })
+  })
+
+  it('미확정 시작 복구 — add 503 → 실패 활동 1 · 로컬 링크 유지 · 미확정 기록 끝', async () => {
+    const r = await rig()
+    const run = clocked({ registry: registryFor({ connectionId: r.connectionId, explicit: false }), service: r.service })
+    const pending = new MemoryPending()
+    pending.add({ attemptId: newAttemptId({ now: Date.now(), uuid: randomUUID() }), connectionId: r.connectionId, sourceId: 'la', itemId: FIXTURE_IDS.task600, itemKey: 'LIFE-600', repoRoot: ROOT, name: 'scratch', path: WT, agent: 'claude', model: 'opus', startedAt: 2_000_000_000_000, preexisting: false })
+    const start = startOf({ r, links: run.links, pending })
+    r.fixture.toolFaults.set('issue_work_link_add', { kind: 'http', status: 503, body: '{}' })
+    expect(await start.recover(SCRATCH)).toBe(1)
+    expect(failures(r)).toHaveLength(1)
+    expect(pending.entries).toHaveLength(0)
+    expect(run.links.annotate(SCRATCH)[0]?.worktrees[0]?.workLink).toMatchObject({ mode: 'explicit', itemId: FIXTURE_IDS.task600 })
   })
 })

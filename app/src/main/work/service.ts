@@ -56,6 +56,9 @@ import type { LinkConnection } from '../../shared/work-link.js'
 import type { StartSourceLink } from '../../shared/work-start.js'
 import { log } from '../log.js'
 import { fallbackMacName } from '../mobile/mac-name.js'
+import { MachineUnsettledError, normalizeMachine } from './machine.js'
+
+export { normalizeMachine }
 import { redactSecret, workError } from './errors.js'
 import type { ActivityPort } from './activity-store.js'
 import type { WorkCredentials, WorkOutcome, WorkSourceClient, WorkSourceEntry, WorkSourceRegistry } from './source.js'
@@ -148,8 +151,11 @@ export class WorkService {
   private readonly statusLabels = new Map<string, Map<string, string>>()
   /** 연결 → 작업 id → 마지막으로 본 단건(연결 포함) — 뗀 연결의 상대를 활동에 적는 데. */
   private readonly seenItems = new Map<string, Map<string, WorkItem>>()
-  /** 이 Mac 의 이름 — 첫 요청 때 한 번 읽는다(LIFE-635). 읽은 뒤 `machineName` 에 두고 설정 상태로 알린다. */
-  private machinePending: Promise<string> | null = null
+  /**
+   * 이 Mac 의 이름 — 첫 요청 때 한 번 읽는다(LIFE-635). 읽은 뒤 `machineName` 에 두고 설정 상태로 알린다.
+   * `settled` false = 영속하지 못한 이름(X3-3) — 표시만 하고 출처 쓰기에 쓰지 않는다. 그때는 캐시하지 않아 다음 호출이 다시 확정을 시도한다.
+   */
+  private machinePending: Promise<{ name: string; settled: boolean }> | null = null
   private machineName: string | null = null
 
   constructor(deps: WorkServiceDeps) {
@@ -159,17 +165,26 @@ export class WorkService {
   }
 
   /** 이 Mac 의 이름(출처 링크의 `machine`) — 프로세스 동안 같은 값. 못 읽으면 hostname 대체값. */
-  machine(): Promise<string> {
+  async machine(): Promise<string> {
+    return (await this.machineState()).name
+  }
+
+  private machineState(): Promise<{ name: string; settled: boolean }> {
     if (this.machinePending !== null) return this.machinePending
     const read = this.deps.machine ?? (async () => fallbackMacName())
     // LA 는 machine 을 trim 해 저장한다(LIFE-635 X1-5) — 보내는 값·화면이 견주는 값도 같은 꼴로. 비면 대체값.
-    this.machinePending = read().catch(() => fallbackMacName()).then((raw) => {
+    const pending = read().then(
+      (raw) => ({ raw, settled: true }),
+      (error: unknown) => (error instanceof MachineUnsettledError ? { raw: error.machine, settled: false } : { raw: fallbackMacName(), settled: true }),
+    ).then(({ raw, settled }) => {
       const name = normalizeMachine(raw) ?? normalizeMachine(fallbackMacName()) ?? 'Mac'
       this.machineName = name
       this.emit()
-      return name
+      if (!settled && this.machinePending === pending) this.machinePending = null
+      return { name, settled }
     })
-    return this.machinePending
+    this.machinePending = pending
+    return pending
   }
 
   settings(): WorkSettingsState {
@@ -379,8 +394,9 @@ export class WorkService {
    * LIFE-635: 저장·지우기에 이 Mac 의 이름(`machine`)을, 저장에는 레포 표시 이름(`repo`)을 늘 싣는다(F7).
    */
   async storeLink({ connectionId, itemId, link, action }: { connectionId: string; itemId: string; link: WorkLink; action: 'save' | 'remove' }): Promise<StartSourceLink> {
-    const outcome = await this.sendLink({ connectionId, itemId, link, action, generation: this.generation(connectionId) })
-    return this.linkResult(outcome)
+    const sent = await this.sendLink({ connectionId, itemId, link, action, generation: this.generation(connectionId) })
+    if (sent.state === 'unsettled') return action === 'save' ? MACHINE_UNSETTLED_SAVE : MACHINE_UNSETTLED_REMOVE
+    return this.linkResult(sent.outcome)
   }
 
   /**
@@ -392,7 +408,9 @@ export class WorkService {
     const found = await this.resolveLinkTarget({ connectionId, key, link, generation, acquire: false })
     if (found.state === 'later') return null
     if (found.state !== 'item') return { state: found.state, message: found.message }
-    return this.linkResult(await this.sendLink({ connectionId, itemId: found.itemId, link, action: 'save', generation }))
+    const sent = await this.sendLink({ connectionId, itemId: found.itemId, link, action: 'save', generation })
+    // machine 미확정이면 능력 모름과 같이 null — 다음 관측에서 다시(X3-3).
+    return sent.state === 'unsettled' ? null : this.linkResult(sent.outcome)
   }
 
   /**
@@ -404,7 +422,8 @@ export class WorkService {
     const found = await this.resolveLinkTarget({ connectionId, key, link, generation, acquire: true })
     if (found.state === 'later') return { state: 'failed', message: this.scrub({ error: this.staleError(connectionId) }).message }
     if (found.state !== 'item') return { state: found.state, message: found.message }
-    return this.linkResult(await this.sendLink({ connectionId, itemId: found.itemId, link, action: 'remove', generation }))
+    const sent = await this.sendLink({ connectionId, itemId: found.itemId, link, action: 'remove', generation })
+    return sent.state === 'unsettled' ? MACHINE_UNSETTLED_REMOVE : this.linkResult(sent.outcome)
   }
 
   /**
@@ -425,7 +444,10 @@ export class WorkService {
     } else if (this.knownCapabilities(connectionId) === null) {
       return { state: 'later' }
     }
-    const outcome = await this.sendLink({ connectionId, itemId: target, link, action: 'save', generation })
+    const sent = await this.sendLink({ connectionId, itemId: target, link, action: 'save', generation })
+    // machine 미확정 = 보내지 않았다 — 실패로 세지 않고 다음 관측에서 다시(X3-3).
+    if (sent.state === 'unsettled') return { state: 'later' }
+    const outcome = sent.outcome
     if (outcome.ok) return { state: 'saved' }
     return settled(outcome.error.kind === 'unsupported' ? { state: 'skipped' } : failed(outcome.error))
   }
@@ -441,11 +463,15 @@ export class WorkService {
     return { state: 'failed', message: this.scrub({ error: outcome.error }).message }
   }
 
-  /** 링크 쓰기 호출 — 이 Mac 의 이름·레포 표시 이름을 붙여 보낸다. `generation` 이 지금 세대와 다르면 보내지 않는다(X1-4). */
-  private async sendLink({ connectionId, itemId, link, action, generation }: { connectionId: string; itemId: string; link: WorkLink; action: 'save' | 'remove'; generation: number }): Promise<WorkOutcome> {
-    const machine = await this.machine()
-    const call: WorkCall = action === 'save' ? { op: 'saveWorkLink', itemId, link, machine, repo: this.repoNameOf(link) } : { op: 'removeWorkLink', itemId, link, machine }
-    return this.run({ connectionId, call, announce: false, generation })
+  /**
+   * 링크 쓰기 호출 — 이 Mac 의 이름·레포 표시 이름을 붙여 보낸다. `generation` 이 지금 세대와 다르면 보내지 않는다(X1-4).
+   * 이름이 영속되지 않았으면(X3-3) **보내지 않고** `unsettled` — 그 이름으로 남긴 행은 다음 실행의 떼기가 못 찾는다.
+   */
+  private async sendLink({ connectionId, itemId, link, action, generation }: { connectionId: string; itemId: string; link: WorkLink; action: 'save' | 'remove'; generation: number }): Promise<{ state: 'unsettled' } | { state: 'sent'; outcome: WorkOutcome }> {
+    const machine = await this.machineState()
+    if (!machine.settled) return { state: 'unsettled' }
+    const call: WorkCall = action === 'save' ? { op: 'saveWorkLink', itemId, link, machine: machine.name, repo: this.repoNameOf(link) } : { op: 'removeWorkLink', itemId, link, machine: machine.name }
+    return { state: 'sent', outcome: await this.run({ connectionId, call, announce: false, generation }) }
   }
 
   /** 링크의 레포 표시 이름 — 등록된 레포의 이름, 모르면 루트 폴더 이름, 레포가 없는 링크는 null. */
@@ -816,11 +842,12 @@ function actionOf(error: WorkError): 'replace_token' | 'retry' | null {
  * 링크 이관을 같은 자격으로 다시 보내도 되는 실패(LIFE-635 C4 ⓒⓓ) — 출처가 답하지 않았거나(네트워크·시간 초과·5xx) 답이 깨졌거나,
  * 보내는 사이 연결이 바뀐 것(`not_connected` — 새 세대로 다시). 인증·권한·거절·키체인은 같은 자격으로 다시 보내지 않는다.
  */
-/** machine 정규화 — LA 와 같이 앞뒤 공백을 떼고(제어 문자는 mac-name 이 이미 뺐다) 100자까지. 비면 null. */
-export function normalizeMachine(raw: string): string | null {
-  const name = raw.trim().slice(0, 100).trim()
-  return name.length > 0 ? name : null
-}
+/**
+ * machine 미확정(X3-3) 때의 결과 — 저장은 `later`(보내지 않음 · 확정되면 이관이 보낸다), 지우기는 `failed`(출처의 링크가 남았다 — 로컬 떼기는 끝).
+ */
+const MACHINE_UNSETTLED_SAVE: StartSourceLink = { state: 'later', message: '이 Mac 이름을 아직 확정하지 못해 출처 저장을 미뤘습니다 — 확정되면 다시 보냅니다.' }
+const MACHINE_UNSETTLED_REMOVE: StartSourceLink = { state: 'failed', message: '이 Mac 이름을 확정하지 못해 출처의 링크를 지우지 못했습니다.' }
+
 
 function retryableLinkError(error: WorkError): boolean {
   return error.kind === 'network' || error.kind === 'invalid_response' || error.kind === 'not_connected'

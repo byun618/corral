@@ -28,11 +28,18 @@ describe('parseClaudeUsage — 응답 4형태(E3ⓒ)', () => {
   })
   it('r1 P5 — 평면 5h 95%·7d 80% + limits[Fable 5%] 를 합친다(평면 칸을 버리지 않는다)', () => {
     const parsed = parseClaudeUsage({ five_hour: { utilization: 95 }, seven_day: { utilization: 80 }, limits: [{ kind: 'weekly_scoped', group: 'weekly', percent: 5, scope: { model: { display_name: 'Fable' } } }] })
-    expect(parsed?.windows.map((window) => [window.label, window.usedPercent])).toEqual([['Fable 7d', 5], ['5h', 95], ['7d', 80]])
+    expect(parsed?.windows.map((window) => [window.label, window.usedPercent])).toEqual([['5h', 95], ['7d', 80], ['Fable 7d', 5]])
   })
-  it('r1 P6 — 같은 길이·라벨 창(범위 없는 weekly_scoped + weekly_all)은 한 번, 큰 사용률을 남긴다', () => {
-    const parsed = parseClaudeUsage({ limits: [{ kind: 'weekly_all', percent: 40 }, { kind: 'weekly_scoped', percent: 70 }] })
-    expect(parsed?.windows.map((window) => [window.label, window.usedPercent])).toEqual([['7d', 70]])
+  it('r1 P6 → r2 R2-3 — limits[] 안의 weekly_all 과 이름 없는 weekly_scoped 는 합치지 않는다(범위 창은 「7d 범위」)', () => {
+    const parsed = parseClaudeUsage({ limits: [{ kind: 'weekly_all', percent: 30 }, { kind: 'weekly_scoped', percent: 70, scope: { model: { id: null, display_name: null }, surface: 'x' } }] })
+    expect(parsed?.windows.map((window) => [window.label, window.usedPercent])).toEqual([['7d', 30], ['7d 범위', 70]])
+  })
+  it('r2 R2-3 — 평면 칸 ↔ limits[] 만 합친다: 평면 7d 50 + limits weekly_all 60 = 7d 60 하나(평면 자리), limits 의 같은 라벨 둘째는 남는다', () => {
+    const parsed = parseClaudeUsage({ seven_day: { utilization: 50 }, limits: [{ kind: 'weekly_all', percent: 60 }, { kind: 'weekly_all', percent: 20 }] })
+    expect(parsed?.windows.map((window) => [window.label, window.usedPercent])).toEqual([['7d', 60], ['7d', 20]])
+  })
+  it('실측(c10) 결과 그대로 — 5h 10% · 7d 67% · Fable 7d 12%', () => {
+    expect(parseClaudeUsage(fixture('claude-usage.json'))?.windows.map((window) => [window.label, window.usedPercent])).toEqual([['5h', 10], ['7d', 67], ['Fable 7d', 12]])
   })
   it('평면 칸이 기록이 아니면(모양이 바뀜) skipped 로 센다', () => {
     expect(parseClaudeUsage({ five_hour: '10%', limits: [{ kind: 'session', percent: 10 }] })).toEqual({ windows: [{ label: '5h', windowMinutes: 300, usedPercent: 10, resetsAt: null }], skipped: 1 })

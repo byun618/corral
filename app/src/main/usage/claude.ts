@@ -84,7 +84,9 @@ function windowFromLimit(item: unknown): UsageWindow | null {
   const base = minutes === null ? (kind ?? '?') : windowLabel(minutes)
   const scope = readRecord(item, 'scope')
   const model = stringField({ record: scope === null ? null : readRecord(scope, 'model'), key: 'display_name' })
-  return { label: model === null ? base : `${model} ${base}`, windowMinutes: minutes, usedPercent, resetsAt: timeOf(item.resets_at) }
+  // 모델 이름 없는 범위 한정 창은 주 창(`7d`)과 구분되는 라벨로 — 같은 라벨이면 전체 한도처럼 읽힌다(r2 R2-3).
+  const label = model !== null ? `${model} ${base}` : kind === 'weekly_scoped' ? `${base} 범위` : base
+  return { label, windowMinutes: minutes, usedPercent, resetsAt: timeOf(item.resets_at) }
 }
 
 function windowFromFlat({ value, minutes }: { value: unknown; minutes: number }): UsageWindow | null {
@@ -95,27 +97,37 @@ function windowFromFlat({ value, minutes }: { value: unknown; minutes: number })
 }
 
 /**
- * 응답 → 창 목록. `limits[]` 와 평면 `five_hour`·`seven_day` 를 **합친다**(r1 R1-4ⓐ — 한쪽에만 있는 창을 버리지 않는다).
- * 같은 창(길이 + 라벨 — 라벨에 모델 범위가 들어 있다)은 한 번만, 겹치면 사용률이 큰 쪽(칩 = 가장 빡빡한 창이라 낮춰 보이지 않게).
+ * 응답 → 창 목록. 평면 `five_hour`·`seven_day` 와 `limits[]` 를 **합친다**(r1 R1-4ⓐ — 한쪽에만 있는 창을 버리지 않는다). 평면 칸이 앞(`5h`·`7d` 먼저).
+ * 중복 제거는 **평면 칸 ↔ `limits[]` 항목 사이에서만**(r2 R2-3): 평면 칸 하나와 길이·라벨이 같은 `limits[]` 항목 하나를 한 창으로 보고 사용률이 큰 쪽을 남긴다.
+ * 같은 `limits[]` 안의 항목끼리는 합치지 않는다(서로 다른 한도일 수 있다).
  * 창 항목(limits 원소·null 아닌 평면 칸)인데 못 읽은 것은 `skipped` 로 센다(ⓑ). 읽을 창이 하나도 없으면 null(= `error(parse)`).
  */
 export function parseClaudeUsage(value: unknown): ParsedWindows | null {
   if (!isRecord(value)) return null
-  const items: (UsageWindow | null)[] = readArray(value, 'limits').map(windowFromLimit)
-  for (const [key, minutes] of [['five_hour', SESSION_MINUTES], ['seven_day', WEEK_MINUTES]] as const) {
-    if (value[key] !== null && value[key] !== undefined) items.push(windowFromFlat({ value: value[key], minutes }))
-  }
-  const windows: UsageWindow[] = []
   let skipped = 0
-  for (const window of items) {
+  const flat: UsageWindow[] = []
+  for (const [key, minutes] of [['five_hour', SESSION_MINUTES], ['seven_day', WEEK_MINUTES]] as const) {
+    if (value[key] === null || value[key] === undefined) continue
+    const window = windowFromFlat({ value: value[key], minutes })
+    if (window === null) skipped += 1
+    else flat.push(window)
+  }
+  const matched = new Set<number>()
+  const rest: UsageWindow[] = []
+  for (const window of readArray(value, 'limits').map(windowFromLimit)) {
     if (window === null) {
       skipped += 1
       continue
     }
-    const same = windows.findIndex((kept) => kept.windowMinutes === window.windowMinutes && kept.label === window.label)
-    if (same === -1) windows.push(window)
-    else if (window.usedPercent > windows[same]!.usedPercent) windows[same] = window
+    const same = flat.findIndex((kept, index) => !matched.has(index) && kept.windowMinutes === window.windowMinutes && kept.label === window.label)
+    if (same === -1) {
+      rest.push(window)
+      continue
+    }
+    matched.add(same)
+    if (window.usedPercent > flat[same]!.usedPercent) flat[same] = window
   }
+  const windows = [...flat, ...rest]
   return windows.length > 0 ? { windows, skipped } : null
 }
 

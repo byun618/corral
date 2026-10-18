@@ -174,13 +174,13 @@ export function StatusBarUsage({ suspended = false }: { suspended?: boolean }): 
     if (suspended) setAnchor(null)
   }, [suspended])
 
-  // 열면 포커스를 팝오버 안으로(r1 R1-9) — 첫 버튼(새로고침), 비활성(갱신 중)이면 팝오버 자체. Esc 는 칩으로 되돌린다(아래).
+  // 열면 포커스를 팝오버 안으로(r1 R1-9) — 첫 버튼(새로고침). 버튼이 없으면 팝오버 자체. Esc 는 칩으로 되돌린다(아래).
   const openId = anchor?.id ?? null
   useEffect(() => {
     if (openId === null) return
     const node = popover.current
     if (node === null) return
-    const target = node.querySelector<HTMLElement>('button:not(:disabled)') ?? node
+    const target = node.querySelector<HTMLElement>('button') ?? node
     target.focus()
   }, [openId])
 
@@ -225,6 +225,12 @@ export function StatusBarUsage({ suspended = false }: { suspended?: boolean }): 
 
   const visible = snapshot.providers.map((entry) => ({ entry, usage: expireStale({ usage: entry.usage, now }) })).filter(({ usage }) => showsChip(usage))
   const open = anchor === null ? undefined : visible.find(({ entry }) => entry.id === anchor.id)
+  // 열린 팝오버의 provider 칩이 사라지면(로그아웃·끄기) anchor 를 비운다(r2 R2-7) — Esc 리스너가 남아 다른 Esc 를 삼키거나,
+  // provider 가 돌아왔을 때 팝오버가 혼자 다시 뜨지 않게.
+  const openGone = anchor !== null && open === undefined
+  useEffect(() => {
+    if (openGone) setAnchor(null)
+  }, [openGone])
 
   return (
     <>
@@ -265,10 +271,14 @@ export function StatusBarUsage({ suspended = false }: { suspended?: boolean }): 
               type="button"
               className="statusbar-usage-refresh"
               data-statusbar-usage-refresh
-              disabled={open.entry.refreshing}
+              // 갱신 중에도 `disabled` 를 쓰지 않는다(r2 R2-6) — 포커스를 가진 버튼이 비활성이 되면 Chromium 이 포커스를 body 로 보낸다.
+              // 대신 aria-disabled 로 알리고 클릭은 무시한다(main 도 진행 중 요청을 같이 기다려 중복 요청은 없다).
+              aria-disabled={open.entry.refreshing}
               aria-label="새로고침"
               title={open.entry.refreshing ? '갱신 중…' : '새로고침'}
-              onClick={() => void refreshUsage(open.entry.id)}
+              onClick={() => {
+                if (!open.entry.refreshing) void refreshUsage(open.entry.id)
+              }}
             >
               <RefreshCwIcon className={`statusbar-usage-refresh-icon${open.entry.refreshing ? ' is-spinning' : ''}`} />
             </button>

@@ -14,7 +14,9 @@ import type { CollectorDeps } from '../../src/main/usage/collector.js'
 
 const only = (process.argv[2] ?? '').split(',').filter((id) => id !== '')
 const home = os.homedir()
-const credentialPaths = [path.join(home, '.claude'), path.join(home, '.codex'), path.join(home, '.grok')]
+// 수집기와 같은 환경변수를 따른다(r2 R2-4) — 기본 경로도 함께 센다(환경변수로 옮겨도 기본 경로 쓰기는 여전히 위반).
+const envDir = (name: string): string[] => { const value = process.env[name]; return value !== undefined && value !== '' ? [value] : [] }
+const credentialPaths = [path.join(home, '.claude'), path.join(home, '.codex'), path.join(home, '.grok'), ...envDir('CLAUDE_CONFIG_DIR'), ...envDir('CODEX_HOME'), ...envDir('GROK_HOME')]
 const writes: { api: string; target: string }[] = []
 const spawns: { api: string; file: string; args: string[] }[] = []
 
@@ -89,7 +91,7 @@ async function main(): Promise<void> {
   }
   const credentialWrites = writes.filter((write) => touchesCredentials(write.target))
   const keychainWrites = spawns.filter((spawn) => spawn.args.some((arg) => /^(add|delete|set)-generic-password$/.test(arg) || arg === 'set-generic-password-partition-list'))
-  process.stdout.write(JSON.stringify({ at: new Date().toISOString(), results, instrumentation: { writes, credentialWrites: credentialWrites.length, spawns, keychainWrites: keychainWrites.length } }, null, 2) + '\n')
+  process.stdout.write(JSON.stringify({ at: new Date().toISOString(), results, instrumentation: { credentialPaths, writes, credentialWrites: credentialWrites.length, spawns, keychainWrites: keychainWrites.length } }, null, 2) + '\n')
 }
 
 void main()

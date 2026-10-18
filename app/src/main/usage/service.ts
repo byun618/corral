@@ -16,6 +16,8 @@ import type { CollectorDeps, FetchOutcome, UsageCollector } from './collector.js
 
 export const USAGE_POLL_MS = 5 * 60 * 1000
 export const USAGE_FOCUS_STALE_MS = 5 * 60 * 1000
+/** `unavailable`(로그인 정보 없음) 의 포커스 재확인 간격 — 로그인 직후 칩이 늦게 뜨지 않게 짧게(r2 R2-2), 포커스마다 다시 읽지는 않게(r1 R1-3). */
+export const USAGE_UNAVAILABLE_RECHECK_MS = 60 * 1000
 export const USAGE_BACKOFF_BASE_MS = 30 * 1000
 export const USAGE_BACKOFF_CAP_MS = 15 * 60 * 1000
 export const USAGE_TIMEOUT_MS = 10 * 1000
@@ -88,14 +90,14 @@ export class UsageService {
 
   /**
    * 창 포커스 복귀(ⓑ) — 마지막 성공이 5분 넘었거나 성공이 없으면 즉시.
-   * 로그인 정보 없음(`unavailable`)도 5분 안에 확인했으면 건너뛴다 — 안 쓰는 provider 의 자격 증명(macOS 는 `security` 자식 프로세스)을
-   * 포커스마다 다시 읽지 않게(r1 R1-3). 새로고침·켜기는 바로 간다.
+   * 로그인 정보 없음(`unavailable`)은 60초 안에 확인했으면 건너뛴다 — 안 쓰는 provider 의 자격 증명(macOS 는 `security` 자식 프로세스)을
+   * 포커스마다 다시 읽지 않게(r1 R1-3). 60초인 것은 로그인 직후 칩이 늦게 뜨지 않게(r2 R2-2). 켜기는 바로 간다.
    */
   onFocus(): void {
     if (this.disposed) return
     const now = this.now()
     for (const slot of this.slots) {
-      if (slot.usage.status === 'unavailable' && slot.checkedAt !== null && now - slot.checkedAt <= USAGE_FOCUS_STALE_MS) continue
+      if (slot.usage.status === 'unavailable' && slot.checkedAt !== null && now - slot.checkedAt <= USAGE_UNAVAILABLE_RECHECK_MS) continue
       const updatedAt = lastSuccessAt(slot.usage)
       if (updatedAt === null || now - updatedAt > USAGE_FOCUS_STALE_MS) void this.request({ slot, reason: 'focus' })
     }

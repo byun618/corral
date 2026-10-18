@@ -353,7 +353,7 @@ describe('fix1 — 리뷰 r1 재현을 시험으로', () => {
     expect(a.calls).toBe(3)
     svc.dispose()
   })
-  it('R1-3 unavailable — 포커스 10번 = 요청 0(기동 1회만), 5분 지나면 포커스 1회, 새로고침은 바로', async () => {
+  it('R1-3 unavailable — 포커스 10번 = 요청 0(기동 1회만), 60초 지나면 포커스 1회(r2 R2-2), 새로고침은 바로', async () => {
     const a = collector('a')
     a.next = Array.from({ length: 5 }, (): FetchOutcome => ({ kind: 'unavailable', reason: '로그인 정보 없음' }))
     active = false
@@ -365,7 +365,7 @@ describe('fix1 — 리뷰 r1 재현을 시험으로', () => {
       await flush()
     }
     expect(a.calls).toBe(1)
-    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1)
+    await vi.advanceTimersByTimeAsync(60_000 + 1)
     svc.onFocus()
     await flush()
     expect(a.calls).toBe(2)
@@ -382,6 +382,25 @@ describe('fix1 — 리뷰 r1 재현을 시험으로', () => {
     const result = logs.find((entry) => entry[0] === 'usage.result')
     expect(result?.[1]).toEqual({ provider: 'a', status: 'ok', windows: 1, skipped: 2 })
     expect(usageOf(svc, 'a')).toMatchObject({ status: 'ok', windows: OK.kind === 'ok' ? OK.windows : [] })
+    svc.dispose()
+  })
+  it('r2 R2-2 로그인 직후 — unavailable → ok 수집기: 30초 뒤 포커스는 건너뛰고, 61초 뒤 포커스면 1회 더 조회해 ok', async () => {
+    const a = collector('a')
+    a.next = [{ kind: 'unavailable', reason: '로그인 정보 없음' }, OK]
+    active = false
+    const svc = service([a])
+    svc.start()
+    await flush()
+    expect(usageOf(svc, 'a').status).toBe('unavailable')
+    await vi.advanceTimersByTimeAsync(30_000)
+    svc.onFocus()
+    await flush()
+    expect(a.calls).toBe(1)
+    await vi.advanceTimersByTimeAsync(31_000)
+    svc.onFocus()
+    await flush()
+    expect(a.calls).toBe(2)
+    expect(usageOf(svc, 'a').status).toBe('ok')
     svc.dispose()
   })
 })

@@ -160,11 +160,34 @@ describe('E8ⓓⓔ 팝오버 · 키보드', () => {
     await open()
     expect(document.activeElement).toBe(host.querySelector('[data-statusbar-usage-refresh]'))
   })
-  it('r1 R1-9 — 갱신 중(새로고침 비활성)이면 팝오버 자체로', async () => {
+  it('r2 R2-6 — 갱신 중에도 새로고침 버튼은 disabled 가 아니라 aria-disabled(포커스 유지), 클릭은 무시', async () => {
     install({ providers: [{ ...entry('claude', { status: 'ok', windows: windows(42), updatedAt: NOW }), refreshing: true }] })
     await render()
     await act(async () => { chip('claude')!.click() })
-    expect(document.activeElement).toBe(q('[data-statusbar-usage-popover="claude"]'))
+    const button = host.querySelector<HTMLButtonElement>('[data-statusbar-usage-refresh]')!
+    expect(document.activeElement).toBe(button)
+    expect(button.disabled).toBe(false)
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    await act(async () => { button.click() })
+    expect(refreshed).toEqual([])
+  })
+  it('r2 R2-6 — 새로고침을 누른 뒤 갱신 중 푸시가 와도 포커스는 버튼에 남는다', async () => {
+    await open()
+    const button = host.querySelector<HTMLButtonElement>('[data-statusbar-usage-refresh]')!
+    await act(async () => { button.click() })
+    await act(async () => { push?.({ providers: [{ ...entry('claude', { status: 'ok', windows: windows(42), updatedAt: NOW }), refreshing: true }] }) })
+    expect(document.activeElement).toBe(host.querySelector('[data-statusbar-usage-refresh]'))
+  })
+  it('r2 R2-7 — 열린 팝오버의 provider 가 사라지면 anchor 를 비운다: Esc 를 삼키지 않고, 돌아와도 팝오버가 혼자 뜨지 않는다', async () => {
+    await open()
+    await act(async () => { push?.({ providers: [entry('claude', { status: 'unavailable', reason: '로그인 정보 없음' })] }) })
+    expect(q('[data-statusbar-usage-popover]')).toBeNull()
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    await act(async () => { document.dispatchEvent(escape) })
+    expect(escape.defaultPrevented).toBe(false)
+    await act(async () => { push?.({ providers: [entry('claude', { status: 'ok', windows: windows(42), updatedAt: NOW })] }) })
+    expect(q('[data-statusbar-usage-popover]')).toBeNull()
+    expect(chip('claude')!.getAttribute('aria-expanded')).toBe('false')
   })
   it('r1 R1-4ⓒ — 라벨이 같은 창 둘이어도 둘 다 그린다(key 중복 없음)', async () => {
     install({ providers: [entry('claude', { status: 'ok', windows: [{ label: '7d', windowMinutes: 10080, usedPercent: 40, resetsAt: null }, { label: '7d', windowMinutes: 10080, usedPercent: 70, resetsAt: null }], updatedAt: NOW })] })

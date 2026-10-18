@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// LIFE-636 E1ⓐⓒ·E8 — 상태바 틀(사용량 슬롯 · spacer · 세그먼트 슬롯), 지운 항목 0, 칩 상태 6종 × 렌더, 키보드·바깥 클릭·inert.
+// LIFE-636 E1ⓐⓒ·E1′·E8 — 상태바 틀(브랜치 라벨·git 배지 · 사용량 슬롯 · spacer · 세그먼트 슬롯), 지운 항목 0, 칩 상태 6종 × 렌더, 키보드·바깥 클릭·inert.
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -27,8 +27,18 @@ function install(snapshot: UsageSnapshot): void {
     onUsage: (listener: (next: UsageSnapshot) => void) => { push = listener; return () => { push = null } },
   })
 }
-async function render(props: { inert?: boolean; memoryLabel?: string | null } = {}): Promise<void> {
-  await act(async () => { root.render(createElement(StatusBar, { inert: props.inert ?? false, memoryLabel: props.memoryLabel === undefined ? '12.3 MB' : props.memoryLabel })) })
+type RenderProps = { inert?: boolean; memoryLabel?: string | null; activeWorktreeLabel?: string | null; dirtyTotal?: number; aheadTotal?: number; behindTotal?: number }
+async function render(props: RenderProps = {}): Promise<void> {
+  await act(async () => {
+    root.render(createElement(StatusBar, {
+      inert: props.inert ?? false,
+      activeWorktreeLabel: props.activeWorktreeLabel === undefined ? 'LIFE-636-statusbar-usage' : props.activeWorktreeLabel,
+      dirtyTotal: props.dirtyTotal ?? 0,
+      aheadTotal: props.aheadTotal ?? 0,
+      behindTotal: props.behindTotal ?? 0,
+      memoryLabel: props.memoryLabel === undefined ? '12.3 MB' : props.memoryLabel,
+    }))
+  })
 }
 const q = (selector: string) => host.querySelector(selector)
 const chip = (id: string) => host.querySelector<HTMLButtonElement>(`[data-statusbar-usage-chip="${id}"]`)
@@ -46,23 +56,41 @@ afterEach(() => {
 })
 
 describe('E1 상태바 틀', () => {
-  it('ⓒ 순서 = 사용량 슬롯 · spacer · 세그먼트 슬롯, 세그먼트의 자식은 메모리 한 줄', async () => {
+  it('ⓒ·E1′ⓐ 순서 = 브랜치 라벨 · ●↑↓ 배지 · 사용량 슬롯 · spacer · 세그먼트 슬롯, 세그먼트의 자식은 메모리 한 줄', async () => {
     install({ providers: [] })
     await render()
     const bar = q('[data-statusbar]')!
-    expect([...bar.children].map((child) => child.className)).toEqual(['statusbar-usage', 'statusbar-spacer', 'statusbar-segments'])
-    expect(bar.children[0]!.hasAttribute('data-statusbar-usage')).toBe(true)
-    expect(bar.children[2]!.hasAttribute('data-statusbar-segments')).toBe(true)
+    expect([...bar.children].map((child) => child.className)).toEqual([
+      'statusbar-repo', 'statusbar-badge tone-dirty', 'statusbar-badge tone-ahead', 'statusbar-badge tone-behind',
+      'statusbar-usage', 'statusbar-spacer', 'statusbar-segments',
+    ])
+    expect(bar.children[4]!.hasAttribute('data-statusbar-usage')).toBe(true)
+    expect(bar.children[6]!.hasAttribute('data-statusbar-segments')).toBe(true)
     const segments = q('[data-statusbar-segments]')!
     expect(segments.children).toHaveLength(1)
     expect(segments.textContent).toBe('12.3 MB')
   })
-  it('ⓐ 지운 항목 0 — corral / 라벨 · ●↑↓ 배지 · groups · panes · ⤢ · agents · xterm', async () => {
+  it('ⓐ 지운 항목 0 — groups · panes · ⤢ · agents · xterm', async () => {
     install({ providers: [entry('claude', { status: 'ok', windows: windows(42), updatedAt: NOW })] })
     await render()
     const text = q('[data-statusbar]')!.textContent ?? ''
-    for (const gone of ['corral', '●', '↑', '↓', 'groups', 'panes', '⤢', 'agents', 'xterm']) expect(text).not.toContain(gone)
-    for (const selector of ['.statusbar-repo', '.statusbar-badge', '[data-statusbar-groups]', '[data-statusbar-panes]']) expect(q(selector)).toBeNull()
+    for (const gone of ['groups', 'panes', '⤢', 'agents', 'xterm']) expect(text).not.toContain(gone)
+    for (const selector of ['[data-statusbar-groups]', '[data-statusbar-panes]']) expect(q(selector)).toBeNull()
+  })
+  it('E1′ⓐ 브랜치 라벨 `corral / {worktree}`(title = 전체) · 배지 = 받은 합계 그대로', async () => {
+    install({ providers: [] })
+    await render({ activeWorktreeLabel: 'feature/very-long-branch', dirtyTotal: 7, aheadTotal: 2, behindTotal: 0 })
+    const repo = q('.statusbar-repo')!
+    expect(repo.textContent).toBe('corral / feature/very-long-branch')
+    expect(repo.getAttribute('title')).toBe('corral / feature/very-long-branch')
+    expect(q('.statusbar-badge.tone-dirty')!.textContent).toBe('●7')
+    expect(q('.statusbar-badge.tone-ahead')!.textContent).toBe('↑2')
+    expect(q('.statusbar-badge.tone-behind')!.textContent).toBe('↓0')
+  })
+  it('E1′ⓐ 활성 worktree 가 없으면 라벨은 `corral` 만(기준 9d7d4d3e9 와 같은 문구)', async () => {
+    install({ providers: [] })
+    await render({ activeWorktreeLabel: null })
+    expect(q('.statusbar-repo')!.textContent).toBe('corral')
   })
   it('메모리 null 이면 세그먼트 슬롯은 비어 있다', async () => {
     install({ providers: [] })

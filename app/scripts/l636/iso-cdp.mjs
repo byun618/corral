@@ -1,8 +1,9 @@
 /* global fetch, WebSocket */
 // LIFE-636 최종 관문 격리 회차 CDP 운전 — iso-up.sh 가 띄운 숨긴 창에 붙어 DOM·캡처·IPC 를 본다. 입력은 CDP(렌더러 안)로만 — OS 입력 없음.
-//   node scripts/l636/iso-cdp.mjs <port> <run1|narrow|run2> <out 디렉터리> <root>
+//   node scripts/l636/iso-cdp.mjs <port> <run1|narrow|run2|branch> <out 디렉터리> <root>
 // run1(실제 자격 증명): ⓐ E1 상태바 DOM · ⓑ 900px·400px 캡처·폭 · ⓕ 새로고침 키보드(R2-6) · ⓒ 설정에서 Claude 끄기
 // run2(재시작 · CODEX_HOME·GROK_HOME 빈 폴더): ⓒ 끈 설정 유지 · ⓓ 칩 없음·「로그인 정보 없음」 · ⓔ exposedMethods·푸시·잘못된 입력
+// branch(게이트 ① 수정 1): 긴 이름 worktree 를 열고 1180~360px — 라벨 먼저 말줄임, 배지·칩·메모리 폭 불변
 // 출력: <out>/<run>.json (판정 근거 값) · PNG. 토큰·계정 값은 DOM 에 없다(칩 문구는 사용률뿐).
 import fs from 'node:fs'
 import path from 'node:path'
@@ -104,6 +105,31 @@ try {
     await sleep(800)
     await shot('settings-claude-off')
     result.steps.claudeOff = { chipsAfter: await js(`[...document.querySelectorAll('[data-statusbar-usage-chip]')].map((el) => el.dataset.statusbarUsageChip)`) }
+  } else if (run === 'branch') {
+    // 게이트 ① 수정 1 E1′ⓒ — 긴 worktree 이름을 연 상태에서 폭을 줄여 **브랜치 라벨이 먼저** 줄고 배지·칩·메모리 폭이 그대로인가
+    await until(`!!document.querySelector('[data-worktree]')`, 'worktree row')
+    await js(`document.querySelector('[data-worktree] [data-worktree-card-surface]').click()`)
+    await until(`(document.querySelector('.statusbar-repo')?.textContent ?? '').includes(' / ')`, 'branch label', 30_000)
+    await until(`(() => { const c = [...document.querySelectorAll('[data-statusbar-usage-chip]')]; return c.length > 0 && c.every((el) => el.dataset.statusbarUsageStatus !== 'loading') })()`, 'chips settled', 30_000)
+    await sleep(500)
+    const BRANCH = `(() => {
+      const r = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width * 10) / 10, height: Math.round(b.height), scrollWidth: el.scrollWidth, clientWidth: el.clientWidth } }
+      const bar = document.querySelector('[data-statusbar]'); const repo = document.querySelector('.statusbar-repo')
+      return { innerWidth, statusbar: { ...r(bar), scrollWidth: bar.scrollWidth, clientWidth: bar.clientWidth, height: getComputedStyle(bar).height },
+        repo: { ...r(repo), text: repo?.textContent ?? null, title: repo?.getAttribute('title') ?? null, ellipsis: repo ? repo.scrollWidth > repo.clientWidth : null, textOverflow: repo ? getComputedStyle(repo).textOverflow : null },
+        badges: [...document.querySelectorAll('.statusbar-badge')].map((el) => ({ cls: el.className, text: el.textContent, rect: r(el) })),
+        usage: r(document.querySelector('[data-statusbar-usage]')),
+        chips: [...document.querySelectorAll('[data-statusbar-usage-chip]')].map((el) => ({ id: el.dataset.statusbarUsageChip, status: el.dataset.statusbarUsageStatus, text: el.textContent, rect: r(el) })),
+        segments: { ...r(document.querySelector('[data-statusbar-segments]')), text: document.querySelector('[data-statusbar-segments]')?.textContent ?? null },
+        lineCount: new Set([...bar.children].map((el) => Math.round(el.getBoundingClientRect().top))).size }
+    })()`
+    for (const width of [1180, 900, 700, 560, 480, 420, 360]) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 600, deviceScaleFactor: 2, mobile: false })
+      await sleep(400)
+      result.steps[`width${width}`] = await js(BRANCH)
+      await shot(`branch-w${width}`)
+    }
+    await send('Emulation.clearDeviceMetricsOverride')
   } else if (run === 'narrow') {
     // ⓑ 보강 — 400px 에선 다 들어가 줄어들 일이 없었다(run1). 넘치는 폭에서 사용량 슬롯이 먼저 줄고 메모리는 그대로인가
     await until(`document.querySelectorAll('[data-statusbar-usage-chip]').length > 0`, 'chips')

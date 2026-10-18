@@ -1925,6 +1925,15 @@ export function App(): React.JSX.Element {
   /** 고른 자리는 **id 로** 찾는다 — 죽은 pane 이 빠져도 강조가 한 줄 밀리지 않는다. */
   const mruSelectedIndex = mru === null ? -1 : mruRows.findIndex((row) => row.paneId === mru.order[mru.index])
 
+  const allWorktrees = state.repos.flatMap((repo) => repo.worktrees)
+  const dirtyTotal = allWorktrees.reduce(
+    (sum, worktree) =>
+      sum + worktree.gitStatus.staged + worktree.gitStatus.unstaged + worktree.gitStatus.untracked + worktree.gitStatus.conflicted,
+    0,
+  )
+  const aheadTotal = allWorktrees.reduce((sum, worktree) => sum + (worktree.gitStatus.ahead ?? 0), 0)
+  const behindTotal = allWorktrees.reduce((sum, worktree) => sum + (worktree.gitStatus.behind ?? 0), 0)
+
   const paletteEntries: PaletteEntry[] = []
   const connected = state.link.phase === 'live'
   // 수정 r1 R1-B — 파일 탭이 활성이면 pane 대상 명령은 무동작이라 팔레트에서도 막아 둔다.
@@ -2120,6 +2129,10 @@ export function App(): React.JSX.Element {
 
       <StatusBar
         inert={paletteOpen || quickOpenOpen}
+        activeWorktreeLabel={activeWorktree === undefined ? null : (activeWorktree.branch ?? worktreeDisplayName(activeWorktree))}
+        dirtyTotal={dirtyTotal}
+        aheadTotal={aheadTotal}
+        behindTotal={behindTotal}
         memoryLabel={memoryLabel}
       />
 

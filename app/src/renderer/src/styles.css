@@ -1176,9 +1176,16 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
   background: var(--bg-statusbar); border-top: 1px solid var(--line-weak);
   font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-dim);
 }
-/* LIFE-636 — 왼쪽 사용량 슬롯 · spacer · 오른쪽 세그먼트 슬롯(02-kickoff 슬롯 계약 5). 폭이 모자라면 spacer 다음으로 **왼쪽 사용량 슬롯이 먼저** 줄어든다
-   (칩이 말줄임 → 잘림). 오른쪽 슬롯은 줄지 않는다. 높이는 `.statusbar` 의 25px 그대로 — 칩은 그 안에 들어가고 줄바꿈하지 않는다. */
-.statusbar-usage { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden; margin-left: -5px; }
+/* LIFE-636 — 브랜치 라벨·git 배지 · 사용량 슬롯 · spacer · 오른쪽 세그먼트 슬롯(02-kickoff 슬롯 계약 1·5). 폭이 모자라면 spacer 다음으로
+   **브랜치 라벨이 먼저** 말줄임된다(게이트 ① 수정 1). flex 수축은 비례 배분이라 사용량 슬롯 수축 가중을 아주 작게(0.000001) 둔다 —
+   1000:1 로는 칩이 0.1px 줄어 사유 문구가 말줄임됐다(g1fix1 g12 캡처). 라벨이 0 까지 줄어 멈춘 뒤에야 남은 부족분이 칩으로 간다(칩 말줄임 → 잘림).
+   배지·오른쪽 슬롯은 줄지 않는다. 높이는 `.statusbar` 의 25px 그대로 — 줄바꿈하지 않는다. */
+.statusbar-repo { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); }
+.statusbar-badge { flex-shrink: 0; white-space: nowrap; }
+.statusbar-badge.tone-dirty { color: var(--st-dirty); }
+.statusbar-badge.tone-ahead { color: var(--st-ahead); }
+.statusbar-badge.tone-behind { color: var(--st-behind); }
+.statusbar-usage { flex: 0 0.000001 auto; min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden; margin-left: -5px; }
 .statusbar-spacer { flex: 1 1 0; min-width: 0; }
 .statusbar-segments { flex-shrink: 0; display: flex; align-items: center; gap: 14px; white-space: nowrap; }
 

@@ -69,7 +69,12 @@ type Migration = {
   generation: number | null
   /** 실패를 남길 활동 열쇠 — 이 실행에서 처음 본 자동 연결은 자동 연결 저장과 같은 열쇠(`run:srcfail:<자동 사건 열쇠>`), 그 밖은 이관 열쇠. */
   activityKey: string
+  /** 마지막 관측 트리에 있나 — 전송 후보 여부만 가른다. 실패 이력(상태·시도·다음 시각·세대)은 트리에서 잠깐 빠져도 남는다(X2-2). */
+  present: boolean
 }
+
+/** 트리에서 빠진 이관 항목을 들고 있는 상한 — 넘으면 오래된 것부터 잊는다(X2-2 수명 규칙 — design-notes §4). */
+export const MIGRATE_ABSENT_MAX = 500
 
 /** 턴 결과 뒤 이 시간 안에는 바뀐 파일 수를 다시 읽어 고친다(R1-M — git 상태 폴링이 결과보다 늦게 올 수 있다). */
 export const FILES_SETTLE_MS = 60_000
@@ -137,8 +142,13 @@ export class WorkLinks {
   private readonly migrations = new Map<string, Migration>()
   private migrationLoop: Promise<void> | null = null
   private migrationTimerAt: number | null = null
-  /** worktree 경로 → 그 링크로 진행 중인 출처 쓰기(이관·자동 연결 저장). 떼기는 이것이 끝난 뒤 지운다 — 지우기가 마지막 연산(X1-2). */
-  private readonly inflight = new Map<string, Promise<void>>()
+  /**
+   * worktree 경로 → 그 경로의 출처 쓰기 줄(X2-1). 시작 저장·미확정 시작 복구·자동 연결 저장·이관·떼기(명시·자동)가 **모두** 이 줄에 서서 한 번에 하나씩 나간다 —
+   * 떼기의 remove 는 앞선 쓰기가 끝난 뒤 나가 그 링크의 마지막 연산이 된다.
+   */
+  private readonly writes = new Map<string, Promise<void>>()
+  /** 경로마다 떼기 횟수 — 줄 선 add 는 나갈 차례에 이 값이 줄 설 때와 다르면(그사이 떼어졌으면) 보내지 않는다(X2-1). */
+  private readonly detachCount = new Map<string, number>()
   /** 떼어진 경로 — 트리가 그 경로를 링크 없이 보일 때까지 이관·재시도가 보내지 않는다(X1-2). */
   private readonly detached = new Set<string>()
   /** 이 실행의 시작 시각 — 이보다 늦게 적힌 명시 링크는 시작이 이미 출처에 보냈다(이관하지 않는다). */
@@ -198,6 +208,8 @@ export class WorkLinks {
         const current = data.worktrees[path] ?? {}
         data.worktrees[path] = { ...current, workLink: link, workLinkSuppressed: false }
       })
+      // 새 링크다 — 앞 떼기의 「낡은 트리 막기」 는 끝(이 링크의 출처 저장은 시작이 `sourceSave` 로 보낸다).
+      this.detached.delete(path)
       return true
     } catch (error) {
       this.deps.log('work.link_save_failed', { path, error: String(error) })
@@ -215,7 +227,7 @@ export class WorkLinks {
     const registry = this.deps.registry()
     if (registry === null) return 'failed'
     try {
-      return registry.change((data): ClaimResult => {
+      const result = registry.change((data): ClaimResult => {
         const current = data.worktrees[path] ?? {}
         const existing = current.workLink ?? null
         if (existing !== null) return existing.connectionId === link.connectionId && existing.itemId === link.itemId ? 'linked' : 'held'
@@ -223,6 +235,8 @@ export class WorkLinks {
         data.worktrees[path] = { ...current, workLink: link, workLinkSuppressed: false }
         return 'saved'
       })
+      if (result === 'saved') this.detached.delete(path)
+      return result
     } catch (error) {
       this.deps.log('work.link_save_failed', { path, error: String(error) })
       return 'failed'
@@ -248,12 +262,20 @@ export class WorkLinks {
     } catch (error) {
       return { ok: false, error: `링크를 떼지 못했습니다: ${String(error)}` }
     }
-    // 이 링크의 이관·자동 저장은 더 보내지 않는다. 이미 나간 쓰기가 있으면 그것이 끝난 뒤 지운다 — 늦은 add 가 떼기를 뒤집지 않게(X1-2).
+    // 이 링크의 이관·자동 저장은 더 보내지 않는다. 줄에 이미 선 add 는 나갈 차례에 떼기를 보고 빠지고, 이미 나간 쓰기는 끝난 뒤 지운다 —
+    // 늦은 add(시작·복구·자동 연결·이관 어느 쪽이든)가 떼기를 뒤집지 않게(X1-2 · X2-1).
     this.detached.add(worktree.path)
+    this.detachCount.set(worktree.path, (this.detachCount.get(worktree.path) ?? 0) + 1)
     for (const [key, entry] of this.migrations) if (entry.worktree === worktree.path) this.migrations.delete(key)
     for (const [key, entry] of this.autoStores) if (entry.worktree === worktree.path) this.autoStores.delete(key)
-    await this.inflight.get(worktree.path)
     const work = this.deps.work()
+    const sourceLink = await this.queueWrite({ path: worktree.path, add: false, send: async () => {
+      if (work === null) return null
+      // 자동 연결은 작업 id 가 없다 — 키로 찾아 지운다(X1-1). 지우기 포트가 없으면(시험 가짜) 출처를 건드리지 않는다.
+      const target: WorkLink = { kind: 'worktree', path: worktree.path, repoRoot }
+      return link.itemId !== null ? work.storeLink({ connectionId: link.connectionId, itemId: link.itemId, link: target, action: 'remove' })
+        : work.removeAutoLink === undefined ? null : work.removeAutoLink({ connectionId: link.connectionId, key: link.key, link: target })
+    } })
     work?.recordEvent({
       connectionId: link.connectionId,
       itemId: link.itemId,
@@ -261,11 +283,6 @@ export class WorkLinks {
       eventKey: `run:detach:${link.connectionId}:${link.key}:${worktree.path}:${Date.now()}`,
       change: { field: 'run', event: 'detach', worktree: worktree.path, branch: branchName(worktree.branch) },
     })
-    // 자동 연결은 작업 id 가 없다 — 키로 찾아 지운다(X1-1). 지우기 포트가 없으면(시험 가짜) 출처를 건드리지 않는다.
-    const target: WorkLink = { kind: 'worktree', path: worktree.path, repoRoot }
-    const sourceLink = work === null ? null
-      : link.itemId !== null ? await work.storeLink({ connectionId: link.connectionId, itemId: link.itemId, link: target, action: 'remove' })
-        : work.removeAutoLink === undefined ? null : await work.removeAutoLink({ connectionId: link.connectionId, key: link.key, link: target })
     // 출처 지우기 실패는 활동에도 남긴다(LIFE-635 C6) — 로컬 떼기는 이미 끝났다.
     if (sourceLink?.state === 'failed') {
       work?.recordEvent({
@@ -306,7 +323,8 @@ export class WorkLinks {
           // 실패 활동 열쇠는 자동 연결 저장의 열쇠 그대로. 이관 포트가 없으면(시험 가짜) 옛 자동 저장 경로.
           if (work.migrateLink !== undefined) {
             const current = this.migrations.get(migrationKey)
-            if (current === undefined || current.state !== 'done') this.migrations.set(migrationKey, { ...this.migration({ link, worktree: worktree.path, repoRoot: repo.root, state: 'pending' }), activityKey: `run:srcfail:${autoKey}` })
+            if (current === undefined) this.migrations.set(migrationKey, { ...this.migration({ link, worktree: worktree.path, repoRoot: repo.root, state: 'pending' }), activityKey: `run:srcfail:${autoKey}` })
+            else if (current.state === 'pending' && current.attempts === 0) current.activityKey = `run:srcfail:${autoKey}`
           } else {
             this.autoStores.set(autoKey, { connectionId: link.connectionId, itemId: link.itemId, key: link.key, worktree: worktree.path, repoRoot: repo.root, inFlight: false })
           }
@@ -344,20 +362,35 @@ export class WorkLinks {
   }
 
   private migration({ link, worktree, repoRoot, state }: { link: WorktreeWorkLink; worktree: string; repoRoot: string; state: Migration['state'] }): Migration {
-    return { connectionId: link.connectionId, itemId: link.itemId, key: link.key, worktree, repoRoot, state, attempts: 0, nextAt: 0, deferred: false, generation: null, activityKey: `run:srcfail:migrate:${link.connectionId}:${link.key}:${worktree}` }
+    return { connectionId: link.connectionId, itemId: link.itemId, key: link.key, worktree, repoRoot, state, attempts: 0, nextAt: 0, deferred: false, generation: null, activityKey: `run:srcfail:migrate:${link.connectionId}:${link.key}:${worktree}`, present: true }
   }
 
   /** 관측마다 — 트리에서 사라진 링크는 잊고, 멈춘 이관은 자격이 바뀌었으면 다시, 기다리던 것은 다시 본다. 그리고 직렬 보내기를 깨운다. */
   private reviewMigrations({ work, present }: { work: LinkWorkPort; present: Set<string> }): void {
     if (work.migrateLink === undefined) return
+    let absent = 0
     for (const [key, entry] of this.migrations) {
-      if (!present.has(key)) { if (entry.state !== 'done') this.migrations.delete(key); continue }
+      entry.present = present.has(key)
+      if (!entry.present) {
+        // 트리에서 빠진 것은 보내지 않을 뿐 이력은 남긴다 — git 조회 실패(빈 트리) 뒤 돌아온 링크가 정지·시도 횟수·간격을 잊지 않게(X2-2).
+        // 이력 없는 것(아직 한 번도 안 보낸 pending)만 잊는다 — 다시 나타나면 같은 값으로 새로 만든다.
+        if (entry.state === 'pending' && entry.attempts === 0) this.migrations.delete(key)
+        else absent += 1
+        continue
+      }
       entry.deferred = false
       if (entry.state === 'stopped' && entry.generation !== (work.credentialGeneration?.(entry.connectionId) ?? entry.generation)) {
         entry.state = 'pending'
         entry.attempts = 0
         entry.nextAt = 0
       }
+    }
+    // 수명 상한 — 빠진 것이 너무 많으면 가장 오래된(먼저 만든) 것부터 잊는다. 잊힌 링크가 다시 나타나면 새 항목(한 번 더 보낼 수 있다 — 멱등).
+    for (const [key, entry] of this.migrations) {
+      if (absent <= MIGRATE_ABSENT_MAX) break
+      if (entry.present) continue
+      this.migrations.delete(key)
+      absent -= 1
     }
     this.pumpMigrations(work)
   }
@@ -373,18 +406,17 @@ export class WorkLinks {
     if (migrate === undefined) return
     for (;;) {
       const now = (this.deps.now ?? Date.now)()
-      const entry = [...this.migrations.values()].find((row) => row.state === 'pending' && !row.deferred && row.nextAt <= now && !this.detached.has(row.worktree))
+      const entry = [...this.migrations.values()].find((row) => row.present && row.state === 'pending' && !row.deferred && row.nextAt <= now && !this.detached.has(row.worktree))
       if (entry === undefined) break
-      const sending = migrate({ connectionId: entry.connectionId, itemId: entry.itemId, key: entry.key, link: { kind: 'worktree', path: entry.worktree, repoRoot: entry.repoRoot } }).catch((error: unknown): LinkMigrateOutcome => {
+      const outcome = await this.queueWrite({ path: entry.worktree, add: true, send: () => migrate({ connectionId: entry.connectionId, itemId: entry.itemId, key: entry.key, link: { kind: 'worktree', path: entry.worktree, repoRoot: entry.repoRoot } }).catch((error: unknown): LinkMigrateOutcome => {
         this.deps.log('work.link_migrate_error', { connectionId: entry.connectionId, key: entry.key, error: String(error) })
         return { state: 'failed', retry: true, message: '출처에 링크를 남기지 못했습니다.', generation: work.credentialGeneration?.(entry.connectionId) ?? 0 }
-      })
-      const outcome = await this.track(entry.worktree, sending)
-      // 보내는 사이 떼어졌으면 결과를 버린다 — 떼기가 이 쓰기 뒤에 지운다.
-      if (this.detached.has(entry.worktree)) continue
+      }) })
+      // 줄 서는 사이·보내는 사이 떼어졌으면 결과를 버린다 — 떼기가 이 쓰기 뒤에 지운다(항목은 떼기가 이미 지웠다).
+      if (outcome === null || this.detached.has(entry.worktree)) continue
       this.settleMigration({ work, entry, outcome })
     }
-    const waiting = [...this.migrations.values()].filter((row) => row.state === 'pending' && !row.deferred).map((row) => row.nextAt)
+    const waiting = [...this.migrations.values()].filter((row) => row.present && row.state === 'pending' && !row.deferred).map((row) => row.nextAt)
     if (waiting.length > 0) this.wakeMigrations({ work, at: Math.min(...waiting) })
   }
 
@@ -413,13 +445,26 @@ export class WorkLinks {
     }
   }
 
-  /** 그 경로의 출처 쓰기를 진행 중으로 표시한다 — 떼기가 기다린다. */
-  private track<T>(worktree: string, sending: Promise<T>): Promise<T> {
-    const done = sending.then(() => {}, () => {})
-    const chained = (this.inflight.get(worktree) ?? Promise.resolve()).then(() => done)
-    this.inflight.set(worktree, chained)
-    void chained.then(() => { if (this.inflight.get(worktree) === chained) this.inflight.delete(worktree) })
-    return sending
+  /**
+   * 그 경로의 출처 쓰기를 줄 세운다(X2-1) — 앞 쓰기가 끝난 뒤 `send` 를 부른다. `add` 는 줄 선 뒤 그 경로가 떼어졌으면 부르지 않고 null.
+   * remove(떼기)는 늘 나간다 — 줄 끝에서.
+   */
+  private queueWrite<T>({ path: worktree, add, send }: { path: string; add: boolean; send: () => Promise<T> }): Promise<T | null> {
+    const queuedAt = this.detachCount.get(worktree) ?? 0
+    const previous = this.writes.get(worktree) ?? Promise.resolve()
+    const result = previous.then(() => add && (this.detachCount.get(worktree) ?? 0) !== queuedAt ? null : send())
+    const settled = result.then(() => {}, () => {})
+    this.writes.set(worktree, settled)
+    void settled.then(() => { if (this.writes.get(worktree) === settled) this.writes.delete(worktree) })
+    return result
+  }
+
+  /**
+   * 시작·미확정 시작 복구의 출처 저장(X2-1) — 같은 경로의 줄에 선다. 로컬 링크를 적은 같은 틱에 불러야 한다(그 뒤 떼기가 이 add 를 빼거나 기다린다).
+   * 줄 선 뒤 떼어졌으면 보내지 않고 `skipped`.
+   */
+  async sourceSave({ path: worktree, send }: { path: string; send: () => Promise<StartSourceLink> }): Promise<StartSourceLink> {
+    return (await this.queueWrite({ path: worktree, add: true, send })) ?? { state: 'skipped', message: null }
   }
 
   private wakeMigrations({ work, at }: { work: LinkWorkPort; at: number }): void {
@@ -439,7 +484,7 @@ export class WorkLinks {
     for (const [eventKey, entry] of this.autoStores) {
       if (entry.inFlight) continue
       entry.inFlight = true
-      void this.track(entry.worktree, work.storeAutoLink({ connectionId: entry.connectionId, key: entry.key, link: { kind: 'worktree', path: entry.worktree, repoRoot: entry.repoRoot } }).then((result) => {
+      void this.queueWrite({ path: entry.worktree, add: true, send: () => work.storeAutoLink({ connectionId: entry.connectionId, key: entry.key, link: { kind: 'worktree', path: entry.worktree, repoRoot: entry.repoRoot } }) }).then((result) => {
         entry.inFlight = false
         if (result === null) return
         this.autoStores.delete(eventKey)
@@ -452,7 +497,7 @@ export class WorkLinks {
       }, (error: unknown) => {
         entry.inFlight = false
         this.deps.log('work.auto_link_source_error', { connectionId: entry.connectionId, key: entry.key, error: String(error) })
-      }))
+      })
     }
   }
 

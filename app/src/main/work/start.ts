@@ -28,7 +28,7 @@ import { sanitizeDraftBody } from '../../shared/terminal-paste.js'
 export type StartDeps = {
   invoke: () => ((invocation: Invocation, timeoutMs?: number) => Promise<RpcResponse>) | null
   repos: () => RepoRow[]
-  links: () => Pick<WorkLinks, 'saveExplicit' | 'claimExplicit'> | null
+  links: () => Pick<WorkLinks, 'saveExplicit' | 'claimExplicit' | 'sourceSave'> | null
   work: () => LinkWorkPort | null
   log: (event: string, data: Record<string, unknown>) => void
   cwd: string
@@ -380,7 +380,9 @@ export class StartService {
       const pending = this.deps.pending
       for (const row of pending?.list() ?? []) if (row.attemptId === input.attemptId || row.path === path) pending?.remove(row.attemptId)
     }
-    const sourceLink = work === null || !linkSaved ? null : await work.storeLink({ connectionId: input.connectionId, itemId: input.itemId, link: { kind: 'worktree', path, repoRoot: input.repoRoot }, action: 'save' })
+    // 출처 저장은 그 경로의 출처 쓰기 줄에 선다(X2-1) — 로컬 링크를 적은 같은 틱. 그 뒤 떼기가 오면 이 add 를 기다렸다 지우거나, 아직 안 나갔으면 빼낸다.
+    const sourceLink = work === null || links === null || !linkSaved ? null
+      : await links.sourceSave({ path, send: () => work.storeLink({ connectionId: input.connectionId, itemId: input.itemId, link: { kind: 'worktree', path, repoRoot: input.repoRoot }, action: 'save' }) })
     // 출처 저장 실패는 활동 줄로도 남긴다 — 복구(R4-B, 결과를 볼 모달이 없다)와 일반 시작(LIFE-635 C6) 모두. 열쇠는 시도마다 하나라 두 번 남지 않는다.
     // 로컬 링크는 그대로, 시작 진행은 막지 않는다.
     if (sourceLink?.state === 'failed') {

@@ -1,5 +1,8 @@
 // LIFE-635 fix r1 — Codex r1 지적 X1-1–X1-7 의 재현 조건을 회귀 시험으로(리뷰 프로브 P1·P2·P3·P7·P8·P10·P12·P14 의 조건을 이식).
+// fix r2 — Codex r2 X2-1–X2-4(리뷰 R12 복구 경합 · Q3/Q4 관측 누락 · R09 프로세스 경합 · R07 낡은 트리)도 이 파일 끝에.
 // 실제 경로: WorkLinks → WorkService → LaSource → McpHttpClient → LaMcpFixture(127.0.0.1 HTTP). 토큰은 가짜뿐 · 실제 Mac 이름·설정 무접촉(조회 함수 주입).
+import { fork } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -8,6 +11,8 @@ import { RepoRegistry } from '../registry.js'
 import { readMacName } from '../mobile/mac-name.js'
 import { testRepo, testWorktree } from '../../shared/test-rows.js'
 import type { WorkLink } from '../../shared/work.js'
+import { newAttemptId, type StartWorkInput } from '../../shared/work-start.js'
+import type { RpcResponse } from '../../runtime/contracts.js'
 import type { RepoRow } from '../../shared/types.js'
 import { laSourceEntry } from './la-source.js'
 import { FIXTURE_IDS, LaMcpFixture } from './la-mcp-fixture.js'
@@ -19,6 +24,8 @@ import { WorkSourceRegistry } from './source.js'
 import { CredentialVault } from './vault.js'
 import { FakeCipher, FAKE_LA_READ_TOKEN, FAKE_LA_TOKEN, FAKE_MOCK_TOKEN, MemoryStore, workHarness } from './test-kit.js'
 import { MemoryActivity } from './activity-store.js'
+import { StartService } from './start.js'
+import { MemoryPending } from './start-pending.js'
 
 const fixtures: LaMcpFixture[] = []
 const dirs: string[] = []
@@ -147,10 +154,15 @@ describe('X1-2 떼기가 마지막 연산 — 진행 중 이관 add 뒤에 지�
     run.links.observe(run.links.annotate(rows({ explicit: true })))
     for (let index = 0; index < 50 && toolCount(r.fixture, 'issue_work_link_add') === 0; index += 1) await new Promise((resolve) => setTimeout(resolve, 5))
     expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(1)
+    // 떼기 **전** 트리 그대로(링크가 실린 스냅샷) — 떼기 뒤 다시 annotate 하면 떼기 예외가 읽혀 링크가 null 이 돼 이 조건이 사라진다(X2-4).
+    const stale = run.links.annotate(rows({ explicit: true }))
+    expect(stale[0]?.worktrees[0]?.workLink).toMatchObject({ mode: 'explicit', key: 'LIFE-600', connected: true })
     const result = await run.links.detach({ worktree: testWorktree({ path: WT, branch: 'refs/heads/LIFE-600-x' }), repoRoot: ROOT })
     expect(result).toMatchObject({ ok: true, mode: 'explicit', sourceLink: { state: 'saved' } })
-    // 떼기 직후 낡은 트리(아직 링크가 보이는) 관측이 와도 다시 보내지 않는다.
-    await run.observe(rows({ explicit: true }).map((repo) => ({ ...repo, worktrees: repo.worktrees.map((row) => ({ ...row, workLink: { mode: 'explicit' as const, sourceId: 'la', connectionId: r.connectionId, key: 'LIFE-600', itemId: FIXTURE_IDS.task600, connected: true } })) })))
+    // 떼기 직후 낡은 트리(아직 링크가 보이는) 관측이 와도 다시 보내지 않는다 — 스냅샷을 해석 없이 그대로 넣는다.
+    run.links.observe(stale)
+    await run.links.migrationsSettled()
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(1)
     r.fixture.toolFaults.clear()
     for (let index = 0; index < 4; index += 1) { run.tick(MIGRATE_RETRY_MS * 4); await run.observe(rows({ explicit: true })); await run.fire() }
     expect(remoteRows(r.fixture, WT)).toHaveLength(0)
@@ -303,5 +315,243 @@ describe('X1-7 LA fixture 는 LA 규칙(issue-work-link.rules)대로 거절·정
     expect(state.items.find((item) => item.id === 'm-1')?.workLinks).toHaveLength(1)
     await client.call({ op: 'removeWorkLink', itemId: 'm-1', link: { kind: 'worktree', path: ' /t/p', repoRoot: null }, machine: ' mac' }, { writeId: null })
     expect(state.items.find((item) => item.id === 'm-1')?.workLinks).toEqual([])
+  })
+})
+
+// ─── fix r2 ───────────────────────────────────────────────────────────────
+
+/** 조건이 설 때까지(최대 1초) — 늦게 나가는 요청을 기다린다. */
+async function until(check: () => boolean): Promise<void> {
+  for (let index = 0; index < 200 && !check(); index += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+  expect(check()).toBe(true)
+}
+
+/** 키 없는 브랜치(자동 연결 안 됨)의 worktree 하나 — 시작·복구가 명시 링크를 붙일 자리. */
+const SCRATCH = [testRepo({ root: ROOT, worktrees: [testWorktree({ path: WT, branch: 'refs/heads/scratch' })] })]
+
+const ok = (result: unknown): RpcResponse => ({ id: 'x', ok: true, result, _meta: { runtimeId: 'r' } })
+
+function startOf({ r, links, pending, invoke = null }: { r: Rig; links: WorkLinks; pending: MemoryPending; invoke?: (() => Promise<RpcResponse>) | null }): StartService {
+  return new StartService({ invoke: () => invoke, repos: () => SCRATCH, links: () => links, work: () => r.service, log: () => {}, cwd: ROOT, sleep: async () => {}, pending, now: () => 2_000_000_000_010 })
+}
+
+const startInput = ({ r }: { r: Rig }): StartWorkInput => ({
+  attemptId: newAttemptId({ now: Date.now(), uuid: randomUUID() }), connectionId: r.connectionId, sourceId: 'la', itemId: FIXTURE_IDS.task600, itemKey: 'LIFE-600', repoRoot: ROOT, name: 'scratch',
+  agent: 'claude', model: 'opus', effort: 'high', prompt: '작업 본문', submit: false,
+})
+
+describe('X2-1 같은 링크의 모든 출처 쓰기는 한 줄 — 떼기가 마지막 · 떼어진 뒤 어느 경로도 add 하지 않는다', () => {
+  it('미확정 시작 복구가 로컬 링크를 적고 add 가 200ms 늦는 사이 떼기 → add → remove · 원격 0 · 로컬 null(리뷰 R12 조건)', async () => {
+    const r = await rig()
+    const run = clocked({ registry: registryFor({ connectionId: r.connectionId, explicit: false }), service: r.service })
+    const pending = new MemoryPending()
+    const attemptId = newAttemptId({ now: Date.now(), uuid: randomUUID() })
+    pending.add({ attemptId, connectionId: r.connectionId, sourceId: 'la', itemId: FIXTURE_IDS.task600, itemKey: 'LIFE-600', repoRoot: ROOT, name: 'scratch', path: WT, agent: 'claude', model: 'opus', startedAt: 2_000_000_000_000, preexisting: false })
+    const start = startOf({ r, links: run.links, pending })
+    await run.observe(SCRATCH)
+    r.fixture.toolFaults.set('issue_work_link_add', { kind: 'delay', ms: 200 })
+    const recovering = start.recover(SCRATCH)
+    await until(() => toolCount(r.fixture, 'issue_work_link_add') === 1)
+    // 리뷰 R12 처럼 최신 트리를 한 번 더 관측 — 복구의 add 는 이관이 아니라 시작 경로다(이관 done).
+    await run.observe(SCRATCH)
+    const detached = await run.links.detach({ worktree: SCRATCH[0]!.worktrees[0]!, repoRoot: ROOT })
+    expect(await recovering).toBe(1)
+    expect(detached).toMatchObject({ ok: true, mode: 'explicit', sourceLink: { state: 'saved' } })
+    expect(r.fixture.workLinkArgs.map((row) => row.tool)).toEqual(['issue_work_link_add', 'issue_work_link_remove'])
+    expect(remoteRows(r.fixture, WT)).toHaveLength(0)
+    expect(run.links.annotate(SCRATCH)[0]?.worktrees[0]?.workLink).toBeNull()
+  })
+
+  it('일반 시작 — 출처 add 가 늦는 사이 떼기 → add → remove · 원격 0', async () => {
+    const r = await rig()
+    const run = clocked({ registry: registryFor({ connectionId: r.connectionId, explicit: false }), service: r.service })
+    const invoke = async () => ok({ worktree: { path: WT }, stages: { worktree: { status: 'completed', path: WT }, terminal: { status: 'completed' }, agent: { status: 'completed' }, prompt: { status: 'completed', mode: 'draft', enterSent: false } }, outcome: 'completed' })
+    const start = startOf({ r, links: run.links, pending: new MemoryPending(), invoke })
+    r.fixture.toolFaults.set('issue_work_link_add', { kind: 'delay', ms: 200 })
+    const starting = start.start(startInput({ r }))
+    await until(() => toolCount(r.fixture, 'issue_work_link_add') === 1)
+    const detached = await run.links.detach({ worktree: SCRATCH[0]!.worktrees[0]!, repoRoot: ROOT })
+    expect((await starting).sourceLink).toEqual({ state: 'saved', message: null })
+    expect(detached).toMatchObject({ ok: true, sourceLink: { state: 'saved' } })
+    expect(r.fixture.workLinkArgs.map((row) => row.tool)).toEqual(['issue_work_link_add', 'issue_work_link_remove'])
+    expect(remoteRows(r.fixture, WT)).toHaveLength(0)
+  })
+
+  it('줄에 선(아직 안 나간) 시작 add 는 떼기 뒤 나가지 않는다 — 앞 이관 add 가 늦는 사이 시작 → 떼기 → 시작 sourceLink skipped · add 1(이관) → remove', async () => {
+    const r = await rig()
+    const run = clocked({ registry: registryFor({ connectionId: r.connectionId, explicit: true }), service: r.service })
+    const invoke = async () => ok({ worktree: { path: WT }, stages: { worktree: { status: 'completed', path: WT }, terminal: { status: 'completed' }, agent: { status: 'completed' }, prompt: { status: 'completed', mode: 'draft', enterSent: false } }, outcome: 'completed' })
+    const start = startOf({ r, links: run.links, pending: new MemoryPending(), invoke })
+    r.fixture.toolFaults.set('issue_work_link_add', { kind: 'delay', ms: 200 })
+    run.links.observe(run.links.annotate(rows({ explicit: true })))
+    await until(() => toolCount(r.fixture, 'issue_work_link_add') === 1)
+    const starting = start.start(startInput({ r }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const detached = await run.links.detach({ worktree: SCRATCH[0]!.worktrees[0]!, repoRoot: ROOT })
+    expect((await starting).sourceLink).toEqual({ state: 'skipped', message: null })
+    expect(detached).toMatchObject({ ok: true, sourceLink: { state: 'saved' } })
+    await run.links.migrationsSettled()
+    expect(r.fixture.workLinkArgs.map((row) => row.tool)).toEqual(['issue_work_link_add', 'issue_work_link_remove'])
+    expect(remoteRows(r.fixture, WT)).toHaveLength(0)
+  })
+})
+
+describe('X2-2 트리에서 잠깐 빠져도 이관 실패 이력(정지·시도·간격·세대)은 남는다 — 빈 트리 → 복귀(리뷰 Q3·Q4)', () => {
+  const gap = async (run: ReturnType<typeof clocked>, times: number, explicitRows: RepoRow[]): Promise<void> => {
+    for (let index = 0; index < times; index += 1) { await run.observe([]); await run.observe(explicitRows) }
+  }
+
+  it('200 isError scope(읽기 토큰) → 정지 · 빈 트리/복귀 3회에도 add 1 · 세대 그대로', async () => {
+    const r = await rig()
+    await r.service.addConnection({ sourceId: 'la', token: FAKE_LA_READ_TOKEN, replaceId: r.connectionId })
+    const generation = r.service.credentialGeneration(r.connectionId)
+    const run = clocked({ registry: registryFor({ connectionId: r.connectionId, explicit: true }), service: r.service })
+    await run.observe(rows({ explicit: true }))
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(1)
+    await gap(run, 3, rows({ explicit: true }))
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(1)
+    expect(r.service.credentialGeneration(r.connectionId)).toBe(generation)
+  })
+
+  it('HTTP 403 → 정지 유지 · 거절(LA 검증 isError) → 정지 유지', async () => {
+    const r = await rig()
+    const run = clocked({ registry: registryFor({ connectionId: r.connectionId, explicit: true }), service: r.service })
+    r.fixture.toolFaults.set('issue_work_link_add', { kind: 'http', status: 403, body: '{}' })
+    await run.observe(rows({ explicit: true }))
+    await gap(run, 3, rows({ explicit: true }))
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(1)
+
+    // 거절 — 경로 상한(LA 규칙) 초과 링크. fixture 가 isError 로 거절한다.
+    const long = await rig()
+    const longPath = `${ROOT}/${'x'.repeat(2000)}`
+    const dir = tempDir('l635r2-reg-')
+    fs.writeFileSync(path.join(dir, 'repos.json'), JSON.stringify({ version: 2, repos: [{ id: 'repo-1', path: ROOT, name: 'corral', projectId: 'repo:repo-1', baseRef: 'main', method: 'imported-existing-folder' }], setups: [], worktrees: { [longPath]: { repoId: 'repo-1', workLink: { sourceId: 'la', connectionId: long.connectionId, itemId: FIXTURE_IDS.task600, key: 'LIFE-600', linkedAt: 1_700_000_000_000 }, workLinkSuppressed: false } } }))
+    const rejected = clocked({ registry: () => new RepoRegistry(dir), service: long.service })
+    const longRows = [testRepo({ root: ROOT, worktrees: [testWorktree({ path: longPath, branch: 'refs/heads/scratch' })] })]
+    await rejected.observe(longRows)
+    expect(toolCount(long.fixture, 'issue_work_link_add')).toBe(1)
+    expect(long.fixture.workLinks).toHaveLength(0)
+    await gap(rejected, 3, longRows)
+    expect(toolCount(long.fixture, 'issue_work_link_add')).toBe(1)
+  })
+
+  it('503 → 간격·상한 유지 — 빈 트리/복귀를 간격 없이 5회 해도 add 1, 간격마다 1회씩 상한 3에서 끝', async () => {
+    const r = await rig()
+    const run = clocked({ registry: registryFor({ connectionId: r.connectionId, explicit: true }), service: r.service })
+    r.fixture.toolFaults.set('issue_work_link_add', { kind: 'http', status: 503, body: '{}' })
+    await run.observe(rows({ explicit: true }))
+    await gap(run, 5, rows({ explicit: true }))
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(1)
+    run.tick(MIGRATE_RETRY_MS)
+    await gap(run, 3, rows({ explicit: true }))
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(2)
+    run.tick(MIGRATE_RETRY_MS * 2)
+    await gap(run, 3, rows({ explicit: true }))
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(3)
+    run.tick(MIGRATE_RETRY_MS * 8)
+    await gap(run, 3, rows({ explicit: true }))
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(3)
+  })
+
+  it('양성 대조 — 자격을 바꾸면(새 세대) 빠졌다 돌아온 정지 링크도 다시 보낸다', async () => {
+    const r = await rig()
+    await r.service.addConnection({ sourceId: 'la', token: FAKE_LA_READ_TOKEN, replaceId: r.connectionId })
+    const run = clocked({ registry: registryFor({ connectionId: r.connectionId, explicit: true }), service: r.service })
+    await run.observe(rows({ explicit: true }))
+    await run.observe([])
+    await r.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: r.connectionId })
+    await run.observe(rows({ explicit: true }))
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(2)
+    expect(remoteRows(r.fixture, WT)).toHaveLength(1)
+  })
+})
+
+describe('X2-3 work-machine.json 최초 확정은 프로세스 사이에서도 하나 — 진 실행은 확정값을 다시 읽어 반환(리뷰 R09 조건)', () => {
+  type Child = { pid: number | undefined; ready: Promise<void>; value: Promise<string>; exit: Promise<number | null>; release: (name: string) => void; kill: () => void }
+  const children: Child[] = []
+  afterEach(() => { for (const child of children.splice(0)) child.kill() })
+
+  function child(dir: string): Child {
+    const proc = fork(path.join(import.meta.dirname, 'machine-race.child.mjs'), [dir], { execArgv: ['--import', 'tsx'], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] })
+    let ready: () => void = () => {}
+    let value: (name: string) => void = () => {}
+    const made: Child = {
+      pid: proc.pid,
+      ready: new Promise<void>((resolve) => { ready = resolve }),
+      value: new Promise<string>((resolve) => { value = resolve }),
+      exit: new Promise<number | null>((resolve) => { proc.on('exit', (code) => resolve(code)) }),
+      release: (name) => { proc.send({ release: name }) },
+      kill: () => { if (proc.exitCode === null) proc.kill() },
+    }
+    proc.on('message', (message: unknown) => {
+      if (typeof message !== 'object' || message === null) return
+      if ('ready' in message) ready()
+      if ('value' in message && typeof message.value === 'string') value(message.value)
+    })
+    children.push(made)
+    return made
+  }
+
+  const stored = (dir: string): unknown => JSON.parse(fs.readFileSync(path.join(dir, MACHINE_FILE), 'utf8'))
+
+  it('둘 다 조회 대기 → A(review-host) 먼저 확정 · B(Review Mac) 나중 → 둘 다 review-host · 파일도 review-host · 깨진 파일 재생성도 같은 규칙', async () => {
+    for (const broken of [false, true]) {
+      const dir = tempDir('l635r2-mp-')
+      if (broken) fs.writeFileSync(path.join(dir, MACHINE_FILE), '{broken')
+      const a = child(dir)
+      const b = child(dir)
+      await Promise.all([a.ready, b.ready])
+      a.release('review-host')
+      expect(await a.value).toBe('review-host')
+      b.release('Review Mac')
+      expect(await b.value).toBe('review-host')
+      expect(await Promise.all([a.exit, b.exit])).toEqual([0, 0])
+      expect(stored(dir)).toEqual({ version: 1, machine: 'review-host' })
+      expect(fs.readdirSync(dir).sort()).toEqual([MACHINE_FILE])
+    }
+  }, 30_000)
+
+  it('동시에 풀어도 값은 하나 — 두 반환값과 파일이 같다', async () => {
+    const dir = tempDir('l635r2-mp-')
+    const a = child(dir)
+    const b = child(dir)
+    await Promise.all([a.ready, b.ready])
+    a.release('review-host')
+    b.release('Review Mac')
+    const values = await Promise.all([a.value, b.value])
+    expect(values[0]).toBe(values[1])
+    expect(stored(dir)).toEqual({ version: 1, machine: values[0] })
+    expect(await Promise.all([a.exit, b.exit])).toEqual([0, 0])
+  }, 30_000)
+
+  it('같은 프로세스 안에서도 — 늦게 풀린 조회는 먼저 확정된 값을 돌려준다 · 오래된 잠금은 치우고 쓴다', async () => {
+    const dir = tempDir('l635r2-mp-')
+    let releaseLate: (name: string) => void = () => {}
+    const late = persistedMachine({ dir, read: () => new Promise<string>((resolve) => { releaseLate = resolve }) })()
+    expect(await persistedMachine({ dir, read: async () => 'review-host' })()).toBe('review-host')
+    releaseLate('Review Mac')
+    expect(await late).toBe('review-host')
+
+    const staleDir = tempDir('l635r2-mp-')
+    const lock = path.join(staleDir, `${MACHINE_FILE}.lock`)
+    fs.mkdirSync(lock)
+    const old = new Date(Date.now() - 60_000)
+    fs.utimesSync(lock, old, old)
+    expect(await persistedMachine({ dir: staleDir, read: async () => 'Review Mac' })()).toBe('Review Mac')
+    expect(stored(staleDir)).toEqual({ version: 1, machine: 'Review Mac' })
+    expect(fs.existsSync(lock)).toBe(false)
+  })
+
+  it('다른 실행이 잠금을 잡고 있으면 쓰지 않고 기다린다 — 그 실행이 확정한 값을 돌려준다(잠금 = 쓰기 권한 하나)', async () => {
+    const dir = tempDir('l635r2-mp-')
+    const lock = path.join(dir, `${MACHINE_FILE}.lock`)
+    fs.mkdirSync(lock)
+    const waiting = persistedMachine({ dir, read: async () => 'Review Mac' })()
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(fs.existsSync(path.join(dir, MACHINE_FILE))).toBe(false)
+    fs.writeFileSync(path.join(dir, MACHINE_FILE), `${JSON.stringify({ version: 1, machine: 'review-host' })}\n`)
+    fs.rmSync(lock, { recursive: true })
+    expect(await waiting).toBe('review-host')
+    expect(stored(dir)).toEqual({ version: 1, machine: 'review-host' })
   })
 })

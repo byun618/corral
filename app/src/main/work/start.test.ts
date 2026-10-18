@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { Receipts } from '../../runtime/terminal/receipts.js'
 import { RuntimeError } from '../../runtime/contracts.js'
 import type { Invocation, RpcResponse } from '../../runtime/contracts.js'
-import { newAttemptId, type StartWorkInput } from '../../shared/work-start.js'
+import { newAttemptId, type StartSourceLink, type StartWorkInput } from '../../shared/work-start.js'
 import { testRepo, testWorktree } from '../../shared/test-rows.js'
 import type { RepoRow } from '../../shared/types.js'
 import type { StoredWorkLink } from '../../shared/work-link.js'
@@ -51,6 +51,7 @@ function fakeLinks({ held = {}, canSave = () => true }: { held?: Record<string, 
       if (current !== undefined) return current.connectionId === link.connectionId && current.itemId === link.itemId ? 'linked' : 'held'
       return write({ path, link }) ? 'saved' : 'failed'
     },
+    sourceSave: ({ send }: { path: string; send: () => Promise<StartSourceLink> }): Promise<StartSourceLink> => send(),
   }
 }
 

@@ -166,3 +166,12 @@ describe('attribute — F9 걸러진 루트 0개는 측정 불가', () => {
     expect(result.app).toEqual({ state: 'unavailable', reason: '앱 프로세스가 ps 표에 없다' })
   })
 })
+
+describe('attribute — 셸 부모가 1 이면 herdr 루트로 쓰지 않는다', () => {
+  it('pid 1 아래 전체를 herdr 로 삼키지 않는다', () => {
+    const orphan = TABLE.replace('  300   200   0.0   2048', '  300     1   0.0   2048')
+    const result = attribute({ table: parsePsTable(orphan), panes: [{ paneId: 'A', shellPid: 300, expectedParent: null }], appRoots: [100] })
+    expect(result.herdr).toEqual({ state: 'unavailable', reason: '측정된 pane 이 없어 herdr 서버 pid 를 모른다' })
+    expect(usage(result.app).pids).not.toContain(999)
+  })
+})

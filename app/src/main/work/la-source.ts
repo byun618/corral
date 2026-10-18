@@ -9,7 +9,14 @@
 //     스페이스가 아닌 프로젝트(보관·완료) 아래 일감은 「미분류」 로 간다(01-criteria C9, 2026-10-13 사용자 재승인 — R3-D). 열린 수도 같은 규칙.
 //     스페이스가 아니게 된 옛 프로젝트 키로 목록을 부르면 「스페이스 아님」(rejected).
 // 상태: 모든 LA 스페이스가 같은 `status_list`. 앞으로 = `issue_transition`(forwardOnly) · 뒤로 = `issue_update(statusId)`(D6).
-// 능력 꺼짐(L1 대기): 순서(L1f · LIFE-612) · 커서 페이지(L1c) · 코멘트·이력(L1e).
+// 능력 꺼짐(L1 대기): 순서(L1f · LIFE-612).
+// 커서 페이지(L1c · LIFE-638 · LA LIFE-610) 켜짐: 정규 스페이스 목록 한 쪽 = `issue_list({rootId: 스페이스, archived:'all', paginate:true, limit, cursor})` 한 번.
+//   커서는 LA `nextCursor` 를 받은 글자 그대로 화면에 넘기고 그대로 돌려보낸다(만들거나 해석하지 않는다). LA 쪽은 seq 내림차순이라 부모가 자식보다 뒤 쪽에 온다 —
+//   표시 부모 사슬은 쪽마다 같은 루트의 부모 가능 종류(checkpoint·bug, 보관 포함)를 따로 끝까지 받아 푼다(쪽당 RPC = 스페이스 확인 1 + 쪽 1 + 구조 2 — 작업 수와 무관).
+//   「미분류」 는 루트가 없어 지금처럼 한 번에(D3). LA `잘못된 cursor입니다.` = 낡은 목록 위치(rejected, D4).
+// 코멘트·이력(L1e · LIFE-638 · LA LIFE-611) 켜짐: `issue_comment_list`·`issue_history_list` 를 끝까지 받아 오래된 것부터 · `issue_comment_add`(결과 모름 재전송 없음).
+//   쓰기 5툴(`issue_create`·`issue_update`·`issue_transition`·`issue_link_create`·`issue_link_delete`)에 corral 쓰기 id 를 `clientWriteId` 로 싣는다 —
+//   LA 패턴 밖이면 싣지 않는다(쓰기 id 때문에 쓰기가 거절되지 않게). 이력 행 `writeId` 로 돌아와 활동 기록과 짝을 짓는다.
 // 작업 링크 저장(L1a) 켜짐(LIFE-635 · LA LIFE-609): 저장 = `issue_work_link_add({issueId, link, machine, repo})` · 지우기 = `issue_work_link_remove({issueId, link, machine})`.
 // LA 판별 = 종류 + 핵심 값 + machine — 같은 링크 재저장 = 한 행(repo·부가 값은 통째로 덮음), 없는 링크 지우기 = 오류 아님, 다른 machine 의 같은 경로는 별개 행.
 // 결과 = 응답의 그 일감 링크 목록 전체. 단건(`issue_get`) 응답의 `workLinks` 가 `WorkItem.workLinks`(단건 모양에서만 — 목록 행에는 없다, LIFE-609 D2).
@@ -17,18 +24,19 @@
 // isError text JSON `{statusCode:409, code:"CONFLICT", current, …}` 로 거절(저장 0) → `conflict` + 단건 경로로 다시 읽은 지금 작업(by = null → 「다른 곳에서」).
 // 응답은 `la-shape.ts` 로 검증한 뒤에만 계약 타입으로 바꾼다(C3) — 어긋나면 `invalid_response`.
 // LIFE-602 계약 확장: 필드 수정 = `issue_update`(title·description·priority·dueAt, PATCH) · 완료 갈래 = resolution(completed·cancelled) ·
-// 자식 = `issue_list(parentId)`·`issue_create`(부모 규칙은 종류의 `childKinds` 로 알린다) · 연결 상대의 스페이스 = 상대의 부모 사슬(못 풀면 null) ·
-// 이력은 꺼짐(L1e).
+// 자식 = `issue_list(parentId)`·`issue_create`(부모 규칙은 종류의 `childKinds` 로 알린다) · 연결 상대의 스페이스 = 상대의 부모 사슬(못 풀면 null).
 // LIFE-604 E10·E11: 만들기 = `issue_create`(description·statusId·priority·onBoard 명시) · 생성 메타 = 열린 상태 아무거나 · 필수 필드 없음.
 
 import { isRecord, safeParse } from '../../shared/json.js'
-import { createFieldsProblem } from '../../shared/work.js'
+import { createFieldsProblem, WORK_HISTORY_FIELDS } from '../../shared/work.js'
 import type {
   WorkCall,
   WorkCreateMeta,
   WorkFieldPatch,
   WorkCapabilities,
   WorkError,
+  WorkHistoryEntry,
+  WorkHistoryField,
   WorkItem,
   WorkKind,
   WorkRelation,
@@ -38,26 +46,40 @@ import type {
   WorkStatus,
 } from '../../shared/work.js'
 import { appliedUnread, unknownWriteOutcome, workError } from './errors.js'
-import { readBySeq, readIssueCreated, readIssueDetail, readIssueSummaries, type LaIssueDetail, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, readWorkLinks, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
+import { readBySeq, readComment, readCommentPage, readHistoryPage, readIssueCreated, readIssueDetail, readIssuePage, readIssueSummaries, type LaIssueDetail, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, readWorkLinks, LaShapeError, type LaIssue, type LaPage, type LaStatus } from './la-shape.js'
 import { log } from '../log.js'
 import { McpHttpClient } from './mcp-http.js'
-import type { WorkOutcome, WorkSourceClient, WorkSourceEntry } from './source.js'
+import type { WorkCallMeta, WorkOutcome, WorkSourceClient, WorkSourceEntry } from './source.js'
 
 export const LA_SOURCE_ID = 'la'
 export const LA_DEFAULT_MCP_URL = 'https://assistant-api.chaco.cloud/mcp'
 export const LA_TOKEN_PREFIX = 'life_pat_'
 /** 「미분류」 스페이스 키 — LA 일감 id(uuid)와 겹치지 않는다. */
 export const LA_CATCH_ALL_KEY = 'la:unsorted'
-/** `issue_list` 상한(도구 스키마 max 200). 상한에 닿은 목록은 `truncated` 로 알린다 — 커서가 없다(L1c). */
+/** `issue_list` 상한(도구 스키마 max 200). 한 번에 받는 목록(스페이스·미분류·자식)이 상한에 닿으면 `truncated` 로 알린다. */
 const LIST_LIMIT = 200
+/** 정규 스페이스 목록의 쪽 크기(LIFE-638 D1) — 화면 「더 불러오기」 한 번에 오는 수. 시험은 `pageSize` 로 줄인다. */
+const LIST_PAGE_SIZE = 100
+/** 정규 스페이스 목록 쪽 수 상한(D10) — 이 쪽을 넘어 커서가 이어지면 조용히 끊지 않고 오류. 100 × 100 = 1만 건. */
+const MAX_LIST_PAGES = 100
+/** 한 연산 안에서 끝까지 따라가는 쪽 목록(구조·코멘트·이력)의 쪽 크기(LA 상한 200)와 쪽 수 상한(D10) — 200 × 50 = 1만 행. */
+const FOLLOW_PAGE_SIZE = 200
+const MAX_FOLLOW_PAGES = 50
+/** 목록 커서의 쪽 번호를 기억하는 수 — 쪽 수 상한을 연산 사이에서 세기 위함. 넘으면 오래된 것부터 잊는다(잊힌 커서는 2쪽으로 센다). */
+const LIST_CURSOR_MEMORY = 256
+/** LA `clientWriteId` 입력 패턴(611 mcp-schema) — 밖이면 LA 가 -32602 로 쓰기 전체를 거절하므로 싣지 않는다(D5). */
+const CLIENT_WRITE_ID = /^[A-Za-z0-9_-]{1,64}$/
+/** LA 의 낡은·깨진 커서 문구(610·611 고정 문구) — 이 글자일 때만 「목록 위치가 낡음」 으로 읽는다(D4). */
+const INVALID_CURSOR = '잘못된 cursor입니다.'
+/** 코멘트 남기기 결과를 모름(D7) — 다시 보내지 않는다. */
+const COMMENT_UNKNOWN_PREFIX = '코멘트가 남았는지 모릅니다(다시 보내지 말고 새로 고쳐 확인하세요)'
 /** 프로젝트 → 체크포인트 → bug → task 를 넘는 깊이는 없다고 보지 않고, 넉넉히 내려가되 끝은 둔다. */
 const MAX_DEPTH = 5
 /**
  * LA 의 부모 규칙(issue.service `checkParentRule`): task 의 부모 = project·checkpoint·bug · bug 의 부모 = project·checkpoint(또는 없음)
- * · checkpoint 의 부모 = project · project 는 부모 없음. → **자식을 가질 수 있는 것은 project·checkpoint·bug** 이고 task 만 잎이다(R1-A).
+ * · checkpoint 의 부모 = project · project 는 부모 없음(R1-A). 작업 쪽 모양(E6) — 종류마다 그 아래에 만들 수 있는 자식 종류. task 는 잎.
+ * 목록의 표시 부모 사슬은 그래서 checkpoint·bug 만 따라가면 된다(LIFE-638 D2 — 구조 = 그 두 종류).
  */
-const PARENT_KINDS = new Set<LaIssue['kind']>(['project', 'checkpoint', 'bug'])
-/** 같은 규칙의 작업 쪽 모양(E6) — 종류마다 그 아래에 만들 수 있는 자식 종류. task 는 잎. */
 const CHILD_KINDS: Record<'checkpoint' | 'task' | 'bug', string[]> = { checkpoint: ['task', 'bug'], bug: ['task'], task: [] }
 /** 연결 상대의 스페이스(E9)를 푸는 상한 — 넘는 상대는 null(모름). 단건 한 번에 RPC 가 끝없이 늘지 않게. */
 const MAX_LINK_SPACES = 12
@@ -92,10 +114,10 @@ export const LA_CAPABILITIES: WorkCapabilities = {
   relations: { state: 'on' },
   parentChange: { state: 'on' },
   order: { state: 'disabled', reason: 'LA 에는 순서를 바꾸는 MCP 도구가 없습니다 (LIFE-612).' },
-  cursorPaging: { state: 'disabled', reason: 'LA 목록은 커서 페이지가 없습니다 — 한 번에 최대 200건 (L1c).' },
+  cursorPaging: { state: 'on' },
   conflictCheck: { state: 'on' },
-  comments: { state: 'disabled', reason: 'LA 에는 코멘트가 아직 없습니다 (L1e).' },
-  history: { state: 'disabled', reason: 'LA 에는 변경 이력이 아직 없습니다 (L1e).' },
+  comments: { state: 'on' },
+  history: { state: 'on' },
   workLinkStore: { state: 'on' },
   resolution: { state: 'on' },
   querySearch: { state: 'hidden' },
@@ -106,10 +128,11 @@ const KINDS: WorkKind[] = (['checkpoint', 'task', 'bug'] as const).map((key) => 
 
 type Step<T> = { ok: true; value: T } | { ok: false; outcome: WorkOutcome }
 
-export function laSourceEntry({ url, clientVersion, fetchImpl, timeoutMs }: { url: string; clientVersion: string; fetchImpl?: typeof fetch; timeoutMs?: number }): WorkSourceEntry {
+/** `pageSize` = 정규 스페이스 목록의 쪽 크기(기본 100, LA 상한 200) — 시험이 여러 쪽을 만들 때만 바꾼다. */
+export function laSourceEntry({ url, clientVersion, fetchImpl, timeoutMs, pageSize }: { url: string; clientVersion: string; fetchImpl?: typeof fetch; timeoutMs?: number; pageSize?: number }): WorkSourceEntry {
   return {
     descriptor: LA_DESCRIPTOR,
-    create: ({ token }) => new LaSource(new McpHttpClient({ url, token, clientVersion, fetchImpl, timeoutMs, toolError: laToolError })),
+    create: ({ token }) => new LaSource({ mcp: new McpHttpClient({ url, token, clientVersion, fetchImpl, timeoutMs, toolError: laToolError }), pageSize }),
   }
 }
 
@@ -120,6 +143,8 @@ export function laSourceEntry({ url, clientVersion, fetchImpl, timeoutMs }: { ur
  * 나머지는 공통 분류로.
  */
 export function laToolError(text: string): WorkError | null {
+  // 낡은·깨진 커서(D4) — 연결 상태를 바꾸지 않는 연산 실패. 원격 글을 옮기지 않고 이쪽 말로.
+  if (text.trim() === INVALID_CURSOR) return workError({ kind: 'rejected', message: '목록 위치가 낡았습니다 — 처음부터 새로 고치세요.' })
   const parsed = safeParse(text)
   if (isRecord(parsed) && parsed.code === 'CONFLICT' && parsed.statusCode === 409 && isRecord(parsed.current)) {
     return workError({ kind: 'conflict', status: 409, message: '다른 곳에서 먼저 바뀌었습니다 — 새로 불러오거나 덮어쓰세요.' })
@@ -132,9 +157,13 @@ export function laToolError(text: string): WorkError | null {
 
 export class LaSource implements WorkSourceClient {
   private readonly mcp: McpHttpClient
+  private readonly pageSize: number
+  /** 목록 커서 → 그 커서가 여는 쪽 번호(2부터). 쪽 수 상한(D10)을 연산 사이에서 센다. 커서 글자는 LA 값 그대로 열쇠로만 쓴다. */
+  private readonly listPages = new Map<string, number>()
 
-  constructor(mcp: McpHttpClient) {
+  constructor({ mcp, pageSize = LIST_PAGE_SIZE }: { mcp: McpHttpClient; pageSize?: number }) {
     this.mcp = mcp
+    this.pageSize = pageSize
   }
 
   capabilities(): WorkCapabilities {
@@ -145,7 +174,8 @@ export class LaSource implements WorkSourceClient {
     this.mcp.close()
   }
 
-  async call(call: WorkCall): Promise<WorkOutcome> {
+  async call(call: WorkCall, meta?: WorkCallMeta): Promise<WorkOutcome> {
+    const writeId = clientWriteIdOf(meta?.writeId ?? null)
     switch (call.op) {
       case 'listSpaces': return this.listSpaces()
       case 'listStatuses': {
@@ -153,8 +183,10 @@ export class LaSource implements WorkSourceClient {
         return statuses.ok ? { ok: true, result: { op: 'listStatuses', statuses: statuses.value.map(toStatus), kinds: KINDS } } : statuses.outcome
       }
       case 'listItems':
-        if (call.cursor !== null) return unsupported('cursorPaging')
-        return this.listItems(call.spaceKey)
+        if (call.spaceKey !== LA_CATCH_ALL_KEY) return this.listItems({ spaceKey: call.spaceKey, cursor: call.cursor })
+        // 「미분류」 는 한 번에 다 준다(D3) — 커서가 오면 첫 쪽을 다시 주지 않고 거절.
+        if (call.cursor !== null) return { ok: false, error: workError({ kind: 'rejected', message: '「미분류」 는 한 번에 다 받습니다 — 다음 쪽이 없습니다. 새로 고치세요.' }) }
+        return this.listCatchAll()
       case 'getItem': {
         const item = await this.item(call.itemId)
         return item.ok ? { ok: true, result: { op: 'getItem', item: item.value } } : item.outcome
@@ -165,37 +197,36 @@ export class LaSource implements WorkSourceClient {
         return statuses.ok ? { ok: true, result: { op: 'listTransitions', statusKeys: statuses.value.map((status) => status.id), blocked: [] } } : statuses.outcome
       }
       case 'changeStatus':
-        return this.changeStatus({ itemId: call.itemId, statusKey: call.statusKey, resolution: call.resolution ?? null, ifVersion: call.ifVersion })
+        return this.changeStatus({ itemId: call.itemId, statusKey: call.statusKey, resolution: call.resolution ?? null, ifVersion: call.ifVersion, writeId })
       case 'updateItem': {
-        const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, ...updateArgs(call.fields) }, ifVersion: call.ifVersion }), read: readIssueUpdated })
+        const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, ...updateArgs(call.fields) }, ifVersion: call.ifVersion }), read: readIssueUpdated, writeId })
         return this.written({ op: 'updateItem', itemId: call.itemId, step: updated })
       }
       case 'listChildren': return this.listChildren(call.itemId)
-      case 'createItem': return this.createItem(call)
+      case 'createItem': return this.createItem({ call, writeId })
       case 'getCreateMeta': {
         const meta = await this.createMeta({ spaceKey: call.spaceKey, kindKey: call.kindKey })
         return meta.ok ? { ok: true, result: { op: 'getCreateMeta', meta: meta.value } } : meta.outcome
       }
-      case 'listHistory': return unsupported('history')
+      case 'listHistory': return this.listHistory(call.itemId)
       case 'setPlacement': {
-        const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, onBoard: call.placement === 'board' }, ifVersion: call.ifVersion }), read: readIssueUpdated })
+        const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, onBoard: call.placement === 'board' }, ifVersion: call.ifVersion }), read: readIssueUpdated, writeId })
         return this.written({ op: 'setPlacement', itemId: call.itemId, step: updated })
       }
       case 'setParent': {
         // 스페이스 바로 아래(null) = 그 프로젝트가 부모. 「미분류」 바로 아래 = 부모 없음.
         const parentId = call.parentId ?? (call.spaceKey === LA_CATCH_ALL_KEY ? null : call.spaceKey)
-        const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, parentId }, ifVersion: call.ifVersion }), read: readIssueUpdated })
+        const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: call.itemId, parentId }, ifVersion: call.ifVersion }), read: readIssueUpdated, writeId })
         return this.written({ op: 'setParent', itemId: call.itemId, step: updated })
       }
-      case 'addRelation': return this.addRelation({ itemId: call.itemId, kind: call.kind, otherKey: call.otherKey })
+      case 'addRelation': return this.addRelation({ itemId: call.itemId, kind: call.kind, otherKey: call.otherKey, writeId })
       case 'removeRelation': {
-        const deleted = await this.tool({ name: 'issue_link_delete', args: { linkId: call.relationId }, read: readLinkDeleted })
+        const deleted = await this.tool({ name: 'issue_link_delete', args: withWriteId({ args: { linkId: call.relationId }, writeId }), read: readLinkDeleted })
         return deleted.ok ? { ok: true, result: { op: 'removeRelation', relationId: deleted.value } } : deleted.outcome
       }
       case 'reorder': return unsupported('order')
-      case 'listComments':
-      case 'addComment':
-        return unsupported('comments')
+      case 'listComments': return this.listComments(call.itemId)
+      case 'addComment': return this.addComment({ itemId: call.itemId, body: call.body })
       case 'saveWorkLink': {
         // repo 는 늘 싣는다(null 이어도) — 생략하면 LA 가 기존 repo 를 null 로 덮는 것과 같지만, 무엇을 보냈는지가 인자에 드러나게(F7).
         const saved = await this.tool({ name: 'issue_work_link_add', args: { issueId: call.itemId, link: call.link, machine: call.machine, repo: call.repo }, read: readWorkLinks })
@@ -226,7 +257,7 @@ export class LaSource implements WorkSourceClient {
    * 미지정이면 보드 생성이 조용히 백로그로 간다(배치를 안 보낸 만들기 = 보드, T3 자식 추가 그대로). 상태를 안 보내면 LA 기본 상태.
    * 부모 규칙은 LA 서버가 다시 검증한다 — 여기서는 종류의 `childKinds` 밖·메타 밖 상태·필드를 보내기 전에 거절한다.
    */
-  private async createItem(call: Extract<WorkCall, { op: 'createItem' }>): Promise<WorkOutcome> {
+  private async createItem({ call, writeId }: { call: Extract<WorkCall, { op: 'createItem' }>; writeId: string | null }): Promise<WorkOutcome> {
     const kind = laKind(call.kindKey)
     if (kind === null) return { ok: false, error: workError({ kind: 'rejected', message: '없는 종류입니다.' }) }
     const meta = await this.createMeta({ spaceKey: call.spaceKey, kindKey: kind })
@@ -241,7 +272,8 @@ export class LaSource implements WorkSourceClient {
     }
     const parentId = call.parentId ?? (call.spaceKey === LA_CATCH_ALL_KEY ? null : call.spaceKey)
     // 생성 요청은 다시 보내지 않는다 — 결과를 모르는 실패(시간 초과·끊김·깨진 답)는 「만들어졌을 수 있음」 으로 돌려준다(R1-A ⓑ).
-    const sent = await this.mcp.callTool({ name: 'issue_create', args: createArgs({ call, kind, parentId }) })
+    // 쓰기 id 는 LA 가 부모의 `child` 이력 행에만 붙인다(611) — 만든 작업 자신에는 이력 행이 없다.
+    const sent = await this.mcp.callTool({ name: 'issue_create', args: withWriteId({ args: createArgs({ call, kind, parentId }), writeId }) })
     if (!sent.ok) return { ok: false, error: unknownWriteOutcome({ error: sent.error, unsent: sent.unsent === true }) }
     let created: LaIssue
     try {
@@ -290,8 +322,8 @@ export class LaSource implements WorkSourceClient {
    * 쓰기 도구(`issue_update`·`issue_transition`) — 보낸 뒤 결과를 모르는 실패(시간 초과·연결 뒤 끊김·깨진 답)는 「적용됐는지 모름」(LIFE-632 F11 —
    * 만들기 `unknownWriteOutcome` 과 같은 규칙). 보내지 않은 실패(`unsent`)·출처의 거절(권한·검증·충돌)은 그대로. 다시 보내지 않는다.
    */
-  private async writeTool<T>({ name, args, read }: { name: string; args: Record<string, unknown>; read: (value: unknown, path: string) => T }): Promise<Step<T>> {
-    const sent = await this.mcp.callTool({ name, args })
+  private async writeTool<T>({ name, args, read, writeId }: { name: string; args: Record<string, unknown>; read: (value: unknown, path: string) => T; writeId: string | null }): Promise<Step<T>> {
+    const sent = await this.mcp.callTool({ name, args: withWriteId({ args, writeId }) })
     if (!sent.ok) return { ok: false, outcome: { ok: false, error: unknownWriteOutcome({ error: sent.error, unsent: sent.unsent === true, prefix: UNKNOWN_PREFIX }) } }
     try {
       return { ok: true, value: read(sent.value, name) }
@@ -342,36 +374,100 @@ export class LaSource implements WorkSourceClient {
     return { ok: true, result: { op: 'listSpaces', spaces, capabilities: LA_CAPABILITIES } }
   }
 
-  private async listItems(spaceKey: string): Promise<WorkOutcome> {
-    if (spaceKey === LA_CATCH_ALL_KEY) return this.listCatchAll()
+  /**
+   * 정규 스페이스 목록 한 쪽(LIFE-638 D1·D2). 스페이스 확인 → 그 쪽(`rootId` 커서 모드)과 구조(같은 루트의 checkpoint·bug 전부, 보관 포함)를 함께 받는다.
+   * 쪽을 다 이어 붙인 결과는 옛 깊이별 탐색과 같다 — 같은 작업 집합(미보관 · 조상의 보관 무관, R2-C) · 같은 표시 부모(가장 가까운 미보관 조상, 스페이스면 null).
+   * 부모가 뒤 쪽에 있어도 구조가 사슬을 풀어 준다. 커서는 LA 값 그대로 — 끝 = `nextCursor: null`, `truncated` 는 늘 false(끝은 커서가 말한다).
+   */
+  private async listItems({ spaceKey, cursor }: { spaceKey: string; cursor: string | null }): Promise<WorkOutcome> {
+    const page = cursor === null ? 1 : this.listPages.get(cursor) ?? 2
+    if (page > MAX_LIST_PAGES) return { ok: false, error: pagingError('목록') }
     const space = await this.tool({ name: 'issue_get', args: { id: spaceKey }, read: readIssueDetail })
     if (!space.ok) return space.outcome
     // 스페이스가 아닌 키(프로젝트가 아닌 일감 · 완료·보관돼 스페이스가 아니게 된 옛 프로젝트) = 「스페이스 아님」(R3-D) —
     // 그 아래 미보관 일감은 미분류에 나오고 단건도 미분류 키를 말한다. 옛 키로 그 프로젝트 키를 붙인 목록을 내지 않는다.
     if (!isSpace(space.value)) return { ok: false, error: workError({ kind: 'rejected', message: '이 키는 스페이스가 아닙니다 — 완료·보관된 프로젝트의 작업은 「미분류」 에 있습니다.' }) }
-    const children = await this.list({ parentId: spaceKey })
-    if (!children.ok) return children.outcome
-    let truncated = children.value.length >= LIST_LIMIT
-    // 구조는 보관 포함으로 내려간다 — 보관된 checkpoint·bug 아래 미보관 작업을 놓치지 않는다(R2-C).
-    const collected = new Map<string, LaIssue>()
-    let frontier = children.value.filter((issue) => issue.kind !== 'project')
-    for (let depth = 0; depth < MAX_DEPTH && frontier.length > 0; depth += 1) {
-      for (const issue of frontier) collected.set(issue.id, issue)
-      // 자식을 가질 수 있는 것만 내려간다 — task 만 잎이다(bug 아래에도 task 가 있다).
-      const parents = frontier.filter((issue) => PARENT_KINDS.has(issue.kind))
-      const steps = await Promise.all(parents.map((issue) => this.list({ parentId: issue.id })))
-      const failed = steps.find((step) => !step.ok)
-      if (failed !== undefined && !failed.ok) return failed.outcome
-      const next = steps.flatMap((step) => (step.ok ? step.value : []))
-      if (steps.some((step) => step.ok && step.value.length >= LIST_LIMIT)) truncated = true
-      frontier = next.filter((issue) => issue.kind !== 'project' && !collected.has(issue.id))
-    }
+    const rootArgs = { rootId: spaceKey, archived: 'all', paginate: true }
+    const [rows, checkpoints, bugs] = await Promise.all([
+      this.tool({ name: 'issue_list', args: { ...rootArgs, limit: this.pageSize, ...(cursor === null ? {} : { cursor }) }, read: readIssuePage }),
+      this.follow({ name: 'issue_list', args: { ...rootArgs, kind: 'checkpoint' }, read: readIssuePage, what: '목록 구조' }),
+      this.follow({ name: 'issue_list', args: { ...rootArgs, kind: 'bug' }, read: readIssuePage, what: '목록 구조' }),
+    ])
+    if (!rows.ok) return rows.outcome
+    if (!checkpoints.ok) return checkpoints.outcome
+    if (!bugs.ok) return bugs.outcome
+    const nextCursor = rows.value.nextCursor
+    // 끝나지 않는 쪽(D10) — 빈 쪽인데 다음이 있음 · 받은 커서를 그대로 다시 줌. 조용히 끊지 않는다.
+    if (nextCursor !== null && (rows.value.items.length === 0 || nextCursor === cursor)) return { ok: false, error: pagingError('목록') }
+    if (nextCursor !== null) this.rememberListPage({ cursor: nextCursor, page: page + 1 })
     // 표시 부모를 풀 때 스페이스 프로젝트에 닿으면 바로 아래(null)다 — 사슬 지도에 프로젝트도 넣는다.
-    const byId = new Map(collected).set(space.value.id, space.value)
-    const items = [...collected.values()]
-      .filter((issue) => issue.archivedAt === null)
+    const byId = new Map<string, LaIssue>()
+    for (const issue of [...checkpoints.value, ...bugs.value]) byId.set(issue.id, issue)
+    byId.set(space.value.id, space.value)
+    const items = rows.value.items
+      .filter((issue) => issue.kind !== 'project' && issue.archivedAt === null)
       .map((issue) => toItem({ issue, spaceKey, parentId: visibleParent({ issue, byId }) }))
-    return { ok: true, result: { op: 'listItems', items, nextCursor: null, truncated } }
+    return { ok: true, result: { op: 'listItems', items, nextCursor, truncated: false } }
+  }
+
+  private rememberListPage({ cursor, page }: { cursor: string; page: number }): void {
+    this.listPages.delete(cursor)
+    this.listPages.set(cursor, page)
+    if (this.listPages.size <= LIST_CURSOR_MEMORY) return
+    const oldest = this.listPages.keys().next()
+    if (oldest.done !== true) this.listPages.delete(oldest.value)
+  }
+
+  /**
+   * 커서 쪽을 끝까지(D10) — 같은 인자 + `cursor: nextCursor`. 빈 쪽인데 다음이 있음 · 이미 받은 커서 · 쪽 수 상한 초과는 조용히 자르지 않고 오류(Jira `pagingError` 선례).
+   */
+  private async follow<T>({ name, args, read, what }: { name: string; args: Record<string, unknown>; read: (value: unknown, path: string) => LaPage<T>; what: string }): Promise<Step<T[]>> {
+    const out: T[] = []
+    const seen = new Set<string>()
+    let cursor: string | null = null
+    for (let page = 0; page < MAX_FOLLOW_PAGES; page += 1) {
+      const step: Step<LaPage<T>> = await this.tool({ name, args: { ...args, limit: FOLLOW_PAGE_SIZE, ...(cursor === null ? {} : { cursor }) }, read })
+      if (!step.ok) return step
+      out.push(...step.value.items)
+      const next: string | null = step.value.nextCursor
+      if (next === null) return { ok: true, value: out }
+      if (step.value.items.length === 0 || seen.has(next)) break
+      seen.add(next)
+      cursor = next
+    }
+    return { ok: false, outcome: { ok: false, error: pagingError(what) } }
+  }
+
+  /** 변경 이력(D6) — 끝까지 받아 **오래된 것부터**(LA 는 최신순). 계약 9칸만 · body 는 from/to null · 쓰기 id 그대로. `origin` 은 싣지 않는다(D8). */
+  private async listHistory(itemId: string): Promise<WorkOutcome> {
+    const rows = await this.follow({ name: 'issue_history_list', args: { issueId: itemId }, read: readHistoryPage, what: '변경 이력' })
+    if (!rows.ok) return rows.outcome
+    const entries: WorkHistoryEntry[] = []
+    for (const row of rows.value) {
+      const field = historyField(row.field)
+      if (field === null) continue
+      const text = field === 'body' ? { from: null, to: null } : { from: row.from, to: row.to }
+      entries.push({ id: row.id, at: row.at, author: row.author, field, ...text, writeId: row.writeId })
+    }
+    return { ok: true, result: { op: 'listHistory', entries: entries.reverse() } }
+  }
+
+  /** 코멘트(D7) — 끝까지 받아 **오래된 것부터**. 본문은 받은 그대로. */
+  private async listComments(itemId: string): Promise<WorkOutcome> {
+    const rows = await this.follow({ name: 'issue_comment_list', args: { issueId: itemId }, read: readCommentPage, what: '코멘트' })
+    return rows.ok ? { ok: true, result: { op: 'listComments', comments: [...rows.value].reverse() } } : rows.outcome
+  }
+
+  /** 코멘트 남기기(D7) — 한 번만 보낸다. 보낸 뒤 결과를 모르면(시간 초과·끊김·깨진 답) 「남았는지 모름」. 코멘트는 판을 올리지 않는다(611). */
+  private async addComment({ itemId, body }: { itemId: string; body: string }): Promise<WorkOutcome> {
+    const sent = await this.mcp.callTool({ name: 'issue_comment_add', args: { issueId: itemId, body } })
+    if (!sent.ok) return { ok: false, error: unknownWriteOutcome({ error: sent.error, unsent: sent.unsent === true, prefix: COMMENT_UNKNOWN_PREFIX }) }
+    try {
+      return { ok: true, result: { op: 'addComment', comment: readComment(sent.value, 'issue_comment_add') } }
+    } catch (error) {
+      if (error instanceof LaShapeError) return { ok: false, error: unknownWriteOutcome({ error: workError({ kind: 'invalid_response', message: error.message }), unsent: false, prefix: COMMENT_UNKNOWN_PREFIX }) }
+      throw error
+    }
   }
 
   /** 「미분류」 — 부모 사슬이 프로젝트에 닿지 않거나, 닿은 프로젝트가 스페이스가 아닌(보관·완료) 미보관 일감. 4번 받아 메모리에서 사슬을 푼다. */
@@ -487,7 +583,7 @@ export class LaSource implements WorkSourceClient {
    * 소비하지 않으므로 같은 판, F5) · 뒤로 `issue_update(statusId)`(D6) · 갈래만 `issue_update(resolution)`. **쓰기가 없는 갈래**(같은 상태·같은 갈래)는
    * 서버가 판을 볼 기회가 없다(F7) — 이 연산이 막 읽은 단건의 판과 글자로 견줘 다르면 충돌로 돌려준다(낡은 판을 성공으로 넘기지 않는다).
    */
-  private async changeStatus({ itemId, statusKey, resolution, ifVersion }: { itemId: string; statusKey: string; resolution: WorkResolutionChoice | null; ifVersion: string | null }): Promise<WorkOutcome> {
+  private async changeStatus({ itemId, statusKey, resolution, ifVersion, writeId }: { itemId: string; statusKey: string; resolution: WorkResolutionChoice | null; ifVersion: string | null; writeId: string | null }): Promise<WorkOutcome> {
     const [statuses, current] = await Promise.all([this.statuses(), this.tool({ name: 'issue_get', args: { id: itemId }, read: readIssueDetail })])
     if (!statuses.ok) return statuses.outcome
     if (!current.ok) return current.outcome
@@ -503,14 +599,14 @@ export class LaSource implements WorkSourceClient {
         if (ifVersion !== null && ifVersion !== current.value.version) return this.withCurrent({ itemId, outcome: { ok: false, error: workError({ kind: 'conflict', status: 409, message: conflictMessage(current.value.displayId) }) } })
         return this.itemResult({ op: 'changeStatus', itemId, applied: false })
       }
-      const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: itemId, resolution }, ifVersion }), read: readIssueUpdated })
+      const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args: { id: itemId, resolution }, ifVersion }), read: readIssueUpdated, writeId })
       return this.written({ op: 'changeStatus', itemId, step: updated })
     }
     const labelUnique = order.filter((status) => status.label === target.label).length === 1
     if (to > from && labelUnique) {
       const args: Record<string, unknown> = { id: itemId, toStatusLabel: target.label, forwardOnly: true }
       if (target.categoryKey === 'done') args.resolution = chosen
-      const moved = await this.writeTool({ name: 'issue_transition', args: versioned({ args, ifVersion }), read: readTransition })
+      const moved = await this.writeTool({ name: 'issue_transition', args: versioned({ args, ifVersion }), read: readTransition, writeId })
       if (!moved.ok) return this.withCurrent({ itemId, outcome: moved.outcome })
       if (moved.value.transitioned) return this.itemResult({ op: 'changeStatus', itemId, applied: true })
       // 서버가 「뒤로」 라고 보면(순서 해석이 갈림) 되돌리기 경로로 — D6 은 둘 다 허용한다.
@@ -518,18 +614,18 @@ export class LaSource implements WorkSourceClient {
     const args: Record<string, unknown> = { id: itemId, statusId: target.id }
     if (target.categoryKey !== 'done' && current.value.statusCategoryKey === 'done') args.resolution = null
     if (target.categoryKey === 'done') args.resolution = chosen
-    const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args, ifVersion }), read: readIssueUpdated })
+    const updated = await this.writeTool({ name: 'issue_update', args: versioned({ args, ifVersion }), read: readIssueUpdated, writeId })
     return this.written({ op: 'changeStatus', itemId, step: updated })
   }
 
-  private async addRelation({ itemId, kind, otherKey }: { itemId: string; kind: WorkRelation['kind']; otherKey: string }): Promise<WorkOutcome> {
+  private async addRelation({ itemId, kind, otherKey, writeId }: { itemId: string; kind: WorkRelation['kind']; otherKey: string; writeId: string | null }): Promise<WorkOutcome> {
     const match = LA_KEY.exec(otherKey.trim())
     if (match === null) return { ok: false, error: workError({ kind: 'rejected', message: `LA 작업 키는 LIFE-N 꼴입니다 (${otherKey.slice(0, 40)}).` }) }
     const issue = await this.tool({ name: 'issue_get', args: { id: itemId }, read: readIssueDetail })
     if (!issue.ok) return issue.outcome
     const otherSeq = Number(match[1])
     if (otherSeq === issue.value.sequentialId) return { ok: false, error: workError({ kind: 'rejected', message: '자기 자신과는 연결할 수 없습니다.' }) }
-    const created = await this.tool({ name: 'issue_link_create', args: { seq: issue.value.sequentialId, relation: kind, otherSeq }, read: readLink })
+    const created = await this.tool({ name: 'issue_link_create', args: withWriteId({ args: { seq: issue.value.sequentialId, relation: kind, otherSeq }, writeId }), read: readLink })
     if (!created.ok) return created.outcome
     const link = created.value
     return {
@@ -578,12 +674,31 @@ function versioned({ args, ifVersion }: { args: Record<string, unknown>; ifVersi
   return ifVersion === null ? args : { ...args, ifVersion }
 }
 
+/** corral 쓰기 id → LA `clientWriteId` 값. 패턴 밖이거나 없으면 null(싣지 않는다, D5). */
+function clientWriteIdOf(writeId: string | null): string | null {
+  return writeId !== null && CLIENT_WRITE_ID.test(writeId) ? writeId : null
+}
+
+/** 쓰기 도구 인자에 `clientWriteId` 를 — 값이 없으면 칸을 뺀다(LA: 생략 = 이력 행 writeId null). */
+function withWriteId({ args, writeId }: { args: Record<string, unknown>; writeId: string | null }): Record<string, unknown> {
+  return writeId === null ? args : { ...args, clientWriteId: writeId }
+}
+
+/** LA 이력 칸 이름 → 계약 칸. 계약 밖(`kind`·`goal`·`archived`·모르는 이름)은 null(버린다). */
+function historyField(field: string): WorkHistoryField | null {
+  return WORK_HISTORY_FIELDS.find((known) => known === field) ?? null
+}
+
+function pagingError(what: string): WorkError {
+  return workError({ kind: 'invalid_response', message: `LA ${what} 쪽이 끝나지 않습니다(빈 쪽·같은 다음 쪽 표지·쪽 수 상한) — 응답 모양이 다릅니다.` })
+}
+
 /** 충돌 문구 — 원격 message 를 옮기지 않고 이쪽 말로(모의 출처와 같은 꼴). */
 function conflictMessage(key: string): string {
   return `${key} 이(가) 연 뒤에 바뀌었습니다 — 새로 불러오거나 덮어쓰세요.`
 }
 
-function unsupported(name: 'order' | 'cursorPaging' | 'comments' | 'history' | 'querySearch'): WorkOutcome {
+function unsupported(name: 'order' | 'querySearch'): WorkOutcome {
   const capability = LA_CAPABILITIES[name]
   const reason = capability.state === 'disabled' ? capability.reason : 'LA 는 이 연산을 하지 않습니다.'
   return { ok: false, error: workError({ kind: 'unsupported', message: reason }) }

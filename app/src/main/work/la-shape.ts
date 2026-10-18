@@ -7,11 +7,13 @@
 //   - 수정 `issue_update` = `IssueResponse`(`toIssueResponse`) — 공통 칸 + description, links·openBlockers 없음 → `readIssueUpdated`
 //   - 단건 `issue_get` = `IssueResponse & { links, workLinks }` — 공통 칸 + description + links + 작업 링크(LIFE-609) → `readIssueDetail`
 //   - 작업 링크 `issue_work_link_add`·`_remove`·`_list` = `{ workLinks: IssueWorkLinkResponse[] }` → `readWorkLinks`(LIFE-635 C1)
+//   - 커서 쪽(LIFE-638 D11 — LA 610·611) = `{ items, nextCursor }` → `readIssuePage`·`readHistoryPage`·`readCommentPage`. `nextCursor` 는 비지 않은 글자 또는 null
+//     (빈 글자는 LA `cursor` 입력이 받지 않는다 — 되돌려 보낼 수 없는 값이라 어긋남). 행 하나라도 어긋나면 쪽 전체가 어긋남.
 // 공통 칸: parentId·priority·onBoard·position·dueAt·color·archivedAt(값 null 허용, 칸 필수) · updatedAt(글자) · version(글자 — LIFE-622, LA LIFE-607).
 // LA 가 늘 주는 것 이상은 요구하지 않는다.
 
 import { isRecord } from '../../shared/json.js'
-import { readWorkCategory, readWorkPriority, readWorkRelationKind, type WorkCategory, type WorkLink, type WorkLinkRecord, type WorkPriority, type WorkRelationKind, type WorkResolution } from '../../shared/work.js'
+import { readWorkCategory, readWorkPriority, readWorkRelationKind, type WorkCategory, type WorkComment, type WorkLink, type WorkLinkRecord, type WorkPriority, type WorkRelationKind, type WorkResolution } from '../../shared/work.js'
 
 export class LaShapeError extends Error {
   readonly path: string
@@ -129,11 +131,28 @@ function categoryOf(value: unknown, path: string): WorkCategory {
   return category
 }
 
-/** 도구가 배열을 그대로 주거나 `{ items: [...] }` 로 감싸 준다 — 둘만 받는다. */
+/**
+ * 도구가 배열을 그대로 주거나 `{ items: [...] }` 로 감싸 준다 — 둘만 받는다. 감싼 모양에 다음 쪽(`nextCursor` 가 null 아님)이 있으면 어긋남이다 —
+ * 한 번에 받는 자리에서 다음 쪽을 조용히 버리지 않는다(LIFE-638 F2). 쪽으로 받는 자리는 `readPage` 계열을 쓴다.
+ */
 export function readList(value: unknown, path: string): unknown[] {
   if (Array.isArray(value)) return value
-  if (isRecord(value) && Array.isArray(value.items)) return value.items
+  if (isRecord(value) && Array.isArray(value.items)) {
+    if (value.nextCursor !== undefined && value.nextCursor !== null) throw new LaShapeError(`${path}.nextCursor`)
+    return value.items
+  }
   throw new LaShapeError(path)
+}
+
+/** 커서 쪽 하나 — 커서는 받은 글자 그대로(해석·변경 없음). */
+export type LaPage<T> = { items: T[]; nextCursor: string | null }
+
+function readPage<T>({ value, path, row }: { value: unknown; path: string; row: (value: unknown, path: string) => T }): LaPage<T> {
+  const page = record(value, path)
+  if (!Array.isArray(page.items)) throw new LaShapeError(`${path}.items`)
+  const nextCursor = nullableStr(page, 'nextCursor', path)
+  if (nextCursor === '') throw new LaShapeError(`${path}.nextCursor`)
+  return { items: page.items.map((entry, index) => row(entry, `${path}.items[${index}]`)), nextCursor }
 }
 
 export function readIssueRef(value: unknown, path: string): LaIssueRef {
@@ -305,6 +324,41 @@ export function readBySeq(value: unknown, path: string): string | null {
 
 export function readIssueSummaries(value: unknown, path: string): LaIssue[] {
   return readList(value, path).map((row, index) => readIssueSummary(row, `${path}[${index}]`))
+}
+
+/** `issue_list` 커서 모드(LIFE-610) — 행은 배열 모드와 같은 `IssueSummary`. */
+export function readIssuePage(value: unknown, path: string): LaPage<LaIssue> {
+  return readPage({ value, path, row: readIssueSummary })
+}
+
+/**
+ * 이력 한 행(LIFE-611 `IssueHistoryEntry`) — `{id, at, author, field, from, to, writeId, origin}`. 칸 이름은 글자로만 받고(계약 9칸 거르기는 출처가 한다),
+ * from·to·writeId·author 는 칸 필수 · 글자 또는 null. `at` 은 날짜로 읽혀야 한다. `origin` 은 계약에 싣지 않아 보지 않는다(D8).
+ */
+export type LaHistoryEntry = { id: string; at: string; author: string | null; field: string; from: string | null; to: string | null; writeId: string | null }
+
+function readHistoryEntry(value: unknown, path: string): LaHistoryEntry {
+  const row = record(value, path)
+  const at = str(row, 'at', path)
+  if (!Number.isFinite(Date.parse(at))) throw new LaShapeError(`${path}.at`)
+  return {
+    id: str(row, 'id', path), at, author: nullableStr(row, 'author', path), field: str(row, 'field', path),
+    from: nullableStr(row, 'from', path), to: nullableStr(row, 'to', path), writeId: nullableStr(row, 'writeId', path),
+  }
+}
+
+export function readHistoryPage(value: unknown, path: string): LaPage<LaHistoryEntry> {
+  return readPage({ value, path, row: readHistoryEntry })
+}
+
+/** 코멘트(LIFE-611 `IssueComment`) — 계약 `WorkComment` 네 칸만 읽는다. 본문은 받은 바이트 그대로(trim 없음). */
+export function readComment(value: unknown, path: string): WorkComment {
+  const row = record(value, path)
+  return { id: str(row, 'id', path), author: nullableStr(row, 'author', path), body: str(row, 'body', path), createdAt: str(row, 'createdAt', path) }
+}
+
+export function readCommentPage(value: unknown, path: string): LaPage<WorkComment> {
+  return readPage({ value, path, row: readComment })
 }
 
 export function readStatuses(value: unknown, path: string): LaStatus[] {

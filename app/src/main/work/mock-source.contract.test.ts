@@ -20,6 +20,7 @@ workContractSuite({
         return () => { item.body = before }
       },
       workLinkStore: 'on',
+      declared: { cursorPaging: 'on', comments: 'on', history: 'on' },
       // LIFE-635 — 다른 machine 의 링크를 상태에 직접(모의 출처의 판별 규칙 = LA 와 같은 축).
       plantWorkLink: ({ itemId, link, machine, repo }) => {
         const item = state.items.find((entry) => entry.id === itemId)

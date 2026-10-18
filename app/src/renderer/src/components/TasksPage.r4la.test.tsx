@@ -51,7 +51,7 @@ it('LA-TIME 실제 adapter 연산이 44초(RPC 넷 × 11초)에 성공 → 30초
     const result = reply === null ? { protocolVersion: '2025-06-18' } : { content: [{ type: 'text', text: reply.text }], ...(reply.isError ? { isError: true } : {}) }
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), { headers: { 'content-type': 'application/json' } })
   }
-  const source = new LaSource(new McpHttpClient({ url: 'http://127.0.0.1:9/not-networked', token: 'fixture_synthetic', clientVersion: 'test', fetchImpl }))
+  const source = new LaSource({ mcp: new McpHttpClient({ url: 'http://127.0.0.1:9/not-networked', token: 'fixture_synthetic', clientVersion: 'test', fetchImpl }) })
   try {
     const got = await source.call({ op: 'getItem', itemId: FIXTURE_IDS.task601 })
     if (!got.ok || got.result.op !== 'getItem') throw new Error('fixture')

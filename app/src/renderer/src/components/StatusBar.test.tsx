@@ -156,8 +156,25 @@ describe('E8ⓓⓔ 팝오버 · 키보드', () => {
     await act(async () => { chip('codex')!.click() })
     expect(q('[data-statusbar-usage-popover="codex"]')!.textContent).toContain('로그인 만료 — codex 실행 시 갱신')
   })
+  it('r1 R1-9 — 열면 포커스가 팝오버 안 새로고침 버튼으로', async () => {
+    await open()
+    expect(document.activeElement).toBe(host.querySelector('[data-statusbar-usage-refresh]'))
+  })
+  it('r1 R1-9 — 갱신 중(새로고침 비활성)이면 팝오버 자체로', async () => {
+    install({ providers: [{ ...entry('claude', { status: 'ok', windows: windows(42), updatedAt: NOW }), refreshing: true }] })
+    await render()
+    await act(async () => { chip('claude')!.click() })
+    expect(document.activeElement).toBe(q('[data-statusbar-usage-popover="claude"]'))
+  })
+  it('r1 R1-4ⓒ — 라벨이 같은 창 둘이어도 둘 다 그린다(key 중복 없음)', async () => {
+    install({ providers: [entry('claude', { status: 'ok', windows: [{ label: '7d', windowMinutes: 10080, usedPercent: 40, resetsAt: null }, { label: '7d', windowMinutes: 10080, usedPercent: 70, resetsAt: null }], updatedAt: NOW })] })
+    await render()
+    await act(async () => { chip('claude')!.click() })
+    expect(q('[data-statusbar-usage-popover="claude"]')!.querySelectorAll('[data-statusbar-usage-window="7d"]')).toHaveLength(2)
+  })
   it('Esc = 닫고 칩으로 포커스 복귀', async () => {
     await open()
+    expect(document.activeElement).not.toBe(chip('claude'))
     await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
     expect(q('[data-statusbar-usage-popover]')).toBeNull()
     expect(document.activeElement).toBe(chip('claude'))

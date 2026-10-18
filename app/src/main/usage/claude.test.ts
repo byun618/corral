@@ -7,24 +7,35 @@ const credentials = JSON.stringify({ claudeAiOauth: { accessToken: TEST_TOKEN, r
 const KEYCHAIN = { 'Claude Code-credentials': credentials }
 
 describe('parseClaudeUsage — 응답 4형태(E3ⓒ)', () => {
-  it('실측(c10): limits[] 우선 — 5h·7d·Fable 7d, 초기화 시각 ISO', () => {
-    expect(parseClaudeUsage(fixture('claude-usage.json'))).toEqual([
+  it('실측(c10): limits[] + 평면 칸 합침, 같은 창(5h·7d)은 한 번 — 5h·7d·Fable 7d, 초기화 시각 ISO', () => {
+    expect(parseClaudeUsage(fixture('claude-usage.json'))?.windows).toEqual([
       { label: '5h', windowMinutes: 300, usedPercent: 10, resetsAt: Date.parse('2026-10-18T14:20:00.475906+00:00') },
       { label: '7d', windowMinutes: 10080, usedPercent: 67, resetsAt: Date.parse('2026-10-19T01:00:00.475926+00:00') },
       { label: 'Fable 7d', windowMinutes: 10080, usedPercent: 12, resetsAt: Date.parse('2026-10-19T01:00:00.476062+00:00') },
     ])
   })
   it('평면 칸만(five_hour·seven_day) — limits 없음', () => {
-    expect(parseClaudeUsage({ five_hour: { utilization: 23.5, resets_at: 1738425600 }, seven_day: { utilization: 41.2, resets_at: null }, seven_day_opus: null })).toEqual([
+    expect(parseClaudeUsage({ five_hour: { utilization: 23.5, resets_at: 1738425600 }, seven_day: { utilization: 41.2, resets_at: null }, seven_day_opus: null })).toEqual({ windows: [
       { label: '5h', windowMinutes: 300, usedPercent: 23.5, resetsAt: 1738425600 * 1000 },
       { label: '7d', windowMinutes: 10080, usedPercent: 41.2, resetsAt: null },
-    ])
+    ], skipped: 0 })
   })
-  it('limits[] 만 — 평면 칸 null, 모르는 kind 는 라벨 = kind, 범위 밖 % 는 0–100 으로', () => {
-    expect(parseClaudeUsage({ five_hour: null, seven_day: null, limits: [{ kind: 'weekly_all', group: 'weekly', percent: 140, resets_at: '2026-10-19T01:00:00Z' }, { kind: 'mystery', percent: 3 }, { kind: 'session' }] })).toEqual([
+  it('limits[] 만 — 평면 칸 null, 모르는 kind 는 라벨 = kind, 범위 밖 % 는 0–100 으로, 못 읽은 항목은 skipped', () => {
+    expect(parseClaudeUsage({ five_hour: null, seven_day: null, limits: [{ kind: 'weekly_all', group: 'weekly', percent: 140, resets_at: '2026-10-19T01:00:00Z' }, { kind: 'mystery', percent: 3 }, { kind: 'session' }] })).toEqual({ windows: [
       { label: '7d', windowMinutes: 10080, usedPercent: 100, resetsAt: Date.parse('2026-10-19T01:00:00Z') },
       { label: 'mystery', windowMinutes: null, usedPercent: 3, resetsAt: null },
-    ])
+    ], skipped: 1 })
+  })
+  it('r1 P5 — 평면 5h 95%·7d 80% + limits[Fable 5%] 를 합친다(평면 칸을 버리지 않는다)', () => {
+    const parsed = parseClaudeUsage({ five_hour: { utilization: 95 }, seven_day: { utilization: 80 }, limits: [{ kind: 'weekly_scoped', group: 'weekly', percent: 5, scope: { model: { display_name: 'Fable' } } }] })
+    expect(parsed?.windows.map((window) => [window.label, window.usedPercent])).toEqual([['Fable 7d', 5], ['5h', 95], ['7d', 80]])
+  })
+  it('r1 P6 — 같은 길이·라벨 창(범위 없는 weekly_scoped + weekly_all)은 한 번, 큰 사용률을 남긴다', () => {
+    const parsed = parseClaudeUsage({ limits: [{ kind: 'weekly_all', percent: 40 }, { kind: 'weekly_scoped', percent: 70 }] })
+    expect(parsed?.windows.map((window) => [window.label, window.usedPercent])).toEqual([['7d', 70]])
+  })
+  it('평면 칸이 기록이 아니면(모양이 바뀜) skipped 로 센다', () => {
+    expect(parseClaudeUsage({ five_hour: '10%', limits: [{ kind: 'session', percent: 10 }] })).toEqual({ windows: [{ label: '5h', windowMinutes: 300, usedPercent: 10, resetsAt: null }], skipped: 1 })
   })
   it('모르는 형태 → null(= error(parse)) — 숫자를 지어내지 않는다', () => {
     expect(parseClaudeUsage({ usage: { session: '10%' } })).toBeNull()
@@ -57,6 +68,13 @@ describe('Claude 자격 증명(E3ⓐ) — 키체인 → 파일, 읽기만', () =
     expect((await claudeCollector.fetch(deps)).kind).toBe('ok')
     expect(calls[0]).toEqual({ kind: 'keychain', service: claudeKeychainService('/cfg'), account: 'tester' })
     expect(calls[1]).toEqual({ kind: 'file', file: '/cfg/.credentials.json' })
+  })
+  it('USER 폴백 — $USER 가 없거나 비면 OS 사용자 이름, 둘 다 없으면 claude-code-user', async () => {
+    for (const [env, username, account] of [[{}, 'osuser', 'osuser'], [{ USER: '' }, 'osuser', 'osuser'], [{ USER: 'envuser' }, 'osuser', 'envuser'], [{}, null, 'claude-code-user']] as const) {
+      const { deps, calls } = fakeDeps({ env: { ...env }, username, keychain: KEYCHAIN, http: () => response({ status: 200, body: fixture('claude-usage.json') }) })
+      await claudeCollector.fetch(deps)
+      expect(calls[0]).toEqual({ kind: 'keychain', service: 'Claude Code-credentials', account })
+    }
   })
   it('macOS 가 아니면 키체인을 부르지 않는다', async () => {
     const { deps, calls } = fakeDeps({ platform: 'linux' })

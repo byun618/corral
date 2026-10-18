@@ -84,5 +84,7 @@ app.whenReady().then(async () => {
   }
   fs.writeFileSync(path.join(out, 'capture.json'), JSON.stringify({ at: new Date().toISOString(), probedAt: probe.at, pid: process.pid, window: { width: 900, height: 600, shown: win.isVisible() }, shots, console: log }, null, 2) + '\n')
   win.destroy()
-  app.exit(0)
+  // 장면 하나라도 오류면 실패로 끝낸다(r1 R1-8) — 종료코드만 보고도 통과를 가를 수 있게. 콘솔 경고·오류도 실패로 센다.
+  const failed = shots.some((entry) => 'error' in entry) || log.some((entry) => entry.level >= 2)
+  app.exit(failed ? 1 : 0)
 })

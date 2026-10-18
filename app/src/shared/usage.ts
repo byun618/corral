@@ -108,7 +108,7 @@ export function formatResetIn({ resetsAt, now }: { resetsAt: number; now: number
   return `${minutes}m`
 }
 
-/** provider ↔ 설정 칸 표(E9) — 설정 › 외관 「상태바」 카드의 스위치 순서이기도 하다. 수집기를 더하면 여기 한 줄 + `Settings` 칸 하나. */
+/** provider ↔ 설정 칸 표(E9) — 설정 › 외관 「상태바」 카드의 스위치 순서이기도 하다. 새 provider 를 넣을 때 고칠 곳 전부는 `main/usage/registry.ts` 머리 주석. */
 export type UsageSettingKey = 'statusBarUsageClaude' | 'statusBarUsageCodex' | 'statusBarUsageGrok'
 export const USAGE_SETTING_ROWS: readonly { id: string; name: string; key: UsageSettingKey }[] = [
   { id: 'claude', name: 'Claude', key: 'statusBarUsageClaude' },

@@ -8,7 +8,7 @@
 import path from 'node:path'
 import { isRecord, readRecord } from '../../shared/json.js'
 import { windowLabel, type UsageWindow } from '../../shared/usage.js'
-import { PARSE_ERROR, failure, getJson, percentOf, readJsonFile, stringField, timeOf, type CollectorDeps, type FetchOutcome, type UsageCollector } from './collector.js'
+import { failure, getJson, parsedOutcome, percentOf, readJsonFile, stringField, timeOf, type CollectorDeps, type FetchOutcome, type ParsedWindows, type UsageCollector } from './collector.js'
 
 export const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 
@@ -23,13 +23,23 @@ function windowOf({ value, now }: { value: unknown; now: number }): UsageWindow 
   return { label: minutes === null ? 'limit' : windowLabel(minutes), windowMinutes: minutes, usedPercent, resetsAt }
 }
 
-/** 응답 → 창 목록(primary·secondary 중 있는 것). 하나도 없으면 null(= `error(parse)`). */
-export function parseCodexUsage({ value, now }: { value: unknown; now: number }): UsageWindow[] | null {
+/**
+ * 응답 → 창 목록(primary·secondary 중 있는 것). null 이 아닌 창 칸을 못 읽으면 `skipped`(r1 R1-4ⓑ — 값은 만들지 않는다).
+ * 읽은 창이 하나도 없으면 null(= `error(parse)`).
+ */
+export function parseCodexUsage({ value, now }: { value: unknown; now: number }): ParsedWindows | null {
   if (!isRecord(value)) return null
   const limit = readRecord(value, 'rate_limit')
   if (limit === null) return null
-  const windows = [windowOf({ value: limit.primary_window, now }), windowOf({ value: limit.secondary_window, now })].filter((window) => window !== null)
-  return windows.length > 0 ? windows : null
+  const windows: UsageWindow[] = []
+  let skipped = 0
+  for (const raw of [limit.primary_window, limit.secondary_window]) {
+    if (raw === null || raw === undefined) continue
+    const window = windowOf({ value: raw, now })
+    if (window === null) skipped += 1
+    else windows.push(window)
+  }
+  return windows.length > 0 ? { windows, skipped } : null
 }
 
 async function fetchCodex(deps: CollectorDeps): Promise<FetchOutcome> {
@@ -53,8 +63,7 @@ async function fetchCodex(deps: CollectorDeps): Promise<FetchOutcome> {
   if (accountId !== null) headers['ChatGPT-Account-Id'] = accountId
   const response = await getJson({ deps, url: CODEX_USAGE_URL, cli: 'codex', headers })
   if (response.kind === 'error') return response
-  const windows = parseCodexUsage({ value: response.value, now: deps.now() })
-  return windows === null ? failure({ error: PARSE_ERROR }) : { kind: 'ok', windows }
+  return parsedOutcome(parseCodexUsage({ value: response.value, now: deps.now() }))
 }
 
 export const codexCollector: UsageCollector = { id: 'codex', name: 'Codex', fetch: fetchCodex }

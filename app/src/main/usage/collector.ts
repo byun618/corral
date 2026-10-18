@@ -21,6 +21,8 @@ export type CollectorDeps = {
   readKeychain: (query: { service: string; account: string }) => Promise<KeychainReadResult>
   env: Readonly<Record<string, string | undefined>>
   homedir: string
+  /** OS 사용자 이름(`os.userInfo().username`) — `$USER` 가 없을 때의 키체인 account 폴백(Finder·Dock 으로 띄운 앱). 못 읽으면 null. */
+  username: string | null
   platform: string
   now: () => number
   /** corral 자기 이름 — provider CLI 로 위장하지 않는다(D10). */
@@ -31,7 +33,8 @@ export type CollectorDeps = {
 
 /** 수집 한 번의 결과 — 서비스가 이것을 `ProviderUsage` 로 바꾼다(직전 값 유지·stale 정책은 서비스 몫). */
 export type FetchOutcome =
-  | { kind: 'ok'; windows: UsageWindow[] }
+  /** `skipped` = 응답에 창 항목이 있었는데 못 읽은 개수(r1 R1-4ⓑ). 숫자를 지어내지 않고 서비스가 로그 한 줄로만 남긴다. */
+  | { kind: 'ok'; windows: UsageWindow[]; skipped?: number }
   | { kind: 'unavailable'; reason: string }
   | { kind: 'error'; error: UsageError; retryAfterMs: number | null }
 
@@ -43,6 +46,14 @@ export type UsageCollector = {
 
 export function failure(input: { error: UsageError; retryAfterMs?: number | null }): FetchOutcome {
   return { kind: 'error', error: input.error, retryAfterMs: input.retryAfterMs ?? null }
+}
+
+/** 파서 결과 — 읽은 창 + 창 항목이었는데 못 읽은 개수. 읽은 창이 0 이면 파서는 null(= `error(parse)`)을 돌려준다. */
+export type ParsedWindows = { windows: UsageWindow[]; skipped: number }
+
+/** 파서 결과 → 수집 결과. null = 모르는 형태. */
+export function parsedOutcome(parsed: ParsedWindows | null): FetchOutcome {
+  return parsed === null ? failure({ error: PARSE_ERROR }) : { kind: 'ok', windows: parsed.windows, skipped: parsed.skipped }
 }
 
 export const PARSE_ERROR: UsageError = { kind: 'parse', message: '응답 형태를 읽지 못함 — 사용량 API 가 바뀌었을 수 있습니다' }

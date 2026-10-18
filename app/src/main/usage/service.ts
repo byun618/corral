@@ -4,8 +4,10 @@
 //   ⓐ 기본 5분 주기 — 배경 틱은 **창이 보이고 포커스일 때만**(`isActive`). 기동 때 한 번은 조회한다.
 //   ⓑ 포커스 복귀 — 마지막 성공이 5분 넘었으면 즉시 1회, 아니면 0회.
 //   ⓒ 팝오버 새로고침 = 즉시(지수 백오프 무시). 진행 중이면 그 요청을 같이 기다린다(중복 요청 0).
-//   ⓓ provider 별 지수 백오프 30초 × 2^(실패-1), 상한 15분. 429 `Retry-After` 동안은 새로고침까지 포함해 그 provider 요청 0.
-//   ⓔ 꺼 둔 provider 는 수집기를 부르지 않는다 — 키체인·파일·네트워크 접근 0.
+//   ⓓ provider 별 지수 백오프 30초 × 2^(실패-1), 상한 15분. 429 `Retry-After` 동안은 새로고침까지 포함해 그 provider 요청 0
+//      (헤더 없는 429 는 백오프 동안 같은 취급 — r1 R1-2).
+//   ⓔ 꺼 둔 provider 는 수집기를 부르지 않는다 — 키체인·파일·네트워크 접근 0. 한계(r1 R1-10): 끄는 순간 이미 진행 중이던 키체인·파일 읽기
+//      한 번은 끝까지 간다(`security`·`readFile` 은 signal 을 받지 않는다) — 결과는 버리고, 네트워크는 끊긴 signal 로 나가지 않는다.
 //   ⓕ 실패해도 30분 안의 직전 값은 `stale` 로 남는다. 30분 넘으면 버리고 `error`.
 //   ⓖ `dispose` — 타이머·진행 중 요청을 모두 정리한다.
 //   ⓗ 요청 하나 10초 타임아웃(AbortSignal).
@@ -36,6 +38,8 @@ type Slot = {
   failures: number
   backoffUntil: number
   retryAfterUntil: number
+  /** 마지막으로 결과를 받은 시각(무엇이든). `unavailable` 의 포커스 재조회 간격에 쓴다(r1 R1-3). */
+  checkedAt: number | null
   inflight: Inflight | null
 }
 
@@ -64,6 +68,7 @@ export class UsageService {
       failures: 0,
       backoffUntil: 0,
       retryAfterUntil: 0,
+      checkedAt: null,
       inflight: null,
     }))
   }
@@ -81,11 +86,16 @@ export class UsageService {
     for (const slot of this.slots) void this.request({ slot, reason: 'tick' })
   }
 
-  /** 창 포커스 복귀(ⓑ) — 마지막 성공이 5분 넘었거나 성공이 없으면 즉시. */
+  /**
+   * 창 포커스 복귀(ⓑ) — 마지막 성공이 5분 넘었거나 성공이 없으면 즉시.
+   * 로그인 정보 없음(`unavailable`)도 5분 안에 확인했으면 건너뛴다 — 안 쓰는 provider 의 자격 증명(macOS 는 `security` 자식 프로세스)을
+   * 포커스마다 다시 읽지 않게(r1 R1-3). 새로고침·켜기는 바로 간다.
+   */
   onFocus(): void {
     if (this.disposed) return
     const now = this.now()
     for (const slot of this.slots) {
+      if (slot.usage.status === 'unavailable' && slot.checkedAt !== null && now - slot.checkedAt <= USAGE_FOCUS_STALE_MS) continue
       const updatedAt = lastSuccessAt(slot.usage)
       if (updatedAt === null || now - updatedAt > USAGE_FOCUS_STALE_MS) void this.request({ slot, reason: 'focus' })
     }
@@ -108,11 +118,17 @@ export class UsageService {
         const inflight = slot.inflight
         slot.inflight = null
         cancel(inflight)
-        Object.assign(slot, { usage: { status: 'disabled' }, failures: 0, backoffUntil: 0, retryAfterUntil: 0 })
+        // 429 대기(`retryAfterUntil`)는 남긴다 — 끄고 켜기로 요청 제한을 건너뛰지 않게(r1 R1-2).
+        Object.assign(slot, { usage: { status: 'disabled' }, failures: 0, backoffUntil: 0, checkedAt: null })
         changed = true
       } else if (enabled && slot.usage.status === 'disabled') {
-        slot.usage = { status: 'loading' }
+        const now = this.now()
         changed = true
+        if (now < slot.retryAfterUntil) {
+          slot.usage = { status: 'error', error: { kind: 'rate_limited', message: '요청 제한 (HTTP 429) — 잠시 뒤 다시' }, checkedAt: now }
+          continue
+        }
+        slot.usage = { status: 'loading' }
         void this.request({ slot, reason: 'enabled' })
       }
     }
@@ -175,10 +191,12 @@ export class UsageService {
 
   private apply({ slot, outcome }: { slot: Slot; outcome: FetchOutcome }): void {
     const now = this.now()
+    slot.checkedAt = now
     switch (outcome.kind) {
       case 'ok':
         Object.assign(slot, { usage: { status: 'ok', windows: outcome.windows, updatedAt: now }, failures: 0, backoffUntil: 0, retryAfterUntil: 0 })
-        this.options.log('usage.result', { provider: slot.collector.id, status: 'ok', windows: outcome.windows.length })
+        // 못 읽은 창이 있으면 개수만 로그에 남긴다(r1 R1-4ⓑ) — 값·응답 조각은 싣지 않는다.
+        this.options.log('usage.result', { provider: slot.collector.id, status: 'ok', windows: outcome.windows.length, ...(outcome.skipped !== undefined && outcome.skipped > 0 ? { skipped: outcome.skipped } : {}) })
         return
       case 'unavailable':
         Object.assign(slot, { usage: { status: 'unavailable', reason: outcome.reason }, failures: 0, backoffUntil: 0, retryAfterUntil: 0 })
@@ -188,7 +206,9 @@ export class UsageService {
         slot.failures += 1
         const backoff = Math.min(USAGE_BACKOFF_CAP_MS, USAGE_BACKOFF_BASE_MS * 2 ** (slot.failures - 1))
         slot.backoffUntil = now + Math.max(backoff, outcome.retryAfterMs ?? 0)
-        slot.retryAfterUntil = outcome.retryAfterMs === null ? 0 : now + outcome.retryAfterMs
+        // 429 는 `Retry-After` 가 없어도 백오프가 끝날 때까지 새로고침·켜기까지 막는다(r1 R1-2) — 헤더 없는 429 에 버튼 연타가 요청을 쌓지 않게.
+        // 다른 오류(5xx·네트워크 등)는 지금처럼 새로고침이 바로 간다.
+        slot.retryAfterUntil = outcome.retryAfterMs !== null ? now + outcome.retryAfterMs : outcome.error.kind === 'rate_limited' ? slot.backoffUntil : 0
         slot.usage = failedUsage({ previous: expireStale({ usage: slot.usage, now }), error: outcome.error, now })
         this.options.log('usage.result', { provider: slot.collector.id, status: slot.usage.status, error: outcome.error.kind, failures: slot.failures })
         return

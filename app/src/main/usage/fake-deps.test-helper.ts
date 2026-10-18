@@ -25,6 +25,7 @@ export function fakeDeps(input: {
   keychain?: Record<string, string> | 'error'
   http?: (request: { url: string; headers: Record<string, string>; signal: AbortSignal }) => HttpResponse | Promise<HttpResponse>
   env?: Record<string, string | undefined>
+  username?: string | null
   platform?: string
   signal?: AbortSignal
 }): { deps: CollectorDeps; calls: Call[] } {
@@ -49,6 +50,7 @@ export function fakeDeps(input: {
     },
     env: input.env ?? { USER: 'tester' },
     homedir: '/home/tester',
+    username: input.username ?? null,
     platform: input.platform ?? 'darwin',
     now: () => NOW,
     userAgent: 'corral/test',

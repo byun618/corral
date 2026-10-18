@@ -10,10 +10,10 @@ const auth = (expiresAt: string): string => JSON.stringify({ 'https://auth.x.ai:
 
 describe('parseGrokUsage(E5ⓒ)', () => {
   it('실측(c12): 주간 20%, 창 = currentPeriod 7일, 초기화 = end', () => {
-    expect(parseGrokUsage(fixture('grok-billing.json'))).toEqual([{ label: '7d', windowMinutes: 10080, usedPercent: 20, resetsAt: Date.parse('2026-10-23T23:09:35.051329+00:00') }])
+    expect(parseGrokUsage(fixture('grok-billing.json'))).toEqual({ windows: [{ label: '7d', windowMinutes: 10080, usedPercent: 20, resetsAt: Date.parse('2026-10-23T23:09:35.051329+00:00') }], skipped: 0 })
   })
   it('평면 형태(config 없음)도 읽는다 · 기간 없으면 라벨 credits', () => {
-    expect(parseGrokUsage({ creditUsagePercent: 42 })).toEqual([{ label: 'credits', windowMinutes: null, usedPercent: 42, resetsAt: null }])
+    expect(parseGrokUsage({ creditUsagePercent: 42 })).toEqual({ windows: [{ label: 'credits', windowMinutes: null, usedPercent: 42, resetsAt: null }], skipped: 0 })
   })
   it('percent 없음 → null(= error(parse)) — Orca 의 0% 폴백을 따르지 않는다', () => {
     expect(parseGrokUsage({ config: { currentPeriod: { start: '2026-10-16T00:00:00Z', end: '2026-10-23T00:00:00Z' } } })).toBeNull()

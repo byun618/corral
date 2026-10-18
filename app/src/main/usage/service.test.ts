@@ -306,3 +306,82 @@ describe('E6ⓑ 토큰은 main 밖으로 안 나간다', () => {
     svc.dispose()
   })
 })
+
+describe('fix1 — 리뷰 r1 재현을 시험으로', () => {
+  it('R1-2 헤더 없는 429 — 백오프 동안 새로고침 5번·켜기도 요청 0(첫 요청 1회만), 백오프가 지나면 새로고침이 간다', async () => {
+    const a = collector('a')
+    a.next = [fail('rate_limited', null)]
+    const svc = service([a])
+    svc.start()
+    await flush()
+    for (let i = 0; i < 5; i++) await svc.refresh('a')
+    expect(a.calls).toBe(1)
+    // 끄고 켜기로도 건너뛰지 못한다 — 켜면 요청 대신 「요청 제한」 상태.
+    enabled = { a: false }
+    svc.settingsChanged()
+    enabled = { a: true }
+    svc.settingsChanged()
+    await flush()
+    expect(a.calls).toBe(1)
+    expect(usageOf(svc, 'a')).toMatchObject({ status: 'error', error: { kind: 'rate_limited' } })
+    // 대기가 끝나면 다음 틱(창 활성)이 다시 부른다.
+    await vi.advanceTimersByTimeAsync(USAGE_POLL_MS)
+    expect(a.calls).toBe(2)
+    svc.dispose()
+  })
+  it('R1-2 헤더 없는 429 → 백오프(30초)가 지나면 새로고침이 간다', async () => {
+    const a = collector('a')
+    a.next = [fail('rate_limited', null)]
+    const svc = service([a])
+    svc.start()
+    await flush()
+    await svc.refresh('a')
+    expect(a.calls).toBe(1)
+    await vi.advanceTimersByTimeAsync(USAGE_BACKOFF_BASE_MS)
+    await svc.refresh('a')
+    expect(a.calls).toBe(2)
+    svc.dispose()
+  })
+  it('R1-2 유지 — 5xx·네트워크 실패 뒤 새로고침은 바로 간다', async () => {
+    const a = collector('a')
+    a.next = [fail('network'), fail('network')]
+    const svc = service([a])
+    svc.start()
+    await flush()
+    await svc.refresh('a')
+    await svc.refresh('a')
+    expect(a.calls).toBe(3)
+    svc.dispose()
+  })
+  it('R1-3 unavailable — 포커스 10번 = 요청 0(기동 1회만), 5분 지나면 포커스 1회, 새로고침은 바로', async () => {
+    const a = collector('a')
+    a.next = Array.from({ length: 5 }, (): FetchOutcome => ({ kind: 'unavailable', reason: '로그인 정보 없음' }))
+    active = false
+    const svc = service([a])
+    svc.start()
+    await flush()
+    for (let i = 0; i < 10; i++) {
+      svc.onFocus()
+      await flush()
+    }
+    expect(a.calls).toBe(1)
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1)
+    svc.onFocus()
+    await flush()
+    expect(a.calls).toBe(2)
+    await svc.refresh('a')
+    expect(a.calls).toBe(3)
+    svc.dispose()
+  })
+  it('R1-4ⓑ 못 읽은 창 — 값은 없고 로그 한 줄(provider·skipped 개수)', async () => {
+    const a = collector('a')
+    a.next = [{ kind: 'ok', windows: OK.kind === 'ok' ? OK.windows : [], skipped: 2 }]
+    const svc = service([a])
+    svc.start()
+    await flush()
+    const result = logs.find((entry) => entry[0] === 'usage.result')
+    expect(result?.[1]).toEqual({ provider: 'a', status: 'ok', windows: 1, skipped: 2 })
+    expect(usageOf(svc, 'a')).toMatchObject({ status: 'ok', windows: OK.kind === 'ok' ? OK.windows : [] })
+    svc.dispose()
+  })
+})

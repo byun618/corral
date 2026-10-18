@@ -3,7 +3,7 @@
 // 칩 = provider 하나, 아이콘 + **가장 빡빡한 창의 사용률 %**. 자격 없음(`unavailable`)·꺼짐(`disabled`)은 칩이 없다.
 // 상태별 모양(E8ⓑ): 첫 로딩 `···` · ok `NN%` · stale `NN% ⚠` · error `⚠ 짧은 사유`(만료면 「만료」 — 팝오버에 「<cli> 실행 시 갱신」).
 // 색(E8ⓒ): 60% 미만 기본 · 60% 이상 주의(`--st-dirty`) · 80% 이상 경고(`--st-error`).
-// 칩 클릭 = 팝오버(창마다 라벨·막대·%·초기화까지 남은 시간 · 마지막 갱신 · 오류 문구 · 새로고침). Esc = 닫고 칩으로 포커스, 바깥 클릭 = 닫기.
+// 칩 클릭 = 팝오버(창마다 라벨·막대·%·초기화까지 남은 시간 · 마지막 갱신 · 오류 문구 · 새로고침). 열면 포커스가 팝오버 안으로, Esc = 닫고 칩으로 포커스, 바깥 클릭 = 닫기.
 // 이 파일의 클래스(`.statusbar-usage-*`)·컴포넌트는 LIFE-637 이 가져다 쓰는 공개 API 가 아니다(킥오프 슬롯 계약 6).
 import { useEffect, useRef, useState } from 'react'
 import { expireStale, formatResetIn, tightestWindow, usageTone, type ProviderUsage, type ProviderUsageEntry, type UsageErrorKind } from '../../../shared/usage.js'
@@ -134,8 +134,8 @@ function PopoverBody({ usage, now }: { usage: ProviderUsage; now: number }): Rea
       return (
         <>
           <ul className="statusbar-usage-windows">
-            {usage.windows.map((window) => (
-              <li key={window.label} className="statusbar-usage-window" data-statusbar-usage-window={window.label}>
+            {usage.windows.map((window, index) => (
+              <li key={`${index}:${window.label}`} className="statusbar-usage-window" data-statusbar-usage-window={window.label}>
                 <div className="statusbar-usage-window-head">
                   <span className="statusbar-usage-window-label">{window.label}</span>
                   <span className={`statusbar-usage-window-pct tone-${usageTone(window.usedPercent)}`}>{Math.round(window.usedPercent)}% 사용</span>
@@ -173,6 +173,16 @@ export function StatusBarUsage({ suspended = false }: { suspended?: boolean }): 
   useEffect(() => {
     if (suspended) setAnchor(null)
   }, [suspended])
+
+  // 열면 포커스를 팝오버 안으로(r1 R1-9) — 첫 버튼(새로고침), 비활성(갱신 중)이면 팝오버 자체. Esc 는 칩으로 되돌린다(아래).
+  const openId = anchor?.id ?? null
+  useEffect(() => {
+    if (openId === null) return
+    const node = popover.current
+    if (node === null) return
+    const target = node.querySelector<HTMLElement>('button:not(:disabled)') ?? node
+    target.focus()
+  }, [openId])
 
   useEffect(() => {
     if (anchor === null) return
@@ -245,6 +255,7 @@ export function StatusBarUsage({ suspended = false }: { suspended?: boolean }): 
           role="dialog"
           aria-label={`${open.entry.name} 사용량`}
           data-statusbar-usage-popover={open.entry.id}
+          tabIndex={-1}
           style={{ left: anchor.left, bottom: anchor.bottom, width: POPOVER_WIDTH }}
         >
           <div className="statusbar-usage-pop-head">

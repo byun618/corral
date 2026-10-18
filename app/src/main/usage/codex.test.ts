@@ -9,19 +9,23 @@ const FILE = '/home/tester/.codex/auth.json'
 
 describe('parseCodexUsage — 플랜별 창(E4ⓒ)', () => {
   it('실측 free(c11): 30일 창 하나, secondary null', () => {
-    expect(parseCodexUsage({ value: fixture('codex-usage-free.json'), now: NOW })).toEqual([{ label: '30d', windowMinutes: 43200, usedPercent: 0, resetsAt: 1794908330 * 1000 }])
+    expect(parseCodexUsage({ value: fixture('codex-usage-free.json'), now: NOW })).toEqual({ windows: [{ label: '30d', windowMinutes: 43200, usedPercent: 0, resetsAt: 1794908330 * 1000 }], skipped: 0 })
   })
   it('prolite: 7d 하나(secondary_window null)', () => {
     const value = { plan_type: 'prolite', rate_limit: { primary_window: { used_percent: 41, limit_window_seconds: 604800, reset_at: 1_800_000_000 }, secondary_window: null } }
-    expect(parseCodexUsage({ value, now: NOW })).toEqual([{ label: '7d', windowMinutes: 10080, usedPercent: 41, resetsAt: 1_800_000_000_000 }])
+    expect(parseCodexUsage({ value, now: NOW })).toEqual({ windows: [{ label: '7d', windowMinutes: 10080, usedPercent: 41, resetsAt: 1_800_000_000_000 }], skipped: 0 })
   })
   it('plus(Orca fixture): 5h + 7d', () => {
     const value = { plan_type: 'plus', rate_limit: { primary_window: { used_percent: 7, limit_window_seconds: 5 * 60 * 60, reset_at: 1_800_000_000 }, secondary_window: { used_percent: 23, limit_window_seconds: 7 * 24 * 60 * 60, reset_at: 1_800_100_000 } } }
-    expect(parseCodexUsage({ value, now: NOW })?.map((window) => [window.label, window.usedPercent])).toEqual([['5h', 7], ['7d', 23]])
+    expect(parseCodexUsage({ value, now: NOW })?.windows.map((window) => [window.label, window.usedPercent])).toEqual([['5h', 7], ['7d', 23]])
   })
   it('reset_at 없으면 reset_after_seconds 로, 299분은 5h(1분 오차)', () => {
     const value = { rate_limit: { primary_window: { used_percent: 1, limit_window_seconds: 299 * 60, reset_after_seconds: 60 } } }
-    expect(parseCodexUsage({ value, now: NOW })).toEqual([{ label: '5h', windowMinutes: 299, usedPercent: 1, resetsAt: NOW + 60_000 }])
+    expect(parseCodexUsage({ value, now: NOW })).toEqual({ windows: [{ label: '5h', windowMinutes: 299, usedPercent: 1, resetsAt: NOW + 60_000 }], skipped: 0 })
+  })
+  it('r1 P7 — secondary 칸 이름이 바뀌어 못 읽으면 primary 만 + skipped 1(값을 만들지 않는다)', () => {
+    const value = { rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18000 }, secondary_window: { usedPercent: 99, windowSeconds: 604800 } } }
+    expect(parseCodexUsage({ value, now: NOW })).toEqual({ windows: [{ label: '5h', windowMinutes: 300, usedPercent: 10, resetsAt: null }], skipped: 1 })
   })
   it('모르는 형태 → null', () => {
     expect(parseCodexUsage({ value: { plan_type: 'plus' }, now: NOW })).toBeNull()

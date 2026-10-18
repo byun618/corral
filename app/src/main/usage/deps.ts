@@ -38,6 +38,14 @@ export function readKeychain({ service, account }: { service: string; account: s
   })
 }
 
+function osUsername(): string | null {
+  try {
+    return os.userInfo().username
+  } catch {
+    return null
+  }
+}
+
 export function realCollectorDeps({ signal, userAgent }: { signal: AbortSignal; userAgent: string }): CollectorDeps {
-  return { httpGet, readFile: readFileText, readKeychain, env: process.env, homedir: os.homedir(), platform: process.platform, now: Date.now, userAgent, signal }
+  return { httpGet, readFile: readFileText, readKeychain, env: process.env, homedir: os.homedir(), username: osUsername(), platform: process.platform, now: Date.now, userAgent, signal }
 }

@@ -7,7 +7,7 @@
 import path from 'node:path'
 import { isRecord, readRecord } from '../../shared/json.js'
 import { windowLabel, type UsageWindow } from '../../shared/usage.js'
-import { PARSE_ERROR, failure, getJson, percentOf, readJsonFile, stringField, timeOf, type CollectorDeps, type FetchOutcome, type UsageCollector } from './collector.js'
+import { failure, getJson, parsedOutcome, percentOf, readJsonFile, stringField, timeOf, type CollectorDeps, type FetchOutcome, type ParsedWindows, type UsageCollector } from './collector.js'
 
 export const GROK_USAGE_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits'
 const XAI_ISSUER = 'https://auth.x.ai'
@@ -36,7 +36,7 @@ export function pickGrokEntry({ value, now }: { value: unknown; now: number }): 
 }
 
 /** 응답 → 창 하나. percent 가 없으면 null(= `error(parse)`). */
-export function parseGrokUsage(value: unknown): UsageWindow[] | null {
+export function parseGrokUsage(value: unknown): ParsedWindows | null {
   if (!isRecord(value)) return null
   const config = readRecord(value, 'config') ?? value
   const usedPercent = percentOf(config.creditUsagePercent)
@@ -45,7 +45,8 @@ export function parseGrokUsage(value: unknown): UsageWindow[] | null {
   const start = period === null ? null : timeOf(period.start)
   const end = period === null ? null : timeOf(period.end)
   const minutes = start !== null && end !== null && end > start ? Math.round((end - start) / 60_000) : null
-  return [{ label: minutes === null ? 'credits' : windowLabel(minutes), windowMinutes: minutes, usedPercent, resetsAt: end }]
+  const window: UsageWindow = { label: minutes === null ? 'credits' : windowLabel(minutes), windowMinutes: minutes, usedPercent, resetsAt: end }
+  return { windows: [window], skipped: 0 }
 }
 
 async function fetchGrok(deps: CollectorDeps): Promise<FetchOutcome> {
@@ -69,8 +70,7 @@ async function fetchGrok(deps: CollectorDeps): Promise<FetchOutcome> {
   if (entry.userId !== null) headers['x-userid'] = entry.userId
   const response = await getJson({ deps, url: GROK_USAGE_URL, cli: 'grok', headers })
   if (response.kind === 'error') return response
-  const windows = parseGrokUsage(response.value)
-  return windows === null ? failure({ error: PARSE_ERROR }) : { kind: 'ok', windows }
+  return parsedOutcome(parseGrokUsage(response.value))
 }
 
 export const grokCollector: UsageCollector = { id: 'grok', name: 'Grok', fetch: fetchGrok }

@@ -324,3 +324,13 @@ export function PanelLeftIcon({ className }: { className?: string }): React.JSX.
     </svg>
   )
 }
+
+/** lucide Gauge — 설정 › 외관 「상태바」 카드(LIFE-636). */
+export function GaugeIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="m12 14 4-4" />
+      <path d="M3.34 19a10 10 0 1 1 17.32 0" />
+    </svg>
+  )
+}

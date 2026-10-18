@@ -36,12 +36,16 @@ import type { Settings, SettingsWriteResult } from '../shared/terminal-settings.
 import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
+import type { UsageSnapshot } from '../shared/usage.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
 import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerOpResult } from '../shared/explorer-ops.js'
 import type { FileListInput, FileListResult } from '../shared/file-list.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
 
 const EXPOSED = [
+  'getUsage',
+  'refreshUsage',
+  'onUsage',
   'getMobileStatus',
   'onMobileStatus',
   'createMobilePairing',
@@ -380,6 +384,16 @@ const api: CorralApi = {
   createMobilePairing: (): Promise<MobilePairingResult> => ipcRenderer.invoke('corral:createMobilePairing'),
   revokeMobileDevice: (input: { id: string }): Promise<{ ok: boolean }> => ipcRenderer.invoke('corral:revokeMobileDevice', input),
   recheckMobile: (): Promise<MobileStatus | null> => ipcRenderer.invoke('corral:recheckMobile'),
+  // 상태바 사용량 (LIFE-636). push·응답 모두 표시용 칸만 — 토큰은 main 밖으로 나오지 않는다.
+  getUsage: (): Promise<UsageSnapshot | null> => ipcRenderer.invoke('corral:usageGet'),
+  refreshUsage: (input: { id: string | null }): Promise<UsageSnapshot | null> => ipcRenderer.invoke('corral:usageRefresh', input),
+  onUsage: (listener: (snapshot: UsageSnapshot) => void) => {
+    const handler = (_event: unknown, snapshot: UsageSnapshot): void => listener(snapshot)
+    ipcRenderer.on('corral:usage', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:usage', handler)
+    }
+  },
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

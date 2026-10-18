@@ -4,6 +4,7 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
+import type { UsageSnapshot } from './usage.js'
 import type { FileListInput, FileListResult } from './file-list.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
@@ -1135,5 +1136,10 @@ export type CorralApi = {
   revokeMobileDevice: (input: { id: string }) => Promise<{ ok: boolean }>
   /** 「다시 확인」 — 꺼져 있으면 읽기 점검만. */
   recheckMobile: () => Promise<MobileStatus | null>
+  // --- 상태바 사용량 (LIFE-636) — 창별 사용률·초기화 시각·상태 문구만(토큰·계정 값 없음). 다른 창의 요청이면 null ---
+  getUsage: () => Promise<UsageSnapshot | null>
+  /** 새로고침 — id 가 없으면 전부. 끝난 뒤 스냅숏. 진행 중이면 그 요청을 같이 기다린다. */
+  refreshUsage: (input: { id: string | null }) => Promise<UsageSnapshot | null>
+  onUsage: (listener: (snapshot: UsageSnapshot) => void) => () => void
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }

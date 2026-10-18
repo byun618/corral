@@ -65,7 +65,7 @@ export const SETTINGS_SECTIONS = [
     id: 'appearance',
     group: 'interface',
     title: '외관',
-    description: '터미널 글꼴·테마·커서·pane 모양과 사이드바 카드 레이아웃.',
+    description: '터미널 글꼴·테마·커서·pane 모양, 사이드바 카드 레이아웃, 상태바 사용량.',
     searchEntries: [
       { title: '터미널', description: '터미널 외관 — 글꼴, 테마, 커서, pane.', keywords: ['terminal', 'appearance', '외관', '터미널', '모양'] },
       { title: '글꼴 크기', description: '새 창 및 라이브 업데이트의 기본 terminal 글꼴 크기입니다.', keywords: ['terminal', 'typography', 'font', 'font size', 'size', '글꼴', '크기', '폰트'] },
@@ -80,6 +80,9 @@ export const SETTINGS_SECTIONS = [
       { title: '구분선 두께', description: '창 구분선의 두께입니다.', keywords: ['pane', 'divider', 'thickness', '구분선', '디바이더', '두께'] },
       { title: '창 및 사이드바', description: '사이드바 모양.', keywords: ['window', 'sidebar', 'appearance', '창', '사이드바'] },
       { title: '카드 레이아웃', description: '사이드바의 워크트리 카드를 자세히 또는 간단히 표시합니다.', keywords: ['card', 'card layout', 'layout', 'compact', 'detailed', 'sidebar', 'workspace card', 'worktree card', '카드', '레이아웃', '간단히', '자세히', '사이드바', '워크트리 카드'] },
+      // 상태바 (LIFE-636 E9ⓓ) — 「상태바」·「사용량」·usage·provider 이름이 이 카드를 찾는다.
+      { title: '상태바', description: '상태바에 보일 provider 사용량.', keywords: ['status bar', 'statusbar', 'usage', 'rate limit', 'limit', 'quota', '상태바', '사용량', '한도', '사용률'] },
+      { title: '사용량 표시', description: 'Claude · Codex · Grok 한도 사용률 칩을 켜고 끕니다.', keywords: ['usage', 'claude', 'codex', 'grok', 'anthropic', 'openai', 'xai', 'provider', '사용량', '한도', '칩'] },
     ],
   },
   {

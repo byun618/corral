@@ -47,6 +47,7 @@ it('LA-TIME 실제 adapter 연산이 44초(RPC 넷 × 11초)에 성공 → 30초
     const tool = body.params?.name
     if (slow && tool !== undefined) await new Promise((resolve) => setTimeout(resolve, 11_000))
     if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
+    // fixture 입력 검증(-32602) 없음 — 도구 처리기를 직접 부른다. 입력 형식 판정은 HTTP 경로 시험(`la-activity.test.ts` 등)이 맡는다(LIFE-638 S1-5).
     const reply: { isError: boolean; text: string } | null = body.method === 'initialize' ? null : Reflect.get(fixture, 'tool').call(fixture, { tool, args: body.params?.arguments ?? {} })
     const result = reply === null ? { protocolVersion: '2025-06-18' } : { content: [{ type: 'text', text: reply.text }], ...(reply.isError ? { isError: true } : {}) }
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), { headers: { 'content-type': 'application/json' } })

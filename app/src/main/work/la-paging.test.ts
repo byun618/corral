@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { WorkCall, WorkItem, WorkResponse } from '../../shared/work.js'
 import { FIXTURE_IDS, FIXTURE_RETIRED_SPACE_KEYS } from './la-mcp-fixture.js'
 import { pagingSeed } from './la-paging-seed.js'
-import { LA_CAPABILITIES, LA_CATCH_ALL_KEY } from './la-source.js'
+import { LA_CAPABILITIES, LA_CATCH_ALL_KEY, laSourceEntry } from './la-source.js'
 import { readList, LaShapeError } from './la-shape.js'
 import { McpHttpClient } from './mcp-http.js'
 import { FAKE_LA_TOKEN, laFixtureHarness } from './test-kit.js'
@@ -185,7 +185,7 @@ describe('C2 쪽을 이어 붙인 결과 = 수정 전 BFS 결과', () => {
     expect(rows.some((row) => row.key === 'LIFE-709' || row.key === 'LIFE-701' || row.key === 'LIFE-499')).toBe(false) // 보관 작업 자신은 행 0
   })
 
-  it('쪽 하나의 RPC 수 — 쪽 크기 1 과 5 에서 같은 상한(작업 수에 비례하지 않음)', async () => {
+  it('쪽 하나의 RPC 수 — 구조(checkpoint·bug)가 한 쪽 이하일 때 쪽 크기 1 과 5 에서 같은 4(작업 수에 비례하지 않음)', async () => {
     const counts: Record<number, number[]> = {}
     for (const pageSize of [1, 5]) {
       const { harness, send } = await connect({ pageSize, seed: 'paging' })
@@ -199,7 +199,59 @@ describe('C2 쪽을 이어 붙인 결과 = 수정 전 BFS 결과', () => {
   })
 })
 
+/** 체크포인트를 `count` 개 더 심는다(seq 91000+ — 구조 쪽의 앞자리를 차지해 원래 부모들을 구조 둘째 쪽 뒤로 민다). */
+function plantCheckpoints({ harness, count }: { harness: Harness; count: number }): Set<string> {
+  const template = harness.fixture.issues.find((issue) => issue.id === FIXTURE_IDS.checkpoint)
+  if (template === undefined) throw new Error('씨앗')
+  const ids = new Set<string>()
+  for (let n = 0; n < count; n += 1) {
+    const id = `00000000-0000-4000-8000-${String(91000 + n).padStart(12, '0')}`
+    harness.fixture.issues.push({ ...template, id, sequentialId: 91000 + n })
+    ids.add(id)
+  }
+  return ids
+}
+
+describe('C2 구조가 한 쪽보다 클 때 (f1 S1-2)', () => {
+  it('부모 checkpoint 가 구조 둘째 쪽 이후에 있어도 이어 붙인 결과(표시 부모 포함)가 수정 전 원자료와 같다', async () => {
+    const { harness, send } = await connect({ pageSize: 5, seed: 'paging' })
+    const planted = plantCheckpoints({ harness, count: 210 })
+    const all = await listAll({ harness, send, spaceKey: FIXTURE_IDS.corral })
+    // 구조 checkpoint 쪽이 둘 이상이었다 — 원래 부모(372·700 …)는 seq 내림차순 둘째 쪽에 있다.
+    const structure = harness.fixture.toolCalls.filter((call) => call.tool === 'issue_list' && call.args.kind === 'checkpoint')
+    expect(structure.some((call) => call.args.cursor !== undefined)).toBe(true)
+    expect(all.rows.filter((row) => !planted.has(row.id))).toEqual(BEFORE.paging[FIXTURE_IDS.corral]?.items)
+    // 쪽당 RPC 는 구조 쪽 수만큼 늘지만(4 → 5) 쪽의 작업 수와는 무관하다.
+    expect(new Set(all.pages.map((entry) => entry.calls))).toEqual(new Set([5]))
+  })
+})
+
+describe('U-1 task 아래 자손(옛 데이터) — 의도적 차이', () => {
+  it('새 목록은 task 아래 task 를 내고 표시 부모 = 그 task(미보관) · 나머지 집합은 수정 전과 같다', async () => {
+    const { harness, send } = await connect({ pageSize: 3, seed: 'paging' })
+    const template = harness.fixture.issues.find((issue) => issue.id === FIXTURE_IDS.task600)
+    if (template === undefined) throw new Error('씨앗')
+    const legacy = '00000000-0000-4000-8000-000000000800'
+    // LA 부모 규칙(LIFE-293 뒤) 이전 데이터 흉내 — task 밑 task. 옛 BFS 는 task 아래로 내려가지 않아 이 행을 어디에도 보이지 않았다.
+    harness.fixture.issues.push({ ...template, id: legacy, sequentialId: 800, parentId: FIXTURE_IDS.task600, title: '옛 task 밑 task' })
+    const all = await listAll({ harness, send, spaceKey: FIXTURE_IDS.corral })
+    expect(all.rows.find((row) => row.id === legacy)).toEqual({ id: legacy, key: 'LIFE-800', parentId: FIXTURE_IDS.task600, spaceKey: FIXTURE_IDS.corral })
+    expect(all.rows.filter((row) => row.id !== legacy)).toEqual(BEFORE.paging[FIXTURE_IDS.corral]?.items)
+  })
+})
+
 describe('C3 「미분류」·낡은 커서', () => {
+  it('빈 글자 커서(f1 S1-6) — 정규 스페이스·「미분류」 모두 보내기 전에 낡은 커서와 같은 rejected · 요청 0', async () => {
+    const { harness, send } = await connect({ pageSize: 2 })
+    for (const spaceKey of [FIXTURE_IDS.corral, LA_CATCH_ALL_KEY]) {
+      const before = harness.fixture.requests.length
+      const response = await send({ op: 'listItems', spaceKey, cursor: '' })
+      expect(response.ok ? null : { kind: response.error.kind, message: response.error.message }).toEqual({ kind: 'rejected', message: '목록 위치가 낡았습니다 — 처음부터 새로 고치세요.' })
+      expect(harness.fixture.requests.length).toBe(before)
+    }
+    expect(harness.service.settings().connections[0]?.status).toBe('ok')
+  })
+
   it('「미분류」 는 지금 그대로 — 한 번에 · 호출 모양(종류별 배열 4번) 무변경 · 커서가 오면 첫 쪽을 다시 주지 않고 거절(요청 0)', async () => {
     const { harness, send } = await connect({ pageSize: 1 })
     const start = harness.fixture.toolCalls.length
@@ -275,6 +327,9 @@ describe('C8 목록 순회 상한', () => {
       expect(failure.error.kind).toBe('invalid_response')
       expect(failure.error.message).toContain('쪽이 끝나지 않습니다')
     }
+    // 감지가 어디서 멈췄는지(f1 S1-1) — repeat·empty 는 둘째 쪽에서 바로(쪽 수 상한까지 가지 않는다), endless 는 쪽 수 상한(100쪽)에서.
+    const main = harness.fixture.toolCalls.filter((call) => call.tool === 'issue_list' && call.args.kind === undefined).length
+    expect(main).toBe(mode === 'endless' ? 100 : 2)
   })
 
   it.each(['repeat', 'empty', 'endless'] as const)('구조 목록 %s → 그 쪽이 invalid_response', async (mode) => {
@@ -286,11 +341,75 @@ describe('C8 목록 순회 상한', () => {
     harness.fixture.pagingFault = { tool: 'issue_list', mode, when: (args) => args.kind === 'checkpoint' }
     const response = await send({ op: 'listItems', spaceKey: FIXTURE_IDS.corral, cursor: null })
     expect(response.ok ? null : response.error.kind).toBe('invalid_response')
+    // repeat·empty 는 구조 둘째 쪽에서 감지(f1 S1-1), endless 는 구조 쪽 수 상한(50쪽).
+    const structure = harness.fixture.toolCalls.filter((call) => call.tool === 'issue_list' && call.args.kind === 'checkpoint' && call.args.paginate === true).length
+    expect(structure).toBe(mode === 'endless' ? 50 : 2)
   })
 
   it('양성 대조 — 고장이 없으면 같은 씨앗을 끝까지 받는다', async () => {
     const { harness, send } = await connect({ pageSize: 2 })
     const all = await listAll({ harness, send, spaceKey: FIXTURE_IDS.corral })
     expect(all.rows).toEqual(BEFORE.default[FIXTURE_IDS.corral]?.items)
+  })
+})
+
+describe('U-3 목록 커서 쪽 번호 기억(listPages)', () => {
+  it('기억에 없는 커서(연결 교체·재시작 흉내 — 새 출처 인스턴스)로 이어 받아도 정상 순회는 끝까지 간다', async () => {
+    const { harness } = await connect()
+    const entry = laSourceEntry({ url: harness.url, clientVersion: 'test', pageSize: 2 })
+    const first = entry.create({ token: FAKE_LA_TOKEN, account: {} })
+    const page1 = await first.call({ op: 'listItems', spaceKey: FIXTURE_IDS.corral, cursor: null })
+    if (!page1.ok || page1.result.op !== 'listItems') throw new Error('첫 쪽')
+    first.close()
+    const second = entry.create({ token: FAKE_LA_TOKEN, account: {} })
+    const ids = page1.result.items.map((item) => item.id)
+    let cursor = page1.result.nextCursor
+    for (let index = 0; index < 50 && cursor !== null; index += 1) {
+      const next = await second.call({ op: 'listItems', spaceKey: FIXTURE_IDS.corral, cursor })
+      if (!next.ok || next.result.op !== 'listItems') throw new Error(next.ok ? next.result.op : next.error.message)
+      ids.push(...next.result.items.map((item) => item.id))
+      cursor = next.result.nextCursor
+    }
+    expect(cursor).toBeNull()
+    expect(ids.sort()).toEqual(BEFORE.default[FIXTURE_IDS.corral]?.items.map((row) => row.id))
+    second.close()
+  })
+
+  it('256 개를 넘어 밀려난 커서로 이어 받는 정상 순회도 상한 초과로 끊기지 않는다', async () => {
+    const { harness } = await connect()
+    // 쪽 크기 1 로 90쪽씩 도는 스페이스 셋 = 기억할 커서 267개(> 256).
+    const template = harness.fixture.issues.find((issue) => issue.id === FIXTURE_IDS.direct)
+    const project = harness.fixture.issues.find((issue) => issue.id === FIXTURE_IDS.lifeAssistant)
+    if (template === undefined || project === undefined) throw new Error('씨앗')
+    const spaces = [0, 1, 2].map((s) => {
+      const id = `00000000-0000-4000-8000-${String(95000 + s).padStart(12, '0')}`
+      harness.fixture.issues.push({ ...project, id, sequentialId: 95000 + s, title: `큰 스페이스 ${s}` })
+      for (let n = 0; n < 90; n += 1) harness.fixture.issues.push({ ...template, id: `00000000-0000-4000-8000-${String(96000 + s * 100 + n).padStart(12, '0')}`, sequentialId: 96000 + s * 100 + n, parentId: id })
+      return id
+    })
+    const client = laSourceEntry({ url: harness.url, clientVersion: 'test', pageSize: 1 }).create({ token: FAKE_LA_TOKEN, account: {} })
+    const walk = async ({ spaceKey, from, stopAfter }: { spaceKey: string; from: string | null; stopAfter?: number }): Promise<{ ids: string[]; cursor: string | null }> => {
+      const ids: string[] = []
+      let cursor = from
+      for (let index = 0; index < 200; index += 1) {
+        const got = await client.call({ op: 'listItems', spaceKey, cursor })
+        if (!got.ok || got.result.op !== 'listItems') throw new Error(got.ok ? got.result.op : `${got.error.kind} ${got.error.message}`)
+        ids.push(...got.result.items.map((item) => item.id))
+        cursor = got.result.nextCursor
+        if (cursor === null || (stopAfter !== undefined && index + 1 >= stopAfter)) break
+      }
+      return { ids, cursor }
+    }
+    const head = await walk({ spaceKey: FIXTURE_IDS.corral, from: null, stopAfter: 1 })
+    const held = head.cursor
+    if (held === null) throw new Error('다음 쪽 없음')
+    for (const spaceKey of spaces) expect((await walk({ spaceKey, from: null })).ids).toHaveLength(90)
+    const memory = Reflect.get(client, 'listPages')
+    if (!(memory instanceof Map)) throw new Error('listPages')
+    expect(memory.size).toBe(256)
+    expect(memory.has(held)).toBe(false)
+    const rest = await walk({ spaceKey: FIXTURE_IDS.corral, from: held })
+    expect([...head.ids, ...rest.ids].sort()).toEqual(BEFORE.default[FIXTURE_IDS.corral]?.items.map((row) => row.id))
+    client.close()
   })
 })

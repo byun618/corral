@@ -77,6 +77,8 @@ export type FixtureCorrupt =
   | 'worklink-unknown-kind' | 'worklink-drop-path' | 'worklink-machine-number' | 'worklink-drop-createdAt' | 'worklink-not-array' | 'drop-workLinks'
   // LIFE-638 C1·C5·C7 양성 대조 — 커서 쪽의 nextCursor 를 숫자로 · 빈 글자로 · 칸 삭제 · items 를 객체로 · 이력 행 from 을 숫자로 · 코멘트 본문을 숫자로.
   | 'page-cursor-number' | 'page-cursor-empty' | 'page-cursor-missing' | 'page-items-object' | 'history-from-number' | 'comment-body-number'
+  // LIFE-638 f1 S1-4 — 이력 행 at 을 날짜가 아닌 글자로 · writeId 를 숫자로.
+  | 'history-at-invalid' | 'history-writeId-number'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -108,7 +110,7 @@ export type FixtureRequest = { method: string; tool: string | null; bearer: 'non
 /** LA `issue_history` 한 행(611). `origin` = web·mobile·mcp. */
 export type FixtureHistory = { id: string; issueId: string; at: string; author: string; field: string; from: string | null; to: string | null; writeId: string | null; origin: 'web' | 'mobile' | 'mcp' }
 /** LA `issue_comment` 한 행(611). */
-export type FixtureComment = { id: string; issueId: string; author: string; body: string; origin: 'web' | 'mobile' | 'mcp'; createdAt: string; updatedAt: string }
+export type FixtureComment = { id: string; issueId: string; author: string | null; body: string; origin: 'web' | 'mobile' | 'mcp'; createdAt: string; updatedAt: string }
 /**
  * 끝나지 않는 쪽(LIFE-638 C8) — `repeat` = 받은 커서를 그대로 다음으로 · `empty` = 둘째 쪽부터 빈 쪽 + 다음 커서 · `endless` = 늘 새 커서(같은 행).
  * `when` 이 있으면 그 인자에만(예: 구조 목록이 아닌 본 목록).
@@ -302,7 +304,7 @@ export class LaMcpFixture {
   }
 
   /** 다른 곳이 남긴 코멘트를 심는다. */
-  plantComment({ issueId, author, body, origin = 'web' }: { issueId: string; author: string; body: string; origin?: FixtureComment['origin'] }): FixtureComment {
+  plantComment({ issueId, author, body, origin = 'web' }: { issueId: string; author: string | null; body: string; origin?: FixtureComment['origin'] }): FixtureComment {
     const at = this.tick()
     const comment: FixtureComment = { id: uuid(40000 + this.seq++), issueId, author, body, origin, createdAt: at, updatedAt: at }
     this.comments.push(comment)
@@ -844,7 +846,10 @@ export class LaMcpFixture {
   private historyRow(row: FixtureHistory): Record<string, unknown> {
     const { issueId: _issue, ...rest } = row
     void _issue
-    return this.corrupt === 'history-from-number' ? { ...rest, from: 7 } : rest
+    if (this.corrupt === 'history-from-number') return { ...rest, from: 7 }
+    if (this.corrupt === 'history-at-invalid') return { ...rest, at: '어제쯤' }
+    if (this.corrupt === 'history-writeId-number') return { ...rest, writeId: 7 }
+    return rest
   }
 
   /** 코멘트 응답 — `{id, issueId, author, body, origin, createdAt, updatedAt}`(611). */

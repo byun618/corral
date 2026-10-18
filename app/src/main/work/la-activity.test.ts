@@ -187,7 +187,7 @@ describe('C5 변경 이력', () => {
     expect(harness.fixture.history.filter((row) => row.issueId === created.item.id)).toHaveLength(0)
   })
 
-  it.each(['history-from-number', 'page-cursor-number', 'page-cursor-empty', 'page-items-object'] as const)('행·쪽 모양 깨짐(%s) → invalid_response(양성 대조: 깨기 전 통과)', async (corrupt) => {
+  it.each(['history-from-number', 'history-at-invalid', 'history-writeId-number', 'page-cursor-number', 'page-cursor-empty', 'page-items-object'] as const)('행·쪽 모양 깨짐(%s) → invalid_response(양성 대조: 깨기 전 통과)', async (corrupt) => {
     const { harness, send } = await connect()
     await ok(send({ op: 'updateItem', itemId: FIXTURE_IDS.task600, fields: { title: '깨기 전' }, ifVersion: null }))
     expect((await send({ op: 'listHistory', itemId: FIXTURE_IDS.task600 })).ok).toBe(true)
@@ -257,6 +257,21 @@ describe('C7 코멘트', () => {
     expect(harness.fixture.requests.filter((request) => request.tool === 'issue_comment_add')).toHaveLength(2)
   })
 
+  it('author 가 null 인 코멘트는 null 그대로(f1 S1-4 — 빈 글자로 바꾸지 않는다)', async () => {
+    const { harness, send } = await connect()
+    harness.fixture.plantComment({ issueId: FIXTURE_IDS.task600, author: null, body: '작성자 모름' })
+    const listed = await ok(send({ op: 'listComments', itemId: FIXTURE_IDS.task600 }))
+    expect(listed.op === 'listComments' ? listed.comments.map((comment) => comment.author) : null).toEqual([null])
+  })
+
+  it('보내지 않은 실패(unsent — 연결 전 거부)는 「모름」 이 아니다(f1 S1-4 — maybeApplied 없음)', async () => {
+    // 닫힌 포트 = 연결 거부(ECONNREFUSED) — 초기화가 실패해 도구 요청을 보내지 않는다.
+    const client = laSourceEntry({ url: 'http://127.0.0.1:9/mcp', clientVersion: 'test', timeoutMs: 2000 }).create({ token: FAKE_LA_TOKEN, account: {} })
+    const outcome = await client.call({ op: 'addComment', itemId: FIXTURE_IDS.task600, body: '안 보냄' }, { writeId: 'w1' })
+    expect(outcome.ok ? null : { kind: outcome.error.kind, maybe: outcome.error.maybeApplied ?? false, unknown: outcome.error.message.includes('코멘트가 남았는지 모릅니다') }).toEqual({ kind: 'network', maybe: false, unknown: false })
+    client.close()
+  })
+
   it('공백만 본문 = LA 가 분명히 거절(rejected · 결과 모름 아님)', async () => {
     const { send } = await connect()
     const response = await send({ op: 'addComment', itemId: FIXTURE_IDS.task600, body: '   \n' })
@@ -288,9 +303,11 @@ describe('C8 이력·코멘트 순회 상한', () => {
     // 양성 대조: 고장이 없으면 끝까지 받는다.
     expect((await send(call)).ok).toBe(true)
     harness.fixture.pagingFault = { tool, mode }
+    const before = harness.fixture.toolCalls.filter((entry) => entry.tool === tool).length
     const response = await send(call)
     expect(response.ok ? null : response.error.kind).toBe('invalid_response')
     if (!response.ok) expect(response.error.message).toContain('쪽이 끝나지 않습니다')
-    expect(harness.fixture.toolCalls.filter((entry) => entry.tool === tool).length).toBeLessThanOrEqual(2 + 50)
+    // 감지가 어디서 멈췄는지(f1 S1-1) — repeat(이미 받은 커서)·empty(빈 쪽 + 커서)는 둘째 쪽에서, endless 는 쪽 수 상한(50쪽)에서.
+    expect(harness.fixture.toolCalls.filter((entry) => entry.tool === tool).length - before).toBe(mode === 'endless' ? 50 : 2)
   })
 })

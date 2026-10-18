@@ -12,8 +12,9 @@
 // 능력 꺼짐(L1 대기): 순서(L1f · LIFE-612).
 // 커서 페이지(L1c · LIFE-638 · LA LIFE-610) 켜짐: 정규 스페이스 목록 한 쪽 = `issue_list({rootId: 스페이스, archived:'all', paginate:true, limit, cursor})` 한 번.
 //   커서는 LA `nextCursor` 를 받은 글자 그대로 화면에 넘기고 그대로 돌려보낸다(만들거나 해석하지 않는다). LA 쪽은 seq 내림차순이라 부모가 자식보다 뒤 쪽에 온다 —
-//   표시 부모 사슬은 쪽마다 같은 루트의 부모 가능 종류(checkpoint·bug, 보관 포함)를 따로 끝까지 받아 푼다(쪽당 RPC = 스페이스 확인 1 + 쪽 1 + 구조 2 — 작업 수와 무관).
-//   「미분류」 는 루트가 없어 지금처럼 한 번에(D3). LA `잘못된 cursor입니다.` = 낡은 목록 위치(rejected, D4).
+//   표시 부모 사슬은 쪽마다 같은 루트의 부모 가능 종류(checkpoint·bug, 보관 포함)를 따로 끝까지 받아 푼다(쪽당 RPC = 스페이스 확인 1 + 쪽 1 + 구조 2 — 구조(checkpoint·bug)가 각각 한 쪽(200) 이하일 때. 구조가 더 크면 그 쪽 수만큼 늘지만 작업 수와는 무관).
+//   「미분류」 는 루트가 없어 지금처럼 한 번에(D3). LA `잘못된 cursor입니다.` = 낡은 목록 위치(rejected, D4). 빈 글자 커서는 LA 가 받지 않는 값이라
+//   보내기 전에 같은 거절로(요청 0).
 // 코멘트·이력(L1e · LIFE-638 · LA LIFE-611) 켜짐: `issue_comment_list`·`issue_history_list` 를 끝까지 받아 오래된 것부터 · `issue_comment_add`(결과 모름 재전송 없음).
 //   쓰기 5툴(`issue_create`·`issue_update`·`issue_transition`·`issue_link_create`·`issue_link_delete`)에 corral 쓰기 id 를 `clientWriteId` 로 싣는다 —
 //   LA 패턴 밖이면 싣지 않는다(쓰기 id 때문에 쓰기가 거절되지 않게). 이력 행 `writeId` 로 돌아와 활동 기록과 짝을 짓는다.
@@ -58,9 +59,9 @@ export const LA_TOKEN_PREFIX = 'life_pat_'
 export const LA_CATCH_ALL_KEY = 'la:unsorted'
 /** `issue_list` 상한(도구 스키마 max 200). 한 번에 받는 목록(스페이스·미분류·자식)이 상한에 닿으면 `truncated` 로 알린다. */
 const LIST_LIMIT = 200
-/** 정규 스페이스 목록의 쪽 크기(LIFE-638 D1) — 화면 「더 불러오기」 한 번에 오는 수. 시험은 `pageSize` 로 줄인다. */
-const LIST_PAGE_SIZE = 100
-/** 정규 스페이스 목록 쪽 수 상한(D10) — 이 쪽을 넘어 커서가 이어지면 조용히 끊지 않고 오류. 100 × 100 = 1만 건. */
+/** 정규 스페이스 목록의 쪽 크기(LIFE-638 D1) — LA 상한. 200 이하 스페이스는 옛 동작처럼 첫 화면에 다 온다(f1 S1-7). 시험은 `pageSize` 로 줄인다. */
+const LIST_PAGE_SIZE = 200
+/** 정규 스페이스 목록 쪽 수 상한(D10) — 이 쪽을 넘어 커서가 이어지면 조용히 끊지 않고 오류. 100 × 200 = 2만 건. */
 const MAX_LIST_PAGES = 100
 /** 한 연산 안에서 끝까지 따라가는 쪽 목록(구조·코멘트·이력)의 쪽 크기(LA 상한 200)와 쪽 수 상한(D10) — 200 × 50 = 1만 행. */
 const FOLLOW_PAGE_SIZE = 200
@@ -71,6 +72,8 @@ const LIST_CURSOR_MEMORY = 256
 const CLIENT_WRITE_ID = /^[A-Za-z0-9_-]{1,64}$/
 /** LA 의 낡은·깨진 커서 문구(610·611 고정 문구) — 이 글자일 때만 「목록 위치가 낡음」 으로 읽는다(D4). */
 const INVALID_CURSOR = '잘못된 cursor입니다.'
+/** 낡은·깨진 커서의 이쪽 말(D4) — LA 거절과 보내기 전 거절(빈 글자 커서)이 같은 문구. */
+const STALE_CURSOR_MESSAGE = '목록 위치가 낡았습니다 — 처음부터 새로 고치세요.'
 /** 코멘트 남기기 결과를 모름(D7) — 다시 보내지 않는다. */
 const COMMENT_UNKNOWN_PREFIX = '코멘트가 남았는지 모릅니다(다시 보내지 말고 새로 고쳐 확인하세요)'
 /** 프로젝트 → 체크포인트 → bug → task 를 넘는 깊이는 없다고 보지 않고, 넉넉히 내려가되 끝은 둔다. */
@@ -144,7 +147,7 @@ export function laSourceEntry({ url, clientVersion, fetchImpl, timeoutMs, pageSi
  */
 export function laToolError(text: string): WorkError | null {
   // 낡은·깨진 커서(D4) — 연결 상태를 바꾸지 않는 연산 실패. 원격 글을 옮기지 않고 이쪽 말로.
-  if (text.trim() === INVALID_CURSOR) return workError({ kind: 'rejected', message: '목록 위치가 낡았습니다 — 처음부터 새로 고치세요.' })
+  if (text.trim() === INVALID_CURSOR) return workError({ kind: 'rejected', message: STALE_CURSOR_MESSAGE })
   const parsed = safeParse(text)
   if (isRecord(parsed) && parsed.code === 'CONFLICT' && parsed.statusCode === 409 && isRecord(parsed.current)) {
     return workError({ kind: 'conflict', status: 409, message: '다른 곳에서 먼저 바뀌었습니다 — 새로 불러오거나 덮어쓰세요.' })
@@ -183,6 +186,8 @@ export class LaSource implements WorkSourceClient {
         return statuses.ok ? { ok: true, result: { op: 'listStatuses', statuses: statuses.value.map(toStatus), kinds: KINDS } } : statuses.outcome
       }
       case 'listItems':
+        // 빈 글자 커서 — LA `cursor` 는 minLength 1 이라 보내면 입력 검증 거절. 보내기 전에 낡은 커서와 같은 거절로(S1-6, 두 스페이스 종류 모두).
+        if (call.cursor === '') return { ok: false, error: workError({ kind: 'rejected', message: STALE_CURSOR_MESSAGE }) }
         if (call.spaceKey !== LA_CATCH_ALL_KEY) return this.listItems({ spaceKey: call.spaceKey, cursor: call.cursor })
         // 「미분류」 는 한 번에 다 준다(D3) — 커서가 오면 첫 쪽을 다시 주지 않고 거절.
         if (call.cursor !== null) return { ok: false, error: workError({ kind: 'rejected', message: '「미분류」 는 한 번에 다 받습니다 — 다음 쪽이 없습니다. 새로 고치세요.' }) }

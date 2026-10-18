@@ -35,7 +35,7 @@ const settle = async (rounds = 8): Promise<void> => {
   for (let index = 0; index < rounds; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
 }
 
-async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[] }> {
+async function laRig({ pageSize }: { pageSize?: number } = {}): Promise<{ fixture: LaMcpFixture; calls: WorkCall[] }> {
   const fixture = new LaMcpFixture()
   const fetchImpl = async (_url: unknown, options?: RequestInit): Promise<Response> => {
     const body: { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } } = JSON.parse(String(options?.body))
@@ -46,7 +46,7 @@ async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[] }> {
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), { headers: { 'content-type': 'application/json' } })
   }
   let listener: (value: WorkSettingsState) => void = () => {}
-  const harness = workHarness({ entries: [laSourceEntry({ url: 'http://127.0.0.1:9/not-networked', clientVersion: 'test', fetchImpl })] })
+  const harness = workHarness({ entries: [laSourceEntry({ url: 'http://127.0.0.1:9/not-networked', clientVersion: 'test', fetchImpl, pageSize })] })
   const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
   if (!added.ok) throw new Error('LA 모의 연결 실패')
   const calls: WorkCall[] = []
@@ -143,21 +143,59 @@ describe('C6 LA 활동 합치기', () => {
   })
 })
 
+describe('K6 LA 다쪽 「더 불러오기」 (r2 S2-7)', () => {
+  it('작은 쪽 크기 — 누를 때마다 다음 쪽(받은 커서 그대로)이 붙어 카드가 늘고, 끝 쪽에서 버튼이 사라진다', async () => {
+    const r = await laRig({ pageSize: 3 })
+    const cards = (): Set<string> => new Set([...document.querySelectorAll('[data-issue-card]')].map((node) => node.getAttribute('data-issue-card') ?? ''))
+    const firstPage = r.calls.filter((call) => call.op === 'listItems')
+    expect(firstPage.length).toBeGreaterThan(0)
+    expect(firstPage.every((call) => call.op === 'listItems' && call.cursor === null)).toBe(true)
+    let seen = cards()
+    let clicks = 0
+    while (q('[data-tasks-more-button]') !== null && clicks < 20) {
+      click('[data-tasks-more-button]')
+      await settle()
+      clicks += 1
+      const now = cards()
+      expect([...seen].every((key) => now.has(key))).toBe(true)
+      seen = now
+    }
+    expect(clicks).toBeGreaterThan(1)
+    expect(q('[data-tasks-more-button]')).toBeNull()
+    // 누른 수만큼 커서 쪽을 받았고, 각 커서는 fixture 가 내준 글자 그대로였다(엄격 커서 — 고친 커서면 거절됐다).
+    expect(r.calls.filter((call) => call.op === 'listItems' && call.cursor !== null)).toHaveLength(clicks)
+    // 끝까지 받은 카드에 첫 쪽 뒤에 오는 작업(seq 가 낮은 LIFE-372)이 있다.
+    expect(seen.has('LIFE-372')).toBe(true)
+  })
+})
+
 describe('C6 렌더러는 출처 이름으로 가르지 않는다', () => {
-  const SOURCE_NAME = /(['"`])(la|jira|mock-jira)\1|LA_SOURCE_ID|JIRA_SOURCE_ID|MOCK_SOURCE_ID/
+  // 출처 id 글자·상수 + 표시 이름 글자(descriptor `name`·`mono` — 'LA'·'Jira Cloud'·'Mock Jira'·'MJ')와 그 칸을 글자와 견주는 꼴(r2 S2-6).
+  const SOURCE_NAME = /(['"`])(la|jira|mock-jira|LA|Jira|Jira Cloud|Mock Jira|MJ)\1|LA_SOURCE_ID|JIRA_SOURCE_ID|MOCK_SOURCE_ID|\.(name|mono|sourceId)\s*[!=]==?\s*['"`]|['"`]\s*[!=]==?\s*[\w?.]*\.(name|mono|sourceId)\b/
   const files = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
     const path = join(dir, name)
     if (statSync(path).isDirectory()) return files(path)
     return /\.(ts|tsx)$/.test(name) && !/\.test\.tsx?$/.test(name) ? [path] : []
   })
 
-  it('renderer/src 제품 파일에 출처 id 글자·상수가 없다 · 양성 대조: 같은 검사가 심은 분기를 잡는다', () => {
+  it('renderer/src 제품 파일에 출처 id·표시 이름 글자와 그 비교가 없다 · 양성 대조: 같은 검사가 심은 분기를 잡는다', () => {
     const root = join(process.cwd(), 'src/renderer/src')
     const scanned = files(root)
     expect(scanned.length).toBeGreaterThan(20)
     const hits = scanned.filter((path) => SOURCE_NAME.test(readFileSync(path, 'utf8')))
     expect(hits).toEqual([])
-    expect(SOURCE_NAME.test("if (connection.sourceId === 'la') return null")).toBe(true)
-    expect(SOURCE_NAME.test('const off = sourceId === JIRA_SOURCE_ID')).toBe(true)
+    // 양성 대조 — 심은 분기(가짜 소스 줄)는 모두 잡힌다.
+    const planted = [
+      "if (connection.sourceId === 'la') return null",
+      'const off = sourceId === JIRA_SOURCE_ID',
+      "if (source.name === 'LA') return <Hint />",
+      "const jira = descriptor.name === 'Jira Cloud'",
+      "if (source.mono !== 'MJ') return",
+      "const mock = 'Mock Jira' === connection.name",
+      'const label = sourceId === `jira` ? 1 : 2',
+    ]
+    expect(planted.filter((line) => !SOURCE_NAME.test(line))).toEqual([])
+    // 음성 대조 — 출처와 무관한 이름 비교·글자는 잡지 않는다(검사가 아무 줄이나 잡아 녹색을 잃지 않게).
+    expect(["if (name === 'worktree') return", "if (shown.id === 'shortcuts') return", "const label = '나 · corral'"].filter((line) => SOURCE_NAME.test(line))).toEqual([])
   })
 })

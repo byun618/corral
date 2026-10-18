@@ -353,6 +353,18 @@ describe('C8 목록 순회 상한', () => {
   })
 })
 
+describe('기본 쪽 크기 200 (r2 S2-3 — 쪽 크기를 주입하지 않음)', () => {
+  it.each([[150, 1], [180, 1], [250, 2]])('작업 %i 건 더 심은 스페이스(보관 포함 행 = 기본 씨앗 + 그만큼) → 쪽 %i 개 · 마지막 쪽 nextCursor null', async (extra, expected) => {
+    const { harness, send } = await connect()
+    const template = harness.fixture.issues.find((issue) => issue.id === FIXTURE_IDS.direct)
+    if (template === undefined) throw new Error('씨앗')
+    for (let n = 0; n < extra; n += 1) harness.fixture.issues.push({ ...template, id: `00000000-0000-4000-8000-${String(97000 + n).padStart(12, '0')}`, sequentialId: 97000 + n })
+    const all = await listAll({ harness, send, spaceKey: FIXTURE_IDS.corral })
+    expect(all.pages).toHaveLength(expected)
+    expect(harness.fixture.toolCalls.find((call) => call.tool === 'issue_list' && call.args.rootId !== undefined && call.args.kind === undefined)?.args.limit).toBe(200)
+  })
+})
+
 describe('U-3 목록 커서 쪽 번호 기억(listPages)', () => {
   it('기억에 없는 커서(연결 교체·재시작 흉내 — 새 출처 인스턴스)로 이어 받아도 정상 순회는 끝까지 간다', async () => {
     const { harness } = await connect()

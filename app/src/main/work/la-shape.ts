@@ -351,10 +351,12 @@ export function readHistoryPage(value: unknown, path: string): LaPage<LaHistoryE
   return readPage({ value, path, row: readHistoryEntry })
 }
 
-/** 코멘트(LIFE-611 `IssueComment`) — 계약 `WorkComment` 네 칸만 읽는다. 본문은 받은 바이트 그대로(trim 없음). */
+/** 코멘트(LIFE-611 `IssueComment`) — 계약 `WorkComment` 네 칸만 읽는다. 본문은 받은 바이트 그대로(trim 없음). `createdAt` 은 이력 `at` 과 같이 날짜로 읽혀야 한다(r2 S2-2). */
 export function readComment(value: unknown, path: string): WorkComment {
   const row = record(value, path)
-  return { id: str(row, 'id', path), author: nullableStr(row, 'author', path), body: str(row, 'body', path), createdAt: str(row, 'createdAt', path) }
+  const createdAt = str(row, 'createdAt', path)
+  if (!Number.isFinite(Date.parse(createdAt))) throw new LaShapeError(`${path}.createdAt`)
+  return { id: str(row, 'id', path), author: nullableStr(row, 'author', path), body: str(row, 'body', path), createdAt }
 }
 
 export function readCommentPage(value: unknown, path: string): LaPage<WorkComment> {

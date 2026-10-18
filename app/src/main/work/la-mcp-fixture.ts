@@ -79,6 +79,8 @@ export type FixtureCorrupt =
   | 'page-cursor-number' | 'page-cursor-empty' | 'page-cursor-missing' | 'page-items-object' | 'history-from-number' | 'comment-body-number'
   // LIFE-638 f1 S1-4 — 이력 행 at 을 날짜가 아닌 글자로 · writeId 를 숫자로.
   | 'history-at-invalid' | 'history-writeId-number'
+  // LIFE-638 g1 S2-2 — 코멘트 createdAt 을 날짜가 아닌 글자로.
+  | 'comment-createdAt-invalid'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -854,7 +856,9 @@ export class LaMcpFixture {
 
   /** 코멘트 응답 — `{id, issueId, author, body, origin, createdAt, updatedAt}`(611). */
   private commentRow(row: FixtureComment): Record<string, unknown> {
-    return this.corrupt === 'comment-body-number' ? { ...row, body: 7 } : { ...row }
+    if (this.corrupt === 'comment-body-number') return { ...row, body: 7 }
+    if (this.corrupt === 'comment-createdAt-invalid') return { ...row, createdAt: '방금' }
+    return { ...row }
   }
 
   private touch(issue: FixtureIssue): void {

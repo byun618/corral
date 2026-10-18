@@ -131,7 +131,7 @@ const KINDS: WorkKind[] = (['checkpoint', 'task', 'bug'] as const).map((key) => 
 
 type Step<T> = { ok: true; value: T } | { ok: false; outcome: WorkOutcome }
 
-/** `pageSize` = 정규 스페이스 목록의 쪽 크기(기본 100, LA 상한 200) — 시험이 여러 쪽을 만들 때만 바꾼다. */
+/** `pageSize` = 정규 스페이스 목록의 쪽 크기(기본 200 = LA 상한) — 시험이 여러 쪽을 만들 때만 바꾼다. */
 export function laSourceEntry({ url, clientVersion, fetchImpl, timeoutMs, pageSize }: { url: string; clientVersion: string; fetchImpl?: typeof fetch; timeoutMs?: number; pageSize?: number }): WorkSourceEntry {
   return {
     descriptor: LA_DESCRIPTOR,

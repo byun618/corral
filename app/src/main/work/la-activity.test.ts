@@ -187,6 +187,20 @@ describe('C5 변경 이력', () => {
     expect(harness.fixture.history.filter((row) => row.issueId === created.item.id)).toHaveLength(0)
   })
 
+  it('같은 쓰기(같은 at)의 여러 행은 id 가 서로 다르다 · 연결 추가는 relation 행으로 나온다(r2 S2-1)', async () => {
+    const { harness, send } = await connect()
+    await ok(send({ op: 'updateItem', itemId: FIXTURE_IDS.task600, fields: { title: '같은 at', priority: 'lowest' }, ifVersion: null }))
+    await ok(send({ op: 'addRelation', itemId: FIXTURE_IDS.task600, kind: 'relates_to', otherKey: 'LIFE-601' }))
+    const result = await ok(send({ op: 'listHistory', itemId: FIXTURE_IDS.task600 }))
+    if (result.op !== 'listHistory') throw new Error(result.op)
+    const fixtureRows = harness.fixture.history.filter((row) => row.issueId === FIXTURE_IDS.task600)
+    expect(result.entries.map((entry) => entry.id)).toEqual(fixtureRows.map((row) => row.id))
+    const sameAt = result.entries.filter((entry) => entry.at === result.entries[0]?.at)
+    expect(sameAt).toHaveLength(2)
+    expect(new Set(sameAt.map((entry) => entry.id)).size).toBe(2)
+    expect(result.entries.find((entry) => entry.field === 'relation')).toEqual(expect.objectContaining({ from: null, to: 'relates to LIFE-601' }))
+  })
+
   it.each(['history-from-number', 'history-at-invalid', 'history-writeId-number', 'page-cursor-number', 'page-cursor-empty', 'page-items-object'] as const)('행·쪽 모양 깨짐(%s) → invalid_response(양성 대조: 깨기 전 통과)', async (corrupt) => {
     const { harness, send } = await connect()
     await ok(send({ op: 'updateItem', itemId: FIXTURE_IDS.task600, fields: { title: '깨기 전' }, ifVersion: null }))
@@ -222,12 +236,15 @@ describe('C7 코멘트', () => {
     const body = '  앞뒤 공백\n\n**굵게**\r\n줄 끝 공백  \n'
     const added = await ok(send({ op: 'addComment', itemId: issueId, body }))
     if (added.op !== 'addComment') throw new Error(added.op)
-    expect(added.comment).toEqual({ id: expect.any(String), author: 'fixture-pat', body, createdAt: expect.any(String) })
+    const stored = harness.fixture.comments.at(-1)
+    // createdAt 은 LA 값 그대로(r2 S2-2).
+    expect(added.comment).toEqual({ id: stored?.id, author: 'fixture-pat', body, createdAt: stored?.createdAt })
     expect(harness.fixture.toolCalls.filter((entry) => entry.tool === 'issue_comment_add').map((entry) => entry.args)).toEqual([{ issueId, body }])
     const listed = await ok(send({ op: 'listComments', itemId: issueId }))
     if (listed.op !== 'listComments') throw new Error(listed.op)
     expect(listed.comments).toHaveLength(251)
     expect(listed.comments[0]?.body).toBe('c0')
+    expect(listed.comments.map((comment) => comment.createdAt)).toEqual(harness.fixture.comments.map((comment) => comment.createdAt))
     expect(listed.comments.at(-1)).toEqual(added.comment)
     expect(Object.keys(listed.comments[0] ?? {}).sort()).toEqual(['author', 'body', 'createdAt', 'id'])
     expect(harness.fixture.toolCalls.filter((entry) => entry.tool === 'issue_comment_list')).toHaveLength(2)
@@ -255,6 +272,15 @@ describe('C7 코멘트', () => {
     const response = await send({ op: 'addComment', itemId: FIXTURE_IDS.task600, body: '깨진 답' })
     expect(response.ok ? null : { kind: response.error.kind, maybe: response.error.maybeApplied }).toEqual({ kind: 'invalid_response', maybe: true })
     expect(harness.fixture.requests.filter((request) => request.tool === 'issue_comment_add')).toHaveLength(2)
+  })
+
+  it('코멘트 createdAt 이 날짜로 안 읽히면 invalid_response(이력 at 과 같은 규칙 · r2 S2-2) — 양성 대조: 깨기 전 통과', async () => {
+    const { harness, send } = await connect()
+    harness.fixture.plantComment({ issueId: FIXTURE_IDS.task600, author: '웹', body: '날짜' })
+    expect((await send({ op: 'listComments', itemId: FIXTURE_IDS.task600 })).ok).toBe(true)
+    harness.fixture.corrupt = 'comment-createdAt-invalid'
+    const broken = await send({ op: 'listComments', itemId: FIXTURE_IDS.task600 })
+    expect(broken.ok ? null : broken.error.kind).toBe('invalid_response')
   })
 
   it('author 가 null 인 코멘트는 null 그대로(f1 S1-4 — 빈 글자로 바꾸지 않는다)', async () => {

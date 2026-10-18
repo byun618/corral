@@ -171,7 +171,22 @@ describe('attribute — 셸 부모가 1 이면 herdr 루트로 쓰지 않는다'
   it('pid 1 아래 전체를 herdr 로 삼키지 않는다', () => {
     const orphan = TABLE.replace('  300   200   0.0   2048', '  300     1   0.0   2048')
     const result = attribute({ table: parsePsTable(orphan), panes: [{ paneId: 'A', shellPid: 300, expectedParent: null }], appRoots: [100] })
-    expect(result.herdr).toEqual({ state: 'unavailable', reason: '측정된 pane 이 없어 herdr 서버 pid 를 모른다' })
+    expect(result.herdr).toEqual({ state: 'unavailable', reason: '측정된 pane 셸의 부모가 모두 pid 1 이라 herdr 서버 pid 를 모른다' })
     expect(usage(result.app).pids).not.toContain(999)
+  })
+})
+
+describe('attribute — H9 herdr 사유는 경우별로', () => {
+  it('측정된 pane 셸의 부모가 모두 pid 1', () => {
+    const orphan = TABLE.replace('  300   200   0.0   2048', '  300     1   0.0   2048')
+    const result = attribute({ table: parsePsTable(orphan), panes: [{ paneId: 'A', shellPid: 300, expectedParent: null }], appRoots: [100] })
+    expect(result.panes.get('A')?.state).toBe('measured')
+    expect(result.herdr).toEqual({ state: 'unavailable', reason: '측정된 pane 셸의 부모가 모두 pid 1 이라 herdr 서버 pid 를 모른다' })
+  })
+  it('셸의 부모가 앱 프로세스 — 앱 행을 herdr 로 삼키지 않는다(C5)', () => {
+    const appChild = TABLE.replace('  300   200   0.0   2048', '  300   100   0.0   2048')
+    const result = attribute({ table: parsePsTable(appChild), panes: [{ paneId: 'A', shellPid: 300, expectedParent: null }], appRoots: [100, 101] })
+    expect(result.herdr).toEqual({ state: 'unavailable', reason: '측정된 pane 셸의 부모가 앱 프로세스라 herdr 서버를 따로 세지 않는다' })
+    expect(usage(result.app).pids).toEqual([100, 101, 102])
   })
 })

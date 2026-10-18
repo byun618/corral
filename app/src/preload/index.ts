@@ -36,7 +36,7 @@ import type { Settings, SettingsWriteResult } from '../shared/terminal-settings.
 import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
-import type { ResourceCloseResult, ResourceSnapshot } from '../shared/resource.js'
+import type { ResourceCloseResult, ResourceCloseRoute, ResourceSnapshot } from '../shared/resource.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
 import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerOpResult } from '../shared/explorer-ops.js'
 import type { FileListInput, FileListResult } from '../shared/file-list.js'
@@ -51,6 +51,7 @@ const EXPOSED = [
   'getResourceSnapshot',
   'onResourceSnapshot',
   'revealResourcePane',
+  'getResourceCloseRoute',
   'closeResourcePane',
   'getState',
   'refreshTree',
@@ -395,6 +396,7 @@ const api: CorralApi = {
     }
   },
   revealResourcePane: (input: { paneId: string }): Promise<boolean> => ipcRenderer.invoke('corral:resourceReveal', input),
+  getResourceCloseRoute: (input: { paneId: string }): Promise<ResourceCloseRoute> => ipcRenderer.invoke('corral:resourceCloseRoute', input),
   closeResourcePane: (input: { paneId: string; confirmed?: boolean; confirmedPaneIds?: string[] }): Promise<ResourceCloseResult> =>
     ipcRenderer.invoke('corral:resourceClosePane', input),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).

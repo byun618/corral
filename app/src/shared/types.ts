@@ -7,7 +7,7 @@ import type { MobilePairingResult, MobileStatus } from './mobile.js'
 import type { FileListInput, FileListResult } from './file-list.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
-import type { ResourceCloseResult, ResourceSnapshot } from './resource.js'
+import type { ResourceCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
@@ -1141,6 +1141,8 @@ export type CorralApi = {
   onResourceSnapshot: (listener: (snapshot: ResourceSnapshot) => void) => () => void
   /** 그 pane 으로 이동 — 기존 revealPane 푸시를 받는다. 모르는 pane 이면 false. */
   revealResourcePane: (input: { paneId: string }) => Promise<boolean>
+  /** 닫기 길 — 클릭한 순간의 위상(pane 게이트 / 기존 탭 닫기 / 없음). */
+  getResourceCloseRoute: (input: { paneId: string }) => Promise<ResourceCloseRoute>
   /** 그 pane 닫기 — 기존 실행 중 확인 게이트(`closeTabsGated`)를 지난다. */
   closeResourcePane: (input: { paneId: string; confirmed?: boolean; confirmedPaneIds?: string[] }) => Promise<ResourceCloseResult>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }

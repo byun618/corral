@@ -16,7 +16,16 @@ vi.mock('electron', () => ({
   },
 }))
 
-const { closeResourcePane, paneSources, readPsWith, registerResourceIpc } = await import('./resource-ipc.js')
+// 실제 ps 대신 — 몇 번 불렸는지(수집 여부)와 넘긴 env 를 본다.
+const ps = vi.hoisted((): { calls: { file: string; env: unknown }[] } => ({ calls: [] }))
+vi.mock('node:child_process', () => ({
+  execFile: (file: string, _args: string[], options: { env: unknown }, callback: (error: Error | null, result: { stdout: string; stderr: string }) => void) => {
+    ps.calls.push({ file, env: options.env })
+    callback(null, { stdout: '  1 0 0.0 10\n', stderr: '' })
+  },
+}))
+
+const { closeResourcePane, closeRouteOf, paneSources, readPsWith, registerResourceIpc } = await import('./resource-ipc.js')
 type Deps = Parameters<typeof closeResourcePane>[0]['deps']
 
 const pane = (input: { paneId: string; tabId: string; title?: string; agent?: string | null }) => ({
@@ -130,8 +139,32 @@ describe('paneSources', () => {
     tab.panes[0] = { ...first, title: '⠙ Fix login bug' }
     expect(paneSources(next)[0]?.title).toBe('Fix login bug')
   })
-  it('탭 pane 수·worktree 탭 수 (F7 닫기 길 판단)', () => {
-    expect(paneSources(state()).map((row) => [row.paneId, row.tabPaneCount, row.worktreeTabCount])).toEqual([['p1', 2, 2], ['p2', 2, 2], ['p3', 1, 2]])
+})
+
+describe('closeRouteOf — 닫기 길은 지금 위상으로 (H3)', () => {
+  it('split 직후 — 스냅샷에서 혼자였던 pane 도 지금 옆 pane 이 있으면 pane 게이트', () => {
+    const now = state()
+    const tab = now.repos[0]?.worktrees[0]?.workspace?.tabs[1]
+    if (tab === undefined) throw new Error('모양')
+    tab.panes = [...tab.panes, pane({ paneId: 'p4', tabId: 't2' })]
+    expect(closeRouteOf({ state: now, paneId: 'p3' })).toEqual({ kind: 'pane' })
+  })
+  it('옆 pane 소멸 직후 — 지금 혼자면 기존 탭 닫기', () => {
+    const now = state()
+    const tab = now.repos[0]?.worktrees[0]?.workspace?.tabs[0]
+    if (tab === undefined) throw new Error('모양')
+    tab.panes = tab.panes.filter((row) => row.paneId === 'p1')
+    expect(closeRouteOf({ state: now, paneId: 'p1' })).toEqual({ kind: 'tab', tabId: 't1', worktreePath: '/repo/wt', lastInWorktree: false })
+  })
+  it('마지막 터미널 탭 — lastInWorktree (수정 문서 확인)', () => {
+    const now = state()
+    const workspace = now.repos[0]?.worktrees[0]?.workspace
+    if (workspace === undefined || workspace === null) throw new Error('모양')
+    workspace.tabs = workspace.tabs.filter((tab) => tab.tabId === 't2')
+    expect(closeRouteOf({ state: now, paneId: 'p3' })).toEqual({ kind: 'tab', tabId: 't2', worktreePath: '/repo/wt', lastInWorktree: true })
+  })
+  it('없는 pane — missing', () => {
+    expect(closeRouteOf({ state: state(), paneId: 'nope' })).toEqual({ kind: 'missing' })
   })
 })
 
@@ -139,10 +172,11 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
   let stop: (() => void) | null = null
   const sent: unknown[][] = []
   const windowEvents = new Map<string, () => void>()
+  const win = { destroyed: false, visible: false, minimized: false }
   const fakeWindow = {
-    isDestroyed: () => false,
-    isVisible: () => false,
-    isMinimized: () => false,
+    isDestroyed: () => win.destroyed,
+    isVisible: () => win.visible,
+    isMinimized: () => win.minimized,
     on: (name: string, listener: () => void) => windowEvents.set(name, listener),
     webContents: { send: (...args: unknown[]) => sent.push(args) },
   }
@@ -151,12 +185,14 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     electron.appOn.clear()
     sent.length = 0
     windowEvents.clear()
+    ps.calls.length = 0
+    Object.assign(win, { destroyed: false, visible: false, minimized: false })
   })
   afterEach(() => {
     stop?.()
     stop = null
   })
-  function register(patch: Partial<Deps> = {}): Deps & { closed: string[] } {
+  function register(patch: Partial<Deps> = {}): Deps & { closed: string[]; probed: string[][] } {
     const d = deps({ window: () => fakeWindow, ...patch })
     stop = registerResourceIpc(d).stop
     return d
@@ -191,5 +227,59 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     expect([...windowEvents.keys()].sort()).toEqual(['restore', 'show'])
     expect(electron.appOn.has('browser-window-created')).toBe(true)
     expect(electron.appOn.has('will-quit')).toBe(true)
+  })
+
+  const settle = async (): Promise<void> => {
+    for (let index = 0; index < 5; index += 1) await new Promise((resolve) => setImmediate(resolve))
+  }
+
+  it('보이는 창이면 수집한다 — 실제 ps 호출에 LC_ALL=C (R6ⓒ·R1ⓓ 배선)', async () => {
+    win.visible = true
+    register()
+    await settle()
+    expect(ps.calls).toHaveLength(1)
+    expect(ps.calls[0]).toMatchObject({ file: 'ps', env: { LC_ALL: 'C' } })
+  })
+  it.each([
+    ['숨김', { visible: false }],
+    ['최소화', { visible: true, minimized: true }],
+    ['파괴됨', { visible: true, destroyed: true }],
+  ])('창이 %s 이면 ps 를 부르지 않는다 (R6ⓒ 배선)', async (_name, state) => {
+    Object.assign(win, state)
+    register()
+    await settle()
+    expect(ps.calls).toHaveLength(0)
+  })
+  it.each(['show', 'restore'])('창 %s 이벤트 = 곧바로 한 번 더 수집 (F10 배선)', async (name) => {
+    win.visible = true
+    register()
+    await settle()
+    expect(ps.calls).toHaveLength(1)
+    windowEvents.get(name)?.()
+    await settle()
+    expect(ps.calls).toHaveLength(2)
+  })
+  it('닫기 IPC — 남의 창이면 판정도 닫기도 하지 않는다', async () => {
+    const d = register({ fromOurWindow: () => false })
+    expect(await handler('corral:resourceClosePane')({}, { paneId: 'p2', confirmed: true, confirmedPaneIds: ['p2'] })).toEqual({ outcome: 'error', closed: [], error: '허용되지 않은 발신자' })
+    expect(d.closed).toEqual([])
+    expect(d.probed).toEqual([])
+  })
+  it('스냅샷 IPC — 남의 창이면 null, 우리 창이면 최신 값', async () => {
+    win.visible = true
+    let ours = true
+    register({ fromOurWindow: () => ours })
+    await settle()
+    expect(handler('corral:resourceSnapshot')({}, undefined)).toMatchObject({ stats: { collections: 1 } })
+    ours = false
+    expect(handler('corral:resourceSnapshot')({}, undefined)).toBeNull()
+  })
+  it('닫기 길 IPC — 지금 위상을 돌려주고, 남의 창이면 missing', () => {
+    let ours = true
+    register({ fromOurWindow: () => ours })
+    expect(handler('corral:resourceCloseRoute')({}, { paneId: 'p3' })).toEqual({ kind: 'tab', tabId: 't2', worktreePath: '/repo/wt', lastInWorktree: false })
+    expect(handler('corral:resourceCloseRoute')({}, { paneId: 'p1' })).toEqual({ kind: 'pane' })
+    ours = false
+    expect(handler('corral:resourceCloseRoute')({}, { paneId: 'p1' })).toEqual({ kind: 'missing' })
   })
 })

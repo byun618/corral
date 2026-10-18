@@ -121,6 +121,7 @@ export function attribute(input: { table: PsTable; panes: readonly PaneRoot[]; a
 
   const panes = new Map<string, ResourceMeasure>()
   const herdrRoots = new Set<number>()
+  let measuredPanes = 0
   for (const pane of input.panes) {
     const root = pane.shellPid
     if (root === null) {
@@ -148,18 +149,27 @@ export function attribute(input: { table: PsTable; panes: readonly PaneRoot[]; a
       case 'ok':
         claim(result.pids)
         panes.set(pane.paneId, measured({ table, pids: result.pids }))
+        measuredPanes += 1
         if (row.ppid > 1) herdrRoots.add(row.ppid)
         continue
     }
   }
 
-  // herdr 가 앱의 자식으로 떠 있어도(앱이 띄운 서버) herdr 몫으로 먼저 센다. 앱 pid 자체는 herdr 로 세지 않는다.
+  // herdr 가 앱의 자식으로 떠 있어도(앱이 띄운 서버) herdr 몫으로 먼저 센다. 앱 pid 자체는 herdr 로 세지 않는다
+  // (셸의 부모가 앱이면 — herdr 를 거치지 않은 셸 — 앱 행을 herdr 로 삼키지 않는다).
+  const parentsSeen = herdrRoots.size
   for (const pid of input.appRoots) herdrRoots.delete(pid)
   // 걸러 낸 뒤 루트가 하나도 없으면 0 이 아니라 측정 불가다(F9 — 가짜 숫자를 내지 않는다).
   const herdrLive = [...herdrRoots].filter((pid) => table.rows.has(pid) && !owned.has(pid))
   let herdr: ResourceMeasure
   if (herdrRoots.size === 0) {
-    herdr = { state: 'unavailable', reason: '측정된 pane 이 없어 herdr 서버 pid 를 모른다' }
+    // 사유는 경우별로(H9).
+    const reason = measuredPanes === 0
+      ? '측정된 pane 이 없어 herdr 서버 pid 를 모른다'
+      : parentsSeen === 0
+        ? '측정된 pane 셸의 부모가 모두 pid 1 이라 herdr 서버 pid 를 모른다'
+        : '측정된 pane 셸의 부모가 앱 프로세스라 herdr 서버를 따로 세지 않는다'
+    herdr = { state: 'unavailable', reason }
   } else if (herdrLive.length === 0) {
     herdr = { state: 'unavailable', reason: `셸 부모 pid(${[...herdrRoots].join(', ')})가 ps 표에 없다` }
   } else {

@@ -26,10 +26,6 @@ export type ResourcePaneRow = {
   title: string
   /** herdr 가 감지한 에이전트 이름. 셸이면 null. */
   agent: string | null
-  /** 그 탭의 pane 수 — 1 이면 이 pane 을 닫는 것이 곧 탭 닫기다(기존 탭 닫기 확인을 탄다, F7). */
-  tabPaneCount: number
-  /** 그 worktree 의 터미널 탭 수 — 1 이면 그 탭을 닫으면 worktree 의 터미널이 다 없어진다(수정 문서 확인, F7). */
-  worktreeTabCount: number
   measure: ResourceMeasure
 }
 
@@ -58,6 +54,17 @@ export type ResourceSnapshot = {
   host: { totalMemory: number; usedMemory: number; cpuCoreCount: number }
   stats: ResourceStats
 }
+
+/**
+ * 패널 「닫기」 의 길 — 클릭한 그 순간의 main 위상으로 정한다(H3 — 2초 낡은 스냅샷 칸으로 정하지 않는다).
+ *   · pane    — 그 탭에 pane 이 둘 이상: pane 게이트(`corral:resourceClosePane`)
+ *   · tab     — 그 탭의 마지막 pane: 기존 탭 닫기(`corral:closeTabs`). `lastInWorktree` 면 수정 문서 확인을 먼저(F7)
+ *   · missing — 그 pane 이 이미 없다
+ */
+export type ResourceCloseRoute =
+  | { kind: 'pane' }
+  | { kind: 'tab'; tabId: string; worktreePath: string; lastInWorktree: boolean }
+  | { kind: 'missing' }
 
 /** 패널 「닫기」 — 기존 실행 중 확인 게이트(`closeTabsGated`)의 결과를 그대로 쓴다. */
 export type ResourceCloseResult = CloseTabsResult

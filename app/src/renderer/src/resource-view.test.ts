@@ -7,7 +7,7 @@ const GB = 1024 ** 3
 const MB = 1024 ** 2
 const measured = (cpu: number, memory: number): ResourceMeasure => ({ state: 'measured', usage: { cpu, memory }, pids: [1] })
 const row = (input: { paneId: string; group: string; measure: ResourceMeasure }): ResourcePaneRow => ({
-  paneId: input.paneId, tabId: 't', workspaceId: 'w', groupKey: input.group, groupLabel: `label-${input.group}`, title: input.paneId, agent: null, tabPaneCount: 1, worktreeTabCount: 1, measure: input.measure,
+  paneId: input.paneId, tabId: 't', workspaceId: 'w', groupKey: input.group, groupLabel: `label-${input.group}`, title: input.paneId, agent: null, measure: input.measure,
 })
 const snapshot = (patch: Partial<ResourceSnapshot>): ResourceSnapshot => ({
   collectedAt: 0, total: { cpu: 12.4, memory: 3.46 * GB }, unavailableCount: 0, app: measured(1, MB), herdr: measured(1, MB), panes: [],

@@ -13,7 +13,7 @@ import type { CloseTabOutcome } from './close-tabs.js'
 import { closeTabsGated } from './close-tabs.js'
 import { psInvocation } from './resource-collector.js'
 import { createResourceMonitor, RESOURCE_INTERVAL_MS, type ResourcePaneSource } from './resource-monitor.js'
-import type { ResourceCloseResult, ResourceSnapshot } from '../shared/resource.js'
+import type { ResourceCloseResult, ResourceCloseRoute, ResourceSnapshot } from '../shared/resource.js'
 import type { AppState, RunningPane } from '../shared/types.js'
 import { normalizeDecorativeTitle } from '../shared/decorative-title.js'
 import { paneSessionTitle } from '../shared/session-title.js'
@@ -66,8 +66,7 @@ export function paneSources(state: Pick<AppState, 'repos' | 'home'>): ResourcePa
     const workspace = worktree.workspace
     if (workspace === null) return []
     const groupLabel = distinctWorktreeName(worktree)
-    const worktreeTabCount = workspace.tabs.length
-    return workspace.tabs.flatMap((tab) => tab.panes.map((pane) => ({ pane, tabPaneCount: tab.panes.length }))).map(({ pane, tabPaneCount }, index) => ({
+    return workspace.tabs.flatMap((tab) => tab.panes).map((pane, index) => ({
       paneId: pane.paneId,
       tabId: pane.tabId,
       workspaceId: pane.workspaceId,
@@ -75,10 +74,21 @@ export function paneSources(state: Pick<AppState, 'repos' | 'home'>): ResourcePa
       groupLabel,
       title: paneSessionTitle({ pane: { ...pane, title: normalizeDecorativeTitle(pane.title) }, ordinal: index + 1, home: state.home }),
       agent: pane.agent,
-      tabPaneCount,
-      worktreeTabCount,
     }))
   })
+}
+
+/** 닫기 길을 지금 위상으로 정한다(H3). 파일 탭은 herdr 탭이 아니라 `workspace.tabs` 가 곧 터미널 탭이다(App `closeTabsByUser` 와 같은 수). */
+export function closeRouteOf(input: { state: Pick<AppState, 'repos'>; paneId: string }): ResourceCloseRoute {
+  for (const worktree of input.state.repos.flatMap((repo) => repo.worktrees)) {
+    const workspace = worktree.workspace
+    if (workspace === null) continue
+    const tab = workspace.tabs.find((row) => row.panes.some((pane) => pane.paneId === input.paneId))
+    if (tab === undefined) continue
+    if (tab.panes.length > 1) return { kind: 'pane' }
+    return { kind: 'tab', tabId: tab.tabId, worktreePath: worktree.path, lastInWorktree: workspace.tabs.length <= 1 }
+  }
+  return { kind: 'missing' }
 }
 
 export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void } {
@@ -111,6 +121,8 @@ export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void }
     deps.window()?.webContents.send('corral:revealPane', input.paneId)
     return true
   })
+  ipcMain.handle('corral:resourceCloseRoute', (event, input: { paneId?: unknown }): ResourceCloseRoute =>
+    deps.fromOurWindow(event) && typeof input?.paneId === 'string' ? closeRouteOf({ state: deps.state(), paneId: input.paneId }) : { kind: 'missing' })
   ipcMain.handle('corral:resourceClosePane', (event, input: { paneId?: unknown; confirmed?: unknown; confirmedPaneIds?: unknown }): Promise<ResourceCloseResult> | ResourceCloseResult => {
     if (!deps.fromOurWindow(event) || typeof input?.paneId !== 'string') return { outcome: 'error', closed: [], error: '허용되지 않은 발신자' }
     return closeResourcePane({

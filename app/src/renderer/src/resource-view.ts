@@ -33,10 +33,12 @@ export function segmentLabel(snapshot: ResourceSnapshot | null): string {
   return `CPU ${formatCpu(total.cpu)} · 메모리 ${formatGb(total.memory)}`
 }
 
+/** 첫 줄 = 세그먼트 라벨 전문(H7 — 폭이 모자라 말줄임이 나도 호버로 숫자를 읽는다). */
 export function segmentTooltip(snapshot: ResourceSnapshot | null): string {
-  if (snapshot === null) return `${RESOURCE_TOOLTIP}\n아직 수집 전`
-  if (snapshot.total === null) return `${RESOURCE_TOOLTIP}\n측정 불가`
-  return snapshot.unavailableCount === 0 ? RESOURCE_TOOLTIP : `${RESOURCE_TOOLTIP}\n측정 불가 ${snapshot.unavailableCount}칸은 합에서 빠졌다`
+  const head = `${segmentLabel(snapshot)}\n${RESOURCE_TOOLTIP}`
+  if (snapshot === null) return `${head}\n아직 수집 전`
+  if (snapshot.total === null) return `${head}\n측정 불가`
+  return snapshot.unavailableCount === 0 ? head : `${head}\n측정 불가 ${snapshot.unavailableCount}칸은 합에서 빠졌다`
 }
 
 export function measureCells(measure: ResourceMeasure): { cpu: string; memory: string; title: string | null } {

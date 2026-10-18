@@ -4,7 +4,7 @@ import type { ResourceSnapshot } from '../shared/resource.js'
 import { createResourceMonitor, PROBE_RETRY_MS, RESOURCE_INTERVAL_MS, type ResourceMonitorDeps, type ResourcePaneSource } from './resource-monitor.js'
 
 const PS = '  100 1 1.0 100\n  200 1 2.0 200\n  300 200 3.0 300\n  400 200 4.0 400\n'
-const pane = (paneId: string): ResourcePaneSource => ({ paneId, tabId: `t-${paneId}`, workspaceId: 'w', groupKey: '/wt', groupLabel: 'wt', title: paneId, agent: null, tabPaneCount: 1, worktreeTabCount: 1 })
+const pane = (paneId: string): ResourcePaneSource => ({ paneId, tabId: `t-${paneId}`, workspaceId: 'w', groupKey: '/wt', groupLabel: 'wt', title: paneId, agent: null })
 
 function harness(input: { panes: ResourcePaneSource[]; shellPids: Record<string, number | null>; visible?: boolean; intervalMs?: number }) {
   const state = { panes: input.panes, visible: input.visible ?? true, now: 1000, ps: PS, psFails: false }
@@ -195,5 +195,38 @@ describe('다시 보임 (F10)', () => {
     h.monitor.wake()
     await vi.advanceTimersByTimeAsync(RESOURCE_INTERVAL_MS * 2)
     expect(h.monitor.stats().collections).toBe(1)
+  })
+})
+
+describe('wake 겹침 (R6ⓐ — wake 경로에서도 주기가 겹치지 않는다)', () => {
+  it('진행 중인 주기에 wake 가 와도 ps 는 동시에 하나 — 끝난 뒤 한 번 더', async () => {
+    vi.useFakeTimers()
+    let concurrent = 0
+    let maxConcurrent = 0
+    const releases: (() => void)[] = []
+    const h = harness({ panes: [], shellPids: {} })
+    h.readPs.mockImplementation(async () => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise<void>((resolve) => releases.push(resolve))
+      concurrent -= 1
+      return PS
+    })
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    h.monitor.wake()
+    h.monitor.wake()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(maxConcurrent).toBe(1)
+    releases.shift()?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.monitor.stats().collections).toBe(1)
+    // 대기 중이던 wake 한 번 — 곧바로 두 번째 주기(타이머를 기다리지 않는다).
+    expect(h.readPs).toHaveBeenCalledTimes(2)
+    releases.shift()?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.monitor.stats().collections).toBe(2)
+    expect(maxConcurrent).toBe(1)
+    h.monitor.stop()
   })
 })

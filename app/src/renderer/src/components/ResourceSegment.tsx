@@ -1,20 +1,20 @@
 // 상태바 Resource Manager 세그먼트 (LIFE-637) — 기존 JS 힙 표시 자리에 들어가는 자기 완결 요소(자기 상태·IPC 구독·패널).
 //
 // 세그먼트: `CPU n% · 메모리 x.x GB`(표시 규칙 `resource-view.ts`). 클릭하면 패널.
-// 패널(R4): 시스템 한 줄 · 앱·herdr 행 · worktree 묶음(합계 + pane 행). 열린 동안 main 푸시로 갱신. Esc(창 캡처 — 포커스가 어디든)·바깥 클릭으로
+// 패널(R4): 시스템 한 줄 · 앱·herdr 행 · worktree 묶음(합계 + pane 행). 열린 동안 main 푸시로 갱신. Esc(패널 안 포커스, 또는 포커스가 body)·바깥 클릭으로
 // 닫히고 열기 전 포커스로 돌아간다. ↑↓·Home·End 로 pane 행 이동, Enter = 이동. 행이 사라지면 포커스는 이웃 행(없으면 패널)으로(F4).
 // 닫기는 ✕ 버튼만(F8 — 한 키 닫기 없음).
 // 행 동작(R5):
 //   · 이동 = 기존 revealPane 길.
 //   · 닫기 — split 탭의 pane: 기존 실행 중 확인 게이트(main `closeTabsGated`, pane 단위).
-//            탭의 마지막 pane: 기존 탭 닫기 IPC(`closeTabs`) — 핀 확인(`confirmClosePinnedTab`) + 그 worktree 의 마지막 터미널 탭이면 수정 문서 확인(`confirmDiscardOrSave`)
+//            탭의 마지막 pane(클릭 순간의 main 위상, H3): 기존 탭 닫기 IPC(`closeTabs`) — 핀 확인(`confirmClosePinnedTab`) + 그 worktree 의 마지막 터미널 탭이면 수정 문서 확인(`confirmDiscardOrSave`)
 //            을 사이드바·탭 닫기와 같은 규칙으로 먼저 지난다(F7).
 //     확인 창은 기존 `ConfirmClose`, 문구는 pane 기준(`paneCloseCopy`). 뜨면 취소 버튼에 포커스, Esc = 취소(F3).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
 import type { CloseTabsResult, RunningPane } from '../../../shared/types.js'
-import type { ResourcePaneRow, ResourceSnapshot } from '../../../shared/resource.js'
+import type { ResourceCloseRoute, ResourcePaneRow, ResourceSnapshot } from '../../../shared/resource.js'
 import { CLOSE_SKIP_FAILED_NOTICE } from '../close-copy.js'
 import { allDocs } from '../file-docs.js'
 import { confirmDiscardOrSave } from '../file-save.js'
@@ -40,7 +40,7 @@ import './resource.css'
 /** 닫기 길 — split 탭의 pane 은 pane 게이트, 탭의 마지막 pane 은 기존 탭 닫기. */
 type CloseTarget =
   | { kind: 'pane'; row: ResourcePaneRow }
-  | { kind: 'tab'; row: ResourcePaneRow; pinned: boolean; alwaysConfirm: boolean }
+  | { kind: 'tab'; row: ResourcePaneRow; tabId: string; pinned: boolean; alwaysConfirm: boolean }
 
 type PendingClose = { target: CloseTarget; running: RunningPane[] }
 
@@ -48,8 +48,13 @@ const ROW_SELECTOR = '[data-statusbar-resource-row]'
 
 async function pinnedNow(tabId: string): Promise<boolean> {
   // 핀은 App 이 바뀔 때마다 ui-prefs 에 바로 저장한다(App `savedTabMarks`) — 그 값을 읽는다.
-  const prefs = await window.corral.getUiPrefs()
-  return pinnedTabIds(readTabMarks(prefs.tabMarks)).has(tabId)
+  // 읽기에 실패하면 핀으로 본다(H4ⓐ — 모르면 묻는 쪽, 실행 중 판정의 probe 실패와 같은 방향).
+  try {
+    const prefs = await window.corral.getUiPrefs()
+    return pinnedTabIds(readTabMarks(prefs.tabMarks)).has(tabId)
+  } catch {
+    return true
+  }
 }
 
 export function ResourceSegment(): React.JSX.Element {
@@ -105,11 +110,14 @@ export function ResourceSegment(): React.JSX.Element {
     window.setTimeout(() => focusRowNear({ paneId: closingPaneRef.current }), 0)
   }, [focusRowNear])
 
-  // Esc — 패널이 열린 동안 창 캡처로 받는다(포커스가 body·확인 창 어디에 있든). 확인 창이 있으면 취소, 없으면 패널 닫기(F3·F4).
+  // Esc 창 캡처는 두 경우만 가져간다(H2): ⓐ 확인 창이 떠 있다(F3 — 취소) ⓑ 포커스가 body 로 떨어졌다(F4 — 패널 닫기).
+  // 그 밖(팔레트·문서 캡처·터미널 textarea 등 다른 곳에 포커스)의 Esc 는 건드리지 않는다. 패널 안 포커스의 Esc 는 패널 `onKeyDown`.
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape' || event.isComposing) return
+      const active = document.activeElement
+      if (pendingClose === null && active !== null && active !== document.body) return
       event.preventDefault()
       event.stopPropagation()
       if (pendingClose !== null) cancelClose()
@@ -174,7 +182,7 @@ export function ResourceSegment(): React.JSX.Element {
     let result: CloseTabsResult
     try {
       result = target.kind === 'tab'
-        ? await window.corral.closeTabs({ tabIds: [target.row.tabId], confirmed: input.confirmed, alwaysConfirm: target.alwaysConfirm, confirmedPaneIds: input.confirmedPaneIds })
+        ? await window.corral.closeTabs({ tabIds: [target.tabId], confirmed: input.confirmed, alwaysConfirm: target.alwaysConfirm, confirmedPaneIds: input.confirmedPaneIds })
         : await window.corral.closeResourcePane({ paneId: target.row.paneId, confirmed: input.confirmed, confirmedPaneIds: input.confirmedPaneIds })
     } catch (failure) {
       setPendingClose(null)
@@ -185,7 +193,7 @@ export function ResourceSegment(): React.JSX.Element {
       case 'closed': {
         setPendingClose(null)
         // 닫은 목록에 대상이 없으면 아무것도 닫히지 않았다(F6 — 그 사이 사라졌다) — 성공으로 보이지 않는다.
-        const id = target.kind === 'tab' ? target.row.tabId : target.row.paneId
+        const id = target.kind === 'tab' ? target.tabId : target.row.paneId
         setError(result.closed.includes(id) ? null : '닫힌 것이 없다 — 이미 없어졌을 수 있다')
         return
       }
@@ -206,22 +214,44 @@ export function ResourceSegment(): React.JSX.Element {
   const startClose = async (row: ResourcePaneRow): Promise<void> => {
     closingPaneRef.current = row.paneId
     setError(null)
-    if (row.tabPaneCount > 1) {
-      await runClose({ target: { kind: 'pane', row }, confirmed: false, confirmedPaneIds: [] })
+    // 길은 클릭한 지금의 위상으로 main 에 묻는다(H3 — 스냅샷은 최대 2초 낡았다: split 직후·옆 pane 소멸 직후).
+    let route: ResourceCloseRoute
+    try {
+      route = await window.corral.getResourceCloseRoute({ paneId: row.paneId })
+    } catch (failure) {
+      setError(`닫지 못했다: ${failure instanceof Error ? failure.message : String(failure)}`)
       return
     }
-    // 탭의 마지막 pane — 사이드바·탭 닫기(`closeTabsByUser`)와 같은 순서: 수정 문서 → 핀·실행 중 게이트.
-    if (row.worktreeTabCount <= 1) {
-      const saveDeps = { writeFile: window.corral.writeFile, fileDialog: window.corral.fileDialog, notify: (message: string) => toast(message) }
-      const ok = await confirmDiscardOrSave({ targets: () => allDocs().filter((doc) => doc.root === row.groupKey), deps: saveDeps })
-      if (!ok) return
+    switch (route.kind) {
+      case 'missing':
+        setError('그 pane 이 없다(이미 닫혔다)')
+        return
+      case 'pane':
+        await runClose({ target: { kind: 'pane', row }, confirmed: false, confirmedPaneIds: [] })
+        return
+      case 'tab': {
+        // 탭의 마지막 pane — 사이드바·탭 닫기(`closeTabsByUser`)와 같은 순서: 수정 문서 → 핀·실행 중 게이트.
+        if (route.lastInWorktree) {
+          const saveDeps = { writeFile: window.corral.writeFile, fileDialog: window.corral.fileDialog, notify: (message: string) => toast(message) }
+          const worktreePath = route.worktreePath
+          const ok = await confirmDiscardOrSave({ targets: () => allDocs().filter((doc) => doc.root === worktreePath), deps: saveDeps })
+          if (!ok) return
+        }
+        const pinned = await pinnedNow(route.tabId)
+        await runClose({ target: { kind: 'tab', row, tabId: route.tabId, pinned, alwaysConfirm: getSettings().confirmClosePinnedTab && pinned }, confirmed: false, confirmedPaneIds: [] })
+        return
+      }
     }
-    const pinned = await pinnedNow(row.tabId).catch(() => false)
-    await runClose({ target: { kind: 'tab', row, pinned, alwaysConfirm: getSettings().confirmClosePinnedTab && pinned }, confirmed: false, confirmedPaneIds: [] })
   }
 
   const onPanelKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
     if (pendingClose !== null) return
+    if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
+      event.preventDefault()
+      event.stopPropagation()
+      closePanel({ restoreFocus: true })
+      return
+    }
     const rows = rowsInPanel()
     if (rows.length === 0) return
     const index = rows.findIndex((row) => row === document.activeElement)

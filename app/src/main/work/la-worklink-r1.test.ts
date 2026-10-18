@@ -1,6 +1,7 @@
 // LIFE-635 fix r1 — Codex r1 지적 X1-1–X1-7 의 재현 조건을 회귀 시험으로(리뷰 프로브 P1·P2·P3·P7·P8·P10·P12·P14 의 조건을 이식).
 // fix r2 — Codex r2 X2-1–X2-4(리뷰 R12 복구 경합 · Q3/Q4 관측 누락 · R09 프로세스 경합 · R07 낡은 트리)도 이 파일 끝에.
 // fix r3 — Codex r3 X3-1–X3-4(리뷰 P1 응답 대기 중 누락 · P2 상한 경계 · P3 잔류 잠금 · M20 실제 sourceSave 실패 전달)는 맨 끝에.
+// fix r4 — Codex r4 X4-1(리뷰 P2 — 성공 항목이 상한 자리를 차지해 501번째가 영영 보류)는 그 뒤에.
 // 실제 경로: WorkLinks → WorkService → LaSource → McpHttpClient → LaMcpFixture(127.0.0.1 HTTP). 토큰은 가짜뿐 · 실제 Mac 이름·설정 무접촉(조회 함수 주입).
 import { fork } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -645,7 +646,7 @@ describe('X3-2 메모리 상한은 잊기가 아니라 보류 — 이력 있는 
     }, 60_000)
   }
 
-  it('양성 대조 — 상한이어도 자격을 바꾸면(규칙 ③) 이력 있는 링크는 다시 보낸다 · 보류된 링크는 이번 실행에서 그대로 보류', async () => {
+  it('양성 대조 — 상한이어도 자격을 바꾸면(규칙 ③) 이력 있는 링크는 다시 보낸다 · 그 500 이 저장되면 자리가 나 보류된 링크도 같은 실행에서(X4-1)', async () => {
     const r = await rig()
     await r.service.addConnection({ sourceId: 'la', token: FAKE_LA_READ_TOKEN, replaceId: r.connectionId })
     const tree = manyLinks({ connectionId: r.connectionId, count: MIGRATE_MAX_ENTRIES + 1 })
@@ -653,8 +654,8 @@ describe('X3-2 메모리 상한은 잊기가 아니라 보류 — 이력 있는 
     await run.observe(tree.repos)
     await r.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: r.connectionId })
     await run.observe(tree.repos)
-    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(MIGRATE_MAX_ENTRIES * 2)
-    expect(remoteRows(r.fixture, `${ROOT}/.claude/worktrees/wt-${MIGRATE_MAX_ENTRIES}`)).toHaveLength(0)
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(MIGRATE_MAX_ENTRIES * 2 + 1)
+    expect(remoteRows(r.fixture, `${ROOT}/.claude/worktrees/wt-${MIGRATE_MAX_ENTRIES}`)).toHaveLength(1)
   }, 60_000)
 })
 
@@ -749,5 +750,43 @@ describe('X3-4 실제 WorkLinks.sourceSave 를 잇는 시작·복구 실패 — 
     expect(failures(r)).toHaveLength(1)
     expect(pending.entries).toHaveLength(0)
     expect(run.links.annotate(SCRATCH)[0]?.worktrees[0]?.workLink).toMatchObject({ mode: 'explicit', itemId: FIXTURE_IDS.task600 })
+  })
+})
+
+describe('X4-1 저장 성공은 상한 자리를 차지하지 않는다 — 앞 500 이 성공하면 501번째도 같은 실행에서 · 같은 순서 재기동에서도(리뷰 r4 P2)', () => {
+  it(`유효 자격 · 기존 명시 링크 ${MIGRATE_MAX_ENTRIES + 1}개 → 같은 실행에서 전부 저장(원격 ${MIGRATE_MAX_ENTRIES + 1}) · 재관측 반복에도 add 그대로 · 같은 순서 재기동도 전부(멱등)`, async () => {
+    const r = await rig()
+    const count = MIGRATE_MAX_ENTRIES + 1
+    const tree = manyLinks({ connectionId: r.connectionId, count })
+    const before = fs.readFileSync(tree.file)
+    const run = clocked({ registry: tree.registry, service: r.service })
+    await run.observe(tree.repos)
+    const last = `${ROOT}/.claude/worktrees/wt-${MIGRATE_MAX_ENTRIES}`
+    expect(remoteRows(r.fixture, last)).toHaveLength(1)
+    expect(r.fixture.workLinks).toHaveLength(count)
+    const counts = [toolCount(r.fixture, 'issue_work_link_add')]
+    for (let index = 0; index < 3; index += 1) { await run.observe([]); await run.observe(tree.repos); counts.push(toolCount(r.fixture, 'issue_work_link_add')) }
+    expect(counts).toEqual([count, count, count, count])
+    // 같은 트리 순서의 재기동(새 서비스·새 WorkLinks) — 이 실행의 이력이 없으니 다시 보내되 멱등(원격 행 그대로), 이번에도 마지막 링크까지.
+    // 재기동한 앱이 연결을 한 번 쓴 뒤(능력 확보 — 리뷰 P2 와 같은 listSpaces) 관측한다.
+    const service = restart({ r })
+    await service.request({ requestId: 'boot-2', connectionId: r.connectionId, call: { op: 'listSpaces' } })
+    const again = clocked({ registry: tree.registry, service })
+    await again.observe(tree.repos)
+    for (let index = 0; index < 3; index += 1) { await again.observe([]); await again.observe(tree.repos) }
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(count * 2)
+    expect(r.fixture.workLinks).toHaveLength(count)
+    expect(remoteRows(r.fixture, last)).toHaveLength(1)
+    expect(fs.readFileSync(tree.file).equals(before)).toBe(true)
+  }, 120_000)
+
+  it('요청 수 — 성공한 링크는 같은 실행에서 관측마다 다시 보내지 않는다(빈 트리/복귀 포함)', async () => {
+    const r = await rig()
+    const tree = manyLinks({ connectionId: r.connectionId, count: 3 })
+    const run = clocked({ registry: tree.registry, service: r.service })
+    await run.observe(tree.repos)
+    for (let index = 0; index < 5; index += 1) { await run.observe(tree.repos); await run.observe([]); await run.observe(tree.repos) }
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(3)
+    expect(r.fixture.workLinks).toHaveLength(3)
   })
 })

@@ -76,7 +76,8 @@ type Migration = {
 /**
  * 이관 상태 규칙(X3-1·X3-2 — design-notes §12): 항목(= 링크별 이력)은 **사용자 떼기로만** 지도에서 지운다. 저장 성공은 `done` 으로 남고,
  * 자격 세대 교체는 이력을 처음으로 되돌린다. 트리 누락·응답 대기·관측 순서로는 지우지 않는다(보내는 중인 항목의 응답도 같은 객체에 적힌다).
- * 메모리 상한은 **보류**로: 항목이 이만큼 있으면 새 링크의 항목을 만들지 않는다 — 그 링크의 이관은 이번 실행에서 보내지 않고 다음 실행에서.
+ * 메모리 상한은 **보류**로: 아직 이력이 필요한 항목(`done` 아닌 것)이 이만큼 있으면 새 링크의 항목을 만들지 않는다. 저장 성공(`done`)은 자리로 세지 않는다(X4-1) —
+ * 앞 항목이 성공해 자리가 나면 같은 실행에서 보류된 링크를 이어 받는다(`done` 항목은 남아 같은 링크를 다시 보내지 않는다).
  */
 export const MIGRATE_MAX_ENTRIES = 500
 
@@ -159,6 +160,8 @@ export class WorkLinks {
   private readonly owed = new Set<string>()
   /** 상한 보류를 로그에 한 번만. */
   private heldLogged = false
+  /** 마지막 관측에서 상한으로 보류된 링크가 있나 — 자리가 나면 같은 실행에서 다시 관측해 받는다(X4-1). */
+  private held = false
   /** 이 실행의 시작 시각 — 이보다 늦게 적힌 명시 링크는 시작이 이미 출처에 보냈다(이관하지 않는다). */
   private readonly bootAt: number
 
@@ -310,6 +313,7 @@ export class WorkLinks {
     const work = this.deps.work()
     if (work === null) return
     this.lastRepos = repos
+    this.held = false
     const waiting = new Set<string>()
     const linkedAt = this.linkedTimes()
     const migrating = new Set<string>()
@@ -376,12 +380,19 @@ export class WorkLinks {
     return { connectionId: link.connectionId, itemId: link.itemId, key: link.key, worktree, repoRoot, state, attempts: 0, nextAt: 0, deferred: false, generation: null, activityKey: `run:srcfail:migrate:${link.connectionId}:${link.key}:${worktree}`, present: true }
   }
 
-  /** 새 항목을 만들 자리가 있나 — 상한이면 보류(이번 실행에서 보내지 않는다 · X3-2). 이미 있는 항목은 건드리지 않는다. */
+  /** 새 항목을 만들 자리가 있나 — 상한이면 보류(X3-2 — 이미 있는 항목은 건드리지 않는다). 자리 = `done` 아닌 항목 수(X4-1). */
   private roomFor(migrationKey: string): boolean {
-    if (this.migrations.size < MIGRATE_MAX_ENTRIES) return true
+    if (this.unsettledMigrations() < MIGRATE_MAX_ENTRIES) return true
+    this.held = true
     if (!this.heldLogged) this.deps.log('work.link_migrate_held', { key: migrationKey, max: MIGRATE_MAX_ENTRIES })
     this.heldLogged = true
     return false
+  }
+
+  private unsettledMigrations(): number {
+    let count = 0
+    for (const entry of this.migrations.values()) if (entry.state !== 'done') count += 1
+    return count
   }
 
   /**
@@ -415,7 +426,15 @@ export class WorkLinks {
     for (;;) {
       const now = (this.deps.now ?? Date.now)()
       const entry = [...this.migrations.values()].find((row) => row.present && row.state === 'pending' && !row.deferred && row.nextAt <= now && !this.detached.has(row.worktree))
-      if (entry === undefined) break
+      if (entry === undefined) {
+        // 보류된 링크가 있고 성공으로 자리가 났으면 같은 실행에서 이어 받는다(X4-1) — 마지막 트리를 다시 관측해 항목을 만들고 계속 보낸다.
+        if (!this.held || this.lastRepos === null || this.unsettledMigrations() >= MIGRATE_MAX_ENTRIES) break
+        this.held = false
+        // 한 틱 넘긴다 — 이 보내기가 `migrationLoop` 에 걸린 뒤 관측해야 관측의 깨우기가 두 번째 보내기를 띄우지 않는다.
+        await Promise.resolve()
+        if (this.lastRepos !== null) this.observe(this.lastRepos)
+        continue
+      }
       const outcome = await this.queueWrite({ path: entry.worktree, add: true, send: () => migrate({ connectionId: entry.connectionId, itemId: entry.itemId, key: entry.key, link: { kind: 'worktree', path: entry.worktree, repoRoot: entry.repoRoot } }).catch((error: unknown): LinkMigrateOutcome => {
         this.deps.log('work.link_migrate_error', { connectionId: entry.connectionId, key: entry.key, error: String(error) })
         return { state: 'failed', retry: true, message: '출처에 링크를 남기지 못했습니다.', generation: work.credentialGeneration?.(entry.connectionId) ?? 0 }

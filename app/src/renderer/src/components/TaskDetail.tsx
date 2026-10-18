@@ -66,6 +66,16 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
   const sourceName = descriptor?.name ?? connection?.name ?? '출처'
   const links = useContext(WorkLinksContext)
   const trees = links === null || item === null || detail.target === null ? NO_TREES : treesFor({ trees: links.trees, connectionId: detail.target.connectionId, itemId: item.id, key: item.key })
+  // 열린 상세에서 이 작업의 로컬 링크(경로 묶음)가 바뀌면 단건을 다시 읽는다(LIFE-635 X5-1) — 같은 작업 안의 변화만, 처음 그릴 때는 아니다.
+  const linkPaths = trees.map((tree) => tree.path).sort().join('\n')
+  const seenLinks = useRef<{ uid: string | null; paths: string } | null>(null)
+  const loaded = item !== null
+  useEffect(() => {
+    if (!loaded) return
+    const seen = seenLinks.current
+    seenLinks.current = { uid: detail.uid, paths: linkPaths }
+    if (seen !== null && seen.uid === detail.uid && seen.paths !== linkPaths) detail.refreshLinks()
+  }, [linkPaths, detail.uid, loaded])
 
   // 다른 작업으로 바뀌면 열린 메뉴·편집을 버린다.
   useEffect(() => {

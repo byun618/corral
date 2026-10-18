@@ -6,7 +6,7 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { RepoRow } from '../../../shared/types.js'
-import type { WorkRequest, WorkSettingsState } from '../../../shared/work.js'
+import type { WorkRequest } from '../../../shared/work.js'
 import { testRepo, testWorktree } from '../../../shared/test-rows.js'
 import { FIXTURE_IDS, LaMcpFixture } from '../../../main/work/la-mcp-fixture.js'
 import { laSourceEntry } from '../../../main/work/la-source.js'
@@ -48,12 +48,14 @@ function plant(fixture: LaMcpFixture, row: { kind: 'worktree' | 'pull_request'; 
   })
 }
 
-async function rig({ local, machineKnown = true, arrange }: { local: boolean; machineKnown?: boolean; arrange: (fixture: LaMcpFixture) => void }): Promise<void> {
+async function rig({ local, machineKnown = true, arrange }: { local: boolean; machineKnown?: boolean; arrange: (fixture: LaMcpFixture) => void }): Promise<{ fixture: LaMcpFixture; connectionId: string; tools: string[] }> {
   const fixture = new LaMcpFixture()
   arrange(fixture)
+  const tools: string[] = []
   const fetchImpl = async (_url: unknown, options?: RequestInit): Promise<Response> => {
     const body: { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } } = JSON.parse(String(options?.body))
     if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
+    if (body.params?.name !== undefined) tools.push(`${body.params.name}:${JSON.stringify(body.params.arguments ?? {})}`)
     const reply: { isError: boolean; text: string } | null = body.method === 'initialize' ? null : Reflect.get(fixture, 'tool').call(fixture, { tool: body.params?.name, args: body.params?.arguments ?? {} })
     const result = reply === null ? { protocolVersion: '2025-06-18' } : { content: [{ type: 'text', text: reply.text }], ...(reply.isError ? { isError: true } : {}) }
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), { headers: { 'content-type': 'application/json' } })
@@ -64,7 +66,7 @@ async function rig({ local, machineKnown = true, arrange }: { local: boolean; ma
   if (machineKnown) await harness.service.machine()
   Reflect.set(window, 'corral', {
     getUiPrefs: async () => ({}), setUiPrefs: () => {}, getWorkSettings: async () => harness.service.settings(),
-    onWorkSettings: (_next: (value: WorkSettingsState) => void) => () => {},
+    onWorkSettings: () => () => {},
     workRequest: (request: WorkRequest) => harness.service.request(request),
     workActivity: async (query: unknown) => harness.service.activity(query),
   })
@@ -76,6 +78,7 @@ async function rig({ local, machineKnown = true, arrange }: { local: boolean; ma
   act(() => { card.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
   await settle(30)
   if (document.querySelector('[data-issue-detail="LIFE-600"]') === null) throw new Error('상세 없음')
+  return { fixture, connectionId: added.connection.id, tools }
 }
 
 const remoteRows = (): { kind: string | null; value: string; machine: string; href: string | null }[] =>
@@ -137,5 +140,42 @@ describe('LIFE-635 C5 상세 — 다른 곳의 링크(읽기 전용)', () => {
     root = createRoot(host)
     await rig({ local: false, arrange: (fixture) => plant(fixture, { kind: 'worktree', key: '/Users/other/wt', machine: 'mac-studio' }) })
     expect(remoteRows()).toHaveLength(1)
+  })
+})
+
+/** 그 작업 단건 읽기 수(부모 단건 읽기는 빼고). */
+const itemReads = (tools: string[]): number => tools.filter((tool) => tool === `issue_get:${JSON.stringify({ id: FIXTURE_IDS.task600 })}`).length
+
+describe('LIFE-635 X5-1 열린 상세 — 이 작업의 로컬 링크가 바뀌면 단건을 다시 읽는다(리뷰 r5 probe-detail 조건)', () => {
+  const render = (repos: RepoRow[]): void => {
+    act(() => root.render(createElement(TasksPage, { open: true, repos, activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
+  }
+
+  it('사이드바 떼기(트리에서 그 worktree 링크가 사라짐 + 출처 행 지움) → 단건 재조회 · 뗀 worktree 가 「다른 곳의 링크」 로 남지 않는다', async () => {
+    const { fixture, tools } = await rig({ local: true, arrange: (fixture) => plant(fixture, { kind: 'worktree', key: WT, machine: FAKE_MACHINE }) })
+    expect(localTrees()).toBe(1)
+    expect(document.querySelector('[data-issue-remote-links]')).toBeNull()
+    const reads = itemReads(tools)
+    // 떼기 = 로컬 링크 지움 + 출처 remove(그 행이 사라짐). 상세는 쓰기를 내지 않았다.
+    fixture.workLinks = fixture.workLinks.filter((row) => row.key !== WT)
+    render([testRepo({ root: '/tmp/l635/repo', worktrees: [testWorktree({ path: WT, branch: 'refs/heads/LIFE-600-x' })] })])
+    await settle(30)
+    expect(localTrees()).toBe(0)
+    expect(itemReads(tools)).toBe(reads + 1)
+    expect(remoteRows()).toEqual([])
+  })
+
+  it('트리가 다시 그려져도 이 작업의 링크가 그대로면 다시 읽지 않는다 · 다시 붙으면(링크가 생김) 다시 읽는다', async () => {
+    const { connectionId, tools } = await rig({ local: true, arrange: (fixture) => plant(fixture, { kind: 'worktree', key: WT, machine: FAKE_MACHINE }) })
+    const reads = itemReads(tools)
+    render(reposFor({ connectionId, local: true }))
+    await settle(30)
+    expect(itemReads(tools)).toBe(reads)
+    render([testRepo({ root: '/tmp/l635/repo', worktrees: [testWorktree({ path: WT, branch: 'refs/heads/LIFE-600-x' })] })])
+    await settle(30)
+    render(reposFor({ connectionId, local: true }))
+    await settle(30)
+    expect(itemReads(tools)).toBe(reads + 2)
+    expect(localTrees()).toBe(1)
   })
 })

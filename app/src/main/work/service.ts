@@ -209,7 +209,7 @@ export class WorkService {
     if (entry === null) return { ok: false, error: invalid('모르는 작업 출처입니다.') }
     const existing = replaceId === null ? null : this.deps.store.get().connections.find((row) => row.id === replaceId) ?? null
     if (replaceId !== null && (existing === null || existing.sourceId !== entry.descriptor.id)) return { ok: false, error: invalid('바꿀 연결이 없습니다.') }
-    // 보내기 전에 거절한다 — LA 는 형식 다른 토큰에 500 을 주므로, 그 경로를 아예 열지 않는다(C5).
+    // 보내기 전에 거절한다 — 형식 다른 토큰은 보내 봐야 LA 가 401(`invalid_token`)로 거부한다(LIFE-635 실측 c10) — 그 요청을 아예 내지 않는다(C5).
     const token = input.token.trim()
     if (token.length === 0) return { ok: false, error: invalid('토큰을 붙여넣으세요.') }
     if (token.length > MAX_TOKEN_LENGTH || /\s/.test(token)) return { ok: false, error: invalid('토큰 모양이 아닙니다 — 공백 없이 한 줄이어야 합니다.') }

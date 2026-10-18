@@ -710,6 +710,13 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     setPhase({ state: 'loading', message: null })
     setReadSeq((value) => value + 1)
   }, [locked, reading])
+  /**
+   * 이 작업의 로컬 링크가 바뀌었다(사이드바 떼기·다른 곳의 시작 — LIFE-635 X5-1) — 단건을 다시 읽어 출처 링크(`workLinks`)를 새로 받는다.
+   * 「다른 곳의 링크」 는 단건과 지금 트리를 견주므로, 단건이 낡으면 방금 뗀 worktree 가 원격 행으로 남는다. 쓰기 중이면 그 쓰기 뒤 재조회가 맡는다.
+   */
+  const refreshLinks = useCallback(() => {
+    if (here !== null && !locked) void refreshItem(here)
+  }, [here, locked, refreshItem])
   /** 다시 읽을 수 있는가 — 진행 중인 쓰기·읽기가 없을 때(「다시 시도」 버튼). */
   const canReload = !locked && !reading
 
@@ -748,7 +755,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   return {
     target, uid, session, item, base, phase, statuses, parents, children, comments, history, records, conflict, transitions, transitionBlocks,
     caps, descriptor, connection, blocked, busy, commentsGate, canReload,
-    write, finalOf, versionOf, reloadFromServer, overrideConflict, loadTransitions, openKey, openItem, lookupKey, holdBasis, dropBasis,
+    write, finalOf, versionOf, reloadFromServer, refreshLinks, overrideConflict, loadTransitions, openKey, openItem, lookupKey, holdBasis, dropBasis,
   }
 }
 

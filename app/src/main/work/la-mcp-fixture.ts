@@ -104,7 +104,14 @@ const WORK_LINK_EXTRA: Record<FixtureWorkLink['kind'], string> = { worktree: 're
 const LA_UNAUTHORIZED = { code: 'UNAUTHORIZED', message: '인증이 필요해요' }
 /** LA `WORK_LINK_LIMITS` — 길이 상한(issue-work-link.rules.ts). */
 const WORK_LINK_LIMITS = { path: 1024, repoRoot: 1024, name: 255, url: 2048, sessionId: 255, agent: 100, machine: 100, repo: 200 } as const
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/
+/** LA 의 제어 문자 거부(U+0000–U+001F · U+007F) — 글자 코드로 본다(정규식 제어 문자 범위는 lint no-control-regex). */
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code <= 0x1f || code === 0x7f) return true
+  }
+  return false
+}
 
 /** LA `isHttpUrl` — `new URL` 로 읽어 http·https 만. */
 function isHttpUrl(value: string): boolean {
@@ -546,11 +553,11 @@ export class LaMcpFixture {
     if (typeof raw !== 'string' || raw.trim() === '') return { ok: false, message: `${kind} 링크에는 ${field} 가 필요합니다.` }
     const key = raw.trim()
     if (key.length > WORK_LINK_LIMITS[field]) return { ok: false, message: `${field} 가 너무 깁니다(최대 ${WORK_LINK_LIMITS[field]}자).` }
-    if (CONTROL_CHARACTER.test(key)) return { ok: false, message: `${field} 에 제어 문자가 들어 있습니다.` }
+    if (hasControlCharacter(key)) return { ok: false, message: `${field} 에 제어 문자가 들어 있습니다.` }
     if (kind === 'pull_request' && !isHttpUrl(key)) return { ok: false, message: 'pull_request url 은 http(s) URL 이어야 합니다.' }
     const parsedMachine = optionalText({ value: machine, field: 'machine' })
     if (!parsedMachine.ok) return parsedMachine
-    if (parsedMachine.value !== null && CONTROL_CHARACTER.test(parsedMachine.value)) return { ok: false, message: 'machine 에 제어 문자가 들어 있습니다.' }
+    if (parsedMachine.value !== null && hasControlCharacter(parsedMachine.value)) return { ok: false, message: 'machine 에 제어 문자가 들어 있습니다.' }
     return { ok: true, kind, key, machine: parsedMachine.value }
   }
 

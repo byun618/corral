@@ -2,6 +2,7 @@
 // fix r2 — Codex r2 X2-1–X2-4(리뷰 R12 복구 경합 · Q3/Q4 관측 누락 · R09 프로세스 경합 · R07 낡은 트리)도 이 파일 끝에.
 // fix r3 — Codex r3 X3-1–X3-4(리뷰 P1 응답 대기 중 누락 · P2 상한 경계 · P3 잔류 잠금 · M20 실제 sourceSave 실패 전달)는 맨 끝에.
 // fix r4 — Codex r4 X4-1(리뷰 P2 — 성공 항목이 상한 자리를 차지해 501번째가 영영 보류)는 그 뒤에.
+// r5 — X5-5(리뷰 r5 생존 변이 n11 떼기의 항목 삭제 · e-no-tick 보내기 고리 한 틱)는 맨 끝에.
 // 실제 경로: WorkLinks → WorkService → LaSource → McpHttpClient → LaMcpFixture(127.0.0.1 HTTP). 토큰은 가짜뿐 · 실제 Mac 이름·설정 무접촉(조회 함수 주입).
 import { fork } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -789,4 +790,54 @@ describe('X4-1 저장 성공은 상한 자리를 차지하지 않는다 — 앞 
     expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(3)
     expect(r.fixture.workLinks).toHaveLength(3)
   })
+})
+
+describe('X5-5 생존 변이 못박기 — 떼기가 이관 항목을 지운다(n11) · 보류 재관측 전 한 틱(e-no-tick)', () => {
+  const addsFor = (fixture: LaMcpFixture, worktree: string) => fixture.workLinkArgs.filter((row) => row.tool === 'issue_work_link_add' && isPath({ args: row.args, worktree })).length
+  const isPath = ({ args, worktree }: { args: Record<string, unknown>; worktree: string }): boolean => {
+    const link = args.link
+    return typeof link === 'object' && link !== null && Reflect.get(link, 'path') === worktree
+  }
+
+  it('읽기 토큰 · 링크 501개(500 정지 + 1 보류) → 하나를 떼면 그 항목이 지도에서 빠져 자리가 나고 다음 관측에 보류 링크를 보낸다', async () => {
+    const r = await rig()
+    await r.service.addConnection({ sourceId: 'la', token: FAKE_LA_READ_TOKEN, replaceId: r.connectionId })
+    const tree = manyLinks({ connectionId: r.connectionId, count: MIGRATE_MAX_ENTRIES + 1 })
+    const run = clocked({ registry: tree.registry, service: r.service })
+    await run.observe(tree.repos)
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(MIGRATE_MAX_ENTRIES)
+    await run.links.detach({ worktree: testWorktree({ path: `${ROOT}/.claude/worktrees/wt-0`, branch: 'refs/heads/scratch' }), repoRoot: ROOT })
+    await run.observe(tree.repos)
+    // 새로 나갈 수 있는 것은 보류된 wt-500 하나뿐이다(나머지는 정지 · wt-0 은 링크 없음). 거절 요청은 fixture 인자 기록에 안 남아 수로 본다.
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(MIGRATE_MAX_ENTRIES + 1)
+    for (let index = 0; index < 3; index += 1) { await run.observe([]); await run.observe(tree.repos) }
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(MIGRATE_MAX_ENTRIES + 1)
+  }, 60_000)
+
+  it('재시도 타이머가 깨운 고리의 첫 회차가 「보낼 것 없음 · 보류 · 자리 있음」 이어도 보내기 고리는 하나 — 보류 링크 add 1', async () => {
+    const r = await rig()
+    r.fixture.toolFaults.set('issue_work_link_add', { kind: 'http', status: 503, body: '{}' })
+    const tree = manyLinks({ connectionId: r.connectionId, count: MIGRATE_MAX_ENTRIES + 1 })
+    let clock = 2_000_000_000_000
+    let advancing = true
+    const timers: { run: () => void; at: number }[] = []
+    // 실패마다 시계가 1ms 씩 가서 항목마다 다음 시각이 다르다(wt-0 이 가장 이르다).
+    const links = new WorkLinks({ registry: tree.registry, work: () => r.service, log: () => {}, now: () => (advancing ? clock++ : clock), schedule: (run, ms) => { timers.push({ run, at: clock + ms }) }, generation: () => 'g1' })
+    links.observe(links.annotate(tree.repos))
+    await links.migrationsSettled()
+    expect(toolCount(r.fixture, 'issue_work_link_add')).toBe(MIGRATE_MAX_ENTRIES)
+    advancing = false
+    // wt-0 을 떼면(관측 없이) 그 항목이 빠져 자리가 난다. 타이머는 wt-0 의 다음 시각에 걸려 있다 — 그 시각에 깨우면 보낼 수 있는 항목이 없다.
+    await links.detach({ worktree: testWorktree({ path: `${ROOT}/.claude/worktrees/wt-0`, branch: 'refs/heads/scratch' }), repoRoot: ROOT })
+    r.fixture.toolFaults.clear()
+    const wake = timers.reduce((first, timer) => (timer.at < first.at ? timer : first))
+    clock = wake.at
+    wake.run()
+    await links.migrationsSettled()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await links.migrationsSettled()
+    const held = `${ROOT}/.claude/worktrees/wt-${MIGRATE_MAX_ENTRIES}`
+    expect(addsFor(r.fixture, held)).toBe(1)
+    expect(remoteRows(r.fixture, held)).toHaveLength(1)
+  }, 60_000)
 })

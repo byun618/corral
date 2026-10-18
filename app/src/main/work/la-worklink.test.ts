@@ -81,6 +81,26 @@ describe('C1 LA 링크 읽기 — 단건의 workLinks 를 계약 모양으로', 
     })
   }
 
+  // LIFE-635 X5-5 — 칸은 있지만 값이 계약 밖인 행(LA 검증을 거치지 않게 fixture 에 직접 심는다). 리뷰 r5 생존 변이 n8·n9 를 못박는다.
+  type PlantedRow = { kind: 'worktree' | 'pull_request'; key: string; extra: Record<string, string | null> }
+  const contractBreaks: { name: string; row: PlantedRow; ok: PlantedRow }[] = [
+    { name: '빈 핵심 값(path "")', row: { kind: 'worktree', key: '', extra: { repoRoot: null } }, ok: { kind: 'worktree', key: '/a/wt', extra: { repoRoot: null } } },
+    { name: '모르는 PR state("draft")', row: { kind: 'pull_request', key: 'https://github.com/o/r/pull/1', extra: { state: 'draft' } }, ok: { kind: 'pull_request', key: 'https://github.com/o/r/pull/1', extra: { state: 'merged' } } },
+  ]
+  for (const bad of contractBreaks) {
+    it(`${bad.name} → invalid_response (조용히 접지 않는다) · 양성 대조: 계약 안의 값이면 성공`, async () => {
+      const rig = await connected()
+      const call = { op: 'getItem' as const, itemId: FIXTURE_IDS.task600 }
+      const plant = (row: PlantedRow) => {
+        rig.fixture.workLinks = [{ id: 'wl-x5', issueId: FIXTURE_IDS.task600, ...row, machine: 'mac-a', repo: 'a', createdAt: '2026-10-18T00:00:00.000Z' }]
+      }
+      plant(bad.ok)
+      expect(await rig.service.request({ requestId: 'ok', connectionId: rig.connectionId, call })).toMatchObject({ ok: true })
+      plant(bad.row)
+      expect(await rig.service.request({ requestId: 'bad', connectionId: rig.connectionId, call })).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+    })
+  }
+
   it('링크 도구 응답의 workLinks 가 배열이 아니면 저장 결과도 실패(failed) — 양성 대조: 깨기 전엔 saved', async () => {
     const rig = await connected()
     expect(await rig.service.storeLink({ connectionId: rig.connectionId, itemId: FIXTURE_IDS.task600, link: LINK, action: 'save' })).toEqual({ state: 'saved', message: null })

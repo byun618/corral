@@ -211,17 +211,18 @@ describe('LA 기본 상태·배치 적용 (R2-G·R2-H)', () => {
     expect(await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'task' })).toMatchObject({ ok: true, result: { meta: { defaultStatusKey: FIXTURE_STATUS.todo } } })
   })
 
-  it('R2-H task·checkpoint = 배치 적용(onBoard 명시) · bug = 적용 안 됨: onBoard 를 싣지 않고, 배치를 실어 보내면 보내기 전에 거절', async () => {
+  it('R2-H → LIFE-665 task·checkpoint·bug 모두 배치 적용(onBoard 명시) — bug 도 고른 배치를 싣는다(LA LIFE-293)', async () => {
     const { fixture, send } = await laSetup()
-    expect(await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'task' })).toMatchObject({ ok: true, result: { meta: { placement: 'applies' } } })
-    expect(await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'checkpoint' })).toMatchObject({ ok: true, result: { meta: { placement: 'applies' } } })
-    expect(await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey: 'bug' })).toMatchObject({ ok: true, result: { meta: { placement: 'ignored' } } })
+    for (const kindKey of ['task', 'checkpoint', 'bug']) {
+      expect(await send({ op: 'getCreateMeta', spaceKey: FIXTURE_IDS.corral, kindKey })).toMatchObject({ ok: true, result: { meta: { placement: 'applies' } } })
+    }
     const bug = await send({ op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: null, kindKey: 'bug', title: '버그' })
-    expect(bug.ok).toBe(true)
-    expect(fixture.createArgs.at(-1)).toEqual({ kind: 'bug', title: '버그', parentId: FIXTURE_IDS.corral, clientWriteId: expect.stringMatching(/^conn-\d+$/) })
+    expect(bug).toMatchObject({ ok: true, result: { item: { placement: 'board' } } })
+    expect(fixture.createArgs.at(-1)).toEqual({ kind: 'bug', title: '버그', parentId: FIXTURE_IDS.corral, onBoard: true, clientWriteId: expect.stringMatching(/^conn-\d+$/) })
     const withPlacement = await send({ op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: null, kindKey: 'bug', title: '배치 실음', placement: 'backlog' })
-    expect(withPlacement).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('배치') } })
-    expect(fixture.createArgs).toHaveLength(1)
+    expect(withPlacement).toMatchObject({ ok: true, result: { item: { placement: 'backlog' } } })
+    expect(fixture.createArgs.at(-1)).toMatchObject({ kind: 'bug', onBoard: false })
+    expect(fixture.createArgs).toHaveLength(2)
   })
 })
 
@@ -269,6 +270,17 @@ describe('모의 출처(Jira 형) — 첫 상태만 · 필수 필드 (C3·C8)', 
     expect(await send({ op: 'createItem', spaceKey: 'CORE', parentId: null, kindKey: 'story', title: 's', placement: 'board' })).toMatchObject({ ok: false, error: { kind: 'unsupported' } })
     expect(state.createCalls ?? []).toHaveLength(0)
     expect(await send({ op: 'createItem', spaceKey: 'CORE', parentId: null, kindKey: 'story', title: 's' })).toMatchObject({ ok: true })
+  })
+
+  // LIFE-665 — 「배치 능력 켜짐 + 그 종류는 배치 적용 안 됨」 의 유일한 덮개였던 LA bug 가 applies 로 바뀌어, 그 거절(받는 척 금지)을 모의 출처로 덮는다.
+  it('createmeta-placement-ignored — 배치 능력은 켜졌는데 메타가 ignored 면 배치를 실은 만들기는 rejected(저장 0), 안 실으면 만든다', async () => {
+    const { send, state } = await mockSetup({ token: 'mock_createmeta-placement-ignored' })
+    expect(await send({ op: 'getCreateMeta', spaceKey: 'CORE', kindKey: 'story' })).toMatchObject({ ok: true, result: { meta: { placement: 'ignored' } } })
+    const before = state.items.length
+    expect(await send({ op: 'createItem', spaceKey: 'CORE', parentId: null, kindKey: 'story', title: '배치 실음', placement: 'backlog' })).toMatchObject({ ok: false, error: { kind: 'rejected', message: expect.stringContaining('배치') } })
+    expect(state.items).toHaveLength(before)
+    expect(await send({ op: 'createItem', spaceKey: 'CORE', parentId: null, kindKey: 'story', title: '배치 없음' })).toMatchObject({ ok: true })
+    expect(state.items).toHaveLength(before + 1)
   })
 })
 

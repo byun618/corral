@@ -252,7 +252,7 @@ export type WorkCreateFieldValue = { key: string; value: string }
 /**
  * 생성 메타(E11) — `statusKeys` = 만들 때 고를 수 있는 상태(완료 분류 제외, 출처가 첫 상태만 받으면 하나), `defaultStatusKey` 는 그 안.
  * `placement` = 이 (스페이스, 종류)에 보드/백로그 배치가 적용되는가(LIFE-604 R2-H) — `ignored` 면 화면은 배치 칩을 흐리고 `placement` 를 싣지 않는다
- * (실어 보내면 출처가 거절 — 받는 척 금지). 예: LA 는 task·checkpoint 만 `onBoard` 를 쓴다.
+ * (실어 보내면 출처가 거절 — 받는 척 금지). 예: Jira 는 종류 무관 `ignored`. LA 는 task·checkpoint·bug 모두 `applies`(LA LIFE-293 — LIFE-665).
  * `unavailable` = 이 (스페이스, 종류)로는 만들 수 없다 — 이유 글(LIFE-604 R4-F). 화면은 그 종류를 흐림 + 이유로 두고, 출처는 만들기를 거절한다.
  * 예: LA 「미분류」 의 Checkpoint(부모 프로젝트 필수). 없으면 만들 수 있다.
  */

@@ -127,16 +127,17 @@ describe('배치가 적용되지 않는 종류 (R2-H)', () => {
     transition: { mode: 'any' }, placement: { state: 'on' }, relations: { state: 'on' }, parentChange: { state: 'on' }, order: { state: 'on' }, cursorPaging: { state: 'on' },
     conflictCheck: { state: 'on' }, comments: { state: 'on' }, history: { state: 'on' }, workLinkStore: { state: 'on' },
   }
-  const bug: WorkKind = { key: 'bug', label: 'Bug', childKinds: [] }
+  // 손으로 만든 메타의 종류 — 특정 출처의 종류가 아니다(LA bug 는 LIFE-665 부터 배치 적용).
+  const unplaced: WorkKind = { key: 'unplaced', label: 'Unplaced', childKinds: [] }
   const space: SpaceData = {
     connectionId: 'c1', spaceKey: 'CORE', spaceName: 'Core', colorIndex: 0, color: null, statuses: [{ key: 'todo', label: 'todo', category: 'todo', order: 0, color: null }],
-    kinds: [bug], items: [], nextCursor: null, truncated: false,
+    kinds: [unplaced], items: [], nextCursor: null, truncated: false,
   }
   const run = async (placement: 'applies' | 'ignored'): Promise<{ chip: unknown; sent: WorkCall | undefined }> => {
     Reflect.set(window, 'corral', {
       workRequest: async (request: WorkRequest): Promise<WorkResponse> => ({
         requestId: request.requestId, connectionId: request.connectionId, ok: true,
-        result: { op: 'getCreateMeta', meta: { accepts: { body: true, priority: true }, spaceKey: 'CORE', kindKey: 'bug', statusKeys: ['todo'], defaultStatusKey: 'todo', placement, fields: [] } },
+        result: { op: 'getCreateMeta', meta: { accepts: { body: true, priority: true }, spaceKey: 'CORE', kindKey: 'unplaced', statusKeys: ['todo'], defaultStatusKey: 'todo', placement, fields: [] } },
       }),
     })
     sentCreates.length = 0
@@ -144,7 +145,7 @@ describe('배치가 적용되지 않는 종류 (R2-H)', () => {
     act(() => root.render(createElement(Probe, { settings, connectionId: 'c1', data: [space] })))
     act(() => { current().openModal() })
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
-    act(() => { current().update({ title: '버그', placement: 'backlog' }) })
+    act(() => { current().update({ title: '배치 없는 종류', placement: 'backlog' }) })
     const chip = current().modalView?.placement
     await act(async () => { await current().submit() })
     act(() => { current().close() })

@@ -163,7 +163,7 @@ const STEPS = {
     await click('[data-quick-create-status]')
     await click('[data-quick-create-kind="bug"]'); await sleep(400)
     judge('C8 Bug 필수 필드 상자', await exists('[data-quick-create-required]'))
-    // R2-H — 모의 출처는 배치를 받는다(applies): 배치 칩이 켜져 있어야 한다(LA bug 의 흐림은 단위 시험·N8).
+    // R2-H — 모의 출처는 배치를 받는다(applies): 배치 칩이 켜져 있어야 한다(LA bug 도 LIFE-665 부터 applies — 흐림은 Jira·모의 placement-ignored 만).
     judge('R2-H 모의 Bug 배치 칩 켜짐', (await js(`${q('[data-quick-create-placement]')}?.hasAttribute('disabled') ?? null`)) === false)
     await shot('c8-required')
     await closeModal()

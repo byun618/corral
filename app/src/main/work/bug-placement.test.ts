@@ -43,7 +43,7 @@ describe('C2 만들기 인자 — bug 에도 onBoard 를 늘 싣는다', () => {
   it.each([
     ['백로그 → onBoard false', 'backlog', false, 'backlog'],
     ['보드 → onBoard true', 'board', true, 'board'],
-    ['배치 없음(칸 「+ 추가」·자식 추가) → onBoard true', undefined, true, 'board'],
+    ['배치 없음(서비스 직접 호출 · 기본 = 보드) → onBoard true', undefined, true, 'board'],
   ] as const)('%s · 다시 읽은 placement 같음', async (_name, placement, onBoard, reread) => {
     const { fixture, send } = await laSetup()
     const made = await send({ op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: null, kindKey: 'bug', title: `버그 ${String(placement)}`, ...(placement === undefined ? {} : { placement }) })

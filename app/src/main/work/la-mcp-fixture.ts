@@ -96,7 +96,8 @@ type FixtureIssue = {
   statusId: string
   resolution: string | null
   color: string | null
-  position: string
+  /** 저장된 행 = DB 행 모양(글자 또는 null) — 응답 갈래별 모양은 `issue_create` 주석(LIFE-651). */
+  position: string | null
   onBoard: boolean
   dueAt: string | null
   archivedAt: string | null
@@ -593,12 +594,18 @@ export class LaMcpFixture {
         const created: FixtureIssue = {
           id: uuid(80000 + this.seq++), sequentialId, kind, parentId, title: args.title,
           description: !ignore && typeof args.description === 'string' ? args.description : null, priority: !ignore && typeof args.priority === 'string' ? args.priority : null, statusId,
-          resolution: null, color: null, position: String(100 + sequentialId), onBoard: args.onBoard === true, dueAt: typeof args.dueAt === 'string' ? args.dueAt : null, archivedAt: null, updatedAt: '2026-10-14T00:00:00.000Z', version: 1,
+          resolution: null, color: null, position: kind === 'task' || kind === 'bug' ? String(100 + sequentialId) : null, onBoard: args.onBoard === true, dueAt: typeof args.dueAt === 'string' ? args.dueAt : null, archivedAt: null, updatedAt: '2026-10-14T00:00:00.000Z', version: 1,
         }
         this.issues.push(created)
         // 만들기 — 일감 자신엔 이력 행이 없고, 부모의 child 행에만 쓰기 id(611).
         if (parentId !== null) this.pushHistory({ issueId: parentId, at: this.tick(), field: 'child', from: null, to: this.titled(created), writeId: writeIdOf(args) })
-        return ok(this.response(created))
+        // LIFE-651 — 실측 모양: LA create 는 메모리에 대입한 position(`nextTaskPosition` = number)을 그대로 낸다 → task·bug 는 **숫자**,
+        // project·checkpoint 는 null. 저장된 행(get·list·update·transition 의 issue)은 DB 에서 읽어 **글자**다(위 `position` 그대로).
+        // 근거: specs/LIFE-651-create-position/raw/coordinator/c11-la-source-contrast.md(LA issue.service:443-446·mapper:35) ·
+        // c09-la-651-by-seq.md(저장 행 "30") · specs/LIFE-372-la-issue-link/raw/k15/k15-summary.md(생성 응답 숫자 4).
+        const response = this.response(created)
+        if (Object.hasOwn(response, 'position')) response.position = created.position === null ? null : Number(created.position)
+        return ok(response)
       }
       case 'issue_link_create': {
         const from = this.issues.find((issue) => issue.sequentialId === args.seq)

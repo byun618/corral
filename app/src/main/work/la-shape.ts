@@ -10,6 +10,9 @@
 //   - 커서 쪽(LIFE-638 D11 — LA 610·611) = `{ items, nextCursor }` → `readIssuePage`·`readHistoryPage`·`readCommentPage`. `nextCursor` 는 비지 않은 글자 또는 null
 //     (빈 글자는 LA `cursor` 입력이 받지 않는다 — 되돌려 보낼 수 없는 값이라 어긋남). 행 하나라도 어긋나면 쪽 전체가 어긋남.
 // 공통 칸: parentId·priority·onBoard·position·dueAt·color·archivedAt(값 null 허용, 칸 필수) · updatedAt(글자) · version(글자 — LIFE-622, LA LIFE-607).
+// position 은 **두 모양**으로 온다(LIFE-651 — LA `issue.entity` position 에 명시 타입이 없다): DB 에서 읽은 행(list·get·by_seq·update·transition)은 글자(`"30"`),
+// 같은 요청에서 메모리로 대입한 값(issue_create 의 task·bug · update 의 kind 변경 · reorder)은 숫자(`4`). 둘 다 받아 글자로 맞춘다 — `issueRank`.
+// 근거: specs/LIFE-651-create-position/raw/coordinator/c11-la-source-contrast.md · K15 원자료 specs/LIFE-372-la-issue-link/raw/k15/k15-summary.md.
 // LA 가 늘 주는 것 이상은 요구하지 않는다.
 
 import { isRecord } from '../../shared/json.js'
@@ -119,6 +122,18 @@ function position(source: Record<string, unknown>, path: string): number {
   return parsed
 }
 
+/**
+ * 일감 position(LIFE-651) — 칸 필수, 값은 글자(그대로) · null · 0 이상 안전 정수(`String(n)` — DB 행 표기 `"4"` 와 같다).
+ * LA 가 숫자를 내는 경로(`nextTaskPosition` = 형제 최대 + 1, reorder = 순번)는 0 이상 정수뿐이다. 소수·음수·안전 정수 밖(`String` 이 `1e+21` 처럼
+ * 지수 표기가 되거나 자리가 뭉개지는 범위)·불리언·객체·배열은 어긋남 — 조용히 null 로 접지 않는다.
+ */
+function issueRank(source: Record<string, unknown>, path: string): string | null {
+  const value = present(source, 'position', path)
+  if (value === null || typeof value === 'string') return value
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value)
+  throw new LaShapeError(`${path}.position`)
+}
+
 function kindOf(value: unknown, path: string): LaKind {
   const kind = LA_KINDS.find((entry) => entry === value)
   if (kind === undefined) throw new LaShapeError(path)
@@ -188,7 +203,7 @@ function readCore(row: Record<string, unknown>, path: string): LaIssueCore {
     parentId: nullableStr(row, 'parentId', path),
     priority,
     onBoard,
-    position: nullableStr(row, 'position', path),
+    position: issueRank(row, path),
     dueAt: nullableStr(row, 'dueAt', path),
     color: nullableStr(row, 'color', path),
     archivedAt: nullableStr(row, 'archivedAt', path),

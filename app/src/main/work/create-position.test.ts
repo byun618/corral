@@ -166,3 +166,40 @@ describe('C2 — 숫자 position 응답에서 만들기 끝까지 (K15 미달 5�
     expect(stored?.position).toBe(String(createdPositions[0]))
   })
 })
+
+describe('C1 거절 갈래 — 생성 응답 position 이 받지 않는 값이면 「만들어졌을 수 있음」(r1 S1-1)', () => {
+  /** `issue_create` 응답 본문의 숫자 position 을 `bad` 로 바꿔 돌려주는 fetch — 바꾼 횟수를 센다(가짜 대조 방지). */
+  async function setupRewriting(bad: string) {
+    const fixture = new LaMcpFixture()
+    fixture.tokens.set(FAKE_LA_TOKEN, 'write')
+    const url = await fixture.start()
+    stops.push(() => fixture.stop())
+    const state = { rewrites: 0 }
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const response = await fetch(input, init)
+      if (typeof init?.body !== 'string' || !init.body.includes('"name":"issue_create"')) return response
+      const text = await response.text()
+      const rewritten = text.replace(/\\"position\\":\d+/g, () => {
+        state.rewrites += 1
+        return `\\"position\\":${bad}`
+      })
+      return new Response(rewritten, { status: response.status, headers: response.headers })
+    }
+    const harness = workHarness({ entries: [laSourceEntry({ url, clientVersion: 'test', fetchImpl })] })
+    const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
+    if (!added.ok) throw new Error(added.error.message)
+    const send = (call: WorkCall): Promise<WorkResponse> => harness.service.request({ requestId: `x-${++seq}`, connectionId: added.connection.id, call })
+    return { fixture, send, state }
+  }
+
+  it.each([['소수', '1.5'], ['음수', '-1'], ['불리언', 'true'], ['안전 정수 밖', '1e21']])('%s %s → invalid_response · maybeApplied · issue_create 1회(재전송 0)', async (_label, bad) => {
+    const { fixture, send, state } = await setupRewriting(bad)
+    const response = await send({ op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: null, kindKey: 'task', title: '거절 값', placement: 'board' })
+    expect(state.rewrites).toBe(1)
+    expect(response).toMatchObject({ ok: false, error: { kind: 'invalid_response', maybeApplied: true } })
+    if (response.ok) throw new Error('ok 이면 안 된다')
+    expect(response.error.message).toContain('issue_create.position')
+    expect(fixture.createArgs).toHaveLength(1)
+    expect(fixture.requests.filter((request) => request.tool === 'issue_create')).toHaveLength(1)
+  })
+})

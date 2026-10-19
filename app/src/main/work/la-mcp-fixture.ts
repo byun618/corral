@@ -601,8 +601,9 @@ export class LaMcpFixture {
         if (parentId !== null) this.pushHistory({ issueId: parentId, at: this.tick(), field: 'child', from: null, to: this.titled(created), writeId: writeIdOf(args) })
         // LIFE-651 — 실측 모양: LA create 는 메모리에 대입한 position(`nextTaskPosition` = number)을 그대로 낸다 → task·bug 는 **숫자**,
         // project·checkpoint 는 null. 저장된 행(get·list·update·transition 의 issue)은 DB 에서 읽어 **글자**다(위 `position` 그대로).
-        // 근거: specs/LIFE-651-create-position/raw/coordinator/c11-la-source-contrast.md(LA issue.service:443-446·mapper:35) ·
-        // c09-la-651-by-seq.md(저장 행 "30") · specs/LIFE-372-la-issue-link/raw/k15/k15-summary.md(생성 응답 숫자 4).
+        // 근거: LA 소스 apps/api/src/issue/issue.service.ts:443-446(create 가 메모리 number 대입) · issue.mapper.ts:35(정규화 없음) —
+        // 대조 specs/LIFE-651-create-position/raw/coordinator/c11-la-source-contrast.md · 저장 행 글자 c09-la-651-by-seq.md("30") ·
+        // 생성 응답 숫자는 raw/claude/u0-la.json 의 LA 651 본문 서술(372 코디의 MCP 응답 관측 — 캡처 원자료 없음).
         const response = this.response(created)
         if (Object.hasOwn(response, 'position')) response.position = created.position === null ? null : Number(created.position)
         return ok(response)

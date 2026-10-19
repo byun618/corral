@@ -136,10 +136,10 @@ describe('C2 — 숫자 position 응답에서 만들기 끝까지 (K15 미달 5�
     expect(item).toMatchObject({ statusKey: FIXTURE_STATUS.analysis, rank: String(createdPositions[0]) })
   })
 
-  it('ⓔ bug · onBoard 없음(행 98) — ok', async () => {
+  it('ⓔ bug(행 98) — ok · 배치 없음 = onBoard true(LIFE-665 — 옛 기대는 onBoard 없음)', async () => {
     const { fixture, send, createdPositions } = await setup()
     const item = await created({ send, call: { op: 'createItem', spaceKey: FIXTURE_IDS.corral, parentId: null, kindKey: 'bug', title: '버그' } })
-    expect(fixture.createArgs.at(-1)).not.toHaveProperty('onBoard')
+    expect(fixture.createArgs.at(-1)).toMatchObject({ onBoard: true })
     expect(typeof createdPositions[0]).toBe('number')
     expect(item).toMatchObject({ kind: { key: 'bug' }, rank: String(createdPositions[0]) })
   })

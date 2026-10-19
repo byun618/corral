@@ -258,7 +258,7 @@ export class LaSource implements WorkSourceClient {
 
   /**
    * 만들기(E6 · E10 LIFE-604). 부모 없음 = 스페이스 프로젝트 바로 아래(「미분류」 면 부모 없음).
-   * 칸 전달: 본문 → description · 상태 → statusId · 우선순위 → priority · 배치 → onBoard. **onBoard 는 늘 명시한다(배치가 적용되는 task·checkpoint — bug 는 싣지 않음, R2-H)** — LA 기본이 백로그라
+   * 칸 전달: 본문 → description · 상태 → statusId · 우선순위 → priority · 배치 → onBoard. **onBoard 는 늘 명시한다(task·checkpoint·bug — LA LIFE-293 이후 bug 도 task 와 같다, LIFE-665)** — LA 기본이 백로그라
    * 미지정이면 보드 생성이 조용히 백로그로 간다(배치를 안 보낸 만들기 = 보드, T3 자식 추가 그대로). 상태를 안 보내면 LA 기본 상태.
    * 부모 규칙은 LA 서버가 다시 검증한다 — 여기서는 종류의 `childKinds` 밖·메타 밖 상태·필드를 보내기 전에 거절한다.
    */
@@ -304,9 +304,9 @@ export class LaSource implements WorkSourceClient {
     const todo = open.filter((status) => status.categoryKey === 'todo')
     const first = todo.find((status) => status.isDefault === true) ?? todo[0] ?? open[0]
     if (first === undefined) return { ok: false, outcome: { ok: false, error: workError({ kind: 'rejected', message: '만들 수 있는 상태가 없습니다.' }) } }
-    // 배치(R2-H): LA `onBoard` 는 task·checkpoint 만 의미(issue_create 스키마 설명) — bug 는 적용되지 않는다.
-    const placement = kindKey === 'bug' ? 'ignored' : 'applies'
-    const meta: WorkCreateMeta = { spaceKey, kindKey, statusKeys: open.map((status) => status.id), defaultStatusKey: first.id, placement, accepts: { body: true, priority: true }, fields: [] }
+    // 배치: LA 는 세 종류 모두 `onBoard` 를 받는다 — bug 도 task 와 같다(LA LIFE-293 `issue.service.ts:447-452`, LIFE-665).
+    // 옛 R2-H(bug = 적용 안 됨)는 LIFE-293 뒤 갱신 안 된 MCP 칸 설명을 근거로 삼았다(LIFE-665 `raw/coord/c11-la-source-contrast.txt`).
+    const meta: WorkCreateMeta = { spaceKey, kindKey, statusKeys: open.map((status) => status.id), defaultStatusKey: first.id, placement: 'applies', accepts: { body: true, priority: true }, fields: [] }
     // 「미분류」 의 Checkpoint — LA 는 checkpoint 의 부모로 project 를 요구하는데 미분류에는 부모 프로젝트가 없다(R4-F). 화면은 그 종류를 흐린다.
     if (kindKey === 'checkpoint' && spaceKey === LA_CATCH_ALL_KEY) meta.unavailable = '「미분류」 에는 Checkpoint 를 만들 수 없습니다 — 부모 프로젝트가 필요합니다. 프로젝트 스페이스에서 만드세요.'
     return { ok: true, value: meta }
@@ -655,9 +655,8 @@ function laKind(key: string): 'checkpoint' | 'task' | 'bug' | null {
 
 /** 만들기 → `issue_create` 인자. 보낸 칸만 옮기고 onBoard 는 늘(배치 없음 = 보드). 필수 필드는 메타 검사에서 이미 막혔다(LA 는 없음). */
 function createArgs({ call, kind, parentId }: { call: Extract<WorkCall, { op: 'createItem' }>; kind: 'checkpoint' | 'task' | 'bug'; parentId: string | null }): Record<string, unknown> {
-  const args: Record<string, unknown> = { kind, title: call.title, parentId }
-  // onBoard 는 배치가 적용되는 종류(task·checkpoint)에 늘 명시한다 — bug 는 싣지 않는다(LA 가 쓰지 않는 칸, R2-H).
-  if (kind !== 'bug') args.onBoard = (call.placement ?? 'board') === 'board'
+  // onBoard 는 종류 무관 늘 명시한다 — bug 도 LA 가 쓰는 칸이다(LIFE-665). 안 실으면 LA 기본(백로그)으로 조용히 간다.
+  const args: Record<string, unknown> = { kind, title: call.title, parentId, onBoard: (call.placement ?? 'board') === 'board' }
   if (call.body !== undefined) args.description = call.body
   if (call.statusKey !== undefined) args.statusId = call.statusKey
   if (call.priority !== undefined) args.priority = call.priority

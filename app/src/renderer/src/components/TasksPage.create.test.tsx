@@ -1423,3 +1423,24 @@ describe('수정 4 (리뷰 r4)', () => {
     expect(el('.tasks-head').hasAttribute('inert')).toBe(false)
   })
 })
+
+// LIFE-665 S1-5 — LA bug 가 배치 적용으로 바뀌어 「적용 안 되는 종류」 칩 흐림의 실제 출처 통합 덮개가 hook 시험 하나만 남았다.
+// 모의 출처 `createmeta-placement-ignored`(모든 종류 ignored)로 React → hook → 서비스 → 모의 출처 끝까지 흐림 + 이유 · 요청에 placement 없음을 본다.
+describe('LIFE-665 배치가 적용되지 않는 종류 — 모달 칩 흐림 (모의 placement-ignored)', () => {
+  it('모달 배치 칩 둘 disabled + 이유(title) · 만들면 출처 요청에 placement 가 없다', async () => {
+    const harness = await setup({ token: 'mock_l604_createmeta-placement-ignored' })
+    await renderPage(harness)
+    pressC()
+    await settle()
+    for (const entry of ['board', 'backlog']) expect(el(`[data-quick-create-placement="${entry}"]`).hasAttribute('disabled')).toBe(true)
+    expect(el('.qc-place').getAttribute('title')).toBe('이 종류는 보드/백로그 배치를 받지 않습니다')
+    setValue('[data-quick-create-title]', '배치 없는 종류')
+    key(el('[data-quick-create-title]'), { key: 'Enter', metaKey: true })
+    await settle(12)
+    expect(creates(harness)).toBe(1)
+    const call = harness.state.createCalls?.at(-1)
+    expect(call).toMatchObject({ title: '배치 없는 종류' })
+    expect(call).not.toHaveProperty('placement')
+    expect(harness.state.items.some((item) => item.title === '배치 없는 종류')).toBe(true)
+  })
+})

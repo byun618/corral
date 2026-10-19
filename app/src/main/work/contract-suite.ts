@@ -674,6 +674,8 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
         const statusKey = meta.statusKeys.at(-1) ?? meta.defaultStatusKey
         // 배치는 능력이 켜졌고 그 종류에 적용될 때만(R2-H). 적용 안 되는 종류에 실으면 거절이어야 한다(받는 척 금지).
         const placement = capabilities.placement.state === 'on' && meta.placement === 'applies' ? 'backlog' : undefined
+        // LIFE-665: 지금 이 분기를 밟는 출처는 없다(LA bug 가 applies 로 바뀜 · Jira 는 배치 능력 disabled · 모의는 applies).
+        // 그 거절의 덮개는 `create.test.ts` 「createmeta-placement-ignored」(모의 출처) — 분기는 미래 출처를 위해 둔다.
         if (capabilities.placement.state === 'on' && meta.placement === 'ignored') {
           expect(await send({ op: 'createItem', spaceKey: space.key, parentId: null, kindKey: kind.key, title: '배치 실음', placement: 'backlog', ...(fields.length === 0 ? {} : { fields }) })).toMatchObject({ ok: false, error: { kind: 'rejected' } })
         }

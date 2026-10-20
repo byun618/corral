@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-require-imports -- Electron CJS 진입점이라 require 를 쓴다 */
-/* global require, process, console, globalThis */
+/* global require, process, console */
 // LIFE-637 최종 관문 격리 회차 래퍼 진입점(up.sh 가 <root>/wrap/main.cjs 로 복사).
 // l636 hide-window.cjs 와 다른 점: 수집은 창이 **보일 때만** 돌기 때문에(R6ⓒ) 창을 숨기지 않는다. 대신 show·focus 를 showInactive 로 바꾸고
 // 활성화 정책을 accessory(dock 없음)로 둬서, 창은 화면에 보이되 앱이 활성화되거나 키 포커스를 가져가지 않게 한다(LIFE-603 K1 포커스 뺏기 완화).

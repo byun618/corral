@@ -10,9 +10,8 @@ const target = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
 const ws = new WebSocket(target.webSocketDebuggerUrl)
 await new Promise((r, j) => { ws.onopen = r; ws.onerror = j })
 let seq = 0; const pending = new Map()
-ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id !== undefined) { const p = pending.get(d.id); pending.delete(d.id); d.error ? p.j(new Error(JSON.stringify(d.error))) : p.r(d.result) } }
+ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id !== undefined) { const p = pending.get(d.id); pending.delete(d.id); if (d.error) p.j(new Error(JSON.stringify(d.error))); else p.r(d.result) } }
 const send = (method, params = {}) => new Promise((r, j) => { const id = ++seq; pending.set(id, { r, j }); ws.send(JSON.stringify({ id, method, params })) })
-const ev = async (e) => (await send('Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true })).result.value
 // 수집 횟수는 main 쪽에서 읽을 길이 없어 렌더러 스냅샷으로 — 여기서는 구간 시각만 남기고 호출자가 맞춘다.
 await send('Profiler.enable'); await send('Profiler.setSamplingInterval', { interval: 100 })
 const t0 = Date.now(); await send('Profiler.start')

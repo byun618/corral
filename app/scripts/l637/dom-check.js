@@ -1,3 +1,4 @@
+/* global window, document, requestAnimationFrame */
 // R4 — 다음 푸시를 받은 뒤 그 스냅샷(IPC 값)과 패널 DOM 을 맞춘다. 서식은 독립 재구현(cpu = 반올림 %, 메모리 = 1GB 이상 x.x GB, 미만 MB 정수).
 (async () => {
   const s = await new Promise((r) => { const stop = window.corral.onResourceSnapshot((x) => { stop(); r(x) }) })

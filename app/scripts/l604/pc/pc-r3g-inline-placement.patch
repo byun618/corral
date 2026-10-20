@@ -1,0 +1,13 @@
+diff --git a/app/src/renderer/src/hooks/useQuickCreate.ts b/app/src/renderer/src/hooks/useQuickCreate.ts
+index ce5f518cf..2461482c8 100644
+--- a/app/src/renderer/src/hooks/useQuickCreate.ts
++++ b/app/src/renderer/src/hooks/useQuickCreate.ts
+@@ -463,7 +463,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
+     }
+     const caps = settings?.connections.find((connection) => connection.id === current.target.connectionId)?.capabilities ?? null
+     const call: Extract<WorkCall, { op: 'createItem' }> = { op: 'createItem', spaceKey: current.target.spaceKey, parentId: null, kindKey: kind.key, title: current.text.trim(), statusKey: current.statusKey }
+-    if (caps?.placement.state === 'on' && meta.meta.placement === 'applies') call.placement = 'board'
++    if (caps?.placement.state === 'on') call.placement = 'board'
+     const lockKey = `create:inline:${targetKey(current.target)}`
+     if (inlineSending.current.has(lockKey)) return
+     inlineSending.current.add(lockKey)

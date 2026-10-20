@@ -1,0 +1,13 @@
+diff --git a/app/src/shared/work.ts b/app/src/shared/work.ts
+index bd043f2e9..5d02b0521 100644
+--- a/app/src/shared/work.ts
++++ b/app/src/shared/work.ts
+@@ -569,7 +569,7 @@ export function readCreateMeta(value: unknown): WorkCreateMeta | null {
+   }
+   const meta: WorkCreateMeta = { spaceKey: value.spaceKey, kindKey: value.kindKey, statusKeys: [...statusKeys], defaultStatusKey: value.defaultStatusKey, placement: value.placement, fields }
+   if (value.unavailable !== undefined) {
+-    if (!isNonEmpty(value.unavailable) || value.unavailable.length > 500) return null
++    if (!isNonEmpty(value.unavailable)) return null
+     meta.unavailable = value.unavailable
+   }
+   return meta

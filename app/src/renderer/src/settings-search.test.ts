@@ -34,11 +34,11 @@ describe('scoreSettingsSearch — 섹션 제목 > 항목 제목 > 설명 > 키�
 })
 
 describe('settingsNavGroups — 섹션이 있는 그룹만(K3ⓑ)', () => {
-  // LIFE-577 — 「원격 호스트 › Mobile」 이 더해졌다(그룹 4개).
-  it('T6 레지스트리(LIFE-516) + Mobile(LIFE-577): 그룹은 「AI 기능」·「설정 시작」·「인터페이스」·「원격 호스트」, 섹션은 「에이전트」 · 「일반」 · 「외관」·「단축키」 · 「Mobile」 — 198 그룹 순서대로', () => {
+  // LIFE-577 — 「원격 호스트 › Mobile」 이 더해졌다. LIFE-600 — 「워크플로 › 작업 연결」 이 더해졌다(그룹 5개).
+  it('T6 레지스트리(LIFE-516) + Mobile(LIFE-577) + 작업 연결(LIFE-600): 그룹은 「AI 기능」·「설정 시작」·「워크플로」·「인터페이스」·「원격 호스트」 — 198 그룹 순서대로', () => {
     const groups = settingsNavGroups({ query: '' })
-    expect(groups.map((group) => group.title)).toEqual(['AI 기능', '설정 시작', '인터페이스', '원격 호스트'])
-    expect(groups.map((group) => group.sections.map((section) => section.id))).toEqual([['agents'], ['general'], ['appearance', 'shortcuts'], ['mobile']])
+    expect(groups.map((group) => group.title)).toEqual(['AI 기능', '설정 시작', '워크플로', '인터페이스', '원격 호스트'])
+    expect(groups.map((group) => group.sections.map((section) => section.id))).toEqual([['agents'], ['general'], ['connections'], ['appearance', 'shortcuts'], ['mobile']])
     // 레지스트리의 그룹은 198 순서 8개 그대로 — 빈 그룹은 그리지 않을 뿐이다.
     expect(SETTINGS_GROUPS.map((group) => group.id)).toEqual(['capabilities', 'setup', 'workflows', 'interface', 'remote', 'security', 'advanced', 'experimental'])
   })
@@ -54,12 +54,16 @@ describe('settingsNavGroups — 섹션이 있는 그룹만(K3ⓑ)', () => {
       // 가상 섹션 — 레지스트리에 섹션을 더했을 때의 모양만 본다(제품 레지스트리는 건드리지 않는다).
       { id: 'shortcuts', group: 'setup', title: '일반', description: '앱 설정', searchEntries: [{ title: '탭 순서', keywords: ['단축키 힌트'] }] },
     ]
-    expect(settingsNavGroups({ query: '', sections }).map((group) => group.id)).toEqual(['capabilities', 'setup', 'interface', 'remote'])
+    expect(settingsNavGroups({ query: '', sections }).map((group) => group.id)).toEqual(['capabilities', 'setup', 'workflows', 'interface', 'remote'])
     expect(settingsNavGroups({ query: '단축키', sections }).map((group) => group.id)).toEqual(['interface', 'setup'])
   })
   // LIFE-577 A8ⓓ — Mobile 절이 검색에 잡힌다.
   it.each(['mobile', '모바일', 'tailscale', '페어링', 'QR', '기기', 'funnel'])('질의 %s 는 Mobile 섹션을 남긴다', (query) => {
     expect(settingsNavGroups({ query }).flatMap((group) => group.sections.map((section) => section.id))).toContain('mobile')
+  })
+  // LIFE-600 — 작업 연결 절이 검색에 잡힌다.
+  it.each(['연결', 'token', '토큰', '키체인', 'space', '스페이스', '기본 스페이스'])('질의 %s 는 작업 연결 섹션을 남긴다', (query) => {
+    expect(settingsNavGroups({ query }).flatMap((group) => group.sections.map((section) => section.id))).toContain('connections')
   })
   // LIFE-515 K2ⓔ — 기본 Agent 검색 키워드(한·영·에이전트 이름·단축키 기호)로 에이전트 섹션이 걸린다.
   it.each(['에이전트', 'agent', 'Agents', '기본 agent', 'default', '기본값', 'claude', 'Codex', 'grok', '자동', '빈 terminal', '⌘⌥T', '새 에이전트 탭'])('질의 %s 는 에이전트 섹션을 남긴다', (query) => {

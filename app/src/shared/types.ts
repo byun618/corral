@@ -4,6 +4,9 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
+import type { WorktreeWorkLink } from './work-link.js'
+import type { RelaunchAgentInput, StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
+import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
 import type { FileListInput, FileListResult } from './file-list.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
@@ -500,6 +503,11 @@ export type WorktreeRow = {
   comment: string | null
   /** 부모 워크트리 경로 — 레지스트리 `parentWorktreeId`(`<repoId>::<path>`)의 경로 부분. 없으면 null. */
   parentPath: string | null
+  /**
+   * 작업 링크(LIFE-603) — main 이 명시 링크 · 자동 연결 · 예외로 해석한 결과(`shared/work-link.ts`). 링크가 없으면 null.
+   * 칸이 없는 행(링크 해석 전의 행·시험 고정값)은 링크 없음과 같다.
+   */
+  workLink?: WorktreeWorkLink | null
 }
 
 /** 레지스트리에 등록된 레포 하나. **목록의 루트는 이것이다** (기준 N4). */
@@ -748,6 +756,11 @@ export type UiPrefs = {
    * 여기서는 실어 나르기만 한다). 키가 herdr tab id 라 herdr 가 재기동하면 배치·폴백 번호와 같이 잃는다(00-analysis F13).
    */
   tabMarks: unknown[]
+  /**
+   * 작업 페이지 상태 (LIFE-601 C3) — 스페이스·보기·필터·정렬·그룹·밀도·프리셋 기본. 모양은 렌더러 `tasks-model.ts` 가 안다(`tabMarks` 처럼
+   * 여기서는 실어 나르기만 한다). 없는 칸이면 화면 기본값 — 옛 파일은 이 칸이 없다.
+   */
+  tasksPage?: unknown
   /**
    * 오른쪽 패널·탐색기 (LIFE-589 E1ⓑ·E2ⓓⓔ) — 열림·폭과 표시 토글. 범위는 **전역**(worktree 별이 아니다 — VS Code `files.exclude`·
    * Orca 「Show Git Ignored Files」 처럼 보기 설정이라 worktree 를 바꿔도 같은 눈으로 본다). 기본: 닫힘 · 폭 null(토큰) · dotfile 보임 · ignored 보임(흐림).
@@ -1135,5 +1148,29 @@ export type CorralApi = {
   revokeMobileDevice: (input: { id: string }) => Promise<{ ok: boolean }>
   /** 「다시 확인」 — 꺼져 있으면 읽기 점검만. */
   recheckMobile: () => Promise<MobileStatus | null>
+  // --- 설정 › 작업 연결 (LIFE-600) — 토큰은 `addWorkConnection` 입력으로만 main 에 들어가고, 어떤 응답·push 에도 나오지 않는다(끝 4자만) ---
+  getWorkSettings: () => Promise<WorkSettingsState | null>
+  onWorkSettings: (listener: (state: WorkSettingsState) => void) => () => void
+  /** 연결 테스트 통과 뒤에만 저장한다. `replaceId` 면 그 연결의 토큰을 바꾼다. */
+  addWorkConnection: (input: WorkConnectionAddInput) => Promise<WorkConnectionAddResult>
+  testWorkConnection: (input: { connectionId: string }) => Promise<WorkActionResult>
+  removeWorkConnection: (input: { connectionId: string }) => Promise<WorkActionResult>
+  setWorkSpaceHidden: (input: { connectionId: string; spaceKey: string; hidden: boolean }) => Promise<WorkActionResult>
+  setRepoDefaultSpace: (input: { repoRoot: string; target: { connectionId: string; spaceKey: string } | null }) => Promise<WorkActionResult>
+  /** 작업 계약 연산 — 요청 id 는 그대로 돌아온다(늦은 응답 폐기용, T2). */
+  workRequest: (request: WorkRequest) => Promise<WorkResponse>
+  /** 작업 하나의 corral 활동 기록(LIFE-602) — main 이 성공한 쓰기마다 남긴 것, 오래된 것부터. */
+  workActivity: (query: WorkActivityQuery) => Promise<WorkActivityResult>
+  /** 작업에서 시작(LIFE-603) — main 이 런타임 `worktree create` 를 부른다. 같은 `attemptId` 는 합류. 발신자 거절이면 null. */
+  startWork: (input: StartWorkInput) => Promise<StartWorkResult | null>
+  /** 그 작업의 마지막 시작 시도(진행 중이면 결과 null) — 모달을 다시 열 때 이어 받는다. */
+  startWorkStatus: (query: StartWorkStatusQuery) => Promise<StartAttemptView | null>
+  /** 시작 모달 「에이전트 다시 띄우기」 — 그 작업에 붙은 worktree 에 에이전트 pane 하나(프롬프트 없음). 발신자 거절이면 null. */
+  relaunchWorkAgent: (input: RelaunchAgentInput) => Promise<StartWorkResult | null>
+  /** 사이드바 「작업 떼기」 — 명시 링크면 지우고 자동 연결 예외로 둔다. */
+  detachWorkLink: (input: { path: string }) => Promise<DetachWorkLinkResult>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }
+
+/** 작업 떼기 결과(LIFE-603 C9). `sourceLink` = 출처 쪽 링크 지우기(능력 없으면 skipped, 명시 링크가 아니면 null). */
+export type DetachWorkLinkResult = { ok: true; mode: 'explicit' | 'auto'; sourceLink: StartSourceLink | null } | { ok: false; error: string }

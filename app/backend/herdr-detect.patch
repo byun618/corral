@@ -3,17 +3,20 @@
 @@ -1,7 +1,7 @@
  id = "codex"
 -version = "2026.09.05.1"
-+version = "2026.09.21.3"
++version = "2026.10.15.2"
  min_engine_version = 3
 -updated_at = "2026-09-05T00:00:00Z"
-+updated_at = "2026-09-21T00:00:00Z"
++updated_at = "2026-10-15T00:00:00Z"
  
  [[rules]]
  id = "osc_title_blocked"
-@@ -37,10 +37,39 @@
+@@ -37,9 +37,82 @@
  priority = 950
  region = "top_non_empty_lines(20)"
  visible_blocker = true
+-all = [
+-  { regex = ['\A> You are in [^\r\n]+(?:\r?\n|$)'] },
+-  { regex = ['(?s)Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?'] },
 +# LIFE-394 live captures (codex 0.155.1) showed two reasons this rule could never fire on a real
 +# launch, and — once those were fixed — a third reason it fired where it must not:
 +#   1. the header is drawn inside a box, so the line is `>-You are in <cwd>---\u{256e}` (U+2500 after `>`),
@@ -39,27 +42,69 @@
 +# chooser. So the gate matches the composer placeholder only as a **whole line** and only **after**
 +# the chooser's own option rows — that is the one arrangement a quotation produces and a live
 +# chooser cannot.
- all = [
--  { regex = ['\A> You are in [^\r\n]+(?:\r?\n|$)'] },
-+  { regex = ['(?m)^>[ \x{2500}]You are in [^\r\n]+(?:\r?\n|$)'] },
-   { regex = ['(?s)Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?'] },
-+  { regex = ['(?m)^\s*(?:[\x{203a}\x{276f}\x{258c}>]\s+)?1\.\s+Yes,\s+continue\s*\r?\n\s*(?:[\x{203a}\x{276f}\x{258c}>]\s+)?2\.\s+No,\s+quit\s*$'] },
++#
++# LIFE-603 K1: codex-cli 0.162.1 replaced that chooser with a new screen, so the rule now has two
++# branches under `any`, each with its own control lines and its own quotation gate. The 0.155.1
++# branch is unchanged. The 0.162.1 live captures (final gate g31, coordinator x06, review r5 r05/r09):
++#     Folder access                         Folder access
++#     <cwd>                                 <cwd>
++#
++#     Note: You’re in a subdirectory ...    Config, hooks, and exec policies from untrusted
++#     <repo root>                           folders stay disabled. ...
++#
++#     Trust this folder? Codex can ...
++#
++#   › 1. Trust and continue               › 1. Open restricted
++#     2. Back to Agent Command Center       2. Back to Agent Command Center
++#
++#     enter continue · esc back             enter continue · esc back
++#
++# The second screen is what codex shows for a folder it has recorded as untrusted.
++#
++# LIFE-603 K1b (review r5 R5-A): K1 matched only the first screen's wording, so the second one read as
++# Idle and the draft went into the dialog again. The codex binary also carries `Open existing task`
++# and `Keep current directory` labels for the same screen family. So the 0.162.1 branch matches the
++# family, not its wording: the `Folder access` title as a whole line, followed later by numbered
++# option rows `1.` and `2.` on consecutive lines (a cursor glyph allowed on either), whatever the
++# labels and prose say.
++#
++# The `enter continue · esc back` footer is on every capture but is NOT required. Requiring it adds
++# a fail-open path and removes none: the region is the top 20 non-empty lines and the footer is the
++# last row, so a long prose block or a narrow pane can push it out, and a reworded footer would read
++# as Idle again. The title line plus the consecutive option rows already exclude every known
++# non-chooser screen.
++#
++# The `not` gate separates a quotation from the live chooser by what follows the option rows. A live
++# chooser has only the footer below them; a quotation is followed by the composer, whose prompt row
++# starts with a cursor glyph. So the gate fires on any cursor-led row after the option rows that is
++# not itself an option row — the placeholder `› Ask Codex to do anything` (K1) and also a composer
++# holding text (review r5 R5-B, which K1's placeholder-only gate read as Blocked). A cwd carrying
++# `Folder access` is a path row, never a whole title line.
++any = [
++  { all = [
++      { regex = ['(?m)^>[ \x{2500}]You are in [^\r\n]+(?:\r?\n|$)'] },
++      { regex = ['(?s)Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?'] },
++      { regex = ['(?m)^\s*(?:[\x{203a}\x{276f}\x{258c}>]\s+)?1\.\s+Yes,\s+continue\s*\r?\n\s*(?:[\x{203a}\x{276f}\x{258c}>]\s+)?2\.\s+No,\s+quit\s*$'] },
++    ], not = [
++      { regex = ['(?m)^[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+No,[ \t]+quit[ \t]*\r?$[\s\S]*?^[ \t]*[\x{203a}\x{276f}\x{258c}>][ \t]+(?i:Ask Codex to do anything)[ \t]*\r?$'] },
++    ] },
++  { all = [
++      { regex = ['(?m)^[ \t]*Folder[ \t]+access[ \t]*\r?$[\s\S]*?^[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?1\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*\r?\n[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*\r?$'] },
++    ], not = [
++      { regex = ['(?m)^[ \t]*Folder[ \t]+access[ \t]*\r?$[\s\S]*?^[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?1\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*\r?\n[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*\r?$[\s\S]*?^[ \t]*[\x{203a}\x{276f}\x{258c}>][ \t]+(?:[^0-9 \t\r\n]|[0-9]+[^.0-9\r\n])[^\r\n]*\r?$'] },
++    ] },
  ]
-+not = [
-+  { regex = ['(?m)^[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+No,[ \t]+quit[ \t]*\r?$[\s\S]*?^[ \t]*[\x{203a}\x{276f}\x{258c}>][ \t]+(?i:Ask Codex to do anything)[ \t]*\r?$'] },
-+]
  
  [[rules]]
- id = "startup_update"
 --- a/src/detect/manifests/grok.toml
 +++ b/src/detect/manifests/grok.toml
 @@ -1,7 +1,7 @@
  id = "grok"
 -version = "2026.07.16.2"
-+version = "2026.09.21.3"
++version = "2026.10.15.2"
  min_engine_version = 3
 -updated_at = "2026-07-16T00:00:00Z"
-+updated_at = "2026-09-21T00:00:00Z"
++updated_at = "2026-10-15T00:00:00Z"
  aliases = ["grok-build"]
  
  # Evidence: Grok Build 0.2.101 source and live pane reads.
@@ -114,10 +159,11 @@
  priority = 1200
 --- a/src/detect/manifest/tests.rs
 +++ b/src/detect/manifest/tests.rs
-@@ -1263,4 +1263,410 @@
+@@ -1262,5 +1262,747 @@
+     assert_eq!(
          result.matched_rule.as_ref().map(|r| r.id.as_str()),
          Some("osc_title_working")
-     );
++    );
 +}
 +
 +
@@ -477,7 +523,7 @@
 +        assert_ne!(result.state, AgentState::Blocked, "{label} must not be blocked");
 +        assert!(!result.visible_blocker, "{label} must not be a visible blocker");
 +    }
- }
++}
 +
 +#[test]
 +fn grok_trust_directory_requires_live_chooser() {
@@ -525,3 +571,339 @@
 +        }
 +    }
 +}
++
++// --- LIFE-603 K1: codex-cli 0.162.1 trust chooser ("Folder access") ---
++//
++// codex 0.162.1 replaced the 0.155.1 chooser above with a new screen: no `>-You are in` header, no
++// "Do you trust the contents of this directory?" question, and new option rows. The 0.155.1 branch
++// of the rule therefore never matched, the screen read as Idle, and corral pasted a draft into the
++// dialog (LIFE-603 final gate g30/g31, coordinator x05/x06). The fixtures below keep that principle:
++// live control lines are required, and a quotation followed by the composer is not a blocker.
++// LIFE-603 coordinator x06 live capture (full screen, blank rows kept): linked worktree of a repo.
++const CODEX_0162_TRUST_WORKTREE: &str = r#"
++  Folder access
++  /private/tmp/l603g-cr/repo/.claude/worktrees/x-codex-1
++
++  Note: You’re in a subdirectory of a Git project. Trusting will apply to the repository root:
++  /private/tmp/l603g-cr/repo
++
++  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.
++  Folder settings can run code automatically, even without a model request. Continue only if you
++  trust these files. Your trust decision will be saved.
++
++› 1. Trust and continue
++  2. Back to Agent Command Center
++
++  enter continue · esc back
++
++"#;
++// LIFE-603 final gate g31 live capture (`terminal read --screen`, blank rows dropped).
++const CODEX_0162_TRUST_COMPACT: &str = r#"  Folder access
++  /private/tmp/l603g-fg/repo/.claude/worktrees/t-codex-1
++  Note: You’re in a subdirectory of a Git project. Trusting will apply to the repository root:
++  /private/tmp/l603g-fg/repo
++  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.
++  Folder settings can run code automatically, even without a model request. Continue only if you
++  trust these files. Your trust decision will be saved.
++› 1. Trust and continue
++  2. Back to Agent Command Center
++  enter continue · esc back
++"#;
++// The same chooser at a repository root: no "Note: You're in a subdirectory" rows.
++const CODEX_0162_TRUST_PLAIN: &str = r#"
++  Folder access
++  /private/tmp/l603g-cr/repo
++
++  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.
++  Folder settings can run code automatically, even without a model request. Continue only if you
++  trust these files. Your trust decision will be saved.
++
++› 1. Trust and continue
++  2. Back to Agent Command Center
++
++  enter continue · esc back
++"#;
++// The live chooser preceded by the shell line that launched codex.
++const CODEX_0162_TRUST_SHELL_PREFIX: &str = r#"sh-3.2$ codex -c check_for_update_on_startup=false
++  Folder access
++  /private/tmp/l603g-cr/repo/.claude/worktrees/x-codex-1
++
++  Note: You’re in a subdirectory of a Git project. Trusting will apply to the repository root:
++  /private/tmp/l603g-cr/repo
++
++  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.
++  Folder settings can run code automatically, even without a model request. Continue only if you
++  trust these files. Your trust decision will be saved.
++
++› 1. Trust and continue
++  2. Back to Agent Command Center
++
++  enter continue · esc back
++"#;
++// A live chooser whose cwd contains the composer placeholder the `not` gate looks for.
++const CODEX_0162_TRUST_CWD_MARKER: &str = r#"
++  Folder access
++  /private/tmp/l603g-cr/› Ask Codex to do anything
++
++  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.
++  Folder settings can run code automatically, even without a model request. Continue only if you
++  trust these files. Your trust decision will be saved.
++
++› 1. Trust and continue
++  2. Back to Agent Command Center
++
++  enter continue · esc back
++"#;
++// LIFE-603 final gate g36 live capture: the 0.162.1 composer right after trust was accepted.
++const CODEX_0162_COMPOSER_IDLE: &str = r#"  >_ OpenAI Codex (v0.162.1)
++     /private/tmp/l603g-fg/repo/.claude/worktrees/t-codex-1
++  permissions: YOLO mode
++⚠ Heads up, you have less than 10% of your weekly limit left. Run /status for a breakdown.
++                                                                   ⚠ weekly limit: 10% left · /status
++› Ask Codex to do anything
++  GPT-6-Astra medium · /private/tmp/l603g-fg/repo/.claude/worktrees/t-codex-1
++  ← for agents · ? for shortcuts                                            ⚠ 2 warnings · f2 to view
++"#;
++// A transcript that quotes the whole new chooser, consecutive option rows included.
++const CODEX_0162_MULTILINE_QUOTE: &str = r#"› Why did codex show this?
++  Folder access
++  /tmp/example
++  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.
++  › 1. Trust and continue
++  2. Back to Agent Command Center
++  enter continue · esc back
++
++• That is the startup folder-trust dialog; it is not shown now.
++
++› Ask Codex to do anything
++  GPT-6-Astra medium · /private/tmp/l603g-fg/repo
++"#;
++// The 0.162.1 composer whose cwd carries the new header and question text.
++const CODEX_0162_CWD_MARKER_COMPOSER: &str = r#"  >_ OpenAI Codex (v0.162.1)
++     /private/tmp/l603g-fg/Folder access/Trust this folder?
++  permissions: YOLO mode
++› Ask Codex to do anything
++  GPT-6-Astra medium · /private/tmp/l603g-fg/Folder access/Trust this folder?
++  ← for agents · ? for shortcuts
++"#;
++
++#[test]
++fn codex_0162_trust_directory_requires_live_chooser() {
++    // Positive: the live 0.162.1 chooser stays blocked in every captured and derived arrangement.
++    for (label, screen) in [
++        ("0162-worktree", CODEX_0162_TRUST_WORKTREE),
++        ("0162-compact", CODEX_0162_TRUST_COMPACT),
++        ("0162-plain", CODEX_0162_TRUST_PLAIN),
++        ("0162-shell-prefix", CODEX_0162_TRUST_SHELL_PREFIX),
++        ("0162-cwd-marker", CODEX_0162_TRUST_CWD_MARKER),
++    ] {
++        let result = osc_explain(Agent::Codex, screen, "repo", "");
++        assert_eq!(result.state, AgentState::Blocked, "{label} must stay blocked");
++        assert_eq!(
++            result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
++            Some("trust_directory"),
++            "{label} must match trust_directory"
++        );
++        assert!(result.visible_blocker, "{label} must be a visible blocker");
++    }
++
++    // Negative: the 0.162.1 composer, a quotation of the new chooser followed by the composer, and
++    // a composer whose cwd carries the new header and question text.
++    for (label, screen, title) in [
++        ("0162-composer-idle", CODEX_0162_COMPOSER_IDLE, "repo"),
++        ("0162-composer-working", CODEX_0162_COMPOSER_IDLE, "\u{2827} Working"),
++        ("0162-multiline-quote", CODEX_0162_MULTILINE_QUOTE, "repo"),
++        ("0162-cwd-marker-composer", CODEX_0162_CWD_MARKER_COMPOSER, "repo"),
++    ] {
++        let result = osc_explain(Agent::Codex, screen, title, "");
++        assert_ne!(result.state, AgentState::Blocked, "{label} must not be blocked");
++        assert!(!result.visible_blocker, "{label} must not be a visible blocker");
++    }
++}
++
++// --- LIFE-603 K1b: the 0.162.1 "Folder access" screen family (review r5 R5-A/R5-B) ---
++//
++// K1 matched one wording of the screen. Review r5 captured a second live one (`Open restricted`, a
++// folder codex has recorded as untrusted) that read as Idle, and found more labels for the same
++// screen in the codex binary. These fixtures pin the family rule: title line + consecutive numbered
++// option rows, whatever the labels say. Names marked `SYNTH` are composed, not captured.
++// Review r5 r05 live capture (tmux, temporary CODEX_HOME with the repo marked untrusted).
++const CODEX_0162_RESTRICTED: &str = r#"  Folder access
++  /private/tmp/l603r5c/repo
++  Config, hooks, and exec policies from untrusted folders stay disabled. Trusted project folders can still
++  contribute settings. Skills still load, and tools follow your permission settings. Opening will not change
++  saved trust.
++› 1. Open restricted
++  2. Back to Agent Command Center
++  enter continue · esc back
++"#;
++// Review r5 r09 live capture (`terminal read --screen` after corral pasted a draft into it).
++const CODEX_0162_RESTRICTED_WORKTREE: &str = r#"  Folder access
++  /private/tmp/l603g-r5c/repo/.claude/worktrees/r5-codex-1
++  Config, hooks, and exec policies from untrusted folders stay disabled. Trusted project folders can still contribute
++  settings. Skills still load, and tools follow your permission settings. Opening will not change saved trust.
++› 1. Open restricted
++  2. Back to Agent Command Center
++  enter continue · esc back
++"#;
++// Review r5 r04/r06 live capture at 50 columns: the prose wraps.
++const CODEX_0162_TRUST_NARROW: &str = r#"  Folder access
++  /Users/byun
++
++  Trust this folder? Codex can read, edit, and
++  run files here, subject to your permission
++  settings. Folder settings can run code
++  automatically, even without a model request.
++  Continue only if you trust these files. Your
++  trust decision will be saved.
++
++› 1. Trust and continue
++  2. Back to Agent Command Center
++
++  enter continue · esc back
++"#;
++// Review r5 r04/r06 live capture with the cursor moved to the second row (not accepted).
++const CODEX_0162_TRUST_CURSOR2: &str = r#"  Folder access
++  /private/tmp/l603r5c/repo
++
++  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings. Folder
++  settings can run code automatically, even without a model request. Continue only if you trust these files.
++  Your trust decision will be saved.
++
++  1. Trust and continue
++› 2. Back to Agent Command Center
++
++  enter continue · esc back
++"#;
++// SYNTH: the binary's three trust labels as one chooser.
++const CODEX_0162_SYNTH_THREE_OPTIONS: &str = r#"  Folder access
++  /private/tmp/l603r5c/repo
++
++  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.
++
++› 1. Trust and continue
++  2. Open restricted
++  3. Back to Agent Command Center
++
++  enter continue · esc back
++"#;
++// SYNTH: the binary's `Open existing task` / `Keep current directory` labels and their prose.
++const CODEX_0162_SYNTH_EXISTING_TASK: &str = r#"  Folder access
++  /private/tmp/l603r5c/repo
++
++  This existing task may retain settings and history from the folder it was started in.
++
++› 1. Open existing task
++  2. Keep current directory
++  3. Back to Agent Command Center
++
++  enter continue · esc back
++"#;
++// The restricted chooser preceded by the shell line that launched codex, with cursor 2.
++const CODEX_0162_RESTRICTED_SHELL_PREFIX: &str = r#"byun@host ~ % codex -c check_for_update_on_startup=false
++  Folder access
++  /private/tmp/l603r5c/repo
++  Config, hooks, and exec policies from untrusted folders stay disabled. Trusted project folders can still
++  contribute settings. Skills still load, and tools follow your permission settings. Opening will not change
++  saved trust.
++  1. Open restricted
++› 2. Back to Agent Command Center
++  enter continue · esc back
++"#;
++// A quotation of the restricted chooser followed by the composer placeholder.
++const CODEX_0162_RESTRICTED_QUOTE: &str = r#"› What does this screen mean?
++  Folder access
++  /tmp/example
++  Config, hooks, and exec policies from untrusted folders stay disabled.
++  › 1. Open restricted
++  2. Back to Agent Command Center
++  enter continue · esc back
++
++• codex shows it for a folder recorded as untrusted.
++
++› Ask Codex to do anything
++  GPT-6-Astra medium · /private/tmp/l603g-fg/repo
++"#;
++// Review r5 R5-B: the whole chooser quoted and the composer holding text instead of the placeholder.
++// K1's placeholder-only gate read this as Blocked.
++const CODEX_0162_QUOTE_DRAFT_IN_COMPOSER: &str = r#"› Why did codex show this?
++  Folder access
++  /tmp/example
++  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.
++  › 1. Trust and continue
++  2. Back to Agent Command Center
++  enter continue · esc back
++
++• That is the startup folder-trust dialog.
++
++› Please summarize the following draft that the user pasted
++  GPT-6-Astra medium · /private/tmp/x
++"#;
++// A composer whose cwd ends in `Folder access`, with a numbered list in the transcript.
++const CODEX_0162_CWD_FOLDER_ACCESS_LIST: &str = r#"  >_ OpenAI Codex (v0.162.1)
++     /private/tmp/l603g-fg/Folder access
++  permissions: YOLO mode
++• Two steps:
++  1. Open the folder
++  2. Run the tests
++› Ask Codex to do anything
++  GPT-6-Astra medium · /private/tmp/l603g-fg/Folder access
++  ← for agents · ? for shortcuts
++"#;
++// SYNTH: a command approval chooser (wording not captured from 0.162.1) — numbered rows, no title.
++const CODEX_0162_SYNTH_APPROVAL: &str = r#"  Would you like to run the following command?
++
++  $ rm -rf build
++
++› 1. Yes, proceed (y)
++  2. Yes, and don't ask again for this command (a)
++  3. No, and tell Codex what to do differently (esc)
++
++  Press enter to confirm or esc to cancel
++"#;
++
++#[test]
++fn codex_0162_folder_access_family_trust_directory_requires_live_chooser() {
++    // Positive: every captured and composed member of the family, K1's own screens included.
++    for (label, screen) in [
++        ("0162-worktree", CODEX_0162_TRUST_WORKTREE),
++        ("0162-compact", CODEX_0162_TRUST_COMPACT),
++        ("0162-restricted", CODEX_0162_RESTRICTED),
++        ("0162-restricted-worktree", CODEX_0162_RESTRICTED_WORKTREE),
++        ("0162-synth-three-options", CODEX_0162_SYNTH_THREE_OPTIONS),
++        ("0162-synth-existing-task", CODEX_0162_SYNTH_EXISTING_TASK),
++        ("0162-restricted-shell-prefix", CODEX_0162_RESTRICTED_SHELL_PREFIX),
++        ("0162-narrow", CODEX_0162_TRUST_NARROW),
++        ("0162-cursor2", CODEX_0162_TRUST_CURSOR2),
++        ("0162-cwd-marker", CODEX_0162_TRUST_CWD_MARKER),
++    ] {
++        let result = osc_explain(Agent::Codex, screen, "repo", "");
++        assert_eq!(result.state, AgentState::Blocked, "{label} must stay blocked");
++        assert_eq!(
++            result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
++            Some("trust_directory"),
++            "{label} must match trust_directory"
++        );
++        assert!(result.visible_blocker, "{label} must be a visible blocker");
++    }
++
++    // Negative: quotations followed by the composer (placeholder or text), a composer whose cwd
++    // ends in the title text, and a chooser of another kind.
++    for (label, screen) in [
++        ("0162-restricted-quote", CODEX_0162_RESTRICTED_QUOTE),
++        ("0162-quote-draft-in-composer", CODEX_0162_QUOTE_DRAFT_IN_COMPOSER),
++        ("0162-cwd-folder-access-list", CODEX_0162_CWD_FOLDER_ACCESS_LIST),
++        ("0162-composer-idle", CODEX_0162_COMPOSER_IDLE),
++        ("0162-multiline-quote", CODEX_0162_MULTILINE_QUOTE),
++    ] {
++        let result = osc_explain(Agent::Codex, screen, "repo", "");
++        assert_ne!(result.state, AgentState::Blocked, "{label} must not be blocked");
++        assert!(!result.visible_blocker, "{label} must not be a visible blocker");
++    }
++    let result = osc_explain(Agent::Codex, CODEX_0162_SYNTH_APPROVAL, "repo", "");
++    assert_ne!(
++        result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
++        Some("trust_directory"),
++        "0162-synth-approval must not read as a trust chooser"
+     );
+ }

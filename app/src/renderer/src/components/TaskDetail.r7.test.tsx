@@ -1,0 +1,556 @@
+// @vitest-environment happy-dom
+// LIFE-623 — Codex 리뷰 r7 R7-A 재현(`specs/LIFE-602-task-detail/raw/review/codex-r7-raw/probes/null-reorder.test.tsx` V22 · `async-extra.test.tsx` V08 ·
+// `null-la.test.tsx` V11 · `electron-null.mts` V17)을 제품 시험으로 옮긴다. 외부에서 본문을 null 로 비운 뒤 보드 쓰기 결과가 오면 상세가 옛 본문을 보충하지 않는다.
+// 각 시나리오에 빈 글 `''` 대조(기존 보호)를 함께 둔다. 실제 경로 React `TasksPage` → hook → `WorkService` → 출처(모의 · 실제 `LaSource` + `LaMcpFixture`).
+// 렌더러와 main 을 함께 import 하므로 web 타입 검사에서 빼고 mixed 검사(tsconfig.mixed.json)에 둔다. LA 는 네트워크 없이 가짜 fetch 가 fixture 도구 처리기를 부른다(TasksPage.r4la 와 같은 방식).
+import { act, createElement } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { Toaster, toast } from 'sonner'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import type { WorkCall, WorkCapabilities, WorkRequest, WorkResponse, WorkSettingsState } from '../../../shared/work.js'
+import { MemoryActivity } from '../../../main/work/activity-store.js'
+import { FIXTURE_IDS, FIXTURE_STATUS, LaMcpFixture } from '../../../main/work/la-mcp-fixture.js'
+import { laSourceEntry } from '../../../main/work/la-source.js'
+import { mockSourceEntry, seedMockDemoState, type MockState } from '../../../main/work/mock-source.js'
+import type { WorkSourceEntry } from '../../../main/work/source.js'
+import { WorkService } from '../../../main/work/service.js'
+import { WorkSourceRegistry } from '../../../main/work/source.js'
+import { CredentialVault } from '../../../main/work/vault.js'
+import { FAKE_LA_TOKEN, FakeCipher, MemoryStore, workHarness } from '../../../main/work/test-kit.js'
+import { TasksPage } from './TasksPage.js'
+
+Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
+
+let host: HTMLDivElement
+let root: Root
+
+beforeEach(() => {
+  host = document.createElement('div')
+  document.body.append(host)
+  root = createRoot(host)
+})
+afterEach(() => {
+  act(() => { toast.dismiss() })
+  act(() => root.unmount())
+  host.remove()
+  vi.restoreAllMocks()
+})
+
+const settle = async (rounds = 8): Promise<void> => {
+  for (let index = 0; index < rounds; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+}
+
+function renderPage(): void {
+  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+}
+
+type Rig = { state: MockState; calls: WorkCall[]; responses: WorkResponse[] }
+
+/** 모의 출처(충돌 검사 켜짐) — 외부 편집은 서버 fixture 에 직접 가한다. */
+async function rig({ entry }: { entry?: (state: MockState) => WorkSourceEntry } = {}): Promise<Rig> {
+  const state = seedMockDemoState()
+  let seq = 0
+  let listener: (value: WorkSettingsState) => void = () => {}
+  const service = new WorkService({
+    store: new MemoryStore(), vault: new CredentialVault(new FakeCipher()), sources: new WorkSourceRegistry([entry === undefined ? mockSourceEntry({ state }) : entry(state)]), activity: new MemoryActivity(),
+    repos: () => [], onChange: (value) => listener(value), now: () => Date.now(), newId: () => `id-${(seq += 1)}`,
+  })
+  const added = await service.addConnection({ sourceId: 'mock-jira', token: 'mock_l623_fixture', replaceId: null })
+  if (!added.ok) throw new Error('연결 실패')
+  const result: Rig = { state, calls: [], responses: [] }
+  Reflect.set(window, 'corral', {
+    getUiPrefs: async () => ({}), setUiPrefs: () => {}, getWorkSettings: async () => service.settings(),
+    onWorkSettings: (next: (value: WorkSettingsState) => void) => { listener = next; return () => {} },
+    workRequest: async (request: WorkRequest) => { result.calls.push(request.call); const response = await service.request(request); result.responses.push(response); return response },
+    workActivity: async (query: unknown) => service.activity(query),
+  })
+  renderPage()
+  await settle()
+  return result
+}
+
+/** 출처의 능력 표에서 충돌 검사만 꺼짐으로(LIFE-632) — 연결 확인(`listSpaces`)과 `capabilities()` 둘 다. 연산은 실제 출처 그대로. */
+function checksOff(entry: WorkSourceEntry): WorkSourceEntry {
+  return {
+    ...entry,
+    create: (credentials) => {
+      const client = entry.create(credentials)
+      const capabilities: WorkCapabilities = { ...client.capabilities(), conflictCheck: { state: 'hidden' } }
+      return {
+        capabilities: () => capabilities,
+        call: async (call, meta) => {
+          const outcome = await client.call(call, meta)
+          return outcome.ok && outcome.result.op === 'listSpaces' ? { ...outcome, result: { ...outcome.result, capabilities } } : outcome
+        },
+        close: () => client.close(),
+      }
+    },
+  }
+}
+
+/** 실제 `LaSource` + `LaMcpFixture`(충돌 검사 꺼짐). 응답도 모아 쓰기 결과의 본문이 정본 그대로 오는지 본다(V17 상당). */
+async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[]; responses: WorkResponse[]; service: WorkService; connectionId: string; emitSettings: () => void }> {
+  const fixture = new LaMcpFixture()
+  // LIFE-622 — LA 충돌 검사가 켜졌다. 이 파일의 시험은 판과 무관한 **확정 순서 가드**(623 `sent`·미확인 막힘)를 본다 — 켜진 LA 에서는 같은 장면의 B 가
+  // 앞 쓰기 A 가 소비한 판 때문에 충돌 배너로 끝나 B 성공 역전 자체가 생기지 않는다(F8 — specs/LIFE-622-reconcile-conflict/raw/claude/design-notes.md §5).
+  // 그래서 서버는 조건부 수정 이전 모양(판을 견주지 않음)으로 둔다. 켜진 LA 계약은 la-conflict.test.ts · 계약 묶음 · TaskDetail.board-late 가 본다.
+  // LIFE-632 C5 — 능력도 서버 모양에 맞춰 충돌 검사 **꺼짐**으로 알린다(판을 견주지 않는 서버 = 판을 싣지 않는 연결). 켜짐 연결에서는 같은 카드에 답이 안 온
+  // 쓰기가 있으면 상세 쓰기가 기다리므로 「상세 A 늦음 → 상세 B」 장면이 생기지 않는다 — 이 파일의 순서 가드(R2-A·R3-A)·미확인(R4-A·R4-C)은 그 장면이 실제로
+  // 나는 꺼짐 연결(Jira·판 없는 출처)에서 본다. 단언은 그대로다. 켜짐의 같은 순서 가드는 B = 보드 쓰기로 `TaskDetail.r7on.test.tsx` 가 본다.
+  fixture.checksVersion = false
+  const fetchImpl = async (_url: unknown, options?: RequestInit): Promise<Response> => {
+    const body: { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } } = JSON.parse(String(options?.body))
+    if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
+    // fixture 입력 검증(-32602) 없음 — 도구 처리기를 직접 부른다. 입력 형식 판정은 HTTP 경로 시험(`la-activity.test.ts` 등)이 맡는다(LIFE-638 S1-5).
+    const reply: { isError: boolean; text: string } | null = body.method === 'initialize' ? null : Reflect.get(fixture, 'tool').call(fixture, { tool: body.params?.name, args: body.params?.arguments ?? {} })
+    const result = reply === null ? { protocolVersion: '2025-06-18' } : { content: [{ type: 'text', text: reply.text }], ...(reply.isError ? { isError: true } : {}) }
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), { headers: { 'content-type': 'application/json' } })
+  }
+  // 설정 변경(연결 세대 교체)은 `emitSettings` 로 화면 listener 에 직접 넘긴다 — 하네스 서비스의 onChange 는 기록만 한다.
+  let listener: (value: WorkSettingsState) => void = () => {}
+  const harness = workHarness({ entries: [checksOff(laSourceEntry({ url: 'http://127.0.0.1:9/not-networked', clientVersion: 'test', fetchImpl }))] })
+  const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
+  if (!added.ok) throw new Error('LA 모의 연결 실패')
+  const calls: WorkCall[] = []
+  const responses: WorkResponse[] = []
+  Reflect.set(window, 'corral', {
+    getUiPrefs: async () => ({}), setUiPrefs: () => {}, getWorkSettings: async () => harness.service.settings(),
+    onWorkSettings: (next: (value: WorkSettingsState) => void) => { listener = next; return () => {} },
+    workRequest: async (request: WorkRequest) => { calls.push(request.call); const response = await harness.service.request(request); responses.push(response); return response },
+    workActivity: async (query: unknown) => harness.service.activity(query),
+  })
+  renderPage()
+  await settle(30)
+  return { fixture, calls, responses, service: harness.service, connectionId: added.connection.id, emitSettings: () => listener(harness.service.settings()) }
+}
+
+const q = (selector: string): Element | null => document.querySelector(selector)
+function el(selector: string): HTMLElement {
+  const found = q(selector)
+  if (!(found instanceof HTMLElement)) throw new Error(`없음: ${selector}`)
+  return found
+}
+function click(selector: string): void {
+  const target = el(selector)
+  act(() => { target.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+}
+function input(selector: string): HTMLInputElement | HTMLTextAreaElement {
+  const target = el(selector)
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) throw new Error(selector)
+  return target
+}
+function setValue(target: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  const proto = target instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  act(() => {
+    Object.getOwnPropertyDescriptor(proto, 'value')?.set?.call(target, value)
+    target.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+async function openCard(itemKey: string): Promise<void> {
+  click(`[data-tasks-board] [data-issue-card="${itemKey}"]`)
+  await settle()
+  expect(q(`[data-issue-detail="${itemKey}"]`)).not.toBeNull()
+}
+function serverItem(r: Rig, id: string): MockState['items'][number] {
+  const found = r.state.items.find((entry) => entry.id === id)
+  if (found === undefined) throw new Error(`서버에 없음: ${id}`)
+  return found
+}
+/** 그 연산을 풀 때까지 붙든다(렌더러 → main 요청 자리). */
+function hold(op: WorkCall['op']): () => Promise<void> {
+  const original = window.corral.workRequest
+  let release: (() => void) | undefined
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  window.corral.workRequest = async (request: WorkRequest) => {
+    if (request.call.op === op) await pending
+    return original(request)
+  }
+  return async () => { release?.(); await settle(16) }
+}
+const conflictFieldsShown = (): string[] => [...document.querySelectorAll('[data-conflict-field]')].map((entry) => entry.getAttribute('data-conflict-field') ?? '')
+
+/** 실제 끌기 경로 — 손잡이 mousedown → 문턱 넘는 move(놓을 영역은 elementFromPoint) → mouseup. */
+async function dragTo({ card, zone }: { card: string; zone: string }): Promise<void> {
+  const target = q(`[data-drop-zone="${zone}"]`); const handle = el(`[data-tasks-board] [data-issue-card="${card}"]`)
+  vi.spyOn(document, 'elementFromPoint').mockReturnValue(target)
+  const mouse = (at: EventTarget, name: string, x = 10, y = 10): void => { act(() => { at.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y })) }) }
+  mouse(handle, 'mousedown'); mouse(document, 'mousemove', 50, 500); await settle(); mouse(document, 'mousemove', 52, 502); mouse(document, 'mouseup', 52, 502); await settle(16)
+}
+
+// ① V22 — 충돌 검사 켜짐: 본문 초안을 연 채 외부가 본문을 비우고 판을 올림 → 같은 열 재정렬 → 일반 저장 = 저장 안 됨 + 본문 충돌 배너.
+it.each([null, ''])('V22 열린 본문 초안 + 외부 비우기 %j → 같은 열 재정렬 → 일반 저장은 배너, 서버 빈 본문 유지', async (empty) => {
+  const r = await rig()
+  const server = serverItem(r, 'm-2')
+  server.body = 'OLD'
+  await openCard('CORE-2')
+  click('[data-issue-body-edit]')
+  setValue(input('[data-md-editor] textarea'), 'MY DRAFT')
+  server.body = empty
+  server.version += 1
+  const before = r.calls.length
+  await dragTo({ card: 'CORE-2', zone: 'col:st:core-todo' })
+  expect(r.calls.slice(before).filter((call) => call.op === 'reorder')).toHaveLength(1)
+  click('[data-md-save]')
+  await settle(16)
+  expect(server.body).toBe(empty)
+  expect(conflictFieldsShown()).toContain('body')
+  // 초안은 버리지 않는다.
+  expect(input('[data-md-editor] textarea').value).toBe('MY DRAFT')
+})
+
+// ② V08 — 외부 비우기 → 보드 상태 변경 → 본문 편집기를 새로 열어 저장해도 옛 본문이 화면·편집기·서버 어디에도 되살아나지 않는다.
+it.each([null, ''])('V08 외부 비우기 %j → 보드 상태 변경 → 새로 연 편집기·저장에 옛 본문이 없다', async (empty) => {
+  const r = await rig()
+  const server = serverItem(r, 'm-2')
+  server.body = 'OLD NONEMPTY'
+  await openCard('CORE-2')
+  expect(el('[data-issue-body]').textContent).toContain('OLD NONEMPTY')
+  server.body = empty
+  server.version += 1
+  await dragTo({ card: 'CORE-2', zone: 'col:st:core-doing' })
+  expect(server.statusKey).toBe('core-doing')
+  expect(el('[data-issue-body]').textContent).not.toContain('OLD NONEMPTY')
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(16)
+  expect(server.body ?? '').toBe('')
+  expect(document.body.textContent).not.toContain('OLD NONEMPTY')
+})
+
+// ③ V11 · ④ V17 상당 — 실제 LaSource + LaMcpFixture(`description:null`) → 우선순위 변경. 쓰기 결과 본문이 정본(null) 그대로 상세까지 오고,
+// 상세는 빈 본문을 보이며 옛 본문을 저장으로 되살리지 않는다. LA 는 충돌 검사가 꺼져 있다 — 배너 0(T3 C8 그대로).
+it.each([null, ''])('V11·V17 LA 외부 description %j → 우선순위 변경 → 쓰기 결과 본문 = 정본, 상세 빈 본문, 저장이 옛 본문을 되살리지 않는다', async (empty) => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD LA BODY'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(25)
+  expect(el('[data-issue-body]').textContent).toContain('OLD LA BODY')
+  issue.description = empty
+  issue.updatedAt = '2026-10-14T14:05:00Z'
+  const before = la.responses.length
+  click('[data-field="priority"]')
+  click('[data-priority-row="highest"]')
+  await settle(35)
+  // ④ 쓰기 결과(updateItem)의 본문이 정본 그대로 — null 이면 null. 출처(LaSource)의 사실 확인이지 보충 제거의 판별 단언이 아니다 —
+  // 수정 전(e01)에도 통과했다. 판별은 아래 화면·편집기 단언(옛 식이면 'OLD LA BODY' 가 남는다)이다(R1-E).
+  const written = la.responses.slice(before).find((response) => response.ok && response.result.op === 'updateItem')
+  expect(written?.ok === true && written.result.op === 'updateItem' ? written.result.item.body : 'none').toBe(empty)
+  expect(issue.priority).toBe('highest')
+  expect(el('[data-issue-body]').textContent).not.toContain('OLD LA BODY')
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(30)
+  expect(issue.description ?? '').toBe('')
+  expect(q('[data-issue-conflict]')).toBeNull()
+})
+
+// R1-D — 늦은 성공(`useTasksPage.ts` 늦은 결과 → `setSettledWrite`) 길: 상세 우선순위 쓰기가 30초 넘게 붙들린 사이 외부가 본문을 비움 →
+// 늦게 성공한 결과(본문 = 정본 null)가 상세로 온다 → 그 뒤 화면·연 편집기·저장에 옛 본문이 없다. `''` 대조 함께.
+// LA(충돌 검사 꺼짐)로 돈다 — 모의(켜짐)는 외부 판 올림 뒤 쓰기가 충돌로 거절돼 성공 결과가 오지 않는다.
+it.each([null, ''])('R1-D 늦은 성공 — 외부 description %j 뒤 30초 넘어 성공한 우선순위 결과가 옛 본문을 되살리지 않는다', async (empty) => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD LATE BODY'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(25)
+  expect(el('[data-issue-body]').textContent).toContain('OLD LATE BODY')
+  const release = hold('updateItem')
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  click('[data-field="priority"]')
+  click('[data-priority-row="highest"]')
+  await act(async () => { await vi.advanceTimersByTimeAsync(30001) })
+  vi.useRealTimers()
+  issue.description = empty
+  issue.updatedAt = '2026-10-14T14:05:00Z'
+  const before = la.responses.length
+  await release()
+  await settle(35)
+  // 늦게 온 성공 결과 = 정본(본문 null 이면 null).
+  const written = la.responses.slice(before).find((response) => response.ok && response.result.op === 'updateItem')
+  expect(written?.ok === true && written.result.op === 'updateItem' ? written.result.item.body : 'none').toBe(empty)
+  expect(issue.priority).toBe('highest')
+  expect(el('[data-issue-body]').textContent).not.toContain('OLD LATE BODY')
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(30)
+  expect(issue.description ?? '').toBe('')
+  expect(document.body.textContent).not.toContain('OLD LATE BODY')
+})
+
+/** 목록 모양 결과를 돌려주는 출처 사본(R1-A·R1-E 양성 대조) — 보드 쓰기(`changeStatus`·`reorder`) 결과의 본문·연결을 「안 실음」 null 로 바꾼다. 서버 값은 바뀐다(쓰기는 적용). */
+function listShaped(state: MockState): WorkSourceEntry {
+  const base = mockSourceEntry({ state })
+  return {
+    ...base,
+    create: (credentials) => {
+      const inner = base.create(credentials)
+      return {
+        capabilities: () => inner.capabilities(),
+        close: () => inner.close(),
+        call: async (call, meta) => {
+          const outcome = await inner.call(call, meta)
+          if (!outcome.ok || (outcome.result.op !== 'changeStatus' && outcome.result.op !== 'reorder')) return outcome
+          return { ok: true, result: { ...outcome.result, item: { ...outcome.result.item, body: null, relations: null } } }
+        },
+      }
+    },
+  }
+}
+
+// R1-A — 출처가 쓰기 결과를 목록 모양으로 주면 main 이 `invalid_response` + 「적용됐을 수 있음」 으로 거른다. 상세 base·편집 기준은 그 null 로 바뀌지 않는다:
+// 화면 본문·새로 연 편집기 = 서버 본문 그대로. R1-E — 「relations === null 일 때만 옛 값 보충」 같은 화면 쪽 분기는 이 거절 때문에 도달하지 않는다
+// (목록 모양 결과는 `settledWrite` 로 오지 않는다 — 아래 `responses` 단언). 그 변이를 넣은 사본의 실행은 executions.md 참고.
+it('R1-A 목록 모양 쓰기 결과는 main 이 거른다 — maybeApplied, 상세 본문·편집기 = 서버 본문', async () => {
+  const r = await rig({ entry: listShaped })
+  const server = serverItem(r, 'm-2')
+  server.body = 'LIVE SERVER BODY'
+  await openCard('CORE-2')
+  const before = r.responses.length
+  await dragTo({ card: 'CORE-2', zone: 'col:st:core-doing' })
+  const moved = r.responses.slice(before).find((response) => !response.ok && response.error.kind === 'invalid_response')
+  expect(moved?.ok === false ? { kind: moved.error.kind, maybeApplied: moved.error.maybeApplied } : null).toEqual({ kind: 'invalid_response', maybeApplied: true })
+  expect(r.responses.slice(before).some((response) => response.ok && 'item' in response.result && response.result.item !== null && response.result.item.relations === null)).toBe(false)
+  // 쓰기는 출처에 적용됐다(그래서 「적용됐을 수 있음」).
+  expect(server.statusKey).toBe('core-doing')
+  await settle(16)
+  expect(el('[data-issue-body]').textContent).toContain('LIVE SERVER BODY')
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('LIVE SERVER BODY')
+  expect(server.body).toBe('LIVE SERVER BODY')
+})
+
+// R2-A — 먼저 보낸 쓰기의 늦은 결과가 더 새 결과 뒤에 도착하는 길(리뷰 r2 X2-1 「late captured」, `codex-r2-raw/TaskDetail.x2probe.test.tsx` 이식).
+// R1-D 와 다르게 **요청은 실행되고 응답 배달만 붙든다** — A 의 결과는 외부 비우기 전 snapshot(옛 본문)이다. 그 사이 외부 비우기 → B 성공(빈 본문) → A 를 풀어도
+// 상세·새 편집기·저장이 옛 본문으로 되감기지 않는다. `''` 대조 함께.
+it.each([null, ''])('R2-A 먼저 보낸 쓰기 A 의 늦은 결과(외부 비우기 %j 전 snapshot)가 더 새 B 뒤에 와도 상세를 되감지 않는다', async (empty) => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD CAPTURED BODY'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(25)
+  const original = window.corral.workRequest
+  let release: () => void = () => {}
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  let captured = false
+  window.corral.workRequest = async (request: WorkRequest) => {
+    const response = await original(request)
+    if (request.call.op === 'updateItem' && !captured) { captured = true; await pending }
+    return response
+  }
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  click('[data-field="priority"]')
+  click('[data-priority-row="highest"]')
+  await act(async () => { await vi.advanceTimersByTimeAsync(30001) })
+  vi.useRealTimers()
+  expect(captured).toBe(true)
+  issue.description = empty
+  issue.updatedAt = '2026-10-14T14:05:00Z'
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(30)
+  expect(el('[data-issue-body]').textContent).not.toContain('OLD CAPTURED BODY')
+  await act(async () => { release() })
+  await settle(35)
+  expect(el('[data-issue-body]').textContent).not.toContain('OLD CAPTURED BODY')
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(30)
+  expect(issue.description ?? '').toBe('')
+  // 서버는 B 의 값 — 늦은 A 는 화면을 되감지 않았다(서버에서는 A 다음에 B 가 실행됐다).
+  expect(issue.priority).toBe('low')
+  expect(el('[data-field="priority"]').textContent).toContain('낮음')
+})
+
+// R2-A 유지 대조(R1-C) — 늦은 성공이 **가장 최신**이면(그 사이 다른 확정·읽기 없음) 상세는 그 결과를 그대로 받는다: 화면 = 결과, 받은 뒤 단건 재조회 0,
+// 다음 저장이 자기 충돌하지 않는다(충돌 검사 켜진 모의).
+it('R2-A 유지 — 가장 최신인 늦은 성공은 그대로 상세 base 가 된다(재조회 없이), 다음 저장은 충돌 없음', async () => {
+  const r = await rig()
+  await openCard('CORE-2')
+  const release = hold('updateItem')
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  click('[data-field="priority"]')
+  click('[data-priority-row="high"]')
+  await act(async () => { await vi.advanceTimersByTimeAsync(30001) })
+  vi.useRealTimers()
+  const before = r.calls.length
+  await release()
+  await settle(16)
+  expect(el('[data-field="priority"]').textContent).toContain('높음')
+  expect(r.calls.slice(before).filter((call) => call.op === 'getItem')).toHaveLength(0)
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(16)
+  expect(q('[data-issue-conflict]')).toBeNull()
+  expect(serverItem(r, 'm-2').priority).toBe('low')
+})
+
+// ── R3-A — 실패한 쓰기는 base 의 근거를 올리지 않는다 · 순서 가드가 버린 뒤 다시 받지 못하면 상세는 미확인(쓰기 막힘) ──────────────────
+// 출발점: 리뷰 r3 X3-1 `codex-r3-raw/TaskDetail.x3failed-safety.test.tsx`(이식). 실제 React → hook → WorkService → LaSource → LaMcpFixture.
+// LA 도구 응답에 오류를 넣는다(fixture `tool` 을 감싼다) — 쓰기 B 거절 · 재조회(issue_get) 거절.
+
+/** A(우선순위 highest)를 실제로 실행해 성공 응답(외부 비우기 뒤 — 본문 null)을 만든 뒤 배달만 붙든다. 30초 지나 늦음으로. 푸는 함수를 돌려준다. */
+async function captureLateA(): Promise<() => void> {
+  const original = window.corral.workRequest
+  let release: () => void = () => {}
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  let captured = false
+  window.corral.workRequest = async (request: WorkRequest) => {
+    const response = await original(request)
+    if (request.call.op === 'updateItem' && !captured) { captured = true; await pending }
+    return response
+  }
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  click('[data-field="priority"]')
+  click('[data-priority-row="highest"]')
+  await act(async () => { await vi.advanceTimersByTimeAsync(30001) })
+  vi.useRealTimers()
+  expect(captured).toBe(true)
+  return release
+}
+type LaTool = (value: { tool: string; args: Record<string, unknown> }) => { isError: boolean; text: string }
+function wrapTool(fixture: LaMcpFixture, wrap: (inner: LaTool) => LaTool): () => void {
+  const inner: LaTool = Reflect.get(fixture, 'tool').bind(fixture)
+  Reflect.set(fixture, 'tool', wrap(inner))
+  return () => { Reflect.set(fixture, 'tool', inner) }
+}
+const refused = (message: string): { isError: boolean; text: string } => ({ isError: true, text: JSON.stringify({ code: 'BAD_REQUEST', message }) })
+const bodyEditDisabled = (): boolean => { const button = el('[data-issue-body-edit]'); return button instanceof HTMLButtonElement && button.disabled }
+
+// B 실패 — 실패한 B 는 base 의 근거를 올리지 않으므로 A(본문 null 정본)는 그대로 받는다. 재조회가 실패해도(일어나지 않아야) 결과는 같다.
+it.each([false, true])('R3-A B 실패 — 늦은 A(외부 비우기 반영)를 버리지 않는다, 재조회 거절=%s 여도 새 편집기·저장은 빈 본문', async (failRead) => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD BEFORE CLEAR'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(20)
+  issue.description = null
+  const release = await captureLateA()
+  let reread = false
+  const restore = wrapTool(la.fixture, (inner) => (value) => {
+    if (value.tool === 'issue_update' && value.args.priority === 'low') return refused('fixture newer write refused')
+    if (reread && failRead && value.tool === 'issue_get' && value.args.id === issue.id) return refused('fixture reread refused')
+    return inner(value)
+  })
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(25)
+  expect(la.responses.some((response) => !response.ok && response.error.kind === 'rejected')).toBe(true)
+  reread = true
+  await act(async () => { release() })
+  await settle(30)
+  reread = false
+  restore()
+  expect(el('[data-issue-body]').textContent).not.toContain('OLD BEFORE CLEAR')
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(30)
+  expect(issue.description ?? '').toBe('')
+  expect(issue.priority).toBe('highest')
+})
+
+// B 성공 역전 + 재조회 실패 — 늦은 A 는 옛 근거라 버린다. 재조회가 거절되면 상세는 미확인: 본문 편집·필드 쓰기 막힘 + 「다시 시도」. 다시 받으면 풀리고 정본(빈 본문).
+it('R3-A B 성공 역전 + 재조회 실패 — 상세 미확인(쓰기 막힘·다시 시도), 다시 받으면 풀리고 빈 본문', async () => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD CAPTURED BODY'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(20)
+  const release = await captureLateA()
+  issue.description = null
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(30)
+  expect(issue.priority).toBe('low')
+  let failReads = true
+  const restore = wrapTool(la.fixture, (inner) => (value) => (failReads && value.tool === 'issue_get' && value.args.id === issue.id ? refused('fixture reread refused') : inner(value)))
+  await act(async () => { release() })
+  await settle(35)
+  // 미확인 — 옛 본문을 정본처럼 보이지 않고, 본문·필드 쓰기를 막는다.
+  expect(bodyEditDisabled()).toBe(true)
+  const priorityButton = el('[data-field="priority"]')
+  expect(priorityButton instanceof HTMLButtonElement && priorityButton.disabled).toBe(true)
+  expect(q('[data-issue-load-error]')).not.toBeNull()
+  // 다시 시도 — 이번엔 받는다.
+  failReads = false
+  restore()
+  click('[data-issue-retry]')
+  await settle(35)
+  expect(bodyEditDisabled()).toBe(false)
+  expect(q('[data-issue-load-error]')).toBeNull()
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(30)
+  expect(issue.description ?? '').toBe('')
+  expect(issue.priority).toBe('low')
+})
+
+// B 성공 역전 + 재조회 지연 — 재조회가 끝날 때까지 상세 쓰기는 막혀 있고, 끝나면 정본(빈 본문)으로 풀린다.
+it('R3-A B 성공 역전 + 재조회 지연 — 받는 동안 막힘, 받은 뒤 빈 본문', async () => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD CAPTURED BODY'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(20)
+  const releaseA = await captureLateA()
+  issue.description = null
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(30)
+  const releaseRead = hold('getItem')
+  await act(async () => { releaseA() })
+  await settle(20)
+  expect(bodyEditDisabled()).toBe(true)
+  await releaseRead()
+  await settle(30)
+  expect(bodyEditDisabled()).toBe(false)
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+})
+
+// LIFE-623 R4-C — 미확인(순서 가드 재조회 실패)이 어느 정본 수용 경로로 풀리든 지난 읽기 오류 표시도 걷힌다: 다시 시도 · 닫고 다시 열기 · 작업 전환 · 연결 세대 교체 · 보드 쓰기 성공.
+// 리뷰 r4 X4-3(`codex-r4-raw/probes/TaskDetail.x4recovery.test.tsx` 이식) — 수정 전에는 보드 성공만 배너가 남았다.
+it.each(['retry', 'reopen', 'switch', 'generation', 'board'] as const)('R4-C 미확인 회복 %s — 쓰기 풀림·빈 본문 저장·오류 표시 없음', async (mode) => {
+  const la = await laRig()
+  const issue = la.fixture.issues.find((entry) => entry.id === FIXTURE_IDS.task600)
+  if (issue === undefined) throw new Error('fixture')
+  issue.description = 'OLD RECOVERY BODY'
+  await openCard(`LIFE-${issue.sequentialId}`)
+  await settle(20)
+  const release = await captureLateA()
+  issue.description = null
+  click('[data-field="priority"]')
+  click('[data-priority-row="low"]')
+  await settle(30)
+  const restore = wrapTool(la.fixture, (inner) => (value) => (value.tool === 'issue_get' && value.args.id === issue.id ? refused('fixture reconcile refused') : inner(value)))
+  await act(async () => { release() })
+  await settle(30)
+  expect(bodyEditDisabled()).toBe(true)
+  expect(q('[data-issue-load-error]')).not.toBeNull()
+  restore()
+  if (mode === 'retry') click('[data-issue-retry]')
+  if (mode === 'reopen') { click('[data-issue-close]'); await settle(10); await openCard(`LIFE-${issue.sequentialId}`) }
+  if (mode === 'switch') { await openCard('LIFE-601'); await openCard(`LIFE-${issue.sequentialId}`) }
+  if (mode === 'generation') await act(async () => { await la.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: la.connectionId }); la.emitSettings() })
+  if (mode === 'board') await dragTo({ card: `LIFE-${issue.sequentialId}`, zone: `col:st:${FIXTURE_STATUS.analysis}` })
+  await settle(35)
+  expect(bodyEditDisabled()).toBe(false)
+  expect(q('[data-issue-load-error]')).toBeNull()
+  click('[data-issue-body-edit]')
+  expect(input('[data-md-editor] textarea').value).toBe('')
+  click('[data-md-save]')
+  await settle(30)
+  expect(issue.description ?? '').toBe('')
+})

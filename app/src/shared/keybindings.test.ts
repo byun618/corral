@@ -10,7 +10,8 @@ describe('shortcut catalog and compatibility', () => {
     // LIFE-591: + file.save(⌘S)
     // LIFE-592: + explorer.delete(⌘⌫) · explorer.undo(⌘Z) · explorer.redo(⌘⇧Z) — 탐색기 범위
     // LIFE-593: + quickOpen.open(⌘P) · explorer.filter(⌘⌥F — 탐색기 범위)
-    expect(ACTIONS).toHaveLength(27)
+    // LIFE-601: + tasks.toggle(⌘I)
+    expect(ACTIONS).toHaveLength(28)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -44,6 +45,12 @@ describe('shortcut catalog and compatibility', () => {
     expect(key({ key: 'k', focused: true })).toBeNull()
     // 재지정해 ⌘Z 가 탐색기 실행 취소가 아니면 가져오지 않는다(메뉴 role 그대로)
     expect(key({ key: 'z', focused: true, overrides: validateOverrides({ 'explorer.undo': ['Mod+U'] }) })).toBeNull()
+  })
+  it('LIFE-601 tasks.toggle = ⌘I (I 물리 키 — 한글 자판에서도) · 기본 바인딩 충돌 0 · 기존 재정의가 ⌘I 를 쓰면 비켜 선다', () => {
+    expect(matchBinding('Mod+I', {})).toEqual({ id: 'tasks.toggle', variant: 0 })
+    expect(bindingFromEvent({ key: 'ㅑ', code: 'KeyI', metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe('Mod+I')
+    expect(bindingConflict({})).toBeNull()
+    expect(matchBinding('Mod+I', { 'palette.open': ['Mod+I'] })).toEqual({ id: 'palette.open', variant: 0 })
   })
   it('LIFE-511 settings.open = ⌘, (Comma 물리 키) · 기존 재정의가 ⌘, 를 쓰면 비켜 선다', () => {
     expect(matchBinding('Mod+,', {})).toEqual({ id: 'settings.open', variant: 0 })

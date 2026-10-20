@@ -295,3 +295,24 @@ describe('LIFE-478 K7 — GUI 삭제 = CLI worktree rm (격리 레포 매트릭�
     expect(exists(a)).toBe(true)
   })
 })
+
+// LIFE-603 F3 — 「작업에서 시작」 이 workspace 줄을 에이전트 ready 까지 잡는 동안, 카드 메뉴 쓰기는 그 뒤에 서서 60초 뒤 거짓 오류를
+// 내는 대신 보내지 않고 바로 이유를 돌려준다. 시작이 끝나면(바쁨 false) 지금 그대로다.
+describe('LIFE-603 F3 — 시작 진행 중의 카드 메뉴 쓰기', () => {
+  it('시작 진행 중이면 이름 바꾸기·삭제가 런타임에 닿지 않고 start_in_progress, 끝나면 평소대로', async () => {
+    const f = await fixture()
+    const a = await f.create('feat-a')
+    let busy = true
+    let invoked = 0
+    const deps: CardActionDeps = { ...f.deps, startBusy: () => busy, invoke: () => { const real = f.deps.invoke(); return real === null ? null : (invocation) => { invoked += 1; return real(invocation) } } }
+    const started = Date.now()
+    expect(await setWorktreeMeta(deps, { path: a, displayName: '바쁨' })).toEqual({ ok: false, code: 'start_in_progress', error: '작업 시작이 진행 중입니다 — 끝난 뒤 다시 시도하세요.' })
+    expect(await deleteWorktree(deps, { path: a, force: false })).toMatchObject({ ok: false, code: 'start_in_progress' })
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(invoked).toBe(0)
+    expect(f.registry.metadata()[a]?.displayName).toBeUndefined()
+    busy = false
+    expect(await setWorktreeMeta(deps, { path: a, displayName: '평소' })).toEqual({ ok: true })
+    expect(invoked).toBe(1)
+  })
+})

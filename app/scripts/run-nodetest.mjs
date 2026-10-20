@@ -79,7 +79,10 @@ stream.on('test:summary', (data) => { if (data.file === undefined) summary = dat
 stream.on('end', () => {
   // 최종 요약이 없으면 실행이 끝까지 가지 못한 것이다 — 통과로 세지 않는다.
   const ok = summary?.success === true
-  console.log(`run-nodetest: ${files.length}개 실행 · ${ok ? '통과' : '실패'}${summary ? ` (tests ${summary.counts.tests} · fail ${summary.counts.failed} · cancelled ${summary.counts.cancelled})` : ' (최종 요약 없음)'}`)
+  // 건너뜀 · todo 도 요약 줄에 드러낸다(LIFE-603 R3-J) — 건너뛴 칸이 「통과」 에 묻히지 않게.
+  const counts = summary?.counts
+  console.log(`run-nodetest: ${files.length}개 실행 · ${ok ? '통과' : '실패'}${counts ? ` (tests ${counts.tests} · fail ${counts.failed} · cancelled ${counts.cancelled} · skipped ${counts.skipped} · todo ${counts.todo})` : ' (최종 요약 없음)'}`)
+  if (counts !== undefined && counts.skipped + counts.todo > 0) console.log(`run-nodetest: 건너뜀 ${counts.skipped} · todo ${counts.todo} — 이 칸들은 실행되지 않았다`)
   process.exitCode = ok ? 0 : 1
 })
 stream.compose(spec).pipe(process.stdout)

@@ -1,0 +1,2 @@
+# pc-r5c-unavailable-length — unavailable 길이 상한을 지운 사본에서 실패해야 하는 시험(raw/claude/final/pc/)
+src/main/work/create.test.ts > main 의 생성 메타 검증 (E11 — 양성 대조) > 만들 수 없음 이유가 500자 넘음(R5-C) → invalid_response

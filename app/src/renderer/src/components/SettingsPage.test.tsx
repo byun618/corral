@@ -35,13 +35,13 @@ const type = (input: HTMLInputElement, value: string): void => {
   act(() => { setValue.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })) })
 }
 
-it('내비 — 돌아가기 · 검색 · 「AI 기능」·「설정 시작」·「인터페이스」·「원격 호스트」 그룹 · 「단축키」 활성(aria-current) · 섹션 하나만 마운트', () => {
+it('내비 — 돌아가기 · 검색 · 「AI 기능」·「설정 시작」·「워크플로」·「인터페이스」·「원격 호스트」 그룹 · 「단축키」 활성(aria-current) · 섹션 하나만 마운트', () => {
   const { view } = mount()
   expect(view.querySelector('[data-settings-back]')?.textContent).toBe('앱으로 돌아가기')
-  // LIFE-577 — 「원격 호스트 › Mobile」 이 맨 끝 그룹.
-  expect([...view.querySelectorAll('[data-settings-group-title]')].map((el) => el.textContent)).toEqual(['AI 기능', '설정 시작', '인터페이스', '원격 호스트'])
+  // LIFE-577 — 「원격 호스트 › Mobile」 이 맨 끝 그룹. LIFE-600 — 「워크플로 › 작업 연결」 이 설정 시작 다음.
+  expect([...view.querySelectorAll('[data-settings-group-title]')].map((el) => el.textContent)).toEqual(['AI 기능', '설정 시작', '워크플로', '인터페이스', '원격 호스트'])
   // LIFE-515 K2ⓐ — 「AI 기능 › 에이전트」 행(Bot 아이콘)이 맨 위 그룹에 있다. LIFE-516 K2ⓐ — 「설정 시작 › 일반」 이 그다음(레지스트리 순서).
-  expect([...view.querySelectorAll('[data-settings-nav-item]')].map((el) => el.getAttribute('data-settings-nav-item'))).toEqual(['agents', 'general', 'appearance', 'shortcuts', 'mobile'])
+  expect([...view.querySelectorAll('[data-settings-nav-item]')].map((el) => el.getAttribute('data-settings-nav-item'))).toEqual(['agents', 'general', 'connections', 'appearance', 'shortcuts', 'mobile'])
   const item = view.querySelector('[data-settings-nav-item="shortcuts"]')!
   expect(item.getAttribute('aria-current')).toBe('page')
   expect(view.querySelectorAll('[data-settings-section]')).toHaveLength(1)

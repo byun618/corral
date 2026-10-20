@@ -16,6 +16,11 @@ import { isRecord } from '../shared/json.js'
 export type CardActionDeps = {
   /** 런타임 디스패처 — 없으면(런타임 기동 전) 거절. */
   invoke: () => ((invocation: Invocation) => Promise<RpcResponse>) | null
+  /**
+   * LIFE-603 F3 — 「작업에서 시작」 이 진행 중인가. 시작은 런타임 workspace 줄을 에이전트 ready 까지 잡는다 — 그 뒤에 서면 이 IPC 의
+   * 60초 기한이 먼저 끝나 거짓 오류(`request_cancelled`)가 난다. 그래서 진행 중이면 보내지 않고 이유를 바로 돌려준다. 없으면 늘 false.
+   */
+  startBusy?: () => boolean
   /** 지금 화면 트리의 워크트리 — `{ repoRoot, path, branch, isLinked }`. 여기 없는 경로는 받지 않는다. */
   worktrees: () => Array<{ repoRoot: string; path: string; branch: string | null; isLinked: boolean }>
   repoRoots: () => readonly string[]
@@ -46,6 +51,7 @@ function knownRepo(deps: CardActionDeps, target: unknown): string | null {
 }
 
 async function run(deps: CardActionDeps, invocation: Omit<Invocation, 'args' | 'cwd'>): Promise<{ ok: true; result: unknown } | { ok: false; code: string; error: string }> {
+  if (deps.startBusy?.() === true) return { ok: false, code: 'start_in_progress', error: '작업 시작이 진행 중입니다 — 끝난 뒤 다시 시도하세요.' }
   const invoke = deps.invoke()
   if (invoke === null) return { ok: false, code: 'runtime_unavailable', error: '런타임이 아직 안 섰다' }
   const response = await invoke({ ...invocation, args: [], cwd: deps.cwd })

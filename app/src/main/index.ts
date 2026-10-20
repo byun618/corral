@@ -20,7 +20,7 @@ import { closeTabsGated } from './close-tabs.js'
 //
 // 이 파일은 **어댑터의 공개 입구만** import 한다 (`./adapter/index.js`). internal 은 모른다.
 
-import { app, BrowserWindow, type BrowserWindowConstructorOptions, clipboard, dialog, ipcMain, nativeImage, shell, utilityProcess } from 'electron'
+import { app, BrowserWindow, type BrowserWindowConstructorOptions, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, utilityProcess } from 'electron'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -112,7 +112,22 @@ import { bindStartupZoomSync, pushWindowChrome as pushChrome, syncWindowZoom, wi
 import { observePanes } from '../runtime/orchestration/index.js'
 import { OrchestrationStore } from '../runtime/orchestration/store.js'
 import { MobileService } from './mobile/service.js'
+import { readMacName } from './mobile/mac-name.js'
+import { persistedMachine } from './work/machine.js'
 import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
+import { LA_DEFAULT_MCP_URL, laSourceEntry } from './work/la-source.js'
+import { mockSourceEntry, seedMockDemoState } from './work/mock-source.js'
+import { jiraFixtureBaseFromEnv, jiraSourceEntry } from './work/jira-source.js'
+import { WorkService } from './work/service.js'
+import { isRecord } from '../shared/json.js'
+import { WorkLinks, linkOf } from './work/links.js'
+import { StartService } from './work/start.js'
+import { PendingStartStore } from './work/start-pending.js'
+import { WorkActivityStore } from './work/activity-store.js'
+import { WorkSourceRegistry } from './work/source.js'
+import { WorkConnectionStore } from './work/store.js'
+import { CredentialVault, electronCipher, measurementCipher } from './work/vault.js'
+import type { WorkActionResult, WorkError } from '../shared/work.js'
 import { listDir } from './explorer-fs.js'
 import { ExplorerHub } from './explorer-hub.js'
 import { FileLister, resolveGit } from './file-list.js'
@@ -140,7 +155,7 @@ let lastEmittedState: AppState | null = null
 /** 종료 때 serve 항목 제거에 주는 시간 — 넘기면 tailscale 자식을 죽이고 끝낸다(A6ⓕ 10초 안). 남은 항목은 다음 기동 reconcile 이 지운다. */
 const MOBILE_SHUTDOWN_DEADLINE_MS = 6_000
 /** 런타임 디스패처 (LIFE-478) — GUI 카드 메뉴가 CLI 와 같은 `worktree set`/`worktree rm` 을 이 손으로 돈다. */
-let runtimeInvoke: ((invocation: Invocation) => Promise<RpcResponse>) | null = null
+let runtimeInvoke: ((invocation: Invocation, timeoutMs?: number) => Promise<RpcResponse>) | null = null
 let keybindings: KeybindingStore
 let shortcutRecording = false
 /**
@@ -255,6 +270,21 @@ let fileLister: FileLister | null = null
 let fileWatch: FileWatch | null = null
 /** 사용자 설정 (LIFE-512 S11) — 외관. ui-prefs(화면 상태)와 다른 파일·다른 칸이다(U8). */
 let settings: SettingsStore | null = null
+/** 설정 › 작업 연결 (LIFE-600) — 기동 때는 저장 파일만 읽는다. 자격(키체인)은 그 연결이 처음 쓰일 때 푼다(C6). */
+let work: WorkService | null = null
+/** LIFE-603 — 작업 링크(해석·쓰기·사건)와 「작업에서 시작」. 작업 서비스와 같이 선다. */
+let workLinks: WorkLinks | null = null
+let workStarts: StartService | null = null
+/** C7 대조용 — 계측 실행(제어 소켓)에서 `CORRAL_WORK_IPC_TRACE` 가 있을 때만 작업 IPC 응답·push 를 NDJSON 으로 남긴다. */
+function traceWork({ channel, value }: { channel: string; value: unknown }): void {
+  const file = process.env.CORRAL_WORK_IPC_TRACE
+  if (!measuring || file === undefined || file.length === 0) return
+  try {
+    fs.appendFileSync(file, JSON.stringify({ at: Date.now(), channel, value }) + '\n', { mode: 0o600 })
+  } catch (error) {
+    log('work.ipc_trace_failed', { error: String(error) })
+  }
+}
 /** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
 let skeleton: RepoSkeleton[] = []
 let emitScheduled = false
@@ -496,7 +526,9 @@ function registryMetadata(): Record<string, WorktreeMetadataRecord> {
 }
 
 function currentState(): AppState {
-  const tree = joinTree(skeleton, attachDigests(link.store.rows(), digests), registryMetadata())
+  const joined = joinTree(skeleton, attachDigests(link.store.rows(), digests), registryMetadata())
+  // LIFE-603 — 작업 링크를 싣는다(명시 · 자동 · 예외의 해석은 `shared/work-link.ts` 한 곳).
+  const tree = workLinks === null ? joined : { ...joined, repos: workLinks.annotate(joined.repos) }
   // 등록 목록과 그 세대는 **같은 읽기**에서 낸다 — 렌더러가 둘을 한 순간의 값으로 믿는다(R3-01).
   const registryState = registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' }
   return {
@@ -548,6 +580,10 @@ function scheduleEmit(): void {
       ...link.store.ids(),
     })
     window?.webContents.send('corral:state', state)
+    // LIFE-603 — 링크된 worktree 의 사건(자동 연결 · 질문 · 턴 결과)을 활동에 남긴다. 화면이 닫혀 있어도 여기서 남는다.
+    workLinks?.observe(state.repos)
+    // 응답 전에 끝났거나 결과가 미확정이던 시작을 트리와 맞춰 링크한다(R1-C·R1-B).
+    void workStarts?.recover(state.repos).catch((error: unknown) => log('work.start_recover_failed', { error: String(error) }))
     // 폰 목록(LIFE-580) — 방금 만든 상태를 그대로 쓴다(두 번 만들지 않는다). 구독자가 없으면 아무 일도 안 한다.
     lastEmittedState = state
     mobile?.listChanged()
@@ -1662,6 +1698,16 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  /**
+   * 메인 창은 앱 화면 하나다 — 다른 곳으로 이동하지 않는다(LIFE-602 F12 · 보안 체크리스트 13). 본문 markdown 의 `<a href>` 를 그냥 눌러도
+   * 창이 그 주소로 가지 않게 막는다. 외부 링크는 렌더러가 `window.open` 으로 위 새 창 거절 경로(http·https 허용 목록)에 보낸다.
+   * 다시 불러오기(같은 주소)는 이 이벤트를 내지 않는다.
+   */
+  window.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault()
+    log('window.navigate.denied', { url: externalOpenLogUrl(url) })
+  })
+
   const devServer = process.env['ELECTRON_RENDERER_URL']
   if (devServer !== undefined) void window.loadURL(devServer)
   else void window.loadFile(path.join(here, '../renderer/index.html'))
@@ -1705,6 +1751,60 @@ app.whenReady().then(async () => {
       loginShellLookup: loginShellTailscale,
     }),
     run: runTailscale,
+  })
+  const workStore = new WorkConnectionStore(app.getPath('userData'))
+  workStore.load()
+  // LIFE-602 — corral 활동 저장소(성공한 작업 쓰기). 경로 오버라이드 `CORRAL_WORK_ACTIVITY`(격리 실행).
+  const workActivity = new WorkActivityStore(app.getPath('userData'))
+  workActivity.load()
+  // `CORRAL_LA_MCP_URL` — 격리 실행이 모의 LA MCP 서버를 꽂을 때만. 평시는 실제 LA.
+  const laUrl = process.env.CORRAL_LA_MCP_URL !== undefined && process.env.CORRAL_LA_MCP_URL.length > 0 ? process.env.CORRAL_LA_MCP_URL : LA_DEFAULT_MCP_URL
+  if (laUrl !== LA_DEFAULT_MCP_URL) log('work.la_endpoint_override', { url: laUrl.slice(0, 200) })
+  const testCipher = measuring && process.env.CORRAL_WORK_TEST_CIPHER === '1'
+  if (testCipher) log('work.test_cipher', { reason: 'CORRAL_CONTROL_SOCKET + CORRAL_WORK_TEST_CIPHER — 키체인 무접촉 격리 실행' })
+  // LIFE-601 — 격리 실행(측정 모드)에서만 모의 Jira 형 출처를 레지스트리에 더한다. 평시 앱에는 없다.
+  const mockSource = measuring && process.env.CORRAL_WORK_MOCK === '1'
+  if (mockSource) log('work.mock_source', { reason: 'CORRAL_CONTROL_SOCKET + CORRAL_WORK_MOCK — 작업 페이지 격리 실행' })
+  const jiraFixture = jiraFixtureBaseFromEnv(process.env)
+  if (jiraFixture !== null) log('work.jira_fixture', { url: jiraFixture, reason: 'CORRAL_CONTROL_SOCKET + CORRAL_JIRA_FIXTURE_URL — Jira fixture 격리 실행' })
+  work = new WorkService({
+    store: workStore,
+    vault: new CredentialVault(testCipher ? measurementCipher() : electronCipher(safeStorage)),
+    activity: workActivity,
+    sources: new WorkSourceRegistry([
+      laSourceEntry({ url: laUrl, clientVersion: app.getVersion() }),
+      // LIFE-605 — Jira Cloud. fixture 주소는 측정 모드(제어 소켓) + 127.0.0.1 일 때만 열린다(평시 앱은 검증한 *.atlassian.net 만).
+      jiraSourceEntry(jiraFixture === null ? {} : { baseUrlOf: () => jiraFixture }),
+      ...(mockSource ? [mockSourceEntry({ state: seedMockDemoState() })] : []),
+    ]),
+    repos: () => {
+      try {
+        return registry?.records().map((repo) => ({ id: repo.id, root: repo.path, name: repo.name })) ?? []
+      } catch {
+        return []
+      }
+    },
+    onChange: (state) => {
+      traceWork({ channel: 'corral:workSettings', value: state })
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:workSettings', state)
+    },
+    // LIFE-635 — 출처 링크의 machine = 이 Mac 의 컴퓨터 이름(모바일 `macName` 과 같은 원천).
+    // 처음 정한 값을 userData `work-machine.json` 에 두고 재기동에도 그 값(X1-3 — 조회 일시 실패가 판별 키를 바꾸지 않게).
+    machine: persistedMachine({ dir: app.getPath('userData'), read: () => readMacName(), log }),
+  })
+  // 화면이 원격 링크를 가르려면 이 Mac 의 이름이 필요하다 — 기동 때 미리 읽는다(scutil 하나, 금고·네트워크 무접촉).
+  void work.machine()
+  workLinks = new WorkLinks({ registry: () => registry, work: () => work, log })
+  workStarts = new StartService({
+    invoke: () => runtimeInvoke,
+    repos: () => currentState().repos,
+    links: () => workLinks,
+    work: () => work,
+    log,
+    cwd: os.homedir(),
+    pending: new PendingStartStore(app.getPath('userData')),
+    // git worktree 는 그 자리에 `.git` 파일을 둔다 — 트리에 아직 안 올라온 경로도 찾는다(R1-B).
+    worktreeExists: (target) => fs.existsSync(path.join(target, '.git')),
   })
   log('app.ready', {
     logFile: file,
@@ -1821,6 +1921,38 @@ app.whenReady().then(async () => {
     return mobile.status()
   })
 
+  // 설정 › 작업 연결 (LIFE-600) — 입력은 unknown 으로 받아 WorkService 가 손검증한다. 응답·push 에 토큰은 없다(끝 4자만).
+  const workDeniedError: WorkError = { kind: 'invalid_request', message: '허용되지 않은 발신자', status: null }
+  const workDenied: WorkActionResult = { ok: false, error: workDeniedError }
+  // 응답은 계측 실행이면 `CORRAL_WORK_IPC_TRACE` 에 그대로 남긴다(C7 평문 부재 대조 — 입력은 토큰이 실리므로 남기지 않는다).
+  const workHandle = (channel: string, run: (input: unknown) => unknown): void => {
+    ipcMain.handle(channel, async (event, input: unknown) => {
+      const value = fromOurWindow(event) && work !== null ? await run(input) : channel === 'corral:workRequest' ? { requestId: '', connectionId: '', ok: false, error: workDeniedError } : workDenied
+      traceWork({ channel, value })
+      return value
+    })
+  }
+  workHandle('corral:getWorkSettings', () => work?.settings() ?? null)
+  workHandle('corral:addWorkConnection', (input) => work?.addConnection(input))
+  workHandle('corral:testWorkConnection', (input) => work?.testConnection(input))
+  workHandle('corral:removeWorkConnection', (input) => work?.removeConnection(input))
+  workHandle('corral:setWorkSpaceHidden', (input) => work?.setSpaceHidden(input))
+  workHandle('corral:setRepoDefaultSpace', (input) => work?.setRepoDefault(input))
+  workHandle('corral:workRequest', (input) => work?.request(input))
+  workHandle('corral:workActivity', (input) => work?.activity(input))
+  // LIFE-603 — 작업에서 시작 · 이어 받기 · 작업 떼기. 런타임 호출은 main 에서만(렌더러에 범용 런타임 다리 없음).
+  ipcMain.handle('corral:startWork', async (event, input: unknown) => (fromOurWindow(event) && workStarts !== null ? workStarts.start(input) : null))
+  ipcMain.handle('corral:relaunchWorkAgent', async (event, input: unknown) => (fromOurWindow(event) && workStarts !== null ? workStarts.relaunch(input) : null))
+  ipcMain.handle('corral:startWorkStatus', (event, input: unknown) => (fromOurWindow(event) && workStarts !== null ? workStarts.status(input) : null))
+  ipcMain.handle('corral:detachWorkLink', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || workLinks === null) return { ok: false, error: '허용되지 않은 발신자' }
+    const target = isRecord(input) && typeof input.path === 'string' ? linkOf({ repos: currentState().repos, path: input.path }) : null
+    if (target === null) return { ok: false, error: '등록된 워크트리가 아니다' }
+    const result = await workLinks.detach({ worktree: target.worktree, repoRoot: target.repoRoot })
+    scheduleEmit()
+    return result
+  })
+
   // --- 라이프사이클 (R3) ---
   const denied = { ok: false as const, error: '허용되지 않은 발신자' }
   ipcMain.handle('corral:createRow', (event, input: { workspaceId: string; kind: AgentKind; cwd?: unknown; label?: unknown }) =>
@@ -1872,6 +2004,8 @@ app.whenReady().then(async () => {
   // --- 카드 메뉴 (LIFE-478) — 쓰기·삭제는 런타임 디스패처(CLI 와 같은 명령), 경로는 등록된 것만 ---
   const cardDeps: CardActionDeps = {
     invoke: () => runtimeInvoke,
+    // LIFE-603 F3 — 시작이 workspace 줄을 잡고 에이전트를 기다리는 동안 카드 메뉴 쓰기는 줄 서지 않고 바로 이유를 돌려준다.
+    startBusy: () => workStarts?.busy() ?? false,
     worktrees: () => currentState().repos.flatMap((repo) => repo.worktrees.map((row) => ({ repoRoot: repo.root, path: row.path, branch: row.branch, isLinked: row.isLinked }))),
     repoRoots: () => registry?.list() ?? [],
     parentPaths: () => new Map(Object.entries(registryMetadata()).map(([target, meta]) => [target, parentPathOf(meta.parentWorktreeId)])),

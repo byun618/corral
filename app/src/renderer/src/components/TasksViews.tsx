@@ -398,6 +398,8 @@ export function ListView({ groups, all, now, selectedId, sort, group, preset, de
         ))}
       </div>
       <div className="tasks-list-scroll" data-tasks-scroll="list">
+        {/* 안쪽 래퍼 하나 — 행이 보기보다 넓으면 묶음 머리·행·푸터가 같은 폭(가장 넓은 행)으로 스크롤 폭을 채운다(LIFE-670 r3 L-F). */}
+        <div className="tasks-list-inner">
         {hits.map((hit) => {
           const uid = itemUid({ connectionId: hit.connectionId, itemId: hit.item.id })
           return <IssueRow key={`hit-${uid}`} row={{ item: hit.item, space: null, status: null }} all={all} now={now} selected={selectedId === uid} dragging={false} handle={null} onSelect={() => onSelect(uid)} keyHit spaceName={hit.spaceName} />
@@ -405,8 +407,7 @@ export function ListView({ groups, all, now, selectedId, sort, group, preset, de
         {groups.map((entry) => (
           <Fragment key={entry.id}>
             <div className="tasks-list-group" data-list-group={entry.id} title={hasMore ? '받아 둔 행 기준 — 더 있을 수 있습니다' : undefined}>
-              <span>{entry.label}</span>
-              <span className="tasks-column-count">{entry.rows.length}{hasMore ? ' / 받은 것' : ''}</span>
+              <span className="tasks-list-group-title"><span>{entry.label}</span><span className="tasks-column-count">{entry.rows.length}{hasMore ? ' / 받은 것' : ''}</span></span>
             </div>
             {entry.rows.map((row) => (
               <IssueRow key={rowUid(row)} row={row} all={all} now={now} selected={selectedId === rowUid(row)} dragging={false} handle={null} onSelect={() => onSelect(rowUid(row))} keyHit={false} />
@@ -414,6 +415,7 @@ export function ListView({ groups, all, now, selectedId, sort, group, preset, de
           </Fragment>
         ))}
         <MoreBar more={more} onLoadMore={onLoadMore} />
+        </div>
       </div>
     </div>
   )

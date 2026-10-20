@@ -130,7 +130,9 @@ const readability = () => js(`(() => {
 const judgeReadable = async (label) => {
   const r = await readability()
   log(`가독성 ${label}`, r)
-  judge(`M-A 가독성 ${label} — 행 제목 ${r.titles}개 모두 >= ${r.min} · 칩 ${r.chips}개 한 줄`, r.narrowTitles.length === 0 && r.brokenChips.length === 0 && r.chips > 0,
+  // r3 L-I — 토큰을 못 읽으면(NaN) 비교가 늘 거짓이라 통과해 버린다 · 백로그·리스트는 행이 그려져 있어야 한다.
+  const needsRows = /backlog|list/.test(label) && !label.startsWith('filters')
+  judge(`M-A 가독성 ${label} — 행 제목 ${r.titles}개 모두 >= ${r.min} · 칩 ${r.chips}개 한 줄`, Number.isFinite(r.min) && (!needsRows || r.titles > 0) && r.narrowTitles.length === 0 && r.brokenChips.length === 0 && r.chips > 0,
     JSON.stringify({ minTitle: r.minTitle, narrowTitles: r.narrowTitles, base: r.base, brokenChips: r.brokenChips, filterRows: r.filterRows, toolRows: r.toolRows }))
 }
 

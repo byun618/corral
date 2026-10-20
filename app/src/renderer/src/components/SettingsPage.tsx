@@ -20,6 +20,7 @@ import { ConnectionsSection, type ConnectionsRepo } from './ConnectionsSection.j
 import { SettingsSection } from './SettingsControls.js'
 import { ShortcutsSection } from './ShortcutsSection.js'
 import { TerminalAppearanceSection } from './TerminalAppearanceSection.js'
+import { StatusBarCard } from './StatusBarCard.js'
 import { WindowSidebarCard } from './WindowSidebarCard.js'
 import { ArrowLeftIcon, BotIcon, KanbanIcon, KeyboardIcon, PaletteIcon, SearchIcon, SlidersIcon, SmartphoneIcon } from './SidebarIcons.js'
 import './settings.css'
@@ -151,6 +152,7 @@ export function SettingsPage({ section, onSelectSection, onClose, overrides, onC
               {shown.id === 'shortcuts' ? <ShortcutsSection overrides={overrides} onChange={onChangeOverrides} /> : null}
               {shown.id === 'appearance' ? <TerminalAppearanceSection query={query} /> : null}
               {shown.id === 'appearance' ? <WindowSidebarCard view={sidebarView} onChange={onChangeSidebarView} query={query} /> : null}
+              {shown.id === 'appearance' ? <StatusBarCard query={query} /> : null}
               {shown.id === 'general' ? <GeneralSection /> : null}
               {shown.id === 'agents' ? <AgentsSection /> : null}
               {shown.id === 'mobile' ? <MobileSection /> : null}

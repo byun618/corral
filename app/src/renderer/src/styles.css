@@ -1176,11 +1176,63 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
   background: var(--bg-statusbar); border-top: 1px solid var(--line-weak);
   font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-dim);
 }
-.statusbar-repo { color: var(--fg-muted); }
+/* LIFE-636 — 브랜치 라벨·git 배지 · 사용량 슬롯 · spacer · 오른쪽 세그먼트 슬롯(02-kickoff 슬롯 계약 1·5). 폭이 모자라면 spacer 다음으로
+   **브랜치 라벨이 먼저** 말줄임된다(게이트 ① 수정 1). flex 수축은 비례 배분이라 사용량 슬롯 수축 가중을 아주 작게(0.000001) 둔다 —
+   1000:1 로는 칩이 0.1px 줄어 사유 문구가 말줄임됐다(g1fix1 g12 캡처). 라벨이 0 까지 줄어 멈춘 뒤에야 남은 부족분이 칩으로 간다(칩 말줄임 → 잘림).
+   배지·오른쪽 슬롯은 줄지 않는다. 높이는 `.statusbar` 의 25px 그대로 — 줄바꿈하지 않는다. */
+.statusbar-repo { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); }
+.statusbar-badge { flex-shrink: 0; white-space: nowrap; }
 .statusbar-badge.tone-dirty { color: var(--st-dirty); }
 .statusbar-badge.tone-ahead { color: var(--st-ahead); }
 .statusbar-badge.tone-behind { color: var(--st-behind); }
-.statusbar-spacer { flex: 1; }
+.statusbar-usage { flex: 0 0.000001 auto; min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden; margin-left: -5px; }
+.statusbar-spacer { flex: 1 1 0; min-width: 0; }
+.statusbar-segments { flex-shrink: 0; display: flex; align-items: center; gap: 14px; white-space: nowrap; }
+
+/* 사용량 칩·팝오버 (LIFE-636 E8) — 637 이 쓰는 공개 API 아님(계약 6). 색: 60% 주의 = --st-dirty · 80% 경고 = --st-error. */
+.statusbar-usage-chip {
+  flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px; height: 19px; padding: 0 5px;
+  border: 0; border-radius: var(--radius-badge); background: transparent; color: inherit; font: inherit; white-space: nowrap; overflow: hidden; cursor: pointer;
+}
+.statusbar-usage-chip:hover, .statusbar-usage-chip[aria-expanded="true"] { background: var(--bg-row-hover); color: var(--fg-muted); }
+.statusbar-usage-chip:focus-visible { outline: 1px solid var(--ring-sidebar); outline-offset: -1px; }
+.statusbar-usage-icon { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 11px; height: 11px; }
+.statusbar-usage-value, .statusbar-usage-reason { overflow: hidden; text-overflow: ellipsis; }
+.statusbar-usage-value.is-loading { color: var(--fg-faint); }
+.statusbar-usage-warn { flex-shrink: 0; color: var(--st-dirty); }
+.statusbar-usage-chip.is-error .statusbar-usage-reason { color: var(--fg-muted); }
+.statusbar-usage-value.tone-caution, .statusbar-usage-window-pct.tone-caution { color: var(--st-dirty); }
+.statusbar-usage-value.tone-warning, .statusbar-usage-window-pct.tone-warning { color: var(--st-error); }
+
+.statusbar-usage-popover {
+  position: fixed; z-index: 45; box-sizing: border-box; padding: 10px 12px 9px;
+  background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-modal); box-shadow: var(--shadow-menu);
+  font-family: var(--font-ui); font-size: 12px; letter-spacing: var(--ls-ui); color: var(--fg);
+}
+.statusbar-usage-pop-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.statusbar-usage-pop-title { flex: 1; font-weight: 500; }
+.statusbar-usage-refresh {
+  display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0;
+  border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted); cursor: pointer;
+}
+.statusbar-usage-refresh:hover:not(:disabled) { background: var(--bg-menu-hover); color: var(--fg); }
+.statusbar-usage-refresh:disabled { cursor: default; opacity: 0.6; }
+.statusbar-usage-refresh:focus-visible { outline: 1px solid var(--ring-sidebar); }
+.statusbar-usage-refresh-icon { width: 13px; height: 13px; }
+.statusbar-usage-refresh-icon.is-spinning { animation: statusbar-usage-spin 1s linear infinite; }
+@keyframes statusbar-usage-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .statusbar-usage-refresh-icon.is-spinning { animation: none; } }
+.statusbar-usage-windows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+.statusbar-usage-window-head { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.statusbar-usage-window-label { color: var(--fg-muted); }
+.statusbar-usage-window-pct { font-family: var(--font-mono); font-size: 11px; }
+.statusbar-usage-bar { height: 6px; border-radius: 3px; background: var(--bg-chip); overflow: hidden; }
+.statusbar-usage-bar-fill { height: 100%; border-radius: 3px; background: var(--fg-muted); }
+.statusbar-usage-bar-fill.tone-caution { background: var(--st-dirty); }
+.statusbar-usage-bar-fill.tone-warning { background: var(--st-error); }
+.statusbar-usage-window-reset { margin-top: 3px; font-size: 11px; color: var(--fg-dim); }
+.statusbar-usage-pop-note { margin: 9px 0 0; font-size: 11px; color: var(--fg-dim); }
+.statusbar-usage-pop-error { margin: 9px 0 0; font-size: 11.5px; color: var(--fg-notice); }
 
 /* --- 모달 공통 (AddRepoModal · CreateWorktreeModal · RemoveRepoConfirm · ConfirmClose) ------------ */
 

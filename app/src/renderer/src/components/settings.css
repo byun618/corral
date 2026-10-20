@@ -332,6 +332,9 @@
 .mobile-connected { color: var(--st-ok); font-size: 10px; }
 .mobile-empty { padding: 8px 0; }
 
+/* 외관 › 상태바 (LIFE-636 E9) — 스위치 옆 「로그인 정보 없음」. */
+.statusbar-settings-control { display: inline-flex; align-items: center; gap: 10px; }
+.statusbar-settings-note { font-size: 12px; color: var(--fg-dim); }
 /* --- LIFE-600 설정 › 작업 연결(E) — design-handoff §2 「연결 카드(설정)」·「레포 ↔ 기본 스페이스」, 목업 tasks-settings.dc.html.
    색은 기존 토큰(+ color-mix 알파)만, 스페이스 점만 --space-N. */
 .connection-add-buttons { display: flex; gap: 8px; }

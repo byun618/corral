@@ -72,7 +72,7 @@ import { pickPane } from './pane-utils.js'
 import { useOpenTabEntries } from './hooks/useOpenTabEntries.js'
 import { useUnread } from './hooks/useUnread.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
-import { agentPanes, sessionTitle, userLabel } from './session-title.js'
+import { sessionTitle, userLabel } from './session-title.js'
 import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
@@ -1992,17 +1992,6 @@ export function App(): React.JSX.Element {
   const aheadTotal = allWorktrees.reduce((sum, worktree) => sum + (worktree.gitStatus.ahead ?? 0), 0)
   const behindTotal = allWorktrees.reduce((sum, worktree) => sum + (worktree.gitStatus.behind ?? 0), 0)
 
-  // 활성 worktree 의 **전체** pane 수 (핸드오프 I) — 영역이 여럿이면 활성 탭 하나로는 못 센다.
-  const paneCount = activeWorkspace?.tabs.reduce((sum, tab) => sum + tab.panes.length, 0) ?? 0
-  const zoomedAnywhere = state.terminalGroups.some((group) => group.zoomedPaneId !== null)
-  // 상태바의 `{n} agents` 는 **에이전트 세션 수**다 — 전체 탭 수가 아니다.
-  // 09-gate1-fix.md D 가 사이드바를 에이전트 세션만 그리게 하고 01-criteria.md 부록이 "세션"을
-  // 갈라 정의한 뒤로, 전체 탭을 "agents" 라고 부르면 사이드바(2행)와 상태바("4 agents")가
-  // 같은 화면에서 서로 다른 말을 한다. E 의 원칙("근거 없는 수를 …인 양 보여주지 마라")과
-  // 같은 결이라 라벨이 세는 것과 맞췄다. **지시서에 없던 판단이므로 결과 문서에 적는다.**
-  const agentCount = agentPanes(activeWorkspace?.tabs ?? []).length
-  const terminal = state.terminal
-
   const paletteEntries: PaletteEntry[] = []
   const connected = state.link.phase === 'live'
   // 수정 r1 R1-B — 파일 탭이 활성이면 pane 대상 명령은 무동작이라 팔레트에서도 막아 둔다.
@@ -2231,11 +2220,6 @@ export function App(): React.JSX.Element {
         dirtyTotal={dirtyTotal}
         aheadTotal={aheadTotal}
         behindTotal={behindTotal}
-        groupCount={layout.groups.length}
-        paneCount={paneCount}
-        zoomed={zoomedAnywhere}
-        agentCount={agentCount}
-        termSize={terminal.cols === null || terminal.rows === null ? null : { cols: terminal.cols, rows: terminal.rows }}
         memoryLabel={memoryLabel}
       />
 

@@ -4,6 +4,7 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
+import type { UsageSnapshot } from './usage.js'
 import type { WorktreeWorkLink } from './work-link.js'
 import type { RelaunchAgentInput, StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
 import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
@@ -1148,6 +1149,11 @@ export type CorralApi = {
   revokeMobileDevice: (input: { id: string }) => Promise<{ ok: boolean }>
   /** 「다시 확인」 — 꺼져 있으면 읽기 점검만. */
   recheckMobile: () => Promise<MobileStatus | null>
+  // --- 상태바 사용량 (LIFE-636) — 창별 사용률·초기화 시각·상태 문구만(토큰·계정 값 없음). 다른 창의 요청이면 null ---
+  getUsage: () => Promise<UsageSnapshot | null>
+  /** 새로고침 — id 가 없으면 전부. 끝난 뒤 스냅숏. 진행 중이면 그 요청을 같이 기다린다. */
+  refreshUsage: (input: { id: string | null }) => Promise<UsageSnapshot | null>
+  onUsage: (listener: (snapshot: UsageSnapshot) => void) => () => void
   // --- 설정 › 작업 연결 (LIFE-600) — 토큰은 `addWorkConnection` 입력으로만 main 에 들어가고, 어떤 응답·push 에도 나오지 않는다(끝 4자만) ---
   getWorkSettings: () => Promise<WorkSettingsState | null>
   onWorkSettings: (listener: (state: WorkSettingsState) => void) => () => void

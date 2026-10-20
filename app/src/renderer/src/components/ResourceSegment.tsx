@@ -239,25 +239,31 @@ export function ResourceSegment(): React.JSX.Element {
     closePanel({ restoreFocus: false })
   }
 
-  const runClose = async (input: { target: CloseTarget; confirmed: boolean; confirmedPaneIds: string[] }): Promise<void> => {
+  const runClose = async (input: { target: CloseTarget; confirmed: boolean; confirmedPaneIds: string[]; gen: number }): Promise<void> => {
     const { target } = input
+    // 기다리는 사이 취소·Esc·패널 닫기(L1·L2) — 화면 상태도, 길 재시작도 건드리지 않는다.
+    const stale = (): boolean => input.gen !== closeGenRef.current
     let result: ResourceCloseResult
     try {
       result = target.kind === 'tab'
         ? await window.corral.closeTabs({ tabIds: [target.tabId], confirmed: input.confirmed, alwaysConfirm: target.alwaysConfirm, confirmedPaneIds: input.confirmedPaneIds })
         : await window.corral.closeResourcePane({ paneId: target.row.paneId, confirmed: input.confirmed, confirmedPaneIds: input.confirmedPaneIds })
     } catch (failure) {
+      if (stale()) return
       setPendingClose(null)
       setError(`닫지 못했다: ${failure instanceof Error ? failure.message : String(failure)}`)
       return
     }
+    if (result.outcome !== 'closed' && stale()) return
     switch (result.outcome) {
       case 'closed': {
-        setPendingClose(null)
         // 닫은 목록에 대상이 없으면 아무것도 닫히지 않았다(F6 — 그 사이 사라졌다) — 성공으로 보이지 않는다.
         const id = target.kind === 'tab' ? target.tabId : target.row.paneId
         const closed = result.closed.includes(id)
+        // main 에서 실제로 닫혔다는 사실이라 세대와 상관없이 남긴다(K6).
         if (closed) closedRef.current.add(target.row.paneId)
+        if (stale()) return
+        setPendingClose(null)
         setError(closed ? null : '닫힌 것이 없다 — 이미 없어졌을 수 있다')
         return
       }
@@ -306,7 +312,7 @@ export function ResourceSegment(): React.JSX.Element {
         setError('그 pane 이 없다(이미 닫혔다)')
         return
       case 'pane':
-        await runClose({ target: { kind: 'pane', row }, confirmed: false, confirmedPaneIds: [] })
+        await runClose({ target: { kind: 'pane', row }, confirmed: false, confirmedPaneIds: [], gen: input.gen })
         return
       case 'tab': {
         // 탭의 마지막 pane — 사이드바·탭 닫기(`closeTabsByUser`)와 같은 순서: 수정 문서 → 핀·실행 중 게이트.
@@ -322,6 +328,7 @@ export function ResourceSegment(): React.JSX.Element {
           target: { kind: 'tab', row, tabId: route.tabId, lastInWorktree: route.lastInWorktree, pinned, alwaysConfirm: getSettings().confirmClosePinnedTab && pinned },
           confirmed: false,
           confirmedPaneIds: [],
+          gen: input.gen,
         })
         return
       }
@@ -359,7 +366,7 @@ export function ResourceSegment(): React.JSX.Element {
     // 기존 탭 닫기와 같다 — 체크 + 확인만 저장하고, 저장이 실패해도 사용자가 확인한 닫기는 진행한다.
     if (input.dontAskAgainPatch !== null && !(await updateSettings(input.dontAskAgainPatch))) toast(CLOSE_SKIP_FAILED_NOTICE)
     if (gen !== closeGenRef.current) return
-    await runClose({ target, confirmed: true, confirmedPaneIds: input.confirmedPaneIds })
+    await runClose({ target, confirmed: true, confirmedPaneIds: input.confirmedPaneIds, gen })
   }
 
   const onPanelKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {

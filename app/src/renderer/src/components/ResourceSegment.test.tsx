@@ -1062,3 +1062,82 @@ describe('방금 닫은 pane 의 ✕ 는 다음 스냅샷까지 무시한다 (K6
     expect(corral.getResourceCloseRoute).toHaveBeenCalledTimes(2)
   })
 })
+
+// ── 게이트 ① 수정 1 (L1·L2) ──
+describe('닫기 IPC 를 기다리는 사이 패널을 닫으면 늦은 결과로 화면을 바꾸지 않는다 (L1·L2)', () => {
+  async function closeThenEsc(): Promise<(result: ResourceCloseResult) => void> {
+    const result = deferred<ResourceCloseResult>()
+    corral.closeResourcePane.mockReturnValueOnce(result.promise)
+    openR3()
+    click(q('[data-statusbar-resource-close="p-small"]') ?? document.body)
+    await flush()
+    expect(corral.closeResourcePane).toHaveBeenCalledTimes(1)
+    key(document.activeElement ?? document.body, 'Escape')
+    expect(q('[data-statusbar-resource-panel]')).toBeNull()
+    return result.resolve
+  }
+  it('ⓐ 늦게 온 needs-confirm 은 패널 없는 확인 창을 띄우지 않는다 (FINAL L1 재현)', async () => {
+    const resolve = await closeThenEsc()
+    resolve({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 't1', paneId: 'p-small', foreground: ['yes'] }] })
+    await flush()
+    await flush()
+    expect(q('[data-confirm-close-modal]')).toBeNull()
+  })
+  it('ⓑ 늦게 온 route-changed 는 길 조회·닫기 IPC 를 다시 보내지 않는다 (L2)', async () => {
+    const resolve = await closeThenEsc()
+    resolve({ outcome: 'route-changed', closed: [] })
+    await flush()
+    await flush()
+    await flush()
+    expect(corral.getResourceCloseRoute).toHaveBeenCalledTimes(1)
+    expect(corral.closeResourcePane).toHaveBeenCalledTimes(1)
+    expect(corral.closeTabs).not.toHaveBeenCalled()
+  })
+  it('늦게 온 closed 도 그 pane 의 ✕ 는 다음 스냅샷까지 무시한다 — main 에서 닫힌 사실은 남긴다 (K6)', async () => {
+    const resolve = await closeThenEsc()
+    resolve({ outcome: 'closed', closed: ['p-small'] })
+    await flush()
+    click(segment())
+    expect(q('[data-statusbar-resource-panel]')).not.toBeNull()
+    click(q('[data-statusbar-resource-close="p-small"]') ?? document.body)
+    await flush()
+    expect(corral.getResourceCloseRoute).toHaveBeenCalledTimes(1)
+  })
+  it('늦게 온 예외는 그 뒤 다른 행에서 띄운 확인 창을 내리지 않는다 (catch 도 같은 규칙)', async () => {
+    let fail: (reason: Error) => void = () => {}
+    corral.closeResourcePane.mockReturnValueOnce(new Promise<ResourceCloseResult>((_, reject) => {
+      fail = reject
+    }))
+    corral.closeTabs.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [] })
+    openR3()
+    click(q('[data-statusbar-resource-close="p-small"]') ?? document.body)
+    await flush()
+    key(document.activeElement ?? document.body, 'Escape')
+    click(segment())
+    click(q('[data-statusbar-resource-close="p-big"]') ?? document.body)
+    await flush()
+    await flush()
+    expect(q('[data-confirm-close-modal]')).not.toBeNull()
+    fail(new Error('늦은 실패'))
+    await flush()
+    await flush()
+    expect(q('[data-confirm-close-modal]')).not.toBeNull()
+    expect(q('[data-statusbar-resource-error]')).toBeNull()
+  })
+  it('길 조회가 패널을 닫은 뒤 실패해도 다시 열 때 그 오류는 없다 (K5 — runClose 의 늦은 오류는 L1 이 막아 이 길로 가른다)', async () => {
+    let fail: (reason: Error) => void = () => {}
+    corral.getResourceCloseRoute.mockReturnValueOnce(new Promise<ResourceCloseRoute>((_, reject) => {
+      fail = reject
+    }))
+    openR3()
+    click(q('[data-statusbar-resource-close="p-small"]') ?? document.body)
+    await flush()
+    key(document.activeElement ?? document.body, 'Escape')
+    fail(new Error('늦은 실패'))
+    await flush()
+    await flush()
+    click(segment())
+    expect(q('[data-statusbar-resource-panel]')).not.toBeNull()
+    expect(q('[data-statusbar-resource-error]')).toBeNull()
+  })
+})

@@ -55,7 +55,7 @@ import { useCellMetrics } from './hooks/useCellMetrics.js'
 import { useGroupLayout } from './hooks/useGroupLayout.js'
 import { useLifecycleActions } from './hooks/useLifecycleActions.js'
 import { useTermGroupSync, type GroupDeclaration } from './hooks/useTermGroupSync.js'
-import { useMemoryLabel } from './hooks/useMemoryLabel.js'
+import { ResourceSegment } from './components/ResourceSegment.js'
 import { useManualOrder } from './hooks/useManualOrder.js'
 import { useSidebarView } from './hooks/useSidebarView.js'
 import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
@@ -297,7 +297,6 @@ export function App(): React.JSX.Element {
   const manualOrder = useManualOrder({ repos: state?.repos ?? NO_REPOS, registry: { roots: state?.registry.roots ?? NO_ROOTS, generation: state?.registryGeneration ?? 0 } })
   // LIFE-470 — Workspace options(그룹·정렬·필터). 읽기는 manualOrder 와 같은 첫 getUiPrefs 에 얹는다.
   const sidebarView = useSidebarView()
-  const memoryLabel = useMemoryLabel()
 
   /**
    * 상태가 화면에 오기 **전에** pane 제목의 스피너 프레임을 억제한다 (C12).
@@ -2220,7 +2219,7 @@ export function App(): React.JSX.Element {
         dirtyTotal={dirtyTotal}
         aheadTotal={aheadTotal}
         behindTotal={behindTotal}
-        memoryLabel={memoryLabel}
+        resourceSegment={<ResourceSegment />}
       />
 
       {paletteOpen ? <CommandPalette entries={paletteEntries} onClose={restore => {

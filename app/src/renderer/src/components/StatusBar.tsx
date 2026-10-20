@@ -11,14 +11,14 @@ export function StatusBar({
   dirtyTotal,
   aheadTotal,
   behindTotal,
-  memoryLabel,
+  resourceSegment,
 }: {
   inert?: boolean
   activeWorktreeLabel: string | null
   dirtyTotal: number
   aheadTotal: number
   behindTotal: number
-  memoryLabel: string | null
+  resourceSegment: React.ReactNode
 }): React.JSX.Element {
   const label = `corral${activeWorktreeLabel === null ? '' : ` / ${activeWorktreeLabel}`}`
   return (
@@ -32,7 +32,7 @@ export function StatusBar({
       </div>
       <div className="statusbar-spacer" />
       <div className="statusbar-segments" data-statusbar-segments>
-      {memoryLabel === null ? null : <span>{memoryLabel}</span>}
+      {resourceSegment}
       </div>
     </div>
   )

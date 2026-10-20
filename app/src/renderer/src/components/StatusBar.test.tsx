@@ -36,7 +36,7 @@ async function render(props: RenderProps = {}): Promise<void> {
       dirtyTotal: props.dirtyTotal ?? 0,
       aheadTotal: props.aheadTotal ?? 0,
       behindTotal: props.behindTotal ?? 0,
-      memoryLabel: props.memoryLabel === undefined ? '12.3 MB' : props.memoryLabel,
+      resourceSegment: props.memoryLabel === undefined ? createElement('span', null, '12.3 MB') : props.memoryLabel === null ? null : createElement('span', null, props.memoryLabel),
     }))
   })
 }

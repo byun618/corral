@@ -1,0 +1,2 @@
+// LIFE-604 check-data-attrs 양성 대조 — 출처 이름으로 분기하는 줄(일부러 넣음). 이 파일은 번들·시험에 들어가지 않는다.
+export const sample = (connection: { sourceId: string }): boolean => connection.sourceId === 'mock-jira'

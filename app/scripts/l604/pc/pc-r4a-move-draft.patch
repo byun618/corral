@@ -1,0 +1,17 @@
+diff --git a/app/src/renderer/src/hooks/useQuickCreate.ts b/app/src/renderer/src/hooks/useQuickCreate.ts
+index dca53d020..c2ea48909 100644
+--- a/app/src/renderer/src/hooks/useQuickCreate.ts
++++ b/app/src/renderer/src/hooks/useQuickCreate.ts
+@@ -291,11 +291,7 @@ export function useQuickCreate({ page, space, writeBlockOf, onCreated, openItem,
+       // 옛 스페이스 초안(R4-A) — 새 스페이스에 초안이 있어 그것을 열 때만 지금 글을 옛 스페이스 초안으로 둔다. 새 스페이스로 글을 옮길 때(초안 없음)는
+       // 옛 쪽에 남기지 않는다(옮김 — 새 쪽에서 만들면 옛 쪽에 같은 글이 남지 않게). 남기지 않을 때는 연 때의 초안만 지운다(비운 초안이 되살아나지 않게,
+       // 그 사이 닫은 뒤 실패로 돌아온 초안은 남긴다 — R3-B). 진입점 값으로 연 폼이면 옛 초안을 건드리지 않는다(R1-C).
+-      if (!current.keepDraft) {
+-        const oldKey = draftKey(current.target)
+-        if (draft !== null && hasDraftContent({ form: current.form, fieldKeys })) drafts.current.set(oldKey, current.form)
+-        else if (drafts.current.get(oldKey) === (current.draftAtOpen ?? undefined)) drafts.current.delete(oldKey)
+-      }
++      if (hasDraftContent({ form: current.form, fieldKeys }) && !current.keepDraft) drafts.current.set(draftKey(current.target), current.form)
+       const fresh = freshForm({ target, statusKey: null, placement: current.form.placement })
+       if (draft === null) {
+         const form = { ...fresh, title: current.form.title, body: current.form.body }

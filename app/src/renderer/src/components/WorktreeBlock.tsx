@@ -32,6 +32,7 @@ import { AgentFullRow } from './AgentFullRow.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
 import { Chevron, EllipsisIcon, PlusIcon } from './AgentStateDot.js'
 import { HoverCard } from './HoverCard.js'
+import { WorktreeTaskChip, WorktreeTaskRow, type WorktreeTaskLine } from './WorktreeTask.js'
 import { SessionRow } from './SessionRow.js'
 import { GitCommitIcon, NoteIcon, StarIcon, TrashIcon, WorkflowIcon } from './SidebarIcons.js'
 import { lineageIndent } from '../sidebar-sections.js'
@@ -68,6 +69,7 @@ export function WorktreeBlock({
   onCreateShell,
   onCreateAgent,
   repoLabel = null,
+  taskLine = null,
   layout = 'detailed',
   showAgents = true,
   agentLayout = 'compact',
@@ -128,6 +130,8 @@ export function WorktreeBlock({
   onCloseWorktree: () => void
   onCreateShell: () => void
   onCreateAgent: (kind: AgentKind) => void
+  /** 링크된 작업 줄(LIFE-603 C11) — 링크가 없으면 null. */
+  taskLine?: WorktreeTaskLine | null
 }): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -359,6 +363,7 @@ export function WorktreeBlock({
                     )}
                   />
                 )}
+                {compact && taskLine !== null ? <WorktreeTaskChip line={taskLine} suppressed={reordering} testId={worktree.path} /> : null}
                 {groupGlyph === null ? null : (
                   <span className="worktree-groups-glyph" data-worktree-groups={worktree.path} title="영역 레이아웃이 보존돼 있다">
                     {groupGlyph}
@@ -449,6 +454,7 @@ export function WorktreeBlock({
                   {markLabel !== null ? <span className={`worktree-mark tone-${tone}`}>{markLabel}</span> : null}
                 </div>
               )}
+              {!compact && taskLine !== null ? <WorktreeTaskRow line={taskLine} suppressed={reordering} testId={worktree.path} /> : null}
             </div>
             {/* 열린 workspace 가 없어도 그린다 — 마지막 pane 이 끝나고 workspace 가 사라진 worktree 의 보존 행(R1). */}
             {showAgents && roots.length > 0 && full ? (

@@ -170,8 +170,8 @@ export interface ManifestExpectation { version: string; sourceKind: string; loca
  */
 export const EXPECTED_MANIFESTS: Readonly<Record<AgentKind, ManifestExpectation>> = {
     claude: { version: '2026.09.04.1', sourceKind: 'bundled', localOverrideShadowingRemote: false },
-    codex: { version: '2026.09.21.3', sourceKind: 'bundled', localOverrideShadowingRemote: false },
-    grok: { version: '2026.09.21.3', sourceKind: 'bundled', localOverrideShadowingRemote: false },
+    codex: { version: '2026.10.15.2', sourceKind: 'bundled', localOverrideShadowingRemote: false },
+    grok: { version: '2026.10.15.2', sourceKind: 'bundled', localOverrideShadowingRemote: false },
 }
 export interface ManifestReport { agent?: unknown; source_kind?: unknown; active_version?: unknown; local_override_shadowing_remote?: unknown }
 export interface DetectManifestObservation {

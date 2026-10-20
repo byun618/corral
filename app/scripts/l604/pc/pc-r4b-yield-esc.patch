@@ -1,0 +1,13 @@
+diff --git a/app/src/renderer/src/components/QuickCreate.tsx b/app/src/renderer/src/components/QuickCreate.tsx
+index dd0918235..2b442a74a 100644
+--- a/app/src/renderer/src/components/QuickCreate.tsx
++++ b/app/src/renderer/src/components/QuickCreate.tsx
+@@ -33,7 +33,7 @@ export function QuickCreateModal({ model, yieldKeys }: { model: QuickCreateModel
+     if (!open) { setMenu(null); return }
+     const onKey = (event: KeyboardEvent): void => {
+       // 위층이 모달 위에 열렸으면 그 Esc 를 먹지 않는다 — 위층 리스너(설정 등)가 받아 위층만 닫는다(R4-B).
+-      if (event.key !== 'Escape' || yieldRef.current) return
++      if (event.key !== 'Escape') return
+       // 조합 중 Esc 는 조합만 끝낸다 — 그래도 페이지 Esc 로는 내려가지 않는다.
+       event.stopPropagation()
+       if (imeComposing(event)) return

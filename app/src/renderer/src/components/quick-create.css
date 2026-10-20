@@ -1,0 +1,78 @@
+/* 작업 만들기 (LIFE-604 · 목업 C) — 빠른 생성 모달 · 머리 「만들기」 · 칸 「+ 추가」 · 섹션 「추가」. 값은 기존 토큰만(새 토큰 --w-modal-quick-create). */
+
+/* --- 머리 「만들기」(accent, 검색과 닫기 사이) --- */
+.tasks-create {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 0; border-radius: var(--radius);
+  background: var(--accent); color: var(--fg-on-accent); font-size: 12px; font-weight: 600; white-space: nowrap; flex: 0 0 auto; cursor: pointer;
+}
+.tasks-create:hover:not(.is-disabled) { background: var(--accent-hi); }
+.tasks-create.is-disabled { opacity: .4; cursor: default; }
+.tasks-create-kbd { font-size: 10px; font-weight: 500; opacity: .6; }
+
+/* --- 모달 --- */
+.quick-create-scrim { align-items: flex-start; padding-top: 12vh; z-index: 60; }
+.modal-quick-create { width: var(--w-modal-quick-create); max-width: calc(100vw - 32px); display: flex; flex-direction: column; }
+.qc-head { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--fg-muted); }
+.qc-space { color: var(--fg); }
+.qc-crumb { color: var(--fg-dim); }
+.qc-draft-note { font-size: 10.5px; color: var(--fg-dim); }
+.qc-anchor { position: relative; display: inline-flex; }
+.qc-target { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: transparent; color: inherit; cursor: pointer; font-size: 12px; }
+.qc-menu { top: 28px; z-index: 70; }
+.qc-menu-wide { width: 280px; }
+.qc-key { flex: 0 0 auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); }
+
+.qc-body { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; }
+.qc-kinds { display: flex; gap: 2px; width: max-content; padding: 2px; border-radius: 7px; background: color-mix(in srgb, var(--fg) 3%, transparent); }
+.qc-kind { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted); font-size: 11.5px; cursor: pointer; }
+.qc-kind.is-on { background: var(--bg-accent); color: var(--fg); }
+.qc-title { height: 34px; padding: 0; background: transparent; border: none; outline: none; color: var(--fg); font-size: 16px; font-weight: 600; }
+.qc-desc { padding: 0; background: transparent; border: none; outline: none; resize: none; color: var(--fg-menu); font-size: 12.5px; line-height: 1.6; font-family: inherit; }
+.qc-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.qc-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 240px; height: 24px; padding: 0 8px; border-radius: 12px; border: 1px solid var(--line-strong); background: transparent; color: var(--fg-muted); font-size: 11.5px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qc-chip:hover:not(:disabled) { color: var(--fg); }
+.qc-chip:disabled { cursor: default; opacity: .6; }
+/* LIFE-605 C8 — 이 종류가 받지 않는 칸(생성 메타 accepts). */
+.qc-chip.is-disabled, .qc-desc.is-disabled { opacity: .5; }
+.qc-prio-glyph { font-family: var(--font-mono); color: var(--fg-dim); }
+.qc-place { display: inline-flex; gap: 2px; padding: 2px; border-radius: 12px; border: 1px solid var(--line); }
+.qc-place-opt { height: 18px; padding: 0 8px; display: inline-flex; align-items: center; border: 0; border-radius: 9px; background: transparent; color: var(--fg-muted); font-size: 11px; cursor: pointer; }
+.qc-place-opt.is-on { background: var(--bg-accent); color: var(--fg); }
+.qc-place-opt:disabled { cursor: default; }
+
+.qc-required { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: var(--radius-modal); border: 1px solid var(--line-strong); background: color-mix(in srgb, var(--fg) 2%, transparent); }
+.qc-required-head { font-size: 11px; color: var(--fg-muted); }
+.qc-field { display: flex; align-items: center; gap: 10px; }
+.qc-field-label { font-size: 12px; width: 120px; flex: 0 0 auto; }
+.qc-star { color: var(--st-error); }
+.qc-field-input { flex: 1; height: 24px; padding: 0 8px; border-radius: var(--radius-sm); border: 1px solid var(--line-strong); background: transparent; color: var(--fg); font-size: 12px; outline: none; }
+.qc-unsupported { font-size: 11.5px; color: var(--st-error); }
+.qc-meta-error, .qc-error { font-size: 11.5px; color: var(--st-error); display: flex; gap: 8px; align-items: center; }
+.qc-notice { font-size: 11.5px; color: var(--fg-muted); }
+.qc-link { border: 0; background: transparent; color: var(--accent); cursor: pointer; padding: 0; font-size: 11.5px; }
+
+.qc-foot { display: flex; align-items: center; gap: 8px; padding: 10px 12px 10px 16px; border-top: 1px solid var(--line); }
+.qc-switch { display: inline-flex; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--fg-muted); font-size: 12px; cursor: pointer; padding: 0; }
+.qc-track { display: inline-flex; align-items: center; width: 32px; height: 16px; padding: 2px; border-radius: 9999px; background: var(--line-strong); transition: background-color 150ms; }
+.qc-track.is-on { background: var(--accent); }
+.qc-thumb { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--bg-surface); transition: transform 150ms; }
+.qc-track.is-on .qc-thumb { transform: translateX(16px); }
+.qc-problem { font-size: 11px; color: var(--fg-dim); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qc-cancel { height: 28px; padding: 0 12px; border: 0; border-radius: var(--radius); background: transparent; color: var(--fg-muted); font-size: 12px; cursor: pointer; }
+.qc-cancel:hover { background: color-mix(in srgb, var(--bg-accent) 70%, transparent); color: var(--fg); }
+.qc-submit { display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px; border: 0; border-radius: var(--radius); background: var(--accent); color: var(--fg-on-accent); font-size: 12px; font-weight: 600; cursor: pointer; }
+.qc-submit:hover:not(:disabled) { background: var(--accent-hi); }
+.qc-submit:disabled { opacity: .45; cursor: default; }
+.qc-kbd { font-size: 10px; font-weight: 500; opacity: .6; }
+
+/* --- 칸 「+ 추가」 · 섹션 「추가」 --- */
+.qc-inline-open { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 6px; border: 0; border-radius: var(--radius); background: transparent; color: var(--fg-dim); font-size: 11.5px; cursor: pointer; text-align: left; }
+.qc-inline-open:hover:not(.is-disabled) { background: color-mix(in srgb, var(--fg) 4%, transparent); color: var(--fg-muted); }
+.qc-inline-open.is-disabled { opacity: .45; cursor: default; }
+.qc-inline { display: flex; flex-direction: column; gap: 4px; }
+.qc-inline-input { height: 32px; padding: 0 10px; border-radius: var(--radius-modal); background: var(--bg-raised); border: 1px solid var(--accent); outline: none; color: var(--fg); font-size: 12.5px; }
+.qc-inline-note { font-size: 11px; color: var(--fg-dim); }
+.qc-inline-error { font-size: 11px; color: var(--st-error); }
+.tasks-section-add { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; margin-left: auto; border: 0; border-radius: var(--radius); background: transparent; color: var(--fg-muted); font-size: 11.5px; cursor: pointer; }
+.tasks-section-add:hover:not(.is-disabled) { background: color-mix(in srgb, var(--bg-accent) 50%, transparent); color: var(--fg); }
+.tasks-section-add.is-disabled { opacity: .45; cursor: default; }

@@ -23,6 +23,8 @@ export function validateWorkspace(inv: Invocation): void {
   // LIFE-394 §4.1: worktree create carries the agent flags and synthesizes terminal create --agent.
   if (inv.command === 'worktree create') validateAgentFlags(inv)
   else for (const key of ['agent', ...AGENT_OPTIONS]) if (key in f) reject(`--${key} applies to worktree create only`)
+  // LIFE-603 D8: a draft is a prompt the runtime types but does not submit — it needs a body to type.
+  if (f.draft && (f.agent === undefined || (f.prompt === undefined && f['prompt-file'] === undefined))) throw new RuntimeError('invalid_request', '--draft requires --agent and --prompt or --prompt-file')
   if (f['request-id'] !== undefined && !REQUEST_ID.test(String(f['request-id']))) reject('--request-id must be r1.<13-digit Unix milliseconds>.<UUID>')
   if (f['run-hooks'] || (inv.command === 'worktree create' && f.setup === 'run')) throw new RuntimeError('unsupported', 'Setup/archive hooks require LIFE-412')
   for (const key of required[inv.command] ?? []) stringFlag(f, key, true)
@@ -274,7 +276,7 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
     try {
       await git(repo.path, ['worktree', 'add', '-b', name, target, base], ctx.signal)
       added = true
-      metadata.put(target, { ...update, repoId: repo.id, createdBranch: true })
+      metadata.create(target, { ...update, repoId: repo.id, createdBranch: true })
       const activated = f.activate ? await desktop!.activate(repo.path, target) : undefined
       const worktree = (await metadata.list(repos, ctx.signal)).find(row => row.path === target)!
       const created = { worktree, lineage: { parentWorktreeId: worktree.parentWorktreeId, childWorktreeIds: worktree.childWorktreeIds }, warnings: [], setupReceipt: { policy: flag('setup') ?? 'inherit', status: 'skipped', ...(activated ?? {}) } }
@@ -285,6 +287,7 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
       const requestId = derivedRequestId(need('request-id'), 'terminal')
       const forwarded: Flags = { worktree: worktree.id, agent: need('agent'), 'request-id': requestId }
       for (const key of AGENT_OPTIONS) if (f[key] !== undefined) forwarded[key] = f[key]!
+      if (f.draft) forwarded.draft = true
       // The body was read and admitted above; it travels as text so the child never resolves the
       // path again — inside the new checkout that name is either absent or a different file (R6).
       if (promptBody !== undefined) { delete forwarded['prompt-file']; forwarded.prompt = promptBody }

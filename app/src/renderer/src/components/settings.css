@@ -335,3 +335,92 @@
 /* 외관 › 상태바 (LIFE-636 E9) — 스위치 옆 「로그인 정보 없음」. */
 .statusbar-settings-control { display: inline-flex; align-items: center; gap: 10px; }
 .statusbar-settings-note { font-size: 12px; color: var(--fg-dim); }
+/* --- LIFE-600 설정 › 작업 연결(E) — design-handoff §2 「연결 카드(설정)」·「레포 ↔ 기본 스페이스」, 목업 tasks-settings.dc.html.
+   색은 기존 토큰(+ color-mix 알파)만, 스페이스 점만 --space-N. */
+.connection-add-buttons { display: flex; gap: 8px; }
+.connection-btn {
+  display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px; white-space: nowrap; cursor: pointer;
+  font: inherit; font-size: 12px; color: var(--fg); background: transparent; border: 1px solid var(--line-strong); border-radius: 6px;
+}
+.connection-btn:hover:not(:disabled) { background: var(--bg-accent); }
+.connection-btn:disabled { opacity: .45; cursor: default; }
+.connection-btn.is-ghost { border-color: transparent; color: var(--fg-muted); }
+.connection-btn.is-ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--bg-accent) 70%, transparent); color: var(--fg); }
+.connection-btn.is-primary { border-color: transparent; background: var(--accent); color: var(--bg-surface); font-weight: 600; }
+.connection-btn.is-primary:hover:not(:disabled) { background: var(--accent-hi); }
+.connection-btn.is-danger { border-color: transparent; color: var(--st-error); }
+.connection-btn.is-danger:hover { background: color-mix(in srgb, var(--st-error) 12%, transparent); }
+.connection-list { display: flex; flex-direction: column; gap: 12px; }
+.connection-empty { margin: 0; padding: 8px 0; font-size: 12px; color: var(--fg-muted); }
+.connection-form {
+  display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: var(--radius-settings-card);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); background: var(--bg-raised);
+}
+.connection-form-title { font-size: 13px; font-weight: 600; }
+.connection-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--fg-muted); }
+.connection-field input {
+  height: 32px; padding: 0 10px; border-radius: var(--radius-settings-control); background: var(--bg-input-fill); border: 1px solid var(--line-strong);
+  outline: none; color: var(--fg); font-family: var(--font-mono); font-size: 12px;
+}
+.connection-field input:focus { border-color: var(--accent); }
+.connection-field input[readonly] { color: var(--fg-dim); }
+.connection-field-hint { font-size: 11.5px; line-height: 1.5; color: var(--fg-dim); }
+.connection-form-hint { font-size: 11.5px; line-height: 1.5; color: var(--fg-dim); }
+.connection-form-error { font-size: 12px; line-height: 1.5; color: var(--st-error); }
+.connection-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.connection-card {
+  display: flex; flex-direction: column; overflow: hidden; border-radius: var(--radius-settings-card);
+  border: 1px solid color-mix(in srgb, var(--line) 50%, transparent); background: var(--bg-raised); box-shadow: var(--shadow-xs);
+}
+.connection-card-head { display: flex; align-items: center; gap: 14px; padding: 14px 16px; }
+.connection-mono { width: 32px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 8px; background: var(--bg-chip); font-size: 11px; font-weight: 700; color: var(--fg); }
+.connection-card-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.connection-card-title { display: flex; align-items: center; gap: 8px; }
+.connection-name { font-size: 14px; font-weight: 500; }
+.connection-meta { font-size: 12px; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.connection-pill {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 10px; font-size: 11px;
+  border: 1px solid color-mix(in srgb, var(--st-error) 35%, transparent); color: var(--st-error);
+}
+.connection-pill.is-ok { color: var(--st-ok); background: color-mix(in srgb, var(--st-ok) 8%, transparent); border-color: color-mix(in srgb, var(--st-ok) 30%, transparent); }
+.connection-pill.is-forbidden { color: var(--st-dirty); border-color: color-mix(in srgb, var(--st-dirty) 35%, transparent); }
+.connection-pill.is-testing, .connection-pill.is-unchecked { color: var(--fg-muted); border-color: var(--line-strong); }
+.connection-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.connection-spinner { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; border-top-color: transparent; animation: connection-spin .8s linear infinite; }
+@keyframes connection-spin { to { transform: rotate(360deg); } }
+.connection-notice, .connection-error {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 16px; font-size: 12px; line-height: 1.5;
+  background: var(--bg-notice); border-top: 1px solid var(--line-notice); color: var(--fg-notice);
+}
+.connection-error-text { flex: 1; }
+.connection-link { flex: 0 0 auto; padding: 0; border: 0; background: none; font: inherit; color: var(--accent); cursor: pointer; }
+.connection-link:hover { color: var(--accent-hi); }
+.connection-spaces { display: flex; flex-direction: column; padding: 4px 16px 12px; border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+.connection-spaces-title { padding: 10px 0 4px; font-size: 11px; font-weight: 600; color: var(--fg-muted); }
+.connection-spaces-empty { padding: 8px 0; font-size: 12px; color: var(--fg-dim); }
+.connection-space { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; min-height: 36px; border-top: 1px solid color-mix(in srgb, var(--line) 40%, transparent); }
+.connection-space-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 2px; }
+.connection-space-name { flex: 1; min-width: 0; font-size: 13px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.connection-space.is-hidden .connection-space-name { color: var(--fg-dim); }
+.connection-space-count { font-size: 11px; color: var(--fg-dim); }
+/* 실패 줄 = 행 아래 전폭 한 줄(LIFE-615) — 이름 칸을 밀지 않고, 긴 경로 문구도 줄바꿈으로 다 읽힌다. 스페이스 행·레포 기본 행 공통. */
+.connection-space-error { flex: 0 0 100%; min-width: 0; padding: 0 0 8px; font-size: 11px; line-height: 1.45; color: var(--st-error); overflow-wrap: anywhere; }
+.connection-space:has(> .connection-space-error) { padding-top: 8px; }
+.connection-space > .connection-space-error { padding-left: 18px; }
+.connection-space-switch.is-locked { cursor: not-allowed; }
+.connection-space-switch.is-locked .settings-switch { opacity: .4; pointer-events: none; }
+.repo-default-list { display: flex; flex-direction: column; padding: 0 16px; border-radius: var(--radius-settings-card); border: 1px solid color-mix(in srgb, var(--line) 50%, transparent); background: var(--bg-raised); }
+.repo-default { position: relative; display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; min-height: 44px; }
+.repo-default:has(> .connection-space-error) { padding-top: 8px; }
+/* 실패 줄이 있으면 메뉴는 그 줄 아래 흐름에 둔다 — 떠 있는 메뉴가 실패 문구를 가리지 않게(LIFE-615 F2-3). */
+.repo-default:has(> .connection-space-error) > .repo-default-menu { position: static; margin: 0 0 8px auto; }
+.repo-default.has-sep { border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+.repo-default-name { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repo-default-menu {
+  position: absolute; right: 0; top: 40px; z-index: 30; width: 240px; padding: 4px; display: flex; flex-direction: column;
+  background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: var(--shadow-menu);
+}
+.repo-default-option { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 8px; border: 0; border-radius: 4px; background: none; font: inherit; font-size: 11.5px; color: var(--fg); cursor: pointer; text-align: left; }
+.repo-default-option:hover { background: var(--bg-accent); }
+.repo-default-option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repo-default-option-conn { font-size: 10.5px; color: var(--fg-dim); }

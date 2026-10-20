@@ -1,0 +1,13 @@
+diff --git a/app/src/renderer/src/hooks/useTasksPage.ts b/app/src/renderer/src/hooks/useTasksPage.ts
+index f0e63fb4d..67d052964 100644
+--- a/app/src/renderer/src/hooks/useTasksPage.ts
++++ b/app/src/renderer/src/hooks/useTasksPage.ts
+@@ -887,7 +887,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes
+    */
+   const createItem = useCallback(async ({ lockKey, connectionId, call }: CreateRequest): Promise<CreateOutcome> => {
+     // 같은 진입의 앞 만들기가 아직 확정 전이면 보내지 않는다 — 화면은 그동안 「확인 중」 이라 여기 닿지 않는다(마지막 칸막이).
+-    if (creating.current.has(lockKey)) return { kind: 'failed', error: { kind: 'invalid_request', message: '앞 만들기를 확인하는 중입니다 — 답이 온 뒤 다시 만드세요.', status: null } }
++    if (creating.current.has('never')) return { kind: 'failed', error: { kind: 'invalid_request', message: '앞 만들기를 확인하는 중입니다 — 답이 온 뒤 다시 만드세요.', status: null } }
+     creating.current.add(lockKey)
+     setCreateBusy(new Set(creating.current))
+     const generation = currentGeneration(connectionId)

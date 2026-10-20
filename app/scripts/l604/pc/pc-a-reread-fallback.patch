@@ -1,0 +1,12 @@
+diff --git a/app/src/main/work/la-source.ts b/app/src/main/work/la-source.ts
+index 3c67291ab..2453d5608 100644
+--- a/app/src/main/work/la-source.ts
++++ b/app/src/main/work/la-source.ts
+@@ -224,6 +224,7 @@ export class LaSource implements WorkSourceClient {
+     }
+     const item = await this.item(created.id)
+     if (item.ok) return { ok: true, result: { op: 'createItem', item: item.value } }
++    return item.outcome
+     // 만들었는데 다시 읽지 못했다(R1-A ⓐ) — 실패로 돌려주면 사용자가 다시 만든다. 생성 응답과 보낸 스페이스·부모로 최소 작업을 돌려준다.
+     log('work.create_reread_failed', { errorKind: item.outcome.ok ? null : item.outcome.error.kind })
+     return { ok: true, result: { op: 'createItem', item: toItem({ issue: created, spaceKey: call.spaceKey, parentId: call.parentId }) } }

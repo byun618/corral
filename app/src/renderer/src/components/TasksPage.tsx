@@ -17,6 +17,7 @@ import { spaceCapabilities, WORK_PRIORITIES } from '../../../shared/work.js'
 import { useTaskDrag, type TaskDrop } from '../hooks/useTaskDrag.js'
 import { DETAIL_READING, useTasksPage, type MoveNotice } from '../hooks/useTasksPage.js'
 import { useTaskDetail } from '../hooks/useTaskDetail.js'
+import { useDetailLayout } from '../hooks/useDetailLayout.js'
 import {
   NO_FILTERS,
   PRIORITY_LABEL,
@@ -462,6 +463,24 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   })()
 
   const toggleSelect = (uid: string): void => setSelectedId(selectedId === uid ? null : uid)
+  // LIFE-670 — 패널 모드는 보기 영역을 밀어낸다(좁으면 덮기로 물러남). 전체 모드는 덮기 그대로.
+  const mainRef = useRef<HTMLDivElement | null>(null)
+  const detailPlacement = useDetailLayout({ mainRef, open: selectedId !== null, full: prefs.detailFull })
+  // LIFE-670 P3 — 상세를 열거나 바꿀 때만 선택 카드를 보기 영역 안으로 맞춘다. 재렌더(데이터 갱신)에는 다시 끌어오지 않는다.
+  // 선택 카드가 아직 없으면(열린 상세 복원 — 보드 자료가 뒤에 온다, r1 L4) 그 카드가 처음 나타나는 렌더에서 1회 맞춘다.
+  // 자료를 다 받았는데도(ready·error) 없으면 지금 보기·필터에 없는 카드다 — 기다림을 푼다. 나중에 필터를 풀어 나타나도 끌어오지 않는다(r2 L-E).
+  const pendingReveal = useRef<string | null>(null)
+  useEffect(() => { pendingReveal.current = selectedId }, [selectedId])
+  useEffect(() => {
+    if (pendingReveal.current === null) return
+    const selected = mainRef.current?.querySelector<HTMLElement>('.tasks-body .is-selected') ?? null
+    if (selected === null) {
+      if (load.phase === 'ready' || load.phase === 'error') pendingReveal.current = null
+      return
+    }
+    pendingReveal.current = null
+    if (typeof selected.scrollIntoView === 'function') selected.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  })
 
   // --- 본문 ---
   const noConnection = settings !== null && settings.connections.length === 0
@@ -668,7 +687,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         <button type="button" className="tasks-close" data-tasks-close="" onClick={onClose} title={shortcut === null ? '닫기 (Esc)' : `닫기 (Esc · ${shortcut})`} aria-label="작업 페이지 닫기">✕</button>
       </header>
 
-      <div className="tasks-main" inert={overlay}>
+      <div ref={mainRef} className={`tasks-main${detailPlacement === 'push' ? ' is-detail-push' : ''}`} data-detail-layout={detailPlacement} inert={overlay}>
       <div className="tasks-filters" data-tasks-filters="">
         <FilterMenu
           id="kind"

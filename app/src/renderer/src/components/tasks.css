@@ -72,7 +72,10 @@
 .tasks-check { width: 12px; color: var(--accent); }
 
 /* --- 필터 칩 24 --- */
-.tasks-filters { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.tasks-filters { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+/* LIFE-670 r2 M-A — 좁은 보기(밀기 최소 400)에서 칩 글자가 한 글자씩 꺾이지 않게: 칩·버튼은 줄지 않고 줄바꿈하지 않는다. 줄이 넘치면 칩 단위로 다음 줄. 검색 안내만 남은 폭으로 준다. */
+.tasks-filters > *, .tasks-list-tools > * { flex-shrink: 0; white-space: nowrap; }
+.tasks-filters > .tasks-search-note { flex: 1 1 auto; min-width: 0; }
 .tasks-filter {
   height: 24px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line-strong); background: transparent;
   color: var(--fg-muted); cursor: pointer; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;
@@ -185,11 +188,16 @@
 .tasks-drag-preview { position: fixed; z-index: 60; pointer-events: none; opacity: .9; box-shadow: var(--shadow-menu); transform: rotate(1deg); }
 
 /* --- 백로그 --- */
-.tasks-backlog { display: flex; flex-direction: column; gap: 12px; max-width: 980px; }
-.tasks-backlog-section { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+/* min-width: min-content — 행이 보기보다 넓으면(제목 최소 120 + 고정 열) 백로그 전체가 .tasks-scroll 가로 스크롤로 닿고, 구획 머리·행 배경이 그 폭을 채운다
+   (LIFE-670 r2 L-B — r1 의 구획 overflow-x:auto 는 스크롤하면 머리·행이 구획 폭에서 끊겼다). 제목은 contain 으로 내재 폭이 120 이라 긴 제목이 폭을 키우지 않는다. */
+.tasks-backlog { display: flex; flex-direction: column; gap: 12px; max-width: 980px; min-width: min-content; }
+/* overflow: clip — 모서리는 그대로 자르되 스크롤 그릇이 되지 않아, 머리의 구획 이름이 .tasks-scroll 기준으로 sticky 된다(LIFE-670 r2 L-B). */
+.tasks-backlog-section { border: 1px solid var(--line); border-radius: 10px; overflow: clip; }
 .tasks-backlog-section.drag-target.is-over { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 .tasks-backlog-section.drag-blocked { opacity: .38; }
 .tasks-backlog-head { height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 12px; font-weight: 500; background: color-mix(in srgb, var(--fg) 2%, transparent); border-bottom: 1px solid var(--line); }
+/* 가로 스크롤해도 구획 이름·개수가 보기 왼쪽에 남는다(LIFE-670 r2 L-B). */
+.tasks-backlog-title { position: sticky; left: 12px; display: inline-flex; align-items: center; gap: 8px; }
 .tasks-backlog-list { min-height: 34px; }
 .tasks-backlog-empty { height: var(--h-issue-row); display: flex; align-items: center; padding: 0 12px; color: var(--fg-dim); font-size: 11.5px; }
 
@@ -204,7 +212,9 @@
 .tasks-grip { width: 12px; color: var(--fg-faint); cursor: grab; font-size: 10px; letter-spacing: -2px; user-select: none; }
 .tasks-grip.is-locked { cursor: not-allowed; opacity: .4; }
 .tasks-row-key { width: 72px; flex: 0 0 auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); }
-.tasks-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* LIFE-670 r2 M-A — 제목은 120 아래로 눌리지 않는다(넘치는 분은 그릇 가로 스크롤). contain: inline-size = 내재 폭을 min-width 로 묶어 긴 제목이 그릇 폭을 키우지 않게. */
+.tasks-row-title { flex: 1; min-width: var(--w-row-title-min); contain: inline-size; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tasks-row > :not(.tasks-row-title) { flex-shrink: 0; }
 .tasks-row-title.is-missing { color: var(--fg-dim); }
 .tasks-row-space { width: 110px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; color: var(--fg-dim); font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tasks-row-status { width: 96px; flex: 0 0 auto; color: var(--fg-muted); font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -216,7 +226,7 @@
 
 /* --- 리스트 --- */
 .tasks-list { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.tasks-list-tools { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 11.5px; color: var(--fg-muted); }
+.tasks-list-tools { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 11.5px; color: var(--fg-muted); flex-wrap: wrap; }
 .tasks-select { display: inline-flex; align-items: center; gap: 6px; }
 .tasks-select select { height: 24px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--bg-raised); color: var(--fg); font: inherit; font-size: 11.5px; padding: 0 4px; }
 .tasks-list-sep { width: 1px; height: 14px; background: rgba(255, 255, 255, .1); }
@@ -225,6 +235,11 @@
 .tasks-preset.is-on { background: var(--bg-accent); color: var(--fg); }
 .tasks-preset-default { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
 .tasks-list-scroll { flex: 1; min-height: 0; overflow: auto; }
+/* 행이 보기보다 넓으면 묶음 머리·행·푸터가 같은 폭으로 스크롤 폭을 채운다 — 형제 각각이 아니라 안쪽 래퍼 하나가 min-content(LIFE-670 r3 L-F).
+   묶음 이름·개수는 가로 스크롤해도 왼쪽에 남고(sticky), 머리·푸터 글자는 줄바꿈하지 않는다(r3 L-G — 덮기 폴백의 좁은 그릇). */
+.tasks-list-inner { min-width: min-content; }
+.tasks-list-group-title { position: sticky; left: 12px; display: inline-flex; align-items: center; gap: 8px; }
+.tasks-list-group, .tasks-list-more { white-space: nowrap; }
 .tasks-list-group {
   position: sticky; top: 0; z-index: 2; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
   background: var(--bg-surface); border-bottom: 1px solid var(--line); font-size: 11.5px; font-weight: 500; color: var(--fg-muted);

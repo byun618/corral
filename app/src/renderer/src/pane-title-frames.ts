@@ -31,48 +31,7 @@
 // 자리와 같다). 그래야 평범한 제목이 바뀌는 것은 그대로 화면에 온다.
 
 import type { AgentStatus, PaneRow, RepoRow } from '../../shared/types.js'
-
-/** 스피너 글리프 — 점자 + 사분원. Orca `isSpinnerFrameGlyph` 그대로다. */
-function isSpinnerFrameGlyph(code: number): boolean {
-  return (code >= 0x2800 && code <= 0x28ff) || (code >= 0x25d0 && code <= 0x25d3)
-}
-
-/** Orca `isDecorativeTitleWhitespace` — 좁은 공백·제로폭까지 본다(스피너 뒤에 자주 붙는다). */
-function isDecorativeTitleWhitespace(code: number): boolean {
-  return (
-    code === 32 ||
-    (code >= 9 && code <= 13) ||
-    code === 160 ||
-    code === 5760 ||
-    (code >= 8192 && code <= 8202) ||
-    code === 8232 ||
-    code === 8233 ||
-    code === 8239 ||
-    code === 8287 ||
-    code === 12288 ||
-    code === 65279
-  )
-}
-
-/** 앞쪽 스피너·공백을 떼고 가운데 공백을 한 칸으로 줄인다 (Orca `normalizeDecorativeAgentTitleText`). */
-function normalizeDecorativeTitle(title: string): string {
-  let normalized = ''
-  let pendingWhitespace = false
-  for (let index = 0; index < title.length; index += 1) {
-    const code = title.charCodeAt(index)
-    if (normalized.length === 0 && (isDecorativeTitleWhitespace(code) || isSpinnerFrameGlyph(code))) continue
-    if (isDecorativeTitleWhitespace(code)) {
-      pendingWhitespace = normalized.length > 0
-      continue
-    }
-    if (pendingWhitespace) {
-      normalized += ' '
-      pendingWhitespace = false
-    }
-    normalized += title.charAt(index)
-  }
-  return normalized
-}
+import { isSpinnerFrameGlyph, normalizeDecorativeTitle } from '../../shared/decorative-title.js'
 
 /** 제목에 스피너 글리프가 있나 — 없으면 서명을 안 만든다(= 억제 대상이 아니다). */
 function hasSpinnerFrameGlyph(title: string): boolean {

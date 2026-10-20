@@ -21,6 +21,9 @@ export const GHOSTTY_DIFF_LABELS: Record<keyof Settings, string> = {
   skipCloseTerminalWithRunningProcessConfirm: '실행 중인 터미널을 닫기 전에 확인',
   skipDeleteWorktreeConfirm: '워크트리를 삭제하기 전에 확인',
   mobileEnabled: 'Mobile',
+  statusBarUsageClaude: 'Claude 사용량',
+  statusBarUsageCodex: 'Codex 사용량',
+  statusBarUsageGrok: 'Grok 사용량',
 }
 
 export type GhosttyDiffRow =

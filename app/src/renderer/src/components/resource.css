@@ -1,0 +1,42 @@
+/* 상태바 Resource Manager (LIFE-637) — 접두사 `.statusbar-resource-*`. 세그먼트는 `.statusbar` 글꼴·색을 상속한다. */
+
+.statusbar-resource {
+  flex-shrink: 0; max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer;
+}
+.statusbar-resource:hover, .statusbar-resource.is-open { color: var(--fg-muted); }
+.statusbar-resource:focus-visible { outline: 1px solid var(--line-strong); outline-offset: 2px; }
+
+.statusbar-resource-panel {
+  position: fixed; right: 8px; bottom: calc(var(--h-statusbar) + 4px); z-index: 30;
+  width: 460px; max-width: calc(100vw - 16px); max-height: min(70vh, 560px); overflow-y: auto;
+  padding: 6px 0; background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow-menu);
+  font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted);
+}
+.statusbar-resource-panel:focus { outline: none; }
+.statusbar-resource-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 10px 6px; border-bottom: 1px solid var(--line); }
+.statusbar-resource-title { color: var(--fg); }
+.statusbar-resource-sort { display: flex; gap: 4px; }
+.statusbar-resource-sort-btn { padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: none; font: inherit; color: var(--fg-dim); cursor: pointer; }
+.statusbar-resource-sort-btn.is-active { color: var(--fg); border-color: var(--line-strong); }
+.statusbar-resource-note { padding: 4px 10px; color: var(--fg-dim); }
+.statusbar-resource-error { padding: 4px 10px; color: var(--fg-notice); }
+
+.statusbar-resource-line {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto 5ch 8ch; align-items: center; gap: 8px;
+  width: 100%; padding: 3px 10px; text-align: left;
+}
+.statusbar-resource-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statusbar-resource-agent { color: var(--fg-dim); }
+.statusbar-resource-cpu, .statusbar-resource-mem { text-align: right; font-variant-numeric: tabular-nums; }
+.statusbar-resource-line[data-statusbar-resource-app] .statusbar-resource-name,
+.statusbar-resource-line[data-statusbar-resource-herdr] .statusbar-resource-name { grid-column: 1 / 3; }
+.statusbar-resource-group { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
+.statusbar-resource-group-head { color: var(--fg); }
+.statusbar-resource-group-head .statusbar-resource-name { grid-column: 1 / 3; }
+
+.statusbar-resource-pane { display: flex; align-items: center; }
+.statusbar-resource-move { flex: 1; min-width: 0; padding-left: 20px; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; }
+.statusbar-resource-move:hover, .statusbar-resource-move:focus-visible { background: var(--bg-row-hover); color: var(--fg); outline: none; }
+.statusbar-resource-close { flex: 0 0 auto; width: 22px; padding: 0; border: 0; background: none; font: inherit; color: var(--fg-faint); cursor: pointer; }
+.statusbar-resource-close:hover, .statusbar-resource-close:focus-visible { color: var(--fg); outline: none; }

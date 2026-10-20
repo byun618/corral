@@ -49,6 +49,13 @@ export type Settings = {
    * 바뀌면 main 이 `MobileService.setEnabled` 로 넘긴다(`corral:setSettings`).
    */
   mobileEnabled: boolean
+  /**
+   * 상태바 사용량 칩 provider 별 on/off(LIFE-636 E9, 설정 › 외관 「상태바」) — 기본 켬. 끄면 그 provider 는 칩도 조회도 없다
+   * (키체인·파일·네트워크 접근 0 — E7ⓔ). provider ↔ 칸 표는 `shared/usage.ts` `USAGE_SETTING_ROWS`.
+   */
+  statusBarUsageClaude: boolean
+  statusBarUsageCodex: boolean
+  statusBarUsageGrok: boolean
 }
 
 /**
@@ -91,6 +98,9 @@ export const DEFAULT_SETTINGS: Settings = {
   skipCloseTerminalWithRunningProcessConfirm: false,
   skipDeleteWorktreeConfirm: false,
   mobileEnabled: false,
+  statusBarUsageClaude: true,
+  statusBarUsageCodex: true,
+  statusBarUsageGrok: true,
 }
 
 export type NumericSettingKey =
@@ -176,6 +186,9 @@ export function readSettingField({ key, value }: { key: keyof Settings; value: u
     case 'skipCloseTerminalWithRunningProcessConfirm':
     case 'skipDeleteWorktreeConfirm':
     case 'mobileEnabled':
+    case 'statusBarUsageClaude':
+    case 'statusBarUsageCodex':
+    case 'statusBarUsageGrok':
       return typeof value === 'boolean' ? value : null
     case 'terminalDividerColorDark':
       return isHexColor(value) ? value.toLowerCase() : null
@@ -233,6 +246,9 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'skipCloseTerminalWithRunningProcessConfirm',
   'skipDeleteWorktreeConfirm',
   'mobileEnabled',
+  'statusBarUsageClaude',
+  'statusBarUsageCodex',
+  'statusBarUsageGrok',
 ]
 
 /** 파일에서 읽은 객체 → 설정. 칸마다 따로 기본값으로 떨어진다. 객체가 아니면 전부 기본값. */

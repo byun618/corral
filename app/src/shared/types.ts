@@ -4,12 +4,14 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
+import type { UsageSnapshot } from './usage.js'
 import type { WorktreeWorkLink } from './work-link.js'
 import type { RelaunchAgentInput, StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
 import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
 import type { FileListInput, FileListResult } from './file-list.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
+import type { ResourceCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
@@ -1148,6 +1150,20 @@ export type CorralApi = {
   revokeMobileDevice: (input: { id: string }) => Promise<{ ok: boolean }>
   /** 「다시 확인」 — 꺼져 있으면 읽기 점검만. */
   recheckMobile: () => Promise<MobileStatus | null>
+  // --- 상태바 Resource Manager (LIFE-637) — 수집은 main 이 주기로 하고 푸시한다. 처음 값은 getResourceSnapshot ---
+  getResourceSnapshot: () => Promise<ResourceSnapshot | null>
+  onResourceSnapshot: (listener: (snapshot: ResourceSnapshot) => void) => () => void
+  /** 그 pane 으로 이동 — 기존 revealPane 푸시를 받는다. 모르는 pane 이면 false. */
+  revealResourcePane: (input: { paneId: string }) => Promise<boolean>
+  /** 닫기 길 — 클릭한 순간의 위상(pane 게이트 / 기존 탭 닫기 / 없음). */
+  getResourceCloseRoute: (input: { paneId: string }) => Promise<ResourceCloseRoute>
+  /** 그 pane 닫기 — 기존 실행 중 확인 게이트(`closeTabsGated`)를 지난다. */
+  closeResourcePane: (input: { paneId: string; confirmed?: boolean; confirmedPaneIds?: string[] }) => Promise<ResourceCloseResult>
+  // --- 상태바 사용량 (LIFE-636) — 창별 사용률·초기화 시각·상태 문구만(토큰·계정 값 없음). 다른 창의 요청이면 null ---
+  getUsage: () => Promise<UsageSnapshot | null>
+  /** 새로고침 — id 가 없으면 전부. 끝난 뒤 스냅숏. 진행 중이면 그 요청을 같이 기다린다. */
+  refreshUsage: (input: { id: string | null }) => Promise<UsageSnapshot | null>
+  onUsage: (listener: (snapshot: UsageSnapshot) => void) => () => void
   // --- 설정 › 작업 연결 (LIFE-600) — 토큰은 `addWorkConnection` 입력으로만 main 에 들어가고, 어떤 응답·push 에도 나오지 않는다(끝 4자만) ---
   getWorkSettings: () => Promise<WorkSettingsState | null>
   onWorkSettings: (listener: (state: WorkSettingsState) => void) => () => void

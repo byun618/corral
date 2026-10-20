@@ -13,6 +13,7 @@ import { KeybindingStore } from './keybindings.js'
 import { withRetentionSuppressed } from './close-retention.js'
 import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { closeTabsGated } from './close-tabs.js'
+import { registerResourceIpc } from './resource-ipc.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
 // 렌더러가 소켓을 열 수 없는 것은 권장이 아니라 구조적 강제다: sandbox:true 인 렌더러/preload 의
@@ -103,6 +104,10 @@ import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSk
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
 import { SettingsStore } from './settings.js'
+import { UsageService } from './usage/service.js'
+import { USAGE_COLLECTORS } from './usage/registry.js'
+import { realCollectorDeps } from './usage/deps.js'
+import { EMPTY_USAGE_SNAPSHOT, usageEnabled } from '../shared/usage.js'
 import { previewGhosttyImport } from './ghostty/index.js'
 import { DEFAULT_SETTINGS, type SettingsWriteResult } from '../shared/terminal-settings.js'
 import { WorktreePoller, parsePollMs } from './worktree-watch.js'
@@ -270,6 +275,8 @@ let fileLister: FileLister | null = null
 let fileWatch: FileWatch | null = null
 /** 사용자 설정 (LIFE-512 S11) — 외관. ui-prefs(화면 상태)와 다른 파일·다른 칸이다(U8). */
 let settings: SettingsStore | null = null
+/** 상태바 provider 사용량 (LIFE-636) — 기동 때 만들고 `window-all-closed` 에서 정리한다. 토큰은 이 안(main)에서만 산다. */
+let usage: UsageService | null = null
 /** 설정 › 작업 연결 (LIFE-600) — 기동 때는 저장 파일만 읽는다. 자격(키체인)은 그 연결이 처음 쓰일 때 푼다(C6). */
 let work: WorkService | null = null
 /** LIFE-603 — 작업 링크(해석·쓰기·사건)와 「작업에서 시작」. 작업 서비스와 같이 선다. */
@@ -1612,6 +1619,8 @@ function createWindow(): void {
   }
   // 사용자가 목록을 다시 읽는 순간이 포커스가 돌아오는 때다 — 그때 한 번 맞춘다 (A4).
   window.on('focus', () => void link.resync('window-focus'))
+  // 사용량 — 포커스 복귀 때 5분 넘게 묵었으면 즉시 1회(LIFE-636 E7ⓑ).
+  window.on('focus', () => usage?.onFocus())
   /**
    * `⌘W` 를 **메뉴에서 뺏어 온다** (F2-5a · R23).
    *
@@ -1886,6 +1895,8 @@ app.whenReady().then(async () => {
         window?.webContents.send('corral:settings', result.settings)
         // 모바일 스위치가 바뀐 경우만 넘긴다 — 다른 칸 저장마다 tailscale 을 다시 읽지 않게.
         if (mobile !== null && mobile.status().enabled !== result.settings.mobileEnabled) void mobile.setEnabled(result.settings.mobileEnabled)
+        // 사용량 on/off(LIFE-636 E9ⓒ) — 끈 provider 는 즉시 비우고 조회를 멈춘다, 켠 provider 는 즉시 1회.
+        usage?.settingsChanged()
         return result
       case 'unchanged':
         return result
@@ -1903,6 +1914,14 @@ app.whenReady().then(async () => {
       env: { home: os.homedir(), xdgConfigHome: process.env.XDG_CONFIG_HOME, ghosttyResourcesDir: process.env.GHOSTTY_RESOURCES_DIR },
       current: settings?.get() ?? { ...DEFAULT_SETTINGS },
     })
+  })
+
+  // 상태바 사용량 (LIFE-636) — 스냅숏은 창별 사용률·초기화 시각·상태 문구뿐이다(토큰·계정 값 없음, E6ⓒ).
+  ipcMain.handle('corral:usageGet', (event) => (fromOurWindow(event) ? (usage?.snapshot() ?? EMPTY_USAGE_SNAPSHOT) : null))
+  ipcMain.handle('corral:usageRefresh', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || usage === null) return null
+    const id = typeof input === 'object' && input !== null && 'id' in input && typeof input.id === 'string' ? input.id : null
+    return usage.refresh(id)
   })
 
   // 설정 › Mobile (LIFE-577) — 상태에는 토큰·코드가 없다. 코드는 createMobilePairing 응답에만 실린다(로그에도 안 남긴다).
@@ -2419,6 +2438,34 @@ app.whenReady().then(async () => {
   stopRuntime = () => Promise.allSettled([mobileService.shutdown(MOBILE_SHUTDOWN_DEADLINE_MS), runtime.close()]).then(() => undefined)
   runtimeInvoke = runtime.invoke
   createWindow()
+  // LIFE-637 상태바 Resource Manager — pane 별 CPU·메모리 수집과 `corral:resource*` IPC.
+  registerResourceIpc({
+    window: () => window,
+    fromOurWindow,
+    state: currentState,
+    socketPath: currentSocketPath,
+    paneIds: () => link.store.paneIds(),
+    shellPidOf: async ({ socketPath, paneId }) => (await probeForeground(socketPath, paneId)).shellPid,
+    probeRunning: probeRunningPanes,
+    closePane: ({ socketPath, paneId }) =>
+      withRetentionSuppressed({ store: link.store, ids: [paneId], what: 'pane', run: hooks => closePane({ socketPath, paneId, onSent: hooks.onSent }) }),
+    confirmRunning: () => settings === null || !settings.get().skipCloseTerminalWithRunningProcessConfirm,
+    appPids: () => app.getAppMetrics().map(metric => metric.pid),
+    log,
+  })
+  // 사용량 (LIFE-636) — 배경 틱은 창이 보이고 포커스일 때만. User-Agent 는 corral 자기 이름(D10).
+  const settingsStore = settings
+  usage = new UsageService({
+    collectors: USAGE_COLLECTORS,
+    isEnabled: (id) => usageEnabled({ settings: settingsStore.get(), id }),
+    isActive: () => window !== null && !window.isDestroyed() && window.isVisible() && !window.isMinimized() && window.isFocused(),
+    deps: (signal) => realCollectorDeps({ signal, userAgent: `corral/${app.getVersion()}` }),
+    onChange: (snapshot) => {
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:usage', snapshot)
+    },
+    log,
+  })
+  usage.start()
   // 저장된 스위치 값으로 — 꺼져 있으면 아무것도 열지 않는다(A1). 켜 둔 상태면 서버를 열고 serve 항목을 다시 올린다(A8ⓐ).
   void mobileService.start(settings.get().mobileEnabled)
   // 「Install CLI」 (LIFE-556 B14) — 설치본만. 개발 실행에는 번들 shim 이 없다.
@@ -2518,6 +2565,8 @@ app.on('before-quit', event => {
 })
 
 app.on('window-all-closed', () => {
+  usage?.dispose()
+  usage = null
   explorerHub?.dispose()
   fileLister?.killAll()
   fileWatch?.dispose()

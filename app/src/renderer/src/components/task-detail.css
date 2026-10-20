@@ -2,6 +2,9 @@
 
 /* 머리 아래 영역 — 상세 패널이 이 영역의 오른쪽(또는 전체)을 덮는다. */
 .tasks-main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+/* LIFE-670 패널 모드 밀기 — 오른쪽 안쪽 여백이 패널 자리다. 패널(absolute right:0)은 그 여백에 앉고 필터·배너·보기는 남은 폭으로 준다.
+   보기 영역이 --w-tasks-body-min 보다 좁아지면 이 클래스가 빠지고 덮기로 물러난다(useDetailLayout). 전체 모드는 이 클래스가 없다. */
+.tasks-main.is-detail-push { padding-right: var(--w-issue-detail); }
 
 .issue-detail {
   position: absolute; top: 0; right: 0; bottom: 0; z-index: 30;

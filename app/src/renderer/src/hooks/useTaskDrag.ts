@@ -8,14 +8,27 @@
 //   `active` 가 꺼지면(페이지 닫힘·위층이 열림) 끄는 중이라도 취소한다 — 그 뒤 mouseup 은 쓰기를 보내지 않는다(R2-K). `scope`(스페이스)가 바뀌어도 취소.
 // - 놓기는 **mouseup 좌표**로 다시 판정한다(R3-F) — 창 밖이거나 그 자리에 놓을 칸이 없으면 취소(마지막 mousemove 칸에 쓰지 않는다).
 // - 놓일 자리 = 그 영역(`[data-drop-zone]`) 안 끄는 항목을 뺀 항목들의 중점 기준 번호. 화면은 그 번호에 사본 높이만큼 틈을 그려 밀어낸다.
+// - 자동 스크롤(LIFE-670 P5) — 끄는 항목을 담은 보기의 스크롤 그릇 가시 가장자리 띠에 포인터가 있으면 rAF 로 민다(`task-drag-scroll.ts`).
+//   민 뒤에는 같은 포인터로 영역·번호를 다시 잰다(화면 표시용). 놓기 판정·쓰기는 그대로 mouseup 좌표다. 띠 밖·끝 닿음·취소·놓기에 루프가 멈춘다.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { hasCrossedReorderThreshold, type Point } from '../sidebar-reorder.js'
+import { dragScrollStep, type ScrollRect } from '../task-drag-scroll.js'
 
 export type TaskDragState = { itemId: string; zone: string | null; index: number; height: number }
 export type TaskDrop = { itemId: string; zone: string; index: number }
 
 const NON_HANDLE = 'button, a, input, textarea, select, [data-no-drag]'
+/** 보기의 스크롤 그릇 — 보드·백로그·작업 중 `.tasks-scroll`, 리스트 `.tasks-list-scroll`. */
+const SCROLLER = '.tasks-scroll, .tasks-list-scroll'
+
+/** 스크롤 그릇의 가시 사각형 — 패널이 덮고 있으면(덮기 폴백) 오른쪽을 패널 왼쪽으로 깎는다. */
+function visibleRect({ scroller, root }: { scroller: HTMLElement; root: HTMLElement | null }): ScrollRect {
+  const rect = scroller.getBoundingClientRect()
+  const panel = root?.querySelector<HTMLElement>('.issue-detail:not(.is-full)') ?? null
+  const right = panel === null ? rect.right : Math.min(rect.right, panel.getBoundingClientRect().left)
+  return { left: rect.left, top: rect.top, right, bottom: rect.bottom }
+}
 
 function zoneAt(point: Point): HTMLElement | null {
   const hit = document.elementFromPoint(point.x, point.y)
@@ -61,6 +74,9 @@ export function useTaskDrag({ rootRef, active, scope, onStart, onDrop, onEnd }: 
     let preview: HTMLElement | null = null
     let offset: Point = { x: 0, y: 0 }
     let current: TaskDragState | null = null
+    const scroller = source.closest<HTMLElement>(SCROLLER)
+    let pointer: Point = start
+    let frame: number | null = null
 
     const set = (next: TaskDragState | null): void => {
       current = next
@@ -97,6 +113,22 @@ export function useTaskDrag({ rootRef, active, scope, onStart, onDrop, onEnd }: 
       const index = zone === null ? 0 : indexIn({ zone, itemId, y: point.y })
       if (current !== null && (current.zone !== zoneId || current.index !== index)) set({ ...current, zone: zoneId, index })
     }
+    // 자동 스크롤 한 프레임 — 띠 밖이거나 더 밀리지 않으면 루프를 멈춘다(다음 mousemove 가 다시 건다).
+    const tick = (): void => {
+      frame = null
+      if (scroller === null || !started) return
+      const { dx, dy } = dragScrollStep({ point: pointer, rect: visibleRect({ scroller, root: rootRef.current }) })
+      if (dx === 0 && dy === 0) return
+      const before = { left: scroller.scrollLeft, top: scroller.scrollTop }
+      scroller.scrollLeft = before.left + dx
+      scroller.scrollTop = before.top + dy
+      if (scroller.scrollLeft === before.left && scroller.scrollTop === before.top) return
+      move(pointer)
+      frame = requestAnimationFrame(tick)
+    }
+    const autoscroll = (): void => {
+      if (frame === null && scroller !== null) frame = requestAnimationFrame(tick)
+    }
     const finish = (commit: boolean): void => {
       teardown()
       if (!started) return
@@ -118,6 +150,8 @@ export function useTaskDrag({ rootRef, active, scope, onStart, onDrop, onEnd }: 
       }
       moveEvent.preventDefault()
       move(point)
+      pointer = point
+      autoscroll()
     }
     const onUp = (upEvent: MouseEvent): void => {
       const point = { x: upEvent.clientX, y: upEvent.clientY }
@@ -138,6 +172,8 @@ export function useTaskDrag({ rootRef, active, scope, onStart, onDrop, onEnd }: 
       document.removeEventListener('mouseup', onUp, true)
       document.removeEventListener('keydown', onKey, true)
       window.removeEventListener('blur', onBlur)
+      if (frame !== null) cancelAnimationFrame(frame)
+      frame = null
       preview?.remove()
       preview = null
       session.current = null

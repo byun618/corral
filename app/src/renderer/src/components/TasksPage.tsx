@@ -17,6 +17,7 @@ import { spaceCapabilities, WORK_PRIORITIES } from '../../../shared/work.js'
 import { useTaskDrag, type TaskDrop } from '../hooks/useTaskDrag.js'
 import { DETAIL_READING, useTasksPage, type MoveNotice } from '../hooks/useTasksPage.js'
 import { useTaskDetail } from '../hooks/useTaskDetail.js'
+import { useDetailLayout } from '../hooks/useDetailLayout.js'
 import {
   NO_FILTERS,
   PRIORITY_LABEL,
@@ -462,6 +463,15 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   })()
 
   const toggleSelect = (uid: string): void => setSelectedId(selectedId === uid ? null : uid)
+  // LIFE-670 — 패널 모드는 보기 영역을 밀어낸다(좁으면 덮기로 물러남). 전체 모드는 덮기 그대로.
+  const mainRef = useRef<HTMLDivElement | null>(null)
+  const detailPlacement = useDetailLayout({ mainRef, open: selectedId !== null, full: prefs.detailFull })
+  // LIFE-670 P3 — 상세를 열거나 바꿀 때만 선택 카드를 보기 영역 안으로 맞춘다. 재렌더(데이터 갱신)에는 다시 끌어오지 않는다.
+  useEffect(() => {
+    if (selectedId === null) return
+    const selected = mainRef.current?.querySelector<HTMLElement>('.tasks-body .is-selected') ?? null
+    if (selected !== null && typeof selected.scrollIntoView === 'function') selected.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [selectedId])
 
   // --- 본문 ---
   const noConnection = settings !== null && settings.connections.length === 0
@@ -668,7 +678,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         <button type="button" className="tasks-close" data-tasks-close="" onClick={onClose} title={shortcut === null ? '닫기 (Esc)' : `닫기 (Esc · ${shortcut})`} aria-label="작업 페이지 닫기">✕</button>
       </header>
 
-      <div className="tasks-main" inert={overlay}>
+      <div ref={mainRef} className={`tasks-main${detailPlacement === 'push' ? ' is-detail-push' : ''}`} data-detail-layout={detailPlacement} inert={overlay}>
       <div className="tasks-filters" data-tasks-filters="">
         <FilterMenu
           id="kind"

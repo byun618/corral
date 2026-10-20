@@ -1,6 +1,6 @@
 {
   "name": "corral",
-  "version": "0.2.3",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "corral — herdr 기반 AI 워크스페이스 미션 컨트롤 (LIFE-351 R1: 앱 골격 + 어댑터 control 층)",
@@ -13,7 +13,7 @@
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build && npm run build:runtime",
     "start": "electron-vite preview",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.preload.json",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.mixed.json",
     "lint": "eslint .",
     "test": "vitest run && node scripts/run-nodetest.mjs",
     "check:boundary": "node scripts/check-boundary.mjs",
@@ -52,6 +52,8 @@
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "sonner": "2.0.7",
     "string-width": "7.2.0",
     "ws": "^8.22.0"

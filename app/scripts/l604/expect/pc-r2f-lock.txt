@@ -1,0 +1,2 @@
+# pc-r2f-lock — 가드를 뺀 사본에서 실패해야 하는 시험(raw/claude/f2/pc/pc-r2f-lock.txt 에서 뽑음)
+src/renderer/src/hooks/useTasksPage.create.test.tsx > 페이지 생성 잠금 (R2-F) > 같은 잠금 열쇠로 겹쳐 보내면 출처 요청 1건 — 둘째는 보내지 않고 실패, 첫째가 끝나면 다시 보낼 수 있다

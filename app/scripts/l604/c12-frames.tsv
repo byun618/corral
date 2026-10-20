@@ -1,0 +1,15 @@
+# LIFE-604 R1-G ④ — C12 캡처 대조 틀. 최종 관문에서 drive.mjs 가 OUT/shots/<id>.png 로 찍고, 사람이 목업 C 의 같은 자리와 나란히 놓아 본다(『화면 관측』 — 증명 아님).
+# 탭 구분: id · 화면/상태 · 찍는 단계(drive.mjs) · 목업 C 대조 자리(raw/claude/design-diff.md 행) · 볼 것(토큰·치수·문구)
+c1-head	보드 머리 — 검색 · 만들기 · 닫기	c1	머리 「만들기」	accent 버튼 · 순서 · 쓰기 가능 상태(흐림 아님)
+c7-inline-open	보드 칸 「+ 추가」 를 연 한 줄 입력	c1	인라인 입력	accent 테두리 · 자리표시 글 「제목 — Enter 로 추가, Esc 로 닫기」
+c2-modal-empty	빈 모달(Story 기본)	c2	모달 틀 · 모달 머리 40 · 종류 세그먼트 · 제목·설명 · 바닥	--w-modal-quick-create 560 · 위 12vh · scrim · radius · shadow-modal · 만들기 흐림 + 이유 줄
+c2-status-note	상태 메뉴 + 「첫 상태로만」 각주	c2	상태 칩·메뉴	메타 허용 상태만 · 각주 문구(출처 이름 없음 — 의도적 차이)
+c8-required	Bug 고름 — 필수 필드 상자	c2	필수 필드 상자	상자 머리 문구 · 고르기 세그먼트 · 만들기 흐림
+c5-draft-note	글 있는 모달 — 「닫아도 초안이 남습니다」	c5	초안 · 모달 머리 40	머리 오른쪽 안내
+c6-detail-after-create	하나 더 끔 — 만든 뒤 상세	c6	생성 뒤	상세 패널 열림 · 토스트 「KEY 를 만들었습니다」 + 열기(되돌리기 없음 — 의도적 차이)
+c6-another-on	하나 더 켬 — 만든 뒤 빈 제목	c6	하나 더	스위치 켬 · 종류·부모·상태·우선순위·배치 유지
+c12-modal-dark	빈 모달 — 다크 테마	frames	모달 틀	다크 토큰
+c12-modal-light	빈 모달 — 라이트 테마	frames	모달 틀	라이트 토큰
+c1-write-blocked	쓰기 막힘(권한 부족) — 머리 「만들기」 흐림	c1blocked	머리 「만들기」	흐림 · 권한 배너 · 이유 title(R2-C)
+c8-unsupported	지원 밖 필수 필드(Epic)	c8	필수 필드 상자	「corral 에서 채울 수 없음 — 출처에서 만드세요」 · 만들기 흐림(R2-C)
+c1-all-target	「전체」 스페이스 — 모달 머리 만들 스페이스 메뉴	all	모달 머리 40	대상 스페이스 버튼 · 메뉴 행(R2-C)

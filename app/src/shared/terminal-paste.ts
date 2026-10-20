@@ -196,3 +196,41 @@ export function createOrderedSender<T>(send: (item: T) => void): (pending: Promi
     return tail
   }
 }
+
+/**
+ * 초안 본문 정제 (LIFE-603 D8 · C15) — 외부 본문(작업 제목·본문)을 **입력창에만** 넣을 글자로 만든다.
+ *
+ * 남기는 제어 문자는 줄바꿈(LF)과 탭뿐이다. CR·CRLF 는 LF 로 맞추고, ESC(붙여넣기 끝 `ESC[201~` 포함)·그 밖의
+ * C0·DEL·C1 은 **지운다** — U+241B 로 바꾸는 `wrapBracketedPaste` 의 무력화보다 한 단계 세다(본문에 보일 이유가 없는 글자다).
+ * 그래서 감싼 뒤의 틀 안에는 `ESC` 가 하나도 없고, 틀을 일찍 닫아 꼬리를 키 입력으로 돌릴 길이 없다.
+ * 끝의 빈 줄·공백은 걷는다 — 틀 안이어도 마지막 줄바꿈을 「보내기」 로 읽는 입력기가 있을 수 있어 아예 만들지 않는다.
+ */
+export function sanitizeDraftBody(text: string): string {
+  const unified = text.replace(/\r\n?/g, '\n')
+  let out = ''
+  for (const char of unified) {
+    const code = char.codePointAt(0) ?? 0
+    if (char === '\n' || char === '\t') out += char
+    else if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) continue
+    else if (invisibleCodePoint(code)) continue
+    else out += char
+  }
+  return out.replace(/\s+$/u, '')
+}
+
+/**
+ * 사람 눈에 안 보이고 모델은 읽는 글자(LIFE-603 R1-F) — 초안의 안전장치(「사람이 보고 Enter」)를 비껴간다. 지운다.
+ * 태그 U+E0000–E007F(숨긴 ASCII) · 양방향 제어 U+061C·U+200E·U+200F·U+202A–202E·U+2066–2069 ·
+ * 제로폭 U+200B–200D·U+2060–2064·U+FEFF · 변형 선택자 보충 U+E0100–E01EF · 소프트 하이픈 U+00AD.
+ * 대가: 이모지 결합(ZWJ U+200D)이 낱자로 풀린다 — 본문의 뜻은 그대로다.
+ */
+export function invisibleCodePoint(code: number): boolean {
+  return (code >= 0xe0000 && code <= 0xe007f) || (code >= 0xe0100 && code <= 0xe01ef)
+    || code === 0x061c || code === 0x200e || code === 0x200f || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069)
+    || (code >= 0x200b && code <= 0x200d) || (code >= 0x2060 && code <= 0x2064) || code === 0xfeff || code === 0x00ad
+}
+
+/** 초안 한 번에 쓸 바이트 — 정제한 본문을 강제 bracketed paste 하나로. Enter(CR) 는 틀 밖에 붙이지 않는다. */
+export function draftPastePayload(text: string): string {
+  return wrapBracketedPaste(sanitizeDraftBody(text))
+}

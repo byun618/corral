@@ -113,15 +113,17 @@ function mount(): void {
 
 describe('세그먼트 (R3)', () => {
   it('StatusBar 의 메모리 자리에 들어간다 — 다른 칸은 그대로', () => {
+    // 상태바 틀은 LIFE-636(main 통합) — 오른쪽 세그먼트 슬롯의 자식이 이 세그먼트 하나다. 사용량 슬롯은 빈 스냅샷.
+    Reflect.set(window, 'corral', { ...corral, getUsage: async () => null, refreshUsage: async () => null, onUsage: () => () => {} })
     act(() => {
       root.render(createElement(StatusBar, {
-        activeWorktreeLabel: 'wt', dirtyTotal: 0, aheadTotal: 0, behindTotal: 0, groupCount: 1, paneCount: 2, zoomed: false, agentCount: 1,
-        termSize: { cols: 80, rows: 24 }, resourceSegment: createElement(ResourceSegment),
+        activeWorktreeLabel: 'wt', dirtyTotal: 0, aheadTotal: 0, behindTotal: 0, resourceSegment: createElement(ResourceSegment),
       }))
     })
-    const bar = q('[data-statusbar]')
-    expect(bar?.lastElementChild?.hasAttribute('data-statusbar-resource')).toBe(true)
-    expect(bar?.textContent).toContain('xterm 80×24')
+    const segments = q('[data-statusbar-segments]')
+    expect(segments?.children).toHaveLength(1)
+    expect(segments?.firstElementChild?.hasAttribute('data-statusbar-resource')).toBe(true)
+    expect(q('[data-statusbar]')?.textContent).toContain('corral / wt')
     expect(segment().textContent).toBe('CPU — · 메모리 —')
   })
 

@@ -1,0 +1,2 @@
+# pc-f-draft-discard — 가드를 뺀 사본에서 실패해야 하는 시험(raw/claude/f1/pc/pc-f-draft-discard.txt 에서 뽑음)
+src/renderer/src/hooks/useQuickCreate.test.tsx > 초안 수명 (R1-F·R1-M) > 연결이 해제되면 그 연결 초안이 맵에서 빠진다

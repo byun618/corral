@@ -324,3 +324,24 @@ export function PanelLeftIcon({ className }: { className?: string }): React.JSX.
     </svg>
   )
 }
+
+/** lucide Gauge — 설정 › 외관 「상태바」 카드(LIFE-636). */
+export function GaugeIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="m12 14 4-4" />
+      <path d="M3.34 19a10 10 0 1 1 17.32 0" />
+    </svg>
+  )
+}
+
+/** 칸반 — 설정 › 작업 연결(LIFE-600, 목업 tasks-settings.dc.html 내비 아이콘). */
+export function KanbanIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M9 3v18" />
+      <path d="M15 3v10" />
+    </svg>
+  )
+}

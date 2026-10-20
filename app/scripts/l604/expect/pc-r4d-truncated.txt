@@ -1,0 +1,2 @@
+# pc-r4d-truncated — 가드를 뺀(truncated 목록을 「다 받음」 으로 읽던) 사본에서 실패해야 하는 시험(raw/claude/f4/pc/pc-r4d-truncated.txt)
+src/renderer/src/components/TasksPage.create.test.tsx > 수정 4 (리뷰 r4) > R4-D 상한에 잘린 목록(truncated)에 새 작업이 없어도 만든 카드는 남는다 · 잘리지 않은 목록에 없으면 빠진다(대조)

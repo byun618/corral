@@ -95,3 +95,13 @@ function staleOutcome(input: {
   if (freshness.observedVia !== 'event' || freshness.outcomeAt === null) return false
   return freshness.observedAt > freshness.outcomeAt
 }
+
+/**
+ * 대기 중 질문의 본문과, 본문이 없을 때의 이유 (LIFE-603 R1-N) — main 활동 기록과 렌더러 칩이 같이 쓴다.
+ * 빈 목록(`[]`)은 null 과 같다(`agentDot` 의 `length > 0` 과 같은 판정). 이유는 사유에 맞춘다 — 권한 대기에 「질문 본문을 못 읽음」 을 달지 않는다.
+ */
+export function waitingQuestion({ blockedReason, pendingQuestions }: { blockedReason: BlockedReason | null; pendingQuestions: readonly SessionQuestion[] | null }): { text: string | null; reason: string | null } {
+  if (pendingQuestions !== null && pendingQuestions.length > 0) return { text: pendingQuestions.map((entry) => entry.question).join('\n'), reason: null }
+  if (blockedReason === 'permission') return { text: null, reason: '권한 승인을 기다립니다 — 에이전트 화면에서 확인하세요.' }
+  return { text: null, reason: '이 에이전트의 질문 본문은 읽지 못합니다.' }
+}

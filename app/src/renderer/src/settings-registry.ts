@@ -59,6 +59,18 @@ export const SETTINGS_SECTIONS = [
       { title: '워크트리를 삭제하기 전에 확인', description: '사이드바에서 워크트리를 삭제하기 전에 확인 대화상자를 표시합니다.', keywords: ['delete', 'worktree', 'workspace', 'confirm', 'dialog', 'skip', 'prompt', '삭제', '워크트리', '워크스페이스', '확인', '다시 묻지'] },
     ],
   },
+  // 작업 연결 — LIFE-600 E. 비어 있던 「워크플로」 그룹의 첫 섹션(목업 tasks-settings.dc.html 의 자리). 아이콘은 목업의 칸반 모양.
+  {
+    id: 'connections',
+    group: 'workflows',
+    title: '작업 연결',
+    description: '작업 페이지가 읽고 쓰는 작업 관리 서비스입니다. 토큰을 붙여넣어 연결하고, 보일 스페이스와 레포마다 먼저 열릴 스페이스를 고릅니다.',
+    searchEntries: [
+      { title: '연결', description: '토큰을 붙여넣어 작업 관리 서비스를 연결하고, 연결 테스트·해제합니다.', keywords: ['connection', 'connections', 'token', 'pat', 'keychain', 'issue', 'issues', 'task', 'tasks', '연결', '토큰', '키체인', '작업', '일감', '해제', '연결 테스트'] },
+      { title: '스페이스', description: '작업 페이지에 보일 스페이스를 켜고 끕니다.', keywords: ['space', 'spaces', 'project', 'projects', '스페이스', '프로젝트', '숨기기', '보이기'] },
+      { title: '레포 ↔ 기본 스페이스', description: '레포마다 작업 페이지에서 먼저 열릴 스페이스.', keywords: ['repo', 'repository', 'default space', '레포', '기본 스페이스', '기본'] },
+    ],
+  },
   // 외관 — 198 순서대로 「인터페이스」 의 첫 섹션(단축키보다 위, 198 `settings-navigation-interface-sections.ts`). corral 은 그 안의
   // 「터미널」 카드(LIFE-512)와 「창 및 사이드바」 카드(LIFE-516 S27 — 카드 레이아웃 한 행, D8)가 있다. 인터페이스(앱 테마·줌·IDE 글꼴) 카드는 없다(S30·S19 의도적).
   {
@@ -80,6 +92,9 @@ export const SETTINGS_SECTIONS = [
       { title: '구분선 두께', description: '창 구분선의 두께입니다.', keywords: ['pane', 'divider', 'thickness', '구분선', '디바이더', '두께'] },
       { title: '창 및 사이드바', description: '사이드바 모양.', keywords: ['window', 'sidebar', 'appearance', '창', '사이드바'] },
       { title: '카드 레이아웃', description: '사이드바의 워크트리 카드를 자세히 또는 간단히 표시합니다.', keywords: ['card', 'card layout', 'layout', 'compact', 'detailed', 'sidebar', 'workspace card', 'worktree card', '카드', '레이아웃', '간단히', '자세히', '사이드바', '워크트리 카드'] },
+      // 상태바 (LIFE-636 E9ⓓ) — 「상태바」·「사용량」·usage·provider 이름이 이 카드를 찾는다.
+      { title: '상태바', description: '상태바에 보일 provider 사용량.', keywords: ['status bar', 'statusbar', 'usage', 'rate limit', 'limit', 'quota', '상태바', '사용량', '한도', '사용률'] },
+      { title: '사용량 표시', description: 'Claude · Codex · Grok 한도 사용률 칩을 켜고 끕니다.', keywords: ['usage', 'claude', 'codex', 'grok', 'anthropic', 'openai', 'xai', 'provider', '사용량', '한도', '칩'] },
     ],
   },
   {

@@ -37,12 +37,17 @@ import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
 import type { ResourceCloseResult, ResourceCloseRoute, ResourceSnapshot } from '../shared/resource.js'
+import type { UsageSnapshot } from '../shared/usage.js'
+import type { WorkSettingsState } from '../shared/work.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
 import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerOpResult } from '../shared/explorer-ops.js'
 import type { FileListInput, FileListResult } from '../shared/file-list.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
 
 const EXPOSED = [
+  'getUsage',
+  'refreshUsage',
+  'onUsage',
   'getMobileStatus',
   'onMobileStatus',
   'createMobilePairing',
@@ -121,6 +126,19 @@ const EXPOSED = [
   'getWindowChrome',
   'onWindowChrome',
   'syncWindowZoom',
+  'getWorkSettings',
+  'onWorkSettings',
+  'addWorkConnection',
+  'testWorkConnection',
+  'removeWorkConnection',
+  'setWorkSpaceHidden',
+  'setRepoDefaultSpace',
+  'workRequest',
+  'workActivity',
+  'startWork',
+  'startWorkStatus',
+  'relaunchWorkAgent',
+  'detachWorkLink',
   'preloadEnv',
 ]
 
@@ -399,6 +417,36 @@ const api: CorralApi = {
   getResourceCloseRoute: (input: { paneId: string }): Promise<ResourceCloseRoute> => ipcRenderer.invoke('corral:resourceCloseRoute', input),
   closeResourcePane: (input: { paneId: string; confirmed?: boolean; confirmedPaneIds?: string[] }): Promise<ResourceCloseResult> =>
     ipcRenderer.invoke('corral:resourceClosePane', input),
+  // 상태바 사용량 (LIFE-636). push·응답 모두 표시용 칸만 — 토큰은 main 밖으로 나오지 않는다.
+  getUsage: (): Promise<UsageSnapshot | null> => ipcRenderer.invoke('corral:usageGet'),
+  refreshUsage: (input: { id: string | null }): Promise<UsageSnapshot | null> => ipcRenderer.invoke('corral:usageRefresh', input),
+  onUsage: (listener: (snapshot: UsageSnapshot) => void) => {
+    const handler = (_event: unknown, snapshot: UsageSnapshot): void => listener(snapshot)
+    ipcRenderer.on('corral:usage', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:usage', handler)
+    }
+  },
+  // 설정 › 작업 연결 (LIFE-600). push 는 연결 요약만(토큰 없음, 끝 4자).
+  getWorkSettings: () => ipcRenderer.invoke('corral:getWorkSettings'),
+  onWorkSettings: (listener: (state: WorkSettingsState) => void) => {
+    const handler = (_event: unknown, state: WorkSettingsState): void => listener(state)
+    ipcRenderer.on('corral:workSettings', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:workSettings', handler)
+    }
+  },
+  addWorkConnection: (input) => ipcRenderer.invoke('corral:addWorkConnection', input),
+  testWorkConnection: (input) => ipcRenderer.invoke('corral:testWorkConnection', input),
+  removeWorkConnection: (input) => ipcRenderer.invoke('corral:removeWorkConnection', input),
+  setWorkSpaceHidden: (input) => ipcRenderer.invoke('corral:setWorkSpaceHidden', input),
+  setRepoDefaultSpace: (input) => ipcRenderer.invoke('corral:setRepoDefaultSpace', input),
+  workRequest: (request) => ipcRenderer.invoke('corral:workRequest', request),
+  workActivity: (query) => ipcRenderer.invoke('corral:workActivity', query),
+  startWork: (input) => ipcRenderer.invoke('corral:startWork', input),
+  startWorkStatus: (query) => ipcRenderer.invoke('corral:startWorkStatus', query),
+  relaunchWorkAgent: (input) => ipcRenderer.invoke('corral:relaunchWorkAgent', input),
+  detachWorkLink: (input) => ipcRenderer.invoke('corral:detachWorkLink', input),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

@@ -224,4 +224,36 @@
   --fs-settings-body: 14px;
   --fs-settings-group: 11px;
   --ls-settings-group: .18em;       /* 그룹 제목 `tracking-[0.18em]` */
+
+  /* --- LIFE-600 설정 › 작업 연결(E) — LIFE-372 design-handoff §3 중 E 가 쓰는 것만. 스페이스 색만 새 값이다 ----------
+     LA 프로젝트 색이 있으면 그 값, 없을 때 순서대로. 나머지 §3 토큰(--cat-* · --prio-* · 보드·상세 치수)은 T2 이후가 들인다. */
+  --space-1: oklch(72% 0.09 25);
+  --space-2: oklch(72% 0.09 145);
+  --space-3: oklch(72% 0.09 60);
+  --space-4: oklch(72% 0.09 290);
+  --space-5: oklch(72% 0.09 200);
+  --space-6: oklch(72% 0.09 250);
+  --space-7: oklch(72% 0.09 330);
+
+  /* --- LIFE-601 작업 페이지(A) — LIFE-372 design-handoff §3 중 T2 가 쓰는 것. 색은 기존 토큰의 별칭·섞음뿐이다 -------------
+     모달 폭(--w-modal-*)은 T4 가 쓸 때 들인다. 상세 폭은 아래(LIFE-602). */
+  --cat-todo: var(--fg-dim);
+  --cat-doing: #6ea8fe;               /* --st-ahead 와 같은 값, 다른 이름(분류 「진행 중」) */
+  --cat-done: var(--st-ok);
+  --cat-cancel: var(--fg-faint);
+  --prio-highest: var(--st-error);
+  --prio-high: var(--st-dirty);
+  --prio-low: var(--fg-dim);
+  --prio-lowest: var(--fg-faint);
+  --bg-card-selected: color-mix(in srgb, var(--accent) 6%, var(--bg-raised));
+  --line-card-selected: color-mix(in srgb, var(--accent) 60%, transparent);
+  --w-board-col: 256px;
+  --h-issue-row: 34px;
+  /* LIFE-602 작업 상세(B) — 페이지 안 오른쪽 패널 · ⤢ 페이지 전체의 본문 폭. */
+  --w-issue-detail: 560px;
+  --w-issue-detail-full: 820px;
+  /* LIFE-603 작업 시작(D) — 시작 모달 폭(design-handoff §3). */
+  --w-modal-start-work: 600px;
+  /* LIFE-604 작업 만들기(C) — 빠른 생성 모달 폭(design-handoff §2 「빠른 생성」 560 · 위 12vh). */
+  --w-modal-quick-create: 560px;
 }

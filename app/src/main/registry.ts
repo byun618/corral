@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { isRecord } from '../shared/json.js'
 import { canonicalPath } from './canonical-path.js'
+import { readStoredWorkLink, type StoredWorkLink } from '../shared/work-link.js'
 import type { AddRepoResult, RegistryState, RemoveRepoResult } from '../shared/types.js'
 
 export interface RepoRecord {
@@ -39,7 +40,13 @@ export interface WorktreeMetadataRecord {
   parentWorktreeId?: string | null
   workspaceStatus?: string | null
   createdBranch?: boolean
+  /** LIFE-603 명시 작업 링크 — 「작업에서 시작」 이 적는다. 모르는 모양은 읽을 때 버린다(`droppedLinks`). */
+  workLink?: StoredWorkLink | null
+  /** LIFE-603 자동 연결 예외 — 「작업 떼기」 로 끊은 worktree. */
+  workLinkSuppressed?: boolean
 }
+/** 읽다가 버린 작업 링크 칸(손상·모르는 모양) — 앱은 산다. main 이 로그로 남긴다. */
+export type DroppedLink = { path: string; field: 'workLink' | 'workLinkSuppressed' }
 interface RegistryData { version: 2; repos: RepoRecord[]; setups: SetupRecord[]; worktrees: Record<string, WorktreeMetadataRecord> }
 
 /** Delete metadata and cross-repo parent references in the same registry transaction. */
@@ -76,6 +83,7 @@ export class RepoRegistry {
   private readonly file: string
   private readonly legacyMetadata: string
   private lastError: string | null = null
+  private dropped: DroppedLink[] = []
 
   constructor(userDataDir: string) {
     this.file = process.env.CORRAL_REGISTRY || path.join(userDataDir, 'repos.json')
@@ -95,6 +103,8 @@ export class RepoRegistry {
   records(): RepoRecord[] { return this.read().repos }
   setups(): SetupRecord[] { return this.read().setups }
   metadata(): Record<string, WorktreeMetadataRecord> { return this.read().worktrees }
+  /** 마지막 읽기에서 버린 작업 링크 칸. */
+  droppedLinks(): DroppedLink[] { return [...this.dropped] }
 
   private read(): RegistryData {
     let data: unknown
@@ -127,10 +137,22 @@ export class RepoRegistry {
     }
     if (!isRecord(worktrees)) throw new Error('Invalid worktree metadata')
     const metadata: Record<string, WorktreeMetadataRecord> = {}
+    const dropped: DroppedLink[] = []
     for (const [target, value] of Object.entries(worktrees)) {
       if (!isMetadata(value)) throw new Error('Invalid worktree metadata')
+      // LIFE-603: the work-link fields are optional extras. A damaged one is dropped on read (and so on the next
+      // write) instead of failing the whole registry — the other keys of that worktree stay exactly as they were.
+      if (value.workLink !== undefined && value.workLink !== null && readStoredWorkLink(value.workLink) === null) {
+        delete value.workLink
+        dropped.push({ path: target, field: 'workLink' })
+      }
+      if (value.workLinkSuppressed !== undefined && typeof value.workLinkSuppressed !== 'boolean') {
+        delete value.workLinkSuppressed
+        dropped.push({ path: target, field: 'workLinkSuppressed' })
+      }
       metadata[target] = value
     }
+    this.dropped = dropped
     return { version: 2, repos, setups, worktrees: metadata }
   }
 

@@ -82,7 +82,7 @@ await withBackend('f12-impl', binaries.impl, async f => {
     const response = await f.backendRpc('corral.terminal', { epoch: (await f.backendRpc('corral.terminal')).epoch,
       deadline_ms: Date.now() + 15000, operation: { method: 'server.agent_manifests', params: {} } })
     const manifests = Object.fromEntries((response.manifests ?? []).map(row => [row.agent, row]))
-    for (const [agent, version] of [['claude', '2026.09.04.1'], ['codex', '2026.09.21.3'], ['grok', '2026.09.21.3']]) {
+    for (const [agent, version] of [['claude', '2026.09.04.1'], ['codex', '2026.10.15.2'], ['grok', '2026.10.15.2']]) {
       assert.equal(manifests[agent]?.active_version, version, JSON.stringify(manifests[agent]))
       assert.equal(manifests[agent]?.source_kind, 'bundled', JSON.stringify(manifests[agent]))
       assert.equal(manifests[agent]?.local_override_shadowing_remote, false, JSON.stringify(manifests[agent]))

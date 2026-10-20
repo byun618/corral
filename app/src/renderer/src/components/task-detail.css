@@ -9,6 +9,9 @@
    r1 L2: 덮기 폴백에서는 그릇이 줄지 않으므로 오른쪽에 패널 폭을 더해 nearest 가 선택 카드를 패널 왼쪽까지 끌어온다. */
 .tasks-body .tasks-card, .tasks-body .tasks-row, .tasks-body .tasks-key-hit-row { scroll-margin: 12px; }
 .tasks-main[data-detail-layout="overlay"] .tasks-body .is-selected { scroll-margin-right: calc(var(--w-issue-detail) + 12px); }
+/* r2 L-A — 덮기 폴백에서는 그릇 오른쪽에 패널 폭만큼 스크롤 범위를 더해 마지막 칸 카드도 패널 왼쪽까지 끌어올 수 있게 한다. */
+.tasks-main[data-detail-layout="overlay"] .tasks-scroll { padding-right: calc(var(--w-issue-detail) + 12px); }
+.tasks-main[data-detail-layout="overlay"] .tasks-list-scroll { padding-right: var(--w-issue-detail); }
 
 .issue-detail {
   position: absolute; top: 0; right: 0; bottom: 0; z-index: 30;

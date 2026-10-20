@@ -289,7 +289,7 @@ export function Backlog({ sections, all, selectedId, drag, now, sectionView, han
         const showGap = drag !== null && drag.zone === zone && view.mode === 'target'
         return (
           <section key={section.id} className={`tasks-backlog-section drag-${view.mode}${drag?.zone === zone ? ' is-over' : ''}`} data-backlog-section={section.id}>
-            <header className="tasks-backlog-head"><span>{section.label}</span><span className="tasks-column-count">{section.rows.length}</span>{sectionAdd?.(section.id) ?? null}</header>
+            <header className="tasks-backlog-head"><span className="tasks-backlog-title"><span>{section.label}</span><span className="tasks-column-count">{section.rows.length}</span></span>{sectionAdd?.(section.id) ?? null}</header>
             {view.reason !== null ? <div className="tasks-column-reason" data-column-reason="">{view.reason}</div> : null}
             <div className="tasks-backlog-list" data-drop-zone={zone}>
               {section.rows.length === 0 && !showGap ? <div className="tasks-backlog-empty">비어 있음</div> : null}

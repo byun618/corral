@@ -64,7 +64,7 @@ const settle = async (rounds = 8): Promise<void> => {
   for (let index = 0; index < rounds; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
 }
 
-async function rig({ detailFull = false, detail = null, onCommit = () => {} }: { detailFull?: boolean; detail?: string | null; onCommit?: () => void } = {}): Promise<{ calls: WorkCall[] }> {
+async function rig({ detailFull = false, detail = null, filters = null, onCommit = () => {} }: { detailFull?: boolean; detail?: string | null; filters?: { blocked: boolean } | null; onCommit?: () => void } = {}): Promise<{ calls: WorkCall[] }> {
   const state = seedMockDemoState()
   let seq = 0
   let listener: (value: WorkSettingsState) => void = () => {}
@@ -76,7 +76,7 @@ async function rig({ detailFull = false, detail = null, onCommit = () => {} }: {
   if (!added.ok) throw new Error('연결 실패')
   const calls: WorkCall[] = []
   Reflect.set(window, 'corral', {
-    getUiPrefs: async () => ({ tasksPage: { ...(detailFull ? { detailFull: true } : {}), ...(detail === null ? {} : { detail: { connectionId: service.settings().connections[0]?.id ?? '', itemId: detail } }) } }),
+    getUiPrefs: async () => ({ tasksPage: { ...(detailFull ? { detailFull: true } : {}), ...(detail === null ? {} : { detail: { connectionId: service.settings().connections[0]?.id ?? '', itemId: detail } }), ...(filters === null ? {} : { filters }) } }),
     setUiPrefs: () => {},
     getWorkSettings: async () => service.settings(),
     onWorkSettings: (next: (value: WorkSettingsState) => void) => { listener = next; return () => {} },
@@ -202,6 +202,22 @@ describe('P3 열린 상세 복원(r1 L4)', () => {
     expect(spy.mock.contexts[0]).toBe(el('[data-tasks-board] [data-issue-card="CORE-4"]'))
     await settle(20)
     expect(spy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('P3 걸린 맞춤 정리(r2 L-E)', () => {
+  it('지금 필터에 없는 카드를 복원하면 기다림을 풀고, 필터를 풀어 나타나도 맞추지 않는다', async () => {
+    const spy = vi.fn()
+    HTMLElement.prototype.scrollIntoView = spy
+    // 막힘 필터 — CORE-2(m-2) 는 막혀 있지 않아 보드에 없다.
+    await rig({ detail: 'm-2', filters: { blocked: true } })
+    expect(q('[data-issue-detail="CORE-2"]')).not.toBeNull()
+    expect(q('[data-tasks-board] [data-issue-card="CORE-2"]')).toBeNull()
+    expect(spy).toHaveBeenCalledTimes(0)
+    click('[data-filter="blocked"]')
+    await settle(20)
+    expect(q('[data-tasks-board] [data-issue-card="CORE-2"]')).not.toBeNull()
+    expect(spy).toHaveBeenCalledTimes(0)
   })
 })
 

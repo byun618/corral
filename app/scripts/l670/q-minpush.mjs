@@ -16,9 +16,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { APP, ctl, evalJs, recorder, sleep, until } from '../l577/g-lib.mjs'
 
-const [ROOT, OUT, SHOT_DIR] = process.argv.slice(2)
+const [ROOT, OUT, SHOT_DIR, BODY_ARG] = process.argv.slice(2)
+// 넷째 인자 = 맞출 body 폭(기본 = --w-tasks-body-min). 수정 2 대조 회차는 480.
 if (!ROOT?.startsWith('/tmp/l670q-') || OUT === undefined || SHOT_DIR === undefined) {
-  console.error('사용법: node scripts/l670/q-minpush.mjs /tmp/l670q-<n> <OUT 파일> <샷 복사 폴더>')
+  console.error('사용법: node scripts/l670/q-minpush.mjs /tmp/l670q-<n> <OUT 파일> <샷 복사 폴더> [body 폭]')
   process.exit(2)
 }
 const FIXTURE = `${ROOT}-app`
@@ -96,6 +97,43 @@ const measure = (targets) => js(`(() => {
     placement: document.querySelector('.tasks-main')?.dataset.detailLayout ?? null, items: out }
 })()`)
 
+// 가독성(수정 2, r2 M-A) — 보이는 행 제목 폭 >= --w-row-title-min · 필터 줄·리스트 툴바 칩이 한 줄(글자 단위 줄바꿈 0, 높이 <= 가장 흔한 칩 높이).
+// 줄 수 = 칩 안 텍스트 노드마다 Range client rect 윗변 묶음 수의 최댓값(글자 단위 줄바꿈이면 2 이상).
+const readability = () => js(`(() => {
+  const min = parseFloat(getComputedStyle(document.querySelector('.tasks-main')).getPropertyValue('--w-row-title-min'))
+  const titles = [...document.querySelectorAll('.tasks-body .tasks-row-title')].filter((t) => t.getBoundingClientRect().height > 0)
+    .map((t) => ({ key: t.closest('[data-issue-row]')?.getAttribute('data-issue-row') ?? null, width: Math.round(t.getBoundingClientRect().width) }))
+  // 텍스트 노드마다 줄 수(윗변이 6px 넘게 다른 rect = 다른 줄)의 최댓값. select·option 글자는 뺀다(닫힌 목록의 option rect 가 엉뚱한 윗변을 준다 — 6회차 오판).
+  const lines = (el) => {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); let most = 0
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      if (node.parentElement?.closest('select, option') || node.textContent.trim().length === 0) continue
+      const range = document.createRange(); range.selectNodeContents(node)
+      const tops = [...range.getClientRects()].filter((r) => r.width > 0).map((r) => r.top).sort((a, b) => a - b)
+      let count = tops.length === 0 ? 0 : 1
+      for (let i = 1; i < tops.length; i += 1) if (tops[i] - tops[i - 1] > 6) count += 1
+      most = Math.max(most, count)
+    }
+    return most
+  }
+  const chips = [...document.querySelectorAll('.tasks-filters > *, .tasks-list-tools > *')]
+    .filter((c) => !c.matches('.tasks-head-spacer, .tasks-list-sep') && c.getBoundingClientRect().width > 0)
+    .map((c) => ({ text: (c.textContent || '').trim().slice(0, 16), height: Math.round(c.getBoundingClientRect().height), lines: lines(c) }))
+  const counts = {}; for (const c of chips) counts[c.height] = (counts[c.height] ?? 0) + 1
+  const base = Number(Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0)
+  const narrowTitles = titles.filter((t) => t.width < min)
+  const brokenChips = chips.filter((c) => c.lines > 1 || c.height > base)
+  const rows = (sel) => { const tops = new Set([...document.querySelectorAll(sel + ' > *')].filter((c) => c.getBoundingClientRect().width > 0).map((c) => Math.round(c.getBoundingClientRect().top))); return tops.size }
+  return { min, base, titles: titles.length, minTitle: titles.length === 0 ? null : Math.min(...titles.map((t) => t.width)), narrowTitles, chips: chips.length, brokenChips,
+    filterRows: rows('.tasks-filters'), toolRows: document.querySelector('.tasks-list-tools') ? rows('.tasks-list-tools') : null }
+})()`)
+const judgeReadable = async (label) => {
+  const r = await readability()
+  log(`가독성 ${label}`, r)
+  judge(`M-A 가독성 ${label} — 행 제목 ${r.titles}개 모두 >= ${r.min} · 칩 ${r.chips}개 한 줄`, r.narrowTitles.length === 0 && r.brokenChips.length === 0 && r.chips > 0,
+    JSON.stringify({ minTitle: r.minTitle, narrowTitles: r.narrowTitles, base: r.base, brokenChips: r.brokenChips, filterRows: r.filterRows, toolRows: r.toolRows }))
+}
+
 const VIEWS = {
   board: [{ selector: '[data-tasks-scroll="board"]', scroller: true }, { selector: '.tasks-filters' }],
   backlog: [{ selector: '[data-tasks-scroll="backlog"]', scroller: true }, { selector: '.tasks-backlog-head' }, { selector: '[data-tasks-scroll="backlog"] .tasks-row' }],
@@ -118,6 +156,7 @@ const checkView = async ({ label, view }) => {
   judge(`M1 ${label} — 밀기 · body.right <= aside.left · 그릇 밖 넘침 0 · 그릇 안 넘침은 스크롤 끝 도달(대상 ${m.items.length}개)`,
     m.placement === 'push' && m.body.right <= m.asideLeft && m.items.length > 0 && bad.length === 0,
     JSON.stringify({ placement: m.placement, body: m.body, asideLeft: m.asideLeft, n: m.items.length, bad, scrolled }))
+  await judgeReadable(label)
   await shot(`q-minpush-${label}`)
   return m
 }
@@ -134,8 +173,13 @@ try {
   await ctl(ROOT, { cmd: 'key', keyCode: 'I', modifiers: ['meta'] })
   await until(pageOpen, { timeoutMs: 10_000, label: '⌘I 로 열림' })
   await until(() => js(`!!document.querySelector('[data-tasks-board] [data-issue-card="CORE-2"]')`), { timeoutMs: 15_000, label: '보드 카드 CORE-2' })
+  // 양성 대조(환경 L670_UNDO_MA=1): 수정 2 의 눌림 방지 CSS 를 되돌린다 — 가독성 판정이 미달을 내야 한다(판별력 근거, 이 회차의 exit 1 은 기대값).
+  if (process.env.L670_UNDO_MA === '1') {
+    const undone = await js(`(() => { const st = document.createElement('style'); st.textContent = '.tasks-filters, .tasks-list-tools { flex-wrap: nowrap !important } .tasks-filters > *, .tasks-list-tools > * { flex-shrink: 1 !important; white-space: normal !important } .tasks-row-title { min-width: 0 !important; contain: none !important } .tasks-row > * { flex-shrink: 1 !important }'; document.head.append(st); return true })()`)
+    log('양성 대조 — 수정 2 CSS 되돌림 주입', undone)
+  }
   const tokens = await js(`(() => { const s = getComputedStyle(document.querySelector('.tasks-main')); return { panel: s.getPropertyValue('--w-issue-detail').trim(), min: s.getPropertyValue('--w-tasks-body-min').trim() } })()`)
-  const target = Number.parseFloat(tokens.panel) + Number.parseFloat(tokens.min)
+  const target = Number.parseFloat(tokens.panel) + (BODY_ARG === undefined ? Number.parseFloat(tokens.min) : Number(BODY_ARG))
   log('토큰', { ...tokens, targetMain: target })
   // 창 폭 맞추기 — 1241 에서 main 을 재고 차이만큼 고친다(사이드바·경계선 실측).
   let windowWidth = 1241
@@ -147,7 +191,7 @@ try {
   await sleep(400)
   const fitted = await mainWidth()
   log('창 맞춤', { first, windowWidth, main: fitted, inner: await js('innerWidth') })
-  judge('창 맞춤 — main = 패널 + 최소 폭', fitted === target, JSON.stringify({ windowWidth, main: fitted, target }))
+  judge('창 맞춤 — main = 패널 + body 폭', fitted === target, JSON.stringify({ windowWidth, main: fitted, target }))
   // rAF 살아 있음(창 가림 무효 판정) — 500ms 동안 프레임 수.
   const frames = await js(`new Promise((resolve) => { let n = 0; const t0 = performance.now(); const tick = () => { n += 1; if (performance.now() - t0 < 500) requestAnimationFrame(tick); else resolve(n) }; requestAnimationFrame(tick) })`)
   judge('측정 유효 — rAF 가 돈다(창 가림 아님)', frames >= 10, String(frames))
@@ -192,8 +236,10 @@ try {
   // 전체 스페이스 모드 — 행에 스페이스 열이 붙는다(추정하지 않고 잰다).
   await click('[data-space-switch]')
   await click('[data-space-row="all"]')
-  await until(() => js(`document.querySelector('[data-tasks-page]')?.getAttribute('data-tasks-space') === 'all'`), { timeoutMs: 10_000, label: '전체 스페이스' }).catch(() => null)
-  log('스페이스', await js(`document.querySelector('[data-tasks-page]')?.getAttribute('data-tasks-space')`))
+  const switched = await until(() => js(`document.querySelector('[data-tasks-page]')?.getAttribute('data-tasks-space') === 'all'`), { timeoutMs: 10_000, label: '전체 스페이스' }).then(() => true).catch(() => false)
+  const spaceNow = await js(`document.querySelector('[data-tasks-page]')?.getAttribute('data-tasks-space')`)
+  judge('전체 스페이스 전환(r2 L-C — 실패면 all-* 회차가 단일 스페이스를 재는 것을 막는다)', switched && spaceNow === 'all', JSON.stringify({ switched, spaceNow }))
+  if (!switched) throw new Error('전체 스페이스 전환 실패')
   await showView('board')
   await until(() => js(`!!document.querySelector('[data-tasks-board] [data-issue-card]')`), { timeoutMs: 15_000, label: '전체 보드 카드' })
   log('전체 보드 카드', await js(`[...document.querySelectorAll('[data-tasks-board] [data-issue-card]')].map((e) => e.getAttribute('data-issue-card'))`))
@@ -217,6 +263,7 @@ try {
   log('측정 filters-worst', { ...f, note, detailOpen: await js(`!!document.querySelector('[data-issue-detail]')`) })
   const fbad = f.items.filter((item) => !item.ok)
   judge('M1 필터 줄 최악(이번 주 마감 칩 + 검색 안내) — 밀기 · 넘침 0', noted && f.placement === 'push' && fbad.length === 0, JSON.stringify({ noted, note, bad: fbad, asideLeft: f.asideLeft, placement: f.placement }))
+  await judgeReadable('filters-worst')
   await shot('q-minpush-filters-worst')
 
   const failed = verdicts.filter((verdict) => !verdict.pass)

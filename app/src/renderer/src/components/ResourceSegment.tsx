@@ -13,7 +13,9 @@
 //            을 사이드바·탭 닫기와 같은 규칙으로 먼저 지난다(F7).
 //     확인 창은 기존 `ConfirmClose`, 문구는 pane 기준(`paneCloseCopy`). 뜨면 취소 버튼에 포커스, Esc = 취소(F3).
 //     확인한 뒤 다시 부르기 전에 길을 다시 묻고, 바뀌었으면 처음부터 다시 진행한다(J2 — 확인 창에 머무는 동안 옆 pane 이 끝날 수 있다).
-//     같은 행의 닫기가 진행 중이면 다음 ✕ 는 무시한다(J6).
+//     같은 행의 닫기가 진행 중이면 다음 ✕ 는 무시한다(J6). 방금 닫은 pane 의 ✕ 는 다음 스냅샷까지 무시한다(K6).
+//     길을 묻는 동안(첫 조회·확인 뒤 재조회) 취소·Esc·패널 닫기가 오면 닫기를 부르지 않는다(K1 — 세대 번호).
+//     확인 창이 떠 있는 동안 패널은 inert 이고 행 동작은 시작되지 않는다(K2).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
@@ -95,6 +97,10 @@ export function ResourceSegment(): React.JSX.Element {
   const closingRef = useRef(new Set<string>())
   /** 확인 창을 연 행 — 취소하면 그 행으로 포커스를 돌린다. */
   const closingPaneRef = useRef<string | null>(null)
+  /** 취소·패널 닫기 세대(K1). 길을 묻는 await 뒤 세대가 바뀌었으면 그 닫기는 버린다 — 상태는 진행 중 함수에 낡은 값으로 남는다. */
+  const closeGenRef = useRef(0)
+  /** 방금 닫기에 성공한 pane(K6) — 다음 스냅샷이 오면 비운다. */
+  const closedRef = useRef(new Set<string>())
 
   useEffect(() => {
     let alive = true
@@ -108,7 +114,16 @@ export function ResourceSegment(): React.JSX.Element {
     }
   }, [])
 
+  useEffect(() => {
+    closedRef.current.clear()
+  }, [snapshot])
+
   const rowsInPanel = (): HTMLElement[] => [...(panelRef.current?.querySelectorAll<HTMLElement>(ROW_SELECTOR) ?? [])]
+  /** 행(이동 버튼)이나 그 ✕ 에 포커스가 오면 그 pane 과 자리를 기록한다(K4 — ✕ 로 닫은 뒤에도 이웃으로). */
+  const rememberFocus = (paneId: string): void => {
+    focusPaneRef.current = paneId
+    focusIndexRef.current = Math.max(0, rowsInPanel().findIndex((row) => row.dataset.statusbarResourceRow === paneId))
+  }
 
   const focusRowNear = useCallback((input: { paneId: string | null }) => {
     const panel = panelRef.current
@@ -120,6 +135,7 @@ export function ResourceSegment(): React.JSX.Element {
   }, [])
 
   const closePanel = useCallback((input: { restoreFocus: boolean }) => {
+    closeGenRef.current += 1
     setOpen(false)
     setPendingClose(null)
     setError(null)
@@ -130,6 +146,7 @@ export function ResourceSegment(): React.JSX.Element {
   }, [])
 
   const cancelClose = useCallback(() => {
+    closeGenRef.current += 1
     setPendingClose(null)
     // 확인 창이 내려간 뒤(다음 렌더) 그 행으로.
     window.setTimeout(() => focusRowNear({ paneId: closingPaneRef.current }), 0)
@@ -205,13 +222,18 @@ export function ResourceSegment(): React.JSX.Element {
       closePanel({ restoreFocus: true })
       return
     }
+    setError(null)
     setOpen(true)
   }
 
+  /** 행 동작을 시작하지 않는 때 — 호스트가 inert(J4) 이거나 확인 창이 떠 있다(K2). */
+  const blocked = (): boolean => hostInert() || pendingClose !== null
+
   const reveal = (row: ResourcePaneRow): void => {
-    if (hostInert()) return
+    if (blocked()) return
+    // 패널은 곧 닫힌다 — 실패는 토스트로(K5: 열 때 지난 오류를 비우므로 패널 오류 칸에 남기지 않는다).
     void window.corral.revealResourcePane({ paneId: row.paneId }).then((ok) => {
-      if (!ok) setError('그 pane 을 찾지 못했다')
+      if (!ok) toast('그 pane 을 찾지 못했다')
     })
     // 이동하면 포커스는 그 pane 이 가져간다 — 열기 전 자리로 되돌리지 않는다.
     closePanel({ restoreFocus: false })
@@ -234,7 +256,9 @@ export function ResourceSegment(): React.JSX.Element {
         setPendingClose(null)
         // 닫은 목록에 대상이 없으면 아무것도 닫히지 않았다(F6 — 그 사이 사라졌다) — 성공으로 보이지 않는다.
         const id = target.kind === 'tab' ? target.tabId : target.row.paneId
-        setError(result.closed.includes(id) ? null : '닫힌 것이 없다 — 이미 없어졌을 수 있다')
+        const closed = result.closed.includes(id)
+        if (closed) closedRef.current.add(target.row.paneId)
+        setError(closed ? null : '닫힌 것이 없다 — 이미 없어졌을 수 있다')
         return
       }
       case 'needs-confirm':
@@ -267,13 +291,15 @@ export function ResourceSegment(): React.JSX.Element {
   }
 
   const startClose = async (row: ResourcePaneRow): Promise<void> => {
+    const gen = closeGenRef.current
     closingPaneRef.current = row.paneId
     setError(null)
     const route = await askRoute(row.paneId)
-    if (route !== null) await proceedClose({ row, route })
+    if (route === null || gen !== closeGenRef.current) return
+    await proceedClose({ row, route, gen })
   }
 
-  const proceedClose = async (input: { row: ResourcePaneRow; route: ResourceCloseRoute }): Promise<void> => {
+  const proceedClose = async (input: { row: ResourcePaneRow; route: ResourceCloseRoute; gen: number }): Promise<void> => {
     const { row, route } = input
     switch (route.kind) {
       case 'missing':
@@ -291,6 +317,7 @@ export function ResourceSegment(): React.JSX.Element {
           if (!ok) return
         }
         const pinned = await pinnedNow(route.tabId)
+        if (input.gen !== closeGenRef.current) return
         await runClose({
           target: { kind: 'tab', row, tabId: route.tabId, lastInWorktree: route.lastInWorktree, pinned, alwaysConfirm: getSettings().confirmClosePinnedTab && pinned },
           confirmed: false,
@@ -316,18 +343,22 @@ export function ResourceSegment(): React.JSX.Element {
   /** 확인 창의 「확인」 — 다시 부르기 전에 길을 다시 묻는다(J2). 같으면 확인한 대로, 바뀌었으면 지금 위상으로 처음부터. */
   const confirmClose = async (input: { target: CloseTarget; confirmedPaneIds: string[]; dontAskAgainPatch: Parameters<typeof updateSettings>[0] | null }): Promise<void> => {
     const { target } = input
+    const gen = closeGenRef.current
     const route = await askRoute(target.row.paneId)
+    // 묻는 사이 취소·Esc·패널 닫기(K1) — 확인 창은 이미 내려갔다.
+    if (gen !== closeGenRef.current) return
     if (route === null) {
       setPendingClose(null)
       return
     }
     if (!sameRoute({ target, route })) {
       setPendingClose(null)
-      await proceedClose({ row: target.row, route })
+      await proceedClose({ row: target.row, route, gen })
       return
     }
     // 기존 탭 닫기와 같다 — 체크 + 확인만 저장하고, 저장이 실패해도 사용자가 확인한 닫기는 진행한다.
     if (input.dontAskAgainPatch !== null && !(await updateSettings(input.dontAskAgainPatch))) toast(CLOSE_SKIP_FAILED_NOTICE)
+    if (gen !== closeGenRef.current) return
     await runClose({ target, confirmed: true, confirmedPaneIds: input.confirmedPaneIds })
   }
 
@@ -380,6 +411,7 @@ export function ResourceSegment(): React.JSX.Element {
       role="dialog"
       aria-label="Resource Manager"
       tabIndex={-1}
+      inert={pendingClose !== null}
       onKeyDown={onPanelKeyDown}
     >
       <div className="statusbar-resource-head">
@@ -393,6 +425,8 @@ export function ResourceSegment(): React.JSX.Element {
               data-statusbar-resource-sort={key}
               aria-pressed={sort === key}
               onClick={() => {
+                // 이미 그 정렬이면 아무것도 바꾸지 않는다(K3 — 얼린 순서를 풀면 다음 푸시에서 행이 건너뛴다).
+                if (key === sort || blocked()) return
                 orderRef.current = null
                 setSort(key)
               }}
@@ -434,10 +468,7 @@ export function ResourceSegment(): React.JSX.Element {
                       className="statusbar-resource-line statusbar-resource-move"
                       data-statusbar-resource-row={row.paneId}
                       title={cells.title ?? `${row.title} — 이동`}
-                      onFocus={(event) => {
-                        focusPaneRef.current = row.paneId
-                        focusIndexRef.current = Math.max(0, rowsInPanel().indexOf(event.currentTarget))
-                      }}
+                      onFocus={() => rememberFocus(row.paneId)}
                       onClick={() => reveal(row)}
                     >
                       <span className="statusbar-resource-name">{row.title}</span>
@@ -451,8 +482,9 @@ export function ResourceSegment(): React.JSX.Element {
                       data-statusbar-resource-close={row.paneId}
                       aria-label={`${row.title} 닫기`}
                       title="닫기"
+                      onFocus={() => rememberFocus(row.paneId)}
                       onClick={() => {
-                        if (hostInert()) return
+                        if (blocked() || closedRef.current.has(row.paneId)) return
                         void guarded({ paneId: row.paneId, run: () => startClose(row) })
                       }}
                     >

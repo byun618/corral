@@ -5,9 +5,11 @@
 // - 앱 사본 = fixture-app.sh(보드 칸 7 · 질의 `jql:` 에 긴 검색 안내). 창이 가려지면 rAF·ResizeObserver 가 멈춰 측정이 무효라
 //   `--disable-backgrounding-occluded-windows` 로 띄운다(리뷰 r1 환경 주의).
 // - 창 폭은 main 실측으로 맞춘다: 1241 로 연 뒤 main 이 960 이 되게 고쳐 다시 연다. 상세는 보드 카드 CORE-2 로 연 채 보기를 바꾼다.
-// - 판정(보기마다): .tasks-body.right <= aside.left · 검사 대상 요소마다 scrollWidth <= clientWidth · 그 요소의 보이는 자손 right <= aside.left.
+// - 판정(보기마다, 코디 답 A): .tasks-body.right <= aside.left · 그릇 밖 요소 scrollWidth <= clientWidth 이고 자손 right <= aside.left · 그릇 안 요소는 넘치면 그릇 스크롤 끝에서 자손 right <= aside.left.
 //   보드는 칸이 가로 스크롤 그릇(.tasks-scroll) 안에 있는 것이 설계라 그릇만 본다(그릇 right <= aside.left) — 칸 머리·카드는 그릇 안에서 잘린다.
 // - 필터 줄은 두 번: 기본 칩 4 · 「이번 주 마감」 칩(리스트 프리셋 week) + 검색 안내(검색어 `jql:x`)를 켠 상태.
+// - 그릇 안 행 넘침의 대조: 패널을 닫고 창을 패널 폭만큼 줄여 같은 body 폭에서 같은 행의 scroll/client 폭이 같은지(작업 전과 같은 동작).
+// - 전체 스페이스 모드(행에 스페이스 열)도 보드·백로그·리스트를 같은 기준으로 잰다.
 // 실제 LA·사용자 키체인·설치본 무접촉. 종료 코드: 0 전부 통과 · 1 하나라도 미달 · 2 사용법.
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -49,29 +51,48 @@ const shot = async (name) => {
 const pageOpen = () => js(`(() => { const p = document.querySelector('[data-tasks-page]'); return !!p && !p.classList.contains('is-closed') })()`)
 const mainWidth = () => js(`Math.round(document.querySelector('.tasks-main').getBoundingClientRect().width * 100) / 100`)
 
-// 넘침 측정 — 대상 선택자들의 scroll/client 폭과 보이는 자손의 최대 right. `scroller` 는 그릇만(자손 안 봄).
+// 넘침 측정 — 대상 선택자마다 scroll/client 폭과 보이는 자손의 최대 right. `scroller` 는 그릇 자체(자손 안 봄).
+// 판정(코디 답 A, 2026-10-20): 그릇 밖 요소 = scrollWidth <= clientWidth 이고 자손 right <= aside.left(패널 밑 넘침 0).
+// 그릇(가장 가까운 overflow-x auto 조상 — .tasks-scroll · .tasks-list-scroll · 백로그 구획) 안 요소의 min-content 넘침은 허용하되 그 그릇을 가로 스크롤 끝으로 보낸 상태에서 자손 right <= aside.left(끝까지 닿음).
+// 3회차는 .tasks-backlog min-width:min-content 로 통과했지만 긴 제목까지 min-content 로 잡혀 백로그 전체가 넓어졌다(행 506·전체 624) — 구획 overflow-x:auto 로 바꿨다.
 const measure = (targets) => js(`(() => {
   const aside = document.querySelector('[data-issue-detail]')
   const asideLeft = aside ? Math.round(aside.getBoundingClientRect().left) : null
+  const limit = asideLeft ?? Math.round(document.querySelector('.tasks-body').getBoundingClientRect().right)
   const body = document.querySelector('.tasks-body').getBoundingClientRect()
+  const extent = (el) => {
+    let maxRight = Math.round(el.getBoundingClientRect().right); let worst = null
+    for (const child of el.querySelectorAll('*')) {
+      const c = child.getBoundingClientRect()
+      if (c.width === 0 || c.height === 0) continue
+      if (c.right > maxRight) { maxRight = Math.round(c.right); worst = (child.className || child.tagName).toString().slice(0, 40) + ':' + (child.textContent || '').trim().slice(0, 20) }
+    }
+    return { maxRight, worst }
+  }
   const out = []
   for (const { selector, scroller } of ${JSON.stringify(targets)}) {
-    const els = [...document.querySelectorAll(selector)]
-    for (const el of els.slice(0, 12)) {
+    for (const el of [...document.querySelectorAll(selector)].slice(0, 12)) {
       const r = el.getBoundingClientRect()
       if (r.width === 0 && r.height === 0) continue
-      let maxRight = Math.round(r.right)
-      let worst = null
-      if (!scroller) for (const child of el.querySelectorAll('*')) {
-        const c = child.getBoundingClientRect()
-        if (c.width === 0 || c.height === 0) continue
-        if (c.right > maxRight) { maxRight = Math.round(c.right); worst = (child.className || child.tagName).toString().slice(0, 40) + ':' + (child.textContent || '').trim().slice(0, 20) }
+      const key = el.getAttribute('data-issue-row') ?? el.getAttribute('data-issue-card') ?? null
+      if (scroller) { out.push({ selector, key, scroller: true, scrollW: el.scrollWidth, clientW: el.clientWidth, right: Math.round(r.right), ok: Math.round(r.right) <= limit }); continue }
+      const fits = el.scrollWidth <= el.clientWidth
+      const { maxRight, worst } = extent(el)
+      // 가장 가까운 가로 스크롤 조상(overflow-x auto/scroll) — 백로그는 구획, 리스트는 .tasks-list-scroll, 그 밖은 .tasks-scroll.
+      let box = el.parentElement
+      while (box !== null && !['auto', 'scroll'].includes(getComputedStyle(box).overflowX)) box = box.parentElement
+      let reach = null
+      if (box !== null && (!fits || maxRight > limit)) {
+        const saved = box.scrollLeft
+        box.scrollLeft = box.scrollWidth
+        reach = { scrollLeft: box.scrollLeft, scrollMax: box.scrollWidth - box.clientWidth, maxRight: extent(el).maxRight }
+        box.scrollLeft = saved
       }
-      out.push({ selector, scrollW: el.scrollWidth, clientW: el.clientWidth, right: Math.round(r.right), maxRight, worst,
-        ok: (scroller || el.scrollWidth <= el.clientWidth) && maxRight <= asideLeft })
+      const ok = box === null ? fits && maxRight <= limit : (fits && maxRight <= limit) || (reach !== null && reach.maxRight <= limit)
+      out.push({ selector, key, inScroller: box !== null, scrollW: el.scrollWidth, clientW: el.clientWidth, right: Math.round(r.right), maxRight, worst, reach, ok })
     }
   }
-  return { asideLeft, body: { left: Math.round(body.left), right: Math.round(body.right), width: Math.round(body.width) },
+  return { asideLeft, limit, body: { left: Math.round(body.left), right: Math.round(body.right), width: Math.round(body.width) },
     placement: document.querySelector('.tasks-main')?.dataset.detailLayout ?? null, items: out }
 })()`)
 
@@ -80,6 +101,25 @@ const VIEWS = {
   backlog: [{ selector: '[data-tasks-scroll="backlog"]', scroller: true }, { selector: '.tasks-backlog-head' }, { selector: '[data-tasks-scroll="backlog"] .tasks-row' }],
   list: [{ selector: '.tasks-list-scroll', scroller: true }, { selector: '.tasks-list-tools' }, { selector: '.tasks-list-scroll .tasks-row' }, { selector: '.tasks-list-group' }],
   working: [{ selector: '.tasks-body > *', scroller: true }, { selector: '.tasks-body .tasks-empty, .tasks-body .tasks-working-item' }],
+}
+const showView = async (view) => {
+  await click(`[data-tasks-view-tab="${view}"]`)
+  await until(() => js(`document.querySelector('[data-tasks-page]')?.getAttribute('data-tasks-view') === '${view}'`), { timeoutMs: 5_000, label: `보기 ${view}` })
+  await sleep(300)
+}
+const rowShape = (m) => Object.fromEntries(m.items.filter((item) => item.key !== null).map((item) => [item.key, { scrollW: item.scrollW, clientW: item.clientW }]))
+/** 보기 하나 측정·판정 — 밀기 상태여야 한다. */
+const checkView = async ({ label, view }) => {
+  await showView(view)
+  const m = await measure(VIEWS[view])
+  log(`측정 ${label}`, m)
+  const bad = m.items.filter((item) => !item.ok)
+  const scrolled = m.items.filter((item) => item.reach !== null && item.reach !== undefined).map((item) => ({ key: item.key, scrollW: item.scrollW, clientW: item.clientW, reach: item.reach }))
+  judge(`M1 ${label} — 밀기 · body.right <= aside.left · 그릇 밖 넘침 0 · 그릇 안 넘침은 스크롤 끝 도달(대상 ${m.items.length}개)`,
+    m.placement === 'push' && m.body.right <= m.asideLeft && m.items.length > 0 && bad.length === 0,
+    JSON.stringify({ placement: m.placement, body: m.body, asideLeft: m.asideLeft, n: m.items.length, bad, scrolled }))
+  await shot(`q-minpush-${label}`)
+  return m
 }
 
 fs.mkdirSync(ROOT, { recursive: true, mode: 0o700 })
@@ -112,22 +152,60 @@ try {
   const frames = await js(`new Promise((resolve) => { let n = 0; const t0 = performance.now(); const tick = () => { n += 1; if (performance.now() - t0 < 500) requestAnimationFrame(tick); else resolve(n) }; requestAnimationFrame(tick) })`)
   judge('측정 유효 — rAF 가 돈다(창 가림 아님)', frames >= 10, String(frames))
 
-  await click('[data-tasks-board] [data-issue-card="CORE-2"]')
-  await until(() => js(`!!document.querySelector('[data-issue-detail="CORE-2"]')`), { timeoutMs: 10_000, label: '상세 CORE-2' })
-  await sleep(300)
-  for (const view of ['board', 'backlog', 'list', 'working']) {
-    await click(`[data-tasks-view-tab="${view}"]`)
-    await until(() => js(`document.querySelector('[data-tasks-page]')?.getAttribute('data-tasks-view') === '${view}'`), { timeoutMs: 5_000, label: `보기 ${view}` })
+  const openDetail = async () => {
+    await showView('board')
+    await click('[data-tasks-board] [data-issue-card="CORE-2"]')
+    await until(() => js(`!!document.querySelector('[data-issue-detail="CORE-2"]')`), { timeoutMs: 10_000, label: '상세 CORE-2' })
     await sleep(300)
-    const m = await measure(VIEWS[view])
-    log(`측정 ${view}`, m)
-    const bad = m.items.filter((item) => !item.ok)
-    judge(`M1 ${view} — 밀기 · body.right <= aside.left · 대상 ${m.items.length}개 넘침 0`, m.placement === 'push' && m.body.right <= m.asideLeft && m.items.length > 0 && bad.length === 0, JSON.stringify({ placement: m.placement, body: m.body, asideLeft: m.asideLeft, n: m.items.length, bad }))
-    await shot(`q-minpush-${view}`)
   }
+  await openDetail()
+  const pushed = {}
+  for (const view of ['board', 'backlog', 'list', 'working']) pushed[view] = await checkView({ label: view, view })
+
+  // 대조 — 패널을 닫고 창을 줄여 body 를 같은 폭으로: 그릇 안 행 넘침이 작업 전과 같은 모양(행 자체 min-content)인가.
+  await click('[data-issue-close]')
+  await until(async () => (await js(`!document.querySelector('[data-issue-detail]')`)) === true, { timeoutMs: 5_000, label: '상세 닫기' })
+  // 좁은 창에서는 사이드바 폭도 바뀐다 — body 폭을 재며 밀기 때 body 폭(pushed.list.body.width)에 맞춘다(2회차는 391 로 어긋났다).
+  const bodyWidth = () => js(`Math.round(document.querySelector('.tasks-body').getBoundingClientRect().width)`)
+  let narrow = windowWidth - Number.parseFloat(tokens.panel)
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await ctl(ROOT, { cmd: 'resize-window', width: narrow, height: 800 })
+    await sleep(500)
+    const diff = pushed.list.body.width - (await bodyWidth())
+    log('대조 폭 맞춤', { narrow, diff })
+    if (diff === 0) break
+    narrow += diff
+  }
+  for (const view of ['backlog', 'list']) {
+    await showView(view)
+    const m = await measure(VIEWS[view])
+    log(`대조 패널 닫음 ${view}`, { windowWidth: narrow, ...m })
+    const before = rowShape(pushed[view]); const after = rowShape(m)
+    const keys = Object.keys(before)
+    const same = keys.length > 0 && keys.every((key) => after[key] !== undefined && after[key].scrollW === before[key].scrollW && after[key].clientW === before[key].clientW)
+    judge(`M1 대조 ${view} — 패널 닫은 같은 body 폭(${m.body.width})에서 행 scroll/client 폭이 밀기 때와 같다`, m.placement === 'none' && m.body.width === pushed[view].body.width && same, JSON.stringify({ body: m.body, pushed: before, closed: after }))
+    await shot(`q-minpush-control-${view}`)
+  }
+  await ctl(ROOT, { cmd: 'resize-window', width: windowWidth, height: 800 })
+  await sleep(500)
+
+  // 전체 스페이스 모드 — 행에 스페이스 열이 붙는다(추정하지 않고 잰다).
+  await click('[data-space-switch]')
+  await click('[data-space-row="all"]')
+  await until(() => js(`document.querySelector('[data-tasks-page]')?.getAttribute('data-tasks-space') === 'all'`), { timeoutMs: 10_000, label: '전체 스페이스' }).catch(() => null)
+  log('스페이스', await js(`document.querySelector('[data-tasks-page]')?.getAttribute('data-tasks-space')`))
+  await showView('board')
+  await until(() => js(`!!document.querySelector('[data-tasks-board] [data-issue-card]')`), { timeoutMs: 15_000, label: '전체 보드 카드' })
+  log('전체 보드 카드', await js(`[...document.querySelectorAll('[data-tasks-board] [data-issue-card]')].map((e) => e.getAttribute('data-issue-card'))`))
+  if ((await js(`!!document.querySelector('[data-issue-detail]')`)) !== true) {
+    await click('[data-tasks-board] [data-issue-card]')
+    await until(() => js(`!!document.querySelector('[data-issue-detail]')`), { timeoutMs: 10_000, label: '전체 모드 상세' })
+    await sleep(300)
+  }
+  for (const view of ['board', 'backlog', 'list']) await checkView({ label: `all-${view}`, view })
 
   // 필터 줄 최악 — 리스트 프리셋 week(「이번 주 마감」 칩) + 검색 안내.
-  await click('[data-tasks-view-tab="list"]')
+  await showView('list')
   await click('[data-tasks-preset="week"]')
   await until(() => js(`!!document.querySelector('[data-filter="due-week"]')`), { timeoutMs: 5_000, label: '이번 주 마감 칩' })
   await click('[data-tasks-search]')
@@ -136,9 +214,9 @@ try {
   await sleep(300)
   const f = await measure([{ selector: '.tasks-filters' }, { selector: '.tasks-list-tools' }])
   const note = await js(`(() => { const n = document.querySelector('[data-search-note]'); return n ? { text: n.textContent.slice(0, 40), width: Math.round(n.getBoundingClientRect().width), scrollW: n.scrollWidth } : null })()`)
-  log('측정 filters-worst', { ...f, note })
+  log('측정 filters-worst', { ...f, note, detailOpen: await js(`!!document.querySelector('[data-issue-detail]')`) })
   const fbad = f.items.filter((item) => !item.ok)
-  judge('M1 필터 줄 최악(이번 주 마감 칩 + 검색 안내) — 넘침 0', noted && f.placement === 'push' && fbad.length === 0, JSON.stringify({ noted, note, bad: fbad, asideLeft: f.asideLeft }))
+  judge('M1 필터 줄 최악(이번 주 마감 칩 + 검색 안내) — 밀기 · 넘침 0', noted && f.placement === 'push' && fbad.length === 0, JSON.stringify({ noted, note, bad: fbad, asideLeft: f.asideLeft, placement: f.placement }))
   await shot('q-minpush-filters-worst')
 
   const failed = verdicts.filter((verdict) => !verdict.pass)

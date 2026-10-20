@@ -186,7 +186,8 @@
 
 /* --- 백로그 --- */
 .tasks-backlog { display: flex; flex-direction: column; gap: 12px; max-width: 980px; }
-.tasks-backlog-section { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+/* overflow-x: auto — 행의 고정 열(마감·막힘 배지 등)이 구획 폭을 넘으면 잘리지 않고 그 구획 안 가로 스크롤로 닿는다(LIFE-670 r1 M1 — 좁은 보기·밀기 최소 폭 400). 제목 말줄임은 그대로. */
+.tasks-backlog-section { border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; overflow-y: hidden; }
 .tasks-backlog-section.drag-target.is-over { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 .tasks-backlog-section.drag-blocked { opacity: .38; }
 .tasks-backlog-head { height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 12px; font-weight: 500; background: color-mix(in srgb, var(--fg) 2%, transparent); border-bottom: 1px solid var(--line); }

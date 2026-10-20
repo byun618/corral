@@ -33,18 +33,33 @@ export function session({ root, out, shotDir }) {
     fs.copyFileSync(result.file, target)
     log('copied', { target: path.relative(path.resolve(APP, '..'), target), bytes: fs.statSync(target).size })
   }
-  /** 앱 사본 + 창 노출 플래그로 기동 → 모의 연결 → ⌘I → 보드 카드가 보일 때까지. */
-  const boot = async ({ token }) => {
-    fs.mkdirSync(root, { recursive: true, mode: 0o700 })
-    sh(['scripts/l670/fixture-app.sh', `${root}-app`])
-    sh(['scripts/l670/up.sh', root, 'L670_EXTRA_ARGS=--disable-backgrounding-occluded-windows'], { L670_APP_DIR: `${root}-app` })
+  // 앱 사본 — 기본은 이 레포 out/ 로 fixture-app.sh 가 만든다. `fixture` 를 주면 이미 만든 사본(기준 commit 빌드 등)을 쓴다.
+  let appDir = `${root}-app`
+  const launch = async () => {
+    sh(['scripts/l670/up.sh', root, 'L670_EXTRA_ARGS=--disable-backgrounding-occluded-windows'], { L670_APP_DIR: appDir })
     await until(() => js(`!!document.querySelector('[data-tasks-open]')`), { timeoutMs: 30_000, label: '사이드바 「작업」' })
+  }
+  /** 같은 userData 로 앱만 다시 띄운다(herdr 세션은 둔다) — 열린 상세 복원 회차. */
+  const relaunch = async () => {
+    sh(['scripts/l670/down.sh', root])
+    await launch()
+  }
+  /** 앱 사본 + 창 노출 플래그로 기동 → 모의 연결 → ⌘I → 보드 카드가 보일 때까지. */
+  const boot = async ({ token, fixture = null }) => {
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 })
+    if (fixture === null) sh(['scripts/l670/fixture-app.sh', appDir])
+    else appDir = fixture
+    await launch()
     const added = await js(`window.corral.addWorkConnection({ sourceId: 'mock-jira', token: '${token}', replaceId: null }).then((r) => ({ ok: r.ok, id: r.ok ? r.connection.id : null }))`)
     judge('모의 연결 추가(가짜 토큰)', added?.ok === true, JSON.stringify(added))
     await ctl(root, { cmd: 'key', keyCode: 'I', modifiers: ['meta'] })
     await until(() => js(`(() => { const p = document.querySelector('[data-tasks-page]'); return !!p && !p.classList.contains('is-closed') })()`), { timeoutMs: 10_000, label: '⌘I' })
     await until(() => js(`!!document.querySelector('[data-tasks-board] [data-issue-card="CORE-2"]')`), { timeoutMs: 15_000, label: '보드 카드' })
     return added.id
+  }
+  const openPage = async () => {
+    await ctl(root, { cmd: 'key', keyCode: 'I', modifiers: ['meta'] })
+    await until(() => js(`(() => { const p = document.querySelector('[data-tasks-page]'); return !!p && !p.classList.contains('is-closed') })()`), { timeoutMs: 10_000, label: '⌘I' })
   }
   const showView = async (view) => {
     await click(`[data-tasks-view-tab="${view}"]`)
@@ -67,5 +82,5 @@ export function session({ root, out, shotDir }) {
       process.exit(exitCode)
     }
   }
-  return { log, judge, sh, js, click, shot, boot, showView, finish }
+  return { log, judge, sh, js, click, shot, boot, relaunch, openPage, showView, finish }
 }

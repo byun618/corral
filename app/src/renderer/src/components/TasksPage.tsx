@@ -467,11 +467,16 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const mainRef = useRef<HTMLDivElement | null>(null)
   const detailPlacement = useDetailLayout({ mainRef, open: selectedId !== null, full: prefs.detailFull })
   // LIFE-670 P3 — 상세를 열거나 바꿀 때만 선택 카드를 보기 영역 안으로 맞춘다. 재렌더(데이터 갱신)에는 다시 끌어오지 않는다.
+  // 선택 카드가 아직 없으면(열린 상세 복원 — 보드 자료가 뒤에 온다, r1 L4) 그 카드가 처음 나타나는 렌더에서 1회 맞춘다.
+  const pendingReveal = useRef<string | null>(null)
+  useEffect(() => { pendingReveal.current = selectedId }, [selectedId])
   useEffect(() => {
-    if (selectedId === null) return
+    if (pendingReveal.current === null) return
     const selected = mainRef.current?.querySelector<HTMLElement>('.tasks-body .is-selected') ?? null
-    if (selected !== null && typeof selected.scrollIntoView === 'function') selected.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-  }, [selectedId])
+    if (selected === null) return
+    pendingReveal.current = null
+    if (typeof selected.scrollIntoView === 'function') selected.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  })
 
   // --- 본문 ---
   const noConnection = settings !== null && settings.connections.length === 0

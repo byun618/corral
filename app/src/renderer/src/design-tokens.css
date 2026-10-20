@@ -252,8 +252,8 @@
   /* LIFE-602 작업 상세(B) — 페이지 안 오른쪽 패널 · ⤢ 페이지 전체의 본문 폭. */
   --w-issue-detail: 560px;
   --w-issue-detail-full: 820px;
-  /* LIFE-670 패널 모드 밀기 — 보기 영역이 이 폭 아래로 줄면 상세가 덮기로 물러난다(보드 칸 1개 256 + 여백). */
-  --w-tasks-body-min: 320px;
+  /* LIFE-670 패널 모드 밀기 — 보기 영역이 이 폭 아래로 줄면 상세가 덮기로 물러난다(리스트 툴바 363 + 백로그 행 + 여백 — r1 M1, 320 은 둘이 패널 밑에 잘렸다). */
+  --w-tasks-body-min: 400px;
   /* LIFE-603 작업 시작(D) — 시작 모달 폭(design-handoff §3). */
   --w-modal-start-work: 600px;
   /* LIFE-604 작업 만들기(C) — 빠른 생성 모달 폭(design-handoff §2 「빠른 생성」 560 · 위 12vh). */

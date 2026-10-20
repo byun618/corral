@@ -8,18 +8,16 @@
 
 export type DetailLayout = 'none' | 'push' | 'overlay' | 'full'
 
-export function detailLayout({ open, full, mainWidth, panelWidth, minBodyWidth }: {
-  open: boolean
-  full: boolean
-  mainWidth: number
-  /** 토큰을 못 읽었으면 null — 덮기로 물러난다. */
-  panelWidth: number | null
-  minBodyWidth: number | null
-}): DetailLayout {
+/** 밀기가 들어가는 폭인가 — 토큰을 못 읽었으면 null(덮기로 물러난다). 상태는 이 값으로 둔다: 임계를 넘을 때만 바뀌어 폭 변화마다 재렌더하지 않는다(LIFE-670 r1 L1). */
+export function pushFits({ mainWidth, panelWidth, minBodyWidth }: { mainWidth: number; panelWidth: number | null; minBodyWidth: number | null }): boolean | null {
+  if (panelWidth === null || minBodyWidth === null) return null
+  return mainWidth - panelWidth >= minBodyWidth
+}
+
+export function detailLayout({ open, full, fits }: { open: boolean; full: boolean; fits: boolean | null }): DetailLayout {
   if (!open) return 'none'
   if (full) return 'full'
-  if (panelWidth === null || minBodyWidth === null) return 'overlay'
-  return mainWidth - panelWidth >= minBodyWidth ? 'push' : 'overlay'
+  return fits === true ? 'push' : 'overlay'
 }
 
 /** CSS 길이 토큰(`560px`)을 숫자로 — 못 읽으면 null(호출자가 덮기로 물러난다). */

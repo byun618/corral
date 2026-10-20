@@ -5,6 +5,10 @@
 /* LIFE-670 패널 모드 밀기 — 오른쪽 안쪽 여백이 패널 자리다. 패널(absolute right:0)은 그 여백에 앉고 필터·배너·보기는 남은 폭으로 준다.
    보기 영역이 --w-tasks-body-min 보다 좁아지면 이 클래스가 빠지고 덮기로 물러난다(useDetailLayout). 전체 모드는 이 클래스가 없다. */
 .tasks-main.is-detail-push { padding-right: var(--w-issue-detail); }
+/* 선택 카드 맞춤(nearest, TasksPage) — r1 L3: 카드·행을 보기 가장자리에 붙이지 않게 .tasks-scroll 안쪽 여백(12)만큼 띄운다.
+   r1 L2: 덮기 폴백에서는 그릇이 줄지 않으므로 오른쪽에 패널 폭을 더해 nearest 가 선택 카드를 패널 왼쪽까지 끌어온다. */
+.tasks-body .tasks-card, .tasks-body .tasks-row, .tasks-body .tasks-key-hit-row { scroll-margin: 12px; }
+.tasks-main[data-detail-layout="overlay"] .tasks-body .is-selected { scroll-margin-right: calc(var(--w-issue-detail) + 12px); }
 
 .issue-detail {
   position: absolute; top: 0; right: 0; bottom: 0; z-index: 30;

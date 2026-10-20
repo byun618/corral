@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // LIFE-670 — 패널 모드 밀기(P1)·좁은 창 폴백(P4)·선택 카드 가시화(P3)·끌기 자동 스크롤 루프(P5)를 실제 `TasksPage` 경로로 본다.
 // happy-dom 은 레이아웃이 없다 — `.tasks-main` 폭과 토큰은 시험이 넣고, 실제 rect 는 격리 회차(`scripts/l670/q-entry.mjs`)가 본다.
-import { act, createElement } from 'react'
+import { act, createElement, Profiler } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { Toaster, toast } from 'sonner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -19,10 +19,23 @@ Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 let host: HTMLDivElement
 let root: Root
 let mainWidth = 1280
-const TOKENS: Record<string, string> = { '--w-issue-detail': '560px', '--w-tasks-body-min': '320px' }
+const TOKENS: Record<string, string> = { '--w-issue-detail': '560px', '--w-tasks-body-min': '400px' }
+
+/** 손으로 발화하는 ResizeObserver — 마운트 뒤 폭 변화·구독 해제를 본다(r1 L5). */
+class FakeResizeObserver implements ResizeObserver {
+  static live: FakeResizeObserver[] = []
+  disconnected = false
+  constructor(private readonly callback: ResizeObserverCallback) { FakeResizeObserver.live.push(this) }
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void { this.disconnected = true }
+  fire(): void { this.callback([], this) }
+}
 
 beforeEach(() => {
   mainWidth = 1280
+  FakeResizeObserver.live = []
+  vi.stubGlobal('ResizeObserver', FakeResizeObserver)
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -44,13 +57,14 @@ afterEach(() => {
   act(() => root.unmount())
   host.remove()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 const settle = async (rounds = 8): Promise<void> => {
   for (let index = 0; index < rounds; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
 }
 
-async function rig({ detailFull = false }: { detailFull?: boolean } = {}): Promise<{ calls: WorkCall[] }> {
+async function rig({ detailFull = false, detail = null, onCommit = () => {} }: { detailFull?: boolean; detail?: string | null; onCommit?: () => void } = {}): Promise<{ calls: WorkCall[] }> {
   const state = seedMockDemoState()
   let seq = 0
   let listener: (value: WorkSettingsState) => void = () => {}
@@ -62,14 +76,15 @@ async function rig({ detailFull = false }: { detailFull?: boolean } = {}): Promi
   if (!added.ok) throw new Error('연결 실패')
   const calls: WorkCall[] = []
   Reflect.set(window, 'corral', {
-    getUiPrefs: async () => ({ tasksPage: detailFull ? { detailFull: true } : undefined }),
+    getUiPrefs: async () => ({ tasksPage: { ...(detailFull ? { detailFull: true } : {}), ...(detail === null ? {} : { detail: { connectionId: service.settings().connections[0]?.id ?? '', itemId: detail } }) } }),
     setUiPrefs: () => {},
     getWorkSettings: async () => service.settings(),
     onWorkSettings: (next: (value: WorkSettingsState) => void) => { listener = next; return () => {} },
     workRequest: (request: WorkRequest) => { calls.push(request.call); return service.request(request) },
     workActivity: async (query: unknown) => service.activity(query),
   })
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  const page = createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })
+  act(() => root.render(createElement('div', null, createElement(Profiler, { id: 'tasks', onRender: onCommit }, page), createElement(Toaster))))
   await settle()
   return { calls }
 }
@@ -109,14 +124,42 @@ describe('P1·P4 상세 배치', () => {
     expect(layout()).toBe('none')
     expect(el('.tasks-main').classList.contains('is-detail-push')).toBe(false)
   })
-  it('가용 폭이 320 미만이면 덮기로 물러난다(880 은 밀기, 879 는 덮기)', async () => {
-    mainWidth = 879
+  it('가용 폭이 400 미만이면 덮기로 물러난다(960 은 밀기, 959 는 덮기)', async () => {
+    mainWidth = 959
     await rig()
     click(`[data-tasks-board] [data-issue-card="${cards()[0]}"]`)
     await settle()
     expect(layout()).toBe('overlay')
     expect(el('.tasks-main').classList.contains('is-detail-push')).toBe(false)
     expect(q('[data-issue-detail]')).not.toBeNull()
+  })
+  it('마운트 뒤 폭 변화(ResizeObserver)로 밀기↔덮기가 바뀌고, 언마운트하면 구독을 푼다(r1 L5)', async () => {
+    await rig()
+    click(`[data-tasks-board] [data-issue-card="${cards()[0]}"]`)
+    await settle()
+    expect(layout()).toBe('push')
+    const observer = FakeResizeObserver.live.at(-1)
+    if (observer === undefined) throw new Error('구독 없음')
+    mainWidth = 959; act(() => observer.fire())
+    expect(layout()).toBe('overlay')
+    mainWidth = 960; act(() => observer.fire())
+    expect(layout()).toBe('push')
+    expect(observer.disconnected).toBe(false)
+    act(() => root.unmount())
+    expect(observer.disconnected).toBe(true)
+    root = createRoot(host)
+  })
+  it('같은 쪽 폭 변화는 페이지를 다시 그리지 않는다 — 임계를 넘을 때만(r1 L1)', async () => {
+    let commits = 0
+    await rig({ onCommit: () => { commits += 1 } })
+    const observer = FakeResizeObserver.live.at(-1)
+    if (observer === undefined) throw new Error('구독 없음')
+    await settle(20)
+    const before = commits
+    for (const width of [1300, 1500, 1100, 961]) { mainWidth = width; act(() => observer.fire()) }
+    expect(commits).toBe(before)
+    mainWidth = 900; act(() => observer.fire())
+    expect(commits).toBe(before + 1)
   })
   it('전체 모드로 저장돼 있으면 열 때 full — detailFull 복원 무회귀', async () => {
     await rig({ detailFull: true })
@@ -146,6 +189,19 @@ describe('P3 선택 카드 가시화', () => {
     await settle()
     expect(spy).toHaveBeenCalledTimes(2)
     expect(spy.mock.contexts[1]).toBe(el(`[data-tasks-board] [data-issue-card="${second}"]`))
+  })
+})
+
+describe('P3 열린 상세 복원(r1 L4)', () => {
+  it('복원한 선택 카드가 자료 도착 뒤 처음 나타날 때 1회 맞춘다', async () => {
+    const spy = vi.fn()
+    HTMLElement.prototype.scrollIntoView = spy
+    await rig({ detail: 'm-4' })
+    expect(q('[data-issue-detail="CORE-4"]')).not.toBeNull()
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy.mock.contexts[0]).toBe(el('[data-tasks-board] [data-issue-card="CORE-4"]'))
+    await settle(20)
+    expect(spy).toHaveBeenCalledTimes(1)
   })
 })
 

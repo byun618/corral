@@ -3,6 +3,7 @@
 // 세그먼트 = `CPU n% · 메모리 x.x GB`(「전체」 = 앱 + herdr + 모든 pane 자손). 하나도 못 재면 `—` — 가짜 숫자를 보이지 않는다.
 // CPU 척도(LIFE-676 게이트 ⓪ Q3): 세그먼트·패널 머리 요약 줄 = 맥 전체 대비(합 ÷ 코어 수, 0~100) · 묶음·pane·앱·herdr 행 = 코어당(코어 하나 = 100).
 // 메모리 = 활동 상태 보기 「메모리」 열 값(phys_footprint)의 합. 못 재면 `측정 불가`(사유는 툴팁) — RSS 로 대신하지 않는다(Q2).
+// 일부 pid 를 뺀 합(하한)은 `≥ x`, 빠진 사유는 툴팁(리뷰 r1 C1-1).
 // 패널 = worktree 묶음(합계 행 + pane 행) · 앱·herdr 행 따로. 기본 정렬은 메모리 내림차순, 측정 불가는 맨 뒤.
 import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourcePaneRow, type ResourceSnapshot, type ResourceUsage } from '../../shared/resource.js'
 import type { RunningPane } from '../../shared/types.js'
@@ -15,6 +16,15 @@ export const RESOURCE_SCOPE = 'corral 앱 + herdr 서버 + 모든 pane 자손 �
 export const RESOURCE_MEMORY_NOTE = '메모리 = 활동 상태 보기 「메모리」 열 값(압축·swap 된 몫 포함)의 합'
 /** 패널 행 CPU 칸 기준(R3ⓓ). */
 export const RESOURCE_ROW_CPU_TOOLTIP = 'CPU — 코어 하나 = 100%'
+export const RESOURCE_LOWER_BOUND = '≥'
+
+/**
+ * 행의 툴팁 두 자리(리뷰 r1 C1-4) — CPU 칸 자체 `title` 은 행에 사유가 없을 때만 단다(안쪽 `title` 이 행 사유를 덮지 않게).
+ * 사유가 있으면 CPU 기준은 행 툴팁 끝 줄로 옮긴다.
+ */
+export function rowTitles(reason: string | null): { row: string | null; cpu: string | undefined } {
+  return reason === null ? { row: null, cpu: RESOURCE_ROW_CPU_TOOLTIP } : { row: `${reason}\n${RESOURCE_ROW_CPU_TOOLTIP}`, cpu: undefined }
+}
 
 export type ResourceSortKey = 'memory' | 'cpu'
 
@@ -41,11 +51,36 @@ export function formatMemory(bytes: number): string {
   return bytes >= GB ? formatGb(bytes) : `${Math.round(bytes / MB)} MB`
 }
 
-/** 행·묶음 메모리 칸 — 못 재면 `측정 불가`(사유는 칸 툴팁). */
+/** 행·묶음 메모리 칸 — 하한은 `≥ x`, 못 재면 `측정 불가`(사유는 칸 툴팁). */
 export function memoryText(memory: ResourceMemory): string {
   switch (memory.state) {
     case 'measured':
       return formatMemory(memory.bytes)
+    case 'partial':
+      return `${RESOURCE_LOWER_BOUND} ${formatMemory(memory.bytes)}`
+    case 'unavailable':
+      return RESOURCE_UNAVAILABLE
+  }
+}
+
+/** 메모리 칸 툴팁 사유 — 측정값이면 null. */
+export function memoryNote(memory: ResourceMemory): string | null {
+  switch (memory.state) {
+    case 'measured':
+      return null
+    case 'partial':
+      return `메모리 하한 — ${memory.reason}`
+    case 'unavailable':
+      return `메모리 측정 불가 — ${memory.reason}`
+  }
+}
+
+function totalMemoryText(memory: ResourceMemory): string {
+  switch (memory.state) {
+    case 'measured':
+      return formatGb(memory.bytes)
+    case 'partial':
+      return `${RESOURCE_LOWER_BOUND} ${formatGb(memory.bytes)}`
     case 'unavailable':
       return RESOURCE_UNAVAILABLE
   }
@@ -54,7 +89,7 @@ export function memoryText(memory: ResourceMemory): string {
 export function segmentLabel(snapshot: ResourceSnapshot | null): string {
   const total = snapshot?.total ?? null
   if (snapshot === null || total === null) return `CPU ${RESOURCE_EMPTY} · 메모리 ${RESOURCE_EMPTY}`
-  const memory = total.memory.state === 'measured' ? formatGb(total.memory.bytes) : RESOURCE_UNAVAILABLE
+  const memory = totalMemoryText(total.memory)
   return `CPU ${formatMachineCpu({ cpu: total.cpu, cpuCoreCount: snapshot.host.cpuCoreCount })} · 메모리 ${memory}`
 }
 
@@ -71,8 +106,8 @@ export function segmentTooltip(snapshot: ResourceSnapshot | null): string {
   if (snapshot.total === null) return `${head}\n측정 불가`
   const notes: string[] = []
   if (snapshot.unavailableCount > 0) notes.push(`측정 불가 ${snapshot.unavailableCount}칸은 합에서 빠졌다`)
-  if (snapshot.total.memory.state === 'unavailable') notes.push(`메모리 측정 불가 — ${snapshot.total.memory.reason}`)
-  else if (snapshot.memoryUnavailableCount > 0) notes.push(`메모리를 못 잰 ${snapshot.memoryUnavailableCount}칸은 메모리 합에서 빠졌다`)
+  const memory = memoryNote(snapshot.total.memory)
+  if (memory !== null) notes.push(memory)
   return [head, ...notes].join('\n')
 }
 
@@ -80,7 +115,7 @@ export function measureCells(measure: ResourceMeasure): { cpu: string; memory: s
   switch (measure.state) {
     case 'measured': {
       const { memory } = measure.usage
-      return { cpu: formatCpu(measure.usage.cpu), memory: memoryText(memory), title: memory.state === 'unavailable' ? `메모리 측정 불가 — ${memory.reason}` : null }
+      return { cpu: formatCpu(measure.usage.cpu), memory: memoryText(memory), title: memoryNote(memory) }
     }
     case 'unavailable':
       return { cpu: RESOURCE_EMPTY, memory: RESOURCE_EMPTY, title: `측정 불가 — ${measure.reason}` }
@@ -98,7 +133,7 @@ function sortValue(input: { usage: ResourceUsage | null; key: ResourceSortKey })
     case 'cpu':
       return usage.cpu
     case 'memory':
-      return usage.memory.state === 'measured' ? usage.memory.bytes : null
+      return usage.memory.state === 'unavailable' ? null : usage.memory.bytes
   }
 }
 
@@ -149,8 +184,8 @@ export function groupPanes(input: { panes: readonly ResourcePaneRow[]; sort: Res
 export function groupTooltip(group: ResourceGroup): string | null {
   const notes: string[] = []
   if (group.unavailableCount > 0) notes.push(`측정 불가 ${group.unavailableCount}개는 합에서 빠졌다`)
-  if (group.usage !== null && group.usage.memory.state === 'unavailable') notes.push(`메모리 측정 불가 — ${group.usage.memory.reason}`)
-  else if (group.memoryUnavailableCount > 0) notes.push(`메모리를 못 잰 ${group.memoryUnavailableCount}개는 메모리 합에서 빠졌다`)
+  const memory = group.usage === null ? null : memoryNote(group.usage.memory)
+  if (memory !== null) notes.push(memory)
   return notes.length === 0 ? null : notes.join('\n')
 }
 

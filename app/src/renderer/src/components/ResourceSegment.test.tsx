@@ -36,7 +36,7 @@ const SNAPSHOT: ResourceSnapshot = {
     { paneId: 'p-gone', tabId: 't3', workspaceId: 'w2', groupKey: '/wt/b', groupLabel: 'main', title: 'zsh', agent: null, measure: { state: 'unavailable', reason: '셸 프로세스(pid 9)가 없다' } },
   ],
   host: { physicalMemory: 24 * GB, cpuCoreCount: 18, pressure: 'warning', swap: { used: 23.3 * GB, total: 24 * GB }, compressed: 8.4 * GB },
-  stats: { intervalMs: 2000, collections: 3, skippedHidden: 0, processInfoRequests: 3, recentDurationsMs: [120] },
+  stats: { intervalMs: 2000, collections: 3, skippedHidden: 0, processInfoRequests: 3, footprintRuns: 0, hostReads: 0, recentDurationsMs: [120] },
 }
 
 const ROUTES: Record<string, ResourceCloseRoute> = {
@@ -195,9 +195,14 @@ describe('패널 (R4)', () => {
     expect(cpu('[data-statusbar-resource-herdr]')?.textContent).toBe('1%')
     expect(cpu('[data-statusbar-resource-group="/wt/a"] .statusbar-resource-group-head')?.textContent).toBe('56%')
     expect(cpu('[data-statusbar-resource-row="p-small"]')?.textContent).toBe('50%')
-    const cells = [...panel.querySelectorAll<HTMLElement>('[data-statusbar-resource-cpu]')]
-    expect(cells.length).toBeGreaterThan(4)
-    for (const cell of cells) expect(cell.title).toBe('CPU — 코어 하나 = 100%')
+    // C1-4 — 사유가 없는 칸에만 CPU 칸 title. 측정 불가 행(p-gone)·사유 있는 묶음 머리는 CPU 칸 title 없이 행 툴팁에 사유 + CPU 기준.
+    const plain = ['[data-statusbar-resource-app]', '[data-statusbar-resource-herdr]', '[data-statusbar-resource-group="/wt/a"] .statusbar-resource-group-head', '[data-statusbar-resource-row="p-small"]', '[data-statusbar-resource-row="p-big"]']
+    for (const selector of plain) expect(cpu(selector)?.title).toBe('CPU — 코어 하나 = 100%')
+    for (const selector of ['[data-statusbar-resource-row="p-gone"]', '[data-statusbar-resource-group="/wt/b"] .statusbar-resource-group-head']) {
+      expect(cpu(selector)?.hasAttribute('title')).toBe(false)
+    }
+    expect(panel.querySelector<HTMLElement>('[data-statusbar-resource-row="p-gone"]')?.title).toBe('측정 불가 — 셸 프로세스(pid 9)가 없다\nCPU — 코어 하나 = 100%')
+    expect(panel.querySelector<HTMLElement>('[data-statusbar-resource-group="/wt/b"] .statusbar-resource-group-head')?.title).toBe('측정 불가 1개는 합에서 빠졌다\nCPU — 코어 하나 = 100%')
   })
 
   it('LIFE-676 Q2 — 메모리만 못 잰 행은 CPU 숫자 + 메모리 측정 불가, 사유는 행 툴팁', () => {
@@ -210,7 +215,24 @@ describe('패널 (R4)', () => {
     const row = q<HTMLElement>('[data-statusbar-resource-row="p-small"]')
     expect(row?.querySelector('[data-statusbar-resource-cpu]')?.textContent).toBe('50%')
     expect(row?.querySelector('[data-statusbar-resource-memory]')?.textContent).toBe('측정 불가')
-    expect(row?.title).toBe('메모리 측정 불가 — pid 301 의 footprint 를 못 읽었다 (errno 1)')
+    expect(row?.title).toBe('메모리 측정 불가 — pid 301 의 footprint 를 못 읽었다 (errno 1)\nCPU — 코어 하나 = 100%')
+    expect(row?.querySelector('[data-statusbar-resource-cpu]')?.hasAttribute('title')).toBe(false)
+  })
+
+  it('C1-1 — 하한 행·묶음·세그먼트에 `≥` 표식, 사유는 행 툴팁', () => {
+    mount()
+    act(() => push?.({
+      ...SNAPSHOT,
+      total: { cpu: 360, memory: { state: 'partial', bytes: 2.25 * GB, reason: '일부 pid 를 뺀 칸 1개가 빠진 합' } },
+      panes: SNAPSHOT.panes.map((pane) => (pane.paneId === 'p-small' ? { ...pane, measure: { state: 'measured', usage: { cpu: 50, memory: { state: 'partial', bytes: 100 * MB, reason: 'pid 301 (권한 없음 — root·다른 사용자로 실행 중) 제외' } }, pids: [300, 301] } } : pane)),
+    }))
+    expect(segment().textContent).toBe('CPU 20% · 메모리 ≥ 2.3 GB')
+    expect(segment().title).toContain('메모리 하한 — 일부 pid 를 뺀 칸 1개가 빠진 합')
+    click(segment())
+    const row = q<HTMLElement>('[data-statusbar-resource-row="p-small"]')
+    expect(row?.querySelector('[data-statusbar-resource-memory]')?.textContent).toBe('≥ 100 MB')
+    expect(row?.title).toBe('메모리 하한 — pid 301 (권한 없음 — root·다른 사용자로 실행 중) 제외\nCPU — 코어 하나 = 100%')
+    expect(q('[data-statusbar-resource-group="/wt/a"] .statusbar-resource-group-head [data-statusbar-resource-memory]')?.textContent).toBe('≥ 1.3 GB')
   })
 
   it('열린 동안 푸시로 갱신된다', () => {

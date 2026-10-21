@@ -62,7 +62,8 @@ const PANES = [
 function usage(measure: ResourceMeasure | undefined): { cpu: number; memory: number | string; pids: number[] } {
   if (measure === undefined || measure.state !== 'measured') throw new Error(`측정값이 아니다: ${JSON.stringify(measure)}`)
   const { memory } = measure.usage
-  return { cpu: Number(measure.usage.cpu.toFixed(3)), memory: memory.state === 'measured' ? memory.bytes : `측정 불가: ${memory.reason}`, pids: measure.pids }
+  const shown = memory.state === 'measured' ? memory.bytes : memory.state === 'partial' ? `≥ ${memory.bytes}: ${memory.reason}` : `측정 불가: ${memory.reason}`
+  return { cpu: Number(measure.usage.cpu.toFixed(3)), memory: shown, pids: measure.pids }
 }
 
 describe('parsePsTable', () => {
@@ -303,14 +304,36 @@ describe('attribute — LIFE-676 R1ⓓ ps 에는 있고 footprint 표에 없는 
     const result = attribute({ ...tables(TABLE, parseFootprintTable(fp)), panes: PANES, appRoots: [100] })
     expect(usage(result.panes.get('B')).memory).toBe((161792 - 122880) * KB)
   })
-  it('ERR 그 밖(EPERM 등) — 그 칸 메모리만 측정 불가, 다른 칸은 그대로', () => {
+  it('C1-1 일부 EPERM(setuid-root 자식 top·sudo) — 그 pid 만 빼고 읽힌 합을 하한으로, 사유에 pid·이유', () => {
     const fp = split(TABLE).fp.replace(/^401 \d+$/m, '401 ERR 1')
     const result = attribute({ ...tables(TABLE, parseFootprintTable(fp)), panes: PANES, appRoots: [100, 101] })
-    expect(usage(result.panes.get('B'))).toEqual({ cpu: 11.3, memory: '측정 불가: pid 401 의 footprint 를 못 읽었다 (errno 1)', pids: [400, 401, 402, 403] })
+    expect(usage(result.panes.get('B'))).toEqual({ cpu: 11.3, memory: `≥ ${(161792 - 122880) * KB}: pid 401 (권한 없음 — root·다른 사용자로 실행 중) 제외`, pids: [400, 401, 402, 403] })
     expect(usage(result.panes.get('A')).memory).toBe(12288 * KB)
+    // 「전체」 로 전파 — 하한 칸이 섞이면 합도 하한, 값은 읽힌 합 전부.
+    const { total, memoryUnavailableCount } = totalOf([result.app, result.herdr, ...result.panes.values()])
+    expect(memoryUnavailableCount).toBe(0)
+    expect(total?.memory).toEqual({ state: 'partial', bytes: (358400 + 41984 + 12288 + 161792 - 122880) * KB, reason: '일부 pid 를 뺀 칸 1개가 빠진 합' })
+  })
+  it('C1-1 ESRCH 가 아닌 다른 errno 도 같은 규칙 — 넷 이상이면 셋만 적고 외 n개', () => {
+    const fp = split(TABLE).fp.replace(/^400 \d+$/m, '400 ERR 5').replace(/^401 \d+$/m, '401 ERR 1').replace(/^402 \d+$/m, '402 ERR 1')
+    const many = attribute({ ...tables(TABLE, parseFootprintTable(fp)), panes: PANES, appRoots: [100] })
+    expect(usage(many.panes.get('B')).memory).toBe(`≥ ${4096 * KB}: pid 400 (errno 5), pid 401 (권한 없음 — root·다른 사용자로 실행 중), pid 402 (권한 없음 — root·다른 사용자로 실행 중) 제외`)
+    const four = attribute({ ...tables(TABLE, parseFootprintTable(fp.replace(/^403 \d+$/m, '403 ERR 1').replace(/^300 \d+$/m, '300 ERR 1'))), panes: [{ paneId: 'B', shellPid: 400, expectedParent: null }], appRoots: [100] })
+    expect(usage(four.panes.get('B')).memory).toBe('측정 불가: footprint 를 못 읽었다 — pid 400 (errno 5), pid 401 (권한 없음 — root·다른 사용자로 실행 중), pid 402 (권한 없음 — root·다른 사용자로 실행 중) 외 1개')
+  })
+  it('C1-1 귀속 pid 전부가 읽기 실패면 하한이 아니라 측정 불가', () => {
+    const fp = split(TABLE).fp.replace(/^300 \d+$/m, '300 ERR 1').replace(/^301 \d+$/m, '301 ERR 1')
+    const result = attribute({ ...tables(TABLE, parseFootprintTable(fp)), panes: PANES, appRoots: [100, 101] })
+    expect(usage(result.panes.get('A')).memory).toBe('측정 불가: footprint 를 못 읽었다 — pid 300 (권한 없음 — root·다른 사용자로 실행 중), pid 301 (권한 없음 — root·다른 사용자로 실행 중)')
+    expect(usage(result.panes.get('A')).cpu).toBe(50)
     const { total, memoryUnavailableCount } = totalOf([result.app, result.herdr, ...result.panes.values()])
     expect(memoryUnavailableCount).toBe(1)
-    expect(total?.memory).toEqual({ state: 'measured', bytes: (358400 + 41984 + 12288) * KB })
+    expect(total?.memory).toEqual({ state: 'partial', bytes: (358400 + 41984 + 161792) * KB, reason: '메모리를 못 잰 칸 1개가 빠진 합' })
+  })
+  it('C1-1 끝난 pid(ESRCH)와 EPERM 이 섞이면 — 끝난 쪽은 조용히 빼고 EPERM 만 사유에', () => {
+    const fp = split(TABLE).fp.replace(/^401 \d+$/m, '401 ERR 3').replace(/^402 \d+$/m, '402 ERR 1')
+    const result = attribute({ ...tables(TABLE, parseFootprintTable(fp)), panes: PANES, appRoots: [100] })
+    expect(usage(result.panes.get('B')).memory).toBe(`≥ ${(2048 + 4096) * KB}: pid 402 (권한 없음 — root·다른 사용자로 실행 중) 제외`)
   })
   it('귀속 밖 pid 의 ERR 는 아무 칸에도 영향이 없다 (pid 1 은 root — EPERM)', () => {
     const fp = split(TABLE).fp.replace(/^1 \d+$/m, '1 ERR 1')

@@ -58,7 +58,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
 } {
   const intervalMs = Math.max(RESOURCE_INTERVAL_MS, deps.intervalMs)
   const roots = new Map<string, CachedRoot>()
-  const stats: ResourceStats = { intervalMs, collections: 0, skippedHidden: 0, processInfoRequests: 0, recentDurationsMs: [] }
+  const stats: ResourceStats = { intervalMs, collections: 0, skippedHidden: 0, processInfoRequests: 0, footprintRuns: 0, hostReads: 0, recentDurationsMs: [] }
   let latest: ResourceSnapshot | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
   let running = false
@@ -127,6 +127,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
     const panes = deps.panes()
     const asked = new Set<string>()
     await refreshRoots({ panes, asked })
+    stats.hostReads += 1
     const hostRead = deps.readHost()
     let stdout: string | null = null
     try {
@@ -135,11 +136,16 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
       deps.log('resource.ps_failed', { error: String(error) })
     }
     const table = stdout === null ? null : parsePsTable(stdout)
-    const footprint: FootprintTable = table === null || table.malformed > 0 ? { kind: 'unavailable', reason: 'ps 표가 없다' } : await deps.readFootprint()
-    // 사유가 바뀔 때만 남긴다 — 도우미가 없으면 2초마다 같은 줄이 쌓인다.
-    const footprintReason = footprint.kind === 'unavailable' ? footprint.reason : null
-    if (footprintReason !== lastFootprintReason && table !== null && table.malformed === 0) deps.log('resource.footprint', { reason: footprintReason ?? 'ok' })
-    lastFootprintReason = footprintReason
+    const tableOk = table !== null && table.malformed === 0
+    if (tableOk) stats.footprintRuns += 1
+    const footprint: FootprintTable = tableOk ? await deps.readFootprint() : { kind: 'unavailable', reason: 'ps 표가 없다' }
+    // 도우미를 실제로 돌린 주기에서, 사유가 바뀔 때만 남긴다 — 도우미가 없으면 2초마다 같은 줄이 쌓인다.
+    // ps 가 실패한 주기는 도우미 결과가 아니므로 기억을 바꾸지 않는다(C1-7(a) — 그 뒤 첫 정상 주기에 'ok' 가 잘못 남지 않게).
+    if (tableOk) {
+      const footprintReason = footprint.kind === 'unavailable' ? footprint.reason : null
+      if (footprintReason !== lastFootprintReason) deps.log('resource.footprint', { reason: footprintReason ?? 'ok' })
+      lastFootprintReason = footprintReason
+    }
     // 표가 없거나 이상하면 대조하지 않는다 — 깨진 표로 캐시를 지우면 멀쩡한 pane 을 다시 묻게 된다.
     if (table !== null && table.malformed === 0) await verifyRoots({ panes, table, asked })
     const unavailable: ResourceMeasure = { state: 'unavailable', reason: 'ps 실행 실패' }

@@ -67,7 +67,7 @@ describe('resource monitor', () => {
     expect(h.readFootprint).not.toHaveBeenCalled()
     expect(h.readHost).not.toHaveBeenCalled()
     expect(h.probe).not.toHaveBeenCalled()
-    expect(h.monitor.stats()).toMatchObject({ collections: 0, skippedHidden: 2, processInfoRequests: 0 })
+    expect(h.monitor.stats()).toMatchObject({ collections: 0, skippedHidden: 2, processInfoRequests: 0, footprintRuns: 0, hostReads: 0 })
     expect(h.emitted).toHaveLength(0)
   })
 
@@ -284,5 +284,29 @@ describe('wake 겹침 (R6ⓐ — wake 경로에서도 주기가 겹치지 않는
     h.state.psFails = true
     await h.monitor.tick()
     expect(h.readFootprint).not.toHaveBeenCalled()
+    expect(h.monitor.stats()).toMatchObject({ collections: 1, footprintRuns: 0, hostReads: 1 })
+  })
+
+  it('C1-5 — 도우미 실행 수·시스템 지표 읽기 수 카운터 = 실제 호출 수, 스냅샷에도 실린다', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300 } })
+    await h.monitor.tick()
+    await h.monitor.tick()
+    h.state.visible = false
+    await h.monitor.tick()
+    expect(h.readFootprint).toHaveBeenCalledTimes(2)
+    expect(h.readHost).toHaveBeenCalledTimes(2)
+    expect(h.monitor.stats()).toMatchObject({ collections: 2, skippedHidden: 1, footprintRuns: 2, hostReads: 2 })
+    expect(h.emitted.at(-1)?.stats).toMatchObject({ footprintRuns: 2, hostReads: 2 })
+  })
+
+  it('C1-7(a) — ps 실패 주기 뒤 첫 정상 주기에 resource.footprint ok 를 남기지 않는다', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300 } })
+    await h.monitor.tick()
+    h.state.psFails = true
+    await h.monitor.tick()
+    h.state.psFails = false
+    await h.monitor.tick()
+    // 첫 주기는 기억(null)과 같아 남기지 않고, ps 실패 주기는 기억을 바꾸지 않는다 → 0줄.
+    expect(h.log.mock.calls.filter(([tag]) => tag === 'resource.footprint')).toEqual([])
   })
 })

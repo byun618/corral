@@ -17,10 +17,10 @@ vi.mock('electron', () => ({
 }))
 
 // 실제 ps 대신 — 몇 번 불렸는지(수집 여부)와 넘긴 env 를 본다. `calls` = ps 만, `all` = 한 주기의 실행 전부(LIFE-676: 도우미·sysctl·vm_stat).
-const ps = vi.hoisted((): { calls: { file: string; env: unknown }[]; all: { file: string; args: string[] }[] } => ({ calls: [], all: [] }))
+const ps = vi.hoisted((): { calls: { file: string; env: unknown }[]; all: { file: string; args: string[]; env: unknown }[] } => ({ calls: [], all: [] }))
 vi.mock('node:child_process', () => ({
   execFile: (file: string, args: string[], options: { env: unknown }, callback: (error: Error | null, result: { stdout: string; stderr: string }) => void) => {
-    ps.all.push({ file, args })
+    ps.all.push({ file, args, env: options.env })
     if (file === 'ps') ps.calls.push({ file, env: options.env })
     callback(null, { stdout: file === 'ps' ? '  1 0 0.0\n' : file === '/x/corral-footprint' ? '1 10\n' : '', stderr: '' })
   },
@@ -197,9 +197,12 @@ describe('readHostWith — LIFE-676 R5ⓑⓓ sysctl·vm_stat, 못 읽은 지표�
     'sysctl -n kern.memorystatus_vm_pressure_level': '2\n',
     vm_stat: 'Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages occupied by compressor:            515164.\n',
   }
-  it('세 출처를 읽는다', async () => {
-    const exec = vi.fn(async (file: string, args: string[]) => ({ stdout: outputs[[file, ...args].join(' ')] ?? '' }))
-    expect(await readHostWith({ exec, physicalMemory: 24 * 1024 ** 3, cpuCoreCount: 18 })).toEqual({
+  it('세 출처를 읽는다 — LC_ALL=C env 를 넘긴다 (C1-2)', async () => {
+    const exec = vi.fn<(file: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string }>>(async (file, args) => ({ stdout: outputs[[file, ...args].join(' ')] ?? '' }))
+    const host = await readHostWith({ exec, env: { PATH: '/bin', LC_ALL: 'de_DE.UTF-8', LANG: 'de_DE.UTF-8' }, physicalMemory: 24 * 1024 ** 3, cpuCoreCount: 18 })
+    expect(exec).toHaveBeenCalledTimes(3)
+    for (const call of exec.mock.calls) expect(call[2].env).toEqual({ PATH: '/bin', LC_ALL: 'C', LANG: 'de_DE.UTF-8' })
+    expect(host).toEqual({
       physicalMemory: 24 * 1024 ** 3, cpuCoreCount: 18, pressure: 'warning', swap: { total: 24576 * 1024 ** 2, used: 23332.38 * 1024 ** 2 }, compressed: 515164 * 16384,
     })
   })
@@ -208,7 +211,7 @@ describe('readHostWith — LIFE-676 R5ⓑⓓ sysctl·vm_stat, 못 읽은 지표�
       if (file === 'vm_stat') throw new Error('없음')
       return { stdout: outputs[[file, ...args].join(' ')] ?? '' }
     })
-    const host = await readHostWith({ exec, physicalMemory: 1, cpuCoreCount: 2 })
+    const host = await readHostWith({ exec, env: {}, physicalMemory: 1, cpuCoreCount: 2 })
     expect(host.compressed).toBeNull()
     expect(host.pressure).toBe('warning')
     expect(host.swap).not.toBeNull()
@@ -217,7 +220,7 @@ describe('readHostWith — LIFE-676 R5ⓑⓓ sysctl·vm_stat, 못 읽은 지표�
     const exec = vi.fn(async (): Promise<{ stdout: string }> => {
       throw new Error('없음')
     })
-    expect(await readHostWith({ exec, physicalMemory: 1, cpuCoreCount: 2 })).toEqual({ physicalMemory: 1, cpuCoreCount: 2, pressure: null, swap: null, compressed: null })
+    expect(await readHostWith({ exec, env: {}, physicalMemory: 1, cpuCoreCount: 2 })).toEqual({ physicalMemory: 1, cpuCoreCount: 2, pressure: null, swap: null, compressed: null })
   })
 })
 
@@ -350,6 +353,8 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     expect(ps.all.map((call) => [call.file, ...call.args].join(' ')).sort()).toEqual(
       ['/x/corral-footprint', 'ps -axo pid=,ppid=,pcpu=', 'sysctl -n kern.memorystatus_vm_pressure_level', 'sysctl vm.swapusage', 'vm_stat'].sort(),
     )
+    // C1-2 — 시스템 지표도 LC_ALL=C 로 부른다(실제 배선).
+    for (const call of ps.all.filter((item) => item.file === 'sysctl' || item.file === 'vm_stat')) expect(call.env).toMatchObject({ LC_ALL: 'C' })
   })
   it.each([
     ['숨김', { visible: false }],
@@ -360,6 +365,8 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     register()
     await settle()
     expect(ps.calls).toHaveLength(0)
+    // C1-5 — 도우미·sysctl·vm_stat 도 0회(외부 실행 전부).
+    expect(ps.all).toHaveLength(0)
   })
   it.each(['show', 'restore'])('창 %s 이벤트 = 곧바로 한 번 더 수집 (F10 배선)', async (name) => {
     win.visible = true

@@ -73,7 +73,7 @@ export function footprintHelperPath(input: { packaged: boolean; resourcesPath: s
 
 export const FOOTPRINT_TIMEOUT_MS = 2000
 
-type ExecFile = (file: string, args: string[], options: { timeout: number; maxBuffer: number }) => Promise<{ stdout: string }>
+type ExecFile = (file: string, args: string[], options: { timeout: number; maxBuffer: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string }>
 
 /** execFile 오류 → 사람이 읽는 사유. 없음·시한 초과·비정상 종료를 가른다(R1ⓒ). */
 function helperFailure(input: { error: unknown; helper: string }): string {
@@ -100,9 +100,12 @@ export async function readFootprintWith(input: { exec: ExecFile; helper: string 
   }
 }
 
-/** 시스템 줄 지표(게이트 ⓪ Q4) — `sysctl`·`vm_stat` 를 나란히. 던지지 않는다 — 못 읽은 지표는 null. */
-export async function readHostWith(input: { exec: ExecFile; physicalMemory: number; cpuCoreCount: number }): Promise<ResourceHost> {
-  const options = { timeout: 2000, maxBuffer: 1024 * 1024 }
+/**
+ * 시스템 줄 지표(게이트 ⓪ Q4) — `sysctl`·`vm_stat` 를 나란히. 던지지 않는다 — 못 읽은 지표는 null.
+ * `LC_ALL=C` — 로캘이 소수점을 콤마로 쓰면 `vm.swapusage` 가 `0,00M` 이 되어 못 읽는다(ps 와 같은 이유, 리뷰 r1 C1-2).
+ */
+export async function readHostWith(input: { exec: ExecFile; env: NodeJS.ProcessEnv; physicalMemory: number; cpuCoreCount: number }): Promise<ResourceHost> {
+  const options = { timeout: 2000, maxBuffer: 1024 * 1024, env: { ...input.env, LC_ALL: 'C' } }
   const read = (file: string, args: string[]): Promise<string | null> => input.exec(file, args, options).then((out) => out.stdout, () => null)
   const [swap, pressure, vmStat] = await Promise.all([
     read('sysctl', ['vm.swapusage']),
@@ -176,7 +179,7 @@ export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void }
       const window = deps.window()
       return window !== null && !window.isDestroyed() && window.isVisible() && !window.isMinimized()
     },
-    readHost: () => readHostWith({ exec, physicalMemory: os.totalmem(), cpuCoreCount: os.cpus().length }),
+    readHost: () => readHostWith({ exec, env: process.env, physicalMemory: os.totalmem(), cpuCoreCount: os.cpus().length }),
     emit: (snapshot) => {
       const window = deps.window()
       if (window !== null && !window.isDestroyed()) window.webContents.send('corral:resourceSnapshot', snapshot)

@@ -1,14 +1,19 @@
 // 상태바 Resource Manager (LIFE-637 · LIFE-676) — main 수집기 ↔ 렌더러 세그먼트가 주고받는 모양.
 //
 // 메모리 = pid 별 phys_footprint 의 합 — 활동 상태 보기 「메모리」 열과 같은 값(압축·swap 된 몫 포함, LIFE-676).
-//   도우미(`corral-footprint`)로 읽는다. 못 읽으면 그 칸 메모리는 측정 불가 — RSS 로 대신하지 않는다(게이트 ⓪ Q2).
+//   도우미(`corral-footprint`)로 읽는다. 도우미·표가 실패하면 그 칸 메모리는 측정 불가 — RSS 로 대신하지 않는다(게이트 ⓪ Q2).
+//   귀속 pid 중 일부만 못 읽으면(setuid-root 자식 `top`·`sudo` 의 EPERM 등) 읽힌 pid 의 합을 하한(`≥`)으로 낸다(리뷰 r1 C1-1).
 // CPU = `ps %cpu` 합, 코어 하나 = 100 (코어당 원값). 맥 전체 대비(÷ 코어 수)는 표시 층이 한다(Q3).
 // 「전체」 = corral 앱(main·renderer·helper) + herdr 서버 + 모든 pane 자손(637 Q2) — 한 pid 는 한 곳에만 센다.
 import type { CloseTabsResult } from './types.js'
 
-/** 메모리 칸 — 측정값(바이트) 또는 측정 불가(사유). CPU 가 살아 있어도 메모리만 못 잴 수 있다(Q2). */
+/**
+ * 메모리 칸 — 측정값(바이트) · 하한(일부를 뺀 합, 사유) · 측정 불가(사유). CPU 가 살아 있어도 메모리만 못 잴 수 있다(Q2).
+ * `partial` 의 `bytes` 는 실제 값보다 작거나 같다 — 표시는 `≥ x`.
+ */
 export type ResourceMemory =
   | { state: 'measured'; bytes: number }
+  | { state: 'partial'; bytes: number; reason: string }
   | { state: 'unavailable'; reason: string }
 
 export type ResourceUsage = {
@@ -24,30 +29,43 @@ export type ResourceMeasure =
   | { state: 'unavailable'; reason: string }
 
 /**
- * 여러 칸의 합. CPU 는 측정된 칸 전부, 메모리는 메모리까지 측정된 칸만 더한다.
- * `memoryUnavailableCount` = CPU 는 쟀지만 메모리를 못 잰 칸 수 — 0 이 아니면 메모리 합은 그만큼 빠진 합이다.
- * 메모리를 잰 칸이 하나도 없으면 메모리는 측정 불가(첫 사유).
+ * 여러 칸의 합. CPU 는 측정된 칸 전부, 메모리는 값(측정·하한)이 있는 칸만 더한다.
+ * `memoryUnavailableCount` = CPU 는 쟀지만 메모리를 못 잰 칸 수.
+ * 하한 칸이 섞였거나 메모리를 못 잰 칸이 있으면 합도 하한(`partial`, 무엇이 빠졌는지 사유) — 빠진 합을 그대로 보이지 않는다(C1-1).
+ * 값이 있는 칸이 하나도 없으면 메모리는 측정 불가(첫 사유).
  */
 export function sumUsage(usages: readonly ResourceUsage[]): { usage: ResourceUsage | null; memoryUnavailableCount: number } {
   if (usages.length === 0) return { usage: null, memoryUnavailableCount: 0 }
   let cpu = 0
   let bytes = 0
-  let measured = 0
+  let known = 0
+  let partial = 0
   let firstReason: string | null = null
   for (const usage of usages) {
     cpu += usage.cpu
     switch (usage.memory.state) {
       case 'measured':
         bytes += usage.memory.bytes
-        measured += 1
+        known += 1
+        continue
+      case 'partial':
+        bytes += usage.memory.bytes
+        known += 1
+        partial += 1
         continue
       case 'unavailable':
         firstReason = firstReason ?? usage.memory.reason
         continue
     }
   }
-  const memory: ResourceMemory = measured > 0 || firstReason === null ? { state: 'measured', bytes } : { state: 'unavailable', reason: firstReason }
-  return { usage: { cpu, memory }, memoryUnavailableCount: usages.length - measured }
+  const memoryUnavailableCount = usages.length - known
+  if (known === 0 && firstReason !== null) return { usage: { cpu, memory: { state: 'unavailable', reason: firstReason } }, memoryUnavailableCount }
+  const notes = [
+    ...(partial > 0 ? [`일부 pid 를 뺀 칸 ${partial}개`] : []),
+    ...(memoryUnavailableCount > 0 ? [`메모리를 못 잰 칸 ${memoryUnavailableCount}개`] : []),
+  ]
+  const memory: ResourceMemory = notes.length === 0 ? { state: 'measured', bytes } : { state: 'partial', bytes, reason: `${notes.join(' · ')}가 빠진 합` }
+  return { usage: { cpu, memory }, memoryUnavailableCount }
 }
 
 export type ResourcePaneRow = {
@@ -72,6 +90,10 @@ export type ResourceStats = {
   skippedHidden: number
   /** herdr 에 셸 pid 를 물은 횟수(누적). pane 변화가 없는 주기에는 늘지 않는다. */
   processInfoRequests: number
+  /** 메모리 도우미를 실행한 횟수(누적, LIFE-676 C1-5 — 숨김 주기에는 늘지 않는다). */
+  footprintRuns: number
+  /** 시스템 지표(sysctl·vm_stat 한 벌)를 읽은 횟수(누적). */
+  hostReads: number
   /** 최근 주기들의 main 쪽 소요(ms), 오래된 것부터 — 최대 30개. */
   recentDurationsMs: number[]
 }

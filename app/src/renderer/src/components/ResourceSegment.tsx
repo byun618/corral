@@ -37,7 +37,7 @@ import {
   orderOf,
   paneCloseCopy,
   RESOURCE_EMPTY,
-  RESOURCE_ROW_CPU_TOOLTIP,
+  rowTitles,
   segmentLabel,
   segmentTooltip,
   type PanelOrder,
@@ -410,7 +410,10 @@ export function ResourceSegment(): React.JSX.Element {
   })
   const appCells = snapshot === null ? null : measureCells(snapshot.app)
   const herdrCells = snapshot === null ? null : measureCells(snapshot.herdr)
-  const herdrTitle = herdrCells === null || herdrCells.title === null ? HERDR_ROW_TOOLTIP : `${HERDR_ROW_TOOLTIP}\n${herdrCells.title}`
+  // C1-4 — 행에 사유가 있으면 CPU 칸 title 을 달지 않고 CPU 기준을 행 툴팁 끝으로(`rowTitles`).
+  const appTitles = rowTitles(appCells?.title ?? null)
+  const herdrTitles = rowTitles(herdrCells?.title ?? null)
+  const herdrTitle = herdrTitles.row === null ? HERDR_ROW_TOOLTIP : `${HERDR_ROW_TOOLTIP}\n${herdrTitles.row}`
 
   const panel = !open ? null : (
     <div
@@ -450,39 +453,42 @@ export function ResourceSegment(): React.JSX.Element {
       ) : (
         <>
           <div className="statusbar-resource-note" data-statusbar-resource-host>{hostLine(snapshot)}</div>
-          <div className="statusbar-resource-line" data-statusbar-resource-app title={appCells?.title ?? undefined}>
+          <div className="statusbar-resource-line" data-statusbar-resource-app title={appTitles.row ?? undefined}>
             <span className="statusbar-resource-name">corral 앱</span>
-            <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={RESOURCE_ROW_CPU_TOOLTIP}>{appCells?.cpu}</span>
+            <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={appTitles.cpu}>{appCells?.cpu}</span>
             <span className="statusbar-resource-mem" data-statusbar-resource-memory>{appCells?.memory}</span>
           </div>
           <div className="statusbar-resource-line" data-statusbar-resource-herdr title={herdrTitle}>
             <span className="statusbar-resource-name">{HERDR_ROW_LABEL}</span>
-            <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={RESOURCE_ROW_CPU_TOOLTIP}>{herdrCells?.cpu}</span>
+            <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={herdrTitles.cpu}>{herdrCells?.cpu}</span>
             <span className="statusbar-resource-mem" data-statusbar-resource-memory>{herdrCells?.memory}</span>
           </div>
           {groups.length === 0 ? <div className="statusbar-resource-note">열린 pane 이 없다</div> : null}
-          {groups.map((group) => (
+          {groups.map((group) => {
+            const groupTitles = rowTitles(groupTooltip(group))
+            return (
             <div key={group.key} className="statusbar-resource-group" data-statusbar-resource-group={group.key}>
-              <div className="statusbar-resource-line statusbar-resource-group-head" title={groupTooltip(group) ?? undefined}>
+              <div className="statusbar-resource-line statusbar-resource-group-head" title={groupTitles.row ?? undefined}>
                 <span className="statusbar-resource-name">{group.label}</span>
-                <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={RESOURCE_ROW_CPU_TOOLTIP}>{group.usage === null ? RESOURCE_EMPTY : formatCpu(group.usage.cpu)}</span>
+                <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={groupTitles.cpu}>{group.usage === null ? RESOURCE_EMPTY : formatCpu(group.usage.cpu)}</span>
                 <span className="statusbar-resource-mem" data-statusbar-resource-memory>{group.usage === null ? RESOURCE_EMPTY : memoryText(group.usage.memory)}</span>
               </div>
               {group.panes.map((row) => {
                 const cells = measureCells(row.measure)
+                const titles = rowTitles(cells.title)
                 return (
                   <div key={row.paneId} className="statusbar-resource-pane">
                     <button
                       type="button"
                       className="statusbar-resource-line statusbar-resource-move"
                       data-statusbar-resource-row={row.paneId}
-                      title={cells.title ?? `${row.title} — 이동`}
+                      title={titles.row ?? `${row.title} — 이동`}
                       onFocus={() => rememberFocus(row.paneId)}
                       onClick={() => reveal(row)}
                     >
                       <span className="statusbar-resource-name">{row.title}</span>
                       <span className="statusbar-resource-agent" data-statusbar-resource-agent>{row.agent ?? 'shell'}</span>
-                      <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={RESOURCE_ROW_CPU_TOOLTIP}>{cells.cpu}</span>
+                      <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={titles.cpu}>{cells.cpu}</span>
                       <span className="statusbar-resource-mem" data-statusbar-resource-memory>{cells.memory}</span>
                     </button>
                     <button
@@ -503,7 +509,8 @@ export function ResourceSegment(): React.JSX.Element {
                 )
               })}
             </div>
-          ))}
+            )
+          })}
         </>
       )}
       {error === null ? null : <div className="statusbar-resource-error" data-statusbar-resource-error>{error}</div>}

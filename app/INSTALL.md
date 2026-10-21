@@ -85,6 +85,8 @@ scripts/task-finish.sh LIFE-NNN-<슬러그>                                     
 
 ## 빌드
 
+전제: **clang(Xcode 명령줄 도구, `xcode-select --install`)** — `npm run build`·`npm run dev`·`package:mac` 이 Resource Manager 메모리 도우미(`helper/corral-footprint.c`)를 `scripts/build-footprint.mjs` 로 빌드한다(LIFE-676). 없으면 빌드가 멈춘다.
+
 ```sh
 cd app
 npm ci

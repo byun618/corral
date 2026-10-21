@@ -6,8 +6,11 @@
 // 표가 이상하면(숫자 아닌 칸·로캘 콤마·같은 pid 두 줄) 전부 `측정 불가` — 어느 pane 의 줄이 깨졌는지 알 수 없어서다(R1ⓒ).
 // 이중 fork 로 부모가 1 이 된 데몬은 셸 자손에서 빠진다(00-analysis R3) — 「셸 자손 합」이다.
 // 메모리 규칙(LIFE-676, 게이트 ⓪ Q2): footprint 표가 없거나 이상하면 모든 칸의 메모리가 측정 불가(CPU 는 그대로).
-// 귀속 pid 하나가 표에 ERR(ESRCH 말고)로 나오면 그 칸의 메모리가 측정 불가. 표에 없거나 ESRCH 면 그 pid 는 ps 와 도우미 사이에
-// 끝난 것으로 보고 메모리 합에서 뺀다(R1ⓓ — 끝난 프로세스는 메모리를 쥐고 있지 않다). 도우미는 ps 뒤에 돌므로 「표에 없음」 은 끝남뿐이다.
+// 귀속 pid 가 표에 ERR(ESRCH 말고 — setuid-root 자식 `top`·`sudo` 의 EPERM 등)로 나오면 그 pid 만 빼고 읽힌 pid 의 합을
+// 하한(`partial`, 어느 pid 가 왜 빠졌는지)으로 낸다. 읽힌 pid 가 하나도 없이 ERR 만 있으면 그 칸 메모리는 측정 불가(리뷰 r1 C1-1).
+// 표에 없거나 ESRCH 면 그 pid 는 ps 와 도우미 사이에 끝난 것으로 보고 메모리 합에서 뺀다(R1ⓓ — 끝난 프로세스는 메모리를 쥐고 있지 않다).
+// 도우미는 ps 뒤에 돌므로 「표에 없음」 은 보통 그 사이 끝남이다 — 다만 그 사이 pid 가 재사용되면 새 프로세스 몫이 옛 pid 로 들어가고,
+// 도우미 목록이 잘리면(pid 폭증으로 여유 초과) 조용히 덜 센다. 이 둘은 이 규칙으로 가리지 못한다(리뷰 r1 C1-8).
 import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourceUsage } from '../shared/resource.js'
 
 export type PsRow = { pid: number; ppid: number; cpu: number }
@@ -139,18 +142,32 @@ function memoryOf(input: { footprint: FootprintTable; pids: readonly number[] })
       return { state: 'unavailable', reason: footprint.reason }
     case 'ok': {
       let bytes = 0
+      let read = 0
+      const failed: { pid: number; errno: number }[] = []
       for (const pid of input.pids) {
         const value = footprint.bytes.get(pid)
         if (value !== undefined) {
           bytes += value
+          read += 1
           continue
         }
         const errno = footprint.errors.get(pid)
-        if (errno !== undefined && errno !== ESRCH) return { state: 'unavailable', reason: `pid ${pid} 의 footprint 를 못 읽었다 (errno ${errno})` }
+        if (errno !== undefined && errno !== ESRCH) failed.push({ pid, errno })
       }
-      return { state: 'measured', bytes }
+      if (failed.length === 0) return { state: 'measured', bytes }
+      const reason = excludedReason(failed)
+      return read === 0 ? { state: 'unavailable', reason: `footprint 를 못 읽었다 — ${reason}` } : { state: 'partial', bytes, reason: `${reason} 제외` }
     }
   }
+}
+
+const EPERM = 1
+const LISTED = 3
+
+/** 「pid 7 (권한 없음 — root·다른 사용자로 실행 중), pid 9 (errno 5)」 — 넷 이상이면 셋만 적고 「외 n개」. */
+function excludedReason(failed: readonly { pid: number; errno: number }[]): string {
+  const named = failed.slice(0, LISTED).map(({ pid, errno }) => `pid ${pid} (${errno === EPERM ? '권한 없음 — root·다른 사용자로 실행 중' : `errno ${errno}`})`)
+  return failed.length > LISTED ? `${named.join(', ')} 외 ${failed.length - LISTED}개` : named.join(', ')
 }
 
 function measured(input: { table: PsTable; footprint: FootprintTable; pids: number[] }): ResourceMeasure {

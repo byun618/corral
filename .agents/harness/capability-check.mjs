@@ -73,7 +73,7 @@ const FLOW_DOCS = [
   '.agents/rules/validation.md',
   '.agents/skills/task-coordinate/SKILL.md',
   '.agents/skills/task-start/SKILL.md',
-  '.agents/skills/task-start/defaults.md',
+  '.agents/defaults.md',
   '.agents/skills/task-coordinate/references/implementation.md',
 ];
 const SECTIONS = ['### 명령', '### 보장 수준', '### 상황 → 행동'];

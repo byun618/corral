@@ -36,13 +36,13 @@ corral엔 아직 화면이 몇 개 안 되고 다회차 병합 수요가 없어 
   추측하지 말고 읽어서 인용).
 - 디자인 시스템 앵커 — `specs/design-tokens.css`(있으면 — 새 색 만들지 말 것. 없으면 "이번에 만든다, CSS
   변수로"라고 브리프에 명시).
-- **Orca/herdr-studio 레퍼런스** (corral 특유 — 참고 모델 축은 `specs/00-project.md` "방향 결정
-  (2026-09-13)" 참고: **UI/UX 는 Orca, 엔진/데이터모델은 herdr-studio**):
+- **Orca/herdr-studio 레퍼런스** (corral 특유 — 참고 모델 축은 `specs/00-project.md` 「체크포인트별 방향」(LIFE-414 GUI Orca 동일)·
+  「구현 기반과 유지할 제약」(Herdr Studio endpoint 코어) 참고: **UI/UX 는 Orca, 엔진/데이터모델은 herdr-studio**):
   `specs/reference/layout-reference-2026-09-13.md` ·
   `specs/reference/settings-shortcuts-palette-reference-2026-09-13.md` ·
   `specs/reference/secondary-features-reference-2026-09-13.md` (관련 스텝에 해당하는 문서만 인용).
 - herdr 어댑터 경계 — `app/src/main/adapter/`. UI 층으로 herdr 타입(`PaneInfo`·`AgentStatus` 등)이 새면 안
-  된다는 게 corral 의 고정 아키텍처 제약이다(`00-project.md` 헤지 #1) — 디자인이 이 경계를 건너는 데이터를
+  된다는 게 corral 의 고정 아키텍처 제약이다(`00-project.md` 「구현 기반과 유지할 제약」) — 디자인이 이 경계를 건너는 데이터를
   요구하면 브리프 §5(열린 질문)나 §6(범위 밖)에서 짚는다.
 
 ## Phase 2 — 브리프 작성 (6섹션 골격)
@@ -58,7 +58,7 @@ design-intake로 specs/ 이관"* 명시:
    있을 정도의 UIUX 는 갖춰야 한다" 2026-09-13).
 3. **디자인할 화면 (A/B/C…, ★ 핵심)** — 화면별 [현재 상태 → 디자인 거리 → 검토 포인트]. 상태(연결중/정상/
    재동기/거절 등, `link.phase`)마다 눌러도 되는 액션을 명시. **한 브리프에 화면을 너무 많이 담지 않는다** —
-   해당 Step(`00-project.md` Step 4~10)이 다루는 범위만.
+   해당 체크포인트(`00-project.md` 「체크포인트별 방향」)가 다루는 범위만.
 4. **디자인 시스템 앵커** — 토큰 파일 그대로(없으면 "이번에 만든다"), Orca/herdr-studio 레퍼런스 문서의
    구체적 패턴(파일:줄 근거) 인용, 컴포넌트 관용(모달 최소, 종료·삭제 같은 되돌릴 수 없는 동작은 확인 게이트).
 5. **열린 디자인 질문** — **걱정거리와 제약을 주고 안은 저쪽이 낸다**. "A/B/C 중 골라달라"가 아니라

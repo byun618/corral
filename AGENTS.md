@@ -32,7 +32,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 | 7 사용자 확인 → **게이트 ②** = PR 생성·정리 | 코디 | handoff-main.md, pr.md | §8 |
 | 8 출고 — PR 머지·태그·릴리즈 노트·dmg·APK(폰 설치) | 본체 | GitHub Release | release |
 
-- 스킬 파일: .agents/skills/task-start · task-coordinate · release (각 SKILL.md). 역할별 모델·effort·리뷰어 구성은 task-start/defaults.md
+- 스킬 파일: .agents/skills/task-start · task-coordinate · release (각 SKILL.md). 역할별 모델·effort·리뷰어 구성은 .agents/defaults.md
 - 판정 규칙(다수결 기각 금지·수렴 조건·수정 상한·테스트 계층·경량/전체 경로)은 task-coordinate §2·§3·§5·§6
 - **사용자 승인 게이트 3단 (자율 진행 금지 지점)**: ⓪ 킥오프(구현 워커 기동 전) ① 채택(작업 브랜치 머지 전)
   ② 출고(PR 생성 전). 게이트 사이는 자율 진행하되 게이트에서 멈추고 보고한다 — 보고할 내용은 task-coordinate 의 각 게이트 절.
@@ -58,14 +58,14 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 ## 도구 역할
 
 - 코디네이터·판정 = 작업마다 claude 또는 codex. 선택 규칙·기동·전제 점검은 task-start, **역할별 모델·effort·리뷰어 구성의
-  원본은 .agents/skills/task-start/defaults.md 한 곳이다.** 같은 도구여도 세션과 역할은 구분한다.
+  원본은 .agents/defaults.md 한 곳이다.** 같은 도구여도 세션과 역할은 구분한다.
 - claude (Claude Code) = 코디네이터·판정, 구현, 코드 리뷰. native advisor 상담
 - codex = Astra 구현(경쟁 시) / 별도 Astra 코드 리뷰
 - grok = 외부 서치·사실 검증 + 보완 코드 리뷰 (느림 수 분, 무료 쿼터 주의 — 검색 1회 소진 가능)
 - **effort·모델은 세션 기동 시 반드시 명시한다.** 환경 기본이 medium 이라 플래그가 없으면
   조용히 내려간다. 기동 후 세션 중간에 바꾸지 않는다 — 프롬프트 캐시가 깨져 그 턴의 입력
   비용이 수십 배로 뛴다 (Fable 5.1 은 10만 토큰 접두사에서 약 50배)
-- **advisor 는 Claude 내장 상담 도구다. 독립 리뷰를 대신하지 않는다** — 현재 기본 해제(defaults.md)
+- **advisor 는 Claude 내장 상담 도구다. 독립 리뷰를 대신하지 않는다** — 현재 기본 해제(.agents/defaults.md)
 - **제어 도구(pane·배달·완료 감지)는 절차와 분리한다.** 절차는 능력 이름으로 쓰고 명령은 매핑에 둔다 —
   목표는 "어디서나 같은 보장" 이 아니라 **"어디서나 돌고, 못 하는 것은 판정표에서 공백"** 이다
   (.agents/harness/capabilities.md)

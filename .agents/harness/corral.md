@@ -410,7 +410,7 @@ corral worktree set --worktree path:<구현 worktree 절대경로> --parent-work
 `corral orchestration worker-retain --reason user_requested|user_takeover`). 그런데 **`--model`·`--effort`·`--advisor` 의 유효값 집합은
 두 오라클(`--help`·`agent-context`) 어디에도 없다** — `--help` 는 `VALUE`/`<level>`/`<id>` 로만 쓰고
 `agent-context` 는 "`--agent` 를 요구한다" 는 제약만 적는다. 값 집합의 원본은 corral 이 아니라 **에이전트 CLI 쪽**이고
-이 매핑 밖이다. 역할별 기본값은 `.agents/skills/task-start/defaults.md` 한 곳이다(절차 쪽 원본).
+이 매핑 밖이다. 역할별 기본값은 `.agents/defaults.md` 한 곳이다(절차 쪽 원본).
 - **corral 은 값을 검증하지 않는다.** `--effort bogus-effort` 가 거절되지 않고 argv 로 그대로 넘어가
   pane 이 생겼다(`requestedEffort: "bogus-effort"`, `argv: ["claude","--effort","bogus-effort",…]`).
   즉 잘못된 값은 기동 관문이 아니라 **에이전트 쪽에서** 드러나고, 그때는 이미 pane 이 만들어져 있다 —

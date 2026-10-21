@@ -1,20 +1,54 @@
-// 상태바 Resource Manager (LIFE-637) — main 수집기 ↔ 렌더러 세그먼트가 주고받는 모양.
+// 상태바 Resource Manager (LIFE-637 · LIFE-676) — main 수집기 ↔ 렌더러 세그먼트가 주고받는 모양.
 //
-// 메모리 = RSS(공유 메모리 중복 포함, 게이트 ⓪ Q1). CPU = `ps %cpu` 합(코어 하나 = 100%).
-// 「전체」 = corral 앱(main·renderer·helper) + herdr 서버 + 모든 pane 자손(Q2) — 한 pid 는 한 곳에만 센다.
+// 메모리 = pid 별 phys_footprint 의 합 — 활동 상태 보기 「메모리」 열과 같은 값(압축·swap 된 몫 포함, LIFE-676).
+//   도우미(`corral-footprint`)로 읽는다. 못 읽으면 그 칸 메모리는 측정 불가 — RSS 로 대신하지 않는다(게이트 ⓪ Q2).
+// CPU = `ps %cpu` 합, 코어 하나 = 100 (코어당 원값). 맥 전체 대비(÷ 코어 수)는 표시 층이 한다(Q3).
+// 「전체」 = corral 앱(main·renderer·helper) + herdr 서버 + 모든 pane 자손(637 Q2) — 한 pid 는 한 곳에만 센다.
 import type { CloseTabsResult } from './types.js'
 
+/** 메모리 칸 — 측정값(바이트) 또는 측정 불가(사유). CPU 가 살아 있어도 메모리만 못 잴 수 있다(Q2). */
+export type ResourceMemory =
+  | { state: 'measured'; bytes: number }
+  | { state: 'unavailable'; reason: string }
+
 export type ResourceUsage = {
-  /** `ps %cpu` 합 — 코어 하나를 다 쓰면 100. */
+  /** `ps %cpu` 합 — 코어 하나를 다 쓰면 100(코어당 원값). */
   cpu: number
-  /** RSS 합, 바이트. */
-  memory: number
+  /** phys_footprint 합(활동 상태 보기 「메모리」 열 값의 합). */
+  memory: ResourceMemory
 }
 
 /** 측정값 또는 측정 불가. 가짜 숫자를 내지 않는다 — 못 재면 사유를 싣는다. */
 export type ResourceMeasure =
   | { state: 'measured'; usage: ResourceUsage; pids: number[] }
   | { state: 'unavailable'; reason: string }
+
+/**
+ * 여러 칸의 합. CPU 는 측정된 칸 전부, 메모리는 메모리까지 측정된 칸만 더한다.
+ * `memoryUnavailableCount` = CPU 는 쟀지만 메모리를 못 잰 칸 수 — 0 이 아니면 메모리 합은 그만큼 빠진 합이다.
+ * 메모리를 잰 칸이 하나도 없으면 메모리는 측정 불가(첫 사유).
+ */
+export function sumUsage(usages: readonly ResourceUsage[]): { usage: ResourceUsage | null; memoryUnavailableCount: number } {
+  if (usages.length === 0) return { usage: null, memoryUnavailableCount: 0 }
+  let cpu = 0
+  let bytes = 0
+  let measured = 0
+  let firstReason: string | null = null
+  for (const usage of usages) {
+    cpu += usage.cpu
+    switch (usage.memory.state) {
+      case 'measured':
+        bytes += usage.memory.bytes
+        measured += 1
+        continue
+      case 'unavailable':
+        firstReason = firstReason ?? usage.memory.reason
+        continue
+    }
+  }
+  const memory: ResourceMemory = measured > 0 || firstReason === null ? { state: 'measured', bytes } : { state: 'unavailable', reason: firstReason }
+  return { usage: { cpu, memory }, memoryUnavailableCount: usages.length - measured }
+}
 
 export type ResourcePaneRow = {
   paneId: string
@@ -42,16 +76,34 @@ export type ResourceStats = {
   recentDurationsMs: number[]
 }
 
+/** `kern.memorystatus_vm_pressure_level` — 1 정상 · 2 경고 · 4 위험. */
+export type MemoryPressure = 'normal' | 'warning' | 'critical'
+
+/** 패널 시스템 한 줄(게이트 ⓪ Q4)의 재료. 못 읽은 지표는 null — 그 조각만 `—` 로 보인다. */
+export type ResourceHost = {
+  /** 물리 메모리, 바이트(`os.totalmem()`). */
+  physicalMemory: number
+  /** 코어 수(`os.cpus().length`). 0 이면 모른다. */
+  cpuCoreCount: number
+  pressure: MemoryPressure | null
+  /** `sysctl vm.swapusage`, 바이트. */
+  swap: { used: number; total: number } | null
+  /** `vm_stat` 「Pages occupied by compressor」 × 페이지 크기, 바이트. */
+  compressed: number | null
+}
+
 export type ResourceSnapshot = {
   collectedAt: number
   /** 앱 + herdr + pane 중 측정된 것의 합. 하나도 못 재면 null. */
   total: ResourceUsage | null
   /** 측정 불가인 칸 수(앱·herdr·pane). 0 이 아니면 total 은 그만큼 빠진 합이다. */
   unavailableCount: number
+  /** CPU 는 쟀지만 메모리(footprint)를 못 잰 칸 수. 0 이 아니면 total 의 메모리는 그만큼 빠진 합이다. */
+  memoryUnavailableCount: number
   app: ResourceMeasure
   herdr: ResourceMeasure
   panes: ResourcePaneRow[]
-  host: { totalMemory: number; usedMemory: number; cpuCoreCount: number }
+  host: ResourceHost
   stats: ResourceStats
 }
 

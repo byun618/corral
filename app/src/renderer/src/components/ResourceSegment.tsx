@@ -1,6 +1,6 @@
 // 상태바 Resource Manager 세그먼트 (LIFE-637) — 기존 JS 힙 표시 자리에 들어가는 자기 완결 요소(자기 상태·IPC 구독·패널).
 //
-// 세그먼트: `CPU n% · 메모리 x.x GB`(표시 규칙 `resource-view.ts`). 클릭하면 패널.
+// 세그먼트: `CPU n% · 메모리 x.x GB`(표시 규칙 `resource-view.ts` — CPU 는 맥 전체 대비, 행은 코어당). 클릭하면 패널.
 // 패널(R4): 시스템 한 줄 · 앱·herdr 행 · worktree 묶음(합계 + pane 행). 열린 동안 main 푸시로 값만 갱신하고 행 순서는 얼린다(J1 —
 // 다시 매기는 때는 열 때·정렬을 바꿀 때뿐, 새 pane 은 묶음 끝에). Esc(패널 안 포커스, 또는 포커스가 body)·바깥 클릭으로
 // 닫히고 열기 전 포커스로 돌아간다. 호스트(상태바)가 `inert` 가 되면(팔레트 등) 닫는다(J4 — 포털 패널은 inert 밖이다).
@@ -26,16 +26,18 @@ import { allDocs } from '../file-docs.js'
 import { confirmDiscardOrSave } from '../file-save.js'
 import {
   formatCpu,
-  formatMemory,
   groupPanes,
+  groupTooltip,
   HERDR_ROW_LABEL,
   HERDR_ROW_TOOLTIP,
   hostLine,
   keepOrder,
   measureCells,
+  memoryText,
   orderOf,
   paneCloseCopy,
   RESOURCE_EMPTY,
+  RESOURCE_ROW_CPU_TOOLTIP,
   segmentLabel,
   segmentTooltip,
   type PanelOrder,
@@ -422,7 +424,7 @@ export function ResourceSegment(): React.JSX.Element {
       onKeyDown={onPanelKeyDown}
     >
       <div className="statusbar-resource-head">
-        <span className="statusbar-resource-title">{segmentLabel(snapshot)}</span>
+        <span className="statusbar-resource-title" title={segmentTooltip(snapshot)}>{segmentLabel(snapshot)}</span>
         <span className="statusbar-resource-sort" role="group" aria-label="정렬">
           {(['memory', 'cpu'] satisfies ResourceSortKey[]).map((key) => (
             <button
@@ -450,21 +452,21 @@ export function ResourceSegment(): React.JSX.Element {
           <div className="statusbar-resource-note" data-statusbar-resource-host>{hostLine(snapshot)}</div>
           <div className="statusbar-resource-line" data-statusbar-resource-app title={appCells?.title ?? undefined}>
             <span className="statusbar-resource-name">corral 앱</span>
-            <span className="statusbar-resource-cpu" data-statusbar-resource-cpu>{appCells?.cpu}</span>
+            <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={RESOURCE_ROW_CPU_TOOLTIP}>{appCells?.cpu}</span>
             <span className="statusbar-resource-mem" data-statusbar-resource-memory>{appCells?.memory}</span>
           </div>
           <div className="statusbar-resource-line" data-statusbar-resource-herdr title={herdrTitle}>
             <span className="statusbar-resource-name">{HERDR_ROW_LABEL}</span>
-            <span className="statusbar-resource-cpu" data-statusbar-resource-cpu>{herdrCells?.cpu}</span>
+            <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={RESOURCE_ROW_CPU_TOOLTIP}>{herdrCells?.cpu}</span>
             <span className="statusbar-resource-mem" data-statusbar-resource-memory>{herdrCells?.memory}</span>
           </div>
           {groups.length === 0 ? <div className="statusbar-resource-note">열린 pane 이 없다</div> : null}
           {groups.map((group) => (
             <div key={group.key} className="statusbar-resource-group" data-statusbar-resource-group={group.key}>
-              <div className="statusbar-resource-line statusbar-resource-group-head" title={group.unavailableCount === 0 ? undefined : `측정 불가 ${group.unavailableCount}개는 합에서 빠졌다`}>
+              <div className="statusbar-resource-line statusbar-resource-group-head" title={groupTooltip(group) ?? undefined}>
                 <span className="statusbar-resource-name">{group.label}</span>
-                <span className="statusbar-resource-cpu" data-statusbar-resource-cpu>{group.usage === null ? RESOURCE_EMPTY : formatCpu(group.usage.cpu)}</span>
-                <span className="statusbar-resource-mem" data-statusbar-resource-memory>{group.usage === null ? RESOURCE_EMPTY : formatMemory(group.usage.memory)}</span>
+                <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={RESOURCE_ROW_CPU_TOOLTIP}>{group.usage === null ? RESOURCE_EMPTY : formatCpu(group.usage.cpu)}</span>
+                <span className="statusbar-resource-mem" data-statusbar-resource-memory>{group.usage === null ? RESOURCE_EMPTY : memoryText(group.usage.memory)}</span>
               </div>
               {group.panes.map((row) => {
                 const cells = measureCells(row.measure)
@@ -480,7 +482,7 @@ export function ResourceSegment(): React.JSX.Element {
                     >
                       <span className="statusbar-resource-name">{row.title}</span>
                       <span className="statusbar-resource-agent" data-statusbar-resource-agent>{row.agent ?? 'shell'}</span>
-                      <span className="statusbar-resource-cpu" data-statusbar-resource-cpu>{cells.cpu}</span>
+                      <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={RESOURCE_ROW_CPU_TOOLTIP}>{cells.cpu}</span>
                       <span className="statusbar-resource-mem" data-statusbar-resource-memory>{cells.memory}</span>
                     </button>
                     <button

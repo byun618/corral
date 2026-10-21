@@ -10,16 +10,18 @@
   },
   "scripts": {
     "postinstall": "node node_modules/electron/install.js",
+    "predev": "node scripts/build-footprint.mjs",
     "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build && npm run build:runtime",
+    "build": "npm run typecheck && electron-vite build && npm run build:runtime && npm run build:footprint",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.mixed.json",
     "lint": "eslint .",
     "test": "vitest run && node scripts/run-nodetest.mjs",
     "check:boundary": "node scripts/check-boundary.mjs",
     "build:runtime": "node scripts/build-runtime.mjs",
+    "build:footprint": "node scripts/build-footprint.mjs",
     "herdr:guard": "node scripts/build-dev-guard.mjs",
-    "package:mac": "npm run build && node scripts/bundle-herdr.mjs && electron-builder --mac --arm64"
+    "package:mac": "npm run build && node scripts/bundle-herdr.mjs && node scripts/build-footprint.mjs --check && electron-builder --mac --arm64"
   },
   "devDependencies": {
     "@shikijs/engine-javascript": "4.5.0",

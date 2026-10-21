@@ -25,3 +25,5 @@ specs/*/raw/**/_runs/
 app/dist/
 # LIFE-556 동봉 herdr 자리 — scripts/bundle-herdr.mjs 가 release build root 에서 복사한다
 app/build/backend/
+# LIFE-676 Resource Manager 메모리 도우미 — scripts/build-footprint.mjs 가 helper/corral-footprint.c 에서 빌드한다
+app/build/helper/

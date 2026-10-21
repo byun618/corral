@@ -1,32 +1,53 @@
 // LIFE-637 — 주기 수집의 비용 규칙(R6ⓐⓒⓓ의 단위 근거). 최종 관문의 실측 카운터는 별도다.
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ResourceSnapshot } from '../shared/resource.js'
+import type { ResourceHost, ResourceSnapshot } from '../shared/resource.js'
+import { parseFootprintTable, type FootprintTable } from './resource-collector.js'
 import { createResourceMonitor, PROBE_RETRY_MS, RESOURCE_INTERVAL_MS, type ResourceMonitorDeps, type ResourcePaneSource } from './resource-monitor.js'
 
+// 고정 입력: pid ppid %cpu footprint(KB) — 앞 세 칸이 ps stdout, 넷째 칸이 도우미 footprint 표(바이트)가 된다(LIFE-676).
 const PS = '  100 1 1.0 100\n  200 1 2.0 200\n  300 200 3.0 300\n  400 200 4.0 400\n'
+const psOf = (text: string): string => text.split('\n').map((line) => line.trim().split(/\s+/).slice(0, 3).join(' ')).join('\n')
+const fpOf = (text: string): FootprintTable => parseFootprintTable(text.split('\n').flatMap((line) => {
+  const cells = line.trim().split(/\s+/)
+  return cells.length === 4 && /^\d+$/.test(cells[3] ?? '') ? [`${cells[0]} ${Number(cells[3]) * 1024}`] : []
+}).join('\n'))
+const HOST: ResourceHost = { physicalMemory: 8, cpuCoreCount: 2, pressure: 'warning', swap: { used: 1, total: 2 }, compressed: 3 }
 const pane = (paneId: string): ResourcePaneSource => ({ paneId, tabId: `t-${paneId}`, workspaceId: 'w', groupKey: '/wt', groupLabel: 'wt', title: paneId, agent: null })
 
 function harness(input: { panes: ResourcePaneSource[]; shellPids: Record<string, number | null>; visible?: boolean; intervalMs?: number }) {
-  const state = { panes: input.panes, visible: input.visible ?? true, now: 1000, ps: PS, psFails: false }
+  const state: { panes: ResourcePaneSource[]; visible: boolean; now: number; ps: string; psFails: boolean; footprint: FootprintTable | null; calls: string[] } = {
+    panes: input.panes, visible: input.visible ?? true, now: 1000, ps: PS, psFails: false, footprint: null, calls: [],
+  }
   const emitted: ResourceSnapshot[] = []
   const probe = vi.fn(async (paneId: string) => input.shellPids[paneId] ?? null)
   const readPs = vi.fn(async () => {
+    state.calls.push('ps')
     if (state.psFails) throw new Error('ps 없음')
-    return state.ps
+    return psOf(state.ps)
   })
+  const readFootprint = vi.fn(async () => {
+    state.calls.push('footprint')
+    return state.footprint ?? fpOf(state.ps)
+  })
+  const readHost = vi.fn(async () => {
+    state.calls.push('host')
+    return HOST
+  })
+  const log = vi.fn<(tag: string, data: Record<string, unknown>) => void>()
   const deps: ResourceMonitorDeps = {
     intervalMs: input.intervalMs ?? RESOURCE_INTERVAL_MS,
     readPs,
+    readFootprint,
     panes: () => state.panes,
     probeShellPid: probe,
     appRoots: () => [100],
     visible: () => state.visible,
-    host: () => ({ totalMemory: 8, usedMemory: 4, cpuCoreCount: 2 }),
+    readHost,
     emit: (snapshot) => emitted.push(snapshot),
     now: () => state.now,
-    log: () => {},
+    log,
   }
-  return { state, emitted, probe, readPs, monitor: createResourceMonitor(deps) }
+  return { state, emitted, probe, readPs, readFootprint, readHost, log, monitor: createResourceMonitor(deps) }
 }
 
 afterEach(() => {
@@ -43,6 +64,8 @@ describe('resource monitor', () => {
     await h.monitor.tick()
     await h.monitor.tick()
     expect(h.readPs).not.toHaveBeenCalled()
+    expect(h.readFootprint).not.toHaveBeenCalled()
+    expect(h.readHost).not.toHaveBeenCalled()
     expect(h.probe).not.toHaveBeenCalled()
     expect(h.monitor.stats()).toMatchObject({ collections: 0, skippedHidden: 2, processInfoRequests: 0 })
     expect(h.emitted).toHaveLength(0)
@@ -87,10 +110,12 @@ describe('resource monitor', () => {
     const h = harness({ panes: [pane('a')], shellPids: { a: 300 } })
     await h.monitor.tick()
     const snapshot = h.emitted.at(-1)
-    expect(snapshot?.panes[0]).toMatchObject({ paneId: 'a', title: 'a', measure: { state: 'measured', usage: { cpu: 3, memory: 300 * 1024 }, pids: [300] } })
+    expect(snapshot?.panes[0]).toMatchObject({ paneId: 'a', title: 'a', measure: { state: 'measured', usage: { cpu: 3, memory: { state: 'measured', bytes: 300 * 1024 } }, pids: [300] } })
     expect(snapshot?.herdr).toMatchObject({ state: 'measured', pids: [200, 400] })
     expect(snapshot?.app).toMatchObject({ state: 'measured', pids: [100] })
-    expect(snapshot?.total).toEqual({ cpu: 10, memory: 1000 * 1024 })
+    expect(snapshot?.total).toEqual({ cpu: 10, memory: { state: 'measured', bytes: 1000 * 1024 } })
+    expect(snapshot?.memoryUnavailableCount).toBe(0)
+    expect(snapshot?.host).toEqual(HOST)
     expect(snapshot?.stats.recentDurationsMs).toHaveLength(1)
     expect(h.monitor.latest()).toBe(snapshot)
   })
@@ -228,5 +253,36 @@ describe('wake 겹침 (R6ⓐ — wake 경로에서도 주기가 겹치지 않는
     expect(h.monitor.stats().collections).toBe(2)
     expect(maxConcurrent).toBe(1)
     h.monitor.stop()
+  })
+
+  it('LIFE-676 — 도우미는 ps 다음에 돈다(「표에 없음 = 끝남」 규칙의 전제)', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300 } })
+    await h.monitor.tick()
+    expect(h.state.calls.filter((call) => call !== 'host')).toEqual(['ps', 'footprint'])
+    expect(h.readHost).toHaveBeenCalledTimes(1)
+  })
+
+  it('LIFE-676 Q2 — 도우미 실패면 메모리만 측정 불가, CPU 는 그대로 · 사유가 바뀔 때만 로그', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300 } })
+    h.state.footprint = { kind: 'unavailable', reason: 'footprint 도우미가 없다 (/x)' }
+    await h.monitor.tick()
+    await h.monitor.tick()
+    const snapshot = h.emitted.at(-1)
+    expect(snapshot?.panes[0]?.measure).toEqual({ state: 'measured', usage: { cpu: 3, memory: { state: 'unavailable', reason: 'footprint 도우미가 없다 (/x)' } }, pids: [300] })
+    expect(snapshot?.total).toEqual({ cpu: 10, memory: { state: 'unavailable', reason: 'footprint 도우미가 없다 (/x)' } })
+    expect(snapshot?.unavailableCount).toBe(0)
+    expect(snapshot?.memoryUnavailableCount).toBe(3)
+    expect(h.log.mock.calls.filter(([tag]) => tag === 'resource.footprint')).toEqual([['resource.footprint', { reason: 'footprint 도우미가 없다 (/x)' }]])
+    h.state.footprint = null
+    await h.monitor.tick()
+    expect(h.log.mock.calls.filter(([tag]) => tag === 'resource.footprint').at(-1)).toEqual(['resource.footprint', { reason: 'ok' }])
+    expect(h.emitted.at(-1)?.total?.memory).toEqual({ state: 'measured', bytes: 1000 * 1024 })
+  })
+
+  it('LIFE-676 — ps 가 실패하면 도우미를 부르지 않는다', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300 } })
+    h.state.psFails = true
+    await h.monitor.tick()
+    expect(h.readFootprint).not.toHaveBeenCalled()
   })
 })

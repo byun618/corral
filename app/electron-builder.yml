@@ -29,6 +29,10 @@ extraResources:
     to: backend/NOTICE-herdr.md
   - from: build/backend/herdr.json
     to: backend/herdr.json
+  # LIFE-676 — Resource Manager 메모리 도우미(phys_footprint 표). 소스 `helper/corral-footprint.c`, `npm run build` 가 빌드하고
+  # `package:mac` 이 electron-builder 직전에 `build-footprint.mjs --check` 로 확인한다(없으면 패키징 전에 멈춘다).
+  - from: build/helper/corral-footprint
+    to: helper/corral-footprint
   # LIFE-589 — 탐색기 아이콘 글꼴 고지. 글꼴 자체는 렌더러 번들(asar)에 든다: Seti(vscode 1.142.0, MIT + 제3자 고지) · codicons(CC BY 4.0 / 코드 MIT).
   - from: src/renderer/src/assets/seti/VSCODE-LICENSE.txt
     to: licenses/seti/VSCODE-LICENSE.txt

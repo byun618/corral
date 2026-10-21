@@ -1,21 +1,45 @@
-// 상태바 Resource Manager 의 표시 규칙 (LIFE-637 R3·R4) — 순수 함수. 컴포넌트는 `components/ResourceSegment.tsx`.
+// 상태바 Resource Manager 의 표시 규칙 (LIFE-637 R3·R4 · LIFE-676 R3·R4·R5) — 순수 함수. 컴포넌트는 `components/ResourceSegment.tsx`.
 //
-// 세그먼트 = `CPU n% · 메모리 x.x GB`(「전체」 = 앱 + herdr + 모든 pane 자손, RSS). 하나도 못 재면 `—` — 가짜 숫자를 보이지 않는다.
+// 세그먼트 = `CPU n% · 메모리 x.x GB`(「전체」 = 앱 + herdr + 모든 pane 자손). 하나도 못 재면 `—` — 가짜 숫자를 보이지 않는다.
+// CPU 척도(LIFE-676 게이트 ⓪ Q3): 세그먼트·패널 머리 요약 줄 = 맥 전체 대비(합 ÷ 코어 수, 0~100) · 묶음·pane·앱·herdr 행 = 코어당(코어 하나 = 100).
+// 메모리 = 활동 상태 보기 「메모리」 열 값(phys_footprint)의 합. 못 재면 `측정 불가`(사유는 툴팁) — RSS 로 대신하지 않는다(Q2).
+// 일부 pid 를 뺀 합(하한)은 `≥ x`, 빠진 사유는 툴팁(리뷰 r1 C1-1).
 // 패널 = worktree 묶음(합계 행 + pane 행) · 앱·herdr 행 따로. 기본 정렬은 메모리 내림차순, 측정 불가는 맨 뒤.
-import type { ResourceMeasure, ResourcePaneRow, ResourceSnapshot, ResourceUsage } from '../../shared/resource.js'
+import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourcePaneRow, type ResourceSnapshot, type ResourceUsage } from '../../shared/resource.js'
 import type { RunningPane } from '../../shared/types.js'
 import { closeCopy, type CloseCopy } from './close-copy.js'
 
 export const RESOURCE_EMPTY = '—'
-export const RESOURCE_TOOLTIP = 'corral 앱 + herdr 서버 + 모든 pane 자손 합 · 메모리 = RSS(공유 메모리 중복 포함) · CPU = ps %cpu 합(코어 하나 = 100%)'
+export const RESOURCE_UNAVAILABLE = '측정 불가'
+export const RESOURCE_SCOPE = 'corral 앱 + herdr 서버 + 모든 pane 자손 합'
+/** 메모리 정의(R4) — 공유 메모리를 몇 번 세는지는 주장하지 않는다(00-analysis 「합계 의미」). */
+export const RESOURCE_MEMORY_NOTE = '메모리 = 활동 상태 보기 「메모리」 열 값(압축·swap 된 몫 포함)의 합'
+/** 패널 행 CPU 칸 기준(R3ⓓ). */
+export const RESOURCE_ROW_CPU_TOOLTIP = 'CPU — 코어 하나 = 100%'
+export const RESOURCE_LOWER_BOUND = '≥'
+
+/**
+ * 행의 툴팁 두 자리(리뷰 r1 C1-4) — CPU 칸 자체 `title` 은 행에 사유가 없을 때만 단다(안쪽 `title` 이 행 사유를 덮지 않게).
+ * 사유가 있으면 CPU 기준은 행 툴팁 끝 줄로 옮긴다.
+ */
+export function rowTitles(reason: string | null): { row: string | null; cpu: string | undefined } {
+  return reason === null ? { row: null, cpu: RESOURCE_ROW_CPU_TOOLTIP } : { row: `${reason}\n${RESOURCE_ROW_CPU_TOOLTIP}`, cpu: undefined }
+}
 
 export type ResourceSortKey = 'memory' | 'cpu'
 
 const GB = 1024 ** 3
 const MB = 1024 ** 2
 
+/** 코어당 CPU(행) — 코어 하나 = 100%. */
 export function formatCpu(cpu: number): string {
   return `${Math.round(cpu)}%`
+}
+
+/** 맥 전체 대비 CPU(세그먼트·패널 머리) — 합 ÷ 코어 수, 0~100 정수. 코어 수를 모르면(0·비정상) 가짜 숫자 대신 `—`(R3ⓔ). */
+export function formatMachineCpu(input: { cpu: number; cpuCoreCount: number }): string {
+  if (!Number.isFinite(input.cpuCoreCount) || input.cpuCoreCount <= 0) return RESOURCE_EMPTY
+  return `${Math.min(100, Math.max(0, Math.round(input.cpu / input.cpuCoreCount)))}%`
 }
 
 export function formatGb(bytes: number): string {
@@ -27,24 +51,72 @@ export function formatMemory(bytes: number): string {
   return bytes >= GB ? formatGb(bytes) : `${Math.round(bytes / MB)} MB`
 }
 
+/** 행·묶음 메모리 칸 — 하한은 `≥ x`, 못 재면 `측정 불가`(사유는 칸 툴팁). */
+export function memoryText(memory: ResourceMemory): string {
+  switch (memory.state) {
+    case 'measured':
+      return formatMemory(memory.bytes)
+    case 'partial':
+      return `${RESOURCE_LOWER_BOUND} ${formatMemory(memory.bytes)}`
+    case 'unavailable':
+      return RESOURCE_UNAVAILABLE
+  }
+}
+
+/** 메모리 칸 툴팁 사유 — 측정값이면 null. */
+export function memoryNote(memory: ResourceMemory): string | null {
+  switch (memory.state) {
+    case 'measured':
+      return null
+    case 'partial':
+      return `메모리 하한 — ${memory.reason}`
+    case 'unavailable':
+      return `메모리 측정 불가 — ${memory.reason}`
+  }
+}
+
+function totalMemoryText(memory: ResourceMemory): string {
+  switch (memory.state) {
+    case 'measured':
+      return formatGb(memory.bytes)
+    case 'partial':
+      return `${RESOURCE_LOWER_BOUND} ${formatGb(memory.bytes)}`
+    case 'unavailable':
+      return RESOURCE_UNAVAILABLE
+  }
+}
+
 export function segmentLabel(snapshot: ResourceSnapshot | null): string {
   const total = snapshot?.total ?? null
-  if (total === null) return `CPU ${RESOURCE_EMPTY} · 메모리 ${RESOURCE_EMPTY}`
-  return `CPU ${formatCpu(total.cpu)} · 메모리 ${formatGb(total.memory)}`
+  if (snapshot === null || total === null) return `CPU ${RESOURCE_EMPTY} · 메모리 ${RESOURCE_EMPTY}`
+  const memory = totalMemoryText(total.memory)
+  return `CPU ${formatMachineCpu({ cpu: total.cpu, cpuCoreCount: snapshot.host.cpuCoreCount })} · 메모리 ${memory}`
+}
+
+/** 세그먼트·패널 머리 CPU 기준 문구(R3ⓓ) — corral 사용분을 맥 전체 대비로. 맥 전체 사용률(다른 앱 포함)로 읽히지 않게 적는다(게이트 ① 수정 1). */
+export function machineCpuNote(cpuCoreCount: number): string {
+  const scale = Number.isFinite(cpuCoreCount) && cpuCoreCount > 0 ? `코어 ${cpuCoreCount}개 = 100%` : '코어 수를 몰라 표시하지 않는다'
+  return `CPU = corral(앱·herdr·pane)이 쓴 몫, 맥 전체 대비(${scale}) — 맥 전체 사용률이 아니다(다른 앱 제외) · 패널의 앱·herdr·묶음·pane 행은 코어 하나 = 100%`
 }
 
 /** 첫 줄 = 세그먼트 라벨 전문(H7 — 폭이 모자라 말줄임이 나도 호버로 숫자를 읽는다). */
 export function segmentTooltip(snapshot: ResourceSnapshot | null): string {
-  const head = `${segmentLabel(snapshot)}\n${RESOURCE_TOOLTIP}`
+  const head = [segmentLabel(snapshot), RESOURCE_SCOPE, machineCpuNote(snapshot?.host.cpuCoreCount ?? 0), RESOURCE_MEMORY_NOTE].join('\n')
   if (snapshot === null) return `${head}\n아직 수집 전`
   if (snapshot.total === null) return `${head}\n측정 불가`
-  return snapshot.unavailableCount === 0 ? head : `${head}\n측정 불가 ${snapshot.unavailableCount}칸은 합에서 빠졌다`
+  const notes: string[] = []
+  if (snapshot.unavailableCount > 0) notes.push(`측정 불가 ${snapshot.unavailableCount}칸은 합에서 빠졌다`)
+  const memory = memoryNote(snapshot.total.memory)
+  if (memory !== null) notes.push(memory)
+  return [head, ...notes].join('\n')
 }
 
 export function measureCells(measure: ResourceMeasure): { cpu: string; memory: string; title: string | null } {
   switch (measure.state) {
-    case 'measured':
-      return { cpu: formatCpu(measure.usage.cpu), memory: formatMemory(measure.usage.memory), title: null }
+    case 'measured': {
+      const { memory } = measure.usage
+      return { cpu: formatCpu(measure.usage.cpu), memory: memoryText(memory), title: memoryNote(memory) }
+    }
     case 'unavailable':
       return { cpu: RESOURCE_EMPTY, memory: RESOURCE_EMPTY, title: `측정 불가 — ${measure.reason}` }
   }
@@ -54,37 +126,63 @@ function usageOf(measure: ResourceMeasure): ResourceUsage | null {
   return measure.state === 'measured' ? measure.usage : null
 }
 
-/** 내림차순, 측정 불가(null)는 맨 뒤. 같으면 원래 순서. */
+function sortValue(input: { usage: ResourceUsage | null; key: ResourceSortKey }): number | null {
+  const { usage } = input
+  if (usage === null) return null
+  switch (input.key) {
+    case 'cpu':
+      return usage.cpu
+    case 'memory':
+      return usage.memory.state === 'unavailable' ? null : usage.memory.bytes
+  }
+}
+
+/** 내림차순, 측정 불가(null — 메모리순이면 메모리 측정 불가도)는 맨 뒤. 같으면 원래 순서. */
 function compareUsage(input: { a: ResourceUsage | null; b: ResourceUsage | null; key: ResourceSortKey }): number {
-  const { a, b, key } = input
+  const a = sortValue({ usage: input.a, key: input.key })
+  const b = sortValue({ usage: input.b, key: input.key })
   if (a === null || b === null) return a === null ? (b === null ? 0 : 1) : -1
-  return b[key] - a[key]
+  return b - a
 }
 
 export type ResourceGroup = {
   key: string
   label: string
-  /** 묶음 안 측정된 pane 의 합. 하나도 못 재면 null. */
+  /** 묶음 안 측정된 pane 의 합(`sumUsage` — 메모리는 메모리까지 잰 pane 만). 하나도 못 재면 null. */
   usage: ResourceUsage | null
   unavailableCount: number
   panes: ResourcePaneRow[]
 }
 
 export function groupPanes(input: { panes: readonly ResourcePaneRow[]; sort: ResourceSortKey }): ResourceGroup[] {
-  const groups = new Map<string, ResourceGroup>()
+  const members = new Map<string, { key: string; label: string; panes: ResourcePaneRow[] }>()
   for (const pane of input.panes) {
-    const group = groups.get(pane.groupKey) ?? { key: pane.groupKey, label: pane.groupLabel, usage: null, unavailableCount: 0, panes: [] }
+    const group = members.get(pane.groupKey) ?? { key: pane.groupKey, label: pane.groupLabel, panes: [] }
     group.panes.push(pane)
-    const usage = usageOf(pane.measure)
-    if (usage === null) group.unavailableCount += 1
-    else group.usage = group.usage === null ? { ...usage } : { cpu: group.usage.cpu + usage.cpu, memory: group.usage.memory + usage.memory }
-    groups.set(pane.groupKey, group)
+    members.set(pane.groupKey, group)
   }
-  const sorted = [...groups.values()].map((group) => ({
-    ...group,
-    panes: [...group.panes].sort((a, b) => compareUsage({ a: usageOf(a.measure), b: usageOf(b.measure), key: input.sort })),
-  }))
+  const sorted = [...members.values()].map((group): ResourceGroup => {
+    const usages = group.panes.flatMap((pane) => {
+      const usage = usageOf(pane.measure)
+      return usage === null ? [] : [usage]
+    })
+    return {
+      ...group,
+      usage: sumUsage(usages),
+      unavailableCount: group.panes.length - usages.length,
+      panes: [...group.panes].sort((a, b) => compareUsage({ a: usageOf(a.measure), b: usageOf(b.measure), key: input.sort })),
+    }
+  })
   return sorted.sort((a, b) => compareUsage({ a: a.usage, b: b.usage, key: input.sort }))
+}
+
+/** 묶음 합계 행 툴팁 — 빠진 칸이 있을 때만. */
+export function groupTooltip(group: ResourceGroup): string | null {
+  const notes: string[] = []
+  if (group.unavailableCount > 0) notes.push(`측정 불가 ${group.unavailableCount}개는 합에서 빠졌다`)
+  const memory = group.usage === null ? null : memoryNote(group.usage.memory)
+  if (memory !== null) notes.push(memory)
+  return notes.length === 0 ? null : notes.join('\n')
 }
 
 /** 패널이 열린 동안 얼려 둔 행 순서(J1) — 보인 순서 그대로의 묶음 열쇠·pane id. */
@@ -112,9 +210,21 @@ export function keepOrder(input: { groups: readonly ResourceGroup[]; order: Pane
   return groups.map((group) => ({ ...group, panes: byFrozen({ items: group.panes, keyOf: (pane) => pane.paneId, frozen: input.order.panes }) }))
 }
 
-/** 패널 맨 위 시스템 한 줄 — 시스템 사용/전체 메모리. */
+const PRESSURE_LABEL: Record<MemoryPressure, string> = { normal: '정상', warning: '경고', critical: '위험' }
+
+/**
+ * 패널 맨 위 시스템 한 줄 (게이트 ⓪ Q4) — `메모리 압박 <수준> · swap <사용> / <전체> GB · 압축 <크기> GB · 물리 <크기> GB · 코어 N개`.
+ * 「사용 / 전체 메모리」 는 macOS 에서 늘 꽉 차 보여 뺐다(00-analysis C6). 못 읽은 지표는 그 조각만 `—`(R5ⓓ).
+ */
 export function hostLine(snapshot: ResourceSnapshot): string {
-  return `시스템 메모리 ${formatGb(snapshot.host.usedMemory)} / ${formatGb(snapshot.host.totalMemory)} · 코어 ${snapshot.host.cpuCoreCount}개`
+  const { host } = snapshot
+  const gb = (bytes: number): string => (bytes / GB).toFixed(1)
+  const pressure = host.pressure === null ? RESOURCE_EMPTY : PRESSURE_LABEL[host.pressure]
+  const swap = host.swap === null ? RESOURCE_EMPTY : `${gb(host.swap.used)} / ${gb(host.swap.total)} GB`
+  const compressed = host.compressed === null ? RESOURCE_EMPTY : `${gb(host.compressed)} GB`
+  const physical = Number.isFinite(host.physicalMemory) && host.physicalMemory > 0 ? `${Math.round(host.physicalMemory / GB)} GB` : RESOURCE_EMPTY
+  const cores = Number.isFinite(host.cpuCoreCount) && host.cpuCoreCount > 0 ? `${host.cpuCoreCount}개` : RESOURCE_EMPTY
+  return `메모리 압박 ${pressure} · swap ${swap} · 압축 ${compressed} · 물리 ${physical} · 코어 ${cores}`
 }
 
 /** herdr 행 이름·툴팁 (F9) — 셸 부모(herdr) 아래에서 pane 행이 가져가지 않은 것이 전부 이 행으로 온다. */

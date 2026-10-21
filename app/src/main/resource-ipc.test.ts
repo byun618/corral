@@ -16,16 +16,17 @@ vi.mock('electron', () => ({
   },
 }))
 
-// 실제 ps 대신 — 몇 번 불렸는지(수집 여부)와 넘긴 env 를 본다.
-const ps = vi.hoisted((): { calls: { file: string; env: unknown }[] } => ({ calls: [] }))
+// 실제 ps 대신 — 몇 번 불렸는지(수집 여부)와 넘긴 env 를 본다. `calls` = ps 만, `all` = 한 주기의 실행 전부(LIFE-676: 도우미·sysctl·vm_stat).
+const ps = vi.hoisted((): { calls: { file: string; env: unknown }[]; all: { file: string; args: string[]; env: unknown }[] } => ({ calls: [], all: [] }))
 vi.mock('node:child_process', () => ({
-  execFile: (file: string, _args: string[], options: { env: unknown }, callback: (error: Error | null, result: { stdout: string; stderr: string }) => void) => {
-    ps.calls.push({ file, env: options.env })
-    callback(null, { stdout: '  1 0 0.0 10\n', stderr: '' })
+  execFile: (file: string, args: string[], options: { env: unknown }, callback: (error: Error | null, result: { stdout: string; stderr: string }) => void) => {
+    ps.all.push({ file, args, env: options.env })
+    if (file === 'ps') ps.calls.push({ file, env: options.env })
+    callback(null, { stdout: file === 'ps' ? '  1 0 0.0\n' : file === '/x/corral-footprint' ? '1 10\n' : '', stderr: '' })
   },
 }))
 
-const { closeResourcePane, closeRouteOf, paneSources, readPsWith, registerResourceIpc } = await import('./resource-ipc.js')
+const { closeResourcePane, closeRouteOf, footprintHelperPath, paneSources, readFootprintWith, readHostWith, readPsWith, registerResourceIpc } = await import('./resource-ipc.js')
 const { buildAgentRows } = await import('../shared/sidebar-agents.js')
 type Deps = Parameters<typeof closeResourcePane>[0]['deps']
 
@@ -67,6 +68,7 @@ function deps(patch: Partial<Deps> = {}): Deps & { closed: string[]; probed: str
     },
     confirmRunning: () => true,
     appPids: () => [],
+    footprintHelper: '/x/corral-footprint',
     log: () => {},
     ...patch,
     closed,
@@ -150,7 +152,79 @@ describe('readPsWith — R1ⓓ 가 실제 실행에 닿는다', () => {
   it('execFile 에 LC_ALL=C env 를 그대로 넘긴다', async () => {
     const exec = vi.fn(async () => ({ stdout: 'OUT' }))
     expect(await readPsWith({ exec, env: { PATH: '/bin', LC_ALL: 'de_DE.UTF-8' } })).toBe('OUT')
-    expect(exec).toHaveBeenCalledWith('ps', ['-axo', 'pid=,ppid=,pcpu=,rss='], { timeout: 5000, env: { PATH: '/bin', LC_ALL: 'C' } })
+    expect(exec).toHaveBeenCalledWith('ps', ['-axo', 'pid=,ppid=,pcpu='], { timeout: 5000, env: { PATH: '/bin', LC_ALL: 'C' } })
+  })
+})
+
+describe('footprintHelperPath — LIFE-676 R8ⓑ 설치본·개발 실행 둘 다', () => {
+  it('설치본 = Resources/helper, 개발 실행 = app/build/helper', () => {
+    expect(footprintHelperPath({ packaged: true, resourcesPath: '/A/corral.app/Contents/Resources', mainDir: '/ignored' })).toBe('/A/corral.app/Contents/Resources/helper/corral-footprint')
+    expect(footprintHelperPath({ packaged: false, resourcesPath: '/electron/Resources', mainDir: '/repo/app/out/main' })).toBe('/repo/app/build/helper/corral-footprint')
+  })
+})
+
+describe('readFootprintWith — LIFE-676 R1ⓒ 도우미 실패는 사유 있는 측정 불가 (던지지 않는다)', () => {
+  const failing = (error: unknown) => vi.fn(async (): Promise<{ stdout: string }> => {
+    throw error
+  })
+  const withProps = (message: string, props: Record<string, unknown>): Error => Object.assign(new Error(message), props)
+  it('정상 — 표', async () => {
+    const exec = vi.fn(async () => ({ stdout: '10 2048\n11 ERR 1\n' }))
+    expect(await readFootprintWith({ exec, helper: '/h' })).toEqual({ kind: 'ok', bytes: new Map([[10, 2048]]), errors: new Map([[11, 1]]) })
+    expect(exec).toHaveBeenCalledWith('/h', [], { timeout: 2000, maxBuffer: 16 * 1024 * 1024 })
+  })
+  it('없음 · 실행 권한 없음 · 시한 초과 · 비정상 종료 · 신호 · 그 밖', async () => {
+    const cases: [unknown, string][] = [
+      [withProps('spawn /h ENOENT', { code: 'ENOENT' }), 'footprint 도우미가 없다 (/h)'],
+      [withProps('spawn /h EACCES', { code: 'EACCES' }), 'footprint 도우미를 실행할 수 없다 (/h)'],
+      [withProps('Command failed', { killed: true, signal: 'SIGTERM' }), 'footprint 도우미 시한 초과 (2000 ms)'],
+      [withProps('Command failed', { code: 2, killed: false }), 'footprint 도우미 비정상 종료 (코드 2)'],
+      [withProps('Command failed', { killed: false, signal: 'SIGSEGV' }), 'footprint 도우미 비정상 종료 (SIGSEGV)'],
+      [new Error('boom'), 'footprint 도우미 실행 실패 (boom)'],
+      ['weird', 'footprint 도우미 실행 실패 (weird)'],
+    ]
+    for (const [error, reason] of cases) expect(await readFootprintWith({ exec: failing(error), helper: '/h' })).toEqual({ kind: 'unavailable', reason })
+  })
+  it('출력 이상·빈 출력도 측정 불가', async () => {
+    expect(await readFootprintWith({ exec: vi.fn(async () => ({ stdout: '' })), helper: '/h' })).toEqual({ kind: 'unavailable', reason: 'footprint 표가 비었다' })
+    expect(await readFootprintWith({ exec: vi.fn(async () => ({ stdout: 'x y\n' })), helper: '/h' })).toEqual({ kind: 'unavailable', reason: 'footprint 표 이상 (1줄)' })
+  })
+})
+
+describe('readHostWith — LIFE-676 R5ⓑⓓ sysctl·vm_stat, 못 읽은 지표만 null', () => {
+  const outputs: Record<string, string> = {
+    'sysctl vm.swapusage': 'vm.swapusage: total = 24576.00M  used = 23332.38M  free = 1243.62M  (encrypted)\n',
+    'sysctl -n kern.memorystatus_vm_pressure_level': '2\n',
+    vm_stat: 'Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages occupied by compressor:            515164.\n',
+  }
+  it('세 출처를 읽는다 — LC_ALL=C env 를 넘긴다 (C1-2)', async () => {
+    const exec = vi.fn<(file: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string }>>(async (file, args) => ({ stdout: outputs[[file, ...args].join(' ')] ?? '' }))
+    const host = await readHostWith({ exec, env: { PATH: '/bin', LC_ALL: 'de_DE.UTF-8', LANG: 'de_DE.UTF-8' }, physicalMemory: 24 * 1024 ** 3, cpuCoreCount: 18 })
+    expect(exec).toHaveBeenCalledTimes(3)
+    // C3-4 — 시한·버퍼·env 를 통째로 고정한다.
+    const options = { timeout: 2000, maxBuffer: 1024 * 1024, env: { PATH: '/bin', LC_ALL: 'C', LANG: 'de_DE.UTF-8' } }
+    expect(exec).toHaveBeenCalledWith('sysctl', ['vm.swapusage'], options)
+    expect(exec).toHaveBeenCalledWith('sysctl', ['-n', 'kern.memorystatus_vm_pressure_level'], options)
+    expect(exec).toHaveBeenCalledWith('vm_stat', [], options)
+    expect(host).toEqual({
+      physicalMemory: 24 * 1024 ** 3, cpuCoreCount: 18, pressure: 'warning', swap: { total: 24576 * 1024 ** 2, used: 23332.38 * 1024 ** 2 }, compressed: 515164 * 16384,
+    })
+  })
+  it('하나가 실패하면 그 지표만 null', async () => {
+    const exec = vi.fn(async (file: string, args: string[]) => {
+      if (file === 'vm_stat') throw new Error('없음')
+      return { stdout: outputs[[file, ...args].join(' ')] ?? '' }
+    })
+    const host = await readHostWith({ exec, env: {}, physicalMemory: 1, cpuCoreCount: 2 })
+    expect(host.compressed).toBeNull()
+    expect(host.pressure).toBe('warning')
+    expect(host.swap).not.toBeNull()
+  })
+  it('전부 실패해도 던지지 않는다', async () => {
+    const exec = vi.fn(async (): Promise<{ stdout: string }> => {
+      throw new Error('없음')
+    })
+    expect(await readHostWith({ exec, env: {}, physicalMemory: 1, cpuCoreCount: 2 })).toEqual({ physicalMemory: 1, cpuCoreCount: 2, pressure: null, swap: null, compressed: null })
   })
 })
 
@@ -225,6 +299,7 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     sent.length = 0
     windowEvents.clear()
     ps.calls.length = 0
+    ps.all.length = 0
     Object.assign(win, { destroyed: false, visible: false, minimized: false })
   })
   afterEach(() => {
@@ -278,6 +353,12 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     await settle()
     expect(ps.calls).toHaveLength(1)
     expect(ps.calls[0]).toMatchObject({ file: 'ps', env: { LC_ALL: 'C' } })
+    // LIFE-676 — 한 주기 = ps · 도우미 · sysctl 둘 · vm_stat.
+    expect(ps.all.map((call) => [call.file, ...call.args].join(' ')).sort()).toEqual(
+      ['/x/corral-footprint', 'ps -axo pid=,ppid=,pcpu=', 'sysctl -n kern.memorystatus_vm_pressure_level', 'sysctl vm.swapusage', 'vm_stat'].sort(),
+    )
+    // C1-2 — 시스템 지표도 LC_ALL=C 로 부른다(실제 배선).
+    for (const call of ps.all.filter((item) => item.file === 'sysctl' || item.file === 'vm_stat')) expect(call.env).toMatchObject({ LC_ALL: 'C' })
   })
   it.each([
     ['숨김', { visible: false }],
@@ -288,6 +369,8 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     register()
     await settle()
     expect(ps.calls).toHaveLength(0)
+    // C1-5 — 도우미·sysctl·vm_stat 도 0회(외부 실행 전부).
+    expect(ps.all).toHaveLength(0)
   })
   it.each(['show', 'restore'])('창 %s 이벤트 = 곧바로 한 번 더 수집 (F10 배선)', async (name) => {
     win.visible = true

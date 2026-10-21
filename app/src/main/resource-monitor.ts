@@ -9,8 +9,10 @@
 //   다시 물어도 안 맞으면(또는 처음부터 안 맞으면) `PROBE_RETRY_MS` 뒤에만 다시 묻는다 — pane 당 주기당 1회 이하, 끝없는 재질의 없음.
 //   ppid 가 바뀐 pid 를 herdr 가 그대로 주면 처음 본 부모를 유지해 그 pane 은 측정 불가(재사용 의심)로 둔다.
 // CPU = `ps %cpu` 그대로(누적 시간 차분 아님) — RESULT 결정 1.
-import type { ResourceMeasure, ResourcePaneRow, ResourceSnapshot, ResourceStats } from '../shared/resource.js'
-import { attribute, parsePsTable, totalOf, type PsTable } from './resource-collector.js'
+// 메모리(LIFE-676) = ps 다음에 도우미 footprint 표 — ps 뒤에 돌아야 「ps 에 있고 표에 없는 pid = 그 사이 끝남」 이 성립한다(collector 머리 주석).
+// 시스템 지표(`readHost`)는 ps 와 나란히 돈다. 숨김 주기에는 셋 다 돌지 않는다.
+import type { ResourceHost, ResourceMeasure, ResourcePaneRow, ResourceSnapshot, ResourceStats } from '../shared/resource.js'
+import { attribute, parsePsTable, totalOf, type FootprintTable, type PsTable } from './resource-collector.js'
 
 export const RESOURCE_INTERVAL_MS = 2000
 export const PROBE_RETRY_MS = 30_000
@@ -23,6 +25,8 @@ export type ResourceMonitorDeps = {
   intervalMs: number
   /** `LC_ALL=C ps …` 의 stdout. 실패하면 throw. */
   readPs: () => Promise<string>
+  /** 도우미 footprint 표. 던지지 않는다 — 실패는 `unavailable`(사유). */
+  readFootprint: () => Promise<FootprintTable>
   panes: () => ResourcePaneSource[]
   /** herdr 에 그 pane 의 셸 pid 를 묻는다. 모르면 null. */
   probeShellPid: (paneId: string) => Promise<number | null>
@@ -30,7 +34,8 @@ export type ResourceMonitorDeps = {
   appRoots: () => number[]
   /** 창이 보이고 최소화되지 않았는가. */
   visible: () => boolean
-  host: () => ResourceSnapshot['host']
+  /** 시스템 줄 지표. 던지지 않는다 — 못 읽은 지표는 null. */
+  readHost: () => Promise<ResourceHost>
   emit: (snapshot: ResourceSnapshot) => void
   now: () => number
   log: (tag: string, data: Record<string, unknown>) => void
@@ -53,12 +58,13 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
 } {
   const intervalMs = Math.max(RESOURCE_INTERVAL_MS, deps.intervalMs)
   const roots = new Map<string, CachedRoot>()
-  const stats: ResourceStats = { intervalMs, collections: 0, skippedHidden: 0, processInfoRequests: 0, recentDurationsMs: [] }
+  const stats: ResourceStats = { intervalMs, collections: 0, skippedHidden: 0, processInfoRequests: 0, footprintRuns: 0, hostReads: 0, recentDurationsMs: [] }
   let latest: ResourceSnapshot | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
   let running = false
   let inFlight = false
   let wakePending = false
+  let lastFootprintReason: string | null = null
 
   const probe = async (paneId: string): Promise<number | null> => {
     stats.processInfoRequests += 1
@@ -121,6 +127,8 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
     const panes = deps.panes()
     const asked = new Set<string>()
     await refreshRoots({ panes, asked })
+    stats.hostReads += 1
+    const hostRead = deps.readHost()
     let stdout: string | null = null
     try {
       stdout = await deps.readPs()
@@ -128,6 +136,16 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
       deps.log('resource.ps_failed', { error: String(error) })
     }
     const table = stdout === null ? null : parsePsTable(stdout)
+    const tableOk = table !== null && table.malformed === 0
+    if (tableOk) stats.footprintRuns += 1
+    const footprint: FootprintTable = tableOk ? await deps.readFootprint() : { kind: 'unavailable', reason: 'ps 표가 없다' }
+    // 도우미를 실제로 돌린 주기에서, 사유가 바뀔 때만 남긴다 — 도우미가 없으면 2초마다 같은 줄이 쌓인다.
+    // ps 가 실패한 주기는 도우미 결과가 아니므로 기억을 바꾸지 않는다(C1-7(a) — 그 뒤 첫 정상 주기에 'ok' 가 잘못 남지 않게).
+    if (tableOk) {
+      const footprintReason = footprint.kind === 'unavailable' ? footprint.reason : null
+      if (footprintReason !== lastFootprintReason) deps.log('resource.footprint', { reason: footprintReason ?? 'ok' })
+      lastFootprintReason = footprintReason
+    }
     // 표가 없거나 이상하면 대조하지 않는다 — 깨진 표로 캐시를 지우면 멀쩡한 pane 을 다시 묻게 된다.
     if (table !== null && table.malformed === 0) await verifyRoots({ panes, table, asked })
     const unavailable: ResourceMeasure = { state: 'unavailable', reason: 'ps 실행 실패' }
@@ -135,6 +153,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
       ? { panes: new Map(panes.map((pane) => [pane.paneId, unavailable])), herdr: unavailable, app: unavailable }
       : attribute({
           table,
+          footprint,
           panes: panes.map((pane) => {
             const cached = roots.get(pane.paneId)
             return { paneId: pane.paneId, shellPid: cached?.shellPid ?? null, expectedParent: cached?.parentPid ?? null }
@@ -143,6 +162,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
         })
     const rows: ResourcePaneRow[] = panes.map((pane) => ({ ...pane, measure: attribution.panes.get(pane.paneId) ?? unavailable }))
     const { total, unavailableCount } = totalOf([attribution.app, attribution.herdr, ...rows.map((row) => row.measure)])
+    const host = await hostRead
     stats.collections += 1
     stats.recentDurationsMs = [...stats.recentDurationsMs, deps.now() - startedAt].slice(-DURATION_SAMPLES)
     latest = {
@@ -152,7 +172,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
       app: attribution.app,
       herdr: attribution.herdr,
       panes: rows,
-      host: deps.host(),
+      host,
       stats: { ...stats, recentDurationsMs: [...stats.recentDurationsMs] },
     }
     deps.emit(latest)

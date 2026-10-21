@@ -1,20 +1,27 @@
-// Resource Manager 수집기의 순수 층 (LIFE-637 R1) — `ps` 출력 한 벌과 pane 루트 표만 받아 귀속을 낸다. 프로세스·herdr 를 모른다.
+// Resource Manager 수집기의 순수 층 (LIFE-637 R1 · LIFE-676 R1) — `ps` 출력 한 벌, footprint 표 한 벌, pane 루트 표만 받아 귀속을 낸다.
+// 프로세스·herdr 를 모른다. ps = pid·ppid·%cpu(나무와 CPU), footprint 표(도우미 `corral-footprint`) = 메모리. RSS 는 읽지 않는다.
 //
 // 귀속 순서: ① pane(루트 = herdr 가 준 셸 pid, 자손 전체) ② herdr 서버(= pane 셸들의 부모, pane 몫을 뺀 자손) ③ 앱(main pid 와
 // Electron 역할 pid, 앞 둘의 몫을 뺀 자손). 한 pid 는 먼저 잡은 곳에만 센다(R1ⓑ).
 // 표가 이상하면(숫자 아닌 칸·로캘 콤마·같은 pid 두 줄) 전부 `측정 불가` — 어느 pane 의 줄이 깨졌는지 알 수 없어서다(R1ⓒ).
 // 이중 fork 로 부모가 1 이 된 데몬은 셸 자손에서 빠진다(00-analysis R3) — 「셸 자손 합」이다.
-import type { ResourceMeasure } from '../shared/resource.js'
+// 메모리 규칙(LIFE-676, 게이트 ⓪ Q2): footprint 표가 없거나 이상하면 모든 칸의 메모리가 측정 불가(CPU 는 그대로).
+// 귀속 pid 가 표에 ERR(ESRCH 말고 — setuid-root 자식 `top`·`sudo` 의 EPERM 등)로 나오면 그 pid 만 빼고 읽힌 pid 의 합을
+// 하한(`partial`, 어느 pid 가 왜 빠졌는지)으로 낸다. 읽힌 pid 가 하나도 없이 ERR 만 있으면 그 칸 메모리는 측정 불가(리뷰 r1 C1-1).
+// 표에 없거나 ESRCH 면 그 pid 는 ps 와 도우미 사이에 끝난 것으로 보고 메모리 합에서 뺀다(R1ⓓ — 끝난 프로세스는 메모리를 쥐고 있지 않다).
+// 도우미는 ps 뒤에 돌므로 「표에 없음」 은 보통 그 사이 끝남이다 — 다만 그 사이 pid 가 재사용되면 새 프로세스 몫이 옛 pid 로 들어가고,
+// 도우미 목록이 잘리면(pid 폭증으로 여유 초과) 조용히 덜 센다. 이 둘은 이 규칙으로 가리지 못한다(리뷰 r1 C1-8).
+import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourceUsage } from '../shared/resource.js'
 
-export type PsRow = { pid: number; ppid: number; cpu: number; memory: number }
+export type PsRow = { pid: number; ppid: number; cpu: number }
 export type PsTable = { rows: Map<number, PsRow>; malformed: number }
 
 /**
- * `LC_ALL=C ps -axo pid=,ppid=,pcpu=,rss=` (R1ⓓ) — 로캘이 소수점을 콤마로 쓰면 `%cpu` 를 잘못 읽는다(Orca collector 와 같은 이유).
+ * `LC_ALL=C ps -axo pid=,ppid=,pcpu=` (637 R1ⓓ) — 로캘이 소수점을 콤마로 쓰면 `%cpu` 를 잘못 읽는다(Orca collector 와 같은 이유).
  * 부르는 쪽(`resource-ipc.ts`)이 이 값을 그대로 execFile 에 넘긴다.
  */
 export function psInvocation(env: NodeJS.ProcessEnv): { file: string; args: string[]; env: NodeJS.ProcessEnv } {
-  return { file: 'ps', args: ['-axo', 'pid=,ppid=,pcpu=,rss='], env: { ...env, LC_ALL: 'C' } }
+  return { file: 'ps', args: ['-axo', 'pid=,ppid=,pcpu='], env: { ...env, LC_ALL: 'C' } }
 }
 
 const INTEGER = /^\d+$/
@@ -28,13 +35,13 @@ export function parsePsTable(stdout: string): PsTable {
     const trimmed = line.trim()
     if (trimmed === '') continue
     const cells = trimmed.split(/\s+/)
-    const [pid, ppid, cpu, rss] = cells
-    if (cells.length !== 4 || pid === undefined || ppid === undefined || cpu === undefined || rss === undefined
-      || !INTEGER.test(pid) || !INTEGER.test(ppid) || !DECIMAL.test(cpu) || !INTEGER.test(rss)) {
+    const [pid, ppid, cpu] = cells
+    if (cells.length !== 3 || pid === undefined || ppid === undefined || cpu === undefined
+      || !INTEGER.test(pid) || !INTEGER.test(ppid) || !DECIMAL.test(cpu)) {
       malformed += 1
       continue
     }
-    const row = { pid: Number(pid), ppid: Number(ppid), cpu: Number(cpu), memory: Number(rss) * 1024 }
+    const row = { pid: Number(pid), ppid: Number(ppid), cpu: Number(cpu) }
     if (rows.has(row.pid)) {
       malformed += 1
       continue
@@ -42,6 +49,44 @@ export function parsePsTable(stdout: string): PsTable {
     rows.set(row.pid, row)
   }
   return { rows, malformed }
+}
+
+/** ESRCH — 그 사이 끝난 프로세스. */
+const ESRCH = 3
+
+/**
+ * 도우미 표. `bytes` = 읽은 pid → phys_footprint, `errors` = 못 읽은 pid → errno.
+ * `unavailable` = 도우미 실패(없음·비정상 종료·시한 초과 — 부르는 쪽이 사유를 만든다) 또는 표 이상.
+ */
+export type FootprintTable =
+  | { kind: 'ok'; bytes: ReadonlyMap<number, number>; errors: ReadonlyMap<number, number> }
+  | { kind: 'unavailable'; reason: string }
+
+/**
+ * `<pid> <바이트>` · `<pid> ERR <errno>` 줄. 빈 줄은 건너뛴다.
+ * 모양이 다른 줄·같은 pid 두 줄이 하나라도 있거나 읽은 줄이 0 이면 표 전체가 측정 불가(R1ⓒ) — 어느 pid 의 값이 깨졌는지 알 수 없어서다.
+ */
+export function parseFootprintTable(stdout: string): FootprintTable {
+  const bytes = new Map<number, number>()
+  const errors = new Map<number, number>()
+  let malformed = 0
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed === '') continue
+    const cells = trimmed.split(/\s+/)
+    const [pid, value, errno] = cells
+    const ok = cells.length === 2 && pid !== undefined && value !== undefined && INTEGER.test(pid) && INTEGER.test(value)
+    const err = cells.length === 3 && pid !== undefined && value === 'ERR' && errno !== undefined && INTEGER.test(pid) && INTEGER.test(errno)
+    if ((!ok && !err) || pid === undefined || bytes.has(Number(pid)) || errors.has(Number(pid))) {
+      malformed += 1
+      continue
+    }
+    if (ok) bytes.set(Number(pid), Number(value))
+    else errors.set(Number(pid), Number(errno))
+  }
+  if (malformed > 0) return { kind: 'unavailable', reason: `footprint 표 이상 (${malformed}줄)` }
+  if (bytes.size + errors.size === 0) return { kind: 'unavailable', reason: 'footprint 표가 비었다' }
+  return { kind: 'ok', bytes, errors }
 }
 
 /**
@@ -90,20 +135,49 @@ function walk(input: { rows: ReadonlyMap<number, PsRow>; children: Map<number, n
   return { kind: 'ok', pids: pids.sort((a, b) => a - b) }
 }
 
-function measured(input: { table: PsTable; pids: number[] }): ResourceMeasure {
-  let cpu = 0
-  let memory = 0
-  for (const pid of input.pids) {
-    const row = input.table.rows.get(pid)
-    if (row === undefined) continue
-    cpu += row.cpu
-    memory += row.memory
+function memoryOf(input: { footprint: FootprintTable; pids: readonly number[] }): ResourceMemory {
+  const { footprint } = input
+  switch (footprint.kind) {
+    case 'unavailable':
+      return { state: 'unavailable', reason: footprint.reason }
+    case 'ok': {
+      let bytes = 0
+      let read = 0
+      const failed: { pid: number; errno: number }[] = []
+      for (const pid of input.pids) {
+        const value = footprint.bytes.get(pid)
+        if (value !== undefined) {
+          bytes += value
+          read += 1
+          continue
+        }
+        const errno = footprint.errors.get(pid)
+        if (errno !== undefined && errno !== ESRCH) failed.push({ pid, errno })
+      }
+      if (failed.length === 0) return { state: 'measured', bytes }
+      const reason = excludedReason(failed)
+      return read === 0 ? { state: 'unavailable', reason: `footprint 를 못 읽었다 — ${reason}` } : { state: 'partial', bytes, reason: `${reason} 제외` }
+    }
   }
-  return { state: 'measured', usage: { cpu, memory }, pids: input.pids }
 }
 
-export function attribute(input: { table: PsTable; panes: readonly PaneRoot[]; appRoots: readonly number[] }): Attribution {
-  const { table } = input
+const EPERM = 1
+const LISTED = 3
+
+/** 「pid 7 (권한 없음 — root·다른 사용자로 실행 중), pid 9 (errno 5)」 — 넷 이상이면 셋만 적고 「외 n개」. */
+function excludedReason(failed: readonly { pid: number; errno: number }[]): string {
+  const named = failed.slice(0, LISTED).map(({ pid, errno }) => `pid ${pid} (${errno === EPERM ? '권한 없음 — root·다른 사용자로 실행 중' : `errno ${errno}`})`)
+  return failed.length > LISTED ? `${named.join(', ')} 외 ${failed.length - LISTED}개` : named.join(', ')
+}
+
+function measured(input: { table: PsTable; footprint: FootprintTable; pids: number[] }): ResourceMeasure {
+  let cpu = 0
+  for (const pid of input.pids) cpu += input.table.rows.get(pid)?.cpu ?? 0
+  return { state: 'measured', usage: { cpu, memory: memoryOf({ footprint: input.footprint, pids: input.pids }) }, pids: input.pids }
+}
+
+export function attribute(input: { table: PsTable; footprint: FootprintTable; panes: readonly PaneRoot[]; appRoots: readonly number[] }): Attribution {
+  const { table, footprint } = input
   if (table.malformed > 0) {
     const broken: ResourceMeasure = { state: 'unavailable', reason: `ps 표 이상 (${table.malformed}줄)` }
     return { panes: new Map(input.panes.map((pane) => [pane.paneId, broken])), herdr: broken, app: broken }
@@ -148,7 +222,7 @@ export function attribute(input: { table: PsTable; panes: readonly PaneRoot[]; a
         continue
       case 'ok':
         claim(result.pids)
-        panes.set(pane.paneId, measured({ table, pids: result.pids }))
+        panes.set(pane.paneId, measured({ table, footprint, pids: result.pids }))
         measuredPanes += 1
         if (row.ppid > 1) herdrRoots.add(row.ppid)
         continue
@@ -181,7 +255,7 @@ export function attribute(input: { table: PsTable; panes: readonly PaneRoot[]; a
     if (result.kind === 'cycle') herdr = { state: 'unavailable', reason: 'ppid 순환' }
     else {
       claim(result.pids)
-      herdr = measured({ table, pids: result.pids })
+      herdr = measured({ table, footprint, pids: result.pids })
     }
   }
 
@@ -197,29 +271,57 @@ export function attribute(input: { table: PsTable; panes: readonly PaneRoot[]; a
     if (result.kind === 'cycle') app = { state: 'unavailable', reason: 'ppid 순환' }
     else {
       claim(result.pids)
-      app = measured({ table, pids: result.pids })
+      app = measured({ table, footprint, pids: result.pids })
     }
   }
   return { panes, herdr, app }
 }
 
-/** 측정된 칸만 더한다. 하나도 없으면 null(세그먼트는 `—`). */
-export function totalOf(measures: readonly ResourceMeasure[]): { total: { cpu: number; memory: number } | null; unavailableCount: number } {
-  let cpu = 0
-  let memory = 0
-  let count = 0
+/** 측정된 칸만 더한다. 하나도 없으면 null(세그먼트는 `—`). 메모리는 메모리까지 잰 칸만(`sumUsage`). */
+export function totalOf(measures: readonly ResourceMeasure[]): { total: ResourceUsage | null; unavailableCount: number } {
+  const usages: ResourceUsage[] = []
   let unavailableCount = 0
   for (const measure of measures) {
     switch (measure.state) {
       case 'measured':
-        cpu += measure.usage.cpu
-        memory += measure.usage.memory
-        count += 1
+        usages.push(measure.usage)
         continue
       case 'unavailable':
         unavailableCount += 1
         continue
     }
   }
-  return { total: count === 0 ? null : { cpu, memory }, unavailableCount }
+  return { total: sumUsage(usages), unavailableCount }
+}
+
+/** `sysctl vm.swapusage` — `vm.swapusage: total = 24576.00M  used = 23332.38M  free = …`. 모양이 다르면 null. */
+export function parseSwapUsage(stdout: string): { used: number; total: number } | null {
+  const match = stdout.match(/total = (\d+(?:\.\d+)?)M\s+used = (\d+(?:\.\d+)?)M/)
+  if (match === null || match[1] === undefined || match[2] === undefined) return null
+  return { total: Number(match[1]) * 1024 ** 2, used: Number(match[2]) * 1024 ** 2 }
+}
+
+/** `sysctl -n kern.memorystatus_vm_pressure_level` — 1 정상 · 2 경고 · 4 위험. 그 밖의 값은 null. */
+export function parsePressureLevel(stdout: string): MemoryPressure | null {
+  switch (stdout.trim()) {
+    case '1':
+      return 'normal'
+    case '2':
+      return 'warning'
+    case '4':
+      return 'critical'
+    default:
+      return null
+  }
+}
+
+/**
+ * `vm_stat` — 「Pages occupied by compressor」 × 머리 줄의 페이지 크기. 압축기가 RAM 에서 차지하는 크기다.
+ * `vm.compressor_bytes_used`(압축된 자료 바이트) 가 아니라 이 값을 쓰는 근거는 RESULT 「결정」 (R5ⓔ).
+ */
+export function parseCompressedBytes(stdout: string): number | null {
+  const pageSize = stdout.match(/page size of (\d+) bytes/)?.[1]
+  const occupied = stdout.match(/Pages occupied by compressor:\s+(\d+)\./)?.[1]
+  if (pageSize === undefined || occupied === undefined) return null
+  return Number(pageSize) * Number(occupied)
 }

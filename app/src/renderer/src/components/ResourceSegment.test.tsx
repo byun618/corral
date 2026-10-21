@@ -24,17 +24,18 @@ const GB = 1024 ** 3
 const MB = 1024 ** 2
 const SNAPSHOT: ResourceSnapshot = {
   collectedAt: 1,
-  total: { cpu: 61.6, memory: 2.25 * GB },
+  // CPU 합 360(코어당 원값) · 코어 18 → 세그먼트 `CPU 20%`(LIFE-676 R3ⓐ 예).
+  total: { cpu: 360, memory: { state: 'measured', bytes: 2.25 * GB } },
   unavailableCount: 1,
-  app: { state: 'measured', usage: { cpu: 4, memory: 700 * MB }, pids: [100] },
-  herdr: { state: 'measured', usage: { cpu: 1, memory: 40 * MB }, pids: [200] },
+  app: { state: 'measured', usage: { cpu: 4, memory: { state: 'measured', bytes: 700 * MB } }, pids: [100] },
+  herdr: { state: 'measured', usage: { cpu: 1, memory: { state: 'measured', bytes: 40 * MB } }, pids: [200] },
   panes: [
-    { paneId: 'p-small', tabId: 't1', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'grok 1', agent: 'grok', measure: { state: 'measured', usage: { cpu: 50, memory: 100 * MB }, pids: [300, 301] } },
-    { paneId: 'p-big', tabId: 't2', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'claude 1', agent: 'claude', measure: { state: 'measured', usage: { cpu: 6, memory: 1.2 * GB }, pids: [400] } },
+    { paneId: 'p-small', tabId: 't1', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'grok 1', agent: 'grok', measure: { state: 'measured', usage: { cpu: 50, memory: { state: 'measured', bytes: 100 * MB } }, pids: [300, 301] } },
+    { paneId: 'p-big', tabId: 't2', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'claude 1', agent: 'claude', measure: { state: 'measured', usage: { cpu: 6, memory: { state: 'measured', bytes: 1.2 * GB } }, pids: [400] } },
     { paneId: 'p-gone', tabId: 't3', workspaceId: 'w2', groupKey: '/wt/b', groupLabel: 'main', title: 'zsh', agent: null, measure: { state: 'unavailable', reason: '셸 프로세스(pid 9)가 없다' } },
   ],
-  host: { totalMemory: 24 * GB, usedMemory: 20 * GB, cpuCoreCount: 12 },
-  stats: { intervalMs: 2000, collections: 3, skippedHidden: 0, processInfoRequests: 3, recentDurationsMs: [120] },
+  host: { physicalMemory: 24 * GB, cpuCoreCount: 18, pressure: 'warning', swap: { used: 23.3 * GB, total: 24 * GB }, compressed: 8.4 * GB },
+  stats: { intervalMs: 2000, collections: 3, skippedHidden: 0, processInfoRequests: 3, footprintRuns: 0, hostReads: 0, recentDurationsMs: [120] },
 }
 
 const ROUTES: Record<string, ResourceCloseRoute> = {
@@ -131,10 +132,13 @@ describe('세그먼트 (R3)', () => {
     mount()
     expect(segment().textContent).toBe('CPU — · 메모리 —')
     act(() => push?.(SNAPSHOT))
-    expect(segment().textContent).toBe('CPU 62% · 메모리 2.3 GB')
-    expect(segment().title).toContain('RSS(공유 메모리 중복 포함)')
+    expect(segment().textContent).toBe('CPU 20% · 메모리 2.3 GB')
+    // LIFE-676 R3ⓓ·R4 — 맥 전체 대비 기준과 footprint 정의. RSS 문구는 없다.
+    expect(segment().title).toContain('CPU = corral(앱·herdr·pane)이 쓴 몫, 맥 전체 대비(코어 18개 = 100%) — 맥 전체 사용률이 아니다(다른 앱 제외) · 패널의 앱·herdr·묶음·pane 행은 코어 하나 = 100%')
+    expect(segment().title).toContain('메모리 = 활동 상태 보기 「메모리」 열 값(압축·swap 된 몫 포함)의 합')
+    expect(segment().title).not.toContain('RSS')
     // H7 — 툴팁 첫 줄 = 라벨 전문(말줄임이 나도 호버로 읽는다).
-    expect(segment().title.split('\n')[0]).toBe('CPU 62% · 메모리 2.3 GB')
+    expect(segment().title.split('\n')[0]).toBe('CPU 20% · 메모리 2.3 GB')
     expect(segment().title).toContain('측정 불가 1칸')
   })
 
@@ -142,7 +146,7 @@ describe('세그먼트 (R3)', () => {
     corral.getResourceSnapshot.mockResolvedValueOnce(SNAPSHOT)
     mount()
     await flush()
-    expect(segment().textContent).toBe('CPU 62% · 메모리 2.3 GB')
+    expect(segment().textContent).toBe('CPU 20% · 메모리 2.3 GB')
   })
 
   it('전체가 측정 불가면 —', () => {
@@ -164,7 +168,11 @@ describe('패널 (R4)', () => {
 
   it('worktree 묶음 합계 + pane 행, 앱·herdr 행 따로, 메모리 내림차순', () => {
     const panel = openPanel()
-    expect(panel.querySelector('[data-statusbar-resource-host]')?.textContent).toBe('시스템 메모리 20.0 GB / 24.0 GB · 코어 12개')
+    expect(panel.querySelector('[data-statusbar-resource-host]')?.textContent).toBe('메모리 압박 경고 · swap 23.3 / 24.0 GB · 압축 8.4 GB · 물리 24 GB · 코어 18개')
+    // 게이트 ① 수정 1 — 한 줄 고정(말줄임) 클래스 + 전문 title.
+    const host = panel.querySelector<HTMLElement>('[data-statusbar-resource-host]')
+    expect(host?.classList.contains('statusbar-resource-host')).toBe(true)
+    expect(host?.title).toBe('메모리 압박 경고 · swap 23.3 / 24.0 GB · 압축 8.4 GB · 물리 24 GB · 코어 18개')
     expect(panel.querySelector('[data-statusbar-resource-app] [data-statusbar-resource-memory]')?.textContent).toBe('700 MB')
     expect(panel.querySelector('[data-statusbar-resource-herdr] [data-statusbar-resource-memory]')?.textContent).toBe('40 MB')
     // F9 — herdr 행은 서버 + 목록 밖 pane 이라고 밝힌다.
@@ -180,9 +188,59 @@ describe('패널 (R4)', () => {
     expect(rows[2]?.title).toContain('측정 불가')
   })
 
+  it('LIFE-676 R3 — 패널 머리 = 맥 전체 대비, 앱·herdr·묶음·pane 행 = 코어당, 칸마다 기준 툴팁', () => {
+    const panel = openPanel()
+    const title = panel.querySelector<HTMLElement>('.statusbar-resource-head .statusbar-resource-title')
+    expect(title?.textContent).toBe('CPU 20% · 메모리 2.3 GB')
+    expect(title?.title).toContain('CPU = corral(앱·herdr·pane)이 쓴 몫, 맥 전체 대비(코어 18개 = 100%) — 맥 전체 사용률이 아니다(다른 앱 제외) · 패널의 앱·herdr·묶음·pane 행은 코어 하나 = 100%')
+    const cpu = (selector: string): HTMLElement | null => panel.querySelector<HTMLElement>(`${selector} [data-statusbar-resource-cpu]`)
+    expect(cpu('[data-statusbar-resource-app]')?.textContent).toBe('4%')
+    expect(cpu('[data-statusbar-resource-herdr]')?.textContent).toBe('1%')
+    expect(cpu('[data-statusbar-resource-group="/wt/a"] .statusbar-resource-group-head')?.textContent).toBe('56%')
+    expect(cpu('[data-statusbar-resource-row="p-small"]')?.textContent).toBe('50%')
+    // C1-4 — 사유가 없는 칸에만 CPU 칸 title. 측정 불가 행(p-gone)·사유 있는 묶음 머리는 CPU 칸 title 없이 행 툴팁에 사유 + CPU 기준.
+    const plain = ['[data-statusbar-resource-app]', '[data-statusbar-resource-herdr]', '[data-statusbar-resource-group="/wt/a"] .statusbar-resource-group-head', '[data-statusbar-resource-row="p-small"]', '[data-statusbar-resource-row="p-big"]']
+    for (const selector of plain) expect(cpu(selector)?.title).toBe('CPU — 코어 하나 = 100%')
+    for (const selector of ['[data-statusbar-resource-row="p-gone"]', '[data-statusbar-resource-group="/wt/b"] .statusbar-resource-group-head']) {
+      expect(cpu(selector)?.hasAttribute('title')).toBe(false)
+    }
+    expect(panel.querySelector<HTMLElement>('[data-statusbar-resource-row="p-gone"]')?.title).toBe('측정 불가 — 셸 프로세스(pid 9)가 없다\nCPU — 코어 하나 = 100%')
+    expect(panel.querySelector<HTMLElement>('[data-statusbar-resource-group="/wt/b"] .statusbar-resource-group-head')?.title).toBe('측정 불가 1개는 합에서 빠졌다\nCPU — 코어 하나 = 100%')
+  })
+
+  it('LIFE-676 Q2 — 메모리만 못 잰 행은 CPU 숫자 + 메모리 측정 불가, 사유는 행 툴팁', () => {
+    mount()
+    act(() => push?.({
+      ...SNAPSHOT,
+      panes: SNAPSHOT.panes.map((pane) => (pane.paneId === 'p-small' ? { ...pane, measure: { state: 'measured', usage: { cpu: 50, memory: { state: 'unavailable', reason: 'pid 301 의 footprint 를 못 읽었다 (errno 1)' } }, pids: [300, 301] } } : pane)),
+    }))
+    click(segment())
+    const row = q<HTMLElement>('[data-statusbar-resource-row="p-small"]')
+    expect(row?.querySelector('[data-statusbar-resource-cpu]')?.textContent).toBe('50%')
+    expect(row?.querySelector('[data-statusbar-resource-memory]')?.textContent).toBe('측정 불가')
+    expect(row?.title).toBe('메모리 측정 불가 — pid 301 의 footprint 를 못 읽었다 (errno 1)\nCPU — 코어 하나 = 100%')
+    expect(row?.querySelector('[data-statusbar-resource-cpu]')?.hasAttribute('title')).toBe(false)
+  })
+
+  it('C1-1 — 하한 행·묶음·세그먼트에 `≥` 표식, 사유는 행 툴팁', () => {
+    mount()
+    act(() => push?.({
+      ...SNAPSHOT,
+      total: { cpu: 360, memory: { state: 'partial', bytes: 2.25 * GB, reason: '일부 pid 를 뺀 칸 1개' } },
+      panes: SNAPSHOT.panes.map((pane) => (pane.paneId === 'p-small' ? { ...pane, measure: { state: 'measured', usage: { cpu: 50, memory: { state: 'partial', bytes: 100 * MB, reason: 'pid 301 (권한 없음 — root·다른 사용자로 실행 중) 제외' } }, pids: [300, 301] } } : pane)),
+    }))
+    expect(segment().textContent).toBe('CPU 20% · 메모리 ≥ 2.3 GB')
+    expect(segment().title).toContain('메모리 하한 — 일부 pid 를 뺀 칸 1개')
+    click(segment())
+    const row = q<HTMLElement>('[data-statusbar-resource-row="p-small"]')
+    expect(row?.querySelector('[data-statusbar-resource-memory]')?.textContent).toBe('≥ 100 MB')
+    expect(row?.title).toBe('메모리 하한 — pid 301 (권한 없음 — root·다른 사용자로 실행 중) 제외\nCPU — 코어 하나 = 100%')
+    expect(q('[data-statusbar-resource-group="/wt/a"] .statusbar-resource-group-head [data-statusbar-resource-memory]')?.textContent).toBe('≥ 1.3 GB')
+  })
+
   it('열린 동안 푸시로 갱신된다', () => {
     const panel = openPanel()
-    act(() => push?.({ ...SNAPSHOT, app: { state: 'measured', usage: { cpu: 4, memory: 800 * MB }, pids: [100] } }))
+    act(() => push?.({ ...SNAPSHOT, app: { state: 'measured', usage: { cpu: 4, memory: { state: 'measured', bytes: 800 * MB } }, pids: [100] } }))
     expect(panel.querySelector('[data-statusbar-resource-app] [data-statusbar-resource-memory]')?.textContent).toBe('800 MB')
   })
 
@@ -611,11 +669,11 @@ const rowEl = (paneId: string): HTMLElement => {
 }
 const withMemory = (input: { paneId: string; memory: number }): ResourceSnapshot => ({
   ...SNAPSHOT,
-  panes: SNAPSHOT.panes.map((pane) => (pane.paneId === input.paneId ? { ...pane, measure: { state: 'measured', usage: { cpu: 1, memory: input.memory }, pids: [1] } } : pane)),
+  panes: SNAPSHOT.panes.map((pane) => (pane.paneId === input.paneId ? { ...pane, measure: { state: 'measured', usage: { cpu: 1, memory: { state: 'measured', bytes: input.memory } }, pids: [1] } } : pane)),
 })
 /** /wt/a 묶음에 새로 생긴 pane. */
 const newPane = (memory: number): ResourcePaneRow => ({
-  paneId: 'p-new', tabId: 't4', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'codex 1', agent: 'codex', measure: { state: 'measured', usage: { cpu: 1, memory }, pids: [9] },
+  paneId: 'p-new', tabId: 't4', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'codex 1', agent: 'codex', measure: { state: 'measured', usage: { cpu: 1, memory: { state: 'measured', bytes: memory } }, pids: [9] },
 })
 function openR3(): void {
   mount()
@@ -792,9 +850,9 @@ describe('판별력 보강 (J3)', () => {
     corral.getResourceSnapshot.mockReturnValueOnce(first.promise)
     mount()
     act(() => push?.(SNAPSHOT))
-    first.resolve({ ...SNAPSHOT, total: { cpu: 1, memory: 1 * GB } })
+    first.resolve({ ...SNAPSHOT, total: { cpu: 1, memory: { state: 'measured', bytes: 1 * GB } } })
     await flush()
-    expect(segment().textContent).toBe('CPU 62% · 메모리 2.3 GB')
+    expect(segment().textContent).toBe('CPU 20% · 메모리 2.3 GB')
   })
   it('열린 패널은 세그먼트 버튼으로 닫힌다 — 버튼 누름이 바깥 클릭이 되어 다시 열리지 않는다 (Y11)', () => {
     openR3()

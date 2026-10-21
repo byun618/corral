@@ -8,13 +8,14 @@
 //     렌더러가 길을 정한 뒤(확인 창 체류 중 등) 옆 pane 이 사라져 대상이 그 탭의 마지막 pane 이 됐으면 닫지 않고 `route-changed`(J2).
 import { execFile } from 'node:child_process'
 import os from 'node:os'
+import path from 'node:path'
 import { promisify } from 'node:util'
 import { app, ipcMain } from 'electron'
 import type { CloseTabOutcome } from './close-tabs.js'
 import { closeTabsGated } from './close-tabs.js'
-import { psInvocation } from './resource-collector.js'
+import { parseCompressedBytes, parseFootprintTable, parsePressureLevel, parseSwapUsage, psInvocation, type FootprintTable } from './resource-collector.js'
 import { createResourceMonitor, RESOURCE_INTERVAL_MS, type ResourcePaneSource } from './resource-monitor.js'
-import type { ResourceCloseResult, ResourceCloseRoute, ResourceSnapshot } from '../shared/resource.js'
+import type { ResourceCloseResult, ResourceCloseRoute, ResourceHost, ResourceSnapshot } from '../shared/resource.js'
 import type { AppState, RunningPane } from '../shared/types.js'
 import { normalizeDecorativeTitle } from '../shared/decorative-title.js'
 import { paneSessionTitle } from '../shared/session-title.js'
@@ -47,6 +48,8 @@ export type ResourceIpcDeps = {
   confirmRunning: () => boolean
   /** main 밖 Electron 역할 pid(renderer·GPU·utility) — `diagnostics memory` 와 같은 출처 `app.getAppMetrics`. */
   appPids: () => number[]
+  /** 메모리 도우미 실행 파일 경로(`footprintHelperPath`). */
+  footprintHelper: string
   log: (tag: string, data: Record<string, unknown>) => void
 }
 
@@ -56,6 +59,66 @@ type ExecPs = (file: string, args: string[], options: { timeout: number; env: No
 export async function readPsWith(input: { exec: ExecPs; env: NodeJS.ProcessEnv }): Promise<string> {
   const ps = psInvocation(input.env)
   return (await input.exec(ps.file, ps.args, { timeout: 5000, env: ps.env })).stdout
+}
+
+/**
+ * 메모리 도우미 자리 (LIFE-676 R8) — 설치본은 `Contents/Resources/helper/corral-footprint`(electron-builder `extraResources`),
+ * 개발 실행은 main 번들(`app/out/main`) 기준 `app/build/helper/corral-footprint` — `npm run dev`(predev)·`npm run build` 가
+ * `scripts/build-footprint.mjs` 로 빌드한다. `app.getAppPath()` 가 아니라 번들 자리로 찾는 것은 `electron out/main/index.js` 로 띄운
+ * 격리 실행도 같은 자리를 보게 하려는 것이다.
+ */
+export function footprintHelperPath(input: { packaged: boolean; resourcesPath: string; mainDir: string }): string {
+  return input.packaged ? path.join(input.resourcesPath, 'helper', 'corral-footprint') : path.resolve(input.mainDir, '..', '..', 'build', 'helper', 'corral-footprint')
+}
+
+export const FOOTPRINT_TIMEOUT_MS = 2000
+
+type ExecFile = (file: string, args: string[], options: { timeout: number; maxBuffer: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string }>
+
+/** execFile 오류 → 사람이 읽는 사유. 없음·시한 초과·비정상 종료를 가른다(R1ⓒ). */
+function helperFailure(input: { error: unknown; helper: string }): string {
+  const { error, helper } = input
+  if (!(error instanceof Error)) return `footprint 도우미 실행 실패 (${String(error)})`
+  const code = 'code' in error ? error.code : undefined
+  const killed = 'killed' in error ? error.killed : undefined
+  const signal = 'signal' in error ? error.signal : undefined
+  if (code === 'ENOENT') return `footprint 도우미가 없다 (${helper})`
+  if (code === 'EACCES') return `footprint 도우미를 실행할 수 없다 (${helper})`
+  if (killed === true) return `footprint 도우미 시한 초과 (${FOOTPRINT_TIMEOUT_MS} ms)`
+  if (typeof code === 'number') return `footprint 도우미 비정상 종료 (코드 ${code})`
+  if (typeof signal === 'string') return `footprint 도우미 비정상 종료 (${signal})`
+  return `footprint 도우미 실행 실패 (${error.message})`
+}
+
+/** 도우미를 부르고 표로 읽는다. 던지지 않는다 — 실패는 `unavailable`(사유). */
+export async function readFootprintWith(input: { exec: ExecFile; helper: string }): Promise<FootprintTable> {
+  try {
+    const { stdout } = await input.exec(input.helper, [], { timeout: FOOTPRINT_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 })
+    return parseFootprintTable(stdout)
+  } catch (error) {
+    return { kind: 'unavailable', reason: helperFailure({ error, helper: input.helper }) }
+  }
+}
+
+/**
+ * 시스템 줄 지표(게이트 ⓪ Q4) — `sysctl`·`vm_stat` 를 나란히. 던지지 않는다 — 못 읽은 지표는 null.
+ * `LC_ALL=C` — 로캘이 소수점을 콤마로 쓰면 `vm.swapusage` 가 `0,00M` 이 되어 못 읽는다(ps 와 같은 이유, 리뷰 r1 C1-2).
+ */
+export async function readHostWith(input: { exec: ExecFile; env: NodeJS.ProcessEnv; physicalMemory: number; cpuCoreCount: number }): Promise<ResourceHost> {
+  const options = { timeout: 2000, maxBuffer: 1024 * 1024, env: { ...input.env, LC_ALL: 'C' } }
+  const read = (file: string, args: string[]): Promise<string | null> => input.exec(file, args, options).then((out) => out.stdout, () => null)
+  const [swap, pressure, vmStat] = await Promise.all([
+    read('sysctl', ['vm.swapusage']),
+    read('sysctl', ['-n', 'kern.memorystatus_vm_pressure_level']),
+    read('vm_stat', []),
+  ])
+  return {
+    physicalMemory: input.physicalMemory,
+    cpuCoreCount: input.cpuCoreCount,
+    pressure: pressure === null ? null : parsePressureLevel(pressure),
+    swap: swap === null ? null : parseSwapUsage(swap),
+    compressed: vmStat === null ? null : parseCompressedBytes(vmStat),
+  }
 }
 
 /**
@@ -105,6 +168,7 @@ export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void }
   const monitor = createResourceMonitor({
     intervalMs: RESOURCE_INTERVAL_MS,
     readPs: () => readPsWith({ exec, env: process.env }),
+    readFootprint: () => readFootprintWith({ exec, helper: deps.footprintHelper }),
     panes: () => paneSources(deps.state()),
     probeShellPid: async (paneId) => {
       const socketPath = deps.socketPath()
@@ -115,7 +179,7 @@ export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void }
       const window = deps.window()
       return window !== null && !window.isDestroyed() && window.isVisible() && !window.isMinimized()
     },
-    host: () => ({ totalMemory: os.totalmem(), usedMemory: os.totalmem() - os.freemem(), cpuCoreCount: os.cpus().length }),
+    readHost: () => readHostWith({ exec, env: process.env, physicalMemory: os.totalmem(), cpuCoreCount: os.cpus().length }),
     emit: (snapshot) => {
       const window = deps.window()
       if (window !== null && !window.isDestroyed()) window.webContents.send('corral:resourceSnapshot', snapshot)

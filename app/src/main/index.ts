@@ -13,7 +13,7 @@ import { KeybindingStore } from './keybindings.js'
 import { withRetentionSuppressed } from './close-retention.js'
 import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { closeTabsGated } from './close-tabs.js'
-import { registerResourceIpc } from './resource-ipc.js'
+import { footprintHelperPath, registerResourceIpc } from './resource-ipc.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
 // 렌더러가 소켓을 열 수 없는 것은 권장이 아니라 구조적 강제다: sandbox:true 인 렌더러/preload 의
@@ -2451,6 +2451,7 @@ app.whenReady().then(async () => {
       withRetentionSuppressed({ store: link.store, ids: [paneId], what: 'pane', run: hooks => closePane({ socketPath, paneId, onSent: hooks.onSent }) }),
     confirmRunning: () => settings === null || !settings.get().skipCloseTerminalWithRunningProcessConfirm,
     appPids: () => app.getAppMetrics().map(metric => metric.pid),
+    footprintHelper: footprintHelperPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, mainDir: here }),
     log,
   })
   // 사용량 (LIFE-636) — 배경 틱은 창이 보이고 포커스일 때만. User-Agent 는 corral 자기 이름(D10).

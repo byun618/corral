@@ -100,6 +100,8 @@ if [ "$SKIP_BUILD" = 0 ]; then
   NODE_V="$(node -p 'process.versions.node' 2>/dev/null)" || die "node 가 없다 — dmg 빌드에 필요(--skip-build 면 생략)"
   case "$NODE_V" in 24.*) ;; 22.*) note "node $NODE_V — 로컬 관문 기준은 v24 다(경고만)" ;;
     *) die "node $NODE_V — engines(>=22.12)·로컬 관문(v24) 밖이라 dmg 빌드를 거절한다. v24 를 PATH 앞에 두거나 --skip-build" ;; esac
+  # LIFE-676 — Resource Manager 메모리 도우미(app/helper/corral-footprint.c)를 npm run build 가 clang 으로 빌드한다
+  command -v clang >/dev/null 2>&1 || die "clang 이 없다 — dmg 빌드(메모리 도우미)에 필요. xcode-select --install 또는 --skip-build"
 fi
 # APK 툴체인 전제 — 머지 전에 본다. 태그 가드는 태그가 생긴 뒤 release-apk.sh 가 본다
 if [ "$SKIP_APK" = 0 ]; then

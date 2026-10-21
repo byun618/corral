@@ -25,13 +25,14 @@ if (args.roots) {
 }
 
 const at = new Date().toISOString()
+const uptime = run('uptime', []).trim()
 const rows = new Map()
 const children = new Map()
-for (const line of run('ps', ['-axo', 'pid=,ppid=,pcpu=,comm=']).split('\n')) {
+for (const line of run('ps', ['-axo', 'pid=,ppid=,pcpu=,uid=,comm=']).split('\n')) {
   const cols = line.trim().split(/\s+/)
-  if (cols.length < 4) continue
-  const [pid, ppid, pcpu] = cols.slice(0, 3).map(Number)
-  rows.set(pid, { pid, ppid, pcpu, comm: cols.slice(3).join(' ') })
+  if (cols.length < 5) continue
+  const [pid, ppid, pcpu, uid] = cols.slice(0, 4).map(Number)
+  rows.set(pid, { pid, ppid, pcpu, uid, comm: cols.slice(4).join(' ') })
   if (!children.has(ppid)) children.set(ppid, [])
   children.get(ppid).push(pid)
 }
@@ -66,8 +67,11 @@ for (const [id, root] of Object.entries(roots)) {
     pids,
     cpu: Math.round(pids.reduce((sum, pid) => sum + rows.get(pid).pcpu, 0) * 10) / 10,
     memoryBytes: pids.reduce((sum, pid) => sum + (topMem.get(pid) ?? 0), 0),
+    // euid 가 이 사용자인 pid 만의 합 — setuid-root 자식(top·sudo)은 제품 도우미가 못 읽으므로 하한 대조는 이 값과(r2 C2-6⑤).
+    readablePids: pids.filter((pid) => rows.get(pid).uid === process.getuid()),
+    memoryBytesReadable: pids.filter((pid) => rows.get(pid).uid === process.getuid()).reduce((sum, pid) => sum + (topMem.get(pid) ?? 0), 0),
     missingInTop,
-    procs: pids.map((pid) => `${pid}:${rows.get(pid).comm}:${rows.get(pid).pcpu}:${topMem.get(pid) ?? '?'}`),
+    procs: pids.map((pid) => `${pid}:${rows.get(pid).comm}:${rows.get(pid).pcpu}:${topMem.get(pid) ?? '?'}:uid${rows.get(pid).uid}`),
   }
 }
 
@@ -85,4 +89,4 @@ const system = {
   pressure: { 1: 'normal', 2: 'warning', 4: 'critical' }[pressureRaw] ?? null,
   compressedBytes: Number.isFinite(pageSize * occupied) ? pageSize * occupied : null,
 }
-console.log(JSON.stringify({ at, topAt, [args.roots ? 'roots' : 'panes']: result, system }, null, 2))
+console.log(JSON.stringify({ at, topAt, uptime, [args.roots ? 'roots' : 'panes']: result, system }, null, 2))

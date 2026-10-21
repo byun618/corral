@@ -31,7 +31,7 @@ cpm-macro `design-intake` 축소판 — 표면은 `desktop` 하나, `_canon`·`d
 | 핸드오프 원본 | `specs/LIFE-NNN-<슬러그>/design-handoff.md` | 그대로 둔다 (인덱스 역할) |
 
 > 화면이 여러 티켓에 걸쳐 반복 재디자인되는 지점이 오면 그때 `specs/mockups/_canon/desktop/` 같은
-> 캐논 폴더를 새로 판단한다 — 지금은 티켓별 보관으로 충분(2026-09-13 판단, `00-project.md` 참고).
+> 캐논 폴더를 새로 판단한다 — 지금은 티켓별 보관으로 충분(2026-09-13 판단).
 
 ## 절차
 
@@ -45,7 +45,7 @@ cpm-macro `design-intake` 축소판 — 표면은 `desktop` 하나, `_canon`·`d
    - IPC 로 넘어오는 필드 이름이 `app/src/shared/types.ts`(`PaneRow`·`TabRow`·`WorktreeRow` 등)와
      일치하나.
    - **herdr 자체 타입(`PaneInfo`·`AgentStatus` 등)이 UI 카피·라벨에 그대로 노출됐나** → 있으면 어댑터
-     경계 위반, 수정 요청 대상 (`00-project.md` 헤지 #1).
+     경계 위반, 수정 요청 대상 (`00-project.md` 「구현 기반과 유지할 제약」).
    - 서버·클라우드·로그인 전제가 섞였나 → 있으면 수정 요청 대상.
    - 없는 기능을 그렸나(다음 Step 영역이면 표기하고 이번 이관에서는 반영 보류).
    - 어긋난 항목은 `design-brief` 스킬의 "수정 요청 N" 절로 넘겨 다시 붙여넣기 프롬프트를 만든다.

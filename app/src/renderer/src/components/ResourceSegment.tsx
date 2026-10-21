@@ -452,7 +452,7 @@ export function ResourceSegment(): React.JSX.Element {
         <div className="statusbar-resource-note">아직 수집 전</div>
       ) : (
         <>
-          <div className="statusbar-resource-note" data-statusbar-resource-host>{hostLine(snapshot)}</div>
+          <div className="statusbar-resource-note statusbar-resource-host" data-statusbar-resource-host title={hostLine(snapshot)}>{hostLine(snapshot)}</div>
           <div className="statusbar-resource-line" data-statusbar-resource-app title={appTitles.row ?? undefined}>
             <span className="statusbar-resource-name">corral 앱</span>
             <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={appTitles.cpu}>{appCells?.cpu}</span>

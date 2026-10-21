@@ -134,7 +134,7 @@ describe('세그먼트 (R3)', () => {
     act(() => push?.(SNAPSHOT))
     expect(segment().textContent).toBe('CPU 20% · 메모리 2.3 GB')
     // LIFE-676 R3ⓓ·R4 — 맥 전체 대비 기준과 footprint 정의. RSS 문구는 없다.
-    expect(segment().title).toContain('CPU = 맥 전체 대비(코어 18개 = 100%)')
+    expect(segment().title).toContain('CPU = corral(앱·herdr·pane)이 쓴 몫, 맥 전체 대비(코어 18개 = 100%) — 맥 전체 사용률이 아니다(다른 앱 제외) · 패널의 앱·herdr·묶음·pane 행은 코어 하나 = 100%')
     expect(segment().title).toContain('메모리 = 활동 상태 보기 「메모리」 열 값(압축·swap 된 몫 포함)의 합')
     expect(segment().title).not.toContain('RSS')
     // H7 — 툴팁 첫 줄 = 라벨 전문(말줄임이 나도 호버로 읽는다).
@@ -169,6 +169,10 @@ describe('패널 (R4)', () => {
   it('worktree 묶음 합계 + pane 행, 앱·herdr 행 따로, 메모리 내림차순', () => {
     const panel = openPanel()
     expect(panel.querySelector('[data-statusbar-resource-host]')?.textContent).toBe('메모리 압박 경고 · swap 23.3 / 24.0 GB · 압축 8.4 GB · 물리 24 GB · 코어 18개')
+    // 게이트 ① 수정 1 — 한 줄 고정(말줄임) 클래스 + 전문 title.
+    const host = panel.querySelector<HTMLElement>('[data-statusbar-resource-host]')
+    expect(host?.classList.contains('statusbar-resource-host')).toBe(true)
+    expect(host?.title).toBe('메모리 압박 경고 · swap 23.3 / 24.0 GB · 압축 8.4 GB · 물리 24 GB · 코어 18개')
     expect(panel.querySelector('[data-statusbar-resource-app] [data-statusbar-resource-memory]')?.textContent).toBe('700 MB')
     expect(panel.querySelector('[data-statusbar-resource-herdr] [data-statusbar-resource-memory]')?.textContent).toBe('40 MB')
     // F9 — herdr 행은 서버 + 목록 밖 pane 이라고 밝힌다.
@@ -188,7 +192,7 @@ describe('패널 (R4)', () => {
     const panel = openPanel()
     const title = panel.querySelector<HTMLElement>('.statusbar-resource-head .statusbar-resource-title')
     expect(title?.textContent).toBe('CPU 20% · 메모리 2.3 GB')
-    expect(title?.title).toContain('맥 전체 대비(코어 18개 = 100%)')
+    expect(title?.title).toContain('CPU = corral(앱·herdr·pane)이 쓴 몫, 맥 전체 대비(코어 18개 = 100%) — 맥 전체 사용률이 아니다(다른 앱 제외) · 패널의 앱·herdr·묶음·pane 행은 코어 하나 = 100%')
     const cpu = (selector: string): HTMLElement | null => panel.querySelector<HTMLElement>(`${selector} [data-statusbar-resource-cpu]`)
     expect(cpu('[data-statusbar-resource-app]')?.textContent).toBe('4%')
     expect(cpu('[data-statusbar-resource-herdr]')?.textContent).toBe('1%')

@@ -10,7 +10,7 @@
 
 .statusbar-resource-panel {
   position: fixed; right: 8px; bottom: calc(var(--h-statusbar) + 4px); z-index: 30;
-  width: 460px; max-width: calc(100vw - 16px); max-height: min(70vh, 560px); overflow-y: auto;
+  width: 520px; max-width: calc(100vw - 16px); max-height: min(70vh, 560px); overflow-y: auto;
   padding: 6px 0; background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow-menu);
   font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted);
 }
@@ -21,6 +21,8 @@
 .statusbar-resource-sort-btn { padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: none; font: inherit; color: var(--fg-dim); cursor: pointer; }
 .statusbar-resource-sort-btn.is-active { color: var(--fg); border-color: var(--line-strong); }
 .statusbar-resource-note { padding: 4px 10px; color: var(--fg-dim); }
+/* 시스템 줄은 한 줄 고정 — 520px 에서 최장 현실 값(압박 경고 · swap 23.3 / 24.0 GB …)이 안 잘린다. 더 좁아지면 말줄임, 전문은 title */
+.statusbar-resource-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .statusbar-resource-error { padding: 4px 10px; color: var(--fg-notice); }
 
 .statusbar-resource-line {

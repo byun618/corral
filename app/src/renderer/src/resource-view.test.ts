@@ -58,9 +58,10 @@ describe('segmentLabel — R3ⓐ 맥 전체 대비', () => {
 
 describe('segmentTooltip — R3ⓓ·R4 문구', () => {
   const tooltip = segmentTooltip(snapshot({}))
-  it('맥 전체 대비 기준과 행 기준', () => {
-    expect(tooltip).toContain('맥 전체 대비(코어 18개 = 100%)')
-    expect(tooltip).toContain('코어 하나 = 100%')
+  it('corral 사용분 · 맥 전체 대비 기준과 행 기준 — 맥 전체 사용률로 읽히지 않는다(게이트 ① 수정 1)', () => {
+    expect(tooltip.split('\n')).toContain('CPU = corral(앱·herdr·pane)이 쓴 몫, 맥 전체 대비(코어 18개 = 100%) — 맥 전체 사용률이 아니다(다른 앱 제외) · 패널의 앱·herdr·묶음·pane 행은 코어 하나 = 100%')
+    expect(tooltip).toContain('코어 18개 = 100%')
+    expect(tooltip).toContain('맥 전체 사용률이 아니다')
   })
   it('메모리 = 활동 상태 보기 「메모리」 열 값의 합 — RSS 문구 없음, 공유 메모리 중복 주장 없음', () => {
     expect(RESOURCE_MEMORY_NOTE).toBe('메모리 = 활동 상태 보기 「메모리」 열 값(압축·swap 된 몫 포함)의 합')

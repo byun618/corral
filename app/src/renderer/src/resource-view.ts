@@ -93,10 +93,10 @@ export function segmentLabel(snapshot: ResourceSnapshot | null): string {
   return `CPU ${formatMachineCpu({ cpu: total.cpu, cpuCoreCount: snapshot.host.cpuCoreCount })} · 메모리 ${memory}`
 }
 
-/** 세그먼트 CPU 기준 문구(R3ⓓ) — 맥 전체 대비. */
+/** 세그먼트·패널 머리 CPU 기준 문구(R3ⓓ) — corral 사용분을 맥 전체 대비로. 맥 전체 사용률(다른 앱 포함)로 읽히지 않게 적는다(게이트 ① 수정 1). */
 export function machineCpuNote(cpuCoreCount: number): string {
   const scale = Number.isFinite(cpuCoreCount) && cpuCoreCount > 0 ? `코어 ${cpuCoreCount}개 = 100%` : '코어 수를 몰라 표시하지 않는다'
-  return `CPU = 맥 전체 대비(${scale}) · 패널의 앱·herdr·묶음·pane 행은 코어 하나 = 100%`
+  return `CPU = corral(앱·herdr·pane)이 쓴 몫, 맥 전체 대비(${scale}) — 맥 전체 사용률이 아니다(다른 앱 제외) · 패널의 앱·herdr·묶음·pane 행은 코어 하나 = 100%`
 }
 
 /** 첫 줄 = 세그먼트 라벨 전문(H7 — 폭이 모자라 말줄임이 나도 호버로 숫자를 읽는다). */

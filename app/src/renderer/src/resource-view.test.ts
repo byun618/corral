@@ -95,6 +95,9 @@ describe('행 표기 — R3ⓑ 코어당', () => {
   it('1 GB 미만은 MB, 이상은 GB', () => {
     expect(formatMemory(241.5 * MB)).toBe('242 MB')
     expect(formatMemory(1.25 * GB)).toBe('1.3 GB')
+    // C3-4 — 1 GiB 경계: 정확히 1 GiB 부터 GB.
+    expect(formatMemory(GB)).toBe('1.0 GB')
+    expect(formatMemory(GB - MB)).toBe('1023 MB')
   })
   it('측정 불가 칸은 — 와 사유', () => {
     expect(measureCells({ state: 'unavailable', reason: 'ppid 순환' })).toEqual({ cpu: '—', memory: '—', title: '측정 불가 — ppid 순환' })

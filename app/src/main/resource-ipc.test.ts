@@ -201,7 +201,11 @@ describe('readHostWith — LIFE-676 R5ⓑⓓ sysctl·vm_stat, 못 읽은 지표�
     const exec = vi.fn<(file: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string }>>(async (file, args) => ({ stdout: outputs[[file, ...args].join(' ')] ?? '' }))
     const host = await readHostWith({ exec, env: { PATH: '/bin', LC_ALL: 'de_DE.UTF-8', LANG: 'de_DE.UTF-8' }, physicalMemory: 24 * 1024 ** 3, cpuCoreCount: 18 })
     expect(exec).toHaveBeenCalledTimes(3)
-    for (const call of exec.mock.calls) expect(call[2].env).toEqual({ PATH: '/bin', LC_ALL: 'C', LANG: 'de_DE.UTF-8' })
+    // C3-4 — 시한·버퍼·env 를 통째로 고정한다.
+    const options = { timeout: 2000, maxBuffer: 1024 * 1024, env: { PATH: '/bin', LC_ALL: 'C', LANG: 'de_DE.UTF-8' } }
+    expect(exec).toHaveBeenCalledWith('sysctl', ['vm.swapusage'], options)
+    expect(exec).toHaveBeenCalledWith('sysctl', ['-n', 'kern.memorystatus_vm_pressure_level'], options)
+    expect(exec).toHaveBeenCalledWith('vm_stat', [], options)
     expect(host).toEqual({
       physicalMemory: 24 * 1024 ** 3, cpuCoreCount: 18, pressure: 'warning', swap: { total: 24576 * 1024 ** 2, used: 23332.38 * 1024 ** 2 }, compressed: 515164 * 16384,
     })

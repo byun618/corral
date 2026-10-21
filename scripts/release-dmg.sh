@@ -43,6 +43,8 @@ case "$NODE_V" in
   22.*) echo "⚠ node $NODE_V — 로컬 관문 기준은 v24 다(engines 안이라 경고만)" >&2 ;;
   *) die "node $NODE_V — engines(>=22.12)·로컬 관문(v24) 밖. v24 를 PATH 앞에 두고 다시" ;;
 esac
+# LIFE-676 — npm run build 가 Resource Manager 메모리 도우미(app/helper/corral-footprint.c)를 clang 으로 빌드한다(release.sh 와 같은 점검)
+command -v clang >/dev/null 2>&1 || die "clang 이 없다 — 메모리 도우미 빌드에 필요. xcode-select --install 뒤 다시"
 note "가드 통과: $TAG @ $(git rev-parse --short HEAD)(원격 태그 일치), 깨끗한 트리, 버전 $VERSION, node $NODE_V"
 [ "$CHECK_ONLY" = 0 ] || { echo "✔ --check-only — 빌드하지 않음"; exit 0; }
 

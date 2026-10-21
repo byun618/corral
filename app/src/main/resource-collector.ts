@@ -278,7 +278,7 @@ export function attribute(input: { table: PsTable; footprint: FootprintTable; pa
 }
 
 /** 측정된 칸만 더한다. 하나도 없으면 null(세그먼트는 `—`). 메모리는 메모리까지 잰 칸만(`sumUsage`). */
-export function totalOf(measures: readonly ResourceMeasure[]): { total: ResourceUsage | null; unavailableCount: number; memoryUnavailableCount: number } {
+export function totalOf(measures: readonly ResourceMeasure[]): { total: ResourceUsage | null; unavailableCount: number } {
   const usages: ResourceUsage[] = []
   let unavailableCount = 0
   for (const measure of measures) {
@@ -291,8 +291,7 @@ export function totalOf(measures: readonly ResourceMeasure[]): { total: Resource
         continue
     }
   }
-  const { usage, memoryUnavailableCount } = sumUsage(usages)
-  return { total: usage, unavailableCount, memoryUnavailableCount }
+  return { total: sumUsage(usages), unavailableCount }
 }
 
 /** `sysctl vm.swapusage` — `vm.swapusage: total = 24576.00M  used = 23332.38M  free = …`. 모양이 다르면 null. */

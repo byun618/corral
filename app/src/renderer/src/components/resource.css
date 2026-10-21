@@ -1,7 +1,8 @@
 /* 상태바 Resource Manager (LIFE-637) — 접두사 `.statusbar-resource-*`. 세그먼트는 `.statusbar` 글꼴·색을 상속한다. */
 
+/* LIFE-676 C2-1 — 26ch 에서 가장 긴 라벨 `CPU 100% · 메모리 ≥ 999.9 GB` 가 1px 말줄임(headless 실측) → 28ch. 그래도 잘리면 툴팁 첫 줄이 전문(637 H7). */
 .statusbar-resource {
-  flex-shrink: 0; max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex-shrink: 0; max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer;
 }
 .statusbar-resource:hover, .statusbar-resource.is-open { color: var(--fg-muted); }
@@ -23,12 +24,13 @@
 .statusbar-resource-error { padding: 4px 10px; color: var(--fg-notice); }
 
 .statusbar-resource-line {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto 5ch 8ch; align-items: center; gap: 8px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto 5ch 10ch; align-items: center; gap: 8px;
   width: 100%; padding: 3px 10px; text-align: left;
 }
 .statusbar-resource-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .statusbar-resource-agent { color: var(--fg-dim); }
-.statusbar-resource-cpu, .statusbar-resource-mem { text-align: right; font-variant-numeric: tabular-nums; }
+/* LIFE-676 C2-1 — 가장 긴 값(하한 `≥ 999.9 GB` 10글자·`측정 불가`)도 한 줄: 메모리 열 10ch + 줄바꿈 금지. */
+.statusbar-resource-cpu, .statusbar-resource-mem { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .statusbar-resource-line[data-statusbar-resource-app] .statusbar-resource-name,
 .statusbar-resource-line[data-statusbar-resource-herdr] .statusbar-resource-name { grid-column: 1 / 3; }
 .statusbar-resource-group { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }

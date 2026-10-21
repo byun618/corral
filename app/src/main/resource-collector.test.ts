@@ -96,9 +96,8 @@ describe('attribute — R1ⓐ 자손 합 = 손계산 (메모리 = footprint 합)
     expect(usage(result.app)).toEqual({ cpu: 4, memory: 358400 * KB, pids: [100, 101, 102] })
   })
   it('전체 = 넷의 합', () => {
-    const { total, unavailableCount, memoryUnavailableCount } = totalOf([result.app, result.herdr, ...[...result.panes.values()]])
+    const { total, unavailableCount } = totalOf([result.app, result.herdr, ...[...result.panes.values()]])
     expect(unavailableCount).toBe(0)
-    expect(memoryUnavailableCount).toBe(0)
     expect(total?.memory).toEqual({ state: 'measured', bytes: (358400 + 41984 + 12288 + 161792) * KB })
     expect(Number(total?.cpu.toFixed(3))).toBe(68.6)
   })
@@ -279,9 +278,8 @@ describe('attribute — LIFE-676 R1ⓒ 도우미 실패 = 메모리 측정 불�
       const result = attribute({ ...tables(TABLE, { kind: 'unavailable', reason }), panes: PANES, appRoots: [100, 101] })
       for (const measure of [result.app, result.herdr, ...result.panes.values()]) expect(usage(measure).memory).toBe(`측정 불가: ${reason}`)
       expect(usage(result.panes.get('A')).cpu).toBe(50)
-      const { total, unavailableCount, memoryUnavailableCount } = totalOf([result.app, result.herdr, ...result.panes.values()])
+      const { total, unavailableCount } = totalOf([result.app, result.herdr, ...result.panes.values()])
       expect(unavailableCount).toBe(0)
-      expect(memoryUnavailableCount).toBe(4)
       expect(Number(total?.cpu.toFixed(3))).toBe(68.6)
       expect(total?.memory).toEqual({ state: 'unavailable', reason })
     })
@@ -310,9 +308,8 @@ describe('attribute — LIFE-676 R1ⓓ ps 에는 있고 footprint 표에 없는 
     expect(usage(result.panes.get('B'))).toEqual({ cpu: 11.3, memory: `≥ ${(161792 - 122880) * KB}: pid 401 (권한 없음 — root·다른 사용자로 실행 중) 제외`, pids: [400, 401, 402, 403] })
     expect(usage(result.panes.get('A')).memory).toBe(12288 * KB)
     // 「전체」 로 전파 — 하한 칸이 섞이면 합도 하한, 값은 읽힌 합 전부.
-    const { total, memoryUnavailableCount } = totalOf([result.app, result.herdr, ...result.panes.values()])
-    expect(memoryUnavailableCount).toBe(0)
-    expect(total?.memory).toEqual({ state: 'partial', bytes: (358400 + 41984 + 12288 + 161792 - 122880) * KB, reason: '일부 pid 를 뺀 칸 1개가 빠진 합' })
+    const { total } = totalOf([result.app, result.herdr, ...result.panes.values()])
+    expect(total?.memory).toEqual({ state: 'partial', bytes: (358400 + 41984 + 12288 + 161792 - 122880) * KB, reason: '일부 pid 를 뺀 칸 1개' })
   })
   it('C1-1 ESRCH 가 아닌 다른 errno 도 같은 규칙 — 넷 이상이면 셋만 적고 외 n개', () => {
     const fp = split(TABLE).fp.replace(/^400 \d+$/m, '400 ERR 5').replace(/^401 \d+$/m, '401 ERR 1').replace(/^402 \d+$/m, '402 ERR 1')
@@ -326,9 +323,15 @@ describe('attribute — LIFE-676 R1ⓓ ps 에는 있고 footprint 표에 없는 
     const result = attribute({ ...tables(TABLE, parseFootprintTable(fp)), panes: PANES, appRoots: [100, 101] })
     expect(usage(result.panes.get('A')).memory).toBe('측정 불가: footprint 를 못 읽었다 — pid 300 (권한 없음 — root·다른 사용자로 실행 중), pid 301 (권한 없음 — root·다른 사용자로 실행 중)')
     expect(usage(result.panes.get('A')).cpu).toBe(50)
-    const { total, memoryUnavailableCount } = totalOf([result.app, result.herdr, ...result.panes.values()])
-    expect(memoryUnavailableCount).toBe(1)
-    expect(total?.memory).toEqual({ state: 'partial', bytes: (358400 + 41984 + 161792) * KB, reason: '메모리를 못 잰 칸 1개가 빠진 합' })
+    const { total } = totalOf([result.app, result.herdr, ...result.panes.values()])
+    expect(total?.memory).toEqual({ state: 'partial', bytes: (358400 + 41984 + 161792) * KB, reason: '메모리를 못 잰 칸 1개' })
+  })
+  it('C2-5 하한 칸과 못 잰 칸이 같이 있으면 합 사유에 둘 다 — 「n개 · m개」', () => {
+    const fp = split(TABLE).fp.replace(/^300 \d+$/m, '300 ERR 1').replace(/^301 \d+$/m, '301 ERR 1').replace(/^401 \d+$/m, '401 ERR 1')
+    const result = attribute({ ...tables(TABLE, parseFootprintTable(fp)), panes: PANES, appRoots: [100, 101] })
+    expect(totalOf([result.app, result.herdr, ...result.panes.values()]).total?.memory).toEqual({
+      state: 'partial', bytes: (358400 + 41984 + 161792 - 122880) * KB, reason: '일부 pid 를 뺀 칸 1개 · 메모리를 못 잰 칸 1개',
+    })
   })
   it('C1-1 끝난 pid(ESRCH)와 EPERM 이 섞이면 — 끝난 쪽은 조용히 빼고 EPERM 만 사유에', () => {
     const fp = split(TABLE).fp.replace(/^401 \d+$/m, '401 ERR 3').replace(/^402 \d+$/m, '402 ERR 1')
@@ -338,7 +341,7 @@ describe('attribute — LIFE-676 R1ⓓ ps 에는 있고 footprint 표에 없는 
   it('귀속 밖 pid 의 ERR 는 아무 칸에도 영향이 없다 (pid 1 은 root — EPERM)', () => {
     const fp = split(TABLE).fp.replace(/^1 \d+$/m, '1 ERR 1')
     const result = attribute({ ...tables(TABLE, parseFootprintTable(fp)), panes: PANES, appRoots: [100, 101] })
-    expect(totalOf([result.app, result.herdr, ...result.panes.values()]).memoryUnavailableCount).toBe(0)
+    expect(totalOf([result.app, result.herdr, ...result.panes.values()]).total?.memory.state).toBe('measured')
   })
 })
 

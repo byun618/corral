@@ -26,7 +26,7 @@ const row = (input: { paneId: string; group: string; measure: ResourceMeasure })
 })
 const HOST: ResourceHost = { physicalMemory: 24 * GB, cpuCoreCount: 18, pressure: 'warning', swap: { used: 23.3 * GB, total: 24 * GB }, compressed: 8.4 * GB }
 const snapshot = (patch: Partial<ResourceSnapshot>): ResourceSnapshot => ({
-  collectedAt: 0, total: { cpu: 360, memory: { state: 'measured', bytes: 3.46 * GB } }, unavailableCount: 0, memoryUnavailableCount: 0, app: measured(1, MB), herdr: measured(1, MB), panes: [],
+  collectedAt: 0, total: { cpu: 360, memory: { state: 'measured', bytes: 3.46 * GB } }, unavailableCount: 0, app: measured(1, MB), herdr: measured(1, MB), panes: [],
   host: HOST,
   stats: { intervalMs: 2000, collections: 1, skippedHidden: 0, processInfoRequests: 0, footprintRuns: 0, hostReads: 0, recentDurationsMs: [] },
   ...patch,
@@ -77,9 +77,9 @@ describe('segmentTooltip — R3ⓓ·R4 문구', () => {
   it('메모리 측정 불가 사유 · 일부 칸만 못 잰 경우', () => {
     expect(segmentTooltip(snapshot({ total: { cpu: 1, memory: { state: 'unavailable', reason: 'footprint 도우미 시한 초과 (2000 ms)' } } }))).toContain('메모리 측정 불가 — footprint 도우미 시한 초과 (2000 ms)')
     // C1-1 — 하한 합은 라벨에 `≥`, 툴팁에 무엇이 빠졌는지.
-    const lower = snapshot({ total: { cpu: 360, memory: { state: 'partial', bytes: 3.46 * GB, reason: '일부 pid 를 뺀 칸 1개가 빠진 합' } } })
+    const lower = snapshot({ total: { cpu: 360, memory: { state: 'partial', bytes: 3.46 * GB, reason: '일부 pid 를 뺀 칸 1개' } } })
     expect(segmentLabel(lower)).toBe('CPU 20% · 메모리 ≥ 3.5 GB')
-    expect(segmentTooltip(lower)).toContain('메모리 하한 — 일부 pid 를 뺀 칸 1개가 빠진 합')
+    expect(segmentTooltip(lower)).toContain('메모리 하한 — 일부 pid 를 뺀 칸 1개')
   })
   it('코어 수를 모르면 기준 숫자를 지어내지 않는다', () => {
     expect(segmentTooltip(snapshot({ host: { ...HOST, cpuCoreCount: 0 } }))).toContain('코어 수를 몰라 표시하지 않는다')
@@ -139,7 +139,7 @@ describe('groupPanes', () => {
   it('worktree 묶음 합계, 측정 불가는 합에서 빠지고 센다 — 묶음 CPU 는 코어당 합', () => {
     const groups = groupPanes({ panes, sort: 'memory' })
     const a = groups.find((group) => group.key === 'A')
-    expect(a).toMatchObject({ label: 'label-A', usage: { cpu: 55, memory: { state: 'measured', bytes: 400 * MB } }, unavailableCount: 1, memoryUnavailableCount: 0 })
+    expect(a).toMatchObject({ label: 'label-A', usage: { cpu: 55, memory: { state: 'measured', bytes: 400 * MB } }, unavailableCount: 1 })
     expect(a === undefined ? null : groupTooltip(a)).toBe('측정 불가 1개는 합에서 빠졌다')
   })
   it('기본 = 메모리 내림차순(묶음·행 모두), 측정 불가는 맨 뒤', () => {
@@ -160,9 +160,9 @@ describe('groupPanes', () => {
     const mixed = [...panes, row({ paneId: 'a4', group: 'A', measure: memoryLost(99, 'pid 9 의 footprint 를 못 읽었다 (errno 1)') })]
     const byMemory = groupPanes({ panes: mixed, sort: 'memory' })
     const a = byMemory.find((group) => group.key === 'A')
-    expect(a).toMatchObject({ usage: { cpu: 154, memory: { state: 'partial', bytes: 400 * MB, reason: '메모리를 못 잰 칸 1개가 빠진 합' } }, unavailableCount: 1, memoryUnavailableCount: 1 })
+    expect(a).toMatchObject({ usage: { cpu: 154, memory: { state: 'partial', bytes: 400 * MB, reason: '메모리를 못 잰 칸 1개' } }, unavailableCount: 1 })
     expect(a?.panes.map((pane) => pane.paneId)).toEqual(['a2', 'a1', 'a3', 'a4'])
-    expect(a === undefined ? null : groupTooltip(a)).toBe('측정 불가 1개는 합에서 빠졌다\n메모리 하한 — 메모리를 못 잰 칸 1개가 빠진 합')
+    expect(a === undefined ? null : groupTooltip(a)).toBe('측정 불가 1개는 합에서 빠졌다\n메모리 하한 — 메모리를 못 잰 칸 1개')
     expect(groupPanes({ panes: mixed, sort: 'cpu' }).find((group) => group.key === 'A')?.panes.map((pane) => pane.paneId)).toEqual(['a4', 'a1', 'a2', 'a3'])
   })
   it('묶음 전체가 메모리만 못 쟀으면 메모리 측정 불가(사유)', () => {
@@ -175,7 +175,7 @@ describe('groupPanes', () => {
     expect(measureCells(partial)).toEqual({ cpu: '7%', memory: '≥ 1.2 GB', title: '메모리 하한 — pid 9 (권한 없음 — root·다른 사용자로 실행 중) 제외' })
     const groups = groupPanes({ panes: [...panes, row({ paneId: 'a5', group: 'A', measure: partial })], sort: 'memory' })
     const a = groups.find((group) => group.key === 'A')
-    expect(a?.usage?.memory).toEqual({ state: 'partial', bytes: 400 * MB + 1.2 * GB, reason: '일부 pid 를 뺀 칸 1개가 빠진 합' })
+    expect(a?.usage?.memory).toEqual({ state: 'partial', bytes: 400 * MB + 1.2 * GB, reason: '일부 pid 를 뺀 칸 1개' })
     expect(a === undefined || a.usage === null ? null : memoryText(a.usage.memory)).toBe('≥ 1.6 GB')
     expect(groups.map((group) => group.key)).toEqual(['A', 'B'])
     expect(a?.panes.map((pane) => pane.paneId)).toEqual(['a5', 'a2', 'a1', 'a3'])

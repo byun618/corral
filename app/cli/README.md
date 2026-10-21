@@ -1,6 +1,6 @@
 # Local CLI
 
-Requires Node 22.12+ and the built app. From `app/` run `npm ci`, `npm run build`, then `node cli/corral.mjs --help`. The executable `cli/corral.mjs` is also the package `bin` entry; it loads `out/runtime/cli.mjs`. Distribute the CLI and built outputs together with Electron and the application dependencies. No global install is required. `npm run dev` starts the desktop directly; `npm run build:runtime` rebuilds only the Node CLI. The installed app (`npm run package:mac`, see `../INSTALL.md`) bundles this CLI behind `corral.app/Contents/Resources/bin/corral`, which runs it on the app's own Node, adds `corral --version`, and makes `open` launch that bundle instead of the repo Electron.
+Requires Node 22.12+, clang (Xcode Command Line Tools — `npm run build` compiles the Resource Manager memory helper `helper/corral-footprint.c`, LIFE-676) and the built app. From `app/` run `npm ci`, `npm run build`, then `node cli/corral.mjs --help`. The executable `cli/corral.mjs` is also the package `bin` entry; it loads `out/runtime/cli.mjs`. Distribute the CLI and built outputs together with Electron and the application dependencies. No global install is required. `npm run dev` starts the desktop directly; `npm run build:runtime` rebuilds only the Node CLI. The installed app (`npm run package:mac`, see `../INSTALL.md`) bundles this CLI behind `corral.app/Contents/Resources/bin/corral`, which runs it on the app's own Node, adds `corral --version`, and makes `open` launch that bundle instead of the repo Electron.
 
 The five foundation commands are:
 

@@ -114,7 +114,6 @@ describe('resource monitor', () => {
     expect(snapshot?.herdr).toMatchObject({ state: 'measured', pids: [200, 400] })
     expect(snapshot?.app).toMatchObject({ state: 'measured', pids: [100] })
     expect(snapshot?.total).toEqual({ cpu: 10, memory: { state: 'measured', bytes: 1000 * 1024 } })
-    expect(snapshot?.memoryUnavailableCount).toBe(0)
     expect(snapshot?.host).toEqual(HOST)
     expect(snapshot?.stats.recentDurationsMs).toHaveLength(1)
     expect(h.monitor.latest()).toBe(snapshot)
@@ -271,7 +270,6 @@ describe('wake 겹침 (R6ⓐ — wake 경로에서도 주기가 겹치지 않는
     expect(snapshot?.panes[0]?.measure).toEqual({ state: 'measured', usage: { cpu: 3, memory: { state: 'unavailable', reason: 'footprint 도우미가 없다 (/x)' } }, pids: [300] })
     expect(snapshot?.total).toEqual({ cpu: 10, memory: { state: 'unavailable', reason: 'footprint 도우미가 없다 (/x)' } })
     expect(snapshot?.unavailableCount).toBe(0)
-    expect(snapshot?.memoryUnavailableCount).toBe(3)
     expect(h.log.mock.calls.filter(([tag]) => tag === 'resource.footprint')).toEqual([['resource.footprint', { reason: 'footprint 도우미가 없다 (/x)' }]])
     h.state.footprint = null
     await h.monitor.tick()

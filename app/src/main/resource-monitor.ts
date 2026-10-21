@@ -161,7 +161,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
           appRoots: deps.appRoots(),
         })
     const rows: ResourcePaneRow[] = panes.map((pane) => ({ ...pane, measure: attribution.panes.get(pane.paneId) ?? unavailable }))
-    const { total, unavailableCount, memoryUnavailableCount } = totalOf([attribution.app, attribution.herdr, ...rows.map((row) => row.measure)])
+    const { total, unavailableCount } = totalOf([attribution.app, attribution.herdr, ...rows.map((row) => row.measure)])
     const host = await hostRead
     stats.collections += 1
     stats.recentDurationsMs = [...stats.recentDurationsMs, deps.now() - startedAt].slice(-DURATION_SAMPLES)
@@ -169,7 +169,6 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
       collectedAt: deps.now(),
       total,
       unavailableCount,
-      memoryUnavailableCount,
       app: attribution.app,
       herdr: attribution.herdr,
       panes: rows,

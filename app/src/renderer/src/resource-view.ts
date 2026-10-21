@@ -151,8 +151,6 @@ export type ResourceGroup = {
   /** 묶음 안 측정된 pane 의 합(`sumUsage` — 메모리는 메모리까지 잰 pane 만). 하나도 못 재면 null. */
   usage: ResourceUsage | null
   unavailableCount: number
-  /** CPU 는 쟀지만 메모리를 못 잰 pane 수. */
-  memoryUnavailableCount: number
   panes: ResourcePaneRow[]
 }
 
@@ -168,12 +166,10 @@ export function groupPanes(input: { panes: readonly ResourcePaneRow[]; sort: Res
       const usage = usageOf(pane.measure)
       return usage === null ? [] : [usage]
     })
-    const { usage, memoryUnavailableCount } = sumUsage(usages)
     return {
       ...group,
-      usage,
+      usage: sumUsage(usages),
       unavailableCount: group.panes.length - usages.length,
-      memoryUnavailableCount,
       panes: [...group.panes].sort((a, b) => compareUsage({ a: usageOf(a.measure), b: usageOf(b.measure), key: input.sort })),
     }
   })

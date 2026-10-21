@@ -30,12 +30,11 @@ export type ResourceMeasure =
 
 /**
  * 여러 칸의 합. CPU 는 측정된 칸 전부, 메모리는 값(측정·하한)이 있는 칸만 더한다.
- * `memoryUnavailableCount` = CPU 는 쟀지만 메모리를 못 잰 칸 수.
- * 하한 칸이 섞였거나 메모리를 못 잰 칸이 있으면 합도 하한(`partial`, 무엇이 빠졌는지 사유) — 빠진 합을 그대로 보이지 않는다(C1-1).
- * 값이 있는 칸이 하나도 없으면 메모리는 측정 불가(첫 사유).
+ * 하한 칸이 섞였거나 메모리를 못 잰 칸이 있으면 합도 하한(`partial`, 사유 「일부 pid 를 뺀 칸 n개 · 메모리를 못 잰 칸 m개」 → 툴팁 「메모리 하한 — …」)
+ * — 빠진 합을 그대로 보이지 않는다(C1-1, 문구 r2 C2-5). 값이 있는 칸이 하나도 없으면 메모리는 측정 불가(첫 사유).
  */
-export function sumUsage(usages: readonly ResourceUsage[]): { usage: ResourceUsage | null; memoryUnavailableCount: number } {
-  if (usages.length === 0) return { usage: null, memoryUnavailableCount: 0 }
+export function sumUsage(usages: readonly ResourceUsage[]): ResourceUsage | null {
+  if (usages.length === 0) return null
   let cpu = 0
   let bytes = 0
   let known = 0
@@ -58,14 +57,14 @@ export function sumUsage(usages: readonly ResourceUsage[]): { usage: ResourceUsa
         continue
     }
   }
-  const memoryUnavailableCount = usages.length - known
-  if (known === 0 && firstReason !== null) return { usage: { cpu, memory: { state: 'unavailable', reason: firstReason } }, memoryUnavailableCount }
+  const missing = usages.length - known
+  if (known === 0 && firstReason !== null) return { cpu, memory: { state: 'unavailable', reason: firstReason } }
   const notes = [
     ...(partial > 0 ? [`일부 pid 를 뺀 칸 ${partial}개`] : []),
-    ...(memoryUnavailableCount > 0 ? [`메모리를 못 잰 칸 ${memoryUnavailableCount}개`] : []),
+    ...(missing > 0 ? [`메모리를 못 잰 칸 ${missing}개`] : []),
   ]
-  const memory: ResourceMemory = notes.length === 0 ? { state: 'measured', bytes } : { state: 'partial', bytes, reason: `${notes.join(' · ')}가 빠진 합` }
-  return { usage: { cpu, memory }, memoryUnavailableCount }
+  const memory: ResourceMemory = notes.length === 0 ? { state: 'measured', bytes } : { state: 'partial', bytes, reason: notes.join(' · ') }
+  return { cpu, memory }
 }
 
 export type ResourcePaneRow = {
@@ -120,8 +119,6 @@ export type ResourceSnapshot = {
   total: ResourceUsage | null
   /** 측정 불가인 칸 수(앱·herdr·pane). 0 이 아니면 total 은 그만큼 빠진 합이다. */
   unavailableCount: number
-  /** CPU 는 쟀지만 메모리(footprint)를 못 잰 칸 수. 0 이 아니면 total 의 메모리는 그만큼 빠진 합이다. */
-  memoryUnavailableCount: number
   app: ResourceMeasure
   herdr: ResourceMeasure
   panes: ResourcePaneRow[]

@@ -27,7 +27,6 @@ const SNAPSHOT: ResourceSnapshot = {
   // CPU 합 360(코어당 원값) · 코어 18 → 세그먼트 `CPU 20%`(LIFE-676 R3ⓐ 예).
   total: { cpu: 360, memory: { state: 'measured', bytes: 2.25 * GB } },
   unavailableCount: 1,
-  memoryUnavailableCount: 0,
   app: { state: 'measured', usage: { cpu: 4, memory: { state: 'measured', bytes: 700 * MB } }, pids: [100] },
   herdr: { state: 'measured', usage: { cpu: 1, memory: { state: 'measured', bytes: 40 * MB } }, pids: [200] },
   panes: [
@@ -223,11 +222,11 @@ describe('패널 (R4)', () => {
     mount()
     act(() => push?.({
       ...SNAPSHOT,
-      total: { cpu: 360, memory: { state: 'partial', bytes: 2.25 * GB, reason: '일부 pid 를 뺀 칸 1개가 빠진 합' } },
+      total: { cpu: 360, memory: { state: 'partial', bytes: 2.25 * GB, reason: '일부 pid 를 뺀 칸 1개' } },
       panes: SNAPSHOT.panes.map((pane) => (pane.paneId === 'p-small' ? { ...pane, measure: { state: 'measured', usage: { cpu: 50, memory: { state: 'partial', bytes: 100 * MB, reason: 'pid 301 (권한 없음 — root·다른 사용자로 실행 중) 제외' } }, pids: [300, 301] } } : pane)),
     }))
     expect(segment().textContent).toBe('CPU 20% · 메모리 ≥ 2.3 GB')
-    expect(segment().title).toContain('메모리 하한 — 일부 pid 를 뺀 칸 1개가 빠진 합')
+    expect(segment().title).toContain('메모리 하한 — 일부 pid 를 뺀 칸 1개')
     click(segment())
     const row = q<HTMLElement>('[data-statusbar-resource-row="p-small"]')
     expect(row?.querySelector('[data-statusbar-resource-memory]')?.textContent).toBe('≥ 100 MB')

@@ -7,6 +7,8 @@
 // 패치 없는 herdr 의 Ghostty 인코더는 레거시 pane 에 `ESC[27;2;13~` 를 보낸다(00-analysis §9).
 // Alt·Ctrl+Enter 와 다른 수정자가 함께 눌린 Shift+Enter 는 건드리지 않는다(범위 밖 — 00-analysis §6).
 
+import type { IDisposable, Terminal } from '@xterm/xterm'
+
 /** Shift+Enter 의 CSI-u 시퀀스 (수정자 2 = Shift). */
 export const SHIFT_ENTER_SEQUENCE = '\x1b[13;2u'
 
@@ -41,4 +43,11 @@ export function terminalKeyHandler(send: (data: string) => void): (event: Keyboa
     send(sequence)
     return false
   }
+}
+
+/** 터미널에 Shift+Enter 가로채기를 건다. `term.input` 은 onData 로 나가 입력 경로(진단 링·termInput)를 그대로 탄다. */
+export function attachTerminalKeys(input: { term: Terminal }): IDisposable {
+  const { term } = input
+  term.attachCustomKeyEventHandler(terminalKeyHandler((data) => term.input(data)))
+  return { dispose: () => undefined }
 }

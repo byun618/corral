@@ -6,7 +6,7 @@ import { Terminal } from '@xterm/xterm'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { attachTerminalKeys } from './terminal-keys.js'
 
-type Harness = { term: Terminal; textarea: HTMLTextAreaElement; data: string[]; detach: () => void }
+type Harness = { term: Terminal; textarea: HTMLTextAreaElement; data: string[]; detachKeys: () => void; detach: () => void }
 
 let harness: Harness | null = null
 
@@ -24,6 +24,7 @@ function open(): Harness {
     term,
     textarea,
     data,
+    detachKeys: () => keys.dispose(),
     detach: () => {
       keys.dispose()
       term.dispose()
@@ -169,14 +170,13 @@ describe('회귀 없음 (C3)', () => {
 })
 
 describe('정리', () => {
-  it('미뤄 둔 시퀀스는 dispose 뒤 나가지 않는다', async () => {
-    const { textarea, data, detach } = harness!
+  it('미뤄 둔 시퀀스는 keys.dispose 뒤 나가지 않는다 — term 은 살린 채(타이머 취소를 직접 본다)', async () => {
+    const { textarea, data, detachKeys } = harness!
     compose({ textarea, text: '한' })
     await settle()
     pressEnterWhileComposing({ textarea, text: '한', shiftKey: true })
-    detach()
-    harness = null
+    detachKeys()
     await settle()
-    expect(data).not.toContain('\x1b[13;2u')
+    expect(data).toEqual(['한'])
   })
 })

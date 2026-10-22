@@ -52,6 +52,10 @@ export function terminalKeyHandler(send: (data: string) => void): (event: Keyboa
  * xterm 은 조합 글자를 compositionend 의 `setTimeout(0)` 뒤에 보내고, 그 사이 keydown 이 오면 자기 keydown 처리에서 먼저 확정하지만
  * 가로챈 키는 그 처리까지 가지 않는다. 그래서 compositionend 와 같은 태스크에서 가로챈 시퀀스는 `setTimeout(0)` 으로 미룬다 —
  * 같은 지연의 타이머는 등록 순서대로 돌므로(HTML 타이머 순서) xterm 의 조합 글자 전송 뒤에 나간다. 그 밖의 경우는 지금처럼 바로 보낸다.
+ * 이 순서는 xterm 의 글자 전송이 우리 `setTimeout(0)` 보다 늦지 않다는 데 기댄다 — 마이크로태스크로 앞당겨지면 그대로 맞고,
+ * 0 보다 긴 지연·rAF 로 늦춰지거나 xterm 의 compositionend 리스너가 이 리스너보다 늦게 등록되면 깨진다.
+ *
+ * `term.open()` 뒤에 부른다 — textarea 가 있어야 조합 확정을 추적한다(없으면 가로채기만 걸리고 수정 전처럼 바로 보낸다).
  */
 export function attachTerminalKeys(input: { term: Terminal }): IDisposable {
   const { term } = input

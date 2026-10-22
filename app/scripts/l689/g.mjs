@@ -170,6 +170,11 @@ async function openFile(rel, { preview = false } = {}) {
   await sleep(300)
 }
 async function closeFile(rel) {
+  // 닫기 단추는 탭 hover 전엔 히트테스트에 안 잡힌다(g1-k5-1 하네스 미달) — 탭 위로 마우스를 먼저 옮긴다(sendInputEvent mouseMove).
+  const at = await js(`(() => { const r = document.querySelector('[data-file-tab="${rel}"]')?.getBoundingClientRect(); return r ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null })()`)
+  if (at === null) throw new Error(`탭 없음 ${rel}`)
+  await ctl(root, { cmd: 'raw-mouse', type: 'mouseMove', x: at.x, y: at.y })
+  await sleep(200)
   await click(`[data-main-tab-close="file:${rel}"]`)
   await until(() => js(`document.querySelector('[data-file-tab="${rel}"]') === null`), { timeoutMs: 10_000, label: `닫힘 ${rel}` })
   await sleep(300)

@@ -167,3 +167,16 @@ describe('회귀 없음 (C3)', () => {
     expect(data).toEqual(['ㅆ'])
   })
 })
+
+describe('정리', () => {
+  it('미뤄 둔 시퀀스는 dispose 뒤 나가지 않는다', async () => {
+    const { textarea, data, detach } = harness!
+    compose({ textarea, text: '한' })
+    await settle()
+    pressEnterWhileComposing({ textarea, text: '한', shiftKey: true })
+    detach()
+    harness = null
+    await settle()
+    expect(data).not.toContain('\x1b[13;2u')
+  })
+})

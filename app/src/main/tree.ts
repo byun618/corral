@@ -19,7 +19,7 @@
 import path from 'node:path'
 import type { AgentSessionRef, GitStatusSummary, LinkPhase, RepoRow, SessionDigest, WorkspaceRow } from '../shared/types.js'
 import type { WorktreeMetadataRecord } from './registry.js'
-import { readOpenWorkspaces } from './adapter/index.js'
+import { readOpenWorkspaces, type OpenWorkspaceMap } from './adapter/index.js'
 import { getGitStatus } from './git-status.js'
 import { listGitWorktrees } from './git-worktrees.js'
 import { log } from './log.js'
@@ -159,6 +159,28 @@ export function cardlessGate(input: {
     else rows.push(workspace)
   }
   return { rows, fresh }
+}
+
+/**
+ * 카드 귀속 권위 재독 (LIFE-628 F2·G2·G7) — 등록 레포마다 herdr `worktree.list` 를 그 자리에서 읽어 `open_workspace_id` 합집합을 낸다.
+ * 한 루트라도 읽기 실패면 null(부르는 쪽은 닫지 않는다). `is_prunable` 경로의 id 는 세지 않는다 — 디렉터리가 없어 카드가 없는 것과 맞춘다
+ * (셸에서 지운 worktree 의 세션을 prune 전에도 닫을 수 있게). 같은 id 가 살아 있는 다른 경로에도 붙어 있으면 귀속이다.
+ */
+export async function readClaimedWorkspaceIds(input: {
+  roots: readonly string[]
+  read: (root: string) => Promise<OpenWorkspaceMap>
+  log: (tag: string, data: Record<string, unknown>) => void
+}): Promise<Set<string> | null> {
+  const claimed = new Set<string>()
+  for (const root of input.roots) {
+    const open = await input.read(root)
+    if (open.error !== null) {
+      input.log('resource.claimed_read_failed', { root, error: open.error })
+      return null
+    }
+    for (const [path, id] of open.byPath) if (!open.prunable.has(path)) claimed.add(id)
+  }
+  return claimed
 }
 
 /** 레지스트리 `parentWorktreeId` = `<repoId>::<canonicalPath>`(`runtime/workspace/model.ts`) — 화면은 경로만 쓴다. */

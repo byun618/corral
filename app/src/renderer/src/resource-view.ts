@@ -6,7 +6,7 @@
 // 일부 pid 를 뺀 합(하한)은 `≥ x`, 빠진 사유는 툴팁(리뷰 r1 C1-1).
 // 패널 = worktree 묶음(합계 행 + pane 행) · 앱·herdr 행 따로. 기본 정렬은 메모리 내림차순, 측정 불가는 맨 뒤.
 // 카드 밖 workspace(LIFE-628) = worktree 묶음 아래 따로 한 묶음 — workspace 한 줄(원래 경로·에이전트·메모리) + 한 줄 닫기·「모두 닫기」.
-import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourceOrphanRow, type ResourcePaneRow, type ResourceSnapshot, type ResourceUsage } from '../../shared/resource.js'
+import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourceOrphanRow, type ResourceOrphanSkip, type ResourcePaneRow, type ResourceSnapshot, type ResourceUsage } from '../../shared/resource.js'
 import type { RunningPane } from '../../shared/types.js'
 import { closeCopy, type CloseCopy } from './close-copy.js'
 
@@ -258,18 +258,20 @@ export const ORPHAN_SECTION_TOOLTIP = 'herdr 에 열려 있지만 어느 worktre
 /** 가릴 수 없는 때(`orphans: null`) — 빈 목록(「없다」)과 구분한다. */
 export const ORPHAN_UNKNOWN = '지금은 가릴 수 없다(재접속 중·목록 갱신 중)'
 export const ORPHAN_MISSING_PATH = '없음'
+/** 경로 확인 불가(권한 거부 등·확인 전 — LIFE-628 G1). 「없음」 과 다르다. */
+export const ORPHAN_UNCHECKED_PATH = '확인 불가'
 
-/** 줄 이름 칸 — 첫 경로(지금 없으면 「(없음)」), 경로가 여럿이면 「외 n」. 경로를 모르면 workspace 이름. */
+/** 줄 이름 칸 — 첫 경로(지금 없으면 「(없음)」, 확인 못 하면 「(확인 불가)」), 경로가 여럿이면 「외 n」. 경로를 모르면 workspace 이름. */
 export function orphanPathText(row: ResourceOrphanRow): string {
   const [first, ...rest] = row.paths
   if (first === undefined) return row.label
-  const head = first.exists ? first.path : `${first.path} (${ORPHAN_MISSING_PATH})`
+  const head = first.exists === true ? first.path : `${first.path} (${first.exists === false ? ORPHAN_MISSING_PATH : ORPHAN_UNCHECKED_PATH})`
   return rest.length === 0 ? head : `${head} 외 ${rest.length}`
 }
 
 /** 줄 툴팁 — 경로 전부(있음/없음)·pane 수·workspace 이름. */
 export function orphanTooltip(row: ResourceOrphanRow): string {
-  const paths = row.paths.length === 0 ? ['경로 모름'] : row.paths.map((item) => (item.exists ? item.path : `${item.path} — 디렉터리 없음`))
+  const paths = row.paths.length === 0 ? ['경로 모름'] : row.paths.map((item) => (item.exists === true ? item.path : item.exists === false ? `${item.path} — 디렉터리 없음` : `${item.path} — 있는지 확인 불가(권한 등)`))
   return [...paths, `pane ${row.paneIds.length}개 · ${row.label}`].join('\n')
 }
 
@@ -283,6 +285,18 @@ export const ORPHAN_OWNED_TOOLTIP = '경로가 살아 있다(미등록 레포의
 export function orphanKindText(row: ResourceOrphanRow): string {
   const names = [...row.agents, ...row.stoppedAgents.map((agent) => `${agent} (${ORPHAN_STOPPED})`)]
   return names.length === 0 ? 'shell' : names.join(', ')
+}
+
+/** 닫지 않은 줄의 안내 (LIFE-628 G2) — 사유별 개수. 사유 없이 빠진 수(`unexplained`)는 「이미 없어짐」 쪽에 센다. */
+export function orphanSkipText(input: { skipped: readonly ResourceOrphanSkip[]; unexplained: number }): string | null {
+  const count = (reason: ResourceOrphanSkip['reason']): number => input.skipped.filter((item) => item.reason === reason).length
+  const parts = [
+    count('claimed') > 0 ? `카드에 붙음 ${count('claimed')}` : null,
+    count('gone') + input.unexplained > 0 ? `이미 닫힘·없음 ${count('gone') + input.unexplained}` : null,
+    count('not-ownerless') > 0 ? `주인 없는 줄이 아님 ${count('not-ownerless')}` : null,
+  ].filter((part): part is string => part !== null)
+  const total = input.skipped.length + input.unexplained
+  return total === 0 ? null : `${total}개는 닫지 않았다 — ${parts.join(' · ')}`
 }
 
 /** 「모두 닫기」 대상 — 주인 없는 줄만(F3). */

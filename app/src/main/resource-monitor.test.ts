@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ResourceHost, ResourceSnapshot } from '../shared/resource.js'
 import { parseFootprintTable, type FootprintTable } from './resource-collector.js'
-import { createResourceMonitor, NO_RUNTIME_REASON, PROBE_RETRY_MS, RESOURCE_INTERVAL_MS, type ResourceMonitorDeps, type ResourceOrphanSource, type ResourcePaneSource, type ShellProbe } from './resource-monitor.js'
+import { createResourceMonitor, MISSING_RETRY_MS, NO_RUNTIME_REASON, PROBE_RETRY_MS, RESOURCE_INTERVAL_MS, type ResourceMonitorDeps, type ResourceOrphanSource, type ResourcePaneSource, type ShellProbe } from './resource-monitor.js'
 
 // 고정 입력: pid ppid %cpu footprint(KB) — 앞 세 칸이 ps stdout, 넷째 칸이 도우미 footprint 표(바이트)가 된다(LIFE-676).
 const PS = '  100 1 1.0 100\n  200 1 2.0 200\n  300 200 3.0 300\n  400 200 4.0 400\n'
@@ -338,12 +338,12 @@ describe('wake 겹침 (R6ⓐ — wake 경로에서도 주기가 겹치지 않는
     expect(h.emitted.at(-1)?.orphans).toBeNull()
   })
 
-  it('F5 — pane_not_found(런타임 없음) pane 은 30초가 지나도 다시 묻지 않고, 줄은 「프로세스 없음」 사유', async () => {
+  it('F5 — pane_not_found(런타임 없음) pane 은 30초 재질의를 하지 않고, 줄은 「프로세스 없음」 사유', async () => {
     const h = harness({ panes: [pane('a')], shellPids: { a: 300, z: 'missing' }, orphans: [orphanOf('w9', ['z'])] })
     await h.monitor.tick()
     expect(h.emitted.at(-1)?.orphans?.[0]?.measure).toEqual({ state: 'unavailable', reason: NO_RUNTIME_REASON })
     expect(h.probe.mock.calls.filter(([id]) => id === 'z')).toHaveLength(1)
-    h.state.now += PROBE_RETRY_MS * 3
+    h.state.now += MISSING_RETRY_MS - 1
     await h.monitor.tick()
     await h.monitor.tick()
     expect(h.probe.mock.calls.filter(([id]) => id === 'z')).toHaveLength(1)
@@ -372,5 +372,16 @@ describe('wake 겹침 (R6ⓐ — wake 경로에서도 주기가 겹치지 않는
     await h.monitor.tick()
     expect(h.probe.mock.calls.length).toBe(before)
     expect(h.monitor.stats().processInfoRequests).toBe(3)
+  })
+  it('G4 — 런타임 없음 pane 도 60초 뒤 한 번 다시 묻는다: 재기동 뒤 늦게 PTY 가 붙으면 측정으로 돌아온다', async () => {
+    const shellPids: Record<string, number | null | 'missing'> = { a: 300, z: 'missing' }
+    const h = harness({ panes: [pane('a')], shellPids, orphans: [orphanOf('w9', ['z'])] })
+    await h.monitor.tick()
+    expect(h.emitted.at(-1)?.orphans?.[0]?.measure).toEqual({ state: 'unavailable', reason: NO_RUNTIME_REASON })
+    shellPids.z = 400
+    h.state.now += MISSING_RETRY_MS
+    await h.monitor.tick()
+    expect(h.probe.mock.calls.filter(([id]) => id === 'z')).toHaveLength(2)
+    expect(h.emitted.at(-1)?.orphans?.[0]?.measure).toEqual({ state: 'measured', usage: { cpu: 4, memory: { state: 'measured', bytes: 400 * 1024 } }, pids: [400] })
   })
 })

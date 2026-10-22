@@ -3,7 +3,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ResourceCloseResult, ResourceCloseRoute, ResourcePaneRow, ResourceSnapshot } from '../../../shared/resource.js'
+import type { ResourceCloseResult, ResourceCloseRoute, ResourceOrphanCloseResult, ResourcePaneRow, ResourceSnapshot } from '../../../shared/resource.js'
 import type { CloseTabsResult } from '../../../shared/types.js'
 import { StatusBar } from './StatusBar.js'
 import { ResourceSegment } from './ResourceSegment.js'
@@ -59,7 +59,7 @@ const corral = {
   revealResourcePane: vi.fn(async () => true),
   closeResourcePane: vi.fn(async (): Promise<ResourceCloseResult> => ({ outcome: 'closed', closed: ['p-small'] })),
   closeTabs: vi.fn(async (): Promise<CloseTabsResult> => ({ outcome: 'closed', closed: ['t2'] })),
-  closeResourceOrphans: vi.fn(async (input: { workspaceIds: string[] }): Promise<CloseTabsResult> => ({ outcome: 'closed', closed: input.workspaceIds })),
+  closeResourceOrphans: vi.fn(async (input: { workspaceIds: string[] }): Promise<ResourceOrphanCloseResult> => ({ outcome: 'closed', closed: input.workspaceIds })),
   // 닫기 길 = main 의 지금 위상(H3). 기본은 SNAPSHOT 모양 그대로.
   getResourceCloseRoute: vi.fn(async (input: { paneId: string }): Promise<ResourceCloseRoute> => ROUTES[input.paneId] ?? { kind: 'missing' }),
   getUiPrefs: vi.fn(async (): Promise<{ tabMarks: unknown[] }> => ({ tabMarks: [] })),
@@ -1306,6 +1306,14 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     expect(row.querySelector('[data-statusbar-resource-agent]')?.textContent).toBe('claude (중지됨)')
     expect(q('[data-statusbar-resource-orphan-close-all]')).toBeNull()
     expect(q('[data-statusbar-resource-orphan-close="w7"]')).not.toBeNull()
+  })
+
+  it('G2 — 닫지 않은 줄은 main 이 준 사유로 알린다(카드에 붙음)', async () => {
+    corral.closeResourceOrphans.mockResolvedValueOnce({ outcome: 'closed', closed: [], skipped: [{ workspaceId: 'w8', reason: 'claimed' }] })
+    openOrphans()
+    click(must('[data-statusbar-resource-orphan-close="w8"]'))
+    await flush()
+    expect(must('[data-statusbar-resource-error]').textContent).toBe('1개는 닫지 않았다 — 카드에 붙음 1')
   })
 
   it('F3 — 한 줄 확인 창에도 「다시 묻지 않기」 가 없다(전역 설정을 끄지 않는다)', async () => {

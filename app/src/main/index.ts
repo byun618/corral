@@ -101,7 +101,7 @@ import { pickSessionName, pinnedSessions } from './pick-session.js'
 import { BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
 import { RegistryGeneration, removeObserved } from './registry-generation.js'
-import { attachDigests, buildSkeleton, cardlessGate, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
+import { attachDigests, buildSkeleton, cardlessGate, collectSessionRefs, joinTree, readClaimedWorkspaceIds, type RepoSkeleton } from './tree.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
 import { SettingsStore } from './settings.js'
@@ -303,6 +303,8 @@ let skeletonStartedAt: number | null = null
 const workspaceFirstSeen = new Map<string, number>()
 /** 신선도로 막힌 workspace 때문에 골격 재구성을 마지막으로 건 시각 — 같은 창에 여러 번 걸지 않는다. */
 let freshRebuildAt = 0
+/** 골격 오류(gitError·openError)로 카드 밖 판정이 보류일 때 마지막으로 재구성을 건 시각 (G5 — 5초 간격). */
+let errorRebuildAt = 0
 let emitScheduled = false
 let treeScheduled = false
 /**
@@ -598,7 +600,15 @@ function cardlessNow(): WorkspaceRow[] | null {
     workspaces: link.store.rows(),
     firstSeenAt: workspaceFirstSeen,
   })
-  if (gate === null) return null
+  if (gate === null) {
+    // 골격 오류로 보류면 스스로 회복하게 골격을 다시 세운다(G5 — 일시 git·herdr 실패가 다음 외부 변화까지 고착되지 않게). 5초에 한 번까지.
+    if (skeleton.some((repo) => repo.gitError !== null || repo.openError !== null) && Date.now() - errorRebuildAt > 5000) {
+      errorRebuildAt = Date.now()
+      log('resource.cardless_retry', { reason: 'skeleton-error' })
+      scheduleTree()
+    }
+    return null
+  }
   // 골격보다 새 workspace 가 있으면 골격을 한 번 다시 세운다 — 진짜 카드 밖이면 그 뒤에 목록에 나온다(F2). 5초에 한 번까지.
   if (gate.fresh > 0 && Date.now() - freshRebuildAt > 5000) {
     freshRebuildAt = Date.now()
@@ -622,17 +632,8 @@ function noteWorkspaces(): void {
  * 카드 귀속을 **그 자리에서** 다시 읽는다 (LIFE-628 F2 — 닫기 직전 권위 재확인). 메모리 골격이 아니라 등록 레포마다 herdr `worktree.list`
  * (`openWorktreeRow` 가 중복 생성을 막을 때 읽는 것과 같은 권위)의 열린 workspace 전부. 한 레포라도 읽기에 실패하면 null — 닫지 않는다.
  */
-async function claimedWorkspaceIdsNow(socketPath: string): Promise<Set<string> | null> {
-  const claimed = new Set<string>()
-  for (const root of registry?.list() ?? []) {
-    const open = await readOpenWorkspaces(socketPath, root)
-    if (open.error !== null) {
-      log('resource.claimed_read_failed', { root, error: open.error })
-      return null
-    }
-    for (const id of open.byPath.values()) claimed.add(id)
-  }
-  return claimed
+function claimedWorkspaceIdsNow(socketPath: string): Promise<Set<string> | null> {
+  return readClaimedWorkspaceIds({ roots: registry?.list() ?? [], read: (root) => readOpenWorkspaces(socketPath, root), log })
 }
 
 /** 상태 전송은 한 틱으로 뭉친다 — workspace_created 와 그 pane_created 가 같은 프레임에 실린다. */
@@ -757,7 +758,16 @@ async function refreshBindings(reason: string): Promise<{ changed: boolean; note
       }),
     }
   })
-  if (drift.length === 0) return { changed: false, note: null }
+  // G5 — 드리프트가 없어도 이번에 읽기에 성공한 루트의 openError 는 걷는다(그것만 바뀌었으면 note 없이 내보낸다).
+  const cleared = patched.some((repo, index) => repo.openError !== skeleton[index]?.openError)
+  if (drift.length === 0) {
+    if (cleared) {
+      skeleton = patched
+      log('tree.open_error_cleared', { reason })
+      scheduleEmit()
+    }
+    return { changed: false, note: null }
+  }
   skeleton = patched
   log('tree.binding_drift', { reason, drift })
   dropStreamIfPaneUnviewable() // 바인딩이 걷히며 스트리밍 pane 이 트리 밖이 될 수 있다 (C2)

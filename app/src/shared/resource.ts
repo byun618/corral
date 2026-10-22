@@ -87,8 +87,11 @@ export type ResourcePaneRow = {
 export type ResourceOrphanRow = {
   workspaceId: string
   label: string
-  /** pane 들의 cwd(중복 제거, 처음 본 순서). `exists` = 지금 디스크에 있는 디렉터리인가(S3 — 지워진 원래 경로를 가린다). */
-  paths: { path: string; exists: boolean }[]
+  /**
+   * pane 들의 cwd(중복 제거, 처음 본 순서). `exists` = 지금 디스크에 있는 디렉터리인가(S3 — 지워진 원래 경로를 가린다).
+   * `null` = 확인 불가(권한 거부 등 ENOENT·ENOTDIR 밖의 stat 오류, 또는 아직 확인 전 — LIFE-628 G1). 「없음」 으로 읽지 않는다.
+   */
+  paths: { path: string; exists: boolean | null }[]
   /** 주인 없음(F3) — 경로가 하나 이상이고 모두 사라졌거나 HOME. 「모두 닫기」 대상은 이 줄들뿐이다. */
   ownerless: boolean
   /** herdr 가 감지한 에이전트 이름(중복 제거). */
@@ -169,4 +172,12 @@ export type ResourceCloseResult = CloseTabsResult | { outcome: 'route-changed'; 
  * 카드 밖 workspace 닫기 (LIFE-628) — 기존 실행 중 확인 게이트(`closeTabsGated`)를 workspace 단위로 지난다.
  * `closed` = 실제로 닫은 workspace id.
  */
-export type ResourceOrphanCloseResult = CloseTabsResult
+export type ResourceOrphanCloseResult = CloseTabsResult & {
+  /**
+   * 요청했지만 닫지 않은 workspace 와 그 사유(LIFE-628 G2) — `claimed` = 다시 읽은 herdr 목록에서 카드에 붙어 있음,
+   * `gone` = 이미 없음(닫혔거나 카드 밖 목록에서 빠짐), `not-ownerless` = 「모두 닫기」 인데 주인 없는 줄이 아님.
+   */
+  skipped?: ResourceOrphanSkip[]
+}
+
+export type ResourceOrphanSkip = { workspaceId: string; reason: 'claimed' | 'gone' | 'not-ownerless' }

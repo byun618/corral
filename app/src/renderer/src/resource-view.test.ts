@@ -12,6 +12,8 @@ import {
   memoryText,
   bulkOrphanTargets,
   orphanCloseCopy,
+  orphanSkipText,
+  orphanTooltip,
   orphanKindText,
   orphanPathText,
   sortOrphans,
@@ -196,7 +198,7 @@ describe('groupPanes', () => {
 })
 
 describe('카드 밖 workspace 표시 (LIFE-628)', () => {
-  const orphanRow = (input: { id: string; paths: { path: string; exists: boolean }[]; agents?: string[]; stoppedAgents?: string[]; ownerless?: boolean; measure: ResourceMeasure }) => ({
+  const orphanRow = (input: { id: string; paths: { path: string; exists: boolean | null }[]; agents?: string[]; stoppedAgents?: string[]; ownerless?: boolean; measure: ResourceMeasure }) => ({
     workspaceId: input.id, label: `ws-${input.id}`, paths: input.paths, ownerless: input.ownerless ?? true, agents: input.agents ?? [], stoppedAgents: input.stoppedAgents ?? [], paneIds: [`p-${input.id}`], measure: input.measure,
   })
   it('경로 — 없으면 (없음), 여럿이면 외 n, 모르면 workspace 이름', () => {
@@ -207,6 +209,17 @@ describe('카드 밖 workspace 표시 (LIFE-628)', () => {
   it('종류 — 에이전트 이름들, 없으면 shell', () => {
     expect(orphanKindText(orphanRow({ id: 'a', paths: [], agents: ['claude', 'codex'], measure: measured(1, MB) }))).toBe('claude, codex')
     expect(orphanKindText(orphanRow({ id: 'a', paths: [], measure: measured(1, MB) }))).toBe('shell')
+  })
+  it('G1 경로 — 확인 불가(null)는 「(확인 불가)」, 툴팁도 없음과 구분', () => {
+    const row = orphanRow({ id: 'a', paths: [{ path: '/Volumes/x', exists: null }], measure: measured(1, MB) })
+    expect(orphanPathText(row)).toBe('/Volumes/x (확인 불가)')
+    expect(orphanTooltip(row)).toContain('/Volumes/x — 있는지 확인 불가(권한 등)')
+    expect(orphanTooltip(orphanRow({ id: 'b', paths: [{ path: '/gone', exists: false }], measure: measured(1, MB) }))).toContain('/gone — 디렉터리 없음')
+  })
+  it('G2 닫지 않은 줄 안내 — 사유별 개수, 없으면 null', () => {
+    expect(orphanSkipText({ skipped: [], unexplained: 0 })).toBeNull()
+    expect(orphanSkipText({ skipped: [{ workspaceId: 'a', reason: 'claimed' }, { workspaceId: 'b', reason: 'not-ownerless' }], unexplained: 1 })).toBe('3개는 닫지 않았다 — 카드에 붙음 1 · 이미 닫힘·없음 1 · 주인 없는 줄이 아님 1')
+    expect(orphanSkipText({ skipped: [{ workspaceId: 'a', reason: 'gone' }], unexplained: 0 })).toBe('1개는 닫지 않았다 — 이미 닫힘·없음 1')
   })
   it('F4 종류 — 세션 참조만 남은 에이전트는 이름 + (중지됨), 살아 있는 에이전트와 함께', () => {
     expect(orphanKindText(orphanRow({ id: 'a', paths: [], stoppedAgents: ['claude'], measure: measured(1, MB) }))).toBe('claude (중지됨)')

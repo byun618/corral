@@ -40,6 +40,7 @@ import {
   measureCells,
   memoryText,
   bulkOrphanTargets,
+  orphanSkipText,
   ORPHAN_OWNED,
   ORPHAN_OWNED_TOOLTIP,
   ORPHAN_OWNERLESS,
@@ -418,8 +419,9 @@ export function ResourceSegment(): React.JSX.Element {
     switch (result.outcome) {
       case 'closed': {
         setPendingOrphans(null)
-        const missed = ids.length - result.closed.length
-        setError(missed === 0 ? null : `${missed}개는 닫지 않았다 — 이미 없어졌거나 카드에 붙었거나 주인 없는 줄이 아니게 됐다`)
+        const skipped = result.skipped ?? []
+        const unexplained = ids.filter((id) => !result.closed.includes(id) && !skipped.some((item) => item.workspaceId === id)).length
+        setError(orphanSkipText({ skipped, unexplained }))
         return
       }
       case 'needs-confirm':

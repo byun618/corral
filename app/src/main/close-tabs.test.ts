@@ -116,6 +116,10 @@ describe('runningForeground (LIFE-628 F4)', () => {
   it('셸만이면 null', () => {
     expect(runningForeground(read({}))).toBeNull()
   })
+  it('G7 — ok 인데 셸 pid 를 모르면(그룹이 같아 보여도) 실행 중 쪽 — 셸만이라고 단정하지 않는다', () => {
+    expect(runningForeground(read({ shellPid: null, foregroundGroupId: null }))).toEqual(['(알 수 없는 프로세스)'])
+    expect(runningForeground(read({ shellPid: null, foregroundGroupId: null, foreground: [{ name: 'zsh', cmdline: null }] }))).toEqual(['zsh'])
+  })
   it('pane_not_found(missing)이면 null — 「프로세스 확인 실패」 로 묻지 않는다', () => {
     expect(runningForeground(read({ ok: false, shellPid: null, foregroundGroupId: null, error: 'pane_not_found: x', missing: true }))).toBeNull()
   })
@@ -125,6 +129,31 @@ describe('runningForeground (LIFE-628 F4)', () => {
   it('셸 아닌 포그라운드 — 목록, 비면 (알 수 없는 프로세스)', () => {
     expect(runningForeground(read({ foregroundGroupId: 11, foreground: [{ name: 'vim', cmdline: 'vim a' }] }))).toEqual(['vim a'])
     expect(runningForeground(read({ foregroundGroupId: 11 }))).toEqual(['(알 수 없는 프로세스)'])
+  })
+})
+
+describe('closeTabsGated — prepare (LIFE-628 G3)', () => {
+  it('탭마다 준비 → 판정 → 닫기 순서 — 준비가 판정과 닫기 사이에 끼지 않는다', async () => {
+    const w = world({ panes: { A: ['pA'], B: ['pB'] } })
+    const result = await closeTabsGated({ ...w.deps, tabIds: ['A', 'B'], confirmed: true, alwaysConfirm: false, confirmRunning: true, confirmedPaneIds: [],
+      prepare: async (tabId) => { w.log.push(`prepare ${tabId}`); return { outcome: 'ready' } } })
+    expect(result).toEqual({ outcome: 'closed', closed: ['A', 'B'] })
+    expect(w.log).toEqual(['prepare A', 'probe pA', 'close A', 'prepare B', 'probe pB', 'close B'])
+  })
+  it('준비가 skipped 면 그 탭은 판정·닫기 없이 다음으로, error 면 멈춘다(그때까지 닫은 것만)', async () => {
+    const w = world({ panes: { A: ['pA'], B: ['pB'], C: ['pC'] } })
+    const result = await closeTabsGated({ ...w.deps, tabIds: ['A', 'B', 'C'], confirmed: true, alwaysConfirm: false, confirmRunning: true, confirmedPaneIds: [],
+      prepare: async (tabId) => (tabId === 'A' ? { outcome: 'skipped' } : tabId === 'C' ? { outcome: 'error', error: 'read' } : { outcome: 'ready' }) })
+    expect(result).toEqual({ outcome: 'error', closed: ['B'], error: 'read' })
+    expect(w.log).toEqual(['probe pB', 'close B'])
+  })
+  it('준비 뒤 panesOf 가 null 이 되면(사이에 사라짐) 닫지 않는다', async () => {
+    const panes: Record<string, string[]> = { A: ['pA'] }
+    const w = world({ panes })
+    const result = await closeTabsGated({ ...w.deps, tabIds: ['A'], confirmed: true, alwaysConfirm: false, confirmRunning: false, confirmedPaneIds: [],
+      prepare: async () => { delete panes['A']; return { outcome: 'ready' } } })
+    expect(result).toEqual({ outcome: 'closed', closed: [] })
+    expect(w.log).toEqual([])
   })
 })
 

@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { EMPTY_SESSION_DIGEST, type PaneRow, type WorkspaceRow } from '../shared/types.js'
 import { emptyAgentState } from '../shared/agent-state.js'
 vi.mock('./adapter/index.js', () => ({ readOpenWorkspaces: vi.fn() }))
-import { attachDigests, cardlessGate, cardlessWorkspaces, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
+import { attachDigests, cardlessGate, cardlessWorkspaces, collectSessionRefs, joinTree, readClaimedWorkspaceIds, type RepoSkeleton } from './tree.js'
 import { readSessionDigests } from './transcript.js'
 
 function pane(id: string, sessionId: string | null): PaneRow {
@@ -90,6 +90,29 @@ describe('cardlessWorkspaces (LIFE-628 S1)', () => {
   })
   it('골격이 비면(레포 없음) 전부 카드 밖', () => {
     expect(cardlessWorkspaces({ skeleton: [], workspaces: [ws('w1')] }).map((row) => row.workspaceId)).toEqual(['w1'])
+  })
+
+  // fix r2 G2·G7 — 권위 재독(index.ts claimedWorkspaceIdsNow 의 본체).
+  describe('readClaimedWorkspaceIds', () => {
+    const map = (entries: [string, string][], prunable: string[] = [], error: string | null = null) => ({ byPath: new Map(entries), prunable: new Set(prunable), repoName: null, error })
+    it('루트마다 읽어 합집합', async () => {
+      const reads: Record<string, ReturnType<typeof map>> = { '/a': map([['/a', 'w1'], ['/a/x', 'w2']]), '/b': map([['/b', 'w3']]) }
+      const claimed = await readClaimedWorkspaceIds({ roots: ['/a', '/b'], read: async (root) => reads[root] ?? map([]), log: () => {} })
+      expect(claimed).toEqual(new Set(['w1', 'w2', 'w3']))
+    })
+    it('둘째 루트 읽기가 실패하면 null(첫째가 성공했어도)', async () => {
+      const logs: string[] = []
+      const claimed = await readClaimedWorkspaceIds({ roots: ['/a', '/b'], read: async (root) => (root === '/b' ? map([], [], 'timeout') : map([['/a', 'w1']])), log: (tag) => logs.push(tag) })
+      expect(claimed).toBeNull()
+      expect(logs).toEqual(['resource.claimed_read_failed'])
+    })
+    it('prunable 경로의 id 는 귀속으로 세지 않는다 — 같은 id 가 살아 있는 경로에도 붙어 있으면 센다', async () => {
+      const claimed = await readClaimedWorkspaceIds({ roots: ['/a'], read: async () => map([['/a', 'w1'], ['/a/gone', 'w2'], ['/a/gone2', 'w3'], ['/a/live', 'w3']], ['/a/gone', '/a/gone2']), log: () => {} })
+      expect(claimed).toEqual(new Set(['w1', 'w3']))
+    })
+    it('루트가 없으면 빈 집합', async () => {
+      expect(await readClaimedWorkspaceIds({ roots: [], read: async () => map([]), log: () => {} })).toEqual(new Set())
+    })
   })
 
   // fix r1 F1·F2·F6 — 카드 밖 판정 가드(예전 index.ts cardlessNow)를 순수 함수로. 가드 하나하나가 null(보류)을 만든다.

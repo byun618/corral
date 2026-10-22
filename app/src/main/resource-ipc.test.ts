@@ -26,9 +26,11 @@ vi.mock('node:child_process', () => ({
   },
 }))
 
-const { closeOrphanWorkspaces, closeResourcePane, closeRouteOf, createDirectoryCache, footprintHelperPath, orphanSources, shellProbeOf, paneSources, readFootprintWith, readHostWith, readPsWith, registerResourceIpc } = await import('./resource-ipc.js')
+const { checkPath, closeOrphanWorkspaces, closeResourcePane, closeRouteOf, createDirectoryCache, footprintHelperPath, orphanSources, shellProbeOf, paneSources, readFootprintWith, readHostWith, readPsWith, registerResourceIpc } = await import('./resource-ipc.js')
 const { buildAgentRows } = await import('../shared/sidebar-agents.js')
 type Deps = Parameters<typeof closeResourcePane>[0]['deps']
+/** 경로 판정 창구 — 실경로는 기본 모름. */
+const oracle = (isDirectory: (path: string) => boolean | null, realPath: (path: string) => string | null = () => null) => ({ isDirectory, realPath })
 
 const pane = (input: { paneId: string; tabId: string; title?: string; agent?: string | null; workspaceId?: string; cwd?: string | null; agentSession?: AgentSessionRef | null }) => ({
   paneId: input.paneId, tabId: input.tabId, workspaceId: input.workspaceId ?? 'w1', title: input.title ?? input.paneId, agent: input.agent ?? null, agentStatus: 'idle' as const,
@@ -436,42 +438,42 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
   it('orphanSources — 경로는 중복 없이·있는지 함께, 에이전트는 중복 없이, pane id 전부', () => {
     const rows = orphanSources({
       workspaces: [orphan({ workspaceId: 'w8', panes: [{ paneId: 'a', agent: 'claude', cwd: '/gone/wt' }, { paneId: 'b', cwd: '/gone/wt' }, { paneId: 'c', agent: 'claude', cwd: null }] })],
-      home: '/home',
-      isDirectory: (path) => path !== '/gone/wt',
+      homes: ['/home'],
+      paths: oracle((path) => path !== '/gone/wt'),
     })
     expect(rows).toEqual([{ workspaceId: 'w8', label: 'w8', paths: [{ path: '/gone/wt', exists: false }], ownerless: true, agents: ['claude'], stoppedAgents: [], paneIds: ['a', 'b', 'c'] }])
   })
   it('실행 중이면 닫지 않고 needs-confirm — 판정 단위는 그 workspace 의 pane 들', async () => {
     const d = deps()
-    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8'], bulk: false, isDirectory: () => false, confirmed: false, confirmedPaneIds: [] })
-    expect(result).toEqual({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['yes'] }] })
+    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8'], bulk: false, paths: oracle(() => false), confirmed: false, confirmedPaneIds: [] })
+    expect(result).toEqual({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['yes'] }], skipped: [] })
     expect(d.closed).toEqual([])
   })
   it('확인 뒤 「모두 닫기」 — 목록에 있던 것만 닫고, 카드 pane(p1·p2·p3)은 건드리지 않는다', async () => {
     const d = deps()
-    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: true, isDirectory: () => false, confirmed: true, confirmedPaneIds: ['p8', 'p9'] })
-    expect(result).toEqual({ outcome: 'closed', closed: ['w8', 'w9'] })
+    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: true, paths: oracle(() => false), confirmed: true, confirmedPaneIds: ['p8', 'p9'] })
+    expect(result).toEqual({ outcome: 'closed', closed: ['w8', 'w9'], skipped: [] })
     expect(d.closed).toEqual(['w8', 'w9'])
   })
   it('설정 skipCloseTerminalWithRunningProcessConfirm 이면 판정 없이 닫는다', async () => {
     const d = deps({ confirmRunning: () => false })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w9'], bulk: false, isDirectory: () => false, confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w9'] })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w9'], bulk: false, paths: oracle(() => false), confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w9'], skipped: [] })
     expect(d.probed).toEqual([])
   })
   it('지금 카드 밖이 아닌 workspace(카드 귀속 w1·모르는 id)는 닫지 않는다', async () => {
     const d = deps({ confirmRunning: () => false })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w1', 'nope'], bulk: false, isDirectory: () => false, confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: [] })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w1', 'nope'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: [], skipped: [{ workspaceId: 'w1', reason: 'claimed' }, { workspaceId: 'nope', reason: 'gone' }] })
     expect(d.closed).toEqual([])
   })
   it('카드 밖을 가릴 수 없으면(null) 하나도 닫지 않는다', async () => {
     const d = deps({ confirmRunning: () => false, cardlessWorkspaces: () => null })
-    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w9'], bulk: false, isDirectory: () => false, confirmed: true, confirmedPaneIds: [] })
+    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w9'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })
     expect(result.outcome).toBe('error')
     expect(d.closed).toEqual([])
   })
   it('herdr 거절은 그대로 — 그때까지 닫은 것만 closed', async () => {
     const d = deps({ confirmRunning: () => false, closeWorkspace: async (input) => (input.workspaceId === 'w9' ? { outcome: 'rejected', rejection: { code: 'workspace_group_close_required', message: 'group' } } : { outcome: 'closed' }) })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, isDirectory: () => false, confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'rejected', closed: ['w8'], rejection: { code: 'workspace_group_close_required', message: 'group' } })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'rejected', closed: ['w8'], rejection: { code: 'workspace_group_close_required', message: 'group' }, skipped: [] })
   })
   it('IPC — 다른 창 발신·배열 아닌 입력은 닫지 않는다', async () => {
     electron.handlers.clear()
@@ -482,7 +484,7 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     expect(await handler?.({}, { workspaceIds: ['w9'] })).toEqual({ outcome: 'error', closed: [], error: '허용되지 않은 발신자' })
     ours = true
     expect(await handler?.({}, { workspaceIds: 'w9' })).toEqual({ outcome: 'error', closed: [], error: '허용되지 않은 발신자' })
-    expect(await handler?.({}, { workspaceIds: ['w9'], confirmed: true })).toEqual({ outcome: 'closed', closed: ['w9'] })
+    expect(await handler?.({}, { workspaceIds: ['w9'], confirmed: true })).toEqual({ outcome: 'closed', closed: ['w9'], skipped: [] })
     stop.stop()
   })
 
@@ -492,7 +494,7 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     const d = deps()
     const stop = registerResourceIpc(d)
     const handler = electron.handlers.get('corral:resourceCloseOrphans')
-    expect(await handler?.({}, { workspaceIds: ['w8'] })).toEqual({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['yes'] }] })
+    expect(await handler?.({}, { workspaceIds: ['w8'] })).toEqual({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['yes'] }], skipped: [] })
     expect(await handler?.({}, { workspaceIds: ['w8'], confirmed: 'yes', confirmedPaneIds: ['p8'] })).toMatchObject({ outcome: 'needs-confirm' })
     expect(d.closed).toEqual([])
     stop.stop()
@@ -502,66 +504,66 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     const d = deps({ confirmRunning: () => false })
     const stop = registerResourceIpc(d)
     const handler = electron.handlers.get('corral:resourceCloseOrphans')
-    expect(await handler?.({}, { workspaceIds: ['w9'], bulk: true })).toEqual({ outcome: 'needs-confirm', closed: [], running: [] })
+    expect(await handler?.({}, { workspaceIds: ['w9'], bulk: true })).toEqual({ outcome: 'needs-confirm', closed: [], running: [], skipped: [] })
     expect(d.closed).toEqual([])
-    expect(await handler?.({}, { workspaceIds: ['w9'], bulk: 'true' })).toEqual({ outcome: 'closed', closed: ['w9'] })
+    expect(await handler?.({}, { workspaceIds: ['w9'], bulk: 'true' })).toEqual({ outcome: 'closed', closed: ['w9'], skipped: [] })
     stop.stop()
   })
   it('F2 — 다시 읽은 카드 귀속에 있으면(메모리 판정은 카드 밖이어도) 닫지 않는다', async () => {
     const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => new Set(['w1', 'w9']) })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, isDirectory: () => false, confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'] })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'], skipped: [{ workspaceId: 'w9', reason: 'claimed' }] })
     expect(d.closed).toEqual(['w8'])
   })
   it('F2 — 카드 귀속 읽기가 실패하면 하나도 닫지 않는다(판정도 하지 않는다)', async () => {
     const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => null })
-    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, isDirectory: () => false, confirmed: true, confirmedPaneIds: [] })
+    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })
     expect(result.outcome).toBe('error')
     expect(d.closed).toEqual([])
     expect(d.probed).toEqual([])
   })
   it('F2 — 확인 전 판정에도 다시 읽은 귀속을 쓴다: 카드에 붙은 workspace 의 pane 은 판정·확인 창에 넣지 않는다', async () => {
     const d = deps({ claimedWorkspaceIds: async () => new Set(['w1', 'w9']) })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, isDirectory: () => false, confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['yes'] }] })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(() => false), confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['yes'] }], skipped: [{ workspaceId: 'w9', reason: 'claimed' }] })
     expect(d.probed).toEqual([['p8']])
   })
   it('F2 — 귀속 읽기가 실패하면 확인 전 판정(pane 질의)도 하지 않는다', async () => {
     const d = deps({ claimedWorkspaceIds: async () => null })
-    expect((await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8'], bulk: false, isDirectory: () => false, confirmed: false, confirmedPaneIds: [] })).outcome).toBe('error')
+    expect((await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8'], bulk: false, paths: oracle(() => false), confirmed: false, confirmedPaneIds: [] })).outcome).toBe('error')
     expect(d.probed).toEqual([])
   })
   it('F2 — 닫기 직전마다 다시 읽는다: 첫 workspace 를 닫은 뒤 둘째가 카드에 붙으면 건너뛴다', async () => {
     let reads = 0
     const logs: string[] = []
     const d = deps({ confirmRunning: () => false, log: (tag) => logs.push(tag), claimedWorkspaceIds: async () => (++reads >= 3 ? new Set(['w1', 'w9']) : new Set(['w1'])) })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, isDirectory: () => false, confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'] })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'], skipped: [{ workspaceId: 'w9', reason: 'claimed' }] })
     expect(d.closed).toEqual(['w8'])
     expect(logs).toContain('resource.close_orphan_skipped')
   })
   it('F2 — 닫기 직전 다시 읽기가 실패하면 거기서 멈춘다(그때까지 닫은 것만)', async () => {
     let reads = 0
     const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => (++reads >= 3 ? null : new Set(['w1'])) })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, isDirectory: () => false, confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'error', closed: ['w8'], error: '카드 귀속을 다시 읽지 못해 멈췄다' })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'error', closed: ['w8'], error: '카드 귀속을 다시 읽지 못해 멈췄다', skipped: [] })
     expect(d.closed).toEqual(['w8'])
   })
   it('F3 — 「모두 닫기」 는 주인 없는 줄(경로가 모두 없거나 HOME)만 닫는다. 경로가 살아 있는 줄은 남는다', async () => {
     const d = deps({ confirmRunning: () => false })
     // w8 의 /gone/wt 가 지금 있다(미등록 레포 세션 등) → 주인 있음. w9 는 HOME → 주인 없음.
     const isDirectory = (path: string): boolean => path === '/gone/wt' || path === '/home'
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: true, isDirectory, confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w9'] })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: true, paths: oracle(isDirectory), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w9'], skipped: [{ workspaceId: 'w8', reason: 'not-ownerless' }] })
     expect(d.closed).toEqual(['w9'])
     // 경로 존재를 아직 모르면(null) 「있다」 로 — 대상이 아니다.
     const d2 = deps({ confirmRunning: () => false })
-    expect(await closeOrphanWorkspaces({ deps: d2, workspaceIds: ['w8'], bulk: true, isDirectory: () => null, confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: [] })
+    expect(await closeOrphanWorkspaces({ deps: d2, workspaceIds: ['w8'], bulk: true, paths: oracle(() => null), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: [], skipped: [{ workspaceId: 'w8', reason: 'not-ownerless' }] })
     // 한 줄 닫기(✕)는 경로가 살아 있어도 닫는다.
     const d3 = deps({ confirmRunning: () => false })
-    expect(await closeOrphanWorkspaces({ deps: d3, workspaceIds: ['w8'], bulk: false, isDirectory, confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'] })
+    expect(await closeOrphanWorkspaces({ deps: d3, workspaceIds: ['w8'], bulk: false, paths: oracle(isDirectory), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'], skipped: [] })
   })
   it('F3 — 「모두 닫기」 는 실행 중이 없어도·설정이 확인을 껐어도 확인 전엔 needs-confirm(개수 확인) — 하나도 닫지 않는다', async () => {
     const d = deps({ confirmRunning: () => false })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: true, isDirectory: () => false, confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'needs-confirm', closed: [], running: [] })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: true, paths: oracle(() => false), confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'needs-confirm', closed: [], running: [], skipped: [] })
     expect(d.closed).toEqual([])
     const idle = deps({ probeRunning: async () => [] })
-    expect(await closeOrphanWorkspaces({ deps: idle, workspaceIds: ['w8', 'w9'], bulk: true, isDirectory: () => false, confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'needs-confirm', closed: [], running: [] })
+    expect(await closeOrphanWorkspaces({ deps: idle, workspaceIds: ['w8', 'w9'], bulk: true, paths: oracle(() => false), confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'needs-confirm', closed: [], running: [], skipped: [] })
     expect(idle.closed).toEqual([])
   })
   it('F3·F4 orphanSources — 주인 없음 판정(경로 없음·HOME·섞임·경로 없음 pane), 세션 참조만 남은 에이전트는 stoppedAgents', () => {
@@ -573,8 +575,8 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
         orphan({ workspaceId: 'c', panes: [{ paneId: 'c1', cwd: null }] }),
         orphan({ workspaceId: 'd', panes: [{ paneId: 'd1', cwd: '/gone', agentSession: session('claude') }, { paneId: 'd2', cwd: '/gone', agent: 'codex', agentSession: session('codex') }] }),
       ],
-      home: '/home',
-      isDirectory: (path) => path === '/live' || path === '/home',
+      homes: ['/home'],
+      paths: oracle((path) => path === '/live' || path === '/home'),
     })
     expect(rows.map((row) => [row.workspaceId, row.ownerless])).toEqual([['a', true], ['b', false], ['c', false], ['d', true]])
     expect(rows.find((row) => row.workspaceId === 'd')).toMatchObject({ agents: ['codex'], stoppedAgents: ['claude'] })
@@ -584,15 +586,51 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     expect(shellProbeOf({ shellPid: null, missing: true })).toEqual({ kind: 'missing' })
     expect(shellProbeOf({ shellPid: null, missing: false })).toEqual({ kind: 'unknown' })
   })
+  it('G3 — workspace 마다 권위 재독 → 프로세스 판정 → 닫기 (판정과 닫기 사이에 재독이 없다)', async () => {
+    const events: string[] = []
+    const d = deps({
+      claimedWorkspaceIds: async () => { events.push('read'); return new Set(['w1']) },
+      probeRunning: async (input) => { events.push(`probe ${input.panes.map((pane) => pane.paneId).join(',')}`); return [] },
+      closeWorkspace: async (input) => { events.push(`close ${input.workspaceId}`); return { outcome: 'closed' } },
+    })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })).toMatchObject({ outcome: 'closed', closed: ['w8', 'w9'] })
+    expect(events).toEqual(['read', 'read', 'probe p8', 'close w8', 'read', 'probe p9', 'close w9'])
+  })
+  it('G1 checkPath — ENOENT·ENOTDIR 만 없음, EACCES 등은 확인 불가(null), 파일은 없음, 디렉터리는 실경로와 함께', async () => {
+    const fail = (code: string) => async (): Promise<{ isDirectory: () => boolean }> => { throw Object.assign(new Error(code), { code }) }
+    const realpath = async (target: string): Promise<string> => `/real${target}`
+    expect(await checkPath({ target: '/x', stat: fail('ENOENT'), realpath })).toEqual({ exists: false, real: null })
+    expect(await checkPath({ target: '/x', stat: fail('ENOTDIR'), realpath })).toEqual({ exists: false, real: null })
+    for (const code of ['EACCES', 'EPERM', 'EIO']) expect(await checkPath({ target: '/x', stat: fail(code), realpath })).toEqual({ exists: null, real: null })
+    expect(await checkPath({ target: '/x', stat: async () => { throw new Error('no code') }, realpath })).toEqual({ exists: null, real: null })
+    expect(await checkPath({ target: '/f', stat: async () => ({ isDirectory: () => false }), realpath })).toEqual({ exists: false, real: null })
+    expect(await checkPath({ target: '/d', stat: async () => ({ isDirectory: () => true }), realpath })).toEqual({ exists: true, real: '/real/d' })
+    expect(await checkPath({ target: '/d', stat: async () => ({ isDirectory: () => true }), realpath: async () => { throw new Error('x') } })).toEqual({ exists: true, real: null })
+  })
+  it('G1 — 확인 불가(null) 경로는 주인 없음이 아니고 「(없음)」 도 아니다 → 모두 닫기 대상 밖', async () => {
+    const rows = orphanSources({ workspaces: [orphan({ workspaceId: 'w8', panes: [{ paneId: 'p8', cwd: '/Volumes/locked/wt' }] })], homes: ['/home'], paths: oracle(() => null) })
+    expect(rows[0]).toMatchObject({ paths: [{ path: '/Volumes/locked/wt', exists: null }], ownerless: false })
+  })
+  it('G6 — HOME 비교는 실경로로도: 심링크 HOME 아래 열린 pane(실경로 = HOME)도 주인 없음, 논리 HOME 문자열도 HOME', () => {
+    const real = (target: string): string | null => (target === '/Users/me-link' ? '/Users/me' : null)
+    const rows = orphanSources({
+      workspaces: [orphan({ workspaceId: 'a', panes: [{ paneId: 'a1', cwd: '/Users/me-link' }] }), orphan({ workspaceId: 'b', panes: [{ paneId: 'b1', cwd: '/logical-home' }] }), orphan({ workspaceId: 'c', panes: [{ paneId: 'c1', cwd: '/Users/other' }] })],
+      homes: ['/Users/me', '/logical-home'],
+      paths: oracle(() => true, real),
+    })
+    expect(rows.map((row) => [row.workspaceId, row.ownerless])).toEqual([['a', true], ['b', true], ['c', false]])
+  })
   it('F7 createDirectoryCache — 처음엔 모름(null)·비동기 stat 뒤 값·TTL 안에서는 다시 stat 하지 않는다', async () => {
     let now = 0
     const calls: string[] = []
-    const cache = createDirectoryCache({ ttlMs: 5000, now: () => now, stat: async (path) => { calls.push(path); if (path === '/err') throw new Error('x'); return path === '/yes' } })
+    const cache = createDirectoryCache({ ttlMs: 5000, now: () => now, check: async (path) => { calls.push(path); if (path === '/err') throw new Error('x'); return path === '/yes' ? { exists: true, real: '/real/yes' } : { exists: false, real: null } } })
     expect(cache.isDirectory('/yes')).toBeNull()
     expect(cache.isDirectory('/err')).toBeNull()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(cache.isDirectory('/yes')).toBe(true)
-    expect(cache.isDirectory('/err')).toBe(false)
+    expect(cache.realPath('/yes')).toBe('/real/yes')
+    // 확인 자체가 던지면 모름(null) — 「없음」 이 아니다(G1).
+    expect(cache.isDirectory('/err')).toBeNull()
     expect(calls).toEqual(['/yes', '/err'])
     now = 5000
     cache.isDirectory('/yes')

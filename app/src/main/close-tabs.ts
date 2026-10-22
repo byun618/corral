@@ -24,6 +24,9 @@ export type CloseTabOutcome =
   | { outcome: 'rejected'; rejection: { code: string; message: string } }
   | { outcome: 'error'; error: string }
 
+/** 탭 하나를 판정하기 **전** 준비(LIFE-628 G3 — 권위 재독). `ready` 면 판정 → 닫기, `skipped` 면 다음 탭, `error` 면 멈춘다. */
+export type ClosePrepareOutcome = { outcome: 'ready' } | { outcome: 'skipped' } | { outcome: 'error'; error: string }
+
 export async function closeTabsGated(input: {
   tabIds: readonly string[]
   confirmed: boolean
@@ -35,6 +38,11 @@ export async function closeTabsGated(input: {
   /** 그 탭의 지금 pane 들. 탭이 없으면 null(건너뛴다). */
   panesOf: (tabId: string) => readonly string[] | null
   probe: (panes: readonly { tabId: string; paneId: string }[]) => Promise<RunningPane[]>
+  /**
+   * 있으면 탭마다 닫기 직전 재판정 **앞에** 부른다 — 순서 = 준비 → 프로세스 판정 → 닫기. 준비(예: 귀속 재독)가 판정과 닫기 사이에
+   * 끼지 않게 하려는 것이다(LIFE-628 G3). 준비 뒤 `panesOf` 를 다시 본다.
+   */
+  prepare?: (tabId: string) => Promise<ClosePrepareOutcome>
   close: (tabId: string) => Promise<CloseTabOutcome>
 }): Promise<CloseTabsResult> {
   const panesOfTabs = (tabIds: readonly string[]): { tabId: string; paneId: string }[] =>
@@ -48,6 +56,18 @@ export async function closeTabsGated(input: {
   const closed: string[] = []
   for (const [index, tabId] of targets.entries()) {
     if (input.panesOf(tabId) === null) continue
+    if (input.prepare !== undefined) {
+      const ready = await input.prepare(tabId)
+      switch (ready.outcome) {
+        case 'ready':
+          break
+        case 'skipped':
+          continue
+        case 'error':
+          return { outcome: 'error', closed, error: ready.error }
+      }
+      if (input.panesOf(tabId) === null) continue
+    }
     const now = input.confirmRunning ? await input.probe(panesOfTabs([tabId])) : []
     if (now.some((pane) => !confirmed.has(pane.paneId))) {
       const remaining = targets.slice(index).filter((id) => input.panesOf(id) !== null)

@@ -16,6 +16,8 @@ import { attribute, combineMeasures, parsePsTable, totalOf, type FootprintTable,
 
 export const RESOURCE_INTERVAL_MS = 2000
 export const PROBE_RETRY_MS = 30_000
+/** 런타임 없음(`missing`) pane 의 느린 재질의 간격 (LIFE-628 G4) — 재기동 뒤 늦게 PTY 가 붙는 pane 이 측정으로 돌아오게. */
+export const MISSING_RETRY_MS = 60_000
 const DURATION_SAMPLES = 30
 
 /** 수집 대상 pane — 표시에 쓰는 칸까지 main 이 채워 넘긴다. */
@@ -23,7 +25,8 @@ export type ResourcePaneSource = Omit<ResourcePaneRow, 'measure'>
 
 /**
  * herdr 에 셸 pid 를 물은 결과 (LIFE-628 F5). `missing` = herdr 가 `pane_not_found` — 런타임(PTY)이 없는 pane 이라 셸 pid 를
- * 영영 못 받는다. 그런 pane 은 30초 재질의를 하지 않는다(목록에서 빠졌다가 다시 오면 그때 새로 묻는다).
+ * 그때는 못 받는다. 그런 pane 은 30초 재질의 대신 `MISSING_RETRY_MS`(60초) 간격으로만 다시 묻는다(G4 — 늦게 PTY 가 붙는 pane).
+ * 목록에서 빠졌다가 다시 오면 그때 새로 묻는다.
  */
 export type ShellProbe = { kind: 'pid'; pid: number } | { kind: 'unknown' } | { kind: 'missing' }
 
@@ -95,7 +98,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
   }
 
   /**
-   * 새 pane 과 셸 pid 를 못 얻은 pane(재시도 시각이 된 것)만 묻는다. 런타임 없음이 확정된 pane(`missing`)은 다시 묻지 않는다(F5).
+   * 새 pane 과 셸 pid 를 못 얻은 pane(재시도 시각이 된 것)만 묻는다. 런타임 없음(`missing`) pane 은 60초 간격으로만(F5·G4).
    * `keep` = 이번 틱에 재지는 않지만 캐시를 지우지 말 pane(카드 밖 판정이 null 인 틱의 직전 카드 밖 pane — F5).
    */
   const refreshRoots = async (input: { panes: readonly { paneId: string }[]; keep: ReadonlySet<string>; asked: Set<string> }): Promise<void> => {
@@ -104,7 +107,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
     const now = deps.now()
     const asks = input.panes.filter((pane) => {
       const cached = roots.get(pane.paneId)
-      return cached === undefined || (cached.shellPid === null && !cached.missing && now - cached.probedAt >= PROBE_RETRY_MS)
+      return cached === undefined || (cached.shellPid === null && now - cached.probedAt >= (cached.missing ? MISSING_RETRY_MS : PROBE_RETRY_MS))
     })
     for (const pane of asks) {
       const { shellPid, missing } = await probe(pane.paneId)

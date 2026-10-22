@@ -22,6 +22,12 @@ export type TabGroup = {
    * `tabOrder` 에 없는 값은 미리보기가 아니다(`file-tabs.ts` `previewOf` 가 확인한다). 터미널 탭은 미리보기가 될 수 없다.
    */
   previewTabId?: string | null
+  /**
+   * 이 영역의 **탭 MRU**(LIFE-691 R3) — 활성이 된 순서, 끝이 가장 최근. 활성 탭이 영역을 떠나면 여기서 다음 활성을 고른다(`nextActiveAfterLeave`).
+   * **메모리 전용**이다 — 저장 때 `withoutRecentTabs` 로 빼고 `readNode` 도 읽지 않는다(`LAYOUT_FORMAT` 무변경). 재기동 직후엔 없다 → 이웃 폴백.
+   * 기록은 `trackRecentTabs` 한 자리(`useGroupLayout` 의 `mutate`)에서만 한다.
+   */
+  recentTabIds?: string[]
 }
 
 /**
@@ -65,6 +71,80 @@ export function topRightGroupId(node: GroupNode): string {
 
 export function leaf(group: TabGroup): GroupNode {
   return { kind: 'leaf', group }
+}
+
+/**
+ * 활성 탭이 영역을 떠난 뒤(닫기·옮기기) 그 영역의 다음 활성 탭 (LIFE-691 R1·R2 — Orca `tab-group-state.ts` 와 같은 규칙).
+ *
+ * `group` 은 **떠나기 전** 영역이다 — 이웃은 떠나기 전 `tabOrder` 로 센다. `kept` = 떠난 뒤 남는 탭(한 번에 여럿이 떠날 수 있다 — `reconcileLayout`).
+ *   · 활성 탭이 남아 있으면 그대로(R2)
+ *   · MRU 에서 남은 탭 중 가장 최근(R1)
+ *   · 없으면 떠난 활성 탭 자리의 오른쪽에서 가장 가까운 남은 탭 → 왼쪽에서 가장 가까운 남은 탭
+ * 활성이 없거나 `tabOrder` 에 없던 값이면 남은 첫 탭이다(전과 같다).
+ */
+export function nextActiveAfterLeave(input: { group: TabGroup; kept: readonly string[] }): string | null {
+  const { group, kept } = input
+  const active = group.activeTabId
+  if (active !== null && kept.includes(active)) return active
+  if (active === null) return kept[0] ?? null
+  const recent = [...(group.recentTabIds ?? [])].reverse().find((tabId) => kept.includes(tabId))
+  if (recent !== undefined) return recent
+  const at = group.tabOrder.indexOf(active)
+  if (at < 0) return kept[0] ?? null
+  const right = group.tabOrder.slice(at + 1).find((tabId) => kept.includes(tabId))
+  const left = group.tabOrder.slice(0, at).reverse().find((tabId) => kept.includes(tabId))
+  return right ?? left ?? null
+}
+
+/**
+ * 영역마다 탭 MRU 를 맞춘다 (LIFE-691 R3) — 활성 탭을 끝으로, 그 영역 `tabOrder` 에 없는 탭(떠난 탭)은 뺀다. 바뀐 영역이 없으면 같은 객체.
+ *
+ * 활성 탭을 바꾸는 길(클릭·파일 열기·⌃1–9·⌘⇧[ ]·reveal·MRU 전환·탭바 이동·옮겨 온 탭)이 전부 `useGroupLayout` 의 `mutate` 를 지나므로 거기서
+ * 바꾸기 **전**에 한 번 부르면 기록이 빠지지 않는다 — 재기동 직후 저장값의 활성 탭도 든다. 바꾼 뒤의 활성은 다음 `mutate` 의 「전」이 넣는다
+ * (그 사이 그 탭이 떠나도 떠난 탭은 `nextActiveAfterLeave` 의 후보가 아니라 차이가 없다 — LIFE-691 f1 E 에서 「뒤」 호출을 뺐다).
+ */
+export function trackRecentTabs(layout: GroupLayout): GroupLayout {
+  const apply = (node: GroupNode): GroupNode => {
+    switch (node.kind) {
+      case 'leaf': {
+        const { group } = node
+        const previous = group.recentTabIds ?? []
+        const active = group.activeTabId
+        const kept = previous.filter((tabId) => tabId !== active && group.tabOrder.includes(tabId))
+        const next = active !== null && group.tabOrder.includes(active) ? [...kept, active] : kept
+        const same = next.length === previous.length && next.every((tabId, index) => tabId === previous[index])
+        return same && group.recentTabIds !== undefined ? node : leaf({ ...group, recentTabIds: next })
+      }
+      case 'split': {
+        const first = apply(node.first)
+        const second = apply(node.second)
+        return first === node.first && second === node.second ? node : { ...node, first, second }
+      }
+    }
+  }
+  const root = apply(layout.root)
+  return root === layout.root ? layout : { ...layout, root }
+}
+
+/** 저장할 배치 — 메모리 전용 MRU(`recentTabIds`)를 뺀다(LIFE-691 K5, 저장 JSON 에 새 칸 없음). 뺄 것이 없으면 같은 객체. */
+export function withoutRecentTabs(layout: GroupLayout): GroupLayout {
+  const apply = (node: GroupNode): GroupNode => {
+    switch (node.kind) {
+      case 'leaf': {
+        if (node.group.recentTabIds === undefined) return node
+        // 저장 모양(`readNode` 가 읽는 칸)만 남긴다.
+        const { groupId, tabOrder, activeTabId, previewTabId } = node.group
+        return leaf({ groupId, tabOrder, activeTabId, ...(previewTabId === undefined ? {} : { previewTabId }) })
+      }
+      case 'split': {
+        const first = apply(node.first)
+        const second = apply(node.second)
+        return first === node.first && second === node.second ? node : { ...node, first, second }
+      }
+    }
+  }
+  const root = apply(layout.root)
+  return root === layout.root ? layout : { ...layout, root }
 }
 
 /**
@@ -152,8 +232,8 @@ export function splitGroup(input: {
           ...node.group,
           ...(node.group.previewTabId === input.tabId ? { previewTabId: null } : {}),
           tabOrder: remaining,
-          // 빠져나간 탭이 활성이었으면 남은 것 중 앞쪽을 활성으로 (§4 "인접 탭 활성" 과 같은 결).
-          activeTabId: node.group.activeTabId === input.tabId ? (remaining[0] ?? null) : node.group.activeTabId,
+          // 빠져나간 탭이 활성이었으면 MRU → 오른쪽 → 왼쪽 이웃 (LIFE-691 R1 — 닫기와 같은 규칙).
+          activeTabId: nextActiveAfterLeave({ group: node.group, kept: remaining }),
         })
         return edge === 'before'
           ? { kind: 'split', direction: input.direction, ratio: 0.5, first: leaf(moved), second: stayed }
@@ -259,7 +339,7 @@ export function removeTabFromGroup(layout: GroupLayout, groupId: string, tabId: 
   const updated = updateGroup(layout, groupId, (g) => ({
     ...g,
     tabOrder: remaining,
-    activeTabId: g.activeTabId === tabId ? (remaining[0] ?? null) : g.activeTabId,
+    activeTabId: nextActiveAfterLeave({ group: g, kept: remaining }),
     // 미리보기 탭이 영역을 떠나면 그 영역의 미리보기 표시도 걷는다 — 옮긴 곳에서는 고정 탭이다(LIFE-590, 이동 = 고정).
     ...(g.previewTabId === tabId ? { previewTabId: null } : {}),
   }))
@@ -410,7 +490,9 @@ function firstGroupId(node: GroupNode): string {
  * 그때 이 함수는 저장된 영역 **뼈대는 두되** 탭을 전부 첫 영역으로 보낸다 — 잘못된 영역에
  * 붙이거나 크래시하지 않는다. 어느 영역에도 없는 새 탭도 같은 길로 첫 영역에 들어간다(R3-d).
  */
-export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string[] }): GroupLayout {
+export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string[]; pinned?: ReadonlySet<string> }): GroupLayout {
+  // 핀이 있으면 **화면 순서**(핀 접두부)로 먼저 맞춘다 — 닫힌 활성 탭의 이웃은 사용자가 보던 이웃이다(LIFE-691 f1 B). 핀이 없거나 이미 맞으면 같은 객체.
+  const layout = input.pinned === undefined ? input.layout : partitionPinnedLayout({ layout: input.layout, pinned: input.pinned })
   const live = new Set(input.liveTabIds)
   const seen = new Set<string>()
   /** 맞은 **터미널** 탭 수 — 복원 실패 판정은 herdr 탭으로만 한다(파일 탭은 herdr 재기동과 무관하게 늘 맞는다 — LIFE-590). */
@@ -426,9 +508,8 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
           if (!file) matchedTerminals += 1
           return true
         })
-        const activeTabId = node.group.activeTabId !== null && tabOrder.includes(node.group.activeTabId)
-          ? node.group.activeTabId
-          : (tabOrder[0] ?? null)
+        // 활성 탭이 닫혔으면 MRU → 오른쪽 → 왼쪽 이웃 (LIFE-691 R1). 활성이 없던 영역은 전처럼 첫 탭.
+        const activeTabId = nextActiveAfterLeave({ group: node.group, kept: tabOrder })
         if (tabOrder.length === node.group.tabOrder.length && activeTabId === node.group.activeTabId) return node
         return leaf({ ...node.group, tabOrder, activeTabId })
       }
@@ -439,10 +520,10 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
       }
     }
   }
-  const pruned = prune(input.layout.root)
+  const pruned = prune(layout.root)
   const groups = listGroups(pruned)
   const head = groups[0]
-  if (head === undefined) return input.layout
+  if (head === undefined) return layout
   const orphans = input.liveTabIds.filter((tabId) => !seen.has(tabId))
   /**
    * 어디에도 없는 탭이 갈 곳 (R3-d).
@@ -454,7 +535,7 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
   const restoreFailed = matchedTerminals === 0 && orphans.length > 0
   const landing = restoreFailed
     ? head
-    : (groups.find((group) => group.groupId === input.layout.activeGroupId) ?? head)
+    : (groups.find((group) => group.groupId === layout.activeGroupId) ?? head)
   const withOrphans =
     orphans.length === 0
       ? pruned
@@ -494,7 +575,7 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
    * 활성 영역도 **착지점을 따라간다** (§10-R32-1) — 단, 접힌 뒤에는 그 착지 그룹이 실제로
    * 남아 있는지 다시 확인한다(collapse 로 사라졌을 수 있다).
    */
-  const preferredActiveGroupId = restoreFailed ? landing.groupId : input.layout.activeGroupId
+  const preferredActiveGroupId = restoreFailed ? landing.groupId : layout.activeGroupId
   const activeGroupId = finalGroups.some((group) => group.groupId === preferredActiveGroupId)
     ? preferredActiveGroupId
     : (finalGroups.some((group) => group.groupId === head.groupId) ? head.groupId : (finalGroups[0]?.groupId ?? head.groupId))
@@ -509,13 +590,13 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
  * 그대로 앉는다. 근거 `herdrTabIds` 는 herdr 세션 전체의 산 탭(링크 live 일 때만)이라 덜 온 상태에 지우지 않는다.
  * 산 탭만으로 `reconcileLayout` 을 돌린다 — 넘기는 목록이 배치 안 탭의 부분집합이라 고아(새로 끌어들일 탭)가 없고, 빈 영역만 접힌다.
  */
-export function dropDeadTabs(input: { layout: GroupLayout; herdrTabIds: ReadonlySet<string> }): GroupLayout | null {
+export function dropDeadTabs(input: { layout: GroupLayout; herdrTabIds: ReadonlySet<string>; pinned?: ReadonlySet<string> }): GroupLayout | null {
   const held = listGroups(input.layout.root).flatMap((group) => group.tabOrder)
   // 파일 탭(LIFE-590)은 herdr 에 없어도 산다 — 파일 탭만 남은 worktree 배치도 버리지 않는다(E1ⓐ).
   const kept = held.filter((tabId) => input.herdrTabIds.has(tabId) || isFileTabId(tabId))
   if (kept.length === 0) return null
   if (kept.length === held.length) return input.layout
-  return reconcileLayout({ layout: input.layout, liveTabIds: kept })
+  return reconcileLayout({ layout: input.layout, liveTabIds: kept, pinned: input.pinned })
 }
 
 // --- 영속 (R3-h — worktree 단위) ------------------------------------------------

@@ -32,6 +32,35 @@ export function terminalKeyTarget(input: { activeTabId: string | null; selectedP
   return input.activeTabId !== null && isFileTabId(input.activeTabId) ? null : input.selectedPane
 }
 
+/**
+ * 파일 탭 닫기 뒤 입력 pane 따라가기의 대기 기록 (LIFE-691 K2ⓐ · f1 C·D) — 어느 worktree 에서, 닫기 직전 **활성 영역의 활성 탭**이 무엇이었고, 무엇을 닫았나.
+ * 닫기 경로 둘(탭 닫기 `closeFileNow` · 탐색기 삭제/이동 `closeFiles`)이 같이 쓴다.
+ */
+export type CloseFollow = { worktreePath: string; activeTabBefore: string | null; closedTabIds: readonly string[] }
+
+/**
+ * 닫기를 대기 기록에 싣는다 — **활성 worktree 의 닫기만**(다른 worktree 닫기는 화면과 무관 → 기존 기록 그대로). 같은 worktree 의 대기가 있으면 닫은 탭만 보탠다
+ * (여러 탭을 한 번에 닫을 때 `activeTabBefore` 는 첫 닫기 직전 값). 다른 worktree 의 대기는 버린다.
+ */
+export function recordCloseFollow(input: { pending: CloseFollow | null; activeWorktreePath: string | null; worktreePath: string; activeTabBefore: string | null; tabIds: readonly string[] }): CloseFollow | null {
+  if (input.tabIds.length === 0 || input.worktreePath !== input.activeWorktreePath) return input.pending
+  const { pending } = input
+  if (pending !== null && pending.worktreePath === input.worktreePath) return { ...pending, closedTabIds: [...pending.closedTabIds, ...input.tabIds] }
+  return { worktreePath: input.worktreePath, activeTabBefore: input.activeTabBefore, closedTabIds: [...input.tabIds] }
+}
+
+/**
+ * 닫기 뒤 입력 pane 이 따라갈 터미널 탭 id — **같은 worktree 의 활성 영역에서 활성 탭이 닫혀 새 활성이 터미널 탭**일 때만. 아니면 null(선택 pane 을 그대로 둔다).
+ * 다른 영역·비활성 탭·다른 worktree 닫기, 대기 중 worktree 가 바뀐 경우, 새 활성이 파일 탭인 경우가 null 이다. App 은 이 탭의 pane 을 `paneToFollow` 로 고른다.
+ */
+export function closeFollowTarget(input: { pending: CloseFollow | null; worktreePath: string | null; activeTabId: string | null }): string | null {
+  const { pending, activeTabId } = input
+  if (pending === null || pending.worktreePath !== input.worktreePath) return null
+  if (pending.activeTabBefore === null || !pending.closedTabIds.includes(pending.activeTabBefore)) return null
+  if (activeTabId === null || isFileTabId(activeTabId)) return null
+  return activeTabId
+}
+
 export function fileTabLabel(rel: string): string {
   const parts = rel.split('/')
   return parts[parts.length - 1] ?? rel
@@ -142,7 +171,7 @@ export function retargetFileTabs(input: { layout: GroupLayout; from: string; to:
   let layout = input.layout
   for (const group of listGroups(input.layout.root)) {
     if (!group.tabOrder.some((tabId) => map.has(tabId))) continue
-    layout = updateGroup(layout, group.groupId, (current) => ({ ...current, tabOrder: current.tabOrder.map((tabId) => map.get(tabId) ?? tabId), activeTabId: swap(current.activeTabId), previewTabId: swap(current.previewTabId) }))
+    layout = updateGroup(layout, group.groupId, (current) => ({ ...current, tabOrder: current.tabOrder.map((tabId) => map.get(tabId) ?? tabId), activeTabId: swap(current.activeTabId), previewTabId: swap(current.previewTabId), ...(current.recentTabIds === undefined ? {} : { recentTabIds: current.recentTabIds.map((tabId) => map.get(tabId) ?? tabId) }) }))
   }
   return { layout, moved: [...map].map(([from, to]) => ({ from, to })) }
 }

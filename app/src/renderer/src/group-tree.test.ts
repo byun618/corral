@@ -35,7 +35,7 @@ describe('영역 분할 (F1-1)', () => {
     expect(splitGroup({ layout: one, groupId: 'g1', tabId: 't1', direction: 'row', newGroupId: 'g2' })).toBe(one)
   })
 
-  it('빠져나간 탭이 활성이었으면 남은 것 중 앞쪽이 활성이 된다', () => {
+  it('빠져나간 탭이 활성이었으면 오른쪽 이웃이 활성이 된다 (LIFE-691 R1 — MRU 가 없을 때)', () => {
     const next = splitGroup({ layout: base(), groupId: 'g1', tabId: 't1', direction: 'column', newGroupId: 'g2' })
     expect(listGroups(next.root)[0]?.activeTabId).toBe('t2')
   })

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // LIFE-689 K2ⓑ·K3 — 파일 탭 같은 이름 구분(VS Code `labelFormat: default`)의 DOM 계약: 이름이 겹치는 파일 탭만 라벨 뒤에 설명 요소가 붙는다.
 // 설명 계산 자체는 `file-tabs.label.test.ts`. 크기·흐림·잘림 순서는 CSS 라 최종 관문(격리 GUI 캡처)이 본다.
-import { act, createElement } from 'react'
+import { act, createElement, type ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyAgentState } from '../../../shared/agent-state.js'
@@ -22,21 +22,29 @@ const file = (rel: string, extra?: { preview?: boolean; deleted?: boolean; dirty
 
 let host: HTMLDivElement
 let root: Root
-function mount(items: GroupTabItem[]): void {
+/** 영역 하나 = `GroupHeader` 하나. 여러 영역이면 App 처럼 한 트리에 나란히 그린다(L1 — 영역마다 그 영역 탭만 넘긴다). */
+function header(input: { groupId: string; items: GroupTabItem[] }): ReactElement {
   const noop = (): void => {}
+  const { groupId, items } = input
   const tabs = items.flatMap((item) => (item.kind === 'terminal' ? [item.tab] : []))
-  act(() => {
-    root.render(createElement(BindingLabels.Provider, { value: {} }, createElement(GroupHeader, {
-      groupId: 'g1', tabs, items, workspaceTabCount: tabs.length, home: '/home', selectedPane: null, activeTabId: null,
-      activeGroup: true, unreadPanes: new Set<string>(), paneCount: 1, grid: null, zoomed: false,
-      onActivate: noop, onSelectTab: noop, onCreateShell: noop, onCloseTab: noop, onRenameTab: noop, onClearTabName: noop,
-      onSplitPane: noop, onSplitTab: noop, onMoveToGroup: noop, onZoom: noop,
-      pinnedTabs: new Set<string>(), tabColorOf: () => null, renameRequest: null,
-      onRequestRename: noop, onTogglePin: noop, onCloseScope: noop, onSetTabColor: noop, onClosePane: noop, onCloseGroup: null, otherGroups: [], onMoveToOtherGroup: noop, onTabDragStart: noop,
-      tabDragActive: false,
-      openTabEntries: [], onLaunchAgent: noop, onOpenAgentSettings: noop, onActivateOpenTab: noop,
-    })))
+  return createElement(GroupHeader, {
+    key: groupId, groupId, tabs, items, workspaceTabCount: tabs.length, home: '/home', selectedPane: null, activeTabId: null,
+    activeGroup: true, unreadPanes: new Set<string>(), paneCount: 1, grid: null, zoomed: false,
+    onActivate: noop, onSelectTab: noop, onCreateShell: noop, onCloseTab: noop, onRenameTab: noop, onClearTabName: noop,
+    onSplitPane: noop, onSplitTab: noop, onMoveToGroup: noop, onZoom: noop,
+    pinnedTabs: new Set<string>(), tabColorOf: () => null, renameRequest: null,
+    onRequestRename: noop, onTogglePin: noop, onCloseScope: noop, onSetTabColor: noop, onClosePane: noop, onCloseGroup: null, otherGroups: [], onMoveToOtherGroup: noop, onTabDragStart: noop,
+    tabDragActive: false,
+    openTabEntries: [], onLaunchAgent: noop, onOpenAgentSettings: noop, onActivateOpenTab: noop,
   })
+}
+function mountGroups(groups: { groupId: string; items: GroupTabItem[] }[]): void {
+  act(() => {
+    root.render(createElement(BindingLabels.Provider, { value: {} }, ...groups.map(header)))
+  })
+}
+function mount(items: GroupTabItem[]): void {
+  mountGroups([{ groupId: 'g1', items }])
 }
 /** 파일 탭별 [라벨, 설명(없으면 null)] — 설명 요소가 없으면 null, 있으면 그 텍스트. */
 function shownLabels(): [string, string | null][] {
@@ -79,5 +87,15 @@ describe('LIFE-689 K2ⓑ·K3 파일 탭 설명 요소', () => {
     expect(preview?.classList.contains('is-preview')).toBe(true)
     expect(deleted?.classList.contains('is-deleted')).toBe(true)
     expect(deleted?.classList.contains('is-dirty')).toBe(true)
+  })
+
+  it('F1 L1 영역 단위 — 같은 이름·다른 폴더가 영역마다 하나씩이면 어느 쪽도 설명 없음 (대조: 한 영역에 둘이면 생김)', () => {
+    // 두 영역을 한 트리에 그리고 다시 그린다 — 영역 사이에 상태가 새는 호출부(합쳐 계산)는 두 번째 그리기에서도 드러난다
+    const apart = [{ groupId: 'g1', items: [file('src/app/app.service.ts')] }, { groupId: 'g2', items: [file('src/push/app.service.ts')] }]
+    mountGroups(apart)
+    mountGroups(apart)
+    expect(shownLabels()).toEqual([['app.service.ts', null], ['app.service.ts', null]])
+    mountGroups([{ groupId: 'g1', items: [file('src/app/app.service.ts'), file('src/push/app.service.ts')] }, { groupId: 'g2', items: [file('lib/app.service.ts')] }])
+    expect(shownLabels()).toEqual([['app.service.ts', '…/app'], ['app.service.ts', '…/push'], ['app.service.ts', null]])
   })
 })

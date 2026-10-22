@@ -4,10 +4,10 @@
 /* 아이콘 — 탐색기와 같은 Seti(`.explorer-file-icon` 16px + 오른쪽 6px), 탭 줄 높이에 맞춘다. */
 .main-tab-file .explorer-file-icon { height: 100%; line-height: inherit; display: inline-flex; align-items: center; justify-content: center; }
 .main-tab-file:not(.is-active) .explorer-file-icon { opacity: 0.7; }
-/* 미리보기 = 이탤릭(VS Code `.monaco-icon-label.italic` — 고정되지 않은 탭). */
-.main-tab-file.is-preview .main-tab-file-label { font-style: italic; }
-/* 외부에서 지워진 파일 — 취소선(Orca `EditorFileTab` line-through, E5ⓒ). */
-.main-tab-file.is-deleted .main-tab-file-label { text-decoration: line-through; }
+/* 미리보기 = 이탤릭(VS Code `.monaco-icon-label.italic` — 고정되지 않은 탭). 설명에도(LIFE-689 — VS Code `iconlabel.css` 87–91행). */
+.main-tab-file.is-preview .main-tab-file-label, .main-tab-file.is-preview .main-tab-file-desc { font-style: italic; }
+/* 외부에서 지워진 파일 — 취소선(Orca `EditorFileTab` line-through, E5ⓒ). 설명에도(VS Code `iconlabel.css` 98–102행). */
+.main-tab-file.is-deleted .main-tab-file-label, .main-tab-file.is-deleted .main-tab-file-desc { text-decoration: line-through; }
 /* 같은 이름 구분 설명(LIFE-689 — VS Code `labelFormat: default` 의 `.label-description`) — 파일명 바로 뒤에 작고 흐리게.
    탭 폭(`--tab-w`)이 고정이라 넘치면 **설명부터 준다**: 설명의 flex-shrink 를 크게 줘 설명이 다 줄어든(min-width 0) 뒤에야 파일명이 잘린다. */
 .main-tab-file .main-tab-file-label:has(+ .main-tab-file-desc) { flex: 0 1 auto; margin-right: 0; }

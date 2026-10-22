@@ -443,7 +443,8 @@ export class ExplorerHub {
   }
 }
 
-function runGitStatus(cwd: string): Promise<{ git: GitSnapshotWire | null; error: string | null }> {
+/** 탐색기의 git 조회 — 시험이 실제 argv 를 고정한다(LIFE-672). */
+export function runGitStatus(cwd: string): Promise<{ git: GitSnapshotWire | null; error: string | null }> {
   return new Promise((resolve) => {
     execFile('git', ['-C', cwd, ...GIT_STATUS_ARGS], { timeout: 15_000, maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
       if (error !== null) resolve({ git: null, error: String(error).slice(0, 300) })

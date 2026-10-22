@@ -47,9 +47,12 @@ describe('createRebuildScheduler', () => {
     expect(s.due('error')).toBe(false)
     expect(s.due('fresh')).toBe(false)
     s.finished(null)
+    // 하나는 끝났어도 다른 하나가 진행 중 — 간격이 한참 지나도 걸지 않는다.
+    c.at(900_000)
     expect(s.due('error')).toBe(false)
+    expect(s.due('fresh')).toBe(false)
     s.finished({ kind: 'transient' })
-    c.at(600_000 + REBUILD_BACKOFF_MS[0]!)
+    c.at(900_000 + REBUILD_BACKOFF_MS[0]!)
     expect(s.due('error')).toBe(true)
   })
   it('② 간격은 끝난 때부터 — 10초 걸린 재구성 뒤 5초는 끝난 시각 + 5초', () => {

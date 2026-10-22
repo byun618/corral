@@ -180,8 +180,22 @@ async function closeFile(rel) {
   await sleep(300)
 }
 const allFileRels = async () => js(`[...document.querySelectorAll('[data-file-tab]')].map((t) => t.dataset.fileTab)`)
+/** 장면 사이 정리 — 좁은 영역에서는 스트립이 넘쳐 비활성 탭이 가려진다(g1-k5-2 하네스 미달). 활성 탭은 보이는 자리에 dock 되므로
+ * **활성 파일 탭부터** 닫고, 활성 파일 탭이 없으면 파일 탭 하나를 눌러 활성으로 만든 뒤 닫는다. */
 async function closeAllFiles() {
-  for (const rel of await allFileRels()) await closeFile(rel)
+  for (let round = 0; round < 30; round += 1) {
+    const rels = await allFileRels()
+    if (rels.length === 0) return
+    let active = await js(`document.querySelector('[data-file-tab][data-active="true"]')?.dataset.fileTab ?? null`)
+    if (active === null) {
+      await click(`[data-file-tab="${rels[0]}"]`)
+      await until(() => js(`document.querySelector('[data-file-tab="${rels[0]}"]')?.dataset.active === 'true'`), { timeoutMs: 5_000, label: `활성 ${rels[0]}` })
+      await sleep(300)
+      active = rels[0]
+    }
+    await closeFile(active)
+  }
+  throw new Error('파일 탭 정리 30회 초과')
 }
 
 // --- 장면 ----------------------------------------------------------------------

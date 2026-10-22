@@ -20,9 +20,21 @@ describe('skeletonHealth', () => {
     const dead = repo('/gone-repo', { gitError: 'Error: Command failed: git -C /gone-repo worktree list --porcel', openError: 'not_git_worktree: Herdr worktree actions require a path inside a Git work tree' })
     const health = skeletonHealth([repo('/a'), dead])
     expect(health.kind).toBe('permanent')
-    expect(health.kind === 'permanent' ? health.reason : '').toContain('/gone-repo')
+    expect(health.kind === 'permanent' ? health.reason : '').toBe('등록 레포를 읽을 수 없다 — /gone-repo (not_git_worktree: Herdr worktree actions require a path inside a Git work tree)')
     expect(skeletonHealth([repo('/x', { gitError: "fatal: cannot change to '/x': No such file or directory" })]).kind).toBe('permanent')
     expect(skeletonHealth([repo('/x', { gitError: 'fatal: not a git repository' })]).kind).toBe('permanent')
+  })
+})
+
+describe('skeletonHealth — Y3 사유는 원인을 가정하지 않는다', () => {
+  it('권한 거부도 영구로 분류되지만 사유는 「없다」·「정리 필요」 가 아니라 경로와 오류 요지', () => {
+    const health = skeletonHealth([repo('/locked', { gitError: "fatal: cannot change to '/locked': Permission denied\nmore" })])
+    expect(health).toEqual({ kind: 'permanent', reason: "등록 레포를 읽을 수 없다 — /locked (fatal: cannot change to '/locked': Permission denied)" })
+    expect(health.kind === 'permanent' ? health.reason : '').not.toMatch(/정리 필요|루트가 없거나/)
+  })
+  it('긴 오류는 120자로 줄인다', () => {
+    const health = skeletonHealth([repo('/x', { openError: `not_git_worktree: ${'y'.repeat(200)}` })])
+    expect(health.kind === 'permanent' ? health.reason.length : 0).toBe('등록 레포를 읽을 수 없다 — /x ('.length + 120 + 1 + 1)
   })
 })
 
@@ -117,6 +129,44 @@ describe('createRebuildScheduler', () => {
     expect(s.due('error')).toBe(false)
     c.at(6_000)
     expect(s.due('error')).toBe(true)
+  })
+  it('Y2(r4m02) — 끝난 때 기준은 매 재구성마다: 둘째 재구성이 늦게 끝나면 그 시각부터 잰다', () => {
+    const c = clock()
+    const s = createRebuildScheduler({ now: c.now })
+    s.started()
+    c.at(1_000)
+    s.finished({ kind: 'transient' })
+    s.started()
+    c.at(30_000)
+    s.finished({ kind: 'transient' })
+    // 둘째 실패 → 15초, 기준은 둘째가 끝난 30초.
+    c.at(44_999)
+    expect(s.due('error')).toBe(false)
+    c.at(45_000)
+    expect(s.due('error')).toBe(true)
+  })
+  it('Y2(r4m14) — 영구 뒤 일시 실패가 오면 영구 사유를 걷고 백오프로 돌아간다', () => {
+    const c = clock()
+    const s = createRebuildScheduler({ now: c.now })
+    s.started()
+    s.finished({ kind: 'permanent', reason: '루트 없음' })
+    s.started()
+    s.finished({ kind: 'transient' })
+    expect(s.permanentReason()).toBeNull()
+    expect(s.waitMs('error')).toBe(15_000)
+  })
+  it('Y2(r4m10) — fresh 간격은 백오프와 무관: 실패 세 번 뒤(60초)에도 5초', () => {
+    const c = clock()
+    const s = createRebuildScheduler({ now: c.now })
+    for (let i = 0; i < 3; i += 1) {
+      s.started()
+      s.finished({ kind: 'transient' })
+    }
+    expect(s.waitMs('error')).toBe(60_000)
+    expect(s.waitMs('fresh')).toBe(FRESH_REBUILD_MS)
+    c.at(FRESH_REBUILD_MS)
+    expect(s.due('fresh')).toBe(true)
+    expect(s.due('error')).toBe(false)
   })
   it('fresh 재구성은 실패 수와 무관하게 5초 — 같은 in-flight·끝난 때 규칙', () => {
     const c = clock()

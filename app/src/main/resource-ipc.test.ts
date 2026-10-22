@@ -34,7 +34,7 @@ type Deps = Parameters<typeof closeResourcePane>[0]['deps']
 const claim = (...ids: string[]): Map<string, string[]> => new Map(ids.map((id) => [id, [`/live/${id}`]]))
 /** `/live/` 아래만 있는 디렉터리. */
 const live = (path: string): boolean => path.startsWith('/live/')
-const oracle = (isDirectory: (path: string) => boolean | null, realPath: (path: string) => string | null = () => null, checked: (path: string) => boolean = () => true) => ({ isDirectory, realPath, checked })
+const oracle = (isDirectory: (path: string) => boolean | null, realPath: (path: string) => string | null = () => null, checked: (path: string) => boolean = () => true, settle: (path: string) => Promise<boolean | null> = async (path) => isDirectory(path)) => ({ isDirectory, realPath, checked, settle })
 
 const pane = (input: { paneId: string; tabId: string; title?: string; agent?: string | null; workspaceId?: string; cwd?: string | null; agentSession?: AgentSessionRef | null }) => ({
   paneId: input.paneId, tabId: input.tabId, workspaceId: input.workspaceId ?? 'w1', title: input.title ?? input.paneId, agent: input.agent ?? null, agentStatus: 'idle' as const,
@@ -426,6 +426,13 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     await settle()
     expect(handler('corral:resourceSnapshot')({}, undefined)).toMatchObject({ orphans: null, orphansReason: '등록 레포를 읽을 수 없다 — /gone' })
   })
+  it('Y2(r4m20) — 목록이 있으면(가릴 수 있으면) 사유는 싣지 않는다', async () => {
+    win.visible = true
+    register({ cardlessBlockedReason: () => '옛 사유' })
+    await settle()
+    expect(handler('corral:resourceSnapshot')({}, undefined)).toMatchObject({ orphansReason: null })
+    expect(handler('corral:resourceSnapshot')({}, undefined)).not.toMatchObject({ orphans: null })
+  })
   it('스냅샷 IPC — 남의 창이면 null, 우리 창이면 최신 값', async () => {
     win.visible = true
     let ours = true
@@ -610,6 +617,25 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     let reads = 0
     const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => (++reads >= 3 ? new Map([['w1', ['/live/w1']], ['w9', ['/locked/gone']]]) : claim('w1')) })
     expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(live), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'], skipped: [{ workspaceId: 'w9', reason: 'stale-claim' }] })
+  })
+  it('Y4 — 찬 캐시(값 없음)여도 사유는 그 자리에서 확인을 기다려 stale-claim 으로 정한다(닫지 않는 것은 같다)', async () => {
+    const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => new Map([['w1', ['/live/w1']], ['w9', ['/locked/gone']]]) })
+    const cold = oracle((path) => (path.startsWith('/live/') ? true : null), () => null, () => false, async (path) => path.startsWith('/live/'))
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w9'], bulk: false, paths: cold, confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: [], skipped: [{ workspaceId: 'w9', reason: 'stale-claim' }] })
+    expect(d.closed).toEqual([])
+  })
+  it('Y2(r4m23) — 두 경로에 붙은 id 는 하나라도 있으면 카드에 붙음, 둘 다 없어야 stale-claim', async () => {
+    const both = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => new Map([['w1', ['/live/w1']], ['w9', ['/gone/a', '/gone/b']]]) })
+    expect((await closeOrphanWorkspaces({ deps: both, workspaceIds: ['w9'], bulk: false, paths: oracle(live), confirmed: true, confirmedPaneIds: [] })).skipped).toEqual([{ workspaceId: 'w9', reason: 'stale-claim' }])
+    const one = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => new Map([['w1', ['/live/w1']], ['w9', ['/gone/a', '/live/b']]]) })
+    expect((await closeOrphanWorkspaces({ deps: one, workspaceIds: ['w9'], bulk: false, paths: oracle(live), confirmed: true, confirmedPaneIds: [] })).skipped).toEqual([{ workspaceId: 'w9', reason: 'claimed' }])
+  })
+  it('Y4 createDirectoryCache.settle — 확인 전이면 진행 중 확인을 기다려 값을 준다, 확인 뒤엔 캐시 값', async () => {
+    let calls = 0
+    const cache = createDirectoryCache({ ttlMs: 5000, now: () => 0, check: async () => { calls += 1; return { exists: false, real: null } } })
+    expect(await cache.settle('/x')).toBe(false)
+    expect(await cache.settle('/x')).toBe(false)
+    expect(calls).toBe(1)
   })
   it('P3 orphanSources — 확인 전 경로는 pending, 확인 뒤엔 없음', () => {
     const rows = orphanSources({ workspaces: [orphan({ workspaceId: 'w8', panes: [{ paneId: 'a', cwd: '/new' }, { paneId: 'b', cwd: '/old' }] })], homes: ['/home'], paths: oracle(() => null, () => null, (path) => path === '/old') })

@@ -28,7 +28,14 @@ export function skeletonHealth(skeleton: readonly RepoSkeleton[]): SkeletonHealt
     repo.openError?.startsWith('not_git_worktree') === true || /cannot change to|not a git repository/i.test(repo.gitError ?? ''),
   )
   if (dead.length === 0) return { kind: 'transient' }
-  return { kind: 'permanent', reason: `등록 레포를 읽을 수 없다 — ${dead.map((repo) => repo.root).join(', ')} (루트가 없거나 git 레포가 아님 · 레포 목록에서 정리 필요)` }
+  // Y3 — 원인을 가정하지 않는다(권한 거부도 이 분류에 든다): 경로와 오류 요지만.
+  return { kind: 'permanent', reason: `등록 레포를 읽을 수 없다 — ${dead.map((repo) => `${repo.root} (${errorGist(repo)})`).join(', ')}` }
+}
+
+/** 오류 요지 — herdr 쪽(코드가 있다)을 먼저, 없으면 git 쪽. 첫 줄 120자. */
+function errorGist(repo: RepoSkeleton): string {
+  const text = (repo.openError ?? repo.gitError ?? '').split('\n')[0] ?? ''
+  return text.length > 120 ? `${text.slice(0, 120)}…` : text
 }
 
 export type RebuildScheduler = {

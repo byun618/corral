@@ -283,13 +283,17 @@ export const ORPHAN_OWNERLESS_TOOLTIP = '원래 경로가 모두 사라졌거나
 export const ORPHAN_OWNED_TOOLTIP = '경로가 살아 있다(미등록 레포의 세션·형제 pane 이 살아 있는 workspace 등) — 「모두 닫기」 에 들지 않는다. 줄 ✕ 로만 닫는다'
 export const ORPHAN_UNCHECKED = '경로 확인 불가'
 export const ORPHAN_UNCHECKED_TOOLTIP = '경로가 있는지 확인하지 못했다(권한 거부 등) — 「모두 닫기」 에 들지 않는다. 줄 ✕ 로만 닫는다'
+export const ORPHAN_UNKNOWN_PATH = '경로 모름'
+export const ORPHAN_UNKNOWN_PATH_TOOLTIP = '이 workspace 의 pane 경로(cwd)를 받지 못했다 — 「모두 닫기」 에 들지 않는다. 줄 ✕ 로만 닫는다'
 
 /**
  * 줄 배지 (F3·P3) — 주인 없음 / 경로 확인 불가(확인 실패한 경로가 있음) / 경로 있음. 아직 확인 전인 경로가 있으면(첫 틱) 배지를 생략한다 —
  * 다음 틱에 실제 값으로 바뀔 「경로 있음」 을 잠깐 보이지 않게. 주인 없음은 확인된 것만으로 정해지므로 그대로 보인다.
  */
-export function orphanOwnerBadge(row: ResourceOrphanRow): { kind: 'ownerless' | 'unchecked' | 'owned'; text: string; tooltip: string } | null {
+export function orphanOwnerBadge(row: ResourceOrphanRow): { kind: 'ownerless' | 'unchecked' | 'unknown' | 'owned'; text: string; tooltip: string } | null {
   if (row.ownerless) return { kind: 'ownerless', text: ORPHAN_OWNERLESS, tooltip: ORPHAN_OWNERLESS_TOOLTIP }
+  // Y1 — 경로가 하나도 없으면(cwd 모름) 「있음」 이라 하지 않는다.
+  if (row.paths.length === 0) return { kind: 'unknown', text: ORPHAN_UNKNOWN_PATH, tooltip: ORPHAN_UNKNOWN_PATH_TOOLTIP }
   if (row.paths.some((item) => item.pending === true)) return null
   if (row.paths.some((item) => item.exists === null)) return { kind: 'unchecked', text: ORPHAN_UNCHECKED, tooltip: ORPHAN_UNCHECKED_TOOLTIP }
   return { kind: 'owned', text: ORPHAN_OWNED, tooltip: ORPHAN_OWNED_TOOLTIP }
@@ -306,7 +310,8 @@ export function orphanSkipText(input: { skipped: readonly ResourceOrphanSkip[]; 
   const count = (reason: ResourceOrphanSkip['reason']): number => input.skipped.filter((item) => item.reason === reason).length
   const parts = [
     count('claimed') > 0 ? `카드에 붙음 ${count('claimed')}` : null,
-    count('stale-claim') > 0 ? `worktree 잠김·정리 대기 ${count('stale-claim')} (git worktree unlock/prune 필요)` : null,
+    // Y3 — 원인을 가정하지 않는다(외장 볼륨 분리일 수도 있다 — 정리를 권하지 않고 확인을 먼저).
+    count('stale-claim') > 0 ? `경로가 디스크에 없음 ${count('stale-claim')} (볼륨 분리·worktree 잠금 여부를 확인 — 정리하려면 git worktree unlock/prune)` : null,
     count('gone') + input.unexplained > 0 ? `이미 닫힘·없음 ${count('gone') + input.unexplained}` : null,
     count('not-ownerless') > 0 ? `주인 없는 줄이 아님 ${count('not-ownerless')}` : null,
   ].filter((part): part is string => part !== null)

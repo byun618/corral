@@ -174,24 +174,32 @@ export function shellProbeOf(probe: Pick<ForegroundRead, 'shellPid' | 'missing'>
 /** 경로 한 개를 확인한 값 — `exists: null` = 확인 불가(G1), `real` = 있으면 실경로(G6 — HOME 비교용). */
 export type PathCheck = { exists: boolean | null; real: string | null }
 
-/** 경로 판정 창구 — 캐시만 읽는다(값 없으면 null). `checked` = 한 번이라도 확인을 마쳤는가(P3 — 첫 틱 구분). */
-export type PathOracle = { isDirectory: (path: string) => boolean | null; realPath: (path: string) => string | null; checked: (path: string) => boolean }
+/**
+ * 경로 판정 창구 — 캐시만 읽는다(값 없으면 null). `checked` = 한 번이라도 확인을 마쳤는가(P3 — 첫 틱 구분).
+ * `settle` = 확인 전이면 진행 중 확인을 기다려 존재 값을 준다(Y4 — 닫기 사유를 찬 캐시에서도 바로 정한다).
+ */
+export type PathOracle = {
+  isDirectory: (path: string) => boolean | null
+  realPath: (path: string) => string | null
+  checked: (path: string) => boolean
+  settle: (path: string) => Promise<boolean | null>
+}
 
 /**
  * 경로 존재 캐시 (LIFE-628 F7 — main 동기 stat 을 걷는다). 캐시만 읽고 낡았으면 비동기 확인을 건다.
  * 아직 모르면 null — 부르는 쪽이 「있다」 로 읽는다(모르면 주인 있음 쪽 — 「모두 닫기」 대상에 넣지 않는다). 확인 자체가 던지면 null(모름).
  */
 export function createDirectoryCache(input: { ttlMs: number; now: () => number; check: (path: string) => Promise<PathCheck> }): PathOracle {
-  const entries = new Map<string, { value: PathCheck; checkedAt: number; pending: boolean }>()
-  const entryOf = (target: string): { value: PathCheck; checkedAt: number; pending: boolean } => {
-    const entry = entries.get(target) ?? { value: { exists: null, real: null }, checkedAt: -Infinity, pending: false }
+  type Entry = { value: PathCheck; checkedAt: number; inflight: Promise<void> | null }
+  const entries = new Map<string, Entry>()
+  const entryOf = (target: string): Entry => {
+    const entry = entries.get(target) ?? { value: { exists: null, real: null }, checkedAt: -Infinity, inflight: null }
     entries.set(target, entry)
-    if (!entry.pending && input.now() - entry.checkedAt >= input.ttlMs) {
-      entry.pending = true
-      void input.check(target).catch((): PathCheck => ({ exists: null, real: null })).then((value) => {
+    if (entry.inflight === null && input.now() - entry.checkedAt >= input.ttlMs) {
+      entry.inflight = input.check(target).catch((): PathCheck => ({ exists: null, real: null })).then((value) => {
         entry.value = value
         entry.checkedAt = input.now()
-        entry.pending = false
+        entry.inflight = null
       })
     }
     return entry
@@ -200,6 +208,11 @@ export function createDirectoryCache(input: { ttlMs: number; now: () => number; 
     isDirectory: (target) => entryOf(target).value.exists,
     realPath: (target) => entryOf(target).value.real,
     checked: (target) => entryOf(target).checkedAt !== -Infinity,
+    settle: async (target) => {
+      const entry = entryOf(target)
+      if (entry.checkedAt === -Infinity && entry.inflight !== null) await entry.inflight
+      return entry.value.exists
+    },
   }
 }
 
@@ -458,6 +471,12 @@ export async function closeOrphanWorkspaces(input: { deps: ResourceIpcDeps; work
   } catch (error) {
     deps.log('resource.close_orphans_failed', { workspaceIds: input.workspaceIds, error: String(error) })
     return { outcome: 'error', closed: [], error: `닫기 확인에 실패했다: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  // Y4 — 귀속 사유는 경로 확인이 끝난 값으로 다시 정한다(찬 캐시면 그 자리에서 stat 을 기다린다). 닫을지는 이미 끝났다 — 문자열만.
+  for (const [workspaceId, reason] of skips) {
+    if (reason !== 'claimed' && reason !== 'stale-claim') continue
+    const exists = await Promise.all((claimed.get(workspaceId) ?? []).map((target) => input.paths.settle(target)))
+    skips.set(workspaceId, exists.length > 0 && exists.every((value) => value === false) ? 'stale-claim' : 'claimed')
   }
   const skipped = input.workspaceIds.flatMap((workspaceId): ResourceOrphanSkip[] => {
     const reason = skips.get(workspaceId)

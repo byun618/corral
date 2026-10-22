@@ -110,6 +110,11 @@ describe('cardlessWorkspaces (LIFE-628 S1)', () => {
       const claimed = await readClaimedWorkspaceIds({ roots: ['/a'], read: async () => map([['/a', 'w1'], ['/a/gone', 'w2'], ['/a/gone2', 'w3'], ['/a/live', 'w3']], ['/a/gone', '/a/gone2']), log: () => {} })
       expect(claimed).toEqual(new Map([['w1', ['/a']], ['w3', ['/a/live']]]))
     })
+    it('Y2(r4m23) — 한 id 가 두 경로에 붙으면 경로를 모두 싣는다(루트를 넘어서도)', async () => {
+      const reads: Record<string, ReturnType<typeof map>> = { '/a': map([['/a/x', 'w1'], ['/a/y', 'w1']]), '/b': map([['/b/z', 'w1']]) }
+      const claimed = await readClaimedWorkspaceIds({ roots: ['/a', '/b'], read: async (root) => reads[root] ?? map([]), log: () => {} })
+      expect(claimed).toEqual(new Map([['w1', ['/a/x', '/a/y', '/b/z']]]))
+    })
     it('루트가 없으면 빈 집합', async () => {
       expect(await readClaimedWorkspaceIds({ roots: [], read: async () => map([]), log: () => {} })).toEqual(new Map())
     })

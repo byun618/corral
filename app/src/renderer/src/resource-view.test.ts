@@ -228,8 +228,15 @@ describe('카드 밖 workspace 표시 (LIFE-628)', () => {
     expect(orphanOwnerBadge(orphanRow({ id: 'c', paths: [{ path: '/w', exists: true }], ownerless: false, measure: measured(1, MB) }))).toMatchObject({ kind: 'owned', text: '경로 있음' })
     expect(orphanOwnerBadge(orphanRow({ id: 'd', paths: [{ path: '/home', exists: null, pending: true }], ownerless: true, measure: measured(1, MB) }))).toMatchObject({ kind: 'ownerless' })
   })
-  it('P2 닫지 않은 줄 안내 — 잠김·정리 대기는 카드에 붙음과 따로', () => {
-    expect(orphanSkipText({ skipped: [{ workspaceId: 'a', reason: 'stale-claim' }, { workspaceId: 'b', reason: 'claimed' }], unexplained: 0 })).toBe('2개는 닫지 않았다 — 카드에 붙음 1 · worktree 잠김·정리 대기 1 (git worktree unlock/prune 필요)')
+  it('P2·Y3 닫지 않은 줄 안내 — 경로가 디스크에 없음은 카드에 붙음과 따로, 원인을 가정하지 않고 확인을 먼저 권한다', () => {
+    const text = orphanSkipText({ skipped: [{ workspaceId: 'a', reason: 'stale-claim' }, { workspaceId: 'b', reason: 'claimed' }], unexplained: 0 })
+    expect(text).toBe('2개는 닫지 않았다 — 카드에 붙음 1 · 경로가 디스크에 없음 1 (볼륨 분리·worktree 잠금 여부를 확인 — 정리하려면 git worktree unlock/prune)')
+    expect(text).not.toContain('필요')
+  })
+  it('Y1 — 경로 0개 줄은 「경로 모름」 배지, 「경로 있음」·「살아 있다」 가 아니다', () => {
+    const badge = orphanOwnerBadge(orphanRow({ id: 'z', paths: [], ownerless: false, measure: measured(1, MB) }))
+    expect(badge).toMatchObject({ kind: 'unknown', text: '경로 모름' })
+    expect(badge?.tooltip).not.toContain('살아 있다')
   })
   it('G2 닫지 않은 줄 안내 — 사유별 개수, 없으면 null', () => {
     expect(orphanSkipText({ skipped: [], unexplained: 0 })).toBeNull()

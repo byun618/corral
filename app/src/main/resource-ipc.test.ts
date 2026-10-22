@@ -630,6 +630,11 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     const one = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => new Map([['w1', ['/live/w1']], ['w9', ['/gone/a', '/live/b']]]) })
     expect((await closeOrphanWorkspaces({ deps: one, workspaceIds: ['w9'], bulk: false, paths: oracle(live), confirmed: true, confirmedPaneIds: [] })).skipped).toEqual([{ workspaceId: 'w9', reason: 'claimed' }])
   })
+  it('Y4 — 시작 재독에서 귀속이었다가 뒤 재독에서 빠진 id 는(귀속 경로 0개) stale-claim 으로 바꾸지 않는다', async () => {
+    let reads = 0
+    const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => (++reads === 1 ? claim('w1', 'w9') : claim('w1')) })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w9', 'w8'], bulk: false, paths: oracle(live), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'], skipped: [{ workspaceId: 'w9', reason: 'claimed' }] })
+  })
   it('Y4 createDirectoryCache.settle — 확인 전이면 진행 중 확인을 기다려 값을 준다, 확인 뒤엔 캐시 값', async () => {
     let calls = 0
     const cache = createDirectoryCache({ ttlMs: 5000, now: () => 0, check: async () => { calls += 1; return { exists: false, real: null } } })

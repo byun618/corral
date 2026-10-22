@@ -60,6 +60,8 @@ export function useLifecycleActions(state: AppState | null): {
   const [selectedPane, setSelectedPane] = useState<string | null>(null)
   /** 선택 pane 이 속한 탭 — 그 pane 이 닫힌 뒤 승격 자리를 고르는 데 쓴다(LIFE-508, 아래 첫 pane 자동 선택 effect). */
   const selectedTabRef = useRef<string | null>(null)
+  /** 그 탭의 워크스페이스 — 「선택했던 탭이 **이 워크스페이스에서** 통째로 닫혔다」를 가린다(LIFE-691 f1 A). */
+  const selectedWorkspaceRef = useRef<string | null>(null)
   const shownTabRef = useRef<string | null>(null)
   const [activeWorkspaceId, setActiveWorkspaceIdState] = useState<string | null>(null)
   const [lifecycleNotice, setLifecycleNotice] = useState<LifecycleNotice | null>(null)
@@ -251,6 +253,7 @@ export function useLifecycleActions(state: AppState | null): {
     const owner = workspace.tabs.find((tab) => tab.panes.some((pane) => pane.paneId === selectedPane))
     if (owner !== undefined) {
       selectedTabRef.current = owner.tabId
+      selectedWorkspaceRef.current = workspace.workspaceId
       return
     }
     const [firstPane] = panes
@@ -258,9 +261,12 @@ export function useLifecycleActions(state: AppState | null): {
     // LIFE-508 — 선택 pane 이 닫혔는데(분할 pane ⌘W) 그 탭이 남아 있으면 **그 탭의 pane** 으로 승격한다. 화면은 영역의 활성 탭(= 그 탭)에서
     // `pickPane` 으로 고른 pane 을 보이므로(App `groupSelectedPaneId`) 같은 규칙이어야 MRU 맨 앞이 화면의 pane 이 된다. 워크스페이스 전체의
     // herdr 포커스로 가면 다른 탭의 pane 이 선택돼 MRU 맨 앞과 화면이 갈리고 ⌃Tab 이 화면을 안 움직였다.
-    // LIFE-691 K2 — 그 탭째 닫혔으면 **화면이 보이는 탭**(활성 영역의 새 활성 탭 — MRU → 이웃)의 pane. herdr 포커스는 다른 탭일 수 있다.
+    // LIFE-691 K2 — 이 워크스페이스에서 선택했던 탭이 **통째로 닫혔으면** 화면이 보이는 탭(활성 영역의 새 활성 탭 — MRU → 이웃)의 pane.
+    // 첫 열기·재기동·다른 워크스페이스에서 넘어옴(선택했던 탭이 여기 없었다)은 전과 같다(herdr 포커스 → 첫 pane) — 그때는 배치가 아직 저장값을
+    // 안 실었을 수 있어(getState 가 getUiPrefs 보다 먼저) 화면 탭이 첫 탭으로 잘못 보인다(f1 A).
     const sameTab = workspace.tabs.find((tab) => tab.tabId === selectedTabRef.current)
-    const shownTab = workspace.tabs.find((tab) => tab.tabId === shownTabRef.current)
+    const tabClosedHere = selectedTabRef.current !== null && selectedWorkspaceRef.current === workspace.workspaceId
+    const shownTab = tabClosedHere ? workspace.tabs.find((tab) => tab.tabId === shownTabRef.current) : undefined
     const promoted =
       (sameTab === undefined ? null : pickPane(sameTab)) ?? (shownTab === undefined ? null : pickPane(shownTab)) ?? panes.find((pane) => pane.focused) ?? firstPane
     setSelectedPane(promoted.paneId)

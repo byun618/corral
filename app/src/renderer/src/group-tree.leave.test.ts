@@ -3,8 +3,9 @@
 // 활성이 아닌 탭이 떠나면 활성 불변. 시나리오는 일감 원문 [세션1, 세션2, 파일1, 파일2] 그대로.
 
 import { describe, expect, it } from 'vitest'
-import { closeFileTab } from './file-tabs.js'
+import { closeFileTab, retargetFileTabs } from './file-tabs.js'
 import {
+  dropDeadTabs,
   findGroup,
   leaf,
   mergeTabIntoGroup,
@@ -157,6 +158,23 @@ describe('K1ⓗ 핀 접두부·미리보기 탭이 섞여도 같은 결과', () 
     expect(activeOf(closed, 'g1')).toBe(F1)
     expect(findGroup(closed.root, 'g1')?.previewTabId).toBeNull()
   })
+  it('f1 B — 핀 C 로 화면 [C*,A,B,D] 에서 활성 터미널 D 닫기(reconcileLayout, 저장 순서 [A,B,C,D]) = 화면 왼쪽 B', () => {
+    const saved = single({ groupId: 'g1', tabOrder: ['w1:a', 'w1:b', 'w1:c', 'w1:d'], activeTabId: 'w1:d' })
+    const pinned = new Set(['w1:c'])
+    const after = reconcileLayout({ layout: saved, liveTabIds: ['w1:a', 'w1:b', 'w1:c'], pinned })
+    expect(findGroup(after.root, 'g1')?.tabOrder).toEqual(['w1:c', 'w1:a', 'w1:b'])
+    expect(activeOf(after, 'g1')).toBe('w1:b')
+  })
+  it('f1 B — 같은 경우 dropDeadTabs(저장 배치 추리기)도 B', () => {
+    const saved = single({ groupId: 'g1', tabOrder: ['w1:a', 'w1:b', 'w1:c', 'w1:d'], activeTabId: 'w1:d' })
+    const after = dropDeadTabs({ layout: saved, herdrTabIds: new Set(['w1:a', 'w1:b', 'w1:c']), pinned: new Set(['w1:c']) })
+    expect(after === null ? null : activeOf(after, 'g1')).toBe('w1:b')
+  })
+  it('f1 B — 화면 [C*,A,B,D] 활성 B 닫기 = 화면 오른쪽 D (저장 순서의 오른쪽 C 가 아니다)', () => {
+    const saved = single({ groupId: 'g1', tabOrder: ['w1:a', 'w1:b', 'w1:c', 'w1:d'], activeTabId: 'w1:b' })
+    const after = reconcileLayout({ layout: saved, liveTabIds: ['w1:a', 'w1:c', 'w1:d'], pinned: new Set(['w1:c']) })
+    expect(activeOf(after, 'g1')).toBe('w1:d')
+  })
   it('미리보기 파일2 새 영역으로 = 파일1', () => {
     expect(activeOf(splitGroup({ layout: scenario({ previewTabId: F2 }), groupId: 'g1', tabId: F2, direction: 'row', newGroupId: 'g3' }), 'g1')).toBe(F1)
   })
@@ -188,5 +206,16 @@ describe('K5 저장 형식 — MRU 는 저장 JSON 에 싣지 않는다', () => 
     expect(json).not.toContain('recentTabIds')
     expect(readStoredLayouts(JSON.parse(json))[0]?.layout).toEqual(stored)
     expect(withoutRecentTabs(stored)).toBe(stored)
+  })
+})
+
+describe('f1 E — 이름 변경(retargetFileTabs)은 MRU 의 파일 탭 id 도 옮긴다', () => {
+  it('파일1 → 파일1x 로 바꾼 뒤 활성 파일2 닫기 = 파일1x (MRU)', () => {
+    const tracked = trackRecentTabs(scenario({ recentTabIds: [F1, S1, F2] }))
+    const renamed = retargetFileTabs({ layout: tracked, from: 'a.md', to: 'ax.md' }).layout
+    expect(findGroup(renamed.root, 'g1')?.recentTabIds).toEqual(['file:ax.md', S1, F2])
+    expect(activeOf(removeTabFromGroup(renamed, 'g1', F2), 'g1')).toBe(S1)
+    const visited = trackRecentTabs(updateGroup(renamed, 'g1', (group) => ({ ...group, recentTabIds: [S1, 'file:ax.md', F2] })))
+    expect(activeOf(removeTabFromGroup(visited, 'g1', F2), 'g1')).toBe('file:ax.md')
   })
 })

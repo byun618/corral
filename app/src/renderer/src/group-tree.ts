@@ -489,7 +489,9 @@ function firstGroupId(node: GroupNode): string {
  * 그때 이 함수는 저장된 영역 **뼈대는 두되** 탭을 전부 첫 영역으로 보낸다 — 잘못된 영역에
  * 붙이거나 크래시하지 않는다. 어느 영역에도 없는 새 탭도 같은 길로 첫 영역에 들어간다(R3-d).
  */
-export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string[] }): GroupLayout {
+export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string[]; pinned?: ReadonlySet<string> }): GroupLayout {
+  // 핀이 있으면 **화면 순서**(핀 접두부)로 먼저 맞춘다 — 닫힌 활성 탭의 이웃은 사용자가 보던 이웃이다(LIFE-691 f1 B). 핀이 없거나 이미 맞으면 같은 객체.
+  const layout = input.pinned === undefined ? input.layout : partitionPinnedLayout({ layout: input.layout, pinned: input.pinned })
   const live = new Set(input.liveTabIds)
   const seen = new Set<string>()
   /** 맞은 **터미널** 탭 수 — 복원 실패 판정은 herdr 탭으로만 한다(파일 탭은 herdr 재기동과 무관하게 늘 맞는다 — LIFE-590). */
@@ -517,10 +519,10 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
       }
     }
   }
-  const pruned = prune(input.layout.root)
+  const pruned = prune(layout.root)
   const groups = listGroups(pruned)
   const head = groups[0]
-  if (head === undefined) return input.layout
+  if (head === undefined) return layout
   const orphans = input.liveTabIds.filter((tabId) => !seen.has(tabId))
   /**
    * 어디에도 없는 탭이 갈 곳 (R3-d).
@@ -532,7 +534,7 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
   const restoreFailed = matchedTerminals === 0 && orphans.length > 0
   const landing = restoreFailed
     ? head
-    : (groups.find((group) => group.groupId === input.layout.activeGroupId) ?? head)
+    : (groups.find((group) => group.groupId === layout.activeGroupId) ?? head)
   const withOrphans =
     orphans.length === 0
       ? pruned
@@ -572,7 +574,7 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
    * 활성 영역도 **착지점을 따라간다** (§10-R32-1) — 단, 접힌 뒤에는 그 착지 그룹이 실제로
    * 남아 있는지 다시 확인한다(collapse 로 사라졌을 수 있다).
    */
-  const preferredActiveGroupId = restoreFailed ? landing.groupId : input.layout.activeGroupId
+  const preferredActiveGroupId = restoreFailed ? landing.groupId : layout.activeGroupId
   const activeGroupId = finalGroups.some((group) => group.groupId === preferredActiveGroupId)
     ? preferredActiveGroupId
     : (finalGroups.some((group) => group.groupId === head.groupId) ? head.groupId : (finalGroups[0]?.groupId ?? head.groupId))
@@ -587,13 +589,13 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
  * 그대로 앉는다. 근거 `herdrTabIds` 는 herdr 세션 전체의 산 탭(링크 live 일 때만)이라 덜 온 상태에 지우지 않는다.
  * 산 탭만으로 `reconcileLayout` 을 돌린다 — 넘기는 목록이 배치 안 탭의 부분집합이라 고아(새로 끌어들일 탭)가 없고, 빈 영역만 접힌다.
  */
-export function dropDeadTabs(input: { layout: GroupLayout; herdrTabIds: ReadonlySet<string> }): GroupLayout | null {
+export function dropDeadTabs(input: { layout: GroupLayout; herdrTabIds: ReadonlySet<string>; pinned?: ReadonlySet<string> }): GroupLayout | null {
   const held = listGroups(input.layout.root).flatMap((group) => group.tabOrder)
   // 파일 탭(LIFE-590)은 herdr 에 없어도 산다 — 파일 탭만 남은 worktree 배치도 버리지 않는다(E1ⓐ).
   const kept = held.filter((tabId) => input.herdrTabIds.has(tabId) || isFileTabId(tabId))
   if (kept.length === 0) return null
   if (kept.length === held.length) return input.layout
-  return reconcileLayout({ layout: input.layout, liveTabIds: kept })
+  return reconcileLayout({ layout: input.layout, liveTabIds: kept, pinned: input.pinned })
 }
 
 // --- 영속 (R3-h — worktree 단위) ------------------------------------------------

@@ -24,8 +24,8 @@ afterEach(() => {
 })
 
 const stored = [{ worktreePath: '/r', layoutFormat: 2, layout: { activeGroupId: 'g1', root: { kind: 'leaf', group: { groupId: 'g1', tabOrder: ['w1:a', 'w1:b', 'w1:c', 'w1:d'], activeTabId: 'w1:a' } } } }]
-function Harness(props: { liveTabIds: string[] }): null {
-  api = useGroupLayout({ worktreePath: '/r', liveTabIds: props.liveTabIds, ready: true, stored, pinned: new Set(), herdrTabIds: null })
+function Harness(props: { liveTabIds: string[]; pinned?: string[]; saved?: unknown[]; herdrTabIds?: string[] }): null {
+  api = useGroupLayout({ worktreePath: '/r', liveTabIds: props.liveTabIds, ready: true, stored: props.saved ?? stored, pinned: new Set(props.pinned ?? []), herdrTabIds: props.herdrTabIds ?? null })
   return null
 }
 const show = (liveTabIds: string[]): void => act(() => root.render(createElement(Harness, { liveTabIds })))
@@ -66,4 +66,22 @@ it('K5 — 저장 JSON 에 recentTabIds 가 없다(LAYOUT_FORMAT 2 그대로)', 
   expect(json).toContain('"layoutFormat":2')
   expect(json).toContain('"activeTabId":"w1:c"')
   expect(json).not.toContain('recentTabIds')
+})
+
+// f1 B — 핀으로 화면 순서 ≠ 저장 순서. 저장값 [A,B,C,D] 활성 D(MRU 없음 = 재기동 직후), 핀 C → 화면 [C*,A,B,D].
+const savedD = [{ worktreePath: '/r', layoutFormat: 2, layout: { activeGroupId: 'g1', root: { kind: 'leaf', group: { groupId: 'g1', tabOrder: ['w1:a', 'w1:b', 'w1:c', 'w1:d'], activeTabId: 'w1:d' } } } }]
+const showPinned = (props: { liveTabIds: string[]; herdrTabIds?: string[] }): void =>
+  act(() => root.render(createElement(Harness, { ...props, pinned: ['w1:c'], saved: savedD })))
+
+it('f1 B — 화면 [C*,A,B,D] 활성 D(터미널) 닫기 = 화면 왼쪽 B (화면 파생 shownLayout 경로)', () => {
+  showPinned({ liveTabIds: ['w1:a', 'w1:b', 'w1:c', 'w1:d'] })
+  expect(current().groups[0]?.tabOrder).toEqual(['w1:c', 'w1:a', 'w1:b', 'w1:d'])
+  showPinned({ liveTabIds: ['w1:a', 'w1:b', 'w1:c'] })
+  expect(active()).toBe('w1:b')
+})
+
+it('f1 B — 같은 닫기가 herdr 전체 목록으로 저장 배치에서 걷혀도(dropDeadTabs 경로) B', () => {
+  showPinned({ liveTabIds: ['w1:a', 'w1:b', 'w1:c', 'w1:d'], herdrTabIds: ['w1:a', 'w1:b', 'w1:c', 'w1:d'] })
+  showPinned({ liveTabIds: ['w1:a', 'w1:b', 'w1:c'], herdrTabIds: ['w1:a', 'w1:b', 'w1:c'] })
+  expect(active()).toBe('w1:b')
 })

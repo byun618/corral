@@ -76,7 +76,7 @@ import { sessionTitle, userLabel } from './session-title.js'
 import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
-import { fileTabId, fileTabLabel, fileTabsOf, isFileTabId, previewOf, tabKindOf, terminalKeyTarget } from './file-tabs.js'
+import { closeFollowTarget, fileTabId, fileTabLabel, fileTabsOf, isFileTabId, previewOf, recordCloseFollow, tabKindOf, terminalKeyTarget, type CloseFollow } from './file-tabs.js'
 import { FileView, focusLiveEditor, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
 import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, thawEditing, type FileDoc } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, type SaveDeps } from './file-save.js'
@@ -644,14 +644,19 @@ export function App(): React.JSX.Element {
   // LIFE-691 K2 — 터미널 탭이 닫혀 선택 pane 을 잃으면 이 탭의 pane 으로 승격한다(`useLifecycleActions`).
   lifecycle.shownTabRef.current = activeGroupTab?.tabId ?? null
   /**
-   * LIFE-691 K2 — 파일 탭을 닫은 뒤 화면의 새 활성 탭이 터미널이면 입력 pane 도 그 탭으로(`closeFileNow` 가 켠다).
-   * 닫기가 배치를 바꾼 **다음 렌더**에서 한 번만 본다 — 옮기기(새 영역·병합)는 켜지 않는다(포커스가 옮긴 파일 영역이면 선택 pane 을 그대로 둔다).
+   * LIFE-691 K2ⓐ — 파일 탭을 닫아(탭 닫기·탐색기 삭제/이동 — `noteFileClose`) 활성 영역의 활성 탭이 닫히고 새 활성이 터미널 탭이면 입력 pane 도 그 탭으로.
+   * 닫기가 배치를 바꾼 **다음 렌더**에서 한 번 보고 버린다 — 판단은 `closeFollowTarget`(같은 worktree·활성 탭이 닫혔나·새 활성이 터미널인가).
+   * 옮기기(새 영역·병합)는 기록하지 않는다(포커스가 옮긴 파일 영역이면 선택 pane 을 그대로 둔다 — K2ⓒ).
    */
-  const followShownTabRef = useRef(false)
+  const closeFollowRef = useRef<CloseFollow | null>(null)
   useEffect(() => {
-    if (!followShownTabRef.current) return
-    followShownTabRef.current = false
-    const paneId = paneToFollow({ tab: activeGroupTab, selectedPane: lifecycle.selectedPane })
+    const target = closeFollowTarget({
+      pending: closeFollowRef.current,
+      worktreePath: activeWorktreeRow?.path ?? null,
+      activeTabId: layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null,
+    })
+    closeFollowRef.current = null
+    const paneId = target === null ? null : paneToFollow({ tab: tabById(target), selectedPane: lifecycle.selectedPane })
     if (paneId !== null) selectPane(paneId)
   }, [layout.layout])
   const viewedPaneId =
@@ -1225,14 +1230,23 @@ export function App(): React.JSX.Element {
     })
   }
   const closeFileByUser = (tabId: string): void => closeFilesByUser([tabId])
+  /** LIFE-691 K2ⓐ — 파일 탭 닫기를 입력 pane 따라가기 대기에 싣는다(위 `closeFollowRef`). 활성 worktree 의 닫기만 실린다. */
+  const noteFileClose = (input: { worktreePath: string; tabIds: readonly string[] }): void => {
+    closeFollowRef.current = recordCloseFollow({
+      pending: closeFollowRef.current,
+      activeWorktreePath: activeWorktreeRowRef.current?.path ?? null,
+      worktreePath: input.worktreePath,
+      activeTabBefore: layoutRef.current.activeTabId,
+      tabIds: input.tabIds,
+    })
+  }
   const closeFileNow = (input: { worktreePath: string; tabId: string }): void => {
     const { worktreePath, tabId } = input
     const kind = tabKindOf(tabId)
     if (kind.kind !== 'file') return
     fileViewStatesOf(worktreePath).delete(tabId)
     disposeDoc(docKey(worktreePath, kind.rel))
-    // 배치에 있는 탭일 때만 — 안 바뀌는 닫기가 켜 둔 채 남아 나중의 다른 배치 변경에서 pane 을 옮기지 않게.
-    if (layout.layout !== null && groupOfTab(layout.layout.root, tabId) !== null) followShownTabRef.current = true
+    noteFileClose({ worktreePath, tabIds: [tabId] })
     layout.closeFile({
       tabId,
       onClosed: (closed) => {
@@ -1308,7 +1322,15 @@ export function App(): React.JSX.Element {
   const fileOps = useFileOps({
     root: activeWorktreeRow?.path ?? null,
     explorer,
-    layout,
+    // 탐색기 삭제·이동으로 닫히는 파일 탭도 입력 pane 따라가기에 싣는다(LIFE-691 f1 D).
+    layout: {
+      fileLayoutOf: layout.fileLayoutOf,
+      retargetFiles: layout.retargetFiles,
+      closeFiles: (input) => {
+        noteFileClose(input)
+        layout.closeFiles(input)
+      },
+    },
     viewStatesOf: fileViewStatesOf,
     markdownModesOf,
     recentlyClosedRef,

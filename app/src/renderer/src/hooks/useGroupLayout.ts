@@ -101,7 +101,7 @@ function nextGroupId(existing: string[]): string {
 /** 화면에 내는 배치 — 저장값(없으면 살아 있는 탭 한 영역)을 살아 있는 탭에 맞춰 추리고 핀 접두부로 나눈다. 활성·비활성 worktree 가 같은 파생을 쓴다. */
 function shownLayout(input: { saved: GroupLayout | undefined; liveTabIds: string[]; pinned: ReadonlySet<string> }): GroupLayout {
   const base = input.saved ?? singleLayout({ groupId: ROOT_GROUP, tabOrder: input.liveTabIds, activeTabId: input.liveTabIds[0] ?? null })
-  return partitionPinnedLayout({ layout: reconcileLayout({ layout: base, liveTabIds: input.liveTabIds }), pinned: input.pinned })
+  return partitionPinnedLayout({ layout: reconcileLayout({ layout: base, liveTabIds: input.liveTabIds, pinned: input.pinned }), pinned: input.pinned })
 }
 
 export function useGroupLayout(input: {
@@ -145,7 +145,8 @@ export function useGroupLayout(input: {
       let changed = false
       const next: Record<string, GroupLayout> = {}
       for (const [worktreePath, value] of Object.entries(previous)) {
-        const kept = dropDeadTabs({ layout: value, herdrTabIds: live })
+        // 핀은 탭 id 키라 worktree 를 가리지 않는다 — 화면 순서로 이웃을 센다(LIFE-691 f1 B).
+        const kept = dropDeadTabs({ layout: value, herdrTabIds: live, pinned: input.pinned })
         if (kept !== value) changed = true
         if (kept !== null) next[worktreePath] = kept
       }
@@ -196,9 +197,10 @@ export function useGroupLayout(input: {
         const base =
           previous[worktreePath] ?? singleLayout({ groupId: ROOT_GROUP, tabOrder: liveTabIds, activeTabId: liveTabIds[0] ?? null })
         // 화면이 보이는 순서(핀 접두부) 위에서 바꾼다 — 드롭 자리 index 가 그 순서로 계산됐다. 바꾼 뒤에도 한 번 더 지나 경계를 지킨다.
-        // 영역별 탭 MRU(LIFE-691 R3)는 여기 한 자리에서 기록한다 — 바꾸기 전(재기동 직후 저장값의 활성·닫혀서 고른 활성)과 바꾼 뒤.
-        const current = trackRecentTabs(partitionPinnedLayout({ layout: reconcileLayout({ layout: base, liveTabIds }), pinned }))
-        const next = trackRecentTabs(partitionPinnedLayout({ layout: change(current), pinned }))
+        // 영역별 탭 MRU(LIFE-691 R3)는 여기 한 자리에서 기록한다 — **바꾸기 전**(지금 화면의 활성: 재기동 직후 저장값의 활성·닫혀서 고른 활성·
+        // 지난 mutate 가 바꾼 활성). 바꾼 뒤의 활성은 다음 mutate 의 「전」 이 넣는다 — 그 사이 그 탭이 떠나도 떠난 탭은 후보가 아니라 차이가 없다(f1 E).
+        const current = trackRecentTabs(partitionPinnedLayout({ layout: reconcileLayout({ layout: base, liveTabIds, pinned }), pinned }))
+        const next = partitionPinnedLayout({ layout: change(current), pinned })
         return next === previous[worktreePath] ? previous : { ...previous, [worktreePath]: next }
       })
     },

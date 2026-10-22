@@ -5,7 +5,8 @@
 // 메모리 = 활동 상태 보기 「메모리」 열 값(phys_footprint)의 합. 못 재면 `측정 불가`(사유는 툴팁) — RSS 로 대신하지 않는다(Q2).
 // 일부 pid 를 뺀 합(하한)은 `≥ x`, 빠진 사유는 툴팁(리뷰 r1 C1-1).
 // 패널 = worktree 묶음(합계 행 + pane 행) · 앱·herdr 행 따로. 기본 정렬은 메모리 내림차순, 측정 불가는 맨 뒤.
-import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourcePaneRow, type ResourceSnapshot, type ResourceUsage } from '../../shared/resource.js'
+// 카드 밖 workspace(LIFE-628) = worktree 묶음 아래 따로 한 묶음 — workspace 한 줄(원래 경로·에이전트·메모리) + 한 줄 닫기·「모두 닫기」.
+import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourceOrphanRow, type ResourceOrphanSkip, type ResourcePaneRow, type ResourceSnapshot, type ResourceUsage } from '../../shared/resource.js'
 import type { RunningPane } from '../../shared/types.js'
 import { closeCopy, type CloseCopy } from './close-copy.js'
 
@@ -229,7 +230,7 @@ export function hostLine(snapshot: ResourceSnapshot): string {
 
 /** herdr 행 이름·툴팁 (F9) — 셸 부모(herdr) 아래에서 pane 행이 가져가지 않은 것이 전부 이 행으로 온다. */
 export const HERDR_ROW_LABEL = 'herdr (서버 + 목록 밖 pane)'
-export const HERDR_ROW_TOOLTIP = 'herdr 서버와, 패널 목록에 없는 pane(셸 pid 를 아직 모르는 pane·worktree 에 매달리지 않은 workspace)의 프로세스'
+export const HERDR_ROW_TOOLTIP = 'herdr 서버와, 패널 목록에 없는 pane(셸 pid 를 아직 모르는 pane)의 프로세스 — 카드 밖 workspace 는 아래 따로'
 
 /**
  * pane 닫기 확인 문구 (F7) — 뜻·체크박스(「다시 묻지 않기」 = 같은 설정 패치)는 기존 `closeCopy` 를 따르고 말만 pane 기준으로 바꾼다.
@@ -250,3 +251,119 @@ export function paneCloseCopy(input: { running: readonly RunningPane[]; agentPan
       return base
   }
 }
+
+/** 카드 밖 workspace 묶음 (LIFE-628 S1). */
+export const ORPHAN_SECTION_LABEL = '카드 밖 workspace'
+export const ORPHAN_SECTION_TOOLTIP = 'herdr 에 열려 있지만 어느 worktree 카드에도 붙지 않은 workspace — 셸에서 지운 worktree 에 남은 세션, herdr 재기동이 원래 경로 없이 되살린 세션 등. 닫으면 그 안의 셸·에이전트가 종료된다.'
+/** 가릴 수 없는 때(`orphans: null`) — 빈 목록(「없다」)과 구분한다. */
+export const ORPHAN_UNKNOWN = '지금은 가릴 수 없다(재접속 중·목록 갱신 중)'
+export const ORPHAN_MISSING_PATH = '없음'
+/** 경로 확인 불가(권한 거부 등·확인 전 — LIFE-628 G1). 「없음」 과 다르다. */
+export const ORPHAN_UNCHECKED_PATH = '확인 불가'
+
+/** 줄 이름 칸 — 첫 경로(지금 없으면 「(없음)」, 확인 못 하면 「(확인 불가)」), 경로가 여럿이면 「외 n」. 경로를 모르면 workspace 이름. */
+export function orphanPathText(row: ResourceOrphanRow): string {
+  const [first, ...rest] = row.paths
+  if (first === undefined) return row.label
+  // 확인 전(pending — 첫 틱)은 경로만 — 다음 틱에 실제 값이 오기 전에 「확인 불가」 로 깜박이지 않게(P3).
+  const head = first.exists === true || first.pending === true ? first.path : `${first.path} (${first.exists === false ? ORPHAN_MISSING_PATH : ORPHAN_UNCHECKED_PATH})`
+  return rest.length === 0 ? head : `${head} 외 ${rest.length}`
+}
+
+/** 줄 툴팁 — 경로 전부(있음/없음)·pane 수·workspace 이름. */
+export function orphanTooltip(row: ResourceOrphanRow): string {
+  const paths = row.paths.length === 0 ? ['경로 모름'] : row.paths.map((item) => (item.exists === true || item.pending === true ? item.path : item.exists === false ? `${item.path} — 디렉터리 없음` : `${item.path} — 있는지 확인 불가(권한 등)`))
+  return [...paths, `pane ${row.paneIds.length}개 · ${row.label}`].join('\n')
+}
+
+export const ORPHAN_STOPPED = '중지됨'
+export const ORPHAN_OWNERLESS = '주인 없음'
+export const ORPHAN_OWNED = '경로 있음'
+export const ORPHAN_OWNERLESS_TOOLTIP = '원래 경로가 모두 사라졌거나 HOME 이다 — 「모두 닫기」 대상'
+export const ORPHAN_OWNED_TOOLTIP = '경로가 살아 있다(미등록 레포의 세션·형제 pane 이 살아 있는 workspace 등) — 「모두 닫기」 에 들지 않는다. 줄 ✕ 로만 닫는다'
+export const ORPHAN_UNCHECKED = '경로 확인 불가'
+export const ORPHAN_UNCHECKED_TOOLTIP = '경로가 있는지 확인하지 못했다(권한 거부 등) — 「모두 닫기」 에 들지 않는다. 줄 ✕ 로만 닫는다'
+export const ORPHAN_UNKNOWN_PATH = '경로 모름'
+export const ORPHAN_UNKNOWN_PATH_TOOLTIP = '이 workspace 의 pane 경로(cwd)를 받지 못했다 — 「모두 닫기」 에 들지 않는다. 줄 ✕ 로만 닫는다'
+
+/**
+ * 줄 배지 (F3·P3) — 주인 없음 / 경로 확인 불가(확인 실패한 경로가 있음) / 경로 있음. 아직 확인 전인 경로가 있으면(첫 틱) 배지를 생략한다 —
+ * 다음 틱에 실제 값으로 바뀔 「경로 있음」 을 잠깐 보이지 않게. 주인 없음은 확인된 것만으로 정해지므로 그대로 보인다.
+ */
+export function orphanOwnerBadge(row: ResourceOrphanRow): { kind: 'ownerless' | 'unchecked' | 'unknown' | 'owned'; text: string; tooltip: string } | null {
+  if (row.ownerless) return { kind: 'ownerless', text: ORPHAN_OWNERLESS, tooltip: ORPHAN_OWNERLESS_TOOLTIP }
+  // Y1 — 경로가 하나도 없으면(cwd 모름) 「있음」 이라 하지 않는다.
+  if (row.paths.length === 0) return { kind: 'unknown', text: ORPHAN_UNKNOWN_PATH, tooltip: ORPHAN_UNKNOWN_PATH_TOOLTIP }
+  if (row.paths.some((item) => item.pending === true)) return null
+  if (row.paths.some((item) => item.exists === null)) return { kind: 'unchecked', text: ORPHAN_UNCHECKED, tooltip: ORPHAN_UNCHECKED_TOOLTIP }
+  return { kind: 'owned', text: ORPHAN_OWNED, tooltip: ORPHAN_OWNED_TOOLTIP }
+}
+
+/** 종류 칸 — 에이전트 이름들, 세션 참조만 남은 에이전트는 「(중지됨)」(F4 — 재기동이 재개하지 않은 pane), 둘 다 없으면 shell. */
+export function orphanKindText(row: ResourceOrphanRow): string {
+  const names = [...row.agents, ...row.stoppedAgents.map((agent) => `${agent} (${ORPHAN_STOPPED})`)]
+  return names.length === 0 ? 'shell' : names.join(', ')
+}
+
+/** 닫지 않은 줄의 안내 (LIFE-628 G2) — 사유별 개수. 사유 없이 빠진 수(`unexplained`)는 「이미 없어짐」 쪽에 센다. */
+export function orphanSkipText(input: { skipped: readonly ResourceOrphanSkip[]; unexplained: number }): string | null {
+  const count = (reason: ResourceOrphanSkip['reason']): number => input.skipped.filter((item) => item.reason === reason).length
+  const parts = [
+    count('claimed') > 0 ? `카드에 붙음 ${count('claimed')}` : null,
+    // Y3 — 원인을 가정하지 않는다(외장 볼륨 분리일 수도 있다 — 정리를 권하지 않고 확인을 먼저).
+    count('stale-claim') > 0 ? `경로가 디스크에 없음 ${count('stale-claim')} (볼륨 분리·worktree 잠금 여부를 확인 — 정리하려면 git worktree unlock/prune)` : null,
+    count('gone') + input.unexplained > 0 ? `이미 닫힘·없음 ${count('gone') + input.unexplained}` : null,
+    count('not-ownerless') > 0 ? `주인 없는 줄이 아님 ${count('not-ownerless')}` : null,
+  ].filter((part): part is string => part !== null)
+  const total = input.skipped.length + input.unexplained
+  return total === 0 ? null : `${total}개는 닫지 않았다 — ${parts.join(' · ')}`
+}
+
+/** 「모두 닫기」 대상 — 주인 없는 줄만(F3). */
+export function bulkOrphanTargets(rows: readonly ResourceOrphanRow[]): ResourceOrphanRow[] {
+  return rows.filter((row) => row.ownerless)
+}
+
+/** 메모리(또는 CPU) 내림차순, 측정 불가는 맨 뒤 — pane 행과 같은 규칙. */
+export function sortOrphans(input: { rows: readonly ResourceOrphanRow[]; sort: ResourceSortKey }): ResourceOrphanRow[] {
+  return [...input.rows].sort((a, b) => compareUsage({ a: usageOf(a.measure), b: usageOf(b.measure), key: input.sort }))
+}
+
+/** 묶음 머리 합 — 측정된 줄만(`sumUsage`). 하나도 못 재면 null. */
+export function orphanTotal(rows: readonly ResourceOrphanRow[]): ResourceUsage | null {
+  return sumUsage(rows.flatMap((row) => {
+    const usage = usageOf(row.measure)
+    return usage === null ? [] : [usage]
+  }))
+}
+
+/**
+ * 카드 밖 workspace 닫기 확인 문구 — 뜻은 기존 `closeCopy` 를 따르고 말만 workspace 기준으로 바꾼다.
+ * **「다시 묻지 않기」 는 두지 않는다**(F3) — 그 체크는 전역 설정(`skipCloseTerminalWithRunningProcessConfirm`)을 끄므로,
+ * 카드 밖 일괄 닫기의 확인 하나로 모든 터미널 닫기의 확인을 영구히 끌 수 있었다.
+ * `bulk`(「모두 닫기」)는 실행 중이 없어도 개수 확인이다 — 제목에 개수, 확인 버튼에 개수.
+ * 한 줄 닫기에서 실행 중이 비어 있으면(확인 뒤 재판정에서 사라짐) 일반 문구로.
+ */
+export function orphanCloseCopy(input: { running: readonly RunningPane[]; agentPaneIds: ReadonlySet<string>; count: number; bulk: boolean }): CloseCopy {
+  const base = closeCopy({ kind: 'tabs', tabCount: input.count, running: input.running, agentPaneIds: input.agentPaneIds, pinnedCount: 0 })
+  if (input.bulk) {
+    const stops = base.kind === 'agent' ? ['그 안의 에이전트가 종료된다.'] : base.kind === 'command' ? ['안에서 실행 중인 명령이 멈춘다.'] : []
+    return {
+      kind: base.kind === 'agent' ? 'agent' : 'command',
+      title: `주인 없는 workspace ${input.count}개를 닫을까`,
+      body: [`원래 경로가 사라졌거나 HOME 인 카드 밖 workspace ${input.count}개를 닫는다.`, ...stops, '닫은 터미널은 자동으로 재개되지 않는다.'],
+      confirm: `${input.count}개 닫기`,
+      dontAskAgain: null,
+    }
+  }
+  switch (base.kind) {
+    case 'agent':
+      return { ...base, body: ['이 workspace 를 닫으면 그 안의 에이전트가 종료된다.', '닫은 터미널은 자동으로 재개되지 않는다.'], dontAskAgain: null }
+    case 'command':
+      return { ...base, body: ['이 workspace 를 닫으면 안에서 실행 중인 명령이 멈춘다.'], dontAskAgain: null }
+    case 'pinned':
+    case 'worktree':
+      return { kind: 'command', title: '카드 밖 workspace 를 닫을까', body: ['다시 확인했을 때 실행 중인 프로세스가 보이지 않았다.'], confirm: '닫기', dontAskAgain: null }
+  }
+}
+

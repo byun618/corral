@@ -19,8 +19,13 @@ import type { CloseTabsResult, RunningPane } from '../shared/types.js'
 
 export type CloseTabOutcome =
   | { outcome: 'closed' }
+  /** 닫기 직전 재확인에서 대상이 아니게 됐다(LIFE-628 F2 — 그 사이 카드에 붙었다) — 닫지 않고 다음으로. `closed` 에 넣지 않는다. */
+  | { outcome: 'skipped' }
   | { outcome: 'rejected'; rejection: { code: string; message: string } }
   | { outcome: 'error'; error: string }
+
+/** 탭 하나를 판정하기 **전** 준비(LIFE-628 G3 — 권위 재독). `ready` 면 판정 → 닫기, `skipped` 면 다음 탭, `error` 면 멈춘다. */
+export type ClosePrepareOutcome = { outcome: 'ready' } | { outcome: 'skipped' } | { outcome: 'error'; error: string }
 
 export async function closeTabsGated(input: {
   tabIds: readonly string[]
@@ -33,6 +38,11 @@ export async function closeTabsGated(input: {
   /** 그 탭의 지금 pane 들. 탭이 없으면 null(건너뛴다). */
   panesOf: (tabId: string) => readonly string[] | null
   probe: (panes: readonly { tabId: string; paneId: string }[]) => Promise<RunningPane[]>
+  /**
+   * 있으면 탭마다 닫기 직전 재판정 **앞에** 부른다 — 순서 = 준비 → 프로세스 판정 → 닫기. 준비(예: 귀속 재독)가 판정과 닫기 사이에
+   * 끼지 않게 하려는 것이다(LIFE-628 G3). 준비 뒤 `panesOf` 를 다시 본다.
+   */
+  prepare?: (tabId: string) => Promise<ClosePrepareOutcome>
   close: (tabId: string) => Promise<CloseTabOutcome>
 }): Promise<CloseTabsResult> {
   const panesOfTabs = (tabIds: readonly string[]): { tabId: string; paneId: string }[] =>
@@ -46,6 +56,18 @@ export async function closeTabsGated(input: {
   const closed: string[] = []
   for (const [index, tabId] of targets.entries()) {
     if (input.panesOf(tabId) === null) continue
+    if (input.prepare !== undefined) {
+      const ready = await input.prepare(tabId)
+      switch (ready.outcome) {
+        case 'ready':
+          break
+        case 'skipped':
+          continue
+        case 'error':
+          return { outcome: 'error', closed, error: ready.error }
+      }
+      if (input.panesOf(tabId) === null) continue
+    }
     const now = input.confirmRunning ? await input.probe(panesOfTabs([tabId])) : []
     if (now.some((pane) => !confirmed.has(pane.paneId))) {
       const remaining = targets.slice(index).filter((id) => input.panesOf(id) !== null)
@@ -56,6 +78,8 @@ export async function closeTabsGated(input: {
       case 'closed':
         closed.push(tabId)
         continue
+      case 'skipped':
+        continue
       case 'rejected':
         return { outcome: 'rejected', closed, rejection: outcome.rejection }
       case 'error':
@@ -64,3 +88,29 @@ export async function closeTabsGated(input: {
   }
   return { outcome: 'closed', closed }
 }
+
+/** `pane.process_info` 판정 한 벌 — 어댑터 `probeForeground` 의 모양 중 게이트가 쓰는 칸. */
+export type ForegroundRead = {
+  ok: boolean
+  shellPid: number | null
+  foregroundGroupId: number | null
+  foreground: ReadonlyArray<{ name: string; cmdline: string | null }>
+  error: string | null
+  /** herdr 가 `pane_not_found` 로 답했다 — 그 pane 에 런타임(PTY)이 없다(LIFE-628 F4: 재기동이 저장 cwd 없이 살린 pane). */
+  missing: boolean
+}
+
+/**
+ * 게이트의 pane 한 칸 판정 (LIFE-628 F4) — 실행 중이면 확인 창에 보일 프로세스 목록, 아니면 null.
+ *   · 셸만(포그라운드 그룹 = 셸 pid) → null
+ *   · `pane_not_found`(런타임 없음) → null — 프로세스가 없으니 멈출 것도 없다. 「프로세스 확인 실패」 로 묻지 않는다.
+ *   · 그 밖의 판정 실패 → 실행 중으로 기운다(LIFE-346 — 모르면 묻는다)
+ */
+export function runningForeground(probe: ForegroundRead): string[] | null {
+  if (!probe.ok) return probe.missing ? null : [`(프로세스 확인 실패: ${probe.error})`]
+  if (probe.shellPid !== null && probe.foregroundGroupId === probe.shellPid) return null
+  const foreground = probe.foreground.map((item) => item.cmdline ?? item.name)
+  // 셸 아닌 포그라운드인데 목록이 비어 오면(probe 가 그룹만 안다) 무엇인지 몰라도 실행 중이다 — 빈 칸으로 두지 않는다.
+  return foreground.length > 0 ? foreground : ['(알 수 없는 프로세스)']
+}
+

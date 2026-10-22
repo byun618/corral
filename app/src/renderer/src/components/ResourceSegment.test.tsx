@@ -3,7 +3,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ResourceCloseResult, ResourceCloseRoute, ResourcePaneRow, ResourceSnapshot } from '../../../shared/resource.js'
+import type { ResourceCloseResult, ResourceCloseRoute, ResourceOrphanCloseResult, ResourcePaneRow, ResourceSnapshot } from '../../../shared/resource.js'
 import type { CloseTabsResult } from '../../../shared/types.js'
 import { StatusBar } from './StatusBar.js'
 import { ResourceSegment } from './ResourceSegment.js'
@@ -34,6 +34,7 @@ const SNAPSHOT: ResourceSnapshot = {
     { paneId: 'p-big', tabId: 't2', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'claude 1', agent: 'claude', measure: { state: 'measured', usage: { cpu: 6, memory: { state: 'measured', bytes: 1.2 * GB } }, pids: [400] } },
     { paneId: 'p-gone', tabId: 't3', workspaceId: 'w2', groupKey: '/wt/b', groupLabel: 'main', title: 'zsh', agent: null, measure: { state: 'unavailable', reason: '셸 프로세스(pid 9)가 없다' } },
   ],
+  orphans: [],
   host: { physicalMemory: 24 * GB, cpuCoreCount: 18, pressure: 'warning', swap: { used: 23.3 * GB, total: 24 * GB }, compressed: 8.4 * GB },
   stats: { intervalMs: 2000, collections: 3, skippedHidden: 0, processInfoRequests: 3, footprintRuns: 0, hostReads: 0, recentDurationsMs: [120] },
 }
@@ -58,6 +59,7 @@ const corral = {
   revealResourcePane: vi.fn(async () => true),
   closeResourcePane: vi.fn(async (): Promise<ResourceCloseResult> => ({ outcome: 'closed', closed: ['p-small'] })),
   closeTabs: vi.fn(async (): Promise<CloseTabsResult> => ({ outcome: 'closed', closed: ['t2'] })),
+  closeResourceOrphans: vi.fn(async (input: { workspaceIds: string[] }): Promise<ResourceOrphanCloseResult> => ({ outcome: 'closed', closed: input.workspaceIds })),
   // 닫기 길 = main 의 지금 위상(H3). 기본은 SNAPSHOT 모양 그대로.
   getResourceCloseRoute: vi.fn(async (input: { paneId: string }): Promise<ResourceCloseRoute> => ROUTES[input.paneId] ?? { kind: 'missing' }),
   getUiPrefs: vi.fn(async (): Promise<{ tabMarks: unknown[] }> => ({ tabMarks: [] })),
@@ -1199,3 +1201,146 @@ describe('닫기 IPC 를 기다리는 사이 패널을 닫으면 늦은 결과�
     expect(q('[data-statusbar-resource-error]')).toBeNull()
   })
 })
+
+describe('카드 밖 workspace (LIFE-628 S1)', () => {
+  const ORPHANS: ResourceSnapshot = {
+    ...SNAPSHOT,
+    orphans: [
+      { workspaceId: 'w8', label: 'w8', paths: [{ path: '/repo/.claude/worktrees/LIFE-1-x', exists: false }], ownerless: true, agents: ['claude'], stoppedAgents: [], paneIds: ['p8'], measure: { state: 'measured', usage: { cpu: 1, memory: { state: 'measured', bytes: 300 * MB } }, pids: [800] } },
+      { workspaceId: 'w9', label: 'w9', paths: [{ path: '/home', exists: true }], ownerless: true, agents: [], stoppedAgents: [], paneIds: ['p9'], measure: { state: 'unavailable', reason: '셸 pid 를 모른다' } },
+    ],
+  }
+  function openOrphans(snapshot: ResourceSnapshot = ORPHANS): HTMLElement {
+    mount()
+    act(() => push?.(snapshot))
+    click(segment())
+    const panel = q('[data-statusbar-resource-panel]')
+    if (panel === null) throw new Error('패널 없음')
+    return panel
+  }
+  const must = (selector: string): HTMLElement => {
+    const found = q(selector)
+    if (found === null) throw new Error(`${selector} 없음`)
+    return found
+  }
+
+  it('줄 = 원래 경로(없으면 「(없음)」)·에이전트 또는 shell·메모리, 메모리순, 머리에 개수 (K1ⓒ 표시)', () => {
+    openOrphans()
+    const rows = [...document.querySelectorAll('[data-statusbar-resource-orphan]')]
+    expect(rows.map((row) => row.getAttribute('data-statusbar-resource-orphan'))).toEqual(['w8', 'w9'])
+    expect(rows[0]?.querySelector('[data-statusbar-resource-orphan-path]')?.textContent).toBe('/repo/.claude/worktrees/LIFE-1-x (없음)')
+    expect(rows[0]?.querySelector('[data-statusbar-resource-agent]')?.textContent).toBe('claude')
+    expect(rows[0]?.querySelector('[data-statusbar-resource-memory]')?.textContent).toBe('300 MB')
+    expect(rows[1]?.querySelector('[data-statusbar-resource-agent]')?.textContent).toBe('shell')
+    expect(rows[1]?.querySelector('[data-statusbar-resource-memory]')?.textContent).toBe('—')
+    expect(must('[data-statusbar-resource-orphans]').textContent).toContain('카드 밖 workspace (2)')
+  })
+
+  it('P1 — 가릴 수 없는 까닭이 영구면 그 사유를 안내한다', () => {
+    openOrphans({ ...SNAPSHOT, orphans: null, orphansReason: '등록 레포를 읽을 수 없다 — /gone' })
+    expect(must('[data-statusbar-resource-orphans-unknown]').textContent).toBe('등록 레포를 읽을 수 없다 — /gone')
+  })
+
+  it('P3 — 확인 불가 줄은 「경로 확인 불가」 배지, 확인 전 줄은 배지 없음', () => {
+    openOrphans({
+      ...SNAPSHOT,
+      orphans: [
+        { workspaceId: 'w6', label: 'w6', paths: [{ path: '/Volumes/x', exists: null }], ownerless: false, agents: [], stoppedAgents: [], paneIds: ['p6'], measure: { state: 'unavailable', reason: 'x' } },
+        { workspaceId: 'w5', label: 'w5', paths: [{ path: '/new', exists: null, pending: true }], ownerless: false, agents: [], stoppedAgents: [], paneIds: ['p5'], measure: { state: 'unavailable', reason: 'x' } },
+      ],
+    })
+    expect(must('[data-statusbar-resource-orphan="w6"]').querySelector('[data-statusbar-resource-orphan-owner]')?.textContent).toBe('경로 확인 불가')
+    expect(must('[data-statusbar-resource-orphan="w5"]').querySelector('[data-statusbar-resource-orphan-owner]')).toBeNull()
+    expect(must('[data-statusbar-resource-orphan="w5"]').querySelector('[data-statusbar-resource-orphan-path]')?.textContent).toBe('/new')
+  })
+
+  it('가릴 수 없으면(null) 빈 목록과 다른 안내, 모두 닫기 없음', () => {
+    openOrphans({ ...SNAPSHOT, orphans: null })
+    expect(q('[data-statusbar-resource-orphans-unknown]')).not.toBeNull()
+    expect(q('[data-statusbar-resource-orphan-close-all]')).toBeNull()
+  })
+
+  it('줄 ✕ — 그 workspace 만, 확인 전 confirmed:false (K2ⓐ)', async () => {
+    openOrphans()
+    click(must('[data-statusbar-resource-orphan-close="w8"]'))
+    await flush()
+    expect(corral.closeResourceOrphans).toHaveBeenCalledWith({ workspaceIds: ['w8'], bulk: false, confirmed: false, confirmedPaneIds: [] })
+    expect(corral.closeResourcePane).not.toHaveBeenCalled()
+  })
+
+  it('실행 중이면 기존 확인 창(에이전트 문구) — 확인하면 confirmed + 확인한 pane 으로 다시 (K2ⓑ)', async () => {
+    corral.closeResourceOrphans.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['claude'] }] })
+    openOrphans()
+    click(must('[data-statusbar-resource-orphan-close="w8"]'))
+    await flush()
+    const modal = must('[data-confirm-close-modal]')
+    expect(modal.getAttribute('data-confirm-close-kind')).toBe('agent')
+    expect(modal.textContent).toContain('이 workspace 를 닫으면')
+    expect(modal.textContent).toContain('/repo/.claude/worktrees/LIFE-1-x (없음)')
+    click(must('[data-close-confirm-ok]'))
+    await flush()
+    await flush()
+    expect(corral.closeResourceOrphans).toHaveBeenLastCalledWith({ workspaceIds: ['w8'], bulk: false, confirmed: true, confirmedPaneIds: ['p8'] })
+    expect(q('[data-confirm-close-modal]')).toBeNull()
+  })
+
+  it('확인 창 Esc = 취소 — 다시 부르지 않는다', async () => {
+    corral.closeResourceOrphans.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['claude'] }] })
+    openOrphans()
+    click(must('[data-statusbar-resource-orphan-close="w8"]'))
+    await flush()
+    key(document.activeElement ?? document.body, 'Escape')
+    await flush()
+    expect(q('[data-confirm-close-modal]')).toBeNull()
+    expect(corral.closeResourceOrphans).toHaveBeenCalledTimes(1)
+  })
+
+  it('모두 닫기 — 주인 없는 줄 전부를 bulk 로, 실행 중이 없어도 개수 확인 뒤 닫고, 닫지 못한 것이 있으면 알린다 (K2ⓒ·F3)', async () => {
+    corral.closeResourceOrphans.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [] })
+    corral.closeResourceOrphans.mockResolvedValueOnce({ outcome: 'closed', closed: ['w8'] })
+    openOrphans()
+    expect(must('[data-statusbar-resource-orphan-close-all]').textContent).toBe('주인 없는 2개 모두 닫기')
+    click(must('[data-statusbar-resource-orphan-close-all]'))
+    await flush()
+    expect(corral.closeResourceOrphans).toHaveBeenCalledWith({ workspaceIds: ['w8', 'w9'], bulk: true, confirmed: false, confirmedPaneIds: [] })
+    const modal = must('[data-confirm-close-modal]')
+    expect(must('[data-confirm-close-title]').textContent).toBe('주인 없는 workspace 2개를 닫을까')
+    expect(modal.querySelector('input[type="checkbox"]')).toBeNull()
+    expect(modal.textContent).toContain('/repo/.claude/worktrees/LIFE-1-x (없음)')
+    click(must('[data-close-confirm-ok]'))
+    await flush()
+    await flush()
+    expect(corral.closeResourceOrphans).toHaveBeenLastCalledWith({ workspaceIds: ['w8', 'w9'], bulk: true, confirmed: true, confirmedPaneIds: [] })
+    expect(must('[data-statusbar-resource-error]').textContent).toContain('1개는 닫지 않았다')
+  })
+
+  it('F3 — 경로가 살아 있는 줄은 「경로 있음」 표식·모두 닫기 대상 밖, 주인 없는 줄이 없으면 버튼 없음. F4 중지된 에이전트 표시', () => {
+    openOrphans({
+      ...SNAPSHOT,
+      orphans: [{ workspaceId: 'w7', label: 'w7', paths: [{ path: '/live/repo', exists: true }], ownerless: false, agents: [], stoppedAgents: ['claude'], paneIds: ['p7'], measure: { state: 'unavailable', reason: '프로세스 없음' } }],
+    })
+    const row = must('[data-statusbar-resource-orphan="w7"]')
+    expect(row.querySelector('[data-statusbar-resource-orphan-owner]')?.getAttribute('data-statusbar-resource-orphan-owner')).toBe('owned')
+    expect(row.querySelector('[data-statusbar-resource-agent]')?.textContent).toBe('claude (중지됨)')
+    expect(q('[data-statusbar-resource-orphan-close-all]')).toBeNull()
+    expect(q('[data-statusbar-resource-orphan-close="w7"]')).not.toBeNull()
+  })
+
+  it('G2 — 닫지 않은 줄은 main 이 준 사유로 알린다(카드에 붙음)', async () => {
+    corral.closeResourceOrphans.mockResolvedValueOnce({ outcome: 'closed', closed: [], skipped: [{ workspaceId: 'w8', reason: 'claimed' }] })
+    openOrphans()
+    click(must('[data-statusbar-resource-orphan-close="w8"]'))
+    await flush()
+    expect(must('[data-statusbar-resource-error]').textContent).toBe('1개는 닫지 않았다 — 카드에 붙음 1')
+  })
+
+  it('F3 — 한 줄 확인 창에도 「다시 묻지 않기」 가 없다(전역 설정을 끄지 않는다)', async () => {
+    corral.closeResourceOrphans.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['claude'] }] })
+    openOrphans()
+    click(must('[data-statusbar-resource-orphan-close="w8"]'))
+    await flush()
+    expect(must('[data-confirm-close-modal]').querySelector('input[type="checkbox"]')).toBeNull()
+    expect(must('[data-statusbar-resource-orphan="w8"]').querySelector('[data-statusbar-resource-orphan-owner]')?.getAttribute('data-statusbar-resource-orphan-owner')).toBe('ownerless')
+  })
+})
+

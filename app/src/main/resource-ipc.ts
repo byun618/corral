@@ -6,17 +6,21 @@
 //     닫는 동작은 기존 `pane.close` 경로(`closePane`) 그대로 — 새 프로세스 kill 경로는 없다.
 //     탭의 마지막 pane 은 렌더러가 기존 탭 닫기 IPC(`corral:closeTabs`)로 보낸다(핀·수정 문서 확인, F7) — 여기를 지나지 않는다.
 //     렌더러가 길을 정한 뒤(확인 창 체류 중 등) 옆 pane 이 사라져 대상이 그 탭의 마지막 pane 이 됐으면 닫지 않고 `route-changed`(J2).
+//   · 카드 밖 workspace 닫기(LIFE-628) = 같은 게이트 `closeTabsGated` 를 workspace 단위로 지난다(한 줄·「모두 닫기」 같은 길).
+//     닫는 동작은 기존 `workspace.close` 경로(`closeWorkspace` — 카드 메뉴 닫기와 같다) 그대로 — 새 kill 경로는 없다.
+//     닫기 직전에 그 workspace 가 지금도 카드 밖인지 다시 본다 — 그 사이 카드에 붙은 workspace 는 닫지 않고 건너뛴다.
 import { execFile } from 'node:child_process'
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { app, ipcMain } from 'electron'
-import type { CloseTabOutcome } from './close-tabs.js'
+import type { ClosePrepareOutcome, CloseTabOutcome, ForegroundRead } from './close-tabs.js'
 import { closeTabsGated } from './close-tabs.js'
 import { parseCompressedBytes, parseFootprintTable, parsePressureLevel, parseSwapUsage, psInvocation, type FootprintTable } from './resource-collector.js'
-import { createResourceMonitor, RESOURCE_INTERVAL_MS, type ResourcePaneSource } from './resource-monitor.js'
-import type { ResourceCloseResult, ResourceCloseRoute, ResourceHost, ResourceSnapshot } from '../shared/resource.js'
-import type { AppState, RunningPane } from '../shared/types.js'
+import { createResourceMonitor, RESOURCE_INTERVAL_MS, type ResourceOrphanSource, type ResourcePaneSource, type ShellProbe } from './resource-monitor.js'
+import type { ResourceCloseResult, ResourceCloseRoute, ResourceHost, ResourceOrphanCloseResult, ResourceOrphanSkip, ResourceSnapshot } from '../shared/resource.js'
+import type { AppState, CloseTabsResult, RunningPane, WorkspaceRow } from '../shared/types.js'
 import { normalizeDecorativeTitle } from '../shared/decorative-title.js'
 import { paneSessionTitle } from '../shared/session-title.js'
 import { distinctWorktreeName } from '../shared/worktree-name.js'
@@ -40,11 +44,22 @@ export type ResourceIpcDeps = {
   socketPath: () => string | null
   paneIds: () => string[]
   /** herdr 가 준 그 pane 의 셸 pid(어댑터 `probeForeground`). */
-  shellPidOf: (input: { socketPath: string; paneId: string }) => Promise<number | null>
+  shellPidOf: (input: { socketPath: string; paneId: string }) => Promise<ShellProbe>
   /** 기존 게이트의 pane 판정(`probeRunningPanes`). */
   probeRunning: (input: { socketPath: string; panes: readonly { tabId: string; paneId: string }[]; subject: Record<string, unknown> }) => Promise<RunningPane[]>
   /** 기존 pane 닫기(완료 행 되살림 억제 포함). */
   closePane: (input: { socketPath: string; paneId: string }) => Promise<PaneCloseOutcome>
+  /** 카드 밖 workspace(LIFE-628, `tree.ts cardlessWorkspaces`). null = 지금은 가릴 수 없다(링크·골격 미준비). */
+  cardlessWorkspaces: () => WorkspaceRow[] | null
+  /** 카드 밖 판정이 재시도로 안 풀리는 원인으로 보류일 때 그 사유(LIFE-628 P1). */
+  cardlessBlockedReason: () => string | null
+  /**
+   * 카드 귀속을 그 자리에서 다시 읽은 workspace id → 귀속시킨 경로들(LIFE-628 F2·P2 — 등록 레포마다 herdr `worktree.list`).
+   * 한 레포라도 실패면 null.
+   */
+  claimedWorkspaceIds: (socketPath: string) => Promise<ReadonlyMap<string, readonly string[]> | null>
+  /** 기존 workspace 닫기(`closeWorkspace` — 카드 메뉴 닫기와 같은 길, 완료 행 되살림 억제 포함). */
+  closeWorkspace: (input: { socketPath: string; workspaceId: string }) => Promise<CloseTabOutcome>
   confirmRunning: () => boolean
   /** main 밖 Electron 역할 pid(renderer·GPU·utility) — `diagnostics memory` 와 같은 출처 `app.getAppMetrics`. */
   appPids: () => number[]
@@ -150,6 +165,107 @@ export function paneSources(state: Pick<AppState, 'repos' | 'home'>): ResourcePa
   })
 }
 
+/** herdr `pane.process_info` 판정 → 수집기의 셸 pid 결과(LIFE-628 F5) — `pane_not_found` 는 런타임 없음(`missing`). */
+export function shellProbeOf(probe: Pick<ForegroundRead, 'shellPid' | 'missing'>): ShellProbe {
+  if (probe.shellPid !== null) return { kind: 'pid', pid: probe.shellPid }
+  return probe.missing ? { kind: 'missing' } : { kind: 'unknown' }
+}
+
+/** 경로 한 개를 확인한 값 — `exists: null` = 확인 불가(G1), `real` = 있으면 실경로(G6 — HOME 비교용). */
+export type PathCheck = { exists: boolean | null; real: string | null }
+
+/**
+ * 경로 판정 창구 — 캐시만 읽는다(값 없으면 null). `checked` = 한 번이라도 확인을 마쳤는가(P3 — 첫 틱 구분).
+ * `settle` = 확인 전이면 진행 중 확인을 기다려 존재 값을 준다(Y4 — 닫기 사유를 찬 캐시에서도 바로 정한다).
+ */
+export type PathOracle = {
+  isDirectory: (path: string) => boolean | null
+  realPath: (path: string) => string | null
+  checked: (path: string) => boolean
+  settle: (path: string) => Promise<boolean | null>
+}
+
+/**
+ * 경로 존재 캐시 (LIFE-628 F7 — main 동기 stat 을 걷는다). 캐시만 읽고 낡았으면 비동기 확인을 건다.
+ * 아직 모르면 null — 부르는 쪽이 「있다」 로 읽는다(모르면 주인 있음 쪽 — 「모두 닫기」 대상에 넣지 않는다). 확인 자체가 던지면 null(모름).
+ */
+export function createDirectoryCache(input: { ttlMs: number; now: () => number; check: (path: string) => Promise<PathCheck> }): PathOracle {
+  type Entry = { value: PathCheck; checkedAt: number; inflight: Promise<void> | null }
+  const entries = new Map<string, Entry>()
+  const entryOf = (target: string): Entry => {
+    const entry = entries.get(target) ?? { value: { exists: null, real: null }, checkedAt: -Infinity, inflight: null }
+    entries.set(target, entry)
+    if (entry.inflight === null && input.now() - entry.checkedAt >= input.ttlMs) {
+      entry.inflight = input.check(target).catch((): PathCheck => ({ exists: null, real: null })).then((value) => {
+        entry.value = value
+        entry.checkedAt = input.now()
+        entry.inflight = null
+      })
+    }
+    return entry
+  }
+  return {
+    isDirectory: (target) => entryOf(target).value.exists,
+    realPath: (target) => entryOf(target).value.real,
+    checked: (target) => entryOf(target).checkedAt !== -Infinity,
+    settle: async (target) => {
+      const entry = entryOf(target)
+      if (entry.checkedAt === -Infinity && entry.inflight !== null) await entry.inflight
+      return entry.value.exists
+    },
+  }
+}
+
+/**
+ * 경로 하나 확인 (LIFE-628 G1·G6). `ENOENT`·`ENOTDIR` 만 「없음」 — 그 밖의 stat 오류(EACCES·EPERM·EIO 등 TCC 보호 폴더·외장 볼륨)는
+ * 「확인 불가」(null)다. 디렉터리가 아닌 파일은 「없음」. 있으면 실경로도 싣는다(실패면 null).
+ */
+export async function checkPath(input: { target: string; stat: (path: string) => Promise<{ isDirectory: () => boolean }>; realpath: (path: string) => Promise<string> }): Promise<PathCheck> {
+  let directory: boolean
+  try {
+    directory = (await input.stat(input.target)).isDirectory()
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? error.code : undefined
+    return { exists: code === 'ENOENT' || code === 'ENOTDIR' ? false : null, real: null }
+  }
+  if (!directory) return { exists: false, real: null }
+  return { exists: true, real: await input.realpath(input.target).catch(() => null) }
+}
+
+/** HOME 후보 (G6) — 실경로 HOME(`state.home = homeDirReal()`)과 논리 HOME(`$HOME` → `os.homedir()`). */
+export function homesOf(home: string): string[] {
+  return [...new Set([home, os.homedir()])]
+}
+
+/**
+ * 카드 밖 workspace → 패널 줄의 표시 칸(LIFE-628). 경로는 pane cwd 를 중복 없이 처음 본 순서로, 지금 디렉터리가 있는지를
+ * 같이 싣는다 — 셸에서 지운 worktree 는 herdr 가 원래 cwd 를 들고 있어 「없음」 으로 보인다(S3). 재기동이 HOME 으로 옮긴 것은 HOME 이 보인다.
+ * 존재를 아직 모르는 경로(`null`)는 「있다」 로 싣는다.
+ * `ownerless`(F3) = 경로가 하나 이상이고 **모두** 사라졌거나 HOME — 「모두 닫기」 대상. 경로가 살아 있는 줄(미등록 레포 세션·형제 pane 이
+ * 살아 있는 workspace)은 아니다. `stoppedAgents`(F4) = 감지된 에이전트는 없고 세션 참조만 남은 pane 의 에이전트(재개 안 된 pane).
+ */
+export function orphanSources(input: { workspaces: readonly WorkspaceRow[]; homes: readonly string[]; paths: PathOracle }): ResourceOrphanSource[] {
+  // G6 — 경로는 있으면 실경로로도 비교한다(심링크 HOME·/tmp 류). 없으면 원문만.
+  const isHome = (target: string): boolean => input.homes.includes(target) || input.homes.includes(input.paths.realPath(target) ?? target)
+  return input.workspaces.map((workspace) => {
+    const panes = workspace.tabs.flatMap((tab) => tab.panes)
+    const cwds = [...new Set(panes.flatMap((pane) => (pane.cwd === null ? [] : [pane.cwd])))]
+    const agents = [...new Set(panes.flatMap((pane) => (pane.agent === null ? [] : [pane.agent])))]
+    const stoppedAgents = [...new Set(panes.flatMap((pane) => (pane.agent === null && pane.agentSession !== null ? [pane.agentSession.agent] : [])))].filter((agent) => !agents.includes(agent))
+    const paths = cwds.map((cwd) => (input.paths.checked(cwd) ? { path: cwd, exists: input.paths.isDirectory(cwd) } : { path: cwd, exists: input.paths.isDirectory(cwd), pending: true }))
+    return {
+      workspaceId: workspace.workspaceId,
+      label: workspace.label,
+      paths,
+      // 「없음」 은 exists === false 만 — 확인 불가(null)는 있음 쪽(G1).
+      ownerless: paths.length > 0 && paths.every((item) => item.exists === false || isHome(item.path)),
+      agents,
+      stoppedAgents,
+      paneIds: panes.map((pane) => pane.paneId),
+    }
+  })
+}
+
 /** 닫기 길을 지금 위상으로 정한다(H3). 파일 탭은 herdr 탭이 아니라 `workspace.tabs` 가 곧 터미널 탭이다(App `closeTabsByUser` 와 같은 수). */
 export function closeRouteOf(input: { state: Pick<AppState, 'repos'>; paneId: string }): ResourceCloseRoute {
   for (const worktree of input.state.repos.flatMap((repo) => repo.worktrees)) {
@@ -165,14 +281,20 @@ export function closeRouteOf(input: { state: Pick<AppState, 'repos'>; paneId: st
 
 export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void } {
   const exec = promisify(execFile)
+  const directories = createDirectoryCache({ ttlMs: 5000, now: () => Date.now(), check: (target) => checkPath({ target, stat: (item) => fs.promises.stat(item), realpath: (item) => fs.promises.realpath(item) }) })
   const monitor = createResourceMonitor({
     intervalMs: RESOURCE_INTERVAL_MS,
     readPs: () => readPsWith({ exec, env: process.env }),
     readFootprint: () => readFootprintWith({ exec, helper: deps.footprintHelper }),
     panes: () => paneSources(deps.state()),
-    probeShellPid: async (paneId) => {
+    orphans: () => {
+      const workspaces = deps.cardlessWorkspaces()
+      return workspaces === null ? null : orphanSources({ workspaces, homes: homesOf(deps.state().home), paths: directories })
+    },
+    orphansReason: deps.cardlessBlockedReason,
+    probeShellPid: async (paneId): Promise<ShellProbe> => {
       const socketPath = deps.socketPath()
-      return socketPath === null ? null : deps.shellPidOf({ socketPath, paneId })
+      return socketPath === null ? { kind: 'unknown' } : deps.shellPidOf({ socketPath, paneId })
     },
     appRoots: () => [...new Set([process.pid, ...deps.appPids()])],
     visible: () => {
@@ -201,6 +323,19 @@ export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void }
     return closeResourcePane({
       deps,
       paneId: input.paneId,
+      confirmed: input.confirmed === true,
+      confirmedPaneIds: Array.isArray(input.confirmedPaneIds) ? input.confirmedPaneIds.filter((paneId): paneId is string => typeof paneId === 'string') : [],
+    })
+  })
+
+  ipcMain.handle('corral:resourceCloseOrphans', (event, input: { workspaceIds?: unknown; bulk?: unknown; confirmed?: unknown; confirmedPaneIds?: unknown }): Promise<ResourceOrphanCloseResult> | ResourceOrphanCloseResult => {
+    if (!deps.fromOurWindow(event) || !Array.isArray(input?.workspaceIds)) return { outcome: 'error', closed: [], error: '허용되지 않은 발신자' }
+    return closeOrphanWorkspaces({
+      deps,
+      workspaceIds: input.workspaceIds.filter((id): id is string => typeof id === 'string'),
+      // 생략·true 아닌 값은 한 줄 닫기다 — 「모두 닫기」 의 넓은 범위는 명시해야만 열린다(그래도 주인 없는 줄만, 개수 확인은 늘).
+      bulk: input.bulk === true,
+      paths: directories,
       confirmed: input.confirmed === true,
       confirmedPaneIds: Array.isArray(input.confirmedPaneIds) ? input.confirmedPaneIds.filter((paneId): paneId is string => typeof paneId === 'string') : [],
     })
@@ -262,4 +397,91 @@ export async function closeResourcePane(input: { deps: ResourceIpcDeps; paneId: 
   }
   deps.log('resource.close_pane', { paneId, confirmed: input.confirmed, outcome: result.outcome })
   return result
+}
+
+/**
+ * 카드 밖 workspace 를 기존 게이트로 닫는다(LIFE-628 S1) — 게이트 단위(「탭」 칸)에 workspace id 를 넣는다.
+ * 대상은 세 겹으로 좁힌다:
+ *   ① 메모리 판정(`cardlessWorkspaces`)이 지금 카드 밖이라고 하는 것 — 판정 보류(null)면 하나도 닫지 않는다
+ *   ② 그 자리에서 다시 읽은 카드 귀속(`claimedWorkspaceIds` — herdr `worktree.list`, prunable 경로 제외 G2)에 없는 것(F2). 읽기 실패면 하나도 닫지 않는다.
+ *      workspace 마다 **재독 → 프로세스 판정 → 닫기** 순서다(G3 `prepare`) — 재독에서 카드에 붙어 있으면 판정 없이 건너뛴다.
+ *   ③ 「모두 닫기」(`bulk`)면 주인 없는 줄(`ownerless` — 원래 경로가 모두 사라졌거나 HOME)만(F3). 경로가 살아 있는 줄은 줄 ✕ 로만 닫힌다.
+ * 「모두 닫기」 는 실행 중 여부·설정과 무관하게 개수 확인을 한 번 거친다(`alwaysConfirm` — 확인 전 `needs-confirm`).
+ * 닫지 않은 줄은 사유(`skipped` — claimed·gone·not-ownerless)로 돌려준다(G2).
+ * 보장의 한계(원자적이지 않은 두 창): ⓐ 프로세스 판정 → `workspace.close` 사이(요청 한 번 — 기존 게이트와 같은 크기),
+ * ⓑ 귀속 재독(등록 레포 전부를 차례로 읽는 시간 — 레포 수에 비례) → `workspace.close` 사이. ⓑ 동안 카드에 붙는 workspace 는 막지 못한다.
+ */
+export async function closeOrphanWorkspaces(input: { deps: ResourceIpcDeps; workspaceIds: readonly string[]; bulk: boolean; paths: PathOracle; confirmed: boolean; confirmedPaneIds: readonly string[] }): Promise<ResourceOrphanCloseResult> {
+  const { deps } = input
+  const socketPath = deps.socketPath()
+  if (socketPath === null) return { outcome: 'error', closed: [], error: '세션이 없다' }
+  if (deps.cardlessWorkspaces() === null) return { outcome: 'error', closed: [], error: '지금은 카드 밖 workspace 를 가릴 수 없다 — 잠시 뒤 다시 시도' }
+  const claimedAtStart = await deps.claimedWorkspaceIds(socketPath)
+  if (claimedAtStart === null) return { outcome: 'error', closed: [], error: '카드 귀속을 다시 읽지 못해 닫지 않았다 — 잠시 뒤 다시 시도' }
+  let claimed = claimedAtStart
+  // 닫지 않은 사유(G2) — 판정할 때마다 마지막 사유로 덮는다. 끝에 닫힌 것은 뺀다.
+  const skips = new Map<string, ResourceOrphanSkip['reason']>()
+  // 귀속 사유(P2) — 귀속 경로가 모두 「없음」 으로 확인되면 잠김·정리 대기, 아니면 카드에 붙음. 닫지 않는 것은 둘 다 같다.
+  const claimReason = (workspaceId: string): ResourceOrphanSkip['reason'] =>
+    (claimed.get(workspaceId) ?? []).every((target) => input.paths.isDirectory(target) === false) ? 'stale-claim' : 'claimed'
+  const inScope = (workspace: WorkspaceRow): boolean =>
+    !input.bulk || orphanSources({ workspaces: [workspace], homes: homesOf(deps.state().home), paths: input.paths })[0]?.ownerless === true
+  const panesOf = (workspaceId: string): string[] | null => {
+    if (claimed.has(workspaceId)) {
+      skips.set(workspaceId, claimReason(workspaceId))
+      return null
+    }
+    const workspace = deps.cardlessWorkspaces()?.find((row) => row.workspaceId === workspaceId)
+    if (workspace === undefined) {
+      skips.set(workspaceId, 'gone')
+      return null
+    }
+    if (!inScope(workspace)) {
+      skips.set(workspaceId, 'not-ownerless')
+      return null
+    }
+    skips.delete(workspaceId)
+    return workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.paneId))
+  }
+  let result: CloseTabsResult
+  try {
+    result = await closeTabsGated({
+      tabIds: input.workspaceIds,
+      confirmed: input.confirmed,
+      alwaysConfirm: input.bulk,
+      confirmRunning: deps.confirmRunning(),
+      confirmedPaneIds: input.confirmedPaneIds,
+      panesOf,
+      probe: (panes) => deps.probeRunning({ socketPath, panes, subject: { close: 'resource-orphans', workspaceIds: input.workspaceIds } }),
+      // G3 — workspace 마다 권위 재독 → (게이트의) 프로세스 판정 → 닫기. 재독이 판정과 닫기 사이에 끼지 않는다.
+      prepare: async (workspaceId): Promise<ClosePrepareOutcome> => {
+        const fresh = await deps.claimedWorkspaceIds(socketPath)
+        if (fresh === null) return { outcome: 'error', error: '카드 귀속을 다시 읽지 못해 멈췄다' }
+        claimed = fresh
+        if (claimed.has(workspaceId)) {
+          const reason = claimReason(workspaceId)
+          skips.set(workspaceId, reason)
+          deps.log('resource.close_orphan_skipped', { workspaceId, reason })
+          return { outcome: 'skipped' }
+        }
+        return { outcome: 'ready' }
+      },
+      close: (workspaceId) => deps.closeWorkspace({ socketPath, workspaceId }),
+    })
+  } catch (error) {
+    deps.log('resource.close_orphans_failed', { workspaceIds: input.workspaceIds, error: String(error) })
+    return { outcome: 'error', closed: [], error: `닫기 확인에 실패했다: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  // Y4 — 귀속 사유는 경로 확인이 끝난 값으로 다시 정한다(찬 캐시면 그 자리에서 stat 을 기다린다). 닫을지는 이미 끝났다 — 문자열만.
+  for (const [workspaceId, reason] of skips) {
+    if (reason !== 'claimed' && reason !== 'stale-claim') continue
+    const exists = await Promise.all((claimed.get(workspaceId) ?? []).map((target) => input.paths.settle(target)))
+    skips.set(workspaceId, exists.length > 0 && exists.every((value) => value === false) ? 'stale-claim' : 'claimed')
+  }
+  const skipped = input.workspaceIds.flatMap((workspaceId): ResourceOrphanSkip[] => {
+    const reason = skips.get(workspaceId)
+    return reason === undefined || result.closed.includes(workspaceId) ? [] : [{ workspaceId, reason }]
+  })
+  deps.log('resource.close_orphans', { requested: input.workspaceIds.length, confirmed: input.confirmed, outcome: result.outcome, closed: result.closed.length, skipped })
+  return { ...result, skipped }
 }

@@ -96,7 +96,7 @@ describe('LIFE-478 K1 — GUI 메타 쓰기 = CLI worktree set', () => {
     expect(await f.cli('worktree', 'show', '--worktree', `path:${a}`)).toMatchObject({ ok: true, result: { worktree: { displayName: '내 이름', comment: '메모\n둘째 줄' } } })
     expect((await f.cli('worktree', 'set', '--worktree', `path:${a}`, '--display-name', 'cli-name', '--comment', 'null')).ok).toBe(true)
     const tree = joinTree(
-      [{ root: f.repo, name: 'repo', error: null, worktrees: [{ path: a, branch: 'feat-a', head: null, isLinked: true, openWorkspaceId: null, gitStatus: { branch: 'feat-a', upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null } }] }],
+      [{ root: f.repo, name: 'repo', error: null, gitError: null, openError: null, worktrees: [{ path: a, branch: 'feat-a', head: null, isLinked: true, openWorkspaceId: null, gitStatus: { branch: 'feat-a', upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null } }] }],
       [],
       f.registry.metadata(),
     )

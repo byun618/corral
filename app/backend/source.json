@@ -8,7 +8,8 @@
     "herdr-guard.patch",
     "herdr-detect.patch",
     "herdr-bundle.patch",
-    "herdr-shift-enter.patch"
+    "herdr-shift-enter.patch",
+    "herdr-restore.patch"
   ],
   "platform": "darwin",
   "arch": "arm64",
@@ -20,7 +21,8 @@
     "herdr-guard.patch": "ad181838a0b042cd14bb44e6bb3989e36191944766471cae6e4ceeedf71a4861",
     "herdr-detect.patch": "051ccb02b5306f8c1250a7992208f9d7857f9dd3ec4563649a6c0a3fb5d8c638",
     "herdr-bundle.patch": "1eceac67e97c195ac073b37e1dba42108b420e862a70c2c84d1cc033eab38ac0",
-    "herdr-shift-enter.patch": "746cbafdad7bbc8d1338fa0b4b12388a95ee6aa7dcb2406d8e932b16e8e589f1"
+    "herdr-shift-enter.patch": "746cbafdad7bbc8d1338fa0b4b12388a95ee6aa7dcb2406d8e932b16e8e589f1",
+    "herdr-restore.patch": "27780042fa6322320706f7f7f2cbb66ab9a59637e27ae30be4576c12b873284b"
   },
   "agentOps": true
 }

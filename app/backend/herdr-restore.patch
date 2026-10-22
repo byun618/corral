@@ -1,0 +1,288 @@
+diff --git a/src/app/agent_resume.rs b/src/app/agent_resume.rs
+index 2cbd93a..2bb7bf7 100644
+--- a/src/app/agent_resume.rs
++++ b/src/app/agent_resume.rs
+@@ -233,6 +233,20 @@ impl App {
+             return false;
+         };
+ 
++        // corral LIFE-628 (upstream #4400 backport): the directory can vanish between restore and
++        // the deferred launch. Do not resume the agent anywhere else; keep the session reference.
++        if !cwd.is_dir() {
++            if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
++                terminal.pending_agent_resume_plan = None;
++                terminal.restore_error = Some(
++                    "Saved directory is unavailable. Restore the directory and restart this session."
++                        .into(),
++                );
++                terminal.revision = terminal.revision.saturating_add(1);
++            }
++            return true;
++        }
++
+         let runtime = match crate::terminal::TerminalRuntime::spawn(
+             pane_id,
+             rows,
+@@ -378,6 +392,43 @@ mod tests {
+         ]
+     }
+ 
++    // corral LIFE-628 (upstream #4400 backport): a directory that vanished before the deferred
++    // launch must not resume the agent elsewhere, and the session reference must survive.
++    #[cfg(unix)]
++    #[tokio::test]
++    async fn deferred_resume_with_missing_cwd_keeps_session_reference_without_launch() {
++        let mut app = test_app();
++        let workspace = crate::workspace::Workspace::test_new("unavailable");
++        let pane_id = workspace.tabs[0].root_pane;
++        let terminal_id = workspace.terminal_id(pane_id).unwrap().clone();
++        app.state.workspaces = vec![workspace];
++        app.state.active = Some(0);
++        app.state.ensure_test_terminals();
++        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
++        terminal.cwd = std::env::current_dir()
++            .unwrap()
++            .join("__herdr_missing_resume_cwd__");
++        assert!(!terminal.cwd.exists());
++        let session = crate::agent_resume::PersistedAgentSession {
++            source: "herdr:claude".into(),
++            agent: "claude".into(),
++            session_ref: crate::agent_resume::AgentSessionRef::id("resume-test").unwrap(),
++        };
++        terminal.persisted_agent_session = Some(session.clone());
++        terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
++            agent: "claude".into(),
++            argv: long_running_test_argv(),
++            dedupe_key: "resume-test".into(),
++        });
++        app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80, true);
++        assert!(app.terminal_runtimes.get(&terminal_id).is_none());
++        let terminal = &app.state.terminals[&terminal_id];
++        assert!(terminal.pending_agent_resume_plan.is_none());
++        assert_eq!(terminal.persisted_agent_session.as_ref(), Some(&session));
++        assert!(terminal.restore_error.is_some());
++        assert!(!app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80, true));
++    }
++
+     #[cfg(unix)]
+     #[tokio::test]
+     async fn pending_agent_resume_waits_for_host_theme_before_launch() {
+diff --git a/src/persist/restore.rs b/src/persist/restore.rs
+index 3c5775c..4bb3249 100644
+--- a/src/persist/restore.rs
++++ b/src/persist/restore.rs
+@@ -433,6 +433,38 @@ fn restore_workspace(
+     )
+ }
+ 
++/// corral LIFE-628 — same wording as upstream #4400.
++const UNAVAILABLE_RESTORE_DIRECTORY: &str =
++    "Saved directory is unavailable. Restore the directory and restart this session.";
++
++fn unavailable_restored_terminal(
++    pane: Option<&super::snapshot::PaneSnapshot>,
++    cwd: PathBuf,
++    reason: String,
++) -> TerminalState {
++    warn!(cwd = %cwd.display(), reason = %reason, "preserving unavailable restored pane");
++    let mut terminal = TerminalState::new(TerminalId::alloc(), cwd);
++    terminal.restore_error = Some(reason);
++    if let Some(pane) = pane {
++        terminal.manual_label = pane.label.clone();
++        terminal.launch_argv = pane.launch_argv.clone();
++        if let Some(session) = restored_terminal_agent_session(pane.agent_session.as_ref(), false) {
++            terminal.set_persisted_agent_session(session);
++        }
++        match (
++            pane.agent_name.as_ref(),
++            pane.managed_agent_kind
++                .as_deref()
++                .and_then(crate::detect::parse_canonical_agent_label),
++        ) {
++            (Some(name), Some(agent)) => terminal.restore_managed_agent(name.clone(), agent),
++            (Some(name), None) => terminal.set_agent_name(name.clone()),
++            _ => {}
++        }
++    }
++    terminal
++}
++
+ fn restored_worktree_space_membership(
+     space: Option<crate::workspace::WorktreeSpaceMembership>,
+ ) -> Option<crate::workspace::WorktreeSpaceMembership> {
+@@ -473,22 +505,22 @@ fn restore_tab(
+             .map(|p| p.cwd.clone())
+             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+ 
+-        let cwd = if saved_cwd.exists() {
+-            saved_cwd
+-        } else {
+-            warn!(
+-                cwd = %saved_cwd.display(),
+-                "saved pane cwd does not exist, falling back to HOME"
++        // corral LIFE-628 (upstream #4400 backport): a pane whose saved directory is gone is kept
++        // without a runtime — no shell and no agent resume elsewhere (the old HOME fallback resumed
++        // the agent in HOME and then overwrote the saved cwd). The saved cwd, label and agent
++        // session stay in the snapshot so the pane can still be identified and closed.
++        let cwd = saved_cwd;
++        let has_import = old_id.is_some_and(|old_id| imported_panes.contains_key(old_id));
++        if !has_import && !cwd.is_dir() {
++            let terminal = unavailable_restored_terminal(
++                saved_pane,
++                cwd,
++                UNAVAILABLE_RESTORE_DIRECTORY.into(),
+             );
+-            let home = std::env::var("HOME")
+-                .map(PathBuf::from)
+-                .unwrap_or_else(|_| PathBuf::from("/"));
+-            if home.exists() {
+-                home
+-            } else {
+-                PathBuf::from("/")
+-            }
+-        };
++            panes.insert(*id, PaneState::new(terminal.id.clone()));
++            terminals.push(terminal);
++            continue;
++        }
+ 
+         let saved_label = saved_pane.and_then(|p| p.label.clone());
+         let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
+@@ -1167,6 +1199,116 @@ mod tests {
+         assert!(restored_terminal_agent_session(Some(&session), true).is_none());
+     }
+ 
++    // corral LIFE-628 (upstream #4400 backport): a pane whose saved directory is gone gets no shell
++    // and no agent resume, keeps its saved cwd and agent session, and its sibling pane in an
++    // existing directory still defers its agent resume (positive control).
++    #[tokio::test]
++    async fn restore_keeps_missing_cwd_pane_without_runtime_or_agent_resume() {
++        let cwd = std::env::current_dir().unwrap();
++        let missing = cwd.join("__herdr_missing_restore_directory__");
++        assert!(!missing.exists());
++        let claude = |value: &str| super::super::snapshot::PaneAgentSessionSnapshot {
++            source: "herdr:claude".into(),
++            agent: "claude".into(),
++            kind: crate::agent_resume::AgentSessionRefKind::Id,
++            value: value.into(),
++        };
++        let pane = |cwd: PathBuf, label: &str, session: &str| super::super::snapshot::PaneSnapshot {
++            cwd,
++            label: Some(label.into()),
++            agent_name: None,
++            managed_agent_kind: None,
++            agent_session: Some(claude(session)),
++            launch_argv: None,
++        };
++        let snapshot = SessionSnapshot {
++            version: super::super::snapshot::SNAPSHOT_VERSION,
++            workspaces: vec![WorkspaceSnapshot {
++                id: Some("w-missing".into()),
++                custom_name: None,
++                identity_cwd: missing.clone(),
++                worktree_space: None,
++                public_pane_numbers: HashMap::new(),
++                next_public_pane_number: 0,
++                public_tab_numbers: Vec::new(),
++                next_public_tab_number: 0,
++                tabs: vec![TabSnapshot {
++                    custom_name: None,
++                    layout: LayoutSnapshot::Split {
++                        direction: super::super::snapshot::DirectionSnapshot::Horizontal,
++                        ratio: 0.5,
++                        first: Box::new(LayoutSnapshot::Pane(0)),
++                        second: Box::new(LayoutSnapshot::Pane(1)),
++                    },
++                    panes: HashMap::from([
++                        (0, pane(missing.clone(), "gone", "missing-session")),
++                        (1, pane(cwd.clone(), "here", "present-session")),
++                    ]),
++                    zoomed: false,
++                    focused: Some(0),
++                    root_pane: Some(0),
++                }],
++                active_tab: 0,
++            }],
++            active: Some(0),
++            selected: 0,
++            sidebar_width: None,
++            sidebar_section_split: None,
++            collapsed_space_keys: Default::default(),
++        };
++        let (events, _event_rx) = mpsc::channel(4);
++        let (workspaces, terminals, runtimes) = restore(
++            &snapshot,
++            None,
++            24,
++            80,
++            0,
++            test_restore_shell(),
++            crate::config::ShellModeConfig::NonLogin,
++            true,
++            events,
++            Arc::new(Notify::new()),
++            Arc::new(RenderSignal::new()),
++        );
++        assert_eq!(workspaces.len(), 1, "the workspace must survive");
++        assert!(runtimes.is_empty(), "no shell for the missing pane, deferred resume for the other");
++        let by_label = |label: &str| {
++            terminals
++                .values()
++                .find(|terminal| terminal.manual_label.as_deref() == Some(label))
++                .unwrap()
++        };
++        let gone = by_label("gone");
++        assert_eq!(gone.cwd, missing, "the saved cwd must not be replaced by HOME");
++        assert!(gone.pending_agent_resume_plan.is_none(), "no agent resume elsewhere");
++        assert!(gone.restore_error.is_some());
++        assert_eq!(
++            gone.persisted_agent_session.as_ref().map(|s| s.session_ref.value.as_str()),
++            Some("missing-session")
++        );
++        let here = by_label("here");
++        assert!(here.restore_error.is_none());
++        assert!(
++            here.pending_agent_resume_plan
++                .as_ref()
++                .is_some_and(|plan| plan.argv.iter().any(|arg| arg == "present-session")),
++            "a pane whose directory exists still resumes its agent"
++        );
++
++        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
++        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
++        let saved = captured.workspaces[0].tabs[0]
++            .panes
++            .values()
++            .find(|pane| pane.label.as_deref() == Some("gone"))
++            .unwrap();
++        assert_eq!(saved.cwd, missing, "the next save keeps the saved intent");
++        assert_eq!(
++            saved.agent_session.as_ref().map(|s| s.value.as_str()),
++            Some("missing-session")
++        );
++    }
++
+     #[tokio::test]
+     async fn restore_carries_persisted_agent_session_metadata() {
+         let cwd = std::env::current_dir().unwrap();
+diff --git a/src/terminal/state.rs b/src/terminal/state.rs
+index c0b9f05..fc6d769 100644
+--- a/src/terminal/state.rs
++++ b/src/terminal/state.rs
+@@ -150,6 +150,8 @@ pub struct TerminalState {
+     recent_agent_process_exit: Option<RecentAgentProcessExit>,
+     agent_process_acquisition_pending: bool,
+     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
++    /// corral LIFE-628 (upstream #4400 backport): why a restored pane has no runtime.
++    pub restore_error: Option<String>,
+ }
+ 
+ impl TerminalState {
+@@ -186,6 +188,7 @@ impl TerminalState {
+             recent_agent_process_exit: None,
+             agent_process_acquisition_pending: false,
+             pending_agent_resume_plan: None,
++            restore_error: None,
+         }
+     }
+ 

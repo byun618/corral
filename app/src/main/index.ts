@@ -12,8 +12,8 @@ import { addInstallCliMenu } from './install-cli-menu.js'
 import { KeybindingStore } from './keybindings.js'
 import { withRetentionSuppressed } from './close-retention.js'
 import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
-import { closeTabsGated } from './close-tabs.js'
-import { footprintHelperPath, registerResourceIpc } from './resource-ipc.js'
+import { closeTabsGated, runningForeground } from './close-tabs.js'
+import { footprintHelperPath, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
 // 렌더러가 소켓을 열 수 없는 것은 권장이 아니라 구조적 강제다: sandbox:true 인 렌더러/preload 의
@@ -50,6 +50,7 @@ import type {
   TerminalGroupRequest,
   TerminalScroll,
   UiPrefs,
+  WorkspaceRow,
   WorktreeActionResult,
 } from '../shared/types.js'
 import {
@@ -100,7 +101,8 @@ import { pickSessionName, pinnedSessions } from './pick-session.js'
 import { BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
 import { RegistryGeneration, removeObserved } from './registry-generation.js'
-import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
+import { attachDigests, buildSkeleton, cardlessGate, collectSessionRefs, joinTree, readClaimedWorkspaceIds, type RepoSkeleton } from './tree.js'
+import { createRebuildScheduler, skeletonHealth } from './rebuild-retry.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
 import { SettingsStore } from './settings.js'
@@ -294,6 +296,14 @@ function traceWork({ channel, value }: { channel: string; value: unknown }): voi
 }
 /** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
 let skeleton: RepoSkeleton[] = []
+/** 지금 골격을 만든 세션 소켓 (LIFE-628) — 카드 밖 판정은 지금 붙은 소켓으로 만든 골격에서만 한다. */
+let skeletonSocket: string | null = null
+/** 지금 골격을 만든 빌드가 **시작한** 시각 (LIFE-628 F2) — 그 뒤에 처음 보인 workspace 는 골격이 모른다(`cardlessGate`). */
+let skeletonStartedAt: number | null = null
+/** store 에 workspace 가 처음 보인 시각 (LIFE-628 F2). 내보낼 때마다(`scheduleEmit`) 갱신하고, 사라진 id 는 지운다. */
+const workspaceFirstSeen = new Map<string, number>()
+/** 골격 재구성 재시도 스케줄 (LIFE-628 P1) — 진행 중이면 걸지 않고, 끝난 때부터 간격·백오프. 모든 `rebuildTree` 가 시작·끝을 알린다. */
+const rebuildRetry = createRebuildScheduler({ now: () => Date.now() })
 let emitScheduled = false
 let treeScheduled = false
 /**
@@ -571,12 +581,63 @@ function currentState(): AppState {
   }
 }
 
+/**
+ * 카드 밖 workspace (LIFE-628 S1) — Resource Manager 가 2초마다 부른다. 가릴 수 없으면 null(빈 목록과 다르다):
+ * 링크가 live 가 아니다(재접속 중 store 가 비어 있을 수 있다) · 제 세션이 아니다(폴백으로 남의 세션에 붙음 — `herdrTabIds` 와 같은 가드) ·
+ * 골격이 지금 소켓으로 만든 것이 아니다(세션 전환 직후·첫 골격 전 — 바인딩이 비어 전부 카드 밖으로 보인다) ·
+ * 어느 레포의 열림상태 읽기가 실패했다(그 레포 workspace 가 카드 밖으로 잘못 보인다).
+ */
+function cardlessNow(): WorkspaceRow[] | null {
+  noteWorkspaces()
+  const gate = cardlessGate({
+    socketPath: currentSocketPath(),
+    skeleton,
+    skeletonSocket,
+    skeletonStartedAt,
+    linkPhase: link.linkState().phase,
+    ownSession: isOwnSession({ selected: selectedSession, env: process.env }),
+    workspaces: link.store.rows(),
+    firstSeenAt: workspaceFirstSeen,
+  })
+  if (gate === null) {
+    // 골격 오류로 보류면 스스로 회복하게 골격을 다시 세운다(G5) — 진행 중이 없고 끝난 때부터 백오프 간격이 지났을 때만(P1).
+    if (skeletonHealth(skeleton).kind !== 'ok' && !treeScheduled && rebuildRetry.due('error')) {
+      log('resource.cardless_retry', { reason: 'skeleton-error', waitMs: rebuildRetry.waitMs('error'), permanent: rebuildRetry.permanentReason() })
+      scheduleTree()
+    }
+    return null
+  }
+  // 골격보다 새 workspace 가 있으면 골격을 한 번 다시 세운다 — 진짜 카드 밖이면 그 뒤에 목록에 나온다(F2). 같은 in-flight 규칙(P1).
+  if (gate.fresh > 0 && !treeScheduled && rebuildRetry.due('fresh')) scheduleTree()
+  return gate.rows
+}
+
+/** store 의 workspace 가 처음 보인 시각을 적는다(F2). 사라진 id 는 지운다 — 같은 id 가 다시 오면 새로 본 것이다. */
+function noteWorkspaces(): void {
+  const now = Date.now()
+  const live = new Set<string>()
+  for (const workspace of link.store.rows()) {
+    live.add(workspace.workspaceId)
+    if (!workspaceFirstSeen.has(workspace.workspaceId)) workspaceFirstSeen.set(workspace.workspaceId, now)
+  }
+  for (const id of [...workspaceFirstSeen.keys()]) if (!live.has(id)) workspaceFirstSeen.delete(id)
+}
+
+/**
+ * 카드 귀속을 **그 자리에서** 다시 읽는다 (LIFE-628 F2 — 닫기 직전 권위 재확인). 메모리 골격이 아니라 등록 레포마다 herdr `worktree.list`
+ * (`openWorktreeRow` 가 중복 생성을 막을 때 읽는 것과 같은 권위)의 열린 workspace 전부. 한 레포라도 읽기에 실패하면 null — 닫지 않는다.
+ */
+function claimedWorkspaceIdsNow(socketPath: string): Promise<Map<string, string[]> | null> {
+  return readClaimedWorkspaceIds({ roots: registry?.list() ?? [], read: (root) => readOpenWorkspaces(socketPath, root), log })
+}
+
 /** 상태 전송은 한 틱으로 뭉친다 — workspace_created 와 그 pane_created 가 같은 프레임에 실린다. */
 function scheduleEmit(): void {
   if (emitScheduled) return
   emitScheduled = true
   setTimeout(() => {
     emitScheduled = false
+    noteWorkspaces()
     revision += 1
     if (window !== null && window.isDestroyed()) window = null
     const state = currentState()
@@ -618,14 +679,28 @@ function scheduleTree(): void {
 let treeGeneration = 0
 
 async function rebuildTree(): Promise<void> {
+  // 지금 store 의 workspace 는 이 빌드가 읽을 herdr 상태 안에 있다 — 시작 시각 전에 적어 둔다(F2).
+  noteWorkspaces()
   const startedAt = Date.now()
   const generation = ++treeGeneration
-  const built = await buildSkeleton({ roots: registry?.list() ?? [], socketPath: currentSocketPath() })
+  const socketPath = currentSocketPath()
+  rebuildRetry.started()
+  let built: RepoSkeleton[]
+  try {
+    built = await buildSkeleton({ roots: registry?.list() ?? [], socketPath })
+  } catch (error) {
+    rebuildRetry.finished(null)
+    throw error
+  }
   if (generation !== treeGeneration) {
+    rebuildRetry.finished(null)
     log('tree.stale', { generation, current: treeGeneration, ms: Date.now() - startedAt })
     return
   }
+  rebuildRetry.finished(skeletonHealth(built))
   skeleton = built
+  skeletonSocket = socketPath
+  skeletonStartedAt = startedAt
   log('tree.built', {
     ms: Date.now() - startedAt,
     repos: skeleton.length,
@@ -677,6 +752,8 @@ async function refreshBindings(reason: string): Promise<{ changed: boolean; note
     if (byPath === undefined) return repo // 읽기 실패·미대상 루트는 건드리지 않는다
     return {
       ...repo,
+      // LIFE-628 F7 — 이 루트의 열림상태를 방금 읽었다. 빌드 때의 herdr 읽기 실패는 더 이상 사실이 아니다.
+      openError: null,
       worktrees: repo.worktrees.map((worktree) => {
         const fresh = byPath.get(worktree.path) ?? null
         if (fresh === worktree.openWorkspaceId) return worktree
@@ -685,7 +762,16 @@ async function refreshBindings(reason: string): Promise<{ changed: boolean; note
       }),
     }
   })
-  if (drift.length === 0) return { changed: false, note: null }
+  // G5 — 드리프트가 없어도 이번에 읽기에 성공한 루트의 openError 는 걷는다(그것만 바뀌었으면 note 없이 내보낸다).
+  const cleared = patched.some((repo, index) => repo.openError !== skeleton[index]?.openError)
+  if (drift.length === 0) {
+    if (cleared) {
+      skeleton = patched
+      log('tree.open_error_cleared', { reason })
+      scheduleEmit()
+    }
+    return { changed: false, note: null }
+  }
   skeleton = patched
   log('tree.binding_drift', { reason, drift })
   dropStreamIfPaneUnviewable() // 바인딩이 걷히며 스트리밍 pane 이 트리 밖이 될 수 있다 (C2)
@@ -936,20 +1022,20 @@ async function probeRunningPanes(input: {
   const running: RunningPane[] = []
   for (const { tabId, paneId } of input.panes) {
     const probe = await probeForeground(socketPath, paneId)
-    const clear = probe.ok && probe.shellPid !== null && probe.foregroundGroupId === probe.shellPid
+    // 판정 규칙은 `close-tabs.ts runningForeground` 한 곳(LIFE-628 F4 — 런타임 없는 pane 은 프로세스 없음).
+    const foreground = runningForeground(probe)
     log('lifecycle.close_gate', {
       ...subject,
       paneId,
       shellPid: probe.shellPid,
       foregroundGroupId: probe.foregroundGroupId,
-      clear,
+      clear: foreground === null,
+      missing: probe.missing,
       foreground: probe.foreground.map((item) => item.name),
       probeError: probe.error,
     })
-    if (clear) continue
-    const foreground = probe.ok ? probe.foreground.map((item) => item.cmdline ?? item.name) : [`(프로세스 확인 실패: ${probe.error})`]
-    // 셸 아닌 포그라운드인데 목록이 비어 오면(probe 가 그룹만 안다) 무엇인지 몰라도 실행 중이다 — 빈 칸으로 두지 않는다.
-    running.push({ tabId, paneId, foreground: foreground.length > 0 ? foreground : ['(알 수 없는 프로세스)'] })
+    if (foreground === null) continue
+    running.push({ tabId, paneId, foreground })
   }
   return running
 }
@@ -2445,10 +2531,22 @@ app.whenReady().then(async () => {
     state: currentState,
     socketPath: currentSocketPath,
     paneIds: () => link.store.paneIds(),
-    shellPidOf: async ({ socketPath, paneId }) => (await probeForeground(socketPath, paneId)).shellPid,
+    shellPidOf: async ({ socketPath, paneId }) => shellProbeOf(await probeForeground(socketPath, paneId)),
     probeRunning: probeRunningPanes,
     closePane: ({ socketPath, paneId }) =>
       withRetentionSuppressed({ store: link.store, ids: [paneId], what: 'pane', run: hooks => closePane({ socketPath, paneId, onSent: hooks.onSent }) }),
+    cardlessWorkspaces: cardlessNow,
+    claimedWorkspaceIds: claimedWorkspaceIdsNow,
+    cardlessBlockedReason: () => rebuildRetry.permanentReason(),
+    // LIFE-628 — 카드 밖 workspace 닫기. 카드 메뉴 닫기(`closeWorktreeByWorkspace`)와 같은 `workspace.close` 길·완료 행 억제.
+    closeWorkspace: async ({ socketPath, workspaceId }) => {
+      const outcome = await withRetentionSuppressed({ store: link.store, ids: [workspaceId], what: 'workspace', run: hooks => closeWorkspace(socketPath, workspaceId, hooks) })
+      if (outcome.outcome === 'closed') {
+        scheduleTree()
+        scheduleEmit()
+      }
+      return outcome
+    },
     confirmRunning: () => settings === null || !settings.get().skipCloseTerminalWithRunningProcessConfirm,
     appPids: () => app.getAppMetrics().map(metric => metric.pid),
     footprintHelper: footprintHelperPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, mainDir: here }),

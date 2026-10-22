@@ -11,15 +11,30 @@
 // CPU = `ps %cpu` 그대로(누적 시간 차분 아님) — RESULT 결정 1.
 // 메모리(LIFE-676) = ps 다음에 도우미 footprint 표 — ps 뒤에 돌아야 「ps 에 있고 표에 없는 pid = 그 사이 끝남」 이 성립한다(collector 머리 주석).
 // 시스템 지표(`readHost`)는 ps 와 나란히 돈다. 숨김 주기에는 셋 다 돌지 않는다.
-import type { ResourceHost, ResourceMeasure, ResourcePaneRow, ResourceSnapshot, ResourceStats } from '../shared/resource.js'
-import { attribute, parsePsTable, totalOf, type FootprintTable, type PsTable } from './resource-collector.js'
+import type { ResourceHost, ResourceMeasure, ResourceOrphanRow, ResourcePaneRow, ResourceSnapshot, ResourceStats } from '../shared/resource.js'
+import { attribute, combineMeasures, parsePsTable, totalOf, type FootprintTable, type PsTable } from './resource-collector.js'
 
 export const RESOURCE_INTERVAL_MS = 2000
 export const PROBE_RETRY_MS = 30_000
+/** 런타임 없음(`missing`) pane 의 느린 재질의 간격 (LIFE-628 G4) — 재기동 뒤 늦게 PTY 가 붙는 pane 이 측정으로 돌아오게. */
+export const MISSING_RETRY_MS = 60_000
 const DURATION_SAMPLES = 30
 
 /** 수집 대상 pane — 표시에 쓰는 칸까지 main 이 채워 넘긴다. */
 export type ResourcePaneSource = Omit<ResourcePaneRow, 'measure'>
+
+/**
+ * herdr 에 셸 pid 를 물은 결과 (LIFE-628 F5). `missing` = herdr 가 `pane_not_found` — 런타임(PTY)이 없는 pane 이라 셸 pid 를
+ * 그때는 못 받는다. 그런 pane 은 30초 재질의 대신 `MISSING_RETRY_MS`(60초) 간격으로만 다시 묻는다(G4 — 늦게 PTY 가 붙는 pane).
+ * 목록에서 빠졌다가 다시 오면 그때 새로 묻는다.
+ */
+export type ShellProbe = { kind: 'pid'; pid: number } | { kind: 'unknown' } | { kind: 'missing' }
+
+/** 런타임 없는 pane 의 측정 칸 사유 — 프로세스가 없다(메모리를 쥐고 있지 않다). */
+export const NO_RUNTIME_REASON = '프로세스 없음 — herdr 에 런타임이 없는 pane(재개 안 됨)'
+
+/** 카드 밖 workspace(LIFE-628) — 표시 칸까지 main 이 채워 넘긴다. 그 pane 들도 카드 pane 과 같은 캐시·귀속 규칙으로 잰다. */
+export type ResourceOrphanSource = Omit<ResourceOrphanRow, 'measure'>
 
 export type ResourceMonitorDeps = {
   intervalMs: number
@@ -28,8 +43,12 @@ export type ResourceMonitorDeps = {
   /** 도우미 footprint 표. 던지지 않는다 — 실패는 `unavailable`(사유). */
   readFootprint: () => Promise<FootprintTable>
   panes: () => ResourcePaneSource[]
-  /** herdr 에 그 pane 의 셸 pid 를 묻는다. 모르면 null. */
-  probeShellPid: (paneId: string) => Promise<number | null>
+  /** 카드 밖 workspace. null = 지금은 가릴 수 없다(스냅샷 `orphans: null`). 없으면 늘 null. */
+  orphans?: () => ResourceOrphanSource[] | null
+  /** `orphans` 가 null 일 때의 영구 사유(P1). 없으면 null. */
+  orphansReason?: () => string | null
+  /** herdr 에 그 pane 의 셸 pid 를 묻는다(F5 — 런타임 없음은 `missing`). */
+  probeShellPid: (paneId: string) => Promise<ShellProbe>
   /** main pid + Electron 역할 pid. */
   appRoots: () => number[]
   /** 창이 보이고 최소화되지 않았는가. */
@@ -45,7 +64,7 @@ export type ResourceMonitorDeps = {
  * pane 하나의 셸 루트 캐시. `parentPid` = 이 셸 pid 를 ps 표에서 처음 봤을 때의 ppid(아직 못 봤으면 null).
  * `healthy` = 직전 주기에 표와 맞았는가 — 맞다가 어긋난 첫 주기에만 바로 다시 묻는다.
  */
-type CachedRoot = { shellPid: number | null; parentPid: number | null; probedAt: number; healthy: boolean }
+type CachedRoot = { shellPid: number | null; missing: boolean; parentPid: number | null; probedAt: number; healthy: boolean }
 
 export function createResourceMonitor(deps: ResourceMonitorDeps): {
   start: () => void
@@ -65,31 +84,43 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
   let inFlight = false
   let wakePending = false
   let lastFootprintReason: string | null = null
+  let lastOrphanPanes: ReadonlySet<string> = new Set()
 
-  const probe = async (paneId: string): Promise<number | null> => {
+  const probe = async (paneId: string): Promise<{ shellPid: number | null; missing: boolean }> => {
     stats.processInfoRequests += 1
-    return deps.probeShellPid(paneId).catch(() => null)
+    const result = await deps.probeShellPid(paneId).catch((): ShellProbe => ({ kind: 'unknown' }))
+    switch (result.kind) {
+      case 'pid':
+        return { shellPid: result.pid, missing: false }
+      case 'unknown':
+        return { shellPid: null, missing: false }
+      case 'missing':
+        return { shellPid: null, missing: true }
+    }
   }
 
-  /** 새 pane 과 셸 pid 를 못 얻은 pane(재시도 시각이 된 것)만 묻는다. */
-  const refreshRoots = async (input: { panes: readonly ResourcePaneSource[]; asked: Set<string> }): Promise<void> => {
+  /**
+   * 새 pane 과 셸 pid 를 못 얻은 pane(재시도 시각이 된 것)만 묻는다. 런타임 없음(`missing`) pane 은 60초 간격으로만(F5·G4).
+   * `keep` = 이번 틱에 재지는 않지만 캐시를 지우지 말 pane(카드 밖 판정이 null 인 틱의 직전 카드 밖 pane — F5).
+   */
+  const refreshRoots = async (input: { panes: readonly { paneId: string }[]; keep: ReadonlySet<string>; asked: Set<string> }): Promise<void> => {
     const live = new Set(input.panes.map((pane) => pane.paneId))
-    for (const paneId of [...roots.keys()]) if (!live.has(paneId)) roots.delete(paneId)
+    for (const paneId of [...roots.keys()]) if (!live.has(paneId) && !input.keep.has(paneId)) roots.delete(paneId)
     const now = deps.now()
     const asks = input.panes.filter((pane) => {
       const cached = roots.get(pane.paneId)
-      return cached === undefined || (cached.shellPid === null && now - cached.probedAt >= PROBE_RETRY_MS)
+      return cached === undefined || (cached.shellPid === null && now - cached.probedAt >= (cached.missing ? MISSING_RETRY_MS : PROBE_RETRY_MS))
     })
     for (const pane of asks) {
-      const shellPid = await probe(pane.paneId)
+      const { shellPid, missing } = await probe(pane.paneId)
       input.asked.add(pane.paneId)
-      roots.set(pane.paneId, { shellPid, parentPid: null, probedAt: deps.now(), healthy: false })
+      roots.set(pane.paneId, { shellPid, missing, parentPid: null, probedAt: deps.now(), healthy: false })
     }
     if (asks.length > 0) deps.log('resource.probe', { asked: asks.length, reason: 'new-or-retry', total: stats.processInfoRequests })
   }
 
   /** 캐시한 루트를 이번 ps 표와 대조하고, 어긋난 pane 은 규칙대로 다시 묻는다(F1). */
-  const verifyRoots = async (input: { panes: readonly ResourcePaneSource[]; table: PsTable; asked: Set<string> }): Promise<void> => {
+  const verifyRoots = async (input: { panes: readonly { paneId: string }[]; table: PsTable; asked: Set<string> }): Promise<void> => {
     let reasked = 0
     for (const pane of input.panes) {
       const cached = roots.get(pane.paneId)
@@ -104,7 +135,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
         roots.set(pane.paneId, { ...cached, healthy: false })
         continue
       }
-      const shellPid = await probe(pane.paneId)
+      const { shellPid, missing } = await probe(pane.paneId)
       input.asked.add(pane.paneId)
       reasked += 1
       const fresh = shellPid === null ? undefined : input.table.rows.get(shellPid)
@@ -112,7 +143,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
         pane.paneId,
         shellPid === cached.shellPid
           ? { ...cached, probedAt: deps.now(), healthy: false }
-          : { shellPid, parentPid: fresh?.ppid ?? null, probedAt: deps.now(), healthy: fresh !== undefined },
+          : { shellPid, missing, parentPid: fresh?.ppid ?? null, probedAt: deps.now(), healthy: fresh !== undefined },
       )
     }
     if (reasked > 0) deps.log('resource.probe', { asked: reasked, reason: 'root-changed', total: stats.processInfoRequests })
@@ -125,8 +156,13 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
     }
     const startedAt = deps.now()
     const panes = deps.panes()
+    const orphans = deps.orphans?.() ?? null
+    // 카드 pane 과 카드 밖 pane 을 한 캐시로 잰다 — 카드 밖 pane 의 자손이 herdr 행으로 빠지지 않게 pane 으로 먼저 잡는다.
+    const measured = [...panes, ...(orphans ?? []).flatMap((orphan) => orphan.paneIds.map((paneId) => ({ paneId })))]
+    // 카드 밖을 가릴 수 없는 틱(null)에는 직전 카드 밖 pane 의 캐시를 지우지 않는다 — 돌아왔을 때 전부 다시 묻지 않게(F5).
+    if (orphans !== null) lastOrphanPanes = new Set(orphans.flatMap((orphan) => orphan.paneIds))
     const asked = new Set<string>()
-    await refreshRoots({ panes, asked })
+    await refreshRoots({ panes: measured, keep: orphans === null ? lastOrphanPanes : new Set(), asked })
     stats.hostReads += 1
     const hostRead = deps.readHost()
     let stdout: string | null = null
@@ -147,21 +183,27 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
       lastFootprintReason = footprintReason
     }
     // 표가 없거나 이상하면 대조하지 않는다 — 깨진 표로 캐시를 지우면 멀쩡한 pane 을 다시 묻게 된다.
-    if (table !== null && table.malformed === 0) await verifyRoots({ panes, table, asked })
+    if (table !== null && table.malformed === 0) await verifyRoots({ panes: measured, table, asked })
     const unavailable: ResourceMeasure = { state: 'unavailable', reason: 'ps 실행 실패' }
     const attribution = table === null
-      ? { panes: new Map(panes.map((pane) => [pane.paneId, unavailable])), herdr: unavailable, app: unavailable }
+      ? { panes: new Map(measured.map((pane) => [pane.paneId, unavailable])), herdr: unavailable, app: unavailable }
       : attribute({
           table,
           footprint,
-          panes: panes.map((pane) => {
+          panes: measured.map((pane) => {
             const cached = roots.get(pane.paneId)
             return { paneId: pane.paneId, shellPid: cached?.shellPid ?? null, expectedParent: cached?.parentPid ?? null }
           }),
           appRoots: deps.appRoots(),
         })
-    const rows: ResourcePaneRow[] = panes.map((pane) => ({ ...pane, measure: attribution.panes.get(pane.paneId) ?? unavailable }))
-    const { total, unavailableCount } = totalOf([attribution.app, attribution.herdr, ...rows.map((row) => row.measure)])
+    const noRuntime: ResourceMeasure = { state: 'unavailable', reason: NO_RUNTIME_REASON }
+    const measureOf = (paneId: string): ResourceMeasure => (roots.get(paneId)?.missing === true ? noRuntime : attribution.panes.get(paneId) ?? unavailable)
+    const rows: ResourcePaneRow[] = panes.map((pane) => ({ ...pane, measure: measureOf(pane.paneId) }))
+    const orphanRows: ResourceOrphanRow[] | null = orphans === null
+      ? null
+      : orphans.map((orphan) => ({ ...orphan, measure: combineMeasures(orphan.paneIds.map(measureOf)) }))
+    const orphanPaneMeasures = (orphans ?? []).flatMap((orphan) => orphan.paneIds.map(measureOf))
+    const { total, unavailableCount } = totalOf([attribution.app, attribution.herdr, ...rows.map((row) => row.measure), ...orphanPaneMeasures])
     const host = await hostRead
     stats.collections += 1
     stats.recentDurationsMs = [...stats.recentDurationsMs, deps.now() - startedAt].slice(-DURATION_SAMPLES)
@@ -172,6 +214,8 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
       app: attribution.app,
       herdr: attribution.herdr,
       panes: rows,
+      orphans: orphanRows,
+      orphansReason: orphanRows === null ? deps.orphansReason?.() ?? null : null,
       host,
       stats: { ...stats, recentDurationsMs: [...stats.recentDurationsMs] },
     }

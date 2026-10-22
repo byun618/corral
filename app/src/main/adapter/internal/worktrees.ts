@@ -12,18 +12,23 @@ import { isRecord, readArray, readRecord, readString } from '../../../shared/jso
 import { canonicalPath } from '../../canonical-path.js'
 import { request } from './request.js'
 
-/** 경로 → 그 체크아웃을 열고 있는 workspace id. 열려 있지 않은 경로는 맵에 없다. */
-export type OpenWorkspaceMap = { byPath: Map<string, string>; repoName: string | null; error: string | null }
+/**
+ * 경로 → 그 체크아웃을 열고 있는 workspace id. 열려 있지 않은 경로는 맵에 없다.
+ * `prunable` = herdr 가 `is_prunable: true` 로 준 경로(디렉터리가 사라졌고 `git worktree prune` 전 — LIFE-628 G2). herdr 는 그런 줄에도
+ * `open_workspace_id` 를 붙이므로 `byPath` 에는 들어 있다 — 귀속으로 셀지는 부르는 쪽이 정한다(골격은 git 이 그 경로를 버려 어차피 안 붙는다).
+ */
+export type OpenWorkspaceMap = { byPath: Map<string, string>; prunable: Set<string>; repoName: string | null; error: string | null }
 
 export async function readOpenWorkspaces(socketPath: string, repoRoot: string): Promise<OpenWorkspaceMap> {
   const byPath = new Map<string, string>()
+  const prunable = new Set<string>()
   try {
     const response = await request(socketPath, 'worktree.list', { cwd: repoRoot }, { reason: 'worktree' })
     if (response.error) {
-      return { byPath, repoName: null, error: `${response.error.code ?? 'error'}: ${response.error.message ?? ''}` }
+      return { byPath, prunable, repoName: null, error: `${response.error.code ?? 'error'}: ${response.error.message ?? ''}` }
     }
     const result = response.result
-    if (!isRecord(result)) return { byPath, repoName: null, error: 'worktree.list 응답 모양이 아니다' }
+    if (!isRecord(result)) return { byPath, prunable, repoName: null, error: 'worktree.list 응답 모양이 아니다' }
     for (const item of readArray(result, 'worktrees')) {
       if (!isRecord(item)) continue
       const itemPath = readString(item, 'path')
@@ -31,10 +36,11 @@ export async function readOpenWorkspaces(socketPath: string, repoRoot: string): 
       if (itemPath === null || openId === null) continue
       // git 쪽과 같은 정규화 (수정 1회차 L8). 두 쪽이 다른 canonical path 를 주면 조인이 조용히 빗나간다.
       byPath.set(canonicalPath(itemPath), openId)
+      if (item['is_prunable'] === true) prunable.add(canonicalPath(itemPath))
     }
     const source = readRecord(result, 'source')
-    return { byPath, repoName: source === null ? null : readString(source, 'repo_name'), error: null }
+    return { byPath, prunable, repoName: source === null ? null : readString(source, 'repo_name'), error: null }
   } catch (error) {
-    return { byPath, repoName: null, error: String(error) }
+    return { byPath, prunable, repoName: null, error: String(error) }
   }
 }

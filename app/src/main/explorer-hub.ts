@@ -50,7 +50,8 @@ export const IDLE_STOP_MS = 300
 /** git 재조회 최대 대기 — 첫 요청부터 이 안에는 돈다(뭉침이 계속 밀려도). */
 export const GIT_MAX_WAIT_MS = 1_000
 const INDEX_POLL_MS = 1_000
-export const GIT_STATUS_ARGS = ['-c', 'core.quotePath=false', 'status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignored=matching']
+/** `--no-optional-locks` — 주기 조회가 `.git/index.lock` 을 잡지 않게(LIFE-672, git-status.ts 와 같다). */
+export const GIT_STATUS_ARGS = ['--no-optional-locks', '-c', 'core.quotePath=false', 'status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignored=matching']
 
 type Subscription = {
   root: string
@@ -442,7 +443,8 @@ export class ExplorerHub {
   }
 }
 
-function runGitStatus(cwd: string): Promise<{ git: GitSnapshotWire | null; error: string | null }> {
+/** 탐색기의 git 조회 — 시험이 실제 argv 를 고정한다(LIFE-672). */
+export function runGitStatus(cwd: string): Promise<{ git: GitSnapshotWire | null; error: string | null }> {
   return new Promise((resolve) => {
     execFile('git', ['-C', cwd, ...GIT_STATUS_ARGS], { timeout: 15_000, maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
       if (error !== null) resolve({ git: null, error: String(error).slice(0, 300) })

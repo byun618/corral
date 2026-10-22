@@ -19,6 +19,8 @@
 #   3) 머지 커밋 부모 2개 확인(squash·rebase 아님), 원격 head 브랜치 삭제
 # 남은 PR 에 base 를 합쳐 push 하지 않는다 — CI 가 없어 다시 돌릴 것이 없고, 남의 작업 브랜치를 건드리지 않는다.
 # 충돌 해소 절차는 app/INSTALL.md 「출고」 — 원격 작업 브랜치로 worktree 를 다시 만들어 base 를 merge(rebase 금지)·push 한 뒤 다시 돌린다.
+# 4) 본체 checkout fast-forward 는 release-ff.sh — index.lock 을 총 30초·0.5초 간격으로 기다린다(관측 lock 유지 최대 1.55초, LIFE-672).
+#    실패해도 경고로 남고 dmg 로 간다. lock 은 지우지 않는다
 # 버전 커밋·태그 push 가 실패하면(exit 7) 로컬 태그를 지우고 멈춘다 — 같은 명령 재실행이 태그만 다시 만든다.
 # dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 안내대로 release-dmg.sh 만 다시 돌린다(그 뒤 APK 도 — 안내에 있다).
 # APK 가 실패하면(exit 10) 머지·태그·dmg 는 끝난 상태다 — 안내대로 release-apk.sh 만 다시 돌린다.
@@ -274,15 +276,16 @@ gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$NOTES" $REL_
   || die "GitHub Release 생성 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다(app/INSTALL.md 「출고」)${NL}노트만 다시:${NL}$REL_RERUN${NL}그 뒤 dmg:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE${NL}그 뒤 APK:${NL}$APK_RERUN" 9
 note "GitHub Release $TAG ($(gh release view "$TAG" --json url --jq .url))"
 
-# 4. 본체 checkout 이 base 이고 깨끗하면 fast-forward
-if [ "$(git branch --show-current)" = "$BASE" ] && [ -z "$(git status --porcelain)" ]; then
-  if git fetch -q origin "$BASE" && git merge -q --ff-only "origin/$BASE"; then
-    note "본체 $BASE fast-forward → $TAG"
-  else
-    note "⚠ 본체 $BASE fast-forward 실패 — 로컬 $BASE 가 origin 과 갈라졌다. 출고(원격)는 끝났다. 본체를 손으로 맞춘다(git status·git log origin/$BASE..$BASE)"
-  fi
+# 4. 본체 checkout 이 base 이고 깨끗하면 fast-forward — release-ff.sh(LIFE-672: index.lock 대기·원인별 문구, lock 은 지우지 않음).
+#    실패해도 경고만 — 출고(원격)는 끝났고 5단계로 간다. 3(다른 브랜치·미커밋)·7(앞섬)은 의도한 상태일 수 있어 스크립트 문구만
+if [ -x "$SCRIPT_DIR/release-ff.sh" ]; then
+  FF_RC=0; "$SCRIPT_DIR/release-ff.sh" --repo "$REPO" --base "$BASE" --tag "$TAG" || FF_RC=$?
+  case "$FF_RC" in
+    0|3|7) ;;
+    *) note "⚠ 본체 $BASE 는 fast-forward 하지 않았다(위 원인) — 출고(원격)는 끝났다. 본체를 손으로 맞춘다" ;;
+  esac
 else
-  note "본체 checkout 은 $BASE 가 아니거나 미커밋이 있어 fast-forward 하지 않음"
+  note "⚠ scripts/release-ff.sh 가 없어 본체 $BASE fast-forward 를 건너뜀 — 출고(원격)는 끝났다. 본체를 손으로 맞춘다"
 fi
 
 # 5. dmg — 그 태그 위 깨끗한 트리(임시 worktree)에서만. 산출물은 본체 app/dist/release/<태그>/ 로 복사(git 무시)

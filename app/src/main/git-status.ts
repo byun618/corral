@@ -21,6 +21,8 @@ const run = promisify(execFile)
 
 export const GIT_STATUS_CACHE_MS = 4000
 export const GIT_STATUS_TIMEOUT_MS = 8000
+/** 주기 조회라 optional lock 을 잡지 않는다 — index 를 고쳐 쓰려고 `.git/index.lock` 을 잡으면 사람·출고 스크립트의 git 이 막힌다(LIFE-672). */
+export const GIT_STATUS_ARGS = ['--no-optional-locks', 'status', '--porcelain=v2', '--branch']
 
 type CacheEntry = { value: GitStatusSummary; at: number }
 const cache = new Map<string, CacheEntry>()
@@ -52,7 +54,7 @@ export async function getGitStatus(worktreePath: string): Promise<GitStatusSumma
 
 async function computeGitStatus(worktreePath: string): Promise<GitStatusSummary> {
   try {
-    const { stdout } = await run('git', ['-C', worktreePath, 'status', '--porcelain=v2', '--branch'], {
+    const { stdout } = await run('git', ['-C', worktreePath, ...GIT_STATUS_ARGS], {
       timeout: GIT_STATUS_TIMEOUT_MS,
     })
     return parseGitStatus(stdout)

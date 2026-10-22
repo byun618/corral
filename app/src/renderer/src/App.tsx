@@ -68,7 +68,7 @@ import { RightPanel, RightPanelToggle } from './components/RightPanel.js'
 import { Explorer } from './components/Explorer.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
-import { pickPane } from './pane-utils.js'
+import { paneToFollow, pickPane } from './pane-utils.js'
 import { useOpenTabEntries } from './hooks/useOpenTabEntries.js'
 import { useUnread } from './hooks/useUnread.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
@@ -641,6 +641,19 @@ export function App(): React.JSX.Element {
    * `groupSelectedPaneId` 와 같은 규칙: 창 전체 선택 pane 이 그 영역 탭에 있으면 그것, 아니면 그 탭이 보던 pane. 창이 보이고 포커스인지는 훅이 본다.
    */
   const activeGroupTab = tabById(layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null)
+  // LIFE-691 K2 — 터미널 탭이 닫혀 선택 pane 을 잃으면 이 탭의 pane 으로 승격한다(`useLifecycleActions`).
+  lifecycle.shownTabRef.current = activeGroupTab?.tabId ?? null
+  /**
+   * LIFE-691 K2 — 파일 탭을 닫은 뒤 화면의 새 활성 탭이 터미널이면 입력 pane 도 그 탭으로(`closeFileNow` 가 켠다).
+   * 닫기가 배치를 바꾼 **다음 렌더**에서 한 번만 본다 — 옮기기(새 영역·병합)는 켜지 않는다(포커스가 옮긴 파일 영역이면 선택 pane 을 그대로 둔다).
+   */
+  const followShownTabRef = useRef(false)
+  useEffect(() => {
+    if (!followShownTabRef.current) return
+    followShownTabRef.current = false
+    const paneId = paneToFollow({ tab: activeGroupTab, selectedPane: lifecycle.selectedPane })
+    if (paneId !== null) selectPane(paneId)
+  }, [layout.layout])
   const viewedPaneId =
     activeGroupTab === null
       ? null
@@ -1218,6 +1231,8 @@ export function App(): React.JSX.Element {
     if (kind.kind !== 'file') return
     fileViewStatesOf(worktreePath).delete(tabId)
     disposeDoc(docKey(worktreePath, kind.rel))
+    // 배치에 있는 탭일 때만 — 안 바뀌는 닫기가 켜 둔 채 남아 나중의 다른 배치 변경에서 pane 을 옮기지 않게.
+    if (layout.layout !== null && groupOfTab(layout.layout.root, tabId) !== null) followShownTabRef.current = true
     layout.closeFile({
       tabId,
       onClosed: (closed) => {

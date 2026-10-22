@@ -24,7 +24,9 @@ import {
   singleLayout,
   splitGroup as splitGroupIn,
   splitGroupWithForeignTab as splitGroupWithForeignTabIn,
+  trackRecentTabs,
   updateGroup,
+  withoutRecentTabs,
   type GroupLayout,
   type TabGroup,
 } from '../group-tree.js'
@@ -175,7 +177,8 @@ export function useGroupLayout(input: {
   const saved = useRef('[]')
   useEffect(() => {
     if (!input.ready || !hydrated.current) return
-    const rows = Object.entries(byWorktree).map(([worktreePath, value]) => ({ worktreePath, layout: value, layoutFormat: LAYOUT_FORMAT }))
+    // 영역별 탭 MRU(LIFE-691)는 메모리 전용 — 저장 JSON 에 싣지 않는다(형식 무변경).
+    const rows = Object.entries(byWorktree).map(([worktreePath, value]) => ({ worktreePath, layout: withoutRecentTabs(value), layoutFormat: LAYOUT_FORMAT }))
     const serialized = JSON.stringify(rows)
     if (serialized === saved.current) return
     saved.current = serialized
@@ -193,8 +196,9 @@ export function useGroupLayout(input: {
         const base =
           previous[worktreePath] ?? singleLayout({ groupId: ROOT_GROUP, tabOrder: liveTabIds, activeTabId: liveTabIds[0] ?? null })
         // 화면이 보이는 순서(핀 접두부) 위에서 바꾼다 — 드롭 자리 index 가 그 순서로 계산됐다. 바꾼 뒤에도 한 번 더 지나 경계를 지킨다.
-        const current = partitionPinnedLayout({ layout: reconcileLayout({ layout: base, liveTabIds }), pinned })
-        const next = partitionPinnedLayout({ layout: change(current), pinned })
+        // 영역별 탭 MRU(LIFE-691 R3)는 여기 한 자리에서 기록한다 — 바꾸기 전(재기동 직후 저장값의 활성·닫혀서 고른 활성)과 바꾼 뒤.
+        const current = trackRecentTabs(partitionPinnedLayout({ layout: reconcileLayout({ layout: base, liveTabIds }), pinned }))
+        const next = trackRecentTabs(partitionPinnedLayout({ layout: change(current), pinned }))
         return next === previous[worktreePath] ? previous : { ...previous, [worktreePath]: next }
       })
     },

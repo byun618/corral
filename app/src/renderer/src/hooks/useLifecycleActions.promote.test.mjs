@@ -67,3 +67,30 @@ describe('닫힌 선택 pane 의 승격 (LIFE-508)', () => {
     expect(hook.selectedPane).toBe('p1')
   })
 })
+
+describe('탭째 닫힌 선택 pane 은 화면이 보이는 탭으로 (LIFE-691 K2ⓑ)', () => {
+  it('t3 을 닫으면 화면의 새 활성 탭(t2)의 pane — herdr 포커스(p1, 다른 탭)가 아니다', () => {
+    push(stateOf())
+    act(() => hook.selectPane('p4'))
+    push(stateOf())
+    hook.shownTabRef.current = 't2'
+    push(stateOf(['p3', 'p4']))
+    expect(hook.selectedPane).toBe('p2')
+  })
+  it('같은 탭 pane 이 남으면 LIFE-508 그대로 — 화면 탭보다 같은 탭', () => {
+    push(stateOf())
+    act(() => hook.selectPane('p4'))
+    push(stateOf())
+    hook.shownTabRef.current = 't2'
+    push(stateOf(['p4']))
+    expect(hook.selectedPane).toBe('p3')
+  })
+  it('화면 탭이 파일 탭(null)이면 예전 규칙(herdr 포커스)', () => {
+    push(stateOf())
+    act(() => hook.selectPane('p4'))
+    push(stateOf())
+    hook.shownTabRef.current = null
+    push(stateOf(['p3', 'p4']))
+    expect(hook.selectedPane).toBe('p1')
+  })
+})

@@ -142,7 +142,7 @@ export function retargetFileTabs(input: { layout: GroupLayout; from: string; to:
   let layout = input.layout
   for (const group of listGroups(input.layout.root)) {
     if (!group.tabOrder.some((tabId) => map.has(tabId))) continue
-    layout = updateGroup(layout, group.groupId, (current) => ({ ...current, tabOrder: current.tabOrder.map((tabId) => map.get(tabId) ?? tabId), activeTabId: swap(current.activeTabId), previewTabId: swap(current.previewTabId) }))
+    layout = updateGroup(layout, group.groupId, (current) => ({ ...current, tabOrder: current.tabOrder.map((tabId) => map.get(tabId) ?? tabId), activeTabId: swap(current.activeTabId), previewTabId: swap(current.previewTabId), ...(current.recentTabIds === undefined ? {} : { recentTabIds: current.recentTabIds.map((tabId) => map.get(tabId) ?? tabId) }) }))
   }
   return { layout, moved: [...map].map(([from, to]) => ({ from, to })) }
 }

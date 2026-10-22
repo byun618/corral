@@ -100,7 +100,8 @@ export function nextActiveAfterLeave(input: { group: TabGroup; kept: readonly st
  * 영역마다 탭 MRU 를 맞춘다 (LIFE-691 R3) — 활성 탭을 끝으로, 그 영역 `tabOrder` 에 없는 탭(떠난 탭)은 뺀다. 바뀐 영역이 없으면 같은 객체.
  *
  * 활성 탭을 바꾸는 길(클릭·파일 열기·⌃1–9·⌘⇧[ ]·reveal·MRU 전환·탭바 이동·옮겨 온 탭)이 전부 `useGroupLayout` 의 `mutate` 를 지나므로 거기서
- * 바꾸기 **전과 뒤**에 한 번씩 부르면 기록이 빠지지 않는다(전 = 재기동 직후 저장값의 활성 탭도 MRU 에 든다).
+ * 바꾸기 **전**에 한 번 부르면 기록이 빠지지 않는다 — 재기동 직후 저장값의 활성 탭도 든다. 바꾼 뒤의 활성은 다음 `mutate` 의 「전」이 넣는다
+ * (그 사이 그 탭이 떠나도 떠난 탭은 `nextActiveAfterLeave` 의 후보가 아니라 차이가 없다 — LIFE-691 f1 E 에서 「뒤」 호출을 뺐다).
  */
 export function trackRecentTabs(layout: GroupLayout): GroupLayout {
   const apply = (node: GroupNode): GroupNode => {

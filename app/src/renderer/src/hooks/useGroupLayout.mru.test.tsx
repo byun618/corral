@@ -85,3 +85,14 @@ it('f1 B — 같은 닫기가 herdr 전체 목록으로 저장 배치에서 걷�
   showPinned({ liveTabIds: ['w1:a', 'w1:b', 'w1:c'], herdrTabIds: ['w1:a', 'w1:b', 'w1:c'] })
   expect(active()).toBe('w1:b')
 })
+
+it('f2 L — 비활성 worktree 의 closeFiles 도 화면 순서: 저장 [A,B,C,file:d] 활성 file:d, 핀 C(화면 [C*,A,B,file:d]) → file:d 닫으면 B', () => {
+  const saved = [
+    ...stored,
+    { worktreePath: '/r2', layoutFormat: 2, layout: { activeGroupId: 'g1', root: { kind: 'leaf', group: { groupId: 'g1', tabOrder: ['x:a', 'x:b', 'x:c', 'file:d.md'], activeTabId: 'file:d.md' } } } },
+  ]
+  act(() => root.render(createElement(Harness, { liveTabIds: ['w1:a', 'w1:b', 'w1:c', 'w1:d'], pinned: ['x:c'], saved })))
+  act(() => current().closeFiles({ worktreePath: '/r2', tabIds: ['file:d.md'] }))
+  const group = current().fileLayoutOf('/r2')?.root
+  expect(group?.kind === 'leaf' ? group.group.activeTabId : null).toBe('x:b')
+})

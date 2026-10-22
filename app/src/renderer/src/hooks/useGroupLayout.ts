@@ -358,14 +358,17 @@ export function useGroupLayout(input: {
         mutate(close)
         return
       }
+      // 비활성 worktree 도 화면 순서(핀 접두부)로 이웃을 센다 — 활성 경로(`mutate`)와 같은 결(LIFE-691 f2 L). 핀은 탭 id 키라 worktree 를 가리지 않는다.
+      const pinned = input.pinned
       setByWorktree((previous) => {
         const value = previous[target.worktreePath]
         if (value === undefined) return previous
-        const next = close(value)
-        return next === value ? previous : { ...previous, [target.worktreePath]: next }
+        const shown = partitionPinnedLayout({ layout: value, pinned })
+        const next = close(shown)
+        return next === shown ? previous : { ...previous, [target.worktreePath]: next }
       })
     },
-    [mutate, input.worktreePath],
+    [mutate, input.worktreePath, input.pinned],
   )
 
   return {

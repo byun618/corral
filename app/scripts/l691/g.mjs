@@ -146,10 +146,20 @@ async function typeProbe(label) {
     landed = []
     for (const paneId of panes) {
       const text = await herdr('pane.read', { pane_id: paneId, source: 'visible', format: 'text', strip_ansi: true }).then((r) => r.read?.text ?? '', () => '')
-      if (text.includes(marker)) landed.push(paneId)
+      // 좁은 pane 에서는 표지가 줄바꿈된다(g-l-1·2 하네스 미달 원인) — 줄바꿈·줄 끝 공백을 걷고 찾는다.
+      if (text.split('\n').map((line) => line.trimEnd()).join('').includes(marker)) landed.push(paneId)
     }
     return landed.length > 0
   }, { timeoutMs: 5_000, everyMs: 300, label: `표지 ${marker}` }).catch(() => null)
+  if (landed.length === 0) {
+    // 못 찾음 진단 — 각 pane 화면 끝 줄 · 렌더러 xterm 버퍼(term-read) · 렌더러가 보낸 입력 링(진단 실행일 때).
+    for (const paneId of panes) {
+      const text = await herdr('pane.read', { pane_id: paneId, source: 'visible', format: 'text', strip_ansi: true }).then((r) => r.read?.text ?? '', (e) => `오류 ${e}`)
+      log(`[진단] ${paneId} 화면 끝`, text.trimEnd().split('\n').slice(-3))
+    }
+    log('[진단] term-read', await ctl(root, { cmd: 'term-read' }).catch((e) => String(e)))
+    log('[진단] activeElement', await js(`({ tag: document.activeElement?.tagName, cls: String(document.activeElement?.className ?? ''), term: document.activeElement?.closest('[data-term-pane]')?.dataset.termPane ?? null, composing: document.activeElement?.closest('.xterm')?.querySelector('.composition-view')?.classList.contains('active') ?? null, hasFocus: document.hasFocus() })`))
+  }
   await key('U', ['control'])
   log(`[입력] ${label}`, { marker, landed })
   return landed

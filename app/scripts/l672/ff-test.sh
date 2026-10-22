@@ -11,7 +11,7 @@
 # 임시 폴더는 TMPDIR 과 무관하게 /tmp/l672ff.XXXXXX(짧은 고정 접두) — 문구의 경로 길이가 환경마다 달라지지 않게.
 set -uo pipefail
 
-ALL="r1a r1-toctou r1-unable-injected r1-final r1-caughtup r1-caughtup-clean r2a r2b r2-vanish r2-lsoferr r2-lsofstderr r2-noindex r3a r3a-lock r3-ahead r3b r3-noref r3d-dirty r3d-branch r3e r3-reflock r3-newindex r3-postdiverge r8-mergebase r8-revparse r8-revlist r-gitdir r-gitindex e2e e2e-ff e2e-dirty"
+ALL="r1a r1-toctou r1-unable-injected r1-final r1-caughtup r1-caughtup-clean r2a r2b r2-vanish r2-lsoferr r2-lsofstderr r2-noindex r3a r3a-lock r3-ahead r3b r3-noref r3d-dirty r3d-branch r3e r3-reflock r3-newindex r3-postdiverge r8-mergebase r8-revparse r8-revlist r8-status r8-branch r8-gitpath r-gitdir r-gitindex r-linked r1-tagdiff r2-lsofdigit e2e e2e-ff e2e-dirty e2e-ahead e2e-noff"
 OUT="${1:?원자료 폴더}"; shift
 CASES="${*:-$ALL}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -45,6 +45,12 @@ case "\${SHIM_MODE:-}" in
   rpfail) # merge-base 가 한 번 불린 뒤부터 rev-parse 는 전부 실패
     case " \$* " in *" merge-base "*) touch "\$SHIM_STATE/mb" ;; esac
     case " \$* " in *" rev-parse "*) if [ -e "\$SHIM_STATE/mb" ]; then echo "fatal: 흉내 rev-parse 오류" >&2; exit 128; fi ;; esac ;;
+  stfail) # status 는 전부 실패
+    case " \$* " in *" status "*) echo "fatal: 흉내 status 오류" >&2; exit 128 ;; esac ;;
+  brfail) # branch 는 전부 실패
+    case " \$* " in *" branch "*) echo "fatal: 흉내 branch 오류" >&2; exit 128 ;; esac ;;
+  gpfail) # rev-parse --git-path 는 실패
+    case " \$* " in *" --git-path "*) echo "fatal: 흉내 --git-path 오류" >&2; exit 128 ;; esac ;;
   rlfail) # rev-list 는 전부 실패
     case " \$* " in *" rev-list "*) echo "fatal: 흉내 rev-list 오류" >&2; exit 128 ;; esac ;;
 esac
@@ -75,7 +81,7 @@ case " \$* " in *" merge "*)
 esac
 exec "$REAL_GIT" "\$@"
 EOF
-mkdir -p "$WORK/shim-final" "$WORK/shim-vanish" "$WORK/shim-lsoferr" "$WORK/shim-lsofstderr"
+mkdir -p "$WORK/shim-final" "$WORK/shim-vanish" "$WORK/shim-lsoferr" "$WORK/shim-lsofstderr" "$WORK/shim-lsofdigit"
 cat > "$WORK/shim-final/sleep" <<'EOF'
 #!/bin/bash
 touch "$SHIM_STATE/slept"; exec /bin/sleep 0.01
@@ -94,6 +100,11 @@ cat > "$WORK/shim-lsofstderr/lsof" <<'EOF'
 #!/bin/bash
 # 종료코드는 「일치 없음」 과 같은 1 이지만 stderr 에 오류가 있다(없는 경로·잘못된 옵션 등)
 echo "lsof: status error on 흉내: No such file or directory" >&2; exit 1
+EOF
+cat > "$WORK/shim-lsofdigit/lsof" <<'EOF'
+#!/bin/bash
+# stdout 은 비고 stderr 에 숫자만 있는 줄 — pid 로 세면 안 된다
+echo "424242" >&2; exit 1
 EOF
 HOLD_PY="$WORK/hold.py"
 cat > "$HOLD_PY" <<'EOF'
@@ -119,7 +130,7 @@ signal.signal(signal.SIGTERM, release)
 time.sleep(secs)
 release()
 EOF
-chmod +x "$SHIM/git" "$WORK/shim-final/sleep" "$WORK/shim-vanish/stat" "$WORK/shim-lsoferr/lsof" "$WORK/shim-lsofstderr/lsof"
+chmod +x "$SHIM/git" "$WORK/shim-final/sleep" "$WORK/shim-vanish/stat" "$WORK/shim-lsoferr/lsof" "$WORK/shim-lsofstderr/lsof" "$WORK/shim-lsofdigit/lsof"
 
 # mkrepo <이름> → $W/origin.git, $W/b (main 이 origin/main 보다 1커밋 뒤, origin/main 은 fetch 로 최신)
 mkrepo() {
@@ -153,7 +164,7 @@ lockstat() { stat -f '%i %m %z' "$1" 2>/dev/null || echo "없음"; }
 # ff [env …] — shim 을 거쳐 release-ff.sh 를 돈다(extra PATH 는 XPATH)
 ff() {
   run env PATH="${XPATH:+$XPATH:}$SHIM:$PATH" SHIM_LOG="$W/state/git-argv.txt" SHIM_STATE="$W/state" SHIM_LOCK="$LOCK" \
-    SHIM_HOLD="$HOLD_PY" SHIM_PIDS="$PIDS" "$@" "$FF" --repo "$B" --base main
+    SHIM_HOLD="$HOLD_PY" SHIM_PIDS="$PIDS" "$@" "$FF" --repo "${FF_REPO:-$B}" --base "${FF_BASE:-main}" ${FF_TAG:+--tag "$FF_TAG"}
 }
 
 # run → RC, ELAPSED(초, 소수). 출력은 $LOG 에 덧붙인다
@@ -196,7 +207,7 @@ diverge() {
 }
 
 for CASE in $CASES; do
-  CASE_FAIL=0; HOLDER=""; XPATH=""; RC=""; ELAPSED=""
+  CASE_FAIL=0; HOLDER=""; XPATH=""; RC=""; ELAPSED=""; FF_REPO=""; FF_BASE=""; FF_TAG=""
   mkrepo "$CASE"
   LOG="$OUT/$CASE.txt"
   echo "## $CASE — $(date '+%F %T')" > "$LOG"
@@ -466,6 +477,54 @@ for CASE in $CASES; do
       check "미커밋으로 오판하지 않았다" hasnt "미커밋"
       check "다른 레포는 그대로" [ "$(git -C "$O" rev-parse HEAD)" = "$OTHER_BEFORE" ]
       ;;
+    r8-status|r8-branch|r8-gitpath) # 미커밋 확인 status · branch --show-current · rev-parse --git-path 실패 → exit 8(깨끗함·다른 브랜치로 오판하지 않는다)
+      case "$CASE" in r8-status) M=stfail; WHAT_GIT="git status" ;; r8-branch) M=brfail; WHAT_GIT="git branch --show-current" ;; *) M=gpfail; WHAT_GIT="git rev-parse --git-path index.lock" ;; esac
+      ff SHIM_MODE=$M
+      check "exit 8" [ "$RC" = 8 ]
+      check "git 조회 오류 문구($WHAT_GIT)" has "git 조회가 실패해 상태를 가리지 못했다($WHAT_GIT)"
+      check "다른 판정 문구 없음(미커밋·브랜치·ff)" hasnt "fast-forward →"
+      check "HEAD 불변" head_unchanged
+      ;;
+    r-linked) # linked worktree 를 --repo 로 — 그 worktree 자신의 index.lock(.git/worktrees/<이름>/index.lock)을 기다렸다가 ff
+      g -C "$W/seed" push -q origin main:feat
+      g -C "$B" fetch -q origin
+      g -C "$B" worktree add -q -b feat "$W/wt" "$(git -C "$B" rev-parse origin/feat~1)"
+      MAINLOCK="$LOCK"; LOCK="$(git -C "$W/wt" rev-parse --path-format=absolute --git-path index.lock)"
+      echo "linked worktree lock: $LOCK" >> "$LOG"
+      WT_BEFORE="$(git -C "$W/wt" rev-parse HEAD)"
+      hold 2
+      FF_REPO="$W/wt"; FF_BASE=feat
+      ff
+      stopholder
+      check "exit 0" [ "$RC" = 0 ]
+      check "per-worktree lock 경로(.git/worktrees/wt/index.lock)" [ "$LOCK" = "$(realpath_of "$B")/.git/worktrees/wt/index.lock" ]
+      check "그 lock 을 기다렸다(대기 문구)" has "index.lock 이 잡혀 있다"
+      check "lock 이 풀린 뒤 ff 시도 1회로 됐다(엉뚱한 lock 을 보면 실패 시도가 쌓인다)" has "ff 시도 1회"
+      check "linked worktree HEAD = origin/feat" [ "$(git -C "$W/wt" rev-parse HEAD)" = "$(git -C "$W/wt" rev-parse origin/feat)" ]
+      check "linked worktree 가 실제로 움직였다" [ "$(git -C "$W/wt" rev-parse HEAD)" != "$WT_BEFORE" ]
+      check "본체 index.lock 은 없음 그대로" [ "$(lockstat "$MAINLOCK")" = "없음" ]
+      check "쥐개의 lock 이 놓을 때까지 그대로(inode·mtime)" holder_intact
+      ;;
+    r1-tagdiff) # --tag 가 origin/<base> 와 다른 커밋 — ff 대상은 origin/main, 문구가 태그와 다르다고 말한다
+      g -C "$B" tag v9.9.9 "$BEFORE"
+      FF_TAG=v9.9.9
+      ff
+      check "exit 0" [ "$RC" = 0 ]
+      check "HEAD = origin/main(대상은 origin)" head_is_origin
+      check "문구가 실제 대상 origin/main 과 태그 불일치를 말한다" has "fast-forward → origin/main (⚠ 태그 v9.9.9 와 다른 커밋"
+      check "「→ v9.9.9」 로 말하지 않는다" hasnt "fast-forward → v9.9.9"
+      ;;
+    r2-lsofdigit) # lsof 가 stdout 없이 stderr 에 숫자 한 줄 — pid 로 세지 않고 확인 불가
+      : > "$LOCK"
+      BEFORE_LOCK="$(lockstat "$LOCK")"
+      XPATH="$WORK/shim-lsofdigit"
+      ff
+      AFTER_LOCK="$(lockstat "$LOCK")"
+      check "exit 2" [ "$RC" = 2 ]
+      check "확인 불가(lsof 종료코드 1 · 424242)" has "열고 있는 프로세스: 확인 불가(lsof 종료코드 1 · 424242)"
+      check "pid 424242 로 세지 않았다" hasnt "pid 424242"
+      check "lock 그대로(inode·mtime·크기 $BEFORE_LOCK)" [ "$BEFORE_LOCK" = "$AFTER_LOCK" ]
+      ;;
     r-gitdir) # 바깥 GIT_DIR·GIT_WORK_TREE 가 다른 레포를 가리켜도 --repo 를 ff 한다
       O="$W/other"; g clone -q "$W/origin.git" "$O"; g -C "$O" reset -q --hard HEAD~1
       OTHER_BEFORE="$(git -C "$O" rev-parse HEAD)"
@@ -474,11 +533,13 @@ for CASE in $CASES; do
       check "--repo 가 ff 됐다(HEAD = origin/main)" head_is_origin
       check "다른 레포는 그대로" [ "$(git -C "$O" rev-parse HEAD)" = "$OTHER_BEFORE" ]
       ;;
-    e2e|e2e-ff|e2e-dirty) # 실제 release.sh 를 끝까지 — e2e: 4단계 lock 실패가 경고로 남고 5·6단계로(R2ⓒ·R4ⓑ) ·
-      # e2e-ff: lock 없이 4단계 ff 성공 뒤 5단계로 · e2e-dirty: 본체 미커밋(exit 3)은 ⚠ 경고 없이 스크립트 문구만
+    e2e|e2e-ff|e2e-dirty|e2e-ahead|e2e-noff) # 실제 release.sh 를 끝까지 — e2e: 4단계 lock 실패가 경고로 남고 5·6단계로(R2ⓒ·R4ⓑ) ·
+      # e2e-ff: lock 없이 4단계 ff 성공 뒤 5단계로 · e2e-dirty: 본체 미커밋(exit 3)은 ⚠ 경고 없이 스크립트 문구만 ·
+      # e2e-ahead: 3단계 뒤 본체에 로컬 커밋이 생겨 앞섬만(exit 7) — ⚠ 없이 · e2e-noff: release-ff.sh 가 없는 사본 — ⚠ 뒤 5단계로
       g -C "$B" merge -q --ff-only origin/main  # 스크립트 커밋을 올린 뒤 release.sh 의 버전 커밋이 본체를 1커밋 뒤로 만든다
       mkdir -p "$B/scripts" "$B/app"
-      cp "$ROOT/scripts/release.sh" "$ROOT/scripts/release-ff.sh" "$B/scripts/"
+      cp "$ROOT/scripts/release.sh" "$B/scripts/"
+      [ "$CASE" = e2e-noff ] || cp "$ROOT/scripts/release-ff.sh" "$B/scripts/"
       printf '{\n  "name": "x",\n  "version": "0.0.1",\n  "private": true\n}\n' > "$B/app/package.json"
       printf '{\n  "name": "x",\n  "version": "0.0.1",\n  "lockfileVersion": 3,\n  "requires": true,\n  "packages": {\n    "": {\n      "name": "x",\n      "version": "0.0.1"\n    }\n  }\n}\n' > "$B/app/package-lock.json"
       printf '.claude/worktrees/\napp/dist/\n' > "$B/.gitignore"
@@ -492,18 +553,24 @@ for CASE in $CASES; do
 echo "gh $*" >> "$(dirname "$0")/gh-calls.txt"
 case "$*" in
   "pr view"*state,baseRefName*) echo "MERGED main LIFE-0-x false false 0000000000000000000000000000000000000000" ;;
-  "release create"*) ;;
+  "release create"*) # e2e-ahead: 태그 push 뒤 본체에 로컬 커밋이 생긴 상태를 만든다(origin 보다 앞섬만)
+    if [ -n "${E2E_AHEAD_REPO:-}" ]; then
+      git -C "$E2E_AHEAD_REPO" fetch -q origin && git -C "$E2E_AHEAD_REPO" merge -q --ff-only origin/main \
+        && git -C "$E2E_AHEAD_REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "로컬 커밋" || exit 1
+    fi ;;
   "release view"*) echo "https://example.invalid/release" ;;
   *) echo "가짜 gh: 모르는 호출 $*" >&2; exit 1 ;;
 esac
 GH
       chmod +x "$W/bin/gh"
       echo "노트" > "$W/notes.md"
-      check "release-ff.sh 사본 = 레포 원본(sha1 $(shasum < "$FF" | cut -c1-12))" [ "$(shasum < "$FF")" = "$(shasum < "$B/scripts/release-ff.sh")" ]
+      if [ "$CASE" = e2e-noff ]; then check "release-ff.sh 가 사본에 없다" [ ! -e "$B/scripts/release-ff.sh" ]
+      else check "release-ff.sh 사본 = 레포 원본(sha1 $(shasum < "$FF" | cut -c1-12))" [ "$(shasum < "$FF")" = "$(shasum < "$B/scripts/release-ff.sh")" ]; fi
       check "release.sh 사본 = 레포 원본(sha1 $(shasum < "$ROOT/scripts/release.sh" | cut -c1-12))" [ "$(shasum < "$ROOT/scripts/release.sh")" = "$(shasum < "$B/scripts/release.sh")" ]
       [ "$CASE" = e2e ] && hold 45
       [ "$CASE" = e2e-dirty ] && echo stray > "$B/stray.txt"
-      run env PATH="$W/bin:$PATH" bash -c 'command -v gh; exec "$0" "$@"' "$B/scripts/release.sh" --prs 1 --notes "$W/notes.md" --skip-build --skip-apk
+      AHEAD_REPO=""; [ "$CASE" = e2e-ahead ] && AHEAD_REPO="$B"
+      run env PATH="$W/bin:$PATH" E2E_AHEAD_REPO="$AHEAD_REPO" bash -c 'command -v gh; exec "$0" "$@"' "$B/scripts/release.sh" --prs 1 --notes "$W/notes.md" --skip-build --skip-apk
       stopholder
       cp "$W/bin/gh-calls.txt" "$OUT/$CASE-gh-calls.txt" 2>/dev/null
       check "가짜 gh 를 썼다" has "$W/bin/gh"
@@ -516,12 +583,18 @@ GH
           check "본체 HEAD 불변(ff 안 됨)" head_unchanged
           check "쥐개의 lock 이 놓을 때까지 그대로(inode·mtime)" holder_intact ;;
         e2e-ff)
-          check "4단계 ff 성공 문구" has "본체 브랜치 main fast-forward → v0.0.2"
+          check "4단계 ff 성공 문구(실제 대상 origin/main = 태그)" has "본체 브랜치 main fast-forward → origin/main (= 태그 v0.0.2)"
           check "4단계 경고 없음" hasnt "fast-forward 하지 않았다"
           check "본체 HEAD = origin/main(ff 됨)" head_is_origin ;;
         e2e-dirty)
           check "4단계 미커밋 문구(스크립트)" has "미커밋 변경 1건 — fast-forward 하지 않음"
           check "release.sh 호출부 ⚠ 경고 없음(exit 3)" hasnt "fast-forward 하지 않았다(위 원인)"
+          check "본체 HEAD 불변" head_unchanged ;;
+        e2e-ahead)
+          check "4단계 앞섬 문구(스크립트, exit 7)" has "1커밋 앞섬 — origin 에 없는 로컬 커밋이다"
+          check "release.sh 호출부 ⚠ 경고 없음(exit 7)" hasnt "fast-forward 하지 않았다(위 원인)" ;;
+        e2e-noff)
+          check "release-ff.sh 부재 ⚠ 문구" has "⚠ scripts/release-ff.sh 가 없어 본체 main fast-forward 를 건너뜀 — 출고(원격)는 끝났다"
           check "본체 HEAD 불변" head_unchanged ;;
       esac
       check "5단계로 갔다(--skip-build)" has "--skip-build — dmg 는 나중에"

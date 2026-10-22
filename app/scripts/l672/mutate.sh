@@ -9,7 +9,7 @@
 set -uo pipefail
 
 OUT="${1:?원자료 폴더}"; shift
-ALLIDS="M03 M04 M10 M19 G1-3rm G1-1 G1-6 C1-8 C1-4 T6b T6-tree N4 N11 N19 N-post N-ahead-sleep C2-4rp C2-4rl C2-6 C2-9 C2-7"
+ALLIDS="M03 M04 M10 M19 G1-3rm G1-1 G1-6 C1-8 C1-4 T6b T6-tree N4 N11 N19 N-post N-ahead-sleep C2-4rp C2-4rl C2-6 C2-9 C2-7 MA1 MA2 MA6 MA7 MA13 G3-2 G3-1msg"
 IDS="${*:-$ALLIDS}"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 mkdir -p "$OUT"
@@ -98,6 +98,20 @@ exit 0' || MRC=1 ;;
          mutate app/src/main/explorer-hub.ts "execFile('git', ['-C', cwd, ...GIT_STATUS_ARGS]" "execFile('git', ['-C', cwd, ...GIT_STATUS_ARGS.filter((arg) => arg !== '--no-optional-locks')]" || MRC=1 ;;
     T6-tree) KIND=vitest; WHAT="트리 골격 getGitStatus 가 억제 없는 인자로 호출"
          mutate app/src/main/git-status.ts "await run('git', ['-C', worktreePath, ...GIT_STATUS_ARGS]" "await run('git', ['-C', worktreePath, ...GIT_STATUS_ARGS.filter((arg) => arg !== '--no-optional-locks')]" || MRC=1 ;;
+    MA1) WHAT="미커밋 확인 status 실패를 깨끗함으로(|| true)"; CASES="r8-status"
+         mutate $FF 'dirty_lines() { git --no-optional-locks status --porcelain || git_fail "status"; }' 'dirty_lines() { git --no-optional-locks status --porcelain || true; }' || MRC=1 ;;
+    MA2) WHAT="branch --show-current 실패 무시"; CASES="r8-branch"
+         mutate $FF 'CUR="$(git branch --show-current)" || git_fail "branch --show-current"' 'CUR="$(git branch --show-current || true)"' || MRC=1 ;;
+    MA6) WHAT="release.sh 호출부 0|3|7 → 0|3 (= X-drop7, 앞섬에도 ⚠)"; CASES="e2e-ahead"
+         mutate scripts/release.sh '    0|3|7) ;;' '    0|3) ;;' || MRC=1 ;;
+    MA7) WHAT="release.sh 의 release-ff.sh 부재 분기 note → die"; CASES="e2e-noff"
+         mutate scripts/release.sh '  note "⚠ scripts/release-ff.sh 가 없어' '  die "⚠ scripts/release-ff.sh 가 없어' || MRC=1 ;;
+    MA13) WHAT="LOCK 을 --git-path 대신 \$REPO/.git/index.lock 으로 하드코딩"; CASES="r-linked"
+         mutate $FF 'LOCK="$(git rev-parse --path-format=absolute --git-path index.lock)" || git_fail "rev-parse --git-path index.lock"' 'LOCK="$REPO/.git/index.lock"' || MRC=1 ;;
+    G3-2) WHAT="lsof stderr 를 stdout 에 합침(2>&1 복원 — 숫자 stderr 를 pid 로)"; CASES="r2-lsofdigit"
+         mutate $FF 'res="$( { lsof -t -- "$LOCK" | sed' 'res="$( { lsof -t -- "$LOCK" 2>&1 | sed' || MRC=1 ;;
+    G3-1msg) WHAT="성공 문구 대상을 태그로(구 형태: → \$TAG)"; CASES="r1-tagdiff e2e-ff"
+         mutate $FF '  [ -n "$TAG" ] || { echo "origin/$BASE"; return; }' '  [ -z "$TAG" ] || { echo "$TAG"; return; }; echo "origin/$BASE"; return' || MRC=1 ;;
     INFRA) WHAT="(변이 없음) 러너가 모르는 케이스로 실패 — 판정불가로 나오는지 보는 인프라 대조"; CASES="no-such-case" ;;
     *) echo "모르는 변이 $ID" >&2; exit 64 ;;
   esac

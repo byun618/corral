@@ -36,7 +36,6 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$REPO" ] || { echo "✖ 사용법: release-ff.sh --repo <본체 checkout> [--base main] [--tag <태그>]" >&2; exit 64; }
 cd "$REPO"
-TO="${TAG:-origin/$BASE}"
 WHO="본체 브랜치 $BASE"
 
 # 문구는 stderr 로 — 명령 치환 안에서 불려도 사라지지 않게
@@ -67,6 +66,17 @@ if ! git rev-parse -q --verify "$REMOTE^{commit}" >/dev/null; then
 fi
 
 LOCK="$(git rev-parse --path-format=absolute --git-path index.lock)" || git_fail "rev-parse --git-path index.lock"
+
+# 문구의 대상 — ff 대상은 늘 origin/<base> 다. --tag 를 받았으면 그 태그가 지금 HEAD 와 같은 커밋인지 덧붙인다
+target() {
+  local head tagc
+  [ -n "$TAG" ] || { echo "origin/$BASE"; return; }
+  head="$(git rev-parse HEAD 2>/dev/null || true)"
+  tagc="$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
+  if [ -z "$tagc" ]; then echo "origin/$BASE (태그 $TAG 는 이 checkout 에 없어 대조 못 함)"
+  elif [ "$tagc" = "$head" ]; then echo "origin/$BASE (= 태그 $TAG)"
+  else echo "origin/$BASE (⚠ 태그 $TAG 와 다른 커밋 — 태그 ${tagc:0:7}, HEAD ${head:0:7})"; fi
+}
 
 # same_as_remote → 0 HEAD = origin · 1 다름. git 실패는 exit 8
 same_as_remote() {
@@ -99,14 +109,15 @@ not_behind_exit() {
   exit 5
 }
 
-# 열고 있는 프로세스 — lsof 로 본다. 종료코드 1 + stderr 없음 = 「없음」(이 계정에서 보이는 프로세스 한정), 그 밖은 확인 불가
+# 열고 있는 프로세스 — lsof 로 본다. 종료코드 1 + stderr 없음 = 「없음」(이 계정에서 보이는 프로세스 한정), 그 밖은 확인 불가.
+# stdout(pid)과 stderr 는 섞지 않는다 — stdout 줄에만 「O:」 를 붙여 받고(임시 파일 없이), 나머지 줄은 stderr 로 본다
 lock_holders() {
   local res rc pids err pid line=""
   command -v lsof >/dev/null 2>&1 || { echo "확인 불가(lsof 없음)"; return; }
-  res="$(lsof -t -- "$LOCK" 2>&1; echo "rc=$?")"
+  res="$( { lsof -t -- "$LOCK" | sed 's/^/O:/'; echo "rc=${PIPESTATUS[0]}"; } 2>&1 )"
   rc="$(echo "$res" | sed -n 's/^rc=//p' | tail -1)"
-  pids="$(echo "$res" | grep -E '^[0-9]+$' || true)"
-  err="$(echo "$res" | grep -vE '^[0-9]+$|^rc=' || true)"
+  pids="$(echo "$res" | sed -n 's/^O:\([0-9][0-9]*\)$/\1/p')"
+  err="$(echo "$res" | grep -vE '^O:|^rc=' || true)"
   if [ -z "$pids" ]; then
     if [ "$rc" = 1 ] && [ -z "$err" ]; then echo "없음(이 계정에서 보이는 프로세스 중)"
     else echo "확인 불가(lsof 종료코드 $rc${err:+ · $(first_line "$err" | cut -c1-80)})"; fi
@@ -142,7 +153,7 @@ caught_up_exit() {
     note "⚠ $WHO 은 기다리는 동안 다른 git 작업으로 origin 과 같아졌지만 미커밋 변경 $(echo "$dirty" | wc -l | tr -d ' ')건이 보인다 — HEAD 만 옮겨졌을 수 있다(git status)"
     exit 3
   fi
-  note "$WHO 은 기다리는 동안 다른 git 작업으로 그새 최신($TO)이 됐다 — 이 스크립트는 ff 하지 않음($(waited))"
+  note "$WHO 은 기다리는 동안 다른 git 작업으로 그새 최신($(target))이 됐다 — 이 스크립트는 ff 하지 않음($(waited))"
   exit 0
 }
 
@@ -164,13 +175,13 @@ try_ff() {
 
 TRIES=0; STEPS=0; T0=$SECONDS; LAST_ERR=""
 if same_as_remote; then
-  note "$WHO 은 이미 최신($TO) — fast-forward 할 것 없음"
+  note "$WHO 은 이미 최신($(target)) — fast-forward 할 것 없음"
   exit 0
 fi
 while :; do
   if try_ff; then
-    if [ "$STEPS" = 0 ] && [ "$TRIES" -le 1 ]; then note "$WHO fast-forward → $TO"
-    else note "$WHO fast-forward → $TO — $(waited)"; fi
+    if [ "$STEPS" = 0 ] && [ "$TRIES" -le 1 ]; then note "$WHO fast-forward → $(target)"
+    else note "$WHO fast-forward → $(target) — $(waited)"; fi
     exit 0
   fi
   # 0.5초 × 60회를 채우면 포기한다. git 호출이 느려 늘어지는 경우를 위해 초 단위 상한(+1초)도 둔다
@@ -182,7 +193,7 @@ done
 
 # 상한 — 그 사이 lock 이 사라졌으면 한 번 더 해 본다
 if [ ! -e "$LOCK" ] && try_ff; then
-  note "$WHO fast-forward → $TO — 상한에 닿은 뒤 마지막 시도로 됐다($(waited))"
+  note "$WHO fast-forward → $(target) — 상한에 닿은 뒤 마지막 시도로 됐다($(waited))"
   exit 0
 fi
 if [ -e "$LOCK" ]; then lock_note; exit 2; fi

@@ -41,9 +41,7 @@ import {
   memoryText,
   bulkOrphanTargets,
   orphanSkipText,
-  ORPHAN_OWNED,
-  ORPHAN_OWNED_TOOLTIP,
-  ORPHAN_OWNERLESS,
+  orphanOwnerBadge,
   ORPHAN_OWNERLESS_TOOLTIP,
   ORPHAN_SECTION_LABEL,
   ORPHAN_SECTION_TOOLTIP,
@@ -609,23 +607,28 @@ export function ResourceSegment(): React.JSX.Element {
               <span className="statusbar-resource-cpu" data-statusbar-resource-cpu>{orphanSum === null ? RESOURCE_EMPTY : formatCpu(orphanSum.cpu)}</span>
               <span className="statusbar-resource-mem" data-statusbar-resource-memory>{orphanSum === null ? RESOURCE_EMPTY : memoryText(orphanSum.memory)}</span>
             </div>
-            {orphans === null ? <div className="statusbar-resource-note" data-statusbar-resource-orphans-unknown>{ORPHAN_UNKNOWN}</div> : null}
+            {orphans === null ? <div className="statusbar-resource-note" data-statusbar-resource-orphans-unknown>{snapshot?.orphansReason ?? ORPHAN_UNKNOWN}</div> : null}
             {orphans !== null && orphans.length === 0 ? <div className="statusbar-resource-note">없다</div> : null}
             {(orphans ?? []).map((row) => {
               const cells = measureCells(row.measure)
               const titles = rowTitles(cells.title)
               const path = orphanPathText(row)
+              const badge = orphanOwnerBadge(row)
               return (
                 <div key={row.workspaceId} className="statusbar-resource-pane" data-statusbar-resource-orphan={row.workspaceId}>
                   <div className="statusbar-resource-line statusbar-resource-orphan-line" title={titles.row === null ? orphanTooltip(row) : `${orphanTooltip(row)}\n${titles.row}`}>
                     <span className="statusbar-resource-name">
-                      <span
-                        className={`statusbar-resource-owner${row.ownerless ? ' is-ownerless' : ''}`}
-                        data-statusbar-resource-orphan-owner={row.ownerless ? 'ownerless' : 'owned'}
-                        title={row.ownerless ? ORPHAN_OWNERLESS_TOOLTIP : ORPHAN_OWNED_TOOLTIP}
-                      >
-                        {row.ownerless ? ORPHAN_OWNERLESS : ORPHAN_OWNED}
-                      </span>{' '}
+                      {badge === null ? null : (
+                        <>
+                          <span
+                            className={`statusbar-resource-owner${badge.kind === 'ownerless' ? ' is-ownerless' : ''}`}
+                            data-statusbar-resource-orphan-owner={badge.kind}
+                            title={badge.tooltip}
+                          >
+                            {badge.text}
+                          </span>{' '}
+                        </>
+                      )}
                       <span data-statusbar-resource-orphan-path>{path}</span>
                     </span>
                     <span className="statusbar-resource-agent" data-statusbar-resource-agent>{orphanKindText(row)}</span>

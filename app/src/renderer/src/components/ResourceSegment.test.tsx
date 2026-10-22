@@ -1236,6 +1236,24 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     expect(must('[data-statusbar-resource-orphans]').textContent).toContain('카드 밖 workspace (2)')
   })
 
+  it('P1 — 가릴 수 없는 까닭이 영구면 그 사유를 안내한다', () => {
+    openOrphans({ ...SNAPSHOT, orphans: null, orphansReason: '등록 레포를 읽을 수 없다 — /gone' })
+    expect(must('[data-statusbar-resource-orphans-unknown]').textContent).toBe('등록 레포를 읽을 수 없다 — /gone')
+  })
+
+  it('P3 — 확인 불가 줄은 「경로 확인 불가」 배지, 확인 전 줄은 배지 없음', () => {
+    openOrphans({
+      ...SNAPSHOT,
+      orphans: [
+        { workspaceId: 'w6', label: 'w6', paths: [{ path: '/Volumes/x', exists: null }], ownerless: false, agents: [], stoppedAgents: [], paneIds: ['p6'], measure: { state: 'unavailable', reason: 'x' } },
+        { workspaceId: 'w5', label: 'w5', paths: [{ path: '/new', exists: null, pending: true }], ownerless: false, agents: [], stoppedAgents: [], paneIds: ['p5'], measure: { state: 'unavailable', reason: 'x' } },
+      ],
+    })
+    expect(must('[data-statusbar-resource-orphan="w6"]').querySelector('[data-statusbar-resource-orphan-owner]')?.textContent).toBe('경로 확인 불가')
+    expect(must('[data-statusbar-resource-orphan="w5"]').querySelector('[data-statusbar-resource-orphan-owner]')).toBeNull()
+    expect(must('[data-statusbar-resource-orphan="w5"]').querySelector('[data-statusbar-resource-orphan-path]')?.textContent).toBe('/new')
+  })
+
   it('가릴 수 없으면(null) 빈 목록과 다른 안내, 모두 닫기 없음', () => {
     openOrphans({ ...SNAPSHOT, orphans: null })
     expect(q('[data-statusbar-resource-orphans-unknown]')).not.toBeNull()

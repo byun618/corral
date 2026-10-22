@@ -45,6 +45,8 @@ export type ResourceMonitorDeps = {
   panes: () => ResourcePaneSource[]
   /** 카드 밖 workspace. null = 지금은 가릴 수 없다(스냅샷 `orphans: null`). 없으면 늘 null. */
   orphans?: () => ResourceOrphanSource[] | null
+  /** `orphans` 가 null 일 때의 영구 사유(P1). 없으면 null. */
+  orphansReason?: () => string | null
   /** herdr 에 그 pane 의 셸 pid 를 묻는다(F5 — 런타임 없음은 `missing`). */
   probeShellPid: (paneId: string) => Promise<ShellProbe>
   /** main pid + Electron 역할 pid. */
@@ -213,6 +215,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
       herdr: attribution.herdr,
       panes: rows,
       orphans: orphanRows,
+      orphansReason: orphanRows === null ? deps.orphansReason?.() ?? null : null,
       host,
       stats: { ...stats, recentDurationsMs: [...stats.recentDurationsMs] },
     }

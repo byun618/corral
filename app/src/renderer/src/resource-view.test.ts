@@ -12,6 +12,7 @@ import {
   memoryText,
   bulkOrphanTargets,
   orphanCloseCopy,
+  orphanOwnerBadge,
   orphanSkipText,
   orphanTooltip,
   orphanKindText,
@@ -198,7 +199,7 @@ describe('groupPanes', () => {
 })
 
 describe('카드 밖 workspace 표시 (LIFE-628)', () => {
-  const orphanRow = (input: { id: string; paths: { path: string; exists: boolean | null }[]; agents?: string[]; stoppedAgents?: string[]; ownerless?: boolean; measure: ResourceMeasure }) => ({
+  const orphanRow = (input: { id: string; paths: { path: string; exists: boolean | null; pending?: boolean }[]; agents?: string[]; stoppedAgents?: string[]; ownerless?: boolean; measure: ResourceMeasure }) => ({
     workspaceId: input.id, label: `ws-${input.id}`, paths: input.paths, ownerless: input.ownerless ?? true, agents: input.agents ?? [], stoppedAgents: input.stoppedAgents ?? [], paneIds: [`p-${input.id}`], measure: input.measure,
   })
   it('경로 — 없으면 (없음), 여럿이면 외 n, 모르면 workspace 이름', () => {
@@ -215,6 +216,20 @@ describe('카드 밖 workspace 표시 (LIFE-628)', () => {
     expect(orphanPathText(row)).toBe('/Volumes/x (확인 불가)')
     expect(orphanTooltip(row)).toContain('/Volumes/x — 있는지 확인 불가(권한 등)')
     expect(orphanTooltip(orphanRow({ id: 'b', paths: [{ path: '/gone', exists: false }], measure: measured(1, MB) }))).toContain('/gone — 디렉터리 없음')
+  })
+  it('P3 경로·배지 — 확인 전(pending)은 경로만·배지 없음, 확인 불가는 「경로 확인 불가」, 살아 있으면 「경로 있음」, 주인 없음은 그대로', () => {
+    const pending = orphanRow({ id: 'a', paths: [{ path: '/p', exists: null, pending: true }], ownerless: false, measure: measured(1, MB) })
+    expect(orphanPathText(pending)).toBe('/p')
+    expect(orphanTooltip(pending)).toContain('/p\n')
+    expect(orphanOwnerBadge(pending)).toBeNull()
+    const unchecked = orphanRow({ id: 'b', paths: [{ path: '/v', exists: null }, { path: '/w', exists: true }], ownerless: false, measure: measured(1, MB) })
+    expect(orphanOwnerBadge(unchecked)).toMatchObject({ kind: 'unchecked', text: '경로 확인 불가' })
+    expect(orphanOwnerBadge(unchecked)?.tooltip).not.toContain('살아 있다')
+    expect(orphanOwnerBadge(orphanRow({ id: 'c', paths: [{ path: '/w', exists: true }], ownerless: false, measure: measured(1, MB) }))).toMatchObject({ kind: 'owned', text: '경로 있음' })
+    expect(orphanOwnerBadge(orphanRow({ id: 'd', paths: [{ path: '/home', exists: null, pending: true }], ownerless: true, measure: measured(1, MB) }))).toMatchObject({ kind: 'ownerless' })
+  })
+  it('P2 닫지 않은 줄 안내 — 잠김·정리 대기는 카드에 붙음과 따로', () => {
+    expect(orphanSkipText({ skipped: [{ workspaceId: 'a', reason: 'stale-claim' }, { workspaceId: 'b', reason: 'claimed' }], unexplained: 0 })).toBe('2개는 닫지 않았다 — 카드에 붙음 1 · worktree 잠김·정리 대기 1 (git worktree unlock/prune 필요)')
   })
   it('G2 닫지 않은 줄 안내 — 사유별 개수, 없으면 null', () => {
     expect(orphanSkipText({ skipped: [], unexplained: 0 })).toBeNull()

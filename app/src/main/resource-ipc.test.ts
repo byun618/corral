@@ -30,7 +30,11 @@ const { checkPath, closeOrphanWorkspaces, homesOf, closeResourcePane, closeRoute
 const { buildAgentRows } = await import('../shared/sidebar-agents.js')
 type Deps = Parameters<typeof closeResourcePane>[0]['deps']
 /** 경로 판정 창구 — 실경로는 기본 모름. */
-const oracle = (isDirectory: (path: string) => boolean | null, realPath: (path: string) => string | null = () => null) => ({ isDirectory, realPath })
+/** 다시 읽은 귀속 — id 마다 살아 있는 경로 하나(`/live/<id>`). */
+const claim = (...ids: string[]): Map<string, string[]> => new Map(ids.map((id) => [id, [`/live/${id}`]]))
+/** `/live/` 아래만 있는 디렉터리. */
+const live = (path: string): boolean => path.startsWith('/live/')
+const oracle = (isDirectory: (path: string) => boolean | null, realPath: (path: string) => string | null = () => null, checked: (path: string) => boolean = () => true) => ({ isDirectory, realPath, checked })
 
 const pane = (input: { paneId: string; tabId: string; title?: string; agent?: string | null; workspaceId?: string; cwd?: string | null; agentSession?: AgentSessionRef | null }) => ({
   paneId: input.paneId, tabId: input.tabId, workspaceId: input.workspaceId ?? 'w1', title: input.title ?? input.paneId, agent: input.agent ?? null, agentStatus: 'idle' as const,
@@ -78,7 +82,8 @@ function deps(patch: Partial<Deps> = {}): Deps & { closed: string[]; probed: str
       return { outcome: 'ok' }
     },
     cardlessWorkspaces: () => cardless.filter((row) => !closed.includes(row.workspaceId)),
-    claimedWorkspaceIds: async () => new Set(['w1']),
+    claimedWorkspaceIds: async () => claim('w1'),
+    cardlessBlockedReason: () => null,
     closeWorkspace: async (input) => {
       closed.push(input.workspaceId)
       return { outcome: 'closed' }
@@ -415,6 +420,12 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     expect(d.closed).toEqual([])
     expect(d.probed).toEqual([])
   })
+  it('P1 — 스냅샷에 카드 밖 보류의 영구 사유를 싣는다', async () => {
+    win.visible = true
+    register({ cardlessWorkspaces: () => null, cardlessBlockedReason: () => '등록 레포를 읽을 수 없다 — /gone' })
+    await settle()
+    expect(handler('corral:resourceSnapshot')({}, undefined)).toMatchObject({ orphans: null, orphansReason: '등록 레포를 읽을 수 없다 — /gone' })
+  })
   it('스냅샷 IPC — 남의 창이면 null, 우리 창이면 최신 값', async () => {
     win.visible = true
     let ours = true
@@ -462,7 +473,7 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
   })
   it('지금 카드 밖이 아닌 workspace(카드 귀속 w1·모르는 id)는 닫지 않는다', async () => {
     const d = deps({ confirmRunning: () => false })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w1', 'nope'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: [], skipped: [{ workspaceId: 'w1', reason: 'claimed' }, { workspaceId: 'nope', reason: 'gone' }] })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w1', 'nope'], bulk: false, paths: oracle(live), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: [], skipped: [{ workspaceId: 'w1', reason: 'claimed' }, { workspaceId: 'nope', reason: 'gone' }] })
     expect(d.closed).toEqual([])
   })
   it('카드 밖을 가릴 수 없으면(null) 하나도 닫지 않는다', async () => {
@@ -510,8 +521,8 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     stop.stop()
   })
   it('F2 — 다시 읽은 카드 귀속에 있으면(메모리 판정은 카드 밖이어도) 닫지 않는다', async () => {
-    const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => new Set(['w1', 'w9']) })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'], skipped: [{ workspaceId: 'w9', reason: 'claimed' }] })
+    const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => claim('w1', 'w9') })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(live), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'], skipped: [{ workspaceId: 'w9', reason: 'claimed' }] })
     expect(d.closed).toEqual(['w8'])
   })
   it('F2 — 카드 귀속 읽기가 실패하면 하나도 닫지 않는다(판정도 하지 않는다)', async () => {
@@ -522,8 +533,8 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     expect(d.probed).toEqual([])
   })
   it('F2 — 확인 전 판정에도 다시 읽은 귀속을 쓴다: 카드에 붙은 workspace 의 pane 은 판정·확인 창에 넣지 않는다', async () => {
-    const d = deps({ claimedWorkspaceIds: async () => new Set(['w1', 'w9']) })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(() => false), confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['yes'] }], skipped: [{ workspaceId: 'w9', reason: 'claimed' }] })
+    const d = deps({ claimedWorkspaceIds: async () => claim('w1', 'w9') })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(live), confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['yes'] }], skipped: [{ workspaceId: 'w9', reason: 'claimed' }] })
     expect(d.probed).toEqual([['p8']])
   })
   it('F2 — 귀속 읽기가 실패하면 확인 전 판정(pane 질의)도 하지 않는다', async () => {
@@ -534,14 +545,14 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
   it('F2 — 닫기 직전마다 다시 읽는다: 첫 workspace 를 닫은 뒤 둘째가 카드에 붙으면 건너뛴다', async () => {
     let reads = 0
     const logs: string[] = []
-    const d = deps({ confirmRunning: () => false, log: (tag) => logs.push(tag), claimedWorkspaceIds: async () => (++reads >= 3 ? new Set(['w1', 'w9']) : new Set(['w1'])) })
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'], skipped: [{ workspaceId: 'w9', reason: 'claimed' }] })
+    const d = deps({ confirmRunning: () => false, log: (tag) => logs.push(tag), claimedWorkspaceIds: async () => (++reads >= 3 ? claim('w1', 'w9') : claim('w1')) })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(live), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'], skipped: [{ workspaceId: 'w9', reason: 'claimed' }] })
     expect(d.closed).toEqual(['w8'])
     expect(logs).toContain('resource.close_orphan_skipped')
   })
   it('F2 — 닫기 직전 다시 읽기가 실패하면 거기서 멈춘다(그때까지 닫은 것만)', async () => {
     let reads = 0
-    const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => (++reads >= 3 ? null : new Set(['w1'])) })
+    const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => (++reads >= 3 ? null : claim('w1')) })
     expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(() => false), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'error', closed: ['w8'], error: '카드 귀속을 다시 읽지 못해 멈췄다', skipped: [] })
     expect(d.closed).toEqual(['w8'])
   })
@@ -586,10 +597,36 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     expect(shellProbeOf({ shellPid: null, missing: true })).toEqual({ kind: 'missing' })
     expect(shellProbeOf({ shellPid: null, missing: false })).toEqual({ kind: 'unknown' })
   })
+  it('P2 — 다시 읽은 귀속의 경로가 모두 디스크에 없으면(잠긴 worktree 를 지움) 사유 stale-claim — 닫지 않는 것은 같다', async () => {
+    const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => new Map([['w1', ['/live/w1']], ['w9', ['/locked/gone']]]) })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(live), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'], skipped: [{ workspaceId: 'w9', reason: 'stale-claim' }] })
+    // 한 경로라도 있거나 아직 모르면(null) 카드에 붙음.
+    const d2 = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => new Map([['w1', ['/live/w1']], ['w9', ['/locked/gone', '/live/w9']]]) })
+    expect((await closeOrphanWorkspaces({ deps: d2, workspaceIds: ['w9'], bulk: false, paths: oracle(live), confirmed: true, confirmedPaneIds: [] })).skipped).toEqual([{ workspaceId: 'w9', reason: 'claimed' }])
+    const d3 = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => new Map([['w1', ['/live/w1']], ['w9', ['/locked/gone']]]) })
+    expect((await closeOrphanWorkspaces({ deps: d3, workspaceIds: ['w9'], bulk: false, paths: oracle(() => null), confirmed: true, confirmedPaneIds: [] })).skipped).toEqual([{ workspaceId: 'w9', reason: 'claimed' }])
+  })
+  it('P2 — 닫기 직전 재독에서 잠김 귀속이 생기면 그 사유로 건너뛴다', async () => {
+    let reads = 0
+    const d = deps({ confirmRunning: () => false, claimedWorkspaceIds: async () => (++reads >= 3 ? new Map([['w1', ['/live/w1']], ['w9', ['/locked/gone']]]) : claim('w1')) })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, paths: oracle(live), confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w8'], skipped: [{ workspaceId: 'w9', reason: 'stale-claim' }] })
+  })
+  it('P3 orphanSources — 확인 전 경로는 pending, 확인 뒤엔 없음', () => {
+    const rows = orphanSources({ workspaces: [orphan({ workspaceId: 'w8', panes: [{ paneId: 'a', cwd: '/new' }, { paneId: 'b', cwd: '/old' }] })], homes: ['/home'], paths: oracle(() => null, () => null, (path) => path === '/old') })
+    expect(rows[0]?.paths).toEqual([{ path: '/new', exists: null, pending: true }, { path: '/old', exists: null }])
+  })
+  it('P3 createDirectoryCache.checked — 확인을 마치기 전 false, 뒤 true(던져도 true — 확인 불가로 확정)', async () => {
+    const cache = createDirectoryCache({ ttlMs: 5000, now: () => 0, check: async (path) => { if (path === '/err') throw new Error('x'); return { exists: true, real: null } } })
+    expect(cache.checked('/a')).toBe(false)
+    expect(cache.checked('/err')).toBe(false)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cache.checked('/a')).toBe(true)
+    expect(cache.checked('/err')).toBe(true)
+  })
   it('G3 — workspace 마다 권위 재독 → 프로세스 판정 → 닫기 (판정과 닫기 사이에 재독이 없다)', async () => {
     const events: string[] = []
     const d = deps({
-      claimedWorkspaceIds: async () => { events.push('read'); return new Set(['w1']) },
+      claimedWorkspaceIds: async () => { events.push('read'); return claim('w1') },
       probeRunning: async (input) => { events.push(`probe ${input.panes.map((pane) => pane.paneId).join(',')}`); return [] },
       closeWorkspace: async (input) => { events.push(`close ${input.workspaceId}`); return { outcome: 'closed' } },
     })

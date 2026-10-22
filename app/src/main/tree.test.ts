@@ -98,7 +98,7 @@ describe('cardlessWorkspaces (LIFE-628 S1)', () => {
     it('루트마다 읽어 합집합', async () => {
       const reads: Record<string, ReturnType<typeof map>> = { '/a': map([['/a', 'w1'], ['/a/x', 'w2']]), '/b': map([['/b', 'w3']]) }
       const claimed = await readClaimedWorkspaceIds({ roots: ['/a', '/b'], read: async (root) => reads[root] ?? map([]), log: () => {} })
-      expect(claimed).toEqual(new Set(['w1', 'w2', 'w3']))
+      expect(claimed).toEqual(new Map([['w1', ['/a']], ['w2', ['/a/x']], ['w3', ['/b']]]))
     })
     it('둘째 루트 읽기가 실패하면 null(첫째가 성공했어도)', async () => {
       const logs: string[] = []
@@ -108,10 +108,10 @@ describe('cardlessWorkspaces (LIFE-628 S1)', () => {
     })
     it('prunable 경로의 id 는 귀속으로 세지 않는다 — 같은 id 가 살아 있는 경로에도 붙어 있으면 센다', async () => {
       const claimed = await readClaimedWorkspaceIds({ roots: ['/a'], read: async () => map([['/a', 'w1'], ['/a/gone', 'w2'], ['/a/gone2', 'w3'], ['/a/live', 'w3']], ['/a/gone', '/a/gone2']), log: () => {} })
-      expect(claimed).toEqual(new Set(['w1', 'w3']))
+      expect(claimed).toEqual(new Map([['w1', ['/a']], ['w3', ['/a/live']]]))
     })
     it('루트가 없으면 빈 집합', async () => {
-      expect(await readClaimedWorkspaceIds({ roots: [], read: async () => map([]), log: () => {} })).toEqual(new Set())
+      expect(await readClaimedWorkspaceIds({ roots: [], read: async () => map([]), log: () => {} })).toEqual(new Map())
     })
   })
 

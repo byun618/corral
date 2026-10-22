@@ -102,6 +102,7 @@ import { BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwn
 import { RepoRegistry } from './registry.js'
 import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, cardlessGate, collectSessionRefs, joinTree, readClaimedWorkspaceIds, type RepoSkeleton } from './tree.js'
+import { createRebuildScheduler, skeletonHealth } from './rebuild-retry.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
 import { SettingsStore } from './settings.js'
@@ -301,10 +302,8 @@ let skeletonSocket: string | null = null
 let skeletonStartedAt: number | null = null
 /** store 에 workspace 가 처음 보인 시각 (LIFE-628 F2). 내보낼 때마다(`scheduleEmit`) 갱신하고, 사라진 id 는 지운다. */
 const workspaceFirstSeen = new Map<string, number>()
-/** 신선도로 막힌 workspace 때문에 골격 재구성을 마지막으로 건 시각 — 같은 창에 여러 번 걸지 않는다. */
-let freshRebuildAt = 0
-/** 골격 오류(gitError·openError)로 카드 밖 판정이 보류일 때 마지막으로 재구성을 건 시각 (G5 — 5초 간격). */
-let errorRebuildAt = 0
+/** 골격 재구성 재시도 스케줄 (LIFE-628 P1) — 진행 중이면 걸지 않고, 끝난 때부터 간격·백오프. 모든 `rebuildTree` 가 시작·끝을 알린다. */
+const rebuildRetry = createRebuildScheduler({ now: () => Date.now() })
 let emitScheduled = false
 let treeScheduled = false
 /**
@@ -601,19 +600,15 @@ function cardlessNow(): WorkspaceRow[] | null {
     firstSeenAt: workspaceFirstSeen,
   })
   if (gate === null) {
-    // 골격 오류로 보류면 스스로 회복하게 골격을 다시 세운다(G5 — 일시 git·herdr 실패가 다음 외부 변화까지 고착되지 않게). 5초에 한 번까지.
-    if (skeleton.some((repo) => repo.gitError !== null || repo.openError !== null) && Date.now() - errorRebuildAt > 5000) {
-      errorRebuildAt = Date.now()
-      log('resource.cardless_retry', { reason: 'skeleton-error' })
+    // 골격 오류로 보류면 스스로 회복하게 골격을 다시 세운다(G5) — 진행 중이 없고 끝난 때부터 백오프 간격이 지났을 때만(P1).
+    if (skeletonHealth(skeleton).kind !== 'ok' && !treeScheduled && rebuildRetry.due('error')) {
+      log('resource.cardless_retry', { reason: 'skeleton-error', waitMs: rebuildRetry.waitMs('error'), permanent: rebuildRetry.permanentReason() })
       scheduleTree()
     }
     return null
   }
-  // 골격보다 새 workspace 가 있으면 골격을 한 번 다시 세운다 — 진짜 카드 밖이면 그 뒤에 목록에 나온다(F2). 5초에 한 번까지.
-  if (gate.fresh > 0 && Date.now() - freshRebuildAt > 5000) {
-    freshRebuildAt = Date.now()
-    scheduleTree()
-  }
+  // 골격보다 새 workspace 가 있으면 골격을 한 번 다시 세운다 — 진짜 카드 밖이면 그 뒤에 목록에 나온다(F2). 같은 in-flight 규칙(P1).
+  if (gate.fresh > 0 && !treeScheduled && rebuildRetry.due('fresh')) scheduleTree()
   return gate.rows
 }
 
@@ -632,7 +627,7 @@ function noteWorkspaces(): void {
  * 카드 귀속을 **그 자리에서** 다시 읽는다 (LIFE-628 F2 — 닫기 직전 권위 재확인). 메모리 골격이 아니라 등록 레포마다 herdr `worktree.list`
  * (`openWorktreeRow` 가 중복 생성을 막을 때 읽는 것과 같은 권위)의 열린 workspace 전부. 한 레포라도 읽기에 실패하면 null — 닫지 않는다.
  */
-function claimedWorkspaceIdsNow(socketPath: string): Promise<Set<string> | null> {
+function claimedWorkspaceIdsNow(socketPath: string): Promise<Map<string, string[]> | null> {
   return readClaimedWorkspaceIds({ roots: registry?.list() ?? [], read: (root) => readOpenWorkspaces(socketPath, root), log })
 }
 
@@ -689,11 +684,20 @@ async function rebuildTree(): Promise<void> {
   const startedAt = Date.now()
   const generation = ++treeGeneration
   const socketPath = currentSocketPath()
-  const built = await buildSkeleton({ roots: registry?.list() ?? [], socketPath })
+  rebuildRetry.started()
+  let built: RepoSkeleton[]
+  try {
+    built = await buildSkeleton({ roots: registry?.list() ?? [], socketPath })
+  } catch (error) {
+    rebuildRetry.finished(null)
+    throw error
+  }
   if (generation !== treeGeneration) {
+    rebuildRetry.finished(null)
     log('tree.stale', { generation, current: treeGeneration, ms: Date.now() - startedAt })
     return
   }
+  rebuildRetry.finished(skeletonHealth(built))
   skeleton = built
   skeletonSocket = socketPath
   skeletonStartedAt = startedAt
@@ -2533,6 +2537,7 @@ app.whenReady().then(async () => {
       withRetentionSuppressed({ store: link.store, ids: [paneId], what: 'pane', run: hooks => closePane({ socketPath, paneId, onSent: hooks.onSent }) }),
     cardlessWorkspaces: cardlessNow,
     claimedWorkspaceIds: claimedWorkspaceIdsNow,
+    cardlessBlockedReason: () => rebuildRetry.permanentReason(),
     // LIFE-628 — 카드 밖 workspace 닫기. 카드 메뉴 닫기(`closeWorktreeByWorkspace`)와 같은 `workspace.close` 길·완료 행 억제.
     closeWorkspace: async ({ socketPath, workspaceId }) => {
       const outcome = await withRetentionSuppressed({ store: link.store, ids: [workspaceId], what: 'workspace', run: hooks => closeWorkspace(socketPath, workspaceId, hooks) })

@@ -51,8 +51,13 @@ export type ResourceIpcDeps = {
   closePane: (input: { socketPath: string; paneId: string }) => Promise<PaneCloseOutcome>
   /** 카드 밖 workspace(LIFE-628, `tree.ts cardlessWorkspaces`). null = 지금은 가릴 수 없다(링크·골격 미준비). */
   cardlessWorkspaces: () => WorkspaceRow[] | null
-  /** 카드 귀속을 그 자리에서 다시 읽은 workspace id(LIFE-628 F2 — 등록 레포마다 herdr `worktree.list`). 한 레포라도 실패면 null. */
-  claimedWorkspaceIds: (socketPath: string) => Promise<ReadonlySet<string> | null>
+  /** 카드 밖 판정이 재시도로 안 풀리는 원인으로 보류일 때 그 사유(LIFE-628 P1). */
+  cardlessBlockedReason: () => string | null
+  /**
+   * 카드 귀속을 그 자리에서 다시 읽은 workspace id → 귀속시킨 경로들(LIFE-628 F2·P2 — 등록 레포마다 herdr `worktree.list`).
+   * 한 레포라도 실패면 null.
+   */
+  claimedWorkspaceIds: (socketPath: string) => Promise<ReadonlyMap<string, readonly string[]> | null>
   /** 기존 workspace 닫기(`closeWorkspace` — 카드 메뉴 닫기와 같은 길, 완료 행 되살림 억제 포함). */
   closeWorkspace: (input: { socketPath: string; workspaceId: string }) => Promise<CloseTabOutcome>
   confirmRunning: () => boolean
@@ -169,8 +174,8 @@ export function shellProbeOf(probe: Pick<ForegroundRead, 'shellPid' | 'missing'>
 /** 경로 한 개를 확인한 값 — `exists: null` = 확인 불가(G1), `real` = 있으면 실경로(G6 — HOME 비교용). */
 export type PathCheck = { exists: boolean | null; real: string | null }
 
-/** 경로 판정 창구 — 캐시만 읽는다(값 없으면 null). */
-export type PathOracle = { isDirectory: (path: string) => boolean | null; realPath: (path: string) => string | null }
+/** 경로 판정 창구 — 캐시만 읽는다(값 없으면 null). `checked` = 한 번이라도 확인을 마쳤는가(P3 — 첫 틱 구분). */
+export type PathOracle = { isDirectory: (path: string) => boolean | null; realPath: (path: string) => string | null; checked: (path: string) => boolean }
 
 /**
  * 경로 존재 캐시 (LIFE-628 F7 — main 동기 stat 을 걷는다). 캐시만 읽고 낡았으면 비동기 확인을 건다.
@@ -194,6 +199,7 @@ export function createDirectoryCache(input: { ttlMs: number; now: () => number; 
   return {
     isDirectory: (target) => entryOf(target).value.exists,
     realPath: (target) => entryOf(target).value.real,
+    checked: (target) => entryOf(target).checkedAt !== -Infinity,
   }
 }
 
@@ -233,7 +239,7 @@ export function orphanSources(input: { workspaces: readonly WorkspaceRow[]; home
     const cwds = [...new Set(panes.flatMap((pane) => (pane.cwd === null ? [] : [pane.cwd])))]
     const agents = [...new Set(panes.flatMap((pane) => (pane.agent === null ? [] : [pane.agent])))]
     const stoppedAgents = [...new Set(panes.flatMap((pane) => (pane.agent === null && pane.agentSession !== null ? [pane.agentSession.agent] : [])))].filter((agent) => !agents.includes(agent))
-    const paths = cwds.map((cwd) => ({ path: cwd, exists: input.paths.isDirectory(cwd) }))
+    const paths = cwds.map((cwd) => (input.paths.checked(cwd) ? { path: cwd, exists: input.paths.isDirectory(cwd) } : { path: cwd, exists: input.paths.isDirectory(cwd), pending: true }))
     return {
       workspaceId: workspace.workspaceId,
       label: workspace.label,
@@ -272,6 +278,7 @@ export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void }
       const workspaces = deps.cardlessWorkspaces()
       return workspaces === null ? null : orphanSources({ workspaces, homes: homesOf(deps.state().home), paths: directories })
     },
+    orphansReason: deps.cardlessBlockedReason,
     probeShellPid: async (paneId): Promise<ShellProbe> => {
       const socketPath = deps.socketPath()
       return socketPath === null ? { kind: 'unknown' } : deps.shellPidOf({ socketPath, paneId })
@@ -401,11 +408,14 @@ export async function closeOrphanWorkspaces(input: { deps: ResourceIpcDeps; work
   let claimed = claimedAtStart
   // 닫지 않은 사유(G2) — 판정할 때마다 마지막 사유로 덮는다. 끝에 닫힌 것은 뺀다.
   const skips = new Map<string, ResourceOrphanSkip['reason']>()
+  // 귀속 사유(P2) — 귀속 경로가 모두 「없음」 으로 확인되면 잠김·정리 대기, 아니면 카드에 붙음. 닫지 않는 것은 둘 다 같다.
+  const claimReason = (workspaceId: string): ResourceOrphanSkip['reason'] =>
+    (claimed.get(workspaceId) ?? []).every((target) => input.paths.isDirectory(target) === false) ? 'stale-claim' : 'claimed'
   const inScope = (workspace: WorkspaceRow): boolean =>
     !input.bulk || orphanSources({ workspaces: [workspace], homes: homesOf(deps.state().home), paths: input.paths })[0]?.ownerless === true
   const panesOf = (workspaceId: string): string[] | null => {
     if (claimed.has(workspaceId)) {
-      skips.set(workspaceId, 'claimed')
+      skips.set(workspaceId, claimReason(workspaceId))
       return null
     }
     const workspace = deps.cardlessWorkspaces()?.find((row) => row.workspaceId === workspaceId)
@@ -436,8 +446,9 @@ export async function closeOrphanWorkspaces(input: { deps: ResourceIpcDeps; work
         if (fresh === null) return { outcome: 'error', error: '카드 귀속을 다시 읽지 못해 멈췄다' }
         claimed = fresh
         if (claimed.has(workspaceId)) {
-          skips.set(workspaceId, 'claimed')
-          deps.log('resource.close_orphan_skipped', { workspaceId, reason: 'claimed' })
+          const reason = claimReason(workspaceId)
+          skips.set(workspaceId, reason)
+          deps.log('resource.close_orphan_skipped', { workspaceId, reason })
           return { outcome: 'skipped' }
         }
         return { outcome: 'ready' }

@@ -90,8 +90,9 @@ export type ResourceOrphanRow = {
   /**
    * pane 들의 cwd(중복 제거, 처음 본 순서). `exists` = 지금 디스크에 있는 디렉터리인가(S3 — 지워진 원래 경로를 가린다).
    * `null` = 확인 불가(권한 거부 등 ENOENT·ENOTDIR 밖의 stat 오류, 또는 아직 확인 전 — LIFE-628 G1). 「없음」 으로 읽지 않는다.
+   * `pending` = 아직 확인 전(첫 틱 — 비동기 stat 대기, P3). 화면은 이때 「확인 불가」 를 보이지 않는다.
    */
-  paths: { path: string; exists: boolean | null }[]
+  paths: { path: string; exists: boolean | null; pending?: boolean }[]
   /** 주인 없음(F3) — 경로가 하나 이상이고 모두 사라졌거나 HOME. 「모두 닫기」 대상은 이 줄들뿐이다. */
   ownerless: boolean
   /** herdr 가 감지한 에이전트 이름(중복 제거). */
@@ -147,6 +148,8 @@ export type ResourceSnapshot = {
   panes: ResourcePaneRow[]
   /** 카드 밖 workspace(LIFE-628). null = 지금은 가릴 수 없다(링크 재접속 중·트리 미구성·레포 열림상태 읽기 실패) — 빈 목록과 다르다. */
   orphans: ResourceOrphanRow[] | null
+  /** `orphans` 가 null 인 까닭이 재시도로 안 풀리는 것일 때 그 사유(LIFE-628 P1 — 사라진 등록 루트 등). 없으면 일반 「가릴 수 없다」. */
+  orphansReason?: string | null
   host: ResourceHost
   stats: ResourceStats
 }
@@ -175,9 +178,10 @@ export type ResourceCloseResult = CloseTabsResult | { outcome: 'route-changed'; 
 export type ResourceOrphanCloseResult = CloseTabsResult & {
   /**
    * 요청했지만 닫지 않은 workspace 와 그 사유(LIFE-628 G2) — `claimed` = 다시 읽은 herdr 목록에서 카드에 붙어 있음,
-   * `gone` = 이미 없음(닫혔거나 카드 밖 목록에서 빠짐), `not-ownerless` = 「모두 닫기」 인데 주인 없는 줄이 아님.
+   * `gone` = 이미 없음(닫혔거나 카드 밖 목록에서 빠짐), `not-ownerless` = 「모두 닫기」 인데 주인 없는 줄이 아님,
+   * `stale-claim` = herdr 는 귀속으로 보지만 그 경로가 디스크에 없다(잠긴 worktree 를 지운 경우 등 — `git worktree unlock`/`prune` 필요, P2).
    */
   skipped?: ResourceOrphanSkip[]
 }
 
-export type ResourceOrphanSkip = { workspaceId: string; reason: 'claimed' | 'gone' | 'not-ownerless' }
+export type ResourceOrphanSkip = { workspaceId: string; reason: 'claimed' | 'stale-claim' | 'gone' | 'not-ownerless' }

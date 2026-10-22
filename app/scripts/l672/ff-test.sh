@@ -4,12 +4,14 @@
 # 임시 레포 = bare origin + clone(main 이 origin 보다 1커밋 뒤). lock 쥐개 = clone 의 .git/index.lock 을 O_EXCL 로 만들어 열어 둔 python —
 # 놓을 때(시간이 됐거나 SIGTERM) lock 이 자기가 만든 그대로인지(inode·mtime) 기록한다.
 # release-ff.sh 는 git shim 을 거쳐 돈다 — shim 은 argv 를 기록하고(스크립트 자신의 status 에 --no-optional-locks 가 있는지 본다),
-# 케이스에 따라 첫 merge 직전 lock 생성(TOCTOU)·「Unable to write index.」 주입·상한 뒤 마지막 시도만 통과를 흉내 낸다.
+# 케이스에 따라 첫 merge 직전 lock 생성(TOCTOU)·「Unable to write index.」 주입(실제 ff 경로 문구가 아닌 방어용 주입)·실제 ff 경로 문구
+# 「unable to write new index file」·상한 뒤 마지막 시도만 통과·merge-base/rev-parse/rev-list 실패·merge 실패 사이 원격 갈라짐을 흉내 낸다.
 # e2e = 실제 scripts/release.sh 를 가짜 gh 로 임시 레포에서 끝까지 돌린다(4단계 lock 실패 → 경고 뒤 5·6단계·「✔ 출고」).
-# 판정 회차는 직렬로 돌린다(쥐개 2초 케이스가 부하에 민감하다).
+# **판정 회차는 직렬로 돌린다** — 한 번에 이 스크립트 하나, 다른 무거운 작업과 겹치지 않게(쥐개 2초·30초 상한 케이스가 부하에 민감하다).
+# 임시 폴더는 TMPDIR 과 무관하게 /tmp/l672ff.XXXXXX(짧은 고정 접두) — 문구의 경로 길이가 환경마다 달라지지 않게.
 set -uo pipefail
 
-ALL="r1a r1-toctou r1-unable r1-final r2a r2b r2-vanish r2-lsoferr r3a r3a-lock r3-ahead r3b r3-noref r3d-dirty r3d-branch r3e r3-reflock r-gitdir e2e"
+ALL="r1a r1-toctou r1-unable-injected r1-final r1-caughtup r1-caughtup-clean r2a r2b r2-vanish r2-lsoferr r2-lsofstderr r2-noindex r3a r3a-lock r3-ahead r3b r3-noref r3d-dirty r3d-branch r3e r3-reflock r3-newindex r3-postdiverge r8-mergebase r8-revparse r8-revlist r-gitdir r-gitindex e2e e2e-ff e2e-dirty"
 OUT="${1:?원자료 폴더}"; shift
 CASES="${*:-$ALL}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -17,7 +19,7 @@ FF="$ROOT/scripts/release-ff.sh"
 REAL_GIT="$(command -v git)"
 mkdir -p "$OUT" "${TMPDIR:-/tmp}" || exit 1
 OUT="$(cd "$OUT" && pwd)"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/l672ff.XXXXXX")" || { echo "mktemp 실패 — TMPDIR=${TMPDIR:-} 확인" >&2; exit 1; }
+WORK="$(mktemp -d /tmp/l672ff.XXXXXX)" || { echo "mktemp 실패 — /tmp 확인" >&2; exit 1; }
 HOLDER=""
 cleanup() {
   [ -n "$HOLDER" ] && kill "$HOLDER" 2>/dev/null
@@ -37,6 +39,15 @@ cat > "$SHIM/git" <<EOF
 #!/bin/bash
 # git shim — argv 기록 + SHIM_MODE 주입
 echo "\$*" >> "\$SHIM_LOG"
+case "\${SHIM_MODE:-}" in
+  mbfail) # merge-base 만 git 오류(128)
+    case " \$* " in *" merge-base "*) echo "fatal: 흉내 merge-base 오류" >&2; exit 128 ;; esac ;;
+  rpfail) # merge-base 가 한 번 불린 뒤부터 rev-parse 는 전부 실패
+    case " \$* " in *" merge-base "*) touch "\$SHIM_STATE/mb" ;; esac
+    case " \$* " in *" rev-parse "*) if [ -e "\$SHIM_STATE/mb" ]; then echo "fatal: 흉내 rev-parse 오류" >&2; exit 128; fi ;; esac ;;
+  rlfail) # rev-list 는 전부 실패
+    case " \$* " in *" rev-list "*) echo "fatal: 흉내 rev-list 오류" >&2; exit 128 ;; esac ;;
+esac
 case " \$* " in *" merge "*)
   n=\$(( \$(cat "\$SHIM_STATE/merges" 2>/dev/null || echo 0) + 1 )); echo \$n > "\$SHIM_STATE/merges"
   case "\${SHIM_MODE:-}" in
@@ -48,13 +59,23 @@ case " \$* " in *" merge "*)
       fi ;;
     unable) # 첫 merge 만 index 를 못 썼다고 실패(lock 파일 없음)
       if [ \$n = 1 ]; then echo "error: Unable to write index." >&2; exit 128; fi ;;
+    always) # 모든 merge 가 lock 파일 없이 index 를 못 썼다고 실패 — 상한까지 간다
+      echo "error: Unable to write index." >&2; exit 128 ;;
+    newindex) # 실제 git 2.50.1 ff 경로의 index 쓰기 실패 문구 — 재시도하지 않아야 한다
+      echo "error: unable to write new index file" >&2; exit 1 ;;
+    postdiverge) # 첫 merge 가 실패하는 사이 원격이 갈라진다(origin/main 을 무관한 커밋으로 옮김)
+      if [ \$n = 1 ]; then
+        t=\$("$REAL_GIT" rev-parse "HEAD^{tree}"); c=\$(echo x | "$REAL_GIT" -c user.name=t -c user.email=t@t commit-tree "\$t")
+        "$REAL_GIT" update-ref refs/remotes/origin/main "\$c"
+        echo "error: 흉내 merge 실패" >&2; exit 1
+      fi ;;
     final) # 바로 앞에 sleep 이 있었던 merge(대기 루프 안)는 전부 실패 — sleep 없이 이어진 merge(상한 뒤 마지막 시도)만 통과
       if [ \$n = 1 ] || [ -e "\$SHIM_STATE/slept" ]; then rm -f "\$SHIM_STATE/slept"; echo "error: Unable to write index." >&2; exit 128; fi ;;
   esac ;;
 esac
 exec "$REAL_GIT" "\$@"
 EOF
-mkdir -p "$WORK/shim-final" "$WORK/shim-vanish" "$WORK/shim-lsoferr"
+mkdir -p "$WORK/shim-final" "$WORK/shim-vanish" "$WORK/shim-lsoferr" "$WORK/shim-lsofstderr"
 cat > "$WORK/shim-final/sleep" <<'EOF'
 #!/bin/bash
 touch "$SHIM_STATE/slept"; exec /bin/sleep 0.01
@@ -68,6 +89,11 @@ EOF
 cat > "$WORK/shim-lsoferr/lsof" <<'EOF'
 #!/bin/bash
 echo "lsof: 흉내 낸 오류" >&2; exit 2
+EOF
+cat > "$WORK/shim-lsofstderr/lsof" <<'EOF'
+#!/bin/bash
+# 종료코드는 「일치 없음」 과 같은 1 이지만 stderr 에 오류가 있다(없는 경로·잘못된 옵션 등)
+echo "lsof: status error on 흉내: No such file or directory" >&2; exit 1
 EOF
 HOLD_PY="$WORK/hold.py"
 cat > "$HOLD_PY" <<'EOF'
@@ -93,7 +119,7 @@ signal.signal(signal.SIGTERM, release)
 time.sleep(secs)
 release()
 EOF
-chmod +x "$SHIM/git" "$WORK/shim-final/sleep" "$WORK/shim-vanish/stat" "$WORK/shim-lsoferr/lsof"
+chmod +x "$SHIM/git" "$WORK/shim-final/sleep" "$WORK/shim-vanish/stat" "$WORK/shim-lsoferr/lsof" "$WORK/shim-lsofstderr/lsof"
 
 # mkrepo <이름> → $W/origin.git, $W/b (main 이 origin/main 보다 1커밋 뒤, origin/main 은 fetch 로 최신)
 mkrepo() {
@@ -199,7 +225,7 @@ for CASE in $CASES; do
       check "shim 쥐개의 lock 이 놓을 때까지 그대로(inode·mtime)" holder_intact
       check "스크립트의 status 는 전부 --no-optional-locks" status_suppressed
       ;;
-    r1-unable) # lock 파일 없이 git 이 「Unable to write index.」 로 실패 → lock 경합으로 보고 다시 시도
+    r1-unable-injected) # lock 파일 없이 git 이 「Unable to write index.」(주입 문구 — 실제 ff 경로 문구 아님)로 실패 → 다시 시도
       ff SHIM_MODE=unable
       check "exit 0" [ "$RC" = 0 ]
       check "ff 시도 2회" has "ff 시도 2회"
@@ -214,8 +240,34 @@ for CASE in $CASES; do
       check "대기 60회" has "index.lock 대기 60회"
       check "HEAD = origin/main" head_is_origin
       ;;
+    r1-caughtup|r1-caughtup-clean) # lock 대기 중 다른 git 작업이 HEAD 를 origin 으로 옮긴다(update-ref) — 우리가 ff 한 것이 아니다
+      # -clean: origin 의 새 커밋이 빈 커밋이라 작업 트리가 그대로 맞다 → 그새 최신 exit 0. 그 밖: 파일이 달라 미커밋으로 보인다 → exit 3
+      if [ "$CASE" = r1-caughtup-clean ]; then
+        g -C "$W/seed" commit -q --allow-empty -m empty; g -C "$W/seed" push -q origin main
+        g -C "$B" fetch -q origin; g -C "$B" reset -q --hard origin/main~1; BEFORE="$(git -C "$B" rev-parse HEAD)"
+      fi
+      : > "$LOCK"
+      BEFORE_LOCK="$(lockstat "$LOCK")"
+      (sleep 1.2; "$REAL_GIT" -C "$B" update-ref refs/heads/main refs/remotes/origin/main) &
+      SIDE=$!; echo "$CASE side pid $SIDE (1.2초 뒤 update-ref)" >> "$PIDS"
+      ff
+      wait "$SIDE" 2>/dev/null; echo "$CASE side pid $SIDE done" >> "$PIDS"
+      AFTER_LOCK="$(lockstat "$LOCK")"
+      check "HEAD = origin/main(다른 쪽이 옮김)" head_is_origin
+      check "「fast-forward →」 로 말하지 않는다" hasnt "fast-forward →"
+      check "ff 시도 0회" hasnt "ff 시도 1회"
+      check "lock 그대로($BEFORE_LOCK)" [ "$BEFORE_LOCK" = "$AFTER_LOCK" ]
+      if [ "$CASE" = r1-caughtup-clean ]; then
+        check "exit 0" [ "$RC" = 0 ]
+        check "그새 최신 문구" has "그새 최신(origin/main)이 됐다 — 이 스크립트는 ff 하지 않음"
+      else
+        check "exit 3" [ "$RC" = 3 ]
+        check "HEAD 만 옮겨졌을 수 있다 문구" has "HEAD 만 옮겨졌을 수 있다"
+      fi
+      ;;
     r2a) # 쥐개가 상한보다 오래(40초) 쥔다 → 30초(+2) 안에 포기, 쥐개 pid 가 문구에
       hold 40
+      HPID="$HOLDER"
       BEFORE_LOCK="$(lockstat "$LOCK")"
       ff
       AFTER_LOCK="$(lockstat "$LOCK")"
@@ -226,7 +278,7 @@ for CASE in $CASES; do
       check "lock 경로" has "lock: $(realpath_of "$LOCK")"
       check "나이(mtime 기준)" has "초(mtime 기준)"
       check "크기" has "크기 0바이트"
-      check "열고 있는 프로세스 = 쥐개 pid" grep -qE "열고 있는 프로세스: pid [0-9]+ .*hold\.py" "$LOG"
+      check "열고 있는 프로세스 = 쥐개 pid $HPID" has "열고 있는 프로세스: pid $HPID "
       check "잰 대기 횟수·경과 문구(대기 N회·30초 넘음, ff 시도 0회)" grep -qE "index.lock 대기 [1-9][0-9]회·3[0-9]초, ff 시도 0회" "$LOG"
       check "지우지 않는다 문구" has "스크립트는 lock 을 지우지 않는다"
       check "갈라졌다 문구 없음" hasnt "갈라졌다"
@@ -243,7 +295,7 @@ for CASE in $CASES; do
       check "exit 2" [ "$RC" = 2 ]
       check "30초 이상" ge "$ELAPSED" 30
       check "32초 미만" lt "$ELAPSED" 32
-      check "열고 있는 프로세스: 없음" has "열고 있는 프로세스: 없음"
+      check "열고 있는 프로세스: 없음(계정 한정 문구)" has "열고 있는 프로세스: 없음(이 계정에서 보이는 프로세스 중)"
       check "나이 2시간 근처(7200초대)" grep -qE '나이 72[0-9][0-9]초' "$LOG"
       check "지우지 않는다 문구" has "스크립트는 lock 을 지우지 않는다"
       check "lock 그대로(inode·mtime·크기 $BEFORE_LOCK)" [ "$BEFORE_LOCK" = "$AFTER_LOCK" ]
@@ -265,9 +317,29 @@ for CASE in $CASES; do
       ff
       AFTER_LOCK="$(lockstat "$LOCK")"
       check "exit 2" [ "$RC" = 2 ]
-      check "확인 불가(lsof 종료코드 2)" has "열고 있는 프로세스: 확인 불가(lsof 종료코드 2)"
+      check "확인 불가(lsof 종료코드 2 · stderr)" has "열고 있는 프로세스: 확인 불가(lsof 종료코드 2 · lsof: 흉내 낸 오류)"
       check "「없음」 이 아니다" hasnt "열고 있는 프로세스: 없음"
       check "lock 그대로(inode·mtime·크기 $BEFORE_LOCK)" [ "$BEFORE_LOCK" = "$AFTER_LOCK" ]
+      ;;
+    r2-lsofstderr) # lsof 종료코드는 1(일치 없음과 같음)이지만 stderr 에 오류 → 「없음」 이 아니라 확인 불가
+      : > "$LOCK"
+      BEFORE_LOCK="$(lockstat "$LOCK")"
+      XPATH="$WORK/shim-lsofstderr"
+      ff
+      AFTER_LOCK="$(lockstat "$LOCK")"
+      check "exit 2" [ "$RC" = 2 ]
+      check "확인 불가(lsof 종료코드 1 · stderr)" has "열고 있는 프로세스: 확인 불가(lsof 종료코드 1 · lsof: status error"
+      check "「없음」 이 아니다" hasnt "열고 있는 프로세스: 없음"
+      check "lock 그대로(inode·mtime·크기 $BEFORE_LOCK)" [ "$BEFORE_LOCK" = "$AFTER_LOCK" ]
+      ;;
+    r2-noindex) # lock 파일은 없는데 모든 merge 가 index 를 못 썼다고 실패 → 상한 뒤 마지막 시도도 실패 → exit 2(성공으로 끝나면 안 된다)
+      XPATH="$WORK/shim-final"
+      ff SHIM_MODE=always
+      check "exit 2" [ "$RC" = 2 ]
+      check "lock 없이 index 를 못 썼다는 문구" has "기다리는 동안 index 를 쓰지 못했다"
+      check "지금은 lock 없음" has "지금은 lock 없음"
+      check "git 첫 줄" has "git: error: Unable to write index."
+      check "HEAD 불변" head_unchanged
       ;;
     r3a|r3a-lock) # 로컬 2커밋 · origin 1커밋 → 갈라짐(앞섬 2·뒤짐 1), 기다리지 않는다. -lock 은 0바이트 lock 까지 남겨 둔 채
       diverge
@@ -289,6 +361,7 @@ for CASE in $CASES; do
       ff
       check "exit 7" [ "$RC" = 7 ]
       check "앞섬 문구" has "1커밋 앞섬 — origin 에 없는 로컬 커밋이다"
+      check "기다리지 않았다(2초 미만)" lt "$ELAPSED" 2
       check "갈라졌다 문구 없음" hasnt "갈라졌다"
       check "HEAD 불변" head_unchanged
       ;;
@@ -345,6 +418,54 @@ for CASE in $CASES; do
       check "ref lock 이 실제로 있었다(양성 대조)" [ "$BEFORE_LOCK" != "없음" ]
       check "HEAD 불변" head_unchanged
       ;;
+    r3-newindex) # 실제 ff 경로 문구 「unable to write new index file」 — 작업 트리가 이미 바뀐 뒤라 재시도하지 않고 exit 6
+      ff SHIM_MODE=newindex
+      check "exit 6" [ "$RC" = 6 ]
+      check "재시도하지 않았다(대기 문구 없음)" hasnt "기다린다"
+      check "git 첫 줄" has "git: error: unable to write new index file"
+      check "merge 는 1번만" [ "$(cat "$W/state/merges")" = 1 ]
+      ;;
+    r3-postdiverge) # 첫 확인 때는 뒤짐이었는데 merge 가 실패하는 사이 원격이 갈라졌다 → 두 번째 조상 확인이 갈라짐으로 말한다
+      ff SHIM_MODE=postdiverge
+      check "exit 5" [ "$RC" = 5 ]
+      check "갈라졌다 + 앞섬 1·뒤짐 1" has "로컬만 있는 커밋 1개(앞섬) · origin 만 있는 커밋 1개(뒤짐)"
+      check "exit 6 문구 없음" hasnt "index lock·갈라짐 아님"
+      check "HEAD 불변" head_unchanged
+      ;;
+    r8-mergebase) # merge-base 만 git 오류 → exit 8
+      ff SHIM_MODE=mbfail
+      check "exit 8" [ "$RC" = 8 ]
+      check "merge-base 오류 문구" has "git merge-base 가 종료코드 128 로 실패해 원인을 가리지 못했다"
+      check "HEAD 불변" head_unchanged
+      ;;
+    r8-revparse) # 대기 중 rev-parse 가 실패 → 빈 값 비교로 성공하지 않고 exit 8 (lock 을 두어 루프를 한 번 돌게)
+      : > "$LOCK"
+      BEFORE_LOCK="$(lockstat "$LOCK")"
+      ff SHIM_MODE=rpfail
+      AFTER_LOCK="$(lockstat "$LOCK")"
+      check "exit 8" [ "$RC" = 8 ]
+      check "git 조회 오류 문구(rev-parse)" has "git 조회가 실패해 상태를 가리지 못했다(git rev-parse HEAD)"
+      check "거짓 성공 문구 없음" hasnt "fast-forward →"
+      check "HEAD 불변" head_unchanged
+      check "lock 그대로($BEFORE_LOCK)" [ "$BEFORE_LOCK" = "$AFTER_LOCK" ]
+      ;;
+    r8-revlist) # 갈라진 레포에서 rev-list 가 실패 → 빈 개수의 「갈라졌다」 가 아니라 exit 8
+      diverge
+      ff SHIM_MODE=rlfail
+      check "exit 8" [ "$RC" = 8 ]
+      check "git 조회 오류 문구(rev-list)" has "git 조회가 실패해 상태를 가리지 못했다(git rev-list"
+      check "갈라졌다 문구 없음" hasnt "갈라졌다"
+      check "HEAD 불변" head_unchanged
+      ;;
+    r-gitindex) # 바깥 GIT_INDEX_FILE·GIT_COMMON_DIR 이 다른 곳을 가리켜도 --repo 의 index·레포로 ff 한다
+      O="$W/other"; g clone -q "$W/origin.git" "$O"; g -C "$O" reset -q --hard HEAD~1
+      OTHER_BEFORE="$(git -C "$O" rev-parse HEAD)"
+      ff GIT_INDEX_FILE="$W/없는/index" GIT_COMMON_DIR="$O/.git"
+      check "exit 0" [ "$RC" = 0 ]
+      check "--repo 가 ff 됐다(HEAD = origin/main)" head_is_origin
+      check "미커밋으로 오판하지 않았다" hasnt "미커밋"
+      check "다른 레포는 그대로" [ "$(git -C "$O" rev-parse HEAD)" = "$OTHER_BEFORE" ]
+      ;;
     r-gitdir) # 바깥 GIT_DIR·GIT_WORK_TREE 가 다른 레포를 가리켜도 --repo 를 ff 한다
       O="$W/other"; g clone -q "$W/origin.git" "$O"; g -C "$O" reset -q --hard HEAD~1
       OTHER_BEFORE="$(git -C "$O" rev-parse HEAD)"
@@ -353,7 +474,8 @@ for CASE in $CASES; do
       check "--repo 가 ff 됐다(HEAD = origin/main)" head_is_origin
       check "다른 레포는 그대로" [ "$(git -C "$O" rev-parse HEAD)" = "$OTHER_BEFORE" ]
       ;;
-    e2e) # 실제 release.sh 를 끝까지 — 4단계 lock 실패가 경고로 남고 5·6단계로 간다(R2ⓒ·R4ⓑ)
+    e2e|e2e-ff|e2e-dirty) # 실제 release.sh 를 끝까지 — e2e: 4단계 lock 실패가 경고로 남고 5·6단계로(R2ⓒ·R4ⓑ) ·
+      # e2e-ff: lock 없이 4단계 ff 성공 뒤 5단계로 · e2e-dirty: 본체 미커밋(exit 3)은 ⚠ 경고 없이 스크립트 문구만
       g -C "$B" merge -q --ff-only origin/main  # 스크립트 커밋을 올린 뒤 release.sh 의 버전 커밋이 본체를 1커밋 뒤로 만든다
       mkdir -p "$B/scripts" "$B/app"
       cp "$ROOT/scripts/release.sh" "$ROOT/scripts/release-ff.sh" "$B/scripts/"
@@ -379,21 +501,33 @@ GH
       echo "노트" > "$W/notes.md"
       check "release-ff.sh 사본 = 레포 원본(sha1 $(shasum < "$FF" | cut -c1-12))" [ "$(shasum < "$FF")" = "$(shasum < "$B/scripts/release-ff.sh")" ]
       check "release.sh 사본 = 레포 원본(sha1 $(shasum < "$ROOT/scripts/release.sh" | cut -c1-12))" [ "$(shasum < "$ROOT/scripts/release.sh")" = "$(shasum < "$B/scripts/release.sh")" ]
-      hold 45
+      [ "$CASE" = e2e ] && hold 45
+      [ "$CASE" = e2e-dirty ] && echo stray > "$B/stray.txt"
       run env PATH="$W/bin:$PATH" bash -c 'command -v gh; exec "$0" "$@"' "$B/scripts/release.sh" --prs 1 --notes "$W/notes.md" --skip-build --skip-apk
       stopholder
-      cp "$W/bin/gh-calls.txt" "$OUT/e2e-gh-calls.txt" 2>/dev/null
+      cp "$W/bin/gh-calls.txt" "$OUT/$CASE-gh-calls.txt" 2>/dev/null
       check "가짜 gh 를 썼다" has "$W/bin/gh"
       check "exit 0(출고 계속)" [ "$RC" = 0 ]
       check "버전 커밋·태그 push(3단계)" has "태그 v0.0.2 push"
-      check "4단계 lock 문구(잰 대기 횟수·경과)" grep -qE "index.lock 이 풀리지 않았다\(index.lock 대기 [1-9][0-9]회·3[0-9]초" "$LOG"
-      check "4단계 경고(release.sh 호출부)" has "fast-forward 하지 않았다(위 원인) — 출고(원격)는 끝났다"
+      case "$CASE" in
+        e2e)
+          check "4단계 lock 문구(잰 대기 횟수·경과)" grep -qE "index.lock 이 풀리지 않았다\(index.lock 대기 [1-9][0-9]회·3[0-9]초" "$LOG"
+          check "4단계 경고(release.sh 호출부)" has "fast-forward 하지 않았다(위 원인) — 출고(원격)는 끝났다"
+          check "본체 HEAD 불변(ff 안 됨)" head_unchanged
+          check "쥐개의 lock 이 놓을 때까지 그대로(inode·mtime)" holder_intact ;;
+        e2e-ff)
+          check "4단계 ff 성공 문구" has "본체 브랜치 main fast-forward → v0.0.2"
+          check "4단계 경고 없음" hasnt "fast-forward 하지 않았다"
+          check "본체 HEAD = origin/main(ff 됨)" head_is_origin ;;
+        e2e-dirty)
+          check "4단계 미커밋 문구(스크립트)" has "미커밋 변경 1건 — fast-forward 하지 않음"
+          check "release.sh 호출부 ⚠ 경고 없음(exit 3)" hasnt "fast-forward 하지 않았다(위 원인)"
+          check "본체 HEAD 불변" head_unchanged ;;
+      esac
       check "5단계로 갔다(--skip-build)" has "--skip-build — dmg 는 나중에"
       check "6단계로 갔다(--skip-apk)" has "--skip-apk — APK 는 나중에"
       check "끝 문구 ✔ 출고 v0.0.2" has "✔ 출고 v0.0.2"
       check "갈라졌다 문구 없음" hasnt "갈라졌다"
-      check "본체 HEAD 불변(ff 안 됨)" head_unchanged
-      check "쥐개의 lock 이 놓을 때까지 그대로(inode·mtime)" holder_intact
       ;;
     *) echo "모르는 케이스 $CASE" >&2; exit 64 ;;
   esac

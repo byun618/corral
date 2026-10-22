@@ -277,10 +277,13 @@ gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$NOTES" $REL_
 note "GitHub Release $TAG ($(gh release view "$TAG" --json url --jq .url))"
 
 # 4. 본체 checkout 이 base 이고 깨끗하면 fast-forward — release-ff.sh(LIFE-672: index.lock 대기·원인별 문구, lock 은 지우지 않음).
-#    실패해도 경고만 — 출고(원격)는 끝났고 5단계로 간다
+#    실패해도 경고만 — 출고(원격)는 끝났고 5단계로 간다. 3(다른 브랜치·미커밋)·7(앞섬)은 의도한 상태일 수 있어 스크립트 문구만
 if [ -x "$SCRIPT_DIR/release-ff.sh" ]; then
-  "$SCRIPT_DIR/release-ff.sh" --repo "$REPO" --base "$BASE" --tag "$TAG" \
-    || note "⚠ 본체 $BASE 는 fast-forward 하지 않았다(위 원인) — 출고(원격)는 끝났다. 본체를 손으로 맞춘다"
+  FF_RC=0; "$SCRIPT_DIR/release-ff.sh" --repo "$REPO" --base "$BASE" --tag "$TAG" || FF_RC=$?
+  case "$FF_RC" in
+    0|3|7) ;;
+    *) note "⚠ 본체 $BASE 는 fast-forward 하지 않았다(위 원인) — 출고(원격)는 끝났다. 본체를 손으로 맞춘다" ;;
+  esac
 else
   note "⚠ scripts/release-ff.sh 가 없어 본체 $BASE fast-forward 를 건너뜀 — 출고(원격)는 끝났다. 본체를 손으로 맞춘다"
 fi

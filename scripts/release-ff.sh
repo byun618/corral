@@ -8,12 +8,14 @@
 # 재시도는 lock 때문일 때만 한다 — 갈라짐·앞섬·로컬 변경·fetch 실패는 바로 원인을 말하고 끝낸다.
 # 원인은 git 문구 접두(error:/fatal:)가 아니라 lock 파일 존재·조상 관계(merge-base --is-ancestor)로 가린다.
 # **lock 은 지우지 않는다** — 경로·나이·크기·열고 있는 프로세스만 보여 주고 사람이 판단한다(남의 git 작업을 깨지 않게).
+# git 값은 변수로 먼저 받고 실패하면 exit 8 로 끝낸다 — 함수가 if·|| 안에서 불려 set -e 가 꺼져 있어도 빈 값으로 판정하지 않게.
 #
-# 종료코드: 0 ff 했거나 이미 최신 · 2 index.lock 이 끝내 안 풀림 · 3 base 가 아니거나 미커밋 · 4 fetch 실패(origin/<base> 없음 포함)
-#           5 갈라짐 · 6 그 밖의 ff 실패(ref lock 등, git 첫 줄을 보여 준다) · 7 로컬이 앞섬만(ff 할 것 없음) · 8 git 조회 오류 · 64 인자 오류
+# 종료코드: 0 ff 했거나 이미(그새) 최신 · 2 index.lock 이 끝내 안 풀림 · 3 base 가 아니거나 미커밋 · 4 fetch 실패(origin/<base> 없음 포함)
+#           5 갈라짐 · 6 그 밖의 ff 실패(ref lock·index 새로 쓰기 실패 등, git 첫 줄을 보여 준다) · 7 로컬이 앞섬만(ff 할 것 없음)
+#           8 git 조회 오류 · 64 인자 오류
 # 출력은 release.sh 의 note 와 같은 「· 」 줄이다.
 set -euo pipefail
-# --repo 가 이기게 — 바깥 git 환경변수가 다른 레포를 가리키면 그 레포를 ff 하게 된다
+# --repo 가 이기게 — 바깥 git 환경변수가 다른 레포·index 를 가리키면 그쪽을 보거나 ff 하게 된다
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 
 WAIT_TOTAL_S=30
@@ -37,13 +39,18 @@ cd "$REPO"
 TO="${TAG:-origin/$BASE}"
 WHO="본체 브랜치 $BASE"
 
-# 이 스크립트의 git status 는 optional lock 을 잡지 않는다 — 대기 중인 lock 경합을 스스로 만들지 않게
-CUR="$(git branch --show-current)"
+# 문구는 stderr 로 — 명령 치환 안에서 불려도 사라지지 않게
+git_fail() { note "⚠ $WHO fast-forward 못 함 — git 조회가 실패해 상태를 가리지 못했다(git $1)" >&2; exit 8; }
+
+# 미커밋 변경 줄 — 이 스크립트의 git status 는 optional lock 을 잡지 않는다(대기 중인 lock 경합을 스스로 만들지 않게)
+dirty_lines() { git --no-optional-locks status --porcelain || git_fail "status"; }
+
+CUR="$(git branch --show-current)" || git_fail "branch --show-current"
 if [ "$CUR" != "$BASE" ]; then
   note "본체 checkout 은 ${CUR:-(detached HEAD)} 브랜치 — 기준 브랜치($BASE)가 아니어서 fast-forward 하지 않음"
   exit 3
 fi
-DIRTY="$(git --no-optional-locks status --porcelain)"
+DIRTY="$(dirty_lines)" || exit 8
 if [ -n "$DIRTY" ]; then
   note "본체 checkout 에 미커밋 변경 $(echo "$DIRTY" | wc -l | tr -d ' ')건 — fast-forward 하지 않음(git status)"
   exit 3
@@ -59,7 +66,15 @@ if ! git rev-parse -q --verify "$REMOTE^{commit}" >/dev/null; then
   exit 4
 fi
 
-LOCK="$(git rev-parse --path-format=absolute --git-path index.lock)"
+LOCK="$(git rev-parse --path-format=absolute --git-path index.lock)" || git_fail "rev-parse --git-path index.lock"
+
+# same_as_remote → 0 HEAD = origin · 1 다름. git 실패는 exit 8
+same_as_remote() {
+  local head remote
+  head="$(git rev-parse HEAD)" || git_fail "rev-parse HEAD"
+  remote="$(git rev-parse "$REMOTE")" || git_fail "rev-parse $REMOTE"
+  [ "$head" = "$remote" ]
+}
 
 # is_ancestor <a> <b> → 0 조상 · 1 아님. git 오류(그 밖의 종료코드)는 원인 판별 불가로 끝낸다
 is_ancestor() {
@@ -74,8 +89,8 @@ is_ancestor() {
 # HEAD 가 origin 의 조상이 아니면(앞섬만 또는 갈라짐) 기다려도 안 풀린다 — 원인을 말하고 끝낸다
 not_behind_exit() {
   local ahead behind
-  ahead="$(git rev-list --count "$REMOTE..HEAD")"
-  behind="$(git rev-list --count "HEAD..$REMOTE")"
+  ahead="$(git rev-list --count "$REMOTE..HEAD")" || git_fail "rev-list $REMOTE..HEAD"
+  behind="$(git rev-list --count "HEAD..$REMOTE")" || git_fail "rev-list HEAD..$REMOTE"
   if [ "$behind" = 0 ]; then
     note "⚠ $WHO 이 origin/$BASE 브랜치보다 ${ahead}커밋 앞섬 — origin 에 없는 로컬 커밋이다. fast-forward 할 것 없음(git log origin/$BASE..$BASE)"
     exit 7
@@ -84,16 +99,20 @@ not_behind_exit() {
   exit 5
 }
 
-# 열고 있는 프로세스 — lsof 로 본다. lsof 종료코드 1 은 「일치 없음」, 그 밖의 실패는 확인 불가
+# 열고 있는 프로세스 — lsof 로 본다. 종료코드 1 + stderr 없음 = 「없음」(이 계정에서 보이는 프로세스 한정), 그 밖은 확인 불가
 lock_holders() {
-  local out rc=0 pid line=""
+  local res rc pids err pid line=""
   command -v lsof >/dev/null 2>&1 || { echo "확인 불가(lsof 없음)"; return; }
-  out="$(lsof -t -- "$LOCK" 2>/dev/null)" || rc=$?
-  if [ -z "$out" ]; then
-    if [ "$rc" = 1 ]; then echo "없음"; else echo "확인 불가(lsof 종료코드 $rc)"; fi
+  res="$(lsof -t -- "$LOCK" 2>&1; echo "rc=$?")"
+  rc="$(echo "$res" | sed -n 's/^rc=//p' | tail -1)"
+  pids="$(echo "$res" | grep -E '^[0-9]+$' || true)"
+  err="$(echo "$res" | grep -vE '^[0-9]+$|^rc=' || true)"
+  if [ -z "$pids" ]; then
+    if [ "$rc" = 1 ] && [ -z "$err" ]; then echo "없음(이 계정에서 보이는 프로세스 중)"
+    else echo "확인 불가(lsof 종료코드 $rc${err:+ · $(first_line "$err" | cut -c1-80)})"; fi
     return
   fi
-  for pid in $out; do
+  for pid in $pids; do
     line="$line${line:+ / }pid $pid $(ps -o command= -p "$pid" 2>/dev/null | tr '\n' ' ' | cut -c1-160)"
   done
   echo "$line"
@@ -115,22 +134,36 @@ lock_note() {
   note "  스크립트는 lock 을 지우지 않는다 — 다른 git 작업이 없는지 확인 후 사람이 지운다. 그 뒤: git -C '$REPO' merge --ff-only origin/$BASE"
 }
 
-# try_ff → 0 ff 됨(또는 그새 최신) · 1 lock 때문에 못 함(기다릴 것) · 원인이 따로 있으면 여기서 끝낸다
+# 대기 중 다른 git 작업이 HEAD 를 origin 으로 옮겼다 — 우리가 ff 한 것이 아니다. 작업 트리가 따라왔는지 다시 본다
+caught_up_exit() {
+  local dirty
+  dirty="$(dirty_lines)" || exit 8
+  if [ -n "$dirty" ]; then
+    note "⚠ $WHO 은 기다리는 동안 다른 git 작업으로 origin 과 같아졌지만 미커밋 변경 $(echo "$dirty" | wc -l | tr -d ' ')건이 보인다 — HEAD 만 옮겨졌을 수 있다(git status)"
+    exit 3
+  fi
+  note "$WHO 은 기다리는 동안 다른 git 작업으로 그새 최신($TO)이 됐다 — 이 스크립트는 ff 하지 않음($(waited))"
+  exit 0
+}
+
+# try_ff → 0 ff 됨 · 1 lock 때문에 못 함(기다릴 것) · 원인이 따로 있으면 여기서 끝낸다(그새 최신 포함)
 try_ff() {
-  if [ "$(git rev-parse HEAD)" = "$(git rev-parse "$REMOTE")" ]; then return 0; fi
+  if same_as_remote; then caught_up_exit; fi
   is_ancestor HEAD "$REMOTE" || not_behind_exit
   [ ! -e "$LOCK" ] || return 1
   TRIES=$((TRIES + 1))
   if LAST_ERR="$(git merge -q --ff-only "$REMOTE" 2>&1)"; then return 0; fi
-  # 실패 — lock 이 지금 있거나 git 이 index lock 을 못 잡았다고/index 를 못 썼다고 했으면 lock 경합으로 보고 기다린다
+  # 실패 — lock 이 지금 있거나 git 이 index lock 을 못 잡았다고 했으면 lock 경합으로 보고 기다린다.
+  # 'Unable to write index' 는 게이트 ⓪ 에서 넣은 방어(주입 시험 문구) — git 2.50.1 ff 경로의 실제 문구가 아니다.
+  # 실제 ff 경로 문구 'unable to write new index file' 은 작업 트리가 이미 바뀐 뒤라 재시도하지 않는다(exit 6)
   if [ -e "$LOCK" ] || echo "$LAST_ERR" | grep -qE 'index\.lock|Unable to write index'; then return 1; fi
   is_ancestor HEAD "$REMOTE" || not_behind_exit
-  note "⚠ $WHO fast-forward 실패(index lock·갈라짐 아님 — ref lock·로컬 변경 겹침 등) — git: $(first_line "$LAST_ERR")"
+  note "⚠ $WHO fast-forward 실패(index lock·갈라짐 아님 — ref lock·index 새로 쓰기 실패·로컬 변경 겹침 등) — git: $(first_line "$LAST_ERR")"
   exit 6
 }
 
 TRIES=0; STEPS=0; T0=$SECONDS; LAST_ERR=""
-if [ "$(git rev-parse HEAD)" = "$(git rev-parse "$REMOTE")" ]; then
+if same_as_remote; then
   note "$WHO 은 이미 최신($TO) — fast-forward 할 것 없음"
   exit 0
 fi

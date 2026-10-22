@@ -1,25 +1,42 @@
-// LIFE-690 최종 관문 G3·G4·G5 — 개발 실행 한 세션 안에서 기준선 렌더러 → 수정본 렌더러 순으로 회차를 돌리고 종료코드로 판정한다.
-// 0 = 모든 기대 걸음 통과, 1 = 하나라도 어긋남, 2 = rpc 실패·중단. 걸음별 판정은 <out>/checks.json, 회차별 링·화면·스크린샷은 <out>/<회차>.*.
-// 사용(app/ 에서, dev-up.sh 로 기준선 out 을 띄운 뒤): node scripts/l690/gate.mjs <ctl.sock> <out 폴더> <worktree> <수정본 renderer 폴더>
+// LIFE-690 최종 관문 G3·G4·G5 — 같은 herdr l690 서버 위에서 기준선 빌드 → (Electron 재기동) → 수정본 빌드 순으로 회차를 돌리고 종료코드로 판정한다.
+// 0 = 모든 기대 걸음 통과, 1 = 하나라도 어긋남, 2 = 무효·중단(rpc 실패, 번들 정체 불일치, 재기동 실패 등 — 판정 칸에 넣지 않는다).
+// 걸음별 판정은 <ROOT>/gate/checks.json, 회차별 링·화면·스크린샷은 <ROOT>/gate/<회차>.*, 보낸 키는 keys.json, 혼입 대조는 input-audit.json.
+// 사용(app/ 에서, dev-up.sh 로 기준선 out 을 띄운 뒤): node scripts/l690/gate.mjs <ROOT=/tmp/l690-*> <worktree>
+//   빌드 사본은 L690_OUT_BASE·L690_OUT_FIX(기본 /tmp/l690-out-base·/tmp/l690-out-fix — prep.sh 가 만든다).
 //
 // 주입 (02-kickoff 격리 4 — OS 입력·입력 소스 전환 없음):
 // - 조합: 선택된 pane 의 xterm textarea 에 DOM composition·input 합성. G4 회차는 keydown(229) → compositionend → keydown(Enter, keyCode 13,
 //   isComposing=false) 를 **한 eval 안의 동기 dispatch** 로 낸다(xterm 의 조합 전송 setTimeout(0) 이 그 사이에 돌 수 없다).
 // - 그 밖의 글자·키: control `type`/`key` = webContents.sendInputEvent(Chromium 입력 경로).
-// - 빌드 전환: app/out/renderer 를 수정본 사본으로 바꾸고 location.reload() — main·herdr 세션·pane 의 Claude Code 는 그대로다.
+// - 빌드 전환(f2): Electron 만 PID 로 끄고 app/out 을 수정본 사본으로 바꿔 같은 userData 로 다시 띄운다(app-restart.sh). herdr l690 서버는 살려 둔다.
+//   f1 의 렌더러 location.reload() 는 main 의 will-navigate 가드가 막아 수정본이 실리지 않았다(f1 final/corral.ndjson 652) — 그 경로는 지웠다.
+// - 번들 정체(f2): 기준선·수정본 회차 직전에 페이지가 실은 스크립트 src 가 그 빌드 사본 index.html 의 것과 같아야 한다. 다르면 회차 없이 exit 2.
+// - 셸 C3ⓑ(f2): Claude Code 탭과 따로 연 셸 탭(⌘T)에서 기준선·수정본 둘 다 돈다 — Claude Code 종료(f1 의 /exit 시간 초과)에 기대지 않는다.
+// - 혼입 대조(f2): 드라이버가 보낸 `key` 를 keys.json 에 적고, 격리 로그 input.raw 전량이 그것과 순서·개수로 맞는지 input-audit.mjs 로 본다.
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { rpc } from '../gui-diff/lib/corral.mjs'
+import { audit } from './input-audit.mjs'
 
-const [sock, out, worktree, fixRenderer] = process.argv.slice(2)
-if (!sock || !out || !worktree || !fixRenderer) {
-  console.error('사용: node scripts/l690/gate.mjs <ctl.sock> <out> <worktree> <수정본 renderer 폴더>')
+const [root, worktree] = process.argv.slice(2)
+if (!root || !worktree || !root.startsWith('/tmp/l690-')) {
+  console.error('사용: node scripts/l690/gate.mjs <ROOT=/tmp/l690-*> <worktree>')
   process.exit(2)
 }
+const sock = path.join(root, 'ctl.sock')
+const out = path.join(root, 'gate')
+const OUT_BASE = process.env.L690_OUT_BASE ?? '/tmp/l690-out-base'
+const OUT_FIX = process.env.L690_OUT_FIX ?? '/tmp/l690-out-fix'
 fs.mkdirSync(out, { recursive: true })
 const CSI = '\x1b[13;2u'
 const checks = []
-const save = () => fs.writeFileSync(path.join(out, 'checks.json'), JSON.stringify(checks, null, 1))
+/** 드라이버가 보낸 control `key` 요청(= sendInputEvent keyDown·keyUp) 순서 그대로 — 혼입 대조의 기대 목록. */
+const sentKeys = []
+const save = () => {
+  fs.writeFileSync(path.join(out, 'checks.json'), JSON.stringify(checks, null, 1))
+  fs.writeFileSync(path.join(out, 'keys.json'), JSON.stringify(sentKeys, null, 1))
+}
 const abort = (message) => {
   checks.push({ step: 'abort', pass: false, message })
   save()
@@ -39,7 +56,10 @@ const call = async (request, timeout = 20_000) => {
 }
 const evalJs = async (code) => (await call({ cmd: 'eval', code: `(() => { ${code} })()` })).result
 const type = (text) => call({ cmd: 'type', text })
-const key = (keyCode, modifiers = []) => call({ cmd: 'key', keyCode, modifiers })
+const key = (keyCode, modifiers = []) => {
+  sentKeys.push({ keyCode, modifiers, at: Date.now() })
+  return call({ cmd: 'key', keyCode, modifiers })
+}
 const read = async () => {
   const term = (await call({ cmd: 'term-read' })).term
   if (!term || !Array.isArray(term.inputs) || !Array.isArray(term.lines)) abort('term-read 빈 결과')
@@ -147,25 +167,64 @@ const clearClaude = async (label) => {
 const settleMs = 1500
 const USER = 'ㅁㄴ어미나언마ㅣ'
 
-// === 0. pane 열기 (셸) ===
-await call({ cmd: 'add-repo', root: worktree })
+// --- pane·탭·번들 --------------------------------------------------------------------------
 const card = `[data-worktree="${worktree}"] [data-worktree-card-surface]`
-await until(async () => ((await call({ cmd: 'query', selector: card })).found ?? []).length > 0, '사이드바 행')
-const click = await call({ cmd: 'click', selector: card })
-if (!click.hit) abort(`행 클릭 실패 ${JSON.stringify(click).slice(0, 200)}`)
-await until(async () => (await rpc(sock, { cmd: 'term-read' }, 20_000)).term, 'pane')
-await pause(2500)
-const bundle = async (label) => {
-  const src = await evalJs(`return Array.from(document.querySelectorAll('script[src]')).map((s) => s.getAttribute('src'))`)
-  fs.writeFileSync(path.join(out, `${label}.bundle.json`), JSON.stringify(src))
-  console.log(`bundle ${label} ${JSON.stringify(src)}`)
-  return src
+/** worktree 행을 눌러 그 pane 을 연다(첫 기동·재기동 뒤). */
+const openWorktree = async () => {
+  await until(async () => {
+    const res = await rpc(sock, { cmd: 'query', selector: card }, 20_000).catch(() => null)
+    return (res?.found ?? []).length > 0
+  }, '사이드바 행')
+  const click = await call({ cmd: 'click', selector: card })
+  if (!click.hit) abort(`행 클릭 실패 ${JSON.stringify(click).slice(0, 200)}`)
+  await until(async () => (await rpc(sock, { cmd: 'term-read' }, 20_000).catch(() => null))?.term, 'pane')
+  await pause(2500)
 }
-const baseBundle = await bundle('base')
+const tabs = () => evalJs(`return Array.from(document.querySelectorAll('[data-main-tab]')).filter((el) => el.getAttribute('data-file-tab') === null)
+  .map((el) => ({ id: el.getAttribute('data-main-tab'), active: el.getAttribute('data-active') === 'true' }))`)
+const activeTab = async () => (await tabs()).find((tab) => tab.active)?.id ?? null
+/** 탭을 눌러 고르고 그 pane 의 textarea 에 포커스를 둔다. */
+const selectTab = async (id) => {
+  const res = await call({ cmd: 'click', selector: `[data-main-tab="${id}"]` })
+  if (!res.hit) abort(`탭 ${id} 클릭 실패`)
+  await until(async () => (await activeTab()) === id, `탭 ${id} 활성`, 10_000)
+  await pause(800)
+  await step('focus', ime.focus)
+}
+/** 번들 정체 — 페이지가 실은 스크립트 src 가 빌드 사본 index.html 의 것과 같아야 한다. 다르면 회차를 돌리지 않고 exit 2. */
+const expectBundle = async (label, copy) => {
+  const html = fs.readFileSync(path.join(copy, 'renderer', 'index.html'), 'utf8')
+  const expected = Array.from(html.matchAll(/<script[^>]*\ssrc="([^"]+)"/g)).map((m) => m[1])
+  const loaded = await evalJs(`return Array.from(document.querySelectorAll('script[src]')).map((s) => s.getAttribute('src'))`)
+  const files = expected.map((src) => fs.existsSync(path.join(copy, 'renderer', src)))
+  const detail = { copy, build: fs.readFileSync(path.join(copy, '.l690-build'), 'utf8').trim(), expected, loaded, filesExist: files }
+  fs.writeFileSync(path.join(out, `${label}.bundle.json`), JSON.stringify(detail, null, 1))
+  const pass = expected.length > 0 && JSON.stringify(expected) === JSON.stringify(loaded) && files.every(Boolean)
+  record(`${label} 번들 정체 = ${copy}`, pass, detail)
+  if (!pass) abort(`${label} 번들 정체 불일치 — 회차 무효`)
+}
+
+// === 0. pane 열기 · 번들 정체(기준선) · 셸 탭 ===
+await call({ cmd: 'add-repo', root: worktree })
+await openWorktree()
+await expectBundle('base', OUT_BASE)
+const claudeTab = await activeTab()
+if (claudeTab === null) abort('활성 탭 없음')
+// 셸 C3ⓑ 전용 탭 — ⌘T(control key = sendInputEvent, l507 k2 와 같은 길). Claude Code 탭과 갈라 둬서 Claude Code 종료에 기대지 않는다.
+const before = (await tabs()).map((tab) => tab.id)
+await key('t', ['meta'])
+const shellTab = await until(async () => {
+  const now = await tabs()
+  const fresh = now.find((tab) => !before.includes(tab.id) && tab.active)
+  return fresh?.id ?? null
+}, '⌘T 새 셸 탭', 15_000)
+await until(async () => (await read()).lines.some((line) => line.trim().length > 0), '셸 탭 프롬프트', 20_000)
+await pause(2500)
+console.log(`tabs claude=${claudeTab} shell=${shellTab}`)
 
 /** C3ⓑ 셸 회차 — 조합 중 Enter(`echo l690-ime ㅇ`)·비조합 Enter(`echo l690-plain`). 셸이라 제출해도 무해. */
 const shellEnter = async (phase) => {
-  await step('focus', ime.focus)
+  await selectTab(shellTab)
   await mark()
   await type('echo l690-ime ')
   await pause(300)
@@ -187,6 +246,7 @@ const shellEnter = async (phase) => {
 
 // === 1. 기준선 (25d4fc301 렌더러) ===
 const baseShell = await shellEnter('base')
+await selectTab(claudeTab)
 await type('claude')
 await key('Return')
 await until(async () => (await read()).lines.some((line) => /^❯/.test(line)), 'Claude Code 입력줄', 60_000)
@@ -214,25 +274,39 @@ const c1bHan = await snapshot('base-c1b-han')
 expectRing('base C1ⓑ 한 결함 재현', c1bHan, `${CSI}한`)
 await clearClaude('base-c1b-han')
 
-// === 2. 수정본 렌더러로 전환 (같은 main·herdr 세션·Claude Code) ===
-const rendererDir = path.join(process.cwd(), 'out', 'renderer')
-fs.rmSync(rendererDir, { recursive: true, force: true })
-fs.cpSync(fixRenderer, rendererDir, { recursive: true })
-await evalJs(`setTimeout(() => location.reload(), 50); return true`)
-await pause(3000)
-await until(async () => {
-  const res = await rpc(sock, { cmd: 'query', selector: card }, 20_000).catch(() => null)
-  return (res?.found ?? []).length > 0
-}, '재적재 뒤 사이드바 행')
-const selected = await evalJs(`return document.querySelector('.term-pane.is-selected [data-term-pane]') !== null || document.querySelector('[data-term-pane]') !== null`)
-if (!selected) {
-  const again = await call({ cmd: 'click', selector: card })
-  if (!again.hit) abort('재적재 뒤 행 클릭 실패')
+// === 2. 수정본 빌드로 전환 — Electron 재기동(같은 userData·같은 herdr l690 서버) ===
+save()
+try {
+  execFileSync('sh', ['scripts/l690/app-restart.sh', root, OUT_FIX, 'base'], { stdio: 'inherit' })
+} catch (error) {
+  abort(`Electron 재기동 실패 ${error.status ?? error.message}`)
 }
-await until(async () => (await read()).lines.some((line) => /^❯/.test(line)), '재적재 뒤 Claude Code 입력줄', 30_000)
+await openWorktree()
+await expectBundle('fix', OUT_FIX)
+const tabsAfter = (await tabs()).map((tab) => tab.id)
+record('재기동 뒤 두 탭이 이어졌다', tabsAfter.includes(claudeTab) && tabsAfter.includes(shellTab), { claudeTab, shellTab, tabsAfter })
+if (!tabsAfter.includes(claudeTab) || !tabsAfter.includes(shellTab)) abort('재기동 뒤 탭이 없다')
+await selectTab(claudeTab)
+// Claude Code 가 이어졌는지 — Ctrl+L(제출 아님: Claude Code·셸 둘 다 화면 다시 그리기)로 화면을 다시 받은 뒤 입력줄을 본다.
+await key('l', ['control'])
 await pause(1500)
-const fixBundle = await bundle('fix')
-record('빌드 전환 — 번들이 바뀌었다', JSON.stringify(baseBundle) !== JSON.stringify(fixBundle), { base: baseBundle, fix: fixBundle })
+let claudeContinued = (await read()).lines.some((line) => /^❯/.test(line))
+if (!claudeContinued) {
+  await pause(3000)
+  claudeContinued = (await read()).lines.some((line) => /^❯/.test(line))
+}
+checks.push({ step: '재기동 뒤 Claude Code 세션 이어짐 (정보용)', pass: true, info: true, continued: claudeContinued })
+console.log(`INFO Claude Code 이어짐 ${claudeContinued}`)
+if (!claudeContinued) {
+  // 이어지지 않았다 — 셸 프롬프트일 때만 새로 띄운다(Claude Code 입력줄에 `claude` 를 쳐서 제출하지 않게).
+  // 사용자 zsh 프롬프트는 `… <브랜치> >` 뒤에 오른쪽 시각이 붙는다(f1 base-c3b-plain-enter.png) — ` > ` 또는 줄 끝 $%#>.
+  const shellPrompt = (await read()).lines.some((line) => /\s>\s|[$%#>]\s*$/.test(line.trimEnd()))
+  if (!shellPrompt) abort('재기동 뒤 Claude Code 입력줄도 셸 프롬프트도 안 보인다')
+  await type('claude')
+  await key('Return')
+  await until(async () => (await read()).lines.some((line) => /^❯/.test(line)), '수정본 쪽 새 Claude Code 입력줄', 60_000)
+  await pause(2000)
+}
 await step('focus', ime.focus)
 
 // C2ⓑ — 사용자 재현.
@@ -309,15 +383,42 @@ await pause(settleMs)
 info('fix 스트레스 같은 eval 안 d', await snapshot('fix-stress-same-eval-d'))
 await clearClaude('fix-stress')
 
-// === 3. Claude Code 닫고 셸 C3ⓑ (수정본) ===
-await type('/exit')
-await pause(500)
-await key('Return')
-await until(async () => (await read()).lines.some((line) => /Resume this session|claude --resume/.test(line)), 'Claude Code 종료', 30_000)
-await pause(1500)
-await snapshot('fix-claude-exit')
+// === 3. 셸 C3ⓑ (수정본, 같은 셸 탭) ===
 const fixShell = await shellEnter('fix')
 record('C3ⓑ 링 기준선 = 수정본', JSON.stringify(baseShell) === JSON.stringify(fixShell), { base: baseShell, fix: fixShell })
+
+// === 4. Claude Code 닫기 (02-kickoff 안전 5) — 정보용. 판정은 여기 기대지 않는다(f1 /exit 시간 초과). 못 닫혀도 dev-down 이 herdr l690 을 내린다.
+await selectTab(claudeTab)
+await type('/exit')
+await pause(800)
+await key('Return')
+const exitStart = Date.now()
+let exited = false
+while (Date.now() - exitStart < 15_000) {
+  const lines = (await read()).lines
+  if (!lines.some((line) => /^❯/.test(line)) || lines.some((line) => /Resume this session|claude --resume/.test(line))) {
+    exited = true
+    break
+  }
+  await pause(500)
+}
+const exitSnap = await snapshot('fix-claude-exit')
+checks.push({ step: 'Claude Code /exit (정보용)', pass: true, info: true, exited, lines: exitSnap.lines.slice(-12) })
+console.log(`INFO /exit exited=${exited}`)
+
+// === 5. 사용자 입력 혼입 대조 — input.raw 전량 ↔ 드라이버 key (기준선 구간 + 수정본 구간) ===
+await pause(1500)
+const logs = [path.join(root, 'corral.base.ndjson'), path.join(root, 'corral.ndjson')].map((file) => fs.readFileSync(file, 'utf8'))
+const inputAudit = audit({ logs, sentKeys })
+fs.writeFileSync(path.join(out, 'input-audit.json'), JSON.stringify(inputAudit, null, 1))
+record('사용자 입력 혼입 없음 (input.raw ↔ 드라이버 key)', inputAudit.pass, {
+  raw: inputAudit.raw,
+  expected: inputAudit.expected,
+  keyRequests: inputAudit.keyRequests,
+  sentKeys: inputAudit.sentKeys,
+  sentMatch: inputAudit.sentMatch,
+  firstMismatch: inputAudit.firstMismatch,
+})
 
 save()
 const failed = checks.filter((check) => !check.pass)

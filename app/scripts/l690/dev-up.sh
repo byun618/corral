@@ -2,10 +2,10 @@
 # LIFE-690 (LIFE-571 dev-up.sh 복사) G3 — 구현 worktree 의 개발 실행(Electron)을 실제 HOME 으로 띄운다. userData 만 /tmp/l690-*.
 # herdr 는 레포 guard 바이너리의 **전용 세션 l571** 에 붙는다 — herdr-dev default·다른 작업 세션은 건드리지 않는다.
 # 사용자 설정(외관)은 사용자 userData 의 settings.json 을 **읽어 복사**만 한다(사용자 화면 조건 재현). 설치본 corral·그 userData·provider 설정 무접촉.
-# 사용: sh scripts/l690/dev-up.sh <ROOT=/tmp/l690-*> [<빌드 out 사본 폴더>] [<CDP 포트>]   (app/ 에서)
-#   out 사본을 주면 app/out 을 그것으로 바꿔 띄운다(기준선·수정본 빌드 전환 — 최종 관문). CDP 포트를 주면 --remote-debugging-port 로 연다(포커스 에뮬레이션용).
+# 사용: sh scripts/l690/dev-up.sh <ROOT=/tmp/l690-*> [<빌드 out 사본 폴더>]   (app/ 에서)
+#   out 사본을 주면 app/out 을 그것으로 바꿔 띄운다(기준선 빌드 — 최종 관문). Electron 기동은 app-launch.sh(빌드 전환 재기동 app-restart.sh 와 같은 경로).
 set -eu
-ROOT=$1; OUTSRC=${2:-}; CDP=${3:-}
+ROOT=$1; OUTSRC=${2:-}
 case "$ROOT" in /tmp/l690-*) ;; *) echo "ROOT 는 /tmp/l690-*"; exit 2 ;; esac
 [ -e "$ROOT" ] && { echo "$ROOT 이미 있음"; exit 2; }
 APP=$(pwd -P); EL="$APP/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
@@ -33,10 +33,6 @@ SOCK=$("$GUARD" session list --json 2>/dev/null | node -e "let s='';process.stdi
 [ -n "$SOCK" ] || SOCK="$HOME/.config/herdr-dev/sessions/$SESSION/herdr.sock"
 [ -S "$SOCK" ] || { echo "소켓 없음 $SOCK"; "$GUARD" session list; exit 1; }
 echo "backend pid $(cat "$ROOT/backend.pid") sock $SOCK guard $GUARD"
+echo "$SOCK" > "$ROOT/backend.sock"; echo "$GUARD" > "$ROOT/guard.path"
 echo "# 개발 실행"
-env $UNSETS HOME="$HOME" CORRAL_USER_DATA="$ROOT/ud" CORRAL_CONTROL_SOCKET="$ROOT/ctl.sock" CORRAL_LOG="$ROOT/corral.ndjson" CORRAL_SHOT_DIR="$ROOT/shots" \
-  CORRAL_SESSION=$SESSION CORRAL_BACKEND_SOCKET="$SOCK" CORRAL_HERDR_BIN="$GUARD" \
-  nohup "$EL" "$APP" --user-data-dir="$ROOT/ud" ${CDP:+--remote-debugging-port=$CDP} > "$ROOT/electron.log" 2>&1 &
-echo $! > "$ROOT/app.pid"; echo "$APP" > "$ROOT/app.dir"
-i=0; until [ -S "$ROOT/ctl.sock" ]; do i=$((i+1)); [ $i -gt 150 ] && { echo "ctl 안 뜸"; exit 1; }; sleep 0.2; done
-echo "app pid $(cat "$ROOT/app.pid") ctl $ROOT/ctl.sock"
+sh "$(dirname "$0")/app-launch.sh" "$ROOT"

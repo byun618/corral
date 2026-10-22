@@ -26,7 +26,7 @@ vi.mock('node:child_process', () => ({
   },
 }))
 
-const { checkPath, closeOrphanWorkspaces, closeResourcePane, closeRouteOf, createDirectoryCache, footprintHelperPath, orphanSources, shellProbeOf, paneSources, readFootprintWith, readHostWith, readPsWith, registerResourceIpc } = await import('./resource-ipc.js')
+const { checkPath, closeOrphanWorkspaces, homesOf, closeResourcePane, closeRouteOf, createDirectoryCache, footprintHelperPath, orphanSources, shellProbeOf, paneSources, readFootprintWith, readHostWith, readPsWith, registerResourceIpc } = await import('./resource-ipc.js')
 const { buildAgentRows } = await import('../shared/sidebar-agents.js')
 type Deps = Parameters<typeof closeResourcePane>[0]['deps']
 /** 경로 판정 창구 — 실경로는 기본 모름. */
@@ -619,6 +619,11 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
       paths: oracle(() => true, real),
     })
     expect(rows.map((row) => [row.workspaceId, row.ownerless])).toEqual([['a', true], ['b', true], ['c', false]])
+  })
+  it('G6 homesOf — 실경로 HOME 과 논리 HOME($HOME → os.homedir) 둘 다, 같으면 하나', async () => {
+    const os = await import('node:os')
+    expect(homesOf('/real/home-l628')).toEqual(['/real/home-l628', os.homedir()])
+    expect(homesOf(os.homedir())).toEqual([os.homedir()])
   })
   it('F7 createDirectoryCache — 처음엔 모름(null)·비동기 stat 뒤 값·TTL 안에서는 다시 stat 하지 않는다', async () => {
     let now = 0

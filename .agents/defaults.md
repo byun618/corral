@@ -54,6 +54,7 @@
 
 분석 단계(AGENTS.md 플로우 1)의 grok 외부 서치는 Grok 주간 한도가 소진됐으면 **생략하고 코디 검색만으로 진행한다.**
 「grok 이 없으면 차단 사유로 보고」(task-coordinate §0)의 예외이며 사용자 재승인은 필요 없다.
+한도 확인은 task-coordinate §1-2 에서 grok 을 띄우기로 판단한 경우에만 한다 — 조건 미해당 생략은 그 절의 기록 방식을 따른다.
 
 - **확인 방법**: grok 세션을 띄워 기동 배너의 `Weekly limit left: N%` 를 『화면 관측』으로 읽고, **입력 없이** 닫는다
   (LIFE-478 `raw/coordinator/c41-grok-probe-*` 방식). `grok_status` 는 인증만 보여 주고 한도를 주지 않는다.

@@ -519,6 +519,16 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     expect(d.closed).toEqual([])
     expect(d.probed).toEqual([])
   })
+  it('F2 — 확인 전 판정에도 다시 읽은 귀속을 쓴다: 카드에 붙은 workspace 의 pane 은 판정·확인 창에 넣지 않는다', async () => {
+    const d = deps({ claimedWorkspaceIds: async () => new Set(['w1', 'w9']) })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], bulk: false, isDirectory: () => false, confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['yes'] }] })
+    expect(d.probed).toEqual([['p8']])
+  })
+  it('F2 — 귀속 읽기가 실패하면 확인 전 판정(pane 질의)도 하지 않는다', async () => {
+    const d = deps({ claimedWorkspaceIds: async () => null })
+    expect((await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8'], bulk: false, isDirectory: () => false, confirmed: false, confirmedPaneIds: [] })).outcome).toBe('error')
+    expect(d.probed).toEqual([])
+  })
   it('F2 — 닫기 직전마다 다시 읽는다: 첫 workspace 를 닫은 뒤 둘째가 카드에 붙으면 건너뛴다', async () => {
     let reads = 0
     const logs: string[] = []

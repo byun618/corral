@@ -104,6 +104,8 @@ describe('cardlessWorkspaces (LIFE-628 S1)', () => {
     })
     it('세션 소켓이 없으면 보류', () => {
       expect(cardlessGate({ ...ok, socketPath: null })).toBeNull()
+      // 골격도 소켓 없이 지어진 상태(둘 다 null)여도 보류 — 불일치 가드만으로는 못 막는다.
+      expect(cardlessGate({ ...ok, socketPath: null, skeletonSocket: null })).toBeNull()
     })
     it('골격이 다른 소켓에서 지어졌으면 보류', () => {
       expect(cardlessGate({ ...ok, skeletonSocket: '/old' })).toBeNull()

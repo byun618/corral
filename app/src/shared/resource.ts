@@ -80,6 +80,22 @@ export type ResourcePaneRow = {
   measure: ResourceMeasure
 }
 
+/**
+ * 카드 밖 workspace 한 줄 (LIFE-628 S1) — herdr 에 열려 있으나 어느 worktree 카드에도 귀속되지 않은 workspace.
+ * 셸에서 worktree 를 지운 뒤 남은 것, herdr 재기동이 저장 cwd 없이 되살린 것이 여기로 온다. 메모리는 그 pane 들의 자손 합.
+ */
+export type ResourceOrphanRow = {
+  workspaceId: string
+  label: string
+  /** pane 들의 cwd(중복 제거, 처음 본 순서). `exists` = 지금 디스크에 있는 디렉터리인가(S3 — 지워진 원래 경로를 가린다). */
+  paths: { path: string; exists: boolean }[]
+  /** herdr 가 감지한 에이전트 이름(중복 제거). 비면 셸뿐. */
+  agents: string[]
+  paneIds: string[]
+  /** pane 들의 측정을 합친 값 — 측정된 pane 이 하나도 없으면 측정 불가(사유). */
+  measure: ResourceMeasure
+}
+
 /** 비용 관문(R6)에서 세는 카운터 — 앱이 켜진 뒤 누적. */
 export type ResourceStats = {
   intervalMs: number
@@ -122,6 +138,8 @@ export type ResourceSnapshot = {
   app: ResourceMeasure
   herdr: ResourceMeasure
   panes: ResourcePaneRow[]
+  /** 카드 밖 workspace(LIFE-628). null = 지금은 가릴 수 없다(링크 재접속 중·트리 미구성·레포 열림상태 읽기 실패) — 빈 목록과 다르다. */
+  orphans: ResourceOrphanRow[] | null
   host: ResourceHost
   stats: ResourceStats
 }
@@ -142,3 +160,9 @@ export type ResourceCloseRoute =
  * `route-changed` = 대상이 지금 그 탭의 마지막 pane 이라 pane 게이트로 닫지 않았다(J2) — 렌더러가 길을 다시 묻는다.
  */
 export type ResourceCloseResult = CloseTabsResult | { outcome: 'route-changed'; closed: string[] }
+
+/**
+ * 카드 밖 workspace 닫기 (LIFE-628) — 기존 실행 중 확인 게이트(`closeTabsGated`)를 workspace 단위로 지난다.
+ * `closed` = 실제로 닫은 workspace id.
+ */
+export type ResourceOrphanCloseResult = CloseTabsResult

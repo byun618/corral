@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ResourceMeasure } from '../shared/resource.js'
 import {
   attribute,
+  combineMeasures,
   parseCompressedBytes,
   parseFootprintTable,
   parsePressureLevel,
@@ -366,3 +367,20 @@ describe('시스템 지표 파서 — LIFE-676 R5ⓓ 못 읽으면 null', () => 
     expect(parseCompressedBytes('Mach Virtual Memory Statistics: (page size of 16384 bytes)\n')).toBeNull()
   })
 })
+
+describe('combineMeasures (LIFE-628 — 카드 밖 workspace 한 줄)', () => {
+  const m = (cpu: number, bytes: number, pids: number[]): ResourceMeasure => ({ state: 'measured', usage: { cpu, memory: { state: 'measured', bytes } }, pids })
+  it('측정된 pane 의 합, pid 는 합쳐 정렬', () => {
+    expect(combineMeasures([m(1, 10, [5]), m(2, 20, [3])])).toEqual({ state: 'measured', usage: { cpu: 3, memory: { state: 'measured', bytes: 30 } }, pids: [3, 5] })
+  })
+  it('못 잰 pane 이 섞이면 메모리는 하한(사유)', () => {
+    expect(combineMeasures([m(1, 10, [5]), { state: 'unavailable', reason: '셸 pid 를 모른다' }])).toEqual({
+      state: 'measured', usage: { cpu: 1, memory: { state: 'partial', bytes: 10, reason: '측정 불가 pane 1개 제외 — 셸 pid 를 모른다' } }, pids: [5],
+    })
+  })
+  it('하나도 못 쟀으면 측정 불가 — 첫 사유 + 개수, pane 이 없으면 그 사유', () => {
+    expect(combineMeasures([{ state: 'unavailable', reason: 'a' }, { state: 'unavailable', reason: 'b' }])).toEqual({ state: 'unavailable', reason: 'a 외 1개' })
+    expect(combineMeasures([])).toEqual({ state: 'unavailable', reason: 'pane 이 없다' })
+  })
+})
+

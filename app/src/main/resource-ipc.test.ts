@@ -1,7 +1,7 @@
 // LIFE-637 F5 — main 배선(리뷰 r1 C1-5·G1-7): 닫기 게이트 인자·LC_ALL=C 전달·reveal 검증·닫기 IPC 인자·창 다시 보임.
 // Electron 은 가짜(ipcMain·app·창) — 실제 herdr·창 회차는 최종 관문 몫.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EMPTY_SESSION_DIGEST, type AppState, type RunningPane } from '../shared/types.js'
+import { EMPTY_SESSION_DIGEST, type AppState, type RunningPane, type WorkspaceRow } from '../shared/types.js'
 import { emptyAgentState } from '../shared/agent-state.js'
 
 const electron = vi.hoisted(() => ({
@@ -26,14 +26,22 @@ vi.mock('node:child_process', () => ({
   },
 }))
 
-const { closeResourcePane, closeRouteOf, footprintHelperPath, paneSources, readFootprintWith, readHostWith, readPsWith, registerResourceIpc } = await import('./resource-ipc.js')
+const { closeOrphanWorkspaces, closeResourcePane, closeRouteOf, footprintHelperPath, orphanSources, paneSources, readFootprintWith, readHostWith, readPsWith, registerResourceIpc } = await import('./resource-ipc.js')
 const { buildAgentRows } = await import('../shared/sidebar-agents.js')
 type Deps = Parameters<typeof closeResourcePane>[0]['deps']
 
-const pane = (input: { paneId: string; tabId: string; title?: string; agent?: string | null }) => ({
-  paneId: input.paneId, tabId: input.tabId, workspaceId: 'w1', title: input.title ?? input.paneId, agent: input.agent ?? null, agentStatus: 'idle' as const,
-  agentState: emptyAgentState(0), cwd: null, focused: false, agentSession: null, digest: EMPTY_SESSION_DIGEST,
+const pane = (input: { paneId: string; tabId: string; title?: string; agent?: string | null; workspaceId?: string; cwd?: string | null }) => ({
+  paneId: input.paneId, tabId: input.tabId, workspaceId: input.workspaceId ?? 'w1', title: input.title ?? input.paneId, agent: input.agent ?? null, agentStatus: 'idle' as const,
+  agentState: emptyAgentState(0), cwd: input.cwd ?? null, focused: false, agentSession: null, digest: EMPTY_SESSION_DIGEST,
 })
+/** 카드 밖 workspace(LIFE-628) — 셸에서 지운 worktree 에 남은 에이전트 pane 과 셸 pane. */
+function orphan(input: { workspaceId: string; panes: { paneId: string; agent?: string | null; cwd?: string | null }[] }): WorkspaceRow {
+  return {
+    workspaceId: input.workspaceId, label: input.workspaceId, number: 9, focused: false, agentStatus: 'idle',
+    tabs: [{ tabId: `${input.workspaceId}-t`, workspaceId: input.workspaceId, label: '', number: 1, order: 0, agentStatus: 'idle', focused: false, digest: EMPTY_SESSION_DIGEST,
+      panes: input.panes.map((item) => pane({ ...item, tabId: `${input.workspaceId}-t`, workspaceId: input.workspaceId })) }],
+  }
+}
 function state(): Pick<AppState, 'repos' | 'home'> {
   const tabs = [
     { tabId: 't1', workspaceId: 'w1', label: '', number: 1, order: 0, agentStatus: 'idle' as const, focused: true, digest: EMPTY_SESSION_DIGEST, panes: [pane({ paneId: 'p1', tabId: 't1', title: '⠋ Fix login bug', agent: 'codex' }), pane({ paneId: 'p2', tabId: 't1' })] },
@@ -50,6 +58,7 @@ function state(): Pick<AppState, 'repos' | 'home'> {
 
 function deps(patch: Partial<Deps> = {}): Deps & { closed: string[]; probed: string[][] } {
   const closed: string[] = []
+  const cardless = [orphan({ workspaceId: 'w8', panes: [{ paneId: 'p8', agent: 'claude', cwd: '/gone/wt' }] }), orphan({ workspaceId: 'w9', panes: [{ paneId: 'p9', cwd: '/home' }] })]
   const probed: string[][] = []
   return {
     window: () => null,
@@ -65,6 +74,11 @@ function deps(patch: Partial<Deps> = {}): Deps & { closed: string[]; probed: str
     closePane: async (input) => {
       closed.push(input.paneId)
       return { outcome: 'ok' }
+    },
+    cardlessWorkspaces: () => cardless.filter((row) => !closed.includes(row.workspaceId)),
+    closeWorkspace: async (input) => {
+      closed.push(input.workspaceId)
+      return { outcome: 'closed' }
     },
     confirmRunning: () => true,
     appPids: () => [],
@@ -414,5 +428,59 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     expect(handler('corral:resourceCloseRoute')({}, { paneId: 'p1' })).toEqual({ kind: 'pane' })
     ours = false
     expect(handler('corral:resourceCloseRoute')({}, { paneId: 'p1' })).toEqual({ kind: 'missing' })
+  })
+})
+
+describe('카드 밖 workspace (LIFE-628 S1)', () => {
+  it('orphanSources — 경로는 중복 없이·있는지 함께, 에이전트는 중복 없이, pane id 전부', () => {
+    const rows = orphanSources({
+      workspaces: [orphan({ workspaceId: 'w8', panes: [{ paneId: 'a', agent: 'claude', cwd: '/gone/wt' }, { paneId: 'b', cwd: '/gone/wt' }, { paneId: 'c', agent: 'claude', cwd: null }] })],
+      isDirectory: (path) => path !== '/gone/wt',
+    })
+    expect(rows).toEqual([{ workspaceId: 'w8', label: 'w8', paths: [{ path: '/gone/wt', exists: false }], agents: ['claude'], paneIds: ['a', 'b', 'c'] }])
+  })
+  it('실행 중이면 닫지 않고 needs-confirm — 판정 단위는 그 workspace 의 pane 들', async () => {
+    const d = deps()
+    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8'], confirmed: false, confirmedPaneIds: [] })
+    expect(result).toEqual({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['yes'] }] })
+    expect(d.closed).toEqual([])
+  })
+  it('확인 뒤 「모두 닫기」 — 목록에 있던 것만 닫고, 카드 pane(p1·p2·p3)은 건드리지 않는다', async () => {
+    const d = deps()
+    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], confirmed: true, confirmedPaneIds: ['p8', 'p9'] })
+    expect(result).toEqual({ outcome: 'closed', closed: ['w8', 'w9'] })
+    expect(d.closed).toEqual(['w8', 'w9'])
+  })
+  it('설정 skipCloseTerminalWithRunningProcessConfirm 이면 판정 없이 닫는다', async () => {
+    const d = deps({ confirmRunning: () => false })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w9'], confirmed: false, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: ['w9'] })
+    expect(d.probed).toEqual([])
+  })
+  it('지금 카드 밖이 아닌 workspace(카드 귀속 w1·모르는 id)는 닫지 않는다', async () => {
+    const d = deps({ confirmRunning: () => false })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w1', 'nope'], confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'closed', closed: [] })
+    expect(d.closed).toEqual([])
+  })
+  it('카드 밖을 가릴 수 없으면(null) 하나도 닫지 않는다', async () => {
+    const d = deps({ confirmRunning: () => false, cardlessWorkspaces: () => null })
+    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w9'], confirmed: true, confirmedPaneIds: [] })
+    expect(result.outcome).toBe('error')
+    expect(d.closed).toEqual([])
+  })
+  it('herdr 거절은 그대로 — 그때까지 닫은 것만 closed', async () => {
+    const d = deps({ confirmRunning: () => false, closeWorkspace: async (input) => (input.workspaceId === 'w9' ? { outcome: 'rejected', rejection: { code: 'workspace_group_close_required', message: 'group' } } : { outcome: 'closed' }) })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['w8', 'w9'], confirmed: true, confirmedPaneIds: [] })).toEqual({ outcome: 'rejected', closed: ['w8'], rejection: { code: 'workspace_group_close_required', message: 'group' } })
+  })
+  it('IPC — 다른 창 발신·배열 아닌 입력은 닫지 않는다', async () => {
+    electron.handlers.clear()
+    const d = deps({ confirmRunning: () => false })
+    let ours = false
+    const stop = registerResourceIpc({ ...d, fromOurWindow: () => ours })
+    const handler = electron.handlers.get('corral:resourceCloseOrphans')
+    expect(await handler?.({}, { workspaceIds: ['w9'] })).toEqual({ outcome: 'error', closed: [], error: '허용되지 않은 발신자' })
+    ours = true
+    expect(await handler?.({}, { workspaceIds: 'w9' })).toEqual({ outcome: 'error', closed: [], error: '허용되지 않은 발신자' })
+    expect(await handler?.({}, { workspaceIds: ['w9'], confirmed: true })).toEqual({ outcome: 'closed', closed: ['w9'] })
+    stop.stop()
   })
 })

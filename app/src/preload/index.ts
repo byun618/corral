@@ -36,7 +36,7 @@ import type { Settings, SettingsWriteResult } from '../shared/terminal-settings.
 import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
-import type { ResourceCloseResult, ResourceCloseRoute, ResourceSnapshot } from '../shared/resource.js'
+import type { ResourceCloseResult, ResourceCloseRoute, ResourceOrphanCloseResult, ResourceSnapshot } from '../shared/resource.js'
 import type { UsageSnapshot } from '../shared/usage.js'
 import type { WorkSettingsState } from '../shared/work.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
@@ -417,6 +417,9 @@ const api: CorralApi = {
   getResourceCloseRoute: (input: { paneId: string }): Promise<ResourceCloseRoute> => ipcRenderer.invoke('corral:resourceCloseRoute', input),
   closeResourcePane: (input: { paneId: string; confirmed?: boolean; confirmedPaneIds?: string[] }): Promise<ResourceCloseResult> =>
     ipcRenderer.invoke('corral:resourceClosePane', input),
+  // 카드 밖 workspace 닫기 (LIFE-628) — 한 줄·「모두 닫기」 같은 길.
+  closeResourceOrphans: (input: { workspaceIds: string[]; confirmed?: boolean; confirmedPaneIds?: string[] }): Promise<ResourceOrphanCloseResult> =>
+    ipcRenderer.invoke('corral:resourceCloseOrphans', input),
   // 상태바 사용량 (LIFE-636). push·응답 모두 표시용 칸만 — 토큰은 main 밖으로 나오지 않는다.
   getUsage: (): Promise<UsageSnapshot | null> => ipcRenderer.invoke('corral:usageGet'),
   refreshUsage: (input: { id: string | null }): Promise<UsageSnapshot | null> => ipcRenderer.invoke('corral:usageRefresh', input),

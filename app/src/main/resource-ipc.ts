@@ -6,7 +6,11 @@
 //     닫는 동작은 기존 `pane.close` 경로(`closePane`) 그대로 — 새 프로세스 kill 경로는 없다.
 //     탭의 마지막 pane 은 렌더러가 기존 탭 닫기 IPC(`corral:closeTabs`)로 보낸다(핀·수정 문서 확인, F7) — 여기를 지나지 않는다.
 //     렌더러가 길을 정한 뒤(확인 창 체류 중 등) 옆 pane 이 사라져 대상이 그 탭의 마지막 pane 이 됐으면 닫지 않고 `route-changed`(J2).
+//   · 카드 밖 workspace 닫기(LIFE-628) = 같은 게이트 `closeTabsGated` 를 workspace 단위로 지난다(한 줄·「모두 닫기」 같은 길).
+//     닫는 동작은 기존 `workspace.close` 경로(`closeWorkspace` — 카드 메뉴 닫기와 같다) 그대로 — 새 kill 경로는 없다.
+//     닫기 직전에 그 workspace 가 지금도 카드 밖인지 다시 본다 — 그 사이 카드에 붙은 workspace 는 닫지 않고 건너뛴다.
 import { execFile } from 'node:child_process'
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -14,9 +18,9 @@ import { app, ipcMain } from 'electron'
 import type { CloseTabOutcome } from './close-tabs.js'
 import { closeTabsGated } from './close-tabs.js'
 import { parseCompressedBytes, parseFootprintTable, parsePressureLevel, parseSwapUsage, psInvocation, type FootprintTable } from './resource-collector.js'
-import { createResourceMonitor, RESOURCE_INTERVAL_MS, type ResourcePaneSource } from './resource-monitor.js'
-import type { ResourceCloseResult, ResourceCloseRoute, ResourceHost, ResourceSnapshot } from '../shared/resource.js'
-import type { AppState, RunningPane } from '../shared/types.js'
+import { createResourceMonitor, RESOURCE_INTERVAL_MS, type ResourceOrphanSource, type ResourcePaneSource } from './resource-monitor.js'
+import type { ResourceCloseResult, ResourceCloseRoute, ResourceHost, ResourceOrphanCloseResult, ResourceSnapshot } from '../shared/resource.js'
+import type { AppState, RunningPane, WorkspaceRow } from '../shared/types.js'
 import { normalizeDecorativeTitle } from '../shared/decorative-title.js'
 import { paneSessionTitle } from '../shared/session-title.js'
 import { distinctWorktreeName } from '../shared/worktree-name.js'
@@ -45,6 +49,10 @@ export type ResourceIpcDeps = {
   probeRunning: (input: { socketPath: string; panes: readonly { tabId: string; paneId: string }[]; subject: Record<string, unknown> }) => Promise<RunningPane[]>
   /** 기존 pane 닫기(완료 행 되살림 억제 포함). */
   closePane: (input: { socketPath: string; paneId: string }) => Promise<PaneCloseOutcome>
+  /** 카드 밖 workspace(LIFE-628, `tree.ts cardlessWorkspaces`). null = 지금은 가릴 수 없다(링크·골격 미준비). */
+  cardlessWorkspaces: () => WorkspaceRow[] | null
+  /** 기존 workspace 닫기(`closeWorkspace` — 카드 메뉴 닫기와 같은 길, 완료 행 되살림 억제 포함). */
+  closeWorkspace: (input: { socketPath: string; workspaceId: string }) => Promise<CloseTabOutcome>
   confirmRunning: () => boolean
   /** main 밖 Electron 역할 pid(renderer·GPU·utility) — `diagnostics memory` 와 같은 출처 `app.getAppMetrics`. */
   appPids: () => number[]
@@ -150,6 +158,33 @@ export function paneSources(state: Pick<AppState, 'repos' | 'home'>): ResourcePa
   })
 }
 
+/**
+ * 카드 밖 workspace → 패널 줄의 표시 칸(LIFE-628). 경로는 pane cwd 를 중복 없이 처음 본 순서로, 지금 디렉터리가 있는지(`isDirectory`)를
+ * 같이 싣는다 — 셸에서 지운 worktree 는 herdr 가 원래 cwd 를 들고 있어 「없음」 으로 보인다(S3). 재기동이 HOME 으로 옮긴 것은 HOME 이 보인다.
+ */
+export function orphanSources(input: { workspaces: readonly WorkspaceRow[]; isDirectory: (path: string) => boolean }): ResourceOrphanSource[] {
+  return input.workspaces.map((workspace) => {
+    const panes = workspace.tabs.flatMap((tab) => tab.panes)
+    const cwds = [...new Set(panes.flatMap((pane) => (pane.cwd === null ? [] : [pane.cwd])))]
+    const agents = [...new Set(panes.flatMap((pane) => (pane.agent === null ? [] : [pane.agent])))]
+    return {
+      workspaceId: workspace.workspaceId,
+      label: workspace.label,
+      paths: cwds.map((cwd) => ({ path: cwd, exists: input.isDirectory(cwd) })),
+      agents,
+      paneIds: panes.map((pane) => pane.paneId),
+    }
+  })
+}
+
+function isDirectory(target: string): boolean {
+  try {
+    return fs.statSync(target).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 /** 닫기 길을 지금 위상으로 정한다(H3). 파일 탭은 herdr 탭이 아니라 `workspace.tabs` 가 곧 터미널 탭이다(App `closeTabsByUser` 와 같은 수). */
 export function closeRouteOf(input: { state: Pick<AppState, 'repos'>; paneId: string }): ResourceCloseRoute {
   for (const worktree of input.state.repos.flatMap((repo) => repo.worktrees)) {
@@ -170,6 +205,10 @@ export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void }
     readPs: () => readPsWith({ exec, env: process.env }),
     readFootprint: () => readFootprintWith({ exec, helper: deps.footprintHelper }),
     panes: () => paneSources(deps.state()),
+    orphans: () => {
+      const workspaces = deps.cardlessWorkspaces()
+      return workspaces === null ? null : orphanSources({ workspaces, isDirectory })
+    },
     probeShellPid: async (paneId) => {
       const socketPath = deps.socketPath()
       return socketPath === null ? null : deps.shellPidOf({ socketPath, paneId })
@@ -201,6 +240,16 @@ export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void }
     return closeResourcePane({
       deps,
       paneId: input.paneId,
+      confirmed: input.confirmed === true,
+      confirmedPaneIds: Array.isArray(input.confirmedPaneIds) ? input.confirmedPaneIds.filter((paneId): paneId is string => typeof paneId === 'string') : [],
+    })
+  })
+
+  ipcMain.handle('corral:resourceCloseOrphans', (event, input: { workspaceIds?: unknown; confirmed?: unknown; confirmedPaneIds?: unknown }): Promise<ResourceOrphanCloseResult> | ResourceOrphanCloseResult => {
+    if (!deps.fromOurWindow(event) || !Array.isArray(input?.workspaceIds)) return { outcome: 'error', closed: [], error: '허용되지 않은 발신자' }
+    return closeOrphanWorkspaces({
+      deps,
+      workspaceIds: input.workspaceIds.filter((id): id is string => typeof id === 'string'),
       confirmed: input.confirmed === true,
       confirmedPaneIds: Array.isArray(input.confirmedPaneIds) ? input.confirmedPaneIds.filter((paneId): paneId is string => typeof paneId === 'string') : [],
     })
@@ -261,5 +310,39 @@ export async function closeResourcePane(input: { deps: ResourceIpcDeps; paneId: 
     return { outcome: 'error', closed: [], error: `닫기 확인에 실패했다: ${error instanceof Error ? error.message : String(error)}` }
   }
   deps.log('resource.close_pane', { paneId, confirmed: input.confirmed, outcome: result.outcome })
+  return result
+}
+
+/**
+ * 카드 밖 workspace 를 기존 게이트로 닫는다(LIFE-628 S1) — 게이트 단위(「탭」 칸)에 workspace id 를 넣는다.
+ * 한 줄 닫기와 「모두 닫기」 가 같은 길이다. 대상은 **지금** 카드 밖인 것만 — 그 사이 카드에 붙었거나 사라진 workspace 는
+ * `panesOf` 가 null 이라 건너뛴다(닫지 않는다). 카드 밖 판정을 못 하는 때(`null`)는 하나도 닫지 않는다.
+ */
+export async function closeOrphanWorkspaces(input: { deps: ResourceIpcDeps; workspaceIds: readonly string[]; confirmed: boolean; confirmedPaneIds: readonly string[] }): Promise<ResourceOrphanCloseResult> {
+  const { deps } = input
+  const socketPath = deps.socketPath()
+  if (socketPath === null) return { outcome: 'error', closed: [], error: '세션이 없다' }
+  if (deps.cardlessWorkspaces() === null) return { outcome: 'error', closed: [], error: '지금은 카드 밖 workspace 를 가릴 수 없다 — 잠시 뒤 다시 시도' }
+  const panesOf = (workspaceId: string): string[] | null => {
+    const workspace = deps.cardlessWorkspaces()?.find((row) => row.workspaceId === workspaceId)
+    return workspace === undefined ? null : workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.paneId))
+  }
+  let result: ResourceOrphanCloseResult
+  try {
+    result = await closeTabsGated({
+      tabIds: input.workspaceIds,
+      confirmed: input.confirmed,
+      alwaysConfirm: false,
+      confirmRunning: deps.confirmRunning(),
+      confirmedPaneIds: input.confirmedPaneIds,
+      panesOf,
+      probe: (panes) => deps.probeRunning({ socketPath, panes, subject: { close: 'resource-orphans', workspaceIds: input.workspaceIds } }),
+      close: (workspaceId) => deps.closeWorkspace({ socketPath, workspaceId }),
+    })
+  } catch (error) {
+    deps.log('resource.close_orphans_failed', { workspaceIds: input.workspaceIds, error: String(error) })
+    return { outcome: 'error', closed: [], error: `닫기 확인에 실패했다: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  deps.log('resource.close_orphans', { requested: input.workspaceIds.length, confirmed: input.confirmed, outcome: result.outcome, closed: result.closed.length })
   return result
 }

@@ -50,6 +50,7 @@ import type {
   TerminalGroupRequest,
   TerminalScroll,
   UiPrefs,
+  WorkspaceRow,
   WorktreeActionResult,
 } from '../shared/types.js'
 import {
@@ -100,7 +101,7 @@ import { pickSessionName, pinnedSessions } from './pick-session.js'
 import { BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
 import { RegistryGeneration, removeObserved } from './registry-generation.js'
-import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
+import { attachDigests, buildSkeleton, cardlessWorkspaces, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
 import { SettingsStore } from './settings.js'
@@ -294,6 +295,8 @@ function traceWork({ channel, value }: { channel: string; value: unknown }): voi
 }
 /** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
 let skeleton: RepoSkeleton[] = []
+/** 지금 골격을 만든 세션 소켓 (LIFE-628) — 카드 밖 판정은 지금 붙은 소켓으로 만든 골격에서만 한다. */
+let skeletonSocket: string | null = null
 let emitScheduled = false
 let treeScheduled = false
 /**
@@ -571,6 +574,20 @@ function currentState(): AppState {
   }
 }
 
+/**
+ * 카드 밖 workspace (LIFE-628 S1) — Resource Manager 가 2초마다 부른다. 가릴 수 없으면 null(빈 목록과 다르다):
+ * 링크가 live 가 아니다(재접속 중 store 가 비어 있을 수 있다) · 제 세션이 아니다(폴백으로 남의 세션에 붙음 — `herdrTabIds` 와 같은 가드) ·
+ * 골격이 지금 소켓으로 만든 것이 아니다(세션 전환 직후·첫 골격 전 — 바인딩이 비어 전부 카드 밖으로 보인다) ·
+ * 어느 레포의 열림상태 읽기가 실패했다(그 레포 workspace 가 카드 밖으로 잘못 보인다).
+ */
+function cardlessNow(): WorkspaceRow[] | null {
+  const socketPath = currentSocketPath()
+  if (socketPath === null || skeletonSocket !== socketPath) return null
+  if (link.linkState().phase !== 'live' || !isOwnSession({ selected: selectedSession, env: process.env })) return null
+  if (skeleton.some((repo) => repo.openError !== null)) return null
+  return cardlessWorkspaces({ skeleton, workspaces: link.store.rows() })
+}
+
 /** 상태 전송은 한 틱으로 뭉친다 — workspace_created 와 그 pane_created 가 같은 프레임에 실린다. */
 function scheduleEmit(): void {
   if (emitScheduled) return
@@ -620,12 +637,14 @@ let treeGeneration = 0
 async function rebuildTree(): Promise<void> {
   const startedAt = Date.now()
   const generation = ++treeGeneration
-  const built = await buildSkeleton({ roots: registry?.list() ?? [], socketPath: currentSocketPath() })
+  const socketPath = currentSocketPath()
+  const built = await buildSkeleton({ roots: registry?.list() ?? [], socketPath })
   if (generation !== treeGeneration) {
     log('tree.stale', { generation, current: treeGeneration, ms: Date.now() - startedAt })
     return
   }
   skeleton = built
+  skeletonSocket = socketPath
   log('tree.built', {
     ms: Date.now() - startedAt,
     repos: skeleton.length,
@@ -2449,6 +2468,16 @@ app.whenReady().then(async () => {
     probeRunning: probeRunningPanes,
     closePane: ({ socketPath, paneId }) =>
       withRetentionSuppressed({ store: link.store, ids: [paneId], what: 'pane', run: hooks => closePane({ socketPath, paneId, onSent: hooks.onSent }) }),
+    cardlessWorkspaces: cardlessNow,
+    // LIFE-628 — 카드 밖 workspace 닫기. 카드 메뉴 닫기(`closeWorktreeByWorkspace`)와 같은 `workspace.close` 길·완료 행 억제.
+    closeWorkspace: async ({ socketPath, workspaceId }) => {
+      const outcome = await withRetentionSuppressed({ store: link.store, ids: [workspaceId], what: 'workspace', run: hooks => closeWorkspace(socketPath, workspaceId, hooks) })
+      if (outcome.outcome === 'closed') {
+        scheduleTree()
+        scheduleEmit()
+      }
+      return outcome
+    },
     confirmRunning: () => settings === null || !settings.get().skipCloseTerminalWithRunningProcessConfirm,
     appPids: () => app.getAppMetrics().map(metric => metric.pid),
     footprintHelper: footprintHelperPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, mainDir: here }),

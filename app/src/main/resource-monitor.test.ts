@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ResourceHost, ResourceSnapshot } from '../shared/resource.js'
 import { parseFootprintTable, type FootprintTable } from './resource-collector.js'
-import { createResourceMonitor, PROBE_RETRY_MS, RESOURCE_INTERVAL_MS, type ResourceMonitorDeps, type ResourcePaneSource } from './resource-monitor.js'
+import { createResourceMonitor, PROBE_RETRY_MS, RESOURCE_INTERVAL_MS, type ResourceMonitorDeps, type ResourceOrphanSource, type ResourcePaneSource } from './resource-monitor.js'
 
 // 고정 입력: pid ppid %cpu footprint(KB) — 앞 세 칸이 ps stdout, 넷째 칸이 도우미 footprint 표(바이트)가 된다(LIFE-676).
 const PS = '  100 1 1.0 100\n  200 1 2.0 200\n  300 200 3.0 300\n  400 200 4.0 400\n'
@@ -14,9 +14,9 @@ const fpOf = (text: string): FootprintTable => parseFootprintTable(text.split('\
 const HOST: ResourceHost = { physicalMemory: 8, cpuCoreCount: 2, pressure: 'warning', swap: { used: 1, total: 2 }, compressed: 3 }
 const pane = (paneId: string): ResourcePaneSource => ({ paneId, tabId: `t-${paneId}`, workspaceId: 'w', groupKey: '/wt', groupLabel: 'wt', title: paneId, agent: null })
 
-function harness(input: { panes: ResourcePaneSource[]; shellPids: Record<string, number | null>; visible?: boolean; intervalMs?: number }) {
-  const state: { panes: ResourcePaneSource[]; visible: boolean; now: number; ps: string; psFails: boolean; footprint: FootprintTable | null; calls: string[] } = {
-    panes: input.panes, visible: input.visible ?? true, now: 1000, ps: PS, psFails: false, footprint: null, calls: [],
+function harness(input: { panes: ResourcePaneSource[]; shellPids: Record<string, number | null>; visible?: boolean; intervalMs?: number; orphans?: ResourceOrphanSource[] | null }) {
+  const state: { panes: ResourcePaneSource[]; orphans: ResourceOrphanSource[] | null; visible: boolean; now: number; ps: string; psFails: boolean; footprint: FootprintTable | null; calls: string[] } = {
+    panes: input.panes, orphans: input.orphans ?? null, visible: input.visible ?? true, now: 1000, ps: PS, psFails: false, footprint: null, calls: [],
   }
   const emitted: ResourceSnapshot[] = []
   const probe = vi.fn(async (paneId: string) => input.shellPids[paneId] ?? null)
@@ -39,6 +39,7 @@ function harness(input: { panes: ResourcePaneSource[]; shellPids: Record<string,
     readPs,
     readFootprint,
     panes: () => state.panes,
+    orphans: () => state.orphans,
     probeShellPid: probe,
     appRoots: () => [100],
     visible: () => state.visible,
@@ -307,4 +308,30 @@ describe('wake 겹침 (R6ⓐ — wake 경로에서도 주기가 겹치지 않는
     // 첫 주기는 기억(null)과 같아 남기지 않고, ps 실패 주기는 기억을 바꾸지 않는다 → 0줄.
     expect(h.log.mock.calls.filter(([tag]) => tag === 'resource.footprint')).toEqual([])
   })
+
+  // LIFE-628 — 카드 밖 workspace 는 pane 과 같은 규칙으로 잰다: 그 자손은 herdr 행이 아니라 그 줄로 간다.
+  const orphanOf = (workspaceId: string, paneIds: string[]): ResourceOrphanSource => ({ workspaceId, label: workspaceId, paths: [{ path: '/gone', exists: false }], agents: ['claude'], paneIds })
+
+  it('카드 밖 workspace — 그 pane 자손 합이 그 줄로, herdr 행에서는 빠지고 전체에는 든다 (LIFE-628)', async () => {
+    // 200(herdr) ← 300(카드 pane a) · 400(카드 밖 pane z)
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300, z: 400 }, orphans: [orphanOf('w9', ['z'])] })
+    await h.monitor.tick()
+    const snapshot = h.emitted.at(-1)
+    expect(snapshot?.orphans).toEqual([{ ...orphanOf('w9', ['z']), measure: { state: 'measured', usage: { cpu: 4, memory: { state: 'measured', bytes: 400 * 1024 } }, pids: [400] } }])
+    expect(snapshot?.herdr).toEqual({ state: 'measured', usage: { cpu: 2, memory: { state: 'measured', bytes: 200 * 1024 } }, pids: [200] })
+    expect(snapshot?.total?.cpu).toBe(10)
+    expect(h.monitor.stats().processInfoRequests).toBe(2)
+    await h.monitor.tick()
+    expect(h.monitor.stats().processInfoRequests).toBe(2)
+  })
+
+  it('카드 밖 pane 의 셸 pid 를 모르면 그 줄은 측정 불가(사유), 가릴 수 없으면 orphans 는 null (LIFE-628)', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300, z: null }, orphans: [orphanOf('w9', ['z'])] })
+    await h.monitor.tick()
+    expect(h.emitted.at(-1)?.orphans?.[0]?.measure).toEqual({ state: 'unavailable', reason: '셸 pid 를 모른다' })
+    h.state.orphans = null
+    await h.monitor.tick()
+    expect(h.emitted.at(-1)?.orphans).toBeNull()
+  })
 })
+

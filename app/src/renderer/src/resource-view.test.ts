@@ -10,6 +10,10 @@ import {
   hostLine,
   measureCells,
   memoryText,
+  orphanCloseCopy,
+  orphanKindText,
+  orphanPathText,
+  sortOrphans,
   RESOURCE_MEMORY_NOTE,
   RESOURCE_ROW_CPU_TOOLTIP,
   rowTitles,
@@ -26,7 +30,7 @@ const row = (input: { paneId: string; group: string; measure: ResourceMeasure })
 })
 const HOST: ResourceHost = { physicalMemory: 24 * GB, cpuCoreCount: 18, pressure: 'warning', swap: { used: 23.3 * GB, total: 24 * GB }, compressed: 8.4 * GB }
 const snapshot = (patch: Partial<ResourceSnapshot>): ResourceSnapshot => ({
-  collectedAt: 0, total: { cpu: 360, memory: { state: 'measured', bytes: 3.46 * GB } }, unavailableCount: 0, app: measured(1, MB), herdr: measured(1, MB), panes: [],
+  collectedAt: 0, total: { cpu: 360, memory: { state: 'measured', bytes: 3.46 * GB } }, unavailableCount: 0, app: measured(1, MB), herdr: measured(1, MB), panes: [], orphans: [],
   host: HOST,
   stats: { intervalMs: 2000, collections: 1, skippedHidden: 0, processInfoRequests: 0, footprintRuns: 0, hostReads: 0, recentDurationsMs: [] },
   ...patch,
@@ -189,3 +193,30 @@ describe('groupPanes', () => {
     expect(rowTitles('측정 불가 — ppid 순환')).toEqual({ row: '측정 불가 — ppid 순환\nCPU — 코어 하나 = 100%', cpu: undefined })
   })
 })
+
+describe('카드 밖 workspace 표시 (LIFE-628)', () => {
+  const orphanRow = (input: { id: string; paths: { path: string; exists: boolean }[]; agents?: string[]; measure: ResourceMeasure }) => ({
+    workspaceId: input.id, label: `ws-${input.id}`, paths: input.paths, agents: input.agents ?? [], paneIds: [`p-${input.id}`], measure: input.measure,
+  })
+  it('경로 — 없으면 (없음), 여럿이면 외 n, 모르면 workspace 이름', () => {
+    expect(orphanPathText(orphanRow({ id: 'a', paths: [{ path: '/wt/x', exists: false }], measure: measured(1, MB) }))).toBe('/wt/x (없음)')
+    expect(orphanPathText(orphanRow({ id: 'a', paths: [{ path: '/home', exists: true }, { path: '/tmp', exists: true }], measure: measured(1, MB) }))).toBe('/home 외 1')
+    expect(orphanPathText(orphanRow({ id: 'a', paths: [], measure: measured(1, MB) }))).toBe('ws-a')
+  })
+  it('종류 — 에이전트 이름들, 없으면 shell', () => {
+    expect(orphanKindText(orphanRow({ id: 'a', paths: [], agents: ['claude', 'codex'], measure: measured(1, MB) }))).toBe('claude, codex')
+    expect(orphanKindText(orphanRow({ id: 'a', paths: [], measure: measured(1, MB) }))).toBe('shell')
+  })
+  it('정렬 — 메모리 내림차순, 측정 불가 맨 뒤', () => {
+    const rows = [orphanRow({ id: 'u', paths: [], measure: { state: 'unavailable', reason: 'x' } }), orphanRow({ id: 's', paths: [], measure: measured(1, MB) }), orphanRow({ id: 'b', paths: [], measure: measured(1, GB) })]
+    expect(sortOrphans({ rows, sort: 'memory' }).map((row) => row.workspaceId)).toEqual(['b', 's', 'u'])
+  })
+  it('확인 문구 — 에이전트면 workspace 기준 에이전트 문구 + 실행 중 다시 묻지 않기, 여럿이면 개수', () => {
+    const one = orphanCloseCopy({ running: [{ tabId: 'w', paneId: 'p', foreground: ['claude'] }], agentPaneIds: new Set(['p']), count: 1 })
+    expect(one.kind).toBe('agent')
+    expect(one.body[0]).toBe('이 workspace 를 닫으면 그 안의 에이전트가 종료된다.')
+    expect(one.dontAskAgain?.patch).toEqual({ skipCloseTerminalWithRunningProcessConfirm: true })
+    expect(orphanCloseCopy({ running: [{ tabId: 'w', paneId: 'p', foreground: ['vim'] }], agentPaneIds: new Set(), count: 3 }).body[0]).toBe('카드 밖 workspace 3개를 닫으면 안에서 실행 중인 명령이 멈춘다.')
+  })
+})
+

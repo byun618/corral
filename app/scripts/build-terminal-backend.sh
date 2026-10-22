@@ -23,12 +23,13 @@ if [ ! -f "$tools/zig.tar.xz" ]; then curl -fSL https://ziglang.org/download/0.1
 (cd "$tools" && printf '%s\n' '1e83bff4b05834ed8281e16f1680e8f3e58375a94b2e3f2b3d021e28e293ef9a  herdr.tar.gz' '3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b  zig.tar.xz' | shasum -a 256 -c -)
 # Patch order is fixed: stream, then guard (both touch pane/terminal runtime), then detect
 # (manifests only), then bundle (release-only folder name and update lock — debug behaviour is unchanged),
-# then shift-enter (legacy-pane Shift+Enter → CR in pane/terminal.rs, on top of stream+guard — LIFE-571).
-# The digest covers all five so a changed patch set forces a fresh build root.
-patch_digest=$(cat "$repo_root/app/backend/herdr-stream.patch" "$repo_root/app/backend/herdr-guard.patch" "$repo_root/app/backend/herdr-detect.patch" "$repo_root/app/backend/herdr-bundle.patch" "$repo_root/app/backend/herdr-shift-enter.patch" | shasum -a 256 | cut -d " " -f 1)
+# then shift-enter (legacy-pane Shift+Enter → CR in pane/terminal.rs, on top of stream+guard — LIFE-571),
+# then restore (missing saved cwd → keep the pane without a shell or agent resume, upstream #4400 backport — LIFE-628).
+# The digest covers all six so a changed patch set forces a fresh build root.
+patch_digest=$(cat "$repo_root/app/backend/herdr-stream.patch" "$repo_root/app/backend/herdr-guard.patch" "$repo_root/app/backend/herdr-detect.patch" "$repo_root/app/backend/herdr-bundle.patch" "$repo_root/app/backend/herdr-shift-enter.patch" "$repo_root/app/backend/herdr-restore.patch" | shasum -a 256 | cut -d " " -f 1)
 if [ ! -d "$work/herdr-0.9.0" ]; then
  tar -xzf "$tools/herdr.tar.gz" -C "$work"
- (cd "$work/herdr-0.9.0" && patch -p1 < "$repo_root/app/backend/herdr-stream.patch" && patch -p1 < "$repo_root/app/backend/herdr-guard.patch" && patch -p1 < "$repo_root/app/backend/herdr-detect.patch" && patch -p1 < "$repo_root/app/backend/herdr-bundle.patch" && patch -p1 < "$repo_root/app/backend/herdr-shift-enter.patch")
+ (cd "$work/herdr-0.9.0" && patch -p1 < "$repo_root/app/backend/herdr-stream.patch" && patch -p1 < "$repo_root/app/backend/herdr-guard.patch" && patch -p1 < "$repo_root/app/backend/herdr-detect.patch" && patch -p1 < "$repo_root/app/backend/herdr-bundle.patch" && patch -p1 < "$repo_root/app/backend/herdr-shift-enter.patch" && patch -p1 < "$repo_root/app/backend/herdr-restore.patch")
  printf "%s\n" "$patch_digest" > "$work/herdr-0.9.0/.corral-patches"
 fi
 [ "$(cat "$work/herdr-0.9.0/.corral-patches")" = "$patch_digest" ] || { echo "Patch set changed; use a fresh CORRAL_BACKEND_BUILD_ROOT" >&2; exit 1; }

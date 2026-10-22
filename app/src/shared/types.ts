@@ -11,7 +11,7 @@ import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConne
 import type { FileListInput, FileListResult } from './file-list.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
-import type { ResourceCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
+import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
@@ -1159,6 +1159,8 @@ export type CorralApi = {
   getResourceCloseRoute: (input: { paneId: string }) => Promise<ResourceCloseRoute>
   /** 그 pane 닫기 — 기존 실행 중 확인 게이트(`closeTabsGated`)를 지난다. */
   closeResourcePane: (input: { paneId: string; confirmed?: boolean; confirmedPaneIds?: string[] }) => Promise<ResourceCloseResult>
+  /** 카드 밖 workspace 닫기 (LIFE-628) — 기존 실행 중 확인 게이트를 workspace 단위로. 한 줄·「모두 닫기」 같은 길. */
+  closeResourceOrphans: (input: { workspaceIds: string[]; confirmed?: boolean; confirmedPaneIds?: string[] }) => Promise<ResourceOrphanCloseResult>
   // --- 상태바 사용량 (LIFE-636) — 창별 사용률·초기화 시각·상태 문구만(토큰·계정 값 없음). 다른 창의 요청이면 null ---
   getUsage: () => Promise<UsageSnapshot | null>
   /** 새로고침 — id 가 없으면 전부. 끝난 뒤 스냅숏. 진행 중이면 그 요청을 같이 기다린다. */

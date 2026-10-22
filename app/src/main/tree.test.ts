@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { EMPTY_SESSION_DIGEST, type PaneRow, type WorkspaceRow } from '../shared/types.js'
 import { emptyAgentState } from '../shared/agent-state.js'
 vi.mock('./adapter/index.js', () => ({ readOpenWorkspaces: vi.fn() }))
-import { attachDigests, collectSessionRefs } from './tree.js'
+import { attachDigests, cardlessWorkspaces, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
 import { readSessionDigests } from './transcript.js'
 
 function pane(id: string, sessionId: string | null): PaneRow {
@@ -73,3 +73,23 @@ it('reads two different transcript files for two panes in one tab', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+describe('cardlessWorkspaces (LIFE-628 S1)', () => {
+  const ws = (id: string): WorkspaceRow => ({ ...workspace([]), workspaceId: id })
+  const status = { branch: null, upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null }
+  const wt = (path: string, open: string | null) => ({ path, branch: null, head: null, isLinked: true, openWorkspaceId: open, gitStatus: status })
+  const skeleton: RepoSkeleton[] = [{ root: '/r', name: 'r', error: null, openError: null, worktrees: [wt('/r', 'w1'), wt('/r/a', 'w2'), wt('/r/a/b', 'w2'), wt('/r/c', null)] }]
+
+  it('카드 귀속(골격의 openWorkspaceId — 이중 바인딩 포함)을 뺀 나머지 = joinTree 가 붙이지 않은 집합 (K1ⓔ)', () => {
+    const rows = [ws('w1'), ws('w2'), ws('w3'), ws('w4')]
+    const cardless = cardlessWorkspaces({ skeleton, workspaces: rows }).map((row) => row.workspaceId)
+    expect(cardless).toEqual(['w3', 'w4'])
+    const attached = joinTree(skeleton, rows).repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => (worktree.workspace === null ? [] : [worktree.workspace.workspaceId]))
+    expect(attached.filter((id) => cardless.includes(id))).toEqual([])
+    expect(new Set([...attached, ...cardless])).toEqual(new Set(rows.map((row) => row.workspaceId)))
+  })
+  it('골격이 비면(레포 없음) 전부 카드 밖', () => {
+    expect(cardlessWorkspaces({ skeleton: [], workspaces: [ws('w1')] }).map((row) => row.workspaceId)).toEqual(['w1'])
+  })
+})
+

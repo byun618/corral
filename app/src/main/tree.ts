@@ -29,6 +29,8 @@ export type RepoSkeleton = {
   root: string
   name: string
   error: string | null
+  /** herdr 열림상태(`worktree.list`) 읽기 실패 — 이 레포의 바인딩을 모르므로 카드 밖 판정을 하지 않는다(LIFE-628). */
+  openError: string | null
   worktrees: Array<{
     path: string
     branch: string | null
@@ -69,6 +71,7 @@ export async function buildSkeleton(input: {
       root,
       name: open.repoName ?? path.basename(root),
       error: errors.length === 0 ? null : errors.join(' · '),
+      openError: open.error,
       worktrees,
     })
   }
@@ -108,6 +111,17 @@ export function attachDigests(
       }
     }),
   }))
+}
+
+/**
+ * 카드 밖 workspace (LIFE-628 S1) — 어느 worktree 카드에도 귀속되지 않은 workspace. `joinTree` 가 `tree.unregistered` 로
+ * 로그만 남기는 것과 같은 집합이다: `joinTree` 는 골격의 `openWorkspaceId` 가 가리키는 workspace 를 (이중 바인딩이면 가장 긴 경로
+ * 하나에) 붙이므로, 귀속 = 골격 어딘가의 `openWorkspaceId` 다. 로그를 남기지 않는 순수 함수라 주기 수집이 불러도 된다.
+ */
+export function cardlessWorkspaces(input: { skeleton: readonly RepoSkeleton[]; workspaces: readonly WorkspaceRow[] }): WorkspaceRow[] {
+  const claimed = new Set<string>()
+  for (const repo of input.skeleton) for (const worktree of repo.worktrees) if (worktree.openWorkspaceId !== null) claimed.add(worktree.openWorkspaceId)
+  return input.workspaces.filter((workspace) => !claimed.has(workspace.workspaceId))
 }
 
 /** 레지스트리 `parentWorktreeId` = `<repoId>::<canonicalPath>`(`runtime/workspace/model.ts`) — 화면은 경로만 쓴다. */

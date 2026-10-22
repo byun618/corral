@@ -277,6 +277,39 @@ export function attribute(input: { table: PsTable; footprint: FootprintTable; pa
   return { panes, herdr, app }
 }
 
+/**
+ * 카드 밖 workspace 한 줄의 측정(LIFE-628) — 그 pane 들의 측정을 합친다. 측정된 pane 만 더하고(`sumUsage` — 메모리를 못 잰 pane 이
+ * 섞이면 하한), 하나도 못 쟀으면 측정 불가(사유는 첫 pane 의 것, 둘 이상이면 개수를 붙인다). 측정된 pane 이 있고 못 잰 pane 도
+ * 있으면 메모리를 하한으로 내려 빠진 몫을 드러낸다.
+ */
+export function combineMeasures(measures: readonly ResourceMeasure[]): ResourceMeasure {
+  const usages: ResourceUsage[] = []
+  const pids: number[] = []
+  const reasons: string[] = []
+  for (const measure of measures) {
+    switch (measure.state) {
+      case 'measured':
+        usages.push(measure.usage)
+        pids.push(...measure.pids)
+        continue
+      case 'unavailable':
+        reasons.push(measure.reason)
+        continue
+    }
+  }
+  const usage = sumUsage(usages)
+  if (usage === null) {
+    const first = reasons[0] ?? 'pane 이 없다'
+    return { state: 'unavailable', reason: reasons.length > 1 ? `${first} 외 ${reasons.length - 1}개` : first }
+  }
+  if (reasons.length === 0) return { state: 'measured', usage, pids: pids.sort((a, b) => a - b) }
+  const note = `측정 불가 pane ${reasons.length}개 제외 — ${reasons[0]}`
+  const memory: ResourceMemory = usage.memory.state === 'unavailable'
+    ? usage.memory
+    : { state: 'partial', bytes: usage.memory.bytes, reason: usage.memory.state === 'partial' ? `${usage.memory.reason} · ${note}` : note }
+  return { state: 'measured', usage: { cpu: usage.cpu, memory }, pids: pids.sort((a, b) => a - b) }
+}
+
 /** 측정된 칸만 더한다. 하나도 없으면 null(세그먼트는 `—`). 메모리는 메모리까지 잰 칸만(`sumUsage`). */
 export function totalOf(measures: readonly ResourceMeasure[]): { total: ResourceUsage | null; unavailableCount: number } {
   const usages: ResourceUsage[] = []

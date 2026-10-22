@@ -5,7 +5,8 @@
 // 메모리 = 활동 상태 보기 「메모리」 열 값(phys_footprint)의 합. 못 재면 `측정 불가`(사유는 툴팁) — RSS 로 대신하지 않는다(Q2).
 // 일부 pid 를 뺀 합(하한)은 `≥ x`, 빠진 사유는 툴팁(리뷰 r1 C1-1).
 // 패널 = worktree 묶음(합계 행 + pane 행) · 앱·herdr 행 따로. 기본 정렬은 메모리 내림차순, 측정 불가는 맨 뒤.
-import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourcePaneRow, type ResourceSnapshot, type ResourceUsage } from '../../shared/resource.js'
+// 카드 밖 workspace(LIFE-628) = worktree 묶음 아래 따로 한 묶음 — workspace 한 줄(원래 경로·에이전트·메모리) + 한 줄 닫기·「모두 닫기」.
+import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourceOrphanRow, type ResourcePaneRow, type ResourceSnapshot, type ResourceUsage } from '../../shared/resource.js'
 import type { RunningPane } from '../../shared/types.js'
 import { closeCopy, type CloseCopy } from './close-copy.js'
 
@@ -229,7 +230,7 @@ export function hostLine(snapshot: ResourceSnapshot): string {
 
 /** herdr 행 이름·툴팁 (F9) — 셸 부모(herdr) 아래에서 pane 행이 가져가지 않은 것이 전부 이 행으로 온다. */
 export const HERDR_ROW_LABEL = 'herdr (서버 + 목록 밖 pane)'
-export const HERDR_ROW_TOOLTIP = 'herdr 서버와, 패널 목록에 없는 pane(셸 pid 를 아직 모르는 pane·worktree 에 매달리지 않은 workspace)의 프로세스'
+export const HERDR_ROW_TOOLTIP = 'herdr 서버와, 패널 목록에 없는 pane(셸 pid 를 아직 모르는 pane)의 프로세스 — 카드 밖 workspace 는 아래 따로'
 
 /**
  * pane 닫기 확인 문구 (F7) — 뜻·체크박스(「다시 묻지 않기」 = 같은 설정 패치)는 기존 `closeCopy` 를 따르고 말만 pane 기준으로 바꾼다.
@@ -250,3 +251,61 @@ export function paneCloseCopy(input: { running: readonly RunningPane[]; agentPan
       return base
   }
 }
+
+/** 카드 밖 workspace 묶음 (LIFE-628 S1). */
+export const ORPHAN_SECTION_LABEL = '카드 밖 workspace'
+export const ORPHAN_SECTION_TOOLTIP = 'herdr 에 열려 있지만 어느 worktree 카드에도 붙지 않은 workspace — 셸에서 지운 worktree 에 남은 세션, herdr 재기동이 원래 경로 없이 되살린 세션 등. 닫으면 그 안의 셸·에이전트가 종료된다.'
+/** 가릴 수 없는 때(`orphans: null`) — 빈 목록(「없다」)과 구분한다. */
+export const ORPHAN_UNKNOWN = '지금은 가릴 수 없다(재접속 중·목록 갱신 중)'
+export const ORPHAN_MISSING_PATH = '없음'
+
+/** 줄 이름 칸 — 첫 경로(지금 없으면 「(없음)」), 경로가 여럿이면 「외 n」. 경로를 모르면 workspace 이름. */
+export function orphanPathText(row: ResourceOrphanRow): string {
+  const [first, ...rest] = row.paths
+  if (first === undefined) return row.label
+  const head = first.exists ? first.path : `${first.path} (${ORPHAN_MISSING_PATH})`
+  return rest.length === 0 ? head : `${head} 외 ${rest.length}`
+}
+
+/** 줄 툴팁 — 경로 전부(있음/없음)·pane 수·workspace 이름. */
+export function orphanTooltip(row: ResourceOrphanRow): string {
+  const paths = row.paths.length === 0 ? ['경로 모름'] : row.paths.map((item) => (item.exists ? item.path : `${item.path} — 디렉터리 없음`))
+  return [...paths, `pane ${row.paneIds.length}개 · ${row.label}`].join('\n')
+}
+
+/** 종류 칸 — 에이전트 이름들, 없으면 shell. */
+export function orphanKindText(row: ResourceOrphanRow): string {
+  return row.agents.length === 0 ? 'shell' : row.agents.join(', ')
+}
+
+/** 메모리(또는 CPU) 내림차순, 측정 불가는 맨 뒤 — pane 행과 같은 규칙. */
+export function sortOrphans(input: { rows: readonly ResourceOrphanRow[]; sort: ResourceSortKey }): ResourceOrphanRow[] {
+  return [...input.rows].sort((a, b) => compareUsage({ a: usageOf(a.measure), b: usageOf(b.measure), key: input.sort }))
+}
+
+/** 묶음 머리 합 — 측정된 줄만(`sumUsage`). 하나도 못 재면 null. */
+export function orphanTotal(rows: readonly ResourceOrphanRow[]): ResourceUsage | null {
+  return sumUsage(rows.flatMap((row) => {
+    const usage = usageOf(row.measure)
+    return usage === null ? [] : [usage]
+  }))
+}
+
+/**
+ * 카드 밖 workspace 닫기 확인 문구 — 뜻·체크박스는 기존 `closeCopy` 를 따르고 말만 workspace 기준으로 바꾼다.
+ * 실행 중이 비어 있으면(확인 뒤 재판정에서 사라짐) 일반 문구로.
+ */
+export function orphanCloseCopy(input: { running: readonly RunningPane[]; agentPaneIds: ReadonlySet<string>; count: number }): CloseCopy {
+  const base = closeCopy({ kind: 'tabs', tabCount: input.count, running: input.running, agentPaneIds: input.agentPaneIds, pinnedCount: 0 })
+  const what = input.count > 1 ? `카드 밖 workspace ${input.count}개를` : '이 workspace 를'
+  switch (base.kind) {
+    case 'agent':
+      return { ...base, body: [`${what} 닫으면 그 안의 에이전트가 종료된다.`, '닫은 터미널은 자동으로 재개되지 않는다.'] }
+    case 'command':
+      return { ...base, body: [`${what} 닫으면 안에서 실행 중인 명령이 멈춘다.`] }
+    case 'pinned':
+    case 'worktree':
+      return { kind: 'command', title: '카드 밖 workspace 를 닫을까', body: ['다시 확인했을 때 실행 중인 프로세스가 보이지 않았다.'], confirm: '닫기', dontAskAgain: null }
+  }
+}
+

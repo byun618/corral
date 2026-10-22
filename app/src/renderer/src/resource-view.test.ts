@@ -10,6 +10,7 @@ import {
   hostLine,
   measureCells,
   memoryText,
+  bulkOrphanTargets,
   orphanCloseCopy,
   orphanKindText,
   orphanPathText,
@@ -195,8 +196,8 @@ describe('groupPanes', () => {
 })
 
 describe('카드 밖 workspace 표시 (LIFE-628)', () => {
-  const orphanRow = (input: { id: string; paths: { path: string; exists: boolean }[]; agents?: string[]; measure: ResourceMeasure }) => ({
-    workspaceId: input.id, label: `ws-${input.id}`, paths: input.paths, agents: input.agents ?? [], paneIds: [`p-${input.id}`], measure: input.measure,
+  const orphanRow = (input: { id: string; paths: { path: string; exists: boolean }[]; agents?: string[]; stoppedAgents?: string[]; ownerless?: boolean; measure: ResourceMeasure }) => ({
+    workspaceId: input.id, label: `ws-${input.id}`, paths: input.paths, ownerless: input.ownerless ?? true, agents: input.agents ?? [], stoppedAgents: input.stoppedAgents ?? [], paneIds: [`p-${input.id}`], measure: input.measure,
   })
   it('경로 — 없으면 (없음), 여럿이면 외 n, 모르면 workspace 이름', () => {
     expect(orphanPathText(orphanRow({ id: 'a', paths: [{ path: '/wt/x', exists: false }], measure: measured(1, MB) }))).toBe('/wt/x (없음)')
@@ -207,16 +208,36 @@ describe('카드 밖 workspace 표시 (LIFE-628)', () => {
     expect(orphanKindText(orphanRow({ id: 'a', paths: [], agents: ['claude', 'codex'], measure: measured(1, MB) }))).toBe('claude, codex')
     expect(orphanKindText(orphanRow({ id: 'a', paths: [], measure: measured(1, MB) }))).toBe('shell')
   })
+  it('F4 종류 — 세션 참조만 남은 에이전트는 이름 + (중지됨), 살아 있는 에이전트와 함께', () => {
+    expect(orphanKindText(orphanRow({ id: 'a', paths: [], stoppedAgents: ['claude'], measure: measured(1, MB) }))).toBe('claude (중지됨)')
+    expect(orphanKindText(orphanRow({ id: 'a', paths: [], agents: ['codex'], stoppedAgents: ['claude'], measure: measured(1, MB) }))).toBe('codex, claude (중지됨)')
+  })
+  it('F3 「모두 닫기」 대상 — 주인 없는 줄만', () => {
+    const rows = [orphanRow({ id: 'a', paths: [], ownerless: true, measure: measured(1, MB) }), orphanRow({ id: 'b', paths: [], ownerless: false, measure: measured(1, MB) })]
+    expect(bulkOrphanTargets(rows).map((row) => row.workspaceId)).toEqual(['a'])
+  })
   it('정렬 — 메모리 내림차순, 측정 불가 맨 뒤', () => {
     const rows = [orphanRow({ id: 'u', paths: [], measure: { state: 'unavailable', reason: 'x' } }), orphanRow({ id: 's', paths: [], measure: measured(1, MB) }), orphanRow({ id: 'b', paths: [], measure: measured(1, GB) })]
     expect(sortOrphans({ rows, sort: 'memory' }).map((row) => row.workspaceId)).toEqual(['b', 's', 'u'])
   })
-  it('확인 문구 — 에이전트면 workspace 기준 에이전트 문구 + 실행 중 다시 묻지 않기, 여럿이면 개수', () => {
-    const one = orphanCloseCopy({ running: [{ tabId: 'w', paneId: 'p', foreground: ['claude'] }], agentPaneIds: new Set(['p']), count: 1 })
+  it('확인 문구 — 한 줄: 에이전트면 workspace 기준 에이전트 문구, 「다시 묻지 않기」 없음(F3 — 전역 설정을 끄지 않는다)', () => {
+    const one = orphanCloseCopy({ running: [{ tabId: 'w', paneId: 'p', foreground: ['claude'] }], agentPaneIds: new Set(['p']), count: 1, bulk: false })
     expect(one.kind).toBe('agent')
     expect(one.body[0]).toBe('이 workspace 를 닫으면 그 안의 에이전트가 종료된다.')
-    expect(one.dontAskAgain?.patch).toEqual({ skipCloseTerminalWithRunningProcessConfirm: true })
-    expect(orphanCloseCopy({ running: [{ tabId: 'w', paneId: 'p', foreground: ['vim'] }], agentPaneIds: new Set(), count: 3 }).body[0]).toBe('카드 밖 workspace 3개를 닫으면 안에서 실행 중인 명령이 멈춘다.')
+    expect(one.dontAskAgain).toBeNull()
+    const command = orphanCloseCopy({ running: [{ tabId: 'w', paneId: 'p', foreground: ['vim'] }], agentPaneIds: new Set(), count: 1, bulk: false })
+    expect(command.body[0]).toBe('이 workspace 를 닫으면 안에서 실행 중인 명령이 멈춘다.')
+    expect(command.dontAskAgain).toBeNull()
+  })
+  it('F3 확인 문구 — 「모두 닫기」 는 실행 중이 없어도 개수 확인(제목·버튼에 개수), 「다시 묻지 않기」 없음', () => {
+    const idle = orphanCloseCopy({ running: [], agentPaneIds: new Set(), count: 3, bulk: true })
+    expect(idle.title).toBe('주인 없는 workspace 3개를 닫을까')
+    expect(idle.confirm).toBe('3개 닫기')
+    expect(idle.dontAskAgain).toBeNull()
+    const agent = orphanCloseCopy({ running: [{ tabId: 'w', paneId: 'p', foreground: ['claude'] }], agentPaneIds: new Set(['p']), count: 2, bulk: true })
+    expect(agent.kind).toBe('agent')
+    expect(agent.body).toContain('그 안의 에이전트가 종료된다.')
+    expect(agent.dontAskAgain).toBeNull()
   })
 })
 

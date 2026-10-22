@@ -1206,8 +1206,8 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
   const ORPHANS: ResourceSnapshot = {
     ...SNAPSHOT,
     orphans: [
-      { workspaceId: 'w8', label: 'w8', paths: [{ path: '/repo/.claude/worktrees/LIFE-1-x', exists: false }], agents: ['claude'], paneIds: ['p8'], measure: { state: 'measured', usage: { cpu: 1, memory: { state: 'measured', bytes: 300 * MB } }, pids: [800] } },
-      { workspaceId: 'w9', label: 'w9', paths: [{ path: '/home', exists: true }], agents: [], paneIds: ['p9'], measure: { state: 'unavailable', reason: '셸 pid 를 모른다' } },
+      { workspaceId: 'w8', label: 'w8', paths: [{ path: '/repo/.claude/worktrees/LIFE-1-x', exists: false }], ownerless: true, agents: ['claude'], stoppedAgents: [], paneIds: ['p8'], measure: { state: 'measured', usage: { cpu: 1, memory: { state: 'measured', bytes: 300 * MB } }, pids: [800] } },
+      { workspaceId: 'w9', label: 'w9', paths: [{ path: '/home', exists: true }], ownerless: true, agents: [], stoppedAgents: [], paneIds: ['p9'], measure: { state: 'unavailable', reason: '셸 pid 를 모른다' } },
     ],
   }
   function openOrphans(snapshot: ResourceSnapshot = ORPHANS): HTMLElement {
@@ -1246,7 +1246,7 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     openOrphans()
     click(must('[data-statusbar-resource-orphan-close="w8"]'))
     await flush()
-    expect(corral.closeResourceOrphans).toHaveBeenCalledWith({ workspaceIds: ['w8'], confirmed: false, confirmedPaneIds: [] })
+    expect(corral.closeResourceOrphans).toHaveBeenCalledWith({ workspaceIds: ['w8'], bulk: false, confirmed: false, confirmedPaneIds: [] })
     expect(corral.closeResourcePane).not.toHaveBeenCalled()
   })
 
@@ -1262,7 +1262,7 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     click(must('[data-close-confirm-ok]'))
     await flush()
     await flush()
-    expect(corral.closeResourceOrphans).toHaveBeenLastCalledWith({ workspaceIds: ['w8'], confirmed: true, confirmedPaneIds: ['p8'] })
+    expect(corral.closeResourceOrphans).toHaveBeenLastCalledWith({ workspaceIds: ['w8'], bulk: false, confirmed: true, confirmedPaneIds: ['p8'] })
     expect(q('[data-confirm-close-modal]')).toBeNull()
   })
 
@@ -1277,13 +1277,44 @@ describe('카드 밖 workspace (LIFE-628 S1)', () => {
     expect(corral.closeResourceOrphans).toHaveBeenCalledTimes(1)
   })
 
-  it('모두 닫기 — 보이는 줄 전부를 한 번에, 닫지 못한 것이 있으면 알린다 (K2ⓒ)', async () => {
+  it('모두 닫기 — 주인 없는 줄 전부를 bulk 로, 실행 중이 없어도 개수 확인 뒤 닫고, 닫지 못한 것이 있으면 알린다 (K2ⓒ·F3)', async () => {
+    corral.closeResourceOrphans.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [] })
     corral.closeResourceOrphans.mockResolvedValueOnce({ outcome: 'closed', closed: ['w8'] })
     openOrphans()
+    expect(must('[data-statusbar-resource-orphan-close-all]').textContent).toBe('주인 없는 2개 모두 닫기')
     click(must('[data-statusbar-resource-orphan-close-all]'))
     await flush()
-    expect(corral.closeResourceOrphans).toHaveBeenCalledWith({ workspaceIds: ['w8', 'w9'], confirmed: false, confirmedPaneIds: [] })
+    expect(corral.closeResourceOrphans).toHaveBeenCalledWith({ workspaceIds: ['w8', 'w9'], bulk: true, confirmed: false, confirmedPaneIds: [] })
+    const modal = must('[data-confirm-close-modal]')
+    expect(must('[data-confirm-close-title]').textContent).toBe('주인 없는 workspace 2개를 닫을까')
+    expect(modal.querySelector('input[type="checkbox"]')).toBeNull()
+    expect(modal.textContent).toContain('/repo/.claude/worktrees/LIFE-1-x (없음)')
+    click(must('[data-close-confirm-ok]'))
+    await flush()
+    await flush()
+    expect(corral.closeResourceOrphans).toHaveBeenLastCalledWith({ workspaceIds: ['w8', 'w9'], bulk: true, confirmed: true, confirmedPaneIds: [] })
     expect(must('[data-statusbar-resource-error]').textContent).toContain('1개는 닫지 않았다')
+  })
+
+  it('F3 — 경로가 살아 있는 줄은 「경로 있음」 표식·모두 닫기 대상 밖, 주인 없는 줄이 없으면 버튼 없음. F4 중지된 에이전트 표시', () => {
+    openOrphans({
+      ...SNAPSHOT,
+      orphans: [{ workspaceId: 'w7', label: 'w7', paths: [{ path: '/live/repo', exists: true }], ownerless: false, agents: [], stoppedAgents: ['claude'], paneIds: ['p7'], measure: { state: 'unavailable', reason: '프로세스 없음' } }],
+    })
+    const row = must('[data-statusbar-resource-orphan="w7"]')
+    expect(row.querySelector('[data-statusbar-resource-orphan-owner]')?.getAttribute('data-statusbar-resource-orphan-owner')).toBe('owned')
+    expect(row.querySelector('[data-statusbar-resource-agent]')?.textContent).toBe('claude (중지됨)')
+    expect(q('[data-statusbar-resource-orphan-close-all]')).toBeNull()
+    expect(q('[data-statusbar-resource-orphan-close="w7"]')).not.toBeNull()
+  })
+
+  it('F3 — 한 줄 확인 창에도 「다시 묻지 않기」 가 없다(전역 설정을 끄지 않는다)', async () => {
+    corral.closeResourceOrphans.mockResolvedValueOnce({ outcome: 'needs-confirm', closed: [], running: [{ tabId: 'w8', paneId: 'p8', foreground: ['claude'] }] })
+    openOrphans()
+    click(must('[data-statusbar-resource-orphan-close="w8"]'))
+    await flush()
+    expect(must('[data-confirm-close-modal]').querySelector('input[type="checkbox"]')).toBeNull()
+    expect(must('[data-statusbar-resource-orphan="w8"]').querySelector('[data-statusbar-resource-orphan-owner]')?.getAttribute('data-statusbar-resource-orphan-owner')).toBe('ownerless')
   })
 })
 

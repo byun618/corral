@@ -19,6 +19,8 @@ import type { CloseTabsResult, RunningPane } from '../shared/types.js'
 
 export type CloseTabOutcome =
   | { outcome: 'closed' }
+  /** 닫기 직전 재확인에서 대상이 아니게 됐다(LIFE-628 F2 — 그 사이 카드에 붙었다) — 닫지 않고 다음으로. `closed` 에 넣지 않는다. */
+  | { outcome: 'skipped' }
   | { outcome: 'rejected'; rejection: { code: string; message: string } }
   | { outcome: 'error'; error: string }
 
@@ -56,6 +58,8 @@ export async function closeTabsGated(input: {
       case 'closed':
         closed.push(tabId)
         continue
+      case 'skipped':
+        continue
       case 'rejected':
         return { outcome: 'rejected', closed, rejection: outcome.rejection }
       case 'error':
@@ -64,3 +68,29 @@ export async function closeTabsGated(input: {
   }
   return { outcome: 'closed', closed }
 }
+
+/** `pane.process_info` 판정 한 벌 — 어댑터 `probeForeground` 의 모양 중 게이트가 쓰는 칸. */
+export type ForegroundRead = {
+  ok: boolean
+  shellPid: number | null
+  foregroundGroupId: number | null
+  foreground: ReadonlyArray<{ name: string; cmdline: string | null }>
+  error: string | null
+  /** herdr 가 `pane_not_found` 로 답했다 — 그 pane 에 런타임(PTY)이 없다(LIFE-628 F4: 재기동이 저장 cwd 없이 살린 pane). */
+  missing: boolean
+}
+
+/**
+ * 게이트의 pane 한 칸 판정 (LIFE-628 F4) — 실행 중이면 확인 창에 보일 프로세스 목록, 아니면 null.
+ *   · 셸만(포그라운드 그룹 = 셸 pid) → null
+ *   · `pane_not_found`(런타임 없음) → null — 프로세스가 없으니 멈출 것도 없다. 「프로세스 확인 실패」 로 묻지 않는다.
+ *   · 그 밖의 판정 실패 → 실행 중으로 기운다(LIFE-346 — 모르면 묻는다)
+ */
+export function runningForeground(probe: ForegroundRead): string[] | null {
+  if (!probe.ok) return probe.missing ? null : [`(프로세스 확인 실패: ${probe.error})`]
+  if (probe.shellPid !== null && probe.foregroundGroupId === probe.shellPid) return null
+  const foreground = probe.foreground.map((item) => item.cmdline ?? item.name)
+  // 셸 아닌 포그라운드인데 목록이 비어 오면(probe 가 그룹만 안다) 무엇인지 몰라도 실행 중이다 — 빈 칸으로 두지 않는다.
+  return foreground.length > 0 ? foreground : ['(알 수 없는 프로세스)']
+}
+

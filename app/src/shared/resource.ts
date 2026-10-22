@@ -89,8 +89,12 @@ export type ResourceOrphanRow = {
   label: string
   /** pane 들의 cwd(중복 제거, 처음 본 순서). `exists` = 지금 디스크에 있는 디렉터리인가(S3 — 지워진 원래 경로를 가린다). */
   paths: { path: string; exists: boolean }[]
-  /** herdr 가 감지한 에이전트 이름(중복 제거). 비면 셸뿐. */
+  /** 주인 없음(F3) — 경로가 하나 이상이고 모두 사라졌거나 HOME. 「모두 닫기」 대상은 이 줄들뿐이다. */
+  ownerless: boolean
+  /** herdr 가 감지한 에이전트 이름(중복 제거). */
   agents: string[]
+  /** 감지된 에이전트는 없고 세션 참조만 남은 pane 의 에이전트(F4 — 재기동이 재개하지 않은 pane). agents 와 겹치지 않는다. 둘 다 비면 셸뿐. */
+  stoppedAgents: string[]
   paneIds: string[]
   /** pane 들의 측정을 합친 값 — 측정된 pane 이 하나도 없으면 측정 불가(사유). */
   measure: ResourceMeasure

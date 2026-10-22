@@ -418,7 +418,7 @@ const api: CorralApi = {
   closeResourcePane: (input: { paneId: string; confirmed?: boolean; confirmedPaneIds?: string[] }): Promise<ResourceCloseResult> =>
     ipcRenderer.invoke('corral:resourceClosePane', input),
   // 카드 밖 workspace 닫기 (LIFE-628) — 한 줄·「모두 닫기」 같은 길.
-  closeResourceOrphans: (input: { workspaceIds: string[]; confirmed?: boolean; confirmedPaneIds?: string[] }): Promise<ResourceOrphanCloseResult> =>
+  closeResourceOrphans: (input: { workspaceIds: string[]; bulk?: boolean; confirmed?: boolean; confirmedPaneIds?: string[] }): Promise<ResourceOrphanCloseResult> =>
     ipcRenderer.invoke('corral:resourceCloseOrphans', input),
   // 상태바 사용량 (LIFE-636). push·응답 모두 표시용 칸만 — 토큰은 main 밖으로 나오지 않는다.
   getUsage: (): Promise<UsageSnapshot | null> => ipcRenderer.invoke('corral:usageGet'),

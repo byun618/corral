@@ -114,6 +114,8 @@ export type ForegroundProbe = {
   /** 전경 프로세스 이름·cmdline — 확인 모달에 보인다. */
   foreground: Array<{ name: string; cmdline: string | null }>
   error: string | null
+  /** herdr 가 `pane_not_found` 로 답했다 — 런타임(PTY)이 없는 pane(LIFE-628 F4). */
+  missing: boolean
 }
 
 /**
@@ -123,11 +125,11 @@ export type ForegroundProbe = {
 export async function probeForeground(socketPath: string, paneId: string): Promise<ForegroundProbe> {
   const response = await request(socketPath, 'pane.process_info', { pane_id: paneId }, { reason: 'close-gate' })
   if (response.error) {
-    return { ok: false, shellPid: null, foregroundGroupId: null, foreground: [], error: `${response.error.code}: ${response.error.message}` }
+    return { ok: false, shellPid: null, foregroundGroupId: null, foreground: [], error: `${response.error.code}: ${response.error.message}`, missing: response.error.code === 'pane_not_found' }
   }
   const info = readRecord(response.result as Record<string, unknown>, 'process_info')
   if (info === null) {
-    return { ok: false, shellPid: null, foregroundGroupId: null, foreground: [], error: 'process_info 없음' }
+    return { ok: false, shellPid: null, foregroundGroupId: null, foreground: [], error: 'process_info 없음', missing: false }
   }
   const rawList = info['foreground_processes']
   const foreground = Array.isArray(rawList)
@@ -142,6 +144,7 @@ export async function probeForeground(socketPath: string, paneId: string): Promi
     foregroundGroupId: readNumber(info, 'foreground_process_group_id'),
     foreground,
     error: null,
+    missing: false,
   }
 }
 

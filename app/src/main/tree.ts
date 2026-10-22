@@ -17,7 +17,7 @@
 // 그래서 비싼 쪽만 캐시하고(`buildSkeleton`), 행은 **내보낼 때마다 새로 붙인다**(`joinTree`).
 
 import path from 'node:path'
-import type { AgentSessionRef, GitStatusSummary, RepoRow, SessionDigest, WorkspaceRow } from '../shared/types.js'
+import type { AgentSessionRef, GitStatusSummary, LinkPhase, RepoRow, SessionDigest, WorkspaceRow } from '../shared/types.js'
 import type { WorktreeMetadataRecord } from './registry.js'
 import { readOpenWorkspaces } from './adapter/index.js'
 import { getGitStatus } from './git-status.js'
@@ -29,7 +29,9 @@ export type RepoSkeleton = {
   root: string
   name: string
   error: string | null
-  /** herdr 열림상태(`worktree.list`) 읽기 실패 — 이 레포의 바인딩을 모르므로 카드 밖 판정을 하지 않는다(LIFE-628). */
+  /** `git worktree list` 실패(타임아웃 포함) — worktree 가 비어 그 레포의 카드 workspace 가 카드 밖으로 보이므로 카드 밖 판정을 하지 않는다(LIFE-628 F1). */
+  gitError: string | null
+  /** herdr 열림상태(`worktree.list`) 읽기 실패 — 이 레포의 바인딩을 모르므로 카드 밖 판정을 하지 않는다(LIFE-628). 재동기가 성공하면 걷힌다(F7). */
   openError: string | null
   worktrees: Array<{
     path: string
@@ -71,6 +73,7 @@ export async function buildSkeleton(input: {
       root,
       name: open.repoName ?? path.basename(root),
       error: errors.length === 0 ? null : errors.join(' · '),
+      gitError: git.error,
       openError: open.error,
       worktrees,
     })
@@ -122,6 +125,40 @@ export function cardlessWorkspaces(input: { skeleton: readonly RepoSkeleton[]; w
   const claimed = new Set<string>()
   for (const repo of input.skeleton) for (const worktree of repo.worktrees) if (worktree.openWorkspaceId !== null) claimed.add(worktree.openWorkspaceId)
   return input.workspaces.filter((workspace) => !claimed.has(workspace.workspaceId))
+}
+
+/**
+ * 카드 밖 판정의 문 (LIFE-628 F1·F2) — 가릴 수 있을 때만 `cardlessWorkspaces` 를 돌려준다. 순수 함수라 가드를 시험으로 잠근다.
+ * null(가릴 수 없다 — 빈 목록과 다르다):
+ *   · 소켓이 없다 · 골격이 지금 소켓으로 만든 것이 아니다(세션 전환 직후·첫 골격 전 — 바인딩이 비어 전부 카드 밖으로 보인다)
+ *   · 링크가 live 가 아니다(재접속 중 store 가 비어 있을 수 있다) · 제 세션이 아니다(폴백으로 남의 세션에 붙음)
+ *   · 어느 레포든 골격이 불완전하다 — `git worktree list` 실패(`gitError`, H1) 또는 herdr `worktree.list` 실패(`openError`)
+ * 신선도(F2 — 표시 쪽 창 막기): 골격은 그 빌드를 **시작한** 시각의 herdr 상태다. 그 뒤에 처음 보인 workspace 는 골격이 아직 모른다 —
+ * 카드에 붙을 workspace 가 한 주기 카드 밖으로 보이는 창이다. 그래서 `firstSeenAt > skeletonStartedAt` 인 workspace 는 다음 골격까지
+ * 목록에 올리지 않고 `fresh` 로 센다(부르는 쪽이 골격 재구성을 한 번 건다 — 진짜 카드 밖이면 다음 골격 뒤에 나타난다).
+ * 처음 본 시각을 모르는 workspace 도 올리지 않는다(모르면 막는 쪽).
+ */
+export function cardlessGate(input: {
+  socketPath: string | null
+  skeleton: readonly RepoSkeleton[]
+  skeletonSocket: string | null
+  skeletonStartedAt: number | null
+  linkPhase: LinkPhase
+  ownSession: boolean
+  workspaces: readonly WorkspaceRow[]
+  firstSeenAt: ReadonlyMap<string, number>
+}): { rows: WorkspaceRow[]; fresh: number } | null {
+  if (input.socketPath === null || input.skeletonSocket !== input.socketPath || input.skeletonStartedAt === null) return null
+  if (input.linkPhase !== 'live' || !input.ownSession) return null
+  if (input.skeleton.some((repo) => repo.gitError !== null || repo.openError !== null)) return null
+  const rows: WorkspaceRow[] = []
+  let fresh = 0
+  for (const workspace of cardlessWorkspaces({ skeleton: input.skeleton, workspaces: input.workspaces })) {
+    const seen = input.firstSeenAt.get(workspace.workspaceId)
+    if (seen === undefined || seen > input.skeletonStartedAt) fresh += 1
+    else rows.push(workspace)
+  }
+  return { rows, fresh }
 }
 
 /** 레지스트리 `parentWorktreeId` = `<repoId>::<canonicalPath>`(`runtime/workspace/model.ts`) — 화면은 경로만 쓴다. */

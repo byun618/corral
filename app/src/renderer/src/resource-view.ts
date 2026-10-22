@@ -273,9 +273,21 @@ export function orphanTooltip(row: ResourceOrphanRow): string {
   return [...paths, `pane ${row.paneIds.length}개 · ${row.label}`].join('\n')
 }
 
-/** 종류 칸 — 에이전트 이름들, 없으면 shell. */
+export const ORPHAN_STOPPED = '중지됨'
+export const ORPHAN_OWNERLESS = '주인 없음'
+export const ORPHAN_OWNED = '경로 있음'
+export const ORPHAN_OWNERLESS_TOOLTIP = '원래 경로가 모두 사라졌거나 HOME 이다 — 「모두 닫기」 대상'
+export const ORPHAN_OWNED_TOOLTIP = '경로가 살아 있다(미등록 레포의 세션·형제 pane 이 살아 있는 workspace 등) — 「모두 닫기」 에 들지 않는다. 줄 ✕ 로만 닫는다'
+
+/** 종류 칸 — 에이전트 이름들, 세션 참조만 남은 에이전트는 「(중지됨)」(F4 — 재기동이 재개하지 않은 pane), 둘 다 없으면 shell. */
 export function orphanKindText(row: ResourceOrphanRow): string {
-  return row.agents.length === 0 ? 'shell' : row.agents.join(', ')
+  const names = [...row.agents, ...row.stoppedAgents.map((agent) => `${agent} (${ORPHAN_STOPPED})`)]
+  return names.length === 0 ? 'shell' : names.join(', ')
+}
+
+/** 「모두 닫기」 대상 — 주인 없는 줄만(F3). */
+export function bulkOrphanTargets(rows: readonly ResourceOrphanRow[]): ResourceOrphanRow[] {
+  return rows.filter((row) => row.ownerless)
 }
 
 /** 메모리(또는 CPU) 내림차순, 측정 불가는 맨 뒤 — pane 행과 같은 규칙. */
@@ -292,17 +304,29 @@ export function orphanTotal(rows: readonly ResourceOrphanRow[]): ResourceUsage |
 }
 
 /**
- * 카드 밖 workspace 닫기 확인 문구 — 뜻·체크박스는 기존 `closeCopy` 를 따르고 말만 workspace 기준으로 바꾼다.
- * 실행 중이 비어 있으면(확인 뒤 재판정에서 사라짐) 일반 문구로.
+ * 카드 밖 workspace 닫기 확인 문구 — 뜻은 기존 `closeCopy` 를 따르고 말만 workspace 기준으로 바꾼다.
+ * **「다시 묻지 않기」 는 두지 않는다**(F3) — 그 체크는 전역 설정(`skipCloseTerminalWithRunningProcessConfirm`)을 끄므로,
+ * 카드 밖 일괄 닫기의 확인 하나로 모든 터미널 닫기의 확인을 영구히 끌 수 있었다.
+ * `bulk`(「모두 닫기」)는 실행 중이 없어도 개수 확인이다 — 제목에 개수, 확인 버튼에 개수.
+ * 한 줄 닫기에서 실행 중이 비어 있으면(확인 뒤 재판정에서 사라짐) 일반 문구로.
  */
-export function orphanCloseCopy(input: { running: readonly RunningPane[]; agentPaneIds: ReadonlySet<string>; count: number }): CloseCopy {
+export function orphanCloseCopy(input: { running: readonly RunningPane[]; agentPaneIds: ReadonlySet<string>; count: number; bulk: boolean }): CloseCopy {
   const base = closeCopy({ kind: 'tabs', tabCount: input.count, running: input.running, agentPaneIds: input.agentPaneIds, pinnedCount: 0 })
-  const what = input.count > 1 ? `카드 밖 workspace ${input.count}개를` : '이 workspace 를'
+  if (input.bulk) {
+    const stops = base.kind === 'agent' ? ['그 안의 에이전트가 종료된다.'] : base.kind === 'command' ? ['안에서 실행 중인 명령이 멈춘다.'] : []
+    return {
+      kind: base.kind === 'agent' ? 'agent' : 'command',
+      title: `주인 없는 workspace ${input.count}개를 닫을까`,
+      body: [`원래 경로가 사라졌거나 HOME 인 카드 밖 workspace ${input.count}개를 닫는다.`, ...stops, '닫은 터미널은 자동으로 재개되지 않는다.'],
+      confirm: `${input.count}개 닫기`,
+      dontAskAgain: null,
+    }
+  }
   switch (base.kind) {
     case 'agent':
-      return { ...base, body: [`${what} 닫으면 그 안의 에이전트가 종료된다.`, '닫은 터미널은 자동으로 재개되지 않는다.'] }
+      return { ...base, body: ['이 workspace 를 닫으면 그 안의 에이전트가 종료된다.', '닫은 터미널은 자동으로 재개되지 않는다.'], dontAskAgain: null }
     case 'command':
-      return { ...base, body: [`${what} 닫으면 안에서 실행 중인 명령이 멈춘다.`] }
+      return { ...base, body: ['이 workspace 를 닫으면 안에서 실행 중인 명령이 멈춘다.'], dontAskAgain: null }
     case 'pinned':
     case 'worktree':
       return { kind: 'command', title: '카드 밖 workspace 를 닫을까', body: ['다시 확인했을 때 실행 중인 프로세스가 보이지 않았다.'], confirm: '닫기', dontAskAgain: null }

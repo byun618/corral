@@ -49,3 +49,5 @@
 .statusbar-resource-orphan-line { flex: 1; min-width: 0; padding-left: 20px; }
 .statusbar-resource-close-all { padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; background: none; font: inherit; color: var(--fg-dim); cursor: pointer; }
 .statusbar-resource-close-all:hover, .statusbar-resource-close-all:focus-visible { color: var(--fg); border-color: var(--line-strong); outline: none; }
+.statusbar-resource-owner { color: var(--fg-faint); }
+.statusbar-resource-owner.is-ownerless { color: var(--fg-notice); }

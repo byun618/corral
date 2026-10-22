@@ -1,7 +1,7 @@
 // LIFE-495 fix1 R1-05 — bulk 탭 닫기의 닫기 직전 재판정. herdr·프로세스 경계만 mock 한다(Codex r1 `gate.log` 모양).
 import { describe, expect, it } from 'vitest'
 import type { RunningPane } from '../shared/types.js'
-import { closeTabsGated, type CloseTabOutcome } from './close-tabs.js'
+import { closeTabsGated, runningForeground, type CloseTabOutcome, type ForegroundRead } from './close-tabs.js'
 
 /** pane 별 「지금 실행 중인가」 — 테스트가 순간마다 바꾼다. */
 function world(input: { panes: Record<string, string[]> }) {
@@ -107,5 +107,31 @@ describe('closeTabsGated — 실행 중 확인 설정 (LIFE-516 K4ⓑ·ⓖ)', ()
     expect(await closeTabsGated({ tabIds: ['A', 'B'], confirmed: true, alwaysConfirm: false, confirmRunning: true, confirmedPaneIds: ['pA'], ...w.deps })).toEqual({
       outcome: 'needs-confirm', closed: ['A'], running: [{ tabId: 'B', paneId: 'pB', foreground: ['sleep 600'] }],
     })
+  })
+})
+
+// LIFE-628 F4 — 런타임 없는 pane(pane_not_found)은 실행 중이 아니다. 다른 판정 실패는 지금처럼 실행 중(모르면 묻는다).
+describe('runningForeground (LIFE-628 F4)', () => {
+  const read = (patch: Partial<ForegroundRead>): ForegroundRead => ({ ok: true, shellPid: 10, foregroundGroupId: 10, foreground: [], error: null, missing: false, ...patch })
+  it('셸만이면 null', () => {
+    expect(runningForeground(read({}))).toBeNull()
+  })
+  it('pane_not_found(missing)이면 null — 「프로세스 확인 실패」 로 묻지 않는다', () => {
+    expect(runningForeground(read({ ok: false, shellPid: null, foregroundGroupId: null, error: 'pane_not_found: x', missing: true }))).toBeNull()
+  })
+  it('그 밖의 판정 실패는 실행 중으로 기운다', () => {
+    expect(runningForeground(read({ ok: false, shellPid: null, foregroundGroupId: null, error: 'timeout', missing: false }))).toEqual(['(프로세스 확인 실패: timeout)'])
+  })
+  it('셸 아닌 포그라운드 — 목록, 비면 (알 수 없는 프로세스)', () => {
+    expect(runningForeground(read({ foregroundGroupId: 11, foreground: [{ name: 'vim', cmdline: 'vim a' }] }))).toEqual(['vim a'])
+    expect(runningForeground(read({ foregroundGroupId: 11 }))).toEqual(['(알 수 없는 프로세스)'])
+  })
+})
+
+describe('closeTabsGated — skipped (LIFE-628 F2)', () => {
+  it('close 가 skipped 면 closed 에 넣지 않고 다음으로 간다', async () => {
+    const w = world({ panes: { A: ['pA'], B: ['pB'] } })
+    const result = await closeTabsGated({ ...w.deps, tabIds: ['A', 'B'], confirmed: true, alwaysConfirm: false, confirmRunning: false, confirmedPaneIds: [], close: async (tabId) => (tabId === 'A' ? { outcome: 'skipped' } : { outcome: 'closed' }) })
+    expect(result).toEqual({ outcome: 'closed', closed: ['B'] })
   })
 })

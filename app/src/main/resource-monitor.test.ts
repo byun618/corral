@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ResourceHost, ResourceSnapshot } from '../shared/resource.js'
 import { parseFootprintTable, type FootprintTable } from './resource-collector.js'
-import { createResourceMonitor, PROBE_RETRY_MS, RESOURCE_INTERVAL_MS, type ResourceMonitorDeps, type ResourceOrphanSource, type ResourcePaneSource } from './resource-monitor.js'
+import { createResourceMonitor, NO_RUNTIME_REASON, PROBE_RETRY_MS, RESOURCE_INTERVAL_MS, type ResourceMonitorDeps, type ResourceOrphanSource, type ResourcePaneSource, type ShellProbe } from './resource-monitor.js'
 
 // 고정 입력: pid ppid %cpu footprint(KB) — 앞 세 칸이 ps stdout, 넷째 칸이 도우미 footprint 표(바이트)가 된다(LIFE-676).
 const PS = '  100 1 1.0 100\n  200 1 2.0 200\n  300 200 3.0 300\n  400 200 4.0 400\n'
@@ -14,12 +14,16 @@ const fpOf = (text: string): FootprintTable => parseFootprintTable(text.split('\
 const HOST: ResourceHost = { physicalMemory: 8, cpuCoreCount: 2, pressure: 'warning', swap: { used: 1, total: 2 }, compressed: 3 }
 const pane = (paneId: string): ResourcePaneSource => ({ paneId, tabId: `t-${paneId}`, workspaceId: 'w', groupKey: '/wt', groupLabel: 'wt', title: paneId, agent: null })
 
-function harness(input: { panes: ResourcePaneSource[]; shellPids: Record<string, number | null>; visible?: boolean; intervalMs?: number; orphans?: ResourceOrphanSource[] | null }) {
+function harness(input: { panes: ResourcePaneSource[]; shellPids: Record<string, number | null | 'missing'>; visible?: boolean; intervalMs?: number; orphans?: ResourceOrphanSource[] | null }) {
   const state: { panes: ResourcePaneSource[]; orphans: ResourceOrphanSource[] | null; visible: boolean; now: number; ps: string; psFails: boolean; footprint: FootprintTable | null; calls: string[] } = {
     panes: input.panes, orphans: input.orphans ?? null, visible: input.visible ?? true, now: 1000, ps: PS, psFails: false, footprint: null, calls: [],
   }
   const emitted: ResourceSnapshot[] = []
-  const probe = vi.fn(async (paneId: string) => input.shellPids[paneId] ?? null)
+  // 숫자 = 셸 pid, 'missing' = herdr pane_not_found(런타임 없는 pane — LIFE-628 F5), null/없음 = 모름.
+  const probe = vi.fn(async (paneId: string): Promise<ShellProbe> => {
+    const value = input.shellPids[paneId] ?? null
+    return value === null ? { kind: 'unknown' } : value === 'missing' ? { kind: 'missing' } : { kind: 'pid', pid: value }
+  })
   const readPs = vi.fn(async () => {
     state.calls.push('ps')
     if (state.psFails) throw new Error('ps 없음')
@@ -157,7 +161,7 @@ describe('셸 pid 캐시 자가 치유 (F1)', () => {
     expect(h.emitted.at(-1)?.panes[0]?.measure).toMatchObject({ state: 'measured', pids: [300] })
     // herdr 가 같은 pane id 에 새 셸 700 을 넣었다.
     h.state.ps = '  100 1 1.0 100\n  200 1 2.0 200\n  700 200 7.0 700\n'
-    h.probe.mockImplementation(async () => 700)
+    h.probe.mockImplementation(async () => ({ kind: 'pid', pid: 700 }))
     await h.monitor.tick()
     expect(h.monitor.stats().processInfoRequests).toBe(2)
     expect(h.emitted.at(-1)?.panes[0]?.measure).toMatchObject({ state: 'measured', pids: [700] })
@@ -310,7 +314,7 @@ describe('wake 겹침 (R6ⓐ — wake 경로에서도 주기가 겹치지 않는
   })
 
   // LIFE-628 — 카드 밖 workspace 는 pane 과 같은 규칙으로 잰다: 그 자손은 herdr 행이 아니라 그 줄로 간다.
-  const orphanOf = (workspaceId: string, paneIds: string[]): ResourceOrphanSource => ({ workspaceId, label: workspaceId, paths: [{ path: '/gone', exists: false }], agents: ['claude'], paneIds })
+  const orphanOf = (workspaceId: string, paneIds: string[]): ResourceOrphanSource => ({ workspaceId, label: workspaceId, paths: [{ path: '/gone', exists: false }], ownerless: true, agents: ['claude'], stoppedAgents: [], paneIds })
 
   it('카드 밖 workspace — 그 pane 자손 합이 그 줄로, herdr 행에서는 빠지고 전체에는 든다 (LIFE-628)', async () => {
     // 200(herdr) ← 300(카드 pane a) · 400(카드 밖 pane z)
@@ -333,5 +337,40 @@ describe('wake 겹침 (R6ⓐ — wake 경로에서도 주기가 겹치지 않는
     await h.monitor.tick()
     expect(h.emitted.at(-1)?.orphans).toBeNull()
   })
-})
 
+  it('F5 — pane_not_found(런타임 없음) pane 은 30초가 지나도 다시 묻지 않고, 줄은 「프로세스 없음」 사유', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300, z: 'missing' }, orphans: [orphanOf('w9', ['z'])] })
+    await h.monitor.tick()
+    expect(h.emitted.at(-1)?.orphans?.[0]?.measure).toEqual({ state: 'unavailable', reason: NO_RUNTIME_REASON })
+    expect(h.probe.mock.calls.filter(([id]) => id === 'z')).toHaveLength(1)
+    h.state.now += PROBE_RETRY_MS * 3
+    await h.monitor.tick()
+    await h.monitor.tick()
+    expect(h.probe.mock.calls.filter(([id]) => id === 'z')).toHaveLength(1)
+    // 목록에서 빠졌다 돌아오면(pane 세대 변화) 다시 묻는다.
+    h.state.orphans = []
+    await h.monitor.tick()
+    h.state.orphans = [orphanOf('w9', ['z'])]
+    await h.monitor.tick()
+    expect(h.probe.mock.calls.filter(([id]) => id === 'z')).toHaveLength(2)
+  })
+  it('F5 — 그 밖의 실패(모름)는 지금처럼 30초 뒤 다시 묻는다(대조)', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300, z: null }, orphans: [orphanOf('w9', ['z'])] })
+    await h.monitor.tick()
+    h.state.now += PROBE_RETRY_MS
+    await h.monitor.tick()
+    expect(h.probe.mock.calls.filter(([id]) => id === 'z')).toHaveLength(2)
+  })
+  it('F5 — 카드 밖을 가릴 수 없는 틱(null)에도 카드 밖 pane 캐시를 지우지 않는다 — 돌아왔을 때 다시 묻지 않는다', async () => {
+    const h = harness({ panes: [pane('a')], shellPids: { a: 300, z: 400, y: 'missing' }, orphans: [orphanOf('w9', ['z', 'y'])] })
+    await h.monitor.tick()
+    const before = h.probe.mock.calls.length
+    h.state.orphans = null
+    await h.monitor.tick()
+    await h.monitor.tick()
+    h.state.orphans = [orphanOf('w9', ['z', 'y'])]
+    await h.monitor.tick()
+    expect(h.probe.mock.calls.length).toBe(before)
+    expect(h.monitor.stats().processInfoRequests).toBe(3)
+  })
+})

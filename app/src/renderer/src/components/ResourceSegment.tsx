@@ -16,8 +16,10 @@
 //     같은 행의 닫기가 진행 중이면 다음 ✕ 는 무시한다(J6). 방금 닫은 pane 의 ✕ 는 다음 스냅샷까지 무시한다(K6).
 //     길을 묻는 동안(첫 조회·확인 뒤 재조회) 취소·Esc·패널 닫기가 오면 닫기를 부르지 않는다(K1 — 세대 번호).
 //     확인 창이 떠 있는 동안 패널은 inert 이고 행 동작은 시작되지 않는다(K2).
-//   · 카드 밖 workspace(LIFE-628) — worktree 묶음 아래 한 묶음. 줄 ✕ = 그 workspace 닫기, 머리 「모두 닫기」 = 지금 보이는 줄 전부.
+//   · 카드 밖 workspace(LIFE-628) — worktree 묶음 아래 한 묶음. 줄마다 「주인 없음」(원래 경로가 모두 사라졌거나 HOME)/「경로 있음」 표식.
+//     줄 ✕ = 그 workspace 닫기, 머리 「주인 없는 n개 모두 닫기」 = 지금 보이는 주인 없는 줄만(F3 — 경로가 살아 있는 줄은 ✕ 로만).
 //     둘 다 main `closeTabsGated`(workspace 단위)를 지난다 — 실행 중이면 같은 `ConfirmClose`(문구 `orphanCloseCopy`), 확인 뒤 재판정도 같다.
+//     「모두 닫기」 는 실행 중 여부와 무관하게 개수 확인을 늘 한 번 묻는다(main `alwaysConfirm`). 카드 밖 확인 창에는 「다시 묻지 않기」 가 없다.
 //     이동은 없다(카드가 없어 보일 자리가 없다).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -37,6 +39,11 @@ import {
   keepOrder,
   measureCells,
   memoryText,
+  bulkOrphanTargets,
+  ORPHAN_OWNED,
+  ORPHAN_OWNED_TOOLTIP,
+  ORPHAN_OWNERLESS,
+  ORPHAN_OWNERLESS_TOOLTIP,
   ORPHAN_SECTION_LABEL,
   ORPHAN_SECTION_TOOLTIP,
   ORPHAN_UNKNOWN,
@@ -67,7 +74,7 @@ type CloseTarget =
 
 type PendingClose = { target: CloseTarget; running: RunningPane[] }
 /** 카드 밖 workspace 닫기의 확인 대기 (LIFE-628) — 닫으려던 줄들과 게이트가 돌려준 실행 중 pane. */
-type PendingOrphanClose = { rows: ResourceOrphanRow[]; running: RunningPane[] }
+type PendingOrphanClose = { rows: ResourceOrphanRow[]; running: RunningPane[]; bulk: boolean }
 
 const ROW_SELECTOR = '[data-statusbar-resource-row]'
 
@@ -394,12 +401,12 @@ export function ResourceSegment(): React.JSX.Element {
    * 카드 밖 workspace 닫기 (LIFE-628) — 한 줄·「모두 닫기」 같은 길. 대상 id 는 누른 순간 보인 줄이고, main 이 닫기 직전에 지금도 카드 밖인지
    * 다시 본다(그 사이 카드에 붙은 것은 건너뛴다). 확인 창은 pane 닫기와 같은 `ConfirmClose`.
    */
-  const runOrphanClose = async (input: { rows: ResourceOrphanRow[]; confirmed: boolean; confirmedPaneIds: string[]; gen: number }): Promise<void> => {
+  const runOrphanClose = async (input: { rows: ResourceOrphanRow[]; bulk: boolean; confirmed: boolean; confirmedPaneIds: string[]; gen: number }): Promise<void> => {
     const stale = (): boolean => input.gen !== closeGenRef.current
     const ids = input.rows.map((row) => row.workspaceId)
     let result: ResourceOrphanCloseResult
     try {
-      result = await window.corral.closeResourceOrphans({ workspaceIds: ids, confirmed: input.confirmed, confirmedPaneIds: input.confirmedPaneIds })
+      result = await window.corral.closeResourceOrphans({ workspaceIds: ids, bulk: input.bulk, confirmed: input.confirmed, confirmedPaneIds: input.confirmedPaneIds })
     } catch (failure) {
       if (stale()) return
       setPendingOrphans(null)
@@ -412,12 +419,12 @@ export function ResourceSegment(): React.JSX.Element {
       case 'closed': {
         setPendingOrphans(null)
         const missed = ids.length - result.closed.length
-        setError(missed === 0 ? null : `${missed}개는 닫지 않았다 — 이미 없어졌거나 카드에 붙었다`)
+        setError(missed === 0 ? null : `${missed}개는 닫지 않았다 — 이미 없어졌거나 카드에 붙었거나 주인 없는 줄이 아니게 됐다`)
         return
       }
       case 'needs-confirm':
         // 확인 뒤 닫다가 새 실행 중을 만나 멈췄으면 남은 줄만 다시 묻는다.
-        setPendingOrphans({ rows: input.rows.filter((row) => !result.closed.includes(row.workspaceId)), running: result.running })
+        setPendingOrphans({ rows: input.rows.filter((row) => !result.closed.includes(row.workspaceId)), running: result.running, bulk: input.bulk })
         return
       case 'rejected':
         setPendingOrphans(null)
@@ -430,11 +437,11 @@ export function ResourceSegment(): React.JSX.Element {
     }
   }
 
-  const startOrphanClose = (rows: ResourceOrphanRow[]): void => {
-    if (blocked() || rows.length === 0) return
-    const key = `orphan:${rows.map((row) => row.workspaceId).join(',')}`
+  const startOrphanClose = (input: { rows: ResourceOrphanRow[]; bulk: boolean }): void => {
+    if (blocked() || input.rows.length === 0) return
+    const key = `orphan:${input.rows.map((row) => row.workspaceId).join(',')}`
     setError(null)
-    void guarded({ paneId: key, run: () => runOrphanClose({ rows, confirmed: false, confirmedPaneIds: [], gen: closeGenRef.current }) })
+    void guarded({ paneId: key, run: () => runOrphanClose({ rows: input.rows, bulk: input.bulk, confirmed: false, confirmedPaneIds: [], gen: closeGenRef.current }) })
   }
 
   const onPanelKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
@@ -476,6 +483,7 @@ export function ResourceSegment(): React.JSX.Element {
   })
   const orphans = snapshot?.orphans === undefined || snapshot.orphans === null ? null : sortOrphans({ rows: snapshot.orphans.filter((row) => !closedRef.current.has(row.workspaceId)), sort })
   const orphanSum = orphans === null ? null : orphanTotal(orphans)
+  const bulkTargets = orphans === null ? [] : bulkOrphanTargets(orphans)
   const appCells = snapshot === null ? null : measureCells(snapshot.app)
   const herdrCells = snapshot === null ? null : measureCells(snapshot.herdr)
   // C1-4 — 행에 사유가 있으면 CPU 칸 title 을 달지 않고 CPU 기준을 행 툴팁 끝으로(`rowTitles`).
@@ -585,15 +593,15 @@ export function ResourceSegment(): React.JSX.Element {
                 {ORPHAN_SECTION_LABEL}
                 {orphans === null ? null : ` (${orphans.length})`}
               </span>
-              {orphans !== null && orphans.length > 0 ? (
+              {bulkTargets.length > 0 ? (
                 <button
                   type="button"
                   className="statusbar-resource-close-all"
                   data-statusbar-resource-orphan-close-all
-                  title="목록의 카드 밖 workspace 를 모두 닫는다"
-                  onClick={() => startOrphanClose(orphans)}
+                  title={`주인 없는 줄(${ORPHAN_OWNERLESS_TOOLTIP.split(' — ')[0]})만 닫는다 — 개수를 한 번 확인한다`}
+                  onClick={() => startOrphanClose({ rows: bulkTargets, bulk: true })}
                 >
-                  모두 닫기
+                  {`주인 없는 ${bulkTargets.length}개 모두 닫기`}
                 </button>
               ) : <span />}
               <span className="statusbar-resource-cpu" data-statusbar-resource-cpu>{orphanSum === null ? RESOURCE_EMPTY : formatCpu(orphanSum.cpu)}</span>
@@ -608,7 +616,16 @@ export function ResourceSegment(): React.JSX.Element {
               return (
                 <div key={row.workspaceId} className="statusbar-resource-pane" data-statusbar-resource-orphan={row.workspaceId}>
                   <div className="statusbar-resource-line statusbar-resource-orphan-line" title={titles.row === null ? orphanTooltip(row) : `${orphanTooltip(row)}\n${titles.row}`}>
-                    <span className="statusbar-resource-name" data-statusbar-resource-orphan-path>{path}</span>
+                    <span className="statusbar-resource-name">
+                      <span
+                        className={`statusbar-resource-owner${row.ownerless ? ' is-ownerless' : ''}`}
+                        data-statusbar-resource-orphan-owner={row.ownerless ? 'ownerless' : 'owned'}
+                        title={row.ownerless ? ORPHAN_OWNERLESS_TOOLTIP : ORPHAN_OWNED_TOOLTIP}
+                      >
+                        {row.ownerless ? ORPHAN_OWNERLESS : ORPHAN_OWNED}
+                      </span>{' '}
+                      <span data-statusbar-resource-orphan-path>{path}</span>
+                    </span>
                     <span className="statusbar-resource-agent" data-statusbar-resource-agent>{orphanKindText(row)}</span>
                     <span className="statusbar-resource-cpu" data-statusbar-resource-cpu title={titles.cpu}>{cells.cpu}</span>
                     <span className="statusbar-resource-mem" data-statusbar-resource-memory>{cells.memory}</span>
@@ -621,7 +638,7 @@ export function ResourceSegment(): React.JSX.Element {
                     title="닫기"
                     onClick={() => {
                       if (closedRef.current.has(row.workspaceId)) return
-                      startOrphanClose([row])
+                      startOrphanClose({ rows: [row], bulk: false })
                     }}
                   >
                     ✕
@@ -656,32 +673,26 @@ export function ResourceSegment(): React.JSX.Element {
   })()
 
   const orphanConfirm = pendingOrphans === null ? null : (() => {
-    const { rows, running } = pendingOrphans
+    const { rows, running, bulk } = pendingOrphans
     const agentPaneIds = new Set(rows.flatMap((row) => (row.agents.length === 0 ? [] : row.paneIds)))
-    const copy = orphanCloseCopy({ running, agentPaneIds, count: rows.length })
+    const copy = orphanCloseCopy({ running, agentPaneIds, count: rows.length, bulk })
     const confirmedPaneIds = running.map((pane) => pane.paneId)
-    const labelOf = (workspaceId: string): string => {
-      const row = rows.find((item) => item.workspaceId === workspaceId)
-      return row === undefined ? workspaceId : orphanPathText(row)
-    }
     const key = `orphan:${rows.map((row) => row.workspaceId).join(',')}`
+    // 「모두 닫기」 는 닫을 줄 전부(개수 확인), 한 줄 닫기는 실행 중인 pane 만 보인다.
+    const confirmRows = bulk
+      ? rows.map((row) => ({ key: row.workspaceId, label: orphanPathText(row), foreground: running.filter((pane) => pane.tabId === row.workspaceId).flatMap((pane) => pane.foreground) }))
+      : running.map((pane) => {
+        const row = rows.find((item) => item.workspaceId === pane.tabId)
+        return { key: pane.paneId, label: row === undefined ? pane.tabId : orphanPathText(row), foreground: pane.foreground }
+      })
     return (
       <ConfirmClose
         key={`${key}|${confirmedPaneIds.join(',')}`}
         copy={copy}
-        rows={running.map((pane) => ({ key: pane.paneId, label: labelOf(pane.tabId), foreground: pane.foreground }))}
-        onConfirm={({ dontAskAgain }) => {
-          const patch = dontAskAgain && copy.dontAskAgain !== null ? copy.dontAskAgain.patch : null
+        rows={confirmRows}
+        onConfirm={() => {
           const gen = closeGenRef.current
-          void guarded({
-            paneId: key,
-            run: async () => {
-              // 기존 탭 닫기와 같다 — 체크 + 확인만 저장하고, 저장이 실패해도 사용자가 확인한 닫기는 진행한다.
-              if (patch !== null && !(await updateSettings(patch))) toast(CLOSE_SKIP_FAILED_NOTICE)
-              if (gen !== closeGenRef.current) return
-              await runOrphanClose({ rows, confirmed: true, confirmedPaneIds, gen })
-            },
-          })
+          void guarded({ paneId: key, run: () => runOrphanClose({ rows, bulk, confirmed: true, confirmedPaneIds, gen }) })
         }}
         onCancel={cancelClose}
       />

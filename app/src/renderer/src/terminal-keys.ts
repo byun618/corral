@@ -7,6 +7,8 @@
 // 패치 없는 herdr 의 Ghostty 인코더는 레거시 pane 에 `ESC[27;2;13~` 를 보낸다(00-analysis §9).
 // Alt·Ctrl+Enter 와 다른 수정자가 함께 눌린 Shift+Enter 는 건드리지 않는다(범위 밖 — 00-analysis §6).
 
+import type { IDisposable, Terminal } from '@xterm/xterm'
+
 /** Shift+Enter 의 CSI-u 시퀀스 (수정자 2 = Shift). */
 export const SHIFT_ENTER_SEQUENCE = '\x1b[13;2u'
 
@@ -40,5 +42,52 @@ export function terminalKeyHandler(send: (data: string) => void): (event: Keyboa
     event.stopPropagation()
     send(sequence)
     return false
+  }
+}
+
+/**
+ * 터미널에 Shift+Enter 가로채기를 건다. `term.input` 은 onData 로 나가 입력 경로(진단 링·termInput)를 그대로 탄다.
+ *
+ * LIFE-690 — 한글 조합 중 Shift+Enter 는 compositionend 와 keydown(Enter, keyCode 13, isComposing=false)이 **같은 태스크**로 온다.
+ * xterm 은 조합 글자를 compositionend 의 `setTimeout(0)` 뒤에 보내고, 그 사이 keydown 이 오면 자기 keydown 처리에서 먼저 확정하지만
+ * 가로챈 키는 그 처리까지 가지 않는다. 그래서 compositionend 와 같은 태스크에서 가로챈 시퀀스는 `setTimeout(0)` 으로 미룬다 —
+ * 같은 지연의 타이머는 등록 순서대로 돌므로(HTML 타이머 순서) xterm 의 조합 글자 전송 뒤에 나간다. 그 밖의 경우는 지금처럼 바로 보낸다.
+ * 이 순서는 xterm 의 글자 전송이 우리 `setTimeout(0)` 보다 늦지 않다는 데 기댄다 — 마이크로태스크로 앞당겨지면 그대로 맞고,
+ * 0 보다 긴 지연·rAF 로 늦춰지거나 xterm 의 compositionend 리스너가 이 리스너보다 늦게 등록되면 깨진다.
+ *
+ * `term.open()` 뒤에 부른다 — textarea 가 있어야 조합 확정을 추적한다(없으면 가로채기만 걸리고 수정 전처럼 바로 보낸다).
+ */
+export function attachTerminalKeys(input: { term: Terminal }): IDisposable {
+  const { term } = input
+  const textarea = term.textarea
+  const timers = new Set<ReturnType<typeof setTimeout>>()
+  const later = (run: () => void): void => {
+    const timer = setTimeout(() => {
+      timers.delete(timer)
+      run()
+    }, 0)
+    timers.add(timer)
+  }
+  /** compositionend 가 이 태스크에서 지나갔다 — xterm 의 조합 글자 전송이 아직 대기 중이다. */
+  let commitPending = false
+  const onCompositionEnd = (): void => {
+    commitPending = true
+    later(() => {
+      commitPending = false
+    })
+  }
+  textarea?.addEventListener('compositionend', onCompositionEnd)
+  term.attachCustomKeyEventHandler(
+    terminalKeyHandler((data) => {
+      if (commitPending) later(() => term.input(data))
+      else term.input(data)
+    }),
+  )
+  return {
+    dispose: () => {
+      textarea?.removeEventListener('compositionend', onCompositionEnd)
+      for (const timer of timers) clearTimeout(timer)
+      timers.clear()
+    },
   }
 }

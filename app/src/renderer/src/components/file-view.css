@@ -9,9 +9,12 @@
 /* 외부에서 지워진 파일 — 취소선(Orca `EditorFileTab` line-through, E5ⓒ). 설명에도(VS Code `iconlabel.css` 98–102행). */
 .main-tab-file.is-deleted .main-tab-file-label, .main-tab-file.is-deleted .main-tab-file-desc { text-decoration: line-through; }
 /* 같은 이름 구분 설명(LIFE-689 — VS Code `labelFormat: default` 의 `.label-description`) — 파일명 바로 뒤에 작고 흐리게.
-   탭 폭(`--tab-w`)이 고정이라 넘치면 **설명부터 준다**: 설명의 flex-shrink 를 크게 줘 설명이 다 줄어든(min-width 0) 뒤에야 파일명이 잘린다. */
-.main-tab-file .main-tab-file-label:has(+ .main-tab-file-desc) { flex: 0 1 auto; margin-right: 0; }
-.main-tab-file-desc { flex: 0 100000 auto; min-width: 0; margin: 0 4px 0 0.5em; font-size: 0.9em; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+   설명이 붙은 탭은 **줄지 않는다**(게이트 ① 결정 1 — VS Code `tabSizing: fit` 쪽): 폭 = 내용(파일명 + 설명 전체), 내용이 `--tab-w` 보다 좁으면 다른 탭과 같은 폭.
+   상한 없음(`shorten` 이 이미 최소 구분 성분만 남긴다). 넘치면 탭 줄의 기존 넘침 처리(스크롤·chevron·dock)가 맡는다. 설명 없는 탭은 그대로. */
+.main-tab-file.has-desc { flex-shrink: 0; width: auto; min-width: var(--tab-w); }
+@media (min-width: 1280px) { .main-tab-file.has-desc { min-width: var(--tab-w-wide); } }
+.main-tab-file.has-desc .main-tab-file-label { flex: 0 0 auto; margin-right: 0; }
+.main-tab-file-desc { flex: 0 0 auto; margin: 0 4px 0 0.5em; font-size: 0.9em; opacity: 0.7; white-space: nowrap; }
 /* 수정 점(LIFE-591 E1ⓑ) — 닫기 단추(16px) 자리에 채운 원 8px(VS Code 수정 탭 · Orca `size-1.5 rounded-full` 류), 비활성 탭에서도 보인다.
    탭 hover · 단추 키보드 포커스면 점을 걷고 닫기(×)를 보인다 — VS Code·Orca 와 같다. */
 .main-tab-file.is-dirty .main-tab-close { color: var(--fg-muted); }

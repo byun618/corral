@@ -72,6 +72,9 @@ describe('LIFE-689 K2ⓑ·K3 파일 탭 설명 요소', () => {
     // 설명은 라벨 뒤 별도 요소, 같은 제목 칸 안
     const title = host.querySelector('[data-file-tab="src/app/app.service.ts"] .main-tab-title')
     expect([...(title?.children ?? [])].map((node) => node.className)).toEqual(['main-tab-label main-tab-file-label', 'main-tab-file-desc'])
+    // 게이트 ① 결정 1 — 설명이 붙은 탭만 `has-desc`(줄지 않는 폭, file-view.css). 설명 없는 탭은 기존 고정 폭 그대로
+    expect(host.querySelector('[data-file-tab="src/app/app.service.ts"]')?.classList.contains('has-desc')).toBe(true)
+    expect(host.querySelector('[data-file-tab="src/main.ts"]')?.classList.contains('has-desc')).toBe(false)
   })
 
   it('이름이 안 겹치면 설명 요소 자체가 없다', () => {

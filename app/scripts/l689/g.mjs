@@ -1,11 +1,12 @@
-// LIFE-689 최종 관문 g1 — K5 격리 GUI 회차(S1·S2·S3 · K5ⓐ–ⓓ). l691/g.mjs 의 기동·입력·덤프 방식을 줄여 옮겼다.
+// LIFE-689 최종 관문 — K5 격리 GUI 회차(S1·S2·S3 · K5ⓐ–ⓓ). l691/g.mjs 의 기동·입력·덤프 방식을 줄여 옮겼다.
+// u1(게이트 ① 결정 1 — 설명 탭은 줄지 않는다): 판정을 U1–U4 로 바꿨다. g1 판(설명부터 줄기)은 커밋 9f345e79c 이전 이력.
 //
 // 격리: l689/up.sh(= l691/up.sh 사본) — userData·제어 소켓·ui-prefs·레지스트리 전부 ROOT(/tmp/l689g-*) 아래, herdr 는 레포 guard 바이너리의 이름 세션 `l689g-<꼬리>`.
 //   설치본·사용자 userData·사용자 herdr·실제 LA 무접촉. 앱은 빌드 산출물 사본(l689/fixture-app.sh — 창 showInactive)으로 띄운다.
 // 입력: 제어 소켓(click·dblclick·key = webContents.sendInputEvent) — OS 키 입력 없음.
 // 관측: 장면마다 캡처 PNG + DOM 덤프(탭별 라벨·설명 텍스트 · clientWidth/scrollWidth · computed font-style/text-decoration-line/flex/margin).
 // 판정: 항목마다 통과/미달. 기대값과 다르거나 타임아웃·예외면 미달 → exit 1.
-// 사용(app/ 에서): node scripts/l689/g.mjs --root /tmp/l689g-<x> --out <raw txt>
+// 사용(app/ 에서): node scripts/l689/g.mjs --root /tmp/l689g-<x> --out <raw txt> [--g1-s2 <g1 S2 덤프 json — U3 폭 비교 기준>]
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
@@ -100,17 +101,20 @@ const DUMP_JS = `(() => {
       file: t.dataset.fileTab ?? null,
       cls: t.className.split(/\\s+/).filter(Boolean),
       tabWidth: t.getBoundingClientRect().width,
+      tabStyle: (() => { const st = getComputedStyle(t); return { width: st.width, flex: st.getPropertyValue('flex'), minWidth: st.minWidth } })(),
       label: box(t.querySelector('.main-tab-label')),
       desc: box(t.querySelector('.main-tab-file-desc')),
     })),
   }))
-  return { windowWidth: window.innerWidth, tabW: getComputedStyle(document.documentElement).getPropertyValue('--tab-w').trim(), groups }
+  const strips = [...document.querySelectorAll('[data-main-tab-strip]')].map((strip) => ({ groupId: strip.dataset.mainTabStrip, clientWidth: strip.clientWidth, scrollWidth: strip.scrollWidth, chevrons: [...document.querySelectorAll('[data-group-chevron="' + strip.dataset.mainTabStrip + '"]')].map((c) => c.dataset.tabStripChevron) }))
+  const panels = { sidebar: !!document.querySelector('[data-sidebar]') && document.querySelector('[data-sidebar]').getBoundingClientRect().width > 0, rightPanel: document.querySelector('[data-right-panel]')?.dataset.rightPanel ?? null }
+  return { windowWidth: window.innerWidth, tabW: getComputedStyle(document.documentElement).getPropertyValue('--tab-w').trim(), panels, strips, groups }
 })()`
 async function dump(label) {
   const dom = await js(DUMP_JS)
   fs.mkdirSync(dumpDir, { recursive: true })
   fs.writeFileSync(path.join(dumpDir, `${label}.json`), JSON.stringify(dom, null, 2) + '\n')
-  log(`[덤프] ${label}`, { windowWidth: dom.windowWidth, tabW: dom.tabW, groups: dom.groups.map((g) => ({ groupId: g.groupId, tabs: g.tabs.map((t) => [t.file ?? t.tabId, t.label?.text ?? null, t.desc?.text ?? null]) })) })
+  log(`[덤프] ${label}`, { windowWidth: dom.windowWidth, tabW: dom.tabW, panels: dom.panels, strips: dom.strips, groups: dom.groups.map((g) => ({ groupId: g.groupId, tabs: g.tabs.map((t) => [t.file ?? t.tabId, t.label?.text ?? null, t.desc?.text ?? null]) })) })
   await shot(label)
   return dom
 }
@@ -209,6 +213,12 @@ async function run() {
   const s1 = await dump('S1-one-area')
   judge('창 폭 < 1280 · --tab-w 180px', s1.windowWidth < 1280 && s1.tabW === '180px', { windowWidth: s1.windowWidth, tabW: s1.tabW })
   judge('S1 같은 이름 둘 → …/app · …/push, main.ts 설명 없음', s1.groups.length === 1 && descOf(s1, 'src/app/app.service.ts') === '…/app' && descOf(s1, 'src/push/app.service.ts') === '…/push' && descOf(s1, 'src/main.ts') === null, {})
+  const s1Tabs = s1.groups[0]?.tabs ?? []
+  judge('U4 S1 조건 — 창 1200px · 양옆 패널 · 탭 4개 이상', s1.windowWidth === 1200 && s1.panels.sidebar && s1.panels.rightPanel === 'open' && s1Tabs.length >= 4, { panels: s1.panels, tabs: s1Tabs.length })
+  const fits = (t) => t.label.clientWidth >= t.label.scrollWidth && t.desc !== null && t.desc.clientWidth >= t.desc.scrollWidth
+  const sizes = (t) => ({ file: t.file, tabWidth: t.tabWidth, label: [t.label.clientWidth, t.label.scrollWidth], desc: t.desc && [t.desc.text, t.desc.clientWidth, t.desc.scrollWidth] })
+  const s1Desc = [tabOf(s1, 'src/app/app.service.ts'), tabOf(s1, 'src/push/app.service.ts')]
+  judge('U1·U4 S1 두 app.service.ts 파일명·설명 clientWidth >= scrollWidth · 탭 폭 >= --tab-w', s1Desc.every((t) => fits(t) && t.tabWidth >= 180 - 0.5), s1Desc.map(sizes))
 
   // K5ⓒ 터미널 탭 · 설명 없는 파일 탭 · 설명 있는 파일 탭의 .main-tab-label computed flex·margin
   const terminal = s1.groups.flatMap((g) => g.tabs).find((t) => t.file === null)
@@ -217,8 +227,13 @@ async function run() {
   const row = (what, tab) => ({ what, flex: tab?.label?.flex ?? null, margin: tab?.label?.margin ?? null })
   const rows = [row('터미널 탭', terminal), row('설명 없는 파일 탭', plain), row('설명 있는 파일 탭', described)]
   for (const r of rows) log(`[K5ⓒ] ${r.what} .main-tab-label flex=${r.flex} margin=${r.margin}`)
-  judge('K5ⓒ 터미널·설명 없는 파일 탭 라벨 = 기존 값(flex 1 1 auto · margin 0 4px 0 0), 설명 있는 탭 = flex 0 1 auto · margin 0',
-    terminal !== undefined && rows[0].flex === '1 1 auto' && rows[0].margin === '0px 4px 0px 0px' && rows[1].flex === rows[0].flex && rows[1].margin === rows[0].margin && rows[2].flex === '0 1 auto' && rows[2].margin === '0px', rows)
+  judge('K5ⓒ 터미널·설명 없는 파일 탭 라벨 = 기존 값(flex 1 1 auto · margin 0 4px 0 0), 설명 있는 탭 = flex 0 0 auto · margin 0',
+    terminal !== undefined && rows[0].flex === '1 1 auto' && rows[0].margin === '0px 4px 0px 0px' && rows[1].flex === rows[0].flex && rows[1].margin === rows[0].margin && rows[2].flex === '0 0 auto' && rows[2].margin === '0px', rows)
+  // U3 — 설명 없는 파일 탭·터미널 탭의 .main-tab 수축 규칙(computed flex·min-width) 은 기존 그대로, 설명 탭만 flex-shrink 0
+  const tabRows = [['터미널 탭', terminal], ['설명 없는 파일 탭', plain], ['설명 있는 파일 탭', described]].map(([what, tab]) => ({ what, tabWidth: tab?.tabWidth, ...tab?.tabStyle }))
+  for (const r of tabRows) log(`[U3] ${r.what} .main-tab width=${r.width} flex=${r.flex} min-width=${r.minWidth} rect=${r.tabWidth}`)
+  judge('U3 S1 터미널·설명 없는 파일 탭 .main-tab flex 0 1 auto · 같은 min-width, 설명 탭 flex 0 0 auto',
+    tabRows[0].flex === '0 1 auto' && tabRows[1].flex === '0 1 auto' && tabRows[0].minWidth === tabRows[1].minWidth && tabRows[2].flex === '0 0 auto', tabRows)
 
   // S2 그중 하나(src/push)를 다른 영역으로 — ⌘⌥D(오른쪽 새 영역으로)
   await click('[data-file-tab="src/push/app.service.ts"]')
@@ -230,6 +245,13 @@ async function run() {
   const appTab = tabOf(s2, 'src/app/app.service.ts')
   const pushTab = tabOf(s2, 'src/push/app.service.ts')
   judge('S2 다른 영역으로 옮김 → 두 영역 모두 설명 없음', s2.groups.length === 2 && appTab.groupId !== pushTab.groupId && fileTabs(s2).every((t) => t.desc === null), { app: appTab.groupId, push: pushTab.groupId })
+  if (args['g1-s2'] !== undefined) {
+    // U3 — 설명 탭이 없는 같은 배치(S2)에서 탭 폭이 g1(수정 전) 덤프와 같은가
+    const before = JSON.parse(fs.readFileSync(path.resolve(args['g1-s2']), 'utf8'))
+    const widths = (dom) => dom.groups.flatMap((g) => g.tabs.map((t) => `${g.groupId}:${t.file ?? 'terminal'}=${Math.round(t.tabWidth * 2) / 2}`))
+    const [was, now] = [widths(before), widths(s2)]
+    judge('U3 S2(설명 탭 없음) 탭 폭 = g1 덤프 값', JSON.stringify(was) === JSON.stringify(now), { g1: was, u1: now, g1File: args['g1-s2'] })
+  }
   await closeAllFiles()
   await until(async () => (await js(`document.querySelectorAll('.tab-group[data-tab-group]').length`)) === 1, { timeoutMs: 5_000, label: '영역 하나로' })
 
@@ -245,8 +267,9 @@ async function run() {
   await openFile(`${LONG_B}/x.ts`)
   const a = await dump('K5a-short-name-long-desc')
   const aTabs = [tabOf(a, `${LONG_A}/x.ts`), tabOf(a, `${LONG_B}/x.ts`)]
-  judge('K5ⓐ 파일명 clientWidth >= scrollWidth · 설명 clientWidth < scrollWidth', aTabs.every((t) => t.label.clientWidth >= t.label.scrollWidth && t.desc !== null && t.desc.clientWidth < t.desc.scrollWidth),
-    aTabs.map((t) => ({ file: t.file, tabWidth: t.tabWidth, label: [t.label.clientWidth, t.label.scrollWidth], desc: t.desc && [t.desc.text, t.desc.clientWidth, t.desc.scrollWidth] })))
+  const aStrip = a.strips[0]
+  judge('U4 K5ⓐ 긴 폴더 설명 — 파일명·설명 전체 보임', aTabs.every(fits), aTabs.map(sizes))
+  judge('U2·U4 K5ⓐ 탭 줄 넘침 → chevron', a.strips.length === 1 && aStrip.scrollWidth > aStrip.clientWidth && aStrip.chevrons.length > 0, aStrip)
   await closeAllFiles()
 
   // K5ⓑ 파일명 · 설명 둘 다 김
@@ -254,8 +277,7 @@ async function run() {
   await openFile(`${LONG_B}/${LONG_NAME}`)
   const b = await dump('K5b-long-name-long-desc')
   const bTabs = [tabOf(b, `${LONG_A}/${LONG_NAME}`), tabOf(b, `${LONG_B}/${LONG_NAME}`)]
-  judge('K5ⓑ 설명 clientWidth ≈ 0(≤ 1) · 파일명 clientWidth < scrollWidth', bTabs.every((t) => t.desc !== null && t.desc.clientWidth <= 1 && t.label.clientWidth < t.label.scrollWidth),
-    bTabs.map((t) => ({ file: t.file, tabWidth: t.tabWidth, label: [t.label.clientWidth, t.label.scrollWidth], desc: t.desc && [t.desc.text, t.desc.clientWidth, t.desc.scrollWidth] })))
+  judge('U1 K5ⓑ 긴 파일명 + 긴 설명 — 파일명·설명 전체 보임(상한 없음)', bTabs.every(fits), bTabs.map(sizes))
   await closeAllFiles()
 
   // K5ⓓ 미리보기(단일 클릭) · 삭제된 파일(외부에서 지움) — 파일명·설명 둘 다 이탤릭/취소선

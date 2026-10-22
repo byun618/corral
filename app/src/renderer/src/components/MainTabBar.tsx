@@ -486,7 +486,7 @@ function FileTab({
   ]
   return (
     <div
-      className={`main-tab main-tab-file ${active ? 'is-active' : ''} ${hasTabsToRight ? 'has-right' : ''} ${item.preview ? 'is-preview' : ''} ${item.deleted ? 'is-deleted' : ''} ${item.dirty ? 'is-dirty' : ''}`}
+      className={`main-tab main-tab-file ${active ? 'is-active' : ''} ${hasTabsToRight ? 'has-right' : ''} ${item.preview ? 'is-preview' : ''} ${item.deleted ? 'is-deleted' : ''} ${item.dirty ? 'is-dirty' : ''} ${description === null ? '' : 'has-desc'}`}
       data-main-tab={item.tabId}
       data-file-dirty={item.dirty ? 'true' : 'false'}
       data-file-tab={item.rel}

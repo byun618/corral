@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-/* global document, window -- happy-dom 환경 */
+/* global document, window, console -- happy-dom 환경 */
 // LIFE-691 f1 A — 재기동 때 `getState` 와 `getUiPrefs`(배치 hydrate) 도착 순서와 무관하게 첫 선택 pane 이 기준 동작(herdr 포커스)이다.
 // 리뷰 r1 프로브(`raw/review/claude-r1-raw/probe/zz-review-probe-startup.test.tsx`)와 같은 결: 저장 활성 t2, herdr 포커스 p2(t2), 첫 탭 t1(p1).
 // 고치기 전 HEAD(df6d5c394)는 state 먼저에서 p1 (화면 t2 와 갈림).

@@ -23,7 +23,6 @@ export function tabKindOf(tabId: string): TabKind {
   return isFileTabId(tabId) ? { kind: 'file', tabId, rel: tabId.slice(FILE_TAB_PREFIX.length) } : { kind: 'terminal', tabId }
 }
 
-/** 파일 이름(탭 제목) — 경로 마지막 성분. */
 /**
  * 터미널 pane 을 대상으로 하는 단축키(⌘D·⌘⇧D 분할 · ⌘⌥방향 인접 포커스 · ⌘⇧Z 줌)의 대상 — 활성 영역의 활성 탭이 **파일 탭이면 없음**(무동작).
  * 파일 탭으로 바꿔도 `selectedPane` 은 직전 터미널 pane 에 남아 있어, 그대로 쓰면 보이지 않는 터미널을 분할·줌한다(수정 r1 R1-B).
@@ -61,9 +60,124 @@ export function closeFollowTarget(input: { pending: CloseFollow | null; worktree
   return activeTabId
 }
 
+/** 파일 이름(탭 제목) — 경로 마지막 성분. */
 export function fileTabLabel(rel: string): string {
   const parts = rel.split('/')
   return parts[parts.length - 1] ?? rel
+}
+
+/** 부모 폴더(worktree 루트 기준 상대) — 루트 파일은 `''`(VS Code `labelService.getUriLabel(dirname, { relative: true })` 와 같다). */
+function parentOf(rel: string): string {
+  const at = rel.lastIndexOf('/')
+  return at < 0 ? '' : rel.slice(0, at)
+}
+
+/**
+ * 파일 탭 설명 (LIFE-689 — VS Code `workbench.editor.labelFormat: default`, `multiEditorTabsControl.ts` `shortenTabLabels` 4df8bb183f0e).
+ * 입력 = **한 영역의 파일 탭** 상대 경로들(터미널 탭은 부르는 쪽이 뺀다). 돌려주는 값 = 설명이 붙는 탭만 `rel → 설명`.
+ *   · 파일 이름이 그 영역에서 하나뿐이면 설명 없음
+ *   · 같은 이름 묶음의 부모 폴더가 1종이면 설명 없음, 2종 이상이면 서로 다른 부모 폴더들을 `shorten` 한 값(루트 `''` → `./`)
+ * VS Code 의 절대경로 재비교(`useLongDescriptions`)는 생략 — 한 worktree 안에서 상대 경로가 같으면 같은 탭이다.
+ */
+export function fileTabDescriptions(rels: readonly string[]): Map<string, string> {
+  const byName = new Map<string, string[]>()
+  for (const rel of rels) {
+    const name = fileTabLabel(rel)
+    byName.set(name, [...(byName.get(name) ?? []), rel])
+  }
+  const descriptions = new Map<string, string>()
+  for (const same of byName.values()) {
+    if (same.length < 2) continue
+    const parents = [...new Set(same.map(parentOf))]
+    if (parents.length < 2) continue
+    const short = shorten(parents)
+    for (const rel of same) descriptions.set(rel, short[parents.indexOf(parentOf(rel))] ?? '')
+  }
+  return descriptions
+}
+
+const ELLIPSIS = '\u2026'
+const SEP = '/'
+const HOME = '~'
+
+/**
+ * VS Code `labels.ts` `shorten`(4df8bb183f0e, 214–324행) 이식 — 경로마다 **다른 경로에 안 나오는 가장 짧은 연속 성분**을 뒤에서부터 찾고 잘린 쪽에 `…`.
+ * 구분자는 `/` 고정(상대 경로만 들어온다). 원문의 URL 스킴·UNC 접두 분기는 뺐다(LIFE-689 범위 밖) — `/`·`~` 접두와 드라이브(`x:`) 보존은 원문 그대로.
+ * 빈 문자열 = `./`, `null` 은 그대로(원문 `!originalPath` 분기 — 시험 사례 `['', null]`).
+ */
+export function shorten<T extends string | null>(paths: readonly T[]): (string | T)[] {
+  const shortened: (string | T)[] = new Array<string | T>(paths.length)
+  let match = false
+  for (const [pathIndex, originalPath] of paths.entries()) {
+    if (originalPath === '') {
+      shortened[pathIndex] = `.${SEP}`
+      continue
+    }
+    if (typeof originalPath !== 'string') {
+      shortened[pathIndex] = originalPath
+      continue
+    }
+    match = true
+
+    // `/etc`·`~/etc` 접두는 떼어 두었다가 나중에 붙인다
+    let prefix = ''
+    let trimmedPath: string = originalPath
+    if (trimmedPath.indexOf(SEP) === 0) {
+      prefix = SEP
+      trimmedPath = trimmedPath.slice(SEP.length)
+    } else if (trimmedPath.indexOf(HOME) === 0) {
+      prefix = HOME
+      trimmedPath = trimmedPath.slice(HOME.length)
+    }
+
+    // 처음 찾은 가장 짧은 부분 경로
+    const segments = trimmedPath.split(SEP)
+    for (let subpathLength = 1; match && subpathLength <= segments.length; subpathLength++) {
+      for (let start = segments.length - subpathLength; match && start >= 0; start--) {
+        match = false
+        let subpath = segments.slice(start, start + subpathLength).join(SEP)
+
+        // 다른 어떤 경로에도 없는가
+        for (let otherPathIndex = 0; !match && otherPathIndex < paths.length; otherPathIndex++) {
+          const otherPath = paths[otherPathIndex]
+          // 끝 성분은 따로 본다 — 'x' 와 'x/...' 는 겹침이 아니다
+          if (otherPathIndex !== pathIndex && typeof otherPath === 'string' && otherPath !== '' && otherPath.indexOf(subpath) > -1) {
+            const isSubpathEnding = start + subpathLength === segments.length
+            // 구분자를 앞에 붙여 `endsWith` 가 성분 단위로 보게 한다 — 부분 경로가 맨 앞이거나 상대 경로에 폴더가 하나뿐이면 붙이지 않는다
+            const subpathWithSep = start > 0 && otherPath.indexOf(SEP) > -1 ? SEP + subpath : subpath
+            const isOtherPathEnding = otherPath.endsWith(subpathWithSep)
+            match = !isSubpathEnding || isOtherPathEnding
+          }
+        }
+
+        if (!match) {
+          let result = ''
+          // 드라이브·루트 접두 보존
+          const first = segments[0] ?? ''
+          if (first.endsWith(':') || prefix !== '') {
+            if (start === 1) {
+              // 부분 경로를 드라이브 접두까지 늘린다
+              start = 0
+              subpathLength++
+              subpath = first + SEP + subpath
+            }
+            if (start > 0) result = first + SEP
+            result = prefix + result
+          }
+          if (start > 0) result = result + ELLIPSIS + SEP
+          result = result + subpath
+          if (start + subpathLength < segments.length) {
+            // 마지막 성분이 비었으면 끝 구분자를 남긴다
+            result = start + subpathLength === segments.length - 1 && segments[segments.length - 1] === '' ? result + SEP : result + SEP + ELLIPSIS
+          }
+          shortened[pathIndex] = result
+        }
+      }
+    }
+    // 유일한 부분 경로가 없으면 원래 경로
+    if (match) shortened[pathIndex] = originalPath
+  }
+  return shortened
 }
 
 /** 그 영역의 미리보기 탭이 아직 그 영역에 있는 파일 탭일 때만 — 손으로 고친 파일·옛 값 대비. */

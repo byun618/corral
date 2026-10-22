@@ -54,7 +54,7 @@ import type { LaunchAgent, OpenTabSearchEntry } from '../tab-create-menu.js'
 import { TabCreateMenu } from './TabCreateMenu.js'
 import { FileIcon } from './ExplorerIcons.js'
 import { ContextMenu, type MenuEntry } from './ContextMenu.js'
-import { fileTabLabel } from '../file-tabs.js'
+import { fileTabDescriptions, fileTabLabel } from '../file-tabs.js'
 import './file-view.css'
 
 /**
@@ -436,6 +436,7 @@ type FileTabMenuAction = 'close' | 'keep' | 'close-others' | 'close-right' | 'sp
  */
 function FileTab({
   item,
+  description,
   active,
   dock,
   hasTabsToRight,
@@ -450,6 +451,8 @@ function FileTab({
   onDragStart,
 }: {
   item: Extract<GroupTabItem, { kind: 'file' }>
+  /** 같은 영역에 같은 이름 파일 탭이 있을 때 붙는 부모 폴더 설명(LIFE-689 — `fileTabDescriptions`). 없으면 null. */
+  description: string | null
   active: boolean
   dock: boolean
   hasTabsToRight: boolean
@@ -483,7 +486,7 @@ function FileTab({
   ]
   return (
     <div
-      className={`main-tab main-tab-file ${active ? 'is-active' : ''} ${hasTabsToRight ? 'has-right' : ''} ${item.preview ? 'is-preview' : ''} ${item.deleted ? 'is-deleted' : ''} ${item.dirty ? 'is-dirty' : ''}`}
+      className={`main-tab main-tab-file ${active ? 'is-active' : ''} ${hasTabsToRight ? 'has-right' : ''} ${item.preview ? 'is-preview' : ''} ${item.deleted ? 'is-deleted' : ''} ${item.dirty ? 'is-dirty' : ''} ${description === null ? '' : 'has-desc'}`}
       data-main-tab={item.tabId}
       data-file-dirty={item.dirty ? 'true' : 'false'}
       data-file-tab={item.rel}
@@ -521,6 +524,7 @@ function FileTab({
       <FileIcon name={label} />
       <span className="main-tab-title">
         <span className="main-tab-label main-tab-file-label">{label}</span>
+        {description === null ? null : <span className="main-tab-file-desc">{description}</span>}
       </span>
       {/* 수정 점(LIFE-591 E1ⓑ) — VS Code `.tab.dirty > .tab-actions`·Orca 처럼 **닫기 단추 자리**에 채운 원, 탭 hover·단추 포커스면 닫기(×). 단추 안 `::before` 로 그린다(file-view.css). */}
       <button
@@ -787,6 +791,8 @@ export function GroupHeader({
   const activeTab = tabs.find((tab) => tab.tabId === activeTabId) ?? null
   const activeTabLabel = activeTab?.label ?? ''
   const tabOrder = shown.map((item) => (item.kind === 'terminal' ? item.tab.tabId : item.tabId))
+  // LIFE-689 — 같은 이름 구분 설명은 **이 영역의 파일 탭끼리만** 계산한다(VS Code 는 그룹 단위, 터미널 탭은 파일 이름이 없다).
+  const fileDescriptions = fileTabDescriptions(shown.flatMap((item) => (item.kind === 'file' ? [item.rel] : [])))
   return (
     <div
       className={`main-tabbar ${activeGroup ? 'is-active-group' : ''}`}
@@ -822,6 +828,7 @@ export function GroupHeader({
             <FileTab
               key={item.tabId}
               item={item}
+              description={fileDescriptions.get(item.rel) ?? null}
               active={item.tabId === activeTabId}
               dock={item.tabId === activeTabId && !tabDragActive}
               hasTabsToRight={index < shown.length - 1}

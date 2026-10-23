@@ -1264,6 +1264,11 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
 .modal-meta-line { margin: 0; display: flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 10.5px; color: var(--st-dirty); }
 .modal-list { margin: 0; padding: 0 0 0 18px; }
 .modal-list li { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; color: var(--fg-menu); }
+/* LIFE-693 — 실행 중 확인 창(ConfirmClose)만: 뷰포트를 넘으면 머리(제목·✕)·바닥(취소·확인)은 늘 보이고 본문만 스크롤.
+   선례 `.modal-ghostty-import`(settings.css). 본문은 overflow 가 있어 min-height 가 0 으로 풀려 줄어들고, 머리·바닥은 줄지 않게 막는다. */
+.modal-confirm-close { max-height: calc(100vh - 80px); display: flex; flex-direction: column; }
+.modal-confirm-close > .modal-head, .modal-confirm-close > .modal-footer { flex-shrink: 0; }
+.modal-confirm-close > .modal-body { min-height: 0; overflow-y: auto; }
 
 .dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; }
 .dot.tone-dirty { background: var(--st-dirty); }

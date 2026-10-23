@@ -3,6 +3,7 @@
 // LIFE-495 — 문구는 `close-copy.ts`(K5 에이전트/명령/핀), 탭 여럿을 닫을 때는 탭마다 한 줄(라벨 + 실행 중 프로세스)로 모아 한 번에 묻는다.
 // LIFE-516 — `copy.dontAskAgain` 이 있으면 본문 아래 「다시 묻지 않음」 체크박스. 확인 때 `onConfirm({ dontAskAgain })` 로 체크 여부를 넘긴다
 // (저장은 부른 쪽). 체크 상태는 창이 새로 열릴 때마다 꺼짐 — 부른 쪽이 창마다 `key` 를 바꾼다.
+// LIFE-693 — 줄이 많아 창이 뷰포트를 넘으면 머리·바닥은 그대로 두고 본문만 세로 스크롤(`modal-confirm-close`, styles.css).
 import { useState } from 'react'
 import type { CloseCopy } from '../close-copy.js'
 import { DontAskAgain } from './DontAskAgain.js'
@@ -25,7 +26,7 @@ export function ConfirmClose({
   return (
     <div className="modal-scrim" data-modal-scrim onClick={onCancel}>
       <div
-        className="modal modal-confirm"
+        className="modal modal-confirm modal-confirm-close"
         data-confirm-close-modal
         data-confirm-close-kind={copy.kind}
         onClick={(event) => event.stopPropagation()}
@@ -38,7 +39,7 @@ export function ConfirmClose({
             ✕
           </button>
         </div>
-        <div className="modal-body">
+        <div className="modal-body" data-confirm-close-scroll>
           {copy.body.map((line, index) => (
             <p key={index} className="modal-desc" data-confirm-close-body={index}>
               {line}

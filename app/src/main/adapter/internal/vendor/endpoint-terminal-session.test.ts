@@ -5,7 +5,7 @@
 //      — bridge 는 벤더 금지(사용자 지시: 참고만), create() 는 R3 범위라 세션에서 strip 됨.
 //      남긴 것: EndpointTerminalSession describe 전체 + 마우스 top-level 2건 + cropFrame describe
 //   ④ (LIFE-544) 간헐 실패 7건의 고정 대기를 조건 대기(`until`)로, 500ms 보류 타이머와 경합하던
-//      4건(first visible frame ×3·continuous stale frames)은 제품 타이머만 가짜 시계(`fakeProductTimers`)로
+//      4건(first visible frame ×3·continuous stale frames)은 제품 타이머만 가짜 시계(`fakeProductTimers`)로 바꿨다
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as net from "node:net";
 import * as path from "node:path";

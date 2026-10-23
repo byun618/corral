@@ -53,7 +53,7 @@ import 경로(`./thin-client` → `./frame-types`, `../utils/logger` → `./logg
 
 | 무엇 | 왜 |
 | --- | --- |
-| 헬퍼 `until(label, check, budgetMs)` 추가 — 진짜 `setTimeout` 으로 5ms 폴링, 예산을 폴링 횟수로 센다. 넘으면 `expect.fail("missing <label> …")` | 고정 대기 대신 조건 대기. 이벤트 루프가 부하로 멈춰도 예산이 벽시계로 깎이지 않고, 오지 않으면 vitest 5초 전에 단언 오류로 끝난다 |
+| 헬퍼 `until(label, check, budgetMs)` 추가 — 진짜 `setTimeout` 으로 5ms 폴링, 예산을 폴링 횟수로 센다. 넘으면 `expect.fail("missing <label> …")` | 고정 대기 대신 조건 대기. 이벤트 루프가 부하로 멈춰도 예산이 벽시계로 깎이지 않고, 오지 않으면 단언 오류로 끝난다 — 벽시계 상한은 fix r1 의 천장(테스트 시작부터 4000ms)이 맡는다. 정지가 천장을 넘어 계속되면 천장 오류가 5초 뒤에 날 수 있다 |
 | 헬퍼 `fakeProductTimers()`(`vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })`)·`surfaceLog()`(세션 debug 로그의 `surfaceRevision` 수집) 추가 | 제품의 `FIT_DEFER_MS`(500ms) 보류 기한이 실시간이라 테스트 단계와 경합했다. 제품 타이머만 가짜 시계로 두고 테스트가 시간을 넘긴다. 소켓은 실제로 돈다. 처리 여부는 기존 계측 로그(벤더 수정 ③)로 본다 |
 | `corrects a one-cell overshoot` ×2: `sleep(60)` 앞에 `until("80x24 frame")` | 보정 왕복이 60ms 를 넘으면 실패했다. `sleep(60)` 은 수렴 뒤 "추가 보정 없음" 관측 창으로 남긴다 |
 | `first visible frame fits …` ×3: 가짜 제품 타이머, `sleep(60)`→`until("stale surface")`+`advanceTimersByTime(60)`, 두 번째 `sleep(60)`→`until("settled frame")`, `sleep(550)`→`advanceTimersByTime(550)` | 부하 정지가 500ms 를 넘기면 보류 프레임이 settle 보다 먼저 나왔다 — 조건 대기만으로는 안 닫힌다(RESULT 근거) |

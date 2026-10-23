@@ -31,7 +31,7 @@ for step in typecheck test nodetest check:boundary lint; do
   [[ $step != lint && $code != 0 ]] && failed+=($step)
 done
 out=$raw/$label-lint-diff.txt
-{ echo "# 입력: r1-lint-base.txt · $label-lint.txt. 머리줄·exit 줄·빈 줄·npm 머리 제외, worktree 경로 제거"
+{ echo "# 입력: r1-lint-base.txt · $label-lint.txt. 머리줄·exit 줄·빈 줄·npm 머리 제외, 첫 …/app/ 접두(/private 포함) 제거"
   echo "# 기준 $(tail -1 $raw/r1-lint-base.txt) · $(grep -E '^✖' $raw/r1-lint-base.txt)"
   echo "# 이번 $(tail -1 $raw/$label-lint.txt) · $(grep -E '^✖' $raw/$label-lint.txt)"
   diff <(lint_body $raw/r1-lint-base.txt) <(lint_body $raw/$label-lint.txt)

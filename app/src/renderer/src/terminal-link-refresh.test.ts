@@ -1,0 +1,302 @@
+// @vitest-environment happy-dom
+// LIFE-573 — 링크 행 캐시 무효화·정지 포인터 재평가(C1·C2·C3·C6 단위), 재질의 상한(C5), 비공개 모양 불일치 시 현재 동작(C4), dispose 정리(제약 5).
+// Linkifier 는 xterm 6.0.0 의 캐시 규칙만 흉내 낸 가짜다 — 같은 칸이면 hover 를 건너뛰고, 같은 행이면 캐시를 쓴다(질의 0).
+// 실제 Linkifier 경로(합성 마우스 → provider → 열림)는 네이티브 관문 몫이다. 실제 @xterm/xterm 에 붙는지(모양 일치)는 끝의 한 건이 본다.
+import { Terminal } from '@xterm/xterm'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { attachLinkRefresh, LINK_REFRESH_INTERVAL_MS, type LinkRefreshTerminal } from './terminal-link-refresh.js'
+
+type Cell = { x: number; y: number }
+
+/** xterm 6.0.0 Linkifier 의 캐시 단락 ①·② 만 옮긴 가짜. `queries` = provider 를 다시 물은 횟수. clientX/Y 가 곧 칸(1 기반). */
+class FakeLinkifier {
+  _element: HTMLElement = document.createElement('div')
+  _activeLine = -1
+  _lastBufferCell: Cell | undefined = undefined
+  _isMouseOut = true
+  _lastMouseEvent: MouseEvent | undefined = undefined
+  _currentLink: object | undefined = undefined
+  queries = 0
+
+  constructor() {
+    this._element.addEventListener('mouseleave', () => {
+      this._isMouseOut = true
+      this._currentLink = undefined
+    })
+  }
+
+  _handleMouseMove(event: MouseEvent): void {
+    this._lastMouseEvent = event
+    this._isMouseOut = false
+    const position = { x: event.clientX, y: event.clientY }
+    const last = this._lastBufferCell
+    if (last !== undefined && last.x === position.x && last.y === position.y) return
+    if (this._activeLine !== position.y) {
+      this.queries++
+      this._activeLine = position.y
+    }
+    this._lastBufferCell = position
+  }
+
+  move(cell: Cell): void {
+    this._handleMouseMove(new MouseEvent('mousemove', { clientX: cell.x, clientY: cell.y }))
+  }
+}
+
+type FakeTerm = LinkRefreshTerminal & { _core: unknown; render(range?: { start: number; end: number }): void; listeners(): number }
+
+function fakeTerm(input: { core: unknown; viewportY?: number }): FakeTerm {
+  const listeners = new Set<(event: { start: number; end: number }) => void>()
+  return {
+    _core: input.core,
+    buffer: { active: { viewportY: input.viewportY ?? 0 } },
+    onRender: (listener) => {
+      listeners.add(listener)
+      return { dispose: () => listeners.delete(listener) }
+    },
+    render: (range = { start: 0, end: 23 }) => listeners.forEach((listener) => listener(range)),
+    listeners: () => listeners.size,
+  }
+}
+
+function setup(): { linkifier: FakeLinkifier; term: FakeTerm; refresh: ReturnType<typeof attachLinkRefresh> } {
+  const linkifier = new FakeLinkifier()
+  const term = fakeTerm({ core: { linkifier } })
+  const refresh = attachLinkRefresh({ term })
+  return { linkifier, term, refresh }
+}
+
+beforeEach(() => {
+  vi.useFakeTimers()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+describe('정지 포인터 재평가 (C1)', () => {
+  it('렌더 뒤 간격이 지나면 마지막 포인터로 한 번 다시 묻는다', () => {
+    const { linkifier, term, refresh } = setup()
+    expect(refresh.active).toBe(true)
+    linkifier.move({ x: 3, y: 5 })
+    expect(linkifier.queries).toBe(1)
+    term.render()
+    // 캐시는 즉시 잊지만 질의는 아직 없다.
+    expect(linkifier._activeLine).toBe(-1)
+    expect(linkifier.queries).toBe(1)
+    vi.advanceTimersByTime(LINK_REFRESH_INTERVAL_MS - 1)
+    expect(linkifier.queries).toBe(1)
+    vi.advanceTimersByTime(1)
+    expect(linkifier.queries).toBe(2)
+    expect(linkifier._activeLine).toBe(5)
+    expect(linkifier._lastBufferCell).toEqual({ x: 3, y: 5 })
+  })
+
+  it('예약 중 렌더가 이어져도 예약을 미루지 않는다 — 스트리밍 중에도 간격마다 1회(C5ⓑ 상한)', () => {
+    const { linkifier, term } = setup()
+    linkifier.move({ x: 3, y: 5 })
+    // 10초 동안 10ms 마다 전체 리페인트.
+    for (let t = 0; t < 10_000; t += 10) {
+      term.render()
+      vi.advanceTimersByTime(10)
+    }
+    const requeries = linkifier.queries - 1
+    expect(requeries).toBeLessThanOrEqual(10_000 / LINK_REFRESH_INTERVAL_MS)
+    // 굶지 않는다 — 꼬리 디바운스였다면 0 이다.
+    expect(requeries).toBeGreaterThanOrEqual(10_000 / LINK_REFRESH_INTERVAL_MS - 1)
+  })
+})
+
+describe('같은 행 안 이동 (C2·C3)', () => {
+  it('렌더 뒤 같은 행 다른 칸으로 옮기면 캐시를 쓰지 않고 다시 묻는다 — 예약은 겹쳐 묻지 않는다', () => {
+    const { linkifier, term } = setup()
+    linkifier.move({ x: 3, y: 5 })
+    term.render()
+    linkifier.move({ x: 12, y: 5 })
+    expect(linkifier.queries).toBe(2)
+    vi.advanceTimersByTime(LINK_REFRESH_INTERVAL_MS)
+    expect(linkifier.queries).toBe(2)
+  })
+
+  it('렌더가 없으면 같은 행 이동은 여전히 캐시를 쓴다(질의 0)', () => {
+    const { linkifier } = setup()
+    linkifier.move({ x: 3, y: 5 })
+    linkifier.move({ x: 12, y: 5 })
+    vi.advanceTimersByTime(1000)
+    expect(linkifier.queries).toBe(1)
+  })
+})
+
+describe('#4298 경로와 겹치지 않음 (제약 4)', () => {
+  it('링크가 잡혀 있으면 렌더에 아무것도 안 한다', () => {
+    const { linkifier, term } = setup()
+    linkifier.move({ x: 3, y: 5 })
+    linkifier._currentLink = {}
+    term.render()
+    expect(linkifier._activeLine).toBe(5)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('예약 뒤 링크가 잡히면 예약된 재평가를 그만둔다', () => {
+    const { linkifier, term } = setup()
+    linkifier.move({ x: 3, y: 5 })
+    term.render()
+    linkifier._currentLink = {}
+    vi.advanceTimersByTime(LINK_REFRESH_INTERVAL_MS)
+    expect(linkifier.queries).toBe(1)
+  })
+})
+
+describe('렌더 범위', () => {
+  it('캐시된 행이 렌더 범위 밖이면 잊지 않는다', () => {
+    const { linkifier, term } = setup()
+    linkifier.move({ x: 3, y: 5 })
+    // 0 기반 렌더 행 9..9 = 1 기반 버퍼 행 10.
+    term.render({ start: 9, end: 9 })
+    expect(linkifier._activeLine).toBe(5)
+    expect(vi.getTimerCount()).toBe(0)
+    // 0 기반 4 = 1 기반 5 — 범위 안.
+    term.render({ start: 4, end: 4 })
+    expect(linkifier._activeLine).toBe(-1)
+  })
+
+  it('viewportY 만큼 밀린 버퍼 행으로 비교한다', () => {
+    const linkifier = new FakeLinkifier()
+    const term = fakeTerm({ core: { linkifier }, viewportY: 10 })
+    attachLinkRefresh({ term })
+    linkifier.move({ x: 3, y: 15 })
+    term.render({ start: 4, end: 4 })
+    expect(linkifier._activeLine).toBe(-1)
+  })
+})
+
+describe('포인터가 밖 (C5ⓐ·C6)', () => {
+  it('포인터가 밖이면 10초 스트리밍 동안 질의 0·예약 0', () => {
+    const { linkifier, term } = setup()
+    linkifier.move({ x: 3, y: 5 })
+    linkifier._element.dispatchEvent(new MouseEvent('mouseleave'))
+    const before = linkifier.queries
+    for (let t = 0; t < 10_000; t += 16) {
+      term.render()
+      expect(vi.getTimerCount()).toBe(0)
+      vi.advanceTimersByTime(16)
+    }
+    expect(linkifier.queries).toBe(before)
+  })
+
+  it('처음부터 포인터가 들어온 적이 없으면 렌더에 아무것도 안 한다', () => {
+    const { linkifier, term } = setup()
+    term.render()
+    vi.advanceTimersByTime(1000)
+    expect(linkifier.queries).toBe(0)
+  })
+
+  it('밖에 나갔다 같은 칸으로 돌아오면 다시 묻는다', () => {
+    const { linkifier } = setup()
+    linkifier.move({ x: 3, y: 5 })
+    linkifier._element.dispatchEvent(new MouseEvent('mouseleave'))
+    expect(linkifier.queries).toBe(1)
+    linkifier.move({ x: 3, y: 5 })
+    expect(linkifier.queries).toBe(2)
+  })
+
+  it('(양성 대조) 붙이지 않으면 같은 칸 복귀는 hover 를 건너뛴다', () => {
+    const linkifier = new FakeLinkifier()
+    linkifier.move({ x: 3, y: 5 })
+    linkifier._element.dispatchEvent(new MouseEvent('mouseleave'))
+    linkifier.move({ x: 3, y: 5 })
+    expect(linkifier.queries).toBe(1)
+  })
+})
+
+describe('dispose (제약 5)', () => {
+  it('예약된 타이머·렌더 리스너·mouseleave 리스너를 거둔다', () => {
+    const { linkifier, term, refresh } = setup()
+    linkifier.move({ x: 3, y: 5 })
+    term.render()
+    expect(vi.getTimerCount()).toBe(1)
+    expect(term.listeners()).toBe(1)
+    refresh.dispose()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(term.listeners()).toBe(0)
+    vi.advanceTimersByTime(1000)
+    expect(linkifier.queries).toBe(1)
+    // mouseleave 가 더는 캐시를 잊지 않는다.
+    linkifier.move({ x: 4, y: 6 })
+    linkifier._element.dispatchEvent(new MouseEvent('mouseleave'))
+    expect(linkifier._activeLine).toBe(6)
+  })
+})
+
+describe('비공개 모양 불일치 → 현재 동작 (C4)', () => {
+  /** 모양 하나를 깨뜨린 Linkifier. 렌더·leave 가 예외 없이 아무것도 바꾸지 않아야 한다. */
+  const broken: Array<[string, () => unknown]> = [
+    ['_core 없음', () => undefined],
+    ['linkifier 없음', () => ({})],
+    ['linkifier 가 원시값', () => ({ linkifier: 1 })],
+    ['_activeLine 이 문자열', () => ({ linkifier: Object.assign(new FakeLinkifier(), { _activeLine: '-1' }) })],
+    ['_isMouseOut 없음', () => ({ linkifier: Object.assign(new FakeLinkifier(), { _isMouseOut: undefined }) })],
+    ['_lastBufferCell 이 숫자', () => ({ linkifier: Object.assign(new FakeLinkifier(), { _lastBufferCell: 3 }) })],
+    ['_currentLink 가 null', () => ({ linkifier: Object.assign(new FakeLinkifier(), { _currentLink: null }) })],
+    ['_lastMouseEvent 가 문자열', () => ({ linkifier: Object.assign(new FakeLinkifier(), { _lastMouseEvent: 'x' }) })],
+    ['_element 가 HTMLElement 아님', () => ({ linkifier: Object.assign(new FakeLinkifier(), { _element: {} }) })],
+    ['_handleMouseMove 없음', () => ({ linkifier: Object.assign(new FakeLinkifier(), { _handleMouseMove: undefined }) })],
+  ]
+
+  it.each(broken)('%s — active false, 렌더해도 예외·변경 없음', (_name, core) => {
+    const term = fakeTerm({ core: core() })
+    const refresh = attachLinkRefresh({ term })
+    expect(refresh.active).toBe(false)
+    expect(term.listeners()).toBe(0)
+    expect(() => term.render()).not.toThrow()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(() => refresh.dispose()).not.toThrow()
+  })
+
+  it('붙인 뒤 모양이 바뀌면 그때부터 아무것도 쓰지 않는다', () => {
+    const { linkifier, term } = setup()
+    linkifier.move({ x: 3, y: 5 })
+    Reflect.set(linkifier, '_lastBufferCell', 'broken')
+    expect(() => term.render()).not.toThrow()
+    expect(linkifier._activeLine).toBe(5)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(() => linkifier._element.dispatchEvent(new MouseEvent('mouseleave'))).not.toThrow()
+    expect(Reflect.get(linkifier, '_lastBufferCell')).toBe('broken')
+  })
+
+  it('예약 뒤 모양이 바뀌면 재평가를 부르지 않는다', () => {
+    const { linkifier, term } = setup()
+    linkifier.move({ x: 3, y: 5 })
+    term.render()
+    Reflect.set(linkifier, '_isMouseOut', 'no')
+    expect(() => vi.advanceTimersByTime(LINK_REFRESH_INTERVAL_MS)).not.toThrow()
+    expect(linkifier.queries).toBe(1)
+  })
+})
+
+describe('실제 @xterm/xterm 6.0.0', () => {
+  it('open 뒤 비공개 Linkifier 모양이 맞아 붙는다 — 버전이 바뀌어 이 건이 깨지면 이 모듈을 다시 본다', () => {
+    vi.useRealTimers()
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const term = new Terminal({ cols: 20, rows: 4, allowProposedApi: true })
+    try {
+      term.open(host)
+      const refresh = attachLinkRefresh({ term })
+      expect(refresh.active).toBe(true)
+      refresh.dispose()
+    } finally {
+      term.dispose()
+      host.remove()
+    }
+  })
+
+  it('open 전에는 Linkifier 가 없어 붙지 않는다(예외 없음)', () => {
+    const term = new Terminal({ cols: 20, rows: 4, allowProposedApi: true })
+    try {
+      expect(attachLinkRefresh({ term }).active).toBe(false)
+    } finally {
+      term.dispose()
+    }
+  })
+})

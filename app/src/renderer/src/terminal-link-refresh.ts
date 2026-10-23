@@ -29,7 +29,7 @@ type Linkifier = {
   idleActiveLine(): number | null
   /** 마지막 칸·캐시 행을 잊는다 — 다음 hover 가 provider 를 다시 묻는다. 질의 없음. */
   forget(): void
-  /** 저장된 마지막 mousemove 로 hover 를 다시 돈다 — provider 질의. */
+  /** 저장된 마지막 mousemove 로 hover 를 다시 돈다 — provider 질의. 저장 좌표가 터미널 사각형 밖이면 건너뛴다. */
   rehover(): void
 }
 
@@ -74,7 +74,15 @@ function readLinkifier(term: object): Linkifier | null {
     rehover: () => {
       if (!shapeOk()) return
       const event: unknown = Reflect.get(linkifier, '_lastMouseEvent')
-      if (event === undefined) return
+      if (event === null || typeof event !== 'object') return
+      // 레이아웃이 바뀌어(사이드바 등) 저장 좌표가 터미널 밖인데 mouseleave 가 안 왔으면, getCoords 클램프가 가장자리 칸을
+      // hover 한다(fix r2 L4-4). 그때는 건너뛴다 — 캐시는 이미 잊어 질의 0. 모양이 다르면 현재 동작(아무것도 안 함).
+      const x: unknown = Reflect.get(event, 'clientX')
+      const y: unknown = Reflect.get(event, 'clientY')
+      if (typeof x !== 'number' || typeof y !== 'number') return
+      // 반열림 사각형(왼쪽·위 포함, 오른쪽·아래 제외) — 맞닿은 이웃 요소와 경계 픽셀을 겹쳐 갖지 않는다.
+      const rect = element.getBoundingClientRect()
+      if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) return
       Reflect.apply(handleMouseMove, linkifier, [event])
     },
   }

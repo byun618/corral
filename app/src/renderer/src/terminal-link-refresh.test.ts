@@ -19,8 +19,13 @@ class FakeLinkifier {
   _lastMouseEvent: MouseEvent | undefined = undefined
   _currentLink: object | undefined = undefined
   queries = 0
+  /** `_handleMouseMove` 가 불린 횟수(직접 move 포함). */
+  moves = 0
+  /** 터미널 사각형 — happy-dom 은 레이아웃이 없어 0 사각형이라 스텁한다(fix r2). 기본은 모든 칸을 덮는다. */
+  rect = new DOMRect(0, 0, 1000, 1000)
 
   constructor() {
+    this._element.getBoundingClientRect = () => this.rect
     this._element.addEventListener('mouseleave', () => {
       this._isMouseOut = true
       this._currentLink = undefined
@@ -28,6 +33,7 @@ class FakeLinkifier {
   }
 
   _handleMouseMove(event: MouseEvent): void {
+    this.moves++
     this._lastMouseEvent = event
     this._isMouseOut = false
     const position = { x: event.clientX, y: event.clientY }
@@ -321,6 +327,59 @@ describe('비공개 모양 불일치 → 현재 동작 (C4)', () => {
   })
 })
 
+// fix r2 L4-4 — 저장된 포인터 좌표가 터미널 사각형 밖(레이아웃 변경, mouseleave 없음)이면 재평가가 `_handleMouseMove` 를 부르지 않는다.
+describe('저장 좌표가 터미널 사각형 밖 (fix r2 L4-4)', () => {
+  /** 사각형 left 10 · top 20 · right 110 · bottom 70. 포인터를 point 에 두고 렌더 → 간격 뒤 재평가로 불린 `_handleMouseMove` 횟수. */
+  function rehoverCalls(point: { x: number; y: number }): number {
+    const { linkifier, term } = setup()
+    linkifier.rect = new DOMRect(10, 20, 100, 50)
+    linkifier.move(point)
+    const before = linkifier.moves
+    term.render()
+    vi.advanceTimersByTime(LINK_REFRESH_INTERVAL_MS)
+    return linkifier.moves - before
+  }
+
+  it.each([
+    ['왼쪽', { x: 5, y: 40 }],
+    ['오른쪽', { x: 150, y: 40 }],
+    ['위', { x: 50, y: 10 }],
+    ['아래', { x: 50, y: 90 }],
+  ])('%s 밖이면 0회', (_side, point) => {
+    expect(rehoverCalls(point)).toBe(0)
+  })
+
+  it('안이면 1회 (양성 대조)', () => {
+    expect(rehoverCalls({ x: 50, y: 40 })).toBe(1)
+  })
+
+  it.each([
+    ['left 포함', 1, { x: 10, y: 40 }],
+    ['left 바로 밖', 0, { x: 9.5, y: 40 }],
+    ['top 포함', 1, { x: 50, y: 20 }],
+    ['top 바로 밖', 0, { x: 50, y: 19.5 }],
+    ['right 제외', 0, { x: 110, y: 40 }],
+    ['right 바로 안', 1, { x: 109.5, y: 40 }],
+    ['bottom 제외', 0, { x: 50, y: 70 }],
+    ['bottom 바로 안', 1, { x: 50, y: 69.5 }],
+  ])('경계 %s → %i회', (_name, calls, point) => {
+    expect(rehoverCalls(point)).toBe(calls)
+  })
+
+  it.each([
+    ['clientX 가 문자열', { clientX: '50', clientY: 40 }],
+    ['clientY 없음', { clientX: 50 }],
+  ])('%s 이면 0회 — 모양 불일치 = 현재 동작', (_name, event) => {
+    const { linkifier, term } = setup()
+    linkifier.move({ x: 50, y: 40 })
+    Reflect.set(linkifier, '_lastMouseEvent', event)
+    const before = linkifier.moves
+    term.render()
+    vi.advanceTimersByTime(LINK_REFRESH_INTERVAL_MS)
+    expect(linkifier.moves - before).toBe(0)
+  })
+})
+
 describe('실제 @xterm/xterm 6.0.0', () => {
   it('open 뒤 비공개 Linkifier 모양이 맞아 붙는다 — 버전이 바뀌어 이 건이 깨지면 이 모듈을 다시 본다', () => {
     vi.useRealTimers()
@@ -362,6 +421,9 @@ describe('실제 Linkifier 통합 (C1·C2·C3·C6 양성 대조)', () => {
     move(cell: { x: number; y: number }): void
     leave(): void
     click(cell: { x: number; y: number }): void
+    /** 터미널 사각형을 옮긴다(레이아웃 변경 — mouseleave 없음). */
+    moveRect(rect: { left: number; top: number }): void
+    hovered(): boolean
     opened: string[]
     dispose(): void
   }
@@ -377,9 +439,13 @@ describe('실제 Linkifier 통합 (C1·C2·C3·C6 양성 대조)', () => {
     const mouse: unknown = Reflect.get(core, '_mouseService')
     const linkifier: unknown = Reflect.get(core, 'linkifier')
     if (mouse === null || typeof mouse !== 'object' || linkifier === null || typeof linkifier !== 'object') throw new Error('xterm 6.0.0 모양 아님')
-    Reflect.set(mouse, 'getCoords', (event: MouseEvent) => [event.clientX, event.clientY])
     const screen: unknown = Reflect.get(linkifier, '_element')
     if (!(screen instanceof HTMLElement)) throw new Error('Linkifier _element 없음')
+    // 1px = 1칸. 사각형 기준 상대 좌표를 실제 getCoords 처럼 1..cols·1..rows 로 클램프한다 — 사각형이 (0,0) 이면 clientX/Y 가 곧 칸(fix r2).
+    let rect = new DOMRect(0, 0, 1000, 1000)
+    screen.getBoundingClientRect = () => rect
+    const clamp = (value: number, max: number): number => Math.min(Math.max(value, 1), max)
+    Reflect.set(mouse, 'getCoords', (event: MouseEvent) => [clamp(event.clientX - rect.left, term.cols), clamp(event.clientY - rect.top, term.rows)])
     const refresh = input.attach ? attachLinkRefresh({ term }) : null
     if (refresh !== null) expect(refresh.active).toBe(true)
     const opened: string[] = []
@@ -398,6 +464,10 @@ describe('실제 Linkifier 통합 (C1·C2·C3·C6 양성 대조)', () => {
         mouseAt('mousedown', cell, true)
         mouseAt('mouseup', cell, true)
       },
+      moveRect: (next) => {
+        rect = new DOMRect(next.left, next.top, 1000, 1000)
+      },
+      hovered: () => Reflect.get(linkifier, '_currentLink') !== undefined,
       opened,
       dispose: () => {
         open.mockRestore()
@@ -521,5 +591,37 @@ describe('실제 Linkifier 통합 (C1·C2·C3·C6 양성 대조)', () => {
     } finally {
       h.dispose()
     }
+  })
+
+  /** L4-4 — 포인터 정지 → 사각형 이동(mouseleave 없음) → 그 행 0열에 URL → 렌더·간격 대기 뒤 hover 여부를 모듈 없이·있게. */
+  async function layoutShift(input: { pointer: { x: number; y: number }; left: number; url: string }): Promise<{ without: boolean; with: boolean }> {
+    const result = { without: false, with: false }
+    for (const attach of [false, true]) {
+      const h = harness({ attach })
+      try {
+        await h.write(at({ row: 3, col: 1, text: '_'.repeat(10) }))
+        await sleep(SETTLE_MS)
+        h.move(input.pointer)
+        h.moveRect({ left: input.left, top: 0 })
+        await h.write(at({ row: 3, col: 1, text: input.url }))
+        await sleep(SETTLE_MS)
+        if (attach) result.with = h.hovered()
+        else result.without = h.hovered()
+      } finally {
+        h.dispose()
+      }
+    }
+    return result
+  }
+
+  it('L4-4 — 가장자리 칸에 정지 뒤 사각형이 옮겨 저장 좌표가 밖이면 0열 URL 을 hover 하지 않는다 (fix r2)', async () => {
+    const result = await layoutShift({ pointer: { x: 1, y: 3 }, left: 100, url: 'https://example.com/?l573=l44' })
+    expect(result).toEqual({ without: false, with: false })
+  })
+
+  it('L4-4 양성 대조 — 사각형이 옮겨도 저장 좌표가 안(다른 칸)이면 그 칸 링크를 hover 한다', async () => {
+    // 저장 clientX 8 · left 5 → 3열, URL 은 1열부터.
+    const result = await layoutShift({ pointer: { x: 8, y: 3 }, left: 5, url: 'https://example.com/?l573=l44pos' })
+    expect(result).toEqual({ without: false, with: true })
   })
 })

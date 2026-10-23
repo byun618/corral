@@ -1,10 +1,12 @@
 // @vitest-environment happy-dom
 // LIFE-573 — 링크 행 캐시 무효화·정지 포인터 재평가(C1·C2·C3·C6 단위), 재질의 상한(C5), 비공개 모양 불일치 시 현재 동작(C4), dispose 정리(제약 5).
 // Linkifier 는 xterm 6.0.0 의 캐시 규칙만 흉내 낸 가짜다 — 같은 칸이면 hover 를 건너뛰고, 같은 행이면 캐시를 쓴다(질의 0).
-// 실제 Linkifier 경로(합성 마우스 → provider → 열림)는 네이티브 관문 몫이다. 실제 @xterm/xterm 에 붙는지(모양 일치)는 끝의 한 건이 본다.
+// 실제 Linkifier 경로(합성 마우스 → provider → `_handleNewLink` → 열림)는 끝의 「실제 Linkifier 통합」 블록이 본다(fix r1 F2) — 레이아웃이 없는 happy-dom 이라
+// 마우스 좌표 → 칸 변환(`_mouseService.getCoords`)만 그 블록 안에서 갈아 끼운다. 렌더러 화면·OS 입력은 네이티브 관문 몫이다.
 import { Terminal } from '@xterm/xterm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { attachLinkRefresh, LINK_REFRESH_INTERVAL_MS, type LinkRefreshTerminal } from './terminal-link-refresh.js'
+import { registerTerminalLinks, terminalLinkHandler } from './terminal-links.js'
 
 type Cell = { x: number; y: number }
 
@@ -45,10 +47,11 @@ class FakeLinkifier {
 
 type FakeTerm = LinkRefreshTerminal & { _core: unknown; render(range?: { start: number; end: number }): void; listeners(): number }
 
-function fakeTerm(input: { core: unknown; viewportY?: number }): FakeTerm {
+function fakeTerm(input: { core: unknown; viewportY?: number; rows?: number }): FakeTerm {
   const listeners = new Set<(event: { start: number; end: number }) => void>()
   return {
     _core: input.core,
+    rows: input.rows ?? 24,
     buffer: { active: { viewportY: input.viewportY ?? 0 } },
     onRender: (listener) => {
       listeners.add(listener)
@@ -75,6 +78,11 @@ afterEach(() => {
 })
 
 describe('정지 포인터 재평가 (C1)', () => {
+  it('간격은 100ms 이하 — 정지 포인터 아래 링크가 사람 눈에 늦지 않게 (fix r1 F1)', () => {
+    expect(LINK_REFRESH_INTERVAL_MS).toBeGreaterThan(0)
+    expect(LINK_REFRESH_INTERVAL_MS).toBeLessThanOrEqual(100)
+  })
+
   it('렌더 뒤 간격이 지나면 마지막 포인터로 한 번 다시 묻는다', () => {
     const { linkifier, term, refresh } = setup()
     expect(refresh.active).toBe(true)
@@ -166,6 +174,45 @@ describe('렌더 범위', () => {
     attachLinkRefresh({ term })
     linkifier.move({ x: 3, y: 15 })
     term.render({ start: 4, end: 4 })
+    expect(linkifier._activeLine).toBe(-1)
+  })
+
+  // fix r1 F1 — 경계 양쪽. 캐시 행(1 기반 y)의 바로 위·바로 아래 행만 렌더되면 잊지 않고, 그 행이 렌더되면 잊는다.
+  it.each([
+    { viewportY: 0, y: 5 },
+    { viewportY: 10, y: 15 },
+  ])('경계: viewportY=$viewportY, 캐시 행 $y — 바로 위·아래 행 렌더는 그대로, 그 행 렌더는 잊는다', ({ viewportY, y }) => {
+    const linkifier = new FakeLinkifier()
+    const term = fakeTerm({ core: { linkifier }, viewportY })
+    attachLinkRefresh({ term })
+    linkifier.move({ x: 3, y })
+    // 0 기반 화면 행 r = 1 기반 버퍼 행 viewportY + r + 1.
+    const screenRow = y - viewportY - 1
+    term.render({ start: screenRow - 1, end: screenRow - 1 })
+    expect(linkifier._activeLine).toBe(y)
+    term.render({ start: screenRow + 1, end: screenRow + 1 })
+    expect(linkifier._activeLine).toBe(y)
+    expect(vi.getTimerCount()).toBe(0)
+    term.render({ start: screenRow, end: screenRow })
+    expect(linkifier._activeLine).toBe(-1)
+    expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('캐시 행이 스크롤로 화면 밖이면 렌더 범위와 무관하게 잊고 예약한다 (fix r1 F4)', () => {
+    const linkifier = new FakeLinkifier()
+    // 6행 화면, 맨 윗 행(1)에 정지 포인터 → 출력이 6행 스크롤해 viewportY=6. 캐시 행 1 은 이제 화면 밖이다.
+    const term = fakeTerm({ core: { linkifier }, rows: 6 })
+    attachLinkRefresh({ term })
+    linkifier.move({ x: 3, y: 1 })
+    term.buffer.active.viewportY = 6
+    // 화면 맨 윗 행(0 기반 0)이 아닌 일부만 렌더돼도 — 범위 검사로 건너뛰면 안 된다.
+    term.render({ start: 3, end: 5 })
+    expect(linkifier._activeLine).toBe(-1)
+    expect(vi.getTimerCount()).toBe(1)
+    // 화면 아래로 밀린 경우(viewportY 가 줄어 캐시 행이 bottom 밖)도 같다.
+    linkifier.move({ x: 3, y: 12 })
+    term.buffer.active.viewportY = 0
+    term.render({ start: 0, end: 0 })
     expect(linkifier._activeLine).toBe(-1)
   })
 })
@@ -297,6 +344,182 @@ describe('실제 @xterm/xterm 6.0.0', () => {
       expect(attachLinkRefresh({ term }).active).toBe(false)
     } finally {
       term.dispose()
+    }
+  })
+})
+
+// fix r1 F2 — 실제 @xterm/xterm 6.0.0 Linkifier(가짜 아님) + 실제 평문 provider·OSC 8 처리기. 시나리오마다 **모듈 없이 / 있게** 같은 순서를 돌려
+// 없을 때 실패(양성 대조 — 증상이 실제로 재현된다)·있을 때 통과를 한 테스트 안에서 본다. 리뷰어 r1 스크래치(`raw/review/claude-r1-raw/scratch-tests/zzreal.test.ts`) 를 옮겼다.
+// 바꾸는 것은 `_mouseService.getCoords` 하나다 — happy-dom 은 레이아웃이 없어 clientX/Y 를 그대로 칸(1 기반)으로 본다. 제품 코드는 이 대체를 모른다.
+describe('실제 Linkifier 통합 (C1·C2·C3·C6 양성 대조)', () => {
+  /** 렌더(다음 animation frame)·재평가 간격을 넉넉히 넘기는 대기. */
+  const SETTLE_MS = LINK_REFRESH_INTERVAL_MS * 4
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+  const at = (input: { row: number; col: number; text: string }): string => `\x1b[${input.row};${input.col}H${input.text}`
+
+  type Harness = {
+    write(data: string): Promise<void>
+    move(cell: { x: number; y: number }): void
+    leave(): void
+    click(cell: { x: number; y: number }): void
+    opened: string[]
+    dispose(): void
+  }
+
+  function harness(input: { attach: boolean }): Harness {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const term = new Terminal({ cols: 60, rows: 6, scrollback: 0, allowProposedApi: true, linkHandler: terminalLinkHandler })
+    term.open(host)
+    const links = registerTerminalLinks(term)
+    const core: unknown = Reflect.get(term, '_core')
+    if (core === null || typeof core !== 'object') throw new Error('xterm 6.0.0 _core 없음')
+    const mouse: unknown = Reflect.get(core, '_mouseService')
+    const linkifier: unknown = Reflect.get(core, 'linkifier')
+    if (mouse === null || typeof mouse !== 'object' || linkifier === null || typeof linkifier !== 'object') throw new Error('xterm 6.0.0 모양 아님')
+    Reflect.set(mouse, 'getCoords', (event: MouseEvent) => [event.clientX, event.clientY])
+    const screen: unknown = Reflect.get(linkifier, '_element')
+    if (!(screen instanceof HTMLElement)) throw new Error('Linkifier _element 없음')
+    const refresh = input.attach ? attachLinkRefresh({ term }) : null
+    if (refresh !== null) expect(refresh.active).toBe(true)
+    const opened: string[] = []
+    const open = vi.spyOn(window, 'open').mockImplementation((url) => {
+      opened.push(String(url))
+      return null
+    })
+    const mouseAt = (type: string, cell: { x: number; y: number }, metaKey = false): void => {
+      screen.dispatchEvent(new MouseEvent(type, { clientX: cell.x, clientY: cell.y, bubbles: true, metaKey }))
+    }
+    return {
+      write: (data) => new Promise((resolve) => term.write(data, resolve)),
+      move: (cell) => mouseAt('mousemove', cell),
+      leave: () => screen.dispatchEvent(new MouseEvent('mouseleave')),
+      click: (cell) => {
+        mouseAt('mousedown', cell, true)
+        mouseAt('mouseup', cell, true)
+      },
+      opened,
+      dispose: () => {
+        open.mockRestore()
+        refresh?.dispose()
+        links.dispose()
+        term.dispose()
+        host.remove()
+      },
+    }
+  }
+
+  /** 같은 시나리오를 모듈 없이·있게 돌려 각각 열린 URL 목록을 낸다. */
+  async function both(scenario: (h: Harness) => Promise<void>): Promise<{ without: string[]; with: string[] }> {
+    const result: { without: string[]; with: string[] } = { without: [], with: [] }
+    for (const attach of [false, true]) {
+      const h = harness({ attach })
+      try {
+        await scenario(h)
+        if (attach) result.with = [...h.opened]
+        else result.without = [...h.opened]
+      } finally {
+        h.dispose()
+      }
+    }
+    return result
+  }
+
+  beforeEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('C1 평문 — 링크 없는 칸에 정지한 포인터 아래로 URL 이 온다 → 이동 없이 ⌘+클릭', async () => {
+    const url = 'https://example.com/?l573=c1'
+    const result = await both(async (h) => {
+      await h.write(at({ row: 3, col: 1, text: '_'.repeat(10) }))
+      await sleep(SETTLE_MS)
+      h.move({ x: 8, y: 3 })
+      await h.write(at({ row: 3, col: 5, text: url }))
+      await sleep(SETTLE_MS)
+      h.click({ x: 8, y: 3 })
+    })
+    expect(result.without).toEqual([])
+    expect(result.with).toEqual([url])
+  })
+
+  it('C1 OSC 8 — 정지 포인터 아래로 OSC 8 링크가 온다', async () => {
+    const url = 'https://example.com/?l573=c1osc'
+    const result = await both(async (h) => {
+      await h.write(at({ row: 3, col: 1, text: '_'.repeat(10) }))
+      await sleep(SETTLE_MS)
+      h.move({ x: 8, y: 3 })
+      await h.write(at({ row: 3, col: 5, text: `\x1b]8;;${url}\x1b\\label-text\x1b]8;;\x1b\\` }))
+      await sleep(SETTLE_MS)
+      h.click({ x: 8, y: 3 })
+    })
+    expect(result.without).toEqual([])
+    expect(result.with).toEqual([url])
+  })
+
+  it('C2 — 행이 바뀌어 다른 열에 새 URL, 같은 행 안에서 그 칸으로 이동 → ⌘+클릭', async () => {
+    const url = 'https://example.com/?l573=c2'
+    const result = await both(async (h) => {
+      await h.write(at({ row: 3, col: 1, text: 'no link here' }))
+      await sleep(SETTLE_MS)
+      h.move({ x: 2, y: 3 })
+      await h.write(at({ row: 3, col: 1, text: `\x1b[2Kabc ${url}` }))
+      await sleep(SETTLE_MS)
+      h.move({ x: 12, y: 3 })
+      h.click({ x: 12, y: 3 })
+    })
+    expect(result.without).toEqual([])
+    expect(result.with).toEqual([url])
+  })
+
+  it('C3 — 사라진 링크 A 의 옛 범위로 같은 행 이동 → ⌘+클릭 열림 0 (수정 전에는 A 가 열린다)', async () => {
+    const stale = 'https://example.com/?l573=c3A'
+    const result = await both(async (h) => {
+      await h.write(at({ row: 3, col: 1, text: `abc ${stale}` }))
+      await sleep(SETTLE_MS)
+      h.move({ x: 2, y: 3 })
+      await h.write(at({ row: 3, col: 1, text: '\x1b[2Kno link here' }))
+      await sleep(SETTLE_MS)
+      h.move({ x: 10, y: 3 })
+      h.click({ x: 10, y: 3 })
+    })
+    expect(result.without).toEqual([stale])
+    expect(result.with).toEqual([])
+  })
+
+  it('C6 — 밖에 나간 사이 같은 칸에 URL, 같은 칸으로 복귀 → ⌘+클릭', async () => {
+    const url = 'https://example.com/?l573=c6'
+    const result = await both(async (h) => {
+      await h.write(at({ row: 3, col: 1, text: '_'.repeat(10) }))
+      await sleep(SETTLE_MS)
+      h.move({ x: 8, y: 3 })
+      h.leave()
+      await h.write(at({ row: 3, col: 5, text: url }))
+      await sleep(SETTLE_MS)
+      h.move({ x: 8, y: 3 })
+      h.click({ x: 8, y: 3 })
+    })
+    expect(result.without).toEqual([])
+    expect(result.with).toEqual([url])
+  })
+
+  it('수식키 없는 클릭은 열지 않는다 (C4 회귀 — 모듈이 있어도)', async () => {
+    const h = harness({ attach: true })
+    try {
+      await h.write(at({ row: 3, col: 1, text: 'https://example.com/?l573=nometa' }))
+      await sleep(SETTLE_MS)
+      h.move({ x: 8, y: 3 })
+      const screenCell = { clientX: 8, clientY: 3, bubbles: true }
+      const target = document.querySelector('.xterm-screen')
+      if (target === null) throw new Error('.xterm-screen 없음')
+      target.dispatchEvent(new MouseEvent('mousedown', screenCell))
+      target.dispatchEvent(new MouseEvent('mouseup', screenCell))
+      expect(h.opened).toEqual([])
+      // 양성 대조 — 같은 자리 ⌘+클릭은 연다(링크가 실제로 잡혀 있었다).
+      h.click({ x: 8, y: 3 })
+      expect(h.opened).toEqual(['https://example.com/?l573=nometa'])
+    } finally {
+      h.dispose()
     }
   })
 })

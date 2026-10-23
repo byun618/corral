@@ -20,7 +20,7 @@ import type { IDisposable, Terminal } from '@xterm/xterm'
 export const LINK_REFRESH_INTERVAL_MS = 50
 
 /** 이 모듈이 터미널에서 쓰는 공개 면. 테스트가 가짜로 대신한다. */
-export type LinkRefreshTerminal = Pick<Terminal, 'onRender'> & { buffer: { active: { viewportY: number } } }
+export type LinkRefreshTerminal = Pick<Terminal, 'onRender' | 'rows'> & { buffer: { active: { viewportY: number } } }
 
 /** 비공개 Linkifier 위에서 하는 일. 모양 검사를 통과한 뒤에만 만든다. */
 type Linkifier = {
@@ -100,10 +100,13 @@ export function attachLinkRefresh(input: { term: LinkRefreshTerminal }): IDispos
   const render = term.onRender(({ start, end }) => {
     const line = linkifier.idleActiveLine()
     if (line === null) return
-    // 캐시된 행이 이번 렌더 범위 밖이면 그 행 내용은 그대로다(커서 깜빡임 등). -1 은 이미 잊은 상태 — 예약만 확인한다.
-    const top = term.buffer.active.viewportY + start + 1
-    const bottom = term.buffer.active.viewportY + end + 1
-    if (line !== -1 && (line < top || line > bottom)) return
+    // 캐시된 행이 화면 안이고 이번 렌더 범위 밖이면 그 행 내용은 그대로다(커서 깜빡임 등). -1 은 이미 잊은 상태 — 예약만 확인한다.
+    // 스크롤로 캐시된 행이 화면 밖으로 밀렸으면 포인터 아래 행이 아니라 낡은 캐시다 — 범위와 무관하게 잊는다(fix r1 F4).
+    const viewportY = term.buffer.active.viewportY
+    const onScreen = line >= viewportY + 1 && line <= viewportY + term.rows
+    const top = viewportY + start + 1
+    const bottom = viewportY + end + 1
+    if (line !== -1 && onScreen && (line < top || line > bottom)) return
     linkifier.forget()
     if (timer === null) timer = setTimeout(fire, LINK_REFRESH_INTERVAL_MS)
   })

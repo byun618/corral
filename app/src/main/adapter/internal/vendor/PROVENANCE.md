@@ -60,6 +60,16 @@ import 경로(`./thin-client` → `./frame-types`, `../utils/logger` → `./logg
 | `continuous stale frames …`: 가짜 제품 타이머, 루프의 `sleep(100)`→`until(stale surface n)`+`advanceTimersByTime(100)`, `sleep(40)`→`until(surface 처리)` | 같은 경합 + 실시간 700ms 루프의 시간초과 |
 | `fits pane content …`(5건 공용 `waitForSize`): 2000ms 실시간 `setTimeout` reject → `until(…, 2000)` | 부하 정지가 2000ms 벽시계 예산을 먹어 `missing 81x25 frame` 이 났다. 같은 오류문 접두를 유지한다 |
 
+**fix r1 (리뷰 r1 지적 반영)**:
+
+| 무엇 | 왜 |
+| --- | --- |
+| `afterEach` 첫 줄 `vi.useRealTimers()` | 테스트가 vitest 시간초과로 끝나면 `finally` 가 안 돌아 가짜 시계가 뒤 테스트로 샜다(변이 M1 에서 무관 5건 연쇄 시간초과) |
+| `until` 에 벽시계 천장 — 테스트 시작(`beforeEach` 의 `performance.now()`)부터 4000ms | 폴링 예산만으로는 벽시계 상한이 없어 vitest 5초 시간초과가 먼저 날 수 있었다. 천장에서도 `missing <label> at the 4000ms wall-clock ceiling` 단언 오류 |
+| `untilSettled(label, promise)` — first visible frame ×3·continuous stale frames 의 `session.connect`·`requested.promise` 대기 | 가짜 시계 아래에선 제품의 connect 안전망(핸드셰이크 8초·첫 surface 10초)이 안 울리고 resize 요청 대기도 상한이 없었다 |
+
+**의존 경고**: `surfaceLog` 는 벤더 수정 ③ 의 `logger.debug("surface", { surfaceRevision })` 에 의존한다 — 그 줄을 지우거나 이름·필드를 바꾸면 이 테스트들이 `missing stale surface` 로 실패한다(조용히 통과하지 않는다).
+
 업스트림(herdr-studio `origin/HEAD` 791379e)은 같은 고정 대기를 유지한다 — 가져올 패치 없음.
 
 strip 검증: 남긴 테스트가 벤더한 코드 표면(EndpointTerminalSession·cropFrame·EndpointClient·

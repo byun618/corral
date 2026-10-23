@@ -6,7 +6,7 @@
 //      남긴 것: EndpointTerminalSession describe 전체 + 마우스 top-level 2건 + cropFrame describe
 //   ④ (LIFE-544) 간헐 실패 7건의 고정 대기를 조건 대기(`until`)로, 500ms 보류 타이머와 경합하던
 //      4건(first visible frame ×3·continuous stale frames)은 제품 타이머만 가짜 시계(`fakeProductTimers`)로
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as net from "node:net";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -23,19 +23,46 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 // LIFE-544: captured before any test fakes timers, so waits stay on the real clock.
 const realSetTimeout = globalThis.setTimeout;
 const POLL_MS = 5;
+// Wall-clock ceiling per test, kept below vitest's 5s test timeout.
+const WALL_CEILING_MS = 4000;
+let testStartedAt = performance.now();
+beforeEach(() => {
+  testStartedAt = performance.now();
+});
 
 /**
  * Waits for something that must arrive. The budget counts polls, not
  * wall-clock: an event loop stalled by full-suite load delays one poll
- * instead of eating the budget, while a missing event still fails as an
- * assertion well inside vitest's 5s test timeout.
+ * instead of eating the budget. A wall-clock ceiling measured from the
+ * test start still ends the wait as an assertion before vitest's 5s
+ * timeout. `performance` is never faked here (fakeProductTimers fakes
+ * setTimeout/clearTimeout only).
  */
 async function until(label: string, check: () => boolean, budgetMs = 1000) {
   for (let polled = 0; !check(); polled += POLL_MS) {
     if (polled >= budgetMs)
       expect.fail(`missing ${label} within ${budgetMs}ms of polling`);
+    const elapsed = performance.now() - testStartedAt;
+    if (elapsed >= WALL_CEILING_MS)
+      expect.fail(
+        `missing ${label} at the ${WALL_CEILING_MS}ms wall-clock ceiling (${Math.round(elapsed)}ms since test start)`,
+      );
     await new Promise<void>((resolve) => realSetTimeout(resolve, POLL_MS));
   }
+}
+
+/** `until` for a promise: resolves with its value or rethrows its error. */
+async function untilSettled<T>(label: string, promise: Promise<T>): Promise<T> {
+  const outcomes: Array<{ ok: true; value: T } | { ok: false; error: unknown }> =
+    [];
+  void promise.then(
+    (value) => outcomes.push({ ok: true, value }),
+    (error: unknown) => outcomes.push({ ok: false, error }),
+  );
+  await until(label, () => outcomes.length > 0);
+  const [outcome] = outcomes;
+  if (!outcome.ok) throw outcome.error;
+  return outcome.value;
 }
 
 /**
@@ -47,7 +74,12 @@ function fakeProductTimers() {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 }
 
-/** Surface revisions the session has processed, from its debug log. */
+/**
+ * Surface revisions the session has processed, from its debug log.
+ * Depends on vendor change ③ (`logger.debug("surface", { surfaceRevision })`
+ * in endpoint-terminal-session.ts): removing or renaming that line fails
+ * these tests loudly as `missing stale surface …`, never silently.
+ */
 function surfaceLog() {
   const revisions: number[] = [];
   const logger = {
@@ -63,6 +95,9 @@ function surfaceLog() {
 const servers: net.Server[] = [];
 
 afterEach(async () => {
+  // A test that hits vitest's timeout skips its `finally`; never leak fake
+  // timers into the next test.
+  vi.useRealTimers();
   await Promise.all(
     servers
       .splice(0)
@@ -443,8 +478,9 @@ describe("EndpointTerminalSession", () => {
       session.on("terminal", (frame) => frames.push(frame));
       fakeProductTimers();
       try {
-        await session.connect(cols, 69);
-        const settle = await requested.promise;
+        // Fake timers silence the product's connect timeouts; bound it here.
+        await untilSettled("connect", session.connect(cols, 69));
+        const settle = await untilSettled("resize request", requested.promise);
         await until("stale surface", () => revisions.includes(2));
         vi.advanceTimersByTime(60);
         expect(frames).toEqual([]);
@@ -489,8 +525,9 @@ describe("EndpointTerminalSession", () => {
     session.on("terminal", (frame) => frames.push(frame));
     fakeProductTimers();
     try {
-      await session.connect(134, 69);
-      const send = await requested.promise;
+      // Fake timers silence the product's connect timeouts; bound it here.
+      await untilSettled("connect", session.connect(134, 69));
+      const send = await untilSettled("resize request", requested.promise);
       expect(frames).toEqual([]);
       for (let i = 0; i < 7; i++) {
         send(true);

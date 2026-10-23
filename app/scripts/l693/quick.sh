@@ -3,7 +3,8 @@
 # 사용: quick.sh <라벨>   (원자료: specs/LIFE-693-confirm-scroll/raw/claude/<라벨>-*.txt)
 #       quick.sh base     — lint 기준값만 r1-lint-base.txt 로 남긴다 (고치기 전, 기준 commit 상태에서)
 # 종료코드: 실패한 단계가 하나라도 있으면 1. lint 는 원 exit 를 기록만 하고, 판정은 r1-lint-base.txt 와의 diff
-# (<라벨>-lint-diff.txt, 새 문제 0 = exit 0)로 센다. 두 원자료 모두 이 worktree 경로를 지운 뒤 대조한다.
+# (<라벨>-lint-diff.txt, 새 문제 0 = exit 0)로 센다. 두 원자료는 같은 규칙으로 정규화한다 — 절대경로의 첫 `…/app/` 접두
+# (앞의 `/private` 포함)를 지워 checkout 경로에 묶이지 않게 한다 (f1 E). 머리줄에 HEAD·`git status --porcelain` 줄 수.
 set -u
 label=$1
 app=${0:A:h:h:h}
@@ -11,8 +12,8 @@ raw=${app:h}/specs/LIFE-693-confirm-scroll/raw/claude
 export PATH="$HOME/.nvm/versions/node/v24.14.1/bin:$PATH"
 export TMPDIR=/tmp/l693w; mkdir -p $TMPDIR
 cd $app
-head=$(git rev-parse --short HEAD)
-lint_body() { grep -v '^#' $1 | sed "s|$app/||" | grep -v '^$' | grep -v '^> '; }
+head="$(git rev-parse --short HEAD) · porcelain $(git status --porcelain | wc -l | tr -d ' ')줄"
+lint_body() { grep -v '^#' $1 | perl -pe 's#^(/private)?/\S*?/app/##' | grep -v '^$' | grep -v '^> '; }
 if [[ $label == base ]]; then
   out=$raw/r1-lint-base.txt
   { echo "# base · npm run lint · HEAD $head · $(date -u +%FT%TZ)"; npm run lint 2>&1; echo "# exit $?"; } > $out 2>&1

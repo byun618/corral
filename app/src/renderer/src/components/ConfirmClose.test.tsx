@@ -37,17 +37,17 @@ describe('ConfirmClose (LIFE-693)', () => {
     )
     const modal = host.querySelector('[data-confirm-close-modal]')
     const scroll = host.querySelector('[data-confirm-close-scroll]')
+    // 요소가 없으면 `contains(null)` 이 false 라 「밖」 단언이 그냥 통과한다 — 먼저 전부 있는지 본다(f1 D).
+    const outside = ['[data-confirm-close-title]', '[data-confirm-close-x]', '[data-close-confirm-cancel]', '[data-close-confirm-ok]']
+    const inside = ['[data-confirm-close-body="0"]', '[data-confirm-close-fg]', '[data-dont-ask-again-input]']
+    for (const selector of [...outside, ...inside]) expect(host.querySelector(selector), selector).not.toBeNull()
     expect(modal?.classList.contains('modal-confirm-close')).toBe(true)
     // 공통 클래스는 그대로 — 폭·모양은 다른 확인 창과 같다.
     expect(modal?.classList.contains('modal-confirm')).toBe(true)
     expect(scroll?.classList.contains('modal-body')).toBe(true)
     expect(scroll?.parentElement).toBe(modal)
-    for (const selector of ['[data-confirm-close-title]', '[data-confirm-close-x]', '[data-close-confirm-cancel]', '[data-close-confirm-ok]']) {
-      expect(scroll?.contains(host.querySelector(selector))).toBe(false)
-    }
-    expect(scroll?.contains(host.querySelector('[data-confirm-close-body="0"]'))).toBe(true)
-    expect(scroll?.contains(host.querySelector('[data-confirm-close-fg]'))).toBe(true)
-    expect(scroll?.contains(host.querySelector('[data-dont-ask-again-input]'))).toBe(true)
+    for (const selector of outside) expect(scroll?.contains(host.querySelector(selector)), selector).toBe(false)
+    for (const selector of inside) expect(scroll?.contains(host.querySelector(selector)), selector).toBe(true)
     expect(host.querySelectorAll('[data-confirm-close-fg] li')).toHaveLength(40 * 3)
   })
 })

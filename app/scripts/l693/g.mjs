@@ -7,11 +7,12 @@
 // 측정(MEASURE_JS): 뷰포트 · 창 rect · 제목/✕/취소/확인 중심 elementFromPoint · 스크롤 영역 scrollHeight/clientHeight/scrollTop · 마지막 행 노출.
 // 판정은 하지 않는다 — 수치 JSON + PNG 를 남기고, 항목별 통과선 대조는 g1-summary.mjs 가 한다.
 // 사용(app/ 에서): node scripts/l693/g.mjs --scenario orphan|tabs --build impl|base --root /tmp/l693q-<x> --port <CDP 포트> --out <raw txt>
+/* global fetch, WebSocket */ // Node 22+ 전역(CDP 접속)
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { ctl, evalJs, recorder, sleep, until } from '../l577/g-lib.mjs'
 
 const APP = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..')
@@ -419,7 +420,7 @@ try {
 } finally {
   log('보낸 입력', sent)
   fs.writeFileSync(path.join(dataDir, 'sent-input.json'), JSON.stringify(sent, null, 2) + '\n')
-  try { cdpSocket?.close() } catch {}
+  try { cdpSocket?.close() } catch { /* 이미 닫힌 소켓 — 정리 단계라 무시 */ }
   // 격리 확인 원자료는 ud 를 지우기 전에 — 앱을 내린 뒤 로그를 읽는다.
   try { down() } catch (error) { code = 1; log('down 실패', String(error)) }
   log(`# exit ${code}`)

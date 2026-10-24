@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 vi.mock('react', () => import('./fake-react.test-helper.mjs'))
 
@@ -25,11 +25,26 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-function gitRepo(dir) {
-  fs.mkdirSync(dir, { recursive: true })
+// LIFE-701 — 테스트 1건이 동기 git 을 23회 띄웠다(fixture 4개 × init·commit 8회 + 제품 `repoRootOf` 3회 × 등록 5회 15회).
+// 부하에서 git 1회가 약 0.2초를 넘으면 기본 5초를 넘는다. fixture 쪽은 파일당 한 번 만든 템플릿 저장소를 복사해 0회로 줄이고
+// (각 root 는 여전히 `.git` 을 가진 실제 저장소), 제품 쪽 15회는 그대로 돌리며 시간초과를 이 파일 범위로 늘린다:
+// 15회 × 1.2초 + 기저 약 0.4초 ≈ 18.4초 → 20초. 근거·측정은 specs/LIFE-701-manual-order-flake/raw/claude/RESULT.md.
+const GIT_TIMEOUT = 20_000
+
+let template = null
+beforeAll(() => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l469r3-template-'))
   const git = (...args) => execFileSync('git', ['-C', dir, '-c', 'user.name=l469', '-c', 'user.email=l469@example.invalid', ...args], { stdio: 'ignore' })
   git('init', '-q', '-b', 'main')
   git('commit', '-q', '--allow-empty', '-m', 'init')
+  template = dir
+}, GIT_TIMEOUT)
+afterAll(() => {
+  if (template) fs.rmSync(template, { recursive: true, force: true })
+})
+
+function gitRepo(dir) {
+  fs.cpSync(template, dir, { recursive: true })
   return fs.realpathSync(dir)
 }
 
@@ -127,7 +142,7 @@ function renderer(w) {
   }
 }
 
-describe('R3-01 — GUI 제거 → CLI repo add 재등록(B 없는 트리 없이) → CLI D 추가 → B 새 워크트리', () => {
+describe('R3-01 — GUI 제거 → CLI repo add 재등록(B 없는 트리 없이) → CLI D 추가 → B 새 워크트리', { timeout: GIT_TIMEOUT }, () => {
   async function scenario({ readdBy, deliverAbsentTree }) {
     const w = world()
     const { a, b, c, d } = w.roots
@@ -199,7 +214,7 @@ describe('R3-01 — GUI 제거 → CLI repo add 재등록(B 없는 트리 없이
   })
 })
 
-describe('R4-01 — 제거 트랜잭션이 잠금을 푼 직후·main 이 다시 읽기 전에 다른 작성자가 재등록해도 대기 키가 풀린다', () => {
+describe('R4-01 — 제거 트랜잭션이 잠금을 푼 직후·main 이 다시 읽기 전에 다른 작성자가 재등록해도 대기 키가 풀린다', { timeout: GIT_TIMEOUT }, () => {
   async function scenario({ raceInsideRemove }) {
     const w = world()
     const { a, b, c } = w.roots

@@ -46,6 +46,32 @@ import 경로(`./thin-client` → `./frame-types`, `../utils/logger` → `./logg
 | `frame-to-ansi.test.ts` (추가) | bun:test 전용 매처 `toStartWith`/`toEndWith` 2곳 → `startsWith`/`endsWith` + `toBe(true)` 동치 변환 |
 | `endpoint-terminal-session.test.ts` | 공통 수정 + **strip**: 원본 2361줄 중 `createTerminalBridge`/`ServerWebSocket`(bun)/`session.create()`/`EndpointCreationDeadline` 에 의존하는 테스트 전량 — terminal-bridge 는 벤더 금지(코디네이터 지시: 참고만, 얇게 재작성), `create()` 는 R3 범위라 세션에서 strip 됨. **남긴 것**: 헬퍼 전체(1–334) + `describe("EndpointTerminalSession")` 전체(336–780) + top-level 마우스 테스트 2건(781–945) + `describe("cropFrame")`(1382–1411). **strip 한 것**(원본 줄 번호): 946–1381 (bridge 팬아웃·클립보드 소유권·재접속 광고 5건 + spyOn 기반 2건), 1414–2361 (creation·bridge RPC 계열 전부) |
 
+### LIFE-544 — `endpoint-terminal-session.test.ts` 간헐 실패 안정화 (2026-10-23)
+
+전체 스위트 부하에서 고정 `sleep(N)` 뒤 "도착했어야 할 것"을 단언하던 7개 테스트가 간헐 실패했다
+(원인·재현: `specs/LIFE-544-overshoot-flake/raw/claude/RESULT.md`). 제품 코드 무수정, 단언 무삭제.
+
+| 무엇 | 왜 |
+| --- | --- |
+| 헬퍼 `until(label, check, budgetMs)` 추가 — 진짜 `setTimeout` 으로 5ms 폴링, 예산을 폴링 횟수로 센다. 넘으면 `expect.fail("missing <label> …")` | 고정 대기 대신 조건 대기. 이벤트 루프가 부하로 멈춰도 예산이 벽시계로 깎이지 않고, 오지 않으면 단언 오류로 끝난다 — 벽시계 상한은 fix r1 의 천장(테스트 시작부터 4000ms)이 맡는다. 정지가 천장을 넘어 계속되면 천장 오류가 5초 뒤에 날 수 있다 |
+| 헬퍼 `fakeProductTimers()`(`vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })`)·`surfaceLog()`(세션 debug 로그의 `surfaceRevision` 수집) 추가 | 제품의 `FIT_DEFER_MS`(500ms) 보류 기한이 실시간이라 테스트 단계와 경합했다. 제품 타이머만 가짜 시계로 두고 테스트가 시간을 넘긴다. 소켓은 실제로 돈다. 처리 여부는 기존 계측 로그(벤더 수정 ③)로 본다 |
+| `corrects a one-cell overshoot` ×2: `sleep(60)` 앞에 `until("80x24 frame")` | 보정 왕복이 60ms 를 넘으면 실패했다. `sleep(60)` 은 수렴 뒤 "추가 보정 없음" 관측 창으로 남긴다 |
+| `first visible frame fits …` ×3: 가짜 제품 타이머, `sleep(60)`→`until("stale surface")`+`advanceTimersByTime(60)`, 두 번째 `sleep(60)`→`until("settled frame")`, `sleep(550)`→`advanceTimersByTime(550)` | 부하 정지가 500ms 를 넘기면 보류 프레임이 settle 보다 먼저 나왔다 — 조건 대기만으로는 안 닫힌다(RESULT 근거) |
+| `continuous stale frames …`: 가짜 제품 타이머, 루프의 `sleep(100)`→`until(stale surface n)`+`advanceTimersByTime(100)`, `sleep(40)`→`until(surface 처리)` | 같은 경합 + 실시간 700ms 루프의 시간초과 |
+| `fits pane content …`(5건 공용 `waitForSize`): 2000ms 실시간 `setTimeout` reject → `until(…, 2000)` | 부하 정지가 2000ms 벽시계 예산을 먹어 `missing 81x25 frame` 이 났다. 같은 오류문 접두를 유지한다 |
+
+**fix r1 (리뷰 r1 지적 반영)**:
+
+| 무엇 | 왜 |
+| --- | --- |
+| `afterEach` 첫 줄 `vi.useRealTimers()` | 테스트가 vitest 시간초과로 끝나면 `finally` 가 안 돌아 가짜 시계가 뒤 테스트로 샜다(변이 M1 에서 무관 5건 연쇄 시간초과) |
+| `until` 에 벽시계 천장 — 테스트 시작(`beforeEach` 의 `performance.now()`)부터 4000ms | 폴링 예산만으로는 벽시계 상한이 없어 vitest 5초 시간초과가 먼저 날 수 있었다. 천장에서도 `missing <label> at the 4000ms wall-clock ceiling` 단언 오류 |
+| `untilSettled(label, promise)` — first visible frame ×3·continuous stale frames 의 `session.connect`·`requested.promise` 대기 | 가짜 시계 아래에선 제품의 connect 안전망(핸드셰이크 8초·첫 surface 10초)이 안 울리고 resize 요청 대기도 상한이 없었다 |
+
+**의존 경고**: `surfaceLog` 는 벤더 수정 ③ 의 `logger.debug("surface", { surfaceRevision })` 에 의존한다 — 그 줄을 지우거나 이름·필드를 바꾸면 이 테스트들이 `missing stale surface` 로 실패한다(조용히 통과하지 않는다).
+
+업스트림(herdr-studio `origin/HEAD` 791379e)은 같은 고정 대기를 유지한다 — 가져올 패치 없음.
+
 strip 검증: 남긴 테스트가 벤더한 코드 표면(EndpointTerminalSession·cropFrame·EndpointClient·
 frameToAnsi·VtInputClassifier)의 전부를 덮고, strip 한 테스트는 벤더하지 않은 코드
 (terminal-bridge.ts·endpoint-creation.ts)의 표면만 잰다. 러너 출력은 `raw/claude/s7-vendor-tests.txt`.

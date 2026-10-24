@@ -4,7 +4,9 @@
 //   ③ terminal-bridge(createTerminalBridge)·create()/EndpointCreationDeadline 의존 테스트 전량 strip
 //      — bridge 는 벤더 금지(사용자 지시: 참고만), create() 는 R3 범위라 세션에서 strip 됨.
 //      남긴 것: EndpointTerminalSession describe 전체 + 마우스 top-level 2건 + cropFrame describe
-import { afterEach, describe, expect, test } from "vitest";
+//   ④ (LIFE-544) 간헐 실패 7건의 고정 대기를 조건 대기(`until`)로, 500ms 보류 타이머와 경합하던
+//      4건(first visible frame ×3·continuous stale frames)은 제품 타이머만 가짜 시계(`fakeProductTimers`)로 바꿨다
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as net from "node:net";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -18,10 +20,84 @@ import { silentLogger } from "./logger";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+// LIFE-544: captured before any test fakes timers, so waits stay on the real clock.
+const realSetTimeout = globalThis.setTimeout;
+const POLL_MS = 5;
+// Wall-clock ceiling per test, kept below vitest's 5s test timeout.
+const WALL_CEILING_MS = 4000;
+let testStartedAt = performance.now();
+beforeEach(() => {
+  testStartedAt = performance.now();
+});
+
+/**
+ * Waits for something that must arrive. The budget counts polls, not
+ * wall-clock: an event loop stalled by full-suite load delays one poll
+ * instead of eating the budget. A wall-clock ceiling measured from the
+ * test start still ends the wait as an assertion before vitest's 5s
+ * timeout. `performance` is never faked here (fakeProductTimers fakes
+ * setTimeout/clearTimeout only).
+ */
+async function until(label: string, check: () => boolean, budgetMs = 1000) {
+  for (let polled = 0; !check(); polled += POLL_MS) {
+    if (polled >= budgetMs)
+      expect.fail(`missing ${label} within ${budgetMs}ms of polling`);
+    const elapsed = performance.now() - testStartedAt;
+    if (elapsed >= WALL_CEILING_MS)
+      expect.fail(
+        `missing ${label} at the ${WALL_CEILING_MS}ms wall-clock ceiling (${Math.round(elapsed)}ms since test start)`,
+      );
+    await new Promise<void>((resolve) => realSetTimeout(resolve, POLL_MS));
+  }
+}
+
+/** `until` for a promise: resolves with its value or rethrows its error. */
+async function untilSettled<T>(label: string, promise: Promise<T>): Promise<T> {
+  const outcomes: Array<{ ok: true; value: T } | { ok: false; error: unknown }> =
+    [];
+  void promise.then(
+    (value) => outcomes.push({ ok: true, value }),
+    (error: unknown) => outcomes.push({ ok: false, error }),
+  );
+  await until(label, () => outcomes.length > 0);
+  const [outcome] = outcomes;
+  if (!outcome.ok) throw outcome.error;
+  return outcome.value;
+}
+
+/**
+ * The session's FIT_DEFER_MS deadline races a real-clock test under load.
+ * Fake only setTimeout/clearTimeout so the deadline moves when the test
+ * advances it; sockets and `until` keep running on the real clock.
+ */
+function fakeProductTimers() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+}
+
+/**
+ * Surface revisions the session has processed, from its debug log.
+ * Depends on vendor change ③ (`logger.debug("surface", { surfaceRevision })`
+ * in endpoint-terminal-session.ts): removing or renaming that line fails
+ * these tests loudly as `missing stale surface …`, never silently.
+ */
+function surfaceLog() {
+  const revisions: number[] = [];
+  const logger = {
+    ...silentLogger,
+    debug: (message: string, fields?: Record<string, unknown>) => {
+      if (message === "surface") revisions.push(Number(fields?.surfaceRevision));
+    },
+  };
+  return { revisions, logger };
+}
+
 
 const servers: net.Server[] = [];
 
 afterEach(async () => {
+  // A test that hits vitest's timeout skips its `finally`; never leak fake
+  // timers into the next test.
+  vi.useRealTimers();
   await Promise.all(
     servers
       .splice(0)
@@ -362,7 +438,10 @@ describe("EndpointTerminalSession", () => {
     session.on("terminal", (frame) => frames.push(frame));
     try {
       await session.connect(80, 24, { cols: initial.cols, rows: initial.rows });
-      await sleep(60);
+      await until("80x24 frame", () =>
+        frames.some((frame) => frame.width === 80 && frame.height === 24),
+      );
+      await sleep(60); // observation window: no further correction after convergence
       expect(resizes).toEqual([[...initial.expected]]);
       expect(frames.at(-1)).toMatchObject({ width: 80, height: 24 });
     } finally {
@@ -388,27 +467,33 @@ describe("EndpointTerminalSession", () => {
           requested.resolve(() => send(settled.frame, settled.panes));
         },
       });
+      const { revisions, logger } = surfaceLog();
       const session = new EndpointTerminalSession(
         socketPath,
         "terminal",
         async () => initial.panes[index].paneId,
+        logger,
       );
       const frames: Array<{ width: number; height: number }> = [];
       session.on("terminal", (frame) => frames.push(frame));
+      fakeProductTimers();
       try {
-        await session.connect(cols, 69);
-        const settle = await requested.promise;
-        await sleep(60);
+        // Fake timers silence the product's connect timeouts; bound it here.
+        await untilSettled("connect", session.connect(cols, 69));
+        const settle = await untilSettled("resize request", requested.promise);
+        await until("stale surface", () => revisions.includes(2));
+        vi.advanceTimersByTime(60);
         expect(frames).toEqual([]);
         settle();
-        await sleep(60);
+        await until("settled frame", () => frames.length > 0);
         expect(frames).toEqual([
           expect.objectContaining({ width: cols, height: 69 }),
         ]);
-        await sleep(550);
+        vi.advanceTimersByTime(550);
         expect(frames).toHaveLength(1); // no stale timer repaint
       } finally {
         session.close();
+        vi.useRealTimers();
       }
     },
   );
@@ -429,30 +514,36 @@ describe("EndpointTerminalSession", () => {
           ),
         ),
     });
+    const { revisions, logger } = surfaceLog();
     const session = new EndpointTerminalSession(
       socketPath,
       "terminal",
       async () => "w1:p1",
+      logger,
     );
     const frames: Array<{ width: number; mouseReporting: boolean }> = [];
     session.on("terminal", (frame) => frames.push(frame));
+    fakeProductTimers();
     try {
-      await session.connect(134, 69);
-      const send = await requested.promise;
+      // Fake timers silence the product's connect timeouts; bound it here.
+      await untilSettled("connect", session.connect(134, 69));
+      const send = await untilSettled("resize request", requested.promise);
       expect(frames).toEqual([]);
       for (let i = 0; i < 7; i++) {
         send(true);
-        await sleep(100);
+        await until(`stale surface ${i + 1}`, () => revisions.includes(i + 2));
+        vi.advanceTimersByTime(100);
       }
       expect(frames.length).toBeGreaterThan(0);
       expect(frames.at(-1)).toEqual(
         expect.objectContaining({ width: 64, mouseReporting: true }),
       );
       send(false);
-      await sleep(40);
+      await until("mouseReporting false frame", () => revisions.includes(9));
       expect(frames.at(-1)?.mouseReporting).toBe(false);
     } finally {
       session.close();
+      vi.useRealTimers();
     }
   });
 
@@ -542,20 +633,16 @@ describe("EndpointTerminalSession", () => {
         "term_1",
         async () => "w1:p1",
       );
-      const waitForSize = (width: number, height: number) =>
-        new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            session.off("terminal", onFrame);
-            reject(new Error(`missing ${width}x${height} frame`));
-          }, 2000);
-          const onFrame = (frame: { width: number; height: number }) => {
-            if (frame.width !== width || frame.height !== height) return;
-            clearTimeout(timer);
-            session.off("terminal", onFrame);
-            resolve();
-          };
-          session.on("terminal", onFrame);
-        });
+      const waitForSize = (width: number, height: number) => {
+        let seen = false;
+        const onFrame = (frame: { width: number; height: number }) => {
+          if (frame.width === width && frame.height === height) seen = true;
+        };
+        session.on("terminal", onFrame);
+        return until(`${width}x${height} frame`, () => seen, 2000).finally(
+          () => session.off("terminal", onFrame),
+        );
+      };
       try {
         await session.connect(100, 30);
         // The viewer attach drives convergence: one targeted resize, at

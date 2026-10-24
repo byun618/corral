@@ -567,7 +567,14 @@ export function App(): React.JSX.Element {
 
   const [requestedPane, setRequestedPane] = useState<string | null>(null)
   const requestedDeadline = useRef<number | null>(null)
-  useEffect(() => window.corral.onRevealPane(pane => { requestedDeadline.current = null; setRequestedPane(pane) }), [])
+  // LIFE-675 — 이동(Resource 「이동」·CLI `worktree create --activate`)은 덮는 설정·작업 페이지를 닫고 간다(작업 페이지 안 이동과 같은 규칙).
+  // 닫기와 요청이 한 렌더에 걸리므로 아래 효과의 `selectPane` 이 올리는 focusToken 은 덮개가 걷힌 뒤에 닿는다.
+  useEffect(() => window.corral.onRevealPane(pane => {
+    setSettingsView(null)
+    setTasksOpen(false)
+    requestedDeadline.current = null
+    setRequestedPane(pane)
+  }), [])
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
     const stop = window.corral.onTerminalFocus(request => {

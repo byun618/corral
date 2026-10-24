@@ -15,6 +15,7 @@ step() {
   return $code
 }
 {
+  echo "# uptime $(uptime)"
   echo "# g1-dmg · HEAD $(git rev-parse --short HEAD) · porcelain $(git status --porcelain | wc -l | tr -d ' ')줄 · $(date -u +%FT%TZ) · node $(node -v)"
   step "npm ci" npm ci || exit 1
   export CORRAL_BACKEND_BUILD_ROOT=$(mktemp -d /tmp/l675w/corral-herdr-release-XXXXXX)

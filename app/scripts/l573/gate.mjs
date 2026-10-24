@@ -1,6 +1,6 @@
 // LIFE-573 최종 관문 드라이버 — 개발 앱(up.sh) 하나에 회차를 돌려 원자료 한 행씩(rounds.ndjson) 남긴다.
 // 사용(구현 worktree 의 app/ 에서): L565_ROOT=/tmp/l573n-<빌드> node scripts/l573/gate.mjs <빌드> <원자료 폴더> <단계...>
-//   단계: setup <레포> <worktree> · probe · c1 · c2 · c3 · c3info · c6 · c4 · c5 · claude
+//   단계: setup <레포> <worktree> · probe · c1 · c2 · c3 · c3info · c3info1w · c6 · c4 · c5 · claude · l44 · l44pos
 // 입력은 렌더러 합성 이벤트(01-criteria 「입력 모형」) — `.xterm-screen` 에 mousemove/mousedown/mouseup/mouseleave 를 dispatch.
 // 셸 명령은 `term.input`(onData → pane) 으로 보낸다 — 제어 `type` 은 before-input-event 를 타 `input.raw` 를 남겨
 // 사용자 키 누출 계수와 섞이기 때문이다. 열림 판정 = main `window.open.*` 로그 ↔ localhost 관측 서버 접속(l565 계측).
@@ -132,6 +132,50 @@ async function rowRound({ item, id, before, after, startCol, targetCol, mode, ex
   record({ item, id, mode, expect, start, click, pointerXY: p0, snaps: { s0, s1, s2, s3 }, pre, ...res, rowText: t.lines[row], pass })
   console.log(`${item} ${id} ${mode} pass=${pass} opens=${JSON.stringify(res.mainLog.map((m) => `${m.tag}:${m.url}`))} http=${JSON.stringify(res.http)} q(s1→s3)=${JSON.stringify([s1?.provide, s3?.provide])} pointer=${s3?.pointer}`)
   return pass
+}
+
+/** L4-4 한 회차. 사이드바 접기 → 포인터 정지 → 펼치기(mouseleave 없음) → 그 행에 URL → 렌더·간격 대기 → hasLink. 끝나면 사이드바는 처음(펼침) 상태. */
+async function l44Round({ id, inner }) {
+  await helper()
+  const toggle = () => l.evalJs(`(() => { const b = document.querySelector('[data-sidebar-toggle]'); b?.click(); return b?.getAttribute('aria-label') ?? null })()`)
+  const rectNow = () => js(`(() => { const r = L.term.element.querySelector('.xterm-screen').getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, cols: L.term.cols } })()`)
+  const before0 = await toggle()
+  await l.pause(1500)
+  await helper()
+  const u = url(inner ? `${id}-inner` : `${id}-edge`)
+  fs.writeFileSync(`${ROWS}/${id}.before`, `${'_'.repeat(60)} [${id}]\n`)
+  fs.rmSync(`${ROWS}/${id}.after`, { force: true })
+  fs.rmSync(`${ROWS}/${id}.go`, { force: true })
+  await sh(`clear; sh ${ROW_SH} ${ROWS} ${id}`)
+  const { row } = await findRow(`[${id}]`, `${id} before`)
+  await l.pause(400)
+  await js(`L.ev('mousemove', ${row + 4}, 2, {})`)
+  await l.pause(100)
+  // 가장자리 = 1열 · 양성 대조 = 60열(밑줄 끝 공백 — 링크 없음)
+  const p = await js(`L.ev('mousemove', ${row}, ${inner ? 60 : 1}, {})`)
+  await l.pause(300)
+  const s1 = await js('L.snap()')
+  const rect1 = await rectNow()
+  const before1 = await toggle()
+  await l.pause(1500)
+  const rect2 = await rectNow()
+  const s2 = await js('L.snap()')
+  const outside = p.x < rect2.left || p.x >= rect2.right || p.y < rect2.top || p.y >= rect2.bottom
+  // 펼친 뒤 저장 좌표 아래 칸. 가장자리는 0열부터, 양성 대조는 그 칸이 URL 안에 들게 10칸 앞부터 쓴다.
+  const colAfter = Math.floor((p.x - rect2.left) / (rect2.width / rect2.cols))
+  const urlStart = inner ? Math.max(2, colAfter - 10) : 0
+  fs.writeFileSync(`${ROWS}/${id}.after`, `${urlStart === 0 ? '' : `${'_'.repeat(urlStart - 1)} `}${u} ____ [${id}]x\n`)
+  fs.writeFileSync(`${ROWS}/${id}.go`, '')
+  await findRow(`[${id}]x`, `${id} after`)
+  await jsAsync('await L.settle()')
+  await l.pause(300)
+  const s3 = await js('L.snap()')
+  const linkText = await js('L.lk._currentLink?.link?.text ?? null')
+  const t = await l.termRead()
+  const pass = inner ? !outside && s3.hasLink === true && linkText === u : outside && s3.hasLink === false
+  record({ item: inner ? 'L4-4-positive' : 'L4-4', id, inner, expect: inner ? u : null, pointerXY: p, rect1, rect2, colAfter, urlStart, toggles: [before0, before1], snaps: { s1, s2, s3 }, linkText,
+    pointerOutsideAfterLayout: outside, rowText: t.lines.find((x) => x.includes(`[${id}]x`)), pass })
+  console.log(`${inner ? 'L4-4-positive' : 'L4-4'} ${id} pass=${pass} pointer.x=${p.x} rect1.left=${rect1.left} rect2.left=${rect2.left} outside=${outside} colAfter=${colAfter} s2.hasLink=${s2.hasLink} s3.hasLink=${s3.hasLink} link=${linkText} q=${JSON.stringify([s1.provide, s2.provide, s3.provide])}`)
 }
 
 const FILL = '_'.repeat(70)
@@ -270,39 +314,9 @@ const steps_ = {
   },
   // L4-4 레이아웃 변경 뒤 가장자리 — 포인터를 왼쪽 가장자리 칸(링크 없음)에 둔 채 사이드바를 펼쳐 터미널을 오른쪽으로 밀고
   // (저장된 clientX 는 이제 터미널 왼쪽 밖), 그 행 0열에 URL 이 오게 한다. 재평가가 클램프된 0열로 링크를 잡는지 본다. 클릭은 안 한다.
-  async l44() {
-    await helper()
-    const toggle = () => l.evalJs(`(() => { const b = document.querySelector('[data-sidebar-toggle]'); b?.click(); return b?.getAttribute('aria-label') ?? null })()`)
-    const before0 = await toggle()
-    await l.pause(1500)
-    await helper()
-    const id = 'l44-1'
-    const u = url('l44-edge')
-    fs.writeFileSync(`${ROWS}/${id}.before`, `${'_'.repeat(60)} [${id}]\n`)
-    fs.writeFileSync(`${ROWS}/${id}.after`, `${u} ____ [${id}]x\n`)
-    fs.rmSync(`${ROWS}/${id}.go`, { force: true })
-    await sh(`clear; sh ${ROW_SH} ${ROWS} ${id}`)
-    const { row } = await findRow(`[${id}]`, 'l44 before')
-    await l.pause(400)
-    await js(`L.ev('mousemove', ${row + 4}, 2, {})`)
-    await l.pause(100)
-    const p = await js(`L.ev('mousemove', ${row}, 1, {})`)
-    await l.pause(300)
-    const s1 = await js('L.snap()')
-    const rect1 = await js(`(() => { const r = L.term.element.querySelector('.xterm-screen').getBoundingClientRect(); return { left: r.left, width: r.width, cols: L.term.cols } })()`)
-    const before1 = await toggle()
-    await l.pause(1500)
-    const rect2 = await js(`(() => { const r = L.term.element.querySelector('.xterm-screen').getBoundingClientRect(); return { left: r.left, width: r.width, cols: L.term.cols } })()`)
-    const s2 = await js('L.snap()')
-    fs.writeFileSync(`${ROWS}/${id}.go`, '')
-    await findRow(`[${id}]x`, 'l44 after')
-    await jsAsync('await L.settle()')
-    await l.pause(300)
-    const s3 = await js('L.snap()')
-    const t = await l.termRead()
-    record({ item: 'L4-4', id, pointerXY: p, rect1, rect2, toggles: [before0, before1], snaps: { s1, s2, s3 }, pointerOutsideAfterLayout: p.x < rect2.left, rowText: t.lines.find((x) => x.includes(`[${id}]x`)) })
-    console.log(`L4-4 pointer.x=${p.x} rect1.left=${rect1.left} rect2.left=${rect2.left} outside=${p.x < rect2.left} s2.hasLink=${s2.hasLink} s3.hasLink=${s3.hasLink} q=${JSON.stringify([s1.provide, s2.provide, s3.provide])}`)
-  },
+  // g2: 3회 + 양성 대조(l44pos) 3회 — 포인터를 가운데 칸에 두면 펼친 뒤에도 저장 좌표가 터미널 안(다른 칸)이다. 그 칸에 URL 을 두면 잡혀야 한다.
+  async l44() { for (let n = 1; n <= 3; n++) await l44Round({ id: `l44-${n}`, inner: false }) },
+  async l44pos() { for (let n = 1; n <= 3; n++) await l44Round({ id: `l44pos-${n}`, inner: true }) },
   // C4 실제 Claude Code pane — viewportY 기록(L4-5) · 마우스 리포트 양성 대조(실제 DOM 이벤트 → onData SGR) ·
   // 정지 포인터 재평가 구간(응답 스트리밍 중 포인터 고정) SGR 0 · 응답의 URL ⌘+클릭 1 (L4-2)
   async claude() {

@@ -20,6 +20,19 @@ const record = (over: Partial<WorkActivityRecord> = {}): WorkActivityRecord => (
   id: `a-${Math.random()}`, connectionId: 'c1', itemId: 'i1', at: 1, writeId: 'w1', change: { field: 'title', to: '새 제목' }, ...over,
 })
 
+/**
+ * LIFE-700 — 상한 바로 아래(199줄)까지는 파일에 한 번에 깔고, 상한을 넘기는 줄만 `append` 로 쓴다.
+ * append 는 회차마다 파일 전체를 원자 쓰기하므로, 205회 append 는 부하 시 쓰기 지연 × 205 로 5초를 넘겼다.
+ * 깐 줄은 상한 안이라 `load` 의 상한은 아무것도 버리지 않는다 — 밀어내는 것은 append 경로다.
+ * 열쇠 기억은 저장소가 쓰는 모양(`[열쇠, 연결 id]`)으로 같이 깐다.
+ */
+const padFile = ({ file, rows }: { file: string; rows: WorkActivityRecord[] }): void => {
+  const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { version: 1, records: [], seen: [] }
+  const keys = rows.flatMap((row) => (row.eventKey === undefined ? [] : [[row.eventKey, row.connectionId]]))
+  fs.writeFileSync(file, JSON.stringify({ ...saved, records: [...saved.records, ...rows], seen: [...(saved.seen ?? []), ...keys] }))
+}
+const PADDED = 199
+
 describe('활동 저장소 파일', () => {
   it('재시작(새 인스턴스 load) 뒤에도 남는다 · 파일은 0600 · 본문 전문은 담지 않는다', () => {
     const first = new WorkActivityStore(dir)
@@ -75,7 +88,10 @@ describe('활동 저장소 파일', () => {
     const capped = capRecords({ records: rows, perItem: 3, total: 5 })
     expect(capped.map((row) => row.id)).toEqual(['r4', 'r5', 'r6', 'r7', 'r8', 'r9'].slice(-5))
     const store = new WorkActivityStore(dir)
-    for (let index = 0; index < 205; index += 1) store.append(record({ id: `n${index}` }))
+    padFile({ file: store.file, rows: Array.from({ length: PADDED }, (_, index) => record({ id: `n${index}` })) })
+    store.load()
+    expect(store.list({ connectionId: 'c1', itemId: 'i1' })).toHaveLength(PADDED)
+    for (let index = PADDED; index < 205; index += 1) store.append(record({ id: `n${index}` }))
     expect(store.list({ connectionId: 'c1', itemId: 'i1' })).toHaveLength(200)
     expect(store.list({ connectionId: 'c1', itemId: 'i1' })[0]?.id).toBe('n5')
   })
@@ -160,10 +176,14 @@ describe('WorkService 기록 지점', () => {
 
 describe('LIFE-603 R1-K·M — 사건 열쇠 기억 · 내용 고치기', () => {
   it('보존 상한으로 줄이 밀려나도 같은 열쇠는 다시 남지 않는다 — 재시작 뒤에도(양성 대조: 새 열쇠는 남는다)', () => {
+    const seeded = new WorkActivityStore(dir)
+    seeded.load()
+    expect(seeded.append(record({ eventKey: 'agent:q:old', itemKey: 'K-1' }))).toBe(true)
+    padFile({ file: seeded.file, rows: Array.from({ length: PADDED - 1 }, (_, index) => record({ eventKey: `agent:t:${index}`, itemKey: 'K-1' })) })
     const first = new WorkActivityStore(dir)
     first.load()
-    expect(first.append(record({ eventKey: 'agent:q:old', itemKey: 'K-1' }))).toBe(true)
-    for (let index = 0; index < 205; index += 1) first.append(record({ eventKey: `agent:t:${index}`, itemKey: 'K-1' }))
+    expect(first.list({ connectionId: 'c1', itemId: 'i1' }).some((row) => row.eventKey === 'agent:q:old')).toBe(true)
+    for (let index = PADDED - 1; index < 205; index += 1) first.append(record({ eventKey: `agent:t:${index}`, itemKey: 'K-1' }))
     expect(first.list({ connectionId: 'c1', itemId: 'i1' }).some((row) => row.eventKey === 'agent:q:old')).toBe(false)
     expect(first.append(record({ eventKey: 'agent:q:old', itemKey: 'K-1' }))).toBe(false)
     const second = new WorkActivityStore(dir)
@@ -200,10 +220,14 @@ describe('LIFE-603 R1-K·M — 사건 열쇠 기억 · 내용 고치기', () => 
 
 describe('R2-J ⓒ 연결 해제는 줄이 밀려난 열쇠까지 지운다', () => {
   it('상한으로 밀려난 c1 의 열쇠도 해제 뒤 파일에 없다 · 다른 연결의 열쇠는 남는다(양성 대조) · fix1 판 문자열 seen 도 읽는다', () => {
+    const seeded = new WorkActivityStore(dir)
+    seeded.load()
+    seeded.append(record({ eventKey: 'run:start:attempt-old', connectionId: 'c1', itemKey: 'K-1' }))
+    padFile({ file: seeded.file, rows: Array.from({ length: PADDED - 1 }, (_, index) => record({ eventKey: `agent:t:c1:K-1:${index}`, connectionId: 'c1', itemKey: 'K-1' })) })
     const store = new WorkActivityStore(dir)
     store.load()
-    store.append(record({ eventKey: 'run:start:attempt-old', connectionId: 'c1', itemKey: 'K-1' }))
-    for (let index = 0; index < 205; index += 1) store.append(record({ eventKey: `agent:t:c1:K-1:${index}`, connectionId: 'c1', itemKey: 'K-1' }))
+    expect(store.list({ connectionId: 'c1', itemId: 'i1' }).some((row) => row.eventKey === 'run:start:attempt-old')).toBe(true)
+    for (let index = PADDED - 1; index < 205; index += 1) store.append(record({ eventKey: `agent:t:c1:K-1:${index}`, connectionId: 'c1', itemKey: 'K-1' }))
     store.append(record({ eventKey: 'run:start:other', connectionId: 'c2', itemId: 'i9' }))
     expect(store.list({ connectionId: 'c1', itemId: 'i1' }).some((row) => row.eventKey === 'run:start:attempt-old')).toBe(false)
     store.purgeConnection('c1')

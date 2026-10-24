@@ -70,7 +70,9 @@ describe('terminal receipt admission survives result loss', () => {
 
   // ~20,000 file operations (9,999 seeded here, then the expiry sweep unlinks them) — a 5s budget fails
   // when the whole suite runs in parallel under disk load (LIFE-517 K4: 5/5 under a concurrent npm ci).
-  it('counts missing receipts toward capacity and releases space only after expiry', { timeout: 30_000 }, async () => {
+  // Body measured apart from the cleanup hook: max 41.0s, one ambient run at load 222 in the LIFE-699 r2 review
+  // (63 split samples, median 1.2s, cause not isolated). 90s = 2.2x that max. The hook deletes one file when this passes.
+  it('counts missing receipts toward capacity and releases space only after expiry', { timeout: 90_000 }, async () => {
     const inv = request(), effect = vi.fn(async () => ({ bytes: 4 }))
     await receipts.run(inv, effect); fs.unlinkSync(file(inv))
     const directory = path.dirname(file(inv))
@@ -392,13 +394,14 @@ describe('LIFE-423 r2 a released receipt holds no capacity', () => {
     receipts = new Receipts(root, now)
   })
   // The 10,000-file cleanup runs here, under the hook limit (10s default), not the test's own budget. Measured
-  // apart from the body it took up to 15.9s (LIFE-699 raw/claude/f1; reviewers saw 14.7s). 40s = 2.5x that max.
+  // apart from the body it took up to 15.9s under `yes` x216 (LIFE-699 raw/claude/f1; 14.7s ambient in the r1
+  // review). 40s = 2.5x that max.
   afterEach(() => { vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force: true }) }, 40_000)
 
   // A tombstone is not a spent id, so it must not push the profile into `receipt_capacity`.
-  // ~20,000 file operations (9,999 seeded, then the cap path reads all 10,000). Measured apart from the cleanup
-  // hook, this and the next test took up to 38.0s — filesystem stalls, seen at load 59 as well as under `yes` x216
-  // (LIFE-699 raw/claude/f1 and the r1 reviews). 80s = 2.1x that max.
+  // ~20,000 file operations (9,999 seeded, then the cap path reads all 10,000). Body measured apart from the
+  // cleanup hook: max 38.0s, one ambient run at load 358 in the LIFE-699 r1 review (174 split samples, median
+  // 0.7s, cause not isolated). 80s = 2.1x that max.
   it('admits a new request although released tombstones fill the directory', { timeout: 80_000 }, async () => {
     const effect = vi.fn(async () => ({ bytes: 4 }))
     const seed = request()

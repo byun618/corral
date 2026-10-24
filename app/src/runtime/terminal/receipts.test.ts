@@ -394,7 +394,10 @@ describe('LIFE-423 r2 a released receipt holds no capacity', () => {
   afterEach(() => { vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force: true }) })
 
   // A tombstone is not a spent id, so it must not push the profile into `receipt_capacity`.
-  it('admits a new request although released tombstones fill the directory', async () => {
+  // ~20,000 file operations (9,999 seeded, then the cap path reads all 10,000) — under `yes` x216 load 5s
+  // failed 3/3 and a completed run took up to 14.2s (LIFE-699 raw/claude/w1). 30s = 2.1x that max, the same
+  // budget as the 9,999-seed capacity test above (LIFE-517).
+  it('admits a new request although released tombstones fill the directory', { timeout: 30_000 }, async () => {
     const effect = vi.fn(async () => ({ bytes: 4 }))
     const seed = request()
     await receipts.run(seed, effect)
@@ -408,7 +411,8 @@ describe('LIFE-423 r2 a released receipt holds no capacity', () => {
 
   // L-7: one of the occupants cannot be parsed. The cap loop keeps its slot rather than waving it
   // through — an unreadable file is not evidence that the id behind it was released.
-  it('still refuses when the directory is full, one of them unreadable', async () => {
+  // Same 10,000-file scale and 30s budget as the test above (LIFE-699).
+  it('still refuses when the directory is full, one of them unreadable', { timeout: 30_000 }, async () => {
     const effect = vi.fn(async () => ({ bytes: 4 }))
     const seed = request()
     await receipts.run(seed, effect)

@@ -27,8 +27,10 @@ afterEach(() => {
 
 // LIFE-701 — 테스트 1건이 동기 git 을 23회 띄웠다(fixture 4개 × init·commit 8회 + 제품 `repoRootOf` 3회 × 등록 5회 15회).
 // 부하에서 git 1회가 약 0.2초를 넘으면 기본 5초를 넘는다. fixture 쪽은 파일당 한 번 만든 템플릿 저장소를 복사해 0회로 줄이고
-// (각 root 는 여전히 `.git` 을 가진 실제 저장소), 제품 쪽 15회는 그대로 돌리며 시간초과를 이 파일 범위로 늘린다:
-// 15회 × 1.2초 + 기저 약 0.4초 ≈ 18.4초 → 20초. 근거·측정은 specs/LIFE-701-manual-order-flake/raw/claude/RESULT.md.
+// (각 root 는 여전히 `.git` 을 가진 실제 저장소, 템플릿의 git 2회는 `beforeAll` 이라 테스트 시간초과 밖), 제품 쪽은 그대로 돌리며
+// (테스트별 15·12·9회) 시간초과를 이 파일 범위로 늘린다 — 호출당 예산 5000/23 ≈ 217ms → 20000/15 ≈ 1333ms.
+// 실측(git 1회당 지연 주입): 0.5초/회 6건 통과·최악 16.9초 · 1.0초/회 15회 테스트 19.8~23.1초로 한계 · 1.5초/회 15회 테스트 실패.
+// 지연 없이 load 291 의 `npm test` 안에서 이 파일 9.2초. 근거·원자료는 specs/LIFE-701-manual-order-flake/raw/claude/RESULT.md.
 const GIT_TIMEOUT = 20_000
 
 let template = null

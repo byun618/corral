@@ -24,12 +24,11 @@ const record = (over: Partial<WorkActivityRecord> = {}): WorkActivityRecord => (
  * LIFE-700 — 상한 바로 아래(199줄)까지는 파일에 한 번에 깔고, 상한을 넘기는 줄만 `append` 로 쓴다.
  * append 는 회차마다 파일 전체를 원자 쓰기하므로, 205회 append 는 부하 시 쓰기 지연 × 205 로 5초를 넘겼다.
  * 깐 줄은 상한 안이라 `load` 의 상한은 아무것도 버리지 않는다 — 밀어내는 것은 append 경로다.
- * 열쇠 기억은 저장소가 쓰는 모양(`[열쇠, 연결 id]`)으로 같이 깐다.
+ * 깐 줄의 열쇠는 `seen` 에 넣지 않는다 — load 가 남은 줄의 열쇠로 채운다. 앞서 save 가 쓴 `seen` 은 그대로 둔다.
  */
 const padFile = ({ file, rows }: { file: string; rows: WorkActivityRecord[] }): void => {
-  const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { version: 1, records: [], seen: [] }
-  const keys = rows.flatMap((row) => (row.eventKey === undefined ? [] : [[row.eventKey, row.connectionId]]))
-  fs.writeFileSync(file, JSON.stringify({ ...saved, records: [...saved.records, ...rows], seen: [...(saved.seen ?? []), ...keys] }))
+  const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { version: 1, records: [] }
+  fs.writeFileSync(file, JSON.stringify({ ...saved, records: [...saved.records, ...rows] }))
 }
 const PADDED = 199
 
@@ -94,6 +93,12 @@ describe('활동 저장소 파일', () => {
     for (let index = PADDED; index < 205; index += 1) store.append(record({ id: `n${index}` }))
     expect(store.list({ connectionId: 'c1', itemId: 'i1' })).toHaveLength(200)
     expect(store.list({ connectionId: 'c1', itemId: 'i1' })[0]?.id).toBe('n5')
+    // load 경로의 상한 — 제품 save 를 거치지 않은 상한 초과 파일(205줄)도 읽을 때 200줄로 줄고 가장 오래된 5줄이 빠진다.
+    fs.writeFileSync(store.file, JSON.stringify({ version: 1, records: Array.from({ length: 205 }, (_, index) => record({ id: `o${index}` })) }))
+    const over = new WorkActivityStore(dir)
+    over.load()
+    expect(over.list({ connectionId: 'c1', itemId: 'i1' })).toHaveLength(200)
+    expect(over.list({ connectionId: 'c1', itemId: 'i1' })[0]?.id).toBe('o5')
   })
 
   it('경로 오버라이드 CORRAL_WORK_ACTIVITY · 쓰기 실패는 던지지 않는다', () => {
@@ -179,6 +184,8 @@ describe('LIFE-603 R1-K·M — 사건 열쇠 기억 · 내용 고치기', () => 
     const seeded = new WorkActivityStore(dir)
     seeded.load()
     expect(seeded.append(record({ eventKey: 'agent:q:old', itemKey: 'K-1' }))).toBe(true)
+    // append 가 열쇠를 기억하고 save 가 그것을 파일에 남긴다 — 아래 load 는 남은 줄로 seen 을 다시 채우므로 여기서 직접 본다.
+    expect(JSON.parse(fs.readFileSync(seeded.file, 'utf8')).seen).toContainEqual(['agent:q:old', 'c1'])
     padFile({ file: seeded.file, rows: Array.from({ length: PADDED - 1 }, (_, index) => record({ eventKey: `agent:t:${index}`, itemKey: 'K-1' })) })
     const first = new WorkActivityStore(dir)
     first.load()

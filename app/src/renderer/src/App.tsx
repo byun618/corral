@@ -78,6 +78,7 @@ import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
 import { closeFollowTarget, fileTabId, fileTabLabel, fileTabsOf, isFileTabId, previewOf, recordCloseFollow, tabKindOf, terminalKeyTarget, type CloseFollow } from './file-tabs.js'
 import { FileView, focusLiveEditor, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
+import { createMarkdownToggleHandler } from './markdown-toggle.js'
 import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, thawEditing, type FileDoc } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, type SaveDeps } from './file-save.js'
 import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
@@ -1614,6 +1615,15 @@ export function App(): React.JSX.Element {
       const doc = kind.kind === 'file' ? getDoc(docKey(root, kind.rel)) : undefined
       if (doc !== undefined) void saveDoc(doc, saveDepsRef.current)
     },
+    // LIFE-629 — 포커스가 있는 Markdown 보기의 탭(없으면 — 팔레트 — 활성 탭)을 원문 ↔ 미리보기로, 그 영역을 활성으로, 바뀐 보기에 포커스(`markdown-toggle.ts`).
+    'markdown.togglePreview': createMarkdownToggleHandler({
+      root: () => activeWorktreeRow?.path ?? null,
+      layout: () => layoutRef.current,
+      focused: () => document.activeElement,
+      markdownModesOf,
+      activateGroup: (groupId) => activateGroup({ groupId, paneId: null }),
+      focusOpenedFile,
+    }),
     // LIFE-592 — 탐색기 트리 포커스에서만(범위 'explorer'). ⌘⌫ = 선택 항목 삭제(확인 뒤 휴지통), ⌘Z·⌘⇧Z = 탐색기 기록.
     'explorer.delete': () => {
       const selected = explorer.state?.selected ?? null

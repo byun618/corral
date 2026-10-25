@@ -1,7 +1,10 @@
 // Monaco 편집기 (LIFE-590 E4ⓐ 읽기 · LIFE-591 F3 편집) — **첫 파일 탭이 열릴 때 처음 로드된다**(`FileEditor` 의 동적 import, E8ⓒ 지연 로딩).
 //
-// Monaco 는 `editor.api`(핵심) + 읽기 전용 뷰어에 쓰는 기여만 싣는다 — 언어 서비스(TS·JSON·CSS·HTML worker)·Monarch 기본 언어는 싣지 않는다
+// Monaco 는 `editor.api`(핵심) + 편집기에 쓰는 기여만 골라 싣는다 — 언어 서비스(TS·JSON·CSS·HTML worker)·Monarch 기본 언어는 싣지 않는다
 // (구문 강조는 VS Code TextMate — `textmate.ts`. 언어 서버·의미 강조는 F2 범위 밖).
+// LIFE-692 — VS Code 줄 편집 키: linesOperations(⌘⌫·⌘⇧K·⌥↑↓·⌥⇧↑↓·⌘] ⌘[·⌘↵·⌃J) · comment(⌘/·⌥⇧A — 주석 문자는 `language-config.ts`) · indentation ·
+// caretOperations(⌃T) · wordPartOperations(⌃⌥←→). 키는 Monaco(= VS Code) 기본 그대로다. 앱 단축키와 겹치는 ⌘K 화음(⌘K ⌘C 등)은 앱 ⌘K 팔레트가 이긴다.
+// suggest·quickAccess·insertFinalNewLine 은 싣지 않는다(동작 변경·앱 팔레트와 겹침 — 00-analysis §4).
 // worker: 편집기 worker 하나(Vite `?worker` — 빌드 결과에 같은 출처 파일로 나간다, CSP `default-src 'self'` 안). file:// 에서 못 뜨면 Monaco 가
 // main 스레드로 폴백한다(그 경로는 `raw/claude/` 에 실측 기록 — R10).
 import * as monaco from 'monaco-editor/editor/editor.api'
@@ -21,6 +24,11 @@ import 'monaco-editor/features/cursorUndo/register'
 import 'monaco-editor/features/unicodeHighlighter/register'
 import 'monaco-editor/features/readOnlyMessage/register'
 import 'monaco-editor/features/longLinesHelper/register'
+import 'monaco-editor/features/linesOperations/register'
+import 'monaco-editor/features/comment/register'
+import 'monaco-editor/features/indentation/register'
+import 'monaco-editor/features/caretOperations/register'
+import 'monaco-editor/features/wordPartOperations/register'
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
 import { createTextMate, DARK_2026, INITIAL, languageOf, tokenizeLine, type TextMate } from './textmate.js'
 import type { StateStack } from '@shikijs/vscode-textmate'

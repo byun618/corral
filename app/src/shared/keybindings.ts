@@ -64,6 +64,10 @@ export const ACTIONS = [
   // 이름 필터는 VS Code macOS 목록 찾기 키 ⌥⌘F(`list.find`) — 트리 포커스에서만(Q7). 둘 다 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
   { id: 'quickOpen.open', group: '전역', title: '빠른 열기 (파일)', defaultBinding: ['Mod+P'], bindingVariants: [0], variants: ['열기'] },
   { id: 'explorer.filter', group: '탐색기', title: '이름 필터', defaultBinding: ['Mod+Alt+F'], bindingVariants: [0], variants: ['열기'], scope: 'explorer' },
+  // LIFE-629 — VS Code `markdown.togglePreview`(⇧⌘V). 키 = **포커스가 있는 Markdown 보기**(원문 편집기·미리보기)의 탭을 원문 ↔ 미리보기로 바꾸고 그 영역을 활성으로
+  // (`renderer/markdown-toggle.ts` — 파일 뷰 버튼과 같은 상태 경로). 포커스가 그 보기 밖이면 키를 가져가지 않는다 — 터미널(붙여넣기)·다른 파일 탭·입력칸
+  // (`yieldsOutsideMarkdown` — `useKeybindings` 가 부른다). 커맨드 팔레트 항목은 포커스 무관 — 활성 탭이 Markdown 이면 그 탭. 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
+  { id: 'markdown.togglePreview', group: '탭', title: 'Markdown 미리보기 전환', defaultBinding: ['Mod+Shift+V'], bindingVariants: [0], variants: ['Markdown 보기'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
 /** 액션이 매칭되는 자리 — `global` 어디서나 · `explorer` 탐색기 트리 포커스에서만(LIFE-592). */
@@ -102,7 +106,7 @@ export function bindingFromEvent(event: KeyInput): string | null {
  * 재정의해 둔 사용자의 `keybindings.json` 이 충돌로 버려지지 않게 한다(재정의가 이기고, 이 액션은 조합 없음으로 남는다 —
  * 단축키 설정에서 다시 배정할 수 있다). 처음부터 있던 액션의 기본값은 지금처럼 재정의보다 앞선다.
  */
-const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'file.save', 'explorer.delete', 'explorer.undo', 'explorer.redo', 'quickOpen.open', 'explorer.filter', 'tasks.toggle']
+const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'file.save', 'explorer.delete', 'explorer.undo', 'explorer.redo', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview']
 
 /**
  * 기본 조합 **개수가 바뀐** 액션의 옛 기본값 (LIFE-495 K7ⓘ). 칸 수가 다른 재정의는 아래 검사에서 버려지므로, 옛 칸 수 그대로인 재정의를
@@ -188,13 +192,21 @@ export function matchBinding(binding: string, overrides: Keybindings, scope: Act
   return null
 }
 /** 누르고 있어도 한 번만 도는 액션 (LIFE-495 K6ⓔ) — 렌더러 keydown·main 메뉴 키 두 길이 같은 목록을 본다(fix1 R1-06). */
-export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'file.save', 'explorer.delete', 'quickOpen.open', 'explorer.filter', 'tasks.toggle']
+export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'file.save', 'explorer.delete', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview']
 
 /**
  * 편집기(파일 탭 Monaco)에 포커스가 있으면 **편집기에 양보하는** 액션 (LIFE-591). 터미널 pane 을 겨누는 단축키는 파일 탭이 활성이면 무동작이라(590 수정 r1 R1-B — `terminalKeyTarget`)
  * 삼키기만 하면 편집기의 같은 키가 죽는다: ⌘⇧Z 다시 실행(VS Code·Monaco macOS) · ⌘D 다음 일치 항목 추가 · ⌘⌥↑↓ 커서 추가. 양보해도 잃는 앱 동작이 없다.
  */
 export const EDITOR_YIELD_ACTIONS: readonly ActionId[] = ['terminal.zoom', 'terminal.split', 'terminal.focus']
+
+/**
+ * 포커스가 Markdown 보기(파일 탭의 원문 편집기·미리보기) 밖이면 **키를 가져가지 않는** 액션인가 (LIFE-629). VS Code `markdown.togglePreview` when 절
+ * (`!terminalFocus && (markdown 편집기 포커스 || 미리보기 활성)`)을 옮긴다 — 터미널 ⇧⌘V·입력칸 붙여넣기·다른 파일 탭의 같은 조합을 삼키지 않는다. 순수 판정.
+ */
+export function yieldsOutsideMarkdown(input: { id: ActionId; inMarkdownView: boolean }): boolean {
+  return input.id === 'markdown.togglePreview' && !input.inMarkdownView
+}
 
 /**
  * main `before-input-event` 가 메뉴 가속키에서 가져오는 키 — `⌘W`(File ▸ Close Window)·`⌘R`(View ▸ Reload). 순수 판정.

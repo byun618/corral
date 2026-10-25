@@ -81,6 +81,24 @@ export function focusLiveEditor(input: { store: ViewStateStore; tabId: string })
   }
   return false
 }
+/**
+ * 붙어 있는 Markdown 보기의 원문 ↔ 미리보기 전환(모드 저장소·탭 id 별) — LIFE-629 ⇧⌘V. 파일 뷰 버튼과 같은 `setMode` 경로라 탭별 `MarkdownModeStore` 에 남는다.
+ */
+const liveModeToggles = new WeakMap<MarkdownModeStore, Map<string, () => void>>()
+const modeTogglesOf = (store: MarkdownModeStore): Map<string, () => void> => {
+  const found = liveModeToggles.get(store)
+  if (found !== undefined) return found
+  const made = new Map<string, () => void>()
+  liveModeToggles.set(store, made)
+  return made
+}
+/** 그 탭의 Markdown 보기를 원문 ↔ 미리보기로 바꾼다 — 붙어 있는 편집 가능한 Markdown 보기가 없으면(다른 파일·이미지·읽기 실패) 아무것도 안 하고 거짓. */
+export function toggleMarkdownMode(input: { store: MarkdownModeStore; tabId: string }): boolean {
+  const toggle = modeTogglesOf(input.store).get(input.tabId)
+  if (toggle === undefined) return false
+  toggle()
+  return true
+}
 /** 탭 id 가 바뀐 편집기 — 지금 view state 를 새 id 로 맡기고, 정리 때도 새 id 로 저장하게 한다. */
 export function retargetLiveEditors(store: ViewStateStore, moved: readonly { from: string; to: string }[]): void {
   for (const live of liveEditorsOf(store)) {
@@ -214,6 +232,22 @@ export function FileView({
   const large = doc !== undefined ? doc.large : read !== null && read.ok && read.size > LARGE_FILE_BYTES
   const deleted = doc !== undefined && (watched?.exists === false || (read !== null && !read.ok && read.code === 'not_found'))
 
+  // LIFE-629 — ⇧⌘V 가 이 보기를 바꿀 수 있게 건다(편집 가능한 Markdown 일 때만 — 버튼이 보이는 조건과 같다).
+  const togglable = markdown && editable
+  useEffect(() => {
+    if (!togglable) return
+    const toggles = modeTogglesOf(markdownModes)
+    const toggle = (): void => {
+      const next = (markdownModes.get(tabId) ?? 'source') === 'source' ? 'preview' : 'source'
+      markdownModes.set(tabId, next)
+      setModeState(next)
+    }
+    toggles.set(tabId, toggle)
+    return () => {
+      if (toggles.get(tabId) === toggle) toggles.delete(tabId)
+    }
+  }, [togglable, markdownModes, tabId])
+
   let body: React.JSX.Element
   const readOnly = doc?.readOnly ?? (textRead === null ? null : readOnlyReasonOf(textRead))
   if (editable)
@@ -249,7 +283,7 @@ export function FileView({
   return (
     // tabIndex -1 — 편집기가 없는 보기(이미지·바이너리·안내·Markdown 미리보기)에서 ⌘P 로 연 뒤 포커스가 머물 자리(수정 r1 R1-C-06). Tab 순회에는 들지 않는다.
     // 편집기가 있으면 두지 않는다 — 편집기 안을 누를 때 브라우저 기본 포커스가 이 상자로 가지 않게.
-    <div className="file-group" tabIndex={editable && !(markdown && mode === 'preview') ? undefined : -1} data-file-group={groupId} data-file-view={rel} data-file-dirty={doc?.dirty === true ? 'true' : 'false'} onMouseDown={() => onActivate()}>
+    <div className="file-group" tabIndex={editable && !(markdown && mode === 'preview') ? undefined : -1} data-file-group={groupId} data-file-view={rel} data-markdown-view={togglable ? mode : undefined} data-file-dirty={doc?.dirty === true ? 'true' : 'false'} onMouseDown={() => onActivate()}>
       {markdown && editable ? (
         <div className="file-view-toolbar">
           <button

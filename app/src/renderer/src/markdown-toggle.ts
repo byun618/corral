@@ -1,4 +1,4 @@
-// LIFE-629 ⇧⌘V Markdown 미리보기 전환 — 무엇을 바꿀지(대상)와 바꾸는 순서. App 처리기는 이 함수 하나를 부른다.
+// LIFE-629 ⇧⌘V Markdown 미리보기 전환 — 무엇을 바꿀지(대상)와 바꾸는 순서. App 처리기는 `createMarkdownToggleHandler` 가 만든 함수를 그대로 쓴다(수정 f2 N-2 — 처리기 본문을 행동 시험으로 잠근다).
 //
 // 대상(수정 f1 F1 — reviews.md r1 A): **포커스가 있는 Markdown 보기의 탭**이 먼저다(VS Code 처럼 포커스 편집기가 대상). 키 캡처는 포커스가 그 보기 안일 때만
 // 키를 가져오므로(`useKeybindings`), 그 보기가 활성 영역이 아니어도(툴바 버튼 클릭 — 영역을 활성으로 만들지 않는다) 그 탭을 바꾸고 그 영역을 활성으로 만든다.
@@ -40,4 +40,31 @@ export function runMarkdownToggle(deps: {
   if (target.groupId !== deps.activeGroupId) deps.activateGroup(target.groupId)
   deps.focusFile(target.rel)
   return true
+}
+
+/**
+ * App 의 `markdown.togglePreview` 처리기 — 부를 때마다 지금 worktree·배치·포커스를 읽어 `runMarkdownToggle` 에 넘긴다(worktree 가 없으면 무동작).
+ * 포커스는 미리보기면 보기 자리, 원문이면 편집기(붙는 대로) — 마우스 없이 다시 ⇧⌘V 가 먹고, 원문으로 오면 바로 타이핑된다(`focusOpenedFile`).
+ */
+export function createMarkdownToggleHandler(deps: {
+  root: () => string | null
+  layout: () => { activeGroupId: string | null; activeTabId: string | null }
+  focused: () => Element | null
+  markdownModesOf: (root: string) => MarkdownModeStore
+  activateGroup: (groupId: string) => void
+  focusOpenedFile: (input: { worktreePath: string; rel: string }) => void
+}): () => void {
+  return () => {
+    const root = deps.root()
+    if (root === null) return
+    const layout = deps.layout()
+    runMarkdownToggle({
+      focused: deps.focused(),
+      activeGroupId: layout.activeGroupId,
+      activeTabId: layout.activeTabId,
+      store: deps.markdownModesOf(root),
+      activateGroup: deps.activateGroup,
+      focusFile: (rel) => deps.focusOpenedFile({ worktreePath: root, rel }),
+    })
+  }
 }

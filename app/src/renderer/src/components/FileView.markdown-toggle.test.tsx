@@ -76,3 +76,22 @@ describe('toggleMarkdownMode (LIFE-629 K3)', () => {
     expect(markdownModes.size).toBe(0)
   })
 })
+
+describe('캡처 조건 = 전환기 등록 조건 (f2 N-1 — 편집 불가 .md 는 키를 가져가지 않는다)', () => {
+  const unreadable = [
+    { label: '읽기 실패', result: { ok: false, code: 'not_found', error: 'ENOENT' } },
+    { label: '바이너리', result: { ok: true, kind: 'binary', size: 9, bytesRead: 9, stamp: 's1' } },
+    { label: '상한 초과', result: { ok: true, kind: 'too_large', size: 99, limit: 10, bytesRead: 0, stamp: 's1' } },
+  ]
+  for (const item of unreadable) {
+    it(`${item.label} .md → data-markdown-view 없음 · toggleMarkdownMode 거짓 · 저장소 불변`, async () => {
+      Reflect.set(window, 'corral', { readFile: async () => item.result })
+      const markdownModes: MarkdownModeStore = new Map()
+      await render({ rel: 'BROKEN.md', markdownModes })
+      expect(view()?.getAttribute('data-file-view')).toBe('BROKEN.md')
+      expect(view()?.hasAttribute('data-markdown-view')).toBe(false)
+      expect(toggleMarkdownMode({ store: markdownModes, tabId: 'file:BROKEN.md' })).toBe(false)
+      expect(markdownModes.size).toBe(0)
+    })
+  }
+})

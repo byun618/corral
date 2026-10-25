@@ -64,9 +64,10 @@ export const ACTIONS = [
   // 이름 필터는 VS Code macOS 목록 찾기 키 ⌥⌘F(`list.find`) — 트리 포커스에서만(Q7). 둘 다 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
   { id: 'quickOpen.open', group: '전역', title: '빠른 열기 (파일)', defaultBinding: ['Mod+P'], bindingVariants: [0], variants: ['열기'] },
   { id: 'explorer.filter', group: '탐색기', title: '이름 필터', defaultBinding: ['Mod+Alt+F'], bindingVariants: [0], variants: ['열기'], scope: 'explorer' },
-  // LIFE-629 — VS Code `markdown.togglePreview`(⇧⌘V). 활성 탭이 Markdown 파일 탭이면 원문 ↔ 미리보기(파일 뷰 버튼과 같은 경로). 포커스가 그 Markdown 보기 안일 때만
-  // 키를 가져간다 — 터미널(붙여넣기)·다른 파일 탭·입력칸에서는 삼키지 않는다(`yieldsOutsideMarkdown` — `useKeybindings` 가 부른다). 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
-  { id: 'markdown.togglePreview', group: '탭', title: 'Markdown 미리보기 전환', defaultBinding: ['Mod+Shift+V'], bindingVariants: [0], variants: ['활성 Markdown 탭'] },
+  // LIFE-629 — VS Code `markdown.togglePreview`(⇧⌘V). 키 = **포커스가 있는 Markdown 보기**(원문 편집기·미리보기)의 탭을 원문 ↔ 미리보기로 바꾸고 그 영역을 활성으로
+  // (`renderer/markdown-toggle.ts` — 파일 뷰 버튼과 같은 상태 경로). 포커스가 그 보기 밖이면 키를 가져가지 않는다 — 터미널(붙여넣기)·다른 파일 탭·입력칸
+  // (`yieldsOutsideMarkdown` — `useKeybindings` 가 부른다). 커맨드 팔레트 항목은 포커스 무관 — 활성 탭이 Markdown 이면 그 탭. 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
+  { id: 'markdown.togglePreview', group: '탭', title: 'Markdown 미리보기 전환', defaultBinding: ['Mod+Shift+V'], bindingVariants: [0], variants: ['Markdown 보기'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
 /** 액션이 매칭되는 자리 — `global` 어디서나 · `explorer` 탐색기 트리 포커스에서만(LIFE-592). */

@@ -1,14 +1,12 @@
 // @vitest-environment happy-dom
 // LIFE-692 수정 f1 F2 — ⇧⌘V 처리기(`runMarkdownToggle`)의 대상: 포커스가 있는 Markdown 보기의 탭 → 그 영역 활성, 다른 영역 탭 모드 불변(K3 ⓕ).
 // 포커스가 보기 밖(팔레트 경로)이면 활성 탭. 실제 FileView 두 개(영역 둘)를 그리고 실제 전환기 등록을 거친다 — Monaco 는 싣지 않는다(가짜).
-// App 처리기가 이 함수를 실제로 부르는지는 아래 마지막 시험이 App.tsx 원문으로 잠근다(App 전체 마운트에 파일 탭 두 영역을 합성하는 길이 아직 없다).
-import fs from 'node:fs'
-import path from 'node:path'
+// App 처리기 본문은 `createMarkdownToggleHandler` 다(수정 f2 N-2) — 아래 마지막 단락이 그 함수를 실제로 불러 행동으로 잠근다(App 은 의존성만 넘기는 한 줄 위임).
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FileView, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
-import { focusedMarkdownView, markdownToggleTarget, runMarkdownToggle } from './markdown-toggle.js'
+import { createMarkdownToggleHandler, focusedMarkdownView, markdownToggleTarget, runMarkdownToggle } from './markdown-toggle.js'
 
 vi.mock('./editor/monaco.js', () => ({ languageFor: () => new Promise(() => {}) }))
 vi.mock('./editor/markdown.js', () => ({ renderMarkdown: () => '<p>미리보기</p>', slugOf: () => '', resolveMarkdownTarget: () => null }))
@@ -93,12 +91,47 @@ describe('⇧⌘V 대상 = 포커스가 있는 Markdown 보기 (f1 F1 · K3 ⓕ)
     expect(markdownToggleTarget({ focused: { groupId: 'g2', rel: 'B.md' }, activeGroupId: 'g1', activeTabId: 'file:A.md' })).toEqual({ groupId: 'g2', tabId: 'file:B.md', rel: 'B.md' })
     expect(markdownToggleTarget({ focused: null, activeGroupId: 'g1', activeTabId: 'file:A.md' })).toEqual({ groupId: 'g1', tabId: 'file:A.md', rel: 'A.md' })
   })
-  it('App 처리기가 runMarkdownToggle 에 포커스 요소·활성 영역·영역 활성화·포커스 이동을 넘긴다(처리기 무동작 변이 M3 를 잡는다)', () => {
-    const source = fs.readFileSync(path.join(import.meta.dirname, 'App.tsx'), 'utf8')
-    const start = source.indexOf("'markdown.togglePreview': () => {")
-    expect(start).toBeGreaterThan(-1)
-    const body = source.slice(start, source.indexOf('\n    },', start))
-    for (const part of ['runMarkdownToggle({', 'focused: document.activeElement', 'activeGroupId: layoutRef.current.activeGroupId', 'activeTabId: layoutRef.current.activeTabId', 'store: markdownModesOf(root)', 'activateGroup({ groupId, paneId: null })', 'focusOpenedFile({ worktreePath: root, rel })']) expect(body).toContain(part)
-    expect(body).not.toMatch(/^\s*return\s*$/m)
+})
+
+describe('App 처리기 createMarkdownToggleHandler (f2 N-2 — 처리기 무동작 변이 M3·M3b·void 0 을 잡는다)', () => {
+  const handler = (input: { root: string | null; activeGroupId: string | null; activeTabId: string | null; focused: Element | null }) => {
+    const calls: { activated: string[]; opened: { worktreePath: string; rel: string }[]; stores: string[] } = { activated: [], opened: [], stores: [] }
+    const run = createMarkdownToggleHandler({
+      root: () => input.root,
+      layout: () => ({ activeGroupId: input.activeGroupId, activeTabId: input.activeTabId }),
+      focused: () => input.focused,
+      markdownModesOf: (worktree) => {
+        calls.stores.push(worktree)
+        return markdownModes
+      },
+      activateGroup: (groupId) => calls.activated.push(groupId),
+      focusOpenedFile: (target) => calls.opened.push(target),
+    })
+    return { run, calls }
+  }
+  it('비활성 영역 g2 보기 포커스 → B.md 전환 · g2 활성 · 그 worktree 의 B.md 로 포커스 이동, A.md 불변', () => {
+    const { run, calls } = handler({ root: '/w', activeGroupId: 'g1', activeTabId: 'file:A.md', focused: group('g2').querySelector('[data-markdown-toggle]') })
+    act(() => run())
+    expect(markdownModes.get('file:B.md')).toBe('source')
+    expect(markdownModes.get('file:A.md')).toBe('preview')
+    expect(calls).toEqual({ activated: ['g2'], opened: [{ worktreePath: '/w', rel: 'B.md' }], stores: ['/w'] })
+    // 다시 부르면 되돌아간다(같은 처리기 — 부를 때마다 지금 상태를 읽는다)
+    act(() => run())
+    expect(markdownModes.get('file:B.md')).toBe('preview')
+  })
+  it('팔레트 경로(포커스 = 문서 본문) → 활성 탭 A.md 전환 · 영역 활성화 없음', () => {
+    const { run, calls } = handler({ root: '/w', activeGroupId: 'g1', activeTabId: 'file:A.md', focused: document.body })
+    act(() => run())
+    expect(markdownModes.get('file:A.md')).toBe('source')
+    expect(calls).toEqual({ activated: [], opened: [{ worktreePath: '/w', rel: 'A.md' }], stores: ['/w'] })
+  })
+  it('worktree 없음 → 아무것도 안 함 · 활성 탭이 터미널 → 무변화', () => {
+    const none = handler({ root: null, activeGroupId: 'g1', activeTabId: 'file:A.md', focused: group('g1') })
+    act(() => none.run())
+    expect(none.calls).toEqual({ activated: [], opened: [], stores: [] })
+    const terminal = handler({ root: '/w', activeGroupId: 'g1', activeTabId: 'term-1', focused: document.body })
+    act(() => terminal.run())
+    expect(terminal.calls.opened).toEqual([])
+    expect([...markdownModes]).toEqual([['file:A.md', 'preview'], ['file:B.md', 'preview']])
   })
 })

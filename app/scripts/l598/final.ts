@@ -1026,6 +1026,60 @@ async function u3c(): Promise<void> {
   }
 }
 
+/**
+ * LIFE-598 r1 ⓒ: 한가한 pane 에서 `/clear` 전후 `agent.get` 시계열(≤ 150 ms) — `state_change_seq`·`status`·`agent_session`·입력 revision·idle.
+ * `--rounds N`(기본 2). 회차마다 한 줄: Enter 뒤 세션 반영 지연(`sessionChangeMs`), 그 표본의 입력 idle(마지막 키 뒤 경과),
+ * 세션이 바뀐 표본에서 seq 가 Enter 직전과 같은가(`seqSameAtChange`), 변화가 있었던 칸들의 시계열(값이 바뀐 표본만). 세션 값은 앞 8자.
+ * 판정: 세션이 6 s 안에 바뀌었고 샘플러 실패 0 이면 ok(측정 회차의 성립 — 지연 값 자체는 판정하지 않는다).
+ */
+async function series(): Promise<void> {
+  const info = paneOf(flag('pane') ?? 'cs')
+  const rounds = Number(flag('rounds') ?? '2')
+  for (let round = 0; round < rounds; round += 1) {
+    await waitIdle(info, 60_000)
+    await delay(1500)
+    const pane = await own(info.paneId)
+    type Sample = { ms: number; status: string | null; seq: number | null; session: string | null; revision: number | null; idleMs: number | null; quietMs: number | null; error: string | null }
+    const samples: Sample[] = []
+    let t0 = Date.now()
+    let running = true
+    const take = async (): Promise<void> => {
+      while (running) {
+        const at = Date.now()
+        const sample = await terminal.agentInfo(pane, ctx()).then(
+          (agent): Sample => ({ ms: at - t0, status: agent.status, seq: agent.stateChangeSeq, session: agent.session?.value.slice(0, 8) ?? null, revision: agent.input?.revision ?? null, idleMs: agent.input?.idleMs ?? null, quietMs: agent.stateQuietMs ?? null, error: null }),
+          (error: unknown): Sample => ({ ms: at - t0, status: null, seq: null, session: null, revision: null, idleMs: null, quietMs: null, error: String(error).slice(0, 80) }),
+        )
+        samples.push(sample)
+        await delay(Math.max(0, 100 - (Date.now() - at)))
+      }
+    }
+    const sampler = take()
+    await delay(600)
+    await desktopKeys(info.paneId, '/clear')
+    await delay(500)
+    t0 = Date.now()
+    // 앞 표본은 Enter 기준 음수 ms 로 다시 적는다.
+    for (const sample of samples) sample.ms -= 1100
+    await desktopKeys(info.paneId, '\r')
+    await delay(6000)
+    running = false
+    await sampler
+    const before = [...samples].reverse().find((sample) => sample.ms < 0 && sample.error === null) ?? null
+    const change = samples.find((sample) => sample.ms >= 0 && sample.error === null && sample.session !== null && before !== null && sample.session !== before.session) ?? null
+    const prevOfChange = change === null ? null : [...samples].reverse().find((sample) => sample.ms < change.ms && sample.error === null) ?? null
+    const compact = samples.filter((sample, index) => index === 0 || sample.error !== null || ((prev) => prev.status !== sample.status || prev.seq !== sample.seq || prev.session !== sample.session || prev.revision !== sample.revision)(samples[index - 1]!))
+    const errors = samples.filter((sample) => sample.error !== null).length
+    const nulls = samples.filter((sample) => sample.error === null && sample.session === null).length
+    out(`series-${info.name}-${round}`, {
+      pane: info.name, mode: info.mode, samples: samples.length, errors, nullSessionSamples: nulls,
+      sessionChangeMs: change?.ms ?? null, sessionChangeWindowMs: change === null || prevOfChange === null ? null : [prevOfChange.ms, change.ms],
+      idleAtChange: change?.idleMs ?? null, seqBefore: before?.seq ?? null, seqAtChange: change?.seq ?? null, seqSameAtChange: change === null || before === null ? null : change.seq === before.seq,
+      statusBefore: before?.status ?? null, statusAtChange: change?.status ?? null, compact,
+    }, change !== null && errors === 0)
+  }
+}
+
 type Ask = { tag: string; prompt: string; answers: { choices: number[]; other: string | null }[]; expect: string[] }
 const ASK: Ask = { tag: 'single', prompt: 'Call AskUserQuestion once: one question "Pick a color", single select, options Red, Green, Blue with short descriptions. No other tools. After I answer say OK.', answers: [{ choices: [1], other: null }], expect: ['Green'] }
 
@@ -1150,7 +1204,7 @@ async function u5r(): Promise<void> {
 
 // --- 실행 ---------------------------------------------------------------------------------------------------
 
-const ITEMS: Record<string, () => Promise<void>> = { u1a, u1b, u1d, u2b, u2c, u2d, u2d2, u3a, u3b, u3c, u3d, u4a, u5, u5r }
+const ITEMS: Record<string, () => Promise<void>> = { series, u1a, u1b, u1d, u2b, u2c, u2d, u2d2, u3a, u3b, u3c, u3d, u4a, u5, u5r }
 if (command === 'setup') {
   await setup()
 } else if (ITEMS[command] !== undefined) {

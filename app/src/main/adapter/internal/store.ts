@@ -71,6 +71,8 @@ export const RETAINED_LIMIT = 20
 
 /** 닫힌 pane 의 마지막 기록 — 모양은 경계 타입 하나다(`shared/types.ts`). */
 export type RetainedAgent = RetainedAgentRow
+/** false = 그 workspace 의 pane 은 보존하지 않는다(LIFE-694 — 카드 밖·주인 없음). 판정을 못 하면 true 를 돌려준다. */
+export type RetentionPolicy = (input: { workspaceId: string; cwds: readonly string[] }) => boolean
 
 export type ApplyResult = {
   changed: boolean
@@ -198,6 +200,12 @@ export class WorkspaceStore {
 
   /** corral 이 스스로 닫은 pane·탭 — 그 닫힘은 보존하지 않는다 (아래 `suppressRetention`). */
   private retentionSuppressed = new Set<string>()
+  /**
+   * **corral 밖에서 닫힌 workspace 를 보존할지** 묻는 자리 (LIFE-694). store 는 카드를 모른다 — 카드 귀속·경로 판정은
+   * main 이 쥐고 있어 여기에 술어로 꽂는다. 없으면(시험·부팅 전) 지금처럼 보존한다. 사라지기 **전에** 그 workspace 의
+   * pane cwd 를 모아 한 번 묻는다 — pane 을 하나씩 지우는 도중에 물으면 형제 cwd 를 못 본다.
+   */
+  private retentionPolicy: RetentionPolicy | null = null
   private orphans: Orphan[] = []
 
   reset(): void {
@@ -466,6 +474,7 @@ export class WorkspaceStore {
         if (id === null) return { changed: false, note: 'tab_closed 필드 부족' }
         // workspace 연쇄를 보려면 지우기 **전에** 주인을 읽어야 한다 (수정 1회차 L5).
         const workspaceId = this.tabs.get(id)?.workspaceId ?? readString(data, 'workspace_id')
+        const keep = workspaceId === null || this.retentionAllowed(workspaceId)
         const had = this.tabs.delete(id)
         this.closedTabs.set(id, at)
         let orphaned = 0
@@ -473,7 +482,7 @@ export class WorkspaceStore {
           if (pane.tabId !== id) continue
           // H1ⓒ — 탭과 함께 죽은 pane 에도 묘비. 탭이 닫혔다는 **관측**에서 바로 따라 나오는
           // 사실이라(닫힌 탭의 pane 은 herdr 에도 없다) 이쪽은 추정이 아니다.
-          this.forgetPane({ pane, at, retain: true })
+          this.forgetPane({ pane, at, retain: keep })
           orphaned += 1
         }
         this.releaseTabSuppression(id)
@@ -563,7 +572,7 @@ export class WorkspaceStore {
         // 한다 — 닫힘 통보가 create 보다 먼저 오는 구간이 실제로 있기 때문이다.
         this.closedPanes.set(id, at)
         if (pane === null) return { changed: false, note: `${frame.event}: 이미 없음(멱등)` }
-        this.forgetPane({ pane, at, retain: true })
+        this.forgetPane({ pane, at, retain: this.retentionAllowed(pane.workspaceId) })
         const siblings = [...this.panes.values()].filter((item) => item.tabId === pane.tabId).length
         if (siblings > 0) return { changed: true, note: `${frame.event}: 탭에 pane ${siblings}개 남음` }
         /**
@@ -633,6 +642,8 @@ export class WorkspaceStore {
    *     workspace 째 사라질 때만 뒤집혀 있었다(코디 재현 C4)
    */
   private dropWorkspace(id: string, at: number, retain: boolean): boolean {
+    // 정책은 workspace·pane 을 지우기 **전에** 묻는다 (LIFE-694).
+    const keep = retain && this.retentionAllowed(id)
     const had = this.workspaces.delete(id)
     this.closed.set(id, at)
     // 주인이 닫혔으면 그 주인을 기다리던 보류분도 의미가 없다.
@@ -651,7 +662,7 @@ export class WorkspaceStore {
     }
     for (const pane of this.panes.values()) {
       if (pane.workspaceId !== id) continue
-      this.forgetPane({ pane, at, retain }) // H1ⓑ — 연쇄로 죽은 pane 에도 묘비
+      this.forgetPane({ pane, at, retain: keep }) // H1ⓑ — 연쇄로 죽은 pane 에도 묘비
     }
     for (const tabId of droppedTabs) this.releaseTabSuppression(tabId)
     this.retentionSuppressed.delete(id)
@@ -1140,6 +1151,30 @@ export class WorkspaceStore {
   /** 보존된 마지막 기록 — 최신 우선. */
   retainedRows(): readonly RetainedAgent[] {
     return this.retained
+  }
+
+  /** 외부 닫기 보존 정책을 꽂는다 (LIFE-694). null 이면 지금처럼 늘 보존한다. */
+  setRetentionPolicy(policy: RetentionPolicy | null): void {
+    this.retentionPolicy = policy
+  }
+
+  /**
+   * 보존 행을 걷는다 — 사용자가 ✕ 로 걷은 행(LIFE-696)과 붙을 카드가 없어진 행(LIFE-694 C3)이 같은 길이다.
+   * 모르는 id 는 무시한다. 걷은 id 만 돌려준다(없으면 빈 배열 — 부르는 쪽이 상태를 다시 낼지 정한다).
+   */
+  dropRetained(paneIds: readonly string[]): string[] {
+    const ids = new Set(paneIds)
+    const dropped = this.retained.filter((row) => ids.has(row.paneId)).map((row) => row.paneId)
+    if (dropped.length > 0) this.retained = this.retained.filter((row) => !ids.has(row.paneId))
+    return dropped
+  }
+
+  /** 그 workspace 가 지금 사라지면 보존해도 되나 — 정책이 없으면 그렇다. cwd 는 지금 남은 pane 들의 것(중복 제거). */
+  private retentionAllowed(workspaceId: string): boolean {
+    if (this.retentionPolicy === null) return true
+    const cwds = new Set<string>()
+    for (const pane of this.panes.values()) if (pane.workspaceId === workspaceId && pane.cwd !== null) cwds.add(pane.cwd)
+    return this.retentionPolicy({ workspaceId, cwds: [...cwds] })
   }
 
   /**

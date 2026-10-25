@@ -8,7 +8,8 @@
 //      그대로 — 공백뿐인 줄 상자는 접혀 실제로는 `mt-0.5` 만 남는다. 격리 실측으로 높이를 적는다)
 // 행 `py-1`, 루트 `px-2` · 자식 `pl-5 pr-2`. 접힘 없이 늘 세 줄 규칙대로 그린다(펼침 버튼 `hideExpand`).
 //
-// corral 차이(의도적): 닫기는 live 행만(compact 행 D18 과 같다 — 198 은 retained 도 dismiss), 3줄에 corral 통지(기록 못 읽음 등) 포함.
+// corral 차이(의도적): 닫기는 live 행만(compact 행 D18 과 같다), 3줄에 corral 통지(기록 못 읽음 등) 포함.
+// 「닫힌 탭」(retained) 행은 198 처럼 같은 칸의 ✕ 로 걷는다(LIFE-696 — 확인 대화 없음, 서브에이전트 행은 없음).
 import { useState } from 'react'
 import { AGENT_DOT_LABEL } from '../agent-dot.js'
 import { elapsedAgoLabel } from '../session-activity.js'
@@ -41,6 +42,7 @@ export function AgentFullRow({
   const time = elapsedAgoLabel({ at: node.timeAt, now })
   const { full } = node
   const canClose = node.source === 'live'
+  const canDismiss = node.source === 'retained'
   const classes = [
     'agent-full-row',
     `source-${node.source}`,
@@ -103,7 +105,7 @@ export function AgentFullRow({
         {/* 시간과 닫기가 한 칸(`w-12`)을 나눠 쓴다 — hover 면 시간이 비켜 서고 닫기가 선다(198 `DashboardAgentRowTrailingControls.tsx:107-140`). */}
         <span className="agent-full-trailing">
           {time === null ? null : (
-            <span className={`agent-full-time ${canClose && hovered ? 'is-hidden' : ''}`} data-elapsed={time}>
+            <span className={`agent-full-time ${(canClose || canDismiss) && hovered ? 'is-hidden' : ''}`} data-elapsed={time}>
               {time}
             </span>
           )}
@@ -116,6 +118,20 @@ export function AgentFullRow({
               onClick={(event) => {
                 event.stopPropagation()
                 onClose(node.paneId)
+              }}
+            >
+              ×
+            </button>
+          ) : null}
+          {canDismiss ? (
+            <button
+              className={`agent-full-close ${hovered ? 'is-active' : ''}`}
+              data-dismiss-retained={node.paneId}
+              title="닫힌 탭 걷기"
+              aria-label="닫힌 탭 걷기"
+              onClick={(event) => {
+                event.stopPropagation()
+                void window.corral.dismissRetained({ paneId: node.paneId })
               }}
             >
               ×

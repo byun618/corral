@@ -627,6 +627,17 @@ button, input { font: inherit; letter-spacing: inherit; }
 }
 .session-row-close.is-active { opacity: 1; }
 .session-row-close:hover { background: var(--bg-danger-hover); color: var(--st-error-hi); }
+/* 「닫힌 탭」 걷기 (LIFE-696) — 시간 칸과 한 자리를 나눈다(198 `DashboardAgentRowTrailingControls`). hover 면 시간이 비켜 서고 ✕ 가 선다. */
+.session-row-trailing { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: flex-end; min-width: 14px; height: 14px; }
+.session-row-elapsed.is-hidden { opacity: 0; }
+.session-row-dismiss {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; padding: 0;
+  background: none; border: 0 solid; border-radius: 3px; font-size: 13px; line-height: 1; cursor: pointer;
+  color: color-mix(in srgb, var(--fg-muted) 70%, transparent); opacity: 0;
+}
+.session-row-dismiss.is-active { opacity: 1; }
+.session-row-dismiss:hover { color: var(--fg); }
 
 /* --- Agent activity layout: Full list (LIFE-477 B12·D16 — Orca 1.4.198 `DashboardAgentRow` 인라인 변형) -------------- */
 

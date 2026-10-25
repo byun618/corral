@@ -120,6 +120,7 @@ const EXPOSED = [
   'splitPane',
   'resizePane',
   'closePane',
+  'dismissRetained',
   'focusPaneDirection',
   'onTermFrame',
   'onShortcut',
@@ -355,6 +356,7 @@ const api: CorralApi = {
   resizePane: (input: { paneId: string; direction: PaneDirection; amount: number }): Promise<PaneActionResult> =>
     ipcRenderer.invoke('corral:resizePane', input),
   closePane: (input: { paneId: string }): Promise<PaneActionResult> => ipcRenderer.invoke('corral:closePane', input),
+  dismissRetained: (input: { paneId: string }): Promise<boolean> => ipcRenderer.invoke('corral:dismissRetained', input),
   focusPaneDirection: (input: { paneId: string; direction: PaneDirection }): Promise<PaneNeighborResult> =>
     ipcRenderer.invoke('corral:focusPaneDirection', input),
   onTerminalFocus: (listener: (request: { id: string; paneId: string; deadlineAt: number }) => void) => {

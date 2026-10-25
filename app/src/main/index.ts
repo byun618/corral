@@ -13,7 +13,8 @@ import { KeybindingStore } from './keybindings.js'
 import { withRetentionSuppressed } from './close-retention.js'
 import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { closeTabsGated, runningForeground } from './close-tabs.js'
-import { footprintHelperPath, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
+import { footprintHelperPath, homesOf, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
+import { directoryNow, keepRetention, prunableRetained } from './retention.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
 // 렌더러가 소켓을 열 수 없는 것은 권장이 아니라 구조적 강제다: sandbox:true 인 렌더러/preload 의
@@ -589,16 +590,7 @@ function currentState(): AppState {
  */
 function cardlessNow(): WorkspaceRow[] | null {
   noteWorkspaces()
-  const gate = cardlessGate({
-    socketPath: currentSocketPath(),
-    skeleton,
-    skeletonSocket,
-    skeletonStartedAt,
-    linkPhase: link.linkState().phase,
-    ownSession: isOwnSession({ selected: selectedSession, env: process.env }),
-    workspaces: link.store.rows(),
-    firstSeenAt: workspaceFirstSeen,
-  })
+  const gate = cardlessGateNow()
   if (gate === null) {
     // 골격 오류로 보류면 스스로 회복하게 골격을 다시 세운다(G5) — 진행 중이 없고 끝난 때부터 백오프 간격이 지났을 때만(P1).
     if (skeletonHealth(skeleton).kind !== 'ok' && !treeScheduled && rebuildRetry.due('error')) {
@@ -610,6 +602,53 @@ function cardlessNow(): WorkspaceRow[] | null {
   // 골격보다 새 workspace 가 있으면 골격을 한 번 다시 세운다 — 진짜 카드 밖이면 그 뒤에 목록에 나온다(F2). 같은 in-flight 규칙(P1).
   if (gate.fresh > 0 && !treeScheduled && rebuildRetry.due('fresh')) scheduleTree()
   return gate.rows
+}
+
+/** 카드 밖 판정의 문을 지금 값으로 연다 — 부수 효과 없음(재시도 예약·처음 본 시각 기록은 부르는 쪽 몫). */
+function cardlessGateNow(): ReturnType<typeof cardlessGate> {
+  return cardlessGate({
+    socketPath: currentSocketPath(),
+    skeleton,
+    skeletonSocket,
+    skeletonStartedAt,
+    linkPhase: link.linkState().phase,
+    ownSession: isOwnSession({ selected: selectedSession, env: process.env }),
+    workspaces: link.store.rows(),
+    firstSeenAt: workspaceFirstSeen,
+  })
+}
+
+/**
+ * corral 밖에서 닫힌 workspace 를 보존할지 (LIFE-694 ①) — store 가 사라지기 직전에 묻는다. 판정은 `retention.ts`.
+ * 처음 본 시각은 여기서 적지 않는다 — 모르는 workspace 는 신선한 것으로 보아 카드 밖 목록에 안 들고, 그래서 보존된다(모르면 남기는 쪽).
+ */
+link.store.setRetentionPolicy(({ workspaceId, cwds }) => {
+  const keep = keepRetention({
+    workspaceId,
+    cwds,
+    cardless: cardlessGateNow()?.rows ?? null,
+    homes: homesOf(homeDirReal()),
+    worktreePaths: skeletonWorktreePaths(),
+    isDirectory: directoryNow,
+  })
+  if (!keep) log('retained.skip_ownerless', { workspaceId, cwds: cwds.join(',') })
+  return keep
+})
+
+/** 골격의 git worktree 경로 전부 — 죽은 worktree 자리 판정의 근거. */
+function skeletonWorktreePaths(): string[] {
+  return skeleton.flatMap((repo) => repo.worktrees.map((worktree) => worktree.path))
+}
+
+/** 붙을 카드가 없어진 보존 행을 걷는다 (LIFE-694 ② · C3) — 내보내기 직전에. 판정 불가면 걷지 않는다. */
+function pruneRetained(): void {
+  const paneIds = prunableRetained({
+    retained: link.store.retainedRows(),
+    determinable: cardlessGateNow() !== null,
+    worktreePaths: skeletonWorktreePaths(),
+  })
+  const dropped = link.store.dropRetained(paneIds)
+  if (dropped.length > 0) log('retained.pruned_dead_slot', { panes: dropped.join(',') })
 }
 
 /** store 의 workspace 가 처음 보인 시각을 적는다(F2). 사라진 id 는 지운다 — 같은 id 가 다시 오면 새로 본 것이다. */
@@ -638,6 +677,7 @@ function scheduleEmit(): void {
   setTimeout(() => {
     emitScheduled = false
     noteWorkspaces()
+    pruneRetained()
     revision += 1
     if (window !== null && window.isDestroyed()) window = null
     const state = currentState()
@@ -2491,6 +2531,15 @@ app.whenReady().then(async () => {
       what: 'pane',
       run: hooks => closePane({ socketPath, paneId: input.paneId, onSent: hooks.onSent }),
     }))
+  })
+  // LIFE-696 — 「닫힌 탭」 행 하나를 걷는다. 확인 대화 없음(Orca 198). 모르는 id·잘못된 인자는 무동작 false.
+  ipcMain.handle('corral:dismissRetained', (event, input: { paneId?: unknown }): boolean => {
+    if (!fromOurWindow(event) || typeof input?.paneId !== 'string') return false
+    const dropped = link.store.dropRetained([input.paneId])
+    if (dropped.length === 0) return false
+    log('retained.dismissed', { paneId: input.paneId })
+    scheduleEmit()
+    return true
   })
   // 인접 pane 은 **서버가 계산한다**(F2-4). corral 은 id 만 받아 자기 연결의 pane.focus 로 옮긴다.
   ipcMain.handle(

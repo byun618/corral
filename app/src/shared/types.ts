@@ -1132,6 +1132,8 @@ export type CorralApi = {
   resizePane: (input: { paneId: string; direction: PaneDirection; amount: number }) => Promise<PaneActionResult>
   /** `pane.close`. 마지막 pane 이면 탭이 닫힌다 (F2-5). */
   closePane: (input: { paneId: string }) => Promise<PaneActionResult>
+  /** 「닫힌 탭」 보존 행 하나를 걷는다 (LIFE-696). 걷었으면 true, 모르는 id·잘못된 인자는 false(오류 없음). */
+  dismissRetained: (input: { paneId: string }) => Promise<boolean>
   /** `pane.focus_direction` — 인접 pane 포커스 이동은 서버가 정한다 (F2-4). */
   focusPaneDirection: (input: { paneId: string; direction: PaneDirection }) => Promise<PaneNeighborResult>
   onTermFrame: (listener: (frame: TerminalFrame) => void) => () => void

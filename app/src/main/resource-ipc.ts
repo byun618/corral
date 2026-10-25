@@ -24,6 +24,7 @@ import type { AppState, CloseTabsResult, RunningPane, WorkspaceRow } from '../sh
 import { normalizeDecorativeTitle } from '../shared/decorative-title.js'
 import { paneSessionTitle } from '../shared/session-title.js'
 import { distinctWorktreeName } from '../shared/worktree-name.js'
+import { isDeadWorktreeSlot } from '../shared/worktree-slot.js'
 
 type PaneCloseOutcome = { outcome: 'ok' } | { outcome: 'rejected'; rejection: { code: string; message: string } }
 
@@ -232,6 +233,11 @@ export async function checkPath(input: { target: string; stat: (path: string) =>
   return { exists: true, real: await input.realpath(input.target).catch(() => null) }
 }
 
+/** 등록 레포들의 git worktree 경로 전부 — 죽은 worktree 자리 판정의 근거(LIFE-697). */
+export function worktreePathsOf(state: Pick<AppState, 'repos'>): string[] {
+  return state.repos.flatMap((repo) => repo.worktrees.map((worktree) => worktree.path))
+}
+
 /** HOME 후보 (G6) — 실경로 HOME(`state.home = homeDirReal()`)과 논리 HOME(`$HOME` → `os.homedir()`). */
 export function homesOf(home: string): string[] {
   return [...new Set([home, os.homedir()])]
@@ -243,8 +249,11 @@ export function homesOf(home: string): string[] {
  * 존재를 아직 모르는 경로(`null`)는 「있다」 로 싣는다.
  * `ownerless`(F3) = 경로가 하나 이상이고 **모두** 사라졌거나 HOME — 「모두 닫기」 대상. 경로가 살아 있는 줄(미등록 레포 세션·형제 pane 이
  * 살아 있는 workspace)은 아니다. `stoppedAgents`(F4) = 감지된 에이전트는 없고 세션 참조만 남은 pane 의 에이전트(재개 안 된 pane).
+ * 폴더가 남아 있어도 **죽은 worktree 자리**(지워진 `.claude/worktrees/<name>` — `isDeadWorktreeSlot`)면 주인 없는 쪽이다(LIFE-697) —
+ * 그 경로에 `deadSlot` 을 실어 툴팁이 사유를 보인다. `worktreePaths` = 등록 레포들의 git worktree 목록(비면 이 판정을 하지 않는다).
  */
-export function orphanSources(input: { workspaces: readonly WorkspaceRow[]; homes: readonly string[]; paths: PathOracle }): ResourceOrphanSource[] {
+export function orphanSources(input: { workspaces: readonly WorkspaceRow[]; homes: readonly string[]; paths: PathOracle; worktreePaths?: readonly string[] }): ResourceOrphanSource[] {
+  const worktreePaths = input.worktreePaths ?? []
   // G6 — 경로는 있으면 실경로로도 비교한다(심링크 HOME·/tmp 류). 없으면 원문만.
   const isHome = (target: string): boolean => input.homes.includes(target) || input.homes.includes(input.paths.realPath(target) ?? target)
   return input.workspaces.map((workspace) => {
@@ -252,13 +261,17 @@ export function orphanSources(input: { workspaces: readonly WorkspaceRow[]; home
     const cwds = [...new Set(panes.flatMap((pane) => (pane.cwd === null ? [] : [pane.cwd])))]
     const agents = [...new Set(panes.flatMap((pane) => (pane.agent === null ? [] : [pane.agent])))]
     const stoppedAgents = [...new Set(panes.flatMap((pane) => (pane.agent === null && pane.agentSession !== null ? [pane.agentSession.agent] : [])))].filter((agent) => !agents.includes(agent))
-    const paths = cwds.map((cwd) => (input.paths.checked(cwd) ? { path: cwd, exists: input.paths.isDirectory(cwd) } : { path: cwd, exists: input.paths.isDirectory(cwd), pending: true }))
+    const paths: ResourceOrphanSource['paths'] = cwds.map((cwd) => {
+      const item = input.paths.checked(cwd) ? { path: cwd, exists: input.paths.isDirectory(cwd) } : { path: cwd, exists: input.paths.isDirectory(cwd), pending: true }
+      // 남아 있는 폴더만 사유를 단다 — 사라진 자리는 「디렉터리 없음」 이 이미 사유다.
+      return item.exists === true && isDeadWorktreeSlot({ path: cwd, worktreePaths }) ? { ...item, deadSlot: true } : item
+    })
     return {
       workspaceId: workspace.workspaceId,
       label: workspace.label,
       paths,
       // 「없음」 은 exists === false 만 — 확인 불가(null)는 있음 쪽(G1).
-      ownerless: paths.length > 0 && paths.every((item) => item.exists === false || isHome(item.path)),
+      ownerless: paths.length > 0 && paths.every((item) => item.exists === false || isHome(item.path) || item.deadSlot === true),
       agents,
       stoppedAgents,
       paneIds: panes.map((pane) => pane.paneId),
@@ -289,7 +302,7 @@ export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void }
     panes: () => paneSources(deps.state()),
     orphans: () => {
       const workspaces = deps.cardlessWorkspaces()
-      return workspaces === null ? null : orphanSources({ workspaces, homes: homesOf(deps.state().home), paths: directories })
+      return workspaces === null ? null : orphanSources({ workspaces, homes: homesOf(deps.state().home), paths: directories, worktreePaths: worktreePathsOf(deps.state()) })
     },
     orphansReason: deps.cardlessBlockedReason,
     probeShellPid: async (paneId): Promise<ShellProbe> => {
@@ -425,7 +438,7 @@ export async function closeOrphanWorkspaces(input: { deps: ResourceIpcDeps; work
   const claimReason = (workspaceId: string): ResourceOrphanSkip['reason'] =>
     (claimed.get(workspaceId) ?? []).every((target) => input.paths.isDirectory(target) === false) ? 'stale-claim' : 'claimed'
   const inScope = (workspace: WorkspaceRow): boolean =>
-    !input.bulk || orphanSources({ workspaces: [workspace], homes: homesOf(deps.state().home), paths: input.paths })[0]?.ownerless === true
+    !input.bulk || orphanSources({ workspaces: [workspace], homes: homesOf(deps.state().home), paths: input.paths, worktreePaths: worktreePathsOf(deps.state()) })[0]?.ownerless === true
   const panesOf = (workspaceId: string): string[] | null => {
     if (claimed.has(workspaceId)) {
       skips.set(workspaceId, claimReason(workspaceId))

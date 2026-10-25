@@ -1,5 +1,5 @@
 // Resource Manager 수집기의 순수 층 (LIFE-637 R1 · LIFE-676 R1) — `ps` 출력 한 벌, footprint 표 한 벌, pane 루트 표만 받아 귀속을 낸다.
-// 프로세스·herdr 를 모른다. ps = pid·ppid·%cpu(나무와 CPU), footprint 표(도우미 `corral-footprint`) = 메모리. RSS 는 읽지 않는다.
+// 프로세스·herdr 를 모른다. ps = pid·ppid·%cpu(나무와 CPU)·tpgid·ucomm(주 프로세스, LIFE-688), footprint 표(도우미 `corral-footprint`) = 메모리. RSS 는 읽지 않는다.
 //
 // 귀속 순서: ① pane(루트 = herdr 가 준 셸 pid, 자손 전체) ② herdr 서버(= pane 셸들의 부모, pane 몫을 뺀 자손) ③ 앱(main pid 와
 // Electron 역할 pid, 앞 둘의 몫을 뺀 자손). 한 pid 는 먼저 잡은 곳에만 센다(R1ⓑ).
@@ -11,37 +11,44 @@
 // 표에 없거나 ESRCH 면 그 pid 는 ps 와 도우미 사이에 끝난 것으로 보고 메모리 합에서 뺀다(R1ⓓ — 끝난 프로세스는 메모리를 쥐고 있지 않다).
 // 도우미는 ps 뒤에 돌므로 「표에 없음」 은 보통 그 사이 끝남이다 — 다만 그 사이 pid 가 재사용되면 새 프로세스 몫이 옛 pid 로 들어가고,
 // 도우미 목록이 잘리면(pid 폭증으로 여유 초과) 조용히 덜 센다. 이 둘은 이 규칙으로 가리지 못한다(리뷰 r1 C1-8).
-import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourceUsage } from '../shared/resource.js'
+import { sumUsage, type MemoryPressure, type ResourceMainProcess, type ResourceMeasure, type ResourceMemory, type ResourceUsage } from '../shared/resource.js'
 
-export type PsRow = { pid: number; ppid: number; cpu: number }
+/**
+ * `tpgid` = 터미널 포그라운드 프로세스 그룹(터미널 없으면 0), `name` = 실행 파일 이름(`ucomm` — 16자 잘림, 공백 포함 가능).
+ * 이름 칸이 빈 줄은 `name: null` — 보조 표시값이 없다고 CPU·메모리 측정을 버리지 않는다(리뷰 r1 C-L1).
+ */
+export type PsRow = { pid: number; ppid: number; cpu: number; tpgid: number; name: string | null }
 export type PsTable = { rows: Map<number, PsRow>; malformed: number }
 
 /**
- * `LC_ALL=C ps -axo pid=,ppid=,pcpu=` (637 R1ⓓ) — 로캘이 소수점을 콤마로 쓰면 `%cpu` 를 잘못 읽는다(Orca collector 와 같은 이유).
- * 부르는 쪽(`resource-ipc.ts`)이 이 값을 그대로 execFile 에 넘긴다.
+ * `LC_ALL=C ps -axo pid=,ppid=,pcpu=,tpgid=,ucomm=` (637 R1ⓓ) — 로캘이 소수점을 콤마로 쓰면 `%cpu` 를 잘못 읽는다(Orca collector 와 같은 이유).
+ * `ucomm` 은 공백을 포함할 수 있어 맨 끝에 둔다(LIFE-688). 부르는 쪽(`resource-ipc.ts`)이 이 값을 그대로 execFile 에 넘긴다.
  */
 export function psInvocation(env: NodeJS.ProcessEnv): { file: string; args: string[]; env: NodeJS.ProcessEnv } {
-  return { file: 'ps', args: ['-axo', 'pid=,ppid=,pcpu='], env: { ...env, LC_ALL: 'C' } }
+  return { file: 'ps', args: ['-axo', 'pid=,ppid=,pcpu=,tpgid=,ucomm='], env: { ...env, LC_ALL: 'C' } }
 }
 
 const INTEGER = /^\d+$/
 const DECIMAL = /^\d+(\.\d+)?$/
+const SIGNED = /^-?\d+$/
+/** 숫자 칸 넷 + 나머지 전부 이름(`Notion Helper (R` 처럼 공백이 든 이름도 한 칸으로 읽는다). 이름은 없어도 된다(C-L1). */
+const PS_LINE = /^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(.+))?$/
 
-/** 빈 줄은 건너뛴다. 그 밖에 모양이 다른 줄은 `malformed` 로 센다(버리지 않고 표 전체를 의심하게 한다). */
+/** 빈 줄은 건너뛴다. 그 밖에 모양이 다른 줄(숫자 칸이 숫자가 아님·숫자 칸 셋 이하)은 `malformed` 로 센다(버리지 않고 표 전체를 의심하게 한다). */
 export function parsePsTable(stdout: string): PsTable {
   const rows = new Map<number, PsRow>()
   let malformed = 0
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim()
     if (trimmed === '') continue
-    const cells = trimmed.split(/\s+/)
-    const [pid, ppid, cpu] = cells
-    if (cells.length !== 3 || pid === undefined || ppid === undefined || cpu === undefined
-      || !INTEGER.test(pid) || !INTEGER.test(ppid) || !DECIMAL.test(cpu)) {
+    const match = trimmed.match(PS_LINE)
+    const [, pid, ppid, cpu, tpgid, name] = match ?? []
+    if (pid === undefined || ppid === undefined || cpu === undefined || tpgid === undefined
+      || !INTEGER.test(pid) || !INTEGER.test(ppid) || !DECIMAL.test(cpu) || !SIGNED.test(tpgid)) {
       malformed += 1
       continue
     }
-    const row = { pid: Number(pid), ppid: Number(ppid), cpu: Number(cpu) }
+    const row = { pid: Number(pid), ppid: Number(ppid), cpu: Number(cpu), tpgid: Number(tpgid), name: name ?? null }
     if (rows.has(row.pid)) {
       malformed += 1
       continue
@@ -97,6 +104,8 @@ export type PaneRoot = { paneId: string; shellPid: number | null; expectedParent
 
 export type Attribution = {
   panes: Map<string, ResourceMeasure>
+  /** 측정된 pane 의 주 프로세스(LIFE-688). 측정 불가 pane 은 없다. */
+  mains: Map<string, ResourceMainProcess>
   herdr: ResourceMeasure
   app: ResourceMeasure
 }
@@ -176,11 +185,22 @@ function measured(input: { table: PsTable; footprint: FootprintTable; pids: numb
   return { state: 'measured', usage: { cpu, memory: memoryOf({ footprint: input.footprint, pids: input.pids }) }, pids: input.pids }
 }
 
+/**
+ * 주 프로세스(LIFE-688) — 셸 행의 tpgid(터미널 포그라운드 그룹 = 셸이 앞에 띄운 에이전트)가 그 pane 귀속 pid 안이면 그 pid,
+ * 아니면 셸. 귀속 밖 tpgid(0·음수·표에 없음·다른 pane·herdr·앱)는 주 프로세스로 내지 않는다.
+ */
+function mainProcessOf(input: { table: PsTable; shell: PsRow; pids: readonly number[] }): ResourceMainProcess {
+  const { shell } = input
+  const foreground = shell.tpgid > 0 && input.pids.includes(shell.tpgid) ? input.table.rows.get(shell.tpgid) : undefined
+  const main = foreground ?? shell
+  return { pid: main.pid, name: main.name }
+}
+
 export function attribute(input: { table: PsTable; footprint: FootprintTable; panes: readonly PaneRoot[]; appRoots: readonly number[] }): Attribution {
   const { table, footprint } = input
   if (table.malformed > 0) {
     const broken: ResourceMeasure = { state: 'unavailable', reason: `ps 표 이상 (${table.malformed}줄)` }
-    return { panes: new Map(input.panes.map((pane) => [pane.paneId, broken])), herdr: broken, app: broken }
+    return { panes: new Map(input.panes.map((pane) => [pane.paneId, broken])), mains: new Map(), herdr: broken, app: broken }
   }
   const children = new Map<number, number[]>()
   for (const row of table.rows.values()) {
@@ -194,6 +214,7 @@ export function attribute(input: { table: PsTable; footprint: FootprintTable; pa
   }
 
   const panes = new Map<string, ResourceMeasure>()
+  const mains = new Map<string, ResourceMainProcess>()
   const herdrRoots = new Set<number>()
   let measuredPanes = 0
   for (const pane of input.panes) {
@@ -223,6 +244,7 @@ export function attribute(input: { table: PsTable; footprint: FootprintTable; pa
       case 'ok':
         claim(result.pids)
         panes.set(pane.paneId, measured({ table, footprint, pids: result.pids }))
+        mains.set(pane.paneId, mainProcessOf({ table, shell: row, pids: result.pids }))
         measuredPanes += 1
         if (row.ppid > 1) herdrRoots.add(row.ppid)
         continue
@@ -274,7 +296,7 @@ export function attribute(input: { table: PsTable; footprint: FootprintTable; pa
       app = measured({ table, footprint, pids: result.pids })
     }
   }
-  return { panes, herdr, app }
+  return { panes, mains, herdr, app }
 }
 
 /**

@@ -55,6 +55,7 @@ import {
   sortOrphans,
   paneCloseCopy,
   RESOURCE_EMPTY,
+  paneRowTitle,
   rowTitles,
   segmentLabel,
   segmentTooltip,
@@ -558,7 +559,7 @@ export function ResourceSegment(): React.JSX.Element {
                       type="button"
                       className="statusbar-resource-line statusbar-resource-move"
                       data-statusbar-resource-row={row.paneId}
-                      title={titles.row ?? `${row.title} — 이동`}
+                      title={paneRowTitle({ row, reason: cells.title })}
                       onFocus={() => rememberFocus(row.paneId)}
                       onClick={() => reveal(row)}
                     >

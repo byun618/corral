@@ -4,9 +4,13 @@ import type { ResourceHost, ResourceSnapshot } from '../shared/resource.js'
 import { parseFootprintTable, type FootprintTable } from './resource-collector.js'
 import { createResourceMonitor, MISSING_RETRY_MS, NO_RUNTIME_REASON, PROBE_RETRY_MS, RESOURCE_INTERVAL_MS, type ResourceMonitorDeps, type ResourceOrphanSource, type ResourcePaneSource, type ShellProbe } from './resource-monitor.js'
 
-// 고정 입력: pid ppid %cpu footprint(KB) — 앞 세 칸이 ps stdout, 넷째 칸이 도우미 footprint 표(바이트)가 된다(LIFE-676).
+// 고정 입력: pid ppid %cpu footprint(KB) — 앞 세 칸이 ps stdout(psOf 가 tpgid·이름을 붙인다), 넷째 칸이 도우미 footprint 표(바이트)가 된다(LIFE-676).
 const PS = '  100 1 1.0 100\n  200 1 2.0 200\n  300 200 3.0 300\n  400 200 4.0 400\n'
-const psOf = (text: string): string => text.split('\n').map((line) => line.trim().split(/\s+/).slice(0, 3).join(' ')).join('\n')
+// 앞 세 칸 뒤에 tpgid(= 자기 pid)·이름 `p<pid>` 를 붙인다(LIFE-688). 칸이 모자란 줄은 그대로.
+const psOf = (text: string): string => text.split('\n').map((line) => {
+  const cells = line.trim().split(/\s+/)
+  return cells.length >= 3 ? [...cells.slice(0, 3), cells[0], `p${cells[0]}`].join(' ') : line.trim()
+}).join('\n')
 const fpOf = (text: string): FootprintTable => parseFootprintTable(text.split('\n').flatMap((line) => {
   const cells = line.trim().split(/\s+/)
   return cells.length === 4 && /^\d+$/.test(cells[3] ?? '') ? [`${cells[0]} ${Number(cells[3]) * 1024}`] : []
@@ -122,6 +126,39 @@ describe('resource monitor', () => {
     expect(snapshot?.host).toEqual(HOST)
     expect(snapshot?.stats.recentDurationsMs).toHaveLength(1)
     expect(h.monitor.latest()).toBe(snapshot)
+  })
+
+  it('LIFE-688 — pane 행에 주 프로세스, 측정 불가·런타임 없음·ps 실패 행은 null · ps 1회·herdr 요청 불변', async () => {
+    const h = harness({ panes: [pane('a'), pane('x'), pane('m')], shellPids: { a: 300, x: null, m: 'missing' } })
+    await h.monitor.tick()
+    const rows = h.emitted.at(-1)?.panes ?? []
+    expect(rows.map((row) => [row.paneId, row.measure.state, row.main])).toEqual([
+      ['a', 'measured', { pid: 300, name: 'p300' }],
+      ['x', 'unavailable', null],
+      ['m', 'unavailable', null],
+    ])
+    expect(h.readPs).toHaveBeenCalledTimes(1)
+    expect(h.monitor.stats().processInfoRequests).toBe(3)
+    await h.monitor.tick()
+    expect(h.readPs).toHaveBeenCalledTimes(2)
+    expect(h.monitor.stats().processInfoRequests).toBe(3)
+    h.state.psFails = true
+    await h.monitor.tick()
+    expect(h.emitted.at(-1)?.panes.map((row) => row.main)).toEqual([null, null, null])
+  })
+
+  it('리뷰 r1 C-L4① · C-L1 — tpgid ≠ 셸이면 행 main 은 포그라운드 pid·이름, 이름 칸 없는 줄은 이름 null 로 측정 유지', async () => {
+    const h = harness({ panes: [pane('a'), pane('b')], shellPids: { a: 300, b: 400 } })
+    // footprint 표는 state.ps(4칸 고정 입력)에서, ps stdout 은 tpgid·이름을 직접 적은 표에서.
+    h.state.ps = '  100 1 1.0 100\n  200 1 2.0 200\n  300 200 3.0 300\n  301 300 5.0 301\n  400 200 4.0 400\n  401 400 1.0 401\n'
+    h.readPs.mockImplementation(async () => '  100 1 1.0 0 corral\n  200 1 2.0 0 herdr\n  300 200 3.0 301 zsh\n  301 300 5.0 301 2.1.296\n  400 200 4.0 401 zsh\n  401 400 1.0 401\n')
+    await h.monitor.tick()
+    const rows = h.emitted.at(-1)?.panes ?? []
+    expect(rows.map((row) => [row.paneId, row.measure.state, row.main])).toEqual([
+      ['a', 'measured', { pid: 301, name: '2.1.296' }],
+      ['b', 'measured', { pid: 401, name: null }],
+    ])
+    expect(rows[0]?.measure).toMatchObject({ usage: { cpu: 8 }, pids: [300, 301] })
   })
 
   it('ps 가 실패하면 전부 측정 불가 — 전체 null(세그먼트 `—`)', async () => {

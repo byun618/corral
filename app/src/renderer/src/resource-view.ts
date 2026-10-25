@@ -6,7 +6,7 @@
 // 일부 pid 를 뺀 합(하한)은 `≥ x`, 빠진 사유는 툴팁(리뷰 r1 C1-1).
 // 패널 = worktree 묶음(합계 행 + pane 행) · 앱·herdr 행 따로. 기본 정렬은 메모리 내림차순, 측정 불가는 맨 뒤.
 // 카드 밖 workspace(LIFE-628) = worktree 묶음 아래 따로 한 묶음 — workspace 한 줄(원래 경로·에이전트·메모리) + 한 줄 닫기·「모두 닫기」.
-import { sumUsage, type MemoryPressure, type ResourceMeasure, type ResourceMemory, type ResourceOrphanRow, type ResourceOrphanSkip, type ResourcePaneRow, type ResourceSnapshot, type ResourceUsage } from '../../shared/resource.js'
+import { sumUsage, type MemoryPressure, type ResourceMainProcess, type ResourceMeasure, type ResourceMemory, type ResourceOrphanRow, type ResourceOrphanSkip, type ResourcePaneRow, type ResourceSnapshot, type ResourceUsage } from '../../shared/resource.js'
 import type { RunningPane } from '../../shared/types.js'
 import { closeCopy, type CloseCopy } from './close-copy.js'
 
@@ -25,6 +25,20 @@ export const RESOURCE_LOWER_BOUND = '≥'
  */
 export function rowTitles(reason: string | null): { row: string | null; cpu: string | undefined } {
   return reason === null ? { row: null, cpu: RESOURCE_ROW_CPU_TOOLTIP } : { row: `${reason}\n${RESOURCE_ROW_CPU_TOOLTIP}`, cpu: undefined }
+}
+
+/** 주 프로세스 한 줄(LIFE-688) — 활동 상태 보기 「프로세스 이름」·「PID」 열과 같은 값. 이름을 모르면 PID 만(C-L1). */
+export function mainProcessLine(main: ResourceMainProcess): string {
+  return main.name === null ? `주 프로세스 PID ${main.pid}` : `주 프로세스 ${main.name} · PID ${main.pid}`
+}
+
+/**
+ * pane 행 툴팁 — 기존 내용(측정 사유·CPU 기준 또는 「이동」) 뒤에 주 프로세스 한 줄. 주 프로세스가 없으면 그 줄을 뺀다.
+ * `reason` = `measureCells` 의 `title`.
+ */
+export function paneRowTitle(input: { row: ResourcePaneRow; reason: string | null }): string {
+  const base = rowTitles(input.reason).row ?? `${input.row.title} — 이동`
+  return input.row.main === null ? base : `${base}\n${mainProcessLine(input.row.main)}`
 }
 
 export type ResourceSortKey = 'memory' | 'cpu'

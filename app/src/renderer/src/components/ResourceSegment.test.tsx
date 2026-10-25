@@ -30,9 +30,9 @@ const SNAPSHOT: ResourceSnapshot = {
   app: { state: 'measured', usage: { cpu: 4, memory: { state: 'measured', bytes: 700 * MB } }, pids: [100] },
   herdr: { state: 'measured', usage: { cpu: 1, memory: { state: 'measured', bytes: 40 * MB } }, pids: [200] },
   panes: [
-    { paneId: 'p-small', tabId: 't1', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'grok 1', agent: 'grok', measure: { state: 'measured', usage: { cpu: 50, memory: { state: 'measured', bytes: 100 * MB } }, pids: [300, 301] } },
-    { paneId: 'p-big', tabId: 't2', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'claude 1', agent: 'claude', measure: { state: 'measured', usage: { cpu: 6, memory: { state: 'measured', bytes: 1.2 * GB } }, pids: [400] } },
-    { paneId: 'p-gone', tabId: 't3', workspaceId: 'w2', groupKey: '/wt/b', groupLabel: 'main', title: 'zsh', agent: null, measure: { state: 'unavailable', reason: '셸 프로세스(pid 9)가 없다' } },
+    { paneId: 'p-small', tabId: 't1', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'grok 1', agent: 'grok', measure: { state: 'measured', usage: { cpu: 50, memory: { state: 'measured', bytes: 100 * MB } }, pids: [300, 301] }, main: null },
+    { paneId: 'p-big', tabId: 't2', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'claude 1', agent: 'claude', measure: { state: 'measured', usage: { cpu: 6, memory: { state: 'measured', bytes: 1.2 * GB } }, pids: [400] }, main: { pid: 400, name: '2.1.296' } },
+    { paneId: 'p-gone', tabId: 't3', workspaceId: 'w2', groupKey: '/wt/b', groupLabel: 'main', title: 'zsh', agent: null, measure: { state: 'unavailable', reason: '셸 프로세스(pid 9)가 없다' }, main: null },
   ],
   orphans: [],
   host: { physicalMemory: 24 * GB, cpuCoreCount: 18, pressure: 'warning', swap: { used: 23.3 * GB, total: 24 * GB }, compressed: 8.4 * GB },
@@ -208,6 +208,33 @@ describe('패널 (R4)', () => {
     }
     expect(panel.querySelector<HTMLElement>('[data-statusbar-resource-row="p-gone"]')?.title).toBe('측정 불가 — 셸 프로세스(pid 9)가 없다\nCPU — 코어 하나 = 100%')
     expect(panel.querySelector<HTMLElement>('[data-statusbar-resource-group="/wt/b"] .statusbar-resource-group-head')?.title).toBe('측정 불가 1개는 합에서 빠졌다\nCPU — 코어 하나 = 100%')
+  })
+
+  it('LIFE-688 C2 — pane 행 툴팁에 주 프로세스 이름·PID 한 줄, 기존 내용은 그대로 · 없으면 줄을 빼고 · 카드 밖·앱·herdr 행은 그대로', () => {
+    mount()
+    act(() => push?.({
+      ...SNAPSHOT,
+      panes: SNAPSHOT.panes.map((pane) => (pane.paneId === 'p-small'
+        ? { ...pane, measure: { state: 'measured', usage: { cpu: 50, memory: { state: 'partial', bytes: 100 * MB, reason: 'pid 301 (errno 5) 제외' } }, pids: [300, 301] }, main: { pid: 301, name: 'Notion Helper (R' } }
+        : pane)),
+      orphans: [{ workspaceId: 'ow', label: 'ws-o', paths: [{ path: '/gone', exists: false }], ownerless: true, agents: ['claude'], stoppedAgents: [], paneIds: ['p-o'], measure: { state: 'measured', usage: { cpu: 1, memory: { state: 'measured', bytes: MB } }, pids: [500] } }],
+    }))
+    click(segment())
+    const title = (paneId: string): string | undefined => q<HTMLElement>(`[data-statusbar-resource-row="${paneId}"]`)?.title
+    // ⓐ 측정된 행 — 기존 「이동」 줄 뒤에 주 프로세스 한 줄.
+    expect(title('p-big')).toBe('claude 1 — 이동\n주 프로세스 2.1.296 · PID 400')
+    // ⓑ 사유가 있는 행 — 사유·CPU 기준 줄이 그대로 남고 그 뒤에 붙는다. 공백 든 이름도 그대로.
+    expect(title('p-small')).toBe('메모리 하한 — pid 301 (errno 5) 제외\nCPU — 코어 하나 = 100%\n주 프로세스 Notion Helper (R · PID 301')
+    // ⓒ 주 프로세스 없음(측정 불가) — 줄을 빼고 가짜 값을 내지 않는다.
+    expect(title('p-gone')).toBe('측정 불가 — 셸 프로세스(pid 9)가 없다\nCPU — 코어 하나 = 100%')
+    expect(title('p-gone')).not.toContain('주 프로세스')
+    // ⓓ 카드 밖 workspace 줄·앱·herdr 행에는 주 프로세스가 없다.
+    const others = ['[data-statusbar-resource-app]', '[data-statusbar-resource-herdr]', '[data-statusbar-resource-orphans]']
+    for (const selector of others) {
+      const element = q<HTMLElement>(selector)
+      expect(element).not.toBeNull()
+      expect(element?.outerHTML).not.toContain('주 프로세스')
+    }
   })
 
   it('LIFE-676 Q2 — 메모리만 못 잰 행은 CPU 숫자 + 메모리 측정 불가, 사유는 행 툴팁', () => {
@@ -675,7 +702,7 @@ const withMemory = (input: { paneId: string; memory: number }): ResourceSnapshot
 })
 /** /wt/a 묶음에 새로 생긴 pane. */
 const newPane = (memory: number): ResourcePaneRow => ({
-  paneId: 'p-new', tabId: 't4', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'codex 1', agent: 'codex', measure: { state: 'measured', usage: { cpu: 1, memory: { state: 'measured', bytes: memory } }, pids: [9] },
+  paneId: 'p-new', tabId: 't4', workspaceId: 'w1', groupKey: '/wt/a', groupLabel: 'feat-a', title: 'codex 1', agent: 'codex', measure: { state: 'measured', usage: { cpu: 1, memory: { state: 'measured', bytes: memory } }, pids: [9] }, main: null,
 })
 function openR3(): void {
   mount()

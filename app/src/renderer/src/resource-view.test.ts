@@ -20,6 +20,8 @@ import {
   sortOrphans,
   RESOURCE_MEMORY_NOTE,
   RESOURCE_ROW_CPU_TOOLTIP,
+  mainProcessLine,
+  paneRowTitle,
   rowTitles,
   segmentLabel,
   segmentTooltip,
@@ -30,7 +32,7 @@ const MB = 1024 ** 2
 const measured = (cpu: number, memory: number): ResourceMeasure => ({ state: 'measured', usage: { cpu, memory: { state: 'measured', bytes: memory } }, pids: [1] })
 const memoryLost = (cpu: number, reason: string): ResourceMeasure => ({ state: 'measured', usage: { cpu, memory: { state: 'unavailable', reason } }, pids: [1] })
 const row = (input: { paneId: string; group: string; measure: ResourceMeasure }): ResourcePaneRow => ({
-  paneId: input.paneId, tabId: 't', workspaceId: 'w', groupKey: input.group, groupLabel: `label-${input.group}`, title: input.paneId, agent: null, measure: input.measure,
+  paneId: input.paneId, tabId: 't', workspaceId: 'w', groupKey: input.group, groupLabel: `label-${input.group}`, title: input.paneId, agent: null, measure: input.measure, main: null,
 })
 const HOST: ResourceHost = { physicalMemory: 24 * GB, cpuCoreCount: 18, pressure: 'warning', swap: { used: 23.3 * GB, total: 24 * GB }, compressed: 8.4 * GB }
 const snapshot = (patch: Partial<ResourceSnapshot>): ResourceSnapshot => ({
@@ -276,3 +278,22 @@ describe('카드 밖 workspace 표시 (LIFE-628)', () => {
   })
 })
 
+
+describe('LIFE-688 C2 — pane 행 툴팁의 주 프로세스 줄', () => {
+  const base = row({ paneId: 'claude 1', group: 'A', measure: measured(5, 400 * MB) })
+  it('ⓐ 이름(ucomm)과 PID 한 줄 — 활동 상태 보기 열과 같은 값', () => {
+    expect(mainProcessLine({ pid: 60567, name: '2.1.296' })).toBe('주 프로세스 2.1.296 · PID 60567')
+    expect(paneRowTitle({ row: { ...base, main: { pid: 60567, name: '2.1.296' } }, reason: null })).toBe('claude 1 — 이동\n주 프로세스 2.1.296 · PID 60567')
+  })
+  it('ⓑ 사유가 있으면 사유·CPU 기준 줄 뒤에 붙는다', () => {
+    expect(paneRowTitle({ row: { ...base, main: { pid: 7, name: 'zsh' } }, reason: '메모리 하한 — x' })).toBe('메모리 하한 — x\nCPU — 코어 하나 = 100%\n주 프로세스 zsh · PID 7')
+  })
+  it('C-L1 — 이름을 모르면 PID 만, 빈 이름·가짜 이름을 내지 않는다', () => {
+    expect(mainProcessLine({ pid: 60567, name: null })).toBe('주 프로세스 PID 60567')
+    expect(paneRowTitle({ row: { ...base, main: { pid: 60567, name: null } }, reason: null })).toBe('claude 1 — 이동\n주 프로세스 PID 60567')
+  })
+  it('ⓒ 주 프로세스가 없으면 줄을 빼고 기존 툴팁 그대로', () => {
+    expect(paneRowTitle({ row: base, reason: null })).toBe('claude 1 — 이동')
+    expect(paneRowTitle({ row: base, reason: '측정 불가 — y' })).toBe('측정 불가 — y\nCPU — 코어 하나 = 100%')
+  })
+})

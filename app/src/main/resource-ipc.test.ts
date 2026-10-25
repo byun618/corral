@@ -22,7 +22,7 @@ vi.mock('node:child_process', () => ({
   execFile: (file: string, args: string[], options: { env: unknown }, callback: (error: Error | null, result: { stdout: string; stderr: string }) => void) => {
     ps.all.push({ file, args, env: options.env })
     if (file === 'ps') ps.calls.push({ file, env: options.env })
-    callback(null, { stdout: file === 'ps' ? '  1 0 0.0\n' : file === '/x/corral-footprint' ? '1 10\n' : '', stderr: '' })
+    callback(null, { stdout: file === 'ps' ? '  1 0 0.0 0 launchd\n' : file === '/x/corral-footprint' ? '1 10\n' : '', stderr: '' })
   },
 }))
 
@@ -174,7 +174,7 @@ describe('readPsWith — R1ⓓ 가 실제 실행에 닿는다', () => {
   it('execFile 에 LC_ALL=C env 를 그대로 넘긴다', async () => {
     const exec = vi.fn(async () => ({ stdout: 'OUT' }))
     expect(await readPsWith({ exec, env: { PATH: '/bin', LC_ALL: 'de_DE.UTF-8' } })).toBe('OUT')
-    expect(exec).toHaveBeenCalledWith('ps', ['-axo', 'pid=,ppid=,pcpu='], { timeout: 5000, env: { PATH: '/bin', LC_ALL: 'C' } })
+    expect(exec).toHaveBeenCalledWith('ps', ['-axo', 'pid=,ppid=,pcpu=,tpgid=,ucomm='], { timeout: 5000, env: { PATH: '/bin', LC_ALL: 'C' } })
   })
 })
 
@@ -377,7 +377,7 @@ describe('registerResourceIpc — IPC 입력 검증·배선', () => {
     expect(ps.calls[0]).toMatchObject({ file: 'ps', env: { LC_ALL: 'C' } })
     // LIFE-676 — 한 주기 = ps · 도우미 · sysctl 둘 · vm_stat.
     expect(ps.all.map((call) => [call.file, ...call.args].join(' ')).sort()).toEqual(
-      ['/x/corral-footprint', 'ps -axo pid=,ppid=,pcpu=', 'sysctl -n kern.memorystatus_vm_pressure_level', 'sysctl vm.swapusage', 'vm_stat'].sort(),
+      ['/x/corral-footprint', 'ps -axo pid=,ppid=,pcpu=,tpgid=,ucomm=', 'sysctl -n kern.memorystatus_vm_pressure_level', 'sysctl vm.swapusage', 'vm_stat'].sort(),
     )
     // C1-2 — 시스템 지표도 LC_ALL=C 로 부른다(실제 배선).
     for (const call of ps.all.filter((item) => item.file === 'sysctl' || item.file === 'vm_stat')) expect(call.env).toMatchObject({ LC_ALL: 'C' })

@@ -121,8 +121,9 @@ export const LAST_KEY = `(() => {
 /** Monaco 모듈(지연 청크)을 찾아 모델·편집기를 읽는다(읽기 전용). 모델은 파일 이름(URI 끝)으로 찾는다. */
 export const MONACO = `(async () => {
   if (window.__l692monaco) return window.__l692monaco
-  const url = performance.getEntriesByType('resource').map((e) => e.name).find((n) => /\\/monaco-[^/]+\\.js$/.test(n))
-  if (!url) return null
+  // file:// 자원은 Resource Timing 에 안 잡힌다 — 하네스가 빌드 폴더에서 읽은 청크 이름(window.__l692monacoFile)으로 같은 URL 을 만든다(같은 모듈 인스턴스).
+  if (!window.__l692monacoFile) return null
+  const url = new URL('./assets/' + window.__l692monacoFile, location.href).href
   const mod = await import(url)
   const m = Object.values(mod).find((v) => v && typeof v === 'object' && v.editor && typeof v.editor.getEditors === 'function')
   window.__l692monaco = m ?? null

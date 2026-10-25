@@ -112,12 +112,17 @@ function makeRepo() {
   execFileSync('git', ['-C', repo, '-c', 'user.name=l692', '-c', 'user.email=l692@example.invalid', 'commit', '-q', '-m', 'fixture'])
 }
 async function up() {
-  const extra = `--disable-backgrounding-occluded-windows --remote-debugging-port=${port}`
+  // clean.sh 가 KEY=VALUE 를 공백으로 쪼갠다 — 플래그는 하나만(base1 회차에서 포트 플래그가 빠져 CDP 실패)
+  const extra = `--remote-debugging-port=${port}`
   sh(['scripts/l692/up.sh', root, `L692_EXTRA_ARGS=${extra}`], process.env.L692_EXE ? { L692_EXE: process.env.L692_EXE } : { L692_APP_DIR: appDir })
   cdp = await connect(port)
   log('cdp', { url: cdp.url.replace(os.homedir(), '~') })
   await until(() => js(`!!document.querySelector('[data-sidebar]')`), { timeoutMs: 30_000, label: '렌더러(사이드바)' })
   log('probe', await js(INSTALL_PROBE))
+  const assets = process.env.L692_ASSETS ?? path.join(appDir, 'out/renderer/assets')
+  const monacoFile = fs.readdirSync(assets).find((name) => /^monaco-[^.]+\.js$/.test(name))
+  log('monaco chunk', { assets: assets.replace(os.homedir(), '~'), monacoFile })
+  await js(`window.__l692monacoFile = ${JSON.stringify(monacoFile)}`)
 }
 const down = (withHerdr = false) => { cdp?.close(); cdp = null; sh(['scripts/l692/down.sh', root, ...(withHerdr ? ['herdr'] : [])]) }
 async function workspaceOf() {
@@ -176,7 +181,12 @@ async function setup(file, text, sel) {
 }
 /** 예외는 그 항목 미달로 남기고 계속. */
 async function item(name, fn) {
-  try { await fn() } catch (error) { judge(name, false, { error: String(error?.stack ?? error).slice(0, 600) }); await shot(`error-${name}`).catch(() => null) }
+  try { await fn() } catch (error) {
+    judge(name, false, { error: String(error?.stack ?? error).slice(0, 600) })
+    await shot(`error-${name}`).catch(() => null)
+    // 다음 항목이 앞 실패의 대화상자에 막히지 않게(impl1 회차: 팔레트가 열린 채 남아 뒤 항목이 연쇄 실패)
+    if (await js(`!!document.querySelector('[data-command-palette]')`).catch(() => false)) { await pressK('Escape').catch(() => null); await sleep(300) }
+  }
 }
 
 // --- K1 ------------------------------------------------------------------------
@@ -233,6 +243,7 @@ async function k1(cases) {
       await setup('a.md', MD_A, { sl: 3, sc: 1 })
       const r1 = await step('K1ⓕ md ⌘/', 'Meta+/', 'a.md')
       const r2 = await step('K1ⓕ md ⌘/ 두 번째', 'Meta+/', 'a.md')
+      await pressK('Meta+S'); await sleep(600)
       judge('K1ⓕ .md ⌘/ → <!-- --> · 두 번 → 원상', r1.after.text === withLine(MD_A, 3, '<!-- l692 a -->') && r2.after.text === MD_A, { first: r1.after.text, second: r2.after.text })
       await ctlClick(fileTabSel('k1.ts'))
       await editorReady('k1.ts')
@@ -336,6 +347,15 @@ async function k2(terminalTab) {
 }
 
 // --- K3 ------------------------------------------------------------------------
+/** 팔레트에서 항목을 키보드로 실행 — 목록이 길어 항목이 화면 밖이면 마우스 클릭이 빗나간다(impl1 회차). 검색어로 거른 뒤 첫 항목이 그것인지 보고 Enter. */
+async function runPaletteEntry() {
+  await until(() => js(`!!document.querySelector('[data-command-palette] input')`), { timeoutMs: 3_000, label: '팔레트' })
+  await typeK('togglepreview')
+  await until(() => js(`document.querySelector('[data-command-palette] [aria-selected="true"]')?.dataset.paletteEntry === 'markdown.togglePreview:0'`), { timeoutMs: 3_000, label: '팔레트 항목 선택' })
+  await shot('팔레트 항목 선택')
+  await pressK('Enter')
+  await sleep(300)
+}
 const modeOf = (d, rel) => d.groups.find((g) => g.view === rel)?.markdownView ?? null
 async function k3(terminalTab) {
   await openFile('a.md')
@@ -353,6 +373,7 @@ async function k3(terminalTab) {
     judge('K3ⓑ 이어서 ⇧⌘V → 원문 · 편집기 포커스 복귀 · 바로 타이핑이 원문에', modeOf(rb.after, 'a.md') === 'source' && focused && typed.text?.includes('Q'), { mode: modeOf(rb.after, 'a.md'), focused, text: typed.text, selection: typed.selection })
     await shot('K3ⓑ 타이핑 뒤')
     await setup('a.md', MD_A, { sl: 3, sc: 1 })
+    await pressK('Meta+S'); await sleep(600)
   })
   await item('K3ⓒ', async () => {
     await pressK('Meta+Shift+V'); await sleep(400)
@@ -462,8 +483,7 @@ async function k3(terminalTab) {
       await clickAt(cdp, `.file-group[data-file-group="${ga.groupId}"] [data-file-editor]`, { dx: 200, dy: 60 }); await sleep(300)
       const before = await dump('a.md')
       await pressK('Meta+K'); await sleep(400)
-      await until(() => js(`!!document.querySelector('[data-palette-entry="markdown.togglePreview:0"]')`), { timeoutMs: 3_000, label: '팔레트 항목' })
-      await clickAt(cdp, '[data-palette-entry="markdown.togglePreview:0"]'); await sleep(300)
+      await runPaletteEntry()
       const focused = await until(async () => (await dump('a.md')).active?.inMarkdownView === 'a.md', { timeoutMs: 3_000, label: '보기 포커스' }).then(() => true, () => false)
       const after = await dump('a.md')
       log('[걸음] K3ⓗ 팔레트 항목(활성 a.md)', { before: before.groups, after: after.groups, active: after.active })
@@ -475,7 +495,7 @@ async function k3(terminalTab) {
       await clickAt(cdp, '[data-term-pane]'); await sleep(300)
       const t0 = await dump('a.md')
       await pressK('Meta+K'); await sleep(400)
-      await clickAt(cdp, '[data-palette-entry="markdown.togglePreview:0"]'); await sleep(600)
+      await runPaletteEntry(); await sleep(300)
       const t1 = await dump('a.md')
       log('[걸음] K3ⓗ 팔레트 항목(활성 = 터미널)', { before: t0.groups, after: t1.groups, palette: t1.palette })
       await shot('K3ⓗ 터미널 활성 팔레트 뒤')

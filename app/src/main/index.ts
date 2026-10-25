@@ -643,8 +643,11 @@ function deadSlotNow(target: string): boolean {
 
 /** 붙을 카드가 없어진 보존 행을 걷는다 (LIFE-694 ② · C3) — 내보내기 직전에. 판정 불가면 걷지 않는다. */
 function pruneRetained(): void {
+  // 걷을 것이 없으면 판정(카드 밖 문 · store 행 조립)도 하지 않는다 — emit 마다 불린다(r2 리뷰 G3).
+  const retained = link.store.retainedRows()
+  if (retained.length === 0) return
   const paneIds = prunableRetained({
-    retained: link.store.retainedRows(),
+    retained,
     determinable: cardlessGateNow() !== null,
     isDeadSlot: deadSlotNow,
   })

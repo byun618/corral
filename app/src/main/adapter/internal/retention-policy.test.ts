@@ -26,6 +26,9 @@ let LOCKED = ''
 /** 심링크 자리 — 목록에는 실경로만 있다(r1 리뷰 Claude R6). */
 let LINKED = ''
 let WORKTREES: string[] = []
+/** 부모 `.claude/worktrees` 가 mode 000 인 두 번째 레포 — 자리 뿌리 stat 자체가 EACCES(r2 리뷰 G2, r1 Grok 3 의 실측 모양). */
+let ROOT2 = ''
+let BEHIND = ''
 
 const mkdir = (target: string): void => {
   fs.mkdirSync(target, { recursive: true })
@@ -49,12 +52,17 @@ beforeAll(() => {
   fs.writeFileSync(path.join(real, '.git'), 'gitdir: x\n')
   fs.symlinkSync(real, LINKED)
   fs.chmodSync(LOCKED, 0o000)
+  ROOT2 = path.join(TMP, 'r2')
+  BEHIND = path.join(ROOT2, '.claude/worktrees/x')
+  mkdir(path.join(BEHIND, 'src'))
+  fs.chmodSync(path.join(ROOT2, '.claude/worktrees'), 0o000)
   // 골격 목록 — main · 살아 있는 worktree · 심링크 자리의 **실경로**. FRESH·LOCKED·LINKED(논리 경로)는 목록에 없다.
   WORKTREES = [ROOT, LIVE, real]
 })
 
 afterAll(() => {
   fs.chmodSync(LOCKED, 0o755)
+  fs.chmodSync(path.join(ROOT2, '.claude/worktrees'), 0o755)
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
@@ -108,6 +116,27 @@ describe('자리 뿌리 파일시스템 확인 (F1)', () => {
     expect([FRESH, LOCKED, `${LINKED}/src`].map(deadSlot)).toEqual([false, false, false])
     // 목록으로도 아닌 자리는 파일시스템을 보지 않고 아니다.
     expect([LIVE, `${ROOT}/app`, HOME].map(deadSlot)).toEqual([false, false, false])
+  })
+})
+
+describe('G2 — 부모 `.claude/worktrees` 접근 거부(뿌리 stat 이 EACCES)', () => {
+  const worktreePaths = (): string[] => [ROOT2]
+  const behindDead = (target: string): boolean => confirmedDeadSlot({ path: target, worktreePaths: worktreePaths(), slotState: slotStateNow })
+  it('자리 확인은 동기·비동기 모두 unknown — 죽은 자리가 아니다 · directoryNow 는 null(확인 불가)', async () => {
+    expect(slotStateNow(BEHIND)).toBe('unknown')
+    expect(await slotStateOf(BEHIND)).toBe('unknown')
+    expect(behindDead(`${BEHIND}/src`)).toBe(false)
+    expect(directoryNow(`${BEHIND}/src`)).toBeNull()
+  })
+  it('카드 밖이어도 보존하고, 판정 가능해도 걷지 않는다', () => {
+    const store = new WorkspaceStore()
+    store.setRetentionPolicy(({ workspaceId, cwd }) => keepRetention({
+      workspaceId, cwd, cardless: store.rows(), homes: [HOME], isDirectory: directoryNow, isDeadSlot: behindDead,
+    }))
+    store.applySnapshot(snapshotOf([{ id: 'p1', tab: 't1', cwd: `${BEHIND}/src` }]))
+    closeWorkspace(store)
+    expect(retainedIds(store)).toEqual(['p1'])
+    expect(prunableRetained({ retained: store.retainedRows(), determinable: true, isDeadSlot: behindDead })).toEqual([])
   })
 })
 

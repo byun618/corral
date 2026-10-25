@@ -22,6 +22,7 @@ function trimSlash(path: string): string {
  * 이 판정은 목록 문자열만 본다. 접근 거부로 목록에서 빠진 worktree·심링크 자리도 여기서는 죽은 자리로 보이므로(LIFE-694 r1 리뷰 F1),
  * 되돌릴 수 없는 쪽(보존 거부·걷기·「모두 닫기」)은 main 이 이 뿌리를 파일시스템으로 한 번 더 확인한다(`main/retention.ts slotState*`).
  * 화면에서 숨기기만 하는 쪽(695 사이드바·모바일)은 이 판정 그대로 쓴다.
+ * 그래서 심링크·접근 거부 자리의 보존 행은 화면에서는 숨고(목록 판정) 공급에서는 안 걷힌다(목록 + fs) — 칸만 차지하는 알려진 틈이다(r2 리뷰 G4).
  */
 export function deadSlotRoot(input: { path: string; worktreePaths: readonly string[] }): string | null {
   const target = trimSlash(input.path)

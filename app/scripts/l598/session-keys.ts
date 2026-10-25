@@ -45,7 +45,8 @@ function collect(value: unknown, into: Map<string, unknown>): void {
   for (const child of Object.values(value)) collect(child, into)
 }
 
-const panes = JSON.parse(fs.readFileSync(path.join(ROOT, 'panes.json'), 'utf8')) as { name: string; paneId: string }[]
+const parsed: unknown = JSON.parse(fs.readFileSync(path.join(ROOT, 'panes.json'), 'utf8'))
+const panes = (Array.isArray(parsed) ? parsed : []).flatMap((entry: unknown) => (isRecord(entry) && typeof entry.name === 'string' && typeof entry.paneId === 'string' ? [{ name: entry.name, paneId: entry.paneId }] : []))
 const listed = new Map<string, unknown>()
 collect(await state(), listed)
 const epoch = await terminal.epoch(ctx())

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, explorerKeyShortcut, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, scopeOf, validateOverrides } from './keybindings.js'
+import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, explorerKeyShortcut, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, scopeOf, validateOverrides, yieldsOutsideMarkdown } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
   it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
     // LIFE-478: + workspace.rename(⌘⌥R) · workspace.delete(⌘⇧⌫)
@@ -11,7 +11,8 @@ describe('shortcut catalog and compatibility', () => {
     // LIFE-592: + explorer.delete(⌘⌫) · explorer.undo(⌘Z) · explorer.redo(⌘⇧Z) — 탐색기 범위
     // LIFE-593: + quickOpen.open(⌘P) · explorer.filter(⌘⌥F — 탐색기 범위)
     // LIFE-601: + tasks.toggle(⌘I)
-    expect(ACTIONS).toHaveLength(28)
+    // LIFE-629: + markdown.togglePreview(⇧⌘V)
+    expect(ACTIONS).toHaveLength(29)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -340,5 +341,44 @@ describe('LIFE-593 ⌘P 빠른 열기 · ⌥⌘F 이름 필터', () => {
   })
   it('키를 누르고 있어도 한 번', () => {
     expect(NON_REPEATING_ACTIONS).toContain('quickOpen.open')
+  })
+})
+
+describe('LIFE-629 ⇧⌘V Markdown 미리보기 전환', () => {
+  it('기본값 ⇧⌘V · 다른 기본값과 충돌 없음 · 한 번만(반복 삼킴)', () => {
+    expect(matchBinding('Mod+Shift+V', {})).toEqual({ id: 'markdown.togglePreview', variant: 0 })
+    expect(bindingFromEvent({ key: 'V', code: 'KeyV', metaKey: true, ctrlKey: false, altKey: false, shiftKey: true })).toBe('Mod+Shift+V')
+    // 한글 자판(ㅍ)이어도 물리 키로 읽는다
+    expect(bindingFromEvent({ key: 'ㅍ', code: 'KeyV', metaKey: true, ctrlKey: false, altKey: false, shiftKey: true })).toBe('Mod+Shift+V')
+    expect(bindingConflict({})).toBeNull()
+    expect(NON_REPEATING_ACTIONS).toContain('markdown.togglePreview')
+    // 메뉴 Paste and Match Style(⌘⌥⇧V)·⌘V 는 액션이 아니다
+    expect(matchBinding('Mod+Alt+Shift+V', {})).toBeNull()
+    expect(matchBinding('Mod+V', {})).toBeNull()
+  })
+  it('재정의가 먹는다 · 저장 형식 그대로(기본값과 같으면 파일에 안 남는다)', () => {
+    const moved = validateOverrides({ 'markdown.togglePreview': ['Mod+Alt+V'] })
+    expect(moved).toEqual({ 'markdown.togglePreview': ['Mod+Alt+V'] })
+    expect(matchBinding('Mod+Alt+V', moved)).toEqual({ id: 'markdown.togglePreview', variant: 0 })
+    expect(matchBinding('Mod+Shift+V', moved)).toBeNull()
+    expect(validateOverrides({ 'markdown.togglePreview': ['Mod+Shift+V'] })).toEqual({})
+    // 기존 재정의 파일(다른 액션들)은 그대로 통과한다
+    expect(validateOverrides({ 'palette.open': ['Mod+J'], 'palette.search': ['Mod+Shift+J'] })).toEqual({ 'palette.open': ['Mod+J'], 'palette.search': ['Mod+Shift+J'] })
+  })
+  it('기존 사용자 재정의가 ⇧⌘V 를 쓰면 새 기본값이 비켜 선다(YIELDING_DEFAULTS) — 충돌로 파일이 버려지지 않는다', () => {
+    const existing = validateOverrides({ 'palette.search': ['Mod+Shift+V'] })
+    expect(existing).toEqual({ 'palette.search': ['Mod+Shift+V'] })
+    expect(bindingsFor('markdown.togglePreview', existing)).toEqual([null])
+    expect(matchBinding('Mod+Shift+V', existing)).toEqual({ id: 'palette.search', variant: 0 })
+    expect(bindingConflict(existing)).toBeNull()
+  })
+  it('yieldsOutsideMarkdown — Markdown 보기 밖이면 이 액션만 양보, 다른 액션은 그대로', () => {
+    expect(yieldsOutsideMarkdown({ id: 'markdown.togglePreview', inMarkdownView: false })).toBe(true)
+    expect(yieldsOutsideMarkdown({ id: 'markdown.togglePreview', inMarkdownView: true })).toBe(false)
+    for (const action of ACTIONS) if (action.id !== 'markdown.togglePreview') expect(yieldsOutsideMarkdown({ id: action.id, inMarkdownView: false })).toBe(false)
+  })
+  it('LIFE-692 새 편집기 키는 앱 전역 액션이 아니다(편집기로 간다) — ⌘K 만 앱이 쥔다', () => {
+    for (const binding of ['Mod+Backspace', 'Mod+Shift+K', 'Alt+ArrowUp', 'Alt+ArrowDown', 'Alt+Shift+ArrowUp', 'Alt+Shift+ArrowDown', 'Mod+]', 'Mod+[', 'Mod+/', 'Alt+Shift+A', 'Mod+Enter', 'Mod+Shift+Enter', 'Control+J', 'Control+T', 'Control+Alt+ArrowLeft', 'Control+Alt+ArrowRight']) expect(matchBinding(binding, {})).toBeNull()
+    expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
   })
 })

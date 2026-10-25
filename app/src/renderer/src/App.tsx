@@ -77,7 +77,7 @@ import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type 
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
 import { closeFollowTarget, fileTabId, fileTabLabel, fileTabsOf, isFileTabId, previewOf, recordCloseFollow, tabKindOf, terminalKeyTarget, type CloseFollow } from './file-tabs.js'
-import { FileView, focusLiveEditor, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
+import { FileView, focusLiveEditor, toggleMarkdownMode, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
 import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, thawEditing, type FileDoc } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, type SaveDeps } from './file-save.js'
 import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
@@ -1613,6 +1613,16 @@ export function App(): React.JSX.Element {
       const kind = tabKindOf(tabId)
       const doc = kind.kind === 'file' ? getDoc(docKey(root, kind.rel)) : undefined
       if (doc !== undefined) void saveDoc(doc, saveDepsRef.current)
+    },
+    // LIFE-629 — 활성 탭이 Markdown 파일 탭이면 원문 ↔ 미리보기(파일 뷰 버튼과 같은 경로). 키는 포커스가 Markdown 보기 안일 때만 왔다(useKeybindings).
+    // 바뀐 보기에 포커스를 둔다 — 미리보기면 보기 자리, 원문이면 편집기(붙는 대로) — 마우스 없이 다시 ⇧⌘V 가 먹고, 원문으로 오면 바로 타이핑된다.
+    'markdown.togglePreview': () => {
+      const tabId = layoutRef.current.activeTabId
+      const root = activeWorktreeRow?.path ?? null
+      if (tabId === null || root === null) return
+      const kind = tabKindOf(tabId)
+      if (kind.kind !== 'file' || !toggleMarkdownMode({ store: markdownModesOf(root), tabId })) return
+      focusOpenedFile({ worktreePath: root, rel: kind.rel })
     },
     // LIFE-592 — 탐색기 트리 포커스에서만(범위 'explorer'). ⌘⌫ = 선택 항목 삭제(확인 뒤 휴지통), ⌘Z·⌘⇧Z = 탐색기 기록.
     'explorer.delete': () => {

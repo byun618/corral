@@ -605,7 +605,8 @@ describe('R1-A3 맥 타자 — 관측한 입력 revision 으로만 넣는다', (
     t.backend.input = { revision: 42, idleMs: 9_000 }
     t.hub.send({ device: 'd1', id: 'r1a3-0000-0001', channel: 'c1', text: 'x' })
     expect((await t.settled('r1a3-0000-0001')).state).toBe('delivered')
-    expect(t.backend.fences).toEqual([{ seq: 1, inputRevision: 42, minIdleMs: 500 }])
+    // 하한 = max(quietMs 500, sessionSettleMs 2000) — LIFE-598.
+    expect(t.backend.fences).toEqual([{ seq: 1, inputRevision: 42, minIdleMs: 2000 }])
   })
   it('입력 revision 이 없는 guard 면 넣지 않는다(guard_outdated)', async () => {
     const t = setup()
@@ -749,6 +750,8 @@ describe('C1 꼬리 커서', () => {
 })
 
 /** 그 채널(`c1` 등)의 pane — 세션 교체를 흉내 낸다. */
+/** fixture c1 의 접수 세션을 herdr 관측 키로(LIFE-598 시험이 관측을 고정할 때). */
+const OLD_SESSION = observedSessionKey({ source: CHAT_SESSIONS.claude.source, kind: 'id', value: CHAT_SESSIONS.claude.id })
 /** 그 pane 의 목록 세션 — 없는 pane 이면 null(가짜 herdr 관측용). */
 function paneSession(state: ReturnType<typeof chatListState>, id: string) {
   for (const repo of state.repos) for (const worktree of repo.worktrees) for (const tab of worktree.workspace?.tabs ?? []) for (const pane of tab.panes) if (pane.paneId === id) return pane.agentSession
@@ -920,10 +923,12 @@ describe('R2-A3 화면을 잡을 때의 입력 — 같은 guard 턴의 revision�
     await wait(120)
     expect(t.backend.prompts).toHaveLength(0)
     expect(t.last('r2a3-0000-0001')).toMatchObject({ state: 'queued', wait: 'gate' })
-    t.backend.screenInput = { revision: 2, idleMs: 900 }
+    // 조용해짐 — 화면 턴과 그 뒤 효과 직전 재관측(LIFE-598)이 같은 revision 2 를 본다. 하한은 sessionSettleMs(2000) 이상.
+    t.backend.screenInput = { revision: 2, idleMs: 2_500 }
+    t.backend.input = { revision: 2, idleMs: 2_500 }
     expect((await t.settled('r2a3-0000-0001')).state).toBe('delivered')
-    // 넣기의 울타리는 관측(1)이 아니라 화면 턴의 revision(2)이다.
-    expect(t.backend.fences.at(-1)).toMatchObject({ inputRevision: 2, minIdleMs: 500 })
+    // 넣기의 울타리는 처음 관측(1)이 아니라 화면 턴의 revision(2)이다.
+    expect(t.backend.fences.at(-1)).toMatchObject({ inputRevision: 2, minIdleMs: 2000 })
   })
   it('화면 턴의 seq 가 관측과 다르면 그 화면으로 넣지 않는다', async () => {
     const t = setup()
@@ -951,6 +956,8 @@ describe('R2-A3 화면을 잡을 때의 입력 — 같은 guard 턴의 revision�
 describe('R2-A4 접수 세션 — 관문 await 중 같은 PTY 의 세션이 바뀌면 넣지 않는다', () => {
   it('첫 관측 동안 세션 교체(PTY·epoch·seq 그대로) → target_changed, 넣기 0회', async () => {
     const t = setup()
+    // herdr 관측은 옛 세션에 고정 — 목록 비교(R2-A4)만으로 잡히는지 본다(LIFE-598 r1 C·R1-C2).
+    t.backend.observedSession = () => OLD_SESSION
     const observe = t.backend.observe.bind(t.backend)
     let swapped = false
     t.backend.observe = async (pane) => {
@@ -978,6 +985,115 @@ describe('R2-A4 접수 세션 — 관문 await 중 같은 PTY 의 세션이 바�
     t.hub.answer({ device: 'd1', id: 'r2a4-0000-0002', channel: 'c1', question: 10, call: 'toolu-10', digest: digestFor(10), answers: [{ choices: [], other: '본문' }] })
     expect(await t.settled('r2a4-0000-0002')).toMatchObject({ state: 'unconfirmed', reason: 'target_changed' })
     expect(t.backend.sends.map((send) => send.text)).toEqual(['3'])
+  })
+})
+
+describe('LIFE-598 r1 — 마지막 관측 뒤 세션만 바뀌는 창 · 효과 시점 입력 조용함 하한', () => {
+  const newSession = observedSessionKey({ source: 'herdr:claude', kind: 'id', value: 'cleared-session' })
+  it('screen 도중 세션만 바뀜(seq·revision 그대로) → 효과 직전 재관측이 잡아 prompt 0회 target_changed', async () => {
+    const t = setup()
+    const screen = t.backend.screen.bind(t.backend)
+    t.backend.screen = async () => {
+      const shot = await screen()
+      t.backend.observedSession = () => newSession
+      return shot
+    }
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0001', channel: 'c1', text: '옛 세션 지시' })
+    expect(await t.settled('l598r1-0000-0001')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('manifestVerified 도중 세션만 바뀜 → prompt 0회 target_changed', async () => {
+    const t = setup()
+    t.backend.manifestVerified = async () => {
+      t.backend.observedSession = () => newSession
+      return true
+    }
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0002', channel: 'c1', text: '옛 세션 지시' })
+    expect(await t.settled('l598r1-0000-0002')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('screen 도중 세션이 null 로 → 쓰지 않고 target_changed', async () => {
+    const t = setup()
+    const screen = t.backend.screen.bind(t.backend)
+    t.backend.screen = async () => {
+      const shot = await screen()
+      t.backend.observedSession = () => null
+      return shot
+    }
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0003', channel: 'c1', text: '옛 세션 지시' })
+    expect(await t.settled('l598r1-0000-0003')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.fences).toHaveLength(0)
+  })
+  it('호출 횟수로 가른다 — 첫·두 번째 관측은 옛 세션, 세 번째(효과 직전)만 새 세션 → target_changed', async () => {
+    const t = setup()
+    let calls = 0
+    t.backend.observedSession = () => ((calls += 1) <= 2 ? OLD_SESSION : newSession)
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0004', channel: 'c1', text: '옛 세션 지시' })
+    expect(await t.settled('l598r1-0000-0004')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(calls).toBe(3)
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('효과 시점 입력이 하한(2 s) 미만이면 넣지 않고 기다린다 — 넘으면 넣는다', async () => {
+    const t = setup()
+    t.backend.input = { revision: 5, idleMs: 1_200 }
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0005', channel: 'c1', text: '조용해지면' })
+    await wait(80)
+    expect(t.backend.prompts).toHaveLength(0)
+    expect(t.last('l598r1-0000-0005')).toMatchObject({ state: 'queued', wait: 'gate' })
+    t.backend.input = { revision: 5, idleMs: 2_100 }
+    expect((await t.settled('l598r1-0000-0005')).state).toBe('delivered')
+    expect(t.backend.fences.at(-1)).toMatchObject({ inputRevision: 5, minIdleMs: 2000 })
+  })
+  it('화면 뒤 재관측에서 revision 이 바뀌었으면(그 사이 입력) 그 화면으로 넣지 않는다', async () => {
+    const t = setup()
+    const screen = t.backend.screen.bind(t.backend)
+    let bumped = false
+    t.backend.screen = async () => {
+      const shot = await screen()
+      if (!bumped && t.backend.input !== null) {
+        bumped = true
+        t.backend.input = { revision: t.backend.input.revision + 1, idleMs: 10_000 }
+      }
+      return shot
+    }
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0006', channel: 'c1', text: '다음 화면으로' })
+    expect((await t.settled('l598r1-0000-0006')).state).toBe('delivered')
+    // 첫 화면(revision 1)으로는 넣지 않았다 — 다음 관문의 화면(revision 2)으로 넣었다.
+    expect(t.backend.fences).toEqual([expect.objectContaining({ inputRevision: 2 })])
+  })
+  it('질문 답 — 화면 읽기 도중 세션만 바뀜 → 키 0회 target_changed', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = questionScreen(12)
+    t.items.list = [question({ id: 12, state: 'pending' })]
+    const screen = t.backend.screen.bind(t.backend)
+    t.backend.screen = async () => {
+      const shot = await screen()
+      t.backend.observedSession = () => newSession
+      return shot
+    }
+    t.hub.answer({ device: 'd1', id: 'l598r1-0000-0007', channel: 'c1', question: 12, call: 'toolu-12', digest: digestFor(12), answers: [{ choices: [1], other: null }] })
+    expect(await t.settled('l598r1-0000-0007')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.sends).toHaveLength(0)
+  })
+  it('질문 답 — 첫 화면이 하한 미만으로 조용하면 키를 넣지 않고 다시 읽는다', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = questionScreen(13)
+    t.items.list = [question({ id: 13, state: 'pending' })]
+    t.answerOn({ id: 13, value: 'o1' })
+    const screen = t.backend.screen.bind(t.backend)
+    const idles: number[] = []
+    t.backend.screen = async () => {
+      const shot = await screen()
+      // 첫 읽기는 1.2 s 조용, 그 뒤는 2.5 s — 첫 읽기 뒤에는 키가 없어야 한다.
+      const idleMs = idles.length === 0 ? 1_200 : 2_500
+      idles.push(t.backend.sends.length)
+      return { ...shot, input: shot.input === null ? null : { ...shot.input, idleMs } }
+    }
+    t.hub.answer({ device: 'd1', id: 'l598r1-0000-0008', channel: 'c1', question: 13, call: 'toolu-13', digest: digestFor(13), answers: [{ choices: [1], other: null }] })
+    expect((await t.settled('l598r1-0000-0008')).state).toBe('delivered')
+    expect(idles.slice(0, 2)).toEqual([0, 0])
   })
 })
 

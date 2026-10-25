@@ -966,7 +966,9 @@ async function u3b(): Promise<void> {
 }
 
 /**
- * ⓒ 대기 중 같은 pane 에 새 세션(Claude `/clear`)이 뜸. `--expect fixed`(기본, C1) → failed/target_changed · 옛·새 기록 모두 0.
+ * ⓒ 대기 중 같은 pane 에 새 세션(Claude `/clear`)이 뜸. `--expect fixed`(기본, C1) → failed/target_changed · 옛·새 기록 모두 0
+ *   + 세션이 실제로 바뀌었다(`sessionChanged`) · 넣기를 시작하지 않았다(`sendingAt` null) · 실패 수신이 `/clear` 뒤 · 표본 실패 0 · `/clear` 뒤 세션 null 표본 ≤ 2
+ *   (r1 — 세션과 무관한 「항상 거절」 거짓 양성을 통과로 세지 않는다).
  * `--expect repro`(C0, 수정 전) → 새 세션에 들어감(unconfirmed/record_missing 또는 delivered) + 새 세션 기록 표지 1건.
  * 같은 회차에 herdr `agent_session` 표본(150 ms)으로 바뀐 시각, 폰이 `sending` 을 받은 시각(허브가 넣기 시작)을 남긴다.
  */
@@ -981,12 +983,13 @@ async function u3c(): Promise<void> {
     const marker = M(`l598-u3c-${info.name}`)
     const id = newId(`u3c-${info.name}`)
     const text = `${marker} reply OK only`
-    const sessions: { at: number; session: string | null }[] = []
+    // 표본 실패(error)와 herdr 가 세션 없음(null)이라 말한 것을 가른다(r1).
+    const sessions: { at: number; session: string | null; error: boolean }[] = []
     let sampling = true
     const sampler = (async () => {
       while (sampling) {
         const agent = await agentOf(info.paneId).catch(() => null)
-        sessions.push({ at: Date.now(), session: agent?.session ?? null })
+        sessions.push({ at: Date.now(), session: agent?.session ?? null, error: agent === null })
         await delay(150)
       }
     })()
@@ -1004,8 +1007,10 @@ async function u3c(): Promise<void> {
     await sampler
     const after = await agentOf(info.paneId)
     const changedAt = sessions.find((sample) => sample.at >= clearEnterAt && sample.session !== null && sample.session !== before.session)?.at ?? null
-    const nullDuring = sessions.filter((sample) => sample.at >= clearEnterAt && sample.session === null).length
+    const nullDuring = sessions.filter((sample) => sample.at >= clearEnterAt && !sample.error && sample.session === null).length
+    const sampleErrors = sessions.filter((sample) => sample.error).length
     const sent = sendingAt(phone, id)
+    const failedAt = (phone.states.get(id) ?? []).find((wire) => wire.state === 'failed')?.recvAt ?? null
     // 기록 파일별 표지 수 — Claude 기록 파일 이름 = 세션 id.
     const bySession: Record<string, number> = {}
     for (const row of rowsOf(info)) {
@@ -1016,10 +1021,11 @@ async function u3c(): Promise<void> {
     }
     const rows = markerRows(info, marker)
     const states = (phone.states.get(id) ?? []).map((wire) => `${wire.state}${wire.wait === null ? '' : `:${wire.wait}`}${wire.reason === null ? '' : `/${wire.reason}`}`)
-    const timing = { clearEnterAt, herdrSessionChangedAt: changedAt, sendingAt: sent, herdrChangeMs: changedAt === null ? null : changedAt - clearEnterAt, sendingMs: sent === null ? null : sent - clearEnterAt, sessionSamples: sessions.length, nullSamplesAfterClear: nullDuring }
+    const timing = { clearEnterAt, herdrSessionChangedAt: changedAt, sendingAt: sent, failedAt, herdrChangeMs: changedAt === null ? null : changedAt - clearEnterAt, sendingMs: sent === null ? null : sent - clearEnterAt, failedMs: failedAt === null ? null : failedAt - clearEnterAt, sessionSamples: sessions.length, sampleErrors, nullSamplesAfterClear: nullDuring }
     const reproduced = (final?.state === 'unconfirmed' || final?.state === 'delivered') && (bySession.new ?? 0) === 1
-    const fixed = final?.state === 'failed' && final.reason === 'target_changed' && rows === 0
-    out(`U3c-${info.name}`, { pane: info.name, mode: info.mode, managed: after.ready, expect, queued: queued !== null, sessionChanged: before.session !== null && after.session !== null && before.session !== after.session, final: final?.state ?? null, reason: final?.reason ?? null, states, rows, bySession, ...timing },
+    const sessionChanged = before.session !== null && after.session !== null && before.session !== after.session
+    const fixed = final?.state === 'failed' && final.reason === 'target_changed' && rows === 0 && sessionChanged && sent === null && failedAt !== null && failedAt > clearEnterAt && sampleErrors === 0 && nullDuring <= 2
+    out(`U3c-${info.name}`, { pane: info.name, mode: info.mode, managed: after.ready, expect, queued: queued !== null, sessionChanged, final: final?.state ?? null, reason: final?.reason ?? null, states, rows, bySession, ...timing },
       expect === 'repro' ? reproduced : fixed)
   } finally {
     await phone.close()

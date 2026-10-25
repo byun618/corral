@@ -1592,9 +1592,11 @@ async function runPoll(): Promise<void> {
   sessions = pinnedSessions({ sessions: scan.sessions, pinDefault: bundledHerdr !== null || onRepoGuard(herdr), bound: boundSessionName(process.env) })
   sessionsError = scan.error
   scanState = scan.error === null ? 'ok' : 'error'
+  const previousStreak = scanErrorStreak
   scanErrorStreak = nextScanErrorStreak({ streak: scanErrorStreak, scan: scanState })
-  // 조회마다 연속 계수를 남긴다(fix1 R1-02) — `backend.status` 는 종류가 바뀔 때만 찍혀 「1·2회엔 카드 없음」 을 로그로 대조할 수 없다.
-  log('sessions.scan', { scan: scanState, streak: scanErrorStreak })
+  // 연속 계수를 남긴다(fix1 R1-02) — `backend.status` 는 종류가 바뀔 때만 찍혀 「1·2회엔 카드 없음」 을 로그로 대조할 수 없다.
+  // 오류가 이어지는 동안과 0 으로 돌아온 한 번만(fix2 N-03) — 성공이 이어지는 평시엔 0줄이다(3초마다 한 줄은 하루 수 MB).
+  if (scanErrorStreak > 0 || scanErrorStreak !== previousStreak) log('sessions.scan', { scan: scanState, streak: scanErrorStreak })
   // default 가 돌고 있으면 남은 실패를 걷는다(r2 R2-01) — 그 뒤 멈추면 확인(exited)과 재개 요약이 나와야 한다.
   if (scanState === 'ok' && sessions.some((session) => session.isDefault && session.running)) backendStarter.observeRunning()
   // 조회 오류 중이어도 default 에 live 로 붙어 있으면 서버가 돈다 — 낡은 실패를 걷는다(r5 R5-02).

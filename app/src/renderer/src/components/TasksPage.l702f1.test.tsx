@@ -249,7 +249,8 @@ describe('F4 필터 + 숨김 — 「필터를 지우면 다시 보입니다」 �
   })
 
   it('대조 — 필터를 통과한 행이 아예 없으면 지금처럼 필터 빈 상태', async () => {
-    items = [item({ id: 'i1', key: 'K-1', statusKey: 'done', category: 'done', resolution: 'completed', doneAt: ago(20 * DAY) })]
+    // 수정 r2 G3 — 필터를 지우면 보일 열린 일감(K-2)이 있어야 필터 원인이다(오래된 완료뿐이면 보기 그대로 — TasksPage.l702f2 G3).
+    items = [item({ id: 'i1', key: 'K-1', statusKey: 'done', category: 'done', resolution: 'completed', doneAt: ago(20 * DAY) }), item({ id: 'i2', key: 'K-2', rank: '2' })]
     await renderPage()
     click(q('[data-filter="blocked"]'))
     expect(q('[data-tasks-empty="filter"]')).not.toBeNull()

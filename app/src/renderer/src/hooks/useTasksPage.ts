@@ -957,7 +957,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     const settled = response.ok && (response.result.op === 'changeStatus' || response.result.op === 'setPlacement' || response.result.op === 'reorder') ? response.result.item : null
     if (!accepted || settled === null) {
       // 실패·버린 응답·모양이 다른 응답 = 그 카드 하나만 옮기기 전 자리로(순서는 그 카드만 되돌린다, R2-B), 그리고 서버를 다시 읽어 수렴한다.
-      patch({ connectionId, spaceKey, apply: (items) => applyIntent({ items, itemId: row.item.id, intent: reverse, statuses }) })
+      // 역방향 의도는 doneAt 을 낙관 규칙(null)으로 두므로 이동 전 값을 되살린다 — 재조회까지 실패해도 보드 숨김 판정이 서버와 같게(LIFE-702 G1).
+      patch({ connectionId, spaceKey, apply: (items) => applyIntent({ items, itemId: row.item.id, intent: reverse, statuses }).map((entry) => (entry.id === row.item.id ? { ...entry, doneAt: original.doneAt } : entry)) })
       notify({ kind: 'failed', message: `${original.key} — ${response.ok ? '출처 응답을 확인하지 못했습니다.' : response.error.message}` })
       if (!response.ok) markUnsure({ uid, error: response.error })
       doubtLane({ written })

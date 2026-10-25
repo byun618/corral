@@ -246,7 +246,8 @@ describe('D6 빈 상태 원인', () => {
   })
 
   it('필터가 켜져 있고 보이는 것이 0 이면 필터 빈 상태(원인 = 필터)', async () => {
-    items = [done({ id: 'i2', key: 'K-2', doneAt: ago(20) })]
+    // 수정 r2 G3 — 필터를 지우면 보일 열린 일감(K-1)이 있을 때만 필터 원인이다. 오래된 완료뿐이면 보기를 그대로 그린다(TasksPage.l702f2 G3).
+    items = [done({ id: 'i2', key: 'K-2', doneAt: ago(20) }), item({ id: 'i1', key: 'K-1', rank: '2' })]
     await renderPage()
     click(q('[data-filter="blocked"]'))
     expect(q('[data-tasks-empty="filter"]')).not.toBeNull()

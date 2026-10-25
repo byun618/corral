@@ -403,6 +403,29 @@ function markerRows(info: PaneInfo, marker: string): number {
   return rowsOf(info).filter((row) => row.role === 'user' && row.text !== null && row.text.includes(marker)).length
 }
 
+/** LIFE-598 r2: 허브가 `target_changed` 로 끝낸 갈래(앱 로그 `mobile.input_target_changed` 의 `check`) — `since` 이후 줄만. 무엇이 막았는지 원자료로 가른다(C·R2-C3). */
+function hubChecks(since: number): { at: number; op: string | null; check: string | null }[] {
+  let text = ''
+  try {
+    text = fs.readFileSync(path.join(ROOT, 'ud/corral.ndjson'), 'utf8')
+  } catch {
+    return []
+  }
+  const found: { at: number; op: string | null; check: string | null }[] = []
+  for (const line of text.split('\n')) {
+    if (!line.includes('mobile.input_target_changed')) continue
+    try {
+      const parsed: unknown = JSON.parse(line)
+      if (!isRecord(parsed) || parsed.tag !== 'mobile.input_target_changed') continue
+      const at = num(parsed.at)
+      if (at !== null && at >= since) found.push({ at, op: str(parsed.op), check: str(parsed.check) })
+    } catch {
+      continue
+    }
+  }
+  return found
+}
+
 // --- 지시 1회 ---------------------------------------------------------------------------------------------
 
 type SendResult = { id: string; marker: string; final: Wire | null; ms: number | null; states: string[]; record: number; textExact: boolean | null }
@@ -967,8 +990,10 @@ async function u3b(): Promise<void> {
 
 /**
  * ⓒ 대기 중 같은 pane 에 새 세션(Claude `/clear`)이 뜸. `--expect fixed`(기본, C1) → failed/target_changed · 옛·새 기록 모두 0
- *   + 세션이 실제로 바뀌었다(`sessionChanged`) · 넣기를 시작하지 않았다(`sendingAt` null) · 실패 수신이 `/clear` 뒤 · 표본 실패 0 · `/clear` 뒤 세션 null 표본 ≤ 2
+ *   + 세션이 실제로 바뀌었다(`sessionChanged`) · 넣기를 시작하지 않았다(`sendingAt` null) · 표본 실패 0 · `/clear` 뒤 세션 null 표본 ≤ 2
  *   (r1 — 세션과 무관한 「항상 거절」 거짓 양성을 통과로 세지 않는다).
+ *   r2(게이트 ① 「1안」): 접수 뒤 첫 맥 키(Esc)부터 그 지시는 끝나야 한다 — 실패 수신이 Esc 뒤이고, 허브 로그의 갈래가 입력 울타리(`check: input`)여야 통과
+ *   (목록·herdr 세션 대조가 막은 것은 r2 울타리의 증거가 아니다). 갈래·시각은 `blockedBy`·`checks` 로 남긴다.
  * `--expect repro`(C0, 수정 전) → 새 세션에 들어감(unconfirmed/record_missing 또는 delivered) + 새 세션 기록 표지 1건.
  * 같은 회차에 herdr `agent_session` 표본(150 ms)으로 바뀐 시각, 폰이 `sending` 을 받은 시각(허브가 넣기 시작)을 남긴다.
  */
@@ -993,8 +1018,12 @@ async function u3c(): Promise<void> {
         await delay(150)
       }
     })()
+    const sentAt = Date.now()
     phone.send({ type: 'input.send', id, channel: info.paneId, text })
     const queued = await phone.waitFor(id, (wire) => wire.state === 'queued', 8000)
+    // 접수가 묶이기(bind 관측) 전에 키가 가면 R0 가 그 키를 포함한다 — 묶일 여유를 둔다.
+    await delay(1500)
+    const escAt = Date.now()
     await desktopKeys(info.paneId, '\x1b')
     await waitIdle(info, 30_000)
     await desktopKeys(info.paneId, '/clear')
@@ -1021,12 +1050,40 @@ async function u3c(): Promise<void> {
     }
     const rows = markerRows(info, marker)
     const states = (phone.states.get(id) ?? []).map((wire) => `${wire.state}${wire.wait === null ? '' : `:${wire.wait}`}${wire.reason === null ? '' : `/${wire.reason}`}`)
-    const timing = { clearEnterAt, herdrSessionChangedAt: changedAt, sendingAt: sent, failedAt, herdrChangeMs: changedAt === null ? null : changedAt - clearEnterAt, sendingMs: sent === null ? null : sent - clearEnterAt, failedMs: failedAt === null ? null : failedAt - clearEnterAt, sessionSamples: sessions.length, sampleErrors, nullSamplesAfterClear: nullDuring }
+    const timing = { escAt, clearEnterAt, herdrSessionChangedAt: changedAt, sendingAt: sent, failedAt, herdrChangeMs: changedAt === null ? null : changedAt - clearEnterAt, sendingMs: sent === null ? null : sent - clearEnterAt, failedMs: failedAt === null ? null : failedAt - clearEnterAt, failedAfterEscMs: failedAt === null ? null : failedAt - escAt, sessionSamples: sessions.length, sampleErrors, nullSamplesAfterClear: nullDuring }
+    const checks = hubChecks(sentAt).filter((entry) => entry.op === 'send')
+    const blockedBy = checks.length === 1 ? checks[0]!.check : null
     const reproduced = (final?.state === 'unconfirmed' || final?.state === 'delivered') && (bySession.new ?? 0) === 1
     const sessionChanged = before.session !== null && after.session !== null && before.session !== after.session
-    const fixed = final?.state === 'failed' && final.reason === 'target_changed' && rows === 0 && sessionChanged && sent === null && failedAt !== null && failedAt > clearEnterAt && sampleErrors === 0 && nullDuring <= 2
-    out(`U3c-${info.name}`, { pane: info.name, mode: info.mode, managed: after.ready, expect, queued: queued !== null, sessionChanged, final: final?.state ?? null, reason: final?.reason ?? null, states, rows, bySession, ...timing },
+    const fixed = final?.state === 'failed' && final.reason === 'target_changed' && rows === 0 && sessionChanged && sent === null && failedAt !== null && failedAt > escAt && blockedBy === 'input' && sampleErrors === 0 && nullDuring <= 2
+    out(`U3c-${info.name}`, { pane: info.name, mode: info.mode, managed: after.ready, expect, queued: queued !== null, sessionChanged, final: final?.state ?? null, reason: final?.reason ?? null, blockedBy, checks, states, rows, bySession, ...timing },
       expect === 'repro' ? reproduced : fixed)
+  } finally {
+    await phone.close()
+  }
+}
+
+/**
+ * LIFE-598 r2 C3 추가: 같은 pane 연속 두 지시 — 앞 지시가 허브 쓰기(revision +1)여도 뒤 지시가 들어간다(자기 쓰기 사슬). 맥 입력 없음.
+ * 한가한 pane 에 두 지시를 잇달아 보낸다(앞 지시가 들어가 턴이 도는 동안 뒤 지시는 queued/turn). 판정: 둘 다 delivered + 기록 표지 각 1건 + 갈래 로그 0.
+ */
+async function twin(): Promise<void> {
+  const phone = await Phone.open()
+  const info = paneOf(flag('pane') ?? 'cs')
+  try {
+    await waitIdle(info)
+    const markers = [M(`l598-twin-a-${info.name}`), M(`l598-twin-b-${info.name}`)]
+    const ids = markers.map((marker) => newId(marker))
+    const sentAt = Date.now()
+    for (let index = 0; index < 2; index += 1) phone.send({ type: 'input.send', id: ids[index]!, channel: info.paneId, text: `${markers[index]} reply OK only` })
+    const finals = [await phone.final(ids[0]!, 120_000), await phone.final(ids[1]!, 120_000)]
+    await waitIdle(info, 60_000)
+    await delay(1500)
+    const rows = markers.map((marker) => markerRows(info, marker))
+    const states = ids.map((id) => (phone.states.get(id) ?? []).map((wire) => `${wire.state}${wire.wait === null ? '' : `:${wire.wait}`}${wire.reason === null ? '' : `/${wire.reason}`}`))
+    const checks = hubChecks(sentAt)
+    out(`twin-${info.name}`, { pane: info.name, mode: info.mode, finals: finals.map((final) => final?.state ?? null), reasons: finals.map((final) => final?.reason ?? null), rows, states, checks },
+      finals.every((final) => final?.state === 'delivered') && rows.every((count) => count === 1) && checks.length === 0)
   } finally {
     await phone.close()
   }
@@ -1210,7 +1267,7 @@ async function u5r(): Promise<void> {
 
 // --- 실행 ---------------------------------------------------------------------------------------------------
 
-const ITEMS: Record<string, () => Promise<void>> = { series, u1a, u1b, u1d, u2b, u2c, u2d, u2d2, u3a, u3b, u3c, u3d, u4a, u5, u5r }
+const ITEMS: Record<string, () => Promise<void>> = { series, twin, u1a, u1b, u1d, u2b, u2c, u2d, u2d2, u3a, u3b, u3c, u3d, u4a, u5, u5r }
 if (command === 'setup') {
   await setup()
 } else if (ITEMS[command] !== undefined) {

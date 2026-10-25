@@ -207,13 +207,25 @@
   (옛 guard 는 모르는 칸을 무시하고 `interactive_ready` 를 요구하므로 보내도 거절되지만, 기다리지 않고 바로 끝낸다). 질문 답·중단(`pane.send_text`)은 관리 여부와 무관하게 같은 seq 비교로 받는다.
 - **메시지 id 당 많아야 한 번**: (기기, id) 를 기억한다(기기당 끝난 것 500개까지 상태를). 같은 id 를 다시 보내면 넣지 않고 `input.state` 로 지금 상태만. 같은 글이라도 새 id 면 새 지시다.
   500개에서 밀린 id 는 상태를 잊어도 **표지는 남긴다**(앱 기동 동안) — 다시 오면 넣지 않고 `unknown/expired`(R1-A6).
-- **접수 때 대상을 묶는다**(R1-A5·R2-A4): 지시를 받으면 그 pane 의 backend epoch·PTY 세대·provider 세션을 묶는다. 넣기 전 셋 중 하나라도 바뀌면(herdr 재시작·같은 pane 의 새 세션) `failed/target_changed` —
-  이전 지시가 새 세대로 따라가지 않는다. provider 세션은 관문 await 들이 끝난 **효과 직전에 다시** 본다 — 목록(이 프로세스 상태라 그 확인과 넣기 호출 사이에 바뀌지 않는다)과
-  **herdr 관측**(효과 호출 바로 앞에서 다시 한 `agent.get` 의 `agent_session`, source·kind·값으로 대조 — LIFE-598) 둘 중 하나라도 다르면 `target_changed`. 목록은 `/clear` 뒤 몇 초 늦게 바뀌어
-  목록만 보면 그 사이 새 세션에 넣는다(실측 허브 넣기 `/clear` 뒤 ~3 s). herdr 관측에 세션이 없으면 같은 세션임을 증명 못 한 것이라 쓰지 않고 `target_changed`(기다리지 않는다).
-  herdr 도 키 뒤 바로 바뀌지 않는다(실측 마지막 키 뒤 ≤ 193~867 ms). 그 사이에는 revision 울타리(화면의 revision 이 이미 그 키를 포함)도 seq(관리 밖 pane 은 `/clear` 에
-  상태 전이가 없다)도 못 막는다 — 그래서 **효과 시점 사람 입력이 2 s(`sessionSettleMs`) 이상 조용해야** 넣는다. 지시는 화면·재관측이 그만큼 조용할 때만(아니면 기다림),
-  guard `agent.prompt` 의 `min_input_idle_ms` 가 같은 턴에서 다시 강제한다. 재관측과 넣기 사이의 키는 revision 울타리가 거절한다.
+- **접수 때 대상을 묶는다**(R1-A5·R2-A4·LIFE-598 r2): 지시를 받으면 그 pane 의 backend epoch·PTY 세대·provider 세션·**입력 revision**(접수 때 herdr 관측, R0)을 묶는다.
+  넣기 전 하나라도 바뀌면(herdr 재시작·같은 pane 의 새 세션·접수 뒤 입력) `failed/target_changed` — 이전 지시가 새 세대로 따라가지 않는다.
+  - **접수 뒤 맥 입력이 있으면 보내지 않는다**(LIFE-598 게이트 ① 결정 「1안」): 지시 대기 중 같은 pane 에 맥에서 **아무 키나** 치면(글자·Esc·`/clear`·붙여넣기, 그 pane 에 붙은
+    다른 클라이언트의 쓰기 — CLI `terminal prompt`·orchestration 배달 포함) 그 지시는 넣지 않고 `failed/target_changed`(쓰기 0) 다. 폰 문구는 기존 「그 사이 세션이 바뀌어 보내지 않았습니다」
+    그대로다(mobile 앱 무변경 — `/clear` 아닌 타자에는 문구가 어긋난다, 게이트 ① 보고 항목). 기다리지 않는다 — 대기 중이어도 다음 관측에서 바로 끝낸다.
+  - **보장 강도 — 결정적인 것은 revision 울타리**: 효과(`agent.prompt`)의 `expected_input_revision` 이 R0 라 guard 가 쓰는 같은 App 턴에서 접수 뒤 입력을 거절한다.
+    `/clear` 는 키 입력이라 herdr 가 새 세션을 언제 알든(리뷰 r2 실측 Enter 뒤 최대 ≈ 6 s, 한 번은 7 s 안에 반영 안 됨 — Claude 세션 참조는 SessionStart 훅 경로라 상한이 없다) 막힌다.
+    guard 가 거절하면 다시 관측해 revision 이 R0 와 다르면(입력) `target_changed`, 같으면(상태 전이) 큐로 돌아가 다음 관문을 기다린다.
+  - **허브 자기 쓰기는 접수 뒤 입력이 아니다**: 같은 pane 앞 지시의 넣기·질문 답 키·중단 키 뒤에는 「쓰기 직전 revision → 쓴 뒤 revision」 을 남겨, 쓰기 직전 revision 을 R0 로 묶은 대기 지시만
+    그 뒤 revision 으로 넘긴다(그 사이 맥 입력이 끼었으면 넘기지 않아 실패한다). 쓰기 직전 revision 은 그 쓰기의 울타리라 guard 가 같은 턴에서 확인한 값이고, 쓴 뒤 revision 은
+    키(`pane.send_text`)면 guard 응답, 지시(`agent.prompt`)면 guard 가 같은 턴에서 정확히 1 올리는 규칙(`queue_user_input_submission` → `corral_note_input` — 응답에 revision 이 없다)으로 안다.
+    그래서 중단 키도 이제 모든 provider 에서 관측 턴의 revision 으로 울타리 친다 — 관측과 키 사이(RPC 한 번)에 맥 키가 끼면 중단 키 0회 `failed/state_changed`(다시 누르면 된다).
+  - **보조 — 효과 직전 세션 대조**: 목록(이 프로세스 상태라 그 확인과 넣기 호출 사이에 바뀌지 않는다)과 **herdr 관측**(효과 호출 바로 앞에서 다시 한 `agent.get` 의 `agent_session`,
+    source·kind·값으로 대조 — LIFE-598 r0·r1) 둘 중 하나라도 접수 때와 다르면 `target_changed`. 관측에 세션이 없으면 같은 세션임을 증명 못 한 것이라 쓰지 않고 `target_changed`.
+    목록은 `/clear` 뒤 몇 초 늦게 바뀌고 herdr 도 상한 없이 늦을 수 있어 이것만으로는 확률적이다 — 접수 뒤 `/clear` 는 울타리가 막고, 이 대조는 아래 구멍을 일부 줄인다.
+  - **남는 구멍**(범위 한계, 막지 않는다): 맥에서 `/clear` 를 **먼저** 치고, 목록·herdr 가 아직 새 세션을 모르는 때(Enter 뒤 수백 ms~수 초) 폰 지시가 **접수**되면 R0 가 이미 그 키를 포함한다 —
+    울타리로는 못 막고, 효과 직전 herdr·목록 대조가 그때까지 새 세션을 알면만 막는다(모르면 새 세션에 들어간다 — `unconfirmed/record_missing` 로 보인다).
+  - r1 의 효과 시점 2 s 조용함 하한(`sessionSettleMs`)은 되돌렸다(지연 비용만 남아서) — 조용함 하한은 echo 를 덮는 500 ms(`quietMs`) 하나다. guard `min_input_idle_ms` 도 500.
+  - 실패 갈래는 로그 `mobile.input_target_changed` 의 `check`(`list`·`pane`·`herdr_session`·`input`·`input_refused`)로 남는다 — 무엇이 막았는지 실물 회차가 가른다.
 - **해지·끔**(R1-A1·A4): 기기를 해지하면 그 기기의 대기 지시는 `failed/revoked`(결과도 보내지 않는다). 모바일을 끄면 활성 세대가 바뀌어 이전 세대의 요청은 효과를 내지 않는다 — 넣는 중이던 지시에
   늦게 온 guard 거절도 큐로 되살리지 않는다(`failed/mobile_off`), 질문 답은 남은 키를 멈춘다(일부가 들어갔으면 `unconfirmed`). 매 await 뒤·효과 직전에 페어링과 세대를 다시 본다.
   **연결이 끊긴 것(폰 화면 끔)은 해지가 아니다** — 큐는 남고 결과는 다음 연결에서 조회로 받는다.
@@ -256,7 +268,9 @@
   Codex 는 접힌 표시(`? N question(s)` + `⇧← to answer`)가 **맨 아래 입력창 바로 위**일 때만(아래가 입력창·상태 줄뿐 — D2. R4-A3: 입력창 `› …` 과 그 이어진 줄(정확히 2칸 들여쓰기),
   빈 줄 뒤 상태 줄 3줄까지만 — 상태 줄은 실측 모양 `모델 · 경로[ · 제목]` · `? for shortcuts[  ⚠ N warnings · f2 to view]` · `⚠ N warnings · f2 to view` 만 받고 그 밖의 줄 하나라도 있으면 접힌 질문이 아니다) 그 문항 수를 본 뒤 ⇧← 를 한 번 보내 펼치고, 펼친 상자가 맞을 때만
   답 키를 넣는다(이미 펼쳐져 있으면 ⇧← 를 보내지 않는다). ④ 키마다 guard 가 그 `blocked` seq 와 **입력 revision** 을 같은 턴에서 비교한다 —
-  첫 키는 그 화면의 revision, 다음 키는 guard 가 앞 키를 쓴 직후 돌려준 revision 이라 그 사이 다른 클라이언트의 입력이 끼면 그 키부터 쓰지 않는다. ⑤ 키마다 접수 세션이 그대로여야 한다(R2-A4 목록 + 키마다 바로 앞에서 다시 한 herdr 관측, seq·revision 도 울타리 값 그대로 — LIFE-598). 첫 키 묶음의 화면은 입력이 2 s 이상 조용할 때만 잡는다.
+  첫 키는 접수 때의 revision(LIFE-598 r2, 그 화면도 같은 값), 다음 키는 guard 가 앞 키를 쓴 직후 돌려준 revision 이라 그 사이 다른 클라이언트의 입력이 끼면 그 키부터 쓰지 않는다. ⑤ 키마다 접수 세션이 그대로여야 한다(R2-A4 목록 + 키마다 바로 앞에서 다시 한 herdr 관측, seq·revision 도 울타리 값 그대로 — LIFE-598).
+  **첫 키의 울타리는 접수 때의 revision**(LIFE-598 r2 — 답 요청을 받은 직후 관측): 첫 키 묶음의 화면도 그 revision 그대로여야 하고, 접수 뒤 맥 입력이 있으면 키 0회 `failed/question_changed`
+  (답의 폰 문구 그대로 — 로그 `check: input`). 화면 조용함 하한은 다른 묶음과 같은 500 ms.
   기록의 질문이 닫혔으면 `failed/question_closed`, 화면·seq·revision·지문이 다르면 `question_changed`(키가 하나도 안 들어갔으면 `failed`, 들어갔으면 `unconfirmed`). 잠긴 질문(선택지 9개 이상 · Claude 아닌 multiSelect · Claude preview 의 직접 입력) `question_locked`·`other_locked`.
   잠긴 질문의 폰 문구는 「맥에서 답해 주세요」 한 갈래다 — 카드 「맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다」 · 입력창 자리표시 「맥에서 답해 주세요」 · 결과 줄 `question_locked` 「이 질문은 맥에서 답해 주세요」(D1 — 잠금 + 안내).
   폰 카드는 그 채널이 **질문을 기다릴 때만**(목록 `waiting: question`) 연다(서버도 상태가 blocked 가 아니면 `question_closed`). 기록엔 대기인데 채널이 기다리지 않으면 카드를 잠그고 입력창은 그 질문을 뺀 일반 지시 규칙 —
@@ -272,7 +286,7 @@
   답 줄이 오류면 `unconfirmed/question_declined`, 2건 이상 `record_ambiguous`. **답·중단은 취소를 받지 않는다**(`input.cancel` 은 큐의 지시만 — 받으면 지금 상태만 돌려준다, R2-A9).
 - **중단**: 그 순간 다시 관측해 `working`·`blocked` 일 때만 키 1회(Claude·Codex Esc · Grok Ctrl+C), 재시도 없음. 한가 `failed/not_running` · 숨김 대기(Grok 질문·권한 · 로그인 등 — Grok 권한은 상자가 입력 줄을 덮어 초안 확인 불가, 최종 관문 Z5ⓔ) `stop_hidden` ·
   Grok 입력창에 글 `mac_draft` · 관측 뒤 전이 `state_changed`. Grok 의 Ctrl+C 는 입력 줄의 글을 지우므로 **빈 입력 줄을 본 같은 guard 턴**(입력 500 ms 이상 조용 · 같은 seq)의
-  입력 revision 으로 `pane.send_text` 를 울타리 친다(R3-A6) — 화면을 읽은 뒤 맥 입력이 끼면 guard 가 거절해 Ctrl+C 0회 `failed/state_changed`. Claude·Codex 의 Esc 는 그대로(seq 비교만). 멈춤 = 상태가 working·blocked 를 떠남 또는 기록의 그 턴 `interrupted`(5초), 아니면 `unconfirmed/still_running`.
+  입력 revision 으로 `pane.send_text` 를 울타리 친다(R3-A6) — 화면을 읽은 뒤 맥 입력이 끼면 guard 가 거절해 Ctrl+C 0회 `failed/state_changed`. Claude·Codex 의 Esc 는 화면 없이 관측 턴의 revision 으로 울타리 친다(LIFE-598 r2 — 쓴 뒤 revision 으로 같은 pane 대기 지시의 울타리를 옮기려고, revision 없는 guard 면 seq 비교만). 멈춤 = 상태가 working·blocked 를 떠남 또는 기록의 그 턴 `interrupted`(5초), 아니면 `unconfirmed/still_running`.
   백그라운드 작업(Bash·서브에이전트)은 멈추지 않는다(Z1ⓓ).
 - 답·중단은 채널당 한 번에 하나(겹치면 `failed/busy`). 그 밖 이유: `empty`(정리 뒤 빈 글) · `bad_answer` · `not_ready` · `backend`(guard 오류 — 넣기 전이면 failed, 뒤면 unconfirmed) ·
   `revoked` · `target_changed` · `guard_outdated`(입력 revision 이 없는 guard, 또는 관리 밖 pane 인데 `unmanaged_prompt` 가 없는 guard) · `record_ambiguous`(기록 후보 둘 이상) · `record_unreadable`(커서용 기록을 못 읽음 — 넣지 않았다).

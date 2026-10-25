@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { emptyAgentState } from './agent-state.js'
 import { retainedByWorktree } from './sidebar-agents.js'
 import type { RetainedAgentRow } from './types.js'
-import { isDeadWorktreeSlot } from './worktree-slot.js'
+import { deadSlotRoot, isDeadWorktreeSlot } from './worktree-slot.js'
 
 describe('isDeadWorktreeSlot — 죽은 worktree 자리 (LIFE-694·695·697)', () => {
   const worktreePaths = ['/r', '/r/.claude/worktrees/live']
@@ -32,6 +32,15 @@ describe('isDeadWorktreeSlot — 죽은 worktree 자리 (LIFE-694·695·697)', (
   })
   it('linked worktree 안의 자리도 같은 규칙이다', () => {
     expect(dead('/r/.claude/worktrees/live/.claude/worktrees/nested')).toBe(true)
+  })
+  it('비정규 입력 — 이름이 빈 자리(`.claude/worktrees//x`)는 자리가 아니다', () => {
+    expect(dead('/r/.claude/worktrees//x')).toBe(false)
+  })
+  it('deadSlotRoot — 하위 경로여도 자리 뿌리 하나를 돌려준다(파일시스템 확인 대상, r1 리뷰 F1)', () => {
+    expect(deadSlotRoot({ path: '/r/.claude/worktrees/gone/apps/api', worktreePaths })).toBe('/r/.claude/worktrees/gone')
+    expect(deadSlotRoot({ path: '/r/.claude/worktrees/gone/', worktreePaths })).toBe('/r/.claude/worktrees/gone')
+    expect(deadSlotRoot({ path: '/r/app', worktreePaths })).toBeNull()
+    expect(deadSlotRoot({ path: '/.claude/worktrees/x', worktreePaths: ['/'] })).toBe('/.claude/worktrees/x')
   })
 })
 

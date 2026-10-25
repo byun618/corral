@@ -14,7 +14,7 @@ import { withRetentionSuppressed } from './close-retention.js'
 import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { closeTabsGated, runningForeground } from './close-tabs.js'
 import { footprintHelperPath, homesOf, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
-import { directoryNow, keepRetention, prunableRetained } from './retention.js'
+import { confirmedDeadSlot, directoryNow, keepRetention, prunableRetained, slotStateNow } from './retention.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
 // 렌더러가 소켓을 열 수 없는 것은 권장이 아니라 구조적 강제다: sandbox:true 인 렌더러/preload 의
@@ -619,25 +619,26 @@ function cardlessGateNow(): ReturnType<typeof cardlessGate> {
 }
 
 /**
- * corral 밖에서 닫힌 workspace 를 보존할지 (LIFE-694 ①) — store 가 사라지기 직전에 묻는다. 판정은 `retention.ts`.
+ * corral 밖에서 닫힌 pane 을 보존할지 (LIFE-694 ①) — store 가 그 pane 을 보존하려는 순간에만 묻는다(r1 리뷰 F2). 판정은 `retention.ts`.
  * 처음 본 시각은 여기서 적지 않는다 — 모르는 workspace 는 신선한 것으로 보아 카드 밖 목록에 안 들고, 그래서 보존된다(모르면 남기는 쪽).
  */
-link.store.setRetentionPolicy(({ workspaceId, cwds }) => {
+link.store.setRetentionPolicy(({ workspaceId, cwd }) => {
   const keep = keepRetention({
     workspaceId,
-    cwds,
+    cwd,
     cardless: cardlessGateNow()?.rows ?? null,
     homes: homesOf(homeDirReal()),
-    worktreePaths: skeletonWorktreePaths(),
     isDirectory: directoryNow,
+    isDeadSlot: deadSlotNow,
   })
-  if (!keep) log('retained.skip_ownerless', { workspaceId, cwds: cwds.join(',') })
+  // 정책은 실제로 보존될 pane 에만 불리므로 false 는 곧 「보존하지 않았다」 다.
+  if (!keep) log('retained.skip_ownerless', { workspaceId, cwd })
   return keep
 })
 
-/** 골격의 git worktree 경로 전부 — 죽은 worktree 자리 판정의 근거. */
-function skeletonWorktreePaths(): string[] {
-  return skeleton.flatMap((repo) => repo.worktrees.map((worktree) => worktree.path))
+/** 확인된 죽은 worktree 자리 — 골격 목록 판정 + 자리 뿌리의 파일시스템 확인(F1). */
+function deadSlotNow(target: string): boolean {
+  return confirmedDeadSlot({ path: target, worktreePaths: skeleton.flatMap((repo) => repo.worktrees.map((worktree) => worktree.path)), slotState: slotStateNow })
 }
 
 /** 붙을 카드가 없어진 보존 행을 걷는다 (LIFE-694 ② · C3) — 내보내기 직전에. 판정 불가면 걷지 않는다. */
@@ -645,7 +646,7 @@ function pruneRetained(): void {
   const paneIds = prunableRetained({
     retained: link.store.retainedRows(),
     determinable: cardlessGateNow() !== null,
-    worktreePaths: skeletonWorktreePaths(),
+    isDeadSlot: deadSlotNow,
   })
   const dropped = link.store.dropRetained(paneIds)
   if (dropped.length > 0) log('retained.pruned_dead_slot', { panes: dropped.join(',') })

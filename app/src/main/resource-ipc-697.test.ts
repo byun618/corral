@@ -1,4 +1,5 @@
-// LIFE-697 C6 — 카드 밖 줄: 폴더만 남은 죽은 worktree 자리 = 주인 없음. 판정 근거는 등록 레포의 git worktree 목록과 자리 모양뿐.
+// LIFE-697 C6 — 카드 밖 줄: 폴더만 남은 죽은 worktree 자리 = 주인 없음. 판정 근거는 등록 레포의 git worktree 목록·자리 모양과
+// 자리 뿌리의 파일시스템 확인(`slots` — r1 리뷰 F1). 실제 확인 함수(`slotStateOf`)는 `adapter/internal/retention-policy.test.ts` 가 실제 디스크로 본다.
 import { describe, expect, it, vi } from 'vitest'
 import { EMPTY_SESSION_DIGEST, type AppState, type WorkspaceRow } from '../shared/types.js'
 import { emptyAgentState } from '../shared/agent-state.js'
@@ -6,7 +7,8 @@ import { TEST_GIT } from '../shared/test-rows.js'
 
 vi.mock('electron', () => ({ ipcMain: { handle: () => {} }, app: { on: () => {}, once: () => {} } }))
 
-const { closeOrphanWorkspaces, orphanSources, worktreePathsOf } = await import('./resource-ipc.js')
+const { closeOrphanWorkspaces, createSlotCache, orphanSources, worktreePathsOf } = await import('./resource-ipc.js')
+type SlotOracle = NonNullable<Parameters<typeof orphanSources>[0]['slots']>
 type Deps = Parameters<typeof closeOrphanWorkspaces>[0]['deps']
 
 const ROOT = '/repo'
@@ -36,8 +38,11 @@ const disk = (...present: string[]) => {
   return { isDirectory, realPath: () => null, checked: () => true, settle: async (path: string) => isDirectory(path) }
 }
 
-const sources = (input: { workspaces: WorkspaceRow[]; present: string[]; worktrees?: readonly string[] }) =>
-  orphanSources({ workspaces: input.workspaces, homes: ['/home'], paths: disk(...input.present), worktreePaths: worktreePathsOf(state(input.worktrees)) })
+/** 자리 뿌리 확인 — 기본은 DEAD 뿌리만 확인된 죽은 자리, 나머지는 확인 전. */
+const slotsOf = (states: Record<string, ReturnType<SlotOracle['state']>> = { [DEAD]: 'dead' }): SlotOracle => ({ state: (root) => states[root] ?? 'pending' })
+
+const sources = (input: { workspaces: WorkspaceRow[]; present: string[]; worktrees?: readonly string[]; slots?: SlotOracle }) =>
+  orphanSources({ workspaces: input.workspaces, homes: ['/home'], paths: disk(...input.present), worktreePaths: worktreePathsOf(state(input.worktrees)), slots: input.slots ?? slotsOf() })
 
 describe('orphanSources — 폴더만 남은 죽은 worktree 자리 (C6)', () => {
   // 툴팁 문구는 렌더러 시험(`renderer/src/resource-view-697.test.ts`)이 이 줄 모양으로 본다.
@@ -66,6 +71,30 @@ describe('orphanSources — 폴더만 남은 죽은 worktree 자리 (C6)', () =>
     expect(rows.flatMap((row) => row.paths)).toEqual([{ path: '/gone/wt', exists: false }, { path: '/home', exists: true }])
     // 사라진 죽은 자리는 「디렉터리 없음」 이 이미 사유다 — deadSlot 을 달지 않는다.
     expect(sources({ workspaces: [orphan('w3', [DEAD])], present: [] })[0]?.paths).toEqual([{ path: DEAD, exists: false }])
+  })
+})
+
+describe('F1 — 자리 뿌리 파일시스템 확인이 dead 일 때만', () => {
+  it('확인 전(pending)·확인 불가(unknown)·살아 있음(alive — 골격이 모르는 새 worktree·접근 거부·심링크)이면 주인 없음으로 올리지 않는다', () => {
+    for (const value of ['pending', 'unknown', 'alive'] as const) {
+      const [row] = sources({ workspaces: [orphan('w1', [DEAD])], present: [DEAD], slots: slotsOf({ [DEAD]: value }) })
+      expect(row?.ownerless, value).toBe(false)
+      expect(row?.paths, value).toEqual([{ path: DEAD, exists: true }])
+    }
+  })
+  it('뿌리 확인은 자리 뿌리 하나로 묻는다 — 하위 경로 cwd 도 같은 뿌리', () => {
+    const asked: string[] = []
+    sources({ workspaces: [orphan('w1', [`${DEAD}/apps/api`])], present: [DEAD], slots: { state: (root) => { asked.push(root); return 'dead' } } })
+    expect(asked).toEqual([DEAD])
+  })
+  it('createSlotCache — 첫 읽기는 pending, 확인이 끝나면 값, 확인이 던지면 unknown', async () => {
+    const values = new Map<string, Promise<'dead'>>([[DEAD, Promise.resolve('dead')]])
+    const cache = createSlotCache({ ttlMs: 5000, now: () => 0, check: (root) => values.get(root) ?? Promise.reject(new Error('EIO')) })
+    expect(cache.state(DEAD)).toBe('pending')
+    expect(cache.state('/other')).toBe('pending')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cache.state(DEAD)).toBe('dead')
+    expect(cache.state('/other')).toBe('unknown')
   })
 })
 
@@ -98,18 +127,24 @@ describe('closeOrphanWorkspaces — 「모두 닫기」 재확인도 같은 판�
   it('죽은 자리 줄은 대상에 들고 main 하위 폴더 줄은 not-ownerless 로 남는다 — 개수 확인(alwaysConfirm)을 거친 뒤 닫는다', async () => {
     const d = deps({ cardless })
     const paths = disk(DEAD, ROOT)
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['dead', 'sub'], bulk: true, paths, confirmed: false, confirmedPaneIds: [] }))
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['dead', 'sub'], bulk: true, paths, slots: slotsOf(), confirmed: false, confirmedPaneIds: [] }))
       .toEqual({ outcome: 'needs-confirm', closed: [], running: [], skipped: [{ workspaceId: 'sub', reason: 'not-ownerless' }] })
     expect(d.closed).toEqual([])
-    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['dead', 'sub'], bulk: true, paths, confirmed: true, confirmedPaneIds: [] }))
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['dead', 'sub'], bulk: true, paths, slots: slotsOf(), confirmed: true, confirmedPaneIds: [] }))
       .toEqual({ outcome: 'closed', closed: ['dead'], skipped: [{ workspaceId: 'sub', reason: 'not-ownerless' }] })
     expect(d.closed).toEqual(['dead'])
   })
   it('실행 중 확인 게이트(closeTabsGated)는 그대로 — 확인 안 한 실행 중 pane 이 있으면 닫지 않는다', async () => {
     const d = deps({ cardless, running: true })
-    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['dead'], bulk: true, paths: disk(DEAD, ROOT), confirmed: true, confirmedPaneIds: [] })
+    const result = await closeOrphanWorkspaces({ deps: d, workspaceIds: ['dead'], bulk: true, paths: disk(DEAD, ROOT), slots: slotsOf(), confirmed: true, confirmedPaneIds: [] })
     expect(result.outcome).toBe('needs-confirm')
     expect(d.closed).toEqual([])
     expect(d.probed).toBeGreaterThan(0)
+  })
+  it('F1 — 재확인 시점에 자리 확인이 dead 가 아니면(확인 전 포함) not-ownerless 로 닫지 않는다', async () => {
+    const d = deps({ cardless })
+    expect(await closeOrphanWorkspaces({ deps: d, workspaceIds: ['dead'], bulk: true, paths: disk(DEAD, ROOT), slots: slotsOf({}), confirmed: true, confirmedPaneIds: [] }))
+      .toEqual({ outcome: 'closed', closed: [], skipped: [{ workspaceId: 'dead', reason: 'not-ownerless' }] })
+    expect(d.closed).toEqual([])
   })
 })

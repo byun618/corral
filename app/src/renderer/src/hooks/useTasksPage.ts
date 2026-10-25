@@ -204,9 +204,9 @@ function laneOf({ uid, op }: { uid: string; op: WorkCall['op'] }): string {
   return `${uid}|${op}`
 }
 
-/** 작업 하나의 상태·분류·배치를 그 값으로(순서 값은 둔다). */
+/** 작업 하나의 상태·분류·배치·완료 시각을 그 값으로(순서 값은 둔다). doneAt 은 보드 숨김 판정이 기댄다(LIFE-702 F1). */
 function setFields({ item }: { item: WorkItem }): (items: WorkItem[]) => WorkItem[] {
-  return (items) => items.map((entry) => (entry.id === item.id ? { ...entry, statusKey: item.statusKey, category: item.category, placement: item.placement } : entry))
+  return (items) => items.map((entry) => (entry.id === item.id ? { ...entry, statusKey: item.statusKey, category: item.category, placement: item.placement, doneAt: item.doneAt } : entry))
 }
 
 /** 목록 자료의 작업을 서버 값으로 — 목록은 가벼운 모양(본문·연결 null)을 지킨다. */

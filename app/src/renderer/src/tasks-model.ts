@@ -294,6 +294,14 @@ export function isHiddenOnBoard({ item, now }: { item: Pick<WorkItem, 'category'
   return now - doneAt >= DONE_HIDE_MS
 }
 
+/**
+ * 낙관 반영의 doneAt(LIFE-702 F1) — 출처 규칙(done 진입 기록 · 이탈 null · done→done 유지)을 화면이 응답 전에 흉내 낸다.
+ * 진입은 null(시각을 지어내지 않는다 — null 도 「방금」 도 숨김이 아니다). 응답이 오면 서버 값으로 덮인다.
+ */
+export function optimisticDoneAt({ from, to, doneAt }: { from: WorkCategory; to: WorkCategory; doneAt: string | null }): string | null {
+  return to === 'done' && from === 'done' ? doneAt : null
+}
+
 export function passesText({ item, query }: { item: WorkItem; query: string }): boolean {
   const needle = query.trim().toLowerCase()
   if (needle.length === 0) return true
@@ -559,7 +567,11 @@ export function applyIntent({ items, itemId, intent, statuses }: { items: WorkIt
       return items
     case 'status': {
       const status = statuses.find((entry) => entry.key === intent.statusKey)
-      return items.map((item) => (item.id === itemId ? { ...item, statusKey: intent.statusKey, category: status?.category ?? item.category } : item))
+      return items.map((item) => {
+        if (item.id !== itemId) return item
+        const category = status?.category ?? item.category
+        return { ...item, statusKey: intent.statusKey, category, doneAt: optimisticDoneAt({ from: item.category, to: category, doneAt: item.doneAt }) }
+      })
     }
     case 'placement':
       return items.map((item) => (item.id === itemId ? { ...item, placement: intent.placement } : item))

@@ -243,6 +243,11 @@ export class LaMcpFixture {
   readonly writeArgs: { tool: string; args: Record<string, unknown> }[] = []
   statuses = seedStatuses()
   issues = seedIssues()
+  /**
+   * done 진입 시각의 시계(LIFE-702 F2) — 기본은 실제 지금. 씨앗 `updatedAt`(2026-10-13 + n초)이나 이력 시계(`clock`)를 쓰면 날이 지나 14일 숨김에 걸려
+   * 방금 완료로 옮긴 카드가 보드에서 빠진다. 시험이 바꿀 수 있다. `updatedAt` 규칙(`touch`)은 그대로.
+   */
+  doneClock: () => number = () => Date.now()
   links: FixtureLink[] = []
   /** 작업 링크 행(LIFE-635). 시험이 다른 machine 의 행을 직접 심을 수 있다(`plantWorkLink`). */
   workLinks: FixtureWorkLink[] = []
@@ -880,11 +885,11 @@ export class LaMcpFixture {
     issue.updatedAt = new Date(Date.parse(issue.updatedAt) + 1000).toISOString()
   }
 
-  /** LA `doneAt` 규칙(LIFE-702) — done 진입이면 지금(updatedAt), 이탈이면 null, done→done 은 그대로. */
+  /** LA `doneAt` 규칙(LIFE-702) — done 진입이면 지금(`doneClock`), 이탈이면 null, done→done 은 그대로. */
   private markDone({ issue, from }: { issue: FixtureIssue; from: WorkCategory }): void {
     const to = this.status(issue).categoryKey
     if (to !== 'done') issue.doneAt = null
-    else if (from !== 'done') issue.doneAt = issue.updatedAt
+    else if (from !== 'done') issue.doneAt = new Date(this.doneClock()).toISOString()
   }
 
   private status(issue: FixtureIssue): FixtureStatus {

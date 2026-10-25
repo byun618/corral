@@ -492,8 +492,9 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const loading = (load.phase === 'loading' && load.data.length === 0) || page.choosing
   const total = view === 'working' ? workingInSpace.length : rows.length
   const shown = view === 'working' ? workingViews.length : view === 'board' ? boardRows.length : view === 'backlog' ? shelved.length : filtered.length
-  // 숨김 때문에만 0 이면(검색어·필터 없음) 빈 상태 대신 보기를 그대로 그린다 — 「검색 결과 없음」·「필터」 로 원인을 꾸미지 않는다(LIFE-702 D6).
-  const shelvedOnly = shelving && !filtersActive(prefs.filters) && shown === 0 && rows.some((row) => isHiddenOnBoard({ item: row.item, now }))
+  // 필터를 통과한 행 중 숨긴 오래된 완료가 있어 0 이면 빈 상태 대신 보기를 그대로 그린다 — 「검색 결과 없음」·「필터를 지우면 다시 보입니다」 로
+  // 원인을 꾸미지 않는다(LIFE-702 D6 · F4: 필터를 지워도 그 행은 숨은 채라 문구가 거짓이 된다). 필터 없음이면 모든 행이 통과한다.
+  const shelvedOnly = shelving && shown === 0 && rows.some((row) => passes(row.item) && isHiddenOnBoard({ item: row.item, now }))
   // 다음 쪽이 있으면 거른 결과가 0 이어도 빈 상태로 갈아 끼우지 않는다 — 「더 불러오기」·목록 도구가 남아야 한다(R2-M).
   const empty = !noConnection && banner === null && !loading && load.phase !== 'idle' && shown === 0 && !shelvedOnly && hits.length === 0 && (view === 'working' || more?.kind !== 'cursor')
   const cause = emptyCause({ total, afterFilter: view === 'working' ? workingAfterFilter : afterFilter, query, view })

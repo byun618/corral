@@ -34,6 +34,7 @@ import {
   groupRows,
   imeComposing,
   parseUid,
+  isHiddenOnBoard,
   passesFilters,
   passesText,
   rowUid,
@@ -208,7 +209,11 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     () => rows.filter((row) => passes(row.item) && passesText({ item: row.item, query }) && !hitUids.has(rowUid(row))),
     [rows, prefs.filters, page.workingKeys, now, query, page.hits],
   )
-  const afterFilter = useMemo(() => rows.filter((row) => passes(row.item)).length, [rows, prefs.filters, page.workingKeys, now])
+  // 오래된 완료 숨김(LIFE-702) — 보드·백로그 보기에서 검색어가 없을 때만. 필터·프리셋은 풀지 않는다. 숨긴 건수 안내는 그리지 않는다.
+  const shelving = (view === 'board' || view === 'backlog') && query.trim().length === 0
+  const onShelf = (item: WorkItem): boolean => !shelving || !isHiddenOnBoard({ item, now })
+  const shelved = useMemo(() => (shelving ? filtered.filter((row) => onShelf(row.item)) : filtered), [filtered, shelving, now])
+  const afterFilter = useMemo(() => rows.filter((row) => passes(row.item) && onShelf(row.item)).length, [rows, prefs.filters, page.workingKeys, now, shelving])
   const statuses: WorkStatus[] = load.data.length === 1 ? (load.data[0]?.statuses ?? []) : []
   const kinds = useMemo(() => {
     const map = new Map<string, string>()
@@ -373,15 +378,15 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
 
   // --- 보기 자료 ---
   const placementHidden = shownCaps.length > 0 && shownCaps.every((caps) => caps.placement.state === 'hidden')
-  const boardRows = placementHidden ? filtered : filtered.filter((row) => row.item.placement !== 'backlog')
+  const boardRows = placementHidden ? shelved : shelved.filter((row) => row.item.placement !== 'backlog')
   const bands = useMemo(() => boardBands({ rows: boardRows, statuses, all }), [boardRows, statuses, all])
   const backlogSections = useMemo((): BacklogSection[] => {
-    const sorted = [...filtered].sort((a, b) => compareRank(a.item, b.item))
+    const sorted = [...shelved].sort((a, b) => compareRank(a.item, b.item))
     return [
       { id: 'board', label: '보드', rows: sorted.filter((row) => row.item.placement !== 'backlog') },
       { id: 'backlog', label: '백로그', rows: sorted.filter((row) => row.item.placement === 'backlog') },
     ]
-  }, [filtered])
+  }, [shelved])
   const listGroups = useMemo(() => groupRows({ rows: sortRows({ rows: filtered, sort: prefs.sort }), group: prefs.group, statuses, all }), [filtered, prefs.sort, prefs.group, statuses, all])
   const more = ((): MoreState => {
     if (load.data.some((entry) => entry.nextCursor !== null)) return { kind: 'cursor', loaded: rows.length, loading: load.loadingMore }
@@ -486,9 +491,11 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const noConnection = settings !== null && settings.connections.length === 0
   const loading = (load.phase === 'loading' && load.data.length === 0) || page.choosing
   const total = view === 'working' ? workingInSpace.length : rows.length
-  const shown = view === 'working' ? workingViews.length : view === 'board' ? boardRows.length : filtered.length
+  const shown = view === 'working' ? workingViews.length : view === 'board' ? boardRows.length : view === 'backlog' ? shelved.length : filtered.length
+  // 숨김 때문에만 0 이면(검색어·필터 없음) 빈 상태 대신 보기를 그대로 그린다 — 「검색 결과 없음」·「필터」 로 원인을 꾸미지 않는다(LIFE-702 D6).
+  const shelvedOnly = shelving && !filtersActive(prefs.filters) && shown === 0 && rows.some((row) => isHiddenOnBoard({ item: row.item, now }))
   // 다음 쪽이 있으면 거른 결과가 0 이어도 빈 상태로 갈아 끼우지 않는다 — 「더 불러오기」·목록 도구가 남아야 한다(R2-M).
-  const empty = !noConnection && banner === null && !loading && load.phase !== 'idle' && shown === 0 && hits.length === 0 && (view === 'working' || more?.kind !== 'cursor')
+  const empty = !noConnection && banner === null && !loading && load.phase !== 'idle' && shown === 0 && !shelvedOnly && hits.length === 0 && (view === 'working' || more?.kind !== 'cursor')
   const cause = emptyCause({ total, afterFilter: view === 'working' ? workingAfterFilter : afterFilter, query, view })
 
   const body = ((): React.ReactNode => {

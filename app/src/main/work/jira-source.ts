@@ -579,6 +579,8 @@ export class JiraSource implements WorkSourceClient {
         statusKey: issue.status.id,
         category,
         resolution: category === 'done' ? resolutionOf(issue.resolution) : null,
+        // 오래된 완료 숨김(LIFE-702)은 LA 규칙 맞춤 — Jira 는 값을 주지 않아 숨기지 않는다(resolutiondate 미사용).
+        doneAt: null,
         priority: priorityOf(issue.priority),
         dueAt: dueFromJira(issue.duedate),
         parentId: issue.parentId,
@@ -1218,7 +1220,7 @@ function createFieldOf(field: JiraFieldMeta): WorkCreateField {
 function minimalItem({ created, call, sentBody, type, types, statusKey }: { created: { id: string; key: string }; call: Extract<WorkCall, { op: 'createItem' }>; sentBody: AdfDoc | null; type: JiraIssueType; types: JiraIssueType[]; statusKey: string }): WorkItem {
   const shown = adfView(sentBody ?? { type: 'doc', version: 1, content: [] })
   return {
-    id: created.id, key: created.key, spaceKey: call.spaceKey, title: call.title, body: shown.markdown, kind: kindOf({ type, types }), statusKey, category: 'todo', resolution: null,
+    id: created.id, key: created.key, spaceKey: call.spaceKey, title: call.title, body: shown.markdown, kind: kindOf({ type, types }), statusKey, category: 'todo', resolution: null, doneAt: null,
     priority: call.priority ?? null, dueAt: null, parentId: call.parentId, placement: null, rank: null, openBlockerCount: 0, openBlockers: [], updatedAt: new Date().toISOString(), version: null,
     relations: [], workLinks: [], bodyLock: shown.unsupported.length === 0 ? null : lockReason(shown.unsupported),
   }

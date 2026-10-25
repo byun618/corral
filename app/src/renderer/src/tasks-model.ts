@@ -280,6 +280,20 @@ export function passesFilters({ item, filters, workingKeys, now }: { item: WorkI
   return true
 }
 
+/** 오래된 완료를 보드·백로그에서 숨기는 기간(LIFE-702) — LA `board-visibility.ts` `DONE_HIDE_DAYS = 14` 와 같은 값. */
+export const DONE_HIDE_MS = 14 * DAY_MS
+
+/**
+ * 보드·백로그에서 숨길 오래된 완료인가(LIFE-702) — LA `isHiddenOnBoard` 와 같은 식: done 분류 + `doneAt` 있음 + 14일 이상 지남(`>=`).
+ * `doneAt` 이 null 이거나 해석되지 않으면 숨기지 않는다(안전 기본값). 리스트·작업 중·키 일치·상세는 이 함수를 쓰지 않는다.
+ */
+export function isHiddenOnBoard({ item, now }: { item: Pick<WorkItem, 'category' | 'doneAt'>; now: number }): boolean {
+  if (item.category !== 'done' || item.doneAt === null) return false
+  const doneAt = Date.parse(item.doneAt)
+  if (Number.isNaN(doneAt)) return false
+  return now - doneAt >= DONE_HIDE_MS
+}
+
 export function passesText({ item, query }: { item: WorkItem; query: string }): boolean {
   const needle = query.trim().toLowerCase()
   if (needle.length === 0) return true

@@ -10,6 +10,7 @@
 //   - 커서 쪽(LIFE-638 D11 — LA 610·611) = `{ items, nextCursor }` → `readIssuePage`·`readHistoryPage`·`readCommentPage`. `nextCursor` 는 비지 않은 글자 또는 null
 //     (빈 글자는 LA `cursor` 입력이 받지 않는다 — 되돌려 보낼 수 없는 값이라 어긋남). 행 하나라도 어긋나면 쪽 전체가 어긋남.
 // 공통 칸: parentId·priority·onBoard·position·dueAt·color·archivedAt(값 null 허용, 칸 필수) · updatedAt(글자) · version(글자 — LIFE-622, LA LIFE-607).
+// doneAt(LIFE-702)은 칸 필수의 예외 — 없으면 null(옛 서버를 목록 실패로 만들지 않는다).
 // position 은 **두 모양**으로 온다(LIFE-651 — LA `issue.entity` position 에 명시 타입이 없다): DB 에서 읽은 행(list·get·by_seq·update·transition)은 글자(`"30"`),
 // 같은 요청에서 메모리로 대입한 값(issue_create 의 task·bug · update 의 kind 변경 · reorder)은 숫자(`4`). 둘 다 받아 글자로 맞춘다 — `issueRank`.
 // 근거: specs/LIFE-651-create-position/raw/coordinator/c11-la-source-contrast.md · K15 원자료 specs/LIFE-372-la-issue-link/raw/k15/k15-summary.md.
@@ -56,6 +57,8 @@ export type LaIssueCore = LaIssueRef & {
   dueAt: string | null
   color: string | null
   archivedAt: string | null
+  /** done 분류 진입 시각(LIFE-702 — LA 가 진입 때 기록, 이탈 때 null). 칸이 없으면 null(옛 서버 — 목록을 실패로 만들지 않는다). */
+  doneAt: string | null
   updatedAt: string
   /** 판(LIFE-622) — LA `issue.mapper` 의 `String(issue.version)`. 불투명 글자: 산술·비교 없이 받은 그대로 `ifVersion` 으로 돌려보낸다. */
   version: string
@@ -207,6 +210,7 @@ function readCore(row: Record<string, unknown>, path: string): LaIssueCore {
     dueAt: nullableStr(row, 'dueAt', path),
     color: nullableStr(row, 'color', path),
     archivedAt: nullableStr(row, 'archivedAt', path),
+    doneAt: optionalStr(row, 'doneAt', path),
     updatedAt: str(row, 'updatedAt', path),
     // 칸이 없거나 글자가 아니면 어긋남 — 조용히 null(판 없음 = 무조건 저장)로 접지 않는다(C1).
     version: str(row, 'version', path),

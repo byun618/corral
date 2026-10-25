@@ -11,7 +11,7 @@
 // CPU = `ps %cpu` 그대로(누적 시간 차분 아님) — RESULT 결정 1.
 // 메모리(LIFE-676) = ps 다음에 도우미 footprint 표 — ps 뒤에 돌아야 「ps 에 있고 표에 없는 pid = 그 사이 끝남」 이 성립한다(collector 머리 주석).
 // 시스템 지표(`readHost`)는 ps 와 나란히 돈다. 숨김 주기에는 셋 다 돌지 않는다.
-import type { ResourceHost, ResourceMeasure, ResourceOrphanRow, ResourcePaneRow, ResourceSnapshot, ResourceStats } from '../shared/resource.js'
+import type { ResourceHost, ResourceMainProcess, ResourceMeasure, ResourceOrphanRow, ResourcePaneRow, ResourceSnapshot, ResourceStats } from '../shared/resource.js'
 import { attribute, combineMeasures, parsePsTable, totalOf, type FootprintTable, type PsTable } from './resource-collector.js'
 
 export const RESOURCE_INTERVAL_MS = 2000
@@ -21,7 +21,7 @@ export const MISSING_RETRY_MS = 60_000
 const DURATION_SAMPLES = 30
 
 /** 수집 대상 pane — 표시에 쓰는 칸까지 main 이 채워 넘긴다. */
-export type ResourcePaneSource = Omit<ResourcePaneRow, 'measure'>
+export type ResourcePaneSource = Omit<ResourcePaneRow, 'measure' | 'main'>
 
 /**
  * herdr 에 셸 pid 를 물은 결과 (LIFE-628 F5). `missing` = herdr 가 `pane_not_found` — 런타임(PTY)이 없는 pane 이라 셸 pid 를
@@ -186,7 +186,7 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
     if (table !== null && table.malformed === 0) await verifyRoots({ panes: measured, table, asked })
     const unavailable: ResourceMeasure = { state: 'unavailable', reason: 'ps 실행 실패' }
     const attribution = table === null
-      ? { panes: new Map(measured.map((pane) => [pane.paneId, unavailable])), herdr: unavailable, app: unavailable }
+      ? { panes: new Map(measured.map((pane) => [pane.paneId, unavailable])), mains: new Map<string, ResourceMainProcess>(), herdr: unavailable, app: unavailable }
       : attribute({
           table,
           footprint,
@@ -198,7 +198,11 @@ export function createResourceMonitor(deps: ResourceMonitorDeps): {
         })
     const noRuntime: ResourceMeasure = { state: 'unavailable', reason: NO_RUNTIME_REASON }
     const measureOf = (paneId: string): ResourceMeasure => (roots.get(paneId)?.missing === true ? noRuntime : attribution.panes.get(paneId) ?? unavailable)
-    const rows: ResourcePaneRow[] = panes.map((pane) => ({ ...pane, measure: measureOf(pane.paneId) }))
+    // 주 프로세스는 측정된 pane 에만 붙인다 — 런타임 없음(noRuntime)으로 덮인 pane 에 낡은 값을 내지 않는다.
+    const rows: ResourcePaneRow[] = panes.map((pane) => {
+      const measure = measureOf(pane.paneId)
+      return { ...pane, measure, main: measure.state === 'measured' ? attribution.mains.get(pane.paneId) ?? null : null }
+    })
     const orphanRows: ResourceOrphanRow[] | null = orphans === null
       ? null
       : orphans.map((orphan) => ({ ...orphan, measure: combineMeasures(orphan.paneIds.map(measureOf)) }))

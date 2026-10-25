@@ -27,6 +27,20 @@ export function rowTitles(reason: string | null): { row: string | null; cpu: str
   return reason === null ? { row: null, cpu: RESOURCE_ROW_CPU_TOOLTIP } : { row: `${reason}\n${RESOURCE_ROW_CPU_TOOLTIP}`, cpu: undefined }
 }
 
+/** 주 프로세스 한 줄(LIFE-688) — 활동 상태 보기 「프로세스 이름」·「PID」 열과 같은 값. */
+export function mainProcessLine(main: { pid: number; name: string }): string {
+  return `주 프로세스 ${main.name} · PID ${main.pid}`
+}
+
+/**
+ * pane 행 툴팁 — 기존 내용(측정 사유·CPU 기준 또는 「이동」) 뒤에 주 프로세스 한 줄. 주 프로세스가 없으면 그 줄을 뺀다.
+ * `reason` = `measureCells` 의 `title`.
+ */
+export function paneRowTitle(input: { row: ResourcePaneRow; reason: string | null }): string {
+  const base = rowTitles(input.reason).row ?? `${input.row.title} — 이동`
+  return input.row.main === null ? base : `${base}\n${mainProcessLine(input.row.main)}`
+}
+
 export type ResourceSortKey = 'memory' | 'cpu'
 
 const GB = 1024 ** 3

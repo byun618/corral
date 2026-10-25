@@ -15,7 +15,8 @@ import {
   type PsTable,
 } from './resource-collector.js'
 
-// 고정 입력 한 장: pid ppid %cpu footprint(KB). 앞 세 칸이 ps 표(`pid= ppid= pcpu=`), 넷째 칸이 도우미 footprint 표가 된다(`tables`).
+// 고정 입력 한 장: pid ppid %cpu footprint(KB). 앞 세 칸이 ps 표(`pid= ppid= pcpu=`, `split` 이 tpgid 0·이름 `p<pid>` 를 붙인다 — LIFE-688),
+// 넷째 칸이 도우미 footprint 표가 된다(`tables`).
 // ps 표에는 메모리 칸이 없다 — 메모리 합의 출처는 footprint 표뿐이다(LIFE-676 R1ⓐ). 손계산 표(메모리 = footprint 합):
 //   앱(roots 100·101)   = 100·101·102            cpu 1.5+2.0+0.5 = 4.0   fp  204800+102400+51200 = 358400
 //   herdr(=셸들의 부모 200) = 200·250            cpu 3.0+0.3 = 3.3       fp  40960+1024 = 41984
@@ -40,10 +41,16 @@ const TABLE = `
 `
 const KB = 1024
 
-/** 고정 입력 → ps 표 stdout(앞 세 칸)·footprint 표 stdout(`pid 바이트`). 칸이 모자란 줄(이상 입력 시험)은 ps 쪽에만 그대로 둔다. */
+/**
+ * 고정 입력 → ps 표 stdout(앞 세 칸 + tpgid 0 + 이름 `p<pid>`)·footprint 표 stdout(`pid 바이트`). 칸이 모자란 줄(이상 입력 시험)은 ps 쪽에만 그대로 둔다.
+ * 주 프로세스 시험(LIFE-688)은 이 출력의 줄을 바꿔 tpgid·이름을 넣는다.
+ */
 function split(text: string): { ps: string; fp: string } {
   const lines = text.split('\n')
-  const ps = lines.map((line) => line.trim().split(/\s+/).slice(0, 3).join(' ')).join('\n')
+  const ps = lines.map((line) => {
+    const cells = line.trim().split(/\s+/)
+    return cells.length >= 3 ? [...cells.slice(0, 3), '0', `p${cells[0]}`].join(' ') : line.trim()
+  }).join('\n')
   const fp = lines.flatMap((line) => {
     const cells = line.trim().split(/\s+/)
     return cells.length === 4 && /^\d+$/.test(cells[0] ?? '') && /^\d+$/.test(cells[3] ?? '') ? [`${cells[0]} ${Number(cells[3]) * KB}`] : []
@@ -68,19 +75,28 @@ function usage(measure: ResourceMeasure | undefined): { cpu: number; memory: num
 }
 
 describe('parsePsTable', () => {
-  it('빈 줄은 건너뛴다 — 칸은 pid·ppid·%cpu 셋(메모리 칸 없음)', () => {
+  it('빈 줄은 건너뛴다 — 칸은 pid·ppid·%cpu·tpgid·이름(메모리 칸 없음)', () => {
     const table = parsePsTable(split(TABLE).ps)
     expect(table.malformed).toBe(0)
     expect(table.rows.size).toBe(13)
-    expect(table.rows.get(301)).toEqual({ pid: 301, ppid: 300, cpu: 50 })
+    expect(table.rows.get(301)).toEqual({ pid: 301, ppid: 300, cpu: 50, tpgid: 0, name: 'p301' })
   })
   it('로캘 콤마·칸 수 다름·같은 pid 두 줄은 malformed 로 센다', () => {
-    expect(parsePsTable('  301 300 50,0\n').malformed).toBe(1)
+    expect(parsePsTable('  301 300 50,0 0 zsh\n').malformed).toBe(1)
     expect(parsePsTable('  301 300\n').malformed).toBe(1)
-    // 칸이 남는 줄도(J3 X9 — 모자란 쪽만 보던 시험). 637 의 rss 칸이 남은 4칸 줄도 이상이다.
+    // 이름 칸이 없는 줄(LIFE-688 전 3칸 모양·637 의 rss 칸이 남은 4칸 모양)도 이상이다.
+    expect(parsePsTable('  301 300 1.0\n').malformed).toBe(1)
     expect(parsePsTable('  301 300 1.0 10240\n').malformed).toBe(1)
-    expect(parsePsTable('  301 300 1.0\n  301 300 1.0\n').malformed).toBe(1)
+    expect(parsePsTable('  301 300 1.0 0 zsh\n  301 300 1.0 0 zsh\n').malformed).toBe(1)
+    expect(parsePsTable('  301 300 1.0 x zsh\n').malformed).toBe(1)
     expect(parsePsTable('').malformed).toBe(0)
+  })
+  it('LIFE-688 C3ⓐ — 이름에 공백이 든 줄(`Notion Helper (R`)·끝 공백·음수 tpgid 는 이상이 아니다', () => {
+    const table = parsePsTable(' 6649  6590   0.0    0 Notion Helper (R  \n 6650  6590   0.0   -1 Notion Helper   \n60567 60500  12.5 60567 2.1.296\n')
+    expect(table.malformed).toBe(0)
+    expect(table.rows.get(6649)).toEqual({ pid: 6649, ppid: 6590, cpu: 0, tpgid: 0, name: 'Notion Helper (R' })
+    expect(table.rows.get(6650)).toEqual({ pid: 6650, ppid: 6590, cpu: 0, tpgid: -1, name: 'Notion Helper' })
+    expect(table.rows.get(60567)?.name).toBe('2.1.296')
   })
 })
 
@@ -158,11 +174,53 @@ describe('attribute — R1ⓒ 이상 입력에서 예외 없이 측정 불가', 
   })
 })
 
+describe('attribute — LIFE-688 C1 주 프로세스', () => {
+  // pane A = 셸 300(zsh) + 301(claude — ucomm `2.1.296`), pane B = 셸 400(zsh) + 401·402·403.
+  const named = (input: { aTpgid: string; bTpgid?: string }): string => split(TABLE).ps
+    .replace(/^300 200 0\.0 0 p300$/m, `300 200 0.0 ${input.aTpgid} zsh`)
+    .replace(/^301 300 50\.0 0 p301$/m, '301 300 50.0 301 2.1.296')
+    .replace(/^400 200 0\.1 0 p400$/m, `400 200 0.1 ${input.bTpgid ?? '400'} zsh`)
+  const run = (ps: string) => attribute({ table: parsePsTable(ps), footprint: tables(TABLE).footprint, panes: PANES, appRoots: [100, 101] })
+  it('ⓐ 에이전트 pane — 셸 tpgid 가 귀속 pid 안이면 그 pid, 이름은 ucomm(argv0 아님)', () => {
+    expect(run(named({ aTpgid: '301' })).mains.get('A')).toEqual({ pid: 301, name: '2.1.296' })
+  })
+  it('ⓑ 셸만 — tpgid = 셸 pid 면 셸', () => {
+    expect(run(named({ aTpgid: '301' })).mains.get('B')).toEqual({ pid: 400, name: 'zsh' })
+  })
+  it('ⓒ tpgid 가 0·음수·표에 없음·다른 pane·herdr·앱 pid 면 셸로 떨어진다', () => {
+    for (const tpgid of ['0', '-1', '4242', '401', '200', '100', '999']) {
+      expect(run(named({ aTpgid: tpgid })).mains.get('A'), `tpgid ${tpgid}`).toEqual({ pid: 300, name: 'zsh' })
+    }
+  })
+  it('ⓓ 측정 불가 pane 은 주 프로세스 없음 — 셸 pid 모름·표에 없음·재사용 의심·ps 표 이상', () => {
+    const ps = named({ aTpgid: '301' })
+    const result = attribute({
+      table: parsePsTable(ps),
+      footprint: tables(TABLE).footprint,
+      panes: [{ paneId: 'x', shellPid: null, expectedParent: null }, { paneId: 'gone', shellPid: 4242, expectedParent: null }, { paneId: 'A', shellPid: 300, expectedParent: 1 }],
+      appRoots: [100],
+    })
+    expect([...result.panes.values()].map((measure) => measure.state)).toEqual(['unavailable', 'unavailable', 'unavailable'])
+    expect(result.mains.size).toBe(0)
+    const broken = run(`${ps}\n  777 1 1,0 0 x\n`)
+    expect(broken.panes.get('A')?.state).toBe('unavailable')
+    expect(broken.mains.size).toBe(0)
+  })
+  it('ⓔ 기존 값(pid 집합·CPU·메모리 합)은 tpgid·이름 열과 무관 — 같은 입력 표로 비교', () => {
+    const plain = attribute({ ...tables(TABLE), panes: PANES, appRoots: [100, 101] })
+    const withNames = run(named({ aTpgid: '301', bTpgid: '401' }))
+    expect(withNames.panes).toEqual(plain.panes)
+    expect(withNames.herdr).toEqual(plain.herdr)
+    expect(withNames.app).toEqual(plain.app)
+    expect(usage(withNames.panes.get('A'))).toEqual({ cpu: 50, memory: 12288 * KB, pids: [300, 301] })
+  })
+})
+
 describe('psInvocation — R1ⓓ LC_ALL=C', () => {
   it('로캘을 덮어쓰고 나머지 환경은 유지한다', () => {
     const invocation = psInvocation({ PATH: '/usr/bin', LC_ALL: 'de_DE.UTF-8', LANG: 'de_DE.UTF-8' })
     expect(invocation.file).toBe('ps')
-    expect(invocation.args).toEqual(['-axo', 'pid=,ppid=,pcpu='])
+    expect(invocation.args).toEqual(['-axo', 'pid=,ppid=,pcpu=,tpgid=,ucomm='])
     expect(invocation.env).toEqual({ PATH: '/usr/bin', LC_ALL: 'C', LANG: 'de_DE.UTF-8' })
   })
 })

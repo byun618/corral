@@ -23,7 +23,12 @@ export function restoreLine(restore: RestoreSummary): string {
   return `서버를 시작하면 에이전트 세션 ${restore.total}개가 다시 붙습니다 (${kinds})`
 }
 
-export function BackendCard({ status, onStart }: { status: BackendStatus; onStart: () => void }): React.JSX.Element | null {
+/** 연결 실패 카드 문구 (LIFE-532 02-kickoff 고정 문구). */
+export const UNREACHABLE_SCAN_TITLE = 'herdr 세션 목록을 읽지 못했습니다'
+export const UNREACHABLE_SCAN_LINE = '세션 조회가 계속 실패하고 있습니다. 서버가 돌고 있는지 확인할 수 없습니다'
+export const UNREACHABLE_LINK_LINE = '자동으로 다시 연결하지 않는 오류입니다'
+
+export function BackendCard({ status, onStart, onRetry }: { status: BackendStatus; onStart: () => void; onRetry: () => void }): React.JSX.Element | null {
   switch (status.kind) {
     case 'ok':
       return null
@@ -93,6 +98,19 @@ export function BackendCard({ status, onStart }: { status: BackendStatus; onStar
           <span className="backend-card-line">이 세션은 corral 이 시작하지 않습니다. 터미널에서 직접 시작하면 자동으로 연결합니다</span>
         </Card>
       )
+    case 'unreachable':
+      // 기존 `failed` 카드와 같은 모양(오류 원문 + 「다시 시도」). 버튼은 「서버 시작」 경로가 아니라 재조회·링크 다시 열기다.
+      return (
+        <Card kind={status.kind} cause={status.cause} title={status.cause === 'scan' ? UNREACHABLE_SCAN_TITLE : `herdr 세션 ${status.session ?? ''} 에 연결하지 못했습니다`}>
+          <span className="backend-card-line">{status.cause === 'scan' ? UNREACHABLE_SCAN_LINE : UNREACHABLE_LINK_LINE}</span>
+          <pre className="backend-card-error" data-backend-error>
+            {status.error}
+          </pre>
+          <button className="btn-ghost" data-backend-retry onClick={onRetry}>
+            다시 시도
+          </button>
+        </Card>
+      )
     case 'reconnecting':
       // 서버는 돌고 링크만 끊긴 상태 — 카드로 터미널 화면을 걷지 않는다(r1 R1-01). App 이 배너(`BackendBanner`)로 그린다.
       return null
@@ -114,9 +132,9 @@ export function backendBlocksTerminal(status: BackendStatus): boolean {
   return status.kind !== 'ok' && status.kind !== 'reconnecting'
 }
 
-function Card({ kind, title, children }: { kind: BackendStatus['kind']; title: string; children: React.ReactNode }): React.JSX.Element {
+function Card({ kind, cause, title, children }: { kind: BackendStatus['kind']; cause?: 'scan' | 'link'; title: string; children: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="backend-card-wrap" data-backend-card={kind}>
+    <div className="backend-card-wrap" data-backend-card={kind} data-backend-cause={cause}>
       <div className="backend-card">
         <span className="backend-card-title">{title}</span>
         {children}

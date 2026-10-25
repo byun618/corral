@@ -21,6 +21,9 @@ function input(patch: Partial<BackendInput>): BackendInput {
     starter: { phase: 'idle' },
     autoStartUsed: false,
     scan: 'ok',
+    scanErrorStreak: 0,
+    scanError: null,
+    linkError: null,
     ...patch,
   }
 }

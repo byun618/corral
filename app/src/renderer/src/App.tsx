@@ -2192,7 +2192,7 @@ export function App(): React.JSX.Element {
           <TerminalChrome panes={stripPanes}>
             {/* LIFE-485 D3 — 링크가 live 가 아닐 때의 원인·행동. 결정은 main(`decideBackend`)이 하고 여기는 그린다. */}
             {backendBlocksTerminal(state.backend) ? (
-              <BackendCard status={state.backend} onStart={() => void window.corral.startBackend()} />
+              <BackendCard status={state.backend} onStart={() => void window.corral.startBackend()} onRetry={() => void window.corral.retryBackend()} />
             ) : activeWorkspace === null || layout.layout === null ? (
               <div className="term-empty" data-term-empty />
             ) : (

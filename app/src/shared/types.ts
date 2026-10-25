@@ -161,6 +161,11 @@ export type BackendStatus =
   /** `reason` — `bound`: 프로필 바인딩·CORRAL_SESSION 으로 지정된 세션 · `attached`: 기존 규칙으로 붙어 있던 이름 세션(r1 R1-07) */
   | { kind: 'bound-stopped'; session: string; reason: 'bound' | 'attached' }
   | { kind: 'reconnecting'; session: string; attempt: number }
+  /**
+   * 연결 실패 (LIFE-532) — `cause` `scan`: 세션 조회가 연속 임계 횟수 이상 실패 · `link`: 링크가 재시도 없는 최종 실패인데 세션은 돌거나 모름.
+   * `session` 은 원인 `scan` 에서 아직 붙은 세션이 없으면 null. `error` 는 마지막 조회 오류 또는 링크 `lastError` 원문.
+   */
+  | { kind: 'unreachable'; cause: 'scan' | 'link'; session: string | null; error: string }
 
 /** 세션 링크가 지금 어느 걸음에 있나. */
 export type LinkPhase =
@@ -1014,6 +1019,8 @@ export type CorralApi = {
   refreshSessions: () => Promise<void>
   /** 「서버 시작」·「다시 시도」 (LIFE-485). 결정은 main 이 다시 한다 — 이미 돌면 아무것도 안 띄운다. */
   startBackend: () => Promise<void>
+  /** 연결 실패 카드의 「다시 시도」 (LIFE-532). main 이 상태를 다시 정해 연결 실패일 때만 재조회·링크 다시 열기를 한다. */
+  retryBackend: () => Promise<void>
   // --- 화면 UI 상태 영속 (C2·C3) ---
   getKeybindings: () => Promise<Keybindings>
   saveKeybindings: (overrides: Keybindings) => Promise<{ ok: true; overrides: Keybindings } | { ok: false; error: string }>

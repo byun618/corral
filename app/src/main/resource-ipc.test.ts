@@ -34,8 +34,8 @@ type Deps = Parameters<typeof closeResourcePane>[0]['deps']
 const claim = (...ids: string[]): Map<string, string[]> => new Map(ids.map((id) => [id, [`/live/${id}`]]))
 /** `/live/` 아래만 있는 디렉터리. */
 const live = (path: string): boolean => path.startsWith('/live/')
-// LIFE-694 r3 H1 — `fresh`(그 자리 재확인)를 더했다. 가짜 디스크라 캐시와 같은 값을 준다.
-const oracle = (isDirectory: (path: string) => boolean | null, realPath: (path: string) => string | null = () => null, checked: (path: string) => boolean = () => true, settle: (path: string) => Promise<boolean | null> = async (path) => isDirectory(path)) => ({ isDirectory, realPath, checked, settle, fresh: async (path: string) => isDirectory(path) })
+// LIFE-694 r3 H1·r4 I1 — `fresh`(그 자리 재확인 — 존재·실경로)를 더했다. 가짜 디스크라 캐시와 같은 값을 준다.
+const oracle = (isDirectory: (path: string) => boolean | null, realPath: (path: string) => string | null = () => null, checked: (path: string) => boolean = () => true, settle: (path: string) => Promise<boolean | null> = async (path) => isDirectory(path)) => ({ isDirectory, realPath, checked, settle, fresh: async (path: string) => ({ exists: isDirectory(path), real: realPath(path) }) })
 
 const pane = (input: { paneId: string; tabId: string; title?: string; agent?: string | null; workspaceId?: string; cwd?: string | null; agentSession?: AgentSessionRef | null }) => ({
   paneId: input.paneId, tabId: input.tabId, workspaceId: input.workspaceId ?? 'w1', title: input.title ?? input.paneId, agent: input.agent ?? null, agentStatus: 'idle' as const,

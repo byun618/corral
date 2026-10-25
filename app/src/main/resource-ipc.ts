@@ -187,8 +187,11 @@ export type PathOracle = {
   realPath: (path: string) => string | null
   checked: (path: string) => boolean
   settle: (path: string) => Promise<boolean | null>
-  /** 캐시를 건너뛰고 **그 자리에서** 다시 확인한다(결과로 캐시도 갱신). 확인 불가는 null(있음 쪽) — 「모두 닫기」 범위 판정(r3 H1). */
-  fresh: (path: string) => Promise<boolean | null>
+  /**
+   * 캐시를 건너뛰고 **그 자리에서** 다시 확인한다(결과로 캐시도 갱신). 확인 불가는 `exists: null`(있음 쪽) — 「모두 닫기」 범위 판정(r3 H1).
+   * 존재와 실경로를 한 번에 돌려준다 — 부르는 쪽은 이 값으로 판정을 지역 고정하고 캐시를 다시 읽지 않는다(r4 I1).
+   */
+  fresh: (path: string) => Promise<PathCheck>
 }
 
 /**
@@ -196,13 +199,16 @@ export type PathOracle = {
  * 아직 모르면 null — 부르는 쪽이 「있다」 로 읽는다(모르면 주인 있음 쪽 — 「모두 닫기」 대상에 넣지 않는다). 확인 자체가 던지면 null(모름).
  */
 export function createDirectoryCache(input: { ttlMs: number; now: () => number; check: (path: string) => Promise<PathCheck> }): PathOracle {
-  type Entry = { value: PathCheck; checkedAt: number; inflight: Promise<void> | null }
+  // `generation` — `fresh` 가 값을 쓰면 올린다. 그 전에 시작된 확인이 늦게 끝나도 새 값을 덮지 못한다(r4 I1).
+  type Entry = { value: PathCheck; checkedAt: number; inflight: Promise<void> | null; generation: number }
   const entries = new Map<string, Entry>()
   const entryOf = (target: string): Entry => {
-    const entry = entries.get(target) ?? { value: { exists: null, real: null }, checkedAt: -Infinity, inflight: null }
+    const entry = entries.get(target) ?? { value: { exists: null, real: null }, checkedAt: -Infinity, inflight: null, generation: 0 }
     entries.set(target, entry)
     if (entry.inflight === null && input.now() - entry.checkedAt >= input.ttlMs) {
+      const generation = entry.generation
       entry.inflight = input.check(target).catch((): PathCheck => ({ exists: null, real: null })).then((value) => {
+        if (entry.generation !== generation) return
         entry.value = value
         entry.checkedAt = input.now()
         entry.inflight = null
@@ -221,11 +227,13 @@ export function createDirectoryCache(input: { ttlMs: number; now: () => number; 
     },
     fresh: async (target) => {
       const value = await input.check(target).catch((): PathCheck => ({ exists: null, real: null }))
-      const entry = entries.get(target) ?? { value, checkedAt: -Infinity, inflight: null }
+      const entry = entries.get(target) ?? { value, checkedAt: -Infinity, inflight: null, generation: 0 }
+      entry.generation += 1
+      entry.inflight = null
       entry.value = value
       entry.checkedAt = input.now()
       entries.set(target, entry)
-      return value.exists
+      return value
     },
   }
 }
@@ -293,9 +301,9 @@ export function homesOf(home: string): string[] {
  */
 export function orphanSources(input: { workspaces: readonly WorkspaceRow[]; homes: readonly string[]; paths: PathOracle; worktreePaths?: readonly string[]; slots?: SlotOracle }): ResourceOrphanSource[] {
   const worktreePaths = input.worktreePaths ?? []
-  const deadSlot = (cwd: string): boolean => {
+  const slotOf = (cwd: string): SlotState | 'pending' | null => {
     const root = deadSlotRoot({ path: cwd, worktreePaths })
-    return root !== null && input.slots?.state(root) === 'dead'
+    return root === null || input.slots === undefined ? null : input.slots.state(root)
   }
   // G6 — 경로는 있으면 실경로로도 비교한다(심링크 HOME·/tmp 류). 없으면 원문만.
   const isHome = (target: string): boolean => input.homes.includes(target) || input.homes.includes(input.paths.realPath(target) ?? target)
@@ -307,7 +315,11 @@ export function orphanSources(input: { workspaces: readonly WorkspaceRow[]; home
     const paths: ResourceOrphanSource['paths'] = cwds.map((cwd) => {
       const item = input.paths.checked(cwd) ? { path: cwd, exists: input.paths.isDirectory(cwd) } : { path: cwd, exists: input.paths.isDirectory(cwd), pending: true }
       // 남아 있는 폴더만 사유를 단다 — 사라진 자리는 「디렉터리 없음」 이 이미 사유다.
-      return item.exists === true && deadSlot(cwd) ? { ...item, deadSlot: true } : item
+      // 목록상 죽은 자리 후보인데 자리 확인 전이면 `pending` 을 실어 배지가 「경로 있음」 을 잠깐 보이지 않게 한다(r4 I2) — 주인 없음 판정은 그대로.
+      if (item.exists !== true) return item
+      const slot = slotOf(cwd)
+      if (slot === 'dead') return { ...item, deadSlot: true }
+      return slot === 'pending' ? { ...item, pending: true } : item
     })
     return {
       workspaceId: workspace.workspaceId,
@@ -466,8 +478,8 @@ export async function closeResourcePane(input: { deps: ResourceIpcDeps; paneId: 
  *   ② 그 자리에서 다시 읽은 카드 귀속(`claimedWorkspaceIds` — herdr `worktree.list`, prunable 경로 제외 G2)에 없는 것(F2). 읽기 실패면 하나도 닫지 않는다.
  *      workspace 마다 **재독 → 프로세스 판정 → 닫기** 순서다(G3 `prepare`) — 재독에서 카드에 붙어 있으면 판정 없이 건너뛴다.
  *   ③ 「모두 닫기」(`bulk`)면 주인 없는 줄(`ownerless` — 원래 경로가 모두 사라졌거나 HOME 이거나 확인된 죽은 worktree 자리, LIFE-697)만(F3).
- *      판정 함수는 주기 수집과 같은 `orphanSources` 지만 입력은 **표시 캐시가 아니라 그 자리에서 새로 확인한 값**이다 — 경로 존재(`paths.fresh`)와
- *      자리 상태(`deps.checkSlot`) 둘 다(r2 G1 · r3 H1). 게이트 시작 때 한 번, workspace 마다 닫기 직전(`prepare`)에 한 번 더 본다.
+ *      판정 함수는 주기 수집과 같은 `orphanSources` 지만 입력은 **표시 캐시가 아니라 그 자리에서 새로 확인한 값**이다 — 경로 존재·실경로(`paths.fresh`)와
+ *      자리 상태(`deps.checkSlot`) 모두(r2 G1 · r3 H1 · r4 I1). 게이트 시작 때 한 번, workspace 마다 닫기 직전(`prepare`)에 한 번 더 본다.
  *      확인 불가는 있음 쪽이라 닫지 않는다. 경로가 살아 있는 줄은 줄 ✕ 로만 닫힌다.
  * 「모두 닫기」 는 실행 중 여부·설정과 무관하게 개수 확인을 한 번 거친다(`alwaysConfirm` — 확인 전 `needs-confirm`).
  * 닫지 않은 줄은 사유(`skipped` — claimed·gone·not-ownerless)로 돌려준다(G2).
@@ -501,13 +513,14 @@ export async function closeOrphanWorkspaces(input: { deps: ResourceIpcDeps; work
       const root = deadSlotRoot({ path: cwd, worktreePaths })
       return root === null ? [] : [root]
     }))]
-    const exists = new Map<string, boolean | null>(await Promise.all(cwds.map(async (cwd): Promise<[string, boolean | null]> => [cwd, await input.paths.fresh(cwd).catch(() => null)])))
+    // 존재와 실경로 둘 다 이 확인 값으로 고정한다 — 캐시(`input.paths`)는 다시 읽지 않는다(r4 I1: 늦게 끝난 표시용 확인이 실경로를 HOME 으로 덮을 수 있었다).
+    const checks = new Map<string, PathCheck>(await Promise.all(cwds.map(async (cwd): Promise<[string, PathCheck]> => [cwd, await input.paths.fresh(cwd).catch((): PathCheck => ({ exists: null, real: null }))])))
     const slotStates = new Map<string, SlotState>(await Promise.all(roots.map(async (root): Promise<[string, SlotState]> => [root, await deps.checkSlot(root).catch((): SlotState => 'unknown')])))
     const paths: PathOracle = {
-      isDirectory: (target) => exists.get(target) ?? null,
-      realPath: input.paths.realPath,
+      isDirectory: (target) => checks.get(target)?.exists ?? null,
+      realPath: (target) => checks.get(target)?.real ?? null,
       checked: () => true,
-      settle: async (target) => exists.get(target) ?? null,
+      settle: async (target) => checks.get(target)?.exists ?? null,
       fresh: input.paths.fresh,
     }
     const slots: SlotOracle = { state: (root) => slotStates.get(root) ?? 'unknown' }

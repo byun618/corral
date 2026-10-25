@@ -39,7 +39,7 @@ function state(worktrees: readonly string[] = [ROOT, LIVE]): Pick<AppState, 'rep
 /** 디스크 — 넘긴 경로(와 그 하위)만 있다. */
 const disk = (...present: string[]) => {
   const isDirectory = (path: string): boolean => present.some((root) => path === root || path.startsWith(`${root}/`))
-  return { isDirectory, realPath: () => null, checked: () => true, settle: async (path: string) => isDirectory(path), fresh: async (path: string) => isDirectory(path) }
+  return { isDirectory, realPath: () => null, checked: () => true, settle: async (path: string) => isDirectory(path), fresh: async (path: string) => ({ exists: isDirectory(path), real: null }) }
 }
 
 /** 자리 뿌리 확인 — 기본은 DEAD 뿌리만 확인된 죽은 자리, 나머지는 확인 전. */
@@ -83,8 +83,13 @@ describe('F1 — 자리 뿌리 파일시스템 확인이 dead 일 때만', () =>
     for (const value of ['pending', 'unknown', 'alive'] as const) {
       const [row] = sources({ workspaces: [orphan('w1', [DEAD])], present: [DEAD], slots: slotsOf({ [DEAD]: value }) })
       expect(row?.ownerless, value).toBe(false)
-      expect(row?.paths, value).toEqual([{ path: DEAD, exists: true }])
+      // r4 I2 — 확인 전이면 `pending` 을 실어 배지가 「경로 있음」 을 잠깐 보이지 않게 한다(확인 불가·살아 있음은 그대로).
+      expect(row?.paths, value).toEqual(value === 'pending' ? [{ path: DEAD, exists: true, pending: true }] : [{ path: DEAD, exists: true }])
     }
+  })
+  it('I2 — 목록상 죽은 자리 후보가 아닌 경로(main 하위·살아 있는 worktree)는 자리 확인과 무관하게 pending 을 싣지 않는다', () => {
+    const [row] = sources({ workspaces: [orphan('w1', [`${ROOT}/app`, `${LIVE}/src`])], present: [ROOT, LIVE], slots: slotsOf({}) })
+    expect(row?.paths).toEqual([{ path: `${ROOT}/app`, exists: true }, { path: `${LIVE}/src`, exists: true }])
   })
   it('뿌리 확인은 자리 뿌리 하나로 묻는다 — 하위 경로 cwd 도 같은 뿌리', () => {
     const asked: string[] = []
@@ -212,7 +217,7 @@ describe('closeOrphanWorkspaces — 「모두 닫기」 재확인도 같은 판�
   })
   it('H1 — 경로 확인이 던지면(확인 불가) 있음 쪽이라 닫지 않는다', async () => {
     const d = deps({ cardless: [orphan('gone', ['/gone/wt'])] })
-    const paths = { ...disk(), fresh: async (): Promise<boolean | null> => { throw new Error('EIO') } }
+    const paths = { ...disk(), fresh: async (): Promise<{ exists: boolean | null; real: string | null }> => { throw new Error('EIO') } }
     expect(await bulk(d, ['gone'], paths)).toEqual({ outcome: 'closed', closed: [], skipped: [{ workspaceId: 'gone', reason: 'not-ownerless' }] })
   })
   it('G1 — 범위 판정 뒤 닫기 직전에 자리가 살아나면(prepare 재확인) 닫지 않고 not-ownerless', async () => {
@@ -247,5 +252,77 @@ describe('closeOrphanWorkspaces — 「모두 닫기」 재확인도 같은 판�
     const result = await closeOrphanWorkspaces({ deps: { ...d, state: () => { throw new Error('state 깨짐') } }, workspaceIds: ['dead'], bulk: true, paths: disk(DEAD, ROOT), confirmed: true, confirmedPaneIds: [] })
     expect(result.outcome).toBe('error')
     expect(d.closed).toEqual([])
+  })
+  it('I1 — 범위 판정의 실경로는 그 자리 확인 값이다: 캐시 실경로가 HOME 이어도 새 확인이 아니라고 하면 닫지 않는다', async () => {
+    const d = deps({ cardless: [orphan('dead', [DEAD])], checkSlot: checkOf({ [DEAD]: 'alive' }) })
+    const paths = { ...disk(DEAD, ROOT), realPath: () => '/home', fresh: async (path: string) => ({ exists: true, real: path }) }
+    expect(await bulk(d, ['dead'], paths)).toEqual({ outcome: 'closed', closed: [], skipped: [{ workspaceId: 'dead', reason: 'not-ownerless' }] })
+    // 양성 대조 — 새 확인의 실경로가 HOME 이면 닫힌다.
+    const d2 = deps({ cardless: [orphan('dead', [DEAD])], checkSlot: checkOf({ [DEAD]: 'alive' }) })
+    expect((await bulk(d2, ['dead'], { ...paths, fresh: async () => ({ exists: true, real: '/home' }) })).closed).toEqual(['dead'])
+  })
+  it('I1 — HOME 심링크 자리의 늦은 realpath 가 prepare 중에 도착해도 닫지 않는다(실제 디스크 · 제품 경로 캐시·자리 확인)', async () => {
+    await withTmp(async (tmp) => {
+      const home = nodePath.join(tmp, 'home')
+      const root = nodePath.join(tmp, 'r')
+      const slot = nodePath.join(root, '.claude/worktrees/late')
+      fs.mkdirSync(home, { recursive: true })
+      fs.mkdirSync(nodePath.dirname(slot), { recursive: true })
+      fs.symlinkSync(home, slot)
+      const homeReal = fs.realpathSync(home)
+      let release = (): void => {}
+      const released = new Promise<void>((resolve) => { release = resolve })
+      let realpaths = 0
+      const paths = createDirectoryCache({ ttlMs: 5000, now: () => 0, check: (target) => checkPath({ target, stat: (item) => fs.promises.stat(item), realpath: async (item) => {
+        const resolved = await fs.promises.realpath(item)
+        if (++realpaths === 1) await released // 표시 틱의 확인 — 심링크 시점 실경로(HOME)를 들고 늦게 끝난다
+        return resolved
+      } }) })
+      paths.isDirectory(slot)
+      await vi.waitFor(() => expect(realpaths).toBe(1))
+      const slotStates: string[] = []
+      const d = deps({ cardless: [orphan('late', [slot])], worktrees: [root], checkSlot: async (rootPath) => {
+        const value = await slotStateOf(rootPath)
+        slotStates.push(value)
+        if (slotStates.length === 1) {
+          // 범위 판정 뒤, 닫기 직전 재확인 전에 그 자리를 실제 worktree 로 바꾼다.
+          fs.rmSync(slot, { recursive: true, force: true })
+          fs.mkdirSync(slot)
+          fs.writeFileSync(nodePath.join(slot, '.git'), 'gitdir: x\n')
+        } else {
+          release()
+          await new Promise((resolve) => setTimeout(resolve, 0))
+        }
+        return value
+      } })
+      const result = await closeOrphanWorkspaces({ deps: { ...d, state: () => ({ ...state([root]), home: homeReal }) }, workspaceIds: ['late'], bulk: true, paths, confirmed: true, confirmedPaneIds: [] })
+      expect(slotStates).toEqual(['dead', 'alive']) // 시작은 HOME 심링크(.git 없음), 닫기 직전은 살아난 worktree
+      expect(paths.realPath(slot)).not.toBe(homeReal) // 늦은 확인(HOME)이 캐시를 덮지 못했다
+      expect(result).toEqual({ outcome: 'closed', closed: [], skipped: [{ workspaceId: 'late', reason: 'not-ownerless' }] })
+      expect(d.closed).toEqual([])
+    })
+  })
+})
+
+describe('createDirectoryCache — fresh 뒤 늦게 끝난 옛 확인은 캐시를 덮지 못한다 (r4 I1)', () => {
+  it('표시 틱이 먼저 건 확인이 fresh 뒤에 끝나도 캐시는 fresh 값', async () => {
+    let release = (): void => {}
+    const released = new Promise<void>((resolve) => { release = resolve })
+    let calls = 0
+    const cache = createDirectoryCache({ ttlMs: 5000, now: () => 0, check: async () => {
+      if (++calls === 1) {
+        await released
+        return { exists: false, real: null }
+      }
+      return { exists: true, real: '/live' }
+    } })
+    cache.isDirectory('/x')
+    expect(await cache.fresh('/x')).toEqual({ exists: true, real: '/live' })
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(calls).toBe(2)
+    expect(cache.isDirectory('/x')).toBe(true)
+    expect(cache.realPath('/x')).toBe('/live')
+    expect(calls).toBe(2) // TTL 안 — 새 확인을 걸지 않는다
   })
 })

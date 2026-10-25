@@ -100,9 +100,10 @@ export type ResourceOrphanRow = {
    * pane 들의 cwd(중복 제거, 처음 본 순서). `exists` = 지금 디스크에 있는 디렉터리인가(S3 — 지워진 원래 경로를 가린다).
    * `null` = 확인 불가(권한 거부 등 ENOENT·ENOTDIR 밖의 stat 오류, 또는 아직 확인 전 — LIFE-628 G1). 「없음」 으로 읽지 않는다.
    * `pending` = 아직 확인 전(첫 틱 — 비동기 stat 대기, P3). 화면은 이때 「확인 불가」 를 보이지 않는다.
+   * `deadSlot` = 폴더는 있지만 지워진 worktree 의 자리(`.claude/worktrees/<name>` 인데 git worktree 목록에 없음 — LIFE-697).
    */
-  paths: { path: string; exists: boolean | null; pending?: boolean }[]
-  /** 주인 없음(F3) — 경로가 하나 이상이고 모두 사라졌거나 HOME. 「모두 닫기」 대상은 이 줄들뿐이다. */
+  paths: { path: string; exists: boolean | null; pending?: boolean; deadSlot?: boolean }[]
+  /** 주인 없음(F3) — 경로가 하나 이상이고 모두 사라졌거나 HOME 이거나 죽은 worktree 자리(LIFE-697). 「모두 닫기」 대상은 이 줄들뿐이다. */
   ownerless: boolean
   /** herdr 가 감지한 에이전트 이름(중복 제거). */
   agents: string[]

@@ -286,7 +286,7 @@ export function orphanPathText(row: ResourceOrphanRow): string {
 
 /** 줄 툴팁 — 경로 전부(있음/없음)·pane 수·workspace 이름. */
 export function orphanTooltip(row: ResourceOrphanRow): string {
-  const paths = row.paths.length === 0 ? ['경로 모름'] : row.paths.map((item) => (item.exists === true || item.pending === true ? item.path : item.exists === false ? `${item.path} — 디렉터리 없음` : `${item.path} — 있는지 확인 불가(권한 등)`))
+  const paths = row.paths.length === 0 ? ['경로 모름'] : row.paths.map((item) => (item.deadSlot === true ? `${item.path} — ${ORPHAN_DEAD_SLOT}` : item.exists === true || item.pending === true ? item.path : item.exists === false ? `${item.path} — 디렉터리 없음` : `${item.path} — 있는지 확인 불가(권한 등)`))
   return [...paths, `pane ${row.paneIds.length}개 · ${row.label}`].join('\n')
 }
 
@@ -294,6 +294,9 @@ export const ORPHAN_STOPPED = '중지됨'
 export const ORPHAN_OWNERLESS = '주인 없음'
 export const ORPHAN_OWNED = '경로 있음'
 export const ORPHAN_OWNERLESS_TOOLTIP = '원래 경로가 모두 사라졌거나 HOME 이다 — 「모두 닫기」 대상'
+/** LIFE-697 — 폴더는 남았지만 지워진 worktree 의 자리. */
+export const ORPHAN_DEAD_SLOT = 'worktree 아님(폴더만 남음)'
+export const ORPHAN_DEAD_SLOT_TOOLTIP = `원래 경로가 모두 사라졌거나 HOME 이거나 지워진 worktree 자리다(${ORPHAN_DEAD_SLOT}) — 「모두 닫기」 대상`
 export const ORPHAN_OWNED_TOOLTIP = '경로가 살아 있다(미등록 레포의 세션·형제 pane 이 살아 있는 workspace 등) — 「모두 닫기」 에 들지 않는다. 줄 ✕ 로만 닫는다'
 export const ORPHAN_UNCHECKED = '경로 확인 불가'
 export const ORPHAN_UNCHECKED_TOOLTIP = '경로가 있는지 확인하지 못했다(권한 거부 등) — 「모두 닫기」 에 들지 않는다. 줄 ✕ 로만 닫는다'
@@ -305,7 +308,7 @@ export const ORPHAN_UNKNOWN_PATH_TOOLTIP = '이 workspace 의 pane 경로(cwd)�
  * 다음 틱에 실제 값으로 바뀔 「경로 있음」 을 잠깐 보이지 않게. 주인 없음은 확인된 것만으로 정해지므로 그대로 보인다.
  */
 export function orphanOwnerBadge(row: ResourceOrphanRow): { kind: 'ownerless' | 'unchecked' | 'unknown' | 'owned'; text: string; tooltip: string } | null {
-  if (row.ownerless) return { kind: 'ownerless', text: ORPHAN_OWNERLESS, tooltip: ORPHAN_OWNERLESS_TOOLTIP }
+  if (row.ownerless) return { kind: 'ownerless', text: ORPHAN_OWNERLESS, tooltip: row.paths.some((item) => item.deadSlot === true) ? ORPHAN_DEAD_SLOT_TOOLTIP : ORPHAN_OWNERLESS_TOOLTIP }
   // Y1 — 경로가 하나도 없으면(cwd 모름) 「있음」 이라 하지 않는다.
   if (row.paths.length === 0) return { kind: 'unknown', text: ORPHAN_UNKNOWN_PATH, tooltip: ORPHAN_UNKNOWN_PATH_TOOLTIP }
   if (row.paths.some((item) => item.pending === true)) return null

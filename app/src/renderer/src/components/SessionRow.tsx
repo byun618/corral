@@ -2,6 +2,7 @@
 //
 // 좌→우: 자식 셰브론(자식 있을 때, 없으면 정렬용 빈 칸) · 상태 점 · 종류 아이콘(서브에이전트 행은 숨김) ·
 // `앞 - 뒤` 한 칸(잘림 + 전문 툴팁) · 모델(mono, 폭 상한) · 접힌 자식 `+N` · 경과 시간 · hover 닫기(live 만).
+// 「닫힌 탭」(retained) 행은 시간 칸과 한 자리를 나눈 hover ✕ 로 걷는다(LIFE-696 — 198 `DashboardAgentRowTrailingControls`, 확인 대화 없음).
 // 높이 24px · 글자 11px (c4 §5.4). 한 줄이다 — LIFE-366 C8 의 "제목과 2차 줄을 같은 칸에서 같이 자른다" 가 그대로 산다.
 //
 // ## 굵기 — 1.4.217 기준 (B1)
@@ -114,8 +115,30 @@ export function SessionRow({
         </span>
       )}
       {disclosure !== null && !disclosure.expanded ? <span className="agent-row-child-count">+{disclosure.count}</span> : null}
-      {/* 경과 시각이 **실재할 때만** 그린다 (D1). 없으면 칸 자체가 없다 — 지어낸 수 대신 부재. */}
-      {elapsed === null ? null : (
+      {/* 경과 시각이 **실재할 때만** 그린다 (D1). 없으면 칸 자체가 없다 — 지어낸 수 대신 부재.
+          보존 행은 시간과 걷기 ✕ 가 한 칸을 나눈다 — hover 면 시간이 비켜 서고 ✕ 가 선다(LIFE-696). */}
+      {node.source === 'retained' ? (
+        <span className="session-row-trailing">
+          {elapsed === null ? null : (
+            <span className={`session-row-elapsed ${hovered ? 'is-hidden' : ''}`} data-elapsed={elapsed}>
+              {elapsed}
+            </span>
+          )}
+          <button
+            className={`session-row-dismiss ${hovered ? 'is-active' : ''}`}
+            data-dismiss-retained={node.paneId}
+            title="닫힌 탭 걷기"
+            aria-label="닫힌 탭 걷기"
+            onClick={(event) => {
+              // 행 활성화로 번지지 않게 끊는다(C5ⓖ) — 보존 행 클릭은 그 worktree 로 옮긴다.
+              event.stopPropagation()
+              void window.corral.dismissRetained({ paneId: node.paneId })
+            }}
+          >
+            ×
+          </button>
+        </span>
+      ) : elapsed === null ? null : (
         <span className="session-row-elapsed" data-elapsed={elapsed}>
           {elapsed}
         </span>

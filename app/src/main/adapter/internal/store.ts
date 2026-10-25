@@ -71,6 +71,8 @@ export const RETAINED_LIMIT = 20
 
 /** 닫힌 pane 의 마지막 기록 — 모양은 경계 타입 하나다(`shared/types.ts`). */
 export type RetainedAgent = RetainedAgentRow
+/** false = 그 pane 은 보존하지 않는다(LIFE-694 — 카드 밖 workspace 이고 그 cwd 가 주인 없음). 판정을 못 하면 true 를 돌려준다. */
+export type RetentionPolicy = (input: { workspaceId: string; cwd: string | null }) => boolean
 
 export type ApplyResult = {
   changed: boolean
@@ -198,6 +200,13 @@ export class WorkspaceStore {
 
   /** corral 이 스스로 닫은 pane·탭 — 그 닫힘은 보존하지 않는다 (아래 `suppressRetention`). */
   private retentionSuppressed = new Set<string>()
+  /**
+   * **corral 밖에서 닫힌 pane 을 보존할지** 묻는 자리 (LIFE-694). store 는 카드를 모른다 — 카드 귀속·경로 판정은
+   * main 이 쥐고 있어 여기에 술어로 꽂는다. 없으면(시험·부팅 전) 지금처럼 보존한다. 그 pane 이 실제로 보존될 때(`done`·억제 표 없음)만,
+   * 그 pane 하나를 두고 묻는다(r1 리뷰 F2) — 닫기 모양(workspace 한 건 / pane·탭 따로)과 무관하게 같은 답이 나온다.
+   * 묻는 동안 그 workspace 는 아직 store 에 있다(`dropWorkspace` 가 pane 을 먼저 잊는다) — main 의 카드 밖 판정이 그 id 를 본다.
+   */
+  private retentionPolicy: RetentionPolicy | null = null
   private orphans: Orphan[] = []
 
   reset(): void {
@@ -633,7 +642,7 @@ export class WorkspaceStore {
    *     workspace 째 사라질 때만 뒤집혀 있었다(코디 재현 C4)
    */
   private dropWorkspace(id: string, at: number, retain: boolean): boolean {
-    const had = this.workspaces.delete(id)
+    const had = this.workspaces.has(id)
     this.closed.set(id, at)
     // 주인이 닫혔으면 그 주인을 기다리던 보류분도 의미가 없다.
     this.orphans = this.orphans.filter((item) => item.workspaceId !== id)
@@ -653,6 +662,8 @@ export class WorkspaceStore {
       if (pane.workspaceId !== id) continue
       this.forgetPane({ pane, at, retain }) // H1ⓑ — 연쇄로 죽은 pane 에도 묘비
     }
+    // workspace 는 pane 을 잊은 **뒤에** 지운다 (LIFE-694) — 보존 정책이 묻는 동안 그 workspace 가 store 에 있어야 카드 밖 판정이 그 id 를 본다.
+    this.workspaces.delete(id)
     for (const tabId of droppedTabs) this.releaseTabSuppression(tabId)
     this.retentionSuppressed.delete(id)
     return had
@@ -985,6 +996,8 @@ export class WorkspaceStore {
      */
     if (this.retentionSuppressed.has(pane.tabId)) return
     if (this.retentionSuppressed.has(pane.workspaceId)) return
+    // LIFE-694 — 실제로 보존될 pane 만 묻는다(F2). 묻는 것은 그 pane 자신의 cwd 다.
+    if (this.retentionPolicy !== null && !this.retentionPolicy({ workspaceId: pane.workspaceId, cwd: pane.cwd })) return
     this.retained = [
       { paneId: pane.paneId, tabId: pane.tabId, workspaceId: pane.workspaceId, title: pane.title,
         agent: pane.agent, agentStatus: pane.agentStatus, agentState: pane.agentState, cwd: pane.cwd, retainedAt: at,
@@ -1140,6 +1153,22 @@ export class WorkspaceStore {
   /** 보존된 마지막 기록 — 최신 우선. */
   retainedRows(): readonly RetainedAgent[] {
     return this.retained
+  }
+
+  /** 외부 닫기 보존 정책을 꽂는다 (LIFE-694). null 이면 지금처럼 늘 보존한다. */
+  setRetentionPolicy(policy: RetentionPolicy | null): void {
+    this.retentionPolicy = policy
+  }
+
+  /**
+   * 보존 행을 걷는다 — 사용자가 ✕ 로 걷은 행(LIFE-696)과 붙을 카드가 없어진 행(LIFE-694 C3)이 같은 길이다.
+   * 모르는 id 는 무시한다. 걷은 id 만 돌려준다(없으면 빈 배열 — 부르는 쪽이 상태를 다시 낼지 정한다).
+   */
+  dropRetained(paneIds: readonly string[]): string[] {
+    const ids = new Set(paneIds)
+    const dropped = this.retained.filter((row) => ids.has(row.paneId)).map((row) => row.paneId)
+    if (dropped.length > 0) this.retained = this.retained.filter((row) => !ids.has(row.paneId))
+    return dropped
   }
 
   /**

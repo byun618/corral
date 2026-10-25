@@ -28,6 +28,7 @@
 
 import type { AgentKind, AgentStatus, IntegrationRow, OrchestrationLineage, PaneRow, RetainedAgentRow, TabRow } from './types.js'
 import { AGENT_DOT_LABEL, agentDot, type AgentDot } from './agent-dot.js'
+import { isDeadWorktreeSlot } from './worktree-slot.js'
 import { paneMessageLine, paneSecondaryLine, sessionRowText, type SessionRowText } from './session-activity.js'
 import { agentIcon, AGENT_ICON } from './session-glyphs.js'
 import { paneSessionTitle } from './session-title.js'
@@ -355,6 +356,9 @@ export function livePaneIdsOf(repos: readonly { worktrees: readonly { workspace:
  *
  * cwd 를 먼저 보는 이유: herdr workspace id 는 서버 생애 안에서 재사용될 수 있어, 닫힌 workspace 의 id 가 지금 다른
  * worktree 의 workspace 를 가리킬 수 있다.
+ *
+ * cwd 가 **죽은 worktree 자리**(지워진 `.claude/worktrees/<name>`)면 어디에도 붙이지 않는다 (LIFE-695) — 최장 접두로는
+ * 상위 경로인 main 이 이겨 main 카드 밑에 남의 행이 섰다. workspaceId 폴백도 타지 않는다(위의 id 재사용).
  */
 export function retainedByWorktree(input: {
   repos: readonly { worktrees: readonly { path: string; workspace: { workspaceId: string } | null }[] }[]
@@ -362,8 +366,10 @@ export function retainedByWorktree(input: {
 }): ReadonlyMap<string, readonly RetainedAgentRow[]> {
   const worktrees = input.repos.flatMap((repo) => repo.worktrees)
   const out = new Map<string, RetainedAgentRow[]>()
+  const paths = worktrees.map((worktree) => worktree.path)
   for (const row of input.retained) {
-    const path = worktreeOfCwd({ cwd: row.cwd, paths: worktrees.map((worktree) => worktree.path) })
+    if (row.cwd !== null && isDeadWorktreeSlot({ path: row.cwd, worktreePaths: paths })) continue
+    const path = worktreeOfCwd({ cwd: row.cwd, paths })
       ?? worktrees.find((worktree) => worktree.workspace?.workspaceId === row.workspaceId)?.path
       ?? null
     if (path === null) continue

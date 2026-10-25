@@ -24,6 +24,8 @@ import type { AppState, CloseTabsResult, RunningPane, WorkspaceRow } from '../sh
 import { normalizeDecorativeTitle } from '../shared/decorative-title.js'
 import { paneSessionTitle } from '../shared/session-title.js'
 import { distinctWorktreeName } from '../shared/worktree-name.js'
+import { deadSlotRoot } from '../shared/worktree-slot.js'
+import { slotStateOf, type SlotState } from './retention.js'
 
 type PaneCloseOutcome = { outcome: 'ok' } | { outcome: 'rejected'; rejection: { code: string; message: string } }
 
@@ -51,6 +53,8 @@ export type ResourceIpcDeps = {
   closePane: (input: { socketPath: string; paneId: string }) => Promise<PaneCloseOutcome>
   /** 카드 밖 workspace(LIFE-628, `tree.ts cardlessWorkspaces`). null = 지금은 가릴 수 없다(링크·골격 미준비). */
   cardlessWorkspaces: () => WorkspaceRow[] | null
+  /** 자리 뿌리를 **그 자리에서** 확인한다(LIFE-697 · r2 G1 · r3 H2 — 제품은 `slotStateOf`). 「모두 닫기」 범위 판정이 쓴다 — 필수라 배선 누락이 타입에서 막힌다. */
+  checkSlot: (root: string) => Promise<SlotState>
   /** 카드 밖 판정이 재시도로 안 풀리는 원인으로 보류일 때 그 사유(LIFE-628 P1). */
   cardlessBlockedReason: () => string | null
   /**
@@ -183,6 +187,11 @@ export type PathOracle = {
   realPath: (path: string) => string | null
   checked: (path: string) => boolean
   settle: (path: string) => Promise<boolean | null>
+  /**
+   * 캐시를 건너뛰고 **그 자리에서** 다시 확인한다(결과로 캐시도 갱신). 확인 불가는 `exists: null`(있음 쪽) — 「모두 닫기」 범위 판정(r3 H1).
+   * 존재와 실경로를 한 번에 돌려준다 — 부르는 쪽은 이 값으로 판정을 지역 고정하고 캐시를 다시 읽지 않는다(r4 I1).
+   */
+  fresh: (path: string) => Promise<PathCheck>
 }
 
 /**
@@ -190,13 +199,16 @@ export type PathOracle = {
  * 아직 모르면 null — 부르는 쪽이 「있다」 로 읽는다(모르면 주인 있음 쪽 — 「모두 닫기」 대상에 넣지 않는다). 확인 자체가 던지면 null(모름).
  */
 export function createDirectoryCache(input: { ttlMs: number; now: () => number; check: (path: string) => Promise<PathCheck> }): PathOracle {
-  type Entry = { value: PathCheck; checkedAt: number; inflight: Promise<void> | null }
+  // `generation` — `fresh` 가 값을 쓰면 올린다. 그 전에 시작된 확인이 늦게 끝나도 새 값을 덮지 못한다(r4 I1).
+  type Entry = { value: PathCheck; checkedAt: number; inflight: Promise<void> | null; generation: number }
   const entries = new Map<string, Entry>()
   const entryOf = (target: string): Entry => {
-    const entry = entries.get(target) ?? { value: { exists: null, real: null }, checkedAt: -Infinity, inflight: null }
+    const entry = entries.get(target) ?? { value: { exists: null, real: null }, checkedAt: -Infinity, inflight: null, generation: 0 }
     entries.set(target, entry)
     if (entry.inflight === null && input.now() - entry.checkedAt >= input.ttlMs) {
+      const generation = entry.generation
       entry.inflight = input.check(target).catch((): PathCheck => ({ exists: null, real: null })).then((value) => {
+        if (entry.generation !== generation) return
         entry.value = value
         entry.checkedAt = input.now()
         entry.inflight = null
@@ -212,6 +224,40 @@ export function createDirectoryCache(input: { ttlMs: number; now: () => number; 
       const entry = entryOf(target)
       if (entry.checkedAt === -Infinity && entry.inflight !== null) await entry.inflight
       return entry.value.exists
+    },
+    fresh: async (target) => {
+      const value = await input.check(target).catch((): PathCheck => ({ exists: null, real: null }))
+      const entry = entries.get(target) ?? { value, checkedAt: -Infinity, inflight: null, generation: 0 }
+      entry.generation += 1
+      entry.inflight = null
+      entry.value = value
+      entry.checkedAt = input.now()
+      entries.set(target, entry)
+      return value
+    },
+  }
+}
+
+/** 자리 뿌리 판정 창구(LIFE-697 · r1 리뷰 F1) — 캐시만 읽는다. 아직 확인 전이면 `pending`. `dead` 만 죽은 자리로 센다. */
+export type SlotOracle = { state: (root: string) => SlotState | 'pending' }
+
+/** 자리 뿌리 캐시 — 경로 캐시와 같은 결: 캐시만 읽고 낡았으면 비동기 확인을 건다. 확인이 던지면 `unknown`. */
+export function createSlotCache(input: { ttlMs: number; now: () => number; check: (root: string) => Promise<SlotState> }): SlotOracle {
+  type Entry = { value: SlotState | 'pending'; checkedAt: number; inflight: boolean }
+  const entries = new Map<string, Entry>()
+  return {
+    state: (root) => {
+      const entry = entries.get(root) ?? { value: 'pending', checkedAt: -Infinity, inflight: false }
+      entries.set(root, entry)
+      if (!entry.inflight && input.now() - entry.checkedAt >= input.ttlMs) {
+        entry.inflight = true
+        void input.check(root).catch((): SlotState => 'unknown').then((value) => {
+          entry.value = value
+          entry.checkedAt = input.now()
+          entry.inflight = false
+        })
+      }
+      return entry.value
     },
   }
 }
@@ -232,6 +278,11 @@ export async function checkPath(input: { target: string; stat: (path: string) =>
   return { exists: true, real: await input.realpath(input.target).catch(() => null) }
 }
 
+/** 등록 레포들의 git worktree 경로 전부 — 죽은 worktree 자리 판정의 근거(LIFE-697). */
+export function worktreePathsOf(state: Pick<AppState, 'repos'>): string[] {
+  return state.repos.flatMap((repo) => repo.worktrees.map((worktree) => worktree.path))
+}
+
 /** HOME 후보 (G6) — 실경로 HOME(`state.home = homeDirReal()`)과 논리 HOME(`$HOME` → `os.homedir()`). */
 export function homesOf(home: string): string[] {
   return [...new Set([home, os.homedir()])]
@@ -243,8 +294,17 @@ export function homesOf(home: string): string[] {
  * 존재를 아직 모르는 경로(`null`)는 「있다」 로 싣는다.
  * `ownerless`(F3) = 경로가 하나 이상이고 **모두** 사라졌거나 HOME — 「모두 닫기」 대상. 경로가 살아 있는 줄(미등록 레포 세션·형제 pane 이
  * 살아 있는 workspace)은 아니다. `stoppedAgents`(F4) = 감지된 에이전트는 없고 세션 참조만 남은 pane 의 에이전트(재개 안 된 pane).
+ * 폴더가 남아 있어도 **죽은 worktree 자리**면 주인 없는 쪽이다(LIFE-697) — 목록 판정(`deadSlotRoot` — `.claude/worktrees/<name>` 인데
+ * git worktree 목록에 없음)에 더해 자리 뿌리의 파일시스템 확인(`slots` — 뿌리가 없거나 그 안에 `.git` 이 없음)이 `dead` 일 때만(r1 리뷰 F1).
+ * 확인 전(pending)·확인 불가(unknown)면 올리지 않는다. 그 경로에 `deadSlot` 을 실어 툴팁이 사유를 보인다.
+ * `worktreePaths` = 등록 레포들의 git worktree 목록(비면 이 판정을 하지 않는다). `slots` 가 없으면 이 판정을 하지 않는다.
  */
-export function orphanSources(input: { workspaces: readonly WorkspaceRow[]; homes: readonly string[]; paths: PathOracle }): ResourceOrphanSource[] {
+export function orphanSources(input: { workspaces: readonly WorkspaceRow[]; homes: readonly string[]; paths: PathOracle; worktreePaths?: readonly string[]; slots?: SlotOracle }): ResourceOrphanSource[] {
+  const worktreePaths = input.worktreePaths ?? []
+  const slotOf = (cwd: string): SlotState | 'pending' | null => {
+    const root = deadSlotRoot({ path: cwd, worktreePaths })
+    return root === null || input.slots === undefined ? null : input.slots.state(root)
+  }
   // G6 — 경로는 있으면 실경로로도 비교한다(심링크 HOME·/tmp 류). 없으면 원문만.
   const isHome = (target: string): boolean => input.homes.includes(target) || input.homes.includes(input.paths.realPath(target) ?? target)
   return input.workspaces.map((workspace) => {
@@ -252,13 +312,21 @@ export function orphanSources(input: { workspaces: readonly WorkspaceRow[]; home
     const cwds = [...new Set(panes.flatMap((pane) => (pane.cwd === null ? [] : [pane.cwd])))]
     const agents = [...new Set(panes.flatMap((pane) => (pane.agent === null ? [] : [pane.agent])))]
     const stoppedAgents = [...new Set(panes.flatMap((pane) => (pane.agent === null && pane.agentSession !== null ? [pane.agentSession.agent] : [])))].filter((agent) => !agents.includes(agent))
-    const paths = cwds.map((cwd) => (input.paths.checked(cwd) ? { path: cwd, exists: input.paths.isDirectory(cwd) } : { path: cwd, exists: input.paths.isDirectory(cwd), pending: true }))
+    const paths: ResourceOrphanSource['paths'] = cwds.map((cwd) => {
+      const item = input.paths.checked(cwd) ? { path: cwd, exists: input.paths.isDirectory(cwd) } : { path: cwd, exists: input.paths.isDirectory(cwd), pending: true }
+      // 남아 있는 폴더만 사유를 단다 — 사라진 자리는 「디렉터리 없음」 이 이미 사유다.
+      // 목록상 죽은 자리 후보인데 자리 확인 전이면 `pending` 을 실어 배지가 「경로 있음」 을 잠깐 보이지 않게 한다(r4 I2) — 주인 없음 판정은 그대로.
+      if (item.exists !== true) return item
+      const slot = slotOf(cwd)
+      if (slot === 'dead') return { ...item, deadSlot: true }
+      return slot === 'pending' ? { ...item, pending: true } : item
+    })
     return {
       workspaceId: workspace.workspaceId,
       label: workspace.label,
       paths,
       // 「없음」 은 exists === false 만 — 확인 불가(null)는 있음 쪽(G1).
-      ownerless: paths.length > 0 && paths.every((item) => item.exists === false || isHome(item.path)),
+      ownerless: paths.length > 0 && paths.every((item) => item.exists === false || isHome(item.path) || item.deadSlot === true),
       agents,
       stoppedAgents,
       paneIds: panes.map((pane) => pane.paneId),
@@ -282,6 +350,7 @@ export function closeRouteOf(input: { state: Pick<AppState, 'repos'>; paneId: st
 export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void } {
   const exec = promisify(execFile)
   const directories = createDirectoryCache({ ttlMs: 5000, now: () => Date.now(), check: (target) => checkPath({ target, stat: (item) => fs.promises.stat(item), realpath: (item) => fs.promises.realpath(item) }) })
+  const slots = createSlotCache({ ttlMs: 5000, now: () => Date.now(), check: slotStateOf })
   const monitor = createResourceMonitor({
     intervalMs: RESOURCE_INTERVAL_MS,
     readPs: () => readPsWith({ exec, env: process.env }),
@@ -289,7 +358,10 @@ export function registerResourceIpc(deps: ResourceIpcDeps): { stop: () => void }
     panes: () => paneSources(deps.state()),
     orphans: () => {
       const workspaces = deps.cardlessWorkspaces()
-      return workspaces === null ? null : orphanSources({ workspaces, homes: homesOf(deps.state().home), paths: directories })
+      if (workspaces === null) return null
+      // 상태는 틱마다 한 번만 만든다(r1 리뷰 F4) — HOME 과 worktree 경로가 같은 값에서 나온다.
+      const state = deps.state()
+      return orphanSources({ workspaces, homes: homesOf(state.home), paths: directories, worktreePaths: worktreePathsOf(state), slots })
     },
     orphansReason: deps.cardlessBlockedReason,
     probeShellPid: async (paneId): Promise<ShellProbe> => {
@@ -405,11 +477,15 @@ export async function closeResourcePane(input: { deps: ResourceIpcDeps; paneId: 
  *   ① 메모리 판정(`cardlessWorkspaces`)이 지금 카드 밖이라고 하는 것 — 판정 보류(null)면 하나도 닫지 않는다
  *   ② 그 자리에서 다시 읽은 카드 귀속(`claimedWorkspaceIds` — herdr `worktree.list`, prunable 경로 제외 G2)에 없는 것(F2). 읽기 실패면 하나도 닫지 않는다.
  *      workspace 마다 **재독 → 프로세스 판정 → 닫기** 순서다(G3 `prepare`) — 재독에서 카드에 붙어 있으면 판정 없이 건너뛴다.
- *   ③ 「모두 닫기」(`bulk`)면 주인 없는 줄(`ownerless` — 원래 경로가 모두 사라졌거나 HOME)만(F3). 경로가 살아 있는 줄은 줄 ✕ 로만 닫힌다.
+ *   ③ 「모두 닫기」(`bulk`)면 주인 없는 줄(`ownerless` — 원래 경로가 모두 사라졌거나 HOME 이거나 확인된 죽은 worktree 자리, LIFE-697)만(F3).
+ *      판정 함수는 주기 수집과 같은 `orphanSources` 지만 입력은 **표시 캐시가 아니라 그 자리에서 새로 확인한 값**이다 — 경로 존재·실경로(`paths.fresh`)와
+ *      자리 상태(`deps.checkSlot`) 모두(r2 G1 · r3 H1 · r4 I1). 게이트 시작 때 한 번, workspace 마다 닫기 직전(`prepare`)에 한 번 더 본다.
+ *      확인 불가는 있음 쪽이라 닫지 않는다. 경로가 살아 있는 줄은 줄 ✕ 로만 닫힌다.
  * 「모두 닫기」 는 실행 중 여부·설정과 무관하게 개수 확인을 한 번 거친다(`alwaysConfirm` — 확인 전 `needs-confirm`).
  * 닫지 않은 줄은 사유(`skipped` — claimed·gone·not-ownerless)로 돌려준다(G2).
- * 보장의 한계(원자적이지 않은 두 창): ⓐ 프로세스 판정 → `workspace.close` 사이(요청 한 번 — 기존 게이트와 같은 크기),
+ * 보장의 한계(원자적이지 않은 세 창): ⓐ 프로세스 판정 → `workspace.close` 사이(요청 한 번 — 기존 게이트와 같은 크기),
  * ⓑ 귀속 재독(등록 레포 전부를 차례로 읽는 시간 — 레포 수에 비례) → `workspace.close` 사이. ⓑ 동안 카드에 붙는 workspace 는 막지 못한다.
+ * ⓒ 「모두 닫기」 의 닫기 직전 범위 재확인(`prepare` — 경로·자리 stat) → 프로세스 판정 → `workspace.close` 사이. 그 동안 그 자리에 생기는 worktree 는 막지 못한다.
  */
 export async function closeOrphanWorkspaces(input: { deps: ResourceIpcDeps; workspaceIds: readonly string[]; bulk: boolean; paths: PathOracle; confirmed: boolean; confirmedPaneIds: readonly string[] }): Promise<ResourceOrphanCloseResult> {
   const { deps } = input
@@ -424,8 +500,35 @@ export async function closeOrphanWorkspaces(input: { deps: ResourceIpcDeps; work
   // 귀속 사유(P2) — 귀속 경로가 모두 「없음」 으로 확인되면 잠김·정리 대기, 아니면 카드에 붙음. 닫지 않는 것은 둘 다 같다.
   const claimReason = (workspaceId: string): ResourceOrphanSkip['reason'] =>
     (claimed.get(workspaceId) ?? []).every((target) => input.paths.isDirectory(target) === false) ? 'stale-claim' : 'claimed'
-  const inScope = (workspace: WorkspaceRow): boolean =>
-    !input.bulk || orphanSources({ workspaces: [workspace], homes: homesOf(deps.state().home), paths: input.paths })[0]?.ownerless === true
+  /**
+   * 「모두 닫기」 범위 — 주인 없는 줄인가. 경로 존재와 자리 상태 모두 표시용 캐시(TTL)가 아니라 **그 자리에서 새로 확인한 값**으로 본다(r2 G1 · r3 H1):
+   * 캐시가 「없음」 이나 `dead` 를 든 사이 그 자리에 worktree 가 다시 생기면 낡은 값으로 닫는다. 닫기는 되돌릴 수 없다.
+   * 확인이 던지면 경로는 null(확인 불가 — 있음 쪽), 자리는 `unknown` — 둘 다 주인 없음에 안 든다.
+   */
+  const ownerlessNow = async (workspace: WorkspaceRow): Promise<boolean> => {
+    const state = deps.state()
+    const worktreePaths = worktreePathsOf(state)
+    const cwds = [...new Set(workspace.tabs.flatMap((tab) => tab.panes).flatMap((pane) => (pane.cwd === null ? [] : [pane.cwd])))]
+    const roots = [...new Set(cwds.flatMap((cwd) => {
+      const root = deadSlotRoot({ path: cwd, worktreePaths })
+      return root === null ? [] : [root]
+    }))]
+    // 존재와 실경로 둘 다 이 확인 값으로 고정한다 — 캐시(`input.paths`)는 다시 읽지 않는다(r4 I1: 늦게 끝난 표시용 확인이 실경로를 HOME 으로 덮을 수 있었다).
+    const checks = new Map<string, PathCheck>(await Promise.all(cwds.map(async (cwd): Promise<[string, PathCheck]> => [cwd, await input.paths.fresh(cwd).catch((): PathCheck => ({ exists: null, real: null }))])))
+    const slotStates = new Map<string, SlotState>(await Promise.all(roots.map(async (root): Promise<[string, SlotState]> => [root, await deps.checkSlot(root).catch((): SlotState => 'unknown')])))
+    const paths: PathOracle = {
+      isDirectory: (target) => checks.get(target)?.exists ?? null,
+      realPath: (target) => checks.get(target)?.real ?? null,
+      checked: () => true,
+      settle: async (target) => checks.get(target)?.exists ?? null,
+      fresh: input.paths.fresh,
+    }
+    const slots: SlotOracle = { state: (root) => slotStates.get(root) ?? 'unknown' }
+    return orphanSources({ workspaces: [workspace], homes: homesOf(state.home), paths, worktreePaths, slots })[0]?.ownerless === true
+  }
+  // 게이트의 `panesOf` 는 동기라 범위는 게이트 시작 전에 새로 확인해 둔다(아래 `try` 안 — 던지면 구조화된 오류). 닫기 직전(`prepare`)에 한 번 더 새로 본다.
+  const scope = new Map<string, boolean>()
+  const inScope = (workspace: WorkspaceRow): boolean => !input.bulk || scope.get(workspace.workspaceId) === true
   const panesOf = (workspaceId: string): string[] | null => {
     if (claimed.has(workspaceId)) {
       skips.set(workspaceId, claimReason(workspaceId))
@@ -445,6 +548,7 @@ export async function closeOrphanWorkspaces(input: { deps: ResourceIpcDeps; work
   }
   let result: CloseTabsResult
   try {
+    if (input.bulk) for (const workspace of deps.cardlessWorkspaces() ?? []) if (input.workspaceIds.includes(workspace.workspaceId)) scope.set(workspace.workspaceId, await ownerlessNow(workspace))
     result = await closeTabsGated({
       tabIds: input.workspaceIds,
       confirmed: input.confirmed,
@@ -462,6 +566,13 @@ export async function closeOrphanWorkspaces(input: { deps: ResourceIpcDeps; work
           const reason = claimReason(workspaceId)
           skips.set(workspaceId, reason)
           deps.log('resource.close_orphan_skipped', { workspaceId, reason })
+          return { outcome: 'skipped' }
+        }
+        // G1 — 「모두 닫기」 는 닫기 직전에 주인 없음을 그 자리에서 다시 확인한다(판정 뒤 그 자리에 worktree 가 생겼을 수 있다).
+        const workspace = deps.cardlessWorkspaces()?.find((row) => row.workspaceId === workspaceId)
+        if (input.bulk && (workspace === undefined || !(await ownerlessNow(workspace)))) {
+          skips.set(workspaceId, workspace === undefined ? 'gone' : 'not-ownerless')
+          deps.log('resource.close_orphan_skipped', { workspaceId, reason: skips.get(workspaceId) })
           return { outcome: 'skipped' }
         }
         return { outcome: 'ready' }

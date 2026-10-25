@@ -627,6 +627,21 @@ button, input { font: inherit; letter-spacing: inherit; }
 }
 .session-row-close.is-active { opacity: 1; }
 .session-row-close:hover { background: var(--bg-danger-hover); color: var(--st-error-hi); }
+/* 「닫힌 탭」 걷기 (LIFE-696) — 시간 칸과 한 자리를 나눈다(198 `DashboardAgentRowTrailingControls`). hover 면 시간이 비켜 서고 ✕ 가 선다. */
+.session-row-trailing { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: flex-end; min-width: 14px; height: 14px; }
+.session-row-elapsed.is-hidden { opacity: 0; }
+.session-row-dismiss {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; padding: 0;
+  background: none; border: 0 solid; border-radius: 3px; font-size: 13px; line-height: 1; cursor: pointer;
+  color: color-mix(in srgb, var(--fg-muted) 70%, transparent); opacity: 0;
+}
+.session-row-dismiss.is-active { opacity: 1; }
+/* 키보드 포커스에서도 보인다(r1 리뷰 F6) — 안 보이는 버튼이 탭 순서에 서지 않게. full 행의 걷기·닫기 버튼도 같다. */
+.session-row-dismiss:focus-visible, .agent-full-close:focus-visible { opacity: 1; }
+/* 포커스 때는 hover 때처럼 시간이 비켜 선다 — 한 칸에 겹쳐 그리지 않는다. */
+.session-row-trailing:focus-within .session-row-elapsed, .agent-full-trailing:focus-within .agent-full-time { opacity: 0; }
+.session-row-dismiss:hover { color: var(--fg); }
 
 /* --- Agent activity layout: Full list (LIFE-477 B12·D16 — Orca 1.4.198 `DashboardAgentRow` 인라인 변형) -------------- */
 

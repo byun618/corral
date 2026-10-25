@@ -214,8 +214,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const onShelf = (item: WorkItem): boolean => !shelving || !isHiddenOnBoard({ item, now })
   // `now` 는 `filtered` 도 이미 의존하지만, 이 계산이 직접 쓰는 값이라 의존 목록에 둔다(LIFE-702 G4).
   const shelved = useMemo(() => (shelving ? filtered.filter((row) => onShelf(row.item)) : filtered), [filtered, shelving, now])
-  // 숨긴 행은 세지 않아도 된다 — 필터를 통과한 숨긴 행이 있으면 아래 `shelvedOnly` 가 빈 상태 자체를 끈다(LIFE-702 G4).
-  const afterFilter = useMemo(() => rows.filter((row) => passes(row.item)).length, [rows, prefs.filters, page.workingKeys, now])
+  // 숨긴 행은 세지 않는다 — 필터를 통과한 숨긴 행만 남은 빈 상태가 「검색 결과 없음」 으로 꾸며지지 않게(LIFE-702 H4 — G4 에서 뺀 것을 되살림).
+  const afterFilter = useMemo(() => rows.filter((row) => passes(row.item) && onShelf(row.item)).length, [rows, prefs.filters, page.workingKeys, now, shelving])
   const statuses: WorkStatus[] = load.data.length === 1 ? (load.data[0]?.statuses ?? []) : []
   const kinds = useMemo(() => {
     const map = new Map<string, string>()
@@ -495,10 +495,11 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const total = view === 'working' ? workingInSpace.length : rows.length
   // 백로그는 화면에 그리는 `shelved` 를 센다 — `filtered` 를 세도 결과는 같지만(숨김뿐인 0 은 `shelvedOnly` 가 가린다) 보이는 것을 센다는 뜻을 지킨다(LIFE-702 G4).
   const shown = view === 'working' ? workingViews.length : view === 'board' ? boardRows.length : view === 'backlog' ? shelved.length : filtered.length
-  // 숨김 때문에 0 이면 빈 상태 대신 보기를 그대로 그린다 — 「검색 결과 없음」·「필터를 지우면 다시 보입니다」 로 원인을 꾸미지 않는다(LIFE-702 D6).
-  // ① 필터를 통과한 행 중 숨긴 오래된 완료가 있다(F4 — 필터를 지워도 그 행은 숨은 채) ② 남은 행이 전부 숨긴 오래된 완료다(G3 — 필터를 지워도 보일 행이 없다).
-  const hiddenNow = (item: WorkItem): boolean => isHiddenOnBoard({ item, now })
-  const shelvedOnly = shelving && shown === 0 && (rows.some((row) => passes(row.item) && hiddenNow(row.item)) || (rows.length > 0 && rows.every((row) => hiddenNow(row.item))))
+  // 숨김이 걸린 0 은 필터를 지웠을 때 이 보기(보드는 백로그 배치 제외)에 보일 카드가 없으면 빈 상태 대신 보기를 그대로 그린다 —
+  // 「검색 결과 없음」·「필터를 지우면 다시 보입니다」 가 거짓이 되지 않게(LIFE-702 D6 · H4: F4·G3·리뷰 r3 Grok 장면을 한 원칙으로). 숨긴 건수 안내는 없다.
+  const inView = (row: TasksRow): boolean => view !== 'board' || placementHidden || row.item.placement !== 'backlog'
+  const shelvedOnly = shelving && shown === 0 && rows.some((row) => isHiddenOnBoard({ item: row.item, now }))
+    && !rows.some((row) => inView(row) && !isHiddenOnBoard({ item: row.item, now }))
   // 다음 쪽이 있으면 거른 결과가 0 이어도 빈 상태로 갈아 끼우지 않는다 — 「더 불러오기」·목록 도구가 남아야 한다(R2-M).
   const empty = !noConnection && banner === null && !loading && load.phase !== 'idle' && shown === 0 && !shelvedOnly && hits.length === 0 && (view === 'working' || more?.kind !== 'cursor')
   const cause = emptyCause({ total, afterFilter: view === 'working' ? workingAfterFilter : afterFilter, query, view })

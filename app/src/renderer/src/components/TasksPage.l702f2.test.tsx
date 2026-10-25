@@ -218,8 +218,10 @@ describe('G1 끌기 실패 원복 — doneAt 을 이동 전 값으로', () => {
   })
 })
 
-describe('G1 상세 되돌리기 — 낙관 반영이 before.doneAt 을 덮지 않는다', () => {
-  it('오래된 완료를 상세에서 할 일로 바꾼 뒤 되돌리면, 응답 전엔 원래대로 숨고 응답(서버 새 진입 시각)이 오면 보인다', async () => {
+// 수정 r3 H1 — 되돌리기(할 일 → 완료)는 출처에서 done 「진입」 이라 서버가 새 시각을 쓴다. 옛 doneAt 을 되살리면 서버 어느 상태와도 다르고
+// 응답 전까지 카드가 사라진다(리뷰 r3 Claude R3-1). 낙관은 optimisticDoneAt(진입 null) — 응답 전에도 보인다. r2 의 「응답 전 숨김」 기대를 바꿨다.
+describe('상세 되돌리기 — 낙관 반영은 done 진입 규칙(응답 전에도 보임)', () => {
+  it('오래된 완료를 상세에서 할 일로 바꾼 뒤 되돌리면, 응답 전에도 응답 뒤(서버 새 진입 시각)에도 보인다', async () => {
     items = [done({ id: 'i1', key: 'K-1', doneAt: ago(20 * DAY) }), item({ id: 'i2', key: 'K-2', rank: '2' })]
     await renderPage()
     typeSearch('제목')
@@ -241,7 +243,7 @@ describe('G1 상세 되돌리기 — 낙관 반영이 before.doneAt 을 덮지 �
     click(undo)
     await settle()
     expect(writes).toBe(2)
-    expect(cards(), '되돌리기 응답 전 — 원래 오래된 완료').toEqual(['K-2'])
+    expect(cards(), '되돌리기 응답 전 — 진입 낙관(null)이라 보임').toEqual(['K-1', 'K-2'])
     act(() => releaseWrite())
     await settle()
     expect(cards(), '응답 뒤 — 서버가 새 진입 시각').toEqual(['K-1', 'K-2'])

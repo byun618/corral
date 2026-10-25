@@ -155,7 +155,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
   }
   const applyStatus = (row: StatusMenuRow): void => {
     setConfirm(null)
-    const before = { statusKey: item.statusKey, category: item.category, resolution: item.resolution, doneAt: item.doneAt }
+    const before = { statusKey: item.statusKey, category: item.category, resolution: item.resolution }
     const resolution = row.category === 'done' ? row.resolution : null
     // 원래 완료 갈래를 다시 쓸 수 없으면(LA archived·duplicate 등) 되돌리기를 내지 않고 그 사실을 알린다 — 완료함으로 바꿔 끼우지 않는다(R1-G).
     const restorable = restorableResolution({ item: before, picks: picksResolution(detail.caps) })
@@ -166,8 +166,8 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
       undo: restorable.restorable
         ? (now) => ({
           call: { op: 'changeStatus', itemId: item.id, statusKey: before.statusKey, ifVersion: versionOf(now), resolution: restorable.resolution },
-          // 되돌리기는 이전 doneAt 그대로(LIFE-702 G1) — 출처가 done 진입 시각을 새로 쓰면 응답이 덮는다.
-          optimistic: (value) => ({ ...value, ...before }),
+          // 되돌리기도 상태 이동이다 — done 으로 돌아가면 출처는 진입 시각을 새로 쓴다(LA resolveDoneAt). 옛 doneAt 을 되살리지 않는다(LIFE-702 H1).
+          optimistic: (value) => ({ ...value, ...before, doneAt: optimisticDoneAt({ from: value.category, to: before.category, doneAt: value.doneAt }) }),
           label: null,
           undo: null,
         })

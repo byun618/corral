@@ -330,10 +330,11 @@ function record({ state, itemId, author, writeId, field, from, to }: { state: Mo
   state.history[itemId] = [...(state.history[itemId] ?? []), { id: `h-${state.seq++}`, at, author, field, from, to, writeId }]
 }
 
-/** done 진입 시각(LIFE-702) — LA 와 같이 done 으로 들어갈 때 기록, 나가면 null, done→done 은 유지. */
-function doneAtFor({ from, to, current, at }: { from: WorkStatus['category']; to: WorkStatus['category']; current: string | null; at: number }): string | null {
+/** done 진입 시각(LIFE-702) — LA `resolveDoneAt` 과 같다: 나가면 null, done→done 은 유지(비어 있으면 지금으로 채움 — H3), 들어가면 지금. */
+function doneAtFor({ from, to, current, at }: { from: WorkStatus['category'] | null; to: WorkStatus['category']; current: string | null; at: number }): string | null {
   if (to !== 'done') return null
-  return from === 'done' ? current : new Date(at).toISOString()
+  if (from === 'done' && current !== null) return current
+  return new Date(at).toISOString()
 }
 
 /** 완료 분류로 갈 때의 갈래 — 고른 것, 없으면 완료함. */
@@ -496,7 +497,7 @@ export class MockSource implements WorkSourceClient {
         const seq = this.state.items.filter((row) => row.spaceKey === call.spaceKey).length + 1
         const created: MockItem = {
           id: `m-new-${this.state.seq++}`, key: `${call.spaceKey}-${100 + seq}`, spaceKey: call.spaceKey, title: call.title, body: call.body ?? '', kind: { ...kind, childKinds: [...kind.childKinds] },
-          statusKey: call.statusKey ?? meta.meta.defaultStatusKey, resolution: null, doneAt: null, priority: call.priority ?? null, dueAt: null, parentId: call.parentId, placement: call.placement ?? 'board', rank: `z${this.state.seq}`,
+          statusKey: call.statusKey ?? meta.meta.defaultStatusKey, resolution: null, doneAt: doneAtFor({ from: null, to: space.statuses.find((status) => status.key === (call.statusKey ?? meta.meta.defaultStatusKey))?.category ?? 'todo', current: null, at: now(this.state) }), priority: call.priority ?? null, dueAt: null, parentId: call.parentId, placement: call.placement ?? 'board', rank: `z${this.state.seq}`,
           openBlockerCount: 0, openBlockers: [], updatedAt: new Date(now(this.state)).toISOString(), version: 1, updatedBy: MOCK_AUTHOR, workLinks: [],
         }
         this.state.items.push(created)

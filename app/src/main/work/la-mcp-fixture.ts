@@ -609,6 +609,7 @@ export class LaMcpFixture {
           resolution: null, color: null, position: kind === 'task' || kind === 'bug' ? String(100 + sequentialId) : null, onBoard: args.onBoard === true, dueAt: typeof args.dueAt === 'string' ? args.dueAt : null, archivedAt: null, doneAt: null, updatedAt: '2026-10-14T00:00:00.000Z', version: 1,
         }
         this.issues.push(created)
+        this.markDone({ issue: created, from: null })
         // 만들기 — 일감 자신엔 이력 행이 없고, 부모의 child 행에만 쓰기 id(611).
         if (parentId !== null) this.pushHistory({ issueId: parentId, at: this.tick(), field: 'child', from: null, to: this.titled(created), writeId: writeIdOf(args) })
         // LIFE-651 — 실측 모양: LA create 는 메모리에 대입한 position(`nextTaskPosition` = number)을 그대로 낸다 → task·bug 는 **숫자**,
@@ -885,11 +886,11 @@ export class LaMcpFixture {
     issue.updatedAt = new Date(Date.parse(issue.updatedAt) + 1000).toISOString()
   }
 
-  /** LA `doneAt` 규칙(LIFE-702) — done 진입이면 지금(`doneClock`), 이탈이면 null, done→done 은 그대로. */
-  private markDone({ issue, from }: { issue: FixtureIssue; from: WorkCategory }): void {
+  /** LA `resolveDoneAt` 규칙(LIFE-702) — 이탈이면 null, done→done 은 그대로(비어 있으면 지금으로 채움 — H3), 진입(만들기 포함)이면 지금(`doneClock`). */
+  private markDone({ issue, from }: { issue: FixtureIssue; from: WorkCategory | null }): void {
     const to = this.status(issue).categoryKey
     if (to !== 'done') issue.doneAt = null
-    else if (from !== 'done') issue.doneAt = new Date(this.doneClock()).toISOString()
+    else if (from !== 'done' || issue.doneAt === null) issue.doneAt = new Date(this.doneClock()).toISOString()
   }
 
   private status(issue: FixtureIssue): FixtureStatus {

@@ -14,7 +14,7 @@ import { withRetentionSuppressed } from './close-retention.js'
 import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { closeTabsGated, runningForeground } from './close-tabs.js'
 import { footprintHelperPath, homesOf, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
-import { confirmedDeadSlot, directoryNow, keepRetention, prunableRetained, slotStateNow } from './retention.js'
+import { confirmedDeadSlot, directoryNow, keepRetention, prunableRetained, slotStateNow, slotStateOf } from './retention.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
 // 렌더러가 소켓을 열 수 없는 것은 권장이 아니라 구조적 강제다: sandbox:true 인 렌더러/preload 의
@@ -2591,6 +2591,7 @@ app.whenReady().then(async () => {
     cardlessWorkspaces: cardlessNow,
     claimedWorkspaceIds: claimedWorkspaceIdsNow,
     cardlessBlockedReason: () => rebuildRetry.permanentReason(),
+    checkSlot: slotStateOf,
     // LIFE-628 — 카드 밖 workspace 닫기. 카드 메뉴 닫기(`closeWorktreeByWorkspace`)와 같은 `workspace.close` 길·완료 행 억제.
     closeWorkspace: async ({ socketPath, workspaceId }) => {
       const outcome = await withRetentionSuppressed({ store: link.store, ids: [workspaceId], what: 'workspace', run: hooks => closeWorkspace(socketPath, workspaceId, hooks) })

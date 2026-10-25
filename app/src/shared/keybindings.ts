@@ -65,7 +65,7 @@ export const ACTIONS = [
   { id: 'quickOpen.open', group: '전역', title: '빠른 열기 (파일)', defaultBinding: ['Mod+P'], bindingVariants: [0], variants: ['열기'] },
   { id: 'explorer.filter', group: '탐색기', title: '이름 필터', defaultBinding: ['Mod+Alt+F'], bindingVariants: [0], variants: ['열기'], scope: 'explorer' },
   // LIFE-629 — VS Code `markdown.togglePreview`(⇧⌘V). 활성 탭이 Markdown 파일 탭이면 원문 ↔ 미리보기(파일 뷰 버튼과 같은 경로). 포커스가 그 Markdown 보기 안일 때만
-  // 키를 가져간다 — 터미널(붙여넣기)·다른 파일 탭·입력칸에서는 삼키지 않는다(`useKeybindings` 의 `yieldsToFocus`). 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
+  // 키를 가져간다 — 터미널(붙여넣기)·다른 파일 탭·입력칸에서는 삼키지 않는다(`yieldsOutsideMarkdown` — `useKeybindings` 가 부른다). 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
   { id: 'markdown.togglePreview', group: '탭', title: 'Markdown 미리보기 전환', defaultBinding: ['Mod+Shift+V'], bindingVariants: [0], variants: ['활성 Markdown 탭'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']

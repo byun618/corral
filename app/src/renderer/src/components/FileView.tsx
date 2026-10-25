@@ -283,7 +283,7 @@ export function FileView({
   return (
     // tabIndex -1 — 편집기가 없는 보기(이미지·바이너리·안내·Markdown 미리보기)에서 ⌘P 로 연 뒤 포커스가 머물 자리(수정 r1 R1-C-06). Tab 순회에는 들지 않는다.
     // 편집기가 있으면 두지 않는다 — 편집기 안을 누를 때 브라우저 기본 포커스가 이 상자로 가지 않게.
-    <div className="file-group" tabIndex={editable && !(markdown && mode === 'preview') ? undefined : -1} data-file-group={groupId} data-file-view={rel} data-markdown-view={markdown && editable ? mode : undefined} data-file-dirty={doc?.dirty === true ? 'true' : 'false'} onMouseDown={() => onActivate()}>
+    <div className="file-group" tabIndex={editable && !(markdown && mode === 'preview') ? undefined : -1} data-file-group={groupId} data-file-view={rel} data-markdown-view={togglable ? mode : undefined} data-file-dirty={doc?.dirty === true ? 'true' : 'false'} onMouseDown={() => onActivate()}>
       {markdown && editable ? (
         <div className="file-view-toolbar">
           <button

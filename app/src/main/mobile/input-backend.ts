@@ -5,7 +5,7 @@
 import { TerminalBackend, type TerminalIdentity, type TerminalOperation } from '../adapter/index.js'
 import { RuntimeError } from '../../runtime/contracts.js'
 import { agentQuiescent, evaluateManifest } from '../../runtime/terminal/agent.js'
-import type { InputBackend, KeyResult, PaneObservation, ScreenRead, SendResult } from './input.js'
+import { observedSessionKey, type InputBackend, type KeyResult, type PaneObservation, type ScreenRead, type SendResult } from './input.js'
 import type { MobileAgentKind } from './list.js'
 
 /** 한 호출의 마감 — 관측·넣기 모두 짧다. */
@@ -50,9 +50,10 @@ export class HerdrInputBackend implements InputBackend {
       const settled = info.status === 'idle' || info.status === 'done'
       const unmanaged = settled && !info.launchPending && !info.interactiveReady
       const unmanagedQuiet = unmanaged && this.backend.unmanagedPromptCapable() && (info.stateQuietMs ?? 0) >= UNMANAGED_SETTLE_MS
-      return { status: info.status, seq: info.stateChangeSeq, quiet: agentQuiescent(info) || unmanagedQuiet, unmanaged, input: info.input ?? null }
+      // LIFE-598: herdr 가 지금 말하는 provider 세션 — 허브가 효과 직전 접수 때 묶은 세션과 대조한다(목록은 늦게 바뀐다).
+      return { status: info.status, seq: info.stateChangeSeq, quiet: agentQuiescent(info) || unmanagedQuiet, unmanaged, input: info.input ?? null, session: info.session === null ? null : observedSessionKey(info.session) }
     } catch (error) {
-      if (error instanceof RuntimeError && error.code === 'agent_not_found') return { status: 'none', seq: -1, quiet: false, unmanaged: false, input: null }
+      if (error instanceof RuntimeError && error.code === 'agent_not_found') return { status: 'none', seq: -1, quiet: false, unmanaged: false, input: null, session: null }
       throw error
     }
   }

@@ -7,7 +7,8 @@
 //   `unconfirmed`(확인하지 못했습니다) — 들어감으로 올리지 않는다(P6ⓓ). 다시 넣지도 않는다. 커서는 **파일 꼬리**다(dev·ino · 크기 + 끝 64 KiB 지문, R2-A7) —
 //   지시마다 기록 전체를 동기로 읽지 않는다(C1, 45 MB 기록에서 루프 지연 p99 230 ms 실측).
 // - **접수 때 대상을 묶는다**(R1-A5): backend epoch · PTY 세대 · provider 세션. 넣기 전 셋 중 하나라도 바뀌면(herdr 재시작·같은 pane 의 새 세션) 실패 —
-//   이전 지시가 새 세대로 따라가지 않는다.
+//   이전 지시가 새 세대로 따라가지 않는다. 효과 직전 세션 확인은 목록과 **herdr 관측**(넣기 직전 `agent.get` 의 `agent_session`) 둘 다 본다(LIFE-598) —
+//   목록은 `/clear` 뒤 몇 초 늦게 바뀌므로 목록만 보면 그 사이 새 세션에 넣는다. 관측에 세션이 없으면 같은 세션임을 증명 못 한 것 — 쓰지 않고 실패.
 // - **채널별 큐**(P3): 순서대로 한 건씩. 에이전트가 준비 관문(750 ms 두 관측 · 같은 seq · detect manifest 확인 — CLI 와 같은 관문)을 통과해야 넣는다.
 //   관문 통과 = 턴이 끝났다는 뜻이라 턴 안에 끼어들지 않는다. 넣기는 guard 의 compare-and-submit(`agent.prompt` + 관측한 seq + **관측한 입력 revision**)이라
 //   그 사이 전이·맥 타자가 있으면 아무것도 쓰지 않고 거절된다 — 그때는 큐에 그대로 두고 다시 기다린다. 취소는 넣기 시작 전(`queued`)만.
@@ -93,7 +94,13 @@ export const INPUT_TIMING: InputTiming = { pollMs: 1000, gateMs: 750, quietMs: 5
  * `quiet` 는 관리 pane 이면 `agentQuiescent`, 관리 밖이면 guard 가 그 갈래를 알고 settle 을 넘겼을 때다.
  * `input` = 그 pane 의 사람 입력 revision·조용한 시간(guard 가 같은 관측 턴에서 읽는다). 이전 guard 면 null — 그때는 넣지 않는다.
  */
-export type PaneObservation = { status: string; seq: number; quiet: boolean; unmanaged: boolean; input: { revision: number; idleMs: number } | null }
+export type PaneObservation = { status: string; seq: number; quiet: boolean; unmanaged: boolean; input: { revision: number; idleMs: number } | null; session: string | null }
+/**
+ * LIFE-598: `PaneObservation.session` — herdr `agent.get` 의 `agent_session` 을 이 키로. 목록 `AgentSessionRef` 도 같은 herdr 봉투에서 왔으므로
+ * (`store.ts readAgentSession`) source·kind·값으로 맞춘다. `agent` 는 관측 봉투에 없어 쓰지 않는다(source 가 `herdr:<agent>` 라 갈린다).
+ */
+export const observedSessionKey = (session: { source: string; kind: string; value: string }): string => `${session.source}\u0000${session.kind}\u0000${session.value}`
+const boundSessionKey = (session: AgentSessionRef): string => observedSessionKey({ source: session.source, kind: session.kind, value: session.kind === 'id' ? session.id : session.path })
 export type SendResult = 'sent' | 'refused' | 'unknown'
 /** 키 한 번의 결과 — `sent` 면 guard 가 쓴 뒤의 입력 revision(다음 키의 울타리, 울타리 없이 보냈으면 null). */
 export type KeyResult = { kind: 'sent'; revision: number | null } | { kind: 'refused' } | { kind: 'unknown' }
@@ -150,8 +157,8 @@ export type InputHubDeps = {
   timing?: Partial<InputTiming>
 }
 
-/** 접수 때 묶은 대상(R1-A5). */
-type Bind = { epoch: string; ptyId: string; session: string }
+/** 접수 때 묶은 대상(R1-A5). `observed` = 같은 세션의 herdr 관측 키(LIFE-598 — 효과 직전 `PaneObservation.session` 과 대조). */
+type Bind = { epoch: string; ptyId: string; session: string; observed: string }
 
 type Entry = {
   device: string
@@ -660,7 +667,7 @@ export class InputHub {
     const pane = await backend.locate(entry.channel)
     if (this.dropped(entry)) return
     if (pane === null) return this.settle(entry, 'failed', 'closed')
-    entry.bind = { epoch: pane.epoch, ptyId: pane.ptyId, session: sessionKey(channel.session) }
+    entry.bind = { epoch: pane.epoch, ptyId: pane.ptyId, session: sessionKey(channel.session), observed: boundSessionKey(channel.session) }
     void this.pump(entry.channel)
   }
 
@@ -745,10 +752,11 @@ export class InputHub {
     const cursor = tailCursor(file)
     if (cursor === null) return this.fail(entry, 'record_unreadable')
     const submittedAtMs = this.now()
-    // 여기서부터 취소 불가 — 넣기 시작. 효과 직전 마지막 확인(해지·끔 · 접수 때 묶은 provider 세션 — R2-A4).
+    // 여기서부터 취소 불가 — 넣기 시작. 효과 직전 마지막 확인(해지·끔 · 접수 때 묶은 provider 세션 — 목록 R2-A4 + herdr 관측 LIFE-598).
+    // herdr 관측은 `second`(넣기 전 마지막 `agent.get`)다 — 그 뒤 넣기까지의 세션 교체는 키 입력이라 guard 의 입력 revision 울타리가 막는다.
     const gone = this.gone(entry)
     if (gone !== null) return this.fail(entry, gone)
-    if (this.sessionMoved(entry)) return this.fail(entry, 'target_changed')
+    if (this.sessionMoved(entry, second)) return this.fail(entry, 'target_changed')
     entry.state = 'sending'
     entry.wait = null
     this.emit(entry)
@@ -782,14 +790,17 @@ export class InputHub {
   }
 
   /**
-   * 접수 때 묶은 provider 세션이 지금 목록의 그 채널 세션과 다른가(R2-A4) — 효과 직전에 await 없이 본다. 채널이 사라졌어도 바뀐 것이다.
-   * 목록은 이 프로세스의 상태라 이 확인과 효과 호출 사이에 바뀌지 않는다.
+   * 접수 때 묶은 provider 세션이 바뀌었나 — 효과 직전에 await 없이 본다. 둘 중 하나라도 다르면 바뀐 것이다:
+   * - 목록(R2-A4): 지금 목록의 그 채널 세션. 채널이 사라졌어도 바뀐 것이다. 목록은 이 프로세스의 상태라 이 확인과 효과 호출 사이에 바뀌지 않는다.
+   * - herdr 관측(LIFE-598): 효과 직전 마지막 `observe` 의 `agent_session`. 목록은 `/clear` 뒤 몇 초 늦게 바뀌지만 herdr 는 1초 안에 바뀐다(C0 실측 418·718 ms).
+   *   관측에 세션이 없으면(null) 같은 세션임을 증명 못 한다 — 바뀐 것으로 본다(fail-closed, 기다리지 않으니 블랙홀도 없다).
    */
-  private sessionMoved(entry: Entry): boolean {
+  private sessionMoved(entry: Entry, observed: PaneObservation): boolean {
+    if (entry.bind === null) return false
+    if (observed.session !== entry.bind.observed) return true
     const located = this.locate(entry.channel)
     if (!located.ok) return true
-    const session = sessionKey(located.channel.session)
-    return entry.bind === null ? false : session !== entry.bind.session
+    return sessionKey(located.channel.session) !== entry.bind.session
   }
 
   private fail(entry: Entry, reason: string): 'done' {
@@ -851,7 +862,7 @@ export class InputHub {
   /**
    * 질문 답(P4 · R2-A1). 같은 질문의 증명:
    * - 기록: 그 말풍선 id + 도구 호출 id 가 마지막 대기 질문이고, 그 내용 지문이 폰이 본 지문과 같다(같은 id·호출에 다른 내용이면 거절).
-   * - 세션: 접수 때의 provider 세션이 키마다 그대로다.
+   * - 세션: 접수 때의 provider 세션이 키마다 그대로다(목록 + 키 전 herdr 관측 — LIFE-598).
    * - 화면: 키 묶음마다 그 앞에서, 입력이 `quietMs` 이상 조용할 때 잡은 화면의 **활성 질문 영역**(맨 아래 질문 상자)이 그 문항이다.
    *   화면 위쪽 과거 글은 보지 않는다. Codex 는 접힌 표시의 문항 수를 본 뒤 ⇧← 로 열고 다시 본다.
    * - 입력: 그 화면의 입력 revision 에서 시작해 키마다 guard 가 돌려준 revision 으로 다음 키를 울타리 친다 — 다른 클라이언트의 입력이 끼면 그 키부터 넣지 않는다.
@@ -869,7 +880,7 @@ export class InputHub {
     const pane = await backend.locate(entry.channel)
     if (this.halted(entry)) return
     if (pane === null) return this.settle(entry, 'failed', 'closed')
-    entry.bind = { epoch: pane.epoch, ptyId: pane.ptyId, session: sessionKey(channel.session) }
+    entry.bind = { epoch: pane.epoch, ptyId: pane.ptyId, session: sessionKey(channel.session), observed: boundSessionKey(channel.session) }
     const resolved = this.deps.resolveFile(channel)
     if (resolved.kind !== 'found') return this.settle(entry, 'failed', resolved.kind === 'ambiguous' ? 'record_ambiguous' : 'not_ready')
     const { file } = resolved
@@ -917,9 +928,10 @@ export class InputHub {
       for (let index = 0; index < keys.length; index += 1) {
         if (index > 0) await this.sleep(this.timing.stepGapMs)
         // 키마다 효과 직전 — 해지·끔·세션 바뀜이면 남은 키를 넣지 않는다. 첫 키 전이면 아무것도 넣지 않았다(R1-A1·A4·R2-A4).
+        // herdr 관측은 `before`(키 전 마지막 `agent.get`, LIFE-598) — 그 뒤의 세션 교체는 키 입력이라 키마다의 revision 울타리가 막는다.
         const gone = this.gone(entry)
         if (gone !== null) return stop(gone)
-        if (this.sessionMoved(entry)) return stop('target_changed')
+        if (this.sessionMoved(entry, before)) return stop('target_changed')
         if (sent === 0) {
           entry.state = 'sending'
           this.emit(entry)

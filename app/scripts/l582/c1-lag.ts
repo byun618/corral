@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { chatListState, CHAT_SESSIONS } from '../../src/main/mobile/chat-fixture.js'
-import { InputHub, type InputBackend } from '../../src/main/mobile/input.js'
+import { InputHub, observedSessionKey, type InputBackend } from '../../src/main/mobile/input.js'
 
 const file = process.argv[2] ?? ''
 if (!file.startsWith('/tmp/l582-c1/')) process.exit(2)
@@ -13,7 +13,7 @@ const EMPTY = ['', '─'.repeat(40), '❯ ', '─'.repeat(40)].join('\r\n')
 const line = (text: string) => JSON.stringify({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: text }, uuid: 'c1', parentUuid: null, timestamp: new Date().toISOString(), sessionId: CHAT_SESSIONS.claude.id })
 const backend: InputBackend = {
   locate: async (paneId) => ({ epoch: 'e', ptyId: 't', paneId, tabId: 'tab', workspaceId: 'ws', path: '/w', repo: '/w', title: 'x' }),
-  observe: async () => ({ status: 'idle', seq: 1, quiet: true, unmanaged: false, input: { revision: 1, idleMs: 10_000 } }),
+  observe: async () => ({ status: 'idle', seq: 1, quiet: true, unmanaged: false, input: { revision: 1, idleMs: 10_000 }, session: observedSessionKey({ source: CHAT_SESSIONS.claude.source, kind: 'id', value: CHAT_SESSIONS.claude.id }) }),
   unmanagedPrompt: () => false,
   manifestVerified: async () => true,
   screen: async () => ({ text: EMPTY, input: { revision: 1, idleMs: 10_000 }, seq: 1 }),

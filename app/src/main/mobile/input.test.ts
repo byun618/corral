@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { TerminalIdentity } from '../adapter/index.js'
 import { ChatBuilder, type ChatItem } from '../chat-parse.js'
 import { CHAT_SESSIONS, chatListState } from './chat-fixture.js'
-import { answerMatches, answerRecords, cleanAnswers, recordedAnswers, INPUT_IDS_MAX, INPUT_QUEUE_MAX, InputHub, type FileResolution, type InputBackend, type InputWire, type KeyResult, type PaneObservation, type ScreenRead, type SendResult } from './input.js'
+import { answerMatches, answerRecords, cleanAnswers, observedSessionKey, recordedAnswers, INPUT_IDS_MAX, INPUT_QUEUE_MAX, InputHub, type FileResolution, type InputBackend, type InputWire, type KeyResult, type PaneObservation, type ScreenRead, type SendResult } from './input.js'
 import { activeQuestion, KEY, matchQuestion, questionDigest } from './keys.js'
 import type { MobileAgentKind } from './list.js'
 
@@ -50,6 +50,8 @@ class FakeBackend implements InputBackend {
   epoch = 'e'
   ptyId = 't'
   input: PaneObservation['input'] = { revision: 1, idleMs: 10_000 }
+  /** LIFE-598: herdr 가 말하는 그 pane 의 세션 — 기본은 목록과 같다(setup 이 목록에서 읽게 잇는다). 시험이 목록과 엇갈리게 바꾼다. */
+  observedSession: (paneId: string) => string | null = () => null
   /** 넣기 직전에 부른다(끔·해지가 넣기 중에 겹치는 시험). */
   onPrompt: (() => void) | null = null
   readonly fences: { seq: number; inputRevision: number; minIdleMs: number }[] = []
@@ -69,8 +71,8 @@ class FakeBackend implements InputBackend {
     return { epoch: this.epoch, ptyId: this.ptyId, paneId, tabId: 'tab', workspaceId: 'ws', path: '/w', repo: '/w', title: 'x' }
   }
 
-  async observe(): Promise<PaneObservation> {
-    return { status: this.status, seq: this.seq, quiet: this.quiet, unmanaged: this.unmanaged, input: this.input }
+  async observe(pane: TerminalIdentity): Promise<PaneObservation> {
+    return { status: this.status, seq: this.seq, quiet: this.quiet, unmanaged: this.unmanaged, input: this.input, session: this.observedSession(pane.paneId) }
   }
 
   unmanagedPrompt(): boolean {
@@ -142,6 +144,11 @@ function setup(input: { listed?: boolean; noFileYet?: boolean; resolution?: () =
   const logs: { tag: string; fields: Record<string, unknown> }[] = []
   // 목록 상태 — 시험이 세션 교체(R2-A4)를 흉내 내려고 고칠 수 있다.
   const state = chatListState()
+  // herdr 관측 세션 = 지금 목록의 그 pane 세션(실물에서 둘이 같은 봉투 — LIFE-598 k1 실측). 시험이 엇갈림을 따로 만든다.
+  backend.observedSession = (paneId) => {
+    const session = paneSession(state, paneId)
+    return session === null ? null : observedSessionKey({ source: session.source, kind: session.kind, value: session.kind === 'id' ? session.id : session.path })
+  }
   const hub = new InputHub({
     read: () => (input.listed === false ? null : { state, prefs: null }),
     backend: () => backend,
@@ -742,6 +749,11 @@ describe('C1 꼬리 커서', () => {
 })
 
 /** 그 채널(`c1` 등)의 pane — 세션 교체를 흉내 낸다. */
+/** 그 pane 의 목록 세션 — 없는 pane 이면 null(가짜 herdr 관측용). */
+function paneSession(state: ReturnType<typeof chatListState>, id: string) {
+  for (const repo of state.repos) for (const worktree of repo.worktrees) for (const tab of worktree.workspace?.tabs ?? []) for (const pane of tab.panes) if (pane.paneId === id) return pane.agentSession
+  return null
+}
 function paneOf(state: ReturnType<typeof chatListState>, id: string) {
   for (const repo of state.repos) for (const worktree of repo.worktrees) for (const tab of worktree.workspace?.tabs ?? []) for (const pane of tab.panes) if (pane.paneId === id) return pane
   throw new Error(`no pane ${id}`)
@@ -941,8 +953,8 @@ describe('R2-A4 접수 세션 — 관문 await 중 같은 PTY 의 세션이 바�
     const t = setup()
     const observe = t.backend.observe.bind(t.backend)
     let swapped = false
-    t.backend.observe = async () => {
-      const seen = await observe()
+    t.backend.observe = async (pane) => {
+      const seen = await observe(pane)
       if (!swapped) {
         swapped = true
         const pane = paneOf(t.state, 'c1')
@@ -966,6 +978,52 @@ describe('R2-A4 접수 세션 — 관문 await 중 같은 PTY 의 세션이 바�
     t.hub.answer({ device: 'd1', id: 'r2a4-0000-0002', channel: 'c1', question: 10, call: 'toolu-10', digest: digestFor(10), answers: [{ choices: [], other: '본문' }] })
     expect(await t.settled('r2a4-0000-0002')).toMatchObject({ state: 'unconfirmed', reason: 'target_changed' })
     expect(t.backend.sends.map((send) => send.text)).toEqual(['3'])
+  })
+})
+
+describe('LIFE-598 효과 직전 세션 — 목록이 늦어도 herdr 관측이 바뀌었으면 넣지 않는다', () => {
+  const newSession = observedSessionKey({ source: 'herdr:claude', kind: 'id', value: 'cleared-session' })
+  it('ⓐ 목록은 옛 세션, herdr 관측은 새 세션(/clear) → failed/target_changed, prompt 0회', async () => {
+    const t = setup()
+    t.backend.observedSession = () => newSession
+    t.hub.send({ device: 'd1', id: 'l598-0000-0001', channel: 'c1', text: '옛 세션 지시' })
+    expect(await t.settled('l598-0000-0001')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.fences).toHaveLength(0)
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('ⓐ\' 대기 중(작업 중)에 herdr 세션만 바뀌면 관문을 넘는 순간 target_changed — 새 세션에 넣지 않는다', async () => {
+    const t = setup()
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598-0000-0002', channel: 'c1', text: '대기 지시' })
+    await new Promise((done) => setTimeout(done, 30))
+    expect(t.last('l598-0000-0002')?.state).toBe('queued')
+    t.backend.observedSession = () => newSession
+    t.backend.quiet = true
+    expect(await t.settled('l598-0000-0002')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('ⓑ herdr 관측에 세션이 없으면(null) 쓰지 않고 끝낸다 — queued 로 남지 않는다', async () => {
+    const t = setup()
+    t.backend.observedSession = () => null
+    t.hub.send({ device: 'd1', id: 'l598-0000-0003', channel: 'c1', text: '증명 못 함' })
+    expect(await t.settled('l598-0000-0003')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.fences).toHaveLength(0)
+  })
+  it('ⓒ 세션이 같으면(목록 = herdr) 지금처럼 넣는다', async () => {
+    const t = setup()
+    t.hub.send({ device: 'd1', id: 'l598-0000-0004', channel: 'c1', text: '같은 세션' })
+    expect(await t.settled('l598-0000-0004')).toMatchObject({ state: 'delivered' })
+    expect(t.backend.prompts).toEqual(['같은 세션'])
+  })
+  it('질문 답 — 목록은 옛 세션, herdr 관측은 새 세션 → 키 0회 target_changed', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = questionScreen(11)
+    t.items.list = [question({ id: 11, state: 'pending' })]
+    t.backend.observedSession = () => newSession
+    t.hub.answer({ device: 'd1', id: 'l598-0000-0005', channel: 'c1', question: 11, call: 'toolu-11', digest: digestFor(11), answers: [{ choices: [1], other: null }] })
+    expect(await t.settled('l598-0000-0005')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.sends).toHaveLength(0)
   })
 })
 

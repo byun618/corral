@@ -70,6 +70,9 @@ describe('BackendCard 연결 실패 (LIFE-532 고정 문구)', () => {
     expect(html.match(/<button/g)).toHaveLength(1)
     expect(html).toContain('data-backend-retry')
   })
+  it('원인 scan · 붙은 세션 있음 — 제목은 같은 고정 문구', () => {
+    expect(renderStatus({ kind: 'unreachable', cause: 'scan', session: 'default', error: 'e' })).toContain('herdr 세션 목록을 읽지 못했습니다')
+  })
   it('다른 카드에는 원인 속성이 없다', () => {
     expect(renderStatus({ kind: 'failed', session: 'default', error: 'e', logPath: null })).not.toMatch(/data-backend-cause|data-backend-retry/)
   })

@@ -34,7 +34,7 @@ export function BackendCard({ status, onStart, onRetry }: { status: BackendStatu
       return null
     case 'confirm':
       return (
-        <Card kind={status.kind} title={status.reason === 'exited' ? `herdr 서버(${status.session})가 멈췄습니다` : `herdr 서버(${status.session})가 꺼져 있습니다`}>
+        <Card status={status} title={status.reason === 'exited' ? `herdr 서버(${status.session})가 멈췄습니다` : `herdr 서버(${status.session})가 꺼져 있습니다`}>
           <span className="backend-card-line" data-backend-restore={status.restore.known ? String(status.restore.total) : 'unknown'}>
             {restoreLine(status.restore)}
           </span>
@@ -45,13 +45,13 @@ export function BackendCard({ status, onStart, onRetry }: { status: BackendStatu
       )
     case 'starting':
       return (
-        <Card kind={status.kind} title={`herdr 서버(${status.session})를 시작하는 중입니다`}>
+        <Card status={status} title={`herdr 서버(${status.session})를 시작하는 중입니다`}>
           <span className="backend-card-line">준비되면 자동으로 연결합니다</span>
         </Card>
       )
     case 'failed':
       return (
-        <Card kind={status.kind} title={`herdr 서버(${status.session})를 시작하지 못했습니다`}>
+        <Card status={status} title={`herdr 서버(${status.session})를 시작하지 못했습니다`}>
           <pre className="backend-card-error" data-backend-error>
             {status.error}
           </pre>
@@ -63,7 +63,7 @@ export function BackendCard({ status, onStart, onRetry }: { status: BackendStatu
       )
     case 'missing':
       return (
-        <Card kind={status.kind} title={status.bundled ? '앱에 들어 있는 herdr 를 찾지 못했습니다' : 'herdr 를 찾지 못했습니다'}>
+        <Card status={status} title={status.bundled ? '앱에 들어 있는 herdr 를 찾지 못했습니다' : 'herdr 를 찾지 못했습니다'}>
           <span className="backend-card-line">찾아 본 위치</span>
           <ul className="backend-card-list">
             {status.searched.map((place) => (
@@ -77,7 +77,7 @@ export function BackendCard({ status, onStart, onRetry }: { status: BackendStatu
       )
     case 'stale':
       return (
-        <Card kind={status.kind} title="레포 guard herdr 가 이 체크아웃과 맞지 않습니다">
+        <Card status={status} title="레포 guard herdr 가 이 체크아웃과 맞지 않습니다">
           <span className="backend-card-line" data-backend-stale-reason>
             {status.reason}
           </span>
@@ -92,7 +92,7 @@ export function BackendCard({ status, onStart, onRetry }: { status: BackendStatu
     case 'bound-stopped':
       return (
         <Card
-          kind={status.kind}
+          status={status}
           title={status.reason === 'bound' ? `지정된 herdr 세션 ${status.session} 이(가) 멈춰 있습니다` : `붙어 있던 herdr 세션 ${status.session} 이(가) 멈췄습니다`}
         >
           <span className="backend-card-line">이 세션은 corral 이 시작하지 않습니다. 터미널에서 직접 시작하면 자동으로 연결합니다</span>
@@ -101,7 +101,7 @@ export function BackendCard({ status, onStart, onRetry }: { status: BackendStatu
     case 'unreachable':
       // 기존 `failed` 카드와 같은 모양(오류 원문 + 「다시 시도」). 버튼은 「서버 시작」 경로가 아니라 재조회·링크 다시 열기다.
       return (
-        <Card kind={status.kind} cause={status.cause} title={status.cause === 'scan' ? UNREACHABLE_SCAN_TITLE : `herdr 세션 ${status.session ?? ''} 에 연결하지 못했습니다`}>
+        <Card status={status} title={status.cause === 'scan' ? UNREACHABLE_SCAN_TITLE : `herdr 세션 ${status.session} 에 연결하지 못했습니다`}>
           <span className="backend-card-line">{status.cause === 'scan' ? UNREACHABLE_SCAN_LINE : UNREACHABLE_LINK_LINE}</span>
           <pre className="backend-card-error" data-backend-error>
             {status.error}
@@ -132,9 +132,9 @@ export function backendBlocksTerminal(status: BackendStatus): boolean {
   return status.kind !== 'ok' && status.kind !== 'reconnecting'
 }
 
-function Card({ kind, cause, title, children }: { kind: BackendStatus['kind']; cause?: 'scan' | 'link'; title: string; children: React.ReactNode }): React.JSX.Element {
+function Card({ status, title, children }: { status: BackendStatus; title: string; children: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="backend-card-wrap" data-backend-card={kind} data-backend-cause={cause}>
+    <div className="backend-card-wrap" data-backend-card={status.kind} data-backend-cause={status.kind === 'unreachable' ? status.cause : undefined}>
       <div className="backend-card">
         <span className="backend-card-title">{title}</span>
         {children}

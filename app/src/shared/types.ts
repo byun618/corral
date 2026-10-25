@@ -162,10 +162,11 @@ export type BackendStatus =
   | { kind: 'bound-stopped'; session: string; reason: 'bound' | 'attached' }
   | { kind: 'reconnecting'; session: string; attempt: number }
   /**
-   * 연결 실패 (LIFE-532) — `cause` `scan`: 세션 조회가 연속 임계 횟수 이상 실패 · `link`: 링크가 재시도 없는 최종 실패인데 세션은 돌거나 모름.
-   * `session` 은 원인 `scan` 에서 아직 붙은 세션이 없으면 null. `error` 는 마지막 조회 오류 또는 링크 `lastError` 원문.
+   * 연결 실패 (LIFE-532) — `cause` `scan`: 세션 조회가 연속 임계 횟수 이상 실패(아직 붙은 세션이 없으면 `session` null, `error` = 마지막 조회 오류) ·
+   * `link`: 링크가 재시도 없는 최종 실패인데 세션은 돌거나 모름(`session` 은 늘 그 링크의 세션, `error` = 링크 `lastError`).
    */
-  | { kind: 'unreachable'; cause: 'scan' | 'link'; session: string | null; error: string }
+  | { kind: 'unreachable'; cause: 'scan'; session: string | null; error: string }
+  | { kind: 'unreachable'; cause: 'link'; session: string; error: string }
 
 /** 세션 링크가 지금 어느 걸음에 있나. */
 export type LinkPhase =

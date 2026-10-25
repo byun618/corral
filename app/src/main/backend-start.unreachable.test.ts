@@ -84,6 +84,15 @@ describe('decideBackend 연결 실패 (LIFE-532 K1)', () => {
     // 멈춤 확인이면 기존 지정 세션 카드 (⑧ 과 같은 규칙)
     expect(status({ ...bound, ...linkFailed, sessions: [{ name: 'work', isDefault: false, running: false }] })).toEqual({ kind: 'bound-stopped', session: 'work', reason: 'bound' })
   })
+  it('⑨ 바인딩 + 바이너리 missing — 원인 scan 은 내지 않고 원인 link 는 낸다 (fix1 R1-01)', () => {
+    // 리뷰 탐침 입력(grok probe `bind_missing_*` · claude v08 P3): 파일시스템 폴백이 늘 조회 오류를 채운다.
+    const bound = { bound: 'work', selected: 'work', binary: { kind: 'missing', searched: ['/x/herdr'], bundled: false } } satisfies Partial<BackendInput>
+    const missingScan = { scan: 'error', scanErrorStreak: 3, scanError: 'herdr 실행 파일을 해소하지 못했다' } satisfies Partial<BackendInput>
+    expect(status({ ...bound, ...missingScan, sessions: [] })).toEqual({ kind: 'ok' })
+    expect(status({ ...bound, ...missingScan, scanErrorStreak: 9, sessions: [{ name: 'work', isDefault: false, running: true }], link: { phase: 'connecting', attempt: 1 } })).toEqual({ kind: 'ok' })
+    expect(status({ ...bound, ...missingScan, link: { phase: 'reconnecting', attempt: 2 } })).toEqual({ kind: 'reconnecting', session: 'work', attempt: 2 })
+    expect(status({ ...bound, ...missingScan, ...linkFailed })).toEqual(linkCard('work'))
+  })
   it('⑩ 연속 ≥3 + 재연결 중 → 배너 대신 원인 scan 카드', () => {
     expect(status({ ...scanErrors(3), link: { phase: 'reconnecting', attempt: 4 } })).toEqual(scanCard('default'))
     expect(status({ bound: 'work', selected: 'work', ...scanErrors(3), link: { phase: 'reconnecting', attempt: 4 } })).toEqual(scanCard('work'))
@@ -164,6 +173,19 @@ describe('「다시 시도」 손 (LIFE-532 K3)', () => {
       await h.retry.retry()
       expect(h.events).toEqual(['backend.retry.ignored'])
     }
+  })
+  it('ⓓ 첫 시도의 재조회가 끝나기 전이면 마이크로태스크 뒤의 클릭도 합친다 (fix1 R1-08)', async () => {
+    const h = harness(linkCard('default'))
+    const first = h.retry.retry()
+    // 같은 턴이 아니라 이벤트 루프를 한 번 돈 뒤의 두 번째 클릭 — `await poll()` 을 하지 않는 구현이면 여기서 inflight 가 비어 다시 연다.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const second = h.retry.retry()
+    expect(h.events.filter((event) => event === 'reopen:default')).toHaveLength(1)
+    expect(h.events.filter((event) => event === 'backend.retry.joined')).toHaveLength(1)
+    h.release()
+    await Promise.all([first, second])
+    expect(h.events.filter((event) => event === 'reopen:default')).toHaveLength(1)
+    expect(h.events.filter((event) => event === 'poll')).toHaveLength(1)
   })
   it('ⓓ 연타·동시 호출은 진행 중인 한 번으로 합친다 — 링크를 겹쳐 열지 않는다', async () => {
     const h = harness(linkCard('default'))

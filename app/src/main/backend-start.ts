@@ -92,14 +92,14 @@ export function decideBackend(input: BackendInput): BackendDecision {
     // 지름길(`CORRAL_SESSION`+`CORRAL_BACKEND_SOCKET`)은 CLI 를 부르지 않아 오류가 없지만, `CORRAL_SESSION` 만이면 CLI 조회라 오류가 날 수 있다.
     if (input.scan !== 'ok') {
       // 모름이어도 링크 최종 실패·조회 오류 지속은 알린다(LIFE-532) — 빈 터미널만 두지 않는다.
-      const unreachable = unreachableStatus({ input, session: input.bound, running: 'unknown' })
+      const unreachable = unreachableStatus({ input, session: input.bound })
       if (unreachable !== null) return none(unreachable)
       if (link.phase === 'reconnecting') return none({ kind: 'reconnecting', session: input.bound, attempt: link.attempt })
       return none({ kind: 'ok' })
     }
     if (named === undefined || !named.running) return none({ kind: 'bound-stopped', session: input.bound, reason: 'bound' })
-    const unreachable = unreachableStatus({ input, session: input.bound, running: 'running' })
-    if (unreachable !== null) return none(unreachable)
+    // 조회가 성공했다 — 원인 `scan` 은 없다(계수 0). 링크 최종 실패만 본다.
+    if (link.phase === 'failed') return none(linkFailed({ session: input.bound, error: input.linkError }))
     if (link.phase === 'reconnecting') return none({ kind: 'reconnecting', session: input.bound, attempt: link.attempt })
     return none({ kind: 'ok' })
   }
@@ -117,7 +117,7 @@ export function decideBackend(input: BackendInput): BackendDecision {
     if (link.phase === 'live') return none({ kind: 'ok' })
     if (input.starter.phase === 'failed') return none(failed(input.starter))
     // 링크 최종 실패·조회 오류 지속(LIFE-532) — 재연결 배너보다 먼저다. 서버가 도는지조차 모르는데 배너만 두면 빈 화면과 같다.
-    const unreachable = unreachableStatus({ input, session: input.selected, running: 'unknown' })
+    const unreachable = unreachableStatus({ input, session: input.selected })
     if (unreachable !== null) return none(unreachable)
     if (link.phase === 'reconnecting' && input.selected !== null) return none({ kind: 'reconnecting', session: input.selected, attempt: link.attempt })
     return none({ kind: 'ok' })
@@ -157,14 +157,14 @@ export function decideBackend(input: BackendInput): BackendDecision {
 }
 
 /**
- * 「연결 실패」 판정 (LIFE-532 D2) — 원인 `link` 가 `scan` 보다 먼저다(더 구체적이다). 링크 live 는 부르기 전에 걸러져 있어야 한다.
- * `running` — `running`: 세션이 도는 것을 조회로 확인 · `unknown`: 조회 전·오류라 모른다. 멈춤이 확인된 경우는 부르지 않는다(기존 멈춤 카드).
- * 원인 `scan` 은 모를 때만 — 조회가 성공했으면 연속 오류도 0 이다.
+ * 조회 전·조회 오류(세션이 도는지 모름) 자리의 「연결 실패」 판정 (LIFE-532 D2) — 원인 `link` 가 `scan` 보다 먼저다(더 구체적이다).
+ * 링크 live 는 부르기 전에 걸러져 있어야 한다. 바이너리 `missing` 이면 원인 `scan` 을 내지 않는다(fix1 R1-01) — 파일시스템 폴백이 정상 경로라
+ * 조회 오류가 늘 채워진다. 링크 실패는 바이너리와 무관하니 원인 `link` 는 그대로 낸다.
  */
-function unreachableStatus(args: { input: BackendInput; session: string | null; running: 'running' | 'unknown' }): BackendStatus | null {
+function unreachableStatus(args: { input: BackendInput; session: string | null }): BackendStatus | null {
   const { input, session } = args
   if (input.link.phase === 'failed' && session !== null) return linkFailed({ session, error: input.linkError })
-  if (args.running === 'unknown' && input.scanErrorStreak >= SCAN_ERROR_THRESHOLD) {
+  if (input.binary.kind !== 'missing' && input.scanErrorStreak >= SCAN_ERROR_THRESHOLD) {
     return { kind: 'unreachable', cause: 'scan', session, error: input.scanError ?? '(조회 오류 원문 없음)' }
   }
   return null
@@ -399,7 +399,7 @@ export class BackendRetry {
       return
     }
     this.deps.log('backend.retry', { cause: status.cause, session: status.session })
-    if (status.cause === 'link' && status.session !== null && !this.deps.reopenLink(status.session)) {
+    if (status.cause === 'link' && !this.deps.reopenLink(status.session)) {
       this.deps.log('backend.retry.link_missing', { session: status.session })
     }
     await this.deps.poll()

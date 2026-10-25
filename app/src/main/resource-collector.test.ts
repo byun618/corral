@@ -84,12 +84,21 @@ describe('parsePsTable', () => {
   it('로캘 콤마·칸 수 다름·같은 pid 두 줄은 malformed 로 센다', () => {
     expect(parsePsTable('  301 300 50,0 0 zsh\n').malformed).toBe(1)
     expect(parsePsTable('  301 300\n').malformed).toBe(1)
-    // 이름 칸이 없는 줄(LIFE-688 전 3칸 모양·637 의 rss 칸이 남은 4칸 모양)도 이상이다.
+    // 숫자 칸이 셋 이하인 줄(LIFE-688 전 3칸 모양)은 이상이다. 숫자 넷 + 이름 없음은 행이다(C-L1 — 아래 시험).
     expect(parsePsTable('  301 300 1.0\n').malformed).toBe(1)
-    expect(parsePsTable('  301 300 1.0 10240\n').malformed).toBe(1)
+    expect(parsePsTable('  301 300 1.0 \n').malformed).toBe(1)
     expect(parsePsTable('  301 300 1.0 0 zsh\n  301 300 1.0 0 zsh\n').malformed).toBe(1)
     expect(parsePsTable('  301 300 1.0 x zsh\n').malformed).toBe(1)
     expect(parsePsTable('').malformed).toBe(0)
+  })
+  it('리뷰 r1 C-L1 — 숫자 넷 + 이름 칸 없음은 malformed 가 아니라 이름 없는(null) 행이다', () => {
+    const table = parsePsTable('  301 300 1.0 301\n  302 300 0.5 -1   \n')
+    expect(table.malformed).toBe(0)
+    expect(table.rows.get(301)).toEqual({ pid: 301, ppid: 300, cpu: 1, tpgid: 301, name: null })
+    expect(table.rows.get(302)).toEqual({ pid: 302, ppid: 300, cpu: 0.5, tpgid: -1, name: null })
+    // 숫자 칸 하나가 숫자가 아니면 여전히 이상 — 이름 없는 줄을 받는다고 다른 규칙이 느슨해지지 않는다.
+    expect(parsePsTable('  301 300 1.0 x\n').malformed).toBe(1)
+    expect(parsePsTable('  301 300 1,0 301\n').malformed).toBe(1)
   })
   it('LIFE-688 C3ⓐ — 이름에 공백이 든 줄(`Notion Helper (R`)·끝 공백·음수 tpgid 는 이상이 아니다', () => {
     const table = parsePsTable(' 6649  6590   0.0    0 Notion Helper (R  \n 6650  6590   0.0   -1 Notion Helper   \n60567 60500  12.5 60567 2.1.296\n')
@@ -205,6 +214,14 @@ describe('attribute — LIFE-688 C1 주 프로세스', () => {
     const broken = run(`${ps}\n  777 1 1,0 0 x\n`)
     expect(broken.panes.get('A')?.state).toBe('unavailable')
     expect(broken.mains.size).toBe(0)
+  })
+  it('C-L1 — 주 프로세스 줄에 이름 칸이 없어도 표는 측정되고 주 프로세스는 이름 없이(null) 실린다', () => {
+    const ps = named({ aTpgid: '301' }).replace(/^301 300 50\.0 301 2\.1\.296$/m, '301 300 50.0 301')
+    const result = run(ps)
+    expect(usage(result.panes.get('A'))).toEqual({ cpu: 50, memory: 12288 * KB, pids: [300, 301] })
+    expect(result.mains.get('A')).toEqual({ pid: 301, name: null })
+    expect(result.mains.get('B')).toEqual({ pid: 400, name: 'zsh' })
+    expect(result.app.state).toBe('measured')
   })
   it('ⓔ 기존 값(pid 집합·CPU·메모리 합)은 tpgid·이름 열과 무관 — 같은 입력 표로 비교', () => {
     const plain = attribute({ ...tables(TABLE), panes: PANES, appRoots: [100, 101] })

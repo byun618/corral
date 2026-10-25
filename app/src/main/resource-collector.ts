@@ -13,8 +13,11 @@
 // 도우미 목록이 잘리면(pid 폭증으로 여유 초과) 조용히 덜 센다. 이 둘은 이 규칙으로 가리지 못한다(리뷰 r1 C1-8).
 import { sumUsage, type MemoryPressure, type ResourceMainProcess, type ResourceMeasure, type ResourceMemory, type ResourceUsage } from '../shared/resource.js'
 
-/** `tpgid` = 터미널 포그라운드 프로세스 그룹(터미널 없으면 0), `name` = 실행 파일 이름(`ucomm` — 16자 잘림, 공백 포함 가능). */
-export type PsRow = { pid: number; ppid: number; cpu: number; tpgid: number; name: string }
+/**
+ * `tpgid` = 터미널 포그라운드 프로세스 그룹(터미널 없으면 0), `name` = 실행 파일 이름(`ucomm` — 16자 잘림, 공백 포함 가능).
+ * 이름 칸이 빈 줄은 `name: null` — 보조 표시값이 없다고 CPU·메모리 측정을 버리지 않는다(리뷰 r1 C-L1).
+ */
+export type PsRow = { pid: number; ppid: number; cpu: number; tpgid: number; name: string | null }
 export type PsTable = { rows: Map<number, PsRow>; malformed: number }
 
 /**
@@ -28,10 +31,10 @@ export function psInvocation(env: NodeJS.ProcessEnv): { file: string; args: stri
 const INTEGER = /^\d+$/
 const DECIMAL = /^\d+(\.\d+)?$/
 const SIGNED = /^-?\d+$/
-/** 숫자 칸 넷 + 나머지 전부 이름(`Notion Helper (R` 처럼 공백이 든 이름도 한 칸으로 읽는다). */
-const PS_LINE = /^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)$/
+/** 숫자 칸 넷 + 나머지 전부 이름(`Notion Helper (R` 처럼 공백이 든 이름도 한 칸으로 읽는다). 이름은 없어도 된다(C-L1). */
+const PS_LINE = /^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(.+))?$/
 
-/** 빈 줄은 건너뛴다. 그 밖에 모양이 다른 줄(숫자 칸이 숫자가 아님·이름 없음)은 `malformed` 로 센다(버리지 않고 표 전체를 의심하게 한다). */
+/** 빈 줄은 건너뛴다. 그 밖에 모양이 다른 줄(숫자 칸이 숫자가 아님·숫자 칸 셋 이하)은 `malformed` 로 센다(버리지 않고 표 전체를 의심하게 한다). */
 export function parsePsTable(stdout: string): PsTable {
   const rows = new Map<number, PsRow>()
   let malformed = 0
@@ -40,12 +43,12 @@ export function parsePsTable(stdout: string): PsTable {
     if (trimmed === '') continue
     const match = trimmed.match(PS_LINE)
     const [, pid, ppid, cpu, tpgid, name] = match ?? []
-    if (pid === undefined || ppid === undefined || cpu === undefined || tpgid === undefined || name === undefined
+    if (pid === undefined || ppid === undefined || cpu === undefined || tpgid === undefined
       || !INTEGER.test(pid) || !INTEGER.test(ppid) || !DECIMAL.test(cpu) || !SIGNED.test(tpgid)) {
       malformed += 1
       continue
     }
-    const row = { pid: Number(pid), ppid: Number(ppid), cpu: Number(cpu), tpgid: Number(tpgid), name }
+    const row = { pid: Number(pid), ppid: Number(ppid), cpu: Number(cpu), tpgid: Number(tpgid), name: name ?? null }
     if (rows.has(row.pid)) {
       malformed += 1
       continue

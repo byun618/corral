@@ -70,8 +70,9 @@ export function sumUsage(usages: readonly ResourceUsage[]): ResourceUsage | null
 /**
  * pane 의 주 프로세스(LIFE-688) — 활동 상태 보기 「PID」·「프로세스 이름」 열과 짝짓는 열쇠.
  * `name` = 실행 파일 이름(`ps ucomm`, 16자 잘림) — claude 는 argv0 `claude` 가 아니라 `2.1.296` 처럼 보인다.
+ * ps 줄에 이름 칸이 없었으면 null — 빈 이름·가짜 이름을 내지 않는다(리뷰 r1 C-L1).
  */
-export type ResourceMainProcess = { pid: number; name: string }
+export type ResourceMainProcess = { pid: number; name: string | null }
 
 export type ResourcePaneRow = {
   paneId: string

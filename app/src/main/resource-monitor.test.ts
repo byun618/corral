@@ -147,6 +147,20 @@ describe('resource monitor', () => {
     expect(h.emitted.at(-1)?.panes.map((row) => row.main)).toEqual([null, null, null])
   })
 
+  it('리뷰 r1 C-L4① · C-L1 — tpgid ≠ 셸이면 행 main 은 포그라운드 pid·이름, 이름 칸 없는 줄은 이름 null 로 측정 유지', async () => {
+    const h = harness({ panes: [pane('a'), pane('b')], shellPids: { a: 300, b: 400 } })
+    // footprint 표는 state.ps(4칸 고정 입력)에서, ps stdout 은 tpgid·이름을 직접 적은 표에서.
+    h.state.ps = '  100 1 1.0 100\n  200 1 2.0 200\n  300 200 3.0 300\n  301 300 5.0 301\n  400 200 4.0 400\n  401 400 1.0 401\n'
+    h.readPs.mockImplementation(async () => '  100 1 1.0 0 corral\n  200 1 2.0 0 herdr\n  300 200 3.0 301 zsh\n  301 300 5.0 301 2.1.296\n  400 200 4.0 401 zsh\n  401 400 1.0 401\n')
+    await h.monitor.tick()
+    const rows = h.emitted.at(-1)?.panes ?? []
+    expect(rows.map((row) => [row.paneId, row.measure.state, row.main])).toEqual([
+      ['a', 'measured', { pid: 301, name: '2.1.296' }],
+      ['b', 'measured', { pid: 401, name: null }],
+    ])
+    expect(rows[0]?.measure).toMatchObject({ usage: { cpu: 8 }, pids: [300, 301] })
+  })
+
   it('ps 가 실패하면 전부 측정 불가 — 전체 null(세그먼트 `—`)', async () => {
     const h = harness({ panes: [pane('a')], shellPids: { a: 300 } })
     h.state.psFails = true

@@ -288,6 +288,10 @@ describe('LIFE-688 C2 — pane 행 툴팁의 주 프로세스 줄', () => {
   it('ⓑ 사유가 있으면 사유·CPU 기준 줄 뒤에 붙는다', () => {
     expect(paneRowTitle({ row: { ...base, main: { pid: 7, name: 'zsh' } }, reason: '메모리 하한 — x' })).toBe('메모리 하한 — x\nCPU — 코어 하나 = 100%\n주 프로세스 zsh · PID 7')
   })
+  it('C-L1 — 이름을 모르면 PID 만, 빈 이름·가짜 이름을 내지 않는다', () => {
+    expect(mainProcessLine({ pid: 60567, name: null })).toBe('주 프로세스 PID 60567')
+    expect(paneRowTitle({ row: { ...base, main: { pid: 60567, name: null } }, reason: null })).toBe('claude 1 — 이동\n주 프로세스 PID 60567')
+  })
   it('ⓒ 주 프로세스가 없으면 줄을 빼고 기존 툴팁 그대로', () => {
     expect(paneRowTitle({ row: base, reason: null })).toBe('claude 1 — 이동')
     expect(paneRowTitle({ row: base, reason: '측정 불가 — y' })).toBe('측정 불가 — y\nCPU — 코어 하나 = 100%')

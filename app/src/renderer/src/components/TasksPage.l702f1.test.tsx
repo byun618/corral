@@ -186,6 +186,23 @@ describe('F1 끌기 — 옛 doneAt 이 남은 비완료 카드를 완료로 옮�
   })
 })
 
+describe('F1 끌기 성공 반영 — 서버 doneAt 이 목록에 실린다', () => {
+  it('완료로 끈 뒤 재조회가 실패해도 목록이 서버 시각을 갖는다 — 15일 뒤 틱에서 숨는다', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+    failListAfterWrite = true
+    items = [item({ id: 'i1', key: 'K-1', statusKey: 'doing', category: 'in_progress' }), item({ id: 'i2', key: 'K-2', rank: '2' })]
+    await renderPage()
+    await dragTo({ key: 'K-1', zone: 'col:st:done' })
+    await wait(60)
+    await settle()
+    expect(writes[0]?.doneAt).not.toBeNull()
+    expect(cards()).toEqual(['K-1', 'K-2'])
+    vi.setSystemTime(Date.now() + 15 * DAY)
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+    expect(cards()).toEqual(['K-2'])
+  })
+})
+
 describe('F1 상세 — 낙관 반영도 doneAt 을 맞춘다', () => {
   it('상세에서 완료로 바꾸면 응답 전에도 카드가 보드에 남는다', async () => {
     holdWrite = true

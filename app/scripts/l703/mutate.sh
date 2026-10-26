@@ -34,6 +34,17 @@ delete-fail	finish-deletefail	/# guard:delete-fail$/ s/UNRESOLVED=[^;]*; //
 wait-loop	ship-indirect-late	/# guard:wait-loop$/ s/now="\$(date +%s)"; .*/now=0; break/
 mergeable-loop	ship-mergeable-late	/# guard:mergeable-loop$/ s/\$(seq 1 "\$TRIES")/1/
 verify-tag	ship-ok	s/ --verify-tag --title/ --title/
+version-gt	cut-ver-low	
+merged-only	ship-noindirect	/# guard:merged-only$/ s/if \[ "\$st" != MERGED \]; then/if false; then/
+pkg-version	ship-pkgver	
+remote-ahead	ship-remote-ahead	
+rpm-tip	ship-merged-moved	
+second-parent	ship-second-parent	
+base-changed	ship-base-changed	
+unrecorded	ship-unrecorded-merge	
+record-valid	ship-forged-record	/# guard:record-valid$/ s/ok = /ok = 1 || /
+record-anc	ship-forged-record2	
+rehearsal-head	ns-rehearsal-realhead	/# guard:rehearsal-head$/ s/if \[ "\$BK" = rehearsal \]; then/if false; then/
 P
 )"
 BAD=0

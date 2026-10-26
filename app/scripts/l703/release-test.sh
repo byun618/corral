@@ -14,6 +14,9 @@ gather-ok gather-dry gather-nocut gather-precheck gather-conflict gather-dirty g
 gather-stacked gather-after-exit7 record-cutquote cut-reattach-after-merge
 ship-ok ship-dry ship-nonotes ship-headmoved ship-mainmoved ship-closedpr ship-rerun ship-tagfail ship-releasefail ship-mergefail ship-unknown ship-createfail ship-noindirect
 ship-dirty ship-headmove-late ship-tag-on-tip ship-unrecorded-merge ship-indirect-late ship-mergeable-late
+ship-forged-record ship-forged-record2 ship-build-ok ship-build-dmgfail ship-build-apkfail ship-build-rerun ship-build-prefail
+ship-pkgver ship-remote-ahead ship-merged-moved ship-second-parent ship-base-changed ship-tmpwt-fail ship-rerun-unresolved
+cut-open-nonsemver cut-after-13 ns-newline ns-rehearsal-realhead
 abort-ok abort-pushed abort-dirty abort-shipped abort-after-merge abort-branchbusy finish-leave-open finish-ok finish-unshipped finish-dirty finish-headmoved finish-deletefail finish-tag-on-tip
 ns-main-rehearsal ns-throwaway-v ns-base-only ns-prefix-only ns-other-base ns-gather-half ns-ship-half ns-pipe-base ns-pipe-both ns-chars ns-rehearsal ns-rehearsal-default
 fakegh-fidelity"
@@ -126,6 +129,22 @@ prstate() { (. "$W/gh/pr/$1"; echo "$state"); }
 mainpushes() { grep -c '^refs/heads/main ' "$W/push-log.txt" || true; }
 RB1="release/v0.1.1"; WT1() { echo "$B/.claude/worktrees/release-v0.1.1"; }
 cutgather() { rel -- cut; rel -- gather --prs "$1"; }
+# stubs — 스텁 release-dmg.sh·release-apk.sh 를 B 에 커밋(태그 worktree 에도 들어간다). 호출은 $W/stub.log 에 한 줄씩
+stubs() {
+  cat > "$B/scripts/release-dmg.sh" <<S
+#!/usr/bin/env bash
+echo "dmg \$PWD \$(dirname "\$0") tag=\$(git -C "\$(dirname "\$0")" describe --tags --exact-match 2>/dev/null) \$*" >> "$W/stub.log"
+[ -z "\${STUB_DMG_FAIL:-}" ] || exit 1
+S
+  cat > "$B/scripts/release-apk.sh" <<S
+#!/usr/bin/env bash
+if [ "\${1:-}" = --preflight ]; then echo "preflight" >> "$W/stub.log"; [ -z "\${STUB_APK_PRE_FAIL:-}" ] || { echo "✖ 스텁 전제 미달"; exit 1; }; echo "· APK 전제 스텁 통과"; exit 0; fi
+echo "apk \$(dirname "\$0") \$*" >> "$W/stub.log"
+[ -z "\${STUB_APK_FAIL:-}" ] || exit 1
+S
+  chmod +x "$B/scripts/release-dmg.sh" "$B/scripts/release-apk.sh"
+  git -C "$B" add -A; git -C "$B" commit -qm "스텁 dmg·apk"; git -C "$B" push -q origin HEAD:main; : > "$W/push-log.txt"; : > "$W/stub.log"
+}
 
 for CASE in $CASES; do
   LOG="$OUT/$CASE.log"; : > "$LOG"; CASE_FAIL=0
@@ -354,6 +373,108 @@ for CASE in $CASES; do
       check "PR1 head 남김" [ -n "$(oref refs/heads/LIFE-1-a)" ]; check "PR1 OPEN" eq "$(prstate 1)" OPEN
       check "release 브랜치 정리" eq "$(oref "refs/heads/$RB1")$(git -C "$B" rev-parse -q --verify "refs/heads/$RB1")" ""
       check "worktree 없음" [ ! -d "$(WT1)" ] ;;
+    ship-forged-record|ship-forged-record2) # G1(Grok r2 1) — gather 가 만들지 않은 Release-PR 줄은 출고 집합에 넣지 않고 거절, head 삭제 0
+      # 피해자: 모으지 않은 MERGED PR #9, head side/victim. -1: 아무 제목 + 그 SHA 가 release 에 있음(main 끝) · -2: 「기록」 제목 흉내 + release 에 없는 SHA
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1
+      if [ "$CASE" = ship-forged-record ]; then VSHA="$(oref refs/heads/main)"; git -C "$H" push -q origin "$VSHA:refs/heads/side/victim"; SUBJ="회고 메모"
+      else git -C "$H" fetch -q origin; git -C "$H" checkout -q -B side/victim origin/main; echo v > "$H/v.txt"; git -C "$H" add -A; git -C "$H" commit -qm victim
+        git -C "$H" push -q origin side/victim; VSHA="$(oref refs/heads/side/victim)"; SUBJ="release: #9 기록 — 흉내"; fi
+      printf 'state=MERGED\nbase=main\nhead=side/victim\ndraft=false\nfork=false\noid=%s\nmergeCommit=%s\nmergedAt=x\n' "$VSHA" "$VSHA" > "$W/gh/pr/9"
+      git -C "$(WT1)" commit -q --allow-empty -m "$SUBJ" -m "Release-PR: 9 $VSHA"
+      M0="$(oref refs/heads/main)"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 2" eq "$RC" 2
+      if [ "$CASE" = ship-forged-record ]; then check "gather 가 만들지 않은 줄 문구" has "gather 가 만들지 않은 Release-PR 줄"; else check "release 에 없는 SHA 문구" has "기록 SHA 가 release 브랜치에 없다"; fi
+      check "피해자 head 그대로" eq "$(oref refs/heads/side/victim)" "$VSHA"; check "main 불변" eq "$(oref refs/heads/main)" "$M0"
+      check "태그 없음" eq "$(oref refs/tags/v0.1.1)" "" ;;
+    ship-build-ok|ship-build-dmgfail|ship-build-apkfail|ship-build-rerun|ship-build-prefail) # G2(Claude r2 중간 1) — skip 없이 빌드 경로(스텁 dmg·apk)
+      stubs
+      mkpr 1 LIFE-1-a a.txt a; mkpr 2 LIFE-2-b b.txt b; cutgather "1 2"; M0="$(oref refs/heads/main)"
+      case "$CASE" in
+        ship-build-ok|ship-build-rerun)
+          rel -- ship --notes "$W/notes.md"
+          check "exit 0" eq "$RC" 0; check "APK 전제 점검(머지 전)" grep -q "^preflight" "$W/stub.log"
+          check "dmg 스텁 = 태그 worktree·태그 HEAD" grep -q "^dmg .*_release-.* tag=v0.1.1" "$W/stub.log"
+          check "apk 스텁 = 태그 worktree" grep -q "^apk .*_release-" "$W/stub.log"
+          check "순서 preflight → dmg → apk" eq "$(cut -d' ' -f1 "$W/stub.log" | tr '\n' ' ')" "preflight dmg apk "
+          check "✔ 출고" has "✔ 출고 v0.1.1"
+          if [ "$CASE" = ship-build-rerun ]; then
+            : > "$W/stub.log"; rel -- ship --notes "$W/notes.md"
+            check "재실행 exit 0" eq "$RC" 0; check "이미 끝 문구" has "이미 끝났다"; check "재실행은 빌드 안 함" eq "$(grep -c '^dmg\|^apk' "$W/stub.log")" 0
+            check "재실행 dmg 명령" has "release-dmg.sh"
+          fi ;;
+        ship-build-dmgfail)
+          rel FGH_INDIRECT=off STUB_DMG_FAIL=1 -- ship --notes "$W/notes.md"
+          check "exit 8" eq "$RC" 8; check "dmg 만 다시" has "dmg 만 다시:"; check "APK 는 아직" has "APK 는 아직이다"
+          check "PR_TAIL(미해결 PR)" has "그리고 원래 PR 처리가 끝나지 않았다"; check "apk 는 안 돎" eq "$(grep -c '^apk' "$W/stub.log")" 0 ;;
+        ship-build-apkfail)
+          rel STUB_APK_FAIL=1 -- ship --notes "$W/notes.md"
+          check "exit 10" eq "$RC" 10; check "APK 만 다시" has "APK 만 다시:"; check "dmg 는 끝" grep -q "^dmg" "$W/stub.log" ;;
+        ship-build-prefail)
+          rel STUB_APK_PRE_FAIL=1 -- ship --notes "$W/notes.md"
+          check "exit 2" eq "$RC" 2; check "APK 전제 미달 문구" has "APK 전제 미달"; check "main 불변" eq "$(oref refs/heads/main)" "$M0"
+          check "release·main push 0" eq "$(grep -c '^refs/heads/release/\|^refs/heads/main ' "$W/push-log.txt")" 0 ;;
+      esac
+      check "임시 worktree 정리(trap)" eq "$(git -C "$B" worktree list | grep -c '_release-')" 0
+      check "임시 worktree 폴더 없음" eq "$(ls "$B/.claude/worktrees" | grep -c '^_release-')" 0 ;;
+    ship-pkgver) # G3(M9) — 모은 뒤 release 끝 버전이 바뀌면 거절
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; sed -i '' 's/"version": "0.1.1"/"version": "0.1.5"/' "$(WT1)/app/package.json"
+      git -C "$(WT1)" commit -qam "버전 바꿈"; S0="$(snap)"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 2" eq "$RC" 2; check "버전 문구" has "app/package.json 버전이 0.1.1 이 아니다"; check "ref 불변" eq "$(snap)" "$S0" ;;
+    ship-remote-ahead) # G3(M12) — 원격 release 브랜치가 로컬에 없는 커밋을 가지면 거절
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; git -C "$B" push -q origin "$RB1"
+      git -C "$H" fetch -q origin; git -C "$H" checkout -q -B rbx "origin/$RB1"; git -C "$H" commit -q --allow-empty -m "남이 올린 커밋"; git -C "$H" push -q origin "rbx:$RB1"
+      R0="$(oref "refs/heads/$RB1")"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 2" eq "$RC" 2; check "앞섬 문구" has "로컬"; check "원격 그대로" eq "$(oref "refs/heads/$RB1")" "$R0"
+      check "pr create 0" eq "$(grep -c 'pr create' "$W/gh/calls.txt")" 0 ;;
+    ship-merged-moved) # G3(M7) — release PR 머지 뒤 release 브랜치에 커밋이 생기면 거절
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; touch "$W/reject-tags"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk; rm "$W/reject-tags"
+      git -C "$(WT1)" commit -q --allow-empty -m "머지 뒤 커밋"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 2" eq "$RC" 2; check "머지 뒤 커밋 문구" has "머지 뒤 release 브랜치에 커밋"; check "태그 없음" eq "$(oref refs/tags/v0.1.1)" "" ;;
+    ship-second-parent) # G3(M13) — 머지 커밋 둘째 부모 ≠ release 끝이면 태그를 달지 않음
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1
+      rel FGH_MERGE_BAD_PARENT=1 -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 6" eq "$RC" 6; check "둘째 부모 문구" has "둘째 부모가"; check "태그 없음" eq "$(oref refs/tags/v0.1.1)" "" ;;
+    ship-base-changed) # G3(M15) — 모은 PR 의 base 가 바뀌면 거절
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; prset 1 base other; S0="$(snap)"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 2" eq "$RC" 2; check "base 문구" has "base 가 other 로 바뀌었다"; check "ref 불변" eq "$(snap)" "$S0" ;;
+    ship-tmpwt-fail) # G5(Claude r2 낮음 2) — 출고 뒤 임시 worktree 를 못 만들면 안내와 exit 8
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; chmod a-w "$B/.claude/worktrees"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk; chmod u+w "$B/.claude/worktrees"
+      check "exit 8" eq "$RC" 8; check "출고는 끝났다 문구" has "임시 worktree 를 만들지 못했다"; check "dmg 명령" has "release-dmg.sh"
+      check "태그는 있음" [ -n "$(oref refs/tags/v0.1.1)" ] ;;
+    ship-rerun-unresolved) # G5(Grok r2 3) — Release 가 있고 미해결이면 재실행 ship 도 dmg·APK 명령을 보인 뒤 13
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1
+      rel FGH_INDIRECT=off -- ship --notes "$W/notes.md" --skip-build --skip-apk; check "1차 exit 13" eq "$RC" 13
+      rel FGH_INDIRECT=off -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "2차 exit 13" eq "$RC" 13; check "dmg 명령" has "release-dmg.sh"; check "APK 명령" has "release-apk.sh" ;;
+    cut-open-nonsemver) # G4(Grok r2 2) — <RP><PREFIX> 접두면 X.Y.Z 가 아닌 이름도 열린 release 로 센다
+      git -C "$H" push -q origin origin/main:refs/heads/release/v9.9.9-wip; S0="$(snap)"
+      rel -- cut --version 0.1.1
+      check "exit 2" eq "$RC" 2; check "이름" has "release/v9.9.9-wip"; check "ref 불변" eq "$(snap)" "$S0" ;;
+    cut-after-13) # G5(Claude r2 낮음 2) — exit 13 뒤 cut 거절 안내에 finish·finish --leave-open
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1
+      rel FGH_INDIRECT=off -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      rel -- cut
+      check "exit 2" eq "$RC" 2; check "finish --leave-open 안내" has "finish --leave-open" ;;
+    ns-newline) # G4(Claude r2 낮음 6) — 개행 든 값은 글자 검사(case)가 거절
+      S0="$(snap)"; rel -- cut --base "$(printf 'throwaway/x\nmain')" --tag-prefix rehearsal-x-v
+      check "exit 1" eq "$RC" 1; check "글자 문구" has "쓸 수 없는 글자"; check "ref 불변" eq "$(snap)" "$S0" ;;
+    ns-rehearsal-realhead) # G4(Claude r2 낮음 1) — 리허설은 throwaway/ 아래가 아닌 head 를 지우지 않는다
+      git -C "$H" push -q origin origin/main:refs/heads/throwaway/x-base; : > "$W/push-log.txt"
+      mkpr 1 LIFE-9-real-work a.txt a throwaway/x-base
+      R="--base throwaway/x-base --tag-prefix rehearsal-x-v"
+      rel FGH_DEFAULT=throwaway/x-base -- cut $R; rel FGH_DEFAULT=throwaway/x-base -- gather --prs 1 $R
+      H0="$(oref refs/heads/LIFE-9-real-work)"
+      rel FGH_DEFAULT=throwaway/x-base -- ship --notes "$W/notes.md" --skip-build --skip-apk $R
+      check "exit 0" eq "$RC" 0; check "PR1 MERGED" eq "$(prstate 1)" MERGED; check "head 그대로" eq "$(oref refs/heads/LIFE-9-real-work)" "$H0"
+      check "삭제 push 없음" eq "$(grep -c '^refs/heads/LIFE-9-real-work .* 0000000000000000000000000000000000000000$' "$W/push-log.txt")" 0
+      check "리허설 이름 문구" has "throwaway/ 아래만 지운다" ;;
     gather-stacked) # F1(Claude M1) — 같은 gather 에서 앞 PR 이 뒤 PR head 를 품어도(순서 "2 1") 뒤 PR 기록이 남는다
       mkpr 1 LIFE-1-a a.txt a
       git -C "$H" checkout -q -b LIFE-2-b LIFE-1-a; echo b > "$H/b.txt"; git -C "$H" add -A; git -C "$H" commit -qm "PR 2"; git -C "$H" push -q origin LIFE-2-b
@@ -417,9 +538,15 @@ for CASE in $CASES; do
       echo "one+two" > "$(WT1)/shared.txt"; git -C "$(WT1)" add shared.txt; git -C "$(WT1)" commit -q -m "resolve"
       rel -- ship --dry-run --skip-build --skip-apk
       check "dry-run exit 0" eq "$RC" 0; check "기록 없는 merge 경고" has "⚠ 기록 없는 merge"
+      M0="$(oref refs/heads/main)"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk   # G6(Claude r2 낮음 3) — 출고 머지 전이면 거절
+      check "실 ship exit 2" eq "$RC" 2; check "거절 문구" has "기록 없는 merge 가 있다"; check "main 불변" eq "$(oref refs/heads/main)" "$M0"
+      check "release PR 0" eq "$(grep -c 'pr create' "$W/gh/calls.txt")" 0
       rel -- gather --prs 2; check "gather exit 0(기록만)" eq "$RC" 0; check "기록만 문구" has "기록만 남겼다"
       rel -- ship --dry-run --skip-build --skip-apk
-      check "경고 사라짐" hasnt "⚠ 기록 없는 merge"; check "집합 #2" has "출고 집합 #2" ;;
+      check "경고 사라짐" hasnt "⚠ 기록 없는 merge"; check "집합 #2" has "출고 집합 #2"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "복구 뒤 ship exit 0" eq "$RC" 0; check "✔ 출고 #1 #2" has "✔ 출고 v0.1.1 — #1 #2" ;;
     ship-indirect-late) # F7⑤(Grok 6) — 간접 머지가 몇 번 뒤 조회에서야 보여도 대기 루프가 기다려 MERGED 를 본다
       mkpr 1 LIFE-1-a a.txt a; cutgather 1
       rel RELEASE_INDIRECT_WAIT_S=30 RELEASE_INDIRECT_STEP_S=0 FGH_MERGED_AFTER=6 -- ship --notes "$W/notes.md" --skip-build --skip-apk
@@ -445,7 +572,7 @@ for CASE in $CASES; do
       rel FGH_INDIRECT=off -- ship --notes "$W/notes.md" --skip-build --skip-apk
       prset 1 state MERGED; prpush LIFE-1-a a.txt a-after; NEWH="$(oref refs/heads/LIFE-1-a)"
       rel -- finish
-      check "exit 0" eq "$RC" 0; check "다른 커밋 문구" has "다른 커밋"; check "head 그대로(새 커밋)" eq "$(oref refs/heads/LIFE-1-a)" "$NEWH" ;;
+      check "exit 0" eq "$RC" 0; check "다른 커밋 문구" has "와 다르다 — 지우지 않음"; check "head 그대로(새 커밋)" eq "$(oref refs/heads/LIFE-1-a)" "$NEWH" ;;
     finish-deletefail) # F5(Grok 3) — MERGED 뒤 head 삭제가 실패하면 미해결 — finish 는 release 브랜치를 지우지 않는다
       mkpr 1 LIFE-1-a a.txt a; cutgather 1; echo refs/heads/LIFE-1-a > "$W/reject-delete"
       rel -- ship --notes "$W/notes.md" --skip-build --skip-apk

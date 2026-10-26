@@ -7,7 +7,7 @@
 #     FGH_INDIRECT=off 면 하지 않는다(간접 머지 미확인 경로)
 #   - OPEN PR 의 head 브랜치가 원격에서 사라지면 CLOSED (G4)
 #   - pr merge 는 merge-tree 로 merge commit(부모 2개)을 만들어 base 를 옮긴다. --match-head-commit 이 지금 head 와 다르면 거절
-# 주입: FGH_MERGEABLE(판정 고정, 예 UNKNOWN) · FGH_MERGE_FAIL=1 · FGH_CREATE_FAIL=1 · FGH_RELEASE_FAIL=1 · FGH_ON_RELEASE_CREATE(bash 명령)
+# 주입: FGH_MERGEABLE(판정 고정, 예 UNKNOWN) · FGH_MERGE_FAIL=1 · FGH_MERGE_BAD_PARENT=1(둘째 부모 = head^) · FGH_CREATE_FAIL=1 · FGH_RELEASE_FAIL=1 · FGH_ON_RELEASE_CREATE(bash 명령)
 #   FGH_MERGED_AFTER=N — PR 마다 `pr view` N 번째 조회부터 간접 머지를 반영(대기 루프를 잠근다)
 #   FGH_MERGEABLE_AFTER=N — `pr view --json mergeable` N 번째 조회까지는 UNKNOWN(재시도 루프를 잠근다)
 #   FGH_HOOK_ON(인자 줄 glob) + FGH_HOOK_CMD(bash 명령) — 처음 맞는 호출 직전에 한 번 돌린다(예: 판정 조회 때 PR head 이동)
@@ -121,8 +121,9 @@ case "${1:-} ${2:-}" in
     [ -z "$M" ] || [ "$M" = "$oid" ] || fail "Head branch was modified. Review and try the merge again."
     btip="$(og rev-parse "refs/heads/$base")"
     tree="$(og merge-tree --write-tree "$btip" "$oid")" || fail "merge conflict"
+    p2="$oid"; [ "${FGH_MERGE_BAD_PARENT:-0}" = 0 ] || p2="$(og rev-parse "$oid^")"  # 주입: 둘째 부모가 head 가 아닌 머지 커밋
     mc="$(GIT_AUTHOR_NAME=gh GIT_AUTHOR_EMAIL=gh@example GIT_COMMITTER_NAME=gh GIT_COMMITTER_EMAIL=gh@example \
-      og commit-tree "$tree" -p "$btip" -p "$oid" -m "Merge pull request #$n from o/$head")"
+      og commit-tree "$tree" -p "$btip" -p "$p2" -m "Merge pull request #$n from o/$head")"
     og update-ref "refs/heads/$base" "$mc" "$btip" || fail "base 가 그새 움직였다"
     state=MERGED; mergeCommit="$mc"; mergedAt="2026-10-26T00:00:00Z"; save "$n" ;;
   "release view")

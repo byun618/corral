@@ -13,8 +13,8 @@ arm64 macOS 전용. 서명은 ad-hoc 이고 자동 업데이트·brew cask·릴�
 본체 세션이 본체 checkout 에서 `release` 스킬(`.agents/skills/release/SKILL.md`)대로 실행한다 — 릴리즈 노트 작성이 그 스킬 몫이다.
 
 흐름은 **release 브랜치** 하나를 거친다(Git Flow 에서 develop 을 뺀 모양): main 에서 `release/vX.Y.Z` 를 자르고, 고른 PR 을 거기에 로컬 merge 로 모아
-release worktree 에서 통합 확인한 뒤, release → main PR 하나를 머지하는 것이 출고다. 원래 PR 들(base 는 그대로 main)은 head 가 main 에 닿아
-GitHub 가 MERGED 로 바꾼다(간접 머지). release 브랜치는 출고 1회 수명이고 **한 번에 하나**다.
+release worktree 에서 통합 확인한 뒤, release → main PR 하나를 머지하는 것이 출고다. 원래 PR 들(base 는 그대로 main)은 head 가 main 에 닿으면
+GitHub 가 MERGED 로 바꾼다고 **가정한다**(간접 머지 — 기본 브랜치에서만, C14 실측 전). 확인이 안 되면 head 를 지우지 않고 exit 13 으로 멈춘다. release 브랜치는 출고 1회 수명이고 **한 번에 하나**다.
 
 ```sh
 gh pr list                                              # 출고 대기열
@@ -36,6 +36,7 @@ scripts/release.sh abort                                # 접기 — 출고 전 
 
 **② gather** — 고른 PR 전부를 먼저 본다: 닫힘·draft·포크·base 가 main 이 아님 중 하나라도면 release 브랜치 변경 0건(exit 2). 이때 head SHA 를 고정해
 그 SHA 를 fetch·merge 하고, merge 커밋에 `Release-PR: <번호> <head SHA>` 줄을 남긴다 — **출고 집합은 이 기록이다**(ship 이 다시 고르지 않는다).
+기록 줄은 gather 가 만든 커밋(둘째 부모 = 그 SHA 인 merge, 또는 제목 `release: #<번호> 기록`)에 있고 그 SHA 가 release 브랜치에 있을 때만 센다 — 아니면 어느 커밋인지 대고 exit 2.
 이미 들어 있는 head 는 건너뛰므로 같은 명령을 몇 번 다시 쳐도 된다. release worktree 가 더럽거나 해소 중인 merge 가 있으면 거절한다.
 
 **충돌이 나면 (gather exit 3)** — 그 PR 에서 멈추고(뒤 PR 은 모으지 않음) release worktree 에 충돌 상태를 남긴다. 그 자리에서 푼다:
@@ -46,9 +47,10 @@ git commit --no-edit                     # 메시지의 Release-PR 줄이 모으
 scripts/release.sh gather --prs "<멈춘 PR> <뒤 PR …>"   # 이미 모은 PR 은 넣어도 건너뛴다(안내 메시지에 그대로 있다)
 ```
 PR head 에는 해소가 없다 — 상관없다: 그 head 가 release→main 머지로 main 에 닿으면 PR 이 MERGED 가 된다. 해소가 기능을 바꿀 만큼 크면
-`git merge --abort` 로 그 PR 을 빼고 나머지만 모은 뒤 그 작업의 코디에게 돌려보낸다. LA 는 `검증 중` 그대로다.
-해소 커밋을 `-m` 으로 만들어 `Release-PR:` 줄이 빠지면 그 PR 은 출고 집합 밖이다 — `ship`(dry-run 포함)이 「⚠ 기록 없는 merge」로 경고하고,
-같은 PR 을 다시 `gather` 하면 기록만 남긴다. 앞 PR 이 뒤 PR 의 head 를 이미 품은 경우(쌓인 PR)도 `gather` 가 기록만 남긴다.
+`git merge --abort` 로 그 PR 을 빼고 나머지만 모은 뒤 그 작업의 코디에게 돌려보낸다.
+**이미 모은 PR 을 빼려면** `abort` 후 다시 `cut` 하고 나머지만 `gather` 한다 — 앞서 푼 충돌 해소는 다시 해야 한다. LA 는 `검증 중` 그대로다.
+해소 커밋을 `-m` 으로 만들어 `Release-PR:` 줄이 빠지면 그 PR 은 출고 집합 밖이다 — `ship --dry-run` 은 「⚠ 기록 없는 merge」로 보고만 하고,
+실제 `ship` 은 출고 머지 전이면 거절한다(exit 2 + gather 안내). 같은 PR 을 다시 `gather` 하면 기록만 남긴다. 앞 PR 이 뒤 PR 의 head 를 이미 품은 경우(쌓인 PR)도 `gather` 가 기록만 남긴다.
 
 **출고 중 수정** — 통합 확인에서 문제가 나오면 그 일감 브랜치에서 고쳐 push 하고(리뷰 근거를 일감에 남긴다) 같은 PR 을 다시 `gather` 한다 —
 새 커밋만 merge 하고 기록을 갱신한다. release worktree 에서 직접 고치지 않는다. 자른 뒤엔 출고를 막는 수정만 넣는다(동결) — 새 작업은 다음 출고.
@@ -63,7 +65,7 @@ dmg 를 만들 거면 node(v24 기준, v22 는 경고, 그 밖은 거절)·clang
 재확인과 머지 사이에 남는 짧은 창의 head 이동은 막을 수 없다 — 그 PR 은 OPEN 으로 남고 ⓕ 가 exit 13 으로 받는다
 ⓒ 주석 태그 `vX.Y.Z` = **main 끝(머지 커밋)** push — main 에 직접 push 하는 것은 이 태그뿐이다 ⓓ `--notes` 로 GitHub Release ⓔ 본체 checkout fast-forward(`release-ff.sh`)
 ⓕ **원래 PR 처리**: 기록된 PR 의 상태를 다시 조회해 **MERGED 를 본 뒤에만** 원격 head 를 지운다(그 전에 지우면 PR 이 merged 가 아니라 closed 가 될 수 있다).
-대기 시계는 **한 실행에 하나**다 — `RELEASE_INDIRECT_WAIT_S`(기본 120초, 간격 `RELEASE_INDIRECT_STEP_S` 10초)를 모든 PR 이 같이 쓰고, 시계가 다 돼도 PR 마다 최소 1회는 조회한다.
+리허설은 `throwaway/` 아래 head 만 지운다(그 밖은 그대로 두고 알린다). 대기 시계는 **한 실행에 하나**다 — `RELEASE_INDIRECT_WAIT_S`(기본 120초, 간격 `RELEASE_INDIRECT_STEP_S` 10초)를 모든 PR 이 같이 쓰고, 시계가 다 돼도 PR 마다 최소 1회는 조회한다.
 head 가 그 사이 다른 커밋으로 움직였으면 지우지 않는다(그 뒤 push 된 커밋이다). **head 삭제가 실패하면 미해결로 센다**(exit 13 — finish 가 release 브랜치를 지우지 않는다)
 ⓖ 그 태그 위 깨끗한 임시 worktree(`.claude/worktrees/_release-*`)에서 `scripts/release-dmg.sh` 로 아래 「빌드」를 돌려 dmg 를 `app/dist/release/vX.Y.Z/` 에 둔다(`--skip-build` 면 생략)
 ⓗ 같은 worktree 에서 `scripts/release-apk.sh` 로 모바일 APK(`preview` 프로필 로컬 빌드 — EAS 쿼터 소모 없음, 서명 = EAS 원격 자격증명)를 `app/dist/release/vX.Y.Z/corral-mobile-X.Y.Z.apk` 에 둔다
@@ -81,13 +83,13 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 | exit | 뜻 | 할 일 |
 | --- | --- | --- |
 | 0 | 완료 | 다음 하위 명령 |
-| 1 | 인자·환경 오류(짝 안 맞는 리허설 인자·옛 `--prs` 단독 호출 포함) — 변경 0 | 메시지대로 고쳐 다시 |
-| 2 | 사전 점검 거절 — 변경 0 | 사유(열린 release 브랜치·head 이동·main 이동·더러운 worktree 등)를 풀고 다시 |
+| 1 | 인자·환경 오류(짝 안 맞는 리허설 인자·쓸 수 없는 글자·옛 `--prs` 단독 호출 포함) — ref·push 전에 멈춤 | 메시지대로 고쳐 다시 |
+| 2 | 점검 거절 — 대부분 변경 0. 단 ship 의 머지 직전 head 재확인은 release 브랜치 push·release PR 생성 뒤(PR 은 열린 채), gather 는 앞 PR 을 모은 뒤 거절할 수 있다 | 사유(열린 release 브랜치·head 이동·main 이동·더러운 worktree·기록 이상 등)를 풀고 같은 명령 |
 | 3 | 충돌 — gather: release worktree 에 남김 / ship: release PR 이 main 과 충돌 | 위 「충돌이 나면」 / release worktree 에서 `merge origin/main` 뒤 ship |
 | 5 | release PR 머지 가능 판정이 안 나옴 | 잠시 뒤 같은 ship |
 | 6 | release PR 머지 거절·머지 결과 이상(부모·버전) | PR 상태를 보고 같은 ship |
-| 7 | 태그 push 실패(머지는 끝남, 로컬 태그는 지움) | 같은 ship — 태그부터 이어 간다 |
-| 8 | dmg 실패(머지·태그·Release 끝) | 메시지의 「dmg 만 다시」 줄 → 그 뒤 「dmg 뒤 APK」 줄 |
+| 7 | 태그 만들기·push·main fetch 실패(머지는 끝남, 로컬 태그는 지움) | 같은 ship — 태그부터 이어 간다 |
+| 8 | dmg 실패 또는 빌드용 임시 worktree 생성 실패(머지·태그·Release 끝) | 메시지의 「dmg 만 다시」 줄 → 그 뒤 「dmg 뒤 APK」 줄 |
 | 9 | GitHub Release 실패(머지·태그 끝) | 같은 ship — Release 부터 이어 간다 |
 | 10 | APK 실패(머지·태그·Release·dmg 끝) | 메시지의 「APK 만 다시」 줄 |
 | 11 | release 브랜치 push·삭제 실패 | 원인을 보고 같은 명령 |

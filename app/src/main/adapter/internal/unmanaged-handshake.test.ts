@@ -40,6 +40,8 @@ async function stubGuard(input: { advertise: boolean; managed: boolean; file: st
   const agent = {
     agent: 'claude', name: input.managed ? 'corral-x' : null, agent_status: 'idle', launch_pending: false, interactive_ready: input.managed,
     state_change_seq: 7, pane_id: 'c1', corral_input_revision: 3, corral_input_idle_ms: 5_000,
+    // LIFE-598: 실물 guard 처럼 지금 세션을 싣는다 — 허브가 효과 직전 접수 때 묶은 목록 세션과 대조한다.
+    agent_session: { source: CHAT_SESSIONS.claude.source, agent: 'claude', kind: 'id', value: CHAT_SESSIONS.claude.id },
     // 옛 guard 는 이 칸을 모른다.
     ...(input.advertise ? { corral_state_quiet_ms: 5_000 } : {}),
   }

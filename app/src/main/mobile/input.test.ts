@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { TerminalIdentity } from '../adapter/index.js'
 import { ChatBuilder, type ChatItem } from '../chat-parse.js'
 import { CHAT_SESSIONS, chatListState } from './chat-fixture.js'
-import { answerMatches, answerRecords, cleanAnswers, recordedAnswers, INPUT_IDS_MAX, INPUT_QUEUE_MAX, InputHub, type FileResolution, type InputBackend, type InputWire, type KeyResult, type PaneObservation, type ScreenRead, type SendResult } from './input.js'
+import { answerMatches, answerRecords, cleanAnswers, observedSessionKey, recordedAnswers, INPUT_IDS_MAX, INPUT_QUEUE_MAX, InputHub, type FileResolution, type InputBackend, type InputWire, type KeyResult, type PaneObservation, type ScreenRead, type SendResult } from './input.js'
 import { activeQuestion, KEY, matchQuestion, questionDigest } from './keys.js'
 import type { MobileAgentKind } from './list.js'
 
@@ -50,6 +50,8 @@ class FakeBackend implements InputBackend {
   epoch = 'e'
   ptyId = 't'
   input: PaneObservation['input'] = { revision: 1, idleMs: 10_000 }
+  /** LIFE-598: herdr 가 말하는 그 pane 의 세션 — 기본은 목록과 같다(setup 이 목록에서 읽게 잇는다). 시험이 목록과 엇갈리게 바꾼다. */
+  observedSession: (paneId: string) => string | null = () => null
   /** 넣기 직전에 부른다(끔·해지가 넣기 중에 겹치는 시험). */
   onPrompt: (() => void) | null = null
   readonly fences: { seq: number; inputRevision: number; minIdleMs: number }[] = []
@@ -69,8 +71,8 @@ class FakeBackend implements InputBackend {
     return { epoch: this.epoch, ptyId: this.ptyId, paneId, tabId: 'tab', workspaceId: 'ws', path: '/w', repo: '/w', title: 'x' }
   }
 
-  async observe(): Promise<PaneObservation> {
-    return { status: this.status, seq: this.seq, quiet: this.quiet, unmanaged: this.unmanaged, input: this.input }
+  async observe(pane: TerminalIdentity): Promise<PaneObservation> {
+    return { status: this.status, seq: this.seq, quiet: this.quiet, unmanaged: this.unmanaged, input: this.input, session: this.observedSession(pane.paneId) }
   }
 
   unmanagedPrompt(): boolean {
@@ -91,6 +93,9 @@ class FakeBackend implements InputBackend {
     this.unmanagedAgents.push(unmanagedAgent)
     this.onPrompt?.()
     if (this.promptResult !== 'sent') return this.promptResult
+    // guard 처럼 — 울타리 revision 이 지금 값과 다르면 쓰지 않는다(`input_changed`). 들어가면 같은 턴에서 revision 을 1 올린다(`queue_user_input_submission`).
+    if (this.input !== null && fence.inputRevision !== this.input.revision) return 'refused'
+    if (this.input !== null) this.input = { ...this.input, revision: this.input.revision + 1 }
     this.prompts.push(text)
     const times = this.delivery === 'none' ? 0 : this.delivery === 'twice' ? 2 : 1
     for (let index = 0; index < times; index += 1) fs.appendFileSync(this.file, `${userLine(text)}\n`)
@@ -142,6 +147,11 @@ function setup(input: { listed?: boolean; noFileYet?: boolean; resolution?: () =
   const logs: { tag: string; fields: Record<string, unknown> }[] = []
   // 목록 상태 — 시험이 세션 교체(R2-A4)를 흉내 내려고 고칠 수 있다.
   const state = chatListState()
+  // herdr 관측 세션 = 지금 목록의 그 pane 세션(실물에서 둘이 같은 봉투 — LIFE-598 k1 실측). 시험이 엇갈림을 따로 만든다.
+  backend.observedSession = (paneId) => {
+    const session = paneSession(state, paneId)
+    return session === null ? null : observedSessionKey({ source: session.source, kind: session.kind, value: session.kind === 'id' ? session.id : session.path })
+  }
   const hub = new InputHub({
     read: () => (input.listed === false ? null : { state, prefs: null }),
     backend: () => backend,
@@ -598,6 +608,7 @@ describe('R1-A3 맥 타자 — 관측한 입력 revision 으로만 넣는다', (
     t.backend.input = { revision: 42, idleMs: 9_000 }
     t.hub.send({ device: 'd1', id: 'r1a3-0000-0001', channel: 'c1', text: 'x' })
     expect((await t.settled('r1a3-0000-0001')).state).toBe('delivered')
+    // 울타리 = 접수 때의 revision(LIFE-598 r2), 하한 = quietMs(r2 에서 2 s 하한을 되돌림).
     expect(t.backend.fences).toEqual([{ seq: 1, inputRevision: 42, minIdleMs: 500 }])
   })
   it('입력 revision 이 없는 guard 면 넣지 않는다(guard_outdated)', async () => {
@@ -607,7 +618,7 @@ describe('R1-A3 맥 타자 — 관측한 입력 revision 으로만 넣는다', (
     expect(await t.settled('r1a3-0000-0002')).toMatchObject({ state: 'failed', reason: 'guard_outdated' })
     expect(t.backend.fences).toHaveLength(0)
   })
-  it('guard 가 입력 변화로 거절하면 큐로 돌아가고, 다음 관문에서 초안을 보면 넣지 않는다', async () => {
+  it('guard 가 거절했는데 입력 revision 이 그대로면(상태 전이) 큐로 돌아가고, 다음 관문에서 초안을 보면 넣지 않는다', async () => {
     const t = setup()
     t.backend.promptResult = 'refused'
     t.backend.onPrompt = () => { t.backend.screenText = DRAFT }
@@ -742,6 +753,13 @@ describe('C1 꼬리 커서', () => {
 })
 
 /** 그 채널(`c1` 등)의 pane — 세션 교체를 흉내 낸다. */
+/** fixture c1 의 접수 세션을 herdr 관측 키로(LIFE-598 시험이 관측을 고정할 때). */
+const OLD_SESSION = observedSessionKey({ source: CHAT_SESSIONS.claude.source, kind: 'id', value: CHAT_SESSIONS.claude.id })
+/** 그 pane 의 목록 세션 — 없는 pane 이면 null(가짜 herdr 관측용). */
+function paneSession(state: ReturnType<typeof chatListState>, id: string) {
+  for (const repo of state.repos) for (const worktree of repo.worktrees) for (const tab of worktree.workspace?.tabs ?? []) for (const pane of tab.panes) if (pane.paneId === id) return pane.agentSession
+  return null
+}
 function paneOf(state: ReturnType<typeof chatListState>, id: string) {
   for (const repo of state.repos) for (const worktree of repo.worktrees) for (const tab of worktree.workspace?.tabs ?? []) for (const pane of tab.panes) if (pane.paneId === id) return pane
   throw new Error(`no pane ${id}`)
@@ -902,15 +920,15 @@ describe('R2-A2 Codex 답 귀속 — 그 호출의 문항 답만 센다', () => 
 describe('R2-A3 화면을 잡을 때의 입력 — 같은 guard 턴의 revision·조용한 시간', () => {
   it('화면을 잡을 때 입력이 조용하지 않았으면(echo 가 아직 화면에 없을 수 있다) 그 화면으로 넣지 않는다 — 조용해지면 그 화면의 revision 으로', async () => {
     const t = setup()
-    // 관측은 조용(revision 1)하지만 화면을 잡은 턴에는 막 입력이 있었다(revision 2, 0 ms).
-    t.backend.screenInput = { revision: 2, idleMs: 0 }
+    // 접수 직전에 맥 입력이 있었다(revision 2, 0 ms) — 접수 때 묶은 revision 도 2. 화면을 잡은 턴에 입력이 아직 조용하지 않다.
+    t.backend.input = { revision: 2, idleMs: 0 }
     t.hub.send({ device: 'd1', id: 'r2a3-0000-0001', channel: 'c1', text: '폰 지시' })
     await wait(120)
     expect(t.backend.prompts).toHaveLength(0)
     expect(t.last('r2a3-0000-0001')).toMatchObject({ state: 'queued', wait: 'gate' })
-    t.backend.screenInput = { revision: 2, idleMs: 900 }
+    // 조용해짐(revision 그대로) — 화면 턴과 효과 직전 재관측이 접수 때의 revision 2 를 본다.
+    t.backend.input = { revision: 2, idleMs: 2_500 }
     expect((await t.settled('r2a3-0000-0001')).state).toBe('delivered')
-    // 넣기의 울타리는 관측(1)이 아니라 화면 턴의 revision(2)이다.
     expect(t.backend.fences.at(-1)).toMatchObject({ inputRevision: 2, minIdleMs: 500 })
   })
   it('화면 턴의 seq 가 관측과 다르면 그 화면으로 넣지 않는다', async () => {
@@ -939,10 +957,12 @@ describe('R2-A3 화면을 잡을 때의 입력 — 같은 guard 턴의 revision�
 describe('R2-A4 접수 세션 — 관문 await 중 같은 PTY 의 세션이 바뀌면 넣지 않는다', () => {
   it('첫 관측 동안 세션 교체(PTY·epoch·seq 그대로) → target_changed, 넣기 0회', async () => {
     const t = setup()
+    // herdr 관측은 옛 세션에 고정 — 목록 비교(R2-A4)만으로 잡히는지 본다(LIFE-598 r1 C·R1-C2).
+    t.backend.observedSession = () => OLD_SESSION
     const observe = t.backend.observe.bind(t.backend)
     let swapped = false
-    t.backend.observe = async () => {
-      const seen = await observe()
+    t.backend.observe = async (pane) => {
+      const seen = await observe(pane)
       if (!swapped) {
         swapped = true
         const pane = paneOf(t.state, 'c1')
@@ -966,6 +986,823 @@ describe('R2-A4 접수 세션 — 관문 await 중 같은 PTY 의 세션이 바�
     t.hub.answer({ device: 'd1', id: 'r2a4-0000-0002', channel: 'c1', question: 10, call: 'toolu-10', digest: digestFor(10), answers: [{ choices: [], other: '본문' }] })
     expect(await t.settled('r2a4-0000-0002')).toMatchObject({ state: 'unconfirmed', reason: 'target_changed' })
     expect(t.backend.sends.map((send) => send.text)).toEqual(['3'])
+  })
+})
+
+describe('LIFE-598 r1 — 마지막 관측 뒤 세션만 바뀌는 창 (r2: 조용함 하한은 quietMs 로 되돌림)', () => {
+  const newSession = observedSessionKey({ source: 'herdr:claude', kind: 'id', value: 'cleared-session' })
+  it('screen 도중 세션만 바뀜(seq·revision 그대로) → 효과 직전 재관측이 잡아 prompt 0회 target_changed', async () => {
+    const t = setup()
+    const screen = t.backend.screen.bind(t.backend)
+    t.backend.screen = async () => {
+      const shot = await screen()
+      t.backend.observedSession = () => newSession
+      return shot
+    }
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0001', channel: 'c1', text: '옛 세션 지시' })
+    expect(await t.settled('l598r1-0000-0001')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('manifestVerified 도중 세션만 바뀜 → prompt 0회 target_changed', async () => {
+    const t = setup()
+    t.backend.manifestVerified = async () => {
+      t.backend.observedSession = () => newSession
+      return true
+    }
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0002', channel: 'c1', text: '옛 세션 지시' })
+    expect(await t.settled('l598r1-0000-0002')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('screen 도중 세션이 null 로 → 쓰지 않고 target_changed', async () => {
+    const t = setup()
+    const screen = t.backend.screen.bind(t.backend)
+    t.backend.screen = async () => {
+      const shot = await screen()
+      t.backend.observedSession = () => null
+      return shot
+    }
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0003', channel: 'c1', text: '옛 세션 지시' })
+    expect(await t.settled('l598r1-0000-0003')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.fences).toHaveLength(0)
+  })
+  it('호출 횟수로 가른다 — 접수·첫·두 번째 관측은 옛 세션, 네 번째(효과 직전)만 새 세션 → target_changed', async () => {
+    const t = setup()
+    let calls = 0
+    t.backend.observedSession = () => ((calls += 1) <= 3 ? OLD_SESSION : newSession)
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0004', channel: 'c1', text: '옛 세션 지시' })
+    expect(await t.settled('l598r1-0000-0004')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    // 접수(bind — R0)·first·second·last.
+    expect(calls).toBe(4)
+    expect(t.logs.filter((log) => log.tag === 'mobile.input_target_changed').map((log) => log.fields.check)).toEqual(['herdr_session'])
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('효과 시점 입력이 quietMs 미만이면 넣지 않고 기다린다 — 넘으면 넣는다(r2: 2 s 하한 없음)', async () => {
+    const t = setup()
+    t.backend.input = { revision: 5, idleMs: 300 }
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0005', channel: 'c1', text: '조용해지면' })
+    await wait(80)
+    expect(t.backend.prompts).toHaveLength(0)
+    expect(t.last('l598r1-0000-0005')).toMatchObject({ state: 'queued', wait: 'gate' })
+    // 1.2 s — r1 의 2 s 하한이면 기다렸을 값. 이제는 넣는다.
+    t.backend.input = { revision: 5, idleMs: 1_200 }
+    expect((await t.settled('l598r1-0000-0005')).state).toBe('delivered')
+    expect(t.backend.fences.at(-1)).toMatchObject({ inputRevision: 5, minIdleMs: 500 })
+  })
+  it('화면 뒤 재관측에서 revision 이 바뀌었으면(접수 뒤 입력) 넣지 않고 끝낸다 — 다음 화면을 기다리지 않는다(r2)', async () => {
+    const t = setup()
+    const screen = t.backend.screen.bind(t.backend)
+    let bumped = false
+    t.backend.screen = async () => {
+      const shot = await screen()
+      if (!bumped && t.backend.input !== null) {
+        bumped = true
+        t.backend.input = { revision: t.backend.input.revision + 1, idleMs: 10_000 }
+      }
+      return shot
+    }
+    t.hub.send({ device: 'd1', id: 'l598r1-0000-0006', channel: 'c1', text: '다음 화면으로' })
+    expect(await t.settled('l598r1-0000-0006')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.fences).toHaveLength(0)
+    expect(t.logs.filter((log) => log.tag === 'mobile.input_target_changed').map((log) => log.fields.check)).toEqual(['input'])
+  })
+  it('질문 답 — 화면 읽기 도중 세션만 바뀜 → 키 0회 target_changed', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = questionScreen(12)
+    t.items.list = [question({ id: 12, state: 'pending' })]
+    const screen = t.backend.screen.bind(t.backend)
+    t.backend.screen = async () => {
+      const shot = await screen()
+      t.backend.observedSession = () => newSession
+      return shot
+    }
+    t.hub.answer({ device: 'd1', id: 'l598r1-0000-0007', channel: 'c1', question: 12, call: 'toolu-12', digest: digestFor(12), answers: [{ choices: [1], other: null }] })
+    expect(await t.settled('l598r1-0000-0007')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.sends).toHaveLength(0)
+  })
+  it('질문 답 — 첫 화면이 quietMs 미만으로 조용하면 키를 넣지 않고 다시 읽는다(r2: 2 s 하한 없음 — G·R2-G1 해소)', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = questionScreen(13)
+    t.items.list = [question({ id: 13, state: 'pending' })]
+    t.answerOn({ id: 13, value: 'o1' })
+    const screen = t.backend.screen.bind(t.backend)
+    const idles: number[] = []
+    t.backend.screen = async () => {
+      const shot = await screen()
+      // 첫 읽기는 0.3 s 조용, 그 뒤는 0.6 s — 첫 읽기 뒤에는 키가 없어야 한다.
+      const idleMs = idles.length === 0 ? 300 : 600
+      idles.push(t.backend.sends.length)
+      return { ...shot, input: shot.input === null ? null : { ...shot.input, idleMs } }
+    }
+    t.hub.answer({ device: 'd1', id: 'l598r1-0000-0008', channel: 'c1', question: 13, call: 'toolu-13', digest: digestFor(13), answers: [{ choices: [1], other: null }] })
+    expect((await t.settled('l598r1-0000-0008')).state).toBe('delivered')
+    expect(idles.slice(0, 2)).toEqual([0, 0])
+  })
+})
+
+describe('LIFE-598 r2 — 접수 뒤 맥 입력이 있으면 넣지 않는다(접수 때 입력 revision 울타리)', () => {
+  const newSession = observedSessionKey({ source: 'herdr:claude', kind: 'id', value: 'cleared-session' })
+  /** 맥 키 한 번 — 입력 revision 만 움직인다(세션은 herdr·목록 모두 옛 값 그대로 = herdr 가 `/clear` 를 아직 모르는 때). */
+  const typed = (t: ReturnType<typeof setup>): void => {
+    if (t.backend.input !== null) t.backend.input = { ...t.backend.input, revision: t.backend.input.revision + 1 }
+  }
+  const checks = (t: ReturnType<typeof setup>): unknown[] => t.logs.filter((log) => log.tag === 'mobile.input_target_changed').map((log) => log.fields.check)
+  const states = (t: ReturnType<typeof setup>, id: string): string[] => t.wires.filter((wire) => wire.id === id).map((wire) => `${wire.state}${wire.wait === null ? '' : `:${wire.wait}`}`)
+
+  it('ⓓ 대기 중 맥 입력(세션은 herdr·목록 모두 옛 값) → prompt 0회 · failed/target_changed', async () => {
+    const t = setup()
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0001', channel: 'c1', text: '옛 세션 지시' })
+    await wait(30)
+    expect(t.last('l598r2-0000-0001')?.state).toBe('queued')
+    typed(t)
+    t.backend.quiet = true
+    expect(await t.settled('l598r2-0000-0001')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.fences).toHaveLength(0)
+    expect(t.backend.prompts).toHaveLength(0)
+    expect(checks(t)).toEqual(['input'])
+  })
+  it('ⓓ 양성 대조 — 접수 뒤 입력이 없으면 접수 때 revision 으로 넣는다', async () => {
+    const t = setup()
+    t.backend.quiet = false
+    t.backend.input = { revision: 7, idleMs: 10_000 }
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0002', channel: 'c1', text: '그대로' })
+    await wait(30)
+    t.backend.quiet = true
+    expect((await t.settled('l598r2-0000-0002')).state).toBe('delivered')
+    expect(t.backend.fences).toEqual([{ seq: 1, inputRevision: 7, minIdleMs: 500 }])
+  })
+  it('ⓔ 같은 pane 연속 두 지시 — 앞 지시의 허브 쓰기(revision +1) 뒤에도 뒤 지시를 넣는다', async () => {
+    const t = setup()
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0003', channel: 'c1', text: '앞 지시' })
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0004', channel: 'c1', text: '뒤 지시' })
+    await wait(30)
+    t.backend.quiet = true
+    expect((await t.settled('l598r2-0000-0003')).state).toBe('delivered')
+    expect((await t.settled('l598r2-0000-0004')).state).toBe('delivered')
+    expect(t.backend.prompts).toEqual(['앞 지시', '뒤 지시'])
+    // 둘 다 접수 때 revision 1 — 뒤 지시의 울타리는 앞 지시 쓰기 뒤(2)로 옮겨졌다.
+    expect(t.backend.fences.map((fence) => fence.inputRevision)).toEqual([1, 2])
+  })
+  it('ⓕ 앞 지시 쓰기와 뒤 지시 사이 맥 입력 → 뒤 지시 failed/target_changed(앞 지시는 들어감)', async () => {
+    const t = setup()
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      const result = await prompt(pane, input)
+      if ((calls += 1) === 1) typed(t)
+      return result
+    }
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0005', channel: 'c1', text: '앞 지시' })
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0006', channel: 'c1', text: '뒤 지시' })
+    await wait(30)
+    t.backend.quiet = true
+    expect((await t.settled('l598r2-0000-0005')).state).toBe('delivered')
+    expect(await t.settled('l598r2-0000-0006')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toEqual(['앞 지시'])
+  })
+  it('ⓑ guard 거절이 입력 변화면(재관측 revision ≠ 울타리) 큐로 돌리지 않고 failed/target_changed', async () => {
+    const t = setup()
+    // 효과 직전 재관측 뒤·guard 턴 전에 맥 키 — 가짜 guard 가 울타리로 거절한다.
+    t.backend.onPrompt = () => {
+      t.backend.onPrompt = null
+      typed(t)
+    }
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0007', channel: 'c1', text: '거절됨' })
+    expect(await t.settled('l598r2-0000-0007')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toHaveLength(0)
+    expect(checks(t)).toEqual(['input_refused'])
+    expect(states(t, 'l598r2-0000-0007')).not.toContain('queued:turn')
+  })
+  it('ⓑ guard 거절이 상태 전이면(revision 그대로) 큐로 — 다음 관문에서 넣는다', async () => {
+    const t = setup()
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, input) => ((calls += 1) === 1 ? 'refused' : prompt(pane, input))
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0008', channel: 'c1', text: '다음 관문' })
+    expect((await t.settled('l598r2-0000-0008')).state).toBe('delivered')
+    expect(calls).toBe(2)
+    expect(states(t, 'l598r2-0000-0008')).toContain('queued:turn')
+  })
+  it('ⓒ 답 키(허브 자기 쓰기) 뒤 대기 지시는 넣는다', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.quiet = false
+    t.backend.screenText = questionScreen(14)
+    t.items.list = [question({ id: 14, state: 'pending' })]
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0009', channel: 'c1', text: '답 뒤 지시' })
+    await wait(30)
+    t.answerOn({ id: 14, value: 'o1' })
+    t.hub.answer({ device: 'd1', id: 'l598r2-0000-0010', channel: 'c1', question: 14, call: 'toolu-14', digest: digestFor(14), answers: [{ choices: [1], other: null }] })
+    expect((await t.settled('l598r2-0000-0010')).state).toBe('delivered')
+    t.backend.onSend = null
+    t.backend.status = 'idle'
+    t.backend.screenText = EMPTY
+    t.backend.quiet = true
+    expect((await t.settled('l598r2-0000-0009')).state).toBe('delivered')
+    expect(t.backend.fences.map((fence) => fence.inputRevision)).toEqual([2])
+  })
+  it('ⓒ 중단 키(허브 자기 쓰기) 뒤 대기 지시는 넣는다', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0011', channel: 'c1', text: '중단 뒤 지시' })
+    await wait(30)
+    t.backend.onSend = () => {
+      t.backend.status = 'idle'
+      t.backend.quiet = true
+    }
+    t.hub.stopTurn({ device: 'd1', id: 'l598r2-0000-0012', channel: 'c1' })
+    expect((await t.settled('l598r2-0000-0012')).state).toBe('stopped')
+    expect((await t.settled('l598r2-0000-0011')).state).toBe('delivered')
+    // 중단 키는 울타리 없이(r3) — 사슬은 관측 revision 1 → 2 를 쓰기 전에 걸었다.
+    expect(t.backend.keyFences).toEqual([null])
+    expect(t.backend.fences.map((fence) => fence.inputRevision)).toEqual([2])
+  })
+  it('ⓓ 답 — 접수 뒤(첫 화면 전) 맥 입력 → 키 0회 · failed/question_changed(로그는 입력 울타리)', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = questionScreen(15)
+    t.items.list = [question({ id: 15, state: 'pending' })]
+    const screen = t.backend.screen.bind(t.backend)
+    let first = true
+    t.backend.screen = async () => {
+      if (first) typed(t)
+      first = false
+      return screen()
+    }
+    t.hub.answer({ device: 'd1', id: 'l598r2-0000-0013', channel: 'c1', question: 15, call: 'toolu-15', digest: digestFor(15), answers: [{ choices: [1], other: null }] })
+    expect(await t.settled('l598r2-0000-0013')).toMatchObject({ state: 'failed', reason: 'question_changed' })
+    expect(t.backend.sends).toHaveLength(0)
+    expect(checks(t)).toEqual(['input'])
+  })
+  // --- 리뷰 r2 생존 변이(C·R2-C2·G·R2-G2)를 죽이는 시험 ---
+  it('C·R2-C2(a) 화면 뒤 재관측의 seq 가 두 번째 관측과 다르면 그 관측으로 넣지 않는다 — 턴을 기다린 뒤 넣는다', async () => {
+    const t = setup()
+    const observe = t.backend.observe.bind(t.backend)
+    let calls = 0
+    // 접수(1)·first(2)·second(3)·last(4) — 효과 직전 재관측 한 번만 seq 가 다르다.
+    t.backend.observe = async (pane) => {
+      const seen = await observe(pane)
+      return (calls += 1) === 4 ? { ...seen, seq: seen.seq + 1 } : seen
+    }
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0014', channel: 'c1', text: '다음 턴' })
+    expect((await t.settled('l598r2-0000-0014')).state).toBe('delivered')
+    expect(states(t, 'l598r2-0000-0014')).toContain('queued:turn')
+    expect(t.backend.fences).toEqual([expect.objectContaining({ seq: 1 })])
+  })
+  it('C·R2-C2(b) 화면 뒤 재관측에 입력 revision 이 없으면(guard) 넣지 않는다 — guard_outdated', async () => {
+    const t = setup()
+    const observe = t.backend.observe.bind(t.backend)
+    let calls = 0
+    t.backend.observe = async (pane) => {
+      const seen = await observe(pane)
+      return (calls += 1) === 4 ? { ...seen, input: null } : seen
+    }
+    t.hub.send({ device: 'd1', id: 'l598r2-0000-0015', channel: 'c1', text: 'x' })
+    expect(await t.settled('l598r2-0000-0015')).toMatchObject({ state: 'failed', reason: 'guard_outdated' })
+    expect(t.backend.fences).toHaveLength(0)
+  })
+  it('C·R2-C2(c) 답 둘째 키 전 herdr 관측만 새 세션(목록 옛 값) → 둘째 키 0 · unconfirmed/target_changed', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = questionScreen(16)
+    t.items.list = [question({ id: 16, state: 'pending' })]
+    t.backend.onSend = () => { t.backend.observedSession = () => newSession }
+    t.hub.answer({ device: 'd1', id: 'l598r2-0000-0016', channel: 'c1', question: 16, call: 'toolu-16', digest: digestFor(16), answers: [{ choices: [], other: '폰의 답' }] })
+    expect(await t.settled('l598r2-0000-0016')).toMatchObject({ state: 'unconfirmed', reason: 'target_changed' })
+    expect(t.backend.sends.map((send) => send.text)).toEqual(['3'])
+    expect(checks(t)).toEqual(['herdr_session'])
+  })
+  it('C·R2-C2(d) 답 키 사이 seq 전이(revision 그대로) → 다음 키 0 · unconfirmed/question_changed', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = questionScreen(17)
+    t.items.list = [question({ id: 17, state: 'pending' })]
+    t.backend.onSend = () => { t.backend.seq += 1 }
+    t.hub.answer({ device: 'd1', id: 'l598r2-0000-0017', channel: 'c1', question: 17, call: 'toolu-17', digest: digestFor(17), answers: [{ choices: [], other: '폰의 답' }] })
+    expect(await t.settled('l598r2-0000-0017')).toMatchObject({ state: 'unconfirmed', reason: 'question_changed' })
+    expect(t.backend.sends.map((send) => send.text)).toEqual(['3'])
+  })
+  it('G·R2-G2 둘째 묶음 화면의 revision 이 앞 키 revision 과 다르면(화면 턴만 입력을 봄) 둘째 묶음 키 0', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.items.list = [twoQuestions(32)]
+    t.backend.screenText = boxOf('Q-32 첫째?')
+    t.backend.onSend = () => { t.backend.screenText = boxOf('Q-32 둘째?') }
+    const screen = t.backend.screen.bind(t.backend)
+    t.backend.screen = async () => {
+      const shot = await screen()
+      return t.backend.sends.length === 0 || shot.input === null ? shot : { ...shot, input: { ...shot.input, revision: shot.input.revision + 5 } }
+    }
+    const item = twoQuestions(32)
+    if (item.kind !== 'question') throw new Error('fixture')
+    t.hub.answer({ device: 'd1', id: 'l598r2-0000-0018', channel: 'c1', question: 32, call: 'toolu-32', digest: questionDigest(item.questions), answers: [{ choices: [0], other: null }, { choices: [1], other: null }] })
+    expect(await t.settled('l598r2-0000-0018')).toMatchObject({ state: 'unconfirmed', reason: 'question_changed' })
+    expect(t.backend.sends.map((send) => send.text)).toEqual(['1'])
+  })
+})
+
+describe('LIFE-598 r3 — 자기 쓰기 사슬은 쓰기 전에 · 순환 차단 · PTY 세대 · 중단 무울타리', () => {
+  const lag = (ms: number) => new Promise<void>((done) => setTimeout(done, ms))
+  const checks = (t: ReturnType<typeof setup>): unknown[] => t.logs.filter((log) => log.tag === 'mobile.input_target_changed').map((log) => log.fields.check)
+  it('P1(리뷰 R3-C2) 중단 키가 guard 에서 쓰인 뒤 응답이 늦어도 대기 지시는 거짓 target_changed 가 아니다 — 넣는다', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0001', channel: 'c1', text: '중단 뒤 지시' })
+    await wait(30)
+    const send = t.backend.send.bind(t.backend)
+    t.backend.send = async (pane, input) => {
+      const result = await send(pane, input) // revision +1 은 이미 일어남
+      t.backend.status = 'idle'
+      t.backend.quiet = true
+      await lag(40) // 응답이 허브에 닿기까지 — 그 사이 펌프가 새 revision 을 본다
+      return result
+    }
+    t.hub.stopTurn({ device: 'd1', id: 'l598r3-0000-0002', channel: 'c1' })
+    expect((await t.settled('l598r3-0000-0002')).state).toBe('stopped')
+    expect((await t.settled('l598r3-0000-0001')).state).toBe('delivered')
+    expect(t.backend.fences.map((fence) => fence.inputRevision)).toEqual([2])
+    expect(checks(t)).toEqual([])
+  })
+  it('P2(리뷰 R3-C2) 답 키 — 같은 경합에서도 대기 지시를 넣는다', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.quiet = false
+    t.backend.screenText = questionScreen(61)
+    t.items.list = [question({ id: 61, state: 'pending' })]
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0003', channel: 'c1', text: '답 뒤 지시' })
+    await wait(30)
+    t.answerOn({ id: 61, value: 'o1' })
+    const send = t.backend.send.bind(t.backend)
+    t.backend.send = async (pane, input) => {
+      const result = await send(pane, input)
+      await lag(40)
+      return result
+    }
+    t.hub.answer({ device: 'd1', id: 'l598r3-0000-0004', channel: 'c1', question: 61, call: 'toolu-61', digest: digestFor(61), answers: [{ choices: [1], other: null }] })
+    expect((await t.settled('l598r3-0000-0004')).state).toBe('delivered')
+    t.backend.send = send
+    t.backend.onSend = null
+    t.backend.status = 'idle'
+    t.backend.screenText = EMPTY
+    t.backend.quiet = true
+    expect((await t.settled('l598r3-0000-0003')).state).toBe('delivered')
+    expect(checks(t)).toEqual([])
+  })
+  it('중단 키 관측과 키 사이 맥 입력(울타리 없는 키) → 중단은 들어가고 뒤 대기 지시는 target_changed(쓰지 않는 쪽)', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0005', channel: 'c1', text: '맥 입력 뒤 지시' })
+    await wait(30)
+    const send = t.backend.send.bind(t.backend)
+    t.backend.send = async (pane, input) => {
+      // 관측 뒤·키 앞의 맥 키 — 울타리 없는 중단 키는 그대로 들어간다.
+      if (t.backend.input !== null) t.backend.input = { ...t.backend.input, revision: t.backend.input.revision + 1 }
+      return send(pane, input)
+    }
+    t.backend.onSend = () => {
+      t.backend.status = 'idle'
+      t.backend.quiet = true
+    }
+    t.hub.stopTurn({ device: 'd1', id: 'l598r3-0000-0006', channel: 'c1' })
+    expect((await t.settled('l598r3-0000-0006')).state).toBe('stopped')
+    expect(await t.settled('l598r3-0000-0005')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('R3-C3 쓴 뒤 revision 이 직전보다 크지 않으면(guard 가 +0 을 돌려줌) 사슬을 걸지 않는다 — 걸리지 않고 뒤 지시는 끝난다', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.quiet = false
+    t.backend.screenText = questionScreen(62)
+    t.items.list = [question({ id: 62, state: 'pending' })]
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0007', channel: 'c1', text: '+0 뒤 지시' })
+    await wait(30)
+    t.answerOn({ id: 62, value: 'o1' })
+    const send = t.backend.send.bind(t.backend)
+    // guard 가 쓴 뒤 revision 을 쓰기 전 값 그대로 돌려준다(실제로는 +1) — 그 값을 고리로 걸면 자기 고리다.
+    t.backend.send = async (pane, input) => {
+      const result = await send(pane, input)
+      return result.kind === 'sent' && result.revision !== null ? { kind: 'sent', revision: result.revision - 1 } : result
+    }
+    t.hub.answer({ device: 'd1', id: 'l598r3-0000-0008', channel: 'c1', question: 62, call: 'toolu-62', digest: digestFor(62), answers: [{ choices: [1], other: null }] })
+    await t.settled('l598r3-0000-0008')
+    t.backend.send = send
+    t.backend.onSend = null
+    t.backend.status = 'idle'
+    t.backend.screenText = EMPTY
+    t.backend.quiet = true
+    expect(await t.settled('l598r3-0000-0007')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('R3-C5 같은 revision 숫자의 새 PTY 세대 항목은 옛 세대의 사슬을 타지 않는다', async () => {
+    const t = setup()
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0009', channel: 'c1', text: '옛 세대' })
+    expect((await t.settled('l598r3-0000-0009')).state).toBe('delivered')
+    // 옛 PTY 의 사슬 1 → 2. 새 PTY 는 revision 을 1 부터 다시 센다.
+    t.backend.ptyId = 't-respawned'
+    t.backend.input = { revision: 1, idleMs: 10_000 }
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0010', channel: 'c1', text: '새 세대' })
+    expect((await t.settled('l598r3-0000-0010')).state).toBe('delivered')
+    expect(t.backend.fences.map((fence) => fence.inputRevision)).toEqual([1, 1])
+  })
+  it('R3-C5 지시 `unknown`(썼을 수 있음)은 사슬을 잇지 않는다 — 뒤 대기 지시는 target_changed', async () => {
+    const t = setup()
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      const result = await prompt(pane, input)
+      return (calls += 1) === 1 ? 'unknown' : result
+    }
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0011', channel: 'c1', text: '시간 초과' })
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0012', channel: 'c1', text: '뒤 지시' })
+    await wait(30)
+    t.backend.quiet = true
+    await t.settled('l598r3-0000-0011')
+    expect(await t.settled('l598r3-0000-0012')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toEqual(['시간 초과'])
+  })
+  it('R3-C5(x7) guard 거절과 겹친 허브 자기 쓰기(중단 키)가 끝났으면 거절 뒤 판별은 지금 사슬로 — 큐로 돌아가 넣는다', async () => {
+    const t = setup()
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      if ((calls += 1) === 1) {
+        // 넣기 요청이 guard 에 닿기 전에 폰 중단 키가 먼저 쓰였다(revision +1) — 이 넣기는 울타리로 거절된다.
+        t.backend.status = 'working'
+        t.backend.onSend = () => { t.backend.status = 'idle' }
+        t.hub.stopTurn({ device: 'd1', id: 'l598r3-0000-0014', channel: 'c1' })
+        await lag(20)
+      }
+      return prompt(pane, input)
+    }
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0013', channel: 'c1', text: '거절 뒤 다시' })
+    expect((await t.settled('l598r3-0000-0013')).state).toBe('delivered')
+    expect((await t.settled('l598r3-0000-0014')).state).toBe('stopped')
+    expect(t.backend.prompts).toEqual(['거절 뒤 다시'])
+    expect(checks(t)).toEqual([])
+  })
+})
+
+describe('LIFE-598 r4 — 진행 중 넣지 않음 · reject 정리 · 응답 없는 +1 은 재관측으로 · 답은 확정 고리까지', () => {
+  const lag = (ms: number) => new Promise<void>((done) => setTimeout(done, ms))
+  const macKey = (t: ReturnType<typeof setup>): void => {
+    if (t.backend.input !== null) t.backend.input = { ...t.backend.input, revision: t.backend.input.revision + 1, idleMs: 0 }
+  }
+  it('P7(C·R4-C1·G·R4-G1) 중단 키가 guard 에 닿기 전 맥 키(예측 끝값과 같은 revision) + 에이전트 한가 → 진행 중이라 대기 지시를 넣지 않는다', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0001', channel: 'c1', text: '맥 키 뒤 지시' })
+    await wait(30)
+    const send = t.backend.send.bind(t.backend)
+    t.backend.send = async (pane, input) => {
+      macKey(t)
+      t.backend.status = 'idle'
+      t.backend.quiet = true
+      t.backend.input = t.backend.input === null ? null : { ...t.backend.input, idleMs: 10_000 }
+      await lag(120) // in-flight — 펌프가 관문을 도는 동안
+      return send(pane, input)
+    }
+    t.hub.stopTurn({ device: 'd1', id: 'l598r4-0000-0002', channel: 'c1' })
+    await t.settled('l598r4-0000-0002')
+    expect(await t.settled('l598r4-0000-0001')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toEqual([])
+  })
+  it('P1(R4-C2) 지시 prompt 가 reject 하면 진행 표시를 남기지 않는다 — 같은 pane 다음 지시가 들어간다', async () => {
+    const t = setup()
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      if ((calls += 1) === 1) throw new Error('boom')
+      return prompt(pane, input)
+    }
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0003', channel: 'c1', text: '던짐' })
+    expect(await t.settled('l598r4-0000-0003')).toMatchObject({ state: 'unconfirmed', reason: 'backend' })
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0004', channel: 'c1', text: '다음' })
+    expect((await t.settled('l598r4-0000-0004')).state).toBe('delivered')
+  })
+  it('P2(R4-C2) 답 키 send 가 reject 해도 같은 pane 다음 지시가 queued 로 남지 않는다', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.quiet = false
+    t.backend.screenText = questionScreen(71)
+    t.items.list = [question({ id: 71, state: 'pending' })]
+    const send = t.backend.send.bind(t.backend)
+    t.backend.send = async () => { throw new Error('boom') }
+    t.hub.answer({ device: 'd1', id: 'l598r4-0000-0005', channel: 'c1', question: 71, call: 'toolu-71', digest: digestFor(71), answers: [{ choices: [1], other: null }] })
+    await t.settled('l598r4-0000-0005')
+    t.backend.send = send
+    t.backend.status = 'idle'
+    t.backend.quiet = true
+    t.backend.screenText = EMPTY
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0006', channel: 'c1', text: '다음' })
+    expect((await t.settled('l598r4-0000-0006')).state).toBe('delivered')
+  })
+  it('중단 키 send 가 reject 해도 같은 pane 대기 지시는 끝난다(진행 표시 없음 — 고리 거둠 → target_changed)', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0007', channel: 'c1', text: '중단 reject 뒤' })
+    await wait(30)
+    t.backend.send = async () => {
+      // 썼는지 모른다 — 실제로 썼다고 치자(revision +1).
+      macKey(t)
+      t.backend.status = 'idle'
+      t.backend.quiet = true
+      throw new Error('boom')
+    }
+    t.hub.stopTurn({ device: 'd1', id: 'l598r4-0000-0008', channel: 'c1' })
+    await t.settled('l598r4-0000-0008')
+    expect(await t.settled('l598r4-0000-0007')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+  })
+  it('P3(R4-C3) guard 가 지시에서 revision 을 안 올리면(+0) 고리를 확정하지 않는다 — 뒤 지시는 영구 behind 없이 들어간다', async () => {
+    const t = setup()
+    const prompt = t.backend.prompt.bind(t.backend)
+    t.backend.prompt = async (pane, input) => {
+      const before = t.backend.input
+      const result = await prompt(pane, input)
+      if (before !== null) t.backend.input = before
+      return result
+    }
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0009', channel: 'c1', text: '앞' })
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0010', channel: 'c1', text: '뒤' })
+    await wait(30)
+    t.backend.quiet = true
+    expect((await t.settled('l598r4-0000-0009')).state).toBe('delivered')
+    expect((await t.settled('l598r4-0000-0010')).state).toBe('delivered')
+    expect(t.backend.fences.map((fence) => fence.inputRevision)).toEqual([1, 1])
+  })
+  it('R4-C3 중단 키 +0(guard 계약 깨짐) 뒤 맥 +1 → 맥 입력을 자기 쓰기로 삼키지 않는다 — 뒤 지시 target_changed', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0011', channel: 'c1', text: '삼키면 안 됨' })
+    await wait(30)
+    const send = t.backend.send.bind(t.backend)
+    t.backend.send = async (pane, input) => {
+      const before = t.backend.input
+      const result = await send(pane, input)
+      if (before !== null) t.backend.input = before // +0
+      t.backend.status = 'idle'
+      setTimeout(() => {
+        macKey(t)
+        if (t.backend.input !== null) t.backend.input = { ...t.backend.input, idleMs: 10_000 }
+        t.backend.quiet = true
+      }, 40)
+      return result
+    }
+    t.hub.stopTurn({ device: 'd1', id: 'l598r4-0000-0012', channel: 'c1' })
+    await t.settled('l598r4-0000-0012')
+    expect(await t.settled('l598r4-0000-0011')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toEqual([])
+  })
+  it('P4 앞 지시가 쓰인 뒤 응답 지연 중 맥 키 → 뒤 지시 target_changed', async () => {
+    const t = setup()
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      const result = await prompt(pane, input)
+      if ((calls += 1) === 1) {
+        macKey(t)
+        await lag(60)
+      }
+      return result
+    }
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0013', channel: 'c1', text: '앞' })
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0014', channel: 'c1', text: '뒤' })
+    await wait(30)
+    t.backend.quiet = true
+    expect((await t.settled('l598r4-0000-0013')).state).toBe('delivered')
+    expect(await t.settled('l598r4-0000-0014')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toEqual(['앞'])
+  })
+  it('P5 앞 지시 in-flight 중 맥 키가 먼저(앞 지시 거절) → 뒤 지시 target_changed, 뒤 prompt 0회', async () => {
+    const t = setup()
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      if ((calls += 1) === 1) {
+        macKey(t)
+        await lag(60)
+      }
+      return prompt(pane, input)
+    }
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0015', channel: 'c1', text: '앞' })
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0016', channel: 'c1', text: '뒤' })
+    await wait(30)
+    t.backend.quiet = true
+    await t.settled('l598r4-0000-0015')
+    expect(await t.settled('l598r4-0000-0016')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toEqual([])
+  })
+  it('R4-C4 답은 같은 pane 지시 쓰기가 끝날 때까지 기다려 확정 고리까지만 울타리로 — 지시 거절 뒤 맥 키면 답 키 0', async () => {
+    const t = setup()
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      if ((calls += 1) === 1) {
+        // 넣기 in-flight 중 에이전트가 질문으로 막히고 폰 답이 온다(허브 상태 기계상 가능한 조합).
+        t.backend.status = 'blocked'
+        t.backend.quiet = false
+        t.backend.screenText = questionScreen(72)
+        t.items.list = [question({ id: 72, state: 'pending' })]
+        t.answerOn({ id: 72, value: 'o1' })
+        // 답의 첫 화면 읽기 순간에 맥 키 — R0(맥 키 전) 뒤이고, 그 revision 은 아직 미확정인 넣기 고리의 끝(R0+1)과 같다.
+        const screen = t.backend.screen.bind(t.backend)
+        let first = true
+        t.backend.screen = async () => {
+          if (first) {
+            first = false
+            macKey(t)
+            if (t.backend.input !== null) t.backend.input = { ...t.backend.input, idleMs: 10_000 }
+          }
+          return screen()
+        }
+        t.hub.answer({ device: 'd1', id: 'l598r4-0000-0018', channel: 'c1', question: 72, call: 'toolu-72', digest: digestFor(72), answers: [{ choices: [1], other: null }] })
+        await lag(100)
+        return 'refused'
+      }
+      return prompt(pane, input)
+    }
+    t.hub.send({ device: 'd1', id: 'l598r4-0000-0017', channel: 'c1', text: '앞' })
+    expect(await t.settled('l598r4-0000-0018')).toMatchObject({ state: 'failed', reason: 'question_changed' })
+    expect(t.backend.sends).toHaveLength(0)
+  })
+})
+
+describe('LIFE-598 r5 낮음 — 재관측 실패·답 대기·중단 확인 기한·빈 사슬 정리', () => {
+  const lag = (ms: number) => new Promise<void>((done) => setTimeout(done, ms))
+  /** 지시가 들어간 직후의 다음 관측 한 번(= 사슬 확정용 재관측)만 바꾼다. */
+  const afterPrompt = (t: ReturnType<typeof setup>, seen: (pane: TerminalIdentity, observe: (pane: TerminalIdentity) => Promise<PaneObservation>) => Promise<PaneObservation>): void => {
+    const prompt = t.backend.prompt.bind(t.backend)
+    const observe = t.backend.observe.bind(t.backend)
+    let armed = false
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      const result = await prompt(pane, input)
+      if ((calls += 1) === 1) armed = true
+      return result
+    }
+    t.backend.observe = async (pane) => {
+      if (!armed) return observe(pane)
+      armed = false
+      return seen(pane, observe)
+    }
+  }
+  it('C·R5-C1 지시가 들어간 뒤 재관측이 reject → 이 지시는 delivered, 고리는 거둬 뒤 지시 target_changed(k8)', async () => {
+    const t = setup()
+    afterPrompt(t, async () => { throw new Error('observe boom') })
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0001', channel: 'c1', text: '앞' })
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0002', channel: 'c1', text: '뒤' })
+    await wait(30)
+    t.backend.quiet = true
+    expect((await t.settled('l598r5-0000-0001')).state).toBe('delivered')
+    expect(await t.settled('l598r5-0000-0002')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toEqual(['앞'])
+  })
+  it('C·R5-C1 재관측에 입력 revision 이 없으면(null) 확정하지 않는다 — 뒤 지시 target_changed(k9)', async () => {
+    const t = setup()
+    afterPrompt(t, async (pane, observe) => ({ ...(await observe(pane)), input: null }))
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0003', channel: 'c1', text: '앞' })
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0004', channel: 'c1', text: '뒤' })
+    await wait(30)
+    t.backend.quiet = true
+    expect((await t.settled('l598r5-0000-0003')).state).toBe('delivered')
+    expect(await t.settled('l598r5-0000-0004')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toEqual(['앞'])
+  })
+  /** 지시 넣기가 `hold` ms 걸리는 동안 질문이 열리고 폰 답이 온다 — 넣기는 결국 들어간다(revision +1). */
+  const slowPromptWithAnswer = (t: ReturnType<typeof setup>, input: { hold: number; id: number; answerId: string; during?: () => void }): void => {
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, args) => {
+      if ((calls += 1) === 1) {
+        t.backend.status = 'blocked'
+        t.backend.quiet = false
+        t.backend.screenText = questionScreen(input.id)
+        t.items.list = [question({ id: input.id, state: 'pending' })]
+        t.answerOn({ id: input.id, value: 'o1' })
+        t.hub.answer({ device: 'd1', id: input.answerId, channel: 'c1', question: input.id, call: `toolu-${input.id}`, digest: digestFor(input.id), answers: [{ choices: [1], other: null }] })
+        await lag(30) // 답이 R0(넣기 전 값)를 잡고 진행 중 쓰기를 기다린다
+        input.during?.()
+        await lag(input.hold)
+      }
+      return prompt(pane, args)
+    }
+  }
+  it('C·R5-C2 지시가 느리게 들어가는 동안 온 답은 기다린 뒤 확정 고리(R0+1)를 울타리로 — 답도 delivered(k11)', async () => {
+    const t = setup()
+    slowPromptWithAnswer(t, { hold: 80, id: 81, answerId: 'l598r5-0000-0006' })
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0005', channel: 'c1', text: '앞' })
+    expect((await t.settled('l598r5-0000-0006')).state).toBe('delivered')
+    expect(t.backend.keyFences).toEqual([2])
+  })
+  it('C·R5-C2 지시 넣기가 answerConfirmMs(300) 보다 오래 걸리면 답은 키 0회 failed/busy(k3)', async () => {
+    const t = setup()
+    slowPromptWithAnswer(t, { hold: 700, id: 82, answerId: 'l598r5-0000-0008' })
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0007', channel: 'c1', text: '앞' })
+    expect(await t.settled('l598r5-0000-0008')).toMatchObject({ state: 'failed', reason: 'busy' })
+    expect(t.backend.sends).toHaveLength(0)
+  })
+  it('C·R5-C2 답이 기다리는 동안 모바일을 끄면 바로 끝난다(halted — 기한·쓰기 끝을 기다리지 않음, k10)', async () => {
+    const t = setup()
+    let offAt = 0
+    slowPromptWithAnswer(t, { hold: 600, id: 83, answerId: 'l598r5-0000-0010', during: () => { offAt = Date.now(); t.hub.stop() } })
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0009', channel: 'c1', text: '앞' })
+    expect(await t.settled('l598r5-0000-0010')).toMatchObject({ state: 'failed', reason: 'mobile_off' })
+    expect(Date.now() - offAt).toBeLessThan(200)
+    // 대기 루프도 그 자리에서 멈춰야 한다 — 기한(300 ms)·쓰기 끝(600 ms) 뒤에 결과를 다른 이유(`busy` 등)로 덮어쓰거나 키를 넣지 않는다.
+    await wait(800)
+    expect(t.last('l598r5-0000-0010')).toMatchObject({ state: 'failed', reason: 'mobile_off' })
+    expect(t.wires.filter((wire) => wire.id === 'l598r5-0000-0010' && wire.state === 'failed')).toHaveLength(1)
+    expect(t.backend.sends).toHaveLength(0)
+  })
+  it('C·R5-C3 중단 확인 기한은 사슬 재관측 뒤부터 — 관측이 느려도(150 ms) 기한(200 ms) 안에 멈춤을 본다', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    const observe = t.backend.observe.bind(t.backend)
+    let keyAt = 0
+    t.backend.onSend = () => {
+      keyAt = Date.now()
+      // 키 뒤 320 ms 에 멈춘다.
+      setTimeout(() => { t.backend.status = 'idle' }, 320)
+    }
+    t.backend.observe = async (pane) => {
+      if (keyAt > 0) await lag(150)
+      return observe(pane)
+    }
+    t.hub.stopTurn({ device: 'd1', id: 'l598r5-0000-0011', channel: 'c1' })
+    expect((await t.settled('l598r5-0000-0011', 3_000)).state).toBe('stopped')
+  })
+  it('C·R5-C5 고리가 하나도 남지 않은 pane 의 사슬 Map 은 버린다(거절·unknown 뒤 빈 Map 없음)', async () => {
+    const t = setup()
+    t.backend.promptResult = 'unknown'
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0012', channel: 'c1', text: '시간 초과' })
+    await t.settled('l598r5-0000-0012')
+    expect(t.hub.selfWritePanes()).toBe(0)
+    // 들어간 쓰기의 확정 고리는 남는다(뒤 지시의 울타리).
+    t.backend.promptResult = 'sent'
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0013', channel: 'c1', text: '들어감' })
+    expect((await t.settled('l598r5-0000-0013')).state).toBe('delivered')
+    expect(t.hub.selfWritePanes()).toBe(1)
+  })
+})
+
+describe('LIFE-598 효과 직전 세션 — 목록이 늦어도 herdr 관측이 바뀌었으면 넣지 않는다', () => {
+  const newSession = observedSessionKey({ source: 'herdr:claude', kind: 'id', value: 'cleared-session' })
+  it('ⓐ 목록은 옛 세션, herdr 관측은 새 세션(/clear) → failed/target_changed, prompt 0회', async () => {
+    const t = setup()
+    t.backend.observedSession = () => newSession
+    t.hub.send({ device: 'd1', id: 'l598-0000-0001', channel: 'c1', text: '옛 세션 지시' })
+    expect(await t.settled('l598-0000-0001')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.fences).toHaveLength(0)
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('ⓐ\' 대기 중(작업 중)에 herdr 세션만 바뀌면 관문을 넘는 순간 target_changed — 새 세션에 넣지 않는다', async () => {
+    const t = setup()
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598-0000-0002', channel: 'c1', text: '대기 지시' })
+    await new Promise((done) => setTimeout(done, 30))
+    expect(t.last('l598-0000-0002')?.state).toBe('queued')
+    t.backend.observedSession = () => newSession
+    t.backend.quiet = true
+    expect(await t.settled('l598-0000-0002')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('ⓑ herdr 관측에 세션이 없으면(null) 쓰지 않고 끝낸다 — queued 로 남지 않는다', async () => {
+    const t = setup()
+    t.backend.observedSession = () => null
+    t.hub.send({ device: 'd1', id: 'l598-0000-0003', channel: 'c1', text: '증명 못 함' })
+    expect(await t.settled('l598-0000-0003')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.fences).toHaveLength(0)
+  })
+  it('ⓒ 세션이 같으면(목록 = herdr) 지금처럼 넣는다', async () => {
+    const t = setup()
+    t.hub.send({ device: 'd1', id: 'l598-0000-0004', channel: 'c1', text: '같은 세션' })
+    expect(await t.settled('l598-0000-0004')).toMatchObject({ state: 'delivered' })
+    expect(t.backend.prompts).toEqual(['같은 세션'])
+  })
+  it('질문 답 — 목록은 옛 세션, herdr 관측은 새 세션 → 키 0회 target_changed', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = questionScreen(11)
+    t.items.list = [question({ id: 11, state: 'pending' })]
+    t.backend.observedSession = () => newSession
+    t.hub.answer({ device: 'd1', id: 'l598-0000-0005', channel: 'c1', question: 11, call: 'toolu-11', digest: digestFor(11), answers: [{ choices: [1], other: null }] })
+    expect(await t.settled('l598-0000-0005')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.sends).toHaveLength(0)
   })
 })
 
@@ -1308,12 +2145,21 @@ describe('R3-A6 Grok 중단 — 빈 입력 줄을 본 guard 턴의 revision 으�
     expect(t.backend.sends.map((send) => send.text)).toEqual([KEY.ctrlC])
     expect(t.backend.keyFences).toEqual([1])
   })
-  it('다른 provider 의 중단은 그대로(울타리 없이 seq 비교만)', async () => {
+  it('다른 provider 의 중단은 그대로(울타리 없이 seq 비교만 — LIFE-598 r3 에서 r2 이전으로 되돌림)', async () => {
     const t = setup()
     t.backend.status = 'working'
     t.backend.onSend = () => { t.backend.status = 'idle' }
     t.hub.stopTurn({ device: 'd1', id: 'r3a6-0000-0003', channel: 'c1' })
     expect((await t.settled('r3a6-0000-0003')).state).toBe('stopped')
+    expect(t.backend.keyFences).toEqual([null])
+  })
+  it('revision 없는 guard 면 다른 provider 의 중단은 예전처럼 울타리 없이', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.input = null
+    t.backend.onSend = () => { t.backend.status = 'idle' }
+    t.hub.stopTurn({ device: 'd1', id: 'r3a6-0000-0004', channel: 'c1' })
+    expect((await t.settled('r3a6-0000-0004')).state).toBe('stopped')
     expect(t.backend.keyFences).toEqual([null])
   })
 })

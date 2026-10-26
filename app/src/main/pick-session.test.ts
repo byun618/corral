@@ -7,6 +7,7 @@ const handle = (name: string, running: boolean) => ({ name, isDefault: name === 
 const backend = (sessions: BackendInput['sessions'], selected: string | null): BackendInput => ({
   bound: null, binary: { kind: 'found' }, sessions, selected, link: { phase: 'idle', attempt: 0 },
   restore: { known: true, total: 0, agents: [] }, starter: { phase: 'idle' }, autoStartUsed: false, scan: 'ok',
+  scanErrorStreak: 0, scanError: null, linkError: null,
 })
 
 describe('pinnedSessions (LIFE-556 fix2 M2)', () => {

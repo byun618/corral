@@ -97,7 +97,7 @@ function parseSessionList(stdout: string): SessionHandle[] | null {
 
 /** CLI 가 없거나 실패할 때의 폴백. 경로 규칙 두 갈래를 그대로 구현한다. */
 function scanFilesystem(input: { reason: string; appDir: string }): SessionScan {
-  const { reason } = input
+  let reason = input.reason
   const home = herdrHome(input.appDir)
   const sessions: SessionHandle[] = []
   const defaultSocket = path.join(home, 'herdr.sock')
@@ -106,7 +106,16 @@ function scanFilesystem(input: { reason: string; appDir: string }): SessionScan 
   }
   const namedDir = path.join(home, 'sessions')
   if (fs.existsSync(namedDir)) {
-    for (const entry of fs.readdirSync(namedDir, { withFileTypes: true })) {
+    // 폴더를 못 읽으면(권한 EACCES 등) 던지지 않고 조회 오류로 돌려준다 (LIFE-532 fix2 N-01) — 던지면 `runPoll` 이 계수 갱신 전에 끝나
+    // 「연결 실패」 카드가 영영 안 뜬다. 여기서 잡는 것이 범위가 가장 작다: 이 읽기가 `listSessions` 에서 던질 수 있는 유일한 자리이고,
+    // 이미 찾은 default 소켓은 버리지 않는다.
+    let entries: fs.Dirent[] = []
+    try {
+      entries = fs.readdirSync(namedDir, { withFileTypes: true })
+    } catch (error) {
+      reason = `${reason}\n세션 폴더를 읽지 못했다: ${String(error)}`
+    }
+    for (const entry of entries) {
       if (!entry.isDirectory()) continue
       const socketPath = path.join(namedDir, entry.name, 'herdr.sock')
       if (!fs.existsSync(socketPath)) continue

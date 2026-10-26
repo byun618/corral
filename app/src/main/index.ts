@@ -99,7 +99,7 @@ import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { externalOpenLogUrl, isExternalOpenAllowed } from './external-url.js'
 import { pickSessionName, pinnedSessions } from './pick-session.js'
-import { BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, type BackendInput } from './backend-start.js'
+import { BackendRetry, BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, nextScanErrorStreak, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
 import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, cardlessGate, collectSessionRefs, joinTree, readClaimedWorkspaceIds, type RepoSkeleton } from './tree.js'
@@ -269,6 +269,8 @@ let restore: BackendInput['restore'] = null
 let lastBackendLog = ''
 /** 세션 조회 상태 (r2 R2-02) — 첫 조회 전 `pending`, CLI 조회가 실패해 폴백했으면 `error`. */
 let scanState: BackendInput['scan'] = 'pending'
+/** 연속 조회 오류 수 (LIFE-532 D1) — `runPoll` 이 실제 조회 결과로 갱신한다. */
+let scanErrorStreak = 0
 let registry: RepoRegistry | null = null
 let uiPrefs: UiPrefsStore | null = null
 /** 탐색기 감시·git 허브 (LIFE-589) — 감시는 utility process 안에서 돈다. */
@@ -369,10 +371,13 @@ function backendInput(): BackendInput {
     sessions,
     selected: selectedSession,
     link: { phase: link.linkState().phase, attempt: link.linkState().attempt },
+    linkError: link.linkState().lastError,
     restore,
     starter: backendStarter.phase(),
     autoStartUsed: backendStarter.autoStartUsed(),
     scan: scanState,
+    scanErrorStreak,
+    scanError: sessionsError,
   }
 }
 
@@ -434,6 +439,23 @@ async function startBackendFromUi(): Promise<void> {
   await backendStarter.start('button')
   await pollSessions()
 }
+
+/**
+ * 연결 실패 카드의 「다시 시도」 (LIFE-532 D3). 원인 `link` 는 **같은 세션**의 링크만 다시 연다 — `pickSession` 의 정리(스트림 닫기·지문·
+ * 통합 상태 비우기)는 세션이 바뀔 때의 것이라 하지 않는다. 영역 스트림은 링크와 별개 소켓이고 같은 세션의 것이다.
+ */
+const backendRetry = new BackendRetry({
+  status: () => decideBackend(backendInput()).status,
+  reopenLink: (name) => {
+    const found = sessions.find((session) => session.name === name)
+    if (found === undefined) return false
+    link.open(found)
+    scheduleEmit()
+    return true
+  },
+  poll: () => pollSessions(),
+  log,
+})
 
 /**
  * 터미널 스트림 (R2) — herdr-client.sock 의 endpoint 연결. control 링크와 **별개 소켓·별개
@@ -1570,6 +1592,11 @@ async function runPoll(): Promise<void> {
   sessions = pinnedSessions({ sessions: scan.sessions, pinDefault: bundledHerdr !== null || onRepoGuard(herdr), bound: boundSessionName(process.env) })
   sessionsError = scan.error
   scanState = scan.error === null ? 'ok' : 'error'
+  const previousStreak = scanErrorStreak
+  scanErrorStreak = nextScanErrorStreak({ streak: scanErrorStreak, scan: scanState })
+  // 연속 계수를 남긴다(fix1 R1-02) — `backend.status` 는 종류가 바뀔 때만 찍혀 「1·2회엔 카드 없음」 을 로그로 대조할 수 없다.
+  // 오류가 이어지는 동안과 0 으로 돌아온 한 번만(fix2 N-03) — 성공이 이어지는 평시엔 0줄이다(3초마다 한 줄은 하루 수 MB).
+  if (scanErrorStreak > 0 || scanErrorStreak !== previousStreak) log('sessions.scan', { scan: scanState, streak: scanErrorStreak })
   // default 가 돌고 있으면 남은 실패를 걷는다(r2 R2-01) — 그 뒤 멈추면 확인(exited)과 재개 요약이 나와야 한다.
   if (scanState === 'ok' && sessions.some((session) => session.isDefault && session.running)) backendStarter.observeRunning()
   // 조회 오류 중이어도 default 에 live 로 붙어 있으면 서버가 돈다 — 낡은 실패를 걷는다(r5 R5-02).
@@ -1591,7 +1618,8 @@ function evaluateBackend(): void {
   const needsCount = needsRestoreCount({ bound: boundSessionName(process.env), sessions, selected: selectedSession })
   restore = needsCount ? readRestoreTargets(sessions.find((session) => session.isDefault)?.sessionDir ?? null) : null
   const decision = decideBackend(backendInput())
-  const summary = JSON.stringify({ status: decision.status.kind, restore })
+  // 연결 실패는 원인까지 — 원인 `scan` → `link` 전이도 로그에 남는다(LIFE-532).
+  const summary = JSON.stringify({ status: decision.status.kind, cause: decision.status.kind === 'unreachable' ? decision.status.cause : null, restore })
   if (summary !== lastBackendLog) {
     lastBackendLog = summary
     log('backend.status', { status: decision.status, restore })
@@ -1989,6 +2017,7 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('corral:refreshSessions', (event) => (fromOurWindow(event) ? pollSessions() : undefined))
   ipcMain.handle('corral:startBackend', (event) => (fromOurWindow(event) ? startBackendFromUi() : undefined))
+  ipcMain.handle('corral:retryBackend', (event) => (fromOurWindow(event) ? backendRetry.retry() : undefined))
   ipcMain.handle('corral:getKeybindings', (event) => fromOurWindow(event) ? keybindings.get() : {})
   ipcMain.handle('corral:saveKeybindings', (event, overrides: unknown) => {
     if (!fromOurWindow(event)) return { ok: false, error: '다른 창의 요청' }

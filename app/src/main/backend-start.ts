@@ -25,6 +25,8 @@ export type BackendInput = {
   /** 지금 붙어 있는(붙었던) 세션. 연결 도중 멈춤을 가른다. */
   selected: string | null
   link: { phase: LinkPhase; attempt: number }
+  /** 링크가 `failed` 로 간 원문 — 링크 `lastError` (LIFE-532 원인 `link` 카드). */
+  linkError: string | null
   /** default 의 재개 대상. 셀 필요가 없을 때(돌고 있는 세션이 있을 때)는 null 이어도 된다. */
   restore: RestoreSummary | null
   starter: StarterPhase
@@ -35,6 +37,18 @@ export type BackendInput = {
    * 둘 다 「멈춤」 의 증거가 아니다 — 빈 결과를 멈춤으로 읽어 확인 카드·자동 기동을 내지 않는다.
    */
   scan: 'pending' | 'ok' | 'error'
+  /** 조회 오류가 몇 번 이어졌나 (LIFE-532 D1) — 성공 1회로 0. `nextScanErrorStreak` 로 main 이 갱신한다. */
+  scanErrorStreak: number
+  /** 마지막 조회 오류 원문 — 성공이면 null. */
+  scanError: string | null
+}
+
+/** 조회 오류가 이만큼 이어지면 「연결 실패」(원인 `scan`) 카드로 올린다 (LIFE-532 D1) — 일시 실패와 구분한다. */
+export const SCAN_ERROR_THRESHOLD = 3
+
+/** 연속 조회 오류 수 (LIFE-532 D1) — 오류면 하나 더, 성공이면 0. */
+export function nextScanErrorStreak(input: { streak: number; scan: BackendInput['scan'] }): number {
+  return input.scan === 'error' ? input.streak + 1 : 0
 }
 
 export type RunningProbe = { kind: 'running' } | { kind: 'stopped' } | { kind: 'unknown'; error: string }
@@ -77,10 +91,15 @@ export function decideBackend(input: BackendInput): BackendDecision {
     // 조회 전·조회 실패 — 지정 세션이 멈췄는지 모른다. 빈 목록을 멈춤 카드로 그려 터미널을 가리지 않는다(r3 R3-01).
     // 지름길(`CORRAL_SESSION`+`CORRAL_BACKEND_SOCKET`)은 CLI 를 부르지 않아 오류가 없지만, `CORRAL_SESSION` 만이면 CLI 조회라 오류가 날 수 있다.
     if (input.scan !== 'ok') {
+      // 모름이어도 링크 최종 실패·조회 오류 지속은 알린다(LIFE-532) — 빈 터미널만 두지 않는다.
+      const unreachable = unreachableStatus({ input, session: input.bound })
+      if (unreachable !== null) return none(unreachable)
       if (link.phase === 'reconnecting') return none({ kind: 'reconnecting', session: input.bound, attempt: link.attempt })
       return none({ kind: 'ok' })
     }
     if (named === undefined || !named.running) return none({ kind: 'bound-stopped', session: input.bound, reason: 'bound' })
+    // 조회가 성공했다 — 원인 `scan` 은 없다(계수 0). 링크 최종 실패만 본다.
+    if (link.phase === 'failed') return none(linkFailed({ session: input.bound, error: input.linkError }))
     if (link.phase === 'reconnecting') return none({ kind: 'reconnecting', session: input.bound, attempt: link.attempt })
     return none({ kind: 'ok' })
   }
@@ -97,6 +116,9 @@ export function decideBackend(input: BackendInput): BackendDecision {
     // 다만 링크가 live 면 서버가 실제로 돈다 — 낡은 실패 카드로 터미널을 가리지 않는다(r5 R5-02). 실패는 main 이 걷는다.
     if (link.phase === 'live') return none({ kind: 'ok' })
     if (input.starter.phase === 'failed') return none(failed(input.starter))
+    // 링크 최종 실패·조회 오류 지속(LIFE-532) — 재연결 배너보다 먼저다. 서버가 도는지조차 모르는데 배너만 두면 빈 화면과 같다.
+    const unreachable = unreachableStatus({ input, session: input.selected })
+    if (unreachable !== null) return none(unreachable)
     if (link.phase === 'reconnecting' && input.selected !== null) return none({ kind: 'reconnecting', session: input.selected, attempt: link.attempt })
     return none({ kind: 'ok' })
   }
@@ -105,6 +127,8 @@ export function decideBackend(input: BackendInput): BackendDecision {
   if (input.selected !== null) {
     const current = input.sessions.find((session) => session.name === input.selected)
     if (current !== undefined && current.running) {
+      // 세션은 도는데 링크가 재시도 없이 끝났다(LIFE-532) — 원인 `link` 만 본다. 조회는 성공(또는 바이너리 없음 폴백)이라 원인 `scan` 이 아니다.
+      if (link.phase === 'failed') return none(linkFailed({ session: input.selected, error: input.linkError }))
       if (link.phase === 'reconnecting') return none({ kind: 'reconnecting', session: input.selected, attempt: link.attempt })
       return none({ kind: 'ok' })
     }
@@ -130,6 +154,24 @@ export function decideBackend(input: BackendInput): BackendDecision {
     return { status: { kind: 'starting', session: DEFAULT_SESSION }, autostart: true }
   }
   return none({ kind: 'confirm', reason: 'stopped', session: DEFAULT_SESSION, restore })
+}
+
+/**
+ * 조회 전·조회 오류(세션이 도는지 모름) 자리의 「연결 실패」 판정 (LIFE-532 D2) — 원인 `link` 가 `scan` 보다 먼저다(더 구체적이다).
+ * 링크 live 는 부르기 전에 걸러져 있어야 한다. 바이너리 `missing` 이면 원인 `scan` 을 내지 않는다(fix1 R1-01) — 파일시스템 폴백이 정상 경로라
+ * 조회 오류가 늘 채워진다. 링크 실패는 바이너리와 무관하니 원인 `link` 는 그대로 낸다.
+ */
+function unreachableStatus(args: { input: BackendInput; session: string | null }): BackendStatus | null {
+  const { input, session } = args
+  if (input.link.phase === 'failed' && session !== null) return linkFailed({ session, error: input.linkError })
+  if (input.binary.kind !== 'missing' && input.scanErrorStreak >= SCAN_ERROR_THRESHOLD) {
+    return { kind: 'unreachable', cause: 'scan', session, error: input.scanError ?? '(조회 오류 원문 없음)' }
+  }
+  return null
+}
+
+function linkFailed(args: { session: string; error: string | null }): BackendStatus {
+  return { kind: 'unreachable', cause: 'link', session: args.session, error: args.error ?? '(링크 오류 원문 없음)' }
 }
 
 const unknownRestore: RestoreSummary = { known: false, reason: '재개 대상을 세지 않았다' }
@@ -317,5 +359,49 @@ export class BackendStarter {
 
   private probe(): Promise<RunningProbe> {
     return this.deps.isRunning().catch((error: unknown) => ({ kind: 'unknown', error: String(error) }))
+  }
+}
+
+export type RetryDeps = {
+  /** 지금 상태 — main 이 `decideBackend(backendInput())` 로 다시 정한다. */
+  status: () => BackendStatus
+  /** 선택된 세션의 링크를 다시 연다(attempt 0 부터). 다시 열 대상을 못 찾으면 false. */
+  reopenLink: (session: string) => boolean
+  poll: () => Promise<void>
+  log: (event: string, data: Record<string, unknown>) => void
+}
+
+/**
+ * 연결 실패 카드의 「다시 시도」 (LIFE-532 D3). 원인 `scan` 은 즉시 재조회, 원인 `link` 는 링크를 다시 연 뒤 재조회.
+ * 지금 상태가 연결 실패가 아니면 아무것도 하지 않는다(`startBackendFromUi` 와 같은 가드). **연타·동시 호출은 진행 중인 한 번으로
+ * 합친다** — 링크를 겹쳐 열지 않는다.
+ */
+export class BackendRetry {
+  private inflight: Promise<void> | null = null
+
+  constructor(private readonly deps: RetryDeps) {}
+
+  retry(): Promise<void> {
+    if (this.inflight !== null) {
+      this.deps.log('backend.retry.joined', {})
+      return this.inflight
+    }
+    this.inflight = this.run().finally(() => {
+      this.inflight = null
+    })
+    return this.inflight
+  }
+
+  private async run(): Promise<void> {
+    const status = this.deps.status()
+    if (status.kind !== 'unreachable') {
+      this.deps.log('backend.retry.ignored', { status: status.kind })
+      return
+    }
+    this.deps.log('backend.retry', { cause: status.cause, session: status.session })
+    if (status.cause === 'link' && !this.deps.reopenLink(status.session)) {
+      this.deps.log('backend.retry.link_missing', { session: status.session })
+    }
+    await this.deps.poll()
   }
 }

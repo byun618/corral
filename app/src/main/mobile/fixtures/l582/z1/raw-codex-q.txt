@@ -1,0 +1,16 @@
+before blocked#149
+"\u001b[1;2D" blocked#149
+"1" blocked#149
+"3" blocked#149
+"라떼" blocked#149
+• Working (7s • esc to interrupt)
+• Queued follow-up inputs
+  Pick drink
+    1. Tea
+    2. Coffee
+  › 3. 라떼
+  enter submit   ⌃] skip   ⇧→ main prompt
+before blocked#149
+"\r" working#150
+question_reply>\n[{\"answer\":\"Small\",\"question\":\"Pick size
+question_reply>\n[{\"answer\":\"라떼\",\"question\":\"Pick drink

@@ -1,0 +1,14 @@
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Pets  ☒ City  ✔ Submit  →
+
+Review your answers
+
+ ● Pick pets
+   → Dog, 햄스터
+ ● Pick city
+   → 대구
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel

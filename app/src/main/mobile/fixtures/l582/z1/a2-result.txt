@@ -1,0 +1,2 @@
+A same={"matchCount":1,"naiveCount":1,"cursorInvalidated":false,"assistantAfter":true} bonly={"matchCount":0,"naiveCount":0,"cursorInvalidated":false,"assistantAfter":false}
+B same={"matchCount":1,"naiveCount":1,"cursorInvalidated":false,"assistantAfter":true} bonly={"matchCount":1,"naiveCount":1,"cursorInvalidated":false,"assistantAfter":true}

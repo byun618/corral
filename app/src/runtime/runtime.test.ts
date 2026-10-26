@@ -629,7 +629,7 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
   // (`app/backend/herdr-guard.patch` — `corral_terminal_allows_agent_explain_with_the_same_identity_fence`).
   // 끝에서 끝까지는 네이티브 회차가 잰다.
   const claudeExplain = (): Record<string, unknown> => {
-    const file = new URL('../../../specs/LIFE-456-agent-state/raw/claude/s9-r1/f2/claude-explain.json', import.meta.url)
+    const file = new URL('../shared/fixtures/l456-s9-r1-f2/claude-explain.json', import.meta.url)
     const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
     return asObject(parsed)
   }

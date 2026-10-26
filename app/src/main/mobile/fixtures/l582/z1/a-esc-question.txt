@@ -1,0 +1,10 @@
+before: "agent_status":"blocked" "state_change_seq":89  | after: "agent_status":"blocked" "state_change_seq":90 | ms=257
+⏺ User declined to answer questions
+  ⎿  · Pick a number (One / Two)
+✻ Cooked for 1s · done 11:39 PM
+                                                                                                   ◐ medium · /effort
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents
+{"pending":null,"turnOutcome":{"outcome":"interrupted","reason":"[Request interrupted by user for tool use]"}}

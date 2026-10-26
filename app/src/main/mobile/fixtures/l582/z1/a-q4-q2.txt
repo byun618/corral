@@ -1,0 +1,14 @@
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Pets  ☐ City  ✔ Submit  →
+
+Pick city
+
+❯ 1. Seoul
+     Pick Seoul
+  2. Busan
+     Pick Busan
+  3. Type something.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

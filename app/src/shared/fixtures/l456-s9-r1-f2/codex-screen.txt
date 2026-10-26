@@ -1,0 +1,14 @@
+
+  Environment: local
+
+  Reason: Allow creating approval-test.txt containing hello in the workspace?
+
+  $ printf 'hello\n' > approval-test.txt
+
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `printf 'hello\n' > approval-
+     test.txt` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel

@@ -1,0 +1,14 @@
+
+
+• Working (6s • esc to interrupt)
+
+• Queued follow-up inputs
+
+
+  Pick drink
+
+  › 1. Tea
+    2. Coffee
+    3. Other
+
+  enter submit   ⌃] skip   ⇧→ main prompt

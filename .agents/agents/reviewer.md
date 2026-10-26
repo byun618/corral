@@ -1,7 +1,7 @@
 # reviewer — 코드 독립 리뷰 지침
 
 코디네이터가 지정한 고정 commit과 specs의 기준을 검토한다.
-임시 출력 경로는 코디네이터가 지정하고, 최종 보고서·raw는 코디네이터가 작업 브랜치 specs로 회수·커밋한다.
+보고서·raw는 코디네이터가 지정한 corral-specs 작업 폴더(`raw/review/`)에 절대경로로 직접 쓰고, 커밋은 코디네이터가 한다.
 
 ## 독립성·공통 규칙
 
@@ -47,4 +47,4 @@
   처럼 실패를 성공으로 읽는 패턴은 없는지), 그리고 판별력 자기점검(다른 상태를 실제로 구분하는지
   — `differsFromStateArray` 류)이 있는지 확인한다. **테스트가 아무것도 안 해도 통과하는 부류는
   구현 버그보다 찾기 어렵다** — LIFE-357 fix4 에서 리뷰어 3명(claude·codex·grok) 전부 놓쳤고
-  구현자가 스스로 발견했다 (`specs/LIFE-357-layout-redesign/14-handoff-main.md` §3-②)
+  구현자가 스스로 발견했다 (`corral-specs/LIFE-357-layout-redesign/14-handoff-main.md` §3-②)

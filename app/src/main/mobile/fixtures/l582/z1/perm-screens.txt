@@ -1,0 +1,29 @@
+== w1:p7 "agent_status":"blocked"
+ echo hi > z1-perm-probe.txt && cat z1-perm-probe.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to ~/repos/byun618/corral/.claude/worktrees/LIFE-582-mobile-input-claude
+      from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+ Esc to cancel · Tab to amend
+== w1:p8 "agent_status":"blocked"
+  Would you like to run the following command?
+  Environment: local
+  Reason: 읽기 전용 샌드박스 밖에서 요청한 z1-perm-probe.txt 파일을 생성하도록 허용하시겠어요?
+  $ echo hi > z1-perm-probe.txt
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `echo hi > z1-perm-probe.txt` (p)
+  3. No, and tell Codex what to do differently (esc)
+  Press enter to confirm or esc to cancel
+== w1:p9 "agent_status":"blocked"
+  ┃  echo hi > z1-perm-probe.txt && ls -la z1-perm-probe.txt && cat z1-perm-probe.txt
+  ┃  ← → narrow scope
+  ┃
+  ┃  1 (●) Yes, and don't ask again for anything (always-approve mode)
+  ┃  2 (○) Yes, proceed
+  ┃  3 (○) No, reject (type to add feedback)
+  ┃  4 (○) Never allow: echo
+  ┃
+  1/4:select  │  Tab:next option  │  ←/→:scope  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback

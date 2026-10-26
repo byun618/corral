@@ -1,0 +1,14 @@
+  Read Terms and Privacy Policy.
+
+  ┃
+  ┃  Pick a fruit
+  ┃
+  ┃
+  ┃  1 (○) Apple  Apple                                                                                              █
+  ┃  2 (○) Pear   Pear                                                                                               █
+  ┃  z (●) ❯ 망고 mango
+  ┃
+  ┃  ↑/↓ navigate · y copy                                                                              Enter:edit
+  ┃
+
+  Enter:submit  │  Esc:back

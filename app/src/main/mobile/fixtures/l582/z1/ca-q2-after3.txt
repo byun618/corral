@@ -1,0 +1,12 @@
+• Working (6s • esc to interrupt)
+
+• Queued follow-up inputs
+
+
+  Pick a fruit
+
+    1. Apple
+    2. Pear
+  › 3. Other
+
+  enter submit   ⌃] skip   ⇧→ main prompt

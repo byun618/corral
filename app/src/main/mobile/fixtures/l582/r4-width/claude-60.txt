@@ -1,0 +1,30 @@
+
+[0m[38;2;215;119;87m ▐[0m[38;2;215;119;87m[48;2;0;0;0m▛███▛█   [0m[1mClaude Code [0m[38;2;153;153;153mv2.1.296[0m
+[0m[38;2;215;119;87m▝▜[0m[38;2;215;119;87m[48;2;0;0;0m█████[0m[38;2;215;119;87m█▀  [0m[38;2;153;153;153mHaiku 5.5 with low effort · Claude Max[0m
+[0m[38;2;215;119;87m ▝▝   ▝▝   [0m[38;2;153;153;153m/private/tmp/l582-race4/cap-claude[0m
+
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mCall AskUserQuestion once now. One single-select question[0m[48;2;55;55;55m [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mtitled "Choose deployment". Use exactly these option [0m[48;2;55;55;55m     [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mlabels: "Deploy the service to the staging environment [0m[48;2;55;55;55m   [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mafter running all integration checks" and "Keep the [0m[48;2;55;55;55m      [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mcurrent release running until the maintenance window [0m[48;2;55;55;55m     [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mtomorrow morning". Short descriptions. No other tools. [0m[48;2;55;55;55m   [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mWait for my answer, then say OK.[0m[48;2;55;55;55m                          [0m
+[0m[38;2;153;153;153m────────────────────────────────────────────────────────────[0m
+[0m[38;2;0;0;0m[48;2;177;185;249m ☐ Deployment [0m
+
+[0m[1m[38;2;255;255;255mChoose deployment[0m
+
+[0m[38;2;177;185;249m❯ [0m[38;2;153;153;153m1. [0m[38;2;177;185;249mDeploy the service to the staging environment after [0m
+     [0m[38;2;177;185;249mrunning all integration checks[0m
+     [0m[38;2;153;153;153mRun integration checks, then deploy to staging now.[0m
+  [0m[38;2;153;153;153m2. [0mKeep the current release running until the maintenance
+     window tomorrow morning
+     [0m[38;2;153;153;153mLeave the current release running and deploy in [0m
+     [0m[38;2;153;153;153mtomorrow's maintenance window.[0m
+  [0m[38;2;153;153;153m3. Type something.[0m
+[0m[38;2;153;153;153m────────────────────────────────────────────────────────────[0m
+  4. Chat about this
+
+[0m[38;2;153;153;153mEnter to select · ↑/↓ to navigate · Esc to cancel[0m

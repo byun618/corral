@@ -1,0 +1,8 @@
+     Pick Green
+  3. Blue
+     Pick Blue
+❯ 4. 보라 violet
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in VS Code · Esc to cancel

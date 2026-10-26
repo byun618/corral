@@ -1,0 +1,13 @@
+before blocked#141
+"1" blocked#141
+"3" blocked#141
+"\u001b[B" blocked#141
+"\u001b[B" blocked#141
+"\u001b[B" blocked#141
+"\u001b[B" blocked#141
+"\r" blocked#141
+"4" working#142
+"배송" working#142
+"\r" working#144
+"1" working#144
+"answers":{"Pick tools":"Saw"}

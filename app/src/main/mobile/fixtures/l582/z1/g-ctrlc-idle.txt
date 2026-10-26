@@ -1,0 +1,5 @@
+before: "agent_status":"done" "state_change_seq":125  | after: "agent_status":"done" "state_change_seq":125 | ms=376
+  │ ❯                                                                                                                │
+  ╰─────────────────────────────────────────────────────────────────────────────── Grok 4.7 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+.:shortcuts
+"agent_status":"done"

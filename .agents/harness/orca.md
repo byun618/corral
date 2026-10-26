@@ -400,7 +400,7 @@ jq -r 'select(.type=="user" or .type=="assistant")
 jq -r '.type' <세션 기록 .jsonl 절대경로> | sort | uniq -c | sort -rn   # 줄 종류만 세기
 ```
 
-**⚠ `specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 누출 점검 도구가 절대경로류 문자열을 `<p:…>` 로
+**⚠ `corral-specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 누출 점검 도구가 절대경로류 문자열을 `<p:…>` 로
 치환해 커밋했으므로 문법부터 깨져 있다(`b2-oracle-*.mjs` 3개 `node --check` 실패). 근거로 **인용**만 한다.
 
 **이 절의 실행 근거**: `worker-read` 는 **미실행**이다(읽기 전용 매핑). 아래 jq 는 corral 로 띄운 Claude
@@ -447,7 +447,7 @@ orca orchestration run-use --id <run_id> [--takeover-legacy] --json
 
 ## 실측 부록 — LIFE-443 (2026-09-29, 설치본 1.4.198)
 
-첫 orchestration 실사용에서 관측한 것. 위 본문의 "미실행" 추정보다 이 기록이 앞선다. 원자료 `specs/LIFE-443-gui-diff/raw/coordinator/`.
+첫 orchestration 실사용에서 관측한 것. 위 본문의 "미실행" 추정보다 이 기록이 앞선다. 원자료 `corral-specs/LIFE-443-gui-diff/raw/coordinator/`.
 
 - **`run-create` 가 스스로 바인딩한다** — 이어서 `run-use` 를 부를 필요가 없었다(c2·c3).
 - **`orca orchestration check --wait --ack` 동시 사용 가능** — 직전 배치 확인과 다음 대기를 한 호출로. heartbeat 는 같은 방식으로 흘려 보낸다.
@@ -457,7 +457,7 @@ orca orchestration run-use --id <run_id> [--takeover-legacy] --json
 
 ## 실측 부록 — LIFE-459·462 착수 (2026-09-30, 설치본 1.4.198)
 
-본체 세션이 코디네이터 둘을 병렬 기동하면서 겪은 것. 기록 `specs/LIFE-462-task-lifecycle/00-start.md` 「코디네이터 터미널」.
+본체 세션이 코디네이터 둘을 병렬 기동하면서 겪은 것. 기록 `corral-specs/LIFE-462-task-lifecycle/00-start.md` 「코디네이터 터미널」.
 
 - **시간 초과 뒤 터미널은 8초 넘게 늦게 나타날 수 있다** — `orca terminal create` 가 `runtime_error: Timed out waiting for terminal handle after creation`
   을 낸 뒤 8초 시점의 `orca terminal list`(같은 조회로 형제 작업 터미널은 보였다 = 조회 자체는 양성)와 `pgrep` 이 모두 비어 있었다.
@@ -470,7 +470,7 @@ orca orchestration run-use --id <run_id> [--takeover-legacy] --json
 
 ## 실측 부록 — LIFE-485 (2026-10-07, 설치본 1.4.198)
 
-LIFE-485 코디 세션(Run `run_296174c855c9`)이 겪은 것. 일감 LIFE-533, 원자료는 `specs/LIFE-485-herdr-autostart/raw/coordinator/`.
+LIFE-485 코디 세션(Run `run_296174c855c9`)이 겪은 것. 일감 LIFE-533, 원자료는 `corral-specs/LIFE-485-herdr-autostart/raw/coordinator/`.
 
 - **`orca terminal close` 에서 `--terminal` 값이 비면 호출한 터미널을 닫는다** — 위 `orca terminal send` 항목과 같은 성질이 `orca terminal close` 에도 있다.
   zsh 루프에서 위치 인자를 다시 세우는 셸 내장 명령이 인용 없는 변수를 단어로 나누지 않아 handle 이 빈 채로 불렸고, **코디 자신의 터미널이 닫혀 세션이 죽었다**(05:03, `c26-close--r1.json` 의 `handle` = 코디).

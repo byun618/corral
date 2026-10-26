@@ -11,44 +11,44 @@ description: >-
 # Design — Brief (Claude Design에 줄 브리프)
 
 디자인은 **Claude Design(claude.ai/design)에서** 그린다. 이 스킬은 *그리기 직전의 입력*을 만든다 — 산출물 하나,
-`specs/LIFE-NNN-<슬러그>/design-brief.md`(붙여넣기용). cpm-macro `design-brief`를 corral(단일 표면 =
+`corral-specs/LIFE-NNN-<슬러그>/design-brief.md`(붙여넣기용). cpm-macro `design-brief`를 corral(단일 표면 =
 **Electron 데스크톱 앱**)에 맞게 축소·조정한 것 — `_canon`(캐논 마스터)·`design-screens.md`(누적 마스터 스펙)는
 corral엔 아직 화면이 몇 개 안 되고 다회차 병합 수요가 없어 **뺐다** (2026-09-13 판단, 필요해지면 나중에 추가).
 
-> 흐름: 화면 인벤토리(`specs/app-screens.md`) → **design-brief** → [Claude Design 외부, 사용자가 전달] →
-> `design-intake`(specs/ 이관) → 구현(AGENTS.md 작업 플로우).
+> 흐름: 화면 인벤토리(`corral-specs/app-screens.md`) → **design-brief** → [Claude Design 외부, 사용자가 전달] →
+> `design-intake`(corral-specs/ 이관) → 구현(AGENTS.md 작업 플로우).
 
 ## Phase 0 — 컨텍스트
 
 1. **LIFE-N 확정**(미명시면 1번 묻기). 작업 브랜치·worktree 가 있으면 그 안에서 진행(`task-start` 로 이미 파둔 것 전제).
-2. **선행 게이트**: `specs/app-screens.md`(현재 화면 인벤토리 — 화면 목록·상태·버튼·데이터)가 없으면 브리프
+2. **선행 게이트**: `corral-specs/app-screens.md`(현재 화면 인벤토리 — 화면 목록·상태·버튼·데이터)가 없으면 브리프
    직행 X → 사용자와 먼저 정리해 커밋. 있으면 통과. 화면 인벤토리 없이 쓴 브리프는 corral에 없는 구조
    (예: 서버형 대시보드, 브라우저 탭)가 돌아온다.
-3. **분석 문서가 있으면 인용**: `specs/LIFE-NNN-*/00-analysis.md`(모르는 것 목록)가 이미 있으면 그걸 브리프
+3. **분석 문서가 있으면 인용**: `corral-specs/LIFE-NNN-*/00-analysis.md`(모르는 것 목록)가 이미 있으면 그걸 브리프
    근거로 쓴다 — 없으면 이 스킬이 브리프를 쓰기 전에 최소한 "이 화면이 왜 필요한가"를 사용자와 확인한다.
 
 ## Phase 1 — 그라운딩 (브리프 전 항상)
 
 추측 금지 — 아래를 실제로 읽고 브리프에 인용:
 
-- `specs/app-screens.md` — 화면·상태·버튼·데이터 (없으면 Phase 0 게이트에서 먼저 만든다).
+- `corral-specs/app-screens.md` — 화면·상태·버튼·데이터 (없으면 Phase 0 게이트에서 먼저 만든다).
 - 현재 렌더러 코드 — `app/src/renderer/src/App.tsx` · `TerminalPane.tsx` · `styles.css` (실제 구조·현재 없는 것을
   추측하지 말고 읽어서 인용).
-- 디자인 시스템 앵커 — `specs/design-tokens.css`(있으면 — 새 색 만들지 말 것. 없으면 "이번에 만든다, CSS
+- 디자인 시스템 앵커 — `corral-specs/design-tokens.css`(있으면 — 새 색 만들지 말 것. 없으면 "이번에 만든다, CSS
   변수로"라고 브리프에 명시).
-- **Orca/herdr-studio 레퍼런스** (corral 특유 — 참고 모델 축은 `specs/00-project.md` 「체크포인트별 방향」(LIFE-414 GUI Orca 동일)·
+- **Orca/herdr-studio 레퍼런스** (corral 특유 — 참고 모델 축은 `corral-specs/00-project.md` 「체크포인트별 방향」(LIFE-414 GUI Orca 동일)·
   「구현 기반과 유지할 제약」(Herdr Studio endpoint 코어) 참고: **UI/UX 는 Orca, 엔진/데이터모델은 herdr-studio**):
-  `specs/reference/layout-reference-2026-09-13.md` ·
-  `specs/reference/settings-shortcuts-palette-reference-2026-09-13.md` ·
-  `specs/reference/secondary-features-reference-2026-09-13.md` (관련 스텝에 해당하는 문서만 인용).
+  `corral-specs/reference/layout-reference-2026-09-13.md` ·
+  `corral-specs/reference/settings-shortcuts-palette-reference-2026-09-13.md` ·
+  `corral-specs/reference/secondary-features-reference-2026-09-13.md` (관련 스텝에 해당하는 문서만 인용).
 - herdr 어댑터 경계 — `app/src/main/adapter/`. UI 층으로 herdr 타입(`PaneInfo`·`AgentStatus` 등)이 새면 안
   된다는 게 corral 의 고정 아키텍처 제약이다(`00-project.md` 「구현 기반과 유지할 제약」) — 디자인이 이 경계를 건너는 데이터를
   요구하면 브리프 §5(열린 질문)나 §6(범위 밖)에서 짚는다.
 
 ## Phase 2 — 브리프 작성 (6섹션 골격)
 
-`specs/LIFE-NNN-<슬러그>/design-brief.md` — 헤더에 *"Claude Design에 붙여넣는 브리프, 산출물은
-design-intake로 specs/ 이관"* 명시:
+`corral-specs/LIFE-NNN-<슬러그>/design-brief.md` — 헤더에 *"Claude Design에 붙여넣는 브리프, 산출물은
+design-intake로 corral-specs/ 이관"* 명시:
 
 1. **제품 컨텍스트** — herdr 기반 AI 워크스페이스의 **설치형 Electron 데스크톱 앱**(단일 창). **고정
    제약**(매 브리프 반복): 화면 계층은 `repo → worktree(workspace) → tab → pane` 4단(LIFE-344 확정, 안
@@ -76,7 +76,7 @@ design-intake로 specs/ 이관"* 명시:
 탐색안은 안 보내도 된다(원하면 `explorations/`에 남겨도 되지만 corral 은 이관 안 함).
 
 - 파일·폴더명 kebab-case.
-- **머리말 3줄**: 수신=`design-intake` · 결정 근거 경로(`00-analysis.md`/`specs/app-screens.md` 등) ·
+- **머리말 3줄**: 수신=`design-intake` · 결정 근거 경로(`00-analysis.md`/`corral-specs/app-screens.md` 등) ·
   `surface: desktop`.
 - **5섹션** (cpm-macro 6섹션에서 §3 `design-screens.md` diff 는 corral 에 그 문서가 없어 뺐다):
   §0 산출 파일 · §1 채택 결정(§5 열린 질문에 대한 답 포함) · §2 컴포넌트 스펙(상태×토큰) ·
@@ -84,7 +84,7 @@ design-intake로 specs/ 이관"* 명시:
   IPC 타입 이름은 `app/src/shared/types.ts` 가 권위).
 
 > 골격(5섹션·머리말·kebab·`screens/desktop`)은 스킬 소유 = 제품 무관. 제품 특정값(토큰·화면·제약 문구)은
-> `specs/`.
+> `corral-specs/`.
 
 ## Phase 3 — 매듭
 

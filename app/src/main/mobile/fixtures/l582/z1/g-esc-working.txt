@@ -1,0 +1,8 @@
+before: "agent_status":"working" "state_change_seq":106  | after: "agent_status":"working" "state_change_seq":106 | ms=10393
+"agent_status":"working"
+  for training and debugging purposes. Change anytime via settings.
+  Read Terms and Privacy Policy.
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                │
+  ╰─────────────────────────────────────────────────────────────────────────────── Grok 4.7 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+.:shortcuts

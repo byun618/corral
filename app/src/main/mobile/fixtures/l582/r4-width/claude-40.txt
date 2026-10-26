@@ -1,0 +1,35 @@
+
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mCall AskUserQuestion once now. One [0m[48;2;55;55;55m   [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55msingle-select question titled "Choose[0m[48;2;55;55;55m [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mdeployment". Use exactly these [0m[48;2;55;55;55m       [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55moption labels: "Deploy the service to[0m[48;2;55;55;55m [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mthe staging environment after [0m[48;2;55;55;55m        [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mrunning all integration checks" and [0m[48;2;55;55;55m  [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55m"Keep the current release running [0m[48;2;55;55;55m    [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55muntil the maintenance window tomorrow[0m[48;2;55;55;55m [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mmorning". Short descriptions. No [0m[48;2;55;55;55m     [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mother tools. Wait for my answer, then[0m[48;2;55;55;55m [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55msay OK.[0m[48;2;55;55;55m                               [0m
+[0m[38;2;153;153;153m────────────────────────────────────────[0m
+[0m[38;2;0;0;0m[48;2;177;185;249m ☐ Deployment [0m
+
+[0m[1m[38;2;255;255;255mChoose deployment[0m
+
+[0m[38;2;177;185;249m❯ [0m[38;2;153;153;153m1. [0m[38;2;177;185;249mDeploy the service to the staging [0m
+     [0m[38;2;177;185;249menvironment after running all [0m
+     [0m[38;2;177;185;249mintegration checks[0m
+     [0m[38;2;153;153;153mRun integration checks, then deploy[0m
+     [0m[38;2;153;153;153mto staging now.[0m
+  [0m[38;2;153;153;153m2. [0mKeep the current release running
+     until the maintenance window
+     tomorrow morning
+     [0m[38;2;153;153;153mLeave the current release running [0m
+     [0m[38;2;153;153;153mand deploy in tomorrow's [0m
+     [0m[38;2;153;153;153mmaintenance window.[0m
+  [0m[38;2;153;153;153m3. Type something.[0m
+[0m[38;2;153;153;153m────────────────────────────────────────[0m
+  4. Chat about this
+
+[0m[38;2;153;153;153mEnter to select · ↑/↓ to navigate · Esc [0m
+[0m[38;2;153;153;153mto cancel[0m

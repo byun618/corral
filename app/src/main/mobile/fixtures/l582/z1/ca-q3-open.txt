@@ -1,0 +1,14 @@
+
+• Working (5s • esc to interrupt)
+
+• Queued follow-up inputs
+
+
+  1 of 2
+  Pick size
+
+  › 1. Small
+    2. Large
+    3. Other
+
+  enter submit   ⌃] skip   ⇧→ main prompt   ⇧← next question

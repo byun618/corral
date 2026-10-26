@@ -107,8 +107,10 @@ describe('E7ⓑ 좁혀 찾기', () => {
   })
 })
 
-// 코디 고정 질의 표(01-criteria 「E2 질의 표」) — 기준 트리는 게이트 ⓪ 승인 뒤 작업 브랜치 HEAD fd1664c4d. 그 commit 이 없는 체크아웃이면 건너뛴다.
-const BASE = 'fd1664c4d'
+// 코디 고정 질의 표(01-criteria 「E2 질의 표」) — 기준 트리는 게이트 ⓪ 승인 뒤 작업 브랜치 HEAD fd1664c4d.
+// LIFE-705 레포 분리(filter-repo)로 그 commit 은 사라졌다 — specs/ 를 뺀 트리가 같은 가장 가까운 조상 8f9c45298 로 바꾸고,
+// specs/00-project.md 를 기대하던 q11 은 이 레포에 남는 파일로 바꿨다. 그 commit 이 없는 체크아웃이면 건너뛴다.
+const BASE = '8f9c45298'
 const baseFiles = ((): string[] | null => {
   try {
     return execFileSync('git', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', BASE], { encoding: 'utf8', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'ignore'] })
@@ -129,7 +131,7 @@ const TABLE: { id: string; query: string; expected: string; within: number }[] =
   { id: 'q8', query: 'uiprefs', expected: 'app/src/main/ui-prefs.ts', within: 5 },
   { id: 'q9', query: 'Explorer.tsx', expected: 'app/src/renderer/src/components/Explorer.tsx', within: 1 },
   { id: 'q10', query: 'electron-builder', expected: 'app/electron-builder.yml', within: 3 },
-  { id: 'q11', query: '00-project', expected: 'specs/00-project.md', within: 2 },
+  { id: 'q11', query: 'release.sh', expected: 'scripts/release.sh', within: 2 },
   { id: 'q12', query: 'EXPLORER-FS', expected: 'app/src/main/explorer-fs.ts', within: 3 },
 ]
 // 수정 r1 R1-C-11 — 기준 commit 이 없는 체크아웃에서 조용히 건너뛰지 않는다: 실패로 알린다. 일부러 건너뛸 때만 L593_ALLOW_NO_E2_TABLE=1(사유를 크게 남긴다).

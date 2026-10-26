@@ -204,7 +204,7 @@ describe('pickBlockedRule — 구체성은 조건 개수다 (F2 · R2-F4)', () =
    * 라운드 1 의 이 스위트는 `{id, matched, priority}` 만 있는 손으로 지은 객체를 먹여서
    * `state` 칸 미필터와 구체성 정의 오류를 **둘 다 못 잡았다.**
    */
-  const screensDir = fileURLToPath(new URL('../../../specs/LIFE-456-agent-state/raw/claude/s9-r1/f2/', import.meta.url))
+  const screensDir = fileURLToPath(new URL('./fixtures/l456-s9-r1-f2/', import.meta.url))
   const screen = (name: string): Record<string, unknown> => {
     const raw: unknown = JSON.parse(readFileSync(`${screensDir}${name}`, 'utf8'))
     if (!isRecord(raw)) throw new Error(`원자료가 객체가 아니다: ${name}`)

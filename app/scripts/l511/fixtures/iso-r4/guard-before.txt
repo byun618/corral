@@ -1,0 +1,1 @@
+pgrep -fl "/tmp/l511if1|l443-gui-diff" → (없음)

@@ -13,10 +13,9 @@ app/node_modules/
 app/out/
 app/*.tsbuildinfo
 
-# 대량 반복 런 로그 — 요약 JSON 이 원본 해시로 사슬을 남긴다 (LIFE-356 킥오프 원자료 정책).
-# _discarded 의 버린 회차 실물은 커밋한다 (park() 가 _runs 밖으로 옮기므로 이 규칙에 안 걸린다).
-# `**` 로 수정 회차 하위 폴더(raw/claude/fix1/_runs 등)까지 덮는다 (RAW_SUBDIR).
-specs/*/raw/**/_runs/
+# 작업 산출물은 별도 레포 corral-specs (LIFE-705). 옛 측정 스크립트(app/scripts/lNNN)의 기본 출력 경로가
+# specs/…/raw 라 돌리면 여기 생긴다 — 이 레포에 커밋하지 않는다
+specs/
 
 # LIFE-366 격리 HOME (02-kickoff.md 정체 표) — 통합 설치·에이전트 기동 실측이 여기 떨어진다.
 .tmp/

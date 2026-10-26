@@ -1,0 +1,11 @@
+2325c327aee6798f8398a963c8cd4b94040aaac11a7bdd118c7ae91dffa13465  specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures/arrow-accepted.ansi
+8dc8cde4c3b999fee4bc1c6d038f1fdd4ef5a2b3ab617c572fcaf0598d5cb99b  specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures/arrow-ghost.ansi
+f3a5ba3f3400d416a6b5994314a32afae7319858ec4d30073f3a006f83dc45c5  specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures/count-done.ansi
+08eb4ef167e356675de066a37f4bb020283728bba7d8eb354d7848511ae6e786  specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures/ghost-partial.ansi
+d2dbc4db3c5d9bbf45dd7d53942c1162e684f5c2c72d48b7f163c4df73ff28f0  specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures/multiline-negative.ansi
+76b9e2f00bdb72eef1b9f1e2f3afa68c59a81f8d97a77faeb5e50a36228aec02  specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures/paste-leading-newline.ansi
+00a8f07c999ede3e2ad7f6c3cbf895ba6a07ed7069e2cc07476bbb0a74ecbcb0  specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures/paste-markdown.ansi
+d1e3099ef01bf72b3fa51eb382b7f058f3094d03631430503daf6b1cabfb2af3  specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures/paste-multiline.ansi
+032af7c05e693d47983447bd8b2f69ac2c2718b3ee0076d5583ee37d5125ba2d  specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures/paste-sgr.ansi
+cf1c715f31345a143b96867c90726fcfaee22622e6c6034e7f4e6dcf00f75ca0  specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures/paste-unicode.ansi
+7fabc615a6accb1ef1fb5ddedb89ce3f4873f60485df04db483a715f476d7cba  specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures/tab-accepted.ansi

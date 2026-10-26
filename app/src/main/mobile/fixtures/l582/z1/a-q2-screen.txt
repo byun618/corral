@@ -1,0 +1,20 @@
+
+❯ z1a q2: Use AskUserQuestion to ask exactly one question 'Pick fruits' with options Apple, Banana, Cherry and
+  multiSelect true. Then reply with just the chosen labels.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Fruits  ✔ Submit  →
+
+Pick fruits
+
+❯ 1. [ ] Apple
+         Pick Apple
+  2. [ ] Banana
+         Pick Banana
+  3. [ ] Cherry
+         Pick Cherry
+  4. [ ] Type something
+     Submit
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

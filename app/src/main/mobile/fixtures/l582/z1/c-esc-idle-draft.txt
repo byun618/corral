@@ -1,0 +1,5 @@
+before: "agent_status":"done" "state_change_seq":102  | after: "agent_status":"done" "state_change_seq":102 | ms=161
+■ Conversation interrupted - use /feedback if something went wrong
+› draft kappa
+  GPT-6-Astra low · ~/repos/byun618/corral/.claude/worktrees/LIFE-582-mobile-input-claude · Reply ok
+                                                                                              ⚠ 2 warnings · f2 to view

@@ -1,0 +1,16 @@
+❯ z1a q3: Use AskUserQuestion ONCE with two questions: 'Pick size' (Small, Large) and 'Pick drink' (Tea, Coffee), both
+  single select. Then reply with just the answers.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Size  ☐ Drink  ✔ Submit  →
+
+Pick drink
+
+❯ 1. Tea
+     Pick Tea
+  2. Coffee
+     Pick Coffee
+  3. Type something.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

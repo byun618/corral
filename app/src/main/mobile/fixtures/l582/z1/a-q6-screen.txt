@@ -1,0 +1,30 @@
+  just the labels.
+
+⏺ User answered Claude's questions:
+  ⎿  · Pick tools → Saw
+
+⏺ Saw
+
+✻ Churned for 2s · done 11:33 PM
+
+❯ z1a q6: Use AskUserQuestion with one single-select question 'Pick layout' with two options A and B, and give EACH
+  option a 'preview' field containing a short 3-line ascii box mockup. Then reply with just the label.
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Layout
+
+Pick layout
+
+❯ 1. A                            ┌──────────────────────────────────────────┐
+  2. B                            │ +----------------+                       │
+                                  │ |  Header        |                       │
+                                  │ |  Content  | Side|                      │
+                                  │ +----------------+                       │
+                                  └──────────────────────────────────────────┘
+
+                                  Notes: press n to add notes
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Chat about this
+
+Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel

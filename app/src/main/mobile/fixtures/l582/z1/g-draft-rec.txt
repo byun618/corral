@@ -1,0 +1,1 @@
+grok exact={"matchCount":0,"naiveCount":0,"cursorInvalidated":false,"assistantAfter":false} merged={"matchCount":1,"naiveCount":1,"cursorInvalidated":false,"assistantAfter":true}

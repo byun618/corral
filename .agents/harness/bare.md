@@ -10,7 +10,7 @@
 | **tmux**(스크립트 가능) | 송신·화면 읽기·pane 목록을 셸에서 자동화할 수 있다. **보장은 늘지 않는다** — 자동화와 증명은 다른 것이다 |
 
 실측(읽기 전용, `raw/claude/c5-bare-probe.txt`): tmux 3.6a(`/opt/homebrew/bin/tmux`, 이 시점 서버 없음),
-iTerm2 3.7.2(`/Applications/iTerm.app`). 외부 사실 근거는 `specs/LIFE-440-harness-capability-map/00-analysis.md`
+iTerm2 3.7.2(`/Applications/iTerm.app`). 외부 사실 근거는 `corral-specs/LIFE-440-harness-capability-map/00-analysis.md`
 §8 G1·G2(iTerm2 Python API 문서 · tmux wiki Advanced Use).
 
 ## 이 매핑의 존재 이유 — 무엇이 없는지 정직하게 적는 것
@@ -295,7 +295,7 @@ jq -r 'select(.type=="user" or .type=="assistant")
 jq -r '.type' <세션 기록 .jsonl 절대경로> | sort | uniq -c | sort -rn   # 줄 종류만 세기
 ```
 
-**⚠ `specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 누출 점검 도구가 절대경로류 문자열을 `<p:…>` 로
+**⚠ `corral-specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 누출 점검 도구가 절대경로류 문자열을 `<p:…>` 로
 치환해 커밋했으므로 문법부터 깨져 있다(`b2-oracle-*.mjs` 3개 `node --check` 실패). 근거로 **인용**만 한다.
 
 **이 절의 실행 근거**: bare 순환은 **미실행**이다. 위 jq 는 corral 로 띄운 Claude 세션에서 1회 실행했고

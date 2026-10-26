@@ -50,7 +50,7 @@ test('조용한 pane 양성 대조 — 줄 훼손·삭제·다른 줄·메아리
 })
 
 // r2 R2-01 — 커밋된 R056 원자료(fix1/iso-r4)로 양성·음성 대조. 리뷰가 재현한 변조 3종이 전부 실패해야 한다.
-const R056 = new URL('../../../specs/LIFE-511-settings-frame/raw/claude/fix1/iso-r4/', import.meta.url)
+const R056 = new URL('./fixtures/iso-r4/', import.meta.url)
 const readR056 = (name) => fs.readFileSync(new URL(name, R056), 'utf8')
 
 test('R056 원본 A 쌍(k2-base → k2-end)은 통과한다 — 양성 대조', () => {

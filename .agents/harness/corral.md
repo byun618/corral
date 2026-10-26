@@ -2,7 +2,7 @@
 
 능력 이름과 보장 어휘(증명/관측/공백)의 정본은 [capabilities.md](capabilities.md). 이 파일은 그 능력을
 corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적는다. 실측 원본은
-`specs/LIFE-440-harness-capability-map/raw/claude/c3-corral-help.txt`(`corral <명령> --help` 36줄)와
+`corral-specs/LIFE-440-harness-capability-map/raw/claude/c3-corral-help.txt`(`corral <명령> --help` 36줄)와
 `c3-corral-agent-context.json`(명령 58개의 시그니처·주의사항, 2026-09-27 실측).
 
 ## 이 도구를 쓰기 위한 전제
@@ -68,10 +68,10 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 
 위 「보장 수준」은 **corral 의 공개 계약**(`agent-context` 의 시그니처·주의사항)이 무엇을 값으로 돌려준다고
 적는지를 읽은 것이다. 그중 실제로 돌려 확인한 경로와 계약만 읽은 경로를 갈라 둔다 — 계약을 실행으로
-착각하지 않기 위해서다. 실측은 `specs/LIFE-440-harness-capability-map/raw/claude/c6-smoke-record.md`.
+착각하지 않기 위해서다. 실측은 `corral-specs/LIFE-440-harness-capability-map/raw/claude/c6-smoke-record.md`.
 
 **이 표의 기준 시점**: 이 매핑의 마지막 수정 라운드(2026-09-27, 수정 3/3). 회차의 정본은 표가 아니라
-**실행 목록**이다 — `specs/LIFE-440-harness-capability-map/raw/claude/fix3-executions.md` (합계는 `fix3-tally.mjs`).
+**실행 목록**이다 — `corral-specs/LIFE-440-harness-capability-map/raw/claude/fix3-executions.md` (합계는 `fix3-tally.mjs`).
 표가 목록보다 뒤처지면 목록이 맞다. 라운드 2·3 에서 이 표가 두 번 뒤처졌다(K3 → P7).
 
 | 경로 | 이 문서를 쓸 때 |
@@ -343,7 +343,7 @@ corral worktree set --worktree path:<구현 worktree 절대경로> --parent-work
 - **실패는 경고만 남기고 워커 기동을 막지 않는다.** 부모는 사이드바 표시용 메타일 뿐 제어 순환(Task·Dispatch·완료 감지)은 이 값을
   읽지 않는다. 거절 원문(예: 순환 거절 `Lineage cycle is not allowed`)을 원자료에 남기고 진행한다.
 - 보장 수준: **실행 1회 원자료 있음** — LIFE-576 구현 worktree 에 이 명령을 실제로 쳤고 전후 `worktree show` 로 parent 가 작업
-  worktree 로 바뀐 것을 확인했다(`specs/LIFE-576-worktree-nesting/raw/coord/d7-worktree-set.txt`). 작업 worktree 쪽은 task-start 가
+  worktree 로 바뀐 것을 확인했다(`corral-specs/LIFE-576-worktree-nesting/raw/coord/d7-worktree-set.txt`). 작업 worktree 쪽은 task-start 가
   정한다 — 독립 작업은 루트, **묶음 자식은 feature worktree 아래**로 같은 명령을 친다(`--worktree path:<자식 작업 worktree>
   --parent-worktree path:<feature worktree>`). 묶음 자식 쪽 보장 수준: **명령 실행 원자료 없음** — 2026-10-10 기준 LIFE-582·588 이
   LIFE-564-mobile 아래에 붙어 있는 것은 `worktree show` 로 확인했으나, 사용자가 사이드바 드래그로 붙인 것이다.
@@ -593,7 +593,7 @@ jq -r '.type' <세션 기록 .jsonl 절대경로> | sort | uniq -c | sort -rn
 **두 user 줄의 모양이 같아 사람 입력과 주입 입력을 가를 필드가 없다는 것이 재확인됐다**).
 Codex·Grok 판도 같은 형태의 JSONL 이지만 필드 이름이 다르므로 **먼저 한 줄을 열어 키를 확인한 뒤** 같은 요령으로 읽는다.
 
-**⚠ `specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 그 폴더의 파일은 누출 점검 도구가 절대경로류
+**⚠ `corral-specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 그 폴더의 파일은 누출 점검 도구가 절대경로류
 문자열을 `<p:…>` 로 치환해 커밋한 것이라 **문법부터 깨져 있다**(`b2-oracle-*.mjs` 3개 모두 `node --check` 실패).
 근거로 **인용**만 하고, 실행 방법은 위처럼 이 매핑에 직접 적는다.
 

@@ -1,0 +1,8 @@
+== w1:p1
+before: "agent_status":"working" "state_change_seq":114  | after: "agent_status":"idle" "state_change_seq":115 | ms=402
+  ⎿  Interrupted · What should Claude do instead?
+❯ draft mu
+== w1:p3
+before: "agent_status":"working" "state_change_seq":116  | after: "agent_status":"done" "state_change_seq":117 | ms=573
+■ Conversation interrupted - use /feedback if something went wrong
+› draft mu

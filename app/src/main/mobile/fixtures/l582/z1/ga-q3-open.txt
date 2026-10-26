@@ -1,0 +1,20 @@
+   ◆ Waiting on answers for 2 questions                                                             2.8s ⇣28.1k [stop]
+
+  Help improve Grok                                                                                 [Opt out] [Opt in]
+  Off by default. Opt-in to allow SpaceXAI to retain coding data, e.g., prompts, traces, & metrics,
+  for training and debugging purposes. Change anytime via settings.
+  Read Terms and Privacy Policy.
+
+  ┃
+  ┃  Pick pets
+  ┃
+  ┃
+  ┃  1 [ ] Cat   Cat                                                                                                 █
+  ┃  2 [ ] Dog   Dog                                                                                                 █
+  ┃  3 [ ] Fish  Fish                                                                                                █
+  ┃  z [ ] Type your answer here
+  ┃
+  ┃  [1/2] ↑/↓ navigate · ←/→ question · y copy                                                       Enter:select
+  ┃
+
+  Tab:next answer  │  Esc:scrollback  │  Shift+x:dismiss

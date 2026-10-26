@@ -3,13 +3,20 @@
 herdr 기반 AI 워크스페이스 (LIFE-337). 세션·일감을 한 울타리에 모으는 미션 컨트롤.
 herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 Electron + React GUI.
 
-프로젝트 방향·체크포인트는 specs/00-project.md 를 읽는다.
+프로젝트 방향·체크포인트는 corral-specs/00-project.md 를 읽는다.
 
 ## 산출물 규칙
 
-- 작업 하나 = specs/LIFE-NNN-<슬러그>/ 폴더. 단계 산출물은 번호 파일 (00-analysis.md, 01-criteria.md, …)
-- specs/ 파일이 진실의 원천. 세션 간 조율은 파일로 한다 — 세션 컨텍스트는 휘발됨
-- **아티팩트(계획 문서·목업 설명)는 진실의 원천이 아니다.** 일감의 근거는 specs/ 에서만 끌어온다 —
+- **작업 산출물은 별도 private 레포 corral-specs 에 둔다** — 본체 checkout 옆 폴더(`<본체>/../corral-specs`, 지금
+  `~/repos/byun618/corral-specs`. 이하 `corral-specs/`). 브랜치는 main 하나, worktree 를 만들지 않는다. 이 코드 레포에는
+  공개해도 되는 것만 둔다 — 원자료·작업 문서를 커밋하지 않는다 (LIFE-705, 2026-10-26 분리)
+- 작업 하나 = corral-specs/LIFE-NNN-<슬러그>/ 폴더. 단계 산출물은 번호 파일 (00-analysis.md, 01-criteria.md, …)
+- **쓰기와 커밋** — 본체·코디·워커·리뷰어 모두 그 폴더에 **절대경로로 직접** 쓴다(worktree 안 상대경로 금지).
+  커밋은 그 일감의 코디(00-start 는 본체)만, 게이트 시점에, **자기 폴더만** 한다:
+  `git -C <corral-specs> add -- LIFE-NNN-<슬러그>/ && git -C <corral-specs> commit -m "…" -- LIFE-NNN-<슬러그>/ && git -C <corral-specs> push`.
+  여러 일감이 한 working copy 를 같이 쓰므로 남의 폴더를 add 하지 않고, `index.lock` 이면 잠시 뒤 다시 한다. 워커·리뷰어는 커밋하지 않는다
+- corral-specs 파일이 진실의 원천. 세션 간 조율은 파일로 한다 — 세션 컨텍스트는 휘발됨
+- **아티팩트(계획 문서·목업 설명)는 진실의 원천이 아니다.** 일감의 근거는 corral-specs 에서만 끌어온다 —
   아티팩트가 스파이크 판정과 어긋난 채 계획 근거로 쓰이고 있던 전례가 있다 (LIFE-344 → 00-project.md 정정)
 - 완료 조건·판정표 형식·**네이티브 실행 관문**(워커·리뷰어 공통)의 원본은 .agents/rules/validation.md —
   완료 선언 전에 확인한다
@@ -20,7 +27,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 스킬은 **능력 이름**으로만 말하고 명령은 .agents/harness/ 의 도구별 매핑에 있다 —
 어느 매핑을 열지는 .agents/harness/capabilities.md 의 「매핑 선택」 한 곳에서 정한다.
 
-| 단계 | 누가 | 산출물 (specs/LIFE-NNN-<슬러그>/) | 절차 |
+| 단계 | 누가 | 산출물 (corral-specs/LIFE-NNN-<슬러그>/) | 절차 |
 | --- | --- | --- | --- |
 | 0 시작 — 작업 브랜치·worktree·코디 기동 | 본체 | 00-start.md | task-start |
 | 1 분석 — 일감 스냅샷·외부 서치 대조 | 코디 | 00-analysis.md | task-coordinate §1 |
@@ -72,7 +79,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 ## 세션 간 통신
 
-- 영속 산출물: specs/ 파일 (진실의 원천)
+- 영속 산출물: corral-specs 파일 (진실의 원천)
 - 제어 채널: 『감독 워커 기동』·『완료 감지』·『질의응답』. 완료는 워커의 종료 보고로만 본다 (파일·화면·프로세스 종료가 아니다).
   명령과 보장 수준은 선택한 매핑(.agents/harness/<도구>.md) — 능력이 공백인 도구에서는 그 판정 칸이 공백이다. 절차는 task-coordinate §4
 - 보조: Claude 세션 간 SendMessage (claude↔claude 한정)
@@ -81,7 +88,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 | 증상 | 고치는 파일 |
 | --- | --- |
-| 프로젝트가 뭔지 매번 설명하게 된다 | AGENTS.md · specs/00-project.md |
+| 프로젝트가 뭔지 매번 설명하게 된다 | AGENTS.md · corral-specs/00-project.md |
 | 문체·용어·문서 형식이 매번 다르다 | .agents/rules/writing.md |
 | 코드 스타일·파일 이름이 제각각이다 | .agents/rules/coding.md |
 | "다 됐습니다"인데 안 되어 있다 | .agents/rules/validation.md |
@@ -99,5 +106,6 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - .agents/agents/ 를 고치면 .codex/agents/*.toml 포인터가 깨지지 않았는지 확인
 - rules 스텁(writing.md·coding.md)은 같은 실수 두 번째에 한 줄씩. 글로벌 스타일과 중복 금지
 - 스킬의 로컬 상태(config.json, state/)는 .gitignore — config.example.json 만 커밋
+- 시크릿 점검: corral·corral-specs 둘 다 gitleaks pre-commit 훅(`.githooks/`). 클론마다 한 번 `git config core.hooksPath .githooks`
 - **이 파일은 매 세션·매 호출에 실린다** — 매 세션 필요한 사실만 두고, 다단계 절차·한 역할만 쓰는 규칙은 스킬로 뺀다.
   200줄을 넘으면 이미 너무 길다

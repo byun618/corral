@@ -1,0 +1,16 @@
+←  ☒ Pets  ☐ City  ✔ Submit  →
+
+Pick pets
+
+❯ 1. [ ] Cat
+         Pick Cat
+  2. [✔] Dog
+         Pick Dog
+  3. [ ] Fish
+         Pick Fish
+  4. [✔] Type something
+     Next
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

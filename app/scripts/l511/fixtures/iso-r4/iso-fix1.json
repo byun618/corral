@@ -1,0 +1,2380 @@
+{
+ "app": "/Users/byun/repos/byun618/corral/.claude/worktrees/LIFE-511-settings-frame-claude/app",
+ "startedAt": "2026-10-05T08:20:58.072Z",
+ "steps": [
+  {
+   "name": "base",
+   "at": 1791188465591,
+   "gridRequests": 3,
+   "logLength": 296,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 16,
+    "w1:p3": 6
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p3",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "gear-during",
+   "at": 1791188467817,
+   "gridRequests": 3,
+   "logLength": 373,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 27,
+    "w1:p3": 6
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": null,
+   "activeTag": "BUTTON.shortcut-recorder is-pending",
+   "settingsOpen": true,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "gear-closed",
+   "at": 1791188468424,
+   "gridRequests": 3,
+   "logLength": 397,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 30,
+    "w1:p3": 6
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p3",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "back-closed",
+   "at": 1791188470341,
+   "gridRequests": 3,
+   "logLength": 456,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 39,
+    "w1:p3": 7
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p3",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "palette-closed",
+   "at": 1791188472567,
+   "gridRequests": 3,
+   "logLength": 536,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 50,
+    "w1:p3": 8
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p3",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "help-closed",
+   "at": 1791188474285,
+   "gridRequests": 3,
+   "logLength": 598,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 59,
+    "w1:p3": 9
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p3",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "tools-closed",
+   "at": 1791188476001,
+   "gridRequests": 3,
+   "logLength": 651,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 67,
+    "w1:p3": 10
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p3",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "k2-end",
+   "at": 1791188477703,
+   "gridRequests": 3,
+   "logLength": 697,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 76,
+    "w1:p3": 11
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p3",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "R1-01-cmd-comma-closed",
+   "at": 1791188478973,
+   "gridRequests": 3,
+   "logLength": 746,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 82,
+    "w1:p3": 11
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p3",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "R1-01-palette-closed",
+   "at": 1791188481246,
+   "gridRequests": 3,
+   "logLength": 830,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 94,
+    "w1:p3": 12
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p3",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "mru",
+   "at": 1791188482801,
+   "gridRequests": 3,
+   "logLength": 891,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 102,
+    "w1:p3": 14
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p2",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "R1-02-open",
+   "at": 1791188484314,
+   "gridRequests": 3,
+   "logLength": 959,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 111,
+    "w1:p3": 15
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": null,
+   "activeTag": "INPUT.",
+   "settingsOpen": true,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 1180,
+    "h": 768
+   }
+  },
+  {
+   "name": "B2-resized-open",
+   "at": 1791188490066,
+   "gridRequests": 5,
+   "logLength": 1164,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 22,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 21,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 142,
+    "w1:p3": 17
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": null,
+   "activeTag": "BODY.",
+   "settingsOpen": true,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 680,
+    "h": 768
+   }
+  },
+  {
+   "name": "B2-closed",
+   "at": 1791188490673,
+   "gridRequests": 5,
+   "logLength": 1189,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 22,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 21,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 145,
+    "w1:p3": 17
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p3",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 680,
+    "h": 768
+   }
+  },
+  {
+   "name": "B2-closed",
+   "at": 1791188490674,
+   "gridRequests": 5,
+   "logLength": 1191,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 22,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 21,
+     "rows": 42
+    }
+   ],
+   "seq": {
+    "w1:p2": 145,
+    "w1:p3": 17
+   },
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focusPane": "w1:p3",
+   "activeTag": "TEXTAREA.xterm-helper-textarea",
+   "settingsOpen": false,
+   "menus": 0,
+   "tabs": 2,
+   "viewport": {
+    "w": 680,
+    "h": 768
+   }
+  }
+ ],
+ "reads": {
+  "k2-base": {
+   "A": "sh-3.2$ /Users/byun/.nvm/versions/node/v24.14.1/bin/no\nde /Users/byun/repos/byun618/corral/.claude/worktrees/\nLIFE-511-settings-frame-claude/app/scripts/l511/pane-s\nink.mjs /tmp/l511if1/sink-A.ndjson A 1 60\nSTABLE-A-001 783e3b31\nSTABLE-A-002 783e3b31\nSTABLE-A-003 783e3b31\nSTABLE-A-004 783e3b31\nSTABLE-A-005 783e3b31\nSTABLE-A-006 783e3b31\nSTABLE-A-007 783e3b31\nSTABLE-A-008 783e3b31\nSTABLE-A-009 783e3b31\nSTABLE-A-010 783e3b31\nSTABLE-A-011 783e3b31\nSTABLE-A-012 783e3b31\nSTABLE-A-013 783e3b31\nSTABLE-A-014 783e3b31\nSTABLE-A-015 783e3b31\nSTABLE-A-016 783e3b31\nSTABLE-A-017 783e3b31\nSTABLE-A-018 783e3b31\nSTABLE-A-019 783e3b31\nSTABLE-A-020 783e3b31\nSTABLE-A-021 783e3b31\nSTABLE-A-022 783e3b31\nSTABLE-A-023 783e3b31\nSTABLE-A-024 783e3b31\nSTABLE-A-025 783e3b31\nSTABLE-A-026 783e3b31\nSTABLE-A-027 783e3b31\nSTABLE-A-028 783e3b31\nSTABLE-A-029 783e3b31\nSTABLE-A-030 783e3b31\nSTABLE-A-031 783e3b31\nSTABLE-A-032 783e3b31\nSTABLE-A-033 783e3b31\nSTABLE-A-034 783e3b31\nSTABLE-A-035 783e3b31\nSTABLE-A-036 783e3b31\nSTABLE-A-037 783e3b31\nSTABLE-A-038 783e3b31\nSTABLE-A-039 783e3b31\nSTABLE-A-040 783e3b31\nSTABLE-A-041 783e3b31\nSTABLE-A-042 783e3b31\nSTABLE-A-043 783e3b31\nSTABLE-A-044 783e3b31\nSTABLE-A-045 783e3b31\nSTABLE-A-046 783e3b31\nSTABLE-A-047 783e3b31\nSTABLE-A-048 783e3b31\nSTABLE-A-049 783e3b31\nSTABLE-A-050 783e3b31\nSTABLE-A-051 783e3b31\nSTABLE-A-052 783e3b31\nSTABLE-A-053 783e3b31\nSTABLE-A-054 783e3b31\nSTABLE-A-055 783e3b31\nSTABLE-A-056 783e3b31\nSTABLE-A-057 783e3b31\nSTABLE-A-058 783e3b31\nSTABLE-A-059 783e3b31\nSTABLE-A-060 783e3b31\ntick A 1\ntick A 2\ntick A 3\ntick A 4\ntick A 5\ntick A 6\ntick A 7\ntick A 8\n",
+   "B": "sh-3.2$ /Users/byun/.nvm/versions/node/v24.14.1/bin/n\node /Users/byun/repos/byun618/corral/.claude/worktree\ns/LIFE-511-settings-frame-claude/app/scripts/l511/pan\ne-sink.mjs /tmp/l511if1/sink-B.ndjson B 0 60\nSTABLE-B-001 52690720\nSTABLE-B-002 52690720\nSTABLE-B-003 52690720\nSTABLE-B-004 52690720\nSTABLE-B-005 52690720\nSTABLE-B-006 52690720\nSTABLE-B-007 52690720\nSTABLE-B-008 52690720\nSTABLE-B-009 52690720\nSTABLE-B-010 52690720\nSTABLE-B-011 52690720\nSTABLE-B-012 52690720\nSTABLE-B-013 52690720\nSTABLE-B-014 52690720\nSTABLE-B-015 52690720\nSTABLE-B-016 52690720\nSTABLE-B-017 52690720\nSTABLE-B-018 52690720\nSTABLE-B-019 52690720\nSTABLE-B-020 52690720\nSTABLE-B-021 52690720\nSTABLE-B-022 52690720\nSTABLE-B-023 52690720\nSTABLE-B-024 52690720\nSTABLE-B-025 52690720\nSTABLE-B-026 52690720\nSTABLE-B-027 52690720\nSTABLE-B-028 52690720\nSTABLE-B-029 52690720\nSTABLE-B-030 52690720\nSTABLE-B-031 52690720\nSTABLE-B-032 52690720\nSTABLE-B-033 52690720\nSTABLE-B-034 52690720\nSTABLE-B-035 52690720\nSTABLE-B-036 52690720\nSTABLE-B-037 52690720\nSTABLE-B-038 52690720\nSTABLE-B-039 52690720\nSTABLE-B-040 52690720\nSTABLE-B-041 52690720\nSTABLE-B-042 52690720\nSTABLE-B-043 52690720\nSTABLE-B-044 52690720\nSTABLE-B-045 52690720\nSTABLE-B-046 52690720\nSTABLE-B-047 52690720\nSTABLE-B-048 52690720\nSTABLE-B-049 52690720\nSTABLE-B-050 52690720\nSTABLE-B-051 52690720\nSTABLE-B-052 52690720\nSTABLE-B-053 52690720\nSTABLE-B-054 52690720\nSTABLE-B-055 52690720\nSTABLE-B-056 52690720\nSTABLE-B-057 52690720\nSTABLE-B-058 52690720\nSTABLE-B-059 52690720\nSTABLE-B-060 52690720\n",
+   "form": {
+    "source": "recent",
+    "lines": 5000
+   }
+  },
+  "k2-end": {
+   "A": "sh-3.2$ /Users/byun/.nvm/versions/node/v24.14.1/bin/no\nde /Users/byun/repos/byun618/corral/.claude/worktrees/\nLIFE-511-settings-frame-claude/app/scripts/l511/pane-s\nink.mjs /tmp/l511if1/sink-A.ndjson A 1 60\nSTABLE-A-001 783e3b31\nSTABLE-A-002 783e3b31\nSTABLE-A-003 783e3b31\nSTABLE-A-004 783e3b31\nSTABLE-A-005 783e3b31\nSTABLE-A-006 783e3b31\nSTABLE-A-007 783e3b31\nSTABLE-A-008 783e3b31\nSTABLE-A-009 783e3b31\nSTABLE-A-010 783e3b31\nSTABLE-A-011 783e3b31\nSTABLE-A-012 783e3b31\nSTABLE-A-013 783e3b31\nSTABLE-A-014 783e3b31\nSTABLE-A-015 783e3b31\nSTABLE-A-016 783e3b31\nSTABLE-A-017 783e3b31\nSTABLE-A-018 783e3b31\nSTABLE-A-019 783e3b31\nSTABLE-A-020 783e3b31\nSTABLE-A-021 783e3b31\nSTABLE-A-022 783e3b31\nSTABLE-A-023 783e3b31\nSTABLE-A-024 783e3b31\nSTABLE-A-025 783e3b31\nSTABLE-A-026 783e3b31\nSTABLE-A-027 783e3b31\nSTABLE-A-028 783e3b31\nSTABLE-A-029 783e3b31\nSTABLE-A-030 783e3b31\nSTABLE-A-031 783e3b31\nSTABLE-A-032 783e3b31\nSTABLE-A-033 783e3b31\nSTABLE-A-034 783e3b31\nSTABLE-A-035 783e3b31\nSTABLE-A-036 783e3b31\nSTABLE-A-037 783e3b31\nSTABLE-A-038 783e3b31\nSTABLE-A-039 783e3b31\nSTABLE-A-040 783e3b31\nSTABLE-A-041 783e3b31\nSTABLE-A-042 783e3b31\nSTABLE-A-043 783e3b31\nSTABLE-A-044 783e3b31\nSTABLE-A-045 783e3b31\nSTABLE-A-046 783e3b31\nSTABLE-A-047 783e3b31\nSTABLE-A-048 783e3b31\nSTABLE-A-049 783e3b31\nSTABLE-A-050 783e3b31\nSTABLE-A-051 783e3b31\nSTABLE-A-052 783e3b31\nSTABLE-A-053 783e3b31\nSTABLE-A-054 783e3b31\nSTABLE-A-055 783e3b31\nSTABLE-A-056 783e3b31\nSTABLE-A-057 783e3b31\nSTABLE-A-058 783e3b31\nSTABLE-A-059 783e3b31\nSTABLE-A-060 783e3b31\ntick A 1\ntick A 2\ntick A 3\ntick A 4\ntick A 5\ntick A 6\ntick A 7\ntick A 8\ntick A 9\ntick A 10\ntick A 11\ntick A 12\ntick A 13\ntick A 14\ntick A 15\ntick A 16\ntick A 17\ntick A 18\ntick A 19\ntick A 20\ntick A 21\ntick A 22\ntick A 23\ntick A 24\ntick A 25\ntick A 26\ntick A 27\ntick A 28\ntick A 29\ntick A 30\ntick A 31\ntick A 32\ntick A 33\ntick A 34\ntick A 35\ntick A 36\ntick A 37\ntick A 38\ntick A 39\ntick A 40\ntick A 41\ntick A 42\ntick A 43\ntick A 44\ntick A 45\ntick A 46\ntick A 47\ntick A 48\ntick A 49\ntick A 50\ntick A 51\ntick A 52\ntick A 53\ntick A 54\ntick A 55\ntick A 56\ntick A 57\ntick A 58\ntick A 59\ntick A 60\ntick A 61\ntick A 62\ntick A 63\ntick A 64\ntick A 65\ntick A 66\ntick A 67\ntick A 68\n",
+   "B": "sh-3.2$ /Users/byun/.nvm/versions/node/v24.14.1/bin/n\node /Users/byun/repos/byun618/corral/.claude/worktree\ns/LIFE-511-settings-frame-claude/app/scripts/l511/pan\ne-sink.mjs /tmp/l511if1/sink-B.ndjson B 0 60\nSTABLE-B-001 52690720\nSTABLE-B-002 52690720\nSTABLE-B-003 52690720\nSTABLE-B-004 52690720\nSTABLE-B-005 52690720\nSTABLE-B-006 52690720\nSTABLE-B-007 52690720\nSTABLE-B-008 52690720\nSTABLE-B-009 52690720\nSTABLE-B-010 52690720\nSTABLE-B-011 52690720\nSTABLE-B-012 52690720\nSTABLE-B-013 52690720\nSTABLE-B-014 52690720\nSTABLE-B-015 52690720\nSTABLE-B-016 52690720\nSTABLE-B-017 52690720\nSTABLE-B-018 52690720\nSTABLE-B-019 52690720\nSTABLE-B-020 52690720\nSTABLE-B-021 52690720\nSTABLE-B-022 52690720\nSTABLE-B-023 52690720\nSTABLE-B-024 52690720\nSTABLE-B-025 52690720\nSTABLE-B-026 52690720\nSTABLE-B-027 52690720\nSTABLE-B-028 52690720\nSTABLE-B-029 52690720\nSTABLE-B-030 52690720\nSTABLE-B-031 52690720\nSTABLE-B-032 52690720\nSTABLE-B-033 52690720\nSTABLE-B-034 52690720\nSTABLE-B-035 52690720\nSTABLE-B-036 52690720\nSTABLE-B-037 52690720\nSTABLE-B-038 52690720\nSTABLE-B-039 52690720\nSTABLE-B-040 52690720\nSTABLE-B-041 52690720\nSTABLE-B-042 52690720\nSTABLE-B-043 52690720\nSTABLE-B-044 52690720\nSTABLE-B-045 52690720\nSTABLE-B-046 52690720\nSTABLE-B-047 52690720\nSTABLE-B-048 52690720\nSTABLE-B-049 52690720\nSTABLE-B-050 52690720\nSTABLE-B-051 52690720\nSTABLE-B-052 52690720\nSTABLE-B-053 52690720\nSTABLE-B-054 52690720\nSTABLE-B-055 52690720\nSTABLE-B-056 52690720\nSTABLE-B-057 52690720\nSTABLE-B-058 52690720\nSTABLE-B-059 52690720\nSTABLE-B-060 52690720\ngot 1B\ngot 1B\ngot 1B\ngot 1B\ngot 1B\n",
+   "form": {
+    "source": "recent",
+    "lines": 5000
+   }
+  },
+  "self-control": {
+   "A": "sh-3.2$ /Users/byun/.n\nvm/versions/node/v24.1\n4.1/bin/node /Users/by\nun/repos/byun618/corra\nl/.claude/worktrees/LI\nFE-511-settings-frame-\nclaude/app/scripts/l51\n1/pane-sink.mjs /tmp/l\n511if1/sink-A.ndjson A\n 1 60\nSTABLE-A-001 783e3b31\nSTABLE-A-002 783e3b31\nSTABLE-A-003 783e3b31\nSTABLE-A-004 783e3b31\nSTABLE-A-005 783e3b31\nSTABLE-A-006 783e3b31\nSTABLE-A-007 783e3b31\nSTABLE-A-008 783e3b31\nSTABLE-A-009 783e3b31\nSTABLE-A-010 783e3b31\nSTABLE-A-011 783e3b31\nSTABLE-A-012 783e3b31\nSTABLE-A-013 783e3b31\nSTABLE-A-014 783e3b31\nSTABLE-A-015 783e3b31\nSTABLE-A-016 783e3b31\nSTABLE-A-017 783e3b31\nSTABLE-A-018 783e3b31\nSTABLE-A-019 783e3b31\nSTABLE-A-020 783e3b31\nSTABLE-A-021 783e3b31\nSTABLE-A-022 783e3b31\nSTABLE-A-023 783e3b31\nSTABLE-A-024 783e3b31\nSTABLE-A-025 783e3b31\nSTABLE-A-026 783e3b31\nSTABLE-A-027 783e3b31\nSTABLE-A-028 783e3b31\nSTABLE-A-029 783e3b31\nSTABLE-A-030 783e3b31\nSTABLE-A-031 783e3b31\nSTABLE-A-032 783e3b31\nSTABLE-A-033 783e3b31\nSTABLE-A-034 783e3b31\nSTABLE-A-035 783e3b31\nSTABLE-A-036 783e3b31\nSTABLE-A-037 783e3b31\nSTABLE-A-038 783e3b31\nSTABLE-A-039 783e3b31\nSTABLE-A-040 783e3b31\nSTABLE-A-041 783e3b31\nSTABLE-A-042 783e3b31\nSTABLE-A-043 783e3b31\nSTABLE-A-044 783e3b31\nSTABLE-A-045 783e3b31\nSTABLE-A-046 783e3b31\nSTABLE-A-047 783e3b31\nSTABLE-A-048 783e3b31\nSTABLE-A-049 783e3b31\nSTABLE-A-050 783e3b31\nSTABLE-A-051 783e3b31\nSTABLE-A-052 783e3b31\nSTABLE-A-053 783e3b31\nSTABLE-A-054 783e3b31\nSTABLE-A-055 783e3b31\nSTABLE-A-056 783e3b31\nSTABLE-A-057 783e3b31\nSTABLE-A-058 783e3b31\nSTABLE-A-059 783e3b31\nSTABLE-A-060 783e3b31\ntick A 1\ntick A 2\ntick A 3\ntick A 4\ntick A 5\ntick A 6\ntick A 7\ntick A 8\ntick A 9\ntick A 10\ntick A 11\ntick A 12\ntick A 13\ntick A 14\ntick A 15\ntick A 16\ntick A 17\ntick A 18\ntick A 19\ntick A 20\ntick A 21\ntick A 22\ntick A 23\ntick A 24\ntick A 25\ntick A 26\ntick A 27\ntick A 28\ntick A 29\ntick A 30\ntick A 31\ntick A 32\ntick A 33\ntick A 34\ntick A 35\ntick A 36\ntick A 37\ntick A 38\ntick A 39\ntick A 40\ntick A 41\ntick A 42\ntick A 43\ntick A 44\ntick A 45\ntick A 46\ntick A 47\ntick A 48\ntick A 49\ntick A 50\ntick A 51\ntick A 52\ntick A 53\ntick A 54\ntick A 55\ntick A 56\ntick A 57\ntick A 58\ntick A 59\ntick A 60\ntick A 61\ntick A 62\ntick A 63\ntick A 64\ntick A 65\ntick A 66\ntick A 67\ntick A 68\ntick A 69\ntick A 70\ntick A 71\ntick A 72\ntick A 73\ntick A 74\ntick A 75\ntick A 76\ntick A 77\ntick A 78\ntick A 79\ntick A 80\ntick A 81\ntick A 82\ntick A 83\ntick A 84\ntick A 85\ntick A 86\ntick A 87\ntick A 88\ntick A 89\ntick A 90\ntick A 91\ntick A 92\ntick A 93\ntick A 94\ntick A 95\ntick A 96\ntick A 97\ntick A 98\ntick A 99\ntick A 100\ntick A 101\ntick A 102\ntick A 103\ntick A 104\ntick A 105\ntick A 106\ntick A 107\ntick A 108\ntick A 109\ntick A 110\ntick A 111\ntick A 112\ntick A 113\ntick A 114\ntick A 115\ntick A 116\ntick A 117\ntick A 118\ntick A 119\ntick A 120\ntick A 121\ntick A 122\ntick A 123\ntick A 124\ntick A 125\ntick A 126\ntick A 127\ntick A 128\ntick A 129\ntick A 130\ntick A 131\ntick A 132\ntick A 133\ntick A 134\ntick A 135\ntick A 136\n",
+   "B": "sh-3.2$ /Users/byun/.\nnvm/versions/node/v24\n.14.1/bin/node /Users\n/byun/repos/byun618/c\norral/.claude/worktre\nes/LIFE-511-settings-\nframe-claude/app/scri\npts/l511/pane-sink.mj\ns /tmp/l511if1/sink-B\n.ndjson B 0 60\nSTABLE-B-001 52690720\nSTABLE-B-002 52690720\nSTABLE-B-003 52690720\nSTABLE-B-004 52690720\nSTABLE-B-005 52690720\nSTABLE-B-006 52690720\nSTABLE-B-007 52690720\nSTABLE-B-008 52690720\nSTABLE-B-009 52690720\nSTABLE-B-010 52690720\nSTABLE-B-011 52690720\nSTABLE-B-012 52690720\nSTABLE-B-013 52690720\nSTABLE-B-014 52690720\nSTABLE-B-015 52690720\nSTABLE-B-016 52690720\nSTABLE-B-017 52690720\nSTABLE-B-018 52690720\nSTABLE-B-019 52690720\nSTABLE-B-020 52690720\nSTABLE-B-021 52690720\nSTABLE-B-022 52690720\nSTABLE-B-023 52690720\nSTABLE-B-024 52690720\nSTABLE-B-025 52690720\nSTABLE-B-026 52690720\nSTABLE-B-027 52690720\nSTABLE-B-028 52690720\nSTABLE-B-029 52690720\nSTABLE-B-030 52690720\nSTABLE-B-031 52690720\nSTABLE-B-032 52690720\nSTABLE-B-033 52690720\nSTABLE-B-034 52690720\nSTABLE-B-035 52690720\nSTABLE-B-036 52690720\nSTABLE-B-037 52690720\nSTABLE-B-038 52690720\nSTABLE-B-039 52690720\nSTABLE-B-040 52690720\nSTABLE-B-041 52690720\nSTABLE-B-042 52690720\nSTABLE-B-043 52690720\nSTABLE-B-044 52690720\nSTABLE-B-045 52690720\nSTABLE-B-046 52690720\nSTABLE-B-047 52690720\nSTABLE-B-048 52690720\nSTABLE-B-049 52690720\nSTABLE-B-050 52690720\nSTABLE-B-051 52690720\nSTABLE-B-052 52690720\nSTABLE-B-053 52690720\nSTABLE-B-054 52690720\nSTABLE-B-055 52690720\nSTABLE-B-056 52690720\nSTABLE-B-057 52690720\nSTABLE-B-058 52690720\nSTABLE-B-059 52690720\nSTABLE-B-060 52690720\ngot 1B\ngot 1B\ngot 1B\ngot 1B\ngot 1B\ngot 1B\ngot 1B\ngot 1B\n",
+   "form": {
+    "source": "recent",
+    "lines": 5000
+   }
+  },
+  "self-before": {
+   "A": "sh-3.2$ /Users/byun/.n\nvm/versions/node/v24.1\n4.1/bin/node /Users/by\nun/repos/byun618/corra\nl/.claude/worktrees/LI\nFE-511-settings-frame-\nclaude/app/scripts/l51\n1/pane-sink.mjs /tmp/l\n511if1/sink-A.ndjson A\n 1 60\nSTABLE-A-001 783e3b31\nSTABLE-A-002 783e3b31\nSTABLE-A-003 783e3b31\nSTABLE-A-004 783e3b31\nSTABLE-A-005 783e3b31\nSTABLE-A-006 783e3b31\nSTABLE-A-007 783e3b31\nSTABLE-A-008 783e3b31\nSTABLE-A-009 783e3b31\nSTABLE-A-010 783e3b31\nSTABLE-A-011 783e3b31\nSTABLE-A-012 783e3b31\nSTABLE-A-013 783e3b31\nSTABLE-A-014 783e3b31\nSTABLE-A-015 783e3b31\nSTABLE-A-016 783e3b31\nSTABLE-A-017 783e3b31\nSTABLE-A-018 783e3b31\nSTABLE-A-019 783e3b31\nSTABLE-A-020 783e3b31\nSTABLE-A-021 783e3b31\nSTABLE-A-022 783e3b31\nSTABLE-A-023 783e3b31\nSTABLE-A-024 783e3b31\nSTABLE-A-025 783e3b31\nSTABLE-A-026 783e3b31\nSTABLE-A-027 783e3b31\nSTABLE-A-028 783e3b31\nSTABLE-A-029 783e3b31\nSTABLE-A-030 783e3b31\nSTABLE-A-031 783e3b31\nSTABLE-A-032 783e3b31\nSTABLE-A-033 783e3b31\nSTABLE-A-034 783e3b31\nSTABLE-A-035 783e3b31\nSTABLE-A-036 783e3b31\nSTABLE-A-037 783e3b31\nSTABLE-A-038 783e3b31\nSTABLE-A-039 783e3b31\nSTABLE-A-040 783e3b31\nSTABLE-A-041 783e3b31\nSTABLE-A-042 783e3b31\nSTABLE-A-043 783e3b31\nSTABLE-A-044 783e3b31\nSTABLE-A-045 783e3b31\nSTABLE-A-046 783e3b31\nSTABLE-A-047 783e3b31\nSTABLE-A-048 783e3b31\nSTABLE-A-049 783e3b31\nSTABLE-A-050 783e3b31\nSTABLE-A-051 783e3b31\nSTABLE-A-052 783e3b31\nSTABLE-A-053 783e3b31\nSTABLE-A-054 783e3b31\nSTABLE-A-055 783e3b31\nSTABLE-A-056 783e3b31\nSTABLE-A-057 783e3b31\nSTABLE-A-058 783e3b31\nSTABLE-A-059 783e3b31\nSTABLE-A-060 783e3b31\ntick A 1\ntick A 2\ntick A 3\ntick A 4\ntick A 5\ntick A 6\ntick A 7\ntick A 8\ntick A 9\ntick A 10\ntick A 11\ntick A 12\ntick A 13\ntick A 14\ntick A 15\ntick A 16\ntick A 17\ntick A 18\ntick A 19\ntick A 20\ntick A 21\ntick A 22\ntick A 23\ntick A 24\ntick A 25\ntick A 26\ntick A 27\ntick A 28\ntick A 29\ntick A 30\ntick A 31\ntick A 32\ntick A 33\ntick A 34\ntick A 35\ntick A 36\ntick A 37\ntick A 38\ntick A 39\ntick A 40\ntick A 41\ntick A 42\ntick A 43\ntick A 44\ntick A 45\ntick A 46\ntick A 47\ntick A 48\ntick A 49\ntick A 50\ntick A 51\ntick A 52\ntick A 53\ntick A 54\ntick A 55\ntick A 56\ntick A 57\ntick A 58\ntick A 59\ntick A 60\ntick A 61\ntick A 62\ntick A 63\ntick A 64\ntick A 65\ntick A 66\ntick A 67\ntick A 68\ntick A 69\ntick A 70\ntick A 71\ntick A 72\ntick A 73\ntick A 74\ntick A 75\ntick A 76\ntick A 77\ntick A 78\ntick A 79\ntick A 80\ntick A 81\ntick A 82\ntick A 83\ntick A 84\ntick A 85\ntick A 86\ntick A 87\ntick A 88\ntick A 89\ntick A 90\ntick A 91\ntick A 92\ntick A 93\ntick A 94\ntick A 95\ntick A 96\ntick A 97\ntick A 98\ntick A 99\ntick A 100\ntick A 101\ntick A 102\ntick A 103\ntick A 104\ntick A 105\ntick A 106\ntick A 107\ntick A 108\ntick A 109\ntick A 110\ntick A 111\ntick A 112\ntick A 113\ntick A 114\ntick A 115\ntick A 116\ntick A 117\ntick A 118\ntick A 119\ntick A 120\ntick A 121\ntick A 122\ntick A 123\ntick A 124\ntick A 125\ntick A 126\ntick A 127\ntick A 128\ntick A 129\ntick A 130\ntick A 131\ntick A 132\ntick A 133\ntick A 134\ntick A 135\ntick A 136\ntick A 137\ntick A 138\ntick A 139\ntick A 140\ntick A 141\ntick A 142\ntick A 143\ntick A 144\n",
+   "B": "sh-3.2$ /Users/byun/.\nnvm/versions/node/v24\n.14.1/bin/node /Users\n/byun/repos/byun618/c\norral/.claude/worktre\nes/LIFE-511-settings-\nframe-claude/app/scri\npts/l511/pane-sink.mj\ns /tmp/l511if1/sink-B\n.ndjson B 0 60\nSTABLE-B-001 52690720\nSTABLE-B-002 52690720\nSTABLE-B-003 52690720\nSTABLE-B-004 52690720\nSTABLE-B-005 52690720\nSTABLE-B-006 52690720\nSTABLE-B-007 52690720\nSTABLE-B-008 52690720\nSTABLE-B-009 52690720\nSTABLE-B-010 52690720\nSTABLE-B-011 52690720\nSTABLE-B-012 52690720\nSTABLE-B-013 52690720\nSTABLE-B-014 52690720\nSTABLE-B-015 52690720\nSTABLE-B-016 52690720\nSTABLE-B-017 52690720\nSTABLE-B-018 52690720\nSTABLE-B-019 52690720\nSTABLE-B-020 52690720\nSTABLE-B-021 52690720\nSTABLE-B-022 52690720\nSTABLE-B-023 52690720\nSTABLE-B-024 52690720\nSTABLE-B-025 52690720\nSTABLE-B-026 52690720\nSTABLE-B-027 52690720\nSTABLE-B-028 52690720\nSTABLE-B-029 52690720\nSTABLE-B-030 52690720\nSTABLE-B-031 52690720\nSTABLE-B-032 52690720\nSTABLE-B-033 52690720\nSTABLE-B-034 52690720\nSTABLE-B-035 52690720\nSTABLE-B-036 52690720\nSTABLE-B-037 52690720\nSTABLE-B-038 52690720\nSTABLE-B-039 52690720\nSTABLE-B-040 52690720\nSTABLE-B-041 52690720\nSTABLE-B-042 52690720\nSTABLE-B-043 52690720\nSTABLE-B-044 52690720\nSTABLE-B-045 52690720\nSTABLE-B-046 52690720\nSTABLE-B-047 52690720\nSTABLE-B-048 52690720\nSTABLE-B-049 52690720\nSTABLE-B-050 52690720\nSTABLE-B-051 52690720\nSTABLE-B-052 52690720\nSTABLE-B-053 52690720\nSTABLE-B-054 52690720\nSTABLE-B-055 52690720\nSTABLE-B-056 52690720\nSTABLE-B-057 52690720\nSTABLE-B-058 52690720\nSTABLE-B-059 52690720\nSTABLE-B-060 52690720\ngot 1B\ngot 1B\ngot 1B\ngot 1B\ngot 1B\ngot 1B\ngot 1B\ngot 1B\n",
+   "form": {
+    "source": "recent",
+    "lines": 5000
+   }
+  },
+  "self-after": {
+   "A": "sh-3.2$ /Users/byun/.n\nvm/versions/node/v24.1\n4.1/bin/node /Users/by\nun/repos/byun618/corra\nl/.claude/worktrees/LI\nFE-511-settings-frame-\nclaude/app/scripts/l51\n1/pane-sink.mjs /tmp/l\n511if1/sink-A.ndjson A\n 1 60\nSTABLE-A-001 783e3b31\nSTABLE-A-002 783e3b31\nSTABLE-A-003 783e3b31\nSTABLE-A-004 783e3b31\nSTABLE-A-005 783e3b31\nSTABLE-A-006 783e3b31\nSTABLE-A-007 783e3b31\nSTABLE-A-008 783e3b31\nSTABLE-A-009 783e3b31\nSTABLE-A-010 783e3b31\nSTABLE-A-011 783e3b31\nSTABLE-A-012 783e3b31\nSTABLE-A-013 783e3b31\nSTABLE-A-014 783e3b31\nSTABLE-A-015 783e3b31\nSTABLE-A-016 783e3b31\nSTABLE-A-017 783e3b31\nSTABLE-A-018 783e3b31\nSTABLE-A-019 783e3b31\nSTABLE-A-020 783e3b31\nSTABLE-A-021 783e3b31\nSTABLE-A-022 783e3b31\nSTABLE-A-023 783e3b31\nSTABLE-A-024 783e3b31\nSTABLE-A-025 783e3b31\nSTABLE-A-026 783e3b31\nSTABLE-A-027 783e3b31\nSTABLE-A-028 783e3b31\nSTABLE-A-029 783e3b31\nSTABLE-A-030 783e3b31\nSTABLE-A-031 783e3b31\nSTABLE-A-032 783e3b31\nSTABLE-A-033 783e3b31\nSTABLE-A-034 783e3b31\nSTABLE-A-035 783e3b31\nSTABLE-A-036 783e3b31\nSTABLE-A-037 783e3b31\nSTABLE-A-038 783e3b31\nSTABLE-A-039 783e3b31\nSTABLE-A-040 783e3b31\nSTABLE-A-041 783e3b31\nSTABLE-A-042 783e3b31\nSTABLE-A-043 783e3b31\nSTABLE-A-044 783e3b31\nSTABLE-A-045 783e3b31\nSTABLE-A-046 783e3b31\nSTABLE-A-047 783e3b31\nSTABLE-A-048 783e3b31\nSTABLE-A-049 783e3b31\nSTABLE-A-050 783e3b31\nSTABLE-A-051 783e3b31\nSTABLE-A-052 783e3b31\nSTABLE-A-053 783e3b31\nSTABLE-A-054 783e3b31\nSTABLE-A-055 783e3b31\nSTABLE-A-056 783e3b31\nSTABLE-A-057 783e3b31\nSTABLE-A-058 783e3b31\nSTABLE-A-059 783e3b31\nSTABLE-A-060 783e3b31\ntick A 1\ntick A 2\ntick A 3\ntick A 4\ntick A 5\ntick A 6\ntick A 7\ntick A 8\ntick A 9\ntick A 10\ntick A 11\ntick A 12\ntick A 13\ntick A 14\ntick A 15\ntick A 16\ntick A 17\ntick A 18\ntick A 19\ntick A 20\ntick A 21\ntick A 22\ntick A 23\ntick A 24\ntick A 25\ntick A 26\ntick A 27\ntick A 28\ntick A 29\ntick A 30\ntick A 31\ntick A 32\ntick A 33\ntick A 34\ntick A 35\ntick A 36\ntick A 37\ntick A 38\ntick A 39\ntick A 40\ntick A 41\ntick A 42\ntick A 43\ntick A 44\ntick A 45\ntick A 46\ntick A 47\ntick A 48\ntick A 49\ntick A 50\ntick A 51\ntick A 52\ntick A 53\ntick A 54\ntick A 55\ntick A 56\ntick A 57\ntick A 58\ntick A 59\ntick A 60\ntick A 61\ntick A 62\ntick A 63\ntick A 64\ntick A 65\ntick A 66\ntick A 67\ntick A 68\ntick A 69\ntick A 70\ntick A 71\ntick A 72\ntick A 73\ntick A 74\ntick A 75\ntick A 76\ntick A 77\ntick A 78\ntick A 79\ntick A 80\ntick A 81\ntick A 82\ntick A 83\ntick A 84\ntick A 85\ntick A 86\ntick A 87\ntick A 88\ntick A 89\ntick A 90\ntick A 91\ntick A 92\ntick A 93\ntick A 94\ntick A 95\ntick A 96\ntick A 97\ntick A 98\ntick A 99\ntick A 100\ntick A 101\ntick A 102\ntick A 103\ntick A 104\ntick A 105\ntick A 106\ntick A 107\ntick A 108\ntick A 109\ntick A 110\ntick A 111\ntick A 112\ntick A 113\ntick A 114\ntick A 115\ntick A 116\ntick A 117\ntick A 118\ntick A 119\ntick A 120\ntick A 121\ntick A 122\ntick A 123\ntick A 124\ntick A 125\ntick A 126\ntick A 127\ntick A 128\ntick A 129\ntick A 130\ntick A 131\ntick A 132\ntick A 133\ntick A 134\ntick A 135\ntick A 136\ntick A 137\ntick A 138\ntick A 139\ntick A 140\ntick A 141\ntick A 142\ntick A 143\ntick A 144\ntick A 145\ngot 1B\ntick A 146\ntick A 147\ntick A 148\ntick A 149\ntick A 150\ntick A 151\n",
+   "B": "sh-3.2$ /Users/byun/.\nnvm/versions/node/v24\n.14.1/bin/node /Users\n/byun/repos/byun618/c\norral/.claude/worktre\nes/LIFE-511-settings-\nframe-claude/app/scri\npts/l511/pane-sink.mj\ns /tmp/l511if1/sink-B\n.ndjson B 0 60\nSTABLE-B-001 52690720\nSTABLE-B-002 52690720\nSTABLE-B-003 52690720\nSTABLE-B-004 52690720\nSTABLE-B-005 52690720\nSTABLE-B-006 52690720\nSTABLE-B-007 52690720\nSTABLE-B-008 52690720\nSTABLE-B-009 52690720\nSTABLE-B-010 52690720\nSTABLE-B-011 52690720\nSTABLE-B-012 52690720\nSTABLE-B-013 52690720\nSTABLE-B-014 52690720\nSTABLE-B-015 52690720\nSTABLE-B-016 52690720\nSTABLE-B-017 52690720\nSTABLE-B-018 52690720\nSTABLE-B-019 52690720\nSTABLE-B-020 52690720\nSTABLE-B-021 52690720\nSTABLE-B-022 52690720\nSTABLE-B-023 52690720\nSTABLE-B-024 52690720\nSTABLE-B-025 52690720\nSTABLE-B-026 52690720\nSTABLE-B-027 52690720\nSTABLE-B-028 52690720\nSTABLE-B-029 52690720\nSTABLE-B-030 52690720\nSTABLE-B-031 52690720\nSTABLE-B-032 52690720\nSTABLE-B-033 52690720\nSTABLE-B-034 52690720\nSTABLE-B-035 52690720\nSTABLE-B-036 52690720\nSTABLE-B-037 52690720\nSTABLE-B-038 52690720\nSTABLE-B-039 52690720\nSTABLE-B-040 52690720\nSTABLE-B-041 52690720\nSTABLE-B-042 52690720\nSTABLE-B-043 52690720\nSTABLE-B-044 52690720\nSTABLE-B-045 52690720\nSTABLE-B-046 52690720\nSTABLE-B-047 52690720\nSTABLE-B-048 52690720\nSTABLE-B-049 52690720\nSTABLE-B-050 52690720\nSTABLE-B-051 52690720\nSTABLE-B-052 52690720\nSTABLE-B-053 52690720\nSTABLE-B-054 52690720\nSTABLE-B-055 52690720\nSTABLE-B-056 52690720\nSTABLE-B-057 52690720\nSTABLE-B-058 52690720\nSTABLE-B-059 52690720\nSTABLE-B-060 52690720\ngot 1B\ngot 1B\ngot 1B\ngot 1B\ngot 1B\nCORRUPTED\ngot 1B\ngot 1B\n",
+   "form": {
+    "source": "recent",
+    "lines": 5000
+   }
+  }
+ },
+ "judges": {
+  "k2": {
+   "inputs": {
+    "pass": true,
+    "rows": [
+     {
+      "pane": "A",
+      "got": "",
+      "want": ""
+     },
+     {
+      "pane": "B",
+      "got": "qqqqq",
+      "want": "qqqqq"
+     }
+    ],
+    "bad": []
+   },
+   "A": {
+    "pass": true,
+    "problems": [],
+    "stable": 60,
+    "ticksBefore": 8,
+    "ticksAfter": 68
+   },
+   "B": {
+    "pass": true,
+    "problems": [],
+    "added": 5
+   }
+  },
+  "whole": {
+   "pass": true,
+   "rows": [
+    {
+     "pane": "A",
+     "got": "",
+     "want": ""
+    },
+    {
+     "pane": "B",
+     "got": "qqqqqqqq",
+     "want": "qqqqqqqq"
+    }
+   ],
+   "bad": []
+  },
+  "selfControl": {
+   "inputs": {
+    "pass": true,
+    "rows": [
+     {
+      "pane": "A",
+      "got": "",
+      "want": ""
+     },
+     {
+      "pane": "B",
+      "got": "",
+      "want": ""
+     }
+    ],
+    "bad": []
+   },
+   "A": {
+    "pass": true,
+    "problems": [],
+    "stable": 60,
+    "ticksBefore": 136,
+    "ticksAfter": 144
+   },
+   "B": {
+    "pass": true,
+    "problems": [],
+    "added": 0
+   }
+  },
+  "self": {
+   "injected": {
+    "A": "z",
+    "B": "\u0018"
+   },
+   "inputs": {
+    "pass": false,
+    "rows": [
+     {
+      "pane": "A",
+      "got": "z",
+      "want": ""
+     },
+     {
+      "pane": "B",
+      "got": "\u0018",
+      "want": ""
+     }
+    ],
+    "bad": [
+     {
+      "pane": "A",
+      "got": "z",
+      "want": ""
+     },
+     {
+      "pane": "B",
+      "got": "\u0018",
+      "want": ""
+     }
+    ]
+   },
+   "A": {
+    "pass": false,
+    "problems": [
+     "출력 대역에 다른 줄: \"got 1B\""
+    ],
+    "stable": 60,
+    "ticksBefore": 144,
+    "ticksAfter": 152
+   },
+   "B": {
+    "pass": false,
+    "problems": [
+     "전 텍스트가 그대로가 아니다(줄 75: \"got 1B\" → \"CORRUPTED\")"
+    ],
+    "added": 0
+   }
+  }
+ },
+ "requirements": [
+  {
+   "name": "R1-08-panes-observed",
+   "pass": true,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "xterms": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ],
+   "focus": "w1:p3"
+  },
+  {
+   "name": "k2-base-xterm-B-equals-herdr",
+   "pass": true,
+   "probe": "w1:p3",
+   "xtermB": [
+    "STABLE-B-057 52690720",
+    "STABLE-B-058 52690720",
+    "STABLE-B-059 52690720",
+    "STABLE-B-060 52690720"
+   ],
+   "herdrB": [
+    "STABLE-B-057 52690720",
+    "STABLE-B-058 52690720",
+    "STABLE-B-059 52690720",
+    "STABLE-B-060 52690720"
+   ]
+  },
+  {
+   "name": "click [data-settings-open]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-settings-open]",
+    "at": 1791188465596,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 17,
+    "y": 729,
+    "rect": {
+     "left": 12,
+     "top": 718,
+     "w": 9.796875,
+     "h": 21
+    },
+    "elementFromPoint": "button.sidebar-footer-glyph.sidebar-footer-btn",
+    "target": "button.sidebar-footer-glyph.sidebar-footer-btn",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "gear-opens",
+   "pass": true
+  },
+  {
+   "name": "click [data-record=\"sidebar.toggle\"][data-variant=\"0\"]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-record=\"sidebar.toggle\"][data-variant=\"0\"]",
+    "at": 1791188467214,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 373,
+    "y": 567,
+    "rect": {
+     "left": 351,
+     "top": 555,
+     "w": 44,
+     "h": 24
+    },
+    "elementFromPoint": "button.shortcut-recorder",
+    "target": "button.shortcut-recorder",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "record-candidate-shown",
+   "pass": true
+  },
+  {
+   "name": "esc1-shows-confirm",
+   "pass": true
+  },
+  {
+   "name": "gear-no-new-tab",
+   "pass": true
+  },
+  {
+   "name": "gear-esc2-closes",
+   "pass": true
+  },
+  {
+   "name": "gear-inputs-while-open-zero",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": ""
+   }
+  },
+  {
+   "name": "gear-focus-B",
+   "pass": true,
+   "focus": "w1:p3",
+   "active": "TEXTAREA.xterm-helper-textarea"
+  },
+  {
+   "name": "gear-typed-to-B-only",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": "q"
+   }
+  },
+  {
+   "name": "cmd-comma-opens",
+   "pass": true
+  },
+  {
+   "name": "click [data-settings-back]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-settings-back]",
+    "at": 1791188469735,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 140,
+    "y": 28,
+    "rect": {
+     "left": 12,
+     "top": 12,
+     "w": 255,
+     "h": 32
+    },
+    "elementFromPoint": "button.settings-back",
+    "target": "button.settings-back",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "back-closes",
+   "pass": true
+  },
+  {
+   "name": "back-inputs-while-open-zero",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": ""
+   }
+  },
+  {
+   "name": "back-focus-B",
+   "pass": true,
+   "focus": "w1:p3",
+   "active": "TEXTAREA.xterm-helper-textarea"
+  },
+  {
+   "name": "back-typed-to-B-only",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": "q"
+   }
+  },
+  {
+   "name": "palette-opens",
+   "pass": true
+  },
+  {
+   "name": "palette-esc2-closes",
+   "pass": true
+  },
+  {
+   "name": "palette-inputs-while-open-zero",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": ""
+   }
+  },
+  {
+   "name": "palette-focus-B",
+   "pass": true,
+   "focus": "w1:p3",
+   "active": "TEXTAREA.xterm-helper-textarea"
+  },
+  {
+   "name": "palette-typed-to-B-only",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": "q"
+   }
+  },
+  {
+   "name": "click [data-help-menu-toggle]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-help-menu-toggle]",
+    "at": 1791188473269,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 38,
+    "y": 729,
+    "rect": {
+     "left": 33.796875,
+     "top": 718,
+     "w": 9.109375,
+     "h": 21
+    },
+    "elementFromPoint": "button.sidebar-footer-glyph.sidebar-footer-btn",
+    "target": "button.sidebar-footer-glyph.sidebar-footer-btn",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "click [data-help-menu] [data-menu-action=\"shortcuts\"]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-help-menu] [data-menu-action=\"shortcuts\"]",
+    "at": 1791188473272,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 138,
+    "y": 696,
+    "rect": {
+     "left": 38.796875,
+     "top": 683,
+     "w": 198,
+     "h": 26
+    },
+    "elementFromPoint": "span.ctx-menu-text",
+    "target": "div.repo-row-menu-item.ctx-menu-item",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "help-opens",
+   "pass": true
+  },
+  {
+   "name": "click [data-settings-back]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-settings-back]",
+    "at": 1791188473678,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 140,
+    "y": 28,
+    "rect": {
+     "left": 12,
+     "top": 12,
+     "w": 255,
+     "h": 32
+    },
+    "elementFromPoint": "button.settings-back",
+    "target": "button.settings-back",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "help-back-closes",
+   "pass": true
+  },
+  {
+   "name": "help-inputs-while-open-zero",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": ""
+   }
+  },
+  {
+   "name": "help-focus-B",
+   "pass": true,
+   "focus": "w1:p3",
+   "active": "TEXTAREA.xterm-helper-textarea"
+  },
+  {
+   "name": "help-typed-to-B-only",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": "q"
+   }
+  },
+  {
+   "name": "click [data-shortcuts-open]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-shortcuts-open]",
+    "at": 1791188474988,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 1143,
+    "y": 19,
+    "rect": {
+     "left": 1115.78125,
+     "top": 4,
+     "w": 54.21875,
+     "h": 29
+    },
+    "elementFromPoint": "button",
+    "target": "button",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "tools-opens",
+   "pass": true
+  },
+  {
+   "name": "click [data-settings-back]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-settings-back]",
+    "at": 1791188475395,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 140,
+    "y": 28,
+    "rect": {
+     "left": 12,
+     "top": 12,
+     "w": 255,
+     "h": 32
+    },
+    "elementFromPoint": "button.settings-back",
+    "target": "button.settings-back",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "tools-back-closes",
+   "pass": true
+  },
+  {
+   "name": "tools-inputs-while-open-zero",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": ""
+   }
+  },
+  {
+   "name": "tools-focus-B",
+   "pass": true,
+   "focus": "w1:p3",
+   "active": "TEXTAREA.xterm-helper-textarea"
+  },
+  {
+   "name": "tools-typed-to-B-only",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": "q"
+   }
+  },
+  {
+   "name": "k2-end-xterm-B-equals-herdr",
+   "pass": true,
+   "probe": "w1:p3",
+   "xtermB": [
+    "got 1B",
+    "got 1B",
+    "got 1B",
+    "got 1B"
+   ],
+   "herdrB": [
+    "got 1B",
+    "got 1B",
+    "got 1B",
+    "got 1B"
+   ]
+  },
+  {
+   "name": "K2-judge-inputs",
+   "pass": true,
+   "problems": []
+  },
+  {
+   "name": "K2-judge-A",
+   "pass": true,
+   "problems": []
+  },
+  {
+   "name": "K2-judge-B",
+   "pass": true,
+   "problems": []
+  },
+  {
+   "name": "K2-grid-requests-zero",
+   "pass": true,
+   "base": 3,
+   "end": 3
+  },
+  {
+   "name": "K2-stream-sync-zero",
+   "pass": true,
+   "rows": 0
+  },
+  {
+   "name": "K2-cols-rows-unchanged",
+   "pass": true
+  },
+  {
+   "name": "K2-xterm-same-instance",
+   "pass": true,
+   "end": [
+    {
+     "pane": "w1:p2",
+     "tag": "tag-w1:p2"
+    },
+    {
+     "pane": "w1:p3",
+     "tag": "tag-w1:p3"
+    }
+   ]
+  },
+  {
+   "name": "click [data-help-menu-toggle]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-help-menu-toggle]",
+    "at": 1791188477706,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 38,
+    "y": 729,
+    "rect": {
+     "left": 33.796875,
+     "top": 718,
+     "w": 9.109375,
+     "h": 21
+    },
+    "elementFromPoint": "button.sidebar-footer-glyph.sidebar-footer-btn",
+    "target": "button.sidebar-footer-glyph.sidebar-footer-btn",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "R1-01-cmd-comma-menu-open-before",
+   "pass": true
+  },
+  {
+   "name": "R1-01-cmd-comma-opens",
+   "pass": true
+  },
+  {
+   "name": "R1-01-cmd-comma-menu-closed",
+   "pass": true,
+   "menu": false,
+   "hover": 0
+  },
+  {
+   "name": "R1-01-cmd-comma-esc1-confirm",
+   "pass": true
+  },
+  {
+   "name": "R1-01-cmd-comma-esc2-closes",
+   "pass": true
+  },
+  {
+   "name": "R1-01-cmd-comma-inputs-while-open-zero",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": ""
+   }
+  },
+  {
+   "name": "R1-01-cmd-comma-focus-B",
+   "pass": true,
+   "focus": "w1:p3",
+   "active": "TEXTAREA.xterm-helper-textarea"
+  },
+  {
+   "name": "R1-01-cmd-comma-typed-to-B-only",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": "q"
+   }
+  },
+  {
+   "name": "click [data-help-menu-toggle]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-help-menu-toggle]",
+    "at": 1791188479674,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 38,
+    "y": 729,
+    "rect": {
+     "left": 33.796875,
+     "top": 718,
+     "w": 9.109375,
+     "h": 21
+    },
+    "elementFromPoint": "button.sidebar-footer-glyph.sidebar-footer-btn",
+    "target": "button.sidebar-footer-glyph.sidebar-footer-btn",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "R1-01-palette-menu-open-before",
+   "pass": true
+  },
+  {
+   "name": "R1-01-palette-opens",
+   "pass": true
+  },
+  {
+   "name": "R1-01-palette-menu-closed",
+   "pass": true,
+   "menu": false,
+   "hover": 0
+  },
+  {
+   "name": "R1-01-palette-esc1-confirm",
+   "pass": true
+  },
+  {
+   "name": "R1-01-palette-esc2-closes",
+   "pass": true
+  },
+  {
+   "name": "R1-01-palette-inputs-while-open-zero",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": ""
+   }
+  },
+  {
+   "name": "R1-01-palette-focus-B",
+   "pass": true,
+   "focus": "w1:p3",
+   "active": "TEXTAREA.xterm-helper-textarea"
+  },
+  {
+   "name": "R1-01-palette-typed-to-B-only",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": "q"
+   }
+  },
+  {
+   "name": "B3-mru-overlay-shown",
+   "pass": true
+  },
+  {
+   "name": "B3-mru-moves-focus-to-A",
+   "pass": true,
+   "focus": "w1:p2"
+  },
+  {
+   "name": "B3-mru-no-pty-input",
+   "pass": true
+  },
+  {
+   "name": "click [data-refresh-tree]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-refresh-tree]",
+    "at": 1791188482803,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 235,
+    "y": 729,
+    "rect": {
+     "left": 228.046875,
+     "top": 718,
+     "w": 12.953125,
+     "h": 21
+    },
+    "elementFromPoint": "button.sidebar-footer-glyph.sidebar-footer-btn",
+    "target": "button.sidebar-footer-glyph.sidebar-footer-btn",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "B3-refresh-tree",
+   "pass": true,
+   "revisionBefore": 157,
+   "revisionAfter": 159
+  },
+  {
+   "name": "click [data-reveal-active]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-reveal-active]",
+    "at": 1791188482955,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 261,
+    "y": 729,
+    "rect": {
+     "left": 253,
+     "top": 721,
+     "w": 15,
+     "h": 15
+    },
+    "elementFromPoint": "svg",
+    "target": "button.sidebar-footer-glyph.sidebar-footer-btn.sidebar-footer-icon-btn",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "B3-reveal-flash",
+   "pass": true
+  },
+  {
+   "name": "click [data-term-pane-box=\"w1:p3\"] .xterm-screen",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-term-pane-box=\"w1:p3\"] .xterm-screen",
+    "at": 1791188483108,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 942,
+    "y": 397,
+    "rect": {
+     "left": 734,
+     "top": 82,
+     "w": 415,
+     "h": 630
+    },
+    "elementFromPoint": "div.xterm-screen",
+    "target": "div.xterm-screen",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "R1-02-opens",
+   "pass": true
+  },
+  {
+   "name": "R1-02-1180-window-reached",
+   "pass": true,
+   "inner": [
+    1180,
+    768
+   ],
+   "outer": [
+    1180,
+    800
+   ],
+   "avail": [
+    2560,
+    1410
+   ]
+  },
+  {
+   "name": "R1-02-1180-stacked",
+   "pass": true,
+   "vw": 1180,
+   "vh": 768,
+   "rail": {
+    "x": 343,
+    "y": 222,
+    "w": 774,
+    "h": 222,
+    "bottom": 444,
+    "right": 1117
+   },
+   "list": {
+    "x": 343,
+    "y": 468,
+    "w": 774,
+    "h": 198,
+    "bottom": 666,
+    "right": 1117
+   },
+   "listScroll": {
+    "top": 0,
+    "height": 1442,
+    "client": 198,
+    "scrollWidth": 763,
+    "clientWidth": 763
+   },
+   "clipped": [],
+   "rows": "222px 198px",
+   "cols": "774px"
+  },
+  {
+   "name": "R1-02-1180-no-horizontal-clip",
+   "pass": true,
+   "clipped": [],
+   "listScroll": {
+    "top": 0,
+    "height": 1442,
+    "client": 198,
+    "scrollWidth": 763,
+    "clientWidth": 763
+   }
+  },
+  {
+   "name": "R1-02-1180-edit-reachable",
+   "pass": true,
+   "clicked": true,
+   "blockedBy": null,
+   "candidate": true,
+   "cancel": true
+  },
+  {
+   "name": "R1-02-1180-last-row-reachable",
+   "pass": true,
+   "action": "terminal.close",
+   "hit": true,
+   "inView": true
+  },
+  {
+   "name": "R1-02-800-window-reached",
+   "pass": true,
+   "inner": [
+    800,
+    768
+   ],
+   "outer": [
+    800,
+    800
+   ],
+   "avail": [
+    2560,
+    1410
+   ]
+  },
+  {
+   "name": "R1-02-800-stacked",
+   "pass": true,
+   "vw": 800,
+   "vh": 768,
+   "rail": {
+    "x": 341,
+    "y": 238,
+    "w": 398,
+    "h": 222,
+    "bottom": 460,
+    "right": 739
+   },
+   "list": {
+    "x": 341,
+    "y": 484,
+    "w": 398,
+    "h": 182,
+    "bottom": 666,
+    "right": 739
+   },
+   "listScroll": {
+    "top": 0,
+    "height": 1562,
+    "client": 182,
+    "scrollWidth": 387,
+    "clientWidth": 387
+   },
+   "clipped": [],
+   "rows": "222px 182px",
+   "cols": "398px"
+  },
+  {
+   "name": "R1-02-800-no-horizontal-clip",
+   "pass": true,
+   "clipped": [],
+   "listScroll": {
+    "top": 0,
+    "height": 1562,
+    "client": 182,
+    "scrollWidth": 387,
+    "clientWidth": 387
+   }
+  },
+  {
+   "name": "R1-02-800-edit-reachable",
+   "pass": true,
+   "clicked": true,
+   "blockedBy": null,
+   "candidate": true,
+   "cancel": true
+  },
+  {
+   "name": "R1-02-800-last-row-reachable",
+   "pass": true,
+   "action": "terminal.close",
+   "hit": true,
+   "inView": true
+  },
+  {
+   "name": "R1-02-680-window-reached",
+   "pass": true,
+   "inner": [
+    680,
+    768
+   ],
+   "outer": [
+    680,
+    800
+   ],
+   "avail": [
+    2560,
+    1410
+   ]
+  },
+  {
+   "name": "R1-02-680-stacked",
+   "pass": true,
+   "vw": 680,
+   "vh": 768,
+   "rail": {
+    "x": 341,
+    "y": 238,
+    "w": 278,
+    "h": 222,
+    "bottom": 460,
+    "right": 619
+   },
+   "list": {
+    "x": 341,
+    "y": 484,
+    "w": 278,
+    "h": 182,
+    "bottom": 666,
+    "right": 619
+   },
+   "listScroll": {
+    "top": 0,
+    "height": 1682,
+    "client": 182,
+    "scrollWidth": 267,
+    "clientWidth": 267
+   },
+   "clipped": [],
+   "rows": "222px 182px",
+   "cols": "278px"
+  },
+  {
+   "name": "R1-02-680-no-horizontal-clip",
+   "pass": true,
+   "clipped": [],
+   "listScroll": {
+    "top": 0,
+    "height": 1682,
+    "client": 182,
+    "scrollWidth": 267,
+    "clientWidth": 267
+   }
+  },
+  {
+   "name": "R1-02-680-edit-reachable",
+   "pass": true,
+   "clicked": true,
+   "blockedBy": null,
+   "candidate": true,
+   "cancel": true
+  },
+  {
+   "name": "R1-02-680-last-row-reachable",
+   "pass": true,
+   "action": "terminal.close",
+   "hit": true,
+   "inView": true
+  },
+  {
+   "name": "R1-02-old-rule-detected-at-680",
+   "pass": true,
+   "rail": {
+    "x": 341,
+    "y": 238,
+    "w": 256,
+    "h": 428,
+    "bottom": 666,
+    "right": 597
+   },
+   "list": {
+    "x": 621,
+    "y": 238,
+    "w": 4,
+    "h": 428,
+    "bottom": 666,
+    "right": 625
+   },
+   "stacked": false,
+   "editHit": false,
+   "editBox": {
+    "x": 618,
+    "w": 44,
+    "right": 662
+   }
+  },
+  {
+   "name": "B2-requests-while-open",
+   "pass": true,
+   "gridDuringOpen": 2,
+   "sync": [
+    "g1:w1:t2:62x42",
+    "g1:w1:t2:46x42",
+    "g1:w1:t2:46x42"
+   ]
+  },
+  {
+   "name": "B2-no-2x1",
+   "pass": true,
+   "panes": [
+    {
+     "paneId": "w1:p2",
+     "cols": 22,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 21,
+     "rows": 42
+    }
+   ]
+  },
+  {
+   "name": "B2-real-size-applied",
+   "pass": true,
+   "before": [
+    {
+     "paneId": "w1:p2",
+     "cols": 54,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 53,
+     "rows": 42
+    }
+   ],
+   "after": [
+    {
+     "paneId": "w1:p2",
+     "cols": 22,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 21,
+     "rows": 42
+    }
+   ]
+  },
+  {
+   "name": "click [data-settings-back]",
+   "pass": true,
+   "response": {
+    "ok": true,
+    "selector": "[data-settings-back]",
+    "at": 1791188490068,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 140,
+    "y": 28,
+    "rect": {
+     "left": 12,
+     "top": 12,
+     "w": 255,
+     "h": 32
+    },
+    "elementFromPoint": "button.settings-back",
+    "target": "button.settings-back",
+    "blockedBy": null
+   }
+  },
+  {
+   "name": "B2-close-closes",
+   "pass": true
+  },
+  {
+   "name": "B2-no-request-on-close",
+   "pass": true,
+   "open": 5,
+   "closed": 5
+  },
+  {
+   "name": "B2-cols-rows-kept-on-close",
+   "pass": true,
+   "open": [
+    {
+     "paneId": "w1:p2",
+     "cols": 22,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 21,
+     "rows": 42
+    }
+   ],
+   "closed": [
+    {
+     "paneId": "w1:p2",
+     "cols": 22,
+     "rows": 42
+    },
+    {
+     "paneId": "w1:p3",
+     "cols": 21,
+     "rows": 42
+    }
+   ]
+  },
+  {
+   "name": "B2-inputs-while-open-zero",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": ""
+   }
+  },
+  {
+   "name": "B2-focus-B",
+   "pass": true,
+   "focus": "w1:p3",
+   "active": "TEXTAREA.xterm-helper-textarea"
+  },
+  {
+   "name": "B2-typed-to-B-only",
+   "pass": true,
+   "got": {
+    "A": "",
+    "B": "q"
+   }
+  },
+  {
+   "name": "whole-run-inputs",
+   "pass": true,
+   "rows": [
+    {
+     "pane": "A",
+     "got": "",
+     "want": ""
+    },
+    {
+     "pane": "B",
+     "got": "qqqqqqqq",
+     "want": "qqqqqqqq"
+    }
+   ]
+  },
+  {
+   "name": "self-control-inputs-passes",
+   "pass": true,
+   "problems": []
+  },
+  {
+   "name": "self-control-A-passes",
+   "pass": true,
+   "problems": []
+  },
+  {
+   "name": "self-control-B-passes",
+   "pass": true,
+   "problems": []
+  },
+  {
+   "name": "self-check-input-boundary-detects",
+   "pass": true,
+   "bad": [
+    {
+     "pane": "A",
+     "got": "z",
+     "want": ""
+    },
+    {
+     "pane": "B",
+     "got": "\u0018",
+     "want": ""
+    }
+   ]
+  },
+  {
+   "name": "self-check-A-text-detects",
+   "pass": true,
+   "problems": [
+    "출력 대역에 다른 줄: \"got 1B\""
+   ]
+  },
+  {
+   "name": "self-check-B-text-detects",
+   "pass": true,
+   "problems": [
+    "전 텍스트가 그대로가 아니다(줄 75: \"got 1B\" → \"CORRUPTED\")"
+   ]
+  }
+ ],
+ "appPid": 68489,
+ "panes": {
+  "A": "w1:p2",
+  "B": "w1:p3",
+  "tabId": "w1:t2"
+ },
+ "screens": {
+  "k2-base": {
+   "probePane": "w1:p3",
+   "xtermB": [
+    "STABLE-B-020 52690720",
+    "STABLE-B-021 52690720",
+    "STABLE-B-022 52690720",
+    "STABLE-B-023 52690720",
+    "STABLE-B-024 52690720",
+    "STABLE-B-025 52690720",
+    "STABLE-B-026 52690720",
+    "STABLE-B-027 52690720",
+    "STABLE-B-028 52690720",
+    "STABLE-B-029 52690720",
+    "STABLE-B-030 52690720",
+    "STABLE-B-031 52690720",
+    "STABLE-B-032 52690720",
+    "STABLE-B-033 52690720",
+    "STABLE-B-034 52690720",
+    "STABLE-B-035 52690720",
+    "STABLE-B-036 52690720",
+    "STABLE-B-037 52690720",
+    "STABLE-B-038 52690720",
+    "STABLE-B-039 52690720",
+    "STABLE-B-040 52690720",
+    "STABLE-B-041 52690720",
+    "STABLE-B-042 52690720",
+    "STABLE-B-043 52690720",
+    "STABLE-B-044 52690720",
+    "STABLE-B-045 52690720",
+    "STABLE-B-046 52690720",
+    "STABLE-B-047 52690720",
+    "STABLE-B-048 52690720",
+    "STABLE-B-049 52690720",
+    "STABLE-B-050 52690720",
+    "STABLE-B-051 52690720",
+    "STABLE-B-052 52690720",
+    "STABLE-B-053 52690720",
+    "STABLE-B-054 52690720",
+    "STABLE-B-055 52690720",
+    "STABLE-B-056 52690720",
+    "STABLE-B-057 52690720",
+    "STABLE-B-058 52690720",
+    "STABLE-B-059 52690720",
+    "STABLE-B-060 52690720"
+   ],
+   "herdrB": [
+    "STABLE-B-020 52690720",
+    "STABLE-B-021 52690720",
+    "STABLE-B-022 52690720",
+    "STABLE-B-023 52690720",
+    "STABLE-B-024 52690720",
+    "STABLE-B-025 52690720",
+    "STABLE-B-026 52690720",
+    "STABLE-B-027 52690720",
+    "STABLE-B-028 52690720",
+    "STABLE-B-029 52690720",
+    "STABLE-B-030 52690720",
+    "STABLE-B-031 52690720",
+    "STABLE-B-032 52690720",
+    "STABLE-B-033 52690720",
+    "STABLE-B-034 52690720",
+    "STABLE-B-035 52690720",
+    "STABLE-B-036 52690720",
+    "STABLE-B-037 52690720",
+    "STABLE-B-038 52690720",
+    "STABLE-B-039 52690720",
+    "STABLE-B-040 52690720",
+    "STABLE-B-041 52690720",
+    "STABLE-B-042 52690720",
+    "STABLE-B-043 52690720",
+    "STABLE-B-044 52690720",
+    "STABLE-B-045 52690720",
+    "STABLE-B-046 52690720",
+    "STABLE-B-047 52690720",
+    "STABLE-B-048 52690720",
+    "STABLE-B-049 52690720",
+    "STABLE-B-050 52690720",
+    "STABLE-B-051 52690720",
+    "STABLE-B-052 52690720",
+    "STABLE-B-053 52690720",
+    "STABLE-B-054 52690720",
+    "STABLE-B-055 52690720",
+    "STABLE-B-056 52690720",
+    "STABLE-B-057 52690720",
+    "STABLE-B-058 52690720",
+    "STABLE-B-059 52690720",
+    "STABLE-B-060 52690720"
+   ]
+  },
+  "k2-end": {
+   "probePane": "w1:p3",
+   "xtermB": [
+    "STABLE-B-025 52690720",
+    "STABLE-B-026 52690720",
+    "STABLE-B-027 52690720",
+    "STABLE-B-028 52690720",
+    "STABLE-B-029 52690720",
+    "STABLE-B-030 52690720",
+    "STABLE-B-031 52690720",
+    "STABLE-B-032 52690720",
+    "STABLE-B-033 52690720",
+    "STABLE-B-034 52690720",
+    "STABLE-B-035 52690720",
+    "STABLE-B-036 52690720",
+    "STABLE-B-037 52690720",
+    "STABLE-B-038 52690720",
+    "STABLE-B-039 52690720",
+    "STABLE-B-040 52690720",
+    "STABLE-B-041 52690720",
+    "STABLE-B-042 52690720",
+    "STABLE-B-043 52690720",
+    "STABLE-B-044 52690720",
+    "STABLE-B-045 52690720",
+    "STABLE-B-046 52690720",
+    "STABLE-B-047 52690720",
+    "STABLE-B-048 52690720",
+    "STABLE-B-049 52690720",
+    "STABLE-B-050 52690720",
+    "STABLE-B-051 52690720",
+    "STABLE-B-052 52690720",
+    "STABLE-B-053 52690720",
+    "STABLE-B-054 52690720",
+    "STABLE-B-055 52690720",
+    "STABLE-B-056 52690720",
+    "STABLE-B-057 52690720",
+    "STABLE-B-058 52690720",
+    "STABLE-B-059 52690720",
+    "STABLE-B-060 52690720",
+    "got 1B",
+    "got 1B",
+    "got 1B",
+    "got 1B",
+    "got 1B"
+   ],
+   "herdrB": [
+    "STABLE-B-025 52690720",
+    "STABLE-B-026 52690720",
+    "STABLE-B-027 52690720",
+    "STABLE-B-028 52690720",
+    "STABLE-B-029 52690720",
+    "STABLE-B-030 52690720",
+    "STABLE-B-031 52690720",
+    "STABLE-B-032 52690720",
+    "STABLE-B-033 52690720",
+    "STABLE-B-034 52690720",
+    "STABLE-B-035 52690720",
+    "STABLE-B-036 52690720",
+    "STABLE-B-037 52690720",
+    "STABLE-B-038 52690720",
+    "STABLE-B-039 52690720",
+    "STABLE-B-040 52690720",
+    "STABLE-B-041 52690720",
+    "STABLE-B-042 52690720",
+    "STABLE-B-043 52690720",
+    "STABLE-B-044 52690720",
+    "STABLE-B-045 52690720",
+    "STABLE-B-046 52690720",
+    "STABLE-B-047 52690720",
+    "STABLE-B-048 52690720",
+    "STABLE-B-049 52690720",
+    "STABLE-B-050 52690720",
+    "STABLE-B-051 52690720",
+    "STABLE-B-052 52690720",
+    "STABLE-B-053 52690720",
+    "STABLE-B-054 52690720",
+    "STABLE-B-055 52690720",
+    "STABLE-B-056 52690720",
+    "STABLE-B-057 52690720",
+    "STABLE-B-058 52690720",
+    "STABLE-B-059 52690720",
+    "STABLE-B-060 52690720",
+    "got 1B",
+    "got 1B",
+    "got 1B",
+    "got 1B",
+    "got 1B"
+   ]
+  }
+ },
+ "widths": [
+  {
+   "width": 1180,
+   "windowSize": {
+    "inner": [
+     1180,
+     768
+    ],
+    "outer": [
+     1180,
+     800
+    ],
+    "avail": [
+     2560,
+     1410
+    ]
+   },
+   "layout": {
+    "vw": 1180,
+    "vh": 768,
+    "rail": {
+     "x": 343,
+     "y": 222,
+     "w": 774,
+     "h": 222,
+     "bottom": 444,
+     "right": 1117
+    },
+    "list": {
+     "x": 343,
+     "y": 468,
+     "w": 774,
+     "h": 198,
+     "bottom": 666,
+     "right": 1117
+    },
+    "listScroll": {
+     "top": 0,
+     "height": 1442,
+     "client": 198,
+     "scrollWidth": 763,
+     "clientWidth": 763
+    },
+    "clipped": [],
+    "rows": "222px 198px",
+    "cols": "774px"
+   },
+   "clicked": {
+    "ok": true,
+    "selector": "[data-record=\"sidebar.toggle\"][data-variant=\"0\"]",
+    "at": 1791188485724,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 373,
+    "y": 567,
+    "rect": {
+     "left": 351,
+     "top": 555,
+     "w": 44,
+     "h": 24
+    },
+    "elementFromPoint": "button.shortcut-recorder",
+    "target": "button.shortcut-recorder",
+    "blockedBy": null
+   },
+   "candidate": true,
+   "last": {
+    "action": "terminal.close",
+    "hit": true,
+    "inView": true
+   }
+  },
+  {
+   "width": 800,
+   "windowSize": {
+    "inner": [
+     800,
+     768
+    ],
+    "outer": [
+     800,
+     800
+    ],
+    "avail": [
+     2560,
+     1410
+    ]
+   },
+   "layout": {
+    "vw": 800,
+    "vh": 768,
+    "rail": {
+     "x": 341,
+     "y": 238,
+     "w": 398,
+     "h": 222,
+     "bottom": 460,
+     "right": 739
+    },
+    "list": {
+     "x": 341,
+     "y": 484,
+     "w": 398,
+     "h": 182,
+     "bottom": 666,
+     "right": 739
+    },
+    "listScroll": {
+     "top": 0,
+     "height": 1562,
+     "client": 182,
+     "scrollWidth": 387,
+     "clientWidth": 387
+    },
+    "clipped": [],
+    "rows": "222px 182px",
+    "cols": "398px"
+   },
+   "clicked": {
+    "ok": true,
+    "selector": "[data-record=\"sidebar.toggle\"][data-variant=\"0\"]",
+    "at": 1791188487638,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 371,
+    "y": 575,
+    "rect": {
+     "left": 349,
+     "top": 563,
+     "w": 44,
+     "h": 24
+    },
+    "elementFromPoint": "button.shortcut-recorder",
+    "target": "button.shortcut-recorder",
+    "blockedBy": null
+   },
+   "candidate": true,
+   "last": {
+    "action": "terminal.close",
+    "hit": true,
+    "inView": true
+   }
+  },
+  {
+   "width": 680,
+   "windowSize": {
+    "inner": [
+     680,
+     768
+    ],
+    "outer": [
+     680,
+     800
+    ],
+    "avail": [
+     2560,
+     1410
+    ]
+   },
+   "layout": {
+    "vw": 680,
+    "vh": 768,
+    "rail": {
+     "x": 341,
+     "y": 238,
+     "w": 278,
+     "h": 222,
+     "bottom": 460,
+     "right": 619
+    },
+    "list": {
+     "x": 341,
+     "y": 484,
+     "w": 278,
+     "h": 182,
+     "bottom": 666,
+     "right": 619
+    },
+    "listScroll": {
+     "top": 0,
+     "height": 1682,
+     "client": 182,
+     "scrollWidth": 267,
+     "clientWidth": 267
+    },
+    "clipped": [],
+    "rows": "222px 182px",
+    "cols": "278px"
+   },
+   "clicked": {
+    "ok": true,
+    "selector": "[data-record=\"sidebar.toggle\"][data-variant=\"0\"]",
+    "at": 1791188489558,
+    "method": "sendInputEvent",
+    "found": true,
+    "hit": true,
+    "x": 371,
+    "y": 575,
+    "rect": {
+     "left": 349,
+     "top": 563,
+     "w": 44,
+     "h": 24
+    },
+    "elementFromPoint": "button.shortcut-recorder",
+    "target": "button.shortcut-recorder",
+    "blockedBy": null
+   },
+   "candidate": true,
+   "last": {
+    "action": "terminal.close",
+    "hit": true,
+    "inView": true
+   }
+  }
+ ],
+ "r102OldRule": {
+  "rail": {
+   "x": 341,
+   "y": 238,
+   "w": 256,
+   "h": 428,
+   "bottom": 666,
+   "right": 597
+  },
+  "list": {
+   "x": 621,
+   "y": 238,
+   "w": 4,
+   "h": 428,
+   "bottom": 666,
+   "right": 625
+  },
+  "stacked": false,
+  "editHit": false,
+  "editBox": {
+   "x": 618,
+   "w": 44,
+   "right": 662
+  }
+ },
+ "b2": {
+  "gridDuringOpen": 2,
+  "sync": [
+   "g1:w1:t2:62x42",
+   "g1:w1:t2:46x42",
+   "g1:w1:t2:46x42"
+  ]
+ },
+ "owned": [
+  {
+   "paths": [
+    "/tmp/l511if1/corral-userdata",
+    "/tmp/l511if1/corral-herdr"
+   ]
+  },
+  {
+   "pid": 68447,
+   "label": "herdr backend"
+  },
+  {
+   "pid": 68489,
+   "label": "corral desktop"
+  }
+ ],
+ "alive": [],
+ "leftover": "",
+ "finishedAt": "2026-10-05T08:21:36.514Z",
+ "exitCode": 0
+}

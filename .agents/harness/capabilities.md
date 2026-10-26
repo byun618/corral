@@ -86,7 +86,7 @@ A1~A8 이고, 거기 없는 형태는 통과가 아니라 **오류**다. 매핑�
 대조 방향은 넷이다 — ① 선언이 비지 않았나 ② 표기가 허용 목록에 있나 ③ 본문이 쓰는 명령 ⊆ 선언
 ④ `required` ⊆ 런타임 광고. **광고가 없는 도구(bare)에서는 ①②③ 이 돌고 ④ 만 공백이다**
 (bare 의 어휘는 그 매핑의 선언 자신이다). 양성 대조: 선언 쪽 7건
-`specs/LIFE-440-harness-capability-map/raw/claude/fix1-m1-declaration-controls.txt` ·
+`corral-specs/LIFE-440-harness-capability-map/raw/claude/fix1-m1-declaration-controls.txt` ·
 표기 쪽 라운드 2 6건 `…/fix2-n1-convention-controls.txt` · **라운드 3 10건**
 `…/fix3-p1-controls.mjs` (출력은 관문 회차별 출력의 `p1.txt` — `…/fix3-gates-final2/p1.txt`).
 
@@ -134,10 +134,10 @@ A1~A8 이고, 거기 없는 형태는 통과가 아니라 **오류**다. 매핑�
   `CLAUDE_CONFIG_DIR` 로 띄우면서 이 변수만 빼면 **다시 파생 이름 디렉터리를 읽고 쓴다.**
   즉 **이름 변수만 켰다고 cwd 로 계산한 경로가 틀리는 것이 아니다** — 무시되는 세 경우(홈 변수 미설정 ·
   값 형식 위반 · settings `env` 설정)에는 파생 경로가 맞다. 그래도 **경로는 짐작하지 말고 도구가 돌려주는
-  값을 쓴다**(위 첫 줄). 확인 원문: `specs/LIFE-440-harness-capability-map/raw/coordinator/verify-r4/g-r4-2-claude-sessions-doc.md`
+  값을 쓴다**(위 첫 줄). 확인 원문: `corral-specs/LIFE-440-harness-capability-map/raw/coordinator/verify-r4/g-r4-2-claude-sessions-doc.md`
 
   **Grok 은 한 세션이 디렉터리 하나다. 어느 파일을 여는지가 판정을 바꾼다** (실측 2026-09-27,
-  `specs/LIFE-440-harness-capability-map/raw/claude/fix3-p5-grok-session-files.txt`):
+  `corral-specs/LIFE-440-harness-capability-map/raw/claude/fix3-p5-grok-session-files.txt`):
 
   | 파일 | 첫 줄 키 | 무엇 |
   | --- | --- | --- |
@@ -151,12 +151,12 @@ A1~A8 이고, 거기 없는 형태는 통과가 아니라 **오류**다. 매핑�
   **한 줄을 열어 키를 확인한 뒤** 세는 것이 규칙이다(각 매핑 『세션 기록 오라클』).
   세 기록 모두 **사람이 친 입력과 주입된 입력을 가르는 필드가 없다** — 그래서 H2 가 남는다.
   codex `history.jsonl` 은 `max_bytes` 가 걸리면 오래된 줄을 버리기도 한다 — 줄이 없다는 것이 더더욱 증거가 아니다.
-- **`specs/*/raw/` 의 커밋된 스크립트를 실행 명령으로 적지 않는다.** 누출 점검 도구가 절대경로류 문자열을
+- **`corral-specs/*/raw/` 의 커밋된 스크립트를 실행 명령으로 적지 않는다.** 누출 점검 도구가 절대경로류 문자열을
   `<p:…>` 로 치환해 커밋하므로 문법부터 깨져 있다(`b2-oracle-*.mjs` 3개 `node --check` 실패 — LIFE-440 라운드 1
   리뷰에서 확인). 근거로 **인용**만 하고, 실행 방법은 매핑에 직접 적는다.
 - **H4 — 워커가 일감 본문을 읽었는지를 판정 가능하게 한다.** 워커 preamble 은 제어 도구의 제품 코드이고
   이 절차는 그것을 고치지 않는다. 대신 두 가지로 막는다: ⓐ 코디네이터가 착수 시 일감 본문을
-  `specs/LIFE-NNN-*/00-analysis.md` 에 스냅샷한다 (specs 가 진실의 원천이므로 워커가 일감 조회 도구를 못 써도
+  `corral-specs/LIFE-NNN-*/00-analysis.md` 에 스냅샷한다 (specs 가 진실의 원천이므로 워커가 일감 조회 도구를 못 써도
   내용이 빠지지 않는다) ⓑ 일감 명세의 첫 단계를 "일감 조회 결과를 원자료로 남기거나, 못 읽으면 그 사실과
   오류 원문을 원자료로 남긴다" 로 둔다. 읽었는지가 파일로 판정된다. 이 방식은 세 매핑에 똑같이 적용된다.
   **일감이 없는 과제(스모크·검증 순환·사람이 말로 준 짧은 일)는 조회할 대상이 없다** — 그때는 ⓑ 를 생략하고

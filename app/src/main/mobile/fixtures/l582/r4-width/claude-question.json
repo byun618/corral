@@ -1,0 +1,17 @@
+[
+ {
+  "question": "Choose deployment",
+  "header": "Deployment",
+  "options": [
+   {
+    "label": "Deploy the service to the staging environment after running all integration checks",
+    "description": "Run integration checks, then deploy to staging now."
+   },
+   {
+    "label": "Keep the current release running until the maintenance window tomorrow morning",
+    "description": "Leave the current release running and deploy in tomorrow's maintenance window."
+   }
+  ],
+  "multiSelect": false
+ }
+]

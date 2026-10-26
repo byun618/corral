@@ -1,0 +1,16 @@
+   │ CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_PID -u AI_AGENT
+   │ claude --permission-mode manual
+   Launch a fresh Claude session with parent env cleared
+
+ This command requires approval
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don’t ask again for: env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDECODE -u
+      CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_SESSION_ID -u
+      CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_MESSAGING_SOCKET -u
+      CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_PID -u AI_AGENT claude --permission-mode manual
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend

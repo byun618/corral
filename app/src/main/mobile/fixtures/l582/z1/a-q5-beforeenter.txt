@@ -1,0 +1,12 @@
+Pick tools
+
+  1. [ ] Hammer
+         Pick Hammer
+  2. [✔] Saw
+         Pick Saw
+  3. [ ] Type something
+❯    Submit
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in VS Code · Esc to cancel

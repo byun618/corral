@@ -55,7 +55,8 @@ lines_of() {
     on && e != "" && $0 ~ e { exit }
     on { print NR "\t" $0 }' "$f"
 }
-REQ="$(cat <<'Q'
+# 표는 $(cat <<…) 가 아니라 read 로 읽는다 — macOS bash 3.2 는 명령 치환 안 here-doc 의 따옴표·괄호를 짝 맞추려 든다
+IFS= read -r -d '' REQ <<'Q' || true
 C1a-field-scope	L	has	**Scope:**
 C1a-field-learning	L	has	**Learning:**
 C1a-field-evidence	L	has	**Evidence:**
@@ -136,7 +137,6 @@ AG-fix-learnings	AGF	has	.agents/learnings/<영역>.md
 AG-fix-adr	AGF	has	docs/adr/
 AG-stub-learnings	AGO	re	rules 스텁.*두 번째에 한 줄씩 — 첫 번째는 \.agents/learnings/
 Q
-)"
 TABLE="$OUT/table.txt"; : > "$TABLE"
 printf '%s\t%s\t%s\t%s\n' 결과 요구 자리 위치 >> "$TABLE"
 N=0; MISS=0
@@ -174,7 +174,7 @@ say "── 대조표: 요구 $N 줄 · 빠진 줄 $MISS (table.txt)"
 LEAK="$OUT/leak.txt"; : > "$LEAK"
 ere_quote() { sed 's/[][.*^$+?(){}|\\]/\\&/g'; }
 # 패턴은 자기 자신에 걸리지 않게 문자 클래스로 쓴다. 신원 패턴(홈·계정·메일)은 실행 환경에서 만든다 — 이 파일에 적지 않는다
-PATS="$(cat <<'P'
+IFS= read -r -d '' PATS <<'P' || true
 home-path	/Users/[A-Za-z]
 home-tilde	~/[A-Za-z.]
 specs-raw	corral-specs/LIFE-[0-9]
@@ -183,8 +183,7 @@ uuid	[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 corral-id	(run|task|ctx|msg)_[0-9a-f]{12}
 handle	t1\.ey[A-Za-z0-9_-]{20}
 P
-)"
-PATS="$PATS"$'\n'"home-env	$(printf '%s' "$HOME" | ere_quote)"
+PATS="${PATS%$'\n'}"$'\n'"home-env	$(printf '%s' "$HOME" | ere_quote)"
 PATS="$PATS"$'\n'"account	(^|[^A-Za-z])$(id -un)([^A-Za-z0-9]|$)"
 EM="$(git config user.email || true)"; [ -n "$EM" ] && PATS="$PATS"$'\n'"email	$(printf '%s' "$EM" | ere_quote)"
 if [ -n "$EXTRA" ]; then

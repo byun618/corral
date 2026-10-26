@@ -31,7 +31,7 @@ scripts/release.sh abort                                # 접기 — 출고 전 
 **① cut** — origin/main 끝의 `app/package.json` 에서 다음 버전을 정하고(`--bump`·`--version`) 다음 버전 ≤ 지금 버전 · 원격 태그 존재 ·
 열린 release 브랜치(로컬·원격 `release/v*`) 있음 · 다른 레포 안에서 부름 중 하나라도면 아무것도 만들지 않는다(exit 2). 만들면 release 브랜치에
 버전 커밋 `release: vX.Y.Z`(`Release-Cut:` 줄)이 올라간다 — main 에 버전 커밋을 직접 올리지 않는다. 같은 버전으로 다시 치면 있는 것을 재사용하고
-(worktree 를 잃었으면 다시 붙이고 — 폴더만 지워져 git 등록이 남은 경우도 하위 명령마다 먼저 `git worktree prune` 으로 정리한다, 원격에만 있으면 로컬로 가져온다) 두 번째를 만들지 않는다. release PR 머지 뒤에는 main 버전이 이미 올라가
+(worktree 를 잃었으면 다시 붙이고 — 폴더만 지워져 git 등록이 남은 경우도 하위 명령마다 먼저 `git worktree prune` 으로 정리한다 — 이 레포 전체의 폴더 없는 등록이 정리 대상이다(release worktree 만이 아니다), 원격에만 있으면 로컬로 가져온다) 두 번째를 만들지 않는다. release PR 머지 뒤에는 main 버전이 이미 올라가
 다음 버전을 계산하므로 **`cut --version X.Y.Z`(그 버전)** 로 붙인다 — 스크립트 안내가 그 명령을 낸다.
 
 **② gather** — 고른 PR 전부를 먼저 본다: 닫힘·draft·포크·base 가 main 이 아님 중 하나라도면 release 브랜치 변경 0건(exit 2). 이때 head SHA 를 고정해
@@ -84,7 +84,7 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 | exit | 뜻 | 할 일 |
 | --- | --- | --- |
 | 0 | 완료 | 다음 하위 명령 |
-| 1 | 인자·환경 오류(짝 안 맞는 리허설 인자·쓸 수 없는 글자·옛 `--prs` 단독 호출 포함) — ref·push 전에 멈춤 | 메시지대로 고쳐 다시 |
+| 1 | 인자·환경 오류(짝 안 맞는 리허설 인자·쓸 수 없는 글자·옛 `--prs` 단독 호출 포함) — ref·push 전에 멈춤. 단 abort·finish 의 로컬 정리(worktree·브랜치 삭제) 실패와 gather 의 일반 merge 실패는 상태가 바뀐 뒤에도 1 이다 — 메시지가 로컬·원격 상태를 말한다 | 메시지대로 고쳐 다시 |
 | 2 | 점검 거절 — 대부분 변경 0. 단 ship 의 머지 직전 head 재확인은 release 브랜치 push·release PR 생성 뒤(PR 은 열린 채), gather 는 앞 PR 을 모은 뒤 거절할 수 있다 | 사유(열린 release 브랜치·head 이동·main 이동·더러운 worktree·기록 이상 등)를 풀고 같은 명령 |
 | 3 | 충돌 — gather: release worktree 에 남김 / ship: release PR 이 main 과 충돌 | 위 「충돌이 나면」 / release worktree 에서 `merge origin/main` 뒤 ship |
 | 5 | release PR 머지 가능 판정이 안 나옴 | 잠시 뒤 같은 ship |

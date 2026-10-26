@@ -3,6 +3,7 @@
 # app/scripts/l703/mutate.sh <원자료 폴더> [가드 이름 …]   (생략 = 전부)
 # 쌍마다: 대조(변이 없음) PASS + 변이 FAIL 이어야 그 쌍이 통과다. 변이가 사본을 실제로 바꿨는지(diff 줄 수)도 본다. 하나라도 아니면 exit 1.
 # 변이: 셋째 칸이 비면 「# guard:<이름>」 줄의 die 를 true 로(거절 가드), 아니면 그 sed 스크립트(루프·재계산·플래그 — die 가 아닌 가드).
+# 한 가드 줄의 다른 절을 따로 보려면 이름을 <가드>@<절> 로 쓴다(가드 줄 찾기는 @ 앞 이름). 「# guard: 이름 집합 = 쌍 목록의 가드 이름 집합」도 본다.
 set -uo pipefail
 OUT="${1:?원자료 폴더}"; shift; mkdir -p "$OUT" || exit 1; OUT="$(cd "$OUT" && pwd)"
 ONLY="${*:-}"
@@ -44,18 +45,26 @@ base-changed	ship-base-changed
 unrecorded	ship-unrecorded-merge	
 record-valid	ship-forged-record	/# guard:record-valid$/ s/ok = /ok = 1 || /
 record-anc	ship-forged-record2	
+namespace@bothbad	ns-bothbad	/# guard:namespace$/ s/ && \[ "\$BK" != bad \]//
+unrec-main-parent	main-merge-recovery	/# guard:unrec-main-parent$/ s/is_ancestor "\$p2" "origin\/\$BASE" && continue/true/
+protected-head	protected-head	/# guard:protected-head$/ s/|release\/\*//
 rehearsal-head	ns-rehearsal-realhead	/# guard:rehearsal-head$/ s/if \[ "\$BK" = rehearsal \]; then/if false; then/
 wt-prune	wt-rmrf	/# guard:wt-prune$/ s/git worktree prune/true/
 merged-link	reuse-name	/# guard:merged-link$/ s/is_ancestor "\$h" "\$ref" &&/true \&\&/
 P
 )"
 BAD=0
+# 가드 이름 집합 = 쌍 목록의 가드 이름 집합 — 표시만 하고 쌍이 없는 가드(또는 그 반대)가 생기면 실패
+GS="$(grep -oE '# guard:[a-z0-9-]+$' "$REL" | sed 's/# guard://' | sort -u | tr '\n' ' ')"
+PS="$(echo "$PAIRS" | cut -f1 | sed 's/@.*//' | grep . | sort -u | tr '\n' ' ')"
+if [ "$GS" = "$PS" ]; then echo "ok 가드 이름 집합 = 쌍 목록 ($(echo $GS | wc -w | tr -d ' ')개)" | tee -a "$SUM"
+else echo "BAD 가드 이름 집합 ≠ 쌍 목록 — 가드만: $(comm -23 <(echo $GS | tr ' ' '\n') <(echo $PS | tr ' ' '\n') | tr '\n' ' ')· 쌍만: $(comm -13 <(echo $GS | tr ' ' '\n') <(echo $PS | tr ' ' '\n') | tr '\n' ' ')" | tee -a "$SUM"; BAD=$((BAD + 1)); fi
 while IFS="$(printf '\t')" read -r g c sedx; do
   [ -n "$g" ] || continue
   [ -z "$ONLY" ] || case " $ONLY " in *" $g "*) ;; *) continue ;; esac
-  n="$(grep -c "# guard:$g\$" "$REL")"
-  [ "$g" = verify-tag ] || [ "$n" = 1 ] || { echo "BAD guard:$g — 가드 줄이 $n 개(1개여야 한다)" | tee -a "$SUM"; BAD=$((BAD + 1)); continue; }
-  [ -n "$sedx" ] || sedx="/# guard:$g\$/ s/die \"/true \"/"
+  gm="${g%%@*}"; n="$(grep -c "# guard:$gm\$" "$REL")"
+  [ "$gm" = verify-tag ] || [ "$n" = 1 ] || { echo "BAD guard:$g — 가드 줄이 $n 개(1개여야 한다)" | tee -a "$SUM"; BAD=$((BAD + 1)); continue; }
+  [ -n "$sedx" ] || sedx="/# guard:$gm\$/ s/die \"/true \"/"
   changed="$(sed "$sedx" "$REL" | diff "$REL" - | grep -c '^>' || true)"
   "$HERE/release-test.sh" "$OUT/control-$g" "$c" > /dev/null 2>&1; crc=$?
   L703_MUTANT="$g" L703_MUTANT_SED="$sedx" "$HERE/release-test.sh" "$OUT/mutant-$g" "$c" > /dev/null 2>&1; mrc=$?

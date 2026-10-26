@@ -18,6 +18,7 @@ ship-forged-record ship-forged-record2 ship-build-ok ship-build-dmgfail ship-bui
 ship-pkgver ship-remote-ahead ship-merged-moved ship-second-parent ship-base-changed ship-tmpwt-fail ship-rerun-unresolved
 cut-open-nonsemver cut-after-13 ns-newline ns-rehearsal-realhead
 wt-rmrf wt-rmrf-remote wt-rmrf-abort wt-rmrf-finish wt-rmrf-cut-fresh reuse-name forged-abort-recut
+ns-bothbad main-merge-recovery main-merge-recovery-gather protected-head
 abort-ok abort-pushed abort-dirty abort-shipped abort-after-merge abort-branchbusy finish-leave-open finish-ok finish-unshipped finish-dirty finish-headmoved finish-deletefail finish-tag-on-tip
 ns-main-rehearsal ns-throwaway-v ns-base-only ns-prefix-only ns-other-base ns-gather-half ns-ship-half ns-pipe-base ns-pipe-both ns-chars ns-rehearsal ns-rehearsal-default
 fakegh-fidelity"
@@ -525,6 +526,27 @@ for CASE in $CASES; do
       check "다시 자른 뒤 ship exit 0" eq "$RC" 0; PC="$(grep ' pr create ' "$W/gh/calls.txt" | tail -1)"; eval "set -- ${PC#gh}"; BODYARG=""
       while [ $# -gt 0 ]; do [ "$1" = --body ] && BODYARG="$2"; shift; done
       check "PR 본문 참고용 문구" eq "$(echo "$BODYARG" | grep -c '참고용 — 재사용하면 갱신하지 않는다')" 1 ;;
+    ns-bothbad) # L1(Claude r4 낮음 1) — base·접두 둘 다 어느 이름 공간도 아닌 조합은 ref·push 0건으로 거절(짝이 같아도 bad 끼리는 안 된다)
+      git -C "$H" push -q origin origin/main:refs/heads/release/v9.9.9; : > "$W/push-log.txt"
+      S0="$(snap)"; rel -- cut --base release/v9.9.9 --tag-prefix zzz-
+      check "exit 1" eq "$RC" 1; check "짝 문구" has "짝이 맞지 않는다"; check "ref·worktree 0건" eq "$(snap)" "$S0"; check "push 0건" eq "$(wc -l < "$W/push-log.txt" | tr -d ' ')" 0
+      S0="$(snap)"; rel -- cut --base feature/x --tag-prefix v9-
+      check "exit 1(2)" eq "$RC" 1; check "ref·worktree 0건(2)" eq "$(snap)" "$S0" ;;
+    main-merge-recovery|main-merge-recovery-gather) # L2(Claude r4 낮음 2) — main 이동 → ship 2 → 안내대로 release worktree 에서 merge origin/main → 같은 ship 0(-gather: 그 뒤 PR 을 더 모으고 ship)
+      mkpr 1 LIFE-1-a a.txt a; mkpr 2 LIFE-2-b b.txt b; cutgather 1
+      git -C "$H" fetch -q origin; git -C "$H" checkout -q -B tmp origin/main; echo z > "$H/z.txt"; git -C "$H" add -A; git -C "$H" commit -qm z; git -C "$H" push -q origin tmp:main
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk; check "ship 2(main 이동)" eq "$RC" 2; check "merge 안내" has "merge origin/main"
+      git -C "$B" fetch -q origin; git -C "$(WT1)" merge -q --no-edit origin/main; check "merge origin/main 0" eq "$?" 0
+      if [ "$CASE" = main-merge-recovery-gather ]; then rel -- gather --prs 2; check "gather 0" eq "$RC" 0; fi
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "같은 ship 0" eq "$RC" 0; check "기록 없는 merge 경고 없음" hasnt "기록 없는 merge"; check "PR1 MERGED" eq "$(prstate 1)" MERGED
+      check "z.txt 도 main 에" eq "$(git --git-dir="$O" show refs/heads/main:z.txt)" z
+      [ "$CASE" = main-merge-recovery ] || check "PR2 MERGED" eq "$(prstate 2)" MERGED ;;
+    protected-head) # L3(Claude r4 낮음 3) — 원래 PR head 가 release/* 이름이면 MERGED 여도 원격 head 를 지우지 않고 문구를 남긴다
+      mkpr 1 release/hotfix-x a.txt a; cutgather 1
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "ship 0" eq "$RC" 0; check "PR1 MERGED" eq "$(prstate 1)" MERGED
+      check "release/hotfix-x 그대로" [ -n "$(oref refs/heads/release/hotfix-x)" ]; check "지우지 않는 이름 문구" has "지우지 않는 이름" ;;
     gather-stacked) # F1(Claude M1) — 같은 gather 에서 앞 PR 이 뒤 PR head 를 품어도(순서 "2 1") 뒤 PR 기록이 남는다
       mkpr 1 LIFE-1-a a.txt a
       git -C "$H" checkout -q -b LIFE-2-b LIFE-1-a; echo b > "$H/b.txt"; git -C "$H" add -A; git -C "$H" commit -qm "PR 2"; git -C "$H" push -q origin LIFE-2-b

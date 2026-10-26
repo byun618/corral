@@ -33,9 +33,10 @@ while IFS= read -r line; do
 done <<H
 $HITS
 H
-# 양성 대조 — 같은 grep 이 옛 문서(main 의 INSTALL.md)에서는 걸리는지(패턴이 실제로 잡는지)
-CTRL="$(git show main:app/INSTALL.md 2>/dev/null | grep -cE "$PAT" || true)"
-[ "${CTRL:-0}" -gt 0 ] && ok "양성 대조: main 의 app/INSTALL.md 에서 옛 사용법 ${CTRL}줄을 잡는다" || bad "양성 대조 실패: main 의 INSTALL.md 에서 0줄(패턴 무효)"
+# 양성 대조 — 같은 grep 이 옛 문서에서는 걸리는지(패턴이 실제로 잡는지). 대상은 이 일감 직전 커밋으로 고정한다 — main 은 머지 뒤 새 문서가 되어 대조 구실을 못 한다
+CTRL_REV=ab41bd84
+CTRL="$(git show "$CTRL_REV:app/INSTALL.md" 2>/dev/null | grep -cE "$PAT" || true)"
+[ "${CTRL:-0}" -gt 0 ] && ok "양성 대조: $CTRL_REV 의 app/INSTALL.md 에서 옛 사용법 ${CTRL}줄을 잡는다" || bad "양성 대조 실패: $CTRL_REV 의 INSTALL.md 에서 0줄(패턴 무효 또는 커밋 없음)"
 
 # ── 2. release SKILL — 순서와 회고 자리 ──
 S=.agents/skills/release/SKILL.md

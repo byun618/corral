@@ -427,7 +427,7 @@ process_prs() {
     note "PR #$n $raw"
     if [ "$st" != MERGED ]; then UNRESOLVED="$UNRESOLVED #$n($st)"; continue; fi # guard:merged-only
     # 지우는 것은 원격 head 가 **기록 SHA**(모은 그 커밋)이자 gh 의 head oid 일 때만 — 그 뒤 push 된 새 커밋은 건드리지 않는다
-    case "$head" in "$BASE"|"$RB"|main|release/*) note "PR #$n head $head — 지우지 않는 이름"; continue ;; esac
+    case "$head" in "$BASE"|"$RB"|main|release/*) note "PR #$n head $head — 지우지 않는 이름"; continue ;; esac # guard:protected-head
     # 리허설은 throwaway/ 아래 head 만 지운다(이름 공간 — C7)
     if [ "$BK" = rehearsal ]; then case "$head" in throwaway/*) ;; *) note "PR #$n head $head — 리허설은 throwaway/ 아래만 지운다(그대로 둠)"; continue ;; esac; fi # guard:rehearsal-head
     rh="$(remote_head "$head")" || { UNRESOLVED="$UNRESOLVED #$n(head 조회 실패)"; note "⚠ PR #$n head $head 원격 조회 실패 — 지우지 않음"; continue; }
@@ -519,7 +519,7 @@ CUT_C="$(read_record "$RB" cut)"
 UNREC=""
 while read -r m _ p2 _rest; do
   [ -n "$m" ] || continue
-  is_ancestor "$p2" "origin/$BASE" && continue
+  is_ancestor "$p2" "origin/$BASE" && continue # guard:unrec-main-parent
   hit=0; for r in $(echo "$RECORD" | awk '{print $2}'); do if is_ancestor "$p2" "$r"; then hit=1; break; fi; done
   [ "$hit" = 1 ] || UNREC="$UNREC${NL}  merge ${m:0:7}(둘째 부모 ${p2:0:7}) — git -C $(shq "$REPO") log -1 ${m:0:7}"
 done <<M

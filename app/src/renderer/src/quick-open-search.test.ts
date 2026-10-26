@@ -1,5 +1,5 @@
 // LIFE-593 E2·E5ⓑ·E7ⓑ — ⌘P 퍼지 검색(순수). 규칙 + E2 질의 표(코디 고정 — 작업 commit fd1664c4d 의 corral 레포 트리).
-import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { buildFileIndex, matchTerm, narrows, QUICK_OPEN_LIMIT, queryTerms, searchFiles } from './quick-open-search.js'
 
@@ -108,18 +108,13 @@ describe('E7ⓑ 좁혀 찾기', () => {
 })
 
 // 코디 고정 질의 표(01-criteria 「E2 질의 표」) — 기준 트리는 게이트 ⓪ 승인 뒤 작업 브랜치 HEAD fd1664c4d.
-// LIFE-705 레포 분리(filter-repo)로 그 commit 은 사라졌다 — specs/ 를 뺀 트리가 같은 가장 가까운 조상 8f9c45298 로 바꾸고,
-// specs/00-project.md 를 기대하던 q11 은 이 레포에 남는 파일로 바꿨다. 그 commit 이 없는 체크아웃이면 건너뛴다.
+// LIFE-705 레포 분리(filter-repo)로 그 commit 이 사라져, specs/ 를 뺀 트리가 같은 조상 8f9c45298 의 파일 목록을
+// fixture 로 고정했다 — 히스토리(얕은 클론·재필터)와 무관하게 같은 표를 본다. specs/00-project.md 를 기대하던 q11 은
+// 이 레포에 남는 파일로 바꿨다. fixture 가 없으면 읽기에서 실패한다(조용히 건너뛰지 않는다).
 const BASE = '8f9c45298'
-const baseFiles = ((): string[] | null => {
-  try {
-    return execFileSync('git', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', BASE], { encoding: 'utf8', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'ignore'] })
-      .split('\0')
-      .filter((rel) => rel !== '')
-  } catch {
-    return null
-  }
-})()
+const baseFiles = readFileSync(new URL('./fixtures/l593-e2-base-files.txt', import.meta.url), 'utf8')
+  .split('\n')
+  .filter((rel) => rel !== '')
 const TABLE: { id: string; query: string; expected: string; within: number }[] = [
   { id: 'q1', query: 'explorer-fs', expected: 'app/src/main/explorer-fs.ts', within: 3 },
   { id: 'q2', query: 'shared/keybindings', expected: 'app/src/shared/keybindings.ts', within: 1 },
@@ -134,18 +129,7 @@ const TABLE: { id: string; query: string; expected: string; within: number }[] =
   { id: 'q11', query: 'release.sh', expected: 'scripts/release.sh', within: 2 },
   { id: 'q12', query: 'EXPLORER-FS', expected: 'app/src/main/explorer-fs.ts', within: 3 },
 ]
-// 수정 r1 R1-C-11 — 기준 commit 이 없는 체크아웃에서 조용히 건너뛰지 않는다: 실패로 알린다. 일부러 건너뛸 때만 L593_ALLOW_NO_E2_TABLE=1(사유를 크게 남긴다).
-describe(`E2ⓑ 질의 표 (corral 레포 ${BASE})`, () => {
-  if (baseFiles === null) {
-    if (process.env.L593_ALLOW_NO_E2_TABLE === '1') {
-      console.warn(`[E2ⓑ 건너뜀] 기준 commit ${BASE} 이 이 체크아웃에 없다 — L593_ALLOW_NO_E2_TABLE=1 로 건너뛴다. 판정 회차로 세지 않는다.`)
-      it.skip(`기준 commit ${BASE} 없음 — 건너뜀(L593_ALLOW_NO_E2_TABLE=1)`, () => undefined)
-    } else
-      it(`기준 commit ${BASE} 이 있어야 한다`, () => {
-        throw new Error(`E2ⓑ 질의 표의 기준 트리 ${BASE} 를 읽지 못했다 — 작업 브랜치를 fetch 하거나(L593_ALLOW_NO_E2_TABLE=1 로만 건너뛴다)`)
-      })
-    return
-  }
+describe(`E2ⓑ 질의 표 (corral 레포 ${BASE} 파일 목록)`, () => {
   const index = buildFileIndex(baseFiles)
   for (const row of TABLE) {
     it(`${row.id} ${row.query} → ${row.expected} 상위 ${row.within}`, () => {

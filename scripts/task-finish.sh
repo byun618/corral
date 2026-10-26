@@ -45,6 +45,12 @@ git fetch -q --prune origin
 if [ -d "$WT/$TASK" ]; then
   [ -z "$(git -C "$WT/$TASK" status --porcelain)" ] || die "작업 worktree 에 미커밋 변경 — 먼저 커밋(인계 문서 포함)"
 fi
+# 산출물은 corral-specs 에만 둔다(LIFE-705). worktree 안 specs/ 는 .gitignore 라 status 에 안 보이는데, 옛 측정 스크립트의
+# 기본 출력 경로가 거기라 원자료가 남을 수 있다 — worktree 를 지우기 전에 멈춰서 옮기게 한다
+for w in "$WT/$TASK" "$WT/$TASK"-*; do
+  [ -d "$w/specs" ] && [ -n "$(find "$w/specs" -type f -print -quit)" ] \
+    && die "$w/specs 에 파일이 있다 — corral-specs 작업 폴더로 옮긴 뒤 비우고 다시(worktree 와 함께 지워진다)"
+done
 
 # 1. 작업 브랜치가 어디에 보존됐는지 확인 — 그 기준(KEEP)으로 변형 브랜치를 검사한다
 if [ -n "$INTO" ]; then

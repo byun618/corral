@@ -19,7 +19,7 @@ description: >-
   minor 면 `--bump minor`. 버그 수정·개선만이면 patch (LIFE-572 가 0.3.0 대신 v0.2.3 으로 나간 전례).
 - `scripts/release.sh cut --dry-run` 으로 이름·버전을 보고 `scripts/release.sh cut [--bump minor]` — `release/vX.Y.Z` 브랜치와
   `.claude/worktrees/release-vX.Y.Z` worktree, 버전 커밋이 생긴다(push 없음). 열린 release 브랜치가 이미 있으면 거절된다 — 그것을 끝내거나 접는다.
-- 자른 뒤엔 **출고를 막는 수정만** 넣는다(동결). 새 작업은 새 일감 → 다음 출고.
+- 자른 뒤엔 **출고를 막는 수정만** 넣는다(동결). 새 작업은 새 일감 → 다음 출고. 예외는 §4 회고 커밋 하나다.
 
 ## 2. 모으기
 
@@ -37,7 +37,22 @@ description: >-
 
 ## 4. 회고 자리
 
-- (LIFE-704 가 채운다 — devlog·changelog 를 release 브랜치에 커밋하는 자리. 지금은 건너뛴다.)
+통합 확인 뒤·릴리즈 노트 전에, 이번 출고에 실린 일감의 배움을 사용자와 정리한다 (LIFE-704). 결과물은 release 브랜치의 회고 커밋 하나와 비공개 결정 기록이다.
+
+- **읽는다**: 모은 PR 의 일감마다 corral-specs 작업 폴더의 `devlog.md`·`learnings-proposal.md`·`adr-draft-*.md`(task-coordinate §8 게이트 ② 기록)를
+  사용자와 같이 읽는다. 여러 일감을 하루치로 묶어 보는 것은 사람이 이때 한다. 기록이 없는 일감은 「없음」으로 적고 넘어간다.
+- **정한다** — 제안마다 채택·기각·보류:
+  - learnings 추가·승격·삭제는 `.agents/learnings/README.md` 대로(목적지 분류·상한·쓰기 전 압축·승격하면 같은 변경에서 삭제).
+  - ADR 초안 채택이면 그때 번호를 매겨 `docs/adr/NNNN-<제목>.md` 로, `status: accepted` (`docs/adr/README.md`).
+  - **이전 learnings 가 이번에 작동했나** — 실린 일감의 킥오프가 인용한 항목(task-coordinate §1)이 실수를 막았는지·빗나갔는지 대조한다.
+    빗나갔으면 고치거나 지운다.
+  - **90일 재검토** — `Last reviewed` 가 90일을 넘었거나 상한에 닿은 영역 파일은 전체를 검토하고 날짜를 갱신한다.
+  - 승격된 `.agents/` 규칙·스킬 반영이 크면 여기서 고치지 않고 별도 LIFE 일감으로 만든다 — 회고 커밋은 learnings·ADR 와 짧은 승격 줄만 싣는다.
+- **커밋한다**: 채택분을 release worktree 에서 **비-merge 커밋 하나**로 커밋한다(`docs(release): vX.Y.Z 회고` 류). 동결(§1)의 유일한 예외다.
+  - 메시지에 `Release-PR:` 줄을 쓰지 않는다 — `ship` 이 모으기 기록 밖의 그 줄을 위조 기록으로 거절한다.
+  - `ship` 전에 끝낸다 — 커밋하지 않은 회고 변경이 남으면 `ship` 이 더러운 worktree 로 거절한다. 채택분이 없으면 커밋하지 않는다.
+- **결정 기록(비공개)**: 채택·기각·보류와 그 이유, 「작동했나」 대조 결과는 corral-specs `retro/vX.Y.Z.md` 한 파일에 쓰고
+  본체 세션이 그 파일만 지정해 커밋한다(AGENTS.md 「산출물 규칙」의 루트 공용 파일과 같은 방식). 공개 쪽에는 결정 결과만 남는다.
 
 ## 5. 릴리즈 노트 작성
 

@@ -172,7 +172,8 @@ say "── 대조표: 요구 $N 줄 · 빠진 줄 $MISS (table.txt)"
 
 # ── 2. 공개 누출 스캔 — 이번 diff 의 추가 줄 + 새 공개 폴더 전체 ──
 LEAK="$OUT/leak.txt"; : > "$LEAK"
-ere_quote() { sed 's/[][.*^$+?(){}|\\]/\\&/g'; }
+# 괄호 식 안에서 「[」 바로 뒤에 「.」 이 오면 BSD sed 가 대조 기호로 읽는다 — 「[」 를 맨 뒤에 둔다
+ere_quote() { sed 's/[]*.^$+?(){}|\\[]/\\&/g'; }
 # 패턴은 자기 자신에 걸리지 않게 문자 클래스로 쓴다. 신원 패턴(홈·계정·메일)은 실행 환경에서 만든다 — 이 파일에 적지 않는다
 IFS= read -r -d '' PATS <<'P' || true
 home-path	/Users/[A-Za-z]
@@ -201,6 +202,7 @@ scan() { # $1 = 대상 줄 파일 → 걸린 줄 수를 낸다
   local hits=0 name p
   while IFS=$'\t' read -r name p; do
     [ -n "$name" ] || continue
+    [ -n "$p" ] || { echo "  [$name] 빈 패턴 — 전부 걸리므로 거절"; continue; }
     while IFS= read -r h; do
       [ -n "$h" ] || continue
       echo "  [$name] ${h%%$'\t'*}" ; hits=$((hits + 1))

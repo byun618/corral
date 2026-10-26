@@ -100,6 +100,8 @@ CWD_COMMON="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null 
   || die "지금 폴더는 다른 git 레포다($CWD_COMMON) — 이 스크립트의 레포($REPO) 안이나 레포 밖에서 부른다" 2  # guard:other-repo
 cd "$REPO"
 WT_ROOT="$REPO/.claude/worktrees"
+# 폴더가 지워지고 등록만 남은 worktree 를 먼저 정리한다 — 남아 있으면 재부착(worktree add)·브랜치 삭제가 막힌다(LIFE-703 r3). 폴더 없는 등록만 지운다
+[ "$DRY_RUN" = 1 ] || git worktree prune # guard:wt-prune
 
 # ── 공용 ──
 # 다음 버전 — package.json 본문에서. 출력: "<지금> <다음>"
@@ -143,6 +145,24 @@ remote_head() { # 원격 브랜치 끝 SHA(없으면 빈 값), 조회 실패면 
   echo "$out" | awk -v r="refs/heads/$1" '$2 == r {print $1}'
 }
 is_ancestor() { git merge-base --is-ancestor "$1" "$2" 2>/dev/null; }
+# 이 release 의 머지된 release PR — 출력 "번호 head 머지커밋"(없으면 빈 값), 조회 실패면 1.
+# 이름만 보지 않는다: 같은 이름의 옛 회차 PR 은 GitHub 에 MERGED 로 영구히 남는다 — 그 head 가 지금 $RB 안에 있는 것만 이 release 의 것(LIFE-703 r3)
+merged_rp() {
+  local rows ref n h m
+  rows="$(gh pr list --head "$RB" --base "$BASE" --state merged --json number,headRefOid,mergeCommit --jq '.[] | "\(.number) \(.headRefOid) \(.mergeCommit.oid)"')" || return 1
+  [ -n "$rows" ] || return 0
+  ref="refs/heads/$RB"
+  if ! git rev-parse -q --verify "$ref" >/dev/null; then
+    ref="refs/remotes/origin/$RB"; git fetch -q origin "+refs/heads/$RB:$ref" 2>/dev/null || return 0
+  fi
+  while read -r n h m; do
+    [ -n "$n" ] || continue
+    is_ancestor "$h" "$ref" && { echo "$n $h $m"; return 0; } # guard:merged-link
+  done <<R
+$rows
+R
+  return 0
+}
 
 # 열린 release 브랜치 — 로컬·원격에서 <RP><PREFIX> 로 시작하는 이름 전부(X.Y.Z 가 아닌 이름도 센다 — 한 번에 하나). 출력: 이름 한 줄씩(중복 없음)
 open_releases() {
@@ -210,7 +230,7 @@ load_record() {
   case "$rc" in
     0) ;;
     1) die "$RB 에 자르기 커밋(Release-Cut: $TAG)이 없다 — 이 스크립트가 자른 브랜치가 아니다. 확인 뒤 abort" 2 ;;
-    3) die "release 브랜치에 gather 가 만들지 않은 Release-PR 줄이 있다 — 출고 집합에 넣지 않고 멈춘다. 그 커밋을 되돌리거나(git -C $(shq "$WT") revert) 접고(abort) 다시 자른다:${NL}$(echo "$out" | awk '$1 == "BAD" {printf "  커밋 %s — #%s %s\n", substr($2, 1, 7), $3, substr($4, 1, 7)}')" 2 ;;
+    3) die "release 브랜치에 gather 가 만들지 않은 Release-PR 줄이 있다 — 출고 집합에 넣지 않고 멈춘다. 접고(abort) 다시 자른 뒤 모은다(revert 로는 풀리지 않는다 — 원 커밋이 이력에 남는다):${NL}$(echo "$out" | awk '$1 == "BAD" {printf "  커밋 %s — #%s %s\n", substr($2, 1, 7), $3, substr($4, 1, 7)}')" 2 ;;
     *) die "release 브랜치 기록을 읽지 못했다(rc $rc)" ;;
   esac
   while read -r n sha; do
@@ -312,7 +332,7 @@ if [ "$CMD" = gather ]; then
   wt_clean_or_die "모으기"
   TC="$(remote_tag_commit "$TAG")" || die "원격 태그 조회 실패"
   [ -z "$TC" ] || die "원격에 태그 $TAG 가 이미 있다 — 이 release 는 출고됐다. 새 PR 은 다음 출고(finish 뒤 cut)" 2
-  MERGED_RP="$(gh pr list --head "$RB" --base "$BASE" --state merged --json number --jq '.[0].number // empty')" || die "release PR 조회 실패" 12
+  MERGED_RP="$(merged_rp)" || die "release PR 조회 실패" 12; MERGED_RP="${MERGED_RP%% *}"
   [ -z "$MERGED_RP" ] || die "release PR #$MERGED_RP 가 이미 머지됐다(태그 전에 멈춘 출고) — 더 모으지 않는다. 같은 ship 으로 출고를 이어 간다:${NL}$(shq "$SCRIPT_DIR/release.sh") ship --notes <파일>$RARGS" 2 # guard:gather-merged
   load_record
   TIP="$(git rev-parse "$RB")"
@@ -429,7 +449,7 @@ if [ "$CMD" = abort ]; then
   [ -n "$RB" ] || { echo "✔ 접을 release 브랜치가 없다"; exit 0; }
   TC="$(remote_tag_commit "$TAG")" || die "원격 태그 조회 실패"
   [ -z "$TC" ] || die "원격에 태그 $TAG 가 있다 — 이미 출고됐다. 접지 않는다(정리는 finish)" 2
-  MERGED_RP="$(gh pr list --head "$RB" --base "$BASE" --state merged --json number --jq '.[0].number // empty')" || die "release PR 조회 실패" 12
+  MERGED_RP="$(merged_rp)" || die "release PR 조회 실패" 12; MERGED_RP="${MERGED_RP%% *}"
   [ -z "$MERGED_RP" ] || die "release PR #$MERGED_RP 가 이미 머지됐다 — 접지 않는다. 출고를 이어 간다: $(shq "$SCRIPT_DIR/release.sh") ship --notes <파일>$RARGS" 2 # guard:abort-merged
   if [ -d "$WT" ]; then
     wt_on_rb || die "worktree 자리 $WT 가 $RB 가 아니다 — 지우지 않음" 2
@@ -514,8 +534,7 @@ if [ -n "$TC" ]; then
     || die "원격 태그 $TAG(${TC:0:7})가 이 release 의 출고 머지 커밋(origin/$BASE 위 merge commit, 둘째 부모 = $RB 끝 ${TIP:0:7})이 아니다 — 출고하지 않음. 태그를 직접 확인한다:${NL}git -C $(shq "$REPO") ls-remote --tags origin $(shq "refs/tags/$TAG*")" 2 # guard:tag-merge
   STAGE=tagged; MC="$TC"
 else
-  RPM="$(gh pr list --head "$RB" --base "$BASE" --state merged --json number,headRefOid,mergeCommit --jq '.[0] | select(. != null) | "\(.number) \(.headRefOid) \(.mergeCommit.oid)"')" \
-    || die "release PR 조회 실패" 12
+  RPM="$(merged_rp)" || die "release PR 조회 실패" 12
   if [ -n "$RPM" ]; then
     set -- $RPM
     [ "$2" = "$TIP" ] || die "release PR #$1 은 머지됐는데 그때 head(${2:0:7})가 지금 $RB 끝(${TIP:0:7})과 다르다 — 머지 뒤 release 브랜치에 커밋이 생겼다. 직접 확인한다" 2 # guard:rpm-tip
@@ -616,7 +635,7 @@ if [ "$STAGE" = premerge ]; then
   # 2. release → base PR (열린 것이 있으면 재사용, 한 개)
   RPN="$(gh pr list --head "$RB" --base "$BASE" --state open --json number --jq '.[0].number // empty')" || die "release PR 조회 실패" 12
   if [ -z "$RPN" ]; then
-    BODY="출고 $TAG — scripts/release.sh ship. 머지·태그·Release 는 이 스크립트 한 경로로만 한다(웹 UI 머지 금지).${NL}${NL}모은 PR:${NL}$PRLIST"
+    BODY="출고 $TAG — scripts/release.sh ship. 머지·태그·Release 는 이 스크립트 한 경로로만 한다(웹 UI 머지 금지).${NL}${NL}모은 PR(PR 을 만들 때의 참고용 — 재사용하면 갱신하지 않는다. 출고 집합은 release 브랜치의 Release-PR 기록이다):${NL}$PRLIST"
     URL="$(gh pr create --base "$BASE" --head "$RB" --title "release: $TAG" --body "$BODY")" \
       || die "release PR 생성 실패 — $RB 는 push 됐다. 같은 명령을 다시(열린 release PR 이 있으면 재사용한다):${NL}$SHIP_RERUN" 12
     RPN="${URL##*/}"

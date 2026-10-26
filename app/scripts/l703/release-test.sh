@@ -17,6 +17,7 @@ ship-dirty ship-headmove-late ship-tag-on-tip ship-unrecorded-merge ship-indirec
 ship-forged-record ship-forged-record2 ship-build-ok ship-build-dmgfail ship-build-apkfail ship-build-rerun ship-build-prefail
 ship-pkgver ship-remote-ahead ship-merged-moved ship-second-parent ship-base-changed ship-tmpwt-fail ship-rerun-unresolved
 cut-open-nonsemver cut-after-13 ns-newline ns-rehearsal-realhead
+wt-rmrf wt-rmrf-remote wt-rmrf-abort wt-rmrf-finish wt-rmrf-cut-fresh reuse-name forged-abort-recut
 abort-ok abort-pushed abort-dirty abort-shipped abort-after-merge abort-branchbusy finish-leave-open finish-ok finish-unshipped finish-dirty finish-headmoved finish-deletefail finish-tag-on-tip
 ns-main-rehearsal ns-throwaway-v ns-base-only ns-prefix-only ns-other-base ns-gather-half ns-ship-half ns-pipe-base ns-pipe-both ns-chars ns-rehearsal ns-rehearsal-default
 fakegh-fidelity"
@@ -475,6 +476,55 @@ for CASE in $CASES; do
       check "exit 0" eq "$RC" 0; check "PR1 MERGED" eq "$(prstate 1)" MERGED; check "head 그대로" eq "$(oref refs/heads/LIFE-9-real-work)" "$H0"
       check "삭제 push 없음" eq "$(grep -c '^refs/heads/LIFE-9-real-work .* 0000000000000000000000000000000000000000$' "$W/push-log.txt")" 0
       check "리허설 이름 문구" has "throwaway/ 아래만 지운다" ;;
+    wt-rmrf) # H1(Claude r3 중간 1) — release worktree 폴더를 잃고 등록만 남아도 같은 cut 이 다시 붙이고 이어 간다
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; rm -rf "$(WT1)"
+      rel -- gather --prs 1; check "gather exit 2(다시 자르라)" eq "$RC" 2
+      rel -- cut; check "cut exit 0(재부착)" eq "$RC" 0; check "붙였다 문구" has "release worktree 를 붙였다"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk; check "ship exit 0" eq "$RC" 0 ;;
+    wt-rmrf-remote) # H1 — 폴더·로컬 브랜치를 잃고 원격만 남아도 cut 이 붙인다
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; git -C "$B" push -q origin "$RB1"
+      rm -rf "$(WT1)"; git -C "$B" update-ref -d "refs/heads/$RB1"   # 등록은 남기고 로컬 브랜치만 없앤다
+      rel -- cut; check "cut exit 0(재부착)" eq "$RC" 0; check "worktree = release 브랜치" eq "$(git -C "$(WT1)" symbolic-ref --short HEAD)" "$RB1" ;;
+    wt-rmrf-abort) # H1 — 등록만 남은 상태에서 abort
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; rm -rf "$(WT1)"
+      rel -- abort; check "abort exit 0" eq "$RC" 0; check "로컬 브랜치 없음" not git -C "$B" rev-parse -q --verify "refs/heads/$RB1"
+      check "등록 없음" eq "$(git -C "$B" worktree list | grep -c 'release-v0.1.1')" 0 ;;
+    wt-rmrf-finish) # H1 — 출고 뒤 등록만 남은 상태에서 finish
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; rel -- ship --notes "$W/notes.md" --skip-build --skip-apk; rm -rf "$(WT1)"
+      rel -- finish; check "finish exit 0" eq "$RC" 0; check "로컬 브랜치 없음" not git -C "$B" rev-parse -q --verify "refs/heads/$RB1"
+      check "원격 브랜치 없음" eq "$(oref "refs/heads/$RB1")" "" ;;
+    wt-rmrf-cut-fresh) # H1 — 등록만 남고 브랜치는 없으면 새로 자른다
+      rel -- cut; rm -rf "$(WT1)"
+      rel -- abort; check "abort exit 0" eq "$RC" 0
+      rel -- cut; check "다시 cut exit 0" eq "$RC" 0; check "worktree 있음" [ -d "$(WT1)" ] ;;
+    reuse-name) # H2(Claude r3 중간 2) — 리허설 2회차: 1회차 정리 뒤 같은 이름으로 cut→gather→ship→finish. 옛 회차 머지 PR(GitHub 에 남음)을 이 release 의 것으로 읽지 않는다
+      git -C "$H" push -q origin origin/main:refs/heads/throwaway/x-base; : > "$W/push-log.txt"
+      R="--base throwaway/x-base --tag-prefix rehearsal-x-v"
+      mkpr 1 throwaway/x-pr1 a.txt a throwaway/x-base
+      rel FGH_DEFAULT=throwaway/x-base -- cut $R; rel FGH_DEFAULT=throwaway/x-base -- gather --prs 1 $R
+      rel FGH_DEFAULT=throwaway/x-base -- ship --notes "$W/notes.md" --skip-build --skip-apk $R; check "1회차 ship exit 0" eq "$RC" 0
+      rel FGH_DEFAULT=throwaway/x-base -- finish $R; check "1회차 finish exit 0" eq "$RC" 0
+      # 정리(C12) — 원격·로컬 태그, Release 기록, base 를 되돌림. PR 기록(gh/pr/*)은 GitHub 처럼 남는다
+      git --git-dir="$O" tag -d rehearsal-x-v0.1.1 >/dev/null; git -C "$B" tag -d rehearsal-x-v0.1.1 >/dev/null; rm -f "$W/gh/release/rehearsal-x-v0.1.1"
+      git --git-dir="$O" update-ref -d refs/heads/throwaway/x-base; git -C "$H" push -q origin origin/main:refs/heads/throwaway/x-base
+      git -C "$B" fetch -q --prune origin
+      check "옛 release PR 은 MERGED 로 남음" eq "$(grep -l 'head=throwaway/x-base-release/' "$W"/gh/pr/* | xargs grep -l 'state=MERGED' | wc -l | tr -d ' ')" 1
+      mkpr 7 throwaway/x-pr7 g.txt g throwaway/x-base
+      rel FGH_DEFAULT=throwaway/x-base -- cut $R; check "2회차 cut exit 0" eq "$RC" 0
+      rel FGH_DEFAULT=throwaway/x-base -- gather --prs 7 $R; check "2회차 gather exit 0" eq "$RC" 0
+      rel FGH_DEFAULT=throwaway/x-base -- ship --notes "$W/notes.md" --skip-build --skip-apk $R; check "2회차 ship exit 0" eq "$RC" 0
+      check "새 release PR 생성" has "release PR #"; check "PR7 MERGED" eq "$(prstate 7)" MERGED
+      rel FGH_DEFAULT=throwaway/x-base -- finish $R; check "2회차 finish exit 0" eq "$RC" 0 ;;
+    forged-abort-recut) # H3(Claude r3 낮음 1) — 위조 줄 거절 안내는 abort → 다시 cut 한 길, 그대로 따르면 출고된다
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1
+      git -C "$(WT1)" commit -q --allow-empty -m "회고 메모" -m "Release-PR: 9 $(oref refs/heads/main)"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 2" eq "$RC" 2; check "abort 안내" has "접고(abort) 다시 자른"; check "revert 권유 없음" hasnt "git -C"
+      rel -- abort; check "abort exit 0" eq "$RC" 0
+      cutgather 1; rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "다시 자른 뒤 ship exit 0" eq "$RC" 0; PC="$(grep ' pr create ' "$W/gh/calls.txt" | tail -1)"; eval "set -- ${PC#gh}"; BODYARG=""
+      while [ $# -gt 0 ]; do [ "$1" = --body ] && BODYARG="$2"; shift; done
+      check "PR 본문 참고용 문구" eq "$(echo "$BODYARG" | grep -c '참고용 — 재사용하면 갱신하지 않는다')" 1 ;;
     gather-stacked) # F1(Claude M1) — 같은 gather 에서 앞 PR 이 뒤 PR head 를 품어도(순서 "2 1") 뒤 PR 기록이 남는다
       mkpr 1 LIFE-1-a a.txt a
       git -C "$H" checkout -q -b LIFE-2-b LIFE-1-a; echo b > "$H/b.txt"; git -C "$H" add -A; git -C "$H" commit -qm "PR 2"; git -C "$H" push -q origin LIFE-2-b

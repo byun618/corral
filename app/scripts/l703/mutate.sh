@@ -45,6 +45,8 @@ unrecorded	ship-unrecorded-merge
 record-valid	ship-forged-record	/# guard:record-valid$/ s/ok = /ok = 1 || /
 record-anc	ship-forged-record2	
 rehearsal-head	ns-rehearsal-realhead	/# guard:rehearsal-head$/ s/if \[ "\$BK" = rehearsal \]; then/if false; then/
+wt-prune	wt-rmrf	/# guard:wt-prune$/ s/git worktree prune/true/
+merged-link	reuse-name	/# guard:merged-link$/ s/is_ancestor "\$h" "\$ref" &&/true \&\&/
 P
 )"
 BAD=0

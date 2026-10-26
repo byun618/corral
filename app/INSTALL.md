@@ -88,7 +88,7 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 | 2 | 점검 거절 — 대부분 변경 0. 단 ship 의 머지 직전 head 재확인은 release 브랜치 push·release PR 생성 뒤(PR 은 열린 채), gather 는 앞 PR 을 모은 뒤 거절할 수 있다 | 사유(열린 release 브랜치·head 이동·main 이동·더러운 worktree·기록 이상 등)를 풀고 같은 명령 |
 | 3 | 충돌 — gather: release worktree 에 남김 / ship: release PR 이 main 과 충돌 | 위 「충돌이 나면」 / release worktree 에서 `merge origin/main` 뒤 ship |
 | 5 | release PR 머지 가능 판정이 안 나옴 | 잠시 뒤 같은 ship |
-| 6 | release PR 머지 거절·머지 결과 이상(부모·버전) | PR 상태를 보고 같은 ship |
+| 6 | release PR 머지 거절·머지 결과 이상(부모·버전). main 이 막 움직여 충돌이 아직 판정되지 않은 경우 포함(GitHub 의 첫 mergeable 이 옛 값 MERGEABLE 이라 머지가 「merge conflicts」로 거절된다) | PR 상태를 보고 같은 ship — 그 경우 다시 치면 2(main 이동)·3(충돌) 의 `merge origin/main` 안내로 이어진다 |
 | 7 | 태그 만들기·push·main fetch 실패(머지는 끝남, 로컬 태그는 지움) | 같은 ship — 태그부터 이어 간다 |
 | 8 | dmg 실패 또는 빌드용 임시 worktree 생성 실패(머지·태그·Release 끝) | 메시지의 「dmg 만 다시」 줄 → 그 뒤 「dmg 뒤 APK」 줄 |
 | 9 | GitHub Release 실패(머지·태그 끝) | 같은 ship — Release 부터 이어 간다 |

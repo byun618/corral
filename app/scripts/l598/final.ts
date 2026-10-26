@@ -1083,36 +1083,63 @@ async function twin(): Promise<void> {
     await waitIdle(info, 60_000)
     await delay(1500)
     const rows = markers.map((marker) => markerRows(info, marker))
+    // r4(C·R4-G1·G·R4-G5): 두 표지가 **같은 세션 기록 파일**에 있어야 하고(세션이 바뀌어 각자 들어간 것이 아니다), 뒤 지시는 실제로 큐에서
+    // 앞 지시의 쓰기를 기다렸어야(`queued:turn` 또는 `queued:gate` 뒤 sending) 사슬을 탄 것이다.
+    const files = markers.map((marker) => [...new Set(rowsOf(info).filter((row) => row.role === 'user' && row.text !== null && row.text.includes(marker)).map((row) => row.file))])
+    const sameFile = files[0]!.length === 1 && files[1]!.length === 1 && files[0]![0] === files[1]![0]
     const states = ids.map((id) => (phone.states.get(id) ?? []).map((wire) => `${wire.state}${wire.wait === null ? '' : `:${wire.wait}`}${wire.reason === null ? '' : `/${wire.reason}`}`))
+    const secondWaited = states[1]!.some((state) => state === 'queued:turn' || state === 'queued:gate')
+    const firstSendingAt = sendingAt(phone, ids[0]!)
+    const secondSendingAt = sendingAt(phone, ids[1]!)
+    const ordered = firstSendingAt !== null && secondSendingAt !== null && secondSendingAt > firstSendingAt
     const checks = hubChecks(sentAt)
-    out(`twin-${info.name}`, { pane: info.name, mode: info.mode, finals: finals.map((final) => final?.state ?? null), reasons: finals.map((final) => final?.reason ?? null), rows, states, checks },
-      finals.every((final) => final?.state === 'delivered') && rows.every((count) => count === 1) && checks.length === 0)
+    out(`twin-${info.name}`, { pane: info.name, mode: info.mode, finals: finals.map((final) => final?.state ?? null), reasons: finals.map((final) => final?.reason ?? null), rows, files: files.map((list) => list.map((file) => path.basename(file))), sameFile, secondWaited, ordered, states, checks },
+      finals.every((final) => final?.state === 'delivered') && rows.every((count) => count === 1) && sameFile && secondWaited && ordered && checks.length === 0)
   } finally {
     await phone.close()
   }
 }
 
 /**
- * LIFE-598 r3 (최종 관문 준비 — 리뷰 r3 C·R3-C1·G·R3-G1): 대기 지시 중 맥 GUI 경로의 **입력이 아닌 조작** 한 번이 revision 을 올리는지, 올리면 지시가 끝나는지.
- * 긴 턴 중 지시를 큐에 넣고, corral GUI 와 같은 endpoint 클라이언트(`herdr-client.sock`)를 붙여 그 pane 의 `mouseReporting`(provider 가 마우스 보고를 켰나)을 적은 뒤
+ * LIFE-598 r3·r4 (최종 관문 준비 — 리뷰 r3 C·R3-C1·G·R3-G1, r4 C·R4-G1·G·R4-G5): 대기 지시 중 맥 GUI 경로의 **입력이 아닌 조작** 한 번이 revision 을 올리는지, 올리면 지시가 끝나는지.
+ * corral GUI 와 같은 endpoint 클라이언트(`herdr-client.sock`)를 붙여 그 pane 의 `mouseReporting`(provider 가 마우스 보고를 켰나)을 적고, `precheck` 가 보류 사유를 주면
+ * 판정은 보류(ok null)다. `control`(있으면)은 지시 없이 같은 조작을 한 번 해 revision 이 오르는지 본 양성 대조. 그다음 긴 턴 중 지시를 큐에 넣고 **조작 직전에도 queued 임을 단언**한 뒤
  * `act` 를 한 번 한다. 판정은 일관성: revision 이 움직였으면 `failed/target_changed`·갈래 `input`·기록 0, 안 움직였으면 턴 뒤 `delivered`·기록 1.
  */
-async function pendingRound(input: { label: string; act: (client: EndpointClient, info: PaneInfo) => Promise<Record<string, unknown>> }): Promise<void> {
+type RoundAct = (client: EndpointClient, info: PaneInfo) => Promise<Record<string, unknown>>
+async function pendingRound(input: { label: string; precheck: (input: { info: PaneInfo; mouseReporting: boolean | null }) => string | null; control: RoundAct | null; act: RoundAct }): Promise<void> {
   const phone = await Phone.open()
   const info = paneOf(flag('pane') ?? 'cs')
   const client = new EndpointClient(SOCK.replace(/herdr\.sock$/, 'herdr-client.sock'))
   client.on('error', () => {})
   try {
+    await waitIdle(info)
+    await client.connect(120, 40)
+    await delay(800)
+    const mouseReporting = client.currentSurface?.panes.find((pane) => pane.paneId === info.paneId)?.mouseReporting ?? null
+    const hold = input.precheck({ info, mouseReporting })
+    if (hold !== null) {
+      out(`${input.label}-${info.name}`, { pane: info.name, mode: info.mode, mouseReporting, hold }, null)
+      return
+    }
+    let control: Record<string, unknown> | null = null
+    if (input.control !== null) {
+      const before = (await rawAgent(info.paneId)).revision
+      const acted = await input.control(client, info)
+      await delay(800)
+      const after = (await rawAgent(info.paneId)).revision
+      control = { before, after, moved: before !== null && after !== null && after !== before, acted }
+    }
     await startLong(phone, info, M(`l598-${input.label}-long-${info.name}`))
+    const mouseReportingWorking = client.currentSurface?.panes.find((pane) => pane.paneId === info.paneId)?.mouseReporting ?? null
     const marker = M(`l598-${input.label}-${info.name}`)
     const id = newId(`${input.label}-${info.name}`)
     const sentAt = Date.now()
     phone.send({ type: 'input.send', id, channel: info.paneId, text: `${marker} reply OK only` })
     const queued = await phone.waitFor(id, (wire) => wire.state === 'queued', 8000)
     await delay(1500)
-    await client.connect(120, 40)
-    await delay(800)
-    const mouseReporting = client.currentSurface?.panes.find((pane) => pane.paneId === info.paneId)?.mouseReporting ?? null
+    // 조작 직전에 아직 큐에 있어야 이 회차가 「대기 지시 중 조작」 이다(이미 들어갔거나 끝났으면 헛통과).
+    const stateBeforeAct = (phone.states.get(id) ?? []).at(-1)?.state ?? null
     const before = (await rawAgent(info.paneId)).revision
     const acted = await input.act(client, info)
     await delay(800)
@@ -1127,34 +1154,43 @@ async function pendingRound(input: { label: string; act: (client: EndpointClient
     const consistent = moved
       ? final?.state === 'failed' && final.reason === 'target_changed' && checks.length === 1 && checks[0]!.check === 'input' && rows === 0
       : final?.state === 'delivered' && rows === 1
-    out(`${input.label}-${info.name}`, { pane: info.name, mode: info.mode, queued: queued !== null, mouseReporting, revisionBefore: before, revisionAfter: after, moved, acted, final: final?.state ?? null, reason: final?.reason ?? null, checks, states, rows }, before !== null && after !== null && consistent)
+    const controlOk = control === null || control.moved === true
+    out(`${input.label}-${info.name}`, { pane: info.name, mode: info.mode, mouseReporting, mouseReportingWorking, control, queued: queued !== null, stateBeforeAct, revisionBefore: before, revisionAfter: after, moved, acted, final: final?.state ?? null, reason: final?.reason ?? null, checks, states, rows },
+      queued !== null && stateBeforeAct === 'queued' && before !== null && after !== null && controlOk && consistent)
   } finally {
     client.close()
     await phone.close()
   }
 }
 
-/** 대기 지시 중 마우스 휠 1회(corral GUI 의 휠과 같은 `sendPaneInput` ScrollUp). */
+const wheelOnce: RoundAct = async (client, info) => {
+  client.sendPaneInput(info.paneId, [{ type: 'mouse', kind: MOUSE_KIND.ScrollUp, column: 5, row: 5, modifiers: 0, lines: 1 }])
+  return { event: 'ScrollUp' }
+}
+
+/** 대기 지시 중 마우스 휠 1회(corral GUI 의 휠과 같은 `sendPaneInput` ScrollUp). 그 pane 이 마우스 보고를 켜지 않았으면 보류. 양성 대조 = 지시 없이 휠 1회. */
 async function wheel(): Promise<void> {
   await pendingRound({
     label: 'wheel',
-    act: async (client, info) => {
-      client.sendPaneInput(info.paneId, [{ type: 'mouse', kind: MOUSE_KIND.ScrollUp, column: 5, row: 5, modifiers: 0, lines: 1 }])
-      return { event: 'ScrollUp' }
-    },
+    precheck: ({ mouseReporting }) => (mouseReporting === true ? null : `mouseReporting=${String(mouseReporting)} — 마우스 보고를 켠 pane 이 아니면 휠은 입력이 아니다(판정 보류)`),
+    control: wheelOnce,
+    act: wheelOnce,
   })
 }
 
-/** 대기 지시 중 포커스 전환 1회 — 다른 시험 pane 으로 `pane.focus` 뒤 되돌림(corral GUI 의 pane 클릭과 같은 endpoint). */
+/** 대기 지시 중 포커스 전환 1회 — 다른 시험 pane 으로 `pane.focus` 뒤 되돌림(corral GUI 의 pane 클릭과 같은 endpoint). 다른 pane 이 없으면 보류. */
 async function focus(): Promise<void> {
   await pendingRound({
     label: 'focus',
+    precheck: ({ info }) => (panes().some((pane) => pane.paneId !== info.paneId) ? null : '다른 시험 pane 이 없다 — 포커스를 옮길 곳이 없음(판정 보류)'),
+    control: null,
     act: async (client, info) => {
-      const other = panes().find((pane) => pane.paneId !== info.paneId) ?? null
-      if (other !== null) await client.callEndpoint('pane.focus', { pane_id: other.paneId })
+      const other = panes().find((pane) => pane.paneId !== info.paneId)
+      if (other === undefined) throw new Error('precheck 뒤 다른 pane 없음')
+      await client.callEndpoint('pane.focus', { pane_id: other.paneId })
       await delay(700)
       await client.callEndpoint('pane.focus', { pane_id: info.paneId })
-      return { away: other?.paneId ?? null, back: info.paneId }
+      return { away: other.paneId, back: info.paneId }
     },
   })
 }

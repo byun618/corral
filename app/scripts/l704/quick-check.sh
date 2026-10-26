@@ -131,7 +131,7 @@ C2a-retro-3lens-3	S8	has	방식 개선(다음엔 무엇을 바꾸나)
 C2a-sources	S8	has	코디 세션 transcript 와 git log(작업 브랜치·corral-specs)로 대조한다
 C2a-sources-reviews	S8	has	`reviews.md` 는 내용 대조에 쓴다 — 시각이 드물어 날짜 축이 되지 못한다
 C2a-record-no-guess	S8	has	경로를 짐작하지 않고(능력 계약 H6)
-G1-record-from-start	S8	has	`00-start.md` 에 시작 세션이 적은 세션 기록 경로(task-start 6단계
+G1-record-from-start	S8	has	`00-start.md` 에 시작 세션이 적은 세션 기록 경로(task-start 4단계
 G1-record-none	S8	has	devlog 에 「코디 기록 없음」을 적은 뒤
 G1-by-mapping	S8	has	응답에 경로를 주지 않는 매핑
 G1-no-raw-start	S8	not	raw/start/
@@ -191,7 +191,7 @@ F6-find-folder	R4	has	head 브랜치 `LIFE-NNN-<슬러그>` = corral-specs 작�
 F6-bundle-children	R4	has	묶음 폴더 `verdict.md` 의 자식 판정 링크
 F6-record-commit-after-ship	R4	has	커밋은 출고(§6)가 끝난 뒤 마무리에서
 F6-abort	R4	has	「접음 — 다음 출고 회고에서 다시 적용」
-F6-r7-commit	R7	has	회고 결정 기록 `retro/vX.Y.Z.md` 가 있으면
+F6-r7-commit	R7	has	회고 결정 기록 `retro/vX.Y.Z.md`(이어받은 「접음」 기록이 있으면 그것도)가 있으면
 C3b-record-one-place	R4	has	corral-specs `retro/vX.Y.Z.md` 한 파일
 C3b-no-release-pr-line	R4	has	메시지에 `Release-PR:` 줄을 쓰지 않는다
 C3c-no-changelog	RS	not	changelog

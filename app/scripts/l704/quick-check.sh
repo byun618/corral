@@ -149,7 +149,7 @@ G1-task-start-records	TS4	has	응답이 세션 기록 경로를 돌려주면 그
 H1-before-delivery	TS4	has	6단계의 전달 전 커밋에 들어간다
 H1-not-after-delivery	TS6	not	세션 기록 경로
 H1-s8-step4	S8	has	(task-start 4단계 — 『세션 기동』 응답이 돌려준 값)
-H3-lastreviewed-scan	R4	has	`.agents/learnings/*.md` 머리의 `Last reviewed` 를 모두 훑어
+H3-lastreviewed-scan	R4	has	`.agents/learnings/` 의 영역 파일(README 제외) 머리의 `Last reviewed` 를 모두 훑어
 H3-retro-git-add	R4	has	`git add -- retro/vX.Y.Z.md` 를 먼저 한다
 H3-inherited	R4	has	「이어받음 vX.Y.Z」
 H3-r7-add	R7	has	§4 「결정 기록」 대로 corral-specs 에 커밋·push 한다

@@ -52,7 +52,7 @@ description: >-
   - 기록이 없는 일감은 「없음」으로 적고 넘어간다.
 - **정한다** — 제안마다 채택·기각·보류:
   - learnings 추가·승격·삭제와 낡은 영역 파일의 재검토(90일·상한) — `.agents/learnings/README.md` 대로.
-    재검토 대상은 일감 기록에 기대지 않고 직접 찾는다: `.agents/learnings/*.md` 머리의 `Last reviewed` 를 모두 훑어 90일 넘은 파일과 상한에 닿은 파일을 연다.
+    재검토 대상은 일감 기록에 기대지 않고 직접 찾는다: `.agents/learnings/` 의 영역 파일(README 제외) 머리의 `Last reviewed` 를 모두 훑어 90일 넘은 파일과 상한에 닿은 파일을 연다.
   - ADR 초안 채택 — `docs/adr/README.md` 대로 번호·상태를 붙인다.
   - **이전 learnings 가 이번에 작동했나** — 실린 일감의 킥오프가 인용한 항목(task-coordinate §1)이 실수를 막았는지·빗나갔는지 대조한다.
     빗나갔으면 고치거나 지운다.

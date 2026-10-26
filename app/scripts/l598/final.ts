@@ -473,6 +473,10 @@ async function clearStartup(info: PaneInfo): Promise<boolean> {
     } else if (!trusted && info.kind === 'codex' && /Trust this folder\?|trust the contents of this directory|Do you trust/i.test(plain)) {
       await desktopKeys(info.paneId, '\r')
       trusted = true
+    } else if (!trusted && info.kind === 'grok' && /Do you trust the contents of this directory/i.test(plain)) {
+      // Grok 1.0.70 은 /tmp 작업 폴더에 신뢰 질문을 띄운다(~/.grok/trusted_folders.toml 에 기록 — 관문 끝에 백업 바이트로 복원).
+      await desktopKeys(info.paneId, 'y')
+      trusted = true
     } else {
       // 관리 밖(셸)도 herdr 가 상태를 감지한다 — 한가 + 빈 입력 줄.
       const agent = await agentOf(info.paneId).catch(() => null)
@@ -667,7 +671,7 @@ async function u1a(): Promise<void> {
     for (let round = 0; round < 3; round += 1) {
       for (const name of ['cs', 'xs', 'gs']) {
         const info = paneOf(name)
-        await waitIdle(info)
+        await roundStart(info)
         const before = await rawAgent(info.paneId)
         const result = await sendOnce({ phone, info, text: `${M(`l598-u1a-${round}-${name}`)} reply with OK only`, marker: `u1a-${round}-${name}` })
         out(`U1a-${round}-${name}`, { pane: name, kind: info.kind, mode: info.mode, managed: before.ready, launchPending: before.launchPending, ...sendView(result) }, before.ready === false && result.final?.state === 'delivered' && result.record === 1 && result.ms !== null && result.ms <= 15_000)
@@ -708,10 +712,65 @@ async function u1b(): Promise<void> {
 }
 
 const LONG = (tag: string): string => `Run the shell command \`sleep 12\` in the foreground and wait for it, then reply with the single word DONE. ${tag}`
+/** 목록(ctl `state`)의 그 pane agentSession 값. 못 찾으면 null. */
+function listedSession(value: unknown, paneId: string): string | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const hit = listedSession(item, paneId)
+      if (hit !== null) return hit
+    }
+    return null
+  }
+  if (!isRecord(value)) return null
+  if (value.paneId === paneId && isRecord(value.agentSession)) {
+    const session = value.agentSession
+    const key = session.kind === 'id' ? session.id : session.path
+    return typeof key === 'string' ? key : null
+  }
+  for (const child of Object.values(value)) {
+    const hit = listedSession(child, paneId)
+    if (hit !== null) return hit
+  }
+  return null
+}
+
+/**
+ * 최종 관문 f1b(하네스): 맥 `/clear` 뒤 목록 세션은 herdr 보다 20 s 넘게 늦게 따라온다(final/f1q) — 그 창에 받은 지시는 설계대로(C2 ⓐ)
+ * `target_changed/herdr_session` 이다. 회차 시작 전 목록과 herdr 세션이 같아질 때까지 기다린다(앞 회차의 /clear 를 다음 회차로 넘기지 않게).
+ */
+async function waitListed(info: PaneInfo, timeoutMs = 90_000): Promise<number> {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const herdrSession = (await agentOf(info.paneId)).session
+    const listed = listedSession(await ctlCall({ cmd: 'state' }), info.paneId)
+    if (herdrSession !== null && listed === herdrSession) return Date.now() - started
+    await delay(500)
+  }
+  throw new Error(`목록 세션이 herdr 와 같아지지 않음 (${info.name}, ${timeoutMs} ms)`)
+}
+
+/** 회차 시작 — 한가 + 빈 입력 줄(아니면 멈춤 — f3f: 앞 회차 중단 뒤 Claude 가 끊긴 지시를 입력 줄에 되돌려 둔 채 시작해 `mac_draft`) + 목록 세션 = herdr. */
+async function roundStart(info: PaneInfo): Promise<void> {
+  if (!(await waitIdle(info))) throw new Error(`회차 시작 전 한가·빈 입력 줄이 아님 (${info.name})`)
+  await waitListed(info)
+}
+
+/** 중단(Esc·Ctrl+C) 뒤 Claude 는 끊긴 지시를 입력 줄에 되돌려 둔다(f3f) — 다음 회차 전에 Ctrl+C 한 번으로 비운다(빈 줄이면 보내지 않는다). */
+async function clearRestoredDraft(info: PaneInfo): Promise<void> {
+  await waitStatus(info.paneId, idle, 60_000)
+  await delay(800)
+  if (draftState({ kind: info.kind, screen: await screen(info.paneId) }) === 'empty') return
+  await desktopKeys(info.paneId, '\x03')
+  await delay(800)
+}
+
 async function startLong(phone: Phone, info: PaneInfo, tag: string): Promise<SendResult> {
-  await waitIdle(info)
+  await roundStart(info)
   const result = await sendOnce({ phone, info, text: LONG(tag), marker: tag, settleMs: 300 })
-  await waitStatus(info.paneId, (agent) => agent.status === 'working', 30_000)
+  // f1b(하네스): 긴 지시가 들어가 턴이 돌지 않으면 시나리오(긴 턴 중 대기 지시)가 아니다 — 조용히 넘어가지 않고 멈춘다.
+  if (result.final?.state !== 'delivered') throw new Error(`긴 지시가 안 들어감 (${info.name}: ${result.final?.state ?? null}/${result.final?.reason ?? null})`)
+  const working = await waitStatus(info.paneId, (agent) => agent.status === 'working', 30_000)
+  if (working === null) throw new Error(`긴 턴이 안 돎 (${info.name})`)
   await delay(1500)
   return result
 }
@@ -1074,7 +1133,7 @@ async function twin(): Promise<void> {
   const phone = await Phone.open()
   const info = paneOf(flag('pane') ?? 'cs')
   try {
-    await waitIdle(info)
+    await roundStart(info)
     const markers = [M(`l598-twin-a-${info.name}`), M(`l598-twin-b-${info.name}`)]
     const ids = markers.map((marker) => newId(marker))
     const sentAt = Date.now()
@@ -1114,8 +1173,10 @@ async function pendingRound(input: { label: string; precheck: (input: { info: Pa
   const client = new EndpointClient(SOCK.replace(/herdr\.sock$/, 'herdr-client.sock'))
   client.on('error', () => {})
   try {
-    await waitIdle(info)
+    await roundStart(info)
     await client.connect(120, 40)
+    // f4b(하네스): 이 클라이언트의 화면 면에는 포커스한 pane 만 실린다 — 대상 pane 에 먼저 포커스해야 그 pane 의 마우스 보고를 읽는다(포커스는 +0, f4c·f4d).
+    await client.callEndpoint('pane.focus', { pane_id: info.paneId })
     await delay(800)
     const mouseReporting = client.currentSurface?.panes.find((pane) => pane.paneId === info.paneId)?.mouseReporting ?? null
     const hold = input.precheck({ info, mouseReporting })
@@ -1246,7 +1307,7 @@ async function answerchain(): Promise<void> {
   const phone = await Phone.open()
   const info = paneOf(flag('pane') ?? 'cs')
   try {
-    await waitIdle(info)
+    await roundStart(info)
     phone.subscribe(info.paneId)
     await delay(800)
     const seen = new Set([...(phone.questions.get(info.paneId)?.keys() ?? [])])
@@ -1344,7 +1405,7 @@ async function u3d(): Promise<void> {
   const phone = await Phone.open()
   const info = paneOf('cs')
   try {
-    await waitIdle(info)
+    await roundStart(info)
     phone.subscribe(info.paneId)
     await delay(800)
     const seen = new Set([...(phone.questions.get(info.paneId)?.keys() ?? [])])
@@ -1369,7 +1430,7 @@ async function u3d(): Promise<void> {
     await delay(1500)
     const after = await agentOf(info.paneId)
     out('U3d-stop', { stop: final === null ? null : `${final.state}/${final.reason}`, ms: final === null ? null : final.recvAt - t0, statusAfter: after.status }, final?.state === 'stopped' && after.status !== 'working')
-    await waitIdle(info, 60_000)
+    await clearRestoredDraft(info)
   } finally {
     await phone.close()
   }
@@ -1383,7 +1444,7 @@ async function u4a(): Promise<void> {
     for (let round = 0; round < 2; round += 1) {
       for (const name of ['cm', 'xm', 'gm']) {
         const info = paneOf(name)
-        await waitIdle(info)
+        await roundStart(info)
         const before = await rawAgent(info.paneId)
         const result = await sendOnce({ phone, info, text: `${M(`l598-u4a-${round}-${name}`)} reply with OK only`, marker: `u4a-${round}-${name}` })
         out(`U4a-${round}-${name}`, { pane: name, kind: info.kind, managed: before.ready, ...sendView(result) }, before.ready === true && result.final?.state === 'delivered' && result.record === 1)

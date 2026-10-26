@@ -44,6 +44,7 @@ LIFE="$(awk 'match($0, /LIFE-[0-9]+/) { print substr($0, RSTART, RLENGTH) }' <<<
 [ -n "$VERDICT" ] || VERDICT="$SPEC_ID/verdict.md"
 [ -n "$PR_DOC" ] || PR_DOC="$SPEC_ID/pr.md"
 SPECS="${CORRAL_SPECS:-$(dirname "$REPO")/corral-specs}"
+[ -d "$SPECS" ] || die "corral-specs 폴더 없음: $SPECS (CORRAL_SPECS 로 지정)"
 [ "$(git -C "$SPECS" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$SPECS" 2>/dev/null && pwd -P)" ] \
   || die "corral-specs 레포가 아니다: $SPECS (CORRAL_SPECS 로 지정)"
 # 원고·판정문은 corral-specs 에 커밋돼 있어야 한다 — 작업 폴더에만 있고 커밋 안 된 문서로 PR 을 열지 않는다
@@ -63,6 +64,11 @@ if [ -n "$WT_PATH" ]; then
 fi
 specs_committed "$VERDICT" "판정문"
 specs_committed "$PR_DOC" "PR 원고"
+# 작업 폴더 전체(raw 포함)가 커밋돼 있어야 한다 — 원자료가 빠진 채 PR 을 열지 않는다
+[ -d "$SPECS/$SPEC_ID" ] || die "작업 폴더 없음: $SPECS/$SPEC_ID"
+DIRTY="$(git -C "$SPECS" status --porcelain --untracked-files=all -- "$SPEC_ID/")"
+[ -z "$DIRTY" ] || die "corral-specs 작업 폴더에 커밋 안 된 파일: $SPEC_ID/ — 코디가 커밋한 뒤 다시
+$(head -5 <<<"$DIRTY")"
 [ -n "$(git -C "$REPO" log --oneline "origin/$BASE..$HEAD_BRANCH")" ] || die "$BASE 에 없는 커밋이 없다 — 이미 반영됐거나 빈 브랜치"
 
 # PR 원고 — 코디네이터가 diff·specs 를 읽고 쓴 제목·본문. 기계적으로 뽑지 않는다. 없으면 push 전에 멈춘다

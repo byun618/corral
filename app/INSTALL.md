@@ -80,8 +80,8 @@ scripts/task-finish.sh LIFE-NNN-<슬러그>                                     
   EAS 의 작업 폴더 자동 정리는 끄고(`EAS_LOCAL_BUILD_SKIP_CLEANUP=1`) 성공했을 때만 이번에 만든 그 폴더를 지운다 — 빌드·확인이 실패하면 작업 폴더를 남기고 경로를 알려 준다.
 - `JAVA_HOME`·`ANDROID_HOME`·`CORRAL_APK_WORK_BASE` 는 절대경로여야 한다 — 상대경로면 사전 점검에서 거절한다(머지 전 exit 2). 사전 점검(본체 cwd)과 태그 worktree 빌드가 같은 곳을 봐야 해서다.
 - 서명 확인은 `apksigner verify` 성공 + 서명자 정확히 1개 + SHA-256 일치일 때만 통과한다(출고 정책 = EAS 단일 키) — 빌드 뒤 확인과 폰 설치 전 대조 모두 같다.
-- PR CI 는 아직 없다 — 후속 일감 LIFE-575. 574 구현 r0 의 ubuntu workflow 초안은 구현 브랜치 커밋 `ffb08b9` 에 남아 있다(계정 결제 잠금으로 한 번도 돌지 못했다).
-- 574 출고 전후 과도기(565·566·564 와 첫 출고 순서)는 `specs/LIFE-574-pr-release/transition.md`.
+- PR CI 는 아직 없다 — 후속 일감 LIFE-575. 574 구현 r0 의 ubuntu workflow 초안은 구현 브랜치 커밋 `ffb08b9` 에 남아 있다(계정 결제 잠금으로 한 번도 돌지 못했다). 분리 전 커밋이라 corral-specs 레포에서 본다(LIFE-705).
+- 574 출고 전후 과도기(565·566·564 와 첫 출고 순서)는 `corral-specs/LIFE-574-pr-release/transition.md`.
 
 ## 빌드
 

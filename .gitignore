@@ -15,7 +15,7 @@ app/*.tsbuildinfo
 
 # 작업 산출물은 별도 레포 corral-specs (LIFE-705). 옛 측정 스크립트(app/scripts/lNNN)의 기본 출력 경로가
 # specs/…/raw 라 돌리면 여기 생긴다 — 이 레포에 커밋하지 않는다
-specs/
+/specs/
 
 # LIFE-366 격리 HOME (02-kickoff.md 정체 표) — 통합 설치·에이전트 기동 실측이 여기 떨어진다.
 .tmp/

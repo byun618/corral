@@ -14,7 +14,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - **쓰기와 커밋** — 본체·코디·워커·리뷰어 모두 그 폴더에 **절대경로로 직접** 쓴다(worktree 안 상대경로 금지).
   커밋은 그 일감의 코디(00-start 는 본체)만, 게이트 시점에, **자기 폴더만** 한다:
   `git -C <corral-specs> add -- LIFE-NNN-<슬러그>/ && git -C <corral-specs> commit -m "…" -- LIFE-NNN-<슬러그>/ && git -C <corral-specs> push`.
-  여러 일감이 한 working copy 를 같이 쓰므로 남의 폴더를 add 하지 않고, `index.lock` 이면 잠시 뒤 다시 한다. 워커·리뷰어는 커밋하지 않는다
+  여러 일감이 한 working copy 를 같이 쓰므로 남의 폴더를 add 하지 않고, `index.lock` 이면 잠시 뒤 다시 한다. 워커·리뷰어는 커밋하지 않는다.
+  루트 공용 파일(00-project.md·app-screens.md·design-tokens*.css·reference/ 등)은 바꾼 세션(본체 또는 그 일감의 코디)이 그 파일만 지정해 커밋한다
 - corral-specs 파일이 진실의 원천. 세션 간 조율은 파일로 한다 — 세션 컨텍스트는 휘발됨
 - **아티팩트(계획 문서·목업 설명)는 진실의 원천이 아니다.** 일감의 근거는 corral-specs 에서만 끌어온다 —
   아티팩트가 스파이크 판정과 어긋난 채 계획 근거로 쓰이고 있던 전례가 있다 (LIFE-344 → 00-project.md 정정)

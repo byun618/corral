@@ -36,6 +36,8 @@ description: >-
    진행하지 않는다. 광고를 대조할 수 없는 도구는 그 사실을 기록하고 판정표의 공백으로 낸다.
    **제어 런타임을 띄울 때의 환경 조건(상속되면 배달 판정이 무력화되는 env 마커 등)은 매핑의
    『전제 점검』에 적혀 있다** — 런타임을 새로 띄우는 경우 그 조건을 먼저 읽는다.
+   **corral-specs 레포**(본체 옆 폴더, AGENTS.md 「산출물 규칙」)가 있는지, 코드 레포와 corral-specs 둘 다 `git config core.hooksPath` 가
+   `.githooks` 인지(새 클론이면 비어 있다 — 설정한다), `gitleaks` 가 PATH 에 있는지 확인한다. 없으면 훅이 모든 커밋을 막는다.
    슬러그는 타이틀에서 케밥케이스 1~3단어로 파생하며, 기존 LIFE-N의 슬러그는 재사용한다.
 2. **분기 기준 선택 → 작업 worktree 생성** (신규만, 본체는 main 유지):
    - **독립 작업**(기본): `main` 에서 딴다. 게이트 ② 에서 main 대상 PR 이 된다.
@@ -55,7 +57,8 @@ description: >-
    이어가며 새로 만들지 않는다. 세션이 없을 때만 기록된 도구로 재기동한다.
 3. **기동 전에 선택 기록**: `corral-specs/LIFE-NNN-<슬러그>/00-start.md`를 작성하고 corral-specs 에 그 폴더만 커밋·push 한다
    (AGENTS.md 「산출물 규칙」의 커밋 명령). 작업 worktree 에는 산출물을 두지 않는다.
-   최소 항목: LIFE-N, 슬러그, 작업 브랜치·**분기 기준(main / feature 브랜치와 그 만료일)**·절대 worktree 경로, 코디네이터 도구, 선택 근거
+   최소 항목: LIFE-N, 슬러그, 작업 브랜치·**분기 기준(main / feature 브랜치와 그 만료일)**·절대 worktree 경로,
+   **corral-specs 작업 폴더 절대경로**(코디·워커·리뷰어가 이 값을 그대로 쓴다), 코디네이터 도구, 선택 근거
    (사용자 지정/신규 기본값/재개), 모델·effort(미지정 기본값은 `.agents/defaults.md`:
    claude → `claude-opus-5-5` high, codex → `gpt-6-astra` high, 2026-09-29), **선택한 하네스 매핑**,
    기동 상태. 모든 역할의 요청 모델·effort·advisor·단독/경쟁 방식은 `.agents/defaults.md` 에서 복사한다.

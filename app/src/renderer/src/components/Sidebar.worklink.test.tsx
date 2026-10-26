@@ -24,7 +24,7 @@ const ROWS: WorktreeRow[] = [
   testWorktree({ path: '/r/b', branch: 'CORE-9-gone', workLink: link('CORE-9') }),
   testWorktree({ path: '/r/c', branch: 'main', workLink: null }),
 ]
-const ITEM: WorkItem = { bodyLock: null, 
+const ITEM: WorkItem = { bodyLock: null, doneAt: null, 
   id: 'm-2', key: 'CORE-2', spaceKey: 'CORE', title: '카드 저장', body: null, kind: { key: 'story', label: 'Story', childKinds: [] }, statusKey: 'core-todo', category: 'todo', priority: 'medium', dueAt: null,
   parentId: null, placement: 'board', rank: null, resolution: null, openBlockerCount: 1, openBlockers: [{ id: 'm-1', key: 'CORE-1', title: '결제 개편' }], updatedAt: '', version: null, relations: null, workLinks: [],
 }

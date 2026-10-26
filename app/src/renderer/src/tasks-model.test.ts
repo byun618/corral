@@ -38,7 +38,7 @@ import {
 const status = (key: string, category: WorkStatus['category'], order: number): WorkStatus => ({ key, label: key.toUpperCase(), category, order, color: null })
 const STATUSES = [status('todo', 'todo', 0), status('doing', 'in_progress', 1), status('review', 'in_progress', 2), status('done', 'done', 3)]
 
-const item = (over: Partial<WorkItem> & { id: string }): WorkItem => ({ bodyLock: null, 
+const item = (over: Partial<WorkItem> & { id: string }): WorkItem => ({ bodyLock: null, doneAt: null, 
   key: over.id.toUpperCase(), spaceKey: 'S', title: `title ${over.id}`, body: null, kind: { key: 'task', label: 'Task', childKinds: [] }, statusKey: 'todo', category: 'todo',
   priority: 'medium', dueAt: null, parentId: null, placement: 'board', rank: null, resolution: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [],
   ...over,

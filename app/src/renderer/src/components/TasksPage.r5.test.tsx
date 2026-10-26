@@ -21,7 +21,7 @@ const STATUSES: WorkStatus[] = [
   { key: 'doing', label: '개발 중', category: 'in_progress', order: 1, color: null },
   { key: 'done', label: '완료', category: 'done', order: 2, color: null },
 ]
-const item = (over: Partial<WorkItem> & { id: string; key: string }): WorkItem => ({ bodyLock: null, 
+const item = (over: Partial<WorkItem> & { id: string; key: string }): WorkItem => ({ bodyLock: null, doneAt: null, 
   spaceKey: 's1', title: `제목 ${over.key}`, body: null, kind: { key: 'task', label: 'Task', childKinds: [] }, statusKey: 'todo', category: 'todo', priority: 'medium', dueAt: null,
   parentId: null, placement: 'board', rank: null, resolution: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [], ...over,
 })

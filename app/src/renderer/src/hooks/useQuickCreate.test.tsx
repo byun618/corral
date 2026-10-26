@@ -87,7 +87,7 @@ describe('초안 수명 (R1-F·R1-M)', () => {
 describe('제출 직전 부모 검사 (R2-F)', () => {
   const epic: WorkKind = { key: 'epic', label: 'Epic', childKinds: ['story'] }
   const story: WorkKind = { key: 'story', label: 'Story', childKinds: [] }
-  const item = (id: string, kind: WorkKind): WorkItem => ({ bodyLock: null, 
+  const item = (id: string, kind: WorkKind): WorkItem => ({ bodyLock: null, doneAt: null, 
     id, key: id.toUpperCase(), spaceKey: 'CORE', title: id, body: null, kind, statusKey: 'todo', category: 'todo', resolution: null, priority: null, dueAt: null, parentId: null,
     placement: 'board', rank: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [],
   })

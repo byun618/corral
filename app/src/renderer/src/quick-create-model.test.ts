@@ -7,7 +7,7 @@ import { describeChange } from './task-detail-model.js'
 const kinds: WorkKind[] = [{ key: 'epic', label: 'Epic', childKinds: ['story', 'bug'] }, { key: 'story', label: 'Story', childKinds: [] }, { key: 'bug', label: 'Bug', childKinds: [] }]
 const status = (key: string, category: WorkStatus['category'], order: number): WorkStatus => ({ key, label: key, category, order, color: null })
 const statuses = [status('todo', 'todo', 0), status('doing', 'in_progress', 1), status('review', 'in_progress', 2), status('done', 'done', 3)]
-const item = (id: string, kind: WorkKind): WorkItem => ({ bodyLock: null, 
+const item = (id: string, kind: WorkKind): WorkItem => ({ bodyLock: null, doneAt: null, 
   id, key: id.toUpperCase(), spaceKey: 'S', title: id, body: null, kind, statusKey: 'todo', category: 'todo', resolution: null, priority: null, dueAt: null, parentId: null, placement: 'board',
   rank: null, openBlockerCount: 0, openBlockers: [], updatedAt: '', version: null, relations: null, workLinks: [],
 })

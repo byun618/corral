@@ -30,7 +30,7 @@ import {
 import { toggleCheckLine } from '../markdown.js'
 import { treesFor, type LinkedTree } from '../work-links-model.js'
 import { RemoteLinksSection, WorkButtons, WorkLinksContext, WorkRunSection, type DetailWorkActions } from './WorkLinkChips.js'
-import { PRIORITY_GLYPH, PRIORITY_LABEL, UNRESTORABLE_RESOLUTION, dueTone, imeComposing, picksResolution, restorableResolution } from '../tasks-model.js'
+import { PRIORITY_GLYPH, PRIORITY_LABEL, UNRESTORABLE_RESOLUTION, dueTone, imeComposing, optimisticDoneAt, picksResolution, restorableResolution } from '../tasks-model.js'
 import { MarkdownEditor } from './MarkdownEditor.js'
 import { MarkdownView } from './MarkdownView.js'
 import { KindIcon, SpaceDot, StatusCircle } from './TasksViews.js'
@@ -161,12 +161,13 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
     const restorable = restorableResolution({ item: before, picks: picksResolution(detail.caps) })
     void detail.write({
       call: { op: 'changeStatus', itemId: item.id, statusKey: row.statusKey, ifVersion: versionOf(base), resolution: row.resolution },
-      optimistic: (value) => ({ ...value, statusKey: row.statusKey, category: row.category, resolution }),
+      optimistic: (value) => ({ ...value, statusKey: row.statusKey, category: row.category, resolution, doneAt: optimisticDoneAt({ from: value.category, to: row.category, doneAt: value.doneAt }) }),
       label: restorable.restorable ? `${item.key} → ${row.label}` : `${item.key} → ${row.label} · ${UNRESTORABLE_RESOLUTION}`,
       undo: restorable.restorable
         ? (now) => ({
           call: { op: 'changeStatus', itemId: item.id, statusKey: before.statusKey, ifVersion: versionOf(now), resolution: restorable.resolution },
-          optimistic: (value) => ({ ...value, ...before }),
+          // 되돌리기도 상태 이동이다 — done 으로 돌아가면 출처는 진입 시각을 새로 쓴다(LA resolveDoneAt). 옛 doneAt 을 되살리지 않는다(LIFE-702 H1).
+          optimistic: (value) => ({ ...value, ...before, doneAt: optimisticDoneAt({ from: value.category, to: before.category, doneAt: value.doneAt }) }),
           label: null,
           undo: null,
         })

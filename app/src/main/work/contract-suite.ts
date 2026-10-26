@@ -196,6 +196,16 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       }
     })
 
+    it('doneAt(LIFE-702) — 목록·단건 모두 칸이 있고 null 또는 해석되는 시각 글자다', async () => {
+      const { items } = await stage()
+      const first = items[0]
+      if (first === undefined) throw new Error('작업 없음')
+      for (const item of [...items, await getItem(first.id)]) {
+        expect(Object.hasOwn(item, 'doneAt'), item.key).toBe(true)
+        if (item.doneAt !== null) expect(Number.isNaN(Date.parse(item.doneAt)), item.key).toBe(false)
+      }
+    })
+
     it('스페이스는 1급 — 목록이 따로고, 작업 목록에 스페이스가 섞이지 않는다', async () => {
       const { spaces } = await listSpaces()
       expect(spaces.length).toBeGreaterThan(0)

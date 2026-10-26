@@ -81,6 +81,8 @@ export type FixtureCorrupt =
   | 'history-at-invalid' | 'history-writeId-number'
   // LIFE-638 g1 S2-2 — 코멘트 createdAt 을 날짜가 아닌 글자로.
   | 'comment-createdAt-invalid'
+  // LIFE-702 D1ⓑ — 옛 서버처럼 doneAt 칸이 없는 응답(목록 행 · 단건·수정).
+  | 'list-drop-doneAt' | 'drop-doneAt'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -101,6 +103,8 @@ type FixtureIssue = {
   onBoard: boolean
   dueAt: string | null
   archivedAt: string | null
+  /** done 분류 진입 시각(LIFE-702) — 씨앗은 null, 시험이 행마다 심을 수 있다. 상태 쓰기는 LA 처럼 진입 때 기록·이탈 때 null·done→done 유지. */
+  doneAt: string | null
   updatedAt: string
   /** LA `issue.version`(정수) — 응답에는 글자로 나간다. */
   version: number
@@ -203,7 +207,7 @@ export const FIXTURE_VISIBLE_ITEMS = [
 ]
 
 function seedIssues(): FixtureIssue[] {
-  const base = { description: null, priority: 'medium', resolution: null, color: null, onBoard: true, dueAt: null, archivedAt: null, updatedAt: '2026-10-13T00:00:00.000Z', version: 1 }
+  const base = { description: null, priority: 'medium', resolution: null, color: null, onBoard: true, dueAt: null, archivedAt: null, doneAt: null, updatedAt: '2026-10-13T00:00:00.000Z', version: 1 }
   return [
     { ...base, id: FIXTURE_IDS.corral, sequentialId: 337, kind: 'project', parentId: null, title: 'corral', statusId: FIXTURE_STATUS.dev, color: '#c7b28a', position: '1', onBoard: false },
     { ...base, id: FIXTURE_IDS.lifeAssistant, sequentialId: 2, kind: 'project', parentId: null, title: 'life-assistant', statusId: FIXTURE_STATUS.dev, position: '2', onBoard: false },
@@ -239,6 +243,11 @@ export class LaMcpFixture {
   readonly writeArgs: { tool: string; args: Record<string, unknown> }[] = []
   statuses = seedStatuses()
   issues = seedIssues()
+  /**
+   * done 진입 시각의 시계(LIFE-702 F2) — 기본은 실제 지금. 씨앗 `updatedAt`(2026-10-13 + n초)이나 이력 시계(`clock`)를 쓰면 날이 지나 14일 숨김에 걸려
+   * 방금 완료로 옮긴 카드가 보드에서 빠진다. 시험이 바꿀 수 있다. `updatedAt` 규칙(`touch`)은 그대로.
+   */
+  doneClock: () => number = () => Date.now()
   links: FixtureLink[] = []
   /** 작업 링크 행(LIFE-635). 시험이 다른 machine 의 행을 직접 심을 수 있다(`plantWorkLink`). */
   workLinks: FixtureWorkLink[] = []
@@ -516,6 +525,7 @@ export class LaMcpFixture {
         issue.statusId = target.id
         if (typeof args.resolution === 'string' || args.resolution === null) issue.resolution = args.resolution
         this.touch(issue)
+        this.markDone({ issue, from: from.categoryKey })
         issue.version += 1
         this.recordChanges({ issue, before, args })
         return ok({ transitioned: true, from: fromLabel, to: { label: target.label, categoryKey: target.categoryKey }, issue: this.full(issue) })
@@ -530,7 +540,9 @@ export class LaMcpFixture {
         const oldParent = issue.parentId
         if (typeof args.statusId === 'string') {
           if (!this.statuses.some((status) => status.id === args.statusId)) return fail('BAD_REQUEST', '없는 statusId')
+          const fromCategory = this.status(issue).categoryKey
           issue.statusId = args.statusId
+          this.markDone({ issue, from: fromCategory })
         }
         if (typeof args.onBoard === 'boolean') issue.onBoard = args.onBoard
         if ('parentId' in args) {
@@ -594,9 +606,10 @@ export class LaMcpFixture {
         const created: FixtureIssue = {
           id: uuid(80000 + this.seq++), sequentialId, kind, parentId, title: args.title,
           description: !ignore && typeof args.description === 'string' ? args.description : null, priority: !ignore && typeof args.priority === 'string' ? args.priority : null, statusId,
-          resolution: null, color: null, position: kind === 'task' || kind === 'bug' ? String(100 + sequentialId) : null, onBoard: args.onBoard === true, dueAt: typeof args.dueAt === 'string' ? args.dueAt : null, archivedAt: null, updatedAt: '2026-10-14T00:00:00.000Z', version: 1,
+          resolution: null, color: null, position: kind === 'task' || kind === 'bug' ? String(100 + sequentialId) : null, onBoard: args.onBoard === true, dueAt: typeof args.dueAt === 'string' ? args.dueAt : null, archivedAt: null, doneAt: null, updatedAt: '2026-10-14T00:00:00.000Z', version: 1,
         }
         this.issues.push(created)
+        this.markDone({ issue: created, from: null })
         // 만들기 — 일감 자신엔 이력 행이 없고, 부모의 child 행에만 쓰기 id(611).
         if (parentId !== null) this.pushHistory({ issueId: parentId, at: this.tick(), field: 'child', from: null, to: this.titled(created), writeId: writeIdOf(args) })
         // LIFE-651 — 실측 모양: LA create 는 메모리에 대입한 position(`nextTaskPosition` = number)을 그대로 낸다 → task·bug 는 **숫자**,
@@ -873,6 +886,13 @@ export class LaMcpFixture {
     issue.updatedAt = new Date(Date.parse(issue.updatedAt) + 1000).toISOString()
   }
 
+  /** LA `resolveDoneAt` 규칙(LIFE-702) — 이탈이면 null, done→done 은 그대로(비어 있으면 지금으로 채움 — H3), 진입(만들기 포함)이면 지금(`doneClock`). */
+  private markDone({ issue, from }: { issue: FixtureIssue; from: WorkCategory | null }): void {
+    const to = this.status(issue).categoryKey
+    if (to !== 'done') issue.doneAt = null
+    else if (from !== 'done' || issue.doneAt === null) issue.doneAt = new Date(this.doneClock()).toISOString()
+  }
+
   private status(issue: FixtureIssue): FixtureStatus {
     const found = this.statuses.find((status) => status.id === issue.statusId)
     if (found === undefined) throw new Error('fixture status')
@@ -897,7 +917,7 @@ export class LaMcpFixture {
       .map(({ displayId, ...rest }) => (this.corrupt === 'blocker-no-displayId' ? rest : { ...rest, displayId }))
     return {
       ...this.ref(issue), goalId: null, parentId: issue.parentId, priority: issue.priority, color: issue.color, position: issue.position, onBoard: issue.onBoard,
-      startedAt: null, dueAt: issue.dueAt, doneAt: null, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: issue.updatedAt,
+      startedAt: null, dueAt: issue.dueAt, doneAt: issue.doneAt, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: issue.updatedAt,
       version: this.corrupt === 'version-number' ? issue.version : String(issue.version), openBlockers,
     }
   }

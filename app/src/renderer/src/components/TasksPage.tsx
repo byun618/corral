@@ -34,6 +34,7 @@ import {
   groupRows,
   imeComposing,
   parseUid,
+  isHiddenOnBoard,
   passesFilters,
   passesText,
   rowUid,
@@ -208,7 +209,13 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     () => rows.filter((row) => passes(row.item) && passesText({ item: row.item, query }) && !hitUids.has(rowUid(row))),
     [rows, prefs.filters, page.workingKeys, now, query, page.hits],
   )
-  const afterFilter = useMemo(() => rows.filter((row) => passes(row.item)).length, [rows, prefs.filters, page.workingKeys, now])
+  // 오래된 완료 숨김(LIFE-702) — 보드·백로그 보기에서 검색어가 없을 때만. 필터·프리셋은 풀지 않는다. 숨긴 건수 안내는 그리지 않는다.
+  const shelving = (view === 'board' || view === 'backlog') && query.trim().length === 0
+  const onShelf = (item: WorkItem): boolean => !shelving || !isHiddenOnBoard({ item, now })
+  // `now` 는 `filtered` 도 이미 의존하지만, 이 계산이 직접 쓰는 값이라 의존 목록에 둔다(LIFE-702 G4).
+  const shelved = useMemo(() => (shelving ? filtered.filter((row) => onShelf(row.item)) : filtered), [filtered, shelving, now])
+  // 숨긴 행은 세지 않는다 — 필터를 통과한 숨긴 행만 남은 빈 상태가 「검색 결과 없음」 으로 꾸며지지 않게(LIFE-702 H4 — G4 에서 뺀 것을 되살림).
+  const afterFilter = useMemo(() => rows.filter((row) => passes(row.item) && onShelf(row.item)).length, [rows, prefs.filters, page.workingKeys, now, shelving])
   const statuses: WorkStatus[] = load.data.length === 1 ? (load.data[0]?.statuses ?? []) : []
   const kinds = useMemo(() => {
     const map = new Map<string, string>()
@@ -373,15 +380,15 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
 
   // --- 보기 자료 ---
   const placementHidden = shownCaps.length > 0 && shownCaps.every((caps) => caps.placement.state === 'hidden')
-  const boardRows = placementHidden ? filtered : filtered.filter((row) => row.item.placement !== 'backlog')
+  const boardRows = placementHidden ? shelved : shelved.filter((row) => row.item.placement !== 'backlog')
   const bands = useMemo(() => boardBands({ rows: boardRows, statuses, all }), [boardRows, statuses, all])
   const backlogSections = useMemo((): BacklogSection[] => {
-    const sorted = [...filtered].sort((a, b) => compareRank(a.item, b.item))
+    const sorted = [...shelved].sort((a, b) => compareRank(a.item, b.item))
     return [
       { id: 'board', label: '보드', rows: sorted.filter((row) => row.item.placement !== 'backlog') },
       { id: 'backlog', label: '백로그', rows: sorted.filter((row) => row.item.placement === 'backlog') },
     ]
-  }, [filtered])
+  }, [shelved])
   const listGroups = useMemo(() => groupRows({ rows: sortRows({ rows: filtered, sort: prefs.sort }), group: prefs.group, statuses, all }), [filtered, prefs.sort, prefs.group, statuses, all])
   const more = ((): MoreState => {
     if (load.data.some((entry) => entry.nextCursor !== null)) return { kind: 'cursor', loaded: rows.length, loading: load.loadingMore }
@@ -486,9 +493,15 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const noConnection = settings !== null && settings.connections.length === 0
   const loading = (load.phase === 'loading' && load.data.length === 0) || page.choosing
   const total = view === 'working' ? workingInSpace.length : rows.length
-  const shown = view === 'working' ? workingViews.length : view === 'board' ? boardRows.length : filtered.length
+  // 백로그는 화면에 그리는 `shelved` 를 센다 — `filtered` 를 세도 결과는 같지만(숨김뿐인 0 은 `shelvedOnly` 가 가린다) 보이는 것을 센다는 뜻을 지킨다(LIFE-702 G4).
+  const shown = view === 'working' ? workingViews.length : view === 'board' ? boardRows.length : view === 'backlog' ? shelved.length : filtered.length
+  // 숨김이 걸린 0 은 필터를 지웠을 때 이 보기(보드는 백로그 배치 제외)에 보일 카드가 없으면 빈 상태 대신 보기를 그대로 그린다 —
+  // 「검색 결과 없음」·「필터를 지우면 다시 보입니다」 가 거짓이 되지 않게(LIFE-702 D6 · H4: F4·G3·리뷰 r3 Grok 장면을 한 원칙으로). 숨긴 건수 안내는 없다.
+  const inView = (row: TasksRow): boolean => view !== 'board' || placementHidden || row.item.placement !== 'backlog'
+  const shelvedOnly = shelving && shown === 0 && rows.some((row) => isHiddenOnBoard({ item: row.item, now }))
+    && !rows.some((row) => inView(row) && !isHiddenOnBoard({ item: row.item, now }))
   // 다음 쪽이 있으면 거른 결과가 0 이어도 빈 상태로 갈아 끼우지 않는다 — 「더 불러오기」·목록 도구가 남아야 한다(R2-M).
-  const empty = !noConnection && banner === null && !loading && load.phase !== 'idle' && shown === 0 && hits.length === 0 && (view === 'working' || more?.kind !== 'cursor')
+  const empty = !noConnection && banner === null && !loading && load.phase !== 'idle' && shown === 0 && !shelvedOnly && hits.length === 0 && (view === 'working' || more?.kind !== 'cursor')
   const cause = emptyCause({ total, afterFilter: view === 'working' ? workingAfterFilter : afterFilter, query, view })
 
   const body = ((): React.ReactNode => {

@@ -760,6 +760,8 @@ function toItem({ issue, spaceKey, parentId }: { issue: LaIssue | LaIssueDetail;
     category: issue.statusCategoryKey,
     // 완료 갈래는 완료 분류일 때만 뜻이 있다 — 다른 분류에 남은 값은 버린다.
     resolution: issue.statusCategoryKey === 'done' ? issue.resolution : null,
+    // 응답 값 그대로(LIFE-702) — 숨김 판정이 분류를 같이 본다.
+    doneAt: issue.doneAt,
     priority: issue.priority,
     dueAt: issue.dueAt,
     parentId,

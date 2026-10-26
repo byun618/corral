@@ -280,6 +280,28 @@ export function passesFilters({ item, filters, workingKeys, now }: { item: WorkI
   return true
 }
 
+/** 오래된 완료를 보드·백로그에서 숨기는 기간(LIFE-702) — LA `board-visibility.ts` `DONE_HIDE_DAYS = 14` 와 같은 값. */
+export const DONE_HIDE_MS = 14 * DAY_MS
+
+/**
+ * 보드·백로그에서 숨길 오래된 완료인가(LIFE-702) — LA `isHiddenOnBoard` 와 같은 식: done 분류 + `doneAt` 있음 + 14일 이상 지남(`>=`).
+ * `doneAt` 이 null 이거나 해석되지 않으면 숨기지 않는다(안전 기본값). 리스트·작업 중·키 일치·상세는 이 함수를 쓰지 않는다.
+ */
+export function isHiddenOnBoard({ item, now }: { item: Pick<WorkItem, 'category' | 'doneAt'>; now: number }): boolean {
+  if (item.category !== 'done' || item.doneAt === null) return false
+  const doneAt = Date.parse(item.doneAt)
+  if (Number.isNaN(doneAt)) return false
+  return now - doneAt >= DONE_HIDE_MS
+}
+
+/**
+ * 낙관 반영의 doneAt(LIFE-702 F1) — 출처 규칙(done 진입 기록 · 이탈 null · done→done 유지)을 화면이 응답 전에 흉내 낸다.
+ * 진입은 null(시각을 지어내지 않는다 — null 도 「방금」 도 숨김이 아니다). 응답이 오면 서버 값으로 덮인다.
+ */
+export function optimisticDoneAt({ from, to, doneAt }: { from: WorkCategory; to: WorkCategory; doneAt: string | null }): string | null {
+  return to === 'done' && from === 'done' ? doneAt : null
+}
+
 export function passesText({ item, query }: { item: WorkItem; query: string }): boolean {
   const needle = query.trim().toLowerCase()
   if (needle.length === 0) return true
@@ -545,7 +567,11 @@ export function applyIntent({ items, itemId, intent, statuses }: { items: WorkIt
       return items
     case 'status': {
       const status = statuses.find((entry) => entry.key === intent.statusKey)
-      return items.map((item) => (item.id === itemId ? { ...item, statusKey: intent.statusKey, category: status?.category ?? item.category } : item))
+      return items.map((item) => {
+        if (item.id !== itemId) return item
+        const category = status?.category ?? item.category
+        return { ...item, statusKey: intent.statusKey, category, doneAt: optimisticDoneAt({ from: item.category, to: category, doneAt: item.doneAt }) }
+      })
     }
     case 'placement':
       return items.map((item) => (item.id === itemId ? { ...item, placement: intent.placement } : item))

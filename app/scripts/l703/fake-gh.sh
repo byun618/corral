@@ -8,6 +8,11 @@
 #   - OPEN PR 의 head 브랜치가 원격에서 사라지면 CLOSED (G4)
 #   - pr merge 는 merge-tree 로 merge commit(부모 2개)을 만들어 base 를 옮긴다. --match-head-commit 이 지금 head 와 다르면 거절
 # 주입: FGH_MERGEABLE(판정 고정, 예 UNKNOWN) · FGH_MERGE_FAIL=1 · FGH_CREATE_FAIL=1 · FGH_RELEASE_FAIL=1 · FGH_ON_RELEASE_CREATE(bash 명령)
+#   FGH_MERGED_AFTER=N — PR 마다 `pr view` N 번째 조회부터 간접 머지를 반영(대기 루프를 잠근다)
+#   FGH_MERGEABLE_AFTER=N — `pr view --json mergeable` N 번째 조회까지는 UNKNOWN(재시도 루프를 잠근다)
+#   FGH_HOOK_ON(인자 줄 glob) + FGH_HOOK_CMD(bash 명령) — 처음 맞는 호출 직전에 한 번 돌린다(예: 판정 조회 때 PR head 이동)
+# 실 gh 흉내(gh 2.88.1): --jq 결과의 null 은 빈 줄 · 모르는 --json 필드는 실패 · release create 는 --verify-tag 가 없고 태그가 없으면
+#   기본 브랜치 끝에 태그를 만든다(그래서 --verify-tag 가 빠지면 하네스가 잡는다).
 # --jq 는 시스템 jq 로 푼다. 호출은 FGH_STATE/calls.txt 에 한 줄씩 남는다.
 set -uo pipefail
 : "${FGH_STATE:?FGH_STATE}" "${FGH_ORIGIN:?FGH_ORIGIN}"
@@ -15,6 +20,10 @@ DEFAULT="${FGH_DEFAULT:-main}"
 mkdir -p "$FGH_STATE/pr" "$FGH_STATE/release"
 printf 'gh' >> "$FGH_STATE/calls.txt"; for a in "$@"; do printf ' %q' "$a" >> "$FGH_STATE/calls.txt"; done; echo >> "$FGH_STATE/calls.txt"
 og() { git --git-dir="$FGH_ORIGIN" "$@"; }
+if [ -n "${FGH_HOOK_ON:-}" ] && [ ! -e "$FGH_STATE/hook-done" ]; then
+  case "$*" in $FGH_HOOK_ON) touch "$FGH_STATE/hook-done"; bash -c "$FGH_HOOK_CMD" >> "$FGH_STATE/hook.log" 2>&1 || { echo "fake gh: hook 실패" >&2; exit 1; } ;; esac
+fi
+bump() { local f="$FGH_STATE/count-$1" c; c=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 )); echo "$c" > "$f"; echo "$c"; }
 fail() { echo "fake gh: $1" >&2; exit 1; }
 
 # PR 파일 읽기·쓰기
@@ -36,13 +45,14 @@ refresh() { # GitHub 쪽 상태 갱신 — head 끝 다시 읽기·head 삭제�
   if [ -z "$live" ]; then state=CLOSED; save "$n"; return 0; fi
   oid="$live"
   btip="$(og rev-parse -q --verify "refs/heads/$base" 2>/dev/null || true)"
-  if [ "${FGH_INDIRECT:-on}" = on ] && [ "$base" = "$DEFAULT" ] && [ -n "$btip" ] && og merge-base --is-ancestor "$oid" "$btip" 2>/dev/null; then
+  if [ "${FGH_INDIRECT:-on}" = on ] && [ "$base" = "$DEFAULT" ] && [ "${VIEWS:-999999}" -ge "${FGH_MERGED_AFTER:-1}" ] && [ -n "$btip" ] && og merge-base --is-ancestor "$oid" "$btip" 2>/dev/null; then
     state=MERGED; mergedAt="2026-10-26T00:00:00Z"; mergeCommit="$btip"
   fi
   save "$n"
 }
 mergeable_of() {
   [ -z "${FGH_MERGEABLE:-}" ] || { echo "$FGH_MERGEABLE"; return; }
+  [ "${MQ:-999999}" -gt "${FGH_MERGEABLE_AFTER:-0}" ] || { echo UNKNOWN; return; }
   local btip; btip="$(og rev-parse "refs/heads/$base")"
   if og merge-tree --write-tree "$btip" "$oid" >/dev/null 2>&1; then echo MERGEABLE; else echo CONFLICTING; fi
 }
@@ -57,11 +67,14 @@ pr_json() { # 현재 load 된 PR → JSON
       url: ("https://github.example/o/r/pull/" + ($number | tostring))}'
 }
 # --json 필드·--jq 적용
-emit() { # $1 JSON, $2 필드 목록, $3 jq 식(없으면 필드만 뽑아 출력)
-  local sel
+PR_FIELDS=",number,state,baseRefName,headRefName,isDraft,isCrossRepository,headRefOid,mergeCommit,mergedAt,mergedBy,title,mergeable,url,"
+REL_FIELDS=",tagName,url,isPrerelease,"
+emit() { # $1 JSON, $2 필드 목록, $3 jq 식(없으면 필드만 뽑아 출력), $4 허용 필드 목록
+  local sel f
+  for f in $(echo "$2" | tr ',' ' '); do case "$4" in *",$f,"*) ;; *) fail "Unknown JSON field: \"$f\"" ;; esac; done
   sel="$(echo "$2" | awk -F, '{for (i = 1; i <= NF; i++) printf "%s%s: .%s", (i > 1 ? ", " : ""), $i, $i}')"
   if echo "$1" | jq -e 'type == "array"' >/dev/null; then sel="map({$sel})"; else sel="{$sel}"; fi
-  if [ -n "$3" ]; then echo "$1" | jq -c "$sel" | jq -r "$3"; else echo "$1" | jq -c "$sel"; fi
+  if [ -n "$3" ]; then echo "$1" | jq -c "$sel" | jq -r "$3" | sed 's/^null$//'; else echo "$1" | jq -c "$sel"; fi
 }
 opt() { # 인자 목록에서 --이름 값
   local want="$1"; shift
@@ -72,8 +85,11 @@ opt() { # 인자 목록에서 --이름 값
 case "${1:-} ${2:-}" in
   "pr view")
     n="$3"; shift 3
+    [ -f "$FGH_STATE/pr/$n" ] || fail "no pull request #$n"
+    J="$(opt --json "$@")"
+    case ",$J," in *,mergeable,*) MQ="$(bump "mergeable-$n")" ;; *) VIEWS="$(bump "view-$n")" ;; esac
     refresh "$n" || fail "no pull request #$n"
-    emit "$(pr_json "$n")" "$(opt --json "$@")" "$(opt --jq "$@" || true)" ;;
+    emit "$(pr_json "$n")" "$J" "$(opt --jq "$@" || true)" "$PR_FIELDS" ;;
   "pr list")
     shift 2
     H="$(opt --head "$@" || true)"; B="$(opt --base "$@" || true)"; S="$(opt --state "$@" || echo open)"
@@ -86,7 +102,7 @@ case "${1:-} ${2:-}" in
       case "$S" in open) [ "$state" = OPEN ] || continue ;; merged) [ "$state" = MERGED ] || continue ;; closed) [ "$state" = CLOSED ] || continue ;; all) ;; esac
       arr="$(echo "$arr" | jq -c --argjson p "$(pr_json "$n")" '. + [$p]')"
     done
-    emit "$arr" "$(opt --json "$@")" "$(opt --jq "$@" || true)" ;;
+    emit "$arr" "$(opt --json "$@")" "$(opt --jq "$@" || true)" "$PR_FIELDS" ;;
   "pr create")
     shift 2
     [ "${FGH_CREATE_FAIL:-0}" = 0 ] || fail "흉내 pr create 실패"
@@ -113,11 +129,16 @@ case "${1:-} ${2:-}" in
     T="$3"; shift 3
     [ -f "$FGH_STATE/release/$T" ] || fail "release not found"
     emit "$(jq -n --arg t "$T" --arg pre "$(cat "$FGH_STATE/release/$T")" '{tagName: $t, url: ("https://github.example/o/r/releases/tag/" + $t), isPrerelease: ($pre == "pre")}')" \
-      "$(opt --json "$@" || echo tagName,url,isPrerelease)" "$(opt --jq "$@" || true)" ;;
+      "$(opt --json "$@" || echo tagName,url,isPrerelease)" "$(opt --jq "$@" || true)" "$REL_FIELDS" ;;
   "release create")
     T="$3"; shift 3
     [ "${FGH_RELEASE_FAIL:-0}" = 0 ] || fail "흉내 release create 실패"
-    og rev-parse -q --verify "refs/tags/$T" >/dev/null || fail "tag $T 가 원격에 없다(--verify-tag)"
+    if ! og rev-parse -q --verify "refs/tags/$T" >/dev/null; then
+      case " $* " in
+        *" --verify-tag "*) fail "tag $T 가 원격에 없다(--verify-tag)" ;;
+        *) og update-ref "refs/tags/$T" "$(og rev-parse "refs/heads/$DEFAULT")" ;;  # 실 gh: 태그가 없으면 기본 브랜치 끝에 만든다
+      esac
+    fi
     [ ! -f "$FGH_STATE/release/$T" ] || fail "release $T 가 이미 있다"
     F="$(opt --notes-file "$@")"; [ -s "$F" ] || fail "노트 파일 없음"
     pre=full; case " $* " in *" --prerelease "*) pre=pre ;; esac

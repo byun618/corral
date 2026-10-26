@@ -5,14 +5,18 @@
 # 가짜 gh = fake-gh.sh(간접 머지·head 삭제 → CLOSED·merge commit 머지 흉내). origin 에 update 훅을 달아 **push 로 들어온 ref 갱신**을
 # push-log.txt 에 남긴다 — 가짜 gh 의 머지는 update-ref 라 남지 않으므로, refs/heads/main 줄이 있으면 스크립트가 main 에 직접 push 한 것이다(C3ⓕ).
 # 양성 대조: L703_MUTANT=<가드 이름> 이면 B 의 release.sh 사본에서 「# guard:<이름>」 줄의 die 를 true 로 바꾼다(mutate.sh 가 쓴다).
+#   L703_MUTANT_SED 가 있으면 그 sed 스크립트를 대신 적용한다(die 가 아닌 가드 — 루프·재계산·플래그).
 # 임시 폴더는 /tmp/l703.XXXXXX(짧은 고정 접두). 끝나면 지운다.
 set -uo pipefail
 
 ALL="old-usage cut-ok cut-dry cut-rerun cut-minor cut-version cut-ver-low cut-tag-exists cut-open-local cut-open-remote cut-otherrepo cut-reattach
 gather-ok gather-dry gather-nocut gather-precheck gather-conflict gather-dirty gather-headmove gather-already
+gather-stacked gather-after-exit7 record-cutquote cut-reattach-after-merge
 ship-ok ship-dry ship-nonotes ship-headmoved ship-mainmoved ship-closedpr ship-rerun ship-tagfail ship-releasefail ship-mergefail ship-unknown ship-createfail ship-noindirect
-abort-ok abort-pushed abort-dirty abort-shipped finish-leave-open finish-ok finish-unshipped finish-dirty
-ns-main-rehearsal ns-throwaway-v ns-base-only ns-prefix-only ns-other-base ns-gather-half ns-ship-half ns-rehearsal ns-rehearsal-default"
+ship-dirty ship-headmove-late ship-tag-on-tip ship-unrecorded-merge ship-indirect-late ship-mergeable-late
+abort-ok abort-pushed abort-dirty abort-shipped abort-after-merge abort-branchbusy finish-leave-open finish-ok finish-unshipped finish-dirty finish-headmoved finish-deletefail finish-tag-on-tip
+ns-main-rehearsal ns-throwaway-v ns-base-only ns-prefix-only ns-other-base ns-gather-half ns-ship-half ns-pipe-base ns-pipe-both ns-chars ns-rehearsal ns-rehearsal-default
+fakegh-fidelity"
 OUT="${1:?원자료 폴더}"; shift
 CASES="${*:-$ALL}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,13 +65,14 @@ setup() {
 #!/bin/sh
 echo "\$1 \$2 \$3" >> "$W/push-log.txt"
 case "\$1" in refs/tags/*) [ -e "$W/reject-tags" ] && { echo "흉내: 태그 push 거절" >&2; exit 1; } ;; esac
+if [ -e "$W/reject-delete" ] && [ "\$1" = "\$(cat "$W/reject-delete")" ] && [ "\$3" = 0000000000000000000000000000000000000000 ]; then echo "흉내: 삭제 거절" >&2; exit 1; fi
 exit 0
 EOF
   chmod +x "$O/hooks/update"; : > "$W/push-log.txt"
   git clone -q "$O" "$B" 2>/dev/null
   mkdir -p "$B/scripts" "$B/app"
   if [ -n "$MUT" ]; then
-    sed "/# guard:$MUT\$/ s/die \"/true \"/; /# guard:$MUT\$/ s/|| MOVED=/|| true MOVED=/" "$REL" > "$B/scripts/release.sh"
+    sed "${L703_MUTANT_SED:-/# guard:$MUT\$/ s/die \"/true \"/; /# guard:$MUT\$/ s/|| MOVED=/|| true MOVED=/}" "$REL" > "$B/scripts/release.sh"
   else cp "$REL" "$B/scripts/release.sh"; fi
   chmod +x "$B/scripts/release.sh"
   cp "$ROOT/scripts/release-ff.sh" "$B/scripts/"
@@ -263,6 +268,7 @@ for CASE in $CASES; do
       check "main 직접 push 0건(태그만)" eq "$(mainpushes)" 0
       check "태그 push 1건" eq "$(grep -c '^refs/tags/v0.1.1 ' "$W/push-log.txt")" 1
       check "Release(정식)" eq "$(cat "$W/gh/release/v0.1.1")" full
+      check "release create --verify-tag" grep -q "release create v0.1.1 --verify-tag" "$W/gh/calls.txt"
       check "PR1 MERGED" eq "$(prstate 1)" MERGED; check "PR2(묶음) MERGED" eq "$(prstate 2)" MERGED
       check "PR1 head 삭제" eq "$(oref refs/heads/LIFE-1-a)" ""; check "PR2 head 삭제" eq "$(oref refs/heads/feature/LIFE-2-b)" ""
       check "raw 상태 줄" has '"state":"MERGED"'
@@ -348,6 +354,119 @@ for CASE in $CASES; do
       check "PR1 head 남김" [ -n "$(oref refs/heads/LIFE-1-a)" ]; check "PR1 OPEN" eq "$(prstate 1)" OPEN
       check "release 브랜치 정리" eq "$(oref "refs/heads/$RB1")$(git -C "$B" rev-parse -q --verify "refs/heads/$RB1")" ""
       check "worktree 없음" [ ! -d "$(WT1)" ] ;;
+    gather-stacked) # F1(Claude M1) — 같은 gather 에서 앞 PR 이 뒤 PR head 를 품어도(순서 "2 1") 뒤 PR 기록이 남는다
+      mkpr 1 LIFE-1-a a.txt a
+      git -C "$H" checkout -q -b LIFE-2-b LIFE-1-a; echo b > "$H/b.txt"; git -C "$H" add -A; git -C "$H" commit -qm "PR 2"; git -C "$H" push -q origin LIFE-2-b
+      printf 'state=OPEN\nbase=main\nhead=LIFE-2-b\n' > "$W/gh/pr/2"
+      rel -- cut; rel -- gather --prs "2 1"
+      check "exit 0" eq "$RC" 0; check "PR1 기록만 문구" has "PR #1 (LIFE-1-a)"
+      check "기록 2 1" eq "$(git -C "$B" log --first-parent --reverse --format=%B "$RB1" | sed -n 's/^Release-PR: \([0-9]*\) .*/\1/p' | tr '\n' ' ')" "2 1 "
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "ship exit 0" eq "$RC" 0; check "✔ 출고 #2 #1" has "✔ 출고 v0.1.1 — #2 #1"
+      check "PR1 MERGED" eq "$(prstate 1)" MERGED; check "PR1 head 삭제" eq "$(oref refs/heads/LIFE-1-a)" "" ;;
+    gather-after-exit7) # F8(Claude L1) — release PR 이 머지됐는데 태그가 없으면 gather 거절·ship 안내 → ship 이 이어 감
+      mkpr 1 LIFE-1-a a.txt a; mkpr 2 LIFE-2-b b.txt b; cutgather 1; touch "$W/reject-tags"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk; check "ship exit 7" eq "$RC" 7
+      rm "$W/reject-tags"; T1="$(git -C "$B" rev-parse "$RB1")"
+      rel -- gather --prs 2
+      check "gather exit 2" eq "$RC" 2; check "ship 안내" has "ship --notes"; check "release 끝 불변" eq "$(git -C "$B" rev-parse "$RB1")" "$T1"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "ship 재실행 exit 0" eq "$RC" 0; check "태그 = main 끝" eq "$(oref 'refs/tags/v0.1.1^{commit}')" "$(oref refs/heads/main)" ;;
+    record-cutquote) # F3(Grok 1) — 뒤 커밋 메시지의 Release-Cut 줄이 기록을 자르지 않는다
+      mkpr 1 LIFE-1-a a.txt a; mkpr 2 LIFE-2-b b.txt b; cutgather 1
+      git -C "$(WT1)" commit -q --allow-empty -m "회고 — 자르기 커밋 인용" -m "Release-Cut: v0.1.1"
+      rel -- gather --prs 2
+      check "gather exit 0" eq "$RC" 0; check "기록에 #1·#2" has "기록(출고 집합): #1@"
+      check "기록에 #2" has " #2@"
+      rel -- ship --dry-run --skip-build --skip-apk
+      check "dry-run 집합 #1" has "출고 집합 #1"; check "dry-run 집합 #2" has "출고 집합 #2" ;;
+    cut-reattach-after-merge) # F8(Claude L5) — exit 7 뒤 로컬 release 브랜치를 잃어도 안내대로 cut --version 이 붙인다
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; touch "$W/reject-tags"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk; rm "$W/reject-tags"
+      git -C "$B" worktree remove --force "$(WT1)"; git -C "$B" branch -q -D "$RB1"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "ship exit 2" eq "$RC" 2; check "cut --version 안내" has "cut --version 0.1.1"
+      rel -- cut --version 0.1.1
+      check "cut exit 0(재부착)" eq "$RC" 0; check "원격에서 붙임" has "로컬 브랜치로 붙였다"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "ship exit 0" eq "$RC" 0; check "태그 = main 끝" eq "$(oref 'refs/tags/v0.1.1^{commit}')" "$(oref refs/heads/main)" ;;
+    ship-dirty) # F7③(Claude M3) — release worktree 가 더러우면 ship 거절, push 0
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; echo x >> "$(WT1)/shared.txt"; S0="$(snap)"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 2" eq "$RC" 2; check "사유" has "커밋 안 된 변경"; check "ref 불변" eq "$(snap)" "$S0" ;;
+    ship-headmove-late) # F4(Grok 2) — 머지 가능 판정 조회 때 PR head 가 움직이면 머지 직전 재확인이 거절 → 다시 모으고 같은 ship
+      mkpr 1 LIFE-1-a a.txt a; mkpr 2 LIFE-2-b b.txt b; cutgather "1 2"; M0="$(oref refs/heads/main)"
+      HOOK="git -C '$H' fetch -q origin && git -C '$H' checkout -q -B LIFE-2-b origin/LIFE-2-b && echo b2 > '$H/b.txt' && git -C '$H' commit -qam late && git -C '$H' push -q origin LIFE-2-b"
+      rel FGH_HOOK_ON="pr view * --json mergeable*" FGH_HOOK_CMD="$HOOK" -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 2" eq "$RC" 2; check "머지 직전 문구" has "머지 직전 다시 보니"; check "PR #2 를 댄다" has "#2 (LIFE-2-b)"
+      check "main 불변(머지 0)" eq "$(oref refs/heads/main)" "$M0"; check "pr merge 0회" eq "$(grep -c 'pr merge' "$W/gh/calls.txt")" 0
+      check "태그 없음" eq "$(oref refs/tags/v0.1.1)" ""
+      rel -- gather --prs "1 2"; check "다시 모으기 exit 0" eq "$RC" 0
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "ship exit 0" eq "$RC" 0; check "release PR 재사용" has "재사용"; check "PR2 MERGED" eq "$(prstate 2)" MERGED
+      check "새 head 가 main 에" git --git-dir="$O" merge-base --is-ancestor "$(git -C "$H" rev-parse LIFE-2-b)" refs/heads/main ;;
+    ship-tag-on-tip) # F6(Grok 4) — 원격 태그가 release 끝(머지 커밋 아님)이면 「이미 출고」로 보지 않고 거절
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; git -C "$B" push -q origin "$RB1"; git -C "$B" tag v0.1.1 "$RB1"; git -C "$B" push -q origin v0.1.1
+      M0="$(oref refs/heads/main)"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 2" eq "$RC" 2; check "출고 머지 커밋이 아니다" has "출고 머지 커밋"
+      check "Release 없음" [ ! -f "$W/gh/release/v0.1.1" ]; check "main 불변" eq "$(oref refs/heads/main)" "$M0"; check "PR1 OPEN" eq "$(prstate 1)" OPEN ;;
+    ship-unrecorded-merge) # F9(Claude L2) — 해소 커밋을 -m 으로 만들어 기록이 빠진 merge 를 ship 이 경고(거절 아님), gather 재실행이 복구
+      mkpr 1 LIFE-1-a shared.txt one; mkpr 2 LIFE-2-b shared.txt two
+      rel -- cut; rel -- gather --prs "1 2"
+      echo "one+two" > "$(WT1)/shared.txt"; git -C "$(WT1)" add shared.txt; git -C "$(WT1)" commit -q -m "resolve"
+      rel -- ship --dry-run --skip-build --skip-apk
+      check "dry-run exit 0" eq "$RC" 0; check "기록 없는 merge 경고" has "⚠ 기록 없는 merge"
+      rel -- gather --prs 2; check "gather exit 0(기록만)" eq "$RC" 0; check "기록만 문구" has "기록만 남겼다"
+      rel -- ship --dry-run --skip-build --skip-apk
+      check "경고 사라짐" hasnt "⚠ 기록 없는 merge"; check "집합 #2" has "출고 집합 #2" ;;
+    ship-indirect-late) # F7⑤(Grok 6) — 간접 머지가 몇 번 뒤 조회에서야 보여도 대기 루프가 기다려 MERGED 를 본다
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1
+      rel RELEASE_INDIRECT_WAIT_S=30 RELEASE_INDIRECT_STEP_S=0 FGH_MERGED_AFTER=6 -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 0" eq "$RC" 0; check "PR1 MERGED" eq "$(prstate 1)" MERGED; check "head 삭제" eq "$(oref refs/heads/LIFE-1-a)" ""
+      check "PR1 조회 6회 이상" [ "$(cat "$W/gh/count-view-1")" -ge 6 ] ;;
+    ship-mergeable-late) # F7⑤(Grok 6) — 머지 가능 판정이 몇 번 UNKNOWN 이어도 재시도 루프가 기다린다
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1
+      rel RELEASE_MERGEABLE_TRIES=5 FGH_MERGEABLE_AFTER=2 -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "exit 0" eq "$RC" 0; check "판정 조회 3회" eq "$(cat "$W/gh/count-mergeable-2")" 3 ;;
+    abort-after-merge) # F7②(Claude M3) — release PR 머지 뒤(exit 7)에는 접지 않는다
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; touch "$W/reject-tags"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk; rm "$W/reject-tags"; S0="$(snap)"
+      rel -- abort
+      check "exit 2" eq "$RC" 2; check "이미 머지 문구" has "이미 머지됐다"; check "불변" eq "$(snap)" "$S0" ;;
+    abort-branchbusy) # F5(Claude L4) — 정리 단계 실패(로컬 브랜치를 다른 worktree 가 씀)면 ✔ 없이 멈춘다
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; git -C "$B" push -q origin "$RB1"
+      git -C "$B" worktree add -q --force "$W/busy" "$RB1"
+      rel -- abort
+      check "exit ≠ 0" [ "$RC" != 0 ]; check "삭제 실패 문구" has "로컬 $RB1 삭제 실패"; check "✔ 없음" hasnt "✔ 접기"
+      check "원격 release 브랜치 그대로" [ -n "$(oref "refs/heads/$RB1")" ] ;;
+    finish-headmoved) # F7①(Claude M3) — MERGED 인데 원격 head 가 그 뒤 다른 커밋이면 지우지 않는다(정리는 진행)
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1
+      rel FGH_INDIRECT=off -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      prset 1 state MERGED; prpush LIFE-1-a a.txt a-after; NEWH="$(oref refs/heads/LIFE-1-a)"
+      rel -- finish
+      check "exit 0" eq "$RC" 0; check "다른 커밋 문구" has "다른 커밋"; check "head 그대로(새 커밋)" eq "$(oref refs/heads/LIFE-1-a)" "$NEWH" ;;
+    finish-deletefail) # F5(Grok 3) — MERGED 뒤 head 삭제가 실패하면 미해결 — finish 는 release 브랜치를 지우지 않는다
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; echo refs/heads/LIFE-1-a > "$W/reject-delete"
+      rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
+      check "ship exit 13" eq "$RC" 13; check "삭제 실패 미해결" has "#1(head 삭제 실패)"
+      rel -- finish
+      check "finish exit 13" eq "$RC" 13; check "release 브랜치 남김" git -C "$B" rev-parse -q --verify "refs/heads/$RB1"
+      check "원격 release 브랜치 남김" [ -n "$(oref "refs/heads/$RB1")" ]
+      rm "$W/reject-delete"; rel -- finish
+      check "삭제 풀린 뒤 finish exit 0" eq "$RC" 0; check "head 삭제" eq "$(oref refs/heads/LIFE-1-a)" "" ;;
+    finish-tag-on-tip) # F6(Grok 4) — finish 의 출고 확인도 「머지 커밋 태그」로만
+      mkpr 1 LIFE-1-a a.txt a; cutgather 1; git -C "$B" tag v0.1.1 "$RB1"; git -C "$B" push -q origin v0.1.1; S0="$(snap)"
+      rel -- finish --leave-open
+      check "exit 2" eq "$RC" 2; check "출고 확인 안 됨" has "출고가 확인되지 않았다"; check "불변" eq "$(snap)" "$S0" ;;
+    fakegh-fidelity) # F7⑦(Claude L3) — 가짜 gh 가 실 gh 처럼 null 은 빈 줄, 모르는 --json 필드는 실패
+      mkpr 1 LIFE-1-a a.txt a
+      G() { (cd "$B" && PATH="$W/bin:$PATH" FGH_STATE="$W/gh" FGH_ORIGIN="$O" gh "$@"); }
+      LAST="$W/fid.txt"; { G pr view 1 --json mergeCommit --jq .mergeCommit.oid; echo "rc=$?"; G pr view 1 --json nope 2>&1; echo "rc=$?"; } > "$LAST" 2>&1
+      cat "$LAST" >> "$LOG"
+      check "null → 빈 줄" eq "$(head -1 "$LAST")" ""; check "null 줄 rc 0" eq "$(sed -n 2p "$LAST")" "rc=0"
+      check "모르는 필드 실패" grep -q 'Unknown JSON field' "$LAST"; check "모르는 필드 rc≠0" eq "$(tail -1 "$LAST")" "rc=1"
+      RC=0 ;;
     abort-ok) # C6ⓐⓒ
       mkpr 1 LIFE-1-a a.txt a; cutgather 1; M0="$(oref refs/heads/main)"
       rel -- abort
@@ -387,9 +506,15 @@ for CASE in $CASES; do
       echo x >> "$(WT1)/shared.txt"; S0="$(snap)"
       rel -- finish
       check "exit 2" eq "$RC" 2; check "불변" eq "$(snap)" "$S0" ;;
-    ns-main-rehearsal|ns-throwaway-v|ns-base-only|ns-prefix-only|ns-other-base|ns-gather-half|ns-ship-half) # C7 음성 대조 — ref·push 0건
+    ns-main-rehearsal|ns-throwaway-v|ns-base-only|ns-prefix-only|ns-other-base|ns-gather-half|ns-ship-half|ns-pipe-base|ns-pipe-both|ns-chars) # C7 음성 대조 — ref·push 0건
       git -C "$H" push -q origin origin/main:refs/heads/throwaway/x-base; : > "$W/push-log.txt"
+      MSG="짝이 맞지 않는다"
       case "$CASE" in
+        # r1 지적(Claude M2·Grok 5): '|' 가 든 값이 짝 패턴을 속였다 — 글자 검사가 먼저 거절한다
+        ns-pipe-base) A="cut --base throwaway/a|rehearsal-b --tag-prefix v"; MSG="쓸 수 없는 글자"
+          git -C "$H" push -q origin "origin/main:refs/heads/throwaway/a|rehearsal-b"; : > "$W/push-log.txt" ;;
+        ns-pipe-both) A="cut --base throwaway/x|main --tag-prefix v|rehearsal-x"; MSG="쓸 수 없는 글자" ;;
+        ns-chars) A="cut --base throwaway/a|b --tag-prefix rehearsal-x-v"; MSG="쓸 수 없는 글자" ;;
         ns-main-rehearsal) A="cut --base main --tag-prefix rehearsal-x-v" ;;
         ns-throwaway-v) A="cut --base throwaway/x-base --tag-prefix v" ;;
         ns-base-only) A="cut --base throwaway/x-base" ;;
@@ -399,7 +524,7 @@ for CASE in $CASES; do
         ns-ship-half) A="ship --notes $W/notes.md --tag-prefix rehearsal-x-v" ;;
       esac
       S0="$(snap)"; rel -- $A
-      check "exit 1" eq "$RC" 1; check "짝 문구" has "짝이 맞지 않는다"; check "ref·worktree 0건" eq "$(snap)" "$S0"
+      check "exit 1" eq "$RC" 1; check "거절 문구($MSG)" has "$MSG"; check "ref·worktree 0건" eq "$(snap)" "$S0"
       check "push 0건" eq "$(wc -l < "$W/push-log.txt" | tr -d ' ')" 0 ;;
     ns-rehearsal|ns-rehearsal-default) # C7 양성 — 리허설 인자로 끝까지. 이름이 전부 throwaway/·rehearsal- 아래, main·v*·release/v* 불변
       # ns-rehearsal: 비기본 base 라 가짜 gh 가 간접 머지를 하지 않는다(GHES 3.12 문장) → exit 13 경로 · -default: 기본 브랜치로 흉내 → exit 0

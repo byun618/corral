@@ -31,7 +31,8 @@ scripts/release.sh abort                                # 접기 — 출고 전 
 **① cut** — origin/main 끝의 `app/package.json` 에서 다음 버전을 정하고(`--bump`·`--version`) 다음 버전 ≤ 지금 버전 · 원격 태그 존재 ·
 열린 release 브랜치(로컬·원격 `release/v*`) 있음 · 다른 레포 안에서 부름 중 하나라도면 아무것도 만들지 않는다(exit 2). 만들면 release 브랜치에
 버전 커밋 `release: vX.Y.Z`(`Release-Cut:` 줄)이 올라간다 — main 에 버전 커밋을 직접 올리지 않는다. 같은 버전으로 다시 치면 있는 것을 재사용하고
-(worktree 를 잃었으면 다시 붙이고, 원격에만 있으면 로컬로 가져온다) 두 번째를 만들지 않는다.
+(worktree 를 잃었으면 다시 붙이고, 원격에만 있으면 로컬로 가져온다) 두 번째를 만들지 않는다. release PR 머지 뒤에는 main 버전이 이미 올라가
+다음 버전을 계산하므로 **`cut --version X.Y.Z`(그 버전)** 로 붙인다 — 스크립트 안내가 그 명령을 낸다.
 
 **② gather** — 고른 PR 전부를 먼저 본다: 닫힘·draft·포크·base 가 main 이 아님 중 하나라도면 release 브랜치 변경 0건(exit 2). 이때 head SHA 를 고정해
 그 SHA 를 fetch·merge 하고, merge 커밋에 `Release-PR: <번호> <head SHA>` 줄을 남긴다 — **출고 집합은 이 기록이다**(ship 이 다시 고르지 않는다).
@@ -46,6 +47,8 @@ scripts/release.sh gather --prs "<멈춘 PR> <뒤 PR …>"   # 이미 모은 PR 
 ```
 PR head 에는 해소가 없다 — 상관없다: 그 head 가 release→main 머지로 main 에 닿으면 PR 이 MERGED 가 된다. 해소가 기능을 바꿀 만큼 크면
 `git merge --abort` 로 그 PR 을 빼고 나머지만 모은 뒤 그 작업의 코디에게 돌려보낸다. LA 는 `검증 중` 그대로다.
+해소 커밋을 `-m` 으로 만들어 `Release-PR:` 줄이 빠지면 그 PR 은 출고 집합 밖이다 — `ship`(dry-run 포함)이 「⚠ 기록 없는 merge」로 경고하고,
+같은 PR 을 다시 `gather` 하면 기록만 남긴다. 앞 PR 이 뒤 PR 의 head 를 이미 품은 경우(쌓인 PR)도 `gather` 가 기록만 남긴다.
 
 **출고 중 수정** — 통합 확인에서 문제가 나오면 그 일감 브랜치에서 고쳐 push 하고(리뷰 근거를 일감에 남긴다) 같은 PR 을 다시 `gather` 한다 —
 새 커밋만 merge 하고 기록을 갱신한다. release worktree 에서 직접 고치지 않는다. 자른 뒤엔 출고를 막는 수정만 넣는다(동결) — 새 작업은 다음 출고.
@@ -55,17 +58,22 @@ PR head 에는 해소가 없다 — 상관없다: 그 head 가 release→main �
 (모은 뒤 head 가 움직였는데 다시 모으지 않았으면 어느 PR 인지 대고 거절 — 그대로 내보내면 그 PR 은 열린 채 남는다) · 노트 파일 ·
 dmg 를 만들 거면 node(v24 기준, v22 는 경고, 그 밖은 거절)·clang · APK 를 만들 거면 그 전제(JDK 17 이상 — `JAVA_HOME` 의 java, 없으면 PATH 의 `java -version` ·
 `ANDROID_HOME` 의 build-tools(apksigner·aapt2) · `eas whoami` 로그인 · 작업 폴더 자리(아래)) — 하나라도 어긋나면 push·머지 0건(exit 2).
-ⓑ release 브랜치 push → release→main PR(열린 것이 있으면 재사용) → 머지 가능 판정 → `gh pr merge --merge --match-head-commit <release 끝>` → 머지 커밋 부모 2개·둘째 부모 = release 끝·버전 확인
+ⓑ release 브랜치 push → release→main PR(열린 것이 있으면 재사용) → 머지 가능 판정 → **기록된 PR head 재확인**(움직였으면 머지하지 않고 exit 2, release PR 은 열린 채 —
+다시 모은 뒤 같은 ship) → `gh pr merge --merge --match-head-commit <release 끝>` → 머지 커밋 부모 2개·둘째 부모 = release 끝·버전 확인.
+재확인과 머지 사이에 남는 짧은 창의 head 이동은 막을 수 없다 — 그 PR 은 OPEN 으로 남고 ⓕ 가 exit 13 으로 받는다
 ⓒ 주석 태그 `vX.Y.Z` = **main 끝(머지 커밋)** push — main 에 직접 push 하는 것은 이 태그뿐이다 ⓓ `--notes` 로 GitHub Release ⓔ 본체 checkout fast-forward(`release-ff.sh`)
-ⓕ **원래 PR 처리**: 기록된 PR 마다 상태를 정해진 시간(`RELEASE_INDIRECT_WAIT_S`, 기본 120초) 동안 다시 조회해 **MERGED 를 본 뒤에만** 원격 head 를 지운다
-(그 전에 지우면 PR 이 merged 가 아니라 closed 가 될 수 있다). head 가 그 사이 다른 커밋으로 움직였으면 지우지 않는다
+ⓕ **원래 PR 처리**: 기록된 PR 의 상태를 다시 조회해 **MERGED 를 본 뒤에만** 원격 head 를 지운다(그 전에 지우면 PR 이 merged 가 아니라 closed 가 될 수 있다).
+대기 시계는 **한 실행에 하나**다 — `RELEASE_INDIRECT_WAIT_S`(기본 120초, 간격 `RELEASE_INDIRECT_STEP_S` 10초)를 모든 PR 이 같이 쓰고, 시계가 다 돼도 PR 마다 최소 1회는 조회한다.
+head 가 그 사이 다른 커밋으로 움직였으면 지우지 않는다(그 뒤 push 된 커밋이다). **head 삭제가 실패하면 미해결로 센다**(exit 13 — finish 가 release 브랜치를 지우지 않는다)
 ⓖ 그 태그 위 깨끗한 임시 worktree(`.claude/worktrees/_release-*`)에서 `scripts/release-dmg.sh` 로 아래 「빌드」를 돌려 dmg 를 `app/dist/release/vX.Y.Z/` 에 둔다(`--skip-build` 면 생략)
 ⓗ 같은 worktree 에서 `scripts/release-apk.sh` 로 모바일 APK(`preview` 프로필 로컬 빌드 — EAS 쿼터 소모 없음, 서명 = EAS 원격 자격증명)를 `app/dist/release/vX.Y.Z/corral-mobile-X.Y.Z.apk` 에 둔다
 (**매 출고 기본**, `--skip-apk` 면 생략). `--skip-build` 는 dmg 만, `--skip-apk` 는 APK 만 뺀다.
 **멱등**: 단계마다 원격 상태(원격 태그 · release PR 상태 · Release 유무)로 어디까지 됐는지 보고 이어 간다 — 같은 `ship` 명령을 다시 치면 끝난 단계는 건너뛴다.
-Release 까지 끝난 뒤 다시 치면 빌드하지 않고 원래 PR 처리만 다시 본 뒤 dmg·APK 명령을 보여 준다.
+Release 까지 끝난 뒤 다시 치면 빌드하지 않고 원래 PR 처리만 다시 본 뒤 dmg·APK 명령을 보여 준다. 「이미 태그됨」은 원격 태그가 출고 머지 커밋일 때만이다 —
+다른 커밋(예: release 브랜치 끝)을 가리키면 출고하지 않고 exit 2 로 멈춘다(태그를 직접 확인). release PR 이 머지됐는데 태그가 없으면(exit 7 뒤) `gather` 는
+더 모으지 않고 같은 `ship` 을 안내한다.
 
-**⑤ finish** — 원격 태그가 release 브랜치 끝을 품을 때(출고 확인)만 돈다. 원래 PR 처리를 한 번 더 하고(MERGED 면 head 삭제), 남은 PR 이 없으면
+**⑤ finish** — 원격 태그가 이 release 의 출고 머지 커밋(origin/main 위 merge commit, 둘째 부모 = release 브랜치 끝)일 때(출고 확인)만 돈다. 원래 PR 처리를 한 번 더 하고(MERGED 면 head 삭제), 남은 PR 이 없으면
 release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 커밋 안 된 변경이 있으면 지우지 않는다. 재실행 안전.
 **abort** — 출고 전(태그 없음·release PR 미머지)에만. release 브랜치(로컬·원격)·worktree 를 지운다 — 열려 있던 release PR 은 브랜치 삭제로 GitHub 가 닫고,
 모았던 PR 은 열린 채 남는다. main·태그 변경 없음. worktree 가 더러우면 멈춘다.
@@ -84,7 +92,7 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 | 10 | APK 실패(머지·태그·Release·dmg 끝) | 메시지의 「APK 만 다시」 줄 |
 | 11 | release 브랜치 push·삭제 실패 | 원인을 보고 같은 명령 |
 | 12 | release PR 생성·조회 실패 | 같은 ship — 열린 release PR 이 있으면 재사용 |
-| 13 | 원래 PR 이 MERGED 로 확인되지 않음 — 출고 자체(태그·Release·dmg·APK)는 끝남, 그 head 는 지우지 않음 | 아래 「간접 머지가 안 될 때」 |
+| 13 | 원래 PR 처리 미완 — MERGED 미확인 또는 head 조회·삭제 실패. 출고 자체(태그·Release·dmg·APK)는 끝남, 그 head 는 지우지 않음(못 지움) | 아래 「간접 머지가 안 될 때」 · 삭제 실패면 원인(권한·보호)을 풀고 finish |
 
 **간접 머지가 안 될 때 (exit 13)** — GitHub 문서는 「PR 의 head 커밋이 다른 PR 머지로 기본 브랜치에 닿으면 merged」라고만 적고 지연 상한은 없다.
 메시지의 `gh pr view <번호> --json state,mergedAt,mergeCommit` 로 상태를 보고, 시간이 지나 MERGED 가 되면 `scripts/release.sh finish` 가 head 를 지우고 정리한다.

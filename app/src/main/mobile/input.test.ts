@@ -1218,7 +1218,8 @@ describe('LIFE-598 r2 — 접수 뒤 맥 입력이 있으면 넣지 않는다(�
     t.hub.stopTurn({ device: 'd1', id: 'l598r2-0000-0012', channel: 'c1' })
     expect((await t.settled('l598r2-0000-0012')).state).toBe('stopped')
     expect((await t.settled('l598r2-0000-0011')).state).toBe('delivered')
-    expect(t.backend.keyFences).toEqual([1])
+    // 중단 키는 울타리 없이(r3) — 사슬은 관측 revision 1 → 2 를 쓰기 전에 걸었다.
+    expect(t.backend.keyFences).toEqual([null])
     expect(t.backend.fences.map((fence) => fence.inputRevision)).toEqual([2])
   })
   it('ⓓ 답 — 접수 뒤(첫 화면 전) 맥 입력 → 키 0회 · failed/question_changed(로그는 입력 울타리)', async () => {
@@ -1302,6 +1303,150 @@ describe('LIFE-598 r2 — 접수 뒤 맥 입력이 있으면 넣지 않는다(�
     t.hub.answer({ device: 'd1', id: 'l598r2-0000-0018', channel: 'c1', question: 32, call: 'toolu-32', digest: questionDigest(item.questions), answers: [{ choices: [0], other: null }, { choices: [1], other: null }] })
     expect(await t.settled('l598r2-0000-0018')).toMatchObject({ state: 'unconfirmed', reason: 'question_changed' })
     expect(t.backend.sends.map((send) => send.text)).toEqual(['1'])
+  })
+})
+
+describe('LIFE-598 r3 — 자기 쓰기 사슬은 쓰기 전에 · 순환 차단 · PTY 세대 · 중단 무울타리', () => {
+  const lag = (ms: number) => new Promise<void>((done) => setTimeout(done, ms))
+  const checks = (t: ReturnType<typeof setup>): unknown[] => t.logs.filter((log) => log.tag === 'mobile.input_target_changed').map((log) => log.fields.check)
+  it('P1(리뷰 R3-C2) 중단 키가 guard 에서 쓰인 뒤 응답이 늦어도 대기 지시는 거짓 target_changed 가 아니다 — 넣는다', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0001', channel: 'c1', text: '중단 뒤 지시' })
+    await wait(30)
+    const send = t.backend.send.bind(t.backend)
+    t.backend.send = async (pane, input) => {
+      const result = await send(pane, input) // revision +1 은 이미 일어남
+      t.backend.status = 'idle'
+      t.backend.quiet = true
+      await lag(40) // 응답이 허브에 닿기까지 — 그 사이 펌프가 새 revision 을 본다
+      return result
+    }
+    t.hub.stopTurn({ device: 'd1', id: 'l598r3-0000-0002', channel: 'c1' })
+    expect((await t.settled('l598r3-0000-0002')).state).toBe('stopped')
+    expect((await t.settled('l598r3-0000-0001')).state).toBe('delivered')
+    expect(t.backend.fences.map((fence) => fence.inputRevision)).toEqual([2])
+    expect(checks(t)).toEqual([])
+  })
+  it('P2(리뷰 R3-C2) 답 키 — 같은 경합에서도 대기 지시를 넣는다', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.quiet = false
+    t.backend.screenText = questionScreen(61)
+    t.items.list = [question({ id: 61, state: 'pending' })]
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0003', channel: 'c1', text: '답 뒤 지시' })
+    await wait(30)
+    t.answerOn({ id: 61, value: 'o1' })
+    const send = t.backend.send.bind(t.backend)
+    t.backend.send = async (pane, input) => {
+      const result = await send(pane, input)
+      await lag(40)
+      return result
+    }
+    t.hub.answer({ device: 'd1', id: 'l598r3-0000-0004', channel: 'c1', question: 61, call: 'toolu-61', digest: digestFor(61), answers: [{ choices: [1], other: null }] })
+    expect((await t.settled('l598r3-0000-0004')).state).toBe('delivered')
+    t.backend.send = send
+    t.backend.onSend = null
+    t.backend.status = 'idle'
+    t.backend.screenText = EMPTY
+    t.backend.quiet = true
+    expect((await t.settled('l598r3-0000-0003')).state).toBe('delivered')
+    expect(checks(t)).toEqual([])
+  })
+  it('중단 키 관측과 키 사이 맥 입력(울타리 없는 키) → 중단은 들어가고 뒤 대기 지시는 target_changed(쓰지 않는 쪽)', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0005', channel: 'c1', text: '맥 입력 뒤 지시' })
+    await wait(30)
+    const send = t.backend.send.bind(t.backend)
+    t.backend.send = async (pane, input) => {
+      // 관측 뒤·키 앞의 맥 키 — 울타리 없는 중단 키는 그대로 들어간다.
+      if (t.backend.input !== null) t.backend.input = { ...t.backend.input, revision: t.backend.input.revision + 1 }
+      return send(pane, input)
+    }
+    t.backend.onSend = () => {
+      t.backend.status = 'idle'
+      t.backend.quiet = true
+    }
+    t.hub.stopTurn({ device: 'd1', id: 'l598r3-0000-0006', channel: 'c1' })
+    expect((await t.settled('l598r3-0000-0006')).state).toBe('stopped')
+    expect(await t.settled('l598r3-0000-0005')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('R3-C3 쓴 뒤 revision 이 직전보다 크지 않으면(guard 가 +0 을 돌려줌) 사슬을 걸지 않는다 — 걸리지 않고 뒤 지시는 끝난다', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.quiet = false
+    t.backend.screenText = questionScreen(62)
+    t.items.list = [question({ id: 62, state: 'pending' })]
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0007', channel: 'c1', text: '+0 뒤 지시' })
+    await wait(30)
+    t.answerOn({ id: 62, value: 'o1' })
+    const send = t.backend.send.bind(t.backend)
+    // guard 가 쓴 뒤 revision 을 쓰기 전 값 그대로 돌려준다(실제로는 +1) — 그 값을 고리로 걸면 자기 고리다.
+    t.backend.send = async (pane, input) => {
+      const result = await send(pane, input)
+      return result.kind === 'sent' && result.revision !== null ? { kind: 'sent', revision: result.revision - 1 } : result
+    }
+    t.hub.answer({ device: 'd1', id: 'l598r3-0000-0008', channel: 'c1', question: 62, call: 'toolu-62', digest: digestFor(62), answers: [{ choices: [1], other: null }] })
+    await t.settled('l598r3-0000-0008')
+    t.backend.send = send
+    t.backend.onSend = null
+    t.backend.status = 'idle'
+    t.backend.screenText = EMPTY
+    t.backend.quiet = true
+    expect(await t.settled('l598r3-0000-0007')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('R3-C5 같은 revision 숫자의 새 PTY 세대 항목은 옛 세대의 사슬을 타지 않는다', async () => {
+    const t = setup()
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0009', channel: 'c1', text: '옛 세대' })
+    expect((await t.settled('l598r3-0000-0009')).state).toBe('delivered')
+    // 옛 PTY 의 사슬 1 → 2. 새 PTY 는 revision 을 1 부터 다시 센다.
+    t.backend.ptyId = 't-respawned'
+    t.backend.input = { revision: 1, idleMs: 10_000 }
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0010', channel: 'c1', text: '새 세대' })
+    expect((await t.settled('l598r3-0000-0010')).state).toBe('delivered')
+    expect(t.backend.fences.map((fence) => fence.inputRevision)).toEqual([1, 1])
+  })
+  it('R3-C5 지시 `unknown`(썼을 수 있음)은 사슬을 잇지 않는다 — 뒤 대기 지시는 target_changed', async () => {
+    const t = setup()
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      const result = await prompt(pane, input)
+      return (calls += 1) === 1 ? 'unknown' : result
+    }
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0011', channel: 'c1', text: '시간 초과' })
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0012', channel: 'c1', text: '뒤 지시' })
+    await wait(30)
+    t.backend.quiet = true
+    await t.settled('l598r3-0000-0011')
+    expect(await t.settled('l598r3-0000-0012')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toEqual(['시간 초과'])
+  })
+  it('R3-C5(x7) guard 거절과 겹친 허브 자기 쓰기(중단 키)가 끝났으면 거절 뒤 판별은 지금 사슬로 — 큐로 돌아가 넣는다', async () => {
+    const t = setup()
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      if ((calls += 1) === 1) {
+        // 넣기 요청이 guard 에 닿기 전에 폰 중단 키가 먼저 쓰였다(revision +1) — 이 넣기는 울타리로 거절된다.
+        t.backend.status = 'working'
+        t.backend.onSend = () => { t.backend.status = 'idle' }
+        t.hub.stopTurn({ device: 'd1', id: 'l598r3-0000-0014', channel: 'c1' })
+        await lag(20)
+      }
+      return prompt(pane, input)
+    }
+    t.hub.send({ device: 'd1', id: 'l598r3-0000-0013', channel: 'c1', text: '거절 뒤 다시' })
+    expect((await t.settled('l598r3-0000-0013')).state).toBe('delivered')
+    expect((await t.settled('l598r3-0000-0014')).state).toBe('stopped')
+    expect(t.backend.prompts).toEqual(['거절 뒤 다시'])
+    expect(checks(t)).toEqual([])
   })
 })
 
@@ -1690,13 +1835,13 @@ describe('R3-A6 Grok 중단 — 빈 입력 줄을 본 guard 턴의 revision 으�
     expect(t.backend.sends.map((send) => send.text)).toEqual([KEY.ctrlC])
     expect(t.backend.keyFences).toEqual([1])
   })
-  it('다른 provider 의 중단은 화면 없이 관측 턴의 revision 으로 울타리(LIFE-598 r2 — 쓴 뒤 revision 으로 대기 지시를 옮기려고)', async () => {
+  it('다른 provider 의 중단은 그대로(울타리 없이 seq 비교만 — LIFE-598 r3 에서 r2 이전으로 되돌림)', async () => {
     const t = setup()
     t.backend.status = 'working'
     t.backend.onSend = () => { t.backend.status = 'idle' }
     t.hub.stopTurn({ device: 'd1', id: 'r3a6-0000-0003', channel: 'c1' })
     expect((await t.settled('r3a6-0000-0003')).state).toBe('stopped')
-    expect(t.backend.keyFences).toEqual([1])
+    expect(t.backend.keyFences).toEqual([null])
   })
   it('revision 없는 guard 면 다른 provider 의 중단은 예전처럼 울타리 없이', async () => {
     const t = setup()

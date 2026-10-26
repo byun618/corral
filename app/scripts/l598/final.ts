@@ -14,6 +14,8 @@ import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { WebSocket } from 'ws'
 import { TerminalBackend, type TerminalIdentity } from '../../src/main/adapter/index.js'
+import { EndpointClient } from '../../src/main/adapter/internal/vendor/endpoint-client.js'
+import { MOUSE_KIND } from '../../src/main/adapter/internal/vendor/vt-input-classifier.js'
 import { cleanBody, draftState, screenPlain } from '../../src/main/mobile/keys.js'
 import type { MobileAgentKind } from '../../src/main/mobile/list.js'
 import { openLog } from '../../src/main/log.js'
@@ -1065,6 +1067,7 @@ async function u3c(): Promise<void> {
 
 /**
  * LIFE-598 r2 C3 추가: 같은 pane 연속 두 지시 — 앞 지시가 허브 쓰기(revision +1)여도 뒤 지시가 들어간다(자기 쓰기 사슬). 맥 입력 없음.
+ * `--pane cs`(관리 밖) · `--pane cm`(관리 — r3 최종 관문 준비).
  * 한가한 pane 에 두 지시를 잇달아 보낸다(앞 지시가 들어가 턴이 도는 동안 뒤 지시는 queued/turn). 판정: 둘 다 delivered + 기록 표지 각 1건 + 갈래 로그 0.
  */
 async function twin(): Promise<void> {
@@ -1087,6 +1090,73 @@ async function twin(): Promise<void> {
   } finally {
     await phone.close()
   }
+}
+
+/**
+ * LIFE-598 r3 (최종 관문 준비 — 리뷰 r3 C·R3-C1·G·R3-G1): 대기 지시 중 맥 GUI 경로의 **입력이 아닌 조작** 한 번이 revision 을 올리는지, 올리면 지시가 끝나는지.
+ * 긴 턴 중 지시를 큐에 넣고, corral GUI 와 같은 endpoint 클라이언트(`herdr-client.sock`)를 붙여 그 pane 의 `mouseReporting`(provider 가 마우스 보고를 켰나)을 적은 뒤
+ * `act` 를 한 번 한다. 판정은 일관성: revision 이 움직였으면 `failed/target_changed`·갈래 `input`·기록 0, 안 움직였으면 턴 뒤 `delivered`·기록 1.
+ */
+async function pendingRound(input: { label: string; act: (client: EndpointClient, info: PaneInfo) => Promise<Record<string, unknown>> }): Promise<void> {
+  const phone = await Phone.open()
+  const info = paneOf(flag('pane') ?? 'cs')
+  const client = new EndpointClient(SOCK.replace(/herdr\.sock$/, 'herdr-client.sock'))
+  client.on('error', () => {})
+  try {
+    await startLong(phone, info, M(`l598-${input.label}-long-${info.name}`))
+    const marker = M(`l598-${input.label}-${info.name}`)
+    const id = newId(`${input.label}-${info.name}`)
+    const sentAt = Date.now()
+    phone.send({ type: 'input.send', id, channel: info.paneId, text: `${marker} reply OK only` })
+    const queued = await phone.waitFor(id, (wire) => wire.state === 'queued', 8000)
+    await delay(1500)
+    await client.connect(120, 40)
+    await delay(800)
+    const mouseReporting = client.currentSurface?.panes.find((pane) => pane.paneId === info.paneId)?.mouseReporting ?? null
+    const before = (await rawAgent(info.paneId)).revision
+    const acted = await input.act(client, info)
+    await delay(800)
+    const after = (await rawAgent(info.paneId)).revision
+    const final = await phone.final(id, 240_000)
+    await waitIdle(info, 120_000)
+    await delay(1500)
+    const rows = markerRows(info, marker)
+    const checks = hubChecks(sentAt).filter((entry) => entry.op === 'send')
+    const moved = before !== null && after !== null && after !== before
+    const states = (phone.states.get(id) ?? []).map((wire) => `${wire.state}${wire.wait === null ? '' : `:${wire.wait}`}${wire.reason === null ? '' : `/${wire.reason}`}`)
+    const consistent = moved
+      ? final?.state === 'failed' && final.reason === 'target_changed' && checks.length === 1 && checks[0]!.check === 'input' && rows === 0
+      : final?.state === 'delivered' && rows === 1
+    out(`${input.label}-${info.name}`, { pane: info.name, mode: info.mode, queued: queued !== null, mouseReporting, revisionBefore: before, revisionAfter: after, moved, acted, final: final?.state ?? null, reason: final?.reason ?? null, checks, states, rows }, before !== null && after !== null && consistent)
+  } finally {
+    client.close()
+    await phone.close()
+  }
+}
+
+/** 대기 지시 중 마우스 휠 1회(corral GUI 의 휠과 같은 `sendPaneInput` ScrollUp). */
+async function wheel(): Promise<void> {
+  await pendingRound({
+    label: 'wheel',
+    act: async (client, info) => {
+      client.sendPaneInput(info.paneId, [{ type: 'mouse', kind: MOUSE_KIND.ScrollUp, column: 5, row: 5, modifiers: 0, lines: 1 }])
+      return { event: 'ScrollUp' }
+    },
+  })
+}
+
+/** 대기 지시 중 포커스 전환 1회 — 다른 시험 pane 으로 `pane.focus` 뒤 되돌림(corral GUI 의 pane 클릭과 같은 endpoint). */
+async function focus(): Promise<void> {
+  await pendingRound({
+    label: 'focus',
+    act: async (client, info) => {
+      const other = panes().find((pane) => pane.paneId !== info.paneId) ?? null
+      if (other !== null) await client.callEndpoint('pane.focus', { pane_id: other.paneId })
+      await delay(700)
+      await client.callEndpoint('pane.focus', { pane_id: info.paneId })
+      return { away: other?.paneId ?? null, back: info.paneId }
+    },
+  })
 }
 
 /**
@@ -1267,7 +1337,7 @@ async function u5r(): Promise<void> {
 
 // --- 실행 ---------------------------------------------------------------------------------------------------
 
-const ITEMS: Record<string, () => Promise<void>> = { series, twin, u1a, u1b, u1d, u2b, u2c, u2d, u2d2, u3a, u3b, u3c, u3d, u4a, u5, u5r }
+const ITEMS: Record<string, () => Promise<void>> = { series, twin, wheel, focus, u1a, u1b, u1d, u2b, u2c, u2d, u2d2, u3a, u3b, u3c, u3d, u4a, u5, u5r }
 if (command === 'setup') {
   await setup()
 } else if (ITEMS[command] !== undefined) {

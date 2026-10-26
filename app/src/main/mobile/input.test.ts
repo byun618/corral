@@ -1640,6 +1640,126 @@ describe('LIFE-598 r4 — 진행 중 넣지 않음 · reject 정리 · 응답 �
   })
 })
 
+describe('LIFE-598 r5 낮음 — 재관측 실패·답 대기·중단 확인 기한·빈 사슬 정리', () => {
+  const lag = (ms: number) => new Promise<void>((done) => setTimeout(done, ms))
+  /** 지시가 들어간 직후의 다음 관측 한 번(= 사슬 확정용 재관측)만 바꾼다. */
+  const afterPrompt = (t: ReturnType<typeof setup>, seen: (pane: TerminalIdentity, observe: (pane: TerminalIdentity) => Promise<PaneObservation>) => Promise<PaneObservation>): void => {
+    const prompt = t.backend.prompt.bind(t.backend)
+    const observe = t.backend.observe.bind(t.backend)
+    let armed = false
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      const result = await prompt(pane, input)
+      if ((calls += 1) === 1) armed = true
+      return result
+    }
+    t.backend.observe = async (pane) => {
+      if (!armed) return observe(pane)
+      armed = false
+      return seen(pane, observe)
+    }
+  }
+  it('C·R5-C1 지시가 들어간 뒤 재관측이 reject → 이 지시는 delivered, 고리는 거둬 뒤 지시 target_changed(k8)', async () => {
+    const t = setup()
+    afterPrompt(t, async () => { throw new Error('observe boom') })
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0001', channel: 'c1', text: '앞' })
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0002', channel: 'c1', text: '뒤' })
+    await wait(30)
+    t.backend.quiet = true
+    expect((await t.settled('l598r5-0000-0001')).state).toBe('delivered')
+    expect(await t.settled('l598r5-0000-0002')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toEqual(['앞'])
+  })
+  it('C·R5-C1 재관측에 입력 revision 이 없으면(null) 확정하지 않는다 — 뒤 지시 target_changed(k9)', async () => {
+    const t = setup()
+    afterPrompt(t, async (pane, observe) => ({ ...(await observe(pane)), input: null }))
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0003', channel: 'c1', text: '앞' })
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0004', channel: 'c1', text: '뒤' })
+    await wait(30)
+    t.backend.quiet = true
+    expect((await t.settled('l598r5-0000-0003')).state).toBe('delivered')
+    expect(await t.settled('l598r5-0000-0004')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.backend.prompts).toEqual(['앞'])
+  })
+  /** 지시 넣기가 `hold` ms 걸리는 동안 질문이 열리고 폰 답이 온다 — 넣기는 결국 들어간다(revision +1). */
+  const slowPromptWithAnswer = (t: ReturnType<typeof setup>, input: { hold: number; id: number; answerId: string; during?: () => void }): void => {
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, args) => {
+      if ((calls += 1) === 1) {
+        t.backend.status = 'blocked'
+        t.backend.quiet = false
+        t.backend.screenText = questionScreen(input.id)
+        t.items.list = [question({ id: input.id, state: 'pending' })]
+        t.answerOn({ id: input.id, value: 'o1' })
+        t.hub.answer({ device: 'd1', id: input.answerId, channel: 'c1', question: input.id, call: `toolu-${input.id}`, digest: digestFor(input.id), answers: [{ choices: [1], other: null }] })
+        await lag(30) // 답이 R0(넣기 전 값)를 잡고 진행 중 쓰기를 기다린다
+        input.during?.()
+        await lag(input.hold)
+      }
+      return prompt(pane, args)
+    }
+  }
+  it('C·R5-C2 지시가 느리게 들어가는 동안 온 답은 기다린 뒤 확정 고리(R0+1)를 울타리로 — 답도 delivered(k11)', async () => {
+    const t = setup()
+    slowPromptWithAnswer(t, { hold: 80, id: 81, answerId: 'l598r5-0000-0006' })
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0005', channel: 'c1', text: '앞' })
+    expect((await t.settled('l598r5-0000-0006')).state).toBe('delivered')
+    expect(t.backend.keyFences).toEqual([2])
+  })
+  it('C·R5-C2 지시 넣기가 answerConfirmMs(300) 보다 오래 걸리면 답은 키 0회 failed/busy(k3)', async () => {
+    const t = setup()
+    slowPromptWithAnswer(t, { hold: 700, id: 82, answerId: 'l598r5-0000-0008' })
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0007', channel: 'c1', text: '앞' })
+    expect(await t.settled('l598r5-0000-0008')).toMatchObject({ state: 'failed', reason: 'busy' })
+    expect(t.backend.sends).toHaveLength(0)
+  })
+  it('C·R5-C2 답이 기다리는 동안 모바일을 끄면 바로 끝난다(halted — 기한·쓰기 끝을 기다리지 않음, k10)', async () => {
+    const t = setup()
+    let offAt = 0
+    slowPromptWithAnswer(t, { hold: 600, id: 83, answerId: 'l598r5-0000-0010', during: () => { offAt = Date.now(); t.hub.stop() } })
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0009', channel: 'c1', text: '앞' })
+    expect(await t.settled('l598r5-0000-0010')).toMatchObject({ state: 'failed', reason: 'mobile_off' })
+    expect(Date.now() - offAt).toBeLessThan(200)
+    // 대기 루프도 그 자리에서 멈춰야 한다 — 기한(300 ms)·쓰기 끝(600 ms) 뒤에 결과를 다른 이유(`busy` 등)로 덮어쓰거나 키를 넣지 않는다.
+    await wait(800)
+    expect(t.last('l598r5-0000-0010')).toMatchObject({ state: 'failed', reason: 'mobile_off' })
+    expect(t.wires.filter((wire) => wire.id === 'l598r5-0000-0010' && wire.state === 'failed')).toHaveLength(1)
+    expect(t.backend.sends).toHaveLength(0)
+  })
+  it('C·R5-C3 중단 확인 기한은 사슬 재관측 뒤부터 — 관측이 느려도(150 ms) 기한(200 ms) 안에 멈춤을 본다', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    const observe = t.backend.observe.bind(t.backend)
+    let keyAt = 0
+    t.backend.onSend = () => {
+      keyAt = Date.now()
+      // 키 뒤 320 ms 에 멈춘다.
+      setTimeout(() => { t.backend.status = 'idle' }, 320)
+    }
+    t.backend.observe = async (pane) => {
+      if (keyAt > 0) await lag(150)
+      return observe(pane)
+    }
+    t.hub.stopTurn({ device: 'd1', id: 'l598r5-0000-0011', channel: 'c1' })
+    expect((await t.settled('l598r5-0000-0011', 3_000)).state).toBe('stopped')
+  })
+  it('C·R5-C5 고리가 하나도 남지 않은 pane 의 사슬 Map 은 버린다(거절·unknown 뒤 빈 Map 없음)', async () => {
+    const t = setup()
+    t.backend.promptResult = 'unknown'
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0012', channel: 'c1', text: '시간 초과' })
+    await t.settled('l598r5-0000-0012')
+    expect(t.hub.selfWritePanes()).toBe(0)
+    // 들어간 쓰기의 확정 고리는 남는다(뒤 지시의 울타리).
+    t.backend.promptResult = 'sent'
+    t.hub.send({ device: 'd1', id: 'l598r5-0000-0013', channel: 'c1', text: '들어감' })
+    expect((await t.settled('l598r5-0000-0013')).state).toBe('delivered')
+    expect(t.hub.selfWritePanes()).toBe(1)
+  })
+})
+
 describe('LIFE-598 효과 직전 세션 — 목록이 늦어도 herdr 관측이 바뀌었으면 넣지 않는다', () => {
   const newSession = observedSessionKey({ source: 'herdr:claude', kind: 'id', value: 'cleared-session' })
   it('ⓐ 목록은 옛 세션, herdr 관측은 새 세션(/clear) → failed/target_changed, prompt 0회', async () => {

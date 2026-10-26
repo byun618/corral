@@ -954,12 +954,16 @@ export class InputHub {
     if (count > 0) this.writing.set(write.key, count)
     else this.writing.delete(write.key)
     const { link } = write
-    if (link === null) return
+    if (link === null) {
+      this.dropEmptyChain(write.key)
+      return
+    }
     link.owners.delete(write.token)
     const chain = this.selfWrites.get(write.key)
     if (outcome.kind === 'sent') {
       if (outcome.after <= write.before) {
         if (link.owners.size === 0 && !link.confirmed) chain?.delete(write.before)
+        this.dropEmptyChain(write.key)
         return
       }
       link.after = outcome.after
@@ -967,6 +971,17 @@ export class InputHub {
       return
     }
     if (link.owners.size === 0 && !link.confirmed) chain?.delete(write.before)
+    this.dropEmptyChain(write.key)
+  }
+
+  /** 고리가 하나도 남지 않은 pane 의 사슬 Map 은 버린다(R5-C5 — pane·PTY 세대마다 빈 Map 이 쌓이지 않게). 진행 중인 쓰기가 있으면 남긴다. */
+  private dropEmptyChain(key: string): void {
+    if (this.selfWrites.get(key)?.size === 0 && !this.writing.has(key)) this.selfWrites.delete(key)
+  }
+
+  /** 시험·계측 — 사슬 Map 을 가진 pane 수. */
+  selfWritePanes(): number {
+    return this.selfWrites.size
   }
 
   /**
@@ -1296,18 +1311,22 @@ export class InputHub {
     const base = inputRevision ?? observed.input?.revision ?? null
     const write = base === null ? null : this.beginWrite({ pane, before: base })
     let sent: KeyResult = { kind: 'unknown' }
+    // 멈춤 확인 기한의 시작 — 키 직전. 사슬 확정용 재관측을 하면 그 뒤부터(R5-C3 — 재관측 RPC 만큼 확인 창이 줄지 않게. 키·결과 의미는 r2 이전 그대로).
+    let confirmFrom = sentAt
     try {
       sent = await backend.send(pane, { text: stopKey(kind), seq: observed.seq, inputRevision })
       // 울타리 없는 키는 응답에 revision 이 없다 — 다시 관측해 +1 일 때만 확정(R4-C3). Grok(울타리)은 guard 가 돌려준 값.
       if (write !== null && sent.kind === 'sent') {
-        if (sent.revision === null) await this.endUnreported({ write, backend, pane })
-        else this.endWrite(write, { kind: 'sent', after: sent.revision })
+        if (sent.revision === null) {
+          await this.endUnreported({ write, backend, pane })
+          confirmFrom = this.now()
+        } else this.endWrite(write, { kind: 'sent', after: sent.revision })
       }
     } finally {
       if (write !== null) this.endWrite(write, sent.kind === 'refused' ? { kind: 'refused' } : { kind: 'unknown' })
     }
     if (sent.kind === 'refused') return this.settle(entry, 'failed', 'state_changed')
-    const deadline = sentAt + this.timing.stopConfirmMs
+    const deadline = confirmFrom + this.timing.stopConfirmMs
     for (;;) {
       const now = await backend.observe(pane).catch(() => null)
       if (now !== null && now.status !== 'working' && now.status !== 'blocked') return this.settle(entry, 'stopped', null)

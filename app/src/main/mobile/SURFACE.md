@@ -213,9 +213,10 @@
   - **접수 뒤 맥 입력이 있으면 보내지 않는다**(LIFE-598 게이트 ① 결정 「1안」): 지시 대기 중 같은 pane 에 맥에서 **아무 키나** 치면(글자·Esc·`/clear`·붙여넣기, 그 pane 에 붙은
     다른 클라이언트의 쓰기 — CLI `terminal prompt`·orchestration 배달 포함), **마우스 보고를 켠 pane 에서 휠·클릭만 해도**(리뷰 r3 격리 실측 휠 +1·클릭 +2 — 맥에서 출력을 스크롤만 해도)
     그 지시는 넣지 않고 `failed/target_changed`(쓰기 0) 다. **포커스 전환**(다른 pane·창으로 포커스만 옮김 — corral 의 `pane.focus` 경로)은 revision 을 올리지 않았다(리뷰 r3 실측 +0, 양성 대조 포함).
-    같은 클릭이라도 **마우스 보고를 켠 pane 안을 누르면** 마우스 입력이라 +2 다(위) — 포커스만 옮기는 클릭과 구분된다(—
-    herdr 의 포커스 보고 코드 경로는 있어 provider 가 1004 를 켜는 경우는 최종 관문에서 본다). 휠·클릭을 빼는 정밀 구분은 guard 패치(입력 종류별 카운터)라 범위 밖이다(게이트 ① 판단 항목). 폰 문구는 기존 「그 사이 세션이 바뀌어 보내지 않았습니다」
-    그대로다(mobile 앱 무변경 — `/clear` 아닌 타자에는 문구가 어긋난다, 게이트 ① 보고 항목). 기다리지 않는다 — 대기 중이어도 다음 관측에서 바로 끝낸다.
+    같은 클릭이라도 **마우스 보고를 켠 pane 안을 누르면** 마우스 입력이라 +2 다(위). 포커스만 옮기는 클릭과는 구분된다.
+    herdr 에는 포커스 보고 코드 경로가 있어, provider 가 포커스 보고(1004)를 켜는 경우는 최종 관문에서 따로 본다.
+    휠·클릭을 빼는 정밀 구분은 guard 패치(입력 종류별 카운터)라 범위 밖이다(게이트 ① 판단 항목).
+    폰 문구는 기존 「그 사이 세션이 바뀌어 보내지 않았습니다」 그대로다(mobile 앱 무변경 — `/clear` 아닌 타자에는 문구가 어긋난다, 게이트 ① 보고 항목). 기다리지 않는다 — 대기 중이어도 다음 관측에서 바로 끝낸다.
   - **보장 강도 — 결정적인 것은 revision 울타리**: 효과(`agent.prompt`)의 `expected_input_revision` 이 **R0 에서 허브 자기 쓰기 사슬을 따라간 끝**(자기 쓰기가 없으면 R0)이라 guard 가 쓰는 같은 App 턴에서 접수 뒤 남의 입력을 거절한다.
     `/clear` 는 키 입력이라 herdr 가 새 세션을 언제 알든(리뷰 r2 실측 Enter 뒤 최대 ≈ 6 s, 한 번은 7 s 안에 반영 안 됨 — Claude 세션 참조는 SessionStart 훅 경로라 상한이 없다) 막힌다.
     guard 가 거절하면 다시 관측해 그 revision 을 지금의 사슬로 가른다 — 사슬 밖(`moved`, 접수 뒤 남의 입력)이면 `target_changed`(`input_refused`), 사슬 위이거나 자기 쓰기 진행 중(`behind`)이면
@@ -300,7 +301,7 @@
   답 줄이 오류면 `unconfirmed/question_declined`, 2건 이상 `record_ambiguous`. **답·중단은 취소를 받지 않는다**(`input.cancel` 은 큐의 지시만 — 받으면 지금 상태만 돌려준다, R2-A9).
 - **중단**: 그 순간 다시 관측해 `working`·`blocked` 일 때만 키 1회(Claude·Codex Esc · Grok Ctrl+C), 재시도 없음. 한가 `failed/not_running` · 숨김 대기(Grok 질문·권한 · 로그인 등 — Grok 권한은 상자가 입력 줄을 덮어 초안 확인 불가, 최종 관문 Z5ⓔ) `stop_hidden` ·
   Grok 입력창에 글 `mac_draft` · 관측 뒤 전이 `state_changed`. Grok 의 Ctrl+C 는 입력 줄의 글을 지우므로 **빈 입력 줄을 본 같은 guard 턴**(입력 500 ms 이상 조용 · 같은 seq)의
-  입력 revision 으로 `pane.send_text` 를 울타리 친다(R3-A6) — 화면을 읽은 뒤 맥 입력이 끼면 guard 가 거절해 Ctrl+C 0회 `failed/state_changed`. Claude·Codex 의 Esc 는 그대로(seq 비교만 — LIFE-598 r2 가 울타리를 쳤다가 r3 에서 되돌림. 같은 pane 대기 지시의 사슬은 관측 revision → +1 을 쓰기 전에 건다, 위 「허브 자기 쓰기」). 멈춤 = 상태가 working·blocked 를 떠남 또는 기록의 그 턴 `interrupted`(5초), 아니면 `unconfirmed/still_running`.
+  입력 revision 으로 `pane.send_text` 를 울타리 친다(R3-A6) — 화면을 읽은 뒤 맥 입력이 끼면 guard 가 거절해 Ctrl+C 0회 `failed/state_changed`. Claude·Codex 의 Esc 는 그대로(seq 비교만 — LIFE-598 r2 가 울타리를 쳤다가 r3 에서 되돌림. 같은 pane 대기 지시의 사슬은 관측 revision → +1 을 쓰기 전에 건다, 위 「허브 자기 쓰기」). 멈춤 = 상태가 working·blocked 를 떠남 또는 기록의 그 턴 `interrupted`(5초 — 사슬 확정용 재관측을 했으면 그 뒤부터 잰다, LIFE-598 r5), 아니면 `unconfirmed/still_running`.
   백그라운드 작업(Bash·서브에이전트)은 멈추지 않는다(Z1ⓓ).
 - 답·중단은 채널당 한 번에 하나(겹치면 `failed/busy`). 그 밖 이유: `empty`(정리 뒤 빈 글) · `bad_answer` · `not_ready` · `backend`(guard 오류 — 넣기 전이면 failed, 뒤면 unconfirmed) ·
   `revoked` · `target_changed` · `guard_outdated`(입력 revision 이 없는 guard, 또는 관리 밖 pane 인데 `unmanaged_prompt` 가 없는 guard) · `record_ambiguous`(기록 후보 둘 이상) · `record_unreadable`(커서용 기록을 못 읽음 — 넣지 않았다).

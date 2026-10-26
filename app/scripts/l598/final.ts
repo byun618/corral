@@ -1094,7 +1094,8 @@ async function twin(): Promise<void> {
     const ordered = firstSendingAt !== null && secondSendingAt !== null && secondSendingAt > firstSendingAt
     const checks = hubChecks(sentAt)
     out(`twin-${info.name}`, { pane: info.name, mode: info.mode, finals: finals.map((final) => final?.state ?? null), reasons: finals.map((final) => final?.reason ?? null), rows, files: files.map((list) => list.map((file) => path.basename(file))), sameFile, secondWaited, ordered, states, checks },
-      finals.every((final) => final?.state === 'delivered') && rows.every((count) => count === 1) && sameFile && secondWaited && ordered && checks.length === 0)
+      // `ordered` 는 기록만(판정 근거 아님 — 큐는 원래 순서대로라 변별력이 약하다, 리뷰 r5 C·R5-C6). 판정 = 둘 다 들어감 · 같은 세션 파일 · 뒤 지시가 큐에서 기다림.
+      finals.every((final) => final?.state === 'delivered') && rows.every((count) => count === 1) && sameFile && secondWaited && checks.length === 0)
   } finally {
     await phone.close()
   }
@@ -1107,7 +1108,7 @@ async function twin(): Promise<void> {
  * `act` 를 한 번 한다. 판정은 일관성: revision 이 움직였으면 `failed/target_changed`·갈래 `input`·기록 0, 안 움직였으면 턴 뒤 `delivered`·기록 1.
  */
 type RoundAct = (client: EndpointClient, info: PaneInfo) => Promise<Record<string, unknown>>
-async function pendingRound(input: { label: string; precheck: (input: { info: PaneInfo; mouseReporting: boolean | null }) => string | null; control: RoundAct | null; act: RoundAct }): Promise<void> {
+async function pendingRound(input: { label: string; precheck: (input: { info: PaneInfo; mouseReporting: boolean | null }) => string | null; holdWorking?: (mouseReportingWorking: boolean | null) => string | null; control: RoundAct | null; act: RoundAct }): Promise<void> {
   const phone = await Phone.open()
   const info = paneOf(flag('pane') ?? 'cs')
   const client = new EndpointClient(SOCK.replace(/herdr\.sock$/, 'herdr-client.sock'))
@@ -1155,8 +1156,11 @@ async function pendingRound(input: { label: string; precheck: (input: { info: Pa
       ? final?.state === 'failed' && final.reason === 'target_changed' && checks.length === 1 && checks[0]!.check === 'input' && rows === 0
       : final?.state === 'delivered' && rows === 1
     const controlOk = control === null || control.moved === true
-    out(`${input.label}-${info.name}`, { pane: info.name, mode: info.mode, mouseReporting, mouseReportingWorking, control, queued: queued !== null, stateBeforeAct, revisionBefore: before, revisionAfter: after, moved, acted, final: final?.state ?? null, reason: final?.reason ?? null, checks, states, rows },
-      queued !== null && stateBeforeAct === 'queued' && before !== null && after !== null && controlOk && consistent)
+    // 작업 중(조작 시점)에도 그 조건이어야 한다 — 아니면 판정 보류(리뷰 r5 C·R5-C6: 한가 때만 마우스 보고를 켜는 provider).
+    const holdWorking = input.holdWorking?.(mouseReportingWorking) ?? null
+    const ok = queued !== null && stateBeforeAct === 'queued' && before !== null && after !== null && controlOk && consistent
+    out(`${input.label}-${info.name}`, { pane: info.name, mode: info.mode, mouseReporting, mouseReportingWorking, holdWorking, control, queued: queued !== null, stateBeforeAct, revisionBefore: before, revisionAfter: after, moved, acted, final: final?.state ?? null, reason: final?.reason ?? null, checks, states, rows },
+      holdWorking !== null ? null : ok)
   } finally {
     client.close()
     await phone.close()
@@ -1173,6 +1177,7 @@ async function wheel(): Promise<void> {
   await pendingRound({
     label: 'wheel',
     precheck: ({ mouseReporting }) => (mouseReporting === true ? null : `mouseReporting=${String(mouseReporting)} — 마우스 보고를 켠 pane 이 아니면 휠은 입력이 아니다(판정 보류)`),
+    holdWorking: (working) => (working === true ? null : `mouseReportingWorking=${String(working)} — 작업 중에는 마우스 보고가 꺼져 있다(판정 보류)`),
     control: wheelOnce,
     act: wheelOnce,
   })
@@ -1193,6 +1198,88 @@ async function focus(): Promise<void> {
       return { away: other.paneId, back: info.paneId }
     },
   })
+}
+
+/**
+ * LIFE-598 r5(리뷰 C·R5-C4 — 최종 관문 필수): 실 guard 로 도는 허브 자기 쓰기 사슬. 「대기 지시 + 폰 중단」 — 긴 턴 중 지시를 큐에 넣고 폰에서 중단(Claude Esc, 울타리 없음),
+ * 지시는 중단 뒤 `delivered`·기록 1 이어야 한다. 중단 키 전후 입력 revision(관측)을 원자료로 남긴다 — 실 guard 의 중단 키가 정확히 +1 인지(`stopDelta`).
+ */
+async function stopchain(): Promise<void> {
+  const phone = await Phone.open()
+  const info = paneOf(flag('pane') ?? 'cs')
+  try {
+    await startLong(phone, info, M(`l598-stopchain-long-${info.name}`))
+    const marker = M(`l598-stopchain-${info.name}`)
+    const id = newId(`stopchain-${info.name}`)
+    const sentAt = Date.now()
+    phone.send({ type: 'input.send', id, channel: info.paneId, text: `${marker} reply OK only` })
+    const queued = await phone.waitFor(id, (wire) => wire.state === 'queued', 8000)
+    await delay(1500)
+    const stateBeforeStop = (phone.states.get(id) ?? []).at(-1)?.state ?? null
+    const before = (await rawAgent(info.paneId)).revision
+    const stopId = newId(`stopchain-stop-${info.name}`)
+    phone.send({ type: 'turn.stop', id: stopId, channel: info.paneId })
+    const stop = await phone.final(stopId, 15_000)
+    const afterStopAt = Date.now()
+    const afterStop = (await rawAgent(info.paneId)).revision
+    const final = await phone.final(id, 120_000)
+    await waitIdle(info, 60_000)
+    await delay(1500)
+    const rows = markerRows(info, marker)
+    const checks = hubChecks(sentAt).filter((entry) => entry.op === 'send')
+    const states = (phone.states.get(id) ?? []).map((wire) => `${wire.state}${wire.wait === null ? '' : `:${wire.wait}`}${wire.reason === null ? '' : `/${wire.reason}`}`)
+    // afterStop 을 읽기 전에 지시가 넣기를 시작했으면 그 +1 도 섞인다 — 그때 `stopDelta` 는 중단 키만의 값이 아니다(`promptBeforeRead`).
+    const sending = sendingAt(phone, id)
+    const sentBeforeAfterStop = sending !== null && sending < afterStopAt
+    out(`stopchain-${info.name}`, { pane: info.name, mode: info.mode, queued: queued !== null, stateBeforeStop, stop: stop === null ? null : `${stop.state}/${stop.reason}`, revisionBeforeStop: before, revisionAfterStop: afterStop, stopDelta: before === null || afterStop === null ? null : afterStop - before, promptBeforeRead: sentBeforeAfterStop, final: final?.state ?? null, reason: final?.reason ?? null, rows, checks, states },
+      queued !== null && stateBeforeStop === 'queued' && stop?.state === 'stopped' && final?.state === 'delivered' && rows === 1 && checks.length === 0)
+  } finally {
+    await phone.close()
+  }
+}
+
+/**
+ * LIFE-598 r5(리뷰 C·R5-C4 — 최종 관문 필수): 「대기 지시 + 질문 답 키」 — 질문(AskUserQuestion)으로 막힌 동안 지시를 큐에 넣고 폰에서 답, 답 키(울타리, guard 가 쓴 뒤 revision 을 돌려줌)
+ * 뒤 지시가 `delivered`·기록 1 이어야 한다. 답 전후 revision 을 남긴다(`answerDelta` = 답 키 수와 같아야 사슬이 그대로 이어진다).
+ */
+async function answerchain(): Promise<void> {
+  const phone = await Phone.open()
+  const info = paneOf(flag('pane') ?? 'cs')
+  try {
+    await waitIdle(info)
+    phone.subscribe(info.paneId)
+    await delay(800)
+    const seen = new Set([...(phone.questions.get(info.paneId)?.keys() ?? [])])
+    const ask = await sendOnce({ phone, info, text: ASK.prompt, marker: M(`l598-answerchain-ask-${info.name}`), settleMs: 300 })
+    const question = await phone.pendingQuestion(info.paneId, seen, 90_000)
+    if (question === null) {
+      out(`answerchain-${info.name}`, { ask: sendView(ask), question: null }, false)
+      return
+    }
+    await waitStatus(info.paneId, (agent) => agent.status === 'blocked', 30_000)
+    const marker = M(`l598-answerchain-${info.name}`)
+    const id = newId(`answerchain-${info.name}`)
+    const sentAt = Date.now()
+    phone.send({ type: 'input.send', id, channel: info.paneId, text: `${marker} reply OK only` })
+    const queued = await phone.waitFor(id, (wire) => wire.state === 'queued', 8000)
+    await delay(1500)
+    const stateBeforeAnswer = (phone.states.get(id) ?? []).at(-1)?.state ?? null
+    const before = (await rawAgent(info.paneId)).revision
+    const answerId = newId(`answerchain-answer-${info.name}`)
+    phone.send({ type: 'question.answer', id: answerId, channel: info.paneId, question: question.id, call: question.call, digest: question.digest, answers: ASK.answers })
+    const answer = await phone.final(answerId, 60_000)
+    const afterAnswer = (await rawAgent(info.paneId)).revision
+    const final = await phone.final(id, 120_000)
+    await waitIdle(info, 60_000)
+    await delay(1500)
+    const rows = markerRows(info, marker)
+    const checks = hubChecks(sentAt).filter((entry) => entry.op === 'send')
+    const states = (phone.states.get(id) ?? []).map((wire) => `${wire.state}${wire.wait === null ? '' : `:${wire.wait}`}${wire.reason === null ? '' : `/${wire.reason}`}`)
+    out(`answerchain-${info.name}`, { pane: info.name, mode: info.mode, queued: queued !== null, stateBeforeAnswer, answer: answer === null ? null : `${answer.state}/${answer.reason}`, revisionBeforeAnswer: before, revisionAfterAnswer: afterAnswer, answerDelta: before === null || afterAnswer === null ? null : afterAnswer - before, final: final?.state ?? null, reason: final?.reason ?? null, rows, checks, states },
+      queued !== null && stateBeforeAnswer === 'queued' && answer?.state === 'delivered' && final?.state === 'delivered' && rows === 1 && checks.length === 0)
+  } finally {
+    await phone.close()
+  }
 }
 
 /**
@@ -1373,7 +1460,7 @@ async function u5r(): Promise<void> {
 
 // --- 실행 ---------------------------------------------------------------------------------------------------
 
-const ITEMS: Record<string, () => Promise<void>> = { series, twin, wheel, focus, u1a, u1b, u1d, u2b, u2c, u2d, u2d2, u3a, u3b, u3c, u3d, u4a, u5, u5r }
+const ITEMS: Record<string, () => Promise<void>> = { series, twin, wheel, focus, stopchain, answerchain, u1a, u1b, u1d, u2b, u2c, u2d, u2d2, u3a, u3b, u3c, u3d, u4a, u5, u5r }
 if (command === 'setup') {
   await setup()
 } else if (ITEMS[command] !== undefined) {

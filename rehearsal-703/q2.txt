@@ -1,2 +1,3 @@
 release 쪽 q2
 base 쪽 q2 — 충돌(ⓠ②)
+base 쪽 q2 두 번째 — 충돌(ⓠ② 재시도)

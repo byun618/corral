@@ -223,6 +223,10 @@ corral terminal read --terminal <handle> --screen --json   # 배너
 ```
 
 ### 보장 수준
+**세션 기록 경로**: 응답의 `result.agent.sessionRecord.path` — claude 는 세션 id 를 민팅하므로 기동 응답에 있다(파일은 아직 없어 `exists: false`).
+codex 는 기동 응답에서 `sessionRecord`·`sessionId` 가 null 이고, 경로는 첫 `terminal prompt` 응답에서야 나오며 소유 판정이 `ambiguous` 일 수 있다
+(LIFE-704 의 claude 코디 기동 응답, LIFE-589 의 codex 기동 응답·LIFE-591 의 codex 주입 응답 원자료 — 2026-10 관측).
+
 **관측.** 기동 자체는 계약이지만 **모델·advisor 가 실제로 무엇으로 해소됐는지는 관측이다.** dispatch 스냅샷은
 기동 시점 관측이라 갱신되지 않고 `resolvedModel: null` 일 수 있다. argv(`terminal show`)와 배너(`terminal read`)로
 기록하고 **요청값과 관측값을 구분해 적는다.** 별칭(`opus`·`fable`)은 버전 고정이 아니다.

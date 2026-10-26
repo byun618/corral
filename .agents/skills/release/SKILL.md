@@ -64,7 +64,8 @@ description: >-
 - **결정 기록(비공개)**: 채택·기각·보류와 그 이유, 「작동했나」 대조, 개선 일감 후보를 corral-specs `retro/vX.Y.Z.md` 한 파일에 이때 쓴다.
   커밋은 출고(§6)가 끝난 뒤 마무리에서 본체 세션이 그 파일만 지정해 한다(AGENTS.md 「산출물 규칙」의 루트 공용 파일과 같은 방식) —
   `retro/` 의 새 파일은 미추적이라 `git add -- retro/vX.Y.Z.md` 를 먼저 한다.
-  출고를 접으면(`abort`) 회고 커밋은 release 브랜치와 함께 사라진다 — 기록 머리에 「접음 — 다음 출고 회고에서 다시 적용」을 적어 커밋하고, 다음 회고가 그 기록에서 이어 간다.
+  출고를 접으면(`abort`) 회고 커밋은 release 브랜치와 함께 사라진다 — 접기 전에 그 커밋의 diff(사용자와 다듬은 learnings·ADR 최종 문구)를 기록에 붙이고,
+  기록 머리에 「접음 — 다음 출고 회고에서 다시 적용」을 적어 커밋한다. 다음 회고가 그 기록에서 이어 간다.
   그래서 회고를 시작할 때 `retro/` 에서 「접음」 머리를 가진 기록을 먼저 찾는다 — 다시 자르며 버전이 바뀌면 파일 이름이 다르다.
   이어받으면 그 기록 머리를 「이어받음 vX.Y.Z」(이어받은 출고 버전)로 바꿔 같이 커밋한다 — 다음 회고가 다시 찾지 않게.
   공개 쪽에는 결정 결과만 남는다.
@@ -103,7 +104,7 @@ description: >-
    폰이 연결돼 있지 않으면 설치를 미루고 그렇다고 보고한다.
 4. 남은 작업 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>`.
 5. `scripts/release.sh finish` — 원래 PR 이 MERGED 인지 다시 보고(head 삭제) release 브랜치(로컬·원격)·worktree 를 지운다. 13 이면 남겨 두고 보고한다.
-6. 회고 결정 기록 `retro/vX.Y.Z.md`(이어받은 「접음」 기록이 있으면 그것도)가 있으면 corral-specs 에 그 파일만 지정해 `git add --`·커밋·push 한다(§4).
+6. 회고 결정 기록이 있으면 §4 「결정 기록」 대로 corral-specs 에 커밋·push 한다.
 7. 보고: 태그·Release URL·출고된 PR(MERGED 여부)·LA 전이 결과·맥 설치 버전·폰 설치 결과(versionName·`lastUpdateTime`)·**APK 경로와 sha256**·release 브랜치 정리. 빠진 단계가 있으면 그렇다고 적는다.
 
 출고를 접을 때(출고 전): `scripts/release.sh abort` — release 브랜치·worktree 만 지우고 PR 은 열린 채 남는다. 회고를 했으면 결정 기록 처리는 §4.

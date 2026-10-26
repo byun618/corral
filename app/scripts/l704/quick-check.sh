@@ -55,6 +55,7 @@ place() {
     R4) printf '%s\t%s\t%s\n' "$RS" '^## 4\. ' '^## 5\. ' ;;
     R2) printf '%s\t%s\t%s\n' "$RS" '^## 2\. ' '^## 3\. ' ;;
     R7) printf '%s\t%s\t%s\n' "$RS" '^## 7\. ' '' ;;
+    CM) printf '%s\t%s\t%s\n' .agents/harness/corral.md '^## 『세션 기동』' '^## 『준비 대기』' ;;
     TS4) printf '%s\t%s\t%s\n' .agents/skills/task-start/SKILL.md '^4\. ' '^5\. ' ;;
     TS6) printf '%s\t%s\t%s\n' .agents/skills/task-start/SKILL.md '^6\. ' '' ;;
     INST) printf '%s\t%s\t%s\n' app/INSTALL.md '^## 출고' '^## 빌드' ;;
@@ -133,7 +134,15 @@ C2a-sources-reviews	S8	has	`reviews.md` 는 내용 대조에 쓴다 — 시각�
 C2a-record-no-guess	S8	has	경로를 짐작하지 않고(능력 계약 H6)
 G1-record-from-start	S8	has	`00-start.md` 에 시작 세션이 적은 세션 기록 경로(task-start 4단계
 G1-record-none	S8	has	devlog 에 「코디 기록 없음」을 적은 뒤
-G1-by-mapping	S8	has	응답에 경로를 주지 않는 매핑
+G1-by-mapping	S8	has	기동 응답에 경로를 주지 않는 도구 — 지금 corral 매핑의 Codex 코디, 매핑 『세션 기동』 절
+J1-claude-only	S8	has	transcript 대조는 지금 Claude 코디 일감에서만 된다
+J1-ts4-per-tool	TS4	has	기동 응답에 경로가 있는지는 도구마다 다르다
+J1-mapping-field	CM	has	`result.agent.sessionRecord.path`
+J1-mapping-codex-null	CM	has	codex 는 기동 응답에서 `sessionRecord`·`sessionId` 가 null
+J2-restart-many	S8	has	경로가 여럿이면 날짜순으로 모두 읽는다
+J2-abort-keep-text	R4	has	접기 전에 그 커밋의 diff(사용자와 다듬은 learnings·ADR 최종 문구)를 기록에 붙이고
+J2-readme-points	L	has	별도 LIFE 일감)는 release §4 가 정한다
+J2-readme-no-restate	L	not	회고에서 바로 고치지 않고
 G1-no-raw-start	S8	not	raw/start/
 G1-no-codex-branch	S8	not	Codex 코디 등
 G1-task-start-records	TS4	has	응답이 세션 기록 경로를 돌려주면 그 경로도 같이 적는다
@@ -143,7 +152,8 @@ H1-s8-step4	S8	has	(task-start 4단계 — 『세션 기동』 응답이 돌려�
 H3-lastreviewed-scan	R4	has	`.agents/learnings/*.md` 머리의 `Last reviewed` 를 모두 훑어
 H3-retro-git-add	R4	has	`git add -- retro/vX.Y.Z.md` 를 먼저 한다
 H3-inherited	R4	has	「이어받음 vX.Y.Z」
-H3-r7-add	R7	has	`git add --`·커밋·push
+H3-r7-add	R7	has	§4 「결정 기록」 대로 corral-specs 에 커밋·push 한다
+J2-r7-no-restate	R7	not	git add
 G3-stale-to-proposal	S8	has	고치지 않고 그 파일 이름을 여기 적는다
 G3-same-reply	S8	has	사람 절 초안을 보이고 사용자 확인을 받기 전에는 1단계로 가지 않는다
 G3-readme-points	L	has	회고로 넘기는 법은 task-coordinate §8
@@ -191,7 +201,7 @@ F6-find-folder	R4	has	head 브랜치 `LIFE-NNN-<슬러그>` = corral-specs 작�
 F6-bundle-children	R4	has	묶음 폴더 `verdict.md` 의 자식 판정 링크
 F6-record-commit-after-ship	R4	has	커밋은 출고(§6)가 끝난 뒤 마무리에서
 F6-abort	R4	has	「접음 — 다음 출고 회고에서 다시 적용」
-F6-r7-commit	R7	has	회고 결정 기록 `retro/vX.Y.Z.md`(이어받은 「접음」 기록이 있으면 그것도)가 있으면
+F6-r7-commit	R7	has	6. 회고 결정 기록이 있으면
 C3b-record-one-place	R4	has	corral-specs `retro/vX.Y.Z.md` 한 파일
 C3b-no-release-pr-line	R4	has	메시지에 `Release-PR:` 줄을 쓰지 않는다
 C3c-no-changelog	RS	not	changelog
@@ -312,9 +322,9 @@ TOTPC="$(grep -c . "$PCS")"
 RANGE="$OUT/range.txt"
 git diff --stat "$BASE...HEAD" > "$RANGE"
 [ -s "$RANGE" ] || bad "diff --stat 이 비었다 ($BASE...HEAD)"
-OUTSIDE="$(git diff --name-only "$BASE...HEAD" | grep -vE '^(AGENTS\.md|\.agents/learnings/|docs/adr/|\.agents/skills/task-coordinate/(SKILL\.md|references/implementation\.md)|\.agents/skills/release/SKILL\.md|app/INSTALL\.md|\.agents/skills/task-start/SKILL\.md|app/scripts/l704/)' || true)"
+OUTSIDE="$(git diff --name-only "$BASE...HEAD" | grep -vE '^(AGENTS\.md|\.agents/learnings/|docs/adr/|\.agents/skills/task-coordinate/(SKILL\.md|references/implementation\.md)|\.agents/skills/release/SKILL\.md|app/INSTALL\.md|\.agents/skills/task-start/SKILL\.md|\.agents/harness/corral\.md|app/scripts/l704/)' || true)"
 say "── diff 범위 ($BASE...HEAD): $(tail -1 "$RANGE")"
-[ -z "$OUTSIDE" ] && say "ok   범위 안 (제품 코드 app/src·mobile 무변경, app/INSTALL.md 는 r1 F1·task-start 는 r2 G1 정합 줄)" || { bad "범위 밖 파일"; echo "$OUTSIDE" | sed 's/^/  /' | tee -a "$SUM"; }
+[ -z "$OUTSIDE" ] && say "ok   범위 안 (제품 코드 app/src·mobile 무변경, app/INSTALL.md 는 r1 F1·task-start 는 r2 G1·corral.md 는 r4 J1 정합 줄)" || { bad "범위 밖 파일"; echo "$OUTSIDE" | sed 's/^/  /' | tee -a "$SUM"; }
 
 # ── 4. AGENTS.md 줄 수 ──
 L="$(wc -l < AGENTS.md | tr -d ' ')"; [ "$L" -le 200 ] && say "ok   AGENTS.md ${L}줄 ≤ 200" || bad "AGENTS.md ${L}줄"

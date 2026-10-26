@@ -1,146 +1,104 @@
 #!/usr/bin/env bash
-# release.sh --prs "<번호> <번호> …" --notes <릴리즈 노트 파일> [--bump patch|minor|major | --version X.Y.Z] [--skip-build] [--skip-apk] [--dry-run]
-#            [--base throwaway/<이름> --tag-prefix rehearsal-<이름>-v]   ← 리허설. 둘은 짝으로만 받는다
-# 출고 (LIFE-574) — 사용자가 고른 PR 을 그 순서대로 머지하고, 버전 올림 커밋 + 태그 <접두>X.Y.Z 를 push 한 뒤
-# 그 태그 위 깨끗한 트리에서 dmg 와 모바일 APK 를 빌드한다(LIFE-599). 출고 머지는 이 스크립트 한 경로로만 한다(웹 UI 머지 금지).
-# --skip-build 는 dmg 만, --skip-apk 는 APK 만 건너뛴다 — 둘 다 빼려면 둘 다 준다.
+# release.sh <하위 명령> [인자]   — 출고 (LIFE-574 → LIFE-703 release 브랜치 흐름)
+#   cut    [--bump patch|minor|major | --version X.Y.Z] [--dry-run]       ① 자르기 — origin/main 끝에서 release/vX.Y.Z + worktree, 버전 커밋
+#   gather --prs "<번호> <번호> …" [--dry-run]                            ② 모으기 — 고른 PR head 를 release 브랜치에 로컬 merge(merge commit)
+#   ship   --notes <릴리즈 노트 파일> [--skip-build] [--skip-apk] [--dry-run] ③ 출고 — release→main PR 머지 · 태그 · Release · ff · 원래 PR 처리 · dmg · APK
+#   finish [--leave-open]                                                ④ 정리 — 출고 확인 뒤 release 브랜치(로컬·원격)·worktree 삭제
+#          (--leave-open: MERGED 로 확인 안 된 원래 PR 이 남아도 그 head 는 두고 release 브랜치만 정리 — 사람이 확인한 뒤에만)
+#   abort                                                                ⑤ 접기 — 출고 전 release 브랜치(로컬·원격)·worktree 삭제, PR 은 열린 채
+#   모든 하위 명령: [--base throwaway/<이름> --tag-prefix rehearsal-<이름>-v]  ← 리허설. 둘은 짝으로만 받는다
 #
-# **검사 없이 순서 머지다** (범위 변경 r1, 2026-10-08). PR CI 는 아직 없다 — 후속 일감 LIFE-575(맥미니 self-hosted 러너).
-# 브랜치 보호(required check)도 Free 플랜 private 레포에서 쓸 수 없다(403). 검증은 작업 플로우의 리뷰·관문이 한다.
+# 흐름 — release 브랜치는 출고 1회 수명이고 한 번에 하나다(로컬·원격 어디든 열린 것이 있으면 cut 거절).
+# 실 출고: base main · 태그 vX.Y.Z · release 브랜치 release/vX.Y.Z · worktree <본체>/.claude/worktrees/release-vX.Y.Z
+# 리허설: base throwaway/<이름> · 태그 rehearsal-…X.Y.Z · release 브랜치 <base>-release/<태그> — 이름이 전부 throwaway/·rehearsal- 아래다.
 #
-# 0) 머지 전에 고른 PR 전부를 본다 — 닫힘·draft·포크·base 불일치가 하나라도 있으면 아무것도 머지하지 않는다(exit 2).
-#    이때 각 PR 의 head SHA 를 고정한다. 이미 머지된 PR 은 건너뛴다 — 중간에 멈추면 같은 명령을 다시 돌리면 된다.
-#    APK 를 만들 거면 그 툴체인 전제(JDK·Android SDK·eas 로그인·작업 폴더)도 여기서 본다(release-apk.sh --preflight) — 미달이면 머지 0건(exit 2).
-#    --dry-run 은 여기까지 보고 대상 PR·순서·head·다음 버전·태그·dmg·APK 계획을 출력하고 끝난다(머지·커밋·push 0건)
-# PR 마다:
-#   1) GitHub 의 머지 가능 판정(mergeable)을 본다 — 앞 PR 머지로 충돌이 생겼으면(CONFLICTING) 거기서 멈추고
-#      그 PR 과 뒤 PR 은 머지하지 않는다(exit 3). 판정이 끝내 안 나오면 멈춘다(exit 5)
-#   2) gh pr merge --merge --match-head-commit <0) 에서 고정한 SHA> — 그 뒤 head 가 바뀌었으면 GitHub 가 거절한다(exit 6). 검사가 아니라 안전장치다
-#   3) 머지 커밋 부모 2개 확인(squash·rebase 아님), 원격 head 브랜치 삭제
-# 남은 PR 에 base 를 합쳐 push 하지 않는다 — CI 가 없어 다시 돌릴 것이 없고, 남의 작업 브랜치를 건드리지 않는다.
-# 충돌 해소 절차는 app/INSTALL.md 「출고」 — 원격 작업 브랜치로 worktree 를 다시 만들어 base 를 merge(rebase 금지)·push 한 뒤 다시 돌린다.
-# 4) 본체 checkout fast-forward 는 release-ff.sh — index.lock 을 총 30초·0.5초 간격으로 기다린다(관측 lock 유지 최대 1.55초, LIFE-672).
-#    실패해도 경고로 남고 dmg 로 간다. lock 은 지우지 않는다
-# 버전 커밋·태그 push 가 실패하면(exit 7) 로컬 태그를 지우고 멈춘다 — 같은 명령 재실행이 태그만 다시 만든다.
-# dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 안내대로 release-dmg.sh 만 다시 돌린다(그 뒤 APK 도 — 안내에 있다).
-# APK 가 실패하면(exit 10) 머지·태그·dmg 는 끝난 상태다 — 안내대로 release-apk.sh 만 다시 돌린다.
-# 릴리즈 노트(--notes)는 release 스킬이 고른 PR 본문을 읽고 쓴 원고다 — 태그 push 뒤 GitHub Release 로 올린다
-# (리허설은 prerelease). 실패하면(exit 9) 머지·태그는 끝난 상태다 — 안내대로 gh release create 만 다시 돌린다.
+# 설계 (LIFE-703 00-analysis §5 — 기준):
+# - PR 집합의 출처는 release 브랜치 자신이다. gather 의 merge 커밋마다 「Release-PR: <번호> <head SHA>」 줄을 남기고,
+#   ship·finish 는 release 브랜치의 first-parent 이력(자르기 커밋 「Release-Cut: <태그>」 까지)에서 그 줄을 읽는다 — --prs 를 다시 받지 않는다.
+#   같은 PR 이 여러 번 모였으면(출고 중 수정) 마지막 줄의 SHA 가 기록이다.
+# - head 고정: gather 는 점검 시점 head SHA 를 fetch 해 그 SHA 를 merge 한다. ship 직전에 PR 마다 **지금 head 가 release 브랜치에 있는지** 다시 본다 —
+#   모은 뒤 head 가 움직였는데 다시 모으지 않았으면 거절(exit 2). release→main 머지는 release 끝 SHA 로 --match-head-commit 고정.
+# - 원래 PR 은 head 가 main 에 닿으면 GitHub 가 MERGED 로 바꾼다(간접 머지). ship 은 정해진 시간 동안 다시 조회해 **MERGED 를 본 뒤에만**
+#   원격 head 를 지운다(그 전에 지우면 CLOSED 가 될 수 있다). 끝내 안 되면 지우지 않고 남은 PR 을 알리고 exit 13 — finish 가 다시 본다.
+# - 태그 = main 끝(release→main 머지 커밋). 그 커밋의 app/package.json = 태그 버전(버전 커밋은 cut 이 release 브랜치에 둔다).
+#   main 에 직접 push 하는 것은 태그뿐이다 — main 의 새 커밋은 release PR 머지 커밋 하나다.
+# - 멱등: 단계마다 「어디까지 됐나」를 원격 상태(원격 태그·release PR 상태·Release 유무)로 보고, 같은 명령 재실행이 이어 간다.
+#
+# 종료코드 (app/INSTALL.md 「출고」 표와 같다):
+#   0 완료 · 1 인자·환경 오류(변경 0) · 2 사전 점검 거절(변경 0) · 3 충돌(gather: release worktree 에 남김 / ship: release PR 충돌)
+#   5 머지 가능 판정 없음 · 6 release PR 머지 거절·결과 이상 · 7 태그 push 실패 · 8 dmg 실패 · 9 GitHub Release 실패 · 10 APK 실패
+#   11 release 브랜치 push 실패 · 12 release PR 생성·조회 실패 · 13 원래 PR 이 MERGED 로 확인되지 않음(출고 자체는 끝남)
+# 재실행 안내의 명령은 설명과 다른 줄에 홀로, 경로는 단일 따옴표로 인용한다(LIFE-599).
+#
+# 검사 없이 순서 머지다 — PR CI 는 아직 없다(LIFE-575), 브랜치 보호는 Free 플랜 private 레포에서 쓸 수 없다(403).
+# 본체 checkout fast-forward 는 release-ff.sh(LIFE-672), dmg 는 release-dmg.sh, APK 는 release-apk.sh — 셋 다 태그 하나를 입력으로 받는다.
 set -euo pipefail
 
 die() { local code="${2:-1}"; echo "✖ $1" >&2; exit "$code"; }
 note() { echo "· $1"; }
+shq() { local s="$1" q="'\\''"; printf "'%s'" "${s//\'/$q}"; }
+NL=$'\n'
 
-PRS=""; NOTES=""; BASE="main"; PREFIX="v"; BUMP="patch"; VERSION=""; SKIP_BUILD=0; SKIP_APK=0; DRY_RUN=0
+USAGE="사용법: release.sh cut|gather|ship|finish|abort [인자] — 머리 주석·app/INSTALL.md 「출고」"
+CMD="${1:-}"
+case "$CMD" in
+  cut|gather|ship|finish|abort) shift ;;
+  ""|-h|--help) echo "$USAGE"; exit 0 ;;
+  --*) die "하위 명령이 필요하다(LIFE-703 — 옛 'release.sh --prs …' 한 번 출고는 없다: cut → gather → ship). $USAGE" ;;
+  *) die "모르는 하위 명령: $CMD. $USAGE" ;;
+esac
+
+PRS=""; NOTES=""; BASE="main"; PREFIX="v"; BUMP="patch"; VERSION=""; SKIP_BUILD=0; SKIP_APK=0; DRY_RUN=0; LEAVE_OPEN=0
+allow() { case " $1 " in *" $CMD "*) ;; *) die "$2 는 $CMD 에서 받지 않는다. $USAGE" ;; esac; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --prs) PRS="${2:?--prs 값 없음}"; shift 2 ;;
-    --notes) NOTES="${2:?--notes 값 없음}"; shift 2 ;;
     --base) BASE="${2:?--base 값 없음}"; shift 2 ;;
     --tag-prefix) PREFIX="${2:?--tag-prefix 값 없음}"; shift 2 ;;
-    --bump) BUMP="${2:?--bump 값 없음}"; shift 2 ;;
-    --version) VERSION="${2:?--version 값 없음}"; shift 2 ;;
-    --skip-build) SKIP_BUILD=1; shift ;;
-    --skip-apk) SKIP_APK=1; shift ;;
-    --dry-run) DRY_RUN=1; shift ;;
-    *) die "모르는 인자: $1" ;;
+    --bump) allow cut "$1"; BUMP="${2:?--bump 값 없음}"; shift 2 ;;
+    --version) allow cut "$1"; VERSION="${2:?--version 값 없음}"; shift 2 ;;
+    --prs) allow gather "$1"; PRS="${2:?--prs 값 없음}"; shift 2 ;;
+    --notes) allow ship "$1"; NOTES="${2:?--notes 값 없음}"; shift 2 ;;
+    --skip-build) allow ship "$1"; SKIP_BUILD=1; shift ;;
+    --skip-apk) allow ship "$1"; SKIP_APK=1; shift ;;
+    --dry-run) allow "cut gather ship" "$1"; DRY_RUN=1; shift ;;
+    --leave-open) allow finish "$1"; LEAVE_OPEN=1; shift ;;
+    *) die "모르는 인자: $1. $USAGE" ;;
   esac
 done
-[ -n "$(echo "$PRS" | tr -d ' ,')" ] || die "사용법: release.sh --prs \"12 15\" --notes <파일> [--bump patch|minor|major|--version X.Y.Z] [--skip-build] [--skip-apk] [--dry-run]"
-# 릴리즈 노트 — 실 실행은 필수(dry-run 은 노트를 쓰기 전 점검이라 없어도 된다). 아래에서 cd 하므로 절대경로로
-if [ -n "$NOTES" ]; then
-  [ -s "$NOTES" ] || die "릴리즈 노트 파일이 없거나 비었다: $NOTES"
-  NOTES="$(cd "$(dirname "$NOTES")" && pwd)/$(basename "$NOTES")"
-elif [ "$DRY_RUN" != 1 ]; then
-  die "--notes <릴리즈 노트 파일> 필수 — 고른 PR 본문을 읽고 쓴다(release 스킬). 머지 전에 거절"
-fi
-# 번호 검사 + 중복 제거(처음 나온 순서 유지)
-UNIQ=""
-for n in $(echo "$PRS" | tr ',' ' '); do
-  case "$n" in *[!0-9]*) die "PR 번호가 아님: $n" ;; esac
-  case " $UNIQ " in *" $n "*) echo "· PR #$n 중복 — 한 번만 처리" ;; *) UNIQ="$UNIQ $n" ;; esac
-done
-PRS="$UNIQ"
-# 실 출고(main + v) 와 리허설(throwaway/* + rehearsal-*) 만 허용 — 한쪽만 바꾸면 실 레포의 main 이나 v 태그를 칠 수 있다
+
+# 이름 공간 — 실 출고(main + v) 와 리허설(throwaway/<이름> + rehearsal-<…>) 만. 한쪽만 바꾸면 실 레포의 main·v 태그·release/v 를 칠 수 있다.
+# release 브랜치 접두(RP)는 짝에서 파생한다 — 따로 받지 않아 세 번째 어긋남이 생기지 않는다
 case "$BASE|$PREFIX" in
-  "main|v") ;;
-  throwaway/*"|"rehearsal-*) ;;
+  "main|v") RP="release/" ;;
+  throwaway/?*"|"rehearsal-?*) RP="$BASE-release/" ;;  # guard:namespace
   *) die "--base '$BASE' 와 --tag-prefix '$PREFIX' 짝이 맞지 않는다 — 실 출고는 둘 다 기본값(main·v), 리허설은 --base throwaway/<이름> --tag-prefix rehearsal-<이름>-v" ;;
 esac
+git check-ref-format "refs/heads/$BASE" && git check-ref-format "refs/tags/${PREFIX}0.0.0" \
+  || die "--base '$BASE' 또는 --tag-prefix '$PREFIX' 가 git 이름으로 쓸 수 없다"
+# 릴리즈 노트는 부른 곳 기준 — 아래에서 cd 하므로 절대경로로
+[ -z "$NOTES" ] || [ ! -f "$NOTES" ] || NOTES="$(cd "$(dirname "$NOTES")" && pwd)/$(basename "$NOTES")"
+RARGS=""; [ "$BASE" = main ] || RARGS=" --base $(shq "$BASE") --tag-prefix $(shq "$PREFIX")"
 case "$BUMP" in patch|minor|major) ;; *) die "--bump 는 patch|minor|major" ;; esac
 [ -z "$VERSION" ] || echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || die "--version 은 X.Y.Z"
 
-# 레포 = 본체 checkout. 작업 worktree 의 사본이나 `git show … > 파일` 로 꺼낸 사본으로 돌려도 본체를 가리키게
-# 스크립트 위치(없으면 cwd)의 git 공통 디렉터리에서 역산한다
+# 레포 = 본체 checkout. 작업 worktree 의 사본으로 돌려도 본체를 가리키게 스크립트 위치의 git 공통 디렉터리에서 역산한다
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMMON="$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || git rev-parse --path-format=absolute --git-common-dir)" \
-  || { echo "✖ git 레포 안에서 실행한다" >&2; exit 1; }
+COMMON="$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+  || die "이 스크립트는 git 레포 안의 사본으로 실행한다(scripts/release.sh)"
 REPO="$(dirname "$COMMON")"
+[ "$(git -C "$REPO" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || die "본체 checkout($REPO)이 작업 트리가 아니다" 2
+# 오용 — 다른 레포 안에서 이 레포의 스크립트를 부르면 어느 레포를 출고하는지 헷갈린다
+CWD_COMMON="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+[ -z "$CWD_COMMON" ] || [ "$CWD_COMMON" = "$COMMON" ] \
+  || die "지금 폴더는 다른 git 레포다($CWD_COMMON) — 이 스크립트의 레포($REPO) 안이나 레포 밖에서 부른다" 2  # guard:other-repo
 cd "$REPO"
+WT_ROOT="$REPO/.claude/worktrees"
 
-# ── 재실행 안내 생성 (LIFE-599) ──
-# 명령은 설명과 다른 줄에 홀로, 인자는 POSIX 단일 따옴표로 인용한다(' → '\''). printf %q 는 macOS bash 3.2 에서
-# 한글 경로를 깨진 UTF-8 바이트로 내보내 화면에서 복사한 명령이 돌지 않았다 — 단일 따옴표 인용은 경로 바이트를 그대로 두므로
-# UTF-8 경로는 UTF-8 그대로 나온다. git -C·절대경로라 어느 cwd 에서 붙여 넣어도 돈다
-shq() { local s="$1" q="'\\''"; printf "'%s'" "${s//\'/$q}"; }
-NL=$'\n'
-# rerun_cmds <태그> → APK_RERUN · DMG_RERUN · DMG_DONE (OUT_DIR 도 정한다)
-rerun_cmds() {
-  local tag="$1" wt
-  OUT_DIR="$REPO/app/dist/release/$tag"
-  APK_RERUN="$(shq "$SCRIPT_DIR/release-apk.sh") --from-tag $(shq "$tag") --tag-prefix $(shq "$PREFIX") --out $(shq "$OUT_DIR")"
-  wt="$REPO/.claude/worktrees/_dmg-$tag-$(date +%Y%m%d-%H%M%S)"
-  DMG_RERUN="git -C $(shq "$REPO") fetch origin $(shq "refs/tags/$tag:refs/tags/$tag") && git -C $(shq "$REPO") worktree add --detach $(shq "$wt") $(shq "refs/tags/$tag") && $(shq "$wt/scripts/release-dmg.sh") --tag-prefix $(shq "$PREFIX") --out $(shq "$OUT_DIR")"
-  DMG_DONE="git -C $(shq "$REPO") worktree remove --force $(shq "$wt")"
-}
-# ── 재실행 안내 생성 끝 ──
-git fetch -q --tags origin
-git rev-parse --verify -q "refs/remotes/origin/$BASE" >/dev/null || die "원격 base 없음: origin/$BASE"
-
-# dmg 빌드 node — 머지(되돌릴 수 없음) 전에 본다. 기준은 release-dmg.sh 와 같다
-if [ "$SKIP_BUILD" = 0 ]; then
-  NODE_V="$(node -p 'process.versions.node' 2>/dev/null)" || die "node 가 없다 — dmg 빌드에 필요(--skip-build 면 생략)"
-  case "$NODE_V" in 24.*) ;; 22.*) note "node $NODE_V — 로컬 관문 기준은 v24 다(경고만)" ;;
-    *) die "node $NODE_V — engines(>=22.12)·로컬 관문(v24) 밖이라 dmg 빌드를 거절한다. v24 를 PATH 앞에 두거나 --skip-build" ;; esac
-  # LIFE-676 — Resource Manager 메모리 도우미(app/helper/corral-footprint.c)를 npm run build 가 clang 으로 빌드한다
-  command -v clang >/dev/null 2>&1 || die "clang 이 없다 — dmg 빌드(메모리 도우미)에 필요. xcode-select --install 또는 --skip-build"
-fi
-# APK 툴체인 전제 — 머지 전에 본다. 태그 가드는 태그가 생긴 뒤 release-apk.sh 가 본다
-if [ "$SKIP_APK" = 0 ]; then
-  [ -x "$SCRIPT_DIR/release-apk.sh" ] || die "scripts/release-apk.sh 가 없다 — APK 를 빼려면 --skip-apk — 아무것도 머지하지 않음" 2
-  APK_PRE="$("$SCRIPT_DIR/release-apk.sh" --preflight 2>&1)" \
-    || die "APK 전제 미달 — 아무것도 머지하지 않음(APK 를 빼려면 --skip-apk): $(echo "$APK_PRE" | tail -1)" 2
-  APK_PRE="$(echo "$APK_PRE" | grep '^· APK 전제' | head -1 || true)"
-fi
-
-# 0. 사전 확인 — 모든 PR 이 열려 있고(이미 머지된 것은 건너뜀) base 가 맞고 draft·포크가 아니다. 하나라도 어긋나면 머지 0건.
-#    head SHA 를 여기서 고정한다(PINS: "번호=SHA" 목록) — 사용자가 고른 시점의 PR 을 머지한다
-TODO=""; PINS=""; SKIPPED=""
-for n in $PRS; do
-  info="$(gh pr view "$n" --json state,baseRefName,headRefName,isDraft,isCrossRepository,headRefOid --jq '"\(.state) \(.baseRefName) \(.headRefName) \(.isDraft) \(.isCrossRepository) \(.headRefOid)"')" \
-    || die "PR #$n 조회 실패 — 아무것도 머지하지 않음" 2
-  set -- $info
-  case "$1" in
-    MERGED) if [ "$2" = "$BASE" ]; then note "PR #$n 은 이미 $2 에 머지됨 — 건너뜀"; SKIPPED="$SKIPPED #$n($3)"
-            else note "PR #$n 은 이미 머지됨(base $2 — 요청 base $BASE 와 다르다, 번호 확인) — 건너뜀"; fi
-            continue ;;
-    OPEN) ;;
-    *) die "PR #$n 상태가 $1 — 열린 PR 만 출고한다 — 아무것도 머지하지 않음" 2 ;;
-  esac
-  [ "$2" = "$BASE" ] || die "PR #$n 의 base 가 $2 — 요청 base $BASE 와 다르다 — 아무것도 머지하지 않음" 2
-  [ "$4" = "false" ] || die "PR #$n 은 draft — ready 로 바꾼 뒤 다시 — 아무것도 머지하지 않음" 2
-  [ "$5" = "false" ] || die "PR #$n 은 포크 PR — 출고 대상 아님 — 아무것도 머지하지 않음" 2
-  TODO="$TODO $n"; PINS="$PINS $n=$6"
-done
-pin_of() { local kv; for kv in $PINS; do [ "${kv%%=*}" = "$1" ] && { echo "${kv#*=}"; return; }; done; }
-
-# 다음 버전 — base 끝의 app/package.json 에서. 출력: "<지금> <다음>"
+# ── 공용 ──
+# 다음 버전 — package.json 본문에서. 출력: "<지금> <다음>"
 next_version() {
   local cur ma mi pa
-  cur="$(awk 'match($0, /^  "version": "[0-9.]+",$/) { v = $0; sub(/^  "version": "/, "", v); sub(/",$/, "", v); print v; exit }' <<J
-$1
-J
-)"
+  cur="$(pkg_version "$1")"
   [ -n "$cur" ] || return 1
   if [ -n "$VERSION" ]; then echo "$cur $VERSION"; return; fi
   IFS=. read -r ma mi pa <<V
@@ -152,8 +110,10 @@ V
     patch) echo "$cur $ma.$mi.$((pa + 1))" ;;
   esac
 }
-
-# 다음 버전·태그를 머지 전에 본다 — --version 이 지금 이하이거나 태그가 이미 있으면 머지 0건으로 거절(exit 2)
+pkg_version() { awk 'match($0, /^  "version": "[0-9.]+",$/) { v = $0; sub(/^  "version": "/, "", v); sub(/",$/, "", v); print v; exit }' <<J
+$1
+J
+}
 ver_gt() { # $1 > $2 (X.Y.Z)
   local a1 a2 a3 b1 b2 b3
   IFS=. read -r a1 a2 a3 <<V
@@ -164,120 +124,463 @@ $2
 V
   [ "$a1" -gt "$b1" ] || { [ "$a1" -eq "$b1" ] && { [ "$a2" -gt "$b2" ] || { [ "$a2" -eq "$b2" ] && [ "$a3" -gt "$b3" ]; }; }; }
 }
-NV="$(next_version "$(git show "origin/$BASE:app/package.json")")" || die "app/package.json 버전을 못 읽음" 2
-ver_gt "${NV#* }" "${NV% *}" || die "다음 버전 ${NV#* } 이 지금 버전 ${NV% *} 보다 크지 않다(--version 확인) — 아무것도 머지하지 않음" 2
-[ -z "$(git ls-remote --tags origin "refs/tags/$PREFIX${NV#* }")" ] || die "원격에 태그 $PREFIX${NV#* } 가 이미 있다 — 아무것도 머지하지 않음(--version 으로 다른 버전을 주거나 태그를 확인)" 2
+# 원격 태그가 가리키는 커밋(주석 태그는 벗긴다). 없으면 빈 값, 조회 실패면 1
+remote_tag_commit() {
+  local out
+  out="$(git ls-remote --tags origin "refs/tags/$1" "refs/tags/$1^{}")" || return 1
+  echo "$out" | awk -v t="refs/tags/$1" '$2 == t "^{}" {p = $1} $2 == t {l = $1} END {print (p != "" ? p : l)}'
+}
+remote_head() { # 원격 브랜치 끝 SHA(없으면 빈 값), 조회 실패면 1
+  local out
+  out="$(git ls-remote --heads origin "refs/heads/$1")" || return 1
+  echo "$out" | awk -v r="refs/heads/$1" '$2 == r {print $1}'
+}
+is_ancestor() { git merge-base --is-ancestor "$1" "$2" 2>/dev/null; }
+
+# 열린 release 브랜치 — 로컬·원격의 <RP><PREFIX>X.Y.Z 이름. 출력: 이름 한 줄씩(중복 없음)
+open_releases() {
+  local remote name ver
+  remote="$(git ls-remote --heads origin)" || die "origin 조회 실패(git ls-remote)"
+  { git for-each-ref --format='%(refname)' refs/heads/; echo "$remote" | awk '{print $2}'; } \
+    | sed -n 's|^refs/heads/||p' | sort -u | while read -r name; do
+      case "$name" in "$RP$PREFIX"*) ver="${name#"$RP$PREFIX"}"; if echo "$ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then echo "$name"; fi ;; esac
+    done
+}
+# 하나뿐인 열린 release 브랜치를 RB·VER·TAG·WT 로. 없으면 빈 RB
+pick_release() {
+  local names n
+  names="$(open_releases)"
+  n="$(echo "$names" | grep -c . || true)"
+  RB=""; VER=""; TAG=""; WT=""
+  [ "$n" -le 1 ] || die "열린 release 브랜치가 여러 개다 — 한 번에 하나만(접을 것을 abort 로 정리):${NL}$names" 2
+  [ "$n" = 1 ] || return 0
+  RB="$names"; VER="${RB#"$RP$PREFIX"}"; TAG="$PREFIX$VER"; WT="$WT_ROOT/release-$TAG"
+}
+wt_on_rb() { [ -d "$WT" ] && [ "$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null)" = "$RB" ]; }
+# release worktree 가 깨끗한가 — 해소 중 merge·미커밋 변경이면 사유를 내고 멈춘다(exit 2)
+wt_clean_or_die() {
+  local what="$1"
+  if git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    die "release worktree 에 해소 중인 merge 가 있다 — $what 하지 않음. 충돌을 풀고 커밋하거나(git -C $(shq "$WT") commit --no-edit) 그 PR 을 빼려면 git -C $(shq "$WT") merge --abort" 2
+  fi
+  local dirty; dirty="$(git -C "$WT" status --porcelain)"
+  [ -z "$dirty" ] || die "release worktree 에 커밋 안 된 변경이 있다 — $what 하지 않음:${NL}$(echo "$dirty" | head -10)${NL}($WT)" 2  # guard:wt-dirty
+}
+# release 브랜치 기록 — first-parent 로 자르기 커밋까지 내려가며 「Release-PR: <번호> <SHA>」 를 모은다.
+# 출력: "<번호> <마지막 SHA>" 한 줄씩, 처음 모은 순서. 자르기 커밋이 없으면 1. awk 는 입력을 끝까지 읽는다(일찍 끝내면 git log 가 SIGPIPE)
+read_record() {
+  git log --first-parent --format='@@C %H%n%B' "$1" | awk -v cut="Release-Cut: $TAG" '
+    found { next }
+    $0 == cut { found = 1; next }
+    /^Release-PR: [0-9]+ [0-9a-f]+$/ && length($3) == 40 { rec[++k] = $2 " " $3 }
+    END {
+      if (!found) exit 1
+      for (i = k; i >= 1; i--) { split(rec[i], a, " "); if (!(a[1] in s)) o[++m] = a[1]; s[a[1]] = a[2] }
+      for (i = 1; i <= m; i++) print o[i], s[o[i]]
+    }'
+}
+rec_sha() { echo "$RECORD" | awk -v n="$1" '$1 == n {print $2}'; }
+
+git fetch -q --tags origin || die "git fetch origin 실패"
+git rev-parse --verify -q "refs/remotes/origin/$BASE" >/dev/null || die "원격 base 없음: origin/$BASE"
+
+# ════════════════════════════ cut ════════════════════════════
+if [ "$CMD" = cut ]; then
+  NV="$(next_version "$(git show "origin/$BASE:app/package.json")")" || die "origin/$BASE 의 app/package.json 버전을 못 읽음" 2
+  CUR="${NV% *}"; VER="${NV#* }"; TAG="$PREFIX$VER"; RB="$RP$TAG"; WT="$WT_ROOT/release-$TAG"
+  NAMES="$(open_releases)"
+  if [ -n "$NAMES" ] && [ "$NAMES" != "$RB" ]; then
+    die "열린 release 브랜치가 이미 있다 — 한 번에 하나다. 그것을 출고(ship·finish)하거나 접고(abort) 다시 자른다:${NL}$NAMES" 2  # guard:open-release
+  fi
+  if [ "$NAMES" = "$RB" ]; then
+    # 재실행 — 같은 버전으로 다시 쳤다. 있는 것을 재사용하고 두 번째를 만들지 않는다
+    if [ "$DRY_RUN" = 1 ]; then
+      echo "── dry-run (ref·worktree 변경 없음) ──"
+      echo "release 브랜치 $RB 가 이미 있다 — 재사용(새로 만들지 않음)$(git rev-parse -q --verify "refs/heads/$RB" >/dev/null || echo ' · 로컬에 없어 원격에서 붙인다')"
+      echo "worktree $WT $(wt_on_rb && echo '(있음)' || echo '(없음 — 붙인다)')"
+      exit 0
+    fi
+    if ! git rev-parse -q --verify "refs/heads/$RB" >/dev/null; then
+      git fetch -q origin "refs/heads/$RB:refs/heads/$RB" || die "원격 release 브랜치 $RB 를 가져오지 못했다"
+      note "원격 $RB 를 로컬 브랜치로 붙였다"
+    fi
+    read_record "$RB" >/dev/null || die "$RB 에 자르기 커밋(Release-Cut: $TAG)이 없다 — 이 스크립트가 자른 브랜치가 아니다. 확인 뒤 abort" 2
+    if wt_on_rb; then note "release worktree 가 이미 있다: $WT"
+    else
+      [ ! -e "$WT" ] || die "worktree 자리에 다른 것이 있다: $WT" 2
+      git worktree add -q "$WT" "$RB" || die "release worktree 를 붙이지 못했다: $WT"
+      note "release worktree 를 붙였다: $WT"
+    fi
+    echo "✔ release 브랜치 $RB 가 이미 있다(재사용 — 새로 자르지 않음) @ $(git rev-parse --short "$RB"), worktree $WT"
+    echo "□ 다음: $(shq "$SCRIPT_DIR/release.sh") gather --prs '<번호…>'$RARGS"
+    exit 0
+  fi
+  ver_gt "$VER" "$CUR" || die "다음 버전 $VER 이 지금 버전 $CUR 보다 크지 않다(--version 확인) — 자르지 않음" 2  # guard:version-gt
+  TC="$(remote_tag_commit "$TAG")" || die "원격 태그 조회 실패"
+  [ -z "$TC" ] || die "원격에 태그 $TAG 가 이미 있다 — 자르지 않음(--version 으로 다른 버전)" 2  # guard:tag-exists
+  [ ! -e "$WT" ] || die "worktree 자리에 이미 무언가 있다: $WT — 자르지 않음" 2
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "── dry-run (ref·worktree 변경 없음) ──"
+    echo "base $BASE @ $(git rev-parse --short "origin/$BASE"), 버전 $CUR → $VER, 태그 $TAG"
+    echo "release 브랜치 $RB (로컬만 — push 는 ship 이 한다)"
+    echo "worktree $WT"
+    exit 0
+  fi
+  BASE_SHA="$(git rev-parse "origin/$BASE")"
+  git worktree add -q --no-track -b "$RB" "$WT" "origin/$BASE" || die "release 브랜치·worktree 를 만들지 못했다"
+  cut_rollback() {
+    git worktree remove --force "$WT" >/dev/null 2>&1 || true
+    git branch -D "$RB" >/dev/null 2>&1 || true
+    die "$1 — 만든 release 브랜치·worktree 를 지웠다(push 한 것 없음)"
+  }
+  (cd "$WT/app" && npm version "$VER" --no-git-tag-version --allow-same-version >/dev/null) || cut_rollback "버전 올림(npm version) 실패"
+  [ "$(pkg_version "$(cat "$WT/app/package.json")")" = "$VER" ] || cut_rollback "버전 올림 결과가 $VER 이 아니다"
+  git -C "$WT" add app/package.json || cut_rollback "git add 실패"
+  [ ! -f "$WT/app/package-lock.json" ] || git -C "$WT" add app/package-lock.json || cut_rollback "git add 실패"
+  git -C "$WT" commit -q -m "release: $TAG" -m "scripts/release.sh cut — base $BASE @ ${BASE_SHA:0:7}, $CUR → $VER" -m "Release-Cut: $TAG" \
+    || cut_rollback "버전 커밋 실패"
+  echo "✔ 자르기 $RB @ $(git rev-parse --short "$RB") (버전 $CUR → $VER, base $BASE @ ${BASE_SHA:0:7})"
+  echo "  worktree $WT — 통합 확인(빌드·실행)은 여기서"
+  echo "□ 다음: $(shq "$SCRIPT_DIR/release.sh") gather --prs '<번호…>'$RARGS"
+  exit 0
+fi
+
+# ── cut 밖 하위 명령은 열린 release 브랜치 하나를 다룬다 ──
+pick_release
+
+# ════════════════════════════ gather ════════════════════════════
+if [ "$CMD" = gather ]; then
+  [ -n "$(echo "$PRS" | tr -d ' ,')" ] || die "사용법: release.sh gather --prs \"12 15\"$RARGS"
+  UNIQ=""
+  for n in $(echo "$PRS" | tr ',' ' '); do
+    case "$n" in *[!0-9]*) die "PR 번호가 아님: $n" ;; esac
+    case " $UNIQ " in *" $n "*) note "PR #$n 중복 — 한 번만 처리" ;; *) UNIQ="$UNIQ $n" ;; esac
+  done
+  [ -n "$RB" ] || die "열린 release 브랜치가 없다 — 먼저 $(shq "$SCRIPT_DIR/release.sh") cut$RARGS" 2
+  git rev-parse -q --verify "refs/heads/$RB" >/dev/null || die "$RB 가 원격에만 있다 — cut 을 다시 치면 로컬에 붙인다" 2
+  wt_on_rb || die "release worktree 가 없거나 $RB 가 아니다: $WT — cut 을 다시 치면 붙인다" 2
+  wt_clean_or_die "모으기"
+  TC="$(remote_tag_commit "$TAG")" || die "원격 태그 조회 실패"
+  [ -z "$TC" ] || die "원격에 태그 $TAG 가 이미 있다 — 이 release 는 출고됐다. 새 PR 은 다음 출고(finish 뒤 cut)" 2
+  RECORD="$(read_record "$RB")" || die "$RB 에 자르기 커밋(Release-Cut: $TAG)이 없다" 2
+  TIP="$(git rev-parse "$RB")"
+
+  # 0. 사전 일괄 점검 — 하나라도 어긋나면 release 브랜치 변경 0건. head SHA 는 여기서 고정하고 그 SHA 를 fetch 해 둔다
+  PLAN=""  # "번호 동작 SHA head" — 동작: merge(새로 모음) · rec(이미 들어 있어 기록만) · skip(이미 모아 기록됨)
+  for n in $UNIQ; do
+    info="$(gh pr view "$n" --json state,baseRefName,headRefName,isDraft,isCrossRepository,headRefOid --jq '"\(.state) \(.baseRefName) \(.headRefName) \(.isDraft) \(.isCrossRepository) \(.headRefOid)"')" \
+      || die "PR #$n 조회 실패 — 아무것도 모으지 않음" 2
+    set -- $info
+    [ "$1" = OPEN ] || die "PR #$n 상태가 $1 — 열린 PR 만 모은다 — 아무것도 모으지 않음" 2  # guard:pr-open
+    [ "$2" = "$BASE" ] || die "PR #$n 의 base 가 $2 — $BASE 대상 PR 만 모은다 — 아무것도 모으지 않음" 2
+    [ "$4" = false ] || die "PR #$n 은 draft — ready 로 바꾼 뒤 다시 — 아무것도 모으지 않음" 2
+    [ "$5" = false ] || die "PR #$n 은 포크 PR — 출고 대상 아님 — 아무것도 모으지 않음" 2
+    head="$3"; pin="$6"
+    git fetch -q origin "refs/heads/$head" || die "PR #$n head $head 를 가져오지 못했다 — 아무것도 모으지 않음" 2
+    [ "$(git rev-parse FETCH_HEAD)" = "$pin" ] \
+      || die "PR #$n head 가 점검 중에 움직였다(${pin:0:7} → $(git rev-parse --short FETCH_HEAD)) — 아무것도 모으지 않음. 다시 친다" 2
+    if is_ancestor "$pin" "$TIP"; then
+      if [ "$(rec_sha "$n")" = "$pin" ]; then act=skip; else act=rec; fi
+    else act=merge; fi
+    PLAN="$PLAN$n $act $pin $head$NL"
+  done
+
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "── dry-run (release 브랜치 변경 없음) ──"
+    echo "release 브랜치 $RB @ ${TIP:0:7}, worktree $WT"
+    echo "$PLAN" | while read -r n act pin head; do
+      [ -n "$n" ] || continue
+      case "$act" in
+        merge) echo "  모을 예정 #$n ($head) @ ${pin:0:7}" ;;
+        rec) echo "  기록만 #$n ($head) @ ${pin:0:7} — head 가 이미 release 브랜치에 있다" ;;
+        skip) echo "  건너뜀 #$n ($head) @ ${pin:0:7} — 이미 모음" ;;
+      esac
+    done
+    exit 0
+  fi
+
+  DONE_LIST=""
+  REST="$UNIQ"
+  while read -r n act pin head; do
+    [ -n "$n" ] || continue
+    REST="${REST# }"; REST="${REST#"$n"}"
+    case "$act" in
+      skip) note "PR #$n ($head) @ ${pin:0:7} 는 이미 모음 — 건너뜀" ;;
+      rec)
+        git -C "$WT" commit -q --allow-empty -m "release: #$n 기록 — $head @ ${pin:0:7} 가 이미 들어 있다" -m "Release-PR: $n $pin" \
+          || die "PR #$n 기록 커밋 실패"
+        note "PR #$n ($head) @ ${pin:0:7} — head 가 이미 들어 있어 기록만 남겼다"; DONE_LIST="$DONE_LIST #$n" ;;
+      merge)
+        if ! git -C "$WT" merge -q --no-ff --no-edit -m "release: #$n 모으기 — $head @ ${pin:0:7}" -m "Release-PR: $n $pin" "$pin"; then
+          if git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            FILES="$(git -C "$WT" diff --name-only --diff-filter=U)"
+            die "PR #$n ($head) 가 release 브랜치와 충돌 — 여기서 멈춘다(뒤 PR 은 모으지 않음)${DONE_LIST:+. 이번에 모음:$DONE_LIST}${NL}충돌 파일:${NL}$FILES${NL}release worktree 에서 풀고 커밋한다(커밋 메시지의 Release-PR 줄이 모으기 기록이다 — --no-edit 로 그대로 둔다):${NL}git -C $(shq "$WT") add -- <푼 파일>${NL}git -C $(shq "$WT") commit --no-edit${NL}그 뒤 남은 PR 을 모은다(이미 모은 PR 은 넣어도 건너뛴다):${NL}$(shq "$SCRIPT_DIR/release.sh") gather --prs $(shq "$n$REST")$RARGS${NL}해소가 기능을 바꿀 만큼 크면 이 PR 을 빼고(git -C $(shq "$WT") merge --abort) 나머지만 모은다" 3
+          fi
+          die "PR #$n merge 실패(충돌 아님) — 위 git 출력을 본다${DONE_LIST:+. 이번에 모음:$DONE_LIST}"
+        fi
+        note "PR #$n ($head) @ ${pin:0:7} 모음 → $(git -C "$WT" rev-parse --short HEAD)"; DONE_LIST="$DONE_LIST #$n" ;;
+    esac
+  done <<P
+$PLAN
+P
+  RECORD="$(read_record "$RB")"
+  echo "✔ 모으기 $RB @ $(git rev-parse --short "$RB")${DONE_LIST:+ — 이번에:$DONE_LIST}"
+  echo "  기록(출고 집합): $(echo "$RECORD" | awk '{printf "#%s@%s ", $1, substr($2, 1, 7)}')"
+  echo "□ 다음: 통합 확인은 release worktree 에서($WT) → $(shq "$SCRIPT_DIR/release.sh") ship --notes <파일>$RARGS"
+  exit 0
+fi
+
+# ── 원래 PR 처리 (ship·finish) — MERGED 를 본 뒤에만 원격 head 를 지운다 ──
+# 남은 PR 은 UNRESOLVED("#번호(상태)" 목록). 대기는 전체 실행에 한 번: RELEASE_INDIRECT_WAIT_S(기본 120초) · RELEASE_INDIRECT_STEP_S(기본 10초)
+process_prs() {
+  local wait="${RELEASE_INDIRECT_WAIT_S:-120}" step="${RELEASE_INDIRECT_STEP_S:-10}" start now n sha st head oid rh raw
+  start="$(date +%s)"; UNRESOLVED=""
+  while read -r n sha; do
+    [ -n "$n" ] || continue
+    while :; do
+      st="$(gh pr view "$n" --json state,headRefName,headRefOid --jq '"\(.state) \(.headRefName) \(.headRefOid)"')" || st="ERROR - -"
+      set -- $st; st="$1"; head="$2"; oid="$3"
+      [ "$st" = OPEN ] || [ "$st" = ERROR ] || break
+      now="$(date +%s)"; [ $((now - start)) -lt "$wait" ] || break
+      sleep "$step"
+    done
+    raw="$(gh pr view "$n" --json state,mergedAt,mergeCommit,mergedBy 2>&1 || true)"
+    note "PR #$n $raw"
+    if [ "$st" != MERGED ]; then UNRESOLVED="$UNRESOLVED #$n($st)"; continue; fi
+    # 지우는 것은 PR head 가 아직 그 PR 이 머지된 SHA 일 때만 — 그 뒤 push 된 새 커밋은 건드리지 않는다
+    case "$head" in "$BASE"|"$RB"|main|release/*) note "PR #$n head $head — 지우지 않는 이름"; continue ;; esac
+    rh="$(remote_head "$head")" || { note "⚠ PR #$n head $head 원격 조회 실패 — 지우지 않음"; continue; }
+    if [ -z "$rh" ]; then note "PR #$n MERGED — 원격 head $head 는 이미 없다"
+    elif [ "$rh" = "$oid" ]; then
+      git push -q origin --delete "$head" && note "PR #$n MERGED — 원격 head 삭제: $head" || note "⚠ PR #$n 원격 head $head 삭제 실패"
+    else note "⚠ PR #$n MERGED 인데 원격 head $head 가 다른 커밋(${rh:0:7}) — 지우지 않음"; fi
+  done <<R
+$RECORD
+R
+}
+unresolved_msg() {
+  echo "원래 PR 이 MERGED 로 확인되지 않았다:$UNRESOLVED — 그 head 는 지우지 않았다.${NL}GitHub 가 간접 머지를 늦게 반영할 수 있다. 확인:${NL}$(for n in $(echo "$UNRESOLVED" | tr -c '0-9\n' ' '); do echo "gh pr view $n --json state,mergedAt,mergeCommit"; done)${NL}MERGED 가 되면 다시 본다(MERGED 인 PR 의 head 만 지우고 release 브랜치를 정리한다):${NL}$(shq "$SCRIPT_DIR/release.sh") finish$RARGS${NL}끝내 OPEN 이면 app/INSTALL.md 「출고」 — 간접 머지가 안 될 때(확인 뒤 finish --leave-open)"
+}
+
+# ════════════════════════════ abort ════════════════════════════
+if [ "$CMD" = abort ]; then
+  [ -n "$RB" ] || { echo "✔ 접을 release 브랜치가 없다"; exit 0; }
+  TC="$(remote_tag_commit "$TAG")" || die "원격 태그 조회 실패"
+  [ -z "$TC" ] || die "원격에 태그 $TAG 가 있다 — 이미 출고됐다. 접지 않는다(정리는 finish)" 2
+  MERGED_RP="$(gh pr list --head "$RB" --base "$BASE" --state merged --json number --jq '.[0].number // empty')" || die "release PR 조회 실패" 12
+  [ -z "$MERGED_RP" ] || die "release PR #$MERGED_RP 가 이미 머지됐다 — 접지 않는다. 출고를 이어 간다: $(shq "$SCRIPT_DIR/release.sh") ship --notes <파일>$RARGS" 2
+  if [ -d "$WT" ]; then
+    wt_on_rb || die "worktree 자리 $WT 가 $RB 가 아니다 — 지우지 않음" 2
+    wt_clean_or_die "접기"
+    git worktree remove --force "$WT" && note "release worktree 삭제: $WT"
+  fi
+  git rev-parse -q --verify "refs/heads/$RB" >/dev/null && git branch -q -D "$RB" && note "로컬 $RB 삭제"
+  RH="$(remote_head "$RB")" || die "원격 조회 실패"
+  if [ -n "$RH" ]; then
+    git push -q origin --delete "$RB" || die "원격 $RB 삭제 실패" 11
+    note "원격 $RB 삭제(열려 있던 release PR 은 GitHub 가 닫는다)"
+  fi
+  echo "✔ 접기 $RB — 모았던 PR 은 열린 채 남는다. main·태그 변경 없음"
+  exit 0
+fi
+
+# ════════════════════════════ finish ════════════════════════════
+if [ "$CMD" = finish ]; then
+  [ -n "$RB" ] || { echo "✔ 정리할 release 브랜치가 없다"; exit 0; }
+  git rev-parse -q --verify "refs/heads/$RB" >/dev/null || git fetch -q origin "refs/heads/$RB:refs/heads/$RB" || die "$RB 를 가져오지 못했다"
+  TIP="$(git rev-parse "$RB")"
+  TC="$(remote_tag_commit "$TAG")" || die "원격 태그 조회 실패"
+  { [ -n "$TC" ] && is_ancestor "$TIP" "$TC"; } \
+    || die "출고가 확인되지 않았다 — 원격 태그 $TAG 가 없거나 $RB 끝(${TIP:0:7})을 품지 않는다. 정리하지 않음(출고 전에 그만두려면 abort)" 2  # guard:finish-shipped
+  if [ -d "$WT" ]; then
+    wt_on_rb || die "worktree 자리 $WT 가 $RB 가 아니다 — 지우지 않음" 2
+    wt_clean_or_die "정리"
+  fi
+  RECORD="$(read_record "$RB")" || die "$RB 에 자르기 커밋이 없다" 2
+  process_prs
+  if [ -n "$UNRESOLVED" ]; then
+    [ "$LEAVE_OPEN" = 1 ] || die "$(unresolved_msg)${NL}release 브랜치·worktree 는 기록을 위해 남겨 둔다" 13
+    note "⚠ --leave-open — MERGED 로 확인 안 된 PR:$UNRESOLVED — 그 head 는 지우지 않고 release 브랜치만 정리한다(PR 처리는 사람이)"
+  fi
+  [ ! -d "$WT" ] || { git worktree remove --force "$WT" && note "release worktree 삭제: $WT"; }
+  git branch -q -D "$RB" && note "로컬 $RB 삭제"
+  RH="$(remote_head "$RB")" || die "원격 조회 실패"
+  [ -z "$RH" ] || { git push -q origin --delete "$RB" || die "원격 $RB 삭제 실패" 11; note "원격 $RB 삭제"; }
+  echo "✔ 정리 $RB — 출고 $TAG"
+  exit 0
+fi
+
+# ════════════════════════════ ship ════════════════════════════
+[ -n "$RB" ] || die "열린 release 브랜치가 없다 — cut → gather 먼저" 2
+git rev-parse -q --verify "refs/heads/$RB" >/dev/null || die "$RB 가 원격에만 있다 — cut 을 다시 치면 로컬에 붙인다" 2
+[ ! -d "$WT" ] || { wt_on_rb || die "worktree 자리 $WT 가 $RB 가 아니다" 2; wt_clean_or_die "출고"; }
+# 릴리즈 노트 — 실 실행은 필수(dry-run 은 노트를 쓰기 전 점검이라 없어도 된다)
+if [ -n "$NOTES" ]; then
+  [ -s "$NOTES" ] || die "릴리즈 노트 파일이 없거나 비었다: $NOTES" 2
+elif [ "$DRY_RUN" != 1 ]; then
+  die "--notes <릴리즈 노트 파일> 필수 — 모은 PR 본문을 읽고 쓴다(release 스킬). 머지 전에 거절" 2
+fi
+TIP="$(git rev-parse "$RB")"
+RECORD="$(read_record "$RB")" || die "$RB 에 자르기 커밋(Release-Cut: $TAG)이 없다" 2
+[ -n "$RECORD" ] || die "$RB 에 모은 PR 이 없다 — gather 먼저" 2
+
+# 어디까지 됐나 — 원격 태그 → release PR 머지 여부
+TC="$(remote_tag_commit "$TAG")" || die "원격 태그 조회 실패"
+STAGE=premerge; MC=""
+if [ -n "$TC" ]; then
+  is_ancestor "$TIP" "$TC" || die "원격 태그 $TAG 가 이 release 브랜치 끝(${TIP:0:7})을 품지 않는다 — 태그를 직접 확인한다(git ls-remote --tags origin)" 2
+  STAGE=tagged; MC="$TC"
+else
+  RPM="$(gh pr list --head "$RB" --base "$BASE" --state merged --json number,headRefOid,mergeCommit --jq '.[0] | select(. != null) | "\(.number) \(.headRefOid) \(.mergeCommit.oid)"')" \
+    || die "release PR 조회 실패" 12
+  if [ -n "$RPM" ]; then
+    set -- $RPM
+    [ "$2" = "$TIP" ] || die "release PR #$1 은 머지됐는데 그때 head(${2:0:7})가 지금 $RB 끝(${TIP:0:7})과 다르다 — 머지 뒤 release 브랜치에 커밋이 생겼다. 직접 확인한다" 2
+    STAGE=merged; RPN="$1"; MC="$3"
+  fi
+fi
+
+# 빌드 전제 — 머지(되돌릴 수 없음) 전에 본다. 이미 Release 까지 끝났으면 빌드하지 않으므로(재실행 안내만) 보지 않는다
+REL_URL=""; [ "$STAGE" != tagged ] || REL_URL="$(gh release view "$TAG" --json url --jq .url 2>/dev/null || true)"
+WILL_BUILD=1; [ -z "$REL_URL" ] || WILL_BUILD=0
+if [ "$WILL_BUILD" = 1 ] && [ "$SKIP_BUILD" = 0 ]; then
+  NODE_V="$(node -p 'process.versions.node' 2>/dev/null)" || die "node 가 없다 — dmg 빌드에 필요(--skip-build 면 생략)" 2
+  case "$NODE_V" in 24.*) ;; 22.*) note "node $NODE_V — 로컬 관문 기준은 v24 다(경고만)" ;;
+    *) die "node $NODE_V — engines(>=22.12)·로컬 관문(v24) 밖이라 dmg 빌드를 거절한다. v24 를 PATH 앞에 두거나 --skip-build" 2 ;; esac
+  command -v clang >/dev/null 2>&1 || die "clang 이 없다 — dmg 빌드(메모리 도우미)에 필요. xcode-select --install 또는 --skip-build" 2
+fi
+if [ "$WILL_BUILD" = 1 ] && [ "$SKIP_APK" = 0 ]; then
+  [ -x "$SCRIPT_DIR/release-apk.sh" ] || die "scripts/release-apk.sh 가 없다 — APK 를 빼려면 --skip-apk — 아무것도 머지하지 않음" 2
+  APK_PRE="$("$SCRIPT_DIR/release-apk.sh" --preflight 2>&1)" \
+    || die "APK 전제 미달 — 아무것도 머지하지 않음(APK 를 빼려면 --skip-apk): $(echo "$APK_PRE" | tail -1)" 2
+  APK_PRE="$(echo "$APK_PRE" | grep '^· APK 전제' | head -1 || true)"
+fi
+
+# 머지 전 점검 — release 브랜치가 main 을 품는가 · 버전 · 원격 release 브랜치 · 기록된 PR 마다 지금 head 가 들어 있는가
+if [ "$STAGE" = premerge ]; then
+  is_ancestor "origin/$BASE" "$TIP" \
+    || die "origin/$BASE 가 자른 뒤 움직였다 — $RB 가 $BASE 끝을 품지 않는다. release worktree 에서 $BASE 를 merge 한 뒤 다시(rebase 금지):${NL}git -C $(shq "$WT") merge origin/$BASE${NL}$(shq "$SCRIPT_DIR/release.sh") ship --notes <파일>$RARGS" 2  # guard:base-contained
+  [ "$(pkg_version "$(git show "$TIP:app/package.json")")" = "$VER" ] \
+    || die "$RB 끝의 app/package.json 버전이 $VER 이 아니다 — 모은 PR 이 버전을 바꿨는지 본다" 2
+  RH="$(remote_head "$RB")" || die "원격 조회 실패"
+  if [ -n "$RH" ] && [ "$RH" != "$TIP" ]; then
+    git cat-file -e "$RH^{commit}" 2>/dev/null || git fetch -q origin "refs/heads/$RB" || true
+    is_ancestor "$RH" "$TIP" || die "원격 $RB(${RH:0:7})가 로컬(${TIP:0:7})에 없는 커밋을 가졌다 — 직접 확인한다" 2
+  fi
+  MOVED=""; PRLIST=""
+  while read -r n sha; do
+    [ -n "$n" ] || continue
+    info="$(gh pr view "$n" --json state,baseRefName,headRefName,headRefOid --jq '"\(.state) \(.baseRefName) \(.headRefName) \(.headRefOid)"')" \
+      || die "PR #$n 조회 실패 — 아무것도 머지하지 않음" 2
+    set -- $info
+    case "$1" in
+      OPEN) ;;
+      MERGED) note "PR #$n 은 이미 머지됨(release 밖에서) — 그대로 둔다"; PRLIST="$PRLIST- #$n ($3) @ ${4:0:7}$NL"; continue ;;
+      *) die "모은 PR #$n 상태가 $1 — 출고하지 않음. 다시 열거나, 접고(abort) 다시 자른다" 2 ;;
+    esac
+    [ "$2" = "$BASE" ] || die "모은 PR #$n 의 base 가 $2 로 바뀌었다 — 출고하지 않음" 2
+    git cat-file -e "$4^{commit}" 2>/dev/null || git fetch -q origin "refs/heads/$3" 2>/dev/null || true
+    is_ancestor "$4" "$TIP" || MOVED="$MOVED${NL}  #$n ($3): 모은 ${sha:0:7} → 지금 ${4:0:7}"  # guard:head-moved
+    PRLIST="$PRLIST- #$n ($3) @ ${4:0:7}$NL"
+  done <<R
+$RECORD
+R
+  [ -z "$MOVED" ] || die "모은 뒤 head 가 움직인 PR 이 있다 — 그대로 내보내면 그 PR 은 열린 채 남고 새 커밋은 출고되지 않는다. 다시 모은 뒤 ship(아무것도 머지하지 않음):$MOVED${NL}$(shq "$SCRIPT_DIR/release.sh") gather --prs $(shq "$(echo "$RECORD" | awk '{printf "%s%s", (NR > 1 ? " " : ""), $1}')")$RARGS" 2
+fi
 
 if [ "$DRY_RUN" = 1 ]; then
-  set -- "${NV% *}" "${NV#* }"
-  echo "── dry-run (머지·커밋·push 없음) ──"
-  echo "base $BASE @ $(git rev-parse --short "origin/$BASE"), 태그 접두 $PREFIX"
-  for n in $TODO; do echo "  머지 예정 #$n @ $(pin_of "$n" | cut -c1-7)"; done
-  [ -n "$TODO" ] || echo "  머지 예정 없음"
-  echo "버전 $1 → $2, 태그 $PREFIX$2 (지금 base 기준 — 머지할 PR 이 버전을 바꾸면 달라진다)"
+  echo "── dry-run (push·PR·머지·태그 없음) ──"
+  echo "release 브랜치 $RB @ ${TIP:0:7} → base $BASE @ $(git rev-parse --short "origin/$BASE"), 태그 $TAG"
+  echo "단계: $STAGE"
+  echo "$RECORD" | while read -r n sha; do [ -n "$n" ] && echo "  출고 집합 #$n @ ${sha:0:7}"; done
   [ "$SKIP_BUILD" = 1 ] && echo "dmg: 건너뜀(--skip-build)" || echo "dmg: node ${NODE_V:-?} 로 빌드 예정"
-  [ "$SKIP_APK" = 1 ] && echo "APK: 건너뜀(--skip-apk)" || echo "APK: 매 출고 빌드 예정(preview 로컬 빌드, dmg 뒤) — ${APK_PRE#· }"
+  [ "$SKIP_APK" = 1 ] && echo "APK: 건너뜀(--skip-apk)" || echo "APK: 매 출고 빌드 예정(preview 로컬 빌드, dmg 뒤) — ${APK_PRE:-전제 점검 생략(이미 Release 까지 끝남)}"
   [ -n "$NOTES" ] && echo "릴리즈 노트: $NOTES" || echo "릴리즈 노트: 아직 없음 — 실 실행에는 --notes 필수"
   exit 0
 fi
 
-# 임시 worktree — 본체 checkout 을 건드리지 않고 버전 커밋·빌드를 한다
-TMPWT="$REPO/.claude/worktrees/_release-$(date +%Y%m%d-%H%M%S)"
-cleanup() { [ -d "$TMPWT" ] && git -C "$REPO" worktree remove --force "$TMPWT" >/dev/null 2>&1; git -C "$REPO" worktree prune; }
-trap cleanup EXIT
-git worktree add -q --detach "$TMPWT" "origin/$BASE"
-
-# GitHub 머지 가능 판정 — UNKNOWN 이면 계산될 때까지 잠시 기다린다(앞 PR 머지 직후 흔하다)
-mergeable_state() {
-  local n="$1" st=""
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    st="$(gh pr view "$n" --json mergeable --jq .mergeable)"
-    [ "$st" != "UNKNOWN" ] && break
-    sleep 3
-  done
-  echo "$st"
+# 재실행 안내 (LIFE-599) — 명령은 홀로 한 줄, 단일 따옴표 인용
+rerun_cmds() {
+  local tag="$1" wt
+  OUT_DIR="$REPO/app/dist/release/$tag"
+  APK_RERUN="$(shq "$SCRIPT_DIR/release-apk.sh") --from-tag $(shq "$tag") --tag-prefix $(shq "$PREFIX") --out $(shq "$OUT_DIR")"
+  wt="$WT_ROOT/_dmg-$tag-$(date +%Y%m%d-%H%M%S)"
+  DMG_RERUN="git -C $(shq "$REPO") fetch origin $(shq "refs/tags/$tag:refs/tags/$tag") && git -C $(shq "$REPO") worktree add --detach $(shq "$wt") $(shq "refs/tags/$tag") && $(shq "$wt/scripts/release-dmg.sh") --tag-prefix $(shq "$PREFIX") --out $(shq "$OUT_DIR")"
+  DMG_DONE="git -C $(shq "$REPO") worktree remove --force $(shq "$wt")"
 }
+SHIP_RERUN="$(shq "$SCRIPT_DIR/release.sh") ship --notes $(shq "${NOTES:-<파일>}")$RARGS$([ "$SKIP_BUILD" = 0 ] || echo ' --skip-build')$([ "$SKIP_APK" = 0 ] || echo ' --skip-apk')"
 
-MERGED_LIST=""
-for n in $TODO; do
-  head="$(gh pr view "$n" --json headRefName --jq .headRefName)"
-  sha="$(pin_of "$n")"
-
-  # 1. 머지 가능 판정 — 앞 PR 머지로 충돌이 생겼으면 여기서 멈춘다
-  case "$(mergeable_state "$n")" in
+if [ "$STAGE" = premerge ]; then
+  # 1. release 브랜치 push
+  if [ "$(remote_head "$RB")" != "$TIP" ]; then
+    git push -q origin "$TIP:refs/heads/$RB" || die "release 브랜치 $RB push 실패 — main·태그는 그대로다. 원인을 보고 같은 명령을 다시:${NL}$SHIP_RERUN" 11
+    note "release 브랜치 push: $RB @ ${TIP:0:7}"
+  fi
+  # 2. release → base PR (열린 것이 있으면 재사용, 한 개)
+  RPN="$(gh pr list --head "$RB" --base "$BASE" --state open --json number --jq '.[0].number // empty')" || die "release PR 조회 실패" 12
+  if [ -z "$RPN" ]; then
+    BODY="출고 $TAG — scripts/release.sh ship. 머지·태그·Release 는 이 스크립트 한 경로로만 한다(웹 UI 머지 금지).${NL}${NL}모은 PR:${NL}$PRLIST"
+    URL="$(gh pr create --base "$BASE" --head "$RB" --title "release: $TAG" --body "$BODY")" \
+      || die "release PR 생성 실패 — $RB 는 push 됐다. 같은 명령을 다시(열린 release PR 이 있으면 재사용한다):${NL}$SHIP_RERUN" 12
+    RPN="${URL##*/}"
+    case "$RPN" in ''|*[!0-9]*) die "release PR 번호를 읽지 못했다: $URL" 12 ;; esac
+    note "release PR #$RPN 생성 ($URL)"
+  else note "release PR #$RPN 재사용"; fi
+  # 3. 머지 가능 판정 → 머지(release 끝 SHA 고정)
+  TRIES="${RELEASE_MERGEABLE_TRIES:-10}"; MST=""
+  for _ in $(seq 1 "$TRIES"); do
+    MST="$(gh pr view "$RPN" --json mergeable --jq .mergeable)" || MST=""
+    [ "$MST" != UNKNOWN ] && [ -n "$MST" ] && break
+    sleep "${RELEASE_MERGEABLE_STEP_S:-3}"
+  done
+  case "$MST" in
     MERGEABLE) ;;
-    CONFLICTING) die "PR #$n ($head) 가 $BASE 와 충돌 — 머지 안 함(이 PR 과 뒤 PR 모두). 그 작업 브랜치에 $BASE 를 merge 해 풀고 push 한 뒤 남은 PR 로 다시${MERGED_LIST:+ (이미 머지:$MERGED_LIST)}" 3 ;;
-    *) die "PR #$n 머지 가능 판정이 나오지 않음 — 머지 안 함. 잠시 뒤 남은 PR 로 다시${MERGED_LIST:+ (이미 머지:$MERGED_LIST)}" 5 ;;
+    CONFLICTING) die "release PR #$RPN 이 $BASE 와 충돌 — 머지 안 함. release worktree 에서 git -C $(shq "$WT") merge origin/$BASE 로 풀고 커밋한 뒤 다시:${NL}$SHIP_RERUN" 3 ;;
+    *) die "release PR #$RPN 머지 가능 판정이 나오지 않음($MST) — 머지 안 함. 잠시 뒤 같은 명령을 다시:${NL}$SHIP_RERUN" 5 ;;
   esac
+  gh pr merge "$RPN" --merge --match-head-commit "$TIP" \
+    || die "release PR #$RPN 머지 거절 — head 가 바뀌었거나 머지 불가. PR 상태를 보고 같은 명령을 다시:${NL}$SHIP_RERUN" 6
+  MC="$(gh pr view "$RPN" --json state,mergeCommit --jq 'select(.state == "MERGED") | .mergeCommit.oid')" \
+    || die "release PR #$RPN 머지 결과 조회 실패 — 머지는 됐을 수 있다. 같은 명령을 다시 돌리면 이어 간다:${NL}$SHIP_RERUN" 6
+  [ -n "$MC" ] || die "release PR #$RPN 이 MERGED 가 아니다" 6
+  STAGE=merged
+fi
 
-  # 2. 머지 — 본 SHA 로 고정(안전장치). head 가 바뀌었으면 GitHub 가 거절한다
-  gh pr merge "$n" --merge --match-head-commit "$sha" || die "PR #$n 머지 거절 — head 가 바뀌었거나 머지 불가. PR 상태를 보고 남은 PR 로 다시${MERGED_LIST:+ (이미 머지:$MERGED_LIST)}" 6
-  mc="$(gh pr view "$n" --json state,mergeCommit --jq 'select(.state == "MERGED") | .mergeCommit.oid')" \
-    || die "PR #$n 머지 결과 조회 실패 — 머지는 됐을 수 있다. 같은 명령을 다시 돌리면 머지된 PR 은 건너뛴다${MERGED_LIST:+ (이미 머지:$MERGED_LIST)}" 6
-  [ -n "$mc" ] || die "PR #$n 이 MERGED 가 아니다" 6
+if [ "$STAGE" = merged ]; then
+  # 4. 머지 결과 확인 — merge commit(부모 2개, 둘째 부모 = release 끝) · 버전
   git fetch -q origin "$BASE"
-  parents="$(git rev-list --parents -n 1 "$mc" | wc -w | tr -d ' ')"
-  [ "$parents" = "3" ] || die "PR #$n 머지 커밋 ${mc:0:7} 부모가 2개가 아니다 — squash·rebase 머지 설정 확인" 6
-  note "PR #$n 머지 → ${mc:0:7} (merge commit)"
-  git push -q origin --delete "$head" 2>/dev/null && note "원격 브랜치 삭제: $head" || note "원격 브랜치 $head 삭제 건너뜀(이미 없음)"
-  MERGED_LIST="$MERGED_LIST #$n($head)"
-done
-
-# 3. 버전 올림 커밋 + 태그 — 태그 = <접두>X.Y.Z = app/package.json 버전
-git fetch -q origin "$BASE"
-# 이번에 머지한 것이 없고 base 끝이 이미 버전 커밋이면 출고할 것이 없다 — 같은 명령 재실행이 버전을 또 올리지 않게
-if [ -z "$MERGED_LIST" ] && git log -1 --format=%s "origin/$BASE" | grep -q '^release: '; then
-  # 버전 커밋 제목 "release: <태그>" 의 태그는 확인될 때만 실행 명령에 넣는다 — 접두가 이번 --tag-prefix 이고
-  # 원격 태그가 가리키는 커밋 = origin/$BASE 끝. 하나라도 아니거나 확인할 수 없으면 고르지 않고 직접 확인하게 한다
-  LAST_SUBJ="$(git log -1 --format=%s "origin/$BASE")"
-  LAST_TAG="$(echo "$LAST_SUBJ" | sed -n 's/^release: //p')"
-  WHY=""
-  LAST_VER=""; case "$LAST_TAG" in "$PREFIX"?*) LAST_VER="${LAST_TAG#"$PREFIX"}" ;; esac
-  if ! echo "$LAST_VER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-    WHY="제목의 태그 '$LAST_TAG' 가 '$PREFIX<X.Y.Z>' 모양이 아니다"
-  else
-    TAG_PEELED="$(git ls-remote --tags origin "refs/tags/$LAST_TAG" "refs/tags/$LAST_TAG^{}" 2>/dev/null | awk -v t="refs/tags/$LAST_TAG" '$2 == t "^{}" {p = $1} $2 == t {l = $1} END {print (p != "" ? p : l)}')" || TAG_PEELED=""
-    BASE_TIP="$(git rev-parse "origin/$BASE^{commit}")"
-    [ -n "$TAG_PEELED" ] && [ "$TAG_PEELED" = "$BASE_TIP" ] \
-      || WHY="원격 태그 $LAST_TAG 가 없거나(또는 조회 실패) $BASE 끝(${BASE_TIP:0:7})과 다른 커밋(${TAG_PEELED:0:7})을 가리킨다"
+  git cat-file -e "$MC^{commit}" 2>/dev/null || die "머지 커밋 ${MC:0:7} 을 가져오지 못했다" 6
+  set -- $(git rev-list --parents -n 1 "$MC")
+  [ $# = 3 ] || die "release PR 머지 커밋 ${MC:0:7} 부모가 2개가 아니다 — squash·rebase 머지 설정 확인" 6
+  [ "$3" = "$TIP" ] || die "머지 커밋 ${MC:0:7} 의 둘째 부모가 $RB 끝(${TIP:0:7})이 아니다" 6
+  [ "$(pkg_version "$(git show "$MC:app/package.json")")" = "$VER" ] || die "머지 커밋의 app/package.json 버전이 $VER 이 아니다" 6
+  note "release PR #${RPN:-?} 머지 → ${MC:0:7} (merge commit)"
+  # 5. 태그 = main 끝(머지 커밋). main 에 직접 push 하는 것은 이 태그뿐이다
+  if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+    git tag -d "$TAG" >/dev/null && note "원격에 없는 로컬 태그 $TAG 삭제(앞선 push 실패 잔재)"
   fi
-  if [ -n "$WHY" ]; then
-    die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋($LAST_SUBJ) — 출고할 것 없음. $WHY — 태그를 자동으로 고르지 않는다.${NL}dmg·APK 가 빠졌다면 먼저 $BASE 끝을 가리키는 태그를 직접 확인한다:${NL}git -C $(shq "$REPO") ls-remote --tags origin${NL}확인한 태그를 TAG 에 넣고 실행한다(직접 고쳐 쓰는 명령, dmg 는 app/INSTALL.md 「출고」):${NL}TAG='여기에-확인한-태그'; $(shq "$SCRIPT_DIR/release-apk.sh") --from-tag \"\$TAG\" --tag-prefix $(shq "$PREFIX")"
+  git tag -a "$TAG" "$MC" -m "release $TAG" -m "PR:$(echo "$RECORD" | awk '{printf " #%s", $1}')"
+  if ! git push -q origin "refs/tags/$TAG"; then
+    git tag -d "$TAG" >/dev/null 2>&1 || true
+    die "태그 $TAG push 실패 — release PR 머지는 끝났다(${MC:0:7}). 로컬 태그는 지웠다 — 같은 명령을 다시 돌리면 태그부터 이어 간다:${NL}$SHIP_RERUN" 7
   fi
-  rerun_cmds "$LAST_TAG"
-  die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋(release: $LAST_TAG, 원격 태그가 $BASE 끝과 같은 커밋) — 출고할 것 없음. 앞선 실행의 push 가 실제로는 반영됐는데 dmg·APK 가 없다면 아래 명령을 그대로 붙여 넣는다${NL}dmg 만:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE${NL}APK 만:${NL}$APK_RERUN"
+  note "버전 $VER, 태그 $TAG push (${MC:0:7})"
+  STAGE=tagged
 fi
-git -C "$TMPWT" checkout -q --detach "origin/$BASE"
-NV="$(next_version "$(cat "$TMPWT/app/package.json")")" || die "app/package.json 버전을 못 읽음"
-CUR="${NV% *}"; VERSION="${NV#* }"
-TAG="$PREFIX$VERSION"
-[ -z "$(git ls-remote --tags origin "refs/tags/$TAG")" ] || die "원격에 태그 $TAG 가 이미 있다"
-# 원격에 없는 로컬 태그 = 앞선 실행의 push 실패가 남긴 고아(push 안 된 버전 커밋을 가리킨다) — 지우고 다시 만든다
-if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-  git tag -d "$TAG" >/dev/null && note "원격에 없는 로컬 태그 $TAG 삭제(앞선 push 실패 잔재)"
-fi
-(cd "$TMPWT/app" && npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null)
-[ "$(sed -n 's/^  "version": "\([0-9.]*\)",$/\1/p' "$TMPWT/app/package.json" | head -1)" = "$VERSION" ] || die "버전 올림 실패"
-git -C "$TMPWT" add app/package.json app/package-lock.json
-PR_NOTE="PR:${MERGED_LIST:- (이번 실행 0건)}${SKIPPED:+ / 앞선 실행에서 머지:$SKIPPED}"
-git -C "$TMPWT" commit -q -m "release: $TAG" -m "$PR_NOTE" -m "scripts/release.sh — base $BASE, $CUR → $VERSION"
-git -C "$TMPWT" tag -a "$TAG" -m "release $TAG" -m "$PR_NOTE"
-if ! git -C "$TMPWT" push -q --atomic origin "HEAD:refs/heads/$BASE" "refs/tags/$TAG"; then
-  git tag -d "$TAG" >/dev/null 2>&1 || true
-  die "버전 커밋·태그 push 실패 — $BASE 가 그새 움직였을 수 있다. 머지는${MERGED_LIST:-(이번 실행 0건)} 끝났다. 로컬 태그는 지웠다 — 같은 명령을 다시 돌리면 버전 커밋·태그만 다시 만든다" 7
-fi
-note "버전 $CUR → $VERSION, 태그 $TAG push ($(git -C "$TMPWT" rev-parse --short HEAD))"
+git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || git fetch -q origin "refs/tags/$TAG:refs/tags/$TAG" || true
 
-# 3-1. GitHub Release — 태그에 릴리즈 노트를 붙인다. 리허설 태그는 prerelease 로 표시
-REL_FLAG=""; [ "$PREFIX" = "v" ] || REL_FLAG="--prerelease"
+# 6. GitHub Release — 리허설 태그는 prerelease. 이미 있으면 앞선 실행이 여기까지 왔다 — 빌드하지 않고 안내만
 rerun_cmds "$TAG"
-REL_RERUN="(cd $(shq "$REPO") && gh release create $(shq "$TAG") --verify-tag --title $(shq "$TAG") --notes-file $(shq "$NOTES")${REL_FLAG:+ $REL_FLAG})"
-gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$NOTES" $REL_FLAG >/dev/null \
-  || die "GitHub Release 생성 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다(app/INSTALL.md 「출고」)${NL}노트만 다시:${NL}$REL_RERUN${NL}그 뒤 dmg:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE${NL}그 뒤 APK:${NL}$APK_RERUN" 9
-note "GitHub Release $TAG ($(gh release view "$TAG" --json url --jq .url))"
+if [ -n "$REL_URL" ]; then
+  note "GitHub Release $TAG 는 이미 있다($REL_URL) — 출고는 앞선 실행에서 끝났다. 원래 PR 처리만 다시 본다"
+else
+  REL_FLAG=""; [ "$PREFIX" = "v" ] || REL_FLAG="--prerelease"
+  gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$NOTES" $REL_FLAG >/dev/null \
+    || die "GitHub Release 생성 실패 — 머지·태그 $TAG push 는 끝났다. 같은 명령을 다시 돌리면 Release 부터 이어 간다:${NL}$SHIP_RERUN" 9
+  note "GitHub Release $TAG ($(gh release view "$TAG" --json url --jq .url))"
+fi
 
-# 4. 본체 checkout 이 base 이고 깨끗하면 fast-forward — release-ff.sh(LIFE-672: index.lock 대기·원인별 문구, lock 은 지우지 않음).
-#    실패해도 경고만 — 출고(원격)는 끝났고 5단계로 간다. 3(다른 브랜치·미커밋)·7(앞섬)은 의도한 상태일 수 있어 스크립트 문구만
+# 7. 본체 checkout fast-forward — release-ff.sh(LIFE-672). 실패해도 경고만
 if [ -x "$SCRIPT_DIR/release-ff.sh" ]; then
   FF_RC=0; "$SCRIPT_DIR/release-ff.sh" --repo "$REPO" --base "$BASE" --tag "$TAG" || FF_RC=$?
   case "$FF_RC" in
@@ -288,10 +591,24 @@ else
   note "⚠ scripts/release-ff.sh 가 없어 본체 $BASE fast-forward 를 건너뜀 — 출고(원격)는 끝났다. 본체를 손으로 맞춘다"
 fi
 
-# 5. dmg — 그 태그 위 깨끗한 트리(임시 worktree)에서만. 산출물은 본체 app/dist/release/<태그>/ 로 복사(git 무시)
-# 재실행 안내 — 명령은 설명과 다른 줄에 홀로 두고 경로를 셸 인용한다. 어느 cwd 에서 붙여 넣어도 돈다(git -C·절대경로).
-# APK 는 release-apk.sh --from-tag 가 정확한 태그 fetch → 매번 새 임시 worktree → 기존 APK 보존까지 맡는다
-rerun_cmds "$TAG"
+# 8. 원래 PR 처리 — 간접 머지 확인 뒤에만 head 삭제. 결과는 끝에서 판정(dmg·APK 는 막지 않는다)
+process_prs
+
+if [ -n "$REL_URL" ]; then
+  [ -z "$UNRESOLVED" ] || die "$(unresolved_msg)" 13
+  echo "✔ 출고 $TAG 는 이미 끝났다 — dmg·APK 가 빠졌다면 아래 명령을 그대로 붙여 넣는다"
+  echo "dmg 만:"; echo "$DMG_RERUN"; echo "dmg 가 끝나면 임시 worktree 정리:"; echo "$DMG_DONE"
+  echo "APK 만:"; echo "$APK_RERUN"
+  echo "□ 다음: 설치 확인 뒤 $(shq "$SCRIPT_DIR/release.sh") finish$RARGS"
+  exit 0
+fi
+PR_TAIL=""; [ -z "$UNRESOLVED" ] || PR_TAIL="${NL}그리고 $(unresolved_msg)"
+
+# 9. dmg·APK — 그 태그 위 깨끗한 임시 worktree 에서만
+TMPWT="$WT_ROOT/_release-$(date +%Y%m%d-%H%M%S)"
+cleanup() { [ -d "$TMPWT" ] && git -C "$REPO" worktree remove --force "$TMPWT" >/dev/null 2>&1; git -C "$REPO" worktree prune; }
+trap cleanup EXIT
+git worktree add -q --detach "$TMPWT" "refs/tags/$TAG"
 if [ "$SKIP_BUILD" = 1 ]; then
   note "--skip-build — dmg 는 나중에(그대로 붙여 넣는다):"
   echo "$DMG_RERUN"
@@ -299,18 +616,17 @@ if [ "$SKIP_BUILD" = 1 ]; then
 else
   APK_TAIL=""; [ "$SKIP_APK" = 1 ] || APK_TAIL="${NL}APK 는 아직이다 — dmg 뒤 APK:${NL}$APK_RERUN"
   "$TMPWT/scripts/release-dmg.sh" --tag-prefix "$PREFIX" --out "$OUT_DIR" \
-    || die "dmg 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다${NL}dmg 만 다시:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE$APK_TAIL" 8
+    || die "dmg 실패 — 머지·태그 $TAG push·Release 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다${NL}dmg 만 다시:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE$APK_TAIL$PR_TAIL" 8
 fi
-
-# 6. APK — dmg 와 같은 태그 worktree 에서. 가드(HEAD = 태그·깨끗한 트리·원격 태그)는 release-apk.sh 가 빌드 전에 본다
 if [ "$SKIP_APK" = 1 ]; then
   note "--skip-apk — APK 는 나중에(그대로 붙여 넣는다):"
   echo "$APK_RERUN"
 else
   "$TMPWT/scripts/release-apk.sh" --tag-prefix "$PREFIX" --out "$OUT_DIR" \
-    || die "APK 실패 — 머지·버전 커밋·태그 $TAG push$([ "$SKIP_BUILD" = 1 ] || echo "·dmg") 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다${NL}APK 만 다시:${NL}$APK_RERUN" 10
+    || die "APK 실패 — 머지·태그 $TAG push·Release$([ "$SKIP_BUILD" = 1 ] || echo "·dmg") 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다${NL}APK 만 다시:${NL}$APK_RERUN$PR_TAIL" 10
 fi
 
+[ -z "$UNRESOLVED" ] || die "출고 $TAG 는 끝났다(태그·Release$([ "$SKIP_BUILD" = 1 ] || echo "·dmg")$([ "$SKIP_APK" = 1 ] || echo "·APK")). 그런데 $(unresolved_msg)" 13
 APK_LATER=""; [ "$SKIP_APK" = 0 ] || APK_LATER=" — --skip-apk 였으니 APK 를 먼저 만든다"
-echo "✔ 출고 $TAG —$MERGED_LIST${SKIPPED:+ (앞선 실행:$SKIPPED)}"
-echo "□ 다음: ① 머지된 PR 의 LIFE 일감마다 LA '완료' 전이(출고 머지 뒤 — D2) ② dmg 설치(app/INSTALL.md 「설치」) ③ 폰 APK 덮어 설치 scripts/release-apk-install.sh --serial <폰 시리얼> --apk $OUT_DIR/corral-mobile-$VERSION.apk (서명 대조 뒤 install -r$APK_LATER) ④ 남은 로컬 정리 scripts/task-finish.sh <LIFE-NNN-슬러그>"
+echo "✔ 출고 $TAG —$(echo "$RECORD" | awk '{printf " #%s", $1}')"
+echo "□ 다음: ① 출고된 PR 의 LIFE 일감마다 LA '완료' 전이 ② dmg 설치(app/INSTALL.md 「설치」) ③ 폰 APK 덮어 설치 scripts/release-apk-install.sh --serial <폰 시리얼> --apk $OUT_DIR/corral-mobile-$VER.apk (서명 대조 뒤 install -r$APK_LATER) ④ release 브랜치·worktree 정리 $(shq "$SCRIPT_DIR/release.sh") finish$RARGS ⑤ 남은 로컬 정리 scripts/task-finish.sh <LIFE-NNN-슬러그>"

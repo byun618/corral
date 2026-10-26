@@ -6,7 +6,7 @@
 # release-ff.sh 는 git shim 을 거쳐 돈다 — shim 은 argv 를 기록하고(스크립트 자신의 status 에 --no-optional-locks 가 있는지 본다),
 # 케이스에 따라 첫 merge 직전 lock 생성(TOCTOU)·「Unable to write index.」 주입(실제 ff 경로 문구가 아닌 방어용 주입)·실제 ff 경로 문구
 # 「unable to write new index file」·상한 뒤 마지막 시도만 통과·merge-base/rev-parse/rev-list 실패·merge 실패 사이 원격 갈라짐을 흉내 낸다.
-# e2e = 실제 scripts/release.sh 를 가짜 gh 로 임시 레포에서 끝까지 돌린다(4단계 lock 실패 → 경고 뒤 5·6단계·「✔ 출고」).
+# e2e = 실제 scripts/release.sh 를 가짜 gh(app/scripts/l703/fake-gh.sh)로 임시 레포에서 cut → gather → ship 끝까지 돌린다(4단계 lock 실패 → 경고 뒤 5·6단계·「✔ 출고」).
 # **판정 회차는 직렬로 돌린다** — 한 번에 이 스크립트 하나, 다른 무거운 작업과 겹치지 않게(쥐개 2초·30초 상한 케이스가 부하에 민감하다).
 # 임시 폴더는 TMPDIR 과 무관하게 /tmp/l672ff.XXXXXX(짧은 고정 접두) — 문구의 경로 길이가 환경마다 달라지지 않게.
 set -uo pipefail
@@ -546,33 +546,33 @@ for CASE in $CASES; do
       g -C "$B" add -A; g -C "$B" commit -qm "release 스크립트"; g -C "$B" push -q origin HEAD:main
       g -C "$B" fetch -q origin
       BEFORE="$(git -C "$B" rev-parse HEAD)"
-      mkdir -p "$W/bin"
-      cat > "$W/bin/gh" <<'GH'
-#!/usr/bin/env bash
-# 가짜 gh — PR 은 이미 머지됨, release create/view 는 성공
-echo "gh $*" >> "$(dirname "$0")/gh-calls.txt"
-case "$*" in
-  "pr view"*state,baseRefName*) echo "MERGED main LIFE-0-x false false 0000000000000000000000000000000000000000" ;;
-  "release create"*) # e2e-ahead: 태그 push 뒤 본체에 로컬 커밋이 생긴 상태를 만든다(origin 보다 앞섬만)
-    if [ -n "${E2E_AHEAD_REPO:-}" ]; then
-      git -C "$E2E_AHEAD_REPO" fetch -q origin && git -C "$E2E_AHEAD_REPO" merge -q --ff-only origin/main \
-        && git -C "$E2E_AHEAD_REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "로컬 커밋" || exit 1
-    fi ;;
-  "release view"*) echo "https://example.invalid/release" ;;
-  *) echo "가짜 gh: 모르는 호출 $*" >&2; exit 1 ;;
-esac
-GH
+      # 출고 대상 PR 1건 — head 브랜치를 origin/main 에서 만들어 push(LIFE-703: cut → gather → ship)
+      g -C "$B" checkout -q -b LIFE-0-x; echo pr > "$B/pr.txt"; g -C "$B" add pr.txt; g -C "$B" commit -qm "PR 1"
+      g -C "$B" push -q origin LIFE-0-x; PR_OID="$(git -C "$B" rev-parse HEAD)"; g -C "$B" checkout -q main
+      mkdir -p "$W/bin" "$W/gh/pr" "$W/gh/release"
+      printf 'state=OPEN\nbase=main\nhead=LIFE-0-x\ndraft=false\nfork=false\noid=%s\n' "$PR_OID" > "$W/gh/pr/1"
+      # 가짜 gh = LIFE-703 하네스의 fake-gh.sh(간접 머지·merge commit 머지 흉내)
+      cp "$ROOT/app/scripts/l703/fake-gh.sh" "$W/bin/gh"
       chmod +x "$W/bin/gh"
       echo "노트" > "$W/notes.md"
       if [ "$CASE" = e2e-noff ]; then check "release-ff.sh 가 사본에 없다" [ ! -e "$B/scripts/release-ff.sh" ]
       else check "release-ff.sh 사본 = 레포 원본(sha1 $(shasum < "$FF" | cut -c1-12))" [ "$(shasum < "$FF")" = "$(shasum < "$B/scripts/release-ff.sh")" ]; fi
       check "release.sh 사본 = 레포 원본(sha1 $(shasum < "$ROOT/scripts/release.sh" | cut -c1-12))" [ "$(shasum < "$ROOT/scripts/release.sh")" = "$(shasum < "$B/scripts/release.sh")" ]
-      [ "$CASE" = e2e ] && hold 45
       [ "$CASE" = e2e-dirty ] && echo stray > "$B/stray.txt"
       AHEAD_REPO=""; [ "$CASE" = e2e-ahead ] && AHEAD_REPO="$B"
-      run env PATH="$W/bin:$PATH" E2E_AHEAD_REPO="$AHEAD_REPO" bash -c 'command -v gh; exec "$0" "$@"' "$B/scripts/release.sh" --prs 1 --notes "$W/notes.md" --skip-build --skip-apk
+      # e2e-ahead: Release 생성(태그 push 뒤) 때 본체에 로컬 커밋이 생긴 상태를 만든다(origin 보다 앞섬만)
+      ON_REL=""; [ -z "$AHEAD_REPO" ] || ON_REL="git -C '$AHEAD_REPO' fetch -q origin && git -C '$AHEAD_REPO' merge -q --ff-only origin/main && git -C '$AHEAD_REPO' -c user.name=t -c user.email=t@t commit -q --allow-empty -m '로컬 커밋'"
+      GHENV="PATH=$W/bin:$PATH FGH_STATE=$W/gh FGH_ORIGIN=$W/origin.git RELEASE_INDIRECT_WAIT_S=0 RELEASE_INDIRECT_STEP_S=0"
+      cd "$B"  # release.sh 는 다른 레포 안에서 부르면 거절한다(오용 가드) — 본체 B 안에서 부른다
+      run env $GHENV "$B/scripts/release.sh" cut
+      check "cut exit 0" [ "$RC" = 0 ]
+      run env $GHENV "$B/scripts/release.sh" gather --prs 1
+      check "gather exit 0" [ "$RC" = 0 ]
+      [ "$CASE" = e2e ] && hold 45  # 쥐개는 ship 직전 — cut·gather 는 release worktree 에서 돌아 본체 index 를 쓰지 않는다
+      run env $GHENV FGH_ON_RELEASE_CREATE="$ON_REL" bash -c 'command -v gh; exec "$0" "$@"' "$B/scripts/release.sh" ship --notes "$W/notes.md" --skip-build --skip-apk
       stopholder
-      cp "$W/bin/gh-calls.txt" "$OUT/$CASE-gh-calls.txt" 2>/dev/null
+      cd "$ROOT"
+      cp "$W/gh/calls.txt" "$OUT/$CASE-gh-calls.txt" 2>/dev/null
       check "가짜 gh 를 썼다" has "$W/bin/gh"
       check "exit 0(출고 계속)" [ "$RC" = 0 ]
       check "버전 커밋·태그 push(3단계)" has "태그 v0.0.2 push"

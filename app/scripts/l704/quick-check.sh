@@ -140,7 +140,7 @@ C2e-s1-learnings	S1	has	**learnings 를 골라 읽는다**
 C2e-s1-title-scope	S1	has	주제 제목과 `Scope` 만 먼저 훑고
 C3a-position	R4	has	통합 확인 뒤·릴리즈 노트 전에
 C3a-before-ship	R4	has	`ship` 전에 끝낸다
-C3b-read-devlog	R4	has	사용자와 같이 읽는다
+C3b-read-devlog	R4	has	**읽는다** — 일감 폴더마다 사용자와 같이
 C3b-adr-accept	R4	has	ADR 초안 채택 — `docs/adr/README.md` 대로 번호·상태를 붙인다
 C3b-commit-release	R4	has	release worktree 에서 **비-merge 커밋 하나**
 C3b-freeze-exception-r4	R4	has	동결의 예외다(§1)

@@ -3,7 +3,8 @@
 # AGENTS.md 줄 수(C5ⓒ), capability-check names·shape(C5ⓐ), l703 doc-check(C5ⓑ) 를 한 번에 돌린다.
 # app/scripts/l704/quick-check.sh <원자료 폴더> [--extra <누출 패턴 파일>] [--base <비교 기준, 기본 main>]
 #   출력: <폴더>/quick-check.txt (요약) · table.txt(대조표) · leak.txt · range.txt · capcheck-*.txt · l703/doc-check.txt. 하나라도 어긋나면 exit 1.
-#   --extra: 한 줄에 하나씩 grep -E 패턴(공개 레포에 적을 수 없는 이름·원문 인용 등). 레포 밖에 둔다.
+#   --extra: 한 줄에 하나씩 grep -E 패턴(공개 레포에 적을 수 없는 이름·원문 인용 등). 레포 밖에 둔다. 없으면 요약에 WARN — 이름·원문 인용은 검사하지 않은 것이다.
+#   --base: 없는 ref 이거나 diff 가 비면 FAIL — 빈 diff 를 「누출 0·범위 안」 으로 읽지 않는다.
 # node 는 v24 이상이 PATH 앞에 있어야 한다(capability-check).
 set -uo pipefail
 OUT="${1:?원자료 폴더}"; shift; mkdir -p "$OUT" || exit 1; OUT="$(cd "$OUT" && pwd)"
@@ -21,6 +22,9 @@ SUM="$OUT/quick-check.txt"; : > "$SUM"
 BAD=0
 say() { echo "$1" | tee -a "$SUM"; }
 bad() { say "FAIL $1"; BAD=$((BAD + 1)); }
+if ! git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
+  say "FAIL --base $BASE 가 커밋이 아니다 — 비교 기준 없이는 diff 검사(누출·범위)가 빈 결과로 통과한다"; say "실패 1"; exit 1
+fi
 say "# l704 quick-check $(date '+%F %T') · HEAD $(git rev-parse --short HEAD) · base $BASE $(git rev-parse --short "$BASE")$(git diff --quiet HEAD -- . && git diff --cached --quiet || echo ' (+작업 트리 변경 — diff 는 커밋 기준)')"
 
 # ── 1. 대조표 — 요구 id · 자리 · 방식(has 고정 문자열 / re 정규식 / not 없어야 함) · 패턴 ──
@@ -38,6 +42,9 @@ place() {
     IM3) printf '%s\t%s\t%s\n' "$IM" '^## 3\. ' '^## 4\. ' ;;
     R1) printf '%s\t%s\t%s\n' "$RS" '^## 1\. ' '^## 2\. ' ;;
     R4) printf '%s\t%s\t%s\n' "$RS" '^## 4\. ' '^## 5\. ' ;;
+    R2) printf '%s\t%s\t%s\n' "$RS" '^## 2\. ' '^## 3\. ' ;;
+    R7) printf '%s\t%s\t%s\n' "$RS" '^## 7\. ' '' ;;
+    INST) printf '%s\t%s\t%s\n' app/INSTALL.md '^## 출고' '^## 빌드' ;;
     RS) printf '%s\t\t\n' "$RS" ;;
     AG) printf '%s\t\t\n' AGENTS.md ;;
     AGF) printf '%s\t%s\t%s\n' AGENTS.md '^## 어디를 고치나' '^## 원본 관리' ;;
@@ -81,7 +88,10 @@ C1a-promote-count-misfits	L	has	안 통하는 자리 세기
 C1a-promote-scenarios	L	has	시나리오 열거
 C1a-read-not-inject	L	has	모든 작업에 주입하지 않는다
 C1a-read-title-scope-first	L	has	제목과 `Scope` 를 먼저 훑고
-C1a-proposal-in-specs-adopt-at-release	L	has	이 폴더에는 출고 회고에서 채택분만 커밋한다
+C1a-when-points-to-skills	L	has	제안 = task-coordinate §8 게이트 ②, 채택·승격·재검토 = release §4 회고
+C1a-8kb-bytes	L	has	8KB(파일 바이트, `wc -c`
+C1a-90d-fix-at-retro	L	has	**고치는 것은 출고 회고다**(release §4)
+C1a-public-once	L	has	(`docs/adr/` 도 이 줄을 따른다)
 C1b-tpl-title	AT	re	^# <
 C1b-tpl-context	AT	re	^## Context and Problem Statement$
 C1b-tpl-drivers	AT	re	^## Decision Drivers$
@@ -94,7 +104,9 @@ C1b-status-values	AR	has	`proposed` · `accepted` · `rejected` · `deprecated` 
 C1b-accepted-immutable	AR	has	accepted 뒤에는 본문을 고치지 않는다
 C1b-superseded-only	AR	has	`superseded by ADR-NNNN` 으로 바꾼다
 C1b-number-at-adoption	AR	has	번호는 채택할 때 매긴다
-C1b-draft-in-specs	AR	has	PR 에는 싣지 않는다
+C1b-when-points-to-skills	AR	has	초안은 게이트 ②(task-coordinate §8)에, 채택은 출고 회고(release §4)에
+C1b-public-points	AR	has	공개 레포 주의는 `.agents/learnings/README.md`
+C1b-not-restated	AR	not	corral-specs 원자료 경로
 C2a-devlog-file	S8	has	**devlog** `devlog.md` (비공개)
 C2a-devlog-dated	S8	has	날짜별 절(`## YYYY-MM-DD`)
 C2a-view-human-draft	S8	has	**사람**(그날의 결정·승인·지시 원문 — LLM 초안
@@ -103,8 +115,17 @@ C2a-view-llm	S8	has	**LLM**(시도 → 실패 → 원인 → 해결)
 C2a-view-directives	S8	has	**LLM 이 본 지시**(방향을 바꾼 지시, 반복된 지적, 모호했던 지시)
 C2a-retro-3lens	S8	has	문제 정의(처음 정의가 맞았나) · 검증 설계(기준·관문이 결함을 잡았나)
 C2a-retro-3lens-3	S8	has	방식 개선(다음엔 무엇을 바꾸나)
-C2a-sources	S8	re	transcript·git log.*·$
-C2a-sources-reviews	S8	has	`reviews.md` 로 대조한다
+C2a-sources	S8	has	코디 세션 transcript 와 git log(작업 브랜치·corral-specs)로 대조한다
+C2a-sources-reviews	S8	has	`reviews.md` 는 내용 대조에 쓴다 — 시각이 드물어 날짜 축이 되지 못한다
+C2a-record-no-guess	S8	has	경로를 짐작하지 않는다(능력 계약 H6)
+C2a-record-start	S8	has	시작 기록(`00-start.md`·`raw/start/` 의 기동·주입 응답)
+C2a-record-codex	S8	has	Codex 는 날짜 샤드
+C2a-record-ambiguous	S8	has	없거나 둘 이상이면 고르지 않고 devlog 에 공백으로 적는다
+C2a-oracle	S8	has	매핑의 『세션 기록 오라클』로
+C2a-no-full-load	S8	has	기록을 통째로 문맥에 싣지 않는다
+C2a-oracle-observation	S8	has	오라클은 관측이라 devlog 사실의 증명이 아니다
+C2a-human-gui-h2	S8	has	(H2 — 『화면 관측』으로만 회수된다)
+C2a-no-home-path	S8	not	.claude/projects
 C2a-compact	S8	has	compact 로 초반이 뭉개진다
 C2b-human-before-finish	S8	has	**사람 절 확인은 정리 전에 끝낸다**
 C2b-commit-with-step1	S8	has	**게이트 ② 기록·인계 문서·PR 원고를 corral-specs 에 커밋·push 한다**
@@ -120,13 +141,27 @@ C2e-s1-title-scope	S1	has	주제 제목과 `Scope` 만 먼저 훑고
 C3a-position	R4	has	통합 확인 뒤·릴리즈 노트 전에
 C3a-before-ship	R4	has	`ship` 전에 끝낸다
 C3b-read-devlog	R4	has	사용자와 같이 읽는다
-C3b-adr-accept	R4	has	`status: accepted`
+C3b-adr-accept	R4	has	ADR 초안 채택 — `docs/adr/README.md` 대로 번호·상태를 붙인다
 C3b-commit-release	R4	has	release worktree 에서 **비-merge 커밋 하나**
-C3b-freeze-exception-r4	R4	has	동결(§1)의 유일한 예외
-C3b-freeze-exception-r1	R1	has	예외는 §4 회고 커밋 하나다
+C3b-freeze-exception-r4	R4	has	동결의 예외다(§1)
+C3b-freeze-exception-r1	R1	has	**예외는 §4 회고 커밋 하나다**
+F1-r1-canonical	R1	has	동결과 그 예외의 원본은 이 줄이고
+F1-r2-points	R2	has	직접 고치지 않는다(예외는 §1 — §4 회고 커밋)
+F1-agents-points	AG	has	다시 모은다(예외는 release 스킬 §1)
+F1-install-points	INST	has	동결의 예외(회고 커밋)는 release 스킬 §1 이 정한다
+F1-install-flow	INST	has	③' 회고 — 채택한 learnings·ADR 을 release worktree 에서 커밋(release 스킬 4)
 C3b-worked	R4	has	**이전 learnings 가 이번에 작동했나**
-C3b-90d	R4	has	**90일 재검토**
-C3b-big-separate	R4	has	별도 LIFE 일감으로 만든다
+C3b-90d	R4	has	재검토(90일·상한) — `.agents/learnings/README.md` 대로
+C3b-no-restate-limits	R4	not	쓰기 전 압축
+C3b-big-separate	R4	has	별도 LIFE 일감 후보로 적는다
+F3-read-proc-misfit	R4	has	`00-analysis.md` 「절차 어긋남」 절
+F3-read-method-lens	R4	has	devlog 회고의 「방식 개선」 렌즈
+F3-decide-improve	R4	has	**스킬·규칙 개선안**
+F6-find-folder	R4	has	head 브랜치 `LIFE-NNN-<슬러그>` = corral-specs 작업 폴더 이름
+F6-bundle-children	R4	has	묶음 폴더 `verdict.md` 의 자식 판정 링크
+F6-record-commit-after-ship	R4	has	커밋은 출고(§6)가 끝난 뒤 마무리에서
+F6-abort	R4	has	「접음 — 다음 출고 회고에서 다시 적용」
+F6-r7-commit	R7	has	회고 결정 기록 `retro/vX.Y.Z.md` 가 있으면
 C3b-record-one-place	R4	has	corral-specs `retro/vX.Y.Z.md` 한 파일
 C3b-no-release-pr-line	R4	has	메시지에 `Release-PR:` 줄을 쓰지 않는다
 C3c-no-changelog	RS	not	changelog
@@ -178,6 +213,7 @@ ere_quote() { sed 's/[]*.^$+?(){}|\\[]/\\&/g'; }
 IFS= read -r -d '' PATS <<'P' || true
 home-path	/Users/[A-Za-z]
 home-tilde	~/[A-Za-z.]
+home-var	\$\{?HOME\}?/
 specs-raw	corral-specs/LIFE-[0-9]
 raw-tool-path	raw/(claude|codex|grok|coordinator|review|start)/[A-Za-z0-9]
 uuid	[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
@@ -188,7 +224,7 @@ PATS="${PATS%$'\n'}"$'\n'"home-env	$(printf '%s' "$HOME" | ere_quote)"
 PATS="$PATS"$'\n'"account	(^|[^A-Za-z])$(id -un)([^A-Za-z0-9]|$)"
 EM="$(git config user.email || true)"; [ -n "$EM" ] && PATS="$PATS"$'\n'"email	$(printf '%s' "$EM" | ere_quote)"
 if [ -n "$EXTRA" ]; then
-  while IFS= read -r p; do [ -n "$p" ] && PATS="$PATS"$'\n'"extra	$p"; done < "$EXTRA"
+  n=0; while IFS= read -r p; do [ -n "$p" ] || continue; n=$((n + 1)); PATS="$PATS"$'\n'"extra$n	$p"; done < "$EXTRA"
 fi
 # 스캔 대상: "<자리>\t<본문>" 줄
 targets() {
@@ -212,6 +248,9 @@ scan() { # $1 = 대상 줄 파일 → 걸린 줄 수를 낸다
 }
 targets | sort -u > "$OUT/leak-targets.txt"
 say "── 누출 스캔: 대상 $(wc -l < "$OUT/leak-targets.txt" | tr -d ' ')줄(diff 추가 줄 + .agents/learnings·docs/adr 전체) · 패턴 $(printf '%s\n' "$PATS" | grep -c .)개$( [ -n "$EXTRA" ] && echo ' (+--extra)')"
+[ -n "$EXTRA" ] || say "WARN --extra 없음 — 사용자 이름·원문 인용은 검사하지 않았다(그 칸은 이 회차로 판정하지 않는다)"
+DIFFADD="$(git diff -U0 "$BASE...HEAD" | grep -c '^+[^+]' || true)"
+[ "$DIFFADD" -gt 0 ] || bad "diff 추가 줄 0 ($BASE...HEAD) — 비교 기준이 틀렸거나 커밋이 없다"
 scan "$OUT/leak-targets.txt" > "$LEAK"
 LH="$(grep -c . "$LEAK" || true)"
 if [ "$LH" = 0 ]; then say "ok   누출 0건"; else bad "누출 ${LH}건"; sed 's/^/  /' "$LEAK" | tee -a "$SUM"; fi
@@ -223,13 +262,15 @@ add() { printf 'sample:%s\t%s\n' "$1" "$2" >> "$PCS"; }
 H8=0123abcd
 add home-path "see /Users""/someone/x"; add home-tilde "see ~""/repos/x"; add specs-raw "corral-specs/LIFE-""123-x/raw"
 add raw-tool-path "raw/claude""/DONE.md"; add uuid "$H8-${H8:0:4}-${H8:4:4}-${H8:0:4}-$H8${H8:0:4}"; add corral-id "ctx_""$H8${H8:0:4}"
-add handle "t1.ey""JABCDEFGHIJKLMNOPQRSTUVWXYZ"; add home-env "$HOME/x"; add account "by $(id -un) here"
+add handle "t1.ey""JABCDEFGHIJKLMNOPQRSTUVWXYZ"; add home-env "$HOME""/x"; add home-var "see "'$'"HOME""/x"; add home-var-brace "see "'$'"{HOME}""/x"; add account "by $(id -un) here"
 [ -n "$EM" ] && add email "mail $EM"
 if [ -n "$EXTRA" ]; then n=0; while IFS= read -r p; do [ -n "$p" ] || continue; n=$((n + 1)); add "extra$n" "$(printf '%s' "$p" | sed 's/\\//g')"; done < "$EXTRA"; fi
 scan "$PCS" > "$PC"
 MISSPC=0
+# 표본 id = 그 표본을 잡아야 할 패턴 이름 — 다른 패턴이 같은 표본을 잡아도 대신 세지 않는다(LIFE-704 r1 지적 4)
 while IFS=$'\t' read -r loc _; do
-  grep -qF "] $loc" "$PC" || { echo "  양성 대조 놓침: $loc" | tee -a "$SUM"; MISSPC=$((MISSPC + 1)); }
+  want="${loc#sample:}"; want="${want%-brace}"
+  grep -qF "[$want] $loc" "$PC" || { echo "  양성 대조 놓침: $loc (패턴 $want 가 못 잡음)" | tee -a "$SUM"; MISSPC=$((MISSPC + 1)); }
 done < "$PCS"
 TOTPC="$(grep -c . "$PCS")"
 [ "$MISSPC" = 0 ] && say "ok   양성 대조: 심은 표본 ${TOTPC}개 전부 잡음 (leak-positive.txt)" || bad "양성 대조 놓침 ${MISSPC}/${TOTPC}"
@@ -237,9 +278,10 @@ TOTPC="$(grep -c . "$PCS")"
 # ── 3. diff 범위 — 00-analysis §5 「넣는다」 안, 제품 코드 무변경 ──
 RANGE="$OUT/range.txt"
 git diff --stat "$BASE...HEAD" > "$RANGE"
-OUTSIDE="$(git diff --name-only "$BASE...HEAD" | grep -vE '^(AGENTS\.md|\.agents/learnings/|docs/adr/|\.agents/skills/task-coordinate/(SKILL\.md|references/implementation\.md)|\.agents/skills/release/SKILL\.md|app/scripts/l704/)' || true)"
+[ -s "$RANGE" ] || bad "diff --stat 이 비었다 ($BASE...HEAD)"
+OUTSIDE="$(git diff --name-only "$BASE...HEAD" | grep -vE '^(AGENTS\.md|\.agents/learnings/|docs/adr/|\.agents/skills/task-coordinate/(SKILL\.md|references/implementation\.md)|\.agents/skills/release/SKILL\.md|app/INSTALL\.md|app/scripts/l704/)' || true)"
 say "── diff 범위 ($BASE...HEAD): $(tail -1 "$RANGE")"
-[ -z "$OUTSIDE" ] && say "ok   범위 안 (제품 코드 app/src·mobile 무변경)" || { bad "범위 밖 파일"; echo "$OUTSIDE" | sed 's/^/  /' | tee -a "$SUM"; }
+[ -z "$OUTSIDE" ] && say "ok   범위 안 (제품 코드 app/src·mobile 무변경, app/INSTALL.md 는 r1 F1 정합 줄)" || { bad "범위 밖 파일"; echo "$OUTSIDE" | sed 's/^/  /' | tee -a "$SUM"; }
 
 # ── 4. AGENTS.md 줄 수 ──
 L="$(wc -l < AGENTS.md | tr -d ' ')"; [ "$L" -le 200 ] && say "ok   AGENTS.md ${L}줄 ≤ 200" || bad "AGENTS.md ${L}줄"

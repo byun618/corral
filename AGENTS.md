@@ -62,7 +62,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - 슬러그는 일감 타이틀에서 자동 파생(케밥케이스 1~3단어), 생성 후 불변 (매핑은 키로만)
 - worktree 는 전부 .claude/worktrees/ 아래 형제 폴더 — 중첩 금지. 구현 브랜치 생존 중 작업 브랜치 rebase 금지
 - **release 브랜치 release/vX.Y.Z** (예외, 단명 원칙 안): 출고 1회 수명·한 번에 하나. main 에서 자르고(.claude/worktrees/release-vX.Y.Z)
-  PR 을 모아 통합 확인 뒤 main 머지, 출고 확인 뒤 삭제(접으면 삭제·PR 은 열린 채). 자른 뒤엔 출고를 막는 수정만 — 수정은 일감 브랜치에서 고쳐 다시 모은다
+  PR 을 모아 통합 확인 뒤 main 머지, 출고 확인 뒤 삭제(접으면 삭제·PR 은 열린 채). 자른 뒤엔 출고를 막는 수정만 — 수정은 일감 브랜치에서 고쳐 다시 모은다(예외는 release 스킬 §1)
 - 출고 통합 확인은 release worktree 에서 한다. 그 밖의 통합 확인은 throwaway: integration/<이름>-YYYYMMDD 에 합쳐 테스트 후 삭제. 유지 금지
 - feature·예외적 장기 통합 브랜치는 만료일 명시(첫 자식 작업 00-start.md), 넘기면 쪼개서 main 에
 

@@ -10,12 +10,11 @@ corral 의 구조·작업 방식에서 **오래 남을 결정**과 그 이유를
 
 ## 흐름과 번호
 
-- **초안**: 코디가 게이트 ② 에 corral-specs 작업 폴더에 쓴다(task-coordinate §8). 번호 없이, `status: proposed`.
-  PR 에는 싣지 않는다.
-- **채택**: 출고 회고(release §4)에서 사용자와 정한다. 채택분만 release 브랜치에 `docs/adr/NNNN-<제목-케밥>.md` 로 커밋한다.
+- 초안은 게이트 ②(task-coordinate §8)에, 채택은 출고 회고(release §4)에 — 언제·어디서는 그 스킬들이 정한다.
+- 파일 이름 `docs/adr/NNNN-<제목-케밥>.md`. 초안은 번호 없이 `status: proposed`.
 - **번호는 채택할 때 매긴다** — 이 폴더의 가장 큰 번호 + 1, 네 자리(`0001`). 초안 단계에서 번호를 집지 않는다
   (병렬 일감이 같은 번호를 집는다).
-- 공개 레포다: 홈 경로·사용자 이름·corral-specs 원자료 경로·세션 id·사용자 원문 인용을 넣지 않는다. 근거는 LIFE 번호로.
+- 공개 레포 주의는 `.agents/learnings/README.md` 「형식」의 공개 레포 줄과 같다. 근거는 LIFE 번호로.
 
 ## 상태
 

@@ -5,6 +5,7 @@
 #   출력: <폴더>/quick-check.txt (요약) · table.txt(대조표) · leak.txt · range.txt · capcheck-*.txt · l703/doc-check.txt. 하나라도 어긋나면 exit 1.
 #   --extra: 한 줄에 하나씩 grep -E 패턴(공개 레포에 적을 수 없는 이름·원문 인용 등). 레포 밖에 둔다. 없으면 요약에 WARN — 이름·원문 인용은 검사하지 않은 것이다.
 #   --base: 없는 ref 이거나 diff 가 비면 FAIL — 빈 diff 를 「누출 0·범위 안」 으로 읽지 않는다.
+#   미커밋·미추적 변경이 있으면 FAIL — 스캔은 커밋 diff·커밋 메시지·추적 파일만 보므로 깨끗한 커밋 상태에서만 유효하다.
 # node 는 v24 이상이 PATH 앞에 있어야 한다(capability-check).
 set -uo pipefail
 OUT="${1:?원자료 폴더}"; shift; mkdir -p "$OUT" || exit 1; OUT="$(cd "$OUT" && pwd)"
@@ -25,6 +26,11 @@ bad() { say "FAIL $1"; BAD=$((BAD + 1)); }
 if ! git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
   say "FAIL --base $BASE 가 커밋이 아니다 — 비교 기준 없이는 diff 검사(누출·범위)가 빈 결과로 통과한다"; say "실패 1"; exit 1
 fi
+DIRTY="$(git status --porcelain --untracked-files=all)"
+if [ -n "$DIRTY" ]; then
+  bad "깨끗한 커밋 상태가 아니다 — 미커밋·미추적 변경은 누출 스캔 밖이라 이 회차는 관문이 아니다:"
+  printf '%s\n' "$DIRTY" | head -20 | sed 's/^/  /' | tee -a "$SUM"
+fi
 say "# l704 quick-check $(date '+%F %T') · HEAD $(git rev-parse --short HEAD) · base $BASE $(git rev-parse --short "$BASE")$(git diff --quiet HEAD -- . && git diff --cached --quiet || echo ' (+작업 트리 변경 — diff 는 커밋 기준)')"
 
 # ── 1. 대조표 — 요구 id · 자리 · 방식(has 고정 문자열 / re 정규식 / not 없어야 함) · 패턴 ──
@@ -44,6 +50,7 @@ place() {
     R4) printf '%s\t%s\t%s\n' "$RS" '^## 4\. ' '^## 5\. ' ;;
     R2) printf '%s\t%s\t%s\n' "$RS" '^## 2\. ' '^## 3\. ' ;;
     R7) printf '%s\t%s\t%s\n' "$RS" '^## 7\. ' '' ;;
+    TS6) printf '%s\t%s\t%s\n' .agents/skills/task-start/SKILL.md '^6\. ' '' ;;
     INST) printf '%s\t%s\t%s\n' app/INSTALL.md '^## 출고' '^## 빌드' ;;
     RS) printf '%s\t\t\n' "$RS" ;;
     AG) printf '%s\t\t\n' AGENTS.md ;;
@@ -117,10 +124,19 @@ C2a-retro-3lens	S8	has	문제 정의(처음 정의가 맞았나) · 검증 설�
 C2a-retro-3lens-3	S8	has	방식 개선(다음엔 무엇을 바꾸나)
 C2a-sources	S8	has	코디 세션 transcript 와 git log(작업 브랜치·corral-specs)로 대조한다
 C2a-sources-reviews	S8	has	`reviews.md` 는 내용 대조에 쓴다 — 시각이 드물어 날짜 축이 되지 못한다
-C2a-record-no-guess	S8	has	경로를 짐작하지 않는다(능력 계약 H6)
-C2a-record-start	S8	has	시작 기록(`00-start.md`·`raw/start/` 의 기동·주입 응답)
-C2a-record-codex	S8	has	Codex 는 날짜 샤드
-C2a-record-ambiguous	S8	has	없거나 둘 이상이면 고르지 않고 devlog 에 공백으로 적는다
+C2a-record-no-guess	S8	has	경로를 짐작하지 않고(능력 계약 H6)
+G1-record-from-start	S8	has	`00-start.md` 에 시작 세션이 적은 세션 기록 경로(task-start 6단계
+G1-record-none	S8	has	devlog 에 「코디 기록 없음」을 적은 뒤
+G1-by-mapping	S8	has	응답에 경로를 주지 않는 매핑
+G1-no-raw-start	S8	not	raw/start/
+G1-no-codex-branch	S8	not	Codex 코디 등
+G1-task-start-records	TS6	has	응답이 코디네이터의 세션 기록 경로를 돌려주면 그 경로도 적는다
+G3-stale-to-proposal	S8	has	고치지 않고 그 파일 이름을 여기 적는다
+G3-same-reply	S8	has	사람 절 초안을 보이고 사용자 확인을 받기 전에는 1단계로 가지 않는다
+G3-readme-points	L	has	회고로 넘기는 법은 task-coordinate §8
+G3-read-verdict	R4	has	`02-kickoff.md`(인용한 learnings
+G3-read-reviews	R4	has	`verdict.md`·`reviews.md`
+G3-abort-find	R4	has	`retro/` 에서 「접음」 머리를 가진 기록을 먼저 찾는다
 C2a-oracle	S8	has	매핑의 『세션 기록 오라클』로
 C2a-no-full-load	S8	has	기록을 통째로 문맥에 싣지 않는다
 C2a-oracle-observation	S8	has	오라클은 관측이라 devlog 사실의 증명이 아니다
@@ -193,9 +209,11 @@ while IFS=$'\t' read -r id where mode pat; do
   else printf 'MISSING\t%s\t%s\t(%s 에 %s 없음)\n' "$id" "$where" "$f" "$pat" >> "$TABLE"; MISS=$((MISS + 1)); fi
 done <<<"$REQ"
 # 『질의응답』을 코디 → 워커 질문으로 쓰는 줄이 §8 에 없어야 한다(F4) — 그 능력을 부르는 줄은 「쓰지 않는다」와 같은 줄이어야 한다
-QA="$(lines_of S8 | grep -F '『질의응답』' | grep -vF '쓰지 않는다' || true)"
+S8BODY="$(lines_of S8)"
+QA="$(printf '%s\n' "$S8BODY" | grep -F '『질의응답』' | grep -vF '쓰지 않는다' || true)"
 N=$((N + 1))
-if [ -z "$QA" ]; then printf 'ok\tC2d-qa-direction\tS8\t『질의응답』 줄은 모두 「쓰지 않는다」 줄\n' >> "$TABLE"
+if [ -z "$S8BODY" ]; then printf 'MISSING\tC2d-qa-direction\tS8\t(§8 이 비었다 — 빈 결과를 통과로 읽지 않는다)\n' >> "$TABLE"; MISS=$((MISS + 1))
+elif [ -z "$QA" ]; then printf 'ok\tC2d-qa-direction\tS8\t『질의응답』 줄은 모두 「쓰지 않는다」 줄\n' >> "$TABLE"
 else printf 'MISSING\tC2d-qa-direction\tS8\t%s\n' "$QA" >> "$TABLE"; MISS=$((MISS + 1)); fi
 # 목적지 분류 표가 정확히 6행인지
 DROWS="$(awk '/^## 어디에 둘까/{on=1;next} on&&/^## /{exit} on&&/^\| /' .agents/learnings/README.md | grep -vcE '^\| (배움의 종류|---)')"
@@ -213,7 +231,7 @@ ere_quote() { sed 's/[]*.^$+?(){}|\\[]/\\&/g'; }
 IFS= read -r -d '' PATS <<'P' || true
 home-path	/Users/[A-Za-z]
 home-tilde	~/[A-Za-z.]
-home-var	\$\{?HOME\}?/
+home-var	\$\{?HOME\}?/[A-Za-z0-9._-]
 specs-raw	corral-specs/LIFE-[0-9]
 raw-tool-path	raw/(claude|codex|grok|coordinator|review|start)/[A-Za-z0-9]
 uuid	[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
@@ -232,6 +250,7 @@ targets() {
     /^\+\+\+ b\// { f = substr($0, 7); next }
     /^@@/ { split($3, a, ","); n = substr(a[1], 2) + 0; next }
     /^\+/ && !/^\+\+\+/ { print f ":" n "\t" substr($0, 2); n++ }'
+  git log --format='@@C %h%n%B' "$BASE..HEAD" | awk '/^@@C / { c = $2; n = 0; next } { n++; print "commit:" c ":" n "\t" $0 }'
   git ls-files -- .agents/learnings docs/adr | while IFS= read -r f; do awk -v f="$f" '{ print f ":" NR "\t" $0 }' "$f"; done
 }
 scan() { # $1 = 대상 줄 파일 → 걸린 줄 수를 낸다
@@ -247,7 +266,7 @@ scan() { # $1 = 대상 줄 파일 → 걸린 줄 수를 낸다
   return 0
 }
 targets | sort -u > "$OUT/leak-targets.txt"
-say "── 누출 스캔: 대상 $(wc -l < "$OUT/leak-targets.txt" | tr -d ' ')줄(diff 추가 줄 + .agents/learnings·docs/adr 전체) · 패턴 $(printf '%s\n' "$PATS" | grep -c .)개$( [ -n "$EXTRA" ] && echo ' (+--extra)')"
+say "── 누출 스캔: 대상 $(wc -l < "$OUT/leak-targets.txt" | tr -d ' ')줄(diff 추가 줄 + 커밋 메시지 + .agents/learnings·docs/adr 전체) · 패턴 $(printf '%s\n' "$PATS" | grep -c .)개$( [ -n "$EXTRA" ] && echo ' (+--extra)')"
 [ -n "$EXTRA" ] || say "WARN --extra 없음 — 사용자 이름·원문 인용은 검사하지 않았다(그 칸은 이 회차로 판정하지 않는다)"
 DIFFADD="$(git diff -U0 "$BASE...HEAD" | grep -c '^+[^+]' || true)"
 [ "$DIFFADD" -gt 0 ] || bad "diff 추가 줄 0 ($BASE...HEAD) — 비교 기준이 틀렸거나 커밋이 없다"
@@ -279,9 +298,9 @@ TOTPC="$(grep -c . "$PCS")"
 RANGE="$OUT/range.txt"
 git diff --stat "$BASE...HEAD" > "$RANGE"
 [ -s "$RANGE" ] || bad "diff --stat 이 비었다 ($BASE...HEAD)"
-OUTSIDE="$(git diff --name-only "$BASE...HEAD" | grep -vE '^(AGENTS\.md|\.agents/learnings/|docs/adr/|\.agents/skills/task-coordinate/(SKILL\.md|references/implementation\.md)|\.agents/skills/release/SKILL\.md|app/INSTALL\.md|app/scripts/l704/)' || true)"
+OUTSIDE="$(git diff --name-only "$BASE...HEAD" | grep -vE '^(AGENTS\.md|\.agents/learnings/|docs/adr/|\.agents/skills/task-coordinate/(SKILL\.md|references/implementation\.md)|\.agents/skills/release/SKILL\.md|app/INSTALL\.md|\.agents/skills/task-start/SKILL\.md|app/scripts/l704/)' || true)"
 say "── diff 범위 ($BASE...HEAD): $(tail -1 "$RANGE")"
-[ -z "$OUTSIDE" ] && say "ok   범위 안 (제품 코드 app/src·mobile 무변경, app/INSTALL.md 는 r1 F1 정합 줄)" || { bad "범위 밖 파일"; echo "$OUTSIDE" | sed 's/^/  /' | tee -a "$SUM"; }
+[ -z "$OUTSIDE" ] && say "ok   범위 안 (제품 코드 app/src·mobile 무변경, app/INSTALL.md 는 r1 F1·task-start 는 r2 G1 정합 줄)" || { bad "범위 밖 파일"; echo "$OUTSIDE" | sed 's/^/  /' | tee -a "$SUM"; }
 
 # ── 4. AGENTS.md 줄 수 ──
 L="$(wc -l < AGENTS.md | tr -d ' ')"; [ "$L" -le 200 ] && say "ok   AGENTS.md ${L}줄 ≤ 200" || bad "AGENTS.md ${L}줄"

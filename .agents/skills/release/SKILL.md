@@ -52,6 +52,7 @@ description: >-
   - 기록이 없는 일감은 「없음」으로 적고 넘어간다.
 - **정한다** — 제안마다 채택·기각·보류:
   - learnings 추가·승격·삭제와 낡은 영역 파일의 재검토(90일·상한) — `.agents/learnings/README.md` 대로.
+    재검토 대상은 일감 기록에 기대지 않고 직접 찾는다: `.agents/learnings/*.md` 머리의 `Last reviewed` 를 모두 훑어 90일 넘은 파일과 상한에 닿은 파일을 연다.
   - ADR 초안 채택 — `docs/adr/README.md` 대로 번호·상태를 붙인다.
   - **이전 learnings 가 이번에 작동했나** — 실린 일감의 킥오프가 인용한 항목(task-coordinate §1)이 실수를 막았는지·빗나갔는지 대조한다.
     빗나갔으면 고치거나 지운다.
@@ -61,9 +62,11 @@ description: >-
   - 메시지에 `Release-PR:` 줄을 쓰지 않는다 — `ship` 이 모으기 기록 밖의 그 줄을 위조 기록으로 거절한다.
   - `ship` 전에 끝낸다 — 커밋하지 않은 회고 변경이 남으면 `ship` 이 더러운 worktree 로 거절한다. 채택분이 없으면 커밋하지 않는다.
 - **결정 기록(비공개)**: 채택·기각·보류와 그 이유, 「작동했나」 대조, 개선 일감 후보를 corral-specs `retro/vX.Y.Z.md` 한 파일에 이때 쓴다.
-  커밋은 출고(§6)가 끝난 뒤 마무리에서 본체 세션이 그 파일만 지정해 한다(AGENTS.md 「산출물 규칙」의 루트 공용 파일과 같은 방식).
+  커밋은 출고(§6)가 끝난 뒤 마무리에서 본체 세션이 그 파일만 지정해 한다(AGENTS.md 「산출물 규칙」의 루트 공용 파일과 같은 방식) —
+  `retro/` 의 새 파일은 미추적이라 `git add -- retro/vX.Y.Z.md` 를 먼저 한다.
   출고를 접으면(`abort`) 회고 커밋은 release 브랜치와 함께 사라진다 — 기록 머리에 「접음 — 다음 출고 회고에서 다시 적용」을 적어 커밋하고, 다음 회고가 그 기록에서 이어 간다.
   그래서 회고를 시작할 때 `retro/` 에서 「접음」 머리를 가진 기록을 먼저 찾는다 — 다시 자르며 버전이 바뀌면 파일 이름이 다르다.
+  이어받으면 그 기록 머리를 「이어받음 vX.Y.Z」(이어받은 출고 버전)로 바꿔 같이 커밋한다 — 다음 회고가 다시 찾지 않게.
   공개 쪽에는 결정 결과만 남는다.
 
 ## 5. 릴리즈 노트 작성
@@ -100,7 +103,7 @@ description: >-
    폰이 연결돼 있지 않으면 설치를 미루고 그렇다고 보고한다.
 4. 남은 작업 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>`.
 5. `scripts/release.sh finish` — 원래 PR 이 MERGED 인지 다시 보고(head 삭제) release 브랜치(로컬·원격)·worktree 를 지운다. 13 이면 남겨 두고 보고한다.
-6. 회고 결정 기록 `retro/vX.Y.Z.md` 가 있으면 corral-specs 에 그 파일만 지정해 커밋·push 한다(§4).
+6. 회고 결정 기록 `retro/vX.Y.Z.md`(이어받은 「접음」 기록이 있으면 그것도)가 있으면 corral-specs 에 그 파일만 지정해 `git add --`·커밋·push 한다(§4).
 7. 보고: 태그·Release URL·출고된 PR(MERGED 여부)·LA 전이 결과·맥 설치 버전·폰 설치 결과(versionName·`lastUpdateTime`)·**APK 경로와 sha256**·release 브랜치 정리. 빠진 단계가 있으면 그렇다고 적는다.
 
 출고를 접을 때(출고 전): `scripts/release.sh abort` — release 브랜치·worktree 만 지우고 PR 은 열린 채 남는다. 회고를 했으면 결정 기록 처리는 §4.

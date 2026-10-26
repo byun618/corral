@@ -9,10 +9,10 @@
 # node 는 v24 이상이 PATH 앞에 있어야 한다(capability-check).
 set -uo pipefail
 OUT="${1:?원자료 폴더}"; shift; mkdir -p "$OUT" || exit 1; OUT="$(cd "$OUT" && pwd)"
-EXTRA=""; BASE=main
+EXTRA=""; EXTRA_ARG=""; BASE=main
 while [ $# -gt 0 ]; do
   case "$1" in
-    --extra) EXTRA="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
+    --extra) EXTRA_ARG="$2"; EXTRA="$(cd "$(dirname "$2")" 2>/dev/null && pwd)/$(basename "$2")"; shift 2 ;;
     --base) BASE="$2"; shift 2 ;;
     *) echo "모르는 인자: $1" >&2; exit 2 ;;
   esac
@@ -25,6 +25,11 @@ say() { echo "$1" | tee -a "$SUM"; }
 bad() { say "FAIL $1"; BAD=$((BAD + 1)); }
 if ! git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
   say "FAIL --base $BASE 가 커밋이 아니다 — 비교 기준 없이는 diff 검사(누출·범위)가 빈 결과로 통과한다"; say "실패 1"; exit 1
+fi
+# --extra 를 줬으면 읽을 수 있고 유효 패턴이 1개 이상이어야 한다 — 아니면 이름·원문 인용 검사가 조용히 0개가 된다(r3 지적 2)
+if [ -n "$EXTRA_ARG" ]; then
+  if [ ! -f "$EXTRA" ] || [ ! -r "$EXTRA" ]; then bad "--extra $EXTRA_ARG 를 읽을 수 없다 — 이름·원문 인용 패턴 0개"; EXTRA=""
+  elif [ "$(grep -c . "$EXTRA" || true)" = 0 ]; then bad "--extra $EXTRA_ARG 에 유효 패턴이 0개다"; EXTRA=""; fi
 fi
 DIRTY="$(git status --porcelain --untracked-files=all)"
 if [ -n "$DIRTY" ]; then
@@ -50,6 +55,7 @@ place() {
     R4) printf '%s\t%s\t%s\n' "$RS" '^## 4\. ' '^## 5\. ' ;;
     R2) printf '%s\t%s\t%s\n' "$RS" '^## 2\. ' '^## 3\. ' ;;
     R7) printf '%s\t%s\t%s\n' "$RS" '^## 7\. ' '' ;;
+    TS4) printf '%s\t%s\t%s\n' .agents/skills/task-start/SKILL.md '^4\. ' '^5\. ' ;;
     TS6) printf '%s\t%s\t%s\n' .agents/skills/task-start/SKILL.md '^6\. ' '' ;;
     INST) printf '%s\t%s\t%s\n' app/INSTALL.md '^## 출고' '^## 빌드' ;;
     RS) printf '%s\t\t\n' "$RS" ;;
@@ -130,7 +136,14 @@ G1-record-none	S8	has	devlog 에 「코디 기록 없음」을 적은 뒤
 G1-by-mapping	S8	has	응답에 경로를 주지 않는 매핑
 G1-no-raw-start	S8	not	raw/start/
 G1-no-codex-branch	S8	not	Codex 코디 등
-G1-task-start-records	TS6	has	응답이 코디네이터의 세션 기록 경로를 돌려주면 그 경로도 적는다
+G1-task-start-records	TS4	has	응답이 세션 기록 경로를 돌려주면 그 경로도 같이 적는다
+H1-before-delivery	TS4	has	6단계의 전달 전 커밋에 들어간다
+H1-not-after-delivery	TS6	not	세션 기록 경로
+H1-s8-step4	S8	has	(task-start 4단계 — 『세션 기동』 응답이 돌려준 값)
+H3-lastreviewed-scan	R4	has	`.agents/learnings/*.md` 머리의 `Last reviewed` 를 모두 훑어
+H3-retro-git-add	R4	has	`git add -- retro/vX.Y.Z.md` 를 먼저 한다
+H3-inherited	R4	has	「이어받음 vX.Y.Z」
+H3-r7-add	R7	has	`git add --`·커밋·push
 G3-stale-to-proposal	S8	has	고치지 않고 그 파일 이름을 여기 적는다
 G3-same-reply	S8	has	사람 절 초안을 보이고 사용자 확인을 받기 전에는 1단계로 가지 않는다
 G3-readme-points	L	has	회고로 넘기는 법은 task-coordinate §8
@@ -153,7 +166,8 @@ C2d-worker-log-in-s8	S8	has	`raw/<도구>/worklog.md` 에서 읽는다
 C2d-worker-log-rule	IM3	has	`raw/<도구>/worklog.md` 에 덧붙인다
 C2d-not-ask-direction	S8	has	코디가 워커에게 묻는 데 쓰지 않는다
 C2e-s1-learnings	S1	has	**learnings 를 골라 읽는다**
-C2e-s1-title-scope	S1	has	주제 제목과 `Scope` 만 먼저 훑고
+C2e-s1-points-readme	S1	has	README 「읽기」 대로 읽고
+H3-s1-no-restate	S1	not	먼저 훑고
 C3a-position	R4	has	통합 확인 뒤·릴리즈 노트 전에
 C3a-before-ship	R4	has	`ship` 전에 끝낸다
 C3b-read-devlog	R4	has	**읽는다** — 일감 폴더마다 사용자와 같이

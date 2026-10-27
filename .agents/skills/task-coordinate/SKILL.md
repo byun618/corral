@@ -303,7 +303,7 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
      - 묶음 자식: `cd <본체 절대경로> && scripts/task-finish.sh LIFE-NNN-<슬러그> --into feature/LIFE-MMM-<슬러그>` — feature 로
        로컬 merge·push 한 뒤 정리한다. 자식 코디는 여기까지다 — 정리 뒤엔 세션이 없으므로 정리 **직전에** 묶음 코디에게
        feature 반영을 알린다(연락 수단은 묶음 코디 절차 4). 묶음 코디는 원격 feature 커밋으로 반영을 확인한다.
-       묶음 마무리(묶음 확인·묶음 `verdict.md`·`pr.md`·feature → main PR)는 마지막 자식이어도 **묶음 코디**가 한다 — [묶음 코디 절차](references/bundle.md) 6.
+       묶음 마무리는 마지막 자식이어도 **묶음 코디**가 한다 — [묶음 코디 절차](references/bundle.md) 6.
   4. 사용자에게 스크립트 출력 원문과 함께 **PR 번호(묶음 자식은 feature 반영 결과)**, 인계 문서 경로
      `corral-specs/LIFE-NNN-<슬러그>/handoff-main.md`(절대경로) 를 보고하고 "PR 생성·정리 완료, 출고 대기"라고 끝낸다.
      열린 PR 이 3~4건을 넘거나 같은 파일을 건드리면 출고를 권한다. LA 는 `검증 중` 그대로다.

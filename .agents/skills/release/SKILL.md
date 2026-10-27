@@ -30,6 +30,7 @@ description: >-
   해소가 기능을 바꿀 만큼 크면 `merge --abort` 로 그 PR 을 빼고 그 작업의 코디에게 돌려보낸다.
   이미 모은 PR 을 빼려면 `abort` 후 다시 `cut`·나머지 `gather` — 충돌 해소는 다시 한다.
 - **출고 중 수정**은 그 일감 브랜치에서 고쳐 push 하고(리뷰 근거를 일감에 남긴다) 같은 PR 을 다시 `gather` 한다 — release worktree 에서 직접 고치지 않는다(예외는 §1 — §4 회고 커밋).
+  묶음 PR 이면 일감 브랜치는 feature 이고 고치는 쪽은 재개한 묶음 코디다 — `task-coordinate/references/bundle.md` 6.
 
 ## 3. 통합 확인
 
@@ -96,6 +97,7 @@ description: >-
 
 1. 출고된 PR 의 일감마다 LA `issue_transition(seq: NNN, toStatusLabel: "완료", resolution: "completed")` — 실제 응답을 확인한다.
    설치를 기다리지 않는다. 부모 checkpoint 는 다른 미완 자식이 없는지 본 뒤 따로 판단한다.
+   묶음 PR(head `feature/LIFE-MMM-<슬러그>`)이면 묶음 폴더 `handoff-main.md` 의 실린 자식 일감도 전이한다 — head 에는 체크포인트 번호만 있다.
 2. dmg 설치(`app/INSTALL.md` 「설치」) → `corral --version` 이 새 버전인지 확인.
 3. 폰 APK 덮어 설치 — `adb devices -l` 로 폰 시리얼을 고르고(에뮬레이터가 같이 붙어 있을 수 있다)
    `scripts/release-apk-install.sh --serial <폰 시리얼> --apk app/dist/release/<태그>/corral-mobile-X.Y.Z.apk`.
@@ -105,6 +107,8 @@ description: >-
 4. 남은 작업 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>`.
    묶음 PR(head `feature/LIFE-MMM-<슬러그>`)이 출고됐으면 feature worktree·로컬 feature 브랜치도 여기서 지운다 — 묶음 코디는 출고 전에 끝나므로 이 정리는 본체 몫이다.
    원격 feature 는 5번 `finish` 가 지운다. 13 이면(원래 PR MERGED 미확인) 남겨 두고 보고한다.
+   `branch -d` 가 「not fully merged」로 거절되면 본체 main 이 출고를 받았는지(ff) 먼저 본다 — 확인 없이 `-D` 로 가지 않는다.
+   `worktree remove` 가 더러운 worktree 로 거절되면 feature 에 올리지 않은 작업일 수 있다 — `-f` 로 지우지 않고 보고한다.
    `git worktree remove .claude/worktrees/LIFE-MMM-<슬러그> && git branch -d feature/LIFE-MMM-<슬러그>`
 5. `scripts/release.sh finish` — 원래 PR 이 MERGED 인지 다시 보고(head 삭제) release 브랜치(로컬·원격)·worktree 를 지운다. 13 이면 남겨 두고 보고한다.
 6. 회고 결정 기록이 있으면 §4 「결정 기록」 대로 corral-specs 에 커밋·push 한다.

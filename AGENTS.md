@@ -71,7 +71,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - 코디네이터·판정 = 작업마다 claude 또는 codex. 선택 규칙·기동·전제 점검은 task-start, **역할별 모델·effort·리뷰어 구성의
   원본은 .agents/defaults.md 한 곳이다.** 같은 도구여도 세션과 역할은 구분한다.
 - claude (Claude Code) = 코디네이터·판정, 구현, 코드 리뷰. native advisor 상담
-- codex = Astra 구현(경쟁 시) / 별도 Astra 코드 리뷰
+- codex = 경쟁 구현(Codex 측) / 별도 코드 리뷰 ① — 지정 모델·쓸 수 없을 때의 전환은 .agents/defaults.md 「Codex 사용 불가 시 자동 전환」
 - grok = 외부 서치·사실 검증 + 보완 코드 리뷰 (느림 수 분, 무료 쿼터 주의 — 검색 1회 소진 가능)
 - **effort·모델은 세션 기동 시 반드시 명시한다.** 환경 기본이 medium 이라 플래그가 없으면
   조용히 내려간다. 기동 후 세션 중간에 바꾸지 않는다 — 프롬프트 캐시가 깨져 그 턴의 입력

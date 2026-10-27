@@ -1,5 +1,6 @@
 # gitleaks 허용 지문 — 형식 <commit>:<file>:<rule>:<line>. 전부 테스트의 가짜 값이다(LIFE-716, 2026-10-27 전체 이력 스캔 5건).
 # 지문에 commit SHA 가 들어 있으므로 이력을 다시 쓰면 무효가 된다.
+# HEAD 의 같은 5줄은 줄 끝 `gitleaks:allow` 주석으로 허용한다 — 이 지문은 이력 스캔용이라 `--staged`·`gitleaks dir` 에는 닿지 않는다.
 
 # 사용량 조회 시험의 가짜 토큰 상수 TEST_TOKEN (fake-deps.test-helper.ts)
 3896e57d86770cee3ec3009296353d3b0fa18744:app/src/main/usage/fake-deps.test-helper.ts:generic-api-key:5

@@ -108,7 +108,7 @@ describe('바인딩·HTTP 표면 (A2·A3ⓑ)', () => {
 
   it('다른 경로로의 WS 업그레이드는 404', async () => {
     const { port } = await setup()
-    const out = await rawHttp(port, 'GET /other HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')
+    const out = await rawHttp(port, 'GET /other HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n') // gitleaks:allow — RFC 6455 §1.3 예제 키
     expect(out.startsWith('HTTP/1.1 404')).toBe(true)
   })
 })

@@ -26,9 +26,11 @@ const CATALOG: Record<Exclude<AgentKind, 'shell'>, Catalog> = {
     ],
     efforts: ['low', 'medium', 'high', 'xhigh', 'max'].map((value) => ({ value, label: value })),
   },
-  // `-m` 은 자유 문자열(help) — 식별자는 defaults.md 의 `gpt-6-astra`. effort(`-c model_reasoning_effort=`)는 defaults.md 가 쓰는 두 값.
+  // `-m` 은 자유 문자열(help) — 첫 값은 defaults.md 의 지정 식별자 `gpt-6-astra`(구독 계정용, 바이너리 내장 카탈로그에 있음).
+  // 나머지는 계정 카탈로그(`codex debug models`)에 `visibility: list` 로 있고 호출이 성공한 모델(LIFE-713, 2026-10-27, codex-cli 0.162.1).
+  // effort(`-c model_reasoning_effort=`)는 defaults.md 가 쓰는 두 값.
   codex: {
-    models: [{ value: 'gpt-6-astra', label: 'gpt-6-astra' }],
+    models: ['gpt-6-astra', 'gpt-6-luna', 'gpt-5.6-terra', 'gpt-5.6-luna'].map((value) => ({ value, label: value })),
     efforts: ['high', 'xhigh'].map((value) => ({ value, label: value })),
   },
   // `grok models` 목록 원문.

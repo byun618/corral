@@ -232,7 +232,7 @@ describe('C2 시작 모달 — 기본값 · 입력', () => {
     expect(q('[data-start-model]')).toBeNull()
     expect(q('[data-start-prompt]')).toBeNull()
     click('[data-start-agent-option="codex"]')
-    expect([...el('[data-start-model]').querySelectorAll('option')].map((option) => option.value)).toEqual(['', 'gpt-6-astra'])
+    expect([...el('[data-start-model]').querySelectorAll('option')].map((option) => option.value)).toEqual(['', 'gpt-6-astra', 'gpt-6-luna', 'gpt-5.6-terra', 'gpt-5.6-luna'])
     click('[data-start-submit]')
     await settle()
     expect(r.starts).toHaveLength(1)

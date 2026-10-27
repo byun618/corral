@@ -68,7 +68,7 @@ LA: `진행 중` 전이는 task-start 5단계를 실행한 쪽이 한다 — 체
   묶음 코디는 원격 feature 가 알림 전 값에서 바뀐 것을 본 뒤에야 반영으로 본다. 바뀌지 않으면 자식 코디(세션이 남아 있으면)나 사용자에게 확인한다.
   `--into` 가 멈추면(merge 충돌 등) 정리 전이라 자식 세션이 남는다 — 자식 코디가 정정 알림을 보낸다.
   ```bash
-  git ls-remote origin refs/heads/feature/LIFE-MMM-<슬러그>    # 알림 받을 때 값과 비교
+  git ls-remote --exit-code origin refs/heads/feature/LIFE-MMM-<슬러그>    # 알림 받을 때 값과 비교 — exit 2(없음)는 반영이 아니다
   ```
 - 자식 폴더를 고쳐야 할 일이 보이면 고치지 않고 그 자식 코디에게 알린다.
 

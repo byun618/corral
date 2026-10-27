@@ -43,7 +43,7 @@ description: >-
 여기서는 언제·무엇을 하는지만 적는다.
 
 - **일감 폴더 찾기**: 모은 PR 의 head 브랜치 `LIFE-NNN-<슬러그>` = corral-specs 작업 폴더 이름이다.
-  묶음 PR(head `feature/LIFE-MMM-<슬러그>`)이면 묶음 폴더 `verdict.md` 의 자식 판정 링크(task-coordinate §8)로 자식 일감 폴더를 모두 찾는다 —
+  묶음 PR(head `feature/LIFE-MMM-<슬러그>`)이면 묶음 폴더 `verdict.md` 의 자식 판정 링크(묶음 코디 절차 `task-coordinate/references/bundle.md` 6)로 자식 일감 폴더를 모두 찾는다 —
   게이트 ② 기록은 자식마다 있다.
 - **읽는다** — 일감 폴더마다 사용자와 같이:
   - 게이트 ② 기록(task-coordinate §8): `devlog.md`·`learnings-proposal.md`·`adr-draft-*.md`. 여러 일감을 하루치로 묶어 보는 것은 사람이 이때 한다.
@@ -103,6 +103,9 @@ description: >-
    **서명이 다르거나 설치본이 없어 멈추면 그대로 보고하고 사용자 판단을 받는다 — 앱을 지우고 다시 까는 길로 가지 않는다**(페어링 토큰·기록이 사라진다).
    폰이 연결돼 있지 않으면 설치를 미루고 그렇다고 보고한다.
 4. 남은 작업 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>`.
+   묶음 PR(head `feature/LIFE-MMM-<슬러그>`)이 출고됐으면 feature worktree·로컬 feature 브랜치도 여기서 지운다 — 묶음 코디는 출고 전에 끝나므로 이 정리는 본체 몫이다.
+   원격 feature 는 5번 `finish` 가 지운다. 13 이면(원래 PR MERGED 미확인) 남겨 두고 보고한다.
+   `git worktree remove .claude/worktrees/LIFE-MMM-<슬러그> && git branch -d feature/LIFE-MMM-<슬러그>`
 5. `scripts/release.sh finish` — 원래 PR 이 MERGED 인지 다시 보고(head 삭제) release 브랜치(로컬·원격)·worktree 를 지운다. 13 이면 남겨 두고 보고한다.
 6. 회고 결정 기록이 있으면 §4 「결정 기록」 대로 corral-specs 에 커밋·push 한다.
 7. 보고: 태그·Release URL·출고된 PR(MERGED 여부)·LA 전이 결과·맥 설치 버전·폰 설치 결과(versionName·`lastUpdateTime`)·**APK 경로와 sha256**·release 브랜치 정리. 빠진 단계가 있으면 그렇다고 적는다.

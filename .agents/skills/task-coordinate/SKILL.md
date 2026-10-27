@@ -13,6 +13,7 @@ description: >-
 실행 관문은 `.agents/rules/validation.md`. **LA 전이 시점은 이 문서 §1·§4·§5 첫 줄**(진행 중은 task-start, 완료는 release).
 문서 산출물·원자료는 전부 `corral-specs/LIFE-NNN-<슬러그>/`(절대경로)에 두고 게이트 시점에 그 폴더만 커밋·push 한다
 (AGENTS.md 「산출물 규칙」). 작업 브랜치에는 코드만 들어간다.
+**묶음 코디**(체크포인트 feature worktree 의 코디)는 [묶음 코디 절차](references/bundle.md)를 먼저 읽는다 — 이 문서의 어느 절을 따르는지는 거기서 정한다.
 
 **이 문서에는 도구 명령이 없다.** 능력 이름은 겹낫표로 감싸 적고, 그 능력을 어떤 명령으로 수행하는지와
 무엇까지 증명되는지는 **`.agents/harness/capabilities.md`**(하네스 능력 계약)과 그 폴더의 도구별 매핑에 있다.
@@ -300,10 +301,9 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
        같음을 확인한 뒤 작업·구현 worktree, 로컬 브랜치, 구현 브랜치 원격 사본, 격리 herdr 세션을 정리한다.
        작업 브랜치는 원격(PR head)에 남는다. 태그 `LIFE-NNN-*-final` 은 유지한다.
      - 묶음 자식: `cd <본체 절대경로> && scripts/task-finish.sh LIFE-NNN-<슬러그> --into feature/LIFE-MMM-<슬러그>` — feature 로
-       로컬 merge·push 한 뒤 정리한다. 묶음이 끝나면 **마지막 자식의 코디가** 묶음 확인을 끝내 판정문
-       `corral-specs/LIFE-MMM-<슬러그>/verdict.md`(자식 판정 링크·묶음 확인 결과)와 PR 원고 `corral-specs/LIFE-MMM-<슬러그>/pr.md`(자식들을 묶어 같은 방식으로)를
-       corral-specs 에 커밋하고, 정리 전에 `scripts/task-pr.sh feature/LIFE-MMM-<슬러그>` 로 feature → main PR 하나를 연다
-       (판정문이 없으면 `task-pr.sh` 가 멈추므로 `--verdict <마지막 자식 판정문 경로>` 로 대신 지정할 수 있다).
+       로컬 merge·push 한 뒤 정리한다. 자식 코디는 여기까지다 — 정리 뒤엔 세션이 없으므로 정리 **직전에** 묶음 코디에게
+       feature 반영을 알린다(연락 수단은 묶음 코디 절차 4). 묶음 코디는 원격 feature 커밋으로 반영을 확인한다.
+       묶음 마무리(묶음 확인·묶음 `verdict.md`·`pr.md`·feature → main PR)는 마지막 자식이어도 **묶음 코디**가 한다 — [묶음 코디 절차](references/bundle.md) 6.
   4. 사용자에게 스크립트 출력 원문과 함께 **PR 번호(묶음 자식은 feature 반영 결과)**, 인계 문서 경로
      `corral-specs/LIFE-NNN-<슬러그>/handoff-main.md`(절대경로) 를 보고하고 "PR 생성·정리 완료, 출고 대기"라고 끝낸다.
      열린 PR 이 3~4건을 넘거나 같은 파일을 건드리면 출고를 권한다. LA 는 `검증 중` 그대로다.

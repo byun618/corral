@@ -10,7 +10,7 @@ import { PROTOCOL_VERSION } from './protocol.js'
 import { MobileService } from './service.js'
 import { MOBILE_HTTPS_PORT, runTailscale } from './tailscale.js'
 
-const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../scripts/l577/fake-tailscale.mjs')
+const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../scripts/mobile-repro/fake-tailscale.mjs')
 const DNS = 'fake-mac.example.ts.net'
 const PORT = MOBILE_HTTPS_PORT
 

@@ -140,7 +140,7 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 - 서명 확인은 `apksigner verify` 성공 + 서명자 정확히 1개 + SHA-256 일치일 때만 통과한다(출고 정책 = EAS 단일 키) — 빌드 뒤 확인과 폰 설치 전 대조 모두 같다.
 - PR CI 는 아직 없다 — 후속 일감 LIFE-575. 원격 CD(main 머지 시 GitHub Actions 로 태그·dmg·APK)는 LIFE-707 — 지금 CD 는 로컬 `release.sh ship` 이다.
   574 구현 r0 의 ubuntu workflow 초안은 구현 브랜치 커밋 `ffb08b9` 에 남아 있다(계정 결제 잠금으로 한 번도 돌지 못했다). 분리 전 커밋이라 corral-specs 레포에서 본다(LIFE-705).
-- 오프라인 하네스: `app/scripts/l703/release-test.sh <원자료 폴더>`(로컬 bare 원격 + 가짜 gh 로 하위 명령 분기·exit 코드) · `mutate.sh`(가드를 빼면 케이스가 실패로 바뀌는지).
+- 오프라인 하네스: `app/scripts/release-check/release-test.sh <원자료 폴더>`(로컬 bare 원격 + 가짜 gh 로 하위 명령 분기·exit 코드) · `mutate.sh`(가드를 빼면 케이스가 실패로 바뀌는지).
 - 574 출고 전후 과도기(565·566·564 와 첫 출고 순서)는 `corral-specs/LIFE-574-pr-release/transition.md`.
 
 ## 빌드

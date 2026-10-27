@@ -16,7 +16,7 @@
 //     명부에 없는 pane 이면 보내기 전에 막고 센다
 //   · **R13 — 격자 왕복 제거**: `fit()`→`termResize` 수렴 루프가 없다. 영역 상자 px 를 렌더러가
 //     격자로 바꿔 **연결당 1회** 요청하고, 그 응답 rect 가 pane DOM 상자의 진실이 된다
-//   · **R16 — C2 숨은 의존**: `scripts/l353/s5-grid.mjs` 가 main 의 `vendor.debug` 두 줄
+//   · **R16 — C2 숨은 의존**: LIFE-353 관문 `s5-grid.mjs` 가 main 의 `vendor.debug` 두 줄
 //     (`"resize request"`·`"surface"`)을 센다. **형식을 그대로 유지한다** — 지우면 LIFE-353 S5 가
 //     행동이 맞아도 조용히 타임아웃한다
 //   · **R8/F2-3c — 줌**: herdr 서피스는 줌을 반영하지 않는다(프리플라이트 ②). 클라이언트가

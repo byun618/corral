@@ -303,7 +303,7 @@ describe('LIFE-394 body identity, ready gate and submission window', () => {
   })
 
   it('keeps the harness marker allowlist identical to the product one and preserves the home vars', async () => {
-    const harness = await import('../../scripts/l394/env.mjs')
+    const harness = await import('../../scripts/harness-env/env.mjs')
     expect(harness.SESSION_MARKER_NAMES).toEqual([...SESSION_MARKER_NAMES])
     expect(harness.SESSION_MARKER_PREFIXES).toEqual([...SESSION_MARKER_PREFIXES])
     const environment = { CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', ORCA_AGENT_HOOK_PORT: '9', CODEX_HOME: '/h/.codex', GROK_HOME: '/h/.grok', CLAUDE_CONFIG_DIR: '/h/.claude', PATH: '/bin' }

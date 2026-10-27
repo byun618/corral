@@ -1,7 +1,7 @@
 // 설정 › 워크플로 › 작업 연결 (LIFE-600 E · design-handoff §2 「연결 카드」·「레포 ↔ 기본 스페이스」, 목업 tasks-settings.dc.html).
 //
 // - 화면은 출처를 모른다(P2): 추가 버튼·카드 글자 아이콘·토큰 칸 문구는 main 이 준 `WorkSourceDescriptor` 를 그린다.
-//   출처 이름으로 분기하는 코드를 두지 않는다 — `scripts/l600/renderer-source-branch.mjs` 가 검사한다(C4).
+//   출처 이름으로 분기하는 코드를 두지 않는다 — LIFE-600 관문 `renderer-source-branch.mjs` 가 검사했다(C4).
 // - 상태는 main push(`corral:workSettings`)만 진실로 쓴다. 토큰은 입력칸 상태에만 잠깐 있고, 보낸 뒤 지운다. 화면에는 끝 4자만.
 // - 자격은 main 이 필요할 때 푼다 — 이 화면이 열릴 때 아직 안 읽은 연결은 한 번 연결 테스트를 한다. 그때 macOS 가 키체인 허용을 물을 수 있어,
 //   `pending: keychain` 이면 이유를 먼저 보인다(ad-hoc 서명이라 새로 설치할 때마다 다시 물을 수 있다).

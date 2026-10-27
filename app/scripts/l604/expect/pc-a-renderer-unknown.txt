@@ -1,2 +1,0 @@
-# pc-a-renderer-unknown — 가드를 뺀 사본에서 실패해야 하는 시험(raw/claude/f1/pc/pc-a-renderer-unknown.txt 에서 뽑음)
-src/renderer/src/components/TasksPage.create.test.tsx > 수정 1 (리뷰 r1) > R1-A 결과를 모르는 만들기(모달) — 「모름」: 다시 보내지 못함(재전송 0) · 「목록 다시 확인」 뒤에야 다시 만들 수 있다

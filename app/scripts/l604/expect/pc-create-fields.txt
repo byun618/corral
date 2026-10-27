@@ -1,2 +1,0 @@
-# L604_BREAK=create-fields(LA 출처가 생성 칸을 버림) — E10 계약 시험 한 건만 실패해야 한다.
-src/main/work/la-source.contract.test.ts > 작업 계약 묶음 — LA (모의 MCP 서버) > 만들기 칸(E10) — 본문·상태·우선순위·배치·필수 필드가 그대로 들어가고, 「만들었음」 활동 1건

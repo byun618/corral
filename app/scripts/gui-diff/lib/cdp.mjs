@@ -1,6 +1,6 @@
 // raw CDP 클라이언트 — `/json/list` 로 대상 창을 고르고 WebSocket 으로 붙는다.
 //
-// 왜 Playwright 가 아닌가: corral 의 기존 계측(`l373impl/p-profile.mjs`, `l391-first/gui-verify.mjs`)이
+// 왜 Playwright 가 아닌가: corral 의 기존 계측(LIFE-373 관문 `p-profile.mjs`, LIFE-391 관문 `gui-verify.mjs`)이
 // 이미 이 경로로 Electron 44 에 붙었다 — 검증된 자산에서 출발하라는 기준(C11)이 여기를 가리킨다.
 // Playwright `connectOverCDP` 는 기본 연결이 포커스·미디어 에뮬레이션을 깔고(00-analysis K2),
 // 응답 없는 기존 페이지 하나가 connect 전체를 붙잡는 보고가 있다(K3, playwright#42882).

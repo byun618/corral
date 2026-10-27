@@ -1,2 +1,0 @@
-# pc-r4b-yield-esc — 가드를 뺀(위층이 열려도 Esc 를 먹던) 사본에서 실패해야 하는 시험(raw/claude/f4/pc/pc-r4b-yield-esc.txt)
-src/renderer/src/components/TasksPage.create.test.tsx > 수정 4 (리뷰 r4) > R4-B 위층(설정·팔레트)이 모달 위에 열려 있으면 모달은 Esc 를 먹지 않는다 — 위층이 받고 모달은 그대로 · 위층이 닫히면 모달이 닫힌다

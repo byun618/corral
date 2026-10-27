@@ -1,7 +1,7 @@
-// VS Code 와 같은 토큰 색 (LIFE-590 E4ⓑ — D10 B) — VS Code 1.142 TextMate 문법·Dark 2026 테마(`assets/textmate/`, `scripts/l590/tm-import.mjs` 반입)를
+// VS Code 와 같은 토큰 색 (LIFE-590 E4ⓑ — D10 B) — VS Code 1.142 TextMate 문법·Dark 2026 테마(`assets/textmate/`, `scripts/vendored-assets/tm-import.mjs` 반입)를
 // TextMate 엔진(`@shikijs/vscode-textmate` — vscode-textmate 포크)으로 토큰화한다. 정규식은 **JS 엔진**(`@shikijs/engine-javascript` — Oniguruma 패턴을
 // JS RegExp 로 옮긴다)이라 WASM 이 없다 → CSP 무변경(`wasm-unsafe-eval` 불필요 — E7ⓔ). VS Code 는 같은 문법을 vscode-oniguruma(WASM)로 돈다 —
-// 엔진 차이로 색이 갈리는지는 E4ⓑ 자동 대조(`scripts/l590/token-colors.mjs` 의 기대 색 = vscode-textmate + oniguruma)가 잰다.
+// 엔진 차이로 색이 갈리는지는 E4ⓑ 자동 대조(LIFE-590 관문 `token-colors.mjs` 의 기대 색 = vscode-textmate + oniguruma)가 잰다.
 //
 // Monaco 에는 **TextMate 이진 토큰을 그대로** 준다(`tokenizeEncoded` — VS Code 와 같은 길): 메타데이터 = 언어 id·표준 종류(주석·문자열·정규식)·
 // 균형 괄호 비트·글꼴 모양·전경/바탕 색 번호. 색 번호는 TextMate 색표 번호이고 Monaco 테마에 같은 색표를 `encodedTokensColors` 로 줘서 번호가 맞는다

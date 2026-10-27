@@ -12,7 +12,7 @@ import { MobileServer } from './server.js'
 import { MobileService } from './service.js'
 import { runTailscale, type TailscaleRunner } from './tailscale.js'
 
-const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../scripts/l577/fake-tailscale.mjs')
+const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../scripts/mobile-repro/fake-tailscale.mjs')
 const DNS = 'fix1.example.ts.net'
 const PORT = 8577
 const KEY = `${DNS}:${PORT}`

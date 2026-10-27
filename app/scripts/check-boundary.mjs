@@ -8,7 +8,7 @@
 //
 // 알려진 한계(LIFE-577 fix3 R3-N1): ④의 모바일 면제(`src/main/mobile/` 의 프로토콜 어휘)는 리터럴의 **구문 위치**만 본다 —
 // 문장 간 값 흐름은 추적하지 않는다. type 자리에서 허용된 값을 다른 식에서 `method` 로 쓰는 꼴(`method: msg.type` ·
-// `method: CLIENT_TYPES[2]`)은 잡지 못한다. 대조 묶음에 「알려진 미검출」 칸으로 남겨 두었다(`scripts/l518/boundary-probes.mjs` knownMiss).
+// `method: CLIENT_TYPES[2]`)은 잡지 못한다. 대조 묶음에 「알려진 미검출」 칸으로 남겨 두었다(`scripts/boundary-probes/boundary-probes.mjs` knownMiss).
 //
 // 무효 조건(샘플링 금지)을 지키려고 `src/**` 의 .ts/.tsx 를 **한 파일도 빼지 않고** 읽는다.
 // 읽은 파일 목록을 결과에 그대로 실어서, 덮은 범위가 결과만 보고 확인되게 한다.

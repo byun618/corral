@@ -1,5 +1,5 @@
 // LIFE-485 K1ⓐ·K2ⓐⓑⓓ·K4ⓖ — 바이너리 해소·재개 대상 계수·서버 환경·분리 기동의 실패 경로.
-// 계수 입력은 `scripts/l477/session-restore-check.mjs --self-check` 의 합성 입력을 **전부** 그대로 옮겼다 —
+// 계수 입력은 LIFE-477 관문 `session-restore-check.mjs --self-check` 의 합성 입력을 **전부** 그대로 옮겼다 —
 // 같은 입력에 같은 판정(개수·모름)이 나와야 한다. 모름은 0 이 아니다.
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'

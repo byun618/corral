@@ -214,7 +214,7 @@ describe('L1 · L5 · L8 · L9 — 폰 전용 규칙', () => {
 
   it('L9ⓓ 페이로드에 경로·셸 제목·홈이 없다', () => {
     const text = JSON.stringify(list)
-    for (const secret of ['/fx/', 'byun@mac', 'zsh', 'sess-codex-21', '/fx/home']) expect(text).not.toContain(secret)
+    for (const secret of ['/fx/', 'user@mac', 'zsh', 'sess-codex-21', '/fx/home']) expect(text).not.toContain(secret)
   })
 
   it('L5ⓗ herdr 링크가 live 가 아니면 「못 읽음」 — 빈 목록과 구분한다', () => {
@@ -273,7 +273,7 @@ describe('R1-A3 폰 표시 글의 경로 — 홈 아래 절대경로를 싣지 �
     // providerTitle·firstPrompt 가 없는 AI pane — 데스크톱은 터미널 제목으로 폴백한다(홈 축약은 데스크톱 함수가 한다).
     const overrides = {
       p7: { title: '/tmp/secret', digest: { providerTitle: null } },
-      p9: { title: 'byun@mac:~/repos/corral', cwd: '/fx/home/repos/corral', digest: { providerTitle: null } },
+      p9: { title: 'user@mac:~/repos/corral', cwd: '/fx/home/repos/corral', digest: { providerTitle: null } },
     }
     const state = listFixture(overrides)
     const value = prefs()
@@ -285,7 +285,7 @@ describe('R1-A3 폰 표시 글의 경로 — 홈 아래 절대경로를 싣지 �
     expect(titles).toContain('/tmp/secret')
     expect(titles).toContain('~/repos/corral')
     // 셸 프롬프트 제목의 사용자@호스트 원문·홈 절대경로는 싣지 않는다(데스크톱이 cwd 홈 축약으로 바꾼다).
-    expect(titles.join('\n')).not.toContain('byun@mac')
+    expect(titles.join('\n')).not.toContain('user@mac')
     expect(titles.join('\n')).not.toContain('/fx/home')
   })
 })

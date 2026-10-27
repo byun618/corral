@@ -132,7 +132,7 @@ export function listFixture(overrides: Record<string, PaneSpec> = {}): ListState
           p('p2', 'codex', { agentStatus: 'working', agentState: { observedAt: at(5) }, digest: { firstPrompt: '목록 화면 구현', lastPrompt: '목록 화면 구현해 줘' } }),
           p('p3', 'claude', { agentStatus: 'done', agentState: { enteredDoneAt: at(600), observedAt: at(600) }, digest: { providerTitle: '구현 리뷰 1차', lastActivityAt: at(600), turnOutcome: { outcome: 'completed' } } }),
           // 셸 pane — 목록에 오지 않는다(L1ⓑ 양성 대조: 같은 워크트리에 에이전트와 섞여 있다).
-          p('s1', null, { title: 'byun@mac:~/repos/corral', agentStatus: 'unknown' }),
+          p('s1', null, { title: 'user@mac:~/repos/corral', agentStatus: 'unknown' }),
         ],
       }),
       // 하위 워크트리 — 부모 작업에 합쳐진다(`↳ life-579-impl`).

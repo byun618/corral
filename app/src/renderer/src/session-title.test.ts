@@ -262,18 +262,18 @@ describe('tabAgent · providerTitle', () => {
 //
 // 옛 필터 `/^\S+@\S+:\//` 는 격리 HOME(`/private/var/folders/…`)에서 나온 표본만 보고 지어져서
 // `:~` 로 접히는 실환경 프롬프트를 못 걸렀다 (`04-gate1-check.md` §2). 아래 4줄은 사용자
-// 실환경 `herdr pane list` 실측값 그대로다 — 다음 라운드가 또 격리 표본만 보고 좁히면 여기서 깨진다.
+// 실환경 `herdr pane list` 실측값의 모양 그대로다(사용자·호스트·계정 이름만 자리표시자) — 다음 라운드가 또 격리 표본만 보고 좁히면 여기서 깨진다.
 describe('셸 프롬프트 제목 — 실환경 실측 4줄 (G1)', () => {
-  const HOME = '/Users/byun'
+  const HOME = '/Users/user'
   const MEASURED = [
-    'byun@sanghyunui-MacBookPro:~',
-    'byun@sanghyunui-MacBookPro:~/repos/byun618/corral',
-    'byun@sanghyunui-MacBookPro:~/repos/byun618/corral/.claude/worktrees/LIFE-357-layout-redesign-claude-orca',
-    'byun@sanghyunui-MacBookPro:/private/var/folders/x',
+    'user@example-DevMachine:~',
+    'user@example-DevMachine:~/repos/example/corral',
+    'user@example-DevMachine:~/repos/example/corral/.claude/worktrees/LIFE-357-layout-redesign-claude-orca',
+    'user@example-DevMachine:/private/var/folders/x',
   ]
 
   // **이제 거절이 아니라 치환이다** (C11ⓒ): 프롬프트 모양이면 그 pane 의 cwd 로 만든 값을 쓴다.
-  // herdr 는 OSC 2 만 주므로 그냥 15자로 자르면 홈에서 `..-MacBookPro:~` 가 되어 Orca(`~`)와
+  // herdr 는 OSC 2 만 주므로 그냥 15자로 자르면 홈에서 `..-DevMachine:~` 가 되어 Orca(`~`)와
   // 어긋난다 — 그 어긋남을 아래 마지막 칸이 못 박는다.
   for (const measured of MEASURED) {
     it(`프롬프트 모양으로 잡힌다: ${measured}`, () => {
@@ -281,20 +281,20 @@ describe('셸 프롬프트 제목 — 실환경 실측 4줄 (G1)', () => {
     })
   }
 
-  it('홈에서는 **`~`** 가 된다 — 그냥 자르면 `..-MacBookPro:~` 라 Orca 와 어긋난다', () => {
-    const panes = [pane({ title: 'byun@sanghyunui-MacBookPro:~', cwd: HOME })]
+  it('홈에서는 **`~`** 가 된다 — 그냥 자르면 `..-DevMachine:~` 라 Orca 와 어긋난다', () => {
+    const panes = [pane({ title: 'user@example-DevMachine:~', cwd: HOME })]
     expect(label(tab({ panes }), HOME)).toBe('~')
-    expect(truncatePathLeft('byun@sanghyunui-MacBookPro:~')).toBe('..-MacBookPro:~') // 안 쓰는 쪽
+    expect(truncatePathLeft('user@example-DevMachine:~')).toBe('..-DevMachine:~') // 안 쓰는 쪽
   })
 
   it('worktree 에서는 잘린 경로가 된다 — Orca 화면과 같은 글자', () => {
-    const cwd = `${HOME}/repos/byun618/corral/.claude/worktrees/LIFE-366-session-identity`
-    const panes = [pane({ title: 'byun@sanghyunui-MacBookPro:~/repos/byun618/corral/.claude/worktrees/LIFE-366-session-identity', cwd })]
+    const cwd = `${HOME}/repos/example/corral/.claude/worktrees/LIFE-366-session-identity`
+    const panes = [pane({ title: 'user@example-DevMachine:~/repos/example/corral/.claude/worktrees/LIFE-366-session-identity', cwd })]
     expect(label(tab({ panes }), HOME)).toBe('..sion-identity')
   })
 
   it('cwd 를 모르면 그 티어는 부재다 — 긴 프롬프트 문자열이 절대 안 뜬다', () => {
-    const panes = [pane({ title: 'byun@sanghyunui-MacBookPro:~/repos/byun618/corral' })]
+    const panes = [pane({ title: 'user@example-DevMachine:~/repos/example/corral' })]
     expect(title({ tab: tab({ number: 2, panes }), ordinal: 2 })).toBe('terminal 2')
   })
 
@@ -309,9 +309,9 @@ describe('셸 프롬프트 제목 — 실환경 실측 4줄 (G1)', () => {
   })
 
   it('사용자가 준 이름은 프롬프트 모양이어도 산다 — 필터는 터미널 제목 티어에만 있다', () => {
-    const panes = [pane({ title: 'byun@sanghyunui-MacBookPro:~' })]
-    expect(title({ tab: tab({ label: 'byun@sanghyunui-MacBookPro:~', number: 2, panes }) })).toBe(
-      'byun@sanghyunui-MacBookPro:~',
+    const panes = [pane({ title: 'user@example-DevMachine:~' })]
+    expect(title({ tab: tab({ label: 'user@example-DevMachine:~', number: 2, panes }) })).toBe(
+      'user@example-DevMachine:~',
     )
   })
 })
@@ -470,13 +470,13 @@ describe('firstPromptTitle', () => {
  * **herdr 는 OSC 1 을 안 준다**. 그래서 같은 값을 corral 이 계산한다 — 그 계산이 이 표다.
  */
 describe('셸 탭 폴백 = 잘린 경로 (C9)', () => {
-  const HOME = '/Users/byun'
+  const HOME = '/Users/user'
 
   it('사용자가 본 그 글자 — `~/…/worktrees/LIFE-366-session-identity` → `..sion-identity`', () => {
     const shell = tab({
       label: '1',
       number: 1,
-      panes: [pane({ cwd: `${HOME}/repos/byun618/corral/.claude/worktrees/LIFE-366-session-identity` })],
+      panes: [pane({ cwd: `${HOME}/repos/example/corral/.claude/worktrees/LIFE-366-session-identity` })],
     })
     expect(title({ tab: shell, tabCount: 1, home: HOME })).toBe('..sion-identity')
   })
@@ -502,7 +502,7 @@ describe('셸 탭 폴백 = 잘린 경로 (C9)', () => {
   })
 
   it('`~/repos` 로 시작하는 **다른** 폴더를 홈으로 오인하지 않는다', () => {
-    expect(homeRelativeDir({ dir: '/Users/byun618/x', home: HOME })).toBe('/Users/byun618/x')
+    expect(homeRelativeDir({ dir: '/Users/user2/x', home: HOME })).toBe('/Users/user2/x')
   })
 
   it('cwd 를 모르면 `terminal N` 으로 떨어진다 (C9 마지막 줄)', () => {
@@ -515,7 +515,7 @@ describe('셸 탭 폴백 = 잘린 경로 (C9)', () => {
     const claude = tab({
       label: '1',
       number: 1,
-      panes: [pane({ title: '', agent: 'claude', cwd: `${HOME}/repos/byun618/corral` })],
+      panes: [pane({ title: '', agent: 'claude', cwd: `${HOME}/repos/example/corral` })],
     })
     expect(title({ tab: claude, tabCount: 1, home: HOME, ordinal: 2 })).toBe('claude 2')
   })
@@ -524,7 +524,7 @@ describe('셸 탭 폴백 = 잘린 경로 (C9)', () => {
     const shell = tab({
       label: '1',
       number: 1,
-      panes: [pane({ title: 'npm run dev', cwd: `${HOME}/repos/byun618/corral` })],
+      panes: [pane({ title: 'npm run dev', cwd: `${HOME}/repos/example/corral` })],
     })
     expect(title({ tab: shell, tabCount: 1, home: HOME })).toBe('npm run dev')
   })
@@ -533,9 +533,9 @@ describe('셸 탭 폴백 = 잘린 경로 (C9)', () => {
     const shell = tab({
       label: '1',
       number: 1,
-      panes: [pane({ title: 'byun@host:~/repos/byun618/corral', cwd: `${HOME}/repos/byun618/corral` })],
+      panes: [pane({ title: 'user@host:~/repos/example/corral', cwd: `${HOME}/repos/example/corral` })],
     })
-    expect(title({ tab: shell, tabCount: 1, home: HOME })).toBe('..yun618/corral')
+    expect(title({ tab: shell, tabCount: 1, home: HOME })).toBe('..xample/corral')
   })
 })
 

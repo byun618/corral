@@ -60,7 +60,8 @@ description: >-
    최소 항목: LIFE-N, 슬러그, 작업 브랜치·**분기 기준(main / feature 브랜치와 그 만료일)**·절대 worktree 경로,
    **corral-specs 작업 폴더 절대경로**(코디·워커·리뷰어가 이 값을 그대로 쓴다), 코디네이터 도구, 선택 근거
    (사용자 지정/신규 기본값/재개), 모델·effort(미지정 기본값은 `.agents/defaults.md`:
-   claude → `claude-opus-5-5` high, codex → `gpt-6-astra` high, 2026-09-29), **선택한 하네스 매핑**,
+   claude → `claude-opus-5-5` high, codex → `gpt-6-astra` high, 2026-09-29 — codex 면 기동 전에 지정 모델이 계정 카탈로그에 있는지
+   `.agents/defaults.md` 「Codex 사용 불가 시 자동 전환」의 카탈로그 확인 방법으로 보고, 없으면 같은 파일 「운영 규칙」대로 보고한다), **선택한 하네스 매핑**,
    기동 상태. 모든 역할의 요청 모델·effort·advisor·단독/경쟁 방식은 `.agents/defaults.md` 에서 복사한다.
    처음 상태는 `기동 전`.
    워커 구성·구현→리뷰 흐름·사용자 예외(경량/전체 경로 지정 포함), 수정 라운드용 워커 유지 요청도 기록하고, 재개는 이력을 덧붙인다.

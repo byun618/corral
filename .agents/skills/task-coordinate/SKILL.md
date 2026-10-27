@@ -302,7 +302,7 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
        작업 브랜치는 원격(PR head)에 남는다. 태그 `LIFE-NNN-*-final` 은 유지한다.
      - 묶음 자식: `cd <본체 절대경로> && scripts/task-finish.sh LIFE-NNN-<슬러그> --into feature/LIFE-MMM-<슬러그>` — feature 로
        로컬 merge·push 한 뒤 정리한다. 자식 코디는 여기까지다 — 정리 뒤엔 세션이 없으므로 정리 **직전에** 묶음 코디에게
-       feature 반영을 알린다(연락 수단은 묶음 코디 절차 4). 묶음 코디는 원격 feature 커밋으로 반영을 확인한다.
+       반영 시작을 알린다. 알림의 뜻·통로·실패 시 정정은 묶음 코디 절차 4 「반영 알림」이 원본이다.
        묶음 마무리는 마지막 자식이어도 **묶음 코디**가 한다 — [묶음 코디 절차](references/bundle.md) 6.
   4. 사용자에게 스크립트 출력 원문과 함께 **PR 번호(묶음 자식은 feature 반영 결과)**, 인계 문서 경로
      `corral-specs/LIFE-NNN-<슬러그>/handoff-main.md`(절대경로) 를 보고하고 "PR 생성·정리 완료, 출고 대기"라고 끝낸다.

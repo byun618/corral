@@ -106,10 +106,13 @@ description: >-
    폰이 연결돼 있지 않으면 설치를 미루고 그렇다고 보고한다.
 4. 남은 작업 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>`.
    묶음 PR(head `feature/LIFE-MMM-<슬러그>`)이 출고됐으면 feature worktree·로컬 feature 브랜치도 여기서 지운다 — 묶음 코디는 출고 전에 끝나므로 이 정리는 본체 몫이다.
-   원격 feature 는 5번 `finish` 가 지운다. 13 이면(원래 PR MERGED 미확인) 남겨 두고 보고한다.
+   원격 feature 는 `ship`(남았으면 5번 `finish`)이 PR MERGED 확인 뒤 지운다 — 그래서 대개 추적 ref 가 없고 `-d` 는 본체 main 이 출고를 받았는지(ff)에 달려 있다.
+   13 이면(원래 PR MERGED 미확인) 남겨 두고 보고한다.
+   ```bash
+   git worktree remove .claude/worktrees/LIFE-MMM-<슬러그> && git branch -d feature/LIFE-MMM-<슬러그>
+   ```
    `branch -d` 가 「not fully merged」로 거절되면 본체 main 이 출고를 받았는지(ff) 먼저 본다 — 확인 없이 `-D` 로 가지 않는다.
    `worktree remove` 가 더러운 worktree 로 거절되면 feature 에 올리지 않은 작업일 수 있다 — `-f` 로 지우지 않고 보고한다.
-   `git worktree remove .claude/worktrees/LIFE-MMM-<슬러그> && git branch -d feature/LIFE-MMM-<슬러그>`
 5. `scripts/release.sh finish` — 원래 PR 이 MERGED 인지 다시 보고(head 삭제) release 브랜치(로컬·원격)·worktree 를 지운다. 13 이면 남겨 두고 보고한다.
 6. 회고 결정 기록이 있으면 §4 「결정 기록」 대로 corral-specs 에 커밋·push 한다.
 7. 보고: 태그·Release URL·출고된 PR(MERGED 여부)·LA 전이 결과·맥 설치 버전·폰 설치 결과(versionName·`lastUpdateTime`)·**APK 경로와 sha256**·release 브랜치 정리. 빠진 단계가 있으면 그렇다고 적는다.

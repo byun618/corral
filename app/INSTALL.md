@@ -21,6 +21,7 @@ gh pr list                                              # 출고 대기열
 scripts/release.sh cut [--bump minor|major | --version X.Y.Z] [--dry-run]   # ① 자르기 — release/vX.Y.Z + .claude/worktrees/release-vX.Y.Z + 버전 커밋(기본 patch, push 없음)
 scripts/release.sh gather --prs "12 15" [--dry-run]     # ② 모으기 — 고른 순서대로 release 브랜치에 로컬 merge(merge commit)
 #                                                         ③ 통합 확인 — release worktree 에서 빌드·실행(release 스킬 3)
+#                                                         ③' 회고 — 채택한 learnings·ADR 을 release worktree 에서 커밋(release 스킬 4)
 scripts/release.sh ship --notes <노트 파일> [--dry-run]  # ④ 출고 — release→main 머지 · 태그 · Release · 본체 ff · 원래 PR 처리 · dmg · APK
 scripts/release.sh finish [--leave-open]                # ⑤ 정리 — 출고 확인 뒤 release 브랜치(로컬·원격)·worktree 삭제
 scripts/release.sh abort                                # 접기 — 출고 전 release 브랜치·worktree 만 삭제, PR 은 열린 채
@@ -54,6 +55,7 @@ PR head 에는 해소가 없다 — 상관없다: 그 head 가 release→main �
 
 **출고 중 수정** — 통합 확인에서 문제가 나오면 그 일감 브랜치에서 고쳐 push 하고(리뷰 근거를 일감에 남긴다) 같은 PR 을 다시 `gather` 한다 —
 새 커밋만 merge 하고 기록을 갱신한다. release worktree 에서 직접 고치지 않는다. 자른 뒤엔 출고를 막는 수정만 넣는다(동결) — 새 작업은 다음 출고.
+동결의 예외(회고 커밋)는 release 스킬 §1 이 정한다.
 
 **④ ship** — ⓐ 머지 전 점검: release worktree 깨끗함 · release 브랜치가 origin/main 을 품음(main 이 그새 움직였으면 멈추고
 `git -C <release worktree> merge origin/main` 안내) · 끝의 `app/package.json` = 브랜치 버전 · **기록된 PR 마다 지금 head 가 release 브랜치에 있음**

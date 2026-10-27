@@ -69,7 +69,9 @@ description: >-
    선택은 `claude` 또는 `codex`다. 모델·effort는 사용자 지정값, 미지정이면 3단계의 기본값을 **명령에
    명시한다**(이유는 AGENTS.md 「도구 역할」). advisor 지정이 그 매핑에서
    불가능하면 그 사실을 기록한다(조용히 빼지 않는다).
-   반환된 세션 handle 을 확보하고 `00-start.md`에 기록한다. 사용자에게 보여줄 코디네이터 세션에만
+   반환된 세션 handle 을 확보하고 `00-start.md`에 기록한다. 응답이 세션 기록 경로를 돌려주면 그 경로도 같이 적는다
+   (devlog 재료 — task-coordinate §8. 6단계의 전달 전 커밋에 들어간다). 기동 응답에 경로가 있는지는 도구마다 다르다
+   — 매핑 『세션 기동』 절(corral 매핑은 지금 Claude 만 준다). 사용자에게 보여줄 코디네이터 세션에만
    포커스 전환을 쓴다(매핑에 따라 헤드리스에서는 미지원).
 5. **LA 상태 전이**: 시작 세션이 `issue_transition` → `진행 중`을 요청한다. 코디네이터가 먼저 전진했다면
    forward-only의 `same`·`backward` 응답을 존중한다. 부모가 checkpoint이면 함께 온보드(`issue_update`

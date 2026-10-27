@@ -37,8 +37,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 | 4 구현 — 단독 워커, 설계 단계 없음(경쟁은 옵션) | 워커 | 구현 브랜치 LIFE-NNN-<슬러그>-claude | §4 |
 | 5 코드 리뷰 — 별도 세션, 재리뷰도 새 세션 | 리뷰어 | raw/review/, reviews.md | §5 |
 | 6 판정 → **게이트 ①** | 코디 | verdict.md | §6·§7 |
-| 7 사용자 확인 → **게이트 ②** = PR 생성·정리 | 코디 | handoff-main.md, pr.md | §8 |
-| 8 출고 — release/vX.Y.Z 자르기·PR 모으기·통합 확인 → main 머지·태그·릴리즈 노트·dmg·APK(폰 설치) | 본체 | GitHub Release | release |
+| 7 사용자 확인 → **게이트 ②** = 기록·PR 생성·정리 | 코디 | devlog.md, learnings-proposal.md, adr-draft-*.md, handoff-main.md, pr.md | §8 |
+| 8 출고 — release/vX.Y.Z 자르기·PR 모으기·통합 확인·회고 → main 머지·태그·릴리즈 노트·dmg·APK(폰 설치) | 본체 | GitHub Release, corral-specs/retro/vX.Y.Z.md | release |
 
 - 스킬 파일: .agents/skills/task-start · task-coordinate · release (각 SKILL.md). 역할별 모델·effort·리뷰어 구성은 .agents/defaults.md
 - 판정 규칙(다수결 기각 금지·수렴 조건·수정 상한·테스트 계층·경량/전체 경로)은 task-coordinate §2·§3·§5·§6
@@ -62,7 +62,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - 슬러그는 일감 타이틀에서 자동 파생(케밥케이스 1~3단어), 생성 후 불변 (매핑은 키로만)
 - worktree 는 전부 .claude/worktrees/ 아래 형제 폴더 — 중첩 금지. 구현 브랜치 생존 중 작업 브랜치 rebase 금지
 - **release 브랜치 release/vX.Y.Z** (예외, 단명 원칙 안): 출고 1회 수명·한 번에 하나. main 에서 자르고(.claude/worktrees/release-vX.Y.Z)
-  PR 을 모아 통합 확인 뒤 main 머지, 출고 확인 뒤 삭제(접으면 삭제·PR 은 열린 채). 자른 뒤엔 출고를 막는 수정만 — 수정은 일감 브랜치에서 고쳐 다시 모은다
+  PR 을 모아 통합 확인 뒤 main 머지, 출고 확인 뒤 삭제(접으면 삭제·PR 은 열린 채). 자른 뒤엔 출고를 막는 수정만 — 수정은 일감 브랜치에서 고쳐 다시 모은다(예외는 release 스킬 §1)
 - 출고 통합 확인은 release worktree 에서 한다. 그 밖의 통합 확인은 throwaway: integration/<이름>-YYYYMMDD 에 합쳐 테스트 후 삭제. 유지 금지
 - feature·예외적 장기 통합 브랜치는 만료일 명시(첫 자식 작업 00-start.md), 넘기면 쪼개서 main 에
 
@@ -101,6 +101,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 | 명령·플래그가 실제와 다르거나 빠져 있다 | .agents/harness/<도구>.md (corral·orca·bare 매핑) |
 | 같은 다단계 절차를 매번 다시 설명한다 | .agents/skills/<이름>/SKILL.md 신설 |
 | 무엇을 만들어야 하는지가 흔들린다 | 해당 작업의 01-criteria.md |
+| 같은 배움을 일감마다 다시 겪는다 | .agents/learnings/<영역>.md (형식·승격은 그 폴더 README) |
+| 왜 그렇게 정했는지 매번 다시 묻는다 | docs/adr/ (번호·상태는 그 폴더 README) |
 
 ## 원본 관리
 
@@ -108,7 +110,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - .agents/agents/ 의 역할 파일은 각 터미널 세션이 시작 시 읽는 지침서다 (서브에이전트 아님)
 - grok 은 AGENTS.md 와 .claude/rules/ 를 자동 로드한다 — .grok/ 폴더 불필요. codex 는 AGENTS.md 만 읽는다 — rules 는 .codex/agents 포인터 경유
 - .agents/agents/ 를 고치면 .codex/agents/*.toml 포인터가 깨지지 않았는지 확인
-- rules 스텁(writing.md·coding.md)은 같은 실수 두 번째에 한 줄씩. 글로벌 스타일과 중복 금지
+- rules 스텁(writing.md·coding.md)은 같은 실수 두 번째에 한 줄씩 — 첫 번째는 .agents/learnings/ 에. 글로벌 스타일과 중복 금지
 - 스킬의 로컬 상태(config.json, state/)는 .gitignore — config.example.json 만 커밋
 - 시크릿 점검: corral·corral-specs 둘 다 gitleaks pre-commit 훅(`.githooks/`). 클론마다 한 번 `git config core.hooksPath .githooks`
 - **이 파일은 매 세션·매 호출에 실린다** — 매 세션 필요한 사실만 두고, 다단계 절차·한 역할만 쓰는 규칙은 스킬로 뺀다.

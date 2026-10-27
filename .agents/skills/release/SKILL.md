@@ -20,6 +20,7 @@ description: >-
 - `scripts/release.sh cut --dry-run` 으로 이름·버전을 보고 `scripts/release.sh cut [--bump minor]` — `release/vX.Y.Z` 브랜치와
   `.claude/worktrees/release-vX.Y.Z` worktree, 버전 커밋이 생긴다(push 없음). 열린 release 브랜치가 이미 있으면 거절된다 — 그것을 끝내거나 접는다.
 - 자른 뒤엔 **출고를 막는 수정만** 넣는다(동결). 새 작업은 새 일감 → 다음 출고.
+  **예외는 §4 회고 커밋 하나다** — 채택한 learnings·ADR 을 release worktree 에서 직접 커밋한다. 동결과 그 예외의 원본은 이 줄이고, 다른 문서는 이리로 가리킨다.
 
 ## 2. 모으기
 
@@ -28,7 +29,7 @@ description: >-
 - 충돌(exit 3)은 **release worktree 에서 바로 푼다** — 스크립트 안내대로 풀고 `git commit --no-edit`(메시지의 `Release-PR:` 줄이 모으기 기록) 뒤 남은 PR 로 다시.
   해소가 기능을 바꿀 만큼 크면 `merge --abort` 로 그 PR 을 빼고 그 작업의 코디에게 돌려보낸다.
   이미 모은 PR 을 빼려면 `abort` 후 다시 `cut`·나머지 `gather` — 충돌 해소는 다시 한다.
-- **출고 중 수정**은 그 일감 브랜치에서 고쳐 push 하고(리뷰 근거를 일감에 남긴다) 같은 PR 을 다시 `gather` 한다 — release worktree 에서 직접 고치지 않는다.
+- **출고 중 수정**은 그 일감 브랜치에서 고쳐 push 하고(리뷰 근거를 일감에 남긴다) 같은 PR 을 다시 `gather` 한다 — release worktree 에서 직접 고치지 않는다(예외는 §1 — §4 회고 커밋).
 
 ## 3. 통합 확인
 
@@ -37,7 +38,37 @@ description: >-
 
 ## 4. 회고 자리
 
-- (LIFE-704 가 채운다 — devlog·changelog 를 release 브랜치에 커밋하는 자리. 지금은 건너뛴다.)
+통합 확인 뒤·릴리즈 노트 전에, 이번 출고에 실린 일감의 배움과 막힌 지점을 사용자와 정리한다 (LIFE-704).
+결과물은 release 브랜치의 회고 커밋 하나와 비공개 결정 기록이다. learnings 의 형식·상한·승격과 ADR 의 번호·상태는 각 README 가 원본이다 —
+여기서는 언제·무엇을 하는지만 적는다.
+
+- **일감 폴더 찾기**: 모은 PR 의 head 브랜치 `LIFE-NNN-<슬러그>` = corral-specs 작업 폴더 이름이다.
+  묶음 PR(head `feature/LIFE-MMM-<슬러그>`)이면 묶음 폴더 `verdict.md` 의 자식 판정 링크(task-coordinate §8)로 자식 일감 폴더를 모두 찾는다 —
+  게이트 ② 기록은 자식마다 있다.
+- **읽는다** — 일감 폴더마다 사용자와 같이:
+  - 게이트 ② 기록(task-coordinate §8): `devlog.md`·`learnings-proposal.md`·`adr-draft-*.md`. 여러 일감을 하루치로 묶어 보는 것은 사람이 이때 한다.
+  - 막힌 지점: `00-analysis.md` 「절차 어긋남」 절과 devlog 회고의 「방식 개선」 렌즈 — 스킬·규칙이 그 일감에서 어긋난 자리다.
+  - 판정·리뷰: `02-kickoff.md`(인용한 learnings — 아래 「작동했나」의 대상)·`verdict.md`·`reviews.md` — 기준·리뷰가 무엇을 잡고 놓쳤나.
+  - 기록이 없는 일감은 「없음」으로 적고 넘어간다.
+- **정한다** — 제안마다 채택·기각·보류:
+  - learnings 추가·승격·삭제와 낡은 영역 파일의 재검토(90일·상한) — `.agents/learnings/README.md` 대로.
+    재검토 대상은 일감 기록에 기대지 않고 직접 찾는다: `.agents/learnings/` 의 영역 파일(README 제외) 머리의 `Last reviewed` 를 모두 훑어 90일 넘은 파일과 상한에 닿은 파일을 연다.
+  - ADR 초안 채택 — `docs/adr/README.md` 대로 번호·상태를 붙인다.
+  - **이전 learnings 가 이번에 작동했나** — 실린 일감의 킥오프가 인용한 항목(task-coordinate §1)이 실수를 막았는지·빗나갔는지 대조한다.
+    빗나갔으면 고치거나 지운다.
+  - **스킬·규칙 개선안**(막힌 지점·승격된 규칙의 `.agents/` 반영) — 짧은 승격 줄이 아니면 여기서 고치지 않고 별도 LIFE 일감 후보로 적는다.
+    사용자가 고르면 일감을 만든다. 회고 커밋은 learnings·ADR 과 짧은 승격 줄만 싣는다.
+- **커밋한다**: 채택분을 release worktree 에서 **비-merge 커밋 하나**로 커밋한다(`docs(release): vX.Y.Z 회고` 류). 동결의 예외다(§1).
+  - 메시지에 `Release-PR:` 줄을 쓰지 않는다 — `ship` 이 모으기 기록 밖의 그 줄을 위조 기록으로 거절한다.
+  - `ship` 전에 끝낸다 — 커밋하지 않은 회고 변경이 남으면 `ship` 이 더러운 worktree 로 거절한다. 채택분이 없으면 커밋하지 않는다.
+- **결정 기록(비공개)**: 채택·기각·보류와 그 이유, 「작동했나」 대조, 개선 일감 후보를 corral-specs `retro/vX.Y.Z.md` 한 파일에 이때 쓴다.
+  커밋은 출고(§6)가 끝난 뒤 마무리에서 본체 세션이 그 파일만 지정해 한다(AGENTS.md 「산출물 규칙」의 루트 공용 파일과 같은 방식) —
+  `retro/` 의 새 파일은 미추적이라 `git add -- retro/vX.Y.Z.md` 를 먼저 한다.
+  출고를 접으면(`abort`) 회고 커밋은 release 브랜치와 함께 사라진다 — 접기 전에 그 커밋의 diff(사용자와 다듬은 learnings·ADR 최종 문구)를 기록에 붙이고,
+  기록 머리에 「접음 — 다음 출고 회고에서 다시 적용」을 적어 커밋한다. 다음 회고가 그 기록에서 이어 간다.
+  그래서 회고를 시작할 때 `retro/` 에서 「접음」 머리를 가진 기록을 먼저 찾는다 — 다시 자르며 버전이 바뀌면 파일 이름이 다르다.
+  이어받으면 그 기록 머리를 「이어받음 vX.Y.Z」(이어받은 출고 버전)로 바꿔 같이 커밋한다 — 다음 회고가 다시 찾지 않게.
+  공개 쪽에는 결정 결과만 남는다.
 
 ## 5. 릴리즈 노트 작성
 
@@ -73,6 +104,7 @@ description: >-
    폰이 연결돼 있지 않으면 설치를 미루고 그렇다고 보고한다.
 4. 남은 작업 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>`.
 5. `scripts/release.sh finish` — 원래 PR 이 MERGED 인지 다시 보고(head 삭제) release 브랜치(로컬·원격)·worktree 를 지운다. 13 이면 남겨 두고 보고한다.
-6. 보고: 태그·Release URL·출고된 PR(MERGED 여부)·LA 전이 결과·맥 설치 버전·폰 설치 결과(versionName·`lastUpdateTime`)·**APK 경로와 sha256**·release 브랜치 정리. 빠진 단계가 있으면 그렇다고 적는다.
+6. 회고 결정 기록이 있으면 §4 「결정 기록」 대로 corral-specs 에 커밋·push 한다.
+7. 보고: 태그·Release URL·출고된 PR(MERGED 여부)·LA 전이 결과·맥 설치 버전·폰 설치 결과(versionName·`lastUpdateTime`)·**APK 경로와 sha256**·release 브랜치 정리. 빠진 단계가 있으면 그렇다고 적는다.
 
-출고를 접을 때(출고 전): `scripts/release.sh abort` — release 브랜치·worktree 만 지우고 PR 은 열린 채 남는다.
+출고를 접을 때(출고 전): `scripts/release.sh abort` — release 브랜치·worktree 만 지우고 PR 은 열린 채 남는다. 회고를 했으면 결정 기록 처리는 §4.

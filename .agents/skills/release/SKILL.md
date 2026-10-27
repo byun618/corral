@@ -106,12 +106,15 @@ description: >-
    폰이 연결돼 있지 않으면 설치를 미루고 그렇다고 보고한다.
 4. 남은 작업 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>`.
    묶음 PR(head `feature/LIFE-MMM-<슬러그>`)이 출고됐으면 feature worktree·로컬 feature 브랜치도 여기서 지운다 — 묶음 코디는 출고 전에 끝나므로 이 정리는 본체 몫이다.
+   지우기 전에 그 worktree 에 남은 묶음 코디 세션을 『회수·정리』로 닫는다(본체가 task-start 로 띄운 세션이다 — 세션의 작업 폴더가 사라지기 전에).
    원격 feature 는 `ship`(남았으면 5번 `finish`)이 PR MERGED 확인 뒤 지운다 — 그래서 대개 추적 ref 가 없고 `-d` 는 본체 main 이 출고를 받았는지(ff)에 달려 있다.
    13 이면(원래 PR MERGED 미확인) 남겨 두고 보고한다.
+   본체 checkout 에서 친다(상대경로다):
    ```bash
    git worktree remove .claude/worktrees/LIFE-MMM-<슬러그> && git branch -d feature/LIFE-MMM-<슬러그>
    ```
    `branch -d` 가 「not fully merged」로 거절되면 본체 main 이 출고를 받았는지(ff) 먼저 본다 — 확인 없이 `-D` 로 가지 않는다.
+   ff 를 맞춘 뒤에는 `git branch -d feature/LIFE-MMM-<슬러그>` 만 다시 친다 — worktree 는 이미 지워져 블록을 통째로 다시 치면 `-d` 가 실행되지 않는다.
    `worktree remove` 가 더러운 worktree 로 거절되면 feature 에 올리지 않은 작업일 수 있다 — `-f` 로 지우지 않고 보고한다.
 5. `scripts/release.sh finish` — 원래 PR 이 MERGED 인지 다시 보고(head 삭제) release 브랜치(로컬·원격)·worktree 를 지운다. 13 이면 남겨 두고 보고한다.
 6. 회고 결정 기록이 있으면 §4 「결정 기록」 대로 corral-specs 에 커밋·push 한다.

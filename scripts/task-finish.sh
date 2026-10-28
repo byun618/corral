@@ -49,6 +49,8 @@ has_remote() { [ -n "$(git -C "$REPO" ls-remote --heads origin "refs/heads/$1")"
 # main 에서 따서 ⓐⓑ 둘 다 없다. **한계**: upstream 이 origin/<feature> 가 아니고(--no-track 으로 땄거나 뒤에 push -u 로 바뀜)
 # feature 의 첫 고유 커밋보다 먼저 딴 자식은 못 센다 — 빈 feature 에서 딴 자식은 그 시점 main 과 그래프가 같아 upstream·설정 말고 단서가 없다.
 # ⓐⓑ 는 origin/feature 에서 딴 통합 확인용 throwaway 브랜치도 센다(안전 쪽 — 지우고 다시).
+# **한계**: worktree 등록의 `.git` 은 사라졌는데 폴더 잔해(node_modules 등)가 남으면 그 폴더를 본체로 읽어 멈춘다(제거 실패 또는 HEAD 사유) —
+# 비파괴(exit≠0·무변경)다. 잔해 폴더는 손으로 치우고 `git worktree prune` 뒤 다시 실행한다.
 # herdr 격리 세션 정리는 하지 않는다 — 묶음 코디는 구현 워커를 띄우지 않고, 체크포인트 번호 접두 매칭은 자식 세션을 잘못 잡는다.
 finish_feature() {
   local FWT PR PR_NUM PR_STATE PR_BASE KEEP here wt_list w b up h kids k u FT lease LOID="" ROID="" did=0
@@ -129,7 +131,7 @@ EOF2
     note "자식 브랜치 $k 가 남아 있다(이미 $KEEP 에 들어 있음) — 지우지 않는다, 필요하면 task-finish.sh $k --into $TASK"
   done
 
-  # 4. 정리 — 검사를 다 통과한 뒤에만. git worktree remove 는 --force 없이(그새 더러워졌으면 git 이 거절한다)
+  # 4. 정리 — 검사를 다 통과한 뒤에만. git worktree remove 는 --force 없이(그새 더러워졌으면 git 이 거절한다) # guard:f-no-force
   while IFS= read -r w; do
     [ -n "$w" ] && [ -d "$w" ] || continue
     git worktree remove "$w" || die "worktree 제거 실패: $w — 원인을 본 뒤 다시(멱등)" # guard:f-wt-remove

@@ -30,14 +30,14 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 | 단계 | 누가 | 산출물 (corral-specs/LIFE-NNN-<슬러그>/) | 절차 |
 | --- | --- | --- | --- |
-| 0 시작 — 작업 브랜치·worktree·코디 기동 | 본체 (묶음 자식은 묶음 코디) | 00-start.md | task-start |
+| 0 시작 — 작업 브랜치·worktree·코디 기동(체크포인트는 작업 브랜치 대신 feature) | 본체 (묶음 자식은 묶음 코디) | 00-start.md | task-start |
 | 1 분석 — 일감 스냅샷·외부 서치 대조 | 코디 | 00-analysis.md | task-coordinate §1 |
 | 2 판정 기준 — 구현 전에 박는다 | 코디 | 01-criteria.md | §2 |
 | 3 킥오프 → **게이트 ⓪** | 코디 | 02-kickoff.md | §3 |
 | 4 구현 — 단독 워커, 설계 단계 없음(경쟁은 옵션) | 워커 | 구현 브랜치 LIFE-NNN-<슬러그>-claude | §4 |
 | 5 코드 리뷰 — 별도 세션, 재리뷰도 새 세션 | 리뷰어 | raw/review/, reviews.md | §5 |
 | 6 판정 → **게이트 ①** | 코디 | verdict.md | §6·§7 |
-| 7 사용자 확인 → **게이트 ②** = 기록·PR 생성·정리 | 코디 | devlog.md, learnings-proposal.md, adr-draft-*.md, handoff-main.md, pr.md | §8 |
+| 7 사용자 확인 → **게이트 ②** = 기록·PR 생성·정리 | 코디 | devlog.md, learnings-proposal.md, adr-draft-*.md, handoff-main.md, pr.md(묶음 자식은 없음) | §8 |
 | 8 출고 — release/vX.Y.Z 자르기·PR 모으기·통합 확인·회고 → main 머지·태그·릴리즈 노트·dmg·APK(폰 설치) | 본체 | GitHub Release, corral-specs/retro/vX.Y.Z.md | release |
 
 - 스킬 파일: .agents/skills/task-start · task-coordinate · release (각 SKILL.md). 역할별 모델·effort·리뷰어 구성은 .agents/defaults.md
@@ -56,7 +56,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
   release → main PR 하나를 merge commit 으로 머지한다 — 원래 PR 은 기본 브랜치에서 간접 머지로 MERGED 를 가정하고 확인 안 되면 exit 13(C14 실측 전, squash·rebase 머지는 레포 설정으로 꺼 둠).
   PR CI 는 아직 없다 — 후속 LIFE-575. main 직접 push·웹 UI 머지 금지 — main 에 직접 올라가는 것은 release.sh 의 태그뿐이다.
   Free 플랜 private 레포라 브랜치 보호가 없다(403) — 서버 강제 없이 규약과 스크립트 가드로 막는다
-- **묶음 브랜치 feature/LIFE-NNN-<슬러그>** (NNN = 체크포인트): 서로 의존하는 작업 묶음만(체크포인트 시작은 분해 전에 열고, 의존하는 자식이 둘 미만이면 게이트 ⓪ 에서 접을지 그대로 갈지 정한다 — task-coordinate references/bundle.md 2). 자식 작업 브랜치는 feature 에서
+- **묶음 브랜치 feature/LIFE-NNN-<슬러그>** (NNN = 체크포인트): 서로 의존하는 작업 묶음만(체크포인트 시작 — task-coordinate references/bundle.md 2). 자식 작업 브랜치는 feature 에서
   따고 feature 로 로컬 merge, 묶음이 끝나면 feature → main PR 하나. main 이 움직이면 main 을 feature 로 merge(rebase 금지 —
   살아 있는 worktree). 독립 작업은 main 에서 따고 main 대상 PR. 그 외 체크포인트·프로젝트 단위 통합 브랜치는 금지
 - 슬러그는 일감 타이틀에서 자동 파생(케밥케이스 1~3단어), 생성 후 불변 (매핑은 키로만)

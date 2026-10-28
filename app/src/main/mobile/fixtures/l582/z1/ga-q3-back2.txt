@@ -1,9 +1,0 @@
-  ┃
-  ┃  1 [x] Cat   Cat                                                                                                 █
-  ┃  2 [ ] Dog   Dog                                                                                                 █
-  ┃  3 [x] Fish  Fish                                                                                                █
-  ┃  z [ ] Type your answer here
-  ┃
-  ┃  [1/2] ↑/↓ navigate · ←/→ question · y copy                                                       Enter:select
-  ┃
-  Tab:next answer  │  Esc:unselect  │  Shift+x:dismiss

@@ -1,2 +1,0 @@
-~/.grok/sessions/%2FUsers%2Fbyun%2Frepos%2Fbyun618%2Fcorral%2F.claude%2Fworktrees%2FLIFE-582-mobile-input-claude/01a12638-8756-7ac0-8b65-adc29317ceca/updates.jsonl
-~/.grok/sessions/%2FUsers%2Fbyun%2Frepos%2Fbyun618%2Fcorral%2F.claude%2Fworktrees%2FLIFE-582-mobile-input-claude/01a12638-936e-7311-b357-b88fccb5a0da

@@ -1,2 +1,0 @@
-72883 72882       00:56 bash -c for i in $(seq 1 200); do echo z1r1bg-$i; sleep 1; done
-72949 72948       00:52 bash -c for i in $(seq 1 150); do echo z1r1sub-$i; sleep 1; done

@@ -1,5 +1,0 @@
-before blocked#145
-"3" blocked#145
-"택배 보관" blocked#145
-"\r" working#146
-"answers":{"Pick delivery":"택배 보관"}

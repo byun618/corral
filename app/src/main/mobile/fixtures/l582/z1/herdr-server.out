@@ -1,5 +1,0 @@
-herdr server running; you can use any herdr CLI command in another terminal.
-api socket: /Users/byun/.config/herdr-dev/sessions/l582z1/herdr.sock
-client socket: /Users/byun/.config/herdr-dev/sessions/l582z1/herdr-client.sock
-logs: /Users/byun/.config/herdr-dev/sessions/l582z1/herdr-server.log
-did you mean to open the Herdr TUI? run `herdr`; you do not need `herdr server`.

@@ -30,7 +30,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 | 단계 | 누가 | 산출물 (corral-specs/LIFE-NNN-<슬러그>/) | 절차 |
 | --- | --- | --- | --- |
-| 0 시작 — 작업 브랜치·worktree·코디 기동 | 본체 | 00-start.md | task-start |
+| 0 시작 — 작업 브랜치·worktree·코디 기동 | 본체 (묶음 자식은 묶음 코디) | 00-start.md | task-start |
 | 1 분석 — 일감 스냅샷·외부 서치 대조 | 코디 | 00-analysis.md | task-coordinate §1 |
 | 2 판정 기준 — 구현 전에 박는다 | 코디 | 01-criteria.md | §2 |
 | 3 킥오프 → **게이트 ⓪** | 코디 | 02-kickoff.md | §3 |
@@ -44,7 +44,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - 판정 규칙(다수결 기각 금지·수렴 조건·수정 상한·테스트 계층·경량/전체 경로)은 task-coordinate §2·§3·§5·§6
 - **사용자 승인 게이트 3단 (자율 진행 금지 지점)**: ⓪ 킥오프(구현 워커 기동 전) ① 채택(작업 브랜치 머지 전)
   ② 출고(PR 생성 전). 게이트 사이는 자율 진행하되 게이트에서 멈추고 보고한다 — 보고할 내용은 task-coordinate 의 각 게이트 절.
-  worktree 는 출고 승인 전까지 유지 — 사용자가 직접 실행·확인할 수 있는 상태. feature worktree 는 출고까지(task-coordinate references/bundle.md)
+  worktree 는 출고 승인 전까지 유지 — 사용자가 직접 실행·확인할 수 있는 상태. feature worktree 는 release 머지(출고)까지(task-coordinate references/bundle.md)
 - 작업이 끝나거나 막히면 반드시 사용자에게 보고 — 조용한 완료 금지
 - LA 상태는 코디(진행)·본체(출고)가 forward-only 로 전이한다 — 시점은 각 스킬의 해당 절 첫 줄
 

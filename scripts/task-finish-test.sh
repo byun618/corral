@@ -6,12 +6,15 @@
 # 실제 GitHub·본체 checkout·LA·corral 레지스트리·사용자 herdr 무접촉: PATH 앞에 가짜 gh 와 빈 목록만 내는 가짜 herdr 를 둔다.
 # 사용자 git 설정은 끊는다(하네스 전용 전역 설정). 커밋 시각을 고정해 두 판의 해시가 같게 한다.
 # 양성 대조: TF_MUTANT=<가드 이름> 이면 B 의 사본에서 「# guard:<이름>」 줄의 die 를 true 로 바꾼다 — 그 가드의 케이스가 FAIL 해야 한다.
+#   가드 이름 전부는 `grep -o 'guard:f-[a-z-]*' scripts/task-finish.sh`. 멈춤 케이스는 사유 문구까지 본다 — 다른 가드나 git 의 거절이 같은 모양으로 대신 막으면 변이가 산다.
+# 이름에 LIMIT 이 든 케이스는 알려진 한계의 현 동작을 고정한다(기대 = 못 막음). 한계가 풀리면 그 케이스를 멈춤 케이스로 바꾼다.
 # 임시 폴더는 /tmp/tft.XXXXXX(짧은 고정 접두), 끝나면 지운다. 종료코드 0 = 전부 PASS.
 set -uo pipefail
 
-ALL="C1a C1b C1c C1d C1e
-C2a C2b C2c C2d C2e C2f C2f-variant C2g C2h-root C2h-sub C2i C2j C2k
-C3a C3b-lock C3b-delete
+ALL="C1a C1b C1c C1c-other-bundle C1c-integration C1d C1e
+C2a C2b C2b-nolocal C2c C2d C2e C2f C2f-merged C2f-variant C2f-variant-only C2f-pushu C2f-notrack C2f-localstart C2f-detached C2f-LIMIT-empty-feature
+C2g C2h-root C2h-sub C2h-elsewhere C2-main-checkout C2i C2j C2k
+C3a C3b-lock C3b-delete C3-lsremote-fail C3-late-commit C3-merged-remote-ahead
 C4a C4b
 C5a C5b C5c C5d"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -148,6 +151,13 @@ case_C1c() { setup; mk_feature; mk_indep LIFE-901-i; mk_release
   check "exit 0" rc_is 0; check "feature worktree 사라짐" no_wt "$FWT"; check "로컬 feature 사라짐" no_local "$F"
   check "독립 worktree 남음" is_wt "$WT/LIFE-901-i"; check "독립 브랜치 그대로" [ "$(git -C "$B" rev-parse LIFE-901-i)" = "$i" ]
   check "release worktree 남음" is_wt "$WT/release-v0.0.1"; check "release 브랜치 그대로" [ "$(git -C "$B" rev-parse release/v0.0.1)" = "$r" ]; }
+case_C1c-other-bundle() { setup; mk_feature   # 다른 묶음의 자식은 세지 않는다
+  git -C "$B" branch -q --no-track feature/LIFE-901-y origin/main; git -C "$B" push -q -u origin feature/LIFE-901-y 2>/dev/null
+  git -C "$B" fetch -q origin; git -C "$B" worktree add -q "$WT/LIFE-902-k" -b LIFE-902-k origin/feature/LIFE-901-y 2>/dev/null; commit_in "$WT/LIFE-902-k" kk
+  run "$F"; check "exit 0" rc_is 0; check "feature worktree 사라짐" no_wt "$FWT"; check "다른 묶음 자식 worktree 그대로" is_wt "$WT/LIFE-902-k"; }
+case_C1c-integration() { setup; mk_feature   # origin/feature 에서 딴 throwaway(고유 커밋 없음, worktree 없음) — 안내만 하고 정리한다
+  git -C "$B" fetch -q origin; git -C "$B" branch -q integration/x-20261028 "origin/$F"
+  run "$F"; check "exit 0" rc_is 0; check "feature worktree 사라짐" no_wt "$FWT"; check "integration 브랜치 그대로" is_local integration/x-20261028; check "남은 브랜치 안내" has "integration/x-20261028 가 남아 있다"; }
 case_C1d() { setup; mk_feature; merge_feature_to_main
   run "$F"
   check "exit 0" rc_is 0; check "PR MERGED" pr_state MERGED "$F"; check "feature worktree 사라짐" no_wt "$FWT"
@@ -159,18 +169,43 @@ case_C1e() { setup; mk_feature
   check "herdr 호출 없음" [ ! -e "$W/herdr-calls.txt" ]; }
 # ---- 묶음 경로 멈춤 ----
 case_C2a() { setup; mk_feature; rm -f "$W/gh/pr/1"; run "$F"; stopped; }
-case_C2b() { setup; mk_feature; pr 1 CLOSED "$F"; run "$F"; stopped; }
+case_C2b() { setup; mk_feature; pr 1 CLOSED "$F"; run "$F"; stopped; check "사유 = CLOSED" has "상태가 CLOSED"; }
+case_C2b-nolocal() { setup; mk_feature; git -C "$B" worktree remove "$FWT"; git -C "$B" branch -q -D "$F"; pr 1 CLOSED "$F"   # 지울 로컬이 없어도 CLOSED 는 멈춘다
+  run "$F"; stopped; check "사유 = CLOSED" has "상태가 CLOSED"; }
 case_C2c() { setup; mk_feature; commit_in "$FWT" unpushed; run "$F"; stopped; }
-case_C2d() { setup; mk_feature; echo changed >> "$FWT/a"; run "$F"; stopped; }
-case_C2e() { setup; mk_feature; echo u > "$FWT/untracked"; run "$F"; stopped; }
+case_C2d() { setup; mk_feature; echo changed >> "$FWT/a"; run "$F"; stopped; check "사유 = 미커밋 변경(가드 — git 의 remove 거절 아님)" has "미커밋 변경"; }
+case_C2e() { setup; mk_feature; echo u > "$FWT/untracked"; run "$F"; stopped; check "사유 = 미커밋 변경(가드 — git 의 remove 거절 아님)" has "미커밋 변경"; }
 case_C2f() { setup; mk_feature; mk_child LIFE-901-c; run "$F"; stopped; check "자식 worktree 남음" is_wt "$WT/LIFE-901-c"; }
+case_C2f-merged() { setup; mk_feature; git -C "$B" fetch -q origin   # 자식 worktree 는 남았고 커밋은 feature 에 다 들어 있다(브랜치 검사로는 못 막는다)
+  git -C "$B" worktree add -q "$WT/LIFE-901-c" -b LIFE-901-c "origin/$F" 2>/dev/null
+  run "$F"; stopped; check "사유 = 자식 worktree" has "자식 worktree 가 남아 있다"; }
+# 블록 밖에서 딴 자식 — upstream 신호가 없어도 feature 고유 커밋으로 센다
+case_C2f-pushu() { setup; mk_feature; mk_child LIFE-901-c; git -C "$WT/LIFE-901-c" push -q -u origin LIFE-901-c 2>/dev/null   # upstream 이 origin/<자식> 으로 바뀜
+  run "$F"; stopped; check "사유 = 자식 worktree" has "자식 worktree 가 남아 있다"; }
+case_C2f-notrack() { setup; mk_feature; git -C "$B" fetch -q origin; git -C "$B" worktree add -q --no-track "$WT/LIFE-901-c" -b LIFE-901-c "origin/$F"; commit_in "$WT/LIFE-901-c" cc
+  run "$F"; stopped; check "사유 = 자식 worktree" has "자식 worktree 가 남아 있다"; }
+case_C2f-localstart() { setup; mk_feature; git -C "$B" worktree add -q "$WT/LIFE-901-c" -b LIFE-901-c "$F" 2>/dev/null; commit_in "$WT/LIFE-901-c" cc
+  run "$F"; stopped; check "사유 = 자식 worktree" has "자식 worktree 가 남아 있다"; }
+case_C2f-variant-only() { setup; mk_feature; mk_child LIFE-901-c   # 자식 본 브랜치는 지웠고 구현 변형 worktree 만 남음
+  git -C "$B" worktree add -q "$WT/LIFE-901-c-claude" -b LIFE-901-c-claude LIFE-901-c; git -C "$B" worktree remove --force "$WT/LIFE-901-c"; git -C "$B" branch -q -D LIFE-901-c
+  run "$F"; stopped; check "사유 = 자식 worktree" has "자식 worktree 가 남아 있다"; }
+case_C2f-detached() { setup; mk_feature; git -C "$B" fetch -q origin; git -C "$B" worktree add -q --detach "$WT/LIFE-901-d" "origin/$F"; commit_in "$WT/LIFE-901-d" dd
+  run "$F"; stopped; check "사유 = 브랜치 없는 worktree" has "브랜치 없는 worktree"; }
+case_C2f-LIMIT-empty-feature() { export FGH_INDIRECT=off   # 한계: feature 에 base 에 없는 커밋이 없을 때 upstream 없이 딴 자식은 못 센다(현 동작 고정)
+  setup; git -C "$B" branch -q --no-track "$F" origin/main; git -C "$B" push -q -u origin "$F" 2>/dev/null; git -C "$B" worktree add -q "$FWT" "$F"; pr 1 OPEN "$F"
+  git -C "$B" fetch -q origin; git -C "$B" worktree add -q --no-track "$WT/LIFE-901-c" -b LIFE-901-c "origin/$F"; commit_in "$WT/LIFE-901-c" cc
+  run "$F"; check "(한계) exit 0 — 멈추지 않는다" rc_is 0; check "(한계) 자식 worktree 는 그대로" is_wt "$WT/LIFE-901-c"; check "자식 커밋 무손실" is_local LIFE-901-c; }
 case_C2f-variant() { setup; mk_feature; mk_child LIFE-901-c   # 자식은 지웠는데 자식의 구현 변형 worktree 가 남았다
   git -C "$B" worktree add -q "$WT/LIFE-901-c-claude" -b LIFE-901-c-claude LIFE-901-c; git -C "$B" worktree remove "$WT/LIFE-901-c"
   run "$F"; stopped; }
 case_C2g() { setup; mk_feature; mk_child LIFE-901-c; git -C "$B" worktree remove "$WT/LIFE-901-c"; run "$F"; stopped; }
-case_C2h-root() { setup; mk_feature; run --cwd "$FWT" "$F"; stopped; }
+case_C2h-root() { setup; mk_feature; run --cwd "$FWT" "$F"; stopped; check "사유 = feature worktree 안" has "feature worktree 안에서 실행 금지"; }
 case_C2h-sub() { setup; mk_feature; mkdir -p "$FWT/sub"; touch "$FWT/sub/.keep"; git -C "$FWT" add -A; git -C "$FWT" commit -qm sub; git -C "$FWT" push -q origin "$F"
-  run --cwd "$FWT/sub" "$F"; stopped; }
+  run --cwd "$FWT/sub" "$F"; stopped; check "사유 = feature worktree 안" has "feature worktree 안에서 실행 금지"; }
+case_C2h-elsewhere() { setup; mk_feature; git -C "$B" worktree remove "$FWT"; git -C "$B" worktree add -q "$WT/elsewhere" "$F"; mkdir -p "$WT/elsewhere/sub"   # 기대 경로가 아닌 worktree 하위
+  run --cwd "$WT/elsewhere/sub" "$F"; stopped; check "사유 = 체크아웃한 worktree 안" has "체크아웃한 worktree"; check "cwd 그대로" [ -d "$WT/elsewhere/sub" ]; }
+case_C2-main-checkout() { setup; mk_feature; git -C "$B" worktree remove "$FWT"; git -C "$B" checkout -q "$F"
+  run "$F"; stopped; check "사유 = 본체 checkout" has "본체 checkout"; }
 case_C2i() { setup; mk_feature; run "$F" --into "$F"; stopped; }
 case_C2j() { setup; mk_feature; mkdir -p "$FWT/specs"; echo r > "$FWT/specs/raw.txt"; run "$F"; stopped; check "사유 = specs" has "specs 에 파일"; }
 case_C2k() { setup; mk_feature; local b n=1   # 이름 가드만 막도록 각 이름에 원격 브랜치·열린 PR 을 둔다(없으면 PR 없음 가드가 먼저 막는다)
@@ -186,6 +221,16 @@ case_C3b-lock() { setup; mk_feature; git -C "$B" worktree lock --reason tft "$FW
 case_C3b-delete() { setup; mk_feature; merge_feature_to_main   # 주입: origin update 훅이 feature 삭제 push 를 거절한다
   printf '#!/bin/sh\n[ "$1" = "refs/heads/%s" ] && [ "$3" = 0000000000000000000000000000000000000000 ] && { echo "흉내: 삭제 거절" >&2; exit 1; }\nexit 0\n' "$F" > "$O/hooks/update"; chmod +x "$O/hooks/update"
   run "$F"; check "exit ≠ 0" rc_fail; check "✔ 없음" no_success; check "원격 feature 남음" [ -n "$(remote_oid "$F")" ]; }
+case_C3-lsremote-fail() { setup; mk_feature; merge_feature_to_main   # ls-remote 만 실패 — 원격 유무를 조회 실패로 「없음」이라 읽으면 ✔ 뒤 원격이 남는다
+  printf '#!/bin/sh\ncase " $* " in *" ls-remote "*) echo "fatal: 흉내 네트워크 실패" >&2; exit 128 ;; esac\nexec %s "$@"\n' "$(command -v git)" > "$W/bin/git"; chmod +x "$W/bin/git"
+  run "$F"; check "✔ 와 원격 잔존이 함께 나오지 않는다" not eval 'grep -q "^✔" "$LAST" && [ -n "$(remote_oid "$F")" ]'; }
+case_C3-late-commit() { setup; mk_feature   # 검사 뒤 삭제 전: 첫 worktree remove 직전 feature worktree 에 커밋이 들어온다
+  printf '#!/bin/sh\nif [ "$1 $2" = "worktree remove" ] && [ ! -e "%s/injected" ]; then touch "%s/injected"; echo late > "%s/late"; %s -C "%s" add late; %s -C "%s" commit -qm late; fi\nexec %s "$@"\n' \
+    "$W" "$W" "$FWT" "$(command -v git)" "$FWT" "$(command -v git)" "$FWT" "$(command -v git)" > "$W/bin/git"; chmod +x "$W/bin/git"
+  run "$F"; check "exit ≠ 0" rc_fail; check "✔ 없음" no_success; check "늦은 커밋이 로컬 feature 에 남음" [ "$(git -C "$B" log -1 --format=%s "$F" 2>/dev/null)" = late ]; }
+case_C3-merged-remote-ahead() { setup; mk_feature; merge_feature_to_main   # MERGED 인데 출고 뒤 origin/feature 에 커밋이 더 올라갔다 — 지우기 전에 멈춘다
+  git -C "$H" checkout -q -B "$F" "origin/$F"; commit_in "$H" after; git -C "$H" push -q origin "$F"; pr 1 MERGED "$F"
+  run "$F"; stopped; check "사유 = 원격이 보존 위치에 없음" has "다 들어 있지 않다"; }
 # ---- 멱등 ----
 case_C4a() { setup; mk_feature; run "$F"; run "$F"
   check "재실행 exit 0" rc_is 0; check "재실행 무변경" unchanged; check "이미 정리됨 안내" has "이미 정리됨"; }
@@ -206,7 +251,7 @@ case_C5d() { setup; mk_indep LIFE-901-c; run LIFE-901-c --into main; stopped; }
 
 TOTAL=0; PASSED=0; FAILED_LIST=""
 for CASE in $CASES; do
-  LOG="$WORK/$CASE.log"; : > "$LOG"; CASE_FAIL=0
+  LOG="$WORK/$CASE.log"; : > "$LOG"; CASE_FAIL=0; unset FGH_INDIRECT
   type "case_$CASE" >/dev/null 2>&1 || { echo "FAIL $CASE: 모르는 케이스"; TOTAL=$((TOTAL + 1)); FAILED_LIST="$FAILED_LIST $CASE"; continue; }
   "case_$CASE"
   TOTAL=$((TOTAL + 1))

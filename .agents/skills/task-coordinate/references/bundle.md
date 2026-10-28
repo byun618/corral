@@ -100,6 +100,8 @@ git fetch origin main && git merge origin/main && git push origin feature/LIFE-M
    `task-finish.sh` 는 feature worktree 안 실행을 거절하므로 본체 경로에서 본체의 스크립트로 돌린다:
    `cd <본체 절대경로> && scripts/task-finish.sh feature/LIFE-MMM-<슬러그>` — PR 이 있고 로컬 feature 가 원격 사본에 다 들어 있고 feature worktree 가 깨끗하고
    남은 자식(자식 worktree·feature 에 안 들어간 자식 브랜치)이 없음을 확인한 뒤 feature worktree 와 로컬 feature 브랜치를 정리한다. feature 는 원격(PR head)에 남는다.
+   자식은 upstream 이 원격 feature 이거나 feature 고유 커밋을 품은 브랜치·worktree 로 센다 — **feature 에 main 에 없는 커밋이 하나도 없을 때 upstream 없이 딴 자식은 못 센다**.
+   그런 묶음(자식이 아직 아무것도 반영하지 않은 채 출고 승인)이면 정리 전에 `git worktree list` 로 자식 worktree 를 직접 본다.
    남은 자식이 있으면 멈춘다 — 그 자식의 `--into` 를 기다리거나 사용자에게 보고한다. 스크립트가 실패하면 멈추고 원문을 보고한다 — 남은 정리는 같은 명령으로 이어 간다(멱등).
    사용자에게 스크립트 출력 원문과 함께 PR 번호·`handoff-main.md` 절대경로를 보고하고 "PR 생성·정리 완료, 출고 대기"라고 끝낸다.
    **묶음 코디의 수명은 여기까지다** — 출고는 본체(release).

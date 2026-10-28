@@ -59,7 +59,7 @@ description: >-
    `ROOT` 는 어느 worktree 에서 쳐도 본체 checkout 을 가리킨다.
    ```bash
    ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
-   git fetch origin feature/LIFE-MMM-<슬러그>    # 묶음 자식 — 분기 전에 origin/feature 를 최신으로
+   git fetch origin feature/LIFE-MMM-<슬러그>    # 묶음 자식만 — 분기 전에 origin/feature 를 최신으로. 실패하면 분기하지 않고 멈춘다(독립 작업·체크포인트 시작은 건너뛴다)
    git worktree add "$ROOT/.claude/worktrees/LIFE-NNN-<슬러그>" -b LIFE-NNN-<슬러그> <main 또는 origin/feature/LIFE-MMM-<슬러그>>   # 독립 작업·묶음 자식
    git worktree add "$ROOT/.claude/worktrees/LIFE-MMM-<슬러그>" feature/LIFE-MMM-<슬러그>                                       # 체크포인트 시작 — feature worktree
    ```

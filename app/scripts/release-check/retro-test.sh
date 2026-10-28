@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # LIFE-704 최종 관문 C3ⓓ — release §4 회고 커밋이 scripts/release.sh 의 출고 흐름과 맞는지 로컬 bare 원격 + 가짜 gh 로 본다.
 # app/scripts/release-check/retro-test.sh <원자료 폴더> [케이스 …]   (케이스 생략 = 전부, 목록은 ALL)
-# 하네스 도우미(setup·mkpr·prpush·rel·snap·oref·prstate·cutgather·check …)는 l703 release-test.sh 의 것을 그대로 읽어 쓴다 —
-# 같은 가짜 gh·같은 격리(전역 git 설정 끊기)라 l703 케이스와 결과를 견줄 수 있다. 실제 GitHub·본체 checkout 무접촉.
+# 하네스 도우미(setup·mkpr·prpush·rel·snap·oref·prstate·cutgather·check …)는 같은 폴더 release-test.sh 의 것을 그대로 읽어 쓴다 —
+# 같은 가짜 gh·같은 격리(전역 git 설정 끊기)라 release-test 케이스와 결과를 견줄 수 있다. 실제 GitHub·본체 checkout 무접촉.
 # 양성 대조: L703_MUTANT=<가드 이름> [L703_MUTANT_SED=<sed>] 로 release.sh 사본의 가드를 끄면 그 가드를 보는 케이스가 FAIL 이어야 한다.
 # 임시 폴더는 /tmp/l704.XXXXXX. 끝나면 지운다.
 set -uo pipefail
@@ -21,9 +21,9 @@ SUMMARY="$OUT/summary.txt"; : > "$SUMMARY"
 MUT="${L703_MUTANT:-}"
 echo "# retro-test $(date '+%F %T') · HEAD $(git -C "$ROOT" rev-parse --short HEAD) · git $(git --version | cut -d' ' -f3-) · work $WORK · release.sh sha1 $(shasum < "$REL" | cut -c1-12)${MUT:+ · 변이 $MUT}" | tee -a "$SUMMARY"
 
-# l703 하네스의 도우미 구간(전역 git 설정 ~ 케이스 루프 앞)을 읽어 온다. 앵커가 없으면 멈춘다 — 조용히 빈 도우미로 돌지 않게
+# release-test.sh 의 도우미 구간(전역 git 설정 ~ 케이스 루프 앞)을 읽어 온다. 앵커가 없으면 멈춘다 — 조용히 빈 도우미로 돌지 않게
 HELPERS="$(sed -n '/^# 사용자 git 설정을 끊는다/,/^for CASE in/p' "$HERE/release-test.sh" | sed '$d')"
-case "$HELPERS" in *"setup()"*"mkpr()"*"rel()"*"cutgather()"*) ;; *) echo "l703 도우미를 못 읽었다 — 앵커 확인" >&2; exit 64 ;; esac
+case "$HELPERS" in *"setup()"*"mkpr()"*"rel()"*"cutgather()"*) ;; *) echo "release-test.sh 도우미를 못 읽었다 — 앵커 확인" >&2; exit 64 ;; esac
 eval "$HELPERS"
 
 # retro <메시지…> — release worktree 에 회고 변경(learnings 영역 파일·ADR)을 만들고 비-merge 커밋 하나로

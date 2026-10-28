@@ -2,7 +2,7 @@
 // LIFE-623 최종 관문 C4 — T3 C8 의 G4(LIFE-602 격리 관문 `g-gate.mjs` 의 g4 · g4drift · g4la)를 격리 Electron 창 없이 같은 단계로 돈다.
 // 경로: React `TasksPage` → hooks → 실제 `WorkService` → 출처(모의 `mock-jira` 충돌 검사 켜짐 · 실제 `LaSource` + `LaMcpFixture`). window.corral 은 시험 bridge(IPC 아님).
 // 외부 변경은 g-gate 와 같이 같은 서비스에 `updateItem`(ifVersion null) 으로 넣는다 — 다른 클라이언트의 저장. 대응표 `specs/LIFE-623-null-body/raw/claude/final/g4-map.md`.
-// 렌더러와 main 을 함께 import 하므로 web 타입 검사에서 빼고 mixed 검사(tsconfig.mixed.json)에 둔다 — 선례 scripts/tasks-windowless/jira.test.tsx.
+// 렌더러와 main 을 함께 import 하므로 web 타입 검사에서 빼고 mixed 검사(tsconfig.mixed.json)에 둔다 — 선례 LIFE-605 관문 `windowless.test.tsx`.
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { Toaster, toast } from 'sonner'

@@ -143,7 +143,7 @@ const TASK=/^LIFE-(\d+)\b/
 const rawEnv=process.env.CORRAL_VERIFY_RAW
 if(rawEnv===undefined||rawEnv.trim()==='')refuse(
  'CORRAL_VERIFY_RAW 가 필요하다. 기본 출력 경로는 없앴다 — 이 실행이 기록을 쓸 디렉터리를 직접 지정한다.',
- {예시:'CORRAL_VERIFY_RAW="$PWD/specs/LIFE-NNN-<슬러그>/raw/worker/<owner>/backend/<회차>" node app/scripts/backend-source/verify-backend-source.mjs',
+ {예시:'CORRAL_VERIFY_RAW="$(mktemp -d)" node app/scripts/backend-source/verify-backend-source.mjs — 어느 저장소에도 속하지 않는 이 회차만의 새 디렉터리',
   이유:'예전 기본값은 specs/LIFE-393-cli-terminal/raw/codex 로 풀렸고 이 스크립트는 거기 고정 파일명을 덮어썼다 (LIFE-430 C4)'})
 // ② 심링크를 끝까지 푼다. 아직 없는 디렉터리는 가장 가까운 존재하는 조상을 풀고 나머지를 잇는다.
 const resolved=(()=>{

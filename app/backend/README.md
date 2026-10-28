@@ -9,7 +9,8 @@ LIFE-393 CLI는 명시적으로 연결한 corral terminal backend를 쓴다. 설
 export CORRAL_BACKEND_BUILD_ROOT="$(mktemp -d /tmp/l393-codex-build-XXXXXX)"
 sh app/scripts/build-terminal-backend.sh
 export CORRAL_TEST_BACKEND="$CORRAL_BACKEND_BUILD_ROOT/herdr-0.9.0/target/debug/herdr"
-node app/scripts/backend-source/verify-backend-source.mjs
+# 기록은 저장소 밖 이 회차만의 새 디렉터리에 쓴다(CORRAL_VERIFY_RAW 필수 — 기본 경로 없음)
+CORRAL_VERIFY_RAW="$(mktemp -d)" node app/scripts/backend-source/verify-backend-source.mjs
 npm --prefix app ci
 npm --prefix app run build
 # LIFE-393·394·409·426 수락 관문 하네스(live·gui·failures·contract·fixtures·global-config-diff·leak-check·attribution 등)는

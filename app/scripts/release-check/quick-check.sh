@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # LIFE-704 빠른 확인 — 요구 → 실제 문구 위치 대조표(C1ⓒ·C2ⓕ·C3 문구), 공개 누출 스캔 + 양성 대조(C5ⓓ), diff 범위(C5ⓔ),
-# AGENTS.md 줄 수(C5ⓒ), capability-check names·shape(C5ⓐ), l703 doc-check(C5ⓑ) 를 한 번에 돌린다.
+# AGENTS.md 줄 수(C5ⓒ), capability-check names·shape(C5ⓐ), doc-check(C5ⓑ) 를 한 번에 돌린다.
 # app/scripts/release-check/quick-check.sh <원자료 폴더> [--extra <누출 패턴 파일>] [--base <비교 기준, 기본 main>]
-#   출력: <폴더>/quick-check.txt (요약) · table.txt(대조표) · leak.txt · range.txt · capcheck-*.txt · l703/doc-check.txt. 하나라도 어긋나면 exit 1.
+#   출력: <폴더>/quick-check.txt (요약) · table.txt(대조표) · leak.txt · range.txt · capcheck-*.txt · doc-check/doc-check.txt. 하나라도 어긋나면 exit 1.
 #   --extra: 한 줄에 하나씩 grep -E 패턴(공개 레포에 적을 수 없는 이름·원문 인용 등). 레포 밖에 둔다. 없으면 요약에 WARN — 이름·원문 인용은 검사하지 않은 것이다.
 #   --base: 없는 ref 이거나 diff 가 비면 FAIL — 빈 diff 를 「누출 0·범위 안」 으로 읽지 않는다.
 #   미커밋·미추적 변경이 있으면 FAIL — 스캔은 커밋 diff·커밋 메시지·추적 파일만 보므로 깨끗한 커밋 상태에서만 유효하다.
@@ -36,7 +36,7 @@ if [ -n "$DIRTY" ]; then
   bad "깨끗한 커밋 상태가 아니다 — 미커밋·미추적 변경은 누출 스캔 밖이라 이 회차는 관문이 아니다:"
   printf '%s\n' "$DIRTY" | head -20 | sed 's/^/  /' | tee -a "$SUM"
 fi
-say "# l704 quick-check $(date '+%F %T') · HEAD $(git rev-parse --short HEAD) · base $BASE $(git rev-parse --short "$BASE")$(git diff --quiet HEAD -- . && git diff --cached --quiet || echo ' (+작업 트리 변경 — diff 는 커밋 기준)')"
+say "# quick-check $(date '+%F %T') · HEAD $(git rev-parse --short HEAD) · base $BASE $(git rev-parse --short "$BASE")$(git diff --quiet HEAD -- . && git diff --cached --quiet || echo ' (+작업 트리 변경 — diff 는 커밋 기준)')"
 
 # ── 1. 대조표 — 요구 id · 자리 · 방식(has 고정 문자열 / re 정규식 / not 없어야 함) · 패턴 ──
 TC=.agents/skills/task-coordinate/SKILL.md
@@ -329,15 +329,15 @@ say "── diff 범위 ($BASE...HEAD): $(tail -1 "$RANGE")"
 # ── 4. AGENTS.md 줄 수 ──
 L="$(wc -l < AGENTS.md | tr -d ' ')"; [ "$L" -le 200 ] && say "ok   AGENTS.md ${L}줄 ≤ 200" || bad "AGENTS.md ${L}줄"
 
-# ── 5. capability-check names·shape · l703 doc-check ──
+# ── 5. capability-check names·shape · doc-check ──
 for m in names shape; do
   node .agents/harness/capability-check.mjs "$m" > "$OUT/capcheck-$m.txt" 2>&1; rc=$?
   echo "exit $rc" >> "$OUT/capcheck-$m.txt"
   [ "$rc" = 0 ] && say "ok   capability-check $m (exit 0)" || bad "capability-check $m exit $rc"
 done
-bash app/scripts/release-check/doc-check.sh "$OUT/l703" > /dev/null 2>&1; rc=$?
-say "     l703 doc-check: ok $(grep -c '^ok' "$OUT/l703/doc-check.txt") · FAIL $(grep -c '^FAIL' "$OUT/l703/doc-check.txt") (exit $rc)"
-[ "$rc" = 0 ] || bad "l703 doc-check exit $rc"
+bash app/scripts/release-check/doc-check.sh "$OUT/doc-check" > /dev/null 2>&1; rc=$?
+say "     doc-check: ok $(grep -c '^ok' "$OUT/doc-check/doc-check.txt") · FAIL $(grep -c '^FAIL' "$OUT/doc-check/doc-check.txt") (exit $rc)"
+[ "$rc" = 0 ] || bad "doc-check exit $rc"
 
 say "실패 $BAD"
 [ "$BAD" = 0 ]

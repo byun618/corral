@@ -122,7 +122,7 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 ③ 같을 때만 `adb install -r`(데이터·페어링 유지) ④ `dumpsys` 로 versionName·`lastUpdateTime` 이 바뀌었는지 보고 APK sha256 을 출력한다 — 출고 보고에 넣는다.
 설치본을 지우고 새로 까는 길은 없다 — 지우면 페어링 토큰·기록이 사라진다. 서명이 다르거나 설치본이 없으면(첫 설치) 멈추고 사용자에게 보고한다(첫 설치는 `mobile/README.md` §3).
 
-- **자르기·모으기·머지·태그는 `release.sh` 로만 한다.** 브랜치 보호(required check)는 Free 플랜 private 레포에서 쓸 수 없어(403) 서버가 막지 않는다 —
+- **자르기·모으기·머지·태그는 `release.sh` 로만 한다.** ruleset 「main 보호」(LIFE-718)가 main 직접 push·force push·삭제를 서버에서 막지만, required check 는 PR CI 전이라 없고 웹 UI 머지는 막지 않는다 —
   웹 UI 머지(release PR 포함 — 웹으로 머지하면 태그·Release·dmg·APK 가 안 돈다)·main 직접 push 를 하지 않는 것은 규약이다. squash·rebase 머지는 레포 설정에서 꺼 두었다(merge commit 만).
 - 태그 밖에서 dmg 를 만들어야 하면(개발 빌드) 「빌드」를 손으로 돌린다 — 그 dmg 는 출고본이 아니다. 출고 dmg 는 `release-dmg.sh` 가 HEAD = 태그·깨끗한 트리·
   태그 버전 = package.json 버전을 확인할 때만 만든다(`--check-only` 로 가드만 본다).

@@ -10,8 +10,111 @@
  
  [[rules]]
  id = "osc_title_blocked"
-@@ -37,12 +37,117 @@
+@@ -31,15 +31,147 @@
+   { contains = ["esc/← to edit prev"] },
+ ]
+ 
++# LIFE-626: the codex-cli 0.162.1 trust chooser ("Folder access" screen family).
++#
++# Live captures (LIFE-603 final gate g31, coordinator x06, review r5 r05/r09, review r6 r03/r17):
++#     Folder access                         Folder access
++#     <cwd>                                 <cwd>
++#
++#     Note: You’re in a subdirectory ...    Config, hooks, and exec policies from untrusted
++#     <repo root>                           folders stay disabled. ...
++#
++#     Trust this folder? Codex can ...
++#
++#   › 1. Trust and continue               › 1. Open restricted
++#     2. Back to Agent Command Center       2. Quit
++#
++#     enter continue · esc back             enter continue · esc quit
++#
++# The second screen is what codex shows for a folder it has recorded as untrusted. The binary also
++# carries `Open existing task` / `Keep current directory` labels for the same screen, so the rule
++# matches the family (LIFE-603 K1b), not its wording: the `Folder access` title as a whole line and
++# numbered option rows `1.` and `2.` on consecutive lines, a cursor glyph allowed on either.
++#
++# K1b kept this as a branch of the rule below, gated to the top 20 non-empty lines with a `not` for
++# "a cursor-led row after the option rows". LIFE-603 review r6 showed that region was wrong three ways:
++#   R6-A (fail-closed): a transcript or tool output with the same title + numbered rows inside the top
++#        20 lines, and the composer pushed below them, read as Blocked — the `not` could not see the
++#        composer.
++#   R6-B (fail-open): an old quotation followed by the composer higher up in the same screen, then the
++#        live chooser below it, read as Idle — the `not` matched the old quotation.
++#   R6-C (fail-open): in a pane about 33 columns wide or less, wrapped prose and paths pushed the option
++#        rows past the 20th line and the live chooser read as Idle.
++#
++# What separates the live chooser from everything else is what lies BELOW its option rows. The detection
++# text is the last screenful of the pane (bottom-anchored), and codex draws the chooser alone
++# (codex-rs tui/src/onboarding/trust_directory.rs `render_ref`, identical in 0.162.1, 0.165.0 and main):
++# below the option rows there are only blank rows, an optional red error paragraph and the mandatory
++# `enter continue · esc …` footer (wrapped at narrow widths). A codex screen without the chooser has
++# the composer at its bottom, and the composer's prompt row starts with a prompt glyph. In 0.162.1
++# (`chat_composer.rs` prompt span, `effort_ignition.rs` `prompt_glyph`) that glyph is one of three:
++# `\u{203a}` (default and Max effort), `\u{00bb}` (Ultra effort) or `!` (bash mode) — the same row
++# carries a placeholder, a draft or nothing. Sent user messages in the transcript start with
++# `\u{203a}` too. So this rule looks at the whole screen and matches only when some `Folder access`
++# title is followed by the option pair and, from the pair to the end of the screen, no row starts
++# with one of those three prompt glyphs (more numbered option rows directly under the pair are
++# allowed — a cursor may sit on option 3). It also requires that no row between the title and the
++# pair starts with one: a live chooser has only its path, note and prose there, while a quotation of
++# the chooser followed by a composer whose draft is a numbered list has the quoted cursor row (and
++# usually more prompt-led rows) between the quoted title and the draft's rows.
++#
++# The option rows themselves still accept the wider cursor set `\u{203a} \u{276f} \u{258c} >` the 0.155.1
++# branch uses; that set only widens what counts as an option row. It is NOT the composer test: the
++# 0.162.1 composer never draws `\u{276f}`, `\u{258c}` or `>`, and keeping them there would let a
++# chooser row that merely starts with `>` (an error paragraph, LIFE-626 review r1 A12) hide a live
++# chooser.
++#
++# So a match needs the lowest pair on the screen, which closes all three:
++#   R6-A: the composer row lies below the quoted pair, so nothing matches — whichever of the three
++#         prompt glyphs it shows.
++#   R6-B: the quotation above has the composer below it, but the live pair at the bottom has no
++#         prompt-led row under it, so it matches.
++#   R6-C: there is no line limit, so wrapped prose cannot push the pair out.
++#
++# Both rules share the id `trust_directory` (the id corral maps to reason `trust`) and priority 950. The
++# engine keeps the first matching rule of equal priority, and a screen cannot show both choosers, so
++# their order does not change any state. This rule comes first because `herdr agent explain` previews
++# the region of the first evaluated rule whose id matches: in this order a 0.162.1 chooser previews this
++# rule's whole screen. A 0.155.1 chooser now previews the whole screen too instead of the top 20 lines —
++# cosmetic, and only for the codex version the user no longer runs.
++#
++# Neither the footer nor the path row is required. The path row is not drawn at all when the pane is
++# too low (`cwd_height` is 0) and is centre-truncated when long; the footer adds nothing the rule
++# needs. A composer placeholder (`Ask Codex to do anything`, `Ask a follow-up question`) is not used
++# either: there is more than one, and a composer holding text shows none.
++#
++# Known limits — each needs a `Folder access` title line on screen that is not a live chooser, and
++# each reads as Blocked with reason trust (fail-closed):
++#   1. a composer DRAFT whose rows form the option pair under a quoted title with no prompt-led row
++#      between them: the draft contains the quoted title and option rows itself, or the draft is a
++#      numbered list of two or more lines under a quotation that has no prompt-led row — a bare title
++#      line, or a quoted plain numbered list without a cursor (LIFE-626 review r1 B05/C01). Below the
++#      pair there is only the status line. A one-line draft that starts like an option row
++#      (`\u{203a} 1. ...`) does not match;
++#   2. a quoted title above a UI that hides the composer: an overlay without prompt-led rows (a working
++#      screen without the composer, review r1 B09), or one that has numbered choices of its own — a
++#      command approval or the model picker (review r1 B06/B08). Its choices form the pair, so a screen
++#      that is Blocked anyway reports reason trust instead of its own;
++#   3. a chooser row (path segment, prose or error paragraph) that starts with `\u{00bb}` or `!` hides
++#      a live chooser (fail-open). The trust screen draws none: paths start with `/` or `~` and the
++#      prose and footer are fixed English text; only a wrapped path segment could, for a directory
++#      whose name starts with one.
+ [[rules]]
+ id = "trust_directory"
+ state = "blocked"
  priority = 950
++region = "whole_recent"
++visible_blocker = true
++regex = ['(?m)^[ \t]*Folder[ \t]+access[ \t]*\r?\n(?:[ \t]*(?:[^ \t\r\n\x{203a}\x{00bb}!][^\r\n]*)?\r?\n)*[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?1\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*\r?\n[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*(?:\r?\n[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?[0-9]+\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*)*(?:\r?\n[ \t]*(?:[^ \t\r\n\x{203a}\x{00bb}!][^\r\n]*)?)*\z']
++
++[[rules]]
++id = "trust_directory"
++state = "blocked"
++priority = 950
  region = "top_non_empty_lines(20)"
  visible_blocker = true
 -all = [
@@ -45,7 +148,7 @@
 +#
 +# LIFE-603 K1 added the codex-cli 0.162.1 chooser ("Folder access") as a second branch of this rule
 +# and K1b widened it from one wording to the screen family. LIFE-626 moved that branch into its own
-+# rule below (same id), because this rule's region — the top 20 non-empty lines — was the cause of
++# rule above (same id), because this rule's region — the top 20 non-empty lines — was the cause of
 +# all three LIFE-603 review r6 findings for it. Only the 0.155.1 branch stays here, unchanged.
 +any = [
 +  { all = [
@@ -57,80 +160,7 @@
 +    ] },
  ]
  
-+# LIFE-626: the codex-cli 0.162.1 trust chooser ("Folder access" screen family).
-+#
-+# Live captures (LIFE-603 final gate g31, coordinator x06, review r5 r05/r09, review r6 r03/r17):
-+#     Folder access                         Folder access
-+#     <cwd>                                 <cwd>
-+#
-+#     Note: You’re in a subdirectory ...    Config, hooks, and exec policies from untrusted
-+#     <repo root>                           folders stay disabled. ...
-+#
-+#     Trust this folder? Codex can ...
-+#
-+#   › 1. Trust and continue               › 1. Open restricted
-+#     2. Back to Agent Command Center       2. Quit
-+#
-+#     enter continue · esc back             enter continue · esc quit
-+#
-+# The second screen is what codex shows for a folder it has recorded as untrusted. The binary also
-+# carries `Open existing task` / `Keep current directory` labels for the same screen, so the rule
-+# matches the family (LIFE-603 K1b), not its wording: the `Folder access` title as a whole line and
-+# numbered option rows `1.` and `2.` on consecutive lines, a cursor glyph allowed on either.
-+#
-+# K1b kept this as a branch of the rule above, gated to the top 20 non-empty lines with a `not` for
-+# "a cursor-led row after the option rows". LIFE-603 review r6 showed that region was wrong three ways:
-+#   R6-A (fail-closed): a transcript or tool output with the same title + numbered rows inside the top
-+#        20 lines, and the composer pushed below them, read as Blocked — the `not` could not see the
-+#        composer.
-+#   R6-B (fail-open): an old quotation followed by the composer higher up in the same screen, then the
-+#        live chooser below it, read as Idle — the `not` matched the old quotation.
-+#   R6-C (fail-open): in a pane about 33 columns wide or less, wrapped prose and paths pushed the option
-+#        rows past the 20th line and the live chooser read as Idle.
-+#
-+# What separates the live chooser from everything else is what lies BELOW its option rows. The detection
-+# text is the last screenful of the pane (bottom-anchored), and codex draws the chooser alone
-+# (codex-rs tui/src/onboarding/trust_directory.rs `render_ref`, identical in 0.162.1, 0.165.0 and main):
-+# below the option rows there are only blank rows, an optional red error paragraph and the mandatory
-+# `enter continue · esc …` footer (wrapped at narrow widths) — no row starts with a cursor glyph. A codex
-+# screen without the chooser always has the composer at its bottom, and the composer's prompt row
-+# starts with a cursor glyph whether it shows a placeholder or a draft. So this rule looks at the whole
-+# screen and matches only when some `Folder access` title is followed by the option pair and, from the
-+# pair to the end of the screen, no row starts with a cursor glyph (more numbered option rows directly
-+# under the pair are allowed — a cursor may sit on option 3). It also requires that no row between the
-+# title and the pair starts with a cursor glyph: a live chooser has only its path, note and prose
-+# there, while a quotation of the chooser followed by a composer whose draft is a numbered list has the
-+# quoted cursor row (and usually more cursor-led rows) between the quoted title and the draft's rows.
-+# So a match needs the lowest pair on the screen, which closes all three:
-+#   R6-A: the composer row lies below the quoted pair, so nothing matches.
-+#   R6-B: the quotation above has the composer below it, but the live pair at the bottom has nothing
-+#         cursor-led under it, so it matches.
-+#   R6-C: there is no line limit, so wrapped prose cannot push the pair out.
-+#
-+# Neither the footer nor the path row is required. The path row is not drawn at all when the pane is
-+# too low (`cwd_height` is 0) and is centre-truncated when long; the footer adds nothing the rule
-+# needs. A composer placeholder (`Ask Codex to do anything`, `Ask a follow-up question`) is not used
-+# either: there is more than one, and a composer holding text shows none.
-+#
-+# Known limits — both need a quotation of the chooser on screen and both read as Blocked (fail-closed):
-+#   1. a composer DRAFT whose rows form the title + option pair: either the draft contains the quoted
-+#      title and option rows itself, or a bare `Folder access` title line (no cursor-led row under it)
-+#      sits above a draft that is a numbered list of two or more lines. Below the pair there is only
-+#      the status line. A one-line draft that starts like an option row (`› 1. ...`) does not match;
-+#   2. an idle codex screen whose composer row is hidden (by an overlay without cursor-led rows) under a
-+#      quotation of the chooser.
  [[rules]]
-+id = "trust_directory"
-+state = "blocked"
-+priority = 950
-+region = "whole_recent"
-+visible_blocker = true
-+regex = ['(?m)^[ \t]*Folder[ \t]+access[ \t]*\r?\n(?:[ \t]*(?:[^ \t\r\n\x{203a}\x{276f}\x{258c}>][^\r\n]*)?\r?\n)*[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?1\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*\r?\n[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*(?:\r?\n[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?[0-9]+\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*)*(?:\r?\n[ \t]*(?:[^ \t\r\n\x{203a}\x{276f}\x{258c}>][^\r\n]*)?)*\z']
-+
-+[[rules]]
- id = "startup_update"
- state = "blocked"
- priority = 950
 --- a/src/detect/manifests/grok.toml
 +++ b/src/detect/manifests/grok.toml
 @@ -1,7 +1,7 @@
@@ -194,11 +224,10 @@
  priority = 1200
 --- a/src/detect/manifest/tests.rs
 +++ b/src/detect/manifest/tests.rs
-@@ -1263,4 +1263,1421 @@
-         result.matched_rule.as_ref().map(|r| r.id.as_str()),
+@@ -1264,3 +1264,1650 @@
          Some("osc_title_working")
      );
-+}
+ }
 +
 +
 +// --- LIFE-394 trust chooser fixtures (implementation round, review conditions C1/D22) ---
@@ -557,7 +586,7 @@
 +        assert_ne!(result.state, AgentState::Blocked, "{label} must not be blocked");
 +        assert!(!result.visible_blocker, "{label} must not be a visible blocker");
 +    }
- }
++}
 +
 +#[test]
 +fn grok_trust_directory_requires_live_chooser() {
@@ -1615,4 +1644,234 @@
 +        assert_ne!(result.state, AgentState::Blocked, "{label} must not be blocked");
 +        assert!(!result.visible_blocker, "{label} must not be a visible blocker");
 +    }
++}
++
++// --- LIFE-626 fix1: the composer prompt glyphs of codex 0.162.1 (review r1 F1/F4/F5) ---
++//
++// The 0.162.1 composer prompt is `\u{203a}`, `\u{00bb}` (Ultra effort) or `!` (bash mode). These screens
++// are byte-identical to `corral-specs/LIFE-626-codex-trust/raw/review/claude-r1-raw/screens/` and
++// `screens2/`; review r1 composed them from the source, none is a live capture.
++// A12: a live restricted chooser with a row below the options that starts with `>`.
++const CODEX_0162_R1_A12_ERROR_STARTING_WITH_GT: &str = r#"
++  Folder access
++  /private/tmp/l603r6c-live/repo
++
++  Config, hooks, and exec policies
++  from untrusted folders stay
++  disabled. Trusted project folders
++  can still contribute settings.
++  Skills still load, and tools follow
++  your permission settings. Opening
++  will not change saved trust.
++
++› 1. Open restricted
++  2. Quit
++
++  > error: x
++
++  enter continue · esc quit
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++"#;
++// B01: R6-A with an Ultra-effort composer (`\u{00bb}` prompt) showing the placeholder.
++const CODEX_0162_R1_B01_ULTRA_PLACEHOLDER: &str = r#"• Here is what I suggest for the settings page:
++
++  Folder access
++
++  1. Let users pick the folder
++  2. Remember the last folder
++
++  Network access
++
++  1. Allow by default
++  2. Ask each time
++  - a
++  - b
++  - c
++  - d
++  - e
++  - f
++  - g
++  - h
++  - i
++  - j
++  - k
++  - l
++  - m
++
++» Ask Codex to do anything
++  GPT-6-Astra medium · /private/tmp/x
++"#;
++// B02: R6-A with a bash-mode composer (`!` prompt) holding a command.
++const CODEX_0162_R1_B02_BASH_DRAFT: &str = r#"• Here is what I suggest for the settings page:
++
++  Folder access
++
++  1. Let users pick the folder
++  2. Remember the last folder
++
++  Network access
++
++  1. Allow by default
++  2. Ask each time
++  - a
++  - b
++  - c
++  - d
++  - e
++  - f
++  - g
++  - h
++  - i
++  - j
++  - k
++  - l
++  - m
++
++! ls -la
++  GPT-6-Astra medium · /private/tmp/x
++"#;
++// B03: R6-A with an empty bash-mode composer.
++const CODEX_0162_R1_B03_BASH_EMPTY: &str = r#"• Here is what I suggest for the settings page:
++
++  Folder access
++
++  1. Let users pick the folder
++  2. Remember the last folder
++
++  Network access
++
++  1. Allow by default
++  2. Ask each time
++  - a
++  - b
++  - c
++  - d
++  - e
++  - f
++  - g
++  - h
++  - i
++  - j
++  - k
++  - l
++  - m
++
++! 
++  GPT-6-Astra medium · /private/tmp/x
++"#;
++// C07: a quoted chooser followed by an Ultra-effort composer.
++const CODEX_0162_R1_C07_QUOTE_ULTRA_PLACEHOLDER: &str = r#"• It looks like this:
++
++  Folder access
++  /tmp/e
++  › 1. Open restricted
++    2. Quit
++  enter continue · esc quit
++
++» Ask Codex to do anything
++  GPT-6-Astra medium · /private/tmp/x
++"#;
++// C08: a quoted chooser followed by a bash-mode composer.
++const CODEX_0162_R1_C08_QUOTE_BASH: &str = r#"• It looks like this:
++
++  Folder access
++  /tmp/e
++  › 1. Open restricted
++    2. Quit
++  enter continue · esc quit
++
++! git status
++  GPT-6-Astra medium · /private/tmp/x
++"#;
++
++#[test]
++fn codex_0162_trust_directory_knows_every_composer_prompt() {
++    // Positive: a row below the options that starts with `>` is not a composer (review r1 F4).
++    let result = osc_explain(Agent::Codex, CODEX_0162_R1_A12_ERROR_STARTING_WITH_GT, "repo", "");
++    assert_eq!(result.state, AgentState::Blocked, "r1-a12 must stay blocked");
++    assert_eq!(
++        result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
++        Some("trust_directory"),
++        "r1-a12 must match trust_directory"
++    );
++    assert!(result.visible_blocker, "r1-a12 must be a visible blocker");
++
++    // Negative: R6-A and a quoted chooser under the Ultra-effort and bash-mode composers (review r1 F1).
++    for (label, screen) in [
++        ("r1-b01-ultra-placeholder", CODEX_0162_R1_B01_ULTRA_PLACEHOLDER),
++        ("r1-b02-bash-draft", CODEX_0162_R1_B02_BASH_DRAFT),
++        ("r1-b03-bash-empty", CODEX_0162_R1_B03_BASH_EMPTY),
++        ("r1-c07-quote-ultra-placeholder", CODEX_0162_R1_C07_QUOTE_ULTRA_PLACEHOLDER),
++        ("r1-c08-quote-bash", CODEX_0162_R1_C08_QUOTE_BASH),
++    ] {
++        let result = osc_explain(Agent::Codex, screen, "repo", "");
++        assert_ne!(
++            result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
++            Some("trust_directory"),
++            "{label} must not match trust_directory"
++        );
++        assert_ne!(result.state, AgentState::Blocked, "{label} must not be blocked");
++        assert!(!result.visible_blocker, "{label} must not be a visible blocker");
++    }
++}
++
++#[test]
++fn codex_trust_directory_rules_report_their_own_region() {
++    // Review r1 F5: two rules share the id `trust_directory`. The 0.162.1 rule comes first, so the
++    // first evaluated rule with that id — the one `herdr agent explain` previews — is the rule that
++    // matched a 0.162.1 chooser. The 0.155.1 chooser still matches its own rule.
++    for (label, screen, region) in [
++        ("0162-worktree", CODEX_0162_TRUST_WORKTREE, "whole_recent"),
++        ("r6-live-note-w30", CODEX_0162_R6_LIVE_NOTE_W30, "whole_recent"),
++        ("0155-plain", CODEX_TRUST_PLAIN, "top_non_empty_lines(20)"),
++        ("0155-worktree", CODEX_TRUST_WORKTREE, "top_non_empty_lines(20)"),
++    ] {
++        let result = osc_explain(Agent::Codex, screen, "repo", "");
++        assert_eq!(result.state, AgentState::Blocked, "{label} must stay blocked");
++        let matched = result.matched_rule.as_ref().expect("a matched rule");
++        assert_eq!(matched.id, "trust_directory", "{label} must match trust_directory");
++        assert_eq!(matched.region, region, "{label} must match the rule for its codex version");
++        assert!(result.visible_blocker, "{label} must be a visible blocker");
++    }
++    let result = osc_explain(Agent::Codex, CODEX_0162_TRUST_WORKTREE, "repo", "");
++    let first = result
++        .evaluated_rules
++        .iter()
++        .find(|rule| rule.id == "trust_directory")
++        .expect("an evaluated trust_directory rule");
++    assert_eq!(first.region, "whole_recent");
++    assert!(first.matched, "the previewed trust_directory rule is the one that matched");
 +}

@@ -49,7 +49,7 @@ description: >-
      LA 부모가 checkpoint 라는 것만으로 묶음 자식이 되지 않는다(판단 기준은 의존이다).
    - **체크포인트 시작**(묶음 열기): LA kind 가 checkpoint 인 일감 자체를 시작하면 이 경로다(분해 뒤 자식이 하나뿐이면 묶음 코디 절차 2 가 접는다). 작업 브랜치 `LIFE-MMM-<슬러그>` 를 만들지 않는다. `origin/main` 최신에서 feature 를 만들어 origin 에 push 하고,
      feature worktree 를 그 feature 체크아웃으로 연다 — 이 worktree 가 **묶음 코디**의 작업 worktree 다. 만료일(기본 시작일 + 2주)을 00-start 에 적는다.
-     feature 가 이미 있으면(묶음 코디 없이 자식만 시작된 경우) 만들기·push 는 건너뛰고 feature worktree 와 묶음 코디만 연다.
+     feature 가 이미 있으면(묶음 코디 없이 자식만 시작된 경우, 출고 중 수정으로 정리된 feature worktree 를 다시 여는 경우 — 묶음 코디 절차 6) 만들기·push 는 건너뛰고 feature worktree 와 묶음 코디만 연다.
      **본체가 이미 분해·자식 시작을 했어도 묶음 코디는 띄운다** — 00-start 분해 상태는 3단계.
      묶음 코디가 하는 일은 [묶음 코디 절차](../task-coordinate/references/bundle.md)가 원본이다.
    ```bash

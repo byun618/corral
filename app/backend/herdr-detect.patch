@@ -3,14 +3,14 @@
 @@ -1,7 +1,7 @@
  id = "codex"
 -version = "2026.09.05.1"
-+version = "2026.10.15.2"
++version = "2026.10.28.1"
  min_engine_version = 3
 -updated_at = "2026-09-05T00:00:00Z"
-+updated_at = "2026-10-15T00:00:00Z"
++updated_at = "2026-10-28T00:00:00Z"
  
  [[rules]]
  id = "osc_title_blocked"
-@@ -37,9 +37,82 @@
+@@ -37,12 +37,117 @@
  priority = 950
  region = "top_non_empty_lines(20)"
  visible_blocker = true
@@ -43,9 +43,23 @@
 +# the chooser's own option rows — that is the one arrangement a quotation produces and a live
 +# chooser cannot.
 +#
-+# LIFE-603 K1: codex-cli 0.162.1 replaced that chooser with a new screen, so the rule now has two
-+# branches under `any`, each with its own control lines and its own quotation gate. The 0.155.1
-+# branch is unchanged. The 0.162.1 live captures (final gate g31, coordinator x06, review r5 r05/r09):
++# LIFE-603 K1 added the codex-cli 0.162.1 chooser ("Folder access") as a second branch of this rule
++# and K1b widened it from one wording to the screen family. LIFE-626 moved that branch into its own
++# rule below (same id), because this rule's region — the top 20 non-empty lines — was the cause of
++# all three LIFE-603 review r6 findings for it. Only the 0.155.1 branch stays here, unchanged.
++any = [
++  { all = [
++      { regex = ['(?m)^>[ \x{2500}]You are in [^\r\n]+(?:\r?\n|$)'] },
++      { regex = ['(?s)Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?'] },
++      { regex = ['(?m)^\s*(?:[\x{203a}\x{276f}\x{258c}>]\s+)?1\.\s+Yes,\s+continue\s*\r?\n\s*(?:[\x{203a}\x{276f}\x{258c}>]\s+)?2\.\s+No,\s+quit\s*$'] },
++    ], not = [
++      { regex = ['(?m)^[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+No,[ \t]+quit[ \t]*\r?$[\s\S]*?^[ \t]*[\x{203a}\x{276f}\x{258c}>][ \t]+(?i:Ask Codex to do anything)[ \t]*\r?$'] },
++    ] },
+ ]
+ 
++# LIFE-626: the codex-cli 0.162.1 trust chooser ("Folder access" screen family).
++#
++# Live captures (LIFE-603 final gate g31, coordinator x06, review r5 r05/r09, review r6 r03/r17):
 +#     Folder access                         Folder access
 +#     <cwd>                                 <cwd>
 +#
@@ -55,47 +69,68 @@
 +#     Trust this folder? Codex can ...
 +#
 +#   › 1. Trust and continue               › 1. Open restricted
-+#     2. Back to Agent Command Center       2. Back to Agent Command Center
++#     2. Back to Agent Command Center       2. Quit
 +#
-+#     enter continue · esc back             enter continue · esc back
++#     enter continue · esc back             enter continue · esc quit
 +#
-+# The second screen is what codex shows for a folder it has recorded as untrusted.
++# The second screen is what codex shows for a folder it has recorded as untrusted. The binary also
++# carries `Open existing task` / `Keep current directory` labels for the same screen, so the rule
++# matches the family (LIFE-603 K1b), not its wording: the `Folder access` title as a whole line and
++# numbered option rows `1.` and `2.` on consecutive lines, a cursor glyph allowed on either.
 +#
-+# LIFE-603 K1b (review r5 R5-A): K1 matched only the first screen's wording, so the second one read as
-+# Idle and the draft went into the dialog again. The codex binary also carries `Open existing task`
-+# and `Keep current directory` labels for the same screen family. So the 0.162.1 branch matches the
-+# family, not its wording: the `Folder access` title as a whole line, followed later by numbered
-+# option rows `1.` and `2.` on consecutive lines (a cursor glyph allowed on either), whatever the
-+# labels and prose say.
++# K1b kept this as a branch of the rule above, gated to the top 20 non-empty lines with a `not` for
++# "a cursor-led row after the option rows". LIFE-603 review r6 showed that region was wrong three ways:
++#   R6-A (fail-closed): a transcript or tool output with the same title + numbered rows inside the top
++#        20 lines, and the composer pushed below them, read as Blocked — the `not` could not see the
++#        composer.
++#   R6-B (fail-open): an old quotation followed by the composer higher up in the same screen, then the
++#        live chooser below it, read as Idle — the `not` matched the old quotation.
++#   R6-C (fail-open): in a pane about 33 columns wide or less, wrapped prose and paths pushed the option
++#        rows past the 20th line and the live chooser read as Idle.
 +#
-+# The `enter continue · esc back` footer is on every capture but is NOT required. Requiring it adds
-+# a fail-open path and removes none: the region is the top 20 non-empty lines and the footer is the
-+# last row, so a long prose block or a narrow pane can push it out, and a reworded footer would read
-+# as Idle again. The title line plus the consecutive option rows already exclude every known
-+# non-chooser screen.
++# What separates the live chooser from everything else is what lies BELOW its option rows. The detection
++# text is the last screenful of the pane (bottom-anchored), and codex draws the chooser alone
++# (codex-rs tui/src/onboarding/trust_directory.rs `render_ref`, identical in 0.162.1, 0.165.0 and main):
++# below the option rows there are only blank rows, an optional red error paragraph and the mandatory
++# `enter continue · esc …` footer (wrapped at narrow widths) — no row starts with a cursor glyph. A codex
++# screen without the chooser always has the composer at its bottom, and the composer's prompt row
++# starts with a cursor glyph whether it shows a placeholder or a draft. So this rule looks at the whole
++# screen and matches only when some `Folder access` title is followed by the option pair and, from the
++# pair to the end of the screen, no row starts with a cursor glyph (more numbered option rows directly
++# under the pair are allowed — a cursor may sit on option 3). It also requires that no row between the
++# title and the pair starts with a cursor glyph: a live chooser has only its path, note and prose
++# there, while a quotation of the chooser followed by a composer whose draft is a numbered list has the
++# quoted cursor row (and usually more cursor-led rows) between the quoted title and the draft's rows.
++# So a match needs the lowest pair on the screen, which closes all three:
++#   R6-A: the composer row lies below the quoted pair, so nothing matches.
++#   R6-B: the quotation above has the composer below it, but the live pair at the bottom has nothing
++#         cursor-led under it, so it matches.
++#   R6-C: there is no line limit, so wrapped prose cannot push the pair out.
 +#
-+# The `not` gate separates a quotation from the live chooser by what follows the option rows. A live
-+# chooser has only the footer below them; a quotation is followed by the composer, whose prompt row
-+# starts with a cursor glyph. So the gate fires on any cursor-led row after the option rows that is
-+# not itself an option row — the placeholder `› Ask Codex to do anything` (K1) and also a composer
-+# holding text (review r5 R5-B, which K1's placeholder-only gate read as Blocked). A cwd carrying
-+# `Folder access` is a path row, never a whole title line.
-+any = [
-+  { all = [
-+      { regex = ['(?m)^>[ \x{2500}]You are in [^\r\n]+(?:\r?\n|$)'] },
-+      { regex = ['(?s)Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?'] },
-+      { regex = ['(?m)^\s*(?:[\x{203a}\x{276f}\x{258c}>]\s+)?1\.\s+Yes,\s+continue\s*\r?\n\s*(?:[\x{203a}\x{276f}\x{258c}>]\s+)?2\.\s+No,\s+quit\s*$'] },
-+    ], not = [
-+      { regex = ['(?m)^[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+No,[ \t]+quit[ \t]*\r?$[\s\S]*?^[ \t]*[\x{203a}\x{276f}\x{258c}>][ \t]+(?i:Ask Codex to do anything)[ \t]*\r?$'] },
-+    ] },
-+  { all = [
-+      { regex = ['(?m)^[ \t]*Folder[ \t]+access[ \t]*\r?$[\s\S]*?^[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?1\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*\r?\n[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*\r?$'] },
-+    ], not = [
-+      { regex = ['(?m)^[ \t]*Folder[ \t]+access[ \t]*\r?$[\s\S]*?^[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?1\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*\r?\n[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*\r?$[\s\S]*?^[ \t]*[\x{203a}\x{276f}\x{258c}>][ \t]+(?:[^0-9 \t\r\n]|[0-9]+[^.0-9\r\n])[^\r\n]*\r?$'] },
-+    ] },
- ]
- 
++# Neither the footer nor the path row is required. The path row is not drawn at all when the pane is
++# too low (`cwd_height` is 0) and is centre-truncated when long; the footer adds nothing the rule
++# needs. A composer placeholder (`Ask Codex to do anything`, `Ask a follow-up question`) is not used
++# either: there is more than one, and a composer holding text shows none.
++#
++# Known limits — both need a quotation of the chooser on screen and both read as Blocked (fail-closed):
++#   1. a composer DRAFT whose rows form the title + option pair: either the draft contains the quoted
++#      title and option rows itself, or a bare `Folder access` title line (no cursor-led row under it)
++#      sits above a draft that is a numbered list of two or more lines. Below the pair there is only
++#      the status line. A one-line draft that starts like an option row (`› 1. ...`) does not match;
++#   2. an idle codex screen whose composer row is hidden (by an overlay without cursor-led rows) under a
++#      quotation of the chooser.
  [[rules]]
++id = "trust_directory"
++state = "blocked"
++priority = 950
++region = "whole_recent"
++visible_blocker = true
++regex = ['(?m)^[ \t]*Folder[ \t]+access[ \t]*\r?\n(?:[ \t]*(?:[^ \t\r\n\x{203a}\x{276f}\x{258c}>][^\r\n]*)?\r?\n)*[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?1\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*\r?\n[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*(?:\r?\n[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?[0-9]+\.[ \t]+[^\r\n]*[^ \t\r\n][ \t]*)*(?:\r?\n[ \t]*(?:[^ \t\r\n\x{203a}\x{276f}\x{258c}>][^\r\n]*)?)*\z']
++
++[[rules]]
+ id = "startup_update"
+ state = "blocked"
+ priority = 950
 --- a/src/detect/manifests/grok.toml
 +++ b/src/detect/manifests/grok.toml
 @@ -1,7 +1,7 @@
@@ -159,11 +194,10 @@
  priority = 1200
 --- a/src/detect/manifest/tests.rs
 +++ b/src/detect/manifest/tests.rs
-@@ -1262,5 +1262,747 @@
-     assert_eq!(
+@@ -1263,4 +1263,1421 @@
          result.matched_rule.as_ref().map(|r| r.id.as_str()),
          Some("osc_title_working")
-+    );
+     );
 +}
 +
 +
@@ -523,7 +557,7 @@
 +        assert_ne!(result.state, AgentState::Blocked, "{label} must not be blocked");
 +        assert!(!result.visible_blocker, "{label} must not be a visible blocker");
 +    }
-+}
+ }
 +
 +#[test]
 +fn grok_trust_directory_requires_live_chooser() {
@@ -905,5 +939,680 @@
 +        result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
 +        Some("trust_directory"),
 +        "0162-synth-approval must not read as a trust chooser"
-     );
- }
++    );
++}
++
++// --- LIFE-626: the 0.162.1 chooser rule reads the whole screen (LIFE-603 review r6 R6-A/B/C) ---
++//
++// The rule left the top-20-lines region. It now matches a `Folder access` title + option pair only
++// when no row from the pair to the end of the screen starts with a cursor glyph. The `R6` screens are
++// byte-identical to `corral-specs/LIFE-603-start-work-link/raw/review/claude-r6-raw/screens/*.txt`
++// and `claude-r6-raw/r17-live-wt-trust-w{28,32}.txt`: live codex 0.162.1 captures, except the two
++// `FP_*` screens and `STALE_QUOTE_ABOVE_LIVE`, which review r6 composed. Names marked `SYNTH` are
++// composed here.
++// R6-A: a settings answer whose headings and numbered lists match the family, composer pushed below the top 20 lines.
++const CODEX_0162_R6_FP_HEADING_LIST: &str = r#"• Here is what I suggest for the settings page:
++
++  Folder access
++
++  1. Let users pick the folder
++  2. Remember the last folder
++
++  Network access
++
++  1. Allow by default
++  2. Ask each time
++  - a
++  - b
++  - c
++  - d
++  - e
++  - f
++  - g
++  - h
++  - i
++  - j
++  - k
++  - l
++  - m
++
++› Ask Codex to do anything
++  GPT-6-Astra medium · /private/tmp/x
++"#;
++// R6-A: tool output that prints a captured restricted chooser, composer pushed below the top 20 lines.
++const CODEX_0162_R6_FP_CAT_OUTPUT_TALL: &str = r#"› show me what the captured dialog looked like in the kb25 raw file
++• Ran cat specs/LIFE-603-start-work-link/raw/claude/kb/kb25-codex-restricted-screen-records.txt
++  └ # kb25 codex restricted screen records
++    ## record 1 (t+3s)
++      Folder access
++      /private/tmp/l603g-kbx/repo
++      Config, hooks, and exec policies from untrusted folders stay disabled.
++    › 1. Open restricted
++      2. Back to Agent Command Center
++      enter continue · esc back
++    ## record 2 (t+63s)
++    (same)
++
++• The file shows the dialog stayed up for the whole minute. Summary:
++  - the screen never changed
++  - no draft body reached the dialog
++  - no rollout file was created
++  - no trust entry was written
++  - the manifest was verified
++  - outcome was not_started
++  - reason was trust
++  - nothing else to report here
++  - one more line
++  - another line
++  - and one more
++  - last bullet
++
++› Ask Codex to do anything
++  GPT-6-Astra medium · /private/tmp/x
++"#;
++// R6-B: an old quotation and its composer above the live restricted chooser in the same screen.
++const CODEX_0162_R6_STALE_QUOTE_ABOVE_LIVE: &str = r#"byun@host ~ % codex
++› what does the dialog look like?
++  Folder access
++  /tmp/example
++  › 1. Open restricted
++  2. Back to Agent Command Center
++  enter continue · esc back
++
++› Ask Codex to do anything
++  GPT-6-Astra medium · /tmp/x
++
++byun@host ~/other % codex
++  Folder access
++  /private/tmp/l603r6c-live/repo
++
++  Config, hooks, and exec policies from untrusted folders stay disabled.
++
++› 1. Open restricted
++  2. Quit
++
++  enter continue · esc quit
++"#;
++// R6-C: live capture at 30 columns, deep path and Note: the option rows fall past the 20th non-empty line.
++const CODEX_0162_R6_LIVE_NOTE_W30: &str = r#"
++  Folder access
++  /private/tmp/l603r6c-live/
++  repo2/some/quite/long/nest
++  ed/directory/structure/sub
++
++  Note: You’re in a
++  subdirectory of a Git
++  project. Trusting will
++  apply to the repository
++  root:
++  /private/tmp/l603r6c-live/
++  repo2
++
++  Trust this folder? Codex
++  can read, edit, and run
++  files here, subject to
++  your permission settings.
++  Folder settings can run
++  code automatically, even
++  without a model request.
++  Continue only if you trust
++  these files. Your trust
++  decision will be saved.
++
++› 1. Trust and continue
++  2. Quit
++
++  enter continue · esc quit
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++"#;
++// R6-C: live capture at 28 columns in a linked worktree; the footer wraps (`quit` on its own row).
++const CODEX_0162_R6_LIVE_WT_TRUST_W28: &str = r#"
++  Folder access
++  /private/tmp/l603r6c-liv
++  e/repo3/.claude/worktree
++  s/LIFE-603-start-work-li
++  nk-claude
++
++  Note: You’re in a
++  subdirectory of a Git
++  project. Trusting will
++  apply to the repository
++  root:
++  /private/tmp/l603r6c-liv
++  e/repo3
++
++  Trust this folder? Codex
++  can read, edit, and run
++  files here, subject to
++  your permission
++  settings. Folder
++  settings can run code
++  automatically, even
++  without a model request.
++  Continue only if you
++  trust these files. Your
++  trust decision will be
++  saved.
++
++› 1. Trust and continue
++  2. Quit
++
++  enter continue · esc
++  quit
++"#;
++// R6-C: live capture at 32 columns in a linked worktree.
++const CODEX_0162_R6_LIVE_WT_TRUST_W32: &str = r#"
++  Folder access
++  /private/tmp/l603r6c-live/re
++  po3/.claude/worktrees/LIFE-6
++  03-start-work-link-claude
++
++  Note: You’re in a
++  subdirectory of a Git
++  project. Trusting will apply
++  to the repository root:
++  /private/tmp/l603r6c-live/re
++  po3
++
++  Trust this folder? Codex can
++  read, edit, and run files
++  here, subject to your
++  permission settings. Folder
++  settings can run code
++  automatically, even without
++  a model request. Continue
++  only if you trust these
++  files. Your trust decision
++  will be saved.
++
++› 1. Trust and continue
++  2. Quit
++
++  enter continue · esc quit
++"#;
++// Live capture at 40 columns, deep path and Note.
++const CODEX_0162_R6_LIVE_NOTE_W40: &str = r#"
++  Folder access
++  /private/tmp/l603r6c-live/repo2/some
++  /quite/long/nested/directory/structu
++  re/sub
++
++  Note: You’re in a subdirectory of a
++  Git project. Trusting will apply to
++  the repository root:
++  /private/tmp/l603r6c-live/repo2
++
++  Trust this folder? Codex can read,
++  edit, and run files here, subject to
++  your permission settings. Folder
++  settings can run code automatically,
++  even without a model request.
++  Continue only if you trust these
++  files. Your trust decision will be
++  saved.
++
++› 1. Trust and continue
++  2. Quit
++
++  enter continue · esc quit
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++"#;
++// Live capture at 60 columns, deep path and Note.
++const CODEX_0162_R6_LIVE_NOTE_W60: &str = r#"
++  Folder access
++  /private/tmp/l603r6c-live/repo2/some/quite/long/nested/d
++  irectory/structure/sub
++
++  Note: You’re in a subdirectory of a Git project.
++  Trusting will apply to the repository root:
++  /private/tmp/l603r6c-live/repo2
++
++  Trust this folder? Codex can read, edit, and run files
++  here, subject to your permission settings. Folder
++  settings can run code automatically, even without a
++  model request. Continue only if you trust these files.
++  Your trust decision will be saved.
++
++› 1. Trust and continue
++  2. Quit
++
++  enter continue · esc quit
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++"#;
++// Live capture at 120 columns, deep path and Note.
++const CODEX_0162_R6_LIVE_NOTE_W120: &str = r#"
++  Folder access
++  /private/tmp/l603r6c-live/repo2/some/quite/long/nested/directory/structure/sub
++
++  Note: You’re in a subdirectory of a Git project. Trusting will apply to the repository root:
++  /private/tmp/l603r6c-live/repo2
++
++  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings. Folder settings
++  can run code automatically, even without a model request. Continue only if you trust these files. Your trust
++  decision will be saved.
++
++› 1. Trust and continue
++  2. Quit
++
++  enter continue · esc quit
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++"#;
++// Live restricted chooser at 30 columns.
++const CODEX_0162_R6_LIVE_RESTRICTED_W30: &str = r#"
++  Folder access
++  /private/tmp/l603r6c-live/
++  repo
++
++  Config, hooks, and exec
++  policies from untrusted
++  folders stay disabled.
++  Trusted project folders
++  can still contribute
++  settings. Skills still
++  load, and tools follow
++  your permission settings.
++  Opening will not change
++  saved trust.
++
++› 1. Open restricted
++  2. Quit
++
++  enter continue · esc quit
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++"#;
++// Live restricted chooser at 40 columns.
++const CODEX_0162_R6_LIVE_RESTRICTED_W40: &str = r#"
++  Folder access
++  /private/tmp/l603r6c-live/repo
++
++  Config, hooks, and exec policies
++  from untrusted folders stay
++  disabled. Trusted project folders
++  can still contribute settings.
++  Skills still load, and tools follow
++  your permission settings. Opening
++  will not change saved trust.
++
++› 1. Open restricted
++  2. Quit
++
++  enter continue · esc quit
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++"#;
++// Live restricted chooser at 60 columns.
++const CODEX_0162_R6_LIVE_RESTRICTED_W60: &str = r#"
++  Folder access
++  /private/tmp/l603r6c-live/repo
++
++  Config, hooks, and exec policies from untrusted folders
++  stay disabled. Trusted project folders can still
++  contribute settings. Skills still load, and tools follow
++  your permission settings. Opening will not change saved
++  trust.
++
++› 1. Open restricted
++  2. Quit
++
++  enter continue · esc quit
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++"#;
++// Live restricted chooser at 120 columns.
++const CODEX_0162_R6_LIVE_RESTRICTED_W120: &str = r#"
++  Folder access
++  /private/tmp/l603r6c-live/repo
++
++  Config, hooks, and exec policies from untrusted folders stay disabled. Trusted project folders can still contribute
++  settings. Skills still load, and tools follow your permission settings. Opening will not change saved trust.
++
++› 1. Open restricted
++  2. Quit
++
++  enter continue · esc quit
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++"#;
++// The live chooser under a shell prompt that starts with a cursor glyph (`\u{276f} codex`).
++const CODEX_0162_R6_LIVE_PREV_SHELL_GLYPH: &str = r#"❯ codex
++  Folder access
++  /private/tmp/x
++
++› 1. Open restricted
++  2. Quit
++
++  enter continue · esc quit
++"#;
++// SYNTH: the same arrangement as R6-A on a short screen: the quotation and the composer both fit.
++const CODEX_0162_SYNTH_SHORT_HEADING_LIST: &str = r#"› Here is what I suggest for the settings page:
++
++  Folder access
++
++  1. Let users pick the folder
++  2. Remember the last folder
++
++› Ask Codex to do anything
++  GPT-6-Astra medium · /private/tmp/x
++"#;
++// SYNTH: a quotation of the chooser above a composer whose draft is itself a numbered list. The
++// draft's own rows form an option pair with only the status line below it; the quoted option row
++// (cursor-led) between the quoted title and that pair is what keeps it from matching.
++const CODEX_0162_SYNTH_QUOTE_ABOVE_LIST_DRAFT: &str = r#"› Why did codex show this?
++  Folder access
++  /tmp/example
++  › 1. Trust and continue
++  2. Back to Agent Command Center
++  enter continue · esc back
++
++• That is the startup folder-trust dialog.
++
++› 1. Open the folder
++  2. Run the tests
++  GPT-6-Astra medium · /private/tmp/x
++"#;
++// SYNTH: a quotation followed by a composer whose text starts like an option row (`1. ...`).
++const CODEX_0162_SYNTH_QUOTE_DRAFT_NUMBERED: &str = r#"› Why did codex show this?
++  Folder access
++  /tmp/example
++  › 1. Trust and continue
++  2. Back to Agent Command Center
++  enter continue · esc back
++
++• That is the startup folder-trust dialog.
++
++› 1. summarize the draft below
++  GPT-6-Astra medium · /private/tmp/x
++"#;
++
++#[test]
++fn codex_0162_trust_directory_reads_the_whole_screen() {
++    // Positive: the live chooser at every captured width (R6-C), under an older quotation and its
++    // composer (R6-B), and under a shell prompt that starts with a cursor glyph.
++    for (label, screen) in [
++        ("r6-stale-quote-above-live", CODEX_0162_R6_STALE_QUOTE_ABOVE_LIVE),
++        ("r6-live-note-w30", CODEX_0162_R6_LIVE_NOTE_W30),
++        ("r6-live-wt-trust-w28", CODEX_0162_R6_LIVE_WT_TRUST_W28),
++        ("r6-live-wt-trust-w32", CODEX_0162_R6_LIVE_WT_TRUST_W32),
++        ("r6-live-note-w40", CODEX_0162_R6_LIVE_NOTE_W40),
++        ("r6-live-note-w60", CODEX_0162_R6_LIVE_NOTE_W60),
++        ("r6-live-note-w120", CODEX_0162_R6_LIVE_NOTE_W120),
++        ("r6-live-restricted-w30", CODEX_0162_R6_LIVE_RESTRICTED_W30),
++        ("r6-live-restricted-w40", CODEX_0162_R6_LIVE_RESTRICTED_W40),
++        ("r6-live-restricted-w60", CODEX_0162_R6_LIVE_RESTRICTED_W60),
++        ("r6-live-restricted-w120", CODEX_0162_R6_LIVE_RESTRICTED_W120),
++        ("r6-live-prev-shell-glyph", CODEX_0162_R6_LIVE_PREV_SHELL_GLYPH),
++    ] {
++        let result = osc_explain(Agent::Codex, screen, "repo", "");
++        assert_eq!(result.state, AgentState::Blocked, "{label} must stay blocked");
++        assert_eq!(
++            result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
++            Some("trust_directory"),
++            "{label} must match trust_directory"
++        );
++        assert!(result.visible_blocker, "{label} must be a visible blocker");
++    }
++
++    // Negative: the same title + numbered rows in a transcript or tool output with the composer below
++    // them, on a tall screen (R6-A) and a short one, with the composer holding text (review r5 R5-B),
++    // with a numbered draft under a quoted chooser, and with a draft that starts like an option row.
++    for (label, screen) in [
++        ("r6-fp-heading-list", CODEX_0162_R6_FP_HEADING_LIST),
++        ("r6-fp-cat-output-tall", CODEX_0162_R6_FP_CAT_OUTPUT_TALL),
++        ("0162-synth-short-heading-list", CODEX_0162_SYNTH_SHORT_HEADING_LIST),
++        ("0162-multiline-quote", CODEX_0162_MULTILINE_QUOTE),
++        ("0162-restricted-quote", CODEX_0162_RESTRICTED_QUOTE),
++        ("0162-quote-draft-in-composer", CODEX_0162_QUOTE_DRAFT_IN_COMPOSER),
++        ("0162-synth-quote-above-list-draft", CODEX_0162_SYNTH_QUOTE_ABOVE_LIST_DRAFT),
++        ("0162-synth-quote-draft-numbered", CODEX_0162_SYNTH_QUOTE_DRAFT_NUMBERED),
++    ] {
++        let result = osc_explain(Agent::Codex, screen, "repo", "");
++        assert_ne!(
++            result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
++            Some("trust_directory"),
++            "{label} must not match trust_directory"
++        );
++        assert_ne!(result.state, AgentState::Blocked, "{label} must not be blocked");
++        assert!(!result.visible_blocker, "{label} must not be a visible blocker");
++    }
++}

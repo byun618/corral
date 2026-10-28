@@ -156,8 +156,8 @@ case_C1c-other-bundle() { setup; mk_feature   # 다른 묶음의 자식은 세�
   git -C "$B" fetch -q origin; git -C "$B" worktree add -q "$WT/LIFE-902-k" -b LIFE-902-k origin/feature/LIFE-901-y 2>/dev/null; commit_in "$WT/LIFE-902-k" kk
   run "$F"; check "exit 0" rc_is 0; check "feature worktree 사라짐" no_wt "$FWT"; check "다른 묶음 자식 worktree 그대로" is_wt "$WT/LIFE-902-k"; }
 case_C1c-integration() { setup; mk_feature   # origin/feature 에서 딴 throwaway(고유 커밋 없음, worktree 없음) — 안내만 하고 정리한다
-  git -C "$B" fetch -q origin; git -C "$B" branch -q integration/x-20261028 "origin/$F"
-  run "$F"; check "exit 0" rc_is 0; check "feature worktree 사라짐" no_wt "$FWT"; check "integration 브랜치 그대로" is_local integration/x-20261028; check "남은 브랜치 안내" has "integration/x-20261028 가 남아 있다"; }
+  git -C "$B" fetch -q origin; git -C "$B" branch -q throwaway-x-20261028 "origin/$F"
+  run "$F"; check "exit 0" rc_is 0; check "feature worktree 사라짐" no_wt "$FWT"; check "integration 브랜치 그대로" is_local throwaway-x-20261028; check "남은 브랜치 안내" has "throwaway-x-20261028 가 남아 있다"; }
 case_C1d() { setup; mk_feature; merge_feature_to_main
   run "$F"
   check "exit 0" rc_is 0; check "PR MERGED" pr_state MERGED "$F"; check "feature worktree 사라짐" no_wt "$FWT"

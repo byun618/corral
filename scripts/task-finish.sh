@@ -47,7 +47,7 @@ has_remote() { [ -n "$(git -C "$REPO" ls-remote --heads origin "refs/heads/$1")"
 # git 기본값으로 그렇게 된다) ⓑ feature 고유 커밋(<PR base>..<feature> 의 가장 오래된 것)을 품은 것(push -u 로 upstream 이 바뀌었거나
 # --no-track·로컬 feature 에서 딴 자식, 자식의 구현 변형, 브랜치 없는 worktree). main·release/*·feature/* 는 세지 않는다 — 독립 작업은
 # main 에서 따서 ⓐⓑ 둘 다 없다. **한계**: feature 에 base 에 없는 커밋이 하나도 없을 때(갓 연 묶음) upstream 없이 딴 자식은 못 센다.
-# ⓑ 는 origin/feature 에서 딴 integration/… throwaway 도 센다(안전 쪽 — 지우고 다시).
+# ⓑ 는 origin/feature 에서 딴 통합 확인용 throwaway 브랜치도 센다(안전 쪽 — 지우고 다시).
 # herdr 격리 세션 정리는 하지 않는다 — 묶음 코디는 구현 워커를 띄우지 않고, 체크포인트 번호 접두 매칭은 자식 세션을 잘못 잡는다.
 finish_feature() {
   local FWT PR PR_NUM PR_STATE PR_BASE KEEP here wt_list w b up h kids k u FT LOID="" ROID="" did=0
@@ -118,7 +118,7 @@ EOF2
       case "$b" in "$k"|"$k"-*) die "자식 worktree 가 남아 있다: $w ($b) — 자식 코디가 task-finish.sh $k --into $TASK 로 넣은 뒤 다시" ;; esac # guard:f-child-wt
     done < <(git worktree list --porcelain | awk '/^worktree /{w=substr($0,10)} /^branch refs\/heads\//{print substr($0,19), w}')
     git merge-base --is-ancestor "$k" "$KEEP" \
-      || die "자식 브랜치 $k 가 $KEEP 에 다 들어 있지 않다 — 자식이면 task-finish.sh $k --into $TASK 로 넣고, throwaway(integration/…)면 지운 뒤 다시" # guard:f-child-branch
+      || die "자식 브랜치 $k 가 $KEEP 에 다 들어 있지 않다 — 자식이면 task-finish.sh $k --into $TASK 로 넣고, 통합 확인용 throwaway 면 지운 뒤 다시" # guard:f-child-branch
     note "자식 브랜치 $k 가 남아 있다(이미 $KEEP 에 들어 있음) — 지우지 않는다, 필요하면 task-finish.sh $k --into $TASK"
   done
 

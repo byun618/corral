@@ -12,7 +12,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
   공개해도 되는 것만 둔다 — 원자료·작업 문서를 커밋하지 않는다 (LIFE-705, 2026-10-26 분리)
 - 작업 하나 = corral-specs/LIFE-NNN-<슬러그>/ 폴더. 단계 산출물은 번호 파일 (00-analysis.md, 01-criteria.md, …)
 - **쓰기와 커밋** — 본체·코디·워커·리뷰어 모두 그 폴더에 **절대경로로 직접** 쓴다(worktree 안 상대경로 금지).
-  커밋은 그 일감의 코디(00-start 는 본체)만, 게이트 시점에, **자기 폴더만** 한다:
+  커밋은 그 일감의 코디(00-start 는 시작한 세션 — 본체, 묶음 자식은 묶음 코디)만, 게이트 시점에, **자기 폴더만** 한다:
   `git -C <corral-specs> add -- LIFE-NNN-<슬러그>/ && git -C <corral-specs> commit -m "…" -- LIFE-NNN-<슬러그>/ && git -C <corral-specs> push`.
   여러 일감이 한 working copy 를 같이 쓰므로 남의 폴더를 add 하지 않고, `index.lock` 이면 잠시 뒤 다시 한다. 워커·리뷰어는 커밋하지 않는다.
   루트 공용 파일(00-project.md·app-screens.md·design-tokens*.css·reference/ 등)은 바꾼 세션(본체 또는 그 일감의 코디)이 그 파일만 지정해 커밋한다
@@ -44,7 +44,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - 판정 규칙(다수결 기각 금지·수렴 조건·수정 상한·테스트 계층·경량/전체 경로)은 task-coordinate §2·§3·§5·§6
 - **사용자 승인 게이트 3단 (자율 진행 금지 지점)**: ⓪ 킥오프(구현 워커 기동 전) ① 채택(작업 브랜치 머지 전)
   ② 출고(PR 생성 전). 게이트 사이는 자율 진행하되 게이트에서 멈추고 보고한다 — 보고할 내용은 task-coordinate 의 각 게이트 절.
-  worktree 는 출고 승인 전까지 유지 — 사용자가 직접 실행·확인할 수 있는 상태
+  worktree 는 출고 승인 전까지 유지 — 사용자가 직접 실행·확인할 수 있는 상태. feature worktree 는 출고까지(task-coordinate references/bundle.md)
 - 작업이 끝나거나 막히면 반드시 사용자에게 보고 — 조용한 완료 금지
 - LA 상태는 코디(진행)·본체(출고)가 forward-only 로 전이한다 — 시점은 각 스킬의 해당 절 첫 줄
 
@@ -64,7 +64,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - **release 브랜치 release/vX.Y.Z** (예외, 단명 원칙 안): 출고 1회 수명·한 번에 하나. main 에서 자르고(.claude/worktrees/release-vX.Y.Z)
   PR 을 모아 통합 확인 뒤 main 머지, 출고 확인 뒤 삭제(접으면 삭제·PR 은 열린 채). 자른 뒤엔 출고를 막는 수정만 — 수정은 일감 브랜치에서 고쳐 다시 모은다(예외는 release 스킬 §1)
 - 출고 통합 확인은 release worktree 에서 한다. 그 밖의 통합 확인은 throwaway: integration/<이름>-YYYYMMDD 에 합쳐 테스트 후 삭제. 유지 금지
-- feature·예외적 장기 통합 브랜치는 만료일 명시(첫 자식 작업 00-start.md), 넘기면 쪼개서 main 에
+- feature·예외적 장기 통합 브랜치는 만료일 명시(체크포인트 폴더 00-start.md), 넘기면 쪼개서 main 에
 
 ## 도구 역할
 

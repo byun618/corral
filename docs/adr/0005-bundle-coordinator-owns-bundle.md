@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0006
 date: 2026-10-28
 decision-makers: 사용자(게이트 ⓪ 승인), 작업 코디네이터(제안)
 ---

@@ -285,7 +285,7 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
      - `corral-specs/LIFE-NNN-<슬러그>/handoff-main.md`: LIFE-N, 본체 경로, 작업 브랜치·PR base(`main`, 묶음 자식이면 feature 브랜치),
        검증한 구현 커밋, 채택·출고 승인 근거, 출고 때 본체 세션이 볼 사항, LA의 현재 상태(`검증 중`)와 다음 전이(출고 머지 뒤 `완료`).
        **LA는 완료로 바꾸지 않는다.**
-     - **PR 원고 `corral-specs/LIFE-NNN-<슬러그>/pr.md`** — 기존 문서를 옮겨 붙이지 말고 diff(`git diff origin/main...HEAD`)와
+     - **PR 원고 `corral-specs/LIFE-NNN-<슬러그>/pr.md`** — 묶음 자식은 쓰지 않는다(묶음 PR 원고는 묶음 코디 — [묶음 코디 절차](references/bundle.md) 6). 기존 문서를 옮겨 붙이지 말고 diff(`git diff origin/main...HEAD`)와
        specs 를 읽고 **PR 을 읽는 사람 기준으로** 새로 쓴다. 첫 줄 `# <제목>` = PR 제목(무엇이 바뀌는지 한 줄, `LIFE-NNN:` 은 없으면 스크립트가 붙인다),
        나머지 = 본문: 왜(문제·증상) → 무엇을 바꿨나(사용자에게 보이는 변화 먼저, 구현 요점은 그 뒤) → 확인한 것(실제 실행 근거 한두 줄).
        리뷰 라운드·게이트·판정표 같은 내부 절차는 쓰지 않는다 — 판정문 위치는 스크립트가 붙인다(private 레포라 링크가 아닌 텍스트).

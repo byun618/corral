@@ -2,7 +2,7 @@
 /* global setTimeout, KeyboardEvent, window, document */
 // LIFE-602 수정 1 R1-F — 편집 칸(`data-editor-keys`: 본문 편집기·코멘트 입력)에 포커스가 있으면 앱 전역 단축키(document capture)가
 // 편집기 단축키(⌘B·⌘⇧I·⌘E·⌘K·⌘↵)를 가로채지 않는다. 칸 밖에서는 그대로 전역 동작(⌘B 사이드바 · ⌘K 팔레트) — 무회귀 대조.
-// 실제 Electron 키 입력 원자료는 `scripts/l602/q-keys.mjs`. main 메뉴 키 길(`menuKeyShortcut`)은 ⌘W·⌘R 만 쥔다(shared/keybindings.test.ts).
+// 실제 Electron 키 입력 원자료는 LIFE-602 관문 `q-keys.mjs`. main 메뉴 키 길(`menuKeyShortcut`)은 ⌘W·⌘R 만 쥔다(shared/keybindings.test.ts).
 // ShortcutHandlers 는 ActionId 전부를 요구해 `as` 없이 채우기 어렵다 — 선례(repeat·menu-scope)처럼 .mjs 로 둔다.
 import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'

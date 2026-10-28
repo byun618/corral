@@ -1,7 +1,7 @@
 // LIFE-590 E4ⓓ — Markdown 링크/이미지 대상 판정(단위) + 악성 fixture 양성 대조(정화 **전** marked 출력에 위험이 실제로 들어 있다).
 // **정화 자체는 여기서 판정하지 않는다** — happy-dom 에서 DOMPurify 가 `<script>` 를 남기고 `<h1>` 을 지우는 것을 확인했다(2026-10-13, 이 작업 원자료
 // `raw/claude/happy-dom-dompurify.txt`): 시험 환경의 DOM 이 틀리면 통과·실패 둘 다 뜻이 없다. 정화 판정은 실제 Chromium — 격리 앱에서 악성 fixture 를 미리보기로 열고 DOM 을
-// 검사하는 `scripts/l590/md-sanitize.mjs`(E4ⓓ).
+// 검사하는 LIFE-590 관문 `md-sanitize.mjs`(E4ⓓ).
 import { Marked } from 'marked'
 import { describe, expect, it } from 'vitest'
 import { resolveMarkdownTarget, slugOf } from './markdown.js'

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // LIFE-670 — 패널 모드 밀기(P1)·좁은 창 폴백(P4)·선택 카드 가시화(P3)·끌기 자동 스크롤 루프(P5)를 실제 `TasksPage` 경로로 본다.
-// happy-dom 은 레이아웃이 없다 — `.tasks-main` 폭과 토큰은 시험이 넣고, 실제 rect 는 격리 회차(`scripts/l670/q-entry.mjs`)가 본다.
+// happy-dom 은 레이아웃이 없다 — `.tasks-main` 폭과 토큰은 시험이 넣고, 실제 rect 는 격리 회차(LIFE-670 관문 `q-entry.mjs`)가 본다.
 import { act, createElement, Profiler } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { Toaster, toast } from 'sonner'

@@ -5,7 +5,7 @@ import path from 'node:path'
 import { activeQuestion, answerGroups, answerLock, answerSteps, cleanAnswerText, cleanBody, draftState, KEY, matchQuestion, questionKeys, screenPlain, stopAllowed, stopKey, stopNeedsEmptyInput } from './keys.js'
 
 /** Z1 실측 화면(커밋된 원자료). */
-const Z1 = path.resolve(__dirname, 'fixtures/l582/z1')
+const Z1 = path.resolve(__dirname, 'fixtures/agent-tui-screens/question-prompts')
 import type { MobileAgentKind } from './list.js'
 
 const one = (options: number) => ({ options, multiSelect: false, preview: false })
@@ -275,7 +275,7 @@ describe('LIFE-582 r3 — 활성 영역 아래 경계 · 선택 상태 · Codex 
 })
 
 describe('LIFE-582 r4 — 좁은 pane 줄 바꿈 복원 · Codex 접힌 표시 하단 허용 목록 (격리 실물 화면 r4/width)', () => {
-  const W = path.resolve(__dirname, 'fixtures/l582/r4-width')
+  const W = path.resolve(__dirname, 'fixtures/agent-tui-screens/narrow-pane')
   const screen = (name: string): string => fs.readFileSync(path.join(W, name), 'utf8')
   /** 같은 실물 회차의 기록 문항(판독자가 읽은 그대로 저장한 것). */
   const recorded = (kind: 'claude' | 'grok') => {
@@ -384,7 +384,7 @@ describe('LIFE-582 최종 관문 — Grok 입력칸 다음 문장 제안(ghost) 
   })
   it('격리 실물 화면(z2-grok-ghost-gm·gu) 그대로 — 제안만 → 빈 입력', () => {
     for (const name of ['gm', 'gu']) {
-      const shot = fs.readFileSync(path.resolve(__dirname, `fixtures/l582/runs/z2-grok-ghost-${name}.ndjson`), 'utf8')
+      const shot = fs.readFileSync(path.resolve(__dirname, `fixtures/agent-tui-screens/grok-ghost-snapshots/grok-ghost-${name}.ndjson`), 'utf8')
       const parsed: unknown = JSON.parse(shot.trim().split('\n').at(-1) ?? '{}')
       const text = typeof parsed === 'object' && parsed !== null && 'screen' in parsed && typeof parsed.screen === 'string' ? parsed.screen : ''
       expect(text).toContain('accept suggestion')
@@ -392,7 +392,7 @@ describe('LIFE-582 최종 관문 — Grok 입력칸 다음 문장 제안(ghost) 
     }
   })
   it('R7-A1 리뷰어 실물 ANSI(raw/claude/final/ghost-fixtures) — 제안만은 빈 입력, 사람 글·수락·붙여넣기·여러 줄은 초안', () => {
-    const dir = path.resolve(__dirname, 'fixtures/l582/ghost-fixtures')
+    const dir = path.resolve(__dirname, 'fixtures/agent-tui-screens/grok-ghost-ansi')
     const want: Record<string, string> = {
       'count-done': 'empty', 'arrow-ghost': 'empty',
       'ghost-partial': 'draft', 'tab-accepted': 'draft', 'arrow-accepted': 'draft', 'multiline-negative': 'draft',

@@ -1,3 +1,0 @@
-# p01-overlay-guard — 페이지 키 overlay 가드를 뺀 사본에서 실패해야 하는 시험(raw/claude/u3-pc-overlay-guard-removed.txt)
-src/renderer/src/components/TasksPage.create.test.tsx > C2·C8 빠른 생성 모달 > 모달이 열린 동안 페이지 키(`/`·`1–4`)가 새지 않고, Esc 는 모달만 닫는다(페이지는 그대로)
-src/renderer/src/components/TasksPage.start.test.tsx > LIFE-604 F10 — 시작 모달이 열린 동안 페이지 키가 새지 않는다 > 버튼에 포커스가 있어도 `1–4`·`/`·`C` 는 페이지에 닿지 않는다(보기·검색·만들기 그대로)

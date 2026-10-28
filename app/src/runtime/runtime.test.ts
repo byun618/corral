@@ -303,7 +303,7 @@ describe('LIFE-394 body identity, ready gate and submission window', () => {
   })
 
   it('keeps the harness marker allowlist identical to the product one and preserves the home vars', async () => {
-    const harness = await import('../../scripts/l394/env.mjs')
+    const harness = await import('../../scripts/harness-env/env.mjs')
     expect(harness.SESSION_MARKER_NAMES).toEqual([...SESSION_MARKER_NAMES])
     expect(harness.SESSION_MARKER_PREFIXES).toEqual([...SESSION_MARKER_PREFIXES])
     const environment = { CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', ORCA_AGENT_HOOK_PORT: '9', CODEX_HOME: '/h/.codex', GROK_HOME: '/h/.grok', CLAUDE_CONFIG_DIR: '/h/.claude', PATH: '/bin' }
@@ -629,7 +629,7 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
   // (`app/backend/herdr-guard.patch` — `corral_terminal_allows_agent_explain_with_the_same_identity_fence`).
   // 끝에서 끝까지는 네이티브 회차가 잰다.
   const claudeExplain = (): Record<string, unknown> => {
-    const file = new URL('../shared/fixtures/l456-s9-r1-f2/claude-explain.json', import.meta.url)
+    const file = new URL('../shared/fixtures/agent-explain/claude-explain.json', import.meta.url)
     const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
     return asObject(parsed)
   }

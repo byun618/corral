@@ -1,8 +1,0 @@
-❯ draft zetaz1 draft probe 1
-⏺ I'm not sure what "draft zetaz1 draft probe 1" refers to. Do you want a draft of something, or is this a test
-  message? I'm also waiting on your decision about the "Pick a number" question, which you rejected.
-✻ Baked for 4s · done 11:39 PM
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents

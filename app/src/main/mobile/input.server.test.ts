@@ -236,7 +236,7 @@ describe('R2-A6 인증 전 수신 한도 = 정확히 16 KiB(선언 길이 · 조
     let data = Buffer.alloc(0)
     socket.on('data', (chunk: Buffer) => { data = Buffer.concat([data, chunk]) })
     await new Promise((done) => socket.once('connect', done))
-    socket.write('GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n')
+    socket.write('GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n') // gitleaks:allow — RFC 6455 §1.3 예제 키
     await until(() => data.includes('\r\n\r\n'))
     expect(data.toString('latin1').startsWith('HTTP/1.1 101')).toBe(true)
     data = Buffer.alloc(0)

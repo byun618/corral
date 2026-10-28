@@ -1,4 +1,4 @@
-// repro 스크립트(`scripts/l577/repro.mjs`)를 실제 서버에 돌린다 (LIFE-577 A9) — 스크립트가 거절 행렬을 맞게 판정하고,
+// repro 스크립트(`scripts/mobile-repro/repro.mjs`)를 실제 서버에 돌린다 (LIFE-577 A9) — 스크립트가 거절 행렬을 맞게 판정하고,
 // 출력에 토큰·코드 원문이 없고, 종료 코드로 성패를 내는지.
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
@@ -16,7 +16,7 @@ import { ChatHub } from './chat.js'
 
 const run = promisify(execFile)
 const APP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
-const REPRO = path.join(APP, 'scripts/l577/repro.mjs')
+const REPRO = path.join(APP, 'scripts/mobile-repro/repro.mjs')
 
 const cleanups: (() => Promise<void> | void)[] = []
 afterEach(async () => {

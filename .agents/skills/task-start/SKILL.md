@@ -2,11 +2,11 @@
 name: task-start
 description: >-
   작업 시작. LIFE-N 일감의 작업 worktree를 만들고 선택한 Claude 또는 Codex
-  코디네이터를 기동한다. main 세션에서 "LIFE-N 시작하자", "작업 시작",
-  "이번 코디네이터는 Codex로" 같은 요청에 사용한다.
+  코디네이터를 기동한다. 본체 세션(main)에서 "LIFE-N 시작하자", "작업 시작",
+  "이번 코디네이터는 Codex로" 같은 요청에 사용한다. 묶음 자식은 그 체크포인트의 묶음 코디가 이 스킬로 시작한다.
 ---
 
-# task-start — 작업 시작 (main 세션에서 실행)
+# task-start — 작업 시작 (본체 세션에서, 묶음 자식은 묶음 코디가 실행)
 
 **이 문서에는 도구 명령이 없다.** 능력 이름은 겹낫표로 감싸 적고, 명령은 **`.agents/harness/capabilities.md`**
 (하네스 능력 계약)의 「매핑 선택」으로 고른 도구별 매핑에서 읽는다. 어느 매핑을 골랐는지는 `00-start.md` 에 기록한다.
@@ -29,7 +29,7 @@ description: >-
 ## 절차
 
 1. **일감·환경 확인**: life-assistant MCP `issue_by_seq`로 LIFE-N 본문을 읽는다.
-   `git status`·`git worktree list`로 본체 main과 기존 작업을 확인하고, 선택한 코디네이터 도구가 실제로
+   `git status`·`git worktree list`로 본체 main과 기존 작업을 확인하고(묶음 코디가 feature worktree 에서 하면 2단계 블록의 `ROOT=…` 줄을 먼저 실행하고 `git -C "$ROOT" status` 로 본체를 본다), 선택한 코디네이터 도구가 실제로
    실행 가능한지 확인한 뒤 **하네스 매핑을 고르고 그 매핑의 『전제 점검』을 실행한다**.
    제어 런타임이 꺼져 있거나 LA가 없으면 이 단계에서 원인을 보고한다. 다른 도구로 몰래 대체하지 않는다.
    **『전제 점검』이 불일치를 내면 멈춘다** — 매핑이 요구하는 능력을 런타임이 광고하지 않으면 추측으로
@@ -42,11 +42,26 @@ description: >-
 2. **분기 기준 선택 → 작업 worktree 생성** (신규만, 본체는 main 유지):
    - **독립 작업**(기본): `main` 에서 딴다. 게이트 ② 에서 main 대상 PR 이 된다.
    - **묶음 자식**: 서로 의존하는 작업 묶음(체크포인트)이면 `feature/LIFE-MMM-<슬러그>`(MMM = 체크포인트)에서 딴다.
-     feature 가 아직 없으면 사용자에게 묶음으로 열지 한 번 묻고, 열면 `main` 에서 만들어 origin 에 push 한다
-     (`git branch feature/LIFE-MMM-<슬러그> main && git push -u origin feature/LIFE-MMM-<슬러그>`). 만료일을 정해 00-start 에 적는다.
-     게이트 ② 에서 PR 대신 feature 로 로컬 merge 된다(AGENTS.md 「브랜치 규약」). 미지정·애매하면 독립 작업이다.
+     **묶음 자식의 task-start 는 그 묶음의 묶음 코디가 한다** — 본체가 자식 시작 요청을 받으면 직접 하지 않는다:
+     활성 묶음 코디가 있으면 그 세션에 넘기고(통로는 묶음 코디 절차 4), feature 는 있는데 묶음 코디가 없으면 아래 「체크포인트 시작」으로 묶음 코디부터 띄운다.
+     feature 가 아직 없으면 사용자에게 묶음으로 열지 한 번 묻고, 열면 「체크포인트 시작」으로 연다.
+     게이트 ② 에서 PR 대신 feature 로 로컬 merge 된다(AGENTS.md 「브랜치 규약」). 미지정·애매하면 독립 작업이다 —
+     LA 부모가 checkpoint 라는 것만으로 묶음 자식이 되지 않는다(판단 기준은 의존이다).
+   - **체크포인트 시작**(묶음 열기): LA kind 가 checkpoint 인 일감 자체를 시작하면 이 경로다(분해 뒤 자식이 하나뿐이면 묶음 코디 절차 2 가 접는다). 작업 브랜치 `LIFE-MMM-<슬러그>` 를 만들지 않는다. `origin/main` 최신에서 feature 를 만들어 origin 에 push 하고,
+     feature worktree 를 그 feature 체크아웃으로 연다 — 이 worktree 가 **묶음 코디**의 작업 worktree 다. 만료일(기본 시작일 + 2주)을 00-start 에 적는다.
+     feature 가 이미 있으면(묶음 코디 없이 자식만 시작된 경우) 만들기·push 는 건너뛰고 feature worktree 와 묶음 코디만 연다.
+     **본체가 이미 분해·자식 시작을 했어도 묶음 코디는 띄운다** — 00-start 분해 상태는 3단계.
+     묶음 코디가 하는 일은 [묶음 코디 절차](../task-coordinate/references/bundle.md)가 원본이다.
    ```bash
-   git worktree add .claude/worktrees/LIFE-NNN-<슬러그> -b LIFE-NNN-<슬러그> <main 또는 origin/feature/LIFE-MMM-<슬러그>>
+   git fetch origin main && git branch --no-track feature/LIFE-MMM-<슬러그> origin/main && git push -u origin feature/LIFE-MMM-<슬러그>    # 체크포인트 시작 — feature 가 없을 때만
+   ```
+   worktree 는 **본체 기준 절대경로**로 만든다 — 묶음 코디가 feature worktree 안에서 쳐도 상대경로처럼 그 아래로 중첩되지 않는다(AGENTS.md 「중첩 금지」).
+   `ROOT` 는 어느 worktree 에서 쳐도 본체 checkout 을 가리킨다.
+   ```bash
+   ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+   git fetch origin feature/LIFE-MMM-<슬러그>    # 묶음 자식만 — 분기 전에 origin/feature 를 최신으로. 실패하면 분기하지 않고 멈춘다(독립 작업·체크포인트 시작은 건너뛴다)
+   git worktree add "$ROOT/.claude/worktrees/LIFE-NNN-<슬러그>" -b LIFE-NNN-<슬러그> <main 또는 origin/feature/LIFE-MMM-<슬러그>>   # 독립 작업·묶음 자식
+   git worktree add "$ROOT/.claude/worktrees/LIFE-MMM-<슬러그>" feature/LIFE-MMM-<슬러그>                                       # 체크포인트 시작 — feature worktree
    ```
    **묶음 자식이면 생성 직후 상위를 feature worktree 로 지정한다** — 사이드바가 체크포인트 아래에 중첩해 보이게 하는
    표시용 메타다(LIFE-576 D7 과 같은 규칙). feature worktree(`.claude/worktrees/LIFE-MMM-<슬러그>`)가 있을 때만 하고,
@@ -54,7 +69,7 @@ description: >-
    `--worktree path:<자식 작업 worktree> --parent-worktree path:<feature worktree>`). **실패는 경고만** — 거절 원문을
    00-start 에 남기고 진행한다. 독립 작업은 루트로 둔다. 그 능력이 없는 매핑이면 이 단계는 공백이다.
    재개는 기존 worktree와 코디네이터 터미널을 확인한다. 활성 코디네이터가 있으면 그 세션으로
-   이어가며 새로 만들지 않는다. 세션이 없을 때만 기록된 도구로 재기동한다.
+   이어가며 새로 만들지 않는다. 세션이 없을 때만 기록된 도구로 재기동한다. 묶음 코디도 같다(묶음 코디 절차 머리).
 3. **기동 전에 선택 기록**: `corral-specs/LIFE-NNN-<슬러그>/00-start.md`를 작성하고 corral-specs 에 그 폴더만 커밋·push 한다
    (AGENTS.md 「산출물 규칙」의 커밋 명령). 작업 worktree 에는 산출물을 두지 않는다.
    최소 항목: LIFE-N, 슬러그, 작업 브랜치·**분기 기준(main / feature 브랜치와 그 만료일)**·절대 worktree 경로,
@@ -65,6 +80,9 @@ description: >-
    기동 상태. 모든 역할의 요청 모델·effort·advisor·단독/경쟁 방식은 `.agents/defaults.md` 에서 복사한다.
    처음 상태는 `기동 전`.
    워커 구성·구현→리뷰 흐름·사용자 예외(경량/전체 경로 지정 포함), 수정 라운드용 워커 유지 요청도 기록하고, 재개는 이력을 덧붙인다.
+   **체크포인트 시작이면** 체크포인트 폴더의 00-start 에 묶음 항목을 더한다: 묶음 표시(`묶음 코디 — LIFE-MMM`, 작업 브랜치 대신 feature 브랜치·만료일),
+   분해 상태(`분해 전` / `분해 끝` 둘 — `분해 끝` 은 누가 분해했든 다시 하지 않는다는 뜻), 이미 시작된 자식(따로 — 자식·그 코디 세션). 구현 워커·리뷰어 구성은 적지 않는다 — 묶음 코디는 그것을 띄우지 않는다(자식 코디 몫).
+   이 줄들도 이 단계의 커밋에 들어간다 — 6단계 전달 전에 끝난다.
 4. **코디네이터 세션 기동** — 『세션 기동』. 작업 폴더는 3단계에 기록한 **절대경로**로 준다.
 
    선택은 `claude` 또는 `codex`다. 모델·effort는 사용자 지정값, 미지정이면 3단계의 기본값을 **명령에
@@ -78,6 +96,7 @@ description: >-
    forward-only의 `same`·`backward` 응답을 존중한다. 부모가 checkpoint이면 함께 온보드(`issue_update`
    onBoard:true)하고 `진행 중`으로 전이하되 project이면 적용하지 않는다. 종료 때 부모 완료는 다른 미완
    자식이 없는지 확인한 뒤 판단한다 — task 하나 완료로 checkpoint 전체를 완료하지 않는다.
+   체크포인트 시작이면 그 체크포인트 일감 자체를 `진행 중`으로 전이하고 온보드한다(부모 project 는 적용하지 않는다).
 
 6. **준비 확인 후 킥오프 주입**:
    - 『준비 대기』로 지시를 받을 수 있는 상태인지 확인한다. **trust·로그인 화면이나 미검증 화면은
@@ -94,6 +113,11 @@ description: >-
      ```
      너는 LIFE-NNN 작업의 코디네이터야. <corral-specs 절대경로>/LIFE-NNN-<슬러그>/00-start.md와
      .agents/skills/task-coordinate/SKILL.md를 읽고, 실제 세션에서 전제 도구를 확인한 뒤 절차대로 진행해.
+     ```
+     체크포인트 시작(묶음 코디)이면 이 지시를 대신 보낸다:
+     ```
+     너는 LIFE-MMM 체크포인트의 묶음 코디네이터야. <corral-specs 절대경로>/LIFE-MMM-<슬러그>/00-start.md와
+     .agents/skills/task-coordinate/references/bundle.md를 읽고, 실제 세션에서 전제 도구를 확인한 뒤 그 절차대로 진행해.
      ```
    - 전달 이후 이 파일·그 specs 폴더와 작업 브랜치는 코디네이터가 맡는다. 시작 세션은 더 수정하지 않는다.
      실제 세션 점검 후 코디네이터가 `준비 완료` 또는 `차단 사유`를 기록한다.

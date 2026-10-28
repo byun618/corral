@@ -7,12 +7,12 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 ## 산출물 규칙
 
-- **작업 산출물은 별도 private 레포 corral-specs 에 둔다** — 본체 checkout 옆 폴더(`<본체>/../corral-specs`, 지금
-  `~/repos/byun618/corral-specs`. 이하 `corral-specs/`). 브랜치는 main 하나, worktree 를 만들지 않는다. 이 코드 레포에는
+- **작업 산출물은 별도 private 레포 corral-specs 에 둔다** — 본체 checkout 옆 폴더(`<본체>/../corral-specs`.
+  이하 `corral-specs/`). 브랜치는 main 하나, worktree 를 만들지 않는다. 이 코드 레포에는
   공개해도 되는 것만 둔다 — 원자료·작업 문서를 커밋하지 않는다 (LIFE-705, 2026-10-26 분리)
 - 작업 하나 = corral-specs/LIFE-NNN-<슬러그>/ 폴더. 단계 산출물은 번호 파일 (00-analysis.md, 01-criteria.md, …)
 - **쓰기와 커밋** — 본체·코디·워커·리뷰어 모두 그 폴더에 **절대경로로 직접** 쓴다(worktree 안 상대경로 금지).
-  커밋은 그 일감의 코디(00-start 는 본체)만, 게이트 시점에, **자기 폴더만** 한다:
+  커밋은 그 일감의 코디(00-start 는 시작한 세션 — 본체, 묶음 자식은 묶음 코디)만, 게이트 시점에(묶음 코디는 분해·알림·출고 중 수정 기록 때도 — task-coordinate references/bundle.md 2·4·6), **자기 폴더만** 한다:
   `git -C <corral-specs> add -- LIFE-NNN-<슬러그>/ && git -C <corral-specs> commit -m "…" -- LIFE-NNN-<슬러그>/ && git -C <corral-specs> push`.
   여러 일감이 한 working copy 를 같이 쓰므로 남의 폴더를 add 하지 않고, `index.lock` 이면 잠시 뒤 다시 한다. 워커·리뷰어는 커밋하지 않는다.
   루트 공용 파일(00-project.md·app-screens.md·design-tokens*.css·reference/ 등)은 바꾼 세션(본체 또는 그 일감의 코디)이 그 파일만 지정해 커밋한다
@@ -30,21 +30,21 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 | 단계 | 누가 | 산출물 (corral-specs/LIFE-NNN-<슬러그>/) | 절차 |
 | --- | --- | --- | --- |
-| 0 시작 — 작업 브랜치·worktree·코디 기동 | 본체 | 00-start.md | task-start |
+| 0 시작 — 작업 브랜치·worktree·코디 기동(체크포인트는 작업 브랜치 대신 feature) | 본체 (묶음 자식은 묶음 코디) | 00-start.md | task-start |
 | 1 분석 — 일감 스냅샷·외부 서치 대조 | 코디 | 00-analysis.md | task-coordinate §1 |
 | 2 판정 기준 — 구현 전에 박는다 | 코디 | 01-criteria.md | §2 |
 | 3 킥오프 → **게이트 ⓪** | 코디 | 02-kickoff.md | §3 |
 | 4 구현 — 단독 워커, 설계 단계 없음(경쟁은 옵션) | 워커 | 구현 브랜치 LIFE-NNN-<슬러그>-claude | §4 |
 | 5 코드 리뷰 — 별도 세션, 재리뷰도 새 세션 | 리뷰어 | raw/review/, reviews.md | §5 |
 | 6 판정 → **게이트 ①** | 코디 | verdict.md | §6·§7 |
-| 7 사용자 확인 → **게이트 ②** = 기록·PR 생성·정리 | 코디 | devlog.md, learnings-proposal.md, adr-draft-*.md, handoff-main.md, pr.md | §8 |
+| 7 사용자 확인 → **게이트 ②** = 기록·PR 생성·정리 | 코디 | devlog.md, learnings-proposal.md, adr-draft-*.md, handoff-main.md, pr.md(묶음 자식은 없음) | §8 |
 | 8 출고 — release/vX.Y.Z 자르기·PR 모으기·통합 확인·회고 → main 머지·태그·릴리즈 노트·dmg·APK(폰 설치) | 본체 | GitHub Release, corral-specs/retro/vX.Y.Z.md | release |
 
 - 스킬 파일: .agents/skills/task-start · task-coordinate · release (각 SKILL.md). 역할별 모델·effort·리뷰어 구성은 .agents/defaults.md
 - 판정 규칙(다수결 기각 금지·수렴 조건·수정 상한·테스트 계층·경량/전체 경로)은 task-coordinate §2·§3·§5·§6
 - **사용자 승인 게이트 3단 (자율 진행 금지 지점)**: ⓪ 킥오프(구현 워커 기동 전) ① 채택(작업 브랜치 머지 전)
-  ② 출고(PR 생성 전). 게이트 사이는 자율 진행하되 게이트에서 멈추고 보고한다 — 보고할 내용은 task-coordinate 의 각 게이트 절.
-  worktree 는 출고 승인 전까지 유지 — 사용자가 직접 실행·확인할 수 있는 상태
+  ② 출고(PR 생성 전). 게이트 사이는 자율 진행하되 게이트에서 멈추고 보고한다 — 보고할 내용은 task-coordinate 의 각 게이트 절. 묶음 코디의 게이트(분해 승인 ⓪·출고 승인)는 task-coordinate references/bundle.md 2·6.
+  worktree 는 출고 승인 전까지 유지 — 사용자가 직접 실행·확인할 수 있는 상태. feature worktree 는 release 머지(출고)까지(task-coordinate references/bundle.md)
 - 작업이 끝나거나 막히면 반드시 사용자에게 보고 — 조용한 완료 금지
 - LA 상태는 코디(진행)·본체(출고)가 forward-only 로 전이한다 — 시점은 각 스킬의 해당 절 첫 줄
 
@@ -56,7 +56,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
   release → main PR 하나를 merge commit 으로 머지한다 — 원래 PR 은 기본 브랜치에서 간접 머지로 MERGED 를 가정하고 확인 안 되면 exit 13(C14 실측 전, squash·rebase 머지는 레포 설정으로 꺼 둠).
   PR CI 는 아직 없다 — 후속 LIFE-575. main 직접 push·웹 UI 머지 금지 — main 에 직접 올라가는 것은 release.sh 의 태그뿐이다.
   Free 플랜 private 레포라 브랜치 보호가 없다(403) — 서버 강제 없이 규약과 스크립트 가드로 막는다
-- **묶음 브랜치 feature/LIFE-NNN-<슬러그>** (NNN = 체크포인트): 서로 의존하는 작업 묶음만. 자식 작업 브랜치는 feature 에서
+- **묶음 브랜치 feature/LIFE-NNN-<슬러그>** (NNN = 체크포인트): 서로 의존하는 작업 묶음만(체크포인트 시작 — task-coordinate references/bundle.md 2). 자식 작업 브랜치는 feature 에서
   따고 feature 로 로컬 merge, 묶음이 끝나면 feature → main PR 하나. main 이 움직이면 main 을 feature 로 merge(rebase 금지 —
   살아 있는 worktree). 독립 작업은 main 에서 따고 main 대상 PR. 그 외 체크포인트·프로젝트 단위 통합 브랜치는 금지
 - 슬러그는 일감 타이틀에서 자동 파생(케밥케이스 1~3단어), 생성 후 불변 (매핑은 키로만)
@@ -64,7 +64,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - **release 브랜치 release/vX.Y.Z** (예외, 단명 원칙 안): 출고 1회 수명·한 번에 하나. main 에서 자르고(.claude/worktrees/release-vX.Y.Z)
   PR 을 모아 통합 확인 뒤 main 머지, 출고 확인 뒤 삭제(접으면 삭제·PR 은 열린 채). 자른 뒤엔 출고를 막는 수정만 — 수정은 일감 브랜치에서 고쳐 다시 모은다(예외는 release 스킬 §1)
 - 출고 통합 확인은 release worktree 에서 한다. 그 밖의 통합 확인은 throwaway: integration/<이름>-YYYYMMDD 에 합쳐 테스트 후 삭제. 유지 금지
-- feature·예외적 장기 통합 브랜치는 만료일 명시(첫 자식 작업 00-start.md), 넘기면 쪼개서 main 에
+- feature·예외적 장기 통합 브랜치는 만료일 명시(체크포인트 폴더 00-start.md), 넘기면 쪼개서 main 에
 
 ## 도구 역할
 

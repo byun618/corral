@@ -1,4 +1,0 @@
-before: "agent_status":"working" "state_change_seq":112  | after: "agent_status":"working" "state_change_seq":112 | ms=10392
-"agent_status":"working"
-  │ ❯                                                                                                                │
-before: "agent_status":"working" "state_change_seq":112  | after: "agent_status":"done" "state_change_seq":113 | ms=624

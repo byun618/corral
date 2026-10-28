@@ -12,7 +12,7 @@ import { MobileServer } from './server.js'
 import { MobileService } from './service.js'
 import { runTailscale, type TailscaleRunner } from './tailscale.js'
 
-const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../scripts/l577/fake-tailscale.mjs')
+const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../scripts/mobile-repro/fake-tailscale.mjs')
 const DNS = 'fix1.example.ts.net'
 const PORT = 8577
 const KEY = `${DNS}:${PORT}`
@@ -294,8 +294,8 @@ describe('서버 단위 — R1-A7 · R1-A10', () => {
 
   it.each([
     ['Sec-WebSocket-Key 없음', 'Sec-WebSocket-Version: 13\r\n'],
-    ['버전 8', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 8\r\n'],
-    ['하위 프로토콜 모양 오류', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: a,,b\r\n'],
+    ['버전 8', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 8\r\n'], // gitleaks:allow — RFC 6455 §1.3 예제 키
+    ['하위 프로토콜 모양 오류', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: a,,b\r\n'], // gitleaks:allow — RFC 6455 §1.3 예제 키
   ])('R1-A10 틀린 업그레이드(%s)도 404 본문 없음(거절 형식 통일)', async (_name, headers) => {
     const { port } = await bare()
     const out = await new Promise<string>((resolve, reject) => {

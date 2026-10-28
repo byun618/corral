@@ -60,12 +60,13 @@ setup() { # 새 fixture: origin(bare) · B(본체) · H(도우미 clone) · bin(
   O="$W/origin.git"; B="$W/B"; H="$W/H"; WT="$B/.claude/worktrees"; FWT="$WT/$FN"
   git init -q --bare "$O"
   git clone -q "$O" "$B" 2>/dev/null
-  mkdir -p "$B/scripts"
-  if [ -n "$MUT" ]; then sed "/# guard:$MUT\$/ s/die \"/true \"/" "$SCRIPT" > "$B/scripts/task-finish.sh"
-  else cp "$SCRIPT" "$B/scripts/task-finish.sh"; fi
   printf '.claude/worktrees/\nspecs/\n' > "$B/.gitignore"
   echo a > "$B/a"
   git -C "$B" add -A; git -C "$B" commit -qm init; git -C "$B" push -q origin HEAD:main
+  # 시험 대상 사본은 커밋하지 않는다(info/exclude) — 판이 달라도 fixture 해시가 같아야 --out 비교가 된다
+  mkdir -p "$B/scripts"; echo /scripts/ >> "$B/.git/info/exclude"
+  if [ -n "$MUT" ]; then sed "/# guard:$MUT\$/ s/die \"/true \"/" "$SCRIPT" > "$B/scripts/task-finish.sh"
+  else cp "$SCRIPT" "$B/scripts/task-finish.sh"; fi
   git clone -q "$O" "$H" 2>/dev/null
   cp "$FAKE_GH" "$W/bin/gh"; chmod +x "$W/bin/gh"
   printf '#!/bin/sh\necho "herdr $*" >> "%s/herdr-calls.txt"\n[ "$1 $2" = "session list" ] && echo "NAME STATUS"\nexit 0\n' "$W" > "$W/bin/herdr"; chmod +x "$W/bin/herdr"

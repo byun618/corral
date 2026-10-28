@@ -379,6 +379,8 @@ corral worktree set --worktree path:<구현 worktree 절대경로> --parent-work
   호출 안에서 원자적이라 중간 화면을 볼 자리가 없다**(`app/src/runtime/orchestration/index.ts` 의 기동 경로) —
   기동 전에 사용자 셸에서 codex 를 최신으로 올리거나, `corral terminal create --agent codex` → `terminal read` 확인 →
   같은 pane 에 `--terminal <handle>` 로 붙이는 2단을 쓴다. **trust 화면은 사람 몫이다.**
+- **셸 rc 의 대화형 질문**: pane 셸이 rc 에서 질문(업데이트 확인 등)을 띄우면 주입한 기동 줄 첫 글자가 그 답으로 먹혀 provider 이름이 깨지고
+  `agent_not_ready`·`incomplete` 로 끝난다. 같은 Task 를 `worker-stop` 으로 멈추고 새로 기동한다 — 반복되면 사용자에게 셸 쪽 질문을 먼저 끝내 달라고 한다(LIFE-719 외 매핑 밖 두 번째).
 - **타임아웃·빈 결과**: 대기 예산은 `--timeout-ms` 로 주고 상한은 120000 이다. codex 는 같은 과제에서 Claude 보다
   느리고 타임아웃이 잦으니 예산을 넉넉히 잡는다. 타임아웃은 "안 갔다" 가 아니다 — `corral orchestration dispatch-show --task <t>` 로
   시도 상태를 먼저 본다.

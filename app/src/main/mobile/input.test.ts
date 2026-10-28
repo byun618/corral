@@ -1879,7 +1879,7 @@ describe('C5 활성 세대 — 끄고 바로 켜도(stopped=false) 이전 세대
 
 // --- 수정 r3 (Codex r3 지적) ---------------------------------------------------------------------------
 
-const Z1 = path.resolve(__dirname, 'fixtures/l582/z1')
+const Z1 = path.resolve(__dirname, 'fixtures/agent-tui-screens/question-prompts')
 const z1 = (name: string): string => fs.readFileSync(path.join(Z1, name), 'utf8')
 const z1Permission = (pane: string): string => {
   const text = z1('perm-screens.txt')
@@ -2250,7 +2250,7 @@ describe('R4-A1 답 값은 문항마다 — 문항↔답 대응을 보존한다'
 })
 
 describe('R4-A2 좁은 맥 pane — 실물 화면(r4/width)에서 허브 답', () => {
-  const W = path.resolve(__dirname, 'fixtures/l582/r4-width')
+  const W = path.resolve(__dirname, 'fixtures/agent-tui-screens/narrow-pane')
   const recordedItem = (kind: 'claude' | 'grok', call: string): Extract<ChatItem, { kind: 'question' }> => {
     const parsed: unknown = JSON.parse(fs.readFileSync(path.join(W, `${kind}-question.json`), 'utf8'))
     if (!Array.isArray(parsed)) throw new Error('fixture')

@@ -7,8 +7,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 ## 산출물 규칙
 
-- **작업 산출물은 별도 private 레포 corral-specs 에 둔다** — 본체 checkout 옆 폴더(`<본체>/../corral-specs`, 지금
-  `~/repos/byun618/corral-specs`. 이하 `corral-specs/`). 브랜치는 main 하나, worktree 를 만들지 않는다. 이 코드 레포에는
+- **작업 산출물은 별도 private 레포 corral-specs 에 둔다** — 본체 checkout 옆 폴더(`<본체>/../corral-specs`.
+  이하 `corral-specs/`). 브랜치는 main 하나, worktree 를 만들지 않는다. 이 코드 레포에는
   공개해도 되는 것만 둔다 — 원자료·작업 문서를 커밋하지 않는다 (LIFE-705, 2026-10-26 분리)
 - 작업 하나 = corral-specs/LIFE-NNN-<슬러그>/ 폴더. 단계 산출물은 번호 파일 (00-analysis.md, 01-criteria.md, …)
 - **쓰기와 커밋** — 본체·코디·워커·리뷰어 모두 그 폴더에 **절대경로로 직접** 쓴다(worktree 안 상대경로 금지).

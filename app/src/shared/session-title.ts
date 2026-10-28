@@ -65,7 +65,7 @@ export function paneSessionTitle(input: { pane: PaneRow; ordinal: number; home: 
 const PANE_ID_TITLE = /^w[A-Za-z0-9]+:p[A-Za-z0-9]+$/
 
 /**
- * `byun@host:~` · `byun@host:~/repos/corral` · `byun@host:/private/var/...` —
+ * `user@host:~` · `user@host:~/repos/corral` · `user@host:/private/var/...` —
  * oh-my-zsh 가 OSC 2 로 쏘는 프롬프트 제목 (`ZSH_THEME_TERM_TITLE_IDLE="%n@%m:%~"`,
  * `~/.oh-my-zsh/lib/termsupport.zsh:41`).
  *
@@ -132,7 +132,7 @@ function paneCwdLabel(input: { pane: PaneRow; home: string | null }): string | n
  *     corral 어댑터가 제목 필드를 하나도 못 찾았을 때 넣는 **자체 폴백**(`store.ts` 의 `?? id`)이다.
  *     남의 값을 거절하는 게 아니라 내 폴백을 안 쓰는 것이라 성격이 다르다.
  *   · **프롬프트 모양은 cwd 값으로 바꾼다** (C11ⓒ) — herdr 는 OSC **2**(`%n@%m:%~`)만 주는데
- *     그걸 그냥 15자로 자르면 홈에서 `..-MacBookPro:~` 가 되어 Orca 화면(`~`)과 **어긋난다**.
+ *     그걸 그냥 15자로 자르면 홈에서 `..-DevMachine:~` 가 되어 Orca 화면(`~`)과 **어긋난다**.
  *     zsh 가 OSC 1 에 넣었을 값(`%15<..<%~%<<`)을 우리가 만들어 넣으면 글자가 같아진다.
  *   · **그 외는 그대로 두되 15자가 넘으면 왼쪽을 자른다** (C11ⓓ) — 길이만 잡는다.
  *   · 갓 뜬 claude 탭의 `✳ Claude Code` 는 이제 **그대로 뜬다** (C11ⓐⓑ). 재료(`ai-title`·첫 발화)가
@@ -276,7 +276,7 @@ export function truncatePathLeft(label: string): string {
  * Orca 는 거절 목록이 없어서 셸이 쏜 OSC 를 그대로 띄우고, 사용자가 화면에서 본 짧은 글자는
  * oh-my-zsh 가 **OSC 1** 로 쏜 `%15<..<%~%<<` 였다. 그런데 **herdr 는 OSC 1 을 안 준다**
  * (`PaneInfo` 에 `title`·`terminal_title`·`terminal_title_stripped` 뿐) — 그대로 따르면
- * OSC 2 의 `byun@host:~/repos/…` 긴 문자열이 뜨고, 그게 사용자가 G1 로 신고한 그 문자열이다.
+ * OSC 2 의 `user@host:~/repos/…` 긴 문자열이 뜨고, 그게 사용자가 G1 로 신고한 그 문자열이다.
  * 그래서 **같은 값을 corral 이 계산한다** (사용자 결정 "그렇게 짤라서 가",
  * `05-orca-parity.md` §5.2).
  *

@@ -1,7 +1,7 @@
 # corral 모바일 (Android)
 
 맥의 corral 에 Tailscale 망으로 붙는 폰 앱. 계정·클라우드를 거치지 않는다 — 폰이 맥의 `wss://<mac>.<tailnet>.ts.net:8577/ws` 에 직접 붙는다.
-서버 쪽 정본은 `app/src/main/mobile/SURFACE.md`. 스택은 life-assistant `apps/mobile` 과 같다(Expo SDK 54 · RN 0.81 · expo-router 6 · NativeWind 4).
+서버 쪽 정본은 `app/src/main/mobile/SURFACE.md`. 스택은 Expo SDK 54 · RN 0.81 · expo-router 6 · NativeWind 4.
 
 - 앱 이름 `corral`, 패키지 `io.github.byun618.corral.mobile` (개발 클라이언트만 `.dev`)
 - EAS 프로젝트 `@byun618/corral-mobile` (`app.config.ts` `extra.eas.projectId`)

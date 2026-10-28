@@ -15,7 +15,7 @@ type Harness = Awaited<ReturnType<typeof laFixtureHarness>>
 type Row = Pick<WorkItem, 'id' | 'key' | 'parentId' | 'spaceKey'>
 type Capture = Record<'default' | 'paging', Record<string, { pages: number; truncated: boolean; items: Row[] }>>
 
-const BEFORE: Capture = JSON.parse(readFileSync(new URL('./fixtures/l638-c2-before-bfs.json', import.meta.url), 'utf8'))
+const BEFORE: Capture = JSON.parse(readFileSync(new URL('./fixtures/la-items-before-bfs.json', import.meta.url), 'utf8'))
 
 const opened: Harness[] = []
 afterEach(async () => {

@@ -6,7 +6,7 @@
 # 실제 GitHub·본체 checkout·LA·corral 레지스트리·사용자 herdr 무접촉: PATH 앞에 가짜 gh 와 빈 목록만 내는 가짜 herdr 를 둔다.
 # 사용자 git 설정은 끊는다(하네스 전용 전역 설정). 커밋 시각을 고정해 두 판의 해시가 같게 한다.
 # 양성 대조: TF_MUTANT=<가드 이름> 이면 B 의 사본에서 「# guard:<이름>」 줄의 die 를 true 로 바꾼다 — 그 가드의 케이스가 FAIL 해야 한다.
-#   die 가 아닌 장치(f-up 자식 upstream 신호 · f-release release/* 제외 · f-lease --force-with-lease)는 아래 mutate() 의 줄별 sed 로 끈다.
+#   die 가 아닌 장치(f-up 자식 upstream 신호 · f-release release/* 제외 · f-lease --force-with-lease · f-prune 등록 치우기)는 아래 mutate() 의 줄별 sed 로 끈다.
 #   변이가 사본을 바꾸지 못하면(표지·식이 어긋남) 시험을 돌리지 않고 exit 2.
 #   가드 이름 전부는 `grep -o 'guard:f-[a-z-]*' scripts/task-finish.sh`. 멈춤 케이스는 사유 문구까지 본다 — 다른 가드나 git 의 거절이 같은 모양으로 대신 막으면 변이가 산다.
 # 이름에 LIMIT 이 든 케이스는 알려진 한계의 현 동작을 고정한다(기대 = 못 막음). 한계가 풀리면 그 케이스를 멈춤 케이스로 바꾼다.
@@ -20,7 +20,7 @@ C2f-empty-feature-block C2f-throwaway-wt C2f-LIMIT-notrack-before-first-commit C
 C2g C2g-empty-feature-block C2h-root C2h-sub C2h-elsewhere C2-main-checkout C2-wt-detached-head C2i C2j C2k
 C2-fetch-fail C2-gh-fail C2-base-open-missing C2-base-merged-missing
 C3a C3b-lock C3b-delete C3-lsremote-fail C3-late-commit C3-merged-remote-ahead C3-push-race
-C4a C4b
+C4a C4b C4b-prunable C4b-prunable-main-ahead
 C5a C5b C5c C5d"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -67,6 +67,7 @@ mutate() { # 표준입력 → 변이 사본
   case "$1" in
     f-up) sed '/# guard:f-up$/ s/\[ "\$up" = "refs\/remotes\/origin\/\$TASK" \] ||/false ||/' ;;
     f-release) sed '/# guard:f-release$/ s/|release\/\*//' ;;
+    f-prune) sed '/# guard:f-prune$/ s/git worktree prune/true/' ;;
     f-lease) sed '/# guard:f-lease$/ s/--force-with-lease=refs\/heads\/\$TASK:\$ROID/--force/' ;;
     *) sed "/# guard:$1\$/ s/die \"/true \"/" ;;
   esac
@@ -285,6 +286,10 @@ case_C4a() { setup; mk_feature; run "$F"; run "$F"
   check "재실행 exit 0" rc_is 0; check "재실행 무변경" unchanged; check "이미 정리됨 안내" has "이미 정리됨"; }
 case_C4b() { setup; mk_feature; git -C "$B" worktree remove "$FWT"   # 반쯤: worktree 는 없고 로컬 feature 만
   run "$F"; check "exit 0" rc_is 0; check "로컬 feature 사라짐" no_local "$F"; check "PR OPEN" pr_state OPEN "$F"; }
+case_C4b-prunable() { setup; mk_feature; rm -rf "$FWT"   # 반쯤: feature worktree 폴더만 손으로 지웠다(git 은 prunable 등록으로 안다) — 이어서 정리
+  run "$F"; check "exit 0" rc_is 0; check "로컬 feature 사라짐" no_local "$F"; check "worktree 등록 사라짐" no_wt "$FWT"; check "PR OPEN" pr_state OPEN "$F"; }
+case_C4b-prunable-main-ahead() { setup; mk_feature; commit_in "$H" m1; git -C "$H" push -q origin HEAD:main; git -C "$B" fetch -q origin; rm -rf "$FWT"   # 같은 상태 + main 이 feature 보다 앞섬
+  run "$F"; check "exit 0" rc_is 0; check "로컬 feature 사라짐" no_local "$F"; check "worktree 등록 사라짐" no_wt "$FWT"; }
 # ---- 기존 경로 회귀(옛 판과 같은 결과여야 한다 — --out 비교) ----
 case_C5a() { setup; local t=LIFE-901-t; mk_indep "$t"; git -C "$WT/$t" push -q -u origin "$t" 2>/dev/null
   git -C "$B" worktree add -q "$WT/$t-claude" -b "$t-claude" "$t"; pr 1 OPEN "$t"

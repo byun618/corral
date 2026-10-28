@@ -91,6 +91,7 @@ finish_feature() {
   wt_list="$(echo "$wt_list" | awk 'NF && !seen[$0]++')"
   while IFS= read -r w; do
     [ -n "$w" ] || continue
+    [ -d "$w" ] || continue   # 폴더가 지워진(prunable) 등록은 검사할 것이 없다 — 아래 git worktree prune 이 치운다
     [ "$(cd "$w" 2>/dev/null && pwd -P)" != "$(pwd -P)" ] || die "$TASK 가 본체 checkout 에 체크아웃돼 있다 — 본체를 main 으로 돌린 뒤 다시" # guard:f-main
     case "$here/" in "$w/"*) die "$TASK 를 체크아웃한 worktree($w) 안에서 실행 금지 — 본체 경로에서 실행" ;; esac # guard:f-cwd-wt
     if [ "$(git -C "$w" symbolic-ref -q HEAD || true)" != "refs/heads/$TASK" ]; then
@@ -136,7 +137,7 @@ EOF2
   done <<EOF2
 $wt_list
 EOF2
-  git worktree prune
+  git worktree prune # guard:f-prune
   if [ -n "$LOID" ]; then
     git update-ref -d "refs/heads/$TASK" "$LOID" || die "로컬 $TASK 삭제 실패 — 검사 뒤 움직였을 수 있다, 다시 실행" # guard:f-cas
     git config --remove-section "branch.$TASK" 2>/dev/null || true   # git branch -D 처럼 추적 설정도 지운다(없으면 그만)

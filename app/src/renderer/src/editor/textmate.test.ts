@@ -1,4 +1,4 @@
-// LIFE-590 E4ⓑ — TextMate 토큰화(JS 정규식 엔진) 단위. 전체 10개 언어 토큰 위치별 대조는 최종 관문(`scripts/l590/token-colors.mjs`)이 한다 —
+// LIFE-590 E4ⓑ — TextMate 토큰화(JS 정규식 엔진) 단위. 전체 10개 언어 토큰 위치별 대조는 최종 관문(LIFE-590 관문 `token-colors.mjs`)이 한다 —
 // 여기서는 연결(문법 지연 로드·의존 문법·주입·이진 토큰 메타데이터·정규식 변환)이 맞는지만 본다.
 import { describe, expect, it } from 'vitest'
 import { EncodedTokenMetadata, type IRawGrammar } from '@shikijs/vscode-textmate'

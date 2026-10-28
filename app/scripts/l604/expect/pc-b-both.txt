@@ -1,3 +1,0 @@
-# pc-b-both — 가드를 뺀 사본에서 실패해야 하는 시험(raw/claude/f1/pc/pc-b-both.txt 에서 뽑음)
-src/renderer/src/components/TasksPage.create.test.tsx > 수정 1 (리뷰 r1) > R1-B 커서 쪽 밖에 만든 작업 — 상세에서 상태를 바꾼 뒤 재조회해도 옛 값으로 덮지 않는다
-src/renderer/src/components/TasksPage.create.test.tsx > 수정 1 (리뷰 r1) > R1-B 커서 쪽 밖에 만든 작업 — 출처(앱 밖)에서 상태가 바뀌거나 지워지면 재조회 뒤 그 값을 따른다

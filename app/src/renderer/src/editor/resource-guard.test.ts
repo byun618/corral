@@ -1,4 +1,4 @@
-// LIFE-590 수정 r1 R1-A — 리소스 참조 판정(순수). 정화 훅 자체의 판정은 실제 Chromium(격리 `scripts/l590/resource-check.mjs`) — happy-dom DOMPurify 는 믿지 못한다.
+// LIFE-590 수정 r1 R1-A — 리소스 참조 판정(순수). 정화 훅 자체의 판정은 실제 Chromium(격리 LIFE-590 관문 `resource-check.mjs`) — happy-dom DOMPurify 는 믿지 못한다.
 import { describe, expect, it } from 'vitest'
 import { attributeVerdict, loadsResource } from './resource-guard.js'
 

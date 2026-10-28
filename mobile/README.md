@@ -128,4 +128,4 @@ npx expo-doctor
 - **에뮬레이터 개발 접속**: 에뮬레이터는 tailnet 주소를 쓸 수 없고, `10.0.2.2` 로 붙으면 RN 이 만드는 Origin(`http://10.0.2.2:…`)을 서버가 거절한다(서버 규칙은 바꾸지 않는다).
   개발 클라이언트(`development` 프로필 · Metro 개발 번들)에서만 `EXPO_PUBLIC_DEV_ENDPOINT=ws://10.0.2.2:<서버 포트>/ws` 를 주면 그 주소로 바이트를 보내고
   Origin 헤더는 QR 주소에서 만든 `https://<host>:8577` 을 단다(`src/runtime/socket.ts`). 배포 번들(`__DEV__` 거짓)에는 이 가지가 없다.
-  개발 서버는 `CORRAL_USER_DATA=/tmp/…` + 가짜 tailscale(`app/scripts/l577/README.md` 「가짜 tailscale」) 로 띄운다.
+  개발 서버는 `CORRAL_USER_DATA=/tmp/…` + 가짜 tailscale(`app/scripts/mobile-repro/README.md` 「가짜 tailscale」) 로 띄운다.

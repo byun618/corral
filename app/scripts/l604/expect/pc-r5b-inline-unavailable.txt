@@ -1,2 +1,0 @@
-# pc-r5b-inline-unavailable — 인라인 unavailable 가드를 지운 사본에서 실패해야 하는 시험(raw/claude/final/pc/)
-src/renderer/src/hooks/useQuickCreate.test.tsx > 인라인 갈래 (R5-B — 수정 4 R4-C·R4-F 의 인라인 쪽) > R4-F 인라인 — 기본 종류 메타가 unavailable 이면 Enter 는 보내지 않고 그 이유를 보인다(출처 거절에 기대지 않음)

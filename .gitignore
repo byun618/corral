@@ -13,7 +13,7 @@ app/node_modules/
 app/out/
 app/*.tsbuildinfo
 
-# 작업 산출물은 별도 레포 corral-specs (LIFE-705). 옛 측정 스크립트(app/scripts/lNNN)의 기본 출력 경로가
+# 작업 산출물은 별도 레포 corral-specs (LIFE-705). 옛 측정 스크립트(LIFE-717 이전 app/scripts 의 일감 폴더 — 지금은 corral-specs 각 작업 폴더 scripts/)의 기본 출력 경로가
 # specs/…/raw 라 돌리면 여기 생긴다 — 이 레포에 커밋하지 않는다
 /specs/
 

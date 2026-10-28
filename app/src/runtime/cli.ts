@@ -122,7 +122,7 @@ export async function runCli(argv: string[]): Promise<void> {
       recovery = { requestId: String(inv.flags['request-id']), terminal: inv.flags.terminal ?? null, command: inv.command, action: 'Retry with the same request ID and input; inspect terminal list/read if unknown' }
     }
     // LIFE-410 §4.5. herdr puts these in the shell it starts inside a pane, and the probe in
-    // `app/scripts/l410/probe-pane-env.mjs` measured HERDR_PANE_ID to be the very string corral's
+    // the LIFE-410 gate script `probe-pane-env.mjs` measured HERDR_PANE_ID to be the very string corral's
     // own pane listing calls `paneId`. Sent on every call, judged only where a worker report needs
     // it — a command that does not care never looks.
     inv.caller = { paneId: process.env.HERDR_PANE_ID ?? null, session: process.env.HERDR_SESSION ?? null, socket: process.env.HERDR_SOCKET_PATH ?? null }

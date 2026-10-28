@@ -463,15 +463,13 @@ This slice does not install, patch, start or stop herdr. Existing desktop sessio
 
 ## Reproduce isolated verification
 
-Run with Node 22 on PATH:
+Run with Node 22 on PATH (from `app/`):
 
 ```
-node scripts/l391-first/cli-verify.mjs
-node scripts/l391-first/gui-verify.mjs
 TMPDIR=/tmp npx vitest run
 ```
 
-GUI verification uses the installed herdr 0.9.0, an isolated XDG configuration and named backend, private profile/repository/sockets, actual Electron input, screenshots and trusted Chromium IME events. It never starts a Claude session. Test artifacts are under `specs/LIFE-391-command-palette-cli/raw/first-release/codex/`; temporary fixture directories remain for inspection, processes are stopped.
+The LIFE-391 acceptance harnesses (`cli-verify.mjs`, `gui-verify.mjs` — installed herdr 0.9.0, isolated XDG configuration and named backend, actual Electron input, screenshots and trusted Chromium IME events) were removed from this repository in LIFE-717; they were one-off gate scripts and are kept with that task's private work records.
 
 ## Repository and worktree behavior
 

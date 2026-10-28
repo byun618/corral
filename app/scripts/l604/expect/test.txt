@@ -1,2 +1,0 @@
-# npm test 에서 기준(b93ae28be, raw/claude/u1/b-test.txt)부터 실패하던 것 — mobile/tsconfig 의 expo/tsconfig.base 를 못 풂(mobile node_modules 없음).
-scripts/l580/native-correlation.test.mjs [ scripts/l580/native-correlation.test.mjs ]

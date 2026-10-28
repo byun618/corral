@@ -169,7 +169,7 @@ installed-compare.mjs C3 설치본 읽기 전용 대조
 
 ## 선택과 사유
 
-- **raw CDP, Playwright 아님** — 기존 자산(`app/scripts/l391-first/gui-verify.mjs`)이 이미 raw CDP 로
+- **raw CDP, Playwright 아님** — 기존 자산(LIFE-391 관문 `gui-verify.mjs`)이 이미 raw CDP 로
   Electron 에 붙는다(C11 「기존 자산에서 출발」). Playwright 의 `connectOverCDP` 는 기본으로
   포커스·미디어를 에뮬레이션해 두 앱에 비대칭을 심는다.
 - **두 앱 다 CDP 한 채널** — corral 제어 소켓(`shot`·`computed-style`)과 CDP 를 섞으면

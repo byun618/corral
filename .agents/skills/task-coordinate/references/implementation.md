@@ -19,7 +19,15 @@ task-coordinate §4에서 기동 전에 읽는다. **이 문서에는 도구 명
   리뷰어는 git commit/add도, 구현자 파일 수정도 안 한다.
 - 워커에게 기준·판정 문서는 작업 폴더 절대경로와 그 시점 corral-specs 커밋 해시로 알려 준다 — 해시는 「무엇을 기준으로
   받았나」의 기록이고, 읽기는 경로로 한다. 리뷰를 위해 제품을 먼저 머지하지 않는다.
-  옛 측정 스크립트(`app/scripts/l<NNN>/`)는 기본 출력이 worktree 안 `specs/…` 다 — 쓰면 출력 경로를 작업 폴더로 지정하게 한다
+- **일감 전용 관문 스크립트는 작업 폴더 `corral-specs/LIFE-NNN-*/scripts/` 에 두고 코드 레포에 커밋하지 않는다.** worktree 경로는
+  절대경로 인자·환경변수로 받고 앱 소스·의존성은 그 경로 기준으로 읽는다 — 상대 import(`../../src/…`)는 안 된다.
+  소스는 `import(pathToFileURL(path.join(wt, 'app/src/…')).href)` 로 읽고 TS 면 그 worktree `app/` 에서 `node --import tsx <스크립트>` 로
+  돌린다(vitest 는 루트 밖 파일을 수집하지 않는다). node_modules 는 `createRequire(path.join(wt, 'app/package.json'))` 로 푼다.
+  작업 폴더 `scripts/` 는 다른 원자료와 같이 코디가 게이트 시점에 자기 폴더로 커밋한다(워커·리뷰어는 커밋하지 않는다). 코드 레포에는
+  되풀이해 쓰는 시험·도구만 하는 일 이름으로 둔다 — 시험은 검사 대상 옆, 도구는 `app/scripts/<하는 일>/`, 경로에 LIFE 번호 없이.
+  옛 일감 하네스(LIFE-717 이전 코드 레포의 일감 번호 폴더)는 `corral-specs/LIFE-<번호>-*/scripts/<원래 폴더명>/`(원래 폴더명은 `l` 뒤에 일감 번호)에 있고,
+  폴더별 색인과 돌리는 커밋·worktree 만드는 법은 LIFE-717 작업 폴더(`…-script-cleanup`) 루트 `moved-index.md` 「재현」에 있다.
+  옛 하네스 가운데 기본 출력이 worktree 안 `specs/…` 인 것을 돌릴 때는 출력 경로를 작업 폴더로 지정하게 한다
   (거기 남은 파일은 `task-finish.sh` 가 정리 전에 멈춰 알린다).
 - native advisor는 서버에서 워커의 대화를 받아 상담한다. 별도 구현자·독립 리뷰어로 세지 않고, 호출 시점·
   횟수는 모델이 정한다. 어려운 판단에서 상담하도록 지시하되 "1회 상한"이나 별도 advisor effort를 지원한다고

@@ -1,2 +1,0 @@
-# pc-r2f-submit-parent — 가드를 뺀 사본에서 실패해야 하는 시험(raw/claude/f2/pc/pc-r2f-submit-parent.txt 에서 뽑음)
-src/renderer/src/hooks/useQuickCreate.test.tsx > 제출 직전 부모 검사 (R2-F) > 모달이 열린 동안 부모가 목록에서 사라지면 보내지 않고 비운다 — 칩과 요청이 어긋나지 않게

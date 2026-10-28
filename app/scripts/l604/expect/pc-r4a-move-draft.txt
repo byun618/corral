@@ -1,3 +1,0 @@
-# pc-r4a-move-draft — 가드를 뺀(스페이스를 바꿀 때 지금 글을 늘 옛 스페이스 초안으로 남기던) 사본에서 실패해야 하는 시험(raw/claude/f4/pc/pc-r4a-move-draft.txt)
-src/renderer/src/components/TasksPage.create.test.tsx > 수정 4 (리뷰 r4) > R4-A 「전체」 — 글을 다른 스페이스로 옮겨 만들면 옛 스페이스에 같은 글이 초안으로 남지 않는다(P4)
-src/renderer/src/components/TasksPage.create.test.tsx > 수정 4 (리뷰 r4) > R4-A 「전체」 — 복원한 초안을 비우고 스페이스를 갔다 오면 비운 초안이 되살아나지 않는다(P4b)

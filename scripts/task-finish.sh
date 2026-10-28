@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# task-finish.sh <LIFE-NNN-슬러그> [--into feature/LIFE-MMM-<슬러그>]
+# task-finish.sh <LIFE-NNN-슬러그> [--into feature/LIFE-MMM-<슬러그>] | task-finish.sh feature/LIFE-MMM-<슬러그>
 # 게이트 ② 뒤 작업 정리 — worktree·로컬 브랜치·격리 herdr 세션 (LIFE-574 에서 PR 흐름으로 바꿈).
 # main 에 머지·push 하지 않는다. main 반영은 출고 때 scripts/release.sh 가 PR 머지로만 한다.
 #   기본      : 작업 브랜치 PR 이 있어야 한다(scripts/task-pr.sh). 로컬 작업 브랜치 = origin 사본임을 확인하고 지운다
 #               — 작업 브랜치는 원격(PR head)에 남는다. 출고 뒤 다시 돌리면 남은 원격 브랜치도 지운다(이미 머지된 PR)
 #   --into F  : 묶음(feature 브랜치)의 자식 작업 — PR 없이 작업 브랜치를 F 에 로컬 merge 해 origin F 에 push 한 뒤 정리
+#   feature/… : 묶음 자신 — feature PR 이 있어야 한다. feature worktree·로컬 feature 정리(아래 finish_feature)
 # 본체 밖 어디서 실행해도 됨 (레포 위치는 스크립트의 git 공통 디렉터리에서 역산). 멱등 — 이미 처리된 단계는 건너뜀.
 #
 # 2026-09-14 (LIFE-357 인계 §3-①) — 변형 브랜치 발견을 하드코딩 3종에서 접두 매칭으로 일반화.
@@ -21,7 +22,7 @@ while [ $# -gt 0 ]; do
     *) TASK="$1"; shift ;;
   esac
 done
-[ -n "$TASK" ] || { echo "✖ 사용법: task-finish.sh <LIFE-NNN-슬러그> [--into feature/LIFE-MMM-슬러그]" >&2; exit 1; }
+[ -n "$TASK" ] || { echo "✖ 사용법: task-finish.sh <LIFE-NNN-슬러그> [--into feature/LIFE-MMM-슬러그] | task-finish.sh feature/LIFE-MMM-슬러그" >&2; exit 1; }
 # 레포 = 본체 checkout. 작업 worktree 의 사본이나 `git show … > 파일` 로 꺼낸 사본으로 돌려도 본체를 가리키게
 # 스크립트 위치(없으면 cwd)의 git 공통 디렉터리에서 역산한다
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,6 +38,129 @@ note() { echo "· $1"; }
 is_throwaway() { [ "$1" = "$TASK-claude" ] || [ "$1" = "$TASK-codex" ]; }
 has_local() { git -C "$REPO" rev-parse --verify -q "refs/heads/$1" >/dev/null; }
 has_remote() { [ -n "$(git -C "$REPO" ls-remote --heads origin "refs/heads/$1")" ]; }
+
+# 묶음(feature/LIFE-MMM-<슬러그>) — 출고 승인(PR 생성) 직후 묶음 코디의 마지막 실행, 출고 뒤엔 본체의 안전망 (LIFE-724).
+# PR(head = feature) 확인 → 로컬 feature 가 보존 위치에 다 있음 → feature worktree 깨끗 → 남은 자식 0 → feature worktree·로컬 feature 정리.
+# 원격 feature 는 PR 이 열려 있는 동안 남긴다(PR head). 검사를 다 통과한 뒤에만 지우고, 지우는 단계가 실패하면 성공을 보고하지 않는다.
+# 지우기는 검사한 값에 묶는다 — 로컬 feature 는 update-ref 구 값 비교, 원격 feature 는 --force-with-lease(검사 뒤 움직였으면 멈춘다).
+# 자식 = feature 가 아닌 로컬 브랜치·worktree 가운데 ⓐ upstream 이 origin/<feature> 이거나(task-start 2단계 블록이 origin/feature 에서 -b 로 따면
+# git 기본값으로 그렇게 된다) ⓑ feature 고유 커밋(<PR base>..<feature> 의 가장 오래된 것)을 품은 것(push -u 로 upstream 이 바뀌었거나
+# --no-track·로컬 feature 에서 딴 자식, 자식의 구현 변형, 브랜치 없는 worktree). main·release/*·feature/* 는 세지 않는다 — 독립 작업은
+# main 에서 따서 ⓐⓑ 둘 다 없다. **한계**: upstream 이 origin/<feature> 가 아니고(--no-track 으로 땄거나 뒤에 push -u 로 바뀜)
+# feature 의 첫 고유 커밋보다 먼저 딴 자식은 못 센다 — 빈 feature 에서 딴 자식은 그 시점 main 과 그래프가 같아 upstream·설정 말고 단서가 없다.
+# ⓐⓑ 는 origin/feature 에서 딴 통합 확인용 throwaway 브랜치도 센다(안전 쪽 — 지우고 다시).
+# **한계**: worktree 등록의 `.git` 은 사라졌는데 폴더 잔해(node_modules 등)가 남으면 그 폴더를 본체로 읽어 멈춘다(제거 실패 또는 HEAD 사유) —
+# 비파괴(exit≠0·무변경)다. 잔해 폴더는 손으로 치우고 `git worktree prune` 뒤 다시 실행한다.
+# herdr 격리 세션 정리는 하지 않는다 — 묶음 코디는 구현 워커를 띄우지 않고, 체크포인트 번호 접두 매칭은 자식 세션을 잘못 잡는다.
+finish_feature() {
+  local FWT PR PR_NUM PR_STATE PR_BASE KEEP here wt_list w b up h kids k u FT lease LOID="" ROID="" did=0
+  echo "$TASK" | grep -qE '^feature/LIFE-[0-9]+-[^/]+$' || die "묶음 브랜치는 feature/LIFE-<번호>-<슬러그> 꼴만 받는다 (받은 값: $TASK)" # guard:f-name
+  [ -z "$INTO" ] || die "--into 는 자식 작업에만 — 묶음 브랜치($TASK)와 함께 쓰지 않는다" # guard:f-into
+  FWT="$(cd "$REPO" && pwd -P)/.claude/worktrees/${TASK#feature/}"
+  here="$(pwd -P)"
+  case "$here/" in "$FWT/"*) die "feature worktree 안에서 실행 금지 — 본체 경로에서 본체의 스크립트로 실행" ;; esac # guard:f-cwd
+  cd "$REPO"
+  git fetch -q --prune origin || die "git fetch 실패" # guard:f-fetch
+
+  # 1. PR·보존 위치
+  PR="$(gh pr list --head "$TASK" --state all --json number,state,baseRefName --jq 'sort_by(.number) | last | if . == null then "" else "\(.number) \(.state) \(.baseRefName)" end')" \
+    || die "gh pr list 실패" # guard:f-gh
+  [ -n "$PR" ] || die "$TASK 의 PR 이 없다 — 먼저 scripts/task-pr.sh $TASK" # guard:f-nopr
+  set -- $PR; PR_NUM="$1"; PR_STATE="$2"; PR_BASE="$3"
+  case "$PR_STATE" in
+    OPEN) KEEP="origin/$TASK"
+          git rev-parse --verify -q "refs/remotes/$KEEP" >/dev/null || die "PR #$PR_NUM 이 열려 있는데 원격 $TASK 가 없다"
+          git rev-parse --verify -q "refs/remotes/origin/$PR_BASE" >/dev/null || die "PR #$PR_NUM base 원격 $PR_BASE 가 없다" ;; # guard:f-base-open
+    MERGED) KEEP="origin/$PR_BASE"
+          git rev-parse --verify -q "refs/remotes/$KEEP" >/dev/null || die "PR #$PR_NUM base 원격 $PR_BASE 가 없다" ;; # guard:f-base-merged
+    *) die "$TASK 의 PR #$PR_NUM 상태가 $PR_STATE — 열림·머지만 정리한다" ;; # guard:f-state
+  esac
+  if has_local "$TASK"; then
+    LOID="$(git rev-parse "refs/heads/$TASK")"
+    git merge-base --is-ancestor "$LOID" "$KEEP" || die "로컬 $TASK 에 $KEEP 에 없는 커밋이 있다 — push(task-pr.sh) 뒤 다시" # guard:f-ahead
+  fi
+  # 원격 feature 유무는 방금 fetch --prune 한 추적 ref 로 본다(ls-remote 조회 실패를 「없음」으로 읽지 않게)
+  ROID="$(git rev-parse --verify -q "refs/remotes/origin/$TASK" || true)"
+  if [ "$PR_STATE" = MERGED ] && [ -n "$ROID" ]; then
+    git merge-base --is-ancestor "$ROID" "$KEEP" || die "원격 $TASK 가 $KEEP 에 다 들어 있지 않다 — 지우지 않는다, 수동 확인" # guard:f-remote-ahead
+  fi
+  note "$TASK 보존 위치: $KEEP (PR #$PR_NUM $PR_STATE → $PR_BASE)"
+
+  # 2. feature worktree — 기대 경로 + 그 브랜치를 체크아웃한 worktree 전부. 실행 위치가 그 안이 아니고, 본체 checkout 이 아니고,
+  #    깨끗해야 한다(미추적 포함), specs/ 파일이 없어야 한다
+  wt_list="$(git worktree list --porcelain | awk -v b="refs/heads/$TASK" '
+    /^worktree /{w=substr($0,10)} /^branch /{if (substr($0,8)==b) print w}' ; [ ! -d "$FWT" ] || echo "$FWT")"
+  wt_list="$(echo "$wt_list" | awk 'NF && !seen[$0]++')"
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    [ -d "$w" ] || continue   # 폴더가 지워진(prunable) 등록은 검사할 것이 없다 — 아래 git worktree prune 이 치운다
+    [ "$(cd "$w" 2>/dev/null && pwd -P)" != "$(pwd -P)" ] || die "$TASK 가 본체 checkout 에 체크아웃돼 있다 — 본체를 main 으로 돌린 뒤 다시" # guard:f-main
+    case "$here/" in "$w/"*) die "$TASK 를 체크아웃한 worktree($w) 안에서 실행 금지 — 본체 경로에서 실행" ;; esac # guard:f-cwd-wt
+    if [ "$(git -C "$w" symbolic-ref -q HEAD || true)" != "refs/heads/$TASK" ]; then
+      git merge-base --is-ancestor "$(git -C "$w" rev-parse HEAD)" "$KEEP" \
+        || die "$w 의 HEAD 가 $TASK 가 아니고(detached·다른 브랜치) $KEEP 에 없는 커밋을 가리킨다 — 브랜치에 담거나 치운 뒤 다시" # guard:f-wt-head
+    fi
+    [ -z "$(git -C "$w" status --porcelain)" ] || die "$w 에 미커밋 변경·미추적 파일 — feature 에 커밋·push 하거나 치운 뒤 다시" # guard:f-dirty
+    [ -d "$w/specs" ] && [ -n "$(find "$w/specs" -type f -print -quit)" ] \
+      && die "$w/specs 에 파일이 있다 — corral-specs 작업 폴더로 옮긴 뒤 비우고 다시(worktree 와 함께 지워진다)" # guard:f-specs
+  done <<EOF2
+$wt_list
+EOF2
+
+  # 3. 남은 자식(위 머리 주석의 ⓐⓑ) — worktree 가 있으면(--into 미처리) 멈추고, worktree 없는 자식 브랜치는 보존 위치에 다 들어 있어야 한다
+  FT="$ROID"; [ -n "$FT" ] || FT="$LOID"
+  u=""; [ -z "$FT" ] || u="$(git rev-list --reverse "origin/$PR_BASE..$FT" | awk 'NR==1')" || die "feature 고유 커밋 조회 실패(origin/$PR_BASE..$FT)"
+  kids=""
+  while read -r b up; do
+    case "$b" in "$TASK"|main|"$PR_BASE"|release/*|feature/*) continue ;; esac # guard:f-release
+    if [ "$up" = "refs/remotes/origin/$TASK" ] || { [ -n "$u" ] && git merge-base --is-ancestor "$u" "$b"; }; then kids="$kids $b"; fi # guard:f-up
+  done < <(git for-each-ref refs/heads --format='%(refname:short) %(upstream)')
+  # 브랜치 없는(detached) worktree 가 feature 고유 커밋을 품으면 자식 작업일 수 있다
+  if [ -n "$u" ]; then
+    while read -r h w; do
+      git merge-base --is-ancestor "$u" "$h" 2>/dev/null \
+        && die "브랜치 없는 worktree 가 $TASK 의 커밋을 품고 있다: $w — 자식 작업이면 feature 에 넣고 치운 뒤 다시" # guard:f-child-detached
+    done < <(git worktree list --porcelain | awk '/^worktree /{w=substr($0,10)} /^HEAD /{h=substr($0,6)} /^detached/{print h, w}')
+  fi
+  for k in $kids; do
+    while read -r b w; do
+      case "$b" in "$k"|"$k"-*) die "자식 worktree 가 남아 있다: $w ($b) — 자식이면 자식 코디가 task-finish.sh $k --into $TASK 로 넣고, 통합 확인용 throwaway 면 지운 뒤 다시" ;; esac # guard:f-child-wt
+    done < <(git worktree list --porcelain | awk '/^worktree /{w=substr($0,10)} /^branch refs\/heads\//{print substr($0,19), w}')
+    git merge-base --is-ancestor "$k" "$KEEP" \
+      || die "자식 브랜치 $k 가 $KEEP 에 다 들어 있지 않다 — 자식이면 task-finish.sh $k --into $TASK 로 넣고, 통합 확인용 throwaway 면 지운 뒤 다시" # guard:f-child-branch
+    note "자식 브랜치 $k 가 남아 있다(이미 $KEEP 에 들어 있음) — 지우지 않는다, 필요하면 task-finish.sh $k --into $TASK"
+  done
+
+  # 4. 정리 — 검사를 다 통과한 뒤에만. git worktree remove 는 --force 없이(그새 더러워졌으면 git 이 거절한다) # guard:f-no-force
+  while IFS= read -r w; do
+    [ -n "$w" ] && [ -d "$w" ] || continue
+    git worktree remove "$w" || die "worktree 제거 실패: $w — 원인을 본 뒤 다시(멱등)" # guard:f-wt-remove
+    note "worktree 제거: $w"; did=1
+  done <<EOF2
+$wt_list
+EOF2
+  git worktree prune # guard:f-prune
+  if [ -n "$LOID" ]; then
+    git update-ref -d "refs/heads/$TASK" "$LOID" || die "로컬 $TASK 삭제 실패 — 검사 뒤 움직였을 수 있다, 다시 실행" # guard:f-cas
+    git config --remove-section "branch.$TASK" 2>/dev/null || true   # git branch -D 처럼 추적 설정도 지운다(없으면 그만)
+    note "브랜치 삭제: $TASK (보존 위치 $KEEP)"; did=1
+  fi
+  # 출고(머지) 뒤에는 원격 feature 도 필요 없다 — release.sh ship 이 대개 먼저 지운다. 열린 PR 이면 head 라 남긴다
+  if [ "$PR_STATE" = MERGED ] && [ -n "$ROID" ]; then
+    lease="--force-with-lease=refs/heads/$TASK:$ROID" # guard:f-lease
+    git push -q "$lease" origin ":refs/heads/$TASK" || die "원격 브랜치 $TASK 삭제 실패" # guard:f-remote-del
+    note "원격 브랜치 삭제: $TASK"; did=1
+  fi
+
+  [ "$did" = 1 ] || note "정리할 것 없음 — 이미 정리됨"
+  echo "✔ $TASK 정리 완료 — 보존 위치 $KEEP"
+  if [ "$PR_STATE" = OPEN ]; then
+    echo "□ 다음: 출고 대기(열린 PR #$PR_NUM). 묶음 코디는 여기서 끝 — 출고 중 수정이 필요하면 본체가 feature worktree 를 다시 열고 묶음 코디를 재기동한다(bundle.md 6). LA 는 그대로"
+  else
+    echo "□ 다음: 출고된 묶음의 남은 로컬 정리 끝. LA 전이는 release §7 1번"
+  fi
+}
+case "$TASK" in feature/*) finish_feature; exit 0 ;; esac
 
 # 0. 안전 확인
 case "$PWD/" in "$WT/$TASK"*) die "작업 worktree 안에서 실행 금지 — 본체나 다른 위치에서 실행" ;; esac

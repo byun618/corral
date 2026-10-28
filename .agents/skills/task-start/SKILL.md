@@ -49,7 +49,7 @@ description: >-
      LA 부모가 checkpoint 라는 것만으로 묶음 자식이 되지 않는다(판단 기준은 의존이다).
    - **체크포인트 시작**(묶음 열기): LA kind 가 checkpoint 인 일감 자체를 시작하면 이 경로다(분해 뒤 자식이 하나뿐이면 묶음 코디 절차 2 가 접는다). 작업 브랜치 `LIFE-MMM-<슬러그>` 를 만들지 않는다. `origin/main` 최신에서 feature 를 만들어 origin 에 push 하고,
      feature worktree 를 그 feature 체크아웃으로 연다 — 이 worktree 가 **묶음 코디**의 작업 worktree 다. 만료일(기본 시작일 + 2주)을 00-start 에 적는다.
-     feature 가 이미 있으면(묶음 코디 없이 자식만 시작된 경우) 만들기·push 는 건너뛰고 feature worktree 와 묶음 코디만 연다.
+     feature 가 이미 있으면(묶음 코디 없이 자식만 시작된 경우, 출고 중 수정으로 정리된 feature worktree 를 다시 여는 경우 — 묶음 코디 절차 6) 만들기·push 는 건너뛰고 feature worktree 와 묶음 코디만 연다.
      **본체가 이미 분해·자식 시작을 했어도 묶음 코디는 띄운다** — 00-start 분해 상태는 3단계.
      묶음 코디가 하는 일은 [묶음 코디 절차](../task-coordinate/references/bundle.md)가 원본이다.
    ```bash
@@ -69,7 +69,8 @@ description: >-
    `--worktree path:<자식 작업 worktree> --parent-worktree path:<feature worktree>`). **실패는 경고만** — 거절 원문을
    00-start 에 남기고 진행한다. 독립 작업은 루트로 둔다. 그 능력이 없는 매핑이면 이 단계는 공백이다.
    재개는 기존 worktree와 코디네이터 터미널을 확인한다. 활성 코디네이터가 있으면 그 세션으로
-   이어가며 새로 만들지 않는다. 세션이 없을 때만 기록된 도구로 재기동한다. 묶음 코디도 같다(묶음 코디 절차 머리).
+   이어가며 새로 만들지 않는다. 세션이 없을 때만 기록된 도구로 재기동한다. 묶음 코디도 같다(묶음 코디 절차 머리) —
+   정리를 마쳐 작업 worktree 가 사라진 묶음 코디 세션은 활성으로 세지 않는다(묶음 코디 절차 6).
 3. **기동 전에 선택 기록**: `corral-specs/LIFE-NNN-<슬러그>/00-start.md`를 작성하고 corral-specs 에 그 폴더만 커밋·push 한다
    (AGENTS.md 「산출물 규칙」의 커밋 명령). 작업 worktree 에는 산출물을 두지 않는다.
    최소 항목: LIFE-N, 슬러그, 작업 브랜치·**분기 기준(main / feature 브랜치와 그 만료일)**·절대 worktree 경로,

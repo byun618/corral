@@ -1,7 +1,7 @@
 /**
  * LIFE-409 F9 — the transition table, startability, the reconcile decision and the store guard,
  * pinned as units. The live behaviour these rules produce is measured separately by
- * `scripts/l409/*` against a real backend; these tests pin the rules themselves so a later change
+ * the LIFE-409 gate scripts against a real backend; these tests pin the rules themselves so a later change
  * to them cannot pass unnoticed.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -679,7 +679,7 @@ describe('LIFE-409 r3 — the rules r2 left unpinned (M11, M12 = C26, C27)', () 
 //
 // Sender judgment, Delivery/ACK and the recovery table are pure functions over the stored document
 // plus one observation, so they are pinned here; the live behaviour they produce is measured by
-// `scripts/l410/*` against a real backend and a real provider pane.
+// the LIFE-410 gate scripts against a real backend and a real provider pane.
 // =================================================================================================
 
 import {

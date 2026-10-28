@@ -37,7 +37,7 @@ Chosen option: "develop 을 뺀 release 브랜치", because 합친 결과의 확
 
 ### Confirmation
 
-`app/scripts/l703/release-test.sh`·`mutate.sh`(가드 변이 쌍)·`app/scripts/l704/retro-test.sh`, release 스킬 순서.
+`app/scripts/release-check/release-test.sh`·`mutate.sh`(가드 변이 쌍)·`retro-test.sh`, release 스킬 순서.
 
 ## Pros and Cons of the Options
 

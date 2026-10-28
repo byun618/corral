@@ -192,7 +192,7 @@ PATH 와 다른 프로필(`--socket`·`--instance`)은 이 점검 밖이다. `st
   남기고 이 매핑을 고친다.
 - **복구**: 런타임이 꺼져 있으면 사용자가 데스크톱 앱을 띄운다. 런타임·backend 는
   `CLAUDE_CODE_*`·`CLAUDECODE`·`CLAUDE_PID`·`CLAUDE_EFFORT`·`ORCA_AGENT_HOOK_*` 를 **제거한 env** 로 띄운다
-  (`app/scripts/l394/env.mjs` 규칙). pane 이 backend 에서 env 를 상속하므로 마커가 남으면 provider 가 세션
+  (`app/scripts/harness-env/env.mjs` 규칙). pane 이 backend 에서 env 를 상속하므로 마커가 남으면 provider 가 세션
   기록을 쓰지 않아 『본문 주입』의 배달 판정이 조용히 무력화된다 — `record.unavailableReason` 이 null 이 아니면
   마커 상속부터 의심한다.
 - **이 점검이 보지 않는 것 — 자식 pane 의 PATH.** `capability-check` 와 `status` 는 **내 셸**에서 corral 이

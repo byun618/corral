@@ -2,7 +2,7 @@
 // LIFE-602 수정 1 — Codex 리뷰 r1 재현(`raw/review/codex-r1-raw/review.test.tsx`)을 가져와 회귀 시험으로 둔다. 기대값은 리뷰의 것 그대로이고,
 // 동작을 바꾸기로 한 두 곳(L: 상세를 받기 전 편집 진입을 막음 · Q: 복원할 수 없는 완료 갈래는 되돌리기를 막음)만 그 결정에 맞춰 고쳤다.
 // 지적별 시험: R1-A = A·B·G · R1-B = L · R1-C = H·H2·H3 · R1-D = C·D · R1-E = I · R1-G = Q·Q2 · R1-H = E·K · R1-I = J(+편집기) · O = 잠금 중 되돌리기(지적 아님).
-// R1-F(⌘B·⌘K) 는 `useKeybindings.editor.test.tsx` 와 격리 Electron(`scripts/l602/q-keys.mjs`).
+// R1-F(⌘B·⌘K) 는 `useKeybindings.editor.test.tsx` 와 격리 Electron(LIFE-602 관문 `q-keys.mjs`).
 // 실제 WorkService(모의 출처 · 메모리 활동 저장소) 또는 LaSource + 루프백 LA 모의 MCP 를 preload 자리에 잇는다. mixed 검사(tsconfig.mixed.json).
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'

@@ -2,7 +2,7 @@
 import fs from 'node:fs'
 import type { CollectorDeps, HttpResponse } from './collector.js'
 
-export const TEST_TOKEN = 'tok-SECRET-l636-0123456789'
+export const TEST_TOKEN = 'tok-SECRET-l636-0123456789' // gitleaks:allow — 테스트 가짜 토큰
 export const NOW = Date.parse('2026-10-18T12:30:00Z')
 
 export type Call =

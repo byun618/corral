@@ -1,2 +1,0 @@
-# pc-r3a-keycode — 가드를 뺀(고치기 전 keyCode 229 거름) 사본에서 실패해야 하는 시험(raw/claude/f3/pc/pc-r3a-keycode.txt)
-src/renderer/src/components/TasksPage.create.test.tsx > 수정 3 (리뷰 r3) > R3-A 한글 자판 `C` 가 keyCode 229 로 와도 열린다 — 조합(isComposing)일 때만 무시

@@ -6,7 +6,7 @@
 //
 // 기동 경로는 새로 만들지 않고 기존 자산을 쓴다 (C11): `cli/corral.mjs open` + `CORRAL_ELECTRON`
 // 래퍼로 `--remote-debugging-port` 를 Electron 바이너리에 직접 넘긴다 —
-// `app/scripts/l391-first/gui-verify.mjs:38-41` 이 Electron 44 에서 이 방법으로 붙은 전례다.
+// LIFE-391 관문 `gui-verify.mjs:38-41` 이 Electron 44 에서 이 방법으로 붙은 전례다.
 
 /* global document -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
 import fs from 'node:fs'
@@ -88,7 +88,7 @@ export async function launchCorral({ appRoot, workDir, port, logDir, onSpawn = n
   env.CORRAL_BACKEND_SOCKET = backendSocket
   env.CORRAL_SESSION = session
 
-  // Electron 바이너리에 디버깅 포트를 직접 먹이는 래퍼 (l391-first/gui-verify.mjs 전례).
+  // Electron 바이너리에 디버깅 포트를 직접 먹이는 래퍼 (LIFE-391 관문 `gui-verify.mjs` 전례).
   const wrapper = path.join(workDir, 'corral-electron')
   const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`
   fs.writeFileSync(
@@ -306,7 +306,7 @@ export async function applyCorralState(handle, { tabCount, agents, agentOffset =
       // LIFE-493 — 두 보고 사이에 **corral main 이 working 을 본 뒤** idle 을 보낸다. 붙여 보내면 main 이 `unknown → done` 만
       // 보고(working 을 못 봄) 471 장부가 그것을 완료로 세지 않는다(「unknown → idle/done 은 세지 않는다」, `unread.ts`) — 탭 벨·
       // 행 굵기가 안 선다. 실측: after-t1-a `done` 축 불일치, debug-done-keep 회차의 main 이력 [unknown] → done(snapshot).
-      // 471 격리 실행(`l471/unread-isolated.mjs` `report`)도 같은 이유로 working 이 보인 뒤 idle 을 보낸다.
+      // 471 격리 실행(LIFE-471 관문 `unread-isolated.mjs` `report`)도 같은 이유로 working 이 보인 뒤 idle 을 보낸다.
       if (reports.length > 1 && step === 0) {
         await until(
           async () => {

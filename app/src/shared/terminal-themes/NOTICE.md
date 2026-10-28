@@ -5,7 +5,7 @@
 이 폴더의 테마 데이터 30개(`defaults.ts`·`popular-dark-core.ts`·`popular-dark-extended.ts`·`popular-light.ts`·`classic.ts`)와
 묶음 파일(`types.ts`·`shared.ts`·`index.ts`·`popular-dark.ts`)은 **Orca v1.4.198** (커밋 `e0826956`)
 `src/renderer/src/lib/terminal-themes/` 에서 값·이름·구조를 그대로 옮겼다. 바꾼 것은 import 경로의 `.js` 꼬리와 각 파일 머리 주석뿐이다.
-값이 원본과 같은지는 `app/scripts/l512/theme-parity.mjs` 가 원본 파일을 읽어 기계 대조한다.
+값이 원본과 같은지는 `app/scripts/vendored-assets/theme-parity.mjs` 가 원본 파일을 읽어 기계 대조한다.
 
 - 기본 다크 `Ghostty Default Style Dark` 는 Ghostty 기본 색에서 왔다. Orca 가 선택 배경만 Ghostty 원본 `#3e4451` 에서
   `#5a7898` 로 올렸다(원본 주석 `defaults.ts` 그대로 유지).

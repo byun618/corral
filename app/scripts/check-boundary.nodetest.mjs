@@ -1,12 +1,12 @@
 // LIFE-518 K3ⓖ — check:boundary 가 **실제 누출은 계속 잡고** 오탐 꼴은 통과시키는지 `npm test` 에서 지킨다.
-// 대조 묶음·실행기는 scripts/l518/boundary-probes.mjs (src/ 전체를 임시 폴더에 복사해서 돌린다 — 실제 src/ 무접촉).
-// 기준 검사기와의 전후 행렬은 scripts/l518/k3-matrix.mjs 가 따로 낸다.
+// 대조 묶음·실행기는 scripts/boundary-probes/boundary-probes.mjs (src/ 전체를 임시 폴더에 복사해서 돌린다 — 실제 src/ 무접촉).
+// 기준 검사기와의 전후 행렬은 LIFE-518 관문(`k3-matrix.mjs`)이 따로 냈다.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
-import { APP_DIR, PROBES, cellState, runProbes } from './l518/boundary-probes.mjs'
+import { APP_DIR, PROBES, cellState, runProbes } from './boundary-probes/boundary-probes.mjs'
 
 test('check:boundary — 양성 대조는 잡고 음성 대조(오탐 꼴)는 통과시킨다', () => {
   const { clean, cells } = runProbes({ checkerSource: fs.readFileSync(path.join(APP_DIR, 'scripts/check-boundary.mjs'), 'utf8') })

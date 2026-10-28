@@ -1,7 +1,0 @@
-#!/bin/sh
-# LIFE-513 fix2 R2-02 가짜 pgrep — L513_FAKE=cwd 이면 claude 하나(pid 777)를 낸다. 그 cwd 는 가짜 lsof 가 fixture 로 답한다.
-if [ "${L513_FAKE:-none}" = cwd ] && [ "$1" = -x ] && [ "$2" = claude ]; then
-  echo 777
-  exit 0
-fi
-exit 1

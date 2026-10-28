@@ -112,7 +112,7 @@ describe('E7ⓑ 좁혀 찾기', () => {
 // fixture 로 고정했다 — 히스토리(얕은 클론·재필터)와 무관하게 같은 표를 본다. specs/00-project.md 를 기대하던 q11 은
 // 이 레포에 남는 파일로 바꿨다. fixture 가 없으면 읽기에서 실패한다(조용히 건너뛰지 않는다).
 const BASE = '8f9c45298'
-const baseFiles = readFileSync(new URL('./fixtures/l593-e2-base-files.txt', import.meta.url), 'utf8')
+const baseFiles = readFileSync(new URL('./fixtures/quick-open-base-files.txt', import.meta.url), 'utf8')
   .split('\n')
   .filter((rel) => rel !== '')
 const TABLE: { id: string; query: string; expected: string; within: number }[] = [

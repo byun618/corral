@@ -1,6 +1,6 @@
 // hook 수준 시험용 가짜 React·DOM (LIFE-469 수정 라운드 1). 렌더러에는 jsdom·testing-library 가 없어 실제 hook 을
 // 그대로 돌리되, React 의 상태·효과 스케줄과 DOM 사각형·이벤트 전달만 손으로 흉내 낸다. 브라우저 실제 click 생성·레이아웃은
-// 격리 실행(`scripts/l469/reorder-isolated.mjs`)이 본다.
+// 격리 실행(LIFE-469 관문 `reorder-isolated.mjs`)이 본다.
 //
 // 쓰는 법: 시험 파일에서 `vi.mock('react', () => import('./fake-react.test-helper.mjs'))` 로 갈아 끼운다.
 

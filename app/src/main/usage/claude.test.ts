@@ -55,7 +55,7 @@ describe('Claude 자격 증명(E3ⓐ) — 키체인 → 파일, 읽기만', () =
   it('키체인 service·account — 기본 / CLAUDE_CONFIG_DIR 접미사(sha256 8 hex) / $USER 허용 문자', () => {
     expect(claudeKeychainService(null)).toBe('Claude Code-credentials')
     expect(claudeKeychainService('/Users/x/.claude-work')).toMatch(/^Claude Code-credentials-[0-9a-f]{8}$/)
-    expect(claudeKeychainAccount('byun')).toBe('byun')
+    expect(claudeKeychainAccount('user')).toBe('user')
     expect(claudeKeychainAccount('a b')).toBe('claude-code-user')
     expect(claudeKeychainAccount(undefined)).toBe('claude-code-user')
   })

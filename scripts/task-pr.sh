@@ -8,7 +8,7 @@
 #   --verdict 판정문 (corral-specs 상대경로). 기본 <…>/verdict.md (존재·커밋 확인, 본문엔 위치만 텍스트로)
 # corral-specs = 작업 산출물 레포 (LIFE-705). 기본 본체 checkout 옆 폴더, CORRAL_SPECS 로 바꾼다
 #   --draft   draft 로 연다 (검증용 PR)
-# 흐름은 life-assistant issue-merge Phase 0~2 모양: 상태 파악 → 미커밋 거절 → push -u → 같은 head 의 열린 PR 재사용/없으면 생성.
+# 흐름: 상태 파악 → 미커밋 거절 → push -u → 같은 head 의 열린 PR 재사용/없으면 생성.
 # 멱등 — 다시 돌리면 같은 PR 의 본문만 갱신하고 PR 을 하나 더 만들지 않는다. 본체 밖 어디서 실행해도 된다.
 set -euo pipefail
 

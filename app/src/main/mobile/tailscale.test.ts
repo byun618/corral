@@ -19,7 +19,7 @@ import {
   withoutRoot,
 } from './tailscale.js'
 
-const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../scripts/l577/fake-tailscale.mjs')
+const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../scripts/mobile-repro/fake-tailscale.mjs')
 const dirs: string[] = []
 afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })

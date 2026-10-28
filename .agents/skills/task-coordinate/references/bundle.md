@@ -95,9 +95,19 @@ git fetch origin main && git merge origin/main && git push origin feature/LIFE-M
    사용자에게 직접 실행·확인을 요청한다(실행 방법 한 줄).
 2. 묶음 폴더에 `verdict.md`(자식 판정 링크·묶음 확인 결과 — 판정표는 `.agents/rules/validation.md` 7칸)·`pr.md`(자식들을 묶어 task-coordinate §8 의 PR 원고 방식으로)·
    `handoff-main.md`(PR base `main`, 실린 자식 일감, LA 다음 전이)를 쓴다. 출고 회고(release §4)는 이 `verdict.md` 의 자식 판정 링크로 자식 폴더를 찾는다.
-3. **⛔ 출고 승인 게이트** — 보고하고 멈춘다(PR 생성 전). 승인이 오면 묶음 폴더를 커밋·push 하고 `scripts/task-pr.sh feature/LIFE-MMM-<슬러그>` 로 feature → main PR 하나를 연다.
-   스크립트의 「다음」 안내대로 남은 자식 worktree 가 없는지 본다.
-4. 사용자에게 PR 번호·`handoff-main.md` 절대경로를 보고하고 끝낸다. **묶음 코디의 수명은 여기까지다** — 출고는 본체(release).
-   feature worktree 는 출고 때까지 남긴다 — 아래 「출고 중 수정」의 재개 자리다. 출고 뒤 이 세션과 feature worktree·로컬 feature 브랜치 정리는 release §7 4번이다.
-5. **출고 중 수정**(release §2)이 묶음 PR 에 필요하면: 본체가 묶음 코디를 같은 feature worktree 에서 재개한다(task-start 재개 규칙 — 세션이 없을 때만 재기동).
-   묶음 코디는 수정 자식을 feature 에서 시작해(3 절) 반영을 받고(5 절) feature 를 push 하고, 이 절 2 에서 쓴 `verdict.md` 자식 판정 링크와 `handoff-main.md` 실린 자식에 수정 자식을 더해 커밋·push 한 뒤 본체에 알린다(4 의 묶음 → 본체 통로) — 본체가 같은 PR 을 다시 `gather` 한다.
+3. **⛔ 출고 승인 게이트** — 보고하고 멈춘다(PR 생성 전). 승인이 오면 묶음 폴더를 커밋·push 하고 이 feature worktree 에서 `scripts/task-pr.sh feature/LIFE-MMM-<슬러그>` 로 feature → main PR 하나를 연다.
+4. **정리까지 한다.** 정리는 feature worktree 를 지우므로 **묶음 코디 세션의 마지막 실행**이다 — 이후 도구 호출을 하지 않는다.
+   `task-finish.sh` 는 feature worktree 안 실행을 거절하므로 본체 경로에서 본체의 스크립트로 돌린다:
+   `cd <본체 절대경로> && scripts/task-finish.sh feature/LIFE-MMM-<슬러그>` — PR 이 있고 로컬 feature 가 원격 사본에 다 들어 있고 feature worktree 가 깨끗하고
+   남은 자식(자식 worktree·feature 에 안 들어간 자식 브랜치)이 없음을 확인한 뒤 feature worktree 와 로컬 feature 브랜치를 정리한다. feature 는 원격(PR head)에 남는다.
+   자식은 upstream 이 원격 feature 이거나 feature 고유 커밋을 품은 브랜치·worktree 로 센다 — **upstream 이 원격 feature 가 아니고(`--no-track` 으로 땄거나 뒤에 `push -u` 로 바뀜)
+   feature 의 첫 고유 커밋보다 먼저 딴 자식은 못 센다**. 자식 중 하나라도 `push -u`·`--no-track` 을 썼고 첫 자식 반영 전에 딴 것이면 정리 전에 `git worktree list` 로 자식 worktree 를 직접 본다.
+   남은 자식이 있으면 멈춘다 — 그 자식의 `--into` 를 기다리거나 사용자에게 보고한다. 스크립트가 실패하면 멈추고 원문을 보고한다 — 남은 정리는 같은 명령으로 이어 간다(멱등).
+   사용자에게 스크립트 출력 원문과 함께 PR 번호·`handoff-main.md` 절대경로를 보고하고 "PR 생성·정리 완료, 출고 대기"라고 끝낸다.
+   **묶음 코디의 수명은 여기까지다** — 출고는 본체(release).
+5. **출고 중 수정**(release §2)이 묶음 PR 에 필요하면: 본체가 feature worktree 를 **다시 열고** 묶음 코디를 재기동한다 — task-start 2단계 「체크포인트 시작」의
+   feature 가 이미 있는 경우(만들기·push 는 건너뛰고 feature worktree 블록 `git worktree add "$ROOT/.claude/worktrees/LIFE-MMM-<슬러그>" feature/LIFE-MMM-<슬러그>` 와 묶음 코디만).
+   로컬 feature 가 없어도 원격 feature(PR head)에서 추적 브랜치를 만들어 연다. 재기동된 묶음 코디는 머리의 재개 규칙(열린 PR)으로 이 절에 온다.
+   정리(이 절 4)를 마친 옛 묶음 코디 세션은 작업 폴더(feature worktree)가 사라졌으므로 쓰지 않는다 — 남아 있으면 『회수·정리』로 닫고 새로 기동한다.
+   묶음 코디는 수정 자식을 feature 에서 시작해(3 절) 반영을 받고(5 절) feature 를 push 하고, 이 절 2 에서 쓴 `verdict.md` 자식 판정 링크와 `handoff-main.md` 실린 자식에 수정 자식을 더해 커밋·push 한 뒤 본체에 알린다(4 절의 묶음 → 본체 통로) — 본체가 같은 PR 을 다시 `gather` 한다.
+   알린 뒤 이 절 4 의 정리를 다시 한다(마지막 실행).

@@ -44,7 +44,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - 판정 규칙(다수결 기각 금지·수렴 조건·수정 상한·테스트 계층·경량/전체 경로)은 task-coordinate §2·§3·§5·§6
 - **사용자 승인 게이트 3단 (자율 진행 금지 지점)**: ⓪ 킥오프(구현 워커 기동 전) ① 채택(작업 브랜치 머지 전)
   ② 출고(PR 생성 전). 게이트 사이는 자율 진행하되 게이트에서 멈추고 보고한다 — 보고할 내용은 task-coordinate 의 각 게이트 절. 묶음 코디의 게이트(분해 승인 ⓪·출고 승인)는 task-coordinate references/bundle.md 2·6.
-  worktree 는 출고 승인 전까지 유지 — 사용자가 직접 실행·확인할 수 있는 상태. feature worktree 는 release 머지(출고)까지(task-coordinate references/bundle.md)
+  worktree 는 출고 승인 전까지 유지 — 사용자가 직접 실행·확인할 수 있는 상태. feature worktree 도 같다 — 묶음 코디가 출고 승인(PR 생성) 직후 정리한다(task-coordinate references/bundle.md 6)
 - 작업이 끝나거나 막히면 반드시 사용자에게 보고 — 조용한 완료 금지
 - LA 상태는 코디(진행)·본체(출고)가 forward-only 로 전이한다 — 시점은 각 스킬의 해당 절 첫 줄
 
@@ -55,7 +55,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - **main 반영은 PR 머지로만** — 출고 때 scripts/release.sh 가 고른 PR 을 release 브랜치에 순서대로 모으고(검사 없이 순서 merge, 충돌이면 멈춤)
   release → main PR 하나를 merge commit 으로 머지한다 — 원래 PR 은 기본 브랜치에서 간접 머지로 MERGED 를 가정하고 확인 안 되면 exit 13(C14 실측 전, squash·rebase 머지는 레포 설정으로 꺼 둠).
   PR CI 는 아직 없다 — 후속 LIFE-575. main 직접 push·웹 UI 머지 금지 — main 에 직접 올라가는 것은 release.sh 의 태그뿐이다.
-  Free 플랜 private 레포라 브랜치 보호가 없다(403) — 서버 강제 없이 규약과 스크립트 가드로 막는다
+  공개 레포 ruleset 「main 보호」가 서버에서 막는다 — main 삭제·force push 금지, PR 필수(승인 0·merge commit 만), 우회 없음(LIFE-718). required check 는 PR CI 전이라 없다
 - **묶음 브랜치 feature/LIFE-NNN-<슬러그>** (NNN = 체크포인트): 서로 의존하는 작업 묶음만(체크포인트 시작 — task-coordinate references/bundle.md 2). 자식 작업 브랜치는 feature 에서
   따고 feature 로 로컬 merge, 묶음이 끝나면 feature → main PR 하나. main 이 움직이면 main 을 feature 로 merge(rebase 금지 —
   살아 있는 worktree). 독립 작업은 main 에서 따고 main 대상 PR. 그 외 체크포인트·프로젝트 단위 통합 브랜치는 금지

@@ -27,7 +27,7 @@ function localDate(ms: number): string {
   const date = new Date(ms)
   return [date.getFullYear(), date.getMonth() + 1, date.getDate()].map((part, index) => index === 0 ? String(part) : String(part).padStart(2, '0')).join('-')
 }
-/** 행 글 기대값 — fixture 시계(2026-10-10 근처)는 NOW 보다 14일 넘게 앞이라 숨김 표시가 붙는다. 경계는 `DONE_HIDE_MS` 와 따로 적은 14일. */
+/** 행 글 기대값 — 씨앗 그대로의 fixture 시계(2026-10-10 근처)는 NOW 보다 14일 넘게 앞이라 숨김 표시가 붙는다(NOW 근처 씨앗은 「방금 완료」 시험). 경계는 `DONE_HIDE_MS` 와 따로 적은 14일. */
 const rowText = (ms: number): string => `${localDate(ms)}${NOW - ms >= 14 * DAY ? ' · 보드에서 숨김' : ''}`
 
 let host: HTMLDivElement
@@ -245,6 +245,21 @@ describe('D4·D5 Jira 상세 「완료」 행', () => {
     expect(el('[data-issue-status]').getAttribute('data-issue-status')).toBe('10011')
     expect(categoryChanged(r, JIRA_FIXTURE_IDS.review)).toBe(entered)
     expect(doneCell()?.textContent).toBe(rowText(entered))
+  })
+
+  it('D5ⓐ 방금 완료 → 「· 보드에서 숨김」 없음(fixture 시계를 NOW 근처로 씨앗)', async () => {
+    // fixture 전이 시각 = 이슈 `updated` + 1분(`record`). 씨앗을 NOW − 5분으로 두면 진입 시각이 NOW − 4분 — 실제로 흔한 「방금 옮김」.
+    const r = await rig({ seed: (server) => {
+      const issue = server.issue(JIRA_FIXTURE_IDS.review)
+      if (issue === null) throw new Error('CORE-4')
+      issue.updated = NOW - 5 * MINUTE
+    } })
+    await openFromList('CORE-4')
+    await pick('10003')
+    const entered = categoryChanged(r, JIRA_FIXTURE_IDS.review)
+    expect(entered).toBe(NOW - 4 * MINUTE)
+    expect(doneCell()?.textContent).toBe(localDate(entered))
+    expect(doneCell()?.textContent).not.toContain('보드에서 숨김')
   })
 
   it('D5ⓑ 완료 → 비완료: 응답을 기다리지 않고 사라진다', async () => {

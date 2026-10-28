@@ -142,6 +142,13 @@ describe('doneRow — 모델(경계)', () => {
   it('done + 해석되는 doneAt → 로컬 날짜', () => {
     expect(at('done', ago(3 * DAY))).toEqual({ date: localDate(ago(3 * DAY)), hidden: false })
   })
+  // UTC 날짜 ≠ 로컬 날짜인 순간 — 00:30Z·03:00Z 는 서쪽(음수 오프셋, LA 등), 16:30Z·23:30Z 는 동쪽(KST 등)에서 날이 갈린다.
+  // 그래서 doneAt 의 UTC 날짜(`slice(0, 10)`)를 쓰는 회귀는 UTC 가 아닌 시간대면 어디서든 여기서 실패한다.
+  const SPLIT = ['2026-10-25T00:30:00.000Z', '2026-10-25T03:00:00.000Z', '2026-10-25T16:30:00.000Z', '2026-10-25T23:30:00.000Z']
+  it('로컬 날짜 — UTC 날짜와 갈리는 순간도 이 기계의 로컬 날짜', () => {
+    for (const doneAt of SPLIT) expect(at('done', doneAt)?.date, doneAt).toBe(localDate(doneAt))
+    if (new Date(NOW).getTimezoneOffset() !== 0) expect(SPLIT.some((doneAt) => localDate(doneAt) !== doneAt.slice(0, 10))).toBe(true)
+  })
   it('경계 — 정확히 14일 = 숨김, 14일 − 1분 = 숨김 아님', () => {
     expect(DONE_HIDE_MS).toBe(14 * DAY)
     expect(at('done', ago(14 * DAY))?.hidden).toBe(true)
@@ -164,7 +171,8 @@ describe('D4 상세 「완료」 행 — 모의 출처', () => {
   }
 
   it('ⓐ 「마감」 바로 뒤 · 로컬 날짜 · 최근이면 숨김 표시 없음', async () => {
-    const doneAt = ago(3 * DAY)
+    // KST 등 동쪽 시간대에서 UTC 날짜와 갈리는 순간(서쪽은 LA fixture 의 03:00Z 시드가 가른다).
+    const doneAt = '2026-10-25T23:30:00.000Z'
     await mockRig({ seed: seedDone(doneAt) })
     await openFromList('CORE-7')
     const cell = doneCell()

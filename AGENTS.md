@@ -55,7 +55,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - **main 반영은 PR 머지로만** — 출고 때 scripts/release.sh 가 고른 PR 을 release 브랜치에 순서대로 모으고(검사 없이 순서 merge, 충돌이면 멈춤)
   release → main PR 하나를 merge commit 으로 머지한다 — 원래 PR 은 기본 브랜치에서 간접 머지로 MERGED 를 가정하고 확인 안 되면 exit 13(C14 실측 전, squash·rebase 머지는 레포 설정으로 꺼 둠).
   PR CI 는 아직 없다 — 후속 LIFE-575. main 직접 push·웹 UI 머지 금지 — main 에 직접 올라가는 것은 release.sh 의 태그뿐이다.
-  Free 플랜 private 레포라 브랜치 보호가 없다(403) — 서버 강제 없이 규약과 스크립트 가드로 막는다
+  공개 레포 ruleset 「main 보호」가 서버에서 막는다 — main 삭제·force push 금지, PR 필수(승인 0·merge commit 만), 우회 없음(LIFE-718). required check 는 PR CI 전이라 없다
 - **묶음 브랜치 feature/LIFE-NNN-<슬러그>** (NNN = 체크포인트): 서로 의존하는 작업 묶음만(체크포인트 시작 — task-coordinate references/bundle.md 2). 자식 작업 브랜치는 feature 에서
   따고 feature 로 로컬 merge, 묶음이 끝나면 feature → main PR 하나. main 이 움직이면 main 을 feature 로 merge(rebase 금지 —
   살아 있는 worktree). 독립 작업은 main 에서 따고 main 대상 PR. 그 외 체크포인트·프로젝트 단위 통합 브랜치는 금지

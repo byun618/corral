@@ -161,14 +161,14 @@ describe('C2 LA 링크 쓰기 — 능력 켜짐 · add/remove 인자 · LA 609 �
   it('machine 은 한 번만 읽고 저장·지우기·재기동(같은 원천)에 같은 값', async () => {
     let reads = 0
     const harness = await laFixtureHarness()
-    const service = serviceOver({ url: harness.url, machine: async () => { reads += 1; return '변상현의 MacBook Pro' } })
+    const service = serviceOver({ url: harness.url, machine: async () => { reads += 1; return '테스트의 MacBook Pro' } })
     const added = await service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
     if (!added.ok) throw new Error('연결 실패')
     await service.storeLink({ connectionId: added.connection.id, itemId: FIXTURE_IDS.task600, link: LINK, action: 'save' })
     await service.storeLink({ connectionId: added.connection.id, itemId: FIXTURE_IDS.task600, link: LINK, action: 'remove' })
     expect(reads).toBe(1)
-    expect(harness.fixture.workLinkArgs.map((row) => row.args.machine)).toEqual(['변상현의 MacBook Pro', '변상현의 MacBook Pro'])
-    expect(service.settings().machine).toBe('변상현의 MacBook Pro')
+    expect(harness.fixture.workLinkArgs.map((row) => row.args.machine)).toEqual(['테스트의 MacBook Pro', '테스트의 MacBook Pro'])
+    expect(service.settings().machine).toBe('테스트의 MacBook Pro')
     await harness.fixture.stop()
   })
 

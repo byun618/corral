@@ -33,7 +33,7 @@
 #   11 release 브랜치 push·삭제 실패 · 12 release PR 생성·조회 실패 · 13 원래 PR 처리 미완 — MERGED 미확인·head 조회/삭제 실패(출고 자체는 끝남)
 # 재실행 안내의 명령은 설명과 다른 줄에 홀로, 경로는 단일 따옴표로 인용한다(LIFE-599).
 #
-# 검사 없이 순서 머지다 — PR CI 는 아직 없다(LIFE-575), 브랜치 보호는 Free 플랜 private 레포에서 쓸 수 없다(403).
+# 검사 없이 순서 머지다 — PR CI 는 아직 없다(LIFE-575), ruleset 「main 보호」(LIFE-718)는 PR 필수·force push 금지뿐 required check 가 없다.
 # 본체 checkout fast-forward 는 release-ff.sh(LIFE-672), dmg 는 release-dmg.sh, APK 는 release-apk.sh — 셋 다 태그 하나를 입력으로 받는다.
 set -euo pipefail
 

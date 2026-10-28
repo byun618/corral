@@ -25,8 +25,9 @@ task-coordinate §4에서 기동 전에 읽는다. **이 문서에는 도구 명
   돌린다(vitest 는 루트 밖 파일을 수집하지 않는다). node_modules 는 `createRequire(path.join(wt, 'app/package.json'))` 로 푼다.
   작업 폴더 `scripts/` 는 다른 원자료와 같이 코디가 게이트 시점에 자기 폴더로 커밋한다(워커·리뷰어는 커밋하지 않는다). 코드 레포에는
   되풀이해 쓰는 시험·도구만 하는 일 이름으로 둔다 — 시험은 검사 대상 옆, 도구는 `app/scripts/<하는 일>/`, 경로에 LIFE 번호 없이.
-  옛 일감 하네스(LIFE-717 이전 코드 레포의 일감 번호 폴더)는 그 일감 작업 폴더 `scripts/` 에 있고, 돌리는 커밋·worktree 만드는 법은
-  LIFE-717 작업 폴더의 `moved-index.md` 「재현」에 있다. 기본 출력이 worktree 안 `specs/…` 인 것이 있어 쓰면 출력 경로를 작업 폴더로 지정하게 한다
+  옛 일감 하네스(LIFE-717 이전 코드 레포의 일감 번호 폴더)는 `corral-specs/LIFE-<번호>-*/scripts/<원래 폴더명>/`(예: `scripts/l410/`)에 있고,
+  폴더별 색인과 돌리는 커밋·worktree 만드는 법은 LIFE-717 작업 폴더(`…-script-cleanup`) 루트 `moved-index.md` 「재현」에 있다.
+  옛 하네스 가운데 기본 출력이 worktree 안 `specs/…` 인 것을 돌릴 때는 출력 경로를 작업 폴더로 지정하게 한다
   (거기 남은 파일은 `task-finish.sh` 가 정리 전에 멈춰 알린다).
 - native advisor는 서버에서 워커의 대화를 받아 상담한다. 별도 구현자·독립 리뷰어로 세지 않고, 호출 시점·
   횟수는 모델이 정한다. 어려운 판단에서 상담하도록 지시하되 "1회 상한"이나 별도 advisor effort를 지원한다고

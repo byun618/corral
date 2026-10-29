@@ -274,3 +274,37 @@
 
 /* --- 사이드바 「작업」 진입 (검색 줄과 같은 문법) --- */
 .sidebar-tasks.is-on { background: color-mix(in srgb, var(--fg) 10%, transparent); color: var(--fg); }
+
+/* --- 부모 칩 · 묶기 레인 (LIFE-745) — 기존 칩·진행 막대 토큰만 쓴다. --- */
+.tasks-parent-chip {
+  align-self: flex-start; max-width: 100%; min-width: 0; height: 18px; display: inline-flex; align-items: center; gap: 4px; padding: 0 6px;
+  border: 0; border-radius: var(--radius-badge); background: var(--bg-chip); color: var(--fg-muted); font: inherit; font-size: 10.5px; cursor: pointer; flex: 0 1 auto;
+}
+.tasks-parent-chip:hover { background: color-mix(in srgb, var(--fg) 10%, transparent); color: var(--fg); }
+.tasks-parent-chip:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.tasks-parent-chip .tasks-kind { width: 10px; height: 10px; }
+.tasks-parent-key { font-family: var(--font-mono); flex: 0 0 auto; }
+.tasks-parent-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tasks-parent-chip.is-loading { color: var(--fg-faint); cursor: progress; }
+.tasks-parent-chip.is-loading .tasks-parent-key, .tasks-parent-chip.is-error .tasks-parent-key { font-family: inherit; }
+.tasks-parent-chip.is-error { color: var(--st-error); }
+.tasks-parent-chip.is-compact { flex: 0 0 auto; height: 16px; padding: 0 4px; }
+.tasks-row .tasks-parent-chip { align-self: center; max-width: 240px; }
+.tasks-working-head .tasks-parent-chip { align-self: center; max-width: 240px; }
+.tasks-key-hit-line { display: flex; align-items: center; gap: 8px; padding-right: 12px; }
+.tasks-key-hit-line > .tasks-key-hit-row { flex: 1; min-width: 0; }
+.tasks-list-group .tasks-parent-chip { align-self: center; max-width: 360px; }
+.tasks-swimlane select { min-width: 64px; }
+.tasks-lanes { display: flex; flex-direction: column; gap: 14px; min-width: min-content; }
+.tasks-lane { display: flex; flex-direction: column; gap: 8px; }
+.tasks-lane-head {
+  position: sticky; left: 0; align-self: flex-start; max-width: 100%; height: 28px; display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--fg-muted); min-width: 0;
+}
+.tasks-lane-head .tasks-parent-chip { align-self: center; height: 22px; font-size: 12px; max-width: 420px; }
+.tasks-lane-toggle { width: 18px; height: 18px; border: 0; background: transparent; color: var(--fg-dim); cursor: pointer; padding: 0; font-size: 11px; }
+.tasks-lane-none { color: var(--fg-dim); font-weight: 500; }
+.tasks-lane-status { color: var(--fg-dim); font-size: 11px; white-space: nowrap; }
+.tasks-lane-progress { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-dim); font-size: 10.5px; white-space: nowrap; }
+.tasks-lane-progress .tasks-progress-bar { width: 64px; }
+.tasks-lane.is-collapsed { gap: 0; }

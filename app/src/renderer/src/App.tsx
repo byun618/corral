@@ -258,6 +258,8 @@ export function App(): React.JSX.Element {
    * 그려지므로, 페이지를 한 번도 안 열어도 마지막 상세가 패널에 복원된다(LIFE-682 A5ⓓ). 닫힌 페이지는 목록을 받지 않는다(읽기 조건이 `open`).
    */
   const [tasksOpen, setTasksOpen] = useState(false)
+  /** 작업 페이지의 만들기·시작 모달이 열려 있다(LIFE-682 r1) — 그동안 앱 단축키는 모달 뒤에 작용하지 않는다(시작 모달은 페이지가 닫힌 터미널 화면에서도 뜬다). */
+  const [tasksModalOpen, setTasksModalOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const sidebarCollapsedRef = useRef(false)
   const toggleSidebar = (): void => {
@@ -1657,7 +1659,7 @@ export function App(): React.JSX.Element {
   // 키는 useKeybindings 가 이미 삼켰으므로 터미널로 새지 않는다. 페이지 닫기(⌘I)·설정·사이드바 접기만 산다.
   const activeHandlers: ShortcutHandlers = { ...handlers }
   if (tasksOpen) for (const action of ACTIONS) if (!TASKS_PAGE_SHORTCUTS.includes(action.id)) activeHandlers[action.id] = () => undefined
-  const keymap = useKeybindings(activeHandlers, modalBlocked || paletteOpen || quickOpenOpen, () => {
+  const keymap = useKeybindings(activeHandlers, modalBlocked || paletteOpen || quickOpenOpen || tasksModalOpen, () => {
     if (mruRef.current === null) return false
     mruCancel()
     return true
@@ -2247,6 +2249,7 @@ export function App(): React.JSX.Element {
             }}
             focus={tasksFocus}
             detailPanel={{ slot: detailSlot, shown: rightPanel.open && rightPanel.view === 'detail', show: () => rightPanel.show('detail'), hide: rightPanel.hide, openPage: openTasks }}
+            onModalChange={setTasksModalOpen}
             headTail={rightPanel.ready && !rightPanel.open ? <RightPanelToggle label="오른쪽 패널 열기" shortcut={rightPanelToggleShortcut} onToggle={rightPanel.toggle} placement="tasks" /> : null}
           />
         </div>

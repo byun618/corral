@@ -122,9 +122,11 @@ export type TasksPageProps = {
   detailPanel: DetailPanel
   /** 머리 오른쪽 끝 — 패널이 닫혀 있으면 여는 단추(LIFE-682 A8). App 이 준다. */
   headTail?: React.ReactNode
+  /** 페이지 모달(만들기·시작)이 열리고 닫힐 때 — App 이 그동안 단축키를 막는다. */
+  onModalChange?: (open: boolean) => void
 }
 
-export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus, detailPanel, headTail }: TasksPageProps): React.JSX.Element {
+export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus, detailPanel, headTail, onModalChange }: TasksPageProps): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
   const [menu, setMenu] = useState<'space' | 'kind' | 'priority' | null>(null)
@@ -193,7 +195,15 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   useLayoutEffect(() => {
     const place = fullActive ? fullSlotRef.current : panelSlot
     if (place === null) { detailHost.remove(); return }
-    if (detailHost.parentNode !== place) place.appendChild(detailHost)
+    if (detailHost.parentNode === place) return
+    // 노드를 옮기면 브라우저가 포커스를 body 로 돌리고 스크롤 그릇의 위치를 0 으로 되돌린다(r1 지적 7) — 옮기기 전 값을 잡아 되돌린다.
+    const active = document.activeElement
+    const focused = active instanceof HTMLElement && detailHost.contains(active) ? active : null
+    const scroller = detailHost.querySelector<HTMLElement>('.issue-detail-scroll')
+    const top = scroller?.scrollTop ?? 0
+    place.appendChild(detailHost)
+    if (scroller !== null) scroller.scrollTop = top
+    if (focused !== null && document.activeElement !== focused) focused.focus({ preventScroll: true })
   }, [fullActive, panelSlot, detailHost])
   useEffect(() => () => detailHost.remove(), [detailHost])
 
@@ -449,12 +459,21 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const viewsRef = useRef(views)
   viewsRef.current = views
   const overlay = creator.modal !== null || starter.open
+  // 상세는 **선택이 있는 한 마운트를 유지**한다(r1 지적 1 — 패널 숨기기·보기 전환에 코멘트·본문 초안을 잃지 않게). 보이지 않는 동안은 host 를 hidden + inert 로
+  // 두어 포커스·Tab·읽기 대상이 되지 않는다(읽기는 `detailMounted` 가 막는다, A5). 만들기·시작 모달이 열린 동안도 host 는 inert(r1 지적 4 — 옛 aside 는 `.tasks-main` 안이라 inert 였다).
+  const detailHidden = selectedId !== null && !detailMounted
+  useLayoutEffect(() => {
+    detailHost.hidden = detailHidden
+    detailHost.inert = detailHidden || overlay
+  }, [detailHidden, overlay, detailHost])
+  // 페이지 모달 열림을 App 에 알린다 — 모달이 열린 동안 App 단축키(⌘L·⌘⇧E·⌘, …)가 모달 뒤에 작용하지 않게(r1 지적 3). 시작 모달은 페이지가 닫힌 터미널 화면에서도 뜬다.
+  useEffect(() => { onModalChange?.(overlay) }, [overlay])
   const leaveFull = (): void => {
     setPrefs({ detailFull: false })
     detailPanel.show()
   }
-  const latest = useRef({ menu, onClose, setPrefs, yieldKeys, viewReason, overlay, openCreate: creator.openModal, fullActive, detailVisible: detailShown && selectedId !== null, leaveFull, hidePanel: detailPanel.hide })
-  latest.current = { menu, onClose, setPrefs, yieldKeys, viewReason, overlay, openCreate: creator.openModal, fullActive, detailVisible: detailShown && selectedId !== null, leaveFull, hidePanel: detailPanel.hide }
+  const latest = useRef({ menu, onClose, setPrefs, yieldKeys, viewReason, overlay, openCreate: creator.openModal, fullActive, detailVisible: detailShown && selectedId !== null, detailMounted, leaveFull, hidePanel: detailPanel.hide })
+  latest.current = { menu, onClose, setPrefs, yieldKeys, viewReason, overlay, openCreate: creator.openModal, fullActive, detailVisible: detailShown && selectedId !== null, detailMounted, leaveFull, hidePanel: detailPanel.hide }
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent): void => {
@@ -470,7 +489,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         if (imeComposing(event)) return
         event.preventDefault()
         if (latest.current.menu !== null) { setMenu(null); return }
-        if (detailEscape.current?.() === true) return
+        // 숨긴 상세의 메뉴·팝오버는 Esc 를 받지 않는다 — 보이지 않는 메뉴를 닫느라 Esc 를 삼키지 않게(r1 지적 2).
+        if (latest.current.detailMounted && detailEscape.current?.() === true) return
         if (typing && target instanceof HTMLElement) { target.blur(); return }
         if (latest.current.fullActive) { latest.current.leaveFull(); return }
         // 옛 「상세 닫기(선택 해제)」 단계 자리 — 고른 작업의 상세가 패널에 보이면 패널을 숨긴다(선택 유지, Q2). 빈 상세 보기는 이 단계를 거치지 않는다.
@@ -846,7 +866,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       <QuickCreateModal model={creator} yieldKeys={yieldKeys} />
       {createPortal(
         <WorkLinksContext.Provider value={links}>
-          {detailMounted ? (
+          {selectedId !== null ? (
             <TaskDetail
               work={workActions}
               detail={detail}

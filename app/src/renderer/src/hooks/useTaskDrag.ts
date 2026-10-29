@@ -22,12 +22,10 @@ const NON_HANDLE = 'button, a, input, textarea, select, [data-no-drag]'
 /** 보기의 스크롤 그릇 — 보드·백로그·작업 중 `.tasks-scroll`, 리스트 `.tasks-list-scroll`. */
 const SCROLLER = '.tasks-scroll, .tasks-list-scroll'
 
-/** 스크롤 그릇의 가시 사각형 — 패널이 덮고 있으면(덮기 폴백) 오른쪽을 패널 왼쪽으로 깎는다. */
-function visibleRect({ scroller, root }: { scroller: HTMLElement; root: HTMLElement | null }): ScrollRect {
+/** 스크롤 그릇의 가시 사각형. 상세는 앱 오른쪽 패널(가운데 영역의 flex 형제)이라 그릇이 이미 패널 왼쪽에서 끝난다(LIFE-682 — 옛 덮기 폴백 분기 삭제). */
+function visibleRect(scroller: HTMLElement): ScrollRect {
   const rect = scroller.getBoundingClientRect()
-  const panel = root?.querySelector<HTMLElement>('.issue-detail:not(.is-full)') ?? null
-  const right = panel === null ? rect.right : Math.min(rect.right, panel.getBoundingClientRect().left)
-  return { left: rect.left, top: rect.top, right, bottom: rect.bottom }
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
 }
 
 function zoneAt(point: Point): HTMLElement | null {
@@ -117,7 +115,7 @@ export function useTaskDrag({ rootRef, active, scope, onStart, onDrop, onEnd }: 
     const tick = (): void => {
       frame = null
       if (scroller === null || !started) return
-      const { dx, dy } = dragScrollStep({ point: pointer, rect: visibleRect({ scroller, root: rootRef.current }) })
+      const { dx, dy } = dragScrollStep({ point: pointer, rect: visibleRect(scroller) })
       if (dx === 0 && dy === 0) return
       const before = { left: scroller.scrollLeft, top: scroller.scrollTop }
       scroller.scrollLeft = before.left + dx

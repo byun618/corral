@@ -113,7 +113,7 @@ describe('C1 상세 그릇', () => {
     expect(q('[data-right-panel-detail] .issue-detail:not(.is-full)')?.getAttribute('data-issue-detail')).toBe('CORE-1')
     click('[data-issue-close]')
     await settle()
-    expect(q('[data-issue-detail]')).toBeNull()
+    expect(q('[data-task-detail-host]:not([hidden]) [data-issue-detail]')).toBeNull()  // LIFE-682 r1 — 숨긴 상세는 마운트를 유지(초안 보존)하고 host 가 hidden
   })
 
   it('Esc 단계 — 메뉴 → 입력 blur → 상세 닫기 → 페이지 닫기', async () => {
@@ -132,7 +132,7 @@ describe('C1 상세 그릇', () => {
     expect(q('[data-issue-detail="CORE-4"]')).not.toBeNull()
     key(document.body, { key: 'Escape' })
     await settle()
-    expect(q('[data-issue-detail]')).toBeNull()
+    expect(q('[data-task-detail-host]:not([hidden]) [data-issue-detail]')).toBeNull()  // LIFE-682 r1 — 숨긴 상세는 마운트를 유지(초안 보존)하고 host 가 hidden
     expect(r.closes).toHaveLength(0)
     key(document.body, { key: 'Escape' })
     expect(r.closes).toHaveLength(1)

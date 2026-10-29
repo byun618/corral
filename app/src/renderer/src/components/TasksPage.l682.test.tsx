@@ -142,7 +142,7 @@ describe('A5 페이지 무관 유지', () => {
   it('ⓓ 대조 — 패널이 숨겨져 있으면 복원한 선택이 있어도 읽지 않는다(상세가 안 보이면 읽기 0)', async () => {
     const r = await rig({ open: false, panelShown: false, prefs: (connectionId) => ({ detail: { connectionId, itemId: 'm-2' } }) })
     await settle()
-    expect(q('.issue-detail')).toBeNull()
+    expect(q('[data-task-detail-host]:not([hidden]) .issue-detail')).toBeNull()
     expect(r.calls.filter((call) => call.op === 'getItem')).toHaveLength(0)
   })
   it('ⓐⓑ 상세를 연 채 페이지를 닫으면 같은 상세가 남고, 그 화면에서 필드 편집이 출처에 쓰인다', async () => {
@@ -198,7 +198,7 @@ describe('A6 닫기 = 숨기기 · Q1 같은 카드', () => {
     expect(q('[data-issue-card="CORE-2"]')?.classList.contains('is-selected')).toBe(true)
     await openCard('CORE-2')
     expect(panelShown()).toBe('false')
-    expect(q('.issue-detail')).toBeNull()
+    expect(q('[data-task-detail-host]:not([hidden]) .issue-detail')).toBeNull()
     expect(q('[data-issue-card="CORE-2"]')?.classList.contains('is-selected')).toBe(false)
     expect(lastDetailPref(r.savedPrefs)).toMatchObject({ itemId: 'm-2' })
     await openCard('CORE-2')
@@ -261,5 +261,124 @@ describe('A8 작업 페이지 머리 끝 — 패널 여는 단추 자리', () =>
     const head = el('.tasks-head')
     expect(head.lastElementChild?.getAttribute('data-head-tail')).toBe('')
     expect(head.lastElementChild?.previousElementSibling?.hasAttribute('data-tasks-close')).toBe(true)
+  })
+})
+
+// LIFE-682 fix r1 — 리뷰 r1 재현 RA·RA2·RC·RD(raw/review/claude-r1/TasksPage.zzr1.test.tsx.txt)를 옮겼다.
+// 하네스의 패널 숨기기(`shown=false`)는 App 의 ✕·같은 카드·⌘L·탐색기 아이콘·⌘⇧E 가 모두 지나는 같은 경로(`detailPanel.shown` 거짓)다.
+function setArea(target: HTMLTextAreaElement, value: string): void {
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(target, value)
+    target.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+const shownDetail = (selector: string): Element | null => q(`[data-task-detail-host]:not([hidden]) ${selector}`)
+
+describe('fix r1 지적 1 — 숨기기·보기 전환에 초안이 남는다(마운트는 선택에, 읽기는 보임에)', () => {
+  it('RA 코멘트 초안 — ✕ 로 숨겼다 같은 카드로 다시 열면 그대로', async () => {
+    await rig({ open: true })
+    await openCard('CORE-2')
+    const area = el('[data-comment-composer] textarea')
+    if (!(area instanceof HTMLTextAreaElement)) throw new Error('textarea')
+    setArea(area, '쓰던 코멘트 초안')
+    click('[data-issue-close]')
+    expect(panelShown()).toBe('false')
+    await openCard('CORE-2')
+    const after = shownDetail('[data-comment-composer] textarea')
+    expect(after instanceof HTMLTextAreaElement ? after.value : null).toBe('쓰던 코멘트 초안')
+  })
+  it('RA2 본문 편집 중 — 같은 카드 재클릭(숨기기) 뒤 다시 열어도 편집기가 열린 채', async () => {
+    await rig({ open: true })
+    await openCard('CORE-2')
+    click('[data-issue-body-edit]')
+    expect(q('[data-issue-body-edit]')).toBeNull()
+    await openCard('CORE-2')
+    expect(panelShown()).toBe('false')
+    await openCard('CORE-2')
+    expect(shownDetail('[data-issue-detail="CORE-2"]')).not.toBeNull()
+    expect(q('[data-issue-body-edit]')).toBeNull()
+  })
+  it('숨긴 상세 host 는 hidden + inert(포커스·Tab 대상 아님)이고, 숨긴 동안 단건 읽기를 더 보내지 않는다', async () => {
+    const r = await rig({ open: true })
+    await openCard('CORE-2')
+    click('[data-issue-close]')
+    await settle()
+    const host = el('[data-task-detail-host]')
+    expect(host.hidden).toBe(true)
+    expect(host.inert).toBe(true)
+    expect(host.querySelector('[data-issue-detail="CORE-2"]')).not.toBeNull()
+    const reads = r.calls.filter((call) => call.op === 'getItem').length
+    await settle()
+    expect(r.calls.filter((call) => call.op === 'getItem')).toHaveLength(reads)
+    await openCard('CORE-2')
+    expect(host.hidden).toBe(false)
+    expect(host.inert).toBe(false)
+  })
+})
+
+describe('fix r1 지적 2 — 메뉴가 열린 채 상세가 숨거나 사라져도 Esc 사슬이 끝까지 내려간다', () => {
+  it('RC 우선순위 메뉴를 연 채 같은 카드 재클릭(숨기기) → Esc 가 페이지 닫기까지', async () => {
+    const r = await rig({ open: true })
+    await openCard('CORE-2')
+    click('[data-field="priority"]')
+    expect(q('[data-detail-menu]')).not.toBeNull()
+    await openCard('CORE-2')
+    expect(panelShown()).toBe('false')
+    key(document.body, { key: 'Escape' })
+    expect(r.closes).toBe(1)
+  })
+  it('선택이 사라져 상세가 언마운트돼도(스페이스 바꾸기) 옛 escapeRef 가 Esc 를 삼키지 않는다', async () => {
+    const r = await rig({ open: true })
+    await openCard('CORE-2')
+    click('[data-field="priority"]')
+    expect(q('[data-detail-menu]')).not.toBeNull()
+    click('[data-space-switch]')
+    click('[data-space-row="all"]')
+    await settle()
+    expect(q('.issue-detail')).toBeNull()
+    key(document.body, { key: 'Escape' })
+    expect(r.closes).toBe(1)
+  })
+})
+
+describe('fix r1 지적 3·4 — 만들기·시작 모달', () => {
+  it('RD 만들기 모달이 열린 동안 패널 상세는 inert, 닫으면 풀린다', async () => {
+    await rig({ open: true })
+    await openCard('CORE-2')
+    key(document.body, { key: 'c' })
+    await settle()
+    expect(q('[data-modal-scrim]')).not.toBeNull()
+    expect(q('.issue-detail')?.closest('[inert]')).not.toBeNull()
+    key(document.body, { key: 'Escape' })
+    await settle()
+    expect(q('[data-modal-scrim]')).toBeNull()
+    expect(q('.issue-detail')?.closest('[inert]')).toBeNull()
+  })
+  it('페이지 모달 열림을 App 에 알린다 — 닫힌 페이지의 시작 모달도(App 이 그동안 단축키를 막는다)', async () => {
+    const r = await rig({ open: true })
+    const changes: boolean[] = []
+    act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, {
+      open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false,
+      onClose: () => { r.closes += 1 }, onOpenSettings: () => {}, onOpenWorktree: () => {}, onModalChange: (open: boolean) => { changes.push(open) },
+    }), createElement(Toaster))))
+    await settle()
+    await openCard('CORE-2')
+    key(document.body, { key: 'c' })
+    await settle()
+    key(document.body, { key: 'Escape' })
+    await settle()
+    act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, {
+      open: false, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false,
+      onClose: () => { r.closes += 1 }, onOpenSettings: () => {}, onOpenWorktree: () => {}, onModalChange: (open: boolean) => { changes.push(open) },
+    }), createElement(Toaster))))
+    await settle()
+    click('[data-issue-start="first"]')
+    await settle()
+    expect(q('[data-modal-scrim]')).not.toBeNull()
+    expect(changes.at(-1)).toBe(true)
+    key(document.body, { key: 'Escape' })
+    await settle()
+    expect(changes.at(-1)).toBe(false)
+    expect(changes.filter((value) => value)).toHaveLength(2)
   })
 })

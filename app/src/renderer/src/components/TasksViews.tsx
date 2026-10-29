@@ -255,7 +255,11 @@ export function IssueCard({ row, rows, all, density, selected, dragging, now, ha
 
 // --- 보드 ---
 
-export type ColumnDragView = { mode: 'target' | 'source' | 'blocked' | 'idle'; reason: string | null }
+/**
+ * `hoverOnly` = 이유 문구를 포인터가 올라간 칸에만 그린다(나머지는 흐림 + title) — 묶기=부모 의 다른 레인 칸이 끌기 시작과 함께
+ * 한꺼번에 문구를 늘려 보드를 밀지 않게(LIFE-745 R1-1). 없으면 기존대로 칸마다 그린다.
+ */
+export type ColumnDragView = { mode: 'target' | 'source' | 'blocked' | 'idle'; reason: string | null; hoverOnly?: boolean }
 
 /** 묶기=부모 의 레인 하나 — 레인과 그 레인의 밴드(칸 구성은 묶기 없음과 같다). */
 export type BoardLane = { lane: ParentLane; bands: BoardBand[] }
@@ -286,9 +290,10 @@ export function Board({ bands, lanes = null, ...rest }: BandsProps & {
     <div className="tasks-lanes" data-tasks-board="" data-tasks-lanes="">
       {lanes.map(({ lane, bands: laneBands }) => {
         const folded = collapsed.has(lane.id)
+        const name = lane.parent === null ? '부모 없음' : parentLabel(lane.parent)
         return (
-          <section key={lane.id} className={`tasks-lane${folded ? ' is-collapsed' : ''}`} data-board-lane={lane.id}>
-            <LaneHead lane={lane} rows={rest.rows} folded={folded} onToggle={() => setCollapsed((current) => {
+          <section key={lane.id} className={`tasks-lane${folded ? ' is-collapsed' : ''}`} data-board-lane={lane.id} aria-label={`${name} 레인`}>
+            <LaneHead lane={lane} name={name} rows={rest.rows} folded={folded} onToggle={() => setCollapsed((current) => {
               const next = new Set(current)
               if (!next.delete(lane.id)) next.add(lane.id)
               return next
@@ -301,13 +306,13 @@ export function Board({ bands, lanes = null, ...rest }: BandsProps & {
   )
 }
 
-function LaneHead({ lane, rows, folded, onToggle }: { lane: ParentLane; rows: TasksRow[]; folded: boolean; onToggle: () => void }): React.JSX.Element {
+function LaneHead({ lane, name, rows, folded, onToggle }: { lane: ParentLane; name: string; rows: TasksRow[]; folded: boolean; onToggle: () => void }): React.JSX.Element {
   const view = useContext(ParentsContext)
   const { parent } = lane
   const status = parent === null ? null : (view?.statusLabel(parent) ?? null)
   return (
     <header className="tasks-lane-head" data-lane-head={lane.id}>
-      <button type="button" className="tasks-lane-toggle" data-lane-toggle="" aria-expanded={!folded} aria-label={folded ? '레인 펼치기' : '레인 접기'} onClick={onToggle}>{folded ? '▸' : '▾'}</button>
+      <button type="button" className="tasks-lane-toggle" data-lane-toggle="" aria-expanded={!folded} aria-label={`${name} 레인 ${folded ? '펼치기' : '접기'}`} onClick={onToggle}>{folded ? '▸' : '▾'}</button>
       {parent === null ? <span className="tasks-lane-none">부모 없음</span> : (
         <>
           <ParentChip parent={parent} compact={false} />
@@ -332,15 +337,16 @@ function Bands({ bands, rows, all, density, selectedId, drag, now, columnView, h
               const zone = columnZone(column)
               const showGap = drag !== null && drag.zone === zone && view.mode === 'target'
               const visible = column.rows
+              const showReason = view.reason !== null && (view.hoverOnly !== true || drag?.zone === zone)
               return (
-                <div key={column.id} className={`tasks-column${column.unmapped ? ' is-unmapped' : ''} drag-${view.mode}${drag?.zone === zone ? ' is-over' : ''}`} data-board-column={column.id}>
+                <div key={column.id} className={`tasks-column${column.unmapped ? ' is-unmapped' : ''} drag-${view.mode}${drag?.zone === zone ? ' is-over' : ''}`} data-board-column={column.id} title={view.hoverOnly === true ? (view.reason ?? undefined) : undefined}>
                   <header className="tasks-column-head">
                     {column.unmapped ? <span className="tasks-unmapped-mark" aria-hidden>⋯</span> : <StatusCircle category={column.category} fill={column.fill} />}
                     <span className="tasks-column-label">{column.label}</span>
                     <span className="tasks-column-count">{column.rows.length}</span>
                   </header>
                   {column.unmapped ? <div className="tasks-column-note">출처 워크플로에 칸이 없는 상태입니다 — 여기로 옮길 수는 없습니다.</div> : null}
-                  {view.reason !== null ? <div className="tasks-column-reason" data-column-reason="">{view.reason}</div> : null}
+                  {showReason ? <div className="tasks-column-reason" data-column-reason="">{view.reason}</div> : null}
                   <div className="tasks-column-list" data-drop-zone={zone}>
                     {withGap({ rows: visible, drag, showGap }).map((entry) => (entry.kind === 'gap'
                       ? <div key="gap" className="tasks-drop-gap" style={{ height: entry.height }} data-drop-gap="" />

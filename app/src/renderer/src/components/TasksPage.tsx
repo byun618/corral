@@ -357,7 +357,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const columnView = (column: BoardColumn): ColumnDragView => (dragRow.current === null ? IDLE : columnViewFor({ row: dragRow.current, column }))
   const columnViewFor = ({ row, column }: { row: TasksRow; column: BoardColumn }): ColumnDragView => {
     // 묶기=부모 — 레인 사이 놓기는 막는다(부모 바꾸기 금지, C6). 레인 안은 묶기 없음과 같다.
-    if (column.lane !== null && column.lane !== (parentOfRow(row)?.uid ?? 'none')) return { mode: 'blocked', reason: LANE_LOCKED }
+    // 이유 문구는 포인터가 올라간 칸에만(R1-1) — 다른 레인 칸 전부가 끌기 시작과 함께 문구를 늘려 보드를 밀지 않게.
+    if (column.lane !== null && column.lane !== (parentOfRow(row)?.uid ?? 'none')) return { mode: 'blocked', reason: LANE_LOCKED, hoverOnly: true }
     const intent = boardDropIntent({ row, column, afterId: null, statusesOf })
     switch (intent.kind) {
       case 'none':

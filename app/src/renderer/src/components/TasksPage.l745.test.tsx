@@ -454,3 +454,169 @@ describe('C9 설정 기억', () => {
     expect(group instanceof HTMLSelectElement ? group.value : null).toBe('priority')
   })
 })
+
+// --- 수정 라운드 1 (리뷰 r1 R1-1~R1-5) ---
+
+/** 끌기 시작만 — 포인터 아래 영역은 `elementFromPoint` 로 정한다. 끝은 `release`. */
+function hover(zone: string): void {
+  const target = q(`[data-drop-zone="${zone}"]`)
+  if (target === null) throw new Error(`영역 없음 ${zone}`)
+  vi.spyOn(document, 'elementFromPoint').mockReturnValue(target)
+}
+async function release(): Promise<void> {
+  mouse(document, 'mouseup', 60, 520)
+  await settle()
+}
+const reasons = (): string[] => qa('[data-column-reason]').map((element) => element.closest('[data-drop-zone]') === null ? (element.parentElement?.querySelector('[data-drop-zone]')?.getAttribute('data-drop-zone') ?? '') : '')
+
+describe('R1-1 묶기=부모 끌기 중 이유 문구는 포인터가 올라간 칸에만', () => {
+  it('끌기 시작 = 문구 0(자기 레인 칸 위) · 막힌 칸 위 = 그 칸 1개 · 나머지 막힌 칸은 title 만', async () => {
+    await renderPage()
+    choose('[data-tasks-swimlane]', 'parent')
+    await settle()
+    hover(`col:st:todo@${P1}`)
+    mouse(q('[data-issue-card="K-11"]') ?? document, 'mousedown')
+    mouse(document, 'mousemove', 50, 500)
+    await settle()
+    expect(q('.is-drag-source')).not.toBeNull()
+    expect(qa('[data-column-reason]')).toHaveLength(0)
+    // 막힌 칸(다른 레인)은 흐림 + title.
+    expect(q(`[data-board-lane="none"] [data-board-column="st:doing"]`)?.classList.contains('drag-blocked')).toBe(true)
+    expect(q(`[data-board-lane="none"] [data-board-column="st:doing"]`)?.getAttribute('title')).toBe('부모 바꾸기는 상세에서 — 다른 부모 줄로는 옮길 수 없습니다')
+    hover('col:st:doing@none')
+    mouse(document, 'mousemove', 60, 520)
+    await settle()
+    expect(reasons()).toEqual(['col:st:doing@none'])
+    await release()
+    expect(writes()).toEqual([])
+  })
+
+  it('묶기 없음의 전이 막힘 이유는 그대로 칸마다 그린다(기존 동작)', async () => {
+    settings = { ...settings, connections: settings.connections.map((connection) => ({ ...connection, capabilities: { ...CAPS, transition: { mode: 'allowed' } } })) }
+    hold = (request) => (request.call.op === 'listTransitions' ? new Promise(() => {}) : null)
+    await renderPage()
+    hover('col:st:todo')
+    mouse(q('[data-issue-card="K-11"]') ?? document, 'mousedown')
+    mouse(document, 'mousemove', 50, 500)
+    await settle()
+    // 허용 전이를 받는 중 — 다른 상태 칸 둘(doing·done)에 포인터와 무관하게 이유가 뜬다.
+    expect(qa('[data-column-reason]').map((element) => element.textContent)).toEqual(['허용 전이를 받는 중…', '허용 전이를 받는 중…'])
+    await release()
+  })
+})
+
+describe('R1-2 재읽기 때 받아 둔 부모를 버리지 않는다', () => {
+  it('RV1 — 재읽기 응답을 기다리는 동안에도 칩·레인 머리는 받은 값 그대로, 새 답이 오면 덮는다', async () => {
+    await renderPage()
+    choose('[data-tasks-swimlane]', 'parent')
+    await settle()
+    expect(getItems('ext-1')).toHaveLength(1)
+    const waits: { request: WorkRequest; resolve: (response: WorkResponse) => void }[] = []
+    hold = (request) => (request.call.op === 'getItem' ? new Promise((resolve) => { waits.push({ request, resolve }) }) : null)
+    await renderPage({ open: false })
+    await renderPage({ open: true })
+    expect(getItems('ext-1')).toHaveLength(2)
+    expect(q('[data-issue-card="K-20"]')).not.toBeNull()
+    expect(q(`[data-board-lane="${PEXT}"] [data-lane-head] [data-parent-chip="K-99"]`)?.getAttribute('data-parent-state')).toBe('found')
+    expect(qa('[data-board-lane]').map((element) => element.getAttribute('data-board-lane'))).toEqual([PEXT, P1, 'none'])
+    await act(async () => { for (const wait of waits) wait.resolve({ requestId: wait.request.requestId, connectionId: wait.request.connectionId, ok: true, result: { op: 'getItem', item: { ...EXT, title: '바깥 부모 새 이름' } } }) })
+    await settle()
+    expect(q(`[data-board-lane="${PEXT}"] [data-lane-head] .tasks-parent-title`)?.textContent).toBe('바깥 부모 새 이름')
+  })
+
+  it('RV2 — 재요청이 실패해도 옛 「받음」 을 유지한다(옛 값이 없을 때만 실패 칩)', async () => {
+    await renderPage()
+    getItemError = '재요청 실패'
+    await renderPage({ open: false })
+    await renderPage({ open: true })
+    expect(getItems('ext-1')).toHaveLength(2)
+    const chip = q('[data-issue-card="K-20"] [data-parent-chip]')
+    expect(chip?.getAttribute('data-parent-state')).toBe('found')
+    expect(chip?.getAttribute('data-parent-chip')).toBe('K-99')
+  })
+})
+
+describe('R1-3 늦은 응답 · 「+ 추가」 · aria-label · 레인 안 순서', () => {
+  it('늦은 응답 — 재읽기(epoch 전환) 뒤 옛 요청 응답이 오면 그 답을 쓰고, 같은 부모에 두 번째 요청을 내지 않는다', async () => {
+    const waits: { request: WorkRequest; resolve: (response: WorkResponse) => void }[] = []
+    hold = (request) => (request.call.op === 'getItem' ? new Promise((resolve) => { waits.push({ request, resolve }) }) : null)
+    await renderPage()
+    expect(getItems('ext-1')).toHaveLength(1)
+    await renderPage({ open: false })
+    await renderPage({ open: true })
+    expect(getItems('ext-1')).toHaveLength(1)
+    expect(q('[data-issue-card="K-20"] [data-parent-chip]')?.getAttribute('data-parent-state')).toBe('loading')
+    await act(async () => { for (const wait of waits) wait.resolve(answer(wait.request)) })
+    await settle()
+    expect(q('[data-issue-card="K-20"] [data-parent-chip="K-99"]')?.getAttribute('data-parent-state')).toBe('found')
+    expect(getItems('ext-1')).toHaveLength(1)
+  })
+
+  it('묶기=부모 에서는 칸 끝 「+ 추가」 가 없다(묶기 없음에는 있다)', async () => {
+    await renderPage()
+    expect(q('[data-inline-add-open]')).not.toBeNull()
+    choose('[data-tasks-swimlane]', 'parent')
+    await settle()
+    expect(q('[data-board-lane]')).not.toBeNull()
+    expect(q('[data-inline-add-open]')).toBeNull()
+    // 머리 「만들기」 는 남는다.
+    expect(q('[data-tasks-create]')).not.toBeNull()
+  })
+
+  it('칩 aria-label — 「부모 열기 — 키 제목」, 받는 중·실패는 그 문구', async () => {
+    getItemError = '끊김'
+    await renderPage()
+    expect(q('[data-issue-card="K-11"] [data-parent-chip="K-10"]')?.getAttribute('aria-label')).toBe('부모 열기 — K-10 공고 기능 개선')
+    expect(q('[data-issue-card="K-20"] [data-parent-chip]')?.getAttribute('aria-label')).toBe('부모 열기 — 부모를 불러오지 못함')
+  })
+
+  it('레인 안 순서 바꾸기 = 묶기 없음과 같은 reorder 쓰기', async () => {
+    items = items.map((entry) => (entry.id === 'b' ? { ...entry, statusKey: 'todo', category: 'todo' } : entry))
+    await renderPage()
+    choose('[data-tasks-swimlane]', 'parent')
+    await settle()
+    expect([...(q(`[data-board-lane="${P1}"] [data-board-column="st:todo"]`)?.querySelectorAll('[data-issue-card]') ?? [])].map((element) => element.getAttribute('data-issue-card'))).toEqual(['K-11', 'K-12'])
+    hover(`col:st:todo@${P1}`)
+    mouse(q('[data-issue-card="K-11"]') ?? document, 'mousedown')
+    mouse(document, 'mousemove', 50, 500)
+    await settle()
+    await release()
+    expect(writes()).toEqual([{ op: 'reorder', itemId: 'a', afterId: 'b' }])
+  })
+})
+
+describe('R1-4 레인 접근 이름', () => {
+  it('레인 구획·접기 버튼 이름에 부모 키·제목', async () => {
+    await renderPage()
+    choose('[data-tasks-swimlane]', 'parent')
+    await settle()
+    expect(q(`[data-board-lane="${P1}"]`)?.getAttribute('aria-label')).toBe('K-10 공고 기능 개선 레인')
+    expect(q(`[data-board-lane="${P1}"] [data-lane-toggle]`)?.getAttribute('aria-label')).toBe('K-10 공고 기능 개선 레인 접기')
+    expect(q('[data-board-lane="none"]')?.getAttribute('aria-label')).toBe('부모 없음 레인')
+    click(q(`[data-board-lane="${P1}"] [data-lane-toggle]`))
+    expect(q(`[data-board-lane="${P1}"] [data-lane-toggle]`)?.getAttribute('aria-label')).toBe('K-10 공고 기능 개선 레인 펼치기')
+  })
+})
+
+describe('R1-5 보충 동시 요청 상한', () => {
+  it(`받은 행 밖 부모 6개 — 한 번에 PARENT_REQUESTS_MAX(4)개까지, 앞 요청이 끝나면 나머지가 나간다`, async () => {
+    items = Array.from({ length: 6 }, (_, index) => item({ id: `k${index}`, key: `K-${50 + index}`, parentId: `far-${index}` }))
+    const waits: { request: WorkRequest; resolve: (response: WorkResponse) => void }[] = []
+    hold = (request) => (request.call.op === 'getItem' ? new Promise((resolve) => { waits.push({ request, resolve }) }) : null)
+    const far = (request: WorkRequest): WorkResponse => {
+      const id = request.call.op === 'getItem' ? request.call.itemId : ''
+      return { requestId: request.requestId, connectionId: request.connectionId, ok: true, result: { op: 'getItem', item: item({ id, key: `K-${id}`, kind: CHECKPOINT }) } }
+    }
+    await renderPage()
+    expect(calls.filter((call) => call.op === 'getItem')).toHaveLength(4)
+    expect(qa('[data-parent-state="loading"]')).toHaveLength(6)
+    await act(async () => { for (const wait of waits.splice(0, 2)) wait.resolve(far(wait.request)) })
+    await settle()
+    expect(calls.filter((call) => call.op === 'getItem')).toHaveLength(6)
+    expect(qa('[data-parent-state="found"]')).toHaveLength(2)
+    await act(async () => { for (const wait of waits.splice(0)) wait.resolve(far(wait.request)) })
+    await settle()
+    expect(qa('[data-parent-state="found"]')).toHaveLength(6)
+    expect(new Set(calls.flatMap((call) => (call.op === 'getItem' ? [call.itemId] : []))).size).toBe(6)
+  })
+})

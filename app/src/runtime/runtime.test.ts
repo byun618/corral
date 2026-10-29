@@ -285,7 +285,9 @@ describe('LIFE-394 body identity, ready gate and submission window', () => {
     // 4: C2/D23. claude runs the same code. "We did not patch it" is not a guarantee.
     expect(EXPECTED_MANIFESTS.claude.version).toBe('2026.09.04.1')
     expect(evaluateManifest('claude', [{ agent: 'claude', source_kind: 'local_override', active_version: '2026.09.04.1', local_override_shadowing_remote: false }], null).verified).toBe(false)
-    expect(EXPECTED_MANIFESTS.codex.version).toBe(EXPECTED_MANIFESTS.grok.version)
+    // LIFE-626 bumped only the codex manifest; grok keeps the version LIFE-603 K1b gave both.
+    expect(EXPECTED_MANIFESTS.codex.version).toBe('2026.10.28.1')
+    expect(EXPECTED_MANIFESTS.grok.version).toBe('2026.10.15.2')
   })
 
   it('maps provider flags and session ids the way section 4.2 freezes them', () => {

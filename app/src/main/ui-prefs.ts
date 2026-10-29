@@ -86,6 +86,8 @@ export type UiPrefs = {
   rightPanelDetailWidth: number | null
   explorerShowDotfiles: boolean
   explorerShowIgnored: boolean
+  /** 소스 제어 보기 모드 (LIFE-683) — `shared/types.ts` 의 같은 칸 주석. */
+  scmViewMode: 'list' | 'tree'
   /** 최근 연 파일 (LIFE-593) — `shared/types.ts` 의 같은 칸 주석. 읽을 때 `readRecentFiles` 로 모양을 본다. */
   recentFiles: RecentFiles
 } & SidebarViewPrefs
@@ -112,6 +114,7 @@ const DEFAULT_PREFS: UiPrefs = {
   rightPanelDetailWidth: null,
   explorerShowDotfiles: true,
   explorerShowIgnored: true,
+  scmViewMode: 'list',
   recentFiles: {},
   // Workspace options (LIFE-470) — 칸 이름·기본값·읽기 규칙은 `shared/sidebar-view.ts` 한 곳.
   ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW),
@@ -188,10 +191,12 @@ export class UiPrefsStore {
         rightPanelOpen: parsed['rightPanelOpen'] === true,
         rightPanelWidth: typeof parsed['rightPanelWidth'] === 'number' && Number.isFinite(parsed['rightPanelWidth']) ? parsed['rightPanelWidth'] : null,
         // LIFE-682 — 모르는 보기 이름·숫자 아닌 폭은 기본(탐색기 · 토큰 폭). 범위 clamp 는 토큰을 아는 렌더러가 한다(rightPanelWidth 와 같다).
-        rightPanelView: parsed['rightPanelView'] === 'detail' ? 'detail' : 'explorer',
+        // LIFE-683 — `'scm'`(소스 제어)도 안다. 그 밖의 값은 여전히 탐색기.
+        rightPanelView: parsed['rightPanelView'] === 'detail' ? 'detail' : parsed['rightPanelView'] === 'scm' ? 'scm' : 'explorer',
         rightPanelDetailWidth: typeof parsed['rightPanelDetailWidth'] === 'number' && Number.isFinite(parsed['rightPanelDetailWidth']) ? parsed['rightPanelDetailWidth'] : null,
         explorerShowDotfiles: parsed['explorerShowDotfiles'] !== false,
         explorerShowIgnored: parsed['explorerShowIgnored'] !== false,
+        scmViewMode: parsed['scmViewMode'] === 'tree' ? 'tree' : 'list',
         // LIFE-593 — 칸 모양이 틀리면 그 칸(또는 그 worktree)만 버린다. 다른 칸은 그대로.
         recentFiles: readRecentFiles(parsed['recentFiles']),
         // 칸마다 따로 기본값으로 떨어진다 — 손상된 모드 문자열이 다른 칸을 버리지 않게(LIFE-470 K9ⓓ).

@@ -180,3 +180,24 @@ export function createModel(input: { text: string; language: string; key: string
 export function setModelLanguage(model: monaco.editor.ITextModel, language: string): void {
   if (model.getLanguageId() !== language) monaco.editor.setModelLanguage(model, language)
 }
+
+/**
+ * 소스 제어 diff 편집기 (LIFE-683 S5) — VS Code `editor/common/config/diffEditor.ts` 기본(나란히 · 폭 900 미만이면 인라인 · `useInlineViewWhenSpaceIsLimited`).
+ * **양쪽 다 읽기 전용**(Q1) — 편집은 「파일 열기」 로 보통 파일 탭에서. diff 계산은 같은 편집기 worker(`MonacoEnvironment`)가 한다.
+ */
+export function createDiffEditor(input: { host: HTMLElement }): monaco.editor.IStandaloneDiffEditor {
+  ensureTextMate()
+  return monaco.editor.createDiffEditor(input.host, {
+    theme: THEME,
+    readOnly: true,
+    domReadOnly: true,
+    originalEditable: false,
+    renderSideBySide: true,
+    useInlineViewWhenSpaceIsLimited: true,
+    renderSideBySideInlineBreakpoint: 900,
+    automaticLayout: true,
+    fontFamily: corralToken('--font-mono', 'ui-monospace, monospace'),
+    links: false,
+    dragAndDrop: false,
+  })
+}

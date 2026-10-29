@@ -25,16 +25,21 @@ export function clampRightPanelWidth(
   return Math.min(maxWidth, Math.max(minWidth, width))
 }
 
-type Widths = Record<RightPanelView, number>
+/** 폭 칸 — 소스 제어는 탐색기 폭을 같이 쓴다(LIFE-683 S1 — VS Code 사이드바 폭은 보기 공용). */
+type WidthSlot = 'explorer' | 'detail'
+type Widths = Record<WidthSlot, number>
+export function widthSlotOf(view: RightPanelView): WidthSlot {
+  return view === 'detail' ? 'detail' : 'explorer'
+}
 
 function defaultWidths(): Widths {
   const widths: Partial<Widths> = {}
-  for (const view of RIGHT_PANEL_VIEWS) widths[view.id] = tokenPx(view.widthToken, view.widthFallback)
+  for (const view of RIGHT_PANEL_VIEWS) widths[widthSlotOf(view.id)] ??= tokenPx(view.widthToken, view.widthFallback)
   return { explorer: widths.explorer ?? 300, detail: widths.detail ?? 560 }
 }
 
 /** 보기 → ui-prefs 칸. 탐색기 폭은 LIFE-589 때부터 있던 `rightPanelWidth` 를 그대로 쓴다(옛 파일 이어받기). */
-function persistWidth({ view, width }: { view: RightPanelView; width: number }): void {
+function persistWidth({ view, width }: { view: WidthSlot; width: number }): void {
   switch (view) {
     case 'explorer':
       window.corral.setUiPrefs({ rightPanelWidth: width })
@@ -83,7 +88,7 @@ export function useRightPanel({ panelRef, sidebarWidth }: {
 
   const min = tokenPx('--right-panel-min', TOKEN_FALLBACK.min)
   const mainMin = tokenPx('--w-tasks-body-min', TOKEN_FALLBACK.mainMin)
-  const width = panelRenderWidth({ stored: widths[view], windowWidth, sidebarWidth, mainMin, min })
+  const width = panelRenderWidth({ stored: widths[widthSlotOf(view)], windowWidth, sidebarWidth, mainMin, min })
 
   useEffect(() => {
     const onResize = (): void => setWindowWidth(window.innerWidth)
@@ -177,7 +182,7 @@ export function useRightPanel({ panelRef, sidebarWidth }: {
     const finalWidth = draftWidthRef.current
     applyRenderedWidth(finalWidth)
     if (finalWidth !== startWidthRef.current) {
-      const target = viewRef.current
+      const target = widthSlotOf(viewRef.current)
       setWidths((current) => ({ ...current, [target]: finalWidth }))
       persistWidth({ view: target, width: finalWidth })
     }

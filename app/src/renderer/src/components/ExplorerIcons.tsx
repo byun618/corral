@@ -16,6 +16,12 @@ export const CODICON = {
   // LIFE-593 — 이름 필터 단추·닫기.
   filter: 0xeaf1,
   close: 0xea76,
+  // LIFE-683 — 소스 제어 보기(activity bar·머리 동작·diff 탭 머리).
+  'source-control': 0xea68,
+  'list-flat': 0xeb84,
+  'list-tree': 0xeb86,
+  'go-to-file': 0xea94,
+  'chevron-right': 0xeab6,
 } as const
 
 export type CodiconName = keyof typeof CODICON

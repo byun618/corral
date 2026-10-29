@@ -424,7 +424,10 @@ function MainTab({
  * 탭바 안 한 칸 (LIFE-590 E1) — 터미널 탭(herdr `TabRow`) 또는 파일 탭. 영역 배치의 `tabOrder` 순서 그대로 섞여 선다.
  * 파일 탭의 `deleted` = 외부에서 지워짐(E5ⓒ — 표시는 F2 본구현에서 채운다). `dirty` = 저장하지 않은 수정이 있음(LIFE-591 E1ⓑ — 닫기 자리에 점).
  */
-export type GroupTabItem = { kind: 'terminal'; tab: TabRow } | { kind: 'file'; tabId: string; rel: string; preview: boolean; deleted: boolean; dirty: boolean }
+export type GroupTabItem =
+  | { kind: 'terminal'; tab: TabRow }
+  // LIFE-683 — `diffLabel` 이 있으면 diff 탭(소스 제어): 제목은 그 글(`a.ts (작업 트리)` — VS Code `getTitle`), 아이콘은 `rel` 의 파일 아이콘, 같은 이름 설명은 붙이지 않는다.
+  | { kind: 'file'; tabId: string; rel: string; preview: boolean; deleted: boolean; dirty: boolean; diffLabel?: string }
 
 type FileTabMenuAction = 'close' | 'keep' | 'close-others' | 'close-right' | 'split-right' | 'split-down' | `move:${string}`
 
@@ -468,7 +471,7 @@ function FileTab({
   onDragStart: (event: React.MouseEvent) => void
 }): React.JSX.Element {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
-  const label = fileTabLabel(item.rel)
+  const label = item.diffLabel ?? fileTabLabel(item.rel)
   const entries: MenuEntry<FileTabMenuAction>[] = [
     { kind: 'item', action: 'close', label: '닫기' },
     { kind: 'item', action: 'close-others', label: '다른 탭 닫기', disabled: !closeScopes.others },
@@ -489,11 +492,12 @@ function FileTab({
       className={`main-tab main-tab-file ${active ? 'is-active' : ''} ${hasTabsToRight ? 'has-right' : ''} ${item.preview ? 'is-preview' : ''} ${item.deleted ? 'is-deleted' : ''} ${item.dirty ? 'is-dirty' : ''} ${description === null ? '' : 'has-desc'}`}
       data-main-tab={item.tabId}
       data-file-dirty={item.dirty ? 'true' : 'false'}
-      data-file-tab={item.rel}
+      data-file-tab={item.diffLabel === undefined ? item.rel : undefined}
+      data-diff-tab={item.diffLabel === undefined ? undefined : item.rel}
       data-active={active ? 'true' : 'false'}
       data-active-tab-dock={dock ? '' : undefined}
       data-tab-preview={item.preview ? 'true' : 'false'}
-      title={`${item.rel}${item.preview ? ' · 미리보기' : ''}${item.deleted ? ' · 삭제됨' : ''}${item.dirty ? ' · 수정됨' : ''} — 끌어서 옮기기`}
+      title={`${item.diffLabel === undefined ? item.rel : `${item.diffLabel} — ${item.rel}`}${item.preview ? ' · 미리보기' : ''}${item.deleted ? ' · 삭제됨' : ''}${item.dirty ? ' · 수정됨' : ''} — 끌어서 옮기기`}
       onMouseDown={(event) => {
         if (event.button === 1) {
           event.preventDefault()
@@ -521,7 +525,7 @@ function FileTab({
       }}
     >
       {active ? <span className="main-tab-indicator" aria-hidden /> : null}
-      <FileIcon name={label} />
+      <FileIcon name={fileTabLabel(item.rel)} />
       <span className="main-tab-title">
         <span className="main-tab-label main-tab-file-label">{label}</span>
         {description === null ? null : <span className="main-tab-file-desc">{description}</span>}
@@ -792,7 +796,7 @@ export function GroupHeader({
   const activeTabLabel = activeTab?.label ?? ''
   const tabOrder = shown.map((item) => (item.kind === 'terminal' ? item.tab.tabId : item.tabId))
   // LIFE-689 — 같은 이름 구분 설명은 **이 영역의 파일 탭끼리만** 계산한다(VS Code 는 그룹 단위, 터미널 탭은 파일 이름이 없다).
-  const fileDescriptions = fileTabDescriptions(shown.flatMap((item) => (item.kind === 'file' ? [item.rel] : [])))
+  const fileDescriptions = fileTabDescriptions(shown.flatMap((item) => (item.kind === 'file' && item.diffLabel === undefined ? [item.rel] : [])))
   return (
     <div
       className={`main-tabbar ${activeGroup ? 'is-active-group' : ''}`}
@@ -828,7 +832,7 @@ export function GroupHeader({
             <FileTab
               key={item.tabId}
               item={item}
-              description={fileDescriptions.get(item.rel) ?? null}
+              description={item.diffLabel === undefined ? (fileDescriptions.get(item.rel) ?? null) : null}
               active={item.tabId === activeTabId}
               dock={item.tabId === activeTabId && !tabDragActive}
               hasTabsToRight={index < shown.length - 1}

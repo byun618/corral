@@ -20,6 +20,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { ALWAYS_HIDDEN_NAMES, EXPLORER_SAFETY_NET_MS, parentRel, type ExplorerEntry, type ExplorerFilter } from '../../../shared/explorer.js'
 import { isAtOrUnder, remapRel } from '../../../shared/explorer-ops.js'
 import { fromWire, type GitSnapshot } from '../../../shared/explorer-git.js'
+import { acquireExplorerWatch } from '../explorer-watch-refs.js'
 
 export type ExplorerRootState = {
   listings: Map<string, ExplorerEntry[]>
@@ -109,6 +110,8 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
   const stale = useRef(new Set<string>())
   const [version, bump] = useReducer((value: number) => value + 1, 0)
   const [filter, setFilterState] = useState<ExplorerFilter>({ showDotfiles: true, showIgnored: true })
+  /** 지금 보이는 루트 — 안 보이는 동안 온 목록 변경 push(소스 제어 보기가 같은 루트를 구독 중일 때 — LIFE-683 S8)는 읽지 않는다. 보이게 되면 `reloadLoaded` 가 맞춘다. */
+  const visibleRoot = useRef<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -262,6 +265,7 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
         // git 스냅샷은 루트 상태가 아직 없어도 받아 둔다(R3-A) — 목록 변경은 읽어 둔 게 없으면 할 일이 없다.
         const store = event.kind === 'git' ? storeOf(event.root) : stores.current.get(event.root)
         if (store === undefined) return
+        if (event.kind !== 'git' && visibleRoot.current !== event.root) return
         switch (event.kind) {
           case 'changed':
             reloadChanged(event.root, event.dirs)
@@ -282,15 +286,18 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
   useEffect(() => {
     if (!active || root === null) return
     storeOf(root)
+    visibleRoot.current = root
     reloadLoaded(root)
-    void window.corral.explorerWatch({ root, on: true }).catch(() => null)
+    // LIFE-683 — 소스 제어 보기와 같은 루트 구독을 참조 셈으로 나눠 쓴다(`explorer-watch-refs.ts`).
+    const release = acquireExplorerWatch(root)
     const timer = window.setInterval(() => {
       reloadLoaded(root)
       window.corral.explorerRefreshGit(root)
     }, EXPLORER_SAFETY_NET_MS)
     return () => {
       window.clearInterval(timer)
-      void window.corral.explorerWatch({ root, on: false })
+      if (visibleRoot.current === root) visibleRoot.current = null
+      release()
     }
   }, [active, root, reloadLoaded, storeOf])
 

@@ -21,7 +21,8 @@ import { UiPrefsStore, type UiPrefs } from './ui-prefs.js'
 // LIFE-589: 오른쪽 패널·탐색기 칸도 옛 파일에서는 닫힘·기본 폭·점 파일/ignored 보임으로 선다.
 // LIFE-593: 최근 연 파일 칸(`recentFiles`)도 옛 파일에서는 빈 기록으로 선다.
 // LIFE-682: 오른쪽 패널 보기·상세 폭 칸도 옛 파일에서는 탐색기 보기·기본 폭으로 선다.
-const L589_DEFAULTS = { rightPanelOpen: false, rightPanelWidth: null, rightPanelView: 'explorer', rightPanelDetailWidth: null, explorerShowDotfiles: true, explorerShowIgnored: true, recentFiles: {} }
+// LIFE-683: 소스 제어 보기 모드 칸(`scmViewMode`)도 옛 파일에서는 목록으로 선다.
+const L589_DEFAULTS = { rightPanelOpen: false, rightPanelWidth: null, rightPanelView: 'explorer', rightPanelDetailWidth: null, explorerShowDotfiles: true, explorerShowIgnored: true, scmViewMode: 'list', recentFiles: {} }
 const L470_DEFAULTS = { manualFlatOrder: [], pinnedWorktrees: [], collapsedLineage: [], unreadWorktrees: [], tabMarks: [], ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW), ...L589_DEFAULTS }
 
 let dir = ''
@@ -546,10 +547,23 @@ describe('오른쪽 패널 보기·보기별 폭 영속 (LIFE-682 A3)', () => {
     expect(store.get()).toMatchObject({ rightPanelOpen: true, rightPanelWidth: 412, rightPanelView: 'explorer', rightPanelDetailWidth: null })
   })
   it('깨진 값 — 모르는 보기 이름은 탐색기, 숫자 아닌·무한 폭은 null(기본). 다른 칸은 그대로', () => {
-    fs.writeFileSync(file, '{"version":1,"rightPanelView":"scm","rightPanelDetailWidth":"wide","rightPanelWidth":1e999,"sidebarWidth":300}')
+    // LIFE-683 — 'scm' 은 이제 아는 보기라 모르는 이름 예를 'terminal' 로 바꿨다.
+    fs.writeFileSync(file, '{"version":1,"rightPanelView":"terminal","rightPanelDetailWidth":"wide","rightPanelWidth":1e999,"sidebarWidth":300}')
     const store = new UiPrefsStore(dir)
     store.load()
     expect(store.get()).toMatchObject({ rightPanelView: 'explorer', rightPanelDetailWidth: null, rightPanelWidth: null, sidebarWidth: 300 })
+  })
+  it('LIFE-683 — 소스 제어 보기·보기 모드를 쓰고 새 스토어로 읽으면 같은 값, 폭은 탐색기 칸 하나, 깨진 모드는 목록', () => {
+    const first = new UiPrefsStore(dir)
+    first.load()
+    first.update({ rightPanelOpen: true, rightPanelView: 'scm', scmViewMode: 'tree', rightPanelWidth: 333 })
+    const second = new UiPrefsStore(dir)
+    second.load()
+    expect(second.get()).toMatchObject({ rightPanelView: 'scm', scmViewMode: 'tree', rightPanelWidth: 333, rightPanelDetailWidth: null })
+    fs.writeFileSync(file, '{"version":1,"rightPanelView":"scm","scmViewMode":"grid"}')
+    const third = new UiPrefsStore(dir)
+    third.load()
+    expect(third.get()).toMatchObject({ rightPanelView: 'scm', scmViewMode: 'list' })
   })
 })
 

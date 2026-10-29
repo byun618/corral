@@ -35,9 +35,15 @@ export type TabGroup = {
  * 파일 탭을 herdr 와 무관하게 살려 둬야 한다 — 파일 탭은 **배치에 있으면 열려 있다**.
  */
 export const FILE_TAB_PREFIX = 'file:'
+/** diff 탭 id 접두사 (LIFE-683 — 모양은 `shared/scm.ts` `diffTabId`). 파일 탭처럼 배치가 진실이고 herdr 와 무관하다. */
+export const DIFF_TAB_ID_PREFIX = 'diff:'
 
+/**
+ * 배치가 소유하는 편집기 탭인가 — 파일 탭(`file:`)과 diff 탭(`diff:`, LIFE-683). 둘 다 herdr 에 없고 pane 이 없다.
+ * 종류를 가르는 것은 `file-tabs.ts` `tabKindOf` 다.
+ */
 export function isFileTabId(tabId: string): boolean {
-  return tabId.startsWith(FILE_TAB_PREFIX) && tabId.length > FILE_TAB_PREFIX.length
+  return (tabId.startsWith(FILE_TAB_PREFIX) && tabId.length > FILE_TAB_PREFIX.length) || (tabId.startsWith(DIFF_TAB_ID_PREFIX) && tabId.length > DIFF_TAB_ID_PREFIX.length)
 }
 
 export type GroupNode =

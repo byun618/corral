@@ -3,6 +3,7 @@
 // main 은 **읽기 전용**으로 한 폴더의 항목만 준다(`corral:explorerList`). 무엇을 숨기고 어떤 순서로 보이는지는 여기 순수 함수가 정한다 —
 // 숨김 규칙(Orca: `.git`·`node_modules` 항상 숨김)과 정렬(VS Code `explorer.sortOrder: default` — 폴더 먼저, 숫자 인식)은 단위 시험으로 덮는다.
 import type { GitSnapshotWire } from './explorer-git.js'
+import type { ScmChange } from './scm.js'
 
 // 경로는 **worktree 루트 기준 상대 경로**(구분자 `/`, 루트 = '')로 주고받는다 — 절대 경로를 렌더러가 조립하지 않게 해 가둠을 main 한 곳에 둔다.
 
@@ -199,4 +200,5 @@ export type ExplorerActionResult = { ok: true; value: string } | { ok: false; co
 export type ExplorerPush =
   | { kind: 'changed'; root: string; dirs: string[] }
   | { kind: 'overflow'; root: string }
-  | { kind: 'git'; root: string; git: GitSnapshotWire | null; error: string | null }
+  // LIFE-683 — `changes` = 같은 git 출력의 소스 제어 분류(X·Y·원래 경로를 잃지 않는 모양). 탐색기 `git` 은 그대로다.
+  | { kind: 'git'; root: string; git: GitSnapshotWire | null; error: string | null; changes?: ScmChange[] }

@@ -10,17 +10,24 @@
 // 터미널 탭 배치·핀·색은 그대로 남는다 — 구 앱이 죽거나 터미널 배치를 버릴 모양(객체 id 등)을 만들지 않는다.
 import { FILE_TAB_PREFIX, findGroup, groupOfTab, isFileTabId, listGroups, removeTabFromGroup, updateGroup, type GroupLayout, type TabGroup } from './group-tree.js'
 import { remapRel } from '../../shared/explorer-ops.js'
+import { DIFF_TAB_PREFIX, parseDiffTabId, type ScmDiffTarget } from '../../shared/scm.js'
 
 export { FILE_TAB_PREFIX, isFileTabId }
 
-export type TabKind = { kind: 'terminal'; tabId: string } | { kind: 'file'; tabId: string; rel: string }
+/**
+ * 탭 종류 — 터미널 · 파일 · diff(LIFE-683 소스 제어). diff 탭은 파일 탭과 같은 미리보기·고정·닫기 규칙을 따르되 문서(편집)가 없다.
+ * 모양이 깨진 `diff:` id(손으로 고친 파일)는 `broken` — 탭바에 그리고 닫을 수 있게 둔다.
+ */
+export type TabKind = { kind: 'terminal'; tabId: string } | { kind: 'file'; tabId: string; rel: string } | { kind: 'diff'; tabId: string; target: ScmDiffTarget | null }
 
 export function fileTabId(rel: string): string {
   return `${FILE_TAB_PREFIX}${rel}`
 }
 
 export function tabKindOf(tabId: string): TabKind {
-  return isFileTabId(tabId) ? { kind: 'file', tabId, rel: tabId.slice(FILE_TAB_PREFIX.length) } : { kind: 'terminal', tabId }
+  if (!isFileTabId(tabId)) return { kind: 'terminal', tabId }
+  if (tabId.startsWith(DIFF_TAB_PREFIX)) return { kind: 'diff', tabId, target: parseDiffTabId(tabId) }
+  return { kind: 'file', tabId, rel: tabId.slice(FILE_TAB_PREFIX.length) }
 }
 
 /**
@@ -193,9 +200,10 @@ export function previewOf(group: TabGroup): string | null {
  *     없으면 활성 탭 바로 오른쪽(VS Code `workbench.editor.openPositioning: right`)
  * 교체로 밀려난 파일은 `replaced` 로 돌려준다 — 부르는 쪽이 닫은 탭 기록(⌘⇧T)에 넣는다(Orca 와 같다).
  */
-export function openFileTab(input: { layout: GroupLayout; rel: string; preview: boolean }): { layout: GroupLayout; replaced: { rel: string; groupId: string; index: number } | null } {
+export function openFileTab(input: { layout: GroupLayout; rel: string; preview: boolean; tabId?: string }): { layout: GroupLayout; replaced: { rel: string; groupId: string; index: number; tabId: string } | null } {
   const { layout, preview } = input
-  const tabId = fileTabId(input.rel)
+  // LIFE-683 — diff 탭도 같은 규칙으로 연다(`tabId` 를 주면 그 id). 밀려난 탭의 `rel` 은 파일 탭일 때만 뜻이 있다 — 부르는 쪽이 `tabId` 종류로 가른다.
+  const tabId = input.tabId ?? fileTabId(input.rel)
   const owner = groupOfTab(layout.root, tabId)
   if (owner !== null) {
     const pinNow = !preview && previewOf(owner) === tabId
@@ -205,11 +213,11 @@ export function openFileTab(input: { layout: GroupLayout; rel: string; preview: 
   const target = findGroup(layout.root, layout.activeGroupId) ?? listGroups(layout.root)[0]
   if (target === undefined) return { layout, replaced: null }
   const current = previewOf(target)
-  let replaced: { rel: string; groupId: string; index: number } | null = null
+  let replaced: { rel: string; groupId: string; index: number; tabId: string } | null = null
   const next = updateGroup(layout, target.groupId, (group) => {
     if (preview && current !== null) {
       const index = group.tabOrder.indexOf(current)
-      replaced = { rel: current.slice(FILE_TAB_PREFIX.length), groupId: group.groupId, index }
+      replaced = { rel: current.slice(FILE_TAB_PREFIX.length), groupId: group.groupId, index, tabId: current }
       const tabOrder = group.tabOrder.map((id) => (id === current ? tabId : id))
       return { ...group, tabOrder, activeTabId: tabId, previewTabId: tabId }
     }

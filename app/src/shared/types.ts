@@ -12,6 +12,7 @@ import type { FileListInput, FileListResult } from './file-list.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
 import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
+import type { ScmReadInput, ScmReadResult } from './scm.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
@@ -783,6 +784,8 @@ export type UiPrefs = {
   rightPanelDetailWidth: number | null
   explorerShowDotfiles: boolean
   explorerShowIgnored: boolean
+  /** 소스 제어 보기 모드 (LIFE-683 S4 · Q6) — 전역. 기본 목록(VS Code `scm.defaultViewMode: list`). 기준 빌드는 모르는 칸이라 다음 저장 때 버린다. */
+  scmViewMode: 'list' | 'tree'
   /**
    * 최근 연 파일 (LIFE-593 E5 · Q5) — worktree 경로 → 루트 상대 경로 목록(최근이 앞, worktree 마다 50). 어느 경로로 열든 파일 탭이 활성이 되면 맨 앞에 온다.
    * 키 경로인 이유는 `groupLayouts` 와 같다. 모양 검사는 main `ui-prefs.ts` 가 읽을 때 한다(상대 경로만 — 열 때 `file-read.ts` 가 다시 가둔다).
@@ -792,7 +795,7 @@ export type UiPrefs = {
 } & SidebarViewPrefs
 
 /** 오른쪽 패널 보기 (LIFE-682) — 목록·아이콘·제목은 렌더러 `right-panel-views.ts` 한 곳. */
-export type RightPanelView = 'explorer' | 'detail'
+export type RightPanelView = 'explorer' | 'scm' | 'detail'
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
 
@@ -1096,6 +1099,8 @@ export type CorralApi = {
   readFile: (input: { root: string; rel: string }) => Promise<FileReadResult>
   /** 이미지 바이트(LIFE-590 E4ⓔ) — 렌더러가 createImageBitmap·인라인 SVG 로 그린다(URL 없음 — CSP 무변경). */
   readImage: (input: { root: string; rel: string }) => Promise<ImageReadResult>
+  /** LIFE-683 S7 — 소스 제어 diff 의 HEAD·인덱스 쪽 내용(읽기 전용, `main/scm-read.ts`). */
+  scmRead: (input: ScmReadInput) => Promise<ScmReadResult>
   /** 열린 파일 탭 감시 집합(LIFE-590 E5) — 통째로 바꾼다. */
   fileWatch: (input: { root: string; rels: string[] }) => Promise<{ ok: boolean; count: number }>
   onFileEvent: (listener: (event: FileWatchPush) => void) => () => void

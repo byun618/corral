@@ -23,6 +23,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { parsePorcelainV2, toWire, type GitSnapshotWire } from '../shared/explorer-git.js'
+import { parseScmChanges, type ScmChange } from '../shared/scm.js'
 import type { ExplorerEntry, ExplorerPush } from '../shared/explorer.js'
 import { confine, dirStamp, linkEntry, listDir, newLinkMemo } from './explorer-fs.js'
 import { RESTART_DELAY_MS, RESTART_MAX, RESTART_WINDOW_MS } from './explorer-watch-batch.js'
@@ -434,8 +435,8 @@ export class ExplorerHub {
     sub.gitRunning = false
     if (this.subs.get(sub.root) !== sub) return
     this.counters.pushedGit += 1
-    this.deps.log('explorer.git', { root: sub.root, ms: this.now() - startedAt, ok: outcome.error === null, marks: outcome.git?.marks.length ?? 0, ignored: outcome.git?.ignored.length ?? 0 })
-    this.deps.push({ kind: 'git', root: sub.root, git: outcome.git, error: outcome.error })
+    this.deps.log('explorer.git', { root: sub.root, ms: this.now() - startedAt, ok: outcome.error === null, marks: outcome.git?.marks.length ?? 0, ignored: outcome.git?.ignored.length ?? 0, changes: outcome.changes?.length ?? 0 })
+    this.deps.push({ kind: 'git', root: sub.root, git: outcome.git, error: outcome.error, ...(outcome.changes === null ? {} : { changes: outcome.changes }) })
     if (sub.gitAgain) {
       sub.gitAgain = false
       this.scheduleGit(sub)
@@ -443,12 +444,14 @@ export class ExplorerHub {
   }
 }
 
-/** 탐색기의 git 조회 — 시험이 실제 argv 를 고정한다(LIFE-672). */
-export function runGitStatus(cwd: string): Promise<{ git: GitSnapshotWire | null; error: string | null }> {
+/**
+ * 탐색기의 git 조회 — 시험이 실제 argv 를 고정한다(LIFE-672). 같은 출력에서 소스 제어 분류(`changes`, LIFE-683)도 만든다 — git 은 루트당 한 벌(S8).
+ */
+export function runGitStatus(cwd: string): Promise<{ git: GitSnapshotWire | null; error: string | null; changes: ScmChange[] | null }> {
   return new Promise((resolve) => {
     execFile('git', ['-C', cwd, ...GIT_STATUS_ARGS], { timeout: 15_000, maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
-      if (error !== null) resolve({ git: null, error: String(error).slice(0, 300) })
-      else resolve({ git: toWire(parsePorcelainV2(stdout)), error: null })
+      if (error !== null) resolve({ git: null, error: String(error).slice(0, 300), changes: null })
+      else resolve({ git: toWire(parsePorcelainV2(stdout)), error: null, changes: parseScmChanges(stdout) })
     })
   })
 }

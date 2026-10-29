@@ -143,6 +143,7 @@ import { explorerAction } from './explorer-actions.js'
 import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
 import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
 import { readFileContent, readImageContent } from './file-read.js'
+import { readScmContent } from './scm-read.js'
 import { createFileWatch, type FileWatch } from './file-watch.js'
 import { loadTestHooks, writeFileContent } from './file-write.js'
 import { fileDialogSpec, parseFileDialogRequest, reloadDialogSpec, unresponsiveDialogSpec } from './file-dialogs.js'
@@ -2271,6 +2272,15 @@ app.whenReady().then(async () => {
     const result = await readFileContent({ roots: explorerRoots(), root, rel })
     // 읽은 바이트를 남긴다(E4ⓕ 「상한 넘게 읽지 않음」 계측) — 경로는 남기지 않는다(상대 경로 길이만).
     log('file.read', { ok: result.ok, kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok ? result.size : null, bytesRead: result.ok ? result.bytesRead : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
+    return result
+  })
+  // LIFE-683 S7 — 소스 제어 diff 의 HEAD·인덱스 내용. 가둠·argv 고정·상한·바이너리는 `readScmContent`. 경로는 남기지 않는다(쓰기 0 계측은 `scm.read` 수).
+  ipcMain.handle('corral:scmRead', async (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    const field = (name: string): unknown => (typeof input === 'object' && input !== null && name in input ? Reflect.get(input, name) : undefined)
+    const startedAt = performance.now()
+    const result = await readScmContent({ roots: explorerRoots(), root: field('root'), rel: field('rel'), side: field('side') })
+    log('scm.read', { ok: result.ok, side: field('side') === 'head' ? 'head' : 'index', kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok && 'size' in result ? result.size : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
     return result
   })
   // 이미지 바이트(E4ⓔ) — 확장자 목록·가둠·상한은 `readImageContent`. 경로는 남기지 않는다.

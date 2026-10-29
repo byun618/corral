@@ -13,6 +13,7 @@ import { WorkService } from '../../../main/work/service.js'
 import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
 import { FakeCipher, MemoryStore } from '../../../main/work/test-kit.js'
+import type { RepoRow, WorktreeRow } from '../../../shared/types.js'
 import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
@@ -380,5 +381,39 @@ describe('fix r1 지적 3·4 — 만들기·시작 모달', () => {
     await settle()
     expect(changes.at(-1)).toBe(false)
     expect(changes.filter((value) => value)).toHaveLength(2)
+  })
+})
+
+// LIFE-682 r2-1 — 리뷰 r2 재현 RZ1·RZ1b(raw/review/claude-r2/TasksPage.zzr2.test.tsx.txt)를 옮겼다. 숨긴(마운트 유지) 상세는 worktree 링크가 바뀌어도 읽지 않는다.
+const GIT = { branch: 'x', upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null }
+function linkedTree(connectionId: string): WorktreeRow {
+  return { path: '/repo/wt', branch: 'CORE-2-x', head: null, repoName: 'repo', isLinked: true, openWorkspaceId: 'w1', workspace: null, gitStatus: GIT, displayName: null, comment: null, parentPath: null, workLink: { mode: 'auto', sourceId: 'mock-jira', connectionId, key: 'CORE-2', itemId: null, connected: true } }
+}
+function renderWithRepos(r: Rig, repos: RepoRow[]): void {
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, {
+    open: true, repos, activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false,
+    onClose: () => { r.closes += 1 }, onOpenSettings: () => {}, onOpenWorktree: () => {},
+  }), createElement(Toaster))))
+}
+
+describe('r2-1 — 숨긴 상세는 링크 변경에 단건을 다시 읽지 않는다(읽기 조건 = 보이는가)', () => {
+  it('RZ1 숨긴 상세 + worktree 링크 생김 → getItem 0', async () => {
+    const r = await rig({ open: true })
+    await openCard('CORE-2')
+    click('[data-issue-close]')
+    await settle()
+    expect(el('[data-task-detail-host]').hidden).toBe(true)
+    r.calls.length = 0
+    renderWithRepos(r, [{ root: '/repo', name: 'repo', error: null, worktrees: [linkedTree(r.connectionId)] }])
+    await settle()
+    expect(r.calls.filter((call) => call.op === 'getItem')).toHaveLength(0)
+  })
+  it('RZ1b 양성 대조 — 보이는 상세는 같은 변경에 단건을 다시 읽는다', async () => {
+    const r = await rig({ open: true })
+    await openCard('CORE-2')
+    r.calls.length = 0
+    renderWithRepos(r, [{ root: '/repo', name: 'repo', error: null, worktrees: [linkedTree(r.connectionId)] }])
+    await settle()
+    expect(r.calls.filter((call) => call.op === 'getItem').length).toBeGreaterThan(0)
   })
 })

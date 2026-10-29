@@ -1948,8 +1948,8 @@ export function App(): React.JSX.Element {
                   <TerminalPane
                     paneId={groupPane.paneId}
                     diagnostics={state.diagnostics}
-                    focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksOpen}
-                    focusToken={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksOpen ? focusToken : 0}
+                    focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksModalOpen && !tasksOpen}
+                    focusToken={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksModalOpen && !tasksOpen ? focusToken : 0}
                     /* 비활성 영역은 herdr 세션 포커스를 가져가지 않는다 (S2-b — PaneLayout 과 같은 규칙). */
                     announceFocus={isActiveGroup}
                   />
@@ -1961,7 +1961,7 @@ export function App(): React.JSX.Element {
                 cell={cell}
                 zoomedPaneId={groupState.zoomedPaneId}
                 selectedPaneId={groupSelectedPaneId}
-                focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksOpen}
+                focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksModalOpen && !tasksOpen}
                 focusToken={focusToken}
                 diagnostics={state.diagnostics}
                 onSelect={(paneId) => activateGroup({ groupId: group.groupId, paneId })}

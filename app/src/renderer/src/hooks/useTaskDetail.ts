@@ -715,8 +715,9 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
    * 「다른 곳의 링크」 는 단건과 지금 트리를 견주므로, 단건이 낡으면 방금 뗀 worktree 가 원격 행으로 남는다. 쓰기 중이면 그 쓰기 뒤 재조회가 맡는다.
    */
   const refreshLinks = useCallback(() => {
-    if (here !== null && !locked) void refreshItem(here)
-  }, [here, locked, refreshItem])
+    // 상세가 보일 때만(LIFE-682 r2-1 — 숨긴 채 마운트된 상세는 읽지 않는다). 다시 보이면 첫 읽기 체인이 단건·링크를 새로 받는다.
+    if (open && here !== null && !locked) void refreshItem(here)
+  }, [open, here, locked, refreshItem])
   /** 다시 읽을 수 있는가 — 진행 중인 쓰기·읽기가 없을 때(「다시 시도」 버튼). */
   const canReload = !locked && !reading
 

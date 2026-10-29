@@ -133,7 +133,7 @@ describe('ScmView', () => {
 })
 
 describe('구독 참조 셈 (S8) · 폭 칸 (S1)', () => {
-  it('같은 루트 두 보기 = on 한 번, 보기 전환(해제 → 구독)은 off 없이, 마지막 해제 뒤 off 한 번', async () => {
+  it('같은 루트 두 보기 = on 한 번, 보기 전환(해제 → 구독)은 off·refresh 없이(F2-04), 마지막 해제 뒤 off 한 번', async () => {
     const calls: string[] = []
     Reflect.set(window, 'corral', {
       explorerWatch: async ({ on }: { on: boolean }) => {
@@ -151,10 +151,10 @@ describe('구독 참조 셈 (S8) · 폭 칸 (S1)', () => {
     scm()
     const again = acquireExplorerWatch('/r')
     await Promise.resolve()
-    expect(calls).toEqual(['on', 'refresh', 'refresh'])
+    expect(calls).toEqual(['on', 'refresh'])
     again()
     await Promise.resolve()
-    expect(calls).toEqual(['on', 'refresh', 'refresh', 'off'])
+    expect(calls).toEqual(['on', 'refresh', 'off'])
   })
   it('소스 제어는 탐색기 폭 칸을 쓴다', () => {
     expect(widthSlotOf('scm')).toBe('explorer')

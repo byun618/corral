@@ -383,8 +383,8 @@ describe('LIFE-629 ⇧⌘V Markdown 미리보기 전환', () => {
   })
 })
 
-describe('LIFE-683 fix r1 R1-03', () => {
-  it('scm.show 는 편집기 양보 목록에 든다(Monaco ⇧⌘G 이전 찾기)', () => {
-    expect(EDITOR_YIELD_ACTIONS).toContain('scm.show')
+describe('LIFE-683 F2-05 (R1-03 되돌림)', () => {
+  it('scm.show 는 편집기 양보 목록에 들지 않는다 — 편집기 포커스에서도 ⌘⇧G = 소스 제어', () => {
+    expect(EDITOR_YIELD_ACTIONS).not.toContain('scm.show')
   })
 })

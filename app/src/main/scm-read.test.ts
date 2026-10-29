@@ -67,7 +67,7 @@ describe('readScmContent', () => {
   })
   it('가둠 — 열린 worktree 아닌 루트 · 탈출 경로 · 절대 경로 · 모르는 side 는 거절', async () => {
     expect(await readScmContent({ roots: [], root, rel: 'a.ts', side: 'head' })).toMatchObject({ ok: false, code: 'not_worktree' })
-    for (const rel of ['../x', 'dir/../../x', '/etc/passwd', '', 'a//b', 'a\0b', 7]) expect(await readScmContent({ roots: roots(), root, rel, side: 'head' })).toMatchObject({ ok: false, code: 'bad_path' })
+    for (const rel of ['../x', 'dir/../../x', '/etc/passwd', '', 'a//b', 'a\0b', 7, 'a'.repeat(4097)]) expect(await readScmContent({ roots: roots(), root, rel, side: 'head' })).toMatchObject({ ok: false, code: 'bad_path' })
     for (const side of ['HEAD~1', 'main', '--output=/tmp/x', 'working', null]) expect(await readScmContent({ roots: roots(), root, rel: 'a.ts', side })).toMatchObject({ ok: false, code: 'bad_path' })
   })
   it('argv 는 고정 — 경로·ref 는 argv 에 없다(stdin), blob 은 hex oid 만', () => {

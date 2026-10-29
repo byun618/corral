@@ -1,6 +1,6 @@
 // 소스 제어 보기 (LIFE-683) — 순수 모델. 탐색기 허브의 같은 `git status --porcelain=v2 -z` 출력을 VS Code git 확장의 리소스 그룹대로 나눈다.
 //
-// · 분류는 VS Code `extensions/git/src/repository.ts` 3205-3248(d0adb05e725): 충돌 XY → 병합 변경, 아니면 X → 스테이지된 변경, Y → 변경. 한 파일이
+// · 분류는 VS Code `extensions/git/src/repository.ts` 3219-3252(d0adb05e725 — `??` 3219 · 충돌 3229-3235 · X 3238-3244 · Y 3246-3252, F2-02 정정): 충돌 XY → 병합 변경, 아니면 X → 스테이지된 변경, Y → 변경. 한 파일이
 //   인덱스·작업 트리 둘 다 바뀌면 두 그룹에 각각 나온다. 추적 안 함은 `git.untrackedChanges: mixed`(기본) 대로 「변경」 에 섞는다.
 //   의도적 차이 — X=`T`(스테이지된 형식 변경)는 VS Code switch 에 없어 목록에서 사라지지만 corral 은 스테이지 그룹에 T 로 둔다(D1).
 // · 글자·색은 탐색기 배지와 같은 표(`explorer-git.ts` `GIT_DECORATION`) — 탐색기 `markOf` 는 건드리지 않는다(S10).
@@ -108,7 +108,7 @@ export function parseScmChanges(stdout: string): ScmChange[] {
   return out
 }
 
-/** 상태 글자(`GIT_DECORATION` 키) — VS Code `getStatusLetter`(`repository.ts:61-91`). */
+/** 상태 글자(`GIT_DECORATION` 키) — VS Code `getStatusLetter`(`repository.ts:62-95`). */
 export function scmMark(status: ScmStatus): GitMark {
   switch (status) {
     case 'INDEX_MODIFIED':
@@ -141,7 +141,7 @@ export function scmMark(status: ScmStatus): GitMark {
   }
 }
 
-/** 툴팁 상태 문구 — VS Code `getStatusText`(`repository.ts:93-117`)의 한국어. */
+/** 툴팁 상태 문구 — VS Code `getStatusText`(`repository.ts:97-120`)의 한국어. */
 export const SCM_STATUS_TEXT: Readonly<Record<ScmStatus, string>> = {
   INDEX_MODIFIED: '인덱스 수정됨',
   MODIFIED: '수정됨',
@@ -280,7 +280,7 @@ export type ScmOpen = { kind: 'diff'; target: ScmDiffTarget } | { kind: 'file'; 
 
 /**
  * 행 클릭이 여는 것 — VS Code `resolveChangeCommand`. 충돌은 작업 파일(`git.mergeEditor` 기본 false).
- * 하위 모듈 항목은 내용 비교가 없다 — VS Code 는 `getResources` 의 submodule 분기(`repository.ts:580-586`)로 그 하위 저장소를 열지만
+ * 하위 모듈 항목은 내용 비교가 없다 — VS Code 는 `getResources` 의 submodule 분기(`repository.ts:581-586`)로 그 하위 저장소를 열지만
  * 여러 저장소 표시는 범위 밖이라 안내만 한다(fix r1 R1-04).
  */
 export function openOf(change: ScmChange): ScmOpen {

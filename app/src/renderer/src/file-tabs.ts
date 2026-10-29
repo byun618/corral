@@ -103,6 +103,24 @@ export function fileTabDescriptions(rels: readonly string[]): Map<string, string
   return descriptions
 }
 
+/**
+ * diff 탭 설명 (LIFE-683 F2-08) — 파일 탭과 같은 규칙을 **탭 제목이 같은 diff 탭끼리** 적용한다. VS Code `shortenTabLabels` 는 탭 이름(`label.name`)으로
+ * 묶는데(`multiEditorTabsControl.ts:1629-1640` d0adb05e725) diff 탭 이름은 `a.ts (작업 트리)` 라 같은 이름 = 같은 파일 이름 + 같은 모드다. 돌려주는 값 = `tabId → 설명`.
+ */
+export function diffTabDescriptions(tabs: readonly { tabId: string; label: string; rel: string }[]): Map<string, string> {
+  const byLabel = new Map<string, { tabId: string; rel: string }[]>()
+  for (const tab of tabs) byLabel.set(tab.label, [...(byLabel.get(tab.label) ?? []), tab])
+  const descriptions = new Map<string, string>()
+  for (const same of byLabel.values()) {
+    const byRel = fileTabDescriptions(same.map((tab) => tab.rel))
+    for (const tab of same) {
+      const description = byRel.get(tab.rel)
+      if (description !== undefined) descriptions.set(tab.tabId, description)
+    }
+  }
+  return descriptions
+}
+
 const ELLIPSIS = '\u2026'
 const SEP = '/'
 const HOME = '~'

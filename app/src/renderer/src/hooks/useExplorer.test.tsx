@@ -24,8 +24,9 @@ let hold = new Set<string>()
 let held: (() => void)[] = []
 
 let probeRoot = '/fixture'
+let probeActive = true
 function Probe(): null {
-  api = useExplorer({ root: probeRoot, active: true })
+  api = useExplorer({ root: probeRoot, active: probeActive })
   return null
 }
 const current = (): ExplorerApi => {
@@ -40,6 +41,7 @@ const names = (rel: string): string[] | undefined => current().state?.listings.g
 
 beforeEach(async () => {
   probeRoot = '/fixture'
+  probeActive = true
   calls = []
   hold = new Set()
   held = []
@@ -374,5 +376,35 @@ describe('R5-A 펼치지 않은 링크 행 — 대상이 생기거나 없어지�
     await act(async () => current().expand('dir'))
     expect(calls).toEqual(['dir'])
     expect(row('dir', 'alias')).toBe('dir:ok')
+  })
+})
+
+describe('LIFE-683 F2-06 ① 숨은 동안의 목록 변경 push (visibleRoot 가드)', () => {
+  const show = async (active: boolean): Promise<void> => {
+    probeActive = active
+    await act(async () => root.render(createElement(Probe)))
+  }
+  it('숨은 동안 changed·overflow 는 읽지 않고, git 스냅샷은 받으며, 다시 보이면 루트 + 펼친 폴더를 맞춘다', async () => {
+    await act(async () => current().expand('dir'))
+    await show(false)
+    calls = []
+    grow('dir', 'hidden.txt')
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['dir/hidden.txt', 'dir'] }))
+    await act(async () => push({ kind: 'overflow', root: '/fixture' }))
+    expect(calls).toEqual([])
+    expect(names('dir')).toEqual(['before.txt'])
+    await act(async () => push({ kind: 'git', root: '/fixture', git: null, error: 'fatal: not a git repository' }))
+    expect(current().state).not.toBeNull()
+    await show(true)
+    expect(calls).toEqual(expect.arrayContaining(['', 'dir']))
+    expect(names('dir')).toEqual(['before.txt', 'hidden.txt'])
+  })
+  it('대조 — 보이는 동안 같은 changed 는 바로 읽는다', async () => {
+    await act(async () => current().expand('dir'))
+    calls = []
+    grow('dir', 'shown.txt')
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['dir/shown.txt', 'dir'] }))
+    expect(calls).toEqual(['dir'])
+    expect(names('dir')).toEqual(['before.txt', 'shown.txt'])
   })
 })

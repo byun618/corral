@@ -7,7 +7,7 @@
 // · `--no-optional-locks`(LIFE-672) — `.git/index.lock` 을 잡지 않는다. cat-file 은 원래 인덱스를 쓰지 않는다.
 // · 상한·바이너리 판정은 `file-read.ts` 와 같은 값(50 MB · 앞 8 KB NUL). 크기를 먼저 보고 넘으면 내용을 읽지 않는다.
 import { execFile } from 'node:child_process'
-import { confine } from './explorer-fs.js'
+import { confine, MAX_REL_LENGTH } from './explorer-fs.js'
 import { decodeText, looksBinary } from './file-read.js'
 import { TEXT_LIMIT_BYTES } from '../shared/file-view.js'
 import { isPlainRel, type ScmReadResult } from '../shared/scm.js'
@@ -31,7 +31,8 @@ function run(input: { cwd: string; args: string[]; stdin?: string; maxBuffer: nu
 export async function readScmContent(input: { roots: readonly string[]; root: unknown; rel: unknown; side: unknown; limit?: number }): Promise<ScmReadResult> {
   const limit = input.limit ?? TEXT_LIMIT_BYTES
   if (input.side !== 'head' && input.side !== 'index') return { ok: false, code: 'bad_path', error: 'side 는 head·index 만' }
-  if (typeof input.rel !== 'string' || !isPlainRel(input.rel)) return { ok: false, code: 'bad_path', error: '상대 경로 형 위반' }
+  // F2-03 — 길이 상한은 탐색기 가둠(`explorer-fs.ts` `MAX_REL_LENGTH`)과 같다(`confine` 은 루트만 보므로 여기서 본다).
+  if (typeof input.rel !== 'string' || input.rel.length > MAX_REL_LENGTH || !isPlainRel(input.rel)) return { ok: false, code: 'bad_path', error: '상대 경로 형 위반' }
   const confined = await confine({ roots: input.roots, root: input.root, rel: '' })
   if (!confined.ok) return { ok: false, code: 'not_worktree', error: confined.error }
   const spec = `${input.side === 'head' ? 'HEAD' : ''}:./${input.rel}`

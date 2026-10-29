@@ -54,7 +54,7 @@ import type { LaunchAgent, OpenTabSearchEntry } from '../tab-create-menu.js'
 import { TabCreateMenu } from './TabCreateMenu.js'
 import { FileIcon } from './ExplorerIcons.js'
 import { ContextMenu, type MenuEntry } from './ContextMenu.js'
-import { fileTabDescriptions, fileTabLabel } from '../file-tabs.js'
+import { diffTabDescriptions, fileTabDescriptions, fileTabLabel } from '../file-tabs.js'
 import './file-view.css'
 
 /**
@@ -426,7 +426,7 @@ function MainTab({
  */
 export type GroupTabItem =
   | { kind: 'terminal'; tab: TabRow }
-  // LIFE-683 — `diffLabel` 이 있으면 diff 탭(소스 제어): 제목은 그 글(`a.ts (작업 트리)` — VS Code `getTitle`), 아이콘은 `rel` 의 파일 아이콘, 같은 이름 설명은 붙이지 않는다.
+  // LIFE-683 — `diffLabel` 이 있으면 diff 탭(소스 제어): 제목은 그 글(`a.ts (작업 트리)` — VS Code `getTitle`), 아이콘은 `rel` 의 파일 아이콘, 같은 이름 설명은 같은 제목 diff 탭끼리(F2-08 `diffTabDescriptions`).
   | { kind: 'file'; tabId: string; rel: string; preview: boolean; deleted: boolean; dirty: boolean; diffLabel?: string }
 
 type FileTabMenuAction = 'close' | 'keep' | 'close-others' | 'close-right' | 'split-right' | 'split-down' | `move:${string}`
@@ -797,6 +797,8 @@ export function GroupHeader({
   const tabOrder = shown.map((item) => (item.kind === 'terminal' ? item.tab.tabId : item.tabId))
   // LIFE-689 — 같은 이름 구분 설명은 **이 영역의 파일 탭끼리만** 계산한다(VS Code 는 그룹 단위, 터미널 탭은 파일 이름이 없다).
   const fileDescriptions = fileTabDescriptions(shown.flatMap((item) => (item.kind === 'file' && item.diffLabel === undefined ? [item.rel] : [])))
+  // LIFE-683 F2-08 — diff 탭도 같은 규칙(같은 제목끼리).
+  const diffDescriptions = diffTabDescriptions(shown.flatMap((item) => (item.kind === 'file' && item.diffLabel !== undefined ? [{ tabId: item.tabId, label: item.diffLabel, rel: item.rel }] : [])))
   return (
     <div
       className={`main-tabbar ${activeGroup ? 'is-active-group' : ''}`}
@@ -832,7 +834,7 @@ export function GroupHeader({
             <FileTab
               key={item.tabId}
               item={item}
-              description={item.diffLabel === undefined ? (fileDescriptions.get(item.rel) ?? null) : null}
+              description={(item.diffLabel === undefined ? fileDescriptions.get(item.rel) : diffDescriptions.get(item.tabId)) ?? null}
               active={item.tabId === activeTabId}
               dock={item.tabId === activeTabId && !tabDragActive}
               hasTabsToRight={index < shown.length - 1}

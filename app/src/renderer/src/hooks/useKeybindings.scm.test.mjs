@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /* global setTimeout, KeyboardEvent, window, document */
-// LIFE-683 fix r1 R1-03 — ⌘⇧G(`scm.show`)는 파일 탭 편집기(`data-file-editor`)·diff 탭 편집기(`data-scm-diff-host`) 안에서는 Monaco(⇧⌘G 이전 찾기)에 양보하고,
-// 편집기 밖에서는 그대로 소스 제어를 연다(S1). 터미널 대상 양보 액션(⌘D 분할)도 diff 편집기 안에서 양보한다.
+// LIFE-683 F2-05 — ⌘⇧G(`scm.show`)는 파일 탭 편집기(`data-file-editor`)·diff 탭 편집기(`data-scm-diff-host`) 안에서도 소스 제어를 연다(S1 ·
+// Orca `scope: 'global'`). fix r1 R1-03 의 편집기 양보를 되돌렸다 — Monaco ⇧⌘G 이전 찾기는 찾기 위젯 ⇧Enter 로 남는다(D1).
 // ShortcutHandlers 는 ActionId 전부를 요구해 `as` 없이 채우기 어렵다 — 선례(editor·repeat)처럼 .mjs 로 둔다.
 import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -53,13 +53,13 @@ afterEach(() => {
   for (const node of nodes.splice(0)) node.remove()
 })
 
-describe('⌘⇧G 편집기 양보 (R1-03)', () => {
-  it('파일 탭·diff 탭 편집기 안 = 전역 처리 0 · 기본 동작 그대로(Monaco 가 받는다)', () => {
-    expect(press(inside('data-file-editor'), G).defaultPrevented).toBe(false)
-    expect(press(inside('data-scm-diff-host'), G).defaultPrevented).toBe(false)
-    expect(ran).toEqual([])
+describe('⌘⇧G 는 편집기 포커스에서도 소스 제어 (F2-05 — R1-03 되돌림)', () => {
+  it('파일 탭·diff 탭 편집기 안에서도 ⌘⇧G = 소스 제어 보이기(키를 가져간다)', () => {
+    expect(press(inside('data-file-editor'), G).defaultPrevented).toBe(true)
+    expect(press(inside('data-scm-diff-host'), G).defaultPrevented).toBe(true)
+    expect(ran).toEqual(['scm.show:0', 'scm.show:0'])
   })
-  it('대조 — 편집기 밖에서는 ⌘⇧G = 소스 제어 보이기', () => {
+  it('편집기 밖에서도 ⌘⇧G = 소스 제어 보이기', () => {
     const outside = inside('data-plain')
     expect(press(outside, G).defaultPrevented).toBe(true)
     expect(ran).toEqual(['scm.show:0'])

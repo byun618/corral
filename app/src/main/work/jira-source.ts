@@ -120,7 +120,7 @@ export const JIRA_CAPABILITIES: WorkCapabilities = {
 const CATEGORY: Record<string, WorkCategory> = { undefined: 'todo', new: 'todo', indeterminate: 'in_progress', done: 'done' }
 const CATEGORY_RANK: Record<WorkCategory, number> = { todo: 0, in_progress: 1, done: 2 }
 /** 목록·검색이 받는 칸 — `/search/jql` 은 `fields` 기본이 `id` 뿐이다(F5). */
-const LIST_FIELDS = ['summary', 'status', 'issuetype', 'parent', 'priority', 'duedate', 'resolution', 'project', 'updated', 'issuelinks']
+const LIST_FIELDS = ['summary', 'status', 'issuetype', 'parent', 'priority', 'duedate', 'resolution', 'project', 'updated', 'issuelinks', 'statuscategorychangedate']
 const ITEM_FIELDS = [...LIST_FIELDS, 'description']
 const PAGE_GUARD = 100
 const CHILD_PAGE_GUARD = 20
@@ -579,8 +579,9 @@ export class JiraSource implements WorkSourceClient {
         statusKey: issue.status.id,
         category,
         resolution: category === 'done' ? resolutionOf(issue.resolution) : null,
-        // 오래된 완료 숨김(LIFE-702)은 LA 규칙 맞춤 — Jira 는 값을 주지 않아 숨기지 않는다(resolutiondate 미사용).
-        doneAt: null,
+        // 오래된 완료 숨김(LIFE-702)·상세 「완료」(LIFE-711) — done 분류일 때만 분류가 바뀐 시각(`statuscategorychangedate`). done→done 이동엔 안 바뀐다(LA 규칙과 같음).
+        // 칸이 없거나 해석 안 되면 null(숨기지 않음). resolutiondate 는 워크플로에 따라 비어 쓰지 않는다.
+        doneAt: category === 'done' ? issue.statusCategoryChangedAt : null,
         priority: priorityOf(issue.priority),
         dueAt: dueFromJira(issue.duedate),
         parentId: issue.parentId,

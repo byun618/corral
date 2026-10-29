@@ -17,6 +17,7 @@ import {
   activityCounts,
   activityRows,
   checkRelationKey,
+  doneRow,
   dueFromInput,
   dueInputValue,
   passesActivity,
@@ -478,6 +479,7 @@ function Fields({ detail, item, now, menu, setMenu, writable, saveFields }: {
 }): React.JSX.Element {
   const placement = detail.caps?.placement ?? { state: 'on' as const }
   const tone = dueTone({ dueAt: item.dueAt, now })
+  const done = doneRow({ item, now })
   const setPlacement = (next: 'board' | 'backlog'): void => {
     if (item.placement === next) return
     const before = item.placement ?? 'board'
@@ -535,6 +537,18 @@ function Fields({ detail, item, now, menu, setMenu, writable, saveFields }: {
           }}
         />
       </span>
+      {done === null ? null : (
+        <>
+          <span className="issue-field-label">완료</span>
+          <span className="issue-field-value issue-done-at" data-field="done-at" title="출처가 기록한 완료 시각 — 고칠 수 없습니다">
+            {/* 값 칸은 flex 라 날짜와 숨김 span 이 따로 놓이면 span 앞 공백이 접힌다 — 한 inline 흐름으로 감싼다. */}
+            <span>
+              {done.date}
+              {done.hidden ? <span className="issue-muted"> · 보드에서 숨김</span> : null}
+            </span>
+          </span>
+        </>
+      )}
       {placement.state === 'hidden' ? null : (
         <>
           <span className="issue-field-label">배치</span>

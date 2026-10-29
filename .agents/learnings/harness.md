@@ -1,6 +1,6 @@
 # harness learnings
 
-Last reviewed: 2026-10-28
+Last reviewed: 2026-10-29
 
 ## 「응답에 X 가 있다」는 어느 명령의 응답인지까지 원자료로
 
@@ -43,3 +43,17 @@ Last reviewed: 2026-10-28
 - **Learning:** 감독 워커로 띄운 리뷰어는 보고서 파일만 쓰고 완료 보고 없이 끝날 수 있다 — 그러면 『완료 감지』가 공백이 된다. 리뷰 명세 끝에 「끝나면 반드시 완료 보고」를 적는다.
 - **Evidence:** LIFE-724 r1 리뷰어가 완료 보고 없이 끝나 판정 근거가 관측(보고서 파일)으로 내려갔다. r2~r4 는 명세에 적어 모두 보고가 왔다.
 - **Disposition:** task-coordinate §5 리뷰 기동 줄 또는 `.agents/agents/reviewer.md` — 다시 나면.
+
+## 공유 프로필의 대기는 소켓 주인 재기동을 견디게 돈다
+
+- **Scope:** corral 매핑 『완료 감지』 — `orchestration check --block`
+- **Learning:** 같은 프로필의 다른 일감이 설치본을 재기동하면 소켓 주인이 바뀌어 긴 `check --block` 이 `outcome_unknown` 으로 끝난다. ack 없는 대기는 다시 불러도 안전하므로 짧은 간격 재연결 루프로 감싸고, 끊김을 메시지 손실·워커 이상으로 읽지 않는다. ack 만 하는 대기에도 `--types` 를 붙여 heartbeat 배치가 새 Delivery 로 따라오지 않게 한다.
+- **Evidence:** LIFE-626 — 병렬 일감의 설치본 재기동마다 코디 대기가 끊겼고(워커 무영향), `--types` 없는 ack 가 heartbeat 18건 배치를 열었다.
+- **Disposition:** `.agents/harness/corral.md` 『완료 감지』 복구 절.
+
+## 설치본 관문의 「쓰기 0」 은 main 쪽 trace 와 양성 대조로
+
+- **Scope:** 설치본을 CDP 로 관측하는 네이티브 관문(실제 외부 연결 위, 읽기 전용 조건)
+- **Learning:** contextBridge 로 노출된 렌더러 API 는 얼어 있어 렌더러 쪽 쓰기 가드를 걸 수 없다. 처음부터 main 쪽 IPC trace 로 사후 검출하고 양성 대조(읽기 응답 ≥ 1, 보낸 요청 id 전부가 trace 에 있음)를 붙인다. trace 를 거치지 않는 IPC 는 판정표에 공백으로 둔다.
+- **Evidence:** LIFE-711 — 첫 회차가 가드 불가로 클릭 전에 멈췄고, trace 사후 검출로 바꾼 뒤 통과했다.
+- **Disposition:** `.agents/harness/corral.md` 설치본 관문 절 또는 validation.md 네이티브 관문 줄.

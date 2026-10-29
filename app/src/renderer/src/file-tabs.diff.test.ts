@@ -1,9 +1,8 @@
-// LIFE-683 S5·S10 — diff 탭: 종류 구분, 파일 탭과 같은 미리보기·고정·중복 0 규칙, 정리 생존, 그리고 **기준 빌드(682 `0aad74da`)** 의 `group-tree.ts`
-// 사본(`app/test-fixtures/group-tree.0aad74da.ts` — 바이트 그대로, 제품 소스 트리 밖 시험 전용)이 diff 탭 id 든 배치를 읽어도 죽지 않고 터미널·파일 탭 배치가 남는다(하위 방향).
+// LIFE-683 S5 — diff 탭: 종류 구분, 파일 탭과 같은 미리보기·고정·중복 0 규칙, 정리 생존. 하위 방향(S10)은 기준 빌드 실기동 회차가 본다
+// (F2-07 — 기준 빌드 `group-tree.ts` 사본과 그 시험은 실기동 회차 통과 뒤 지웠다).
 import { describe, expect, it } from 'vitest'
 import { fileTabId, fileTabsOf, keepFileTab, openFileTab, previewOf, tabKindOf } from './file-tabs.js'
 import { dropDeadTabs, listGroups, readStoredLayouts, reconcileLayout, singleLayout, type GroupLayout } from './group-tree.js'
-import * as base from '../../../test-fixtures/group-tree.0aad74da.js'
 import { diffTabId, type ScmDiffTarget } from '../../shared/scm.js'
 
 const WT: ScmDiffTarget = { mode: 'wt', rel: 'src/a.ts', orig: null }
@@ -54,26 +53,5 @@ describe('여는 규칙 — 파일 탭과 같다', () => {
     const layout: GroupLayout = { root: { kind: 'leaf', group: { groupId: 'g1', tabOrder: ['w1:t1', D1], activeTabId: D1, previewTabId: D1 } }, activeGroupId: 'g1' }
     const [row] = readStoredLayouts(JSON.parse(JSON.stringify([{ worktreePath: '/w', layout, layoutFormat: 2 }])))
     expect(row?.layout).toEqual(layout)
-  })
-})
-
-describe('하위 방향 — 기준 빌드 group-tree(0aad74da)가 새 배치를 읽는다 (S10)', () => {
-  const stored = [
-    {
-      worktreePath: '/w',
-      layoutFormat: 2,
-      layout: { root: { kind: 'split', direction: 'row', ratio: 0.5, first: { kind: 'leaf', group: { groupId: 'g1', tabOrder: ['w1:t1', D1, F], activeTabId: D1, previewTabId: D1 } }, second: { kind: 'leaf', group: { groupId: 'g2', tabOrder: [D2], activeTabId: D2 } } }, activeGroupId: 'g1' },
-    },
-  ]
-  it('읽기에서 죽지 않고, diff 탭은 herdr 에 없는 탭으로 걷히고 터미널·파일 탭 배치는 남는다', () => {
-    const rows = base.readStoredLayouts(JSON.parse(JSON.stringify(stored)))
-    expect(rows).toHaveLength(1)
-    const layout = rows[0]!.layout
-    const kept = base.dropDeadTabs({ layout, herdrTabIds: new Set(['w1:t1']) })
-    expect(kept === null ? null : base.listGroups(kept.root).map((group) => group.tabOrder)).toEqual([['w1:t1', F]])
-    const shown = base.reconcileLayout({ layout, liveTabIds: ['w1:t1'] })
-    expect(base.listGroups(shown.root).map((group) => group.tabOrder)).toEqual([['w1:t1', F]])
-    // 기준 빌드는 diff 미리보기를 미리보기로 싣지 않는다(파일 탭만) — 남는 영역에 엉뚱한 미리보기 표시가 없다.
-    expect(base.listGroups(layout.root)[0]?.previewTabId).toBeUndefined()
   })
 })

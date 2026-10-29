@@ -337,7 +337,10 @@ function Bands({ bands, rows, all, density, selectedId, drag, now, columnView, h
               const zone = columnZone(column)
               const showGap = drag !== null && drag.zone === zone && view.mode === 'target'
               const visible = column.rows
-              const showReason = view.reason !== null && (view.hoverOnly !== true || drag?.zone === zone)
+              // 칸마다 그리는 이유(묶기 없음)는 목록 위 줄. hoverOnly(묶기=부모 의 다른 레인)는 포인터가 올라간 칸에만, 목록 **안** 오버레이로 —
+              // 줄로 끼우면 목록이 밀려 포인터가 영역 밖으로 나가고 문구가 사라졌다 다시 생기는 토글이 난다(LIFE-745 r2 L1).
+              const showReason = view.reason !== null && view.hoverOnly !== true
+              const overlayReason = view.reason !== null && view.hoverOnly === true && drag?.zone === zone
               return (
                 <div key={column.id} className={`tasks-column${column.unmapped ? ' is-unmapped' : ''} drag-${view.mode}${drag?.zone === zone ? ' is-over' : ''}`} data-board-column={column.id} title={view.hoverOnly === true ? (view.reason ?? undefined) : undefined}>
                   <header className="tasks-column-head">
@@ -348,6 +351,7 @@ function Bands({ bands, rows, all, density, selectedId, drag, now, columnView, h
                   {column.unmapped ? <div className="tasks-column-note">출처 워크플로에 칸이 없는 상태입니다 — 여기로 옮길 수는 없습니다.</div> : null}
                   {showReason ? <div className="tasks-column-reason" data-column-reason="">{view.reason}</div> : null}
                   <div className="tasks-column-list" data-drop-zone={zone}>
+                    {overlayReason ? <div className="tasks-column-reason is-overlay" data-column-reason="overlay" aria-live="polite">{view.reason}</div> : null}
                     {withGap({ rows: visible, drag, showGap }).map((entry) => (entry.kind === 'gap'
                       ? <div key="gap" className="tasks-drop-gap" style={{ height: entry.height }} data-drop-gap="" />
                       : (

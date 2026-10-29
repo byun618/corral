@@ -132,7 +132,12 @@
 .tasks-column-count { color: var(--fg-dim); font-family: var(--font-mono); font-size: 10.5px; font-weight: 400; }
 .tasks-column-note { padding: 0 4px; color: var(--fg-dim); font-size: 10.5px; }
 .tasks-column-reason { padding: 0 4px; color: var(--st-error); font-size: 10.5px; }
-.tasks-column-list { display: flex; flex-direction: column; gap: 6px; min-height: 40px; }
+.tasks-column-list { position: relative; display: flex; flex-direction: column; gap: 6px; min-height: 40px; }
+/* 막힌 레인 칸의 이유(LIFE-745 r2 L1) — 목록 안 위쪽에 겹쳐 그려 레이아웃을 밀지 않는다. 포인터는 통과(영역 판정 그대로). */
+.tasks-column-reason.is-overlay {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 3; pointer-events: none; padding: 4px 6px; border-radius: 6px;
+  background: var(--bg-raised); border: 1px solid color-mix(in srgb, var(--st-error) 35%, transparent); box-shadow: var(--shadow-menu);
+}
 .tasks-unmapped-mark { color: var(--fg-dim); width: 10px; text-align: center; }
 .tasks-drop-gap { border-radius: 8px; border-top: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); flex: 0 0 auto; }
 .tasks-drop-gap.is-row { border-radius: 0; }

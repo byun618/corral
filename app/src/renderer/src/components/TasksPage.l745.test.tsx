@@ -467,7 +467,8 @@ async function release(): Promise<void> {
   mouse(document, 'mouseup', 60, 520)
   await settle()
 }
-const reasons = (): string[] => qa('[data-column-reason]').map((element) => element.closest('[data-drop-zone]') === null ? (element.parentElement?.querySelector('[data-drop-zone]')?.getAttribute('data-drop-zone') ?? '') : '')
+/** 이유 문구가 있는 놓기 영역 — 목록 위 줄(묶기 없음)이면 형제 영역, 오버레이(묶기=부모 막힌 레인)면 자기를 품은 영역. */
+const reasons = (): string[] => qa('[data-column-reason]').map((element) => (element.closest('[data-drop-zone]') ?? element.parentElement?.querySelector('[data-drop-zone]'))?.getAttribute('data-drop-zone') ?? '')
 
 describe('R1-1 묶기=부모 끌기 중 이유 문구는 포인터가 올라간 칸에만', () => {
   it('끌기 시작 = 문구 0(자기 레인 칸 위) · 막힌 칸 위 = 그 칸 1개 · 나머지 막힌 칸은 title 만', async () => {
@@ -487,6 +488,14 @@ describe('R1-1 묶기=부모 끌기 중 이유 문구는 포인터가 올라간 
     mouse(document, 'mousemove', 60, 520)
     await settle()
     expect(reasons()).toEqual(['col:st:doing@none'])
+    // r2 L1 — 막힌 레인 칸의 문구는 놓기 영역 **안** 오버레이(목록 위 줄이 아니다 → 목록을 밀지 않는다). 포인터는 통과.
+    const overlay = q('[data-column-reason]')
+    expect(overlay?.getAttribute('data-column-reason')).toBe('overlay')
+    expect(overlay?.classList.contains('is-overlay')).toBe(true)
+    expect(overlay?.parentElement?.getAttribute('data-drop-zone')).toBe('col:st:doing@none')
+    // 같은 칸 안에서 더 움직여도 문구는 하나로 유지된다(토글 없음).
+    for (const y of [522, 524, 526]) { mouse(document, 'mousemove', 60, y); await settle() }
+    expect(reasons()).toEqual(['col:st:doing@none'])
     await release()
     expect(writes()).toEqual([])
   })
@@ -501,6 +510,8 @@ describe('R1-1 묶기=부모 끌기 중 이유 문구는 포인터가 올라간 
     await settle()
     // 허용 전이를 받는 중 — 다른 상태 칸 둘(doing·done)에 포인터와 무관하게 이유가 뜬다.
     expect(qa('[data-column-reason]').map((element) => element.textContent)).toEqual(['허용 전이를 받는 중…', '허용 전이를 받는 중…'])
+    // 묶기 없음의 이유는 기존대로 목록 위 줄(영역 밖).
+    expect(qa('[data-column-reason]').every((element) => element.closest('[data-drop-zone]') === null && !element.classList.contains('is-overlay'))).toBe(true)
     await release()
   })
 })

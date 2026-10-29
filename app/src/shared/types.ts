@@ -775,6 +775,12 @@ export type UiPrefs = {
    */
   rightPanelOpen: boolean
   rightPanelWidth: number | null
+  /**
+   * 오른쪽 패널 활성 보기·보기별 폭 (LIFE-682 A3) — 폭은 보기마다 따로 기억한다. `rightPanelWidth` 는 **탐색기 보기의 폭**이다
+   * (LIFE-589 때부터 있던 칸을 그대로 이어받는다 — 옛 파일의 사용자 폭을 잃지 않게). 상세 폭 null = 토큰 기본(560). 모르는 보기 이름은 탐색기.
+   */
+  rightPanelView: RightPanelView
+  rightPanelDetailWidth: number | null
   explorerShowDotfiles: boolean
   explorerShowIgnored: boolean
   /**
@@ -784,6 +790,9 @@ export type UiPrefs = {
    */
   recentFiles: Record<string, string[]>
 } & SidebarViewPrefs
+
+/** 오른쪽 패널 보기 (LIFE-682) — 목록·아이콘·제목은 렌더러 `right-panel-views.ts` 한 곳. */
+export type RightPanelView = 'explorer' | 'detail'
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
 

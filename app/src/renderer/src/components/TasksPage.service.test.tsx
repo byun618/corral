@@ -12,7 +12,7 @@ import { WorkService } from '../../../main/work/service.js'
 import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
 import { FakeCipher, MemoryStore } from '../../../main/work/test-kit.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -34,7 +34,7 @@ const settle = async (): Promise<void> => {
   for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
 }
 async function renderPage({ open = true }: { open?: boolean } = {}): Promise<void> {
-  act(() => root.render(createElement(TasksPage, { open, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
+  act(() => root.render(createElement(TasksPageInPanel, { open, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
   await settle()
 }
 const q = (selector: string): Element | null => host.querySelector(selector)

@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { RepoRow, WorktreeRow } from '../../../shared/types.js'
 import type { WorkCapabilities, WorkItem, WorkRequest, WorkResponse, WorkSettingsState, WorkStatus } from '../../../shared/work.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -103,7 +103,7 @@ const settle = async (): Promise<void> => {
   for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
 }
 async function renderPage(repos: RepoRow[] = []): Promise<void> {
-  act(() => root.render(createElement(TasksPage, { open: true, repos, activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
+  act(() => root.render(createElement(TasksPageInPanel, { open: true, repos, activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
   await settle()
 }
 const q = (selector: string): Element | null => host.querySelector(selector)

@@ -34,8 +34,8 @@ export function SidebarSearch({ shortcut, onOpen, tasks }: { shortcut: string | 
   )
 }
 
-/** 작업 아이콘 — lucide `SquareKanban`(ISC) path. */
-function TasksIcon({ className }: { className: string }): React.JSX.Element {
+/** 작업 아이콘 — lucide `SquareKanban`(ISC) path. 오른쪽 패널 작업 상세 보기 아이콘도 이것(LIFE-682 Q4 — 사이드바 작업 진입과 같은 모양). */
+export function TasksIcon({ className }: { className: string }): React.JSX.Element {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <rect width="18" height="18" x="3" y="3" rx="2" />

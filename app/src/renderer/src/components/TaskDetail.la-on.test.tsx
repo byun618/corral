@@ -14,7 +14,7 @@ import { FIXTURE_IDS, FIXTURE_STATUS, LaMcpFixture } from '../../../main/work/la
 import { laSourceEntry } from '../../../main/work/la-source.js'
 import type { WorkService } from '../../../main/work/service.js'
 import { FAKE_LA_TOKEN, workHarness } from '../../../main/work/test-kit.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -39,7 +39,7 @@ const settle = async (rounds = 8): Promise<void> => {
 }
 
 function renderPage(): void {
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
 }
 
 /** 실제 `LaSource` + `LaMcpFixture`(기본 = 충돌 검사 켜짐). `checks` false = 조건부 수정 이전 서버(원 재현 대조). */

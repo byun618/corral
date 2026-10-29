@@ -16,7 +16,7 @@ import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
 import { FAKE_JIRA_EMAIL, FAKE_JIRA_TOKEN, FakeCipher, JIRA_ACCOUNT, MemoryStore } from '../../../main/work/test-kit.js'
 import { SEARCH_DEBOUNCE_MS } from '../hooks/useTasksPage.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -104,7 +104,7 @@ async function rig({ seed }: { seed?: (server: JiraRestFixture) => void } = {}):
     workRequest: (request: WorkRequest) => { calls.push(request.call); return service.request(request) },
     workActivity: async (query: unknown) => service.activity(query),
   })
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
   await settle(20)
   return { fixture: server, calls }
 }

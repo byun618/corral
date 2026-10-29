@@ -15,7 +15,7 @@ import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
 import { FAKE_JIRA_EMAIL, FAKE_JIRA_TOKEN, FakeCipher, JIRA_ACCOUNT, MemoryStore } from '../../../main/work/test-kit.js'
 import { SEARCH_DEBOUNCE_MS, looksLikeQuery, splitSearchCalls } from '../hooks/useTasksPage.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -93,7 +93,7 @@ async function rig({ spaceKey = 'CORE', seed, all = false }: { spaceKey?: string
     workRequest: (request: WorkRequest) => { result.calls.push(request.call); return service.request(request) },
     workActivity: async (query: unknown) => service.activity(query),
   })
-  act(() => root.render(createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
+  act(() => root.render(createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
   await settle()
   return result
 }

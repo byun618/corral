@@ -20,7 +20,8 @@ import { UiPrefsStore, type UiPrefs } from './ui-prefs.js'
 // LIFE-576: 접은 「N 하위」 칸(`collapsedLineage`)도 옛 파일에서는 빈 목록(= 전부 펼침)으로 선다.
 // LIFE-589: 오른쪽 패널·탐색기 칸도 옛 파일에서는 닫힘·기본 폭·점 파일/ignored 보임으로 선다.
 // LIFE-593: 최근 연 파일 칸(`recentFiles`)도 옛 파일에서는 빈 기록으로 선다.
-const L589_DEFAULTS = { rightPanelOpen: false, rightPanelWidth: null, explorerShowDotfiles: true, explorerShowIgnored: true, recentFiles: {} }
+// LIFE-682: 오른쪽 패널 보기·상세 폭 칸도 옛 파일에서는 탐색기 보기·기본 폭으로 선다.
+const L589_DEFAULTS = { rightPanelOpen: false, rightPanelWidth: null, rightPanelView: 'explorer', rightPanelDetailWidth: null, explorerShowDotfiles: true, explorerShowIgnored: true, recentFiles: {} }
 const L470_DEFAULTS = { manualFlatOrder: [], pinnedWorktrees: [], collapsedLineage: [], unreadWorktrees: [], tabMarks: [], ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW), ...L589_DEFAULTS }
 
 let dir = ''
@@ -525,6 +526,30 @@ describe('오른쪽 패널·탐색기 영속 (LIFE-589 E1ⓒ·E2ⓓⓔ)', () => 
     const store = new UiPrefsStore(dir)
     store.load()
     expect(store.get()).toMatchObject({ rightPanelOpen: false, rightPanelWidth: null, explorerShowDotfiles: true, explorerShowIgnored: false, sidebarWidth: 300 })
+  })
+})
+
+describe('오른쪽 패널 보기·보기별 폭 영속 (LIFE-682 A3)', () => {
+  it('보기·두 폭을 쓰고 → 새 스토어로 읽으면 같은 값(재시작), 탐색기 폭을 바꿔도 상세 폭 불변', () => {
+    const first = new UiPrefsStore(dir)
+    first.load()
+    first.update({ rightPanelOpen: true, rightPanelView: 'detail', rightPanelWidth: 330, rightPanelDetailWidth: 600 })
+    first.update({ rightPanelWidth: 250 })
+    const second = new UiPrefsStore(dir)
+    second.load()
+    expect(second.get()).toMatchObject({ rightPanelOpen: true, rightPanelView: 'detail', rightPanelWidth: 250, rightPanelDetailWidth: 600 })
+  })
+  it('682 이전 파일 — 기존 rightPanelWidth 는 탐색기 폭으로 이어받고, 보기는 탐색기·상세 폭은 기본(null)', () => {
+    fs.writeFileSync(file, JSON.stringify({ version: 1, rightPanelOpen: true, rightPanelWidth: 412 }))
+    const store = new UiPrefsStore(dir)
+    store.load()
+    expect(store.get()).toMatchObject({ rightPanelOpen: true, rightPanelWidth: 412, rightPanelView: 'explorer', rightPanelDetailWidth: null })
+  })
+  it('깨진 값 — 모르는 보기 이름은 탐색기, 숫자 아닌·무한 폭은 null(기본). 다른 칸은 그대로', () => {
+    fs.writeFileSync(file, '{"version":1,"rightPanelView":"scm","rightPanelDetailWidth":"wide","rightPanelWidth":1e999,"sidebarWidth":300}')
+    const store = new UiPrefsStore(dir)
+    store.load()
+    expect(store.get()).toMatchObject({ rightPanelView: 'explorer', rightPanelDetailWidth: null, rightPanelWidth: null, sidebarWidth: 300 })
   })
 })
 

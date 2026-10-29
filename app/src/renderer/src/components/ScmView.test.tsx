@@ -73,12 +73,11 @@ afterEach(() => {
   host.remove()
 })
 
-const api = (input: Partial<ScmApi> & { changes?: ScmChange[] | null; error?: string | null }): ScmApi => ({
+const api = (input: Partial<ScmApi> & { changes?: ScmChange[] | null; error?: string | null; total?: number }): ScmApi => ({
   root: '/r',
-  state: input.changes === undefined && input.error === undefined ? null : { changes: input.changes ?? null, error: input.error ?? null, stamp: 1 },
+  state: input.changes === undefined && input.error === undefined ? null : { changes: input.changes ?? null, total: input.total ?? input.changes?.length ?? 0, error: input.error ?? null, stamp: 1 },
   version: 1,
   stampOf: () => 1,
-  changesOf: () => null,
   refresh: () => {},
   mode: 'list',
   setMode: () => {},

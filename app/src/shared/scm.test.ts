@@ -6,7 +6,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { parsePorcelainV2 } from './explorer-git.js'
-import { buildTree, comparePaths, diffTabId, diffTitle, flattenTree, groupChanges, isPlainRel, openOf, parseDiffTabId, parseScmChanges, scmMark, scmStrike, sidesOf, type ScmChange, type ScmStatus } from './scm.js'
+import { buildTree, comparePaths, diffTabId, diffTitle, flattenTree, groupChanges, isPlainRel, openOf, parseDiffTabId, parseScmChanges, scmErrorKind, scmMark, scmStrike, sidesOf, type ScmChange, type ScmStatus } from './scm.js'
 
 const v2 = (...records: string[]): string => records.join('\0') + '\0'
 const ordinary = (xy: string, rel: string): string => `1 ${xy} N... 100644 100644 100644 aaaa bbbb ${rel}`
@@ -184,6 +184,65 @@ describe('실제 git — fixture 저장소 분류(공백·한글·따옴표·ren
           'workingTree:UNTRACKED:bin.dat',
         ].sort(),
       )
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  })
+})
+
+// --- fix r1 ---------------------------------------------------------------------------------
+describe('fix r1 — 중첩 저장소(R1-02) · 하위 모듈(R1-04) · 전체 개수(R1-05) · 오류 종류(R1-08)', () => {
+  it('`? dir/`(끝 슬래시 = 중첩 저장소)는 버리고, 보통 추적 안 함은 남긴다 — VS Code git.ts:895', () => {
+    expect(parseScmChanges(v2('? nested/', '? plain.txt', '? dir/inner.txt'))).toEqual([
+      { group: 'workingTree', status: 'UNTRACKED', rel: 'plain.txt', orig: null },
+      { group: 'workingTree', status: 'UNTRACKED', rel: 'dir/inner.txt', orig: null },
+    ])
+  })
+  it('하위 모듈 항목(`<sub>` = S…)은 표시를 달고, 클릭은 diff 대신 안내', () => {
+    const [submodule] = parseScmChanges(v2('1 .M SC.. 160000 160000 160000 aaaa bbbb sub'))
+    expect(submodule).toEqual({ group: 'workingTree', status: 'MODIFIED', rel: 'sub', orig: null, submodule: true })
+    expect(submodule === undefined ? null : openOf(submodule).kind).toBe('notice')
+    expect(parseScmChanges(v2(ordinary('.M', 'a.ts')))[0]).not.toHaveProperty('submodule')
+  })
+  it('잘라 보낸 목록 + 전체 개수 — 안내는 전체 개수로', () => {
+    const shown = Array.from({ length: 4 }, (_value, index) => change('workingTree', `f${index}`))
+    expect(groupChanges(shown, 3, 50)).toMatchObject({ total: 50, truncated: true })
+    expect(groupChanges(shown.slice(0, 2), 3, 2)).toMatchObject({ total: 2, truncated: false })
+  })
+  it('오류 종류 — 저장소 아님 vs 조회 실패', () => {
+    expect(scmErrorKind('Error: Command failed: git -C /x status\nfatal: not a git repository (or any of the parent directories): .git')).toBe('not_repo')
+    expect(scmErrorKind('Error: spawn git ENOENT')).toBe('failed')
+    expect(scmErrorKind('RangeError [ERR_CHILD_PROCESS_STDIO_MAXBUFFER]: stdout maxBuffer length exceeded')).toBe('failed')
+    expect(scmErrorKind('Error: Command failed: git … (killed: SIGTERM, timeout)')).toBe('failed')
+  })
+  it('실제 git — 중첩 저장소는 빠지고 하위 모듈 수정은 표시가 붙는다', () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'l683-nest-')))
+    try {
+      const git = (cwd: string, ...args: string[]): string => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'protocol.file.allow=always', ...args], { encoding: 'utf8' })
+      const host = path.join(base, 'host')
+      const lib = path.join(base, 'lib')
+      for (const dir of [host, lib]) {
+        fs.mkdirSync(dir)
+        git(dir, 'init', '-q', '-b', 'main')
+        fs.writeFileSync(path.join(dir, 'f.txt'), 'x\n')
+        git(dir, 'add', '-A')
+        git(dir, 'commit', '-q', '-m', 'init')
+      }
+      git(host, 'submodule', 'add', '-q', lib, 'sub')
+      git(host, 'commit', '-q', '-m', 'sub')
+      fs.writeFileSync(path.join(host, 'sub', 'f.txt'), 'changed\n')
+      fs.mkdirSync(path.join(host, 'nested'))
+      git(path.join(host, 'nested'), 'init', '-q')
+      fs.writeFileSync(path.join(host, 'nested', 'n.txt'), 'n\n')
+      git(path.join(host, 'nested'), 'add', '-A')
+      git(path.join(host, 'nested'), 'commit', '-q', '-m', 'n')
+      fs.writeFileSync(path.join(host, 'loose.txt'), 'u\n')
+      const stdout = execFileSync('git', ['-C', host, '--no-optional-locks', '-c', 'core.quotePath=false', 'status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignored=matching'], { encoding: 'utf8' })
+      expect(stdout.split('\0')).toContain('? nested/')
+      expect(parseScmChanges(stdout)).toEqual([
+        { group: 'workingTree', status: 'MODIFIED', rel: 'sub', orig: null, submodule: true },
+        { group: 'workingTree', status: 'UNTRACKED', rel: 'loose.txt', orig: null },
+      ])
     } finally {
       fs.rmSync(base, { recursive: true, force: true })
     }

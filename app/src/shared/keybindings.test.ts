@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, explorerKeyShortcut, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, scopeOf, validateOverrides, yieldsOutsideMarkdown } from './keybindings.js'
+import { ACTIONS, bindingConflict, EDITOR_YIELD_ACTIONS, bindingFromEvent, bindingsFor, explorerKeyShortcut, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, scopeOf, validateOverrides, yieldsOutsideMarkdown } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
   it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
     // LIFE-478: + workspace.rename(⌘⌥R) · workspace.delete(⌘⇧⌫)
@@ -380,5 +380,11 @@ describe('LIFE-629 ⇧⌘V Markdown 미리보기 전환', () => {
   it('LIFE-692 새 편집기 키는 앱 전역 액션이 아니다(편집기로 간다) — ⌘K 만 앱이 쥔다', () => {
     for (const binding of ['Mod+Backspace', 'Mod+Shift+K', 'Alt+ArrowUp', 'Alt+ArrowDown', 'Alt+Shift+ArrowUp', 'Alt+Shift+ArrowDown', 'Mod+]', 'Mod+[', 'Mod+/', 'Alt+Shift+A', 'Mod+Enter', 'Mod+Shift+Enter', 'Control+J', 'Control+T', 'Control+Alt+ArrowLeft', 'Control+Alt+ArrowRight']) expect(matchBinding(binding, {})).toBeNull()
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
+  })
+})
+
+describe('LIFE-683 fix r1 R1-03', () => {
+  it('scm.show 는 편집기 양보 목록에 든다(Monaco ⇧⌘G 이전 찾기)', () => {
+    expect(EDITOR_YIELD_ACTIONS).toContain('scm.show')
   })
 })

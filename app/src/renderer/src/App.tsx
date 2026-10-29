@@ -1309,6 +1309,11 @@ export function App(): React.JSX.Element {
    */
   const openScmChange = (input: { change: ScmChange; preview: boolean }): void => {
     const opened = openOf(input.change)
+    // fix r1 R1-04 — 하위 모듈은 내용 비교가 없다: 폴더 읽기 오류 탭 대신 안내.
+    if (opened.kind === 'notice') {
+      notify(opened.message)
+      return
+    }
     if (opened.kind === 'file') {
       openFileFromExplorer({ rel: opened.rel, preview: input.preview })
       return
@@ -1924,6 +1929,8 @@ export function App(): React.JSX.Element {
             root={activeWorktreeRow.path}
             target={activeFile.target}
             stamp={scm.stampOf(activeWorktreeRow.path)}
+            // fix r1 R1-01 — 영역에 보이는 diff 탭은 그 루트 감시를 잡는다(작업 페이지·설정이 덮으면 안 보임 → 해제).
+            watch={!tasksOpen && settingsView === null}
             onOpenFile={(rel) => openFileFromExplorer({ rel, preview: false })}
           />
         ) : activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (

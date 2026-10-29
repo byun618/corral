@@ -1,9 +1,9 @@
 // LIFE-683 S5·S10 — diff 탭: 종류 구분, 파일 탭과 같은 미리보기·고정·중복 0 규칙, 정리 생존, 그리고 **기준 빌드(682 `0aad74da`)** 의 `group-tree.ts`
-// 사본(`legacy/group-tree.0aad74da.ts` — 바이트 그대로)이 diff 탭 id 든 배치를 읽어도 죽지 않고 터미널·파일 탭 배치가 남는다(하위 방향).
+// 사본(`app/test-fixtures/group-tree.0aad74da.ts` — 바이트 그대로, 제품 소스 트리 밖 시험 전용)이 diff 탭 id 든 배치를 읽어도 죽지 않고 터미널·파일 탭 배치가 남는다(하위 방향).
 import { describe, expect, it } from 'vitest'
 import { fileTabId, fileTabsOf, keepFileTab, openFileTab, previewOf, tabKindOf } from './file-tabs.js'
 import { dropDeadTabs, listGroups, readStoredLayouts, reconcileLayout, singleLayout, type GroupLayout } from './group-tree.js'
-import * as base from './legacy/group-tree.0aad74da.js'
+import * as base from '../../../test-fixtures/group-tree.0aad74da.js'
 import { diffTabId, type ScmDiffTarget } from '../../shared/scm.js'
 
 const WT: ScmDiffTarget = { mode: 'wt', rel: 'src/a.ts', orig: null }

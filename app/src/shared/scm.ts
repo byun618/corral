@@ -31,8 +31,11 @@ export type ScmStatus =
   | 'BOTH_ADDED'
   | 'BOTH_MODIFIED'
 
-/** 변경 한 줄 — `rel` 은 보이는 경로(이름 바뀜은 새 경로), `orig` 는 이름 바뀜·복사의 원래 경로(없으면 null). */
-export type ScmChange = { group: ScmGroupId; status: ScmStatus; rel: string; orig: string | null }
+/**
+ * 변경 한 줄 — `rel` 은 보이는 경로(이름 바뀜은 새 경로), `orig` 는 이름 바뀜·복사의 원래 경로(없으면 null).
+ * `submodule` — porcelain v2 `<sub>` 칸이 `S` 로 시작(하위 모듈 항목, fix r1 R1-04). 있을 때만 붙는다.
+ */
+export type ScmChange = { group: ScmGroupId; status: ScmStatus; rel: string; orig: string | null; submodule?: true }
 
 /** 그룹 순서·제목 (VS Code `repository.ts:1020-1023` — Merge Changes · Staged Changes · Changes). */
 export const SCM_GROUPS: readonly { id: ScmGroupId; title: string }[] = [
@@ -70,12 +73,15 @@ export function parseScmChanges(stdout: string): ScmChange[] {
     if (record === undefined || record.length === 0 || record.startsWith('#')) continue
     const kind = record[0]
     if (kind === '?') {
-      out.push({ group: 'workingTree', status: 'UNTRACKED', rel: record.slice(2), orig: null })
+      const rel = record.slice(2)
+      // 끝이 `/` 인 추적 안 함 = 중첩 git 저장소 — VS Code `extensions/git/src/git.ts:895` 처럼 버린다(fix r1 R1-02).
+      if (!rel.endsWith('/')) out.push({ group: 'workingTree', status: 'UNTRACKED', rel, orig: null })
       continue
     }
     if (kind === '!') continue
     const fields = record.split(' ')
     const xy = (fields[1] ?? '..').replace(/\./g, ' ')
+    const sub: { submodule?: true } = (fields[2] ?? '').startsWith('S') ? { submodule: true } : {}
     if (kind === 'u') {
       const status = CONFLICT[xy]
       if (status !== undefined) out.push({ group: 'merge', status, rel: fields.slice(10).join(' '), orig: null })
@@ -95,9 +101,9 @@ export function parseScmChanges(stdout: string): ScmChange[] {
       continue
     }
     const x = INDEX_SIDE[xy[0] ?? ' ']
-    if (x !== undefined) out.push({ group: 'index', status: x, rel, orig: x === 'INDEX_RENAMED' || x === 'INDEX_COPIED' ? orig : null })
+    if (x !== undefined) out.push({ group: 'index', status: x, rel, orig: x === 'INDEX_RENAMED' || x === 'INDEX_COPIED' ? orig : null, ...sub })
     const y = WORKING_SIDE[xy[1] ?? ' ']
-    if (y !== undefined) out.push({ group: 'workingTree', status: y, rel, orig: y === 'INTENT_TO_RENAME' ? orig : null })
+    if (y !== undefined) out.push({ group: 'workingTree', status: y, rel, orig: y === 'INTENT_TO_RENAME' ? orig : null, ...sub })
   }
   return out
 }
@@ -193,10 +199,11 @@ export type ScmGroupView = { id: ScmGroupId; title: string; changes: ScmChange[]
  * 그룹으로 묶는다 — 순서는 `SCM_GROUPS`, 그룹 안은 경로순(`scm.defaultViewSortKey: path`). 병합·스테이지는 비면 숨김(`repository.ts:1025-1028,1058-1059`),
  * 「변경」 도 비면 숨긴다 — 변경이 하나도 없으면 그룹 0 개(빈 상태 문구는 보기 몫, D1). `limit` 을 넘는 변경은 앞에서부터 잘라 `truncated` 로 알린다.
  */
-export function groupChanges(changes: readonly ScmChange[], limit = SCM_STATUS_LIMIT): { groups: ScmGroupView[]; total: number; truncated: boolean } {
+export function groupChanges(changes: readonly ScmChange[], limit = SCM_STATUS_LIMIT, total = changes.length): { groups: ScmGroupView[]; total: number; truncated: boolean } {
   const shown = changes.slice(0, limit)
   const groups = SCM_GROUPS.map((group) => ({ ...group, changes: shown.filter((change) => change.group === group.id).sort((a, b) => comparePaths(a.rel, b.rel)) })).filter((group) => group.changes.length > 0)
-  return { groups, total: changes.length, truncated: changes.length > limit }
+  // `total` — main 이 상한 + 1 로 잘라 보낸 경우의 전체 개수(fix r1 R1-05). 안내는 그 값으로.
+  return { groups, total, truncated: total > limit }
 }
 
 export type ScmTreeNode = { kind: 'dir'; name: string; path: string; children: ScmTreeNode[] } | { kind: 'file'; name: string; change: ScmChange }
@@ -269,11 +276,16 @@ export type ScmSide = 'head' | 'index' | 'working'
 export type ScmDiffMode = 'wt' | 'wtType' | 'wtRename' | 'idx' | 'idxOnly' | 'deleted'
 export type ScmDiffTarget = { mode: ScmDiffMode; rel: string; orig: string | null }
 
-export type ScmOpen = { kind: 'diff'; target: ScmDiffTarget } | { kind: 'file'; rel: string }
+export type ScmOpen = { kind: 'diff'; target: ScmDiffTarget } | { kind: 'file'; rel: string } | { kind: 'notice'; message: string }
 
-/** 행 클릭이 여는 것 — VS Code `resolveChangeCommand`. 충돌은 작업 파일(`git.mergeEditor` 기본 false). */
+/**
+ * 행 클릭이 여는 것 — VS Code `resolveChangeCommand`. 충돌은 작업 파일(`git.mergeEditor` 기본 false).
+ * 하위 모듈 항목은 내용 비교가 없다 — VS Code 는 `getResources` 의 submodule 분기(`repository.ts:580-586`)로 그 하위 저장소를 열지만
+ * 여러 저장소 표시는 범위 밖이라 안내만 한다(fix r1 R1-04).
+ */
 export function openOf(change: ScmChange): ScmOpen {
   const { rel, orig } = change
+  if (change.submodule === true) return { kind: 'notice', message: `${rel} 은(는) 하위 모듈입니다 — 소스 제어 보기는 하위 모듈의 내용 비교를 보여 주지 않습니다.` }
   switch (change.status) {
     case 'MODIFIED':
       return { kind: 'diff', target: { mode: 'wt', rel, orig: null } }
@@ -365,6 +377,11 @@ export function parseDiffTabId(tabId: string): ScmDiffTarget | null {
   if (knownMode === undefined || typeof rel !== 'string' || !isPlainRel(rel)) return null
   if (orig !== null && (typeof orig !== 'string' || !isPlainRel(orig))) return null
   return { mode: knownMode, rel, orig }
+}
+
+/** git 조회 오류 종류 (fix r1 R1-08) — 「저장소 아님」만 VS Code 문구, 나머지(타임아웃·출력 상한·git 없음)는 조회 실패. */
+export function scmErrorKind(error: string): 'not_repo' | 'failed' {
+  return /not a git repository/i.test(error) ? 'not_repo' : 'failed'
 }
 
 // --- 읽기 IPC (S7) -------------------------------------------------------------------

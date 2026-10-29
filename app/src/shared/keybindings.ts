@@ -200,7 +200,8 @@ export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', '
  * 편집기(파일 탭 Monaco)에 포커스가 있으면 **편집기에 양보하는** 액션 (LIFE-591). 터미널 pane 을 겨누는 단축키는 파일 탭이 활성이면 무동작이라(590 수정 r1 R1-B — `terminalKeyTarget`)
  * 삼키기만 하면 편집기의 같은 키가 죽는다: ⌘⇧Z 다시 실행(VS Code·Monaco macOS) · ⌘D 다음 일치 항목 추가 · ⌘⌥↑↓ 커서 추가. 양보해도 잃는 앱 동작이 없다.
  */
-export const EDITOR_YIELD_ACTIONS: readonly ActionId[] = ['terminal.zoom', 'terminal.split', 'terminal.focus']
+// LIFE-683 fix r1 R1-03 — ⌘⇧G `scm.show` 도 편집기(파일 탭·diff 탭)에 양보한다: Monaco macOS ⇧⌘G = 이전 일치 찾기(VS Code 가 mac 에서 ⌃⇧G 를 쓰는 까닭). 편집기 밖에서는 그대로.
+export const EDITOR_YIELD_ACTIONS: readonly ActionId[] = ['terminal.zoom', 'terminal.split', 'terminal.focus', 'scm.show']
 
 /**
  * 포커스가 Markdown 보기(파일 탭의 원문 편집기·미리보기) 밖이면 **키를 가져가지 않는** 액션인가 (LIFE-629). VS Code `markdown.togglePreview` when 절

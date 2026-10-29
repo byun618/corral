@@ -7,7 +7,7 @@
 // · 키보드는 탐색기와 같은 관례: ↑↓ Home End 이동 · ← 접기/부모 · → 펼치기 · Enter 열기(고정) · Space 열기(미리보기).
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { GIT_DECORATION } from '../../../shared/explorer-git.js'
-import { buildTree, flattenTree, groupChanges, SCM_STATUS_LIMIT, SCM_STATUS_TEXT, scmMark, scmStrike, type ScmChange, type ScmGroupId } from '../../../shared/scm.js'
+import { buildTree, flattenTree, groupChanges, SCM_STATUS_LIMIT, scmErrorKind, SCM_STATUS_TEXT, scmMark, scmStrike, type ScmChange, type ScmGroupId } from '../../../shared/scm.js'
 import type { ScmApi } from '../hooks/useScm.js'
 import { Codicon, FileIcon } from './ExplorerIcons.js'
 import './scm.css'
@@ -26,8 +26,8 @@ const nameOf = (rel: string): string => rel.slice(rel.lastIndexOf('/') + 1)
 const parentOf = (rel: string): string => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
 
 /** 그릴 줄 — 그룹 머리 + (목록: 경로순 파일 · 트리: 폴더 먼저 압축 트리). 접힌 그룹·폴더의 자식은 뺀다. 순수 함수(시험 대상). */
-export function scmRows(input: { changes: readonly ScmChange[]; mode: ScmViewMode; collapsed: ReadonlySet<string>; limit?: number }): { rows: ScmRow[]; total: number; truncated: boolean } {
-  const grouped = groupChanges(input.changes, input.limit ?? SCM_STATUS_LIMIT)
+export function scmRows(input: { changes: readonly ScmChange[]; mode: ScmViewMode; collapsed: ReadonlySet<string>; limit?: number; total?: number }): { rows: ScmRow[]; total: number; truncated: boolean } {
+  const grouped = groupChanges(input.changes, input.limit ?? SCM_STATUS_LIMIT, input.total ?? input.changes.length)
   const rows: ScmRow[] = []
   for (const group of grouped.groups) {
     const groupKey = `g:${group.id}`
@@ -81,7 +81,8 @@ export function ScmView({
   const changes = scm.state?.changes ?? null
   const collapsed = useMemo(() => (root === null ? new Set<string>() : (collapsedByRoot.get(root) ?? new Set<string>())), [collapsedByRoot, root])
   const selected = root === null ? null : (selectedByRoot.get(root) ?? null)
-  const { rows, total, truncated } = useMemo(() => (changes === null ? { rows: [], total: 0, truncated: false } : scmRows({ changes, mode, collapsed })), [changes, mode, collapsed])
+  const changesTotal = scm.state?.total ?? 0
+  const { rows, total, truncated } = useMemo(() => (changes === null ? { rows: [], total: 0, truncated: false } : scmRows({ changes, mode, collapsed, total: changesTotal })), [changes, mode, collapsed, changesTotal])
 
   useLayoutEffect(() => {
     const element = scrollRef.current
@@ -191,7 +192,10 @@ export function ScmView({
       : scm.state === null
         ? null
         : scm.state.error !== null
-          ? '현재 열린 폴더에 Git 리포지토리가 없습니다.'
+          ? // fix r1 R1-08 — 저장소 아님만 VS Code 문구(`package.nls.json:407-408`), 타임아웃·출력 상한·git 없음은 조회 실패.
+            scmErrorKind(scm.state.error) === 'not_repo'
+            ? '현재 열린 폴더에 Git 리포지토리가 없습니다.'
+            : `Git 상태를 읽지 못했습니다 — ${scm.state.error.split('\n').find((line) => line.trim() !== '' && !line.startsWith('Command failed')) ?? scm.state.error}`
           : changes !== null && changes.length === 0
             ? '변경 사항 없음'
             : null

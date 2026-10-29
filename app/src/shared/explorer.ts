@@ -201,4 +201,5 @@ export type ExplorerPush =
   | { kind: 'changed'; root: string; dirs: string[] }
   | { kind: 'overflow'; root: string }
   // LIFE-683 — `changes` = 같은 git 출력의 소스 제어 분류(X·Y·원래 경로를 잃지 않는 모양). 탐색기 `git` 은 그대로다.
-  | { kind: 'git'; root: string; git: GitSnapshotWire | null; error: string | null; changes?: ScmChange[] }
+  // fix r1 R1-05 — `changes` 는 상한(`SCM_STATUS_LIMIT`) + 1 개까지만 싣고 전체 개수는 `changesTotal`.
+  | { kind: 'git'; root: string; git: GitSnapshotWire | null; error: string | null; changes?: ScmChange[]; changesTotal?: number }

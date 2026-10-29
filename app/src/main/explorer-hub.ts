@@ -23,7 +23,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { parsePorcelainV2, toWire, type GitSnapshotWire } from '../shared/explorer-git.js'
-import { parseScmChanges, type ScmChange } from '../shared/scm.js'
+import { parseScmChanges, SCM_STATUS_LIMIT, type ScmChange } from '../shared/scm.js'
 import type { ExplorerEntry, ExplorerPush } from '../shared/explorer.js'
 import { confine, dirStamp, linkEntry, listDir, newLinkMemo } from './explorer-fs.js'
 import { RESTART_DELAY_MS, RESTART_MAX, RESTART_WINDOW_MS } from './explorer-watch-batch.js'
@@ -436,12 +436,17 @@ export class ExplorerHub {
     if (this.subs.get(sub.root) !== sub) return
     this.counters.pushedGit += 1
     this.deps.log('explorer.git', { root: sub.root, ms: this.now() - startedAt, ok: outcome.error === null, marks: outcome.git?.marks.length ?? 0, ignored: outcome.git?.ignored.length ?? 0, changes: outcome.changes?.length ?? 0 })
-    this.deps.push({ kind: 'git', root: sub.root, git: outcome.git, error: outcome.error, ...(outcome.changes === null ? {} : { changes: outcome.changes }) })
+    this.deps.push({ kind: 'git', root: sub.root, git: outcome.git, error: outcome.error, ...scmPushOf(outcome.changes) })
     if (sub.gitAgain) {
       sub.gitAgain = false
       this.scheduleGit(sub)
     }
   }
+}
+
+/** fix r1 R1-05 — 소스 제어가 그리는 것은 상한까지라 push 에는 상한 + 1 개만(넘친다는 표시), 안내용 전체 개수는 따로. 탐색기 `git` 은 그대로 전량. */
+export function scmPushOf(changes: readonly ScmChange[] | null): { changes?: ScmChange[]; changesTotal?: number } {
+  return changes === null ? {} : { changes: changes.slice(0, SCM_STATUS_LIMIT + 1), changesTotal: changes.length }
 }
 
 /**

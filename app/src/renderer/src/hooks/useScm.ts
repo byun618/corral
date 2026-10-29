@@ -7,7 +7,8 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import type { ScmChange } from '../../../shared/scm.js'
 import { acquireExplorerWatch } from '../explorer-watch-refs.js'
 
-export type ScmRootState = { changes: ScmChange[] | null; error: string | null; stamp: number }
+/** `total` — main 이 상한 + 1 로 자른 `changes` 의 전체 개수(fix r1 R1-05). */
+export type ScmRootState = { changes: ScmChange[] | null; total: number; error: string | null; stamp: number }
 
 export type ScmApi = {
   root: string | null
@@ -15,8 +16,6 @@ export type ScmApi = {
   version: number
   /** 그 루트의 git push 차례(없으면 0) — diff 탭 갱신 신호. */
   stampOf: (root: string) => number
-  /** 그 루트의 마지막 변경 목록(없으면 null). */
-  changesOf: (root: string) => ScmChange[] | null
   refresh: () => void
   /** 목록 / 트리 (S4) — ui-prefs `scmViewMode` 에 영속(전역). */
   mode: 'list' | 'tree'
@@ -54,7 +53,7 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
         const previous = stores.current.get(event.root)
         // `changes` 가 없는 push(옛 main) 는 git 오류와 같게 본다 — 목록을 지어내지 않는다.
         const changes = event.git === null ? null : (event.changes ?? null)
-        stores.current.set(event.root, { changes, error: event.git === null ? (event.error ?? 'git 상태를 읽지 못했다') : null, stamp: (previous?.stamp ?? 0) + 1 })
+        stores.current.set(event.root, { changes, total: event.changesTotal ?? changes?.length ?? 0, error: event.git === null ? (event.error ?? 'git 상태를 읽지 못했다') : null, stamp: (previous?.stamp ?? 0) + 1 })
         bump()
       }),
     [],
@@ -66,10 +65,9 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
   }, [active, root])
 
   const stampOf = useCallback((key: string) => stores.current.get(key)?.stamp ?? 0, [])
-  const changesOf = useCallback((key: string) => stores.current.get(key)?.changes ?? null, [])
   const refresh = useCallback(() => {
     if (root !== null) window.corral.explorerRefreshGit(root)
   }, [root])
 
-  return { root, state: root === null ? null : (stores.current.get(root) ?? null), version, stampOf, changesOf, refresh, mode, setMode }
+  return { root, state: root === null ? null : (stores.current.get(root) ?? null), version, stampOf, refresh, mode, setMode }
 }

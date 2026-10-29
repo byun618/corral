@@ -9,6 +9,7 @@
 //
 // 여기 있는 함수는 전부 **순수**하고 트리를 새로 만들어 돌려준다 — React 상태로 그대로 쓴다.
 // 화면·IPC·영속은 이 파일 밖(`useGroupLayout`)이다.
+import { DIFF_TAB_PREFIX } from '../../shared/scm.js'
 
 /** 한 영역 — Orca `TabGroup` 과 동형 (§10-R3-c: 영역이 자기 탭 목록을 소유한다). */
 export type TabGroup = {
@@ -35,15 +36,13 @@ export type TabGroup = {
  * 파일 탭을 herdr 와 무관하게 살려 둬야 한다 — 파일 탭은 **배치에 있으면 열려 있다**.
  */
 export const FILE_TAB_PREFIX = 'file:'
-/** diff 탭 id 접두사 (LIFE-683 — 모양은 `shared/scm.ts` `diffTabId`). 파일 탭처럼 배치가 진실이고 herdr 와 무관하다. */
-export const DIFF_TAB_ID_PREFIX = 'diff:'
 
 /**
  * 배치가 소유하는 편집기 탭인가 — 파일 탭(`file:`)과 diff 탭(`diff:`, LIFE-683). 둘 다 herdr 에 없고 pane 이 없다.
  * 종류를 가르는 것은 `file-tabs.ts` `tabKindOf` 다.
  */
 export function isFileTabId(tabId: string): boolean {
-  return (tabId.startsWith(FILE_TAB_PREFIX) && tabId.length > FILE_TAB_PREFIX.length) || (tabId.startsWith(DIFF_TAB_ID_PREFIX) && tabId.length > DIFF_TAB_ID_PREFIX.length)
+  return (tabId.startsWith(FILE_TAB_PREFIX) && tabId.length > FILE_TAB_PREFIX.length) || (tabId.startsWith(DIFF_TAB_PREFIX) && tabId.length > DIFF_TAB_PREFIX.length)
 }
 
 export type GroupNode =

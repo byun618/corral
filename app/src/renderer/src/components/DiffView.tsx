@@ -3,16 +3,20 @@
 // · 읽기: 작업 파일 = 기존 파일 읽기 IPC(`readFile` — 가둠·상한·바이너리), HEAD·인덱스 = `scmRead`(main 이 고정 argv). 렌더러는 ref 를 고르지 않는다.
 // · 갱신(S6): 그 루트의 git push 차례(`stamp`)가 바뀌면 양쪽을 다시 읽어, 내용이 달라진 모델만 바꾼다 — view state(스크롤)를 저장했다 되살린다.
 //   대상이 변경 목록에서 사라져도 탭은 남고 같은 대상을 다시 읽는다. 양쪽이 같아지면 「변경 없음」 안내 띠.
-// · Monaco 는 파일 탭과 같은 지연 로딩(`../editor/monaco.js` 동적 import)·같은 편집기 worker.
+// · Monaco 는 파일 탭과 같은 지연 로딩(`../editor/monaco.js` 동적 import)·같은 편집기 worker. 한쪽이라도 20 MB 를 넘으면 파일 탭과 같은 대용량 처리(fix r1 R1-10).
+// · 감시(fix r1 R1-01 · S8 정정 r1): 영역에 보이는 diff 탭(`watch`)은 그 루트 허브 구독을 잡는다 — 패널이 닫혔거나 상세 보기여도 git push(= 갱신 신호)가 온다.
+//   참조 셈(`explorer-watch-refs.ts`)이라 탐색기·소스 제어와 같은 루트면 한 벌이고, 탭이 안 보이면(탭 전환·닫음·작업 페이지·설정) 해제한다.
 import { useEffect, useRef, useState } from 'react'
 import { diffTitle, sidesOf, type ScmDiffTarget, type ScmSide } from '../../../shared/scm.js'
+import { LARGE_FILE_BYTES } from '../../../shared/file-view.js'
+import { acquireExplorerWatch } from '../explorer-watch-refs.js'
 import { Codicon } from './ExplorerIcons.js'
 import './scm.css'
 
 type MonacoModule = typeof import('../editor/monaco.js')
 type Model = ReturnType<MonacoModule['createModel']>
 
-export type SideContent = { kind: 'text'; text: string } | { kind: 'missing' } | { kind: 'binary' } | { kind: 'too_large' } | { kind: 'error'; message: string }
+export type SideContent = { kind: 'text'; text: string; size: number } | { kind: 'missing' } | { kind: 'binary' } | { kind: 'too_large' } | { kind: 'error'; message: string }
 
 const SIDE_LABEL: Readonly<Record<ScmSide, string>> = { head: 'HEAD', index: '인덱스', working: '작업 트리' }
 
@@ -21,11 +25,11 @@ export async function readSide(input: { root: string; side: ScmSide; rel: string
   if (input.side === 'working') {
     const result = await window.corral.readFile({ root: input.root, rel: input.rel })
     if (!result.ok) return result.code === 'not_found' ? { kind: 'missing' } : { kind: 'error', message: result.error }
-    return result.kind === 'text' ? { kind: 'text', text: result.text } : { kind: result.kind }
+    return result.kind === 'text' ? { kind: 'text', text: result.text, size: result.size } : { kind: result.kind }
   }
   const result = await window.corral.scmRead({ root: input.root, rel: input.rel, side: input.side })
   if (!result.ok) return { kind: 'error', message: result.error }
-  return result.kind === 'text' ? { kind: 'text', text: result.text } : { kind: result.kind }
+  return result.kind === 'text' ? { kind: 'text', text: result.text, size: result.size } : { kind: result.kind }
 }
 
 /** 편집기 대신 보일 안내 — 둘 중 하나라도 글이 아니면(없음은 빈 글로 본다). 없으면 null. */
@@ -40,20 +44,27 @@ export function blockingNotice(sides: readonly SideContent[]): string | null {
 
 const textOf = (side: SideContent): string => (side.kind === 'text' ? side.text : '')
 
-export function DiffView({ root, target, stamp, onOpenFile }: { root: string; target: ScmDiffTarget | null; stamp: number; onOpenFile: (rel: string) => void }): React.JSX.Element {
-  const [contents, setContents] = useState<{ left: SideContent | null; right: SideContent } | null>(null)
+export function DiffView({ root, target, stamp, watch, onOpenFile }: { root: string; target: ScmDiffTarget | null; stamp: number; watch: boolean; onOpenFile: (rel: string) => void }): React.JSX.Element {
+  useEffect(() => {
+    if (!watch) return
+    return acquireExplorerWatch(root)
+  }, [watch, root])
+  // 읽은 내용은 그 대상(`key`)과 같이 든다 — 대상이 바뀐 직후 옛 대상 내용으로 편집기 모양(diff/단일)을 정하지 않게(fix r1 R1-07 시험이 잡음).
+  const [loaded, setLoaded] = useState<{ key: string; left: SideContent | null; right: SideContent } | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
   /** 편집기가 붙은 차례 — 붙은 뒤 마지막 내용을 한 번 싣는다. */
   const [ready, setReady] = useState(0)
   const targetKey = target === null ? null : JSON.stringify(target)
+  const contents = loaded !== null && loaded.key === targetKey ? loaded : null
 
   useEffect(() => {
-    if (target === null) return
+    if (target === null || targetKey === null) return
     let cancelled = false
     const sides = sidesOf(target)
     void Promise.all([sides.left === null ? Promise.resolve(null) : readSide({ root, ...sides.left }), readSide({ root, ...sides.right })]).then(([left, right]) => {
       if (cancelled) return
-      setContents((previous) => (previous !== null && JSON.stringify(previous) === JSON.stringify({ left, right }) ? previous : { left, right }))
+      const next = { key: targetKey, left, right }
+      setLoaded((previous) => (previous !== null && JSON.stringify(previous) === JSON.stringify(next) ? previous : next))
     })
     return () => {
       cancelled = true
@@ -64,6 +75,7 @@ export function DiffView({ root, target, stamp, onOpenFile }: { root: string; ta
   const single = contents !== null && contents.left === null
   const notice = contents === null ? null : blockingNotice(contents.left === null ? [contents.right] : [contents.left, contents.right])
   const editable = contents !== null && notice === null
+  const large = contents !== null && [contents.left, contents.right].some((side) => side !== null && side.kind === 'text' && side.size > LARGE_FILE_BYTES)
   const editorRef = useRef<{ kind: 'diff' | 'single'; dispose: () => void; update: (input: { left: string; right: string }) => void } | null>(null)
 
   // 편집기 만들기 — 대상·모양(diff/단일)이 바뀔 때만. 내용 갱신은 아래 효과.
@@ -73,14 +85,14 @@ export function DiffView({ root, target, stamp, onOpenFile }: { root: string; ta
     let disposed = false
     const rel = target.rel
     void import('../editor/monaco.js').then(async (module) => {
-      const language = await module.languageFor(rel)
+      const language = large ? 'plaintext' : await module.languageFor(rel)
       if (disposed) return
       const model = (text: string, side: string): Model => module.createModel({ text, language, key: `diff:${side}\0${rel}` })
       const setText = (target: Model, text: string): void => {
         if (target.getValue() !== text) target.setValue(text)
       }
       if (single) {
-        const editor = module.createEditor({ host, large: false, readOnly: true })
+        const editor = module.createEditor({ host, large, readOnly: true })
         const right = model('', 'right')
         editor.setModel(right)
         editorRef.current = {
@@ -96,7 +108,7 @@ export function DiffView({ root, target, stamp, onOpenFile }: { root: string; ta
           },
         }
       } else {
-        const editor = module.createDiffEditor({ host })
+        const editor = module.createDiffEditor({ host, large })
         const original = model('', 'left')
         const modified = model('', 'right')
         editor.setModel({ original, modified })
@@ -124,7 +136,7 @@ export function DiffView({ root, target, stamp, onOpenFile }: { root: string; ta
       editorRef.current = null
       delete host.dataset.editorReady
     }
-  }, [targetKey, single, editable])
+  }, [targetKey, single, editable, large])
 
   useEffect(() => {
     if (contents === null || editorRef.current === null) return

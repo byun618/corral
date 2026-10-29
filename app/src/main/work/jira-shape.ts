@@ -136,6 +136,8 @@ export type JiraIssue = {
   duedate: string | null
   parentId: string | null
   updated: string
+  /** 상태 분류가 마지막으로 바뀐 시각(ISO UTC) — `statuscategorychangedate`(비공식 칸, LIFE-711). 없거나 null·해석 불가면 null. */
+  statusCategoryChangedAt: string | null
   links: JiraLink[]
   /** `issuelinks` 칸을 받았나(LIFE-623 R2-B) — 없으면 `links` 의 빈 배열은 「연결 없음」 이 아니라 「안 실음」 이다. */
   hasLinks: boolean
@@ -166,6 +168,17 @@ function readLink(value: unknown, path: string): JiraLink {
     direction: inwardIssue !== undefined ? 'inward' : 'outward',
     other: readLinked(inwardIssue ?? outwardIssue, `${path}.${inwardIssue !== undefined ? 'inwardIssue' : 'outwardIssue'}`),
   }
+}
+
+/**
+ * 비공식 시각 칸(LIFE-711 `statuscategorychangedate`) — 모양이 어긋나도 이슈를 버리지 않는다: 문자열이 아니거나 Jira 시각 꼴로 해석되지 않으면 null.
+ * 다른 칸처럼 `JiraShapeError` 로 던지면 칸 하나 때문에 목록 전체가 `invalid_response` 가 된다.
+ * Jira 는 이 칸에 오프셋(`+0900` 꼴)을 싣는다고 가정한다 — 오프셋 없는 문자열은 `Date.parse` 가 실행 기계의 로컬 시각으로 읽는다.
+ */
+function instantOrNull(value: unknown): string | null {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) return null
+  const ms = Date.parse(value)
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString()
 }
 
 export function readIssue(value: unknown, path = 'issue'): JiraIssue {
@@ -200,6 +213,7 @@ export function readIssue(value: unknown, path = 'issue'): JiraIssue {
     duedate,
     parentId: parent === null ? null : id(parent.id, `${path}.fields.parent.id`),
     updated,
+    statusCategoryChangedAt: instantOrNull(fields.statuscategorychangedate),
     links: fields.issuelinks === undefined ? [] : arr(fields.issuelinks, `${path}.fields.issuelinks`).map((entry, index) => readLink(entry, `${path}.fields.issuelinks[${index}]`)),
     hasLinks: Object.hasOwn(fields, 'issuelinks'),
   }

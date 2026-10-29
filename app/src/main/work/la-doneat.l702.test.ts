@@ -1,5 +1,5 @@
 // LIFE-702 D1 — `WorkItem.doneAt` 계약. LA 는 응답 값 그대로(목록·단건·키 조회·쓰기 결과), 칸이 없으면 null(옛 서버 — 목록 실패 금지).
-// Jira 는 null(숨기지 않음), 모의 출처는 상태 쓰기에서 LA 규칙(진입 기록·이탈 null)을 따른다. LA 모의 서버는 씨앗별 doneAt 을 싣는다.
+// Jira 는 비완료 null · 완료는 분류 변경 시각(LIFE-711 — 원래 「Jira 는 null」, 상세는 `jira-doneat.test.ts`), 모의 출처는 상태 쓰기에서 LA 규칙(진입 기록·이탈 null)을 따른다. LA 모의 서버는 씨앗별 doneAt 을 싣는다.
 import { afterEach, describe, expect, it } from 'vitest'
 import type { WorkCall, WorkItem } from '../../shared/work.js'
 import { JIRA_FIXTURE_IDS } from './jira-rest-fixture.js'
@@ -89,7 +89,7 @@ describe('D1ⓑ LA — doneAt 칸이 없는 응답(옛 서버)은 null, 실패�
 })
 
 describe('D1ⓒ Jira · 모의 출처', () => {
-  it('Jira — 완료 작업도 doneAt null(숨기지 않음)', async () => {
+  it('Jira — 비완료 작업은 doneAt null, 완료 작업은 분류 변경 시각(LIFE-711)', async () => {
     const harness = await jiraFixtureHarness()
     stops.push(() => harness.fixture.stop())
     const added = await harness.service.addConnection({ sourceId: 'jira', token: FAKE_JIRA_TOKEN, account: JIRA_ACCOUNT, replaceId: null })
@@ -98,11 +98,11 @@ describe('D1ⓒ Jira · 모의 출처', () => {
     if (spaces.op !== 'listSpaces') throw new Error(spaces.op)
     const items = (await Promise.all(spaces.spaces.map((space) => listed({ harness, connectionId: added.connection.id, spaceKey: space.key })))).flat()
     expect(items.length).toBeGreaterThan(0)
-    expect(items.every((item) => item.doneAt === null)).toBe(true)
+    expect(items.filter((item) => item.category !== 'done').every((item) => item.doneAt === null)).toBe(true)
     // 목록 씨앗에 완료가 없어 완료 이슈는 단건으로 본다.
     const done = itemOf(await ok({ harness, connectionId: added.connection.id, call: { op: 'getItem', itemId: JIRA_FIXTURE_IDS.done } }))
     expect(done.category).toBe('done')
-    expect(done.doneAt).toBeNull()
+    expect(done.doneAt).toBe('2026-10-09T00:00:00.000Z')
   })
 
   it('모의 — done 으로 가면 기록, 나가면 null', async () => {

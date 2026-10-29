@@ -18,6 +18,8 @@ type FxProject = { id: string; key: string; name: string; types: FxType[]; statu
 type FxIssue = {
   id: string; key: string; projectKey: string; summary: string; description: Adf | null; typeId: string; statusId: string; resolution: string | null; priorityId: string | null
   duedate: string | null; parentId: string | null; rank: number; created: number; updated: number; fieldValues: Record<string, unknown>
+  /** 상태 분류가 마지막으로 바뀐 시각(`statuscategorychangedate`, LIFE-711) — 전이가 분류를 바꿀 때만 새로 쓴다. 결측·null·이상값은 `fieldValues` 로 덮는다. */
+  categoryChanged: number
 }
 type FxLink = { id: string; typeId: string; inward: string; outward: string }
 type FxHistory = { id: string; created: number; historyMetadata: Record<string, unknown> | null; items: { field: string; fieldId: string; fromString: string | null; toString: string | null }[] }
@@ -145,7 +147,7 @@ export class JiraRestFixture {
       workflow: coreWorkflow(), initial: '10000', boards: 1,
     }
     this.projects = [core, simpleProject({ id: '10003', key: 'DOCS', name: 'Docs' }), simpleProject({ id: '10004', key: 'LAB', name: 'Lab' }), simpleProject({ id: '10002', key: 'OPS', name: 'Ops' }), simpleProject({ id: '10001', key: 'WEB', name: 'Web' })]
-    const base = { resolution: null, priorityId: '3', duedate: null, created: Date.parse('2026-10-01T00:00:00.000Z'), updated: Date.parse('2026-10-10T00:00:00.000Z'), fieldValues: {} }
+    const base = { resolution: null, priorityId: '3', duedate: null, created: Date.parse('2026-10-01T00:00:00.000Z'), updated: Date.parse('2026-10-10T00:00:00.000Z'), categoryChanged: Date.parse('2026-10-01T00:00:00.000Z'), fieldValues: {} }
     const locked: Adf = {
       type: 'doc', version: 1, content: [
         { type: 'paragraph', content: [{ type: 'text', text: '재현: ' }, { type: 'mention', attrs: { id: 'acc-9', text: '@Kim' } }, { type: 'text', text: ' 확인' }] },
@@ -159,7 +161,7 @@ export class JiraRestFixture {
       { ...base, id: '20003', key: 'CORE-3', projectKey: 'CORE', summary: '환불 버그', description: locked, typeId: BUG.id, statusId: '10000', parentId: null, rank: 3, priorityId: '1' },
       { ...base, id: '20004', key: 'CORE-4', projectKey: 'CORE', summary: '영수증 메일', description: null, typeId: STORY.id, statusId: '10002', parentId: '20001', rank: 4 },
       { ...base, id: '20005', key: 'CORE-5', projectKey: 'CORE', summary: '카드 저장 시험', description: null, typeId: SUBTASK.id, statusId: '10000', parentId: '20002', rank: 5 },
-      { ...base, id: '20006', key: 'CORE-6', projectKey: 'CORE', summary: '정산 리포트', description: null, typeId: STORY.id, statusId: '10003', resolution: 'Done', parentId: null, rank: 6, duedate: '2026-11-01' },
+      { ...base, id: '20006', key: 'CORE-6', projectKey: 'CORE', summary: '정산 리포트', description: null, typeId: STORY.id, statusId: '10003', resolution: 'Done', parentId: null, rank: 6, duedate: '2026-11-01', categoryChanged: Date.parse('2026-10-09T00:00:00.000Z') },
       { ...base, id: '20101', key: 'WEB-1', projectKey: 'WEB', summary: '랜딩 문구', description: text('랜딩 본문'), typeId: TASK.id, statusId: '10010', parentId: null, rank: 1 },
     ]
   }
@@ -285,6 +287,12 @@ export class JiraRestFixture {
     }
   }
 
+  /** 응답에 싣는 분류 키 — 「No Category」 로 둔 상태는 `undefined`(R1-I). */
+  private categoryOf(statusId: string): string | undefined {
+    if (this.noCategory.has(statusId)) return 'undefined'
+    return STATUS[statusId]?.category
+  }
+
   private statusBean(statusId: string): Record<string, unknown> {
     const status = STATUS[statusId] ?? { id: statusId, name: statusId, category: 'new' }
     // `undefined` = 명세의 「No Category」 분류(id 1) — 깨진 응답이 아니다. 깨기는 명세에 없는 키로(R1-I).
@@ -320,6 +328,7 @@ export class JiraRestFixture {
       project: project === null ? undefined : { self: `https://fixture.invalid/rest/api/3/project/${project.id}`, id: project.id, key: project.key, name: project.name },
       updated: new Date(issue.updated).toISOString().replace('Z', '+0000'),
       created: new Date(issue.created).toISOString().replace('Z', '+0000'),
+      statuscategorychangedate: new Date(issue.categoryChanged).toISOString().replace('Z', '+0000'),
       issuelinks: this.links.flatMap((link): unknown[] => {
         const type = LINK_TYPES.find((entry) => entry.id === link.typeId)
         if (type === undefined) return []
@@ -402,12 +411,15 @@ export class JiraRestFixture {
     const from = STATUS[issue.statusId]
     const to = STATUS[transition.to]
     const items: FxHistory['items'] = [{ field: 'status', fieldId: 'status', fromString: from?.name ?? null, toString: to?.name ?? null }]
+    const categoryMoved = this.categoryOf(issue.statusId) !== this.categoryOf(transition.to)
     issue.statusId = transition.to
     // 완료 분류로 가면 해결 = Done(워크플로 후처리), 나가면 비운다.
     const resolution = to?.category === 'done' ? 'Done' : null
     if (resolution !== issue.resolution) items.push({ field: 'resolution', fieldId: 'resolution', fromString: issue.resolution, toString: resolution })
     issue.resolution = resolution
     this.record({ issue, items, meta: body.historyMetadata })
+    // 분류 변경 시각은 분류가 바뀔 때만 — 같은 분류 안 이동(In Progress → In Review, Done → Closed)은 그대로(LIFE-711).
+    if (categoryMoved) issue.categoryChanged = issue.updated
     return { status: 204, body: null }
   }
 
@@ -514,7 +526,7 @@ export class JiraRestFixture {
     const now = Date.parse('2026-10-16T00:00:00.000Z') + this.seq * 1000
     const issue: FxIssue = {
       id: String(this.seq++), key: `${project.key}-${seq}`, projectKey: project.key, summary: fields.summary, description: isAdf(fields.description) ? fields.description : null, typeId, statusId: project.initial,
-      resolution: null, priorityId, duedate: null, parentId, rank: Math.max(0, ...this.issues.map((entry) => entry.rank)) + 1, created: now, updated: now, fieldValues,
+      resolution: null, priorityId, duedate: null, parentId, rank: Math.max(0, ...this.issues.map((entry) => entry.rank)) + 1, created: now, updated: now, categoryChanged: now, fieldValues,
     }
     this.issues.push(issue)
     return { status: 201, body: { id: issue.id, key: issue.key, self: `https://fixture.invalid/rest/api/3/issue/${issue.id}` } }

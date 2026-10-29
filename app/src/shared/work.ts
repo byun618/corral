@@ -152,8 +152,8 @@ export type WorkItem = {
   /** 완료 갈래(E5). 완료 분류가 아니거나 출처가 값을 주지 않으면 null. */
   resolution: WorkResolution | null
   /**
-   * done 분류에 들어간 시각(ISO, LIFE-702) — 보드·백로그의 오래된 완료 숨김 판정에 쓴다. 출처가 주지 않으면 null(숨기지 않음).
-   * LA 는 응답 값 그대로(칸이 없으면 null), Jira 는 null.
+   * done 분류에 들어간 시각(ISO, LIFE-702) — 보드·백로그의 오래된 완료 숨김 판정과 상세 「완료」 행(LIFE-711)에 쓴다. 출처가 주지 않으면 null(숨기지 않음).
+   * LA 는 응답 값 그대로(칸이 없으면 null), Jira 는 done 분류일 때 `statuscategorychangedate`(칸이 없거나 해석 안 되면 null).
    */
   doneAt: string | null
   priority: WorkPriority | null

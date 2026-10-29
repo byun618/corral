@@ -20,7 +20,7 @@ import type {
   WorkResolutionChoice,
   WorkStatus,
 } from '../../shared/work.js'
-import { PRIORITY_LABEL } from './tasks-model.js'
+import { PRIORITY_LABEL, isHiddenOnBoard } from './tasks-model.js'
 
 export const CATEGORY_RANK: Record<WorkCategory, number> = { todo: 0, in_progress: 1, done: 2 }
 
@@ -106,6 +106,17 @@ export function dueInputValue(dueAt: string | null): string {
   if (Number.isNaN(date.getTime())) return ''
   const pad = (value: number): string => String(value).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/**
+ * 상세 「완료」 행(LIFE-711) — done 분류 + `doneAt` 이 해석될 때만. 날짜는 마감 칸과 같은 로컬 YYYY-MM-DD,
+ * `hidden` 은 보드와 같은 판정(`isHiddenOnBoard`)이라 둘이 갈리지 않는다. 그 밖은 null(행 없음).
+ */
+export function doneRow({ item, now }: { item: Pick<WorkItem, 'category' | 'doneAt'>; now: number }): { date: string; hidden: boolean } | null {
+  if (item.category !== 'done') return null
+  const date = dueInputValue(item.doneAt)
+  if (date === '') return null
+  return { date, hidden: isHiddenOnBoard({ item, now }) }
 }
 
 /** 날짜 칸 값 → ISO(UTC). 그날 로컬 23:59:59 — 「그날까지」. 빈 값은 null(지움), 모양이 아니면 undefined(보내지 않는다). */

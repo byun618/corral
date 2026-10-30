@@ -261,8 +261,11 @@ export function IssueCard({ row, rows, all, density, selected, dragging, now, ha
  */
 export type ColumnDragView = { mode: 'target' | 'source' | 'blocked' | 'idle'; reason: string | null; hoverOnly?: boolean }
 
-/** 묶기=부모 의 레인 하나 — 레인과 그 레인의 밴드(칸 구성은 묶기 없음과 같다). `complete` = 완료 레인(기본 접힘, LIFE-746). */
-export type BoardLane = { lane: ParentLane; complete: boolean; bands: BoardBand[] }
+/**
+ * 묶기=부모 의 레인 하나 — 레인과 그 레인의 밴드(칸 구성은 묶기 없음과 같다). `complete` = 완료 레인(기본 접힘, LIFE-746).
+ * `reveal` = 검색 중이거나 상세가 열린 카드가 이 레인에 있다 — 완료 레인이어도 기본 펼침(r1 지적 1).
+ */
+export type BoardLane = { lane: ParentLane; complete: boolean; reveal: boolean; bands: BoardBand[] }
 
 type BandsProps = {
   rows: TasksRow[]
@@ -278,23 +281,26 @@ type BandsProps = {
   columnFooter?: (column: BoardColumn) => React.ReactNode
 }
 
-export function Board({ bands, lanes = null, ...rest }: BandsProps & {
+export function Board({ bands, lanes = null, laneToggles, onLaneToggle, ...rest }: BandsProps & {
   bands: BoardBand[]
   /** 묶기=부모(LIFE-745) — 있으면 레인마다 밴드를 그린다. null = 묶기 없음. */
   lanes?: BoardLane[] | null
+  /**
+   * 사용자가 토글한 레인(id → 접힘) — 그 선택이 이긴다. 적지 않은 레인은 데이터를 따른다(완료 레인 = 접힘, 검색·선택이 있으면 펼침, LIFE-746).
+   * 페이지가 들고 있어 보기 전환·빈 상태를 넘어 남고, 영속하지 않는다(02-kickoff).
+   */
+  laneToggles: ReadonlyMap<string, boolean>
+  onLaneToggle: (toggle: { id: string; folded: boolean }) => void
 }): React.JSX.Element {
-  // 레인 접힘은 이 실행 동안만 남는다(02-kickoff — 영속하지 않음). 사용자가 토글한 레인만 적어 두고 그 선택이 이긴다 —
-  // 적지 않은 레인은 데이터를 따른다(완료 레인 = 접힘, LIFE-746).
-  const [toggled, setToggled] = useState<ReadonlyMap<string, boolean>>(new Map())
   if (lanes === null) return <div className="tasks-board" data-tasks-board=""><Bands bands={bands} hideParent={false} {...rest} /></div>
   return (
     <div className="tasks-lanes" data-tasks-board="" data-tasks-lanes="">
-      {lanes.map(({ lane, complete, bands: laneBands }) => {
-        const folded = toggled.get(lane.id) ?? complete
+      {lanes.map(({ lane, complete, reveal, bands: laneBands }) => {
+        const folded = laneToggles.get(lane.id) ?? (complete && !reveal)
         const name = lane.parent === null ? '부모 없음' : parentLabel(lane.parent)
         return (
           <section key={lane.id} className={`tasks-lane${folded ? ' is-collapsed' : ''}`} data-board-lane={lane.id} data-lane-complete={complete ? '' : undefined} aria-label={`${name} 레인`}>
-            <LaneHead lane={lane} name={name} rows={rest.rows} folded={folded} onToggle={() => setToggled((current) => new Map(current).set(lane.id, !folded))} />
+            <LaneHead lane={lane} name={name} rows={rest.rows} folded={folded} onToggle={() => onLaneToggle({ id: lane.id, folded: !folded })} />
             {folded ? null : <div className="tasks-board"><Bands bands={laneBands} hideParent {...rest} /></div>}
           </section>
         )

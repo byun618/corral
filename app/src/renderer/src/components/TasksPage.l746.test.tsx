@@ -331,3 +331,117 @@ describe('C3 같은 레인 막힌 칸의 이유가 목록을 밀지 않음', () 
     expect(writes()).toEqual([])
   })
 })
+
+// --- 수정 라운드 1 (리뷰 r1 지적 1·2·3 → 01-criteria C1 ⓕ·ⓖ·ⓒ 개정) ---
+
+function typeSearch(value: string): void {
+  const input = q('[data-tasks-search]')
+  if (!(input instanceof HTMLInputElement)) throw new Error('검색 칸 없음')
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+describe('C1 ⓕ 기본 접힘 예외 — 검색·선택', () => {
+  it('검색 — 완료 레인 안 일치 카드가 보인다(레인 펼침), 그 상태에서 접으면 접힘 유지', async () => {
+    await laned()
+    expect(expanded(P2)).toBe('false')
+    typeSearch('끝난 하나')
+    await settle()
+    expect(laneOrder()).toEqual([P2])
+    expect(expanded(P2)).toBe('true')
+    expect(q(`[data-board-lane="${P2}"] [data-issue-card="K-41"]`)).not.toBeNull()
+    click(q(`[data-board-lane="${P2}"] [data-lane-toggle]`))
+    expect(expanded(P2)).toBe('false')
+    expect(q(`[data-board-lane="${P2}"] [data-issue-card="K-41"]`)).toBeNull()
+    // 검색을 지워도 사용자의 접힘이 이긴다.
+    typeSearch('')
+    await settle()
+    expect(expanded(P2)).toBe('false')
+  })
+
+  it('검색어를 지우면 토글 안 한 완료 레인은 다시 접힘(데이터를 따른다)', async () => {
+    await laned()
+    typeSearch('끝난')
+    await settle()
+    expect(expanded(P2)).toBe('true')
+    typeSearch('')
+    await settle()
+    expect(expanded(P2)).toBe('false')
+    expect(laneOrder()).toEqual([P1, P2, 'none'])
+  })
+
+  it('선택 — 상세가 열린 카드가 든 레인은 완료가 돼도 펼침, 상세를 닫으면 접힘, 사용자가 접으면 접힘 유지', async () => {
+    await laned()
+    click(q('[data-issue-card="K-11"]'))
+    await settle()
+    expect(q('[data-issue-detail="K-11"]')).not.toBeNull()
+    // K-10 의 자식이 다 끝난다 — 선택 카드(K-11)가 그 레인에 있다.
+    items = items.map((entry) => (entry.parentId === 'p1' ? { ...entry, ...DONE } : entry))
+    await reread()
+    expect(q(`[data-board-lane="${P1}"]`)?.hasAttribute('data-lane-complete')).toBe(true)
+    expect(laneOrder()).toEqual([P2, P1, 'none'])
+    expect(expanded(P1)).toBe('true')
+    expect(q(`[data-board-lane="${P1}"] [data-issue-card="K-11"]`)?.classList.contains('is-selected')).toBe(true)
+    expect(expanded(P2)).toBe('false')
+    // 사용자가 접으면 선택이 있어도 접힘.
+    click(q(`[data-board-lane="${P1}"] [data-lane-toggle]`))
+    expect(expanded(P1)).toBe('false')
+  })
+
+  it('선택 해제 — 토글 안 한 완료 레인은 상세를 닫으면 다시 접힘', async () => {
+    await laned()
+    click(q('[data-issue-card="K-11"]'))
+    await settle()
+    items = items.map((entry) => (entry.parentId === 'p1' ? { ...entry, ...DONE } : entry))
+    await reread()
+    expect(expanded(P1)).toBe('true')
+    // 같은 카드를 다시 누르면 상세가 닫힌다(패널 숨김 — 강조가 빠진다).
+    click(q('[data-issue-card="K-11"]'))
+    await settle()
+    expect(q('.tasks-body .is-selected')).toBeNull()
+    expect(expanded(P1)).toBe('false')
+  })
+})
+
+describe('C1 ⓒ 토글 기록 = 작업 페이지 수명', () => {
+  it('펼친 완료 레인 → 리스트 보기 → 보드 보기에서도 펼침', async () => {
+    await laned()
+    click(q(`[data-board-lane="${P2}"] [data-lane-toggle]`))
+    expect(expanded(P2)).toBe('true')
+    click(q('[data-tasks-view-tab="list"]'))
+    await settle()
+    expect(q('[data-board-lane]')).toBeNull()
+    click(q('[data-tasks-view-tab="board"]'))
+    await settle()
+    expect(expanded(P2)).toBe('true')
+    expect(q(`[data-board-lane="${P2}"] [data-issue-card="K-41"]`)).not.toBeNull()
+  })
+
+  it('검색 0건 빈 상태를 거쳐도 남는다 · 접어 둔 진행 레인도 남는다', async () => {
+    await laned()
+    click(q(`[data-board-lane="${P2}"] [data-lane-toggle]`))
+    click(q(`[data-board-lane="${P1}"] [data-lane-toggle]`))
+    typeSearch('아무것도 없는 낱말')
+    await settle()
+    expect(q('[data-board-lane]')).toBeNull()
+    typeSearch('')
+    await settle()
+    expect(expanded(P2)).toBe('true')
+    expect(expanded(P1)).toBe('false')
+  })
+})
+
+describe('C1 ⓖ 완료 판정 = 머리 진행과 같은 행(보드 밖 자식 포함)', () => {
+  it('보드 자식은 모두 완료 + 백로그 배치 미완 자식 하나 → 머리 n/(n+1), 접히지 않음, 진행 레인 쪽 순서', async () => {
+    items = [...items, item({ id: 'g', key: 'K-43', title: '백로그에 남은 하나', parentId: 'p2', rank: '7', placement: 'backlog' })]
+    await laned()
+    expect(q(`[data-board-lane="${P2}"] [data-lane-head] [data-lane-progress]`)?.getAttribute('data-lane-progress')).toBe('2/3')
+    expect(q(`[data-board-lane="${P2}"]`)?.hasAttribute('data-lane-complete')).toBe(false)
+    expect(expanded(P2)).toBe('true')
+    // 둘 다 진행 레인 — 기존 순서 값 순(K-40 → K-10).
+    expect(laneOrder()).toEqual([P2, P1, 'none'])
+    expect(q('[data-issue-card="K-43"]')).toBeNull()
+  })
+})

@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { DETECTABLE_AGENTS, UNKNOWN_AGENT_DETECTION, type AgentDetectionSnapshot, type DetectableAgent, type DetectedAgent, type ShellProbeOutcome } from '../shared/agent-detection.js'
+import { AGENT_DETECTION_CHANNEL, DETECTABLE_AGENTS, UNKNOWN_AGENT_DETECTION, type AgentDetectionSnapshot, type DetectableAgent, type DetectedAgent, type ShellProbeOutcome } from '../shared/agent-detection.js'
 
 /** 로그인 셸 시한 — herdr 조회(`LOGIN_SHELL_TIMEOUT_MS`)·Orca 와 같은 10초. 넘으면 셸 프로세스 그룹을 SIGKILL 한다. */
 export const AGENT_SHELL_TIMEOUT_MS = 10_000
@@ -46,14 +46,18 @@ export function probeLoginShellPath(input: { shell: string; timeoutMs: number; e
     }
     let stdout = ''
     let settled = false
+    let child: ReturnType<typeof spawn> | null = null
     const finish = (probe: ShellProbe): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       input.signal?.removeEventListener('abort', onAbort)
+      // fix2 R2-04 — 어느 경로로 끝나든 stdout 파이프를 끊는다. rc 가 띄운 손주(데몬)가 파이프를 쥐어도 이 프로세스의 fd·리스너가 남지 않는다.
+      // 정상 종료에서는 그룹을 죽이지 않는다 — RESULT 「R2-04」 참고(rc 가 공유용으로 띄운 ssh-agent 류를 끊지 않는다).
+      child?.stdout?.removeAllListeners('data')
+      child?.stdout?.destroy()
       resolve(probe)
     }
-    let child: ReturnType<typeof spawn>
     try {
       child = spawn(input.shell, ['-ilc', `printf '${MARK}%s${MARK}' "$PATH"`], {
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -64,10 +68,11 @@ export function probeLoginShellPath(input: { shell: string; timeoutMs: number; e
       resolve({ outcome: { ok: false, reason: 'spawn-error' }, pathValue: null })
       return
     }
+    const spawned = child
     const killGroup = (): void => {
-      if (child.pid === undefined) return
+      if (spawned.pid === undefined) return
       try {
-        process.kill(-child.pid, 'SIGKILL')
+        process.kill(-spawned.pid, 'SIGKILL')
       } catch {
         // 그룹이 이미 없다.
       }
@@ -81,11 +86,11 @@ export function probeLoginShellPath(input: { shell: string; timeoutMs: number; e
       finish({ outcome: { ok: false, reason: 'aborted' }, pathValue: null })
     }
     input.signal?.addEventListener('abort', onAbort, { once: true })
-    child.stdout?.on('data', (chunk: Buffer) => {
+    spawned.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf8')
     })
-    child.on('error', () => finish({ outcome: { ok: false, reason: 'spawn-error' }, pathValue: null }))
-    child.on('exit', (code) => {
+    spawned.on('error', () => finish({ outcome: { ok: false, reason: 'spawn-error' }, pathValue: null }))
+    spawned.on('exit', (code) => {
       // 마지막 조각이 `exit` 뒤에 올 수 있다 — 한 틱 미룬다.
       setImmediate(() => {
         const value = parseMarkedValue(stdout)
@@ -294,11 +299,11 @@ export function registerAgentDetectionIpc<TEvent>(input: {
   allowed: (event: TEvent) => boolean
   detector: () => AgentDetector | null
 }): void {
-  input.handle('corral:agentDetectionGet', (event) => {
+  input.handle(AGENT_DETECTION_CHANNEL.get, (event) => {
     const detector = input.detector()
     return input.allowed(event) && detector !== null ? detector.get() : null
   })
-  input.handle('corral:agentDetectionRefresh', (event) => {
+  input.handle(AGENT_DETECTION_CHANNEL.refresh, (event) => {
     const detector = input.detector()
     return input.allowed(event) && detector !== null ? detector.refresh() : null
   })

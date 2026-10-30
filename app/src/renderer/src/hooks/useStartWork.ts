@@ -214,10 +214,11 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
   // LIFE-520 fix1 R1-08 — 모달이 열린 뒤 감지가 바뀌어 고른 에이전트가 선택지 밖이 되면(숨은 선택으로 제출되지 않게) 자동 규칙으로 보정한다.
   // 진행 중(합류 포함)이면 그 시도의 값이라 두지 않는다 — 그때는 칸이 잠겨 있다. 모달 칸·단계·제출 흐름은 그대로.
   useEffect(() => {
-    if (form === null || running) return
+    // fix2 R2-06 — 끝난 시도를 복원한 결과 화면(result 있음)이면 두지 않는다: 「다시 띄우기」 가 그 시도의 에이전트로 가야 한다.
+    if (form === null || running || result !== null) return
     if (startAgentChoices(detection).includes(form.agent)) return
     update({ agent: initialStartAgent({ preferred: form.agent, detection }) })
-  }, [detection, form, running, update])
+  }, [detection, form, running, result, update])
 
   return {
     open: mode !== null && form !== null, mode, proceed, setProceed, form, update, prompt, statusTarget, nameProblem, canStart,

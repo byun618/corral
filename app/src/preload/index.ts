@@ -38,7 +38,7 @@ import type { WindowChrome } from '../shared/window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
 import type { ResourceCloseResult, ResourceCloseRoute, ResourceOrphanCloseResult, ResourceSnapshot } from '../shared/resource.js'
 import type { UsageSnapshot } from '../shared/usage.js'
-import type { AgentDetectionSnapshot } from '../shared/agent-detection.js'
+import { AGENT_DETECTION_CHANNEL, type AgentDetectionSnapshot } from '../shared/agent-detection.js'
 import type { WorkSettingsState } from '../shared/work.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
 import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerOpResult } from '../shared/explorer-ops.js'
@@ -443,13 +443,13 @@ const api: CorralApi = {
     }
   },
   // 에이전트 감지 (LIFE-520).
-  getAgentDetection: (): Promise<AgentDetectionSnapshot | null> => ipcRenderer.invoke('corral:agentDetectionGet'),
-  refreshAgentDetection: (): Promise<AgentDetectionSnapshot | null> => ipcRenderer.invoke('corral:agentDetectionRefresh'),
+  getAgentDetection: (): Promise<AgentDetectionSnapshot | null> => ipcRenderer.invoke(AGENT_DETECTION_CHANNEL.get),
+  refreshAgentDetection: (): Promise<AgentDetectionSnapshot | null> => ipcRenderer.invoke(AGENT_DETECTION_CHANNEL.refresh),
   onAgentDetection: (listener: (snapshot: AgentDetectionSnapshot) => void) => {
     const handler = (_event: unknown, snapshot: AgentDetectionSnapshot): void => listener(snapshot)
-    ipcRenderer.on('corral:agentDetection', handler)
+    ipcRenderer.on(AGENT_DETECTION_CHANNEL.push, handler)
     return () => {
-      ipcRenderer.removeListener('corral:agentDetection', handler)
+      ipcRenderer.removeListener(AGENT_DETECTION_CHANNEL.push, handler)
     }
   },
   // 설정 › 작업 연결 (LIFE-600). push 는 연결 요약만(토큰 없음, 끝 4자).

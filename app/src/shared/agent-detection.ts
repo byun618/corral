@@ -18,6 +18,9 @@ export type AgentDetectionSnapshot =
   | { kind: 'unknown' }
   | { kind: 'detected'; agents: DetectedAgent[]; shell: ShellProbeOutcome; at: number }
 
+/** IPC 채널 이름 — main 등록·preload 호출·푸시가 이 한 곳을 쓴다(fix2 R2-02). */
+export const AGENT_DETECTION_CHANNEL = { get: 'corral:agentDetectionGet', refresh: 'corral:agentDetectionRefresh', push: 'corral:agentDetection' } as const
+
 export const UNKNOWN_AGENT_DETECTION: AgentDetectionSnapshot = { kind: 'unknown' }
 
 function isDetectableAgent(value: unknown): value is DetectableAgent {

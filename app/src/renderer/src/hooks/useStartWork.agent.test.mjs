@@ -29,6 +29,7 @@ let seen
 let model
 let pushes
 let initial
+let statusView
 
 function Probe() {
   model = useStartWork({ detail, repos: [], repoDefaults: [], activeRepoRoot: null, sourceName: 'LA', notifyFailure: () => {} })
@@ -43,8 +44,9 @@ beforeEach(() => {
   seen = []
   pushes = []
   initial = UNKNOWN_AGENT_DETECTION
+  statusView = null
   Reflect.set(window, 'corral', {
-    startWorkStatus: async () => null,
+    startWorkStatus: async () => statusView,
     getAgentDetection: async () => initial,
     onAgentDetection: (listener) => { pushes.push(listener); return () => {} },
   })
@@ -116,5 +118,23 @@ describe('열린 뒤 감지가 바뀌면 선택 보정 (K4ⓓ, R1-08)', () => {
     expect(model.form.agent).toBe('grok')
     act(() => { for (const push of pushes) push(detected()) })
     expect(model.form.agent).toBe('shell')
+  })
+})
+
+describe('끝난 실패 시도를 복원하면 보정하지 않는다 (K4ⓓ, fix2 R2-06)', () => {
+  it('복원한 시도의 에이전트(claude)가 지금 미감지여도 그대로 — 「다시 띄우기」 가 그 에이전트로 간다', async () => {
+    const stage = (status) => ({ status, code: null, message: null })
+    statusView = {
+      attemptId: 'a1', repoRoot: '/r', name: 'LIFE-1-x', agent: 'claude', model: '', effort: '', submit: false,
+      result: { attemptId: 'a1', joined: false, done: true, stages: { worktree: stage('completed'), agent: stage('failed'), prompt: stage('skipped') }, worktreePath: '/r/wt', linkSaved: true, sourceLink: null, refused: null },
+    }
+    initial = detected('codex', 'grok')
+    await mount()
+    await open()
+    expect(model.result).not.toBeNull()
+    expect(model.form.agent).toBe('claude')
+    // 감지가 다시 바뀌어도(푸시) 복원한 결과 화면에서는 그대로다.
+    act(() => { for (const push of pushes) push(detected('grok')) })
+    expect(model.form.agent).toBe('claude')
   })
 })

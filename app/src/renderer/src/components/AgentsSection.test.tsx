@@ -115,5 +115,5 @@ it('설명의 단축키는 레지스트리 라벨 — 재정의를 따르고 「
 it('활성 토글·명령·인자·env·상태 훅 칸은 없다 (K2ⓕ — S34·S35 의도적, S33 감지는 LIFE-520)', () => {
   mount()
   expect(host.querySelectorAll('input, [role="switch"], select, textarea')).toHaveLength(0)
-  expect(host.textContent).not.toMatch(/명령|인수|환경|훅|Yolo/)
+  expect(host.textContent).not.toMatch(/새로고침|명령|인수|환경|훅|Yolo/)
 })

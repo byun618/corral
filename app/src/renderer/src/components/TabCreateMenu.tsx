@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMenuBus } from '../menu-bus.js'
 import { AGENT_ICON, agentIcon } from '../session-glyphs.js'
-import { useAgentDetection } from '../agent-detection-store.js'
+import { useAgentDetection, useRecheckAgentDetectionOnOpen } from '../agent-detection-store.js'
 import { useSettings } from '../settings-store.js'
 import {
   activeOptionId,
@@ -149,6 +149,8 @@ export function TabCreateMenu({
   /** 검색 결과용 — 카탈로그 순서 그대로(K4ⓓ, Orca 도 검색 정렬은 점수 기준). */
   // LIFE-520 — 감지된 것만(감지 전·실패면 3종 그대로). 검색 결과도 이 목록에서 찾는다.
   const detection = useAgentDetection()
+  // fix2 R2-03 — 셸 실패 결과면 메뉴를 열 때마다 다시 묻는다.
+  useRecheckAgentDetectionOnOpen(true)
   const agents = useMemo(() => buildAgentLaunchOptions(detection), [detection])
   // 빈 질의 Quick-launch — 명시 기본 에이전트가 맨 앞(K4ⓐ). 메뉴는 열 때마다 새로 마운트되고, 열린 동안 바뀌어도 의존성으로 따라간다(K4ⓒ).
   const { defaultAgent } = useSettings()

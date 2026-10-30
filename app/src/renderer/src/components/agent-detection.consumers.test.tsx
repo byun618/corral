@@ -39,6 +39,7 @@ let refreshCalls = 0
 /** getAgentDetection 응답 — null 이면 영영 오지 않는다(감지 진행 중, K2ⓑ). */
 let initial: AgentDetectionSnapshot | null
 let refreshResult: AgentDetectionSnapshot
+let getCalls = 0
 
 beforeEach(() => {
   host = document.createElement('div')
@@ -48,6 +49,7 @@ beforeEach(() => {
   writes.length = 0
   detectionPushes = []
   refreshCalls = 0
+  getCalls = 0
   initial = null
   refreshResult = N
   Reflect.set(window, 'corral', {
@@ -58,7 +60,10 @@ beforeEach(() => {
       stored = { ...stored, ...patch }
       return { status: 'saved', settings: stored }
     },
-    getAgentDetection: () => (initial === null ? new Promise<AgentDetectionSnapshot>(() => {}) : Promise.resolve(initial)),
+    getAgentDetection: () => {
+      getCalls += 1
+      return initial === null ? new Promise<AgentDetectionSnapshot>(() => {}) : Promise.resolve(initial)
+    },
     onAgentDetection: (listener: (next: AgentDetectionSnapshot) => void) => {
       detectionPushes.push(listener)
       return () => {}
@@ -310,4 +315,41 @@ describe('설정 검색 — 감지 키워드 (R1-09)', () => {
   it.each(['감지', '다시 감지', 'detect'])('%s 로 에이전트 섹션이 걸린다', (query) => {
     expect(matchesSettingsSearch({ query, entries: sectionSearchEntries(settingsSectionById('agents')) })).toBe(true)
   })
+})
+
+// ── 셸 실패 결과면 화면을 열 때 다시 묻는다 (K3ⓕ r2 정정, fix2 R2-03) ──
+// 저장소에 결과를 미리 넣고(앱 기동 뒤 상태) 마운트한다 — 구독 시작의 조회 1회를 빼고 남는 조회가 「다시 묻기」 다.
+
+const shellFailed: AgentDetectionSnapshot = { kind: 'detected', agents: [{ agent: 'grok', path: '/x/grok', source: 'fallback' }], shell: { ok: false, reason: 'timeout' }, at: 1 }
+const shellOk: AgentDetectionSnapshot = detected('grok')
+const rechecks = (): number => getCalls - 1
+
+describe('셸 실패 결과면 화면을 열 때 다시 묻는다 (K3ⓕ, R2-03)', () => {
+  const cases: Array<{ name: string; element: () => React.ReactElement; open?: () => Promise<void> }> = [
+    { name: '+ 메뉴', element: menu },
+    { name: '설정 기본 Agent', element: () => createElement(AgentsSection) },
+    { name: '작업 시작 모달', element: () => modal('claude') },
+    { name: '사이드바 … 메뉴', element: block, open: openWorktreeMenu },
+  ]
+  for (const entry of cases) {
+    it(`${entry.name} — 셸 실패면 열 때 1회 다시 묻고, 셸 성공이면 묻지 않는다`, async () => {
+      initial = shellFailed
+      resetAgentDetectionStoreForTest(shellFailed)
+      await render(entry.element())
+      if (entry.open !== undefined) {
+        expect(rechecks()).toBe(0)
+        await entry.open()
+      }
+      expect(rechecks()).toBe(1)
+
+      act(() => root.unmount())
+      root = createRoot(host)
+      getCalls = 0
+      initial = shellOk
+      resetAgentDetectionStoreForTest(shellOk)
+      await render(entry.element())
+      if (entry.open !== undefined) await entry.open()
+      expect(rechecks()).toBe(0)
+    })
+  }
 })

@@ -9,7 +9,7 @@ import type { RepoRow } from '../../../shared/types.js'
 import { AGENT_ICON } from '../session-glyphs.js'
 import type { StartWorkModel } from '../hooks/useStartWork.js'
 import { alreadyLinked, failureActions, progressRows, promptUndelivered, startAgentChoices, type ProgressRow } from '../start-work-model.js'
-import { useAgentDetection } from '../agent-detection-store.js'
+import { useAgentDetection, useRecheckAgentDetectionOnOpen } from '../agent-detection-store.js'
 import type { LinkedTree } from '../work-links-model.js'
 import { AgentIcon } from './AgentIcon.js'
 
@@ -30,6 +30,8 @@ export function StartWorkModal({ model, itemKey, itemTitle, repos, trees, onOpen
   const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle')
   // LIFE-520 E5 — 에이전트 칸은 감지된 것 + 빈 터미널(감지 전·실패면 base 4칸). 칸·단계·제출 흐름은 그대로.
   const agentChoices = startAgentChoices(useAgentDetection())
+  // fix2 R2-03 — 셸 실패 결과면 모달을 열 때 다시 묻는다.
+  useRecheckAgentDetectionOnOpen(model.open)
   useEffect(() => setCopied('idle'), [result])
   // Esc — 진행 중이면 막는다. 캡처 단계에서 받아 작업 페이지의 Esc 단계로 내려가지 않게 한다.
   useEffect(() => {

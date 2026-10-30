@@ -4,7 +4,7 @@
 // 클릭 = `updateSettings` 1회, 이미 선택된 pill 은 쓰지 않는다(K2ⓒ). 감지 결과로 저장값을 고쳐 쓰지 않는다(LIFE-520 K4ⓔ).
 import type { AgentDetectionSnapshot } from '../../../shared/agent-detection.js'
 import type { DefaultAgent } from '../../../shared/terminal-settings.js'
-import { refreshAgentDetection, useAgentDetection, useAgentDetectionRefreshing } from '../agent-detection-store.js'
+import { refreshAgentDetection, useAgentDetection, useAgentDetectionRefreshing, useRecheckAgentDetectionOnOpen } from '../agent-detection-store.js'
 import { useBindingLabel } from '../hooks/BindingLabels.js'
 import { updateSettings, useSettings } from '../settings-store.js'
 import { agentLabel, autoAgent, buildAgentLaunchOptions, explicitDefaultAgent, isAgentAvailable } from '../tab-create-menu.js'
@@ -35,6 +35,8 @@ export function AgentsSection(): React.JSX.Element {
   const { defaultAgent } = useSettings()
   const detection = useAgentDetection()
   const refreshing = useAgentDetectionRefreshing()
+  // fix2 R2-03 — 셸 실패 결과면 이 섹션을 열 때 다시 묻는다.
+  useRecheckAgentDetectionOnOpen(true)
   const bindingLabel = useBindingLabel()
   const chord = bindingLabel('terminal.newAgent')
   const select = (value: DefaultAgent): void => {

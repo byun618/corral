@@ -49,6 +49,7 @@ async function mount({ defaultAgent, overrides = {}, detection = null }) {
     retainedAgents: [], diagnostics: false, home: folder, orchestrationLineage: { state: 'ready', entries: [] }, herdrTabIds: null,
   }
   const created = []
+  const counters = { gets: 0 }
   const settingsWrites = []
   let settings = { ...DEFAULT_SETTINGS, defaultAgent }
   const api = {
@@ -61,7 +62,7 @@ async function mount({ defaultAgent, overrides = {}, detection = null }) {
     setUiPrefs: () => {},
     setShortcutRecording: async () => {},
     // LIFE-520 — null 이면 감지 결과 없음(Ⓟ, base). 그 밖은 감지 완료 스냅숏.
-    getAgentDetection: async () => detection,
+    getAgentDetection: async () => { counters.gets += 1; return detection },
   }
   Reflect.set(window, 'corral', new Proxy(api, { get: (target, key) => (typeof key === 'string' && key in target ? target[key] : String(key).startsWith('on') ? () => () => {} : async () => null) }))
   resetSettingsStoreForTest(null)
@@ -74,7 +75,7 @@ async function mount({ defaultAgent, overrides = {}, detection = null }) {
   cleanups.push(() => { act(() => root.unmount()); host.remove(); fs.rmSync(folder, { recursive: true, force: true }) })
   const q = (selector) => host.querySelector(selector)
   return {
-    q, created, settingsWrites,
+    q, created, settingsWrites, counters,
     key: async (init) => { await act(async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })) }) },
   }
 }
@@ -154,4 +155,30 @@ it('「Agent 설정…」 → 메뉴 닫힘 → 설정 › AI 기능 › 에이�
   // 설정 화면의 pill 클릭 = 쓰기 1회.
   await act(async () => { app.q('[data-default-agent="grok"]').click() })
   expect(app.settingsWrites).toEqual([{ defaultAgent: 'grok' }])
+})
+
+// LIFE-520 fix2 K4ⓖ (R2-01) — 명령 팔레트의 「새 X 에이전트」 항목이 감지를 따른다. Ⓟ 는 base 3종(`App.tsx` 팔레트 항목).
+const CMD_K = { key: 'k', code: 'KeyK', metaKey: true }
+const paletteAgents = () => [...document.querySelectorAll('[data-palette-entry^="agent.start."]')].map((node) => node.getAttribute('data-palette-entry'))
+it.each([
+  ['Ⓟ', null, ['agent.start.claude', 'agent.start.codex', 'agent.start.grok']],
+  ['Ⓝ', detectedOf('codex', 'grok'), ['agent.start.codex', 'agent.start.grok']],
+  ['Ⓩ', detectedOf(), []],
+])('팔레트 「새 X 에이전트」 — %s (K4ⓖ)', async (_state, detection, expected) => {
+  const app = await mount({ defaultAgent: 'auto', detection })
+  await app.key(CMD_K)
+  expect(app.q('[data-command-palette]')).not.toBeNull()
+  expect(paletteAgents()).toEqual(expected)
+})
+
+// fix2 K3ⓕ (R2-03) — 마지막 결과가 셸 실패면 팔레트를 열 때 다시 묻는다(셸 성공이면 묻지 않는다).
+it.each([
+  ['셸 실패', { kind: 'detected', agents: [], shell: { ok: false, reason: 'timeout' }, at: 1 }, 1],
+  ['셸 성공', detectedOf('codex'), 0],
+])('팔레트를 열 때 다시 묻기 — %s → %i회', async (_name, detection, extra) => {
+  const app = await mount({ defaultAgent: 'auto', detection })
+  const before = app.counters.gets
+  await app.key(CMD_K)
+  expect(app.q('[data-command-palette]')).not.toBeNull()
+  expect(app.counters.gets - before).toBe(extra)
 })

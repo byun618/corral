@@ -98,6 +98,7 @@ import { electronClipboardPng, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepP
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { AgentDetector, realAgentDetectorDeps, registerAgentDetectionIpc } from './agent-detection.js'
+import { AGENT_DETECTION_CHANNEL } from '../shared/agent-detection.js'
 import { externalOpenLogUrl, isExternalOpenAllowed } from './external-url.js'
 import { pickSessionName, pinnedSessions } from './pick-session.js'
 import { BackendRetry, BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, nextScanErrorStreak, type BackendInput } from './backend-start.js'
@@ -2083,7 +2084,7 @@ app.whenReady().then(async () => {
   agentDetector = new AgentDetector(realAgentDetectorDeps({
     env: process.env,
     onChange: (snapshot) => {
-      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:agentDetection', snapshot)
+      if (window !== null && !window.isDestroyed()) window.webContents.send(AGENT_DETECTION_CHANNEL.push, snapshot)
     },
     log,
   }))

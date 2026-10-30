@@ -91,8 +91,9 @@ import { moveDirectionToSplit } from './components/TabContextMenu.js'
 import { groupOfTab, listGroups, readStoredLayouts } from './group-tree.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
 import { updateSettings, useSettings } from './settings-store.js'
-import { resolveNewAgentTab } from './tab-create-menu.js'
-import { useAgentDetection } from './agent-detection-store.js'
+import { isAgentAvailable, resolveNewAgentTab } from './tab-create-menu.js'
+import { DETECTABLE_AGENTS } from '../../shared/agent-detection.js'
+import { useAgentDetection, useRecheckAgentDetectionOnOpen } from './agent-detection-store.js'
 import { terminalCssVars } from './terminal-appearance.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
@@ -811,6 +812,8 @@ export function App(): React.JSX.Element {
   const settings = useSettings()
   // LIFE-520 — 앱 기동 때부터 감지 결과를 구독한다(⌘⌥T 가 메뉴·설정을 열기 전에도 결과를 본다).
   const agentDetection = useAgentDetection()
+  // fix2 R2-03 — 셸 실패 결과면 팔레트를 열 때 다시 묻는다(팔레트의 「새 X 에이전트」 가 감지를 따른다).
+  useRecheckAgentDetectionOnOpen(paletteOpen)
   useLayoutEffect(() => {
     const root = document.documentElement.style
     for (const [name, value] of Object.entries(terminalCssVars(settings))) root.setProperty(name, value)
@@ -2147,7 +2150,8 @@ export function App(): React.JSX.Element {
   for (const section of SETTINGS_SECTIONS) {
     paletteEntries.push({ id: `settings.section:${section.id}`, title: `설정 › ${section.title}`, detail: section.description, keywords: ['settings', '설정', ...section.searchEntries.flatMap((entry) => [entry.title, ...(entry.keywords ?? [])])].join(' '), run: () => openSettings(section.id) })
   }
-  for (const kind of ['claude', 'codex', 'grok'] as const) paletteEntries.push({ id: `agent.start.${kind}`, title: `새 ${kind} 에이전트`, detail: activeWorktree?.path ?? 'worktree 선택 필요', disabled: !connected ? '연결된 세션이 없습니다' : !activeWorkspace ? '열린 worktree를 선택하세요' : undefined, run: () => { if (activeWorkspace) lifecycle.actions.createRow(activeWorkspace.workspaceId, kind) } })
+  // LIFE-520 fix2 R2-01 — 감지된 에이전트만(감지 전·실패면 3종 그대로 = base).
+  for (const kind of DETECTABLE_AGENTS.filter((agent) => isAgentAvailable({ agent, detection: agentDetection }))) paletteEntries.push({ id: `agent.start.${kind}`, title: `새 ${kind} 에이전트`, detail: activeWorktree?.path ?? 'worktree 선택 필요', disabled: !connected ? '연결된 세션이 없습니다' : !activeWorkspace ? '열린 worktree를 선택하세요' : undefined, run: () => { if (activeWorkspace) lifecycle.actions.createRow(activeWorkspace.workspaceId, kind) } })
   for (const repo of state.repos) {
     const primary = repo.worktrees.find(worktree => !worktree.isLinked)
     paletteEntries.push({ id: `repo.select:${repo.root}`, title: `레포 선택 · ${repo.root.split('/').at(-1)}`, detail: repo.root, disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => { if (primary) lifecycle.actions.openWorktree(repo.root, primary) } })

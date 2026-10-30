@@ -1,10 +1,11 @@
 // LIFE-520 K1ⓓ·K3 — 감지 단위 시험. 파싱·거름·폴백 순서는 실제 임시 파일, 시간 초과는 실제 셸 스크립트(손주 포함 kill),
 // 캐시·새로고침·합치기·옛 실행 무시는 가짜 probe(spawn 횟수를 센다).
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { readAgentDetection, type AgentDetectionSnapshot } from '../shared/agent-detection.js'
+import { AGENT_DETECTION_CHANNEL, readAgentDetection, type AgentDetectionSnapshot } from '../shared/agent-detection.js'
 import {
   AgentDetector,
   fallbackAgentDirs,
@@ -405,4 +406,52 @@ describe('fix1 — 폴백에서 grok 은 실물 ~/.grok/bin (R1-02)', () => {
     const found = resolveDetectedAgents({ shellDirs: [], fallbackDirs: fallbackAgentDirs({ home, listDir: () => [] }), isExecutable: isExecutableFile })
     expect(found).toEqual([{ agent: 'grok', path: real, source: 'fallback' }])
   })
+})
+
+// ── fix2 — R2-02 IPC refresh 배선 · R2-04 정상 종료 뒤 파이프 ──
+
+describe('fix2 — IPC refresh 는 성공 캐시 뒤에도 셸을 다시 띄운다 (K3ⓑ IPC 단, R2-02)', () => {
+  it('ensure 로 캐시를 만든 뒤 IPC refresh → spawn 2, 응답은 캐시값이 아니라 새 결과', async () => {
+    const h = harness()
+    const ipc = fakeIpc(h.detector)
+    const boot = h.detector.ensure()
+    h.pending[0]?.resolve(okProbe('/sh'))
+    expect(agentsOf(await boot)).toEqual(['claude:login-shell', 'grok:fallback'])
+    // 캐시 확인 — 조회는 셸을 띄우지 않는다.
+    ipc.invoke(AGENT_DETECTION_CHANNEL.get)
+    expect(h.spawns()).toBe(1)
+    const refreshed = ipc.invoke(AGENT_DETECTION_CHANNEL.refresh)
+    expect(h.spawns()).toBe(2)
+    h.pending[1]?.resolve(okProbe('/new'))
+    expect(agentsOf(readAgentDetection(await Promise.resolve(refreshed)))).toEqual(['codex:login-shell', 'grok:fallback'])
+  })
+  it('main 이 등록하는 채널 = 공유 상수의 get·refresh 둘', () => {
+    const channels: string[] = []
+    registerAgentDetectionIpc<unknown>({ handle: (channel) => channels.push(channel), allowed: () => true, detector: () => null })
+    expect(channels).toEqual([AGENT_DETECTION_CHANNEL.get, AGENT_DETECTION_CHANNEL.refresh])
+  })
+})
+
+describe('fix2 — 정상 종료 뒤 rc 손주가 stdout 을 쥐어도 파이프를 끊는다 (R2-04)', () => {
+  it('rc 가 띄운 백그라운드 손주(stdout 상속)가 살아 있어도, probe 를 부른 node 는 결과 뒤 바로 끝난다', async () => {
+    const pids = path.join(tmp, 'daemon-pid')
+    // 셸은 PATH 를 찍고 끝나지만, 출력을 상속한 손주가 30초 산다(rc 의 `(daemon &)` 모양).
+    const shell = exe(path.join(tmp, 'shell-daemon'), `#!/bin/sh\n( /bin/sleep 30 & echo $! > '${pids}' )\nprintf '${MARK}%s${MARK}' "/p1"\n`)
+    const runner = path.join(tmp, 'runner.mts')
+    fs.writeFileSync(runner, `const mod = await import(${JSON.stringify(path.resolve(import.meta.dirname, 'agent-detection.ts'))})\nconst probe = await mod.probeLoginShellPath({ shell: ${JSON.stringify(shell)}, timeoutMs: 10000, env: {} })\nconsole.log(JSON.stringify(probe))\n`)
+    const tsx = path.resolve(import.meta.dirname, '../../node_modules/tsx/dist/esm/index.mjs')
+    const started = Date.now()
+    const result = spawnSync(process.execPath, ['--import', tsx, runner], { encoding: 'utf8', timeout: 8_000 })
+    const elapsed = Date.now() - started
+    const daemon = Number(fs.readFileSync(pids, 'utf8').trim())
+    try {
+      expect(result.error).toBeUndefined()
+      expect(JSON.parse(result.stdout.trim())).toEqual({ outcome: { ok: true }, pathValue: '/p1' })
+      expect(elapsed).toBeLessThan(8_000)
+      // 정상 종료에서는 그룹을 죽이지 않는다(재량 — RESULT R2-04): 손주는 아직 살아 있다.
+      expect(alive(daemon)).toBe(true)
+    } finally {
+      if (daemon > 0) process.kill(daemon, 'SIGKILL')
+    }
+  }, 20_000)
 })

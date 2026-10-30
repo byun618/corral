@@ -38,7 +38,7 @@ import { GitCommitIcon, NoteIcon, StarIcon, TrashIcon, WorkflowIcon } from './Si
 import { lineageIndent } from '../sidebar-sections.js'
 import { useMenuBus } from '../menu-bus.js'
 import { WorktreeStatusSlot } from './WorktreeStatusSlot.js'
-import { useAgentDetection } from '../agent-detection-store.js'
+import { useAgentDetection, useRecheckAgentDetectionOnOpen } from '../agent-detection-store.js'
 import { isAgentAvailable, type LaunchAgent } from '../tab-create-menu.js'
 
 // LIFE-520 fix1 R1-04 — 감지된 것만 보인다(감지 전·실패면 3종 그대로). 「빈 탭」 등 나머지 항목은 늘 있다.
@@ -139,6 +139,8 @@ export function WorktreeBlock({
   const [hovered, setHovered] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const detection = useAgentDetection()
+  // fix2 R2-03 — 셸 실패 결과면 `…` 메뉴를 열 때 다시 묻는다.
+  useRecheckAgentDetectionOnOpen(menuOpen)
   // K2ⓖ — 카드 ⋯ 도 메뉴 하나 규칙(다른 메뉴가 열리면 닫힘)과 바깥 클릭·Esc 닫기를 갖는다.
   useMenuBus({ open: menuOpen, close: () => setMenuOpen(false) })
   const menuRef = useRef<HTMLDivElement | null>(null)

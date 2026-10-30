@@ -131,16 +131,18 @@ describe('로그인 셸 실행 (K1ⓓ 시간 초과 · 실제 프로세스)', ()
     const pids = path.join(tmp, 'pids')
     const shell = exe(path.join(tmp, 'shell-hang'), `#!/bin/sh\nsleep 60 &\necho "$$ $!" > '${pids}'\nwait\n`)
     const started = Date.now()
-    const probe = await probeLoginShellPath({ shell, timeoutMs: 500, env: {} })
+    // 시한 3초 — 전량 실행 부하에서 500ms 는 sh 가 pid 파일을 쓰기도 전에 끝났다(w-3). 손주까지 뜬 뒤에 시한이 오게 넉넉히.
+    const timeoutMs = 3_000
+    const probe = await probeLoginShellPath({ shell, timeoutMs, env: {} })
     const elapsed = Date.now() - started
     expect(probe).toEqual({ outcome: { ok: false, reason: 'timeout' }, pathValue: null })
-    expect(elapsed).toBeLessThan(500 + 2_000)
+    expect(elapsed).toBeLessThan(timeoutMs + 2_000)
     const [shellPid, grandchildPid] = fs.readFileSync(pids, 'utf8').trim().split(' ').map(Number)
     expect(shellPid).toBeGreaterThan(0)
     expect(grandchildPid).toBeGreaterThan(0)
     expect(await waitDead(shellPid ?? 0)).toBe(true)
     expect(await waitDead(grandchildPid ?? 0)).toBe(true)
-  })
+  }, 15_000)
   it('env 에 DISABLE_AUTO_UPDATE 를 얹지만 넘긴 env 객체는 바꾸지 않는다', async () => {
     const shell = exe(path.join(tmp, 'shell-env'), `#!/bin/sh\nprintf '${MARK}%s${MARK}' "$DISABLE_AUTO_UPDATE"\n`)
     const env: NodeJS.ProcessEnv = { PATH: '/usr/bin:/bin' }

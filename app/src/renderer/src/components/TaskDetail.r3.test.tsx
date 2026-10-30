@@ -13,7 +13,7 @@ import { WorkService } from '../../../main/work/service.js'
 import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
 import { FakeCipher, MemoryStore } from '../../../main/work/test-kit.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -59,7 +59,7 @@ async function rig({ token = 'mock_l602_fixture', prefs }: { token?: string; pre
     workRequest: (request: WorkRequest) => { result.calls.push(request.call); return service.request(request) },
     workActivity: async (query: unknown) => service.activity(query),
   })
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => result.closes.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => result.closes.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
   await settle()
   return result
 }

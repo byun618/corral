@@ -18,7 +18,7 @@ import { FAKE_LA_TOKEN, FakeCipher, MemoryStore, workHarness } from '../../../ma
 import { FIXTURE_STATUS, LaMcpFixture } from '../../../main/work/la-mcp-fixture.js'
 import { laSourceEntry } from '../../../main/work/la-source.js'
 import http from 'node:http'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -65,7 +65,7 @@ async function rig({ token = 'mock_l602_fixture', prefs }: { token?: string; pre
     workRequest: (request: WorkRequest) => { result.calls.push(request.call); return service.request(request) },
     workActivity: async (query: unknown) => service.activity(query),
   })
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => result.closes.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => result.closes.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
   await settle()
   return result
 }
@@ -292,7 +292,7 @@ async function laRig(): Promise<{ fixture: LaMcpFixture; calls: WorkCall[]; stop
     workRequest: (request: WorkRequest) => { calls.push(request.call); return h.service.request(request) },
     workActivity: async (query: unknown) => h.service.activity(query),
   })
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
   await settle(30)
   return { fixture, calls, stop: () => fixture.stop() }
 }

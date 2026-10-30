@@ -175,6 +175,14 @@
   --right-panel-w: 300px;
   --right-panel-min: 220px;
   --right-panel-max: 640px;
+  /* 보기별 폭(LIFE-682 A3) — 위 --right-panel-w 는 탐색기 보기 기본, 작업 상세 보기 기본은 옛 상세 aside 폭(--w-issue-detail)과 같은 560. */
+  --right-panel-detail-w: 560px;
+  /* activity bar(LIFE-682 A1, Orca top 모드 `activity-bar-buttons.tsx:147-171` · `right-sidebar-titlebar-drag-regions.ts:4-5`) —
+     단추 36×36 · 아이콘 16 · 활성 막대 2px(가로 25%~75%) · 줄 왼쪽 안쪽 여백 8. 머리 높이는 --h-titlebar(36). */
+  --right-panel-activity-btn: 36px;
+  --right-panel-activity-icon: 16px;
+  --right-panel-activity-bar: 2px;
+  --right-panel-activity-pad: 8px;
   /* **명시적 편차** (09-gate1-fix.md A 에서 유지 결정) — 핸드오프 §4 는 `--resizer-w: 3px`
      단일이지만, 히트존(집기)과 가시선(보이기)을 분리하면 *보이는 선은 1px* 이라 "테두리 최소"
      기조에 오히려 더 맞고 집기는 더 쉽다. 편차인 채로 결과 문서에 기록한다.

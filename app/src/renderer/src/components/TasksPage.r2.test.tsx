@@ -10,7 +10,7 @@ import { EMPTY_SESSION_DIGEST, type RepoRow, type WorkspaceRow, type WorktreeRow
 import type { WorkCall, WorkCapabilities, WorkItem, WorkRequest, WorkResponse, WorkSettingsState, WorkStatus } from '../../../shared/work.js'
 import { useTasksPage, type MoveNotice, type TasksPageModel } from '../hooks/useTasksPage.js'
 import { compareRank, moveAfter } from '../tasks-model.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
 const BASE_CAPS: WorkCapabilities = { resolution: { state: 'on' }, querySearch: { state: 'hidden' }, 
@@ -168,7 +168,7 @@ const ops = (op: WorkCall['op']): WorkRequest[] => calls.filter((request) => req
 
 type PageProps = { open?: boolean; repos?: RepoRow[]; yieldKeys?: boolean }
 function page({ open = true, repos = [], yieldKeys = false }: PageProps = {}) {
-  return createElement(TasksPage, { open, repos, activeRepoRoot: null, shortcut: '⌘I', yieldKeys, onClose: () => { closed += 1 }, onOpenSettings: () => {}, onOpenWorktree: () => {} })
+  return createElement(TasksPageInPanel, { open, repos, activeRepoRoot: null, shortcut: '⌘I', yieldKeys, onClose: () => { closed += 1 }, onOpenSettings: () => {}, onOpenWorktree: () => {} })
 }
 async function renderPage(props: PageProps = {}): Promise<void> {
   act(() => root.render(page(props)))

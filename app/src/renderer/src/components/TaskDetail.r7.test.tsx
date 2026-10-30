@@ -17,7 +17,7 @@ import { WorkService } from '../../../main/work/service.js'
 import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
 import { FAKE_LA_TOKEN, FakeCipher, MemoryStore, workHarness } from '../../../main/work/test-kit.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -41,7 +41,7 @@ const settle = async (rounds = 8): Promise<void> => {
 }
 
 function renderPage(): void {
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
 }
 
 type Rig = { state: MockState; calls: WorkCall[]; responses: WorkResponse[] }

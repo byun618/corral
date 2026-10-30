@@ -7,9 +7,14 @@
 //   페이지 키는 **페이지 안(또는 포커스 없음)에서 난 키만** 받고, 위층(설정·팔레트·모달)이 열려 있으면(`yieldKeys`) 하나도 받지 않는다(R1-G).
 // - LIFE-604 만들기 진입점 — 머리 「만들기」 · `C` · 보드 칸 「+ 추가」(인라인) · 백로그 섹션 「추가」. 쓰기가 막히면 흐림 + 이유, `C` 는 안 열림.
 //   만들기·시작 모달이 열린 동안 페이지 키(`C`·`/`·`1–4`)는 받지 않는다(F10).
-// - LIFE-602 — 카드·행·검색 결과를 누르면 그 작업 상세(`TaskDetail`)가 오른쪽 패널로 열린다(선택 = 열린 상세, 다시 누르면 닫힘).
-//   `Esc` 단계 = 열린 메뉴 → 상세의 메뉴·확인 팝오버 → 입력 blur → 상세 닫기 → 페이지 닫기.
-import { useEffect, useMemo, useRef, useState } from 'react'
+// - LIFE-602 · LIFE-682 — 카드·행·검색 결과를 누르면 그 작업 상세(`TaskDetail`)가 **앱 오른쪽 패널의 작업 상세 보기**에 선다(패널 열림 + 상세 보기).
+//   선택과 패널 보임은 따로다(닫기 = 숨기기, 선택 유지). 상세에 보이는 그 카드를 다시 누르면 패널을 숨기고, 숨겨졌거나 다른 보기면 연다(Q1).
+//   `Esc` 단계 = 열린 메뉴 → 상세의 메뉴·확인 팝오버 → 입력 blur → (전체 모드면 패널로) 상세 보기가 보이면 패널 숨기기 → 페이지 닫기(Q2).
+// - LIFE-682 상세 상태 소유 — 상세 상태(`useTaskDetail`·시작·링크)는 여전히 이 컴포넌트가 갖고, **App 이 앱 시작부터 이 페이지를 마운트**한다(닫힌 채).
+//   상세 DOM 은 안정된 host 노드 하나에 portal 로 그리고, 그 host 를 패널 자리(`detailPanel.slot`) ↔ 페이지 전체 모드 자리 사이에서 옮긴다 —
+//   ⤢ 를 오가도 상세가 한 번만 마운트돼 입력 초안·포커스가 갈리지 않는다(A7). 상세 읽기 조건은 「페이지 열림」이 아니라 「상세가 보이는가」(A5).
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
 import type { RepoRow } from '../../../shared/types.js'
 import type { WorkCapabilities, WorkItem, WorkPriority, WorkStatus } from '../../../shared/work.js'
@@ -17,7 +22,6 @@ import { spaceCapabilities, WORK_PRIORITIES } from '../../../shared/work.js'
 import { useTaskDrag, type TaskDrop } from '../hooks/useTaskDrag.js'
 import { DETAIL_READING, useTasksPage, type MoveNotice } from '../hooks/useTasksPage.js'
 import { useTaskDetail } from '../hooks/useTaskDetail.js'
-import { useDetailLayout } from '../hooks/useDetailLayout.js'
 import {
   NO_FILTERS,
   PRIORITY_LABEL,
@@ -68,6 +72,20 @@ import { useQuickCreate } from '../hooks/useQuickCreate.js'
 /** 사이드바 작업 줄이 여는 작업 — `itemId` 를 모르면(자동 링크) 키로 찾는다. */
 export type TasksFocus = { seq: number; connectionId: string; itemId: string | null; key: string }
 
+/** 앱 오른쪽 패널의 작업 상세 보기(LIFE-682) — App 이 준다. */
+export type DetailPanel = {
+  /** 패널 상세 보기 몸통 — 상세 host 가 여기 붙는다(아직 없으면 null). */
+  slot: HTMLElement | null
+  /** 패널이 열려 있고 상세 보기다. */
+  shown: boolean
+  /** 패널을 열고 상세 보기로. */
+  show: () => void
+  /** 패널 숨기기(선택 유지). */
+  hide: () => void
+  /** 작업 페이지 열기 — 터미널 화면에서 ⤢ 를 누르면 페이지를 열고 그 위 전체 모드(Q3). */
+  openPage: () => void
+}
+
 const NO_DEFAULTS: WorkRepoDefault[] = []
 import { Backlog, Board, ListView, MoreBar, SpaceDot, WorkingList, capabilityGate, type CardProps, type ColumnDragView, type MoreState, type WorkingView } from './TasksViews.js'
 
@@ -84,7 +102,7 @@ const EMPTY_COPY: Record<EmptyCause, { title: string; body: string }> = {
   working: { title: '작업 중인 worktree 가 없습니다', body: '브랜치 이름에 작업 키가 들어간 worktree 를 열면 여기에 모입니다.' },
 }
 
-export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus }: {
+export type TasksPageProps = {
   open: boolean
   repos: RepoRow[]
   activeRepoRoot: string | null
@@ -101,18 +119,18 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   onRevealPane?: (paneId: string) => void
   /** 사이드바 작업 줄 클릭 — 그 작업 상세를 연다(`seq` 가 바뀔 때마다 한 번). */
   focus?: TasksFocus | null
-}): React.JSX.Element {
+  detailPanel: DetailPanel
+  /** 머리 오른쪽 끝 — 패널이 닫혀 있으면 여는 단추(LIFE-682 A8). App 이 준다. */
+  headTail?: React.ReactNode
+  /** 페이지 모달(만들기·시작)이 열리고 닫힐 때 — App 이 그동안 단축키를 막는다. */
+  onModalChange?: (open: boolean) => void
+}
+
+export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus, detailPanel, headTail, onModalChange }: TasksPageProps): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
   const [menu, setMenu] = useState<'space' | 'kind' | 'priority' | null>(null)
   const [now, setNow] = useState(() => Date.now())
-  // 상대 시간(작업 중 보기·마감)은 열린 동안 분 단위로 흐른다(R2-P).
-  useEffect(() => {
-    if (!open) return
-    setNow(Date.now())
-    const timer = window.setInterval(() => setNow(Date.now()), 60_000)
-    return () => window.clearInterval(timer)
-  }, [open])
 
   const notify = (notice: MoveNotice): void => {
     switch (notice.kind) {
@@ -145,10 +163,49 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const { prefs, setPrefs, space, settings, groups, load, rows, banner, query, setQuery, selectedId, setSelectedId } = page
   const all = space?.kind === 'all'
 
-  // --- 상세 (LIFE-602) ---
+  // --- 상세 (LIFE-602 · LIFE-682) ---
+  // 전체 모드(⤢)는 작업 페이지 위에서만 — 페이지가 닫혀 있으면 패널 상세다. 상세가 보이는 동안만 그리고 읽는다(A5 — 새 폴링 없음).
+  const fullActive = open && prefs.detailFull && selectedId !== null
+  const detailShown = detailPanel.shown
+  const detailMounted = selectedId !== null && (fullActive || detailShown)
   const detailTarget = useMemo(() => (selectedId === null ? null : parseUid(selectedId)), [selectedId])
-  const detail = useTaskDetail({ open, target: detailTarget, page, notify })
+  const detail = useTaskDetail({ open: detailMounted, target: detailTarget, page, notify })
   const detailEscape = useRef<(() => boolean) | null>(null)
+  const openDetail = (uid: string): void => {
+    setSelectedId(uid)
+    detailPanel.show()
+  }
+  // 상대 시간(작업 중 보기·마감·상세)은 페이지가 열렸거나 상세가 보이는 동안 분 단위로 흐른다(R2-P).
+  const ticking = open || detailMounted
+  useEffect(() => {
+    if (!ticking) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [ticking])
+  // 상세 host — 한 노드를 패널 자리와 페이지 전체 모드 자리 사이에서 옮긴다(portal 대상이 안 바뀌어 리마운트 없음).
+  const [detailHost] = useState(() => {
+    const element = document.createElement('div')
+    element.className = 'task-detail-host'
+    element.setAttribute('data-task-detail-host', '')
+    return element
+  })
+  const fullSlotRef = useRef<HTMLDivElement | null>(null)
+  const panelSlot = detailPanel.slot
+  useLayoutEffect(() => {
+    const place = fullActive ? fullSlotRef.current : panelSlot
+    if (place === null) { detailHost.remove(); return }
+    if (detailHost.parentNode === place) return
+    // 노드를 옮기면 브라우저가 포커스를 body 로 돌리고 스크롤 그릇의 위치를 0 으로 되돌린다(r1 지적 7) — 옮기기 전 값을 잡아 되돌린다.
+    const active = document.activeElement
+    const focused = active instanceof HTMLElement && detailHost.contains(active) ? active : null
+    const scroller = detailHost.querySelector<HTMLElement>('.issue-detail-scroll')
+    const top = scroller?.scrollTop ?? 0
+    place.appendChild(detailHost)
+    if (scroller !== null) scroller.scrollTop = top
+    if (focused !== null && document.activeElement !== focused) focused.focus({ preventScroll: true })
+  }, [fullActive, panelSlot, detailHost])
+  useEffect(() => () => detailHost.remove(), [detailHost])
 
   // --- 작업에서 시작 · 링크 (LIFE-603) ---
   const machine = settings?.machine ?? null
@@ -157,18 +214,18 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const starter = useStartWork({ detail, repos, repoDefaults: settings?.repoDefaults ?? NO_DEFAULTS, activeRepoRoot, sourceName: detailSource, notifyFailure: (message) => notify({ kind: 'failed', message }) })
   const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })
   const workActions = useMemo((): DetailWorkActions => ({ start: (mode) => starter.begin(mode), reveal: (paneId) => onRevealPane?.(paneId) }), [starter.begin, onRevealPane])
-  // 사이드바 작업 줄 → 그 작업 상세. 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다.
+  // 사이드바 작업 줄 → 패널 상세 보기 + 그 작업(A4). 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다. 페이지가 앱 시작부터 마운트돼 있어 페이지 열림을 기다리지 않는다.
   const focusSeq = focus?.seq ?? 0
   useEffect(() => {
-    if (focus == null || !open) return
-    if (focus.itemId !== null) { setSelectedId(itemUid({ connectionId: focus.connectionId, itemId: focus.itemId })); return }
+    if (focus == null) return
+    if (focus.itemId !== null) { openDetail(itemUid({ connectionId: focus.connectionId, itemId: focus.itemId })); return }
     let live = true
     void window.corral.workRequest({ requestId: `focus-${focus.seq}-${Date.now()}`, connectionId: focus.connectionId, call: { op: 'findByKey', key: focus.key } }).then((response) => {
       if (!live || !response.ok || response.result.op !== 'findByKey' || response.result.item === null) return
-      setSelectedId(itemUid({ connectionId: focus.connectionId, itemId: response.result.item.id }))
+      openDetail(itemUid({ connectionId: focus.connectionId, itemId: response.result.item.id }))
     })
     return () => { live = false }
-  }, [focusSeq, open])
+  }, [focusSeq])
   /** 스페이스 키 → 이름·색 — 보이는 스페이스면 그 색 번호, 숨긴 스페이스도 설정 목록에서 이름을 찾는다. */
   const spaceOf = (spaceKey: string): { name: string; color: string | null; index: number } | null => {
     if (detailTarget === null) return null
@@ -258,14 +315,14 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     page,
     space,
     writeBlockOf,
-    openItem: (target) => setSelectedId(itemUid(target)),
+    openItem: (target) => openDetail(itemUid(target)),
     notifyFailure: (message) => notify({ kind: 'failed', message }),
     onCreated: ({ connectionId, item }) => {
       const uid = itemUid({ connectionId, itemId: item.id })
       const id = toast(
         <div className="tasks-toast" data-toast="created">
           <span className="tasks-toast-label">{item.key} 를 만들었습니다</span>
-          <button type="button" className="tasks-toast-undo" data-toast-open="" onClick={() => { setSelectedId(uid); toast.dismiss(id) }}>열기</button>
+          <button type="button" className="tasks-toast-undo" data-toast-open="" onClick={() => { openDetail(uid); toast.dismiss(id) }}>열기</button>
         </div>,
         { duration: 6000 },
       )
@@ -402,8 +459,21 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const viewsRef = useRef(views)
   viewsRef.current = views
   const overlay = creator.modal !== null || starter.open
-  const latest = useRef({ menu, onClose, setPrefs, yieldKeys, viewReason, selectedId, setSelectedId, overlay, openCreate: creator.openModal })
-  latest.current = { menu, onClose, setPrefs, yieldKeys, viewReason, selectedId, setSelectedId, overlay, openCreate: creator.openModal }
+  // 상세는 **선택이 있는 한 마운트를 유지**한다(r1 지적 1 — 패널 숨기기·보기 전환에 코멘트·본문 초안을 잃지 않게). 보이지 않는 동안은 host 를 hidden + inert 로
+  // 두어 포커스·Tab·읽기 대상이 되지 않는다(읽기는 `detailMounted` 가 막는다, A5). 만들기·시작 모달이 열린 동안도 host 는 inert(r1 지적 4 — 옛 aside 는 `.tasks-main` 안이라 inert 였다).
+  const detailHidden = selectedId !== null && !detailMounted
+  useLayoutEffect(() => {
+    detailHost.hidden = detailHidden
+    detailHost.inert = detailHidden || overlay
+  }, [detailHidden, overlay, detailHost])
+  // 페이지 모달 열림을 App 에 알린다 — 모달이 열린 동안 App 단축키(⌘L·⌘⇧E·⌘, …)가 모달 뒤에 작용하지 않게(r1 지적 3). 시작 모달은 페이지가 닫힌 터미널 화면에서도 뜬다.
+  useEffect(() => { onModalChange?.(overlay) }, [overlay])
+  const leaveFull = (): void => {
+    setPrefs({ detailFull: false })
+    detailPanel.show()
+  }
+  const latest = useRef({ menu, onClose, setPrefs, yieldKeys, viewReason, overlay, openCreate: creator.openModal, fullActive, detailVisible: detailShown && selectedId !== null, detailMounted, leaveFull, hidePanel: detailPanel.hide })
+  latest.current = { menu, onClose, setPrefs, yieldKeys, viewReason, overlay, openCreate: creator.openModal, fullActive, detailVisible: detailShown && selectedId !== null, detailMounted, leaveFull, hidePanel: detailPanel.hide }
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent): void => {
@@ -412,15 +482,19 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       if (latest.current.overlay) return
       const target = event.target
       // 페이지 밖(사이드바 입력·위층)에서 난 키는 그쪽 몫이다 — 포커스가 없을 때(body)만 페이지가 받는다(R1-G).
-      if (target instanceof Node && target !== document.body && target !== document.documentElement && !(rootRef.current?.contains(target) ?? false)) return
+      // 오른쪽 패널의 상세(host)는 페이지 몫으로 본다 — 상세가 페이지 안 aside 였을 때와 같은 사슬(LIFE-682).
+      if (target instanceof Node && target !== document.body && target !== document.documentElement && !(rootRef.current?.contains(target) ?? false) && !detailHost.contains(target)) return
       const typing = target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select') !== null)
       if (event.key === 'Escape') {
         if (imeComposing(event)) return
         event.preventDefault()
         if (latest.current.menu !== null) { setMenu(null); return }
-        if (detailEscape.current?.() === true) return
+        // 숨긴 상세의 메뉴·팝오버는 Esc 를 받지 않는다 — 보이지 않는 메뉴를 닫느라 Esc 를 삼키지 않게(r1 지적 2).
+        if (latest.current.detailMounted && detailEscape.current?.() === true) return
         if (typing && target instanceof HTMLElement) { target.blur(); return }
-        if (latest.current.selectedId !== null) { latest.current.setSelectedId(null); return }
+        if (latest.current.fullActive) { latest.current.leaveFull(); return }
+        // 옛 「상세 닫기(선택 해제)」 단계 자리 — 고른 작업의 상세가 패널에 보이면 패널을 숨긴다(선택 유지, Q2). 빈 상세 보기는 이 단계를 거치지 않는다.
+        if (latest.current.detailVisible) { latest.current.hidePanel(); return }
         latest.current.onClose()
         return
       }
@@ -451,6 +525,22 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [open])
+  // 터미널 화면(페이지 닫힘)에서 상세 안 Esc 는 팝오버·입력까지만(Q2) — 패널을 닫지 않는다(터미널 Esc 와 겹치지 않게).
+  useEffect(() => {
+    if (open || !detailMounted) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented || imeComposing(event)) return
+      const target = event.target
+      if (!(target instanceof Node) || !detailHost.contains(target)) return
+      if (detailEscape.current?.() === true) { event.preventDefault(); return }
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select') !== null)) {
+        event.preventDefault()
+        target.blur()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open, detailMounted, detailHost])
   // 열면 페이지가 포커스를 받는다 — 덮인 터미널(inert)에 포커스가 남지 않게.
   useEffect(() => {
     if (open) requestAnimationFrame(() => { if (!(document.activeElement instanceof HTMLInputElement)) rootRef.current?.focus({ preventScroll: true }) })
@@ -469,15 +559,35 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     return { name: row?.name ?? load.data[0]?.spaceName ?? '스페이스', color: row?.color ?? null, index: row?.colorIndex ?? 1 }
   })()
 
-  const toggleSelect = (uid: string): void => setSelectedId(selectedId === uid ? null : uid)
-  // LIFE-670 — 패널 모드는 보기 영역을 밀어낸다(좁으면 덮기로 물러남). 전체 모드는 덮기 그대로.
+  // Q1 — 상세에 보이는 그 카드를 다시 누르면 패널 숨기기(선택 유지), 아니면 패널 열고 상세 보기 + 그 작업.
+  const toggleSelect = (uid: string): void => {
+    if (selectedId === uid && detailShown) { detailPanel.hide(); return }
+    openDetail(uid)
+  }
+  // ⤢ — 페이지에서는 전체 모드 ↔ 패널(돌아오면 패널 상세). 터미널 화면에서는 페이지를 열고 그 위 전체 모드(Q3).
+  const toggleFull = (): void => {
+    if (!open) {
+      setPrefs({ detailFull: true })
+      detailPanel.openPage()
+      return
+    }
+    if (prefs.detailFull) leaveFull()
+    else setPrefs({ detailFull: true })
+  }
+  // ✕ — 전체 모드면 패널 상세로 돌아가고, 패널이면 패널 숨기기(선택 유지, A6).
+  const closeDetail = (): void => {
+    if (fullActive) leaveFull()
+    else detailPanel.hide()
+  }
+  // LIFE-682 — 상세가 앱 오른쪽 패널(가운데 영역의 flex 형제)로 나가 보기 영역은 레이아웃이 자연히 남은 폭을 준다. LIFE-670 밀기 장치는 없앴다.
   const mainRef = useRef<HTMLDivElement | null>(null)
-  const detailPlacement = useDetailLayout({ mainRef, open: selectedId !== null, full: prefs.detailFull })
+  // 카드·행 강조 = 상세가 보이는 그 작업(패널을 숨기면 선택은 남지만 강조는 빠진다 — 옛 「다시 누르면 해제」 와 같은 눈).
+  const shownId = detailMounted ? selectedId : null
   // LIFE-670 P3 — 상세를 열거나 바꿀 때만 선택 카드를 보기 영역 안으로 맞춘다. 재렌더(데이터 갱신)에는 다시 끌어오지 않는다.
   // 선택 카드가 아직 없으면(열린 상세 복원 — 보드 자료가 뒤에 온다, r1 L4) 그 카드가 처음 나타나는 렌더에서 1회 맞춘다.
   // 자료를 다 받았는데도(ready·error) 없으면 지금 보기·필터에 없는 카드다 — 기다림을 푼다. 나중에 필터를 풀어 나타나도 끌어오지 않는다(r2 L-E).
   const pendingReveal = useRef<string | null>(null)
-  useEffect(() => { pendingReveal.current = selectedId }, [selectedId])
+  useEffect(() => { pendingReveal.current = shownId }, [shownId])
   useEffect(() => {
     if (pendingReveal.current === null) return
     const selected = mainRef.current?.querySelector<HTMLElement>('.tasks-body .is-selected') ?? null
@@ -538,9 +648,9 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       case 'board':
         return (
           <div className="tasks-scroll" data-tasks-scroll="board">
-            {hits.length > 0 ? <KeyHits hits={hits} selectedId={selectedId} onSelect={toggleSelect} /> : null}
+            {hits.length > 0 ? <KeyHits hits={hits} selectedId={shownId} onSelect={toggleSelect} /> : null}
             <Board
-              bands={bands} rows={rows} all={all} density={prefs.density} selectedId={selectedId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
+              bands={bands} rows={rows} all={all} density={prefs.density} selectedId={shownId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
               columnFooter={(column) => (column.statusKey === null ? null : <InlineAddSlot view={creator.inlineView({ statusKey: column.statusKey, columnId: column.id, unmapped: column.unmapped })} model={creator} statusKey={column.statusKey} columnId={column.id} />)}
             />
             <MoreBar more={more} onLoadMore={() => void page.loadMore()} />
@@ -549,9 +659,9 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       case 'backlog':
         return (
           <div className="tasks-scroll" data-tasks-scroll="backlog">
-            {hits.length > 0 ? <KeyHits hits={hits} selectedId={selectedId} onSelect={toggleSelect} /> : null}
+            {hits.length > 0 ? <KeyHits hits={hits} selectedId={shownId} onSelect={toggleSelect} /> : null}
             <Backlog
-              sections={backlogSections} all={all} selectedId={selectedId} drag={drag} now={now} sectionView={sectionView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
+              sections={backlogSections} all={all} selectedId={shownId} drag={drag} now={now} sectionView={sectionView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
               sectionAdd={(id) => (
                 <button
                   type="button"
@@ -572,7 +682,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
             groups={listGroups}
             all={all}
             now={now}
-            selectedId={selectedId}
+            selectedId={shownId}
             sort={prefs.sort}
             group={prefs.group}
             preset={activePreset(prefs.filters)}
@@ -592,7 +702,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         return (
           <div className="tasks-scroll" data-tasks-scroll="working">
             {/* 키 일치(E2)는 작업 중 보기에서도 맨 앞에 보인다(R2-H) — 다른 스페이스의 작업이어도. */}
-            {hits.length > 0 ? <KeyHits hits={hits} selectedId={selectedId} onSelect={toggleSelect} /> : null}
+            {hits.length > 0 ? <KeyHits hits={hits} selectedId={shownId} onSelect={toggleSelect} /> : null}
             <WorkingList views={workingViews} now={now} onOpen={onOpenWorktree} />
           </div>
         )
@@ -698,9 +808,10 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           <span aria-hidden>+</span><span>만들기</span><span className="tasks-create-kbd">C</span>
         </button>
         <button type="button" className="tasks-close" data-tasks-close="" onClick={onClose} title={shortcut === null ? '닫기 (Esc)' : `닫기 (Esc · ${shortcut})`} aria-label="작업 페이지 닫기">✕</button>
+        {headTail}
       </header>
 
-      <div ref={mainRef} className={`tasks-main${detailPlacement === 'push' ? ' is-detail-push' : ''}`} data-detail-layout={detailPlacement} inert={overlay}>
+      <div ref={mainRef} className="tasks-main" inert={overlay}>
       <div className="tasks-filters" data-tasks-filters="">
         <FilterMenu
           id="kind"
@@ -745,25 +856,38 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         </div>
       )}
 
+      {/* 카드·행의 worktree 칩도 같은 링크 문맥을 읽는다(상세는 아래 portal 이 따로 감싼다). */}
       <WorkLinksContext.Provider value={links}>
       <div className="tasks-body">{body}</div>
-      {selectedId === null ? null : (
-        <TaskDetail
-          work={workActions}
-          detail={detail}
-          full={prefs.detailFull}
-          now={now}
-          escapeRef={detailEscape}
-          onToggleFull={() => setPrefs({ detailFull: !prefs.detailFull })}
-          onClose={() => setSelectedId(null)}
-          spaceOf={spaceOf}
-        />
-      )}
       </WorkLinksContext.Provider>
+      {/* 전체 모드(⤢) 자리 — 상세 host 가 여기로 옮겨 와 보기 영역 위를 덮는다(머리 줄은 덮지 않는다). */}
+      <div ref={fullSlotRef} className="tasks-detail-full-slot" data-detail-full-slot="" />
       </div>
       <QuickCreateModal model={creator} yieldKeys={yieldKeys} />
-      {detail.item === null ? null : (
-        <StartWorkModal model={starter} itemKey={detail.item.key} itemTitle={detail.item.title} repos={repos} trees={detailTrees} onOpen={onOpenWorktree} />
+      {createPortal(
+        <WorkLinksContext.Provider value={links}>
+          {selectedId !== null ? (
+            <TaskDetail
+              work={workActions}
+              detail={detail}
+              full={fullActive}
+              now={now}
+              escapeRef={detailEscape}
+              onToggleFull={toggleFull}
+              onClose={closeDetail}
+              spaceOf={spaceOf}
+            />
+          ) : selectedId === null ? (
+            <div className="right-panel-empty" data-detail-empty="">작업을 고르면 여기에 상세가 보입니다</div>
+          ) : null}
+        </WorkLinksContext.Provider>,
+        detailHost,
+      )}
+      {fullActive && panelSlot !== null ? createPortal(<div className="right-panel-empty" data-detail-empty="full">작업 페이지에서 크게 보는 중입니다</div>, panelSlot) : null}
+      {/* 시작 모달은 페이지 밖(body)에 — 페이지가 닫힌 터미널 화면에서도 상세의 「작업에서 시작」 이 열린다(A5ⓒ, 닫힌 페이지는 inert). */}
+      {detail.item === null ? null : createPortal(
+        <StartWorkModal model={starter} itemKey={detail.item.key} itemTitle={detail.item.title} repos={repos} trees={detailTrees} onOpen={onOpenWorktree} />,
+        document.body,
       )}
     </div>
   )

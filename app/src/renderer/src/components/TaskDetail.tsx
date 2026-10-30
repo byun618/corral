@@ -106,6 +106,8 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
     if (menu !== null) { setMenu(null); return true }
     return false
   }
+  // 언마운트되면 비운다 — 옛 클로저(메뉴 열림)가 남아 페이지 Esc 를 계속 삼키지 않게(LIFE-682 r1 지적 2).
+  useEffect(() => () => { escapeRef.current = null }, [escapeRef])
 
   // 상세 단건 읽기 실패(첫 읽기·새로 불러오기) — 목록 값이 있어도 보이고 다시 읽는다(R6-E). 받기 전이면 편집은 계속 막혀 있다(이유 = 받지 못함).
   const loadError = phase.state !== 'error' ? null : (

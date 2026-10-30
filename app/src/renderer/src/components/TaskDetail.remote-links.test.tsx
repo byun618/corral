@@ -11,7 +11,7 @@ import { testRepo, testWorktree } from '../../../shared/test-rows.js'
 import { FIXTURE_IDS, LaMcpFixture } from '../../../main/work/la-mcp-fixture.js'
 import { laSourceEntry } from '../../../main/work/la-source.js'
 import { FAKE_LA_TOKEN, FAKE_MACHINE, workHarness } from '../../../main/work/test-kit.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -72,7 +72,7 @@ async function rig({ local, machineKnown = true, arrange }: { local: boolean; ma
     workActivity: async (query: unknown) => harness.service.activity(query),
   })
   const repos = reposFor({ connectionId: added.connection.id, local })
-  act(() => root.render(createElement(TasksPage, { open: true, repos, activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
+  act(() => root.render(createElement(TasksPageInPanel, { open: true, repos, activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
   await settle(30)
   const card = document.querySelector('[data-tasks-board] [data-issue-card="LIFE-600"]')
   if (!(card instanceof HTMLElement)) throw new Error('카드 없음')
@@ -149,7 +149,7 @@ const itemReads = (tools: string[]): number => tools.filter((tool) => tool === `
 
 describe('LIFE-635 X5-1 열린 상세 — 이 작업의 로컬 링크가 바뀌면 단건을 다시 읽는다(리뷰 r5 probe-detail 조건)', () => {
   const render = (repos: RepoRow[]): void => {
-    act(() => root.render(createElement(TasksPage, { open: true, repos, activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
+    act(() => root.render(createElement(TasksPageInPanel, { open: true, repos, activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
   }
 
   it('사이드바 떼기(트리에서 그 worktree 링크가 사라짐 + 출처 행 지움) → 단건 재조회 · 뗀 worktree 가 「다른 곳의 링크」 로 남지 않는다', async () => {

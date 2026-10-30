@@ -12,7 +12,7 @@ import { WorkService } from '../../../main/work/service.js'
 import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
 import { FakeCipher, MemoryStore } from '../../../main/work/test-kit.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -96,7 +96,7 @@ async function setup({ token = 'mock_l604_fixture', state = seedMockDemoState(),
 }
 
 async function renderPage(harness: Harness, { open = true, yieldKeys = false }: { open?: boolean; yieldKeys?: boolean } = {}): Promise<void> {
-  const page = createElement(TasksPage, { open, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys, onClose: () => harness.closed.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} })
+  const page = createElement(TasksPageInPanel, { open, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys, onClose: () => harness.closed.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} })
   act(() => root.render(createElement('div', null, page, createElement(Toaster))))
   await settle()
 }

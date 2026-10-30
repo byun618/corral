@@ -16,7 +16,8 @@ import { WorkService } from '../../../main/work/service.js'
 import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
 import { FakeCipher, MemoryStore } from '../../../main/work/test-kit.js'
-import { TasksPage, type TasksFocus } from './TasksPage.js'
+import { type TasksFocus } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -75,7 +76,7 @@ async function rig({ repos = [testRepo({ root: '/repo', worktrees: [] })] }: { r
     state, calls: [], starts: [], relaunches: [], opened: [], revealed: [], connectionId, status: null, focus: null,
     next: async (input) => result({ attemptId: input.attemptId }),
     render: async (next) => {
-      act(() => root.render(createElement('div', null, createElement(TasksPage, {
+      act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, {
         open: true, repos: next, activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {},
         onOpenWorktree: (tree) => { r.opened.push({ repoRoot: tree.repoRoot, path: tree.path }) },
         onRevealPane: (paneId) => { r.revealed.push(paneId) },

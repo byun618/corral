@@ -45,8 +45,9 @@ export function getAgentDetection(): AgentDetectionSnapshot {
   return current
 }
 
+// 세 번째 인자(서버 스냅숏) — `renderToStaticMarkup` 으로 그리는 시험(WorktreeBlock 등)에서도 같은 값으로 선다(fix1 w-f1 전량 실패 원인).
 export function useAgentDetection(): AgentDetectionSnapshot {
-  return useSyncExternalStore(subscribe, getAgentDetection)
+  return useSyncExternalStore(subscribe, getAgentDetection, getAgentDetection)
 }
 
 function isRefreshing(): boolean {
@@ -55,7 +56,7 @@ function isRefreshing(): boolean {
 
 /** 「다시 감지」 진행 중 — 버튼 표시용. */
 export function useAgentDetectionRefreshing(): boolean {
-  return useSyncExternalStore(subscribe, isRefreshing)
+  return useSyncExternalStore(subscribe, isRefreshing, isRefreshing)
 }
 
 /** 다시 감지 — main 캐시를 무시하고 새로 돈다. 결과는 푸시로도 오지만 응답으로 한 번 더 받는다. */

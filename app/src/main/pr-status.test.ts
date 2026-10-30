@@ -7,6 +7,8 @@ import type { GitStatusSummary, RepoRow, WorktreeRow } from '../shared/types.js'
 import { readWorkActivityQuery, type WorkActivityChange, type WorkActivityRecord } from '../shared/work.js'
 import type { WorktreeWorkLink } from '../shared/work-link.js'
 import { MemoryActivity, WorkActivityStore, type ActivityPort } from './work/activity-store.js'
+import { mockSourceEntry, seedMockDemoState } from './work/mock-source.js'
+import { workHarness } from './work/test-kit.js'
 import { classifyFailure, makeRunGh, pickPr, PR_ERROR_TTL_MS, PR_TTL_MS, PrStatus, readOutput, readPr, resolveGh, type GhOutcome, type GhRun, type PrWorkPort } from './pr-status.js'
 
 let base = ''
@@ -439,5 +441,110 @@ describe('fix1 c1-5 오류 결과는 짧은 TTL', () => {
   })
   it('기본값 — 오류 TTL 이 성공 TTL 보다 짧다', () => {
     expect(PR_ERROR_TTL_MS).toBeLessThan(PR_TTL_MS)
+  })
+})
+
+// --- 리뷰 r2 수정(fix2) ---
+describe('fix2 c2-1 기본 gh 고르기는 알려진 worktree 를 roots 로 넘긴다', () => {
+  it('deps.gh 없이 — PATH 앞의 worktree 아래 심은 gh 대신 안전한 gh 를 띄운다(양성 대조: 그 worktree 가 트리에 없으면 심은 것이 뽑힌다)', async () => {
+    const wt = fs.mkdtempSync(path.join(base, 'wt-default-'))
+    const planted = path.join(wt, 'bin')
+    fs.mkdirSync(planted)
+    fs.writeFileSync(path.join(planted, 'gh'), '#!/bin/sh\nexit 99\n', { mode: 0o755 })
+    const safe = fs.mkdtempSync(path.join(base, 'safe-default-'))
+    fs.writeFileSync(path.join(safe, 'gh'), '#!/bin/sh\necho []\n', { mode: 0o755 })
+    const before = process.env.PATH
+    process.env.PATH = `${planted}:${safe}`
+    try {
+      const seen: string[] = []
+      const run: GhRun = async ({ gh }) => { seen.push(gh); return exit(0, '[]') }
+      const known = new PrStatus({ repos: () => [repo([row({ path: wt, branch: 'a' })])], work: () => null, run })
+      await known.branches({ paths: [wt] })
+      const other = fs.mkdtempSync(path.join(base, 'wt-other-'))
+      const unknown = new PrStatus({ repos: () => [repo([row({ path: other, branch: 'a' })])], work: () => null, run })
+      await unknown.branches({ paths: [other] })
+      expect(seen).toEqual([path.join(safe, 'gh'), path.join(planted, 'gh')])
+    } finally {
+      process.env.PATH = before
+    }
+  })
+})
+
+describe('fix2 c2-2 WorkService.recordEvent 는 at 을 그대로 남긴다', () => {
+  it('at 을 주면 그 시각, 안 주면 now', async () => {
+    const { service, activity } = workHarness({ entries: [mockSourceEntry({ state: seedMockDemoState() })] })
+    const added = await service.addConnection({ sourceId: 'mock-jira', token: 'mock_l624_fix2', replaceId: null })
+    expect(added.ok).toBe(true)
+    const connectionId = service.settings().connections[0]?.id ?? ''
+    const change: WorkActivityChange = { field: 'run', event: 'pr', action: 'merged', worktree: '/w', number: 30, url: A1_MERGED.url, branch: 'b', base: 'main', draft: false }
+    expect(service.recordEvent({ connectionId, itemId: null, itemKey: 'K-1', eventKey: 'k-at', change, at: Date.parse(A1_MERGED.mergedAt) })).toBe(true)
+    expect(service.recordEvent({ connectionId, itemId: null, itemKey: 'K-1', eventKey: 'k-now', change })).toBe(true)
+    const rows = activity.list({ connectionId, itemId: 'x', itemKey: 'K-1' })
+    expect(rows.map((record) => record.at)).toEqual([Date.parse(A1_MERGED.mergedAt), 1_791_800_000_000])
+  })
+})
+
+describe('fix2 c2-3 폐기·만료 토큰도 미인증', () => {
+  it('HTTP 401 Bad credentials(exit 1, 리뷰어 실측 원문) → unauthenticated', () => {
+    const stderr = 'HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login\n'
+    expect(classifyFailure(exit(1, '', stderr))).toEqual({ kind: 'error', error: 'unauthenticated', message: 'HTTP 401: Bad credentials (https://api.github.com/graphql)' })
+    expect(classifyFailure(exit(1, '', 'HTTP 404: Not Found\n'))).toMatchObject({ error: 'failed' })
+  })
+})
+
+describe('fix2 c2-4 TTL 은 완료 시각부터', () => {
+  it('오래 걸린 오류 실행 — 끝난 뒤 errorTtl 안 재조회는 gh 0 회', async () => {
+    let now = 0
+    let release: () => void = () => undefined
+    const calls: string[] = []
+    const run: GhRun = () => new Promise((resolve) => { calls.push('run'); release = () => resolve(exit(1, '', 'HTTP 502')) })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/a', branch: 'a' })])], work: () => null, gh: () => '/fake/gh', run, now: () => now, ttlMs: 60_000, errorTtlMs: 10_000 })
+    const first = status.branches({ paths: ['/w/a'] })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    now = 15_000
+    release()
+    expect((await first).lookups['/w/a']).toMatchObject({ kind: 'error' })
+    now = 20_000
+    await status.branches({ paths: ['/w/a'] })
+    expect(calls).toHaveLength(1)
+    now = 26_000
+    const third = status.branches({ paths: ['/w/a'] })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    release()
+    await third
+    expect(calls).toHaveLength(2)
+  })
+})
+
+describe('fix2 c2-5 재조회 대상은 최근에 연 PR 부터', () => {
+  it('열림 12건(오래된 10건은 닫힘 기록) → 상한 10 안에 최근 2건이 든다', async () => {
+    const activity = new MemoryActivity()
+    const work = workOf(activity)
+    const urls: string[] = []
+    for (let n = 1; n <= 12; n += 1) {
+      const url = `https://github.com/o/r/pull/${n}`
+      urls.push(url)
+      const change: Extract<WorkActivityChange, { event: 'pr' }> = { field: 'run', event: 'pr', action: 'open', worktree: '/gone', number: n, url, branch: `b${n}`, base: 'main', draft: false }
+      work.recordEvent({ connectionId: 'c1', itemId: 'i', itemKey: 'K-1', eventKey: `o${n}`, change, at: n })
+      if (n <= 10) work.recordEvent({ connectionId: 'c1', itemId: 'i', itemKey: 'K-1', eventKey: `c${n}`, change: { ...change, action: 'closed' }, at: n + 0.5 })
+    }
+    const run = fakeRun(() => exit(0, JSON.stringify({ ...A1_MERGED, state: 'CLOSED', mergedAt: null })))
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [], work: () => work, gh: () => '/fake/gh', run, ttlMs: 0 })
+    expect(await status.refreshItem({ connectionId: 'c1', itemId: 'i', itemKey: 'K-1' })).toMatchObject({ ok: true, checked: 10 })
+    const asked = run.calls.map((call) => call.args[2])
+    expect(asked).toContain(urls[11])
+    expect(asked).toContain(urls[10])
+    expect(asked).not.toContain(urls[0])
+  })
+})
+
+describe('fix2 c2-6 목록 행을 하나도 못 읽으면 「PR 없음」 이 아니다', () => {
+  it('다른 호스트 URL · 모르는 state 행만 → failed, 하나라도 읽으면 그것', () => {
+    const ghe = { ...A1_MERGED, url: 'https://ghe.example.com/o/r/pull/3' }
+    const weird = { ...A1_MERGED, state: 'QUEUED' }
+    expect(readOutput({ stdout: JSON.stringify([ghe]), many: true })).toMatchObject({ kind: 'error', error: 'failed' })
+    expect(readOutput({ stdout: JSON.stringify([weird]), many: true })).toMatchObject({ kind: 'error', error: 'failed' })
+    expect(readOutput({ stdout: JSON.stringify([weird, A1_MERGED]), many: true })).toMatchObject({ kind: 'pr', pr: { number: 30 } })
+    expect(readOutput({ stdout: '[]', many: true })).toEqual({ kind: 'none' })
   })
 })

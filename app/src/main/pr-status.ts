@@ -130,6 +130,8 @@ export function classifyFailure(outcome: GhOutcome): PrLookup {
     case 'exit': {
       const line = firstLine(outcome.stderr)
       if (outcome.code === 4) return fail('unauthenticated', line)
+      // 폐기·만료 토큰은 exit 1 + 「HTTP 401: Bad credentials」(리뷰 r2 c2-3 실측) — 토큰 없음(exit 4)과 같은 「로그인 필요」 로.
+      if (/HTTP 401\b|Bad credentials/i.test(outcome.stderr)) return fail('unauthenticated', line)
       if (/no git remotes found|none of the git remotes configured for this repository point to a known GitHub host/i.test(outcome.stderr)) return fail('not_github', line)
       if (/Could not resolve to a Repository/i.test(outcome.stderr)) return fail('repo_unreadable', line)
       return fail('failed', line === '' ? `gh 종료 코드 ${outcome.code}` : line)
@@ -184,7 +186,10 @@ export function readOutput({ stdout, many }: { stdout: string; many: boolean }):
   if (many) {
     if (!Array.isArray(parsed)) return fail('failed', 'gh 출력 모양이 다릅니다')
     const own = parsed.filter((row) => !(isRecord(row) && row.isCrossRepository === true))
-    const pr = pickPr(own.flatMap((row) => { const read = readPr(row); return read === null ? [] : [read] }))
+    const read = own.flatMap((row) => { const one = readPr(row); return one === null ? [] : [one] })
+    // 행이 있는데 하나도 못 읽었으면(다른 호스트 URL · 모르는 state) 「PR 없음」 이 아니라 「못 읽음」(리뷰 r2 c2-6 — C3).
+    if (own.length > 0 && read.length === 0) return fail('failed', 'gh 출력의 PR 을 읽지 못했습니다')
+    const pr = pickPr(read)
     return pr === null ? { kind: 'none' } : { kind: 'pr', pr }
   }
   const pr = readPr(parsed)
@@ -287,7 +292,8 @@ export class PrStatus {
         if (!opened.has(change.url)) opened.set(change.url, { connectionId: record.connectionId, itemId: record.itemId === '' ? null : record.itemId, itemKey: record.itemKey ?? query.itemKey ?? '', worktree: change.worktree })
       } else if (change.action === 'merged') settled.add(change.url)
     }
-    const pending = [...opened.entries()].filter(([url, scope]) => !settled.has(url) && scope.itemKey !== '').slice(0, PR_MAX_URLS)
+    // 최근에 연 PR 부터 상한까지(리뷰 r2 c2-5) — 닫힌 채 쌓인 옛 PR 이 새 PR 의 재조회 자리를 먹지 않게. 기록은 오래된 것부터라 뒤집는다.
+    const pending = [...opened.entries()].reverse().filter(([url, scope]) => !settled.has(url) && scope.itemKey !== '').slice(0, PR_MAX_URLS)
     let recorded = 0
     await Promise.all(pending.map(async ([url, scope]) => {
       const result = await this.byUrl(url)
@@ -318,10 +324,14 @@ export class PrStatus {
     if (hit !== undefined && now - hit.at < hit.ttl) return hit.value
     // 오래된 항목 정리 — 키가 무한히 늘지 않게.
     for (const [old, entry] of this.cache) if (now - entry.at >= entry.ttl) this.cache.delete(old)
-    // 진행 중에는 성공 TTL 로 합치고, 오류로 끝나면 그 항목만 짧은 TTL 로 줄인다(r1 c1-5).
+    // 진행 중에는 성공 TTL 로 합치고, 끝나면 TTL 을 **완료 시각**부터 다시 센다(리뷰 r2 c2-4 — 오래 걸린 실행·줄 선 요청이 끝나자마자 만료되지 않게).
+    // 오류로 끝나면 그 항목만 짧은 TTL(r1 c1-5).
     const entry = { at: now, ttl: this.deps.ttlMs ?? PR_TTL_MS, value: this.limited(() => this.execute({ args, cwd, many })) }
     this.cache.set(key, entry)
-    void entry.value.then((result) => { if (result.kind === 'error') entry.ttl = Math.min(entry.ttl, this.deps.errorTtlMs ?? PR_ERROR_TTL_MS) })
+    void entry.value.then((result) => {
+      entry.at = (this.deps.now ?? Date.now)()
+      if (result.kind === 'error') entry.ttl = Math.min(entry.ttl, this.deps.errorTtlMs ?? PR_ERROR_TTL_MS)
+    })
     return entry.value
   }
 

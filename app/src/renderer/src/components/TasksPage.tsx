@@ -224,16 +224,10 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   // --- 작업에서 시작 · 링크 (LIFE-603) ---
   const machine = settings?.machine ?? null
   const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })
-  // LIFE-624 — PR 상태는 보이는 면(작업 중 줄 · 실행 영역)의 worktree 만 묻는다. 페이지 닫힘 + 상세 숨김이면 0 회(C11).
-  const pr = usePrStatus({ targets: prTargets({ pageOpen: open, detailShown: detailMounted, linked: page.linked, detailTrees }) })
-  const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree, machine, pr: pr.lookups }), [page.linked, onOpenWorktree, machine, pr.lookups])
   const detailSource = detail.descriptor?.name ?? detail.connection?.name ?? '출처'
   const starter = useStartWork({ detail, repos, repoDefaults: settings?.repoDefaults ?? NO_DEFAULTS, activeRepoRoot, sourceName: detailSource, notifyFailure: (message) => notify({ kind: 'failed', message }) })
-  // 활동의 PR 줄(C8·C10) — 브랜치 조회가 새 줄을 남겼으면 다시 읽고, 상세가 열릴 때 열린 채 기록된 PR 을 URL 로 다시 본다(사라진 worktree 의 머지).
+  // 활동의 PR 줄(C10) — 상세가 열릴 때 열린 채 기록된 PR 을 URL 로 다시 본다(사라진 worktree 의 머지). 브랜치 조회 쪽 다시 읽기는 아래 PR 상태 절.
   const reloadActivity = detail.reloadActivity
-  useEffect(() => {
-    if (pr.recordedSeq > 0 && detailMounted) reloadActivity()
-  }, [pr.recordedSeq])
   const detailItemKey = detail.item?.key ?? null
   useEffect(() => {
     if (!detailMounted || detailTarget === null || detailItemKey === null) return
@@ -334,6 +328,14 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const workingViews = workingScoped.filter(({ entry, lookup }) => (lookup.state === 'found'
     ? passesText({ item: lookup.item, query })
     : workingTextMatches({ key: entry.key, branches: entry.trees.map((tree) => tree.branch), query })))
+
+  // --- PR 상태 (LIFE-624) — 칩이 지금 보이는 면의 worktree 만 묻는다: 작업 중 보기에 그려진 행 · 열린 상세 실행 영역의 행(C11 · r1 c1-3).
+  // 페이지가 열려 있어도 보드·백로그·리스트 보기면 작업 중 행은 묻지 않는다. 새 줄이 남았으면(recorded) 상세 활동을 다시 읽는다(C8).
+  const pr = usePrStatus({ targets: prTargets({ workingTrees: open && view === 'working' ? workingViews.flatMap(({ entry }) => entry.trees) : [], detailTrees: detailMounted ? detailTrees : [] }) })
+  const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree, machine, pr: pr.lookups }), [page.linked, onOpenWorktree, machine, pr.lookups])
+  useEffect(() => {
+    if (pr.recordedSeq > 0 && detailMounted) reloadActivity()
+  }, [pr.recordedSeq])
 
   // --- 부모 (LIFE-745) ---
   // 받은 행에 없는 부모만 단건으로 보충한다 — 보드·백로그·리스트 행, 키 일치 결과, 작업 중 머리의 부모. 스페이스 자료를 다시 읽으면 다시 받는다.

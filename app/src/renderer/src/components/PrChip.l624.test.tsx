@@ -63,6 +63,12 @@ describe('C6 실행 영역 칩', () => {
     expect(box('b-auth')?.querySelector('.pr-reason')?.classList.contains('pr-chip')).toBe(false)
     expect(box('b-notgh')?.textContent).toBe('corral / b-notgh')
     expect(box('b-unknown')?.textContent).toBe('corral / b-unknown')
+    // r1 c1-6 — 줄은 flex(is-run), 레포 / 브랜치는 한 칸(issue-work-path)이고 칩·이유는 그 칸 밖 형제다(브랜치 글만 줄어든다).
+    const merged = box('b-merged')
+    expect(merged?.classList.contains('is-run')).toBe(true)
+    expect([...(merged?.children ?? [])].map((child) => child.className)).toEqual(['issue-work-path', 'pr-chip is-merged'])
+    expect(merged?.querySelector('.issue-work-path')?.textContent).toBe('corral / b-merged')
+    expect([...(box('b-auth')?.children ?? [])].map((child) => child.className)).toEqual(['issue-work-path', 'pr-reason'])
   })
   it('컨텍스트에 pr 이 없으면(옛 호출자) 칩 없음', () => {
     act(() => root.render(createElement(WorkLinksContext.Provider, { value: { trees: TREES, open: () => undefined, machine: null } },
@@ -121,10 +127,11 @@ describe('C8 활동 PR 줄(화면)', () => {
 
 describe('C11 보일 때만(화면)', () => {
   const linked = [tree('/w/b', 'b'), tree('/w/a', 'a')]
-  it('prTargets — 페이지 닫힘 + 상세 숨김이면 빈 목록, 열리면 보이는 면의 worktree', () => {
-    expect(prTargets({ pageOpen: false, detailShown: false, linked, detailTrees: [linked[0]!] })).toEqual([])
-    expect(prTargets({ pageOpen: true, detailShown: false, linked, detailTrees: [] })).toEqual([{ path: '/w/a', branch: 'a' }, { path: '/w/b', branch: 'b' }])
-    expect(prTargets({ pageOpen: false, detailShown: true, linked, detailTrees: [linked[0]!] })).toEqual([{ path: '/w/b', branch: 'b' }])
+  it('prTargets — 보이는 면이 없으면 빈 목록, 작업 중 행 + 상세 행의 합(중복 하나)', () => {
+    expect(prTargets({ workingTrees: [], detailTrees: [] })).toEqual([])
+    expect(prTargets({ workingTrees: linked, detailTrees: [] })).toEqual([{ path: '/w/a', branch: 'a' }, { path: '/w/b', branch: 'b' }])
+    expect(prTargets({ workingTrees: [], detailTrees: [linked[0]!] })).toEqual([{ path: '/w/b', branch: 'b' }])
+    expect(prTargets({ workingTrees: [linked[0]!], detailTrees: [linked[0]!] })).toEqual([{ path: '/w/b', branch: 'b' }])
   })
 
   function Probe({ targets, seen }: { targets: { path: string; branch: string }[]; seen: (view: ReturnType<typeof usePrStatus>) => void }): null {

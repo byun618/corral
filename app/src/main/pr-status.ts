@@ -23,11 +23,18 @@ export const GH_FALLBACK_DIRS = ['/opt/homebrew/bin', '/usr/local/bin']
 export const GH_TIMEOUT_MS = 15_000
 export const GH_MAX_BYTES = 1024 * 1024
 export const PR_TTL_MS = 60_000
+/** 오류 결과의 TTL — 성공보다 짧게(r1 c1-5). 로그인·설치를 고친 뒤 오래 기다리지 않게, 그래도 같은 화면 여닫기마다 gh 를 띄우지는 않게. */
+export const PR_ERROR_TTL_MS = 10_000
 export const PR_MAX_CONCURRENT = 3
 /** 한 번에 받는 경로 수 · 한 작업에서 다시 보는 URL 수 상한. */
 export const PR_MAX_PATHS = 64
 export const PR_MAX_URLS = 10
-export const PR_JSON_FIELDS = 'number,state,isDraft,url,headRefName,baseRefName,createdAt,mergedAt,closedAt'
+export const PR_JSON_FIELDS = 'number,state,isDraft,url,headRefName,baseRefName,createdAt,mergedAt,closedAt,isCrossRepository'
+/**
+ * 한 브랜치 목록 상한 — 같은 이름의 포크 PR(아래 `readOutput`)이 섞여도 같은 레포 PR 이 잘리지 않을 만큼.
+ * 그래도 포크 PR 이 이보다 많고 같은 레포 PR 이 그 뒤에 있으면 「PR 없음」 이 된다(gh 는 최근 것부터 준다).
+ */
+export const PR_LIST_LIMIT = 50
 
 const realOr = (file: string): string => {
   try {
@@ -44,6 +51,14 @@ const defaultExecutable = (file: string): boolean => {
     if (!stat.isFile()) return false
     fs.accessSync(file, fs.constants.X_OK)
     return true
+  } catch {
+    return false
+  }
+}
+
+const isDirectory = (dir: string): boolean => {
+  try {
+    return fs.statSync(dir).isDirectory()
   } catch {
     return false
   }
@@ -157,12 +172,19 @@ export function pickPr(list: PrInfo[]): PrInfo | null {
   return pool.reduce<PrInfo | null>((best, pr) => (best === null || timeOf(pr.createdAt) > timeOf(best.createdAt) ? pr : best), null)
 }
 
-/** 성공 출력 → 결과. 목록(`pr list`)은 배열, 단건(`pr view`)은 객체. */
+/**
+ * 성공 출력 → 결과. 목록(`pr list`)은 배열, 단건(`pr view`)은 객체.
+ * **포크 PR 은 버린다**(r1 e1): `gh pr list --head <브랜치>` 는 head 이름만 보므로 남의 포크에서 같은 이름(`main`·`trunk`·흔한 이름)으로 연 PR 도
+ * 돌려준다(실측 `--repo cli/cli --head trunk` → 5건 전부 `isCrossRepository: true`). 그 PR 을 칩·활동에 붙이지 않게 같은 레포 PR 만 남긴다.
+ * 한계: 내 포크 브랜치 → upstream 으로 PR 을 여는 흐름(worktree 의 기본 원격이 upstream 인 경우)은 그 PR 이 cross-repo 라 「PR 없음」 이 된다.
+ * `isCrossRepository` 칸이 없는 옛 gh 출력은 같은 레포로 본다.
+ */
 export function readOutput({ stdout, many }: { stdout: string; many: boolean }): PrLookup {
   const parsed = safeParse(stdout)
   if (many) {
     if (!Array.isArray(parsed)) return fail('failed', 'gh 출력 모양이 다릅니다')
-    const pr = pickPr(parsed.flatMap((row) => { const read = readPr(row); return read === null ? [] : [read] }))
+    const own = parsed.filter((row) => !(isRecord(row) && row.isCrossRepository === true))
+    const pr = pickPr(own.flatMap((row) => { const read = readPr(row); return read === null ? [] : [read] }))
     return pr === null ? { kind: 'none' } : { kind: 'pr', pr }
   }
   const pr = readPr(parsed)
@@ -195,6 +217,9 @@ export type PrStatusDeps = {
   run?: GhRun
   now?: () => number
   ttlMs?: number
+  errorTtlMs?: number
+  /** cwd 가 있는 폴더인가 — 기본은 실제 stat(시험은 가짜 경로를 쓴다). */
+  cwdExists?: (dir: string) => boolean
   maxConcurrent?: number
   log?: (tag: string, fields?: Record<string, unknown>) => void
 }
@@ -202,7 +227,7 @@ export type PrStatusDeps = {
 const branchName = (branch: string | null): string | null => (branch === null ? null : branch.replace(/^refs\/heads\//, ''))
 
 export class PrStatus {
-  private readonly cache = new Map<string, { at: number; value: Promise<PrLookup> }>()
+  private readonly cache = new Map<string, { at: number; ttl: number; value: Promise<PrLookup> }>()
   private running = 0
   private readonly queue: (() => void)[] = []
   private lastGh: string | null | undefined = undefined
@@ -226,7 +251,7 @@ export class PrStatus {
       if (branch === null) { lookups[worktreePath] = { kind: 'none' }; return }
       const result = await this.cached({
         key: `b:${worktreePath}\n${branch}`,
-        args: ['pr', 'list', '--head', branch, '--state', 'all', '--json', PR_JSON_FIELDS, '--limit', '20'],
+        args: ['pr', 'list', '--head', branch, '--state', 'all', '--json', PR_JSON_FIELDS, '--limit', String(PR_LIST_LIMIT)],
         cwd: worktreePath,
         many: true,
       })
@@ -245,7 +270,7 @@ export class PrStatus {
     return this.cached({ key: `u:${url}`, args: ['pr', 'view', url, '--json', PR_JSON_FIELDS], cwd: '/', many: false })
   }
 
-  /** 작업 하나의 열린 PR 재조회(C10) — 활동에 열림만 있고 머지·닫힘이 없는 PR 을 URL 로 다시 본다. */
+  /** 작업 하나의 열린 PR 재조회(C10) — 활동에 열림이 있고 머지가 없는 PR 을 URL 로 다시 본다. 닫힘 기록도 다시 본다 — 다시 열려 머지될 수 있다(r1 c1-2). */
   async refreshItem(input: unknown): Promise<PrItemRefreshResult> {
     const query = readWorkActivityQuery(input)
     const work = this.deps.work()
@@ -260,7 +285,7 @@ export class PrStatus {
       if (change.field !== 'run' || change.event !== 'pr') continue
       if (change.action === 'open') {
         if (!opened.has(change.url)) opened.set(change.url, { connectionId: record.connectionId, itemId: record.itemId === '' ? null : record.itemId, itemKey: record.itemKey ?? query.itemKey ?? '', worktree: change.worktree })
-      } else settled.add(change.url)
+      } else if (change.action === 'merged') settled.add(change.url)
     }
     const pending = [...opened.entries()].filter(([url, scope]) => !settled.has(url) && scope.itemKey !== '').slice(0, PR_MAX_URLS)
     let recorded = 0
@@ -290,12 +315,14 @@ export class PrStatus {
   private cached({ key, args, cwd, many }: { key: string; args: string[]; cwd: string; many: boolean }): Promise<PrLookup> {
     const now = (this.deps.now ?? Date.now)()
     const hit = this.cache.get(key)
-    if (hit !== undefined && now - hit.at < (this.deps.ttlMs ?? PR_TTL_MS)) return hit.value
-    const value = this.limited(() => this.execute({ args, cwd, many }))
-    this.cache.set(key, { at: now, value })
+    if (hit !== undefined && now - hit.at < hit.ttl) return hit.value
     // 오래된 항목 정리 — 키가 무한히 늘지 않게.
-    for (const [old, entry] of this.cache) if (now - entry.at >= (this.deps.ttlMs ?? PR_TTL_MS)) this.cache.delete(old)
-    return value
+    for (const [old, entry] of this.cache) if (now - entry.at >= entry.ttl) this.cache.delete(old)
+    // 진행 중에는 성공 TTL 로 합치고, 오류로 끝나면 그 항목만 짧은 TTL 로 줄인다(r1 c1-5).
+    const entry = { at: now, ttl: this.deps.ttlMs ?? PR_TTL_MS, value: this.limited(() => this.execute({ args, cwd, many })) }
+    this.cache.set(key, entry)
+    void entry.value.then((result) => { if (result.kind === 'error') entry.ttl = Math.min(entry.ttl, this.deps.errorTtlMs ?? PR_ERROR_TTL_MS) })
+    return entry.value
   }
 
   private async execute({ args, cwd, many }: { args: string[]; cwd: string; many: boolean }): Promise<PrLookup> {
@@ -306,6 +333,8 @@ export class PrStatus {
       this.deps.log?.('pr.gh', { gh })
     }
     if (gh === null) return fail('no_gh', 'gh 를 찾지 못했습니다')
+    // 없는 cwd 는 execFile 이 ENOENT 로 끝내 「gh 없음」 과 같은 모양이 된다(r1 c1-1) — 띄우기 전에 가른다(트리에서 막 지워진 worktree 등).
+    if (!(this.deps.cwdExists ?? isDirectory)(cwd)) return fail('failed', 'worktree 경로가 없습니다')
     this.calls += 1
     const outcome = await (this.deps.run ?? runGh)({ gh, args, cwd })
     const result = outcome.kind === 'exit' && outcome.code === 0 ? readOutput({ stdout: outcome.stdout, many }) : classifyFailure(outcome)

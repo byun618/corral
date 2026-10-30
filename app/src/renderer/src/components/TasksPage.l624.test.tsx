@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // LIFE-624 C11(화면 통합) · C6 · C10 — 실제 `TasksPage`(패널 하네스) + 실제 `WorkService`(모의 출처). PR 상태는 보이는 면이 있을 때만 묻는다:
-// 페이지 닫힘 + 상세 숨김 = prBranches 0 회 · 페이지 열림 = 링크된 worktree · 상세만 보임 = 그 작업의 worktree + 열린 PR URL 재조회(prRefreshItem).
+// 페이지 닫힘 + 상세 숨김 = prBranches 0 회 · 페이지 열림이어도 작업 중 보기가 아니면 0(r1 c1-3) · 작업 중 보기 = 그 행 · 상세만 보임 = 그 작업의 worktree + 열린 PR URL 재조회(prRefreshItem).
 // 새 활동 줄이 남았으면(recorded > 0) 상세 활동을 다시 읽는다. 렌더러와 main 을 함께 import 하므로 mixed 검사(tsconfig.mixed.json)에 둔다.
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -49,7 +49,7 @@ async function rig({ open, panelShown, detail, recorded = 0 }: { open: boolean; 
   if (!added.ok) throw new Error('연결 실패')
   const connectionId = service.settings().connections[0]?.id ?? ''
   const repos: RepoRow[] = [testRepo({ root: '/r', worktrees: [
-    testWorktree({ path: '/r/core-2', branch: 'refs/heads/CORE-2-x', workLink: { mode: 'explicit', sourceId: 'mock-jira', connectionId, key: 'CORE-2', itemId: 'm-2', connected: true } }),
+    testWorktree({ path: '/r/core-2', branch: 'refs/heads/CORE-2-x', open: true, workLink: { mode: 'explicit', sourceId: 'mock-jira', connectionId, key: 'CORE-2', itemId: 'm-2', connected: true } }),
     testWorktree({ path: '/r/plain', branch: 'main' }),
   ] })]
   const branches: string[][] = []
@@ -87,11 +87,19 @@ describe('C11 보일 때만 — 실제 작업 페이지', () => {
     expect(r.branches).toEqual([])
     expect(r.refreshes).toEqual([])
   })
-  it('페이지를 열면 링크된 worktree 만 1 회 — 다시 그려도 그대로, 닫으면 멈춤, 다시 열면 1 회 더(TTL 은 main 몫)', async () => {
+  it('페이지가 열려도 보드 보기 + 상세 닫힘이면 0 회(r1 c1-3) — 작업 중 보기로 가면 그 행만 1 회, 다시 그려도 그대로, 닫으면 멈춤, 다시 열면 1 회 더', async () => {
     const r = await rig({ open: false, panelShown: false, detail: false })
     r.render({ open: true, panelShown: false })
     await settle()
+    expect(document.querySelector('[data-tasks-view]')?.getAttribute('data-tasks-view')).toBe('board')
+    expect(r.branches).toEqual([])
+    const tab = document.querySelector<HTMLElement>('[data-tasks-view-tab="working"]')
+    expect(tab).not.toBeNull()
+    act(() => { tab?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    await settle()
+    expect(document.querySelector('[data-tasks-view]')?.getAttribute('data-tasks-view')).toBe('working')
     expect(r.branches).toEqual([['/r/core-2']])
+    expect(document.querySelector('[data-working-worktree="CORE-2-x"] [data-pr-chip]')?.textContent).toBe('PR #30 · 머지됨')
     r.render({ open: true, panelShown: false })
     await settle()
     expect(r.branches).toHaveLength(1)

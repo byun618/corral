@@ -170,8 +170,9 @@ export function WorkRunSection({ trees, itemKey, now, actions }: { trees: Linked
               <span className="issue-detail-head-spacer" />
               <button type="button" className="issue-link-btn" data-work-goto={tree.branch} onClick={() => view?.open(tree)}>worktree 로</button>
             </div>
-            <div className="issue-work-where">
-              <span className="issue-work-repo">{tree.repoName}</span> / <span className="issue-work-branch">{tree.branch}</span>
+            {/* 브랜치 글만 줄임표로 줄고 칩·이유는 줄지 않는다(r1 c1-6) — `is-run` 줄은 flex, 레포 / 브랜치를 한 칸(`issue-work-path`)에. */}
+            <div className="issue-work-where is-run">
+              <span className="issue-work-path"><span className="issue-work-repo">{tree.repoName}</span> / <span className="issue-work-branch">{tree.branch}</span></span>
               <PrChip lookup={view?.pr?.get(tree.path)} />
               <PrReason lookup={view?.pr?.get(tree.path)} />
             </div>

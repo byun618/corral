@@ -7,7 +7,7 @@ import type { GitStatusSummary, RepoRow, WorktreeRow } from '../shared/types.js'
 import { readWorkActivityQuery, type WorkActivityChange, type WorkActivityRecord } from '../shared/work.js'
 import type { WorktreeWorkLink } from '../shared/work-link.js'
 import { MemoryActivity, WorkActivityStore, type ActivityPort } from './work/activity-store.js'
-import { classifyFailure, makeRunGh, pickPr, PrStatus, readOutput, readPr, resolveGh, type GhOutcome, type GhRun, type PrWorkPort } from './pr-status.js'
+import { classifyFailure, makeRunGh, pickPr, PR_ERROR_TTL_MS, PR_TTL_MS, PrStatus, readOutput, readPr, resolveGh, type GhOutcome, type GhRun, type PrWorkPort } from './pr-status.js'
 
 let base = ''
 beforeAll(() => { base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'l624-'))) })
@@ -91,7 +91,7 @@ describe('C1 gh 고르기', () => {
   it('아무 데도 없으면 null → 「gh 없음」 분류, gh 를 띄우지 않는다', async () => {
     expect(resolveGh({ pathEnv: '/usr/bin:/bin', isExecutable: () => false })).toBeNull()
     const run = fakeRun(() => exit(0, '[]'))
-    const status = new PrStatus({ repos: () => [repo([row({ path: '/w/a', branch: 'refs/heads/a' })])], work: () => null, gh: () => null, run })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/a', branch: 'refs/heads/a' })])], work: () => null, gh: () => null, run })
     const result = await status.branches({ paths: ['/w/a'] })
     expect(result.lookups['/w/a']).toMatchObject({ kind: 'error', error: 'no_gh' })
     expect(run.calls).toHaveLength(0)
@@ -116,7 +116,7 @@ describe('C2 실행 안전(실제 execFile)', () => {
     const result = await status.branches({ paths: [wt] })
     expect(result.lookups[wt]).toEqual({ kind: 'none' })
     const argv = fs.readFileSync(out, 'utf8').split('\n').slice(0, -1)
-    expect(argv).toEqual(['pr', 'list', '--head', branch, '--state', 'all', '--json', 'number,state,isDraft,url,headRefName,baseRefName,createdAt,mergedAt,closedAt', '--limit', '20'])
+    expect(argv).toEqual(['pr', 'list', '--head', branch, '--state', 'all', '--json', 'number,state,isDraft,url,headRefName,baseRefName,createdAt,mergedAt,closedAt,isCrossRepository', '--limit', '50'])
     expect(fs.existsSync(marker)).toBe(false)
   })
   it('시간 초과 · 출력 상한 · 없는 실행 파일 — 던지지 않고 분류 값', async () => {
@@ -172,7 +172,7 @@ describe('C4 상태 매핑·선택', () => {
 describe('C5 IPC 경계', () => {
   it('모르는 worktree 경로는 거절, gh 를 부르지 않는다', async () => {
     const run = fakeRun(() => exit(0, '[]'))
-    const status = new PrStatus({ repos: () => [repo([row({ path: '/w/a', branch: 'a' })])], work: () => null, gh: () => '/fake/gh', run })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/a', branch: 'a' })])], work: () => null, gh: () => '/fake/gh', run })
     const result = await status.branches({ paths: ['/w/other', '/w/a/../a', '/etc'] })
     expect(Object.values(result.lookups).map((value) => value.kind)).toEqual(['rejected', 'rejected', 'rejected'])
     expect(run.calls).toHaveLength(0)
@@ -182,17 +182,17 @@ describe('C5 IPC 경계', () => {
   })
   it('GitHub PR URL 꼴이 아니면 거절, gh 를 부르지 않는다', async () => {
     const run = fakeRun(() => exit(0, JSON.stringify(A1_MERGED)))
-    const status = new PrStatus({ repos: () => [], work: () => null, gh: () => '/fake/gh', run })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [], work: () => null, gh: () => '/fake/gh', run })
     for (const bad of ['http://github.com/a/b/pull/1', 'https://gitlab.com/a/b/pull/1', 'https://github.com/a/b/pull/1;rm', 'https://github.com/a/b/pull/1 --web', '--help', 'https://github.com/a/b/issues/1', 'https://github.com/a/b/pull/0', 42, null]) {
       expect(await status.byUrl(bad)).toMatchObject({ kind: 'rejected' })
     }
     expect(run.calls).toHaveLength(0)
     expect(await status.byUrl('https://github.com/byun618/corral/pull/30')).toMatchObject({ kind: 'pr' })
-    expect(run.calls).toEqual([{ args: ['pr', 'view', 'https://github.com/byun618/corral/pull/30', '--json', 'number,state,isDraft,url,headRefName,baseRefName,createdAt,mergedAt,closedAt'], cwd: '/' }])
+    expect(run.calls).toEqual([{ args: ['pr', 'view', 'https://github.com/byun618/corral/pull/30', '--json', 'number,state,isDraft,url,headRefName,baseRefName,createdAt,mergedAt,closedAt,isCrossRepository'], cwd: '/' }])
   })
   it('detached(브랜치 없음)는 PR 없음, gh 를 부르지 않는다', async () => {
     const run = fakeRun(() => exit(0, '[]'))
-    const status = new PrStatus({ repos: () => [repo([row({ path: '/w/d', branch: null })])], work: () => null, gh: () => '/fake/gh', run })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/d', branch: null })])], work: () => null, gh: () => '/fake/gh', run })
     expect((await status.branches({ paths: ['/w/d'] })).lookups['/w/d']).toEqual({ kind: 'none' })
     expect(run.calls).toHaveLength(0)
   })
@@ -203,7 +203,7 @@ describe('C8 활동 PR 줄', () => {
     const activity = new MemoryActivity()
     const work = workOf(activity)
     const run = fakeRun(() => exit(0, JSON.stringify([A1_MERGED])))
-    const status = new PrStatus({ repos: () => [repo([row({ path: '/w/683', branch: 'refs/heads/LIFE-683-source-control', workLink: link() })])], work: () => work, gh: () => '/fake/gh', run, ttlMs: 0 })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/683', branch: 'refs/heads/LIFE-683-source-control', workLink: link() })])], work: () => work, gh: () => '/fake/gh', run, ttlMs: 0 })
     const first = await status.branches({ paths: ['/w/683'] })
     expect(first.recorded).toBe(2)
     await status.branches({ paths: ['/w/683'] })
@@ -219,7 +219,7 @@ describe('C8 활동 PR 줄', () => {
     const activity = new MemoryActivity()
     const work = workOf(activity)
     const run = fakeRun(() => exit(0, JSON.stringify([A1_MERGED])))
-    const status = new PrStatus({ repos: () => [repo([row({ path: '/w/a', branch: 'a' }), row({ path: '/w/b', branch: 'b', workLink: { ...link(), connected: false } })])], work: () => work, gh: () => '/fake/gh', run })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/a', branch: 'a' }), row({ path: '/w/b', branch: 'b', workLink: { ...link(), connected: false } })])], work: () => work, gh: () => '/fake/gh', run })
     const result = await status.branches({ paths: ['/w/a', '/w/b'] })
     expect(result.recorded).toBe(0)
     expect(result.lookups['/w/a']).toMatchObject({ kind: 'pr' })
@@ -230,7 +230,7 @@ describe('C8 활동 PR 줄', () => {
     const observe = async (): Promise<number> => {
       const store = new WorkActivityStore(dir)
       store.load()
-      const status = new PrStatus({ repos: () => [repo([row({ path: '/w/683', branch: 'LIFE-683-source-control', workLink: link() })])], work: () => workOf(store), gh: () => '/fake/gh', run: fakeRun(() => exit(0, JSON.stringify([A1_MERGED]))) })
+      const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/683', branch: 'LIFE-683-source-control', workLink: link() })])], work: () => workOf(store), gh: () => '/fake/gh', run: fakeRun(() => exit(0, JSON.stringify([A1_MERGED]))) })
       return (await status.branches({ paths: ['/w/683'] })).recorded
     }
     expect(await observe()).toBe(2)
@@ -278,7 +278,7 @@ describe('C10 사라진 worktree 의 머지', () => {
     work.recordEvent({ connectionId: 'c1', itemId: null, itemKey: 'LIFE-683', eventKey: `run:pr:c1:LIFE-683:${A1_MERGED.url}:open`, change: { field: 'run', event: 'pr', action: 'open', worktree: '/gone/683', number: 30, url: A1_MERGED.url, branch: 'LIFE-683-source-control', base: 'main', draft: false }, at: 1 })
     const run = fakeRun(() => exit(0, JSON.stringify(A1_MERGED)))
     // 트리는 비었다 — worktree 가 지워진 뒤.
-    const status = new PrStatus({ repos: () => [], work: () => work, gh: () => '/fake/gh', run, ttlMs: 0 })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [], work: () => work, gh: () => '/fake/gh', run, ttlMs: 0 })
     const query = { connectionId: 'c1', itemId: 'item-683', itemKey: 'LIFE-683' }
     expect(await status.refreshItem(query)).toEqual({ ok: true, checked: 1, recorded: 1 })
     expect(run.calls.map((call) => call.args.slice(0, 3))).toEqual([['pr', 'view', A1_MERGED.url]])
@@ -296,7 +296,7 @@ describe('C10 사라진 worktree 의 머지', () => {
     work.recordEvent({ connectionId: 'c1', itemId: 'i', itemKey: 'K-1', eventKey: 'k1', change: open })
     work.recordEvent({ connectionId: 'c1', itemId: 'i', itemKey: 'K-1', eventKey: 'k2', change: { ...open, number: 6, url: 'https://github.com/o/r/pull/6 --web' } })
     const run = fakeRun(() => exit(0, JSON.stringify({ ...A1_MERGED, number: 5, url: open.url, state: 'OPEN', mergedAt: null, closedAt: null })))
-    const status = new PrStatus({ repos: () => [], work: () => work, gh: () => '/fake/gh', run, ttlMs: 0 })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [], work: () => work, gh: () => '/fake/gh', run, ttlMs: 0 })
     expect(await status.refreshItem({ connectionId: 'c1', itemId: 'i', itemKey: 'K-1' })).toEqual({ ok: true, checked: 2, recorded: 0 })
     expect(run.calls.map((call) => call.args[2])).toEqual([open.url])
     expect(await status.refreshItem({ connectionId: 'c1', itemId: 'i', itemKey: 'K-1' })).toMatchObject({ checked: 2 })
@@ -308,7 +308,7 @@ describe('C11 비용(main) — TTL 캐시 · 진행 중 합치기 · 동시 실�
   it('TTL 안 재조회는 gh 0 회, 지나면 다시', async () => {
     let now = 1_000
     const run = fakeRun(() => exit(0, '[]'))
-    const status = new PrStatus({ repos: () => [repo([row({ path: '/w/a', branch: 'a' })])], work: () => null, gh: () => '/fake/gh', run, now: () => now, ttlMs: 60_000 })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/a', branch: 'a' })])], work: () => null, gh: () => '/fake/gh', run, now: () => now, ttlMs: 60_000 })
     await status.branches({ paths: ['/w/a'] })
     now += 59_000
     await status.branches({ paths: ['/w/a'] })
@@ -321,7 +321,7 @@ describe('C11 비용(main) — TTL 캐시 · 진행 중 합치기 · 동시 실�
   it('브랜치가 바뀌면 다른 키 — TTL 안이어도 다시 묻는다', async () => {
     let branch = 'a'
     const run = fakeRun(() => exit(0, '[]'))
-    const status = new PrStatus({ repos: () => [repo([row({ path: '/w/a', branch })])], work: () => null, gh: () => '/fake/gh', run })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/a', branch })])], work: () => null, gh: () => '/fake/gh', run })
     await status.branches({ paths: ['/w/a'] })
     branch = 'b'
     await status.branches({ paths: ['/w/a'] })
@@ -337,7 +337,7 @@ describe('C11 비용(main) — TTL 캐시 · 진행 중 합치기 · 동시 실�
       releases.push(() => { running -= 1; resolve(exit(0, '[]')) })
     })
     const paths = ['/w/1', '/w/2', '/w/3', '/w/4', '/w/5']
-    const status = new PrStatus({ repos: () => [repo(paths.map((p) => row({ path: p, branch: p.slice(3) })))], work: () => null, gh: () => '/fake/gh', run, maxConcurrent: 2 })
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo(paths.map((p) => row({ path: p, branch: p.slice(3) })))], work: () => null, gh: () => '/fake/gh', run, maxConcurrent: 2 })
     const pending = Promise.all([status.branches({ paths }), status.branches({ paths: ['/w/1'] })])
     for (let round = 0; round < 10; round += 1) {
       await new Promise((resolve) => setTimeout(resolve, 0))
@@ -348,5 +348,96 @@ describe('C11 비용(main) — TTL 캐시 · 진행 중 합치기 · 동시 실�
     expect(status.calls).toBe(5)
     expect(Object.values(all.lookups).every((value) => value.kind === 'none')).toBe(true)
     expect(again.lookups['/w/1']).toEqual({ kind: 'none' })
+  })
+})
+
+// --- 리뷰 r1 수정(fix1) ---
+// e1 실측(corral-specs raw/coordinator/e1-fork-head-probe.txt): `gh pr list --repo cli/cli --head trunk` → 5건 전부 isCrossRepository true.
+const E1_FORKS = [
+  { headRefName: 'trunk', headRepositoryOwner: { id: 'U_kgDOFFG9yA', login: 'arletteramosg26-ux' }, isCrossRepository: true, number: 14872, state: 'CLOSED' },
+  { headRefName: 'trunk', headRepositoryOwner: { id: 'U_kgDOBxWfsw', name: 'rakcom', login: 'HIHACK1911' }, isCrossRepository: true, number: 14481, state: 'CLOSED' },
+  { headRefName: 'trunk', headRepositoryOwner: { id: 'O_kgDOE67wKg', login: 'deploy-velcat' }, isCrossRepository: true, number: 14471, state: 'CLOSED' },
+  { headRefName: 'trunk', headRepositoryOwner: { id: 'MDQ6VXNlcjQxNzMzODc=', name: 'Jesse Houwing', login: 'jessehouwing' }, isCrossRepository: true, number: 14310, state: 'CLOSED' },
+  { headRefName: 'trunk', headRepositoryOwner: { id: 'U_kgDOEUIGWA', login: 'mirsalimorteza4-hub' }, isCrossRepository: true, number: 14218, state: 'CLOSED' },
+].map((row) => ({ ...row, url: `https://github.com/cli/cli/pull/${row.number}`, isDraft: false, baseRefName: 'trunk', createdAt: '2026-01-01T00:00:00Z', mergedAt: null, closedAt: '2026-01-02T00:00:00Z' }))
+
+describe('fix1 e1 포크 PR 은 붙이지 않는다(C4 선택)', () => {
+  it('실측 모양 — cross 5건뿐이면 PR 없음', () => {
+    expect(readOutput({ stdout: JSON.stringify(E1_FORKS), many: true })).toEqual({ kind: 'none' })
+  })
+  it('같은 레포 1건 + cross 여럿 → 같은 레포 것(cross 가 더 최근·열림이어도)', () => {
+    const own = { ...A1_MERGED, isCrossRepository: false }
+    const openFork = { ...E1_FORKS[0], state: 'OPEN', closedAt: null, createdAt: '2026-10-31T00:00:00Z' }
+    const result = readOutput({ stdout: JSON.stringify([openFork, ...E1_FORKS, own]), many: true })
+    expect(result).toMatchObject({ kind: 'pr', pr: { number: 30, state: 'merged' } })
+  })
+  it('branches() 경로에서도 포크 PR 은 칩·활동 0', async () => {
+    const activity = new MemoryActivity()
+    const work = workOf(activity)
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/t', branch: 'trunk', workLink: link('LIFE-9') })])], work: () => work, gh: () => '/fake/gh', run: fakeRun(() => exit(0, JSON.stringify(E1_FORKS))) })
+    const result = await status.branches({ paths: ['/w/t'] })
+    expect(result).toEqual({ lookups: { '/w/t': { kind: 'none' } }, recorded: 0 })
+    expect(activity.records).toHaveLength(0)
+  })
+})
+
+describe('fix1 c1-1 없는 cwd 는 「gh 없음」 이 아니다', () => {
+  it('실제 stat — 없는 worktree 경로면 failed(경로 없음), gh 를 띄우지 않는다', async () => {
+    const run = fakeRun(() => exit(0, '[]'))
+    const gone = path.join(base, 'gone-worktree')
+    const status = new PrStatus({ repos: () => [repo([row({ path: gone, branch: 'a' })])], work: () => null, gh: () => '/fake/gh', run })
+    const result = await status.branches({ paths: [gone] })
+    expect(result.lookups[gone]).toEqual({ kind: 'error', error: 'failed', message: 'worktree 경로가 없습니다' })
+    expect(run.calls).toHaveLength(0)
+  })
+})
+
+describe('fix1 c1-2 닫힘 기록 뒤 다시 열려 머지된 PR', () => {
+  it('closed 기록 → MERGED 응답 → 머지 줄 1, 다시 열어도 1', async () => {
+    const activity = new MemoryActivity()
+    const work = workOf(activity)
+    const base0: Extract<WorkActivityChange, { event: 'pr' }> = { field: 'run', event: 'pr', action: 'open', worktree: '/gone', number: 30, url: A1_MERGED.url, branch: 'b', base: 'main', draft: false }
+    work.recordEvent({ connectionId: 'c1', itemId: 'i', itemKey: 'K-1', eventKey: `run:pr:c1:K-1:${A1_MERGED.url}:open`, change: base0 })
+    work.recordEvent({ connectionId: 'c1', itemId: 'i', itemKey: 'K-1', eventKey: `run:pr:c1:K-1:${A1_MERGED.url}:closed`, change: { ...base0, action: 'closed' } })
+    const run = fakeRun(() => exit(0, JSON.stringify(A1_MERGED)))
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [], work: () => work, gh: () => '/fake/gh', run, ttlMs: 0, errorTtlMs: 0 })
+    const query = { connectionId: 'c1', itemId: 'i', itemKey: 'K-1' }
+    expect(await status.refreshItem(query)).toEqual({ ok: true, checked: 1, recorded: 1 })
+    expect(await status.refreshItem(query)).toEqual({ ok: true, checked: 0, recorded: 0 })
+    const actions = activity.list(query).map((record) => (record.change.field === 'run' && record.change.event === 'pr' ? record.change.action : '?'))
+    expect(actions).toEqual(['open', 'closed', 'merged'])
+  })
+})
+
+describe('fix1 c1-4① 오류 접착부 — branches() 결과', () => {
+  it('exit 4 → unauthenticated, exit 1 + stdout [] 는 PR 없음이 아니다', async () => {
+    const answers: GhOutcome[] = [exit(4, '', A2.unauth), exit(1, '[]\n', 'HTTP 502')]
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/a', branch: 'a' }), row({ path: '/w/b', branch: 'b' })])], work: () => null, gh: () => '/fake/gh', run: fakeRun(({ args }) => answers[args[3] === 'a' ? 0 : 1] ?? exit(9, '')), maxConcurrent: 1 })
+    const result = await status.branches({ paths: ['/w/a', '/w/b'] })
+    expect(result.lookups['/w/a']).toMatchObject({ kind: 'error', error: 'unauthenticated' })
+    expect(result.lookups['/w/b']).toMatchObject({ kind: 'error', error: 'failed' })
+  })
+})
+
+describe('fix1 c1-5 오류 결과는 짧은 TTL', () => {
+  it('오류는 errorTtl 뒤 다시 묻고, 성공은 성공 TTL 동안 묻지 않는다', async () => {
+    let now = 0
+    let answer: GhOutcome = exit(4, '', A2.unauth)
+    const run = fakeRun(() => answer)
+    const status = new PrStatus({ cwdExists: () => true, repos: () => [repo([row({ path: '/w/a', branch: 'a' })])], work: () => null, gh: () => '/fake/gh', run, now: () => now, ttlMs: 60_000, errorTtlMs: 10_000 })
+    await status.branches({ paths: ['/w/a'] })
+    now = 9_000
+    await status.branches({ paths: ['/w/a'] })
+    expect(run.calls).toHaveLength(1)
+    now = 11_000
+    answer = exit(0, '[]')
+    expect((await status.branches({ paths: ['/w/a'] })).lookups['/w/a']).toEqual({ kind: 'none' })
+    expect(run.calls).toHaveLength(2)
+    now = 50_000
+    await status.branches({ paths: ['/w/a'] })
+    expect(run.calls).toHaveLength(2)
+  })
+  it('기본값 — 오류 TTL 이 성공 TTL 보다 짧다', () => {
+    expect(PR_ERROR_TTL_MS).toBeLessThan(PR_TTL_MS)
   })
 })

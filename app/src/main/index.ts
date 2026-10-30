@@ -97,6 +97,7 @@ import { canonicalPath } from './canonical-path.js'
 import { electronClipboardPng, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepPasteFiles } from './clipboard-image.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
+import { AgentDetector, realAgentDetectorDeps } from './agent-detection.js'
 import { externalOpenLogUrl, isExternalOpenAllowed } from './external-url.js'
 import { pickSessionName, pinnedSessions } from './pick-session.js'
 import { BackendRetry, BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, nextScanErrorStreak, type BackendInput } from './backend-start.js'
@@ -283,6 +284,8 @@ let fileWatch: FileWatch | null = null
 let settings: SettingsStore | null = null
 /** 상태바 provider 사용량 (LIFE-636) — 기동 때 만들고 `window-all-closed` 에서 정리한다. 토큰은 이 안(main)에서만 산다. */
 let usage: UsageService | null = null
+/** 에이전트 감지 (LIFE-520) — 기동 때 백그라운드로 한 번. 창·런타임 기동은 이것을 기다리지 않는다(K2ⓑ). */
+let agentDetector: AgentDetector | null = null
 /** 설정 › 작업 연결 (LIFE-600) — 기동 때는 저장 파일만 읽는다. 자격(키체인)은 그 연결이 처음 쓰일 때 푼다(C6). */
 let work: WorkService | null = null
 /** LIFE-603 — 작업 링크(해석·쓰기·사건)와 「작업에서 시작」. 작업 서비스와 같이 선다. */
@@ -2075,6 +2078,18 @@ app.whenReady().then(async () => {
       current: settings?.get() ?? { ...DEFAULT_SETTINGS },
     })
   })
+
+  // 에이전트 감지 (LIFE-520) — 만들자마자 백그라운드로 돌린다(await 하지 않는다 — 런타임·창 기동과 나란히). 결과는 푸시와 get 으로.
+  agentDetector = new AgentDetector(realAgentDetectorDeps({
+    env: process.env,
+    onChange: (snapshot) => {
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:agentDetection', snapshot)
+    },
+    log,
+  }))
+  void agentDetector.ensure()
+  ipcMain.handle('corral:agentDetectionGet', (event) => (fromOurWindow(event) && agentDetector !== null ? agentDetector.current() : null))
+  ipcMain.handle('corral:agentDetectionRefresh', (event) => (fromOurWindow(event) && agentDetector !== null ? agentDetector.refresh() : null))
 
   // 상태바 사용량 (LIFE-636) — 스냅숏은 창별 사용률·초기화 시각·상태 문구뿐이다(토큰·계정 값 없음, E6ⓒ).
   ipcMain.handle('corral:usageGet', (event) => (fromOurWindow(event) ? (usage?.snapshot() ?? EMPTY_USAGE_SNAPSHOT) : null))

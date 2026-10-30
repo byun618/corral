@@ -2,6 +2,7 @@
 // open-tab-search · QuickLaunchButton)와 같은 상황은 같은 기대값을 쓴다. corral 고유분(한국어 토큰·워치독 판정)은 따로 적는다.
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_AGENT_VALUES } from '../../shared/terminal-settings.js'
+import { UNKNOWN_AGENT_DETECTION } from '../../shared/agent-detection.js'
 import {
   LAUNCH_WATCHDOG_MS,
   OPEN_TAB_SEARCH_RESULT_LIMIT,
@@ -232,14 +233,14 @@ describe('기동 워치독 판정 (Orca QuickLaunchButton 조건의 corral 등�
 describe('기본 에이전트 (LIFE-515)', () => {
   const options = buildAgentLaunchOptions()
   it('resolveNewAgentTab — 다섯 값', () => {
-    expect(resolveNewAgentTab('auto')).toEqual({ kind: 'agent', agent: 'claude' })
-    expect(resolveNewAgentTab('blank')).toEqual({ kind: 'shell' })
-    expect(resolveNewAgentTab('claude')).toEqual({ kind: 'agent', agent: 'claude' })
-    expect(resolveNewAgentTab('codex')).toEqual({ kind: 'agent', agent: 'codex' })
-    expect(resolveNewAgentTab('grok')).toEqual({ kind: 'agent', agent: 'grok' })
+    expect(resolveNewAgentTab({ defaultAgent: 'auto', detection: UNKNOWN_AGENT_DETECTION })).toEqual({ kind: 'agent', agent: 'claude' })
+    expect(resolveNewAgentTab({ defaultAgent: 'blank', detection: UNKNOWN_AGENT_DETECTION })).toEqual({ kind: 'shell' })
+    expect(resolveNewAgentTab({ defaultAgent: 'claude', detection: UNKNOWN_AGENT_DETECTION })).toEqual({ kind: 'agent', agent: 'claude' })
+    expect(resolveNewAgentTab({ defaultAgent: 'codex', detection: UNKNOWN_AGENT_DETECTION })).toEqual({ kind: 'agent', agent: 'codex' })
+    expect(resolveNewAgentTab({ defaultAgent: 'grok', detection: UNKNOWN_AGENT_DETECTION })).toEqual({ kind: 'agent', agent: 'grok' })
   })
   it('자동 = 카탈로그 첫 번째 — 카탈로그 순서와 묶여 있다', () => {
-    const target = resolveNewAgentTab('auto')
+    const target = resolveNewAgentTab({ defaultAgent: 'auto', detection: UNKNOWN_AGENT_DETECTION })
     expect(options[0]?.agent).toBe('claude')
     expect(target).toEqual({ kind: 'agent', agent: 'claude' })
   })

@@ -9,7 +9,8 @@ import { effortOptions, modelOptions, type StartAgent } from '../../../shared/ag
 import type { RepoRow } from '../../../shared/types.js'
 import { composeStartPrompt, defaultStartName, newAttemptId, startNameProblem, startStatusTarget, type StartStatusTarget, type StartWorkInput, type StartWorkResult } from '../../../shared/work-start.js'
 import type { WorkRepoDefault } from '../../../shared/work.js'
-import { defaultStartRepo, startSignature, startSucceeded, uniqueStartName } from '../start-work-model.js'
+import { defaultStartRepo, initialStartAgent, startSignature, startSucceeded, uniqueStartName } from '../start-work-model.js'
+import { useAgentDetection } from '../agent-detection-store.js'
 import type { TaskDetailModel } from './useTaskDetail.js'
 
 export type StartMode = 'first' | 'another'
@@ -43,6 +44,8 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
   notifyFailure: (message: string) => void
 }) {
   const { item, target } = detail
+  // LIFE-520 E5 — 모달을 여는 순간의 감지 결과로 초기 에이전트를 정한다(미감지면 자동 규칙).
+  const detection = useAgentDetection()
   // 상태 쓰기는 시작이 끝난 시점의 상세로 한다(R1-D) — 시작 시점의 클로저는 판이 낡아 충돌로 떨어진다.
   const detailRef = useRef(detail)
   detailRef.current = detail
@@ -79,7 +82,7 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
     setMode(next)
     // 링크가 있는 작업이면 어느 버튼으로 열든 「이미 진행 중」 상자부터(C1) — 「하나 더 시작」 은 그 상자에서 고른다.
     setProceed(false)
-    setForm({ repoRoot, name: uniqueStartName({ base: defaultStartName({ key: item.key, title: item.title }), repos }), agent: 'claude', model: '', effort: '', submit: false, moveStatus: false })
+    setForm({ repoRoot, name: uniqueStartName({ base: defaultStartName({ key: item.key, title: item.title }), repos }), agent: initialStartAgent({ preferred: 'claude', detection }), model: '', effort: '', submit: false, moveStatus: false })
     setResult(null)
     setMove(NO_MOVE)
     setRunning(false)
@@ -103,7 +106,7 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
       setRunning(true)
       void join({ attemptId: view.attemptId, here })
     })
-  }, [item, target, repos, repoDefaults, activeRepoRoot, detail])
+  }, [item, target, repos, repoDefaults, activeRepoRoot, detail, detection])
 
   /**
    * 진행 중 시도에 합류 — main 은 같은 id 를 입력 없이 받지 않으므로 시도 상태를 다시 묻는다.

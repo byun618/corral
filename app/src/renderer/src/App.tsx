@@ -92,6 +92,7 @@ import { groupOfTab, listGroups, readStoredLayouts } from './group-tree.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
 import { updateSettings, useSettings } from './settings-store.js'
 import { resolveNewAgentTab } from './tab-create-menu.js'
+import { useAgentDetection } from './agent-detection-store.js'
 import { terminalCssVars } from './terminal-appearance.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
@@ -808,6 +809,8 @@ export function App(): React.JSX.Element {
   const cell = useCellMetrics()
   // 터미널 외관 CSS 변수(pane 배경·비활성 투명도·디바이더, LIFE-512) — 칠하기 전에 문서 루트에 둔다(첫 화면부터 저장값).
   const settings = useSettings()
+  // LIFE-520 — 앱 기동 때부터 감지 결과를 구독한다(⌘⌥T 가 메뉴·설정을 열기 전에도 결과를 본다).
+  const agentDetection = useAgentDetection()
   useLayoutEffect(() => {
     const root = document.documentElement.style
     for (const [name, value] of Object.entries(terminalCssVars(settings))) root.setProperty(name, value)
@@ -1695,7 +1698,7 @@ export function App(): React.JSX.Element {
     },
     // LIFE-515 — 기본 Agent 로 새 탭. ⌘T 와 같은 대상 workspace·같은 생성 경로(createRow), 에이전트 갈래는 Quick-launch 와 같은 launchAgent(워치독).
     'terminal.newAgent': () => {
-      const target = resolveNewAgentTab(settings.defaultAgent)
+      const target = resolveNewAgentTab({ defaultAgent: settings.defaultAgent, detection: agentDetection })
       switch (target.kind) {
         case 'agent':
           lifecycle.createAgentTab({ kind: target.agent, label: AGENT_LAUNCH_LABEL[target.agent] })

@@ -15,6 +15,7 @@ import { DEFAULT_SETTINGS } from '../../shared/terminal-settings.js'
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
 import { emptyAgentState } from '../../shared/agent-state.js'
 import { resetSettingsStoreForTest } from './settings-store.js'
+import { resetAgentDetectionStoreForTest } from './agent-detection-store.js'
 
 vi.mock('./TerminalPane.js', () => ({ TerminalPane: () => null, keepTerminalFocus: () => {} }))
 const { App } = await import('./App.js')
@@ -28,12 +29,12 @@ class Boundary extends Component {
 }
 
 const cleanups = []
-afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); resetSettingsStoreForTest(null) })
+afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); resetSettingsStoreForTest(null); resetAgentDetectionStoreForTest() })
 
 const pane = { paneId: 'p1', tabId: 't1', workspaceId: 'w1', title: '', agent: null, agentStatus: 'idle', agentState: emptyAgentState(0), cwd: null, focused: true, agentSession: null, digest: EMPTY_SESSION_DIGEST }
 const tabRow = { tabId: 't1', workspaceId: 'w1', label: '', number: 1, order: 0, agentStatus: 'idle', focused: true, panes: [pane], digest: EMPTY_SESSION_DIGEST }
 
-async function mount({ defaultAgent, overrides = {} }) {
+async function mount({ defaultAgent, overrides = {}, detection = null }) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'l515-app-'))
   new KeybindingStore(folder).save(overrides)
   const store = new KeybindingStore(folder)
@@ -59,9 +60,12 @@ async function mount({ defaultAgent, overrides = {} }) {
     createRow: async (input) => { created.push(input); return { ok: true, paneId: null, tabId: null, error: null } },
     setUiPrefs: () => {},
     setShortcutRecording: async () => {},
+    // LIFE-520 — null 이면 감지 결과 없음(Ⓟ, base). 그 밖은 감지 완료 스냅숏.
+    getAgentDetection: async () => detection,
   }
   Reflect.set(window, 'corral', new Proxy(api, { get: (target, key) => (typeof key === 'string' && key in target ? target[key] : String(key).startsWith('on') ? () => () => {} : async () => null) }))
   resetSettingsStoreForTest(null)
+  resetAgentDetectionStoreForTest()
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
@@ -90,6 +94,21 @@ it.each([
   // 대조: ⌘T 는 같은 workspace 에 빈 탭.
   await app.key({ key: 't', code: 'KeyT', metaKey: true })
   expect(app.created.at(-1)).toEqual({ workspaceId: 'w1', kind: 'shell' })
+})
+
+// LIFE-520 K4ⓐ — App 의 ⌘⌥T 가 감지 결과를 본다. Ⓝ(claude 미감지) · Ⓩ(0개).
+const detectedOf = (...agents) => ({ kind: 'detected', agents: agents.map((agent) => ({ agent, path: `/x/${agent}`, source: 'login-shell' })), shell: { ok: true }, at: 1 })
+it.each([
+  ['auto', detectedOf('codex', 'grok'), 'codex'],
+  ['claude', detectedOf('codex', 'grok'), 'codex'],
+  ['grok', detectedOf('codex', 'grok'), 'grok'],
+  ['auto', detectedOf(), 'shell'],
+  ['codex', detectedOf(), 'shell'],
+])('⌘⌥T 감지 반영 — 기본값 %s, 감지 %o → %s · 저장 쓰기 0 (K4ⓐ·ⓔ)', async (defaultAgent, detection, kind) => {
+  const app = await mount({ defaultAgent, detection })
+  await app.key(CMD_OPT_T)
+  expect(app.created).toEqual([{ workspaceId: 'w1', kind }])
+  expect(app.settingsWrites).toEqual([])
 })
 
 it('⌘⌥T 키 반복(repeat)은 무시한다 · 「없음」 으로 끄면 아무 일도 없다 · 재정의 조합이 연다', async () => {

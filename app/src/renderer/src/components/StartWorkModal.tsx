@@ -8,16 +8,12 @@ import { effortOptions, modelOptions, type StartAgent } from '../../../shared/ag
 import type { RepoRow } from '../../../shared/types.js'
 import { AGENT_ICON } from '../session-glyphs.js'
 import type { StartWorkModel } from '../hooks/useStartWork.js'
-import { alreadyLinked, failureActions, progressRows, promptUndelivered, type ProgressRow } from '../start-work-model.js'
+import { alreadyLinked, failureActions, progressRows, promptUndelivered, startAgentChoices, type ProgressRow } from '../start-work-model.js'
+import { useAgentDetection } from '../agent-detection-store.js'
 import type { LinkedTree } from '../work-links-model.js'
 import { AgentIcon } from './AgentIcon.js'
 
-const AGENTS: { value: StartAgent; label: string }[] = [
-  { value: 'claude', label: 'Claude' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'grok', label: 'Grok' },
-  { value: 'shell', label: '빈 터미널' },
-]
+const AGENT_LABEL: Record<StartAgent, string> = { claude: 'Claude', codex: 'Codex', grok: 'Grok', shell: '빈 터미널' }
 
 const STATUS_MARK: Record<ProgressRow['status'], string> = { pending: '○', running: '◌', completed: '✓', queued: '⋯', failed: '✕', skipped: '–', unknown: '?' }
 
@@ -32,6 +28,8 @@ export function StartWorkModal({ model, itemKey, itemTitle, repos, trees, onOpen
 }): React.JSX.Element | null {
   const { form, running, result } = model
   const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle')
+  // LIFE-520 E5 — 에이전트 칸은 감지된 것 + 빈 터미널(감지 전·실패면 base 4칸). 칸·단계·제출 흐름은 그대로.
+  const agentChoices = startAgentChoices(useAgentDetection())
   useEffect(() => setCopied('idle'), [result])
   // Esc — 진행 중이면 막는다. 캡처 단계에서 받아 작업 페이지의 Esc 단계로 내려가지 않게 한다.
   useEffect(() => {
@@ -93,10 +91,10 @@ export function StartWorkModal({ model, itemKey, itemTitle, repos, trees, onOpen
 
             <span className="start-label">에이전트</span>
             <div className="start-segment" role="radiogroup" aria-label="에이전트" data-start-agent="">
-              {AGENTS.map((agent) => (
-                <button key={agent.value} type="button" role="radio" aria-checked={form.agent === agent.value} className={`start-option${form.agent === agent.value ? ' is-on' : ''}`} data-start-agent-option={agent.value} disabled={running} onClick={() => model.update({ agent: agent.value })}>
-                  {agent.value === 'shell' ? <span className="start-shell-mark" aria-hidden>$</span> : <AgentIcon kind={agent.value} glyph={AGENT_ICON[agent.value].glyph} size={13} />}
-                  {agent.label}
+              {agentChoices.map((agent) => (
+                <button key={agent} type="button" role="radio" aria-checked={form.agent === agent} className={`start-option${form.agent === agent ? ' is-on' : ''}`} data-start-agent-option={agent} disabled={running} onClick={() => model.update({ agent })}>
+                  {agent === 'shell' ? <span className="start-shell-mark" aria-hidden>$</span> : <AgentIcon kind={agent} glyph={AGENT_ICON[agent].glyph} size={13} />}
+                  {AGENT_LABEL[agent]}
                 </button>
               ))}
             </div>

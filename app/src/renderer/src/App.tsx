@@ -62,11 +62,15 @@ import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useRightPanel } from './hooks/useRightPanel.js'
 import { useExplorer } from './hooks/useExplorer.js'
+import { useScm } from './hooks/useScm.js'
 import { useFileOps } from './hooks/useFileOps.js'
 import { createWatchHold, forgetMissing, type WatchPush } from './watch-hold.js'
 import { RightPanel, RightPanelToggle } from './components/RightPanel.js'
 import { RIGHT_PANEL_VIEWS } from './components/right-panel-views.js'
 import { Explorer } from './components/Explorer.js'
+import { ScmView } from './components/ScmView.js'
+import { DiffView } from './components/DiffView.js'
+import { diffTabId, diffTitle, openOf, type ScmChange } from '../../shared/scm.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
 import { paneToFollow, pickPane } from './pane-utils.js'
@@ -121,7 +125,7 @@ const NO_ROOTS: string[] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
 /** 작업 페이지가 열린 동안에도 사는 단축키 (LIFE-601 C4) — 나머지 워크스페이스 단축키는 삼키기만 한다. */
 // LIFE-682 A8 — 오른쪽 패널은 페이지와 무관한 전역 패널이라 작업 페이지에서도 ⌘L·⌘⇧E 가 돈다. 탐색기 범위 액션(필터·삭제·기록)은 트리 포커스에서만 오므로 같이 산다.
-const TASKS_PAGE_SHORTCUTS: readonly ActionId[] = ['tasks.toggle', 'settings.open', 'sidebar.toggle', 'rightPanel.toggle', 'explorer.show', 'explorer.filter', 'explorer.delete', 'explorer.undo', 'explorer.redo']
+const TASKS_PAGE_SHORTCUTS: readonly ActionId[] = ['tasks.toggle', 'settings.open', 'sidebar.toggle', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'explorer.filter', 'explorer.delete', 'explorer.undo', 'explorer.redo']
 /** LIFE-592 — 탐색기 이동 뒤 옛·새 경로 감시 push 를 더 버리는 시간(감시 디바운스보다 길게). */
 const WATCH_HOLD_GRACE_MS = 1_000
 /** LIFE-593 수정 r2 R2-G-04 — 저장된 배치(앱 시작 복원)에서 worktree 별 활성 파일 탭 경로. 처음 보일 때 한 번 최근 기록을 건너뛴다(사용자가 연 것이 아니다). */
@@ -296,6 +300,9 @@ export function App(): React.JSX.Element {
   const [detailSlot, setDetailSlot] = useState<HTMLDivElement | null>(null)
   // 탐색기가 보일 때 = 패널 열림 + 탐색기 보기. 감시·auto reveal·필터는 이것으로 켠다(A11 — 상세 보기 동안 감시 0).
   const explorerVisible = rightPanel.open && rightPanel.view === 'explorer'
+  // LIFE-683 — 소스 제어 보기. 감시·git 은 이 보기가 보일 때만(탐색기와 같은 루트면 한 벌 — S8).
+  const scmVisible = rightPanel.open && rightPanel.view === 'scm'
+  const [scmFocusToken, setScmFocusToken] = useState(0)
   const [explorerFocusToken, setExplorerFocusToken] = useState(0)
   const repoCollapse = usePersistentCollapse('collapsedRepos')
   // LIFE-467: 알약은 기본 **접힘**(Orca 와 같다) — 펼친 worktree 만 영속한다. 옛 `collapsedGroups`(기본 펼침)는 안 읽는다.
@@ -623,6 +630,7 @@ export function App(): React.JSX.Element {
   activeWorktreeRowRef.current = activeWorktreeRow
 
   const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: explorerVisible })
+  const scm = useScm({ root: activeWorktreeRow?.path ?? null, active: scmVisible })
 
   const activeWorkspaceRow = useMemo(
     () => (state === null ? null : findWorkspace(state, lifecycle.activeWorkspaceId)),
@@ -1259,6 +1267,12 @@ export function App(): React.JSX.Element {
   const closeFileNow = (input: { worktreePath: string; tabId: string }): void => {
     const { worktreePath, tabId } = input
     const kind = tabKindOf(tabId)
+    // LIFE-683 — diff 탭은 문서가 없다. 닫기만(닫은 탭 기록 ⌘⇧T 는 파일 탭만 — 기록 형식 무변경).
+    if (kind.kind === 'diff') {
+      noteFileClose({ worktreePath, tabIds: [tabId] })
+      layout.closeFile({ tabId })
+      return
+    }
     if (kind.kind !== 'file') return
     fileViewStatesOf(worktreePath).delete(tabId)
     disposeDoc(docKey(worktreePath, kind.rel))
@@ -1279,7 +1293,39 @@ export function App(): React.JSX.Element {
       rel: input.rel,
       preview: input.preview,
       onReplaced: (replaced) => {
+        // LIFE-683 — 밀려난 것이 diff 탭이면 문서·닫은 탭 기록이 없다.
+        if (tabKindOf(replaced.tabId).kind !== 'file') return
         // 교체로 밀려난 미리보기 탭의 문서 — 수정된 미리보기는 고정돼 교체되지 않으므로(E1ⓓ) 여기 오는 것은 수정 없는 문서다.
+        const replacedDoc = getDoc(docKey(worktreePath, replaced.rel))
+        if (replacedDoc !== undefined && !replacedDoc.dirty) disposeDoc(replacedDoc.key)
+        recentlyClosedRef.current = pushClosed({ history: recentlyClosedRef.current, snapshot: { kind: 'file', worktreePath, rel: replaced.rel, preview: true, groupId: replaced.groupId, index: replaced.index } })
+      },
+    })
+  }
+
+  /**
+   * LIFE-683 S5 — 소스 제어 행 열기. 추적 안 함·충돌·intent-to-add 는 보통 파일 탭(탐색기와 같은 경로), 나머지는 diff 탭(같은 미리보기·고정 규칙 — `openFileTab`).
+   * 같은 대상은 같은 탭 id 라 다시 누르면 그 탭이 활성(중복 0). 밀려난 미리보기가 파일 탭이면 탐색기 열기와 같게 문서·닫은 탭 기록을 다룬다.
+   */
+  const openScmChange = (input: { change: ScmChange; preview: boolean }): void => {
+    const opened = openOf(input.change)
+    // fix r1 R1-04 — 하위 모듈은 내용 비교가 없다: 폴더 읽기 오류 탭 대신 안내.
+    if (opened.kind === 'notice') {
+      notify(opened.message)
+      return
+    }
+    if (opened.kind === 'file') {
+      openFileFromExplorer({ rel: opened.rel, preview: input.preview })
+      return
+    }
+    const worktreePath = activeWorktreeRow?.path ?? null
+    if (worktreePath === null) return
+    layout.openFile({
+      rel: opened.target.rel,
+      preview: input.preview,
+      tabId: diffTabId(opened.target),
+      onReplaced: (replaced) => {
+        if (tabKindOf(replaced.tabId).kind !== 'file') return
         const replacedDoc = getDoc(docKey(worktreePath, replaced.rel))
         if (replacedDoc !== undefined && !replacedDoc.dirty) disposeDoc(replacedDoc.key)
         recentlyClosedRef.current = pushClosed({ history: recentlyClosedRef.current, snapshot: { kind: 'file', worktreePath, rel: replaced.rel, preview: true, groupId: replaced.groupId, index: replaced.index } })
@@ -1642,6 +1688,11 @@ export function App(): React.JSX.Element {
       rightPanel.show('explorer')
       requestAnimationFrame(() => setExplorerFocusToken((value) => value + 1))
     },
+    // LIFE-683 — VS Code `workbench.view.scm` 과 같은 뜻: 닫혀 있으면 열고 소스 제어 보기로, 목록에 포커스.
+    'scm.show': () => {
+      rightPanel.show('scm')
+      requestAnimationFrame(() => setScmFocusToken((value) => value + 1))
+    },
     // LIFE-515 — 기본 Agent 로 새 탭. ⌘T 와 같은 대상 workspace·같은 생성 경로(createRow), 에이전트 갈래는 Quick-launch 와 같은 launchAgent(워치독).
     'terminal.newAgent': () => {
       const target = resolveNewAgentTab(settings.defaultAgent)
@@ -1728,6 +1779,8 @@ export function App(): React.JSX.Element {
     const groupPreview = previewOf(group)
     const groupItems: GroupTabItem[] = group.tabOrder.flatMap((tabId): GroupTabItem[] => {
       const kind = tabKindOf(tabId)
+      if (kind.kind === 'diff')
+        return [{ kind: 'file', tabId, rel: kind.target?.rel ?? tabId, preview: groupPreview === tabId, deleted: false, dirty: false, diffLabel: kind.target === null ? '(diff)' : diffTitle(kind.target) }]
       if (kind.kind === 'file')
         return [
           {
@@ -1854,7 +1907,7 @@ export function App(): React.JSX.Element {
             .filter((other) => other.groupId !== group.groupId)
             .map((other) => {
               const kind = other.activeTabId === null ? null : tabKindOf(other.activeTabId)
-              return { groupId: other.groupId, label: kind?.kind === 'file' ? fileTabLabel(kind.rel) : (tabById(other.activeTabId)?.label ?? '비어 있음') }
+              return { groupId: other.groupId, label: kind?.kind === 'file' ? fileTabLabel(kind.rel) : kind?.kind === 'diff' ? (kind.target === null ? '(diff)' : diffTitle(kind.target)) : (tabById(other.activeTabId)?.label ?? '비어 있음') }
             })}
           onMoveToOtherGroup={({ tabId, targetGroupId }) =>
             layout.mergeTabIntoGroup({ tabId, fromGroupId: group.groupId, toGroupId: targetGroupId })
@@ -1870,7 +1923,17 @@ export function App(): React.JSX.Element {
             }}
           />
         ) : null}
-        {activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (
+        {activeFile !== null && activeFile.kind === 'diff' && activeWorktreeRow !== null ? (
+          <DiffView
+            key={activeFile.tabId}
+            root={activeWorktreeRow.path}
+            target={activeFile.target}
+            stamp={scm.stampOf(activeWorktreeRow.path)}
+            // fix r1 R1-01 — 영역에 보이는 diff 탭은 그 루트 감시를 잡는다(작업 페이지·설정이 덮으면 안 보임 → 해제).
+            watch={!tasksOpen && settingsView === null}
+            onOpenFile={(rel) => openFileFromExplorer({ rel, preview: false })}
+          />
+        ) : activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (
           <FileView
             key={activeFile.tabId}
             root={activeWorktreeRow.path}
@@ -2268,6 +2331,7 @@ export function App(): React.JSX.Element {
           onResizeStart={rightPanel.onHandleMouseDown}
           bodies={{
             explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} ops={fileOps} notify={notify} />,
+            scm: <ScmView scm={scm} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} mode={scm.mode} onChangeMode={scm.setMode} focusToken={scmFocusToken} onOpen={openScmChange} />,
             detail: <div ref={setDetailSlot} className="right-panel-detail" data-right-panel-detail="" />,
           }}
         />

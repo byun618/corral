@@ -60,7 +60,8 @@ describe('E2 열기·미리보기 규칙', () => {
     const second = openFileTab({ layout: first, rel: 'src/b.ts', preview: true })
     expect(orders(second.layout)).toEqual([['w1:t1', B, 'w1:t2']])
     expect(previewOf(listGroups(second.layout.root)[0]!)).toBe(B)
-    expect(second.replaced).toEqual({ rel: 'src/a.ts', groupId: 'g1', index: 1 })
+    // LIFE-683 — 밀려난 탭 id 도 돌려준다(diff 탭과 가르기 위해).
+    expect(second.replaced).toEqual({ tabId: A, rel: 'src/a.ts', groupId: 'g1', index: 1 })
   })
   it('고정 탭은 교체되지 않는다 — 더블클릭(preview:false)으로 연 탭 옆에 새 미리보기', () => {
     const pinned = openFileTab({ layout: terminals(), rel: 'src/a.ts', preview: false }).layout

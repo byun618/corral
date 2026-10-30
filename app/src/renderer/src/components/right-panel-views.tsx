@@ -17,8 +17,16 @@ export type RightPanelViewDef = {
   widthFallback: number
 }
 
+/** 소스 제어 아이콘 (LIFE-683 S1) — VS Code codicon `source-control`(0xea68, `codiconsLibrary.ts:34`). 다른 보기 아이콘과 같은 16px 상자. */
+// 글리프는 CSS `::before` 로 — 머리에 글자 노드가 생기지 않게(activity bar 는 제목 글자 없음, A1).
+function SourceControlIcon({ className }: { className: string }): React.JSX.Element {
+  return <span className={`codicon ${className} is-codicon is-source-control`} data-codicon="source-control" aria-hidden />
+}
+
 export const RIGHT_PANEL_VIEWS: readonly RightPanelViewDef[] = [
   { id: 'explorer', title: '탐색기', action: 'explorer.show', icon: FilesIcon, widthToken: '--right-panel-w', widthFallback: 300 },
+  // LIFE-683 — 폭은 탐색기 폭 칸을 같이 쓴다(`useRightPanel` `widthSlotOf`) — 토큰도 같은 것.
+  { id: 'scm', title: '소스 제어', action: 'scm.show', icon: SourceControlIcon, widthToken: '--right-panel-w', widthFallback: 300 },
   { id: 'detail', title: '작업 상세', action: null, icon: TasksIcon, widthToken: '--right-panel-detail-w', widthFallback: 560 },
 ]
 

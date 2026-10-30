@@ -32,7 +32,7 @@ function render({ view, open = true, explorerShortcut = '⌘⇧E' }: { view: Rig
     shortcutOf: (id) => (id === 'explorer' ? explorerShortcut : null),
     onSelectView: (id) => { selected.push(id) },
     panelRef: null, toggleShortcut: '⌘L', onToggle: () => { toggles += 1 }, onResizeStart: () => {},
-    bodies: { explorer: createElement('div', { 'data-probe': 'explorer' }), detail: createElement('div', { 'data-probe': 'detail' }) },
+    bodies: { explorer: createElement('div', { 'data-probe': 'explorer' }), scm: createElement('div', { 'data-probe': 'scm' }), detail: createElement('div', { 'data-probe': 'detail' }) },
   })))
 }
 const q = (selector: string): HTMLElement | null => host.querySelector<HTMLElement>(selector)
@@ -43,12 +43,14 @@ describe('activity bar (A1·A2)', () => {
     render({ view: 'explorer' })
     const head = q('[data-right-panel-head]')
     expect(buttons().map((button) => button.dataset.rightPanelViewBtn)).toEqual(RIGHT_PANEL_VIEWS.map((entry) => entry.id))
-    expect(buttons()).toHaveLength(2)
+    // LIFE-683 — 소스 제어 보기가 탐색기 다음에 더해졌다(3개).
+    expect(buttons()).toHaveLength(3)
     expect(head?.lastElementChild?.getAttribute('data-right-panel-toggle')).toBe('head')
     expect(head?.lastElementChild?.classList.contains('right-panel-toggle')).toBe(true)
     expect(q('.right-panel-title')).toBeNull()
     expect(head?.textContent).toBe('')
-    for (const button of buttons()) expect(button.querySelector('svg.right-panel-activity-icon')).not.toBeNull()
+    // LIFE-683 — 소스 제어 아이콘은 VS Code codicon 글리프(S1), 나머지는 svg.
+    for (const button of buttons()) expect(button.querySelector('svg.right-panel-activity-icon, .codicon.right-panel-activity-icon')).not.toBeNull()
   })
   it('툴팁·aria-label = 「제목 (단축키)」, 단축키 없으면 제목만 — 설정에서 바꾸면 따라간다', () => {
     render({ view: 'explorer' })

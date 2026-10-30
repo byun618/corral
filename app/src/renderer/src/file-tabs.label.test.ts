@@ -2,7 +2,7 @@
 // 출처: microsoft/vscode 4df8bb183f0e — `src/vs/base/common/labels.ts` `shorten`(214–324행) · `src/vs/base/test/common/labels.test.ts` 'shorten - not windows'(72–128행)
 // · `multiEditorTabsControl.ts` `shortenTabLabels`. 사본은 specs/LIFE-689-file-tab-label/raw/coordinator/vscode/.
 import { describe, expect, it } from 'vitest'
-import { fileTabDescriptions, shorten } from './file-tabs.js'
+import { diffTabDescriptions, fileTabDescriptions, shorten } from './file-tabs.js'
 
 /**
  * labels.test.ts 'shorten - not windows' 74–115행 — URL 사례(116–127행)를 뺀 전 사례, 입력·기대값 그대로(`null!` → `null`).
@@ -88,5 +88,23 @@ describe('K2 fileTabDescriptions — 한 영역의 파일 탭 → 탭별 설명 
   it('L1 다른 영역은 따로 부른다 — 한 영역에 하나뿐이면 없음', () => {
     expect(entries(fileTabDescriptions(['src/app/app.service.ts']))).toEqual([])
     expect(entries(fileTabDescriptions(['src/push/app.service.ts', 'src/main.ts']))).toEqual([])
+  })
+})
+
+describe('LIFE-683 F2-08 diffTabDescriptions — diff 탭도 같은 이름 구분 설명', () => {
+  it('같은 제목(이름 + 모드)이 다른 폴더에 둘이면 파일 탭과 같은 줄인 부모 폴더 설명(shorten), 제목이 다르면(모드가 다르면) 설명 없음', () => {
+    const tabs = [
+      { tabId: 'd1', label: 'index.ts (작업 트리)', rel: 'src/a/index.ts' },
+      { tabId: 'd2', label: 'index.ts (작업 트리)', rel: 'src/b/index.ts' },
+      { tabId: 'd3', label: 'index.ts (인덱스)', rel: 'src/a/index.ts' },
+      { tabId: 'd4', label: 'main.ts (작업 트리)', rel: 'main.ts' },
+    ]
+    expect([...diffTabDescriptions(tabs).entries()]).toEqual([
+      ['d1', '…/a'],
+      ['d2', '…/b'],
+    ])
+  })
+  it('한 파일의 작업 트리·인덱스 diff 두 탭은 서로 구분 설명이 없다(제목이 이미 다르다)', () => {
+    expect(diffTabDescriptions([{ tabId: 'w', label: 'a.ts (작업 트리)', rel: 'x/a.ts' }, { tabId: 'i', label: 'a.ts (인덱스)', rel: 'x/a.ts' }]).size).toBe(0)
   })
 })

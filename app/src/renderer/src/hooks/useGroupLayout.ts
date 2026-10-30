@@ -69,7 +69,8 @@ export type GroupLayoutApi = {
    * LIFE-590 — 파일 탭 열기(탐색기 한 번 클릭 = 미리보기, 더블클릭 = 고정). 미리보기 교체로 밀려난 파일은 `onReplaced` 로 알린다(닫은 탭 기록).
    * 지금 worktree 의 배치에서만 한다.
    */
-  openFile: (input: { rel: string; preview: boolean; onReplaced?: (replaced: { rel: string; groupId: string; index: number }) => void }) => void
+  /** 파일 탭을 연다 — `tabId` 를 주면 그 id 의 편집기 탭(LIFE-683 diff 탭)을 같은 규칙으로. 밀려난 탭은 `replaced.tabId` 로 종류를 가른다. */
+  openFile: (input: { rel: string; preview: boolean; tabId?: string; onReplaced?: (replaced: { rel: string; groupId: string; index: number; tabId: string }) => void }) => void
   /** 미리보기 파일 탭 고정(탭 더블클릭). */
   keepFile: (tabId: string) => void
   /** 파일 탭 닫기 — 닫기 전 자리를 `onClosed` 로(⌘⇧T 기록). */
@@ -307,9 +308,10 @@ export function useGroupLayout(input: {
 
   // 밀려난·닫힌 자리 알림은 **화면 배치**(`layout` — 저장값을 같은 파생으로 추린 것)에서 미리 셈한다 — 상태 갱신 함수 안에서 부르면 순수하지 않다.
   const openFile = useCallback(
-    (target: { rel: string; preview: boolean; onReplaced?: (replaced: { rel: string; groupId: string; index: number }) => void }) => {
-      const replaced = layout === null ? null : openFileTab({ layout, rel: target.rel, preview: target.preview }).replaced
-      mutate((current) => openFileTab({ layout: current, rel: target.rel, preview: target.preview }).layout)
+    (target: { rel: string; preview: boolean; tabId?: string; onReplaced?: (replaced: { rel: string; groupId: string; index: number; tabId: string }) => void }) => {
+      const spec = { rel: target.rel, preview: target.preview, ...(target.tabId === undefined ? {} : { tabId: target.tabId }) }
+      const replaced = layout === null ? null : openFileTab({ layout, ...spec }).replaced
+      mutate((current) => openFileTab({ layout: current, ...spec }).layout)
       if (replaced !== null) target.onReplaced?.(replaced)
     },
     [mutate, layout],

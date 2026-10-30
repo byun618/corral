@@ -5,6 +5,7 @@
 // - 카드마다 props 를 내려 보내지 않고 컨텍스트로 받는다 — 보드·백로그·리스트가 같은 칩을 쓴다.
 import { createContext, useContext } from 'react'
 import { elapsedLabel } from '../../../shared/session-activity.js'
+import { PR_ERROR_LABEL, PR_STATE_LABEL, type PrLookup } from '../../../shared/pr-status.js'
 import type { WorkItem } from '../../../shared/work.js'
 import { AGENT_DOT_LABEL } from '../agent-dot.js'
 import { AGENT_ICON } from '../session-glyphs.js'
@@ -18,6 +19,8 @@ export type WorkLinksView = {
   open: (tree: LinkedTree) => void
   /** 이 Mac 의 이름(LIFE-635) — 원격 링크를 로컬과 가른다. 모르면 null(원격 목록을 그리지 않는다). */
   machine: string | null
+  /** LIFE-624 — worktree 경로 → PR 상태(`usePrStatus`). 없으면 칩을 그리지 않는다. */
+  pr?: ReadonlyMap<string, PrLookup>
 }
 
 export const WorkLinksContext = createContext<WorkLinksView | null>(null)
@@ -134,6 +137,19 @@ export function RemoteLinksSection({ item, trees, now }: { item: WorkItem; trees
   )
 }
 
+/** PR 칩(LIFE-624 C6·C7) — `PR #<번호> · <상태>`. PR 이 있을 때만, 그 밖(없음·오류·거절)은 아무것도 그리지 않는다. */
+export function PrChip({ lookup }: { lookup: PrLookup | undefined }): React.JSX.Element | null {
+  if (lookup?.kind !== 'pr') return null
+  const { pr } = lookup
+  return <span className={`pr-chip is-${pr.state}`} data-pr-chip={pr.state} data-pr-number={pr.number} title={pr.url}>PR #{pr.number} · {PR_STATE_LABEL[pr.state]}</span>
+}
+
+/** 실행 영역의 흐린 이유(C6) — 못 읽었을 때만. 「GitHub 원격 아님」 은 그 레포에 원래 PR 이 없으니 소리 내지 않는다. */
+export function PrReason({ lookup }: { lookup: PrLookup | undefined }): React.JSX.Element | null {
+  if (lookup?.kind !== 'error' || lookup.error === 'not_github') return null
+  return <span className="pr-reason" data-pr-reason={lookup.error} title={lookup.message}>{PR_ERROR_LABEL[lookup.error]}</span>
+}
+
 export function WorkRunSection({ trees, itemKey, now, actions }: { trees: LinkedTree[]; itemKey: string; now: number; actions: DetailWorkActions }): React.JSX.Element {
   const view = useContext(WorkLinksContext)
   return (
@@ -154,7 +170,11 @@ export function WorkRunSection({ trees, itemKey, now, actions }: { trees: Linked
               <span className="issue-detail-head-spacer" />
               <button type="button" className="issue-link-btn" data-work-goto={tree.branch} onClick={() => view?.open(tree)}>worktree 로</button>
             </div>
-            <div className="issue-work-where"><span className="issue-work-repo">{tree.repoName}</span> / <span className="issue-work-branch">{tree.branch}</span></div>
+            <div className="issue-work-where">
+              <span className="issue-work-repo">{tree.repoName}</span> / <span className="issue-work-branch">{tree.branch}</span>
+              <PrChip lookup={view?.pr?.get(tree.path)} />
+              <PrReason lookup={view?.pr?.get(tree.path)} />
+            </div>
             {tree.question === null ? null : (
               <div className="issue-work-question" data-work-question={tree.question.text === null ? 'unreadable' : 'text'}>
                 {tree.question.text === null

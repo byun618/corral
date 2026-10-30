@@ -157,3 +157,14 @@ function trimmed(value: string | null): string | null {
   const text = value?.trim() ?? ''
   return text.length > 0 ? text : null
 }
+
+/**
+ * PR 상태를 물을 worktree(LIFE-624 C11) — 보이는 면만. 작업 페이지가 열려 있으면 링크된 worktree 전부(작업 중 줄),
+ * 상세가 보이면 그 작업의 worktree(실행 영역). 둘 다 아니면 빈 목록 = gh 호출 0. 경로·브랜치가 바뀌면 다른 목록이 된다.
+ */
+export function prTargets({ pageOpen, detailShown, linked, detailTrees }: { pageOpen: boolean; detailShown: boolean; linked: LinkedTree[]; detailTrees: LinkedTree[] }): { path: string; branch: string }[] {
+  const picked = new Map<string, string>()
+  if (pageOpen) for (const tree of linked) picked.set(tree.path, tree.branch)
+  if (detailShown) for (const tree of detailTrees) picked.set(tree.path, tree.branch)
+  return [...picked.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([path, branch]) => ({ path, branch }))
+}

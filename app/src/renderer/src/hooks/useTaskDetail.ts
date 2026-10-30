@@ -718,6 +718,10 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     // 상세가 보일 때만(LIFE-682 r2-1 — 숨긴 채 마운트된 상세는 읽지 않는다). 다시 보이면 첫 읽기 체인이 단건·링크를 새로 받는다.
     if (open && here !== null && !locked) void refreshItem(here)
   }, [open, here, locked, refreshItem])
+  /** 활동만 다시 읽기(LIFE-624 — main 이 PR 줄을 새로 남겼을 때). 상세가 보일 때만. */
+  const reloadActivity = useCallback(() => {
+    if (open && here !== null) void refreshActivity(here)
+  }, [open, here, refreshActivity])
   /** 다시 읽을 수 있는가 — 진행 중인 쓰기·읽기가 없을 때(「다시 시도」 버튼). */
   const canReload = !locked && !reading
 
@@ -756,7 +760,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   return {
     target, uid, session, item, base, phase, statuses, parents, children, comments, history, records, conflict, transitions, transitionBlocks,
     caps, descriptor, connection, blocked, busy, commentsGate, canReload,
-    write, finalOf, versionOf, reloadFromServer, refreshLinks, overrideConflict, loadTransitions, openKey, openItem, lookupKey, holdBasis, dropBasis,
+    write, finalOf, versionOf, reloadFromServer, refreshLinks, reloadActivity, overrideConflict, loadTransitions, openKey, openItem, lookupKey, holdBasis, dropBasis,
   }
 }
 

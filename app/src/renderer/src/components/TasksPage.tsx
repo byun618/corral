@@ -22,6 +22,7 @@ import { spaceCapabilities, WORK_PRIORITIES } from '../../../shared/work.js'
 import { useTaskDrag, type TaskDrop } from '../hooks/useTaskDrag.js'
 import { DETAIL_READING, useTasksPage, type MoveNotice } from '../hooks/useTasksPage.js'
 import { useTaskDetail } from '../hooks/useTaskDetail.js'
+import { usePrStatus } from '../hooks/usePrStatus.js'
 import {
   CATEGORY_LABEL,
   NO_FILTERS,
@@ -74,7 +75,7 @@ import { TaskDetail } from './TaskDetail.js'
 import { StartWorkModal } from './StartWorkModal.js'
 import { WorkLinksContext, type DetailWorkActions, type WorkLinksView } from './WorkLinkChips.js'
 import { useStartWork } from '../hooks/useStartWork.js'
-import { treesFor } from '../work-links-model.js'
+import { prTargets, treesFor } from '../work-links-model.js'
 import type { WorkRepoDefault } from '../../../shared/work.js'
 import { InlineAddSlot, QuickCreateModal } from './QuickCreate.js'
 import { useQuickCreate } from '../hooks/useQuickCreate.js'
@@ -222,10 +223,27 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
 
   // --- 작업에서 시작 · 링크 (LIFE-603) ---
   const machine = settings?.machine ?? null
-  const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree, machine }), [page.linked, onOpenWorktree, machine])
+  const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })
+  // LIFE-624 — PR 상태는 보이는 면(작업 중 줄 · 실행 영역)의 worktree 만 묻는다. 페이지 닫힘 + 상세 숨김이면 0 회(C11).
+  const pr = usePrStatus({ targets: prTargets({ pageOpen: open, detailShown: detailMounted, linked: page.linked, detailTrees }) })
+  const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree, machine, pr: pr.lookups }), [page.linked, onOpenWorktree, machine, pr.lookups])
   const detailSource = detail.descriptor?.name ?? detail.connection?.name ?? '출처'
   const starter = useStartWork({ detail, repos, repoDefaults: settings?.repoDefaults ?? NO_DEFAULTS, activeRepoRoot, sourceName: detailSource, notifyFailure: (message) => notify({ kind: 'failed', message }) })
-  const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })
+  // 활동의 PR 줄(C8·C10) — 브랜치 조회가 새 줄을 남겼으면 다시 읽고, 상세가 열릴 때 열린 채 기록된 PR 을 URL 로 다시 본다(사라진 worktree 의 머지).
+  const reloadActivity = detail.reloadActivity
+  useEffect(() => {
+    if (pr.recordedSeq > 0 && detailMounted) reloadActivity()
+  }, [pr.recordedSeq])
+  const detailItemKey = detail.item?.key ?? null
+  useEffect(() => {
+    if (!detailMounted || detailTarget === null || detailItemKey === null) return
+    let live = true
+    void Promise.resolve()
+      .then(() => window.corral.prRefreshItem({ connectionId: detailTarget.connectionId, itemId: detailTarget.itemId, itemKey: detailItemKey }))
+      .then((result) => { if (live && result.ok && result.recorded > 0) reloadActivity() })
+      .catch(() => undefined)
+    return () => { live = false }
+  }, [detailMounted, detailTarget, detailItemKey])
   const workActions = useMemo((): DetailWorkActions => ({ start: (mode) => starter.begin(mode), reveal: (paneId) => onRevealPane?.(paneId) }), [starter.begin, onRevealPane])
   // 사이드바 작업 줄 → 패널 상세 보기 + 그 작업(A4). 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다. 페이지가 앱 시작부터 마운트돼 있어 페이지 열림을 기다리지 않는다.
   const focusSeq = focus?.seq ?? 0
@@ -749,7 +767,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           <div className="tasks-scroll" data-tasks-scroll="working">
             {/* 키 일치(E2)는 작업 중 보기에서도 맨 앞에 보인다(R2-H) — 다른 스페이스의 작업이어도. */}
             {hits.length > 0 ? <KeyHits hits={hits} selectedId={shownId} onSelect={toggleSelect} /> : null}
-            <WorkingList views={workingViews} now={now} onOpen={onOpenWorktree} />
+            <WorkingList views={workingViews} now={now} onOpen={onOpenWorktree} pr={pr.lookups} />
           </div>
         )
     }

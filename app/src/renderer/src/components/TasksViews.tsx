@@ -261,8 +261,8 @@ export function IssueCard({ row, rows, all, density, selected, dragging, now, ha
  */
 export type ColumnDragView = { mode: 'target' | 'source' | 'blocked' | 'idle'; reason: string | null; hoverOnly?: boolean }
 
-/** 묶기=부모 의 레인 하나 — 레인과 그 레인의 밴드(칸 구성은 묶기 없음과 같다). */
-export type BoardLane = { lane: ParentLane; bands: BoardBand[] }
+/** 묶기=부모 의 레인 하나 — 레인과 그 레인의 밴드(칸 구성은 묶기 없음과 같다). `complete` = 완료 레인(기본 접힘, LIFE-746). */
+export type BoardLane = { lane: ParentLane; complete: boolean; bands: BoardBand[] }
 
 type BandsProps = {
   rows: TasksRow[]
@@ -283,21 +283,18 @@ export function Board({ bands, lanes = null, ...rest }: BandsProps & {
   /** 묶기=부모(LIFE-745) — 있으면 레인마다 밴드를 그린다. null = 묶기 없음. */
   lanes?: BoardLane[] | null
 }): React.JSX.Element {
-  // 레인 접힘은 이 실행 동안만 남는다(02-kickoff — 영속하지 않음).
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  // 레인 접힘은 이 실행 동안만 남는다(02-kickoff — 영속하지 않음). 사용자가 토글한 레인만 적어 두고 그 선택이 이긴다 —
+  // 적지 않은 레인은 데이터를 따른다(완료 레인 = 접힘, LIFE-746).
+  const [toggled, setToggled] = useState<ReadonlyMap<string, boolean>>(new Map())
   if (lanes === null) return <div className="tasks-board" data-tasks-board=""><Bands bands={bands} hideParent={false} {...rest} /></div>
   return (
     <div className="tasks-lanes" data-tasks-board="" data-tasks-lanes="">
-      {lanes.map(({ lane, bands: laneBands }) => {
-        const folded = collapsed.has(lane.id)
+      {lanes.map(({ lane, complete, bands: laneBands }) => {
+        const folded = toggled.get(lane.id) ?? complete
         const name = lane.parent === null ? '부모 없음' : parentLabel(lane.parent)
         return (
-          <section key={lane.id} className={`tasks-lane${folded ? ' is-collapsed' : ''}`} data-board-lane={lane.id} aria-label={`${name} 레인`}>
-            <LaneHead lane={lane} name={name} rows={rest.rows} folded={folded} onToggle={() => setCollapsed((current) => {
-              const next = new Set(current)
-              if (!next.delete(lane.id)) next.add(lane.id)
-              return next
-            })} />
+          <section key={lane.id} className={`tasks-lane${folded ? ' is-collapsed' : ''}`} data-board-lane={lane.id} data-lane-complete={complete ? '' : undefined} aria-label={`${name} 레인`}>
+            <LaneHead lane={lane} name={name} rows={rest.rows} folded={folded} onToggle={() => setToggled((current) => new Map(current).set(lane.id, !folded))} />
             {folded ? null : <div className="tasks-board"><Bands bands={laneBands} hideParent {...rest} /></div>}
           </section>
         )
@@ -335,14 +332,19 @@ function Bands({ bands, rows, all, density, selectedId, drag, now, columnView, h
             {band.columns.map((column) => {
               const view = drag === null ? IDLE_VIEW : columnView(column)
               const zone = columnZone(column)
-              const showGap = drag !== null && drag.zone === zone && view.mode === 'target'
+              // 레인 안 빈 칸은 얇게(LIFE-746) — 머리 줄만 남기고 놓기 영역은 칸 전체에 겹친다(끌기 중에도 높이가 그대로라 보드가 밀리지 않는다).
+              // 틈은 그리지 않는다(놓일 번호는 늘 0 — 칸 강조로 보인다).
+              const thin = column.lane !== null && column.rows.length === 0
+              const showGap = !thin && drag !== null && drag.zone === zone && view.mode === 'target'
               const visible = column.rows
               // 칸마다 그리는 이유(묶기 없음)는 목록 위 줄. hoverOnly(묶기=부모 의 다른 레인)는 포인터가 올라간 칸에만, 목록 **안** 오버레이로 —
               // 줄로 끼우면 목록이 밀려 포인터가 영역 밖으로 나가고 문구가 사라졌다 다시 생기는 토글이 난다(LIFE-745 r2 L1).
-              const showReason = view.reason !== null && view.hoverOnly !== true
-              const overlayReason = view.reason !== null && view.hoverOnly === true && drag?.zone === zone
+              // 묶기=부모 의 같은 레인 막힌 칸(순서 금지 LIFE-612 등)도 같다 — 줄로 끼우면 끌기 시작과 함께 그 칸 목록을 민다(LIFE-746).
+              const hoverOnly = view.hoverOnly === true || (column.lane !== null && view.reason !== null)
+              const showReason = view.reason !== null && !hoverOnly
+              const overlayReason = view.reason !== null && hoverOnly && drag?.zone === zone
               return (
-                <div key={column.id} className={`tasks-column${column.unmapped ? ' is-unmapped' : ''} drag-${view.mode}${drag?.zone === zone ? ' is-over' : ''}`} data-board-column={column.id} title={view.hoverOnly === true ? (view.reason ?? undefined) : undefined}>
+                <div key={column.id} className={`tasks-column${column.unmapped ? ' is-unmapped' : ''}${thin ? ' is-thin' : ''} drag-${view.mode}${drag?.zone === zone ? ' is-over' : ''}`} data-board-column={column.id} data-column-thin={thin ? '' : undefined} title={hoverOnly ? (view.reason ?? undefined) : undefined}>
                   <header className="tasks-column-head">
                     {column.unmapped ? <span className="tasks-unmapped-mark" aria-hidden>⋯</span> : <StatusCircle category={column.category} fill={column.fill} />}
                     <span className="tasks-column-label">{column.label}</span>

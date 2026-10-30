@@ -34,6 +34,7 @@ import {
   applyPreset,
   boardBands,
   boardDropIntent,
+  boardLaneOrder,
   columnZone,
   laneBands,
   missingParents,
@@ -482,7 +483,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   // 묶기=부모(LIFE-745 C5) — 레인마다 묶기 없음과 같은 칸 구성, 칸마다 그 레인의 카드만.
   const boardLanes = useMemo((): BoardLane[] | null => {
     if (prefs.swimlane !== 'parent') return null
-    return parentLanes({ rows: boardRows, parentOf: parentOfRow }).map((lane) => ({ lane, bands: laneBands({ bands, lane }) }))
+    // 완료 레인은 진행 레인 뒤·「부모 없음」 앞(LIFE-746) — 완료 판정은 레인 머리 진행과 같은 행(`rows`)으로.
+    return boardLaneOrder({ lanes: parentLanes({ rows: boardRows, parentOf: parentOfRow }), rows }).map(({ lane, complete }) => ({ lane, complete, bands: laneBands({ bands, lane }) }))
   }, [prefs.swimlane, boardRows, bands, rows, fetchedParents])
   const backlogSections = useMemo((): BacklogSection[] => {
     const sorted = [...shelved].sort((a, b) => compareRank(a.item, b.item))

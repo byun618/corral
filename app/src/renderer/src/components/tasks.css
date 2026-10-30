@@ -144,6 +144,9 @@
   position: absolute; top: 0; left: 0; right: 0; z-index: 3; pointer-events: none; padding: 4px 6px; border-radius: 6px;
   background: var(--bg-raised); border: 1px solid color-mix(in srgb, var(--st-error) 35%, transparent); box-shadow: var(--shadow-menu);
 }
+/* 레인 안 빈 칸(LIFE-746) — 머리 줄만. 놓기 영역은 칸 전체에 겹쳐 두어 끌기 중에도 잡히고 높이는 변하지 않는다. 너비는 그대로라 레인 사이 칸이 맞는다. */
+.tasks-column.is-thin { position: relative; }
+.tasks-column.is-thin > .tasks-column-list { position: absolute; inset: 0; min-height: 0; }
 .tasks-unmapped-mark { color: var(--fg-dim); width: 10px; text-align: center; }
 .tasks-drop-gap { border-radius: 8px; border-top: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); flex: 0 0 auto; }
 .tasks-drop-gap.is-row { border-radius: 0; }

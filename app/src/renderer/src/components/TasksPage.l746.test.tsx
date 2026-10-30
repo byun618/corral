@@ -445,3 +445,42 @@ describe('C1 ⓖ 완료 판정 = 머리 진행과 같은 행(보드 밖 자식 �
     expect(q('[data-issue-card="K-43"]')).toBeNull()
   })
 })
+
+// --- 낮음 수정 (리뷰 r2 지적 1) ---
+
+describe('C1 ⓒ 「부모 없음」 토글은 스페이스·「전체」 마다 따로', () => {
+  it('스페이스 A 에서 「부모 없음」 접기 → B·전체의 「부모 없음」 은 펼침 → A 로 돌아오면 접힘 유지 · 부모 레인 토글은 그대로', async () => {
+    settings = { ...settings, connections: settings.connections.map((connection) => ({ ...connection, spaces: [
+      { key: 's1', name: 'corral', color: null, openCount: 2, hidden: false, capabilities: {} },
+      { key: 's2', name: 'other', color: null, openCount: 1, hidden: false, capabilities: {} },
+    ] })) }
+    const other = [item({ id: 'o1', key: 'K-90', title: '다른 스페이스 작업', spaceKey: 's2', rank: '0' })]
+    hold = (request) => (request.call.op === 'listItems' && request.call.spaceKey === 's2'
+      ? Promise.resolve<WorkResponse>({ requestId: request.requestId, connectionId: request.connectionId, ok: true, result: { op: 'listItems', items: other, nextCursor: null, truncated: false } })
+      : null)
+    const pickSpace = async (row: string): Promise<void> => {
+      click(q('[data-space-switch]'))
+      click(q(`[data-space-row="${row}"]`))
+      await settle()
+    }
+    await laned()
+    await pickSpace('s1')
+    expect(q('[data-tasks-page]')?.getAttribute('data-tasks-space')).toBe('c1::s1')
+    click(q('[data-board-lane="none"] [data-lane-toggle]'))
+    click(q(`[data-board-lane="${P2}"] [data-lane-toggle]`))
+    expect(expanded('none')).toBe('false')
+    expect(expanded(P2)).toBe('true')
+    await pickSpace('s2')
+    expect(q('[data-tasks-page]')?.getAttribute('data-tasks-space')).toBe('c1::s2')
+    expect(q('[data-board-lane="none"] [data-issue-card="K-90"]')).not.toBeNull()
+    expect(expanded('none')).toBe('true')
+    await pickSpace('all')
+    expect(q('[data-tasks-page]')?.getAttribute('data-tasks-space')).toBe('all')
+    expect(expanded('none')).toBe('true')
+    // 「전체」 에서도 부모 레인 토글(부모 uid)은 그대로 이어진다.
+    expect(expanded(P2)).toBe('true')
+    await pickSpace('s1')
+    expect(expanded('none')).toBe('false')
+    expect(expanded(P2)).toBe('true')
+  })
+})

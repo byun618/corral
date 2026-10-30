@@ -217,7 +217,10 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
     // fix2 R2-06 — 끝난 시도를 복원한 결과 화면(result 있음)이면 두지 않는다: 「다시 띄우기」 가 그 시도의 에이전트로 가야 한다.
     if (form === null || running || result !== null) return
     if (startAgentChoices(detection).includes(form.agent)) return
-    update({ agent: initialStartAgent({ preferred: form.agent, detection }) })
+    // final R3-03(b) — 바꿀 값이 지금 값과 같으면 갱신하지 않는다(선택지 계산이 어긋나도 갱신 → 렌더 → 보정이 무한히 돌지 않게).
+    const next = initialStartAgent({ preferred: form.agent, detection })
+    if (next === form.agent) return
+    update({ agent: next })
   }, [detection, form, running, result, update])
 
   return {

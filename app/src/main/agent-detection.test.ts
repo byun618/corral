@@ -455,3 +455,33 @@ describe('fix2 — 정상 종료 뒤 rc 손주가 stdout 을 쥐어도 파이프
     }
   }, 20_000)
 })
+
+// ── final — R3-01 실패한 새로고침이 앞선 성공 목록을 바꾸지 않는다 ──
+
+describe('final — 셸 실패 회차는 앞선 성공 목록을 유지하고 캐시하지 않는다 (K3ⓒ, R3-01)', () => {
+  it('ensure 성공 → refresh 시간 초과: 목록은 그대로, shell 만 실패, 다음 조회가 다시 돈다', async () => {
+    const h = harness()
+    const ipc = fakeIpc(h.detector)
+    const boot = h.detector.ensure()
+    h.pending[0]?.resolve(okProbe('/sh'))
+    expect(agentsOf(await boot)).toEqual(['claude:login-shell', 'grok:fallback'])
+    const failed = h.detector.refresh()
+    h.pending[1]?.resolve(timeoutProbe)
+    const snapshot = await failed
+    expect(agentsOf(snapshot)).toEqual(['claude:login-shell', 'grok:fallback'])
+    expect(snapshot.kind === 'detected' ? snapshot.shell : null).toEqual({ ok: false, reason: 'timeout' })
+    expect(h.changes.map(agentsOf)).toEqual([['claude:login-shell', 'grok:fallback'], ['claude:login-shell', 'grok:fallback']])
+    // 캐시 안 함 — 조회가 다시 감지를 건다.
+    ipc.invoke(AGENT_DETECTION_CHANNEL.get)
+    expect(h.spawns()).toBe(3)
+    h.pending[2]?.resolve(okProbe('/new'))
+    await flush()
+    expect(agentsOf(h.detector.current())).toEqual(['codex:login-shell', 'grok:fallback'])
+  })
+  it('앞선 성공이 없으면(첫 회차 실패) 폴백 결과 그대로 — K1ⓑ·K1ⓒ 경로는 바뀌지 않는다', async () => {
+    const h = harness()
+    const boot = h.detector.ensure()
+    h.pending[0]?.resolve(timeoutProbe)
+    expect(agentsOf(await boot)).toEqual(['grok:fallback'])
+  })
+})

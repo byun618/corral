@@ -178,12 +178,16 @@ export type AgentDetectorDeps = {
  *     프로덕션의 「다음 요청」 이다(fix1 R1-01). 진행 중이면 합쳐지므로 셸은 늘지 않는다.
  *   · `refresh` — 늘 새로 실행한다. 진행 중이던 옛 실행은 셸을 끝내고(fix1 R1-07 — 겹쳐도 사는 셸은 하나) 결과도 버린다(세대 번호).
  *   · 셸이 실패한 회차(폴백 결과)는 보여 주되 **캐시하지 않는다**(E2, Orca #9011).
+ *     단 앞서 셸이 성공한 목록이 있으면 실패 회차는 **목록을 바꾸지 않고** 실패 사실(`shell`)만 갱신한다(final R3-01 — 실패한 「다시 감지」 가
+ *     좋은 결과를 더 나쁜 폴백 결과로 갈아 끼우지 않게). 캐시는 여전히 하지 않으므로 다음 요청·화면 열기(R2-03)가 다시 돈다.
  *   · 예외(예상 밖)는 결과를 바꾸지 않는다 — 감지 전이면 `unknown` 그대로.
  *   · `killAll` — 앱 종료. 진행 중 셸 그룹을 끝내고 이후 실행을 받지 않는다(fix1 R1-06).
  */
 export class AgentDetector {
   private snapshot: AgentDetectionSnapshot = UNKNOWN_AGENT_DETECTION
   private cached = false
+  /** 마지막으로 셸이 성공한 회차의 목록 — 실패 회차가 이것을 덮지 않는다(R3-01). */
+  private lastOk: DetectedAgent[] | null = null
   private generation = 0
   private inflight: Promise<AgentDetectionSnapshot> | null = null
   private running: AbortController | null = null
@@ -227,18 +231,25 @@ export class AgentDetector {
     const mine = this.generation
     const startedAt = this.deps.now()
     const run = this.detect(controller.signal).then(
-      ({ snapshot, cacheable }) => {
+      ({ agents, shell, at }) => {
         // 새로고침에 밀린 옛 실행 — 결과를 버리고, 기다리던 쪽은 새 실행을 같이 기다린다.
         if (mine !== this.generation) return this.inflight ?? this.snapshot
         this.inflight = null
         this.running = null
+        const cacheable = shell.ok
+        if (cacheable) this.lastOk = agents
+        const shown = !cacheable && this.lastOk !== null ? this.lastOk : agents
+        const kept = shown !== agents
+        const snapshot: AgentDetectionSnapshot = { kind: 'detected', agents: shown, shell, at }
         this.snapshot = snapshot
         this.cached = cacheable
         this.deps.log('agents.detect', {
           ms: this.deps.now() - startedAt,
-          shell: snapshot.kind === 'detected' ? snapshot.shell : null,
-          agents: snapshot.kind === 'detected' ? snapshot.agents : [],
+          shell,
+          agents: shown,
           cached: cacheable,
+          // 셸 실패 회차에서 앞선 성공 목록을 유지했나 — 그때 폴백이 찾은 목록은 `fallbackAgents` 로만 남긴다.
+          ...(kept ? { kept: true, fallbackAgents: agents } : {}),
         })
         this.deps.onChange(snapshot)
         return snapshot
@@ -255,11 +266,11 @@ export class AgentDetector {
     return run
   }
 
-  private async detect(signal: AbortSignal): Promise<{ snapshot: AgentDetectionSnapshot; cacheable: boolean }> {
+  private async detect(signal: AbortSignal): Promise<{ agents: DetectedAgent[]; shell: ShellProbeOutcome; at: number }> {
     const probe = await this.deps.probe(signal)
     const shellDirs = probe.pathValue === null ? [] : shellPathDirs(probe.pathValue)
     const agents = resolveDetectedAgents({ shellDirs, fallbackDirs: this.deps.fallbackDirs(), isExecutable: this.deps.isExecutable })
-    return { snapshot: { kind: 'detected', agents, shell: probe.outcome, at: this.deps.now() }, cacheable: probe.outcome.ok }
+    return { agents, shell: probe.outcome, at: this.deps.now() }
   }
 }
 

@@ -38,8 +38,11 @@ import { GitCommitIcon, NoteIcon, StarIcon, TrashIcon, WorkflowIcon } from './Si
 import { lineageIndent } from '../sidebar-sections.js'
 import { useMenuBus } from '../menu-bus.js'
 import { WorktreeStatusSlot } from './WorktreeStatusSlot.js'
+import { useAgentDetection } from '../agent-detection-store.js'
+import { isAgentAvailable, type LaunchAgent } from '../tab-create-menu.js'
 
-const AGENT_KINDS: Array<{ kind: AgentKind; label: string }> = [
+// LIFE-520 fix1 R1-04 — 감지된 것만 보인다(감지 전·실패면 3종 그대로). 「빈 탭」 등 나머지 항목은 늘 있다.
+const AGENT_KINDS: Array<{ kind: LaunchAgent; label: string }> = [
   { kind: 'claude', label: 'claude 기동' },
   { kind: 'codex', label: 'codex 기동' },
   { kind: 'grok', label: 'grok 기동' },
@@ -135,6 +138,7 @@ export function WorktreeBlock({
 }): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const detection = useAgentDetection()
   // K2ⓖ — 카드 ⋯ 도 메뉴 하나 규칙(다른 메뉴가 열리면 닫힘)과 바깥 클릭·Esc 닫기를 갖는다.
   useMenuBus({ open: menuOpen, close: () => setMenuOpen(false) })
   const menuRef = useRef<HTMLDivElement | null>(null)
@@ -528,7 +532,7 @@ export function WorktreeBlock({
               <span className="repo-row-menu-glyph">+</span>
               <span>빈 탭</span>
             </div>
-            {AGENT_KINDS.map(({ kind, label }) => (
+            {AGENT_KINDS.filter(({ kind }) => isAgentAvailable({ agent: kind, detection })).map(({ kind, label }) => (
               <div
                 key={kind}
                 className="repo-row-menu-item"

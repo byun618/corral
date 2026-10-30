@@ -11,8 +11,8 @@ export type DetectionSource = 'login-shell' | 'fallback'
 
 export type DetectedAgent = { agent: DetectableAgent; path: string; source: DetectionSource }
 
-/** 로그인 셸 조회 결과 — 실패면 이유. 실패한 회차의 결과는 캐시하지 않는다(E2). */
-export type ShellProbeOutcome = { ok: true } | { ok: false; reason: 'timeout' | 'exit' | 'no-marker' | 'spawn-error' }
+/** 로그인 셸 조회 결과 — 실패면 이유. 실패한 회차의 결과는 캐시하지 않는다(E2). `aborted` = 새로고침이 덮었거나 앱 종료로 끊은 회차(fix1 R1-06·R1-07). */
+export type ShellProbeOutcome = { ok: true } | { ok: false; reason: 'timeout' | 'exit' | 'no-marker' | 'spawn-error' | 'aborted' }
 
 export type AgentDetectionSnapshot =
   | { kind: 'unknown' }
@@ -42,6 +42,7 @@ function readShellOutcome(value: unknown): ShellProbeOutcome {
     case 'exit':
     case 'no-marker':
     case 'spawn-error':
+    case 'aborted':
       return { ok: false, reason }
     default:
       return { ok: false, reason: 'exit' }

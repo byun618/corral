@@ -9,7 +9,7 @@ import { effortOptions, modelOptions, type StartAgent } from '../../../shared/ag
 import type { RepoRow } from '../../../shared/types.js'
 import { composeStartPrompt, defaultStartName, newAttemptId, startNameProblem, startStatusTarget, type StartStatusTarget, type StartWorkInput, type StartWorkResult } from '../../../shared/work-start.js'
 import type { WorkRepoDefault } from '../../../shared/work.js'
-import { defaultStartRepo, initialStartAgent, startSignature, startSucceeded, uniqueStartName } from '../start-work-model.js'
+import { defaultStartRepo, initialStartAgent, startAgentChoices, startSignature, startSucceeded, uniqueStartName } from '../start-work-model.js'
 import { useAgentDetection } from '../agent-detection-store.js'
 import type { TaskDetailModel } from './useTaskDetail.js'
 
@@ -210,6 +210,14 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
       return next
     })
   }
+
+  // LIFE-520 fix1 R1-08 — 모달이 열린 뒤 감지가 바뀌어 고른 에이전트가 선택지 밖이 되면(숨은 선택으로 제출되지 않게) 자동 규칙으로 보정한다.
+  // 진행 중(합류 포함)이면 그 시도의 값이라 두지 않는다 — 그때는 칸이 잠겨 있다. 모달 칸·단계·제출 흐름은 그대로.
+  useEffect(() => {
+    if (form === null || running) return
+    if (startAgentChoices(detection).includes(form.agent)) return
+    update({ agent: initialStartAgent({ preferred: form.agent, detection }) })
+  }, [detection, form, running, update])
 
   return {
     open: mode !== null && form !== null, mode, proceed, setProceed, form, update, prompt, statusTarget, nameProblem, canStart,

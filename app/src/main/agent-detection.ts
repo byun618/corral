@@ -36,15 +36,21 @@ export function parseMarkedValue(stdout: string): string | null {
  * `$SHELL -ilc` 로 PATH 를 받는다. stdin 은 닫고(대화형 rc 가 입력을 기다리지 않게), 셸을 새 프로세스 그룹으로 띄워
  * 시한이 넘으면 그룹째(rc 가 띄운 손주 포함) SIGKILL 한다 — Orca #5657(probe hang) 대비.
  * 셸이 끝났는데 손주가 stdout 을 쥐고 있어도 `exit` 에서 끝낸다(`close` 를 기다리지 않는다).
+ * `signal` 이 끊기면(새로고침이 덮음·앱 종료) 시한을 기다리지 않고 그룹을 SIGKILL 하고 `aborted` 로 끝낸다(fix1 R1-06·R1-07).
  */
-export function probeLoginShellPath(input: { shell: string; timeoutMs: number; env: NodeJS.ProcessEnv }): Promise<ShellProbe> {
+export function probeLoginShellPath(input: { shell: string; timeoutMs: number; env: NodeJS.ProcessEnv; signal?: AbortSignal }): Promise<ShellProbe> {
   return new Promise((resolve) => {
+    if (input.signal?.aborted === true) {
+      resolve({ outcome: { ok: false, reason: 'aborted' }, pathValue: null })
+      return
+    }
     let stdout = ''
     let settled = false
     const finish = (probe: ShellProbe): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      input.signal?.removeEventListener('abort', onAbort)
       resolve(probe)
     }
     let child: ReturnType<typeof spawn>
@@ -70,6 +76,11 @@ export function probeLoginShellPath(input: { shell: string; timeoutMs: number; e
       killGroup()
       finish({ outcome: { ok: false, reason: 'timeout' }, pathValue: null })
     }, input.timeoutMs)
+    const onAbort = (): void => {
+      killGroup()
+      finish({ outcome: { ok: false, reason: 'aborted' }, pathValue: null })
+    }
+    input.signal?.addEventListener('abort', onAbort, { once: true })
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf8')
     })
@@ -97,8 +108,9 @@ export function isExecutableFile(file: string): boolean {
 
 /**
  * 사용자 설치 폴더 폴백(E6) — 이 순서로 본다.
- *   · `~/.local/bin` (claude 네이티브 설치·이 사용자 grok 심링크) · `~/.claude/local` (claude 로컬 설치)
- *   · `~/.grok/bin` (grok 설치 스크립트 — Orca #17590) · `/opt/homebrew/bin`·`/usr/local/bin` (brew·npm 전역)
+ *   · `~/.grok/bin` (grok 설치 스크립트의 실물 자리 — Orca #17590). **맨 앞**: grok 만 사는 전용 폴더라 다른 에이전트 순서에 영향이 없고,
+ *     `~/.local/bin/grok` 은 대개 이것을 가리키는 심링크다 — 실물 경로를 그대로 보여 준다(fix1 R1-02)
+ *   · `~/.local/bin` (claude 네이티브 설치) · `~/.claude/local` (claude 로컬 설치) · `/opt/homebrew/bin`·`/usr/local/bin` (brew·npm 전역)
  *   · `~/.npm-global/bin`·`~/.bun/bin`·`~/.volta/bin` (흔한 npm 전역 prefix·bun·volta)
  *   · `~/.nvm/versions/node/<버전>/bin` (nvm npm 전역 — Orca #14077, 버전 이름 역순 = 대체로 새 버전 먼저)
  */
@@ -111,9 +123,9 @@ export function fallbackAgentDirs(input: { home: string; listDir: (dir: string) 
     .sort((a, b) => b.localeCompare(a, 'en', { numeric: true }))
     .map((name) => path.join(nvmRoot, name, 'bin'))
   return [
+    path.join(home, '.grok', 'bin'),
     path.join(home, '.local', 'bin'),
     path.join(home, '.claude', 'local'),
-    path.join(home, '.grok', 'bin'),
     '/opt/homebrew/bin',
     '/usr/local/bin',
     path.join(home, '.npm-global', 'bin'),
@@ -145,7 +157,8 @@ export function resolveDetectedAgents(input: { shellDirs: readonly string[]; fal
 }
 
 export type AgentDetectorDeps = {
-  probe: () => Promise<ShellProbe>
+  /** 실행 하나 = 셸 하나. `signal` 이 끊기면 셸 그룹을 끝내고 `aborted` 로 돌아와야 한다. */
+  probe: (signal: AbortSignal) => Promise<ShellProbe>
   fallbackDirs: () => string[]
   isExecutable: (file: string) => boolean
   now: () => number
@@ -156,15 +169,20 @@ export type AgentDetectorDeps = {
 /**
  * 메모리 캐시·새로고침(K3).
  *   · `ensure` — 캐시가 있으면 그것(셸을 다시 띄우지 않는다), 진행 중이면 그 실행에 합류, 아니면 실행.
- *   · `refresh` — 늘 새로 실행한다. 진행 중이던 옛 실행은 끝나도 결과를 덮지 않는다(세대 번호).
- *   · 셸이 실패한 회차(폴백 결과)는 보여 주되 **캐시하지 않는다** — 다음 `ensure` 가 다시 돈다(E2, Orca #9011).
+ *   · `get` — 렌더러 조회(IPC). 지금 스냅숏을 바로 돌려주고, 캐시가 없으면(셸 실패 회차 뒤 포함) `ensure` 를 건다 — 실패가 굳지 않는
+ *     프로덕션의 「다음 요청」 이다(fix1 R1-01). 진행 중이면 합쳐지므로 셸은 늘지 않는다.
+ *   · `refresh` — 늘 새로 실행한다. 진행 중이던 옛 실행은 셸을 끝내고(fix1 R1-07 — 겹쳐도 사는 셸은 하나) 결과도 버린다(세대 번호).
+ *   · 셸이 실패한 회차(폴백 결과)는 보여 주되 **캐시하지 않는다**(E2, Orca #9011).
  *   · 예외(예상 밖)는 결과를 바꾸지 않는다 — 감지 전이면 `unknown` 그대로.
+ *   · `killAll` — 앱 종료. 진행 중 셸 그룹을 끝내고 이후 실행을 받지 않는다(fix1 R1-06).
  */
 export class AgentDetector {
   private snapshot: AgentDetectionSnapshot = UNKNOWN_AGENT_DETECTION
   private cached = false
   private generation = 0
   private inflight: Promise<AgentDetectionSnapshot> | null = null
+  private running: AbortController | null = null
+  private disposed = false
 
   constructor(private readonly deps: AgentDetectorDeps) {}
 
@@ -172,25 +190,43 @@ export class AgentDetector {
     return this.snapshot
   }
 
+  get(): AgentDetectionSnapshot {
+    if (!this.cached) void this.ensure()
+    return this.snapshot
+  }
+
   ensure(): Promise<AgentDetectionSnapshot> {
-    if (this.cached) return Promise.resolve(this.snapshot)
+    if (this.cached || this.disposed) return Promise.resolve(this.snapshot)
     if (this.inflight !== null) return this.inflight
     return this.start()
   }
 
   refresh(): Promise<AgentDetectionSnapshot> {
+    if (this.disposed) return Promise.resolve(this.snapshot)
     return this.start()
   }
 
+  killAll(): void {
+    this.disposed = true
+    this.generation += 1
+    this.inflight = null
+    this.running?.abort()
+    this.running = null
+  }
+
   private start(): Promise<AgentDetectionSnapshot> {
+    this.running?.abort()
+    const controller = new AbortController()
+    this.running = controller
     this.generation += 1
     const mine = this.generation
     const startedAt = this.deps.now()
-    const run = this.detect().then(
+    const run = this.detect(controller.signal).then(
       ({ snapshot, cacheable }) => {
         // 새로고침에 밀린 옛 실행 — 결과를 버리고, 기다리던 쪽은 새 실행을 같이 기다린다.
         if (mine !== this.generation) return this.inflight ?? this.snapshot
         this.inflight = null
+        this.running = null
         this.snapshot = snapshot
         this.cached = cacheable
         this.deps.log('agents.detect', {
@@ -206,6 +242,7 @@ export class AgentDetector {
         this.deps.log('agents.detect', { error: error instanceof Error ? error.message : String(error) })
         if (mine !== this.generation) return this.inflight ?? this.snapshot
         this.inflight = null
+        this.running = null
         return this.snapshot
       },
     )
@@ -213,8 +250,8 @@ export class AgentDetector {
     return run
   }
 
-  private async detect(): Promise<{ snapshot: AgentDetectionSnapshot; cacheable: boolean }> {
-    const probe = await this.deps.probe()
+  private async detect(signal: AbortSignal): Promise<{ snapshot: AgentDetectionSnapshot; cacheable: boolean }> {
+    const probe = await this.deps.probe(signal)
     const shellDirs = probe.pathValue === null ? [] : shellPathDirs(probe.pathValue)
     const agents = resolveDetectedAgents({ shellDirs, fallbackDirs: this.deps.fallbackDirs(), isExecutable: this.deps.isExecutable })
     return { snapshot: { kind: 'detected', agents, shell: probe.outcome, at: this.deps.now() }, cacheable: probe.outcome.ok }
@@ -237,11 +274,32 @@ export function realAgentDetectorDeps(input: {
 }): AgentDetectorDeps {
   const shell = input.env.SHELL !== undefined && path.isAbsolute(input.env.SHELL) ? input.env.SHELL : '/bin/zsh'
   return {
-    probe: () => probeLoginShellPath({ shell, timeoutMs: AGENT_SHELL_TIMEOUT_MS, env: input.env }),
+    probe: (signal) => probeLoginShellPath({ shell, timeoutMs: AGENT_SHELL_TIMEOUT_MS, env: input.env, signal }),
     fallbackDirs: () => fallbackAgentDirs({ home: os.homedir(), listDir }),
     isExecutable: isExecutableFile,
     now: () => Date.now(),
     onChange: input.onChange,
     log: input.log,
   }
+}
+
+/**
+ * IPC 처리 함수 (fix1 R1-01 — 시험이 이 단에서 재시도 경로를 본다).
+ *   · `corral:agentDetectionGet` — 지금 스냅숏(기다리지 않음). 캐시가 없으면 감지를 건다(`get`).
+ *   · `corral:agentDetectionRefresh` — 강제 재실행, 끝난 스냅숏.
+ * 다른 창의 요청·감지기 없음이면 null.
+ */
+export function registerAgentDetectionIpc<TEvent>(input: {
+  handle: (channel: string, listener: (event: TEvent) => unknown) => void
+  allowed: (event: TEvent) => boolean
+  detector: () => AgentDetector | null
+}): void {
+  input.handle('corral:agentDetectionGet', (event) => {
+    const detector = input.detector()
+    return input.allowed(event) && detector !== null ? detector.get() : null
+  })
+  input.handle('corral:agentDetectionRefresh', (event) => {
+    const detector = input.detector()
+    return input.allowed(event) && detector !== null ? detector.refresh() : null
+  })
 }

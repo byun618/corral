@@ -14,6 +14,10 @@ import { resetSettingsStoreForTest } from '../settings-store.js'
 import { AgentsSection } from './AgentsSection.js'
 import { StartWorkModal } from './StartWorkModal.js'
 import { TabCreateMenu } from './TabCreateMenu.js'
+import { NO_CARD_ACTIONS, WorktreeBlock } from './WorktreeBlock.js'
+import type { OrchestrationLineage, WorktreeRow } from '../../../shared/types.js'
+import { matchesSettingsSearch } from '../settings-search.js'
+import { sectionSearchEntries, settingsSectionById } from '../settings-registry.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -251,5 +255,59 @@ describe('감지 결과로 defaultAgent 를 쓰지 않는다 (K4ⓔ)', () => {
     await act(async () => host.querySelector<HTMLButtonElement>('[data-tab-create-item^="agent:"]')?.click())
     expect(writes).toEqual([])
     expect(stored.defaultAgent).toBe('claude')
+  })
+})
+
+// ── 사이드바 worktree `…` 메뉴 (K4ⓕ, fix1 R1-04) ──
+
+const READY_EMPTY: OrchestrationLineage = { state: 'ready', entries: [] }
+const worktreeRow: WorktreeRow = {
+  path: '/repo/wt', branch: 'feat', isLinked: true, head: null, repoName: 'repo', openWorkspaceId: 'w1',
+  gitStatus: { branch: 'feat', upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null },
+  // 열린 workspace 여야 `…` 메뉴 단추가 있다(`WorktreeBlock.tsx` isOpen).
+  workspace: { workspaceId: 'w1', label: 'repo', number: 1, agentStatus: 'idle', focused: false, tabs: [] },
+  displayName: null, comment: null, parentPath: null,
+}
+const block = (): React.ReactElement => {
+  const noop = (): void => {}
+  return createElement(WorktreeBlock, {
+    worktree: worktreeRow, reordering: false, dragging: false, onCardMouseDown: noop, selected: false, selectedPane: null, groupGlyph: null, integrations: [],
+    home: '/home', now: 0, retained: [], lineage: READY_EMPTY, livePaneIds: new Set<string>(), groupExpanded: false, onToggleGroup: noop,
+    onSelectBlock: noop, onSelectSession: noop, onCloseSession: noop, onCloseWorktree: noop, onCreateShell: noop, onCreateAgent: noop,
+    card: NO_CARD_ACTIONS,
+  })
+}
+const openWorktreeMenu = async (): Promise<void> => {
+  await act(async () => host.querySelector<HTMLButtonElement>('[data-worktree-menu-toggle]')?.click())
+}
+const menuAgents = (): Array<string | null> => [...host.querySelectorAll('[data-worktree-create-agent]')].map((node) => node.getAttribute('data-kind'))
+
+describe('사이드바 worktree … 메뉴 (K4ⓕ)', () => {
+  it('Ⓟ = base 3종(`WorktreeBlock.tsx:42-46·531-545`)', async () => {
+    await render(block())
+    await openWorktreeMenu()
+    expect(menuAgents()).toEqual(['claude', 'codex', 'grok'])
+  })
+  it('Ⓝ = 감지된 것만', async () => {
+    initial = N
+    await render(block())
+    await openWorktreeMenu()
+    expect(menuAgents()).toEqual(['codex', 'grok'])
+  })
+  it('Ⓩ = 에이전트 항목 0, 「빈 탭」·닫기 등 나머지 항목은 남는다', async () => {
+    initial = Z
+    await render(block())
+    await openWorktreeMenu()
+    expect(menuAgents()).toEqual([])
+    expect(host.querySelector('[data-worktree-create-shell]')).not.toBeNull()
+    expect(host.querySelector('[data-close-worktree]')).not.toBeNull()
+  })
+})
+
+// ── 설정 검색 (fix1 R1-09) ──
+
+describe('설정 검색 — 감지 키워드 (R1-09)', () => {
+  it.each(['감지', '다시 감지', 'detect'])('%s 로 에이전트 섹션이 걸린다', (query) => {
+    expect(matchesSettingsSearch({ query, entries: sectionSearchEntries(settingsSectionById('agents')) })).toBe(true)
   })
 })

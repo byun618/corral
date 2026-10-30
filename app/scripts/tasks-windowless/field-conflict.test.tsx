@@ -16,7 +16,7 @@ import { WorkService } from '../../src/main/work/service.js'
 import { WorkSourceRegistry } from '../../src/main/work/source.js'
 import { CredentialVault } from '../../src/main/work/vault.js'
 import { FAKE_LA_TOKEN, FAKE_MOCK_TOKEN, FakeCipher, MemoryStore, workHarness } from '../../src/main/work/test-kit.js'
-import { TasksPage } from '../../src/renderer/src/components/TasksPage.js'
+import { TasksPageInPanel } from '../../src/renderer/src/components/TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -39,7 +39,7 @@ const settle = async (rounds = 12): Promise<void> => {
   for (let index = 0; index < rounds; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
 }
 function renderPage(): void {
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
 }
 function bridge({ service }: { service: WorkService }): void {
   Reflect.set(window, 'corral', {

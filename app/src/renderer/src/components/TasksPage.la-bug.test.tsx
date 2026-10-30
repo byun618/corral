@@ -12,7 +12,7 @@ import type { WorkRequest } from '../../../shared/work.js'
 import { LaMcpFixture } from '../../../main/work/la-mcp-fixture.js'
 import { laSourceEntry } from '../../../main/work/la-source.js'
 import { FAKE_LA_TOKEN, workHarness } from '../../../main/work/test-kit.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -53,7 +53,7 @@ async function laRig({ prefs = {} }: { prefs?: Record<string, unknown> } = {}): 
     workRequest: (request: WorkRequest) => harness.service.request(request),
     workActivity: async (query: unknown) => harness.service.activity(query),
   })
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
   await settle(30)
   return { fixture }
 }

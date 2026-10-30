@@ -13,7 +13,7 @@ import { WorkService } from '../../../main/work/service.js'
 import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
 import { FakeCipher, MemoryStore } from '../../../main/work/test-kit.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -60,7 +60,7 @@ async function rig({ token = 'mock_l602_fixture', prefs }: { token?: string; pre
     workRequest: (request: WorkRequest) => { result.calls.push(request.call); return service.request(request) },
     workActivity: async (query: unknown) => service.activity(query),
   })
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => result.closes.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => result.closes.push(1), onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
   await settle()
   return result
 }
@@ -95,7 +95,7 @@ async function openCard(itemKey: string): Promise<void> {
 }
 
 describe('C1 상세 그릇', () => {
-  it('카드 → 상세 · ⤢ 패널↔전체(남김) · 부모 경로로 이동 · ✕ 닫기', async () => {
+  it('카드 → 상세 · ⤢ 패널↔전체(남김) · 부모 경로로 이동 · ✕ 전체 → 패널 → 닫기', async () => {
     const r = await rig()
     await openCard('CORE-2')
     expect(el('[data-issue-full]').dataset.issueFull).toBe('panel')
@@ -107,9 +107,13 @@ describe('C1 상세 그릇', () => {
     click('[data-issue-parent="CORE-1"]')
     await settle()
     expect(q('[data-issue-detail="CORE-1"]')).not.toBeNull()
+    // LIFE-682 A7 — 전체 모드의 ✕ 는 패널 상세로 돌아간다(같은 작업). 패널의 ✕ 가 닫는다(패널 숨기기).
     click('[data-issue-close]')
     await settle()
-    expect(q('[data-issue-detail]')).toBeNull()
+    expect(q('[data-right-panel-detail] .issue-detail:not(.is-full)')?.getAttribute('data-issue-detail')).toBe('CORE-1')
+    click('[data-issue-close]')
+    await settle()
+    expect(q('[data-task-detail-host]:not([hidden]) [data-issue-detail]')).toBeNull()  // LIFE-682 r1 — 숨긴 상세는 마운트를 유지(초안 보존)하고 host 가 hidden
   })
 
   it('Esc 단계 — 메뉴 → 입력 blur → 상세 닫기 → 페이지 닫기', async () => {
@@ -128,7 +132,7 @@ describe('C1 상세 그릇', () => {
     expect(q('[data-issue-detail="CORE-4"]')).not.toBeNull()
     key(document.body, { key: 'Escape' })
     await settle()
-    expect(q('[data-issue-detail]')).toBeNull()
+    expect(q('[data-task-detail-host]:not([hidden]) [data-issue-detail]')).toBeNull()  // LIFE-682 r1 — 숨긴 상세는 마운트를 유지(초안 보존)하고 host 가 hidden
     expect(r.closes).toHaveLength(0)
     key(document.body, { key: 'Escape' })
     expect(r.closes).toHaveLength(1)

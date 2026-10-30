@@ -1,6 +1,6 @@
 # harness learnings
 
-Last reviewed: 2026-10-29
+Last reviewed: 2026-10-30
 
 ## 「응답에 X 가 있다」는 어느 명령의 응답인지까지 원자료로
 
@@ -30,13 +30,6 @@ Last reviewed: 2026-10-29
 - **Evidence:** LIFE-719 — 코디 재실행이 두 번 막혔고, 리뷰어 세 라운드의 sandbox 실행 원자료가 독립 근거가 됐다.
 - **Disposition:** task-coordinate §5 리뷰 일감 명세 — 다시 나면.
 
-## 재사용 pane 에 배달하기 전 화면을 따로 본다
-
-- **Scope:** task-coordinate §4·§5 pane 재사용 배달, 매핑 『감독 워커 기동』 재사용 경로
-- **Learning:** 재사용 pane 의 입력줄에는 사람이 쳐 두고 제출하지 않은 글이 있을 수 있고, 주입 배달이 그것을 덮어 지운다. 배달과 같은 명령에서 화면을 읽지 말고 『화면 관측』을 먼저 따로 해 입력줄이 비었는지 본 뒤 배달한다 — 글이 있으면 배달하지 않고 사용자에게 묻는다.
-- **Evidence:** LIFE-724 fix r2 — 화면 읽기와 재사용 배달을 한 명령에 묶어 워커 입력줄의 미제출 사람 입력이 사라졌다. 첫 번째.
-- **Disposition:** 다시 나면 `references/implementation.md` 3 「pane 재사용 경로」 줄.
-
 ## 리뷰어 일감 명세에 완료 보고를 명시한다
 
 - **Scope:** task-coordinate §5 리뷰 명세, corral 『감독 워커 기동』으로 띄운 리뷰어
@@ -56,4 +49,11 @@ Last reviewed: 2026-10-29
 - **Scope:** 설치본을 CDP 로 관측하는 네이티브 관문(실제 외부 연결 위, 읽기 전용 조건)
 - **Learning:** contextBridge 로 노출된 렌더러 API 는 얼어 있어 렌더러 쪽 쓰기 가드를 걸 수 없다. 처음부터 main 쪽 IPC trace 로 사후 검출하고 양성 대조(읽기 응답 ≥ 1, 보낸 요청 id 전부가 trace 에 있음)를 붙인다. trace 를 거치지 않는 IPC 는 판정표에 공백으로 둔다.
 - **Evidence:** LIFE-711 — 첫 회차가 가드 불가로 클릭 전에 멈췄고, trace 사후 검출로 바꾼 뒤 통과했다.
+- **Disposition:** `.agents/harness/corral.md` 설치본 관문 절 또는 validation.md 네이티브 관문 줄.
+
+## 설치본 GUI 회차는 손 떼기를 먼저 받고, 대기에 대상 정체를 단언한다
+
+- **Scope:** 사용자 설치본을 CDP·계측 제어 소켓으로 조작·관측하는 네이티브 관문(사용자가 같은 앱을 쓰는 중)
+- **Learning:** 사용자가 그 앱 창(터미널 pane 포함)을 쓰면 페이지가 닫히거나 선택·보기가 바뀌어 회차가 무효가 된다. 시작 전에 손 떼는 시간을 받고, 「X 가 뜰 때까지」 대기에 대상 정체(선택된 worktree·보기)를 같이 담아 「못 봤다」와 「다른 대상을 봤다」를 가르며, 닫힘을 감지하면 다투지 말고 멈춘다. 마우스 이벤트로 동작하는 요소는 DOM `click()` 대신 입력 이벤트 클릭을, 겹치는 줄이 없는 가장 작은 요소에 쓴다.
+- **Evidence:** LIFE-745 관측 두 회차가 작업 페이지 닫힘으로 무효였고 손 떼기 뒤 정상이었다. LIFE-683 반영 시간 측정 2회가 선택 변경으로 무효, 카드 가운데 클릭이 제목 줄에 맞아 엉뚱한 페이지를 열었다.
 - **Disposition:** `.agents/harness/corral.md` 설치본 관문 절 또는 validation.md 네이티브 관문 줄.

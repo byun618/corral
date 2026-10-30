@@ -1,0 +1,39 @@
+/* 소스 제어 보기 (LIFE-683) — 탐색기 행·머리 클래스를 그대로 쓰고 다른 것만 여기. 값 근거는 VS Code `scm/browser/media/scm.css`(d0adb05e725). */
+.scm { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; font-family: var(--font-ui); font-size: 13px; color: var(--fg); }
+.scm:hover .explorer-toolbar, .scm:focus-within .explorer-toolbar { opacity: 1; }
+/* 그룹 머리 — 굵기 600(VS Code `.resource-group > .name` 은 기본 굵기지만 11px uppercase 가 아니다 — 행과 같은 13px). 오른쪽 개수 배지. */
+.scm-group { font-weight: 600; }
+.scm-group .explorer-twistie { transform: none; }
+.scm-count {
+  flex-shrink: 0; margin-right: 12px; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 11px;
+  font-size: 11px; font-weight: 400; line-height: 18px; background: var(--bg-accent); color: var(--fg);
+}
+/* 이름 + 흐린 부모 경로(목록 모드 description — `.monaco-icon-label .label-description` 0.7 · 0.9em · 왼쪽 0.5em). */
+.scm-name { color: var(--fg); }
+.scm-name.is-strike { text-decoration: line-through; }
+.scm-desc { margin-left: 0.5em; font-size: 0.9em; opacity: 0.7; }
+/* 상태 글자 — semibold(`scm.css:298-309`). */
+.scm-letter { font-weight: 600; }
+.scm-banner { flex-shrink: 0; padding: 4px 12px; font-size: 12px; color: var(--fg-muted); background: var(--bg-accent); }
+.right-panel-activity-icon.is-source-control::before { content: '\ea68'; }
+.right-panel-activity-icon.is-codicon { font-size: var(--right-panel-activity-icon); line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+
+/* --- diff 탭 (S5) --------------------------------------------------------------------------- */
+.scm-diff { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); }
+.scm-diff-head {
+  flex-shrink: 0; height: 26px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 12px;
+  font-family: var(--font-ui); font-size: 12px; color: var(--fg-muted); border-bottom: 1px solid var(--border, rgb(255 255 255 / 0.08));
+}
+/* fix r1 C1 — 영역 알림 띠(`.tab-group > .inline-notice`, absolute 오버레이)가 떠 있으면 머리 줄을 그 아래로 내린다 — 「파일 열기」 가 가려지지 않게. */
+.tab-group:has(> .inline-notice) .scm-diff-head { margin-top: var(--h-notice); }
+.scm-diff-sides { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scm-diff-open {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border: none; border-radius: 4px;
+  background: none; color: var(--fg-muted); font: inherit; cursor: pointer;
+}
+.scm-diff-open:hover { background: var(--bg-accent); color: var(--fg); }
+.scm-diff-open .codicon { font-size: 14px; }
+.scm-diff-notice { flex-shrink: 0; padding: 4px 12px; font-family: var(--font-ui); font-size: 12px; color: var(--fg-muted); background: var(--bg-accent); }
+.scm-diff-host { flex: 1 1 auto; min-height: 0; position: relative; }
+.scm-diff-message { padding: 16px; font-family: var(--font-ui); font-size: 13px; color: var(--fg-muted); }

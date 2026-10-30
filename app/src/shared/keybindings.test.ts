@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, explorerKeyShortcut, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, scopeOf, validateOverrides, yieldsOutsideMarkdown } from './keybindings.js'
+import { ACTIONS, bindingConflict, EDITOR_YIELD_ACTIONS, bindingFromEvent, bindingsFor, explorerKeyShortcut, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, scopeOf, validateOverrides, yieldsOutsideMarkdown } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
   it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
     // LIFE-478: + workspace.rename(⌘⌥R) · workspace.delete(⌘⇧⌫)
@@ -12,7 +12,7 @@ describe('shortcut catalog and compatibility', () => {
     // LIFE-593: + quickOpen.open(⌘P) · explorer.filter(⌘⌥F — 탐색기 범위)
     // LIFE-601: + tasks.toggle(⌘I)
     // LIFE-629: + markdown.togglePreview(⇧⌘V)
-    expect(ACTIONS).toHaveLength(29)
+    expect(ACTIONS).toHaveLength(30) // LIFE-683: + ⌘⇧G 소스 제어 보이기
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -380,5 +380,11 @@ describe('LIFE-629 ⇧⌘V Markdown 미리보기 전환', () => {
   it('LIFE-692 새 편집기 키는 앱 전역 액션이 아니다(편집기로 간다) — ⌘K 만 앱이 쥔다', () => {
     for (const binding of ['Mod+Backspace', 'Mod+Shift+K', 'Alt+ArrowUp', 'Alt+ArrowDown', 'Alt+Shift+ArrowUp', 'Alt+Shift+ArrowDown', 'Mod+]', 'Mod+[', 'Mod+/', 'Alt+Shift+A', 'Mod+Enter', 'Mod+Shift+Enter', 'Control+J', 'Control+T', 'Control+Alt+ArrowLeft', 'Control+Alt+ArrowRight']) expect(matchBinding(binding, {})).toBeNull()
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
+  })
+})
+
+describe('LIFE-683 F2-05 (R1-03 되돌림)', () => {
+  it('scm.show 는 편집기 양보 목록에 들지 않는다 — 편집기 포커스에서도 ⌘⇧G = 소스 제어', () => {
+    expect(EDITOR_YIELD_ACTIONS).not.toContain('scm.show')
   })
 })

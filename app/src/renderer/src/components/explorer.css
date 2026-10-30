@@ -42,14 +42,29 @@
 }
 .right-panel-resizer:hover .sidebar-resizer-line { background: var(--accent); }
 
-/* 머리 — Orca 사이드 레이아웃 머리(h-36 · px-3 · border-b · 11px semibold uppercase tracking-wider). 빈 자리는 창 드래그. */
+/* 머리 — Orca top 모드 activity bar 줄(LIFE-682 A1, `right-sidebar-top-activity-bar.tsx:39` h-36 · border-b, 아이콘 줄 pl-2). 제목 글자 없음.
+   빈 자리는 창 드래그, 단추는 no-drag. */
 .right-panel-head {
   height: var(--h-titlebar); min-height: var(--h-titlebar); flex-shrink: 0;
-  display: flex; align-items: center; justify-content: space-between; padding: 0 4px 0 12px;
+  display: flex; align-items: center; padding: 0 4px 0 0;
   box-shadow: inset 0 -1px 0 var(--line);
-  -webkit-app-region: drag; user-select: none;
+  -webkit-app-region: drag; user-select: none; overflow: hidden;
 }
-.right-panel-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg); }
+.right-panel-activity { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 0; padding-left: var(--right-panel-activity-pad); overflow: hidden; }
+/* 단추 — `activity-bar-buttons.tsx:147-171`: 36×36 · 아이콘 16 · 활성 전경색 · 비활성 muted/60 · hover 는 색만(바탕 없음). */
+.right-panel-activity-btn {
+  -webkit-app-region: no-drag;
+  position: relative; flex: 0 0 auto; width: var(--right-panel-activity-btn); height: var(--right-panel-activity-btn);
+  display: flex; align-items: center; justify-content: center; padding: 0; border: none; background: none; cursor: pointer;
+  color: color-mix(in srgb, var(--fg-muted) 60%, transparent); transition: color 150ms;
+}
+.right-panel-activity-btn:hover { color: var(--fg-muted); }
+.right-panel-activity-btn.is-active { color: var(--fg); }
+.right-panel-activity-icon { width: var(--right-panel-activity-icon); height: var(--right-panel-activity-icon); }
+/* 활성 막대 — 아래 2px, 가로 25%~75%(`absolute bottom-0 left-[25%] right-[25%] h-[2px] bg-foreground rounded-t`). */
+.right-panel-activity-bar { position: absolute; bottom: 0; left: 25%; right: 25%; height: var(--right-panel-activity-bar); background: var(--fg); border-radius: 2px 2px 0 0; }
+.right-panel-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.right-panel-body[hidden] { display: none; }
 .right-panel-toggle {
   -webkit-app-region: no-drag;
   display: flex; align-items: center; justify-content: center; padding: 4px 8px; border: none; border-radius: 4px;
@@ -57,6 +72,7 @@
 }
 .right-panel-toggle:hover { background: var(--bg-accent); color: var(--fg); }
 .right-panel-toggle.is-tabbar { margin: 0 4px 0 2px; align-self: center; }
+.right-panel-toggle.is-tasks { flex: 0 0 auto; }
 
 /* --- 탐색기 -------------------------------------------------------------------------------- */
 .explorer { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; font-family: var(--font-ui); font-size: 13px; color: var(--fg); }

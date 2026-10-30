@@ -42,6 +42,7 @@ import type { WorkSettingsState } from '../shared/work.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
 import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerOpResult } from '../shared/explorer-ops.js'
 import type { FileListInput, FileListResult } from '../shared/file-list.js'
+import type { ScmReadInput, ScmReadResult } from '../shared/scm.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
 
 const EXPOSED = [
@@ -99,6 +100,7 @@ const EXPOSED = [
   'readFile',
   'fileWatch',
   'readImage',
+  'scmRead',
   'onFileEvent',
   'writeFile',
   'fileDialog',
@@ -277,6 +279,8 @@ const api: CorralApi = {
   },
   readFile: (input: { root: string; rel: string }): Promise<FileReadResult> => ipcRenderer.invoke('corral:fileRead', input),
   readImage: (input: { root: string; rel: string }): Promise<ImageReadResult> => ipcRenderer.invoke('corral:fileReadImage', input),
+  // LIFE-683 S7 — 소스 제어 diff 의 HEAD·인덱스 쪽 내용(읽기 전용). ref 는 `side` 두 값뿐 — main 이 고정 argv 로 읽는다.
+  scmRead: (input: ScmReadInput): Promise<ScmReadResult> => ipcRenderer.invoke('corral:scmRead', input),
   fileWatch: (input: { root: string; rels: string[] }): Promise<{ ok: boolean; count: number }> => ipcRenderer.invoke('corral:fileWatch', input),
   onFileEvent: (listener: (event: FileWatchPush) => void) => {
     const handler = (_event: unknown, push: FileWatchPush): void => listener(push)

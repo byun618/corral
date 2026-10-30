@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { WorkCall, WorkCapabilities, WorkError, WorkItem, WorkRequest, WorkResponse, WorkSettingsState, WorkStatus } from '../../../shared/work.js'
 import { useTasksPage, type MoveNotice, type TasksPageModel } from '../hooks/useTasksPage.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -96,7 +96,7 @@ const settle = async (): Promise<void> => {
 }
 
 async function renderPage(): Promise<void> {
-  act(() => root.render(createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => { closed += 1 }, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
+  act(() => root.render(createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => { closed += 1 }, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
   await settle()
 }
 

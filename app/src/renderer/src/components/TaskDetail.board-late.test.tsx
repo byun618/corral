@@ -12,7 +12,7 @@ import type { WorkCall, WorkRequest, WorkResponse } from '../../../shared/work.j
 import { FIXTURE_IDS, FIXTURE_STATUS, LaMcpFixture } from '../../../main/work/la-mcp-fixture.js'
 import { laSourceEntry } from '../../../main/work/la-source.js'
 import { FAKE_LA_TOKEN, workHarness } from '../../../main/work/test-kit.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -36,7 +36,7 @@ const settle = async (rounds = 8): Promise<void> => {
 }
 
 function renderPage(): void {
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
 }
 
 /** 실제 `LaSource` + `LaMcpFixture`(LIFE-622 — 충돌 검사 켜짐). 응답도 모아 쓰기 결과의 본문이 정본 그대로 오는지 본다. */

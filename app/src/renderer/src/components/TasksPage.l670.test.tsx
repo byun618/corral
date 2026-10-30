@@ -12,7 +12,7 @@ import { WorkService } from '../../../main/work/service.js'
 import { WorkSourceRegistry } from '../../../main/work/source.js'
 import { CredentialVault } from '../../../main/work/vault.js'
 import { FakeCipher, MemoryStore } from '../../../main/work/test-kit.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -83,7 +83,7 @@ async function rig({ detailFull = false, detail = null, filters = null, onCommit
     workRequest: (request: WorkRequest) => { calls.push(request.call); return service.request(request) },
     workActivity: async (query: unknown) => service.activity(query),
   })
-  const page = createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })
+  const page = createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} })
   act(() => root.render(createElement('div', null, createElement(Profiler, { id: 'tasks', onRender: onCommit }, page), createElement(Toaster))))
   await settle()
   return { calls }
@@ -100,75 +100,9 @@ function click(selector: string): void {
   act(() => { target.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
 }
 const cards = (): string[] => [...document.querySelectorAll<HTMLElement>('[data-tasks-board] [data-issue-card]')].map((card) => card.dataset.issueCard ?? '')
-const layout = (): string | undefined => el('.tasks-main').dataset.detailLayout
 
-describe('P1·P4 상세 배치', () => {
-  it('패널 모드는 밀기 — 닫으면 none, ⤢ 는 덮기(full)·밀기 클래스 없음', async () => {
-    await rig()
-    expect(layout()).toBe('none')
-    const [first] = cards()
-    click(`[data-tasks-board] [data-issue-card="${first}"]`)
-    await settle()
-    expect(layout()).toBe('push')
-    expect(el('.tasks-main').classList.contains('is-detail-push')).toBe(true)
-    click('[data-issue-full]')
-    await settle()
-    expect(layout()).toBe('full')
-    expect(el('.tasks-main').classList.contains('is-detail-push')).toBe(false)
-    expect(el('[data-issue-detail]').classList.contains('is-full')).toBe(true)
-    click('[data-issue-full]')
-    await settle()
-    expect(layout()).toBe('push')
-    click('[data-issue-close]')
-    await settle()
-    expect(layout()).toBe('none')
-    expect(el('.tasks-main').classList.contains('is-detail-push')).toBe(false)
-  })
-  it('가용 폭이 400 미만이면 덮기로 물러난다(960 은 밀기, 959 는 덮기)', async () => {
-    mainWidth = 959
-    await rig()
-    click(`[data-tasks-board] [data-issue-card="${cards()[0]}"]`)
-    await settle()
-    expect(layout()).toBe('overlay')
-    expect(el('.tasks-main').classList.contains('is-detail-push')).toBe(false)
-    expect(q('[data-issue-detail]')).not.toBeNull()
-  })
-  it('마운트 뒤 폭 변화(ResizeObserver)로 밀기↔덮기가 바뀌고, 언마운트하면 구독을 푼다(r1 L5)', async () => {
-    await rig()
-    click(`[data-tasks-board] [data-issue-card="${cards()[0]}"]`)
-    await settle()
-    expect(layout()).toBe('push')
-    const observer = FakeResizeObserver.live.at(-1)
-    if (observer === undefined) throw new Error('구독 없음')
-    mainWidth = 959; act(() => observer.fire())
-    expect(layout()).toBe('overlay')
-    mainWidth = 960; act(() => observer.fire())
-    expect(layout()).toBe('push')
-    expect(observer.disconnected).toBe(false)
-    act(() => root.unmount())
-    expect(observer.disconnected).toBe(true)
-    root = createRoot(host)
-  })
-  it('같은 쪽 폭 변화는 페이지를 다시 그리지 않는다 — 임계를 넘을 때만(r1 L1)', async () => {
-    let commits = 0
-    await rig({ onCommit: () => { commits += 1 } })
-    const observer = FakeResizeObserver.live.at(-1)
-    if (observer === undefined) throw new Error('구독 없음')
-    await settle(20)
-    const before = commits
-    for (const width of [1300, 1500, 1100, 961]) { mainWidth = width; act(() => observer.fire()) }
-    expect(commits).toBe(before)
-    mainWidth = 900; act(() => observer.fire())
-    expect(commits).toBe(before + 1)
-  })
-  it('전체 모드로 저장돼 있으면 열 때 full — detailFull 복원 무회귀', async () => {
-    await rig({ detailFull: true })
-    click(`[data-tasks-board] [data-issue-card="${cards()[0]}"]`)
-    await settle()
-    expect(layout()).toBe('full')
-    expect(el('[data-issue-detail]').classList.contains('is-full')).toBe(true)
-  })
-})
+// P1·P4(밀기·좁은 창 덮기 폴백) 시험은 LIFE-682 에서 지웠다 — 상세가 앱 오른쪽 패널(가운데 영역의 flex 형제)로 나가 `detail-push.ts`·`useDetailLayout` 이 없어졌다.
+// 보드가 남은 폭을 쓰는 것은 레이아웃이 하고(A9ⓐ 격리 rect), 좁은 창은 패널 렌더 폭 계산(`right-panel-width.test.ts`, A10)이 맡는다.
 
 describe('P3 선택 카드 가시화', () => {
   it('열 때·바꿀 때 1회씩 nearest 로 맞추고 재렌더에는 다시 부르지 않는다', async () => {

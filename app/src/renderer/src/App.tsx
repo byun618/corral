@@ -62,10 +62,15 @@ import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useRightPanel } from './hooks/useRightPanel.js'
 import { useExplorer } from './hooks/useExplorer.js'
+import { useScm } from './hooks/useScm.js'
 import { useFileOps } from './hooks/useFileOps.js'
 import { createWatchHold, forgetMissing, type WatchPush } from './watch-hold.js'
 import { RightPanel, RightPanelToggle } from './components/RightPanel.js'
+import { RIGHT_PANEL_VIEWS } from './components/right-panel-views.js'
 import { Explorer } from './components/Explorer.js'
+import { ScmView } from './components/ScmView.js'
+import { DiffView } from './components/DiffView.js'
+import { diffTabId, diffTitle, openOf, type ScmChange } from '../../shared/scm.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
 import { paneToFollow, pickPane } from './pane-utils.js'
@@ -119,7 +124,8 @@ const NO_REPOS: AppState['repos'] = []
 const NO_ROOTS: string[] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
 /** 작업 페이지가 열린 동안에도 사는 단축키 (LIFE-601 C4) — 나머지 워크스페이스 단축키는 삼키기만 한다. */
-const TASKS_PAGE_SHORTCUTS: readonly ActionId[] = ['tasks.toggle', 'settings.open', 'sidebar.toggle']
+// LIFE-682 A8 — 오른쪽 패널은 페이지와 무관한 전역 패널이라 작업 페이지에서도 ⌘L·⌘⇧E 가 돈다. 탐색기 범위 액션(필터·삭제·기록)은 트리 포커스에서만 오므로 같이 산다.
+const TASKS_PAGE_SHORTCUTS: readonly ActionId[] = ['tasks.toggle', 'settings.open', 'sidebar.toggle', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'explorer.filter', 'explorer.delete', 'explorer.undo', 'explorer.redo']
 /** LIFE-592 — 탐색기 이동 뒤 옛·새 경로 감시 push 를 더 버리는 시간(감시 디바운스보다 길게). */
 const WATCH_HOLD_GRACE_MS = 1_000
 /** LIFE-593 수정 r2 R2-G-04 — 저장된 배치(앱 시작 복원)에서 worktree 별 활성 파일 탭 경로. 처음 보일 때 한 번 최근 기록을 건너뛴다(사용자가 연 것이 아니다). */
@@ -252,10 +258,12 @@ export function App(): React.JSX.Element {
   /**
    * 작업 페이지 (LIFE-601) — **메인 영역만** 덮는다(사이드바는 그대로 보이고 조작된다). 덮는 방식은 설정과 같다: 메인 영역 내용을
    * `display:contents` 래퍼로 감싸 `visibility:hidden` + `inert` — 상자 크기가 그대로라 여닫기가 격자 요청을 내지 않는다.
-   * 페이지는 처음 열 때 마운트되고 닫혀도 남는다(검색어·스크롤 복원 — C3).
+   * 페이지는 **앱 시작부터 마운트**돼(닫힌 채) 닫혀도 남는다(검색어·스크롤 복원 — C3). 작업 상세 상태를 이 페이지가 갖고 상세는 오른쪽 패널에
+   * 그려지므로, 페이지를 한 번도 안 열어도 마지막 상세가 패널에 복원된다(LIFE-682 A5ⓓ). 닫힌 페이지는 목록을 받지 않는다(읽기 조건이 `open`).
    */
   const [tasksOpen, setTasksOpen] = useState(false)
-  const [tasksMounted, setTasksMounted] = useState(false)
+  /** 작업 페이지의 만들기·시작 모달이 열려 있다(LIFE-682 r1) — 그동안 앱 단축키는 모달 뒤에 작용하지 않는다(시작 모달은 페이지가 닫힌 터미널 화면에서도 뜬다). */
+  const [tasksModalOpen, setTasksModalOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const sidebarCollapsedRef = useRef(false)
   const toggleSidebar = (): void => {
@@ -287,7 +295,14 @@ export function App(): React.JSX.Element {
   const { width, onHandleMouseDown } = useSidebarResize(sidebarRef)
   // LIFE-589 — 오른쪽 패널(⌘L)·탐색기(⌘⇧E). 패널을 닫아도 탐색기 상태는 여기 남는다(E1ⓔ).
   const rightPanelRef = useRef<HTMLDivElement | null>(null)
-  const rightPanel = useRightPanel(rightPanelRef)
+  const rightPanel = useRightPanel({ panelRef: rightPanelRef, sidebarWidth: sidebarCollapsed ? 0 : width })
+  /** 오른쪽 패널 작업 상세 보기의 몸통 — TasksPage 가 상세 host 를 여기 붙인다(LIFE-682). */
+  const [detailSlot, setDetailSlot] = useState<HTMLDivElement | null>(null)
+  // 탐색기가 보일 때 = 패널 열림 + 탐색기 보기. 감시·auto reveal·필터는 이것으로 켠다(A11 — 상세 보기 동안 감시 0).
+  const explorerVisible = rightPanel.open && rightPanel.view === 'explorer'
+  // LIFE-683 — 소스 제어 보기. 감시·git 은 이 보기가 보일 때만(탐색기와 같은 루트면 한 벌 — S8).
+  const scmVisible = rightPanel.open && rightPanel.view === 'scm'
+  const [scmFocusToken, setScmFocusToken] = useState(0)
   const [explorerFocusToken, setExplorerFocusToken] = useState(0)
   const repoCollapse = usePersistentCollapse('collapsedRepos')
   // LIFE-467: 알약은 기본 **접힘**(Orca 와 같다) — 펼친 worktree 만 영속한다. 옛 `collapsedGroups`(기본 펼침)는 안 읽는다.
@@ -614,7 +629,8 @@ export function App(): React.JSX.Element {
   const activeWorktreeRowRef = useRef(activeWorktreeRow)
   activeWorktreeRowRef.current = activeWorktreeRow
 
-  const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: rightPanel.open })
+  const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: explorerVisible })
+  const scm = useScm({ root: activeWorktreeRow?.path ?? null, active: scmVisible })
 
   const activeWorkspaceRow = useMemo(
     () => (state === null ? null : findWorkspace(state, lifecycle.activeWorkspaceId)),
@@ -820,16 +836,16 @@ export function App(): React.JSX.Element {
   }, [docsVer, layout.groups, watchRoot, keepFileTab])
 
   // LIFE-590 E6 auto reveal — 활성 영역의 활성 탭이 파일 탭이면 탐색기가 그 파일을 따라간다(조상 펼침·선택·스크롤, 포커스는 그대로).
-  // 패널이 닫혀 있으면 아무것도 안 하고, 열리면 그때 활성 파일을 보인다(open 이 의존성). 숨김 경로(`.git`·`node_modules`)는 `reveal` 이 거른다.
+  // 탐색기가 안 보이면(패널 닫힘·상세 보기) 아무것도 안 하고, 보이면 그때 활성 파일을 보인다(보임이 의존성 — 보기를 탐색기로 돌릴 때도, LIFE-682 A11). 숨김 경로(`.git`·`node_modules`)는 `reveal` 이 거른다.
   const activeTabIdForReveal = layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null
   const activeTabKind = activeTabIdForReveal === null ? null : tabKindOf(activeTabIdForReveal)
   const activeFileRel = activeTabKind?.kind === 'file' ? activeTabKind.rel : null
   const [revealRequest, setRevealRequest] = useState<{ rel: string; token: number } | null>(null)
   const revealFile = explorer.reveal
   useEffect(() => {
-    if (!rightPanel.open || activeFileRel === null) return
+    if (!explorerVisible || activeFileRel === null) return
     if (revealFile(activeFileRel)) setRevealRequest((previous) => ({ rel: activeFileRel, token: (previous?.token ?? 0) + 1 }))
-  }, [rightPanel.open, activeFileRel, revealFile])
+  }, [explorerVisible, activeFileRel, revealFile])
 
   // LIFE-593 E5ⓐ — 어느 경로로 열든(탐색기·⌘P·편집기 링크·⌘⇧T·탭 클릭) 활성 영역의 활성 탭이 파일 탭이 되면 그 worktree 기록 맨 앞에 둔다(ui-prefs 영속 — Q5).
   // 첫 ui-prefs 읽기 전에는 적지 않는다(저장된 기록을 빈 기록으로 덮지 않게).
@@ -1251,6 +1267,12 @@ export function App(): React.JSX.Element {
   const closeFileNow = (input: { worktreePath: string; tabId: string }): void => {
     const { worktreePath, tabId } = input
     const kind = tabKindOf(tabId)
+    // LIFE-683 — diff 탭은 문서가 없다. 닫기만(닫은 탭 기록 ⌘⇧T 는 파일 탭만 — 기록 형식 무변경).
+    if (kind.kind === 'diff') {
+      noteFileClose({ worktreePath, tabIds: [tabId] })
+      layout.closeFile({ tabId })
+      return
+    }
     if (kind.kind !== 'file') return
     fileViewStatesOf(worktreePath).delete(tabId)
     disposeDoc(docKey(worktreePath, kind.rel))
@@ -1271,7 +1293,39 @@ export function App(): React.JSX.Element {
       rel: input.rel,
       preview: input.preview,
       onReplaced: (replaced) => {
+        // LIFE-683 — 밀려난 것이 diff 탭이면 문서·닫은 탭 기록이 없다.
+        if (tabKindOf(replaced.tabId).kind !== 'file') return
         // 교체로 밀려난 미리보기 탭의 문서 — 수정된 미리보기는 고정돼 교체되지 않으므로(E1ⓓ) 여기 오는 것은 수정 없는 문서다.
+        const replacedDoc = getDoc(docKey(worktreePath, replaced.rel))
+        if (replacedDoc !== undefined && !replacedDoc.dirty) disposeDoc(replacedDoc.key)
+        recentlyClosedRef.current = pushClosed({ history: recentlyClosedRef.current, snapshot: { kind: 'file', worktreePath, rel: replaced.rel, preview: true, groupId: replaced.groupId, index: replaced.index } })
+      },
+    })
+  }
+
+  /**
+   * LIFE-683 S5 — 소스 제어 행 열기. 추적 안 함·충돌·intent-to-add 는 보통 파일 탭(탐색기와 같은 경로), 나머지는 diff 탭(같은 미리보기·고정 규칙 — `openFileTab`).
+   * 같은 대상은 같은 탭 id 라 다시 누르면 그 탭이 활성(중복 0). 밀려난 미리보기가 파일 탭이면 탐색기 열기와 같게 문서·닫은 탭 기록을 다룬다.
+   */
+  const openScmChange = (input: { change: ScmChange; preview: boolean }): void => {
+    const opened = openOf(input.change)
+    // fix r1 R1-04 — 하위 모듈은 내용 비교가 없다: 폴더 읽기 오류 탭 대신 안내.
+    if (opened.kind === 'notice') {
+      notify(opened.message)
+      return
+    }
+    if (opened.kind === 'file') {
+      openFileFromExplorer({ rel: opened.rel, preview: input.preview })
+      return
+    }
+    const worktreePath = activeWorktreeRow?.path ?? null
+    if (worktreePath === null) return
+    layout.openFile({
+      rel: opened.target.rel,
+      preview: input.preview,
+      tabId: diffTabId(opened.target),
+      onReplaced: (replaced) => {
+        if (tabKindOf(replaced.tabId).kind !== 'file') return
         const replacedDoc = getDoc(docKey(worktreePath, replaced.rel))
         if (replacedDoc !== undefined && !replacedDoc.dirty) disposeDoc(replacedDoc.key)
         recentlyClosedRef.current = pushClosed({ history: recentlyClosedRef.current, snapshot: { kind: 'file', worktreePath, rel: replaced.rel, preview: true, groupId: replaced.groupId, index: replaced.index } })
@@ -1518,7 +1572,6 @@ export function App(): React.JSX.Element {
   }
   const openTasks = (): void => {
     mruCancel()
-    setTasksMounted(true)
     setTasksOpen(true)
   }
   // 닫으면 덮개가 걷힌 다음 프레임에 활성 pane 이 포커스를 되찾는다(설정 닫기와 같다).
@@ -1557,7 +1610,7 @@ export function App(): React.JSX.Element {
     // 트리 포커스에서만 온다(범위 'explorer') — 탐색기 머리 입력칸을 연다.
     // 팔레트에서 고르면 패널이 닫혀 있을 수 있다 — 열고 연다.
     'explorer.filter': () => {
-      rightPanel.show()
+      rightPanel.show('explorer')
       setExplorerFilterToken((value) => value + 1)
     },
     'terminal.new': () => lifecycle.createShell(),
@@ -1632,8 +1685,13 @@ export function App(): React.JSX.Element {
     'explorer.undo': () => void fileOps.undo(),
     'explorer.redo': () => void fileOps.redo(),
     'explorer.show': () => {
-      rightPanel.show()
+      rightPanel.show('explorer')
       requestAnimationFrame(() => setExplorerFocusToken((value) => value + 1))
+    },
+    // LIFE-683 — VS Code `workbench.view.scm` 과 같은 뜻: 닫혀 있으면 열고 소스 제어 보기로, 목록에 포커스.
+    'scm.show': () => {
+      rightPanel.show('scm')
+      requestAnimationFrame(() => setScmFocusToken((value) => value + 1))
     },
     // LIFE-515 — 기본 Agent 로 새 탭. ⌘T 와 같은 대상 workspace·같은 생성 경로(createRow), 에이전트 갈래는 Quick-launch 와 같은 launchAgent(워치독).
     'terminal.newAgent': () => {
@@ -1652,7 +1710,7 @@ export function App(): React.JSX.Element {
   // 키는 useKeybindings 가 이미 삼켰으므로 터미널로 새지 않는다. 페이지 닫기(⌘I)·설정·사이드바 접기만 산다.
   const activeHandlers: ShortcutHandlers = { ...handlers }
   if (tasksOpen) for (const action of ACTIONS) if (!TASKS_PAGE_SHORTCUTS.includes(action.id)) activeHandlers[action.id] = () => undefined
-  const keymap = useKeybindings(activeHandlers, modalBlocked || paletteOpen || quickOpenOpen, () => {
+  const keymap = useKeybindings(activeHandlers, modalBlocked || paletteOpen || quickOpenOpen || tasksModalOpen, () => {
     if (mruRef.current === null) return false
     mruCancel()
     return true
@@ -1721,6 +1779,8 @@ export function App(): React.JSX.Element {
     const groupPreview = previewOf(group)
     const groupItems: GroupTabItem[] = group.tabOrder.flatMap((tabId): GroupTabItem[] => {
       const kind = tabKindOf(tabId)
+      if (kind.kind === 'diff')
+        return [{ kind: 'file', tabId, rel: kind.target?.rel ?? tabId, preview: groupPreview === tabId, deleted: false, dirty: false, diffLabel: kind.target === null ? '(diff)' : diffTitle(kind.target) }]
       if (kind.kind === 'file')
         return [
           {
@@ -1847,7 +1907,7 @@ export function App(): React.JSX.Element {
             .filter((other) => other.groupId !== group.groupId)
             .map((other) => {
               const kind = other.activeTabId === null ? null : tabKindOf(other.activeTabId)
-              return { groupId: other.groupId, label: kind?.kind === 'file' ? fileTabLabel(kind.rel) : (tabById(other.activeTabId)?.label ?? '비어 있음') }
+              return { groupId: other.groupId, label: kind?.kind === 'file' ? fileTabLabel(kind.rel) : kind?.kind === 'diff' ? (kind.target === null ? '(diff)' : diffTitle(kind.target)) : (tabById(other.activeTabId)?.label ?? '비어 있음') }
             })}
           onMoveToOtherGroup={({ tabId, targetGroupId }) =>
             layout.mergeTabIntoGroup({ tabId, fromGroupId: group.groupId, toGroupId: targetGroupId })
@@ -1863,7 +1923,17 @@ export function App(): React.JSX.Element {
             }}
           />
         ) : null}
-        {activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (
+        {activeFile !== null && activeFile.kind === 'diff' && activeWorktreeRow !== null ? (
+          <DiffView
+            key={activeFile.tabId}
+            root={activeWorktreeRow.path}
+            target={activeFile.target}
+            stamp={scm.stampOf(activeWorktreeRow.path)}
+            // fix r1 R1-01 — 영역에 보이는 diff 탭은 그 루트 감시를 잡는다(작업 페이지·설정이 덮으면 안 보임 → 해제).
+            watch={!tasksOpen && settingsView === null}
+            onOpenFile={(rel) => openFileFromExplorer({ rel, preview: false })}
+          />
+        ) : activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (
           <FileView
             key={activeFile.tabId}
             root={activeWorktreeRow.path}
@@ -1941,8 +2011,8 @@ export function App(): React.JSX.Element {
                   <TerminalPane
                     paneId={groupPane.paneId}
                     diagnostics={state.diagnostics}
-                    focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksOpen}
-                    focusToken={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksOpen ? focusToken : 0}
+                    focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksModalOpen && !tasksOpen}
+                    focusToken={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksModalOpen && !tasksOpen ? focusToken : 0}
                     /* 비활성 영역은 herdr 세션 포커스를 가져가지 않는다 (S2-b — PaneLayout 과 같은 규칙). */
                     announceFocus={isActiveGroup}
                   />
@@ -1954,7 +2024,7 @@ export function App(): React.JSX.Element {
                 cell={cell}
                 zoomedPaneId={groupState.zoomedPaneId}
                 selectedPaneId={groupSelectedPaneId}
-                focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksOpen}
+                focusable={isActiveGroup && !paletteOpen && !quickOpenOpen && !modalBlocked && !tasksModalOpen && !tasksOpen}
                 focusToken={focusToken}
                 diagnostics={state.diagnostics}
                 onSelect={(paneId) => activateGroup({ groupId: group.groupId, paneId })}
@@ -2220,41 +2290,51 @@ export function App(): React.JSX.Element {
             />
           )}
           </div>
-          {tasksMounted ? (
-            <TasksPage
-              open={tasksOpen}
-              repos={state.repos}
-              activeRepoRoot={state.repos.find((repo) => repo.worktrees.some((worktree) => worktree === activeWorktree))?.root ?? null}
-              shortcut={((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('tasks.toggle', keymap.overrides)[0])}
-              yieldKeys={modalBlocked || paletteOpen || quickOpenOpen}
-              onClose={closeTasks}
-              onOpenSettings={() => openSettings('connections')}
-              onOpenWorktree={(tree) => {
-                // 작업 중 줄 클릭 = 페이지 닫힘 + 그 worktree 활성 + 첫 세션 선택 — 사이드바 카드 클릭과 같은 함수(C11).
-                const worktree = state.repos.find((repo) => repo.root === tree.repoRoot)?.worktrees.find((entry) => entry.path === tree.path)
-                closeTasks()
-                if (worktree !== undefined) activateWorktreeCard({ actions: lifecycle.actions, repoRoot: tree.repoRoot, worktree, selectPane: revealPane })
-              }}
-              unreadPanes={unread.panes}
-              onRevealPane={(paneId) => {
-                // 「터미널에서 답하기」 — 페이지를 닫고 그 pane 으로(사이드바 세션 클릭과 같은 길).
-                closeTasks()
-                revealPane(paneId)
-              }}
-              focus={tasksFocus}
-            />
-          ) : null}
+          <TasksPage
+            open={tasksOpen}
+            repos={state.repos}
+            activeRepoRoot={state.repos.find((repo) => repo.worktrees.some((worktree) => worktree === activeWorktree))?.root ?? null}
+            shortcut={((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('tasks.toggle', keymap.overrides)[0])}
+            yieldKeys={modalBlocked || paletteOpen || quickOpenOpen}
+            onClose={closeTasks}
+            onOpenSettings={() => openSettings('connections')}
+            onOpenWorktree={(tree) => {
+              // 작업 중 줄 클릭 = 페이지 닫힘 + 그 worktree 활성 + 첫 세션 선택 — 사이드바 카드 클릭과 같은 함수(C11).
+              const worktree = state.repos.find((repo) => repo.root === tree.repoRoot)?.worktrees.find((entry) => entry.path === tree.path)
+              closeTasks()
+              if (worktree !== undefined) activateWorktreeCard({ actions: lifecycle.actions, repoRoot: tree.repoRoot, worktree, selectPane: revealPane })
+            }}
+            unreadPanes={unread.panes}
+            onRevealPane={(paneId) => {
+              // 「터미널에서 답하기」 — 페이지를 닫고 그 pane 으로(사이드바 세션 클릭과 같은 길).
+              closeTasks()
+              revealPane(paneId)
+            }}
+            focus={tasksFocus}
+            detailPanel={{ slot: detailSlot, shown: rightPanel.open && rightPanel.view === 'detail', show: () => rightPanel.show('detail'), hide: rightPanel.hide, openPage: openTasks }}
+            onModalChange={setTasksModalOpen}
+            headTail={rightPanel.ready && !rightPanel.open ? <RightPanelToggle label="오른쪽 패널 열기" shortcut={rightPanelToggleShortcut} onToggle={rightPanel.toggle} placement="tasks" /> : null}
+          />
         </div>
         <RightPanel
           open={rightPanel.open}
-          title="탐색기"
+          view={rightPanel.view}
+          shortcutOf={(view) => {
+            const action = RIGHT_PANEL_VIEWS.find((entry) => entry.id === view)?.action ?? null
+            const binding = action === null ? undefined : bindingsFor(action, keymap.overrides)[0]
+            return binding == null ? null : formatBinding(binding)
+          }}
+          onSelectView={rightPanel.select}
           panelRef={rightPanelRef}
           toggleShortcut={rightPanelToggleShortcut}
           onToggle={rightPanel.toggle}
           onResizeStart={rightPanel.onHandleMouseDown}
-        >
-          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={rightPanel.open} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} ops={fileOps} notify={notify} />
-        </RightPanel>
+          bodies={{
+            explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} ops={fileOps} notify={notify} />,
+            scm: <ScmView scm={scm} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} mode={scm.mode} onChangeMode={scm.setMode} focusToken={scmFocusToken} onOpen={openScmChange} />,
+            detail: <div ref={setDetailSlot} className="right-panel-detail" data-right-panel-detail="" />,
+          }}
+        />
       </div>
       {settingsView === null ? null : (
         // LIFE-527 D12 — Orca 설정 뷰는 전폭 36px 타이틀바(신호등 여백 + drag)를 유지한다. 설정 페이지는 그 아래에 선다.

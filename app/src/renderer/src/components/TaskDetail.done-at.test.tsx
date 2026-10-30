@@ -18,7 +18,7 @@ import { CredentialVault } from '../../../main/work/vault.js'
 import { FAKE_LA_TOKEN, FAKE_MOCK_TOKEN, FakeCipher, MemoryStore, workHarness } from '../../../main/work/test-kit.js'
 import { doneRow } from '../task-detail-model.js'
 import { DONE_HIDE_MS } from '../tasks-model.js'
-import { TasksPage } from './TasksPage.js'
+import { TasksPageInPanel } from './TasksPage.harness.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -73,7 +73,7 @@ function mount({ service, calls }: { service: WorkService; calls: WorkCall[] }):
     workRequest: (request: WorkRequest) => { calls.push(request.call); return service.request(request) },
     workActivity: async (query: unknown) => service.activity(query),
   })
-  act(() => root.render(createElement('div', null, createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
+  act(() => root.render(createElement('div', null, createElement(TasksPageInPanel, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => {}, onOpenSettings: () => {}, onOpenWorktree: () => {} }), createElement(Toaster))))
 }
 
 async function mockRig({ seed }: { seed: (state: MockState) => void }): Promise<Rig> {

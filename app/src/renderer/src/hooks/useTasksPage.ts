@@ -302,6 +302,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     setUnsureWrite({ uid, seq: unsureSeq.current })
   }, [])
   const [load, setLoad] = useState<TasksLoad>(EMPTY_LOAD)
+  /** 스페이스 자료를 다시 읽은 횟수(LIFE-745) — 부모 보충 결과가 이 값이 바뀔 때까지 재사용된다. */
+  const [readSeq, setReadSeq] = useState(0)
   const [search, setSearch] = useState<KeySearch>(NO_SEARCH)
   const [working, setWorking] = useState<Map<string, StoredLookup>>(new Map())
   const [transitions, setTransitions] = useState<TasksTransitions>(null)
@@ -653,6 +655,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       return [{ ...result.data, items: withCreated({ data: { ...result.data, items: replayed }, created: createdRef.current }) }]
     })
     setLoad({ spaceId: id, phase: error === null ? 'ready' : 'error', data, error, loadingMore: false })
+    setReadSeq((value) => value + 1)
     // 실패 뒤에 시작한 재조회가 다 받아졌다 — 그 갈래의 화면은 이제 서버 값이다(R1-B).
     if (error === null) for (const [lane, mark] of doubt.current) if (mark <= startDoubt) doubt.current.delete(lane)
     void refreshCreated(data)
@@ -1204,7 +1207,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     prefs, setPrefs, prefsReady,
     settings, groups, space, chooseSpace, choosing,
     query, setQuery, selectedId, setSelectedId,
-    load, rows, banner, connectionStatus,
+    load, rows, banner, connectionStatus, readSeq,
     reload, retry, loadMore, invalidateMore,
     hits, searchNotes, workingEntries, working: workingLookups, workingKeys, linked,
     move: (request: MoveRequest) => move({ ...request, undo: false, restore: null }),

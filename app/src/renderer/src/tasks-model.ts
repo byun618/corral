@@ -30,8 +30,12 @@ export type TasksDensity = 'detailed' | 'compact'
 export const TASKS_SORTS = ['rank', 'priority', 'due', 'key'] as const
 export type TasksSort = (typeof TASKS_SORTS)[number]
 export const TASKS_SORT_LABEL: Record<TasksSort, string> = { rank: '순서', priority: '우선순위', due: '마감', key: '키' }
-export const TASKS_GROUPS = ['status', 'priority', 'none'] as const
+export const TASKS_GROUPS = ['status', 'priority', 'parent', 'none'] as const
 export type TasksGroup = (typeof TASKS_GROUPS)[number]
+/** 보드 묶기(LIFE-745) — 없음 · 부모마다 가로 레인. */
+export const TASKS_SWIMLANES = ['none', 'parent'] as const
+export type TasksSwimlane = (typeof TASKS_SWIMLANES)[number]
+export const TASKS_SWIMLANE_LABEL: Record<TasksSwimlane, string> = { none: '없음', parent: '부모' }
 export const TASKS_PRESETS = ['all', 'working', 'blocked', 'week'] as const
 export type TasksPreset = (typeof TASKS_PRESETS)[number]
 export const TASKS_PRESET_LABEL: Record<TasksPreset, string> = { all: '전체', working: '작업 중', blocked: '막힘', week: '이번 주 마감' }
@@ -46,9 +50,11 @@ export type TasksFilters = {
   working: boolean
   /** 프리셋 「이번 주 마감」 — 칩이 아니라 프리셋이 켠다. 「필터 지우기」 가 같이 끈다. */
   dueWeek: boolean
+  /** 부모(LIFE-745) — 고른 부모의 `itemUid`. 그 부모의 직계 자식만 남는다. */
+  parent: string | null
 }
 
-export const NO_FILTERS: TasksFilters = { kinds: [], priorities: [], blocked: false, working: false, dueWeek: false }
+export const NO_FILTERS: TasksFilters = { kinds: [], priorities: [], blocked: false, working: false, dueWeek: false, parent: null }
 
 /** 앱 재시작 뒤에도 남는 것(C3) — 검색어·스크롤은 같은 실행 안에서만(페이지가 마운트를 유지한다). */
 export type TasksPrefs = {
@@ -57,6 +63,8 @@ export type TasksPrefs = {
   filters: TasksFilters
   sort: TasksSort
   group: TasksGroup
+  /** 보드 묶기(LIFE-745) — 칸이 없는 옛 설정·모르는 값은 「없음」. */
+  swimlane: TasksSwimlane
   density: TasksDensity
   defaultPreset: TasksPreset
   /** 상세 크기(LIFE-602 C1 · K4 「상세 패널 크기」 의 해석) — 오른쪽 패널 / 페이지 전체. */
@@ -65,7 +73,7 @@ export type TasksPrefs = {
   detail: { connectionId: string; itemId: string } | null
 }
 
-export const DEFAULT_TASKS_PREFS: TasksPrefs = { space: null, view: 'board', filters: NO_FILTERS, sort: 'rank', group: 'status', density: 'detailed', defaultPreset: 'all', detailFull: false, detail: null }
+export const DEFAULT_TASKS_PREFS: TasksPrefs = { space: null, view: 'board', filters: NO_FILTERS, sort: 'rank', group: 'status', swimlane: 'none', density: 'detailed', defaultPreset: 'all', detailFull: false, detail: null }
 
 function pick<T extends string>(list: readonly T[], value: unknown, fallback: T): T {
   return list.find((entry) => entry === value) ?? fallback
@@ -84,7 +92,8 @@ function readFilters(value: unknown): TasksFilters {
   if (!isRecord(value)) return NO_FILTERS
   const kinds = Array.isArray(value.kinds) ? [...new Set(value.kinds.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0))] : []
   const priorities = Array.isArray(value.priorities) ? WORK_PRIORITIES.filter((entry) => Array.isArray(value.priorities) && value.priorities.includes(entry)) : []
-  return { kinds, priorities, blocked: value.blocked === true, working: value.working === true, dueWeek: value.dueWeek === true }
+  const parent = typeof value.parent === 'string' && parseUid(value.parent) !== null ? value.parent : null
+  return { kinds, priorities, blocked: value.blocked === true, working: value.working === true, dueWeek: value.dueWeek === true, parent }
 }
 
 /** 저장된 칸을 모양을 확인하며 읽는다 — 칸마다 따로 기본값으로 떨어진다(손상된 칸 하나가 다른 칸을 버리지 않게, LIFE-470 K9ⓓ 선례). */
@@ -96,6 +105,7 @@ export function readTasksPrefs(value: unknown): TasksPrefs {
     filters: readFilters(value.filters),
     sort: pick(TASKS_SORTS, value.sort, DEFAULT_TASKS_PREFS.sort),
     group: pick(TASKS_GROUPS, value.group, DEFAULT_TASKS_PREFS.group),
+    swimlane: pick(TASKS_SWIMLANES, value.swimlane, DEFAULT_TASKS_PREFS.swimlane),
     density: value.density === 'compact' ? 'compact' : 'detailed',
     defaultPreset: pick(TASKS_PRESETS, value.defaultPreset, DEFAULT_TASKS_PREFS.defaultPreset),
     detailFull: value.detailFull === true,
@@ -262,13 +272,14 @@ export function branchKey({ branch, pattern }: { branch: string; pattern: string
 // --- 필터·검색 (C10) ---
 
 export function filtersActive(filters: TasksFilters): boolean {
-  return filters.kinds.length > 0 || filters.priorities.length > 0 || filters.blocked || filters.working || filters.dueWeek
+  return filters.kinds.length > 0 || filters.priorities.length > 0 || filters.blocked || filters.working || filters.dueWeek || filters.parent !== null
 }
 
 const DAY_MS = 86_400_000
 
-/** 필터 칩(C10) — 작업 하나만 본다(보드·백로그·리스트 행 · 작업 중 항목 · 키 일치 결과가 같은 함수를 쓴다, R1-I). */
-export function passesFilters({ item, filters, workingKeys, now }: { item: WorkItem; filters: TasksFilters; workingKeys: ReadonlySet<string>; now: number }): boolean {
+/** 필터 칩(C10) — 작업 하나만 본다(보드·백로그·리스트 행 · 작업 중 항목 · 키 일치 결과가 같은 함수를 쓴다, R1-I). 부모 필터는 (연결, 부모 id) 로 본다(LIFE-745). */
+export function passesFilters({ item, connectionId, filters, workingKeys, now }: { item: WorkItem; connectionId: string; filters: TasksFilters; workingKeys: ReadonlySet<string>; now: number }): boolean {
+  if (filters.parent !== null && (item.parentId === null || itemUid({ connectionId, itemId: item.parentId }) !== filters.parent)) return false
   if (filters.kinds.length > 0 && !filters.kinds.includes(item.kind.key)) return false
   if (filters.priorities.length > 0 && (item.priority === null || !filters.priorities.includes(item.priority))) return false
   if (filters.blocked && item.openBlockerCount === 0) return false
@@ -327,7 +338,8 @@ export function emptyCause({ total, afterFilter, query, view }: { total: number;
 
 // --- 보드 (C6) ---
 
-export type BoardColumn = { id: string; label: string; category: WorkCategory; statusKey: string | null; unmapped: boolean; rows: TasksRow[]; fill: number }
+/** `lane` = 묶기=부모 의 레인 id(부모 uid 또는 'none', LIFE-745). 묶기 없음이면 null. */
+export type BoardColumn = { id: string; label: string; category: WorkCategory; statusKey: string | null; unmapped: boolean; rows: TasksRow[]; fill: number; lane: string | null }
 /** 밴드 — 분류 셋 + 상태 목록에 없는 상태의 작업 밴드(`unmapped`, R1-Q: 분류 합계에 넣지 않는다). */
 export type BoardBand = { id: WorkCategory | 'unmapped'; category: WorkCategory; label: string; columns: BoardColumn[]; count: number }
 
@@ -357,7 +369,7 @@ export function boardBands({ rows, statuses, all }: { rows: TasksRow[]; statuses
   if (all) {
     return CATEGORIES.map((category) => {
       const columnRows = sorted.filter((row) => (row.status?.category ?? row.item.category) === category)
-      const column: BoardColumn = { id: `cat:${category}`, label: CATEGORY_LABEL[category], category, statusKey: null, unmapped: false, rows: columnRows, fill: category === 'done' ? 1 : category === 'todo' ? 0 : 0.5 }
+      const column: BoardColumn = { id: `cat:${category}`, label: CATEGORY_LABEL[category], category, statusKey: null, unmapped: false, rows: columnRows, fill: category === 'done' ? 1 : category === 'todo' ? 0 : 0.5, lane: null }
       return { id: category, category, label: CATEGORY_LABEL[category], columns: [column], count: columnRows.length }
     })
   }
@@ -375,13 +387,14 @@ export function boardBands({ rows, statuses, all }: { rows: TasksRow[]; statuses
         unmapped: false,
         rows: sorted.filter((row) => row.item.statusKey === status.key),
         fill: category === 'done' ? 1 : category === 'todo' ? 0 : (doing.indexOf(status) + 1) / (doing.length + 1),
+        lane: null,
       }))
     return { id: category, category, label: CATEGORY_LABEL[category], columns, count: columns.reduce((sum, column) => sum + column.rows.length, 0) }
   }).filter((band) => band.columns.length > 0)
   const strays = sorted.filter((row) => !known.has(row.item.statusKey))
   if (strays.length > 0) {
     // 맨 끝 자기 밴드 — 분류를 모르므로 어느 분류 합계에도 넣지 않는다(R1-Q). 카드 원은 출처가 준 분류.
-    const column: BoardColumn = { id: 'st:__unmapped', label: '보드에 칸이 없는 상태', category: 'todo', statusKey: null, unmapped: true, rows: strays, fill: 0 }
+    const column: BoardColumn = { id: 'st:__unmapped', label: '보드에 칸이 없는 상태', category: 'todo', statusKey: null, unmapped: true, rows: strays, fill: 0, lane: null }
     bands.push({ id: 'unmapped', category: 'todo', label: '칸 없는 상태', columns: [column], count: strays.length })
   }
   return bands
@@ -396,6 +409,123 @@ export function childProgress({ row, rows }: { row: TasksRow; rows: TasksRow[] }
   const children = rows.filter((entry) => entry.space.connectionId === row.space.connectionId && entry.item.parentId === item.id && entry.item.spaceKey === item.spaceKey)
   if (children.length === 0) return null
   return { done: children.filter((entry) => entry.item.category === 'done').length, total: children.length, children, partial: row.space.nextCursor !== null || row.space.truncated }
+}
+
+// --- 부모 (LIFE-745) ---
+
+/** 받은 행에 없는 부모의 단건 보충 결과 — 받는 중 · 받음 · 실패. */
+export type ParentLookup = { state: 'loading' } | { state: 'found'; item: WorkItem } | { state: 'error'; message: string }
+/** 카드·행·레인이 그리는 부모 하나 — `uid` = (연결, 부모 id), `path` = 가장 가까운 조상부터 아는 데까지(title). */
+export type ParentInfo = { uid: string; connectionId: string; itemId: string; lookup: ParentLookup; path: string }
+
+/** 부모를 아는 곳 — 받은 행에서 먼저, 없으면 보충 결과에서. */
+function knownItem({ connectionId, itemId, rows, fetched }: { connectionId: string; itemId: string; rows: TasksRow[]; fetched: ReadonlyMap<string, ParentLookup> }): WorkItem | null {
+  const row = rows.find((entry) => entry.space.connectionId === connectionId && entry.item.id === itemId)
+  if (row !== undefined) return row.item
+  const lookup = fetched.get(itemUid({ connectionId, itemId }))
+  return lookup?.state === 'found' ? lookup.item : null
+}
+
+/**
+ * 작업 하나의 가장 가까운 부모. 부모가 없으면 null. 받은 행에도 보충 결과에도 없으면 「받는 중」(보충이 곧 보낸다).
+ * 경로는 받은 행·보충으로 아는 조상까지만(최대 5단 — 상세 부모 경로와 같은 상한, 고리는 끊는다).
+ */
+export function parentInfo({ connectionId, item, rows, fetched }: { connectionId: string; item: Pick<WorkItem, 'id' | 'parentId'>; rows: TasksRow[]; fetched: ReadonlyMap<string, ParentLookup> }): ParentInfo | null {
+  if (item.parentId === null) return null
+  const uid = itemUid({ connectionId, itemId: item.parentId })
+  const found = knownItem({ connectionId, itemId: item.parentId, rows, fetched })
+  const lookup: ParentLookup = found !== null ? { state: 'found', item: found } : (fetched.get(uid) ?? { state: 'loading' })
+  const names: string[] = []
+  const seen = new Set<string>([item.id])
+  let next: WorkItem | null = found
+  while (next !== null && names.length < 5 && !seen.has(next.id)) {
+    seen.add(next.id)
+    names.push(`${next.key} ${next.title}`)
+    next = next.parentId === null ? null : knownItem({ connectionId, itemId: next.parentId, rows, fetched })
+  }
+  return { uid, connectionId, itemId: item.parentId, lookup, path: names.length === 0 ? '' : `상위: ${names.join(' › ')}` }
+}
+
+/** 보충할 부모 — 받은 행에 없는 부모의 (연결, id). 같은 부모는 한 번만. */
+export function missingParents({ entries, rows }: { entries: { connectionId: string; item: Pick<WorkItem, 'parentId'> }[]; rows: TasksRow[] }): { connectionId: string; itemId: string }[] {
+  const known = new Set(rows.map(rowUid))
+  const needs = new Map<string, { connectionId: string; itemId: string }>()
+  for (const { connectionId, item } of entries) {
+    if (item.parentId === null) continue
+    const uid = itemUid({ connectionId, itemId: item.parentId })
+    if (!known.has(uid) && !needs.has(uid)) needs.set(uid, { connectionId, itemId: item.parentId })
+  }
+  return [...needs.values()]
+}
+
+/** 부모 레인·그룹 하나 — `id` = 부모 uid, 부모 없는 작업은 'none'(맨 끝). */
+export type ParentLane = { id: string; parent: ParentInfo | null; rows: TasksRow[] }
+
+/**
+ * 부모별로 가른다(보드 묶기·리스트 그룹). 레인 안 행 순서는 받은 순서 그대로. 레인 순서 = 부모의 순서 값(`compareRank`) —
+ * 아직 받는 중·실패한 부모는 그 뒤(uid 순), 「부모 없음」 은 맨 끝. 「전체」 에서도 (연결, 부모 id) 로 갈린다.
+ */
+export function parentLanes({ rows, parentOf }: { rows: TasksRow[]; parentOf: (row: TasksRow) => ParentInfo | null }): ParentLane[] {
+  const lanes = new Map<string, ParentLane>()
+  const none: ParentLane = { id: 'none', parent: null, rows: [] }
+  for (const row of rows) {
+    const parent = parentOf(row)
+    if (parent === null) { none.rows.push(row); continue }
+    const lane = lanes.get(parent.uid) ?? { id: parent.uid, parent, rows: [] }
+    lane.rows.push(row)
+    lanes.set(parent.uid, lane)
+  }
+  const ordered = [...lanes.values()].sort((a, b) => {
+    const left = a.parent?.lookup.state === 'found' ? a.parent.lookup.item : null
+    const right = b.parent?.lookup.state === 'found' ? b.parent.lookup.item : null
+    if (left !== null && right !== null) return compareRank(left, right)
+    if (left !== null) return -1
+    if (right !== null) return 1
+    return a.id.localeCompare(b.id)
+  })
+  return none.rows.length > 0 ? [...ordered, none] : ordered
+}
+
+/** 부모 이름 — 받았으면 「키 제목」, 받는 중·실패면 그 문구. */
+export function parentLabel(parent: ParentInfo): string {
+  switch (parent.lookup.state) {
+    case 'found': return `${parent.lookup.item.key} ${parent.lookup.item.title}`
+    case 'loading': return '상위 작업…'
+    case 'error': return '부모를 불러오지 못함'
+  }
+}
+
+/** 레인 머리 진행 — 받아 둔 자식 중 완료 수 / 받아 둔 자식 수(`childProgress` 와 같은 규칙, 부모가 보드 밖이어도). 자식이 받은 쪽에 덜 왔으면 `partial`. */
+export function laneProgress({ parent, rows }: { parent: ParentInfo; rows: TasksRow[] }): { done: number; total: number; partial: boolean } | null {
+  const children = rows.filter((entry) => entry.space.connectionId === parent.connectionId && entry.item.parentId === parent.itemId)
+  if (children.length === 0) return null
+  return { done: children.filter((entry) => entry.item.category === 'done').length, total: children.length, partial: children.some((entry) => entry.space.nextCursor !== null || entry.space.truncated) }
+}
+
+/** 보드 묶기 — 묶기 없음의 밴드·칸 구성을 그대로 두고 칸마다 이 레인의 행만 남긴다(레인마다 같은 칸). */
+export function laneBands({ bands, lane }: { bands: BoardBand[]; lane: ParentLane }): BoardBand[] {
+  const members = new Set(lane.rows.map(rowUid))
+  return bands.map((band) => {
+    const columns = band.columns.map((column) => ({ ...column, lane: lane.id, rows: column.rows.filter((row) => members.has(rowUid(row))) }))
+    return { ...band, columns, count: columns.reduce((sum, column) => sum + column.rows.length, 0) }
+  })
+}
+
+/** 보드 칸의 놓기 영역 id — 묶기=부모 면 레인마다 갈린다(같은 상태 칸이 레인 수만큼 있다). */
+export function columnZone(column: BoardColumn): string {
+  return column.lane === null ? `col:${column.id}` : `col:${column.id}@${column.lane}`
+}
+
+/** 부모 필터 메뉴의 선택지 — 받은 행 중 자식이 있는 작업 + 보충한 부모. 순서 값 순. */
+export function parentOptions({ rows, fetched }: { rows: TasksRow[]; fetched: ReadonlyMap<string, ParentLookup> }): { uid: string; item: WorkItem }[] {
+  const options = new Map<string, WorkItem>()
+  for (const row of rows) {
+    if (row.item.parentId === null) continue
+    const uid = itemUid({ connectionId: row.space.connectionId, itemId: row.item.parentId })
+    const parent = knownItem({ connectionId: row.space.connectionId, itemId: row.item.parentId, rows, fetched })
+    if (parent !== null) options.set(uid, parent)
+  }
+  return [...options.entries()].map(([uid, item]) => ({ uid, item })).sort((a, b) => compareRank(a.item, b.item))
 }
 
 /** 막힘 배지 문구(C6) — 「막힘 · KEY」, 둘 이상이면 「(외 N)」. 열린 막은 쪽이 없으면 null(완료 분류 막은 쪽은 출처가 이미 뺐다). */
@@ -441,13 +571,16 @@ export function sortRows({ rows, sort }: { rows: TasksRow[]; sort: TasksSort }):
   }
 }
 
-export type ListGroup = { id: string; label: string; rows: TasksRow[] }
+/** `lane` = 그룹 「부모」 의 머리(부모 칩·진행, LIFE-745). 다른 그룹에는 없다. */
+export type ListGroup = { id: string; label: string; rows: TasksRow[]; lane?: ParentLane }
 
 /**
  * 그룹 — **받아 둔 행 기준**(C9). 단일 스페이스의 「상태」 는 워크플로 순서대로 상태마다, 「전체」 는 분류마다. 빈 그룹은 그리지 않는다.
  */
-export function groupRows({ rows, group, statuses, all }: { rows: TasksRow[]; group: TasksGroup; statuses: WorkStatus[]; all: boolean }): ListGroup[] {
+export function groupRows({ rows, group, statuses, all, parentOf = () => null }: { rows: TasksRow[]; group: TasksGroup; statuses: WorkStatus[]; all: boolean; parentOf?: (row: TasksRow) => ParentInfo | null }): ListGroup[] {
   switch (group) {
+    case 'parent':
+      return parentLanes({ rows, parentOf }).map((lane) => ({ id: `parent:${lane.id}`, label: lane.parent === null ? '부모 없음' : parentLabel(lane.parent), rows: lane.rows, lane }))
     case 'none':
       return rows.length === 0 ? [] : [{ id: 'all', label: '전체', rows }]
     case 'priority': {

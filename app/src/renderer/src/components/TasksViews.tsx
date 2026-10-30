@@ -1,6 +1,6 @@
 // 작업 페이지 보기 4 (LIFE-601) — 보드 · 백로그 · 리스트 · 작업 중. 계산은 `tasks-model.ts`, 자료·쓰기는 `useTasksPage`, 끌기는 `useTaskDrag`.
 // 출처 이름으로 분기하지 않는다 — 능력 표(흐림 + 이유 / 숨김)와 상태 목록만 본다(K3).
-import { Fragment, useState } from 'react'
+import { createContext, Fragment, useContext, useState } from 'react'
 import type { WorkCapabilities, WorkCategory, WorkItem, WorkStatus } from '../../../shared/work.js'
 import { elapsedLabel } from '../../../shared/session-activity.js'
 import { AGENT_DOT_LABEL } from '../agent-dot.js'
@@ -16,6 +16,9 @@ import {
   TASKS_SORTS,
   blockedLabel,
   childProgress,
+  columnZone,
+  laneProgress,
+  parentLabel,
   dueLabel,
   dueTone,
   itemUid,
@@ -23,6 +26,8 @@ import {
   type BoardBand,
   type BoardColumn,
   type ListGroup,
+  type ParentInfo,
+  type ParentLane,
   type TasksDensity,
   type TasksGroup,
   type TasksPreset,
@@ -35,6 +40,64 @@ import { AgentStateDot } from './AgentStateDot.js'
 import { WorktreeChip, WorktreeDotMark } from './WorkLinkChips.js'
 
 const IDLE_VIEW: ColumnDragView = { mode: 'idle', reason: null }
+
+// --- 부모 (LIFE-745) ---
+
+/** 부모 칩이 쓰는 것 — 페이지가 준다. 없으면(null) 칩을 그리지 않는다. */
+export type ParentsView = {
+  parentOf: (entry: { connectionId: string; item: WorkItem }) => ParentInfo | null
+  /** 칩·레인 머리 클릭 — 부모 상세를 오른쪽 패널에 연다(카드 선택과 같은 경로, 대상만 부모). */
+  open: (uid: string) => void
+  /** 부모의 상태 라벨 — 받은 부모만. */
+  statusLabel: (parent: ParentInfo) => string | null
+}
+export const ParentsContext = createContext<ParentsView | null>(null)
+
+/**
+ * 부모 칩 — 자세히 = 종류 아이콘 + 키 + 제목(한 줄 말줄임), 간단히 = 종류 아이콘 + 키(제목은 title). title 에 조상 경로.
+ * 받는 중 = 「상위 작업…」, 실패 = 「부모를 불러오지 못함」 + title 오류(숨기지 않는다). 버튼이라 끌기 손잡이가 되지 않는다(`useTaskDrag` NON_HANDLE).
+ */
+export function ParentChip({ parent, compact }: { parent: ParentInfo; compact: boolean }): React.JSX.Element | null {
+  const view = useContext(ParentsContext)
+  if (view === null) return null
+  const { lookup } = parent
+  const title = lookup.state === 'found' ? parent.path : lookup.state === 'loading' ? '상위 작업을 받는 중…' : `부모를 불러오지 못함 — ${lookup.message}`
+  return (
+    <button
+      type="button"
+      className={`tasks-parent-chip is-${lookup.state}${compact ? ' is-compact' : ''}`}
+      data-parent-chip={lookup.state === 'found' ? lookup.item.key : ''}
+      data-parent-state={lookup.state}
+      title={title}
+      aria-label={`부모 열기 — ${parentLabel(parent)}`}
+      onClick={(event) => { event.stopPropagation(); view.open(parent.uid) }}
+    >
+      {lookup.state === 'found' ? <KindIcon kind={lookup.item.kind} /> : null}
+      <span className="tasks-parent-key">{lookup.state === 'found' ? lookup.item.key : parentLabel(parent)}</span>
+      {lookup.state === 'found' && !compact ? <span className="tasks-parent-title">{lookup.item.title}</span> : null}
+    </button>
+  )
+}
+
+/** 작업 하나의 부모 칩 — 부모가 없거나 페이지가 부모를 주지 않으면 null. */
+export function ParentChipOf({ connectionId, item, compact }: { connectionId: string | null; item: WorkItem; compact: boolean }): React.JSX.Element | null {
+  const view = useContext(ParentsContext)
+  if (view === null || connectionId === null) return null
+  const parent = view.parentOf({ connectionId, item })
+  return parent === null ? null : <ParentChip parent={parent} compact={compact} />
+}
+
+/** 레인·그룹 머리의 진행 n/m — 받은 자식 기준, 덜 받았으면 「받은 것」. */
+function LaneProgress({ parent, rows }: { parent: ParentInfo; rows: TasksRow[] }): React.JSX.Element | null {
+  const progress = laneProgress({ parent, rows })
+  if (progress === null) return null
+  return (
+    <span className="tasks-lane-progress" data-lane-progress={`${progress.done}/${progress.total}`} title={progress.partial ? '이 스페이스의 작업을 아직 다 받지 않았습니다 — 받은 자식만 셉니다' : undefined}>
+      <span>자식 {progress.done}/{progress.total}{progress.partial ? ' · 받은 것' : ''}</span>
+      <span className="tasks-progress-bar"><span style={{ width: `${(progress.done / progress.total) * 100}%` }} /></span>
+    </span>
+  )
+}
 
 // --- 작은 조각 ---
 
@@ -118,9 +181,11 @@ export type CardProps = {
   now: number
   handle: { blocked: string | null; onMouseDown: (event: React.MouseEvent<HTMLElement>) => void } | null
   onSelect: () => void
+  /** 묶기=부모 레인 안 — 레인 머리가 부모라 칩을 그리지 않는다(LIFE-745). */
+  hideParent?: boolean
 }
 
-export function IssueCard({ row, rows, all, density, selected, dragging, now, handle, onSelect }: CardProps): React.JSX.Element {
+export function IssueCard({ row, rows, all, density, selected, dragging, now, handle, onSelect, hideParent = false }: CardProps): React.JSX.Element {
   const { item } = row
   const [expanded, setExpanded] = useState(false)
   const progress = childProgress({ row, rows })
@@ -142,6 +207,7 @@ export function IssueCard({ row, rows, all, density, selected, dragging, now, ha
           <KindIcon kind={item.kind} />
           <span className="tasks-key">{item.key}</span>
           <span className="tasks-card-title-one">{item.title}</span>
+          {hideParent ? null : <ParentChipOf connectionId={row.space.connectionId} item={item} compact />}
           <PriorityMark item={item} />
           {item.openBlockerCount > 0 ? <span className="tasks-blocked-dot" data-issue-blocked="" title={blockedLabel(item) ?? ''} /> : null}
           <WorktreeDotMark connectionId={row.space.connectionId} item={item} />
@@ -159,6 +225,7 @@ export function IssueCard({ row, rows, all, density, selected, dragging, now, ha
         <PriorityMark item={item} />
         <DueMark item={item} now={now} />
       </div>
+      {hideParent ? null : <ParentChipOf connectionId={row.space.connectionId} item={item} compact={false} />}
       <div className="tasks-card-title">{item.title}</div>
       {all ? <div className="tasks-card-status"><StatusCircle category={item.category} fill={0.5} size={8} />{row.status?.label ?? '보드에 칸이 없는 상태'}</div> : null}
       <BlockedBadge item={item} />
@@ -188,10 +255,16 @@ export function IssueCard({ row, rows, all, density, selected, dragging, now, ha
 
 // --- 보드 ---
 
-export type ColumnDragView = { mode: 'target' | 'source' | 'blocked' | 'idle'; reason: string | null }
+/**
+ * `hoverOnly` = 이유 문구를 포인터가 올라간 칸에만 그린다(나머지는 흐림 + title) — 묶기=부모 의 다른 레인 칸이 끌기 시작과 함께
+ * 한꺼번에 문구를 늘려 보드를 밀지 않게(LIFE-745 R1-1). 없으면 기존대로 칸마다 그린다.
+ */
+export type ColumnDragView = { mode: 'target' | 'source' | 'blocked' | 'idle'; reason: string | null; hoverOnly?: boolean }
 
-export function Board({ bands, rows, all, density, selectedId, drag, now, columnView, handleOf, onSelect, columnFooter }: {
-  bands: BoardBand[]
+/** 묶기=부모 의 레인 하나 — 레인과 그 레인의 밴드(칸 구성은 묶기 없음과 같다). */
+export type BoardLane = { lane: ParentLane; bands: BoardBand[] }
+
+type BandsProps = {
   rows: TasksRow[]
   all: boolean
   density: TasksDensity
@@ -203,28 +276,82 @@ export function Board({ bands, rows, all, density, selectedId, drag, now, column
   onSelect: (row: TasksRow) => void
   /** 칸 끝 「+ 추가」(LIFE-604 C7) — 그리지 않으면 null. */
   columnFooter?: (column: BoardColumn) => React.ReactNode
+}
+
+export function Board({ bands, lanes = null, ...rest }: BandsProps & {
+  bands: BoardBand[]
+  /** 묶기=부모(LIFE-745) — 있으면 레인마다 밴드를 그린다. null = 묶기 없음. */
+  lanes?: BoardLane[] | null
 }): React.JSX.Element {
+  // 레인 접힘은 이 실행 동안만 남는다(02-kickoff — 영속하지 않음).
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  if (lanes === null) return <div className="tasks-board" data-tasks-board=""><Bands bands={bands} hideParent={false} {...rest} /></div>
   return (
-    <div className="tasks-board" data-tasks-board="">
+    <div className="tasks-lanes" data-tasks-board="" data-tasks-lanes="">
+      {lanes.map(({ lane, bands: laneBands }) => {
+        const folded = collapsed.has(lane.id)
+        const name = lane.parent === null ? '부모 없음' : parentLabel(lane.parent)
+        return (
+          <section key={lane.id} className={`tasks-lane${folded ? ' is-collapsed' : ''}`} data-board-lane={lane.id} aria-label={`${name} 레인`}>
+            <LaneHead lane={lane} name={name} rows={rest.rows} folded={folded} onToggle={() => setCollapsed((current) => {
+              const next = new Set(current)
+              if (!next.delete(lane.id)) next.add(lane.id)
+              return next
+            })} />
+            {folded ? null : <div className="tasks-board"><Bands bands={laneBands} hideParent {...rest} /></div>}
+          </section>
+        )
+      })}
+    </div>
+  )
+}
+
+function LaneHead({ lane, name, rows, folded, onToggle }: { lane: ParentLane; name: string; rows: TasksRow[]; folded: boolean; onToggle: () => void }): React.JSX.Element {
+  const view = useContext(ParentsContext)
+  const { parent } = lane
+  const status = parent === null ? null : (view?.statusLabel(parent) ?? null)
+  return (
+    <header className="tasks-lane-head" data-lane-head={lane.id}>
+      <button type="button" className="tasks-lane-toggle" data-lane-toggle="" aria-expanded={!folded} aria-label={`${name} 레인 ${folded ? '펼치기' : '접기'}`} onClick={onToggle}>{folded ? '▸' : '▾'}</button>
+      {parent === null ? <span className="tasks-lane-none">부모 없음</span> : (
+        <>
+          <ParentChip parent={parent} compact={false} />
+          {status === null ? null : <span className="tasks-lane-status" data-lane-status="">{status}</span>}
+          <LaneProgress parent={parent} rows={rows} />
+        </>
+      )}
+      <span className="tasks-column-count">{lane.rows.length}</span>
+    </header>
+  )
+}
+
+function Bands({ bands, rows, all, density, selectedId, drag, now, columnView, handleOf, onSelect, columnFooter, hideParent }: BandsProps & { bands: BoardBand[]; hideParent: boolean }): React.JSX.Element {
+  return (
+    <>
       {bands.map((band) => (
         <section key={band.id} className={`tasks-band cat-${band.category}${band.id === 'unmapped' ? ' is-unmapped' : ''}`} data-board-band={band.id}>
           <header className="tasks-band-head"><span className="tasks-band-label">{band.label}</span><span className="tasks-band-count">{band.count}</span></header>
           <div className="tasks-band-columns">
             {band.columns.map((column) => {
               const view = drag === null ? IDLE_VIEW : columnView(column)
-              const zone = `col:${column.id}`
+              const zone = columnZone(column)
               const showGap = drag !== null && drag.zone === zone && view.mode === 'target'
               const visible = column.rows
+              // 칸마다 그리는 이유(묶기 없음)는 목록 위 줄. hoverOnly(묶기=부모 의 다른 레인)는 포인터가 올라간 칸에만, 목록 **안** 오버레이로 —
+              // 줄로 끼우면 목록이 밀려 포인터가 영역 밖으로 나가고 문구가 사라졌다 다시 생기는 토글이 난다(LIFE-745 r2 L1).
+              const showReason = view.reason !== null && view.hoverOnly !== true
+              const overlayReason = view.reason !== null && view.hoverOnly === true && drag?.zone === zone
               return (
-                <div key={column.id} className={`tasks-column${column.unmapped ? ' is-unmapped' : ''} drag-${view.mode}${drag?.zone === zone ? ' is-over' : ''}`} data-board-column={column.id}>
+                <div key={column.id} className={`tasks-column${column.unmapped ? ' is-unmapped' : ''} drag-${view.mode}${drag?.zone === zone ? ' is-over' : ''}`} data-board-column={column.id} title={view.hoverOnly === true ? (view.reason ?? undefined) : undefined}>
                   <header className="tasks-column-head">
                     {column.unmapped ? <span className="tasks-unmapped-mark" aria-hidden>⋯</span> : <StatusCircle category={column.category} fill={column.fill} />}
                     <span className="tasks-column-label">{column.label}</span>
                     <span className="tasks-column-count">{column.rows.length}</span>
                   </header>
                   {column.unmapped ? <div className="tasks-column-note">출처 워크플로에 칸이 없는 상태입니다 — 여기로 옮길 수는 없습니다.</div> : null}
-                  {view.reason !== null ? <div className="tasks-column-reason" data-column-reason="">{view.reason}</div> : null}
+                  {showReason ? <div className="tasks-column-reason" data-column-reason="">{view.reason}</div> : null}
                   <div className="tasks-column-list" data-drop-zone={zone}>
+                    {overlayReason ? <div className="tasks-column-reason is-overlay" data-column-reason="overlay" aria-live="polite">{view.reason}</div> : null}
                     {withGap({ rows: visible, drag, showGap }).map((entry) => (entry.kind === 'gap'
                       ? <div key="gap" className="tasks-drop-gap" style={{ height: entry.height }} data-drop-gap="" />
                       : (
@@ -239,6 +366,7 @@ export function Board({ bands, rows, all, density, selectedId, drag, now, column
                             now={now}
                             handle={handleOf(entry.row)}
                             onSelect={() => onSelect(entry.row)}
+                            hideParent={hideParent}
                           />
                         )))}
                     {columnFooter?.(column) ?? null}
@@ -249,7 +377,7 @@ export function Board({ bands, rows, all, density, selectedId, drag, now, column
           </div>
         </section>
       ))}
-    </div>
+    </>
   )
 }
 
@@ -306,7 +434,7 @@ export function Backlog({ sections, all, selectedId, drag, now, sectionView, han
 
 // --- 행 (리스트·백로그) ---
 
-export function IssueRow({ row, all, now, selected, dragging, handle, onSelect, keyHit, spaceName }: {
+export function IssueRow({ row, all, now, selected, dragging, handle, onSelect, keyHit, spaceName, hitConnectionId = null }: {
   row: TasksRow | { item: WorkItem; space: null; status: WorkStatus | null }
   all: boolean
   now: number
@@ -316,6 +444,8 @@ export function IssueRow({ row, all, now, selected, dragging, handle, onSelect, 
   onSelect: () => void
   keyHit: boolean
   spaceName?: string
+  /** 키 일치 결과 행(space 없음)의 연결 — 부모 칩이 (연결, 부모 id) 로 찾는다(LIFE-745). */
+  hitConnectionId?: string | null
 }): React.JSX.Element {
   const { item } = row
   const className = `tasks-row${selected ? ' is-selected' : ''}${dragging ? ' is-drag-source' : ''}${keyHit ? ' is-key-hit' : ''}`
@@ -329,6 +459,7 @@ export function IssueRow({ row, all, now, selected, dragging, handle, onSelect, 
       <span className="tasks-row-key">{item.key}</span>
       {keyHit ? <span className="tasks-key-hit" data-search-hit="">키 일치</span> : null}
       <span className="tasks-row-title">{item.title}</span>
+      <ParentChipOf connectionId={row.space?.connectionId ?? hitConnectionId} item={item} compact={false} />
       <BlockedBadge item={item} />
       <WorktreeChip connectionId={row.space?.connectionId ?? null} item={item} />
       {all || spaceName !== undefined ? (
@@ -346,8 +477,10 @@ export function IssueRow({ row, all, now, selected, dragging, handle, onSelect, 
 
 // --- 리스트 (C9) ---
 
-export function ListView({ groups, all, now, selectedId, sort, group, preset, defaultPreset, groupLabel, hits, more, onSort, onGroup, onPreset, onDefaultPreset, onSelect, onLoadMore }: {
+export function ListView({ groups, allRows, all, now, selectedId, sort, group, preset, defaultPreset, groupLabel, hits, more, onSort, onGroup, onPreset, onDefaultPreset, onSelect, onLoadMore }: {
   groups: ListGroup[]
+  /** 받은 행 전부 — 그룹 「부모」 머리의 자식 진행을 센다(LIFE-745). */
+  allRows: TasksRow[]
   all: boolean
   now: number
   selectedId: string | null
@@ -376,7 +509,7 @@ export function ListView({ groups, all, now, selectedId, sort, group, preset, de
           </select>
         </label>
         <label className="tasks-select">그룹
-          <select value={group} onChange={(event) => onGroup(event.target.value === 'priority' ? 'priority' : event.target.value === 'none' ? 'none' : 'status')} data-tasks-group="">
+          <select value={group} onChange={(event) => onGroup(TASKS_GROUPS.find((entry) => entry === event.target.value) ?? 'status')} data-tasks-group="">
             {TASKS_GROUPS.map((entry) => <option key={entry} value={entry}>{groupLabel(entry)}</option>)}
           </select>
         </label>
@@ -402,12 +535,16 @@ export function ListView({ groups, all, now, selectedId, sort, group, preset, de
         <div className="tasks-list-inner">
         {hits.map((hit) => {
           const uid = itemUid({ connectionId: hit.connectionId, itemId: hit.item.id })
-          return <IssueRow key={`hit-${uid}`} row={{ item: hit.item, space: null, status: null }} all={all} now={now} selected={selectedId === uid} dragging={false} handle={null} onSelect={() => onSelect(uid)} keyHit spaceName={hit.spaceName} />
+          return <IssueRow key={`hit-${uid}`} row={{ item: hit.item, space: null, status: null }} all={all} now={now} selected={selectedId === uid} dragging={false} handle={null} onSelect={() => onSelect(uid)} keyHit spaceName={hit.spaceName} hitConnectionId={hit.connectionId} />
         })}
         {groups.map((entry) => (
           <Fragment key={entry.id}>
             <div className="tasks-list-group" data-list-group={entry.id} title={hasMore ? '받아 둔 행 기준 — 더 있을 수 있습니다' : undefined}>
-              <span className="tasks-list-group-title"><span>{entry.label}</span><span className="tasks-column-count">{entry.rows.length}{hasMore ? ' / 받은 것' : ''}</span></span>
+              <span className="tasks-list-group-title">
+                {entry.lane?.parent != null ? <ParentChip parent={entry.lane.parent} compact={false} /> : <span>{entry.label}</span>}
+                <span className="tasks-column-count">{entry.rows.length}{hasMore ? ' / 받은 것' : ''}</span>
+                {entry.lane?.parent != null ? <LaneProgress parent={entry.lane.parent} rows={allRows} /> : null}
+              </span>
             </div>
             {entry.rows.map((row) => (
               <IssueRow key={rowUid(row)} row={row} all={all} now={now} selected={selectedId === rowUid(row)} dragging={false} handle={null} onSelect={() => onSelect(rowUid(row))} keyHit={false} />
@@ -460,6 +597,7 @@ export function WorkingList({ views, now, onOpen }: { views: WorkingView[]; now:
                 <KindIcon kind={lookup.item.kind} />
                 <span className="tasks-row-key">{lookup.item.key}</span>
                 <span className="tasks-row-title">{lookup.item.title}</span>
+                <ParentChipOf connectionId={entry.connectionId} item={lookup.item} compact={false} />
                 <span className="tasks-row-space">{lookup.spaceName}</span>
               </>
             ) : (

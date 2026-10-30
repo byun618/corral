@@ -87,8 +87,9 @@ describe('C3 영속 모양', () => {
     const stored = { space: { kind: 'space', connectionId: 'c1', spaceKey: 'p1' }, view: 'list', filters: { kinds: ['bug', 3], priorities: ['high', 'nope'], blocked: true, working: 'x', dueWeek: true }, sort: 'due', group: 'bogus', density: 'compact', defaultPreset: 'week' }
     expect(readTasksPrefs(stored)).toEqual({
       space: { kind: 'space', connectionId: 'c1', spaceKey: 'p1' }, view: 'list',
-      filters: { kinds: ['bug'], priorities: ['high'], blocked: true, working: false, dueWeek: true },
-      sort: 'due', group: 'status', density: 'compact', defaultPreset: 'week', detailFull: false, detail: null,
+      // 옛 모양(LIFE-745 전) — 새 칸(부모 필터·묶기)은 기본값으로 읽힌다.
+      filters: { kinds: ['bug'], priorities: ['high'], blocked: true, working: false, dueWeek: true, parent: null },
+      sort: 'due', group: 'status', swimlane: 'none', density: 'compact', defaultPreset: 'week', detailFull: false, detail: null,
     })
     expect(readTasksPrefs(undefined)).toEqual(DEFAULT_TASKS_PREFS)
     expect(readTasksPrefs({ space: { kind: 'space', connectionId: '' } }).space).toBeNull()
@@ -229,9 +230,9 @@ describe('C10 검색·필터', () => {
     const [row] = rowsOf([space([item({ id: 'a', key: 'LIFE-1', kind: { key: 'bug', label: 'Bug', childKinds: [] }, priority: 'high', openBlockerCount: 1, dueAt: '2026-10-15T00:00:00Z' })])])
     if (row === undefined) throw new Error('row')
     const working = new Set(['LIFE-1'])
-    expect(passesFilters({ item: row.item, filters: { ...NO_FILTERS, kinds: ['bug'], priorities: ['high'], blocked: true, working: true, dueWeek: true }, workingKeys: working, now })).toBe(true)
-    expect(passesFilters({ item: row.item, filters: { ...NO_FILTERS, kinds: ['task'] }, workingKeys: working, now })).toBe(false)
-    expect(passesFilters({ item: row.item, filters: { ...NO_FILTERS, working: true }, workingKeys: new Set(), now })).toBe(false)
+    expect(passesFilters({ item: row.item, connectionId: row.space.connectionId, filters: { ...NO_FILTERS, kinds: ['bug'], priorities: ['high'], blocked: true, working: true, dueWeek: true }, workingKeys: working, now })).toBe(true)
+    expect(passesFilters({ item: row.item, connectionId: row.space.connectionId, filters: { ...NO_FILTERS, kinds: ['task'] }, workingKeys: working, now })).toBe(false)
+    expect(passesFilters({ item: row.item, connectionId: row.space.connectionId, filters: { ...NO_FILTERS, working: true }, workingKeys: new Set(), now })).toBe(false)
     expect(passesText({ item: row.item, query: 'TITLE A' })).toBe(true)
     expect(passesText({ item: row.item, query: 'life-1' })).toBe(true)
     expect(passesText({ item: row.item, query: 'nothing' })).toBe(false)

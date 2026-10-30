@@ -23,14 +23,23 @@ import { useTaskDrag, type TaskDrop } from '../hooks/useTaskDrag.js'
 import { DETAIL_READING, useTasksPage, type MoveNotice } from '../hooks/useTasksPage.js'
 import { useTaskDetail } from '../hooks/useTaskDetail.js'
 import {
+  CATEGORY_LABEL,
   NO_FILTERS,
   PRIORITY_LABEL,
+  TASKS_SWIMLANES,
+  TASKS_SWIMLANE_LABEL,
   TASKS_VIEWS,
   TASKS_VIEW_LABEL,
   activePreset,
   applyPreset,
   boardBands,
   boardDropIntent,
+  columnZone,
+  laneBands,
+  missingParents,
+  parentInfo,
+  parentLanes,
+  parentOptions,
   compareRank,
   emptyCause,
   filtersActive,
@@ -51,6 +60,7 @@ import {
   type BoardColumn,
   type DragIntent,
   type EmptyCause,
+  type ParentInfo,
   type TasksFilters,
   type TasksGroup,
   type TasksRow,
@@ -68,6 +78,7 @@ import { treesFor } from '../work-links-model.js'
 import type { WorkRepoDefault } from '../../../shared/work.js'
 import { InlineAddSlot, QuickCreateModal } from './QuickCreate.js'
 import { useQuickCreate } from '../hooks/useQuickCreate.js'
+import { useParentLookup } from '../hooks/useParentLookup.js'
 
 /** 사이드바 작업 줄이 여는 작업 — `itemId` 를 모르면(자동 링크) 키로 찾는다. */
 export type TasksFocus = { seq: number; connectionId: string; itemId: string | null; key: string }
@@ -87,12 +98,14 @@ export type DetailPanel = {
 }
 
 const NO_DEFAULTS: WorkRepoDefault[] = []
-import { Backlog, Board, ListView, MoreBar, SpaceDot, WorkingList, capabilityGate, type CardProps, type ColumnDragView, type MoreState, type WorkingView } from './TasksViews.js'
+import { Backlog, Board, ListView, MoreBar, ParentChipOf, ParentsContext, SpaceDot, WorkingList, capabilityGate, type BoardLane, type CardProps, type ColumnDragView, type MoreState, type ParentsView, type WorkingView } from './TasksViews.js'
 
 type BacklogSection = { id: 'board' | 'backlog'; label: string; rows: TasksRow[] }
 
 const IDLE: ColumnDragView = { mode: 'idle', reason: null }
 const NO_TRANSITION = '워크플로에 이 전이가 없습니다'
+/** 묶기=부모 에서 다른 레인으로 놓기 — 부모 바꾸기는 이번 범위 밖이다(LIFE-745 C6, 쓰기 0). */
+const LANE_LOCKED = '부모 바꾸기는 상세에서 — 다른 부모 줄로는 옮길 수 없습니다'
 const BUSY = '앞 변경을 출처가 확인하는 중…'
 
 const EMPTY_COPY: Record<EmptyCause, { title: string; body: string }> = {
@@ -129,7 +142,7 @@ export type TasksPageProps = {
 export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus, detailPanel, headTail, onModalChange }: TasksPageProps): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
-  const [menu, setMenu] = useState<'space' | 'kind' | 'priority' | null>(null)
+  const [menu, setMenu] = useState<'space' | 'kind' | 'priority' | 'parent' | null>(null)
   const [now, setNow] = useState(() => Date.now())
 
   const notify = (notice: MoveNotice): void => {
@@ -258,12 +271,12 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const view: TasksView = views.includes(prefs.view) && viewReason(prefs.view) === null ? prefs.view : 'board'
 
   // --- 거르기 ---
-  const passes = (item: WorkItem): boolean => passesFilters({ item, filters: prefs.filters, workingKeys: page.workingKeys, now })
+  const passes = (item: WorkItem, connectionId: string): boolean => passesFilters({ item, connectionId, filters: prefs.filters, workingKeys: page.workingKeys, now })
   // 키 일치(E2) — 필터를 우회하지 않고(R1-I), 정확히 그 키인 작업은 맨 앞 영역으로 옮기고 나머지 목록에서 뺀다(R1-J).
-  const hits = page.hits.filter((hit) => passes(hit.item))
+  const hits = page.hits.filter((hit) => passes(hit.item, hit.connectionId))
   const hitUids = new Set(hits.map((hit) => itemUid({ connectionId: hit.connectionId, itemId: hit.item.id })))
   const filtered = useMemo(
-    () => rows.filter((row) => passes(row.item) && passesText({ item: row.item, query }) && !hitUids.has(rowUid(row))),
+    () => rows.filter((row) => passes(row.item, row.space.connectionId) && passesText({ item: row.item, query }) && !hitUids.has(rowUid(row))),
     [rows, prefs.filters, page.workingKeys, now, query, page.hits],
   )
   // 오래된 완료 숨김(LIFE-702) — 보드·백로그 보기에서 검색어가 없을 때만. 필터·프리셋은 풀지 않는다. 숨긴 건수 안내는 그리지 않는다.
@@ -272,7 +285,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   // `now` 는 `filtered` 도 이미 의존하지만, 이 계산이 직접 쓰는 값이라 의존 목록에 둔다(LIFE-702 G4).
   const shelved = useMemo(() => (shelving ? filtered.filter((row) => onShelf(row.item)) : filtered), [filtered, shelving, now])
   // 숨긴 행은 세지 않는다 — 필터를 통과한 숨긴 행만 남은 빈 상태가 「검색 결과 없음」 으로 꾸며지지 않게(LIFE-702 H4 — G4 에서 뺀 것을 되살림).
-  const afterFilter = useMemo(() => rows.filter((row) => passes(row.item) && onShelf(row.item)).length, [rows, prefs.filters, page.workingKeys, now, shelving])
+  const afterFilter = useMemo(() => rows.filter((row) => passes(row.item, row.space.connectionId) && onShelf(row.item)).length, [rows, prefs.filters, page.workingKeys, now, shelving])
   const statuses: WorkStatus[] = load.data.length === 1 ? (load.data[0]?.statuses ?? []) : []
   const kinds = useMemo(() => {
     const map = new Map<string, string>()
@@ -296,13 +309,37 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     return [{ entry, lookup }]
   })
   // 같은 필터(R1-I) — 작업을 찾았으면 그 작업으로, 아직 못 찾았으면(찾는 중·없음·실패) 「작업 중」 밖의 필터가 켜져 있을 때 뺀다.
-  const workingScoped = workingInSpace.filter(({ lookup }) => (lookup.state === 'found' ? passes(lookup.item) : !filtersActive({ ...prefs.filters, working: false })))
+  const workingScoped = workingInSpace.filter(({ entry, lookup }) => (lookup.state === 'found' ? passes(lookup.item, entry.connectionId) : !filtersActive({ ...prefs.filters, working: false })))
   const workingAfterFilter = workingScoped.length
   // 글자 거르기 — 찾은 작업은 키·제목으로, 아직 못 찾은 항목(찾는 중·없음·실패)은 키·브랜치로(R2-H). 키 일치 결과는 위에 따로 보인다
   // (작업 중 항목은 worktree 열기 버튼을 갖고 있어 겹쳐도 빼지 않는다).
   const workingViews = workingScoped.filter(({ entry, lookup }) => (lookup.state === 'found'
     ? passesText({ item: lookup.item, query })
     : workingTextMatches({ key: entry.key, branches: entry.trees.map((tree) => tree.branch), query })))
+
+  // --- 부모 (LIFE-745) ---
+  // 받은 행에 없는 부모만 단건으로 보충한다 — 보드·백로그·리스트 행, 키 일치 결과, 작업 중 머리의 부모. 스페이스 자료를 다시 읽으면 다시 받는다.
+  const parentNeeds = missingParents({
+    entries: [
+      ...rows.map((row) => ({ connectionId: row.space.connectionId, item: row.item })),
+      ...page.hits.map((hit) => ({ connectionId: hit.connectionId, item: hit.item })),
+      ...workingInSpace.flatMap(({ entry, lookup }) => (lookup.state === 'found' ? [{ connectionId: entry.connectionId, item: lookup.item }] : [])),
+    ],
+    rows,
+  })
+  const fetchedParents = useParentLookup({ needs: parentNeeds, epoch: `${load.spaceId ?? ''}#${page.readSeq}`, active: open })
+  const parentOfRow = (row: TasksRow): ParentInfo | null => parentInfo({ connectionId: row.space.connectionId, item: row.item, rows, fetched: fetchedParents })
+  const parents = useMemo((): ParentsView => ({
+    parentOf: ({ connectionId, item }) => parentInfo({ connectionId, item, rows, fetched: fetchedParents }),
+    open: (uid) => setSelectedId(uid),
+    statusLabel: (parent) => {
+      if (parent.lookup.state !== 'found') return null
+      const { item } = parent.lookup
+      const statuses = load.data.find((entry) => entry.connectionId === parent.connectionId && entry.spaceKey === item.spaceKey)?.statuses ?? []
+      return statuses.find((status) => status.key === item.statusKey)?.label ?? CATEGORY_LABEL[item.category]
+    },
+  }), [rows, fetchedParents, load.data, setSelectedId])
+  const parentChoices = useMemo(() => parentOptions({ rows, fetched: fetchedParents }), [rows, fetchedParents])
 
   // --- 끌기 (C7·C8) ---
   const writeBlockOf = (connectionId: string): string | null => {
@@ -376,6 +413,9 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const statusesOf = (row: TasksRow): WorkStatus[] => row.space.statuses
   const columnView = (column: BoardColumn): ColumnDragView => (dragRow.current === null ? IDLE : columnViewFor({ row: dragRow.current, column }))
   const columnViewFor = ({ row, column }: { row: TasksRow; column: BoardColumn }): ColumnDragView => {
+    // 묶기=부모 — 레인 사이 놓기는 막는다(부모 바꾸기 금지, C6). 레인 안은 묶기 없음과 같다.
+    // 이유 문구는 포인터가 올라간 칸에만(R1-1) — 다른 레인 칸 전부가 끌기 시작과 함께 문구를 늘려 보드를 밀지 않게.
+    if (column.lane !== null && column.lane !== (parentOfRow(row)?.uid ?? 'none')) return { mode: 'blocked', reason: LANE_LOCKED, hoverOnly: true }
     const intent = boardDropIntent({ row, column, afterId: null, statusesOf })
     switch (intent.kind) {
       case 'none':
@@ -419,7 +459,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const commitDrop = ({ row, drop }: { row: TasksRow; drop: TaskDrop }): void => {
     let intent: DragIntent = { kind: 'none' }
     if (drop.zone.startsWith('col:')) {
-      const column = bands.flatMap((band) => band.columns).find((entry) => `col:${entry.id}` === drop.zone)
+      const column = (boardLanes?.flatMap((lane) => lane.bands) ?? bands).flatMap((band) => band.columns).find((entry) => columnZone(entry) === drop.zone)
       if (column === undefined || columnViewFor({ row, column }).mode !== 'target') return
       const afterId = afterIdFor({ row, laneRows: column.rows, index: drop.index })
       intent = boardDropIntent({ row, column, afterId, statusesOf })
@@ -439,6 +479,11 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const placementHidden = shownCaps.length > 0 && shownCaps.every((caps) => caps.placement.state === 'hidden')
   const boardRows = placementHidden ? shelved : shelved.filter((row) => row.item.placement !== 'backlog')
   const bands = useMemo(() => boardBands({ rows: boardRows, statuses, all }), [boardRows, statuses, all])
+  // 묶기=부모(LIFE-745 C5) — 레인마다 묶기 없음과 같은 칸 구성, 칸마다 그 레인의 카드만.
+  const boardLanes = useMemo((): BoardLane[] | null => {
+    if (prefs.swimlane !== 'parent') return null
+    return parentLanes({ rows: boardRows, parentOf: parentOfRow }).map((lane) => ({ lane, bands: laneBands({ bands, lane }) }))
+  }, [prefs.swimlane, boardRows, bands, rows, fetchedParents])
   const backlogSections = useMemo((): BacklogSection[] => {
     const sorted = [...shelved].sort((a, b) => compareRank(a.item, b.item))
     return [
@@ -446,7 +491,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       { id: 'backlog', label: '백로그', rows: sorted.filter((row) => row.item.placement === 'backlog') },
     ]
   }, [shelved])
-  const listGroups = useMemo(() => groupRows({ rows: sortRows({ rows: filtered, sort: prefs.sort }), group: prefs.group, statuses, all }), [filtered, prefs.sort, prefs.group, statuses, all])
+  const listGroups = useMemo(() => groupRows({ rows: sortRows({ rows: filtered, sort: prefs.sort }), group: prefs.group, statuses, all, parentOf: parentOfRow }), [filtered, prefs.sort, prefs.group, statuses, all, rows, fetchedParents])
   const more = ((): MoreState => {
     if (load.data.some((entry) => entry.nextCursor !== null)) return { kind: 'cursor', loaded: rows.length, loading: load.loadingMore }
     const capped = load.data.find((entry) => entry.truncated)
@@ -650,8 +695,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           <div className="tasks-scroll" data-tasks-scroll="board">
             {hits.length > 0 ? <KeyHits hits={hits} selectedId={shownId} onSelect={toggleSelect} /> : null}
             <Board
-              bands={bands} rows={rows} all={all} density={prefs.density} selectedId={shownId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
-              columnFooter={(column) => (column.statusKey === null ? null : <InlineAddSlot view={creator.inlineView({ statusKey: column.statusKey, columnId: column.id, unmapped: column.unmapped })} model={creator} statusKey={column.statusKey} columnId={column.id} />)}
+              bands={bands} lanes={boardLanes} rows={rows} all={all} density={prefs.density} selectedId={shownId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
+              columnFooter={(column) => (column.statusKey === null || column.lane !== null ? null : <InlineAddSlot view={creator.inlineView({ statusKey: column.statusKey, columnId: column.id, unmapped: column.unmapped })} model={creator} statusKey={column.statusKey} columnId={column.id} />)}
             />
             <MoreBar more={more} onLoadMore={() => void page.loadMore()} />
           </div>
@@ -680,6 +725,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         return (
           <ListView
             groups={listGroups}
+            allRows={rows}
             all={all}
             now={now}
             selectedId={shownId}
@@ -687,7 +733,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
             group={prefs.group}
             preset={activePreset(prefs.filters)}
             defaultPreset={prefs.defaultPreset}
-            groupLabel={(group: TasksGroup) => (group === 'status' ? (all ? '분류' : '상태') : group === 'priority' ? '우선순위' : '없음')}
+            groupLabel={(group: TasksGroup) => (group === 'status' ? (all ? '분류' : '상태') : group === 'priority' ? '우선순위' : group === 'parent' ? '부모' : '없음')}
             hits={hits}
             more={more}
             onSort={(sort) => { page.invalidateMore(); setPrefs({ sort }) }}
@@ -784,6 +830,13 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           })}
         </div>
         <span className="tasks-head-spacer" />
+        {view === 'board' ? (
+          <label className="tasks-select tasks-swimlane">묶기
+            <select value={prefs.swimlane} onChange={(event) => setPrefs({ swimlane: TASKS_SWIMLANES.find((entry) => entry === event.target.value) ?? 'none' })} data-tasks-swimlane={prefs.swimlane}>
+              {TASKS_SWIMLANES.map((entry) => <option key={entry} value={entry}>{TASKS_SWIMLANE_LABEL[entry]}</option>)}
+            </select>
+          </label>
+        ) : null}
         <button type="button" className="tasks-density" data-tasks-density={prefs.density} onClick={() => setPrefs({ density: prefs.density === 'detailed' ? 'compact' : 'detailed' })} title="카드 밀도">
           {prefs.density === 'detailed' ? '자세히' : '간단히'}
         </button>
@@ -834,6 +887,15 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
             if (priority !== undefined) setFilters({ ...prefs.filters, priorities: toggleList(prefs.filters.priorities, priority) })
           }}
         />
+        <FilterMenu
+          id="parent"
+          label="부모"
+          open={menu === 'parent'}
+          onToggle={() => setMenu(menu === 'parent' ? null : 'parent')}
+          options={parentChoices.map((choice) => ({ key: choice.uid, label: `${choice.item.key} ${choice.item.title}` }))}
+          selected={prefs.filters.parent === null ? [] : [prefs.filters.parent]}
+          onPick={(uid) => setFilters({ ...prefs.filters, parent: prefs.filters.parent === uid ? null : uid })}
+        />
         <button type="button" className={`tasks-filter${prefs.filters.blocked ? ' is-on' : ''}`} data-filter="blocked" aria-pressed={prefs.filters.blocked} onClick={() => setFilters({ ...prefs.filters, blocked: !prefs.filters.blocked })}>막힘</button>
         <button type="button" className={`tasks-filter${prefs.filters.working ? ' is-on' : ''}`} data-filter="working" aria-pressed={prefs.filters.working} onClick={() => setFilters({ ...prefs.filters, working: !prefs.filters.working })}>작업 중</button>
         {prefs.filters.dueWeek ? <span className="tasks-filter is-on is-static" data-filter="due-week">이번 주 마감</span> : null}
@@ -858,7 +920,9 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
 
       {/* 카드·행의 worktree 칩도 같은 링크 문맥을 읽는다(상세는 아래 portal 이 따로 감싼다). */}
       <WorkLinksContext.Provider value={links}>
+      <ParentsContext.Provider value={parents}>
       <div className="tasks-body">{body}</div>
+      </ParentsContext.Provider>
       </WorkLinksContext.Provider>
       {/* 전체 모드(⤢) 자리 — 상세 host 가 여기로 옮겨 와 보기 영역 위를 덮는다(머리 줄은 덮지 않는다). */}
       <div ref={fullSlotRef} className="tasks-detail-full-slot" data-detail-full-slot="" />
@@ -898,13 +962,17 @@ function KeyHits({ hits, selectedId, onSelect }: { hits: { connectionId: string;
     <div className="tasks-key-hits" data-search-hits="">
       {hits.map((hit) => {
         const uid = itemUid({ connectionId: hit.connectionId, itemId: hit.item.id })
+        // 부모 칩(LIFE-745)은 행 버튼 옆 형제다 — 버튼 안에 버튼을 두지 않는다.
         return (
-          <button key={uid} type="button" className={`tasks-key-hit-row${selectedId === uid ? ' is-selected' : ''}`} data-issue-row={hit.item.key} onClick={() => onSelect(uid)}>
-            <span className="tasks-key-hit" data-search-hit={hit.via === 'key' ? '' : hit.via}>{hit.via === 'key' ? '키 일치' : '질의'}</span>
-            <span className="tasks-row-key">{hit.item.key}</span>
-            <span className="tasks-row-title">{hit.item.title}</span>
-            <span className="tasks-row-space">{hit.spaceName}</span>
-          </button>
+          <div key={uid} className="tasks-key-hit-line">
+            <button type="button" className={`tasks-key-hit-row${selectedId === uid ? ' is-selected' : ''}`} data-issue-row={hit.item.key} onClick={() => onSelect(uid)}>
+              <span className="tasks-key-hit" data-search-hit={hit.via === 'key' ? '' : hit.via}>{hit.via === 'key' ? '키 일치' : '질의'}</span>
+              <span className="tasks-row-key">{hit.item.key}</span>
+              <span className="tasks-row-title">{hit.item.title}</span>
+              <span className="tasks-row-space">{hit.spaceName}</span>
+            </button>
+            <ParentChipOf connectionId={hit.connectionId} item={hit.item} compact={false} />
+          </div>
         )
       })}
     </div>
@@ -912,7 +980,7 @@ function KeyHits({ hits, selectedId, onSelect }: { hits: { connectionId: string;
 }
 
 function FilterMenu({ id, label, open, onToggle, options, selected, onPick }: {
-  id: 'kind' | 'priority'
+  id: 'kind' | 'priority' | 'parent'
   label: string
   open: boolean
   onToggle: () => void

@@ -451,7 +451,7 @@ describe('LIFE-754 — Claude 2.1.296 문항 글 줄 앞 `│` (격리 실물 �
     { name: 'multi-120', index: 0 },
     { name: 'tabs-q2-120', index: 1 },
   ]
-  const key = (text: string): string => text.replace(/[\s ]+/g, '')
+  const key = (text: string): string => text.replace(/[\s\u00a0]+/g, '')
 
   it('C1 — 화면마다 title = 기록 문항 글(공백 무시) · `│` 0개 · 갓 열린 상태 same', () => {
     for (const { name, index } of NAMES) {

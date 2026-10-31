@@ -7,7 +7,7 @@ Claude Code·Codex·Grok 의 질문·권한·입력창 화면을 터미널에서
 | --- | --- |
 | `question-prompts/` | 세 provider 의 질문 상자·권한 질문·입력 중 화면(ANSI 제거 텍스트) |
 | `narrow-pane/` | 150~40열 pane 에서 같은 질문이 줄 바뀐 화면(ANSI 포함)과 그 회차의 질문 기록(`*-question.json`) |
-| `bar-prefix/` | Claude Code 2.1.296 이 긴 문항 글 줄마다 앞에 `│ `(빈 문단은 `│` 단독 줄)를 그린 질문 상자(ANSI 제거 텍스트)와 그 회차의 질문 기록(`questions.json`) — LIFE-754 |
+| `bar-prefix/` | Claude Code 2.1.296 이 문항 글 줄마다 앞에 `│ `(빈 문단은 `│` 단독 줄)를 그린 질문 상자(ANSI 제거 텍스트)와 그 회차의 질문 기록(`questions.json`) — LIFE-754. 실측: 한 줄 짧은 글(12·47자)엔 없고 긴 한 줄(115·117자)·줄바뀐 글·개행이 든 글(짧아도)엔 줄마다 있다, 붙는 조건(임계)은 가리지 않았다 |
 | `grok-ghost-snapshots/` | Grok 입력창에 자동완성 제안만 떠 있는 화면 스냅샷(ndjson, 마지막 줄의 `screen`) |
 | `grok-ghost-ansi/` | Grok 입력창의 제안·수락·붙여넣기·여러 줄 화면(raw ANSI) — 제안만이면 빈 입력, 나머지는 초안 |
 

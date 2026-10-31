@@ -493,6 +493,15 @@ describe('LIFE-754 — Claude 2.1.296 문항 글 줄 앞 `│` (격리 실물 �
     const old = fs.readFileSync(path.join(Z1, 'a-q1-screen.txt'), 'utf8').replace(/^Pick a color$/m, 'Pick A │ B')
     expect(activeQuestion({ kind: 'claude', screen: old })).toMatchObject({ kind: 'question', title: 'Pick A │ B' })
   })
+  it('C3ⓐ — 문항 글 줄 하나만 접두사가 없으면(부분 접두사) 떼지 않는다 — `│` 가 남고 other', () => {
+    const [long] = recorded('long-120')
+    const partial = screen('long-120').replace(/^│ (This is a deliberately long)/m, '$1')
+    expect(partial).not.toBe(screen('long-120'))
+    const active = activeQuestion({ kind: 'claude', screen: partial })
+    if (active.kind !== 'question') throw new Error(active.kind)
+    expect(active.title).toContain('│')
+    expect(matchQuestion({ kind: 'claude', active, question: long!, index: 0, total: 1 })).toEqual({ kind: 'other' })
+  })
   it('C3ⓑ — 같은 새 렌더링 화면에 다른 문항 글 기록이면 other', () => {
     const active = activeQuestion({ kind: 'claude', screen: screen('long-120') })
     const [long] = recorded('long-120')

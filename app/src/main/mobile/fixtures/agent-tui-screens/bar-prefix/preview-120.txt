@@ -1,0 +1,50 @@
+
+
+⏺ User declined to answer questions
+  ⎿  · Pick a color (Red / Green / Blue)
+
+✻ Crunched for 3s · done 10:56 PM
+
+❯ Now use AskUserQuestion again with exactly one question, header 'Long', options Yes and No, and this exact question
+  text: 'This is a deliberately long question text that should wrap across more than one terminal line at one hundred
+  and twenty columns so we can see how the dialog draws wrapped question lines, does it add a bar?' Do nothing else.
+
+⏺ User declined to answer questions
+  ⎿  · This is a deliberately long question text that should wrap across more than one terminal line at one hundred and
+     twenty columns so we can see how the dialog draws wrapped question lines, does it add a bar? (Yes / No)
+
+✻ Sautéed for 1s · done 10:56 PM
+
+❯ Now use AskUserQuestion again with exactly one question, header 'Para', options Yes and No. The question text must
+  contain a blank line between two short paragraphs: first paragraph 'First paragraph here.' then an empty line then
+  second paragraph 'Second paragraph, proceed?'. Use real newline characters in the question string. Do nothing else.
+
+⏺ User declined to answer questions
+  ⎿  · First paragraph here.
+
+     Second paragraph, proceed? (Yes / No)
+
+✻ Brewed for 2s · done 10:56 PM
+
+❯ Now use AskUserQuestion with exactly one question, header 'Prev', single select, question text: 'Which layout should
+  the settings page use for the new provider section, given that it must fit narrow windows too?'. Two options
+  'Stacked' and 'Grid', each with a 'preview' field containing a 3-line ASCII mockup. Do nothing else.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Prev
+
+│ Which layout should the settings page use for the new provider section, given that it must fit narrow windows too?
+
+❯ 1. Stacked                      ┌──────────────────────────────────────────┐
+  2. Grid                         │ +----------------+                       │
+                                  │ | Provider       |                       │
+                                  │ | [field........] |                      │
+                                  │ +----------------+                       │
+                                  └──────────────────────────────────────────┘
+
+                                  Notes: press n to add notes
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Chat about this
+
+Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel

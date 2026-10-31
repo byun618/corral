@@ -305,7 +305,7 @@ function claudeQuestion(lines: string[]): ActiveQuestion {
   const body = box.slice(1)
   const first = body.findIndex((line) => CLAUDE_OPTION.test(line))
   if (first <= 0) return { kind: 'none' }
-  const title = squash(body.slice(0, first).join(' '))
+  const title = squash(claudeTitleLines(body.slice(0, first)).join(' '))
   const rows: QuestionRow[] = []
   for (const line of body.slice(first)) {
     const match = CLAUDE_OPTION.exec(line)
@@ -323,6 +323,17 @@ function claudeQuestion(lines: string[]): ActiveQuestion {
   const marks = [...head.matchAll(/([☐☒✔])\s+([^☐☒✔→]+)/g)].filter((match) => !(match[1] === '✔' && match[2]!.trim() === 'Submit'))
   const tabs = marks.map((match) => match[1] !== '☐')
   return { kind: 'question', title, options: optionLabels({ kind: 'claude', rows }), position: null, total: null, rows, tabs }
+}
+
+const CLAUDE_TITLE_BAR = /^│(?: |$)/
+
+/**
+ * 문항 글 줄의 렌더러 표시 — Claude 2.1.296 은 긴 문항 글의 줄마다 맨 앞에 `│ `, 빈 문단에 `│` 단독 줄을 그린다(LIFE-754 실측, 짧은 글은 없음).
+ * 문항 글 줄 **모두**가 그 모양일 때만 줄 맨 앞 하나를 뗀다 — 접두사 없는 구 렌더링은 그대로, 글 안쪽의 `│` 는 남는다.
+ */
+function claudeTitleLines(lines: string[]): string[] {
+  if (!lines.every((line) => CLAUDE_TITLE_BAR.test(line))) return lines
+  return lines.map((line) => line.replace(CLAUDE_TITLE_BAR, ''))
 }
 
 /**

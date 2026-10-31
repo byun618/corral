@@ -2364,3 +2364,61 @@ describe('R5-A2·A3 답 값 형식 — 실측 기록(r5/native m01 Claude · m02
     expect(answerMatches({ kind: 'grok', recorded: ['"Yes"'], questions: [word], answers: [{ choices: [], other: 'Yes' }] })).toBe(false)
   })
 })
+
+describe('LIFE-754 Claude 2.1.296 문항 글 줄 앞 `│` — 실물 화면(bar-prefix)에서 허브 답', () => {
+  const B = path.resolve(__dirname, 'fixtures/agent-tui-screens/bar-prefix')
+  /** 같은 회차의 기록 문항(`questions.json` 의 화면 이름 키) → 판독자가 만드는 대기 질문 모양. */
+  const recordedItem = (input: { name: string; call: string }): Extract<ChatItem, { kind: 'question' }> => {
+    const parsed: unknown = JSON.parse(fs.readFileSync(path.join(B, 'questions.json'), 'utf8'))
+    if (typeof parsed !== 'object' || parsed === null) throw new Error('fixture')
+    const list: unknown = Object.entries(parsed).find(([key]) => key === input.name)?.[1]
+    if (!Array.isArray(list)) throw new Error('fixture')
+    const questions = list.map((entry: unknown): Extract<ChatItem, { kind: 'question' }>['questions'][number] => {
+      if (typeof entry !== 'object' || entry === null || !('question' in entry) || !('options' in entry) || typeof entry.question !== 'string' || !Array.isArray(entry.options)) throw new Error('fixture')
+      const options = entry.options.map((option: unknown) => {
+        if (typeof option !== 'object' || option === null || !('label' in option) || typeof option.label !== 'string') throw new Error('fixture')
+        return { label: option.label, description: 'description' in option && typeof option.description === 'string' ? option.description : null, preview: 'preview' in option }
+      })
+      const multiSelect = 'multiSelect' in entry && entry.multiSelect === true
+      const base = { question: entry.question, header: null, options: options.map(({ label, description }) => ({ label, description })), multiSelect }
+      return options.some((option) => option.preview) ? { ...base, preview: true } : base
+    })
+    return { id: 60, kind: 'question', call: input.call, questions, state: 'pending', answer: null, at: null }
+  }
+  const cases = [
+    { name: 'long-120', choice: 1, keys: ['2'] },
+    { name: 'para-120', choice: 0, keys: ['1'] },
+    { name: 'preview-120', choice: 1, keys: ['2', KEY.enter] },
+  ]
+  for (const { name, choice, keys } of cases) {
+    it(`C4 ${name} — question_changed 아니고 키 전송 · 들어감`, async () => {
+      const t = setup()
+      const item = recordedItem({ name, call: `toolu-${name}` })
+      const questions = questionsOf(item)
+      t.backend.status = 'blocked'
+      t.items.list = [item]
+      t.backend.screenText = fs.readFileSync(path.join(B, `${name}.txt`), 'utf8')
+      t.backend.onSend = (text) => {
+        if (text !== keys.at(-1)) return
+        fs.appendFileSync(t.file, `${answerLine(`toolu-${name}`, false, { [questions[0]!.question]: questions[0]!.options[choice]!.label })}\n`)
+        t.items.list = [{ ...item, state: 'answered' }]
+      }
+      t.hub.answer({ device: 'd1', id: `l754-${name}`, channel: 'c1', question: 60, call: `toolu-${name}`, digest: questionDigest(questions), answers: [{ choices: [choice], other: null }] })
+      expect(await t.settled(`l754-${name}`)).toMatchObject({ state: 'delivered' })
+      expect(t.backend.sends.map((send) => send.text)).toEqual(keys)
+    })
+  }
+  it('C4 같은 새 렌더링 화면에 다른 문항 글 기록 → 키 0회 failed/question_changed', async () => {
+    const t = setup()
+    const long = recordedItem({ name: 'long-120', call: 'toolu-other' })
+    const para = recordedItem({ name: 'para-120', call: 'toolu-other' })
+    // 선택지(Yes/No)·설명은 같고 문항 글만 다르다 — 글 대조만이 막는다.
+    const item: Extract<ChatItem, { kind: 'question' }> = { ...long, questions: [{ ...long.questions[0]!, question: para.questions[0]!.question }] }
+    t.backend.status = 'blocked'
+    t.items.list = [item]
+    t.backend.screenText = fs.readFileSync(path.join(B, 'long-120.txt'), 'utf8')
+    t.hub.answer({ device: 'd1', id: 'l754-other', channel: 'c1', question: 60, call: 'toolu-other', digest: questionDigest(questionsOf(item)), answers: [{ choices: [0], other: null }] })
+    expect(await t.settled('l754-other')).toMatchObject({ state: 'failed', reason: 'question_changed' })
+    expect(t.backend.sends).toHaveLength(0)
+  })
+})

@@ -7,6 +7,7 @@ Claude Code·Codex·Grok 의 질문·권한·입력창 화면을 터미널에서
 | --- | --- |
 | `question-prompts/` | 세 provider 의 질문 상자·권한 질문·입력 중 화면(ANSI 제거 텍스트) |
 | `narrow-pane/` | 150~40열 pane 에서 같은 질문이 줄 바뀐 화면(ANSI 포함)과 그 회차의 질문 기록(`*-question.json`) |
+| `bar-prefix/` | Claude Code 2.1.296 이 긴 문항 글 줄마다 앞에 `│ `(빈 문단은 `│` 단독 줄)를 그린 질문 상자(ANSI 제거 텍스트)와 그 회차의 질문 기록(`questions.json`) — LIFE-754 |
 | `grok-ghost-snapshots/` | Grok 입력창에 자동완성 제안만 떠 있는 화면 스냅샷(ndjson, 마지막 줄의 `screen`) |
 | `grok-ghost-ansi/` | Grok 입력창의 제안·수락·붙여넣기·여러 줄 화면(raw ANSI) — 제안만이면 빈 입력, 나머지는 초안 |
 
@@ -17,3 +18,4 @@ Claude Code·Codex·Grok 의 질문·권한·입력창 화면을 터미널에서
 - 뒤 꼬리 — `screen` 질문 상자가 뜬 화면 · `open` Codex 질문을 연 화면 · `typed`·`other-typed` 직접 입력 글을 친 화면 · `after13` 1·3 번을 누른 뒤 · `q2` 둘째 문항 · `review` 제출 전 검토 화면
 - `grok-ghost-gm`·`grok-ghost-gu` — Grok pane 이름: `gm` = corral 이 관리하는(managed) 기동, `gu` = 관리 밖(unmanaged) 기동
 - `narrow-pane/` 의 숫자 — pane 열 폭(150·100·80·60·40). `codex-collapsed-{empty,long,short}` = Codex 질문이 접힌 화면 — 입력칸이 빔 · 여러 줄로 감긴 긴 초안 · 짧은 초안
+- `bar-prefix/` 의 이름 — `<모양>-<열 폭>`: `long` 두 줄로 줄 바뀐 글 · `para` 빈 줄 든 두 문단 · `preview` preview 레이아웃(`-60` 은 같은 화면을 60열로 줄임) · `multi` multiSelect · `tabs-q2` 문항 둘의 둘째(첫 문항 답함). `questions.json` = 화면 이름 → 그 회차 AskUserQuestion input 의 `questions`(LIFE-754 격리 tmux 실측, `claude-haiku-5-5`). `preview-*` 는 캡처 회차가 기록 전에 닫혀, 같은 문항 글·선택지 글을 다시 물은 회차의 기록이다(preview 상자 내용은 다르다 — 대조는 문항 글·선택지 글만)

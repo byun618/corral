@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Haiku 5.5 with low effort · Claude API
+ ▝▝   ▝▝   ~/repos/example/corral/.claude/worktrees/LIFE-754-question-bar
+
+
+❯ Use the AskUserQuestion tool to ask me exactly one question, question text 'Pick a color', header 'Color', options
+  Red, Green, Blue (single select). Do nothing else.
+
+⏺ User declined to answer questions
+  ⎿  · Pick a color (Red / Green / Blue)
+
+✻ Crunched for 3s · done 10:56 PM
+
+❯ Now use AskUserQuestion again with exactly one question, header 'Long', options Yes and No, and this exact question
+  text: 'This is a deliberately long question text that should wrap across more than one terminal line at one hundred
+  and twenty columns so we can see how the dialog draws wrapped question lines, does it add a bar?' Do nothing else.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Long
+
+│ This is a deliberately long question text that should wrap across more than one terminal line at one hundred and
+│ twenty columns so we can see how the dialog draws wrapped question lines, does it add a bar?
+
+❯ 1. Yes
+     Yes
+  2. No
+     No
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

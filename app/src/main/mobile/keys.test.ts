@@ -421,3 +421,95 @@ describe('LIFE-582 최종 관문 — Grok 입력칸 다음 문장 제안(ghost) 
     expect(draftState({ kind: 'codex', screen: codexScreen(`\x1b[1m› \x1b[0m${GHOST('ghost')}`) })).toBe('draft')
   })
 })
+
+describe('LIFE-754 — Claude 2.1.296 문항 글 줄 앞 `│` (격리 실물 화면 bar-prefix)', () => {
+  const B = path.resolve(__dirname, 'fixtures/agent-tui-screens/bar-prefix')
+  const screen = (name: string): string => fs.readFileSync(path.join(B, `${name}.txt`), 'utf8')
+  const Z1 = path.resolve(__dirname, 'fixtures/agent-tui-screens/question-prompts')
+  type Recorded = { question: string; options: string[]; descriptions: (string | null)[]; multiSelect: boolean; preview: boolean }
+  /** 같은 회차의 기록 문항(AskUserQuestion input 그대로 — `questions.json` 의 화면 이름 키). */
+  const recorded = (name: string): Recorded[] => {
+    const parsed: unknown = JSON.parse(fs.readFileSync(path.join(B, 'questions.json'), 'utf8'))
+    if (typeof parsed !== 'object' || parsed === null || !(name in parsed)) throw new Error('fixture')
+    const list: unknown = Object.entries(parsed).find(([key]) => key === name)?.[1]
+    if (!Array.isArray(list)) throw new Error('fixture')
+    return list.map((entry: unknown) => {
+      if (typeof entry !== 'object' || entry === null || !('question' in entry) || !('options' in entry) || typeof entry.question !== 'string' || !Array.isArray(entry.options)) throw new Error('fixture')
+      const options = entry.options.map((option: unknown) => {
+        if (typeof option !== 'object' || option === null || !('label' in option) || typeof option.label !== 'string') throw new Error('fixture')
+        return { label: option.label, description: 'description' in option && typeof option.description === 'string' ? option.description : null, preview: 'preview' in option }
+      })
+      const multiSelect = 'multiSelect' in entry && entry.multiSelect === true
+      return { question: entry.question, options: options.map((option) => option.label), descriptions: options.map((option) => option.description), multiSelect, preview: options.some((option) => option.preview) }
+    })
+  }
+  const NAMES = [
+    { name: 'long-120', index: 0 },
+    { name: 'para-120', index: 0 },
+    { name: 'preview-120', index: 0 },
+    { name: 'preview-60', index: 0 },
+    { name: 'multi-120', index: 0 },
+    { name: 'tabs-q2-120', index: 1 },
+  ]
+  const key = (text: string): string => text.replace(/[\s ]+/g, '')
+
+  it('C1 — 화면마다 title = 기록 문항 글(공백 무시) · `│` 0개 · 갓 열린 상태 same', () => {
+    for (const { name, index } of NAMES) {
+      const questions = recorded(name)
+      const question = questions[index]!
+      const active = activeQuestion({ kind: 'claude', screen: screen(name) })
+      if (active.kind !== 'question') throw new Error(`${name}: ${active.kind}`)
+      // 원본 화면에는 접두사가 있다(양성 — 이 화면들이 새 렌더링이다).
+      expect([name, /^│/m.test(screen(name))]).toEqual([name, true])
+      expect([name, key(active.title)]).toEqual([name, key(question.question)])
+      expect([name, active.title.includes('│')]).toEqual([name, false])
+      expect([name, matchQuestion({ kind: 'claude', active, question, index, total: questions.length })]).toEqual([name, { kind: 'same', checked: [] }])
+    }
+  })
+  it('C1 — 빈 문단의 `│` 단독 줄은 title 에 남지 않는다(para-120)', () => {
+    const active = activeQuestion({ kind: 'claude', screen: screen('para-120') })
+    expect(active).toMatchObject({ kind: 'question', title: 'First paragraph here. Second paragraph, proceed?' })
+  })
+  it('C2 — 선택지·설명·preview·머리 줄 판독은 접두사 없는 화면과 같은 모양', () => {
+    expect(activeQuestion({ kind: 'claude', screen: screen('long-120') })).toMatchObject({ options: ['Yes', 'No'], tabs: [false] })
+    const multi = activeQuestion({ kind: 'claude', screen: screen('multi-120') })
+    expect(multi).toMatchObject({ kind: 'question', options: ['Alpha', 'Beta', 'Gamma'], tabs: [false] })
+    if (multi.kind !== 'question') throw new Error('fixture')
+    expect(multi.rows.slice(0, 3).map((row) => [row.label, row.checked, row.pieces])).toEqual([['Alpha', false, ['Alpha', 'First one']], ['Beta', false, ['Beta', 'Second one']], ['Gamma', false, ['Gamma', 'Third one']]])
+    expect(activeQuestion({ kind: 'claude', screen: screen('tabs-q2-120') })).toMatchObject({ options: ['Keep', 'Drop'], tabs: [true, false] })
+    for (const name of ['preview-120', 'preview-60']) expect([name, activeQuestion({ kind: 'claude', screen: screen(name) })]).toMatchObject([name, { options: ['Stacked', 'Grid'], tabs: [false] }])
+  })
+  it('C3ⓐ — 기록 문항 글 안쪽의 `│` 는 남는다(새 렌더링 · 구 렌더링 · 글이 `│` 로 시작)', () => {
+    const [long] = recorded('long-120')
+    const inner = { ...long!, question: long!.question.replace('does it add a bar?', 'does it add A │ B?') }
+    // 위쪽 대화의 프롬프트 글에도 같은 문장이 있다 — 상자의 `│ ` 줄만 바꾼다.
+    const innerScreen = screen('long-120').replace(/^(│ .*)does it add a bar\?$/m, '$1does it add A │ B?')
+    expect(innerScreen).not.toBe(screen('long-120'))
+    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: innerScreen }), question: inner, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
+    const lead = { ...long!, question: `│ ${long!.question}` }
+    const leadScreen = screen('long-120').replace('│ This is a', '│ │ This is a')
+    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: leadScreen }), question: lead, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
+    // 구 렌더링(접두사 없음) — 줄 맨 앞이 아니면 뗄 것이 없다.
+    const old = fs.readFileSync(path.join(Z1, 'a-q1-screen.txt'), 'utf8').replace(/^Pick a color$/m, 'Pick A │ B')
+    expect(activeQuestion({ kind: 'claude', screen: old })).toMatchObject({ kind: 'question', title: 'Pick A │ B' })
+  })
+  it('C3ⓑ — 같은 새 렌더링 화면에 다른 문항 글 기록이면 other', () => {
+    const active = activeQuestion({ kind: 'claude', screen: screen('long-120') })
+    const [long] = recorded('long-120')
+    const [para] = recorded('para-120')
+    expect(matchQuestion({ kind: 'claude', active, question: { ...para!, options: long!.options, descriptions: long!.descriptions }, index: 0, total: 1 })).toEqual({ kind: 'other' })
+    expect(matchQuestion({ kind: 'claude', active, question: { ...long!, question: long!.question.replace('add a bar?', 'add a line?') }, index: 0, total: 1 })).toEqual({ kind: 'other' })
+    const tabs = recorded('tabs-q2-120')
+    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: screen('tabs-q2-120') }), question: tabs[0]!, index: 1, total: 2 })).toEqual({ kind: 'other' })
+  })
+  it('C3ⓒ — 질문 상자가 아닌 화면(권한 질문 · 상자 위 대화만)은 none', () => {
+    const perm = fs.readFileSync(path.join(Z1, 'perm-screens.txt'), 'utf8')
+    const start = perm.indexOf('== w1:p7 ')
+    const next = perm.indexOf('== w1:', start + 1)
+    expect(activeQuestion({ kind: 'claude', screen: perm.slice(perm.indexOf('\n', start) + 1, next < 0 ? undefined : next) })).toEqual({ kind: 'none' })
+    const text = screen('long-120')
+    expect(activeQuestion({ kind: 'claude', screen: text.slice(0, text.indexOf('─')) })).toEqual({ kind: 'none' })
+    // 새 렌더링 상자 아래에 권한 질문이 있으면 지금 상자가 아니다(R3-A2 그대로).
+    expect(activeQuestion({ kind: 'claude', screen: `${text}\n${perm.slice(perm.indexOf('\n', start) + 1, next < 0 ? undefined : next)}` })).toEqual({ kind: 'none' })
+  })
+})

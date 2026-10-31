@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Haiku 5.5 with low effort · Claude API
+ ▝▝   ▝▝   ~/repos/example/corral/.claude/worktrees/LIFE-754-question-bar-claude
+
+
+❯ Use the AskUserQuestion tool to ask exactly one question, header 'Multi', multiSelect true, options 'Alpha', 'Beta',
+  'Gamma' (descriptions 'First one', 'Second one', 'Third one'), and this exact question text: 'Which of these checks
+  should run before we cut the release branch, keeping in mind that the integration run takes about twenty minutes and
+  blocks other work?' Do nothing else.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Multi  ✔ Submit  →
+
+│ Which of these checks should run before we cut the release branch, keeping in mind that the integration run takes
+│ about twenty minutes and blocks other work?
+
+❯ 1. [ ] Alpha
+         First one
+  2. [ ] Beta
+         Second one
+  3. [ ] Gamma
+         Third one
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

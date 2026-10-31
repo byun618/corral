@@ -495,12 +495,15 @@ describe('LIFE-754 — Claude 2.1.296 문항 글 줄 앞 `│` (격리 실물 �
   })
   it('C3ⓐ — 문항 글 줄 하나만 접두사가 없으면(부분 접두사) 떼지 않는다 — `│` 가 남고 other', () => {
     const [long] = recorded('long-120')
-    const partial = screen('long-120').replace(/^│ (This is a deliberately long)/m, '$1')
-    expect(partial).not.toBe(screen('long-120'))
-    const active = activeQuestion({ kind: 'claude', screen: partial })
-    if (active.kind !== 'question') throw new Error(active.kind)
-    expect(active.title).toContain('│')
-    expect(matchQuestion({ kind: 'claude', active, question: long!, index: 0, total: 1 })).toEqual({ kind: 'other' })
+    // 첫 줄만 · 마지막 줄만 접두사를 지운 두 화면.
+    for (const pattern of [/^│ (This is a deliberately long)/m, /^│ (twenty columns so we can see)/m]) {
+      const partial = screen('long-120').replace(pattern, '$1')
+      expect(partial).not.toBe(screen('long-120'))
+      const active = activeQuestion({ kind: 'claude', screen: partial })
+      if (active.kind !== 'question') throw new Error(active.kind)
+      expect([String(pattern), active.title.includes('│')]).toEqual([String(pattern), true])
+      expect([String(pattern), matchQuestion({ kind: 'claude', active, question: long!, index: 0, total: 1 })]).toEqual([String(pattern), { kind: 'other' }])
+    }
   })
   it('C3ⓑ — 같은 새 렌더링 화면에 다른 문항 글 기록이면 other', () => {
     const active = activeQuestion({ kind: 'claude', screen: screen('long-120') })

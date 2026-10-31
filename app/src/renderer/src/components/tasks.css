@@ -309,10 +309,13 @@
 .tasks-key-hit-line > .tasks-key-hit-row { flex: 1; min-width: 0; }
 .tasks-list-group .tasks-parent-chip { align-self: center; max-width: 360px; }
 .tasks-swimlane select { min-width: 64px; }
+/* 레인 머리는 sticky 라 레인(section) 오른쪽 끝을 넘지 못한다 — 머리가 보이는 폭보다 넓으면 가로 스크롤 끝에서 왼쪽이 잘렸다(LIFE-746 게이트 ① 수정 1).
+   보드 스크롤 그릇을 크기 그릇으로 두고 머리 폭을 보이는 폭(100cqi)으로 묶는다 — 넘치는 머리는 부모 칩이 줄임표로 줄어든다. */
+[data-tasks-scroll="board"] { container-type: inline-size; }
 .tasks-lanes { display: flex; flex-direction: column; gap: 14px; min-width: min-content; }
 .tasks-lane { display: flex; flex-direction: column; gap: 8px; }
 .tasks-lane-head {
-  position: sticky; left: 0; align-self: flex-start; max-width: 100%; height: 28px; display: flex; align-items: center; gap: 8px;
+  position: sticky; left: 0; align-self: flex-start; max-width: min(100%, 100cqi); height: 28px; display: flex; align-items: center; gap: 8px;
   font-size: 12px; color: var(--fg-muted); min-width: 0;
 }
 .tasks-lane-head .tasks-parent-chip { align-self: center; height: 22px; font-size: 12px; max-width: 420px; }

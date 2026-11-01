@@ -92,24 +92,33 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
   // 아직 맨 아래에 반영하지 않은 맨 아래 쪽 변경(`pending`)과, 그 변경 전 `tailRev`(`pendingBase` — 떠난 채 정하면 이 값을 기준으로 「새 메시지 ↓」).
   const pending = useRef(false)
   const pendingBase = useRef(tailRev)
-  // 보류가 아직 크기 변화를 못 본 채 끌기가 시작됐다(`unlaid`) — 크기 변화가 없던 변경(접힌 답의 숨은 줄)일 수도, 그 레이아웃이 끌기 시작보다 늦게 오는 중일 수도 있다(LIFE-595 H1·r6 P10).
-  // 끄는 중 크기 변화가 오면 늦은 레이아웃으로 보고 지우고(settle 에서 정한다), 놓을 때까지 안 오면 settle 이 보류를 버린다(A-F5-fold — 도로 끌어내리지 않는다).
-  const unlaid = useRef(false)
+  // 꼬리 셀(index 0) 자신의 레이아웃을 이 보류 뒤에 봤나(`laid`) — 새 답·자란 답은 꼬리 셀 높이가 바뀌어 온다. 숨은 줄(접힌 답)은 안 온다.
+  // 목록 전체 크기 변화(`onContentSizeChange`)는 끄는 중 가상화가 셀을 잴 때도 와서 이 둘을 못 가른다(LIFE-595 r1 R1-2).
+  const laid = useRef(false)
+  // 꼬리 셀 레이아웃을 못 본 채 따라가던 중 끌기가 시작된 보류(`carried`) — 숨은 줄(A-F5-fold)일 수도, 레이아웃이 끌기 시작보다 늦게 오는 중일 수도 있다(H1·r6 P10).
+  // 꼬리 셀 레이아웃이 오면 보통 보류가 되고(끄는 중이면 settle 이, 놓은 뒤면 그 자리에서 정한다 — R1-1), 안 오면 끌어내리지도 버튼을 세우지도 않는다.
+  // 버리지 않고 기다린다 — 다음 꼬리 변경이 오면 그 변경과 합쳐 보통 보류가 되고, 목록이 빠지면 비운다.
+  const carried = useRef(false)
+  // 이 제스처(또는 놓은 뒤 기다리는 동안)에 보류 중 크기 변화 줄을 이미 찍었나 — 끄는 중 크기 변화는 자주 와서 한 번만 찍는다(R1-5).
+  const sizeLogged = useRef(false)
   const gesture = useRef<Gesture>('none')
   if (seenTail.current !== tailRev) {
     if (!pending.current) pendingBase.current = seenTail.current
     seenTail.current = tailRev
     pending.current = true
-    unlaid.current = false
-    followLog('tail', { rev: tailRev, gesture: gesture.current })
+    carried.current = false
+    laid.current = false
+    sizeLogged.current = false
+    // 제스처 없이 붙는 보통 경로는 `size … decision=follow` 한 줄로 충분하다 — 꼬리 변경 줄은 제스처 중에만.
+    if (gesture.current !== 'none') followLog('tail', { rev: tailRev, gesture: gesture.current })
   }
   const lastY = useRef(0)
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       lastY.current = event.nativeEvent.contentOffset.y
       const isAway = lastY.current > NEAR_BOTTOM
-      // 아직 크기 변화를 못 본 보류(`unlaid`)는 화면에 보인 변경이 아니다 — 그것만으로 「새 메시지 ↓」 를 띄우지 않는다.
-      const base = pending.current && !unlaid.current ? pendingBase.current : tailRev
+      // 꼬리 셀 레이아웃을 기다리는 보류(`carried`)는 화면에 보인 변경이 아니다 — 그것만으로 「새 메시지 ↓」 를 띄우지 않는다.
+      const base = pending.current && !carried.current ? pendingBase.current : tailRev
       setAwayFrom((previous) => (isAway ? (previous ?? base) : null))
     },
     [tailRev],
@@ -140,55 +149,79 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
     gesture.current = 'none'
     lastY.current = 0
     pending.current = false
-    unlaid.current = false
+    carried.current = false
+    laid.current = false
+    sizeLogged.current = false
     pendingBase.current = seenTail.current
     setAwayFrom(null)
   }, [listShown, clearRelease])
   const onContentSizeChange = useCallback(() => {
     // 보류가 없는 크기 변화(가상화가 셀을 잼)는 찍지 않는다 — 끄는 중 자주 온다.
     if (!pending.current) return
-    if (gesture.current !== 'none') {
-      followLog('size', { gesture: gesture.current, unlaid: unlaid.current, y: lastY.current })
-      if (unlaid.current) {
-        unlaid.current = false
-        // 늦게 보인 변경 — 끄는 중 이미 임계를 넘어 떠났다면 그 떠남의 기준을 보류 전으로 돌려 「새 메시지 ↓」 가 서게 한다.
-        const base = pendingBase.current
-        setAwayFrom((previous) => (previous === null ? null : base))
-      }
+    if (gesture.current !== 'none' || carried.current) {
+      // 끄는 중(놓은 직후·관성 포함)엔 붙이지 않는다. 꼬리 셀 레이아웃을 기다리는 보류도 무관한 크기 변화로는 붙이지 않는다(R1-2).
+      if (!sizeLogged.current) followLog('size', { gesture: gesture.current, carried: carried.current, laid: laid.current, y: lastY.current, decision: 'skip' })
+      sizeLogged.current = true
       return
     }
     if (!followingRef.current) return
     pending.current = false
-    followLog('size', { gesture: 'none', decision: 'follow', y: lastY.current })
+    followLog('size', { gesture: 'none', rev: seenTail.current, y: lastY.current, decision: 'follow' })
     list.current?.scrollToOffset({ offset: 0, animated: false })
   }, [])
-  const settle = useCallback((via: 'release' | 'momentum') => {
-    gesture.current = 'none'
-    const held = pending.current
-    const unseen = unlaid.current
+  /** 보류를 최신 offset 으로 정한다 — 임계 안이면 맨 아래로, 밖이면 자리 유지 + 「새 메시지 ↓」. */
+  const decide = useCallback((via: 'release' | 'momentum' | 'layout') => {
     pending.current = false
-    unlaid.current = false
     const y = lastY.current
-    if (!held || unseen) {
-      followLog('settle', { pending: held, unlaid: unseen, y, via, decision: held ? 'drop' : 'none' })
-      return
-    }
     if (y <= NEAR_BOTTOM) {
-      followLog('settle', { pending: true, unlaid: false, y, via, decision: 'follow' })
+      followLog('settle', { pending: true, y, via, decision: 'follow' })
       setAwayFrom(null)
       list.current?.scrollToOffset({ offset: 0, animated: true })
       return
     }
-    followLog('settle', { pending: true, unlaid: false, y, via, decision: 'button' })
+    followLog('settle', { pending: true, y, via, decision: 'button' })
     const base = pendingBase.current
     setAwayFrom((previous) => previous ?? base)
   }, [])
+  const settle = useCallback(
+    (via: 'release' | 'momentum') => {
+      gesture.current = 'none'
+      sizeLogged.current = false
+      if (!pending.current) {
+        followLog('settle', { pending: false, y: lastY.current, via, decision: 'none' })
+        return
+      }
+      // 꼬리 셀 레이아웃을 아직 못 봤다 — 숨은 줄이면 붙일 것이 없고(A-F5-fold), 늦은 레이아웃이면 그게 올 때 정한다(R1-1).
+      if (carried.current) {
+        followLog('settle', { pending: true, carried: true, y: lastY.current, via, decision: 'wait' })
+        return
+      }
+      decide(via)
+    },
+    [decide],
+  )
+  /** 꼬리 셀(index 0)의 레이아웃 — 이 보류의 변경이 화면에 깔렸다는 신호. 끌기 시작·목록 크기 변화와의 순서는 RN 이 보장하지 않는다(Fabric 은 레이아웃 이벤트를 노드마다 따로 보낸다). */
+  const onTailLayout = useCallback(() => {
+    if (!pending.current || laid.current) return
+    laid.current = true
+    if (!carried.current) return
+    carried.current = false
+    // 기다리는 동안 이미 임계를 넘어 떠났다면 그 떠남의 기준을 보류 전으로 돌려 「새 메시지 ↓」 가 서게 한다. 임계 안이면 그대로(끄는 중 버튼·자리 고정을 켜지 않는다).
+    const base = pendingBase.current
+    setAwayFrom((previous) => (previous === null ? null : base))
+    if (gesture.current === 'none') {
+      // 놓은 뒤(settle 이 기다리는 중) 도착 — 지금 정한다(R1-1).
+      decide('layout')
+      return
+    }
+    followLog('tail-layout', { gesture: gesture.current, y: lastY.current, decision: 'hold' })
+  }, [decide])
   const onScrollBeginDrag = useCallback(() => {
-    // 맨 아래를 따라가는 중 제스처 없이 남은 보류는 아직 크기 변화를 못 봤다 — 크기 변화가 없던 변경(24줄 접힌 답 안의 숨은 줄 등, 에뮬레이터 A-F5-fold)이거나
-    // 레이아웃이 끌기 시작보다 늦게 오는 중이다(LIFE-595 H1). 바로 지우지 않고 `unlaid` 로 표시해 끄는 중 크기 변화가 오는지로 settle 에서 가른다.
-    // 관성·놓은 직후에 다시 잡았거나 떠나 있던 동안 들어온 보류는 그대로 남긴다.
-    if (gesture.current === 'none' && followingRef.current && pending.current) unlaid.current = true
-    followLog('begin', { from: gesture.current, pending: pending.current, unlaid: unlaid.current, following: followingRef.current, y: lastY.current })
+    // 맨 아래를 따라가는 중 제스처 없이 남은 보류가 꼬리 셀 레이아웃을 아직 못 봤으면 `carried` — 끌어 놓을 때 바로 정하지 않는다(위 `carried` 설명).
+    // 관성·놓은 직후에 다시 잡았거나 떠나 있던 동안 들어온 보류, 꼬리 레이아웃은 왔는데 목록 크기 변화가 아직인 보류는 보통 보류로 남긴다.
+    if (gesture.current === 'none' && followingRef.current && pending.current && !laid.current) carried.current = true
+    followLog('begin', { from: gesture.current, rev: seenTail.current, pending: pending.current, laid: laid.current, carried: carried.current, following: followingRef.current, y: lastY.current })
+    sizeLogged.current = false
     clearRelease()
     gesture.current = 'drag'
   }, [clearRelease])
@@ -251,17 +284,20 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
         inverted
         keyExtractor={(item) => String(item.id)}
         renderItem={({ item, index }) => (
-          <Bubble
-            item={item}
-            head={heads.has(item.id)}
-            kind={channel.kind}
-            last={index === 0}
-            working={working}
-            monitoring={channel.dot === 'monitoring'}
-            sent={sent?.attached.get(item.id) ?? null}
-            onSentAction={onSentAction}
-            question={question !== undefined && question !== null && question.id === item.id ? question : null}
-          />
+          // 모든 셀을 같은 View 로 감싼다(꼬리가 바뀌어도 셀 트리가 그대로 — 접힘 상태를 잃지 않는다). 꼬리 셀만 레이아웃을 듣는다.
+          <View onLayout={index === 0 ? onTailLayout : undefined}>
+            <Bubble
+              item={item}
+              head={heads.has(item.id)}
+              kind={channel.kind}
+              last={index === 0}
+              working={working}
+              monitoring={channel.dot === 'monitoring'}
+              sent={sent?.attached.get(item.id) ?? null}
+              onSentAction={onSentAction}
+              question={question !== undefined && question !== null && question.id === item.id ? question : null}
+            />
+          </View>
         )}
         maintainVisibleContentPosition={following ? undefined : { minIndexForVisible: 0 }}
         onContentSizeChange={onContentSizeChange}

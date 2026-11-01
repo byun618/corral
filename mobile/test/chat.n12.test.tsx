@@ -4,7 +4,7 @@
 // 내용 크기가 바뀔 때 맨 아래로 붙이고, 임계 밖이면 자리를 지키고(`minIndexForVisible`) 「새 메시지 ↓」 — 를 본다. 수정 전 코드(7cb34f31d)에서 실패하는 것을 음성 대조로 남겼다.
 // r5 R5-A1 절은 손가락 제스처(끌기 → 놓음 → 관성) 중 들어온 새 답의 결정 — `f6bff1f48` 에서 실패하는 것을 음성 대조로 남겼다.
 // r6 절은 놓은 뒤 유예(fake timer — `RELEASE_MS` 0 변이에서 실패)와 목록이 빠졌다 붙을 때의 제스처 정리(`e9cd6120f` 에서 실패).
-import { act, type ReactNode } from 'react'
+import { act, isValidElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseChatMessage, type ChatItem } from '../src/core/chat'
@@ -30,7 +30,8 @@ type ListProps = {
   ref?: { current: unknown }
 }
 const ctx = vi.hoisted(() => {
-  const state: { list: ListProps | null; scrolls: { offset: number; animated?: boolean }[] } = { list: null, scrolls: [] }
+  // `tailLayout` = 꼬리 셀(index 0)을 감싼 View 의 onLayout (LIFE-595 r1) — 시험이 네이티브 레이아웃 도착을 손으로 준다.
+  const state: { list: ListProps | null; scrolls: { offset: number; animated?: boolean }[]; tailLayout: (() => void) | undefined } = { list: null, scrolls: [], tailLayout: undefined }
   return state
 })
 vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn() }))
@@ -49,9 +50,11 @@ vi.mock('react-native', () => ({
     return (
       <div>
         {props.ListHeaderComponent}
-        {props.data.map((item, index) => (
-          <div key={item.id}>{props.renderItem({ item, index })}</div>
-        ))}
+        {props.data.map((item, index) => {
+          const cell = props.renderItem({ item, index })
+          if (index === 0) ctx.tailLayout = isValidElement<{ onLayout?: () => void }>(cell) ? cell.props.onLayout : undefined
+          return <div key={item.id}>{cell}</div>
+        })}
         {props.ListFooterComponent}
       </div>
     )
@@ -504,10 +507,13 @@ describe('n-12 대조 — 위를 보던 사람(임계 밖)은 자리를 지키�
   })
 })
 
-// LIFE-595 — 드래그 시작이 아직 레이아웃되지 않은 꼬리 변경의 보류를 지우던 경합(r6 P10·H1). 순서: 꼬리 변경(렌더) → 끌기 시작 → 늦은 크기 변화(끄는 중) → 놓음.
+// LIFE-595 — 드래그 시작이 아직 레이아웃되지 않은 꼬리 변경의 보류를 지우던 경합(r6 P10·H1). 판별 신호 = 꼬리 셀(index 0) 자신의 레이아웃(`TAIL`, r1 R1-2).
+// 목록 크기 변화(`LAYOUT`)는 끄는 중 가상화 측정에도 와서 신호가 아니다. 두 레이아웃과 끌기 시작의 순서는 RN 이 보장하지 않아 순서를 바꾼 짝을 둔다.
 // base `a7fc8b2a` 에서 C2 절이 실패하는 것을 음성 대조로 남겼다(corral-specs LIFE-595-stick-bottom/raw/claude). C3 절은 base 와 수정본 둘 다 통과해야 한다.
+const TAIL = () => act(async () => ctx.tailLayout?.())
 const SECRET = '사용자내용-표지-595'
-const lateLayoutDrag = async (y: number) => {
+/** 따라가는 중(맨 아래) 새 답이 렌더됐지만 레이아웃은 아직 — 그다음 끌기 시작. */
+const tailThenBegin = async () => {
   const t = harness()
   t.store.open('c1')
   t.frame(page([prompt(1), reply(2)]))
@@ -517,33 +523,102 @@ const lateLayoutDrag = async (y: number) => {
   t.frame(push([prompt(3, SECRET), reply(4, `${SECRET}\n끝 줄`)], 2))
   await show({ store: t.store })
   await BEGIN()
-  await SCROLL(y)
-  await LAYOUT()
-  expect(ctx.scrolls).toEqual([])
   return t
 }
+/** 접힌 답의 숨은 줄 — 꼬리 변경이지만 꼬리 셀 레이아웃이 안 온다(A-F5-fold). */
+const foldThenBegin = async () => {
+  const t = harness()
+  t.store.open('c1')
+  t.frame(page([prompt(1), reply(2, '접힌 답')]))
+  await show({ store: t.store })
+  await LAYOUT()
+  ctx.scrolls = []
+  t.frame(push([reply(2, '접힌 답 숨은 줄')]))
+  await show({ store: t.store })
+  await BEGIN()
+  return t
+}
+const noButton = () => expect(host.textContent).not.toContain('새 메시지 ↓')
+const FOLLOWED = [{ offset: 0, animated: true }]
 
-describe('LIFE-595 C2 끌기 시작보다 늦게 온 새 답의 크기 변화도 놓을 때 정한다', () => {
-  it('ⓐ 유예 경로 — 꼬리 변경 → 끌기 → 늦은 크기 변화 → 53dp 에서 놓음 → 관성 없음 → 맨 아래로 1회 · 버튼 없음', async () => {
-    await lateLayoutDrag(53)
+describe('LIFE-595 C2 끌기 시작보다 늦게 온 새 답의 레이아웃도 놓을 때(또는 놓은 뒤 도착할 때) 정한다', () => {
+  it('ⓐ 유예 경로 — 꼬리 변경 → 끌기 → 늦은 레이아웃(꼬리·목록) → 53dp 에서 놓음 → 관성 없음 → 맨 아래로 1회 · 버튼 없음', async () => {
+    await tailThenBegin()
+    await SCROLL(53)
+    await TAIL()
+    await LAYOUT()
+    expect(ctx.scrolls).toEqual([])
     await END(53)
     await RELEASE()
-    expect(ctx.scrolls).toEqual([{ offset: 0, animated: true }])
-    expect(host.textContent).not.toContain('새 메시지 ↓')
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+    noButton()
   })
 
-  it('ⓑ 관성 경로 — 꼬리 변경 → 끌기 → 늦은 크기 변화 → 53dp 에서 놓음 → 관성 → 관성 종료(53dp) → 맨 아래로 1회 · 버튼 없음', async () => {
-    await lateLayoutDrag(53)
+  it('ⓑ 관성 경로 — 꼬리 변경 → 끌기 → 늦은 레이아웃 → 53dp 에서 놓음 → 관성 → 관성 종료(53dp) → 맨 아래로 1회 · 버튼 없음', async () => {
+    await tailThenBegin()
+    await SCROLL(53)
+    await LAYOUT()
+    await TAIL()
     await END(53)
     await MOMENTUM()
     await RELEASE()
     expect(ctx.scrolls).toEqual([])
     await MOMENTUM_END(53)
-    expect(ctx.scrolls).toEqual([{ offset: 0, animated: true }])
-    expect(host.textContent).not.toContain('새 메시지 ↓')
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+    noButton()
   })
 
-  it(`ⓒ 끄는 중 임계 밖(${NEAR_BOTTOM + 80}dp)으로 떠난 뒤 늦은 크기 변화 → 놓음 → 자리 유지 · 「새 메시지 ↓」`, async () => {
+  it(`ⓒ 끄는 중 임계 밖(${NEAR_BOTTOM + 80}dp)으로 떠난 뒤 늦은 레이아웃 → 놓음 → 자리 유지 · 「새 메시지 ↓」`, async () => {
+    await tailThenBegin()
+    await SCROLL(NEAR_BOTTOM + 80)
+    await TAIL()
+    await LAYOUT()
+    await END(NEAR_BOTTOM + 80)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual([])
+    expect(host.textContent).toContain('새 메시지 ↓')
+  })
+
+  it('ⓓ (나) 유예 경로 — 늦은 꼬리 레이아웃이 settle(100 ms) 뒤에 와도 53dp 면 그때 맨 아래로 · 버튼 없음 (R1-1)', async () => {
+    await tailThenBegin()
+    await SCROLL(53)
+    await END(53)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual([])
+    await LAYOUT()
+    expect(ctx.scrolls).toEqual([])
+    await TAIL()
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+    noButton()
+  })
+
+  it('ⓔ (나) 관성 경로 — 늦은 꼬리 레이아웃이 관성 종료 뒤에 와도 53dp 면 그때 맨 아래로 (R1-1)', async () => {
+    await tailThenBegin()
+    await SCROLL(53)
+    await END(53)
+    await MOMENTUM()
+    await MOMENTUM_END(53)
+    expect(ctx.scrolls).toEqual([])
+    await TAIL()
+    await LAYOUT()
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+    noButton()
+  })
+
+  it(`ⓕ (나) 임계 밖(${NEAR_BOTTOM + 80}dp)에서 놓은 뒤 늦은 꼬리 레이아웃 → 자리 유지 · 「새 메시지 ↓」`, async () => {
+    await tailThenBegin()
+    await SCROLL(NEAR_BOTTOM + 80)
+    await END(NEAR_BOTTOM + 80)
+    await RELEASE()
+    noButton()
+    await TAIL()
+    expect(ctx.scrolls).toEqual([])
+    expect(host.textContent).toContain('새 메시지 ↓')
+  })
+})
+
+describe('LIFE-595 C2 순서 짝 — 꼬리 레이아웃·목록 크기 변화·끌기 시작의 순서를 바꿔도 같은 결정', () => {
+  it('꼬리 레이아웃 → 끌기 시작 → 목록 크기 변화 → 53dp 놓음 → 맨 아래로 1회', async () => {
     const t = harness()
     t.store.open('c1')
     t.frame(page([prompt(1), reply(2)]))
@@ -552,49 +627,168 @@ describe('LIFE-595 C2 끌기 시작보다 늦게 온 새 답의 크기 변화도
     ctx.scrolls = []
     t.frame(push([prompt(3), reply(4)], 2))
     await show({ store: t.store })
+    await TAIL()
     await BEGIN()
-    await SCROLL(NEAR_BOTTOM + 80)
+    await SCROLL(53)
     await LAYOUT()
-    await END(NEAR_BOTTOM + 80)
+    await END(53)
     await RELEASE()
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+  })
+
+  for (const order of ['tail-first', 'size-first'] as const) {
+    it(`제스처 없음 — ${order === 'tail-first' ? '꼬리 레이아웃 → 목록 크기' : '목록 크기 → 꼬리 레이아웃'} → 맨 아래로 1회(겹쳐 두 번 안 붙음)`, async () => {
+      const t = harness()
+      t.store.open('c1')
+      t.frame(page([prompt(1), reply(2)]))
+      await show({ store: t.store })
+      await LAYOUT()
+      ctx.scrolls = []
+      t.frame(push([prompt(3), reply(4)], 2))
+      await show({ store: t.store })
+      if (order === 'tail-first') await TAIL()
+      await LAYOUT()
+      if (order === 'size-first') await TAIL()
+      expect(ctx.scrolls).toEqual([{ offset: 0, animated: false }])
+    })
+  }
+})
+
+describe('LIFE-595 R1-4 리뷰어 순서 ①~⑤ (P1·P2·P6·P4·P7)', () => {
+  it('① P1 — 놓은 뒤 유예 구간(settle 전)에 늦은 꼬리 레이아웃 → 유예 끝에 맨 아래로', async () => {
+    await tailThenBegin()
+    await SCROLL(53)
+    await END(53)
+    await TAIL()
     expect(ctx.scrolls).toEqual([])
-    expect(host.textContent).toContain('새 메시지 ↓')
+    await RELEASE()
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+  })
+
+  it('② P2 — 관성 구간에 늦은 꼬리 레이아웃 → 관성 동안 안 움직임 → 관성 종료에 맨 아래로', async () => {
+    await tailThenBegin()
+    await SCROLL(53)
+    await END(53)
+    await MOMENTUM()
+    await TAIL()
+    await LAYOUT()
+    expect(ctx.scrolls).toEqual([])
+    await MOMENTUM_END(53)
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+  })
+
+  it('③ P6 — 놓은 직후 다시 잡음 → 늦은 꼬리 레이아웃 → 다시 놓음(53dp) → 맨 아래로 1회', async () => {
+    await tailThenBegin()
+    await SCROLL(40)
+    await END(40)
+    await BEGIN()
+    await TAIL()
+    await SCROLL(53)
+    await END(53)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+  })
+
+  it('④ P4 — 끄는 중 임계 밖으로 나갔다 안으로 돌아와 늦은 꼬리 레이아웃 → 놓음(60dp) → 맨 아래로 · 버튼 없음', async () => {
+    await tailThenBegin()
+    await SCROLL(NEAR_BOTTOM + 80)
+    await SCROLL(60)
+    await TAIL()
+    await END(60)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+    noButton()
+  })
+
+  it('⑤ P7 — 끄는 중 꼬리 변경 여러 번(레이아웃 없이도) → 놓음(53dp) → 맨 아래로 1회 (M7 이 지키는 것)', async () => {
+    const t = await tailThenBegin()
+    await SCROLL(53)
+    t.frame(push([reply(4, '자란 답 1')], 3))
+    await show({ store: t.store })
+    t.frame(push([reply(4, '자란 답 2')], 4))
+    await show({ store: t.store })
+    await END(53)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+  })
+
+  it('M6 이 지키는 것 — 임계 안(53dp)에서 끄는 중 늦은 꼬리 레이아웃: 끄는 동안 버튼·자리 고정을 켜지 않는다', async () => {
+    await tailThenBegin()
+    await SCROLL(53)
+    await TAIL()
+    noButton()
+    expect(ctx.list?.maintainVisibleContentPosition).toBeUndefined()
   })
 })
 
-describe('LIFE-595 C3 크기 변화 없는 꼬리 변경(A-F5-fold)은 끌어 놓아도 도로 끌어내리지 않는다', () => {
-  const foldDrag = async (y: number) => {
-    const t = harness()
-    t.store.open('c1')
-    t.frame(page([prompt(1), reply(2, '접힌 답')]))
-    await show({ store: t.store })
-    await LAYOUT()
-    ctx.scrolls = []
-    t.frame(push([reply(2, '접힌 답 숨은 줄')]))
-    await show({ store: t.store })
-    await BEGIN()
-    await SCROLL(y)
-    await END(y)
-  }
-
+describe('LIFE-595 C3 크기 변화 없는 꼬리 변경(A-F5-fold)은 끌어 놓아도 도로 끌어내리지 않는다 — 끄는 중 무관한 크기 변화가 와도 (R1-2)', () => {
   it('ⓐ 유예 경로 — 60dp 에서 놓음 → scroll 0회', async () => {
-    await foldDrag(60)
+    await foldThenBegin()
+    await SCROLL(60)
+    await END(60)
     await RELEASE()
     expect(ctx.scrolls).toEqual([])
   })
 
   it('ⓑ 관성 경로 — 60dp 에서 놓음 → 관성 종료 → scroll 0회', async () => {
-    await foldDrag(60)
+    await foldThenBegin()
+    await SCROLL(60)
+    await END(60)
     await MOMENTUM()
     await MOMENTUM_END(60)
     expect(ctx.scrolls).toEqual([])
   })
 
   it(`ⓒ 임계 밖(${NEAR_BOTTOM + 80}dp)으로 끌어 놓아도 숨은 변경만으로 「새 메시지 ↓」 를 띄우지 않는다`, async () => {
-    await foldDrag(NEAR_BOTTOM + 80)
+    await foldThenBegin()
+    await SCROLL(NEAR_BOTTOM + 80)
+    await END(NEAR_BOTTOM + 80)
     await RELEASE()
     expect(ctx.scrolls).toEqual([])
-    expect(host.textContent).not.toContain('새 메시지 ↓')
+    noButton()
+  })
+
+  it('ⓓ (다) P8 — 끄는 중 무관한 목록 크기 변화(가상화 측정) 30번 → 60dp 놓음 → scroll 0회', async () => {
+    await foldThenBegin()
+    await SCROLL(60)
+    for (let i = 0; i < 30; i += 1) await LAYOUT()
+    await END(60)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual([])
+  })
+
+  it(`ⓔ (다) P9 — 끄는 중 무관한 목록 크기 변화 → ${NEAR_BOTTOM + 80}dp 놓음 → 버튼 없음`, async () => {
+    await foldThenBegin()
+    await SCROLL(NEAR_BOTTOM + 80)
+    await LAYOUT()
+    await END(NEAR_BOTTOM + 80)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual([])
+    noButton()
+  })
+
+  it('ⓕ 남은 보류 — 놓은 뒤 무관한 크기 변화 · 다음 끌기(크기 변화 포함)에서도 안 끌어내림 · 다음 새 답에서는 정상으로 한 번 붙는다', async () => {
+    const t = await foldThenBegin()
+    await SCROLL(60)
+    await END(60)
+    await RELEASE()
+    await LAYOUT()
+    expect(ctx.scrolls).toEqual([])
+    await BEGIN()
+    await SCROLL(50)
+    await LAYOUT()
+    await LAYOUT()
+    await END(50)
+    await RELEASE()
+    await LAYOUT()
+    expect(ctx.scrolls).toEqual([])
+    noButton()
+    await SCROLL(0)
+    t.frame(push([prompt(3), reply(4)], 3))
+    await show({ store: t.store })
+    await LAYOUT()
+    await TAIL()
+    expect(ctx.scrolls).toEqual([{ offset: 0, animated: false }])
   })
 })
 
@@ -607,74 +801,85 @@ describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정
   afterEach(() => { vi.restoreAllMocks() })
   const follow = () => lines.filter((line) => line.startsWith('[corral-follow] '))
 
-  it('유예 경로 — tail → begin(보류·미레이아웃) → size(끄는 중) → end → settle(follow, via=release)', async () => {
-    await lateLayoutDrag(53)
+  it('H1 유예 경로 — begin(보류·미레이아웃·carried) → size skip(끄는 중 여러 번이어도 한 줄) → tail-layout hold → end → settle follow', async () => {
+    await tailThenBegin()
+    await SCROLL(53)
+    await LAYOUT()
+    await LAYOUT()
+    await LAYOUT()
+    await TAIL()
     await SCROLL(54)
-    await SCROLL(55)
     await END(53)
     await RELEASE()
-    const got = follow()
-    expect(got.slice(-5)).toEqual([
-      '[corral-follow] tail rev=2 gesture=none',
-      '[corral-follow] begin from=none pending=true unlaid=true following=true y=0',
-      '[corral-follow] size gesture=drag unlaid=true y=53',
+    expect(follow()).toEqual([
+      '[corral-follow] begin from=none rev=2 pending=true laid=false carried=true following=true y=0',
+      '[corral-follow] size gesture=drag carried=true laid=false y=53 decision=skip',
+      '[corral-follow] tail-layout gesture=drag y=53 decision=hold',
       '[corral-follow] end pending=true y=53',
-      '[corral-follow] settle pending=true unlaid=false y=53 via=release decision=follow',
+      '[corral-follow] settle pending=true y=53 via=release decision=follow',
     ])
-    // onScroll(세 번)은 찍지 않는다 — 첫 페이지는 화면이 붙을 때 이미 본 꼬리라 줄이 없고, 보류 없는 크기 변화도 찍지 않는다
-    expect(got).toHaveLength(5)
     expect(lines.join('\n')).not.toContain(SECRET)
     expect(lines.every((line) => !line.startsWith('[corral-conn]'))).toBe(true)
   })
 
-  it('관성 경로 — momentum-begin · momentum-end 뒤 settle(follow, via=momentum)', async () => {
-    await lateLayoutDrag(53)
+  it('R1-1 — settle 이 기다림(wait) → 놓은 뒤 무관한 크기 한 줄(skip) → 늦은 꼬리 레이아웃에 via=layout 결정', async () => {
+    await tailThenBegin()
+    await SCROLL(53)
     await END(53)
     await MOMENTUM()
     await MOMENTUM_END(53)
-    expect(follow().slice(-3)).toEqual([
+    await LAYOUT()
+    await LAYOUT()
+    await TAIL()
+    expect(follow().slice(-5)).toEqual([
       '[corral-follow] momentum-begin from=release pending=true',
       '[corral-follow] momentum-end from=momentum pending=true y=53',
-      '[corral-follow] settle pending=true unlaid=false y=53 via=momentum decision=follow',
+      '[corral-follow] settle pending=true carried=true y=53 via=momentum decision=wait',
+      '[corral-follow] size gesture=none carried=true laid=false y=53 decision=skip',
+      '[corral-follow] settle pending=true y=53 via=layout decision=follow',
     ])
     expect(lines.join('\n')).not.toContain(SECRET)
   })
 
-  it('A-F5-fold — 끄는 중 크기 변화가 없으면 settle 이 보류를 버린다(decision=drop)', async () => {
-    const t = harness()
-    t.store.open('c1')
-    t.frame(page([prompt(1), reply(2, '접힌 답')]))
-    await show({ store: t.store })
+  it('A-F5-fold — 꼬리 레이아웃 없이 놓으면 settle decision=wait 로 남고(끌어내림 없음), 그 뒤 줄이 없다', async () => {
+    await foldThenBegin()
+    await SCROLL(60)
     await LAYOUT()
-    t.frame(push([reply(2, '접힌 답 숨은 줄')]))
-    await show({ store: t.store })
-    await BEGIN()
     await END(60)
     await RELEASE()
-    expect(follow().at(-1)).toBe('[corral-follow] settle pending=true unlaid=true y=60 via=release decision=drop')
+    expect(follow().slice(-3)).toEqual([
+      '[corral-follow] size gesture=drag carried=true laid=false y=60 decision=skip',
+      '[corral-follow] end pending=true y=60',
+      '[corral-follow] settle pending=true carried=true y=60 via=release decision=wait',
+    ])
   })
 
-  it('제스처 없이 붙임 — size decision=follow 한 줄, 임계 밖 놓음 — settle decision=button', async () => {
+  it('제스처 없이 붙임은 변경당 한 줄(size follow) — 답이 다섯 번 자라도 다섯 줄 · 끄는 중 새 답(임계 밖)은 tail · settle button', async () => {
     const t = harness()
     t.store.open('c1')
     t.frame(page([prompt(1), reply(2)]))
     await show({ store: t.store })
     await LAYOUT()
     expect(follow()).toEqual([])
-    t.frame(push([reply(3)], 2))
-    await show({ store: t.store })
-    await LAYOUT()
-    expect(follow()).toEqual(['[corral-follow] tail rev=2 gesture=none', '[corral-follow] size gesture=none decision=follow y=0'])
+    for (let i = 0; i < 5; i += 1) {
+      t.frame(push([reply(3, `자람 ${i}`)], 2 + i))
+      await show({ store: t.store })
+      await TAIL()
+      await LAYOUT()
+      await LAYOUT()
+    }
+    expect(follow()).toEqual([2, 3, 4, 5, 6].map((rev) => `[corral-follow] size gesture=none rev=${rev} y=0 decision=follow`))
+    lines = []
     await BEGIN()
     await SCROLL(NEAR_BOTTOM + 80)
-    t.frame(push([prompt(4), reply(5)], 3))
+    t.frame(push([prompt(4), reply(5)], 7))
     await show({ store: t.store })
     await END(NEAR_BOTTOM + 80)
     await RELEASE()
     expect(follow().slice(-3)).toEqual([
-      '[corral-follow] tail rev=3 gesture=drag',
+      '[corral-follow] tail rev=7 gesture=drag',
       `[corral-follow] end pending=true y=${NEAR_BOTTOM + 80}`,
-      `[corral-follow] settle pending=true unlaid=false y=${NEAR_BOTTOM + 80} via=release decision=button`,
+      `[corral-follow] settle pending=true y=${NEAR_BOTTOM + 80} via=release decision=button`,
     ])
   })
 })

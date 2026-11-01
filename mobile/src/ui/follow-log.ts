@@ -4,7 +4,7 @@
 
 export const FOLLOW_TAG = '[corral-follow]'
 
-export type FollowValue = number | boolean | 'none' | 'drag' | 'release' | 'momentum' | 'follow' | 'button' | 'drop' | 'skip'
+export type FollowValue = number | boolean | 'none' | 'drag' | 'release' | 'momentum' | 'layout' | 'follow' | 'button' | 'wait' | 'hold' | 'skip'
 
 export function followLog(event: string, fields: Record<string, FollowValue>): void {
   const parts = Object.entries(fields).map(([key, value]) => `${key}=${typeof value === 'number' ? Math.round(value * 10) / 10 : String(value)}`)

@@ -9,7 +9,7 @@
      #[serde(rename = "ping")]
      Ping(PingParams),
      #[serde(rename = "server.stop")]
-@@ -268,3 +270,24 @@
+@@ -268,3 +270,27 @@
  
  #[cfg(test)]
  mod tests;
@@ -28,6 +28,9 @@
 +    /// revision a fenced send returned). Any key, paste, raw send or submission since then is `input_changed` — nothing is written.
 +    /// A mouse report (wheel, click, drag, motion) is not input here (LIFE-708); AlternateScroll's arrow keys are.
 +    #[serde(default)] pub expected_input_revision: Option<u64>,
++    /// pane.send_text (LIFE-708 r1): the any-input revision corral observed (mouse reports included — `corral_any_input_revision`).
++    /// Any input since then, a click too, is `any_input_changed` — nothing is written. A question answer fences on it.
++    #[serde(default)] pub expected_any_input_revision: Option<u64>,
 +    /// agent.prompt · pane.send_text (LIFE-582): the input must have been quiet this long, so an echo still in flight is not missed.
 +    #[serde(default)] pub min_input_idle_ms: Option<u64>,
 +    /// agent.prompt (LIFE-597): opt in to a pane with no managed agent (a provider typed into a shell), naming the agent
@@ -63,7 +66,7 @@
                  SuccessResponse {
 --- /dev/null
 +++ b/src/app/api/corral.rs
-@@ -0,0 +1,645 @@
+@@ -0,0 +1,725 @@
 +use super::App;
 +use crate::api::schema::{AgentStatus, CorralTerminalParams, Method, Request, ResponseResult};
 +use super::responses::{encode_error, encode_error_body, encode_success};
@@ -187,6 +190,15 @@
 +        // nothing is written — so a multi-key answer cannot interleave with a desktop key.
 +        if let Method::PaneSendText(send) = &request.method {
 +            if let Some(refused) = self.corral_input_fence(&id, &send.pane_id, params.expected_input_revision, params.min_input_idle_ms) { return refused; }
++            // LIFE-708 r1: a question answer also fences on every input, a click included — the selection may have moved.
++            if let Some(expected) = params.expected_any_input_revision {
++                let any = self.parse_pane_id(&send.pane_id).and_then(|(ws, pane)| self.lookup_runtime_sender(ws, pane)).map(|runtime| runtime.corral_any_input_state());
++                let Some((revision, idle_ms)) = any else { return encode_error(id.clone(), "stale_terminal", "pane disappeared"); };
++                if revision != expected {
++                    return serde_json::json!({"id": id, "error": {"code": "any_input_changed", "message": "pane input (a mouse report included) moved since corral observed it",
++                        "observed_any_input": {"revision": revision, "idle_ms": idle_ms}}}).to_string();
++                }
++            }
 +        }
 +        // No await, internal-event drain, or second queue between guard and effect.
 +        let snapshot = matches!(&request.method, Method::SessionSnapshot(_));
@@ -196,13 +208,13 @@
 +            // same turn — corral then knows the screen was captured after the input went quiet, and fences on it.
 +            Method::PaneRead(p) => Some((p.pane_id.clone(), "read")),
 +            // LIFE-582 R2-A1: the revision after this write, so corral's next key can fence on it.
-+            Method::PaneSendText(p) if params.expected_input_revision.is_some() => Some((p.pane_id.clone(), "send")),
++            Method::PaneSendText(p) if params.expected_input_revision.is_some() || params.expected_any_input_revision.is_some() => Some((p.pane_id.clone(), "send")),
 +            _ => None,
 +        };
 +        let response = self.handle_api_request_after_internal_events_drained(request);
 +        // LIFE-582 R1-A3: agent.get also reports the pane's user-input revision and quiet time, read in this turn.
 +        if let Some((target, slot)) = input_target {
-+            let input = self.parse_pane_id(&target).and_then(|(ws, pane)| self.lookup_runtime_sender(ws, pane)).map(|runtime| runtime.corral_input_state());
++            let input = self.parse_pane_id(&target).and_then(|(ws, pane)| self.lookup_runtime_sender(ws, pane)).map(|runtime| (runtime.corral_input_state(), runtime.corral_any_input_state()));
 +            let seq = if slot == "read" { self.agent_info_for_target(&target).ok().map(|agent| agent.state_change_seq) } else { None };
 +            // LIFE-597: how long the agent state has held, so corral waits out the unmanaged settle instead of being refused.
 +            let quiet = if slot == "agent" { self.corral_terminal_state(&target).map(|terminal| terminal.corral_agent_changed_at.map(|at| at.elapsed().as_millis() as u64)) } else { None };
@@ -210,9 +222,12 @@
 +            if value.get("error").is_some() { return response; }
 +            if slot == "send" && !value["result"].is_object() { value["result"] = serde_json::json!({}); }
 +            let place = match slot { "agent" => value["result"]["agent"].as_object_mut(), "read" => value["result"]["read"].as_object_mut(), _ => value["result"].as_object_mut() };
-+            if let (Some((revision, idle_ms)), Some(place)) = (input, place) {
++            if let (Some(((revision, idle_ms), (any_revision, any_idle_ms))), Some(place)) = (input, place) {
 +                place.insert("corral_input_revision".into(), serde_json::json!(revision));
 +                place.insert("corral_input_idle_ms".into(), serde_json::json!(idle_ms));
++                // LIFE-708 r1: the same turn's any-input revision and quiet time (mouse reports included).
++                place.insert("corral_any_input_revision".into(), serde_json::json!(any_revision));
++                place.insert("corral_any_input_idle_ms".into(), serde_json::json!(any_idle_ms));
 +                if let Some(seq) = seq { place.insert("corral_state_change_seq".into(), serde_json::json!(seq)); }
 +                if let Some(quiet) = quiet { place.insert("corral_state_quiet_ms".into(), serde_json::json!(quiet)); }
 +            }
@@ -288,14 +303,14 @@
 +            let operation = if method == "pane.close" { serde_json::json!({"method":method,"params":{"pane_id":pane_name}}) }
 +                else { serde_json::json!({"method":method,"params":{"pane_id":pane_name,"text":text}}) };
 +            let response: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
-+                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(format!("{terminal}.{old_generation}")), operation: Some(operation), expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
++                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(format!("{terminal}.{old_generation}")), operation: Some(operation), expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None, expected_any_input_revision: None,
 +            })).unwrap();
 +            assert_eq!(response["error"]["code"], "stale_terminal");
 +            assert_eq!(app.lookup_runtime_sender(ws, pane).unwrap().corral_generation(), new_generation);
 +        }
 +        let manifests: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +            epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: None, terminal_id: None,
-+            operation: Some(serde_json::json!({"method":"server.agent_manifests","params":{}})), expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
++            operation: Some(serde_json::json!({"method":"server.agent_manifests","params":{}})), expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None, expected_any_input_revision: None,
 +        })).unwrap();
 +        assert!(manifests.get("error").is_none(), "{manifests}");
 +        assert!(manifests["result"]["manifests"].as_array().is_some_and(|list| !list.is_empty()), "{manifests}");
@@ -363,7 +378,7 @@
 +            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
 +                operation: Some(serde_json::json!({"method":"agent.prompt","params":{"target":pane_name,"text":"second turn"}})),
-+                expected_state_change_seq: Some(expected), expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
++                expected_state_change_seq: Some(expected), expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None, expected_any_input_revision: None,
 +            })).unwrap()
 +        }
 +        // What this test can and cannot show. It can show that the *guard predicate* accepts a Done
@@ -434,7 +449,7 @@
 +                epoch: epoch().into(), deadline_ms: u64::MAX,
 +                pane_id: pane_id.map(str::to_string), terminal_id: terminal_id.map(str::to_string),
 +                operation: Some(serde_json::json!({"method":"agent.explain","params":{"target":operation_target}})),
-+                expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
++                expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None, expected_any_input_revision: None,
 +            })).unwrap()
 +        }
 +        // ① Matching identity: the envelope must not refuse it any more. There is no provider in
@@ -484,7 +499,7 @@
 +        fn guard(app: &mut App, pane_name: &str, target: &str, operation: serde_json::Value, seq: Option<u64>, revision: Option<u64>, idle: Option<u64>) -> serde_json::Value {
 +            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
-+                operation: Some(operation), expected_state_change_seq: seq, expected_input_revision: revision, min_input_idle_ms: idle, unmanaged_agent: None,
++                operation: Some(operation), expected_state_change_seq: seq, expected_input_revision: revision, min_input_idle_ms: idle, unmanaged_agent: None, expected_any_input_revision: None,
 +            })).unwrap()
 +        }
 +        let get = guard(&mut app, &pane_name, &target, serde_json::json!({"method":"agent.get","params":{"target":pane_name}}), None, None, None);
@@ -542,7 +557,7 @@
 +        fn guard(app: &mut App, pane_name: &str, target: &str, operation: serde_json::Value, revision: Option<u64>) -> serde_json::Value {
 +            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
-+                operation: Some(operation), expected_state_change_seq: None, expected_input_revision: revision, min_input_idle_ms: None, unmanaged_agent: None,
++                operation: Some(operation), expected_state_change_seq: None, expected_input_revision: revision, min_input_idle_ms: None, unmanaged_agent: None, expected_any_input_revision: None,
 +            })).unwrap()
 +        }
 +        let read_op = serde_json::json!({"method":"pane.read","params":{"pane_id":pane_name,"source":"visible","format":"ansi","strip_ansi":false}});
@@ -570,10 +585,78 @@
 +        let prompt: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +            epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(target.clone()),
 +            operation: Some(serde_json::json!({"method":"agent.prompt","params":{"target":pane_name,"text":"phone"}})),
-+            expected_state_change_seq: Some(seq), expected_input_revision: Some(revision + 2), min_input_idle_ms: None, unmanaged_agent: None,
++            expected_state_change_seq: Some(seq), expected_input_revision: Some(revision + 2), min_input_idle_ms: None, unmanaged_agent: None, expected_any_input_revision: None,
 +        })).unwrap();
 +        assert_eq!(prompt["error"]["code"], "input_changed", "a prompt fenced before the submission: {prompt}");
 +        println!("pane.read revision {revision}; fenced key -> {}; other key then fenced key refused; submission -> {}", revision + 1, revision + 3);
++        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
++        std::fs::remove_dir_all(root).unwrap();
++    }
++
++    /// LIFE-708 r1 (C10ⓐ) — pane.read, agent.get and a fenced pane.send_text report the any-input revision next to the draft
++    /// revision. A mouse report moves only the any-input value; a key moves both. A pane.send_text fenced on a stale
++    /// any-input revision is `any_input_changed` and writes nothing; without the field the arm is unchanged.
++    #[tokio::test]
++    async fn corral_terminal_fences_an_answer_key_on_any_input() {
++        use crate::detect::{Agent, AgentState};
++        use crate::events::AppEvent;
++        use std::time::{Duration, Instant};
++        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
++        let mut app = App::new(&crate::config::Config::default(), crate::app::AppPolicy::TEST, None, rx, crate::api::EventHub::default());
++        app.state.default_shell = "/bin/sh".into(); app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
++        let root = std::env::temp_dir().join(format!("l708-any-{}", std::process::id()));
++        std::fs::create_dir_all(&root).unwrap();
++        let req: Request = serde_json::from_value(serde_json::json!({"id":"create", "method":"workspace.create", "params":{"cwd":root,"focus":false}})).unwrap();
++        let response: serde_json::Value = serde_json::from_str(&app.handle_api_request_after_internal_events_drained(req)).unwrap();
++        let pane_name = response["result"]["root_pane"]["pane_id"].as_str().unwrap().to_string();
++        let (ws, pane) = app.parse_pane_id(&pane_name).unwrap();
++        let terminal = app.state.terminal_id_for_pane(ws, pane).unwrap();
++        app.state.outer_terminal_focus = Some(false);
++        app.state.terminals.get_mut(&terminal).unwrap().begin_managed_agent(
++            "corral-any".into(), Agent::Claude, Instant::now(), Duration::ZERO, Duration::from_secs(300));
++        for state in [AgentState::Unknown, AgentState::Idle] {
++            app.state.handle_app_event(AppEvent::StateChanged { pane_id: pane, agent: Some(Agent::Claude), state,
++                visible_blocker: false, visible_working: false, process_exited: false, observed_at: Instant::now() });
++            app.state.terminals.get_mut(&terminal).unwrap().reconcile_managed_agent_at(Instant::now(), false);
++        }
++        let target = format!("{terminal}.{}", app.lookup_runtime_sender(ws, pane).unwrap().corral_generation());
++        fn guard(app: &mut App, pane_name: &str, target: &str, operation: serde_json::Value, revision: Option<u64>, any: Option<u64>) -> serde_json::Value {
++            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
++                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
++                operation: Some(operation), expected_state_change_seq: None, expected_input_revision: revision, min_input_idle_ms: None, unmanaged_agent: None, expected_any_input_revision: any,
++            })).unwrap()
++        }
++        let read_op = serde_json::json!({"method":"pane.read","params":{"pane_id":pane_name,"source":"visible","format":"ansi","strip_ansi":false}});
++        let read = guard(&mut app, &pane_name, &target, read_op.clone(), None, None);
++        let revision = read["result"]["read"]["corral_input_revision"].as_u64().unwrap();
++        let any = read["result"]["read"]["corral_any_input_revision"].as_u64().expect("pane.read carries the any-input revision");
++        assert!(read["result"]["read"]["corral_any_input_idle_ms"].is_u64(), "{read}");
++        let get = guard(&mut app, &pane_name, &target, serde_json::json!({"method":"agent.get","params":{"target":pane_name}}), None, None);
++        assert_eq!(get["result"]["agent"]["corral_any_input_revision"], any, "agent.get carries it too: {get}");
++        assert!(get["result"]["agent"]["corral_any_input_idle_ms"].is_u64(), "{get}");
++        // A mouse report (a click on the question): the draft revision stays, the any-input revision moves.
++        app.lookup_runtime_sender(ws, pane).unwrap().corral_try_send_mouse_report(bytes::Bytes::from_static(b"\x1b[<0;3;2M")).unwrap();
++        let clicked = guard(&mut app, &pane_name, &target, read_op.clone(), None, None);
++        assert_eq!(clicked["result"]["read"]["corral_input_revision"], revision, "a mouse report is not a draft: {clicked}");
++        assert_eq!(clicked["result"]["read"]["corral_any_input_revision"], any + 1, "a mouse report is input: {clicked}");
++        // The answer key fenced on the any-input revision of the screen before the click: refused, nothing written.
++        let send = |text: &str| serde_json::json!({"method":"pane.send_text","params":{"pane_id":pane_name,"text":text}});
++        let stale = guard(&mut app, &pane_name, &target, send("1"), Some(revision), Some(any));
++        assert_eq!(stale["error"]["code"], "any_input_changed", "{stale}");
++        assert_eq!(stale["error"]["observed_any_input"]["revision"], any + 1, "{stale}");
++        let after_refusal = guard(&mut app, &pane_name, &target, read_op.clone(), None, None);
++        assert_eq!(after_refusal["result"]["read"]["corral_input_revision"], revision, "a refused key must not write: {after_refusal}");
++        assert_eq!(after_refusal["result"]["read"]["corral_any_input_revision"], any + 1, "a refused key must not write: {after_refusal}");
++        // Fenced on the current values: written, and the result carries both values after the write (the next key's fence).
++        let fresh = guard(&mut app, &pane_name, &target, send("1"), Some(revision), Some(any + 1));
++        assert!(fresh.get("error").is_none(), "{fresh}");
++        assert_eq!(fresh["result"]["corral_input_revision"], revision + 1, "{fresh}");
++        assert_eq!(fresh["result"]["corral_any_input_revision"], any + 2, "a key moves both: {fresh}");
++        // Without the field the send arm is unchanged — the draft fence alone, which a click does not move.
++        app.lookup_runtime_sender(ws, pane).unwrap().corral_try_send_mouse_report(bytes::Bytes::from_static(b"\x1b[<0;3;2m")).unwrap();
++        let draft_only = guard(&mut app, &pane_name, &target, send("2"), Some(revision + 1), None);
++        assert!(draft_only.get("error").is_none(), "{draft_only}");
++        println!("any-input: read {any}, click -> {} (draft {revision} unchanged), stale any_input_changed (no write), fresh key -> draft {} any {}", any + 1, revision + 1, any + 2);
 +        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
 +        std::fs::remove_dir_all(root).unwrap();
 +    }
@@ -595,7 +678,7 @@
 +        // guard would look old and every unmanaged pane would end in guard_outdated.
 +        let handshake: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("handshake".into(), CorralTerminalParams {
 +            epoch: String::new(), deadline_ms: 0, pane_id: None, terminal_id: None, operation: None,
-+            expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
++            expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None, expected_any_input_revision: None,
 +        })).unwrap();
 +        assert_eq!(handshake["result"]["guard_version"], 1, "{handshake}");
 +        assert_eq!(handshake["result"]["agent_ops"], 1, "{handshake}");
@@ -625,7 +708,7 @@
 +            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
 +                operation: Some(serde_json::json!({"method":"agent.prompt","params":{"target":pane_name,"text":"from the phone"}})),
-+                expected_state_change_seq: Some(seq), expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: unmanaged.map(str::to_string),
++                expected_state_change_seq: Some(seq), expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: unmanaged.map(str::to_string), expected_any_input_revision: None,
 +            })).unwrap()
 +        }
 +        const REFUSED: &str = "is not the observed ready state";
@@ -664,7 +747,7 @@
 +        let get: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +            epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(target.clone()),
 +            operation: Some(serde_json::json!({"method":"agent.get","params":{"target":pane_name}})),
-+            expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
++            expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None, expected_any_input_revision: None,
 +        })).unwrap();
 +        assert!(get["result"]["agent"]["corral_state_quiet_ms"].as_u64().is_some_and(|ms| ms >= 3_000), "agent.get carries the settle: {get}");
 +        let settled = prompt(&mut app, &pane_name, &target, seq, Some("claude"));
@@ -722,7 +805,7 @@
          params: AgentPromptParams,
 --- a/src/pane/terminal.rs
 +++ b/src/pane/terminal.rs
-@@ -213,12 +213,17 @@
+@@ -213,12 +213,20 @@
  
  pub(crate) struct PaneTerminal {
      pub(crate) ghostty: GhosttyPaneTerminal,
@@ -731,17 +814,20 @@
 +    /// LIFE-582: every user-input write that can become a draft in the input line (keys, text, paste, pane.send_text,
 +    /// submissions — and AlternateScroll's arrow keys) — revision and when it last moved. Mouse reports do not count (LIFE-708).
 +    corral_input: Mutex<(u64, std::time::Instant)>,
++    /// LIFE-708 r1: every user-input write, mouse reports included — what a question answer fences on (a click can move the
++    /// selection without a draft or a state change).
++    corral_any_input: Mutex<(u64, std::time::Instant)>,
  }
  
  impl PaneTerminal {
      pub(crate) fn new(ghostty: GhosttyPaneTerminal) -> Self {
 -        Self { ghostty, corral_raw: Mutex::new((std::collections::VecDeque::new(), 0)) }
 +        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-+        Self { ghostty, corral_generation: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), corral_raw: Mutex::new((std::collections::VecDeque::new(), 0)), corral_input: Mutex::new((0, std::time::Instant::now())) }
++        Self { ghostty, corral_generation: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), corral_raw: Mutex::new((std::collections::VecDeque::new(), 0)), corral_input: Mutex::new((0, std::time::Instant::now())), corral_any_input: Mutex::new((0, std::time::Instant::now())) }
      }
  
      pub fn process_pty_bytes(
-@@ -238,6 +243,18 @@
+@@ -238,6 +246,30 @@
              .process_pty_bytes(pane_id, shell_pid, bytes, response_writer)
      }
  
@@ -749,6 +835,12 @@
 +
 +    pub(crate) fn corral_note_input(&self) {
 +        if let Ok(mut input) = self.corral_input.lock() { input.0 = input.0.wrapping_add(1); input.1 = std::time::Instant::now(); }
++        self.corral_note_mouse_report();
++    }
++
++    /// LIFE-708 r1: a mouse report moves only the any-input revision.
++    pub(crate) fn corral_note_mouse_report(&self) {
++        if let Ok(mut input) = self.corral_any_input.lock() { input.0 = input.0.wrapping_add(1); input.1 = std::time::Instant::now(); }
 +    }
 +
 +    /// (input revision, ms since the last user-input write).
@@ -757,12 +849,18 @@
 +        (input.0, u64::try_from(input.1.elapsed().as_millis()).unwrap_or(u64::MAX))
 +    }
 +
++    /// (any-input revision, ms since the last user-input write of any kind — mouse reports included).
++    pub(crate) fn corral_any_input_state(&self) -> (u64, u64) {
++        let input = self.corral_any_input.lock().unwrap();
++        (input.0, u64::try_from(input.1.elapsed().as_millis()).unwrap_or(u64::MAX))
++    }
++
      pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) {
          use base64::Engine;
          let history = self.corral_raw.lock().unwrap();
 --- a/src/pane.rs
 +++ b/src/pane.rs
-@@ -2920,6 +2920,10 @@
+@@ -2920,6 +2920,12 @@
          self.terminal.scroll_metrics()
      }
  
@@ -770,13 +868,16 @@
 +
 +    pub(crate) fn corral_input_state(&self) -> (u64, u64) { self.terminal.corral_input_state() }
 +
++    pub(crate) fn corral_any_input_state(&self) -> (u64, u64) { self.terminal.corral_any_input_state() }
++
      pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.terminal.corral_raw_snapshot() }
  
      pub(crate) fn search_text_window(
-@@ -3133,6 +3137,14 @@
+@@ -3133,7 +3139,18 @@
      }
  
      pub fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
+-        self.io.try_send_bytes(bytes)
 +        let sent = self.io.try_send_bytes(bytes);
 +        if sent.is_ok() { self.terminal.corral_note_input(); }
 +        sent
@@ -784,11 +885,15 @@
 +
 +    /// LIFE-708: a mouse report (wheel under MouseReport routing, button, drag, motion) is an event for the app, not a draft in
 +    /// its input line, so it writes without moving the input revision or the quiet time. AlternateScroll's arrow keys still count.
++    /// It still moves the any-input revision (r1) — a click can move a question's selection.
 +    pub(crate) fn corral_try_send_mouse_report(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
-         self.io.try_send_bytes(bytes)
++        let sent = self.io.try_send_bytes(bytes);
++        if sent.is_ok() { self.terminal.corral_note_mouse_report(); }
++        sent
      }
  
-@@ -3143,8 +3155,11 @@
+     pub fn queue_user_input_submission(
+@@ -3143,8 +3160,11 @@
          delay: std::time::Duration,
          deadline: Option<std::time::Instant>,
      ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
@@ -804,7 +909,7 @@
      pub fn try_send_paste(&self, text: String) -> Result<(), mpsc::error::TrySendError<Bytes>> {
 --- a/src/terminal/runtime.rs
 +++ b/src/terminal/runtime.rs
-@@ -348,6 +348,10 @@
+@@ -348,6 +348,12 @@
          self.0.synchronized_output_active()
      }
  
@@ -812,10 +917,12 @@
 +
 +    pub(crate) fn corral_input_state(&self) -> (u64, u64) { self.0.corral_input_state() }
 +
++    pub(crate) fn corral_any_input_state(&self) -> (u64, u64) { self.0.corral_any_input_state() }
++
      pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.0.corral_raw_snapshot() }
  
      pub fn visible_text(&self) -> String {
-@@ -455,6 +459,10 @@
+@@ -455,6 +461,10 @@
          self.0.try_send_bytes(bytes)
      }
  
@@ -848,14 +955,15 @@
                      .map_err(|err| format!("targeted pane mouse input failed: {err}"))?;
              }
              continue;
-@@ -349,6 +350,84 @@
+@@ -349,6 +350,106 @@
  mod tests {
      use super::*;
  
 +    /// LIFE-708 — a mouse report the client sent as a mouse event (wheel under MouseReport routing, button down/up/drag,
-+    /// motion; the attach wheel too) is written but leaves the input revision and quiet time alone. Keys, text, paste,
-+    /// raw sends (pane.send_text) and submissions (agent.prompt) still move it, on the same pane (positive control),
-+    /// and so does the wheel under AlternateScroll routing — those are arrow keys, which can recall a draft.
++    /// motion; the attach wheel and the popup entry too) is written but leaves the input revision and quiet time alone.
++    /// Keys, text, paste, raw sends (pane.send_text) and submissions (agent.prompt) still move it, on the same pane
++    /// (positive control), and so does the wheel under AlternateScroll routing — those are arrow keys, which can recall a draft.
++    /// r1 (C10): every one of them — mouse reports included — moves the any-input revision by one.
 +    #[tokio::test]
 +    async fn corral_terminal_mouse_reports_leave_the_input_revision() {
 +        use crate::protocol::{ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientMousePosition};
@@ -873,10 +981,13 @@
 +            20, 5, 0, b"\x1b[?1049h\x1b[?1003h\x1b[?1006h", 64);
 +        assert_eq!(runtime.wheel_routing(), Some(crate::pane::WheelRouting::MouseReport));
 +        let (revision, _) = runtime.corral_input_state();
++        let (any_base, _) = runtime.corral_any_input_state();
++        let mut any = any_base;
 +        let mouse_events = [
 +            ("wheel up", mouse(ClientMouseKind::ScrollUp)),
 +            ("wheel down", mouse(ClientMouseKind::ScrollDown)),
 +            ("wheel left", mouse(ClientMouseKind::ScrollLeft)),
++            ("wheel right", mouse(ClientMouseKind::ScrollRight)),
 +            ("button down", mouse(ClientMouseKind::Down(ClientMouseButton::Left))),
 +            ("drag", mouse(ClientMouseKind::Drag(ClientMouseButton::Left))),
 +            ("button up", mouse(ClientMouseKind::Up(ClientMouseButton::Left))),
@@ -891,10 +1002,21 @@
 +            let (now, idle_after) = runtime.corral_input_state();
 +            assert_eq!(now, revision, "{name} must not move the input revision");
 +            assert!(idle_after >= idle_before, "{name} must not restart the quiet time ({idle_before} -> {idle_after} ms)");
++            any += 1;
++            let (now_any, any_idle) = runtime.corral_any_input_state();
++            assert_eq!(now_any, any, "{name} moves the any-input revision");
++            assert!(any_idle < 30, "{name} restarts the any-input quiet time");
 +        }
 +        apply_terminal_attach_scroll(&runtime, AttachScrollSource::Wheel, AttachScrollDirection::Up, 1, Some(3), Some(2), 0).unwrap();
 +        assert!(drain(&mut rx).starts_with(b"\x1b[<"), "attach wheel is a mouse report");
 +        assert_eq!(runtime.corral_input_state().0, revision, "attach wheel must not move the input revision");
++        any += 1;
++        assert_eq!(runtime.corral_any_input_state().0, any, "attach wheel moves the any-input revision");
++        apply_client_popup_input_events(&runtime, &[mouse(ClientMouseKind::Down(ClientMouseButton::Left))]).unwrap();
++        assert!(drain(&mut rx).starts_with(b"\x1b[<"), "popup click is a mouse report");
++        assert_eq!(runtime.corral_input_state().0, revision, "popup click must not move the input revision");
++        any += 1;
++        assert_eq!(runtime.corral_any_input_state().0, any, "popup click moves the any-input revision");
 +
 +        // Positive control — the same pane, the same entry point: everything that can be a draft moves it by one.
 +        let key = ClientPaneInputEvent::Key {
@@ -906,15 +1028,21 @@
 +            apply_client_pane_input_events(&runtime, &[event]).unwrap();
 +            assert!(!drain(&mut rx).is_empty(), "{name} writes");
 +            expected += 1;
++            any += 1;
 +            assert_eq!(runtime.corral_input_state().0, expected, "{name} moves the input revision");
++            assert_eq!(runtime.corral_any_input_state().0, any, "{name} moves the any-input revision too");
 +            assert!(runtime.corral_input_state().1 < 30, "{name} restarts the quiet time");
 +        }
 +        runtime.try_send_bytes(Bytes::from_static(b"send_text")).unwrap();
 +        expected += 1;
++        any += 1;
 +        assert_eq!(runtime.corral_input_state().0, expected, "a raw send (pane.send_text) moves the input revision");
++        assert_eq!(runtime.corral_any_input_state().0, any, "a raw send moves the any-input revision too");
 +        let _queued = runtime.queue_user_input_submission(Bytes::from_static(b"prompt"), Bytes::from_static(b"\r"), Duration::ZERO, None).expect("queued");
 +        expected += 1;
++        any += 1;
 +        assert_eq!(runtime.corral_input_state().0, expected, "a submission (agent.prompt) moves the input revision");
++        assert_eq!(runtime.corral_any_input_state().0, any, "a submission moves the any-input revision too");
 +
 +        // AlternateScroll: no mouse reporting, alternate screen, 1007 on — the wheel becomes an arrow key and counts.
 +        let (alternate, mut rx) = crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
@@ -927,7 +1055,8 @@
 +        assert_eq!(alternate.corral_input_state().0, base + 1, "AlternateScroll's arrow key moves the input revision");
 +        apply_terminal_attach_scroll(&alternate, AttachScrollSource::Wheel, AttachScrollDirection::Down, 1, None, None, 0).unwrap();
 +        assert_eq!(alternate.corral_input_state().0, base + 2, "attach wheel under AlternateScroll moves it too");
-+        println!("mouse reports: revision {revision} unchanged over 7 events + attach wheel; key/text/paste/send/submission -> {expected}; AlternateScroll {base} -> {}", base + 2);
++        assert_eq!(alternate.corral_any_input_state().0, base + 2, "AlternateScroll moves the any-input revision with it");
++        println!("mouse reports: revision {revision} unchanged over 8 events + attach wheel + popup click, any-input {any_base} -> {}; key/text/paste/send/submission -> {expected} (any {any}); AlternateScroll {base} -> {} (any too)", any_base + 10, base + 2);
 +    }
 +
      #[tokio::test]

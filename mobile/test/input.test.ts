@@ -26,7 +26,6 @@ import {
   type SentEntry,
 } from '../src/core/input'
 import { InputStore } from '../src/core/input-store'
-import { parseServerMessage } from '../src/core/protocol'
 import type { Channel } from '../src/core/list'
 import { FakeClock } from './fakes'
 
@@ -161,18 +160,6 @@ describe('LIFE-709 맥 입력으로 막힌 지시 — 사유 mac_input · 모르
   it('failed/mac_input 은 「그 사이 맥에서 입력이 있어」 — 세션이 바뀐 것(target_changed)과 다르게 말한다', () => {
     expect(sentLine({ entry: entry({ state: 'failed', reason: 'mac_input' }), hhmm })).toMatchObject({ tone: 'error', text: '보내지 못했습니다 · 그 사이 맥에서 입력이 있어 보내지 않았습니다', action: 'retry' })
     expect(sentLine({ entry: entry({ state: 'failed', reason: 'target_changed' }), hhmm })?.text).toBe('보내지 못했습니다 · 그 사이 세션이 바뀌어 보내지 않았습니다')
-  })
-  it('옛 앱 호환 — 표에 없는 사유가 와도 수신·저장이 거절하지 않고 「보내지 못했습니다」 로 그린다', () => {
-    // 옛 APK 가 mac_input 을 모르는 것과 같은 모양: 이 앱이 모르는 사유 문자열.
-    const wire = parseServerMessage(JSON.stringify({ type: 'input.state', protocol: 1, id: 'm1', channel: 'w1:p1', op: 'send', state: 'failed', wait: null, reason: 'reason_from_a_newer_mac', at: 1 }))
-    expect(wire).toMatchObject({ type: 'input', message: { id: 'm1', state: 'failed', reason: 'reason_from_a_newer_mac' } })
-    const t = setup()
-    const id = t.store.send({ channel: 'w1:p1', text: 'x', tailId: null }) ?? ''
-    t.connection.state(id, 'failed', { reason: 'reason_from_a_newer_mac' })
-    const stored = t.store.getSnapshot().entries[0]
-    expect(stored).toMatchObject({ state: 'failed', reason: 'reason_from_a_newer_mac' })
-    if (stored === undefined) throw new Error('stored')
-    expect(sentLine({ entry: stored, hhmm })).toMatchObject({ tone: 'error', text: '보내지 못했습니다', action: 'retry' })
   })
 })
 

@@ -195,6 +195,8 @@
   넣는 순간까지 울타리 뒤 입력이 하나라도 있었으면 `input_changed`, 하한이 모자라면 `input_recent` 로 아무것도 쓰지 않는다 → 다시 관측해 입력이면 `mac_input`, 아니면 큐로 돌아가 다음 관문.
   하한 근거 = 격리 실측 echo(키 → 화면, 읽기 왕복 포함) 최대 Claude 225 · Codex 221 · Grok 223 ms(각 10표본, r2 — 부하·원격 attach 상한은 아니다).
   revision 이 없는 guard 면 넣지 않는다(`failed/guard_outdated`). 질문 답 키(`pane.send_text`)도 같은 울타리를 친다 — 아래 「질문 답」.
+  같은 자리에 **모든 입력 revision**(`corral_any_input_revision`·`corral_any_input_idle_ms` — 마우스 보고까지 센다, LIFE-708 r1)도 싣는다. 울타리 친 `pane.send_text` 는
+  `expected_any_input_revision` 을 받아 다르면 같은 턴에 `any_input_changed` 로 아무것도 쓰지 않고, 결과에 쓴 뒤 두 값을 돌려준다. 지시(`agent.prompt`)는 이 값을 쓰지 않는다.
   CLI `terminal prompt` 계약·AgentRecord 는 건드리지 않는다 — 관리되지 않은 pane(GUI 로 연 세션)도 같은 관문을 지난다.
 - **목록의 살아 있는 AI 채널만**: 셸 pane·닫힌 세션·목록 밖은 `failed`(`not_listed`·`closed`), 세션 참조가 아직 없으면(Codex 첫 지시 전) `no_session`. 맥이 guard 바인딩 세션이 아니면 넣지 않는다(대기 → 실패).
   지시는 herdr **관리 에이전트**(데스크톱 GUI·하네스가 `agent.start` 로 띄운 것)와 **관리 밖 pane**(셸에서 직접 친 `claude`·`codex`·`grok`, `--resume` 포함 — LIFE-597, 582 D1 대체)에 넣는다.
@@ -214,9 +216,13 @@
     다른 클라이언트의 쓰기 — CLI `terminal prompt`·orchestration 배달 포함 — 모두 맥 쪽 입력이다) 그 지시는 넣지 않고 `failed/mac_input`(쓰기 0) 다.
     마우스 보고가 꺼진 alt-screen 에서 휠은 herdr 가 화살표 키로 보내므로(`AlternateScroll`) 키와 같이 막는다 — provider TUI 에서 ↑ 는 이전 입력을 불러와 초안을 만든다.
     **마우스 보고**(provider 가 1000/1002/1003/1006 을 켠 pane 의 휠·클릭·드래그·이동)는 막지 않는다(LIFE-708) — herdr 가 마우스 의미 이벤트로 받아 인코딩한 쓰기는 guard 가
-    입력 revision·조용한 시각을 움직이지 않는다(그 전에는 휠 +1·클릭 +2 로 지시가 실패했다 — LIFE-598 리뷰 r3 실측). 클릭이 상태를 바꾸면(질문 선택 등) seq·준비 관문이 따로 막는다.
+    입력 revision·조용한 시각을 움직이지 않는다(그 전에는 휠 +1·클릭 +2 로 지시가 실패했다 — LIFE-598 리뷰 r3 실측). 지시 경로에서 클릭이 에이전트 상태를 바꾸면 seq·준비 관문이 따로 막는다.
+    **질문 답은 클릭도 계속 막는다**(LIFE-708 r1 · C10): 질문 대기(`blocked`) 중 클릭은 선택만 옮기고 seq 를 올리지 않을 수 있어, 답 경로는 아래 「질문 답」 의 **모든 입력 revision**(마우스 보고 포함)으로 울타리 친다.
+    **전환기**: 새 guard 는 설치본 herdr 서버를 새 바이너리로 재기동한 뒤에 돈다 — 그 전(새 허브 + 옛 서버)에는 옛 guard 가 마우스도 세므로 휠·클릭도 `mac_input` 으로 보인다.
     **포커스 전환**(다른 pane·창으로 포커스만 옮김 — corral 의 `pane.focus` 경로)도 revision 을 올리지 않는다(리뷰 r3 실측 +0, 양성 대조 포함).
     herdr 에는 포커스 보고 코드 경로가 있어, provider 가 포커스 보고(1004)를 켜는 경우는 최종 관문에서 따로 본다.
+    **한계**: 다른 도구가 `pane.read`·`agent.read` 를 `recent` 소스로 읽으면 herdr 가 alt-screen 기록을 읽으려고 스스로 합성하는 휠(`alt_screen_read.rs`)은 여전히 입력으로 센다(base 와 같다 —
+    corral 은 `visible`·스트림 소스만 쓰므로 그 휠을 만들지 않는다).
     폰 문구는 「그 사이 맥에서 입력이 있어 보내지 않았습니다」(LIFE-709 — 세션·세대가 바뀐 `target_changed` 는 「그 사이 세션이 바뀌어 보내지 않았습니다」 그대로).
     `mac_input` 을 모르는 옛 앱은 사유 없이 「보내지 못했습니다」 로 보인다(모르는 사유는 문구 없이 그린다 — 깨지지 않는다).
     허브 자기 쓰기 경합의 거짓 실패(아래 「남는 창」 — 자기 쓰기와 재관측 사이 맥 키 등, 빈도 낮음)도 이 사유로 보일 수 있다. 기다리지 않는다 — 대기 중이어도 다음 관측에서 바로 끝낸다.
@@ -293,6 +299,10 @@
   첫 키는 접수 때의 revision(LIFE-598 r2, 그 화면도 같은 값), 다음 키는 guard 가 앞 키를 쓴 직후 돌려준 revision 이라 그 사이 다른 클라이언트의 입력이 끼면 그 키부터 쓰지 않는다. ⑤ 키마다 접수 세션이 그대로여야 한다(R2-A4 목록 + 키마다 바로 앞에서 다시 한 herdr 관측, seq·revision 도 울타리 값 그대로 — LIFE-598).
   **첫 키의 울타리는 접수 때의 revision**(LIFE-598 r2 — 답 요청을 받은 직후 관측): 첫 키 묶음의 화면도 그 revision 그대로여야 하고, 접수 뒤 맥 입력이 있으면 키 0회 `failed/question_changed`
   (답의 폰 문구 그대로 — 로그 `check: input`). 화면 조용함 하한은 다른 묶음과 같은 500 ms.
+  **맥 클릭도 막는다**(LIFE-708 r1 · C10): 초안 revision 은 마우스 보고를 세지 않으므로, 답은 **모든 입력 revision** 도 같은 자리에서 본다 — 화면 조용함(500 ms)을 그 값의 조용한 시간으로 재고
+  (클릭 직후 화면은 기다렸다 다시 읽는다), 화면·키 앞 관측이 그 울타리 값 그대로여야 하며, 키마다 guard 가 `expected_any_input_revision` 으로 같은 턴에서 비교한다(다음 키는 앞 키가 돌려준 쓴 뒤 값).
+  접수 뒤 맥 클릭·휠이 끼면 키 0회 `failed/question_changed`(로그 `check: any_input`). 울타리의 시작은 접수 때 값 + 그 사이 자기 쓰기가 올린 만큼(자기 쓰기는 두 값을 같이 올린다) — 자기 쓰기 사슬 자체는 초안 revision 그대로다.
+  그 값이 없는 이전 guard 는 마우스도 초안 revision 에 세므로 초안 울타리만으로 같다(그 칸을 싣지 않는다). 중단 키는 바꾸지 않았다.
   기록의 질문이 닫혔으면 `failed/question_closed`, 화면·seq·revision·지문이 다르면 `question_changed`(키가 하나도 안 들어갔으면 `failed`, 들어갔으면 `unconfirmed`). 잠긴 질문(선택지 9개 이상 · Claude 아닌 multiSelect · Claude preview 의 직접 입력) `question_locked`·`other_locked`.
   잠긴 질문의 폰 문구는 「맥에서 답해 주세요」 한 갈래다 — 카드 「맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다」 · 입력창 자리표시 「맥에서 답해 주세요」 · 결과 줄 `question_locked` 「이 질문은 맥에서 답해 주세요」(D1 — 잠금 + 안내).
   폰 카드는 그 채널이 **질문을 기다릴 때만**(목록 `waiting: question`) 연다(서버도 상태가 blocked 가 아니면 `question_closed`). 기록엔 대기인데 채널이 기다리지 않으면 카드를 잠그고 입력창은 그 질문을 뺀 일반 지시 규칙 —

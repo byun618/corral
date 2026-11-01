@@ -273,8 +273,10 @@ export function looksLikeQuery({ query, pattern }: { query: string; pattern: str
 
 const NO_UNREAD: ReadonlySet<string> = new Set()
 
-export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes = NO_UNREAD }: {
+export function useTasksPage({ open, detailShown = false, repos, activeRepoRoot, notify, unreadPanes = NO_UNREAD }: {
   open: boolean
+  /** 상세가 패널에 보이는가(LIFE-755) — 페이지가 닫혀 있어도 상세 연결의 스페이스 목록(머리 이름·색)을 받는다. */
+  detailShown?: boolean
   repos: RepoRow[]
   activeRepoRoot: string | null
   /** 사이드바와 같은 안 읽음 pane 집합(`useUnread`) — 링크된 worktree 의 점이 사이드바와 같게(LIFE-603 C10). */
@@ -412,9 +414,12 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
 
   // 스페이스 목록을 아직 못 받은 연결은 열 때 **연결 세대마다 한 번** 받는다(R1-C). 실패는 보존하고 「다시 시도」 까지 다시 보내지 않는다 —
   // 실패도 main 이 상태를 push 하므로, push 마다 다시 보내면 끝없이 돈다.
+  // LIFE-755 — 페이지가 닫힌 채 상세가 패널에 보이면(사이드바 작업 줄) 그 상세의 연결만 같은 규칙으로 받는다. 상세 머리 스페이스 이름·색이 페이지를 열었을 때와 같게.
+  const detailConnectionId = detailShown && selectedId !== null ? parseUid(selectedId)?.connectionId ?? null : null
   useEffect(() => {
-    if (!open || settings === null) return
+    if ((!open && detailConnectionId === null) || settings === null) return
     for (const connection of settings.connections) {
+      if (!open && connection.id !== detailConnectionId) continue
       if (connection.spaces !== null || connection.status === 'testing') continue
       const key = `${connection.id}#${connection.generation}`
       if (spaceFetch.has(key)) continue
@@ -423,7 +428,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         setSpaceFetch((current) => new Map(current).set(key, response.ok ? { state: 'done' } : { state: 'failed', error: response.error }))
       })
     }
-  }, [open, settings, spaceFetch, send])
+  }, [open, detailConnectionId, settings, spaceFetch, send])
   const spaceErrors = useMemo(() => (settings === null ? [] : settings.connections.flatMap((connection) => {
     const fetched = spaceFetch.get(`${connection.id}#${connection.generation}`)
     return connection.spaces === null && fetched?.state === 'failed' ? [{ connectionId: connection.id, error: fetched.error }] : []

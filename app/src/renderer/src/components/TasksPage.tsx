@@ -172,7 +172,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         return
     }
   }
-  const page = useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes })
+  const page = useTasksPage({ open, detailShown: detailPanel.shown, repos, activeRepoRoot, notify, unreadPanes })
   const { prefs, setPrefs, space, settings, groups, load, rows, banner, query, setQuery, selectedId, setSelectedId } = page
   const all = space?.kind === 'all'
 
@@ -227,7 +227,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const starter = useStartWork({ detail, repos, repoDefaults: settings?.repoDefaults ?? NO_DEFAULTS, activeRepoRoot, sourceName: detailSource, notifyFailure: (message) => notify({ kind: 'failed', message }) })
   const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })
   const workActions = useMemo((): DetailWorkActions => ({ start: (mode) => starter.begin(mode), reveal: (paneId) => onRevealPane?.(paneId) }), [starter.begin, onRevealPane])
-  // 사이드바 작업 줄 → 패널 상세 보기 + 그 작업(A4). 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다. 페이지가 앱 시작부터 마운트돼 있어 페이지 열림을 기다리지 않는다.
+  // 사이드바 작업 줄 → 패널 상세 보기 + 그 작업(A4). 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다. 페이지가 앱 시작부터 마운트돼 있어 페이지 열림을 기다리지 않는다 —
+  // 작업 줄은 페이지를 열지 않는다(LIFE-755, 본문 그대로).
   const focusSeq = focus?.seq ?? 0
   useEffect(() => {
     if (focus == null) return

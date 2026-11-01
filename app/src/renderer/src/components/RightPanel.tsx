@@ -4,24 +4,24 @@
 //
 // **닫아도 마운트를 유지한다**(LIFE-589 E1ⓔ — Orca 는 언마운트하지만 corral 결정을 따른다). 보기를 바꿔도 각 보기 몸통은 마운트를 유지하고
 // 안 보이는 쪽은 `hidden` — 탐색기의 펼침·선택·스크롤 상태가 사라지지 않는다(A11).
+// 머리 단추 이름은 DOM 툴팁(`Tooltip` — Orca `TooltipContent side="bottom" sideOffset=6`)으로 띄운다. native `title` 은 쓰지 않는다(LIFE-755 — 실제 앱에서 안 떴다).
 // 닫혀 있으면 여는 버튼은 오른쪽 위 영역 탭 줄 끝(Orca `TitlebarMainStrip` 의 `RightSidebarToggle` 자리)·작업 페이지 머리 끝에 선다 — App 이 그 자리에 넘긴다.
 import type { Ref } from 'react'
 import type { RightPanelView } from '../../../shared/types.js'
 import { PanelRightIcon } from './SidebarIcons.js'
 import { RIGHT_PANEL_VIEWS, viewLabel } from './right-panel-views.js'
+import { Tooltip } from './Tooltip.js'
 
 export function RightPanelToggle({ label, shortcut, onToggle, placement }: { label: string; shortcut: string | null; onToggle: () => void; placement: 'tabbar' | 'head' | 'tasks' }): React.JSX.Element {
   return (
-    <button
-      type="button"
-      className={`right-panel-toggle is-${placement}`}
-      data-right-panel-toggle={placement}
-      aria-label={label}
-      title={shortcut === null ? label : `${label} (${shortcut})`}
-      onClick={onToggle}
-    >
-      <PanelRightIcon className="sidebar-head-toggle-icon" />
-    </button>
+    <Tooltip
+      label={shortcut === null ? label : `${label} (${shortcut})`}
+      render={(trigger) => (
+        <button {...trigger} type="button" className={`right-panel-toggle is-${placement}`} data-right-panel-toggle={placement} aria-label={label} onClick={onToggle}>
+          <PanelRightIcon className="sidebar-head-toggle-icon" />
+        </button>
+      )}
+    />
   )
 }
 
@@ -62,19 +62,24 @@ export function RightPanel({
               const active = entry.id === view
               const Icon = entry.icon
               return (
-                <button
+                <Tooltip
                   key={entry.id}
-                  type="button"
-                  className={`right-panel-activity-btn${active ? ' is-active' : ''}`}
-                  data-right-panel-view-btn={entry.id}
-                  aria-pressed={active}
-                  aria-label={label}
-                  title={label}
-                  onClick={() => onSelectView(entry.id)}
-                >
-                  <Icon className="right-panel-activity-icon" />
-                  {active ? <span className="right-panel-activity-bar" aria-hidden /> : null}
-                </button>
+                  label={label}
+                  render={(trigger) => (
+                    <button
+                      {...trigger}
+                      type="button"
+                      className={`right-panel-activity-btn${active ? ' is-active' : ''}`}
+                      data-right-panel-view-btn={entry.id}
+                      aria-pressed={active}
+                      aria-label={label}
+                      onClick={() => onSelectView(entry.id)}
+                    >
+                      <Icon className="right-panel-activity-icon" />
+                      {active ? <span className="right-panel-activity-bar" aria-hidden /> : null}
+                    </button>
+                  )}
+                />
               )
             })}
           </div>

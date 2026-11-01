@@ -1579,7 +1579,7 @@ export function App(): React.JSX.Element {
     setTasksOpen(false)
     requestAnimationFrame(() => setFocusToken((value) => value + 1))
   }
-  /** 링크된 worktree 카드의 작업 줄 — 누르면 작업 페이지 + 그 작업 상세. 연결이 없거나 못 찾으면 키만. */
+  /** 링크된 worktree 카드의 작업 줄 — 누르면 오른쪽 패널에 그 작업 상세(본문은 그대로 — 작업 페이지를 열지도 닫지도 않는다, LIFE-755). 연결이 없거나 못 찾으면 키만. */
   const taskLineOf = (worktree: WorktreeRow): WorktreeTaskLine | null => {
     const link = worktree.workLink ?? null
     if (link === null) return null
@@ -1593,7 +1593,6 @@ export function App(): React.JSX.Element {
       blocked: (item?.openBlockerCount ?? 0) > 0,
       blockers: item?.openBlockers.map((blocker) => `${blocker.key} ${blocker.title}`) ?? [],
       onOpen: () => {
-        openTasks()
         setTasksFocus((current) => ({ seq: (current?.seq ?? 0) + 1, connectionId: link.connectionId, itemId: link.itemId ?? item?.id ?? null, key: link.key }))
       },
     }

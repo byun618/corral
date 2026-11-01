@@ -1,10 +1,13 @@
 // @vitest-environment happy-dom
 // LIFE-682 A1·A2 — 오른쪽 패널 머리 = Orca top 모드 activity bar. 구조·클래스·aria 만 본다(치수·색은 격리 computed 수치표).
+// LIFE-755 C1·C3·C4 — 머리 단추 이름은 native `title` 이 아니라 DOM 툴팁(`Tooltip`). 자리(C2)·캡처는 네이티브 CDP 관문이 본다.
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { RightPanelView } from '../../../shared/types.js'
-import { RightPanel } from './RightPanel.js'
+import fs from 'node:fs'
+import path from 'node:path'
+import { RightPanel, RightPanelToggle } from './RightPanel.js'
 import { RIGHT_PANEL_VIEWS } from './right-panel-views.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
@@ -37,6 +40,17 @@ function render({ view, open = true, explorerShortcut = '⌘⇧E' }: { view: Rig
 }
 const q = (selector: string): HTMLElement | null => host.querySelector<HTMLElement>(selector)
 const buttons = (): HTMLElement[] => [...host.querySelectorAll<HTMLElement>('[data-right-panel-view-btn]')]
+const tips = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[data-tooltip]')]
+const enter = (target: Element | null): void => act(() => void target?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+const leave = (target: Element | null): void => act(() => void target?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body })))
+/** 단추에 들어가 뜬 툴팁 글자를 읽고 나온다 — 단추당 툴팁 하나. */
+function tipOf(selector: string): string | null {
+  const button = q(selector)
+  enter(button)
+  const text = tips().length === 1 ? (tips()[0]?.textContent ?? null) : null
+  leave(button)
+  return text
+}
 
 describe('activity bar (A1·A2)', () => {
   it('머리 = 보기 수만큼 아이콘 단추(목록 순서) + 오른쪽 끝 패널 토글, 제목 글자 없음', () => {
@@ -54,14 +68,14 @@ describe('activity bar (A1·A2)', () => {
   })
   it('툴팁·aria-label = 「제목 (단축키)」, 단축키 없으면 제목만 — 설정에서 바꾸면 따라간다', () => {
     render({ view: 'explorer' })
-    expect(q('[data-right-panel-view-btn="explorer"]')?.getAttribute('title')).toBe('탐색기 (⌘⇧E)')
+    expect(tipOf('[data-right-panel-view-btn="explorer"]')).toBe('탐색기 (⌘⇧E)')
     expect(q('[data-right-panel-view-btn="explorer"]')?.getAttribute('aria-label')).toBe('탐색기 (⌘⇧E)')
-    expect(q('[data-right-panel-view-btn="detail"]')?.getAttribute('title')).toBe('작업 상세')
+    expect(tipOf('[data-right-panel-view-btn="detail"]')).toBe('작업 상세')
     expect(q('[data-right-panel-view-btn="detail"]')?.getAttribute('aria-label')).toBe('작업 상세')
     render({ view: 'explorer', explorerShortcut: '⌥⌘X' })
-    expect(q('[data-right-panel-view-btn="explorer"]')?.getAttribute('title')).toBe('탐색기 (⌥⌘X)')
+    expect(tipOf('[data-right-panel-view-btn="explorer"]')).toBe('탐색기 (⌥⌘X)')
     render({ view: 'explorer', explorerShortcut: null })
-    expect(q('[data-right-panel-view-btn="explorer"]')?.getAttribute('title')).toBe('탐색기')
+    expect(tipOf('[data-right-panel-view-btn="explorer"]')).toBe('탐색기')
   })
   it('활성 단추 하나만 aria-pressed true + is-active + 아래 막대', () => {
     render({ view: 'detail' })
@@ -85,5 +99,87 @@ describe('activity bar (A1·A2)', () => {
     render({ view: 'explorer', open: false })
     expect(q('[data-probe="detail"]')).not.toBeNull()
     expect(q('[data-right-panel]')?.getAttribute('data-right-panel')).toBe('closed')
+  })
+})
+
+describe('LIFE-755 머리 단추 DOM 툴팁 (C1·C3·C4)', () => {
+  const ALL = ['[data-right-panel-view-btn="explorer"]', '[data-right-panel-view-btn="scm"]', '[data-right-panel-view-btn="detail"]', '[data-right-panel-toggle="head"]']
+  it('C1 네 단추 각각 — 들어가면 바로 툴팁 하나(글자 = 이름(단축키)), 떠나면 바로 사라진다 · 패널 밖(body)으로 portal', () => {
+    render({ view: 'explorer' })
+    const expected = ['탐색기 (⌘⇧E)', '소스 제어', '작업 상세', '오른쪽 패널 닫기 (⌘L)']
+    ALL.forEach((selector, index) => {
+      const button = q(selector)
+      enter(button)
+      expect(tips()).toHaveLength(1)
+      const tip = tips()[0]
+      expect(tip?.textContent).toBe(expected[index])
+      expect(tip?.getAttribute('role')).toBe('tooltip')
+      expect(button?.getAttribute('aria-describedby')).toBe(tip?.id)
+      expect(host.contains(tip ?? null)).toBe(false)
+      expect(tip?.parentElement).toBe(document.body)
+      leave(button)
+      expect(tips()).toHaveLength(0)
+      expect(button?.getAttribute('aria-describedby')).toBeNull()
+    })
+  })
+  it('C1 한 번에 하나 — 떠남 없이 다른 단추로 들어가도 툴팁은 하나', () => {
+    render({ view: 'explorer' })
+    enter(q(ALL[0] ?? ''))
+    enter(q(ALL[2] ?? ''))
+    expect(tips().map((tip) => tip.textContent)).toEqual(['작업 상세'])
+  })
+  it('C3 누르면 닫히고 클릭은 그대로 동작한다 — 보기 전환·패널 닫기 뒤 남은 툴팁 0', () => {
+    render({ view: 'explorer' })
+    const detail = q('[data-right-panel-view-btn="detail"]')
+    enter(detail)
+    act(() => { detail?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); detail?.click() })
+    expect(selected).toEqual(['detail'])
+    expect(tips()).toHaveLength(0)
+    const toggle = q('[data-right-panel-toggle="head"]')
+    enter(toggle)
+    act(() => { toggle?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); toggle?.click() })
+    expect(toggles).toBe(1)
+    expect(tips()).toHaveLength(0)
+  })
+  it('C3 창 blur·키 입력(⌘L 로 패널이 닫혀 mouseleave 가 안 오는 경우)·스크롤에 닫힌다', () => {
+    render({ view: 'explorer' })
+    for (const fire of [() => window.dispatchEvent(new Event('blur')), () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', metaKey: true })), () => document.dispatchEvent(new Event('scroll'))]) {
+      enter(q(ALL[1] ?? ''))
+      expect(tips()).toHaveLength(1)
+      act(() => fire())
+      expect(tips()).toHaveLength(0)
+      leave(q(ALL[1] ?? ''))
+    }
+  })
+  it('C3 툴팁은 포인터를 받지 않는다 — 스타일 규칙 `.tooltip { pointer-events: none }`', () => {
+    const css = fs.readFileSync(path.join(__dirname, '../styles.css'), 'utf8')
+    const rule = /\.tooltip \{([^}]*)\}/.exec(css)?.[1] ?? ''
+    expect(rule).toMatch(/pointer-events:\s*none/)
+    expect(rule).toMatch(/position:\s*fixed/)
+  })
+  it('C3 언마운트(단추가 사라짐) 뒤 고아 툴팁 0', () => {
+    render({ view: 'explorer' })
+    enter(q(ALL[0] ?? ''))
+    expect(tips()).toHaveLength(1)
+    act(() => root.unmount())
+    expect(tips()).toHaveLength(0)
+    root = createRoot(host)
+  })
+  it('C4 바꾼 단추에 title 이 없고 aria-label 은 base 값 그대로', () => {
+    render({ view: 'explorer' })
+    for (const selector of ALL) expect(q(selector)?.hasAttribute('title')).toBe(false)
+    expect(buttons().map((button) => button.getAttribute('aria-label'))).toEqual(['탐색기 (⌘⇧E)', '소스 제어', '작업 상세'])
+    expect(q('[data-right-panel-toggle="head"]')?.getAttribute('aria-label')).toBe('오른쪽 패널 닫기')
+  })
+  it('C4 RightPanelToggle 세 자리(머리·탭 줄·작업 페이지 머리) 모두 같은 툴팁 — title 없음, 단축키 없으면 이름만', () => {
+    for (const placement of ['head', 'tabbar', 'tasks'] as const) {
+      for (const shortcut of ['⌘L', null]) {
+        act(() => root.render(createElement(RightPanelToggle, { label: '오른쪽 패널 열기', shortcut, onToggle: () => {}, placement })))
+        const button = q(`[data-right-panel-toggle="${placement}"]`)
+        expect(button?.hasAttribute('title')).toBe(false)
+        expect(button?.getAttribute('aria-label')).toBe('오른쪽 패널 열기')
+        expect(tipOf(`[data-right-panel-toggle="${placement}"]`)).toBe(shortcut === null ? '오른쪽 패널 열기' : '오른쪽 패널 열기 (⌘L)')
+      }
+    }
   })
 })

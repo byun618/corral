@@ -1495,6 +1495,35 @@ describe('LIFE-708 r1 (C10) — 질문 답은 맥 클릭(모든 입력 revision)
     expect(t.backend.sends.map((send) => send.text)).toEqual(['1'])
     expect(checks(t)).toEqual(['any_input'])
   })
+  it('답 — 문항 둘, 첫 키 뒤 클릭·휠이 이어져 다음 화면이 끝내 조용해지지 않으면 unconfirmed/question_changed(로그 없음)', async () => {
+    const t = setup()
+    t.backend.anyInput = { revision: 40, idleMs: 10_000 }
+    t.backend.status = 'blocked'
+    t.items.list = [twoQuestions(33)]
+    t.backend.screenText = boxOf('Q-33 첫째?')
+    let afterFirstKey = false
+    t.backend.onSend = () => {
+      t.backend.screenText = boxOf('Q-33 둘째?')
+      afterFirstKey = true
+    }
+    const screen = t.backend.screen.bind(t.backend)
+    let reads = 0
+    t.backend.screen = async () => {
+      // 첫 키 뒤의 화면 읽기마다 방금 또 굴렸다 — 값(울타리)은 쓴 뒤 값 그대로, 조용한 시간만 0.
+      if (afterFirstKey) {
+        reads += 1
+        if (t.backend.anyInput !== null) t.backend.anyInput = { ...t.backend.anyInput, idleMs: 0 }
+      }
+      return screen()
+    }
+    const item = twoQuestions(33)
+    if (item.kind !== 'question') throw new Error('fixture')
+    t.hub.answer({ device: 'd1', id: 'l708f-0000-0001', channel: 'c1', question: 33, call: 'toolu-33', digest: questionDigest(item.questions), answers: [{ choices: [0], other: null }, { choices: [1], other: null }] })
+    expect(await t.settled('l708f-0000-0001', 6_000)).toMatchObject({ state: 'unconfirmed', reason: 'question_changed' })
+    expect(t.backend.sends.map((send) => send.text)).toEqual(['1'])
+    expect(reads).toBe(6)
+    expect(checks(t)).toEqual([])
+  }, 10_000)
   it('답 — 클릭·휠이 이어져 모든 입력이 끝내 조용해지지 않으면 화면을 믿지 않고 키 0회 failed/question_changed(로그 없음)', async () => {
     const t = setup()
     t.backend.anyInput = { revision: 40, idleMs: 0 }

@@ -76,7 +76,8 @@ export const NEAR_BOTTOM = 120
 const RELEASE_MS = 100
 /** 꼬리 변경 렌더 뒤 그 꼬리 셀 레이아웃을 기다리는 한도(ms) — 넘어서 온 꼬리 셀 레이아웃은 이 변경의 것이 아니다(작업 커서·펼침·재마운트·폭 변경, LIFE-595 r2 R2-1).
  *  Fabric 은 JS 커밋 안에서 레이아웃을 재고 레이아웃 이벤트를 큐에 넣어 다음 Choreographer 프레임(≈16 ms)에 JS 로 보낸다(`ShadowTree::emitLayoutEvents`·`EventBeat`) —
- *  JS 스레드가 밀려도 수백 ms 안이다. 진짜 늦은 레이아웃을 놓치면 n-27 증상 그대로라 그쪽에 여유를 둔 값(리뷰 r2 제안 「수백 ms~1 s」의 위끝). */
+ *  JS 스레드가 밀려도 수백 ms 안이다. 시한은 렌더 시작(`tailAt`)부터라 그 뒤 목록 자식 렌더·React/Fabric 커밋 시간도 포함한다 — 실기 값은 미측정이라
+ *  `begin`·`tail-layout`·`settle` 줄의 `age` 로 잰다(r3 R3-2). 진짜 늦은 레이아웃을 놓치면 n-27 증상 그대로라 그쪽에 여유를 둔 값(리뷰 r2 제안 「수백 ms~1 s」의 위끝). */
 const LATE_LAYOUT_MS = 1000
 
 /** 손가락 제스처 단계 — 이 동안은 크기 변화로 맨 아래에 붙이지 않고, 끝(`none` 으로 돌아올 때) 한 번 정한다. */
@@ -107,6 +108,8 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
   // 이 제스처(또는 놓은 뒤 기다리는 동안)에 보류 중 크기 변화 줄·꼬리 셀 레이아웃 줄을 이미 찍었나 — 끄는 중엔 자주 와서 한 번만 찍는다(R1-5·R2-3).
   const sizeLogged = useRef(false)
   const layoutLogged = useRef(false)
+  // 마지막으로 본 목록 높이 — `begin` 줄에 싣는다(끄는 중 `size` 의 `h` 와 한 줄씩 비교, r3 R3-5).
+  const lastH = useRef(0)
   const gesture = useRef<Gesture>('none')
   if (seenTail.current !== tailRev) {
     if (!pending.current) pendingBase.current = seenTail.current
@@ -163,6 +166,7 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
     setAwayFrom(null)
   }, [listShown, clearRelease])
   const onContentSizeChange = useCallback((_width: number, height: number) => {
+    lastH.current = height
     // 보류가 없는 크기 변화(가상화가 셀을 잼)는 찍지 않는다 — 끄는 중 자주 온다.
     if (!pending.current) return
     if (gesture.current !== 'none' || carried.current) {
@@ -176,8 +180,10 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
     followLog('size', { gesture: 'none', rev: seenTail.current, h: height, y: lastY.current, decision: 'follow' })
     list.current?.scrollToOffset({ offset: 0, animated: false })
   }, [])
+  /** 꼬리 변경 렌더 뒤 경과(ms) — 로그 `age` 칸. */
+  const age = useCallback(() => Date.now() - tailAt.current, [])
   /** 꼬리 변경 렌더에서 `LATE_LAYOUT_MS` 안인가 — 밖이면 기다리던 보류(`carried`)의 레이아웃은 이제 안 온다고 본다. */
-  const fresh = useCallback(() => Date.now() - tailAt.current <= LATE_LAYOUT_MS, [])
+  const fresh = useCallback(() => age() <= LATE_LAYOUT_MS, [age])
   /** 기다리던 보류를 버린다 — 숨은 줄이었거나 레이아웃이 시한 안에 안 왔다. 끌어내리지도 버튼을 세우지도 않는다. */
   const drop = useCallback(() => {
     pending.current = false
@@ -188,34 +194,34 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
     pending.current = false
     const y = lastY.current
     if (y <= NEAR_BOTTOM) {
-      followLog('settle', { pending: true, y, via, decision: 'follow' })
+      followLog('settle', { pending: true, y, age: age(), via, decision: 'follow' })
       setAwayFrom(null)
       list.current?.scrollToOffset({ offset: 0, animated: true })
       return
     }
-    followLog('settle', { pending: true, y, via, decision: 'button' })
+    followLog('settle', { pending: true, y, age: age(), via, decision: 'button' })
     const base = pendingBase.current
     setAwayFrom((previous) => previous ?? base)
-  }, [])
+  }, [age])
   const settle = useCallback(
     (via: 'release' | 'momentum') => {
       gesture.current = 'none'
       sizeLogged.current = false
       layoutLogged.current = false
       if (!pending.current) {
-        followLog('settle', { pending: false, y: lastY.current, via, decision: 'none' })
+        followLog('settle', { pending: false, y: lastY.current, age: age(), via, decision: 'none' })
         return
       }
       // 꼬리 셀 레이아웃을 아직 못 봤다 — 숨은 줄이면 붙일 것이 없고(A-F5-fold), 늦은 레이아웃이면 시한 안에 올 때 정한다(R1-1). 시한이 지났으면 버린다(R2-1).
       if (carried.current) {
         const waiting = fresh()
         if (!waiting) drop()
-        followLog('settle', { pending: true, carried: true, y: lastY.current, via, decision: waiting ? 'wait' : 'drop' })
+        followLog('settle', { pending: true, carried: true, y: lastY.current, age: age(), via, decision: waiting ? 'wait' : 'drop' })
         return
       }
       decide(via)
     },
-    [decide, drop, fresh],
+    [age, decide, drop, fresh],
   )
   /** 꼬리 셀(index 0)의 레이아웃 — 꼬리 변경이 화면에 깔렸다는 신호. 끌기 시작·목록 크기 변화와의 순서는 RN 이 보장하지 않는다(Fabric 은 레이아웃 이벤트를 노드마다 따로 보낸다).
    *  꼬리 변경마다 첫 한 번만 본다(`laid`). 줄은 제스처 없으면 변경당 한 줄(신호가 실기에서 오는지의 양성 대조 — R2-3), 끄는 중엔 제스처당 한 줄 + 기다리던 보류를 풀 때. */
@@ -223,7 +229,7 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
     (event: LayoutChangeEvent) => {
       if (laid.current) return
       laid.current = true
-      const line = { gesture: gesture.current, rev: seenTail.current, h: event.nativeEvent.layout.height, y: lastY.current }
+      const line = { gesture: gesture.current, rev: seenTail.current, h: event.nativeEvent.layout.height, y: lastY.current, age: age() }
       if (!pending.current || !carried.current) {
         if (gesture.current === 'none' || !layoutLogged.current) followLog('tail-layout', { ...line, decision: 'seen' })
         if (gesture.current !== 'none') layoutLogged.current = true
@@ -244,7 +250,7 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
       // 놓은 뒤(settle 이 기다리는 중) 도착 — 지금 정한다(R1-1).
       if (gesture.current === 'none') decide('layout')
     },
-    [decide, drop, fresh],
+    [age, decide, drop, fresh],
   )
   const onScrollBeginDrag = useCallback(() => {
     // 맨 아래를 따라가는 중 제스처 없이 남은 보류가 꼬리 셀 레이아웃을 아직 못 봤으면 `carried` — 끌어 놓을 때 바로 정하지 않는다(위 `carried` 설명).
@@ -258,12 +264,12 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
         dropped = true
       }
     }
-    followLog('begin', { from: gesture.current, rev: seenTail.current, pending: pending.current, laid: laid.current, carried: carried.current, following: followingRef.current, y: lastY.current, dropped })
+    followLog('begin', { from: gesture.current, rev: seenTail.current, pending: pending.current, laid: laid.current, carried: carried.current, following: followingRef.current, y: lastY.current, h: lastH.current, age: age(), dropped })
     sizeLogged.current = false
     layoutLogged.current = false
     clearRelease()
     gesture.current = 'drag'
-  }, [clearRelease, drop, fresh])
+  }, [age, clearRelease, drop, fresh])
   const onScrollEndDrag = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       lastY.current = event.nativeEvent.contentOffset.y
@@ -356,6 +362,9 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
         <Pressable
           accessibilityRole="button"
           onPress={() => {
+            // 맨 아래로 간다 = 남은 보류가 정해졌다 — 지우지 않으면 누른 뒤 첫 짧은 끌기가 그 보류로 도로 끌어내린다(r3 R3-1).
+            pending.current = false
+            carried.current = false
             list.current?.scrollToOffset({ offset: 0, animated: true })
             setAwayFrom(null)
           }}

@@ -32,7 +32,7 @@ type ListProps = {
 }
 const ctx = vi.hoisted(() => {
   // `tailLayout` = 꼬리 셀(index 0)을 감싼 View 의 onLayout (LIFE-595 r1) — 시험이 네이티브 레이아웃 도착을 손으로 준다.
-  const state: { list: ListProps | null; scrolls: { offset: number; animated?: boolean }[]; tailLayout: ((event: TailLayoutEvent) => void) | undefined } = { list: null, scrolls: [], tailLayout: undefined }
+  const state: { list: ListProps | null; scrolls: { offset: number; animated?: boolean }[]; tailLayout: ((event: TailLayoutEvent) => void) | undefined; otherLayouts: number } = { list: null, scrolls: [], tailLayout: undefined, otherLayouts: 0 }
   return state
 })
 vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn() }))
@@ -53,7 +53,10 @@ vi.mock('react-native', () => ({
         {props.ListHeaderComponent}
         {props.data.map((item, index) => {
           const cell = props.renderItem({ item, index })
-          if (index === 0) ctx.tailLayout = isValidElement<{ onLayout?: (event: TailLayoutEvent) => void }>(cell) ? cell.props.onLayout : undefined
+          const onLayout = isValidElement<{ onLayout?: (event: TailLayoutEvent) => void }>(cell) ? cell.props.onLayout : undefined
+          if (index === 0) ctx.tailLayout = onLayout
+          // 꼬리 아닌 셀이 레이아웃을 들으면 오래된 셀의 측정이 `laid` 를 세운다(r3 N14) — 센다.
+          else if (onLayout !== undefined) ctx.otherLayouts += 1
           return <div key={item.id}>{cell}</div>
         })}
         {props.ListFooterComponent}
@@ -67,6 +70,7 @@ let root: Root
 beforeEach(() => {
   Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
   ctx.scrolls = []
+  ctx.otherLayouts = 0
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -952,7 +956,8 @@ describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정
     vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })
   })
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers() })
-  const follow = () => lines.filter((line) => line.startsWith('[corral-follow] '))
+  // `age`(꼬리 변경 뒤 경과 ms)는 실제 시계 시험에서 흔들려 `*` 로 바꿔 비교한다 — 값은 fake timer 시험이 따로 단언한다.
+  const follow = () => lines.filter((line) => line.startsWith('[corral-follow] ')).map((line) => line.replace(/ age=-?[0-9.]+/, ' age=*'))
 
   it('H1 유예 경로 — begin(carried) → size skip(끄는 중 여러 번이어도 한 줄, 목록 높이 h) → tail-layout hold → end → settle follow', async () => {
     await tailThenBegin()
@@ -965,11 +970,11 @@ describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정
     await END(53)
     await RELEASE()
     expect(follow().slice(-5)).toEqual([
-      '[corral-follow] begin from=none rev=2 pending=true laid=false carried=true following=true y=0 dropped=false',
+      '[corral-follow] begin from=none rev=2 pending=true laid=false carried=true following=true y=0 h=4000 age=* dropped=false',
       '[corral-follow] size gesture=drag carried=true laid=false h=4000 y=53 decision=skip',
-      '[corral-follow] tail-layout gesture=drag rev=2 h=300 y=53 decision=hold',
+      '[corral-follow] tail-layout gesture=drag rev=2 h=300 y=53 age=* decision=hold',
       '[corral-follow] end pending=true y=53',
-      '[corral-follow] settle pending=true y=53 via=release decision=follow',
+      '[corral-follow] settle pending=true y=53 age=* via=release decision=follow',
     ])
     expect(lines.join('\n')).not.toContain(SECRET)
     expect(lines.every((line) => !line.startsWith('[corral-conn]'))).toBe(true)
@@ -987,10 +992,10 @@ describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정
     expect(follow().slice(-6)).toEqual([
       '[corral-follow] momentum-begin from=release pending=true',
       '[corral-follow] momentum-end from=momentum pending=true y=53',
-      '[corral-follow] settle pending=true carried=true y=53 via=momentum decision=wait',
+      '[corral-follow] settle pending=true carried=true y=53 age=* via=momentum decision=wait',
       '[corral-follow] size gesture=none carried=true laid=false h=4000 y=53 decision=skip',
-      '[corral-follow] tail-layout gesture=none rev=2 h=300 y=53 decision=layout',
-      '[corral-follow] settle pending=true y=53 via=layout decision=follow',
+      '[corral-follow] tail-layout gesture=none rev=2 h=300 y=53 age=* decision=layout',
+      '[corral-follow] settle pending=true y=53 age=* via=layout decision=follow',
     ])
     expect(lines.join('\n')).not.toContain(SECRET)
   })
@@ -1005,8 +1010,8 @@ describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정
     await TAIL()
     expect(follow().slice(-3)).toEqual([
       '[corral-follow] end pending=true y=60',
-      '[corral-follow] settle pending=true carried=true y=60 via=release decision=wait',
-      '[corral-follow] tail-layout gesture=none rev=2 h=300 y=60 decision=drop',
+      '[corral-follow] settle pending=true carried=true y=60 age=* via=release decision=wait',
+      '[corral-follow] tail-layout gesture=none rev=2 h=300 y=60 age=* decision=drop',
     ])
   })
 
@@ -1017,7 +1022,7 @@ describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정
     await MOMENTUM()
     await TICK(LATE_LAYOUT_MS + 1)
     await MOMENTUM_END(60)
-    expect(follow().at(-1)).toBe('[corral-follow] settle pending=true carried=true y=60 via=momentum decision=drop')
+    expect(follow().at(-1)).toBe('[corral-follow] settle pending=true carried=true y=60 age=* via=momentum decision=drop')
     expect(ctx.scrolls).toEqual([])
   })
 
@@ -1032,7 +1037,7 @@ describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정
     await show({ store: t.store })
     await TICK(LATE_LAYOUT_MS + 1)
     await BEGIN()
-    expect(follow().at(-1)).toBe('[corral-follow] begin from=none rev=2 pending=false laid=false carried=false following=true y=0 dropped=true')
+    expect(follow().at(-1)).toBe('[corral-follow] begin from=none rev=2 pending=false laid=false carried=false following=true y=0 h=4000 age=* dropped=true')
   })
 
   it('size skip 은 제스처당 한 줄 — 관성 중 다시 잡으면(settle 없이) 새 제스처에서 다시 한 줄', async () => {
@@ -1066,7 +1071,7 @@ describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정
     expect(follow().slice(-3)).toEqual([
       '[corral-follow] size gesture=drag carried=true laid=false h=4000 y=60 decision=skip',
       '[corral-follow] end pending=true y=60',
-      '[corral-follow] settle pending=true carried=true y=60 via=release decision=wait',
+      '[corral-follow] settle pending=true carried=true y=60 age=* via=release decision=wait',
     ])
   })
 
@@ -1086,7 +1091,7 @@ describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정
       await TAIL()
       await LAYOUT()
     }
-    expect(follow()).toEqual([2, 3, 4, 5, 6].flatMap((rev) => [`[corral-follow] size gesture=none rev=${rev} h=4000 y=0 decision=follow`, `[corral-follow] tail-layout gesture=none rev=${rev} h=300 y=0 decision=seen`]))
+    expect(follow()).toEqual([2, 3, 4, 5, 6].flatMap((rev) => [`[corral-follow] size gesture=none rev=${rev} h=4000 y=0 decision=follow`, `[corral-follow] tail-layout gesture=none rev=${rev} h=300 y=0 age=* decision=seen`]))
   })
 
   it('끄는 중 답이 20번 자라면 tail 20 + size 1 + tail-layout 1 + begin·end·settle = 25줄 · 임계 밖이면 settle button', async () => {
@@ -1108,6 +1113,101 @@ describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정
     const got = follow()
     expect(got).toHaveLength(25)
     expect(got.filter((line) => line.includes(' tail '))).toHaveLength(20)
-    expect(got.at(-1)).toBe(`[corral-follow] settle pending=true y=${NEAR_BOTTOM + 80} via=release decision=button`)
+    expect(got.at(-1)).toBe(`[corral-follow] settle pending=true y=${NEAR_BOTTOM + 80} age=* via=release decision=button`)
+  })
+})
+
+describe('LIFE-595 낮음 수정 (r3 R3-1·R3-4)', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('R3-1 B1 — 떠나 있던 중 진짜 답(레이아웃 옴) → 「새 메시지 ↓」 → 맨 아래 → 60dp 끌어 놓음 → 도로 끌어내리지 않음', async () => {
+    const t = harness()
+    t.store.open('c1')
+    t.frame(page([prompt(1), reply(2)]))
+    await show({ store: t.store })
+    await LAYOUT()
+    await BEGIN()
+    await SCROLL(300)
+    await END(300)
+    await MOMENTUM()
+    await MOMENTUM_END(300)
+    t.frame(push([prompt(3), reply(4)], 2))
+    await show({ store: t.store })
+    await TAIL()
+    await LAYOUT()
+    const button = Array.from(host.querySelectorAll('button')).find((node) => node.textContent?.includes('새 메시지'))
+    await act(async () => button?.click())
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+    await SCROLL(0)
+    ctx.scrolls = []
+    await BEGIN()
+    await SCROLL(60)
+    await END(60)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual([])
+  })
+
+  it('R3-4 N12 — 숨은 줄 → 끌어 1.2 s 붙잡고 놓음(settle 이 시한 밖이라 버림) → 무관한 크기 변화 → 안 끌어내림', async () => {
+    vi.useFakeTimers()
+    await foldThenBegin()
+    await SCROLL(60)
+    await TICK(1200)
+    await END(60)
+    await TICK(150)
+    await LAYOUT()
+    expect(ctx.scrolls).toEqual([])
+  })
+
+  it('R3-4 N14 — 꼬리(index 0) 셀만 레이아웃을 듣는다 · 다른 셀은 onLayout 없음', async () => {
+    const t = harness()
+    t.store.open('c1')
+    t.frame(page([prompt(1), reply(2), prompt(3), reply(4)]))
+    await show({ store: t.store })
+    expect(ctx.tailLayout).toBeTypeOf('function')
+    expect(ctx.otherLayouts).toBe(0)
+  })
+
+  for (const y of [NEAR_BOTTOM, NEAR_BOTTOM + 1]) {
+    it(`R3-4 N4 — 끄는 중 새 답 → 놓은 자리 ${y}dp(관성 끝) → ${y <= NEAR_BOTTOM ? '맨 아래로' : '자리 유지 + 버튼'} (settle 경계)`, async () => {
+      const t = harness()
+      t.store.open('c1')
+      t.frame(page([prompt(1), reply(2)]))
+      await show({ store: t.store })
+      await LAYOUT()
+      ctx.scrolls = []
+      await BEGIN()
+      await SCROLL(40)
+      t.frame(push([prompt(3), reply(4)], 2))
+      await show({ store: t.store })
+      await END(40)
+      await MOMENTUM()
+      await MOMENTUM_END(y)
+      if (y <= NEAR_BOTTOM) {
+        expect(ctx.scrolls).toEqual(FOLLOWED)
+        noButton()
+      } else {
+        expect(ctx.scrolls).toEqual([])
+        expect(host.textContent).toContain('새 메시지 ↓')
+      }
+    })
+  }
+
+  it('R3-2·R3-5 age·h 칸 — 꼬리 변경 렌더 뒤 경과 ms(fake timer)와 begin 의 마지막 목록 높이', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })
+    vi.useFakeTimers()
+    await tailThenBegin()
+    await TICK(250)
+    await TAIL()
+    await SCROLL(53)
+    await END(53)
+    await TICK(100)
+    vi.restoreAllMocks()
+    expect(lines.filter((line) => line.startsWith('[corral-follow] ')).slice(-4)).toEqual([
+      '[corral-follow] begin from=none rev=2 pending=true laid=false carried=true following=true y=0 h=4000 age=0 dropped=false',
+      '[corral-follow] tail-layout gesture=drag rev=2 h=300 y=0 age=250 decision=hold',
+      '[corral-follow] end pending=true y=53',
+      '[corral-follow] settle pending=true y=53 age=350 via=release decision=follow',
+    ])
   })
 })

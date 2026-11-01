@@ -4,7 +4,8 @@
 //   · `side="bottom" sideOffset=6`(activity-bar-buttons.tsx) — 단추 아래 가운데, 창 가장자리에서는 창 안으로 민다(Radix collision). 아래 자리가 없으면 위로 뒤집는다
 //   · 누르면 닫힌다(Radix Trigger `onPointerDown`) — 클릭으로 보기를 바꾸거나 패널을 닫은 뒤 툴팁이 남지 않는다. 다시 보려면 나갔다 들어온다
 //   · 키보드 포커스(`:focus-visible`)로 열리고 blur 로 닫힌다 · 한 번에 하나만 보인다
-// corral 이 더하는 것: 창 blur·스크롤·resize·키 입력에 닫힌다(⌘L 로 패널이 닫혀 단추가 숨으면 mouseleave 가 오지 않는다).
+// corral 이 더하는 것: 창 blur·resize·키 입력(수식키 단독은 빼고)에 닫힌다(⌘L 로 패널이 닫혀 단추가 숨으면 mouseleave 가 오지 않는다).
+// 스크롤은 단추를 담은 조상(또는 문서) 것만 닫는다 — 터미널 출력처럼 무관한 요소의 스크롤로 닫히면 「안 뜬다」와 같아 보인다(r1 C).
 // 패널(`overflow:hidden`)·머리 드래그 줄에 잘리지 않게 body 로 portal 한다.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -20,6 +21,8 @@ export type TooltipTriggerProps = {
 }
 
 const SIDE_OFFSET = 6
+/** 수식키 단독 keydown 은 닫지 않는다(r1 G) — ⌘·⇧ 를 누르기만 해도 사라지지 않게. */
+const MODIFIER_KEYS = new Set(['Shift', 'Meta', 'Alt', 'Control'])
 const MARGIN = 8
 
 let nextId = 0
@@ -50,16 +53,23 @@ export function Tooltip({ label, render }: { label: string; render: (trigger: To
 
   useEffect(() => {
     if (!open) return
-    const onScroll = (): void => close()
+    const onScroll = (event: Event): void => {
+      const target = event.target
+      const trigger = triggerRef.current
+      if (target instanceof Document || (target instanceof Node && trigger !== null && target.contains(trigger))) close()
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (!MODIFIER_KEYS.has(event.key)) close()
+    }
     window.addEventListener('blur', close)
     window.addEventListener('resize', close)
     window.addEventListener('scroll', onScroll, true)
-    window.addEventListener('keydown', close, true)
+    window.addEventListener('keydown', onKey, true)
     return () => {
       window.removeEventListener('blur', close)
       window.removeEventListener('resize', close)
       window.removeEventListener('scroll', onScroll, true)
-      window.removeEventListener('keydown', close, true)
+      window.removeEventListener('keydown', onKey, true)
     }
   }, [open, close])
   useEffect(() => () => {
@@ -75,7 +85,8 @@ export function Tooltip({ label, render }: { label: string; render: (trigger: To
     const tip = tipRef.current
     if (trigger === null || tip === null) return
     const anchor = trigger.getBoundingClientRect()
-    const box = tip.getBoundingClientRect()
+    // 크기는 offset 값으로 — 진입 애니메이션(scale .95)이 도는 동안 getBoundingClientRect 는 줄어든 크기를 준다(r1 E).
+    const box = { width: tip.offsetWidth, height: tip.offsetHeight }
     const center = anchor.left + anchor.width / 2
     const left = Math.max(MARGIN, Math.min(center - box.width / 2, window.innerWidth - box.width - MARGIN))
     const below = anchor.bottom + SIDE_OFFSET

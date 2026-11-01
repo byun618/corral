@@ -689,6 +689,7 @@ export function App(): React.JSX.Element {
       : (activeGroupTab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? pickPane(activeGroupTab)?.paneId ?? null)
   const unread = useUnread({ state, viewedPaneId, activeWorktree: activeWorktreeRow?.path ?? null })
   // LIFE-603 C11 — 사이드바 작업 줄의 제목 캐시. 작업 페이지가 닫힐 때마다 다시 받는다(페이지에서 바꾼 제목·상태).
+  // LIFE-755 r1 — 페이지가 닫힌 채 패널 상세에서 쓰기가 성공해도 다시 받는다(작업 줄은 이제 페이지를 거치지 않는다). 열린 페이지의 쓰기는 닫힘이 맡는다.
   const [tasksFocus, setTasksFocus] = useState<TasksFocus | null>(null)
   const [titleRound, setTitleRound] = useState(0)
   useEffect(() => {
@@ -2312,6 +2313,7 @@ export function App(): React.JSX.Element {
             focus={tasksFocus}
             detailPanel={{ slot: detailSlot, shown: rightPanel.open && rightPanel.view === 'detail', show: () => rightPanel.show('detail'), hide: rightPanel.hide, openPage: openTasks }}
             onModalChange={setTasksModalOpen}
+            onItemWritten={() => { if (!tasksOpen) setTitleRound((value) => value + 1) }}
             headTail={rightPanel.ready && !rightPanel.open ? <RightPanelToggle label="오른쪽 패널 열기" shortcut={rightPanelToggleShortcut} onToggle={rightPanel.toggle} placement="tasks" /> : null}
           />
         </div>

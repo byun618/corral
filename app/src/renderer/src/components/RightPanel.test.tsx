@@ -114,6 +114,10 @@ describe('LIFE-755 머리 단추 DOM 툴팁 (C1·C3·C4)', () => {
       const tip = tips()[0]
       expect(tip?.textContent).toBe(expected[index])
       expect(tip?.getAttribute('role')).toBe('tooltip')
+      // 보인다(r1 D) — 자리를 잡은 뒤 inline visibility 가 hidden 이 아니고 display none 도 아니다.
+      expect(tip?.style.visibility).not.toBe('hidden')
+      expect(tip?.style.display).not.toBe('none')
+      expect(tip?.hidden).toBe(false)
       expect(button?.getAttribute('aria-describedby')).toBe(tip?.id)
       expect(host.contains(tip ?? null)).toBe(false)
       expect(tip?.parentElement).toBe(document.body)
@@ -151,7 +155,32 @@ describe('LIFE-755 머리 단추 DOM 툴팁 (C1·C3·C4)', () => {
       leave(q(ALL[1] ?? ''))
     }
   })
-  it('C3 툴팁은 포인터를 받지 않는다 — 스타일 규칙 `.tooltip { pointer-events: none }`', () => {
+  it('C3 (r1 C) 단추를 담지 않은 요소의 스크롤에는 닫히지 않고, 담은 조상의 스크롤에는 닫힌다', () => {
+    render({ view: 'explorer' })
+    const other = document.createElement('div')
+    document.body.append(other)
+    enter(q(ALL[1] ?? ''))
+    act(() => { other.dispatchEvent(new Event('scroll')) })
+    expect(tips()).toHaveLength(1)
+    act(() => { q('[data-right-panel-head]')?.dispatchEvent(new Event('scroll')) })
+    expect(tips()).toHaveLength(0)
+    other.remove()
+  })
+  it('C3 (r1 G) 수식키 단독 keydown 에는 닫히지 않고, 그 밖 키(⌘L)에는 닫힌다', () => {
+    render({ view: 'explorer' })
+    enter(q(ALL[1] ?? ''))
+    for (const key of ['Shift', 'Meta', 'Alt', 'Control']) {
+      act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key })) })
+      expect(tips()).toHaveLength(1)
+    }
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', metaKey: true })) })
+    expect(tips()).toHaveLength(0)
+  })
+  it('C3 툴팁은 포인터를 받지 않는다 — 렌더된 툴팁이 `.tooltip` 이고 그 규칙이 `pointer-events: none`', () => {
+    render({ view: 'explorer' })
+    enter(q(ALL[0] ?? ''))
+    // 렌더 노드가 그 규칙의 class 를 갖는다(r1 J) — class 를 바꾸면 규칙이 안 걸린다.
+    expect(tips()[0]?.classList.contains('tooltip')).toBe(true)
     const css = fs.readFileSync(path.join(__dirname, '../styles.css'), 'utf8')
     const rule = /\.tooltip \{([^}]*)\}/.exec(css)?.[1] ?? ''
     expect(rule).toMatch(/pointer-events:\s*none/)
@@ -181,5 +210,55 @@ describe('LIFE-755 머리 단추 DOM 툴팁 (C1·C3·C4)', () => {
         expect(tipOf(`[data-right-panel-toggle="${placement}"]`)).toBe(shortcut === null ? '오른쪽 패널 열기' : '오른쪽 패널 열기 (⌘L)')
       }
     }
+  })
+})
+
+describe('LIFE-755 r1 F 툴팁 자리 — 단추 아래 6px 가운데 · 창 안으로 밀기 · 아래 자리가 없으면 위', () => {
+  const TIP = { width: 120, height: 28 }
+  let restore: (() => void)[] = []
+  const define = (target: object, key: string, value: PropertyDescriptor): void => {
+    const before = Object.getOwnPropertyDescriptor(target, key)
+    Object.defineProperty(target, key, { configurable: true, ...value })
+    restore.push(() => { if (before === undefined) Reflect.deleteProperty(target, key); else Object.defineProperty(target, key, before) })
+  }
+  beforeEach(() => {
+    restore = []
+    define(window, 'innerWidth', { value: 1000 })
+    define(window, 'innerHeight', { value: 700 })
+    // 툴팁 크기는 offset 값으로 잰다(r1 E) — 툴팁만 크기를 준다.
+    define(HTMLElement.prototype, 'offsetWidth', { get(this: HTMLElement) { return this.hasAttribute('data-tooltip') ? TIP.width : 0 } })
+    define(HTMLElement.prototype, 'offsetHeight', { get(this: HTMLElement) { return this.hasAttribute('data-tooltip') ? TIP.height : 0 } })
+  })
+  afterEach(() => { for (const undo of restore.reverse()) undo() })
+  function placeAt(rect: { left: number; top: number; width: number; height: number }): HTMLElement {
+    render({ view: 'explorer' })
+    const button = q('[data-right-panel-view-btn="scm"]')
+    if (button === null) throw new Error('단추 없음')
+    button.getBoundingClientRect = () => DOMRect.fromRect({ x: rect.left, y: rect.top, width: rect.width, height: rect.height })
+    enter(button)
+    const tip = tips()[0]
+    if (tip === undefined) throw new Error('툴팁 없음')
+    return tip
+  }
+  const px = (value: string): number => Number.parseFloat(value)
+  it('가운데 아래 — top = 단추 bottom + 6, 가운데 정렬', () => {
+    const tip = placeAt({ left: 400, top: 0, width: 36, height: 36 })
+    expect(tip.dataset.side).toBe('bottom')
+    expect(px(tip.style.top)).toBe(36 + 6)
+    expect(px(tip.style.left)).toBe(400 + 18 - TIP.width / 2)
+  })
+  it('창 오른쪽 끝 단추 — 오른쪽 가장자리가 창 안(innerWidth - 8)', () => {
+    const tip = placeAt({ left: 964, top: 0, width: 36, height: 36 })
+    expect(px(tip.style.left) + TIP.width).toBeLessThanOrEqual(1000)
+    expect(px(tip.style.left)).toBe(1000 - TIP.width - 8)
+  })
+  it('창 왼쪽 끝 단추 — 왼쪽 가장자리가 창 안(8)', () => {
+    const tip = placeAt({ left: 0, top: 0, width: 36, height: 36 })
+    expect(px(tip.style.left)).toBe(8)
+  })
+  it('아래 자리가 없으면 위로 — bottom = 단추 top - 6', () => {
+    const tip = placeAt({ left: 400, top: 660, width: 36, height: 36 })
+    expect(tip.dataset.side).toBe('top')
+    expect(px(tip.style.top)).toBe(660 - 6 - TIP.height)
   })
 })

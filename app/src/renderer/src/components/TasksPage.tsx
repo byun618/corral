@@ -137,9 +137,11 @@ export type TasksPageProps = {
   headTail?: React.ReactNode
   /** 페이지 모달(만들기·시작)이 열리고 닫힐 때 — App 이 그동안 단축키를 막는다. */
   onModalChange?: (open: boolean) => void
+  /** 작업 쓰기가 성공했다(LIFE-755 r1 — 페이지가 닫힌 채 패널 상세에서 고친 제목·상태·막힘을 사이드바 작업 줄이 다시 받게). */
+  onItemWritten?: () => void
 }
 
-export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus, detailPanel, headTail, onModalChange }: TasksPageProps): React.JSX.Element {
+export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus, detailPanel, headTail, onModalChange, onItemWritten }: TasksPageProps): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
   const [menu, setMenu] = useState<'space' | 'kind' | 'priority' | 'parent' | null>(null)
@@ -514,6 +516,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   }, [detailHidden, overlay, detailHost])
   // 페이지 모달 열림을 App 에 알린다 — 모달이 열린 동안 App 단축키(⌘L·⌘⇧E·⌘, …)가 모달 뒤에 작용하지 않게(r1 지적 3). 시작 모달은 페이지가 닫힌 터미널 화면에서도 뜬다.
   useEffect(() => { onModalChange?.(overlay) }, [overlay])
+  const writtenSeq = page.settledWrite?.seq ?? 0
+  useEffect(() => { if (writtenSeq > 0) onItemWritten?.() }, [writtenSeq])
   const leaveFull = (): void => {
     setPrefs({ detailFull: false })
     detailPanel.show()

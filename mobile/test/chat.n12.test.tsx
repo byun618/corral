@@ -1011,6 +1011,42 @@ describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정
     expect(ctx.scrolls).toEqual([])
   })
 
+  it('R2-1 — 숨은 줄 뒤 시한이 지나 끌기 시작하면 begin 이 보류를 버린다(dropped=true)', async () => {
+    vi.useFakeTimers()
+    const t = harness()
+    t.store.open('c1')
+    t.frame(page([prompt(1), reply(2, '접힌 답')]))
+    await show({ store: t.store })
+    await LAYOUT()
+    t.frame(push([reply(2, '접힌 답 숨은 줄')]))
+    await show({ store: t.store })
+    await TICK(LATE_LAYOUT_MS + 1)
+    await BEGIN()
+    expect(follow().at(-1)).toBe('[corral-follow] begin from=none rev=2 pending=false laid=false carried=false following=true y=0 dropped=true')
+  })
+
+  it('size skip 은 제스처당 한 줄 — 관성 중 다시 잡으면(settle 없이) 새 제스처에서 다시 한 줄', async () => {
+    const t = harness()
+    t.store.open('c1')
+    t.frame(page([prompt(1), reply(2)]))
+    await show({ store: t.store })
+    await LAYOUT()
+    await BEGIN()
+    t.frame(push([prompt(3), reply(4)], 2))
+    await show({ store: t.store })
+    await LAYOUT()
+    await LAYOUT()
+    await END(40)
+    await MOMENTUM()
+    await BEGIN()
+    await LAYOUT()
+    await LAYOUT()
+    expect(follow().filter((line) => line.startsWith('[corral-follow] size '))).toEqual([
+      '[corral-follow] size gesture=drag carried=false laid=false h=4000 y=0 decision=skip',
+      '[corral-follow] size gesture=drag carried=false laid=false h=4000 y=40 decision=skip',
+    ])
+  })
+
   it('fold — 꼬리 레이아웃 없이 놓으면 settle decision=wait, 그 뒤 줄 없음 (「L 안 옴」과 갈리는 것은 size 의 h — 새 답이면 h 가 는다)', async () => {
     await foldThenBegin()
     await SCROLL(60)

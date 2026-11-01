@@ -516,8 +516,14 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   }, [detailHidden, overlay, detailHost])
   // 페이지 모달 열림을 App 에 알린다 — 모달이 열린 동안 App 단축키(⌘L·⌘⇧E·⌘, …)가 모달 뒤에 작용하지 않게(r1 지적 3). 시작 모달은 페이지가 닫힌 터미널 화면에서도 뜬다.
   useEffect(() => { onModalChange?.(overlay) }, [overlay])
+  // 회차가 바뀐 연결마다 한 번씩 알린다(r3 T — 연결별 회차라 묶인 렌더에서도 빠지지 않는다).
   const written = page.writtenRound
-  useEffect(() => { if (written !== null) onItemWritten?.(written.connectionId) }, [written])
+  const seenWritten = useRef<ReadonlyMap<string, number>>(written)
+  useEffect(() => {
+    const before = seenWritten.current
+    seenWritten.current = written
+    for (const [connectionId, seq] of written) if (before.get(connectionId) !== seq) onItemWritten?.(connectionId)
+  }, [written])
   const leaveFull = (): void => {
     setPrefs({ detailFull: false })
     detailPanel.show()

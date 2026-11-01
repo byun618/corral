@@ -466,3 +466,30 @@ describe('R1-B 되돌리기 기준은 확인된 값일 때만 — 겹친 미확�
     } finally { vi.useRealTimers() }
   })
 })
+
+describe('LIFE-755 r3 R — 상세 쓰기 성공 신호(writtenRound)는 연결별 회차 · 늦은 성공도 올린다', () => {
+  const write = (itemId = 'i1'): void => {
+    act(() => { void probeModel.writeItem({ connectionId: 'c1', spaceKey: 's1', itemId, call: { op: 'changeStatus', itemId, statusKey: 'doing', ifVersion: null }, optimistic: null }) })
+  }
+  it('즉시 성공 = 그 연결 회차 +1', async () => {
+    await probe()
+    expect(probeModel.writtenRound.get('c1') ?? 0).toBe(0)
+    write()
+    await settle()
+    expect(probeModel.writtenRound.get('c1')).toBe(1)
+  })
+  it('30초를 넘긴 늦은 성공도 답이 오면 그 연결 회차 +1 — 늦기 전에는 올리지 않는다', async () => {
+    await probe()
+    const waits = pending('changeStatus')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      write()
+      await pass(30_001)
+      expect(probeModel.writtenRound.get('c1') ?? 0).toBe(0)
+      hold = null
+      await act(async () => { const next = waits[0]; if (next !== undefined) next.resolve(answer(next.request)) })
+      await pass(10)
+      expect(probeModel.writtenRound.get('c1')).toBe(1)
+    } finally { vi.useRealTimers() }
+  })
+})

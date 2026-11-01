@@ -280,6 +280,17 @@ describe('LIFE-755 r1 F 툴팁 자리 — 단추 아래 6px 가운데 · 창 안
     const tip = placeAt({ left: 0, top: 0, width: 36, height: 36 })
     expect(px(tip.style.left)).toBe(8)
   })
+  it('화살표 — 단추 가운데를 가리키고, 창 끝에서 밀려도 몸통 안(8 ~ 너비-8)에 남는다(r3 R)', () => {
+    const arrow = (tip: HTMLElement): number => px(tip.querySelector<HTMLElement>('.tooltip-arrow')?.style.left ?? '')
+    const middle = placeAt({ left: 400, top: 0, width: 36, height: 36 })
+    expect(arrow(middle)).toBe(TIP.width / 2)
+    leave(q('[data-right-panel-view-btn="scm"]'))
+    const right = placeAt({ left: 990, top: 0, width: 10, height: 36 })
+    expect(arrow(right)).toBe(TIP.width - 8)
+    leave(q('[data-right-panel-view-btn="scm"]'))
+    const left = placeAt({ left: 0, top: 0, width: 4, height: 36 })
+    expect(arrow(left)).toBe(8)
+  })
   it('아래 자리가 없으면 위로 — bottom = 단추 top - 6', () => {
     const tip = placeAt({ left: 400, top: 660, width: 36, height: 36 })
     expect(tip.dataset.side).toBe('top')

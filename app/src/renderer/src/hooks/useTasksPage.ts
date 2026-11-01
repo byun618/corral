@@ -294,9 +294,10 @@ export function useTasksPage({ open, detailShown = false, repos, activeRepoRoot,
   const [selectedId, setSelectedId] = useState<string | null>(null)
   /** 성공한 쓰기의 서버 값 — 열린 상세가 받는다(LIFE-602). */
   const [settledWrite, setSettledWrite] = useState<SettledWrite | null>(null)
-  /** 성공한 상세 쓰기(연결·자식 포함, 늦은 성공도)의 회차와 연결 — 사이드바 작업 줄이 그 연결의 제목·막힘을 다시 받는다(LIFE-755 r2). */
-  const [writtenRound, setWrittenRound] = useState<{ seq: number; connectionId: string } | null>(null)
-  const markWritten = useCallback((connectionId: string): void => setWrittenRound((current) => ({ seq: (current?.seq ?? 0) + 1, connectionId })), [])
+  /** 성공한 상세 쓰기(연결·자식 포함, 늦은 성공도)의 연결별 회차 — 사이드바 작업 줄이 그 연결의 제목·막힘을 다시 받는다(LIFE-755 r2).
+   *  연결마다 따로 세어 한 렌더에 여러 연결의 쓰기가 묶여도 앞 연결이 빠지지 않는다(r3 T). */
+  const [writtenRound, setWrittenRound] = useState<ReadonlyMap<string, number>>(() => new Map())
+  const markWritten = useCallback((connectionId: string): void => setWrittenRound((current) => new Map(current).set(connectionId, (current.get(connectionId) ?? 0) + 1)), [])
   const settledSeq = useRef(0)
   /** 적용됐을 수 있는 실패 — 서버 값이 쓰기 전 base 와 다를 수 있다. 열린 상세가 정본을 다시 받을 때까지 쓰기를 막는다(LIFE-623 R4-A). */
   const [unsureWrite, setUnsureWrite] = useState<UnsureWrite | null>(null)

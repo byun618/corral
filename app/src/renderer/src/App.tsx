@@ -693,7 +693,7 @@ export function App(): React.JSX.Element {
   // 열린 페이지의 쓰기는 닫힘 갱신이 맡는다.
   const [tasksFocus, setTasksFocus] = useState<TasksFocus | null>(null)
   const [titleRound, setTitleRound] = useState(0)
-  const [titleReread, setTitleReread] = useState<LinkTitleReread | null>(null)
+  const [titleReread, setTitleReread] = useState<LinkTitleReread>(() => new Map())
   useEffect(() => {
     if (!tasksOpen) setTitleRound((value) => value + 1)
   }, [tasksOpen])
@@ -2315,7 +2315,7 @@ export function App(): React.JSX.Element {
             focus={tasksFocus}
             detailPanel={{ slot: detailSlot, shown: rightPanel.open && rightPanel.view === 'detail', show: () => rightPanel.show('detail'), hide: rightPanel.hide, openPage: openTasks }}
             onModalChange={setTasksModalOpen}
-            onItemWritten={(connectionId) => { if (!tasksOpen) setTitleReread((current) => ({ seq: (current?.seq ?? 0) + 1, connectionId })) }}
+            onItemWritten={(connectionId) => { if (!tasksOpen) setTitleReread((current) => new Map(current).set(connectionId, (current.get(connectionId) ?? 0) + 1)) }}
             headTail={rightPanel.ready && !rightPanel.open ? <RightPanelToggle label="오른쪽 패널 열기" shortcut={rightPanelToggleShortcut} onToggle={rightPanel.toggle} placement="tasks" /> : null}
           />
         </div>

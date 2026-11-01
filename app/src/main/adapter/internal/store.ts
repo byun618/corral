@@ -63,6 +63,14 @@ type Pane = {
   focused: boolean
   /** 에이전트가 스스로 밝힌 세션 참조 (LIFE-366). 보고 전·셸 탭이면 null. */
   agentSession: AgentSessionRef | null
+  /**
+   * **세션 시계** — 지금 `agentSession` 값이 herdr 에게서 나온 **요청 시각** (LIFE-710). 키가 실려 온 때만 움직인다.
+   * 재동기 스냅샷은 그 스냅샷을 요청한 시각, 세션 조회는 그 조회를 요청한 시각, push·부팅 스냅샷은 적용 시각이다.
+   * 이 시계보다 먼저 요청된 답(스냅샷이든 조회든)은 늦게 온 옛 값이라 세션을 덮지 않는다.
+   * 알려진 한계: 벽시계(`Date.now()`)라 시스템 시계가 뒤로 감기면 되감긴 만큼 조회 답이 「옛 답」 으로 버려진다
+   * (그동안은 재동기 스냅샷만 세션을 고친다).
+   */
+  sessionAt: number
   knownAt: number
 }
 
@@ -234,7 +242,7 @@ export class WorkspaceStore {
     for (const item of arrayOf(inner, 'workspaces')) this.putWorkspace(item, at)
     // 탭은 **자리를 배열 순서에서 읽는다** (M5 실측) — 그래서 인덱스를 같이 넘긴다.
     arrayOf(inner, 'tabs').forEach((item, index) => this.putTab(item, at, index))
-    for (const item of arrayOf(inner, 'panes')) this.putPane(item, at)
+    for (const item of arrayOf(inner, 'panes')) this.putPane({ value: item, at })
     return {
       changed: true,
       note: `workspaces=${this.workspaces.size} tabs=${this.tabs.size} panes=${this.panes.size}`,
@@ -348,7 +356,8 @@ export class WorkspaceStore {
       const id = idOf(item, 'pane_id')
       if (id === null) continue
       const had = this.panes.has(id)
-      if (this.putPane(item, at) && !had) added.panes.push(id)
+      // 세션 시계는 이 사진을 **요청한** 시각으로 잰다 — 그 뒤 요청된 조회가 쓴 세션을 옛 사진이 되돌리지 않게 (LIFE-710).
+      if (this.putPane({ value: item, at, sessionRequestedAt: requestedAt }) && !had) added.panes.push(id)
     }
 
     const changed =
@@ -536,7 +545,7 @@ export class WorkspaceStore {
 
       case 'pane_created':
       case 'pane_updated': {
-        const added = this.putPane(data['pane'], at)
+        const added = this.putPane({ value: data['pane'], at })
         if (added) return { changed: true, note: frame.event }
         const pane = readRecord(data, 'pane')
         const paneId = pane === null ? null : readString(pane, 'pane_id')
@@ -764,6 +773,46 @@ export class WorkspaceStore {
     return [...this.panes.keys()].sort()
   }
 
+  /** 에이전트가 붙은 pane 이 하나라도 있나 — 세션 조회를 보낼지 가르는 자리 (LIFE-710). */
+  hasAgentPane(): boolean {
+    for (const pane of this.panes.values()) if (pane.agent !== null) return true
+    return false
+  }
+
+  /**
+   * `agent.list` 답으로 **세션 참조만** 맞춘다 (LIFE-710).
+   *
+   * herdr 는 `pane.report_agent_session` 에 push 를 안 준다(LIFE-366) — `/clear` 처럼 에이전트가 붙은 채
+   * 세션만 바뀌면 스냅샷 재동기(30 s)까지 목록이 옛 세션이었다. link 가 짧은 주기로 이 답을 가져온다.
+   *
+   * - 행을 **만들지 않는다**: 저장소에 없는 pane(닫힌 pane·닫힌 탭의 pane·보류함 pane 포함)은 건너뛴다 — 되살리지 않는다
+   * - `agent_session` 키가 없는 항목은 건너뛴다(`pickAgentSession` 과 같은 규칙). 키가 있고 null 이면 그게 답이다
+   * - 세션 시계가 이 조회의 요청 시각 이후면(`sessionAt >= requestedAt`) 늦은 답이라 덮지 않는다. 쓰면 시계 = 이 요청 시각
+   * - 값이 같으면 바꾸지 않는다 — `changed:false` 면 link 가 화면 갱신 신호를 내지 않는다
+   * 조회 **실패**는 여기 오지 않는다(link 가 버린다) — 실패로 알던 세션을 지우지 않는다.
+   */
+  applyAgentSessions(input: { result: unknown; requestedAt: number }): ApplyResult {
+    const agents = isRecord(input.result) ? input.result['agents'] : undefined
+    if (!Array.isArray(agents)) return { changed: false, note: 'agent.list 모양이 아니다' }
+    const changedIds: string[] = []
+    for (const item of agents) {
+      if (!isRecord(item) || !('agent_session' in item)) continue
+      const id = readString(item, 'pane_id')
+      const pane = id === null ? undefined : this.panes.get(id)
+      // 같은 ms 경계: 조회는 `>=` 로 물러나고 스냅샷은 `>` 일 때만 물러난다 — 동률이면 스냅샷이 이긴다(행 전체의 진실이라서,
+      // 틀렸어도 다음 조회가 1.5 s 안에 다시 본다). `pickSessionWithClock` 과 짝이다.
+      if (id === null || pane === undefined || pane.sessionAt >= input.requestedAt) continue
+      const next = readAgentSession(item['agent_session'])
+      if (sameAgentSession(pane.agentSession, next)) continue
+      // 시계를 이 조회의 요청 시각으로 올린다 — 이보다 먼저 요청된 스냅샷이 뒤늦게 와도 되돌리지 못한다.
+      this.panes.set(id, { ...pane, agentSession: next, sessionAt: input.requestedAt })
+      changedIds.push(id)
+    }
+    return changedIds.length === 0
+      ? { changed: false, note: '세션 같음' }
+      : { changed: true, note: `세션 갱신 ${changedIds.join(',')}` }
+  }
+
   /**
    * 계측용 — 보류함에 몇 개가 떠 있는지.
    * **읽을 때도 만료분을 턴다** (수정 1회차 L7 — codex 4): 1회차는 `hold()` 때만 털어서,
@@ -851,7 +900,9 @@ export class WorkspaceStore {
    * **먼저** 도착한다 (pane 은 PTY 가 실제로 뜬 뒤 알려지기 때문이다). 그때 pane 을 그냥 넣으면
    * 주인 없는 고아가 남는다 — 화면에는 안 보이지만 대조가 어긋나고 맵이 샌다.
    */
-  private putPane(value: unknown, at: number): boolean {
+  private putPane(input: { value: unknown; at: number; sessionRequestedAt?: number }): boolean {
+    const { value, at } = input
+    const sessionRequestedAt = input.sessionRequestedAt ?? at
     if (!isRecord(value)) return false
     const id = readString(value, 'pane_id')
     const workspaceId = readString(value, 'workspace_id')
@@ -910,7 +961,7 @@ export class WorkspaceStore {
         id,
       cwd: readString(value, 'foreground_cwd') ?? readString(value, 'cwd'),
       focused: value['focused'] === true,
-      agentSession: pickAgentSession(value, before?.agentSession ?? null),
+      ...pickSessionWithClock({ value, before, requestedAt: sessionRequestedAt }),
       knownAt: before?.knownAt ?? at,
     })
     return true
@@ -1231,7 +1282,7 @@ export class WorkspaceStore {
     this.orphans = this.orphans.filter((item) => item.workspaceId !== workspaceId)
     // tab 을 먼저 붙인다 — pane 이 tab_id 를 참조한다.
     for (const item of mine) if (item.kind === 'tab') this.putTab(item.value, item.at)
-    for (const item of mine) if (item.kind === 'pane') this.putPane(item.value, item.at)
+    for (const item of mine) if (item.kind === 'pane') this.putPane({ value: item.value, at: item.at })
   }
 }
 
@@ -1291,6 +1342,30 @@ function pickAgentSession(
 ): AgentSessionRef | null {
   if (!('agent_session' in source)) return fallback
   return readAgentSession(source['agent_session'])
+}
+
+/**
+ * 봉투 하나에서 세션과 세션 시계를 함께 고른다 (LIFE-710). 키가 없으면 알던 값·시계 그대로(`pickAgentSession` 규칙).
+ * 키가 있어도 알던 시계가 이 봉투의 요청 시각보다 **나중**이면 옛 사진이다 — 세션을 되돌리지 않는다.
+ */
+function pickSessionWithClock(input: {
+  value: Record<string, unknown>
+  before: Pane | null
+  requestedAt: number
+}): { agentSession: AgentSessionRef | null; sessionAt: number } {
+  const { value, before, requestedAt } = input
+  const kept = { agentSession: before?.agentSession ?? null, sessionAt: before?.sessionAt ?? 0 }
+  if (!('agent_session' in value)) return kept
+  // 동률(같은 ms)이면 이 봉투가 이긴다 — `applyAgentSessions` 의 `>=` 와 짝(위 주석).
+  if (before !== null && before.sessionAt > requestedAt) return kept
+  return { agentSession: pickAgentSession(value, kept.agentSession), sessionAt: requestedAt }
+}
+
+function sameAgentSession(a: AgentSessionRef | null, b: AgentSessionRef | null): boolean {
+  if (a === null || b === null) return a === b
+  if (a.agent !== b.agent || a.source !== b.source) return false
+  if (a.kind === 'id') return b.kind === 'id' && a.id === b.id
+  return b.kind === 'path' && a.path === b.path
 }
 
 /**

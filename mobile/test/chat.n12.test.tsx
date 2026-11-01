@@ -503,3 +503,178 @@ describe('n-12 대조 — 위를 보던 사람(임계 밖)은 자리를 지키�
     expect(ctx.scrolls).toEqual([])
   })
 })
+
+// LIFE-595 — 드래그 시작이 아직 레이아웃되지 않은 꼬리 변경의 보류를 지우던 경합(r6 P10·H1). 순서: 꼬리 변경(렌더) → 끌기 시작 → 늦은 크기 변화(끄는 중) → 놓음.
+// base `a7fc8b2a` 에서 C2 절이 실패하는 것을 음성 대조로 남겼다(corral-specs LIFE-595-stick-bottom/raw/claude). C3 절은 base 와 수정본 둘 다 통과해야 한다.
+const SECRET = '사용자내용-표지-595'
+const lateLayoutDrag = async (y: number) => {
+  const t = harness()
+  t.store.open('c1')
+  t.frame(page([prompt(1), reply(2)]))
+  await show({ store: t.store })
+  await LAYOUT()
+  ctx.scrolls = []
+  t.frame(push([prompt(3, SECRET), reply(4, `${SECRET}\n끝 줄`)], 2))
+  await show({ store: t.store })
+  await BEGIN()
+  await SCROLL(y)
+  await LAYOUT()
+  expect(ctx.scrolls).toEqual([])
+  return t
+}
+
+describe('LIFE-595 C2 끌기 시작보다 늦게 온 새 답의 크기 변화도 놓을 때 정한다', () => {
+  it('ⓐ 유예 경로 — 꼬리 변경 → 끌기 → 늦은 크기 변화 → 53dp 에서 놓음 → 관성 없음 → 맨 아래로 1회 · 버튼 없음', async () => {
+    await lateLayoutDrag(53)
+    await END(53)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual([{ offset: 0, animated: true }])
+    expect(host.textContent).not.toContain('새 메시지 ↓')
+  })
+
+  it('ⓑ 관성 경로 — 꼬리 변경 → 끌기 → 늦은 크기 변화 → 53dp 에서 놓음 → 관성 → 관성 종료(53dp) → 맨 아래로 1회 · 버튼 없음', async () => {
+    await lateLayoutDrag(53)
+    await END(53)
+    await MOMENTUM()
+    await RELEASE()
+    expect(ctx.scrolls).toEqual([])
+    await MOMENTUM_END(53)
+    expect(ctx.scrolls).toEqual([{ offset: 0, animated: true }])
+    expect(host.textContent).not.toContain('새 메시지 ↓')
+  })
+
+  it(`ⓒ 끄는 중 임계 밖(${NEAR_BOTTOM + 80}dp)으로 떠난 뒤 늦은 크기 변화 → 놓음 → 자리 유지 · 「새 메시지 ↓」`, async () => {
+    const t = harness()
+    t.store.open('c1')
+    t.frame(page([prompt(1), reply(2)]))
+    await show({ store: t.store })
+    await LAYOUT()
+    ctx.scrolls = []
+    t.frame(push([prompt(3), reply(4)], 2))
+    await show({ store: t.store })
+    await BEGIN()
+    await SCROLL(NEAR_BOTTOM + 80)
+    await LAYOUT()
+    await END(NEAR_BOTTOM + 80)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual([])
+    expect(host.textContent).toContain('새 메시지 ↓')
+  })
+})
+
+describe('LIFE-595 C3 크기 변화 없는 꼬리 변경(A-F5-fold)은 끌어 놓아도 도로 끌어내리지 않는다', () => {
+  const foldDrag = async (y: number) => {
+    const t = harness()
+    t.store.open('c1')
+    t.frame(page([prompt(1), reply(2, '접힌 답')]))
+    await show({ store: t.store })
+    await LAYOUT()
+    ctx.scrolls = []
+    t.frame(push([reply(2, '접힌 답 숨은 줄')]))
+    await show({ store: t.store })
+    await BEGIN()
+    await SCROLL(y)
+    await END(y)
+  }
+
+  it('ⓐ 유예 경로 — 60dp 에서 놓음 → scroll 0회', async () => {
+    await foldDrag(60)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual([])
+  })
+
+  it('ⓑ 관성 경로 — 60dp 에서 놓음 → 관성 종료 → scroll 0회', async () => {
+    await foldDrag(60)
+    await MOMENTUM()
+    await MOMENTUM_END(60)
+    expect(ctx.scrolls).toEqual([])
+  })
+
+  it(`ⓒ 임계 밖(${NEAR_BOTTOM + 80}dp)으로 끌어 놓아도 숨은 변경만으로 「새 메시지 ↓」 를 띄우지 않는다`, async () => {
+    await foldDrag(NEAR_BOTTOM + 80)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual([])
+    expect(host.textContent).not.toContain('새 메시지 ↓')
+  })
+})
+
+describe('LIFE-595 C1 진단 로그 — 고정 태그 한 줄씩, 경계·결정만, 사용자 내용 없음', () => {
+  let lines: string[] = []
+  beforeEach(() => {
+    lines = []
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+  const follow = () => lines.filter((line) => line.startsWith('[corral-follow] '))
+
+  it('유예 경로 — tail → begin(보류·미레이아웃) → size(끄는 중) → end → settle(follow, via=release)', async () => {
+    await lateLayoutDrag(53)
+    await SCROLL(54)
+    await SCROLL(55)
+    await END(53)
+    await RELEASE()
+    const got = follow()
+    expect(got.slice(-5)).toEqual([
+      '[corral-follow] tail rev=2 gesture=none',
+      '[corral-follow] begin from=none pending=true unlaid=true following=true y=0',
+      '[corral-follow] size gesture=drag unlaid=true y=53',
+      '[corral-follow] end pending=true y=53',
+      '[corral-follow] settle pending=true unlaid=false y=53 via=release decision=follow',
+    ])
+    // onScroll(세 번)은 찍지 않는다 — 첫 페이지는 화면이 붙을 때 이미 본 꼬리라 줄이 없고, 보류 없는 크기 변화도 찍지 않는다
+    expect(got).toHaveLength(5)
+    expect(lines.join('\n')).not.toContain(SECRET)
+    expect(lines.every((line) => !line.startsWith('[corral-conn]'))).toBe(true)
+  })
+
+  it('관성 경로 — momentum-begin · momentum-end 뒤 settle(follow, via=momentum)', async () => {
+    await lateLayoutDrag(53)
+    await END(53)
+    await MOMENTUM()
+    await MOMENTUM_END(53)
+    expect(follow().slice(-3)).toEqual([
+      '[corral-follow] momentum-begin from=release pending=true',
+      '[corral-follow] momentum-end from=momentum pending=true y=53',
+      '[corral-follow] settle pending=true unlaid=false y=53 via=momentum decision=follow',
+    ])
+    expect(lines.join('\n')).not.toContain(SECRET)
+  })
+
+  it('A-F5-fold — 끄는 중 크기 변화가 없으면 settle 이 보류를 버린다(decision=drop)', async () => {
+    const t = harness()
+    t.store.open('c1')
+    t.frame(page([prompt(1), reply(2, '접힌 답')]))
+    await show({ store: t.store })
+    await LAYOUT()
+    t.frame(push([reply(2, '접힌 답 숨은 줄')]))
+    await show({ store: t.store })
+    await BEGIN()
+    await END(60)
+    await RELEASE()
+    expect(follow().at(-1)).toBe('[corral-follow] settle pending=true unlaid=true y=60 via=release decision=drop')
+  })
+
+  it('제스처 없이 붙임 — size decision=follow 한 줄, 임계 밖 놓음 — settle decision=button', async () => {
+    const t = harness()
+    t.store.open('c1')
+    t.frame(page([prompt(1), reply(2)]))
+    await show({ store: t.store })
+    await LAYOUT()
+    expect(follow()).toEqual([])
+    t.frame(push([reply(3)], 2))
+    await show({ store: t.store })
+    await LAYOUT()
+    expect(follow()).toEqual(['[corral-follow] tail rev=2 gesture=none', '[corral-follow] size gesture=none decision=follow y=0'])
+    await BEGIN()
+    await SCROLL(NEAR_BOTTOM + 80)
+    t.frame(push([prompt(4), reply(5)], 3))
+    await show({ store: t.store })
+    await END(NEAR_BOTTOM + 80)
+    await RELEASE()
+    expect(follow().slice(-3)).toEqual([
+      '[corral-follow] tail rev=3 gesture=drag',
+      `[corral-follow] end pending=true y=${NEAR_BOTTOM + 80}`,
+      `[corral-follow] settle pending=true unlaid=false y=${NEAR_BOTTOM + 80} via=release decision=button`,
+    ])
+  })
+})

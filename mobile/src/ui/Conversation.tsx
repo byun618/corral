@@ -28,6 +28,7 @@ import {
   type Block,
 } from '../core/chat-view'
 import type { AgentKind, Channel } from '../core/list'
+import { followLog } from './follow-log'
 import { Avatar } from './StatusGlyph'
 import { color, font, hhmm, mono } from './tokens'
 
@@ -91,17 +92,24 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
   // 아직 맨 아래에 반영하지 않은 맨 아래 쪽 변경(`pending`)과, 그 변경 전 `tailRev`(`pendingBase` — 떠난 채 정하면 이 값을 기준으로 「새 메시지 ↓」).
   const pending = useRef(false)
   const pendingBase = useRef(tailRev)
+  // 보류가 아직 크기 변화를 못 본 채 끌기가 시작됐다(`unlaid`) — 크기 변화가 없던 변경(접힌 답의 숨은 줄)일 수도, 그 레이아웃이 끌기 시작보다 늦게 오는 중일 수도 있다(LIFE-595 H1·r6 P10).
+  // 끄는 중 크기 변화가 오면 늦은 레이아웃으로 보고 지우고(settle 에서 정한다), 놓을 때까지 안 오면 settle 이 보류를 버린다(A-F5-fold — 도로 끌어내리지 않는다).
+  const unlaid = useRef(false)
+  const gesture = useRef<Gesture>('none')
   if (seenTail.current !== tailRev) {
     if (!pending.current) pendingBase.current = seenTail.current
     seenTail.current = tailRev
     pending.current = true
+    unlaid.current = false
+    followLog('tail', { rev: tailRev, gesture: gesture.current })
   }
   const lastY = useRef(0)
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       lastY.current = event.nativeEvent.contentOffset.y
       const isAway = lastY.current > NEAR_BOTTOM
-      const base = pending.current ? pendingBase.current : tailRev
+      // 아직 크기 변화를 못 본 보류(`unlaid`)는 화면에 보인 변경이 아니다 — 그것만으로 「새 메시지 ↓」 를 띄우지 않는다.
+      const base = pending.current && !unlaid.current ? pendingBase.current : tailRev
       setAwayFrom((previous) => (isAway ? (previous ?? base) : null))
     },
     [tailRev],
@@ -117,7 +125,6 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
   const following = awayFrom === null
   const followingRef = useRef(following)
   followingRef.current = following
-  const gesture = useRef<Gesture>('none')
   const releaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clearRelease = useCallback(() => {
     if (releaseTimer.current !== null) clearTimeout(releaseTimer.current)
@@ -133,53 +140,81 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
     gesture.current = 'none'
     lastY.current = 0
     pending.current = false
+    unlaid.current = false
     pendingBase.current = seenTail.current
     setAwayFrom(null)
   }, [listShown, clearRelease])
   const onContentSizeChange = useCallback(() => {
-    if (!pending.current || gesture.current !== 'none' || !followingRef.current) return
+    // 보류가 없는 크기 변화(가상화가 셀을 잼)는 찍지 않는다 — 끄는 중 자주 온다.
+    if (!pending.current) return
+    if (gesture.current !== 'none') {
+      followLog('size', { gesture: gesture.current, unlaid: unlaid.current, y: lastY.current })
+      if (unlaid.current) {
+        unlaid.current = false
+        // 늦게 보인 변경 — 끄는 중 이미 임계를 넘어 떠났다면 그 떠남의 기준을 보류 전으로 돌려 「새 메시지 ↓」 가 서게 한다.
+        const base = pendingBase.current
+        setAwayFrom((previous) => (previous === null ? null : base))
+      }
+      return
+    }
+    if (!followingRef.current) return
     pending.current = false
+    followLog('size', { gesture: 'none', decision: 'follow', y: lastY.current })
     list.current?.scrollToOffset({ offset: 0, animated: false })
   }, [])
-  const settle = useCallback(() => {
+  const settle = useCallback((via: 'release' | 'momentum') => {
     gesture.current = 'none'
-    if (!pending.current) return
+    const held = pending.current
+    const unseen = unlaid.current
     pending.current = false
-    if (lastY.current <= NEAR_BOTTOM) {
+    unlaid.current = false
+    const y = lastY.current
+    if (!held || unseen) {
+      followLog('settle', { pending: held, unlaid: unseen, y, via, decision: held ? 'drop' : 'none' })
+      return
+    }
+    if (y <= NEAR_BOTTOM) {
+      followLog('settle', { pending: true, unlaid: false, y, via, decision: 'follow' })
       setAwayFrom(null)
       list.current?.scrollToOffset({ offset: 0, animated: true })
       return
     }
+    followLog('settle', { pending: true, unlaid: false, y, via, decision: 'button' })
     const base = pendingBase.current
     setAwayFrom((previous) => previous ?? base)
   }, [])
   const onScrollBeginDrag = useCallback(() => {
-    // 맨 아래를 따라가는 중 제스처 없이 남은 보류는 크기 변화가 없던 변경(24줄 접힌 답 안의 숨은 줄 등)이라 화면에 붙일 것이 없다 — 지워서 놓을 때 도로 끌어내리지 않는다
-    // (에뮬레이터 A-F5-fold). 관성·놓은 직후에 다시 잡았거나 떠나 있던 동안 들어온 보류는 남긴다.
-    if (gesture.current === 'none' && followingRef.current) pending.current = false
+    // 맨 아래를 따라가는 중 제스처 없이 남은 보류는 아직 크기 변화를 못 봤다 — 크기 변화가 없던 변경(24줄 접힌 답 안의 숨은 줄 등, 에뮬레이터 A-F5-fold)이거나
+    // 레이아웃이 끌기 시작보다 늦게 오는 중이다(LIFE-595 H1). 바로 지우지 않고 `unlaid` 로 표시해 끄는 중 크기 변화가 오는지로 settle 에서 가른다.
+    // 관성·놓은 직후에 다시 잡았거나 떠나 있던 동안 들어온 보류는 그대로 남긴다.
+    if (gesture.current === 'none' && followingRef.current && pending.current) unlaid.current = true
+    followLog('begin', { from: gesture.current, pending: pending.current, unlaid: unlaid.current, following: followingRef.current, y: lastY.current })
     clearRelease()
     gesture.current = 'drag'
   }, [clearRelease])
   const onScrollEndDrag = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       lastY.current = event.nativeEvent.contentOffset.y
+      followLog('end', { pending: pending.current, y: lastY.current })
       gesture.current = 'release'
       clearRelease()
       releaseTimer.current = setTimeout(() => {
         releaseTimer.current = null
-        if (gesture.current === 'release') settle()
+        if (gesture.current === 'release') settle('release')
       }, RELEASE_MS)
     },
     [clearRelease, settle],
   )
   const onMomentumScrollBegin = useCallback(() => {
+    followLog('momentum-begin', { from: gesture.current, pending: pending.current })
     clearRelease()
     if (gesture.current !== 'drag') gesture.current = 'momentum'
   }, [clearRelease])
   const onMomentumScrollEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       lastY.current = event.nativeEvent.contentOffset.y
-      if (gesture.current === 'momentum') settle()
+      followLog('momentum-end', { from: gesture.current, pending: pending.current, y: lastY.current })
+      if (gesture.current === 'momentum') settle('momentum')
     },
     [settle],
   )

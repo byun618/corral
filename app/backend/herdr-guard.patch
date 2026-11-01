@@ -9,7 +9,7 @@
      #[serde(rename = "ping")]
      Ping(PingParams),
      #[serde(rename = "server.stop")]
-@@ -268,3 +270,23 @@
+@@ -268,3 +270,24 @@
  
  #[cfg(test)]
  mod tests;
@@ -26,6 +26,7 @@
 +    #[serde(default)] pub expected_state_change_seq: Option<u64>,
 +    /// agent.prompt · pane.send_text (LIFE-582): the pane's user-input revision corral observed (pane.read, agent.get, or the
 +    /// revision a fenced send returned). Any key, paste, raw send or submission since then is `input_changed` — nothing is written.
++    /// A mouse report (wheel, click, drag, motion) is not input here (LIFE-708); AlternateScroll's arrow keys are.
 +    #[serde(default)] pub expected_input_revision: Option<u64>,
 +    /// agent.prompt · pane.send_text (LIFE-582): the input must have been quiet this long, so an echo still in flight is not missed.
 +    #[serde(default)] pub min_input_idle_ms: Option<u64>,
@@ -721,13 +722,14 @@
          params: AgentPromptParams,
 --- a/src/pane/terminal.rs
 +++ b/src/pane/terminal.rs
-@@ -213,12 +213,16 @@
+@@ -213,12 +213,17 @@
  
  pub(crate) struct PaneTerminal {
      pub(crate) ghostty: GhosttyPaneTerminal,
 +    corral_generation: u64,
      corral_raw: Mutex<(std::collections::VecDeque<u8>, u64)>,
-+    /// LIFE-582: every user-input write to this PTY (keys, paste, pane.send_text) — revision and when it last moved.
++    /// LIFE-582: every user-input write that can become a draft in the input line (keys, text, paste, pane.send_text,
++    /// submissions — and AlternateScroll's arrow keys) — revision and when it last moved. Mouse reports do not count (LIFE-708).
 +    corral_input: Mutex<(u64, std::time::Instant)>,
  }
  
@@ -739,7 +741,7 @@
      }
  
      pub fn process_pty_bytes(
-@@ -238,6 +242,18 @@
+@@ -238,6 +243,18 @@
              .process_pty_bytes(pane_id, shell_pid, bytes, response_writer)
      }
  
@@ -771,18 +773,22 @@
      pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.terminal.corral_raw_snapshot() }
  
      pub(crate) fn search_text_window(
-@@ -3133,7 +3137,9 @@
+@@ -3133,6 +3137,14 @@
      }
  
      pub fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
--        self.io.try_send_bytes(bytes)
 +        let sent = self.io.try_send_bytes(bytes);
 +        if sent.is_ok() { self.terminal.corral_note_input(); }
 +        sent
++    }
++
++    /// LIFE-708: a mouse report (wheel under MouseReport routing, button, drag, motion) is an event for the app, not a draft in
++    /// its input line, so it writes without moving the input revision or the quiet time. AlternateScroll's arrow keys still count.
++    pub(crate) fn corral_try_send_mouse_report(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
+         self.io.try_send_bytes(bytes)
      }
  
-     pub fn queue_user_input_submission(
-@@ -3143,8 +3149,11 @@
+@@ -3143,8 +3155,11 @@
          delay: std::time::Duration,
          deadline: Option<std::time::Instant>,
      ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
@@ -809,6 +815,124 @@
      pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.0.corral_raw_snapshot() }
  
      pub fn visible_text(&self) -> String {
+@@ -455,6 +459,10 @@
+         self.0.try_send_bytes(bytes)
+     }
+ 
++    pub(crate) fn corral_try_send_mouse_report(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
++        self.0.corral_try_send_mouse_report(bytes)
++    }
++
+     pub fn queue_user_input_submission(
+         &self,
+         text: Bytes,
+--- a/src/server/pane_input.rs
++++ b/src/server/pane_input.rs
+@@ -163,8 +163,9 @@
+                     "failed to encode terminal attach mouse wheel event: {wheel_kind:?}"
+                 ));
+             };
++            // LIFE-708: a mouse report is not a draft — it leaves the input revision alone.
+             runtime
+-                .try_send_bytes(Bytes::from(bytes))
++                .corral_try_send_mouse_report(Bytes::from(bytes))
+                 .map_err(|err| format!("terminal attach mouse wheel input failed: {err}"))?;
+         }
+         Some(crate::pane::WheelRouting::AlternateScroll) => {
+@@ -282,7 +283,7 @@
+                     runtime.scroll_reset();
+                 }
+                 runtime
+-                    .try_send_bytes(Bytes::from(bytes))
++                    .corral_try_send_mouse_report(Bytes::from(bytes))
+                     .map_err(|err| format!("targeted pane mouse input failed: {err}"))?;
+             }
+             continue;
+@@ -349,6 +350,84 @@
+ mod tests {
+     use super::*;
+ 
++    /// LIFE-708 — a mouse report the client sent as a mouse event (wheel under MouseReport routing, button down/up/drag,
++    /// motion; the attach wheel too) is written but leaves the input revision and quiet time alone. Keys, text, paste,
++    /// raw sends (pane.send_text) and submissions (agent.prompt) still move it, on the same pane (positive control),
++    /// and so does the wheel under AlternateScroll routing — those are arrow keys, which can recall a draft.
++    #[tokio::test]
++    async fn corral_terminal_mouse_reports_leave_the_input_revision() {
++        use crate::protocol::{ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientMousePosition};
++        use std::time::Duration;
++        fn mouse(kind: ClientMouseKind) -> ClientPaneInputEvent {
++            ClientPaneInputEvent::Mouse { kind, position: ClientMousePosition::Cell { column: 3, row: 2 }, geometry: None, modifiers: 0, lines: 1 }
++        }
++        fn drain(rx: &mut tokio::sync::mpsc::Receiver<Bytes>) -> Vec<u8> {
++            let mut out = Vec::new();
++            while let Ok(bytes) = rx.try_recv() { out.extend_from_slice(&bytes); }
++            out
++        }
++        // Alternate screen with any-motion SGR mouse reporting — what the provider TUIs turn on.
++        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
++            20, 5, 0, b"\x1b[?1049h\x1b[?1003h\x1b[?1006h", 64);
++        assert_eq!(runtime.wheel_routing(), Some(crate::pane::WheelRouting::MouseReport));
++        let (revision, _) = runtime.corral_input_state();
++        let mouse_events = [
++            ("wheel up", mouse(ClientMouseKind::ScrollUp)),
++            ("wheel down", mouse(ClientMouseKind::ScrollDown)),
++            ("wheel left", mouse(ClientMouseKind::ScrollLeft)),
++            ("button down", mouse(ClientMouseKind::Down(ClientMouseButton::Left))),
++            ("drag", mouse(ClientMouseKind::Drag(ClientMouseButton::Left))),
++            ("button up", mouse(ClientMouseKind::Up(ClientMouseButton::Left))),
++            ("motion", mouse(ClientMouseKind::Moved)),
++        ];
++        for (name, event) in mouse_events {
++            std::thread::sleep(Duration::from_millis(30));
++            let (_, idle_before) = runtime.corral_input_state();
++            apply_client_pane_input_events(&runtime, &[event]).unwrap();
++            let written = drain(&mut rx);
++            assert!(written.starts_with(b"\x1b[<"), "{name} must reach the pane as an SGR mouse report: {written:?}");
++            let (now, idle_after) = runtime.corral_input_state();
++            assert_eq!(now, revision, "{name} must not move the input revision");
++            assert!(idle_after >= idle_before, "{name} must not restart the quiet time ({idle_before} -> {idle_after} ms)");
++        }
++        apply_terminal_attach_scroll(&runtime, AttachScrollSource::Wheel, AttachScrollDirection::Up, 1, Some(3), Some(2), 0).unwrap();
++        assert!(drain(&mut rx).starts_with(b"\x1b[<"), "attach wheel is a mouse report");
++        assert_eq!(runtime.corral_input_state().0, revision, "attach wheel must not move the input revision");
++
++        // Positive control — the same pane, the same entry point: everything that can be a draft moves it by one.
++        let key = ClientPaneInputEvent::Key {
++            code: ClientKeyCode::Char('a'), modifiers: 0, kind: ClientKeyKind::Press, repeat_count: 1, shifted_codepoint: None,
++            generated_text: Some("a".into()), tracks_release: false, physical_key_id: None, windows_record: None,
++        };
++        let mut expected = revision;
++        for (name, event) in [("key", key), ("text", ClientPaneInputEvent::TextCommit("b".into())), ("paste", ClientPaneInputEvent::Paste("c".into()))] {
++            apply_client_pane_input_events(&runtime, &[event]).unwrap();
++            assert!(!drain(&mut rx).is_empty(), "{name} writes");
++            expected += 1;
++            assert_eq!(runtime.corral_input_state().0, expected, "{name} moves the input revision");
++            assert!(runtime.corral_input_state().1 < 30, "{name} restarts the quiet time");
++        }
++        runtime.try_send_bytes(Bytes::from_static(b"send_text")).unwrap();
++        expected += 1;
++        assert_eq!(runtime.corral_input_state().0, expected, "a raw send (pane.send_text) moves the input revision");
++        let _queued = runtime.queue_user_input_submission(Bytes::from_static(b"prompt"), Bytes::from_static(b"\r"), Duration::ZERO, None).expect("queued");
++        expected += 1;
++        assert_eq!(runtime.corral_input_state().0, expected, "a submission (agent.prompt) moves the input revision");
++
++        // AlternateScroll: no mouse reporting, alternate screen, 1007 on — the wheel becomes an arrow key and counts.
++        let (alternate, mut rx) = crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
++            20, 5, 0, b"\x1b[?1049h\x1b[?1007h", 64);
++        assert_eq!(alternate.wheel_routing(), Some(crate::pane::WheelRouting::AlternateScroll));
++        let (base, _) = alternate.corral_input_state();
++        apply_client_pane_input_events(&alternate, &[mouse(ClientMouseKind::ScrollUp)]).unwrap();
++        let arrow = drain(&mut rx);
++        assert!(!arrow.is_empty() && !arrow.starts_with(b"\x1b[<"), "AlternateScroll writes an arrow key: {arrow:?}");
++        assert_eq!(alternate.corral_input_state().0, base + 1, "AlternateScroll's arrow key moves the input revision");
++        apply_terminal_attach_scroll(&alternate, AttachScrollSource::Wheel, AttachScrollDirection::Down, 1, None, None, 0).unwrap();
++        assert_eq!(alternate.corral_input_state().0, base + 2, "attach wheel under AlternateScroll moves it too");
++        println!("mouse reports: revision {revision} unchanged over 7 events + attach wheel; key/text/paste/send/submission -> {expected}; AlternateScroll {base} -> {}", base + 2);
++    }
++
+     #[tokio::test]
+     async fn terminal_attach_stale_geometry_falls_back_to_the_canonical_cell() {
+         let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 5, b"");
 --- a/src/terminal/state.rs
 +++ b/src/terminal/state.rs
 @@ -142,6 +142,8 @@

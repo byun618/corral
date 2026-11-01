@@ -188,11 +188,11 @@
 - **폰은 키·바이트를 보내지 않는다.** 위 쓰기 메시지(다섯 + 복구 조회 `input.pending`)가 전부다 — 질문 답은 「몇 번째 선택지 / 직접 입력 글」, 중단은 「중단」 만. 키 순서는 서버가 `keys.ts` 의 실측표(`specs/LIFE-582-mobile-input/raw/claude/z1-measure.md`)로 만든다.
 - 넣는 길은 CLI `terminal prompt` 와 같은 guard 봉투(`corral.terminal`) — 지시는 `agent.prompt`, 질문 답·중단 키는 `pane.send_text`. 둘 다 **관측한 `state_change_seq` 그대로일 때만** 쓴다
   (`expected_state_change_seq` — `pane.send_text` 의 비교는 LIFE-582 가 guard 에 더했다, `backend/herdr-guard.patch`). 바뀌었으면 guard 가 아무것도 쓰지 않고 `agent_state_changed` 로 거절한다.
-  지시(`agent.prompt`)는 거기에 **pane 의 사람 입력 revision** 까지 같은 App 턴에서 비교한다(R1-A3·R2-A3): guard 가 PTY 사용자 입력 쓰기(키·붙여넣기·마우스 보고를 켠 pane 의 휠·클릭·
-  `pane.send_text` — 데스크톱 타자와 attach 클라이언트 포함)와 **제출 대기열에 넣은 `agent.prompt`(칸 없는 CLI 제출 포함)** 마다 revision 을 올린다. `agent.get` 과 **`pane.read`(화면)** 가 같은 턴의 `corral_input_revision`·`corral_input_idle_ms`
+  지시(`agent.prompt`)는 거기에 **pane 의 사람 입력 revision** 까지 같은 App 턴에서 비교한다(R1-A3·R2-A3): guard 가 초안이 될 수 있는 PTY 사용자 입력 쓰기(키·글자·붙여넣기·
+  `pane.send_text` — 데스크톱 타자와 attach 클라이언트 포함, 마우스 보고가 꺼진 alt-screen 의 휠 `AlternateScroll` 화살표 키 포함 — 마우스 보고(휠·클릭·드래그·이동)는 세지 않는다, LIFE-708)와 **제출 대기열에 넣은 `agent.prompt`(칸 없는 CLI 제출 포함)** 마다 revision 을 올린다. `agent.get` 과 **`pane.read`(화면)** 가 같은 턴의 `corral_input_revision`·`corral_input_idle_ms`
   (화면은 `corral_state_change_seq` 도)를 싣는다. corral 은 **화면을 잡은 턴**에 입력이 조용한 시간 하한(500 ms) 이상 조용했을 때만 그 화면을 믿고(아니면 기다림), 그 화면의 revision 이
   **접수 때 revision(R0)에서 허브 자기 쓰기 사슬만 따라간 울타리**와 같을 때만 그 울타리를 `expected_input_revision` 으로 보낸다(LIFE-598 r2·r3 — 아래 「접수 때 대상을 묶는다」) —
-  넣는 순간까지 울타리 뒤 입력이 하나라도 있었으면 `input_changed`, 하한이 모자라면 `input_recent` 로 아무것도 쓰지 않는다 → 다시 관측해 입력이면 `target_changed`, 아니면 큐로 돌아가 다음 관문.
+  넣는 순간까지 울타리 뒤 입력이 하나라도 있었으면 `input_changed`, 하한이 모자라면 `input_recent` 로 아무것도 쓰지 않는다 → 다시 관측해 입력이면 `mac_input`, 아니면 큐로 돌아가 다음 관문.
   하한 근거 = 격리 실측 echo(키 → 화면, 읽기 왕복 포함) 최대 Claude 225 · Codex 221 · Grok 223 ms(각 10표본, r2 — 부하·원격 attach 상한은 아니다).
   revision 이 없는 guard 면 넣지 않는다(`failed/guard_outdated`). 질문 답 키(`pane.send_text`)도 같은 울타리를 친다 — 아래 「질문 답」.
   CLI `terminal prompt` 계약·AgentRecord 는 건드리지 않는다 — 관리되지 않은 pane(GUI 로 연 세션)도 같은 관문을 지난다.
@@ -209,30 +209,33 @@
 - **메시지 id 당 많아야 한 번**: (기기, id) 를 기억한다(기기당 끝난 것 500개까지 상태를). 같은 id 를 다시 보내면 넣지 않고 `input.state` 로 지금 상태만. 같은 글이라도 새 id 면 새 지시다.
   500개에서 밀린 id 는 상태를 잊어도 **표지는 남긴다**(앱 기동 동안) — 다시 오면 넣지 않고 `unknown/expired`(R1-A6).
 - **접수 때 대상을 묶는다**(R1-A5·R2-A4·LIFE-598 r2): 지시를 받으면 그 pane 의 backend epoch·PTY 세대·provider 세션·**입력 revision**(접수 때 herdr 관측, R0)을 묶는다.
-  넣기 전 하나라도 바뀌면(herdr 재시작·같은 pane 의 새 세션·접수 뒤 입력) `failed/target_changed` — 이전 지시가 새 세대로 따라가지 않는다.
+  넣기 전 하나라도 바뀌면 `failed` — herdr 재시작·같은 pane 의 새 세션은 `target_changed`, 접수 뒤 입력은 `mac_input`(LIFE-709). 이전 지시가 새 세대로 따라가지 않는다.
   - **접수 뒤 맥 입력이 있으면 보내지 않는다**(LIFE-598 게이트 ① 결정 「1안」): 지시 대기 중 같은 pane 에 맥에서 **아무 키나** 치면(글자·Esc·`/clear`·붙여넣기, 그 pane 에 붙은
-    다른 클라이언트의 쓰기 — CLI `terminal prompt`·orchestration 배달 포함), **마우스 보고를 켠 pane 에서 휠·클릭만 해도**(리뷰 r3 격리 실측 휠 +1·클릭 +2 — 맥에서 출력을 스크롤만 해도)
-    그 지시는 넣지 않고 `failed/target_changed`(쓰기 0) 다. **포커스 전환**(다른 pane·창으로 포커스만 옮김 — corral 의 `pane.focus` 경로)은 revision 을 올리지 않았다(리뷰 r3 실측 +0, 양성 대조 포함).
-    같은 클릭이라도 **마우스 보고를 켠 pane 안을 누르면** 마우스 입력이라 +2 다(위). 포커스만 옮기는 클릭과는 구분된다.
+    다른 클라이언트의 쓰기 — CLI `terminal prompt`·orchestration 배달 포함 — 모두 맥 쪽 입력이다) 그 지시는 넣지 않고 `failed/mac_input`(쓰기 0) 다.
+    마우스 보고가 꺼진 alt-screen 에서 휠은 herdr 가 화살표 키로 보내므로(`AlternateScroll`) 키와 같이 막는다 — provider TUI 에서 ↑ 는 이전 입력을 불러와 초안을 만든다.
+    **마우스 보고**(provider 가 1000/1002/1003/1006 을 켠 pane 의 휠·클릭·드래그·이동)는 막지 않는다(LIFE-708) — herdr 가 마우스 의미 이벤트로 받아 인코딩한 쓰기는 guard 가
+    입력 revision·조용한 시각을 움직이지 않는다(그 전에는 휠 +1·클릭 +2 로 지시가 실패했다 — LIFE-598 리뷰 r3 실측). 클릭이 상태를 바꾸면(질문 선택 등) seq·준비 관문이 따로 막는다.
+    **포커스 전환**(다른 pane·창으로 포커스만 옮김 — corral 의 `pane.focus` 경로)도 revision 을 올리지 않는다(리뷰 r3 실측 +0, 양성 대조 포함).
     herdr 에는 포커스 보고 코드 경로가 있어, provider 가 포커스 보고(1004)를 켜는 경우는 최종 관문에서 따로 본다.
-    휠·클릭을 빼는 정밀 구분은 guard 패치(입력 종류별 카운터)라 범위 밖이다(게이트 ① 판단 항목).
-    폰 문구는 기존 「그 사이 세션이 바뀌어 보내지 않았습니다」 그대로다(mobile 앱 무변경 — `/clear` 아닌 타자에는 문구가 어긋난다, 게이트 ① 보고 항목). 기다리지 않는다 — 대기 중이어도 다음 관측에서 바로 끝낸다.
+    폰 문구는 「그 사이 맥에서 입력이 있어 보내지 않았습니다」(LIFE-709 — 세션·세대가 바뀐 `target_changed` 는 「그 사이 세션이 바뀌어 보내지 않았습니다」 그대로).
+    `mac_input` 을 모르는 옛 앱은 사유 없이 「보내지 못했습니다」 로 보인다(모르는 사유는 문구 없이 그린다 — 깨지지 않는다).
+    허브 자기 쓰기 경합의 거짓 실패(아래 「남는 창」 — 자기 쓰기와 재관측 사이 맥 키 등, 빈도 낮음)도 이 사유로 보일 수 있다. 기다리지 않는다 — 대기 중이어도 다음 관측에서 바로 끝낸다.
   - **보장 강도 — 결정적인 것은 revision 울타리**: 효과(`agent.prompt`)의 `expected_input_revision` 이 **R0 에서 허브 자기 쓰기 사슬을 따라간 끝**(자기 쓰기가 없으면 R0)이라 guard 가 쓰는 같은 App 턴에서 접수 뒤 남의 입력을 거절한다.
     `/clear` 는 키 입력이라 herdr 가 새 세션을 언제 알든(리뷰 r2 실측 Enter 뒤 최대 ≈ 6 s, 한 번은 7 s 안에 반영 안 됨 — Claude 세션 참조는 SessionStart 훅 경로라 상한이 없다) 막힌다.
-    guard 가 거절하면 다시 관측해 그 revision 을 지금의 사슬로 가른다 — 사슬 밖(`moved`, 접수 뒤 남의 입력)이면 `target_changed`(`input_refused`), 사슬 위이거나 자기 쓰기 진행 중(`behind`)이면
+    guard 가 거절하면 다시 관측해 그 revision 을 지금의 사슬로 가른다 — 사슬 밖(`moved`, 접수 뒤 남의 입력)이면 `mac_input`(`input_refused`), 사슬 위이거나 자기 쓰기 진행 중(`behind`)이면
     상태 전이로 보고 큐로 돌아가 다음 관문을 기다린다.
   - **허브 자기 쓰기는 접수 뒤 입력이 아니다**(r2·r3): 같은 pane 앞 지시의 넣기·질문 답 키·중단 키는 쓰기 **전에** 「쓰기 직전 revision → +1」 고리를 걸고 그 pane 에 쓰기 진행을 표시한다.
     대기 지시의 울타리는 R0 에서 이 고리들만 따라간 값이고, 관측 revision 이 그 사슬 위의 값이면 남의 입력이 아니다(사슬 중간 값이면 다시 본다). 쓰기 진행 중에는 사슬 밖 값도 실패로 단정하지 않고
-    효과도 내지 않는다 — guard 에서 쓰기가 일어난 뒤 응답이 오기 전에 대기 지시가 새 revision 을 봐도 거짓 `target_changed` 가 아니다(리뷰 r3 C·R3-C2).
+    효과도 내지 않는다 — guard 에서 쓰기가 일어난 뒤 응답이 오기 전에 대기 지시가 새 revision 을 봐도 거짓 `mac_input` 이 아니다(리뷰 r3 C·R3-C2).
     **진행 중 미룸이 걸리는 곳**: 지시 경로의 효과 직전(다른 자기 쓰기가 진행 중이면 넣지 않는다 — 중단·답 키가 guard 에 닿기 전 맥 키가 예측 끝값과 같아지는 창을 이것만 막는다, 리뷰 r4 C·R4-C1)과
     질문 답의 첫 키 앞(같은 pane 지시 쓰기가 끝나 고리가 확정·회수될 때까지 기다린다 — 미확정 끝값을 울타리로 쓰지 않는다, 기한 넘으면 키 0회 `failed/busy`, R4-C4).
     고리 확정: **키**는 guard 가 돌려준 쓴 뒤 revision 이 고리 끝이다. 응답에 revision 이 없는 **지시**(guard 가 같은 턴에서 1 올리는 규칙 — `queue_user_input_submission` → `corral_note_input`)와
     **울타리 없는 중단 키**는 예측 +1 을 그대로 믿지 않고 끝난 뒤 다시 관측해 직전+1 일 때만 확정한다(R4-C3) — +0(guard 계약 깨짐)이면 거둬 뒤 지시는 R0 그대로 울타리(영구 대기 없음),
-    +2 이상(그 사이 맥 입력)이면 거둬 뒤 지시는 `target_changed`. 남는 창: guard 가 +0 인데 맥 키가 쓰기와 그 재관측 사이(RPC 한 번)에 든 경우. 거절이면 거두고, `unknown`(썼을 수 있음)·백엔드 reject 도
-    거둔다(reject 는 `finally` 로 진행 표시까지 닫는다 — R4-C2) — 뒤 지시는 `target_changed`(쓰지 않는 쪽). 쓴 뒤 revision 이 직전보다 크지 않으면 고리를 걸지 않고, 사슬은 순환·반복 상한으로 끊는다(R3-C3).
+    +2 이상(그 사이 맥 입력)이면 거둬 뒤 지시는 `mac_input`. 남는 창: guard 가 +0 인데 맥 키가 쓰기와 그 재관측 사이(RPC 한 번)에 든 경우. 거절이면 거두고, `unknown`(썼을 수 있음)·백엔드 reject 도
+    거둔다(reject 는 `finally` 로 진행 표시까지 닫는다 — R4-C2) — 뒤 지시는 `mac_input`(쓰지 않는 쪽). 쓴 뒤 revision 이 직전보다 크지 않으면 고리를 걸지 않고, 사슬은 순환·반복 상한으로 끊는다(R3-C3).
     쓰기 직전 revision 은 그 쓰기의 울타리(guard 가 같은 턴에서 확인)라 그 사이 맥 입력이 끼면 쓰기가 거절된다. **중단 키(Claude·Codex)는 울타리 없이** 보낸다(LIFE-598 r3 — 02-kickoff
     「중단 경로는 바꾸지 않는다」, 응급 조작이 휠·타자에 실패하지 않게) — 고리는 바로 앞 관측 revision → +1 이고, 관측과 키 사이 맥 입력이 끼면 실제 revision 이 고리 끝을 넘어
-    뒤 대기 지시는 `target_changed`(쓰지 않는 쪽). Grok 의 Ctrl+C 는 이전대로 빈 입력 줄 울타리(R3-A6)이고 그 울타리 값에서 고리를 건다.
+    뒤 대기 지시는 `mac_input`(쓰지 않는 쪽). Grok 의 Ctrl+C 는 이전대로 빈 입력 줄 울타리(R3-A6)이고 그 울타리 값에서 고리를 건다.
   - **보조 — 효과 직전 세션 대조**: 목록(이 프로세스 상태라 그 확인과 넣기 호출 사이에 바뀌지 않는다)과 **herdr 관측**(효과 호출 바로 앞에서 다시 한 `agent.get` 의 `agent_session`,
     source·kind·값으로 대조 — LIFE-598 r0·r1) 둘 중 하나라도 접수 때와 다르면 `target_changed`. 관측에 세션이 없으면 같은 세션임을 증명 못 한 것이라 쓰지 않고 `target_changed`.
     목록 세션은 `/clear` 뒤 약 20~25 s 늦게 바뀌고(최종 관문 실측 final/f1q — herdr 는 +365 ms 에 새 세션, 목록은 20 s 동안 옛 값) herdr 도 상한 없이 늦을 수 있어
@@ -244,6 +247,7 @@
     R0 는 접수 뒤 `bind` 의 locate·observe 왕복(리뷰 r3 실측 ≈ 0~0.3 s) 뒤의 표본이라, **접수 직후 그 왕복 동안 친 키**도 같은 구멍에 든다(답은 `before` 관측까지 같다 — revision 은 RPC 로만 와 접수 시점에 얻을 수 없다).
   - r1 의 효과 시점 2 s 조용함 하한(`sessionSettleMs`)은 되돌렸다(지연 비용만 남아서) — 조용함 하한은 echo 를 덮는 500 ms(`quietMs`) 하나다. guard `min_input_idle_ms` 도 500.
   - 실패 갈래는 로그 `mobile.input_target_changed` 의 `check`(`list`·`pane`·`herdr_session`·`input`·`input_refused`)로 남는다 — 무엇이 막았는지 실물 회차가 가른다.
+    지시의 사유는 갈래를 따른다: `input`·`input_refused` → `mac_input`, `list`·`pane`·`herdr_session` → `target_changed`. 질문 답은 입력 울타리도 `question_changed`, 답 키 사이 세션 대조는 `target_changed` 그대로다.
 - **해지·끔**(R1-A1·A4): 기기를 해지하면 그 기기의 대기 지시는 `failed/revoked`(결과도 보내지 않는다). 모바일을 끄면 활성 세대가 바뀌어 이전 세대의 요청은 효과를 내지 않는다 — 넣는 중이던 지시에
   늦게 온 guard 거절도 큐로 되살리지 않는다(`failed/mobile_off`), 질문 답은 남은 키를 멈춘다(일부가 들어갔으면 `unconfirmed`). 매 await 뒤·효과 직전에 페어링과 세대를 다시 본다.
   **연결이 끊긴 것(폰 화면 끔)은 해지가 아니다** — 큐는 남고 결과는 다음 연결에서 조회로 받는다.
@@ -307,7 +311,7 @@
   입력 revision 으로 `pane.send_text` 를 울타리 친다(R3-A6) — 화면을 읽은 뒤 맥 입력이 끼면 guard 가 거절해 Ctrl+C 0회 `failed/state_changed`. Claude·Codex 의 Esc 는 그대로(seq 비교만 — LIFE-598 r2 가 울타리를 쳤다가 r3 에서 되돌림. 같은 pane 대기 지시의 사슬은 관측 revision → +1 을 쓰기 전에 건다, 위 「허브 자기 쓰기」). 멈춤 = 상태가 working·blocked 를 떠남 또는 기록의 그 턴 `interrupted`(5초 — 사슬 확정용 재관측을 했으면 그 뒤부터 잰다, LIFE-598 r5), 아니면 `unconfirmed/still_running`.
   백그라운드 작업(Bash·서브에이전트)은 멈추지 않는다(Z1ⓓ).
 - 답·중단은 채널당 한 번에 하나(겹치면 `failed/busy`). 그 밖 이유: `empty`(정리 뒤 빈 글) · `bad_answer` · `not_ready` · `backend`(guard 오류 — 넣기 전이면 failed, 뒤면 unconfirmed) ·
-  `revoked` · `target_changed` · `guard_outdated`(입력 revision 이 없는 guard, 또는 관리 밖 pane 인데 `unmanaged_prompt` 가 없는 guard) · `record_ambiguous`(기록 후보 둘 이상) · `record_unreadable`(커서용 기록을 못 읽음 — 넣지 않았다).
+  `revoked` · `target_changed`(세션·세대가 바뀜) · `mac_input`(접수 뒤 맥 입력 — LIFE-709) · `guard_outdated`(입력 revision 이 없는 guard, 또는 관리 밖 pane 인데 `unmanaged_prompt` 가 없는 guard) · `record_ambiguous`(기록 후보 둘 이상) · `record_unreadable`(커서용 기록을 못 읽음 — 넣지 않았다).
 - 로그: `mobile.input_send {bytes, sha}`(정규화 본문 sha256 앞 8자) · `mobile.input_answer {questions}` · `mobile.input_stop` · `mobile.input_state {op, state, reason}` · `mobile.input_delivered {ms}` · `mobile.input_error` — 본문은 없다.
 
 ## 4. 오류 코드

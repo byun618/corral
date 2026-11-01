@@ -7,11 +7,11 @@
 //   `unconfirmed`(확인하지 못했습니다) — 들어감으로 올리지 않는다(P6ⓓ). 다시 넣지도 않는다. 커서는 **파일 꼬리**다(dev·ino · 크기 + 끝 64 KiB 지문, R2-A7) —
 //   지시마다 기록 전체를 동기로 읽지 않는다(C1, 45 MB 기록에서 루프 지연 p99 230 ms 실측).
 // - **접수 때 대상을 묶는다**(R1-A5): backend epoch · PTY 세대 · provider 세션 · **입력 revision**(LIFE-598 r2). 넣기 전 하나라도 바뀌면 실패 —
-//   이전 지시가 새 세대로 따라가지 않는다. **접수 뒤 그 pane 에 맥 입력이 있으면 넣지 않는다**(`target_changed`): 효과는 guard 가 같은 턴에서
+//   이전 지시가 새 세대로 따라가지 않는다. **접수 뒤 그 pane 에 맥 입력이 있으면 넣지 않는다**(`mac_input` — LIFE-709, 세션·세대가 바뀐 것은 `target_changed`): 효과는 guard 가 같은 턴에서
 //   울타리 값 — 접수 때의 revision(R0)에서 허브 자기 쓰기 사슬을 따라간 **끝** — 그대로일 때만 쓴다(`expected_input_revision`). `/clear` 는 키 입력이라 이 울타리가 결정적으로 막는다 — herdr 가 새 세션을
-//   언제 알든(리뷰 r2 실측 최대 ≈ 6 s, 훅 경로라 상한 없음) 상관없다. 「맥 입력」 = guard 가 revision 을 올리는 모든 PTY 사용자 입력 쓰기 — 키·붙여넣기·
-//   **마우스 보고를 켠 pane 안의 휠·클릭(리뷰 r3 실측 휠 +1·클릭 +2)**·다른 클라이언트의 `pane.send_text`. **포커스 전환**(다른 pane·창으로 포커스만 옮김 —
-//   corral 의 `pane.focus` 경로)은 올리지 않았다(리뷰 r3 실측 +0). 같은 「클릭」 이라도 마우스 보고 pane 안을 누르면 마우스 입력이라 +2 다.
+//   언제 알든(리뷰 r2 실측 최대 ≈ 6 s, 훅 경로라 상한 없음) 상관없다. 「맥 입력」 = guard 가 revision 을 올리는, 초안이 될 수 있는 PTY 사용자 입력 쓰기 — 키·글자·붙여넣기·
+//   제출·다른 클라이언트의 `pane.send_text`(CLI `terminal prompt`·orchestration 배달 포함)·마우스 보고가 꺼진 alt-screen 의 휠(`AlternateScroll` — 화살표 키라 이전 입력을 불러온다).
+//   **마우스 보고**(휠·클릭·드래그·이동 — LIFE-708)와 **포커스 전환**(corral 의 `pane.focus` 경로, 리뷰 r3 실측 +0)은 올리지 않는다.
 //   허브 자기 쓰기(앞 지시·답 키·중단 키)는 쓰기 **전에** 「직전 revision → +1」 고리를 걸고(`beginWrite`) 그 pane 에 쓰기 진행을 표시한다(LIFE-598 r3).
 //   끝은 `endWrite`(백엔드 reject 도 `finally` 로 — R4-C2): 키는 guard 가 돌려준 쓴 뒤 revision 으로 확정, 응답에 revision 이 없는 지시·울타리 없는 중단 키는
 //   끝난 뒤 다시 관측해 직전+1 일 때만 확정(`endUnreported`, R4-C3), 거절·`unknown` 은 거둔다. 사슬 위의 값은 남의 입력이 아니다(`fenceRead` — 끝값 ok, 중간·진행 중 사슬 밖은
@@ -22,7 +22,7 @@
 //   R0 가 이미 그 키를 포함하므로 울타리로는 못 막고 보조 대조만 본다(답은 `before` 관측까지 같다).
 // - **채널별 큐**(P3): 순서대로 한 건씩. 에이전트가 준비 관문(750 ms 두 관측 · 같은 seq · detect manifest 확인 — CLI 와 같은 관문)을 통과해야 넣는다.
 //   관문 통과 = 턴이 끝났다는 뜻이라 턴 안에 끼어들지 않는다. 넣기는 guard 의 compare-and-submit(`agent.prompt` + 관측한 seq + **접수 때 revision 에서 자기 쓰기 사슬만 따라간 울타리**)이라
-//   그 사이 전이·맥 입력이 있으면 아무것도 쓰지 않고 거절된다 — 다시 관측해 입력이면 `target_changed`, 전이면 큐로 돌아가 다시 기다린다. 취소는 넣기 시작 전(`queued`)만.
+//   그 사이 전이·맥 입력이 있으면 아무것도 쓰지 않고 거절된다 — 다시 관측해 입력이면 `mac_input`, 전이면 큐로 돌아가 다시 기다린다. 취소는 넣기 시작 전(`queued`)만.
 // - **수명**(R1-A1·A4): 모바일 끔·종료(활성 세대가 바뀜)·그 기기 해지면 그 기기의 끝나지 않은 요청을 끝낸다. 모든 await 뒤와 효과 직전에 다시 본다 —
 //   늦게 온 guard 거절이 끈 뒤의 지시를 큐로 되살리지 않고, 답의 남은 키는 멈춘다(일부 키가 들어갔으면 `unconfirmed`). 연결 끊김(폰 화면 끔)은 수명이 아니다 — 큐는 남는다.
 // - **맥 입력창 초안**(P9): 넣기 직전 보이는 화면의 입력 줄이 비었는지 본다(`keys.ts draftState`). 글이 있거나 판단 못 하면 넣지 않고 실패.
@@ -173,15 +173,15 @@ export type InputHubDeps = {
  * `revision` = 접수 때 herdr 관측의 입력 revision(R0, LIFE-598 r2) — 효과의 울타리는 여기서 허브 자기 쓰기 사슬만 따라간 값(`fenceOf`).
  */
 type Bind = { epoch: string; ptyId: string; session: string; observed: string; revision: number }
-/** 효과 직전 세션·입력 대조 중 무엇이 걸렸나 — `target_changed` 로그(`mobile.input_target_changed`)에 남겨 실물 회차가 가른다(리뷰 r2 C·R2-C3). */
+/** 효과 직전 세션·입력 대조 중 무엇이 걸렸나 — 로그 `mobile.input_target_changed` 에 남겨 실물 회차가 가른다(리뷰 r2 C·R2-C3). */
 type MovedCheck = 'list' | 'pane' | 'herdr_session' | 'input' | 'input_refused'
 /** 허브 자기 쓰기 사슬의 pane 키 — revision 은 PTY 세대마다 새로 센다. */
 const paneKey = (pane: { epoch: string; ptyId: string }): string => `${pane.epoch}\u0000${pane.ptyId}`
-/** pane 당 남기는 자기 쓰기 수 — 넘으면 오래된 것부터 버린다(버린 사슬에 묶인 항목은 `target_changed` 로 끝난다 — 쓰지 않는 쪽). `fenceOf` 반복 상한도 이 값. */
+/** pane 당 남기는 자기 쓰기 수 — 넘으면 오래된 것부터 버린다(버린 사슬에 묶인 항목은 `mac_input` 로 끝난다 — 쓰지 않는 쪽). `fenceOf` 반복 상한도 이 값. */
 const SELF_WRITES_MAX = 256
 /**
  * 자기 쓰기 사슬 한 고리(LIFE-598 r3) — 쓰기 **전에** `before → before + 1` 로 걸고(`owners` = 진행 중인 쓰기), 들어가면 `confirmed`,
- * 거절·`unknown` 이면 그 쓰기의 몫을 거둔다(아무도 확정하지 않았으면 고리를 지운다 — 뒤 항목은 `target_changed`, 쓰지 않는 쪽).
+ * 거절·`unknown` 이면 그 쓰기의 몫을 거둔다(아무도 확정하지 않았으면 고리를 지운다 — 뒤 항목은 `mac_input`, 쓰지 않는 쪽).
  */
 type Link = { after: number; owners: Set<symbol>; confirmed: boolean }
 /** 진행 중인 자기 쓰기 하나 — `beginWrite` 가 주고 `endWrite` 가 한 번만 닫는다(`closed`). 고리를 못 건 쓰기(after ≤ before 등)는 `link` 가 null. */
@@ -824,7 +824,7 @@ export class InputHub {
     // r3: 사슬 고리를 쓰기 **전에** 건다(guard 는 같은 턴에서 revision 을 정확히 1 올린다 — `queue_user_input_submission` → `corral_note_input`).
     const write = this.beginWrite({ pane: bind, before: fence })
     // 들어갔으면 다시 관측해 +1 일 때만 확정(R4-C3). 거절은 쓰지 않았으니 거둔다. `unknown`·reject 는 썼을 수 있지만 몇 번인지 모른다 — 거둔다
-    // (뒤 항목은 `target_changed`, 쓰지 않는 쪽). reject 도 진행 표시를 남기지 않게 `finally`(R4-C2).
+    // (뒤 항목은 `mac_input`, 쓰지 않는 쪽). reject 도 진행 표시를 남기지 않게 `finally`(R4-C2).
     let sent: SendResult = 'unknown'
     try {
       sent = await backend.prompt(pane, { text, seq: last.seq, inputRevision: fence, minIdleMs: this.timing.quietMs, unmanagedAgent: last.unmanaged ? kind : null })
@@ -921,7 +921,7 @@ export class InputHub {
   /**
    * 허브 자기 쓰기 시작(LIFE-598 r3 — R3-C2) — 쓰기 **전에** `before → before + 1` 고리를 걸고 진행 표시를 올린다. 그래서 쓰기가 guard 에서 일어난 뒤
    * 응답이 오기 전에 대기 지시가 새 revision 을 봐도 사슬 위의 값이다. `before` = 그 쓰기의 울타리(guard 가 같은 턴에서 확인하는 값,
-   * 울타리 없는 중단 키는 바로 앞 관측값 — 그 사이 맥 입력이 끼면 실제 revision 이 고리 끝을 넘어 뒤 지시는 `target_changed`, 쓰지 않는 쪽).
+   * 울타리 없는 중단 키는 바로 앞 관측값 — 그 사이 맥 입력이 끼면 실제 revision 이 고리 끝을 넘어 뒤 지시는 `mac_input`, 쓰지 않는 쪽).
    * 같은 직전 값에서 이미 고리가 있으면(겹친 자기 쓰기) 그 고리에 몫만 더한다. 다른 끝값의 고리가 있으면 걸지 않는다.
    */
   private beginWrite(input: { pane: { epoch: string; ptyId: string }; before: number }): SelfWrite {
@@ -944,7 +944,7 @@ export class InputHub {
   }
 
   /**
-   * 허브 자기 쓰기 끝 — `sent` 면 고리 확정(`after` = 쓴 뒤 revision. `after ≤ before` 면 고리를 걸지 않는다 — 뒤 항목은 `target_changed`, R3-C3).
+   * 허브 자기 쓰기 끝 — `sent` 면 고리 확정(`after` = 쓴 뒤 revision. `after ≤ before` 면 고리를 걸지 않는다 — 뒤 항목은 `mac_input`, R3-C3).
    * `refused`·`unknown`(백엔드 reject 포함 — 부르는 쪽이 `finally` 로 닫는다, R4-C2)이면 이 쓰기의 몫을 거두고, 아무도 확정하지 않은 고리는 지운다. 두 번째 호출은 무시한다.
    */
   private endWrite(write: SelfWrite, outcome: WriteOutcome): void {
@@ -987,7 +987,7 @@ export class InputHub {
   /**
    * 응답에 쓴 뒤 revision 이 없는 자기 쓰기(지시 `agent.prompt` · 울타리 없는 중단 키)의 끝(R4-C3) — 예측 +1 을 그대로 믿지 않고 끝난 뒤 다시 관측해
    * 직전+1 일 때만 확정한다. 아니면(+0 — guard 계약 깨짐 · +2 이상 — 그 사이 맥 입력 · 관측 실패) 고리를 거둔다: +0 이면 뒤 지시는 R0 그대로 울타리라 넣고(영구 `behind` 없음),
-   * 맥 입력이 끼었으면 실제 revision 이 사슬 밖이라 `target_changed`(쓰지 않는 쪽). 남는 창: guard 가 +0 인데 맥 키가 쓰기와 이 관측 사이(RPC 한 번)에 든 경우.
+   * 맥 입력이 끼었으면 실제 revision 이 사슬 밖이라 `mac_input`(쓰지 않는 쪽). 남는 창: guard 가 +0 인데 맥 키가 쓰기와 이 관측 사이(RPC 한 번)에 든 경우.
    */
   private async endUnreported(input: { write: SelfWrite; backend: InputBackend; pane: TerminalIdentity }): Promise<void> {
     const seen = await input.backend.observe(input.pane).catch(() => null)
@@ -995,10 +995,13 @@ export class InputHub {
     this.endWrite(input.write, revision === input.write.before + 1 ? { kind: 'sent', after: revision } : { kind: 'unknown' })
   }
 
-  /** `target_changed` — 무엇이 걸렸는지 로그에 남긴다(실물 회차가 목록·herdr·입력 울타리 중 무엇이 막았는지 가른다). */
+  /**
+   * 지시가 효과 직전 대조에 걸렸다 — 입력 울타리(`input`·`input_refused`, 접수 뒤 남의 입력)면 `mac_input`(LIFE-709), 목록·pane·herdr 세션이면 `target_changed`.
+   * 무엇이 걸렸는지 로그에도 남긴다(실물 회차가 목록·herdr·입력 울타리 중 무엇이 막았는지 가른다).
+   */
   private moved(entry: Entry, check: MovedCheck): 'done' {
     this.deps.log('mobile.input_target_changed', { op: entry.op, check })
-    return this.fail(entry, 'target_changed')
+    return this.fail(entry, check === 'input' || check === 'input_refused' ? 'mac_input' : 'target_changed')
   }
 
   private fail(entry: Entry, reason: string): 'done' {
@@ -1307,7 +1310,7 @@ export class InputHub {
     this.emit(entry)
     const sentAt = this.now()
     // LIFE-598 r3: 같은 pane 대기 지시의 사슬 — 쓰기 전에 「울타리(Grok) 또는 바로 앞 관측 revision → +1」 을 건다(키 한 번 = revision 1, guard).
-    // 울타리 없는 키라 관측과 키 사이 맥 입력이 끼면 실제 revision 이 고리 끝을 넘는다 — 뒤 지시는 `target_changed`(쓰지 않는 쪽).
+    // 울타리 없는 키라 관측과 키 사이 맥 입력이 끼면 실제 revision 이 고리 끝을 넘는다 — 뒤 지시는 `mac_input`(쓰지 않는 쪽).
     const base = inputRevision ?? observed.input?.revision ?? null
     const write = base === null ? null : this.beginWrite({ pane, before: base })
     let sent: KeyResult = { kind: 'unknown' }

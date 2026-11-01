@@ -293,6 +293,7 @@ const REASON: Record<string, string> = {
   expired: '맥이 이 지시를 더 기억하지 않습니다',
   revoked: '이 기기의 연결이 해지되었습니다',
   target_changed: '그 사이 세션이 바뀌어 보내지 않았습니다',
+  mac_input: '그 사이 맥에서 입력이 있어 보내지 않았습니다',
   guard_outdated: '맥의 터미널 백엔드가 오래되어 보내지 않았습니다',
 }
 

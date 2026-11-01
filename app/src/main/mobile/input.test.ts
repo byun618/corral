@@ -1436,8 +1436,8 @@ describe('LIFE-708 r1 (C10) — 질문 답은 맥 클릭(모든 입력 revision)
     t.backend.anyInput = { revision: 40, idleMs: 10_000 }
     blockedOn(t, 21)
     const screen = t.backend.screen.bind(t.backend)
-    t.backend.screen = async (pane) => {
-      const shot = await screen(pane)
+    t.backend.screen = async () => {
+      const shot = await screen()
       clicked(t)
       return shot
     }
@@ -1452,10 +1452,10 @@ describe('LIFE-708 r1 (C10) — 질문 답은 맥 클릭(모든 입력 revision)
     blockedOn(t, 22)
     const screen = t.backend.screen.bind(t.backend)
     let first = true
-    t.backend.screen = async (pane) => {
+    t.backend.screen = async () => {
       if (first) clicked(t)
       first = false
-      return screen(pane)
+      return screen()
     }
     t.hub.answer({ device: 'd1', id: 'l708r1-0000-0002', channel: 'c1', question: 22, call: 'toolu-22', digest: digestFor(22), answers: [{ choices: [1], other: null }] })
     expect(await t.settled('l708r1-0000-0002')).toMatchObject({ state: 'failed', reason: 'question_changed' })
@@ -1493,9 +1493,9 @@ describe('LIFE-708 r1 (C10) — 질문 답은 맥 클릭(모든 입력 revision)
     t.answerOn({ id: 25, value: 'o1' })
     const screen = t.backend.screen.bind(t.backend)
     let reads = 0
-    t.backend.screen = async (pane) => {
+    t.backend.screen = async () => {
       reads += 1
-      const shot = await screen(pane)
+      const shot = await screen()
       if (t.backend.anyInput !== null) t.backend.anyInput = { ...t.backend.anyInput, idleMs: 10_000 }
       return shot
     }

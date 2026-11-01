@@ -1475,7 +1475,44 @@ describe('LIFE-708 r1 (C10) — 질문 답은 맥 클릭(모든 입력 revision)
     t.hub.answer({ device: 'd1', id: 'l708r1-0000-0003', channel: 'c1', question: 23, call: 'toolu-23', digest: digestFor(23), answers: [{ choices: [1], other: null }] })
     expect(await t.settled('l708r1-0000-0003')).toMatchObject({ state: 'failed', reason: 'question_changed' })
     expect(t.backend.sends).toHaveLength(0)
+    // guard 거절 갈래는 허브 관측이 아니라 로그가 없다(SURFACE 질문 답 — r3 L1).
+    expect(checks(t)).toEqual([])
   })
+  it('답 — 둘째 키 앞(키 사이) 맥 클릭 → 앞 키는 들어갔으므로 unconfirmed/question_changed, 둘째 키 0', async () => {
+    const t = setup()
+    t.backend.anyInput = { revision: 40, idleMs: 10_000 }
+    t.backend.status = 'blocked'
+    t.items.list = [twoQuestions(29)]
+    t.backend.screenText = boxOf('Q-29 첫째?')
+    t.backend.onSend = () => {
+      t.backend.screenText = boxOf('Q-29 둘째?')
+      clicked(t)
+    }
+    const item = twoQuestions(29)
+    if (item.kind !== 'question') throw new Error('fixture')
+    t.hub.answer({ device: 'd1', id: 'l708r3-0000-0001', channel: 'c1', question: 29, call: 'toolu-29', digest: questionDigest(item.questions), answers: [{ choices: [0], other: null }, { choices: [1], other: null }] })
+    expect(await t.settled('l708r3-0000-0001')).toMatchObject({ state: 'unconfirmed', reason: 'question_changed' })
+    expect(t.backend.sends.map((send) => send.text)).toEqual(['1'])
+    expect(checks(t)).toEqual(['any_input'])
+  })
+  it('답 — 클릭·휠이 이어져 모든 입력이 끝내 조용해지지 않으면 화면을 믿지 않고 키 0회 failed/question_changed(로그 없음)', async () => {
+    const t = setup()
+    t.backend.anyInput = { revision: 40, idleMs: 0 }
+    blockedOn(t, 30)
+    const screen = t.backend.screen.bind(t.backend)
+    let reads = 0
+    t.backend.screen = async () => {
+      reads += 1
+      // 읽을 때마다 방금 또 굴렸다 — 값은 그대로 두고(울타리 대조가 아니라 조용함이 막는 갈래) 조용한 시간만 0.
+      if (t.backend.anyInput !== null) t.backend.anyInput = { ...t.backend.anyInput, idleMs: 0 }
+      return screen()
+    }
+    t.hub.answer({ device: 'd1', id: 'l708r3-0000-0002', channel: 'c1', question: 30, call: 'toolu-30', digest: digestFor(30), answers: [{ choices: [1], other: null }] })
+    expect(await t.settled('l708r3-0000-0002', 6_000)).toMatchObject({ state: 'failed', reason: 'question_changed' })
+    expect(t.backend.sends).toHaveLength(0)
+    expect(reads).toBe(6)
+    expect(checks(t)).toEqual([])
+  }, 10_000)
   it('답 양성 대조 — 클릭이 없으면 들어가고, 키마다 모든 입력 울타리를 앞 키가 돌려준 값으로 잇는다', async () => {
     const t = setup()
     t.backend.anyInput = { revision: 40, idleMs: 10_000 }

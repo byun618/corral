@@ -20,7 +20,7 @@ type Params = Record<string, unknown>
 const methodOf = (params: Params): unknown => readRecord(params, 'operation')?.method
 
 /** guard 봉투 stub — `any` 면 새 guard(모든 입력 칸을 싣는다), 아니면 r0 guard(초안 칸만). */
-async function stubGuard(input: { any: boolean }) {
+async function stubGuard(input: { any: boolean; sendError?: string }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l708s-'))
   const socket = path.join(dir, 'guard.sock')
   const calls: Params[] = []
@@ -43,6 +43,8 @@ async function stubGuard(input: { any: boolean }) {
           corral_input_revision: 3, corral_input_idle_ms: 5_000, ...anyFields(41, 4_000) } } })
       }
       if (method === 'pane.read') return reply({ result: { read: { text: 'x', corral_input_revision: 3, corral_input_idle_ms: 5_000, corral_state_change_seq: 7, ...anyFields(41, 4_000) } } })
+      // LIFE-708 r3: guard 가 울타리로 거절한 모양(아무것도 쓰지 않았다) — 코드만 다르다.
+      if (method === 'pane.send_text' && input.sendError !== undefined) return reply({ error: { code: input.sendError, message: 'pane input moved since corral observed it' } })
       if (method === 'pane.send_text') return reply({ result: { corral_input_revision: 4, corral_input_idle_ms: 0, ...anyFields(42, 0) } })
       return reply({ error: { code: 'unsupported', message: String(method) } })
     })
@@ -72,5 +74,23 @@ describe('LIFE-708 r2 L1 — 모든 입력 칸의 guard ↔ TS 이음새', () =>
     expect((await backend.screen(pane)).anyInput).toBeNull()
     expect(await backend.send(pane, { text: '1', seq: 7, inputRevision: 3, anyInputRevision: null })).toEqual({ kind: 'sent', revision: 4, anyRevision: null })
     expect(guard.sends().map((call) => Object.hasOwn(call, 'expected_any_input_revision'))).toEqual([false])
+  })
+  // r3 M1: 울타리 거절은 「쓰지 않았다」(refused) — `unknown`(썼을 수 있음 → unconfirmed/backend)으로 새면 안 된다.
+  for (const code of ['any_input_changed', 'input_changed', 'input_recent']) {
+    it(`guard 울타리 거절 ${code} → send 는 refused(쓰지 않았다)`, async () => {
+      const guard = await stubGuard({ any: true, sendError: code })
+      const backend = new HerdrInputBackend(guard.socket)
+      const pane = await backend.locate('c1')
+      if (pane === null) throw new Error('pane')
+      expect(await backend.send(pane, { text: '1', seq: 7, inputRevision: 3, anyInputRevision: 41 })).toEqual({ kind: 'refused' })
+      expect(guard.sends()).toHaveLength(1)
+    })
+  }
+  it('대조 — 울타리 밖 오류 코드(예: internal)는 unknown(썼을 수 있음)', async () => {
+    const guard = await stubGuard({ any: true, sendError: 'internal' })
+    const backend = new HerdrInputBackend(guard.socket)
+    const pane = await backend.locate('c1')
+    if (pane === null) throw new Error('pane')
+    expect(await backend.send(pane, { text: '1', seq: 7, inputRevision: 3, anyInputRevision: 41 })).toEqual({ kind: 'unknown' })
   })
 })

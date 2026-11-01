@@ -219,8 +219,10 @@
     입력 revision·조용한 시각을 움직이지 않는다(그 전에는 휠 +1·클릭 +2 로 지시가 실패했다 — LIFE-598 리뷰 r3 실측). 지시 경로에서 클릭이 에이전트 상태를 바꾸면 seq·준비 관문이 따로 막는다.
     **질문 답은 클릭도 계속 막는다**(LIFE-708 r1 · C10): 질문 대기(`blocked`) 중 클릭은 선택만 옮기고 seq 를 올리지 않을 수 있어, 답 경로는 아래 「질문 답」 의 **모든 입력 revision**(마우스 보고 포함)으로 울타리 친다.
     **전환기**: 새 guard 는 설치본 herdr 서버를 새 바이너리로 재기동한 뒤에 돈다 — 그 전(새 허브 + 옛 서버)에는 옛 guard 가 마우스도 세므로 휠·클릭도 `mac_input` 으로 보인다.
+    반대 방향(옛 허브 + 새 guard)에서는 옛 허브가 모든 입력 값을 모르므로 답 경로가 맥 클릭을 못 본다 — herdr 는 앱 번들(`Contents/Resources/backend`)과 함께 움직이므로 이 조합은
+    「새 앱으로 서버를 재기동한 뒤 옛 앱으로 되돌린」 경우뿐이다.
     **포커스 전환**(다른 pane·창으로 포커스만 옮김 — corral 의 `pane.focus` 경로)도 revision 을 올리지 않는다(리뷰 r3 실측 +0, 양성 대조 포함).
-    herdr 에는 포커스 보고 코드 경로가 있어, provider 가 포커스 보고(1004)를 켜는 경우는 최종 관문에서 따로 본다.
+    범위 밖 — provider 가 포커스 보고(1004)를 켜면 그 pane 으로의 포커스 이동이 입력으로 센다(base 와 같음).
     **한계**: 다른 도구가 `pane.read`·`agent.read` 를 `recent` 소스로 읽으면 herdr 가 alt-screen 기록을 읽으려고 스스로 합성하는 휠(`alt_screen_read.rs`)은 여전히 입력으로 센다(base 와 같다 —
     corral 은 `visible`·스트림 소스만 쓰므로 그 휠을 만들지 않는다).
     폰 문구는 「그 사이 맥에서 입력이 있어 보내지 않았습니다」(LIFE-709 — 세션·세대가 바뀐 `target_changed` 는 「그 사이 세션이 바뀌어 보내지 않았습니다」 그대로).
@@ -252,7 +254,7 @@
     울타리로는 못 막고, 효과 직전 herdr·목록 대조가 그때까지 새 세션을 알면만 막는다(모르면 새 세션에 들어간다 — `unconfirmed/record_missing` 로 보인다).
     R0 는 접수 뒤 `bind` 의 locate·observe 왕복(리뷰 r3 실측 ≈ 0~0.3 s) 뒤의 표본이라, **접수 직후 그 왕복 동안 친 키**도 같은 구멍에 든다(답은 `before` 관측까지 같다 — revision 은 RPC 로만 와 접수 시점에 얻을 수 없다).
   - r1 의 효과 시점 2 s 조용함 하한(`sessionSettleMs`)은 되돌렸다(지연 비용만 남아서) — 조용함 하한은 echo 를 덮는 500 ms(`quietMs`) 하나다. guard `min_input_idle_ms` 도 500.
-  - 실패 갈래는 로그 `mobile.input_target_changed` 의 `check`(`list`·`pane`·`herdr_session`·`input`·`input_refused`)로 남는다 — 무엇이 막았는지 실물 회차가 가른다.
+  - 실패 갈래는 로그 `mobile.input_target_changed` 의 `check`(`list`·`pane`·`herdr_session`·`input`·`input_refused`, 질문 답은 `any_input` 도)로 남는다 — 무엇이 막았는지 실물 회차가 가른다.
     지시의 사유는 갈래를 따른다: `input`·`input_refused` → `mac_input`, `list`·`pane`·`herdr_session` → `target_changed`. 질문 답은 입력 울타리도 `question_changed`, 답 키 사이 세션 대조는 `target_changed` 그대로다.
 - **해지·끔**(R1-A1·A4): 기기를 해지하면 그 기기의 대기 지시는 `failed/revoked`(결과도 보내지 않는다). 모바일을 끄면 활성 세대가 바뀌어 이전 세대의 요청은 효과를 내지 않는다 — 넣는 중이던 지시에
   늦게 온 guard 거절도 큐로 되살리지 않는다(`failed/mobile_off`), 질문 답은 남은 키를 멈춘다(일부가 들어갔으면 `unconfirmed`). 매 await 뒤·효과 직전에 페어링과 세대를 다시 본다.
@@ -303,7 +305,9 @@
   (클릭 직후 화면은 기다렸다 다시 읽는다), 화면·키 앞 관측이 그 울타리 값 그대로여야 하며, 키마다 guard 가 `expected_any_input_revision` 으로 같은 턴에서 비교한다(다음 키는 앞 키가 돌려준 쓴 뒤 값).
   접수 뒤 맥 클릭·휠이 끼면 갈래별로: 첫 키 앞 허브 관측(화면·키 앞 `agent.get`)이 잡으면 키 0회 `failed/question_changed`·로그 `check: any_input`,
   관측과 guard 턴 사이에 끼어 guard 가 `any_input_changed` 로 거절하면 같은 `failed/question_changed`(키 0회 — `mobile.input_target_changed` 로그 없음),
-  둘째 키 이후에 끼면 앞 키가 들어갔으므로 `unconfirmed/question_changed`. 울타리의 시작은 접수 때 값 + 그 사이 자기 쓰기가 올린 만큼(자기 쓰기는 두 값을 같이 올린다) — 자기 쓰기 사슬 자체는 초안 revision 그대로다.
+  둘째 키 이후에 끼면 앞 키가 들어갔으므로 `unconfirmed/question_changed`. 클릭·휠이 이어져 모든 입력이 끝내 조용해지지 않으면(화면 읽기 여섯 번) 화면을 믿지 않고
+  키 0회 `failed/question_changed`(로그 없음). 마우스 보고가 꺼진 alt-screen 의 휠(`AlternateScroll` — 화살표 키)은 초안 revision 도 올리므로 키 입력과 같은 갈래다
+  (허브 관측이면 로그 `check: input`, guard 면 `input_changed`). 울타리의 시작은 접수 때 값 + 그 사이 자기 쓰기가 올린 만큼(자기 쓰기는 두 값을 같이 올린다) — 자기 쓰기 사슬 자체는 초안 revision 그대로다.
   그 값이 없는 이전 guard 는 마우스도 초안 revision 에 세므로 초안 울타리만으로 같다(그 칸을 싣지 않는다). 중단 키는 바꾸지 않았다.
   기록의 질문이 닫혔으면 `failed/question_closed`, 화면·seq·revision·지문이 다르면 `question_changed`(키가 하나도 안 들어갔으면 `failed`, 들어갔으면 `unconfirmed`). 잠긴 질문(선택지 9개 이상 · Claude 아닌 multiSelect · Claude preview 의 직접 입력) `question_locked`·`other_locked`.
   잠긴 질문의 폰 문구는 「맥에서 답해 주세요」 한 갈래다 — 카드 「맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다」 · 입력창 자리표시 「맥에서 답해 주세요」 · 결과 줄 `question_locked` 「이 질문은 맥에서 답해 주세요」(D1 — 잠금 + 안내).

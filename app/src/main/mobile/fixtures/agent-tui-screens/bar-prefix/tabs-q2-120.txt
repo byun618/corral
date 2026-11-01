@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Haiku 5.5 with low effort · Claude API
+ ▝▝   ▝▝   ~/repos/example/corral/.claude/worktrees/LIFE-754-question-bar-claude
+
+
+❯ Use the AskUserQuestion tool to ask exactly one question, header 'Multi', multiSelect true, options 'Alpha', 'Beta',
+  'Gamma' (descriptions 'First one', 'Second one', 'Third one'), and this exact question text: 'Which of these checks
+  should run before we cut the release branch, keeping in mind that the integration run takes about twenty minutes and
+  blocks other work?' Do nothing else.
+
+⏺ User declined to answer questions
+  ⎿  · Which of these checks should run before we cut the release branch, keeping in mind that the integration run takes
+     about twenty minutes and blocks other work? (Alpha / Beta / Gamma)
+
+✻ Sautéed for 2s · done 10:23 AM
+
+❯ Now use AskUserQuestion with exactly two questions, both single select. Question 1: header 'First', options 'Yes' and
+  'No', text 'Should the first step reuse the existing worktree that was created yesterday for the earlier attempt at
+  this change?'. Question 2: header 'Second', options 'Keep' and 'Drop', text 'After the first step finishes, should we
+  keep the temporary branch around for comparison or drop it right away once the review is done?'. Do nothing else.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ First  ☐ Second  ✔ Submit  →
+
+│ After the first step finishes, should we keep the temporary branch around for comparison or drop it right away once
+│ the review is done?
+
+❯ 1. Keep
+     Keep the temporary branch for comparison
+  2. Drop
+     Drop the branch once the review is done
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+

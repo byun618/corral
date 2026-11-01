@@ -145,6 +145,20 @@ describe('applyAgentSessions — 저장소 규칙', () => {
       expect(sessionOf(store)).toBe('snap')
     })
 
+    it('같은 ms 경계는 스냅샷이 이긴다 — 조회는 동률이면 물러나고(>=), 스냅샷은 동률이면 덮는다(>)', () => {
+      vi.useFakeTimers()
+      const store = new WorkspaceStore()
+      vi.setSystemTime(1_000_000)
+      store.applySnapshot(snapshot('old'))
+      vi.setSystemTime(1_000_200)
+      store.reconcile(snapshot('snap'), 1_000_100)
+      expect(store.applyAgentSessions({ result: listOf('tie'), requestedAt: 1_000_100 }).changed).toBe(false)
+      expect(sessionOf(store)).toBe('snap')
+      expect(store.applyAgentSessions({ result: listOf('poll'), requestedAt: 1_000_150 }).changed).toBe(true)
+      store.reconcile(snapshot('snap2'), 1_000_150)
+      expect(sessionOf(store)).toBe('snap2')
+    })
+
     it('부팅 스냅샷 뒤(적용 시각이 시계) 그보다 먼저 요청된 조회 답은 덮지 않는다', () => {
       const store = new WorkspaceStore()
       const requestedAt = Date.now() - 10

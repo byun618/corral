@@ -301,7 +301,9 @@
   (답의 폰 문구 그대로 — 로그 `check: input`). 화면 조용함 하한은 다른 묶음과 같은 500 ms.
   **맥 클릭도 막는다**(LIFE-708 r1 · C10): 초안 revision 은 마우스 보고를 세지 않으므로, 답은 **모든 입력 revision** 도 같은 자리에서 본다 — 화면 조용함(500 ms)을 그 값의 조용한 시간으로 재고
   (클릭 직후 화면은 기다렸다 다시 읽는다), 화면·키 앞 관측이 그 울타리 값 그대로여야 하며, 키마다 guard 가 `expected_any_input_revision` 으로 같은 턴에서 비교한다(다음 키는 앞 키가 돌려준 쓴 뒤 값).
-  접수 뒤 맥 클릭·휠이 끼면 키 0회 `failed/question_changed`(로그 `check: any_input`). 울타리의 시작은 접수 때 값 + 그 사이 자기 쓰기가 올린 만큼(자기 쓰기는 두 값을 같이 올린다) — 자기 쓰기 사슬 자체는 초안 revision 그대로다.
+  접수 뒤 맥 클릭·휠이 끼면 갈래별로: 첫 키 앞 허브 관측(화면·키 앞 `agent.get`)이 잡으면 키 0회 `failed/question_changed`·로그 `check: any_input`,
+  관측과 guard 턴 사이에 끼어 guard 가 `any_input_changed` 로 거절하면 같은 `failed/question_changed`(키 0회 — `mobile.input_target_changed` 로그 없음),
+  둘째 키 이후에 끼면 앞 키가 들어갔으므로 `unconfirmed/question_changed`. 울타리의 시작은 접수 때 값 + 그 사이 자기 쓰기가 올린 만큼(자기 쓰기는 두 값을 같이 올린다) — 자기 쓰기 사슬 자체는 초안 revision 그대로다.
   그 값이 없는 이전 guard 는 마우스도 초안 revision 에 세므로 초안 울타리만으로 같다(그 칸을 싣지 않는다). 중단 키는 바꾸지 않았다.
   기록의 질문이 닫혔으면 `failed/question_closed`, 화면·seq·revision·지문이 다르면 `question_changed`(키가 하나도 안 들어갔으면 `failed`, 들어갔으면 `unconfirmed`). 잠긴 질문(선택지 9개 이상 · Claude 아닌 multiSelect · Claude preview 의 직접 입력) `question_locked`·`other_locked`.
   잠긴 질문의 폰 문구는 「맥에서 답해 주세요」 한 갈래다 — 카드 「맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다」 · 입력창 자리표시 「맥에서 답해 주세요」 · 결과 줄 `question_locked` 「이 질문은 맥에서 답해 주세요」(D1 — 잠금 + 안내).

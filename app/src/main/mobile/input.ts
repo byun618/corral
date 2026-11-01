@@ -1137,6 +1137,7 @@ export class InputHub {
       // 화면도 울타리 revision 그대로여야 한다 — 첫 묶음은 R0(접수 뒤 맥 입력이면 키 0), 다음 묶음은 앞 키가 돌려준 revision(R2-G2).
       if (shot.seq !== before.seq) return stop('question_changed')
       if (shot.input.revision !== revision) return this.answerMoved({ stop, entry, sent })
+      // 키 앞 observe 대조(아래)와 중복 방어 — 같은 클릭은 그쪽도 잡는다. 화면이 그 클릭 뒤 값이면 그 화면으로 키를 고르지 않게 여기서 먼저 끝낸다.
       if (anyMoved({ input: shot.input, anyInput: shot.anyInput })) return this.answerMoved({ stop, entry, sent, any: true })
       const shown = this.screenMatches({ kind, check, screen: shot.text, questions: question.questions })
       if (shown.kind === 'skip') continue

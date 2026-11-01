@@ -1446,7 +1446,7 @@ describe('LIFE-708 r1 (C10) — 질문 답은 맥 클릭(모든 입력 revision)
     expect(t.backend.sends).toHaveLength(0)
     expect(checks(t)).toEqual(['any_input'])
   })
-  it('답 — 접수 뒤 화면 전 맥 클릭 → 화면 대조에서 키 0회 · failed/question_changed', async () => {
+  it('답 — 접수 뒤 화면 전 맥 클릭 → 화면 대조(중복 방어)·키 앞 관측 둘 다 잡는 자리, 키 0회 · failed/question_changed', async () => {
     const t = setup()
     t.backend.anyInput = { revision: 40, idleMs: 10_000 }
     blockedOn(t, 22)
@@ -1514,6 +1514,54 @@ describe('LIFE-708 r1 (C10) — 질문 답은 맥 클릭(모든 입력 revision)
     expect((await t.settled('l708r1-0000-0006')).state).toBe('delivered')
     expect(t.backend.fences.map((fence) => fence.inputRevision)).toEqual([1])
     expect(checks(t)).toEqual([])
+  })
+  it('답 — 키 여럿(문항 둘 + 검토) 새 guard: 키마다 모든 입력 울타리가 앞 키의 쓴 뒤 값을 잇고 들어감', async () => {
+    const t = setup()
+    t.backend.anyInput = { revision: 40, idleMs: 10_000 }
+    t.backend.status = 'blocked'
+    t.items.list = [twoQuestions(27)]
+    t.backend.screenText = boxOf('Q-27 첫째?')
+    const screens = [boxOf('Q-27 둘째?'), REVIEW]
+    t.backend.onSend = () => {
+      const next = screens.shift()
+      if (next !== undefined) t.backend.screenText = next
+      else {
+        fs.appendFileSync(t.file, `${answerLine('toolu-27', false, { 'Q-27 첫째?': 'o0', 'Q-27 둘째?': 'o1' })}\n`)
+        t.items.list = [twoQuestions(27, 'answered')]
+      }
+    }
+    const item = twoQuestions(27)
+    if (item.kind !== 'question') throw new Error('fixture')
+    t.hub.answer({ device: 'd1', id: 'l708r2-0000-0001', channel: 'c1', question: 27, call: 'toolu-27', digest: questionDigest(item.questions), answers: [{ choices: [0], other: null }, { choices: [1], other: null }] })
+    expect((await t.settled('l708r2-0000-0001')).state).toBe('delivered')
+    expect(t.backend.sends.map((send) => send.text)).toEqual(['1', '2', '1'])
+    expect(t.backend.keyFences).toEqual([1, 2, 3])
+    expect(t.backend.anyFences).toEqual([40, 41, 42])
+  })
+  it('답 — 같은 pane 앞 지시 쓰기가 접수 뒤 끝나 사슬이 올랐으면 모든 입력 울타리 시작값도 그만큼 올려 들어감', async () => {
+    const t = setup()
+    t.backend.anyInput = { revision: 40, idleMs: 10_000 }
+    const prompt = t.backend.prompt.bind(t.backend)
+    let calls = 0
+    t.backend.prompt = async (pane, input) => {
+      if ((calls += 1) === 1) {
+        // 넣기 in-flight 중 질문으로 막히고 폰 답이 온다 — 답의 접수 관측은 지시 쓰기 전 값(초안 1 · 모든 입력 40).
+        t.backend.status = 'blocked'
+        t.backend.quiet = false
+        t.backend.screenText = questionScreen(28)
+        t.items.list = [question({ id: 28, state: 'pending' })]
+        t.answerOn({ id: 28, value: 'o1' })
+        t.hub.answer({ device: 'd1', id: 'l708r2-0000-0003', channel: 'c1', question: 28, call: 'toolu-28', digest: digestFor(28), answers: [{ choices: [1], other: null }] })
+        await wait(60)
+      }
+      // 지시 쓰기 — 두 값을 같이 1 올린다(초안 2 · 모든 입력 41). 답은 이 고리가 확정된 뒤 그 끝을 울타리로 쓴다.
+      return prompt(pane, input)
+    }
+    t.hub.send({ device: 'd1', id: 'l708r2-0000-0002', channel: 'c1', text: '앞' })
+    expect((await t.settled('l708r2-0000-0003')).state).toBe('delivered')
+    expect(t.backend.prompts).toEqual(['앞'])
+    expect(t.backend.keyFences).toEqual([2])
+    expect(t.backend.anyFences).toEqual([41])
   })
   it('이전 guard(모든 입력 값 없음) — 답은 초안 revision 울타리로 대신하고 모든 입력 울타리 칸을 싣지 않는다', async () => {
     const t = setup()

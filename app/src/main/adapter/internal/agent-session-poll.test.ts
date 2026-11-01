@@ -303,6 +303,30 @@ describe('SessionLink 세션 조회 — agent.list 주기 호출', () => {
       link.close()
     })
 
+    it('재연결로 타이머가 새로 걸려도 진행 중 조회가 있으면 겹쳐 보내지 않는다 — 그 조회가 끝나면 한 주기 안에 이어진다', async () => {
+      const answers: Array<(reply: Reply) => void> = []
+      let call = 0
+      serve({
+        snapshot: () => snapshot('old'),
+        agentList: () => {
+          call += 1
+          if (call > 1) return Promise.resolve({ id: 'a', result: listOf('old') })
+          return new Promise<Reply>((resolve) => { answers.push(resolve) })
+        },
+      })
+      const link = await liveLink()
+      await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS)
+      expect(pollCalls()).toHaveLength(1)
+      mainSub()?.hooks.onDrop('eof', '시험 — 원격 끊김')
+      await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS * 3)
+      expect(link.linkState().phase).toBe('live')
+      expect(pollCalls()).toHaveLength(1)
+      answers[0]?.({ id: 'a', result: listOf('old') })
+      await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS)
+      expect(pollCalls()).toHaveLength(2)
+      link.close()
+    })
+
     it('느린 응답(타임아웃)이 끝난 뒤 다음 조회는 앞 조회 시작 + 한 주기에 나간다 — 틱을 건너뛰지 않는다', async () => {
       let call = 0
       serve({

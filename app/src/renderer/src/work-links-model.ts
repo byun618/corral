@@ -157,3 +157,13 @@ function trimmed(value: string | null): string | null {
   const text = value?.trim() ?? ''
   return text.length > 0 ? text : null
 }
+
+/**
+ * PR 상태를 물을 worktree(LIFE-624 C11 · r1 c1-3) — 칩이 지금 보이는 면만. `workingTrees` = 작업 중 보기에 그려진 행(그 보기가 아니면 빈 목록),
+ * `detailTrees` = 보이는 상세 실행 영역의 행(숨김이면 빈 목록). 둘 다 비면 빈 목록 = gh 호출 0. 경로·브랜치가 바뀌면 다른 목록이 된다.
+ */
+export function prTargets({ workingTrees, detailTrees }: { workingTrees: WorkingTree[]; detailTrees: WorkingTree[] }): { path: string; branch: string }[] {
+  const picked = new Map<string, string>()
+  for (const tree of [...workingTrees, ...detailTrees]) picked.set(tree.path, tree.branch)
+  return [...picked.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([path, branch]) => ({ path, branch }))
+}

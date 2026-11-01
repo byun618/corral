@@ -1,6 +1,7 @@
 // 작업 페이지 보기 4 (LIFE-601) — 보드 · 백로그 · 리스트 · 작업 중. 계산은 `tasks-model.ts`, 자료·쓰기는 `useTasksPage`, 끌기는 `useTaskDrag`.
 // 출처 이름으로 분기하지 않는다 — 능력 표(흐림 + 이유 / 숨김)와 상태 목록만 본다(K3).
 import { createContext, Fragment, useContext, useState } from 'react'
+import type { PrLookup } from '../../../shared/pr-status.js'
 import type { WorkCapabilities, WorkCategory, WorkItem, WorkStatus } from '../../../shared/work.js'
 import { elapsedLabel } from '../../../shared/session-activity.js'
 import { AGENT_DOT_LABEL } from '../agent-dot.js'
@@ -37,7 +38,7 @@ import {
   type WorkingTree,
 } from '../tasks-model.js'
 import { AgentStateDot } from './AgentStateDot.js'
-import { WorktreeChip, WorktreeDotMark } from './WorkLinkChips.js'
+import { PrChip, WorktreeChip, WorktreeDotMark } from './WorkLinkChips.js'
 
 const IDLE_VIEW: ColumnDragView = { mode: 'idle', reason: null }
 
@@ -585,7 +586,8 @@ export function MoreBar({ more, onLoadMore }: { more: MoreState; onLoadMore: () 
 
 export type WorkingView = { entry: WorkingEntry; lookup: WorkingLookup }
 
-export function WorkingList({ views, now, onOpen }: { views: WorkingView[]; now: number; onOpen: (tree: WorkingTree) => void }): React.JSX.Element {
+/** `pr` = worktree 경로 → PR 상태(LIFE-624 C7). 칩만 그린다 — 오류는 여기서 그리지 않는다(실행 영역 몫). */
+export function WorkingList({ views, now, onOpen, pr }: { views: WorkingView[]; now: number; onOpen: (tree: WorkingTree) => void; pr?: ReadonlyMap<string, PrLookup> }): React.JSX.Element {
   return (
     <div className="tasks-working" data-tasks-working="">
       {views.map(({ entry, lookup }) => (
@@ -614,6 +616,7 @@ export function WorkingList({ views, now, onOpen }: { views: WorkingView[]; now:
               <span className="tasks-working-dot">{tree.dot === null ? null : <AgentStateDot dot={tree.dot} />}</span>
               <span className="tasks-working-state">{tree.dot === null ? '에이전트 없음' : AGENT_DOT_LABEL[tree.dot]}</span>
               <span className="tasks-working-branch"><span className="tasks-working-repo">{tree.repoName}</span> / {tree.branch}</span>
+              <PrChip lookup={pr?.get(tree.path)} />
               {/* 시간 = 그 worktree 세션의 마지막 활동(세션 지문). 없으면 그리지 않는다 — 지어낸 시각을 쓰지 않는다(R1-R). */}
               {elapsedLabel(tree.activityAt, now) === null ? null : <span className="tasks-working-time" data-working-time="">{elapsedLabel(tree.activityAt, now)}</span>}
               <span className="tasks-working-chevron" aria-hidden>›</span>

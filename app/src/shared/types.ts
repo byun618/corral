@@ -13,6 +13,7 @@ import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, Exp
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
 import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
 import type { ScmReadInput, ScmReadResult } from './scm.js'
+import type { PrBranchesResult, PrItemRefreshResult } from './pr-status.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
@@ -1211,6 +1212,10 @@ export type CorralApi = {
   relaunchWorkAgent: (input: RelaunchAgentInput) => Promise<StartWorkResult | null>
   /** 사이드바 「작업 떼기」 — 명시 링크면 지우고 자동 연결 예외로 둔다. */
   detachWorkLink: (input: { path: string }) => Promise<DetachWorkLinkResult>
+  /** PR 상태(LIFE-624) — 알려진 worktree 경로마다 그 브랜치의 PR(`gh`). 모르는 경로는 `rejected`. 보일 때만 부른다. */
+  prBranches: (input: { paths: string[] }) => Promise<PrBranchesResult>
+  /** 작업 하나의 열린 PR 을 URL 로 다시 본다(LIFE-624 C10) — 사라진 worktree 의 머지·닫힘을 활동에 남긴다. */
+  prRefreshItem: (query: WorkActivityQuery) => Promise<PrItemRefreshResult>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }
 

@@ -22,6 +22,7 @@ import { spaceCapabilities, WORK_PRIORITIES } from '../../../shared/work.js'
 import { useTaskDrag, type TaskDrop } from '../hooks/useTaskDrag.js'
 import { DETAIL_READING, useTasksPage, type MoveNotice } from '../hooks/useTasksPage.js'
 import { useTaskDetail } from '../hooks/useTaskDetail.js'
+import { usePrStatus } from '../hooks/usePrStatus.js'
 import {
   CATEGORY_LABEL,
   NO_FILTERS,
@@ -74,7 +75,7 @@ import { TaskDetail } from './TaskDetail.js'
 import { StartWorkModal } from './StartWorkModal.js'
 import { WorkLinksContext, type DetailWorkActions, type WorkLinksView } from './WorkLinkChips.js'
 import { useStartWork } from '../hooks/useStartWork.js'
-import { treesFor } from '../work-links-model.js'
+import { prTargets, treesFor } from '../work-links-model.js'
 import type { WorkRepoDefault } from '../../../shared/work.js'
 import { InlineAddSlot, QuickCreateModal } from './QuickCreate.js'
 import { useQuickCreate } from '../hooks/useQuickCreate.js'
@@ -222,10 +223,21 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
 
   // --- 작업에서 시작 · 링크 (LIFE-603) ---
   const machine = settings?.machine ?? null
-  const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree, machine }), [page.linked, onOpenWorktree, machine])
+  const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })
   const detailSource = detail.descriptor?.name ?? detail.connection?.name ?? '출처'
   const starter = useStartWork({ detail, repos, repoDefaults: settings?.repoDefaults ?? NO_DEFAULTS, activeRepoRoot, sourceName: detailSource, notifyFailure: (message) => notify({ kind: 'failed', message }) })
-  const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })
+  // 활동의 PR 줄(C10) — 상세가 열릴 때 열린 채 기록된 PR 을 URL 로 다시 본다(사라진 worktree 의 머지). 브랜치 조회 쪽 다시 읽기는 아래 PR 상태 절.
+  const reloadActivity = detail.reloadActivity
+  const detailItemKey = detail.item?.key ?? null
+  useEffect(() => {
+    if (!detailMounted || detailTarget === null || detailItemKey === null) return
+    let live = true
+    void Promise.resolve()
+      .then(() => window.corral.prRefreshItem({ connectionId: detailTarget.connectionId, itemId: detailTarget.itemId, itemKey: detailItemKey }))
+      .then((result) => { if (live && result.ok && result.recorded > 0) reloadActivity() })
+      .catch(() => undefined)
+    return () => { live = false }
+  }, [detailMounted, detailTarget, detailItemKey])
   const workActions = useMemo((): DetailWorkActions => ({ start: (mode) => starter.begin(mode), reveal: (paneId) => onRevealPane?.(paneId) }), [starter.begin, onRevealPane])
   // 사이드바 작업 줄 → 패널 상세 보기 + 그 작업(A4). 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다. 페이지가 앱 시작부터 마운트돼 있어 페이지 열림을 기다리지 않는다.
   const focusSeq = focus?.seq ?? 0
@@ -316,6 +328,14 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const workingViews = workingScoped.filter(({ entry, lookup }) => (lookup.state === 'found'
     ? passesText({ item: lookup.item, query })
     : workingTextMatches({ key: entry.key, branches: entry.trees.map((tree) => tree.branch), query })))
+
+  // --- PR 상태 (LIFE-624) — 칩이 지금 보이는 면의 worktree 만 묻는다: 작업 중 보기에 그려진 행 · 열린 상세 실행 영역의 행(C11 · r1 c1-3).
+  // 페이지가 열려 있어도 보드·백로그·리스트 보기면 작업 중 행은 묻지 않는다. 새 줄이 남았으면(recorded) 상세 활동을 다시 읽는다(C8).
+  const pr = usePrStatus({ targets: prTargets({ workingTrees: open && view === 'working' ? workingViews.flatMap(({ entry }) => entry.trees) : [], detailTrees: detailMounted ? detailTrees : [] }) })
+  const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree, machine, pr: pr.lookups }), [page.linked, onOpenWorktree, machine, pr.lookups])
+  useEffect(() => {
+    if (pr.recordedSeq > 0 && detailMounted) reloadActivity()
+  }, [pr.recordedSeq])
 
   // --- 부모 (LIFE-745) ---
   // 받은 행에 없는 부모만 단건으로 보충한다 — 보드·백로그·리스트 행, 키 일치 결과, 작업 중 머리의 부모. 스페이스 자료를 다시 읽으면 다시 받는다.
@@ -749,7 +769,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           <div className="tasks-scroll" data-tasks-scroll="working">
             {/* 키 일치(E2)는 작업 중 보기에서도 맨 앞에 보인다(R2-H) — 다른 스페이스의 작업이어도. */}
             {hits.length > 0 ? <KeyHits hits={hits} selectedId={shownId} onSelect={toggleSelect} /> : null}
-            <WorkingList views={workingViews} now={now} onOpen={onOpenWorktree} />
+            <WorkingList views={workingViews} now={now} onOpen={onOpenWorktree} pr={pr.lookups} />
           </div>
         )
     }

@@ -212,6 +212,17 @@ function describeRun(change: Extract<WorkActivityChange, { field: 'run' }>): str
     case 'auto_link': return `worktree 자동 연결 · ${change.branch ?? tail(change.worktree)}`
     case 'detach': return `worktree 떼기 · ${change.branch ?? tail(change.worktree)}`
     case 'source_link_failed': return `출처에 링크를 남기지 못함 · ${tail(change.worktree)}${change.message === null ? '' : ` — ${change.message}`}`
+    case 'pr': return describePr(change)
+  }
+}
+
+/** LIFE-624 — PR 열림·머지·닫힘(목업 문구 「PR #218 초안을 열었습니다 — LIFE-372-la-issue-link → main」). */
+function describePr(change: Extract<WorkActivityChange, { field: 'run'; event: 'pr' }>): string {
+  const route = change.branch === null ? '' : ` — ${change.branch}${change.base === null ? '' : ` → ${change.base}`}`
+  switch (change.action) {
+    case 'open': return `PR #${change.number}${change.draft ? ' 초안을' : ' 을'} 열었습니다${route}`
+    case 'merged': return `PR #${change.number} 이 머지됐습니다${route}`
+    case 'closed': return `PR #${change.number} 이 닫혔습니다${route}`
   }
 }
 
@@ -249,7 +260,8 @@ export function activityRows({ records, history, comments, statuses, sourceName 
     ...records.map((record): ActivityRow => {
       const text = describeChange({ change: record.change, statuses })
       if (record.change.field === 'agent') return { kind: 'agent', id: `a:${record.id}`, at: record.at, who: 'corral', text, quote: record.change.event === 'question' ? record.change.question : null }
-      if (record.change.field === 'run') return { kind: 'run', id: `a:${record.id}`, at: record.at, who: '나 · corral', text, quote: null }
+      // PR 줄(LIFE-624)은 내가 한 일이 아니라 GitHub 에서 본 것이다.
+      if (record.change.field === 'run') return { kind: 'run', id: `a:${record.id}`, at: record.at, who: record.change.event === 'pr' ? 'GitHub' : '나 · corral', text, quote: null }
       return { kind: 'change', id: `a:${record.id}`, at: record.at, who: '나 · corral', text, origin: 'corral' }
     }),
     ...history

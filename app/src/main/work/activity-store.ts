@@ -125,6 +125,13 @@ function readChange(value: unknown): WorkActivityChange | null {
     case 'run': {
       if (!str(value.worktree)) return null
       if (value.event === 'source_link_failed') return nullableStr(value.message) ? { field: 'run', event: 'source_link_failed', worktree: value.worktree, message: value.message } : null
+      if (value.event === 'pr') {
+        const action = value.action === 'open' || value.action === 'merged' || value.action === 'closed' ? value.action : null
+        const number = typeof value.number === 'number' && Number.isInteger(value.number) && value.number > 0 ? value.number : null
+        return action !== null && number !== null && str(value.url) && nullableStr(value.branch) && nullableStr(value.base) && typeof value.draft === 'boolean'
+          ? { field: 'run', event: 'pr', action, worktree: value.worktree, number, url: value.url, branch: value.branch, base: value.base, draft: value.draft }
+          : null
+      }
       if (value.event === 'start') return str(value.branch) && str(value.agent) && nullableStr(value.model) ? { field: 'run', event: 'start', worktree: value.worktree, branch: value.branch, agent: value.agent, model: value.model } : null
       return (value.event === 'auto_link' || value.event === 'detach') && nullableStr(value.branch) ? { field: 'run', event: value.event, worktree: value.worktree, branch: value.branch } : null
     }

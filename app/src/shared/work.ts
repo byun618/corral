@@ -223,6 +223,11 @@ export type WorkActivityChange =
   /** LIFE-603 R1-I — 자동 연결을 출처에 저장하지 못했다(로컬 링크는 그대로). */
   | { field: 'run'; event: 'source_link_failed'; worktree: string; message: string | null }
   /**
+   * LIFE-624 — 링크된 worktree 브랜치의 PR 을 관측했다(`gh`). `action` 하나 = 한 줄(열림 · 머지 · 닫힘), 기록 시각은 PR 의 그 시각.
+   * `worktree` = 관측 때 경로(URL 재조회는 열림 줄의 경로를 잇는다), `branch`·`base` = head·base 브랜치, `draft` = 열 때 초안이었나.
+   */
+  | { field: 'run'; event: 'pr'; action: 'open' | 'merged' | 'closed'; worktree: string; number: number; url: string; branch: string | null; base: string | null; draft: boolean }
+  /**
    * 에이전트 갈래(LIFE-603 C13) — 링크된 worktree 의 에이전트 사건. `question` 은 질문 본문(못 읽는 에이전트는 null + `noBody` 이유),
    * `result` 는 턴 결과(완료 · 중단 · 실패)와 그때 바뀐 파일 수(git 상태, 모르면 null).
    */

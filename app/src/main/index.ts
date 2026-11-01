@@ -144,6 +144,7 @@ import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
 import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
 import { readFileContent, readImageContent } from './file-read.js'
 import { readScmContent } from './scm-read.js'
+import { PrStatus } from './pr-status.js'
 import { createFileWatch, type FileWatch } from './file-watch.js'
 import { loadTestHooks, writeFileContent } from './file-write.js'
 import { fileDialogSpec, parseFileDialogRequest, reloadDialogSpec, unresponsiveDialogSpec } from './file-dialogs.js'
@@ -2131,6 +2132,10 @@ app.whenReady().then(async () => {
     scheduleEmit()
     return result
   })
+  // LIFE-624 — PR 상태(gh). 경로는 지금 트리의 worktree 만, URL 은 GitHub PR 꼴만(`pr-status.ts`). 렌더러가 보일 때만 부른다 — 상시 폴링 없음.
+  const prStatus = new PrStatus({ repos: () => currentState().repos, work: () => work, log })
+  ipcMain.handle('corral:prBranches', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.branches(input) : { lookups: {}, recorded: 0 }))
+  ipcMain.handle('corral:prRefreshItem', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.refreshItem(input) : { ok: false, reason: '허용되지 않은 발신자' }))
 
   // --- 라이프사이클 (R3) ---
   const denied = { ok: false as const, error: '허용되지 않은 발신자' }

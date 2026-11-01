@@ -9,6 +9,9 @@
 //
 // **주기 재동기** (기준 N7): push 는 유실된다 (실측 152/274). 구독은 갱신이지 진실이 아니다 —
 // 진실은 스냅샷이다. 그래서 커넥션이 멀쩡해도 주기적으로 스냅샷을 다시 받아 맞춘다.
+//
+// **세션 조회** (LIFE-710): 세션 참조 보고에는 push 가 없어서, 에이전트가 붙은 pane 이 있는 동안만
+// `agent.list` 한 건을 짧은 주기로 보내 세션 참조만 맞춘다 (`AGENT_SESSION_POLL_MS`).
 
 import type { LinkPhase, LinkState } from '../../../shared/types.js'
 import { pickBlockedRule } from '../../../shared/agent-state.js'
@@ -57,8 +60,24 @@ export const DEFAULT_RESYNC_MS = 30_000
  * 에이전트의 SessionStart 에서 뜨므로 검출 직후 몇 초 안에 참조가 생긴다(A3ⓑ 실측: 기동 →
  * 참조 1,068ms). 폴링을 새로 들이지 않고 **이미 있는 재동기를 두 번 당겨 쓰는** 것이라
  * 비용은 에이전트 기동 1회당 스냅샷 2회다.
+ * LIFE-710 뒤로는 아래 세션 조회(`AGENT_SESSION_POLL_MS`)도 첫 참조를 줍는다 — 이 nudge 는 지우지 않고 둔다
+ * (수정 범위 최소화. 겹쳐도 같은 값이라 화면 갱신은 한 번이다).
  */
 export const AGENT_SESSION_NUDGE_MS: readonly number[] = [2_000, 8_000]
+
+/**
+ * 에이전트가 **이미 붙은 채** 세션만 바뀔 때(`/clear` 등) 세션 참조를 주우러 가는 주기 (LIFE-710).
+ *
+ * 위 nudge 는 `pane_agent_detected` 때만 당긴다. `/clear` 는 같은 에이전트가 붙은 채 세션만 바뀌어
+ * 아무 계기도 없었고, 그래서 목록이 다음 30초 타이머까지 옛 세션이었다(C0 실측: 5회 17~26 s,
+ * 매 회차 `resync.applied reason=timer` 와 짝). `/clear` 가 내는 push 도 기대할 수 없다 — 5회 중 4회는
+ * 구독 push 가 0건이었다(`pane_updated` 0건, 상태 전이는 1회만).
+ *
+ * 그래서 에이전트가 붙은 pane 이 **있는 동안만** `agent.list` 한 건(세션 안 전 에이전트의 참조가 한 번에 온다)을
+ * 이 주기로 보내 **세션 참조만** 맞춘다 — 스냅샷·reconcile 을 돌리지 않고, 값이 같으면 화면 갱신 신호도 없다.
+ * 비용은 세션당 1.5 s 에 요청 1건(120 s 에 80건). 상한은 herdr 보고 뒤 1.5 s + 왕복이다.
+ */
+export const AGENT_SESSION_POLL_MS = 1_500
 
 function resyncIntervalMs(): number {
   const raw = Number(process.env.CORRAL_RESYNC_MS)
@@ -104,6 +123,9 @@ export class SessionLink {
   private nudgeTimers = new Set<ReturnType<typeof setTimeout>>()
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private resyncTimer: ReturnType<typeof setInterval> | null = null
+  /** 세션 조회 타이머·진행 중 표시 (LIFE-710). */
+  private sessionPollTimer: ReturnType<typeof setInterval> | null = null
+  private sessionPolling = false
   private buffer: Array<{ frame: PushFrame; at: number }> = []
   private bootstrapping = false
   private resyncing = false
@@ -185,6 +207,7 @@ export class SessionLink {
     this.retryTimer = null
     if (this.resyncTimer) clearInterval(this.resyncTimer)
     this.resyncTimer = null
+    this.stopSessionPoll()
     if (this.agentTimer) clearTimeout(this.agentTimer)
     this.agentTimer = null
     for (const timer of this.nudgeTimers) clearTimeout(timer)
@@ -304,6 +327,7 @@ export class SessionLink {
       this.hooks.onTopologyChange?.()
       this.scheduleAgentSubscription()
       this.startResync()
+      this.startSessionPoll()
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error))
       const code = 'code' in failure && typeof failure.code === 'string' ? failure.code : 'unknown'
@@ -392,6 +416,44 @@ export class SessionLink {
       return { ok: false, note: String(error) }
     } finally {
       this.resyncing = false
+    }
+  }
+
+  // --- 세션 조회 (LIFE-710) -----------------------------------------------------
+
+  private startSessionPoll(): void {
+    if (this.sessionPollTimer !== null) return
+    this.sessionPollTimer = setInterval(() => void this.pollAgentSessions(), AGENT_SESSION_POLL_MS)
+  }
+
+  private stopSessionPoll(): void {
+    if (this.sessionPollTimer) clearInterval(this.sessionPollTimer)
+    this.sessionPollTimer = null
+  }
+
+  /**
+   * 에이전트가 붙은 pane 이 있으면 `agent.list` 로 세션 참조만 맞춘다. 바뀐 것이 있을 때만 `onChange`.
+   * 실패는 버린다 — 알던 세션을 지우지 않고 다음 주기(또는 재동기)가 다시 본다.
+   */
+  async pollAgentSessions(): Promise<void> {
+    const session = this.session
+    if (session === null || this.stopped || this.state.phase !== 'live' || this.sessionPolling) return
+    if (!this.store.hasAgentPane()) return
+    this.sessionPolling = true
+    const generation = this.generation
+    const requestedAt = Date.now()
+    try {
+      const response = await request(session.socketPath, 'agent.list', {}, { reason: 'agent-session-poll', timeoutMs: AGENT_SESSION_POLL_MS })
+      if (generation !== this.generation || this.stopped) return
+      if (response.error) throw new HerdrRequestError(response.error.code ?? 'error', response.error.message ?? '')
+      const result = this.store.applyAgentSessions({ result: response.result, requestedAt })
+      if (!result.changed) return
+      log('agent_session.poll.applied', { requestedAt, note: result.note })
+      this.hooks.onChange()
+    } catch (error) {
+      log('agent_session.poll.failed', { error: String(error) })
+    } finally {
+      this.sessionPolling = false
     }
   }
 
@@ -584,6 +646,7 @@ export class SessionLink {
     this.bootstrapping = false
     if (this.resyncTimer) clearInterval(this.resyncTimer)
     this.resyncTimer = null
+    this.stopSessionPoll()
     if (reason === 'local') return
     this.scheduleRetry(`구독 끊김(${reason}): ${detail}`)
   }

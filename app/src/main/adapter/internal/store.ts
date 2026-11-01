@@ -63,6 +63,11 @@ type Pane = {
   focused: boolean
   /** 에이전트가 스스로 밝힌 세션 참조 (LIFE-366). 보고 전·셸 탭이면 null. */
   agentSession: AgentSessionRef | null
+  /**
+   * `agentSession` 을 herdr 봉투(스냅샷·`pane_*`)에서 마지막으로 **읽은** 시각 — 키가 실려 온 때만 (LIFE-710).
+   * 세션 조회(`applyAgentSessions`)의 답이 이보다 먼저 요청된 것이면 늦게 온 옛 답이라 덮지 않는다.
+   */
+  sessionAt: number
   knownAt: number
 }
 
@@ -764,6 +769,44 @@ export class WorkspaceStore {
     return [...this.panes.keys()].sort()
   }
 
+  /** 에이전트가 붙은 pane 이 하나라도 있나 — 세션 조회를 보낼지 가르는 자리 (LIFE-710). */
+  hasAgentPane(): boolean {
+    for (const pane of this.panes.values()) if (pane.agent !== null) return true
+    return false
+  }
+
+  /**
+   * `agent.list` 답으로 **세션 참조만** 맞춘다 (LIFE-710).
+   *
+   * herdr 는 `pane.report_agent_session` 에 push 를 안 준다(LIFE-366) — `/clear` 처럼 에이전트가 붙은 채
+   * 세션만 바뀌면 스냅샷 재동기(30 s)까지 목록이 옛 세션이었다. link 가 짧은 주기로 이 답을 가져온다.
+   *
+   * - 행을 **만들지 않는다**: 저장소에 없는 pane(닫혔거나 묘비가 선 것 포함)은 건너뛴다 — 되살리지 않는다
+   * - `agent_session` 키가 없는 항목은 건너뛴다(`pickAgentSession` 과 같은 규칙). 키가 있고 null 이면 그게 답이다
+   * - 요청 뒤에 스냅샷·이벤트가 그 pane 의 세션을 읽었으면(`sessionAt >= requestedAt`) 늦은 답이라 덮지 않는다
+   * - 값이 같으면 바꾸지 않는다 — `changed:false` 면 link 가 화면 갱신 신호를 내지 않는다
+   * 조회 **실패**는 여기 오지 않는다(link 가 버린다) — 실패로 알던 세션을 지우지 않는다.
+   */
+  applyAgentSessions(input: { result: unknown; requestedAt: number }): ApplyResult {
+    const agents = isRecord(input.result) ? input.result['agents'] : undefined
+    if (!Array.isArray(agents)) return { changed: false, note: 'agent.list 모양이 아니다' }
+    const changedIds: string[] = []
+    for (const item of agents) {
+      if (!isRecord(item) || !('agent_session' in item)) continue
+      const id = readString(item, 'pane_id')
+      if (id === null || this.closedPanes.has(id)) continue
+      const pane = this.panes.get(id)
+      if (pane === undefined || pane.sessionAt >= input.requestedAt) continue
+      const next = readAgentSession(item['agent_session'])
+      if (sameAgentSession(pane.agentSession, next)) continue
+      this.panes.set(id, { ...pane, agentSession: next })
+      changedIds.push(id)
+    }
+    return changedIds.length === 0
+      ? { changed: false, note: '세션 같음' }
+      : { changed: true, note: `세션 갱신 ${changedIds.join(',')}` }
+  }
+
   /**
    * 계측용 — 보류함에 몇 개가 떠 있는지.
    * **읽을 때도 만료분을 턴다** (수정 1회차 L7 — codex 4): 1회차는 `hold()` 때만 털어서,
@@ -911,6 +954,7 @@ export class WorkspaceStore {
       cwd: readString(value, 'foreground_cwd') ?? readString(value, 'cwd'),
       focused: value['focused'] === true,
       agentSession: pickAgentSession(value, before?.agentSession ?? null),
+      sessionAt: 'agent_session' in value ? at : (before?.sessionAt ?? 0),
       knownAt: before?.knownAt ?? at,
     })
     return true
@@ -1291,6 +1335,13 @@ function pickAgentSession(
 ): AgentSessionRef | null {
   if (!('agent_session' in source)) return fallback
   return readAgentSession(source['agent_session'])
+}
+
+function sameAgentSession(a: AgentSessionRef | null, b: AgentSessionRef | null): boolean {
+  if (a === null || b === null) return a === b
+  if (a.agent !== b.agent || a.source !== b.source) return false
+  if (a.kind === 'id') return b.kind === 'id' && a.id === b.id
+  return b.kind === 'path' && a.path === b.path
 }
 
 /**

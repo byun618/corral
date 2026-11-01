@@ -315,6 +315,16 @@
 .settings-agent-pill:hover { border-color: color-mix(in srgb, var(--fg-muted) 35%, transparent); color: var(--fg); }
 .settings-agent-pill.is-active { border-color: color-mix(in srgb, var(--fg-muted) 40%, transparent); background: var(--bg-accent); font-weight: 500; color: var(--fg); }
 .settings-agent-pill-icon { width: 14px; height: 14px; flex-shrink: 0; }
+/* LIFE-520 — 저장됐는데 미감지인 기본값 pill 의 표시 · 0개 문구 · 다시 감지. */
+.settings-agent-pill-note { font-size: 11px; font-weight: 400; color: var(--fg-muted); }
+.settings-agent-detect { display: flex; align-items: center; gap: 12px; margin-top: -8px; }
+.settings-agent-detect-empty { font-size: var(--fs-settings-body); color: var(--fg-muted); }
+.settings-agent-detect-refresh {
+  padding: 4px 10px; border: 1px solid var(--line); border-radius: var(--radius-settings-control); background: none;
+  font-size: 12px; line-height: 18px; color: var(--fg-muted);
+}
+.settings-agent-detect-refresh:hover:not(:disabled) { color: var(--fg); }
+.settings-agent-detect-refresh:disabled { opacity: 0.6; }
 
 /* --- 원격 호스트 › Mobile (LIFE-577) --- */
 .mobile-check-mark { display: inline-block; width: 14px; text-align: center; font-weight: 600; }

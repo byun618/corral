@@ -15,6 +15,7 @@ import { DEFAULT_SETTINGS } from '../../shared/terminal-settings.js'
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
 import { emptyAgentState } from '../../shared/agent-state.js'
 import { resetSettingsStoreForTest } from './settings-store.js'
+import { resetAgentDetectionStoreForTest } from './agent-detection-store.js'
 
 vi.mock('./TerminalPane.js', () => ({ TerminalPane: () => null, keepTerminalFocus: () => {} }))
 const { App } = await import('./App.js')
@@ -28,12 +29,12 @@ class Boundary extends Component {
 }
 
 const cleanups = []
-afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); resetSettingsStoreForTest(null) })
+afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); resetSettingsStoreForTest(null); resetAgentDetectionStoreForTest() })
 
 const pane = { paneId: 'p1', tabId: 't1', workspaceId: 'w1', title: '', agent: null, agentStatus: 'idle', agentState: emptyAgentState(0), cwd: null, focused: true, agentSession: null, digest: EMPTY_SESSION_DIGEST }
 const tabRow = { tabId: 't1', workspaceId: 'w1', label: '', number: 1, order: 0, agentStatus: 'idle', focused: true, panes: [pane], digest: EMPTY_SESSION_DIGEST }
 
-async function mount({ defaultAgent, overrides = {} }) {
+async function mount({ defaultAgent, overrides = {}, detection = null }) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'l515-app-'))
   new KeybindingStore(folder).save(overrides)
   const store = new KeybindingStore(folder)
@@ -48,6 +49,7 @@ async function mount({ defaultAgent, overrides = {} }) {
     retainedAgents: [], diagnostics: false, home: folder, orchestrationLineage: { state: 'ready', entries: [] }, herdrTabIds: null,
   }
   const created = []
+  const counters = { gets: 0 }
   const settingsWrites = []
   let settings = { ...DEFAULT_SETTINGS, defaultAgent }
   const api = {
@@ -59,9 +61,12 @@ async function mount({ defaultAgent, overrides = {} }) {
     createRow: async (input) => { created.push(input); return { ok: true, paneId: null, tabId: null, error: null } },
     setUiPrefs: () => {},
     setShortcutRecording: async () => {},
+    // LIFE-520 — null 이면 감지 결과 없음(Ⓟ, base). 그 밖은 감지 완료 스냅숏.
+    getAgentDetection: async () => { counters.gets += 1; return detection },
   }
   Reflect.set(window, 'corral', new Proxy(api, { get: (target, key) => (typeof key === 'string' && key in target ? target[key] : String(key).startsWith('on') ? () => () => {} : async () => null) }))
   resetSettingsStoreForTest(null)
+  resetAgentDetectionStoreForTest()
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
@@ -70,7 +75,7 @@ async function mount({ defaultAgent, overrides = {} }) {
   cleanups.push(() => { act(() => root.unmount()); host.remove(); fs.rmSync(folder, { recursive: true, force: true }) })
   const q = (selector) => host.querySelector(selector)
   return {
-    q, created, settingsWrites,
+    q, created, settingsWrites, counters,
     key: async (init) => { await act(async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })) }) },
   }
 }
@@ -90,6 +95,21 @@ it.each([
   // 대조: ⌘T 는 같은 workspace 에 빈 탭.
   await app.key({ key: 't', code: 'KeyT', metaKey: true })
   expect(app.created.at(-1)).toEqual({ workspaceId: 'w1', kind: 'shell' })
+})
+
+// LIFE-520 K4ⓐ — App 의 ⌘⌥T 가 감지 결과를 본다. Ⓝ(claude 미감지) · Ⓩ(0개).
+const detectedOf = (...agents) => ({ kind: 'detected', agents: agents.map((agent) => ({ agent, path: `/x/${agent}`, source: 'login-shell' })), shell: { ok: true }, at: 1 })
+it.each([
+  ['auto', detectedOf('codex', 'grok'), 'codex'],
+  ['claude', detectedOf('codex', 'grok'), 'codex'],
+  ['grok', detectedOf('codex', 'grok'), 'grok'],
+  ['auto', detectedOf(), 'shell'],
+  ['codex', detectedOf(), 'shell'],
+])('⌘⌥T 감지 반영 — 기본값 %s, 감지 %o → %s · 저장 쓰기 0 (K4ⓐ·ⓔ)', async (defaultAgent, detection, kind) => {
+  const app = await mount({ defaultAgent, detection })
+  await app.key(CMD_OPT_T)
+  expect(app.created).toEqual([{ workspaceId: 'w1', kind }])
+  expect(app.settingsWrites).toEqual([])
 })
 
 it('⌘⌥T 키 반복(repeat)은 무시한다 · 「없음」 으로 끄면 아무 일도 없다 · 재정의 조합이 연다', async () => {
@@ -135,4 +155,30 @@ it('「Agent 설정…」 → 메뉴 닫힘 → 설정 › AI 기능 › 에이�
   // 설정 화면의 pill 클릭 = 쓰기 1회.
   await act(async () => { app.q('[data-default-agent="grok"]').click() })
   expect(app.settingsWrites).toEqual([{ defaultAgent: 'grok' }])
+})
+
+// LIFE-520 fix2 K4ⓖ (R2-01) — 명령 팔레트의 「새 X 에이전트」 항목이 감지를 따른다. Ⓟ 는 base 3종(`App.tsx` 팔레트 항목).
+const CMD_K = { key: 'k', code: 'KeyK', metaKey: true }
+const paletteAgents = () => [...document.querySelectorAll('[data-palette-entry^="agent.start."]')].map((node) => node.getAttribute('data-palette-entry'))
+it.each([
+  ['Ⓟ', null, ['agent.start.claude', 'agent.start.codex', 'agent.start.grok']],
+  ['Ⓝ', detectedOf('codex', 'grok'), ['agent.start.codex', 'agent.start.grok']],
+  ['Ⓩ', detectedOf(), []],
+])('팔레트 「새 X 에이전트」 — %s (K4ⓖ)', async (_state, detection, expected) => {
+  const app = await mount({ defaultAgent: 'auto', detection })
+  await app.key(CMD_K)
+  expect(app.q('[data-command-palette]')).not.toBeNull()
+  expect(paletteAgents()).toEqual(expected)
+})
+
+// fix2 K3ⓕ (R2-03) — 마지막 결과가 셸 실패면 팔레트를 열 때 다시 묻는다(셸 성공이면 묻지 않는다).
+it.each([
+  ['셸 실패', { kind: 'detected', agents: [], shell: { ok: false, reason: 'timeout' }, at: 1 }, 1],
+  ['셸 성공', detectedOf('codex'), 0],
+])('팔레트를 열 때 다시 묻기 — %s → %i회', async (_name, detection, extra) => {
+  const app = await mount({ defaultAgent: 'auto', detection })
+  const before = app.counters.gets
+  await app.key(CMD_K)
+  expect(app.q('[data-command-palette]')).not.toBeNull()
+  expect(app.counters.gets - before).toBe(extra)
 })

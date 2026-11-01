@@ -12,6 +12,7 @@
 //     목적지(제목 전체 일치 → 제목만으로 → 섞임 → 별칭·에이전트만) → 가장 약한 토큰 품질 → 컨테이너만 맞은 토큰 수 → 강도 → 자리(접두 → 단어 경계 → 그 밖)
 //     → 위치(현재 탭 → 영역 순서·탭 순서) → id. 오타·compact 복구와 활동 시각 버킷은 없다(corral 탭에 활동 시각이 없다).
 
+import { UNKNOWN_AGENT_DETECTION, type AgentDetectionSnapshot } from '../../shared/agent-detection.js'
 import type { DefaultAgent } from '../../shared/terminal-settings.js'
 import type { AgentKind } from '../../shared/types.js'
 
@@ -82,11 +83,12 @@ export type LaunchAgent = Exclude<AgentKind, 'shell'>
 export type AgentLaunchOption = { agent: LaunchAgent; label: string; aliases: readonly string[] }
 
 /**
- * 카탈로그 순서 claude → codex → grok (Orca `agent-catalog.tsx:36,57,63`). 고정 3종 — 감지는 없다(LIFE-515 D1·D3, 감지는 후속 LIFE-520).
+ * 카탈로그 순서 claude → codex → grok (Orca `agent-catalog.tsx:36,57,63`). 감지(LIFE-520)는 이 순서를 바꾸지 않고 거르기만 한다 —
+ * 감지 전·실패(`unknown`)면 고정 3종 그대로(base, E2).
  * 기본 에이전트(LIFE-515)는 이 순서를 바꾸지 않고 빈 질의 Quick-launch 에서만 맨 앞으로 옮긴다(`orderAgentLaunchOptions`).
  */
 type AgentCatalogEntry = { agent: LaunchAgent; label: string; cmd: string }
-// 비어 있지 않은 튜플 — 자동(D1)이 첫 항목을 단언 없이 꺼낸다(fix1 R1-03).
+// 비어 있지 않은 튜플 — 카탈로그가 비지 않음을 타입으로 둔다(fix1 R1-03). 자동은 LIFE-520 부터 `autoAgent` 가 감지 결과로 고른다.
 const AGENT_CATALOG: readonly [AgentCatalogEntry, ...AgentCatalogEntry[]] = [
   { agent: 'claude', label: 'Claude', cmd: 'claude' },
   { agent: 'codex', label: 'Codex', cmd: 'codex' },
@@ -95,8 +97,29 @@ const AGENT_CATALOG: readonly [AgentCatalogEntry, ...AgentCatalogEntry[]] = [
 
 const compactAlias = (value: string): string => value.trim().toLowerCase().replace(/[\s_-]+/g, '')
 
-export function buildAgentLaunchOptions(): AgentLaunchOption[] {
-  return AGENT_CATALOG.map(({ agent, label, cmd }) => ({
+/** 이 에이전트를 보여 주는가 — 감지 전·실패면 늘 참(base), 감지가 끝났으면 감지된 것만. */
+export function isAgentAvailable({ agent, detection }: { agent: LaunchAgent; detection: AgentDetectionSnapshot }): boolean {
+  switch (detection.kind) {
+    case 'unknown':
+      return true
+    case 'detected':
+      return detection.agents.some((found) => found.agent === agent)
+  }
+}
+
+/** 「자동」 의 실제 대상 — 감지된 것 중 카탈로그 순 첫 번째(Orca `pickTuiAgent`). 감지 전·실패면 카탈로그 첫 번째(base), 0개면 null. */
+export function autoAgent(detection: AgentDetectionSnapshot): LaunchAgent | null {
+  return AGENT_CATALOG.find(({ agent }) => isAgentAvailable({ agent, detection }))?.agent ?? null
+}
+
+/** 카탈로그 이름 — 감지에서 빠져 목록에 없는 에이전트(저장된 미감지 기본값 pill)도 이름은 여기서 꺼낸다. */
+export function agentLabel(agent: LaunchAgent): string {
+  return AGENT_CATALOG.find((entry) => entry.agent === agent)?.label ?? agent
+}
+
+/** `+` 메뉴·설정 pill·검색이 쓰는 목록 — 카탈로그 순서, 감지된 것만(감지 전·실패면 3종). */
+export function buildAgentLaunchOptions(detection: AgentDetectionSnapshot = UNKNOWN_AGENT_DETECTION): AgentLaunchOption[] {
+  return AGENT_CATALOG.filter(({ agent }) => isAgentAvailable({ agent, detection })).map(({ agent, label, cmd }) => ({
     agent,
     label,
     aliases: [...new Set([agent, label.toLowerCase(), compactAlias(agent), compactAlias(label), cmd, compactAlias(cmd)])],
@@ -109,22 +132,26 @@ export function buildAgentLaunchOptions(): AgentLaunchOption[] {
 export type NewAgentTabTarget = { kind: 'agent'; agent: LaunchAgent } | { kind: 'shell' }
 
 /**
- * 기본 에이전트 → ⌘⌥T 대상. 순수 함수(K3ⓑ).
- *   · 명시 에이전트 → 그 에이전트
- *   · 자동 → **카탈로그 첫 번째**(D1 — 감지가 없어 Orca `pickTuiAgent` 의 「감지·활성 중 첫 번째」 가 카탈로그 첫 번째가 된다)
- *   · agent 없음 → **빈 터미널**(D2 — Orca 는 이 값을 무시하고 자동으로 떨어진다. corral 에는 「새 workspace 를 agent 없이」 소비처가 없어
- *     Orca 의미면 이 값이 순서에만 걸리는 죽은 선택지가 된다 — 00-analysis §4)
+ * 기본 에이전트 + 감지 결과 → ⌘⌥T 대상. 순수 함수(LIFE-515 K3ⓑ · LIFE-520 K4ⓐ).
+ *   · 자동 → **감지된 것 중 카탈로그 순 첫 번째**(`autoAgent`). 감지 전·실패면 카탈로그 첫 번째(base)
+ *   · 명시 에이전트 → 감지됐으면(또는 감지 전·실패면) 그 에이전트, **미감지면 자동 규칙**(E3 — Orca 와 같다)
+ *   · 자동 대상이 없으면(0개) → **빈 터미널**(E4 — Orca 는 탭을 안 연다. corral 은 blank 와 같은 결과)
+ *   · agent 없음 → 빈 터미널(LIFE-515 D2)
  */
-export function resolveNewAgentTab(defaultAgent: DefaultAgent): NewAgentTabTarget {
+export function resolveNewAgentTab({ defaultAgent, detection }: { defaultAgent: DefaultAgent; detection: AgentDetectionSnapshot }): NewAgentTabTarget {
+  const fallback = (): NewAgentTabTarget => {
+    const agent = autoAgent(detection)
+    return agent === null ? { kind: 'shell' } : { kind: 'agent', agent }
+  }
   switch (defaultAgent) {
     case 'auto':
-      return { kind: 'agent', agent: AGENT_CATALOG[0].agent }
+      return fallback()
     case 'blank':
       return { kind: 'shell' }
     case 'claude':
     case 'codex':
     case 'grok':
-      return { kind: 'agent', agent: defaultAgent }
+      return isAgentAvailable({ agent: defaultAgent, detection }) ? { kind: 'agent', agent: defaultAgent } : fallback()
   }
 }
 

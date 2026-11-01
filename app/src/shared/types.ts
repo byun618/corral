@@ -5,6 +5,7 @@ import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
 import type { UsageSnapshot } from './usage.js'
+import type { AgentDetectionSnapshot } from './agent-detection.js'
 import type { WorktreeWorkLink } from './work-link.js'
 import type { RelaunchAgentInput, StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
 import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
@@ -1191,6 +1192,11 @@ export type CorralApi = {
   /** 새로고침 — id 가 없으면 전부. 끝난 뒤 스냅숏. 진행 중이면 그 요청을 같이 기다린다. */
   refreshUsage: (input: { id: string | null }) => Promise<UsageSnapshot | null>
   onUsage: (listener: (snapshot: UsageSnapshot) => void) => () => void
+  // --- 에이전트 감지 (LIFE-520) — `unknown` = 감지 전·실패, `detected` = 끝남(0개 포함). 다른 창의 요청이면 null ---
+  getAgentDetection: () => Promise<AgentDetectionSnapshot | null>
+  /** 다시 감지 — 캐시를 무시하고 새로 돈다. 끝난 뒤 스냅숏. */
+  refreshAgentDetection: () => Promise<AgentDetectionSnapshot | null>
+  onAgentDetection: (listener: (snapshot: AgentDetectionSnapshot) => void) => () => void
   // --- 설정 › 작업 연결 (LIFE-600) — 토큰은 `addWorkConnection` 입력으로만 main 에 들어가고, 어떤 응답·push 에도 나오지 않는다(끝 4자만) ---
   getWorkSettings: () => Promise<WorkSettingsState | null>
   onWorkSettings: (listener: (state: WorkSettingsState) => void) => () => void

@@ -914,6 +914,8 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 /* LIFE-515 K5 — 「Agent 설정…」 `text-muted-foreground` + `SettingsIcon size-4`(Orca 198 `QuickLaunchButton.tsx:246-251`). hover·포커스는 다른 항목과 같다. */
 .tab-create-item.is-muted { color: var(--fg-muted); }
 .tab-create-item.is-muted:hover, .tab-create-item.is-muted:focus { color: var(--fg); }
+/* LIFE-520 — 감지가 끝났는데 0개일 때 Quick-launch 자리 문구. 항목과 같은 줄 높이, 고를 수 없다. */
+.tab-create-empty { padding: 6px 8px; font-size: 12px; line-height: 20px; color: var(--fg-muted); }
 .tab-create-item-icon { width: 16px; height: 16px; flex-shrink: 0; }
 .main-tabbar-spacer { flex: 1; }
 /* 탭이 아닌 꼬리(격자 메타·줌 칩·액션) — 늘 자리를 점유한다. */

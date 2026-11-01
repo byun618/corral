@@ -9,7 +9,8 @@ import { effortOptions, modelOptions, type StartAgent } from '../../../shared/ag
 import type { RepoRow } from '../../../shared/types.js'
 import { composeStartPrompt, defaultStartName, newAttemptId, startNameProblem, startStatusTarget, type StartStatusTarget, type StartWorkInput, type StartWorkResult } from '../../../shared/work-start.js'
 import type { WorkRepoDefault } from '../../../shared/work.js'
-import { defaultStartRepo, startSignature, startSucceeded, uniqueStartName } from '../start-work-model.js'
+import { defaultStartRepo, initialStartAgent, startAgentChoices, startSignature, startSucceeded, uniqueStartName } from '../start-work-model.js'
+import { useAgentDetection } from '../agent-detection-store.js'
 import type { TaskDetailModel } from './useTaskDetail.js'
 
 export type StartMode = 'first' | 'another'
@@ -43,6 +44,8 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
   notifyFailure: (message: string) => void
 }) {
   const { item, target } = detail
+  // LIFE-520 E5 — 모달을 여는 순간의 감지 결과로 초기 에이전트를 정한다(미감지면 자동 규칙).
+  const detection = useAgentDetection()
   // 상태 쓰기는 시작이 끝난 시점의 상세로 한다(R1-D) — 시작 시점의 클로저는 판이 낡아 충돌로 떨어진다.
   const detailRef = useRef(detail)
   detailRef.current = detail
@@ -79,7 +82,7 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
     setMode(next)
     // 링크가 있는 작업이면 어느 버튼으로 열든 「이미 진행 중」 상자부터(C1) — 「하나 더 시작」 은 그 상자에서 고른다.
     setProceed(false)
-    setForm({ repoRoot, name: uniqueStartName({ base: defaultStartName({ key: item.key, title: item.title }), repos }), agent: 'claude', model: '', effort: '', submit: false, moveStatus: false })
+    setForm({ repoRoot, name: uniqueStartName({ base: defaultStartName({ key: item.key, title: item.title }), repos }), agent: initialStartAgent({ preferred: 'claude', detection }), model: '', effort: '', submit: false, moveStatus: false })
     setResult(null)
     setMove(NO_MOVE)
     setRunning(false)
@@ -103,7 +106,7 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
       setRunning(true)
       void join({ attemptId: view.attemptId, here })
     })
-  }, [item, target, repos, repoDefaults, activeRepoRoot, detail])
+  }, [item, target, repos, repoDefaults, activeRepoRoot, detail, detection])
 
   /**
    * 진행 중 시도에 합류 — main 은 같은 id 를 입력 없이 받지 않으므로 시도 상태를 다시 묻는다.
@@ -207,6 +210,18 @@ export function useStartWork({ detail, repos, repoDefaults, activeRepoRoot, sour
       return next
     })
   }
+
+  // LIFE-520 fix1 R1-08 — 모달이 열린 뒤 감지가 바뀌어 고른 에이전트가 선택지 밖이 되면(숨은 선택으로 제출되지 않게) 자동 규칙으로 보정한다.
+  // 진행 중(합류 포함)이면 그 시도의 값이라 두지 않는다 — 그때는 칸이 잠겨 있다. 모달 칸·단계·제출 흐름은 그대로.
+  useEffect(() => {
+    // fix2 R2-06 — 끝난 시도를 복원한 결과 화면(result 있음)이면 두지 않는다: 「다시 띄우기」 가 그 시도의 에이전트로 가야 한다.
+    if (form === null || running || result !== null) return
+    if (startAgentChoices(detection).includes(form.agent)) return
+    // final R3-03(b) — 바꿀 값이 지금 값과 같으면 갱신하지 않는다(선택지 계산이 어긋나도 갱신 → 렌더 → 보정이 무한히 돌지 않게).
+    const next = initialStartAgent({ preferred: form.agent, detection })
+    if (next === form.agent) return
+    update({ agent: next })
+  }, [detection, form, running, result, update])
 
   return {
     open: mode !== null && form !== null, mode, proceed, setProceed, form, update, prompt, statusTarget, nameProblem, canStart,

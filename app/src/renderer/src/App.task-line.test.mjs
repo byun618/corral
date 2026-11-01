@@ -127,6 +127,8 @@ async function mount({ itemId, connections = 1 }) {
       return held === null ? work.service.request(request) : held.then(() => work.service.request(request))
     },
     workActivity: async (query) => work.service.activity(query),
+    // LIFE-624 PR 상태 — 패널 상세가 서면 묻는다. 빈 결과(PR 없음)로 답한다(Proxy 기본 null 이면 상세가 깨진다, v0.5.0 통합 확인).
+    prBranches: async () => ({ lookups: {}, recorded: 0 }),
   }
   Reflect.set(window, 'corral', new Proxy(api, { get: (target, key) => (typeof key === 'string' && key in target ? target[key] : String(key).startsWith('on') ? () => () => {} : async () => null) }))
   const host = document.createElement('div')

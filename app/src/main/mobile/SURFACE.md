@@ -246,8 +246,9 @@
     뒤 대기 지시는 `mac_input`(쓰지 않는 쪽). Grok 의 Ctrl+C 는 이전대로 빈 입력 줄 울타리(R3-A6)이고 그 울타리 값에서 고리를 건다.
   - **보조 — 효과 직전 세션 대조**: 목록(이 프로세스 상태라 그 확인과 넣기 호출 사이에 바뀌지 않는다)과 **herdr 관측**(효과 호출 바로 앞에서 다시 한 `agent.get` 의 `agent_session`,
     source·kind·값으로 대조 — LIFE-598 r0·r1) 둘 중 하나라도 접수 때와 다르면 `target_changed`. 관측에 세션이 없으면 같은 세션임을 증명 못 한 것이라 쓰지 않고 `target_changed`.
-    목록 세션은 herdr 가 새 세션을 받은 뒤 **최대 약 1.5 s** 늦게 바뀐다(LIFE-710 — 에이전트가 붙은 pane 이 있는 동안 런타임이 `agent.list` 를 1.5 s 마다 보내 세션 참조만 맞춘다,
-    `adapter/internal/link.ts` `AGENT_SESSION_POLL_MS`. 전에는 30 s 재동기까지 기다려 `/clear` 뒤 약 20~25 s 옛 값이었다 — 598 final/f1q). herdr 도 `/clear` 뒤 수백 ms 는 옛 세션이고
+    목록 세션은 herdr 가 새 세션을 받은 뒤 정상 응답이면 **최대 약 1.5 s**(+ 왕복), herdr 응답이 느리면 최대 약 2.5 s(주기 1.5 s + 조회 timeout 1.0 s) 늦게 바뀐다
+    (LIFE-710 — 에이전트가 붙은 pane 이 있는 동안 런타임이 `agent.list` 를 1.5 s 마다 보내 세션 참조만 맞춘다, `adapter/internal/link.ts` `AGENT_SESSION_POLL_MS`.
+    전에는 30 s 재동기까지 기다려 `/clear` 뒤 약 20~25 s 옛 값이었다 — 598 final/f1q). herdr 도 `/clear` 뒤 수백 ms 는 옛 세션이고
     보고가 상한 없이 늦을 수 있어 이것만으로는 확률적이다 — 접수 뒤 `/clear` 는 울타리가 막고, 이 대조는 아래 구멍을 일부 줄인다.
     남는 창(herdr 보고 전 수백 ms + 목록 따라잡기 상한) 안에 접수된 폰 지시는 목록 기준으로 옛 세션에 묶이고, herdr 관측이 그새 새 세션이면 이 대조(`herdr_session`)에서
     `failed/target_changed` 로 끝난다(598 final/f1b 의 긴 지시가 이 갈래 — 쓰지 않는 쪽). 폰 목록이 새 세션으로 바뀐 뒤 다시 보내면 들어간다.

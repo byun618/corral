@@ -77,7 +77,11 @@ export class HerdrRequestError extends Error {
   }
 }
 
-export type RequestOptions = { timeoutMs?: number; reason?: string; signal?: AbortSignal; onSent?: () => void }
+/**
+ * `quiet` — 성공한 요청의 `req.*` 줄(open·tx·rx·close)을 남기지 않는다. 오류 답(`req.rx.error`)·모르는 줄은 그대로 남기고,
+ * 연결 실패·타임아웃은 호출부가 남긴다. 짧은 주기로 도는 읽기(세션 조회, LIFE-710)가 로그를 쌓지 않게 하려는 것이다.
+ */
+export type RequestOptions = { timeoutMs?: number; reason?: string; signal?: AbortSignal; onSent?: () => void; quiet?: boolean }
 
 export async function request(
   socketPath: string,
@@ -91,6 +95,7 @@ export async function request(
   options.signal?.throwIfAborted()
   const timeoutMs = options.timeoutMs ?? 5000
   const reason = options.reason ?? 'app'
+  const trace: typeof log = options.quiet === true ? () => {} : log
 
   return new Promise<ResponseFrame>((resolve, reject) => {
     let done = false
@@ -100,7 +105,7 @@ export async function request(
       done = true
       if (timer) clearTimeout(timer)
       options.signal?.removeEventListener('abort', abort)
-      log('req.conn.close', { conn: socket.id, method, reason })
+      trace('req.conn.close', { conn: socket.id, method, reason })
       socket.end()
       fn()
     }
@@ -114,7 +119,7 @@ export async function request(
         }
         // 에러 응답은 **원문 줄 그대로** 남긴다 (L9 채널 원자료 — advisor). 성공은 바이트 수만.
         if (frame.error) log('req.rx.error', { conn: socket.id, method, at, line: line.slice(0, 2000) })
-        else log('req.rx', { conn: socket.id, method, at, bytes: line.length })
+        else trace('req.rx', { conn: socket.id, method, at, bytes: line.length })
         finish(() => resolve(frame))
       },
       // 서버는 응답 뒤 스스로 닫는다 — 응답을 이미 받았으면 finish 가 먼저라 이 경로로 안 온다.
@@ -124,7 +129,7 @@ export async function request(
 
     const abort = () => finish(() => reject(new HerdrRequestError('request_cancelled', 'Request cancelled')))
     options.signal?.addEventListener('abort', abort, { once: true })
-    log('req.conn.open', { conn: socket.id, method, reason, socketPath })
+    trace('req.conn.open', { conn: socket.id, method, reason, socketPath })
     socket.connect(socketPath).then(
       () => {
         if (done || options.signal?.aborted) { abort(); return }
@@ -133,7 +138,7 @@ export async function request(
           timeoutMs,
         )
         const frame = JSON.stringify({ id: `${socket.id}:1`, method, params })
-        log('req.tx', { conn: socket.id, method, ...(method === 'corral.terminal' ? { bytes: frame.length } : { line: frame.slice(0, 500) }) })
+        trace('req.tx', { conn: socket.id, method, ...(method === 'corral.terminal' ? { bytes: frame.length } : { line: frame.slice(0, 500) }) })
         options.onSent?.()
         socket.write(frame)
       },

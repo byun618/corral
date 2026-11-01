@@ -75,9 +75,18 @@ export const AGENT_SESSION_NUDGE_MS: readonly number[] = [2_000, 8_000]
  *
  * 그래서 에이전트가 붙은 pane 이 **있는 동안만** `agent.list` 한 건(세션 안 전 에이전트의 참조가 한 번에 온다)을
  * 이 주기로 보내 **세션 참조만** 맞춘다 — 스냅샷·reconcile 을 돌리지 않고, 값이 같으면 화면 갱신 신호도 없다.
- * 비용은 세션당 1.5 s 에 요청 1건(120 s 에 80건). 상한은 herdr 보고 뒤 1.5 s + 왕복이다.
+ * 비용은 세션당 1.5 s 에 요청 1건(120 s 에 80건). 성공·변화 없음은 로그도 남기지 않는다(조회의 `req.*` 포함 — 리뷰 r1 A:
+ * 4줄이면 하루 약 36 MB). 실패와 세션 변경만 남는다.
+ *
+ * **따라잡기 상한**: 다음 조회는 앞 조회가 **끝난 뒤**, 앞 조회 시작 + 이 주기에 건다(겹치지 않는다).
+ * 요청 timeout(`AGENT_SESSION_POLL_TIMEOUT_MS`)이 주기보다 짧아서 느린 답이 다음 조회를 미루지 않는다.
+ * 정상 응답(수 ms)이면 herdr 보고 뒤 **1.5 s + 왕복**, herdr 가 느리면 최악 **1.5 s + timeout 1.0 s = 약 2.5 s** 다
+ * (보고 직후 나간 조회가 옛 값을 늦게 돌려주는 경우 — 리뷰 r1 D: 전에는 건너뛴 틱 때문에 약 3 s 였다).
  */
 export const AGENT_SESSION_POLL_MS = 1_500
+
+/** 세션 조회 한 건의 timeout — 주기보다 짧게 둔다(위 상한). */
+export const AGENT_SESSION_POLL_TIMEOUT_MS = 1_000
 
 function resyncIntervalMs(): number {
   const raw = Number(process.env.CORRAL_RESYNC_MS)
@@ -124,7 +133,7 @@ export class SessionLink {
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private resyncTimer: ReturnType<typeof setInterval> | null = null
   /** 세션 조회 타이머·진행 중 표시 (LIFE-710). */
-  private sessionPollTimer: ReturnType<typeof setInterval> | null = null
+  private sessionPollTimer: ReturnType<typeof setTimeout> | null = null
   private sessionPolling = false
   private buffer: Array<{ frame: PushFrame; at: number }> = []
   private bootstrapping = false
@@ -422,28 +431,45 @@ export class SessionLink {
   // --- 세션 조회 (LIFE-710) -----------------------------------------------------
 
   private startSessionPoll(): void {
-    if (this.sessionPollTimer !== null) return
-    this.sessionPollTimer = setInterval(() => void this.pollAgentSessions(), AGENT_SESSION_POLL_MS)
+    this.scheduleSessionPoll(AGENT_SESSION_POLL_MS)
+  }
+
+  /**
+   * 다음 조회 하나를 건다 — **한 번에 타이머 하나**. live 가 아니면 걸지 않는다(끊김·close 뒤 타이머 0).
+   * 진행 중인 조회가 있으면 그 조회의 `finally` 가 다음을 건다 — 재연결로 세대가 바뀌어도 이어진다.
+   */
+  private scheduleSessionPoll(delayMs: number): void {
+    if (this.stopped || this.state.phase !== 'live' || this.sessionPollTimer !== null) return
+    this.sessionPollTimer = setTimeout(() => {
+      this.sessionPollTimer = null
+      void this.pollAgentSessions()
+    }, delayMs)
   }
 
   private stopSessionPoll(): void {
-    if (this.sessionPollTimer) clearInterval(this.sessionPollTimer)
+    if (this.sessionPollTimer) clearTimeout(this.sessionPollTimer)
     this.sessionPollTimer = null
   }
 
   /**
-   * 에이전트가 붙은 pane 이 있으면 `agent.list` 로 세션 참조만 맞춘다. 바뀐 것이 있을 때만 `onChange`.
+   * 에이전트가 붙은 pane 이 있으면 `agent.list` 로 세션 참조만 맞춘다. 바뀐 것이 있을 때만 `onChange`·로그.
    * 실패는 버린다 — 알던 세션을 지우지 않고 다음 주기(또는 재동기)가 다시 본다.
    */
   async pollAgentSessions(): Promise<void> {
     const session = this.session
     if (session === null || this.stopped || this.state.phase !== 'live' || this.sessionPolling) return
-    if (!this.store.hasAgentPane()) return
+    const startedAt = Date.now()
+    if (!this.store.hasAgentPane()) {
+      this.scheduleSessionPoll(AGENT_SESSION_POLL_MS)
+      return
+    }
     this.sessionPolling = true
     const generation = this.generation
-    const requestedAt = Date.now()
+    const requestedAt = startedAt
     try {
-      const response = await request(session.socketPath, 'agent.list', {}, { reason: 'agent-session-poll', timeoutMs: AGENT_SESSION_POLL_MS })
+      const response = await request(session.socketPath, 'agent.list', {}, {
+        reason: 'agent-session-poll', timeoutMs: AGENT_SESSION_POLL_TIMEOUT_MS, quiet: true,
+      })
       if (generation !== this.generation || this.stopped) return
       if (response.error) throw new HerdrRequestError(response.error.code ?? 'error', response.error.message ?? '')
       const result = this.store.applyAgentSessions({ result: response.result, requestedAt })
@@ -454,6 +480,7 @@ export class SessionLink {
       log('agent_session.poll.failed', { error: String(error) })
     } finally {
       this.sessionPolling = false
+      this.scheduleSessionPoll(Math.max(0, startedAt + AGENT_SESSION_POLL_MS - Date.now()))
     }
   }
 

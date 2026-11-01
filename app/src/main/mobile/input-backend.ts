@@ -17,7 +17,7 @@ const CALL_MS = 8_000
 export const UNMANAGED_SETTLE_MS = 3_000
 
 /** guard·herdr 가 **아무것도 쓰지 않고** 거절한 것 — 다시 기다려도 된다. 그 밖의 실패(시간 초과 등)는 썼을 수 있다(`unknown`). */
-const REFUSED: ReadonlySet<string> = new Set(['agent_not_ready', 'agent_blocked', 'agent_state_changed', 'agent_not_found', 'stale_terminal', 'stale_backend', 'deadline_exceeded', 'invalid_request', 'unsupported', 'input_changed', 'input_recent'])
+const REFUSED: ReadonlySet<string> = new Set(['agent_not_ready', 'agent_blocked', 'agent_state_changed', 'agent_not_found', 'stale_terminal', 'stale_backend', 'deadline_exceeded', 'invalid_request', 'unsupported', 'input_changed', 'input_recent', 'any_input_changed'])
 
 export class HerdrInputBackend implements InputBackend {
   private readonly backend: TerminalBackend
@@ -51,9 +51,9 @@ export class HerdrInputBackend implements InputBackend {
       const unmanaged = settled && !info.launchPending && !info.interactiveReady
       const unmanagedQuiet = unmanaged && this.backend.unmanagedPromptCapable() && (info.stateQuietMs ?? 0) >= UNMANAGED_SETTLE_MS
       // LIFE-598: herdr 가 지금 말하는 provider 세션 — 허브가 효과 직전 접수 때 묶은 세션과 대조한다(목록은 늦게 바뀐다).
-      return { status: info.status, seq: info.stateChangeSeq, quiet: agentQuiescent(info) || unmanagedQuiet, unmanaged, input: info.input ?? null, session: info.session === null ? null : observedSessionKey(info.session) }
+      return { status: info.status, seq: info.stateChangeSeq, quiet: agentQuiescent(info) || unmanagedQuiet, unmanaged, input: info.input ?? null, anyInput: info.anyInput ?? null, session: info.session === null ? null : observedSessionKey(info.session) }
     } catch (error) {
-      if (error instanceof RuntimeError && error.code === 'agent_not_found') return { status: 'none', seq: -1, quiet: false, unmanaged: false, input: null, session: null }
+      if (error instanceof RuntimeError && error.code === 'agent_not_found') return { status: 'none', seq: -1, quiet: false, unmanaged: false, input: null, anyInput: null, session: null }
       throw error
     }
   }
@@ -81,18 +81,18 @@ export class HerdrInputBackend implements InputBackend {
     return this.effect(() => this.backend.promptAgentIfQuiet(pane, { text: input.text, expectedStateChangeSeq: input.seq, inputRevision: input.inputRevision, minIdleMs: input.minIdleMs, unmanagedAgent: input.unmanagedAgent }, this.ctx()))
   }
 
-  /** seq 비교 + (주면) 입력 revision 울타리(R2-A1). 쓴 뒤 revision 을 돌려준다 — 다음 키의 울타리. */
-  async send(pane: TerminalIdentity, input: { text: string; seq: number; inputRevision: number | null }): Promise<KeyResult> {
+  /** seq 비교 + (주면) 입력 revision 울타리(R2-A1)·모든 입력 울타리(LIFE-708 r1). 쓴 뒤 두 revision 을 돌려준다 — 다음 키의 울타리. */
+  async send(pane: TerminalIdentity, input: { text: string; seq: number; inputRevision: number | null; anyInputRevision: number | null }): Promise<KeyResult> {
     const { inputRevision } = input
     if (inputRevision === null) {
       const sent = await this.effect(() => this.backend.sendIfUnchanged(pane, input.text, input.seq, this.ctx()))
-      return sent === 'sent' ? { kind: 'sent', revision: null } : { kind: sent }
+      return sent === 'sent' ? { kind: 'sent', revision: null, anyRevision: null } : { kind: sent }
     }
-    let revision: number | null = null
+    let after: { revision: number | null; anyRevision: number | null } = { revision: null, anyRevision: null }
     const sent = await this.effect(async () => {
-      revision = (await this.backend.sendFenced(pane, { text: input.text, expectedStateChangeSeq: input.seq, inputRevision }, this.ctx())).revision
+      after = await this.backend.sendFenced(pane, { text: input.text, expectedStateChangeSeq: input.seq, inputRevision, anyInputRevision: input.anyInputRevision }, this.ctx())
     })
-    return sent === 'sent' ? { kind: 'sent', revision } : { kind: sent }
+    return sent === 'sent' ? { kind: 'sent', ...after } : { kind: sent }
   }
 
   private async effect(run: () => Promise<unknown>): Promise<SendResult> {

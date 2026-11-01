@@ -38,6 +38,8 @@ export interface AgentObservation {
   observedAt: string
   /** LIFE-582 R1-A3: the pane's user-input revision and quiet time, read by the guard in the agent.get turn. null on a guard without them. */
   input?: { revision: number; idleMs: number } | null
+  /** LIFE-708 r1: the same turn's any-input revision and quiet time — mouse reports included (`input` leaves them out). null on a guard without it. */
+  anyInput?: { revision: number; idleMs: number } | null
   /** LIFE-597: how long the agent state (and detected kind) has held, read by the guard in the agent.get turn. null on a guard without it. */
   stateQuietMs?: number | null
 }
@@ -149,25 +151,33 @@ export class TerminalBackend {
    * LIFE-582 R2-A1: a raw key fenced on the pane's input revision as well — `inputRevision` is the revision of the screen corral read,
    * or the one the previous fenced key returned. Any other input since then is `input_changed` and nothing is written. Returns the
    * revision after this write (the next key's fence); `null` from a guard that does not report it.
+   * LIFE-708 r1: `anyInputRevision` (a question answer) fences on every input, a click included — `any_input_changed` and nothing written.
+   * `anyRevision` is the any-input revision after this write.
    */
-  async sendFenced(target: TerminalIdentity, input: { text: string; expectedStateChangeSeq: number; inputRevision: number }, ctx: TerminalOperation): Promise<{ revision: number | null }> {
+  async sendFenced(target: TerminalIdentity, input: { text: string; expectedStateChangeSeq: number; inputRevision: number; anyInputRevision: number | null }, ctx: TerminalOperation): Promise<{ revision: number | null; anyRevision: number | null }> {
     const result = await this.call({ epoch: target.epoch, deadline_ms: ctx.deadlineAt, pane_id: target.paneId, terminal_id: target.ptyId,
       expected_state_change_seq: input.expectedStateChangeSeq, expected_input_revision: input.inputRevision,
+      ...(input.anyInputRevision === null ? {} : { expected_any_input_revision: input.anyInputRevision }),
       operation: { method: 'pane.send_text', params: { pane_id: target.paneId, text: input.text } } }, ctx, true)
-    return { revision: typeof result.corral_input_revision === 'number' ? result.corral_input_revision : null }
+    return {
+      revision: typeof result.corral_input_revision === 'number' ? result.corral_input_revision : null,
+      anyRevision: typeof result.corral_any_input_revision === 'number' ? result.corral_any_input_revision : null,
+    }
   }
   /**
    * LIFE-582 R2-A3: the visible screen (SGR kept) with the input revision, input quiet time and agent `state_change_seq` the guard read
    * in the same turn — so corral knows the screen was captured after the input went quiet, and can fence the effect on that revision.
    * `input`·`seq` are null from a guard that does not report them.
    */
-  async screenRead(target: TerminalIdentity, ctx: TerminalOperation): Promise<{ text: string; input: { revision: number; idleMs: number } | null; seq: number | null }> {
+  async screenRead(target: TerminalIdentity, ctx: TerminalOperation): Promise<{ text: string; input: { revision: number; idleMs: number } | null; anyInput: { revision: number; idleMs: number } | null; seq: number | null }> {
     const result = await this.operation(target.epoch, 'pane.read', { pane_id: target.paneId, source: 'visible', format: 'ansi', strip_ansi: false }, ctx, target)
     const content = readRecord(result, 'read') ?? {}
     if (typeof content.text !== 'string') throw new RuntimeError('invalid_backend_response', 'Invalid screen')
     const input = typeof content.corral_input_revision === 'number' && typeof content.corral_input_idle_ms === 'number'
       ? { revision: content.corral_input_revision, idleMs: content.corral_input_idle_ms } : null
-    return { text: content.text, input, seq: typeof content.corral_state_change_seq === 'number' ? content.corral_state_change_seq : null }
+    const anyInput = typeof content.corral_any_input_revision === 'number' && typeof content.corral_any_input_idle_ms === 'number'
+      ? { revision: content.corral_any_input_revision, idleMs: content.corral_any_input_idle_ms } : null
+    return { text: content.text, input, anyInput, seq: typeof content.corral_state_change_seq === 'number' ? content.corral_state_change_seq : null }
   }
   /** LIFE-582: the visible screen with SGR attributes kept — the mobile input path reads the provider's input line from it. */
   async screenAnsi(target: TerminalIdentity, ctx: TerminalOperation): Promise<string> {
@@ -287,6 +297,8 @@ function observation(agent: Record<string, unknown> | null, paneId: string): Age
     observedAt: new Date().toISOString(),
     input: typeof agent.corral_input_revision === 'number' && typeof agent.corral_input_idle_ms === 'number'
       ? { revision: agent.corral_input_revision, idleMs: agent.corral_input_idle_ms } : null,
+    anyInput: typeof agent.corral_any_input_revision === 'number' && typeof agent.corral_any_input_idle_ms === 'number'
+      ? { revision: agent.corral_any_input_revision, idleMs: agent.corral_any_input_idle_ms } : null,
     stateQuietMs: typeof agent.corral_state_quiet_ms === 'number' ? agent.corral_state_quiet_ms : null,
   }
 }

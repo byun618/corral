@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-/* global window, document, requestAnimationFrame */
+/* global window, document, setTimeout, Event, KeyboardEvent */
 // LIFE-755 C5·C6 — 사이드바 링크 worktree 카드의 작업 줄 클릭 = 본문 그대로 + 오른쪽 패널에 그 작업 상세. 실제 App 마운트(xterm 만 가짜 —
 // App.reveal-cover.test.mjs 와 같은 걸음) + 실제 WorkService·모의 출처(TasksPage.l682.test.tsx 와 같은 걸음).
 // C6 「앱 재기동 뒤 페이지 미오픈」 = 연결을 더한 서비스와 같은 저장소로 **새 서비스**를 만든다(런타임 스페이스 목록이 비어 있다 — main 재시작과 같다).
@@ -101,6 +101,8 @@ async function mount({ itemId, connections = 1 }) {
   const work = await freshService({ connections })
   const calls = []
   const requests = []
+  /** 요청을 붙잡는다 — Promise 를 돌려주면 그것이 풀릴 때까지 서비스로 보내지 않는다(갱신 중 화면을 본다). */
+  const hold = { current: null }
   const workLink = { mode: itemId === null ? 'auto' : 'explicit', sourceId: 'mock-jira', connectionId: work.connectionId, key: 'CORE-2', itemId, connected: true }
   const state = {
     revision: 1, sessions: [], sessionsError: null, selectedSession: null, sessionNote: null, link: { phase: 'ready' }, backend: { kind: 'ok' },
@@ -118,7 +120,12 @@ async function mount({ itemId, connections = 1 }) {
     getKeybindings: async () => store.get(),
     getWorkSettings: async () => work.service.settings(),
     onWorkSettings: (listener) => { work.listeners.push(listener); return () => { work.listeners.splice(work.listeners.indexOf(listener), 1) } },
-    workRequest: (request) => { calls.push(request.call); requests.push(request); return work.service.request(request) },
+    workRequest: (request) => {
+      calls.push(request.call)
+      requests.push(request)
+      const held = hold.current?.(request) ?? null
+      return held === null ? work.service.request(request) : held.then(() => work.service.request(request))
+    },
     workActivity: async (query) => work.service.activity(query),
   }
   Reflect.set(window, 'corral', new Proxy(api, { get: (target, key) => (typeof key === 'string' && key in target ? target[key] : String(key).startsWith('on') ? () => () => {} : async () => null) }))
@@ -134,6 +141,7 @@ async function mount({ itemId, connections = 1 }) {
     calls,
     requests,
     work,
+    hold,
     click: async (selector) => {
       const target = q(selector)
       if (target === null) throw new Error(`없음: ${selector}`)
@@ -251,4 +259,50 @@ it('C11 (r1 A) 페이지가 닫힌 채 패널 상세에서 제목을 고치면 �
   expect(app.work.state.items.find((item) => item.key === 'CORE-2')?.title).toBe('패널에서 고친 제목')
   expect(app.view().tasks).toBe(false)
   expect(app.q(LINE)?.textContent).toContain('패널에서 고친 제목')
+})
+
+/** 패널 상세의 「+ 연결 추가」 로 `CORE-2 is_blocked_by <key>` 를 더한다. */
+async function addBlocker(app, blockerKey) {
+  await app.click('[data-right-panel-body="detail"] [data-link-add]')
+  await app.click('[data-right-panel-body="detail"] [data-link-kind="is_blocked_by"]')
+  setValue(app.q('[data-right-panel-body="detail"] [data-link-key]'), blockerKey)
+  await app.click('[data-right-panel-body="detail"] [data-link-submit]')
+}
+const blockedDot = (app) => app.q(`${LINE} [data-worktree-issue-blocked]`)
+
+it('C11 (r2 L) 페이지가 닫힌 채 패널 상세에서 막힘 연결을 더하면 줄에 막힘 점이 생기고, 떼면 사라진다', async () => {
+  const app = await mount({ itemId: 'm-2' })
+  await app.click(LINE)
+  expect(blockedDot(app)).toBeNull()
+  await addBlocker(app, 'CORE-3')
+  expect(app.q('[data-right-panel-body="detail"] [data-link-row="CORE-3"]')).not.toBeNull()
+  expect(app.view().tasks).toBe(false)
+  expect(blockedDot(app)).not.toBeNull()
+  await app.click('[data-right-panel-body="detail"] [data-link-row="CORE-3"] [data-link-remove]')
+  expect(app.q('[data-right-panel-body="detail"] [data-link-row="CORE-3"]')).toBeNull()
+  expect(app.view().tasks).toBe(false)
+  expect(blockedDot(app)).toBeNull()
+})
+
+it('C11 (r2 N) 쓰기 계기 갱신 중에도 줄 제목이 남는다(키만 그리지 않는다) · 다시 묻는 것은 그 줄(CORE-2) 한 번', async () => {
+  const app = await mount({ itemId: 'm-2' })
+  await app.click(LINE)
+  expect(app.q(LINE)?.textContent).toContain('카드 저장')
+  let release = () => {}
+  const gate = new Promise((resolve) => { release = () => resolve(null) })
+  app.hold.current = (request) => (request.call.op === 'findByKey' && String(request.requestId).startsWith('link-title:') ? gate : null)
+  const before = app.requests.filter((request) => String(request.requestId).startsWith('link-title:')).length
+  const input = title(app)
+  act(() => input.focus())
+  setValue(input, '갱신 중 제목')
+  await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })) })
+  await settle()
+  const asked = app.requests.filter((request) => String(request.requestId).startsWith('link-title:')).slice(before)
+  expect(asked.map((request) => request.call.key)).toEqual(['CORE-2'])
+  // 답을 붙잡은 동안 — 옛 제목이 그대로(키만 그리지 않는다).
+  expect(app.q(LINE)?.textContent).toContain('카드 저장')
+  app.hold.current = null
+  release()
+  await settle()
+  expect(app.q(LINE)?.textContent).toContain('갱신 중 제목')
 })

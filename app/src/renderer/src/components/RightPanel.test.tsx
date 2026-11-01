@@ -155,6 +155,30 @@ describe('LIFE-755 머리 단추 DOM 툴팁 (C1·C3·C4)', () => {
       leave(q(ALL[1] ?? ''))
     }
   })
+  it('C3 (r2 O) 창 resize 에 닫힌다', () => {
+    render({ view: 'explorer' })
+    enter(q(ALL[1] ?? ''))
+    expect(tips()).toHaveLength(1)
+    act(() => { window.dispatchEvent(new Event('resize')) })
+    expect(tips()).toHaveLength(0)
+  })
+  it('C1 (r2 O) 키보드 포커스(:focus-visible)로 열리고 blur 로 닫힌다 · 포인터 포커스(:focus-visible 아님)로는 열리지 않는다', () => {
+    render({ view: 'explorer' })
+    const button = q(ALL[2] ?? '')
+    if (button === null) throw new Error('단추 없음')
+    // happy-dom 의 :focus-visible 판정은 입력 방식을 모델링하지 않는다 — matches 를 스텁해 두 경우를 가른다.
+    let visible = false
+    const real = button.matches.bind(button)
+    button.matches = (selector: string) => (selector === ':focus-visible' ? visible : real(selector))
+    act(() => button.focus())
+    expect(tips()).toHaveLength(0)
+    act(() => button.blur())
+    visible = true
+    act(() => button.focus())
+    expect(tips().map((tip) => tip.textContent)).toEqual(['작업 상세'])
+    act(() => button.blur())
+    expect(tips()).toHaveLength(0)
+  })
   it('C3 (r1 C) 단추를 담지 않은 요소의 스크롤에는 닫히지 않고, 담은 조상의 스크롤에는 닫힌다', () => {
     render({ view: 'explorer' })
     const other = document.createElement('div')

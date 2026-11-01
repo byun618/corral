@@ -298,6 +298,7 @@ matchCount·resolvedModel·record.path 가 모두 unknown 이다 — **다른 �
 - **차단 화면**: 주입은 fail-closed 이고 효과가 없다 — `agent_blocked`(차단 화면),
   `detect_manifest_unverified`(가드 manifest 불일치), `agent_not_ready`(준비 관문 또는 제출 직전
   `state_change_seq` 검사 실패), `prompt_already_delivered`(이미 기록에 그 본문이 있음).
+  `prompt_already_delivered` 는 라운드를 넘겨 같은 답(「진행」·「허용함」)을 다시 넣을 때도 난다 — 라운드·시각을 본문에 넣어 다르게 쓴다(LIFE-746).
 - **타임아웃·빈 결과**: 마감·차단·종료로 대기가 끝나면 `wait.reason` 이 `deadline|agent_blocked|agent_exited` 다.
   `outcome` 은 만족한 대기에서만 `completed` 이고, 그 밖은 `outcome: unknown` 이며 **자동 재제출되지 않는다** —
   이때도 확인된 배달은 함께 보고된다. 그 보고를 먼저 읽고, `matchCount: 1` 이면 다시 넣지 않는다.
@@ -393,6 +394,8 @@ corral worktree set --worktree path:<구현 worktree 절대경로> --parent-work
   Dispatch 로 재개되고(`launch: resumed`), **이미 주입된 시도가 열려 있으면 `dispatch_active` 로 거절된다.**
   `launch: reused` 는 열린 시도가 없어 시작 가능한 Task 에 기존 pane 을 배정한 **새 시도**다. 재개는 Dispatch
   생성 시 기록된 본문 digest 를 배달하며, 명령줄에 남은 `--spec-file` 은 `ignoredOptions` 에 들어간다.
+- **런타임 인스턴스가 바뀌었을 때**: 공유 설치본이 재기동돼 보존한 워커 pane 재사용이 `agent_not_found`, `worker-stop` 이 `identity_unproven` 이면
+  `worker-abandon` → pane 정체(paneId·화면) 확인 후 `terminal close` → 새 세션에 이전 worklog·DONE·runs 를 읽게 하는 인계 문단으로 넘긴다(LIFE-754).
 - **하지 말 우회**: **기본 경로는 이 한 호출이다** — 따로 pane 을 만들고 `--terminal` 로 붙이는 2단 경로를
   평소에 쓰지 않는다(2단은 아래 차단 화면 복구용이다). `--terminal` 과 `--agent … --worktree` 를 **동시에 쓰지 않는다**(재사용 pane 은 기동 때의
   agent 를 그대로 쓰므로 `--model`·`--effort`·`--advisor`·`--worktree` 가 거절된다). `--agent` 에는 `--worktree`
@@ -669,3 +672,11 @@ corral orchestration run-use --id <run_id> --json            # 바인딩 복원
   (내가·내 코디네이터 세션이 이 일감으로 만든 것, `run-show` 의 `objective` 로 확인)이면 재사용한다.
   **남의 것이거나 누구 것인지 모르면 새로 만들고 끝나면 복원한다.** 모르는 채 재사용하면 남의 배치를
   `--ack` 하게 되고 그건 되돌릴 수 없다. (2026-09-27 새 독자가 두 문장 사이에서 스스로 판단해야 했던 자리)
+
+## 설치본 네이티브 관문 (사용자 설치본을 CDP·계측 소켓으로 조작·관측할 때)
+
+- **손 떼기 요청 = 키 + 포인터 + 시간.** 시작 전에 「키보드를 치지 않고, 포인터를 창 밖에 두고, N 분」을 받는다 — 창 위 포인터의 스크롤·hover 도 합성 입력과 섞여 회차를 무효로 만든다.
+  실입력 칸(사용자가 창에 손을 대야 하는 회차)만 예외로 적는다. 닫힘·선택 변경을 감지하면 다투지 말고 멈춘다.
+- **「X 가 뜰 때까지」 대기는 대상 정체(선택된 worktree·보기)를 같이 단언한다** — 「못 봤다」와 「다른 대상을 봤다」를 가른다.
+- **dev 빌드(서명이 다름)는 키체인 허용 대화상자가 뜬다** — 손 떼기를 받을 때 「뜨면 허용 한 번」을 같이 알리고, 워커는 대화상자를 누르지 않고 멈춘다.
+- 안 통하는 자리: 창 없는 serve 관문(입력 혼입 없음), 폰 실기기 회차(맥 손 떼기와 별개), orca·bare 매핑(설치본 CDP 관문 없음). (LIFE-683·745·755)

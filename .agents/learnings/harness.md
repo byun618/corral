@@ -1,19 +1,19 @@
 # harness learnings
 
-Last reviewed: 2026-10-30
+Last reviewed: 2026-11-02
 
 ## 「응답에 X 가 있다」는 어느 명령의 응답인지까지 원자료로
 
 - **Scope:** `.agents/harness/**`, 스킬이 매핑 응답 필드를 인용하는 자리
 - **Learning:** 같은 매핑 안에서도 도구마다, 같은 도구에서도 명령마다 응답 필드가 다르다. 절차 문구에 응답 필드를 쓰기 전에 그 명령의 실제 응답 원자료를 연다. 표·요약만 보고 일반화하지 않는다.
-- **Evidence:** LIFE-704 에서 세션 기록 경로를 r1 은 도구 단위로, fix2 는 매핑 단위로 일반화했다. 그러다 r4 에서 「기동 응답엔 없고 주입 응답에 늦게 온다」(Codex)로 뒤집혔다 — 같은 지적이 네 라운드 이어졌다.
+- **Evidence:** LIFE-704 에서 세션 기록 경로를 도구·매핑 단위로 일반화했다가 r4 에서 「기동 응답엔 없고 주입 응답에 늦게 온다」(Codex)로 뒤집혔다 — 같은 지적이 네 라운드 이어졌다.
 - **Disposition:** `.agents/harness/capabilities.md` 작성 지침 — 다시 나면.
 
 ## corral 감독 기동의 codex 는 업데이트 확인을 끌 수 없다
 
 - **Scope:** `.agents/harness/corral.md` 『감독 워커 기동』·『세션 기동』 — codex
 - **Learning:** corral 이 만드는 codex argv 에는 `-c check_for_update_on_startup=false` 가 없고 넘길 플래그도 없다. 업데이트 안내가 뜨는 버전 간격에서는 모델과 무관하게 기동이 120초 `outcome_unknown`·주입 미확정으로 멈출 수 있다 — Codex 워커·리뷰어를 띄우기 전에 이 가능성을 본다.
-- **Evidence:** LIFE-713 에서 codex-cli 0.162.1 → 0.164.0 안내 화면 아래 감독 기동 3회(카탈로그에 있는 모델 포함)가 모두 같은 상태로 멈췄다. 원인(안내 화면·기동 지연·배달 계층)은 가르지 못했다.
+- **Evidence:** LIFE-713 에서 codex-cli 0.162.1 → 0.164.0 안내 화면 아래 감독 기동 3회(카탈로그에 있는 모델 포함)가 모두 같은 상태로 멈췄다.
 - **Disposition:** corral 매핑 『감독 워커 기동』 「상황 → 행동」 — 원인을 가르는 별도 일감 후보(corral 이 codex 기동 `-c` 를 받게 하거나 매핑에 우회 경로).
 
 ## 공유 프로필에서 Run 이 둘이면 워커의 `ask` 를 쓰지 않는다
@@ -40,8 +40,8 @@ Last reviewed: 2026-10-30
 ## 공유 프로필의 대기는 소켓 주인 재기동을 견디게 돈다
 
 - **Scope:** corral 매핑 『완료 감지』 — `orchestration check --block`
-- **Learning:** 같은 프로필의 다른 일감이 설치본을 재기동하면 소켓 주인이 바뀌어 긴 `check --block` 이 `outcome_unknown` 으로 끝난다. ack 없는 대기는 다시 불러도 안전하므로 짧은 간격 재연결 루프로 감싸고, 끊김을 메시지 손실·워커 이상으로 읽지 않는다. ack 만 하는 대기에도 `--types` 를 붙여 heartbeat 배치가 새 Delivery 로 따라오지 않게 한다.
-- **Evidence:** LIFE-626 — 병렬 일감의 설치본 재기동마다 코디 대기가 끊겼고(워커 무영향), `--types` 없는 ack 가 heartbeat 18건 배치를 열었다.
+- **Learning:** 같은 프로필의 다른 일감이 설치본을 재기동하면 소켓 주인이 바뀌어 긴 `check --block` 이 `outcome_unknown` 으로 끝난다. ack 없는 대기는 다시 불러도 안전하므로 짧은 간격 재연결 루프로 감싸고, 끊김을 메시지 손실·워커 이상으로 읽지 않는다. ack 만 하는 대기에도 `--types` 를 붙여 heartbeat 배치가 새 Delivery 로 따라오지 않게 한다. 앱이 살아 있어도 `rpc.sock` 만 사라져 `runtime_unavailable` 이 오래 갈 수 있다 — 워커는 보고를 재시도 스크립트로 남겨 입력 대기하고 코디가 소켓 복구 뒤 한 번 돌리게 하며, 재기동으로 고치려 들지 않는다.
+- **Evidence:** LIFE-626 — 병렬 일감의 설치본 재기동마다 코디 대기가 끊겼고, `--types` 없는 ack 가 heartbeat 18건 배치를 열었다. LIFE-754 — `worker_done` 재시도 110회 모두 소켓 없음, 복구 뒤 전송.
 - **Disposition:** `.agents/harness/corral.md` 『완료 감지』 복구 절.
 
 ## 설치본 관문의 「쓰기 0」 은 main 쪽 trace 와 양성 대조로
@@ -51,9 +51,16 @@ Last reviewed: 2026-10-30
 - **Evidence:** LIFE-711 — 첫 회차가 가드 불가로 클릭 전에 멈췄고, trace 사후 검출로 바꾼 뒤 통과했다.
 - **Disposition:** `.agents/harness/corral.md` 설치본 관문 절 또는 validation.md 네이티브 관문 줄.
 
-## 설치본 GUI 회차는 손 떼기를 먼저 받고, 대기에 대상 정체를 단언한다
+## 설치본 관문은 최소 환경으로 띄우고 교체·종료·해시를 한 절차로 묶는다
 
-- **Scope:** 사용자 설치본을 CDP·계측 제어 소켓으로 조작·관측하는 네이티브 관문(사용자가 같은 앱을 쓰는 중)
-- **Learning:** 사용자가 그 앱 창(터미널 pane 포함)을 쓰면 페이지가 닫히거나 선택·보기가 바뀌어 회차가 무효가 된다. 시작 전에 손 떼는 시간을 받고, 「X 가 뜰 때까지」 대기에 대상 정체(선택된 worktree·보기)를 같이 담아 「못 봤다」와 「다른 대상을 봤다」를 가르며, 닫힘을 감지하면 다투지 말고 멈춘다. 마우스 이벤트로 동작하는 요소는 DOM `click()` 대신 입력 이벤트 클릭을, 겹치는 줄이 없는 가장 작은 요소에 쓴다.
-- **Evidence:** LIFE-745 관측 두 회차가 작업 페이지 닫힘으로 무효였고 손 떼기 뒤 정상이었다. LIFE-683 반영 시간 측정 2회가 선택 변경으로 무효, 카드 가운데 클릭이 제목 줄에 맞아 엉뚱한 페이지를 열었다.
-- **Disposition:** `.agents/harness/corral.md` 설치본 관문 절 또는 validation.md 네이티브 관문 줄.
+- **Scope:** 설치본을 dev 패키지로 바꾸거나 재기동하는 네이티브 관문(macOS, 병렬 일감이 같은 설치본을 씀)
+- **Learning:** 셸의 `open -a` 는 호출 셸 환경(PATH 포함)을 앱에 넘기므로 PATH 가 판정 조건이면 `env -i HOME USER LOGNAME TMPDIR PATH=/usr/bin:/bin:/usr/sbin:/sbin open -a …` 로 띄우고 `ps eww` 로 앱 PATH 를 찍는다. 공유 설치본은 끈 사이 다른 주체가 띄울 수 있어 종료→교체→기동을 한 명령으로 묶고, 교체 전 GUI 잠금을 잡아 형제 코디에게 알린다. 설치본 해시는 방식까지 적고(방식이 다르면 같은 원본도 숫자가 다르다), 종료는 인자 패턴이 아니라 pid 로 확인하며 새 기동은 새 pid 로 단언한다. 키체인 허용 대화상자는 손 떼기를 받을 때 미리 알린다.
+- **Evidence:** LIFE-624 — `open` 기동 두 번이 셸 PATH 로 떠 무효, 끈 뒤 수 초 안 재기동 두 번. LIFE-520 — 세 일감이 설치본을 차례로 갈며 해시 방식이 달랐고, 패턴 종료 대기가 인자 붙은 프로세스를 놓쳐 종료 중 인스턴스에 붙은 무효 회차. LIFE-746 — dev 빌드 두 번 모두 키체인 대화상자.
+- **Disposition:** `.agents/harness/corral.md` 설치본 네이티브 관문 절 — 다시 나면.
+
+## TUI 선택 프롬프트는 선택 상태를 다시 읽은 뒤 Enter 를 보낸다
+
+- **Scope:** 하네스·워커가 에이전트 TUI 를 키 입력으로 넘기는 자리(신뢰·업데이트 프롬프트)
+- **Learning:** 입력 준비 전에 보낸 이동 키는 조용히 사라지고 그 뒤 Enter 가 기본값을 고른다. 이동 키 뒤 화면에서 선택 표시가 원하는 항목에 있는지 읽은 다음에만 Enter 를 보낸다.
+- **Evidence:** LIFE-710 — claude 신뢰 프롬프트의 ↓ 가 유실돼 기본 「No, exit」 로 pane 이 종료됐고, codex 업데이트 안내에서도 Enter 가 엉뚱한 선택을 골랐다.
+- **Disposition:** 같은 실수가 다시 나오면 harness 매핑의 『준비 대기』 주의사항.

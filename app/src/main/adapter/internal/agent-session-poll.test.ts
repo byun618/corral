@@ -89,6 +89,17 @@ describe('applyAgentSessions — 저장소 규칙', () => {
   })
 })
 
+describe('요청 경로가 agent.list 를 허용한다', () => {
+  // 아래 link 시험은 request 를 가짜로 바꾸므로 화이트리스트를 지나지 않는다 — 실물 첫 회차가 여기서 막혔다
+  // (`method_not_allowed`, LIFE-710 raw/claude/feel-c1-r1). 실제 request 로 그 이음새를 따로 못박는다.
+  it('method_not_allowed 로 막히지 않는다 — 없는 소켓이라 연결 단계에서 실패한다', async () => {
+    const actual = await vi.importActual<typeof import('./request.js')>('./request.js')
+    const failure = await actual.request('/tmp/l710-unit-missing.sock', 'agent.list', {}, { timeoutMs: 500 }).then(() => null, (error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure instanceof actual.HerdrRequestError ? failure.code : 'connect').not.toBe('method_not_allowed')
+  })
+})
+
 describe('SessionLink 세션 조회 — agent.list 주기 호출', () => {
   beforeEach(() => {
     vi.useFakeTimers()

@@ -35,6 +35,7 @@ import {
   applyPreset,
   boardBands,
   boardDropIntent,
+  boardLaneOrder,
   columnZone,
   laneBands,
   missingParents,
@@ -502,8 +503,21 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   // 묶기=부모(LIFE-745 C5) — 레인마다 묶기 없음과 같은 칸 구성, 칸마다 그 레인의 카드만.
   const boardLanes = useMemo((): BoardLane[] | null => {
     if (prefs.swimlane !== 'parent') return null
-    return parentLanes({ rows: boardRows, parentOf: parentOfRow }).map((lane) => ({ lane, bands: laneBands({ bands, lane }) }))
-  }, [prefs.swimlane, boardRows, bands, rows, fetchedParents])
+    // 완료 레인은 진행 레인 뒤·「부모 없음」 앞(LIFE-746) — 완료 판정은 레인 머리 진행과 같은 행(`rows`)으로.
+    // 검색 중(레인 = 일치 카드만)이거나 상세가 열린 카드가 든 레인은 완료여도 기본 펼침(r1 지적 1).
+    const searching = query.trim().length > 0
+    return boardLaneOrder({ lanes: parentLanes({ rows: boardRows, parentOf: parentOfRow }), rows }).map(({ lane, complete }) => ({
+      lane, complete, reveal: searching || (detailMounted && lane.rows.some((row) => rowUid(row) === selectedId)), bands: laneBands({ bands, lane }),
+    }))
+  }, [prefs.swimlane, boardRows, bands, rows, fetchedParents, query, detailMounted, selectedId])
+  // 레인 토글 기록(LIFE-746 C1 ⓒ) — 보드가 빠지는 보기 전환·빈 상태를 넘어 이 페이지가 살아 있는 동안 남는다. 영속하지 않는다.
+  // 부모 레인 id(부모 uid)는 연결·부모로 이미 유일하다. 「부모 없음」 은 스페이스·「전체」 마다 다른 레인이라 지금 보는 범위로 가른다(r2 지적 1).
+  const [laneToggles, setLaneToggles] = useState<ReadonlyMap<string, boolean>>(new Map())
+  const toggleKey = (laneId: string): string => (laneId === 'none' ? `none@${space === null ? '' : spaceId(space)}` : laneId)
+  const shownToggles = new Map((boardLanes ?? []).flatMap(({ lane }): [string, boolean][] => {
+    const folded = laneToggles.get(toggleKey(lane.id))
+    return folded === undefined ? [] : [[lane.id, folded]]
+  }))
   const backlogSections = useMemo((): BacklogSection[] => {
     const sorted = [...shelved].sort((a, b) => compareRank(a.item, b.item))
     return [
@@ -715,7 +729,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           <div className="tasks-scroll" data-tasks-scroll="board">
             {hits.length > 0 ? <KeyHits hits={hits} selectedId={shownId} onSelect={toggleSelect} /> : null}
             <Board
-              bands={bands} lanes={boardLanes} rows={rows} all={all} density={prefs.density} selectedId={shownId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
+              bands={bands} lanes={boardLanes} laneToggles={shownToggles} onLaneToggle={({ id, folded }) => setLaneToggles((current) => new Map(current).set(toggleKey(id), folded))} rows={rows} all={all} density={prefs.density} selectedId={shownId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
               columnFooter={(column) => (column.statusKey === null || column.lane !== null ? null : <InlineAddSlot view={creator.inlineView({ statusKey: column.statusKey, columnId: column.id, unmapped: column.unmapped })} model={creator} statusKey={column.statusKey} columnId={column.id} />)}
             />
             <MoreBar more={more} onLoadMore={() => void page.loadMore()} />

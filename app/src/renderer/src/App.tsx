@@ -9,7 +9,7 @@ import { useKeybindings } from './hooks/useKeybindings.js'
 import { SettingsPage } from './components/SettingsPage.js'
 import { TasksPage, type TasksFocus } from './components/TasksPage.js'
 import type { WorktreeTaskLine } from './components/WorktreeTask.js'
-import { linkTitleId, useLinkTitles } from './hooks/useLinkTitles.js'
+import { linkTitleId, useLinkTitles, type LinkTitleReread } from './hooks/useLinkTitles.js'
 import { activateWorktreeCard } from './worktree-activate.js'
 import { DEFAULT_SETTINGS_SECTION, SETTINGS_SECTIONS, type SettingsSectionId } from './settings-registry.js'
 // 화면 오케스트레이터 — `repo → worktree → tab → pane` 4단 데이터를 Orca 배치(사이드바 카드 +
@@ -91,7 +91,9 @@ import { moveDirectionToSplit } from './components/TabContextMenu.js'
 import { groupOfTab, listGroups, readStoredLayouts } from './group-tree.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
 import { updateSettings, useSettings } from './settings-store.js'
-import { resolveNewAgentTab } from './tab-create-menu.js'
+import { isAgentAvailable, resolveNewAgentTab } from './tab-create-menu.js'
+import { DETECTABLE_AGENTS } from '../../shared/agent-detection.js'
+import { useAgentDetection, useRecheckAgentDetectionOnOpen } from './agent-detection-store.js'
 import { terminalCssVars } from './terminal-appearance.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
@@ -689,12 +691,15 @@ export function App(): React.JSX.Element {
       : (activeGroupTab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? pickPane(activeGroupTab)?.paneId ?? null)
   const unread = useUnread({ state, viewedPaneId, activeWorktree: activeWorktreeRow?.path ?? null })
   // LIFE-603 C11 — 사이드바 작업 줄의 제목 캐시. 작업 페이지가 닫힐 때마다 다시 받는다(페이지에서 바꾼 제목·상태).
+  // LIFE-755 r1·r2 — 페이지가 닫힌 채 패널 상세에서 쓰기(연결 포함)가 성공하면 그 연결의 줄만 **기존 값을 남긴 채** 다시 받는다(`reread` — 작업 줄은 이제 페이지를 거치지 않는다).
+  // 열린 페이지의 쓰기는 닫힘 갱신이 맡는다.
   const [tasksFocus, setTasksFocus] = useState<TasksFocus | null>(null)
   const [titleRound, setTitleRound] = useState(0)
+  const [titleReread, setTitleReread] = useState<LinkTitleReread>(() => new Map())
   useEffect(() => {
     if (!tasksOpen) setTitleRound((value) => value + 1)
   }, [tasksOpen])
-  const linkTitles = useLinkTitles({ repos: state?.repos ?? NO_REPOS, refresh: titleRound })
+  const linkTitles = useLinkTitles({ repos: state?.repos ?? NO_REPOS, refresh: titleRound, reread: titleReread })
 
   /**
    * LIFE-387 A1 — 탭 드래그. 판정은 `useTabDrag`(순수 함수 `tab-drag.ts` 를 DOM 에 잇는 층)가
@@ -808,6 +813,10 @@ export function App(): React.JSX.Element {
   const cell = useCellMetrics()
   // 터미널 외관 CSS 변수(pane 배경·비활성 투명도·디바이더, LIFE-512) — 칠하기 전에 문서 루트에 둔다(첫 화면부터 저장값).
   const settings = useSettings()
+  // LIFE-520 — 앱 기동 때부터 감지 결과를 구독한다(⌘⌥T 가 메뉴·설정을 열기 전에도 결과를 본다).
+  const agentDetection = useAgentDetection()
+  // fix2 R2-03 — 셸 실패 결과면 팔레트를 열 때 다시 묻는다(팔레트의 「새 X 에이전트」 가 감지를 따른다).
+  useRecheckAgentDetectionOnOpen(paletteOpen)
   useLayoutEffect(() => {
     const root = document.documentElement.style
     for (const [name, value] of Object.entries(terminalCssVars(settings))) root.setProperty(name, value)
@@ -1579,7 +1588,7 @@ export function App(): React.JSX.Element {
     setTasksOpen(false)
     requestAnimationFrame(() => setFocusToken((value) => value + 1))
   }
-  /** 링크된 worktree 카드의 작업 줄 — 누르면 작업 페이지 + 그 작업 상세. 연결이 없거나 못 찾으면 키만. */
+  /** 링크된 worktree 카드의 작업 줄 — 누르면 오른쪽 패널에 그 작업 상세(본문은 그대로 — 작업 페이지를 열지도 닫지도 않는다, LIFE-755). 연결이 없거나 못 찾으면 키만. */
   const taskLineOf = (worktree: WorktreeRow): WorktreeTaskLine | null => {
     const link = worktree.workLink ?? null
     if (link === null) return null
@@ -1593,7 +1602,6 @@ export function App(): React.JSX.Element {
       blocked: (item?.openBlockerCount ?? 0) > 0,
       blockers: item?.openBlockers.map((blocker) => `${blocker.key} ${blocker.title}`) ?? [],
       onOpen: () => {
-        openTasks()
         setTasksFocus((current) => ({ seq: (current?.seq ?? 0) + 1, connectionId: link.connectionId, itemId: link.itemId ?? item?.id ?? null, key: link.key }))
       },
     }
@@ -1695,7 +1703,7 @@ export function App(): React.JSX.Element {
     },
     // LIFE-515 — 기본 Agent 로 새 탭. ⌘T 와 같은 대상 workspace·같은 생성 경로(createRow), 에이전트 갈래는 Quick-launch 와 같은 launchAgent(워치독).
     'terminal.newAgent': () => {
-      const target = resolveNewAgentTab(settings.defaultAgent)
+      const target = resolveNewAgentTab({ defaultAgent: settings.defaultAgent, detection: agentDetection })
       switch (target.kind) {
         case 'agent':
           lifecycle.createAgentTab({ kind: target.agent, label: AGENT_LAUNCH_LABEL[target.agent] })
@@ -2144,7 +2152,8 @@ export function App(): React.JSX.Element {
   for (const section of SETTINGS_SECTIONS) {
     paletteEntries.push({ id: `settings.section:${section.id}`, title: `설정 › ${section.title}`, detail: section.description, keywords: ['settings', '설정', ...section.searchEntries.flatMap((entry) => [entry.title, ...(entry.keywords ?? [])])].join(' '), run: () => openSettings(section.id) })
   }
-  for (const kind of ['claude', 'codex', 'grok'] as const) paletteEntries.push({ id: `agent.start.${kind}`, title: `새 ${kind} 에이전트`, detail: activeWorktree?.path ?? 'worktree 선택 필요', disabled: !connected ? '연결된 세션이 없습니다' : !activeWorkspace ? '열린 worktree를 선택하세요' : undefined, run: () => { if (activeWorkspace) lifecycle.actions.createRow(activeWorkspace.workspaceId, kind) } })
+  // LIFE-520 fix2 R2-01 — 감지된 에이전트만(감지 전·실패면 3종 그대로 = base).
+  for (const kind of DETECTABLE_AGENTS.filter((agent) => isAgentAvailable({ agent, detection: agentDetection }))) paletteEntries.push({ id: `agent.start.${kind}`, title: `새 ${kind} 에이전트`, detail: activeWorktree?.path ?? 'worktree 선택 필요', disabled: !connected ? '연결된 세션이 없습니다' : !activeWorkspace ? '열린 worktree를 선택하세요' : undefined, run: () => { if (activeWorkspace) lifecycle.actions.createRow(activeWorkspace.workspaceId, kind) } })
   for (const repo of state.repos) {
     const primary = repo.worktrees.find(worktree => !worktree.isLinked)
     paletteEntries.push({ id: `repo.select:${repo.root}`, title: `레포 선택 · ${repo.root.split('/').at(-1)}`, detail: repo.root, disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => { if (primary) lifecycle.actions.openWorktree(repo.root, primary) } })
@@ -2313,6 +2322,7 @@ export function App(): React.JSX.Element {
             focus={tasksFocus}
             detailPanel={{ slot: detailSlot, shown: rightPanel.open && rightPanel.view === 'detail', show: () => rightPanel.show('detail'), hide: rightPanel.hide, openPage: openTasks }}
             onModalChange={setTasksModalOpen}
+            onItemWritten={(connectionId) => { if (!tasksOpen) setTitleReread((current) => new Map(current).set(connectionId, (current.get(connectionId) ?? 0) + 1)) }}
             headTail={rightPanel.ready && !rightPanel.open ? <RightPanelToggle label="오른쪽 패널 열기" shortcut={rightPanelToggleShortcut} onToggle={rightPanel.toggle} placement="tasks" /> : null}
           />
         </div>

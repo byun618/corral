@@ -3,6 +3,8 @@ import type { RepoRow } from '../../shared/types.js'
 import type { WorkRepoDefault } from '../../shared/work.js'
 import type { StartAgent } from '../../shared/agent-options.js'
 import type { StartStage, StartStageName, StartWorkResult } from '../../shared/work-start.js'
+import type { AgentDetectionSnapshot } from '../../shared/agent-detection.js'
+import { autoAgent, isAgentAvailable } from './tab-create-menu.js'
 
 /** 기본 레포 — 그 스페이스를 기본으로 둔 레포 → 활성 worktree 레포 → 없음(고르기). 등록된 레포만. */
 export function defaultStartRepo({ repos, repoDefaults, connectionId, spaceKey, activeRepoRoot }: {
@@ -17,6 +19,18 @@ export function defaultStartRepo({ repos, repoDefaults, connectionId, spaceKey, 
   if (byDefault !== undefined) return byDefault.repoRoot
   if (activeRepoRoot !== null && known.has(activeRepoRoot)) return activeRepoRoot
   return null
+}
+
+/** 에이전트 칸 선택지 (LIFE-520 E5) — 감지된 에이전트 + 빈 터미널(늘 있다). 감지 전·실패면 base 4칸. 순서는 base 그대로. */
+export function startAgentChoices(detection: AgentDetectionSnapshot): StartAgent[] {
+  const all: StartAgent[] = ['claude', 'codex', 'grok', 'shell']
+  return all.filter((agent) => agent === 'shell' || isAgentAvailable({ agent, detection }))
+}
+
+/** 초기 선택 — 원하는 값이 감지됐으면 그대로, 아니면 자동 규칙(감지된 첫 번째), 0개면 빈 터미널. */
+export function initialStartAgent({ preferred, detection }: { preferred: StartAgent; detection: AgentDetectionSnapshot }): StartAgent {
+  if (preferred === 'shell' || isAgentAvailable({ agent: preferred, detection })) return preferred
+  return autoAgent(detection) ?? 'shell'
 }
 
 export type ProgressRow = { name: StartStageName; label: string; status: StartStage['status']; note: string | null }

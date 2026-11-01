@@ -520,11 +520,14 @@ export class WorkService {
     return { state: 'item', itemId: found.result.item.id }
   }
 
-  /** LIFE-603 — main 이 남기는 실행·에이전트 사건. `eventKey` 가 이미 있으면 남기지 않는다. 없는 연결이면 버린다. */
-  recordEvent({ connectionId, itemId, itemKey, eventKey, change }: { connectionId: string; itemId: string | null; itemKey: string; eventKey: string; change: WorkActivityChange }): boolean {
+  /**
+   * LIFE-603 — main 이 남기는 실행·에이전트 사건. `eventKey` 가 이미 있으면 남기지 않는다. 없는 연결이면 버린다.
+   * `at` = 사건 자체의 시각(LIFE-624 — PR 의 열림·머지·닫힘 시각). 없으면 지금.
+   */
+  recordEvent({ connectionId, itemId, itemKey, eventKey, change, at }: { connectionId: string; itemId: string | null; itemKey: string; eventKey: string; change: WorkActivityChange; at?: number }): boolean {
     const activity = this.deps.activity
     if (activity === undefined || !this.deps.store.get().connections.some((row) => row.id === connectionId)) return false
-    return activity.append({ id: this.newId(), connectionId, itemId: itemId ?? '', itemKey, at: this.now(), writeId: eventKey, eventKey, change })
+    return activity.append({ id: this.newId(), connectionId, itemId: itemId ?? '', itemKey, at: at ?? this.now(), writeId: eventKey, eventKey, change })
   }
 
   /** LIFE-603 R1-M — 남긴 사건의 내용 고치기(턴 결과의 바뀐 파일 수). */

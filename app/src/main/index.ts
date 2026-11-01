@@ -97,6 +97,8 @@ import { canonicalPath } from './canonical-path.js'
 import { electronClipboardPng, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepPasteFiles } from './clipboard-image.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
+import { AgentDetector, realAgentDetectorDeps, registerAgentDetectionIpc } from './agent-detection.js'
+import { AGENT_DETECTION_CHANNEL } from '../shared/agent-detection.js'
 import { externalOpenLogUrl, isExternalOpenAllowed } from './external-url.js'
 import { pickSessionName, pinnedSessions } from './pick-session.js'
 import { BackendRetry, BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, nextScanErrorStreak, type BackendInput } from './backend-start.js'
@@ -144,6 +146,7 @@ import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
 import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
 import { readFileContent, readImageContent } from './file-read.js'
 import { readScmContent } from './scm-read.js'
+import { PrStatus } from './pr-status.js'
 import { createFileWatch, type FileWatch } from './file-watch.js'
 import { loadTestHooks, writeFileContent } from './file-write.js'
 import { fileDialogSpec, parseFileDialogRequest, reloadDialogSpec, unresponsiveDialogSpec } from './file-dialogs.js'
@@ -283,6 +286,8 @@ let fileWatch: FileWatch | null = null
 let settings: SettingsStore | null = null
 /** 상태바 provider 사용량 (LIFE-636) — 기동 때 만들고 `window-all-closed` 에서 정리한다. 토큰은 이 안(main)에서만 산다. */
 let usage: UsageService | null = null
+/** 에이전트 감지 (LIFE-520) — 기동 때 백그라운드로 한 번. 창·런타임 기동은 이것을 기다리지 않는다(K2ⓑ). */
+let agentDetector: AgentDetector | null = null
 /** 설정 › 작업 연결 (LIFE-600) — 기동 때는 저장 파일만 읽는다. 자격(키체인)은 그 연결이 처음 쓰일 때 푼다(C6). */
 let work: WorkService | null = null
 /** LIFE-603 — 작업 링크(해석·쓰기·사건)와 「작업에서 시작」. 작업 서비스와 같이 선다. */
@@ -2076,6 +2081,17 @@ app.whenReady().then(async () => {
     })
   })
 
+  // 에이전트 감지 (LIFE-520) — 만들자마자 백그라운드로 돌린다(await 하지 않는다 — 런타임·창 기동과 나란히). 결과는 푸시와 get 으로.
+  agentDetector = new AgentDetector(realAgentDetectorDeps({
+    env: process.env,
+    onChange: (snapshot) => {
+      if (window !== null && !window.isDestroyed()) window.webContents.send(AGENT_DETECTION_CHANNEL.push, snapshot)
+    },
+    log,
+  }))
+  void agentDetector.ensure()
+  registerAgentDetectionIpc({ handle: (channel, listener) => ipcMain.handle(channel, listener), allowed: fromOurWindow, detector: () => agentDetector })
+
   // 상태바 사용량 (LIFE-636) — 스냅숏은 창별 사용률·초기화 시각·상태 문구뿐이다(토큰·계정 값 없음, E6ⓒ).
   ipcMain.handle('corral:usageGet', (event) => (fromOurWindow(event) ? (usage?.snapshot() ?? EMPTY_USAGE_SNAPSHOT) : null))
   ipcMain.handle('corral:usageRefresh', async (event, input: unknown) => {
@@ -2131,6 +2147,10 @@ app.whenReady().then(async () => {
     scheduleEmit()
     return result
   })
+  // LIFE-624 — PR 상태(gh). 경로는 지금 트리의 worktree 만, URL 은 GitHub PR 꼴만(`pr-status.ts`). 렌더러가 보일 때만 부른다 — 상시 폴링 없음.
+  const prStatus = new PrStatus({ repos: () => currentState().repos, work: () => work, log })
+  ipcMain.handle('corral:prBranches', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.branches(input) : { lookups: {}, recorded: 0 }))
+  ipcMain.handle('corral:prRefreshItem', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.refreshItem(input) : { ok: false, reason: '허용되지 않은 발신자' }))
 
   // --- 라이프사이클 (R3) ---
   const denied = { ok: false as const, error: '허용되지 않은 발신자' }
@@ -2739,6 +2759,8 @@ app.on('before-quit', event => {
   }
   // LIFE-593 수정 r2 R2-C-01 — 가로챔을 지난 종료(⌘Q·창 닫힘)에서는 `window-all-closed` 가 오지 않는다. 진행 중 목록 git 그룹을 여기서 동기로 끝낸다(타이머 없이 SIGKILL).
   fileLister?.killAll()
+  // LIFE-520 fix1 R1-06 — 진행 중 감지 셸(새 프로세스 그룹)을 끝낸다. 앱 타이머가 멈추면 시한 kill 이 오지 않는다.
+  agentDetector?.killAll()
   // 런타임 정리(Mobile serve 제거 + 런타임 닫기)는 **한 번만** 돌리고, 정리 중 다시 온 종료 요청(창 파기 → `window-all-closed` 의 `app.quit()` 등)도
   // 같은 정리 Promise 를 기다리게 한다(수정 r2 R2-C — 옛 코드는 첫 요청에서 `stopRuntime` 을 비워, 재진입 종료가 정리를 기다리지 않고 끝났다).
   if (runtimeStopped) return
@@ -2757,6 +2779,7 @@ app.on('before-quit', event => {
 })
 
 app.on('window-all-closed', () => {
+  agentDetector?.killAll()
   usage?.dispose()
   usage = null
   explorerHub?.dispose()

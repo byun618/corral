@@ -9,6 +9,9 @@
 //
 // **주기 재동기** (기준 N7): push 는 유실된다 (실측 152/274). 구독은 갱신이지 진실이 아니다 —
 // 진실은 스냅샷이다. 그래서 커넥션이 멀쩡해도 주기적으로 스냅샷을 다시 받아 맞춘다.
+//
+// **세션 조회** (LIFE-710): 세션 참조 보고에는 push 가 없어서, 에이전트가 붙은 pane 이 있는 동안만
+// `agent.list` 한 건을 짧은 주기로 보내 세션 참조만 맞춘다 (`AGENT_SESSION_POLL_MS`).
 
 import type { LinkPhase, LinkState } from '../../../shared/types.js'
 import { pickBlockedRule } from '../../../shared/agent-state.js'
@@ -46,19 +49,53 @@ const AGENT_SUBSCRIPTION_DEBOUNCE_MS = 400
 export const DEFAULT_RESYNC_MS = 30_000
 
 /**
- * 에이전트가 붙은 뒤 **세션 참조를 주우러 가는 시각** (LIFE-366).
+ * 에이전트가 붙은 뒤 **재동기를 두 번 당기는 시각** (LIFE-366).
  *
  * herdr 는 `pane.report_agent_session` 에 **push 를 안 준다** — 실측이다
  * (`raw/claude/push-probe.json`: 같은 구독이 `pane_created` 는 받는데 보고 뒤에는 0건이고,
- * `pane.agent_session_*` 류 구독 타입은 herdr 가 모른다). 그래서 통합 훅이 알린 세션 id 는
- * **30초 주기 재동기 스냅샷**까지 corral 에 안 온다 — 세션 행 2차 줄이 최대 30초 늦게 붙는다.
+ * `pane.agent_session_*` 류 구독 타입은 herdr 가 모른다).
  *
- * 에이전트가 붙는 순간(`pane_agent_detected`)에 두 번 더 주워 그 구멍을 메운다. 훅은
- * 에이전트의 SessionStart 에서 뜨므로 검출 직후 몇 초 안에 참조가 생긴다(A3ⓑ 실측: 기동 →
- * 참조 1,068ms). 폴링을 새로 들이지 않고 **이미 있는 재동기를 두 번 당겨 쓰는** 것이라
- * 비용은 에이전트 기동 1회당 스냅샷 2회다.
+ * **LIFE-710 이전에는** 그래서 통합 훅이 알린 세션 id 가 30초 주기 재동기 스냅샷까지 corral 에 안 왔고,
+ * 이 nudge 가 그 구멍을 메웠다 — 에이전트가 붙는 순간(`pane_agent_detected`) 재동기를 두 번 더 당긴다
+ * (훅은 SessionStart 에서 뜨므로 검출 직후 몇 초 안에 참조가 생긴다 — A3ⓑ 실측: 기동 → 참조 1,068ms).
+ * 그때는 폴링을 따로 두지 않고 이미 있는 재동기를 당겨 썼고, 비용은 에이전트 기동 1회당 스냅샷 2회였다.
+ *
+ * **지금은** 아래 세션 조회(`AGENT_SESSION_POLL_MS` — 에이전트 pane 이 있는 동안 1.5 s 마다 `agent.list`)가
+ * 첫 참조와 그 뒤의 세션 변경을 줍는다. 이 nudge 는 지우지 않고 둔다(수정 범위 최소화 — 겹쳐도 같은 값이라
+ * 조회 쪽은 화면 갱신 신호를 내지 않는다).
  */
 export const AGENT_SESSION_NUDGE_MS: readonly number[] = [2_000, 8_000]
+
+/**
+ * 에이전트가 **이미 붙은 채** 세션만 바뀔 때(`/clear` 등) 세션 참조를 주우러 가는 주기 (LIFE-710).
+ *
+ * 위 nudge 는 `pane_agent_detected` 때만 당긴다. `/clear` 는 같은 에이전트가 붙은 채 세션만 바뀌어
+ * 아무 계기도 없었고, 그래서 목록이 다음 30초 타이머까지 옛 세션이었다(C0 실측: 5회 17~26 s,
+ * 매 회차 `resync.applied reason=timer` 와 짝). `/clear` 가 내는 push 도 기대할 수 없다 — 5회 중 4회는
+ * 구독 push 가 0건이었다(`pane_updated` 0건, 상태 전이는 1회만).
+ *
+ * 그래서 에이전트가 붙은 pane 이 **있는 동안만** `agent.list` 한 건(세션 안 전 에이전트의 참조가 한 번에 온다)을
+ * 이 주기로 보내 **세션 참조만** 맞춘다 — 스냅샷·reconcile 을 돌리지 않고, 값이 같으면 화면 갱신 신호도 없다.
+ * 비용은 세션당 1.5 s 에 요청 1건(120 s 에 80건). 성공·변화 없음은 로그도 남기지 않는다(조회의 `req.*` 포함 — 리뷰 r1 A:
+ * 4줄이면 하루 약 36 MB). 실패와 세션 변경만 남는다.
+ *
+ * **따라잡기 상한**: 다음 조회는 앞 조회가 **끝난 뒤**, 앞 조회 시작 + 이 주기에 건다(겹치지 않는다).
+ * 요청 timeout(`AGENT_SESSION_POLL_TIMEOUT_MS`)이 주기보다 짧아서 느린 답이 다음 조회를 미루지 않는다.
+ * 정상 응답(수 ms)이면 herdr 보고 뒤 **1.5 s + 왕복**, herdr 가 느려도 **응답이 timeout 안에 오는 한** 최악
+ * **1.5 s + timeout 1.0 s = 약 2.5 s** 다(보고 직후 나간 조회가 옛 값을 늦게 돌려주는 경우 — 리뷰 r1 D: 전에는 건너뛴 틱
+ * 때문에 약 3 s 였다). 연속 timeout 이면 그보다 늦고, 그때는 `agent_session.poll.failed` 가 남는다.
+ * timeout 은 **연결 단계까지** 덮는다 — 조회 경로만 abort 기한을 따로 건다(공용 `request()` 의 timeout 은 연결 뒤에 시작한다).
+ *
+ * **실패 로그**: 같은 오류가 이어지면 첫 건(`poll.failed`)과 `AGENT_SESSION_POLL_FAILURE_SUMMARY_MS` 마다 요약
+ * (`poll.failing`) 한 줄만 남기고, 회복하면 `poll.recovered` 한 줄 — 지속 실패가 1.5 s 마다 로그를 쌓지 않게(리뷰 r2 5).
+ */
+export const AGENT_SESSION_POLL_MS = 1_500
+
+/** 세션 조회 한 건의 timeout — 주기보다 짧게 둔다(위 상한). */
+export const AGENT_SESSION_POLL_TIMEOUT_MS = 1_000
+
+/** 같은 조회 오류가 이어질 때 요약 한 줄을 남기는 간격. */
+export const AGENT_SESSION_POLL_FAILURE_SUMMARY_MS = 60_000
 
 function resyncIntervalMs(): number {
   const raw = Number(process.env.CORRAL_RESYNC_MS)
@@ -104,6 +141,13 @@ export class SessionLink {
   private nudgeTimers = new Set<ReturnType<typeof setTimeout>>()
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private resyncTimer: ReturnType<typeof setInterval> | null = null
+  /** 세션 조회 타이머·진행 중 표시 (LIFE-710). */
+  private sessionPollTimer: ReturnType<typeof setTimeout> | null = null
+  private sessionPolling = false
+  /** 진행 중 조회의 기한(연결 포함) — `stopSessionPoll` 이 끊는다. */
+  private sessionPollDeadline: { controller: AbortController; timer: ReturnType<typeof setTimeout> } | null = null
+  /** 실패 상태 — 실패가 이어지는 동안(오류 문구가 바뀌어도) 첫 건과 요약만 남기려고 센다. `open()`·끊김에서 비운다. */
+  private sessionPollFailure: { error: string; count: number; loggedAt: number } | null = null
   private buffer: Array<{ frame: PushFrame; at: number }> = []
   private bootstrapping = false
   private resyncing = false
@@ -167,6 +211,7 @@ export class SessionLink {
     this.session = session
     this.store.reset()
     this.reasonAttempts.clear()
+    this.sessionPollFailure = null
     this.state = {
       ...this.state,
       sessionName: session.name,
@@ -185,6 +230,7 @@ export class SessionLink {
     this.retryTimer = null
     if (this.resyncTimer) clearInterval(this.resyncTimer)
     this.resyncTimer = null
+    this.stopSessionPoll()
     if (this.agentTimer) clearTimeout(this.agentTimer)
     this.agentTimer = null
     for (const timer of this.nudgeTimers) clearTimeout(timer)
@@ -304,6 +350,7 @@ export class SessionLink {
       this.hooks.onTopologyChange?.()
       this.scheduleAgentSubscription()
       this.startResync()
+      this.startSessionPoll()
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error))
       const code = 'code' in failure && typeof failure.code === 'string' ? failure.code : 'unknown'
@@ -392,6 +439,113 @@ export class SessionLink {
       return { ok: false, note: String(error) }
     } finally {
       this.resyncing = false
+    }
+  }
+
+  // --- 세션 조회 (LIFE-710) -----------------------------------------------------
+
+  private startSessionPoll(): void {
+    this.scheduleSessionPoll(AGENT_SESSION_POLL_MS)
+  }
+
+  /**
+   * 다음 조회 하나를 건다 — **한 번에 타이머 하나**. live 가 아니면 걸지 않는다(끊김·close 뒤 타이머 0).
+   * 진행 중인 조회가 있으면 그 조회의 `finally` 가 다음을 건다 — 재연결로 세대가 바뀌어도 이어진다.
+   */
+  private scheduleSessionPoll(delayMs: number): void {
+    if (this.stopped || this.state.phase !== 'live' || this.sessionPollTimer !== null) return
+    this.sessionPollTimer = setTimeout(() => {
+      this.sessionPollTimer = null
+      void this.pollAgentSessions()
+    }, delayMs)
+  }
+
+  private stopSessionPoll(): void {
+    if (this.sessionPollTimer) clearTimeout(this.sessionPollTimer)
+    this.sessionPollTimer = null
+    // 진행 중 조회도 끊는다 — 그 답은 어차피 낡았고, 기한 타이머가 남지 않게.
+    const deadline = this.sessionPollDeadline
+    this.sessionPollDeadline = null
+    if (deadline !== null) {
+      clearTimeout(deadline.timer)
+      deadline.controller.abort()
+    }
+  }
+
+  /**
+   * 실패 상태 플래그로 판정한다(리뷰 r3 4) — 직전 문구와 비교하면 오류가 번갈아 올 때 매 조회가 로그를 남겼다.
+   * 상태에 들어갈 때 `poll.failed` 한 줄, 머무는 동안은 요약 간격마다 `poll.failing`(횟수·마지막 오류) 한 줄.
+   * 요약 간격은 단조 시계로 잰다(벽시계 되감김에 요약이 멎지 않게).
+   */
+  private notePollFailure(error: string): void {
+    const now = performance.now()
+    const previous = this.sessionPollFailure
+    if (previous === null) {
+      log('agent_session.poll.failed', { error })
+      this.sessionPollFailure = { error, count: 1, loggedAt: now }
+      return
+    }
+    const count = previous.count + 1
+    if (now - previous.loggedAt >= AGENT_SESSION_POLL_FAILURE_SUMMARY_MS) {
+      log('agent_session.poll.failing', { error, count })
+      this.sessionPollFailure = { error, count, loggedAt: now }
+      return
+    }
+    this.sessionPollFailure = { error, count, loggedAt: previous.loggedAt }
+  }
+
+  private notePollRecovered(): void {
+    const previous = this.sessionPollFailure
+    if (previous === null) return
+    this.sessionPollFailure = null
+    log('agent_session.poll.recovered', { error: previous.error, count: previous.count })
+  }
+
+  /**
+   * 에이전트가 붙은 pane 이 있으면 `agent.list` 로 세션 참조만 맞춘다. 바뀐 것이 있을 때만 `onChange`·로그.
+   * 실패는 버린다 — 알던 세션을 지우지 않고 다음 주기(또는 재동기)가 다시 본다.
+   */
+  async pollAgentSessions(): Promise<void> {
+    const session = this.session
+    if (session === null || this.stopped || this.state.phase !== 'live' || this.sessionPolling) return
+    const startedAt = Date.now()
+    if (!this.store.hasAgentPane()) {
+      this.scheduleSessionPoll(AGENT_SESSION_POLL_MS)
+      return
+    }
+    this.sessionPolling = true
+    const generation = this.generation
+    const requestedAt = startedAt
+    let deadlineHit = false
+    const deadline = {
+      controller: new AbortController(),
+      timer: setTimeout(() => {
+        deadlineHit = true
+        deadline.controller.abort()
+      }, AGENT_SESSION_POLL_TIMEOUT_MS),
+    }
+    this.sessionPollDeadline = deadline
+    try {
+      const response = await request(session.socketPath, 'agent.list', {}, {
+        reason: 'agent-session-poll', timeoutMs: AGENT_SESSION_POLL_TIMEOUT_MS, quiet: true, signal: deadline.controller.signal,
+      })
+      if (generation !== this.generation || this.stopped) return
+      if (response.error) throw new HerdrRequestError(response.error.code ?? 'error', response.error.message ?? '')
+      this.notePollRecovered()
+      const result = this.store.applyAgentSessions({ result: response.result, requestedAt })
+      if (!result.changed) return
+      log('agent_session.poll.applied', { requestedAt, note: result.note })
+      this.hooks.onChange()
+    } catch (error) {
+      // 끊김·close 로 끊은 조회는 실패가 아니다 — 남기지 않는다.
+      if (this.stopped || generation !== this.generation || (deadline.controller.signal.aborted && !deadlineHit)) return
+      this.notePollFailure(deadlineHit ? `timeout: agent.list ${AGENT_SESSION_POLL_TIMEOUT_MS}ms (연결 포함)` : String(error))
+    } finally {
+      clearTimeout(deadline.timer)
+      if (this.sessionPollDeadline === deadline) this.sessionPollDeadline = null
+      this.sessionPolling = false
+      // 한 주기를 넘지 않게 묶는다 — 벽시계가 되감기면 `startedAt + 주기 - now` 가 되감긴 만큼 커져 체인이 멎는다(리뷰 r3 1).
+      this.scheduleSessionPoll(Math.min(AGENT_SESSION_POLL_MS, Math.max(0, startedAt + AGENT_SESSION_POLL_MS - Date.now())))
     }
   }
 
@@ -584,6 +738,8 @@ export class SessionLink {
     this.bootstrapping = false
     if (this.resyncTimer) clearInterval(this.resyncTimer)
     this.resyncTimer = null
+    this.stopSessionPoll()
+    this.sessionPollFailure = null
     if (reason === 'local') return
     this.scheduleRetry(`구독 끊김(${reason}): ${detail}`)
   }

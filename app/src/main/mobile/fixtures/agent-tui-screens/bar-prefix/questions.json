@@ -1,0 +1,127 @@
+{
+  "long-120": [
+    {
+      "question": "This is a deliberately long question text that should wrap across more than one terminal line at one hundred and twenty columns so we can see how the dialog draws wrapped question lines, does it add a bar?",
+      "header": "Long",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Yes",
+          "description": "Yes"
+        },
+        {
+          "label": "No",
+          "description": "No"
+        }
+      ]
+    }
+  ],
+  "para-120": [
+    {
+      "question": "First paragraph here.\n\nSecond paragraph, proceed?",
+      "header": "Para",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Yes",
+          "description": "Yes"
+        },
+        {
+          "label": "No",
+          "description": "No"
+        }
+      ]
+    }
+  ],
+  "preview-120": [
+    {
+      "question": "Which layout should the settings page use for the new provider section, given that it must fit narrow windows too?",
+      "header": "Prev",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Stacked",
+          "description": "Items stack vertically in one column",
+          "preview": "[ Provider A ]\n[ Provider B ]\n[ Provider C ]"
+        },
+        {
+          "label": "Grid",
+          "description": "Items sit side by side in columns",
+          "preview": "[ Provider A ] [ Provider B ]\n[ Provider C ] [ Provider D ]\n[ Provider E ] [ Provider F ]"
+        }
+      ]
+    }
+  ],
+  "preview-60": [
+    {
+      "question": "Which layout should the settings page use for the new provider section, given that it must fit narrow windows too?",
+      "header": "Prev",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Stacked",
+          "description": "Items stack vertically in one column",
+          "preview": "[ Provider A ]\n[ Provider B ]\n[ Provider C ]"
+        },
+        {
+          "label": "Grid",
+          "description": "Items sit side by side in columns",
+          "preview": "[ Provider A ] [ Provider B ]\n[ Provider C ] [ Provider D ]\n[ Provider E ] [ Provider F ]"
+        }
+      ]
+    }
+  ],
+  "multi-120": [
+    {
+      "question": "Which of these checks should run before we cut the release branch, keeping in mind that the integration run takes about twenty minutes and blocks other work?",
+      "header": "Multi",
+      "multiSelect": true,
+      "options": [
+        {
+          "label": "Alpha",
+          "description": "First one"
+        },
+        {
+          "label": "Beta",
+          "description": "Second one"
+        },
+        {
+          "label": "Gamma",
+          "description": "Third one"
+        }
+      ]
+    }
+  ],
+  "tabs-q2-120": [
+    {
+      "question": "Should the first step reuse the existing worktree that was created yesterday for the earlier attempt at this change?",
+      "header": "First",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Yes",
+          "description": "Reuse the existing worktree"
+        },
+        {
+          "label": "No",
+          "description": "Do not reuse it"
+        }
+      ]
+    },
+    {
+      "question": "After the first step finishes, should we keep the temporary branch around for comparison or drop it right away once the review is done?",
+      "header": "Second",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Keep",
+          "description": "Keep the temporary branch for comparison"
+        },
+        {
+          "label": "Drop",
+          "description": "Drop the branch once the review is done"
+        }
+      ]
+    }
+  ]
+}

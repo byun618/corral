@@ -22,6 +22,7 @@ import { spaceCapabilities, WORK_PRIORITIES } from '../../../shared/work.js'
 import { useTaskDrag, type TaskDrop } from '../hooks/useTaskDrag.js'
 import { DETAIL_READING, useTasksPage, type MoveNotice } from '../hooks/useTasksPage.js'
 import { useTaskDetail } from '../hooks/useTaskDetail.js'
+import { usePrStatus } from '../hooks/usePrStatus.js'
 import {
   CATEGORY_LABEL,
   NO_FILTERS,
@@ -34,6 +35,7 @@ import {
   applyPreset,
   boardBands,
   boardDropIntent,
+  boardLaneOrder,
   columnZone,
   laneBands,
   missingParents,
@@ -74,7 +76,7 @@ import { TaskDetail } from './TaskDetail.js'
 import { StartWorkModal } from './StartWorkModal.js'
 import { WorkLinksContext, type DetailWorkActions, type WorkLinksView } from './WorkLinkChips.js'
 import { useStartWork } from '../hooks/useStartWork.js'
-import { treesFor } from '../work-links-model.js'
+import { prTargets, treesFor } from '../work-links-model.js'
 import type { WorkRepoDefault } from '../../../shared/work.js'
 import { InlineAddSlot, QuickCreateModal } from './QuickCreate.js'
 import { useQuickCreate } from '../hooks/useQuickCreate.js'
@@ -137,9 +139,11 @@ export type TasksPageProps = {
   headTail?: React.ReactNode
   /** 페이지 모달(만들기·시작)이 열리고 닫힐 때 — App 이 그동안 단축키를 막는다. */
   onModalChange?: (open: boolean) => void
+  /** 상세 쓰기(연결 포함)가 그 연결에 성공했다(LIFE-755 r1·r2 — 페이지가 닫힌 채 패널 상세에서 고친 제목·상태·막힘을 사이드바 작업 줄이 다시 받게). */
+  onItemWritten?: (connectionId: string) => void
 }
 
-export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus, detailPanel, headTail, onModalChange }: TasksPageProps): React.JSX.Element {
+export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus, detailPanel, headTail, onModalChange, onItemWritten }: TasksPageProps): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
   const [menu, setMenu] = useState<'space' | 'kind' | 'priority' | 'parent' | null>(null)
@@ -172,7 +176,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         return
     }
   }
-  const page = useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes })
+  const page = useTasksPage({ open, detailShown: detailPanel.shown, repos, activeRepoRoot, notify, unreadPanes })
   const { prefs, setPrefs, space, settings, groups, load, rows, banner, query, setQuery, selectedId, setSelectedId } = page
   const all = space?.kind === 'all'
 
@@ -222,12 +226,24 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
 
   // --- 작업에서 시작 · 링크 (LIFE-603) ---
   const machine = settings?.machine ?? null
-  const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree, machine }), [page.linked, onOpenWorktree, machine])
+  const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })
   const detailSource = detail.descriptor?.name ?? detail.connection?.name ?? '출처'
   const starter = useStartWork({ detail, repos, repoDefaults: settings?.repoDefaults ?? NO_DEFAULTS, activeRepoRoot, sourceName: detailSource, notifyFailure: (message) => notify({ kind: 'failed', message }) })
-  const detailTrees = detail.item === null || detailTarget === null ? [] : treesFor({ trees: page.linked, connectionId: detailTarget.connectionId, itemId: detail.item.id, key: detail.item.key })
+  // 활동의 PR 줄(C10) — 상세가 열릴 때 열린 채 기록된 PR 을 URL 로 다시 본다(사라진 worktree 의 머지). 브랜치 조회 쪽 다시 읽기는 아래 PR 상태 절.
+  const reloadActivity = detail.reloadActivity
+  const detailItemKey = detail.item?.key ?? null
+  useEffect(() => {
+    if (!detailMounted || detailTarget === null || detailItemKey === null) return
+    let live = true
+    void Promise.resolve()
+      .then(() => window.corral.prRefreshItem({ connectionId: detailTarget.connectionId, itemId: detailTarget.itemId, itemKey: detailItemKey }))
+      .then((result) => { if (live && result.ok && result.recorded > 0) reloadActivity() })
+      .catch(() => undefined)
+    return () => { live = false }
+  }, [detailMounted, detailTarget, detailItemKey])
   const workActions = useMemo((): DetailWorkActions => ({ start: (mode) => starter.begin(mode), reveal: (paneId) => onRevealPane?.(paneId) }), [starter.begin, onRevealPane])
-  // 사이드바 작업 줄 → 패널 상세 보기 + 그 작업(A4). 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다. 페이지가 앱 시작부터 마운트돼 있어 페이지 열림을 기다리지 않는다.
+  // 사이드바 작업 줄 → 패널 상세 보기 + 그 작업(A4). 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다. 페이지가 앱 시작부터 마운트돼 있어 페이지 열림을 기다리지 않는다 —
+  // 작업 줄은 페이지를 열지 않는다(LIFE-755, 본문 그대로).
   const focusSeq = focus?.seq ?? 0
   useEffect(() => {
     if (focus == null) return
@@ -316,6 +332,14 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const workingViews = workingScoped.filter(({ entry, lookup }) => (lookup.state === 'found'
     ? passesText({ item: lookup.item, query })
     : workingTextMatches({ key: entry.key, branches: entry.trees.map((tree) => tree.branch), query })))
+
+  // --- PR 상태 (LIFE-624) — 칩이 지금 보이는 면의 worktree 만 묻는다: 작업 중 보기에 그려진 행 · 열린 상세 실행 영역의 행(C11 · r1 c1-3).
+  // 페이지가 열려 있어도 보드·백로그·리스트 보기면 작업 중 행은 묻지 않는다. 새 줄이 남았으면(recorded) 상세 활동을 다시 읽는다(C8).
+  const pr = usePrStatus({ targets: prTargets({ workingTrees: open && view === 'working' ? workingViews.flatMap(({ entry }) => entry.trees) : [], detailTrees: detailMounted ? detailTrees : [] }) })
+  const links = useMemo((): WorkLinksView => ({ trees: page.linked, open: onOpenWorktree, machine, pr: pr.lookups }), [page.linked, onOpenWorktree, machine, pr.lookups])
+  useEffect(() => {
+    if (pr.recordedSeq > 0 && detailMounted) reloadActivity()
+  }, [pr.recordedSeq])
 
   // --- 부모 (LIFE-745) ---
   // 받은 행에 없는 부모만 단건으로 보충한다 — 보드·백로그·리스트 행, 키 일치 결과, 작업 중 머리의 부모. 스페이스 자료를 다시 읽으면 다시 받는다.
@@ -482,8 +506,21 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   // 묶기=부모(LIFE-745 C5) — 레인마다 묶기 없음과 같은 칸 구성, 칸마다 그 레인의 카드만.
   const boardLanes = useMemo((): BoardLane[] | null => {
     if (prefs.swimlane !== 'parent') return null
-    return parentLanes({ rows: boardRows, parentOf: parentOfRow }).map((lane) => ({ lane, bands: laneBands({ bands, lane }) }))
-  }, [prefs.swimlane, boardRows, bands, rows, fetchedParents])
+    // 완료 레인은 진행 레인 뒤·「부모 없음」 앞(LIFE-746) — 완료 판정은 레인 머리 진행과 같은 행(`rows`)으로.
+    // 검색 중(레인 = 일치 카드만)이거나 상세가 열린 카드가 든 레인은 완료여도 기본 펼침(r1 지적 1).
+    const searching = query.trim().length > 0
+    return boardLaneOrder({ lanes: parentLanes({ rows: boardRows, parentOf: parentOfRow }), rows }).map(({ lane, complete }) => ({
+      lane, complete, reveal: searching || (detailMounted && lane.rows.some((row) => rowUid(row) === selectedId)), bands: laneBands({ bands, lane }),
+    }))
+  }, [prefs.swimlane, boardRows, bands, rows, fetchedParents, query, detailMounted, selectedId])
+  // 레인 토글 기록(LIFE-746 C1 ⓒ) — 보드가 빠지는 보기 전환·빈 상태를 넘어 이 페이지가 살아 있는 동안 남는다. 영속하지 않는다.
+  // 부모 레인 id(부모 uid)는 연결·부모로 이미 유일하다. 「부모 없음」 은 스페이스·「전체」 마다 다른 레인이라 지금 보는 범위로 가른다(r2 지적 1).
+  const [laneToggles, setLaneToggles] = useState<ReadonlyMap<string, boolean>>(new Map())
+  const toggleKey = (laneId: string): string => (laneId === 'none' ? `none@${space === null ? '' : spaceId(space)}` : laneId)
+  const shownToggles = new Map((boardLanes ?? []).flatMap(({ lane }): [string, boolean][] => {
+    const folded = laneToggles.get(toggleKey(lane.id))
+    return folded === undefined ? [] : [[lane.id, folded]]
+  }))
   const backlogSections = useMemo((): BacklogSection[] => {
     const sorted = [...shelved].sort((a, b) => compareRank(a.item, b.item))
     return [
@@ -513,6 +550,14 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   }, [detailHidden, overlay, detailHost])
   // 페이지 모달 열림을 App 에 알린다 — 모달이 열린 동안 App 단축키(⌘L·⌘⇧E·⌘, …)가 모달 뒤에 작용하지 않게(r1 지적 3). 시작 모달은 페이지가 닫힌 터미널 화면에서도 뜬다.
   useEffect(() => { onModalChange?.(overlay) }, [overlay])
+  // 회차가 바뀐 연결마다 한 번씩 알린다(r3 T — 연결별 회차라 묶인 렌더에서도 빠지지 않는다).
+  const written = page.writtenRound
+  const seenWritten = useRef<ReadonlyMap<string, number>>(written)
+  useEffect(() => {
+    const before = seenWritten.current
+    seenWritten.current = written
+    for (const [connectionId, seq] of written) if (before.get(connectionId) !== seq) onItemWritten?.(connectionId)
+  }, [written])
   const leaveFull = (): void => {
     setPrefs({ detailFull: false })
     detailPanel.show()
@@ -695,7 +740,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           <div className="tasks-scroll" data-tasks-scroll="board">
             {hits.length > 0 ? <KeyHits hits={hits} selectedId={shownId} onSelect={toggleSelect} /> : null}
             <Board
-              bands={bands} lanes={boardLanes} rows={rows} all={all} density={prefs.density} selectedId={shownId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
+              bands={bands} lanes={boardLanes} laneToggles={shownToggles} onLaneToggle={({ id, folded }) => setLaneToggles((current) => new Map(current).set(toggleKey(id), folded))} rows={rows} all={all} density={prefs.density} selectedId={shownId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))}
               columnFooter={(column) => (column.statusKey === null || column.lane !== null ? null : <InlineAddSlot view={creator.inlineView({ statusKey: column.statusKey, columnId: column.id, unmapped: column.unmapped })} model={creator} statusKey={column.statusKey} columnId={column.id} />)}
             />
             <MoreBar more={more} onLoadMore={() => void page.loadMore()} />
@@ -749,7 +794,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           <div className="tasks-scroll" data-tasks-scroll="working">
             {/* 키 일치(E2)는 작업 중 보기에서도 맨 앞에 보인다(R2-H) — 다른 스페이스의 작업이어도. */}
             {hits.length > 0 ? <KeyHits hits={hits} selectedId={shownId} onSelect={toggleSelect} /> : null}
-            <WorkingList views={workingViews} now={now} onOpen={onOpenWorktree} />
+            <WorkingList views={workingViews} now={now} onOpen={onOpenWorktree} pr={pr.lookups} />
           </div>
         )
     }

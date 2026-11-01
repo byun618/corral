@@ -40,7 +40,7 @@ export const SETTINGS_SECTIONS = [
       {
         title: '기본 Agent',
         description: '새 에이전트 탭(⌘⌥T)과 탭바 + 메뉴의 맨 앞 에이전트에 쓰입니다.',
-        keywords: ['agent', 'agents', 'default', 'default agent', 'new agent tab', 'claude', 'codex', 'grok', 'auto', 'blank', '⌘⌥T', 'cmd+alt+t', '에이전트', '기본', '기본값', '자동', 'agent 없음', '빈 terminal', '새 에이전트 탭'],
+        keywords: ['agent', 'agents', 'default', 'default agent', 'new agent tab', 'claude', 'codex', 'grok', 'auto', 'blank', '⌘⌥T', 'cmd+alt+t', '에이전트', '기본', '기본값', '자동', 'agent 없음', '빈 terminal', '새 에이전트 탭', '감지', '다시 감지', 'detect', 'detection', 'redetect'],
       },
     ],
   },

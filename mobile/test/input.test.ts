@@ -156,6 +156,13 @@ describe('보낸 지시 상태 (C12 + 확인 못 함 · P6)', () => {
   })
 })
 
+describe('LIFE-709 맥 입력으로 막힌 지시 — 사유 mac_input · 모르는 사유도 받는다', () => {
+  it('failed/mac_input 은 「그 사이 맥에서 입력이 있어」 — 세션이 바뀐 것(target_changed)과 다르게 말한다', () => {
+    expect(sentLine({ entry: entry({ state: 'failed', reason: 'mac_input' }), hhmm })).toMatchObject({ tone: 'error', text: '보내지 못했습니다 · 그 사이 맥에서 입력이 있어 보내지 않았습니다', action: 'retry' })
+    expect(sentLine({ entry: entry({ state: 'failed', reason: 'target_changed' }), hhmm })?.text).toBe('보내지 못했습니다 · 그 사이 세션이 바뀌어 보내지 않았습니다')
+  })
+})
+
 class FakeConnection {
   sent: Record<string, unknown>[] = []
   online = true

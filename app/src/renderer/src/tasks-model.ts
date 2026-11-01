@@ -502,6 +502,26 @@ export function laneProgress({ parent, rows }: { parent: ParentInfo; rows: Tasks
   return { done: children.filter((entry) => entry.item.category === 'done').length, total: children.length, partial: children.some((entry) => entry.space.nextCursor !== null || entry.space.truncated) }
 }
 
+/** 완료 레인(LIFE-746) — 머리 진행이 n/n(받은 자식 ≥ 1 전부 완료, 덜 받지 않음). 머리에 보이는 값과 같은 규칙. 「부모 없음」 은 아니다. */
+export function laneComplete({ lane, rows }: { lane: ParentLane; rows: TasksRow[] }): boolean {
+  if (lane.parent === null) return false
+  const progress = laneProgress({ parent: lane.parent, rows })
+  return progress !== null && progress.done === progress.total && !progress.partial
+}
+
+/**
+ * 보드 레인 순서(LIFE-746) — 진행 레인 → 완료 레인 → 「부모 없음」. 각 무리 안은 `parentLanes` 순서 그대로.
+ * 리스트 그룹 「부모」 는 이 함수를 쓰지 않는다(`parentLanes` 순서 그대로).
+ */
+export function boardLaneOrder({ lanes, rows }: { lanes: ParentLane[]; rows: TasksRow[] }): { lane: ParentLane; complete: boolean }[] {
+  const marked = lanes.map((lane) => ({ lane, complete: laneComplete({ lane, rows }) }))
+  return [
+    ...marked.filter((entry) => entry.lane.parent !== null && !entry.complete),
+    ...marked.filter((entry) => entry.complete),
+    ...marked.filter((entry) => entry.lane.parent === null),
+  ]
+}
+
 /** 보드 묶기 — 묶기 없음의 밴드·칸 구성을 그대로 두고 칸마다 이 레인의 행만 남긴다(레인마다 같은 칸). */
 export function laneBands({ bands, lane }: { bands: BoardBand[]; lane: ParentLane }): BoardBand[] {
   const members = new Set(lane.rows.map(rowUid))

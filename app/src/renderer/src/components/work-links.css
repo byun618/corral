@@ -92,3 +92,15 @@ a.issue-remote-value:hover { text-decoration: underline; }
 .worktree-task-hover-title { color: var(--fg); }
 .worktree-task-muted { color: var(--fg-dim); }
 .worktree-task-blocked-text { color: var(--st-error); }
+
+/* LIFE-624 — PR 칩(목업 tasks.dc.html:484·679: 높이 18 · 반경 4 · 옅은 테두리 · 10.5px · fg-dim 계열)과 실행 영역의 흐린 이유. */
+.pr-chip {
+  display: inline-flex; align-items: center; flex: 0 0 auto; height: 18px; margin-left: 6px; padding: 0 6px; vertical-align: middle;
+  border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 4px; color: var(--fg-dim); font-family: var(--font-mono); font-size: 10.5px; white-space: nowrap;
+}
+.pr-chip.is-merged { color: var(--fg-muted); }
+.pr-reason { margin-left: 6px; color: var(--fg-dim); font-size: 10.5px; opacity: 0.8; }
+/* r1 c1-6 — 실행 영역 2줄: 레포 / 브랜치 칸만 줄고(줄임표) 칩·이유는 제 폭을 지킨다. */
+.issue-work-where.is-run { display: flex; align-items: center; min-width: 0; }
+.issue-work-where.is-run .issue-work-path { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.issue-work-where.is-run .pr-chip, .issue-work-where.is-run .pr-reason { flex: 0 0 auto; }

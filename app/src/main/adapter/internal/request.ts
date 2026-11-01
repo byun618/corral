@@ -11,7 +11,7 @@ import { asResponseFrame, type ResponseFrame } from './protocol.js'
 
 /**
  * 앱이 보내도 되는 메서드 — **읽기 4종 + 쓰기 13종** (R3 + LIFE-357 `tab.rename` + LIFE-366 `integration.list`
- *  + LIFE-373 `pane.*` 5종).
+ *  + LIFE-373 `pane.*` 5종, 그 뒤 읽기 `agent.list` — LIFE-710).
  *
  * R1(LIFE-351)에서는 herdr 접촉이 읽기 전용이었다 — 쓰기 메서드가 나가면 범위 위반이라
  * 화이트리스트에 쓰기가 한 줄도 없었다. R3 에서 행 생성·종료·worktree 조작이 들어오며 쓰기
@@ -27,6 +27,7 @@ import { asResponseFrame, type ResponseFrame } from './protocol.js'
  *   · `integration.list`   — herdr 통합 훅 설치 상태 (LIFE-366 A1, integrations.ts).
  *     **읽기만 한다** — `integration.install`·`uninstall` 은 목록에 없다. 사용자 에이전트 설정을
  *     고치는 조작이라 corral 이 말없이 부를 일이 아니다 (기준 B8 "사용자 확인 없이 실행하지 않는다")
+ *   · `agent.list`         — 에이전트 pane 의 세션 참조 따라잡기 (LIFE-710, link.ts pollAgentSessions)
  *   쓰기 (R3 — lifecycle.ts):
  *   · `tab.create`·`agent.start` — 행 생성 (L1·L2)
  *   · `tab.close`               — 행 종료 (L3·L4·L9a)
@@ -49,6 +50,8 @@ const ALLOWED_METHODS: readonly string[] = [
   'pane.process_info',
   'integration.list',
   'agent.explain',
+  // LIFE-710 — 세션 참조 따라잡기 (link.ts `pollAgentSessions`). 읽기 전용.
+  'agent.list',
   'tab.create',
   'agent.start',
   'tab.close',
@@ -74,7 +77,11 @@ export class HerdrRequestError extends Error {
   }
 }
 
-export type RequestOptions = { timeoutMs?: number; reason?: string; signal?: AbortSignal; onSent?: () => void }
+/**
+ * `quiet` — 성공한 요청의 `req.*` 줄(open·tx·rx·close)을 남기지 않는다. 오류 답(`req.rx.error`)·모르는 줄은 그대로 남기고,
+ * 연결 실패·타임아웃은 호출부가 남긴다. 짧은 주기로 도는 읽기(세션 조회, LIFE-710)가 로그를 쌓지 않게 하려는 것이다.
+ */
+export type RequestOptions = { timeoutMs?: number; reason?: string; signal?: AbortSignal; onSent?: () => void; quiet?: boolean }
 
 export async function request(
   socketPath: string,
@@ -88,6 +95,7 @@ export async function request(
   options.signal?.throwIfAborted()
   const timeoutMs = options.timeoutMs ?? 5000
   const reason = options.reason ?? 'app'
+  const trace: typeof log = options.quiet === true ? () => {} : log
 
   return new Promise<ResponseFrame>((resolve, reject) => {
     let done = false
@@ -97,7 +105,7 @@ export async function request(
       done = true
       if (timer) clearTimeout(timer)
       options.signal?.removeEventListener('abort', abort)
-      log('req.conn.close', { conn: socket.id, method, reason })
+      trace('req.conn.close', { conn: socket.id, method, reason })
       socket.end()
       fn()
     }
@@ -111,7 +119,7 @@ export async function request(
         }
         // 에러 응답은 **원문 줄 그대로** 남긴다 (L9 채널 원자료 — advisor). 성공은 바이트 수만.
         if (frame.error) log('req.rx.error', { conn: socket.id, method, at, line: line.slice(0, 2000) })
-        else log('req.rx', { conn: socket.id, method, at, bytes: line.length })
+        else trace('req.rx', { conn: socket.id, method, at, bytes: line.length })
         finish(() => resolve(frame))
       },
       // 서버는 응답 뒤 스스로 닫는다 — 응답을 이미 받았으면 finish 가 먼저라 이 경로로 안 온다.
@@ -121,7 +129,7 @@ export async function request(
 
     const abort = () => finish(() => reject(new HerdrRequestError('request_cancelled', 'Request cancelled')))
     options.signal?.addEventListener('abort', abort, { once: true })
-    log('req.conn.open', { conn: socket.id, method, reason, socketPath })
+    trace('req.conn.open', { conn: socket.id, method, reason, socketPath })
     socket.connect(socketPath).then(
       () => {
         if (done || options.signal?.aborted) { abort(); return }
@@ -130,7 +138,7 @@ export async function request(
           timeoutMs,
         )
         const frame = JSON.stringify({ id: `${socket.id}:1`, method, params })
-        log('req.tx', { conn: socket.id, method, ...(method === 'corral.terminal' ? { bytes: frame.length } : { line: frame.slice(0, 500) }) })
+        trace('req.tx', { conn: socket.id, method, ...(method === 'corral.terminal' ? { bytes: frame.length } : { line: frame.slice(0, 500) }) })
         options.onSent?.()
         socket.write(frame)
       },

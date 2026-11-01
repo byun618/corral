@@ -1,6 +1,7 @@
 // 작업 페이지 보기 4 (LIFE-601) — 보드 · 백로그 · 리스트 · 작업 중. 계산은 `tasks-model.ts`, 자료·쓰기는 `useTasksPage`, 끌기는 `useTaskDrag`.
 // 출처 이름으로 분기하지 않는다 — 능력 표(흐림 + 이유 / 숨김)와 상태 목록만 본다(K3).
 import { createContext, Fragment, useContext, useState } from 'react'
+import type { PrLookup } from '../../../shared/pr-status.js'
 import type { WorkCapabilities, WorkCategory, WorkItem, WorkStatus } from '../../../shared/work.js'
 import { elapsedLabel } from '../../../shared/session-activity.js'
 import { AGENT_DOT_LABEL } from '../agent-dot.js'
@@ -37,7 +38,7 @@ import {
   type WorkingTree,
 } from '../tasks-model.js'
 import { AgentStateDot } from './AgentStateDot.js'
-import { WorktreeChip, WorktreeDotMark } from './WorkLinkChips.js'
+import { PrChip, WorktreeChip, WorktreeDotMark } from './WorkLinkChips.js'
 
 const IDLE_VIEW: ColumnDragView = { mode: 'idle', reason: null }
 
@@ -261,8 +262,11 @@ export function IssueCard({ row, rows, all, density, selected, dragging, now, ha
  */
 export type ColumnDragView = { mode: 'target' | 'source' | 'blocked' | 'idle'; reason: string | null; hoverOnly?: boolean }
 
-/** 묶기=부모 의 레인 하나 — 레인과 그 레인의 밴드(칸 구성은 묶기 없음과 같다). */
-export type BoardLane = { lane: ParentLane; bands: BoardBand[] }
+/**
+ * 묶기=부모 의 레인 하나 — 레인과 그 레인의 밴드(칸 구성은 묶기 없음과 같다). `complete` = 완료 레인(기본 접힘, LIFE-746).
+ * `reveal` = 검색 중이거나 상세가 열린 카드가 이 레인에 있다 — 완료 레인이어도 기본 펼침(r1 지적 1).
+ */
+export type BoardLane = { lane: ParentLane; complete: boolean; reveal: boolean; bands: BoardBand[] }
 
 type BandsProps = {
   rows: TasksRow[]
@@ -278,26 +282,26 @@ type BandsProps = {
   columnFooter?: (column: BoardColumn) => React.ReactNode
 }
 
-export function Board({ bands, lanes = null, ...rest }: BandsProps & {
+export function Board({ bands, lanes = null, laneToggles, onLaneToggle, ...rest }: BandsProps & {
   bands: BoardBand[]
   /** 묶기=부모(LIFE-745) — 있으면 레인마다 밴드를 그린다. null = 묶기 없음. */
   lanes?: BoardLane[] | null
+  /**
+   * 사용자가 토글한 레인(id → 접힘) — 그 선택이 이긴다. 적지 않은 레인은 데이터를 따른다(완료 레인 = 접힘, 검색·선택이 있으면 펼침, LIFE-746).
+   * 페이지가 들고 있어 보기 전환·빈 상태를 넘어 남고, 영속하지 않는다(02-kickoff).
+   */
+  laneToggles: ReadonlyMap<string, boolean>
+  onLaneToggle: (toggle: { id: string; folded: boolean }) => void
 }): React.JSX.Element {
-  // 레인 접힘은 이 실행 동안만 남는다(02-kickoff — 영속하지 않음).
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   if (lanes === null) return <div className="tasks-board" data-tasks-board=""><Bands bands={bands} hideParent={false} {...rest} /></div>
   return (
     <div className="tasks-lanes" data-tasks-board="" data-tasks-lanes="">
-      {lanes.map(({ lane, bands: laneBands }) => {
-        const folded = collapsed.has(lane.id)
+      {lanes.map(({ lane, complete, reveal, bands: laneBands }) => {
+        const folded = laneToggles.get(lane.id) ?? (complete && !reveal)
         const name = lane.parent === null ? '부모 없음' : parentLabel(lane.parent)
         return (
-          <section key={lane.id} className={`tasks-lane${folded ? ' is-collapsed' : ''}`} data-board-lane={lane.id} aria-label={`${name} 레인`}>
-            <LaneHead lane={lane} name={name} rows={rest.rows} folded={folded} onToggle={() => setCollapsed((current) => {
-              const next = new Set(current)
-              if (!next.delete(lane.id)) next.add(lane.id)
-              return next
-            })} />
+          <section key={lane.id} className={`tasks-lane${folded ? ' is-collapsed' : ''}`} data-board-lane={lane.id} data-lane-complete={complete ? '' : undefined} aria-label={`${name} 레인`}>
+            <LaneHead lane={lane} name={name} rows={rest.rows} folded={folded} onToggle={() => onLaneToggle({ id: lane.id, folded: !folded })} />
             {folded ? null : <div className="tasks-board"><Bands bands={laneBands} hideParent {...rest} /></div>}
           </section>
         )
@@ -335,14 +339,19 @@ function Bands({ bands, rows, all, density, selectedId, drag, now, columnView, h
             {band.columns.map((column) => {
               const view = drag === null ? IDLE_VIEW : columnView(column)
               const zone = columnZone(column)
-              const showGap = drag !== null && drag.zone === zone && view.mode === 'target'
+              // 레인 안 빈 칸은 얇게(LIFE-746) — 머리 줄만 남기고 놓기 영역은 칸 전체에 겹친다(끌기 중에도 높이가 그대로라 보드가 밀리지 않는다).
+              // 틈은 그리지 않는다(놓일 번호는 늘 0 — 칸 강조로 보인다).
+              const thin = column.lane !== null && column.rows.length === 0
+              const showGap = !thin && drag !== null && drag.zone === zone && view.mode === 'target'
               const visible = column.rows
               // 칸마다 그리는 이유(묶기 없음)는 목록 위 줄. hoverOnly(묶기=부모 의 다른 레인)는 포인터가 올라간 칸에만, 목록 **안** 오버레이로 —
               // 줄로 끼우면 목록이 밀려 포인터가 영역 밖으로 나가고 문구가 사라졌다 다시 생기는 토글이 난다(LIFE-745 r2 L1).
-              const showReason = view.reason !== null && view.hoverOnly !== true
-              const overlayReason = view.reason !== null && view.hoverOnly === true && drag?.zone === zone
+              // 묶기=부모 의 같은 레인 막힌 칸(순서 금지 LIFE-612 등)도 같다 — 줄로 끼우면 끌기 시작과 함께 그 칸 목록을 민다(LIFE-746).
+              const hoverOnly = view.hoverOnly === true || (column.lane !== null && view.reason !== null)
+              const showReason = view.reason !== null && !hoverOnly
+              const overlayReason = view.reason !== null && hoverOnly && drag?.zone === zone
               return (
-                <div key={column.id} className={`tasks-column${column.unmapped ? ' is-unmapped' : ''} drag-${view.mode}${drag?.zone === zone ? ' is-over' : ''}`} data-board-column={column.id} title={view.hoverOnly === true ? (view.reason ?? undefined) : undefined}>
+                <div key={column.id} className={`tasks-column${column.unmapped ? ' is-unmapped' : ''}${thin ? ' is-thin' : ''} drag-${view.mode}${drag?.zone === zone ? ' is-over' : ''}`} data-board-column={column.id} data-column-thin={thin ? '' : undefined} title={hoverOnly ? (view.reason ?? undefined) : undefined}>
                   <header className="tasks-column-head">
                     {column.unmapped ? <span className="tasks-unmapped-mark" aria-hidden>⋯</span> : <StatusCircle category={column.category} fill={column.fill} />}
                     <span className="tasks-column-label">{column.label}</span>
@@ -585,7 +594,8 @@ export function MoreBar({ more, onLoadMore }: { more: MoreState; onLoadMore: () 
 
 export type WorkingView = { entry: WorkingEntry; lookup: WorkingLookup }
 
-export function WorkingList({ views, now, onOpen }: { views: WorkingView[]; now: number; onOpen: (tree: WorkingTree) => void }): React.JSX.Element {
+/** `pr` = worktree 경로 → PR 상태(LIFE-624 C7). 칩만 그린다 — 오류는 여기서 그리지 않는다(실행 영역 몫). */
+export function WorkingList({ views, now, onOpen, pr }: { views: WorkingView[]; now: number; onOpen: (tree: WorkingTree) => void; pr?: ReadonlyMap<string, PrLookup> }): React.JSX.Element {
   return (
     <div className="tasks-working" data-tasks-working="">
       {views.map(({ entry, lookup }) => (
@@ -614,6 +624,7 @@ export function WorkingList({ views, now, onOpen }: { views: WorkingView[]; now:
               <span className="tasks-working-dot">{tree.dot === null ? null : <AgentStateDot dot={tree.dot} />}</span>
               <span className="tasks-working-state">{tree.dot === null ? '에이전트 없음' : AGENT_DOT_LABEL[tree.dot]}</span>
               <span className="tasks-working-branch"><span className="tasks-working-repo">{tree.repoName}</span> / {tree.branch}</span>
+              <PrChip lookup={pr?.get(tree.path)} />
               {/* 시간 = 그 worktree 세션의 마지막 활동(세션 지문). 없으면 그리지 않는다 — 지어낸 시각을 쓰지 않는다(R1-R). */}
               {elapsedLabel(tree.activityAt, now) === null ? null : <span className="tasks-working-time" data-working-time="">{elapsedLabel(tree.activityAt, now)}</span>}
               <span className="tasks-working-chevron" aria-hidden>›</span>

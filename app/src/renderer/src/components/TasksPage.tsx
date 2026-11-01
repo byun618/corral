@@ -139,9 +139,11 @@ export type TasksPageProps = {
   headTail?: React.ReactNode
   /** 페이지 모달(만들기·시작)이 열리고 닫힐 때 — App 이 그동안 단축키를 막는다. */
   onModalChange?: (open: boolean) => void
+  /** 상세 쓰기(연결 포함)가 그 연결에 성공했다(LIFE-755 r1·r2 — 페이지가 닫힌 채 패널 상세에서 고친 제목·상태·막힘을 사이드바 작업 줄이 다시 받게). */
+  onItemWritten?: (connectionId: string) => void
 }
 
-export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus, detailPanel, headTail, onModalChange }: TasksPageProps): React.JSX.Element {
+export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree, unreadPanes, onRevealPane, focus, detailPanel, headTail, onModalChange, onItemWritten }: TasksPageProps): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
   const [menu, setMenu] = useState<'space' | 'kind' | 'priority' | 'parent' | null>(null)
@@ -174,7 +176,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         return
     }
   }
-  const page = useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes })
+  const page = useTasksPage({ open, detailShown: detailPanel.shown, repos, activeRepoRoot, notify, unreadPanes })
   const { prefs, setPrefs, space, settings, groups, load, rows, banner, query, setQuery, selectedId, setSelectedId } = page
   const all = space?.kind === 'all'
 
@@ -240,7 +242,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     return () => { live = false }
   }, [detailMounted, detailTarget, detailItemKey])
   const workActions = useMemo((): DetailWorkActions => ({ start: (mode) => starter.begin(mode), reveal: (paneId) => onRevealPane?.(paneId) }), [starter.begin, onRevealPane])
-  // 사이드바 작업 줄 → 패널 상세 보기 + 그 작업(A4). 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다. 페이지가 앱 시작부터 마운트돼 있어 페이지 열림을 기다리지 않는다.
+  // 사이드바 작업 줄 → 패널 상세 보기 + 그 작업(A4). 작업 id 를 모르면(자동 링크) 키로 한 번 찾는다. 페이지가 앱 시작부터 마운트돼 있어 페이지 열림을 기다리지 않는다 —
+  // 작업 줄은 페이지를 열지 않는다(LIFE-755, 본문 그대로).
   const focusSeq = focus?.seq ?? 0
   useEffect(() => {
     if (focus == null) return
@@ -547,6 +550,14 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   }, [detailHidden, overlay, detailHost])
   // 페이지 모달 열림을 App 에 알린다 — 모달이 열린 동안 App 단축키(⌘L·⌘⇧E·⌘, …)가 모달 뒤에 작용하지 않게(r1 지적 3). 시작 모달은 페이지가 닫힌 터미널 화면에서도 뜬다.
   useEffect(() => { onModalChange?.(overlay) }, [overlay])
+  // 회차가 바뀐 연결마다 한 번씩 알린다(r3 T — 연결별 회차라 묶인 렌더에서도 빠지지 않는다).
+  const written = page.writtenRound
+  const seenWritten = useRef<ReadonlyMap<string, number>>(written)
+  useEffect(() => {
+    const before = seenWritten.current
+    seenWritten.current = written
+    for (const [connectionId, seq] of written) if (before.get(connectionId) !== seq) onItemWritten?.(connectionId)
+  }, [written])
   const leaveFull = (): void => {
     setPrefs({ detailFull: false })
     detailPanel.show()

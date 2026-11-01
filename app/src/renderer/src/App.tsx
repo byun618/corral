@@ -9,7 +9,7 @@ import { useKeybindings } from './hooks/useKeybindings.js'
 import { SettingsPage } from './components/SettingsPage.js'
 import { TasksPage, type TasksFocus } from './components/TasksPage.js'
 import type { WorktreeTaskLine } from './components/WorktreeTask.js'
-import { linkTitleId, useLinkTitles } from './hooks/useLinkTitles.js'
+import { linkTitleId, useLinkTitles, type LinkTitleReread } from './hooks/useLinkTitles.js'
 import { activateWorktreeCard } from './worktree-activate.js'
 import { DEFAULT_SETTINGS_SECTION, SETTINGS_SECTIONS, type SettingsSectionId } from './settings-registry.js'
 // 화면 오케스트레이터 — `repo → worktree → tab → pane` 4단 데이터를 Orca 배치(사이드바 카드 +
@@ -691,12 +691,15 @@ export function App(): React.JSX.Element {
       : (activeGroupTab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? pickPane(activeGroupTab)?.paneId ?? null)
   const unread = useUnread({ state, viewedPaneId, activeWorktree: activeWorktreeRow?.path ?? null })
   // LIFE-603 C11 — 사이드바 작업 줄의 제목 캐시. 작업 페이지가 닫힐 때마다 다시 받는다(페이지에서 바꾼 제목·상태).
+  // LIFE-755 r1·r2 — 페이지가 닫힌 채 패널 상세에서 쓰기(연결 포함)가 성공하면 그 연결의 줄만 **기존 값을 남긴 채** 다시 받는다(`reread` — 작업 줄은 이제 페이지를 거치지 않는다).
+  // 열린 페이지의 쓰기는 닫힘 갱신이 맡는다.
   const [tasksFocus, setTasksFocus] = useState<TasksFocus | null>(null)
   const [titleRound, setTitleRound] = useState(0)
+  const [titleReread, setTitleReread] = useState<LinkTitleReread>(() => new Map())
   useEffect(() => {
     if (!tasksOpen) setTitleRound((value) => value + 1)
   }, [tasksOpen])
-  const linkTitles = useLinkTitles({ repos: state?.repos ?? NO_REPOS, refresh: titleRound })
+  const linkTitles = useLinkTitles({ repos: state?.repos ?? NO_REPOS, refresh: titleRound, reread: titleReread })
 
   /**
    * LIFE-387 A1 — 탭 드래그. 판정은 `useTabDrag`(순수 함수 `tab-drag.ts` 를 DOM 에 잇는 층)가
@@ -1585,7 +1588,7 @@ export function App(): React.JSX.Element {
     setTasksOpen(false)
     requestAnimationFrame(() => setFocusToken((value) => value + 1))
   }
-  /** 링크된 worktree 카드의 작업 줄 — 누르면 작업 페이지 + 그 작업 상세. 연결이 없거나 못 찾으면 키만. */
+  /** 링크된 worktree 카드의 작업 줄 — 누르면 오른쪽 패널에 그 작업 상세(본문은 그대로 — 작업 페이지를 열지도 닫지도 않는다, LIFE-755). 연결이 없거나 못 찾으면 키만. */
   const taskLineOf = (worktree: WorktreeRow): WorktreeTaskLine | null => {
     const link = worktree.workLink ?? null
     if (link === null) return null
@@ -1599,7 +1602,6 @@ export function App(): React.JSX.Element {
       blocked: (item?.openBlockerCount ?? 0) > 0,
       blockers: item?.openBlockers.map((blocker) => `${blocker.key} ${blocker.title}`) ?? [],
       onOpen: () => {
-        openTasks()
         setTasksFocus((current) => ({ seq: (current?.seq ?? 0) + 1, connectionId: link.connectionId, itemId: link.itemId ?? item?.id ?? null, key: link.key }))
       },
     }
@@ -2320,6 +2322,7 @@ export function App(): React.JSX.Element {
             focus={tasksFocus}
             detailPanel={{ slot: detailSlot, shown: rightPanel.open && rightPanel.view === 'detail', show: () => rightPanel.show('detail'), hide: rightPanel.hide, openPage: openTasks }}
             onModalChange={setTasksModalOpen}
+            onItemWritten={(connectionId) => { if (!tasksOpen) setTitleReread((current) => new Map(current).set(connectionId, (current.get(connectionId) ?? 0) + 1)) }}
             headTail={rightPanel.ready && !rightPanel.open ? <RightPanelToggle label="오른쪽 패널 열기" shortcut={rightPanelToggleShortcut} onToggle={rightPanel.toggle} placement="tasks" /> : null}
           />
         </div>

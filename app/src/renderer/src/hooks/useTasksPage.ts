@@ -273,8 +273,10 @@ export function looksLikeQuery({ query, pattern }: { query: string; pattern: str
 
 const NO_UNREAD: ReadonlySet<string> = new Set()
 
-export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes = NO_UNREAD }: {
+export function useTasksPage({ open, detailShown = false, repos, activeRepoRoot, notify, unreadPanes = NO_UNREAD }: {
   open: boolean
+  /** 상세가 패널에 보이는가(LIFE-755) — 페이지가 닫혀 있어도 상세 연결의 스페이스 목록(머리 이름·색)을 받는다. */
+  detailShown?: boolean
   repos: RepoRow[]
   activeRepoRoot: string | null
   /** 사이드바와 같은 안 읽음 pane 집합(`useUnread`) — 링크된 worktree 의 점이 사이드바와 같게(LIFE-603 C10). */
@@ -292,6 +294,10 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   /** 성공한 쓰기의 서버 값 — 열린 상세가 받는다(LIFE-602). */
   const [settledWrite, setSettledWrite] = useState<SettledWrite | null>(null)
+  /** 성공한 상세 쓰기(연결·자식 포함, 늦은 성공도)의 연결별 회차 — 사이드바 작업 줄이 그 연결의 제목·막힘을 다시 받는다(LIFE-755 r2).
+   *  연결마다 따로 세어 한 렌더에 여러 연결의 쓰기가 묶여도 앞 연결이 빠지지 않는다(r3 T). */
+  const [writtenRound, setWrittenRound] = useState<ReadonlyMap<string, number>>(() => new Map())
+  const markWritten = useCallback((connectionId: string): void => setWrittenRound((current) => new Map(current).set(connectionId, (current.get(connectionId) ?? 0) + 1)), [])
   const settledSeq = useRef(0)
   /** 적용됐을 수 있는 실패 — 서버 값이 쓰기 전 base 와 다를 수 있다. 열린 상세가 정본을 다시 받을 때까지 쓰기를 막는다(LIFE-623 R4-A). */
   const [unsureWrite, setUnsureWrite] = useState<UnsureWrite | null>(null)
@@ -412,9 +418,12 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
 
   // 스페이스 목록을 아직 못 받은 연결은 열 때 **연결 세대마다 한 번** 받는다(R1-C). 실패는 보존하고 「다시 시도」 까지 다시 보내지 않는다 —
   // 실패도 main 이 상태를 push 하므로, push 마다 다시 보내면 끝없이 돈다.
+  // LIFE-755 — 페이지가 닫힌 채 상세가 패널에 보이면(사이드바 작업 줄) 그 상세의 연결만 같은 규칙으로 받는다. 상세 머리 스페이스 이름·색이 페이지를 열었을 때와 같게.
+  const detailConnectionId = detailShown && selectedId !== null ? parseUid(selectedId)?.connectionId ?? null : null
   useEffect(() => {
-    if (!open || settings === null) return
+    if ((!open && detailConnectionId === null) || settings === null) return
     for (const connection of settings.connections) {
+      if (!open && connection.id !== detailConnectionId) continue
       if (connection.spaces !== null || connection.status === 'testing') continue
       const key = `${connection.id}#${connection.generation}`
       if (spaceFetch.has(key)) continue
@@ -423,7 +432,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         setSpaceFetch((current) => new Map(current).set(key, response.ok ? { state: 'done' } : { state: 'failed', error: response.error }))
       })
     }
-  }, [open, settings, spaceFetch, send])
+  }, [open, detailConnectionId, settings, spaceFetch, send])
   const spaceErrors = useMemo(() => (settings === null ? [] : settings.connections.flatMap((connection) => {
     const fetched = spaceFetch.get(`${connection.id}#${connection.generation}`)
     return connection.spaces === null && fetched?.state === 'failed' ? [{ connectionId: connection.id, error: fetched.error }] : []
@@ -1054,6 +1063,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
         setSearchRound((value) => value + 1)
         if (!late.ok) return { kind: 'failed', error: late.error }
         succeeded.current.add(written)
+        markWritten(connectionId)
         // 늦게 성공한 쓰기도 열린 상세가 서버 값을 받는다(R1-C).
         const item = 'item' in late.result && late.result.item !== null && late.result.item.id === itemId ? late.result.item : null
         if (item !== null) {
@@ -1088,6 +1098,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     }
     const { result } = response
     succeeded.current.add(written)
+    markWritten(connectionId)
     const settled = 'item' in result && result.item !== null && result.item.id === itemId ? result.item : null
     if (settled !== null) {
       patch({ connectionId, spaceKey, apply: replaceItem({ item: settled }) })
@@ -1105,7 +1116,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
       resync()
     }
     return { kind: 'ok', result }
-  }, [patch, gate, notify, reflect, currentGeneration, keepCreated, markUnsure, beginWrite, endWrite, reconcileUnit, doubtLane])
+  }, [patch, gate, notify, reflect, currentGeneration, keepCreated, markUnsure, beginWrite, endWrite, reconcileUnit, doubtLane, markWritten])
 
   // --- 만들기 (LIFE-604) ---
   const creating = useRef(new Set<string>())
@@ -1211,7 +1222,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes 
     reload, retry, loadMore, invalidateMore,
     hits, searchNotes, workingEntries, working: workingLookups, workingKeys, linked,
     move: (request: MoveRequest) => move({ ...request, undo: false, restore: null }),
-    writeItem, settledWrite, unsureWrite, startedWrite, holdRead,
+    writeItem, settledWrite, writtenRound, unsureWrite, startedWrite, holdRead,
     /** 만들기(LIFE-604) — 진입마다 잠금 하나. `createBusy` = 지금 확정을 기다리는 잠금 열쇠. */
     createItem, createBusy,
     /** 확인 안 된 쓰기가 있는 카드(uid) — 끌기 잠금·「확인하는 중」 표시(R2-A). */

@@ -451,6 +451,18 @@ button, input { font: inherit; letter-spacing: inherit; }
   font-family: var(--font-ui); font-size: 12px; line-height: 16px; color: var(--fg);
   animation: hover-card-in 150ms ease-out both; cursor: default;
 }
+/* 아이콘 툴팁 (LIFE-755) — Orca ui/tooltip `TooltipContent` 기본 변형: `bg-foreground text-background rounded-md px-3 py-1.5 text-xs w-fit`,
+   `animate-in fade-in-0 zoom-in-95`, 화살표 `size-2.5 rotate-45 rounded-[2px]`. 포인터를 받지 않는다(`pointer-events-none`). 자리는 `Tooltip.tsx` 가 잡는다. */
+@keyframes tooltip-in { from { opacity: 0; transform: scale(.95); } to { opacity: 1; transform: none; } }
+.tooltip {
+  position: fixed; z-index: 80; width: max-content; max-width: 320px; padding: 6px 12px;
+  background: var(--fg); color: var(--bg-surface); border-radius: var(--radius);
+  font-family: var(--font-ui); font-size: 12px; line-height: 16px; white-space: nowrap;
+  pointer-events: none; user-select: none; animation: tooltip-in 150ms ease-out both;
+}
+.tooltip-arrow { position: absolute; width: 10px; height: 10px; margin-left: -5px; background: var(--fg); border-radius: 2px; transform: rotate(45deg); }
+.tooltip[data-side="bottom"] .tooltip-arrow { top: -3px; }
+.tooltip[data-side="top"] .tooltip-arrow { bottom: -3px; }
 .hover-card-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 /* identity header(branch-first) — 브랜치 `font-mono text-[11px] leading-snug text-muted-foreground break-words`,
    제목 `mt-1 text-[13px] font-semibold leading-snug`. */

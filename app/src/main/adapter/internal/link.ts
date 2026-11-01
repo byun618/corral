@@ -146,7 +146,7 @@ export class SessionLink {
   private sessionPolling = false
   /** 진행 중 조회의 기한(연결 포함) — `stopSessionPoll` 이 끊는다. */
   private sessionPollDeadline: { controller: AbortController; timer: ReturnType<typeof setTimeout> } | null = null
-  /** 이어지는 같은 오류 — 첫 건과 요약만 남기려고 센다. */
+  /** 실패 상태 — 실패가 이어지는 동안(오류 문구가 바뀌어도) 첫 건과 요약만 남기려고 센다. `open()`·끊김에서 비운다. */
   private sessionPollFailure: { error: string; count: number; loggedAt: number } | null = null
   private buffer: Array<{ frame: PushFrame; at: number }> = []
   private bootstrapping = false
@@ -211,6 +211,7 @@ export class SessionLink {
     this.session = session
     this.store.reset()
     this.reasonAttempts.clear()
+    this.sessionPollFailure = null
     this.state = {
       ...this.state,
       sessionName: session.name,
@@ -471,11 +472,16 @@ export class SessionLink {
     }
   }
 
+  /**
+   * 실패 상태 플래그로 판정한다(리뷰 r3 4) — 직전 문구와 비교하면 오류가 번갈아 올 때 매 조회가 로그를 남겼다.
+   * 상태에 들어갈 때 `poll.failed` 한 줄, 머무는 동안은 요약 간격마다 `poll.failing`(횟수·마지막 오류) 한 줄.
+   * 요약 간격은 단조 시계로 잰다(벽시계 되감김에 요약이 멎지 않게).
+   */
   private notePollFailure(error: string): void {
-    const now = Date.now()
+    const now = performance.now()
     const previous = this.sessionPollFailure
-    if (previous === null || previous.error !== error) {
-      log('agent_session.poll.failed', { error, ...(previous === null ? {} : { previous: previous.error, previousCount: previous.count }) })
+    if (previous === null) {
+      log('agent_session.poll.failed', { error })
       this.sessionPollFailure = { error, count: 1, loggedAt: now }
       return
     }
@@ -485,7 +491,7 @@ export class SessionLink {
       this.sessionPollFailure = { error, count, loggedAt: now }
       return
     }
-    this.sessionPollFailure = { ...previous, count }
+    this.sessionPollFailure = { error, count, loggedAt: previous.loggedAt }
   }
 
   private notePollRecovered(): void {
@@ -538,7 +544,8 @@ export class SessionLink {
       clearTimeout(deadline.timer)
       if (this.sessionPollDeadline === deadline) this.sessionPollDeadline = null
       this.sessionPolling = false
-      this.scheduleSessionPoll(Math.max(0, startedAt + AGENT_SESSION_POLL_MS - Date.now()))
+      // 한 주기를 넘지 않게 묶는다 — 벽시계가 되감기면 `startedAt + 주기 - now` 가 되감긴 만큼 커져 체인이 멎는다(리뷰 r3 1).
+      this.scheduleSessionPoll(Math.min(AGENT_SESSION_POLL_MS, Math.max(0, startedAt + AGENT_SESSION_POLL_MS - Date.now())))
     }
   }
 
@@ -732,6 +739,7 @@ export class SessionLink {
     if (this.resyncTimer) clearInterval(this.resyncTimer)
     this.resyncTimer = null
     this.stopSessionPoll()
+    this.sessionPollFailure = null
     if (reason === 'local') return
     this.scheduleRetry(`구독 끊김(${reason}): ${detail}`)
   }

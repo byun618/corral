@@ -287,7 +287,7 @@ describe('SessionLink 세션 조회 — agent.list 주기 호출', () => {
     link.close()
   })
 
-  it('ⓒ 조회 실패(오류 답·거절)는 알던 세션을 지우지 않고 실패 로그만 남긴다', async () => {
+  it('ⓒ 조회 실패(오류 답·거절)는 알던 세션을 지우지 않고 실패 상태에 들어갈 때 실패 로그 한 줄만 남긴다', async () => {
     const onChange = vi.fn()
     let call = 0
     serve({
@@ -305,7 +305,45 @@ describe('SessionLink 세션 조회 — agent.list 주기 호출', () => {
     expect(call).toBe(2)
     expect(sessionOf(link.store)).toBe('kept')
     expect(onChange).not.toHaveBeenCalled()
-    expect(pollTags()).toEqual(['agent_session.poll.failed', 'agent_session.poll.failed'])
+    expect(pollTags()).toEqual(['agent_session.poll.failed'])
+    link.close()
+  })
+
+  it('ⓒ 오류가 번갈아 와도 실패 상태 동안은 첫 건과 요약만 — 40주기에 2줄 이하 (리뷰 r3 P3)', async () => {
+    let call = 0
+    serve({
+      snapshot: () => snapshot('kept'),
+      agentList: async () => {
+        call += 1
+        throw new Error(call % 2 === 0 ? '타임아웃 agent.list' : '응답 전에 닫힘: agent.list')
+      },
+    })
+    const link = await liveLink()
+    logMock.mockClear()
+    await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS * 40)
+    expect(call).toBe(40)
+    expect(pollTags().filter((tag) => tag === 'agent_session.poll.failed')).toHaveLength(1)
+    expect(pollTags().length).toBeLessThanOrEqual(2)
+    link.close()
+  })
+
+  it('ⓒ 끊김·open() 은 실패 상태를 비운다 — 이전 연결의 실패가 회복 줄로 새지 않는다', async () => {
+    let failing = true
+    serve({
+      snapshot: () => snapshot('kept'),
+      agentList: async () => {
+        if (failing) throw new Error('socket closed')
+        return { id: 'a', result: listOf('kept') }
+      },
+    })
+    const link = await liveLink()
+    await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS * 2)
+    mainSub()?.hooks.onDrop('eof', '시험 — 원격 끊김')
+    failing = false
+    logMock.mockClear()
+    await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS * 3)
+    expect(link.linkState().phase).toBe('live')
+    expect(pollTags()).toEqual([])
     link.close()
   })
 
@@ -486,6 +524,85 @@ describe('SessionLink 세션 조회 — agent.list 주기 호출', () => {
     expect(pollCalls()).toHaveLength(2)
     link.close()
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  describe('ⓖ 진행 중 조회 + 끊김·close (리뷰 r3 3)', () => {
+    // 실제 request() 처럼 abort 신호에 거절하는 조회 — 끊김·close 가 그 신호를 당기는지 본다
+    function serveHanging(): AbortSignal[] {
+      const signals: AbortSignal[] = []
+      requestMock.mockImplementation((_socket: string, method: string, _params: unknown, options: { signal?: AbortSignal }) => {
+        if (method === 'session.snapshot') return Promise.resolve({ id: 's', result: snapshot('old') })
+        return new Promise<Reply>((_resolve, reject) => {
+          if (options.signal !== undefined) signals.push(options.signal)
+          options.signal?.addEventListener('abort', () => reject(new Error('Request cancelled')), { once: true })
+        })
+      })
+      return signals
+    }
+
+    it('원격 끊김 — 신호 abort · 실패 로그 0줄 · 재연결 대기 중 조회 타이머 없음(재시도 타이머 하나만)', async () => {
+      const signals = serveHanging()
+      const link = await liveLink()
+      await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS)
+      expect(signals).toHaveLength(1)
+      logMock.mockClear()
+      mainSub()?.hooks.onDrop('eof', '시험 — 원격 끊김')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(signals[0]?.aborted).toBe(true)
+      expect(pollTags()).toEqual([])
+      expect(link.linkState().phase).toBe('reconnecting')
+      expect(vi.getTimerCount()).toBe(1)
+      link.close()
+    })
+
+    it('close — 신호 abort · 실패 로그 0줄 · 타이머 0', async () => {
+      const signals = serveHanging()
+      const link = await liveLink()
+      await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS)
+      logMock.mockClear()
+      link.close()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(signals[0]?.aborted).toBe(true)
+      expect(pollTags()).toEqual([])
+      expect(vi.getTimerCount()).toBe(0)
+    })
+  })
+
+  it('ⓔ 벽시계가 되감겨도 다음 조회는 한 주기 안에 나간다 (리뷰 r3 P1)', async () => {
+    const answers: Array<(reply: Reply) => void> = []
+    let call = 0
+    serve({
+      snapshot: () => snapshot('same'),
+      agentList: () => {
+        call += 1
+        if (call > 1) return Promise.resolve({ id: 'a', result: listOf('same') })
+        return new Promise<Reply>((resolve) => { answers.push(resolve) })
+      },
+    })
+    const link = await liveLink()
+    await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS)
+    vi.setSystemTime(Date.now() - 3_600_000)
+    answers[0]?.({ id: 'a', result: listOf('same') })
+    await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS)
+    expect(pollCalls()).toHaveLength(2)
+    link.close()
+  })
+
+  it('ⓕ 조회 응답이 늦는 동안 더 새로 요청된 재동기가 적용되면 그 조회의 늦은 답이 덮지 않는다 — 조회는 요청 시작 시각을 넘긴다', async () => {
+    const answers: Array<(reply: Reply) => void> = []
+    let snap = 'old'
+    serve({ snapshot: () => snapshot(snap), agentList: () => new Promise<Reply>((resolve) => { answers.push(resolve) }) })
+    const link = await liveLink()
+    await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS) // 조회 요청(시각 T)
+    await vi.advanceTimersByTimeAsync(300)
+    snap = 'snap'
+    await link.resync('시험') // T + 300 에 요청된 스냅샷
+    expect(sessionOf(link.store)).toBe('snap')
+    await vi.advanceTimersByTimeAsync(300)
+    answers[0]?.({ id: 'a', result: listOf('late') })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sessionOf(link.store)).toBe('snap')
+    link.close()
   })
 
   it('ⓖ 재연결 직후 진행 중 조회가 끝나는 순간 새 세대 타이머가 이미 있어도 타이머는 한 벌이다', async () => {

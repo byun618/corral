@@ -713,6 +713,16 @@ describe('LIFE-595 R1-4 리뷰어 순서 ①~⑤ (P1·P2·P6·P4·P7)', () => {
     expect(ctx.scrolls).toEqual(FOLLOWED)
   })
 
+  it('X9 가 지키는 것 — 끄는 중 임계 밖(onScroll 200dp)에서 늦은 꼬리 레이아웃 → 놓은 자리(END)는 53dp(마지막 onScroll 뒤 throttle 사이) → 맨 아래로 · 버튼 없음', async () => {
+    await tailThenBegin()
+    await SCROLL(NEAR_BOTTOM + 80)
+    await TAIL()
+    await END(53)
+    await RELEASE()
+    expect(ctx.scrolls).toEqual(FOLLOWED)
+    noButton()
+  })
+
   it('M6 이 지키는 것 — 임계 안(53dp)에서 끄는 중 늦은 꼬리 레이아웃: 끄는 동안 버튼·자리 고정을 켜지 않는다', async () => {
     await tailThenBegin()
     await SCROLL(53)

@@ -321,9 +321,14 @@ describe('SessionLink 세션 조회 — agent.list 주기 호출', () => {
       await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS * 3)
       expect(link.linkState().phase).toBe('live')
       expect(pollCalls()).toHaveLength(1)
+      // 앞 조회 시작 + 한 주기는 이미 지났다 — 끝나자마자 다음 조회가 나가고, 그 뒤로는 다시 한 주기 간격이다
       answers[0]?.({ id: 'a', result: listOf('old') })
-      await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS)
+      await vi.advanceTimersByTimeAsync(0)
       expect(pollCalls()).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS - 1)
+      expect(pollCalls()).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(pollCalls()).toHaveLength(3)
       link.close()
     })
 

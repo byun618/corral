@@ -14,7 +14,10 @@ type SubHooks = { label?: string; onPush: (frame: unknown, at: number) => void; 
 
 const requestMock = vi.hoisted(() => vi.fn())
 const logMock = vi.hoisted(() => vi.fn())
-const subs = vi.hoisted(() => [] as Array<{ hooks: SubHooks }>)
+const subs = vi.hoisted(() => {
+  const list: Array<{ hooks: SubHooks }> = []
+  return list
+})
 
 vi.mock('../../log.js', () => ({ log: logMock }))
 vi.mock('./request.js', async (importOriginal) => {
@@ -338,22 +341,22 @@ describe('SessionLink 세션 조회 — agent.list 주기 호출', () => {
 
   describe('ⓖ 세대·타이머 정리', () => {
     it('재연결(세대 변경) 전에 나간 조회의 답은 새 저장소에 적용되지 않는다', async () => {
-      let answer: ((reply: Reply) => void) | null = null
+      const answers: Array<(reply: Reply) => void> = []
       let snap: string | null = 'old'
       serve({
         snapshot: () => snapshot(snap),
-        agentList: () => new Promise<Reply>((resolve) => { answer = resolve }),
+        agentList: () => new Promise<Reply>((resolve) => { answers.push(resolve) }),
       })
       const link = await liveLink()
       await vi.advanceTimersByTimeAsync(AGENT_SESSION_POLL_MS)
-      expect(answer).not.toBeNull()
+      expect(answers).toHaveLength(1)
       // 새 세대의 부팅 스냅샷에는 세션 키가 없다(세션 시계 0) — 늦은 답을 막는 것은 세대 확인뿐이다
       snap = null
       mainSub()?.hooks.onDrop('eof', '시험 — 원격 끊김')
       await vi.advanceTimersByTimeAsync(3_000)
       expect(link.linkState().phase).toBe('live')
       expect(sessionOf(link.store)).toBeNull()
-      answer?.({ id: 'a', result: listOf('stale-generation') })
+      answers[0]?.({ id: 'a', result: listOf('stale-generation') })
       await vi.advanceTimersByTimeAsync(0)
       expect(sessionOf(link.store)).toBeNull()
       link.close()

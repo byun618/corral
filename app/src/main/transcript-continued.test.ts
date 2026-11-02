@@ -183,12 +183,33 @@ describe('모름은 없음이 아니다 — 직전 판별을 유지한다', () =
     ['쓰는 중 줄', '{"type":"cost-'],
     ['읽지 못하는 완성 줄', '{broken}\n'],
     ['type 없는 줄', row({ sessionId: A })],
-  ])('이동 뒤 %s 가 붙어도 대상에 머문다 · 그 줄이 메타로 완성되면 그대로', (_name, tail) => {
+  ])('이동 뒤 %s 가 붙어도 대상에 머문다', (_name, tail) => {
     fs.writeFileSync(fileOf(B), human('새', B))
     fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
     expect(follow().file).toBe(fileOf(B))
     fs.appendFileSync(fileOf(A), tail)
     expect(follow().file).toBe(fileOf(B))
+  })
+
+  it('쓰는 중이던 줄이 메타로 완성되면 그대로 대상에 머문다', () => {
+    fs.writeFileSync(fileOf(B), human('새', B))
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    expect(follow().file).toBe(fileOf(B))
+    fs.appendFileSync(fileOf(A), '{"type":"cost-')
+    expect(follow().file).toBe(fileOf(B))
+    fs.appendFileSync(fileOf(A), 'state"}\n')
+    expect(follow().file).toBe(fileOf(B))
+  })
+
+  it('8~64 KiB 완성 사람 줄 → 옛 파일 / 같은 자리 완성 메타 → 새 파일에 머문다', () => {
+    const size = CONTINUED_PROBE_BYTES * 3
+    fs.writeFileSync(fileOf(B), human('새', B))
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    expect(follow().file).toBe(fileOf(B))
+    fs.appendFileSync(fileOf(A), row({ type: 'cost-state', pad: 'x'.repeat(size) }))
+    expect(follow().file).toBe(fileOf(B))
+    fs.appendFileSync(fileOf(A), human('y'.repeat(size), A))
+    expect(follow()).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
   })
 
   it('쓰는 중이던 사람 줄이 완성되면 곧바로 옛 파일로 돌아온다(되살아남)', () => {
@@ -547,6 +568,7 @@ describe('C8 비용', () => {
   })
 
   it('ⓑ 끝이 assistant 인 자라는 파일의 판별은 작은 창 이하만 읽는다', () => {
+    expect(CONTINUED_PROBE_BYTES).toBe(8 * 1024)
     fs.writeFileSync(fileOf(A), human('큰', A) + reply('x'.repeat(CONTINUED_TAIL_BYTES * 2), A))
     for (let index = 0; index < 5; index += 1) {
       fs.appendFileSync(fileOf(A), reply(`자람 ${index}`, A))

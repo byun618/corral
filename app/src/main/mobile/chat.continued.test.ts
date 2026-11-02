@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AgentSessionRef } from '../../shared/types.js'
-import { clearContinuedMemo } from '../transcript-continued.js'
+import { CONTINUED_TAIL_BYTES, clearContinuedMemo } from '../transcript-continued.js'
 import { CHAT_SESSIONS, CLAUDE_SESSION, chatListState } from './chat-fixture.js'
 import { ChatHub, type WireItem } from './chat.js'
 import { buildMobileList, channelKey, type ListState } from './list.js'
@@ -193,6 +193,25 @@ describe('C4 왕복 없음 — 모름은 직전 판별을 유지한다', () => {
     await sleep(800)
     expect(t.resets()).toHaveLength(2)
     expect(t.continued()).toBe(1)
+  })
+
+  it('이동 뒤 옛 파일이 창을 넘게 자라면 옛 파일로 한 번 돌아가 머문다 — 추가 reset 1, 그 뒤 0', async () => {
+    const t = setup()
+    t.open()
+    await waitFor(() => t.resets()[0])
+    fs.writeFileSync(t.fileOf(TARGET), human('새 지시', TARGET))
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), fork(TARGET))
+    await waitFor(() => t.resets()[1])
+    expect(t.continued()).toBe(1)
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), row({ type: 'cost-state', pad: 'x'.repeat(CONTINUED_TAIL_BYTES + 100) }))
+    const back = await waitFor(() => t.resets()[2])
+    expect(texts(back)).toEqual(['옛 지시', '옛 답'])
+    expect(t.continued()).toBe(2)
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), row({ type: 'cost-state', pad: 'y'.repeat(CONTINUED_TAIL_BYTES + 100) }))
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), row({ type: 'cost-state' }))
+    await sleep(1200)
+    expect(t.resets()).toHaveLength(3)
+    expect(t.continued()).toBe(2)
   })
 
   it('원본이 지워지고 메모가 비어도 보던 파일에 머문다 — 없는 원본으로 옮겨 구독을 끝내지 않는다', async () => {

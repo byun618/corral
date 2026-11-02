@@ -152,8 +152,9 @@ export interface InputBackend {
 /**
  * 쓰기용 기록 해소(R1-A13) — `found` 는 **유일한** 후보일 때만. `none` = 훑기 성공·0건(새 세션은 첫 지시 뒤에 파일이 생긴다) ·
  * `error` = 0건을 믿을 수 없다(기다린다) · `ambiguous` = 같은 세션 id 의 파일이 둘 이상(잠근다).
+ * `continuedAs` = 기록이 이어 간 세션 id(LIFE-766) — 커서 뒤 줄은 이 id 로 센다. 없으면 채널 세션 그대로.
  */
-export type FileResolution = { kind: 'found'; file: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous' }
+export type FileResolution = { kind: 'found'; file: string; continuedAs?: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous' }
 
 export type InputHubDeps = {
   read: () => ListInput | null
@@ -852,23 +853,23 @@ export class InputHub {
       if (this.fenceRead(bind, after.input.revision) === 'moved') return this.moved(entry, 'input_refused')
       return this.waitTurn(entry, 'turn')
     }
-    await this.confirmSend({ entry, kind, cursor, submittedAtMs, text, sessionId: channel.session.kind === 'id' ? channel.session.id : null })
+    await this.confirmSend({ entry, kind, cursor, submittedAtMs, text, sessionId: resolved.continuedAs ?? (channel.session.kind === 'id' ? channel.session.id : null) })
     return 'done'
   }
 
   /** 쓰기용 기록 파일 — 유일한 후보, 또는 0건이 확실할 때만 그 세션이 쓸 경로(R1-A13). */
-  private fileFor(input: { channel: ChatChannel; cwd: string }): { kind: 'file'; file: string } | { kind: 'wait' } | { kind: 'fail'; reason: string } {
+  private fileFor(input: { channel: ChatChannel; cwd: string }): { kind: 'file'; file: string; continuedAs: string | null } | { kind: 'wait' } | { kind: 'fail'; reason: string } {
     const resolved = this.deps.resolveFile(input.channel)
     switch (resolved.kind) {
       case 'found':
-        return { kind: 'file', file: resolved.file }
+        return { kind: 'file', file: resolved.file, continuedAs: resolved.continuedAs ?? null }
       case 'ambiguous':
         return { kind: 'fail', reason: 'record_ambiguous' }
       case 'error':
         return { kind: 'wait' }
       case 'none': {
         const expected = this.deps.expectedFile?.(input) ?? null
-        return expected === null ? { kind: 'wait' } : { kind: 'file', file: expected }
+        return expected === null ? { kind: 'wait' } : { kind: 'file', file: expected, continuedAs: null }
       }
     }
   }

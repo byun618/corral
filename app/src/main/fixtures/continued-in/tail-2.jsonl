@@ -1,0 +1,6 @@
+{"type":"permission-mode","permissionMode":"가림","sessionId":"2f1a5d6e-97ea-503e-9551-e42b11dc0e07"}
+{"type":"atis-latch","atis":"가림","sessionId":"2f1a5d6e-97ea-503e-9551-e42b11dc0e07"}
+{"type":"frame-link","artifactCount":0,"sessionId":"2f1a5d6e-97ea-503e-9551-e42b11dc0e07","timestamp":"2026-01-01T00:00:03.000Z"}
+{"type":"continued-in","timestamp":"2026-01-01T00:00:04.000Z","sessionId":"2f1a5d6e-97ea-503e-9551-e42b11dc0e07","continuedInSessionId":"0c47fdf3-9917-56a8-89cc-df2fc157ea48"}
+{"type":"cost-state","sessionId":"2f1a5d6e-97ea-503e-9551-e42b11dc0e07","totalCostUSD":0,"totalAPIDuration":0,"totalAPIDurationWithoutRetries":0,"totalToolDuration":0,"totalLinesAdded":0,"totalLinesRemoved":0,"totalDuration":0,"startTime":0,"modelUsage":{},"hasUnknownModelCost":false}
+{"type":"artifact-comment-monitor","v":0,"sessionId":"2f1a5d6e-97ea-503e-9551-e42b11dc0e07","artifacts":{}}

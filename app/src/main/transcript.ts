@@ -54,6 +54,7 @@ import path from 'node:path'
 import type { AgentSessionRef, SessionDigest, SessionLifecycle, SessionQuestion, TranscriptAgent, TurnOutcome } from '../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../shared/types.js'
 import { log } from './log.js'
+import { clearContinuedMemo, continuedReadBytes, followContinued } from './transcript-continued.js'
 import { parseGrokSummary, parseGrokUpdates, parseHead, parseTail, valueLines } from './transcript-parse.js'
 import type { Ledger, Owner } from './transcript-lifecycle.js'
 import { advanceLedger, claudeSessionAlive, clearClaudeRegistry, grokSessionAlive, ledgerSettled, ledgerView } from './transcript-lifecycle.js'
@@ -119,6 +120,8 @@ type SummaryEntry = {
 type CacheEntry = {
   /** 해소된 파일 경로. 못 찾았으면 null (다음 갱신에 다시 훑는다). */
   file: string | null
+  /** 참조가 찾은 원본 — `file` 은 여기서 `continued-in` 을 따라간 파일이다(LIFE-766). 판별은 주기마다 원본부터 다시 걷는다. */
+  origin: string
   size: number
   mtimeMs: number
   digest: SessionDigest
@@ -236,6 +239,8 @@ export type ReadCost = {
   lifecycleRegistryBytes: number
   lifecycleCatchingUp: number
   lifecycleMs: number
+  /** 이어 가기 판별(LIFE-766) 몫 — 별도 계정이다. 바뀐 파일마다 `CONTINUED_TAIL_BYTES` 이하, 안 바뀐 파일은 0. */
+  continuedBytes: number
 }
 
 /**
@@ -252,6 +257,7 @@ export function clearTranscriptCache(): void {
   fileClaims.clear()
   misses.clear()
   clearClaudeRegistry()
+  clearContinuedMemo()
 }
 
 /** 참조 하나의 캐시 키. pane 이 달라도 같은 세션이면 같은 파일이라 id 로 잡는다. */
@@ -378,8 +384,9 @@ function candidatesOf(input: { agent: TranscriptAgent; id: string }): Candidates
  * 쓰기(폰 지시)용 해소 — 「첫 일치」 가 아니라 **유일한 후보**만 소유 기록으로 센다(LIFE-582 R1-A13, P1 「둘 이상이면 잠금」).
  * `none` = 훑기가 성공했고 후보가 0건(새 세션이 아직 파일을 쓰지 않았을 수 있다) · `error` = 폴더를 못 읽어 0건을 믿을 수 없다 ·
  * `ambiguous` = 같은 id 의 파일이 둘 이상. 표시용 `resolveTranscriptFile`(첫 일치)과 CLI 계약은 그대로다.
+ * `continuedAs` = `continued-in` 을 따라 옮겨 간 세션 id(LIFE-766) — 그 파일의 줄은 이 id 로 세야 한다. 안 옮겼으면 없다.
  */
-export type TranscriptResolution = { kind: 'found'; file: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous'; count: number }
+export type TranscriptResolution = { kind: 'found'; file: string; continuedAs?: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous'; count: number }
 
 export function resolveTranscriptUnique(ref: AgentSessionRef): TranscriptResolution {
   const agent = transcriptAgent(ref.agent)
@@ -392,7 +399,16 @@ export function resolveTranscriptUnique(ref: AgentSessionRef): TranscriptResolut
   if (files.length > 1) return { kind: 'ambiguous', count: files.length }
   // 일부를 못 읽었으면 하나만 찾았어도 유일하다고 말할 수 없고, 0건도 「없음」 이 아니다(R2-A5).
   if (error) return { kind: 'error' }
-  return files.length === 1 ? { kind: 'found', file: files[0]! } : { kind: 'none' }
+  if (files.length === 0) return { kind: 'none' }
+  // 이어 간 세션(LIFE-766) — 대화와 같은 파일을 고르고, 옮겨 간 id 마다 같은 유일성 계약을 건다. 대상 찾기는 표시와 같은 판별 하나다.
+  const followed = followContinued({ session: ref, file: files[0]! })
+  for (const id of followed.hops) {
+    const target = candidatesOf({ agent, id })
+    if (target.files.length > 1) return { kind: 'ambiguous', count: target.files.length }
+    if (target.error) return { kind: 'error' }
+  }
+  const continuedAs = followed.hops.at(-1)
+  return continuedAs === undefined ? { kind: 'found', file: followed.file } : { kind: 'found', file: followed.file, continuedAs }
 }
 
 /** 참조를 파일 경로로 옮긴다. 못 찾으면 null. */
@@ -643,19 +659,22 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     sidecarBytes: 0,
     lifecycle: NO_LIFECYCLE_READ,
   }
-  let file = cached?.file ?? null
-  if (file === null) {
+  let origin = cached?.origin ?? null
+  if (origin === null) {
     const now = Date.now()
     // 훑기를 건너뛰는 주기 — 디스크를 아예 안 만진다. `statOnly` 로 세어 A7 표에 드러낸다.
     if (!shouldResolveNow(key, now)) return { ...unresolved, statOnly: true }
-    file = resolveTranscriptFile(ref)
-    if (file === null) {
+    origin = resolveTranscriptFile(ref)
+    if (origin === null) {
       const miss = misses.get(key) ?? null
       misses.set(key, { firstAt: miss?.firstAt ?? now, lastTryAt: now })
       return { ...unresolved, statOnly: false }
     }
     misses.delete(key)
   }
+  // 이어 간 세션(LIFE-766) — 캐시가 파일을 고정하지 않게 주기마다 다시 고른다. 안 바뀐 파일은 stat 만 한다.
+  const followed = followContinued({ session: ref, file: origin })
+  const { file } = followed
 
   let stat: fs.Stats
   try {
@@ -718,7 +737,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     agent === 'claude'
       ? claudeSessionAlive({
           dir: path.join(homeDir(), '.claude', 'sessions'),
-          sessionId: ref.kind === 'id' ? ref.id : path.basename(ref.path, '.jsonl'),
+          sessionId: ref.kind === 'id' ? (followed.sessionId ?? ref.id) : path.basename(ref.path, '.jsonl'),
         })
       : agent === 'grok'
         ? grokSessionAlive({
@@ -748,7 +767,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
   }
 
   try {
-    const main = cached !== null && mainFresh ? reuseMain(cached) : readMain({ file, stat, agent, ref, cached })
+    const main = cached !== null && mainFresh ? reuseMain(cached) : readMain({ file, stat, agent, sessionId: followed.sessionId, cached: cached?.file === file ? cached : null })
     let sidecar = cached?.sidecar ?? null
     let sidecarBytes = 0
     if (sidecarFile !== null && !sidecarFresh) {
@@ -785,6 +804,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     const digest: SessionDigest = { ...merged, lifecycle: life.lifecycle }
     cache.set(key, {
       file,
+      origin,
       size: stat.size,
       mtimeMs: stat.mtimeMs,
       digest,
@@ -994,7 +1014,8 @@ function readMain(input: {
   file: string
   stat: fs.Stats
   agent: TranscriptAgent
-  ref: AgentSessionRef
+  sessionId: string | null
+  /** 같은 파일의 지난 판독만 — 이어 간 새 파일에 옛 파일의 제목·머리·이어 나르기를 넘기지 않는다(LIFE-766). */
   cached: CacheEntry | null
 }): MainRead {
   const { cached } = input
@@ -1011,7 +1032,7 @@ function readMain(input: {
     size: input.stat.size,
     mtimeMs: input.stat.mtimeMs,
     agent: input.agent,
-    sessionId: input.ref.kind === 'id' ? input.ref.id : null,
+    sessionId: input.sessionId,
     // **파일을 건너 이어진다.** 파일이 자라 mtime 이 바뀌어도 "이 파일은 이미 상한까지
     // 훑어봤다" 는 사실은 그대로다 — 안 이으면 갱신마다 2MB 를 다시 읽는다.
     titleScanned: cached?.titleScanned ?? false,
@@ -1071,6 +1092,7 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
   cost: ReadCost
 } {
   const startedAt = Date.now()
+  const continuedBefore = continuedReadBytes()
   cycle += 1
   fileClaims.clear()
   const digests = new Map<string, SessionDigest>()
@@ -1124,6 +1146,7 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
       lifecycleRegistryBytes,
       lifecycleCatchingUp,
       lifecycleMs,
+      continuedBytes: continuedReadBytes() - continuedBefore,
     },
   }
 }

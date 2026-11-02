@@ -21,6 +21,7 @@ import { MAX_DEVICES, PairingStore } from './pairing.js'
 import { pairingPayload } from './protocol.js'
 import type { AgentSessionRef } from '../../shared/types.js'
 import { resolveTranscriptFile, resolveTranscriptUnique, type TranscriptResolution } from '../transcript.js'
+import { followContinued } from '../transcript-continued.js'
 import { sessionRecordPaths } from '../../runtime/terminal/agent.js'
 import { MobileServer } from './server.js'
 import { MOBILE_HTTPS_PORT, type TailscaleRunner } from './tailscale.js'
@@ -97,8 +98,8 @@ export class MobileService {
       log: deps.log,
       backend: inputBackend,
       resolveFile: ({ session, agent }) => {
-        const resolved = deps.resolveChatFile === undefined ? resolveTranscriptUnique(session) : uniqueOf(deps.resolveChatFile(session))
-        return resolved.kind === 'found' ? { kind: 'found', file: chatFileOf({ agent, transcript: resolved.file }) } : resolved
+        const resolved = deps.resolveChatFile === undefined ? resolveTranscriptUnique(session) : uniqueOf({ session, file: deps.resolveChatFile(session) })
+        return resolved.kind === 'found' ? { kind: 'found', file: chatFileOf({ agent, transcript: resolved.file }), continuedAs: resolved.continuedAs } : resolved
       },
       deviceValid: (device) => this.pairing.has(device),
       questionItems: (file) => chat.readerFor(file)?.items() ?? null,
@@ -281,6 +282,8 @@ export class MobileService {
 }
 
 /** 시험이 주입한 찾기(첫 일치 모양) — 파일 하나면 그것, 없으면 0건. */
-function uniqueOf(file: string | null): TranscriptResolution {
-  return file === null ? { kind: 'none' } : { kind: 'found', file }
+function uniqueOf(input: { session: AgentSessionRef; file: string | null }): TranscriptResolution {
+  if (input.file === null) return { kind: 'none' }
+  const followed = followContinued({ session: input.session, file: input.file })
+  return { kind: 'found', file: followed.file, continuedAs: followed.hops.at(-1) }
 }

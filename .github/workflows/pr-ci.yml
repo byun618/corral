@@ -50,10 +50,13 @@ jobs:
 
       - name: 1-5. 시험 (vitest + node:test)
         id: test
-        env:
-          # 소켓 시험은 짧은 TMPDIR 이 필요하다(긴 경로면 listen EINVAL). 러너 임시 폴더는 잡마다 비운다.
-          TMPDIR: ${{ runner.temp }}
-        run: npm test
+        # 소켓 시험은 짧은 TMPDIR 이 필요하다 — macOS Unix 소켓 경로 한도 104바이트. 러너 임시 폴더(_work/_temp, 34자)는
+        # 시험 소켓 이름(약 70자, pid 자릿수에 따라 다름)과 합쳐 넘친다(listen EINVAL). 잡마다 새로 만들고 지운다.
+        run: |
+          TMPDIR="$(mktemp -d /tmp/prci.XXXXXX)"
+          export TMPDIR
+          trap 'rm -rf "$TMPDIR"' EXIT
+          npm test
 
       - name: 1-6. 요약
         if: always()

@@ -629,10 +629,12 @@ function readDigest(input: {
  * **던지지 않는다.** 한 세션의 판독 실패가 목록 전체를 무너뜨리면 안 되므로 모든 실패는
  * `activity` 의 갈래로 내려앉는다 (기준 A8).
  */
-export function readSessionDigest(ref: AgentSessionRef | null): DigestRead {
+export function readSessionDigest(ref: AgentSessionRef | null): DigestRead & { continuedBytes: number } {
   cycle += 1
   fileClaims.clear()
-  return readOne(ref)
+  const before = continuedReadBytes()
+  const read = readOne(ref)
+  return { ...read, continuedBytes: continuedReadBytes() - before }
 }
 
 type DigestRead = {

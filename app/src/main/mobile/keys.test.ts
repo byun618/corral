@@ -91,7 +91,14 @@ const grokScreen = (input: string): string => ['╭────────╮',
 
 describe('C15 이름 붙은 질문 화면 (LIFE-766 — 실제 pane 화면에서 뜨고 세션 이름을 가린 표본)', () => {
   const sample = (name: string): string => fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'continued-in', name), 'utf8')
-  const plain = (name: string): string => sample(name).replace(/\n[^\n]* 세션 이름 ─\n?$/, '\n')
+  // 표본의 맨 끝 이름 줄을 뗀 화면 — 그 줄은 색 코드로 끝난다.
+  const plain = (name: string): string => {
+    const lines = sample(name).trimEnd().split('\n')
+    expect(lines.at(-1)).toContain('세션 이름')
+    const rest = lines.slice(0, -1).join('\n')
+    expect(rest).not.toContain('세션 이름')
+    return `${rest}\n`
+  }
   const NAMED = `${'─'.repeat(40)} 세션 이름 ─`
   const QUESTION_NAMES = ['screen-question.ansi', 'screen-named-tabs.ansi', 'screen-named-tabs-2.ansi', 'screen-narrow-question.ansi']
   const REVIEW_NAMES = ['screen-named-review.ansi', 'screen-narrow-review.ansi']

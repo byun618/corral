@@ -19,6 +19,7 @@
 //   구독을 들고 있다가 `CHAT_RETRY_MS` 마다 다시 찾아 회복되면 처음부터 보낸다(R2-A4).
 // - **세션 이어 가기**(LIFE-766): 세션이 백그라운드로 옮겨 가면 참조는 그대로이고 목록도 안 바뀐다 — 붙어 있는 Claude 구독은 `CHAT_FOLLOW_MS` 마다 **참조가 찾은 원본**에서
 //   `followContinued` 로 다시 걷는다(안 바뀐 파일은 stat 만, 폴더 훑기 없음). 파일이 달라지면 그 세션 id 의 판독자로 옮겨 `reset` — 옛 판독자는 유예 뒤 버린다.
+//   대상에 대화가 아직 없으면(첫 입력 때 복사된다) 옮기지 않는다 — 빈 `reset` 을 보내지 않는다.
 // - 보내는 글은 전부 홈 경로를 가린다(`maskPaths` — 목록과 같은 계약, X3) · 한 글 `ITEM_TEXT_MAX` 자, 넘으면 `clipped`(원래 길이)를 붙여 자른다.
 //   말풍선 하나 `ITEM_BYTES_MAX` 바이트 — 질문은 글자 예산 안에서만 싣고 넘치면 `clipped`(R1-A5). 프레임 하나 `MAX_FRAME_BYTES` — 넘으면 페이지를 줄이거나 나눠 보낸다.
 // - 폰이 주는 것은 채널 id·세대·말풍선 id(숫자) 뿐이다 — 파일 경로·세션 id 는 서버 안에서 `chatChannel`(목록과 같은 함수로 만든 목록)로만 고른다.
@@ -657,7 +658,7 @@ export class ChatHub {
       const link = sub.link
       if (link.kind !== 'attached' || !followable(link.channel.session)) continue
       watching = true
-      const followed = followContinued({ session: link.channel.session, file: link.origin })
+      const followed = followContinued({ session: link.channel.session, file: link.origin, empty: 'stay' })
       // 원본이 지워졌고 메모도 비었으면(세션 전환의 캐시 비움) 없는 원본이 돌아온다 — 그쪽으로 옮기면 구독이 끝난다. 보던 파일에 머문다.
       if (followed.file === link.entry.reader.file || !fs.existsSync(followed.file)) continue
       this.deps.log('mobile.chat_continued', { agent: link.channel.agent, hops: followed.hops.length })
@@ -698,7 +699,7 @@ export class ChatHub {
     if (!found.ok) return found
     const file = this.deps.resolveFile({ session: found.channel.session, agent: found.channel.agent })
     if (file === null || !fs.existsSync(file)) return { ok: false, reason: 'no_file' }
-    const followed = followContinued({ session: found.channel.session, file })
+    const followed = followContinued({ session: found.channel.session, file, empty: 'stay' })
     return { ok: true, channel: found.channel, origin: file, file: followed.file, sessionId: followed.sessionId }
   }
 

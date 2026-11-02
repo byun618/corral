@@ -1,0 +1,5 @@
+{"type":"ai-title","aiTitle":"세션 제목","sessionId":"00000000-0000-4000-8000-00000000000b"}
+{"type":"agent-name","agentName":"세션 이름","sessionId":"00000000-0000-4000-8000-00000000000b"}
+{"type":"mode","mode":"normal","sessionId":"00000000-0000-4000-8000-00000000000b"}
+{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"00000000-0000-4000-8000-00000000000b"}
+{"type":"atis-latch","sessionId":"00000000-0000-4000-8000-00000000000b"}

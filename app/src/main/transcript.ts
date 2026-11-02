@@ -239,7 +239,7 @@ export type ReadCost = {
   lifecycleRegistryBytes: number
   lifecycleCatchingUp: number
   lifecycleMs: number
-  /** 이어 가기 판별(LIFE-766) 몫 — 별도 계정이다. 바뀐 파일마다 `CONTINUED_TAIL_BYTES` 이하, 안 바뀐 파일은 0. */
+  /** 이어 가기 판별(LIFE-766) 몫 — 별도 계정이다. 끝 판별은 바뀐 파일마다 `CONTINUED_TAIL_BYTES` 이하, 대화 찾기는 대상마다 합쳐 `CONTINUED_CONVERSATION_MAX_BYTES` 이하, 안 바뀐 파일은 0. */
   continuedBytes: number
 }
 
@@ -385,8 +385,9 @@ function candidatesOf(input: { agent: TranscriptAgent; id: string }): Candidates
  * `none` = 훑기가 성공했고 후보가 0건(새 세션이 아직 파일을 쓰지 않았을 수 있다) · `error` = 폴더를 못 읽어 0건을 믿을 수 없다 ·
  * `ambiguous` = 같은 id 의 파일이 둘 이상. 표시용 `resolveTranscriptFile`(첫 일치)과 CLI 계약은 그대로다.
  * `continuedAs` = `continued-in` 을 따라 옮겨 간 세션 id(LIFE-766) — 그 파일의 줄은 이 id 로 세야 한다. 안 옮겼으면 없다.
+ * `shown` = 대화 화면이 보는 파일 — 대상이 아직 비어 `file` 과 다를 때만 있다. 커서·확인은 `file`, 질문 항목은 `shown` 을 쓴다.
  */
-export type TranscriptResolution = { kind: 'found'; file: string; continuedAs?: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous'; count: number }
+export type TranscriptResolution = { kind: 'found'; file: string; continuedAs?: string; shown?: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous'; count: number }
 
 export function resolveTranscriptUnique(ref: AgentSessionRef): TranscriptResolution {
   const agent = transcriptAgent(ref.agent)
@@ -400,15 +401,17 @@ export function resolveTranscriptUnique(ref: AgentSessionRef): TranscriptResolut
   // 일부를 못 읽었으면 하나만 찾았어도 유일하다고 말할 수 없고, 0건도 「없음」 이 아니다(R2-A5).
   if (error) return { kind: 'error' }
   if (files.length === 0) return { kind: 'none' }
-  // 이어 간 세션(LIFE-766) — 대화와 같은 파일을 고르고, 옮겨 간 id 마다 같은 유일성 계약을 건다. 대상 찾기는 표시와 같은 판별 하나다.
-  const followed = followContinued({ session: ref, file: files[0]! })
+  // 이어 간 세션(LIFE-766) — 지시가 기록될 파일을 고르고(빈 대상 포함), 옮겨 간 id 마다 같은 유일성 계약을 건다. 대상 찾기는 표시와 같은 판별 하나다.
+  const followed = followContinued({ session: ref, file: files[0]!, empty: 'follow' })
   for (const id of followed.hops) {
     const target = candidatesOf({ agent, id })
     if (target.files.length > 1) return { kind: 'ambiguous', count: target.files.length }
     if (target.error) return { kind: 'error' }
   }
   const continuedAs = followed.hops.at(-1)
-  return continuedAs === undefined ? { kind: 'found', file: followed.file } : { kind: 'found', file: followed.file, continuedAs }
+  if (continuedAs === undefined) return { kind: 'found', file: followed.file }
+  const shown = followContinued({ session: ref, file: files[0]!, empty: 'stay' }).file
+  return shown === followed.file ? { kind: 'found', file: followed.file, continuedAs } : { kind: 'found', file: followed.file, continuedAs, shown }
 }
 
 /** 참조를 파일 경로로 옮긴다. 못 찾으면 null. */
@@ -674,8 +677,8 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     }
     misses.delete(key)
   }
-  // 이어 간 세션(LIFE-766) — 캐시가 파일을 고정하지 않게 주기마다 다시 고른다. 안 바뀐 파일은 stat 만 한다.
-  const followed = followContinued({ session: ref, file: origin })
+  // 이어 간 세션(LIFE-766) — 캐시가 파일을 고정하지 않게 주기마다 다시 고른다. 안 바뀐 파일은 stat 만 한다. 대상이 비어 있으면 옛 파일에 머문다.
+  const followed = followContinued({ session: ref, file: origin, empty: 'stay' })
   const { file } = followed
 
   let stat: fs.Stats

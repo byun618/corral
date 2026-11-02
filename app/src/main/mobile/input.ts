@@ -153,8 +153,9 @@ export interface InputBackend {
  * 쓰기용 기록 해소(R1-A13) — `found` 는 **유일한** 후보일 때만. `none` = 훑기 성공·0건(새 세션은 첫 지시 뒤에 파일이 생긴다) ·
  * `error` = 0건을 믿을 수 없다(기다린다) · `ambiguous` = 같은 세션 id 의 파일이 둘 이상(잠근다).
  * `continuedAs` = 기록이 이어 간 세션 id(LIFE-766) — 커서 뒤 줄은 이 id 로 센다. 없으면 채널 세션 그대로.
+ * `shown` = 대화 화면이 보는 파일 — 대상이 아직 비어 `file` 과 다를 때만 있다. 질문 항목은 이 파일의 판독자에서 찾는다.
  */
-export type FileResolution = { kind: 'found'; file: string; continuedAs?: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous' }
+export type FileResolution = { kind: 'found'; file: string; continuedAs?: string; shown?: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous' }
 
 export type InputHubDeps = {
   read: () => ListInput | null
@@ -1098,9 +1099,11 @@ export class InputHub {
     const resolved = this.deps.resolveFile(channel)
     if (resolved.kind !== 'found') return this.settle(entry, 'failed', resolved.kind === 'ambiguous' ? 'record_ambiguous' : 'not_ready')
     const { file } = resolved
-    await this.deps.questionReady?.(file)
+    // 폰이 본 질문은 화면이 보는 파일에 있고, 답은 Claude 가 쓰는 파일에 기록된다 — 대상이 비어 있는 동안만 둘이 다르다(LIFE-766).
+    const shownFile = resolved.shown ?? file
+    await this.deps.questionReady?.(shownFile)
     if (this.halted(entry)) return
-    const question = this.openQuestion({ file, id: entry.question, call })
+    const question = this.openQuestion({ file: shownFile, id: entry.question, call })
     if (question === null) return this.settle(entry, 'failed', 'question_closed')
     if (questionDigest(question.questions) !== digest) return this.settle(entry, 'failed', 'question_changed')
     const plan = answerGroups({
@@ -1160,7 +1163,7 @@ export class InputHub {
           ? questionKeys({ kind, question: answerShape(question.questions[check.index]!), answer: answers[check.index]!, checked: shown.checked })
           : plan.groups[group]!.keys
       if (keys.some((key) => key.length === 0)) return stop('question_in_progress')
-      if (this.openQuestion({ file, id: entry.question, call }) === null) return stop('question_closed')
+      if (this.openQuestion({ file: shownFile, id: entry.question, call }) === null) return stop('question_closed')
       for (let index = 0; index < keys.length; index += 1) {
         if (index > 0) await this.sleep(this.timing.stepGapMs)
         // 키마다 효과 직전 — 해지·끔·세션 바뀜이면 남은 키를 넣지 않는다. 첫 키 전이면 아무것도 넣지 않았다(R1-A1·A4·R2-A4).
@@ -1211,8 +1214,9 @@ export class InputHub {
       if (records.count > 1) return this.settle(entry, 'unconfirmed', 'record_ambiguous')
       if (records.count === 1 && records.declined) return this.settle(entry, 'unconfirmed', 'question_declined')
       // 답 1건 + 판독자에서 그 질문이 대기에서 풀림(판독자가 없으면 답 줄이 곧 해소다 — Claude·Grok 은 그 도구 호출의 결과 줄).
+      // 화면이 빈 대상 앞 파일을 보던 답이면(LIFE-766) 그 파일엔 답이 안 쓰인다 — 판독자 없는 경우와 같다.
       // 그리고 기록의 답 값이 폰이 고른 답이어야 한다(R3-A1 — 맥이 먼저 체크해 둔 칸이 섞이면 1건이어도 다른 답이다).
-      if (records.count === 1 && this.questionItem({ file, id: entry.question, call })?.state !== 'pending') {
+      if (records.count === 1 && (shownFile !== file || this.questionItem({ file, id: entry.question, call })?.state !== 'pending')) {
         const recorded: RecordedAnswers = tail.text === null ? { kind: 'unreadable' } : recordedAnswers({ kind, text: tail.text, call, questions: question.questions.map((q) => q.question) })
         if (recorded.kind === 'unreadable') return this.settle(entry, 'unconfirmed', 'answer_unreadable')
         if (!answerMatches({ kind, recorded: recorded.values, questions: question.questions, answers })) return this.settle(entry, 'unconfirmed', 'answer_mismatch')

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentSessionRef } from '../shared/types.js'
 import { ChatBuilder } from './chat-parse.js'
 import { clearTranscriptCache, readSessionDigest, readSessionDigests, resolveTranscriptFile, resolveTranscriptUnique, TAIL_MAX_BYTES } from './transcript.js'
-import { CONTINUED_CHAIN_MAX, CONTINUED_PROBE_BYTES, CONTINUED_TAIL_BYTES, clearContinuedMemo, continuedReadBytes, continuedVerdict, followContinued } from './transcript-continued.js'
+import { CONTINUED_CHAIN_MAX, CONTINUED_CONVERSATION_MAX_BYTES, CONTINUED_PROBE_BYTES, CONTINUED_TAIL_BYTES, clearContinuedMemo, continuedReadBytes, continuedVerdict, followContinued } from './transcript-continued.js'
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'continued-in')
 const A = '00000000-0000-4000-8000-00000000000a'
@@ -28,7 +28,8 @@ let home = ''
 let realHome: string | undefined
 let dir = ''
 const fileOf = (id: string): string => path.join(dir, `${id}.jsonl`)
-const follow = (id = A) => followContinued({ session: refOf(id), file: fileOf(id) })
+const follow = (id = A) => followContinued({ session: refOf(id), file: fileOf(id), empty: 'stay' })
+const followEmpty = (id = A) => followContinued({ session: refOf(id), file: fileOf(id), empty: 'follow' })
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'l766-'))
@@ -64,13 +65,13 @@ describe('C1 판별 규칙', () => {
     fs.writeFileSync(fileOf(A), fork(B))
     fs.writeFileSync(fileOf(B), fork(C, B))
     fs.writeFileSync(fileOf(C), human('끝', C))
-    expect(follow()).toEqual({ file: fileOf(C), sessionId: C, hops: [B, C] })
+    expect(followEmpty()).toEqual({ file: fileOf(C), sessionId: C, hops: [B, C] })
   })
 
   it('ⓒ 연쇄가 상한을 넘으면 상한에서 멈춘다', () => {
     const ids = Array.from({ length: CONTINUED_CHAIN_MAX + 3 }, (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`)
     ids.forEach((id, index) => fs.writeFileSync(fileOf(id), fork(ids[index + 1] ?? LOST, id)))
-    const followed = follow(ids[0])
+    const followed = followEmpty(ids[0])
     expect(followed.hops).toHaveLength(CONTINUED_CHAIN_MAX)
     expect(followed.file).toBe(fileOf(ids[CONTINUED_CHAIN_MAX]!))
   })
@@ -78,9 +79,9 @@ describe('C1 판별 규칙', () => {
   it('ⓓ 순환 A→B→A 는 예외 없이 멈춘다 · 자기 자신도', () => {
     fs.writeFileSync(fileOf(A), fork(B))
     fs.writeFileSync(fileOf(B), fork(A, B))
-    expect(follow()).toEqual({ file: fileOf(B), sessionId: B, hops: [B] })
+    expect(followEmpty()).toEqual({ file: fileOf(B), sessionId: B, hops: [B] })
     fs.writeFileSync(fileOf(C), fork(C, C))
-    expect(follow(C)).toEqual({ file: fileOf(C), sessionId: C, hops: [] })
+    expect(followEmpty(C)).toEqual({ file: fileOf(C), sessionId: C, hops: [] })
   })
 
   it('ⓔ 대상 파일이 없으면 옛 파일, 생기면 옮겨 간다', () => {
@@ -152,7 +153,7 @@ describe('C1 판별 규칙', () => {
     const open = vi.spyOn(fs, 'openSync')
     fs.writeFileSync(fileOf(B), human('새', B))
     fs.writeFileSync(fileOf(A), fork(B))
-    expect(followContinued({ session: { kind: 'id', agent, source: `herdr:${agent}`, id: A }, file: fileOf(A) })).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
+    expect(followContinued({ session: { kind: 'id', agent, source: `herdr:${agent}`, id: A }, file: fileOf(A), empty: 'stay' })).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
     expect(open).not.toHaveBeenCalled()
   })
 
@@ -161,7 +162,7 @@ describe('C1 판별 규칙', () => {
     fs.writeFileSync(fileOf(B), human('새', B))
     fs.writeFileSync(fileOf(A), fork(B))
     const session: AgentSessionRef = { kind: 'path', agent: 'claude', source: 'herdr:claude', path: fileOf(A) }
-    expect(followContinued({ session, file: fileOf(A) })).toEqual({ file: fileOf(A), sessionId: null, hops: [] })
+    expect(followContinued({ session, file: fileOf(A), empty: 'stay' })).toEqual({ file: fileOf(A), sessionId: null, hops: [] })
     expect(open).not.toHaveBeenCalled()
     expect(resolveTranscriptUnique(session)).toEqual({ kind: 'found', file: fileOf(A) })
   })
@@ -584,8 +585,8 @@ describe('C8 비용', () => {
     fs.writeFileSync(fileOf(A), reply('y'.repeat(CONTINUED_TAIL_BYTES * 2), A) + fork(B) + metas)
     const before = continuedReadBytes()
     expect(follow().file).toBe(fileOf(B))
-    // 옛 파일 창 전체 + 대상 파일(작아서 통째로) 한 hop
-    expect(continuedReadBytes() - before).toBe(CONTINUED_TAIL_BYTES + fs.statSync(fileOf(B)).size)
+    // 옛 파일 창 전체 + 대상 파일(작아서 통째로) 한 hop + 대상의 대화 찾기(첫 줄에서 끝난다)
+    expect(continuedReadBytes() - before).toBe(CONTINUED_TAIL_BYTES + fs.statSync(fileOf(B)).size * 2)
   })
 
   it('ⓒ 대상 찾기·지문 재확인은 프로젝트 폴더를 훑지 않는다 — 훑기 횟수를 센다', () => {
@@ -601,5 +602,105 @@ describe('C8 비용', () => {
     expect(readSessionDigest(refOf(A)).digest.lastPrompt).toBe('새')
     for (let index = 0; index < 20; index += 1) follow()
     expect(scans()).toBe(1)
+  })
+})
+
+describe('C13 빈 대상', () => {
+  const fixture = (name: string): string => fs.readFileSync(path.join(__dirname, 'fixtures', 'continued-in', name), 'utf8')
+
+  it.each(['empty-2.jsonl', 'empty-5.jsonl'])('ⓐ 메타 줄만 있는 대상(%s) → 보여 주는 쪽은 옛 파일 · 입력 쪽은 대상과 그 id', (name) => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    fs.writeFileSync(fileOf(B), fixture(name))
+    expect(follow()).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
+    expect(followEmpty()).toEqual({ file: fileOf(B), sessionId: B, hops: [B] })
+    expect(resolveTranscriptUnique(refOf(A))).toEqual({ kind: 'found', file: fileOf(B), continuedAs: B, shown: fileOf(A) })
+  })
+
+  it('ⓐ 지문도 대상이 비면 옛 파일 값이고, 대화가 복사되면 다음 주기에 새 파일 값이다', () => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    fs.writeFileSync(fileOf(B), fixture('empty-5.jsonl'))
+    expect(readSessionDigest(refOf(A)).digest.lastPrompt).toBe('옛')
+    fs.appendFileSync(fileOf(B), human('옛', B) + human('새', B))
+    expect(readSessionDigest(refOf(A)).digest.lastPrompt).toBe('새')
+  })
+
+  it('ⓑ 대화가 복사되면 옮겨 간다 · shown 이 사라진다 — 큰 attachment 가 끝 창을 채워도 앞에서 찾는다', () => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    fs.writeFileSync(fileOf(B), fixture('empty-5.jsonl'))
+    expect(follow().file).toBe(fileOf(A))
+    fs.appendFileSync(fileOf(B), human('옛', B) + row({ type: 'attachment', pad: 'x'.repeat(CONTINUED_TAIL_BYTES * 2) }))
+    expect(follow()).toEqual({ file: fileOf(B), sessionId: B, hops: [B] })
+    expect(resolveTranscriptUnique(refOf(A))).toEqual({ kind: 'found', file: fileOf(B), continuedAs: B })
+  })
+
+  it('ⓑ 쓰는 중인 대화 줄(개행 없음)은 세지 않고, 줄이 닫히면 옮겨 간다', () => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    const line = human('새', B)
+    fs.writeFileSync(fileOf(B), fixture('empty-2.jsonl') + line.slice(0, -1))
+    expect(follow().file).toBe(fileOf(A))
+    fs.appendFileSync(fileOf(B), '\n')
+    expect(follow().file).toBe(fileOf(B))
+  })
+
+  it('ⓑ assistant 만 있어도 대화다', () => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    fs.writeFileSync(fileOf(B), fixture('empty-2.jsonl') + reply('답', B))
+    expect(follow().file).toBe(fileOf(B))
+  })
+
+  it('ⓓ 연쇄 중간이 비었으면 그 앞에 머문다 — 입력 쪽은 끝까지 간다', () => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    fs.writeFileSync(fileOf(B), fixture('empty-2.jsonl') + fork(C, B))
+    fs.writeFileSync(fileOf(C), human('끝', C))
+    expect(follow().file).toBe(fileOf(A))
+    expect(followEmpty()).toEqual({ file: fileOf(C), sessionId: C, hops: [B, C] })
+    fs.writeFileSync(fileOf(B), human('중간', B) + fork(C, B))
+    fs.writeFileSync(fileOf(C), fixture('empty-2.jsonl'))
+    expect(follow().file).toBe(fileOf(B))
+  })
+
+  it('ⓔ 변경 없는 빈 대상의 재확인은 0 바이트 · 자라면 본 데까지 건너뛴다 · 찾은 뒤에는 자라도 0 바이트', () => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    fs.writeFileSync(fileOf(B), fixture('empty-5.jsonl'))
+    follow()
+    const before = continuedReadBytes()
+    for (let index = 0; index < 5; index += 1) follow()
+    expect(continuedReadBytes()).toBe(before)
+    const meta = row({ type: 'mode', mode: 'normal', sessionId: B })
+    fs.appendFileSync(fileOf(B), meta)
+    follow()
+    expect(continuedReadBytes() - before).toBe(Buffer.byteLength(meta))
+    const copied = human('새', B)
+    fs.appendFileSync(fileOf(B), copied)
+    expect(follow().file).toBe(fileOf(B))
+    fs.appendFileSync(fileOf(B), row({ type: 'attachment', pad: 'x'.repeat(CONTINUED_TAIL_BYTES) }))
+    const found = continuedReadBytes()
+    follow()
+    // 대상 끝 판별만 — 대화 찾기는 더 읽지 않는다.
+    expect(continuedReadBytes() - found).toBeLessThanOrEqual(CONTINUED_TAIL_BYTES)
+    fs.writeFileSync(fileOf(C), '')
+    const settled = continuedReadBytes()
+    follow()
+    expect(continuedReadBytes()).toBe(settled)
+  })
+
+  it('ⓔ 찾기 상한을 다 읽어도 없으면 앞 파일에 머물고, 자라도 더 읽지 않는다', () => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    fs.writeFileSync(fileOf(B), row({ type: 'attachment', pad: 'x'.repeat(CONTINUED_CONVERSATION_MAX_BYTES + 1024) }))
+    const before = continuedReadBytes()
+    expect(follow().file).toBe(fileOf(A))
+    expect(continuedReadBytes() - before).toBeLessThanOrEqual(CONTINUED_TAIL_BYTES + CONTINUED_CONVERSATION_MAX_BYTES)
+    const capped = continuedReadBytes()
+    fs.appendFileSync(fileOf(B), human('새', B))
+    expect(follow().file).toBe(fileOf(A))
+    expect(continuedReadBytes()).toBe(capped)
+  })
+
+  it('ⓔ 파일이 바뀌면(줄어듦) 처음부터 다시 찾는다', () => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    fs.writeFileSync(fileOf(B), human('새', B) + reply('답', B))
+    expect(follow().file).toBe(fileOf(B))
+    fs.writeFileSync(fileOf(B), fixture('empty-2.jsonl').slice(0, 10) + '\n')
+    expect(follow().file).toBe(fileOf(A))
   })
 })

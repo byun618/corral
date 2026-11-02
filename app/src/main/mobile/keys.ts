@@ -647,11 +647,13 @@ const plainOf = (runs: Run[]): string => runs.map((run) => run.text).join('')
 /** 보이는 화면(ANSI)의 글만 — 줄 순서 그대로(R1-A2 질문 화면 대조). */
 export const screenPlain = (screen: string): string => screen.split(/\r?\n/).map((line) => plainOf(runsOf(line))).join('\n')
 const RULE = /^\s*─{20,}\s*$/
+/** Claude 입력 상자 윗줄에 세션 이름이 붙은 꼴(`─────… 이름 ─`, 세션을 백그라운드로 옮겼다 돌아온 뒤 — LIFE-766 실측 2.1.296). 첫 칸에서 시작하는 줄만 — 상자 안 여러 줄 초안은 들여 쓰인다. */
+const NAMED_RULE = /^─{3,} \S(?:.*\S)? ─+\s*$/
 
 /**
  * 보이는 화면(ANSI)에서 그 provider 의 입력 줄을 찾아 비었는지 본다(Z1ⓔ 표본 모양). **빈 입력이 확인될 때만 `empty`** —
  * 글이 있으면 `draft`, 입력 줄을 못 찾으면 `unknown`(넣지 않는다, fail-closed).
- * - Claude: 마지막 두 가로줄(─) 사이 상자, 첫 줄이 `❯`. `❯` 뒤와 상자 안 나머지 줄에 진한 글이 없어야 빈 입력(흐린 자리표시 `Try "…"` 는 빈 입력 — 새 세션 첫 화면).
+ * - Claude: 마지막 두 가로줄(─) 사이 상자, 첫 줄이 `❯`. 윗줄은 이름이 붙어도 되고(`NAMED_RULE`) 아랫줄은 글 없는 가로줄이어야 한다. `❯` 뒤와 상자 안 나머지 줄에 진한 글이 없어야 빈 입력(흐린 자리표시 `Try "…"` 는 빈 입력 — 새 세션 첫 화면).
  * - Codex: 마지막 `› ` 줄. 그 뒤 글이 전부 흐림(SGR 2 — 자리표시 `Ask Codex to do anything`)이면 빈 입력. 바로 아래 빈 줄 전까지 이어진 줄이 있으면 여러 줄 초안.
  * - Grok: 마지막 `│ ❯ …│` 줄과 그 아래 `│ … │` 줄(상자 끝 `╰` 전까지)이 비어야 빈 입력. 상자 바로 아래 줄(또는 빈 줄 하나 다음 줄)에 `accept suggestion` 힌트가 있으면
  *   입력칸의 기울임(SGR 3) 글은 Grok 의 다음 문장 제안(ghost)이라 빼고 본다 — 힌트가 없으면 기울임도 초안으로 센다(fail-closed, LIFE-582 최종 관문).
@@ -662,10 +664,11 @@ export function draftState(input: { kind: MobileAgentKind; screen: string }): Dr
   switch (input.kind) {
     case 'claude': {
       const rules: number[] = []
-      plain.forEach((line, index) => { if (RULE.test(line)) rules.push(index) })
+      plain.forEach((line, index) => { if (RULE.test(line) || NAMED_RULE.test(line)) rules.push(index) })
       if (rules.length < 2) return 'unknown'
       const end = rules[rules.length - 1]!
       const start = rules[rules.length - 2]!
+      if (!RULE.test(plain[end]!)) return 'unknown'
       const first = plain[start + 1]
       if (first === undefined || start + 1 >= end || !first.startsWith('❯')) return 'unknown'
       // 흐린 글(SGR 2)은 자리표시(`Try "…"`)다 — 진한 글만 초안으로 센다. 첫 줄 맨 앞 `❯` 는 표식.

@@ -89,6 +89,41 @@ const claudeScreen = (input: string): string => ['● 답', '', RULE, `❯\u00a0
 const codexScreen = (input: string): string => ['• 답', '', input, '', '  gpt · ~/w'].join('\r\n')
 const grokScreen = (input: string): string => ['╭────────╮', `│ ❯ ${input.padEnd(20)}│`, '╰────────╯'].join('\r\n')
 
+describe('C14 이름 붙은 입력 상자 (LIFE-766 — 실제 pane 화면에서 뜨고 세션 이름을 가린 표본)', () => {
+  const sample = (name: string): string => fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'continued-in', name), 'utf8')
+  const NAMED = `${'─'.repeat(40)} 세션 이름 ─`
+  const box = (input: { top: string; first: string; bottom: string }): string => ['● 답', input.top, input.first, input.bottom, '  ? for shortcuts'].join('\r\n')
+
+  it('ⓐ 윗줄에 이름이 붙은 빈 상자 → empty', () => {
+    expect(draftState({ kind: 'claude', screen: sample('screen-named-empty.ansi') })).toBe('empty')
+  })
+  it('ⓑ 같은 상자에 글 → draft', () => {
+    expect(draftState({ kind: 'claude', screen: sample('screen-named-draft.ansi') })).toBe('draft')
+  })
+  it('ⓒ 아랫줄에 이름이 붙은 모양 → unknown', () => {
+    expect(draftState({ kind: 'claude', screen: box({ top: RULE, first: '❯\u00a0', bottom: NAMED }) })).toBe('unknown')
+    expect(draftState({ kind: 'claude', screen: box({ top: NAMED, first: '❯\u00a0', bottom: NAMED }) })).toBe('unknown')
+  })
+  it('ⓒ 상자 첫 줄이 ❯ 아닌 모양 → unknown', () => {
+    expect(draftState({ kind: 'claude', screen: box({ top: NAMED, first: 'x', bottom: RULE }) })).toBe('unknown')
+  })
+  it('ⓒ 들여 쓴 줄은 이름 윗줄이 아니다 — 여러 줄 초안의 그런 줄이 상자 윗줄이 되지 않는다', () => {
+    const screen = [RULE, '❯\u00a0첫 줄', `  ${NAMED}`, '  ❯ 둘째', RULE].join('\r\n')
+    expect(draftState({ kind: 'claude', screen })).toBe('draft')
+  })
+  it('ⓓ 이름 없는 표본은 그대로', () => {
+    expect(draftState({ kind: 'claude', screen: sample('screen-plain-empty.ansi') })).toBe('empty')
+    expect(draftState({ kind: 'claude', screen: claudeScreen('글') })).toBe('draft')
+  })
+  it('질문 화면은 입력 상자가 아니다 → unknown (키 경로가 넣지 않는다)', () => {
+    expect(draftState({ kind: 'claude', screen: sample('screen-question.ansi') })).toBe('unknown')
+  })
+  it('다른 도구의 판별은 이름 줄을 모른다', () => {
+    expect(draftState({ kind: 'codex', screen: sample('screen-named-empty.ansi') })).toBe('unknown')
+    expect(draftState({ kind: 'grok', screen: sample('screen-named-empty.ansi') })).toBe('unknown')
+  })
+})
+
 describe('맥 입력창 초안 (Z1ⓔ — 화면 모양 합성)', () => {
   it('Claude — 상자 안 ❯ 뒤가 비면 empty, 글이 있으면 draft, 상자가 없으면 unknown', () => {
     expect(draftState({ kind: 'claude', screen: claudeScreen('') })).toBe('empty')

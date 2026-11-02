@@ -230,6 +230,62 @@ describe('C4 왕복 없음 — 모름은 직전 판별을 유지한다', () => {
   })
 })
 
+describe('C13 빈 대상', () => {
+  const meta = (type: string): string => row({ type, sessionId: TARGET })
+
+  it.each([[['ai-title', 'agent-name']], [['ai-title', 'agent-name', 'mode', 'permission-mode', 'atis-latch']]])('ⓐ 메타 줄만 있는 대상 %j → 옛 대화에 머문다 · 빈 reset 0 · 이동 0', async (types) => {
+    const t = setup()
+    t.open()
+    const first = await waitFor(() => t.resets()[0])
+    fs.writeFileSync(t.fileOf(TARGET), types.map(meta).join(''))
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), fork(TARGET))
+    await sleep(1200)
+    expect(t.resets()).toHaveLength(1)
+    expect(itemsOf(first).length).toBeGreaterThanOrEqual(1)
+    expect(t.continued()).toBe(0)
+    expect(t.hub.readerFor(t.fileOf(TARGET))).toBeNull()
+  })
+
+  it('ⓑ 대화가 복사되면 3초 안에 옮겨 가고 reset items ≥ 1 — 빈 첫 페이지 없음', async () => {
+    const t = setup()
+    t.open()
+    await waitFor(() => t.resets()[0])
+    fs.writeFileSync(t.fileOf(TARGET), meta('ai-title') + meta('agent-name'))
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), fork(TARGET))
+    await sleep(700)
+    const started = Date.now()
+    fs.appendFileSync(t.fileOf(TARGET), human('옛 지시', TARGET) + reply('옛 답', TARGET) + human('새 지시', TARGET))
+    const page = await waitFor(() => t.resets()[1])
+    expect(Date.now() - started).toBeLessThanOrEqual(3000)
+    expect(texts(page)).toEqual(['옛 지시', '옛 답', '새 지시'])
+    expect(t.resets().every((frame) => itemsOf(frame).length >= 1)).toBe(true)
+    expect(t.continued()).toBe(1)
+  })
+
+  it('ⓓ 연쇄 중간이 비었으면 그 앞에 머문다', async () => {
+    const t = setup()
+    t.open()
+    await waitFor(() => t.resets()[0])
+    fs.writeFileSync(t.fileOf(TARGET), human('중간', TARGET) + fork(NEXT))
+    fs.writeFileSync(t.fileOf(NEXT), row({ type: 'ai-title', sessionId: NEXT }))
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), fork(TARGET))
+    const page = await waitFor(() => t.resets()[1])
+    expect(texts(page)).toEqual(['중간'])
+    await sleep(700)
+    expect(t.resets()).toHaveLength(2)
+    expect(t.hub.readerFor(t.fileOf(NEXT))).toBeNull()
+  })
+
+  it('처음 여는 대화도 대상이 비면 옛 대화를 보여 준다', async () => {
+    const t = setup()
+    fs.writeFileSync(t.fileOf(TARGET), meta('ai-title'))
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), fork(TARGET))
+    t.open()
+    const page = await waitFor(() => t.resets()[0])
+    expect(texts(page)).toEqual(['옛 지시', '옛 답'])
+  })
+})
+
 describe('C5 참조가 뒤늦게 바뀌어도', () => {
   const moved: AgentSessionRef = { kind: 'id', agent: 'claude', source: 'herdr', id: TARGET }
 

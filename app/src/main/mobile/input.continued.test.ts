@@ -18,7 +18,8 @@ const QUESTION = { question: 'Q-1 어느 쪽?', header: 'Pick', multiSelect: fal
 const QUESTION_SCREEN = ['', RULE, ' ☐ Pick', 'Q-1 어느 쪽?', '❯ 1. o0', '  2. o1', '  3. Type something.', RULE, '  4. Chat about this', 'Enter to select · ↑/↓ to navigate · Esc to cancel'].join('\r\n')
 
 const row = (value: unknown): string => `${JSON.stringify(value)}\n`
-const human = (text: string, sessionId: string): string => row({ type: 'user', sessionId, origin: { kind: 'human' }, uuid: `u-${text}`, parentUuid: null, timestamp: new Date().toISOString(), message: { role: 'user', content: text } })
+const human = (text: string, sessionId: string, at = new Date()): string => row({ type: 'user', sessionId, origin: { kind: 'human' }, uuid: `u-${text}-${at.getTime()}`, parentUuid: null, timestamp: at.toISOString(), message: { role: 'user', content: text } })
+const metas = (sessionId: string): string => row({ type: 'ai-title', sessionId }) + row({ type: 'agent-name', sessionId })
 const fork = (to: string): string => row({ type: 'continued-in', sessionId: CLAUDE_SESSION, continuedInSessionId: to })
 const asked = (sessionId: string): string => row({ type: 'assistant', sessionId, uuid: 'a-q', parentUuid: null, timestamp: new Date().toISOString(), message: { id: 'm-q', role: 'assistant', model: 'x', content: [{ type: 'tool_use', id: 'call-1', name: 'AskUserQuestion', input: { questions: [QUESTION] } }] } })
 const answered = (sessionId: string): string => row({ type: 'user', sessionId, uuid: 'r-q', parentUuid: 'a-q', timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-1', content: 'ok' }] }, toolUseResult: { answers: { [QUESTION.question]: 'o1' } } })
@@ -34,6 +35,10 @@ class ForkedBackend implements InputBackend {
   readonly keys: string[] = []
   /** 화면을 읽을 때 부른다 — 관문을 도는 사이의 이동을 끼운다. */
   onScreen: (() => void) | null = null
+  /** 넣기가 일으키는 복사(LIFE-766) — 지시 줄보다 먼저 파일에 붙는다. */
+  copy: (() => string) | null = null
+  /** false 면 지시 줄을 쓰지 않는다(복사만 오고 지시는 안 들어간 경우). */
+  records = true
   /** 키를 넣을 때 기록에 쓰는 줄 — 기본은 질문의 답. */
   keyLine: () => string = () => answered(this.live.sessionId)
 
@@ -66,7 +71,8 @@ class ForkedBackend implements InputBackend {
     if (input.inputRevision !== this.input.revision) return 'refused'
     this.input = { ...this.input, revision: this.input.revision + 1 }
     this.prompts.push(input.text)
-    fs.appendFileSync(this.live.file, human(input.text, this.live.sessionId))
+    if (this.copy !== null) fs.appendFileSync(this.live.file, this.copy())
+    if (this.records) fs.appendFileSync(this.live.file, human(input.text, this.live.sessionId))
     return 'sent'
   }
 
@@ -362,5 +368,82 @@ describe('C6 이어 간 세션의 폰 쓰기', () => {
     await t.settled('ans-l766-0001')
     expect(new Set(t.looked)).toEqual(new Set([fileOf(TARGET)]))
     expect(t.backend.keys.length).toBeGreaterThan(0)
+  })
+
+  describe('C13 빈 대상', () => {
+    const TEXT = '같은 글 지시'
+    const ready = async (t: ReturnType<typeof setup>, file: string): Promise<void> => {
+      const started = Date.now()
+      while (t.chat.readerFor(file)?.state.kind !== 'ready' && Date.now() - started < 2000) await new Promise((done) => setTimeout(done, 5))
+    }
+
+    it('ⓒ 커서가 빈 대상을 쓰고, 복사가 들어와도 새 지시만 delivered · 이어서 화면도 옮겨 간다', async () => {
+      const old = new Date(Date.now() - 60_000)
+      fs.writeFileSync(fileOf(CLAUDE_SESSION), human(TEXT, CLAUDE_SESSION, old) + fork(TARGET))
+      fs.writeFileSync(fileOf(TARGET), metas(TARGET))
+      const t = setup({ followMs: 20 })
+      t.chat.subscribe({ channelId: 'c1', resume: null, sink: () => {} })
+      await ready(t, fileOf(CLAUDE_SESSION))
+      expect(t.chat.readerFor(fileOf(TARGET))).toBeNull()
+      t.backend.copy = () => human(TEXT, TARGET, old)
+      t.hub.send({ device: 'd1', id: 'send-l766-c13a', channel: 'c1', text: TEXT })
+      const { state, reason } = await t.settled('send-l766-c13a')
+      expect({ state, reason }).toEqual({ state: 'delivered', reason: null })
+      expect(t.backend.prompts).toEqual([TEXT])
+      await ready(t, fileOf(TARGET))
+      expect(t.chat.readerFor(fileOf(TARGET))?.state.kind).toBe('ready')
+    })
+
+    it('ⓒ 복사분의 같은 글만 오면 배달이 아니다 — 같은 초의 옛 지시여도 unconfirmed/record_missing', async () => {
+      fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION) + fork(TARGET))
+      fs.writeFileSync(fileOf(TARGET), metas(TARGET))
+      const t = setup()
+      // 제출 시각은 화면을 읽은 뒤다 — 복사분 시각을 그 직전에 잡아, 같은 초 안에서 ms 로만 갈린다.
+      let beforeSubmit = new Date()
+      t.backend.onScreen = () => {
+        beforeSubmit = new Date(Date.now() - 1)
+      }
+      t.backend.records = false
+      t.backend.copy = () => human(TEXT, TARGET, beforeSubmit)
+      t.hub.send({ device: 'd1', id: 'send-l766-c13b', channel: 'c1', text: TEXT })
+      const { state, reason } = await t.settled('send-l766-c13b')
+      expect({ state, reason }).toEqual({ state: 'unconfirmed', reason: 'record_missing' })
+    })
+
+    it('ⓒ 질문 답 — 항목은 화면이 보는 옛 파일에서, 커서는 빈 대상에서', async () => {
+      fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION) + asked(CLAUDE_SESSION))
+      fs.writeFileSync(fileOf(TARGET), metas(TARGET))
+      const t = setup()
+      t.backend.status = 'blocked'
+      t.backend.screenText = QUESTION_SCREEN
+      t.chat.subscribe({ channelId: 'c1', resume: null, sink: () => {} })
+      await ready(t, fileOf(CLAUDE_SESSION))
+      fs.appendFileSync(fileOf(CLAUDE_SESSION), fork(TARGET))
+      const item = t.chat.readerFor(fileOf(CLAUDE_SESSION))?.items().find((one) => one.kind === 'question')
+      if (item?.kind !== 'question') throw new Error('질문 없음')
+      t.hub.answer({ device: 'd1', id: 'ans-l766-c13c', channel: 'c1', question: item.id, call: 'call-1', digest: questionDigest(item.questions), answers: [{ choices: [1], other: null }] })
+      const { state, reason } = await t.settled('ans-l766-c13c')
+      expect({ state, reason }).toEqual({ state: 'delivered', reason: null })
+      expect(new Set(t.looked)).toEqual(new Set([fileOf(CLAUDE_SESSION)]))
+      expect(t.backend.keys.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('C14 이름 붙은 입력 상자', () => {
+    const fixture = (name: string): string => fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'continued-in', name), 'utf8')
+
+    it('이름 붙은 빈 상자에 폰 지시 → delivered · 글이 있으면 failed/mac_draft', async () => {
+      fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION) + fork(TARGET))
+      fs.writeFileSync(fileOf(TARGET), metas(TARGET))
+      const t = setup()
+      t.backend.screenText = fixture('screen-named-empty.ansi')
+      t.hub.send({ device: 'd1', id: 'send-l766-c14a', channel: 'c1', text: '지시' })
+      const sent = await t.settled('send-l766-c14a')
+      expect({ state: sent.state, reason: sent.reason }).toEqual({ state: 'delivered', reason: null })
+      t.backend.screenText = fixture('screen-named-draft.ansi')
+      t.hub.send({ device: 'd1', id: 'send-l766-c14b', channel: 'c1', text: '다음' })
+      const refused = await t.settled('send-l766-c14b')
+      expect({ state: refused.state, reason: refused.reason }).toEqual({ state: 'failed', reason: 'mac_draft' })
+    })
   })
 })

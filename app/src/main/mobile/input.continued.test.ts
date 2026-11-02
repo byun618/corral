@@ -148,7 +148,9 @@ describe('C6 이어 간 세션의 폰 쓰기', () => {
     fs.writeFileSync(fileOf(TARGET), human('새', TARGET))
     const t = setup()
     t.hub.send({ device: 'd1', id: 'msg-l766-0001', channel: 'c1', text: '폰 지시' })
-    expect(await t.settled('msg-l766-0001')).toMatchObject({ state: 'delivered' })
+    // 상태와 사유를 함께 단언한다 — base 대조의 실패 원문에 `unconfirmed/record_missing` 이 남는다.
+    const { state, reason } = await t.settled('msg-l766-0001')
+    expect({ state, reason }).toEqual({ state: 'delivered', reason: null })
     expect(t.backend.prompts).toEqual(['폰 지시'])
     expect(t.logs).not.toContain('mobile.input_target_changed')
   })

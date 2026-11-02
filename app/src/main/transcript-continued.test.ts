@@ -633,11 +633,15 @@ describe('C13 빈 대상', () => {
     expect(resolveTranscriptUnique(refOf(A))).toEqual({ kind: 'found', file: fileOf(B), continuedAs: B })
   })
 
-  it('ⓑ 쓰는 중인 대화 줄(개행 없음)은 세지 않고, 줄이 닫히면 옮겨 간다', () => {
+  it('ⓑ 쓰는 중인 대화 줄(개행 없음)은 세지 않고, 크기가 그대로면 재읽기 0, 줄이 닫히면 옮겨 간다', () => {
     fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
     const line = human('새', B)
     fs.writeFileSync(fileOf(B), fixture('empty-2.jsonl') + line.slice(0, -1))
     expect(follow().file).toBe(fileOf(A))
+    // 쓰는 중 줄이 그대로면 다시 읽지 않는다.
+    const before = continuedReadBytes()
+    follow()
+    expect(continuedReadBytes()).toBe(before)
     fs.appendFileSync(fileOf(B), '\n')
     expect(follow().file).toBe(fileOf(B))
   })

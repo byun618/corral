@@ -403,7 +403,9 @@ describe('fix1 — 폴백에서 grok 은 실물 ~/.grok/bin (R1-02)', () => {
     const real = exe(path.join(home, '.grok', 'bin', 'grok'))
     fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true })
     fs.symlinkSync(real, path.join(home, '.local', 'bin', 'grok'))
-    const found = resolveDetectedAgents({ shellDirs: [], fallbackDirs: fallbackAgentDirs({ home, listDir: () => [] }), isExecutable: isExecutableFile })
+    // 가짜 home 아래 폴더만 — /opt/homebrew/bin 같은 호스트 고정 경로에 진짜 claude 가 있으면 섞인다(LIFE-575 맥미니 CI).
+    const fallbackDirs = fallbackAgentDirs({ home, listDir: () => [] }).filter((dir) => dir.startsWith(home + path.sep))
+    const found = resolveDetectedAgents({ shellDirs: [], fallbackDirs, isExecutable: isExecutableFile })
     expect(found).toEqual([{ agent: 'grok', path: real, source: 'fallback' }])
   })
 })

@@ -59,6 +59,8 @@ export const CHAT_REFRESH_MS = 100
 export const CHAT_RETRY_MS = 1000
 /** 붙어 있는 Claude 구독이 세션 이어 가기(`continued-in`)를 확인하는 주기 — 상태 변화 없이도 옮겨 간다(LIFE-766). 3초 예산(X4) 안. */
 export const CHAT_FOLLOW_MS = 500
+/** 질문 답이 판독자 색인을 기다리는 상한(LIFE-766) — 넘으면 지금 있는 항목으로 판단한다(없으면 키를 안 보낸다). */
+export const CHAT_QUESTION_READY_MS = 2000
 /** 조각 읽기 크기. */
 const READ_CHUNK = 1024 * 1024
 /** 덮어쓰기 감지 — 이미 읽은 구간의 앞·뒤 이만큼을 해시로 대 본다. */
@@ -656,6 +658,7 @@ export class ChatHub {
       if (link.kind !== 'attached' || !followable(link.channel.session)) continue
       watching = true
       const followed = followContinued({ session: link.channel.session, file: link.origin })
+      // 원본이 지워졌고 메모도 비었으면(세션 전환의 캐시 비움) 없는 원본이 돌아온다 — 그쪽으로 옮기면 구독이 끝난다. 보던 파일에 머문다.
       if (followed.file === link.entry.reader.file || !fs.existsSync(followed.file)) continue
       this.deps.log('mobile.chat_continued', { agent: link.channel.agent, hops: followed.hops.length })
       this.moveTo({ sub, located: { ok: true, channel: link.channel, origin: link.origin, file: followed.file, sessionId: followed.sessionId } })
@@ -663,6 +666,20 @@ export class ChatHub {
     if (watching || this.followTimer === null) return
     clearInterval(this.followTimer)
     this.followTimer = null
+  }
+
+  /**
+   * 질문 답 직전(LIFE-766) — 확인 주기를 기다리지 않고 이어 가기를 한 번 돌리고, 그 파일의 판독자 색인이 끝나기를 기다린다.
+   * 판독자가 없으면(그 대화를 연 구독 없음) 바로 돌아온다 — 항목이 없으니 키는 나가지 않는다.
+   */
+  async questionReady(file: string): Promise<void> {
+    this.followTick()
+    const deadline = this.now() + CHAT_QUESTION_READY_MS
+    for (;;) {
+      const reader = this.readers.get(file)?.reader
+      if (reader === undefined || reader.state.kind !== 'indexing' || reader.paused || this.now() >= deadline) return
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
   }
 
   private armRetry(): void {
@@ -917,6 +934,14 @@ export class ChatHub {
 
   private now(): number {
     return (this.deps.now ?? Date.now)()
+  }
+}
+
+/** 폰 쓰기(`InputHub`)가 질문 항목을 읽는 길 — 열린 대화의 판독자. */
+export function questionSource(chat: ChatHub): { questionItems: (file: string) => readonly ChatItem[] | null; questionReady: (file: string) => Promise<void> } {
+  return {
+    questionItems: (file) => chat.readerFor(file)?.items() ?? null,
+    questionReady: (file) => chat.questionReady(file),
   }
 }
 

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentSessionRef } from '../shared/types.js'
 import { ChatBuilder } from './chat-parse.js'
 import { clearTranscriptCache, readSessionDigest, readSessionDigests, resolveTranscriptFile, resolveTranscriptUnique, TAIL_MAX_BYTES } from './transcript.js'
-import { CONTINUED_CHAIN_MAX, CONTINUED_TAIL_BYTES, continuedReadBytes, continuedTarget, followContinued } from './transcript-continued.js'
+import { CONTINUED_CHAIN_MAX, CONTINUED_PROBE_BYTES, CONTINUED_TAIL_BYTES, clearContinuedMemo, continuedReadBytes, continuedVerdict, followContinued } from './transcript-continued.js'
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'continued-in')
 const A = '00000000-0000-4000-8000-00000000000a'
@@ -104,14 +104,25 @@ describe('C1 판별 규칙', () => {
     ['type 없는 객체', () => fork(B) + row({ sessionId: A })],
     ['continuedInSessionId 없음', () => row({ type: 'continued-in', sessionId: A })],
     ['숫자 id', () => row({ type: 'continued-in', continuedInSessionId: 7 })],
-    ['경로 조작 ../', () => row({ type: 'continued-in', continuedInSessionId: `../other/${B}` })],
-    ['경로 구분자', () => row({ type: 'continued-in', continuedInSessionId: `${B}/x` })],
-    ['대문자·긴 모양', () => row({ type: 'continued-in', continuedInSessionId: `${B}0` })],
     ['틀린 마지막 줄이 맞는 앞 줄을 가린다', () => fork(B) + row({ type: 'continued-in', continuedInSessionId: '../x' })],
   ])('ⓖ %s → 옛 파일', (_name, tail) => {
     fs.writeFileSync(fileOf(B), human('새', B))
-    fs.writeFileSync(path.join(home, '.claude', 'projects', `${B}.jsonl`), human('밖', B))
     fs.writeFileSync(fileOf(A), human('옛', A) + tail())
+    expect(follow()).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
+  })
+
+  // 값이 가리키는 파일을 실제로 만든다 — 모양 검사만이 막는다(검사를 지우면 이 칸이 실패한다).
+  it.each([
+    ['경로 조작 ../', `../other/${B}`],
+    ['경로 구분자', `sub/${B}`],
+    ['대문자 UUID', B.toUpperCase()],
+    ['긴 모양', `${B}0`],
+  ])('ⓖ 모양 위반(%s) — 그 대상 파일이 있어도 옛 파일', (_name, target) => {
+    const pointed = path.join(dir, `${target}.jsonl`)
+    fs.mkdirSync(path.dirname(pointed), { recursive: true })
+    fs.writeFileSync(pointed, human('밖', B))
+    fs.writeFileSync(fileOf(A), human('옛', A) + row({ type: 'continued-in', continuedInSessionId: target }))
+    expect(fs.existsSync(pointed)).toBe(true)
     expect(follow()).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
   })
 
@@ -159,11 +170,82 @@ describe('C1 판별 규칙', () => {
     fs.writeFileSync(fileOf(B), human('새', B))
     fs.writeFileSync(fileOf(A), fork(B) + row({ type: 'cost-state', pad: 'x'.repeat(CONTINUED_TAIL_BYTES) }))
     expect(follow().file).toBe(fileOf(A))
-    expect(continuedTarget({ chunk: fork(B), partial: true })).toBeNull()
+    expect(continuedVerdict({ chunk: fork(B), partial: true })).toEqual({ kind: 'unknown', window: true })
   })
 
   it('못 읽는 파일 → 예외 없이 그대로', () => {
     expect(follow(LOST)).toEqual({ file: fileOf(LOST), sessionId: LOST, hops: [] })
+  })
+})
+
+describe('모름은 없음이 아니다 — 직전 판별을 유지한다', () => {
+  it.each([
+    ['쓰는 중 줄', '{"type":"cost-'],
+    ['읽지 못하는 완성 줄', '{broken}\n'],
+    ['type 없는 줄', row({ sessionId: A })],
+  ])('이동 뒤 %s 가 붙어도 대상에 머문다 · 그 줄이 메타로 완성되면 그대로', (_name, tail) => {
+    fs.writeFileSync(fileOf(B), human('새', B))
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    expect(follow().file).toBe(fileOf(B))
+    fs.appendFileSync(fileOf(A), tail)
+    expect(follow().file).toBe(fileOf(B))
+  })
+
+  it('쓰는 중이던 사람 줄이 완성되면 곧바로 옛 파일로 돌아온다(되살아남)', () => {
+    fs.writeFileSync(fileOf(B), human('새', B))
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    expect(follow().file).toBe(fileOf(B))
+    const line = human('되살림', A)
+    fs.appendFileSync(fileOf(A), line.slice(0, 20))
+    expect(follow().file).toBe(fileOf(B))
+    fs.appendFileSync(fileOf(A), line.slice(20))
+    expect(follow()).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
+  })
+
+  it('읽기 오류 한 번도 대상에 머물고, 풀리면 다시 판별한다', () => {
+    fs.writeFileSync(fileOf(B), human('새', B))
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    expect(follow().file).toBe(fileOf(B))
+    fs.appendFileSync(fileOf(A), row({ type: 'cost-state' }))
+    const open = vi.spyOn(fs, 'openSync').mockImplementationOnce(() => {
+      throw new Error('EMFILE')
+    })
+    expect(follow().file).toBe(fileOf(B))
+    expect(open).toHaveBeenCalledTimes(1)
+    fs.appendFileSync(fileOf(A), human('되살림', A))
+    expect(follow().file).toBe(fileOf(A))
+  })
+
+  it('원본 stat 이 실패해도 예외 없이 직전 판별 · 메모가 비었으면 옛 경로 그대로', () => {
+    fs.writeFileSync(fileOf(B), human('새', B))
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    expect(follow().file).toBe(fileOf(B))
+    fs.rmSync(fileOf(A))
+    expect(follow().file).toBe(fileOf(B))
+    clearContinuedMemo()
+    expect(follow()).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
+  })
+
+  it.each([
+    ['교체(정체성이 다름)', () => {
+      fs.rmSync(fileOf(A))
+      fs.writeFileSync(fileOf(A), '{"type":"cost-')
+    }],
+    ['줄어듦', () => fs.writeFileSync(fileOf(A), '{"t')],
+  ])('%s 된 파일의 모름에는 직전 판별을 잇지 않는다', (_name, change) => {
+    fs.writeFileSync(fileOf(B), human('새', B))
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    expect(follow().file).toBe(fileOf(B))
+    change()
+    expect(follow()).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
+  })
+
+  it('처음 보는 파일의 모름은 옛 파일 · 없음과 있음은 그대로', () => {
+    expect(continuedVerdict({ chunk: `${fork(B)}{"type":"cost-`, partial: false })).toEqual({ kind: 'unknown', window: false })
+    expect(continuedVerdict({ chunk: human('옛', A), partial: false })).toEqual({ kind: 'none' })
+    expect(continuedVerdict({ chunk: row({ type: 'cost-state' }), partial: false })).toEqual({ kind: 'none' })
+    expect(continuedVerdict({ chunk: fork(B), partial: false })).toEqual({ kind: 'target', id: B })
+    expect(continuedVerdict({ chunk: row({ type: 'continued-in', continuedInSessionId: 'x' }), partial: false })).toEqual({ kind: 'none' })
   })
 })
 
@@ -173,8 +255,9 @@ describe('C2ⓒ 실제 기록 끝 모양(가린 fixture)', () => {
 
   it.each(tails)('%s 가 그 대상으로 풀린다', (name) => {
     const text = read(name)
-    const target = continuedTarget({ chunk: text, partial: false })
-    if (target === null) throw new Error('대상 없음')
+    const verdict = continuedVerdict({ chunk: text, partial: false })
+    if (verdict.kind !== 'target') throw new Error('대상 없음')
+    const target = verdict.id
     fs.writeFileSync(fileOf(A), text)
     expect(follow().file).toBe(fileOf(A)) // 대상이 아직 없다
     fs.writeFileSync(fileOf(target), human('새', target))
@@ -202,8 +285,9 @@ function promptCount(input: { text: string; sessionId: string | null }): number 
 describe('C3 대화 내용이 맞다 (fixture 쌍)', () => {
   it('옛 참조로 고른 id 로 읽은 사람 말풍선 수 = 대상 id 로 직접 연 수 · 대조: 옛 id 로 읽으면 0', () => {
     const tail = fs.readFileSync(path.join(FIXTURES, 'tail-5.jsonl'), 'utf8')
-    const target = continuedTarget({ chunk: tail, partial: false })
-    if (target === null) throw new Error('대상 없음')
+    const verdict = continuedVerdict({ chunk: tail, partial: false })
+    if (verdict.kind !== 'target') throw new Error('대상 없음')
+    const target = verdict.id
     const text = fs.readFileSync(path.join(FIXTURES, 'target.jsonl'), 'utf8')
     fs.writeFileSync(fileOf(A), tail)
     fs.writeFileSync(fileOf(target), text)
@@ -319,6 +403,24 @@ describe('C7 지문', () => {
     expect(readSessionDigest(refOf(A)).digest.lifecycle).toMatchObject({ state: 'unknown', reason: 'not-running' })
   })
 
+  it('수명 세대 경계(F6) — 포크 전에 열린 작업은 이전 세대로 빠지고 포크 뒤에 열린 작업만 실린다', () => {
+    const at = (seconds: number): string => new Date(Date.parse('2026-06-01T00:00:00.000Z') + seconds * 1000).toISOString()
+    const job = (input: { tool: string; task: string; seconds: number }): string =>
+      row({ type: 'assistant', sessionId: B, uuid: `u-${input.tool}`, parentUuid: 'p', timestamp: at(input.seconds), message: { id: `m-${input.tool}`, role: 'assistant', model: 'x', content: [{ type: 'tool_use', id: input.tool, name: 'Bash', input: { command: 'sleep 600', run_in_background: true } }] } }) +
+      row({ type: 'user', sessionId: B, uuid: `r-${input.tool}`, parentUuid: `u-${input.tool}`, timestamp: at(input.seconds), message: { role: 'user', content: [{ tool_use_id: input.tool, type: 'tool_result', content: 'ok' }] }, toolUseResult: { backgroundTaskId: input.task } })
+    const sessions = path.join(home, '.claude', 'sessions')
+    fs.mkdirSync(sessions)
+    // 포크 프로세스는 포크 시각(100초)에 시작한다 — 새 파일에는 포크 전 줄이 복사돼 있다.
+    fs.writeFileSync(path.join(sessions, '1.json'), JSON.stringify({ pid: process.pid, sessionId: B, startedAt: Date.parse(at(100)) }))
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    fs.writeFileSync(fileOf(B), human('새', B) + job({ tool: 't-before', task: 'before', seconds: 10 }))
+    expect(readSessionDigest(refOf(A)).digest.lifecycle).toMatchObject({ state: 'known', tasks: [] })
+    fs.appendFileSync(fileOf(B), job({ tool: 't-after', task: 'after', seconds: 110 }))
+    const after = readSessionDigest(refOf(A)).digest.lifecycle
+    if (after.state !== 'known') throw new Error('known 이어야 한다')
+    expect(after.tasks.map((task) => task.id)).toEqual(['after'])
+  })
+
   it('옛 참조와 새 참조가 함께 있어도 같은 파일 값이다(압축 뒤 다른 pane 등)', () => {
     fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
     fs.writeFileSync(fileOf(B), human('새', B))
@@ -352,9 +454,30 @@ describe('C8 비용', () => {
     expect(continuedReadBytes()).toBe(after)
     fs.appendFileSync(fileOf(A), reply('자람', A))
     const { cost } = readSessionDigests(new Map([['a', refOf(A)]]))
-    expect(cost.continuedBytes).toBe(CONTINUED_TAIL_BYTES)
+    expect(cost.continuedBytes).toBeGreaterThan(0)
+    expect(cost.continuedBytes).toBeLessThanOrEqual(CONTINUED_TAIL_BYTES)
     expect(cost.bytes).toBeLessThanOrEqual(TAIL_MAX_BYTES + 256 * 1024)
     expect(readSessionDigests(new Map([['a', refOf(A)]])).cost.continuedBytes).toBe(0)
+  })
+
+  it('ⓑ 끝이 assistant 인 자라는 파일의 판별은 작은 창 이하만 읽는다', () => {
+    fs.writeFileSync(fileOf(A), human('큰', A) + reply('x'.repeat(CONTINUED_TAIL_BYTES * 2), A))
+    for (let index = 0; index < 5; index += 1) {
+      fs.appendFileSync(fileOf(A), reply(`자람 ${index}`, A))
+      const before = continuedReadBytes()
+      follow()
+      expect(continuedReadBytes() - before).toBeLessThanOrEqual(CONTINUED_PROBE_BYTES)
+    }
+  })
+
+  it('ⓑ 메타 줄이 작은 창을 넘는 continued-in 도 넓혀서 풀린다 · 총 읽기는 상한 이하, 겹쳐 읽지 않는다', () => {
+    fs.writeFileSync(fileOf(B), human('새', B))
+    const metas = Array.from({ length: 4 }, () => row({ type: 'cost-state', pad: 'x'.repeat(CONTINUED_PROBE_BYTES) })).join('')
+    fs.writeFileSync(fileOf(A), reply('y'.repeat(CONTINUED_TAIL_BYTES * 2), A) + fork(B) + metas)
+    const before = continuedReadBytes()
+    expect(follow().file).toBe(fileOf(B))
+    // 옛 파일 창 전체 + 대상 파일(작아서 통째로) 한 hop
+    expect(continuedReadBytes() - before).toBe(CONTINUED_TAIL_BYTES + fs.statSync(fileOf(B)).size)
   })
 
   it('ⓒ 대상 찾기·지문 재확인은 프로젝트 폴더를 훑지 않는다 — 훑기 횟수를 센다', () => {

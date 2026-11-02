@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TerminalIdentity } from '../adapter/index.js'
 import { resolveTranscriptUnique } from '../transcript.js'
 import { CLAUDE_SESSION, chatListState } from './chat-fixture.js'
-import { ChatHub } from './chat.js'
+import { ChatHub, questionSource } from './chat.js'
 import { InputHub, observedSessionKey, type InputBackend, type InputWire, type KeyResult, type PaneObservation, type ScreenRead, type SendResult } from './input.js'
 import { questionDigest } from './keys.js'
 
@@ -32,6 +32,10 @@ class ForkedBackend implements InputBackend {
   observed: string | null = null
   readonly prompts: string[] = []
   readonly keys: string[] = []
+  /** 화면을 읽을 때 부른다 — 관문을 도는 사이의 이동을 끼운다. */
+  onScreen: (() => void) | null = null
+  /** 키를 넣을 때 기록에 쓰는 줄 — 기본은 질문의 답. */
+  keyLine: () => string = () => answered(this.live.sessionId)
 
   constructor(live: { file: string; sessionId: string }) {
     this.live = live
@@ -54,6 +58,7 @@ class ForkedBackend implements InputBackend {
   }
 
   async screen(): Promise<ScreenRead> {
+    this.onScreen?.()
     return { text: this.screenText, input: this.input, anyInput: null, seq: 1 }
   }
 
@@ -68,7 +73,7 @@ class ForkedBackend implements InputBackend {
   async send(_pane: TerminalIdentity, input: { text: string; inputRevision: number | null }): Promise<KeyResult> {
     this.input = { ...this.input, revision: this.input.revision + 1 }
     this.keys.push(input.text)
-    fs.appendFileSync(this.live.file, answered(this.live.sessionId))
+    fs.appendFileSync(this.live.file, this.keyLine())
     return { kind: 'sent', revision: input.inputRevision === null ? null : this.input.revision, anyRevision: null }
   }
 }
@@ -94,7 +99,7 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true })
 })
 
-function setup() {
+function setup(input: { followMs?: number } = {}) {
   const state = chatListState()
   const list = () => ({ state, prefs: null })
   const backend = new ForkedBackend({ file: fileOf(TARGET), sessionId: TARGET })
@@ -111,18 +116,21 @@ function setup() {
     pollMs: 20,
     graceMs: 50,
     refreshMs: 10,
+    followMs: input.followMs,
   })
   cleanups.push(() => chat.stop())
   const logs: string[] = []
   const looked: string[] = []
+  const source = questionSource(chat)
   const hub = new InputHub({
     read: list,
     backend: () => backend,
     resolveFile: (channel) => resolveTranscriptUnique(channel.session),
     questionItems: (file) => {
       looked.push(file)
-      return chat.readerFor(file)?.items() ?? null
+      return source.questionItems(file)
     },
+    questionReady: source.questionReady,
     log: (tag) => logs.push(tag),
     timing: { pollMs: 5, gateMs: 5, quietMs: 500, confirmMs: 300, recordPollMs: 10, stepGapMs: 1, answerConfirmMs: 300, stopConfirmMs: 200 },
   })
@@ -198,6 +206,109 @@ describe('C6 이어 간 세션의 폰 쓰기', () => {
     expect(t.backend.prompts).toEqual([])
     fs.chmodSync(locked, 0o755)
     expect(await t.settled('msg-l766-0005')).toMatchObject({ state: 'delivered' })
+  })
+
+  it('관문을 도는 사이(화면 읽기 안)에 이동하면 커서 직전에 쌍을 다시 풀어 delivered', async () => {
+    fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION))
+    const t = setup()
+    t.backend.live = { file: fileOf(CLAUDE_SESSION), sessionId: CLAUDE_SESSION }
+    t.backend.onScreen = () => {
+      t.backend.onScreen = null
+      fs.writeFileSync(fileOf(TARGET), human('새', TARGET))
+      fs.appendFileSync(fileOf(CLAUDE_SESSION), fork(TARGET))
+      t.backend.live = { file: fileOf(TARGET), sessionId: TARGET }
+    }
+    t.hub.send({ device: 'd1', id: 'msg-l766-0006', channel: 'c1', text: '폰 지시' })
+    const { state, reason } = await t.settled('msg-l766-0006')
+    expect({ state, reason }).toEqual({ state: 'delivered', reason: null })
+  })
+
+  it('다시 푼 결과가 모호하면 넣지 않고 failed/record_ambiguous', async () => {
+    fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION))
+    const t = setup()
+    t.backend.onScreen = () => {
+      t.backend.onScreen = null
+      fs.writeFileSync(fileOf(TARGET), human('새', TARGET))
+      fs.appendFileSync(fileOf(CLAUDE_SESSION), fork(TARGET))
+      const other = path.join(home, '.claude', 'projects', 'other')
+      fs.mkdirSync(other)
+      fs.writeFileSync(path.join(other, `${TARGET}.jsonl`), human('사본', TARGET))
+    }
+    t.hub.send({ device: 'd1', id: 'msg-l766-0007', channel: 'c1', text: '폰 지시' })
+    expect(await t.settled('msg-l766-0007')).toMatchObject({ state: 'failed', reason: 'record_ambiguous' })
+    expect(t.backend.prompts).toEqual([])
+  })
+
+  it('다시 푼 결과가 못 읽음이면 기다린다 — 넣지 않고, 풀리면 들어간다', async () => {
+    fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION) + fork(TARGET))
+    fs.writeFileSync(fileOf(TARGET), human('새', TARGET))
+    const locked = path.join(home, '.claude', 'projects', 'locked')
+    const t = setup()
+    t.backend.onScreen = () => {
+      t.backend.onScreen = null
+      fs.mkdirSync(locked)
+      fs.chmodSync(locked, 0o000)
+      cleanups.push(() => fs.chmodSync(locked, 0o755))
+    }
+    t.hub.send({ device: 'd1', id: 'msg-l766-0008', channel: 'c1', text: '폰 지시' })
+    await new Promise((done) => setTimeout(done, 150))
+    expect(t.lastWire('msg-l766-0008')?.state).toBe('queued')
+    expect(t.backend.prompts).toEqual([])
+    fs.chmodSync(locked, 0o755)
+    expect(await t.settled('msg-l766-0008')).toMatchObject({ state: 'delivered' })
+  })
+
+  it('커서 뒤 주입 사이의 이동은 넓히지 않는다 — 정직한 unconfirmed/record_missing', async () => {
+    fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION))
+    fs.writeFileSync(fileOf(TARGET), human('새', TARGET))
+    const t = setup()
+    // 커서는 옛 파일, 주입 줄은 새 파일 — 커서 뒤에 이동이 끝난 모양
+    t.hub.send({ device: 'd1', id: 'msg-l766-0009', channel: 'c1', text: '폰 지시' })
+    const { state, reason } = await t.settled('msg-l766-0009')
+    expect({ state, reason }).toEqual({ state: 'unconfirmed', reason: 'record_missing' })
+    expect(t.backend.prompts).toEqual(['폰 지시'])
+  })
+
+  it('중단 확인도 이어 간 파일을 읽는다(runStop)', async () => {
+    fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION) + fork(TARGET))
+    fs.writeFileSync(fileOf(TARGET), human('새', TARGET))
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.keyLine = () => row({ type: 'user', sessionId: TARGET, uuid: 'u-int', parentUuid: 'u-새', timestamp: new Date(Date.now() + 1000).toISOString(), message: { role: 'user', content: '[Request interrupted by user]' } })
+    t.hub.stopTurn({ device: 'd1', id: 'stp-l766-0001', channel: 'c1' })
+    const { state, reason } = await t.settled('stp-l766-0001')
+    expect({ state, reason }).toEqual({ state: 'stopped', reason: 'record' })
+    expect(t.backend.keys.length).toBe(1)
+  })
+
+  it('이동 확인 주기 전에 온 질문 답도 새 파일 판독자로 처리한다 — question_closed 없음', async () => {
+    fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION))
+    // 확인 주기가 끼지 않게 늘린다 — 답 직전 재확인만이 옮긴다.
+    const t = setup({ followMs: 60_000 })
+    t.backend.status = 'blocked'
+    t.backend.screenText = QUESTION_SCREEN
+    t.chat.subscribe({ channelId: 'c1', resume: null, sink: () => {} })
+    const started = Date.now()
+    while (t.chat.readerFor(fileOf(CLAUDE_SESSION))?.state.kind !== 'ready' && Date.now() - started < 2000) await new Promise((done) => setTimeout(done, 5))
+    const text = human('새', TARGET) + asked(TARGET)
+    fs.writeFileSync(fileOf(TARGET), text)
+    fs.appendFileSync(fileOf(CLAUDE_SESSION), fork(TARGET))
+    expect(t.chat.readerFor(fileOf(TARGET))).toBeNull()
+    t.hub.answer({ device: 'd1', id: 'ans-l766-0002', channel: 'c1', question: Buffer.byteLength(human('새', TARGET)), call: 'call-1', digest: questionDigest([QUESTION]), answers: [{ choices: [1], other: null }] })
+    const { state, reason } = await t.settled('ans-l766-0002')
+    expect({ state, reason }).toEqual({ state: 'delivered', reason: null })
+    expect(t.backend.keys.length).toBeGreaterThan(0)
+  })
+
+  it('이동한 대화를 연 구독이 없으면 판독자가 없어 키를 보내지 않는다 — question_closed', async () => {
+    fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION) + fork(TARGET))
+    fs.writeFileSync(fileOf(TARGET), human('새', TARGET) + asked(TARGET))
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = QUESTION_SCREEN
+    t.hub.answer({ device: 'd1', id: 'ans-l766-0003', channel: 'c1', question: 1, call: 'call-1', digest: questionDigest([QUESTION]), answers: [{ choices: [1], other: null }] })
+    expect(await t.settled('ans-l766-0003')).toMatchObject({ state: 'failed', reason: 'question_closed' })
+    expect(t.backend.keys).toEqual([])
   })
 
   it('질문 답이 그 대화 판독자를 찾는다 — 대화와 같은 새 파일', async () => {

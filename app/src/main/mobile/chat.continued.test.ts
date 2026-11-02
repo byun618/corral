@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AgentSessionRef } from '../../shared/types.js'
+import { clearContinuedMemo } from '../transcript-continued.js'
 import { CHAT_SESSIONS, CLAUDE_SESSION, chatListState } from './chat-fixture.js'
 import { ChatHub, type WireItem } from './chat.js'
 import { buildMobileList, channelKey, type ListState } from './list.js'
@@ -161,6 +162,55 @@ describe('C4 열린 대화가 옮겨 간다', () => {
   })
 })
 
+describe('C4 왕복 없음 — 모름은 직전 판별을 유지한다', () => {
+  it('이동 뒤 옛 파일에 쓰는 중 줄이 보여도 이동 1건에 reset 1회·이동 로그 1건(리뷰 P1 순서)', async () => {
+    const t = setup()
+    t.open()
+    await waitFor(() => t.resets()[0])
+    fs.writeFileSync(t.fileOf(TARGET), human('새 지시', TARGET))
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), fork(TARGET))
+    await waitFor(() => t.resets()[1])
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), '{"type":"cost-')
+    await sleep(1200)
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), 'state"}\n')
+    await sleep(1200)
+    expect(t.resets()).toHaveLength(2)
+    expect(t.continued()).toBe(1)
+  })
+
+  it('이동 뒤 옛 파일 읽기 오류에도 reset 이 늘지 않는다', async () => {
+    const t = setup()
+    t.open()
+    await waitFor(() => t.resets()[0])
+    fs.writeFileSync(t.fileOf(TARGET), human('새 지시', TARGET))
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), fork(TARGET))
+    await waitFor(() => t.resets()[1])
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), row({ type: 'cost-state' }))
+    fs.chmodSync(t.fileOf(CLAUDE_SESSION), 0o000)
+    cleanups.push(() => fs.chmodSync(t.fileOf(CLAUDE_SESSION), 0o644))
+    await sleep(1200)
+    fs.chmodSync(t.fileOf(CLAUDE_SESSION), 0o644)
+    await sleep(800)
+    expect(t.resets()).toHaveLength(2)
+    expect(t.continued()).toBe(1)
+  })
+
+  it('원본이 지워지고 메모가 비어도 보던 파일에 머문다 — 없는 원본으로 옮겨 구독을 끝내지 않는다', async () => {
+    const t = setup()
+    t.open()
+    await waitFor(() => t.resets()[0])
+    fs.writeFileSync(t.fileOf(TARGET), human('새 지시', TARGET))
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), fork(TARGET))
+    await waitFor(() => t.resets()[1])
+    fs.rmSync(t.fileOf(CLAUDE_SESSION))
+    clearContinuedMemo()
+    await sleep(800)
+    expect(t.resets()).toHaveLength(2)
+    expect(t.frames.filter((frame) => frame.type === 'chat.unavailable')).toHaveLength(0)
+    expect(t.hub.readerFor(t.fileOf(TARGET))).not.toBeNull()
+  })
+})
+
 describe('C5 참조가 뒤늦게 바뀌어도', () => {
   const moved: AgentSessionRef = { kind: 'id', agent: 'claude', source: 'herdr', id: TARGET }
 
@@ -182,6 +232,23 @@ describe('C5 참조가 뒤늦게 바뀌어도', () => {
     expect(t.hub.readerFor(t.fileOf(TARGET))?.gen).toBe(page['gen'])
     fs.appendFileSync(t.fileOf(TARGET), reply('새 답', TARGET))
     expect(texts(await waitFor(() => t.frames.find((frame) => frame.type === 'chat.items' && frame['gen'] === page['gen'])))).toEqual(['새 답'])
+  })
+
+  it('참조가 새 id 로 바뀐 뒤에는 그 참조의 파일이 원본이다 — 옛 파일이 되살아나도 돌아가지 않는다', async () => {
+    const t = setup()
+    t.open()
+    await waitFor(() => t.resets()[0])
+    fs.writeFileSync(t.fileOf(TARGET), human('새 지시', TARGET))
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), fork(TARGET))
+    await waitFor(() => t.resets()[1])
+    paneOf(t.state, 'c1').agentSession = moved
+    t.hub.changed()
+    await sleep(100)
+    fs.appendFileSync(t.fileOf(CLAUDE_SESSION), human('옛 쪽 되살림', CLAUDE_SESSION))
+    await sleep(800)
+    expect(t.resets()).toHaveLength(2)
+    expect(t.continued()).toBe(1)
+    expect(t.hub.readerFor(t.fileOf(TARGET))?.sessionId).toBe(TARGET)
   })
 
   it('반대 순서 — 참조가 먼저 옮겨 가면 평소의 세션 교체 한 번이고 이어 가기 이동은 없다', async () => {

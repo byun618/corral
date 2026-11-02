@@ -168,6 +168,8 @@ export type InputHubDeps = {
   expectedFile?: (input: { channel: ChatChannel; cwd: string }) => string | null
   /** 그 기록의 말풍선(열린 대화의 판독자) — 질문 확인용. 판독자가 없으면 null. */
   questionItems: (file: string) => readonly ChatItem[] | null
+  /** 그 기록의 판독자를 질문 확인 전에 맞춘다(LIFE-766) — 세션이 막 이어 갔으면 열린 대화를 옮기고 색인을 기다린다. 없으면 바로 본다. */
+  questionReady?: (file: string) => Promise<void>
   /** 그 기기가 아직 페어링돼 있나 — 효과 직전마다 본다(R1-A1). 없으면 `revoke()` 로 받은 해지만 본다. */
   deviceValid?: (device: string) => boolean
   log: (tag: string, fields?: Record<string, unknown>) => void
@@ -770,7 +772,6 @@ export class InputHub {
     const resolved = this.fileFor({ channel, cwd: pane.path })
     if (resolved.kind === 'wait') return 'wait'
     if (resolved.kind === 'fail') return this.fail(entry, resolved.reason)
-    const { file } = resolved
     const first = await backend.observe(pane)
     if (this.dropped(entry)) return 'done'
     // 관리 밖 pane 인데 guard 가 그 갈래를 모른다(설치본 herdr 서버를 재기동하기 전) — 기다려도 넣을 수 없다. 대기로 두면 블랙홀이다(LIFE-597 U5).
@@ -815,7 +816,11 @@ export class InputHub {
     if (lastRead === 'moved') return this.moved(entry, 'input')
     if (lastRead === 'behind') return this.waitTurn(entry, 'gate')
     const text = entry.text ?? ''
-    const cursor = tailCursor(file)
+    // 파일과 세션 id 쌍은 커서 직전에 다시 푼다(LIFE-766) — 위 관문을 기다리는 사이에 세션이 이어 갔을 수 있다. 커서와 확인이 이 쌍을 같이 쓴다.
+    const record = this.fileFor({ channel, cwd: pane.path })
+    if (record.kind === 'wait') return 'wait'
+    if (record.kind === 'fail') return this.fail(entry, record.reason)
+    const cursor = tailCursor(record.file)
     if (cursor === null) return this.fail(entry, 'record_unreadable')
     const submittedAtMs = this.now()
     // 여기서부터 취소 불가 — 넣기 시작. 효과 직전 마지막 확인(해지·끔 · 접수 때 묶은 provider 세션 — 목록 R2-A4 + herdr 관측 `last` LIFE-598).
@@ -853,7 +858,7 @@ export class InputHub {
       if (this.fenceRead(bind, after.input.revision) === 'moved') return this.moved(entry, 'input_refused')
       return this.waitTurn(entry, 'turn')
     }
-    await this.confirmSend({ entry, kind, cursor, submittedAtMs, text, sessionId: resolved.continuedAs ?? (channel.session.kind === 'id' ? channel.session.id : null) })
+    await this.confirmSend({ entry, kind, cursor, submittedAtMs, text, sessionId: record.continuedAs ?? (channel.session.kind === 'id' ? channel.session.id : null) })
     return 'done'
   }
 
@@ -1093,6 +1098,8 @@ export class InputHub {
     const resolved = this.deps.resolveFile(channel)
     if (resolved.kind !== 'found') return this.settle(entry, 'failed', resolved.kind === 'ambiguous' ? 'record_ambiguous' : 'not_ready')
     const { file } = resolved
+    await this.deps.questionReady?.(file)
+    if (this.halted(entry)) return
     const question = this.openQuestion({ file, id: entry.question, call })
     if (question === null) return this.settle(entry, 'failed', 'question_closed')
     if (questionDigest(question.questions) !== digest) return this.settle(entry, 'failed', 'question_changed')

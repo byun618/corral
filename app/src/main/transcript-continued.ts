@@ -194,20 +194,24 @@ function hasConversation(file: string): boolean {
 function scanConversation(input: { file: string; scan: Scan }): void {
   const { scan } = input
   const limit = Math.min(scan.size, CONTINUED_CONVERSATION_MAX_BYTES)
-  let pending = Buffer.alloc(0)
+  // 줄 끝을 못 본 조각 — 줄 하나에 한 번만 합친다(큰 한 줄에서 선형).
+  let open: Buffer[] = []
   let at = scan.offset
   while (at < limit) {
     const to = Math.min(limit, at + CONTINUED_PROBE_BYTES)
-    pending = Buffer.concat([pending, readRange({ file: input.file, from: at, to })])
+    let piece = readRange({ file: input.file, from: at, to })
     at = to
-    for (let end = pending.indexOf(0x0a); end >= 0; end = pending.indexOf(0x0a)) {
-      if (conversationLine(pending.subarray(0, end).toString('utf8'))) {
+    for (let end = piece.indexOf(0x0a); end >= 0; end = piece.indexOf(0x0a)) {
+      const line = Buffer.concat([...open, piece.subarray(0, end)])
+      if (conversationLine(line.toString('utf8'))) {
         scan.found = true
         return
       }
-      scan.offset += end + 1
-      pending = pending.subarray(end + 1)
+      scan.offset += line.length + 1
+      open = []
+      piece = piece.subarray(end + 1)
     }
+    open.push(piece)
   }
   scan.capped = scan.size >= CONTINUED_CONVERSATION_MAX_BYTES
 }

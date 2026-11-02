@@ -98,7 +98,7 @@ export class MobileService {
       backend: inputBackend,
       resolveFile: ({ session, agent }) => {
         const resolved = deps.resolveChatFile === undefined ? resolveTranscriptUnique(session) : uniqueOf(deps.resolveChatFile(session))
-        return resolved.kind === 'found' ? { kind: 'found', file: chatFileOf({ agent, transcript: resolved.file }), continuedAs: resolved.continuedAs, shown: resolved.shown } : resolved
+        return resolved.kind === 'found' ? { kind: 'found', file: chatFileOf({ agent, transcript: resolved.file }), continuedAs: resolved.continuedAs } : resolved
       },
       deviceValid: (device) => this.pairing.has(device),
       ...questionSource(chat),

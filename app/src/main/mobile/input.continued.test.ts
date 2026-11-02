@@ -410,7 +410,7 @@ describe('C6 이어 간 세션의 폰 쓰기', () => {
       expect({ state, reason }).toEqual({ state: 'unconfirmed', reason: 'record_missing' })
     })
 
-    it('ⓒ 질문 답 — 항목은 화면이 보는 옛 파일에서, 커서는 빈 대상에서', async () => {
+    it('빈 대상 구간의 대기 질문은 관측에 없다(질문·검토·권한 화면에서 ← 는 포크하지 않는다) — 그런 순서가 오면 키 0회 failed/question_closed', async () => {
       fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION) + asked(CLAUDE_SESSION))
       fs.writeFileSync(fileOf(TARGET), metas(TARGET))
       const t = setup()
@@ -423,8 +423,23 @@ describe('C6 이어 간 세션의 폰 쓰기', () => {
       if (item?.kind !== 'question') throw new Error('질문 없음')
       t.hub.answer({ device: 'd1', id: 'ans-l766-c13c', channel: 'c1', question: item.id, call: 'call-1', digest: questionDigest(item.questions), answers: [{ choices: [1], other: null }] })
       const { state, reason } = await t.settled('ans-l766-c13c')
+      expect({ state, reason }).toEqual({ state: 'failed', reason: 'question_closed' })
+      expect(t.backend.keys).toEqual([])
+    })
+
+    it('작업 중 포크(실측) — 복사가 바로 되어 대상이 비지 않고, 대기 질문도 답도 대상 파일이다', async () => {
+      fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION) + fork(TARGET))
+      fs.writeFileSync(fileOf(TARGET), metas(TARGET) + human('옛', TARGET) + asked(TARGET))
+      const t = setup()
+      t.backend.status = 'blocked'
+      t.backend.screenText = QUESTION_SCREEN
+      t.chat.subscribe({ channelId: 'c1', resume: null, sink: () => {} })
+      await ready(t, fileOf(TARGET))
+      const item = t.chat.readerFor(fileOf(TARGET))?.items().find((one) => one.kind === 'question')
+      if (item?.kind !== 'question') throw new Error('질문 없음')
+      t.hub.answer({ device: 'd1', id: 'ans-l766-c13d', channel: 'c1', question: item.id, call: 'call-1', digest: questionDigest(item.questions), answers: [{ choices: [1], other: null }] })
+      const { state, reason } = await t.settled('ans-l766-c13d')
       expect({ state, reason }).toEqual({ state: 'delivered', reason: null })
-      expect(new Set(t.looked)).toEqual(new Set([fileOf(CLAUDE_SESSION)]))
       expect(t.backend.keys.length).toBeGreaterThan(0)
     })
   })
@@ -444,6 +459,58 @@ describe('C6 이어 간 세션의 폰 쓰기', () => {
       t.hub.send({ device: 'd1', id: 'send-l766-c14b', channel: 'c1', text: '다음' })
       const refused = await t.settled('send-l766-c14b')
       expect({ state: refused.state, reason: refused.reason }).toEqual({ state: 'failed', reason: 'mac_draft' })
+    })
+  })
+
+  describe('C15 이름 붙은 질문 화면', () => {
+    const fixture = (name: string): string => fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'continued-in', name), 'utf8')
+    const ask = (questions: unknown[]): string => row({ type: 'assistant', sessionId: TARGET, uuid: 'a-q', parentUuid: null, timestamp: new Date().toISOString(), message: { id: 'm-q', role: 'assistant', model: 'x', content: [{ type: 'tool_use', id: 'call-1', name: 'AskUserQuestion', input: { questions } }] } })
+    const reply = (answers: Record<string, string>): string => row({ type: 'user', sessionId: TARGET, uuid: 'r-q', parentUuid: 'a-q', timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-1', content: 'ok' }] }, toolUseResult: { answers } })
+    const start = async (questions: unknown[]) => {
+      fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION) + fork(TARGET))
+      fs.writeFileSync(fileOf(TARGET), human('새', TARGET) + ask(questions))
+      const t = setup()
+      t.backend.status = 'blocked'
+      t.chat.subscribe({ channelId: 'c1', resume: null, sink: () => {} })
+      const started = Date.now()
+      while (t.chat.readerFor(fileOf(TARGET))?.state.kind !== 'ready' && Date.now() - started < 2000) await new Promise((done) => setTimeout(done, 5))
+      const item = t.chat.readerFor(fileOf(TARGET))?.items().find((one) => one.kind === 'question')
+      if (item?.kind !== 'question') throw new Error('질문 없음')
+      return { t, item }
+    }
+
+    it('ⓓ 이름 줄이 있는 실표본 질문 화면에 폰 답 → 키가 나가고 delivered', async () => {
+      const question = { question: '어느쪽 이고?', header: '선택', multiSelect: false, options: [{ label: '가', description: '가 선택' }, { label: '나', description: '나 선택' }] }
+      const { t, item } = await start([question])
+      t.backend.screenText = fixture('screen-question.ansi')
+      t.backend.keyLine = () => reply({ [question.question]: '나' })
+      t.hub.answer({ device: 'd1', id: 'ans-l766-c15a', channel: 'c1', question: item.id, call: 'call-1', digest: questionDigest(item.questions), answers: [{ choices: [1], other: null }] })
+      const { state, reason } = await t.settled('ans-l766-c15a')
+      expect({ state, reason, keys: t.backend.keys }).toEqual({ state: 'delivered', reason: null, keys: ['2'] })
+    })
+
+    it('ⓓ 잘린 이름 줄이면 키 0회 failed/question_changed', async () => {
+      const question = { question: '어느쪽 이고?', header: '선택', multiSelect: false, options: [{ label: '가', description: '가 선택' }, { label: '나', description: '나 선택' }] }
+      const { t, item } = await start([question])
+      t.backend.screenText = fixture('screen-question.ansi').replace(/─+ 세션 이름 ─/, ' 세션 이름 … ─')
+      t.hub.answer({ device: 'd1', id: 'ans-l766-c15b', channel: 'c1', question: item.id, call: 'call-1', digest: questionDigest(item.questions), answers: [{ choices: [1], other: null }] })
+      const { state, reason } = await t.settled('ans-l766-c15b')
+      expect({ state, reason, keys: t.backend.keys }).toEqual({ state: 'failed', reason: 'question_changed', keys: [] })
+    })
+
+    it('ⓓ 문항 둘 — 이름 줄이 있는 탭 화면·검토 화면을 거쳐 delivered', async () => {
+      const first = { question: '하나', header: '일', multiSelect: false, options: [{ label: '가', description: '가' }, { label: '나', description: '나' }] }
+      const second = { question: '둘', header: '이', multiSelect: false, options: [{ label: '다', description: '다' }, { label: '라', description: '라' }] }
+      const { t, item } = await start([first, second])
+      const screens = ['screen-named-tabs.ansi', 'screen-named-tabs-2.ansi', 'screen-named-review.ansi'].map(fixture)
+      t.backend.screenText = screens[0]!
+      t.backend.onScreen = () => {
+        t.backend.screenText = screens[Math.min(t.backend.keys.length, 2)]!
+      }
+      t.backend.keyLine = () => (t.backend.keys.length >= 3 ? reply({ 하나: '가', 둘: '다' }) : '')
+      t.hub.answer({ device: 'd1', id: 'ans-l766-c15c', channel: 'c1', question: item.id, call: 'call-1', digest: questionDigest(item.questions), answers: [{ choices: [0], other: null }, { choices: [0], other: null }] })
+      const { state, reason } = await t.settled('ans-l766-c15c')
+      expect({ state, reason, keys: t.backend.keys }).toEqual({ state: 'delivered', reason: null, keys: ['1', '1', '1'] })
     })
   })
 })

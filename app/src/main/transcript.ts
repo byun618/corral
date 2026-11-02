@@ -385,9 +385,8 @@ function candidatesOf(input: { agent: TranscriptAgent; id: string }): Candidates
  * `none` = 훑기가 성공했고 후보가 0건(새 세션이 아직 파일을 쓰지 않았을 수 있다) · `error` = 폴더를 못 읽어 0건을 믿을 수 없다 ·
  * `ambiguous` = 같은 id 의 파일이 둘 이상. 표시용 `resolveTranscriptFile`(첫 일치)과 CLI 계약은 그대로다.
  * `continuedAs` = `continued-in` 을 따라 옮겨 간 세션 id(LIFE-766) — 그 파일의 줄은 이 id 로 세야 한다. 안 옮겼으면 없다.
- * `shown` = 대화 화면이 보는 파일 — 대상이 아직 비어 `file` 과 다를 때만 있다. 커서·확인은 `file`, 질문 항목은 `shown` 을 쓴다.
  */
-export type TranscriptResolution = { kind: 'found'; file: string; continuedAs?: string; shown?: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous'; count: number }
+export type TranscriptResolution = { kind: 'found'; file: string; continuedAs?: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous'; count: number }
 
 export function resolveTranscriptUnique(ref: AgentSessionRef): TranscriptResolution {
   const agent = transcriptAgent(ref.agent)
@@ -410,8 +409,7 @@ export function resolveTranscriptUnique(ref: AgentSessionRef): TranscriptResolut
   }
   const continuedAs = followed.hops.at(-1)
   if (continuedAs === undefined) return { kind: 'found', file: followed.file }
-  const shown = followContinued({ session: ref, file: files[0]!, empty: 'stay' }).file
-  return shown === followed.file ? { kind: 'found', file: followed.file, continuedAs } : { kind: 'found', file: followed.file, continuedAs, shown }
+  return { kind: 'found', file: followed.file, continuedAs }
 }
 
 /** 참조를 파일 경로로 옮긴다. 못 찾으면 null. */

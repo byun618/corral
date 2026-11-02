@@ -613,7 +613,7 @@ describe('C13 빈 대상', () => {
     fs.writeFileSync(fileOf(B), fixture(name))
     expect(follow()).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
     expect(followEmpty()).toEqual({ file: fileOf(B), sessionId: B, hops: [B] })
-    expect(resolveTranscriptUnique(refOf(A))).toEqual({ kind: 'found', file: fileOf(B), continuedAs: B, shown: fileOf(A) })
+    expect(resolveTranscriptUnique(refOf(A))).toEqual({ kind: 'found', file: fileOf(B), continuedAs: B })
   })
 
   it('ⓐ 지문도 대상이 비면 옛 파일 값이고, 대화가 복사되면 다음 주기에 새 파일 값이다', () => {
@@ -624,7 +624,7 @@ describe('C13 빈 대상', () => {
     expect(readSessionDigest(refOf(A)).digest.lastPrompt).toBe('새')
   })
 
-  it('ⓑ 대화가 복사되면 옮겨 간다 · shown 이 사라진다 — 큰 attachment 가 끝 창을 채워도 앞에서 찾는다', () => {
+  it('ⓑ 대화가 복사되면 옮겨 간다 — 큰 attachment 가 끝 창을 채워도 앞에서 찾는다', () => {
     fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
     fs.writeFileSync(fileOf(B), fixture('empty-5.jsonl'))
     expect(follow().file).toBe(fileOf(A))
@@ -698,6 +698,42 @@ describe('C13 빈 대상', () => {
     fs.appendFileSync(fileOf(B), human('새', B))
     expect(follow().file).toBe(fileOf(A))
     expect(continuedReadBytes()).toBe(capped)
+  })
+
+  it('ⓔ 큰 메타 줄(창 여러 개)을 지난 뒤 자라면 본 데까지 건너뛴다 — 그 뒤의 대화 줄을 찾는다', () => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    fs.writeFileSync(fileOf(B), row({ type: 'attachment', pad: 'x'.repeat(CONTINUED_PROBE_BYTES * 3) }) + fixture('empty-2.jsonl'))
+    expect(follow().file).toBe(fileOf(A))
+    const meta = row({ type: 'mode', mode: 'normal', sessionId: B })
+    fs.appendFileSync(fileOf(B), meta)
+    const before = continuedReadBytes()
+    expect(follow().file).toBe(fileOf(A))
+    expect(continuedReadBytes() - before).toBe(Buffer.byteLength(meta))
+    fs.appendFileSync(fileOf(B), row({ type: 'attachment', pad: 'y'.repeat(CONTINUED_PROBE_BYTES * 2) }) + human('새', B))
+    expect(follow().file).toBe(fileOf(B))
+  })
+
+  it('ⓔ 대화 찾기 읽기 오류는 머문다 — 진행을 남기지 않고 다음 확인에 다시 찾는다', () => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    fs.writeFileSync(fileOf(B), human('새', B))
+    fs.chmodSync(fileOf(B), 0o000)
+    expect(follow()).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
+    fs.chmodSync(fileOf(B), 0o644)
+    expect(follow()).toEqual({ file: fileOf(B), sessionId: B, hops: [B] })
+  })
+
+  it('ⓔ 교체된 파일(새 inode, 더 큼)은 본 데를 잇지 않고 처음부터 찾는다', () => {
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    const meta = fixture('empty-5.jsonl')
+    fs.writeFileSync(fileOf(B), meta)
+    expect(follow().file).toBe(fileOf(A))
+    // 대화 줄이 옛 파일의 찾은 자리보다 앞에 있다 — 본 데를 이으면 못 찾는다.
+    const line = human('새', B)
+    expect(Buffer.byteLength(line)).toBeLessThan(Buffer.byteLength(meta))
+    const replaced = `${fileOf(B)}.new`
+    fs.writeFileSync(replaced, line + meta + meta)
+    fs.renameSync(replaced, fileOf(B))
+    expect(follow().file).toBe(fileOf(B))
   })
 
   it('ⓔ 파일이 바뀌면(줄어듦) 처음부터 다시 찾는다', () => {

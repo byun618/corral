@@ -265,7 +265,7 @@ const CLAUDE_FOOTER_KNOWN = /^Enter to select(?: · (?:↑\/↓ to navigate|Tab\
 
 /**
  * Claude 안내 줄 — `Enter to select` 로 시작하는 마지막 줄. 그 줄이 이미 `Esc to cancel` 로 끝나면 거기서 멈춘다(R5-A4).
- * 덜 끝났으면(좁은 pane 에서 꺾임 — R4-A2 실측 40열) 다음 줄들을 이어 실측 안내 문구가 될 때까지만 읽는다. 그 뒤는 화면 끝까지 빈 줄만(R3-A2). 아니면 -1.
+ * 덜 끝났으면(좁은 pane 에서 꺾임 — R4-A2 실측 40열) 다음 줄들을 이어 실측 안내 문구가 될 때까지만 읽는다. 그 뒤는 화면 끝까지 빈 줄만(R3-A2)이고, 세션 이름 줄 하나(`NAMED_RULE`, LIFE-766)는 받는다 — 그 밖의 글이 있거나 그 줄 뒤에 글이 있으면 -1.
  */
 function claudeFooter(lines: string[]): number {
   const footer = lastIndex(lines, (line) => /^\s*Enter to select\b/.test(line))
@@ -279,13 +279,14 @@ function claudeFooter(lines: string[]): number {
       text = squash(`${text} ${lines[end]!}`)
     }
   }
-  return onlyBlankAfter(lines, end) ? footer : -1
+  const below = lines.slice(end + 1).filter((line) => !blankLine(line))
+  return below.length === 0 || (below.length === 1 && NAMED_RULE.test(below[0]!)) ? footer : -1
 }
 
 /**
  * Claude: 맨 아래 안내 줄(`Enter to select … Esc to cancel`) 위의 두 가로줄 사이 상자. 첫 줄은 머리(` ☐ X` 또는 `←  ☒ A  ☐ B  ✔ Submit  →`),
  * 다음 줄들이 문항 글, `N. 글` 이 선택지(아래 들여쓴 설명 줄·preview 상자는 뺀다). 아래 가로줄과 안내 줄 사이는 `Chat about this` 행뿐,
- * 안내 줄 아래는 빈 줄뿐이어야 한다(R3-A2 — 권한 질문의 `Esc to cancel · Tab to amend` 는 안내 줄이 아니다).
+ * 안내 줄 아래는 빈 줄뿐이거나 세션 이름 줄 하나여야 한다(R3-A2 — 권한 질문의 `Esc to cancel · Tab to amend` 는 안내 줄이 아니다).
  */
 function claudeQuestion(lines: string[]): ActiveQuestion {
   const tabsLine = lastIndex(lines, (line) => /^\s*←\s.*✔\s*Submit\s*→\s*$/.test(line))
@@ -342,7 +343,9 @@ function claudeTitleLines(lines: string[]): string[] {
  * → `1. Submit answers` · `2. Cancel` 로 끝나야 한다(뒤에 안내 줄 하나까지). 그 밖의 줄이 화면 끝까지 하나라도 있으면 아니다(R3-A2).
  */
 function claudeReview(rest: string[]): boolean {
-  const lines = rest.filter((line) => !blankLine(line))
+  const shown = rest.filter((line) => !blankLine(line))
+  // 맨 끝 세션 이름 줄 하나는 화면 틀이다(LIFE-766) — 그 뒤에 글이 있으면 아래 끝 줄 검사가 막는다.
+  const lines = NAMED_RULE.test(shown.at(-1) ?? '') ? shown.slice(0, -1) : shown
   if (lines[0]?.trim() !== 'Review your answers') return false
   const end = lines.length - (CLAUDE_FOOTER.test(lines.at(-1) ?? '') ? 1 : 0)
   if (end < 4) return false

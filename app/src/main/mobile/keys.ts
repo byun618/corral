@@ -265,7 +265,8 @@ const CLAUDE_FOOTER_KNOWN = /^Enter to select(?: · (?:↑\/↓ to navigate|Tab\
 
 /**
  * Claude 안내 줄 — `Enter to select` 로 시작하는 마지막 줄. 그 줄이 이미 `Esc to cancel` 로 끝나면 거기서 멈춘다(R5-A4).
- * 덜 끝났으면(좁은 pane 에서 꺾임 — R4-A2 실측 40열) 다음 줄들을 이어 실측 안내 문구가 될 때까지만 읽는다. 그 뒤는 화면 끝까지 빈 줄만(R3-A2)이고, 세션 이름 줄 하나(`NAMED_RULE`, LIFE-766)는 받는다 — 그 밖의 글이 있거나 그 줄 뒤에 글이 있으면 -1.
+ * 덜 끝났으면(좁은 pane 에서 꺾임 — R4-A2 실측 40열) 다음 줄들을 이어 실측 안내 문구가 될 때까지만 읽는다. 그 뒤는 화면 끝까지 빈 줄만(R3-A2)이고, `NAMED_RULE` 꼴 줄 하나(LIFE-766 세션 이름)는 받는다 — 그 밖의 글이 있거나 그 줄 뒤에 글이 있으면 -1.
+ * 이 가드는 **모양만** 본다: 이름인지 가리지 않아 제목 달린 가로줄 한 줄도 받는다. 권한 화면이 못 지나는 것은 안내 줄이 다르고 줄이 여럿인 표본 근거다. 계획 승인 등 다른 대화상자 표본은 없다.
  */
 function claudeFooter(lines: string[]): number {
   const footer = lastIndex(lines, (line) => /^\s*Enter to select\b/.test(line))
@@ -286,7 +287,7 @@ function claudeFooter(lines: string[]): number {
 /**
  * Claude: 맨 아래 안내 줄(`Enter to select … Esc to cancel`) 위의 두 가로줄 사이 상자. 첫 줄은 머리(` ☐ X` 또는 `←  ☒ A  ☐ B  ✔ Submit  →`),
  * 다음 줄들이 문항 글, `N. 글` 이 선택지(아래 들여쓴 설명 줄·preview 상자는 뺀다). 아래 가로줄과 안내 줄 사이는 `Chat about this` 행뿐,
- * 안내 줄 아래는 빈 줄뿐이거나 세션 이름 줄 하나여야 한다(R3-A2 — 권한 질문의 `Esc to cancel · Tab to amend` 는 안내 줄이 아니다).
+ * 안내 줄 아래는 빈 줄뿐이거나 `NAMED_RULE` 꼴 줄 하나여야 한다(R3-A2 — 권한 질문의 `Esc to cancel · Tab to amend` 는 안내 줄이 아니다).
  */
 function claudeQuestion(lines: string[]): ActiveQuestion {
   const tabsLine = lastIndex(lines, (line) => /^\s*←\s.*✔\s*Submit\s*→\s*$/.test(line))
@@ -344,7 +345,7 @@ function claudeTitleLines(lines: string[]): string[] {
  */
 function claudeReview(rest: string[]): boolean {
   const shown = rest.filter((line) => !blankLine(line))
-  // 맨 끝 세션 이름 줄 하나는 화면 틀이다(LIFE-766) — 그 뒤에 글이 있으면 아래 끝 줄 검사가 막는다.
+  // 맨 끝 `NAMED_RULE` 꼴 줄 하나를 뗀다(LIFE-766 세션 이름) — 모양만 보고, 그 뒤에 글이 있으면 아래 끝 줄 검사가 막는다. 검토 갈래는 폰 질문과 글을 대조하지 않는다.
   const lines = NAMED_RULE.test(shown.at(-1) ?? '') ? shown.slice(0, -1) : shown
   if (lines[0]?.trim() !== 'Review your answers') return false
   const end = lines.length - (CLAUDE_FOOTER.test(lines.at(-1) ?? '') ? 1 : 0)

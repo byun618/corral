@@ -52,9 +52,6 @@ jobs:
         id: test
         # 소켓 시험은 짧은 TMPDIR 이 필요하다 — macOS Unix 소켓 경로 한도 104바이트. 러너 임시 폴더(_work/_temp, 34자)는
         # 시험 소켓 이름(약 70자, pid 자릿수에 따라 다름)과 합쳐 넘친다(listen EINVAL). 잡마다 새로 만들고 지운다.
-        env:
-          # 운영 서버(8코어)라 vitest 작업자를 줄인다. 기본 forks 풀이 읽는 이름 — 3.2.7 에서 실제로 줄어드는 것을 확인했다.
-          VITEST_MAX_FORKS: 4
         run: |
           TMPDIR="$(mktemp -d /tmp/prci.XXXXXX)"
           export TMPDIR

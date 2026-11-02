@@ -57,3 +57,10 @@ Last reviewed: 2026-11-02
 - **Learning:** 폰 앱은 새 채널을 못 열고 사용자 손은 제스처 하나에 집중해야 하므로, 코디가 시험용 에이전트 pane 을 만들고 회차마다 구분 줄을 찍은 뒤 지연 답 지시를 주입한다. 사용자는 손 동작과 한 줄 결과만 말하고, 회차 안내에 답까지 남은 시간을 적는다.
 - **Evidence:** LIFE-595 — 사용자가 직접 보낸 첫 회차는 구분 줄이 보낸 뒤에 찍혔고, 코디 주입으로 바꾼 뒤 12회가 매끄럽게 돌았다.
 - **Disposition:** 모바일 관문 체크리스트 형식(작업 폴더 템플릿 또는 task-coordinate §5) — 다시 나면.
+
+## 원자료 폴더에 임시 git 저장소를 옮기지 않는다
+
+- **Scope:** 리뷰어 일감 명세, corral-specs 커밋
+- **Learning:** 재현용 임시 저장소는 출력만 텍스트로 옮긴다. 폴더째 옮기면 `git add` 가 gitlink 를 만든다. 커밋 전에 gitlink 수를 본다.
+- **Evidence:** LIFE-575 — 리뷰 원자료가 gitlink 로 커밋돼 되돌렸다.
+- **Disposition:** `.agents/rules/validation.md` 「원자료 보관」 — 다시 나면.

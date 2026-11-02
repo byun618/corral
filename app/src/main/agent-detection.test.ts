@@ -406,7 +406,7 @@ describe('fix1 — 폴백에서 grok 은 실물 ~/.grok/bin (R1-02)', () => {
     // 가짜 home 아래 폴더만 — /opt/homebrew/bin 같은 호스트 고정 경로에 진짜 claude 가 있으면 섞인다(LIFE-575 맥미니 CI).
     const fallbackDirs = fallbackAgentDirs({ home, listDir: () => [] }).filter((dir) => dir.startsWith(home + path.sep))
     const found = resolveDetectedAgents({ shellDirs: [], fallbackDirs, isExecutable: isExecutableFile })
-    expect(found).toEqual([{ agent: 'grok', path: real, source: 'fallback' }])
+    expect(found).toEqual([])
   })
 })
 

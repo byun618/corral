@@ -170,7 +170,7 @@ describe('C1 판별 규칙', () => {
     fs.writeFileSync(fileOf(B), human('새', B))
     fs.writeFileSync(fileOf(A), fork(B) + row({ type: 'cost-state', pad: 'x'.repeat(CONTINUED_TAIL_BYTES) }))
     expect(follow().file).toBe(fileOf(A))
-    expect(continuedVerdict({ chunk: fork(B), partial: true })).toEqual({ kind: 'unknown', window: true })
+    expect(continuedVerdict({ chunk: fork(B), partial: true })).toEqual({ kind: 'window' })
   })
 
   it('못 읽는 파일 → 예외 없이 그대로', () => {
@@ -240,8 +240,83 @@ describe('모름은 없음이 아니다 — 직전 판별을 유지한다', () =
     expect(follow()).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
   })
 
+  describe('스캐너 — 읽지 못하는 줄 앞을 더 본다(리뷰 r2 재현)', () => {
+    const parked = (): void => {
+      fs.writeFileSync(fileOf(B), human('새', B))
+      fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+      expect(follow().file).toBe(fileOf(B))
+    }
+    const back = { file: '', sessionId: A, hops: [] }
+
+    it('같은 관측의 완성 사람 줄 + 쓰는 중 assistant → 옛 파일', () => {
+      parked()
+      fs.appendFileSync(fileOf(A), `${human('되살림', A)}{"type":"assistant","sessionId":"`)
+      expect(follow()).toEqual({ ...back, file: fileOf(A) })
+    })
+
+    it('완성 사람 줄 + 깨진 완성 줄 → 옛 파일', () => {
+      parked()
+      fs.appendFileSync(fileOf(A), `${human('되살림', A)}{broken}\n`)
+      expect(follow()).toEqual({ ...back, file: fileOf(A) })
+    })
+
+    it('64 KiB 를 넘는 완성 사람 줄 → 옛 파일 · 그 뒤 짧은 메타도 옛 파일', () => {
+      parked()
+      fs.appendFileSync(fileOf(A), human('x'.repeat(CONTINUED_TAIL_BYTES + 100), A))
+      expect(follow()).toEqual({ ...back, file: fileOf(A) })
+      fs.appendFileSync(fileOf(A), row({ type: 'cost-state', sessionId: A }))
+      expect(follow()).toEqual({ ...back, file: fileOf(A) })
+    })
+
+    it('처음부터 64 KiB 를 넘는 완성 줄 + 짧은 메타를 한 번에 봐도 옛 파일', () => {
+      parked()
+      fs.appendFileSync(fileOf(A), human('x'.repeat(CONTINUED_TAIL_BYTES + 100), A) + row({ type: 'cost-state', sessionId: A }))
+      expect(follow()).toEqual({ ...back, file: fileOf(A) })
+    })
+
+    it('메타 줄이 64 KiB 를 넘어 continued-in 이 창 밖이면 옛 파일로 돌아간다 — 합의된 안전한 실패', () => {
+      parked()
+      fs.appendFileSync(fileOf(A), row({ type: 'cost-state', pad: 'x'.repeat(CONTINUED_TAIL_BYTES + 100) }))
+      expect(follow()).toEqual({ ...back, file: fileOf(A) })
+      fs.appendFileSync(fileOf(A), row({ type: 'cost-state', sessionId: A }))
+      expect(follow()).toEqual({ ...back, file: fileOf(A) })
+    })
+
+    it('continued-in 뒤 메타 + 읽지 못하는 줄 → 모름(직전 유지), 8 KiB 를 넘어도 같다', () => {
+      parked()
+      fs.appendFileSync(fileOf(A), row({ type: 'cost-state', pad: 'x'.repeat(CONTINUED_PROBE_BYTES) }))
+      expect(follow().file).toBe(fileOf(B))
+      fs.appendFileSync(fileOf(A), '{"type":"cost-')
+      expect(follow().file).toBe(fileOf(B))
+    })
+
+    it('읽지 못하는 줄 앞의 모양 위반 continued-in → 없음', () => {
+      expect(continuedVerdict({ chunk: `${row({ type: 'continued-in', continuedInSessionId: '../x' })}{"t`, partial: false })).toEqual({ kind: 'none' })
+    })
+
+    it('잘린 창에서 읽지 못하는 줄뿐이면 window · 파일 전체면 모름', () => {
+      expect(continuedVerdict({ chunk: 'x\n{broken}\n', partial: true })).toEqual({ kind: 'window' })
+      expect(continuedVerdict({ chunk: '{broken}\n', partial: false })).toEqual({ kind: 'unknown' })
+    })
+  })
+
+  it('더 큰 파일로 교체(다른 inode, 끝이 쓰는 중 줄)되면 직전 판별을 잇지 않는다', () => {
+    fs.writeFileSync(fileOf(B), human('새', B))
+    fs.writeFileSync(fileOf(A), human('옛', A) + fork(B))
+    expect(follow().file).toBe(fileOf(B))
+    // 옛 파일이 있는 채로 rename — 같은 inode 가 다시 쓰일 수 없다.
+    const replacement = path.join(dir, 'replacement.tmp')
+    fs.writeFileSync(replacement, `${human('x'.repeat(4096), A)}${fork(B)}{"type":"cost-`)
+    const before = fs.statSync(fileOf(A))
+    fs.renameSync(replacement, fileOf(A))
+    const after = fs.statSync(fileOf(A))
+    expect(after.ino).not.toBe(before.ino)
+    expect(after.size).toBeGreaterThan(before.size)
+    expect(follow()).toEqual({ file: fileOf(A), sessionId: A, hops: [] })
+  })
+
   it('처음 보는 파일의 모름은 옛 파일 · 없음과 있음은 그대로', () => {
-    expect(continuedVerdict({ chunk: `${fork(B)}{"type":"cost-`, partial: false })).toEqual({ kind: 'unknown', window: false })
+    expect(continuedVerdict({ chunk: `${fork(B)}{"type":"cost-`, partial: false })).toEqual({ kind: 'unknown' })
     expect(continuedVerdict({ chunk: human('옛', A), partial: false })).toEqual({ kind: 'none' })
     expect(continuedVerdict({ chunk: row({ type: 'cost-state' }), partial: false })).toEqual({ kind: 'none' })
     expect(continuedVerdict({ chunk: fork(B), partial: false })).toEqual({ kind: 'target', id: B })
@@ -333,6 +408,17 @@ describe('C6 쓰기용 찾기(resolveTranscriptUnique)', () => {
     } finally {
       fs.chmodSync(locked, 0o755)
     }
+  })
+
+  it('옮겨 간 id 의 후보 폴더만 오류면 error(기다림) — 원본 찾기는 성공해도', () => {
+    fs.writeFileSync(fileOf(A), fork(B))
+    fs.writeFileSync(fileOf(B), human('새', B))
+    const other = path.join(home, '.claude', 'projects', 'other')
+    fs.mkdirSync(other)
+    // 자기 자신을 가리키는 링크 — 이 후보만 ELOOP 다.
+    fs.symlinkSync(path.join(other, `${B}.jsonl`), path.join(other, `${B}.jsonl`))
+    expect(resolveTranscriptFile(refOf(A))).toBe(fileOf(A))
+    expect(resolveTranscriptUnique(refOf(A))).toEqual({ kind: 'error' })
   })
 
   it('대상이 다른 폴더에만 있으면 표시와 같이 옛 파일에 머문다', () => {

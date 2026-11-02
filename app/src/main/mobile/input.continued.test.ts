@@ -300,6 +300,39 @@ describe('C6 이어 간 세션의 폰 쓰기', () => {
     expect(t.backend.keys.length).toBeGreaterThan(0)
   })
 
+  it('이동 전 질문 id 의 답은 question_closed — 키를 보내지 않는다', async () => {
+    const before = human('옛', CLAUDE_SESSION)
+    fs.writeFileSync(fileOf(CLAUDE_SESSION), before + asked(CLAUDE_SESSION) + fork(TARGET))
+    const leading = human('새 파일의 더 긴 첫 지시', TARGET)
+    fs.writeFileSync(fileOf(TARGET), leading + asked(TARGET))
+    const oldId = Buffer.byteLength(before)
+    expect(Buffer.byteLength(leading)).not.toBe(oldId)
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = QUESTION_SCREEN
+    t.chat.subscribe({ channelId: 'c1', resume: null, sink: () => {} })
+    t.hub.answer({ device: 'd1', id: 'ans-l766-0004', channel: 'c1', question: oldId, call: 'call-1', digest: questionDigest([QUESTION]), answers: [{ choices: [1], other: null }] })
+    expect(await t.settled('ans-l766-0004')).toMatchObject({ state: 'failed', reason: 'question_closed' })
+    expect(t.backend.keys).toEqual([])
+    expect(t.chat.readerFor(fileOf(TARGET))?.items().some((item) => item.kind === 'question' && item.state === 'pending')).toBe(true)
+  })
+
+  it('옮겨 간 id 의 후보 폴더만 오류면 기다린다 — 넣지 않고, 풀리면 들어간다', async () => {
+    fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION) + fork(TARGET))
+    fs.writeFileSync(fileOf(TARGET), human('새', TARGET))
+    const other = path.join(home, '.claude', 'projects', 'other')
+    fs.mkdirSync(other)
+    const loop = path.join(other, `${TARGET}.jsonl`)
+    fs.symlinkSync(loop, loop)
+    const t = setup()
+    t.hub.send({ device: 'd1', id: 'msg-l766-0010', channel: 'c1', text: '폰 지시' })
+    await new Promise((done) => setTimeout(done, 150))
+    expect(t.lastWire('msg-l766-0010')?.state).toBe('queued')
+    expect(t.backend.prompts).toEqual([])
+    fs.rmSync(loop)
+    expect(await t.settled('msg-l766-0010')).toMatchObject({ state: 'delivered' })
+  })
+
   it('이동한 대화를 연 구독이 없으면 판독자가 없어 키를 보내지 않는다 — question_closed', async () => {
     fs.writeFileSync(fileOf(CLAUDE_SESSION), human('옛', CLAUDE_SESSION) + fork(TARGET))
     fs.writeFileSync(fileOf(TARGET), human('새', TARGET) + asked(TARGET))

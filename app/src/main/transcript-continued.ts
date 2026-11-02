@@ -8,7 +8,8 @@
 //
 // 유효한 `continued-in`: 파일의 마지막 것이고 → `continuedInSessionId` 가 세션 id 모양이고 → 그 뒤에 `user`·`assistant` 줄이 없고(`--resume <옛 id>` 는 같은
 // 파일에 이어 쓴다) → 대상 파일이 있다(약 0.9초 늦게 생긴다). 하나라도 아니면 **옛 파일에 머문다** — `continued-in` 은 공식 형식이 아니라, 못 읽으면 지금처럼 동작하는 쪽이 안전하다.
-// 다만 **모름**(읽지 못하는 줄·쓰는 중 줄·읽기 오류)은 없음과 다르다 — 같은 파일의 직전 판별을 유지한다. 판별을 처음 하는 파일이면 옛 파일에 머문다.
+// 다만 **모름**(`continued-in` 뒤의 읽지 못하는 줄·쓰는 중 줄, 읽기 오류)은 없음과 다르다 — 같은 파일의 직전 판별을 유지한다. 판별을 처음 하는 파일이면 옛 파일에 머문다.
+// 읽지 못하는 줄 앞에 완성된 `user`·`assistant` 가 있으면 모름이 아니라 없음이다. 가장 큰 창을 다 읽어도 `continued-in` 이 안 보이면 없음이다.
 //
 // 비용: 판별은 파일 끝 작은 창(`CONTINUED_PROBE_BYTES`)을 읽고, 결론이 안 나면 `CONTINUED_TAIL_BYTES` 까지만 넓힌다. 파일 정체성·크기·mtime 이 그대로면 다시 읽지 않는다(stat 만). 대상은 **원본과 같은 폴더**에서만 찾는다(관측 5/5) —
 // 꼬리 확인 주기마다 프로젝트 폴더 전체를 훑지 않는다.
@@ -18,7 +19,7 @@ import type { AgentSessionRef } from '../shared/types.js'
 
 /** 판별이 읽는 파일 끝 — 뒤따르는 메타 줄 관측 최대 1339 B. 이 창 밖으로 밀려난 `continued-in` 은 없는 것으로 본다(옛 파일). */
 export const CONTINUED_TAIL_BYTES = 64 * 1024
-/** 먼저 읽는 작은 창 — 자라는 파일의 끝은 대개 `user`·`assistant` 줄이라 여기서 끝난다. 결론이 안 나면 `CONTINUED_TAIL_BYTES` 까지 넓힌다. */
+/** 먼저 읽는 작은 창 — 끝의 `user`·`assistant` 줄이 이 창 안에 온전히 들어오면 여기서 끝난다. 끝 줄이 창보다 크면 결론이 안 나 `CONTINUED_TAIL_BYTES` 까지 넓힌다. */
 export const CONTINUED_PROBE_BYTES = 8 * 1024
 /** 연쇄를 따라가는 최대 횟수 — 넘으면 거기서 멈춘다. */
 export const CONTINUED_CHAIN_MAX = 8
@@ -27,16 +28,19 @@ const MEMO_MAX = 512
 /** 대상 id 는 경로에 들어간다 — 이 모양이 아니면 따라가지 않는다(`../` 차단). */
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
-/** 판별 결과 — `target` 대상 있음 · `none` 확실히 없음 · `unknown` 모름(읽지 못하는 줄, `window` = 창 앞까지 가도 결론이 안 났다). */
-export type ContinuedVerdict = { kind: 'target'; id: string } | { kind: 'none' } | { kind: 'unknown'; window: boolean }
+/** 판별 결과 — `target` 대상 있음 · `none` 확실히 없음 · `unknown` 모름(`continued-in` 뒤의 읽지 못하는 줄 등) · `window` 잘린 창의 줄을 다 봐도 결론이 없다. */
+export type ContinuedVerdict = { kind: 'target'; id: string } | { kind: 'none' } | { kind: 'unknown' } | { kind: 'window' }
 
 /**
- * 파일 끝 조각의 판별 — 끝에서 거꾸로 본다. 메타 줄은 지나가고, `user`·`assistant` 를 먼저 만나면 없음, 읽지 못하는 줄(쓰는 중 포함)을 먼저 만나면 모름.
- * 처음 만난 `continued-in` 이 곧 마지막 것이다 — 그 줄이 틀렸으면 앞의 것으로 내려가지 않는다. 창에 걸린 첫 줄은 없는 것으로 본다.
+ * 파일 끝 조각의 판별 — 끝에서 거꾸로 본다. 메타 줄과 읽지 못하는 줄(쓰는 중·깨진 완성 줄·`type` 없음)은 지나가되 읽지 못한 줄은 표시만 남긴다.
+ * 완성된 `user`·`assistant` 를 먼저 만나면 없음 — 뒤에 읽지 못하는 줄이 있어도 같다. `continued-in` 을 만나면 그 줄이 곧 마지막 것이다:
+ * 모양 위반이면 없음, 뒤에 읽지 못한 줄이 있으면 모름(그 줄이 사람 줄일 수 있다), 아니면 대상. 창에 걸린 첫 줄은 없는 것으로 본다.
+ * 줄을 다 봐도 결론이 없으면 잘린 창은 `window`, 파일 전체는 읽지 못한 줄이 있었으면 모름·아니면 없음.
  */
 export function continuedVerdict(input: { chunk: string; partial: boolean }): ContinuedVerdict {
   const lines = input.chunk.split('\n')
   if (input.partial) lines.shift()
+  let unreadable = false
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index]?.trim() ?? ''
     if (line === '') continue
@@ -44,15 +48,21 @@ export function continuedVerdict(input: { chunk: string; partial: boolean }): Co
     try {
       record = JSON.parse(line)
     } catch {
-      return { kind: 'unknown', window: false }
+      unreadable = true
+      continue
     }
-    if (typeof record !== 'object' || record === null || !('type' in record)) return { kind: 'unknown', window: false }
+    if (typeof record !== 'object' || record === null || !('type' in record)) {
+      unreadable = true
+      continue
+    }
     if (record.type === 'user' || record.type === 'assistant') return { kind: 'none' }
     if (record.type !== 'continued-in') continue
     const target = 'continuedInSessionId' in record ? record.continuedInSessionId : null
-    return typeof target === 'string' && SESSION_ID.test(target) ? { kind: 'target', id: target } : { kind: 'none' }
+    if (typeof target !== 'string' || !SESSION_ID.test(target)) return { kind: 'none' }
+    return unreadable ? { kind: 'unknown' } : { kind: 'target', id: target }
   }
-  return input.partial ? { kind: 'unknown', window: true } : { kind: 'none' }
+  if (input.partial) return { kind: 'window' }
+  return unreadable ? { kind: 'unknown' } : { kind: 'none' }
 }
 
 type Memo = { dev: number; ino: number; size: number; mtimeMs: number; target: string | null }
@@ -85,15 +95,19 @@ function readRange(input: { file: string; from: number; to: number }): Buffer {
   }
 }
 
-/** 작은 창을 먼저 읽고, 창 전체가 메타 줄·잘린 한 줄이라 결론이 안 날 때만 앞을 더 읽어 `CONTINUED_TAIL_BYTES` 까지 넓힌다. */
+/**
+ * 작은 창을 먼저 읽고, 줄을 다 봐도 결론이 없을 때만 앞을 더 읽어 `CONTINUED_TAIL_BYTES` 까지 넓힌다.
+ * 가장 큰 창에도 `continued-in` 이 안 보이면 없음이다 — 창 밖의 것은 없는 것으로 본다(옛 파일, 합의된 안전한 실패).
+ */
 function judgeTail(input: { file: string; size: number }): ContinuedVerdict {
   const near = Math.max(0, input.size - CONTINUED_PROBE_BYTES)
   const tail = readRange({ file: input.file, from: near, to: input.size })
   const verdict = continuedVerdict({ chunk: tail.toString('utf8'), partial: near > 0 })
-  if (verdict.kind !== 'unknown' || !verdict.window) return verdict
+  if (verdict.kind !== 'window') return verdict
   const far = Math.max(0, input.size - CONTINUED_TAIL_BYTES)
   const wider = Buffer.concat([readRange({ file: input.file, from: far, to: near }), tail])
-  return continuedVerdict({ chunk: wider.toString('utf8'), partial: far > 0 })
+  const widest = continuedVerdict({ chunk: wider.toString('utf8'), partial: far > 0 })
+  return widest.kind === 'window' ? { kind: 'none' } : widest
 }
 
 /**
@@ -116,7 +130,7 @@ function fileTarget(file: string): string | null {
   } catch {
     return prior
   }
-  const target = verdict.kind === 'target' ? verdict.id : verdict.kind === 'none' ? null : prior
+  const target = verdict.kind === 'target' ? verdict.id : verdict.kind === 'unknown' ? prior : null
   if (memo.size >= MEMO_MAX) memo.clear()
   memo.set(file, { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, target })
   return target

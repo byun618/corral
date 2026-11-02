@@ -1,0 +1,80 @@
+# PR CI (LIFE-575) — main 대상 PR 에 app/ 의 npm ci → typecheck → test.
+# 러너: 맥미니 macOS 호스트 self-hosted 러너(전용 비관리자 사용자 + LaunchDaemon) —
+# 설치·제거는 homelab-infra services/_runner-macos/. 패키징·네이티브 관문·자동 재시도는 하지 않는다.
+# 참고 신호다 — required check 는 없다(private 동안 ruleset·required check 불가).
+name: 🧪 PR CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 1. 검사 (npm ci · typecheck · test)
+    # fork PR 은 self-hosted 러너에서 돌리지 않는다 — head 레포가 이 레포일 때만.
+    # 단독 방어가 아니다: fork PR 이 이 파일을 고치면 조건도 바뀐다. 공개 전 체크리스트는 설치 문서에.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, corral-macmini]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - name: 1-1. 코드 체크아웃
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 1-2. Node 24.14.1 설정
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.14.1
+          package-manager-cache: false
+
+      - name: 1-3. 의존성 설치 (npm ci)
+        id: npm_ci
+        run: npm ci --no-audit --no-fund
+
+      - name: 1-4. 타입 검사
+        id: typecheck
+        run: npm run typecheck
+
+      - name: 1-5. 시험 (vitest + node:test)
+        id: test
+        env:
+          # 소켓 시험은 짧은 TMPDIR 이 필요하다(긴 경로면 listen EINVAL). 러너 임시 폴더는 잡마다 비운다.
+          TMPDIR: ${{ runner.temp }}
+        run: npm test
+
+      - name: 1-6. 요약
+        if: always()
+        # 체크아웃이 실패해 app/ 가 없어도 요약은 남긴다.
+        working-directory: ${{ github.workspace }}
+        env:
+          NPM_CI: ${{ steps.npm_ci.outcome }}
+          TYPECHECK: ${{ steps.typecheck.outcome }}
+          TEST: ${{ steps.test.outcome }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          icon() { [[ "$1" == "success" ]] && echo "✅ $1" || echo "❌ ${1:-skipped}"; }
+          {
+            echo "## 🧪 PR CI 요약"
+            echo
+            echo "| 항목 | 값 |"
+            echo "| --- | --- |"
+            echo "| 커밋 | \`${HEAD_SHA::7}\` |"
+            echo "| 러너 | \`${RUNNER_NAME}\` |"
+            echo "| node | \`$(node --version 2>/dev/null || echo 없음)\` |"
+            echo "| 1-3. 의존성 설치 | $(icon "$NPM_CI") |"
+            echo "| 1-4. 타입 검사 | $(icon "$TYPECHECK") |"
+            echo "| 1-5. 시험 | $(icon "$TEST") |"
+          } >> "$GITHUB_STEP_SUMMARY"

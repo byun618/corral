@@ -27,7 +27,7 @@ scripts/release.sh finish [--leave-open]                # ⑤ 정리 — 출고 
 scripts/release.sh abort                                # 접기 — 출고 전 release 브랜치·worktree 만 삭제, PR 은 열린 채
 ```
 
-**검사 없이 순서 머지다.** PR CI 는 아직 없다(후속 일감 LIFE-575, 맥미니 self-hosted 러너) — 검증 근거는 각 PR 의 판정문(리뷰·관문)과 release worktree 통합 확인이다.
+**검사 없이 순서 머지다.** PR CI(`.github/workflows/pr-ci.yml` — 맥미니 self-hosted 러너, LIFE-575)는 참고 신호다 — `release.sh` 는 체크를 보지 않고 required check 도 없다(private 동안 걸 수 없다). 모으기 전에 대상 PR 의 체크를 사람이 본다(release 스킬 2). release→main PR 의 CI 는 PR 이 생기고 곧바로 머지된 뒤에 오므로 통합 확인을 대신하지 않는다 — 검증 근거는 각 PR 의 판정문(리뷰·관문)과 release worktree 통합 확인이다.
 
 **① cut** — origin/main 끝의 `app/package.json` 에서 다음 버전을 정하고(`--bump`·`--version`) 다음 버전 ≤ 지금 버전 · 원격 태그 존재 ·
 열린 release 브랜치(로컬·원격 `release/v*`) 있음 · 다른 레포 안에서 부름 중 하나라도면 아무것도 만들지 않는다(exit 2). 만들면 release 브랜치에
@@ -122,7 +122,7 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 ③ 같을 때만 `adb install -r`(데이터·페어링 유지) ④ `dumpsys` 로 versionName·`lastUpdateTime` 이 바뀌었는지 보고 APK sha256 을 출력한다 — 출고 보고에 넣는다.
 설치본을 지우고 새로 까는 길은 없다 — 지우면 페어링 토큰·기록이 사라진다. 서명이 다르거나 설치본이 없으면(첫 설치) 멈추고 사용자에게 보고한다(첫 설치는 `mobile/README.md` §3).
 
-- **자르기·모으기·머지·태그는 `release.sh` 로만 한다.** ruleset 「main 보호」(LIFE-718)가 main 직접 push·force push·삭제를 서버에서 막지만, required check 는 PR CI 전이라 없고 웹 UI 머지는 막지 않는다 —
+- **자르기·모으기·머지·태그는 `release.sh` 로만 한다.** ruleset 「main 보호」(LIFE-718)는 main 직접 push·force push·삭제를 막도록 걸려 있지만 레포가 private 인 동안 서버에서 효력이 없다(공개 뒤 효력 — LIFE-729). required check 도 private 동안 걸 수 없어 없고, 웹 UI 머지는 공개 뒤에도 막지 않는다 —
   웹 UI 머지(release PR 포함 — 웹으로 머지하면 태그·Release·dmg·APK 가 안 돈다)·main 직접 push 를 하지 않는 것은 규약이다. squash·rebase 머지는 레포 설정에서 꺼 두었다(merge commit 만).
 - 태그 밖에서 dmg 를 만들어야 하면(개발 빌드) 「빌드」를 손으로 돌린다 — 그 dmg 는 출고본이 아니다. 출고 dmg 는 `release-dmg.sh` 가 HEAD = 태그·깨끗한 트리·
   태그 버전 = package.json 버전을 확인할 때만 만든다(`--check-only` 로 가드만 본다).
@@ -138,8 +138,8 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
   EAS 의 작업 폴더 자동 정리는 끄고(`EAS_LOCAL_BUILD_SKIP_CLEANUP=1`) 성공했을 때만 이번에 만든 그 폴더를 지운다 — 빌드·확인이 실패하면 작업 폴더를 남기고 경로를 알려 준다.
 - `JAVA_HOME`·`ANDROID_HOME`·`CORRAL_APK_WORK_BASE` 는 절대경로여야 한다 — 상대경로면 사전 점검에서 거절한다(머지 전 exit 2). 사전 점검(본체 cwd)과 태그 worktree 빌드가 같은 곳을 봐야 해서다.
 - 서명 확인은 `apksigner verify` 성공 + 서명자 정확히 1개 + SHA-256 일치일 때만 통과한다(출고 정책 = EAS 단일 키) — 빌드 뒤 확인과 폰 설치 전 대조 모두 같다.
-- PR CI 는 아직 없다 — 후속 일감 LIFE-575. 원격 CD(main 머지 시 GitHub Actions 로 태그·dmg·APK)는 LIFE-707 — 지금 CD 는 로컬 `release.sh ship` 이다.
-  574 구현 r0 의 ubuntu workflow 초안은 구현 브랜치 커밋 `ffb08b9` 에 남아 있다(계정 결제 잠금으로 한 번도 돌지 못했다). 분리 전 커밋이라 corral-specs 레포에서 본다(LIFE-705).
+- PR CI 는 `.github/workflows/pr-ci.yml`(LIFE-575) — main 대상 PR 에 `app/` 의 `npm ci`·typecheck·test 를 맥미니 macOS self-hosted 러너에서 돌린다(설치·제거는 homelab-infra `services/_runner-macos/`). 참고 신호다(required check 없음). 원격 CD(main 머지 시 GitHub Actions 로 태그·dmg·APK)는 LIFE-707 — 지금 CD 는 로컬 `release.sh ship` 이다.
+  574 구현 r0 의 ubuntu workflow 초안(`ffb08b9`, 계정 결제 잠금으로 한 번도 돌지 못했다)은 레포 재생성(LIFE-705)으로 커밋이 사라졌다 — 남은 것은 corral-specs `LIFE-574-pr-release/raw/` 의 정적 단언뿐이다.
 - 오프라인 하네스: `app/scripts/release-check/release-test.sh <원자료 폴더>`(로컬 bare 원격 + 가짜 gh 로 하위 명령 분기·exit 코드) · `mutate.sh`(가드를 빼면 케이스가 실패로 바뀌는지).
 - 574 출고 전후 과도기(565·566·564 와 첫 출고 순서)는 `corral-specs/LIFE-574-pr-release/transition.md`.
 

@@ -24,6 +24,12 @@ description: >-
 
 ## 2. 모으기
 
+- **모으기 전에 대상 PR 마다 PR CI 결과를 본다(읽기 전용)** — 다른 체크(GitGuardian 등)도 붙어 있어 PR CI 잡만 골라 본다:
+  ```bash
+  gh pr checks <번호> --repo byun618/corral --json name,bucket,link --jq '.[] | select(.name | startswith("1. 검사")) | [.bucket, .link] | @tsv'
+  ```
+  `pass` 면 모은다 · `fail`·`cancel` 이면 그 PR 을 이번 출고에서 빼거나 일감 브랜치에서 고쳐 push 한 뒤 다시 본다 · `pending` 이면 끝날 때까지 기다렸다 다시 본다 ·
+  출력이 없거나 `skipping` 이면 PR CI 가 돌지 않은 PR 이다 — 판정문·통합 확인으로만 보고, 출고 보고에 「CI 없음」으로 적는다. `release.sh` 는 이 결과를 보지 않는다(검사 없이 순서 머지).
 - `scripts/release.sh gather --prs "<번호…>" --dry-run` → `scripts/release.sh gather --prs "<번호…>"` — 고른 순서대로 release 브랜치에 로컬 merge.
   거절(exit 2)이면 멈추고 원문을 보고한다.
 - 충돌(exit 3)은 **release worktree 에서 바로 푼다** — 스크립트 안내대로 풀고 `git commit --no-edit`(메시지의 `Release-PR:` 줄이 모으기 기록) 뒤 남은 PR 로 다시.

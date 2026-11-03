@@ -111,7 +111,7 @@ export function questionLockText(input: { lock: Exclude<QuestionLock, 'open'>; k
     case 'shape':
       return '맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다'
     case 'ended':
-      return input.kind === 'codex' ? 'Codex 가 턴을 마쳤습니다 — 아래 입력창에 답을 지시로 보내 주세요' : '턴이 끝난 질문입니다 — 아래 입력창에 답을 지시로 보내 주세요'
+      return input.kind === 'codex' ? 'Codex 가 턴을 마쳤습니다 — 아래 입력창에 답을 지시로 보내 주세요' : '이 질문이 아직 열려 있는지 맥에서 확인해 주세요 — 닫혔으면 아래 입력창에 지시로 보내 주세요'
     case 'checking':
       return '질문을 확인하는 중…'
     case 'not_waiting':

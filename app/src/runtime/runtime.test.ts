@@ -283,8 +283,22 @@ describe('LIFE-394 body identity, ready gate and submission window', () => {
       expect(evaluateManifest(kind, [], null)).toMatchObject({ verified: false, queryError: `no manifest reported for ${kind}` })
     }
     // 4: C2/D23. claude runs the same code. "We did not patch it" is not a guarantee.
-    expect(EXPECTED_MANIFESTS.claude.version).toBe('2026.09.04.1')
-    expect(evaluateManifest('claude', [{ agent: 'claude', source_kind: 'local_override', active_version: '2026.09.04.1', local_override_shadowing_remote: false }], null).verified).toBe(false)
+    expect(EXPECTED_MANIFESTS.claude.version).toBe('2026.11.03.1')
+    expect(evaluateManifest('claude', [{ agent: 'claude', source_kind: 'local_override', active_version: '2026.11.03.1', local_override_shadowing_remote: false }], null).verified).toBe(false)
+    // LIFE-780: a new app on a herdr server that has not restarted still reports the old bundled claude manifest.
+    expect(EXPECTED_MANIFESTS.claude.priorVersions).toEqual(['2026.09.04.1'])
+    expect(evaluateManifest('claude', [bundled('claude', '2026.09.04.1')], null)).toMatchObject({ verified: true, activeVersion: '2026.09.04.1', expectedVersion: '2026.11.03.1' })
+    for (const version of ['2026.11.03.1', '2026.09.04.1']) {
+      expect(evaluateManifest('claude', [{ agent: 'claude', source_kind: 'remote_cache', active_version: version, local_override_shadowing_remote: false }], null).verified).toBe(false)
+      expect(evaluateManifest('claude', [{ agent: 'claude', source_kind: 'local_override', active_version: version, local_override_shadowing_remote: false }], null).verified).toBe(false)
+      expect(evaluateManifest('claude', [{ agent: 'claude', source_kind: 'bundled', active_version: version, local_override_shadowing_remote: true }], null).verified).toBe(false)
+    }
+    expect(evaluateManifest('claude', [bundled('claude', '2026.10.11.1')], null).verified).toBe(false)
+    // The other two keep one value: the claude allowance is not a general one.
+    for (const kind of ['codex', 'grok'] as const) {
+      expect(EXPECTED_MANIFESTS[kind].priorVersions).toEqual([])
+      expect(evaluateManifest(kind, [bundled(kind, '2026.09.04.1')], null).verified).toBe(false)
+    }
     // LIFE-626 bumped only the codex manifest; grok keeps the version LIFE-603 K1b gave both.
     expect(EXPECTED_MANIFESTS.codex.version).toBe('2026.10.28.1')
     expect(EXPECTED_MANIFESTS.grok.version).toBe('2026.10.15.2')

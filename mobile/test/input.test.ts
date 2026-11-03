@@ -327,7 +327,7 @@ describe('LIFE-582 최종 관문 — 답 카드 잠금은 채널이 질문을 �
   })
   it('잠금 안내 — Codex 턴 끝남은 provider 이름, 그 밖은 중립', () => {
     expect(questionLockText({ lock: 'ended', kind: 'codex' })).toBe('Codex 가 턴을 마쳤습니다 — 아래 입력창에 답을 지시로 보내 주세요')
-    expect(questionLockText({ lock: 'ended', kind: 'claude' })).toBe('턴이 끝난 질문입니다 — 아래 입력창에 답을 지시로 보내 주세요')
+    expect(questionLockText({ lock: 'ended', kind: 'claude' })).toBe('이 질문이 아직 열려 있는지 맥에서 확인해 주세요 — 닫혔으면 아래 입력창에 지시로 보내 주세요')
     expect(questionLockText({ lock: 'not_waiting', kind: 'codex' })).toBe('지금은 폰에서 답할 수 없는 질문입니다 — 맥에서 확인해 주세요')
     expect(questionLockText({ lock: 'checking', kind: 'claude' })).toBe('질문을 확인하는 중…')
   })

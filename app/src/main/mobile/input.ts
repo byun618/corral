@@ -26,7 +26,7 @@
 // - **수명**(R1-A1·A4): 모바일 끔·종료(활성 세대가 바뀜)·그 기기 해지면 그 기기의 끝나지 않은 요청을 끝낸다. 모든 await 뒤와 효과 직전에 다시 본다 —
 //   늦게 온 guard 거절이 끈 뒤의 지시를 큐로 되살리지 않고, 답의 남은 키는 멈춘다(일부 키가 들어갔으면 `unconfirmed`). 연결 끊김(폰 화면 끔)은 수명이 아니다 — 큐는 남는다.
 // - **맥 입력창 초안**(P9): 넣기 직전 보이는 화면의 입력 줄이 비었는지 본다(`keys.ts draftState`). 글이 있거나 판단 못 하면 넣지 않고 실패.
-//   그 앞에 Claude agent view 화면인지 본다(`keys.ts agentViewShown`, LIFE-770) — 그 화면의 입력 상자는 새 세션을 만드니 `agent_view` 로 실패.
+//   그 앞에 Claude agent view 화면인지 본다(`keys.ts agentViewShown`, LIFE-770) — 그 화면의 입력은 폰이 보던 대화로 가지 않으니(상자는 새 세션, Space 패널은 그 행의 세션) `agent_view` 로 실패.
 //   그 화면은 같은 guard 턴의 입력 revision·조용한 시간과 함께 읽는다(R2-A3) — 화면을 잡을 때 입력이 `quietMs` 이상 조용했어야 믿고, 그 화면의 revision 도 울타리 값이어야 한다.
 //   넣기는 그 울타리 그대로일 때만 같은 App 턴에서 한다(R1-A3). 칸 없는 CLI 제출도 revision 을 올린다(guard).
 // - **질문 답**(P4): 폰은 어느 질문(말풍선 id + 도구 호출 id + 내용 지문)에 어떤 답인지만 보낸다(R1-A2·R2-A1). 서버는 그 질문이 기록의 마지막 대기 질문이고 지문이 같고
@@ -806,7 +806,7 @@ export class InputHub {
     if (shotRead === 'moved') return this.moved(entry, 'input')
     if (shotRead === 'behind') return this.waitTurn(entry, 'gate')
     if (shot.input.idleMs < this.timing.quietMs) return this.waitTurn(entry, 'gate')
-    // agent view 의 입력 상자는 새 세션을 만든다 — 초안 판정보다 먼저(LIFE-770). 자리표시가 흐림이면 draftState 는 빈 입력으로 읽는다.
+    // agent view 의 입력은 이 대화로 가지 않는다 — 초안 판정보다 먼저(LIFE-770). 자리표시가 흐림이면 draftState 는 빈 입력으로 읽는다.
     if (agentViewShown({ kind, screen: shot.text })) return this.fail(entry, 'agent_view')
     const draft = draftState({ kind, screen: shot.text })
     if (draft !== 'empty') return this.fail(entry, draft === 'draft' ? 'mac_draft' : 'draft_unknown')

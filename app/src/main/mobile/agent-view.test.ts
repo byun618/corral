@@ -1,4 +1,4 @@
-// Claude agent view 판별 (LIFE-770) — `view-*`·`narrow-*`·`manual-*`·`normal-*` 는 실제 pane 화면(2.1.296, ANSI 유지, 다른 세션 제목·대화를 가림)이다. 「합성」 이라 적은 시험만 그 표본을 고쳐 쓴다.
+// Claude agent view 판별 (LIFE-770) — fixtures/agent-view/ 는 실제 pane 화면(2.1.296, ANSI 유지, 다른 세션 제목·대화를 가림)이다. `view-slash`·`view-at` 만 색 없는 pane 이라 글자 근거로만 쓴다. 「합성」 이라 적은 시험만 그 표본을 고쳐 쓴다.
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -28,6 +28,19 @@ describe('C1 실표본 = agent view', () => {
     ['권한 표지 없는 40열 기본', 'manual-narrow-view-default'],
     ['권한 표지 없는 40열 ↓', 'manual-narrow-view-down'],
     ['권한 표지 없는 40열 글', 'manual-narrow-view-typed'],
+    ['그룹 헤더 행 enter to collapse', 'view-header'],
+    ['접힌 그룹 헤더 행 enter to expand', 'view-header-collapsed'],
+    ['claude agents 직접 기동 첫 화면', 'direct-first'],
+    ['삭제 확인 ctrl+x to confirm', 'view-delete-confirm'],
+    ['40열 헤더 enter to coll…', 'width40-header'],
+    ['40열 접힌 헤더 enter to expa…', 'width40-header-collapsed'],
+    ['40열 직접 기동 enter to col…', 'width40-direct'],
+    ['38열 기본 enter to re…', 'width38-view-default'],
+    ['38열 ↓ enter to op…', 'width38-view-down'],
+    ['38열 글 enter to cr…', 'width38-view-typed'],
+    ['38열 헤더 enter to co…', 'width38-header'],
+    ['32열 패널(안내 꺾임)', 'width32-view-peek'],
+    ['28열 패널(안내가 낱말 사이로 꺾임)', 'width28-view-peek'],
   ])('%s', (_label, name) => {
     expect(shown(sample(name))).toBe(true)
   })
@@ -76,6 +89,98 @@ describe('C2 합성 — 표본의 스타일·문구를 고친 화면', () => {
     const screen = swap({ screen: sample('view-peek'), from: 'enter to open · space to close · ctrl+x to delete', to: 'tab to answer' })
     expect(shown(screen)).toBe(false)
     expect(draft(screen)).toBe('unknown')
+  })
+})
+
+describe('좁은 폭 — 안내를 못 읽고 자리표시가 꺾인 실표본(색 유지)', () => {
+  const GRAY = '\x1b[38;2;153;153;153m'
+  const dim = (screen: string): string => {
+    expect(screen).toContain(GRAY)
+    return screen.split('\r\n').map((line) => (/^\x1b\[0m\x1b\[38;2;153;153;153m(❯ )?[a-z ]+\x1b\[0m$/.test(line) ? line.replace(GRAY, '\x1b[2m') : line)).join('\r\n')
+  }
+  it.each([
+    ['36열 enter to …(한 줄)', 'width36-view-default'],
+    ['32열 enter…(두 줄)', 'width32-view-default'],
+    ['28열 e…(두 줄)', 'width28-view-default'],
+    ['32열 헤더(두 줄)', 'width32-header'],
+    ['32열 직접 기동(두 줄)', 'width32-direct'],
+  ])('%s — 지금 색은 판별 못 하고 mac_draft 로 막힌다, 합성 흐림은 agent view', (_label, name) => {
+    const screen = sample(name)
+    expect(shown(screen)).toBe(false)
+    expect(draft(screen)).toBe('draft')
+    expect(draft(dim(screen))).toBe('empty')
+    expect(shown(dim(screen))).toBe(true)
+  })
+  it('32열 글을 친 상자 — 판별 못 하고 mac_draft', () => {
+    expect(shown(sample('width32-view-typed'))).toBe(false)
+    expect(draft(sample('width32-view-typed'))).toBe('draft')
+  })
+  it.each(['width32-normal-typed-placeholder', 'width28-normal-typed-placeholder'])('%s — 일반 프롬프트에 친 글이 꺾여도 진하니 mac_draft', (name) => {
+    expect(shown(sample(name))).toBe(false)
+    expect(draft(sample(name))).toBe('draft')
+  })
+  it.each(['width32-normal-empty', 'width28-normal-empty'])('%s — 일반 빈 입력은 empty', (name) => {
+    expect(shown(sample(name))).toBe(false)
+    expect(draft(sample(name))).toBe('empty')
+  })
+  it('합성: 꺾인 자리표시 글자가 바뀌고 흐림 + 안내 잘림 → 못 잡는다(한계 고정 — SURFACE.md)', () => {
+    const screen = dim(sample('width32-view-default')).replace('describe a task for a new', 'start something new for').replace('session', 'today')
+    expect(shown(screen)).toBe(false)
+    expect(draft(screen)).toBe('empty')
+  })
+})
+
+describe('못 알아보는 agent view 화면 — 결과를 고정한다(SURFACE.md 표)', () => {
+  it.each([
+    ['/ 입력', 'view-slash', 'draft'],
+    ['@ 입력', 'view-at', 'draft'],
+    ['찾기', 'view-find', 'unknown'],
+    ['simple view', 'simple-view', 'unknown'],
+  ])('%s', (_label, name, state) => {
+    expect(shown(sample(name))).toBe(false)
+    expect(draft(sample(name))).toBe(state)
+  })
+})
+
+describe('안내 줄 — 합성(실표본 한 줄을 고침)', () => {
+  const FOOTER = 'enter to return · space to reply · ctrl+x to delete · ? for shortcuts'
+  const withFooter = (line: string): string => {
+    const screen = sample('view-default')
+    expect(screen).toContain(FOOTER)
+    return screen.replace(`\x1b[38;2;255;107;128m⏵⏵ bypass permissions\x1b[0m\x1b[38;2;153;153;153m · ${FOOTER}`, line)
+  }
+  const normal = (below: string): string => `${sample('normal-try-placeholder').trimEnd().split('\r\n').slice(0, -1).join('\r\n')}\r\n${below}`
+  it.each([
+    ['접힌 행 enter to show all(소스만, 표본 없음)', '⏵⏵ bypass permissions · enter to show all · ? for shortcuts'],
+    ['전체 동사가 줄 끝', '⏵⏵ bypass permissions · enter to open'],
+    ['전체 동사 뒤 ·…', '⏵⏵ bypass permissions · enter to return ·…'],
+    ['전체 동사 뒤 …', '⏵⏵ bypass permissions · enter to return…'],
+    ['전체 동사 뒤 공백 …', '⏵⏵ bypass permissions · enter to create …'],
+    ['한 글자만 남은 동사', '⏵⏵ bypass permissions · enter to e…'],
+  ])('%s → agent view', (_label, line) => {
+    expect(shown(withFooter(line))).toBe(true)
+  })
+  it.each([
+    ['전체 동사 뒤에 글', '⏵⏵ bypass permissions · enter to open the file'],
+    ['잘린 꼴이 줄 끝이 아님', '⏵⏵ bypass permissions · enter to r… · ? for shortcuts'],
+    ['다른 동사의 잘린 꼴', '⏵⏵ bypass permissions · enter to view…'],
+    ['동사 없는 잘림', '⏵⏵ bypass permissions · enter to …'],
+    ['enter… 로 잘림', '⏵⏵ bypass permissions · enter…'],
+    ['대문자 안내', 'Enter to use · esc to cancel'],
+    ['칸 앞이 · 가 아님', 'press enter to open'],
+  ])('%s → 안내가 아니다', (_label, line) => {
+    expect(shown(withFooter(line))).toBe(false)
+  })
+  it.each([
+    ['명령 메뉴 첫 행의 설명', '  /deploy     Press · enter to open'],
+    ['명령 메뉴 첫 행의 설명 — space to reply', '  /chat       Open · space to reply'],
+    ['메뉴 둘째 행의 설명', '  /build      Build it\r\n  deploy · enter to return'],
+    ['일반 안내 아래 줄의 인용', '  ⏵⏵ bypass permissions on (shift+tab to cycle)\r\n  · enter to open'],
+    ['enter to open the file', '  ? for shortcuts · enter to open the file'],
+  ])('일반 프롬프트 %s → empty 그대로', (_label, below) => {
+    const screen = normal(below)
+    expect(shown(screen)).toBe(false)
+    expect(draft(screen)).toBe('empty')
   })
 })
 

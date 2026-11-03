@@ -744,36 +744,50 @@ export function draftState(input: { kind: MobileAgentKind; screen: string }): Dr
 // --- Claude agent view (LIFE-770) -----------------------------------------------------------------
 
 const AGENT_VIEW_PLACEHOLDER = 'describe a task for a new session'
-/** 입력 상자 아래 안내(2.1.296 실측). 좁은 pane 은 맨 끝 낱말이 `…` 로 잘린다(`enter to retu…` — 40열). */
-const AGENT_VIEW_HINT = /(?:^|· )(?:space to reply|enter to (?:return|open|create)|enter to (?:r|re|ret|retu|retur|o|op|ope|c|cr|cre|crea|creat)…)/
-/** `?` 안내표 — 넓으면 세 줄, 좁으면 한 줄에 하나씩이고 끝은 늘 `? to close`. */
+/** 입력 상자 바로 아래 안내 줄의 한 칸 — 뒤가 ` ·` 또는 줄 끝(`enter to open the file` 은 아니다). 2.1.296 실측. `show all`(접힌 행)만 소스에서 읽었고 표본이 없다. */
+const AGENT_VIEW_HINT = /(?:^|· )(?:space to reply|enter to (?:return|open|create|collapse|expand|show all)|ctrl\+x to confirm)(?: ·|$)/
+/** 잘린 안내 — `…` 가 줄 끝. 폭 스윕(24~56열)에 동사 앞부분이 한 글자까지 다 나왔다(`enter to r…`, `enter to return…`, `enter to return …`). `enter to …` 부터는 동사가 없어 받지 않는다. */
+const AGENT_VIEW_CUT = /(?:^|· )enter to (\S+) ?…$/
+const AGENT_VIEW_VERBS = ['return', 'open', 'create', 'collapse', 'expand']
+/** `?` 안내표 — 넓으면 세 줄, 좁으면 한 줄에 하나씩이고 끝은 늘 `? to close`. 여러 줄을 잇는다. */
 const AGENT_VIEW_HELP = /ctrl\+s to switch views.*\? to close$/
-/** Space 패널(`╭…╯` 안 `❯ reply`) 아래 안내 — 글을 치면 `enter to send · esc to close` 로 바뀐다. */
-const AGENT_VIEW_PANEL_HINT = /(?:^|· )(?:space to close|enter to send · esc to close)/
+/** Space 패널(`╭…╯` 안 `❯ reply`) 아래 안내 — 좁으면 낱말 사이로 꺾여(`enter to open · space to` / `close · …`) 줄을 잇는다. 글을 치면 `enter to send · esc to close` 로 바뀐다. */
+const AGENT_VIEW_PANEL_HINT = /(?:^|· )(?:space to close|enter to send · esc to close)(?: ·|$)/
 const PANEL_BOTTOM = /^\s*╰─+╯\s*$/
 
+/** 입력 상자 아래 첫 줄이 agent view 안내인가. 첫 줄만 본다 — 안내는 한 줄로 잘리고, 그 아래는 메뉴·표다. `/` 로 시작하면 명령 메뉴 행이다. */
+function agentViewHintLine(line: string): boolean {
+  if (line.startsWith('/')) return false
+  if (AGENT_VIEW_HINT.test(line)) return true
+  const cut = AGENT_VIEW_CUT.exec(line)?.[1]
+  return cut !== undefined && AGENT_VIEW_VERBS.some((verb) => verb.startsWith(cut))
+}
+
 /**
- * 보이는 화면이 Claude agent view 인가(LIFE-770) — 이 화면의 입력 상자는 **새 세션을 만든다**. herdr 는 `idle`(`live_prompt_box`)로 읽어 상태로는 못 가린다.
- * 공식 신호가 없어 글자로 본다. 표지는 맨 아래 상자와 그 아래 줄에서만 찾는다 — 대화 출력에 인용된 글은 상자 위라 잡히지 않고, 상자 **안**의 글은 하단 안내로 세지 않는다.
- * - 하단 안내: 기본·`↓`·글 친 상태·`?` 안내표·Space 패널. 색을 보지 않는다.
- * - 자리표시: 안내가 바뀐 판에서 `draftState` 가 빈 입력으로 읽을 화면(글이 흐림뿐)만 — 일반 프롬프트에 사람이 친 같은 글은 진하니 `mac_draft` 로 남는다.
+ * 보이는 화면이 Claude agent view 인가(LIFE-770) — 폰 지시를 넣으면 안 되는 화면이다: 맨 아래 입력 상자는 **새 세션을 만들고**, Space 패널의 입력은 **그 행의 세션으로** 간다. 어느 쪽도 폰이 보던 대화가 아니다.
+ * herdr 는 `idle`(`live_prompt_box`)로 읽어 상태로는 못 가린다. 공식 신호가 없어 글자로 본다.
+ * 표지는 맨 아래 상자와 그 아래 줄에서만 찾는다 — 대화 출력에 인용된 글은 상자 위라 잡히지 않고, 상자 **안**의 글은 안내로 세지 않는다.
+ * - 하단 안내: 행·헤더 선택, 글 친 상태, 삭제 확인, `?` 안내표, Space 패널. 색을 보지 않는다.
+ * - 자리표시: 안내를 못 읽어도(좁은 폭·문구 변경) `draftState` 가 빈 입력으로 읽을 화면(글이 흐림뿐)이면 잡는다. 좁으면 상자 안에서 꺾이니 줄을 잇는다. 일반 프롬프트에 사람이 친 같은 글은 진하니 `mac_draft` 로 남는다.
  * 다 못 잡으면 `draftState` 판정으로 떨어진다. 글자·색이 모두 바뀐 판은 `empty` 로 읽혀 들어갈 수 있다(SURFACE.md 한계).
  */
 export function agentViewShown(input: { kind: MobileAgentKind; screen: string }): boolean {
   if (input.kind !== 'claude') return false
   const lines = input.screen.split(/\r?\n/).map(runsOf)
   const plain = lines.map(plainOf)
-  const below = (at: number): string => plain.slice(at + 1).map((line) => line.trim()).filter((line) => line.length > 0).join(' ')
+  const below = (at: number): string[] => plain.slice(at + 1).map((line) => line.trim()).filter((line) => line.length > 0)
   const box = claudeBox(plain)
   let panel = -1
   plain.forEach((line, index) => { if (PANEL_BOTTOM.test(line)) panel = index })
   if (panel > (box?.end ?? -1)) {
     let top = panel - 1
     while (top >= 0 && !/^\s*╭/.test(plain[top]!)) top -= 1
-    return plain.slice(top + 1, panel).some((line) => /^\s*│ ❯/.test(line)) && AGENT_VIEW_PANEL_HINT.test(below(panel))
+    return plain.slice(top + 1, panel).some((line) => /^\s*│ ❯/.test(line)) && AGENT_VIEW_PANEL_HINT.test(below(panel).join(' '))
   }
   if (box === null) return false
   const footer = below(box.end)
-  if (AGENT_VIEW_HINT.test(footer) || AGENT_VIEW_HELP.test(footer)) return true
-  return box.end === box.start + 2 && plain[box.start + 1]!.slice(1).trim() === AGENT_VIEW_PLACEHOLDER && !claudeBoxTyped({ lines, box })
+  if (footer[0] !== undefined && agentViewHintLine(footer[0])) return true
+  if (AGENT_VIEW_HELP.test(footer.join(' '))) return true
+  const body = plain.slice(box.start + 1, box.end).join(' ').slice(1).replace(/[\s\u00a0]+/g, ' ').trim()
+  return body === AGENT_VIEW_PLACEHOLDER && !claudeBoxTyped({ lines, box })
 }

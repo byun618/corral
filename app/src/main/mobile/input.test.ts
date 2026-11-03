@@ -401,7 +401,7 @@ describe('맥 초안 (Z6 · P9)', () => {
 
 describe('Claude agent view (LIFE-770) — 실표본 화면', () => {
   const view = (name: string): string => fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'agent-view', `${name}.ansi`), 'utf8')
-  it.each(['view-default', 'view-down', 'view-help', 'view-peek', 'view-typed', 'narrow-view-default'])('%s → failed/agent_view, 넣기 0회', async (name) => {
+  it.each(['view-default', 'view-down', 'view-help', 'view-peek', 'view-typed', 'narrow-view-default', 'view-header', 'view-header-collapsed', 'direct-first', 'view-delete-confirm'])('%s → failed/agent_view, 넣기 0회', async (name) => {
     const t = setup()
     t.backend.screenText = view(name)
     t.hub.send({ device: 'd1', id: `l770-${name}`, channel: 'c1', text: 'Reply with exactly: x' })
@@ -414,6 +414,14 @@ describe('Claude agent view (LIFE-770) — 실표본 화면', () => {
     expect(t.backend.screenText).toContain('\x1b[2m❯ describe')
     t.hub.send({ device: 'd1', id: 'l770-dim-0001', channel: 'c1', text: 'x' })
     expect(await t.settled('l770-dim-0001')).toMatchObject({ state: 'failed', reason: 'agent_view' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('합성: 32열에서 꺾인 자리표시가 흐림이면 안내를 못 읽어도 거절한다', async () => {
+    const t = setup()
+    t.backend.screenText = view('width32-view-default').replaceAll('\x1b[38;2;153;153;153m❯ describe', '\x1b[2m❯ describe').replaceAll('\x1b[38;2;153;153;153msession', '\x1b[2msession')
+    expect(t.backend.screenText).toContain('\x1b[2msession')
+    t.hub.send({ device: 'd1', id: 'l770-dim-0032', channel: 'c1', text: 'x' })
+    expect(await t.settled('l770-dim-0032')).toMatchObject({ state: 'failed', reason: 'agent_view' })
     expect(t.backend.prompts).toHaveLength(0)
   })
   it('대화 출력에 표지 글이 인용된 일반 프롬프트 → 들어간다', async () => {

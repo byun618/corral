@@ -399,6 +399,71 @@ describe('맥 초안 (Z6 · P9)', () => {
   })
 })
 
+describe('Claude agent view (LIFE-770) — 실표본 화면', () => {
+  const view = (name: string): string => fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'agent-view', `${name}.ansi`), 'utf8')
+  it.each(['view-default', 'view-down', 'view-help', 'view-peek', 'view-typed', 'narrow-view-default'])('%s → failed/agent_view, 넣기 0회', async (name) => {
+    const t = setup()
+    t.backend.screenText = view(name)
+    t.hub.send({ device: 'd1', id: `l770-${name}`, channel: 'c1', text: 'Reply with exactly: x' })
+    expect(await t.settled(`l770-${name}`)).toMatchObject({ state: 'failed', reason: 'agent_view' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('합성: 자리표시가 흐림이어도(draftState 는 empty) 초안 판정보다 먼저 거절한다', async () => {
+    const t = setup()
+    t.backend.screenText = view('view-default').replace('\x1b[38;2;153;153;153m❯ describe', '\x1b[2m❯ describe')
+    expect(t.backend.screenText).toContain('\x1b[2m❯ describe')
+    t.hub.send({ device: 'd1', id: 'l770-dim-0001', channel: 'c1', text: 'x' })
+    expect(await t.settled('l770-dim-0001')).toMatchObject({ state: 'failed', reason: 'agent_view' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('대화 출력에 표지 글이 인용된 일반 프롬프트 → 들어간다', async () => {
+    const t = setup()
+    t.backend.screenText = view('normal-quoted')
+    t.hub.send({ device: 'd1', id: 'l770-quote-001', channel: 'c1', text: 'x' })
+    expect((await t.settled('l770-quote-001')).state).toBe('delivered')
+    expect(t.backend.prompts).toEqual(['x'])
+  })
+  it('일반 프롬프트에 자리표시 글을 직접 친 화면 → mac_draft 그대로', async () => {
+    const t = setup()
+    t.backend.screenText = view('normal-typed-placeholder')
+    t.hub.send({ device: 'd1', id: 'l770-typed-001', channel: 'c1', text: 'x' })
+    expect(await t.settled('l770-typed-001')).toMatchObject({ state: 'failed', reason: 'mac_draft' })
+  })
+  it('작업 중 접수되어 기다리던 지시 — 턴이 끝났을 때 agent view 면 넣지 않는다', async () => {
+    const t = setup()
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l770-wait-0001', channel: 'c1', text: 'x' })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(t.last('l770-wait-0001')?.state).toBe('queued')
+    t.backend.screenText = view('view-default')
+    t.backend.quiet = true
+    expect(await t.settled('l770-wait-0001')).toMatchObject({ state: 'failed', reason: 'agent_view' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('판별 뒤 전환 — 넣는 순간 guard 가 거절하고 다음 관문에서 agent view 를 보면 넣지 않는다', async () => {
+    const t = setup()
+    t.backend.promptResult = 'refused'
+    t.backend.onPrompt = () => { t.backend.screenText = view('view-default') }
+    t.hub.send({ device: 'd1', id: 'l770-race-0001', channel: 'c1', text: 'x' })
+    expect(await t.settled('l770-race-0001')).toMatchObject({ state: 'failed', reason: 'agent_view' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('중단 경로는 이 판별을 쓰지 않는다 — Claude 는 화면과 무관하게 키를 보낸다', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.screenText = view('view-default')
+    t.backend.onSend = () => { t.backend.status = 'idle' }
+    t.hub.stopTurn({ device: 'd1', id: 'l770-stop-0001', channel: 'c1' })
+    expect((await t.settled('l770-stop-0001')).state).toBe('stopped')
+  })
+  it('Codex 는 판별하지 않는다 — 입력 줄을 못 찾아 draft_unknown 그대로', async () => {
+    const t = setup()
+    t.backend.screenText = view('view-default')
+    t.hub.send({ device: 'd1', id: 'l770-cdx-00001', channel: 'c2', text: 'x' })
+    expect(await t.settled('l770-cdx-00001')).toMatchObject({ state: 'failed', reason: 'draft_unknown' })
+  })
+})
+
 describe('질문 답 (Z5)', () => {
   it('열린 마지막 질문 + blocked 일 때만 서버가 만든 키를 seq 비교로 넣는다', async () => {
     const t = setup()

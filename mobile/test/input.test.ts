@@ -132,6 +132,7 @@ describe('보낸 지시 상태 (C12 + 확인 못 함 · P6)', () => {
     expect(sentLine({ entry: entry({ state: 'queued', acked: true }), hhmm })).toEqual({ tone: 'question', text: '대기 중 · 이 턴이 끝나면 들어갑니다', action: 'cancel', faded: false })
     expect(sentLine({ entry: entry({ state: 'delivered', acked: true }), hhmm })).toEqual({ tone: 'dim', text: '들어감 ✓ 10:12', action: null, faded: false })
     expect(sentLine({ entry: entry({ state: 'failed', reason: 'mac_draft' }), hhmm })).toMatchObject({ tone: 'error', text: '보내지 못했습니다 · 맥 입력창에 쓰던 글이 있어 보내지 않았습니다', action: 'retry' })
+    expect(sentLine({ entry: entry({ state: 'failed', reason: 'agent_view' }), hhmm })).toEqual({ tone: 'error', text: '보내지 못했습니다 · 맥이 agent view 화면이라 보내지 않았습니다 — 맥에서 대화로 돌아온 뒤 다시 보내 주세요', action: 'retry', faded: false })
     expect(sentLine({ entry: entry({ state: 'unconfirmed', reason: 'record_missing' }), hhmm })?.text).toContain('들어갔는지 확인하지 못했습니다')
     expect(sentLine({ entry: entry({ state: 'cancelled' }), hhmm })).toBeNull()
   })

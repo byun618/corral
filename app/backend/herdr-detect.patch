@@ -246,7 +246,7 @@
  aliases = ["claude-code"]
  
  [[rules]]
-@@ -94,7 +94,37 @@
+@@ -94,7 +94,38 @@
    ] },
  ]
  
@@ -260,7 +260,8 @@
 +# rows, one activity row indented under a `◼` row, and optional pending overflow (#4573 capture), may follow
 +# it. Anything newer ends the match. The name line may be an untitled rule (#4824), so a draft holding the
 +# whole footer reads as blocked when no status row sits under the box. That refuses input; it never adds any.
-+# Spaces only: the screen grid holds no tabs, and a matcher may not pass 512 characters.
++# Spaces only: the screen grid holds no tabs. The regex is 387 characters; the engine refuses a matcher over 512
++# (MAX_MATCHER_CHARS) and that invalidates the whole bundled manifest, which the claude_ tests catch.
  [[rules]]
 +id = "live_blocked_form_named_session"
 +state = "blocked"
@@ -286,7 +287,7 @@
  priority = 980
 --- a/src/detect/manifest/tests.rs
 +++ b/src/detect/manifest/tests.rs
-@@ -1262,5 +1262,2042 @@
+@@ -1262,5 +1262,2048 @@
      assert_eq!(
          result.matched_rule.as_ref().map(|r| r.id.as_str()),
          Some("osc_title_working")
@@ -2264,6 +2265,10 @@
 +        ("a prompt", "  1 task (0 done, 1 in progress, 0 open)\n  ◼ Build\n    ❯ continue"),
 +        ("a rule", "  1 task (0 done, 1 in progress, 0 open)\n  ◼ Build\n    ─── next"),
 +        ("free text after the panel", "  2 tasks (0 done, 1 in progress, 1 open)\n  ◼ Build\n    Running tests…\n  ◻ Verify\nnew output"),
++        // The panel shape rests on one capture (#4573): widen these only with a real sample.
++        ("activity under a row at three columns", "  1 task (0 done, 1 in progress, 0 open)\n   ◼ Build\n      Running tests…"),
++        ("a head without counts", "  5 tasks\n  ◼ Build\n    Running tests…"),
++        ("a head with other counts", "  5 tasks (1 finished)\n  ◼ Build\n    Running tests…"),
 +    ] {
 +        assert_claude_not_blocked(&claude_panel_screen(panel), label);
 +    }
@@ -2301,6 +2306,8 @@
 +        "Enter to select · ↑/↓\nto navigate · ctrl+g\nto edit in VS Code ·\nEsc to cancel",
 +        "Enter to select · ctrl+g to edit\nin VS\nCode · Esc to cancel",
 +        "Enter\nto select · ↑/↓ to navigate · Esc to cancel",
++        // The four rows a hint may take.
++        "Enter to select · ctrl+g to\nedit in\nVS\nCode · Esc to cancel",
 +    ] {
 +        let screen = claude_question_screen(wrapped, CLAUDE_NAME_LINE);
 +        assert_claude_rule(&screen, "live_blocked_form_named_session", wrapped);

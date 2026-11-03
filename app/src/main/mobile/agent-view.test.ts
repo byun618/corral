@@ -96,7 +96,9 @@ describe('좁은 폭 — 안내를 못 읽고 자리표시가 꺾인 실표본(�
   const GRAY = '\x1b[38;2;153;153;153m'
   const dim = (screen: string): string => {
     expect(screen).toContain(GRAY)
-    return screen.split('\r\n').map((line) => (/^\x1b\[0m\x1b\[38;2;153;153;153m(❯ )?[a-z ]+\x1b\[0m$/.test(line) ? line.replace(GRAY, '\x1b[2m') : line)).join('\r\n')
+    const start = `\x1b[0m${GRAY}`
+    const end = '\x1b[0m'
+    return screen.split('\r\n').map((line) => (line.startsWith(start) && line.endsWith(end) && /^(?:❯ )?[a-z ]+$/.test(line.slice(start.length, -end.length)) ? line.replace(GRAY, '\x1b[2m') : line)).join('\r\n')
   }
   it.each([
     ['36열 enter to …(한 줄)', 'width36-view-default'],

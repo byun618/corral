@@ -1,4 +1,4 @@
-// Claude agent view 판별 (LIFE-770) — fixtures/agent-view/ 는 실제 pane 화면(2.1.296, ANSI 유지, 다른 세션 제목·대화를 가림)이다. `view-slash`·`view-at` 만 색 없는 pane 이라 글자 근거로만 쓴다. 「합성」 이라 적은 시험만 그 표본을 고쳐 쓴다.
+// Claude agent view 판별 (LIFE-770) — fixtures/agent-view/ 는 실제 pane 화면(2.1.296, ANSI 유지, 다른 세션 제목·대화를 가림)이다. `view-slash`·`view-at`·`view-fold` 만 색 없는 pane 이라 글자 근거로만 쓴다. 「합성」 이라 적은 시험만 그 표본을 고쳐 쓴다.
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -32,6 +32,12 @@ describe('C1 실표본 = agent view', () => {
     ['접힌 그룹 헤더 행 enter to expand', 'view-header-collapsed'],
     ['claude agents 직접 기동 첫 화면', 'direct-first'],
     ['삭제 확인 ctrl+x to confirm', 'view-delete-confirm'],
+    ['접힌 행 enter to show all(높이 12)', 'view-fold'],
+    ['44열 접힌 행 enter to show all…', 'width44-view-fold'],
+    ['43열 접힌 행 enter to show al…', 'width43-view-fold'],
+    ['41열 접힌 행 enter to show …', 'width41-view-fold'],
+    ['38열 접힌 행 enter to sh…', 'width38-view-fold'],
+    ['37열 접힌 행 enter to s…', 'width37-view-fold'],
     ['40열 헤더 enter to coll…', 'width40-header'],
     ['40열 접힌 헤더 enter to expa…', 'width40-header-collapsed'],
     ['40열 직접 기동 enter to col…', 'width40-direct'],
@@ -153,7 +159,6 @@ describe('안내 줄 — 합성(실표본 한 줄을 고침)', () => {
   }
   const normal = (below: string): string => `${sample('normal-try-placeholder').trimEnd().split('\r\n').slice(0, -1).join('\r\n')}\r\n${below}`
   it.each([
-    ['접힌 행 enter to show all(소스만, 표본 없음)', '⏵⏵ bypass permissions · enter to show all · ? for shortcuts'],
     ['전체 동사가 줄 끝', '⏵⏵ bypass permissions · enter to open'],
     ['전체 동사 뒤 ·…', '⏵⏵ bypass permissions · enter to return ·…'],
     ['전체 동사 뒤 …', '⏵⏵ bypass permissions · enter to return…'],
@@ -166,6 +171,8 @@ describe('안내 줄 — 합성(실표본 한 줄을 고침)', () => {
     ['전체 동사 뒤에 글', '⏵⏵ bypass permissions · enter to open the file'],
     ['잘린 꼴이 줄 끝이 아님', '⏵⏵ bypass permissions · enter to r… · ? for shortcuts'],
     ['다른 동사의 잘린 꼴', '⏵⏵ bypass permissions · enter to view…'],
+    ['동사 뒤로 다른 글이 이어지다 잘림', '⏵⏵ bypass permissions · enter to open the fi…'],
+    ['show all 뒤로 다른 글이 이어지다 잘림', '⏵⏵ bypass permissions · enter to show all the t…'],
     ['동사 없는 잘림', '⏵⏵ bypass permissions · enter to …'],
     ['enter… 로 잘림', '⏵⏵ bypass permissions · enter…'],
     ['대문자 안내', 'Enter to use · esc to cancel'],
@@ -181,6 +188,42 @@ describe('안내 줄 — 합성(실표본 한 줄을 고침)', () => {
     ['enter to open the file', '  ? for shortcuts · enter to open the file'],
   ])('일반 프롬프트 %s → empty 그대로', (_label, below) => {
     const screen = normal(below)
+    expect(shown(screen)).toBe(false)
+    expect(draft(screen)).toBe('empty')
+  })
+})
+
+describe('패널·안내표 모양의 음성 — 합성(실표본을 고침)', () => {
+  const PANEL_FOOTER = 'enter to open · space to close · ctrl+x to delete'
+  const replaced = (input: { screen: string; from: string; to: string }): string => {
+    expect(input.screen).toContain(input.from)
+    return input.screen.replace(input.from, input.to)
+  }
+  const normal = sample('normal-try-placeholder')
+  const footerLine = (below: string): string => `${normal.trimEnd().split('\r\n').slice(0, -1).join('\r\n')}\r\n${below}`
+  it('패널 양성 대조 — 표본 그대로는 agent view', () => {
+    expect(shown(sample('view-peek'))).toBe(true)
+  })
+  it('입력 줄(`│ ❯`)이 없는 패널 모양 + 패널 안내 → agent view 가 아니다', () => {
+    const screen = replaced({ screen: sample('view-peek'), from: '❯', to: ' ' })
+    expect(shown(screen)).toBe(false)
+  })
+  it('패널 안내 칸 앞이 · 가 아니면 → agent view 가 아니다', () => {
+    const screen = replaced({ screen: sample('view-peek'), from: PANEL_FOOTER, to: 'press space to close' })
+    expect(shown(screen)).toBe(false)
+  })
+  it('대화 출력에 패널 모양이 있고 일반 프롬프트 안내에 `· space to close` → 상자 위 패널은 보지 않는다', () => {
+    const quoted = ['╭──────────╮', '│ ❯ reply  │', '╰──────────╯'].join('\r\n')
+    const screen = footerLine('  ⏵⏵ bypass permissions on · space to close').replace('\r\n\x1b[0m\x1b[38;2;136;136;136m─', `\r\n${quoted}\r\n\x1b[0m\x1b[38;2;136;136;136m─`)
+    expect(screen).toContain('│ ❯ reply')
+    expect(shown(screen)).toBe(false)
+    expect(draft(screen)).toBe('empty')
+  })
+  it('안내표 양성 대조 — 표본 그대로는 agent view', () => {
+    expect(shown(sample('view-help'))).toBe(true)
+  })
+  it('`? to close` 뒤에 글이 더 있는 표 모양 → agent view 가 아니다', () => {
+    const screen = footerLine('  ctrl+s to switch views\r\n  ? to close the door')
     expect(shown(screen)).toBe(false)
     expect(draft(screen)).toBe('empty')
   })

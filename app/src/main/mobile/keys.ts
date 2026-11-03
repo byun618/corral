@@ -744,11 +744,11 @@ export function draftState(input: { kind: MobileAgentKind; screen: string }): Dr
 // --- Claude agent view (LIFE-770) -----------------------------------------------------------------
 
 const AGENT_VIEW_PLACEHOLDER = 'describe a task for a new session'
-/** 입력 상자 바로 아래 안내 줄의 한 칸 — 뒤가 ` ·` 또는 줄 끝(`enter to open the file` 은 아니다). 2.1.296 실측. `show all`(접힌 행)만 소스에서 읽었고 표본이 없다. */
+/** 입력 상자 바로 아래 안내 줄의 한 칸 — 뒤가 ` ·` 또는 줄 끝(`enter to open the file` 은 아니다). 2.1.296 실측. */
 const AGENT_VIEW_HINT = /(?:^|· )(?:space to reply|enter to (?:return|open|create|collapse|expand|show all)|ctrl\+x to confirm)(?: ·|$)/
-/** 잘린 안내 — `…` 가 줄 끝. 폭 스윕(24~56열)에 동사 앞부분이 한 글자까지 다 나왔다(`enter to r…`, `enter to return…`, `enter to return …`). `enter to …` 부터는 동사가 없어 받지 않는다. */
-const AGENT_VIEW_CUT = /(?:^|· )enter to (\S+) ?…$/
-const AGENT_VIEW_VERBS = ['return', 'open', 'create', 'collapse', 'expand']
+/** 잘린 안내 — `…` 가 줄 끝. 폭 스윕(24~56열)에 동사 앞부분이 한 글자까지 다 나왔다(`enter to r…`, `enter to return…`, `enter to return …`, `enter to show a…`). `enter to …` 부터는 동사가 없어 받지 않는다. */
+const AGENT_VIEW_CUT = /(?:^|· )enter to ([^·…]+?) ?…$/
+const AGENT_VIEW_VERBS = ['return', 'open', 'create', 'collapse', 'expand', 'show all']
 /** `?` 안내표 — 넓으면 세 줄, 좁으면 한 줄에 하나씩이고 끝은 늘 `? to close`. 여러 줄을 잇는다. */
 const AGENT_VIEW_HELP = /ctrl\+s to switch views.*\? to close$/
 /** Space 패널(`╭…╯` 안 `❯ reply`) 아래 안내 — 좁으면 낱말 사이로 꺾여(`enter to open · space to` / `close · …`) 줄을 잇는다. 글을 치면 `enter to send · esc to close` 로 바뀐다. */

@@ -61,7 +61,7 @@ function stageOf(value: unknown): { status: string; error: string | null; messag
 export const DRAFT_WRITTEN = '붙여넣기를 한 번 썼습니다 — 입력창에서 확인하세요.'
 
 const PROMPT_REASON: Record<string, string> = {
-  agent_blocked: '에이전트가 막는 화면(신뢰·로그인·권한)을 띄웠습니다 — 터미널에서 풀어 주세요.',
+  agent_blocked: '에이전트가 막는 화면(질문·신뢰·로그인·권한)을 띄웠습니다 — 터미널에서 풀어 주세요.',
   detect_manifest_unverified: '에이전트 상태 판독을 확인하지 못해 초안을 넣지 않았습니다.',
   agent_not_ready: '에이전트가 준비되지 않아 초안을 넣지 않았습니다.',
   empty_after_sanitize: '정제한 뒤 남은 본문이 없습니다.',

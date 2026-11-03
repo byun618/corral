@@ -246,7 +246,7 @@
  aliases = ["claude-code"]
  
  [[rules]]
-@@ -94,7 +94,33 @@
+@@ -94,7 +94,37 @@
    ] },
  ]
  
@@ -255,15 +255,19 @@
 +# Based on upstream live_blocked_form_named_session (herdr #5192, #4573), with the hint slots left open:
 +# `n to add notes` and `ctrl+g to edit in VS Code` (Claude Code 2.1.296 live captures) and
 +# `Tab to switch questions` (#5741) are not an enumerable set. `Enter to …` and `Esc to cancel` must still
-+# bind to one footer, wrapped between words or not. Only the name line, then a counted task panel with
-+# marked rows and optional pending overflow (#4573 capture), may follow it. Anything newer ends the match.
++# bind to one footer, wrapped between words or not. A hint may take four rows: `ctrl+g to edit in VS Code`,
++# the longest seen, needs three at a width of 10. Only the name line, then a counted task panel with marked
++# rows, one activity row indented under a `◼` row, and optional pending overflow (#4573 capture), may follow
++# it. Anything newer ends the match. The name line may be an untitled rule (#4824), so a draft holding the
++# whole footer reads as blocked when no status row sits under the box. That refuses input; it never adds any.
++# Spaces only: the screen grid holds no tabs, and a matcher may not pass 512 characters.
  [[rules]]
 +id = "live_blocked_form_named_session"
 +state = "blocked"
 +priority = 980
 +region = "whole_recent"
 +visible_blocker = true
-+regex = ['(?i)(?:^|\n)[ \t]*enter(?:[ \t]+|[ \t]*\n[ \t]*)to(?:[ \t]+|[ \t]*\n[ \t]*)(?:confirm|select)(?:(?:[ \t]+|[ \t]*\n[ \t]*)·(?:[ \t]+|[ \t]*\n[ \t]*)[^\n·]+(?:\n[ \t]*[^\n·─❯]+)?)*?(?:[ \t]+|[ \t]*\n[ \t]*)·(?:[ \t]+|[ \t]*\n[ \t]*)esc(?:[ \t]+|[ \t]*\n[ \t]*)to(?:[ \t]+|[ \t]*\n[ \t]*)cancel[ \t]*\n(?:[ \t]*\n)*[ \t]*─{3,}[^\n]*(?:\n(?:[ \t]*\n)*[ \t]+\d+ tasks? \(\d+ done, (?:\d+ in progress, )?\d+ open\)(?:\n[ \t]+[◻◼✔][ \t]+[^\n]+)+(?:\n[ \t]+…[ \t]+\+\d+[ \t]+pending)?)?(?:\n[ \t]*)*\z']
++regex = ['(?i)(?:^|\n) *enter(?: +| *\n *)to(?: +| *\n *)(?:confirm|select)(?:(?: +| *\n *)·(?: +| *\n *)[^\n·]+(?:\n *[^\n·─❯]+){0,3})*?(?: +| *\n *)·(?: +| *\n *)esc(?: +| *\n *)to(?: +| *\n *)cancel *\n(?: *\n)* *─{3,}[^\n]*(?:\n(?: *\n)* +\d+ tasks? \(\d+ done, (?:\d+ in progress, )?\d+ open\)(?:\n {1,2}◼ +[^\n]+\n {3,}[^\s❯─][^\n]*|\n +[◻◼✔] +[^\n]+)+(?:\n +… +\+\d+ +pending)?)?(?:\n *)*\z']
 +
 +# LIFE-780: the same name line turns the AskUserQuestion review screen into a "prompt box" whose
 +# `❯ 1. Submit answers` wins as live_prompt_box (950). This has to sit above that rule. It wants a titled
@@ -282,7 +286,7 @@
  priority = 980
 --- a/src/detect/manifest/tests.rs
 +++ b/src/detect/manifest/tests.rs
-@@ -1262,5 +1262,1940 @@
+@@ -1262,5 +1262,2042 @@
      assert_eq!(
          result.matched_rule.as_ref().map(|r| r.id.as_str()),
          Some("osc_title_working")
@@ -2157,6 +2161,10 @@
 +        ("enter only", "Enter to select"),
 +        ("another enter verb", "Enter to submit · Esc to cancel"),
 +        ("no separator", "Enter to select ↑/↓ to navigate Esc to cancel"),
++        ("a word after the verb", "Enter to select everything · Esc to cancel"),
++        ("a word after the verb, then a hint", "Enter to select everything · ↑/↓ to navigate · Esc to cancel"),
++        ("a rule inside the footer", "Enter to select · ↑/↓ to navigate\n────────\n· Esc to cancel"),
++        ("a hint of five rows", "Enter to select · one\ntwo\nthree\nfour\nfive · Esc to cancel"),
 +        ("cancel apart from the footer", "Enter to select · ↑/↓ to navigate\n\n· Esc to cancel"),
 +        ("a prompt between", "Enter to select · ↑/↓ to navigate\n❯ · Esc to cancel"),
 +    ] {
@@ -2222,4 +2230,102 @@
 +fn claude_unnamed_question_keeps_the_stock_rule() {
 +    let screen = "❯ ask\n\n────────────────\n ☐ head\n\nWhich?\n\n❯ 1. one\n  2. two\n\nEnter to select · ↑/↓ to navigate · n to add notes · Esc to cancel\n";
 +    assert_claude_rule(screen, "live_blocked_form", "unnamed");
++}
++
++// herdr #4573 (kilhyeonjun, 2.1.289), verbatim.
++const CLAUDE_TASK_PANEL_4573: &str = "  5 tasks (1 done, 1 in progress, 3 open)\n  ◼ Build\n    Running tests…\n  ✔ Prepare\n  ◻ Verify\n  … +2 pending";
++
++fn claude_panel_screen(panel: &str) -> String {
++    claude_question_screen(
++        "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
++        &format!("{CLAUDE_NAME_LINE}\n{panel}"),
++    )
++}
++
++#[test]
++fn claude_named_question_accepts_the_activity_row_under_the_active_task() {
++    for panel in [
++        CLAUDE_TASK_PANEL_4573,
++        "  1 task (0 done, 1 in progress, 0 open)\n  ◼ Build\n    Running tests…",
++        "  2 tasks (0 done, 2 in progress, 0 open)\n  ◼ Build\n    Running tests…\n  ◼ Lint\n    Checking…",
++    ] {
++        assert_claude_rule(&claude_panel_screen(panel), "live_blocked_form_named_session", panel);
++    }
++}
++
++#[test]
++fn claude_named_question_rejects_other_rows_under_the_task_panel() {
++    for (label, panel) in [
++        ("under a pending row", "  2 tasks (0 done, 2 open)\n  ◻ Verify\n    Running tests…"),
++        ("under a done row", "  1 task (1 done, 0 open)\n  ✔ Prepare\n    Running tests…"),
++        ("not indented", "  1 task (0 done, 1 in progress, 0 open)\n  ◼ Build\nRunning tests…"),
++        ("level with the row", "  1 task (0 done, 1 in progress, 0 open)\n  ◼ Build\n  Running tests…"),
++        ("two activity rows", "  1 task (0 done, 1 in progress, 0 open)\n  ◼ Build\n    Running tests…\n    Still running…"),
++        ("a prompt", "  1 task (0 done, 1 in progress, 0 open)\n  ◼ Build\n    ❯ continue"),
++        ("a rule", "  1 task (0 done, 1 in progress, 0 open)\n  ◼ Build\n    ─── next"),
++        ("free text after the panel", "  2 tasks (0 done, 1 in progress, 1 open)\n  ◼ Build\n    Running tests…\n  ◻ Verify\nnew output"),
++    ] {
++        assert_claude_not_blocked(&claude_panel_screen(panel), label);
++    }
++}
++
++fn word_wrap(text: &str, width: usize) -> String {
++    let mut lines: Vec<String> = Vec::new();
++    for word in text.split(' ') {
++        match lines.last_mut() {
++            Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
++                line.push(' ');
++                line.push_str(word);
++            }
++            _ => lines.push(word.to_string()),
++        }
++    }
++    lines.join("\n")
++}
++
++#[test]
++fn claude_named_question_footer_wraps_between_words_at_any_width() {
++    for footer in [
++        "Enter to select · ↑/↓ to navigate · Esc to cancel",
++        "Enter to select · ↑/↓ to navigate · ctrl+g to edit in VS Code · Esc to cancel",
++        "Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · Esc to cancel",
++    ] {
++        for width in 10..=100 {
++            let wrapped = word_wrap(footer, width);
++            let screen = claude_question_screen(&wrapped, CLAUDE_NAME_LINE);
++            assert_claude_rule(&screen, "live_blocked_form_named_session", &format!("width {width}"));
++        }
++    }
++    // The 22-column shape, and a hint on three rows of its own.
++    for wrapped in [
++        "Enter to select · ↑/↓\nto navigate · ctrl+g\nto edit in VS Code ·\nEsc to cancel",
++        "Enter to select · ctrl+g to edit\nin VS\nCode · Esc to cancel",
++        "Enter\nto select · ↑/↓ to navigate · Esc to cancel",
++    ] {
++        let screen = claude_question_screen(wrapped, CLAUDE_NAME_LINE);
++        assert_claude_rule(&screen, "live_blocked_form_named_session", wrapped);
++    }
++}
++
++#[test]
++fn claude_named_question_takes_an_untitled_rule_as_the_name_line() {
++    // herdr #4824: a plain rule under the footer empties the region the same way.
++    let screen = claude_question_screen(
++        "Enter to select · ↑/↓ to navigate · Esc to cancel",
++        "────────────────────────",
++    );
++    assert_claude_rule(&screen, "live_blocked_form_named_session", "untitled rule");
++}
++
++#[test]
++fn claude_named_question_outranks_the_turn_and_the_prompt_box() {
++    let footer = "Enter to select · ↑/↓ to navigate · Esc to cancel";
++    // live_turn_working (970) sees the bottom 12 rows, and this row is among them.
++    let working = format!("✻ Forging… (3s · esc to interrupt)\n{}", claude_question_screen(footer, CLAUDE_NAME_LINE));
++    assert_claude_rule(&working, "live_blocked_form_named_session", "working row above");
++    // live_prompt_box (950): cursor on the row under the rule, its exclusions wrapped apart.
++    let boxed = format!(
++        "❯ ask\n────────────────\nWhich?\n  1. one\n  2. two\n────────────────\n❯ 3. Chat about this\n\nEnter to\nselect · ↑/↓ to\nnavigate · Esc to\ncancel\n{CLAUDE_NAME_LINE}"
++    );
++    assert_claude_rule(&boxed, "live_blocked_form_named_session", "cursor in the box");
 +}

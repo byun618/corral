@@ -437,15 +437,23 @@ describe('Claude agent view (LIFE-770) — 실표본 화면', () => {
     t.hub.send({ device: 'd1', id: 'l770-typed-001', channel: 'c1', text: 'x' })
     expect(await t.settled('l770-typed-001')).toMatchObject({ state: 'failed', reason: 'mac_draft' })
   })
-  it('작업 중 접수되어 기다리던 지시 — 턴이 끝났을 때 agent view 면 넣지 않는다', async () => {
+  it('작업 중 접수되어 기다리던 지시 — 맥에서 `←` 로 agent view 에 들어가면 그 키도 맥 입력이라 울타리가 화면을 읽기 전에 failed/mac_input, 넣기 0회', async () => {
     const t = setup()
     t.backend.quiet = false
     t.hub.send({ device: 'd1', id: 'l770-wait-0001', channel: 'c1', text: 'x' })
     await new Promise((resolve) => setTimeout(resolve, 30))
     expect(t.last('l770-wait-0001')?.state).toBe('queued')
+    // 실제 guard 실측(LIFE-770 최종 관문 runs.md `d`): `←` 와 함께 화면이 바뀌고 입력 revision 이 오른다(29 → 30).
     t.backend.screenText = view('view-default')
+    if (t.backend.input !== null) t.backend.input = { ...t.backend.input, revision: t.backend.input.revision + 1 }
     t.backend.quiet = true
-    expect(await t.settled('l770-wait-0001')).toMatchObject({ state: 'failed', reason: 'agent_view' })
+    expect(await t.settled('l770-wait-0001')).toMatchObject({ state: 'failed', reason: 'mac_input' })
+    expect(t.backend.fences).toHaveLength(0)
+    expect(t.backend.prompts).toHaveLength(0)
+    expect(t.logs.filter((log) => log.tag === 'mobile.input_target_changed').map((log) => log.fields.check)).toEqual(['input'])
+    // 그 뒤 agent view 인 채 새로 보낸 지시는 판별에 닿는다(runs.md `d2`).
+    t.hub.send({ device: 'd1', id: 'l770-wait-0002', channel: 'c1', text: 'x' })
+    expect(await t.settled('l770-wait-0002')).toMatchObject({ state: 'failed', reason: 'agent_view' })
     expect(t.backend.prompts).toHaveLength(0)
   })
   it('판별 뒤 전환 — 넣는 순간 guard 가 거절하고 다음 관문에서 agent view 를 보면 넣지 않는다', async () => {

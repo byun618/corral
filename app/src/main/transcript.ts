@@ -806,7 +806,8 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     const links = linksOf(ledger)
     const groups: CarryGroup[] = []
     const handoff = ledgerHandoff(ledger)
-    if (handoff !== null) groups.push({ carried: handedOpen({ handoff: handoffItems({ handoff, keep: handedTo(mainId) }), target: links.target }), owner: links.handoffOwner })
+    const sent = handoff === null ? null : handoffItems({ handoff, keep: handedTo(mainId) })
+    if (sent !== null) groups.push({ carried: handedOpen({ handoff: sent, target: links.target }), owner: links.handoffOwner })
     const given = previous === null ? null : ledgerHandoff(previous)
     if (given !== null && previousId !== null && given.target === followed.sessionId) {
       groups.push({ carried: inheritedItems({ ledger, handed: handoffItems({ handoff: given, keep: handedTo(previousId) }) }), owner: links.inheritOwner })
@@ -821,8 +822,15 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
       handoff !== null && handoff.since !== null && [...handoff.tasks, ...handoff.subagents].some((item) => item.startedAt === null || (handoff.since !== null && item.startedAt < handoff.since))
     const behind = (side: Ledger | null) => side !== null && !side.caughtUp
     const catchingUp = ((candidates || needsKeep) && chain.some(behind)) || (handed && behind(links.target))
-    // 대상 파일에서 한도보다 긴 줄을 건너뛰어 넘긴 것의 끝을 놓쳤을 수 있으면 모름이다(r2 B).
-    const unsure = handoff !== null && links.target !== null && [...handoff.tasks, ...handoff.subagents].some((item) => links.target?.uncertain.has(item.id) === true)
+    // 대상 파일에서 한도보다 긴 줄을 건너뛰어 넘긴 것의 끝을 놓쳤을 수 있으면 모름이다(r2 B). 건너뛸 때 `keep` 이 아직 안 정해졌을 수 있으니
+    // 대상 파일이 긴 줄을 건너뛴 적이 있으면 넘긴 것 중 거기서 끝을 못 본 것도 본다(r4 A).
+    const target = links.target
+    const endedThere = (id: string) => target !== null && target.state.agent === 'claude' && target.state.ended.has(id)
+    const unsure =
+      target !== null &&
+      handoff !== null &&
+      ([...handoff.tasks, ...handoff.subagents].some((item) => target.uncertain.has(item.id)) ||
+        (target.skipped && sent !== null && [...sent.tasks, ...sent.subagents].some((item) => !endedThere(item.id))))
     return { groups, catchingUp, unsure }
   }
   const priorLinks = linksOf(priorLedger)

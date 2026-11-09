@@ -644,4 +644,21 @@ describe('r3 원본이 큰 2홉 연쇄 콜드 — 원본을 따라잡는 동안 
     expect(seen[0]!.life).toBe('unknown:catching-up')
     expect(seen.at(-1)).toEqual({ life: 'task-1', bytes: 0 })
   })
+
+  it('r4 A 합성 — B 에 머무는 동안 C 의 2MB 넘는 끝 통지가 원본보다 먼저 정착해도 따라잡은 뒤 셸을 싣지 않고 모름, 짧은 끝 통지면 풀린다', () => {
+    const notice = (summary: string) =>
+      JSON.stringify({
+        type: 'queue-operation',
+        operation: 'enqueue',
+        timestamp: '2026-01-01T00:06:00.000Z',
+        sessionId: C_ID,
+        content: `<task-notification>\n<task-id>task-1</task-id>\n<status>completed</status>\n<summary>${summary}</summary>\n</task-notification>`,
+      })
+    setup([...cMeta, notice('z'.repeat(LIFECYCLE_READ_MAX_BYTES + 10_000))])
+    const seen = cycles(6)
+    expect(seen.filter((cycle) => cycle.life === 'task-1' || cycle.life === '')).toEqual([])
+    expect(seen.at(-1)!.life).toBe('unknown:unreadable')
+    fs.appendFileSync(path.join(dir, `${C_ID}.jsonl`), `${notice('가림')}\n`)
+    expect(cycles(2).map((cycle) => cycle.life)).toEqual(['', ''])
+  })
 })

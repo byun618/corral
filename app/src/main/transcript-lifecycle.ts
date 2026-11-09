@@ -17,6 +17,7 @@
 // 한 줄이 한도보다 길면 그 줄은 건너뛴다(`skipping`). 그 줄이 끝 표지(예: 긴 동기 Agent 결과)였을 수 있으므로 **그때 열려 있던 것**은
 // 불확실(`uncertain`)로 적어 두고, 그중 하나라도 아직 열려 있으면 목록 전체를 모름(`unreadable`)으로 싣는다 — 뒤에 다른 표지로
 // 닫히거나 세대가 바뀌면(아래) 풀린다. 건너뛴 줄이 시작 표지였다면 그 작업은 목록에 없다(거짓 도는 중은 아니다 — 한계).
+// 건너뛴 적이 있다는 것(`skipped`)도 남긴다 — 넘겨받을 id 가 건너뛸 때 아직 안 정해졌을 수 있어 넘김을 볼 때 그것으로 가른다(리뷰 r4 A).
 //
 // # 표지 — 전부 실측(관측)이다. 형식 계약이 아니다
 //
@@ -147,6 +148,8 @@ export type Ledger = {
   caughtUp: boolean
   /** 긴 줄을 건너뛸 때 열려 있던 작업·자식 id — 그중 하나라도 아직 열려 있으면 목록은 모름이다(U3). */
   uncertain: Set<string>
+  /** 이 장부에서 한도보다 긴 줄을 건너뛴 적이 있나 — 넘겨받을 id 가 그때 아직 안 정해졌어도 볼 때 불확실로 본다(리뷰 r4 A). */
+  skipped: boolean
   state: LedgerState
 }
 
@@ -209,6 +212,7 @@ export function advanceLedger(input: {
   const state = prior?.state ?? emptyLedgerState(agent)
   const uncertain = prior?.uncertain ?? new Set<string>()
   let skipping = prior?.skipping ?? false
+  let skipped = prior?.skipped ?? false
   let consumed = 0
   const lastNewline = chunk.lastIndexOf(0x0a)
   if (lastNewline !== -1) {
@@ -224,6 +228,7 @@ export function advanceLedger(input: {
     // 그 줄이 지금 열린 것의 끝 표지였을 수 있다 — 열린 id 를 불확실로 적는다(U3).
     consumed = chunk.length
     skipping = true
+    skipped = true
     for (const id of [...openIds(state), ...generation.keep]) uncertain.add(id)
   }
   // 불확실한 것 중 그 뒤 다른 표지로 닫힌 것은 풀린다. 넘겨받은 id 는 이 파일에서 안 열려 있어도 끝 표지를 볼 때까지 남는다.
@@ -240,6 +245,7 @@ export function advanceLedger(input: {
     offset,
     anchor: Buffer.from(anchor.subarray(Math.max(0, anchor.length - LIFECYCLE_ANCHOR_BYTES))),
     skipping,
+    skipped,
     // 파일 끝까지 읽었으면 따라잡은 것이다 — 줄바꿈 없는 끝줄은 아직 쓰는 중이라 다음 주기에 온다.
     caughtUp: to === stat.size,
     uncertain,

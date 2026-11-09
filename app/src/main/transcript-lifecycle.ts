@@ -101,6 +101,11 @@ export type LedgerState =
       parked: ClaudeItems | null
       /** `continued-in` 으로 이어 받은 세션(`target`)에 넘긴 것 — 그 세션 프로세스가 살아 있는 동안 싣는다(LIFE-781). */
       handoff: (ClaudeItems & { target: string }) | null
+      /**
+       * 이 파일에서 끝 표지를 본 id(최근 `ENDED_MAX` 개, LIFE-781) — 넘겨받은 쪽이 「이미 끝났나」를 묻는다. 이어 받은 세션은 첫 입력 전에도
+       * 끝 통지를 새 파일 `queue-operation` 으로 쓴다(실제 기록 1건: 그 뒤에 복사가 온다). 그때 그 id 는 이 파일에서 아직 열린 적이 없다.
+       */
+      ended: Set<string>
     }
   | {
       agent: 'grok'
@@ -135,7 +140,7 @@ export type Ledger = {
 
 export function emptyLedgerState(agent: 'claude' | 'grok'): LedgerState {
   return agent === 'claude'
-    ? { agent: 'claude', tasks: new Map(), calls: new Map(), subagents: new Map(), parked: null, handoff: null }
+    ? { agent: 'claude', tasks: new Map(), calls: new Map(), subagents: new Map(), parked: null, handoff: null, ended: new Set() }
     : { agent: 'grok', tasks: new Map(), subagents: new Map(), spawnCalls: new Map(), spawnedBackground: new Map(), tasksInvalid: false }
 }
 
@@ -156,7 +161,14 @@ export function ledgerSettled(input: { ledger: Ledger | null; stat: fs.Stats }):
  * 누적 판독 한 걸음 — 지난 끝에서부터 새 바이트를 ≤2MB 읽어 열린 집합을 갱신한다. 읽은 바이트를 같이 돌려준다.
  * ①②③ 이면 상태를 버리고 0 부터 다시 쌓는다(남은 예산 안에서).
  */
-export function advanceLedger(input: { file: string; stat: fs.Stats; agent: 'claude' | 'grok'; prior: Ledger | null }): {
+export function advanceLedger(input: {
+  file: string
+  stat: fs.Stats
+  agent: 'claude' | 'grok'
+  prior: Ledger | null
+  /** 이 파일 소유 프로세스의 시작 시각(알면) — `cost-state` 보류분에서 이전 세대를 뺀다(LIFE-781 F2). 모르면 null 이다. */
+  since?: number | null
+}): {
   ledger: Ledger
   bytes: number
   reset: 'identity' | 'shrunk' | 'anchor' | null
@@ -193,7 +205,7 @@ export function advanceLedger(input: { file: string; stat: fs.Stats; agent: 'cla
       skipping = false
     }
     consumed = lastNewline + 1
-    if (begin < consumed) applyLines({ state, text: chunk.subarray(begin, consumed).toString('utf8') })
+    if (begin < consumed) applyLines({ state, text: chunk.subarray(begin, consumed).toString('utf8'), since: input.since ?? null })
   } else if (start + chunk.length < stat.size) {
     // 한도를 다 채웠는데 줄바꿈이 없다 — 한도보다 긴 줄이다. 건너뛰고 다음 줄바꿈부터 다시 읽는다.
     // 그 줄이 지금 열린 것의 끝 표지였을 수 있다 — 열린 id 를 불확실로 적는다(U3).
@@ -270,10 +282,23 @@ export function inheritedItems(input: { ledger: Ledger; from: Ledger; sessionId:
   const handoff = ledgerHandoff(input.from)
   if (handoff === null || handoff.target !== input.sessionId) return { tasks: [], subagents: [] }
   const { state } = input.ledger
+  const ended = state.agent === 'claude' ? state.ended : new Set<string>()
+  const open = <T extends { id: string }>(item: T | undefined): T[] => (item === undefined || ended.has(item.id) ? [] : [item])
   return {
-    tasks: handoff.tasks.flatMap((item) => state.tasks.get(item.id) ?? []),
-    subagents: handoff.subagents.flatMap((item) => state.subagents.get(item.id) ?? []),
+    tasks: handoff.tasks.flatMap((item) => open(state.tasks.get(item.id))),
+    subagents: handoff.subagents.flatMap((item) => open(state.subagents.get(item.id))),
   }
+}
+
+/**
+ * 첫 입력 전(옛 파일에 머무는 구간) 넘긴 것 중 아직 안 끝난 것 (LIFE-781) — 이어 받은 세션은 첫 입력 전에도 끝 통지를 새 파일에 쓴다
+ * (실제 기록 1건 — 에이전트가 `←` 뒤 약 9분 30초 살다 끝, 통지는 새 파일 `queue-operation`). 새 파일을 아직 못 읽었으면(`target` null) 거르지 않는다.
+ */
+export function handedOpen(input: { handoff: HandedItems; target: Ledger | null }): HandedItems {
+  const state = input.target?.state
+  if (state === undefined || state.agent !== 'claude') return input.handoff
+  const ended = state.ended
+  return { tasks: input.handoff.tasks.filter((item) => !ended.has(item.id)), subagents: input.handoff.subagents.filter((item) => !ended.has(item.id)) }
 }
 
 function listView(input: { tasks: BackgroundTask[]; subagents: SessionSubagent[] }): SessionLifecycle {
@@ -321,7 +346,7 @@ function mayMatter(input: { state: LedgerState; line: string }): boolean {
   }
 }
 
-export function applyLines(input: { state: LedgerState; text: string }): void {
+export function applyLines(input: { state: LedgerState; text: string; since?: number | null }): void {
   const { state } = input
   for (const line of input.text.split('\n')) {
     if (!mayMatter({ state, line })) continue
@@ -332,15 +357,15 @@ export function applyLines(input: { state: LedgerState; text: string }): void {
       continue // 잘린 줄·깨진 줄 — 던지지 않는다 (L9)
     }
     if (!isRecord(record)) continue
-    applyRecord({ state: input.state, record })
+    applyRecord({ state: input.state, record, since: input.since ?? null })
   }
 }
 
-export function applyRecord(input: { state: LedgerState; record: Record<string, unknown> }): void {
+export function applyRecord(input: { state: LedgerState; record: Record<string, unknown>; since?: number | null }): void {
   const { state, record } = input
   switch (state.agent) {
     case 'claude':
-      applyClaudeRecord({ state, record })
+      applyClaudeRecord({ state, record, since: input.since ?? null })
       return
     case 'grok':
       applyGrokRecord({ state, record })
@@ -353,7 +378,7 @@ type GrokState = Extract<LedgerState, { agent: 'grok' }>
 
 const CLAUDE_TRACKED_TOOLS = new Set(['Bash', 'Monitor', 'Agent', 'Task'])
 
-function applyClaudeRecord(input: { state: ClaudeState; record: Record<string, unknown> }): void {
+function applyClaudeRecord(input: { state: ClaudeState; record: Record<string, unknown>; since: number | null }): void {
   const { state, record } = input
   const at = readTimestamp(record['timestamp'])
   switch (readString(record, 'type')) {
@@ -361,7 +386,7 @@ function applyClaudeRecord(input: { state: ClaudeState; record: Record<string, u
       // 이 프로세스가 이 파일을 놓았다 (L8). 프로세스 끝이면 작업·서브에이전트는 끝 통지 없이 같이 죽는다 — 다만 전환(`←`)도
       // 이 줄을 먼저 찍고 `continued-in` 을 잇는다(LIFE-781 실측). 그래서 지금 열린 것은 닫지 않고 보류로 옮긴다 — 목록엔 안 싣는다.
       // 이미 넘긴 것은 그대로다 — 전환 뒤 옛 pane 을 닫으면 이 줄이 한 번 더 오지만 넘긴 셸은 이어 받은 세션 아래서 산다(실측).
-      state.parked = { tasks: new Map(state.tasks), subagents: new Map(state.subagents) }
+      state.parked = parkable({ state, since: input.since })
       state.tasks.clear()
       state.calls.clear()
       state.subagents.clear()
@@ -393,6 +418,22 @@ function applyClaudeRecord(input: { state: ClaudeState; record: Record<string, u
       return
     default:
       return
+  }
+}
+
+/**
+ * `cost-state` 때 보류로 옮길 것 (LIFE-781). 지금 열린 것에서 두 가지를 뺀다.
+ * ① Monitor — 문서·실측 모두 전환 때 멈춘다(`Background this session?` 의 「they will be stopped」). 멈춤 통지(`killed`)가 없는 실제 기록도
+ *    있어서(리뷰 r1 R1-3) 통지에 맡기지 않는다. 비동기 에이전트는 계속 산 실제 기록이 있어 빼지 않는다(통지로만 빠진다).
+ * ② 이전 세대 — 이 파일 소유 프로세스의 시작 시각(`since`)을 알면 그보다 먼저 열린 것(강제 종료 뒤 재개 전의 열림)은 넘기지 않는다(R1-1).
+ *    판독 때 소유자가 이미 죽어 `since` 를 모르면 거르지 않는다 — 한계(SURFACE).
+ */
+function parkable(input: { state: ClaudeState; since: number | null }): ClaudeItems {
+  const { since } = input
+  const current = (item: { startedAt: number | null }) => since === null || (item.startedAt !== null && item.startedAt >= since)
+  return {
+    tasks: new Map([...input.state.tasks].filter(([, task]) => task.kind !== 'monitor' && current(task))),
+    subagents: new Map([...input.state.subagents].filter(([, sub]) => current(sub))),
   }
 }
 
@@ -519,7 +560,17 @@ function closeClaude(input: { state: ClaudeState; id: string }): void {
     items.tasks.delete(input.id)
     items.subagents.delete(input.id)
   }
+  const { ended } = input.state
+  ended.delete(input.id)
+  ended.add(input.id)
+  if (ended.size > ENDED_MAX) for (const id of ended) {
+    ended.delete(id)
+    break
+  }
 }
+
+/** 끝 표지를 본 id 를 기억하는 수 — 넘겨받은 것 확인용이라 최근 것이면 된다. */
+const ENDED_MAX = 1024
 
 /** `continuedInSessionId` 모양 — 이어 가기 판별(`transcript-continued.ts`)과 같은 규칙이다. */
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -656,7 +707,16 @@ function readBytes(input: { file: string; from: number; to: number }): Buffer {
 
 // --- claude 프로세스 레지스트리 (L8) -----------------------------------------------------
 
-type RegistryEntry = { size: number; mtimeMs: number; pid: number | null; sessionId: string | null; startedAt: number | null }
+type RegistryEntry = {
+  size: number
+  mtimeMs: number
+  pid: number | null
+  sessionId: string | null
+  startedAt: number | null
+  /** `kind`·`jobId` — 전환으로 이어 받은 bg 세션은 `kind:"bg"`·`jobId:<대상 id 앞 8자>`(2.1.296 관측, LIFE-781 F5). */
+  kind: string | null
+  jobId: string | null
+}
 
 /**
  * 소유 프로세스 판정 — `alive` 면 `since` 는 살아 있는 소유 프로세스(여럿이면 가장 오래된 것)의 시작 시각(epoch ms)이다.
@@ -679,13 +739,13 @@ const registry = new Map<string, RegistryEntry>()
  * 레지스트리를 한 번 훑어 세션 id 마다 소유자를 고르는 함수를 준다 — 한 참조가 제 세션과 넘겨받은 세션(LIFE-781)을 함께 볼 때
  * 폴더를 두 번 훑지 않는다.
  */
-export function claudeLiveSessions(input: { dir: string }): { owner: (sessionId: string) => Owner; bytes: number } {
+export function claudeLiveSessions(input: { dir: string }): { owner: (sessionId: string) => Owner; bgOwner: (sessionId: string) => Owner; bytes: number } {
   let names: string[]
   try {
     names = fs.readdirSync(input.dir).filter((name) => name.endsWith('.json'))
   } catch {
     registry.clear()
-    return { owner: () => ({ alive: false }), bytes: 0 }
+    return { owner: () => ({ alive: false }), bgOwner: () => ({ alive: false }), bytes: 0 }
   }
   let bytes = 0
   const entries: RegistryEntry[] = []
@@ -711,16 +771,29 @@ export function claudeLiveSessions(input: { dir: string }): { owner: (sessionId:
       const pid = isRecord(parsed) && typeof parsed['pid'] === 'number' ? parsed['pid'] : null
       // `startedAt` — 프로세스 시작 시각(epoch ms, `ps` 시작 시각과 1초 안 — 관측)
       const startedAt = isRecord(parsed) && typeof parsed['startedAt'] === 'number' ? parsed['startedAt'] : null
-      entry = { size: stat.size, mtimeMs: stat.mtimeMs, pid, sessionId: isRecord(parsed) ? readString(parsed, 'sessionId') : null, startedAt }
+      entry = {
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        pid,
+        sessionId: isRecord(parsed) ? readString(parsed, 'sessionId') : null,
+        startedAt,
+        kind: isRecord(parsed) ? readString(parsed, 'kind') : null,
+        jobId: isRecord(parsed) ? readString(parsed, 'jobId') : null,
+      }
       registry.set(file, entry)
     }
     entries.push(entry)
   }
   for (const file of registry.keys()) if (!seen.has(file)) registry.delete(file)
   // 생존은 묻는 세션의 항목만 본다 — 남의 세션 pid 마다 신호를 보내지 않는다.
-  const owner = (sessionId: string): Owner =>
-    ownerOf(entries.filter((entry) => entry.sessionId === sessionId && entry.pid !== null && processAlive(entry.pid)).map((entry) => entry.startedAt))
-  return { owner, bytes }
+  const live = (match: (entry: RegistryEntry) => boolean): Owner =>
+    ownerOf(entries.filter((entry) => match(entry) && entry.pid !== null && processAlive(entry.pid)).map((entry) => entry.startedAt))
+  const owner = (sessionId: string): Owner => live((entry) => entry.sessionId === sessionId)
+  // 넘긴 것의 주인 — 이어 받은 bg 세션 항목만(`kind:"bg"` · `jobId` 가 그 id 앞부분). 모양이 다르면 주인이 없다(빠짐 쪽, R1-5).
+  // 같은 id 를 대화형으로 `--resume` 한 프로세스는 넘긴 셸을 모른다.
+  const bgOwner = (sessionId: string): Owner =>
+    live((entry) => entry.sessionId === sessionId && entry.kind === 'bg' && entry.jobId !== null && entry.jobId.length > 0 && sessionId.startsWith(entry.jobId))
+  return { owner, bgOwner, bytes }
 }
 
 function processAlive(pid: number): boolean {

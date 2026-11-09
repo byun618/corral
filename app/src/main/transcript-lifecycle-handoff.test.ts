@@ -662,3 +662,28 @@ describe('r3 원본이 큰 2홉 연쇄 콜드 — 원본을 따라잡는 동안 
     expect(cycles(2).map((cycle) => cycle.life)).toEqual(['', ''])
   })
 })
+
+describe('최종 C7 보완 — 본 파일이 된 새 파일의 한도보다 긴 줄(수정 2 가드)', () => {
+  it('합성 — 첫 입력 전 새 파일에 2MB 넘는 task-1 끝 통지, 그 뒤 대화 복사(task-1 다시 열림)로 새 파일을 따라가도 도는 중이 아니라 모름', () => {
+    const { old, next, registry } = sample('shell-monitor')
+    const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+    const metaEnd = indexWhere({ lines: next, match: isConversation })
+    const shellEnd = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-1</task-id>') && line.includes('<status>') })
+    const notice = JSON.stringify({
+      type: 'queue-operation',
+      operation: 'enqueue',
+      timestamp: '2026-01-01T00:04:00.000Z',
+      sessionId: registry.bg.sessionId,
+      content: `<task-notification>\n<task-id>task-1</task-id>\n<status>completed</status>\n<summary>${'z'.repeat(LIFECYCLE_READ_MAX_BYTES + 10_000)}</summary>\n</task-notification>`,
+    })
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    write({ sessionId: registry.bg.sessionId, lines: [...next.slice(0, metaEnd), notice] })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    for (let round = 0; round < 3; round += 1) lifeOf(registry)
+    fs.appendFileSync(path.join(dir, `${registry.bg.sessionId}.jsonl`), `${next.slice(metaEnd, shellEnd).join('\n')}\n`)
+    const after: SessionLifecycle[] = []
+    for (let round = 0; round < 3; round += 1) after.push(lifeOf(registry))
+    expect(after).toEqual(Array(3).fill({ state: 'unknown', reason: 'unreadable' }))
+  })
+})

@@ -1,0 +1,51 @@
+{"type":"ai-title","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"agent-name","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"mode","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"permission-mode","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"atis-latch","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"file-history-snapshot"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-01-01T00:00:43.589Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e","content":"<task-notification>\n<task-id>task-0</task-id>\n<status>failed</status>\n<summary>가림</summary>\n</task-notification>"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-01-01T00:00:43.608Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:00.000Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:00.060Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:00.061Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"user","timestamp":"2026-01-01T00:00:06.198Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e","message":{"role":"user","content":"가린 지시 11"}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.226Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.226Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.226Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.227Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.228Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.228Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"assistant","timestamp":"2026-01-01T00:00:08.986Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu-0","name":"Agent","input":{"description":"가린 설명 25","run_in_background":"true","subagent_type":"가림"}}]}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.010Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"user","timestamp":"2026-01-01T00:00:09.059Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-0","content":"가린 결과"}]},"toolUseResult":{"agentId":"task-0","status":"async_launched","isAsync":true}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.058Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.062Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.074Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"assistant","timestamp":"2026-01-01T00:00:10.396Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e","message":{"role":"assistant","content":[{"type":"text","text":"가린 글 31"}]}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:10.428Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"system","subtype":"stop_hook_summary","timestamp":"2026-01-01T00:00:10.429Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"system","subtype":"turn_duration","timestamp":"2026-01-01T00:00:10.432Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"user","timestamp":"2026-01-01T00:00:43.623Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e","message":{"role":"user","content":"<task-notification>\n<task-id>task-0</task-id>\n<status>failed</status>\n<summary>가림</summary>\n</task-notification>"}}
+{"type":"last-prompt","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"ai-title","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"agent-name","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"mode","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"permission-mode","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"atis-latch","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"file-history-snapshot"}
+{"type":"user","timestamp":"2026-01-01T00:00:53.373Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e","message":{"role":"user","content":"가린 지시 43"}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:53.372Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:53.372Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:53.372Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"assistant","timestamp":"2026-01-01T00:00:55.225Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e","message":{"role":"assistant","content":[{"type":"text","text":"가린 글 47"}]}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:57.588Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"system","subtype":"stop_hook_summary","timestamp":"2026-01-01T00:00:57.589Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}
+{"type":"system","subtype":"turn_duration","timestamp":"2026-01-01T00:00:57.590Z","sessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}

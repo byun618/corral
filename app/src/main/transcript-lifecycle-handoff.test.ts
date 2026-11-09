@@ -1,0 +1,279 @@
+// 세션 전환(`←`) 전에 열린 백그라운드 작업의 수명 (LIFE-781) — 판독층 입구(`readSessionDigest`)를 실제 파일·레지스트리로 부른다.
+// HOME 은 매번 임시 폴더다(사용자 HOME 을 안 만진다).
+//
+// **실표본**: `fixtures/lifecycle-handoff/` 는 Claude Code 2.1.296 실기 두 번(사전 실측 Run B·C — corral-specs
+// `LIFE-781-background-task-lifetime/raw/claude/pre/`)의 옛·새 세션 파일을 가린 사본이다(`scripts/mask-handoff-fixture.py`).
+// 줄 순서·type·시각 간격·수명 키·통지 status·continued-in 대상은 실물이고, id·글·경로는 지어낸 값이다.
+// 레지스트리(`*-registry.json`)의 startedAt 은 실측 값을 같은 만큼 평행 이동한 것이다. pid 는 이 시험 프로세스로 바꿔 「살아 있음」을 만든다.
+// - shell-monitor: 백그라운드 셸(task-1) + Monitor(task-0) → `←`(Monitor 멈춤 확인) → Enter → 첫 입력 → 옛 pane 닫기 → 셸 끝 통지
+// - subagent: 실제로 도는 비동기 서브에이전트(task-0) → `←`(「1 local agent running — they will be stopped」) → 첫 입력
+// 이름에 「합성」이 붙은 시험만 손으로 지은 줄을 쓴다 — 실제 근거로 세지 않는다.
+
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { isMonitoring } from '../shared/lifecycle'
+import type { AgentSessionRef, SessionLifecycle } from '../shared/types'
+import { LIFECYCLE_READ_MAX_BYTES } from './transcript-lifecycle'
+import { clearTranscriptCache, readSessionDigest, readSessionDigests } from './transcript'
+
+const FIXTURES = path.join(__dirname, 'fixtures', 'lifecycle-handoff')
+type Registry = { old: { sessionId: string; startedAt: number }; bg: { sessionId: string; startedAt: number } }
+type Sample = { old: string[]; next: string[]; registry: Registry }
+
+function sample(name: string): Sample {
+  const lines = (suffix: string) => fs.readFileSync(path.join(FIXTURES, `${name}-${suffix}.jsonl`), 'utf8').split('\n').filter((line) => line !== '')
+  const registry: unknown = JSON.parse(fs.readFileSync(path.join(FIXTURES, `${name}-registry.json`), 'utf8'))
+  if (!isRegistry(registry)) throw new Error('registry 모양')
+  return { old: lines('old'), next: lines('new'), registry }
+}
+
+function isRegistry(value: unknown): value is Registry {
+  return typeof value === 'object' && value !== null && 'old' in value && 'bg' in value
+}
+
+const typeOf = (line: string): unknown => {
+  const record: unknown = JSON.parse(line)
+  return typeof record === 'object' && record !== null && 'type' in record ? record.type : null
+}
+/** 조건을 만족하는 첫 줄 번호 — 없으면 시험이 틀렸다. */
+function indexWhere(input: { lines: string[]; match: (line: string) => boolean; from?: number }): number {
+  const index = input.lines.findIndex((line, at) => at >= (input.from ?? 0) && input.match(line))
+  if (index === -1) throw new Error('표본에 그 줄이 없다')
+  return index
+}
+const isConversation = (line: string) => typeOf(line) === 'user' || typeOf(line) === 'assistant'
+
+let home = ''
+let realHome: string | undefined
+let dir = ''
+
+beforeEach(() => {
+  realHome = process.env['HOME']
+  home = fs.mkdtempSync(path.join(os.tmpdir(), 'l781-'))
+  process.env['HOME'] = home
+  dir = path.join(home, '.claude', 'projects', '-tmp-x')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(path.join(home, '.claude', 'sessions'), { recursive: true })
+  clearTranscriptCache()
+})
+
+afterEach(() => {
+  if (realHome === undefined) delete process.env['HOME']
+  else process.env['HOME'] = realHome
+  fs.rmSync(home, { recursive: true, force: true })
+  clearTranscriptCache()
+})
+
+const write = (input: { sessionId: string; lines: string[] }) => fs.writeFileSync(path.join(dir, `${input.sessionId}.jsonl`), `${input.lines.join('\n')}\n`)
+
+/** 레지스트리 항목 — 관측된 키(`kind`·`parkedJobId`·`jobId`)를 그대로 적는다. 판독은 `pid`·`sessionId`·`startedAt` 만 쓴다. */
+function register(input: { name: 'old' | 'bg'; registry: Registry; alive: boolean }) {
+  const entry = input.registry[input.name]
+  const file = path.join(home, '.claude', 'sessions', `${input.name}.json`)
+  if (!input.alive) {
+    fs.rmSync(file, { force: true })
+    return
+  }
+  const job = input.registry.bg.sessionId.slice(0, 8)
+  const shape = input.name === 'old' ? { kind: 'interactive', parkedJobId: job, jobId: null } : { kind: 'bg', parkedJobId: null, jobId: job }
+  fs.writeFileSync(file, JSON.stringify({ pid: process.pid, sessionId: entry.sessionId, status: 'shell', startedAt: entry.startedAt, ...shape }))
+}
+
+function known(lifecycle: SessionLifecycle) {
+  if (lifecycle.state !== 'known') throw new Error(`known 이 아니다: ${JSON.stringify(lifecycle)}`)
+  return lifecycle
+}
+
+const refOf = (registry: Registry): AgentSessionRef => ({ kind: 'id', agent: 'claude', source: 'herdr:claude', id: registry.old.sessionId })
+const lifeOf = (registry: Registry) => readSessionDigest(refOf(registry)).digest.lifecycle
+const taskIds = (registry: Registry) => known(lifeOf(registry)).tasks.map((task) => task.id)
+const monitoring = (lifecycle: SessionLifecycle) => isMonitoring({ agentStatus: 'idle', turnOutcome: null, lifecycle })
+
+describe('C1 전환 구간 판독 (실표본 shell-monitor) — 전환 전에 연 셸이 도는 동안 목록에 남는다', () => {
+  const { old, next, registry } = sample('shell-monitor')
+  const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+  const metaEnd = indexWhere({ lines: next, match: isConversation })
+  const shellEnd = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-1</task-id>') && line.includes('<status>') })
+
+  it('표본 확인 — 전환 전에는 셸·Monitor 둘 다 열려 있고, 옛 파일 끝은 cost-state → Monitor killed → continued-in → (pane 닫기) cost-state', () => {
+    const costAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'cost-state' })
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, costAt) })
+    register({ name: 'old', registry, alive: true })
+    expect(taskIds(registry)).toEqual(['task-1', 'task-0'])
+    expect(old.slice(costAt, continuedAt + 1).map(typeOf)).toEqual(['cost-state', 'last-prompt', 'ai-title', 'mode', 'permission-mode', 'atis-latch', 'queue-operation', 'continued-in'])
+    expect(old.slice(costAt).some((line) => line.includes('<task-id>task-0</task-id>') && line.includes('<status>killed</status>'))).toBe(true)
+    expect(old.slice(continuedAt + 1).map(typeOf)).toEqual(['cost-state'])
+  })
+
+  it('ⓐ `←` 직후 — 옛 파일 끝 cost-state·continued-in, 새 파일은 메타뿐(옛 파일에 머묾) → 셸은 있고 멈춘 Monitor 는 없다', () => {
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, metaEnd) })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    const lifecycle = lifeOf(registry)
+    expect(known(lifecycle).tasks.map((task) => task.id)).toEqual(['task-1'])
+    expect(monitoring(lifecycle)).toBe(true)
+  })
+
+  it('ⓑ Enter 복귀 뒤 첫 입력 전 — 기록은 그대로, 판독을 거듭해도(캐시·빠른 반환) 셸이 남는다', () => {
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, metaEnd) })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    for (let round = 0; round < 3; round += 1) expect(taskIds(registry)).toEqual(['task-1'])
+  })
+
+  it('ⓒ 첫 입력 뒤 — 새 파일로 옮김(옛 대화가 원래 시각으로 복사, 세대 경계 = bg 시작) → 셸은 있고 Monitor(새 파일 stopped)는 없다', () => {
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, shellEnd) })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    const lifecycle = lifeOf(registry)
+    expect(known(lifecycle).tasks.map((task) => task.id)).toEqual(['task-1'])
+    expect(known(lifecycle).tasks[0]!.startedAt).toBeLessThan(registry.bg.startedAt) // 경계 앞의 항목이다
+    expect(monitoring(lifecycle)).toBe(true)
+    clearTranscriptCache() // 캐시 없이(앞 파일 장부를 처음부터) 읽어도 같다
+    expect(taskIds(registry)).toEqual(['task-1'])
+  })
+
+  it('ⓓ 새 파일의 <task-notification> 뒤 — 없다', () => {
+    write({ sessionId: registry.old.sessionId, lines: old })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, shellEnd) })
+    register({ name: 'bg', registry, alive: true })
+    expect(taskIds(registry)).toEqual(['task-1'])
+    write({ sessionId: registry.bg.sessionId, lines: next })
+    const lifecycle = lifeOf(registry)
+    expect(known(lifecycle).tasks).toEqual([])
+    expect(monitoring(lifecycle)).toBe(false)
+  })
+})
+
+describe('C2 다른 종류 — 목록 = 실제 생존 (실표본)', () => {
+  it('ⓐ 실제로 도는 비동기 서브에이전트는 `←` 때 멈췄다(실측) — 전환 직후·첫 입력 뒤 모두 작업·자식 행에 없다', () => {
+    const { old, next, registry } = sample('subagent')
+    const costAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'cost-state' })
+    const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, costAt) })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    const before = known(lifeOf(registry))
+    expect(before.subagents.map((row) => row.id)).toEqual(['task-0'])
+    expect(old.slice(costAt).some((line) => line.includes('<task-id>task-0</task-id>') && line.includes('<status>killed</status>'))).toBe(true)
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, indexWhere({ lines: next, match: isConversation })) })
+    expect(known(lifeOf(registry))).toMatchObject({ tasks: [], subagents: [] })
+    write({ sessionId: registry.bg.sessionId, lines: next })
+    expect(known(lifeOf(registry))).toMatchObject({ tasks: [], subagents: [] })
+  })
+
+  it('ⓑ Monitor 는 `Background this session?` 확인 뒤 멈췄다(실측) — 전환 직후(옛 파일 killed)·첫 입력 뒤(새 파일 stopped) 모두 없다', () => {
+    const { old, next, registry } = sample('shell-monitor')
+    const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, indexWhere({ lines: next, match: isConversation })) })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    expect(known(lifeOf(registry)).tasks.map((task) => task.kind)).toEqual(['shell'])
+    // 새 파일의 Monitor stopped 통지 바로 앞까지 — 복사분에 Monitor 가 열려 있어도 옛 파일이 넘기지 않았으니 싣지 않는다
+    const stoppedAt = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-0</task-id>') && line.includes('<status>stopped</status>') })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, stoppedAt) })
+    expect(known(lifeOf(registry)).tasks.map((task) => task.kind)).toEqual(['shell'])
+  })
+})
+
+describe('C3 재개 계약 유지', () => {
+  it('ⓒ 전환 뒤 옛 pane 을 닫아 옛 대화형 프로세스가 죽어도 셸은 살았다(실측 ppid→1) — 이어 받은 세션이 사는 동안 남는다', () => {
+    const { old, next, registry } = sample('shell-monitor')
+    const shellEnd = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-1</task-id>') && line.includes('<status>') })
+    write({ sessionId: registry.old.sessionId, lines: old }) // 닫을 때 찍힌 두 번째 cost-state 까지
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, shellEnd) })
+    register({ name: 'old', registry, alive: false })
+    register({ name: 'bg', registry, alive: true })
+    expect(taskIds(registry)).toEqual(['task-1'])
+    // 이어 받은 세션까지 죽으면 끝 통지를 쓸 쪽이 없다 — 지금처럼 not-running(거짓 「지켜보는 중」 없음)
+    register({ name: 'bg', registry, alive: false })
+    expect(lifeOf(registry)).toEqual({ state: 'unknown', reason: 'not-running' })
+  })
+
+  it('ⓒ 첫 입력 전에 옛 pane 을 닫아도 — 옛 파일에 머무는 동안 넘긴 셸의 주인은 이어 받은 세션이다', () => {
+    const { old, next, registry } = sample('shell-monitor')
+    const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, indexWhere({ lines: next, match: isConversation })) })
+    register({ name: 'old', registry, alive: false })
+    register({ name: 'bg', registry, alive: true })
+    expect(taskIds(registry)).toEqual(['task-1'])
+    // 이어 받은 세션이 없으면(옛 프로세스만 산다) 넘긴 것은 싣지 않는다 — 끝 통지를 받을 쪽이 없다
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: false })
+    expect(taskIds(registry)).toEqual([])
+  })
+
+  it('ⓐ 전환 뒤 같은 파일을 재개하면(continued-in 뒤 사람 줄, 새 소유자) 넘긴 것은 버린다 — 이어 받은 세션이 살아 있어도', () => {
+    const { old, registry } = sample('shell-monitor')
+    const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+    const human = old[indexWhere({ lines: old, match: (line) => typeOf(line) === 'user' && line.includes('가린 지시') })]!
+    write({ sessionId: registry.old.sessionId, lines: [...old, human] })
+    const resumed = { ...registry, old: { ...registry.old, startedAt: registry.bg.startedAt + 600_000 } }
+    register({ name: 'old', registry: resumed, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    expect(old.length).toBeGreaterThan(continuedAt)
+    expect(taskIds(registry)).toEqual([])
+  })
+
+  it('ⓑ 합성 — continued-in 이 없는 cost-state(정상 종료)는 지금처럼 닫는다, 뒤에 통지만 와도 되살리지 않는다', () => {
+    const { old, registry } = sample('shell-monitor')
+    const costAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'cost-state' })
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, costAt + 1) })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    expect(taskIds(registry)).toEqual([])
+  })
+
+  it('합성 — 관측 밖 모양(cost-state 없이 온 continued-in · 모양이 아닌 대상 id)은 아무것도 넘기지 않는다(지금 동작)', () => {
+    const { old, registry } = sample('shell-monitor')
+    const costAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'cost-state' })
+    const continued = old[indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })]!
+    // cost-state 없이 continued-in — 열린 것은 옛 소유자 몫으로 남는다(넘기지 않는다)
+    write({ sessionId: registry.old.sessionId, lines: [...old.slice(0, costAt), continued] })
+    register({ name: 'old', registry, alive: false })
+    register({ name: 'bg', registry, alive: true })
+    expect(lifeOf(registry)).toEqual({ state: 'unknown', reason: 'not-running' })
+    clearTranscriptCache()
+    write({ sessionId: registry.old.sessionId, lines: [...old.slice(0, costAt + 1), continued.replace(registry.bg.sessionId, 'not-a-session-id')] })
+    expect(lifeOf(registry)).toEqual({ state: 'unknown', reason: 'not-running' })
+  })
+})
+
+describe('C5 판독 비용 — 앞 파일 장부는 기존 계정에 잡히고, 바뀌지 않으면 0바이트', () => {
+  it('첫 입력 뒤 처음 보는 참조: 새 파일 + 앞 파일을 각자 ≤2MB 로 세고, 다음 주기 0바이트, 옛 pane 닫기(cost-state 한 줄)는 그 줄 + 닻만', () => {
+    const { old, next, registry } = sample('shell-monitor')
+    const shellEnd = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-1</task-id>') && line.includes('<status>') })
+    const oldLines = old.slice(0, -1) // 닫기 전
+    write({ sessionId: registry.old.sessionId, lines: oldLines })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, shellEnd) })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    const refs = new Map([['p1', refOf(registry)]])
+    const oldBytes = fs.statSync(path.join(dir, `${registry.old.sessionId}.jsonl`)).size
+    const newBytes = fs.statSync(path.join(dir, `${registry.bg.sessionId}.jsonl`)).size
+    const first = readSessionDigests(refs)
+    expect(known(first.digests.get('p1')!.lifecycle).tasks.map((task) => task.id)).toEqual(['task-1'])
+    expect(first.cost.lifecycleBytes).toBe(oldBytes + newBytes)
+    expect(first.cost.lifecycleMaxFileBytes).toBe(Math.max(oldBytes, newBytes))
+    expect(first.cost.lifecycleMaxFileBytes).toBeLessThanOrEqual(LIFECYCLE_READ_MAX_BYTES)
+    expect(first.cost.lifecycleRegistryBytes).toBeGreaterThan(0)
+    const second = readSessionDigests(refs)
+    expect(second.cost.lifecycleBytes).toBe(0)
+    expect(second.cost.statOnly).toBe(1)
+    // 옛 pane 닫기 — 앞 파일에 cost-state 한 줄이 붙고 옛 프로세스가 사라진다
+    const closing = `${old.at(-1)!}\n`
+    fs.appendFileSync(path.join(dir, `${registry.old.sessionId}.jsonl`), closing)
+    register({ name: 'old', registry, alive: false })
+    const third = readSessionDigests(refs)
+    expect(third.cost.lifecycleBytes).toBe(Buffer.byteLength(closing) + 1024)
+    expect(known(third.digests.get('p1')!.lifecycle).tasks.map((task) => task.id)).toEqual(['task-1'])
+  })
+})

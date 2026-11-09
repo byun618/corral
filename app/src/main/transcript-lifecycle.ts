@@ -81,6 +81,13 @@ import type { BackgroundTask, SessionLifecycle, SessionSubagent } from '../share
 import { LIFECYCLE_MAX_ITEMS } from '../shared/types.js'
 import { cleanActivityText, readTimestamp } from './transcript-parse.js'
 
+/**
+ * 한 파일의 세대 재료 (LIFE-781). `since` = 그 파일 소유 프로세스의 시작 시각(알면) — 그보다 먼저 열린 것은 보류분에 안 넣는다(강제 종료 뒤 재개 전의 열림).
+ * `keep` = 앞 파일이 이 파일 세션에 넘긴 id — 이 파일에서 한도보다 긴 줄을 건너뛸 때 이것도 불확실로 둔다(그 줄이 넘겨받은 것의 끝 통지였을 수 있다, 리뷰 r2 B).
+ */
+export type Generation = { since: number | null; keep: ReadonlySet<string> }
+const NO_GENERATION: Generation = { since: null, keep: new Set() }
+
 /** 파일 하나를 한 주기에 읽는 상한 (L7) — 닻 확인 판독을 포함한다. */
 export const LIFECYCLE_READ_MAX_BYTES = 2 * 1024 * 1024
 /** 닻 — 지난 판독 끝 바로 앞 바이트. 판독 전제 ③(끝 앞 변경)을 알아채는 데 쓴다. */
@@ -90,6 +97,8 @@ type ClaudeCall = { label: string | null; at: number | null }
 
 /** 열린 작업·서브에이전트 묶음 — `cost-state` 뒤 보류분과 전환으로 넘긴 것(LIFE-781)이 같은 모양이다. */
 type ClaudeItems = { tasks: Map<string, BackgroundTask>; subagents: Map<string, SessionSubagent> }
+/** 보류분 — `since` 는 `cost-state` 를 읽을 때 알던 소유 프로세스 시작 시각(모르면 null). 세대 거르기는 볼 때 한다(`handoffItems`). */
+type ParkedItems = ClaudeItems & { since: number | null }
 
 export type LedgerState =
   | {
@@ -100,9 +109,9 @@ export type LedgerState =
       /** 도는 서브에이전트 — 동기는 tool_use id, 비동기는 agentId 로 잡는다. */
       subagents: Map<string, SessionSubagent>
       /** `cost-state` 때 열려 있던 것 — 뒤에 `continued-in` 이 오면 넘긴 것이 되고, 사람 줄(같은 파일 재개)이 오면 버린다(LIFE-781). */
-      parked: ClaudeItems | null
+      parked: ParkedItems | null
       /** `continued-in` 으로 이어 받은 세션(`target`)에 넘긴 것 — 그 세션 프로세스가 살아 있는 동안 싣는다(LIFE-781). */
-      handoff: (ClaudeItems & { target: string }) | null
+      handoff: (ParkedItems & { target: string; from: string | null }) | null
       /**
        * 이 파일에서 끝 표지를 본 id(최근 `ENDED_MAX` 개, LIFE-781) — 넘겨받은 쪽이 「이미 끝났나」를 묻는다. 이어 받은 세션은 첫 입력 전에도
        * 끝 통지를 새 파일 `queue-operation` 으로 쓴다(실제 기록 1건: 그 뒤에 복사가 온다). 그때 그 id 는 이 파일에서 아직 열린 적이 없다.
@@ -168,14 +177,15 @@ export function advanceLedger(input: {
   stat: fs.Stats
   agent: 'claude' | 'grok'
   prior: Ledger | null
-  /** 이 파일 소유 프로세스의 시작 시각(알면) — `cost-state` 보류분에서 이전 세대를 뺀다(LIFE-781 F2). 모르면 null 이다. */
-  since?: number | null
+  /** 이 파일의 세대 재료(LIFE-781) — `cost-state` 보류분 거르기와 긴 줄 건너뛰기의 불확실 표시에 쓴다. 없으면 거르지 않는다. */
+  generation?: Generation
 }): {
   ledger: Ledger
   bytes: number
   reset: 'identity' | 'shrunk' | 'anchor' | null
 } {
   const { file, stat, agent } = input
+  const generation = input.generation ?? NO_GENERATION
   let budget = LIFECYCLE_READ_MAX_BYTES
   let bytes = 0
   let reset: 'identity' | 'shrunk' | 'anchor' | null = null
@@ -207,17 +217,18 @@ export function advanceLedger(input: {
       skipping = false
     }
     consumed = lastNewline + 1
-    if (begin < consumed) applyLines({ state, text: chunk.subarray(begin, consumed).toString('utf8'), since: input.since ?? null })
+    if (begin < consumed) applyLines({ state, text: chunk.subarray(begin, consumed).toString('utf8'), generation })
   } else if (start + chunk.length < stat.size) {
     // 한도를 다 채웠는데 줄바꿈이 없다 — 한도보다 긴 줄이다. 건너뛰고 다음 줄바꿈부터 다시 읽는다.
     // 그 줄이 지금 열린 것의 끝 표지였을 수 있다 — 열린 id 를 불확실로 적는다(U3).
     consumed = chunk.length
     skipping = true
-    for (const id of openIds(state)) uncertain.add(id)
+    for (const id of [...openIds(state), ...generation.keep]) uncertain.add(id)
   }
-  // 불확실한 것 중 그 뒤 다른 표지로 닫힌 것은 풀린다.
+  // 불확실한 것 중 그 뒤 다른 표지로 닫힌 것은 풀린다. 넘겨받은 id 는 이 파일에서 안 열려 있어도 끝 표지를 볼 때까지 남는다.
   const open = new Set(openIds(state))
-  for (const id of uncertain) if (!open.has(id)) uncertain.delete(id)
+  const ended = state.agent === 'claude' ? state.ended : null
+  for (const id of uncertain) if (ended?.has(id) === true || (!open.has(id) && !generation.keep.has(id))) uncertain.delete(id)
   const offset = start + consumed
   const anchor = Buffer.concat([prior?.anchor ?? Buffer.alloc(0), chunk.subarray(0, consumed)])
   const ledger: Ledger = {
@@ -268,27 +279,40 @@ export function ledgerView(input: { ledger: Ledger; since: number; carried?: Han
   return listView({ tasks, subagents })
 }
 
-/** 이 장부가 `continued-in` 으로 넘긴 것 — 대상 세션 id 와 아직 끝 표지를 못 본 항목. 넘긴 게 없으면 null (LIFE-781). */
-export function ledgerHandoff(ledger: Ledger): (HandedItems & { target: string }) | null {
+/** 넘김 원본 — 대상·보낸 세션 id, 보류 때 알던 `since`, 아직 끝 표지를 못 본 항목. 세대 거르기 전이다(`handoffItems`). */
+export type Handoff = HandedItems & { target: string; from: string | null; since: number | null }
+
+/** 이 장부가 `continued-in` 으로 넘긴 것(거르기 전). 넘긴 게 없으면 null (LIFE-781). */
+export function ledgerHandoff(ledger: Ledger): Handoff | null {
   const { state } = ledger
   if (state.agent !== 'claude' || state.handoff === null) return null
-  return { target: state.handoff.target, tasks: [...state.handoff.tasks.values()], subagents: [...state.handoff.subagents.values()] }
+  const { target, from, since } = state.handoff
+  return { target, from, since, tasks: [...state.handoff.tasks.values()], subagents: [...state.handoff.subagents.values()] }
 }
 
 /**
- * 이어 받은 파일(`ledger`)에서 앞 파일(`from`)이 이 세션(`sessionId`)에 넘긴 것 중 아직 열린 것 (LIFE-781).
- * 새 파일에는 옛 대화가 원래 시각 그대로 복사돼 세대 경계 앞에 열려 있다 — 그중 **옛 파일이 넘긴 id 만** 싣는다.
- * 전환 때 멈춘 Monitor·서브에이전트는 옛 파일 끝 통지로 이미 넘긴 것에서 빠졌다. 값은 새 파일 쪽 항목이다(끝 표지는 새 파일에 온다).
+ * 넘긴 것 중 이 세대의 것 (LIFE-781) — 보류 때 소유 프로세스 시작 시각(`since`)을 알았으면 그보다 먼저 열린 것(강제 종료 뒤 재개 전의 열림)은 뺀다(리뷰 r1 B).
+ * 다만 보낸 파일이 자기 앞 파일에서 넘겨받은 것(`keep`)은 원래 시각이 `since` 앞이어도 이 세대다 — 연쇄 `←` 에서 이어 넘긴다(리뷰 r2 A).
+ * `keep` 은 볼 때 고른다 — 앞 파일 장부를 나중에 따라잡아도 답이 고쳐진다.
  */
-export function inheritedItems(input: { ledger: Ledger; from: Ledger; sessionId: string }): HandedItems {
-  const handoff = ledgerHandoff(input.from)
-  if (handoff === null || handoff.target !== input.sessionId) return { tasks: [], subagents: [] }
+export function handoffItems(input: { handoff: Handoff; keep: ReadonlySet<string> }): HandedItems {
+  const { since } = input.handoff
+  const current = (item: { id: string; startedAt: number | null }) => since === null || input.keep.has(item.id) || (item.startedAt !== null && item.startedAt >= since)
+  return { tasks: input.handoff.tasks.filter(current), subagents: input.handoff.subagents.filter(current) }
+}
+
+/**
+ * 이어 받은 파일(`ledger`)에서 앞 파일이 넘긴 것(`handed`) 중 아직 열린 것 (LIFE-781).
+ * 새 파일에는 옛 대화가 원래 시각 그대로 복사돼 세대 경계 앞에 열려 있다 — 그중 **옛 파일이 넘긴 id 만** 싣는다.
+ * 복사 앞에서 끝 표지를 본 id 는 다시 열려도 싣지 않는다. 값은 새 파일 쪽 항목이다(끝 표지는 새 파일에 온다).
+ */
+export function inheritedItems(input: { ledger: Ledger; handed: HandedItems }): HandedItems {
   const { state } = input.ledger
   const ended = state.agent === 'claude' ? state.ended : new Set<string>()
   const open = <T extends { id: string }>(item: T | undefined): T[] => (item === undefined || ended.has(item.id) ? [] : [item])
   return {
-    tasks: handoff.tasks.flatMap((item) => open(state.tasks.get(item.id))),
-    subagents: handoff.subagents.flatMap((item) => open(state.subagents.get(item.id))),
+    tasks: input.handed.tasks.flatMap((item) => open(state.tasks.get(item.id))),
+    subagents: input.handed.subagents.flatMap((item) => open(state.subagents.get(item.id))),
   }
 }
 
@@ -348,7 +372,7 @@ function mayMatter(input: { state: LedgerState; line: string }): boolean {
   }
 }
 
-export function applyLines(input: { state: LedgerState; text: string; since?: number | null }): void {
+export function applyLines(input: { state: LedgerState; text: string; generation?: Generation }): void {
   const { state } = input
   for (const line of input.text.split('\n')) {
     if (!mayMatter({ state, line })) continue
@@ -359,15 +383,15 @@ export function applyLines(input: { state: LedgerState; text: string; since?: nu
       continue // 잘린 줄·깨진 줄 — 던지지 않는다 (L9)
     }
     if (!isRecord(record)) continue
-    applyRecord({ state: input.state, record, since: input.since ?? null })
+    applyRecord({ state: input.state, record, generation: input.generation ?? NO_GENERATION })
   }
 }
 
-export function applyRecord(input: { state: LedgerState; record: Record<string, unknown>; since?: number | null }): void {
+export function applyRecord(input: { state: LedgerState; record: Record<string, unknown>; generation?: Generation }): void {
   const { state, record } = input
   switch (state.agent) {
     case 'claude':
-      applyClaudeRecord({ state, record, since: input.since ?? null })
+      applyClaudeRecord({ state, record, generation: input.generation ?? NO_GENERATION })
       return
     case 'grok':
       applyGrokRecord({ state, record })
@@ -380,7 +404,7 @@ type GrokState = Extract<LedgerState, { agent: 'grok' }>
 
 const CLAUDE_TRACKED_TOOLS = new Set(['Bash', 'Monitor', 'Agent', 'Task'])
 
-function applyClaudeRecord(input: { state: ClaudeState; record: Record<string, unknown>; since: number | null }): void {
+function applyClaudeRecord(input: { state: ClaudeState; record: Record<string, unknown>; generation: Generation }): void {
   const { state, record } = input
   const at = readTimestamp(record['timestamp'])
   switch (readString(record, 'type')) {
@@ -388,7 +412,7 @@ function applyClaudeRecord(input: { state: ClaudeState; record: Record<string, u
       // 이 프로세스가 이 파일을 놓았다 (L8). 프로세스 끝이면 작업·서브에이전트는 끝 통지 없이 같이 죽는다 — 다만 전환(`←`)도
       // 이 줄을 먼저 찍고 `continued-in` 을 잇는다(LIFE-781 실측). 그래서 지금 열린 것은 닫지 않고 보류로 옮긴다 — 목록엔 안 싣는다.
       // 이미 넘긴 것은 그대로다 — 전환 뒤 옛 pane 을 닫으면 이 줄이 한 번 더 오지만 넘긴 셸은 이어 받은 세션 아래서 산다(실측).
-      state.parked = parkable({ state, since: input.since })
+      state.parked = parkable({ state, generation: input.generation })
       state.tasks.clear()
       state.calls.clear()
       state.subagents.clear()
@@ -398,7 +422,7 @@ function applyClaudeRecord(input: { state: ClaudeState; record: Record<string, u
       // 보류분 없이 온 `continued-in`(관측 밖 모양)은 아무것도 넘기지 않는다 — 지금 동작(빠짐)이다.
       const target = readString(record, 'continuedInSessionId')
       if (state.parked === null || target === null || !SESSION_ID.test(target)) return
-      state.handoff = { target, ...state.parked }
+      state.handoff = { target, from: readString(record, 'sessionId'), ...state.parked }
       state.parked = null
       return
     }
@@ -424,18 +448,17 @@ function applyClaudeRecord(input: { state: ClaudeState; record: Record<string, u
 }
 
 /**
- * `cost-state` 때 보류로 옮길 것 (LIFE-781). 지금 열린 것에서 두 가지를 뺀다.
- * ① Monitor — 문서·실측 모두 전환 때 멈춘다(`Background this session?` 의 「they will be stopped」). 멈춤 통지(`killed`)가 없는 실제 기록도
+ * `cost-state` 때 보류로 옮길 것 (LIFE-781).
+ * ① Monitor 는 뺀다 — 문서·실측 모두 전환 때 멈춘다(`Background this session?` 의 「they will be stopped」). 멈춤 통지(`killed`)가 없는 실제 기록도
  *    있어서(리뷰 r1 R1-3) 통지에 맡기지 않는다. 비동기 에이전트는 계속 산 실제 기록이 있어 빼지 않는다(통지로만 빠진다).
- * ② 이전 세대 — 이 파일 소유 프로세스의 시작 시각(`since`)을 알면 그보다 먼저 열린 것(강제 종료 뒤 재개 전의 열림)은 넘기지 않는다(R1-1).
- *    판독 때 소유자가 이미 죽어 `since` 를 모르면 거르지 않는다 — 한계(SURFACE).
+ * ② 이 파일 소유 프로세스의 시작 시각(`since`, 지금 알면)을 같이 적는다 — 이전 세대 거르기는 볼 때 한다(`handoffItems`). 판독 때 소유자가
+ *    이미 죽어 `since` 를 모르면 거르지 못한다 — 한계(SURFACE).
  */
-function parkable(input: { state: ClaudeState; since: number | null }): ClaudeItems {
-  const { since } = input
-  const current = (item: { startedAt: number | null }) => since === null || (item.startedAt !== null && item.startedAt >= since)
+function parkable(input: { state: ClaudeState; generation: Generation }): ParkedItems {
   return {
-    tasks: new Map([...input.state.tasks].filter(([, task]) => task.kind !== 'monitor' && current(task))),
-    subagents: new Map([...input.state.subagents].filter(([, sub]) => current(sub))),
+    tasks: new Map([...input.state.tasks].filter(([, task]) => task.kind !== 'monitor')),
+    subagents: new Map(input.state.subagents),
+    since: input.generation.since,
   }
 }
 

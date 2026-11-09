@@ -394,14 +394,14 @@ describe('F3 (리뷰 r1 C) Monitor 는 넘기지 않는다 — 전환 때 멈춘
   })
 })
 
-describe('F4·C2ⓐ (리뷰 r1 D) 전환 뒤 계속 도는 비동기 에이전트 — 실제 기록(2.1.296, 가림)', () => {
+describe('F4·C2ⓐ (리뷰 r1 D) 전환 뒤 계속 도는 비동기 에이전트 — 실제 기록(2.1.296, 가림) · 레지스트리 시계는 합성(시계)', () => {
   // agent-continues: 비동기 에이전트(task-7)가 `←` 뒤 약 9분 30초 살아 끝났다. 끝 통지는 첫 입력 **전** 새 파일 queue-operation 으로 왔고,
   // 첫 입력 때 옛 대화가 그 뒤에 복사됐다. 레지스트리 startedAt 은 실측 값이 없어 지었다(합성) — 옛 대화형은 재개 무렵, bg 는 continued-in 직후.
   const { old, next, registry } = sample('agent-continues')
   const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
   const endAt = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-7</task-id>') && line.includes('<status>') })
 
-  it('끝 통지 전(첫 입력 전 구간)에는 에이전트 작업·자식 행에 있고, 새 파일 끝 통지 뒤에는 없다 — 첫 입력 뒤 전체 파일에서도 없다', () => {
+  it('합성(시계) — 끝 통지 전(첫 입력 전 구간)에는 에이전트 작업·자식 행에 있고, 새 파일 끝 통지 뒤에는 없다 — 첫 입력 뒤 전체 파일에서도 없다', () => {
     expect(next.slice(0, endAt + 1).some(isConversation)).toBe(false) // 통지가 복사보다 먼저다
     write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
     write({ sessionId: registry.bg.sessionId, lines: next.slice(0, endAt) })
@@ -448,5 +448,146 @@ describe('F6 (리뷰 r1 F) 보류 중에 오는 통지 user 줄은 재개가 아
     register({ name: 'old', registry, alive: true })
     register({ name: 'bg', registry, alive: true })
     expect(taskIds(registry)).toEqual(['task-1'])
+  })
+})
+
+// === 수정 r2 (리뷰 r2 A~D) =============================================================
+
+const C_ID = '00000000-0000-4000-8000-0000000000c3'
+
+/** 이어 받은 세션 C 의 bg 항목(합성) — 관측된 키 모양. */
+function registerC(input: { startedAt: number }) {
+  fs.writeFileSync(
+    path.join(home, '.claude', 'sessions', 'c.json'),
+    JSON.stringify({ pid: process.pid, sessionId: C_ID, kind: 'bg', status: 'shell', startedAt: input.startedAt, parkedJobId: null, jobId: C_ID.slice(0, 8) }),
+  )
+}
+
+describe('F1 (리뷰 r2 A) 연쇄 `←` — 이어 받은 파일에서 다시 cost-state 가 와도 넘겨받은 셸을 다음 보류분으로 이어 넘긴다', () => {
+  const { old, next, registry } = sample('shell-monitor')
+  const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+  const metaEnd = indexWhere({ lines: next, match: isConversation })
+  const shellEnd = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-1</task-id>') && line.includes('<status>') })
+  // 합성 — 실표본 B(첫 입력까지) 끝에 두 번째 전환(cost-state → continued-in C)을 붙이고, C 는 메타뿐/대화 복사로 짓는다
+  const secondHop = [
+    JSON.stringify({ type: 'cost-state', sessionId: registry.bg.sessionId }),
+    JSON.stringify({ type: 'continued-in', timestamp: '2026-01-01T00:05:00.000Z', sessionId: registry.bg.sessionId, continuedInSessionId: C_ID }),
+  ]
+  const cMeta = [JSON.stringify({ type: 'mode', sessionId: C_ID })]
+  const cCopy = next.slice(metaEnd, shellEnd).map((line) => line.split(registry.bg.sessionId).join(C_ID))
+  const setup = () => {
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+  }
+
+  it('합성 — B 가 살아 있는 bg(셸보다 늦게 뜸)로 두 번째 `←`: C 가 빈 대상·대화 복사·콜드 판독 모두 셸이 남는다', () => {
+    setup()
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, shellEnd) })
+    expect(taskIds(registry)).toEqual(['task-1'])
+    registerC({ startedAt: registry.bg.startedAt + 60_000 })
+    write({ sessionId: registry.bg.sessionId, lines: [...next.slice(0, shellEnd), ...secondHop] })
+    write({ sessionId: C_ID, lines: cMeta })
+    expect(taskIds(registry)).toEqual(['task-1']) // C 빈 대상 — B 에 머문다
+    write({ sessionId: C_ID, lines: [...cMeta, ...cCopy] })
+    expect(taskIds(registry)).toEqual(['task-1']) // C 로 옮김
+    clearTranscriptCache()
+    readSessionDigest(refOf(registry)) // 콜드 — 옆 파일을 처음부터
+    expect(taskIds(registry)).toEqual(['task-1'])
+  })
+
+  it('합성 — 두 번째 전환 뒤 C 에 셸 끝 통지가 오면 빠진다', () => {
+    setup()
+    registerC({ startedAt: registry.bg.startedAt + 60_000 })
+    write({ sessionId: registry.bg.sessionId, lines: [...next.slice(0, shellEnd), ...secondHop] })
+    const end = next[shellEnd]!.split(registry.bg.sessionId).join(C_ID)
+    write({ sessionId: C_ID, lines: [...cMeta, ...cCopy, end] })
+    expect(taskIds(registry)).toEqual([])
+  })
+})
+
+describe('F2 (리뷰 r2 B) 첫 입력 전 대상 파일의 한도보다 긴 줄 — 넘긴 것의 끝을 놓쳤을 수 있으면 모름', () => {
+  it('합성 — 대상 파일에 task-1 끝 통지가 2MB 넘는 한 줄로 오면 도는 중이 아니라 모름, 짧은 끝 통지가 오면 풀린다', () => {
+    const { old, next, registry } = sample('shell-monitor')
+    const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+    const metaEnd = indexWhere({ lines: next, match: isConversation })
+    const notice = (summary: string) =>
+      JSON.stringify({
+        type: 'queue-operation',
+        operation: 'enqueue',
+        timestamp: '2026-01-01T00:04:00.000Z',
+        sessionId: registry.bg.sessionId,
+        content: `<task-notification>\n<task-id>task-1</task-id>\n<status>completed</status>\n<summary>${summary}</summary>\n</task-notification>`,
+      })
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    write({ sessionId: registry.bg.sessionId, lines: [...next.slice(0, metaEnd), notice('z'.repeat(LIFECYCLE_READ_MAX_BYTES + 10_000))] })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    const seen: SessionLifecycle[] = []
+    for (let round = 0; round < 4; round += 1) seen.push(lifeOf(registry))
+    expect(seen.some((lifecycle) => lifecycle.state === 'known')).toBe(false)
+    expect(seen.at(-1)).toEqual({ state: 'unknown', reason: 'unreadable' })
+    fs.appendFileSync(path.join(dir, `${registry.bg.sessionId}.jsonl`), `${notice('가림')}\n`)
+    expect(taskIds(registry)).toEqual([])
+  })
+})
+
+describe('F3 (리뷰 r2 C) 콜드 스타트 — 기다려도 답이 안 바뀌면 앞 파일 따라잡기에 묶지 않는다', () => {
+  it('합성 앞 파일 5MB — 이 파일에 경계 앞 열린 항목이 없으면(셸 끝난 뒤) 첫 주기부터 known', () => {
+    const { old, next, registry } = sample('shell-monitor')
+    const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+    write({ sessionId: registry.old.sessionId, lines: [old[0]!, ...bigLines(5_000_000), ...old.slice(1, continuedAt + 1)] })
+    write({ sessionId: registry.bg.sessionId, lines: next })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    expect(known(lifeOf(registry)).tasks).toEqual([])
+  })
+})
+
+describe('F4 (리뷰 r2 D) 변이 생존 가드를 묶는다', () => {
+  it('합성(시계) M1 — 첫 입력 뒤, 복사가 다시 연 에이전트라도 복사 앞에서 끝 통지를 봤으면 싣지 않는다', () => {
+    const { old, next, registry } = sample('agent-continues')
+    const endAt = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-7</task-id>') && line.includes('<status>') })
+    const reopened = indexWhere({ lines: next, match: (line) => line.includes('"agentId":"task-7"'), from: endAt })
+    const copyEnd = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-7</task-id>') && line.includes('<status>'), from: reopened })
+    write({ sessionId: registry.old.sessionId, lines: old })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, copyEnd) })
+    register({ name: 'bg', registry, alive: true })
+    expect(known(lifeOf(registry))).toMatchObject({ tasks: [], subagents: [] })
+  })
+
+  it('M2 — bg 항목의 jobId 가 대상 id 앞부분이 아니면 주인이 아니다', () => {
+    const { old, next, registry } = sample('shell-monitor')
+    const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, indexWhere({ lines: next, match: isConversation })) })
+    register({ name: 'old', registry, alive: true })
+    const shifted = { ...registry, bg: { ...registry.bg, sessionId: registry.bg.sessionId } }
+    register({ name: 'bg', registry: { ...shifted, bg: { ...shifted.bg } }, alive: true })
+    const file = path.join(home, '.claude', 'sessions', 'bg.json')
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(`"jobId":"${registry.bg.sessionId.slice(0, 8)}"`, '"jobId":"ffffffff"'))
+    expect(taskIds(registry)).toEqual([])
+  })
+
+  it('합성(시계) M3 — 서브에이전트도 세대를 거른다: 에이전트보다 늦게 뜬(재개한) 소유자가 `←` 하면 넘기지 않는다', () => {
+    const { old, next, registry } = sample('agent-continues')
+    const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+    const endAt = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-7</task-id>') && line.includes('<status>') })
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, endAt) })
+    register({ name: 'old', registry: { ...registry, old: { ...registry.old, startedAt: registry.bg.startedAt - 1000 } }, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    expect(known(lifeOf(registry))).toMatchObject({ tasks: [], subagents: [] })
+  })
+
+  it('합성 T1 꼴 콜드 — 첫 입력 뒤에 처음 읽어도(앞 파일을 소유자 시작 시각으로 읽는다) 옛 세대 셸은 없다', () => {
+    const { old, next, registry } = sample('shell-monitor')
+    const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+    const shellEnd = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-1</task-id>') && line.includes('<status>') })
+    write({ sessionId: registry.old.sessionId, lines: old.slice(0, continuedAt + 1) })
+    write({ sessionId: registry.bg.sessionId, lines: next.slice(0, shellEnd) })
+    register({ name: 'old', registry: { ...registry, old: { ...registry.old, startedAt: registry.bg.startedAt - 1000 } }, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    expect(taskIds(registry)).toEqual([])
   })
 })

@@ -56,8 +56,8 @@ import { EMPTY_SESSION_DIGEST } from '../shared/types.js'
 import { log } from './log.js'
 import { clearContinuedMemo, continuedReadBytes, followContinued } from './transcript-continued.js'
 import { parseGrokSummary, parseGrokUpdates, parseHead, parseTail, valueLines } from './transcript-parse.js'
-import type { HandedItems, Ledger, Owner } from './transcript-lifecycle.js'
-import { advanceLedger, claudeLiveSessions, clearClaudeRegistry, grokSessionAlive, handedOpen, inheritedItems, ledgerHandoff, ledgerSettled, ledgerView } from './transcript-lifecycle.js'
+import type { Generation, HandedItems, Handoff, Ledger, Owner } from './transcript-lifecycle.js'
+import { advanceLedger, claudeLiveSessions, clearClaudeRegistry, grokSessionAlive, handedOpen, handoffItems, inheritedItems, ledgerHandoff, ledgerSettled, ledgerView } from './transcript-lifecycle.js'
 
 /** 첫 꼬리 창. 실측 평균 한 턴이 ~46KB 라 대략 5턴을 덮는다. */
 export const TAIL_WINDOW_BYTES = 256 * 1024
@@ -773,37 +773,56 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     return found !== null && found.alive ? found.since : null
   }
   const linkedReads: { key: string; bytes: number }[] = []
-  const linked = (input: { sessionId: string; since: number | null }): Ledger | null => {
-    const read = linkedLedger({ file: path.join(path.dirname(file), `${input.sessionId}.jsonl`), since: input.since })
+  /** 세션 id 의 세대 재료 — 소유자 시작 시각 + 이미 읽은 장부 중 이 세션에 넘긴 id. 본 파일·앞 파일·대상 파일 모두 이것 하나로 고른다(같은 장부를 공유한다). */
+  const generationOf = (sessionId: string | null): Generation => ({ since: sinceOf(sessionId), keep: sessionId === null ? new Set() : handedTo(sessionId) })
+  const linked = (input: { sessionId: string }): Ledger | null => {
+    const read = linkedLedger({ file: path.join(path.dirname(file), `${input.sessionId}.jsonl`), generation: generationOf(input.sessionId) })
     if (read === null) return null
     linkedReads.push(read.read)
     return read.ledger
   }
-  // 앞 파일 — 첫 입력 뒤 이 파일로 옮겨 왔다. 앞 파일 세션 id = 원본(한 번 옮김) 또는 연쇄의 직전 hop.
-  const previousId = followed.hops.length === 0 ? null : (followed.hops.at(-2) ?? (ref.kind === 'id' ? ref.id : null))
-  const previous = agent !== 'claude' || previousId === null ? null : linked({ sessionId: previousId, since: sinceOf(previousId) })
+  // 앞 파일 — 첫 입력 뒤 이 파일로 옮겨 왔다. 연쇄면 원본부터 순서대로 읽는다 — 앞 파일이 자기 앞에서 넘겨받은 것(연쇄 `←`)을 가르려면
+  // 그 앞 장부도 있어야 한다(`handedTo`). 마지막이 바로 앞 파일이다.
+  const chainIds = agent !== 'claude' || ref.kind !== 'id' ? [] : [ref.id, ...followed.hops].slice(0, -1)
+  const chain = chainIds.map((sessionId) => linked({ sessionId }))
+  const previousId = chainIds.at(-1) ?? null
+  const previous = chain.at(-1) ?? null
   const bgOwnerOf = (sessionId: string | null): Owner | null => (sessionId === null || claudeLive === null ? null : claudeLive.bgOwner(sessionId))
   /** 이 장부가 넘긴 것의 대상 파일 장부와 주인 — 첫 입력 전에도 끝 통지가 대상 파일에 온다. */
   const handoffLinks = (ledger: Ledger | null): { target: Ledger | null; owner: Owner | null } => {
     const handoff = ledger === null || agent !== 'claude' ? null : ledgerHandoff(ledger)
     if (handoff === null) return { target: null, owner: null }
-    return { target: linked({ sessionId: handoff.target, since: sinceOf(handoff.target) }), owner: bgOwnerOf(handoff.target) }
+    return { target: linked({ sessionId: handoff.target }), owner: bgOwnerOf(handoff.target) }
   }
   const linksOf = (ledger: Ledger | null): Links => {
     const handoff = handoffLinks(ledger)
     return { previous, target: handoff.target, inheritOwner: previous === null ? null : bgOwnerOf(followed.sessionId), handoffOwner: handoff.owner }
   }
+  const mainId = ref.kind === 'id' ? (followed.sessionId ?? ref.id) : path.basename(ref.path, '.jsonl')
   const carry = (ledger: Ledger): CarryRead => {
     const links = linksOf(ledger)
     const groups: CarryGroup[] = []
     const handoff = ledgerHandoff(ledger)
-    if (handoff !== null) groups.push({ carried: handedOpen({ handoff, target: links.target }), owner: links.handoffOwner })
-    if (previous !== null && followed.sessionId !== null) groups.push({ carried: inheritedItems({ ledger, from: previous, sessionId: followed.sessionId }), owner: links.inheritOwner })
-    // 옆 파일을 아직 따라잡는 중이면 넘김을 모른다 — 빈 `known` 이 아니라 모름이다(리뷰 r1 A: 큰 앞 파일·콜드 스타트).
-    const catchingUp = [previous, handoff === null ? null : links.target].some((side) => side !== null && !side.caughtUp)
-    return { groups, catchingUp }
+    if (handoff !== null) groups.push({ carried: handedOpen({ handoff: handoffItems({ handoff, keep: handedTo(mainId) }), target: links.target }), owner: links.handoffOwner })
+    const given = previous === null ? null : ledgerHandoff(previous)
+    if (given !== null && previousId !== null && given.target === followed.sessionId) {
+      groups.push({ carried: inheritedItems({ ledger, handed: handoffItems({ handoff: given, keep: handedTo(previousId) }) }), owner: links.inheritOwner })
+    }
+    // 옆 파일을 아직 따라잡는 중이면 넘김을 모른다 — 빈 `known` 이 아니라 모름이다(리뷰 r1 A). 다만 기다려도 답이 안 바뀌면 묶지 않는다(r2 C):
+    // 앞 파일(연쇄 포함)은 이 파일에 경계 앞 열린 항목(넘겨받을 후보)이 있을 때만, 대상 파일은 넘긴 것이 있을 때만 본다.
+    const since = owner !== null && owner.alive ? owner.since : null
+    const candidates = [...ledger.state.tasks.values(), ...ledger.state.subagents.values()].some((item) => since === null || item.startedAt === null || item.startedAt < since)
+    const handed = handoff !== null && handoff.tasks.length + handoff.subagents.length > 0
+    const behind = (side: Ledger | null) => side !== null && !side.caughtUp
+    const catchingUp = (candidates && chain.some(behind)) || (handed && behind(links.target))
+    // 대상 파일에서 한도보다 긴 줄을 건너뛰어 넘긴 것의 끝을 놓쳤을 수 있으면 모름이다(r2 B).
+    const unsure = handoff !== null && links.target !== null && [...handoff.tasks, ...handoff.subagents].some((item) => links.target?.uncertain.has(item.id) === true)
+    return { groups, catchingUp, unsure }
   }
   const priorLinks = linksOf(priorLedger)
+  // 본 파일의 세대 재료 — 앞 파일 장부를 먼저 읽었으니 넘겨받은 id 가 보인다. grok 은 보류 규칙이 없다.
+  const mainGeneration: Generation =
+    claudeLive !== null ? generationOf(ref.kind === 'id' ? (followed.sessionId ?? ref.id) : path.basename(ref.path, '.jsonl')) : { since: null, keep: new Set() }
   if (
     cached !== null &&
     mainFresh &&
@@ -846,7 +865,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     // 모델이라 첫 응답 전에 실패한 세션(143 중 45 가 응답 모델 없음)에서도 있다 — `u7-grok-summary-model.txt`.
     const life = conflict
       ? { lifecycle: UNREADABLE, ledger: priorLedger, read: { bytes: 0, ms: 0 } }
-      : readLifecycle({ file: ledgerFile, key: ledgerKey, stat: ledgerStat, agent, prior: priorLedger, advance, owner, carry })
+      : readLifecycle({ file: ledgerFile, key: ledgerKey, stat: ledgerStat, agent, prior: priorLedger, advance, owner, carry, generation: mainGeneration })
     // 첫 입력으로 옮겨 온 주기 — 떠난 장부가 곧 앞 파일 장부면 회수하지 않는다(따라잡은 넘김을 다시 읽지 않는다, 리뷰 r1 A).
     // 주기 끝 회수(`seen`)는 앞 파일로 계속 쓰는 동안 일어나지 않는다.
     const leftIsPrevious = previous !== null && cached?.ledgerKey === ledgerKeyOf(previous)
@@ -921,8 +940,26 @@ const NO_LIFECYCLE_READ: LifecycleRead = { bytes: 0, ms: 0, key: null, registryB
 
 /** 세대 경계를 건너 싣는 묶음과 그 주인 — 주인이 살아 있을 때만 싣는다(LIFE-781). */
 type CarryGroup = { carried: HandedItems; owner: Owner | null }
-/** 넘김 판정 — 옆 파일을 따라잡는 중이면(`catchingUp`) 목록은 모름이다. */
-type CarryRead = { groups: CarryGroup[]; catchingUp: boolean }
+/** 넘김 판정 — 옆 파일을 따라잡는 중이면(`catchingUp`) 모름, 넘긴 것의 끝을 놓쳤을 수 있으면(`unsure`) 판독 불가다. */
+type CarryRead = { groups: CarryGroup[]; catchingUp: boolean; unsure: boolean }
+
+/**
+ * 이미 읽은 claude 장부 중 이 세션에 넘긴 id (LIFE-781) — 각 넘김은 보낸 세션이 자기 앞에서 넘겨받은 것까지 세대 거르기에서 빼고 센다(연쇄, 재귀).
+ * 장부는 파일마다 하나라 몇 개 안 된다. 순환은 `seen` 으로 끊는다.
+ */
+function handedTo(sessionId: string, seen: ReadonlySet<string> = new Set()): Set<string> {
+  const ids = new Set<string>()
+  if (seen.has(sessionId)) return ids
+  const next = new Set([...seen, sessionId])
+  for (const { ledger } of ledgers.values()) {
+    const handoff: Handoff | null = ledgerHandoff(ledger)
+    if (handoff === null || handoff.target !== sessionId) continue
+    const keep = handoff.from === null ? new Set<string>() : handedTo(handoff.from, next)
+    const handed = handoffItems({ handoff, keep })
+    for (const item of [...handed.tasks, ...handed.subagents]) ids.add(item.id)
+  }
+  return ids
+}
 
 /** 옆 파일 장부의 `ledgers` 키 — 장부가 그 파일에 붙어 있다(`dev`·`ino`). */
 function ledgerKeyOf(ledger: Ledger): string {
@@ -934,7 +971,7 @@ function ledgerKeyOf(ledger: Ledger): string {
  * 장부는 `ledgers` 를 같이 쓴다 — 그 파일을 읽던 참조의 장부를 그대로 잇고, 이번 주기에 이미 나아갔거나 무변경이면 다시 읽지 않는다(L7).
  * 못 읽으면 null — 넘김 없이 지금처럼 동작한다. `since` 는 그 파일 소유 프로세스의 시작 시각(알면) — 보류분 세대 거르기(F2).
  */
-function linkedLedger(input: { file: string; since: number | null }): { ledger: Ledger; read: { key: string; bytes: number } } | null {
+function linkedLedger(input: { file: string; generation: Generation }): { ledger: Ledger; read: { key: string; bytes: number } } | null {
   const { file } = input
   const stat = statOrNull(file)
   if (stat === null) return null
@@ -945,7 +982,7 @@ function linkedLedger(input: { file: string; since: number | null }): { ledger: 
   const prior = shared?.ledger ?? null
   if (shared?.cycle === cycle || ledgerSettled({ ledger: prior, stat })) return prior === null ? null : { ledger: prior, read: { key: fileKey, bytes: 0 } }
   try {
-    const step = advanceLedger({ file, stat, agent: 'claude', prior, since: input.since })
+    const step = advanceLedger({ file, stat, agent: 'claude', prior, generation: input.generation })
     if (step.reset !== null) log('transcript.lifecycle.reset', { agent: 'claude', reason: step.reset })
     ledgers.set(key, { ledger: step.ledger, cycle, seen: cycle })
     return { ledger: step.ledger, read: { key: fileKey, bytes: step.bytes } }
@@ -985,6 +1022,8 @@ function readLifecycle(input: {
   owner: Owner | null
   /** 세대 경계를 건너 싣는 묶음(LIFE-781 전환) — 장부마다 고른다. 소유자가 죽어도 주인이 산 묶음이 있으면 그것만 싣는다. */
   carry: (ledger: Ledger) => CarryRead
+  /** 이 파일의 세대 재료(LIFE-781) — 보류분 거르기·넘겨받은 id. */
+  generation: Generation
 }): { lifecycle: SessionLifecycle; ledger: Ledger | null; read: { bytes: number; ms: number } } {
   const { file, key, stat, agent, prior, owner } = input
   if (file === null || key === null || stat === null || agent === 'codex') return { lifecycle: NO_SOURCE, ledger: null, read: { bytes: 0, ms: 0 } }
@@ -992,6 +1031,7 @@ function readLifecycle(input: {
     const carry = input.carry(ledger)
     const anyAlive = (owner !== null && owner.alive) || carry.groups.some((group) => group.owner !== null && group.owner.alive)
     if (carry.catchingUp && anyAlive) return { state: 'unknown', reason: 'catching-up' }
+    if (carry.unsure && anyAlive) return { state: 'unknown', reason: 'unreadable' }
     const carried: HandedItems = { tasks: [], subagents: [] }
     for (const group of carry.groups) {
       if (group.owner === null || !group.owner.alive) continue
@@ -1006,7 +1046,7 @@ function readLifecycle(input: {
   if (!input.advance && prior !== null) return { lifecycle: view(prior), ledger: prior, read: { bytes: 0, ms: 0 } }
   const startedAt = Date.now()
   try {
-    const step = advanceLedger({ file, stat, agent, prior, since: owner !== null && owner.alive ? owner.since : null })
+    const step = advanceLedger({ file, stat, agent, prior, generation: input.generation })
     if (step.reset !== null) log('transcript.lifecycle.reset', { agent, reason: step.reset })
     ledgers.set(key, { ledger: step.ledger, cycle, seen: cycle })
     return { lifecycle: view(step.ledger), ledger: step.ledger, read: { bytes: step.bytes, ms: Date.now() - startedAt } }

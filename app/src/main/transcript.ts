@@ -177,11 +177,14 @@ type CacheEntry = {
 }
 
 /** 넘김(LIFE-781)에 쓰는 옆 파일 장부와 주인 판정 — 빠른 반환이 같은지 본다. */
-type Links = { previous: Ledger | null; target: Ledger | null; inheritOwner: Owner | null; handoffOwner: Owner | null }
+type Links = { chain: (Ledger | null)[]; previous: Ledger | null; target: Ledger | null; inheritOwner: Owner | null; handoffOwner: Owner | null }
 
 function sameLinks(input: { a: Links; b: Links }): boolean {
   const { a, b } = input
+  // 연쇄 앞쪽 장부도 하나하나 같은 객체여야 한다 — 원본을 따라잡은 주기에 답을 다시 고른다(리뷰 r3 A).
   return (
+    a.chain.length === b.chain.length &&
+    a.chain.every((ledger, index) => ledger === b.chain[index]) &&
     a.previous === b.previous &&
     a.target === b.target &&
     sameOwner({ a: a.inheritOwner, b: b.inheritOwner }) &&
@@ -796,7 +799,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
   }
   const linksOf = (ledger: Ledger | null): Links => {
     const handoff = handoffLinks(ledger)
-    return { previous, target: handoff.target, inheritOwner: previous === null ? null : bgOwnerOf(followed.sessionId), handoffOwner: handoff.owner }
+    return { chain, previous, target: handoff.target, inheritOwner: previous === null ? null : bgOwnerOf(followed.sessionId), handoffOwner: handoff.owner }
   }
   const mainId = ref.kind === 'id' ? (followed.sessionId ?? ref.id) : path.basename(ref.path, '.jsonl')
   const carry = (ledger: Ledger): CarryRead => {
@@ -813,8 +816,11 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     const since = owner !== null && owner.alive ? owner.since : null
     const candidates = [...ledger.state.tasks.values(), ...ledger.state.subagents.values()].some((item) => since === null || item.startedAt === null || item.startedAt < since)
     const handed = handoff !== null && handoff.tasks.length + handoff.subagents.length > 0
+    // 이 파일이 넘긴 것의 세대 거르기에 걸릴 항목(보류 때 시작 시각보다 앞)이 있으면 그 `keep` 은 연쇄 앞쪽 장부에 달렸다 — 그것도 기다린다(리뷰 r3 B).
+    const needsKeep =
+      handoff !== null && handoff.since !== null && [...handoff.tasks, ...handoff.subagents].some((item) => item.startedAt === null || (handoff.since !== null && item.startedAt < handoff.since))
     const behind = (side: Ledger | null) => side !== null && !side.caughtUp
-    const catchingUp = (candidates && chain.some(behind)) || (handed && behind(links.target))
+    const catchingUp = ((candidates || needsKeep) && chain.some(behind)) || (handed && behind(links.target))
     // 대상 파일에서 한도보다 긴 줄을 건너뛰어 넘긴 것의 끝을 놓쳤을 수 있으면 모름이다(r2 B).
     const unsure = handoff !== null && links.target !== null && [...handoff.tasks, ...handoff.subagents].some((item) => links.target?.uncertain.has(item.id) === true)
     return { groups, catchingUp, unsure }

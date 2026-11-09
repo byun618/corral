@@ -591,3 +591,57 @@ describe('F4 (리뷰 r2 D) 변이 생존 가드를 묶는다', () => {
     expect(taskIds(registry)).toEqual([])
   })
 })
+
+// === 수정 r3 (리뷰 r3 A·B) =============================================================
+
+describe('r3 원본이 큰 2홉 연쇄 콜드 — 원본을 따라잡는 동안 모름, 따라잡으면 셸(합성)', () => {
+  const { old, next, registry } = sample('shell-monitor')
+  const continuedAt = indexWhere({ lines: old, match: (line) => typeOf(line) === 'continued-in' })
+  const metaEnd = indexWhere({ lines: next, match: isConversation })
+  const shellEnd = indexWhere({ lines: next, match: (line) => line.includes('<task-id>task-1</task-id>') && line.includes('<status>') })
+  // 합성 — 원본 A 에 표지 없는 줄 5MB 를 끼웠고, B 끝에 두 번째 전환을, C 는 메타뿐/B 대화 복사로 지었다
+  const bigA = [old[0]!, ...bigLines(5_000_000), ...old.slice(1, continuedAt + 1)]
+  const secondHop = [
+    JSON.stringify({ type: 'cost-state', sessionId: registry.bg.sessionId }),
+    JSON.stringify({ type: 'continued-in', timestamp: '2026-01-01T00:05:00.000Z', sessionId: registry.bg.sessionId, continuedInSessionId: C_ID }),
+  ]
+  const cMeta = [JSON.stringify({ type: 'mode', sessionId: C_ID })]
+  const cCopy = next.slice(metaEnd, shellEnd).map((line) => line.split(registry.bg.sessionId).join(C_ID))
+  const ids = (lifecycle: SessionLifecycle) => (lifecycle.state === 'known' ? lifecycle.tasks.map((task) => task.id).join(',') : `unknown:${lifecycle.reason}`)
+  const cycles = (count: number) => {
+    const refs = new Map([['p1', refOf(registry)]])
+    const out: { life: string; bytes: number }[] = []
+    for (let round = 0; round < count; round += 1) {
+      const read = readSessionDigests(refs)
+      out.push({ life: ids(read.digests.get('p1')!.lifecycle), bytes: read.cost.lifecycleBytes })
+    }
+    return out
+  }
+  const setup = (c: string[]) => {
+    write({ sessionId: registry.old.sessionId, lines: bigA })
+    write({ sessionId: registry.bg.sessionId, lines: [...next.slice(0, shellEnd), ...secondHop] })
+    write({ sessionId: C_ID, lines: c })
+    register({ name: 'old', registry, alive: true })
+    register({ name: 'bg', registry, alive: true })
+    registerC({ startedAt: registry.bg.startedAt + 60_000 })
+  }
+
+  it('A 합성 — 본 파일 = 셋째 파일(C, 대화 복사): catching-up 뒤 원본을 따라잡은 주기부터 셸 1건, 무변경 0바이트 주기에도 유지', () => {
+    setup([...cMeta, ...cCopy])
+    const seen = cycles(8)
+    expect(seen.filter((cycle) => cycle.life === '')).toEqual([])
+    expect(seen[0]!.life).toBe('unknown:catching-up')
+    const first = seen.findIndex((cycle) => cycle.life === 'task-1')
+    expect(first).toBeGreaterThan(0)
+    expect(seen.slice(first).map((cycle) => cycle.life)).toEqual(Array(8 - first).fill('task-1'))
+    expect(seen.at(-1)!.bytes).toBe(0)
+  })
+
+  it('B 합성 — 본 파일 = 중간 파일(B, C 는 메타뿐): 원본을 따라잡는 동안 known 0건 0회, 따라잡으면 셸', () => {
+    setup(cMeta)
+    const seen = cycles(8)
+    expect(seen.filter((cycle) => cycle.life === '')).toEqual([])
+    expect(seen[0]!.life).toBe('unknown:catching-up')
+    expect(seen.at(-1)).toEqual({ life: 'task-1', bytes: 0 })
+  })
+})

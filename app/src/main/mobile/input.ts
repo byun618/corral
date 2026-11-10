@@ -898,6 +898,7 @@ export class InputHub {
    *   null 이 같은 상태이고, 같은 세션인지는 목록 대조와 revision 울타리가 본다. 목록 값은 해소기가 세션 조회(1.5 s)마다 argv **와 `claude agents` 의 sessionId** 를
    *   다시 맞춘 값이다(fix1 F1 — attach 안 `/clear` 가 같은 id 의 sessionId 를 바꾼다). 그래서 접수 **전** `/clear` 를 목록이 아직 모르는 창은 한 조회 주기다
    *   (herdr 관측이 그 창을 메우는 herdr 출처와 다르다 — SURFACE 「attach pane 의 세션 해소」 남는 한계).
+   *   연결이 증명된 옛 참조(fix3 F13)도 같은 출처라 같다 — 목록 값이 S0 이고 기록 파일·센 id 는 이어 가기로 X 다(`resolveTranscriptUnique` 의 `continuedAs`).
    */
   private sessionMoved(entry: Entry, observed: PaneObservation): 'herdr_session' | 'list' | null {
     if (entry.bind === null) return null

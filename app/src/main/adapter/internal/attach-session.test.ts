@@ -11,7 +11,8 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ATTACH_SESSION_SOURCE } from '../../../shared/types.js'
 import { WorkspaceStore } from './store.js'
-import { AttachSessionResolver, makeRunClaudeAgents, readAttachArgv, resolveAttachRef, type AgentsRunOutcome } from './attach-session.js'
+import { ATTACH_PROOF_RETRY_MS, AttachSessionResolver, makeContinuedProof, makeRunClaudeAgents, readAttachArgv, resolveAttachRef, type AgentsRunOutcome, type ContinuedProof } from './attach-session.js'
+import { clearContinuedMemo, followContinued } from '../../transcript-continued.js'
 
 type SubHooks = { label?: string; onPush: (frame: unknown, at: number) => void; onDrop: (reason: string, detail: string) => void }
 
@@ -330,6 +331,8 @@ describe('C2 전환 — SessionLink 세션 조회 + 해소 (상한 = 세션 조�
   let world: World
   let agentsOutcome: AgentsRunOutcome
   let listFails = false
+  /** 연결 증명(fix3 F13) — 기본은 증명 없음. 시험이 바꾼다(실제 파일 판별은 「fix3 F13 증명기」 describe). */
+  let proof: ContinuedProof = () => null
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -338,6 +341,7 @@ describe('C2 전환 — SessionLink 세션 조회 + 해소 (상한 = 세션 조�
     subs.length = 0
     agentsOutcome = agentsOk()
     listFails = false
+    proof = () => null
     world = { herdr: OLD, agent: 'claude', argv: ['claude', '--model', 'm', '--session-id', OLD] }
     requestMock.mockImplementation(async (_socket: string, method: string) => {
       if (method === 'session.snapshot') return { id: 's', result: snapshot({ session: world.herdr === 'absent' || world.herdr === 'none-listed' ? null : world.herdr, agent: world.agent }) }
@@ -353,7 +357,7 @@ describe('C2 전환 — SessionLink 세션 조회 + 해소 (상한 = 세션 조�
   const runAgents = vi.fn(async () => agentsOutcome)
   async function liveLink(onChange: () => void = () => {}) {
     runAgents.mockClear()
-    const link = new SessionLink({ onChange, runClaudeAgents: runAgents, claudeExecutable: () => '/opt/fake/bin/claude' })
+    const link = new SessionLink({ onChange, runClaudeAgents: runAgents, claudeExecutable: () => '/opt/fake/bin/claude', proveContinued: (input) => proof(input) })
     link.open({ name: 't', isDefault: false, running: true, socketPath: '/tmp/l769-unit.sock', sessionDir: null })
     await vi.advanceTimersByTimeAsync(0)
     expect(link.linkState().phase).toBe('live')
@@ -465,6 +469,60 @@ describe('C2 전환 — SessionLink 세션 조회 + 해소 (상한 = 세션 조�
     agentsOutcome = agentsOk(AGENTS.map((row) => ('id' in row && row.id === '1111bbbb' ? { ...row, sessionId: HERDR_NEW } : row)))
     await tick()
     expect(sessionOf(link.store)).toBe(HERDR_NEW)
+    link.close()
+  })
+
+  /** 합성 증명 — OLD 의 기록이 BG_X 로 이어졌다(`continued-in`). 다른 값엔 증명 없음. */
+  const oldContinuesToX: ContinuedProof = ({ previous, resolvedId }) => (previous.kind === 'id' && previous.id === OLD && resolvedId === BG_X ? OLD : null)
+
+  it('fix3 F13 연결 있음(합성 증명): /bg → attach X 에서 OLD 의 continued-in 이 X 에 닿으면 밖으로 OLD(출처 corral:claude-attach) — 고르기는 766 따라가기', async () => {
+    proof = vi.fn(oldContinuesToX)
+    const link = await liveLink()
+    goBg()
+    await tick()
+    goAttach('1111bbbb')
+    expect(sessionOf(link.store)).toBeNull()
+    await tick()
+    expect(sessionOf(link.store)).toBe(OLD)
+    expect(paneOf(link.store)?.agentSession?.source).toBe(ATTACH_SESSION_SOURCE)
+    expect(proof).toHaveBeenCalledWith({ previous: expect.objectContaining({ id: OLD }), resolvedId: BG_X })
+    await tick()
+    expect(sessionOf(link.store)).toBe(OLD)
+    link.close()
+  })
+
+  it('fix3 F13 대상 다름(경우 ③, 합성 증명): OLD → X 인데 pane 이 Y 에 attach → Y', async () => {
+    proof = oldContinuesToX
+    const link = await liveLink()
+    goBg()
+    await tick()
+    goAttach('2222cccc')
+    await tick()
+    expect(sessionOf(link.store)).toBe(BG_Y)
+    link.close()
+  })
+
+  it('fix3 F13 attach 안 `/clear`(합성 증명): OLD → X 증명으로 OLD 였다가 그 행 sessionId 가 X′ 가 되면 OLD 는 X′ 에 안 닿아 X′', async () => {
+    proof = oldContinuesToX
+    const link = await liveLink()
+    goBg()
+    await tick()
+    goAttach('1111bbbb')
+    await tick()
+    expect(sessionOf(link.store)).toBe(OLD)
+    agentsOutcome = agentsOk(AGENTS.map((row) => ('id' in row && row.id === '1111bbbb' ? { ...row, sessionId: HERDR_NEW } : row)))
+    await tick()
+    expect(sessionOf(link.store)).toBe(HERDR_NEW)
+    link.close()
+  })
+
+  it('fix3 F13 옛 참조 없음(경우 ②, 합성): corral 재시작(빈 store) 뒤 attach pane 은 증명을 부르지 않고 X', async () => {
+    proof = vi.fn(oldContinuesToX)
+    world = { herdr: 'absent', agent: 'claude', argv: ['claude', 'attach', '1111bbbb'] }
+    const link = await liveLink()
+    await tick()
+    expect(sessionOf(link.store)).toBe(BG_X)
+    expect(proof).not.toHaveBeenCalled()
     link.close()
   })
 
@@ -633,6 +691,21 @@ describe('fix2 F11 해소 세대 — 판 진행 중 agent 가 바뀌면 그 판�
     expect(store.applyAttachSessions([{ paneId: 'w1:p1', epoch: next?.epoch ?? -1, sessionId: BG_Y }]).changed).toBe(true)
     expect(sessionOf(store)).toBe(BG_Y)
   })
+
+  it('fix3 F13 — 판 시작 때의 옛 참조로 낸 증명은 그 사이 옛 참조가 바뀌었으면 적지 않는다 · 세대가 바뀌어도 적지 않는다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ session: OLD }))
+    store.applyAgentSessions({ result: agentList('absent'), requestedAt: Date.now() + 1 })
+    const [start] = store.attachCandidates()
+    expect(start?.previous).toEqual(expect.objectContaining({ id: OLD }))
+    const stale = { kind: 'id' as const, agent: 'claude', source: 'herdr:claude', id: HERDR_NEW }
+    expect(store.applyAttachSessions([{ paneId: 'w1:p1', epoch: start?.epoch ?? -1, sessionId: HERDR_NEW, proven: stale }]).changed).toBe(false)
+    expect(sessionOf(store)).toBeNull()
+    expect(store.applyAttachSessions([{ paneId: 'w1:p1', epoch: (start?.epoch ?? -1) + 1, sessionId: OLD, proven: start?.previous ?? null }]).changed).toBe(false)
+    expect(store.applyAttachSessions([{ paneId: 'w1:p1', epoch: start?.epoch ?? -1, sessionId: OLD, proven: start?.previous ?? null }]).changed).toBe(true)
+    expect(sessionOf(store)).toBe(OLD)
+    expect(paneOf(store)?.agentSession?.source).toBe(ATTACH_SESSION_SOURCE)
+  })
 })
 
 describe('C3 herdr 상태 무변경 — corral 은 세션 보고를 부르지 않는다', () => {
@@ -654,5 +727,110 @@ describe('C3 herdr 상태 무변경 — corral 은 세션 보고를 부르지 �
   it("코드에 'pane.report_agent…' 문자열 리터럴이 없다 (주석의 백틱 언급은 제외)", () => {
     const hits = sources(root).filter((file) => /['"]pane\.report_agent/.test(fs.readFileSync(file, 'utf8')))
     expect(hits).toEqual([])
+  })
+})
+
+// --- fix3 F13 증명기 (합성 기록 파일 — 실제 `followContinued` 판별을 쓴다) ------------------
+
+describe('fix3 F13 증명기 — 옛 참조 기록의 continued-in 이 정확히 푼 값에 닿을 때만 (합성 기록 파일)', () => {
+  let dir: string
+  const S0 = OLD
+  const fileOf = (id: string) => path.join(dir, `${id}.jsonl`)
+  const line = (record: Record<string, unknown>) => `${JSON.stringify(record)}\n`
+  const turn = (id: string) => line({ type: 'user', sessionId: id, message: { role: 'user', content: 'Reply with exactly: X' } }) + line({ type: 'assistant', sessionId: id, message: { role: 'assistant', content: [{ type: 'text', text: 'X' }] } })
+  const continued = (to: string) => line({ type: 'continued-in', continuedInSessionId: to })
+  const meta = line({ type: 'ai-title', title: 't' }) + line({ type: 'agent-name', name: 'n' })
+  const prevRef = { kind: 'id' as const, agent: 'claude', source: 'herdr:claude', id: S0 }
+  const prove = (input: { locate?: (id: string) => string | null; now?: () => number } = {}) =>
+    makeContinuedProof({ locate: (ref) => (ref.kind === 'id' ? (input.locate ?? fileOf)(ref.id) : null), now: input.now })
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l769-f13-'))
+    clearContinuedMemo()
+  })
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('연결 있음: S0 끝 continued-in → X, X 는 메타뿐(첫 입력 전) → S0', () => {
+    fs.writeFileSync(fileOf(S0), turn(S0) + continued(BG_X))
+    fs.writeFileSync(fileOf(BG_X), meta)
+    expect(prove()({ previous: prevRef, resolvedId: BG_X })).toBe(S0)
+  })
+
+  it('대상 다름(경우 ③): S0 → X 인데 푼 값 Y → null', () => {
+    fs.writeFileSync(fileOf(S0), turn(S0) + continued(BG_X))
+    fs.writeFileSync(fileOf(BG_X), meta)
+    fs.writeFileSync(fileOf(BG_Y), meta)
+    expect(prove()({ previous: prevRef, resolvedId: BG_Y })).toBeNull()
+  })
+
+  it('`/clear` 뒤 X′: S0 → X 이고 X 에 continued-in 없음 → 푼 값 X′ 이면 null', () => {
+    fs.writeFileSync(fileOf(S0), turn(S0) + continued(BG_X))
+    fs.writeFileSync(fileOf(BG_X), meta + turn(BG_X))
+    expect(prove()({ previous: prevRef, resolvedId: HERDR_NEW })).toBeNull()
+  })
+
+  it('연결 없음(S0 끝이 대화) · 대상 파일 없음 · 옛 참조 파일 없음 → null', () => {
+    fs.writeFileSync(fileOf(S0), turn(S0))
+    expect(prove()({ previous: prevRef, resolvedId: BG_X })).toBeNull()
+    fs.writeFileSync(fileOf(S0), turn(S0) + continued(BG_X))
+    expect(prove()({ previous: prevRef, resolvedId: BG_X })).toBeNull()
+    expect(prove({ locate: () => null })({ previous: prevRef, resolvedId: BG_X })).toBeNull()
+  })
+
+  it('모름(continued-in 뒤 읽지 못하는 줄 — 처음 판별) → null · 읽기 오류(찾기가 던짐) → null', () => {
+    fs.writeFileSync(fileOf(S0), turn(S0) + continued(BG_X) + '{"type":"user","sessionId":')
+    fs.writeFileSync(fileOf(BG_X), meta)
+    expect(prove()({ previous: prevRef, resolvedId: BG_X })).toBeNull()
+    expect(prove({ locate: () => { throw new Error('EACCES') } })({ previous: prevRef, resolvedId: BG_X })).toBeNull()
+  })
+
+  it('연쇄: S0 → X → Y 면 푼 값 Y 는 증명(끝이 같다) · 푼 값 X 는 지나쳐 가므로 null', () => {
+    fs.writeFileSync(fileOf(S0), turn(S0) + continued(BG_X))
+    fs.writeFileSync(fileOf(BG_X), meta + turn(BG_X) + continued(BG_Y))
+    fs.writeFileSync(fileOf(BG_Y), meta)
+    expect(prove()({ previous: prevRef, resolvedId: BG_Y })).toBe(S0)
+    expect(prove()({ previous: prevRef, resolvedId: BG_X })).toBeNull()
+  })
+
+  it('옛 참조가 claude id 가 아니거나 푼 값과 같으면 부르지 않고 null', () => {
+    const locate = vi.fn(fileOf)
+    const check = prove({ locate })
+    expect(check({ previous: { ...prevRef, agent: 'codex' }, resolvedId: BG_X })).toBeNull()
+    expect(check({ previous: { kind: 'path', agent: 'claude', source: 'herdr:claude', path: '/x.jsonl' }, resolvedId: BG_X })).toBeNull()
+    expect(check({ previous: prevRef, resolvedId: S0 })).toBeNull()
+    expect(locate).not.toHaveBeenCalled()
+  })
+
+  it('비용: 찾은 파일은 기억한다(찾기 1회) · 못 찾은 id 는 ATTACH_PROOF_RETRY_MS 뒤에만 다시 찾는다', () => {
+    fs.writeFileSync(fileOf(S0), turn(S0) + continued(BG_X))
+    fs.writeFileSync(fileOf(BG_X), meta)
+    let now = 1_000
+    const found = vi.fn(fileOf)
+    const check = prove({ locate: found, now: () => now })
+    for (let round = 0; round < 5; round += 1) expect(check({ previous: prevRef, resolvedId: BG_X })).toBe(S0)
+    expect(found).toHaveBeenCalledTimes(1)
+    const missing = vi.fn((): string | null => null)
+    const miss = prove({ locate: missing, now: () => now })
+    miss({ previous: prevRef, resolvedId: BG_X })
+    now += ATTACH_PROOF_RETRY_MS - 1
+    miss({ previous: prevRef, resolvedId: BG_X })
+    expect(missing).toHaveBeenCalledTimes(1)
+    now += 1
+    miss({ previous: prevRef, resolvedId: BG_X })
+    expect(missing).toHaveBeenCalledTimes(2)
+  })
+
+  it('내보낸 S0 은 766 따라가기가 고른다: X 가 빌 동안 S0 파일, X 가 자라면(첫 입력 뒤 대화 복사) X 파일', () => {
+    fs.writeFileSync(fileOf(S0), turn(S0) + continued(BG_X))
+    fs.writeFileSync(fileOf(BG_X), meta)
+    expect(prove()({ previous: prevRef, resolvedId: BG_X })).toBe(S0)
+    const exported = { kind: 'id' as const, agent: 'claude', source: ATTACH_SESSION_SOURCE, id: S0 }
+    expect(followContinued({ session: exported, file: fileOf(S0), empty: 'stay' }).file).toBe(fileOf(S0))
+    fs.appendFileSync(fileOf(BG_X), turn(BG_X))
+    const grown = followContinued({ session: exported, file: fileOf(S0), empty: 'stay' })
+    expect(grown.file).toBe(fileOf(BG_X))
+    expect(grown.sessionId).toBe(BG_X)
   })
 })

@@ -23,7 +23,7 @@ import { SUBSCRIPTION_TYPES, agentStatusSubscriptions, subjectOf, type PushFrame
 import { HerdrRequestError, request } from './request.js'
 import { Subscription } from './subscription.js'
 import { WorkspaceStore } from './store.js'
-import { AttachSessionResolver, makeRunClaudeAgents, type AgentsRun } from './attach-session.js'
+import { AttachSessionResolver, makeContinuedProof, makeRunClaudeAgents, type AgentsRun, type ContinuedProof } from './attach-session.js'
 
 /** attach 해소의 `pane.process_info` 한 건 시한 — 세션 조회와 같다. */
 const ATTACH_PROCESS_INFO_TIMEOUT_MS = 1_000
@@ -126,6 +126,8 @@ export type SessionLinkHooks = {
   claudeExecutable?: () => string | null
   /** 시험용 — `claude agents --json --all` 실행기를 바꾼다. */
   runClaudeAgents?: AgentsRun
+  /** 시험용 — 옛 참조 → 푼 값 연결 증명(fix3 F13)을 바꾼다. */
+  proveContinued?: ContinuedProof
 }
 
 export class SessionLink {
@@ -183,9 +185,11 @@ export class SessionLink {
 
   /** herdr 가 참조를 주지 않는 claude pane 의 세션 해소 (LIFE-769) — 세션 조회 한 번마다 한 판(`resolveAttachSessions`). */
   readonly attach: AttachSessionResolver
+  private readonly proveContinued: ContinuedProof
 
   constructor(hooks: SessionLinkHooks) {
     this.hooks = hooks
+    this.proveContinued = hooks.proveContinued ?? makeContinuedProof()
     this.attach = new AttachSessionResolver({
       processInfo: (paneId) => this.processInfo(paneId),
       runAgents: hooks.runClaudeAgents ?? makeRunClaudeAgents(),
@@ -592,16 +596,20 @@ export class SessionLink {
   async resolveAttachSessions(generation: number = this.generation): Promise<void> {
     try {
       // 판 시작 때의 해소 세대를 들고 간다 — 적용 때 같은 pane 만 적는다(fix2 F11).
-      const candidates = this.store.attachCandidates()
-      const epochs = new Map(candidates.map((candidate) => [candidate.paneId, candidate.epoch]))
-      const results = await this.attach.round(candidates.map((candidate) => candidate.paneId))
+      const candidates = new Map(this.store.attachCandidates().map((candidate) => [candidate.paneId, candidate]))
+      const results = await this.attach.round([...candidates.keys()])
       if (results === null || generation !== this.generation || this.stopped) return
-      const applied = this.store.applyAttachSessions(results.flatMap((result) => {
-        const epoch = epochs.get(result.paneId)
-        return epoch === undefined ? [] : [{ ...result, epoch }]
-      }))
+      // 연결이 증명된 옛 참조(fix3 F13) — 판 시작 때의 옛 참조가 푼 값에 `continued-in` 으로 닿으면 그 id 를 내보낸다. 파일 읽기는 store 밖(여기)에서.
+      const applying = results.flatMap((result) => {
+        const candidate = candidates.get(result.paneId)
+        if (candidate === undefined) return []
+        const { previous, epoch } = candidate
+        const provenId = result.sessionId !== null && previous !== null ? this.proveContinued({ previous, resolvedId: result.sessionId }) : null
+        return [{ ...result, epoch, sessionId: provenId ?? result.sessionId, proven: provenId === null ? null : previous, resolved: result.sessionId }]
+      })
+      const applied = this.store.applyAttachSessions(applying)
       if (!applied.changed) return
-      log('attach_session.applied', { note: applied.note, results })
+      log('attach_session.applied', { note: applied.note, results: applying.map(({ paneId, sessionId, resolved, reason }) => ({ paneId, sessionId, resolved, reason })) })
       this.hooks.onChange()
     } catch (error) {
       log('attach_session.failed', { error: String(error) })

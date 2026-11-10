@@ -16,6 +16,11 @@
 //     옛 파일에 `continued-in` 없음). 그래서 푼 값을 argv 로 캐시하지 않는다
 //   · `sessionId` 가 UUID 모양이 아니거나, 명령 실패·시간 초과·JSON 아님·배열 아님이면 없음
 //   · 못 풀면 **없음**이다 — store 에 남은 `/bg` 전 참조로 떨어지지 않는다(게이트 ⓪ 갈래 (가), store.ts `effectiveSession`)
+//   · **연결이 증명된 옛 참조만 쓴다**(fix3 F13): 옛 참조 S0 의 기록이 LIFE-766 따라가기(`followContinued`, `empty: 'follow'`)로 정확히 푼 값 X 에 닿으면
+//     밖으로 S0 을 내보낸다(출처는 `corral:claude-attach`) — 고르기는 766 따라가기에 맡긴다(X 가 빌 동안 S0 대화, 자라면 X). `/bg` 직후 X 파일은 첫 입력 전
+//     메타 줄뿐이라(최종 관문 final-2) X 를 바로 내보내면 빈 대화다. 증명이 안 되면(연결 없음·다른 대상·파일 없음·모름·읽기 오류) X 그대로.
+//     증명 범위 = 766 따라가기가 닿는 범위(같은 폴더, 연쇄 `CONTINUED_CHAIN_MAX` 까지)이고 **끝이 X 여야** 한다 — 지나쳐 가거나 못 미치면 증명 아님.
+//     옛 참조가 없으면(corral 재시작 등 경우 ②) 첫 입력 전 빈 대화가 남는다 — 앞 세션을 찾으려고 폴더를 훑지 않는다(SURFACE 한계 ⑥)
 //
 // **문서에 없는 관측에 기댄다** (Claude Code 2.1.296 · herdr 0.9.0, corral-specs LIFE-769 `raw/coordinator/probe1/`):
 //   · 실행 중인 bg 세션을 `claude --resume <UUID>` 로 열면 프로세스 argv 가 `claude attach <짧은 id>` 로 바뀐다(P9)
@@ -24,9 +29,13 @@
 //   · `claude agents --json --all` 의 background 행 모양 `{id, kind:"background", sessionId, name, pid}` (P3)
 // 남는 한계는 `mobile/SURFACE.md` 「attach pane 의 세션 해소」.
 
+import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { isRecord, readRecord, readString } from '../../../shared/json.js'
+import type { AgentSessionRef } from '../../../shared/types.js'
+import { resolveTranscriptFile } from '../../transcript.js'
+import { followContinued } from '../../transcript-continued.js'
 
 /** `claude agents --json --all` 한 번의 시한 — 실측 0.10~0.13 s(`probe1/agents-json-timing.txt`). */
 export const ATTACH_AGENTS_TIMEOUT_MS = 3_000
@@ -178,4 +187,49 @@ function resolveOutcome(input: { ref: string; outcome: AgentsRunOutcome | undefi
     return { ok: false, reason: 'claude agents 출력이 JSON 아님' }
   }
   return resolveAttachRef({ ref: input.ref, agents: parsed })
+}
+
+/** 옛 참조 파일을 다시 찾기까지 — 못 찾은 id 는 이만큼 지나야 다시 훑는다(찾기 한 번 = 프로젝트 폴더 목록 + 폴더당 stat 1). */
+export const ATTACH_PROOF_RETRY_MS = 30_000
+const PROOF_MEMO_MAX = 64
+
+/** 옛 참조 `previous` 의 기록이 `continued-in` 을 따라 정확히 `resolvedId` 에 닿으면 그 옛 id, 아니면 null (fix3 F13). 던지지 않는다 — 모르면 null. */
+export type ContinuedProof = (input: { previous: AgentSessionRef; resolvedId: string }) => string | null
+
+/**
+ * 실제 증명기 — 옛 참조 파일 위치는 id 마다 기억하고(못 찾았으면 `ATTACH_PROOF_RETRY_MS` 뒤 다시), 판마다 그 파일에서 766 따라가기를 다시 걷는다
+ * (안 바뀐 파일은 stat 만 — `transcript-continued.ts`). 판별 규칙은 새로 만들지 않는다.
+ */
+export function makeContinuedProof(input: { locate?: (ref: AgentSessionRef) => string | null; now?: () => number } = {}): ContinuedProof {
+  const locate = input.locate ?? resolveTranscriptFile
+  const now = input.now ?? Date.now
+  const files = new Map<string, { file: string | null; at: number }>()
+  const fileOf = (ref: Extract<AgentSessionRef, { kind: 'id' }>): string | null => {
+    const known = files.get(ref.id)
+    if (known !== undefined && known.file !== null && isFile(known.file)) return known.file
+    if (known !== undefined && known.file === null && now() - known.at < ATTACH_PROOF_RETRY_MS) return null
+    const file = locate(ref)
+    if (files.size >= PROOF_MEMO_MAX) files.clear()
+    files.set(ref.id, { file, at: now() })
+    return file
+  }
+  return ({ previous, resolvedId }) => {
+    if (previous.kind !== 'id' || previous.agent !== 'claude' || previous.id === resolvedId) return null
+    try {
+      const file = fileOf(previous)
+      if (file === null) return null
+      const followed = followContinued({ session: previous, file, empty: 'follow' })
+      return followed.hops.length > 0 && followed.sessionId === resolvedId ? previous.id : null
+    } catch {
+      return null
+    }
+  }
+}
+
+function isFile(file: string): boolean {
+  try {
+    return fs.statSync(file).isFile()
+  } catch {
+    return false
+  }
 }

@@ -855,10 +855,10 @@ export class WorkspaceStore {
   /**
    * corral 이 세션을 풀어야 하는 pane (LIFE-769) — claude 이고 마지막 `agent.list` 가 키 없이 왔다. herdr 가 키를 주는 pane·claude 가 아닌 pane 은 없다.
    */
-  attachCandidates(): Array<{ paneId: string; epoch: number }> {
+  attachCandidates(): Array<{ paneId: string; epoch: number; previous: AgentSessionRef | null }> {
     return [...this.panes.values()]
       .filter((pane) => pane.agent === 'claude' && pane.attach.kind === 'keyless')
-      .map((pane) => ({ paneId: pane.paneId, epoch: pane.attachEpoch }))
+      .map((pane) => ({ paneId: pane.paneId, epoch: pane.attachEpoch, previous: pane.agentSession }))
       .sort((a, b) => a.paneId.localeCompare(b.paneId))
   }
 
@@ -866,12 +866,14 @@ export class WorkspaceStore {
    * 해소 한 판의 답을 적는다 (LIFE-769, `attach-session.ts`). 그 사이 키가 들어왔거나 claude 가 아니게 된 pane 은 건너뛴다 — herdr 값이 이긴다.
    * `sessionId` null = 못 풀었다 → 없음(옛 참조로 떨어지지 않는다).
    * `epoch` = 그 판이 시작할 때의 해소 세대(`attachCandidates`). 그 사이 agent 가 바뀌었으면(세대가 다르면) 다른 클라이언트에서 나온 값이라 버린다(fix2 F11).
+   * `proven` = 연결이 증명된 옛 참조(fix3 F13) — `sessionId` 가 그 id 다. 판 시작 때의 옛 참조가 그 사이 바뀌었으면 그 증명은 이 pane 의 것이 아니라 적지 않는다.
    */
-  applyAttachSessions(results: ReadonlyArray<{ paneId: string; epoch: number; sessionId: string | null }>): ApplyResult {
+  applyAttachSessions(results: ReadonlyArray<{ paneId: string; epoch: number; sessionId: string | null; proven?: AgentSessionRef | null }>): ApplyResult {
     const changedIds: string[] = []
     for (const result of results) {
       const pane = this.panes.get(result.paneId)
       if (pane === undefined || pane.agent !== 'claude' || pane.attach.kind !== 'keyless' || pane.attachEpoch !== result.epoch) continue
+      if (result.proven != null && !sameAgentSession(pane.agentSession, result.proven)) continue
       const session: AgentSessionRef | null = result.sessionId === null ? null : { kind: 'id', agent: 'claude', source: ATTACH_SESSION_SOURCE, id: result.sessionId }
       if (sameAgentSession(pane.attach.session, session)) continue
       this.panes.set(result.paneId, { ...pane, attach: { kind: 'keyless', session } })
@@ -1441,6 +1443,7 @@ function pickSessionWithClock(input: {
  * herdr 가 키를 주지 않는 claude pane 은 corral 이 푼 값(없으면 null)이고, **store 에 남은 옛 참조로 떨어지지 않는다**
  * (게이트 ⓪ 갈래 (가) — 옛 참조는 `/bg` 전 세션이라 다른 세션일 수 있다). 그 밖은 herdr 값 그대로.
  */
+// 연결이 증명된 옛 참조(fix3 F13)는 해소기가 `session` 자리에 그 id 로 넣는다 — 여기서 옛 참조를 따로 고르지 않는다.
 function effectiveSession(pane: Pane): AgentSessionRef | null {
   if (pane.agent === 'claude' && pane.attach.kind === 'keyless') return pane.attach.session
   return pane.agentSession

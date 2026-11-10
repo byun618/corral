@@ -10,6 +10,7 @@ import { CHAT_SESSIONS, chatListState } from './chat-fixture.js'
 import { answerMatches, answerRecords, cleanAnswers, observedSessionKey, recordedAnswers, INPUT_IDS_MAX, INPUT_QUEUE_MAX, InputHub, type FileResolution, type InputBackend, type InputWire, type KeyResult, type PaneObservation, type ScreenRead, type SendResult } from './input.js'
 import { activeQuestion, KEY, matchQuestion, questionDigest } from './keys.js'
 import type { MobileAgentKind } from './list.js'
+import { ATTACH_SESSION_SOURCE } from '../../shared/types.js'
 
 const cleanups: (() => void)[] = []
 afterEach(() => {
@@ -2837,5 +2838,33 @@ describe('LIFE-754 Claude 2.1.296 문항 글 줄 앞 `│` — 실물 화면(bar
     t.hub.answer({ device: 'd1', id: 'l754-other', channel: 'c1', question: 60, call: 'toolu-other', digest: questionDigest(questionsOf(item)), answers: [{ choices: [0], other: null }] })
     expect(await t.settled('l754-other')).toMatchObject({ state: 'failed', reason: 'question_changed' })
     expect(t.backend.sends).toHaveLength(0)
+  })
+})
+
+describe('LIFE-769 — corral 이 `claude attach` 로 푼 세션의 채널 (합성: herdr 관측이 키 없음인 pane)', () => {
+  // attach pane 은 herdr 가 참조를 주지 않는다(corral-specs LIFE-769 probe2) — 관측 세션은 null 이고, 목록 세션은 해소기가 준 `corral:claude-attach` 참조다.
+  const asAttach = (t: ReturnType<typeof setup>) => {
+    const pane = paneOf(t.state, 'c1')
+    if (pane.agentSession !== null && pane.agentSession.kind === 'id') pane.agentSession = { ...pane.agentSession, source: ATTACH_SESSION_SOURCE }
+    t.backend.observedSession = () => null
+  }
+
+  it('herdr 관측이 null 이어도 같은 상태다 → delivered (base 는 herdr_session 으로 거절)', async () => {
+    const t = setup()
+    asAttach(t)
+    t.hub.send({ device: 'd1', id: 'l769-0000-0001', channel: 'c1', text: 'attach 지시' })
+    expect(await t.settled('l769-0000-0001')).toMatchObject({ state: 'delivered' })
+    expect(t.backend.prompts).toHaveLength(1)
+  })
+
+  it('그 사이 herdr 가 키를 주기 시작하면(다른 세션일 수 있다) 넣지 않는다 — fail-closed 유지', async () => {
+    const t = setup()
+    asAttach(t)
+    let calls = 0
+    t.backend.observedSession = () => ((calls += 1) <= 3 ? null : OLD_SESSION)
+    t.hub.send({ device: 'd1', id: 'l769-0000-0002', channel: 'c1', text: 'attach 지시' })
+    expect(await t.settled('l769-0000-0002')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.logs.filter((log) => log.tag === 'mobile.input_target_changed').map((log) => log.fields.check)).toEqual(['herdr_session'])
+    expect(t.backend.prompts).toHaveLength(0)
   })
 })

@@ -40,7 +40,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import type { TerminalIdentity } from '../adapter/index.js'
 import { bodyIdentity, countSubmissions, normalizeBody } from '../../runtime/terminal/agent.js'
-import type { AgentSessionRef } from '../../shared/types.js'
+import { ATTACH_SESSION_SOURCE, type AgentSessionRef } from '../../shared/types.js'
 import { parseGrokUpdates, parseTail } from '../transcript-parse.js'
 import { codexQuestionReplies, grokAnsweredMessage, grokAnswerSegments, lineAtoms, type ChatItem } from '../chat-parse.js'
 import {
@@ -120,7 +120,12 @@ export type InputMark = { revision: number; idleMs: number }
  * (`store.ts readAgentSession`) source·kind·값으로 맞춘다. `agent` 는 관측 봉투에 없어 쓰지 않는다(source 가 `herdr:<agent>` 라 갈린다).
  */
 export const observedSessionKey = (session: { source: string; kind: string; value: string }): string => `${session.source}\u0000${session.kind}\u0000${session.value}`
-const boundSessionKey = (session: AgentSessionRef): string => observedSessionKey({ source: session.source, kind: session.kind, value: session.kind === 'id' ? session.id : session.path })
+/**
+ * 접수 때 묶는 herdr 관측 키. corral 이 `claude attach` 로 푼 세션(LIFE-769 `ATTACH_SESSION_SOURCE`)은 herdr 가 참조를 주지 않는 pane 의 것이라
+ * 관측 키가 **없음(null)** 이어야 같은 상태다 — herdr 가 그 사이 키를 주기 시작하면 다른 세션으로 보고 거절한다(fail-closed 유지).
+ */
+const boundSessionKey = (session: AgentSessionRef): string | null =>
+  session.source === ATTACH_SESSION_SOURCE ? null : observedSessionKey({ source: session.source, kind: session.kind, value: session.kind === 'id' ? session.id : session.path })
 export type SendResult = 'sent' | 'refused' | 'unknown'
 /** 키 한 번의 결과 — `sent` 면 guard 가 쓴 뒤의 입력 revision(다음 키의 울타리, 울타리 없이 보냈으면 null). */
 export type KeyResult = { kind: 'sent'; revision: number | null; anyRevision: number | null } | { kind: 'refused' } | { kind: 'unknown' }
@@ -184,7 +189,7 @@ export type InputHubDeps = {
  * 접수 때 묶은 대상(R1-A5). `observed` = 같은 세션의 herdr 관측 키(LIFE-598 — 효과 직전 `PaneObservation.session` 과 대조).
  * `revision` = 접수 때 herdr 관측의 입력 revision(R0, LIFE-598 r2) — 효과의 울타리는 여기서 허브 자기 쓰기 사슬만 따라간 값(`fenceOf`).
  */
-type Bind = { epoch: string; ptyId: string; session: string; observed: string; revision: number }
+type Bind = { epoch: string; ptyId: string; session: string; observed: string | null; revision: number }
 /** 효과 직전 세션·입력 대조 중 무엇이 걸렸나 — 로그 `mobile.input_target_changed` 에 남겨 실물 회차가 가른다(리뷰 r2 C·R2-C3). */
 type MovedCheck = 'list' | 'pane' | 'herdr_session' | 'input' | 'input_refused'
 /** 허브 자기 쓰기 사슬의 pane 키 — revision 은 PTY 세대마다 새로 센다. */
@@ -889,6 +894,8 @@ export class InputHub {
    * - herdr 관측(LIFE-598): 효과 호출 바로 앞에서 다시 한 `observe` 의 `agent_session`. 목록보다 빨리 바뀌지만 상한이 없다(리뷰 r2 실측 최대 ≈ 6 s) —
    *   접수 뒤 `/clear` 는 revision 울타리가 막고, 이 대조는 접수 **전** `/clear` 를 herdr 만 먼저 안 때를 줍는다.
    *   관측에 세션이 없으면(null) 같은 세션임을 증명 못 한다 — 바뀐 것으로 본다(fail-closed, 기다리지 않으니 블랙홀도 없다).
+   *   예외: corral 이 `claude attach` 로 푼 세션(LIFE-769)은 묶을 때 관측 키가 null 이다(`boundSessionKey`) — 그 pane 은 herdr 가 참조를 주지 않으므로
+   *   null 이 같은 상태이고, 같은 세션인지는 목록 대조(해소기가 세션 조회마다 argv 를 다시 본다)와 revision 울타리가 본다.
    */
   private sessionMoved(entry: Entry, observed: PaneObservation): 'herdr_session' | 'list' | null {
     if (entry.bind === null) return null

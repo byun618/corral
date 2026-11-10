@@ -23,6 +23,10 @@ import { SUBSCRIPTION_TYPES, agentStatusSubscriptions, subjectOf, type PushFrame
 import { HerdrRequestError, request } from './request.js'
 import { Subscription } from './subscription.js'
 import { WorkspaceStore } from './store.js'
+import { AttachSessionResolver, makeRunClaudeAgents, type AgentsRun } from './attach-session.js'
+
+/** attach 해소의 `pane.process_info` 한 건 시한 — 세션 조회와 같다. */
+const ATTACH_PROCESS_INFO_TIMEOUT_MS = 1_000
 
 /** 백오프: equal jitter. 간격이 실제로 벌어지면서 매번 값이 다르다. */
 const BACKOFF_BASE_MS = 200
@@ -115,6 +119,13 @@ export type SessionLinkHooks = {
    * 안 되던 정황을 이 훅이 덮는다. 걷어 낸 드리프트의 note 를 재동기 기록에 함께 싣는다.
    */
   onResync?: (reason: string) => Promise<{ changed: boolean; note: string | null }>
+  /**
+   * `claude attach` pane 의 세션 해소(LIFE-769)에 쓸 claude 실행 파일 — argv[0] 가 절대경로가 아닐 때(보통 `claude`).
+   * 로그인 셸 PATH·설치 폴더 감지 결과를 준다. 없거나 null 이면 그 pane 은 없음.
+   */
+  claudeExecutable?: () => string | null
+  /** 시험용 — `claude agents --json --all` 실행기를 바꾼다. */
+  runClaudeAgents?: AgentsRun
 }
 
 export class SessionLink {
@@ -170,8 +181,17 @@ export class SessionLink {
     droppingPush: false,
   }
 
+  /** herdr 가 참조를 주지 않는 claude pane 의 세션 해소 (LIFE-769) — 세션 조회 한 번마다 한 판(`resolveAttachSessions`). */
+  readonly attach: AttachSessionResolver
+
   constructor(hooks: SessionLinkHooks) {
     this.hooks = hooks
+    this.attach = new AttachSessionResolver({
+      processInfo: (paneId) => this.processInfo(paneId),
+      runAgents: hooks.runClaudeAgents ?? makeRunClaudeAgents(),
+      claudeExecutable: () => hooks.claudeExecutable?.() ?? null,
+      now: () => Date.now(),
+    })
   }
 
   linkState(): LinkState {
@@ -533,6 +553,8 @@ export class SessionLink {
       if (response.error) throw new HerdrRequestError(response.error.code ?? 'error', response.error.message ?? '')
       this.notePollRecovered()
       const result = this.store.applyAgentSessions({ result: response.result, requestedAt })
+      // 키 없는 claude pane 이 있으면 그 세션을 푼다(LIFE-769). 기다리지 않는다 — 조회 주기를 늦추지 않게(해소기는 겹쳐 돌지 않는다).
+      void this.resolveAttachSessions(generation)
       if (!result.changed) return
       log('agent_session.poll.applied', { requestedAt, note: result.note })
       this.hooks.onChange()
@@ -546,6 +568,35 @@ export class SessionLink {
       this.sessionPolling = false
       // 한 주기를 넘지 않게 묶는다 — 벽시계가 되감기면 `startedAt + 주기 - now` 가 되감긴 만큼 커져 체인이 멎는다(리뷰 r3 1).
       this.scheduleSessionPoll(Math.min(AGENT_SESSION_POLL_MS, Math.max(0, startedAt + AGENT_SESSION_POLL_MS - Date.now())))
+    }
+  }
+
+  // --- attach 세션 해소 (LIFE-769) ---------------------------------------------
+
+  private async processInfo(paneId: string): Promise<unknown> {
+    const session = this.session
+    if (session === null) throw new Error('세션 없음')
+    const response = await request(session.socketPath, 'pane.process_info', { pane_id: paneId }, {
+      reason: 'attach-session', timeoutMs: ATTACH_PROCESS_INFO_TIMEOUT_MS, quiet: true,
+    })
+    if (response.error) throw new HerdrRequestError(response.error.code ?? 'error', response.error.message ?? '')
+    return response.result
+  }
+
+  /**
+   * 키 없는 claude pane 마다 argv 를 보고 `claude attach <ref>` 면 세션을 푼다(`attach-session.ts`). 후보가 없으면 아무것도 부르지 않는다.
+   * 바뀐 것이 있을 때만 `onChange`·로그. 세대가 바뀌었으면(끊김·close) 버린다.
+   */
+  async resolveAttachSessions(generation: number = this.generation): Promise<void> {
+    try {
+      const results = await this.attach.round(this.store.attachCandidates())
+      if (results === null || generation !== this.generation || this.stopped) return
+      const applied = this.store.applyAttachSessions(results)
+      if (!applied.changed) return
+      log('attach_session.applied', { note: applied.note, results })
+      this.hooks.onChange()
+    } catch (error) {
+      log('attach_session.failed', { error: String(error) })
     }
   }
 

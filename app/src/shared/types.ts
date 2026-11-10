@@ -231,6 +231,12 @@ export type AgentSessionRef =
   | { kind: 'id'; agent: string; source: string; id: string }
   | { kind: 'path'; agent: string; source: string; path: string }
 
+/**
+ * herdr 가 참조를 주지 않는 `claude attach` pane 의 세션을 corral 이 `claude agents --json` 으로 푼 참조의 `source` (LIFE-769).
+ * herdr 출처(`herdr:claude`)와 가른다 — herdr 관측에는 이 세션이 없다(`adapter/internal/attach-session.ts`).
+ */
+export const ATTACH_SESSION_SOURCE = 'corral:claude-attach'
+
 export type PaneRow = {
   paneId: string
   tabId: string

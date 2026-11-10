@@ -332,6 +332,11 @@ const link = new SessionLink({
   },
   // 재동기 때 worktree→workspace 바인딩도 새로 대조한다 (버그 ①). 행 대조(reconcile)는 이걸 못 본다.
   onResync: (reason) => refreshBindings(reason),
+  // `claude attach` pane 의 세션 해소(LIFE-769) — argv 가 `claude` 뿐이면 감지한 claude 경로로 `claude agents --json --all` 을 띄운다.
+  claudeExecutable: () => {
+    const snapshot = agentDetector?.current()
+    return snapshot?.kind === 'detected' ? (snapshot.agents.find((item) => item.agent === 'claude')?.path ?? null) : null
+  },
 })
 
 /**

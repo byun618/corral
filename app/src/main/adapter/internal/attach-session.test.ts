@@ -106,8 +106,9 @@ async function resolveCase(input: Case) {
   const runAgents = vi.fn(async () => input.agents)
   const processInfoCalls = vi.fn(async () => processInfo(input.argv))
   const resolver = new AttachSessionResolver({ processInfo: processInfoCalls, runAgents, claudeExecutable: () => '/opt/fake/bin/claude' })
-  const results = await resolver.round(store.attachCandidates())
-  store.applyAttachSessions(results ?? [])
+  const candidates = store.attachCandidates()
+  const results = await resolver.round(candidates.map((candidate) => candidate.paneId))
+  store.applyAttachSessions((results ?? []).map((result) => ({ ...result, epoch: candidates.find((candidate) => candidate.paneId === result.paneId)?.epoch ?? -1 })))
   return { store, session: sessionOf(store), runAgents, processInfoCalls, source: paneOf(store)?.agentSession?.source ?? null }
 }
 
@@ -538,7 +539,7 @@ describe('F3 늦은 스냅샷 — 전환보다 먼저 요청된 스냅샷의 옛
     expect(sessionOf(store)).toBeNull()
     store.reconcile(snapshot({ session: OLD }), before)
     expect(sessionOf(store)).toBeNull()
-    expect(store.attachCandidates()).toEqual(['w1:p1'])
+    expect(store.attachCandidates().map((candidate) => candidate.paneId)).toEqual(['w1:p1'])
   })
 
   it('대조: 전환 뒤에 요청된 스냅샷이 키를 실으면 herdr 값이 이긴다 (정상 기동의 훅 보고)', () => {
@@ -555,6 +556,82 @@ describe('F3 늦은 스냅샷 — 전환보다 먼저 요청된 스냅샷의 옛
     store.applyAgentSessions({ result: agentList('absent'), requestedAt: Date.now() + 1 })
     store.reconcile(snapshot({ session: OLD }), before)
     expect(sessionOf(store)).toBeNull()
+  })
+})
+
+describe('fix2 F8 세션 시계 판별 — 사진 요청이 최초 키 시계 **뒤**·전환 **앞** (실제 /bg 직전 재동기 순서, store 합성)', () => {
+  // 위 「F3 늦은 스냅샷」 은 사진을 최초 키 시계보다 이르게 요청해 시계 올림 없이도 물러났다(리뷰 r2 R2-2). 여기는 벽시계를 고정해 순서를 박는다:
+  // t=1000 부팅 스냅샷(키 OLD, 시계 1000) → t=1500 재동기 사진 요청(아직 OLD 키) → t=2000 전환 → 그 사진이 늦게 도착.
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  const PHOTO_AT = 1_500
+  const boot = () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ session: OLD }))
+    vi.setSystemTime(2_000)
+    return store
+  }
+  const detected = (store: WorkspaceStore, data: Record<string, unknown>) => store.applyEvent({ event: 'pane_agent_detected', data: { pane_id: 'w1:p1', workspace_id: 'w1', agent: 'claude', ...data } })
+
+  it('Mb — push `pane_agent_detected` 로 claude 가 붙으면 시계가 올라 그 사진의 OLD 키가 못 되돌린다', () => {
+    const store = boot()
+    detected(store, { released: true })
+    detected(store, {})
+    store.reconcile(snapshot({ session: OLD }), PHOTO_AT)
+    expect(sessionOf(store)).toBeNull()
+  })
+
+  it('Mc — push 를 놓쳐 `agent.list` 로 처음 키 없음을 본 claude pane 도 시계가 올라 못 되돌린다', () => {
+    const store = boot()
+    store.applyAgentSessions({ result: agentList('absent'), requestedAt: 2_000 })
+    store.reconcile(snapshot({ session: OLD }), PHOTO_AT)
+    expect(sessionOf(store)).toBeNull()
+  })
+
+  it('Md — 봉투(`pane_updated`, putPane)로 claude 가 새로 붙어도 시계가 올라 못 되돌린다', () => {
+    const store = boot()
+    detected(store, { released: true })
+    store.applyEvent({ event: 'pane_updated', data: { pane: { pane_id: 'w1:p1', tab_id: 'w1:t1', workspace_id: 'w1', agent_status: 'idle', agent: 'claude' } } })
+    expect(sessionOf(store)).toBeNull()
+    store.reconcile(snapshot({ session: OLD }), PHOTO_AT)
+    expect(sessionOf(store)).toBeNull()
+  })
+
+  it('대조 — 전환 뒤에 요청된 사진의 키는 이긴다(herdr 가 지금 키를 준다)', () => {
+    const store = boot()
+    detected(store, { released: true })
+    detected(store, {})
+    store.reconcile(snapshot({ session: HERDR_NEW }), 2_500)
+    expect(sessionOf(store)).toBe(HERDR_NEW)
+  })
+
+  it('Me — herdr 키가 있는 pane(키 없음 아님)에는 해소 답을 적지 않는다', () => {
+    const store = boot()
+    expect(store.applyAttachSessions([{ paneId: 'w1:p1', epoch: 0, sessionId: BG_X }]).changed).toBe(false)
+    expect(sessionOf(store)).toBe(OLD)
+  })
+})
+
+describe('fix2 F11 해소 세대 — 판 진행 중 agent 가 바뀌면 그 판의 답을 버린다 (store 합성)', () => {
+  it('판 시작 뒤 attach X → 셸 → attach Y: 시작 때 세대로 온 X 답은 적지 않고, 새 세대 답은 적는다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ session: null }))
+    const [start] = store.attachCandidates()
+    expect(start?.paneId).toBe('w1:p1')
+    // 판이 X 를 푸는 동안 pane 이 셸로 나갔다 Y 로 다시 붙는다
+    store.applyEvent({ event: 'pane_agent_detected', data: { pane_id: 'w1:p1', workspace_id: 'w1', agent: 'claude', released: true } })
+    store.applyEvent({ event: 'pane_agent_detected', data: { pane_id: 'w1:p1', workspace_id: 'w1', agent: 'claude' } })
+    expect(store.applyAttachSessions([{ paneId: 'w1:p1', epoch: start?.epoch ?? -1, sessionId: BG_X }]).changed).toBe(false)
+    expect(sessionOf(store)).toBeNull()
+    const [next] = store.attachCandidates()
+    expect(next?.epoch).not.toBe(start?.epoch)
+    expect(store.applyAttachSessions([{ paneId: 'w1:p1', epoch: next?.epoch ?? -1, sessionId: BG_Y }]).changed).toBe(true)
+    expect(sessionOf(store)).toBe(BG_Y)
   })
 })
 

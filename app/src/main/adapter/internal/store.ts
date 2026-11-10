@@ -64,7 +64,9 @@ type Pane = {
   /** 에이전트가 스스로 밝힌 세션 참조 (LIFE-366). 보고 전·셸 탭이면 null. */
   agentSession: AgentSessionRef | null
   /**
-   * **세션 시계** — 지금 `agentSession` 값이 herdr 에게서 나온 **요청 시각** (LIFE-710). 키가 실려 온 때만 움직인다.
+   * **세션 시계** — herdr 가 이 pane 의 세션에 대해 마지막으로 말해 준 답의 **요청 시각** (LIFE-710). 움직이는 때는 둘이다:
+   * ① 키가 실려 온 때(값 = 그 답의 요청 시각) ② LIFE-769 — claude pane 에서 **키 없음**을 처음 본 때: claude 가 새로 붙은 push·봉투(적용 시각·그 봉투의 요청 시각),
+   * `agent.list` 가 키 없이 처음 온 때(그 조회의 요청 시각). ② 는 「지금 키가 없다」 도 herdr 의 답이라서다 — 그보다 먼저 요청된 스냅샷의 옛 키가 키 없음을 되돌리지 못하게.
    * 재동기 스냅샷은 그 스냅샷을 요청한 시각, 세션 조회는 그 조회를 요청한 시각, push·부팅 스냅샷은 적용 시각이다.
    * 이 시계보다 먼저 요청된 답(스냅샷이든 조회든)은 늦게 온 옛 값이라 세션을 덮지 않는다.
    * 알려진 한계: 벽시계(`Date.now()`)라 시스템 시계가 뒤로 감기면 되감긴 만큼 조회 답이 「옛 답」 으로 버려진다
@@ -77,6 +79,11 @@ type Pane = {
    * `keyless` = 마지막 `agent.list` 가 키 없이 왔다 → claude pane 이면 `session`(푼 값, 못 풀었으면 null)이 답이고 `agentSession`(옛 참조)은 쓰지 않는다.
    */
   attach: AttachOverlay
+  /**
+   * 해소 세대 (LIFE-769 fix2 F11) — agent 가 바뀔 때마다 오른다. 해소 판은 시작 때 이 값을 들고 가고(`attachCandidates`) 적용 때 같을 때만 적는다
+   * (`applyAttachSessions`) — 판 진행 중 attach X → 셸 → attach Y 로 바뀌면 X 에서 나온 값을 Y 에 붙이지 않는다.
+   */
+  attachEpoch: number
   knownAt: number
 }
 
@@ -637,6 +644,7 @@ export class WorkspaceStore {
           ...pane,
           agent: next,
           attach: attachAfterAgentChange({ attach: pane.attach, before: pane.agent, next }),
+          attachEpoch: pane.attachEpoch + 1,
           sessionAt: startsClaude({ before: pane.agent, next }) ? Math.max(pane.sessionAt, at) : pane.sessionAt,
         })
         return { changed: true, note: released ? `agent_detected: ${agent} 떠남` : `agent_detected: ${agent}` }
@@ -804,7 +812,8 @@ export class WorkspaceStore {
    * - 행을 **만들지 않는다**: 저장소에 없는 pane(닫힌 pane·닫힌 탭의 pane·보류함 pane 포함)은 건너뛴다 — 되살리지 않는다
    * - `agent_session` 키가 없는 항목은 참조(`agentSession`)를 건드리지 않고(`pickAgentSession` 과 같은 규칙) **키 없음**만 적는다(LIFE-769 —
    *   `attach.keyless`). 그 pane 이 claude 면 밖으로 나가는 값은 옛 참조가 아니라 corral 이 푼 값이다(`effectiveSession`·`applyAttachSessions`).
-   *   세션 시계는 올리지 않는다(키가 실려 온 때만 움직인다) — 먼저 요청된 스냅샷이 옛 키를 늦게 싣고 오면 키 있음으로 돌아가지만 다음 조회(1.5 s)가 다시 키 없음을 본다.
+   *   claude pane 이면 세션 시계를 이 조회의 요청 시각으로 올린다(fix1 F3 — `sessionAt` 주석 ②). 그보다 먼저 요청된 스냅샷의 옛 키는 키 없음을 되돌리지 못한다.
+   *   claude 가 아닌 pane 은 시계를 두고 표시만 한다(밖으로 나가는 값이 같다).
    *   키가 있고 null 이면 그게 답이다
    * - 세션 시계가 이 조회의 요청 시각 이후면(`sessionAt >= requestedAt`) 늦은 답이라 덮지 않는다. 쓰면 시계 = 이 요청 시각
    * - 값이 같으면 바꾸지 않는다 — `changed:false` 면 link 가 화면 갱신 신호를 내지 않는다
@@ -846,19 +855,23 @@ export class WorkspaceStore {
   /**
    * corral 이 세션을 풀어야 하는 pane (LIFE-769) — claude 이고 마지막 `agent.list` 가 키 없이 왔다. herdr 가 키를 주는 pane·claude 가 아닌 pane 은 없다.
    */
-  attachCandidates(): string[] {
-    return [...this.panes.values()].filter((pane) => pane.agent === 'claude' && pane.attach.kind === 'keyless').map((pane) => pane.paneId).sort()
+  attachCandidates(): Array<{ paneId: string; epoch: number }> {
+    return [...this.panes.values()]
+      .filter((pane) => pane.agent === 'claude' && pane.attach.kind === 'keyless')
+      .map((pane) => ({ paneId: pane.paneId, epoch: pane.attachEpoch }))
+      .sort((a, b) => a.paneId.localeCompare(b.paneId))
   }
 
   /**
    * 해소 한 판의 답을 적는다 (LIFE-769, `attach-session.ts`). 그 사이 키가 들어왔거나 claude 가 아니게 된 pane 은 건너뛴다 — herdr 값이 이긴다.
    * `sessionId` null = 못 풀었다 → 없음(옛 참조로 떨어지지 않는다).
+   * `epoch` = 그 판이 시작할 때의 해소 세대(`attachCandidates`). 그 사이 agent 가 바뀌었으면(세대가 다르면) 다른 클라이언트에서 나온 값이라 버린다(fix2 F11).
    */
-  applyAttachSessions(results: ReadonlyArray<{ paneId: string; sessionId: string | null }>): ApplyResult {
+  applyAttachSessions(results: ReadonlyArray<{ paneId: string; epoch: number; sessionId: string | null }>): ApplyResult {
     const changedIds: string[] = []
     for (const result of results) {
       const pane = this.panes.get(result.paneId)
-      if (pane === undefined || pane.agent !== 'claude' || pane.attach.kind !== 'keyless') continue
+      if (pane === undefined || pane.agent !== 'claude' || pane.attach.kind !== 'keyless' || pane.attachEpoch !== result.epoch) continue
       const session: AgentSessionRef | null = result.sessionId === null ? null : { kind: 'id', agent: 'claude', source: ATTACH_SESSION_SOURCE, id: result.sessionId }
       if (sameAgentSession(pane.attach.session, session)) continue
       this.panes.set(result.paneId, { ...pane, attach: { kind: 'keyless', session } })
@@ -1021,6 +1034,7 @@ export class WorkspaceStore {
       focused: value['focused'] === true,
       ...session,
       attach: keyed ? ATTACH_NONE : attachAfterAgentChange({ attach: before?.attach ?? ATTACH_NONE, before: before?.agent ?? null, next: agent }),
+      attachEpoch: (before?.attachEpoch ?? 0) + (before !== null && before.agent !== agent ? 1 : 0),
       // 키 없이 claude 가 새로 붙은 봉투면 세션 시계를 올린다(fix1 F3, `pane_agent_detected` 와 같은 규칙).
       sessionAt: !keyed && startsClaude({ before: before?.agent ?? null, next: agent }) ? Math.max(session.sessionAt, sessionRequestedAt) : session.sessionAt,
       knownAt: before?.knownAt ?? at,

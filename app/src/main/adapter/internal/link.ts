@@ -564,7 +564,9 @@ export class SessionLink {
       if (this.sessionPollDeadline === deadline) this.sessionPollDeadline = null
       this.sessionPolling = false
       // 키 없는 claude pane 이 있으면 그 세션을 푼다(LIFE-769). 기다리지 않는다 — 조회 주기를 늦추지 않게(해소기는 겹쳐 돌지 않는다).
-      // **조회가 실패해도 돈다**(fix1 F3) — 후보는 store 가 이미 안다(전환 때 키 없음으로 시작). 실패가 이어져도 푼 값의 갱신 상한이 한 주기다.
+      // **조회가 실패해도 돈다**(fix1 F3) — 후보는 store 가 이미 안다(전환 push·봉투에서 키 없음으로 시작). 실패가 이어져도 **이미 키 없음인 pane** 은
+      // 푼 값의 갱신 상한이 한 주기다. 전환 push 를 놓치고 조회도 계속 실패하면 그 pane 은 키 없음이 서지 않아 `/bg` 전 키가 남는다 —
+      // 상한 없음 — 조회가 회복될 때까지다. 예외: `/bg` 의 떠남은 받았고 attach 검출만 놓쳤으면 재동기 스냅샷(30 s)이 agent 전환을 보여 키 없음이 선다(fix2 F12).
       if (!this.stopped && generation === this.generation) void this.resolveAttachSessions(generation)
       // 한 주기를 넘지 않게 묶는다 — 벽시계가 되감기면 `startedAt + 주기 - now` 가 되감긴 만큼 커져 체인이 멎는다(리뷰 r3 1).
       this.scheduleSessionPoll(Math.min(AGENT_SESSION_POLL_MS, Math.max(0, startedAt + AGENT_SESSION_POLL_MS - Date.now())))
@@ -589,9 +591,15 @@ export class SessionLink {
    */
   async resolveAttachSessions(generation: number = this.generation): Promise<void> {
     try {
-      const results = await this.attach.round(this.store.attachCandidates())
+      // 판 시작 때의 해소 세대를 들고 간다 — 적용 때 같은 pane 만 적는다(fix2 F11).
+      const candidates = this.store.attachCandidates()
+      const epochs = new Map(candidates.map((candidate) => [candidate.paneId, candidate.epoch]))
+      const results = await this.attach.round(candidates.map((candidate) => candidate.paneId))
       if (results === null || generation !== this.generation || this.stopped) return
-      const applied = this.store.applyAttachSessions(results)
+      const applied = this.store.applyAttachSessions(results.flatMap((result) => {
+        const epoch = epochs.get(result.paneId)
+        return epoch === undefined ? [] : [{ ...result, epoch }]
+      }))
       if (!applied.changed) return
       log('attach_session.applied', { note: applied.note, results })
       this.hooks.onChange()

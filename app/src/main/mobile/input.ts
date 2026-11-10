@@ -895,7 +895,9 @@ export class InputHub {
    *   접수 뒤 `/clear` 는 revision 울타리가 막고, 이 대조는 접수 **전** `/clear` 를 herdr 만 먼저 안 때를 줍는다.
    *   관측에 세션이 없으면(null) 같은 세션임을 증명 못 한다 — 바뀐 것으로 본다(fail-closed, 기다리지 않으니 블랙홀도 없다).
    *   예외: corral 이 `claude attach` 로 푼 세션(LIFE-769)은 묶을 때 관측 키가 null 이다(`boundSessionKey`) — 그 pane 은 herdr 가 참조를 주지 않으므로
-   *   null 이 같은 상태이고, 같은 세션인지는 목록 대조(해소기가 세션 조회마다 argv 를 다시 본다)와 revision 울타리가 본다.
+   *   null 이 같은 상태이고, 같은 세션인지는 목록 대조와 revision 울타리가 본다. 목록 값은 해소기가 세션 조회(1.5 s)마다 argv **와 `claude agents` 의 sessionId** 를
+   *   다시 맞춘 값이다(fix1 F1 — attach 안 `/clear` 가 같은 id 의 sessionId 를 바꾼다). 그래서 접수 **전** `/clear` 를 목록이 아직 모르는 창은 한 조회 주기다
+   *   (herdr 관측이 그 창을 메우는 herdr 출처와 다르다 — SURFACE 「attach pane 의 세션 해소」 남는 한계).
    */
   private sessionMoved(entry: Entry, observed: PaneObservation): 'herdr_session' | 'list' | null {
     if (entry.bind === null) return null

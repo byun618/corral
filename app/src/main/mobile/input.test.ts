@@ -2857,6 +2857,26 @@ describe('LIFE-769 — corral 이 `claude attach` 로 푼 세션의 채널 (합�
     expect(t.backend.prompts).toHaveLength(1)
   })
 
+  it('fix1 F1 — 접수 뒤 해소기가 같은 attach 의 새 sessionId(`/clear`)로 목록을 바꾸면 넣지 않는다(목록 대조)', async () => {
+    const t = setup()
+    asAttach(t)
+    const observe = t.backend.observe.bind(t.backend)
+    let swapped = false
+    t.backend.observe = async (pane) => {
+      const seen = await observe(pane)
+      if (!swapped) {
+        swapped = true
+        const row = paneOf(t.state, 'c1')
+        if (row.agentSession !== null && row.agentSession.kind === 'id') row.agentSession = { ...row.agentSession, id: 'cleared-in-attach' }
+      }
+      return seen
+    }
+    t.hub.send({ device: 'd1', id: 'l769-0000-0003', channel: 'c1', text: 'attach 지시' })
+    expect(await t.settled('l769-0000-0003')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.logs.filter((log) => log.tag === 'mobile.input_target_changed').map((log) => log.fields.check)).toEqual(['list'])
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+
   it('그 사이 herdr 가 키를 주기 시작하면(다른 세션일 수 있다) 넣지 않는다 — fail-closed 유지', async () => {
     const t = setup()
     asAttach(t)

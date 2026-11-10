@@ -11,7 +11,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ATTACH_SESSION_SOURCE } from '../../../shared/types.js'
 import { WorkspaceStore } from './store.js'
-import { ATTACH_RETRY_MS, AttachSessionResolver, makeRunClaudeAgents, readAttachArgv, resolveAttachRef, type AgentsRunOutcome } from './attach-session.js'
+import { AttachSessionResolver, makeRunClaudeAgents, readAttachArgv, resolveAttachRef, type AgentsRunOutcome } from './attach-session.js'
 
 type SubHooks = { label?: string; onPush: (frame: unknown, at: number) => void; onDrop: (reason: string, detail: string) => void }
 
@@ -105,7 +105,7 @@ async function resolveCase(input: Case) {
   store.applyAgentSessions({ result: agentList(input.herdr), requestedAt: Date.now() + 1 })
   const runAgents = vi.fn(async () => input.agents)
   const processInfoCalls = vi.fn(async () => processInfo(input.argv))
-  const resolver = new AttachSessionResolver({ processInfo: processInfoCalls, runAgents, claudeExecutable: () => '/opt/fake/bin/claude', now: () => 0 })
+  const resolver = new AttachSessionResolver({ processInfo: processInfoCalls, runAgents, claudeExecutable: () => '/opt/fake/bin/claude' })
   const results = await resolver.round(store.attachCandidates())
   store.applyAttachSessions(results ?? [])
   return { store, session: sessionOf(store), runAgents, processInfoCalls, source: paneOf(store)?.agentSession?.source ?? null }
@@ -130,12 +130,25 @@ describe('C1 해소 규칙 (합성 — argv·agents 출력을 지어 규칙만 �
     expect((await resolveCase({ herdr: 'absent', old: null, argv: ['claude', 'attach', 'probe-two'], agents: agentsOk() })).session).toBe(BG_Y)
   })
 
+  it('F2 id 접두가 이름보다 먼저 — 접두 한 행이면 이름에 걸리는 다른 행이 있어도 그 행, 접두 둘 이상이면 없음 (claude attach 실측 순서)', () => {
+    // 리뷰 r1 실측 모양: ref 가 한 행 id 의 접두이고, 다른 행의 이름에도 들어 있다(`afb6` ↔ `afb6-collide`)
+    const rows = [...AGENTS, bgRow({ id: '5555aaaa', sessionId: '5555aaaa-5555-4555-8555-555555555555', name: '1111-collide' })]
+    expect(resolveAttachRef({ ref: '1111', agents: rows })).toEqual({ ok: true, sessionId: BG_X })
+    expect(resolveAttachRef({ ref: '1111bbbb', agents: rows })).toEqual({ ok: true, sessionId: BG_X })
+    // 접두가 둘 이상 — 이름으로 내려가지 않고 없음
+    const twoPrefix = [...rows, bgRow({ id: '1111cccc', sessionId: '1111cccc-1111-4111-8111-111111111112', name: 'other' })]
+    expect(resolveAttachRef({ ref: '1111', agents: twoPrefix }).ok).toBe(false)
+    expect(resolveAttachRef({ ref: '1111b', agents: twoPrefix })).toEqual({ ok: true, sessionId: BG_X })
+    // 접두 0 → 이름
+    expect(resolveAttachRef({ ref: 'collide', agents: rows })).toEqual({ ok: true, sessionId: '5555aaaa-5555-4555-8555-555555555555' })
+  })
+
   it('ⓓ name 에 둘 이상·0 → 없음 (interactive 행 이름은 세지 않는다)', async () => {
     expect((await resolveCase({ herdr: 'absent', old: OLD, argv: ['claude', 'attach', 'beta'], agents: agentsOk() })).session).toBeNull()
     expect((await resolveCase({ herdr: 'absent', old: OLD, argv: ['claude', 'attach', 'gamma'], agents: agentsOk() })).session).toBeNull()
     // 'alpha-probe' 는 interactive 행에도 걸리지만 background 는 하나뿐 → 그 행
     expect((await resolveCase({ herdr: 'absent', old: OLD, argv: ['claude', 'attach', 'alpha-probe'], agents: agentsOk() })).session).toBe(BG_X)
-    expect(resolveAttachRef({ ref: 'beta', agents: AGENTS })).toEqual({ ok: false, reason: 'ref 에 맞는 행 2개' })
+    expect(resolveAttachRef({ ref: 'beta', agents: AGENTS })).toEqual({ ok: false, reason: '이름이 ref 를 담는 행 2개' })
   })
 
   it('ⓔ argv `claude agents`·`claude` 단독·다른 하위 명령·셸 → 없음, claude agents 를 부르지 않는다', async () => {
@@ -208,10 +221,10 @@ describe('C1 해소 규칙 (합성 — argv·agents 출력을 지어 규칙만 �
 // --- C5 비용 (합성) -------------------------------------------------------------
 
 describe('C5 비용 — 해소기', () => {
-  const deps = (input: { argv: string[] | null; agents?: () => Promise<AgentsRunOutcome>; executable?: string | null; now?: () => number }) => {
+  const deps = (input: { argv: string[] | null; agents?: () => Promise<AgentsRunOutcome>; executable?: string | null }) => {
     const runAgents = vi.fn(input.agents ?? (async () => agentsOk()))
     const info = vi.fn(async () => processInfo(input.argv))
-    const resolver = new AttachSessionResolver({ processInfo: info, runAgents, claudeExecutable: () => (input.executable === undefined ? '/opt/fake/bin/claude' : input.executable), now: input.now ?? (() => 0) })
+    const resolver = new AttachSessionResolver({ processInfo: info, runAgents, claudeExecutable: () => (input.executable === undefined ? '/opt/fake/bin/claude' : input.executable) })
     return { resolver, runAgents, info }
   }
 
@@ -229,35 +242,23 @@ describe('C5 비용 — 해소기', () => {
     expect(d.runAgents).not.toHaveBeenCalled()
   })
 
-  it('같은 pane·같은 argv 를 푼 뒤에는 다시 부르지 않는다 — argv 가 바뀌면 한 번 더', async () => {
-    let argv = ['claude', 'attach', '1111bbbb']
-    const runAgents = vi.fn(async () => agentsOk())
-    const resolver = new AttachSessionResolver({ processInfo: async () => processInfo(argv), runAgents, claudeExecutable: () => '/opt/fake/bin/claude', now: () => 0 })
-    for (let i = 0; i < 10; i += 1) expect((await resolver.round(['w1:p1']))?.[0]?.sessionId).toBe(BG_X)
-    expect(runAgents).toHaveBeenCalledTimes(1)
-    argv = ['claude', 'attach', '2222cccc']
-    for (let i = 0; i < 10; i += 1) expect((await resolver.round(['w1:p1']))?.[0]?.sessionId).toBe(BG_Y)
-    expect(runAgents).toHaveBeenCalledTimes(2)
-  })
-
-  it(`못 풀면 같은 argv 를 ${ATTACH_RETRY_MS} ms 에 한 번만 다시 부른다`, async () => {
-    let now = 0
-    const d = deps({ argv: ['claude', 'attach', 'nothing'], now: () => now })
-    for (let i = 0; i < 4; i += 1) {
-      await d.resolver.round(['w1:p1'])
-      now += 1_500
-    }
-    // 0·1.5·3.0·4.5 s → 첫 회만 (5 s 안)
-    expect(d.runAgents).toHaveBeenCalledTimes(1)
-    now = ATTACH_RETRY_MS
-    await d.resolver.round(['w1:p1'])
-    expect(d.runAgents).toHaveBeenCalledTimes(2)
+  it('F1 같은 argv 여도 판마다 다시 푼다 — attach 안 `/clear` 로 같은 id 행의 sessionId 가 바뀌면 다음 판에 새 값 (판당 claude agents 1회)', async () => {
+    const argv = ['claude', 'attach', '1111bbbb']
+    let rows: unknown = AGENTS
+    const runAgents = vi.fn(async () => agentsOk(rows))
+    const resolver = new AttachSessionResolver({ processInfo: async () => processInfo(argv), runAgents, claudeExecutable: () => '/opt/fake/bin/claude' })
+    for (let i = 0; i < 3; i += 1) expect((await resolver.round(['w1:p1']))?.[0]?.sessionId).toBe(BG_X)
+    expect(runAgents).toHaveBeenCalledTimes(3)
+    // `/clear` 실측 모양(리뷰 r1 claude-r1-clear-in-attach.txt): 같은 `id`, 새 `sessionId`
+    rows = AGENTS.map((row) => ('id' in row && row.id === '1111bbbb' ? { ...row, sessionId: HERDR_NEW } : row))
+    expect((await resolver.round(['w1:p1']))?.[0]?.sessionId).toBe(HERDR_NEW)
+    expect(runAgents).toHaveBeenCalledTimes(4)
   })
 
   it('여러 pane 이 한 판에 같은 실행 파일이면 claude agents 는 한 번', async () => {
     const runAgents = vi.fn(async () => agentsOk())
     const argvByPane: Record<string, string[]> = { a: ['claude', 'attach', '1111bbbb'], b: ['claude', 'attach', '2222cccc'] }
-    const resolver = new AttachSessionResolver({ processInfo: async (paneId) => processInfo(argvByPane[paneId] ?? null), runAgents, claudeExecutable: () => '/opt/fake/bin/claude', now: () => 0 })
+    const resolver = new AttachSessionResolver({ processInfo: async (paneId) => processInfo(argvByPane[paneId] ?? null), runAgents, claudeExecutable: () => '/opt/fake/bin/claude' })
     const results = await resolver.round(['a', 'b'])
     expect(results?.map((r) => r.sessionId)).toEqual([BG_X, BG_Y])
     expect(runAgents).toHaveBeenCalledTimes(1)
@@ -282,7 +283,7 @@ describe('C5 비용 — 해소기', () => {
   })
 
   it('process_info 실패는 그 pane 만 없음', async () => {
-    const resolver = new AttachSessionResolver({ processInfo: async () => { throw new Error('pane_not_found') }, runAgents: async () => agentsOk(), claudeExecutable: () => null, now: () => 0 })
+    const resolver = new AttachSessionResolver({ processInfo: async () => { throw new Error('pane_not_found') }, runAgents: async () => agentsOk(), claudeExecutable: () => null })
     expect((await resolver.round(['w1:p1']))?.[0]?.sessionId).toBeNull()
   })
 })
@@ -327,6 +328,7 @@ describe('C2 전환 — SessionLink 세션 조회 + 해소 (상한 = 세션 조�
   type World = { herdr: string | 'absent' | 'none-listed'; agent: string | null; argv: string[] | null }
   let world: World
   let agentsOutcome: AgentsRunOutcome
+  let listFails = false
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -334,10 +336,11 @@ describe('C2 전환 — SessionLink 세션 조회 + 해소 (상한 = 세션 조�
     logMock.mockClear()
     subs.length = 0
     agentsOutcome = agentsOk()
+    listFails = false
     world = { herdr: OLD, agent: 'claude', argv: ['claude', '--model', 'm', '--session-id', OLD] }
     requestMock.mockImplementation(async (_socket: string, method: string) => {
       if (method === 'session.snapshot') return { id: 's', result: snapshot({ session: world.herdr === 'absent' || world.herdr === 'none-listed' ? null : world.herdr, agent: world.agent }) }
-      if (method === 'agent.list') return { id: 'a', result: agentList(world.agent === null ? 'none-listed' : world.herdr) }
+      if (method === 'agent.list') return listFails ? { id: 'a', error: { code: 'internal', message: 'boom' } } : { id: 'a', result: agentList(world.agent === null ? 'none-listed' : world.herdr) }
       if (method === 'pane.process_info') return { id: 'p', result: processInfo(world.argv) }
       throw new Error(`예상 밖 호출 ${method}`)
     })
@@ -382,6 +385,9 @@ describe('C2 전환 — SessionLink 세션 조회 + 해소 (상한 = 세션 조�
     await tick()
     expect(paneOf(link.store)?.agent).toBeNull()
     goAttach('1111bbbb')
+    // fix1 F3 — 붙는 순간(조회 전)에도 `/bg` 전 herdr 참조(OLD)가 아니라 없음
+    expect(paneOf(link.store)?.agent).toBe('claude')
+    expect(sessionOf(link.store)).toBeNull()
     await tick()
     expect(sessionOf(link.store)).toBe(BG_X)
     expect(paneOf(link.store)?.agentSession?.source).toBe(ATTACH_SESSION_SOURCE)
@@ -448,6 +454,35 @@ describe('C2 전환 — SessionLink 세션 조회 + 해소 (상한 = 세션 조�
     link.close()
   })
 
+  it('F1 같은 attach 에서 `/clear`(같은 id, 새 sessionId) → 한 주기 뒤 새 세션', async () => {
+    const link = await liveLink()
+    goBg()
+    await tick()
+    goAttach('1111bbbb')
+    await tick()
+    expect(sessionOf(link.store)).toBe(BG_X)
+    agentsOutcome = agentsOk(AGENTS.map((row) => ('id' in row && row.id === '1111bbbb' ? { ...row, sessionId: HERDR_NEW } : row)))
+    await tick()
+    expect(sessionOf(link.store)).toBe(HERDR_NEW)
+    link.close()
+  })
+
+  it('F3 `agent.list` 조회가 계속 실패해도 붙는 순간 없음 · 한 주기 뒤 해소 값 · `/clear` 도 한 주기 뒤 (상한 = 조회 주기)', async () => {
+    const link = await liveLink()
+    goBg()
+    await tick()
+    listFails = true
+    goAttach('1111bbbb')
+    expect(sessionOf(link.store)).toBeNull()
+    await tick()
+    expect(sessionOf(link.store)).toBe(BG_X)
+    agentsOutcome = agentsOk(AGENTS.map((row) => ('id' in row && row.id === '1111bbbb' ? { ...row, sessionId: HERDR_NEW } : row)))
+    await tick()
+    expect(sessionOf(link.store)).toBe(HERDR_NEW)
+    expect(tagsOf('agent_session.poll.failed')).toBe(1)
+    link.close()
+  })
+
   it('ⓕ corral 재시작(빈 store) 뒤 attach pane → 한 주기 뒤 해소 값 (base 는 no_session)', async () => {
     world = { herdr: 'absent', agent: 'claude', argv: ['claude', 'attach', '1111bbbb'] }
     const link = await liveLink()
@@ -457,15 +492,16 @@ describe('C2 전환 — SessionLink 세션 조회 + 해소 (상한 = 세션 조�
     link.close()
   })
 
-  it('C5 같은 pane·같은 argv 는 여러 주기에 claude agents 한 번 · process_info 는 주기마다 한 건', async () => {
+  it('C5 attach pane 이 있으면 주기마다 process_info 한 건·claude agents 한 번(상한 = 세션 조회 주기, fix1 F1 로 캐시 없음)', async () => {
     const link = await liveLink()
     goBg()
     await tick()
     goAttach('1111bbbb')
     requestMock.mockClear()
+    runAgents.mockClear()
     for (let i = 0; i < 8; i += 1) await tick()
     expect(sessionOf(link.store)).toBe(BG_X)
-    expect(runAgents).toHaveBeenCalledTimes(1)
+    expect(runAgents).toHaveBeenCalledTimes(8)
     expect(infoCalls()).toBe(8)
     link.close()
   })
@@ -486,6 +522,41 @@ describe('C2 전환 — SessionLink 세션 조회 + 해소 (상한 = 세션 조�
 })
 
 // --- C3 herdr 상태 무변경 ---------------------------------------------------------
+
+describe('F3 늦은 스냅샷 — 전환보다 먼저 요청된 스냅샷의 옛 키는 키 없음을 되돌리지 못한다 (store, 합성)', () => {
+  const setup = () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ session: OLD }))
+    store.applyEvent({ event: 'pane_agent_detected', data: { pane_id: 'w1:p1', workspace_id: 'w1', agent: 'claude', released: true } })
+    const before = Date.now() - 1_000 // `/bg` 전에 요청된 재동기 사진
+    store.applyEvent({ event: 'pane_agent_detected', data: { pane_id: 'w1:p1', workspace_id: 'w1', agent: 'claude' } })
+    return { store, before }
+  }
+
+  it('push 로 claude 가 붙은 뒤 먼저 요청된 스냅샷이 OLD 키를 싣고 와도 없음 그대로', () => {
+    const { store, before } = setup()
+    expect(sessionOf(store)).toBeNull()
+    store.reconcile(snapshot({ session: OLD }), before)
+    expect(sessionOf(store)).toBeNull()
+    expect(store.attachCandidates()).toEqual(['w1:p1'])
+  })
+
+  it('대조: 전환 뒤에 요청된 스냅샷이 키를 실으면 herdr 값이 이긴다 (정상 기동의 훅 보고)', () => {
+    const { store } = setup()
+    store.reconcile(snapshot({ session: HERDR_NEW }), Date.now() + 1)
+    expect(sessionOf(store)).toBe(HERDR_NEW)
+    expect(store.attachCandidates()).toEqual([])
+  })
+
+  it('push 를 놓쳐 agent.list 로 처음 키 없음을 본 경우도 먼저 요청된 스냅샷이 되돌리지 못한다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ session: OLD }))
+    const before = Date.now() - 1_000
+    store.applyAgentSessions({ result: agentList('absent'), requestedAt: Date.now() + 1 })
+    store.reconcile(snapshot({ session: OLD }), before)
+    expect(sessionOf(store)).toBeNull()
+  })
+})
 
 describe('C3 herdr 상태 무변경 — corral 은 세션 보고를 부르지 않는다', () => {
   const root = path.resolve(import.meta.dirname, '../../..')

@@ -8,8 +8,12 @@
 // 해소 규칙 (01-criteria C1):
 //   · argv: foreground 프로세스 중 argv[0] 기본이름 `claude` 인 것이 **모두** `claude attach <ref>` 꼴이고 `<ref>` 가 하나일 때만.
 //     foreground 에는 MCP 자식(node 등)도 같이 실린다(워커 사전 실측 `raw/claude/pre/snap-1-after-prompt.txt`) — 첫 프로세스로 고르지 않는다
-//   · `<ref>` 가 background 행의 `id` 와 같으면 그 행, 아니면 `name` 에 (대소문자 무시) 포함되는 background 행이 **하나일 때만**.
-//     둘 이상·0 이면 없음(이름은 유일하지 않다 — 00-analysis-grok §5). `--cwd` 필터는 쓰지 않는다(background 행이 빠졌다 — 00-analysis P3)
+//   · claude 와 같은 우선순위(fix1 F2 — `claude attach` 는 id 접두를 이름보다 먼저 받는다, 리뷰 r1 실측 `raw/review/claude-r1-snaps.txt`):
+//     background 행 중 `id` 가 `<ref>` 로 **시작**하는 행(정확 일치 포함)이 하나라도 있으면 그 집합만 보고 정확히 1개일 때만 그 행. 둘 이상이면 없음.
+//     0개일 때만 `name` 에 (대소문자 무시) 포함되는 background 행이 **하나일 때만**. 둘 이상·0 이면 없음(이름은 유일하지 않다 — 00-analysis-grok §5).
+//     `--cwd` 필터는 쓰지 않는다(background 행이 빠졌다 — 00-analysis P3)
+//   · **판마다 다시 푼다**(fix1 F1): 같은 argv 여도 attach 안 `/clear` 가 같은 `id` 행의 `sessionId` 를 바꾼다(리뷰 r1 실측 `claude-r1-clear-in-attach.txt` —
+//     옛 파일에 `continued-in` 없음). 그래서 푼 값을 argv 로 캐시하지 않는다
 //   · `sessionId` 가 UUID 모양이 아니거나, 명령 실패·시간 초과·JSON 아님·배열 아님이면 없음
 //   · 못 풀면 **없음**이다 — store 에 남은 `/bg` 전 참조로 떨어지지 않는다(게이트 ⓪ 갈래 (가), store.ts `effectiveSession`)
 //
@@ -28,12 +32,6 @@ import { isRecord, readRecord, readString } from '../../../shared/json.js'
 export const ATTACH_AGENTS_TIMEOUT_MS = 3_000
 /** 출력 상한 — 행 수십 개면 수 KB 다. */
 export const ATTACH_AGENTS_MAX_BYTES = 1024 * 1024
-/**
- * 못 푼 (pane, argv) 를 다시 풀어 보는 최소 간격. 푼 것은 argv 가 바뀌기 전까지 다시 부르지 않는다
- * (짧은 id 는 그 세션 UUID 의 앞자리라 argv 가 같으면 답이 같다).
- */
-export const ATTACH_RETRY_MS = 5_000
-
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type AttachArgv =
@@ -72,10 +70,11 @@ export type AttachResolution = { ok: true; sessionId: string } | { ok: false; re
 export function resolveAttachRef(input: { ref: string; agents: unknown }): AttachResolution {
   if (!Array.isArray(input.agents)) return { ok: false, reason: 'agents 출력이 배열 아님' }
   const rows = input.agents.filter((row): row is Record<string, unknown> => isRecord(row) && row['kind'] === 'background')
-  const byId = rows.filter((row) => readString(row, 'id') === input.ref)
+  const byIdPrefix = rows.filter((row) => (readString(row, 'id') ?? '').startsWith(input.ref))
+  if (byIdPrefix.length > 1) return { ok: false, reason: `id 가 ref 로 시작하는 행 ${byIdPrefix.length}개` }
   const needle = input.ref.toLowerCase()
-  const matched = byId.length > 0 ? byId : rows.filter((row) => (readString(row, 'name') ?? '').toLowerCase().includes(needle))
-  if (matched.length !== 1) return { ok: false, reason: matched.length === 0 ? 'ref 에 맞는 행 없음' : `ref 에 맞는 행 ${matched.length}개` }
+  const matched = byIdPrefix.length === 1 ? byIdPrefix : rows.filter((row) => (readString(row, 'name') ?? '').toLowerCase().includes(needle))
+  if (matched.length !== 1) return { ok: false, reason: matched.length === 0 ? 'ref 에 맞는 행 없음' : `이름이 ref 를 담는 행 ${matched.length}개` }
   const sessionId = readString(matched[0] ?? {}, 'sessionId')
   if (sessionId === null || !UUID.test(sessionId)) return { ok: false, reason: 'sessionId 가 UUID 모양 아님' }
   return { ok: true, sessionId }
@@ -109,20 +108,17 @@ export type AttachResolverDeps = {
   runAgents: AgentsRun
   /** argv[0] 가 절대경로가 아닐 때 쓸 claude 실행 파일(로그인 셸 PATH·설치 폴더 감지 결과). 모르면 null → 없음. */
   claudeExecutable: () => string | null
-  now: () => number
 }
 
 export type AttachRoundResult = { paneId: string; sessionId: string | null; reason: string | null }
 
-type Cached = { argvKey: string; resolution: AttachResolution; at: number }
-
 /**
- * 한 판 = 후보 pane 마다 `pane.process_info` 한 건 + (필요할 때만) 실행 파일마다 `claude agents --json --all` 한 건.
- * 겹쳐 돌지 않는다(진행 중이면 그 판은 건너뛴다 — null). 후보가 없으면 아무것도 부르지 않는다.
+ * 한 판 = 후보 pane 마다 `pane.process_info` 한 건 + argv 가 attach 인 pane 이 있으면 실행 파일마다 `claude agents --json --all` 한 건(pane 들이 나눠 쓴다).
+ * 겹쳐 돌지 않는다(진행 중이면 그 판은 건너뛴다 — null). 후보가 없거나 attach argv 가 없으면 `claude agents` 를 부르지 않는다.
+ * 캐시가 없다 — 같은 argv 여도 판마다 다시 푼다(fix1 F1). 빈도 상한 = 판의 빈도(세션 조회 주기 1.5 s)에 실행 파일당 1회.
  */
 export class AttachSessionResolver {
   private readonly deps: AttachResolverDeps
-  private readonly cache = new Map<string, Cached>()
   private running = false
   /** 계측·시험용 — `claude agents` 를 띄운 횟수. */
   agentsCalls = 0
@@ -132,7 +128,6 @@ export class AttachSessionResolver {
   }
 
   async round(paneIds: readonly string[]): Promise<AttachRoundResult[] | null> {
-    for (const key of [...this.cache.keys()]) if (!paneIds.includes(key)) this.cache.delete(key)
     if (paneIds.length === 0) return []
     if (this.running) return null
     this.running = true
@@ -144,36 +139,28 @@ export class AttachSessionResolver {
           return { paneId, argv: { kind: 'none', reason: `process_info 실패: ${String(error).slice(0, 120)}` } satisfies AttachArgv }
         }
       }))
-      const now = this.deps.now()
-      const pending: Array<{ paneId: string; ref: string; executable: string | null; argvKey: string }> = []
+      const outputs = new Map<string, Promise<AgentsRunOutcome>>()
+      const results: AttachRoundResult[] = []
       for (const { paneId, argv } of argvs) {
         if (argv.kind === 'none') {
-          this.cache.delete(paneId)
+          results.push({ paneId, sessionId: null, reason: argv.reason })
           continue
         }
-        const argvKey = `${argv.argv0}\u0000${argv.ref}`
-        const cached = this.cache.get(paneId)
-        if (cached !== undefined && cached.argvKey === argvKey && (cached.resolution.ok || now - cached.at < ATTACH_RETRY_MS)) continue
         const executable = path.isAbsolute(argv.argv0) ? argv.argv0 : this.deps.claudeExecutable()
-        pending.push({ paneId, ref: argv.ref, executable, argvKey })
+        if (executable === null) {
+          results.push({ paneId, sessionId: null, reason: 'claude 실행 파일 없음' })
+          continue
+        }
+        let output = outputs.get(executable)
+        if (output === undefined) {
+          this.agentsCalls += 1
+          output = this.deps.runAgents({ executable })
+          outputs.set(executable, output)
+        }
+        const resolution = resolveOutcome({ ref: argv.ref, outcome: await output })
+        results.push(resolution.ok ? { paneId, sessionId: resolution.sessionId, reason: null } : { paneId, sessionId: null, reason: resolution.reason })
       }
-      const outputs = new Map<string, Promise<AgentsRunOutcome>>()
-      for (const item of pending) {
-        if (item.executable === null || outputs.has(item.executable)) continue
-        this.agentsCalls += 1
-        outputs.set(item.executable, this.deps.runAgents({ executable: item.executable }))
-      }
-      for (const item of pending) {
-        const resolution: AttachResolution = item.executable === null
-          ? { ok: false, reason: 'claude 실행 파일 없음' }
-          : resolveOutcome({ ref: item.ref, outcome: await outputs.get(item.executable) })
-        this.cache.set(item.paneId, { argvKey: item.argvKey, resolution, at: now })
-      }
-      return argvs.map(({ paneId, argv }) => {
-        const cached = argv.kind === 'none' ? undefined : this.cache.get(paneId)
-        if (cached === undefined) return { paneId, sessionId: null, reason: argv.kind === 'none' ? argv.reason : '해소 없음' }
-        return cached.resolution.ok ? { paneId, sessionId: cached.resolution.sessionId, reason: null } : { paneId, sessionId: null, reason: cached.resolution.reason }
-      })
+      return results
     } finally {
       this.running = false
     }

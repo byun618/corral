@@ -172,16 +172,20 @@
   **남는 한계**: ① 옛 소유 프로세스가 이미 죽은 뒤 처음 읽으면(앱 재시작 등) 시작 시각을 몰라 이전 세대를 거르지 못한다 — 강제 종료·재개·`←` 가 겹치고 재개가 `stopped` 를 안 쓴 종류일 때만 거짓 「도는 중」이 될 수 있다(실제 기록 미관측). ② 이어 받은 세션을 `claude stop` 하면 셸이 살아 있어도 빠진다(주인이 없다). ③ bg 프로세스가 레지스트리에 오르기 전 잠깐은 빠질 수 있다. ④ 이어 받은 프로세스가 회수·재시작되는 경우(supervisor)는 LIFE-794. ⑤ pid 재사용은 가리지 못한다. ⑥ 통지 없이 멈춘 비동기 에이전트는 이어 받은 bg 가 사는 동안 남을 수 있다(미확인 — 관측한 멈춤은 모두 `killed`·`failed` 통지가 있었다). ⑦ 연쇄 `←` 는 합성 시험뿐이다 — 실기로 이어 받은 세션에서 새 파일을 만든 경로는 `claude stop` + 대화형 `claude --resume` + `←` 하나였고, 그 재개가 옛 셸을 `stopped` 로 닫아 연쇄로 넘길 열린 작업이 없었다(리뷰어 실기 2회). ⑧ 연쇄 앞쪽 파일 크기에 비례하는 `catching-up`(위).
 - **attach pane 의 세션 해소**(LIFE-769 — 코드 `../adapter/internal/attach-session.ts`·`store.ts` `effectiveSession`): `/bg` 뒤 같은 pane 에서 `claude attach <ref>` 로 붙거나 실행 중인 bg 세션을 `claude --resume` 으로 열면
   herdr 는 claude 를 잡지만 `agent.list` 항목에 `agent_session` **키를 주지 않는다**(attach 클라이언트는 `SessionStart` 훅을 돌리지 않는다). 그런 claude pane 이면 corral 이 세션 조회(1.5 s)마다
-  그 pane 의 foreground argv(herdr `pane.process_info`)를 보고, `claude attach <ref>` 면 공식 스크립트 출력 `claude agents --json --all` 의 background 행으로 `<ref>` → `sessionId` 를 푼다 — `id` 와 같으면 그 행,
-  아니면 `name` 에 (대소문자 무시) 포함되는 행이 **하나일 때만**. 푼 값(출처 `corral:claude-attach`)이 목록·대화·입력·보존 행·데스크톱 지문이 읽는 `pane.agentSession` 이다. **herdr 상태는 쓰지 않는다.**
+  그 pane 의 foreground argv(herdr `pane.process_info`)를 보고, `claude attach <ref>` 면 공식 스크립트 출력 `claude agents --json --all` 의 background 행으로 `<ref>` → `sessionId` 를 푼다 — claude 와 같은 우선순위로
+  `id` 가 `<ref>` 로 **시작**하는 행(정확 일치 포함)이 있으면 그 집합만 보고 정확히 1개일 때만, 0개일 때만 `name` 에 (대소문자 무시) 포함되는 행이 **하나일 때만**. 푼 값(출처 `corral:claude-attach`)이 목록·대화·입력·보존 행·데스크톱 지문이 읽는 `pane.agentSession` 이다. **herdr 상태는 쓰지 않는다.**
   **못 풀면 없음**(`no_session`)이다 — store 에 남은 `/bg` 전 참조를 쓰지 않는다(그 참조는 다른 bg 세션일 수 있다). herdr 가 키를 주는 pane 은 그 값이 이긴다(해소를 부르지 않는다).
-  비용: 조건(claude · 키 없음)을 만족하는 pane 이 없으면 아무것도 부르지 않는다. 있으면 조회마다 그 pane 의 `pane.process_info` 한 건, `claude agents` 는 argv 가 attach 일 때만 — 푼 (pane, argv) 는 argv 가 바뀌기 전까지 다시 안 부르고,
-  못 푼 것은 5 s(`ATTACH_RETRY_MS`)에 한 번, 시한 3 s. 실행 파일은 argv[0] 가 절대경로면 그것, 아니면 로그인 셸 PATH·설치 폴더 감지(`agent-detection.ts`)가 찾은 claude — 못 찾으면 없음.
+  비용: 조건(claude · 키 없음)을 만족하는 pane 이 없으면 아무것도 부르지 않는다. 있으면 조회마다 그 pane 의 `pane.process_info` 한 건, `claude agents` 는 argv 가 attach 인 pane 이 있을 때만 조회마다 실행 파일당 한 번(pane 들이 나눠 쓴다), 시한 3 s.
+  **푼 값을 캐시하지 않는다** — argv 가 같아도 attach 안 `/clear` 가 같은 `id` 행의 `sessionId` 를 바꾸므로(옛 파일에 `continued-in` 없음) 조회마다 다시 맞춘다.
+  해소 판은 `agent.list` 조회가 실패해도 돈다(후보는 store 가 안다). 실행 파일은 argv[0] 가 절대경로면 그것, 아니면 로그인 셸 PATH·설치 폴더 감지(`agent-detection.ts`)가 찾은 claude — 못 찾으면 없음.
   입력: 이 출처의 세션은 herdr 관측 세션이 null 인 것이 같은 상태다(`input.ts` `boundSessionKey`) — herdr 가 그 사이 키를 주기 시작하면 다른 세션으로 보고 넣지 않는다.
   **신호는 Claude Code 2.1.296 · herdr 0.9.0 관측이지 계약이 아니다**: `--resume <실행 중 bg>` 가 argv 를 `claude attach <짧은 id>` 로 바꾸는 것, agent view(`←`)에서 argv 가 `claude agents` 로 바뀌는 것은 문서에 없다(corral-specs LIFE-769 `raw/coordinator/probe1/` P6·P7·P9).
   **남는 한계**: ① attach 클라이언트가 agent view 를 거치면 argv 가 `claude agents` 로 남아 **없음**이다 — Enter 로 같은 세션에 돌아와도(그 pane 이 어느 세션을 띄우는지 알 공식 신호가 없다).
-  ② agent view 에서 argv 를 **바꾸지 않는** 버전이 나오면 argv 의 옛 ref 가 다른 세션을 가리킬 수 있다. ③ 전환 뒤 첫 세션 조회까지(상한 약 1.5 s + 조회 시한) 그 전 값이 보일 수 있다 — 같은 claude 가 셸로 나갔다 다시 붙는 경우는 붙는 순간 없음으로 비운다.
-  ④ 이름 일부 ref 는 `claude attach` 의 대조 규칙(문서 없음)과 다를 수 있다 — 대소문자를 무시하고 하나일 때만 쓰므로 둘 이상 걸리면 없음이다.
+  ② agent view 에서 argv 를 **바꾸지 않는** 버전이 나오면 argv 의 옛 ref 가 다른 세션을 가리킬 수 있다. ③ claude 가 새로 붙는 순간(push·스냅샷) 키 없음으로 시작해 `/bg` 전 참조는 새지 않는다 — 다음 해소 판(상한 약 1.5 s + 해소 시한)까지는 없음이다. 이보다 먼저 요청된
+  스냅샷의 옛 키는 세션 시계가 막는다. 정상 claude 기동도 훅이 키를 줄 때까지(약 1 s) 없음이다. **같은 attach 안 `/clear` 는 다음 판까지(약 1.5 s) 옛 세션이 보일 수 있다**
+  — 그 창에 접수된 폰 입력은 목록 대조·revision 울타리만 본다(herdr 관측이 없다). push 를 놓쳐 전환을 못 본 경우는 다음 `agent.list` 가 키 없음을 세운다.
+  ④ `claude attach` 의 대조 규칙은 문서에 없다 — id 접두가 이름보다 먼저인 것은 2.1.296 실측(리뷰 r1)이다. 접두가 둘 이상이거나, 접두가 없고 이름이 둘 이상 걸리면 없음이다(claude 는 고를 수 있어도).
+  ⑤ 푼 pane 에서 `pane.process_info` 가 한 번 일시 실패하면 그 판은 없음이다 — 채널 키가 한 박자 흔들릴 수 있다(관측 못 한 판에 직전 값을 붙들면 그 사이 다른 세션으로 바뀐 경우를 다시 연다 — 「모르면 없음」).
 - 판독: 처음 한 번 파일 전체를 1 MiB 조각으로 **비동기** 읽어 색인(조각 사이 이벤트 루프 양보 — 동기 전체 읽기 없음), 그 뒤 250 ms(`CHAT_POLL_MS`)마다 stat 해 늘어난 바이트만 이어 읽는다.
   개행으로 끝나지 않은 마지막 줄은 개행이 올 때까지 보류한다.
 - **말풍선** `items[]` — 기록 순서(id 오름차순). `id` = 그 말풍선 첫 줄의 바이트 오프셋(한 줄에서 여럿이 나오면 소수 `+0.1`) — 같은 파일·같은 내용이면 다시 색인해도 같은 id.

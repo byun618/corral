@@ -190,7 +190,6 @@ export class SessionLink {
       processInfo: (paneId) => this.processInfo(paneId),
       runAgents: hooks.runClaudeAgents ?? makeRunClaudeAgents(),
       claudeExecutable: () => hooks.claudeExecutable?.() ?? null,
-      now: () => Date.now(),
     })
   }
 
@@ -553,8 +552,6 @@ export class SessionLink {
       if (response.error) throw new HerdrRequestError(response.error.code ?? 'error', response.error.message ?? '')
       this.notePollRecovered()
       const result = this.store.applyAgentSessions({ result: response.result, requestedAt })
-      // 키 없는 claude pane 이 있으면 그 세션을 푼다(LIFE-769). 기다리지 않는다 — 조회 주기를 늦추지 않게(해소기는 겹쳐 돌지 않는다).
-      void this.resolveAttachSessions(generation)
       if (!result.changed) return
       log('agent_session.poll.applied', { requestedAt, note: result.note })
       this.hooks.onChange()
@@ -566,6 +563,9 @@ export class SessionLink {
       clearTimeout(deadline.timer)
       if (this.sessionPollDeadline === deadline) this.sessionPollDeadline = null
       this.sessionPolling = false
+      // 키 없는 claude pane 이 있으면 그 세션을 푼다(LIFE-769). 기다리지 않는다 — 조회 주기를 늦추지 않게(해소기는 겹쳐 돌지 않는다).
+      // **조회가 실패해도 돈다**(fix1 F3) — 후보는 store 가 이미 안다(전환 때 키 없음으로 시작). 실패가 이어져도 푼 값의 갱신 상한이 한 주기다.
+      if (!this.stopped && generation === this.generation) void this.resolveAttachSessions(generation)
       // 한 주기를 넘지 않게 묶는다 — 벽시계가 되감기면 `startedAt + 주기 - now` 가 되감긴 만큼 커져 체인이 멎는다(리뷰 r3 1).
       this.scheduleSessionPoll(Math.min(AGENT_SESSION_POLL_MS, Math.max(0, startedAt + AGENT_SESSION_POLL_MS - Date.now())))
     }

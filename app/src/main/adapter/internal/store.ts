@@ -632,7 +632,13 @@ export class WorkspaceStore {
         const released = data['released'] === true
         const next = released ? null : (agent ?? pane.agent)
         if (pane.agent === next) return { changed: false, note: 'agent_detected: 같은 값' }
-        this.panes.set(paneId, { ...pane, agent: next, attach: attachAfterAgentChange({ attach: pane.attach, before: pane.agent, next }) })
+        // claude 가 새로 붙으면 키 없음으로 시작하고 세션 시계를 이 시각으로 올린다(LIFE-769 fix1 F3) — 이보다 먼저 요청된 스냅샷이 `/bg` 전 키를 늦게 싣고 와도 되돌리지 못한다.
+        this.panes.set(paneId, {
+          ...pane,
+          agent: next,
+          attach: attachAfterAgentChange({ attach: pane.attach, before: pane.agent, next }),
+          sessionAt: startsClaude({ before: pane.agent, next }) ? Math.max(pane.sessionAt, at) : pane.sessionAt,
+        })
         return { changed: true, note: released ? `agent_detected: ${agent} 떠남` : `agent_detected: ${agent}` }
       }
 
@@ -817,7 +823,10 @@ export class WorkspaceStore {
       if (id === null || pane === undefined || pane.sessionAt >= input.requestedAt) continue
       if (!('agent_session' in item)) {
         if (pane.attach.kind === 'keyless') continue
-        const keyless: Pane = { ...pane, attach: { kind: 'keyless', session: null } }
+        // claude pane 이면 세션 시계를 이 요청 시각으로 올린다(fix1 F3) — 먼저 요청된 스냅샷의 옛 키가 키 없음을 되돌리지 못하게.
+        // (push 유실로 agent 전환을 못 본 채 여기서 처음 키 없음을 볼 수 있다.) claude 가 아니면 시계를 두고 표시만 — 밖으로 나가는 값이 같다.
+        const clock = pane.agent === 'claude' || readString(item, 'agent') === 'claude' ? input.requestedAt : pane.sessionAt
+        const keyless: Pane = { ...pane, attach: { kind: 'keyless', session: null }, sessionAt: clock }
         this.panes.set(id, keyless)
         if (!sameAgentSession(effectiveSession(pane), effectiveSession(keyless))) changedIds.push(id)
         continue
@@ -1012,6 +1021,8 @@ export class WorkspaceStore {
       focused: value['focused'] === true,
       ...session,
       attach: keyed ? ATTACH_NONE : attachAfterAgentChange({ attach: before?.attach ?? ATTACH_NONE, before: before?.agent ?? null, next: agent }),
+      // 키 없이 claude 가 새로 붙은 봉투면 세션 시계를 올린다(fix1 F3, `pane_agent_detected` 와 같은 규칙).
+      sessionAt: !keyed && startsClaude({ before: before?.agent ?? null, next: agent }) ? Math.max(session.sessionAt, sessionRequestedAt) : session.sessionAt,
       knownAt: before?.knownAt ?? at,
     })
     return true
@@ -1421,10 +1432,20 @@ function effectiveSession(pane: Pane): AgentSessionRef | null {
   return pane.agentSession
 }
 
-/** 에이전트가 바뀌면 푼 값은 그 클라이언트의 것이 아니다 — 비운다(다음 해소 판이 다시 푼다). 키 없음 표시는 둔다. */
+/**
+ * 에이전트가 바뀔 때의 키 없음 표시 (LIFE-769).
+ * - claude 가 **새로** 붙으면(없음·다른 에이전트 → claude) 키 없음(null)으로 시작한다(fix1 F3) — `/bg` → attach 에서 다음 조회까지 `/bg` 전 herdr 참조가
+ *   새어 나오지 않게. herdr 가 키를 실어 오면(봉투·`agent.list`) `none` 으로 돌아간다 — 정상 기동은 훅이 키를 줄 때까지(약 1 s) 없음이다.
+ * - 그 밖의 변경은 푼 값만 비운다(그 클라이언트의 것이 아니다 — 다음 해소 판이 다시 푼다).
+ */
 function attachAfterAgentChange(input: { attach: AttachOverlay; before: string | null; next: string | null }): AttachOverlay {
-  if (input.attach.kind === 'none' || input.before === input.next) return input.attach
-  return { kind: 'keyless', session: null }
+  if (input.before === input.next) return input.attach
+  if (startsClaude(input)) return { kind: 'keyless', session: null }
+  return input.attach.kind === 'none' ? input.attach : { kind: 'keyless', session: null }
+}
+
+function startsClaude(input: { before: string | null; next: string | null }): boolean {
+  return input.next === 'claude' && input.before !== 'claude'
 }
 
 function sameAgentSession(a: AgentSessionRef | null, b: AgentSessionRef | null): boolean {

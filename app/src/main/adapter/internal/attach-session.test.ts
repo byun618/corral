@@ -822,6 +822,30 @@ describe('fix3 F13 증명기 — 옛 참조 기록의 continued-in 이 정확히
     expect(missing).toHaveBeenCalledTimes(2)
   })
 
+  it('fix4 F15: 증명 뒤 기억한 S0 파일이 지워지면 null · 옮겨지면 다시 찾아 증명한다', () => {
+    fs.writeFileSync(fileOf(S0), turn(S0) + continued(BG_X))
+    fs.writeFileSync(fileOf(BG_X), meta)
+    const gone = vi.fn((id: string) => (fs.existsSync(fileOf(id)) ? fileOf(id) : null)) // 실제 찾기(`resolveTranscriptFile`)처럼 없으면 null
+    const checkGone = prove({ locate: gone })
+    expect(checkGone({ previous: prevRef, resolvedId: BG_X })).toBe(S0)
+    fs.rmSync(fileOf(S0))
+    expect(checkGone({ previous: prevRef, resolvedId: BG_X })).toBeNull()
+    expect(gone).toHaveBeenCalledTimes(2)
+
+    fs.writeFileSync(fileOf(S0), turn(S0) + continued(BG_X))
+    const moved = path.join(dir, 'moved', `${S0}.jsonl`)
+    let at = fileOf(S0)
+    const relocate = vi.fn(() => at)
+    const checkMoved = prove({ locate: relocate })
+    expect(checkMoved({ previous: prevRef, resolvedId: BG_X })).toBe(S0)
+    fs.mkdirSync(path.dirname(moved))
+    fs.renameSync(fileOf(S0), moved)
+    fs.renameSync(fileOf(BG_X), path.join(path.dirname(moved), `${BG_X}.jsonl`))
+    at = moved
+    expect(checkMoved({ previous: prevRef, resolvedId: BG_X })).toBe(S0)
+    expect(relocate).toHaveBeenCalledTimes(2)
+  })
+
   it('내보낸 S0 은 766 따라가기가 고른다: X 가 빌 동안 S0 파일, X 가 자라면(첫 입력 뒤 대화 복사) X 파일', () => {
     fs.writeFileSync(fileOf(S0), turn(S0) + continued(BG_X))
     fs.writeFileSync(fileOf(BG_X), meta)

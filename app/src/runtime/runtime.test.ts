@@ -990,6 +990,79 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
       expect(f.store.read('pane', 'e', 'p')!.lastSubmission!.cursor.map(entry => entry.path)).toEqual([fileA])
     }, 20000)
 
+    it('B 합성: the count keeps reading the cursor\'s files when the chain shrinks after submit (revived origin, body in the later file)', async () => {
+      const m = moved()
+      m.f.state.onPrompt = () => {
+        // The body lands in the continued file; then the minted session is revived before the count
+        // runs, so the chain is the minted file alone again. The cursor still names both files.
+        m.firstInput(userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: m.b }))
+        fs.appendFileSync(m.fileA, userRow({ body: 'revived', at: new Date().toISOString(), uuid: randomUUID(), session: m.a }))
+      }
+      const result = asObject(await m.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect(m.f.store.read('pane', 'e', 'p')!.lastSubmission!.cursor.map(entry => entry.path)).toEqual([m.fileA, m.fileB])
+      expect(result.outcome).toBe('completed')
+      expect(nested(result, 'record')).toMatchObject({ path: m.fileA, matchCount: 1, unavailableReason: null })
+    }, 20000)
+
+    it('I 합성: two hops — the chain index.ts builds ends in the file the rule chose', async () => {
+      const m = moved()
+      const c = randomUUID(), fileC = path.join(path.dirname(m.fileA), `${c}.jsonl`)
+      m.firstInput(userRow({ body: 'first after move', at: past, uuid: randomUUID(), session: m.b }))
+      fs.appendFileSync(m.fileB, continuedRow(m.b, c))
+      put(fileC, metaRows(c))
+      m.f.state.onPrompt = () => fs.appendFileSync(fileC, userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: c }))
+      const result = asObject(await m.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      const cursor = m.f.store.read('pane', 'e', 'p')!.lastSubmission!.cursor.map(entry => entry.path)
+      expect(cursor).toEqual([m.fileA, m.fileB, fileC])
+      expect(nested(result, 'record').path).toBe(cursor[cursor.length - 1])
+      expect(nested(result, 'agent', 'sessionRecord')).toEqual({ path: fileC, exists: true, continuedIn: [m.b, c] })
+      expect(result.outcome).toBe('completed')
+    }, 20000)
+
+    it('G 합성 (probe1 구조): ai-title/agent-name meta, one tail row after continued-in, copy after the first input\'s meta', async () => {
+      clearContinuedMemo()
+      const f = agentFixture('claude'), a = f.record.sessionId!, b = randomUUID(), fileA = f.recordFile(), fileB = path.join(path.dirname(fileA), `${b}.jsonl`)
+      const line = (row: Record<string, unknown>) => JSON.stringify(row) + '\n'
+      const original = { body: OLD, at: past, uuid: randomUUID(), session: a }
+      // Minted file: meta, the delivered turn, more meta, `continued-in`, then one trailing meta row.
+      put(fileA, ['last-prompt', 'mode', 'permission-mode', 'file-history-snapshot'].map(type => line({ type, sessionId: a })).join('')
+        + userRow(original) + assistantRow(past) + ['ai-title', 'mode', 'cost-state'].map(type => line({ type, sessionId: a })).join('')
+        + continuedRow(a, b) + line({ type: 'cost-state', sessionId: a }))
+      // New file at the switch: `ai-title` and `agent-name` only.
+      put(fileB, line({ type: 'ai-title', aiTitle: 'synthetic', sessionId: b }) + line({ type: 'agent-name', agentName: 'synthetic', sessionId: b }))
+      f.state.onPrompt = () => fs.appendFileSync(fileB,
+        ['mode', 'permission-mode', 'atis-latch', 'file-history-snapshot', 'attachment'].map(type => line({ type, sessionId: b })).join('')
+        + userRow({ ...original, session: b }) + assistantRow(past) + line({ type: 'system', sessionId: b })
+        + userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: b }))
+      const result = asObject(await f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect([result.stage, result.outcome]).toEqual(['confirmed', 'completed'])
+      expect(nested(result, 'record')).toMatchObject({ path: fileB, matchCount: 1, cursorInvalidated: false })
+      // The pre-move body: original + copy fold to one refusal.
+      expect(await refusal(f.run('terminal prompt', { text: OLD, wait: 'accepted' }, 3000)))
+        .toMatchObject({ code: 'prompt_already_delivered', resources: { detail: { matchCount: 1 } } })
+    }, 20000)
+
+    it('F 합성 (한계): --wait responded with a move while answering confirms delivery and leaves the wait unsatisfied', async () => {
+      clearContinuedMemo()
+      const f = agentFixture('claude'), a = f.record.sessionId!, b = randomUUID(), fileA = f.recordFile(), fileB = path.join(path.dirname(fileA), `${b}.jsonl`)
+      put(fileA, metaRows(a))
+      let submitted = false, after = 0
+      f.state.observe = current => {
+        const working = submitted && after++ === 0
+        return { ...current, status: working ? 'working' : 'idle', stateChangeSeq: working ? 3 : 4 }
+      }
+      f.state.onPrompt = () => {
+        submitted = true
+        const row = { body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: a }
+        fs.appendFileSync(fileA, userRow(row) + continuedRow(a, b))
+        put(fileB, metaRows(b) + userRow({ ...row, session: b }) + assistantRow())
+      }
+      const result = asObject(await f.run('terminal prompt', { text: NEW, wait: 'responded' }, 3000))
+      expect(result.outcome).toBe('unknown')
+      expect(nested(result, 'wait')).toMatchObject({ requested: 'responded', satisfied: false })
+      expect(nested(result, 'record')).toMatchObject({ path: fileB, matchCount: 1, unavailableReason: null })
+    }, 20000)
+
     it('합성: a copy with the same uuid but a fresh timestamp is still the earlier file\'s row — counted once, in the earlier file', () => {
       const fileA = '/records/a.jsonl', fileB = '/records/b.jsonl', identity = bodyIdentity(NEW), submittedAtMs = Date.now()
       const row = { body: NEW, at: new Date(submittedAtMs).toISOString(), uuid: 'u-1', session: 'a' }

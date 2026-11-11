@@ -329,9 +329,13 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
        * leaves `continued-in` at the end of the minted one. The set is then that chain — the minted
        * file first, each continued file after it — followed by the same rule the chat view and phone
        * input use (LIFE-766 `followContinued`, `empty: 'follow'`: the next input lands in the new file
-       * even before it holds a conversation). `path` is the file growing now. When the rule cannot
-       * conclude (unknown, out of window, no target file) the chain is just the minted file — what
-       * corral read before. `sessionId` stays the minted id: it names the pane corral launched.
+       * even before it holds a conversation). `path` is the last file the rule reached. When it cannot
+       * conclude on its first look at the minted file (unknown, out of window, no target file) the
+       * chain is just that file — what corral read before. Once a hop is proven, an unknown tail keeps
+       * it and an unprovable later hop is not taken (LIFE-766 rule, at most `CONTINUED_CHAIN_MAX` hops). A minted session revived
+       * after `continued-in` is the minted file alone again. `sessionId` stays the minted id: it names
+       * the pane corral launched. The hop paths are rebuilt here with the rule's own "same folder as
+       * the origin" placement; the 771 two-hop test pins them to the file the rule returns.
        */
       interface OwnedRecords { proven: boolean; files: string[]; sessionId: string | null; source: string | null; path: string | null; continuedIn: readonly string[] }
       const ownedRecords = (record: AgentRecord, cwd: string): OwnedRecords => {

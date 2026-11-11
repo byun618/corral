@@ -1019,7 +1019,7 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
       expect(result.outcome).toBe('completed')
     }, 20000)
 
-    it('G 합성 (probe1 구조): ai-title/agent-name meta, one tail row after continued-in, copy after the first input\'s meta', async () => {
+    it('G 합성 (실측 구조): ai-title/agent-name meta, one tail row after continued-in, copy after the first input\'s meta', async () => {
       clearContinuedMemo()
       const f = agentFixture('claude'), a = f.record.sessionId!, b = randomUUID(), fileA = f.recordFile(), fileB = path.join(path.dirname(fileA), `${b}.jsonl`)
       const line = (row: Record<string, unknown>) => JSON.stringify(row) + '\n'

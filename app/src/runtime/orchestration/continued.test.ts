@@ -78,7 +78,7 @@ function setup() {
   const fileA = sessionRecordPaths('claude', { cwd, sessionId: a, t0Ms: t0, nowMs: Date.now() })[0]!
   const b = randomUUID(), fileB = path.join(path.dirname(fileA), `${b}.jsonl`)
   fs.mkdirSync(path.dirname(fileA), { recursive: true })
-  return { dir, cwd, store, token, task: made.task.id, state, a, b, fileA, fileB }
+  return { dir, cwd, store, token, task: made.task.id, state, info, a, b, fileA, fileB }
 }
 async function workerStart(f: ReturnType<typeof setup>, ms = 20000) {
   const { orchestrationModule } = await import('./index.js')
@@ -114,10 +114,17 @@ describe('LIFE-771 C2 합성 — worker-start on a pane whose claude session con
     fs.writeFileSync(f.fileA, metaRows(f.a))
     let body = ''
     // First start: no move yet, the body lands in the minted file — stamped before the submit
-    // second, so this run's own count cannot confirm it and the attempt stays open (resumable).
-    f.state.onPrompt = text => { body = text; fs.appendFileSync(f.fileA, userRow({ body: text, at: past(), uuid: 'dispatch-row', session: f.a })) }
-    const first = await workerStart(f, 6000)
+    // second, so this run's own count cannot confirm it — and the pane shows a blocking screen right
+    // after the submit, so the confirm loop ends on `agent_blocked` at once instead of waiting out a
+    // deadline (r2 D2: no wall-clock bound decides the stage). The attempt stays open (resumable).
+    f.state.onPrompt = text => {
+      body = text
+      fs.appendFileSync(f.fileA, userRow({ body: text, at: past(), uuid: 'dispatch-row', session: f.a }))
+      f.info.status = 'blocked'
+    }
+    const first = await workerStart(f)
     expect([first.state, first.stage]).toEqual(['incomplete', 'dispatch_input_unconfirmed'])
+    f.info.status = 'idle'
     // Then the session moves and the new file's first input copies that row in (same uuid).
     const copied = fs.readFileSync(f.fileA, 'utf8').split('\n').filter(line => line.includes('"dispatch-row"'))[0]!
     fs.appendFileSync(f.fileA, continuedRow(f.a, f.b))

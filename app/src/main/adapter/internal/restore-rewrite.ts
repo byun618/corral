@@ -8,7 +8,7 @@
 //
 // 안전한 실패: 구조를 모르거나·판별이 결론을 못 내거나·쓰기가 실패하면 파일을 그대로 두고 지금처럼 띄운다. 바뀌는 바이트는 claude 참조 `value` 문자열뿐이다 —
 // 같은 디렉터리 임시 파일에 쓰고 rename 한다. 읽은 뒤 바이트가 바뀌었으면 rename 하지 않는다.
-// **남는 창**은 멈춤 확인부터 rename 까지 전체다(첫 읽기·따라가기 스캔 포함). 그 사이 다른 손(사용자가 친 `herdr`)이 서버를 띄우면 그 서버는 시작 때 읽은
+// **남는 창**은 멈춤 확인부터 rename 까지 전체다(남긴 자식 정리 대기·첫 읽기·따라가기 스캔 포함). 그 사이 다른 손(사용자가 친 `herdr`)이 서버를 띄우면 그 서버는 시작 때 읽은
 // 옛 id 로 재개하고, 파일 바이트가 같으면 rename 이 되며, 그 서버의 다음 저장이 고친 값을 덮는다 — 그 서버에게는 고쳐 쓰기가 없던 것과 같다(지금 동작).
 import fs from 'node:fs'
 import path from 'node:path'
@@ -21,16 +21,30 @@ import { restorePaneMaps } from './server.js'
 /** herdr 가 claude pane 에 남기는 참조의 출처 — herdr 재개 표가 `claude --resume` 으로 옮기는 그 칸이다. */
 const HERDR_CLAUDE_SOURCE = 'herdr:claude'
 
+/**
+ * claude 참조 하나가 어떻게 됐나 — 로그에 개수로 싣는다(세션 id·경로는 싣지 않는다).
+ * `moved` 옮김 · `no_hop` 기록은 찾았는데 따라갈 곳이 없음(전환 없음·되살아남·모름·창 밖·대상 없음·대상에 대화 없음 — 766 판별이 하나로 낸다) ·
+ * `no_file` 기록 파일 없음 · `ambiguous` 같은 id 의 파일이 둘 이상(연쇄 대상 포함) · `scan_error` 기록 폴더를 못 읽음 · `taken` 옮길 곳을 다른 pane 이 이미 쥠(K10).
+ */
+export type RefOutcome = 'moved' | 'no_hop' | 'no_file' | 'ambiguous' | 'scan_error' | 'taken'
+export type RefOutcomes = Partial<Record<RefOutcome, number>>
+
 export type RestoreRewrite =
   | { kind: 'skipped'; reason: string }
-  | { kind: 'unchanged'; refs: number }
-  | { kind: 'rewritten'; refs: number; moved: number }
+  | { kind: 'unchanged'; refs: number; outcomes: RefOutcomes }
+  | { kind: 'rewritten'; refs: number; moved: number; outcomes: RefOutcomes }
   | { kind: 'failed'; reason: string }
 
 export type RestoreRewritePlan =
   | { kind: 'unknown'; reason: string }
-  | { kind: 'same'; refs: number }
-  | { kind: 'moved'; refs: number; moves: ReadonlyMap<string, string>; text: string }
+  | { kind: 'same'; refs: number; outcomes: RefOutcomes }
+  | { kind: 'moved'; refs: number; moves: ReadonlyMap<string, string>; text: string; outcomes: RefOutcomes }
+
+/** 참조 하나의 따라가기 결과 — 옮길 곳 또는 머문 사유. */
+export type FollowResult = { kind: 'to'; id: string } | { kind: 'stay'; reason: Exclude<RefOutcome, 'moved' | 'taken'> }
+
+/** 기록 파일 위치 — 유일할 때만 `found`. */
+export type TranscriptLocation = { kind: 'found'; file: string } | { kind: 'none' } | { kind: 'ambiguous' } | { kind: 'error' }
 
 /** `source: herdr:claude`·`agent: claude`·`kind: id` 이고 값이 세션 id 모양인 참조만 — codex·grok·경로 참조는 건드리지 않는다. */
 function claudeIdRef(agentSession: Record<string, unknown>): string | null {
@@ -64,7 +78,7 @@ function occurrences(input: { text: string; needle: string }): number {
  * 바꿀 값 `"<id>"` 가 원문에 참조 수만큼만 나와야 한다 — 다른 자리에도 있으면 모름(바이트 치환이 그 자리까지 바꾸게 된다).
  * 치환한 원문을 다시 파싱해 「그 참조 값만 바뀐 같은 구조」 인지 대조한다.
  */
-export function planRestoreRewrite(input: { text: string; follow: (id: string) => string | null }): RestoreRewritePlan {
+export function planRestoreRewrite(input: { text: string; follow: (id: string) => FollowResult }): RestoreRewritePlan {
   let session: unknown
   try {
     session = JSON.parse(input.text)
@@ -77,15 +91,35 @@ export function planRestoreRewrite(input: { text: string; follow: (id: string) =
   // 다른 pane 이 이미 쥔 id(원래 값·앞서 옮겨 간 곳)로는 옮기지 않는다 — herdr 는 같은 세션을 한 번만 재개하고(`dedupe_key`) 뒤 pane 은 참조를 잃고 빈 셸로 뜬다(실측 C3 12).
   // 고쳐 쓰기가 재개를 하나 없애는 일은 만들지 않는다 — 그 pane 은 지금처럼 옛 id 다.
   const taken = new Set(found.refs.map((ref) => claudeIdRef(ref)))
+  const decided = new Map<string, RefOutcome>()
   for (const ref of found.refs) {
     const from = claudeIdRef(ref)
-    if (from === null || moves.has(from)) continue
-    const to = input.follow(from)
-    if (to === null || to === from || !SESSION_ID.test(to) || taken.has(to)) continue
+    if (from === null || decided.has(from)) continue
+    const followed = input.follow(from)
+    if (followed.kind === 'stay') {
+      decided.set(from, followed.reason)
+      continue
+    }
+    const to = followed.id
+    if (to === from || !SESSION_ID.test(to)) {
+      decided.set(from, 'no_hop')
+      continue
+    }
+    if (taken.has(to)) {
+      decided.set(from, 'taken')
+      continue
+    }
+    decided.set(from, 'moved')
     moves.set(from, to)
     taken.add(to)
   }
-  if (moves.size === 0) return { kind: 'same', refs: found.refs.length }
+  const outcomes: RefOutcomes = {}
+  for (const ref of found.refs) {
+    const from = claudeIdRef(ref)
+    const outcome = from === null ? undefined : decided.get(from)
+    if (outcome !== undefined) outcomes[outcome] = (outcomes[outcome] ?? 0) + 1
+  }
+  if (moves.size === 0) return { kind: 'same', refs: found.refs.length, outcomes }
   let text = input.text
   for (const [from, to] of moves) {
     const needle = JSON.stringify(from)
@@ -105,24 +139,29 @@ export function planRestoreRewrite(input: { text: string; follow: (id: string) =
     return { kind: 'unknown', reason: '고친 원문이 JSON 이 아니다' }
   }
   if (JSON.stringify(reparsed) !== JSON.stringify(session)) return { kind: 'unknown', reason: '고친 원문의 구조가 참조 값 말고도 다르다' }
-  return { kind: 'moved', refs: found.refs.length, moves, text }
+  return { kind: 'moved', refs: found.refs.length, moves, text, outcomes }
 }
 
 /**
  * 참조의 기록 파일 — 766 쓰기 경로의 유일성 계약(`resolveTranscriptUnique`)을 통과할 때만. 같은 id 의 파일이 둘 이상(연쇄 대상 포함)이거나 폴더를 못 읽으면 null —
  * 첫 일치(`resolveTranscriptFile`)는 폴더 나열 순서에 따라 다른 파일을 고를 수 있다.
  */
-export function uniqueTranscriptFile(ref: AgentSessionRef): string | null {
-  return resolveTranscriptUnique(ref).kind === 'found' ? resolveTranscriptFile(ref) : null
+export function uniqueTranscriptFile(ref: AgentSessionRef): TranscriptLocation {
+  const unique = resolveTranscriptUnique(ref)
+  if (unique.kind !== 'found') return { kind: unique.kind }
+  const file = resolveTranscriptFile(ref)
+  return file === null ? { kind: 'none' } : { kind: 'found', file }
 }
 
-/** 기록 파일 찾기 → 766 따라가기(`empty: 'stay'`). 옮겨 간 곳이 없으면 null. */
-export function followClaudeRef(input: { id: string; locate: (ref: AgentSessionRef) => string | null }): string | null {
+const STAY_OF_LOCATION = { none: 'no_file', ambiguous: 'ambiguous', error: 'scan_error' } as const
+
+/** 기록 파일 찾기 → 766 따라가기(`empty: 'stay'`). 옮겨 간 곳 또는 머문 사유. */
+export function followClaudeRef(input: { id: string; locate: (ref: AgentSessionRef) => TranscriptLocation }): FollowResult {
   const ref: AgentSessionRef = { kind: 'id', agent: 'claude', source: HERDR_CLAUDE_SOURCE, id: input.id }
-  const file = input.locate(ref)
-  if (file === null) return null
-  const followed = followContinued({ session: ref, file, empty: 'stay' })
-  return followed.hops.length > 0 ? followed.sessionId : null
+  const location = input.locate(ref)
+  if (location.kind !== 'found') return { kind: 'stay', reason: STAY_OF_LOCATION[location.kind] }
+  const followed = followContinued({ session: ref, file: location.file, empty: 'stay' })
+  return followed.hops.length > 0 && followed.sessionId !== null ? { kind: 'to', id: followed.sessionId } : { kind: 'stay', reason: 'no_hop' }
 }
 
 function errorCode(error: unknown): string {
@@ -133,7 +172,7 @@ function errorCode(error: unknown): string {
  * 세션 디렉터리의 session.json 을 고쳐 쓴다. 서버가 멈춘 것을 확인한 호출자만 부른다(herdr 가 상주 쓰기 주체다).
  * 쓰기: 같은 디렉터리 임시 파일(`wx`, umask 와 무관하게 `fchmod` 로 원본 권한) → fsync → 원본을 다시 읽어 처음 읽은 바이트와 같을 때만 rename. 어디서 실패해도 원본은 그대로, 임시 파일은 지운다.
  */
-export function rewriteRestoreRefs(input: { sessionDir: string; locate?: (ref: AgentSessionRef) => string | null }): RestoreRewrite {
+export function rewriteRestoreRefs(input: { sessionDir: string; locate?: (ref: AgentSessionRef) => TranscriptLocation }): RestoreRewrite {
   const locate = input.locate ?? uniqueTranscriptFile
   const file = path.join(input.sessionDir, 'session.json')
   let original: Buffer
@@ -150,7 +189,7 @@ export function rewriteRestoreRefs(input: { sessionDir: string; locate?: (ref: A
   if (!Buffer.from(text, 'utf8').equals(original)) return { kind: 'skipped', reason: 'session.json 이 UTF-8 이 아니다' }
   const plan = planRestoreRewrite({ text, follow: (id) => followClaudeRef({ id, locate }) })
   if (plan.kind === 'unknown') return { kind: 'skipped', reason: plan.reason }
-  if (plan.kind === 'same') return { kind: 'unchanged', refs: plan.refs }
+  if (plan.kind === 'same') return { kind: 'unchanged', refs: plan.refs, outcomes: plan.outcomes }
   const temp = path.join(input.sessionDir, `.session.json.corral-${process.pid}-${Date.now()}.tmp`)
   let created = false
   try {
@@ -163,13 +202,14 @@ export function rewriteRestoreRefs(input: { sessionDir: string; locate?: (ref: A
     } finally {
       fs.closeSync(fd)
     }
-    // 읽은 뒤 다른 손이 서버를 띄워 파일을 바꿨으면 그 쓰기를 덮지 않는다 — 남는 창은 이 비교와 rename 사이뿐이다.
+    // 읽은 뒤 다른 손이 서버를 띄워 파일을 바꿨으면 그 쓰기를 덮지 않는다 — 그 쓰기를 덮을 수 있는 창은 이 비교와 rename 사이뿐이다
+    // (멈춤 확인부터 rename 까지의 남는 창 전체는 머리 주석).
     if (!fs.readFileSync(file).equals(original)) {
       fs.unlinkSync(temp)
       return { kind: 'skipped', reason: '읽은 뒤 session.json 이 바뀌었다' }
     }
     fs.renameSync(temp, file)
-    return { kind: 'rewritten', refs: plan.refs, moved: plan.moves.size }
+    return { kind: 'rewritten', refs: plan.refs, moved: plan.moves.size, outcomes: plan.outcomes }
   } catch (error) {
     if (created) {
       try {
@@ -179,27 +219,5 @@ export function rewriteRestoreRefs(input: { sessionDir: string; locate?: (ref: A
       }
     }
     return { kind: 'failed', reason: errorCode(error) }
-  }
-}
-
-/**
- * spawn 직전 고리(`BackendStarter.beforeSpawn`)를 만든다 — main 결선은 이 팩토리 하나다. 부를 때마다 바인딩·세션 목록을 다시 읽는다.
- * 바인딩 세션(corral 이 띄우지 않는다)이면 아무것도 하지 않는다. `default` 세션의 디렉터리를 모르면 부르지 않고 로그 한 줄.
- * 결과는 로그 한 줄(개수만 — 세션 id·경로는 싣지 않는다).
- */
-export function makeBeforeSpawn(input: {
-  bound: () => string | null
-  sessions: () => readonly { isDefault: boolean; sessionDir: string | null }[]
-  rewrite: (sessionDir: string) => RestoreRewrite
-  log: (event: string, data: Record<string, unknown>) => void
-}): () => void {
-  return () => {
-    if (input.bound() !== null) return
-    const sessionDir = input.sessions().find((session) => session.isDefault)?.sessionDir ?? null
-    if (sessionDir === null) {
-      input.log('herdr.restore_rewrite', { kind: 'skipped', reason: '세션 디렉터리를 알 수 없다' })
-      return
-    }
-    input.log('herdr.restore_rewrite', { ...input.rewrite(sessionDir) })
   }
 }

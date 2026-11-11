@@ -203,15 +203,15 @@
   증명이 안 서고 **첫 입력 전 폰 대화가 빈다**(`no_file`). 첫 입력은 X 로 들어가 확인되고 그 뒤 증명이 선다(S0 → X). 수정 전 코드는 이 경로에서 S0 대화를 보였다(퇴행) —
   다른 세션 노출은 없다. 사용자 결정(2026-11-10)으로 받아들였다.
   연결 증명으로 S0 을 내보내는 동안 채널 키는 S0·`corral:claude-attach` 출처로 정해진다 — `/bg` 전 herdr 출처 S0 채널과 키가 다르다(그 사이 agent 가 빠져 채널이 한 번 끊기는 것은 base 와 같다).
-- **herdr 재시작 재개 참조**(LIFE-772 — 코드 `../adapter/internal/restore-rewrite.ts`, 결선 `makeBeforeSpawn` → `../backend-start.ts` `beforeSpawn`): herdr 는 재시작 때 pane 의 claude 를 저장 참조 그대로 `claude --resume <id>` 로 재개한다.
+- **herdr 재시작 재개 참조**(LIFE-772 — 코드 `../adapter/internal/restore-rewrite.ts`, 결선 `../backend-start.ts` `makeBeforeSpawn` → `beforeSpawn`): herdr 는 재시작 때 pane 의 claude 를 저장 참조 그대로 `claude --resume <id>` 로 재개한다.
   `←`·`/bg` 뒤 참조는 옛 id 에 머물러(위 「세션 이어 가기」) 재개가 전환 시점에 멈춘 사본을 열고, 그 뒤 입력은 옛 파일 `continued-in` 뒤에 이어 써져 대화가 갈라진다.
   그래서 **corral 이 멈춘 `default` 서버를 띄우는 그 순간에만**(안 돎 확인 뒤·spawn 앞, 한 번) 그 세션 `session.json` 의 claude 참조(`source: herdr:claude`·`agent: claude`·`kind: id`)를
   위 따라가기(`empty: 'stay'` — 대화가 있는 대상까지, 연쇄 8까지)의 끝 id 로 고쳐 쓴다. 기록 파일 찾기는 폰 쓰기와 같은 유일성 계약이다(같은 id 의 파일이 둘 이상이거나 폴더를 못 읽으면 그 참조는 그대로).
   살아 있는 herdr 상태는 바꾸지 않는다. 바뀌는 바이트는 그 `value` 문자열뿐이고(같은 값이 참조 밖에도 있거나 고친 원문을 다시 읽어 다른 데가 달라지면 쓰지 않는다),
-  같은 디렉터리 임시 파일(원본 권한 그대로) → 원본이 처음 읽은 바이트 그대로일 때만 rename 한다. 결과는 로그 `herdr.restore_rewrite` 한 줄(개수만).
+  같은 디렉터리 임시 파일(원본 권한 그대로) → 원본이 처음 읽은 바이트 그대로일 때만 rename 한다. 결과는 로그 `herdr.restore_rewrite` 한 줄 — 개수와 참조별 사유 개수 `outcomes`(`moved`·`no_hop` 따라갈 곳 없음·`no_file`·`ambiguous`·`scan_error` 기록 폴더 못 읽음·`taken` K10)만, 세션 id·경로는 싣지 않는다.
   **안전한 실패**: `session.json` 없음·읽기 실패·JSON 아님·구조 모름·심볼릭 링크, 판별이 결론을 못 냄(모름·창 밖·대상 없음·대상에 대화 없음·되살아남·기록 위치가 유일하지 않음), 쓰기 실패면 파일을 그대로 두고 지금처럼 띄운다.
   돌고 있거나 조회가 모름이면 띄우지 않으므로 파일도 열지 않는다.
-  **남는 창**: 멈춤 확인부터 rename 까지 전체(첫 읽기·따라가기 스캔 포함). 그 사이 다른 손(사용자가 친 `herdr`)이 서버를 띄우면 그 서버는 시작 때 읽은 옛 id 로 재개하고, 그 서버의 다음 저장이 고친 값을 덮는다 — 고쳐 쓰기가 없던 지금 동작과 같다.
+  **남는 창**: 멈춤 확인부터 rename 까지 전체(지난 시도가 남긴 서버 자식 정리 대기·첫 읽기·따라가기 스캔 포함 — 남긴 자식이 없는 평시엔 정리 대기가 0). 그 사이 다른 손(사용자가 친 `herdr`)이 서버를 띄우면 그 서버는 시작 때 읽은 옛 id 로 재개하고, 그 서버의 다음 저장이 고친 값을 덮는다 — 고쳐 쓰기가 없던 지금 동작과 같다.
   **남는 한계**: ① corral 밖에서 띄운 herdr(TUI `herdr`·CLI)와 바인딩 세션(`CORRAL_SESSION`)은 고쳐 쓰지 않는다 — 지금처럼 멈춘 사본이 열린다. ② bg 잡이 살아 있으면(서버만 재시작) `claude --resume X` 가 `claude attach` 로 바뀌어
   herdr 참조가 null 이다(위 「attach pane」 해소가 세션을 세운다) — 그 pane 은 **다음** 재시작에 재개되지 않는다. ③ 새 기록이 최근 압축 이후만 담을 수 있다(상류 보고, 로컬 미확인).
   ④ herdr 는 같은 세션을 한 번만 재개하고(`dedupe_key`) 뒤 pane 은 참조를 잃고 빈 셸로 뜨므로, X 를 이미 다른 pane 이 쥐고 있으면 그 옛 참조는 고치지 않는다 — 그 pane 은 지금처럼 멈춘 사본을 연다.

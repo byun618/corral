@@ -1,7 +1,11 @@
 // LIFE-485 K3 — 기동 결정 표 ①~⑩ 전부 + 띄우는 손의 동시 트리거·시한·즉시 종료 (K4ⓕⓖⓗ 의 로직 쪽).
-import { describe, expect, it } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
 import type { RestoreSummary } from '../shared/types.js'
-import { type RunningProbe, BackendStarter, boundSessionName, decideBackend, isOwnSession, needsRestoreCount, type BackendInput, type StarterDeps } from './backend-start.js'
+import { rewriteRestoreRefs, type RestoreRewrite } from './adapter/index.js'
+import { type RunningProbe, BackendStarter, boundSessionName, decideBackend, isOwnSession, makeBeforeSpawn, needsRestoreCount, type BackendInput, type StarterDeps } from './backend-start.js'
 
 const zero: RestoreSummary = { known: true, total: 0, agents: [] }
 const three: RestoreSummary = { known: true, total: 3, agents: [{ kind: 'claude', count: 1 }, { kind: 'grok', count: 2 }] }
@@ -227,6 +231,89 @@ describe('BackendStarter.beforeSpawn (LIFE-772 C2 — 재개 참조 고쳐 쓰�
     expect(spawned).toBe(1)
     expect(logs).toContain('backend.start.before_spawn_failed')
     expect(starter.phase()).toEqual({ phase: 'idle' })
+  })
+})
+
+describe('makeBeforeSpawn (LIFE-772 C2 — main 결선 팩토리, fix1 B · fix2 L1)', () => {
+  const done: RestoreRewrite = { kind: 'unchanged', refs: 0, outcomes: {} }
+  const sessions = [
+    { isDefault: false, sessionDir: '/other' },
+    { isDefault: true, sessionDir: '/default' },
+  ]
+  it('env 에 CORRAL_SESSION(바인딩)이 있으면 고쳐 쓰기를 부르지 않는다 · 빈 값은 바인딩 아님', () => {
+    const rewrite = vi.fn(() => done)
+    const log = vi.fn()
+    makeBeforeSpawn({ env: { CORRAL_SESSION: 'l772' }, sessions: () => sessions, rewrite, log })()
+    expect(rewrite).not.toHaveBeenCalled()
+    expect(log).not.toHaveBeenCalled()
+    makeBeforeSpawn({ env: { CORRAL_SESSION: '' }, sessions: () => sessions, rewrite, log })()
+    expect(rewrite).toHaveBeenCalledTimes(1)
+  })
+  it('default 세션의 디렉터리로 한 번 부르고 결과를 로그 한 줄로 — 앞에 다른 세션이 있어도', () => {
+    const rewrite = vi.fn((): RestoreRewrite => ({ kind: 'rewritten', refs: 2, moved: 1, outcomes: { moved: 1, no_hop: 1 } }))
+    const log = vi.fn()
+    makeBeforeSpawn({ env: {}, sessions: () => sessions, rewrite, log })()
+    expect(rewrite).toHaveBeenCalledExactlyOnceWith({ sessionDir: '/default' })
+    expect(log).toHaveBeenCalledExactlyOnceWith('herdr.restore_rewrite', { kind: 'rewritten', refs: 2, moved: 1, outcomes: { moved: 1, no_hop: 1 } })
+  })
+  it('default 의 디렉터리를 모르거나 default 가 없으면 부르지 않고 로그 한 줄', () => {
+    for (const list of [[{ isDefault: true, sessionDir: null }], [{ isDefault: false, sessionDir: '/other' }], []]) {
+      const rewrite = vi.fn(() => done)
+      const log = vi.fn()
+      makeBeforeSpawn({ env: {}, sessions: () => list, rewrite, log })()
+      expect(rewrite).not.toHaveBeenCalled()
+      expect(log).toHaveBeenCalledExactlyOnceWith('herdr.restore_rewrite', { kind: 'skipped', reason: '세션 디렉터리를 알 수 없다' })
+    }
+  })
+  it('부를 때마다 env·세션 목록을 다시 읽는다(결선 시점 값에 묶이지 않는다)', () => {
+    let list: { isDefault: boolean; sessionDir: string | null }[] = []
+    const env: { CORRAL_SESSION?: string } = {}
+    const rewrite = vi.fn(() => done)
+    const hook = makeBeforeSpawn({ env, sessions: () => list, rewrite, log: () => undefined })
+    list = [{ isDefault: true, sessionDir: '/later' }]
+    hook()
+    expect(rewrite).toHaveBeenCalledExactlyOnceWith({ sessionDir: '/later' })
+    env.CORRAL_SESSION = 'bound-later'
+    hook()
+    expect(rewrite).toHaveBeenCalledTimes(1)
+  })
+  it('합성 통합: BackendStarter + makeBeforeSpawn + 실제 rewriteRestoreRefs — spawn 순간 session.json 이 이미 고쳐져 있다', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'l772s-'))
+    const realHome = process.env['HOME']
+    process.env['HOME'] = home
+    try {
+      const A = '00000000-0000-4000-8000-00000000000a'
+      const B = '00000000-0000-4000-8000-00000000000b'
+      const projects = path.join(home, '.claude', 'projects', 'p')
+      fs.mkdirSync(projects, { recursive: true })
+      const line = (value: unknown): string => `${JSON.stringify(value)}\n`
+      const talk = (id: string): string => line({ type: 'user', sessionId: id, message: { role: 'user', content: 'q' } }) + line({ type: 'assistant', sessionId: id, message: { role: 'assistant', content: [{ type: 'text', text: 'r' }] } })
+      fs.writeFileSync(path.join(projects, `${A}.jsonl`), talk(A) + line({ type: 'continued-in', sessionId: A, continuedInSessionId: B }))
+      fs.writeFileSync(path.join(projects, `${B}.jsonl`), talk(B))
+      const sessionDir = path.join(home, 'default')
+      fs.mkdirSync(sessionDir)
+      const file = path.join(sessionDir, 'session.json')
+      fs.writeFileSync(file, JSON.stringify({ workspaces: [{ identity_cwd: '/', tabs: [{ panes: { '1': { agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: A } } } }] }] }))
+      const logs: Array<[string, Record<string, unknown>]> = []
+      let atSpawn = ''
+      let up = false
+      const starter = new BackendStarter(deps({
+        running: () => up,
+        beforeSpawn: makeBeforeSpawn({ env: {}, sessions: () => [{ isDefault: true, sessionDir }], rewrite: rewriteRestoreRefs, log: (event, data) => logs.push([event, data]) }),
+        spawn: () => {
+          atSpawn = fs.readFileSync(file, 'utf8')
+          up = true
+          return { ok: true, pid: 1, logPath: '/l' }
+        },
+      }))
+      await starter.start('auto')
+      expect(JSON.parse(atSpawn).workspaces[0].tabs[0].panes['1'].agent_session.value).toBe(B)
+      expect(logs).toEqual([['herdr.restore_rewrite', { kind: 'rewritten', refs: 1, moved: 1, outcomes: { moved: 1 } }]])
+    } finally {
+      if (realHome === undefined) delete process.env['HOME']
+      else process.env['HOME'] = realHome
+      fs.rmSync(home, { recursive: true, force: true })
+    }
   })
 })
 

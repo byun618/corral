@@ -68,7 +68,6 @@ import {
   readLogTail,
   readRestoreTargets,
   resolveHerdrBinary,
-  makeBeforeSpawn,
   rewriteRestoreRefs,
   spawnServer,
   bundledHerdrPath,
@@ -103,7 +102,7 @@ import { AgentDetector, realAgentDetectorDeps, registerAgentDetectionIpc } from 
 import { AGENT_DETECTION_CHANNEL } from '../shared/agent-detection.js'
 import { externalOpenLogUrl, isExternalOpenAllowed } from './external-url.js'
 import { pickSessionName, pinnedSessions } from './pick-session.js'
-import { BackendRetry, BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, nextScanErrorStreak, type BackendInput } from './backend-start.js'
+import { BackendRetry, BackendStarter, boundSessionName, decideBackend, makeBeforeSpawn, DEFAULT_SESSION, isOwnSession, needsRestoreCount, nextScanErrorStreak, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
 import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, cardlessGate, collectSessionRefs, joinTree, readClaimedWorkspaceIds, type RepoSkeleton } from './tree.js'
@@ -372,12 +371,7 @@ const backendStarter = new BackendStarter({
   onChange: () => scheduleEmit(),
   log,
   // LIFE-772 — 멈춘 default 의 claude 재개 참조를 백그라운드 전환 끝 id 로(재시작 재개가 멈춘 사본을 열지 않게).
-  beforeSpawn: makeBeforeSpawn({
-    bound: () => boundSessionName(process.env),
-    sessions: () => sessions,
-    rewrite: (sessionDir) => rewriteRestoreRefs({ sessionDir }),
-    log,
-  }),
+  beforeSpawn: makeBeforeSpawn({ env: process.env, sessions: () => sessions, rewrite: rewriteRestoreRefs, log }),
 })
 
 function herdrPath(): string | null {

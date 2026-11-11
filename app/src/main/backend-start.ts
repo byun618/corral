@@ -7,6 +7,7 @@
 // 대상은 「기본 경로」 하나다: 바인딩(프로필·CORRAL_SESSION·CORRAL_BACKEND_SOCKET)이 없을 때 붙는 `default`.
 
 import type { BackendStatus, LinkPhase, RestoreSummary } from '../shared/types.js'
+import type { RestoreRewrite } from './adapter/index.js'
 
 export const DEFAULT_SESSION = 'default'
 
@@ -63,6 +64,28 @@ export type BackendDecision = { status: BackendStatus; autostart: boolean }
 export function boundSessionName(env: { CORRAL_SESSION?: string | undefined }): string | null {
   const session = env.CORRAL_SESSION
   return session !== undefined && session.length > 0 ? session : null
+}
+
+/**
+ * spawn 직전 고리(`BackendStarter.beforeSpawn`, LIFE-772)를 만든다 — main 결선은 이 팩토리에 **값을 그대로** 넘긴다(`process.env`·세션 목록 읽기·`rewriteRestoreRefs`·`log`).
+ * 바인딩·default 세션 고르기는 여기서 한다 — 부를 때마다 env·목록을 다시 읽는다. 바인딩이면 아무것도 하지 않고, default 의 디렉터리를 모르면 부르지 않고 로그 한 줄.
+ * 결과는 로그 한 줄(개수·사유 개수만 — 세션 id·경로는 싣지 않는다).
+ */
+export function makeBeforeSpawn(input: {
+  env: { CORRAL_SESSION?: string | undefined }
+  sessions: () => readonly { isDefault: boolean; sessionDir: string | null }[]
+  rewrite: (input: { sessionDir: string }) => RestoreRewrite
+  log: (event: string, data: Record<string, unknown>) => void
+}): () => void {
+  return () => {
+    if (boundSessionName(input.env) !== null) return
+    const sessionDir = input.sessions().find((session) => session.isDefault)?.sessionDir ?? null
+    if (sessionDir === null) {
+      input.log('herdr.restore_rewrite', { kind: 'skipped', reason: '세션 디렉터리를 알 수 없다' })
+      return
+    }
+    input.log('herdr.restore_rewrite', { ...input.rewrite({ sessionDir }) })
+  }
 }
 
 /**

@@ -26,7 +26,7 @@ export {
   SERVER_READY_TIMEOUT_MS,
   type HerdrResolution,
 } from './internal/server.js'
-export { makeBeforeSpawn, rewriteRestoreRefs } from './internal/restore-rewrite.js'
+export { rewriteRestoreRefs, type RestoreRewrite } from './internal/restore-rewrite.js'
 export { devGuardBase, findDevGuard, type DevGuardLookup } from './internal/dev-guard.js'
 export { readOpenWorkspaces, type OpenWorkspaceMap } from './internal/worktrees.js'
 export { readIntegrations, type IntegrationScan } from './internal/integrations.js'

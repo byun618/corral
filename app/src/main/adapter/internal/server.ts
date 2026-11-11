@@ -8,7 +8,7 @@
 // 그대로 `claude --resume <id>` 로 재개하므로, 옛 id 로 두면 전환 시점에 멈춘 사본이 열리고 대화가 갈라진다. 판별은 LIFE-766 `followContinued`(`empty: 'stay'`) 한 벌이다.
 // 예외: 다른 pane 이 이미 쥔 id 로는 옮기지 않는다(herdr 가 같은 세션을 한 번만 재개해 한 pane 이 참조를 잃는다 — K10). 바뀐 참조는 작업 활동 사건 열쇠도 바꾼다(결과 한 줄 중복 가능 — 소비자 6).
 // 안전한 실패: 구조 모름·판별 결론 없음·기록 위치가 유일하지 않음·쓰기 실패면 파일 그대로 지금처럼 띄운다. 계수(`countRestoreTargets`)는 값만 바뀌므로 전후 같다.
-// 남는 창은 멈춤 확인부터 rename 까지 전체다 — 그 사이 다른 손이 띄운 서버는 지금처럼 옛 id 로 재개한다. 그 밖의 남는 한계는 SURFACE 절에 적었다.
+// 남는 창은 멈춤 확인부터 rename 까지 전체다(남긴 자식 정리 대기 포함) — 그 사이 다른 손이 띄운 서버는 지금처럼 옛 id 로 재개한다. 그 밖의 남는 한계는 SURFACE 절에 적었다.
 
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'

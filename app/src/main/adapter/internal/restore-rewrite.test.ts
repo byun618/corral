@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentSessionRef } from '../../../shared/types.js'
 import { clearTranscriptCache } from '../../transcript.js'
 import { CONTINUED_CHAIN_MAX, CONTINUED_TAIL_BYTES, clearContinuedMemo, followContinued } from '../../transcript-continued.js'
-import { makeBeforeSpawn, planRestoreRewrite, rewriteRestoreRefs, type RestoreRewrite } from './restore-rewrite.js'
+import { planRestoreRewrite, rewriteRestoreRefs, type TranscriptLocation } from './restore-rewrite.js'
 import { countRestoreTargets } from './server.js'
 
 const A = '00000000-0000-4000-8000-00000000000a'
@@ -93,7 +93,7 @@ describe('C1 합성 — 경우별 (수정 전 동작 표 K0~K9)', () => {
     fs.writeFileSync(fileOf(A), talk(A))
     const before = sessionJson([claude(A)])
     writeSession(before)
-    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 1 })
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 1, outcomes: { no_hop: 1 } })
     expect(readSession()).toBe(before)
     expect(leftovers()).toEqual([])
   })
@@ -103,7 +103,7 @@ describe('C1 합성 — 경우별 (수정 전 동작 표 K0~K9)', () => {
     fs.writeFileSync(fileOf(B), meta(B) + talk(B))
     const before = sessionJson([claude(A)])
     writeSession(before)
-    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'rewritten', refs: 1, moved: 1 })
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'rewritten', refs: 1, moved: 1, outcomes: { moved: 1 } })
     const after = readSession()
     // ⓐ 바이트 보존 — 차이는 value 문자열뿐(키 순서·공백·다른 필드 동일).
     expect(after).toBe(before.replace(`"${A}"`, `"${B}"`))
@@ -118,7 +118,7 @@ describe('C1 합성 — 경우별 (수정 전 동작 표 K0~K9)', () => {
     fs.writeFileSync(fileOf(B), talk(B))
     const before = sessionJson([claude(A)])
     writeSession(before)
-    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 1 })
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 1, outcomes: { no_hop: 1 } })
     expect(readSession()).toBe(before)
   })
 
@@ -171,7 +171,7 @@ describe('C1 합성 — 경우별 (수정 전 동작 표 K0~K9)', () => {
     fs.writeFileSync(fileOf(C), talk(C))
     const before = sessionJson([claude(A)])
     writeSession(before)
-    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'rewritten', refs: 1, moved: 1 })
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'rewritten', refs: 1, moved: 1, outcomes: { moved: 1 } })
     expect(readSession()).toBe(before.replace(`"${A}"`, `"${C}"`))
   })
 
@@ -205,14 +205,14 @@ describe('C1 합성 — 경우별 (수정 전 동작 표 K0~K9)', () => {
     ]
     const before = sessionJson([...others, claude(A)])
     writeSession(before)
-    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'rewritten', refs: 1, moved: 1 })
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'rewritten', refs: 1, moved: 1, outcomes: { moved: 1 } })
     expect(readSession()).toBe(before.replace(`"${A}"`, `"${B}"`))
   })
 
   it('K6 합성: claude 아닌 참조만 있으면 기록 파일도 찾지 않는다', () => {
-    const locate = vi.fn(() => null)
+    const locate = vi.fn((): TranscriptLocation => ({ kind: 'none' }))
     writeSession(sessionJson([{ source: 'herdr:codex', agent: 'codex', kind: 'id', value: A }]))
-    expect(rewriteRestoreRefs({ sessionDir, locate })).toEqual({ kind: 'unchanged', refs: 0 })
+    expect(rewriteRestoreRefs({ sessionDir, locate })).toEqual({ kind: 'unchanged', refs: 0, outcomes: {} })
     expect(locate).not.toHaveBeenCalled()
   })
 
@@ -296,9 +296,9 @@ describe('C1 합성 — 경우별 (수정 전 동작 표 K0~K9)', () => {
     fs.writeFileSync(fileOf(B), talk(B))
     writeSession(sessionJson([claude(A)]))
     const theirs = sessionJson([claude(A), claude(C)])
-    const locate = (ref: AgentSessionRef): string | null => {
+    const locate = (ref: AgentSessionRef): TranscriptLocation => {
       writeSession(theirs) // 판별 도중 herdr 가 떠서 파일을 새로 썼다
-      return ref.kind === 'id' ? fileOf(ref.id) : null
+      return ref.kind === 'id' ? { kind: 'found', file: fileOf(ref.id) } : { kind: 'none' }
     }
     expect(rewriteRestoreRefs({ sessionDir, locate })).toEqual({ kind: 'skipped', reason: '읽은 뒤 session.json 이 바뀌었다' })
     expect(readSession()).toBe(theirs)
@@ -319,7 +319,7 @@ describe('C1 합성 — 경우별 (수정 전 동작 표 K0~K9)', () => {
     fs.writeFileSync(fileOf(B), talk(B))
     const before = sessionJson([claude(A), claude(A)])
     writeSession(before)
-    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'rewritten', refs: 2, moved: 1 })
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'rewritten', refs: 2, moved: 1, outcomes: { moved: 2 } })
     expect(readSession()).toBe(before.replaceAll(`"${A}"`, `"${B}"`))
   })
 
@@ -328,7 +328,7 @@ describe('C1 합성 — 경우별 (수정 전 동작 표 K0~K9)', () => {
     fs.writeFileSync(fileOf(B), talk(B))
     const before = sessionJson([claude(A), claude(B)])
     writeSession(before)
-    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 2 })
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 2, outcomes: { taken: 1, no_hop: 1 } })
     expect(readSession()).toBe(before)
   })
 
@@ -338,7 +338,7 @@ describe('C1 합성 — 경우별 (수정 전 동작 표 K0~K9)', () => {
     fs.writeFileSync(fileOf(B), talk(B))
     const before = sessionJson([claude(A), claude(C)])
     writeSession(before)
-    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'rewritten', refs: 2, moved: 1 })
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'rewritten', refs: 2, moved: 1, outcomes: { moved: 1, taken: 1 } })
     expect(readSession()).toBe(before.replace(`"${A}"`, `"${B}"`))
   })
 })
@@ -367,52 +367,13 @@ describe('C1ⓒ 합성 — 766 followContinued(stay) 와 같은 답', () => {
 describe('planRestoreRewrite 합성 (순수)', () => {
   it('follow 가 같은 id·id 모양이 아닌 값을 주면 바꾸지 않는다', () => {
     const text = sessionJson([claude(A)])
-    expect(planRestoreRewrite({ text, follow: () => A })).toEqual({ kind: 'same', refs: 1 })
-    expect(planRestoreRewrite({ text, follow: () => '../x' })).toEqual({ kind: 'same', refs: 1 })
+    expect(planRestoreRewrite({ text, follow: () => ({ kind: 'to', id: A }) })).toEqual({ kind: 'same', refs: 1, outcomes: { no_hop: 1 } })
+    expect(planRestoreRewrite({ text, follow: () => ({ kind: 'to', id: '../x' }) })).toEqual({ kind: 'same', refs: 1, outcomes: { no_hop: 1 } })
   })
   it('같은 옛 id 는 한 번만 판별한다', () => {
-    const follow = vi.fn(() => B)
+    const follow = vi.fn(() => ({ kind: 'to' as const, id: B }))
     planRestoreRewrite({ text: sessionJson([claude(A), claude(A)]), follow })
     expect(follow).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('makeBeforeSpawn (C2 — main 결선 팩토리: 바인딩 경계·default 세션 고르기·로그, fix1 B)', () => {
-  const done: RestoreRewrite = { kind: 'unchanged', refs: 0 }
-  const sessions = [
-    { isDefault: false, sessionDir: '/other' },
-    { isDefault: true, sessionDir: '/default' },
-  ]
-  it('바인딩 세션이면 고쳐 쓰기를 부르지 않는다', () => {
-    const rewrite = vi.fn(() => done)
-    const log = vi.fn()
-    makeBeforeSpawn({ bound: () => 'l772', sessions: () => sessions, rewrite, log })()
-    expect(rewrite).not.toHaveBeenCalled()
-    expect(log).not.toHaveBeenCalled()
-  })
-  it('default 세션의 디렉터리로 한 번 부르고 결과를 로그 한 줄로 — 앞에 다른 세션이 있어도', () => {
-    const rewrite = vi.fn((): RestoreRewrite => ({ kind: 'rewritten', refs: 2, moved: 1 }))
-    const log = vi.fn()
-    makeBeforeSpawn({ bound: () => null, sessions: () => sessions, rewrite, log })()
-    expect(rewrite).toHaveBeenCalledExactlyOnceWith('/default')
-    expect(log).toHaveBeenCalledExactlyOnceWith('herdr.restore_rewrite', { kind: 'rewritten', refs: 2, moved: 1 })
-  })
-  it('default 의 디렉터리를 모르거나 default 가 없으면 부르지 않고 로그 한 줄', () => {
-    for (const list of [[{ isDefault: true, sessionDir: null }], [{ isDefault: false, sessionDir: '/other' }], []]) {
-      const rewrite = vi.fn(() => done)
-      const log = vi.fn()
-      makeBeforeSpawn({ bound: () => null, sessions: () => list, rewrite, log })()
-      expect(rewrite).not.toHaveBeenCalled()
-      expect(log).toHaveBeenCalledExactlyOnceWith('herdr.restore_rewrite', { kind: 'skipped', reason: '세션 디렉터리를 알 수 없다' })
-    }
-  })
-  it('부를 때마다 바인딩·세션 목록을 다시 읽는다(결선 시점 값에 묶이지 않는다)', () => {
-    let list: { isDefault: boolean; sessionDir: string | null }[] = []
-    const rewrite = vi.fn(() => done)
-    const hook = makeBeforeSpawn({ bound: () => null, sessions: () => list, rewrite, log: () => undefined })
-    list = [{ isDefault: true, sessionDir: '/later' }]
-    hook()
-    expect(rewrite).toHaveBeenCalledExactlyOnceWith('/later')
   })
 })
 
@@ -429,7 +390,7 @@ describe('fix1 A 합성 — 기록 위치는 유일할 때만(766 쓰기 경로 
     fs.writeFileSync(path.join(dir, `${B}.jsonl`), talk(B))
     const before = sessionJson([claude(A)])
     writeSession(before)
-    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 1 })
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 1, outcomes: { ambiguous: 1 } })
     expect(readSession()).toBe(before)
   })
   it('연쇄 대상 id 가 두 폴더에 있어도 무변경', () => {
@@ -457,7 +418,7 @@ describe('fix1 D 합성 — 재파싱 대조·source·kind 분기', () => {
     const escaped = A.replace(/^00/, '\\u0030\\u0030')
     const before = sessionJson([claude(A)]).replace(`"${A}"`, `"${escaped}"`).replace('"custom_name": null', `"custom_name": "${A}"`)
     expect(JSON.parse(before).workspaces[0].tabs[0].panes['1'].agent_session.value).toBe(A)
-    expect(planRestoreRewrite({ text: before, follow: () => B })).toEqual({ kind: 'unknown', reason: '고친 원문의 구조가 참조 값 말고도 다르다' })
+    expect(planRestoreRewrite({ text: before, follow: () => ({ kind: 'to', id: B }) })).toEqual({ kind: 'unknown', reason: '고친 원문의 구조가 참조 값 말고도 다르다' })
     writeSession(before)
     expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'skipped', reason: '고친 원문의 구조가 참조 값 말고도 다르다' })
     expect(readSession()).toBe(before)
@@ -471,7 +432,7 @@ describe('fix1 D 합성 — 재파싱 대조·source·kind 분기', () => {
     fs.writeFileSync(fileOf(B), talk(B))
     const alone = sessionJson([ref])
     writeSession(alone)
-    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 0 })
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 0, outcomes: {} })
     expect(readSession()).toBe(alone)
     // 같은 id 의 진짜 claude 참조와 함께 있으면 바이트 치환이 그 참조까지 바꾸게 되므로 무변경
     const mixed = sessionJson([ref, claude(A)])
@@ -494,5 +455,61 @@ describe('fix1 G 합성 — 임시 파일 권한은 umask 와 무관하게 원�
       process.umask(previous)
     }
     expect(fs.statSync(sessionFile()).mode & 0o777).toBe(mode)
+  })
+})
+
+describe('fix2 L2·L4 합성 — 참조별 사유 개수 · agent 분기 · fsync', () => {
+  it('기록 파일 없음 → no_file · 대상 파일 없음(전환 대상 없음) → no_hop', () => {
+    fs.writeFileSync(fileOf(C), talk(C) + fork(LOST, C))
+    writeSession(sessionJson([claude(A), claude(C)]))
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 2, outcomes: { no_file: 1, no_hop: 1 } })
+  })
+  it('기록 폴더를 못 읽음 → scan_error (그 참조 무변경)', () => {
+    fs.writeFileSync(fileOf(A), talk(A) + fork(B, A))
+    fs.writeFileSync(fileOf(B), talk(B))
+    const before = sessionJson([claude(A)])
+    writeSession(before)
+    const root = path.join(home, '.claude', 'projects')
+    fs.chmodSync(root, 0o000)
+    try {
+      expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 1, outcomes: { scan_error: 1 } })
+    } finally {
+      fs.chmodSync(root, 0o755)
+    }
+    expect(readSession()).toBe(before)
+  })
+  it('agent 가 claude 아닌 herdr:claude 출처·id 참조는 건드리지 않는다', () => {
+    fs.writeFileSync(fileOf(A), talk(A) + fork(B, A))
+    fs.writeFileSync(fileOf(B), talk(B))
+    const before = sessionJson([{ source: 'herdr:claude', agent: 'codex', kind: 'id', value: A }])
+    writeSession(before)
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'unchanged', refs: 0, outcomes: {} })
+    expect(readSession()).toBe(before)
+  })
+  it('임시 파일을 rename 전에 fsync 한다 · fsync 가 실패하면 원본 그대로·임시 파일 없음', () => {
+    fs.writeFileSync(fileOf(A), talk(A) + fork(B, A))
+    fs.writeFileSync(fileOf(B), talk(B))
+    const before = sessionJson([claude(A)])
+    writeSession(before)
+    const order: string[] = []
+    const fsync = vi.spyOn(fs, 'fsyncSync').mockImplementation(() => {
+      order.push('fsync')
+    })
+    const rename = vi.spyOn(fs, 'renameSync')
+    rename.mockImplementation((...args) => {
+      order.push('rename')
+      rename.mockRestore()
+      fs.renameSync(...args)
+    })
+    expect(rewriteRestoreRefs({ sessionDir }).kind).toBe('rewritten')
+    expect(order).toEqual(['fsync', 'rename'])
+    fsync.mockImplementation(() => {
+      throw Object.assign(new Error('io'), { code: 'EIO' })
+    })
+    writeSession(before)
+    clearContinuedMemo()
+    expect(rewriteRestoreRefs({ sessionDir })).toEqual({ kind: 'failed', reason: 'EIO' })
+    expect(readSession()).toBe(before)
+    expect(leftovers()).toEqual([])
   })
 })

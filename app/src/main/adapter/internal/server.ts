@@ -3,12 +3,12 @@
 // 무엇을 띄울지·언제 띄울지는 여기서 정하지 않는다 — 결정은 main 의 `backend-start.ts` 순수 함수다.
 // 이 파일은 herdr 를 아는 손만 갖는다: 어떤 파일을 읽어 재개 대상을 세는지, 어떤 argv 로 서버를 띄우는지.
 //
-// 재개 참조 고쳐 쓰기 (LIFE-772 — 코드 `restore-rewrite.ts`): corral 이 멈춘 `default` 를 띄울 때는 spawn 바로 앞(`BackendStarter.beforeSpawn`, 안 돎 확인 뒤)에
-// 같은 `session.json` 의 claude 참조를 백그라운드 전환(`continued-in`) 끝의 **대화가 있는** id 로 고쳐 쓴다 — herdr 는 저장 참조 그대로 `claude --resume <id>` 로
-// 재개하므로, 옛 id 로 두면 전환 시점에 멈춘 사본이 열리고 대화가 갈라진다. 판별은 LIFE-766 `followContinued`(`empty: 'stay'`) 한 벌이다.
-// 안전한 실패: 구조 모름·판별 결론 없음(모름·창 밖·대상 없음·대상에 대화 없음·되살아남)·쓰기 실패면 파일 그대로 지금처럼 띄운다. 계수(`countRestoreTargets`)는 값만 바뀌므로 전후 같다.
-// 남는 한계: corral 밖에서 띄운 herdr(TUI·CLI)·바인딩 세션(`CORRAL_SESSION`)은 고쳐 쓰지 않는다. bg 잡이 살아 있으면 `claude --resume X` 가 attach 로 바뀌어
-// herdr 참조가 null 이 되므로(769 와 같은 원인) 그 pane 은 **다음** 재시작에 재개되지 않는다. 새 기록이 최근 압축 이후만 담을 수 있다(상류 보고, 로컬 미확인).
+// 재개 참조 고쳐 쓰기 (LIFE-772 — 코드 `restore-rewrite.ts`, 문서 `../../mobile/SURFACE.md` 「herdr 재시작 재개 참조」): corral 이 멈춘 `default` 를 띄울 때는 spawn 바로 앞
+// (`BackendStarter.beforeSpawn`, 안 돎 확인 뒤)에 같은 `session.json` 의 claude 참조를 백그라운드 전환(`continued-in`) 끝의 **대화가 있는** id 로 고쳐 쓴다 — herdr 는 저장 참조
+// 그대로 `claude --resume <id>` 로 재개하므로, 옛 id 로 두면 전환 시점에 멈춘 사본이 열리고 대화가 갈라진다. 판별은 LIFE-766 `followContinued`(`empty: 'stay'`) 한 벌이다.
+// 예외: 다른 pane 이 이미 쥔 id 로는 옮기지 않는다(herdr 가 같은 세션을 한 번만 재개해 한 pane 이 참조를 잃는다 — K10). 바뀐 참조는 작업 활동 사건 열쇠도 바꾼다(결과 한 줄 중복 가능 — 소비자 6).
+// 안전한 실패: 구조 모름·판별 결론 없음·기록 위치가 유일하지 않음·쓰기 실패면 파일 그대로 지금처럼 띄운다. 계수(`countRestoreTargets`)는 값만 바뀌므로 전후 같다.
+// 남는 창은 멈춤 확인부터 rename 까지 전체다 — 그 사이 다른 손이 띄운 서버는 지금처럼 옛 id 로 재개한다. 그 밖의 남는 한계는 SURFACE 절에 적었다.
 
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'

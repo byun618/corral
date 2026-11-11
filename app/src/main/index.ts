@@ -68,7 +68,7 @@ import {
   readLogTail,
   readRestoreTargets,
   resolveHerdrBinary,
-  rewriteBeforeSpawn,
+  makeBeforeSpawn,
   rewriteRestoreRefs,
   spawnServer,
   bundledHerdrPath,
@@ -372,13 +372,12 @@ const backendStarter = new BackendStarter({
   onChange: () => scheduleEmit(),
   log,
   // LIFE-772 — 멈춘 default 의 claude 재개 참조를 백그라운드 전환 끝 id 로(재시작 재개가 멈춘 사본을 열지 않게).
-  beforeSpawn: () =>
-    rewriteBeforeSpawn({
-      bound: boundSessionName(process.env),
-      sessionDir: sessions.find((session) => session.isDefault)?.sessionDir ?? null,
-      rewrite: (sessionDir) => rewriteRestoreRefs({ sessionDir }),
-      log,
-    }),
+  beforeSpawn: makeBeforeSpawn({
+    bound: () => boundSessionName(process.env),
+    sessions: () => sessions,
+    rewrite: (sessionDir) => rewriteRestoreRefs({ sessionDir }),
+    log,
+  }),
 })
 
 function herdrPath(): string | null {

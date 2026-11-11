@@ -203,9 +203,9 @@ export type StarterDeps = {
   log: (event: string, data: Record<string, unknown>) => void
   /**
    * 안 돎을 확인한 뒤 spawn 바로 앞에서 한 번 부른다(LIFE-772) — 멈춘 세션의 재개 참조를 고쳐 쓰는 자리. 던져도 spawn 은 그대로 간다.
-   * 돌고 있거나 조회가 모름이면 부르지 않는다.
+   * 돌고 있거나 조회가 모름이면 부르지 않는다. 선택 의존이 아니다 — main 결선(`makeBeforeSpawn`)이 빠지면 타입 검사가 잡는다.
    */
-  beforeSpawn?: () => void
+  beforeSpawn: () => void
 }
 
 /**
@@ -292,12 +292,10 @@ export class BackendStarter {
         this.deps.log('backend.start.leftover_skipped', { trigger, pid, detail: identity.detail })
       }
     }
-    if (this.deps.beforeSpawn !== undefined) {
-      try {
-        this.deps.beforeSpawn()
-      } catch (error) {
-        this.deps.log('backend.start.before_spawn_failed', { trigger, error: String(error) })
-      }
+    try {
+      this.deps.beforeSpawn()
+    } catch (error) {
+      this.deps.log('backend.start.before_spawn_failed', { trigger, error: String(error) })
     }
     let exited: string | null = null
     let childPid: number | null = null

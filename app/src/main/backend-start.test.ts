@@ -119,6 +119,7 @@ function deps(patch: Partial<StarterDeps> & { running?: () => boolean }): Starte
     pollMs: 100,
     onChange: () => undefined,
     log: () => undefined,
+    beforeSpawn: () => undefined,
   }
   return { ...base, ...patch }
 }

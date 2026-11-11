@@ -2,17 +2,20 @@
 // 백그라운드 전환(`continued-in`) 끝 id 로 바꾼다. herdr 는 저장 참조 그대로 `claude --resume <id>` 로 재개하므로(0.9.0 `agent_resume.rs` `plan()`),
 // 옛 id 로 두면 전환 시점에 멈춘 사본이 열리고 그 뒤 입력이 옛 파일에 이어 써져 대화가 갈라진다.
 //
-// 판별은 LIFE-766 `followContinued` 한 벌을 그대로 쓴다(`empty: 'stay'` — 대화가 있는 대상까지만, 되살아남·모름·창 밖·대상 없음은 옛 id). 기록 파일 찾기도
-// 기존 해소(`resolveTranscriptFile`)다. **살아 있는 herdr 상태는 바꾸지 않는다** — 서버가 멈춘 것이 확인된 그 자리(`BackendStarter.beforeSpawn`)에서만 파일을 쓴다.
+// 판별은 LIFE-766 `followContinued` 한 벌을 그대로 쓴다(`empty: 'stay'` — 대화가 있는 대상까지만, 되살아남·모름·창 밖·대상 없음은 옛 id). 기록 파일 찾기는
+// 766 쓰기 경로와 같은 유일성 계약(`resolveTranscriptUnique` — 같은 id 의 파일이 둘 이상이거나 폴더를 못 읽으면 그 참조는 그대로)이다.
+// **살아 있는 herdr 상태는 바꾸지 않는다** — 서버가 멈춘 것이 확인된 그 자리(`BackendStarter.beforeSpawn`)에서만 파일을 쓴다.
 //
 // 안전한 실패: 구조를 모르거나·판별이 결론을 못 내거나·쓰기가 실패하면 파일을 그대로 두고 지금처럼 띄운다. 바뀌는 바이트는 claude 참조 `value` 문자열뿐이다 —
-// 같은 디렉터리 임시 파일에 쓰고 rename 한다. 읽은 뒤 다른 손(사용자가 친 `herdr`)이 파일을 바꿨으면 rename 하지 않는다.
+// 같은 디렉터리 임시 파일에 쓰고 rename 한다. 읽은 뒤 바이트가 바뀌었으면 rename 하지 않는다.
+// **남는 창**은 멈춤 확인부터 rename 까지 전체다(첫 읽기·따라가기 스캔 포함). 그 사이 다른 손(사용자가 친 `herdr`)이 서버를 띄우면 그 서버는 시작 때 읽은
+// 옛 id 로 재개하고, 파일 바이트가 같으면 rename 이 되며, 그 서버의 다음 저장이 고친 값을 덮는다 — 그 서버에게는 고쳐 쓰기가 없던 것과 같다(지금 동작).
 import fs from 'node:fs'
 import path from 'node:path'
 import { isRecord } from '../../../shared/json.js'
 import type { AgentSessionRef } from '../../../shared/types.js'
 import { followContinued, SESSION_ID } from '../../transcript-continued.js'
-import { resolveTranscriptFile } from '../../transcript.js'
+import { resolveTranscriptFile, resolveTranscriptUnique } from '../../transcript.js'
 import { restorePaneMaps } from './server.js'
 
 /** herdr 가 claude pane 에 남기는 참조의 출처 — herdr 재개 표가 `claude --resume` 으로 옮기는 그 칸이다. */
@@ -105,6 +108,14 @@ export function planRestoreRewrite(input: { text: string; follow: (id: string) =
   return { kind: 'moved', refs: found.refs.length, moves, text }
 }
 
+/**
+ * 참조의 기록 파일 — 766 쓰기 경로의 유일성 계약(`resolveTranscriptUnique`)을 통과할 때만. 같은 id 의 파일이 둘 이상(연쇄 대상 포함)이거나 폴더를 못 읽으면 null —
+ * 첫 일치(`resolveTranscriptFile`)는 폴더 나열 순서에 따라 다른 파일을 고를 수 있다.
+ */
+export function uniqueTranscriptFile(ref: AgentSessionRef): string | null {
+  return resolveTranscriptUnique(ref).kind === 'found' ? resolveTranscriptFile(ref) : null
+}
+
 /** 기록 파일 찾기 → 766 따라가기(`empty: 'stay'`). 옮겨 간 곳이 없으면 null. */
 export function followClaudeRef(input: { id: string; locate: (ref: AgentSessionRef) => string | null }): string | null {
   const ref: AgentSessionRef = { kind: 'id', agent: 'claude', source: HERDR_CLAUDE_SOURCE, id: input.id }
@@ -120,10 +131,10 @@ function errorCode(error: unknown): string {
 
 /**
  * 세션 디렉터리의 session.json 을 고쳐 쓴다. 서버가 멈춘 것을 확인한 호출자만 부른다(herdr 가 상주 쓰기 주체다).
- * 쓰기: 같은 디렉터리 임시 파일(`wx`, 원본 권한) → fsync → 원본을 다시 읽어 처음 읽은 바이트와 같을 때만 rename. 어디서 실패해도 원본은 그대로, 임시 파일은 지운다.
+ * 쓰기: 같은 디렉터리 임시 파일(`wx`, umask 와 무관하게 `fchmod` 로 원본 권한) → fsync → 원본을 다시 읽어 처음 읽은 바이트와 같을 때만 rename. 어디서 실패해도 원본은 그대로, 임시 파일은 지운다.
  */
 export function rewriteRestoreRefs(input: { sessionDir: string; locate?: (ref: AgentSessionRef) => string | null }): RestoreRewrite {
-  const locate = input.locate ?? resolveTranscriptFile
+  const locate = input.locate ?? uniqueTranscriptFile
   const file = path.join(input.sessionDir, 'session.json')
   let original: Buffer
   let mode: number
@@ -146,6 +157,7 @@ export function rewriteRestoreRefs(input: { sessionDir: string; locate?: (ref: A
     const fd = fs.openSync(temp, 'wx', mode)
     created = true
     try {
+      fs.fchmodSync(fd, mode)
       fs.writeFileSync(fd, plan.text)
       fs.fsyncSync(fd)
     } finally {
@@ -171,19 +183,23 @@ export function rewriteRestoreRefs(input: { sessionDir: string; locate?: (ref: A
 }
 
 /**
- * spawn 직전 고리(`BackendStarter.beforeSpawn`) — 바인딩 세션(corral 이 띄우지 않는다)이면 아무것도 하지 않는다.
+ * spawn 직전 고리(`BackendStarter.beforeSpawn`)를 만든다 — main 결선은 이 팩토리 하나다. 부를 때마다 바인딩·세션 목록을 다시 읽는다.
+ * 바인딩 세션(corral 이 띄우지 않는다)이면 아무것도 하지 않는다. `default` 세션의 디렉터리를 모르면 부르지 않고 로그 한 줄.
  * 결과는 로그 한 줄(개수만 — 세션 id·경로는 싣지 않는다).
  */
-export function rewriteBeforeSpawn(input: {
-  bound: string | null
-  sessionDir: string | null
+export function makeBeforeSpawn(input: {
+  bound: () => string | null
+  sessions: () => readonly { isDefault: boolean; sessionDir: string | null }[]
   rewrite: (sessionDir: string) => RestoreRewrite
   log: (event: string, data: Record<string, unknown>) => void
-}): void {
-  if (input.bound !== null) return
-  if (input.sessionDir === null) {
-    input.log('herdr.restore_rewrite', { kind: 'skipped', reason: '세션 디렉터리를 알 수 없다' })
-    return
+}): () => void {
+  return () => {
+    if (input.bound() !== null) return
+    const sessionDir = input.sessions().find((session) => session.isDefault)?.sessionDir ?? null
+    if (sessionDir === null) {
+      input.log('herdr.restore_rewrite', { kind: 'skipped', reason: '세션 디렉터리를 알 수 없다' })
+      return
+    }
+    input.log('herdr.restore_rewrite', { ...input.rewrite(sessionDir) })
   }
-  input.log('herdr.restore_rewrite', { ...input.rewrite(input.sessionDir) })
 }

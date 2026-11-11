@@ -4,7 +4,7 @@
  * 「합성」: no terminal mock here. worker-start runs the real `terminal` module as its child
  * (`terminalChild` → `terminal prompt`), only the herdr backend is stubbed, and the provider record
  * is a hand-written chain in the shape the coordinator measured on Claude Code 2.1.296 (LIFE-771
- * raw/coordinator/probe1): the minted file ends with `continued-in`, the new file holds meta rows
+ * analysis): the minted file ends with `continued-in`, the new file holds meta rows
  * until its first input, and that input copies the old rows in with their `uuid`. It proves that the
  * child's answer over that chain reaches worker-start's verdict, not that Claude Code writes it.
  */
@@ -55,7 +55,7 @@ function setup() {
     stateChangeSeq: 2, stateLabels: {}, session: null, paneId: 'pane', observedAt: new Date().toISOString() }
   const manifests = AGENT_KINDS.map(agent => ({ agent, source_kind: EXPECTED_MANIFESTS[agent].sourceKind,
     active_version: EXPECTED_MANIFESTS[agent].version, local_override_shadowing_remote: false }))
-  const state = { onPrompt: (_text: string) => {} }
+  const state: { onPrompt: (text: string) => void } = { onPrompt: () => {} }
   const proto = TerminalBackend.prototype
   vi.spyOn(proto, 'epoch').mockImplementation(async () => 'e')
   vi.spyOn(proto, 'agentCapable').mockImplementation(() => true)

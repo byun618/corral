@@ -836,7 +836,7 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
 
   // LIFE-771 — a claude session moved to the background (`←`·`/bg`) goes on in a new id's file. Every
   // case here is 「합성」: the files are written by hand in the shape the coordinator measured on
-  // Claude Code 2.1.296 (corral-specs LIFE-771 raw/coordinator/probe1/*.extract.ndjson) — the minted
+  // Claude Code 2.1.296 (LIFE-771 analysis, the coordinator's real-pane probe) — the minted
   // file ends with `continued-in`, the new file holds only meta rows until its first input, and that
   // input copies the old rows in with their original `uuid` and timestamp under the new `sessionId`.
   // They prove the following and counting rules, not that Claude Code writes that shape.

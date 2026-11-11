@@ -147,6 +147,88 @@ describe('boundSessionName·needsRestoreCount (r1 R1-06·R1-05)', () => {
   })
 })
 
+describe('BackendStarter.beforeSpawn (LIFE-772 C2 — 재개 참조 고쳐 쓰기 자리)', () => {
+  it('ⓐ 안 돎 확인 뒤·spawn 앞에 한 번', async () => {
+    const order: string[] = []
+    const starter = new BackendStarter(deps({
+      isRunning: async () => {
+        order.push('probe')
+        return order.includes('spawn') ? { kind: 'running' } : { kind: 'stopped' }
+      },
+      beforeSpawn: () => order.push('beforeSpawn'),
+      spawn: () => {
+        order.push('spawn')
+        return { ok: true, pid: 1, logPath: '/l' }
+      },
+    }))
+    await starter.start('auto')
+    expect(order.slice(0, 3)).toEqual(['probe', 'beforeSpawn', 'spawn'])
+    expect(order.filter((step) => step === 'beforeSpawn')).toHaveLength(1)
+  })
+  it('ⓐ 남긴 자식 정리 뒤에 부른다', async () => {
+    const order: string[] = []
+    let firstRun = true
+    let probes = 0
+    const starter = new BackendStarter(deps({
+      // 첫 기동: 띄우기 전 안 돎 → 그 뒤 시한 끝까지 모름이라 자식을 남긴다. 두 번째 기동: 안 돎 → 남긴 자식 정리 → 고쳐 쓰기 → spawn
+      isRunning: async () => {
+        probes += 1
+        return firstRun && probes > 1 ? { kind: 'unknown', error: 'x' } : { kind: 'stopped' }
+      },
+      stopChild: async () => {
+        order.push('stopChild')
+        return true
+      },
+      beforeSpawn: () => order.push('beforeSpawn'),
+      spawn: () => {
+        order.push('spawn')
+        return { ok: true, pid: 7, logPath: '/l' }
+      },
+    }))
+    await starter.start('auto')
+    firstRun = false
+    await starter.start('button')
+    const second = order.lastIndexOf('beforeSpawn')
+    expect(order.indexOf('stopChild')).toBeGreaterThan(-1)
+    expect(order.indexOf('stopChild')).toBeLessThan(second)
+    expect(order[second + 1]).toBe('spawn')
+  })
+  it('ⓑ 이미 돌고 있으면 부르지 않는다', async () => {
+    let calls = 0
+    const starter = new BackendStarter(deps({ running: () => true, beforeSpawn: () => { calls += 1 } }))
+    await starter.start('auto')
+    expect(calls).toBe(0)
+  })
+  it('ⓑ 조회가 모름이면 부르지 않는다', async () => {
+    let calls = 0
+    const starter = new BackendStarter(deps({ isRunning: async () => ({ kind: 'unknown', error: 'EACCES' }), beforeSpawn: () => { calls += 1 } }))
+    await starter.start('auto')
+    expect(calls).toBe(0)
+    expect(starter.phase().phase).toBe('failed')
+  })
+  it('ⓒ 던져도 spawn 은 간다 · 로그 한 줄', async () => {
+    let spawned = 0
+    const logs: string[] = []
+    let up = false
+    const starter = new BackendStarter(deps({
+      running: () => up,
+      beforeSpawn: () => {
+        throw new Error('boom')
+      },
+      spawn: () => {
+        spawned += 1
+        up = true
+        return { ok: true, pid: 1, logPath: '/l' }
+      },
+      log: (event) => logs.push(event),
+    }))
+    await starter.start('auto')
+    expect(spawned).toBe(1)
+    expect(logs).toContain('backend.start.before_spawn_failed')
+    expect(starter.phase()).toEqual({ phase: 'idle' })
+  })
+})
+
 describe('BackendStarter (K4ⓕⓖⓗ 로직)', () => {
   it('즉시 종료했지만 그새 서버가 돌고 있으면(경합에 짐) 실패가 아니다 (r1 R1-10)', async () => {
     let checks = 0

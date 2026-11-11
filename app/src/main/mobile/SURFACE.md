@@ -180,6 +180,17 @@
   hop 이 없으면(따라가기가 `continued-in` 을 못 보면) 확인 id 는 채널 id S0 이고 새 글은 X 에만 쓰이므로 확인이 비는 쪽이다(다른 세션으로 확인하지 않는다).
   증명 범위는 766 따라가기가 닿는 범위(같은 폴더, 연쇄 8까지)이고 끝이 X 여야 한다. 연결 없음·다른 대상(경우 ③)·attach 안 `/clear` 뒤 X′(S0 은 X′ 에 안 닿는다)·파일 없음·모름·읽기 오류면 X 그대로다.
   판 시작 때의 옛 참조가 적용 때 바뀌었으면 적지 않는다(해소 세대 대조와 함께).
+- **herdr 재시작 재개 참조**(LIFE-772 — 코드 `../adapter/internal/restore-rewrite.ts`, 부르는 곳 `../backend-start.ts` `beforeSpawn`): herdr 는 재시작 때 pane 의 claude 를 저장 참조 그대로 `claude --resume <id>` 로 재개한다.
+  `←`·`/bg` 뒤 참조는 옛 id 에 머물러(위 「세션 이어 가기」) 재개가 전환 시점에 멈춘 사본을 열고, 그 뒤 입력은 옛 파일 `continued-in` 뒤에 이어 써져 대화가 갈라진다.
+  그래서 **corral 이 멈춘 `default` 서버를 띄우는 그 순간에만**(안 돎 확인 뒤·spawn 앞, 한 번) 그 세션 `session.json` 의 claude 참조(`source: herdr:claude`·`agent: claude`·`kind: id`)를
+  위 따라가기(`empty: 'stay'` — 대화가 있는 대상까지, 연쇄 8까지)의 끝 id 로 고쳐 쓴다. 살아 있는 herdr 상태는 바꾸지 않는다. 바뀌는 바이트는 그 `value` 문자열뿐이고(같은 값이 참조 밖에도 있으면 쓰지 않는다),
+  같은 디렉터리 임시 파일 → 원본이 처음 읽은 바이트 그대로일 때만 rename 한다. 결과는 로그 `herdr.restore_rewrite` 한 줄(개수만).
+  **안전한 실패**: `session.json` 없음·읽기 실패·JSON 아님·구조 모름·심볼릭 링크, 판별이 결론을 못 냄(모름·창 밖·대상 없음·대상에 대화 없음·되살아남), 쓰기 실패면 파일을 그대로 두고 지금처럼 띄운다.
+  돌고 있거나 조회가 모름이면 띄우지 않으므로 파일도 열지 않는다.
+  **남는 한계**: ① corral 밖에서 띄운 herdr(TUI `herdr`·CLI)와 바인딩 세션(`CORRAL_SESSION`)은 고쳐 쓰지 않는다 — 지금처럼 멈춘 사본이 열린다. ② bg 잡이 살아 있으면(서버만 재시작) `claude --resume X` 가 `claude attach` 로 바뀌어
+  herdr 참조가 null 이다(위 「attach pane」 해소가 세션을 세운다) — 그 pane 은 **다음** 재시작에 재개되지 않는다. ③ 새 기록이 최근 압축 이후만 담을 수 있다(상류 보고, 로컬 미확인).
+  ④ herdr 는 같은 세션을 한 번만 재개하고(`dedupe_key`) 뒤 pane 은 참조를 잃고 빈 셸로 뜨므로, X 를 이미 다른 pane 이 쥐고 있으면 그 옛 참조는 고치지 않는다 — 그 pane 은 지금처럼 멈춘 사본을 연다. ⑤ 재시작 뒤 같은 마지막 턴 결과가 작업 활동에 한 줄 더 남을 수 있다(사건 열쇠의 세션 id 가 바뀐다).
+  ⑥ 폰 채널·안 읽음 키는 `/clear`·컴팩션 때처럼 새 세션 것으로 바뀐다.
   비용: 조건(claude · 키 없음)을 만족하는 pane 이 없으면 아무것도 부르지 않는다. 있으면 조회마다 그 pane 의 `pane.process_info` 한 건, `claude agents` 는 argv 가 attach 인 pane 이 있을 때만 조회마다 실행 파일당 한 번(pane 들이 나눠 쓴다), 시한 3 s.
   실측(리뷰 r2, Claude Code 2.1.296 — corral-specs LIFE-769 `raw/review/claude-r2-agents-cost-time.txt`·`claude-r2-ps-sampler1.out`·`grok-r2-poll-cost.txt`): 호출당 real ≈0.1 s · **0.11 CPU-s** · 최대 RSS **≈160 MB**,
   1.5 s 마다 → **attach pane 이 붙어 있는 동안 상시** 한 코어의 ≈7 %(시간당 ≈2,400회 기동·종료). 실행 파일당 1회라 attach pane 수와 무관하고, 겹침은 없다(동시 최대 1, 좀비 0).

@@ -14,6 +14,7 @@ import { Tokens } from './tokens.js'
 import { Receipts, REQUEST_ID } from './receipts.js'
 import { backendBinding } from '../backend.js'
 import { blockedReason, pickBlockedRule } from '../../shared/agent-state.js'
+import { followContinued } from '../../main/transcript-continued.js'
 import {
   AGENT_START_TIMEOUT_MS, AgentStore, READY_SAMPLES, READY_SAMPLE_INTERVAL_MS, SCREEN_EXCERPT_BYTES,
   agentName, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexRolloutFiles, countSubmissions,
@@ -323,17 +324,30 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
        * all. Match count, resolved model and the reported record path are then all read from this
        * one set (R1): borrowing another session's rollout for any of the three reports a body corral
        * never delivered, a model it never resolved, or both.
+       *
+       * LIFE-771: a claude session moved to the background (`←`·`/bg`) goes on in a new id's file and
+       * leaves `continued-in` at the end of the minted one. The set is then that chain — the minted
+       * file first, each continued file after it — followed by the same rule the chat view and phone
+       * input use (LIFE-766 `followContinued`, `empty: 'follow'`: the next input lands in the new file
+       * even before it holds a conversation). `path` is the file growing now. When the rule cannot
+       * conclude (unknown, out of window, no target file) the chain is just the minted file — what
+       * corral read before. `sessionId` stays the minted id: it names the pane corral launched.
        */
-      interface OwnedRecords { proven: boolean; files: string[]; sessionId: string | null; source: string | null; path: string | null }
+      interface OwnedRecords { proven: boolean; files: string[]; sessionId: string | null; source: string | null; path: string | null; continuedIn: readonly string[] }
       const ownedRecords = (record: AgentRecord, cwd: string): OwnedRecords => {
         if (record.kind === 'codex') {
           const found = codexCandidates(codexRolloutFiles(record.t0, Date.now()), cwd, record.t0)
           const owner = found.length === 1 ? found[0] : undefined
-          if (owner === undefined) return { proven: false, files: [], sessionId: null, source: null, path: null }
-          return { proven: true, files: [owner.path], sessionId: owner.sessionId, source: 'record-scan', path: owner.path }
+          if (owner === undefined) return { proven: false, files: [], sessionId: null, source: null, path: null, continuedIn: [] }
+          return { proven: true, files: [owner.path], sessionId: owner.sessionId, source: 'record-scan', path: owner.path, continuedIn: [] }
         }
         const file = sessionRecordPaths(record.kind, { cwd, sessionId: record.sessionId, t0Ms: record.t0, nowMs: Date.now() })[0] ?? null
-        return { proven: true, files: file === null ? [] : [file], sessionId: record.sessionId, source: record.sessionIdSource, path: file }
+        if (file === null || record.kind !== 'claude' || record.sessionId === null) {
+          return { proven: true, files: file === null ? [] : [file], sessionId: record.sessionId, source: record.sessionIdSource, path: file, continuedIn: [] }
+        }
+        const followed = followContinued({ session: { kind: 'id', agent: 'claude', source: record.sessionIdSource ?? 'client-minted', id: record.sessionId }, file, empty: 'follow' })
+        const files = [file, ...followed.hops.map(id => path.join(path.dirname(file), `${id}.jsonl`))]
+        return { proven: true, files, sessionId: record.sessionId, source: record.sessionIdSource, path: followed.file, continuedIn: followed.hops }
       }
       /**
        * The rule id behind a blocked screen, or `null` when herdr cannot say (F3).
@@ -351,7 +365,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
       }
       const agentBlock = async (live: TerminalIdentity, record: AgentRecord | null, views: AgentView[], satisfied: boolean, manifest: DetectManifestObservation | null) => {
         const last = views[views.length - 1], info = last?.info ?? null, phase = phaseOf(record, views, satisfied)
-        const session = record ? ownedRecords(record, live.path) : { sessionId: null, source: null, path: null, files: [] }
+        const session = record ? ownedRecords(record, live.path) : { sessionId: null, source: null, path: null, files: [], continuedIn: [] }
         // Only an observed value is reported; corral never restates the request as a resolution, and
         // it reads the resolution out of the file set it owns rather than every file it can see (R1).
         const resolved = record ? resolvedIdentity(record.kind, session.files) : { model: null, advisor: null, effort: null }
@@ -360,7 +374,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           requestedModel: record?.requestedModel ?? null, requestedEffort: record?.requestedEffort ?? null, requestedAdvisor: record?.requestedAdvisor ?? null,
           resolvedModel: resolved.model, resolvedAdvisor: resolved.advisor,
           argv: record?.argv ?? null, sessionId: session.sessionId, sessionIdSource: session.source,
-          sessionRecord: session.path === null ? null : { path: session.path, exists: fs.existsSync(session.path) },
+          sessionRecord: session.path === null ? null : { path: session.path, exists: fs.existsSync(session.path), continuedIn: session.continuedIn },
           blocked: phase === 'blocked'
             ? { reason: blockedReasonOf({ labels: info?.stateLabels ?? {}, ruleId: await blockedRuleId(live) }), screen: await excerpt(live) }
             : null,
@@ -409,7 +423,12 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           ctx.signal.throwIfAborted()
           if (view.info?.status === 'working') workingObserved = true
           const owned = ownedRecords(record, live.path)
-          const count = countSubmissions({ kind: record.kind, files: owned.files, identity, submittedAtMs, cursor })
+          // LIFE-771: the cursor was taken on the chain as it stood at submit, and counting reads that
+          // same set. A hop that appears mid-wait only adds its new file after them — read whole, the
+          // time bound and the uuid fold keep the copied rows out — so the cursor never names one file
+          // while the count reads another. codex and grok keep counting exactly the files they own.
+          const files = record.kind === 'claude' ? [...new Set([...cursor.map(entry => entry.path), ...owned.files])] : owned.files
+          const count = countSubmissions({ kind: record.kind, files, identity, submittedAtMs, cursor })
           // C7: a codex rollout corral cannot prove it owns never confirms, whatever the count says.
           const reason = owned.proven ? classifyCount(count, count.scanned.length) : 'ambiguous'
           const delivered = reason === null

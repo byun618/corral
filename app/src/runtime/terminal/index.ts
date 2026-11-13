@@ -494,9 +494,14 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
             const idleMs = screen.input?.idleMs ?? null
             if (idleMs === null || idleMs >= INPUT_TIMING.quietMs) break
             const wait = INPUT_TIMING.quietMs - idleMs
-            if (read >= QUIET_READS || Date.now() + wait >= ctx.deadlineAt - 15) {
-              throw new RuntimeError('input_changed', 'The pane kept taking input while corral looked at it; nothing was written. Look at the pane (esc if it shows agent view), then retry',
-                { terminal: handle(live), guard: 'not_quiet', idleMs, quietMs: INPUT_TIMING.quietMs, reads: read, recovery: paneRecovery('input_changed') }, 'preflight', 'not_started')
+            // Two different stops, told apart (r2 M): the pane kept taking input through every read, or the
+            // caller's deadline left no room to wait out the rest. Same code and outcome — nothing was written.
+            const cut = read >= QUIET_READS ? 'reads' : Date.now() + wait >= ctx.deadlineAt - 15 ? 'deadline' : null
+            if (cut !== null) {
+              throw new RuntimeError('input_changed', cut === 'reads'
+                ? 'The pane kept taking input while corral looked at it; nothing was written. Look at the pane (esc if it shows agent view), then retry'
+                : 'The pane had taken input just before corral looked at it and the deadline left no time to wait for it to go quiet; nothing was written. Retry with a longer --timeout-ms (esc first if it shows agent view)',
+                { terminal: handle(live), guard: 'not_quiet', cut, idleMs, quietMs: INPUT_TIMING.quietMs, reads: read, recovery: paneRecovery('input_changed') }, 'preflight', 'not_started')
             }
             await delay(wait, undefined, { signal: ctx.signal })
           }
@@ -564,7 +569,9 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
             // Nothing was submitted, so what *this call* wrote goes back — and only while it is still what
             // this call wrote: another submission to the same pane (a socket `terminal prompt` next to a
             // `worker-start` body) may have recorded its own since, and that record is not ours to undo.
-            if (refusal !== error) {
+            // Every guard refusal that wrote nothing (`not_started`) takes this path, not only the input
+            // fence's: a seq that moved while corral waited for quiet is `agent_not_ready` (r2 N).
+            if (refusal instanceof RuntimeError && refusal.outcome === 'not_started') {
               const now = loadAgent(live)
               if (now !== null && isDeepStrictEqual(now.lastSubmission, pending)) {
                 patchAgent(live, { lastSubmission: record.lastSubmission,
@@ -772,7 +779,13 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           // only `orchestration worker-start` passes it, for the lead line it types before the body. The
           // send then gets the same agent-view judgment and input fence a submission gets.
           if (f['refuse-agent-view'] === true) {
-            const kind = loadAgent(live)?.kind ?? (await backend.agentInfo(live, ctx)).kind
+            // The kind read is part of the check, before any write (r2 L): a failure is `preflight`·`not_started`.
+            let kind: string | null
+            try { kind = loadAgent(live)?.kind ?? (await backend.agentInfo(live, ctx)).kind }
+            catch (error) {
+              throw new RuntimeError(error instanceof RuntimeError ? error.code : 'agent_view_unread', `corral could not read the pane to check for agent view; nothing was written (${error instanceof Error ? error.message : String(error)})`,
+                { terminal: handle(live), recovery: 'terminal show / terminal read, then retry (the same --request-id may be reused)' }, 'preflight', 'not_started')
+            }
             const fence = await agentViewFence(live, isAgentKind(kind) ? kind : null)
             if (fence === null) await backend.send(live, text, ctx)
             else {

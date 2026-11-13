@@ -302,7 +302,8 @@ matchCount·resolvedModel·record.path 가 모두 unknown 이다 — **다른 �
   `prompt_already_delivered` 는 라운드를 넘겨 같은 답(「진행」·「허용함」)을 다시 넣을 때도 난다 — 라운드·시각을 본문에 넣어 다르게 쓴다(LIFE-746).
 - **agent view(LIFE-787)**: Claude pane 이 agent view(빈 프롬프트에서 `←`)면 `agent_view`(효과 없음, `not_started`)로 거절된다 —
   거기 넣으면 새 bg 세션이 생긴다. 사람이 그 pane 에서 `esc` 로 대화로 돌아온 뒤 **같은 `--request-id`** 로 다시 넣는다.
-  판정 화면을 읽을 때 입력이 500ms 조용하지 않았거나(기다려 최대 6번 다시 읽음) 판정 뒤 사람 입력이 끼면 `input_changed`(효과 없음) — pane 을 보고 같은 방법으로 다시 넣는다. 코디는 사용자·코디 pane 에서 `←` 를 누르지 않는다.
+  판정 화면을 읽을 때 입력이 500ms 조용하지 않았거나(기다려 최대 6번 다시 읽음) 판정 뒤 사람 입력이 끼면 `input_changed`(효과 없음) — pane 을 보고 같은 방법으로 다시 넣는다.
+  남는 한계: 500ms 는 폰 경로와 같은 상수라 한계도 같다 — 키의 에코가 그보다 늦게 화면에 오면 일반 화면으로 읽혀 걸러지지 않는다. 코디는 사용자·코디 pane 에서 `←` 를 누르지 않는다.
 - **타임아웃·빈 결과**: 마감·차단·종료로 대기가 끝나면 `wait.reason` 이 `deadline|agent_blocked|agent_exited` 다.
   `outcome` 은 만족한 대기에서만 `completed` 이고, 그 밖은 `outcome: unknown` 이며 **자동 재제출되지 않는다** —
   이때도 확인된 배달은 함께 보고된다. 그 보고를 먼저 읽고, `matchCount: 1` 이면 다시 넣지 않는다.
@@ -387,6 +388,7 @@ corral worktree set --worktree path:<구현 worktree 절대경로> --parent-work
 - **agent view(LIFE-787)**: 워커 pane 이 Claude agent view 면 `worker-start` 가 리드 줄을 치기 **전에** 거절한다 — `incomplete`·`stage: dispatch_input`·
   `stages.input.error: agent_view`, pane 에는 아무것도 쓰지 않는다. 사람이 그 pane 에서 `esc` 로 대화로 돌아온 뒤 **같은 Task 에**
   `corral orchestration worker-start --task <t> --terminal <handle>` 을 다시 부르면 같은 Dispatch 로 재개된다(`launch: resumed`). 재개 중 본문 단계에서 걸려도 같다.
+  아직 대화 기록이 없는 pane(민팅 세션 파일 없음)은 재개 배달이 1회여도 `outcome_unknown` 으로 올 수 있다(LIFE-771 영역) — `dispatch-show` 와 pane 을 먼저 보고 다시 넣지 않는다.
 - **셸 rc 의 대화형 질문**: pane 셸이 rc 에서 질문(업데이트 확인 등)을 띄우면 주입한 기동 줄 첫 글자가 그 답으로 먹혀 provider 이름이 깨지고
   `agent_not_ready`·`incomplete` 로 끝난다. 같은 Task 를 `worker-stop` 으로 멈추고 새로 기동한다 — 반복되면 사용자에게 셸 쪽 질문을 먼저 끝내 달라고 한다(LIFE-719 외 매핑 밖 두 번째).
 - **타임아웃·빈 결과**: 대기 예산은 `--timeout-ms` 로 주고 상한은 120000 이다. codex 는 같은 과제에서 Claude 보다

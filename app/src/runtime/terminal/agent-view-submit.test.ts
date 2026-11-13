@@ -345,3 +345,105 @@ describe('fix1 D — 최상위 recovery 에 esc', () => {
     expect(blocked).toMatchObject({ ok: false, error: { code: 'agent_blocked', resources: { recovery: 'Inspect terminal list/show/read; retry mutations only with the same request ID' } } })
   }, 30000)
 })
+
+// --- fix2 (리뷰 r2 H·L·M·N) -------------------------------------------------------------------
+
+describe('fix2 H 합성 — quiet 문턱·kind 검사·input_recent·마감·취소', () => {
+  const promptWith = (f: ReturnType<typeof setup>, ctx: CommandContext) => f.terminal.execute({ command: 'terminal prompt',
+    flags: { terminal: f.token, text: 'Reply with exactly: L787', 'request-id': `r1.${Date.now()}.${randomUUID()}` }, args: [], cwd: f.cwd }, ctx)
+  it('N7: 첫 읽기 idleMs 300(250~499) 은 아직 믿지 않는다 — 다시 읽어 agent view 를 본다', async () => {
+    const f = setup('claude')
+    let reads = 0
+    f.spies.screenRead.mockImplementation(async () => {
+      reads++
+      return { text: sample(reads === 1 ? NORMAL : 'view-default'), input: { revision: 7, idleMs: reads === 1 ? 300 : INPUT_TIMING.quietMs }, anyInput: null, seq: 2 }
+    })
+    expect((await refusal(f.prompt())).code).toBe('agent_view')
+    expect(reads).toBe(2)
+    expect(f.writeCalls()).toBe(0)
+  }, 20000)
+  it('N5: codex pane 의 리드 줄(refuse-agent-view)은 화면을 읽지 않고 예전처럼 send 한다', async () => {
+    const f = setup('codex')
+    f.state.screen = sample('view-default'); f.state.title = VIEW_TITLE
+    await f.terminal.execute({ command: 'terminal send', flags: { terminal: f.token, text: 'lead', 'refuse-agent-view': true }, args: [], cwd: f.cwd }, f.context(4000))
+    expect(f.spies.screenRead).not.toHaveBeenCalled()
+    expect([f.spies.send.mock.calls.length, f.spies.sendFenced.mock.calls.length, f.state.writes]).toEqual([1, 0, ['lead']])
+  }, 20000)
+  it('N6: guard 의 input_recent 도 input_changed(not_started, detail.guard: input_recent) 로', async () => {
+    const f = setup('claude')
+    f.spies.promptAgentIfQuiet.mockImplementation(async () => { throw new RuntimeError('input_recent', 'pane input moved since corral observed it', undefined, 'backend', 'not_started') })
+    const error = await refusal(f.prompt())
+    expect([error.code, error.outcome, error.stage, detail(error).guard]).toEqual(['input_changed', 'not_started', 'preflight', 'input_recent'])
+  }, 20000)
+  it('N1·M: 마감이 남은 기다림보다 짧으면 기다리지 않고 cut: deadline 으로 끊는다(문구도 다르다)', async () => {
+    const f = setup('claude')
+    const ms = 4000, deadlineAt = Date.now() + ms
+    f.spies.screenRead.mockImplementation(async () => {
+      // The read itself lands 300 ms before the deadline, 10 ms after a key: 490 ms of quiet are still owed.
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, deadlineAt - 300 - Date.now())))
+      return { text: sample(NORMAL), input: { revision: 7, idleMs: 10 }, anyInput: null, seq: 2 }
+    })
+    const error = await refusal(promptWith(f, { ...f.context(ms), deadlineAt }))
+    expect([error.code, error.outcome, detail(error).cut, detail(error).reads]).toEqual(['input_changed', 'not_started', 'deadline', 1])
+    expect(error.message).toContain('deadline')
+    expect(f.writeCalls()).toBe(0)
+  }, 20000)
+  it('M: 읽기 횟수로 끊긴 경우는 cut: reads', async () => {
+    const f = setup('claude')
+    f.spies.screenRead.mockImplementation(async () => ({ text: sample(NORMAL), input: { revision: ++f.state.revision, idleMs: 10 }, anyInput: null, seq: 2 }))
+    const error = await refusal(f.prompt())
+    expect([detail(error).cut, detail(error).reads]).toEqual(['reads', 6])
+    expect(error.message).toContain('kept taking input')
+  }, 20000)
+  it('N2: 기다리는 중 취소되면 기다림을 즉시 끝내고 not_started', async () => {
+    const f = setup('claude')
+    const controller = new AbortController()
+    let abortedAt = 0
+    f.spies.screenRead.mockImplementation(async () => {
+      if (abortedAt === 0) setTimeout(() => { abortedAt = Date.now(); controller.abort() }, 50)
+      return { text: sample(NORMAL), input: { revision: 7, idleMs: 10 }, anyInput: null, seq: 2 }
+    })
+    const error = await refusal(promptWith(f, { ...f.context(10000), signal: controller.signal }))
+    const late = Date.now() - abortedAt
+    expect([error.outcome, error.stage]).toEqual(['not_started', 'preflight'])
+    expect(late).toBeLessThan(250)
+    expect(f.spies.screenRead).toHaveBeenCalledTimes(1)
+    expect(f.writeCalls()).toBe(0)
+  }, 20000)
+})
+
+describe('fix2 L 합성 — 리드 줄 kind 조회 실패도 쓰기 전 거절', () => {
+  it('관리 기록 없는 pane 에서 agent.get 실패 → preflight · not_started, 쓰기 0', async () => {
+    const f = setup('claude')
+    f.store.remove('pane')
+    vi.mocked(TerminalBackend.prototype.agentInfo).mockImplementation(async () => { throw new RuntimeError('backend_timeout', 'agent.get timed out', undefined, 'backend') })
+    const error = await refusal(f.terminal.execute({ command: 'terminal send', flags: { terminal: f.token, text: 'lead', 'refuse-agent-view': true, 'request-id': `r1.${Date.now()}.${randomUUID()}` }, args: [], cwd: f.cwd }, f.context(4000)))
+    expect([error.code, error.outcome, error.stage]).toEqual(['backend_timeout', 'not_started', 'preflight'])
+    expect(f.writeCalls()).toBe(0)
+  }, 20000)
+})
+
+describe('fix2 N 합성 — guard 의 쓰기 전 거절 전부가 조건부 되돌림을 탄다', () => {
+  it('기다리는 사이 seq 가 움직여 agent_not_ready — 다른 제출이 쓴 기록은 덮지 않는다', async () => {
+    const f = setup('claude')
+    const other = { sha256: 'other', bytes: 5, submittedAt: new Date().toISOString(), cursor: [], requestId: `r1.${Date.now()}.${randomUUID()}` }
+    f.spies.promptAgentIfQuiet.mockImplementation(async () => {
+      f.store.update('pane', 'e', 'p', { phase: 'accepted', workingObserved: true, lastSubmission: other })
+      throw new RuntimeError('agent_not_ready', 'agent is not the observed ready state', undefined, 'backend', 'not_started')
+    })
+    expect((await refusal(f.prompt())).code).toBe('agent_not_ready')
+    expect(f.store.read('pane', 'e', 'p')).toMatchObject({ phase: 'accepted', workingObserved: true, lastSubmission: other })
+  }, 20000)
+  it('겹침이 없으면 이 호출의 pending 기록이 남지 않는다(원래 null)', async () => {
+    const f = setup('claude')
+    f.spies.promptAgentIfQuiet.mockImplementation(async () => { throw new RuntimeError('agent_not_ready', 'seq moved', undefined, 'backend', 'not_started') })
+    expect((await refusal(f.prompt())).code).toBe('agent_not_ready')
+    expect(f.store.read('pane', 'e', 'p')).toMatchObject({ phase: 'ready', lastSubmission: null })
+  }, 20000)
+  it('결과를 모르는 실패(outcome 없음)는 되돌리지 않는다 — 썼을 수 있다', async () => {
+    const f = setup('claude')
+    f.spies.promptAgentIfQuiet.mockImplementation(async () => { throw new RuntimeError('backend_timeout', 'timed out', undefined, 'backend') })
+    await refusal(f.prompt())
+    expect(f.store.read('pane', 'e', 'p')?.lastSubmission).toMatchObject({ requestId: null, sha256: expect.any(String) })
+  }, 20000)
+})

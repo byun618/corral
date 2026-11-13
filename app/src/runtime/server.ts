@@ -9,6 +9,7 @@ import { serveSocket, socketPath } from './transport.js'
 import { workspaceModule } from './workspace/index.js'
 import type { WorkspaceDesktop } from './workspace/model.js'
 import { terminalModule, type TerminalDesktop } from './terminal/index.js'
+import { paneRecovery } from './terminal/agent.js'
 import { orchestrationModule, orchestrationStartupSweep } from './orchestration/index.js'
 import { isRecord } from '../shared/json.js'
 import { memorySnapshot } from './memory.js'
@@ -142,7 +143,7 @@ export async function startRuntime(options: {
         const waitTimeout = req.invocation.command === 'terminal wait' && !cancelled.aborted && !controller.signal.aborted && (signal.aborted || error instanceof RuntimeError && ['wait_timeout', 'backend_timeout', 'deadline_exceeded'].includes(error.code))
         const detail = error instanceof RuntimeError ? error.resources : undefined
         const resources = terminal ? { ...(isRecord(detail) ? detail : {}), terminal: req.invocation.flags.terminal ?? null,
-          requestId: req.invocation.flags['request-id'] ?? null, recovery: 'Inspect terminal list/show/read; retry mutations only with the same request ID' } : detail
+          requestId: req.invocation.flags['request-id'] ?? null, recovery: (error instanceof RuntimeError ? paneRecovery(error.code) : null) ?? 'Inspect terminal list/show/read; retry mutations only with the same request ID' } : detail
         const stage = error instanceof RuntimeError && error.stage ? error.stage : terminal ? (effectsStarted ? 'backend' : 'preflight') : undefined
         return { id: req.id, ok: false, error: { code: waitTimeout ? 'wait_timeout' : signal.aborted ? 'request_cancelled' : error instanceof RuntimeError ? error.code : 'operation_failed', message: error instanceof Error ? error.message : String(error), resources, stage }, _meta: { ...meta, outcome: error instanceof RuntimeError && error.outcome ? error.outcome : effectsStarted ? 'unknown' : 'not_started' } }
       }

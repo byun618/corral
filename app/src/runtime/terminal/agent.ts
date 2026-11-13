@@ -49,6 +49,18 @@ export function agentViewSeen(input: { kind: AgentKind; screen: string; title: s
   return marks
 }
 
+/**
+ * LIFE-787 D: the two pane refusals whose recovery is a person's act on the pane, not a retry. The
+ * receipt and the socket envelope otherwise put one generic `recovery` on every terminal error; for
+ * these codes they put this one instead, so a caller that reads only `recovery` still sees `esc`.
+ * Every other code keeps the generic text it had.
+ */
+export function paneRecovery(code: string): string | null {
+  if (code === 'agent_view') return 'press esc in the pane to return to the conversation, then retry (the same --request-id may be reused)'
+  if (code === 'input_changed') return 'look at the pane (press esc if it shows agent view), then retry (the same --request-id may be reused)'
+  return null
+}
+
 export type AgentPhase = 'launching' | 'blocked' | 'ready' | 'accepted' | 'responded' | 'exited'
 /** herdr's startup deadline (src/terminal/state.rs); a human may sit on a trust screen for minutes. */
 export const AGENT_START_TIMEOUT_MS = 300000

@@ -21,6 +21,7 @@ import { RuntimeError, type CommandContext } from '../contracts.js'
 import { TerminalBackend, type AgentObservation, type TerminalIdentity } from '../../main/adapter/index.js'
 import { isRecord } from '../../shared/json.js'
 import { mapAgentStages } from '../../main/work/start.js'
+import { INPUT_TIMING } from '../../main/mobile/input.js'
 
 const cleanups: (() => void)[] = []
 const previous = { ...process.env }
@@ -147,7 +148,7 @@ describe('C2ⓑ 합성 — 판정 화면의 입력 revision 이 넣기 때 다�
     expect([error.code, error.outcome, error.stage]).toEqual(['input_changed', 'not_started', 'preflight'])
     expect(detail(error).guard).toBe('input_changed')
     expect(f.spies.promptAgentIfQuiet).toHaveBeenCalledTimes(1)
-    expect(f.spies.promptAgentIfQuiet.mock.calls[0]![1]).toMatchObject({ inputRevision: 7, minIdleMs: 0, expectedStateChangeSeq: 2 })
+    expect(f.spies.promptAgentIfQuiet.mock.calls[0]![1]).toMatchObject({ inputRevision: 7, minIdleMs: INPUT_TIMING.quietMs, expectedStateChangeSeq: 2 })
     expect(f.state.writes).toEqual([])
     expect(f.store.read('pane', 'e', 'p')?.lastSubmission).toBe(null)
     // The next try reads the screen as it is now — agent view — and refuses for that.
@@ -223,4 +224,124 @@ describe('합성 — terminal send 는 CLI 에서 그대로, 내부 refuse-agent
     expect(f.spies.screenRead).not.toHaveBeenCalled()
     expect([f.spies.send.mock.calls.length, f.state.writes]).toEqual([1, ['raw']])
   }, 20000)
+})
+
+// --- fix1 (리뷰 r1 A·B·C·D·F) ---------------------------------------------------------------
+
+describe('fix1 A 합성 — 판정 화면은 입력이 quiet(폰 quietMs) 이상 조용할 때만 믿는다', () => {
+  it('읽기 전 ←: revision 은 이미 올랐고 화면은 아직 예전(에코 전) → 남은 만큼 기다려 다시 읽고 agent_view, 넣기 0', async () => {
+    const f = setup('claude')
+    const reads: number[] = []
+    // The key went in 100 ms before the first read; Claude draws agent view by the second read.
+    f.spies.screenRead.mockImplementation(async () => {
+      reads.push(Date.now())
+      const first = reads.length === 1
+      return { text: sample(first ? NORMAL : 'view-default'), input: { revision: 8, idleMs: first ? 100 : INPUT_TIMING.quietMs + 100 }, anyInput: null, seq: 2 }
+    })
+    const error = await refusal(f.prompt())
+    expect(error.code).toBe('agent_view')
+    expect(reads).toHaveLength(2)
+    expect(reads[1]! - reads[0]!).toBeGreaterThanOrEqual(INPUT_TIMING.quietMs - 100 - 20)
+    expect(f.writeCalls()).toBe(0)
+  }, 20000)
+  it('끝내 조용해지지 않으면 6번 읽고 input_changed(not_quiet) · not_started, 넣기 0', async () => {
+    const f = setup('claude')
+    f.spies.screenRead.mockImplementation(async () => ({ text: sample(NORMAL), input: { revision: ++f.state.revision, idleMs: 10 }, anyInput: null, seq: 2 }))
+    const error = await refusal(f.prompt())
+    expect([error.code, error.outcome, error.stage, detail(error).guard, detail(error).reads]).toEqual(['input_changed', 'not_started', 'preflight', 'not_quiet', 6])
+    expect(f.writeCalls()).toBe(0)
+  }, 20000)
+})
+
+describe('fix1 F 합성 — 읽기 순서·같은 id 재사용', () => {
+  it('화면(revision)을 먼저, 제목을 그 뒤에 읽는다', async () => {
+    const f = setup('claude')
+    await f.prompt()
+    const screenAt = f.spies.screenRead.mock.invocationCallOrder.at(-1)!
+    const agentGets = vi.mocked(TerminalBackend.prototype.agentInfo).mock.invocationCallOrder
+    // The title read is the first agent.get after the screen read, and the write comes after both.
+    const titleAt = agentGets.find(order => order > screenAt)!
+    expect(titleAt).toBeGreaterThan(screenAt)
+    expect(f.spies.promptAgentIfQuiet.mock.invocationCallOrder[0]!).toBeGreaterThan(titleAt)
+  }, 20000)
+  it('input_changed 뒤 같은 --request-id 로 다시 넣으면 들어간다', async () => {
+    const f = setup('claude')
+    f.state.onAgentGet = () => { if (f.spies.screenRead.mock.calls.length === 1 && f.state.revision === 7) f.state.revision++ }
+    const id = `r1.${Date.now()}.${randomUUID()}`
+    expect((await refusal(f.prompt(id))).code).toBe('input_changed')
+    const result = asObject(await f.prompt(id))
+    expect(result.outcome).toBe('queued')
+    expect(f.state.writes).toEqual(['Reply with exactly: L787'])
+  }, 20000)
+})
+
+describe('fix1 B 합성 — 울타리 거절은 이 호출이 쓴 기록만 되돌린다', () => {
+  it('거절 사이에 다른 제출이 기록을 쓰면 그 기록을 덮지 않는다', async () => {
+    const f = setup('claude')
+    const other = { sha256: 'other', bytes: 5, submittedAt: new Date().toISOString(), cursor: [], requestId: `r1.${Date.now()}.${randomUUID()}` }
+    f.spies.promptAgentIfQuiet.mockImplementation(async () => {
+      // Another submission to this pane recorded its own delivery meanwhile; then the guard refuses ours.
+      f.store.update('pane', 'e', 'p', { phase: 'accepted', workingObserved: true, lastSubmission: other })
+      throw new RuntimeError('input_changed', 'pane input moved since corral observed it', undefined, 'backend', 'not_started')
+    })
+    expect((await refusal(f.prompt())).code).toBe('input_changed')
+    expect(f.store.read('pane', 'e', 'p')).toMatchObject({ phase: 'accepted', workingObserved: true, lastSubmission: other })
+  }, 20000)
+  it('겹침이 없으면 원래 값으로 돌아간다(대조)', async () => {
+    const f = setup('claude')
+    f.spies.promptAgentIfQuiet.mockImplementation(async () => { throw new RuntimeError('input_changed', 'moved', undefined, 'backend', 'not_started') })
+    expect((await refusal(f.prompt())).code).toBe('input_changed')
+    expect(f.store.read('pane', 'e', 'p')).toMatchObject({ phase: 'ready', workingObserved: false, lastSubmission: null })
+  }, 20000)
+})
+
+describe('fix1 C 합성 — 판정 읽기 실패는 쓰기 전 거절', () => {
+  it.each([['screenRead', 'backend_timeout'], ['screenRead', 'invalid_backend_response']])('%s 가 %s → preflight · not_started, 넣기 0', async (_arm, code) => {
+    const f = setup('claude')
+    f.spies.screenRead.mockImplementation(async () => { throw new RuntimeError(code, 'read failed', undefined, 'backend') })
+    const error = await refusal(f.prompt())
+    expect([error.code, error.outcome, error.stage]).toEqual([code, 'not_started', 'preflight'])
+    expect(f.writeCalls()).toBe(0)
+  }, 20000)
+  it('제목 읽기(agent.get) 실패도 같다', async () => {
+    const f = setup('claude')
+    f.state.onAgentGet = () => { if (f.spies.screenRead.mock.calls.length > 0) throw new RuntimeError('agent_not_found', 'gone', undefined, 'backend', 'unknown') }
+    const error = await refusal(f.prompt())
+    expect([error.code, error.outcome, error.stage]).toEqual(['agent_not_found', 'not_started', 'preflight'])
+    expect(f.writeCalls()).toBe(0)
+  }, 20000)
+})
+
+describe('fix1 D — 최상위 recovery 에 esc', () => {
+  it('Receipts 가 감싼 agent_view·input_changed 의 recovery 는 esc 안내, 다른 거절은 그대로', async () => {
+    const f = setup('claude')
+    f.state.screen = sample('view-default')
+    expect(String(asObject((await refusal(f.prompt())).resources).recovery)).toContain('press esc')
+    f.state.screen = sample(NORMAL)
+    f.state.onAgentGet = () => { if (f.spies.screenRead.mock.calls.length === 2 && f.state.revision === 7) f.state.revision++ }
+    expect(String(asObject((await refusal(f.prompt())).resources).recovery)).toContain('esc')
+    f.state.onAgentGet = () => {}
+    f.state.info.status = 'blocked'
+    const blocked = await refusal(f.prompt())
+    expect(blocked.code).toBe('agent_blocked')
+    expect(asObject(blocked.resources).recovery).toBe('Retry the same request ID or inspect terminal list/read')
+  }, 20000)
+  it('소켓 응답(server.ts)의 최상위 recovery 도 같다, 다른 거절은 일반 문구 그대로', async () => {
+    const f = setup('claude')
+    const { startRuntime } = await import('../server.js')
+    const { localCall, request } = await import('../transport.js')
+    // An explicit binding needs both halves; the socket is never dialled — the guard is the stub above.
+    process.env.CORRAL_SESSION = 'l787-fixture'
+    const runtime = await startRuntime({ userData: f.data }); cleanups.push(() => { void runtime.close() })
+    const token = new Tokens(f.data).encode('t1', { runtimeId: runtime.runtimeId, epoch: 'e', ptyId: 'p', paneId: 'pane' })
+    const call = () => localCall(path.join(f.data, 'runtime/rpc.sock'), request({ command: 'terminal prompt',
+      flags: { terminal: token, text: 'Reply with exactly: L787', 'request-id': `r1.${Date.now()}.${randomUUID()}` }, args: [], cwd: f.cwd }, runtime.runtimeId, 8000))
+    f.state.screen = sample('view-default')
+    const viewed = await call()
+    expect(viewed).toMatchObject({ ok: false, error: { code: 'agent_view', stage: 'preflight' }, _meta: { outcome: 'not_started' } })
+    expect(JSON.stringify(viewed)).toContain('"recovery":"press esc in the pane')
+    f.state.screen = sample(NORMAL); f.state.info.status = 'blocked'
+    const blocked = await call()
+    expect(blocked).toMatchObject({ ok: false, error: { code: 'agent_blocked', resources: { recovery: 'Inspect terminal list/show/read; retry mutations only with the same request ID' } } })
+  }, 30000)
 })

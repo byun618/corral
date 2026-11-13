@@ -302,7 +302,7 @@ matchCount·resolvedModel·record.path 가 모두 unknown 이다 — **다른 �
   `prompt_already_delivered` 는 라운드를 넘겨 같은 답(「진행」·「허용함」)을 다시 넣을 때도 난다 — 라운드·시각을 본문에 넣어 다르게 쓴다(LIFE-746).
 - **agent view(LIFE-787)**: Claude pane 이 agent view(빈 프롬프트에서 `←`)면 `agent_view`(효과 없음, `not_started`)로 거절된다 —
   거기 넣으면 새 bg 세션이 생긴다. 사람이 그 pane 에서 `esc` 로 대화로 돌아온 뒤 **같은 `--request-id`** 로 다시 넣는다.
-  판정 뒤 사람 입력이 끼면 `input_changed`(효과 없음) — pane 을 보고 같은 방법으로 다시 넣는다. 코디는 사용자·코디 pane 에서 `←` 를 누르지 않는다.
+  판정 화면을 읽을 때 입력이 500ms 조용하지 않았거나(기다려 최대 6번 다시 읽음) 판정 뒤 사람 입력이 끼면 `input_changed`(효과 없음) — pane 을 보고 같은 방법으로 다시 넣는다. 코디는 사용자·코디 pane 에서 `←` 를 누르지 않는다.
 - **타임아웃·빈 결과**: 마감·차단·종료로 대기가 끝나면 `wait.reason` 이 `deadline|agent_blocked|agent_exited` 다.
   `outcome` 은 만족한 대기에서만 `completed` 이고, 그 밖은 `outcome: unknown` 이며 **자동 재제출되지 않는다** —
   이때도 확인된 배달은 함께 보고된다. 그 보고를 먼저 읽고, `matchCount: 1` 이면 다시 넣지 않는다.

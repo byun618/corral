@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import specs from './specs.json'
 import { RuntimeError, reject, stringFlag, type CommandModule, type CommandSpec, type Invocation, type CommandContext } from '../contracts.js'
@@ -15,14 +16,17 @@ import { Receipts, REQUEST_ID } from './receipts.js'
 import { backendBinding } from '../backend.js'
 import { blockedReason, pickBlockedRule } from '../../shared/agent-state.js'
 import { followContinued } from '../../main/transcript-continued.js'
+import { INPUT_TIMING } from '../../main/mobile/input.js'
 import {
   AGENT_START_TIMEOUT_MS, AgentStore, READY_SAMPLES, READY_SAMPLE_INTERVAL_MS, SCREEN_EXCERPT_BYTES,
-  agentName, agentViewSeen, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexRolloutFiles, countSubmissions,
+  agentName, agentViewSeen, bodyIdentity, paneRecovery, captureCursor, classifyCount, codexCandidates, codexRolloutFiles, countSubmissions,
   evaluateManifest, isAgentKind, manifestGateError, mintsSessionId, normalizeBody, providerArgv, readySatisfied, resolvedIdentity, sessionRecordPaths,
   type AgentKind, type AgentPhase, type AgentRecord, type CursorEntry, type DetectManifestObservation,
 } from './agent.js'
 export const terminalSpecs: CommandSpec[] = specs
 export const MAX_INPUT = 65536
+/** LIFE-787: how many screen reads the agent-view check makes while waiting for the input to go quiet (the phone path's `quietScreen` count). */
+const QUIET_READS = 6
 export interface TerminalDesktop {
   available(): boolean
   changed(): Promise<void>
@@ -465,21 +469,47 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
        * **new** background session — herdr reads that screen as `idle`, so the ready gate lets it through.
        * Looked at immediately before the write and refused with no effect (`agent_view`, `not_started`).
        *
-       * The screen comes first, from a `pane.read` that also reports the pane's input revision in the
-       * same guard turn; the title is read after it (`agent.get`). The returned fence is that revision:
-       * the write carries it and the guard refuses it if any input — a human's `←` included — reached
-       * the pane after the screen corral judged. Only claude has the view: any other kind is not read
-       * at all and gets no fence, so codex and grok submit exactly as before. A guard that reports no
-       * revision (or no seq) still gets the judgment, just not the fence.
+       * The screen comes first, from a `pane.read` that also reports the pane's input revision and quiet
+       * time in the same guard turn; the title is read after it (`agent.get`).
+       * - The screen is trusted only when the input had been quiet for `INPUT_TIMING.quietMs` (the phone
+       *   path's value — the echo of a key, `←` included, reaches the screen up to ~0.27 s after the key):
+       *   a key that went in just before the read has already moved the revision but not yet the screen.
+       *   Less quiet, corral waits out the rest and reads again — at most `QUIET_READS` reads, inside the
+       *   deadline — and refuses `input_changed` if the pane never goes quiet. corral's own write counts as
+       *   input too (the guard bumps the revision for it, herdr-guard.patch:571): the lead line
+       *   `worker-start` types just before the body is waited out the same way, not told apart.
+       * - The returned fence is that revision: the write carries it, and the guard refuses (`input_changed`)
+       *   if any input reached the pane after the judged screen.
+       * Only claude has the view: any other kind is not read at all and gets no fence, so codex and grok
+       * submit exactly as before. A guard that reports no revision (or no seq) still gets the judgment,
+       * just not the quiet wait or the fence. A read that fails here fails before any write, so it is
+       * reported `preflight`·`not_started` whatever the backend called it.
        */
       const agentViewFence = async (live: TerminalIdentity, kind: AgentKind | null): Promise<{ inputRevision: number; seq: number } | null> => {
         if (kind !== 'claude') return null
-        const screen = await backend.screenRead(live, ctx)
-        const title = (await backend.agentInfo(live, ctx)).terminalTitle ?? null
+        let screen: Awaited<ReturnType<TerminalBackend['screenRead']>>, title: string | null
+        try {
+          for (let read = 1; ; read++) {
+            screen = await backend.screenRead(live, ctx)
+            const idleMs = screen.input?.idleMs ?? null
+            if (idleMs === null || idleMs >= INPUT_TIMING.quietMs) break
+            const wait = INPUT_TIMING.quietMs - idleMs
+            if (read >= QUIET_READS || Date.now() + wait >= ctx.deadlineAt - 15) {
+              throw new RuntimeError('input_changed', 'The pane kept taking input while corral looked at it; nothing was written. Look at the pane (esc if it shows agent view), then retry',
+                { terminal: handle(live), guard: 'not_quiet', idleMs, quietMs: INPUT_TIMING.quietMs, reads: read, recovery: paneRecovery('input_changed') }, 'preflight', 'not_started')
+            }
+            await delay(wait, undefined, { signal: ctx.signal })
+          }
+          title = (await backend.agentInfo(live, ctx)).terminalTitle ?? null
+        } catch (error) {
+          if (error instanceof RuntimeError && error.outcome === 'not_started' && error.stage === 'preflight') throw error
+          throw new RuntimeError(error instanceof RuntimeError ? error.code : 'agent_view_unread', `corral could not read the pane to check for agent view; nothing was written (${error instanceof Error ? error.message : String(error)})`,
+            { terminal: handle(live), recovery: 'terminal show / terminal read, then retry (the same --request-id may be reused)' }, 'preflight', 'not_started')
+        }
         const marks = agentViewSeen({ kind, screen: screen.text, title })
         if (marks.length > 0) {
           throw new RuntimeError('agent_view', 'The Claude pane is showing agent view; a body submitted there would start a new background session, not reach this conversation. Nothing was written: press esc in the pane, then retry',
-            { terminal: handle(live), agentView: { marks, title }, recovery: 'press esc in the pane to return to the conversation, then retry (the same --request-id may be reused)' }, 'preflight', 'not_started')
+            { terminal: handle(live), agentView: { marks, title }, recovery: paneRecovery('agent_view') }, 'preflight', 'not_started')
         }
         return screen.input === null || screen.seq === null ? null : { inputRevision: screen.input.revision, seq: screen.seq }
       }
@@ -491,7 +521,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
       const fenceRefusal = (live: TerminalIdentity, error: unknown): unknown => {
         if (!(error instanceof RuntimeError) || (error.code !== 'input_changed' && error.code !== 'input_recent')) return error
         return new RuntimeError('input_changed', 'The pane took input after corral read its screen; nothing was written. Look at the pane (esc if it shows agent view), then retry',
-          { terminal: handle(live), guard: error.code, recovery: 'look at the pane (press esc if it is in agent view), then retry (the same --request-id may be reused)' }, 'preflight', 'not_started')
+          { terminal: handle(live), guard: error.code, recovery: paneRecovery('input_changed') }, 'preflight', 'not_started')
       }
       const submitPrompt = async (live: TerminalIdentity, requestId: string, raw: string, want: 'accepted' | 'responded' | undefined) => {
         const record = loadAgent(live)
@@ -522,15 +552,25 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         // C3/D24: the cursor reaches disk before the effect, so a restart still knows where to look.
         // `workingObserved` is reset with it (R4): it is evidence about *this* submission's turn, and
         // a Working left over from the previous one would otherwise satisfy `responded` on its own.
-        patchAgent(live, { phase: 'ready', workingObserved: false, lastSubmission: { sha256: identity.sha256, bytes: identity.bytes, submittedAt, cursor, requestId: null } })
+        const pending = { sha256: identity.sha256, bytes: identity.bytes, submittedAt, cursor, requestId: null }
+        patchAgent(live, { phase: 'ready', workingObserved: false, lastSubmission: pending })
         if (fence === null) await backend.promptAgent(live, text, info.stateChangeSeq, ctx)
         else {
-          // `minIdleMs: 0`: no quiet time is asked for — only that the input revision is still the judged screen's.
-          try { await backend.promptAgentIfQuiet(live, { text, expectedStateChangeSeq: info.stateChangeSeq, inputRevision: fence.inputRevision, minIdleMs: 0 }, ctx) }
+          // The quiet time is asked for again in the writing turn; with the revision unchanged since a quiet
+          // screen it already holds, so this adds no wait — it is the guard's own statement of the same rule.
+          try { await backend.promptAgentIfQuiet(live, { text, expectedStateChangeSeq: info.stateChangeSeq, inputRevision: fence.inputRevision, minIdleMs: INPUT_TIMING.quietMs }, ctx) }
           catch (error) {
             const refusal = fenceRefusal(live, error)
-            // Nothing was submitted, so the pre-effect record goes back to what it was.
-            if (refusal !== error) patchAgent(live, { phase: record.phase, workingObserved: record.workingObserved, lastSubmission: record.lastSubmission })
+            // Nothing was submitted, so what *this call* wrote goes back — and only while it is still what
+            // this call wrote: another submission to the same pane (a socket `terminal prompt` next to a
+            // `worker-start` body) may have recorded its own since, and that record is not ours to undo.
+            if (refusal !== error) {
+              const now = loadAgent(live)
+              if (now !== null && isDeepStrictEqual(now.lastSubmission, pending)) {
+                patchAgent(live, { lastSubmission: record.lastSubmission,
+                  ...(now.phase === 'ready' ? { phase: record.phase } : {}), ...(now.workingObserved === false ? { workingObserved: record.workingObserved } : {}) })
+              }
+            }
             throw refusal
           }
         }

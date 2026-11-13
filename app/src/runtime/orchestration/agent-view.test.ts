@@ -16,6 +16,7 @@ import { createRun, createTask, emptyState } from './model.js'
 import { TerminalBackend, type AgentObservation, type TerminalIdentity } from '../../main/adapter/index.js'
 import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, PROMPT_LEAD, agentName, sessionRecordPaths } from '../terminal/agent.js'
 import { Tokens } from '../terminal/tokens.js'
+import { INPUT_TIMING } from '../../main/mobile/input.js'
 import { RuntimeError } from '../contracts.js'
 import { clearContinuedMemo } from '../../main/transcript-continued.js'
 import { isRecord } from '../../shared/json.js'
@@ -48,29 +49,39 @@ function setup() {
   const info: AgentObservation = { name: agentName('pane'), kind: 'claude', status: 'idle', launchPending: false, interactiveReady: true,
     stateChangeSeq: 2, stateLabels: {}, session: null, paneId: 'pane', observedAt: new Date().toISOString() }
   const writes: string[] = []
-  const state = { screen: sample('view-default'), revision: 3, writes, afterLead: () => {}, file: '' }
-  const fence = (expected: number) => {
+  /** Set by a case to make every screen read fail. */
+  interface ReadFailure { fail: (() => void) | null }
+  const readFailure: ReadFailure = { fail: null }
+  const state = { screen: sample('view-default'), revision: 3, writes, afterLead: () => {}, file: '', onTitle: () => {},
+    /** The guard's input clock: every write — corral's own included (herdr-guard.patch:571) — is input. */
+    lastInputAt: Date.now() - 5000, idleAtBody: -1, readFailure }
+  const fence = (expected: number, minIdleMs = 0) => {
     if (expected !== state.revision) throw new RuntimeError('input_changed', 'pane input moved since corral observed it', undefined, 'backend', 'not_started')
+    if (Date.now() - state.lastInputAt < minIdleMs) throw new RuntimeError('input_recent', 'pane input moved since corral observed it', undefined, 'backend', 'not_started')
   }
   const proto = TerminalBackend.prototype
   vi.spyOn(proto, 'epoch').mockImplementation(async () => 'e')
   vi.spyOn(proto, 'agentCapable').mockImplementation(() => true)
   vi.spyOn(proto, 'list').mockImplementation(async () => [live])
-  vi.spyOn(proto, 'agentInfo').mockImplementation(async () => ({ ...info, terminalTitle: 'L787-C' }))
+  vi.spyOn(proto, 'agentInfo').mockImplementation(async () => { state.onTitle(); return { ...info, terminalTitle: 'L787-C' } })
   vi.spyOn(proto, 'agentManifests').mockImplementation(async () => AGENT_KINDS.map(agent => ({ agent, source_kind: EXPECTED_MANIFESTS[agent].sourceKind,
     active_version: EXPECTED_MANIFESTS[agent].version, local_override_shadowing_remote: false })))
   vi.spyOn(proto, 'read').mockImplementation(async () => ({ text: 'fixture', truncated: false, total: 7 }))
   vi.spyOn(proto, 'process').mockImplementation(async () => ({ shellPid: 123, foregroundGroupId: null, foreground: [{ pid: 456, name: 'claude', argv: null }] }))
-  vi.spyOn(proto, 'screenRead').mockImplementation(async () => ({ text: state.screen, input: { revision: state.revision, idleMs: 5000 }, anyInput: null, seq: info.stateChangeSeq }))
+  vi.spyOn(proto, 'screenRead').mockImplementation(async () => {
+    state.readFailure.fail?.()
+    return { text: state.screen, input: { revision: state.revision, idleMs: Date.now() - state.lastInputAt }, anyInput: null, seq: info.stateChangeSeq }
+  })
   const writers = [
     vi.spyOn(proto, 'send').mockImplementation(async (_live, text) => { state.writes.push(text) }),
     vi.spyOn(proto, 'sendIfUnchanged').mockImplementation(async (_live, text) => { state.writes.push(text) }),
     vi.spyOn(proto, 'sendFenced').mockImplementation(async (_live, input) => {
-      fence(input.inputRevision); state.writes.push(input.text); state.revision++; state.afterLead(); return { revision: state.revision, anyRevision: null }
+      fence(input.inputRevision); state.writes.push(input.text); state.revision++; state.lastInputAt = Date.now(); state.afterLead(); return { revision: state.revision, anyRevision: null }
     }),
     vi.spyOn(proto, 'promptAgent').mockImplementation(async (_live, text) => { state.writes.push(text); return info }),
     vi.spyOn(proto, 'promptAgentIfQuiet').mockImplementation(async (_live, input) => {
-      fence(input.inputRevision); state.writes.push(input.text); state.revision++
+      state.idleAtBody = Date.now() - state.lastInputAt
+      fence(input.inputRevision, input.minIdleMs); state.writes.push(input.text); state.revision++; state.lastInputAt = Date.now()
       // The provider records the body in the minted session file, as Claude Code does.
       fs.appendFileSync(state.file, JSON.stringify({ type: 'user', origin: { kind: 'human' }, uuid: randomUUID(), timestamp: new Date().toISOString(), message: { content: input.text } }) + '\n')
       return info
@@ -141,5 +152,43 @@ describe('LIFE-787 C3 합성 — worker-start 가 agent view pane 에 리드 줄
     expect([second.state, second.launch, second.dispatchId]).toEqual(['ready', 'resumed', first.dispatchId])
     expect(f.state.writes.filter(text => text === PROMPT_LEAD)).toHaveLength(1)
     expect(f.state.writes).toHaveLength(2)
+  }, 60000)
+
+  it('fix1 A: 리드 줄(corral 자신의 쓰기)이 올린 revision 뒤에도 본문은 스스로 input_recent 로 막히지 않는다 — quiet 를 기다린 화면, minIdleMs = 폰 quietMs', async () => {
+    const f = setup()
+    f.state.screen = sample('normal-named-empty')
+    const started = await workerStart(f)
+    expect(started.state).toBe('ready')
+    expect(f.state.writes).toHaveLength(2)
+    const body = vi.mocked(TerminalBackend.prototype.promptAgentIfQuiet).mock.calls[0]![1]
+    expect(body.minIdleMs).toBe(INPUT_TIMING.quietMs)
+    expect(f.state.idleAtBody).toBeGreaterThanOrEqual(INPUT_TIMING.quietMs)
+  }, 60000)
+
+  it('fix1 F: 리드 줄 울타리 — 판정 화면을 읽은 뒤 입력이 들어오면 리드도 쓰지 않는다(input_changed, claim 반환)', async () => {
+    const f = setup()
+    f.state.screen = sample('normal-named-empty')
+    let bumped = false
+    f.state.onTitle = () => {
+      if (!bumped && vi.mocked(TerminalBackend.prototype.screenRead).mock.calls.length > 0) { bumped = true; f.state.revision++; f.state.lastInputAt = Date.now() - 5000 }
+    }
+    const first = await workerStart(f)
+    expect([first.state, first.stage]).toEqual(['incomplete', 'dispatch_input'])
+    expect(asRecord(asRecord(first.stages).input)).toMatchObject({ status: 'failed', error: 'input_changed', lead: 'released' })
+    expect(f.state.writes).toEqual([])
+    expect(claims(f)).toEqual({ lead: null, prompt: null })
+  }, 60000)
+
+  it('fix1 C: 리드 앞 판정 읽기 실패 → unprovable 이 아니라 효과 없는 입력 실패(재개 가능)', async () => {
+    const f = setup()
+    f.state.screen = sample('normal-named-empty')
+    f.state.readFailure.fail = () => { throw new RuntimeError('backend_timeout', 'read timed out', undefined, 'backend') }
+    const first = await workerStart(f)
+    expect([first.state, first.stage]).toEqual(['incomplete', 'dispatch_input'])
+    expect(asRecord(asRecord(first.stages).input)).toMatchObject({ status: 'failed', error: 'backend_timeout', lead: 'released' })
+    expect(f.state.writes).toEqual([])
+    f.state.readFailure.fail = null
+    const second = await workerStart(f)
+    expect([second.state, second.launch, second.dispatchId]).toEqual(['ready', 'resumed', first.dispatchId])
   }, 60000)
 })

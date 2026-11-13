@@ -1203,7 +1203,8 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           // the same attempt at once both read `null` in their own snapshots, so only the lane can
           // decide which of them makes the effect. The run that writes the key is the only run that
           // makes it. What a later run may do is then decided from those records and the receipts
-          // they name: corral never reads the pane's screen to answer it (`agent.ts` §4.6), and it
+          // they name: corral never reads the pane's screen to answer it (`agent.ts` §4.6 — the screen is read only to
+          // refuse a write on agent view, LIFE-787), and it
           // never repeats an effect whose outcome it cannot read.
           interface Intent { requestId: string; at: string }
           const claim = async (key: 'lead' | 'prompt', requestId: string): Promise<{ mine: boolean; intent: Intent }> => withDocumentLane(async () => {
@@ -1331,8 +1332,9 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           /**
            * V38. A diagnostic, and nothing in this command branches on it. `terminal read --screen`
            * returns the provider's drawing: a TUI puts the input line in a box with hint rows under
-           * it, so the end of the screen is not the end of the input line, and corral does not parse
-           * provider screens to decide anything (`agent.ts` §4.6). So this says `true` only when the
+           * it, so the end of the screen is not the end of the input line, and corral reads provider
+           * screens only to refuse a write (agent view, LIFE-787 — `agent.ts` header), never to decide
+           * that anything happened or is clear. So this says `true` only when the
            * lead's text is somewhere on the screen, and `null` — never `false` — otherwise. corral
            * cannot prove an input line is clear, and claiming it is would be the same mistake facing
            * the other way.

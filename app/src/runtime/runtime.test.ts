@@ -394,6 +394,9 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
       vi.spyOn(proto, 'process').mockImplementation(async () => ({ shellPid: 123, foregroundGroupId: null, foreground: state.foreground })),
       vi.spyOn(proto, 'startAgent').mockImplementation(async () => ({ agent: state.info, argv: [] })),
       vi.spyOn(proto, 'promptAgent').mockImplementation(async () => { state.onPrompt(); return state.info }),
+      // LIFE-787: a claude submission first reads the screen (no agent view here) and then fences on its input revision.
+      vi.spyOn(proto, 'screenRead').mockImplementation(async () => ({ text: '', input: { revision: 1, idleMs: 5000 }, anyInput: null, seq: state.info.stateChangeSeq })),
+      vi.spyOn(proto, 'promptAgentIfQuiet').mockImplementation(async () => { state.onPrompt(); return state.info }),
     ]
     cleanups.push(() => { for (const stub of stubs) stub.mockRestore() })
     const t0 = Date.now() - 1000, store = new AgentStore(data)

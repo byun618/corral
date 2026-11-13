@@ -66,6 +66,10 @@ function setup() {
   vi.spyOn(proto, 'process').mockImplementation(async () => ({ shellPid: 123, foregroundGroupId: null, foreground: [{ pid: 456, name: 'claude', argv: null }] }))
   vi.spyOn(proto, 'send').mockImplementation(async () => undefined)
   vi.spyOn(proto, 'promptAgent').mockImplementation(async (_live, text) => { state.onPrompt(text); return info })
+  // LIFE-787: the lead and the body first read the screen (no agent view here) and then fence on its input revision.
+  vi.spyOn(proto, 'screenRead').mockImplementation(async () => ({ text: '', input: { revision: 1, idleMs: 5000 }, anyInput: null, seq: info.stateChangeSeq }))
+  vi.spyOn(proto, 'sendFenced').mockImplementation(async () => ({ revision: 2, anyRevision: null }))
+  vi.spyOn(proto, 'promptAgentIfQuiet').mockImplementation(async (_live, input) => { state.onPrompt(input.text); return info })
   const t0 = Date.now() - 1000, a = randomUUID()
   new AgentStore(dir).write('pane', { epoch: 'e', ptyGeneration: 'p', kind: 'claude', name: info.name!, argv: ['claude'],
     requestedModel: null, requestedEffort: null, requestedAdvisor: null, sessionId: a, sessionIdSource: 'client-minted',

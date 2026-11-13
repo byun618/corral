@@ -1167,8 +1167,10 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             stages.dispatch = { status: 'completed', dispatchId: dispatch.id, attempt: dispatch.attempt }
             effects.push({ kind: 'dispatch', action: 'created', id: dispatch.id, state: 'dispatched' })
           }
-          const unfinished = () => residualResources.push({ kind: 'dispatch', id: dispatch.id,
-            action: `The attempt exists and holds the pane, with no preamble delivered. corral orchestration worker-start --task ${taskId} --terminal ${target.handle} submits it once the pane is ready; worker-stop --dispatch ${dispatch.id} ends the attempt and closes the pane` })
+          // LIFE-787: an input refused because the pane was in Claude agent view (or took input while corral
+          // looked) wrote nothing; the pane needs a person to press esc before the same call resumes.
+          const unfinished = (error?: unknown) => residualResources.push({ kind: 'dispatch', id: dispatch.id,
+            action: `${error instanceof RuntimeError && (error.code === 'agent_view' || error.code === 'input_changed') ? `The pane refused the input (${error.code}): press esc in it to return to the conversation first. ` : ''}The attempt exists and holds the pane, with no preamble delivered. corral orchestration worker-start --task ${taskId} --terminal ${target.handle} submits it once the pane is ready; worker-stop --dispatch ${dispatch.id} ends the attempt and closes the pane` })
 
           // stage 3 — the one submission
           const input = composeBody({ corral: corralCommand(), runId: start.runId, taskId, dispatchId: dispatch.id, handle: target.handle, spec: start.spec })
@@ -1309,11 +1311,13 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           const leadId = derivedRequestId(parentId, 'lead')
           const leadClaim = await claim('lead', leadId)
           if (leadClaim.mine) {
-            try { await terminalChild('terminal send', { terminal: target.handle, text: PROMPT_LEAD, 'request-id': leadId }, {}) }
+            // LIFE-787: `refuse-agent-view` makes the lead pass the same agent-view judgment and input fence
+            // the body's `terminal prompt` does — so on agent view neither the lead nor the body is typed.
+            try { await terminalChild('terminal send', { terminal: target.handle, text: PROMPT_LEAD, 'request-id': leadId, 'refuse-agent-view': true }, {}) }
             catch (error) {
               const released = await release('lead', error)
               stages.input = { ...stageFailure(error), requestId: leadId, lead: released ? 'released' : 'kept' }
-              unfinished()
+              unfinished(error)
               return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
             }
           } else {
@@ -1377,7 +1381,7 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
               } else {
                 const released = await release('prompt', error)
                 stages.input = { ...stageFailure(error), requestId: promptId, submission: released ? 'released' : 'kept' }
-                unfinished()
+                unfinished(error)
                 return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
               }
             }

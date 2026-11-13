@@ -386,7 +386,7 @@ corral worktree set --worktree path:<구현 worktree 절대경로> --parent-work
   같은 pane 에 `--terminal <handle>` 로 붙이는 2단을 쓴다. **trust 화면은 사람 몫이다.**
 - **agent view(LIFE-787)**: 워커 pane 이 Claude agent view 면 `worker-start` 가 리드 줄을 치기 **전에** 거절한다 — `incomplete`·`stage: dispatch_input`·
   `stages.input.error: agent_view`, pane 에는 아무것도 쓰지 않는다. 사람이 그 pane 에서 `esc` 로 대화로 돌아온 뒤 **같은 Task 에**
-  `worker-start --task <t> --terminal <handle>` 을 다시 부르면 같은 Dispatch 로 재개된다(`launch: resumed`). 재개 중 본문 단계에서 걸려도 같다.
+  `corral orchestration worker-start --task <t> --terminal <handle>` 을 다시 부르면 같은 Dispatch 로 재개된다(`launch: resumed`). 재개 중 본문 단계에서 걸려도 같다.
 - **셸 rc 의 대화형 질문**: pane 셸이 rc 에서 질문(업데이트 확인 등)을 띄우면 주입한 기동 줄 첫 글자가 그 답으로 먹혀 provider 이름이 깨지고
   `agent_not_ready`·`incomplete` 로 끝난다. 같은 Task 를 `worker-stop` 으로 멈추고 새로 기동한다 — 반복되면 사용자에게 셸 쪽 질문을 먼저 끝내 달라고 한다(LIFE-719 외 매핑 밖 두 번째).
 - **타임아웃·빈 결과**: 대기 예산은 `--timeout-ms` 로 주고 상한은 120000 이다. codex 는 같은 과제에서 Claude 보다

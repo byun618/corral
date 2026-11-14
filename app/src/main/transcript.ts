@@ -1080,7 +1080,7 @@ function readLifecycle(input: {
     if (carry.unsure && anyAlive) return { state: 'unknown', reason: 'unreadable' }
     const carried: HandedItems = { tasks: [], subagents: [] }
     // 묶음끼리 id 가 겹치지 않는다 — 재시작 몫은 `cost-state` 가 본 파일의 열린 것(`inheritedItems` 의 재료)을 옮기고 비운 것이고, 이 파일이 넘긴 것(`sent`)과
-    // 재시작 몫이 함께 생기려면 `continued-in` 을 쓴 파일의 세션 id 에 bg 주인이 살아 있어야 한다(관측 없음 — bg 기록 136 중 continued-in 3 은 모두 대화형 줄 뒤, 리뷰 r1 M7).
+    // 재시작 몫이 함께 생기려면 `continued-in` 을 쓴 파일의 세션 id 에 bg 주인이 살아 있어야 한다(관측 없음(사용자 기록 3건) — bg 기록 136 중 continued-in 3 은 모두 대화형 줄 뒤, 리뷰 r1 M7). 두 주인이 함께 살면 같은 id 가 두 번 나올 수 있다(한계).
     for (const group of carry.groups) {
       if (group.owner === null || !group.owner.alive) continue
       carried.tasks.push(...group.carried.tasks)

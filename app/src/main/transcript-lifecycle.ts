@@ -33,7 +33,7 @@
 //         · **`cost-state` 레코드 = 그 프로세스가 이 파일을 놓았다** (L8). 프로세스가 끝나면 백그라운드 작업도 같이 죽는데 끝 통지가
 //           없다(#72171). 재개하면 하네스가 `status:stopped` 통지를 같은 파일에 쓰지만(`raw/claude/u3-resume-probe.txt`),
 //           재개 전까지는 열린 채로 남는다. 사용자 기록 242 파일 · cost-state 426 중 그 뒤에 닫힌 작업 8/8 이 전부 재개 통지였다.
-//           **다만 전환(`←`)도 이 줄을 찍는다** — 아래 「전환」.
+//           **다만 전환(`←`)과 bg 세션 프로세스 재시작(supervisor)도 이 줄을 찍는다** — 아래 「전환」·「supervisor 재시작」.
 //
 // # 끝 표지 없는 죽음 — 프로세스 생존 (L8)
 //
@@ -44,7 +44,7 @@
 //
 // # 세대 경계 — 재개 뒤의 옛 열림 (L8)
 //
-// 강제 종료 뒤 재개하면 같은 파일에 잇는다. 옛 프로세스의 열린 작업·자식은 끝 표지 없이 남는다 — claude 는 재개 때 옛 셸에
+// 강제 종료 뒤 재개하면 같은 파일에 잇는다(supervisor 재시작도 같은 파일에 잇지만 작업이 산다 — 아래 「supervisor 재시작」). 옛 프로세스의 열린 작업·자식은 끝 표지 없이 남는다 — claude 는 재개 때 옛 셸에
 // `stopped` 통지를 쓰지만 모든 종류에 쓴다는 근거가 없고, grok 은 빈 `background_tasks` 스냅샷만 쓴다(자식은 안 닫힌다).
 // 그래서 **살아 있는 소유 프로세스의 시작 시각**(claude 레지스트리 `startedAt`, grok 은 `ps` 의 시작 시각 — 초 단위)보다 먼저
 // 열린 것은 싣지 않는다(제외). 캐시 없이 처음부터 다시 읽어도 같은 답이다 — 기록 순서가 아니라 시각으로 가르기 때문이다.
@@ -65,6 +65,17 @@
 // 옆 파일 장부(연쇄 앞쪽 전부·대상 파일)를 따라잡는 동안은 넘김을 몰라 목록이 모름(`catching-up`)이다 — 빈 목록을 내지 않는다. 기다려도 답이 안 바뀌면
 // (넘겨받을 후보도, 세대 거르기가 앞쪽 장부에 달린 넘김도, 넘긴 것도 없으면) 묶지 않는다. 앞쪽 장부가 따라잡힌 주기에 답을 다시 고른다(`transcript.ts`). 대상 파일에서 긴 줄을 건너뛰면 넘겨받은 id 도 불확실(`unreadable`)이다 — 그 id 의 끝 표지로 풀린다.
 // 보류 없이 온 `continued-in` 이나 모양이 아닌 대상 id 는 아무것도 넘기지 않는다 — 고치기 전 동작(빠짐)으로 떨어진다.
+//
+// # supervisor 재시작 — 같은 파일에서 세대 경계를 건너 넘어간 작업 (LIFE-794, 2.1.296 관측)
+//
+// supervisor 가 bg 세션 프로세스를 다시 띄우면(`claude respawn <id>` 실측) 같은 세션 id·같은 파일로 잇는다. 파일 끝은 옛 프로세스의
+// `cost-state` → `last-prompt` → `cost-state` 이고 `continued-in` 은 없다. 셸·비동기 에이전트는 새 프로세스로 넘어가 계속 돌고(셸 부모 → 1),
+// 끝 통지는 새 프로세스가 같은 파일에 쓴다. 넘어가지 못한 것(Monitor·handoff 끔의 셸)에는 새 프로세스가 곧바로 `killed`·`stopped` 통지를 쓴다. 그래서:
+//   · bg 프로세스가 쓴 줄(`sessionKind:"bg"` — 대화형 줄에는 이 키가 없다)로 열린 셸·비동기 에이전트는 `cost-state` 때 **재시작 몫**(`restart`)으로도
+//     더한다(Monitor 빼고). 대입이 아니라 더한다 — 두 번째 `cost-state` 가 첫 줄의 몫을 지우지 않게. 끝 표지로만 빠지고 사람 줄·`continued-in` 에는 안 지워진다.
+//   · 싣는 것은 볼 때 고른다(`restartItems`): 같은 세션 id 의 **bg 주인**(레지스트리 `kind:"bg"`)이 살아 있고 그 시작 시각보다 **먼저 열린 것**만.
+//     대화형 프로세스가 같은 파일을 이어 받으면(재개, L8) 싣지 않고 옛 세대를 뺀다. `cost-state` 를 쓴 bg 프로세스가 살아 있으면 그 프로세스가 연 것은
+//     시작 시각 뒤라 싣지 않는다(고치기 전 동작). `←` 로 이어 받은 파일은 복사된 줄도 `sessionKind:"bg"` 로 다시 쓰여 넘겨받은 셸도 같은 길로 남는다.
 // grok (`updates.jsonl`, 00-analysis P6):
 //   `background_tasks` 는 **전체 스냅샷**이라 마지막 스냅샷의 `status:'running'` 이 지금 도는 작업이다. `task_completed` 는
 //   스냅샷이 오기 전의 끝을 보탠다. 형제 파일 꼬리 창(256KB) 밖의 스냅샷도 누적 판독이라 잃지 않는다(P1 — 12 중 8).
@@ -115,6 +126,13 @@ export type LedgerState =
       /** `continued-in` 으로 이어 받은 세션(`target`)에 넘긴 것 — 그 세션 프로세스가 살아 있는 동안 싣는다(LIFE-781). */
       handoff: (ParkedItems & { target: string; from: string | null }) | null
       /**
+       * bg 프로세스가 `cost-state` 를 쓸 때 열려 있던 셸·비동기 에이전트 — supervisor 가 그 세션 프로세스를 다시 띄우면 같은 파일·같은 세션 id 로
+       * 넘어간다(LIFE-794, 2.1.296 관측). 끝 표지로만 빠지고 사람 줄(`resumed`)·`continued-in` 에는 안 지워진다. 싣는 것은 볼 때 고른다(`restartItems`).
+       */
+      restart: ClaudeItems | null
+      /** 지금 열린 것 중 bg 프로세스가 쓴 줄(`sessionKind:"bg"`)로 열린 id — `cost-state` 때 `restart` 로 옮길 후보(LIFE-794). */
+      bgOpened: Set<string>
+      /**
        * 이 파일에서 끝 표지를 본 id(최근 `ENDED_MAX` 개, LIFE-781) — 넘겨받은 쪽이 「이미 끝났나」를 묻는다. 이어 받은 세션은 첫 입력 전에도
        * 끝 통지를 새 파일 `queue-operation` 으로 쓴다(실제 기록 1건: 그 뒤에 복사가 온다). 그때 그 id 는 이 파일에서 아직 열린 적이 없다.
        */
@@ -155,7 +173,7 @@ export type Ledger = {
 
 export function emptyLedgerState(agent: 'claude' | 'grok'): LedgerState {
   return agent === 'claude'
-    ? { agent: 'claude', tasks: new Map(), calls: new Map(), subagents: new Map(), parked: null, handoff: null, ended: new Set() }
+    ? { agent: 'claude', tasks: new Map(), calls: new Map(), subagents: new Map(), parked: null, handoff: null, restart: null, bgOpened: new Set(), ended: new Set() }
     : { agent: 'grok', tasks: new Map(), subagents: new Map(), spawnCalls: new Map(), spawnedBackground: new Map(), tasksInvalid: false }
 }
 
@@ -257,7 +275,7 @@ export function advanceLedger(input: {
 function openIds(state: LedgerState): string[] {
   const ids = [...state.tasks.keys(), ...state.subagents.keys()]
   if (state.agent !== 'claude') return ids
-  for (const items of [state.parked, state.handoff]) if (items !== null) ids.push(...items.tasks.keys(), ...items.subagents.keys())
+  for (const items of [state.parked, state.handoff, state.restart]) if (items !== null) ids.push(...items.tasks.keys(), ...items.subagents.keys())
   return ids
 }
 
@@ -332,6 +350,18 @@ export function handedOpen(input: { handoff: HandedItems; target: Ledger | null 
   if (state === undefined || state.agent !== 'claude') return input.handoff
   const ended = state.ended
   return { tasks: input.handoff.tasks.filter((item) => !ended.has(item.id)), subagents: input.handoff.subagents.filter((item) => !ended.has(item.id)) }
+}
+
+/**
+ * supervisor 재시작으로 넘어간 것 (LIFE-794) — bg 프로세스가 `cost-state` 를 쓸 때 열려 있던 것 중 **지금 bg 주인(`since` = 그 시작 시각)보다
+ * 먼저 열린 것**만 싣는다. 같은 프로세스가 아직 살아 있으면(`cost-state` 를 쓰고도 안 죽었으면) 그 프로세스가 연 것은 `since` 뒤라 싣지 않는다 —
+ * 고치기 전 동작이다. 시작 시각을 모르는 것도 싣지 않는다. 주인 판정(같은 세션 id 의 `kind:"bg"` 항목 생존)은 부르는 쪽이 한다.
+ */
+export function restartItems(input: { ledger: Ledger; since: number }): HandedItems {
+  const { state } = input.ledger
+  if (state.agent !== 'claude' || state.restart === null) return { tasks: [], subagents: [] }
+  const before = (item: { startedAt: number | null }) => item.startedAt !== null && item.startedAt < input.since
+  return { tasks: [...state.restart.tasks.values()].filter(before), subagents: [...state.restart.subagents.values()].filter(before) }
 }
 
 function listView(input: { tasks: BackgroundTask[]; subagents: SessionSubagent[] }): SessionLifecycle {
@@ -419,7 +449,10 @@ function applyClaudeRecord(input: { state: ClaudeState; record: Record<string, u
       // 이 프로세스가 이 파일을 놓았다 (L8). 프로세스 끝이면 작업·서브에이전트는 끝 통지 없이 같이 죽는다 — 다만 전환(`←`)도
       // 이 줄을 먼저 찍고 `continued-in` 을 잇는다(LIFE-781 실측). 그래서 지금 열린 것은 닫지 않고 보류로 옮긴다 — 목록엔 안 싣는다.
       // 이미 넘긴 것은 그대로다 — 전환 뒤 옛 pane 을 닫으면 이 줄이 한 번 더 오지만 넘긴 셸은 이어 받은 세션 아래서 산다(실측).
+      // bg 프로세스가 연 것은 재시작 몫에도 더한다 — supervisor 재시작이면 새 프로세스가 이어 받는다(LIFE-794).
       state.parked = parkable({ state, generation: input.generation })
+      state.restart = restartable(state)
+      state.bgOpened.clear()
       state.tasks.clear()
       state.calls.clear()
       state.subagents.clear()
@@ -470,6 +503,20 @@ function parkable(input: { state: ClaudeState; generation: Generation }): Parked
 }
 
 /**
+ * `cost-state` 때 재시작으로 넘어갈 수 있는 것 (LIFE-794) — 지금까지 모은 것에 이번에 열린 것 중 bg 프로세스가 연 셸·비동기 에이전트를 더한다.
+ * 재시작은 `cost-state` 를 두 줄 연달아 쓴다(실측) — 대입이 아니라 더해야 두 번째 줄이 첫 줄의 몫을 지우지 않는다.
+ * ① Monitor 는 뺀다 — 재시작 때 새 프로세스가 `killed`·`stopped` 통지를 쓰고 멈췄다(실측 m0, 문서도 같이 멈춘다).
+ * ② 동기 에이전트(tool_use id)는 `bgOpened` 에 없어 빠진다. ③ 대화형 프로세스가 연 것(`sessionKind` 없음)도 빠진다 — 그 `cost-state` 는
+ *    재개 경계(L8)다. 넘어가지 못한 셸에는 새 프로세스가 `stopped` 통지를 쓴다(handoff 끔 실측) — 그 통지로 빠진다.
+ */
+function restartable(state: ClaudeState): ClaudeItems | null {
+  const carried = (id: string, kind?: string) => state.bgOpened.has(id) && kind !== 'monitor'
+  const tasks = new Map([...(state.restart?.tasks ?? []), ...[...state.tasks].filter(([id, task]) => carried(id, task.kind))])
+  const subagents = new Map([...(state.restart?.subagents ?? []), ...[...state.subagents].filter(([id]) => carried(id))])
+  return tasks.size + subagents.size === 0 ? null : { tasks, subagents }
+}
+
+/**
  * 같은 파일에 대화가 이어졌다(재개) — 보류분은 그 프로세스와 같이 죽었고, 넘긴 것도 이 파일의 몫이 아니다.
  * 766 판별도 `continued-in` 뒤 사람 줄이면 이어 가기를 무효로 본다. 옛 열림은 세대 경계(L8)가 가른다.
  */
@@ -489,6 +536,7 @@ function claudeItems(state: ClaudeState): ClaudeItems[] {
   const all: ClaudeItems[] = [state]
   if (state.parked !== null) all.push(state.parked)
   if (state.handoff !== null) all.push(state.handoff)
+  if (state.restart !== null) all.push(state.restart)
   return all
 }
 
@@ -548,12 +596,15 @@ function applyClaudeUser(input: { state: ClaudeState; record: Record<string, unk
     state.subagents.delete(id) // 동기 서브에이전트는 결과가 오면 끝이다(성공·오류·중단 모두 tool_result 로 온다)
   }
   if (!isRecord(result)) return
+  // bg 프로세스가 쓴 줄로 열린 것 — `cost-state` 때 재시작으로 넘어갈 후보다(LIFE-794). 대화형 줄에는 `sessionKind` 가 없다(관측).
+  const byBg = readString(record, 'sessionKind') === 'bg'
   const backgroundTaskId = readString(result, 'backgroundTaskId')
   const taskId = readString(result, 'taskId')
   const agentId = readString(result, 'agentId')
   const stoppedId = readString(result, 'task_id')
   if (backgroundTaskId !== null) {
     state.tasks.set(backgroundTaskId, { id: backgroundTaskId, kind: 'shell', label: call?.label ?? null, startedAt: at ?? call?.at ?? null })
+    if (byBg) state.bgOpened.add(backgroundTaskId)
   } else if (taskId !== null && 'timeoutMs' in result) {
     state.tasks.set(taskId, { id: taskId, kind: 'monitor', label: call?.label ?? null, startedAt: at ?? call?.at ?? null })
   } else if (agentId !== null && readString(result, 'status') === 'async_launched') {
@@ -569,6 +620,7 @@ function applyClaudeUser(input: { state: ClaudeState; record: Record<string, unk
       startedAt,
       status: 'running',
     })
+    if (byBg) state.bgOpened.add(agentId)
   } else if (stoppedId !== null && 'task_type' in result) {
     closeClaude({ state, id: stoppedId }) // TaskStop 결과
   }
@@ -592,6 +644,7 @@ function closeClaude(input: { state: ClaudeState; id: string }): void {
     items.tasks.delete(input.id)
     items.subagents.delete(input.id)
   }
+  input.state.bgOpened.delete(input.id)
   const { ended } = input.state
   ended.delete(input.id)
   ended.add(input.id)

@@ -57,7 +57,7 @@ import { log } from './log.js'
 import { clearContinuedMemo, continuedReadBytes, followContinued } from './transcript-continued.js'
 import { parseGrokSummary, parseGrokUpdates, parseHead, parseTail, valueLines } from './transcript-parse.js'
 import type { Generation, HandedItems, Handoff, Ledger, Owner } from './transcript-lifecycle.js'
-import { advanceLedger, claudeLiveSessions, clearClaudeRegistry, grokSessionAlive, handedOpen, handoffItems, inheritedItems, ledgerHandoff, ledgerSettled, ledgerView, notHanded, restartItems } from './transcript-lifecycle.js'
+import { advanceLedger, claudeLiveSessions, clearClaudeRegistry, grokSessionAlive, handedOpen, handoffItems, inheritedItems, ledgerHandoff, ledgerSettled, ledgerView, restartItems } from './transcript-lifecycle.js'
 
 /** 첫 꼬리 창. 실측 평균 한 턴이 ~46KB 라 대략 5턴을 덮는다. */
 export const TAIL_WINDOW_BYTES = 256 * 1024
@@ -832,11 +832,13 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     const givenHanded = given !== null && previousId !== null && given.target === followed.sessionId ? handoffItems({ handoff: given, keep: handedTo(previousId) }) : null
     if (givenHanded !== null) groups.push({ carried: inheritedItems({ ledger, handed: givenHanded }), owner: links.inheritOwner })
     // supervisor 재시작(LIFE-794) — 같은 세션 id 의 bg 프로세스가 지금 주인이면, 옛 bg 프로세스가 `cost-state` 때 열어 둔 것 중 그보다 먼저 열린 것을 싣는다.
-    // 그 bg 주인이 전부 `idle` 이면 도는 것이 없다고 스스로 적은 것이라 싣지 않는다(리뷰 r1 B). `←` 로 복사된 옛 열림 중 앞 파일이 넘기지 않은 것은 뺀다(리뷰 r1 D).
+    // 그 bg 주인이 전부 `idle` 이면 도는 것이 없다고 스스로 적은 것이라 싣지 않는다(리뷰 r1 B). `←` 복사 줄로 열린 것은 앞 파일이 넘긴 id 만 싣고,
+    // 앞 파일 장부를 못 쓰면(참조가 bg id 자체·앞 파일 없음) 싣지 않는다(리뷰 r1 D·r2 K).
     const restartOwner = links.restartOwner
+    const handedIds = givenHanded === null ? null : new Set([...givenHanded.tasks, ...givenHanded.subagents].map((item) => item.id))
     const restart =
       restartOwner !== null && restartOwner.alive && restartOwner.since !== null && !links.restartIdle
-        ? restartItems({ ledger, since: restartOwner.since, drop: previous !== null && givenHanded !== null ? notHanded({ previous, handed: givenHanded }) : new Set() })
+        ? restartItems({ ledger, since: restartOwner.since, handed: handedIds })
         : null
     if (restartOwner !== null && restart !== null) groups.push({ carried: restart.carried, owner: restartOwner })
     // 옆 파일을 아직 따라잡는 중이면 넘김을 모른다 — 빈 `known` 이 아니라 모름이다(리뷰 r1 A). 다만 기다려도 답이 안 바뀌면 묶지 않는다(r2 C):
@@ -848,8 +850,8 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     const needsKeep =
       handoff !== null && handoff.since !== null && [...handoff.tasks, ...handoff.subagents].some((item) => item.startedAt === null || (handoff.since !== null && item.startedAt < handoff.since))
     const behind = (side: Ledger | null) => side !== null && !side.caughtUp
-    // 재시작 몫의 `←` 복사분 거르기도 앞 파일 장부에 달렸다(리뷰 r1 D).
-    const restarting = restart !== null && restart.carried.tasks.length + restart.carried.subagents.length > 0
+    // 재시작 몫의 `←` 복사분 거르기도 앞 파일 장부에 달렸다(리뷰 r1 D) — 거른 결과가 비었어도 복사분이 있었으면 기다린다(리뷰 r2 L).
+    const restarting = restart !== null && (restart.copied || restart.carried.tasks.length + restart.carried.subagents.length > 0)
     const catchingUp = ((candidates || needsKeep || restarting) && chain.some(behind)) || (handed && behind(links.target))
     // 대상 파일에서 한도보다 긴 줄을 건너뛰어 넘긴 것의 끝을 놓쳤을 수 있으면 모름이다(r2 B). 건너뛸 때 `keep` 이 아직 안 정해졌을 수 있으니
     // 대상 파일이 긴 줄을 건너뛴 적이 있으면 넘긴 것 중 거기서 끝을 못 본 것도 본다(r4 A).

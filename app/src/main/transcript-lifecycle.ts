@@ -76,7 +76,8 @@
 //     bg 세션 프로세스는 `claude stop` 에도 셸이 산다(부모 → 1, 리뷰어 실측) — 위 L8 의 「같이 죽는다」는 대화형 프로세스 기준이다.
 //   · 싣는 것은 볼 때 고른다(`restartItems`): 같은 세션 id 의 **bg 주인**(레지스트리 `kind:"bg"`)이 살아 있고 그 시작 시각보다 **먼저 열린 것**만.
 //     bg 주인이 전부 `status:"idle"`(넘어간 셸이 돌면 `shell`, 서브에이전트가 돌면 `busy` — 실측)이면 싣지 않는다 — 빼는 쪽으로만 쓰는 상한이다.
-//     시작 시각을 모르는 것이 있으면 목록 전체가 모름(`unreadable`)이다(R2-F1). `←` 로 복사된 옛 열림 중 앞 파일이 넘기지 않은 것은 뺀다(`notHanded`).
+//     시작 시각을 모르는 것이 있으면 목록 전체가 모름(`unreadable`)이다(R2-F1). `←` 복사 줄(`session_id` 가 옛 세션 id)로 열린 것은 앞 파일이 넘긴 id 일 때만 싣고,
+//     앞 파일 장부를 못 쓰면 싣지 않는다. `idle` 은 그 값이 `IDLE_SETTLE_MS` 넘게 그대로일 때만 믿는다(재시작 직후 `idle` 창 — 아래 레지스트리).
 //     대화형 프로세스가 같은 파일을 이어 받으면(재개, L8) 싣지 않고 옛 세대를 뺀다. `cost-state` 를 쓴 bg 프로세스가 살아 있으면 그 프로세스가 연 것은
 //     시작 시각 뒤라 싣지 않는다(고치기 전 동작). `←` 로 이어 받은 파일은 복사된 줄도 `sessionKind:"bg"` 로 다시 쓰여 넘겨받은 셸도 같은 길로 남는다.
 // grok (`updates.jsonl`, 00-analysis P6):
@@ -132,9 +133,14 @@ export type LedgerState =
        * bg 프로세스가 `cost-state` 를 쓸 때 열려 있던 셸·비동기 에이전트 — supervisor 가 그 세션 프로세스를 다시 띄우면 같은 파일·같은 세션 id 로
        * 넘어간다(LIFE-794, 2.1.296 관측). 끝 표지로만 빠지고 사람 줄(`resumed`)·`continued-in` 에는 안 지워진다. 싣는 것은 볼 때 고른다(`restartItems`).
        */
-      restart: ClaudeItems | null
+      restart: (ClaudeItems & { copied: Set<string> }) | null
       /** 지금 열린 것 중 bg 프로세스가 쓴 줄(`sessionKind:"bg"`)로 열린 id — `cost-state` 때 `restart` 로 옮길 후보(LIFE-794). */
       bgOpened: Set<string>
+      /**
+       * `bgOpened` 중 `←` 복사 줄로 열린 id — 복사 줄은 `session_id` 에 옛 세션 id 를 그대로 갖는다(자기 줄은 자기 id, 2.1.296 관측 e0).
+       * 재시작 몫에서 앞 파일이 넘긴 것만 남기는 데 쓴다(리뷰 r2 K).
+       */
+      bgCopied: Set<string>
       /**
        * 이 파일에서 끝 표지를 본 id(최근 `ENDED_MAX` 개, LIFE-781) — 넘겨받은 쪽이 「이미 끝났나」를 묻는다. 이어 받은 세션은 첫 입력 전에도
        * 끝 통지를 새 파일 `queue-operation` 으로 쓴다(실제 기록 1건: 그 뒤에 복사가 온다). 그때 그 id 는 이 파일에서 아직 열린 적이 없다.
@@ -176,7 +182,7 @@ export type Ledger = {
 
 export function emptyLedgerState(agent: 'claude' | 'grok'): LedgerState {
   return agent === 'claude'
-    ? { agent: 'claude', tasks: new Map(), calls: new Map(), subagents: new Map(), parked: null, handoff: null, restart: null, bgOpened: new Set(), ended: new Set() }
+    ? { agent: 'claude', tasks: new Map(), calls: new Map(), subagents: new Map(), parked: null, handoff: null, restart: null, bgOpened: new Set(), bgCopied: new Set(), ended: new Set() }
     : { agent: 'grok', tasks: new Map(), subagents: new Map(), spawnCalls: new Map(), spawnedBackground: new Map(), tasksInvalid: false }
 }
 
@@ -358,30 +364,23 @@ export function handedOpen(input: { handoff: HandedItems; target: Ledger | null 
 /**
  * supervisor 재시작으로 넘어간 것 (LIFE-794) — bg 프로세스가 `cost-state` 를 쓸 때 열려 있던 것 중 **지금 bg 주인(`since` = 그 시작 시각)보다
  * 먼저 열린 것**만 싣는다. 같은 프로세스가 아직 살아 있으면(`cost-state` 를 쓰고도 안 죽었으면) 그 프로세스가 연 것은 `since` 뒤라 싣지 않는다 —
- * 고치기 전 동작이다. 시작 시각을 모르는 것도 싣지 않는다. 주인 판정(같은 세션 id 의 `kind:"bg"` 항목 생존)은 부르는 쪽이 한다.
+ * 고치기 전 동작이다. 주인 판정(같은 세션 id 의 `kind:"bg"` 항목 생존)은 부르는 쪽이 한다.
+ * `←` 복사 줄로 열린 것(`restart.copied`)은 앞 파일이 넘긴 id(`handed` — 781 세대 거르기를 지난 것)일 때만 싣는다. 앞 파일 장부를 못 쓰면(`handed` null —
+ * 참조가 bg id 자체·앞 파일 없음) 복사분은 싣지 않는다(고치기 전 동작, 리뷰 r1 D·r2 K). `copied` 는 거르기 전 복사분이 있었나다 — 앞 장부 대기(리뷰 r2 L).
  */
-export function restartItems(input: { ledger: Ledger; since: number; drop: ReadonlySet<string> }): { carried: HandedItems; undated: boolean } {
+export function restartItems(input: { ledger: Ledger; since: number; handed: ReadonlySet<string> | null }): { carried: HandedItems; undated: boolean; copied: boolean } {
   const { state } = input.ledger
-  if (state.agent !== 'claude' || state.restart === null) return { carried: { tasks: [], subagents: [] }, undated: false }
-  const kept = <T extends { id: string }>(items: Map<string, T>) => [...items.values()].filter((item) => !input.drop.has(item.id))
-  const tasks = kept(state.restart.tasks)
-  const subagents = kept(state.restart.subagents)
+  if (state.agent !== 'claude' || state.restart === null) return { carried: { tasks: [], subagents: [] }, undated: false, copied: false }
+  const { restart } = state
+  const kept = <T extends { id: string }>(items: Map<string, T>) =>
+    [...items.values()].filter((item) => !restart.copied.has(item.id) || (input.handed !== null && input.handed.has(item.id)))
+  const tasks = kept(restart.tasks)
+  const subagents = kept(restart.subagents)
   const before = (item: { startedAt: number | null }) => item.startedAt !== null && item.startedAt < input.since
   // 시작 시각을 모르면 세대를 못 가른다 — 빼고 `known` 을 내지 않고 목록 전체를 모름으로 둔다(R2-F1 과 같다, 리뷰 r1 C).
   const undated = [...tasks, ...subagents].some((item) => item.startedAt === null)
-  return { carried: { tasks: tasks.filter(before), subagents: subagents.filter(before) }, undated }
-}
-
-/**
- * `←` 앞 파일이 넘기지 않은 id (LIFE-794 리뷰 r1 D) — 이어 받은 파일에는 옛 대화가 `sessionKind:"bg"` 로 다시 쓰여 복사되므로, 그 복사로 열린 옛 열림도
- * 재시작 몫에 든다. 앞 파일이 아는 id(넘김 원본·끝 표지를 본 것) 중 781 세대 거르기(`handoffItems`)를 통과하지 못한 것은 재시작 몫에서도 뺀다.
- */
-export function notHanded(input: { previous: Ledger; handed: HandedItems }): Set<string> {
-  const { state } = input.previous
-  if (state.agent !== 'claude') return new Set()
-  const handed = new Set([...input.handed.tasks, ...input.handed.subagents].map((item) => item.id))
-  const known = [...(state.handoff?.tasks.keys() ?? []), ...(state.handoff?.subagents.keys() ?? []), ...state.ended]
-  return new Set(known.filter((id) => !handed.has(id)))
+  const copied = [...restart.tasks.keys(), ...restart.subagents.keys()].some((id) => restart.copied.has(id))
+  return { carried: { tasks: tasks.filter(before), subagents: subagents.filter(before) }, undated, copied }
 }
 
 function listView(input: { tasks: BackgroundTask[]; subagents: SessionSubagent[] }): SessionLifecycle {
@@ -473,6 +472,7 @@ function applyClaudeRecord(input: { state: ClaudeState; record: Record<string, u
       state.parked = parkable({ state, generation: input.generation })
       state.restart = restartable(state)
       state.bgOpened.clear()
+      state.bgCopied.clear()
       state.tasks.clear()
       state.calls.clear()
       state.subagents.clear()
@@ -529,10 +529,11 @@ function parkable(input: { state: ClaudeState; generation: Generation }): Parked
  * ② 동기 에이전트(tool_use id)는 `bgOpened` 에 없어 빠진다. ③ 대화형 프로세스가 연 것(`sessionKind` 없음)도 빠진다 — 그 `cost-state` 는
  *    재개 경계(L8)다. 넘어가지 못한 셸에는 새 프로세스가 `stopped` 통지를 쓴다(handoff 끔 실측) — 그 통지로 빠진다.
  */
-function restartable(state: ClaudeState): ClaudeItems | null {
+function restartable(state: ClaudeState): (ClaudeItems & { copied: Set<string> }) | null {
   const tasks = new Map([...(state.restart?.tasks ?? []), ...[...state.tasks].filter(([id]) => state.bgOpened.has(id))])
   const subagents = new Map([...(state.restart?.subagents ?? []), ...[...state.subagents].filter(([id]) => state.bgOpened.has(id))])
-  return tasks.size + subagents.size === 0 ? null : { tasks, subagents }
+  const copied = new Set([...(state.restart?.copied ?? []), ...state.bgCopied])
+  return tasks.size + subagents.size === 0 ? null : { tasks, subagents, copied }
 }
 
 /**
@@ -617,6 +618,8 @@ function applyClaudeUser(input: { state: ClaudeState; record: Record<string, unk
   if (!isRecord(result)) return
   // bg 프로세스가 쓴 줄로 열린 것 — `cost-state` 때 재시작으로 넘어갈 후보다(LIFE-794). 대화형 줄에는 `sessionKind` 가 없다(관측).
   const byBg = readString(record, 'sessionKind') === 'bg'
+  // `←` 복사 줄 — `session_id` 가 있고 이 줄의 `sessionId` 와 다르다(옛 세션 id). 없으면 복사가 아닌 것으로 본다(plain bg 실표본 4종은 모두 자기 id).
+  const fromCopy = byBg && readString(record, 'session_id') !== null && readString(record, 'session_id') !== readString(record, 'sessionId')
   const backgroundTaskId = readString(result, 'backgroundTaskId')
   const taskId = readString(result, 'taskId')
   const agentId = readString(result, 'agentId')
@@ -624,6 +627,7 @@ function applyClaudeUser(input: { state: ClaudeState; record: Record<string, unk
   if (backgroundTaskId !== null) {
     state.tasks.set(backgroundTaskId, { id: backgroundTaskId, kind: 'shell', label: call?.label ?? null, startedAt: at ?? call?.at ?? null })
     if (byBg) state.bgOpened.add(backgroundTaskId)
+    if (fromCopy) state.bgCopied.add(backgroundTaskId)
   } else if (taskId !== null && 'timeoutMs' in result) {
     state.tasks.set(taskId, { id: taskId, kind: 'monitor', label: call?.label ?? null, startedAt: at ?? call?.at ?? null })
   } else if (agentId !== null && readString(result, 'status') === 'async_launched') {
@@ -640,6 +644,7 @@ function applyClaudeUser(input: { state: ClaudeState; record: Record<string, unk
       status: 'running',
     })
     if (byBg) state.bgOpened.add(agentId)
+    if (fromCopy) state.bgCopied.add(agentId)
   } else if (stoppedId !== null && 'task_type' in result) {
     closeClaude({ state, id: stoppedId }) // TaskStop 결과
   }
@@ -664,6 +669,7 @@ function closeClaude(input: { state: ClaudeState; id: string }): void {
     items.subagents.delete(input.id)
   }
   input.state.bgOpened.delete(input.id)
+  input.state.bgCopied.delete(input.id)
   const { ended } = input.state
   ended.delete(input.id)
   ended.add(input.id)
@@ -822,6 +828,8 @@ type RegistryEntry = {
   jobId: string | null
   /** 세션 단위 상태(`busy`·`shell`·`idle` — 2.1.296 관측). 작업 단위 생존이 아니다 — `idle` 을 「넘어간 작업 없음」으로 빼는 쪽으로만 쓴다(LIFE-794 리뷰 r1 B). */
   status: string | null
+  /** `status` 를 쓴 시각(epoch ms) — `idle` 이 재시작 직후 잠깐 지나가는 값인지 가르는 데만 쓴다(LIFE-794 리뷰 r2 I). */
+  statusUpdatedAt: number | null
 }
 
 /**
@@ -845,6 +853,9 @@ const registry = new Map<string, RegistryEntry>()
  * 레지스트리를 한 번 훑어 세션 id 마다 소유자를 고르는 함수를 준다 — 한 참조가 제 세션과 넘겨받은 세션(LIFE-781)을 함께 볼 때
  * 폴더를 두 번 훑지 않는다.
  */
+/** 재시작 직후 지나가는 `idle` 을 거르는 창 — 실측 `idle` 체류 56~61ms(리뷰 r2 e3, 5/5)·워커 실측(raw/claude/fix2/i1)의 수십 배 여유. */
+export const IDLE_SETTLE_MS = 2000
+
 export function claudeLiveSessions(input: { dir: string }): {
   owner: (sessionId: string) => Owner
   bgOwner: (sessionId: string) => Owner
@@ -891,6 +902,7 @@ export function claudeLiveSessions(input: { dir: string }): {
         kind: isRecord(parsed) ? readString(parsed, 'kind') : null,
         jobId: isRecord(parsed) ? readString(parsed, 'jobId') : null,
         status: isRecord(parsed) ? readString(parsed, 'status') : null,
+        statusUpdatedAt: isRecord(parsed) && typeof parsed['statusUpdatedAt'] === 'number' ? parsed['statusUpdatedAt'] : null,
       }
       registry.set(file, entry)
     }
@@ -908,9 +920,12 @@ export function claudeLiveSessions(input: { dir: string }): {
   const bgOwner = (sessionId: string): Owner => live((entry) => isBg(entry, sessionId))
   // 살아 있는 bg 항목이 전부 `idle` 이다 — 그 프로세스가 도는 셸·서브에이전트가 없다고 스스로 적었다(실측: 셸이 돌면 `shell`, 서브에이전트가 돌면 `busy`,
   // 끝 뒤·handoff 끔 재시작 직후 `idle`). 재시작 몫을 **빼는 쪽으로만** 쓴다(LIFE-794 리뷰 r1 B). 모르는 값·없는 값은 빼지 않는다.
+  // 재시작 직후 새 항목은 `idle` 을 잠깐(실측 수십 ms) 거쳐 `shell` 이 된다 — `idle` 은 `IDLE_SETTLE_MS` 넘게 그대로일 때만 믿는다(리뷰 r2 I). 쓴 시각을 모르면 믿지 않는다.
   const bgIdle = (sessionId: string): boolean => {
     const bg = entries.filter((entry) => isBg(entry, sessionId) && entry.pid !== null && processAlive(entry.pid))
-    return bg.length > 0 && bg.every((entry) => entry.status === 'idle')
+    const settled = (entry: RegistryEntry) =>
+      entry.status === 'idle' && entry.statusUpdatedAt !== null && Date.now() - entry.statusUpdatedAt >= IDLE_SETTLE_MS
+    return bg.length > 0 && bg.every(settled)
   }
   return { owner, bgOwner, bgIdle, bytes }
 }

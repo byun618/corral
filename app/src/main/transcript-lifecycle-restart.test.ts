@@ -16,10 +16,11 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isMonitoring } from '../shared/lifecycle'
 import type { AgentSessionRef, SessionLifecycle } from '../shared/types'
 import { clearTranscriptCache, readSessionDigest, readSessionDigests } from './transcript'
+import { IDLE_SETTLE_MS } from './transcript-lifecycle'
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'lifecycle-restart')
 type Entry = { sessionId: string; startedAt: number; kind: string }
@@ -91,8 +92,9 @@ const write = (input: { sessionId: string; lines: string[] }) => fs.writeFileSyn
 /**
  * 레지스트리 항목 — 관측된 키(`kind`·`jobId`·`parkedJobId`)를 그대로 적는다. 판독은 `pid`·`sessionId`·`startedAt`·`kind`·`jobId` 를 쓴다.
  * 한 세션 id 에 bg 프로세스는 하나다 — `before`·`after` 는 같은 파일 이름(`bg.json`)을 써서 재시작을 흉내 낸다(옛 항목이 사라지고 새 항목이 생긴다).
+ * `status`·`statusUpdatedAt` 에 null 을 주면 그 키를 쓰지 않는다. `statusUpdatedAt` 기본값은 1분 전(창을 넘긴 값).
  */
-function register(input: { registry: Registry; name: string; alive: boolean; kind?: string; file?: string; status?: string }) {
+function register(input: { registry: Registry; name: string; alive: boolean; kind?: string; file?: string; status?: string | null; statusUpdatedAt?: number | null }) {
   const entry = entryOf({ registry: input.registry, name: input.name })
   const file = path.join(home, '.claude', 'sessions', `${input.file ?? (entry.kind === 'bg' ? 'bg' : input.name)}.json`)
   if (!input.alive) {
@@ -102,7 +104,10 @@ function register(input: { registry: Registry; name: string; alive: boolean; kin
   const kind = input.kind ?? entry.kind
   const job = entry.sessionId.slice(0, 8)
   const shape = kind === 'bg' ? { jobId: job, parkedJobId: null } : { jobId: null, parkedJobId: null }
-  fs.writeFileSync(file, JSON.stringify({ pid: process.pid, sessionId: entry.sessionId, status: input.status ?? 'shell', startedAt: entry.startedAt, kind, ...shape }))
+  const status = input.status === undefined ? 'shell' : input.status
+  const statusUpdatedAt = input.statusUpdatedAt === undefined ? Date.now() - 60_000 : input.statusUpdatedAt
+  const statusShape = { ...(status === null ? {} : { status }), ...(statusUpdatedAt === null ? {} : { statusUpdatedAt }) }
+  fs.writeFileSync(file, JSON.stringify({ pid: process.pid, sessionId: entry.sessionId, ...statusShape, startedAt: entry.startedAt, kind, ...shape }))
   // 레지스트리 캐시는 크기·mtime 으로 다시 읽는다 — 같은 크기로 바꿔 써도 다음 판독이 보게 mtime 을 민다
   const bumped = new Date(Date.now() + registerCount++ * 1000)
   fs.utimesSync(file, bumped, bumped)
@@ -425,7 +430,7 @@ describe('fix1 D 합성 — `←` 로 복사된 옛 열림 중 781 이 넘기지
   //   task-x — 옛 파일에서 옛 대화형 주인 시작 시각보다 먼저 열리고 끝 표지 없음(강제 종료 뒤 재개 전 세대 — 781 세대 거르기가 뺀다)
   //   task-y — 옛 파일에서 열리고 `←` 때 cost-state 와 continued-in 사이 killed 통지로 끝남(781 실표본의 멈춘 에이전트 꼴)
   // bg 파일에는 둘 다 복사된 꼴(`sessionKind:"bg"`·bg 세션 id, 끝 통지 없음)로 열려 있다.
-  // 증명: 재시작 몫이 781 넘김 판정을 따른다(`notHanded` 의 넘김 원본·끝 본 id 둘 다), 앞 파일을 따라잡는 동안은 모름.
+  // 증명: 재시작 몫의 복사분이 781 넘김 판정을 따른다(앞 파일이 넘긴 id 만 — fix2 K 에서 `notHanded` 대신), 앞 파일을 따라잡는 동안은 모름.
   // 못 하는 것: 그런 옛 열림이 실제 `←` 복사로 오는지(실기 미확인 — 리뷰 r1 G3·F3 은 코드 경로).
   const old = lines({ name: 'left', tail: 'old' })
   const bg = lines({ name: 'left', tail: 'bg' })
@@ -433,8 +438,9 @@ describe('fix1 D 합성 — `←` 로 복사된 옛 열림 중 781 이 넘기지
   const oldId = entryOf({ registry, name: 'old' }).sessionId
   const bgId = entryOf({ registry, name: 'after' }).sessionId
   const oldStart = entryOf({ registry, name: 'old' }).startedAt
+  // 복사 줄은 `session_id` 에 옛 세션 id 를 갖는다(실표본 left 의 task-0 복사 줄과 같은 꼴 — fix2 K).
   const opened = (input: { sessionId: string; kind: string | null; id: string; at: number }) => {
-    const base = { sessionId: input.sessionId, timestamp: new Date(input.at).toISOString(), ...(input.kind === null ? {} : { sessionKind: input.kind }) }
+    const base = { sessionId: input.sessionId, session_id: oldId, timestamp: new Date(input.at).toISOString(), ...(input.kind === null ? {} : { sessionKind: input.kind }) }
     return [
       JSON.stringify({ type: 'assistant', ...base, message: { role: 'assistant', content: [{ type: 'tool_use', id: `toolu-${input.id}`, name: 'Bash', input: { run_in_background: true } }] } }),
       JSON.stringify({ type: 'user', ...base, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu-${input.id}`, content: '가림' }] }, toolUseResult: { backgroundTaskId: input.id } }),
@@ -484,5 +490,126 @@ describe('fix1 D 합성 — `←` 로 복사된 옛 열림 중 781 이 넘기지
     expect(seen[0]).toEqual({ state: 'unknown', reason: 'catching-up' })
     for (const life of seen) if (life.state === 'known') expect(life.tasks.map((task) => task.id)).toEqual(['task-0', 'task-1'])
     expect(seen.at(-1)?.state).toBe('known')
+  })
+
+  // fix2 K — 앞 파일 장부를 못 쓰는 두 경우. 고치기 전(fix1)은 복사분(task-0·task-x·task-y)을 그대로 실었다.
+  // 증명: 복사 줄(`session_id` ≠ `sessionId`)로 열린 것은 앞 파일이 넘긴 id 가 없으면 싣지 않는다. 못 하는 것: 앞 장부 없이 넘긴 것을 살리는 것 — 빠짐 = 고치기 전 동작.
+  it('fix2 K 합성 — 참조가 bg id 자체면 앞 장부가 없다: 재시작 뒤 복사분(task-0·task-x·task-y)은 없고 bg 에서 연 B 만', () => {
+    write({ sessionId: oldId, lines: oldWith })
+    write({ sessionId: bgId, lines: bgWith.slice(0, bEnd) })
+    register({ registry, name: 'old', alive: true })
+    register({ registry, name: 'after', alive: true })
+    expect(taskIds(bgId)).toEqual(['task-1'])
+  })
+
+  it('fix2 K 합성 — 앞 파일이 없으면(참조 bg id): 재시작 뒤 복사분은 없고 B 만', () => {
+    write({ sessionId: bgId, lines: bgWith.slice(0, bEnd) })
+    register({ registry, name: 'after', alive: true })
+    expect(taskIds(bgId)).toEqual(['task-1'])
+  })
+
+  // fix2 L — 재시작 몫이 복사분뿐이면 앞 장부를 다 읽기 전 거르기 결과는 빈 목록일 수 있다. 결과와 무관하게 앞 장부가 따라잡기 전이면 모름.
+  // 증명: `catching-up` 판정이 거른 뒤 개수가 아니라 복사분 유무를 본다. 못 하는 것: 실기에서 앞 파일이 2MB 를 넘는 `←` 직후 재시작 회차(미측정).
+  it('fix2 L 합성 — B 를 뺀 기록(재시작 몫 = 복사분뿐) · 앞 파일 5MB 콜드: 따라잡는 동안 모름, known 은 늘 A 하나', () => {
+    const big: string[] = []
+    for (let left = 5_000_000; left > 0; left -= 500_000) {
+      big.push(JSON.stringify({ type: 'assistant', timestamp: new Date(oldStart - 120_000).toISOString(), message: { role: 'assistant', content: [{ type: 'text', text: 'z'.repeat(500_000) }] } }))
+    }
+    const withoutB = bgWith.slice(0, bEnd).filter((line) => !line.includes('"backgroundTaskId":"task-1"'))
+    write({ sessionId: oldId, lines: [...big, ...oldWith] })
+    write({ sessionId: bgId, lines: withoutB })
+    register({ registry, name: 'old', alive: true })
+    register({ registry, name: 'after', alive: true })
+    const seen: SessionLifecycle[] = []
+    for (let cycle = 0; cycle < 6; cycle++) seen.push(lifeOf(oldId))
+    expect(seen[0]).toEqual({ state: 'unknown', reason: 'catching-up' })
+    for (const life of seen) if (life.state === 'known') expect(life.tasks.map((task) => task.id)).toEqual(['task-0'])
+    expect(seen.at(-1)?.state).toBe('known')
+  })
+})
+
+describe('fix2 I 합성 — 재시작 직후 레지스트리 전이 `status 없음 → idle(수십 ms) → shell` 동안 셸이 빠지지 않는다', () => {
+  // 실측 순서(리뷰 r2 e3 5ms 폴링 5/5, 워커 fix2 i1): 새 bg 항목은 status 없이 생기고 ~130ms 뒤 idle, 56~61ms 뒤 shell.
+  // 증명: `idle` 은 `statusUpdatedAt` 에서 `IDLE_SETTLE_MS` 가 지나야 상한으로 쓴다 — 파일·레지스트리가 그대로여도 시간이 지나면 다시 판정한다.
+  // 못 하는 것: 창보다 오래 머무는 거짓 idle(실측 없음).
+  const { bg, registry, sessionId, settled } = restartSample('two-shells')
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('없음 → idle(방금) → 61ms 뒤 shell: 매 판독 셸 둘', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-15T00:00:00.000Z'))
+    write({ sessionId, lines: bg.slice(0, settled) })
+    register({ registry, name: 'after', alive: true, status: null, statusUpdatedAt: null })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    vi.advanceTimersByTime(130)
+    register({ registry, name: 'after', alive: true, status: 'idle', statusUpdatedAt: Date.now() })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    vi.advanceTimersByTime(30)
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    vi.advanceTimersByTime(31)
+    register({ registry, name: 'after', alive: true, status: 'shell', statusUpdatedAt: Date.now() })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+  })
+
+  it('양성 대조 — idle 이 창 내내 그대로면(파일·레지스트리 무변경) 창이 지난 판독부터 0', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-15T00:00:00.000Z'))
+    write({ sessionId, lines: bg.slice(0, settled) })
+    register({ registry, name: 'after', alive: true, status: 'idle', statusUpdatedAt: Date.now() })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    vi.advanceTimersByTime(IDLE_SETTLE_MS - 1)
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    vi.advanceTimersByTime(1)
+    expect(taskIds(sessionId)).toEqual([])
+  })
+})
+
+describe('fix2 J 합성 — `idle` 상한의 방향: 살아 있는 bg 항목이 **전부** 창을 넘긴 `idle` 일 때만 뺀다', () => {
+  // 증명: 일부만 idle·status 없음·모르는 값·`statusUpdatedAt` 없음은 빼지 않는다(변이 R1 every→some, R2 없는·모르는 값 = idle 을 잡는다).
+  // 못 하는 것: 한 세션 id 에 bg 항목이 둘 사는 실제 경로(실기 미확인 — 방향 조건만 잠근다).
+  const { bg, registry, sessionId, settled } = restartSample('two-shells')
+  const both = (input: { first: string | null; second: string | null }) => {
+    register({ registry, name: 'after', alive: true, status: input.first })
+    register({ registry, name: 'after', alive: true, file: 'bg2', status: input.second })
+  }
+
+  it('양성 대조 — 둘 다 idle → 0, 하나만 → 0', () => {
+    write({ sessionId, lines: bg.slice(0, settled) })
+    both({ first: 'idle', second: 'idle' })
+    expect(taskIds(sessionId)).toEqual([])
+    register({ registry, name: 'after', alive: false, file: 'bg2' })
+    expect(taskIds(sessionId)).toEqual([])
+  })
+
+  it('idle + shell → 셸 둘', () => {
+    write({ sessionId, lines: bg.slice(0, settled) })
+    both({ first: 'idle', second: 'shell' })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+  })
+
+  it('status 없음 — 하나(idle + 없음)·둘 다·혼자 → 셸 둘', () => {
+    write({ sessionId, lines: bg.slice(0, settled) })
+    both({ first: 'idle', second: null })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    both({ first: null, second: null })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    register({ registry, name: 'after', alive: false, file: 'bg2' })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+  })
+
+  it('waiting·모르는 문자열 → 셸 둘', () => {
+    write({ sessionId, lines: bg.slice(0, settled) })
+    register({ registry, name: 'after', alive: true, status: 'waiting' })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    register({ registry, name: 'after', alive: true, status: 'zzz-unknown' })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+  })
+
+  it('idle 인데 statusUpdatedAt 없음 → 셸 둘(쓴 시각을 모르면 창을 못 잰다)', () => {
+    write({ sessionId, lines: bg.slice(0, settled) })
+    register({ registry, name: 'after', alive: true, status: 'idle', statusUpdatedAt: null })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
   })
 })

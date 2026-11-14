@@ -64,9 +64,9 @@ async function runHook({ dir, script, env }) {
     })
   })
   await new Promise(resolve => server.listen(sock, resolve))
-  const input = JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'fa458ce1-0000-4000-8000-000000000000', transcript_path: '/x/projects/p/fa458ce1.jsonl', source: 'clear' })
+  const input = JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'abcd1234-0000-4000-8000-000000000000', transcript_path: '/x/projects/p/abcd1234.jsonl', source: 'clear' })
   const child = spawn('sh', [script, 'session'], {
-    env: { PATH: process.env.PATH, TMPDIR: dir, HERDR_ENV: '1', HERDR_SOCKET_PATH: sock, HERDR_PANE_ID: 'wH:p4', ...env },
+    env: { PATH: process.env.PATH, TMPDIR: dir, HERDR_ENV: '1', HERDR_SOCKET_PATH: sock, HERDR_PANE_ID: 'w9:p9', ...env },
     stdio: ['pipe', 'ignore', 'pipe'],
   })
   let stderr = ''
@@ -83,13 +83,13 @@ const comparable = request => ({ ...request, id: undefined, params: { ...request
 test('LIFE-795 C7 — a background session (CLAUDE_JOB_DIR set) sends nothing; the unpatched hook does (the defect)', { skip }, async () => {
   const s = scripts()
   try {
-    const bg = { CLAUDE_JOB_DIR: '/Users/someone/.claude/jobs/0a10da84' }
+    const bg = { CLAUDE_JOB_DIR: '/Users/someone/.claude/jobs/deadbeef' }
     const patched = await runHook({ dir: s.dir, script: s.patched, env: bg })
     assert.equal(patched.code, 0, patched.stderr)
     assert.deepEqual(patched.requests, [], 'the patched hook must stay silent in a background session')
     const pristine = await runHook({ dir: s.dir, script: s.pristine, env: bg })
     assert.equal(pristine.requests.length, 1, 'positive control: the upstream hook reports from a background session')
-    assert.equal(pristine.requests[0].params.pane_id, 'wH:p4')
+    assert.equal(pristine.requests[0].params.pane_id, 'w9:p9')
   } finally { fs.rmSync(s.dir, { recursive: true, force: true }) }
 })
 

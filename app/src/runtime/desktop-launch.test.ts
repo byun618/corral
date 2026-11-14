@@ -28,6 +28,10 @@ describe('desktopEnv (LIFE-555 A5)', () => {
     })
     expect(env).toEqual({ PATH: '/bin', CODEX_HOME: '/c', GROK_HOME: '/g', CLAUDE_CONFIG_DIR: '/cc', CORRAL_USER_DATA: '/u' })
   })
+  it('bg Claude 세션 셸에서 띄워도 CLAUDE_JOB_DIR 은 앱으로 넘기지 않는다 (LIFE-795 fix1 A)', () => {
+    const env = desktopEnv({ env: { PATH: '/bin', CLAUDE_JOB_DIR: '/h/.claude/jobs/abc', CLAUDE_CODE_SESSION_KIND: 'bg' }, userData: '/u' })
+    expect(env).toEqual({ PATH: '/bin', CORRAL_USER_DATA: '/u' })
+  })
 })
 
 describe('cliInvocation — 워커 프리앰블의 corral (LIFE-555 fix1 M1)', () => {

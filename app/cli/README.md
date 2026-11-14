@@ -341,13 +341,20 @@ A claude worker moved to the background (`←`, `/bg`) cannot pass the pane comp
 inside Claude Code's account-wide daemon, whose `HERDR_*` belong to the pane that first started the daemon
 (LIFE-796). So the CLI also sends `CLAUDE_CODE_SESSION_ID`, and when the pane comparison fails the runtime admits
 the call if that id is the claude session corral minted for the Dispatch's pane, or one it continued in — the same
-`continued-in` chain `terminal show` follows (`agent.sessionRecord.continuedIn`), read from the Dispatch's own pane
-generation. It is a second way through the first row of the table only: the pane must still be observed live (a
-pane that is gone is still `stale_dispatch`; a chain that cannot be read leaves the call `sender_mismatch`), and
-every later row answers as before. It is claude only, and needs the minted id — a codex or grok attempt, an
-attempt with no minted session, an id outside the chain or in another Dispatch's chain are `sender_mismatch`, and
-so is a background session after `/clear`, whose new id no `continued-in` names. `proof` in the answer is `pane`
-or `session_chain`; an attempt admitted on the chain is never `sessionVerified`.
+`continued-in` chain `terminal show` follows (`agent.sessionRecord.continuedIn`). The chain is read from the record
+files of the minted id the Dispatch froze (the file is found by that id under `CLAUDE_CONFIG_DIR`'s `projects/`; not
+exactly one file is no chain), with no backend round trip and without the pane. It is a second way through the
+first row of the table only: the pane must still be observed live (a pane that is gone is `stale_dispatch` for the
+background session too, a replaced pane `sender_mismatch`), and every later row answers as before. It is claude
+only, and needs the minted id — a codex or grok attempt, an attempt with no minted session, an id outside the chain
+or in another Dispatch's chain are `sender_mismatch`, and so is a background session after `/clear`, whose new id
+no `continued-in` names. `proof` in the answer is `pane` or `session_chain`; an attempt admitted on the chain is
+never `sessionVerified`. The session id is the caller's environment speaking, exactly like the pane id.
+
+One gap is older than the chain: the pane every background session claims is whichever pane first started Claude
+Code's daemon. If that pane happens to be another Dispatch's, a background session that names *that* Dispatch is
+admitted on the pane proof — it has to state someone else's `--dispatch-id`, which is the confusion this check
+narrows, not a boundary it holds.
 
 This is proof against confusion, not authentication — anything that can already write to the 0600 runtime socket
 could state any pane id. The trust boundary is that socket, which is also why coordinator-side commands carry no

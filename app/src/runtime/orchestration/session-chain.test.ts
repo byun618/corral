@@ -9,8 +9,9 @@
  * 「합성」: the units hand `verifySender` a chain directly. The module tests below run the real
  * orchestration and terminal modules over a stubbed herdr backend and a hand-written record chain in the
  * shape measured on Claude Code 2.1.296 (minted file ends with `continued-in`, the new file exists) — they
- * prove that `send`/`ask` read that chain through `terminal show` and judge on it, not that Claude Code
- * writes it or that a real background session sends these ids (that is the live gate C1/C2).
+ * prove that `send`/`ask` read that chain from the record files of the Dispatch's frozen minted id (no
+ * `terminal show`, no backend) and judge on it, also after the pane is gone — not that Claude Code writes it
+ * or that a real background session sends these ids (that is the live gate C1/C2).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
@@ -26,7 +27,7 @@ import {
 } from './model.js'
 import { emptyWorker, replaceDispatchRecord, sessionChainProves, verifySender, wantsSessionChain, withWorker, type CallerClaim, type SessionChain } from './worker.js'
 import { TerminalBackend, type AgentObservation, type TerminalIdentity } from '../../main/adapter/index.js'
-import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, agentName, sessionRecordPaths } from '../terminal/agent.js'
+import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, agentName, claudeRecordById, sessionRecordPaths } from '../terminal/agent.js'
 import { Tokens } from '../terminal/tokens.js'
 import { clearContinuedMemo } from '../../main/transcript-continued.js'
 
@@ -34,7 +35,7 @@ const AT = '2026-11-14T00:00:00.000Z'
 const LIVE: PaneObservation = { kind: 'live' }
 const PANE = { paneId: 'w1:p1', session: 'l796' }
 /** Where Claude Code's daemon was first started — the pane every background session claims to be. */
-const DAEMON_PANE = { paneId: 'wH:p4', session: null }
+const DAEMON_PANE = { paneId: 'w9:p9', session: null }
 const M = '11111111-1111-4111-8111-111111111111'
 const B = '22222222-2222-4222-8222-222222222222'
 
@@ -184,6 +185,7 @@ function setup() {
   process.env.CORRAL_BACKEND_SOCKET = path.join(dir, 'never-connected.sock')
   delete process.env.CORRAL_SESSION
   delete process.env.CORRAL_RUNTIME_SOCKET
+  const gone = new Set<string>()
   const panes = ['w1:p1', 'w2:p1'].map(paneId => {
     const live: TerminalIdentity = { epoch: 'e', ptyId: `p-${paneId}`, paneId, tabId: 'tab', workspaceId: 'w', path: cwd, repo: cwd, title: 'l796' }
     const t0 = Date.now() - 1000, minted = randomUUID(), moved = randomUUID()
@@ -210,14 +212,14 @@ function setup() {
   const proto = TerminalBackend.prototype
   vi.spyOn(proto, 'epoch').mockImplementation(async () => 'e')
   vi.spyOn(proto, 'agentCapable').mockImplementation(() => true)
-  vi.spyOn(proto, 'list').mockImplementation(async () => panes.map(entry => entry.live))
-  vi.spyOn(proto, 'agentInfo').mockImplementation(async live => infoOf(live.paneId))
+  const list = vi.spyOn(proto, 'list').mockImplementation(async () => panes.filter(entry => !gone.has(entry.live.paneId)).map(entry => entry.live))
+  const agentInfo = vi.spyOn(proto, 'agentInfo').mockImplementation(async live => infoOf(live.paneId))
   vi.spyOn(proto, 'agentManifests').mockImplementation(async () => manifests)
   vi.spyOn(proto, 'read').mockImplementation(async () => ({ text: 'fixture', truncated: false, total: 7 }))
   vi.spyOn(proto, 'process').mockImplementation(async () => ({ shellPid: 123, foregroundGroupId: null, foreground: [{ pid: 456, name: 'claude', argv: null }] }))
   vi.spyOn(proto, 'send').mockImplementation(async () => undefined)
   vi.spyOn(proto, 'promptAgent').mockImplementation(async (live, text) => { deliver(live, text); return infoOf(live.paneId) })
-  vi.spyOn(proto, 'screenRead').mockImplementation(async live => ({ text: '', input: { revision: 1, idleMs: 5000 }, anyInput: null, seq: infoOf(live.paneId).stateChangeSeq }))
+  const screenRead = vi.spyOn(proto, 'screenRead').mockImplementation(async live => ({ text: '', input: { revision: 1, idleMs: 5000 }, anyInput: null, seq: infoOf(live.paneId).stateChangeSeq }))
   vi.spyOn(proto, 'sendFenced').mockImplementation(async () => ({ revision: 2, anyRevision: null }))
   vi.spyOn(proto, 'promptAgentIfQuiet').mockImplementation(async (live, input) => { deliver(live, input.text); return infoOf(live.paneId) })
   let state = createRun(emptyState(), 'l796', new Date().toISOString()).state
@@ -227,7 +229,7 @@ function setup() {
     state = made.state; tasks.push(made.task.id)
   }
   new OrchestrationStore(dir).write(state)
-  return { dir, cwd, panes, tasks }
+  return { dir, cwd, panes, tasks, gone, spies: { list, agentInfo, screenRead } }
 }
 type Fixture = ReturnType<typeof setup>
 async function call(f: Fixture, input: { command: string; flags: Record<string, string>; caller?: CallerClaim & { socket?: string | null } }, ms = 20000) {
@@ -284,6 +286,50 @@ describe('LIFE-796 C3 합성 — send from a background session, through the rea
     const own = await report(f, { index: 1, dispatchId: second!, type: 'heartbeat', claudeSession: f.panes[1]!.moved })
     expect(own.proof).toBe('session_chain')
   }, 60000)
+})
+
+describe('LIFE-796 fix1 B·C 합성 — the chain is read from the record, not from the pane', () => {
+  it('(e) the Dispatch pane is gone: the background session still proves the chain, and the look answers stale_dispatch', async () => {
+    const f = setup()
+    const [first] = await started(f)
+    f.gone.add(f.panes[0]!.live.paneId)   // the pane is closed after the session moved to the background
+    const before = fs.readFileSync(path.join(f.dir, 'runtime', 'orchestration', 'state.json'), 'utf8')
+    for (const type of ['heartbeat', 'worker_done']) {
+      const out = await report(f, { index: 0, dispatchId: first!, type, claudeSession: f.panes[0]!.moved })
+      expect([type, out.error, asRecord(out.resources).reason]).toEqual([type, 'stale_dispatch', 'pane_gone'])
+    }
+    // Without the chain the same call is the pane comparison's refusal — the (e) answer above is the chain's doing.
+    const stranger = await report(f, { index: 0, dispatchId: first!, type: 'heartbeat', claudeSession: randomUUID() })
+    expect(stranger.error).toBe('sender_mismatch')
+    expect(fs.readFileSync(path.join(f.dir, 'runtime', 'orchestration', 'state.json'), 'utf8')).toBe(before)
+  }, 60000)
+
+  it('C: admitting on the chain takes no ready gate and no terminal show — only the one memoized pane sweep', async () => {
+    const f = setup()
+    const [first] = await started(f)
+    for (const spy of Object.values(f.spies)) spy.mockClear()
+    const beat = await report(f, { index: 0, dispatchId: first!, type: 'heartbeat', claudeSession: f.panes[0]!.moved })
+    expect(beat.proof).toBe('session_chain')
+    expect(f.spies.agentInfo).not.toHaveBeenCalled()
+    expect(f.spies.screenRead).not.toHaveBeenCalled()
+    expect(f.spies.list.mock.calls.length).toBeLessThanOrEqual(1)
+  }, 60000)
+})
+
+describe('LIFE-796 fix1 B — the minted record is found by its id only when the answer is unique', () => {
+  it('one file is the record; none, or the same id in two project folders, is no record (and so no chain)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l796-id-'))
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const id = randomUUID()
+    expect(claudeRecordById({ sessionId: id })).toBeNull()
+    fs.mkdirSync(path.join(dir, 'projects', 'a'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'projects', 'a', `${id}.jsonl`), '')
+    expect(claudeRecordById({ sessionId: id })).toBe(path.join(dir, 'projects', 'a', `${id}.jsonl`))
+    fs.mkdirSync(path.join(dir, 'projects', 'b'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'projects', 'b', `${id}.jsonl`), '')
+    expect(claudeRecordById({ sessionId: id })).toBeNull()
+  })
 })
 
 describe('LIFE-796 C10 합성 — ask uses the same proof', () => {

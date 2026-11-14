@@ -22,7 +22,8 @@ import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModu
 import { validateFoundation } from '../registry.js'
 import { type Receipt, Receipts, REQUEST_ID, RECEIPT_TTL, readReceipt } from '../terminal/receipts.js'
 import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage, type TerminalDesktop } from '../terminal/index.js'
-import { PROMPT_LEAD } from '../terminal/agent.js'
+import { PROMPT_LEAD, claudeRecordById } from '../terminal/agent.js'
+import { SESSION_ID, followContinued } from '../../main/transcript-continued.js'
 import { socketPath } from '../transport.js'
 import { cliInvocation } from '../desktop-launch.js'
 import { TerminalBackend } from '../../main/adapter/index.js'
@@ -586,15 +587,11 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
         if (terminal === null || epoch === null || ptyId === null || paneId === null)
           return preflight('operation_failed', 'terminal show did not report a target identity', { terminal: handle })
         const block = isRecord(shown) ? readRecord(shown, 'agent') : null
-        const sessionRecord = block === null ? null : readRecord(block, 'sessionRecord')
-        const hops = sessionRecord === null ? null : sessionRecord.continuedIn
         return {
           target: { handle, runtimeId: ctx.runtimeId, epoch, ptyId, paneId },
           agent: block === null ? null : snapshotAgent(block),
           agentAbsenceReason: block === null ? 'no_managed_agent' : null,
           terminal,
-          /** LIFE-771: the ids the minted claude session continued in, as `terminal show` followed them. */
-          continuedIn: Array.isArray(hops) ? hops.filter((hop): hop is string => typeof hop === 'string') : [],
         }
       }
       const mutate = async (body: () => Promise<Record<string, unknown>>): Promise<unknown> => {
@@ -668,20 +665,23 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
       /** LIFE-556 H1 — what `verifySender` sees of the caller: its claim, plus whether its socket is this backend's. */
       const senderClaim = (): CallerClaim => ({ paneId: caller.paneId, session: caller.session, socketIsBackend: callerPlacement() === 'socket', claudeSession: caller.claudeSession ?? null })
       /**
-       * LIFE-796. The session chain of the Dispatch's own pane, read only when it could matter (`wantsSessionChain`:
-       * the pane proof failed and the caller named a claude session). It is `terminal show`'s own answer — the
-       * minted id and the `continued-in` hops it followed — and only for the pane generation the attempt was bound
-       * to: a pane that is gone, replaced or carrying another session yields no chain, and the sender is judged as
-       * before. A read that fails is no chain, never an error of its own.
+       * LIFE-796. The session chain of the claude session this Dispatch was started with, read only when it could
+       * matter (`wantsSessionChain`: the pane proof failed and the caller named a claude session). It is read from
+       * what the Dispatch froze — the minted id — and that session's own record: the file is found by the id
+       * (`claudeRecordById`), and the hops by the rule `terminal show` uses for the same pane (LIFE-766
+       * `followContinued`, `empty: 'follow'`, same folder, at most `CONTINUED_CHAIN_MAX` hops). Files only — no
+       * backend round trip, no ready gate, no pane — so it neither lengthens the lane it runs in nor depends on the
+       * pane still being there: whether the pane lives is the observation's question, asked after it (a pane that
+       * is gone is `stale_dispatch`). No record found, or not exactly one, is no chain, and the sender is judged as before.
        */
-      const sessionChainOf = async (dispatch: DispatchRecord | undefined, claim: CallerClaim): Promise<SessionChain | null> => {
+      const sessionChainOf = (dispatch: DispatchRecord | undefined, claim: CallerClaim): SessionChain | null => {
         if (dispatch === undefined || !wantsSessionChain({ dispatch, caller: claim })) return null
-        try {
-          const shown = await showTerminal(dispatch.target.handle)
-          const same = shown.target.paneId === dispatch.target.paneId && shown.target.ptyId === dispatch.target.ptyId && shown.target.epoch === dispatch.target.epoch
-          const minted = shown.agent?.kind === 'claude' ? shown.agent.sessionId : null
-          return same && minted !== null ? { minted, continuedIn: shown.continuedIn } : null
-        } catch { return null }
+        const minted = dispatch.agent?.sessionId ?? null
+        if (minted === null || !SESSION_ID.test(minted)) return null
+        const file = claudeRecordById({ sessionId: minted })
+        if (file === null) return null
+        const followed = followContinued({ session: { kind: 'id', agent: 'claude', source: dispatch.agent?.sessionIdSource ?? 'client-minted', id: minted }, file, empty: 'follow' })
+        return { minted, continuedIn: followed.hops }
       }
       /**
        * LIFE-459. The parent of the attempt `worker-start` is about to make: the pane this call came
@@ -802,13 +802,14 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           // `session`, whose reconcile pass swept the backend before this line and memoized what it
           // saw. Sweeping again here was a second round trip under a held lane (V24) and bought
           // nothing — the memoized snapshot is from inside this lane, which is exactly the proof
-          // admission needs (§4.5 / LIFE-393's three layers).
+          // admission needs (§4.5 / LIFE-393's three layers). The session chain (LIFE-796) adds no
+          // second trip: `sessionChainOf` reads record files only.
           const observation = found === undefined ? UNOBSERVABLE : observationFor(await observe(), found.target)
           // `worker_done` defers the settled question to `transition`, the only place that can tell
           // "you named a superseded attempt" (stale_dispatch) from "you already reported"
           // (illegal_transition). Every other worker message is refused once the attempt has ended.
           const claim = senderClaim()
-          const verdict = verifySender(state, { taskId, dispatchId, caller: claim, observation, chain: await sessionChainOf(found, claim) }, type === 'worker_done' ? 'defer' : 'reject')
+          const verdict = verifySender(state, { taskId, dispatchId, caller: claim, observation, chain: sessionChainOf(found, claim) }, type === 'worker_done' ? 'defer' : 'reject')
           if (!verdict.ok) throw senderError(verdict)
           return { kind: 'worker', runId: verdict.dispatch.runId, taskId, dispatchId, dispatch: verdict.dispatch, sessionVerified: verdict.sessionVerified, proof: verdict.proof }
         }
@@ -1548,10 +1549,11 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           // died during that wait still admitted a question on an attempt corral could no longer
           // reach. One sweep, under the lane that is about to write, and never again — the wait
           // that follows polls the mailbox, not the backend, so a backend that stops answering
-          // cannot turn a ten-minute wait into an `outcome_unknown` (§4.6).
+          // cannot turn a ten-minute wait into an `outcome_unknown` (§4.6). The session chain (LIFE-796)
+          // reads record files only, so it is not a second look at the backend.
           const asking = findDispatch(state, dispatchId)
           const claimed = senderClaim()
-          const claim: SenderClaim = { taskId, dispatchId, caller: claimed, observation: asking === undefined ? UNOBSERVABLE : await observeNow(asking.target), chain: await sessionChainOf(asking, claimed) }
+          const claim: SenderClaim = { taskId, dispatchId, caller: claimed, observation: asking === undefined ? UNOBSERVABLE : await observeNow(asking.target), chain: sessionChainOf(asking, claimed) }
           // A resume names a question that already exists, so the attempt may already have been
           // settled — `defer` lets a worker collect an answer it asked for before it reported.
           const verdict = verifySender(state, claim, resume === undefined ? 'reject' : 'defer')

@@ -421,30 +421,45 @@ describe('fix1 C 합성 — 시작 시각을 모르는 재시작 몫은 목록 �
 })
 
 describe('fix1 D 합성 — `←` 로 복사된 옛 열림 중 781 이 넘기지 않은 것은 재시작 뒤에도 싣지 않는다', () => {
-  // 실표본 left 에 셋째 셸 task-x 를 지어 넣었다: 옛 파일에서 옛 대화형 주인 시작 시각보다 먼저 열리고 끝 표지 없음(강제 종료 뒤 재개 전 세대 — 781 세대 거르기가 뺀다),
-  // bg 파일에는 복사된 꼴(`sessionKind:"bg"`·bg 세션 id)로 같은 줄이 있다. 증명: 재시작 몫이 781 넘김 판정을 따른다(`notHanded`).
+  // 실표본 left 에 지어 넣은 셸 둘:
+  //   task-x — 옛 파일에서 옛 대화형 주인 시작 시각보다 먼저 열리고 끝 표지 없음(강제 종료 뒤 재개 전 세대 — 781 세대 거르기가 뺀다)
+  //   task-y — 옛 파일에서 열리고 `←` 때 cost-state 와 continued-in 사이 killed 통지로 끝남(781 실표본의 멈춘 에이전트 꼴)
+  // bg 파일에는 둘 다 복사된 꼴(`sessionKind:"bg"`·bg 세션 id, 끝 통지 없음)로 열려 있다.
+  // 증명: 재시작 몫이 781 넘김 판정을 따른다(`notHanded` 의 넘김 원본·끝 본 id 둘 다), 앞 파일을 따라잡는 동안은 모름.
   // 못 하는 것: 그런 옛 열림이 실제 `←` 복사로 오는지(실기 미확인 — 리뷰 r1 G3·F3 은 코드 경로).
   const old = lines({ name: 'left', tail: 'old' })
   const bg = lines({ name: 'left', tail: 'bg' })
   const registry = registryOf('left')
   const oldId = entryOf({ registry, name: 'old' }).sessionId
   const bgId = entryOf({ registry, name: 'after' }).sessionId
-  const early = new Date(entryOf({ registry, name: 'old' }).startedAt - 60_000).toISOString()
-  const opened = (input: { sessionId: string; kind: string | null }) => {
-    const base = { sessionId: input.sessionId, timestamp: early, ...(input.kind === null ? {} : { sessionKind: input.kind }) }
+  const oldStart = entryOf({ registry, name: 'old' }).startedAt
+  const opened = (input: { sessionId: string; kind: string | null; id: string; at: number }) => {
+    const base = { sessionId: input.sessionId, timestamp: new Date(input.at).toISOString(), ...(input.kind === null ? {} : { sessionKind: input.kind }) }
     return [
-      JSON.stringify({ type: 'assistant', ...base, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu-x', name: 'Bash', input: { run_in_background: true } }] } }),
-      JSON.stringify({ type: 'user', ...base, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu-x', content: '가림' }] }, toolUseResult: { backgroundTaskId: 'task-x' } }),
+      JSON.stringify({ type: 'assistant', ...base, message: { role: 'assistant', content: [{ type: 'tool_use', id: `toolu-${input.id}`, name: 'Bash', input: { run_in_background: true } }] } }),
+      JSON.stringify({ type: 'user', ...base, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu-${input.id}`, content: '가림' }] }, toolUseResult: { backgroundTaskId: input.id } }),
     ]
   }
+  const both = (input: { sessionId: string; kind: string | null }) => [
+    ...opened({ ...input, id: 'task-x', at: oldStart - 60_000 }),
+    ...opened({ ...input, id: 'task-y', at: oldStart + 1_000 }),
+  ]
+  const killedY = JSON.stringify({
+    type: 'queue-operation',
+    operation: 'enqueue',
+    timestamp: new Date(oldStart + 30_000).toISOString(),
+    sessionId: oldId,
+    content: '<task-notification>\n<task-id>task-y</task-id>\n<status>killed</status>\n<summary>가림</summary>\n</task-notification>',
+  })
   const oldOpen = indexWhere({ lines: old, match: (line) => line.includes('"backgroundTaskId":"task-0"') })
+  const oldCost = indexWhere({ lines: old, match: isCost })
   const bgOpen = indexWhere({ lines: bg, match: (line) => line.includes('"backgroundTaskId":"task-0"') })
-  const oldWith = [...old.slice(0, oldOpen), ...opened({ sessionId: oldId, kind: null }), ...old.slice(oldOpen)]
-  const bgWith = [...bg.slice(0, bgOpen), ...opened({ sessionId: bgId, kind: 'bg' }), ...bg.slice(bgOpen)]
+  const oldWith = [...old.slice(0, oldOpen), ...both({ sessionId: oldId, kind: null }), ...old.slice(oldOpen, oldCost + 1), killedY, ...old.slice(oldCost + 1)]
+  const bgWith = [...bg.slice(0, bgOpen), ...both({ sessionId: bgId, kind: 'bg' }), ...bg.slice(bgOpen)]
   const costAt = indexWhere({ lines: bgWith, match: isCost })
   const bEnd = indexWhere({ lines: bgWith, match: endOf('task-1') })
 
-  it('재시작 전·뒤 모두 A·B 둘 — task-x 는 없다', () => {
+  it('재시작 전·뒤 모두 A·B 둘 — task-x·task-y 는 없다', () => {
     write({ sessionId: oldId, lines: oldWith })
     register({ registry, name: 'old', alive: true })
     register({ registry, name: 'before', alive: true })
@@ -453,5 +468,21 @@ describe('fix1 D 합성 — `←` 로 복사된 옛 열림 중 781 이 넘기지
     register({ registry, name: 'after', alive: true })
     write({ sessionId: bgId, lines: bgWith.slice(0, bEnd) })
     expect(taskIds(oldId)).toEqual(['task-0', 'task-1'])
+  })
+
+  it('합성 앞 파일 5MB 콜드 — 재시작 뒤 처음 읽을 때 앞 파일을 따라잡는 동안은 모름, known 에 task-x·task-y 가 한 번도 없다', () => {
+    const big: string[] = []
+    for (let left = 5_000_000; left > 0; left -= 500_000) {
+      big.push(JSON.stringify({ type: 'assistant', timestamp: new Date(oldStart - 120_000).toISOString(), message: { role: 'assistant', content: [{ type: 'text', text: 'z'.repeat(500_000) }] } }))
+    }
+    write({ sessionId: oldId, lines: [...big, ...oldWith] })
+    write({ sessionId: bgId, lines: bgWith.slice(0, bEnd) })
+    register({ registry, name: 'old', alive: true })
+    register({ registry, name: 'after', alive: true })
+    const seen: SessionLifecycle[] = []
+    for (let cycle = 0; cycle < 6; cycle++) seen.push(lifeOf(oldId))
+    expect(seen[0]).toEqual({ state: 'unknown', reason: 'catching-up' })
+    for (const life of seen) if (life.state === 'known') expect(life.tasks.map((task) => task.id)).toEqual(['task-0', 'task-1'])
+    expect(seen.at(-1)?.state).toBe('known')
   })
 })

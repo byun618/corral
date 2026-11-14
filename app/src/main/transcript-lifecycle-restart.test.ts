@@ -92,7 +92,7 @@ const write = (input: { sessionId: string; lines: string[] }) => fs.writeFileSyn
  * 레지스트리 항목 — 관측된 키(`kind`·`jobId`·`parkedJobId`)를 그대로 적는다. 판독은 `pid`·`sessionId`·`startedAt`·`kind`·`jobId` 를 쓴다.
  * 한 세션 id 에 bg 프로세스는 하나다 — `before`·`after` 는 같은 파일 이름(`bg.json`)을 써서 재시작을 흉내 낸다(옛 항목이 사라지고 새 항목이 생긴다).
  */
-function register(input: { registry: Registry; name: string; alive: boolean; kind?: string; file?: string }) {
+function register(input: { registry: Registry; name: string; alive: boolean; kind?: string; file?: string; status?: string }) {
   const entry = entryOf({ registry: input.registry, name: input.name })
   const file = path.join(home, '.claude', 'sessions', `${input.file ?? (entry.kind === 'bg' ? 'bg' : input.name)}.json`)
   if (!input.alive) {
@@ -102,8 +102,12 @@ function register(input: { registry: Registry; name: string; alive: boolean; kin
   const kind = input.kind ?? entry.kind
   const job = entry.sessionId.slice(0, 8)
   const shape = kind === 'bg' ? { jobId: job, parkedJobId: null } : { jobId: null, parkedJobId: null }
-  fs.writeFileSync(file, JSON.stringify({ pid: process.pid, sessionId: entry.sessionId, status: 'shell', startedAt: entry.startedAt, kind, ...shape }))
+  fs.writeFileSync(file, JSON.stringify({ pid: process.pid, sessionId: entry.sessionId, status: input.status ?? 'shell', startedAt: entry.startedAt, kind, ...shape }))
+  // 레지스트리 캐시는 크기·mtime 으로 다시 읽는다 — 같은 크기로 바꿔 써도 다음 판독이 보게 mtime 을 민다
+  const bumped = new Date(Date.now() + registerCount++ * 1000)
+  fs.utimesSync(file, bumped, bumped)
 }
+let registerCount = 1
 
 function known(lifecycle: SessionLifecycle) {
   if (lifecycle.state !== 'known') throw new Error(`known 이 아니다: ${JSON.stringify(lifecycle)}`)
@@ -234,7 +238,9 @@ describe('C2 넘어가지 못한 것 — 목록 = 실제 생존 (실표본)', ()
 describe('C3 기존 계약 유지', () => {
   const { bg, registry, sessionId, settled } = restartSample('two-shells')
 
-  it('ⓐ 같은 파일을 대화형 프로세스가 이어 받으면(kind 가 bg 아님) 옛 세대 열린 작업은 뺀다 — 재시작으로 보지 않는다', () => {
+  // 합성(레지스트리 kind) — 실표본 기록에 레지스트리 kind 만 'interactive' 로 지어 넣었다. 증명: bg 주인 판별(kind) 분기.
+  // 못 하는 것: 대화형 `claude --resume <bg 세션 id>` 의 실제 레지스트리 모양(실기 미확인), 대화형·bg 항목이 함께 사는 경우(아래 M6 시험).
+  it('ⓐ 합성(레지스트리 kind) — 같은 파일을 대화형 프로세스가 이어 받으면(kind 가 bg 아님) 옛 세대 열린 작업은 뺀다 — 재시작으로 보지 않는다', () => {
     write({ sessionId, lines: bg.slice(0, settled) })
     register({ registry, name: 'after', alive: true, kind: 'interactive' })
     expect(taskIds(sessionId)).toEqual([])
@@ -342,5 +348,110 @@ describe('C5 판독 비용 — 재시작 판독은 파일·레지스트리를 �
     expect(third.cost.lifecycleBytes).toBe(0)
     expect(third.cost.lifecycleRegistryBytes).toBe(fs.statSync(path.join(home, '.claude', 'sessions', 'bg.json')).size)
     expect(known(third.digests.get('p1')!.lifecycle).tasks.map((task) => task.id)).toEqual(['task-0', 'task-1'])
+  })
+})
+
+describe('fix1 A·M6 합성 — 같은 세션 id 의 대화형 항목이 사는 채 bg 주인만 나타나거나 죽으면 다시 고른다', () => {
+  // 증명: 캐시 빠른 반환이 bg 주인 변화(`Links.restartOwner`)를 본다 — 소유자 시작 시각은 가장 이른 것(대화형)이라 그대로라 `owner` 비교로는 못 본다.
+  // 못 하는 것: 같은 세션 id 로 대화형·bg 프로세스가 실제로 함께 사는 경로(대화형 `--resume` 이 bg 와 겹치는지)는 실기 미확인.
+  const { bg, registry, sessionId, settled } = restartSample('two-shells')
+  const interactive = { ...registry, interactive: { ...entryOf({ registry, name: 'before' }), startedAt: entryOf({ registry, name: 'before' }).startedAt - 60_000, kind: 'interactive' } }
+
+  it('대화형만 → 0, bg 주인이 나타나면 → 셸 둘, bg 주인이 사라지면 → 0 (파일 무변경·대화형 항목 그대로)', () => {
+    write({ sessionId, lines: bg.slice(0, settled) })
+    register({ registry: interactive, name: 'interactive', alive: true, file: 'interactive' })
+    expect(taskIds(sessionId)).toEqual([])
+    register({ registry: interactive, name: 'after', alive: true })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    register({ registry: interactive, name: 'after', alive: false })
+    expect(taskIds(sessionId)).toEqual([])
+  })
+})
+
+describe('fix1 B 레지스트리 bg 주인 status:"idle" 이면 재시작 몫을 싣지 않는다(빼는 쪽으로만)', () => {
+  // 실측(fix1 b1·b2·h1, r0 a0·a1·e0·m0): 넘어간 셸이 돌면 status shell, 넘어간 서브에이전트가 돌면 busy, 끝 뒤·handoff 끔 재시작 직후 idle.
+  // 세션 단위 값이라 idle 일 때만 「도는 것이 없다」로 쓰고 shell·busy·없는 값은 지금처럼 끝 표지로 가른다.
+  const { bg, registry, sessionId, settled } = restartSample('two-shells')
+
+  it('실표본 two-shells 재시작 직후 — status shell·busy 이면 셸 둘, idle 이면 0', () => {
+    write({ sessionId, lines: bg.slice(0, settled) })
+    register({ registry, name: 'after', alive: true, status: 'shell' })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    register({ registry, name: 'after', alive: true, status: 'busy' })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    register({ registry, name: 'after', alive: true, status: 'idle' })
+    expect(taskIds(sessionId)).toEqual([])
+  })
+
+  it('합성 — 끝 통지가 영영 안 온 셸(통지 줄을 뺀 기록): bg 주인이 idle 이 된 뒤 0. 증명: 상한 분기. 못 하는 것: 통지 없이 죽은 셸에 Claude Code 가 idle 을 쓰는지(실측은 통지가 온 회차뿐)', () => {
+    const silent = bg.filter((line) => !/<status>[^<]*<\/status>/.test(line))
+    write({ sessionId, lines: silent })
+    register({ registry, name: 'after', alive: true, status: 'shell' })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    register({ registry, name: 'after', alive: true, status: 'idle' })
+    expect(taskIds(sessionId)).toEqual([])
+  })
+
+  it('실표본 subagent — 넘어간 서브에이전트가 도는 동안(status busy) 남고, idle 이면 0', () => {
+    const sample = restartSample('subagent')
+    register({ registry: sample.registry, name: 'after', alive: true, status: 'busy' })
+    write({ sessionId: sample.sessionId, lines: sample.bg.slice(0, sample.settled) })
+    expect(known(lifeOf(sample.sessionId)).subagents.map((subagent) => subagent.id)).toEqual(['task-0'])
+    register({ registry: sample.registry, name: 'after', alive: true, status: 'idle' })
+    expect(known(lifeOf(sample.sessionId)).subagents).toEqual([])
+  })
+})
+
+describe('fix1 C 합성 — 시작 시각을 모르는 재시작 몫은 목록 전체를 모름(unreadable, R2-F1)', () => {
+  // 증명: 재시작 몫의 시각 없는 항목 분기. 못 하는 것: Claude Code 가 시각 없는 tool_use·tool_result 를 실제로 쓰는지(실표본은 전부 시각이 있다).
+  const { bg, registry, sessionId, settled } = restartSample('two-shells')
+
+  it('셸을 연 줄들의 timestamp 를 지우면 재시작 뒤 unreadable, 그 셸의 끝 통지 뒤 풀린다', () => {
+    const undated = bg.map((line, at) => (at < settled ? line.replace(/"timestamp":"[^"]*",?/, '') : line))
+    const firstEnd = indexWhere({ lines: bg, match: endOf('task-0') })
+    const secondEnd = indexWhere({ lines: bg, match: endOf('task-1') })
+    register({ registry, name: 'after', alive: true })
+    write({ sessionId, lines: undated.slice(0, settled) })
+    expect(lifeOf(sessionId)).toEqual({ state: 'unknown', reason: 'unreadable' })
+    write({ sessionId, lines: undated.slice(0, firstEnd + 1) })
+    expect(lifeOf(sessionId)).toEqual({ state: 'unknown', reason: 'unreadable' })
+    write({ sessionId, lines: undated.slice(0, secondEnd + 1) })
+    expect(taskIds(sessionId)).toEqual([])
+  })
+})
+
+describe('fix1 D 합성 — `←` 로 복사된 옛 열림 중 781 이 넘기지 않은 것은 재시작 뒤에도 싣지 않는다', () => {
+  // 실표본 left 에 셋째 셸 task-x 를 지어 넣었다: 옛 파일에서 옛 대화형 주인 시작 시각보다 먼저 열리고 끝 표지 없음(강제 종료 뒤 재개 전 세대 — 781 세대 거르기가 뺀다),
+  // bg 파일에는 복사된 꼴(`sessionKind:"bg"`·bg 세션 id)로 같은 줄이 있다. 증명: 재시작 몫이 781 넘김 판정을 따른다(`notHanded`).
+  // 못 하는 것: 그런 옛 열림이 실제 `←` 복사로 오는지(실기 미확인 — 리뷰 r1 G3·F3 은 코드 경로).
+  const old = lines({ name: 'left', tail: 'old' })
+  const bg = lines({ name: 'left', tail: 'bg' })
+  const registry = registryOf('left')
+  const oldId = entryOf({ registry, name: 'old' }).sessionId
+  const bgId = entryOf({ registry, name: 'after' }).sessionId
+  const early = new Date(entryOf({ registry, name: 'old' }).startedAt - 60_000).toISOString()
+  const opened = (input: { sessionId: string; kind: string | null }) => {
+    const base = { sessionId: input.sessionId, timestamp: early, ...(input.kind === null ? {} : { sessionKind: input.kind }) }
+    return [
+      JSON.stringify({ type: 'assistant', ...base, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu-x', name: 'Bash', input: { run_in_background: true } }] } }),
+      JSON.stringify({ type: 'user', ...base, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu-x', content: '가림' }] }, toolUseResult: { backgroundTaskId: 'task-x' } }),
+    ]
+  }
+  const oldOpen = indexWhere({ lines: old, match: (line) => line.includes('"backgroundTaskId":"task-0"') })
+  const bgOpen = indexWhere({ lines: bg, match: (line) => line.includes('"backgroundTaskId":"task-0"') })
+  const oldWith = [...old.slice(0, oldOpen), ...opened({ sessionId: oldId, kind: null }), ...old.slice(oldOpen)]
+  const bgWith = [...bg.slice(0, bgOpen), ...opened({ sessionId: bgId, kind: 'bg' }), ...bg.slice(bgOpen)]
+  const costAt = indexWhere({ lines: bgWith, match: isCost })
+  const bEnd = indexWhere({ lines: bgWith, match: endOf('task-1') })
+
+  it('재시작 전·뒤 모두 A·B 둘 — task-x 는 없다', () => {
+    write({ sessionId: oldId, lines: oldWith })
+    register({ registry, name: 'old', alive: true })
+    register({ registry, name: 'before', alive: true })
+    write({ sessionId: bgId, lines: bgWith.slice(0, costAt) })
+    expect(taskIds(oldId)).toEqual(['task-0', 'task-1'])
+    register({ registry, name: 'after', alive: true })
+    write({ sessionId: bgId, lines: bgWith.slice(0, bEnd) })
+    expect(taskIds(oldId)).toEqual(['task-0', 'task-1'])
   })
 })

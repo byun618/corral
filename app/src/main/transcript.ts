@@ -57,7 +57,7 @@ import { log } from './log.js'
 import { clearContinuedMemo, continuedReadBytes, followContinued } from './transcript-continued.js'
 import { parseGrokSummary, parseGrokUpdates, parseHead, parseTail, valueLines } from './transcript-parse.js'
 import type { Generation, HandedItems, Handoff, Ledger, Owner } from './transcript-lifecycle.js'
-import { advanceLedger, claudeLiveSessions, clearClaudeRegistry, grokSessionAlive, handedOpen, handoffItems, inheritedItems, ledgerHandoff, ledgerSettled, ledgerView, restartItems } from './transcript-lifecycle.js'
+import { advanceLedger, claudeLiveSessions, clearClaudeRegistry, grokSessionAlive, handedOpen, handoffItems, inheritedItems, ledgerHandoff, ledgerSettled, ledgerView, notHanded, restartItems } from './transcript-lifecycle.js'
 
 /** 첫 꼬리 창. 실측 평균 한 턴이 ~46KB 라 대략 5턴을 덮는다. */
 export const TAIL_WINDOW_BYTES = 256 * 1024
@@ -185,6 +185,8 @@ type Links = {
   handoffOwner: Owner | null
   /** 이 파일 세션의 bg 주인 — supervisor 재시작으로 넘어간 것을 싣는다(LIFE-794). 대화형 소유자와 섞인 `owner` 와 따로 비교한다. */
   restartOwner: Owner | null
+  /** 그 bg 주인이 전부 레지스트리 `status:"idle"` — 재시작 몫을 싣지 않는다(LIFE-794 리뷰 r1 B). 주인 생존·시작 시각과 따로 바뀌어 비교에 넣는다. */
+  restartIdle: boolean
 }
 
 function sameLinks(input: { a: Links; b: Links }): boolean {
@@ -197,7 +199,8 @@ function sameLinks(input: { a: Links; b: Links }): boolean {
     a.target === b.target &&
     sameOwner({ a: a.inheritOwner, b: b.inheritOwner }) &&
     sameOwner({ a: a.handoffOwner, b: b.handoffOwner }) &&
-    sameOwner({ a: a.restartOwner, b: b.restartOwner })
+    sameOwner({ a: a.restartOwner, b: b.restartOwner }) &&
+    a.restartIdle === b.restartIdle
   )
 }
 
@@ -816,6 +819,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
       inheritOwner: previous === null ? null : bgOwnerOf(followed.sessionId),
       handoffOwner: handoff.owner,
       restartOwner: agent === 'claude' ? bgOwnerOf(mainId) : null,
+      restartIdle: claudeLive !== null && claudeLive.bgIdle(mainId),
     }
   }
   const carry = (ledger: Ledger): CarryRead => {
@@ -825,14 +829,16 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     const sent = handoff === null ? null : handoffItems({ handoff, keep: handedTo(mainId) })
     if (sent !== null) groups.push({ carried: handedOpen({ handoff: sent, target: links.target }), owner: links.handoffOwner })
     const given = previous === null ? null : ledgerHandoff(previous)
-    if (given !== null && previousId !== null && given.target === followed.sessionId) {
-      groups.push({ carried: inheritedItems({ ledger, handed: handoffItems({ handoff: given, keep: handedTo(previousId) }) }), owner: links.inheritOwner })
-    }
+    const givenHanded = given !== null && previousId !== null && given.target === followed.sessionId ? handoffItems({ handoff: given, keep: handedTo(previousId) }) : null
+    if (givenHanded !== null) groups.push({ carried: inheritedItems({ ledger, handed: givenHanded }), owner: links.inheritOwner })
     // supervisor 재시작(LIFE-794) — 같은 세션 id 의 bg 프로세스가 지금 주인이면, 옛 bg 프로세스가 `cost-state` 때 열어 둔 것 중 그보다 먼저 열린 것을 싣는다.
+    // 그 bg 주인이 전부 `idle` 이면 도는 것이 없다고 스스로 적은 것이라 싣지 않는다(리뷰 r1 B). `←` 로 복사된 옛 열림 중 앞 파일이 넘기지 않은 것은 뺀다(리뷰 r1 D).
     const restartOwner = links.restartOwner
-    if (restartOwner !== null && restartOwner.alive && restartOwner.since !== null) {
-      groups.push({ carried: restartItems({ ledger, since: restartOwner.since }), owner: restartOwner })
-    }
+    const restart =
+      restartOwner !== null && restartOwner.alive && restartOwner.since !== null && !links.restartIdle
+        ? restartItems({ ledger, since: restartOwner.since, drop: previous !== null && givenHanded !== null ? notHanded({ previous, handed: givenHanded }) : new Set() })
+        : null
+    if (restartOwner !== null && restart !== null) groups.push({ carried: restart.carried, owner: restartOwner })
     // 옆 파일을 아직 따라잡는 중이면 넘김을 모른다 — 빈 `known` 이 아니라 모름이다(리뷰 r1 A). 다만 기다려도 답이 안 바뀌면 묶지 않는다(r2 C):
     // 앞 파일(연쇄 포함)은 이 파일에 경계 앞 열린 항목(넘겨받을 후보)이 있을 때만, 대상 파일은 넘긴 것이 있을 때만 본다.
     const since = owner !== null && owner.alive ? owner.since : null
@@ -842,16 +848,19 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     const needsKeep =
       handoff !== null && handoff.since !== null && [...handoff.tasks, ...handoff.subagents].some((item) => item.startedAt === null || (handoff.since !== null && item.startedAt < handoff.since))
     const behind = (side: Ledger | null) => side !== null && !side.caughtUp
-    const catchingUp = ((candidates || needsKeep) && chain.some(behind)) || (handed && behind(links.target))
+    // 재시작 몫의 `←` 복사분 거르기도 앞 파일 장부에 달렸다(리뷰 r1 D).
+    const restarting = restart !== null && restart.carried.tasks.length + restart.carried.subagents.length > 0
+    const catchingUp = ((candidates || needsKeep || restarting) && chain.some(behind)) || (handed && behind(links.target))
     // 대상 파일에서 한도보다 긴 줄을 건너뛰어 넘긴 것의 끝을 놓쳤을 수 있으면 모름이다(r2 B). 건너뛸 때 `keep` 이 아직 안 정해졌을 수 있으니
     // 대상 파일이 긴 줄을 건너뛴 적이 있으면 넘긴 것 중 거기서 끝을 못 본 것도 본다(r4 A).
     const target = links.target
     const endedThere = (id: string) => target !== null && target.state.agent === 'claude' && target.state.ended.has(id)
     const unsure =
-      target !== null &&
-      handoff !== null &&
-      ([...handoff.tasks, ...handoff.subagents].some((item) => target.uncertain.has(item.id)) ||
-        (target.skipped && sent !== null && [...sent.tasks, ...sent.subagents].some((item) => !endedThere(item.id))))
+      restart?.undated === true ||
+      (target !== null &&
+        handoff !== null &&
+        ([...handoff.tasks, ...handoff.subagents].some((item) => target.uncertain.has(item.id)) ||
+          (target.skipped && sent !== null && [...sent.tasks, ...sent.subagents].some((item) => !endedThere(item.id)))))
     return { groups, catchingUp, unsure }
   }
   const priorLinks = linksOf(priorLedger)
@@ -1068,21 +1077,12 @@ function readLifecycle(input: {
     if (carry.catchingUp && anyAlive) return { state: 'unknown', reason: 'catching-up' }
     if (carry.unsure && anyAlive) return { state: 'unknown', reason: 'unreadable' }
     const carried: HandedItems = { tasks: [], subagents: [] }
-    // 묶음끼리 같은 id 가 겹칠 수 있다(넘겨받은 셸이 재시작으로도 넘어감) — 한 번만 싣는다. 비동기 에이전트는 작업·자식에 같은 id 로 둘 다 있어 따로 센다.
-    const once = () => {
-      const seen = new Set<string>()
-      return (item: { id: string }) => {
-        if (seen.has(item.id)) return false
-        seen.add(item.id)
-        return true
-      }
-    }
-    const freshTask = once()
-    const freshSubagent = once()
+    // 묶음끼리 id 가 겹치지 않는다 — 재시작 몫은 `cost-state` 가 본 파일의 열린 것(`inheritedItems` 의 재료)을 옮기고 비운 것이고, 이 파일이 넘긴 것(`sent`)과
+    // 재시작 몫이 함께 생기려면 `continued-in` 을 쓴 파일의 세션 id 에 bg 주인이 살아 있어야 한다(관측 없음 — bg 기록 136 중 continued-in 3 은 모두 대화형 줄 뒤, 리뷰 r1 M7).
     for (const group of carry.groups) {
       if (group.owner === null || !group.owner.alive) continue
-      carried.tasks.push(...group.carried.tasks.filter(freshTask))
-      carried.subagents.push(...group.carried.subagents.filter(freshSubagent))
+      carried.tasks.push(...group.carried.tasks)
+      carried.subagents.push(...group.carried.subagents)
     }
     const carrying = carried.tasks.length + carried.subagents.length > 0
     if (owner === null || !owner.alive) return carrying ? ledgerView({ ledger, since: Number.POSITIVE_INFINITY, carried }) : NOT_RUNNING

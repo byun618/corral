@@ -11,7 +11,8 @@ import {
   log,
   maxBytesFromEnv,
   openLog,
-  ROTATE_MAX_FAILURES,
+  retryDelay,
+  ROTATE_RETRY_MAX_MS,
   ROTATE_RETRY_MS
 } from './log'
 
@@ -91,6 +92,17 @@ describe('maxBytesFromEnv — 잘못된 값은 기본값', () => {
   it('양의 정수는 그대로', () => {
     expect(maxBytesFromEnv('1000')).toBe(1000)
     expect(DEFAULT_MAX_BYTES).toBe(104_857_600)
+  })
+
+  // 시험·관문용 변수라 Number() 가 받는 형태를 그대로 받는다 — 수용 형태를 고정한다.
+  it.each([
+    [' 2000 ', 2000],
+    ['1e3', 1000],
+    ['0x10', 16],
+    ['0b11', 3],
+    ['1', 1]
+  ])('%s → %d', (v, n) => {
+    expect(maxBytesFromEnv(v)).toBe(n)
   })
 
   it('openLog 도 잘못된 값이면 기본 상한 — 1000 바이트 넘는 파일을 밀지 않는다', async () => {
@@ -203,77 +215,177 @@ describe('C3 줄 무결성', () => {
     expect([file, `${file}.1`, `${file}.2`].map((p) => tags(p)[0])).toEqual(['log.rotated', 'log.rotated', 'log.rotated'])
     for (const p of [file, `${file}.1`, `${file}.2`]) expect(fs.statSync(p).size).toBeLessThanOrEqual(1000 + per)
   })
+
+  it('한글(멀티바이트) 줄 — 누적은 바이트 기준이라 모든 세대가 상한 + 한 줄 안이다', async () => {
+    openLog(dir)
+    const pad = '한글'.repeat(20)
+    const per = lineBytes('t.seq', { seq: 100, pad })
+    expect(per).toBeGreaterThan(pad.length * 2) // 문자 수와 바이트 수가 크게 다르다
+    const n = Math.ceil((1000 * 5) / per)
+    for (let seq = 0; seq < n; seq++) log('t.seq', { seq, pad })
+    await flush()
+    for (const p of [file, `${file}.1`, `${file}.2`]) expect(fs.statSync(p).size).toBeLessThanOrEqual(1000 + per)
+    const seqs = [...lines(`${file}.2`), ...lines(`${file}.1`), ...lines(file)]
+      .filter((l) => l.tag === 't.seq')
+      .map((l) => l.seq)
+    expect(seqs.at(-1)).toBe(n - 1)
+    expect(seqs).toEqual(Array.from({ length: seqs.length }, (_, i) => n - seqs.length + i))
+  })
 })
 
 describe('C4 회전 실패 내성', () => {
-  it('쓰기 불가 디렉터리 — 던지지 않고 실패 태그를 남기며 간격·횟수 상한을 지킨다', async () => {
-    openLog(dir)
-    const rename = vi.spyOn(fs, 'renameSync')
-    fs.chmodSync(dir, 0o555)
-    const pad = 'p'.repeat(100)
-    const burst = (): void => {
-      for (let i = 0; i < 20; i++) expect(() => log('t.x', { pad })).not.toThrow()
-    }
-    burst()
-    const perAttempt = rename.mock.calls.length
-    expect(perAttempt).toBeGreaterThan(0)
-    burst() // 간격 안 — 재시도 없음
-    expect(rename.mock.calls.length).toBe(perAttempt)
-    vi.setSystemTime(T0.getTime() + ROTATE_RETRY_MS - 1)
-    burst()
-    expect(rename.mock.calls.length).toBe(perAttempt)
-    for (let k = 2; k <= ROTATE_MAX_FAILURES + 2; k++) {
-      vi.setSystemTime(T0.getTime() + ROTATE_RETRY_MS * k)
-      burst()
-    }
-    expect(rename.mock.calls.length).toBe(perAttempt * ROTATE_MAX_FAILURES)
-    fs.chmodSync(dir, 0o755)
-    await flush()
-    const failed = lines(file).filter((l) => l.tag === 'log.rotate.failed')
-    expect(failed.length).toBe(ROTATE_MAX_FAILURES)
-    expect(failed.map((l) => l.failures)).toEqual([1, 2, 3, 4, 5])
-    expect(failed[ROTATE_MAX_FAILURES - 1]).toMatchObject({ phase: 'run', gaveUp: true })
-    expect(String(failed[0]?.error)).toMatch(/EACCES|EPERM/)
-    expect(fs.existsSync(`${file}.1`)).toBe(false)
+  const pad = 'p'.repeat(100)
+  // 상한(1000)을 넘길 만큼 쓴다 — 회전 시도가 한 번 일어난다(간격 안이면 시도 없음).
+  const burst = (): void => {
+    for (let i = 0; i < 8; i++) expect(() => log('t.x', { pad })).not.toThrow()
+  }
+  const realOpen = fs.openSync
+  const realRename = fs.renameSync
+
+  // .next(새 파일) 열기만 실패시킨다.
+  function failNextOpen(): { failing: boolean } {
+    const state = { failing: true }
+    vi.spyOn(fs, 'openSync').mockImplementation((p, flags, mode) => {
+      if (state.failing && String(p).endsWith('.next')) throw Object.assign(new Error('injected open'), { code: 'EIO' })
+      return realOpen(p, flags, mode)
+    })
+    return state
+  }
+
+  function failRenameFrom(src: string, code: string): void {
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(from) === src) throw Object.assign(new Error(`injected ${code}`), { code })
+      realRename(from, to)
+    })
+  }
+
+  function failures(p: string): Record<string, unknown>[] {
+    return lines(p).filter((l) => l.tag === 'log.rotate.failed')
+  }
+
+  it('retryDelay — 1분에서 두 배씩, 1시간 상한', () => {
+    expect([1, 2, 3, 4, 5, 6, 7, 8, 20].map(retryDelay)).toEqual([
+      60_000, 120_000, 240_000, 480_000, 960_000, 1_920_000, 3_600_000, 3_600_000, 3_600_000
+    ])
+    expect(ROTATE_RETRY_MS).toBe(60_000)
+    expect(ROTATE_RETRY_MAX_MS).toBe(3_600_000)
   })
 
-  it('주입된 rename 오류 — 다음 간격 뒤 회복하면 회전하고 실패 횟수가 초기화된다', async () => {
+  it('쓰기 불가 디렉터리 — 던지지 않고, 간격을 늘리며 포기 없이 재시도하고, 해소되면 회전한다', async () => {
     openLog(dir)
-    const real = fs.renameSync
-    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
-      throw new Error('injected rename')
-    })
-    const pad = 'p'.repeat(100)
-    for (let i = 0; i < 12; i++) log('t.x', { i, pad })
+    const open = vi.spyOn(fs, 'openSync')
+    const rename = vi.spyOn(fs, 'renameSync')
+    fs.chmodSync(dir, 0o555)
+    let now = T0.getTime()
+    burst()
+    expect(open).toHaveBeenCalledTimes(1)
+    const attempts = 9 // 이전 상한(5회)을 넘긴다
+    for (let k = 1; k < attempts; k++) {
+      now += retryDelay(k)
+      vi.setSystemTime(now - 1)
+      burst() // 간격 안 — 재시도 없음
+      expect(open).toHaveBeenCalledTimes(k)
+      vi.setSystemTime(now)
+      burst()
+      expect(open).toHaveBeenCalledTimes(k + 1)
+    }
+    expect(rename).not.toHaveBeenCalled() // 새 파일을 못 열면 아무 rename 도 하지 않는다
+    fs.chmodSync(dir, 0o755)
+    now += retryDelay(attempts)
+    vi.setSystemTime(now)
+    log('t.x', { pad }) // 누적은 이미 상한 위 — 한 줄로 회전한다
+    expect(open).toHaveBeenCalledTimes(attempts + 1)
+    expect(fs.existsSync(`${file}.1`)).toBe(true)
+    await flush()
+    const failed = failures(`${file}.1`)
+    expect(failed.map((l) => l.failures)).toEqual(Array.from({ length: attempts }, (_, i) => i + 1))
+    expect(failed.map((l) => l.retryInMs)).toEqual(Array.from({ length: attempts }, (_, i) => retryDelay(i + 1)))
+    expect(String(failed[0]?.error)).toMatch(/EACCES|EPERM/)
+    expect(tags(file)[0]).toBe('log.rotated')
+    expect(fs.existsSync(`${file}.next`)).toBe(false)
+  })
+
+  it('성공 회전 뒤 연속 실패 횟수가 초기화된다 — 다시 실패하면 failures 1·간격 1분', async () => {
+    openLog(dir)
+    const state = failNextOpen()
+    let now = T0.getTime()
+    burst()
+    for (let k = 1; k < 3; k++) {
+      now += retryDelay(k)
+      vi.setSystemTime(now)
+      burst()
+    }
+    state.failing = false
+    now += retryDelay(3)
+    vi.setSystemTime(now)
+    log('t.x', { pad })
+    expect(fs.existsSync(`${file}.1`)).toBe(true)
+    state.failing = true
+    burst()
+    await flush()
+    expect(failures(`${file}.1`).map((l) => l.failures)).toEqual([1, 2, 3])
+    expect(failures(file)).toEqual([expect.objectContaining({ phase: 'run', failures: 1, retryInMs: ROTATE_RETRY_MS })])
+  })
+
+  it('새 파일 열기 실패 — 어떤 rename 도 하지 않고 모든 세대의 바이트가 그대로다', async () => {
+    fs.writeFileSync(`${file}.2`, '{"tag":"gen2"}\n')
+    fs.writeFileSync(`${file}.1`, '{"tag":"gen1"}\n')
+    openLog(dir)
+    failNextOpen()
+    const rename = vi.spyOn(fs, 'renameSync')
+    const gens = [`${file}.1`, `${file}.2`].map(sha)
+    for (let i = 0; i < 12; i++) expect(() => log('t.x', { i, pad })).not.toThrow()
+    await flush()
+    expect(rename).not.toHaveBeenCalled()
+    expect([`${file}.1`, `${file}.2`].map(sha)).toEqual(gens)
+    expect(fs.existsSync(`${file}.next`)).toBe(false)
+    expect(lines(file).map((l) => l.i).filter((i) => i !== undefined)).toEqual(Array.from({ length: 12 }, (_, i) => i))
+    expect(failures(file)).toEqual([expect.objectContaining({ phase: 'run', failures: 1, error: 'injected open' })])
+  })
+
+  it('.1 → .2 가 ENOENT 아닌 오류면 기존 .1 을 덮지 않는다 — 세대는 그대로, 현재 파일에 계속', async () => {
+    fs.writeFileSync(`${file}.2`, '{"tag":"gen2"}\n')
+    fs.writeFileSync(`${file}.1`, '{"tag":"gen1"}\n')
+    openLog(dir)
+    failRenameFrom(`${file}.1`, 'EPERM')
+    burst()
+    await flush()
+    expect(tags(`${file}.1`)).toEqual(['gen1'])
+    expect(tags(`${file}.2`)).toEqual(['gen2'])
+    expect(fs.existsSync(`${file}.next`)).toBe(false)
+    expect(tags(file).filter((t) => t === 't.x')).toHaveLength(8)
+    expect(failures(file)).toEqual([expect.objectContaining({ phase: 'run', failures: 1, error: 'injected EPERM' })])
+  })
+
+  it('현재 → .1 실패 — .2 → .1 을 되돌려 옛 .1 은 남고, 이전 .2 는 잃는다(주석의 잔여)', async () => {
+    fs.writeFileSync(`${file}.2`, '{"tag":"gen2"}\n')
+    fs.writeFileSync(`${file}.1`, '{"tag":"gen1"}\n')
+    openLog(dir)
+    failRenameFrom(file, 'EPERM')
+    burst()
+    await flush()
+    expect(tags(`${file}.1`)).toEqual(['gen1'])
+    expect(fs.existsSync(`${file}.2`)).toBe(false)
+    expect(fs.existsSync(`${file}.next`)).toBe(false)
+    expect(tags(file).filter((t) => t === 't.x')).toHaveLength(8)
+    expect(failures(file)).toHaveLength(1)
+  })
+
+  it('주입된 rename 오류 — 다음 간격 뒤 회복하면 회전한다', async () => {
+    openLog(dir)
+    failRenameFrom(file, 'EIO')
+    burst()
     expect(fs.existsSync(`${file}.1`)).toBe(false)
-    rename.mockImplementation(real)
+    vi.mocked(fs.renameSync).mockImplementation(realRename)
     vi.setSystemTime(T0.getTime() + ROTATE_RETRY_MS)
     log('t.after', { pad })
     expect(fs.existsSync(`${file}.1`)).toBe(true)
     await flush()
-    const old = lines(`${file}.1`)
-    expect(old.filter((l) => l.tag === 'log.rotate.failed')).toEqual([
-      expect.objectContaining({ phase: 'run', failures: 1, gaveUp: false, error: 'injected rename' })
+    expect(failures(`${file}.1`)).toEqual([
+      expect.objectContaining({ phase: 'run', failures: 1, retryInMs: ROTATE_RETRY_MS, error: 'injected EIO' })
     ])
-    expect(old.at(-1)?.tag).toBe('t.after')
+    expect(tags(`${file}.1`).at(-1)).toBe('t.after')
     expect(tags(file)).toEqual(['log.rotated'])
-  })
-
-  it('새 파일 열기 실패 — 밀었던 파일을 되돌리고 같은 파일에 계속 쓴다', async () => {
-    openLog(dir)
-    const open = vi.spyOn(fs, 'openSync').mockImplementation(() => {
-      throw new Error('injected open')
-    })
-    const pad = 'p'.repeat(100)
-    for (let i = 0; i < 12; i++) expect(() => log('t.x', { i, pad })).not.toThrow()
-    expect(open).toHaveBeenCalledTimes(1)
-    await flush()
-    expect(fs.existsSync(`${file}.1`)).toBe(false)
-    const all = lines(file)
-    expect(all.map((l) => l.i).filter((i) => i !== undefined)).toEqual(Array.from({ length: 12 }, (_, i) => i))
-    expect(all.filter((l) => l.tag === 'log.rotate.failed')).toEqual([
-      expect.objectContaining({ phase: 'run', failures: 1, error: 'injected open' })
-    ])
   })
 
   it('열 때 회전 실패 — 던지지 않고 기존 파일에 이어 쓰며 실패를 남긴다', async () => {
@@ -285,11 +397,39 @@ describe('C4 회전 실패 내성', () => {
     fs.chmodSync(dir, 0o755)
     await flush()
     expect(fs.existsSync(`${file}.1`)).toBe(false)
-    expect(fs.statSync(file).size).toBeGreaterThan(1500)
     expect(tags(file)[0]).toBe('t.old')
-    expect(lines(file).filter((l) => l.tag === 'log.rotate.failed')).toEqual([
-      expect.objectContaining({ phase: 'open', failures: 1, gaveUp: false })
-    ])
+    expect(failures(file)).toEqual([expect.objectContaining({ phase: 'open', failures: 1, retryInMs: ROTATE_RETRY_MS })])
     expect(tags(file).slice(-2)).toEqual(['t.after', 't.after2'])
+  })
+
+  // 파일을 못 열면 stdout 으로 간다 — 실패 줄(log.open.failed)과 이후 줄 모두 stdout 에 남는다.
+  it.each([
+    ['상한 아래', 500],
+    ['상한 초과(열 때 회전과 겹침)', 1500]
+  ])('열 때 파일 열기 실패(%s) — openLog·log 가 던지지 않고 stdout 으로, 파일은 그대로', async (_, bytes) => {
+    fill(file, bytes)
+    const before = sha(file)
+    const open = vi.spyOn(fs, 'openSync').mockImplementation(() => {
+      throw Object.assign(new Error('injected open'), { code: 'EMFILE' })
+    })
+    const out: string[] = []
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk))
+      return true
+    })
+    expect(() => openLog(dir)).not.toThrow()
+    for (let i = 0; i < 20; i++) expect(() => log('t.after', { i, pad })).not.toThrow()
+    await flush()
+    open.mockRestore() // readFileSync 도 openSync 를 쓴다
+    vi.mocked(process.stdout.write).mockRestore()
+    const tagsOut = out.map((l) => {
+      const v: unknown = JSON.parse(l)
+      return typeof v === 'object' && v !== null && 'tag' in v ? v.tag : undefined
+    })
+    expect(tagsOut[0]).toBe('log.open.failed')
+    expect(tagsOut.filter((t) => t === 't.after')).toHaveLength(20)
+    expect(sha(file)).toBe(before)
+    expect(fs.existsSync(`${file}.1`)).toBe(false)
+    expect(fs.existsSync(`${file}.next`)).toBe(false)
   })
 })

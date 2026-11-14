@@ -613,3 +613,24 @@ describe('fix2 J 합성 — `idle` 상한의 방향: 살아 있는 bg 항목이 
     expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
   })
 })
+
+describe('final O 합성 — `session_id` 키가 없는 bg 셸 열림 줄은 복사로 보지 않는다', () => {
+  // 증명: 복사 표지는 `session_id` 가 **있고** `sessionId` 와 다를 때만이다 — 키가 없는 bg 줄(옛 판·다른 기록기)을 복사로 오인해 재시작 몫에서 빼지 않는다
+  // (앞 장부가 없는 참조라 복사로 보면 빠진다). 못 하는 것: 키 없는 bg 열림 줄이 실제로 오는지(사용자 기록 작업 열림 줄 100건은 모두 키가 있었다 — 리뷰 r3).
+  const { bg, registry, sessionId, settled } = restartSample('two-shells')
+
+  it('two-shells 에서 `session_id` 를 지운 기록 — 재시작 뒤 셸이 사는 동안 둘, 끝 통지로 빠진다', () => {
+    const keyless = bg.map((line) => {
+      const record: unknown = JSON.parse(line)
+      if (typeof record === 'object' && record !== null) Reflect.deleteProperty(record, 'session_id')
+      return JSON.stringify(record)
+    })
+    expect(keyless.some((line) => line.includes('"session_id"'))).toBe(false)
+    const firstEnd = indexWhere({ lines: keyless, match: endOf('task-0') })
+    register({ registry, name: 'after', alive: true })
+    write({ sessionId, lines: keyless.slice(0, settled) })
+    expect(taskIds(sessionId)).toEqual(['task-0', 'task-1'])
+    write({ sessionId, lines: keyless.slice(0, firstEnd + 1) })
+    expect(taskIds(sessionId)).toEqual(['task-1'])
+  })
+})

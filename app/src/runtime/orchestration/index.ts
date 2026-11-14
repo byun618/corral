@@ -42,8 +42,8 @@ import {
 } from './messages.js'
 import {
   activePaneDispatch, composeBody, emptyWorker, isRetainReason, paneOwner, preambleDigest, releaseDecision, replaceDispatchRecord,
-  resumeDecision, senderError, stopDecision, submissionVerdict, verifySender, withWorker,
-  type CallerClaim, type SenderClaim, type SubmissionVerdict,
+  resumeDecision, senderError, stopDecision, submissionVerdict, verifySender, wantsSessionChain, withWorker,
+  type CallerClaim, type SenderClaim, type SenderProof, type SessionChain, type SubmissionVerdict,
 } from './worker.js'
 
 export const orchestrationSpecs: CommandSpec[] = specs
@@ -586,11 +586,15 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
         if (terminal === null || epoch === null || ptyId === null || paneId === null)
           return preflight('operation_failed', 'terminal show did not report a target identity', { terminal: handle })
         const block = isRecord(shown) ? readRecord(shown, 'agent') : null
+        const sessionRecord = block === null ? null : readRecord(block, 'sessionRecord')
+        const hops = sessionRecord === null ? null : sessionRecord.continuedIn
         return {
           target: { handle, runtimeId: ctx.runtimeId, epoch, ptyId, paneId },
           agent: block === null ? null : snapshotAgent(block),
           agentAbsenceReason: block === null ? 'no_managed_agent' : null,
           terminal,
+          /** LIFE-771: the ids the minted claude session continued in, as `terminal show` followed them. */
+          continuedIn: Array.isArray(hops) ? hops.filter((hop): hop is string => typeof hop === 'string') : [],
         }
       }
       const mutate = async (body: () => Promise<Record<string, unknown>>): Promise<unknown> => {
@@ -662,7 +666,23 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
         return caller.session && backendSession && caller.session === backendSession ? 'session_name' : null
       }
       /** LIFE-556 H1 — what `verifySender` sees of the caller: its claim, plus whether its socket is this backend's. */
-      const senderClaim = (): CallerClaim => ({ paneId: caller.paneId, session: caller.session, socketIsBackend: callerPlacement() === 'socket' })
+      const senderClaim = (): CallerClaim => ({ paneId: caller.paneId, session: caller.session, socketIsBackend: callerPlacement() === 'socket', claudeSession: caller.claudeSession ?? null })
+      /**
+       * LIFE-796. The session chain of the Dispatch's own pane, read only when it could matter (`wantsSessionChain`:
+       * the pane proof failed and the caller named a claude session). It is `terminal show`'s own answer — the
+       * minted id and the `continued-in` hops it followed — and only for the pane generation the attempt was bound
+       * to: a pane that is gone, replaced or carrying another session yields no chain, and the sender is judged as
+       * before. A read that fails is no chain, never an error of its own.
+       */
+      const sessionChainOf = async (dispatch: DispatchRecord | undefined, claim: CallerClaim): Promise<SessionChain | null> => {
+        if (dispatch === undefined || !wantsSessionChain({ dispatch, caller: claim })) return null
+        try {
+          const shown = await showTerminal(dispatch.target.handle)
+          const same = shown.target.paneId === dispatch.target.paneId && shown.target.ptyId === dispatch.target.ptyId && shown.target.epoch === dispatch.target.epoch
+          const minted = shown.agent?.kind === 'claude' ? shown.agent.sessionId : null
+          return same && minted !== null ? { minted, continuedIn: shown.continuedIn } : null
+        } catch { return null }
+      }
       /**
        * LIFE-459. The parent of the attempt `worker-start` is about to make: the pane this call came
        * from, with its generation read from the backend when the caller could be placed in it. The
@@ -740,7 +760,7 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
       // --- send (§4.4) -----------------------------------------------------------------------------
       type SendPlan =
         | { kind: 'coordinator'; runId: string }
-        | { kind: 'worker'; runId: string; taskId: string; dispatchId: string; dispatch: DispatchRecord; sessionVerified: boolean }
+        | { kind: 'worker'; runId: string; taskId: string; dispatchId: string; dispatch: DispatchRecord; sessionVerified: boolean; proof: SenderProof }
       const sendCommand = async (state: OrchestrationState): Promise<unknown> => {
         const type = need('type'), subject = need('subject'), body = flag('body') ?? ''
         const payload = messagePayload({
@@ -787,9 +807,10 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           // `worker_done` defers the settled question to `transition`, the only place that can tell
           // "you named a superseded attempt" (stale_dispatch) from "you already reported"
           // (illegal_transition). Every other worker message is refused once the attempt has ended.
-          const verdict = verifySender(state, { taskId, dispatchId, caller: senderClaim(), observation }, type === 'worker_done' ? 'defer' : 'reject')
+          const claim = senderClaim()
+          const verdict = verifySender(state, { taskId, dispatchId, caller: claim, observation, chain: await sessionChainOf(found, claim) }, type === 'worker_done' ? 'defer' : 'reject')
           if (!verdict.ok) throw senderError(verdict)
-          return { kind: 'worker', runId: verdict.dispatch.runId, taskId, dispatchId, dispatch: verdict.dispatch, sessionVerified: verdict.sessionVerified }
+          return { kind: 'worker', runId: verdict.dispatch.runId, taskId, dispatchId, dispatch: verdict.dispatch, sessionVerified: verdict.sessionVerified, proof: verdict.proof }
         }
         const plan = async (): Promise<SendPlan> => {
           const target = await addressee()
@@ -812,6 +833,7 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           const at = now()
           const worker = target.kind === 'worker' ? target.dispatch : null
           const sessionVerified = target.kind === 'worker' ? target.sessionVerified : null
+          const proof = target.kind === 'worker' ? target.proof : null
           const common = commonFor(target, at)
           if (type === 'worker_done' && target.kind === 'worker') {
             // One value, one write: the report and the settlement it causes are two fields of the
@@ -821,7 +843,7 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             const next = settled === undefined ? moved.state : revoke(moved.state, settled, 'settled', at)
             ctx.onEffect?.()
             records.write(next)
-            return { message: appended.message, task: moved.task, dispatch: findDispatch(next, target.dispatchId) ?? null, promoted: moved.promoted, settledBy: 'worker_done', sessionVerified }
+            return { message: appended.message, task: moved.task, dispatch: findDispatch(next, target.dispatchId) ?? null, promoted: moved.promoted, settledBy: 'worker_done', sessionVerified, proof }
           }
           if (type === 'heartbeat' && target.kind === 'worker') {
             const appended = appendMessage(state, common, { type: 'heartbeat' })
@@ -829,12 +851,12 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             const next = current === undefined ? appended.state : replaceDispatchRecord(appended.state, withWorker(current, { lastHeartbeatAt: at }, at))
             ctx.onEffect?.()
             records.write(next)
-            return { message: appended.message, dispatch: findDispatch(next, target.dispatchId) ?? null, sessionVerified }
+            return { message: appended.message, dispatch: findDispatch(next, target.dispatchId) ?? null, sessionVerified, proof }
           }
           const appended = appendMessage(state, common, { type: type === 'escalation' ? 'escalation' : 'status' })
           ctx.onEffect?.()
           records.write(appended.state)
-          return { message: appended.message, dispatch: worker === null ? null : findDispatch(appended.state, worker.id) ?? null, sessionVerified }
+          return { message: appended.message, dispatch: worker === null ? null : findDispatch(appended.state, worker.id) ?? null, sessionVerified, proof }
         })
       }
 
@@ -1528,7 +1550,8 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           // that follows polls the mailbox, not the backend, so a backend that stops answering
           // cannot turn a ten-minute wait into an `outcome_unknown` (§4.6).
           const asking = findDispatch(state, dispatchId)
-          const claim: SenderClaim = { taskId, dispatchId, caller: senderClaim(), observation: asking === undefined ? UNOBSERVABLE : await observeNow(asking.target) }
+          const claimed = senderClaim()
+          const claim: SenderClaim = { taskId, dispatchId, caller: claimed, observation: asking === undefined ? UNOBSERVABLE : await observeNow(asking.target), chain: await sessionChainOf(asking, claimed) }
           // A resume names a question that already exists, so the attempt may already have been
           // settled — `defer` lets a worker collect an answer it asked for before it reported.
           const verdict = verifySender(state, claim, resume === undefined ? 'reject' : 'defer')
@@ -1539,7 +1562,7 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             if (question.type !== 'question') return preflight('not_a_question', `Message ${resume} is a ${question.type}`, { messageId: resume, type: question.type })
             if (question.dispatchId !== dispatchId) return preflight('sender_mismatch', `Question ${resume} belongs to dispatch ${String(question.dispatchId)}`,
               { messageId: resume, dispatchId: question.dispatchId, claimedDispatchId: dispatchId, recovery: 'Resume only a question this Dispatch asked' })
-            return { messageId: question.id, runId: question.runId, sessionVerified: verdict.sessionVerified }
+            return { messageId: question.id, runId: question.runId, sessionVerified: verdict.sessionVerified, proof: verdict.proof }
           }
           const draft = (current: OrchestrationState) => appendMessage(current, {
             runId: verdict.dispatch.runId, taskId, dispatchId,
@@ -1557,12 +1580,13 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             // V29. The proof that admitted this question travels with it: `send` reports whether
             // the pane's backend session matched the recorded one, and an answer a worker collects
             // has exactly as much to say about who asked.
-            return { messageId: appended.message.id, runId: verdict.dispatch.runId, sessionVerified: verdict.sessionVerified }
+            return { messageId: appended.message.id, runId: verdict.dispatch.runId, sessionVerified: verdict.sessionVerified, proof: verdict.proof }
           })
         })
         const envelope = isRecord(opened) ? opened : {}
         const messageId = readString(envelope, 'messageId')
         const sessionVerified = envelope.sessionVerified === true
+        const proof = readString(envelope, 'proof')
         if (messageId === null) throw new RuntimeError('operation_failed', 'ask did not record a question id')
         const resumeCommand = `${corralCommand()} orchestration ask --resume ${messageId} --task-id ${taskId} --dispatch-id ${dispatchId} --timeout-ms 600000 --json`
         for (;;) {
@@ -1574,12 +1598,12 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             return reply === null ? null : { question, reply }
           })
           if (answered !== null) return {
-            state: 'answered', messageId, runId: readString(envelope, 'runId'), timedOut: false, sessionVerified,
+            state: 'answered', messageId, runId: readString(envelope, 'runId'), timedOut: false, sessionVerified, proof,
             question: { id: answered.question.id, body: answered.question.body, options: answered.question.question.options, askedAt: answered.question.createdAt },
             reply: { id: answered.reply.id, body: answered.reply.body, subject: answered.reply.subject, answeredAt: answered.reply.createdAt },
           }
           if (Date.now() >= waitDeadline) return {
-            state: 'pending', messageId, runId: readString(envelope, 'runId'), timedOut: true, sessionVerified, question: null, reply: null,
+            state: 'pending', messageId, runId: readString(envelope, 'runId'), timedOut: true, sessionVerified, proof, question: null, reply: null,
             resumeCommand, recovery: 'The question is stored. Run resumeCommand to keep waiting; asking again would create a second question',
           }
           ctx.signal.throwIfAborted()

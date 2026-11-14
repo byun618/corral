@@ -336,6 +336,19 @@ reports it in both the `pending` and the `answered` envelope and in the stored r
 started where `CORRAL_SESSION` was unset recorded no session, so there is nothing to compare a caller's against
 and the pane id stands alone — a weaker proof than the usual one, and the caller is told which of the two they
 got rather than left to assume the stronger.
+
+A claude worker moved to the background (`←`, `/bg`) cannot pass the pane comparison at all: the session goes on
+inside Claude Code's account-wide daemon, whose `HERDR_*` belong to the pane that first started the daemon
+(LIFE-796). So the CLI also sends `CLAUDE_CODE_SESSION_ID`, and when the pane comparison fails the runtime admits
+the call if that id is the claude session corral minted for the Dispatch's pane, or one it continued in — the same
+`continued-in` chain `terminal show` follows (`agent.sessionRecord.continuedIn`), read from the Dispatch's own pane
+generation. It is a second way through the first row of the table only: the pane must still be observed live (a
+pane that is gone is still `stale_dispatch`; a chain that cannot be read leaves the call `sender_mismatch`), and
+every later row answers as before. It is claude only, and needs the minted id — a codex or grok attempt, an
+attempt with no minted session, an id outside the chain or in another Dispatch's chain are `sender_mismatch`, and
+so is a background session after `/clear`, whose new id no `continued-in` names. `proof` in the answer is `pane`
+or `session_chain`; an attempt admitted on the chain is never `sessionVerified`.
+
 This is proof against confusion, not authentication — anything that can already write to the 0600 runtime socket
 could state any pane id. The trust boundary is that socket, which is also why coordinator-side commands carry no
 proof at all.

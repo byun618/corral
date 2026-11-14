@@ -124,8 +124,9 @@ export async function runCli(argv: string[]): Promise<void> {
     // LIFE-410 §4.5. herdr puts these in the shell it starts inside a pane, and the probe in
     // the LIFE-410 gate script `probe-pane-env.mjs` measured HERDR_PANE_ID to be the very string corral's
     // own pane listing calls `paneId`. Sent on every call, judged only where a worker report needs
-    // it — a command that does not care never looks.
-    inv.caller = { paneId: process.env.HERDR_PANE_ID ?? null, session: process.env.HERDR_SESSION ?? null, socket: process.env.HERDR_SOCKET_PATH ?? null }
+    // it — a command that does not care never looks. LIFE-796: the claude session id rides along for a
+    // worker moved to the background, whose HERDR_* belong to another pane.
+    inv.caller = { paneId: process.env.HERDR_PANE_ID ?? null, session: process.env.HERDR_SESSION ?? null, socket: process.env.HERDR_SOCKET_PATH ?? null, claudeSession: process.env.CLAUDE_CODE_SESSION_ID ?? null }
     if (inv.flags.socket) process.env.CORRAL_RUNTIME_SOCKET = String(inv.flags.socket)
     const userData = defaultUserData()
     if (inv.command === 'serve') {

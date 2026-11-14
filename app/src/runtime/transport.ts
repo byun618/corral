@@ -21,8 +21,8 @@ export function validateRequest(value: unknown): RpcRequest {
     // explicitly absent. A malformed one is refused rather than read as "no pane".
     const caller = req.invocation.caller;
     const namedOrAbsent = (value: unknown): boolean => value === null || typeof value === 'string';
-    if (caller !== undefined && (!caller || typeof caller !== 'object' || Array.isArray(caller) || !namedOrAbsent(caller.paneId) || !namedOrAbsent(caller.session) || (caller.socket !== undefined && !namedOrAbsent(caller.socket))))
-        throw new RuntimeError('invalid_request', 'caller must be { paneId, session, socket? } of string or null');
+    if (caller !== undefined && (!caller || typeof caller !== 'object' || Array.isArray(caller) || !namedOrAbsent(caller.paneId) || !namedOrAbsent(caller.session) || (caller.socket !== undefined && !namedOrAbsent(caller.socket)) || (caller.claudeSession !== undefined && !namedOrAbsent(caller.claudeSession))))
+        throw new RuntimeError('invalid_request', 'caller must be { paneId, session, socket?, claudeSession? } of string or null');
     return req;
 }
 export async function localCall(endpoint: string, req: RpcRequest, timeout = req.timeoutMs ?? 10000, signal?: AbortSignal): Promise<RpcResponse> {

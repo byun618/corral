@@ -30,6 +30,12 @@ export interface CallerIdentity {
     session: string | null;
     /** LIFE-459: `HERDR_SOCKET_PATH`, the backend socket the pane belongs to. Absent from older CLIs. */
     socket?: string | null;
+    /**
+     * LIFE-796: `CLAUDE_CODE_SESSION_ID`, the claude session the call was made from. Claude Code gives it to
+     * every Bash call, foreground or background, while the `HERDR_*` above are whatever the process inherited —
+     * for a background session, the pane that first started Claude Code's daemon. Absent from older CLIs.
+     */
+    claudeSession?: string | null;
 }
 export interface Invocation {
     command: string;

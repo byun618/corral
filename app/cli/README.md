@@ -343,7 +343,9 @@ inside Claude Code's account-wide daemon, whose `HERDR_*` belong to the pane tha
 the call if that id is the claude session corral minted for the Dispatch's pane, or one it continued in — the same
 `continued-in` chain `terminal show` follows (`agent.sessionRecord.continuedIn`). The chain is read from the record
 files of the minted id the Dispatch froze (the file is found by that id under `CLAUDE_CONFIG_DIR`'s `projects/`; not
-exactly one file is no chain), with no backend round trip and without the pane. It is a second way through the
+exactly one file is no chain — rare, it takes a record copied into a second project folder by hand — and the call is
+judged as before), with no backend round trip and without the pane. The lookup is one existence check per project
+folder, so it grows with their number (about 2–3 ms for 500 folders) and is not cached. It is a second way through the
 first row of the table only: the pane must still be observed live (a pane that is gone is `stale_dispatch` for the
 background session too, a replaced pane `sender_mismatch`), and every later row answers as before. It is claude
 only, and needs the minted id — a codex or grok attempt, an attempt with no minted session, an id outside the chain

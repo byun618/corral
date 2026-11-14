@@ -345,4 +345,34 @@ describe('LIFE-796 C10 합성 — ask uses the same proof', () => {
     const pending = await ask(f, { index: 0, dispatchId: first!, claudeSession: f.panes[0]!.moved })
     expect([pending.error, pending.state, pending.proof, pending.sessionVerified]).toEqual([undefined, 'pending', 'session_chain', false])
   }, 60000)
+
+  it('fix2 P: a gone Dispatch pane is stale_dispatch (pane_gone) for the background session, and the chain costs no ready gate or terminal show', async () => {
+    const f = setup()
+    const [first] = await started(f)
+    for (const spy of Object.values(f.spies)) spy.mockClear()
+    const pending = await ask(f, { index: 0, dispatchId: first!, claudeSession: f.panes[0]!.moved })
+    expect(pending.proof).toBe('session_chain')
+    expect(f.spies.agentInfo).not.toHaveBeenCalled()
+    expect(f.spies.screenRead).not.toHaveBeenCalled()
+    expect(f.spies.list.mock.calls.length).toBeLessThanOrEqual(1)
+    f.gone.add(f.panes[0]!.live.paneId)
+    const gone = await ask(f, { index: 0, dispatchId: first!, claudeSession: f.panes[0]!.moved })
+    expect([gone.error, asRecord(gone.resources).reason]).toEqual(['stale_dispatch', 'pane_gone'])
+  }, 60000)
+})
+
+describe('LIFE-796 fix2 N — a minted id that is not a session id shape gives no chain', () => {
+  it('a stored minted id like `../<folder>/<id>` is not followed into a path, so the background caller is refused as before', async () => {
+    const f = setup()
+    const [first] = await started(f)
+    const store = new OrchestrationStore(f.dir)
+    const state = store.read()
+    // 「합성」: a tampered snapshot. Joined into a path it would still land on the real minted file
+    // (`projects/<any>/../<folder>/<id>.jsonl`), so without the shape guard the chain would admit the caller.
+    const minted = f.panes[0]!.minted, folder = path.basename(path.dirname(f.panes[0]!.fileB))
+    store.write({ ...state, dispatches: state.dispatches.map(entry => entry.id !== first || entry.agent === null ? entry
+      : { ...entry, agent: { ...entry.agent, sessionId: `../${folder}/${minted}` } }) })
+    const out = await report(f, { index: 0, dispatchId: first!, type: 'heartbeat', claudeSession: f.panes[0]!.moved })
+    expect(out.error).toBe('sender_mismatch')
+  }, 60000)
 })

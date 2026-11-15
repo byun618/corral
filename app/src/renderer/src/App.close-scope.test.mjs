@@ -100,6 +100,8 @@ async function mount({ running = [], startOnConfirm = [], dialog = 'discard', la
       return dialog === 'held' ? new Promise((resolve) => { heldDialogs.push(resolve) }) : dialog
     },
     splitPane: async (input) => { splits.push(input); return { ok: false, error: 'test', paneId: null } },
+    // 파일 탭이 활성인 갈래(⌘D)에서 FileView 가 읽는다 — 편집기(Monaco)를 안 띄우는 binary 결과로 답한다.
+    readFile: async () => ({ ok: true, kind: 'binary', size: 1, bytesRead: 1, stamp: 's0' }),
     writeFile: async () => ({ ok: true, stamp: 's1', hash: 'h1' }),
     closeTabs: async (input) => {
       closeCalls.push({ ...input })

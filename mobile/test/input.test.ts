@@ -132,6 +132,7 @@ describe('보낸 지시 상태 (C12 + 확인 못 함 · P6)', () => {
     expect(sentLine({ entry: entry({ state: 'queued', acked: true }), hhmm })).toEqual({ tone: 'question', text: '대기 중 · 이 턴이 끝나면 들어갑니다', action: 'cancel', faded: false })
     expect(sentLine({ entry: entry({ state: 'delivered', acked: true }), hhmm })).toEqual({ tone: 'dim', text: '들어감 ✓ 10:12', action: null, faded: false })
     expect(sentLine({ entry: entry({ state: 'failed', reason: 'mac_draft' }), hhmm })).toMatchObject({ tone: 'error', text: '보내지 못했습니다 · 맥 입력창에 쓰던 글이 있어 보내지 않았습니다', action: 'retry' })
+    expect(sentLine({ entry: entry({ state: 'failed', reason: 'agent_view' }), hhmm })).toEqual({ tone: 'error', text: '보내지 못했습니다 · 맥이 agent view 화면이라 보내지 않았습니다 — 맥에서 대화로 돌아온 뒤 다시 보내 주세요', action: 'retry', faded: false })
     expect(sentLine({ entry: entry({ state: 'unconfirmed', reason: 'record_missing' }), hhmm })?.text).toContain('들어갔는지 확인하지 못했습니다')
     expect(sentLine({ entry: entry({ state: 'cancelled' }), hhmm })).toBeNull()
   })
@@ -327,7 +328,7 @@ describe('LIFE-582 최종 관문 — 답 카드 잠금은 채널이 질문을 �
   })
   it('잠금 안내 — Codex 턴 끝남은 provider 이름, 그 밖은 중립', () => {
     expect(questionLockText({ lock: 'ended', kind: 'codex' })).toBe('Codex 가 턴을 마쳤습니다 — 아래 입력창에 답을 지시로 보내 주세요')
-    expect(questionLockText({ lock: 'ended', kind: 'claude' })).toBe('턴이 끝난 질문입니다 — 아래 입력창에 답을 지시로 보내 주세요')
+    expect(questionLockText({ lock: 'ended', kind: 'claude' })).toBe('이 질문이 아직 열려 있는지 맥에서 확인해 주세요 — 닫혔으면 아래 입력창에 지시로 보내 주세요')
     expect(questionLockText({ lock: 'not_waiting', kind: 'codex' })).toBe('지금은 폰에서 답할 수 없는 질문입니다 — 맥에서 확인해 주세요')
     expect(questionLockText({ lock: 'checking', kind: 'claude' })).toBe('질문을 확인하는 중…')
   })

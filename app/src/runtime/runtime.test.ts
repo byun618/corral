@@ -14,6 +14,8 @@ import { terminalModule } from './terminal/index.js'
 import { Tokens } from './terminal/tokens.js'
 import { TerminalBackend, type AgentManifestObservation, type AgentObservation, type TerminalIdentity } from '../main/adapter/index.js'
 import { isRecord } from '../shared/json.js'
+import { clearContinuedMemo } from '../main/transcript-continued.js'
+import { submissionVerdict } from './orchestration/worker.js'
 import { RuntimeError, type CommandContext } from './contracts.js'
 const cleanups: (() => Promise<void> | void)[] = []
 const previous = { ...process.env }
@@ -283,8 +285,22 @@ describe('LIFE-394 body identity, ready gate and submission window', () => {
       expect(evaluateManifest(kind, [], null)).toMatchObject({ verified: false, queryError: `no manifest reported for ${kind}` })
     }
     // 4: C2/D23. claude runs the same code. "We did not patch it" is not a guarantee.
-    expect(EXPECTED_MANIFESTS.claude.version).toBe('2026.09.04.1')
-    expect(evaluateManifest('claude', [{ agent: 'claude', source_kind: 'local_override', active_version: '2026.09.04.1', local_override_shadowing_remote: false }], null).verified).toBe(false)
+    expect(EXPECTED_MANIFESTS.claude.version).toBe('2026.11.03.1')
+    expect(evaluateManifest('claude', [{ agent: 'claude', source_kind: 'local_override', active_version: '2026.11.03.1', local_override_shadowing_remote: false }], null).verified).toBe(false)
+    // LIFE-780: a new app on a herdr server that has not restarted still reports the old bundled claude manifest.
+    expect(EXPECTED_MANIFESTS.claude.priorVersions).toEqual(['2026.09.04.1'])
+    expect(evaluateManifest('claude', [bundled('claude', '2026.09.04.1')], null)).toMatchObject({ verified: true, activeVersion: '2026.09.04.1', expectedVersion: '2026.11.03.1' })
+    for (const version of ['2026.11.03.1', '2026.09.04.1']) {
+      expect(evaluateManifest('claude', [{ agent: 'claude', source_kind: 'remote_cache', active_version: version, local_override_shadowing_remote: false }], null).verified).toBe(false)
+      expect(evaluateManifest('claude', [{ agent: 'claude', source_kind: 'local_override', active_version: version, local_override_shadowing_remote: false }], null).verified).toBe(false)
+      expect(evaluateManifest('claude', [{ agent: 'claude', source_kind: 'bundled', active_version: version, local_override_shadowing_remote: true }], null).verified).toBe(false)
+    }
+    expect(evaluateManifest('claude', [bundled('claude', '2026.10.11.1')], null).verified).toBe(false)
+    // The other two keep one value: the claude allowance is not a general one.
+    for (const kind of ['codex', 'grok'] as const) {
+      expect(EXPECTED_MANIFESTS[kind].priorVersions).toEqual([])
+      expect(evaluateManifest(kind, [bundled(kind, '2026.09.04.1')], null).verified).toBe(false)
+    }
     // LIFE-626 bumped only the codex manifest; grok keeps the version LIFE-603 K1b gave both.
     expect(EXPECTED_MANIFESTS.codex.version).toBe('2026.10.28.1')
     expect(EXPECTED_MANIFESTS.grok.version).toBe('2026.10.15.2')
@@ -378,6 +394,9 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
       vi.spyOn(proto, 'process').mockImplementation(async () => ({ shellPid: 123, foregroundGroupId: null, foreground: state.foreground })),
       vi.spyOn(proto, 'startAgent').mockImplementation(async () => ({ agent: state.info, argv: [] })),
       vi.spyOn(proto, 'promptAgent').mockImplementation(async () => { state.onPrompt(); return state.info }),
+      // LIFE-787: a claude submission first reads the screen (no agent view here) and then fences on its input revision.
+      vi.spyOn(proto, 'screenRead').mockImplementation(async () => ({ text: '', input: { revision: 1, idleMs: 5000 }, anyInput: null, seq: state.info.stateChangeSeq })),
+      vi.spyOn(proto, 'promptAgentIfQuiet').mockImplementation(async () => { state.onPrompt(); return state.info }),
     ]
     cleanups.push(() => { for (const stub of stubs) stub.mockRestore() })
     const t0 = Date.now() - 1000, store = new AgentStore(data)
@@ -817,6 +836,260 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     expect(submitted).toBe(1)
     expect(send).not.toHaveBeenCalled()
   }, 30000)
+
+  // LIFE-771 — a claude session moved to the background (`←`·`/bg`) goes on in a new id's file. Every
+  // case here is 「합성」: the files are written by hand in the shape the coordinator measured on
+  // Claude Code 2.1.296 (LIFE-771 analysis, the coordinator's real-pane probe) — the minted
+  // file ends with `continued-in`, the new file holds only meta rows until its first input, and that
+  // input copies the old rows in with their original `uuid` and timestamp under the new `sessionId`.
+  // They prove the following and counting rules, not that Claude Code writes that shape.
+  describe('LIFE-771 합성 — delivery follows the continued session file', () => {
+    const OLD = 'Reply with exactly: P771-A0', NEW = 'Reply with exactly: P771-B1'
+    const userRow = (input: { body: string; at: string; uuid: string; session: string }) =>
+      JSON.stringify({ type: 'user', origin: { kind: 'human' }, uuid: input.uuid, sessionId: input.session, timestamp: input.at, message: { content: input.body } }) + '\n'
+    const metaRows = (session: string) => [{ type: 'mode', mode: 'default' }, { type: 'permission-mode', permissionMode: 'default' }]
+      .map(row => JSON.stringify({ ...row, sessionId: session }) + '\n').join('')
+    const continuedRow = (from: string, to: string) =>
+      JSON.stringify({ type: 'continued-in', timestamp: new Date().toISOString(), sessionId: from, continuedInSessionId: to }) + '\n'
+    const past = new Date(Date.now() - 60_000).toISOString()
+    /** A pane whose minted session `a` holds one delivered body and then moved to `b` (meta rows only). */
+    function moved(options: { target?: 'exists' | 'missing'; tail?: string } = {}) {
+      clearContinuedMemo()
+      const f = agentFixture('claude')
+      const a = f.record.sessionId!, b = randomUUID(), fileA = f.recordFile(), fileB = path.join(path.dirname(fileA), `${b}.jsonl`)
+      const original = { body: OLD, at: past, uuid: randomUUID(), session: a }
+      put(fileA, metaRows(a) + userRow(original) + assistantRow(past) + continuedRow(a, b) + (options.tail ?? ''))
+      if ((options.target ?? 'exists') === 'exists') put(fileB, metaRows(b))
+      /** Claude Code's first input in `b`: the old conversation copied in, then the new row. */
+      const firstInput = (row: string) => fs.appendFileSync(fileB, userRow({ ...original, session: b }) + assistantRow(past) + row)
+      return { f, a, b, fileA, fileB, original, firstInput }
+    }
+    const refusal = (promise: Promise<unknown>) => promise.then(() => { throw new Error('expected a refusal') }, (error: unknown) => error)
+    const rowsWith = (file: string, body: string) => fs.readFileSync(file, 'utf8').split('\n').filter(line => line.includes(JSON.stringify(body))).length
+
+    it('E0 합성 유지: without a move the minted file confirms, and nothing is reported as continued', async () => {
+      clearContinuedMemo()
+      const f = agentFixture('claude'), file = f.recordFile()
+      put(file, metaRows(f.record.sessionId!))
+      f.state.onPrompt = () => fs.appendFileSync(file, userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: f.record.sessionId! }))
+      const result = asObject(await f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect([result.stage, result.outcome]).toEqual(['confirmed', 'completed'])
+      expect(nested(result, 'record')).toMatchObject({ path: file, matchCount: 1, unavailableReason: null })
+      expect(nested(result, 'agent', 'sessionRecord')).toEqual({ path: file, exists: true, continuedIn: [] })
+    }, 20000)
+
+    it('E1 합성 유지: without a move a body already in the minted file is refused', async () => {
+      clearContinuedMemo()
+      const f = agentFixture('claude'), file = f.recordFile()
+      put(file, userRow({ body: OLD, at: past, uuid: randomUUID(), session: f.record.sessionId! }))
+      let submitted = 0
+      f.state.onPrompt = () => { submitted++ }
+      expect(await refusal(f.run('terminal prompt', { text: OLD, wait: 'accepted' }, 3000)))
+        .toMatchObject({ code: 'prompt_already_delivered', resources: { detail: { matchCount: 1 } } })
+      expect(submitted).toBe(0)
+    }, 20000)
+
+    it('E2·E6 합성: the first body after the move is confirmed in the new file, and the copied rows do not count', async () => {
+      const m = moved()
+      m.f.state.onPrompt = () => m.firstInput(userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: m.b }))
+      const result = asObject(await m.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect([result.stage, result.outcome]).toEqual(['confirmed', 'completed'])
+      expect(nested(result, 'record')).toMatchObject({ path: m.fileB, matchCount: 1, cursorInvalidated: false, unavailableReason: null })
+      // The minted id still names the pane; the record is the file growing now.
+      expect(nested(result, 'agent')).toMatchObject({ sessionId: m.a, sessionIdSource: 'client-minted' })
+      expect(nested(result, 'agent', 'sessionRecord')).toEqual({ path: m.fileB, exists: true, continuedIn: [m.b] })
+      // C1ⓓ: the cursor the submission persisted names the same chain the count read.
+      const stored = m.f.store.read('pane', 'e', 'p')!.lastSubmission!.cursor
+      expect(stored.map(entry => entry.path)).toEqual([m.fileA, m.fileB])
+      expect(stored[1]).toMatchObject({ existed: true, lines: 2 })
+      // C2: worker-start reads this child answer as a delivery, not `dispatch_input_unconfirmed`.
+      expect(submissionVerdict(result)).toEqual({ kind: 'delivered', confirmed: 'wait_satisfied' })
+    }, 20000)
+
+    it('E3 합성: the same body sent again after the move is refused, and the new file still holds it once', async () => {
+      const m = moved()
+      m.firstInput(userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: m.b }))
+      let submitted = 0
+      m.f.state.onPrompt = () => { submitted++ }
+      expect(await refusal(m.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 3000)))
+        .toMatchObject({ code: 'prompt_already_delivered', stage: 'preflight', outcome: 'not_started', resources: { detail: { matchCount: 1 } } })
+      expect([submitted, rowsWith(m.fileB, NEW)]).toEqual([0, 1])
+    }, 20000)
+
+    for (const copied of [false, true]) {
+      it(`E4 합성: a body from before the move is refused with matchCount 1 (${copied ? 'after the copy — original + copy fold to one' : 'before the copy'})`, async () => {
+        const m = moved()
+        if (copied) m.firstInput(userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: m.b }))
+        expect(rowsWith(m.fileB, OLD)).toBe(copied ? 1 : 0)
+        let submitted = 0
+        m.f.state.onPrompt = () => { submitted++ }
+        const error = await refusal(m.f.run('terminal prompt', { text: OLD, wait: 'accepted' }, 3000))
+        // C1ⓐ: one, not two — worker-start calls exactly one match `already_present` (orchestration V23).
+        expect(error).toMatchObject({ code: 'prompt_already_delivered', resources: { detail: { matchCount: 1 } } })
+        expect(submitted).toBe(0)
+      }, 20000)
+    }
+
+    it('E5 합성: --wait responded completes on the new file', async () => {
+      const m = moved()
+      let submitted = false, after = 0
+      m.f.state.observe = current => {
+        const working = submitted && after++ === 0
+        return { ...current, status: working ? 'working' : 'idle', stateChangeSeq: working ? 3 : 4 }
+      }
+      m.f.state.onPrompt = () => { submitted = true; m.firstInput(userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: m.b }) + assistantRow()) }
+      const result = asObject(await m.f.run('terminal prompt', { text: NEW, wait: 'responded' }, 12000))
+      expect(result.outcome).toBe('completed')
+      expect(nested(result, 'record')).toMatchObject({ path: m.fileB, matchCount: 1, assistantAfter: true })
+      expect(nested(result, 'agent').phase).toBe('responded')
+    }, 30000)
+
+    it('E7 합성 유지: a session revived after continued-in is read in the minted file again', async () => {
+      const m = moved()
+      // `--resume <old id>` writes on in the old file: a human row after `continued-in` ends the move.
+      fs.appendFileSync(m.fileA, userRow({ body: 'revived', at: new Date().toISOString(), uuid: randomUUID(), session: m.a }))
+      m.f.state.onPrompt = () => fs.appendFileSync(m.fileA, userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: m.a }))
+      const result = asObject(await m.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect(result.outcome).toBe('completed')
+      expect(nested(result, 'record')).toMatchObject({ path: m.fileA, matchCount: 1 })
+      expect(nested(result, 'agent', 'sessionRecord')).toMatchObject({ path: m.fileA, continuedIn: [] })
+    }, 20000)
+
+    // C1ⓒ: the three ways the rule cannot conclude. Each stays on the minted file — what corral read
+    // before this change — and the new file is not read at all: a body waiting there is not refused.
+    const undecided: { name: string; options: { target?: 'exists' | 'missing'; tail?: string } }[] = [
+      { name: 'unknown (an unreadable row after continued-in)', options: { tail: '{"type":"user","message":' } },
+      { name: 'out of window (continued-in pushed past the widest read)', options: { tail: metaRows('x').repeat(Math.ceil(70_000 / metaRows('x').length)) } },
+      { name: 'no target file', options: { target: 'missing' } },
+    ]
+    for (const { name, options } of undecided) {
+      it(`E8 합성 유지: ${name} stays on the minted file`, async () => {
+        const m = moved(options)
+        if (options.target !== 'missing') fs.appendFileSync(m.fileB, userRow({ body: NEW, at: past, uuid: randomUUID(), session: m.b }))
+        let submitted = 0
+        m.f.state.onPrompt = () => { submitted++ }
+        const result = asObject(await m.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 1500))
+        expect(submitted).toBe(1)
+        expect(result.outcome).toBe('unknown')
+        expect(nested(result, 'record')).toMatchObject({ path: m.fileA, matchCount: 0 })
+        expect(nested(result, 'agent', 'sessionRecord')).toMatchObject({ path: m.fileA, continuedIn: [] })
+        expect(m.f.store.read('pane', 'e', 'p')!.lastSubmission!.cursor.map(entry => entry.path)).toEqual([m.fileA])
+      }, 20000)
+    }
+
+    it('C1ⓓ 합성: a move during the wait adds the new file after the cursor set, and its copy of this submission folds into one', async () => {
+      clearContinuedMemo()
+      const f = agentFixture('claude'), a = f.record.sessionId!, b = randomUUID(), fileA = f.recordFile(), fileB = path.join(path.dirname(fileA), `${b}.jsonl`)
+      put(fileA, metaRows(a))
+      f.state.onPrompt = () => {
+        // Delivered in the minted file, then moved at once; the new file's first input copies it in.
+        const row = { body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: a }
+        fs.appendFileSync(fileA, userRow(row) + continuedRow(a, b))
+        put(fileB, metaRows(b) + userRow({ ...row, session: b }))
+      }
+      const result = asObject(await f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect(result.outcome).toBe('completed')
+      expect(nested(result, 'record')).toMatchObject({ path: fileB, matchCount: 1, naiveCount: 1, unavailableReason: null })
+      expect(f.store.read('pane', 'e', 'p')!.lastSubmission!.cursor.map(entry => entry.path)).toEqual([fileA])
+    }, 20000)
+
+    it('B 합성: the count keeps reading the cursor\'s files when the chain shrinks after submit (revived origin, body in the later file)', async () => {
+      const m = moved()
+      m.f.state.onPrompt = () => {
+        // The body lands in the continued file; then the minted session is revived before the count
+        // runs, so the chain is the minted file alone again. The cursor still names both files.
+        m.firstInput(userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: m.b }))
+        fs.appendFileSync(m.fileA, userRow({ body: 'revived', at: new Date().toISOString(), uuid: randomUUID(), session: m.a }))
+      }
+      const result = asObject(await m.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect(m.f.store.read('pane', 'e', 'p')!.lastSubmission!.cursor.map(entry => entry.path)).toEqual([m.fileA, m.fileB])
+      expect(result.outcome).toBe('completed')
+      expect(nested(result, 'record')).toMatchObject({ path: m.fileA, matchCount: 1, unavailableReason: null })
+    }, 20000)
+
+    it('I 합성: two hops — the chain index.ts builds ends in the file the rule chose', async () => {
+      const m = moved()
+      const c = randomUUID(), fileC = path.join(path.dirname(m.fileA), `${c}.jsonl`)
+      m.firstInput(userRow({ body: 'first after move', at: past, uuid: randomUUID(), session: m.b }))
+      fs.appendFileSync(m.fileB, continuedRow(m.b, c))
+      put(fileC, metaRows(c))
+      m.f.state.onPrompt = () => fs.appendFileSync(fileC, userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: c }))
+      const result = asObject(await m.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      const cursor = m.f.store.read('pane', 'e', 'p')!.lastSubmission!.cursor.map(entry => entry.path)
+      expect(cursor).toEqual([m.fileA, m.fileB, fileC])
+      expect(nested(result, 'record').path).toBe(cursor[cursor.length - 1])
+      expect(nested(result, 'agent', 'sessionRecord')).toEqual({ path: fileC, exists: true, continuedIn: [m.b, c] })
+      expect(result.outcome).toBe('completed')
+    }, 20000)
+
+    it('G 합성 (실측 구조): ai-title/agent-name meta, one tail row after continued-in, copy after the first input\'s meta', async () => {
+      clearContinuedMemo()
+      const f = agentFixture('claude'), a = f.record.sessionId!, b = randomUUID(), fileA = f.recordFile(), fileB = path.join(path.dirname(fileA), `${b}.jsonl`)
+      const line = (row: Record<string, unknown>) => JSON.stringify(row) + '\n'
+      const original = { body: OLD, at: past, uuid: randomUUID(), session: a }
+      // Minted file: meta, the delivered turn, more meta, `continued-in`, then one trailing meta row.
+      put(fileA, ['last-prompt', 'mode', 'permission-mode', 'file-history-snapshot'].map(type => line({ type, sessionId: a })).join('')
+        + userRow(original) + assistantRow(past) + ['ai-title', 'mode', 'cost-state'].map(type => line({ type, sessionId: a })).join('')
+        + continuedRow(a, b) + line({ type: 'cost-state', sessionId: a }))
+      // New file at the switch: `ai-title` and `agent-name` only.
+      put(fileB, line({ type: 'ai-title', aiTitle: 'synthetic', sessionId: b }) + line({ type: 'agent-name', agentName: 'synthetic', sessionId: b }))
+      f.state.onPrompt = () => fs.appendFileSync(fileB,
+        ['mode', 'permission-mode', 'atis-latch', 'file-history-snapshot', 'attachment'].map(type => line({ type, sessionId: b })).join('')
+        + userRow({ ...original, session: b }) + assistantRow(past) + line({ type: 'system', sessionId: b })
+        + userRow({ body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: b }))
+      const result = asObject(await f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect([result.stage, result.outcome]).toEqual(['confirmed', 'completed'])
+      expect(nested(result, 'record')).toMatchObject({ path: fileB, matchCount: 1, cursorInvalidated: false })
+      // The pre-move body: original + copy fold to one refusal.
+      expect(await refusal(f.run('terminal prompt', { text: OLD, wait: 'accepted' }, 3000)))
+        .toMatchObject({ code: 'prompt_already_delivered', resources: { detail: { matchCount: 1 } } })
+    }, 20000)
+
+    it('F 합성 (한계): --wait responded with a move while answering confirms delivery and leaves the wait unsatisfied', async () => {
+      clearContinuedMemo()
+      const f = agentFixture('claude'), a = f.record.sessionId!, b = randomUUID(), fileA = f.recordFile(), fileB = path.join(path.dirname(fileA), `${b}.jsonl`)
+      put(fileA, metaRows(a))
+      let submitted = false, after = 0
+      f.state.observe = current => {
+        const working = submitted && after++ === 0
+        return { ...current, status: working ? 'working' : 'idle', stateChangeSeq: working ? 3 : 4 }
+      }
+      f.state.onPrompt = () => {
+        submitted = true
+        const row = { body: NEW, at: new Date().toISOString(), uuid: randomUUID(), session: a }
+        fs.appendFileSync(fileA, userRow(row) + continuedRow(a, b))
+        put(fileB, metaRows(b) + userRow({ ...row, session: b }) + assistantRow())
+      }
+      const result = asObject(await f.run('terminal prompt', { text: NEW, wait: 'responded' }, 3000))
+      expect(result.outcome).toBe('unknown')
+      expect(nested(result, 'wait')).toMatchObject({ requested: 'responded', satisfied: false })
+      expect(nested(result, 'record')).toMatchObject({ path: fileB, matchCount: 1, unavailableReason: null })
+    }, 20000)
+
+    it('합성: a copy with the same uuid but a fresh timestamp is still the earlier file\'s row — counted once, in the earlier file', () => {
+      const fileA = '/records/a.jsonl', fileB = '/records/b.jsonl', identity = bodyIdentity(NEW), submittedAtMs = Date.now()
+      const row = { body: NEW, at: new Date(submittedAtMs).toISOString(), uuid: 'u-1', session: 'a' }
+      const restamped = userRow({ ...row, at: new Date(submittedAtMs + 2000).toISOString(), session: 'b' })
+      // In the window in both files: the earlier file counts it, the later file's copy is folded.
+      const both = countSubmissions({ kind: 'claude', files: [fileA, fileB], identity, submittedAtMs, cursor: [], read: reader({ [fileA]: userRow(row), [fileB]: restamped }) })
+      expect([both.matchCount, both.naiveCount]).toEqual([1, 1])
+      // The earlier row is before the cursor; its re-stamped copy is still not a new submission.
+      const cursor = captureCursor([fileA, fileB], reader({ [fileA]: userRow(row), [fileB]: '' }))
+      const behind = countSubmissions({ kind: 'claude', files: [fileA, fileB], identity, submittedAtMs, cursor, read: reader({ [fileA]: userRow(row), [fileB]: restamped }) })
+      expect(behind.matchCount).toBe(0)
+    })
+
+    it('합성 경계: one file, and codex across files, count exactly as before (no uuid fold)', () => {
+      const file = '/records/one.jsonl', identity = bodyIdentity(NEW), submittedAtMs = Date.now(), at = new Date(submittedAtMs).toISOString()
+      // The same uuid twice in one file is not a copy across a move — the single-file count is unchanged (phone input).
+      const twice = userRow({ body: NEW, at, uuid: 'u-1', session: 's' }).repeat(2)
+      expect(countSubmissions({ kind: 'claude', files: [file], identity, submittedAtMs, cursor: [], read: reader({ [file]: twice }) }).matchCount).toBe(2)
+      // codex rows carrying the same uuid in two rollouts still count twice (E9 — its own ambiguity rule decides).
+      const codexRow = (uuid: string) => JSON.stringify({ type: 'response_item', uuid, timestamp: at, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: NEW }] } }) + '\n'
+      const a = '/codex/a.jsonl', b = '/codex/b.jsonl'
+      expect(countSubmissions({ kind: 'codex', files: [a, b], identity, submittedAtMs, cursor: [], read: reader({ [a]: codexRow('u-1'), [b]: codexRow('u-1') }) }).matchCount).toBe(2)
+    })
+  })
 })
 
 

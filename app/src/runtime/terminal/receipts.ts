@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { atomicWrite, readFile, privateDirectory } from '../storage.js'
 import { isRecord } from '../../shared/json.js'
 import { RuntimeError, type Invocation } from '../contracts.js'
+import { paneRecovery } from './agent.js'
 export const RECEIPT_TTL = 24 * 60 * 60 * 1000
 export const REQUEST_ID = /^r1\.(\d{13})\.([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/
 export interface Receipt { hash: string; state: 'pending' | 'completed' | 'released'; createdAt: number; result?: unknown }
@@ -88,7 +89,7 @@ export class Receipts {
         } catch { /* keep the pending receipt and the admission together, and report the refusal */ }
       }
       throw new RuntimeError(error instanceof RuntimeError ? error.code : 'outcome_unknown', error instanceof Error ? error.message : String(error),
-        { requestId: id, terminal: inv.flags.terminal ?? null, recovery: 'Retry the same request ID or inspect terminal list/read', detail: error instanceof RuntimeError ? error.resources : undefined },
+        { requestId: id, terminal: inv.flags.terminal ?? null, recovery: (error instanceof RuntimeError ? paneRecovery(error.code) : null) ?? 'Retry the same request ID or inspect terminal list/read', detail: error instanceof RuntimeError ? error.resources : undefined },
         error instanceof RuntimeError ? error.stage : 'backend', error instanceof RuntimeError ? error.outcome : 'unknown')
     }
     if (!isRecord(value)) throw new RuntimeError('outcome_unknown', 'Mutation returned an invalid receipt result', { requestId: id }, 'receipt', 'unknown')

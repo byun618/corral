@@ -1,0 +1,47 @@
+{"type":"last-prompt","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"mode","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"permission-mode","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"atis-latch","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:00.000Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:00.135Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:00.136Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"file-history-snapshot"}
+{"type":"user","timestamp":"2026-01-01T00:00:09.491Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","message":{"role":"user","content":"가린 지시 8"}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.490Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.490Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.490Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.490Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.490Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.490Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.490Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.524Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.524Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.524Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.525Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.526Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.526Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"last-prompt","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"mode","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"permission-mode","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"atis-latch","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"ai-title","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"assistant","timestamp":"2026-01-01T00:00:17.484Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","message":{"role":"assistant","content":[{"type":"text","text":"가린 글 27"}]}}
+{"type":"assistant","timestamp":"2026-01-01T00:00:17.489Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu-0","name":"Bash","input":{"description":"가린 설명 28","run_in_background":true}}]}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:17.518Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"user","timestamp":"2026-01-01T00:00:17.584Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-0","content":"가린 결과"}]},"toolUseResult":{"backgroundTaskId":"task-0"}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:17.583Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:17.585Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"last-prompt","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"ai-title","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"mode","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"permission-mode","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"atis-latch","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:17.589Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"assistant","timestamp":"2026-01-01T00:00:19.345Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","message":{"role":"assistant","content":[{"type":"text","text":"가린 글 39"}]}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:19.390Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"system","subtype":"stop_hook_summary","timestamp":"2026-01-01T00:00:19.391Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","session_id":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"system","subtype":"turn_duration","timestamp":"2026-01-01T00:00:19.393Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"cost-state","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"continued-in","timestamp":"2026-01-01T00:00:35.164Z","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710","continuedInSessionId":"661788e1-f127-54ab-ad33-382969e5878f"}
+{"type":"last-prompt","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}
+{"type":"cost-state","sessionId":"b80b7cbc-27b5-5d22-90e7-fb26740e1710"}

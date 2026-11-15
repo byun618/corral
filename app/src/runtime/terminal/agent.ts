@@ -2,9 +2,12 @@
  * LIFE-394 — agent launch, readiness and prompt-delivery rules (03-design §2~§4.7).
  *
  * Everything here is either a pure function or a small file-backed store, so the l394 verification
- * scripts run the same rules the product runs (§4.6). corral never parses provider screens and
- * never reads provider trust records: readiness comes from herdr's own agent state machine, and a
- * submission is only "accepted" when the provider's session record contains the body once.
+ * scripts run the same rules the product runs (§4.6). corral never reads provider trust records:
+ * readiness comes from herdr's own agent state machine, and a submission is only "accepted" when the
+ * provider's session record contains the body once. Provider screens are read in one direction only
+ * (LIFE-787): to *refuse* a body on a screen it must not go into — never to decide a pane is ready,
+ * delivered, or that its input line is clear (`agentViewSeen` below; V38's lead diagnostic still
+ * branches on nothing).
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -13,10 +16,50 @@ import { createHash } from 'node:crypto'
 import { RuntimeError } from '../contracts.js'
 import { isRecord } from '../../shared/json.js'
 import { atomicWrite, privateDirectory, readFile } from '../storage.js'
+import { agentViewShown } from '../../main/mobile/keys.js'
 
 export type AgentKind = 'claude' | 'codex' | 'grok'
 export const AGENT_KINDS: readonly AgentKind[] = ['claude', 'codex', 'grok']
 export const isAgentKind = (value: unknown): value is AgentKind => AGENT_KINDS.some(kind => kind === value)
+
+// --- LIFE-787 agent view ------------------------------------------------------------------------
+
+/**
+ * Claude Code's agent view (`←` on an empty prompt) sets the tab title to `claude agents`, or
+ * `N awaiting input · claude agents` when sessions wait for input (agent view docs; 2.1.296 measured
+ * `6 awaiting input · claude agents`, LIFE-787 probe1 21-title). An ordinary session titles the tab
+ * with its own name, so only the documented tail is taken — not any title that happens to contain it.
+ */
+const AGENT_VIEW_TITLE = /(?:^|· )claude agents$/
+export const agentViewTitle = (title: string | null): boolean => title !== null && AGENT_VIEW_TITLE.test(title.trim())
+/**
+ * Is a Claude pane showing agent view, where a submitted body starts a **new** background session
+ * (or, in the Space panel, goes to that row's session) instead of the conversation corral launched?
+ * herdr reads that screen as `idle`, so the ready gate cannot tell. Two independent marks, either of
+ * which refuses: the phone path's screen judgment (LIFE-770 `agentViewShown`, one implementation for
+ * both paths) and the tab title — which `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` turns off, hence the
+ * screen. Only Claude has the view; any other kind reads `[]` whatever its screen or title says.
+ * The answer is the list of marks that matched, so a refusal can say what it saw.
+ */
+export function agentViewSeen(input: { kind: AgentKind; screen: string; title: string | null }): Array<'screen' | 'title'> {
+  if (input.kind !== 'claude') return []
+  const marks: Array<'screen' | 'title'> = []
+  if (agentViewShown({ kind: input.kind, screen: input.screen })) marks.push('screen')
+  if (agentViewTitle(input.title)) marks.push('title')
+  return marks
+}
+
+/**
+ * LIFE-787 D: the two pane refusals whose recovery is a person's act on the pane, not a retry. The
+ * receipt and the socket envelope otherwise put one generic `recovery` on every terminal error; for
+ * these codes they put this one instead, so a caller that reads only `recovery` still sees `esc`.
+ * Every other code keeps the generic text it had.
+ */
+export function paneRecovery(code: string): string | null {
+  if (code === 'agent_view') return 'press esc in the pane to return to the conversation, then retry (the same --request-id may be reused)'
+  if (code === 'input_changed') return 'look at the pane (press esc if it shows agent view), then retry (the same --request-id may be reused)'
+  return null
+}
 
 export type AgentPhase = 'launching' | 'blocked' | 'ready' | 'accepted' | 'responded' | 'exited'
 /** herdr's startup deadline (src/terminal/state.rs); a human may sit on a trust screen for minutes. */
@@ -160,18 +203,22 @@ export const agentName = (paneId: string): string => 'corral-' + createHash('sha
 
 // --- §3 detect manifest gate (D17, C2) ----------------------------------------------------------
 
-export interface ManifestExpectation { version: string; sourceKind: string; localOverrideShadowingRemote: boolean }
+export interface ManifestExpectation { version: string; priorVersions: readonly string[]; sourceKind: string; localOverrideShadowingRemote: boolean }
 /**
  * What the guard's `server.agent_manifests` must report before corral will submit for a provider.
- * codex and grok carry the versions `app/backend/herdr-detect.patch` sets; claude is not patched, so
- * its expectation is the stock bundled version. All three are gated by the same code (C2/D23): "we
- * did not patch it" is not a guarantee that the provider's trust rule is still present — review r4
- * showed a claude override that drops the rule reports the real trust screen as Idle.
+ * All three carry the versions `app/backend/herdr-detect.patch` sets, and all three are gated by the
+ * same code (C2/D23): review r4 showed a claude override that drops the trust rule reports the real
+ * trust screen as Idle.
+ *
+ * `priorVersions` are bundled manifests corral already verified. A new app can talk to a herdr server
+ * that has not restarted yet, and refusing it there would stop every Claude pane, coordinators included
+ * (LIFE-651·665·670 hit this with grok). Claude's stock version stays accepted until the next bump
+ * (LIFE-780): such a server only keeps the named-session misreading it already had.
  */
 export const EXPECTED_MANIFESTS: Readonly<Record<AgentKind, ManifestExpectation>> = {
-    claude: { version: '2026.09.04.1', sourceKind: 'bundled', localOverrideShadowingRemote: false },
-    codex: { version: '2026.10.28.1', sourceKind: 'bundled', localOverrideShadowingRemote: false },
-    grok: { version: '2026.10.15.2', sourceKind: 'bundled', localOverrideShadowingRemote: false },
+    claude: { version: '2026.11.03.1', priorVersions: ['2026.09.04.1'], sourceKind: 'bundled', localOverrideShadowingRemote: false },
+    codex: { version: '2026.10.28.1', priorVersions: [], sourceKind: 'bundled', localOverrideShadowingRemote: false },
+    grok: { version: '2026.10.15.2', priorVersions: [], sourceKind: 'bundled', localOverrideShadowingRemote: false },
 }
 export interface ManifestReport { agent?: unknown; source_kind?: unknown; active_version?: unknown; local_override_shadowing_remote?: unknown }
 export interface DetectManifestObservation {
@@ -196,7 +243,8 @@ export function evaluateManifest(kind: AgentKind, manifests: ManifestReport[] | 
     const sourceKind = typeof entry.source_kind === 'string' ? entry.source_kind : null
     const activeVersion = typeof entry.active_version === 'string' ? entry.active_version : null
     const shadowing = typeof entry.local_override_shadowing_remote === 'boolean' ? entry.local_override_shadowing_remote : null
-    const verified = sourceKind === expected.sourceKind && activeVersion === expected.version && shadowing === expected.localOverrideShadowingRemote
+    const versionKnown = activeVersion !== null && (activeVersion === expected.version || expected.priorVersions.includes(activeVersion))
+    const verified = sourceKind === expected.sourceKind && versionKnown && shadowing === expected.localOverrideShadowingRemote
     return { sourceKind, activeVersion, expectedVersion: expected.version, localOverrideShadowingRemote: shadowing, verified, queryError: null }
 }
 export function manifestGateError(kind: AgentKind, observation: DetectManifestObservation): RuntimeError {
@@ -304,7 +352,7 @@ export interface CountResult {
     scanned: ScannedFile[]
 }
 type RowRole = 'user' | 'assistant' | 'other'
-interface Row { index: number; text: string | null; timeSeconds: number | null; role: RowRole }
+interface Row { index: number; text: string | null; timeSeconds: number | null; role: RowRole; uuid: string | null }
 
 const asRecord = (value: unknown): Record<string, unknown> | null => isRecord(value) ? value : null
 const isoSeconds = (value: unknown): number | null => {
@@ -325,6 +373,7 @@ function projectRow(kind: AgentKind, row: Record<string, unknown>): Omit<Row, 'i
             text: human ? String(message?.content) : null,
             timeSeconds: isoSeconds(row.timestamp),
             role: row.type === 'assistant' ? 'assistant' : row.type === 'user' ? 'user' : 'other',
+            uuid: typeof row.uuid === 'string' && row.uuid !== '' ? row.uuid : null,
         }
     }
     if (kind === 'codex') {
@@ -335,7 +384,7 @@ function projectRow(kind: AgentKind, row: Record<string, unknown>): Omit<Row, 'i
             ? parts.filter(part => asRecord(part)?.type === 'input_text').map(part => String(asRecord(part)?.text ?? '')).join('')
             : null
         const role: RowRole = message && payload?.role === 'assistant' ? 'assistant' : message && payload?.role === 'user' ? 'user' : 'other'
-        return { text, timeSeconds: isoSeconds(row.timestamp), role }
+        return { text, timeSeconds: isoSeconds(row.timestamp), role, uuid: null }
     }
     const update = asRecord(asRecord(row.params)?.update) ?? asRecord(row.update)
     const sessionUpdate = update?.sessionUpdate
@@ -346,7 +395,7 @@ function projectRow(kind: AgentKind, row: Record<string, unknown>): Omit<Row, 'i
                 : String(asRecord(content)?.text ?? ''))
         : null
     const role: RowRole = sessionUpdate === 'agent_message_chunk' ? 'assistant' : sessionUpdate === 'user_message_chunk' ? 'user' : 'other'
-    return { text, timeSeconds: typeof row.timestamp === 'number' ? Math.floor(row.timestamp) : isoSeconds(row.timestamp), role }
+    return { text, timeSeconds: typeof row.timestamp === 'number' ? Math.floor(row.timestamp) : isoSeconds(row.timestamp), role, uuid: null }
 }
 /**
  * §4.6 (G6): grok writes the submitted body as `user_message_chunk` rows. A 466-byte, 6-line body
@@ -401,11 +450,18 @@ export interface CountInput {
  * can be empty). A file that is now *shorter* than its cursor was rotated or replaced: it is scanned
  * whole and flagged, and the caller must keep the outcome unknown (C3/D24) because the time bound
  * alone re-counts a previous row from the same second.
+ *
+ * LIFE-771: a claude session moved to the background continues in a new file, and its first input
+ * copies the old conversation there — same `uuid`, original timestamp, new `sessionId`. When the
+ * files are that chain (origin first), a row whose `uuid` an earlier file already holds is that
+ * copy, not a new submission, so it is never counted — whatever timestamp it carries. Only rows
+ * with a `uuid` across *different* files are folded: one file, codex and grok count as before.
  */
 export function countSubmissions(input: CountInput): CountResult {
     const read = input.read ?? ((file: string) => { try { return fs.readFileSync(file, 'utf8') } catch { return null } })
     const second = submissionSecond(input.submittedAtMs)
     const result: CountResult = { matchCount: 0, naiveCount: 0, cursorInvalidated: false, assistantAfter: false, hookBlocked: false, scanned: [] }
+    const earlier = new Set<string>()
     for (const file of input.files) {
         const text = read(file)
         if (text === null) continue
@@ -424,6 +480,7 @@ export function countSubmissions(input: CountInput): CountResult {
         result.scanned.push({ path: file, rows: rows.length, fromLine, whole })
         let lastMatch = -1
         for (const row of rows) {
+            if (row.uuid !== null && earlier.has(row.uuid)) continue
             if (row.text !== null && sameBody(input.identity, row.text)) result.naiveCount++
             if (row.index < fromLine) continue
             if (row.timeSeconds !== null && row.timeSeconds < second) continue
@@ -432,6 +489,7 @@ export function countSubmissions(input: CountInput): CountResult {
             lastMatch = row.index
         }
         if (lastMatch >= 0 && rows.some(row => row.index > lastMatch && row.role === 'assistant')) result.assistantAfter = true
+        for (const row of rows) if (row.uuid !== null) earlier.add(row.uuid)
         if (input.kind === 'grok' && grokSubmitHookBlocked(text)) result.hookBlocked = true
     }
     return result
@@ -594,6 +652,30 @@ export function sessionRecordPaths(kind: AgentKind, options: RecordLocationInput
         return [path.join(grokHome, 'sessions', encodeURIComponent(realpath(options.cwd)), options.sessionId, 'updates.jsonl')]
     }
     return codexRolloutFiles(options.t0Ms, options.nowMs, codexHome(home))
+}
+
+/**
+ * LIFE-796. The record of a claude session corral minted, found by its id alone — for a caller that no longer has
+ * the pane (and so its cwd) that `sessionRecordPaths` derives the folder from. The id is a UUID corral generated,
+ * so the folder is found by looking for `<id>.jsonl` under each project folder of the same `CLAUDE_CONFIG_DIR`;
+ * exactly one match is the record, none or several (or a folder that cannot be read) is no answer. It reads
+ * directory entries only — no backend, no pane.
+ */
+export function claudeRecordById(input: { sessionId: string; home?: string }): string | null {
+    const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(input.home ?? os.homedir(), '.claude')
+    const projects = path.join(configDir, 'projects')
+    let folders: fs.Dirent[]
+    try { folders = fs.readdirSync(projects, { withFileTypes: true }) } catch { return null }
+    const found: string[] = []
+    for (const folder of folders) {
+        if (!folder.isDirectory()) continue
+        const file = path.join(projects, folder.name, input.sessionId + '.jsonl')
+        try { if (fs.statSync(file).isFile()) found.push(file) } catch (error) {
+            const code = error instanceof Error && 'code' in error ? error.code : null
+            if (code !== 'ENOENT' && code !== 'ENOTDIR') return null
+        }
+    }
+    return found.length === 1 ? found[0] ?? null : null
 }
 
 // --- §8.2 provider session markers --------------------------------------------------------------

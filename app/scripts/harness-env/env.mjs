@@ -6,7 +6,7 @@
 // CLAUDE_CONFIG_DIR must survive, because dropping them moves the very account and record path
 // under measurement. The names below are checked against the product's own constants in
 // `src/runtime/runtime.test.ts`, so the two lists cannot drift apart silently.
-export const SESSION_MARKER_NAMES = ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT']
+export const SESSION_MARKER_NAMES = ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT', 'CLAUDE_JOB_DIR']
 export const SESSION_MARKER_PREFIXES = ['CLAUDE_CODE_', 'ORCA_AGENT_HOOK_']
 export const PRESERVED_NAMES = ['CODEX_HOME', 'GROK_HOME', 'CLAUDE_CONFIG_DIR']
 const marked = name => SESSION_MARKER_NAMES.includes(name) || SESSION_MARKER_PREFIXES.some(prefix => name.startsWith(prefix))

@@ -54,9 +54,10 @@ import path from 'node:path'
 import type { AgentSessionRef, SessionDigest, SessionLifecycle, SessionQuestion, TranscriptAgent, TurnOutcome } from '../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../shared/types.js'
 import { log } from './log.js'
+import { clearContinuedMemo, continuedReadBytes, followContinued } from './transcript-continued.js'
 import { parseGrokSummary, parseGrokUpdates, parseHead, parseTail, valueLines } from './transcript-parse.js'
-import type { Ledger, Owner } from './transcript-lifecycle.js'
-import { advanceLedger, claudeSessionAlive, clearClaudeRegistry, grokSessionAlive, ledgerSettled, ledgerView } from './transcript-lifecycle.js'
+import type { Generation, HandedItems, Handoff, Ledger, Owner } from './transcript-lifecycle.js'
+import { advanceLedger, claudeLiveSessions, clearClaudeRegistry, grokSessionAlive, handedOpen, handoffItems, inheritedItems, ledgerHandoff, ledgerSettled, ledgerView, restartItems } from './transcript-lifecycle.js'
 
 /** 첫 꼬리 창. 실측 평균 한 턴이 ~46KB 라 대략 5턴을 덮는다. */
 export const TAIL_WINDOW_BYTES = 256 * 1024
@@ -119,6 +120,8 @@ type SummaryEntry = {
 type CacheEntry = {
   /** 해소된 파일 경로. 못 찾았으면 null (다음 갱신에 다시 훑는다). */
   file: string | null
+  /** 참조가 찾은 원본 — `file` 은 여기서 `continued-in` 을 따라간 파일이다(LIFE-766). 판별은 주기마다 원본부터 다시 걷는다. */
+  origin: string
   size: number
   mtimeMs: number
   digest: SessionDigest
@@ -166,6 +169,39 @@ type CacheEntry = {
   ledgerKey: string | null
   /** 이 세션의 소유 프로세스 판정(L8). claude·grok 이 아니면 null. 바뀌면 파일이 그대로여도 다시 싣는다. */
   owner: Owner | null
+  /**
+   * 넘김(LIFE-781) 판정 재료 — 앞 파일 장부·대상 파일 장부(같은 객체일 때만 빠른 반환), 넘긴 것의 주인 판정 둘(바뀌면 다시 싣는다).
+   * 넘김과 무관한 참조는 전부 null.
+   */
+  links: Links
+}
+
+/** 넘김(LIFE-781)에 쓰는 옆 파일 장부와 주인 판정 — 빠른 반환이 같은지 본다. */
+type Links = {
+  chain: (Ledger | null)[]
+  previous: Ledger | null
+  target: Ledger | null
+  inheritOwner: Owner | null
+  handoffOwner: Owner | null
+  /** 이 파일 세션의 bg 주인 — supervisor 재시작으로 넘어간 것을 싣는다(LIFE-794). 대화형 소유자와 섞인 `owner` 와 따로 비교한다. */
+  restartOwner: Owner | null
+  /** 그 bg 주인이 전부 레지스트리 `status:"idle"` — 재시작 몫을 싣지 않는다(LIFE-794 리뷰 r1 B). 주인 생존·시작 시각과 따로 바뀌어 비교에 넣는다. */
+  restartIdle: boolean
+}
+
+function sameLinks(input: { a: Links; b: Links }): boolean {
+  const { a, b } = input
+  // 연쇄 앞쪽 장부도 하나하나 같은 객체여야 한다 — 원본을 따라잡은 주기에 답을 다시 고른다(리뷰 r3 A).
+  return (
+    a.chain.length === b.chain.length &&
+    a.chain.every((ledger, index) => ledger === b.chain[index]) &&
+    a.previous === b.previous &&
+    a.target === b.target &&
+    sameOwner({ a: a.inheritOwner, b: b.inheritOwner }) &&
+    sameOwner({ a: a.handoffOwner, b: b.handoffOwner }) &&
+    sameOwner({ a: a.restartOwner, b: b.restartOwner }) &&
+    a.restartIdle === b.restartIdle
+  )
 }
 
 const cache = new Map<string, CacheEntry>()
@@ -236,6 +272,8 @@ export type ReadCost = {
   lifecycleRegistryBytes: number
   lifecycleCatchingUp: number
   lifecycleMs: number
+  /** 이어 가기 판별(LIFE-766) 몫 — 별도 계정이다. 끝 판별은 바뀐 파일마다 `CONTINUED_TAIL_BYTES` 이하, 대화 찾기는 대상마다 합쳐 `CONTINUED_CONVERSATION_MAX_BYTES` 이하, 안 바뀐 파일은 0. */
+  continuedBytes: number
 }
 
 /**
@@ -252,6 +290,7 @@ export function clearTranscriptCache(): void {
   fileClaims.clear()
   misses.clear()
   clearClaudeRegistry()
+  clearContinuedMemo()
 }
 
 /** 참조 하나의 캐시 키. pane 이 달라도 같은 세션이면 같은 파일이라 id 로 잡는다. */
@@ -378,8 +417,9 @@ function candidatesOf(input: { agent: TranscriptAgent; id: string }): Candidates
  * 쓰기(폰 지시)용 해소 — 「첫 일치」 가 아니라 **유일한 후보**만 소유 기록으로 센다(LIFE-582 R1-A13, P1 「둘 이상이면 잠금」).
  * `none` = 훑기가 성공했고 후보가 0건(새 세션이 아직 파일을 쓰지 않았을 수 있다) · `error` = 폴더를 못 읽어 0건을 믿을 수 없다 ·
  * `ambiguous` = 같은 id 의 파일이 둘 이상. 표시용 `resolveTranscriptFile`(첫 일치)과 CLI 계약은 그대로다.
+ * `continuedAs` = `continued-in` 을 따라 옮겨 간 세션 id(LIFE-766) — 그 파일의 줄은 이 id 로 세야 한다. 안 옮겼으면 없다.
  */
-export type TranscriptResolution = { kind: 'found'; file: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous'; count: number }
+export type TranscriptResolution = { kind: 'found'; file: string; continuedAs?: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous'; count: number }
 
 export function resolveTranscriptUnique(ref: AgentSessionRef): TranscriptResolution {
   const agent = transcriptAgent(ref.agent)
@@ -392,7 +432,17 @@ export function resolveTranscriptUnique(ref: AgentSessionRef): TranscriptResolut
   if (files.length > 1) return { kind: 'ambiguous', count: files.length }
   // 일부를 못 읽었으면 하나만 찾았어도 유일하다고 말할 수 없고, 0건도 「없음」 이 아니다(R2-A5).
   if (error) return { kind: 'error' }
-  return files.length === 1 ? { kind: 'found', file: files[0]! } : { kind: 'none' }
+  if (files.length === 0) return { kind: 'none' }
+  // 이어 간 세션(LIFE-766) — 지시가 기록될 파일을 고르고(빈 대상 포함), 옮겨 간 id 마다 같은 유일성 계약을 건다. 대상 찾기는 표시와 같은 판별 하나다.
+  const followed = followContinued({ session: ref, file: files[0]!, empty: 'follow' })
+  for (const id of followed.hops) {
+    const target = candidatesOf({ agent, id })
+    if (target.files.length > 1) return { kind: 'ambiguous', count: target.files.length }
+    if (target.error) return { kind: 'error' }
+  }
+  const continuedAs = followed.hops.at(-1)
+  if (continuedAs === undefined) return { kind: 'found', file: followed.file }
+  return { kind: 'found', file: followed.file, continuedAs }
 }
 
 /** 참조를 파일 경로로 옮긴다. 못 찾으면 null. */
@@ -613,10 +663,12 @@ function readDigest(input: {
  * **던지지 않는다.** 한 세션의 판독 실패가 목록 전체를 무너뜨리면 안 되므로 모든 실패는
  * `activity` 의 갈래로 내려앉는다 (기준 A8).
  */
-export function readSessionDigest(ref: AgentSessionRef | null): DigestRead {
+export function readSessionDigest(ref: AgentSessionRef | null): DigestRead & { continuedBytes: number } {
   cycle += 1
   fileClaims.clear()
-  return readOne(ref)
+  const before = continuedReadBytes()
+  const read = readOne(ref)
+  return { ...read, continuedBytes: continuedReadBytes() - before }
 }
 
 type DigestRead = {
@@ -643,19 +695,22 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     sidecarBytes: 0,
     lifecycle: NO_LIFECYCLE_READ,
   }
-  let file = cached?.file ?? null
-  if (file === null) {
+  let origin = cached?.origin ?? null
+  if (origin === null) {
     const now = Date.now()
     // 훑기를 건너뛰는 주기 — 디스크를 아예 안 만진다. `statOnly` 로 세어 A7 표에 드러낸다.
     if (!shouldResolveNow(key, now)) return { ...unresolved, statOnly: true }
-    file = resolveTranscriptFile(ref)
-    if (file === null) {
+    origin = resolveTranscriptFile(ref)
+    if (origin === null) {
       const miss = misses.get(key) ?? null
       misses.set(key, { firstAt: miss?.firstAt ?? now, lastTryAt: now })
       return { ...unresolved, statOnly: false }
     }
     misses.delete(key)
   }
+  // 이어 간 세션(LIFE-766) — 캐시가 파일을 고정하지 않게 주기마다 다시 고른다. 안 바뀐 파일은 stat 만 한다. 대상이 비어 있으면 옛 파일에 머문다.
+  const followed = followContinued({ session: ref, file: origin, empty: 'stay' })
+  const { file } = followed
 
   let stat: fs.Stats
   try {
@@ -714,12 +769,11 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
   const advance =
     ledgerFile !== null && ledgerStat !== null && !conflict && shared?.cycle !== cycle && !ledgerSettled({ ledger: priorLedger, stat: ledgerStat })
   // 강제 종료는 기록에 아무것도 안 남긴다 — 생존은 파일 변화와 따로 매 주기 본다(L8, `transcript-lifecycle.ts`).
+  // claude 는 레지스트리를 한 번 훑고 제 세션과 넘겨받은 세션(LIFE-781)의 소유자를 함께 고른다.
+  const claudeLive = agent === 'claude' ? claudeLiveSessions({ dir: path.join(homeDir(), '.claude', 'sessions') }) : null
   const liveness =
-    agent === 'claude'
-      ? claudeSessionAlive({
-          dir: path.join(homeDir(), '.claude', 'sessions'),
-          sessionId: ref.kind === 'id' ? ref.id : path.basename(ref.path, '.jsonl'),
-        })
+    claudeLive !== null
+      ? { owner: claudeLive.owner(ref.kind === 'id' ? (followed.sessionId ?? ref.id) : path.basename(ref.path, '.jsonl')), bytes: claudeLive.bytes }
       : agent === 'grok'
         ? grokSessionAlive({
             file: path.join(homeDir(), '.grok', 'active_sessions.json'),
@@ -728,6 +782,93 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
         : null
   const owner = liveness?.owner ?? null
   const registryBytes = liveness?.bytes ?? 0
+  // 전환(LIFE-781) — 넘긴 것의 주인은 이어 받은 bg 세션 프로세스다. 옆 파일 장부(앞 파일·대상 파일)는 `ledgers` 를 같이 쓰고 읽은 몫을 모은다.
+  const sinceOf = (sessionId: string | null): number | null => {
+    const found = sessionId === null || claudeLive === null ? null : claudeLive.owner(sessionId)
+    return found !== null && found.alive ? found.since : null
+  }
+  const linkedReads: { key: string; bytes: number }[] = []
+  /** 세션 id 의 세대 재료 — 소유자 시작 시각 + 이미 읽은 장부 중 이 세션에 넘긴 id. 본 파일·앞 파일·대상 파일 모두 이것 하나로 고른다(같은 장부를 공유한다). */
+  const generationOf = (sessionId: string | null): Generation => ({ since: sinceOf(sessionId), keep: sessionId === null ? new Set() : handedTo(sessionId) })
+  const linked = (input: { sessionId: string }): Ledger | null => {
+    const read = linkedLedger({ file: path.join(path.dirname(file), `${input.sessionId}.jsonl`), generation: generationOf(input.sessionId) })
+    if (read === null) return null
+    linkedReads.push(read.read)
+    return read.ledger
+  }
+  // 앞 파일 — 첫 입력 뒤 이 파일로 옮겨 왔다. 연쇄면 원본부터 순서대로 읽는다 — 앞 파일이 자기 앞에서 넘겨받은 것(연쇄 `←`)을 가르려면
+  // 그 앞 장부도 있어야 한다(`handedTo`). 마지막이 바로 앞 파일이다.
+  const chainIds = agent !== 'claude' || ref.kind !== 'id' ? [] : [ref.id, ...followed.hops].slice(0, -1)
+  const chain = chainIds.map((sessionId) => linked({ sessionId }))
+  const previousId = chainIds.at(-1) ?? null
+  const previous = chain.at(-1) ?? null
+  const bgOwnerOf = (sessionId: string | null): Owner | null => (sessionId === null || claudeLive === null ? null : claudeLive.bgOwner(sessionId))
+  /** 이 장부가 넘긴 것의 대상 파일 장부와 주인 — 첫 입력 전에도 끝 통지가 대상 파일에 온다. */
+  const handoffLinks = (ledger: Ledger | null): { target: Ledger | null; owner: Owner | null } => {
+    const handoff = ledger === null || agent !== 'claude' ? null : ledgerHandoff(ledger)
+    if (handoff === null) return { target: null, owner: null }
+    return { target: linked({ sessionId: handoff.target }), owner: bgOwnerOf(handoff.target) }
+  }
+  const mainId = ref.kind === 'id' ? (followed.sessionId ?? ref.id) : path.basename(ref.path, '.jsonl')
+  const linksOf = (ledger: Ledger | null): Links => {
+    const handoff = handoffLinks(ledger)
+    return {
+      chain,
+      previous,
+      target: handoff.target,
+      inheritOwner: previous === null ? null : bgOwnerOf(followed.sessionId),
+      handoffOwner: handoff.owner,
+      restartOwner: agent === 'claude' ? bgOwnerOf(mainId) : null,
+      restartIdle: claudeLive !== null && claudeLive.bgIdle(mainId),
+    }
+  }
+  const carry = (ledger: Ledger): CarryRead => {
+    const links = linksOf(ledger)
+    const groups: CarryGroup[] = []
+    const handoff = ledgerHandoff(ledger)
+    const sent = handoff === null ? null : handoffItems({ handoff, keep: handedTo(mainId) })
+    if (sent !== null) groups.push({ carried: handedOpen({ handoff: sent, target: links.target }), owner: links.handoffOwner })
+    const given = previous === null ? null : ledgerHandoff(previous)
+    const givenHanded = given !== null && previousId !== null && given.target === followed.sessionId ? handoffItems({ handoff: given, keep: handedTo(previousId) }) : null
+    if (givenHanded !== null) groups.push({ carried: inheritedItems({ ledger, handed: givenHanded }), owner: links.inheritOwner })
+    // supervisor 재시작(LIFE-794) — 같은 세션 id 의 bg 프로세스가 지금 주인이면, 옛 bg 프로세스가 `cost-state` 때 열어 둔 것 중 그보다 먼저 열린 것을 싣는다.
+    // 그 bg 주인이 전부 `idle` 이면 도는 것이 없다고 스스로 적은 것이라 싣지 않는다(리뷰 r1 B). `←` 복사 줄로 열린 것은 앞 파일이 넘긴 id 만 싣고,
+    // 앞 파일 장부를 못 쓰면(참조가 bg id 자체·앞 파일 없음) 싣지 않는다(리뷰 r1 D·r2 K).
+    const restartOwner = links.restartOwner
+    const handedIds = givenHanded === null ? null : new Set([...givenHanded.tasks, ...givenHanded.subagents].map((item) => item.id))
+    const restart =
+      restartOwner !== null && restartOwner.alive && restartOwner.since !== null && !links.restartIdle
+        ? restartItems({ ledger, since: restartOwner.since, handed: handedIds })
+        : null
+    if (restartOwner !== null && restart !== null) groups.push({ carried: restart.carried, owner: restartOwner })
+    // 옆 파일을 아직 따라잡는 중이면 넘김을 모른다 — 빈 `known` 이 아니라 모름이다(리뷰 r1 A). 다만 기다려도 답이 안 바뀌면 묶지 않는다(r2 C):
+    // 앞 파일(연쇄 포함)은 이 파일에 경계 앞 열린 항목(넘겨받을 후보)이 있을 때만, 대상 파일은 넘긴 것이 있을 때만 본다.
+    const since = owner !== null && owner.alive ? owner.since : null
+    const candidates = [...ledger.state.tasks.values(), ...ledger.state.subagents.values()].some((item) => since === null || item.startedAt === null || item.startedAt < since)
+    const handed = handoff !== null && handoff.tasks.length + handoff.subagents.length > 0
+    // 이 파일이 넘긴 것의 세대 거르기에 걸릴 항목(보류 때 시작 시각보다 앞)이 있으면 그 `keep` 은 연쇄 앞쪽 장부에 달렸다 — 그것도 기다린다(리뷰 r3 B).
+    const needsKeep =
+      handoff !== null && handoff.since !== null && [...handoff.tasks, ...handoff.subagents].some((item) => item.startedAt === null || (handoff.since !== null && item.startedAt < handoff.since))
+    const behind = (side: Ledger | null) => side !== null && !side.caughtUp
+    // 재시작 몫의 `←` 복사분 거르기도 앞 파일 장부에 달렸다(리뷰 r1 D) — 거른 결과가 비었어도 복사분이 있었으면 기다린다(리뷰 r2 L).
+    const restarting = restart !== null && (restart.copied || restart.carried.tasks.length + restart.carried.subagents.length > 0)
+    const catchingUp = ((candidates || needsKeep || restarting) && chain.some(behind)) || (handed && behind(links.target))
+    // 대상 파일에서 한도보다 긴 줄을 건너뛰어 넘긴 것의 끝을 놓쳤을 수 있으면 모름이다(r2 B). 건너뛸 때 `keep` 이 아직 안 정해졌을 수 있으니
+    // 대상 파일이 긴 줄을 건너뛴 적이 있으면 넘긴 것 중 거기서 끝을 못 본 것도 본다(r4 A).
+    const target = links.target
+    const endedThere = (id: string) => target !== null && target.state.agent === 'claude' && target.state.ended.has(id)
+    const unsure =
+      restart?.undated === true ||
+      (target !== null &&
+        handoff !== null &&
+        ([...handoff.tasks, ...handoff.subagents].some((item) => target.uncertain.has(item.id)) ||
+          (target.skipped && sent !== null && [...sent.tasks, ...sent.subagents].some((item) => !endedThere(item.id)))))
+    return { groups, catchingUp, unsure }
+  }
+  const priorLinks = linksOf(priorLedger)
+  // 본 파일의 세대 재료 — 앞 파일 장부를 먼저 읽었으니 넘겨받은 id 가 보인다. grok 은 보류 규칙이 없다.
+  const mainGeneration: Generation =
+    claudeLive !== null ? generationOf(ref.kind === 'id' ? (followed.sessionId ?? ref.id) : path.basename(ref.path, '.jsonl')) : { since: null, keep: new Set() }
   if (
     cached !== null &&
     mainFresh &&
@@ -735,7 +876,8 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     summaryFresh &&
     !advance &&
     cached.ledger === priorLedger &&
-    sameOwner({ a: cached.owner, b: owner })
+    sameOwner({ a: cached.owner, b: owner }) &&
+    sameLinks({ a: cached.links, b: priorLinks })
   ) {
     return {
       digest: cached.digest,
@@ -743,12 +885,12 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
       headBytes: 0,
       sidecarBytes: 0,
       statOnly: true,
-      lifecycle: { ...NO_LIFECYCLE_READ, key: fileKey, registryBytes, conflict },
+      lifecycle: { ...NO_LIFECYCLE_READ, key: fileKey, registryBytes, conflict, linked: linkedReads },
     }
   }
 
   try {
-    const main = cached !== null && mainFresh ? reuseMain(cached) : readMain({ file, stat, agent, ref, cached })
+    const main = cached !== null && mainFresh ? reuseMain(cached) : readMain({ file, stat, agent, sessionId: followed.sessionId, cached: cached?.file === file ? cached : null })
     let sidecar = cached?.sidecar ?? null
     let sidecarBytes = 0
     if (sidecarFile !== null && !sidecarFresh) {
@@ -769,8 +911,11 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     // 모델이라 첫 응답 전에 실패한 세션(143 중 45 가 응답 모델 없음)에서도 있다 — `u7-grok-summary-model.txt`.
     const life = conflict
       ? { lifecycle: UNREADABLE, ledger: priorLedger, read: { bytes: 0, ms: 0 } }
-      : readLifecycle({ file: ledgerFile, key: ledgerKey, stat: ledgerStat, agent, prior: priorLedger, advance, owner })
-    if (cached !== null && cached.ledgerKey !== null && cached.ledgerKey !== ledgerKey) releaseLedger({ key: cached.ledgerKey, except: key })
+      : readLifecycle({ file: ledgerFile, key: ledgerKey, stat: ledgerStat, agent, prior: priorLedger, advance, owner, carry, generation: mainGeneration })
+    // 첫 입력으로 옮겨 온 주기 — 떠난 장부가 곧 앞 파일 장부면 회수하지 않는다(따라잡은 넘김을 다시 읽지 않는다, 리뷰 r1 A).
+    // 주기 끝 회수(`seen`)는 앞 파일로 계속 쓰는 동안 일어나지 않는다.
+    const leftIsPrevious = previous !== null && cached?.ledgerKey === ledgerKeyOf(previous)
+    if (cached !== null && cached.ledgerKey !== null && cached.ledgerKey !== ledgerKey && !leftIsPrevious) releaseLedger({ key: cached.ledgerKey, except: key })
     const merged: SessionDigest =
       sidecarFile === null
         ? main.digest
@@ -785,6 +930,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     const digest: SessionDigest = { ...merged, lifecycle: life.lifecycle }
     cache.set(key, {
       file,
+      origin,
       size: stat.size,
       mtimeMs: stat.mtimeMs,
       digest,
@@ -800,6 +946,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
       ledger: conflict ? null : life.ledger,
       ledgerKey,
       owner,
+      links: linksOf(conflict ? null : life.ledger),
     })
     return {
       digest,
@@ -807,7 +954,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
       headBytes: main.headBytes,
       sidecarBytes,
       statOnly: false,
-      lifecycle: { ...life.read, key: fileKey, registryBytes, conflict },
+      lifecycle: { ...life.read, key: fileKey, registryBytes, conflict, linked: linkedReads },
     }
   } catch (error) {
     log('transcript.error', { where: 'read', agent, error: String(error) })
@@ -826,8 +973,71 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
  * 누적 판독 한 참조의 비용 (LIFE-462 L7) — `bytes` 는 기록 파일(정체성 `key` = dev:ino) 몫, `registryBytes` 는 프로세스 레지스트리 몫.
  * `conflict` 는 이번 주기에 다른 provider 참조가 먼저 이 파일을 썼다는 뜻이다(R3-F1).
  */
-type LifecycleRead = { bytes: number; ms: number; key: string | null; registryBytes: number; conflict: boolean }
-const NO_LIFECYCLE_READ: LifecycleRead = { bytes: 0, ms: 0, key: null, registryBytes: 0, conflict: false }
+type LifecycleRead = {
+  bytes: number
+  ms: number
+  key: string | null
+  registryBytes: number
+  conflict: boolean
+  /** 넘김(LIFE-781)의 옆 파일(앞 파일·대상 파일) 장부를 이번에 나아가며 읽은 몫 — 그 파일 정체성으로 따로 센다. */
+  linked: { key: string; bytes: number }[]
+}
+const NO_LIFECYCLE_READ: LifecycleRead = { bytes: 0, ms: 0, key: null, registryBytes: 0, conflict: false, linked: [] }
+
+/** 세대 경계를 건너 싣는 묶음과 그 주인 — 주인이 살아 있을 때만 싣는다(LIFE-781). */
+type CarryGroup = { carried: HandedItems; owner: Owner | null }
+/** 넘김 판정 — 옆 파일을 따라잡는 중이면(`catchingUp`) 모름, 넘긴 것의 끝을 놓쳤을 수 있으면(`unsure`) 판독 불가다. */
+type CarryRead = { groups: CarryGroup[]; catchingUp: boolean; unsure: boolean }
+
+/**
+ * 이미 읽은 claude 장부 중 이 세션에 넘긴 id (LIFE-781) — 각 넘김은 보낸 세션이 자기 앞에서 넘겨받은 것까지 세대 거르기에서 빼고 센다(연쇄, 재귀).
+ * 장부는 파일마다 하나라 몇 개 안 된다. 순환은 `seen` 으로 끊는다.
+ */
+function handedTo(sessionId: string, seen: ReadonlySet<string> = new Set()): Set<string> {
+  const ids = new Set<string>()
+  if (seen.has(sessionId)) return ids
+  const next = new Set([...seen, sessionId])
+  for (const { ledger } of ledgers.values()) {
+    const handoff: Handoff | null = ledgerHandoff(ledger)
+    if (handoff === null || handoff.target !== sessionId) continue
+    const keep = handoff.from === null ? new Set<string>() : handedTo(handoff.from, next)
+    const handed = handoffItems({ handoff, keep })
+    for (const item of [...handed.tasks, ...handed.subagents]) ids.add(item.id)
+  }
+  return ids
+}
+
+/** 옆 파일 장부의 `ledgers` 키 — 장부가 그 파일에 붙어 있다(`dev`·`ino`). */
+function ledgerKeyOf(ledger: Ledger): string {
+  return `claude:${ledger.dev}:${ledger.ino}`
+}
+
+/**
+ * 넘김(LIFE-781)의 옆 파일 장부 — 첫 입력 뒤엔 앞 파일(넘긴 것), 첫 입력 전엔 대상 파일(이어 받은 세션의 끝 통지)을 같이 나아간다.
+ * 장부는 `ledgers` 를 같이 쓴다 — 그 파일을 읽던 참조의 장부를 그대로 잇고, 이번 주기에 이미 나아갔거나 무변경이면 다시 읽지 않는다(L7).
+ * 못 읽으면 null — 넘김 없이 지금처럼 동작한다. `since` 는 그 파일 소유 프로세스의 시작 시각(알면) — 보류분 세대 거르기(F2).
+ */
+function linkedLedger(input: { file: string; generation: Generation }): { ledger: Ledger; read: { key: string; bytes: number } } | null {
+  const { file } = input
+  const stat = statOrNull(file)
+  if (stat === null) return null
+  const fileKey = `${stat.dev}:${stat.ino}`
+  const key = `claude:${fileKey}`
+  const shared = ledgers.get(key)
+  if (shared !== undefined) shared.seen = cycle
+  const prior = shared?.ledger ?? null
+  if (shared?.cycle === cycle || ledgerSettled({ ledger: prior, stat })) return prior === null ? null : { ledger: prior, read: { key: fileKey, bytes: 0 } }
+  try {
+    const step = advanceLedger({ file, stat, agent: 'claude', prior, generation: input.generation })
+    if (step.reset !== null) log('transcript.lifecycle.reset', { agent: 'claude', reason: step.reset })
+    ledgers.set(key, { ledger: step.ledger, cycle, seen: cycle })
+    return { ledger: step.ledger, read: { key: fileKey, bytes: step.bytes } }
+  } catch (error) {
+    log('transcript.error', { where: 'lifecycle-linked', agent: 'claude', error: String(error) })
+    ledgers.delete(key)
+    return null
+  }
+}
 
 /** 교체로 참조가 떠난 장부를, 그 참조(`except`) 말고 아무 캐시 항목도 안 쓰면 회수한다(R3-F2). 별칭이 쓰는 장부는 남는다. */
 function releaseLedger(input: { key: string; except: string }): void {
@@ -856,18 +1066,35 @@ function readLifecycle(input: {
   advance: boolean
   /** 소유 프로세스 판정(L8). 죽었으면 누적은 계속하되 목록은 `not-running`, 시작 시각을 모르면 세대를 못 갈라 `unreadable`. */
   owner: Owner | null
+  /** 세대 경계를 건너 싣는 묶음(LIFE-781 전환) — 장부마다 고른다. 소유자가 죽어도 주인이 산 묶음이 있으면 그것만 싣는다. */
+  carry: (ledger: Ledger) => CarryRead
+  /** 이 파일의 세대 재료(LIFE-781) — 보류분 거르기·넘겨받은 id. */
+  generation: Generation
 }): { lifecycle: SessionLifecycle; ledger: Ledger | null; read: { bytes: number; ms: number } } {
   const { file, key, stat, agent, prior, owner } = input
   if (file === null || key === null || stat === null || agent === 'codex') return { lifecycle: NO_SOURCE, ledger: null, read: { bytes: 0, ms: 0 } }
   const view = (ledger: Ledger): SessionLifecycle => {
-    if (owner === null || !owner.alive) return NOT_RUNNING
+    const carry = input.carry(ledger)
+    const anyAlive = (owner !== null && owner.alive) || carry.groups.some((group) => group.owner !== null && group.owner.alive)
+    if (carry.catchingUp && anyAlive) return { state: 'unknown', reason: 'catching-up' }
+    if (carry.unsure && anyAlive) return { state: 'unknown', reason: 'unreadable' }
+    const carried: HandedItems = { tasks: [], subagents: [] }
+    // 묶음끼리 id 가 겹치지 않는다 — 재시작 몫은 `cost-state` 가 본 파일의 열린 것(`inheritedItems` 의 재료)을 옮기고 비운 것이고, 이 파일이 넘긴 것(`sent`)과
+    // 재시작 몫이 함께 생기려면 `continued-in` 을 쓴 파일의 세션 id 에 bg 주인이 살아 있어야 한다(관측 없음(사용자 기록 3건) — bg 기록 136 중 continued-in 3 은 모두 대화형 줄 뒤, 리뷰 r1 M7). 두 주인이 함께 살면 같은 id 가 두 번 나올 수 있다(한계).
+    for (const group of carry.groups) {
+      if (group.owner === null || !group.owner.alive) continue
+      carried.tasks.push(...group.carried.tasks)
+      carried.subagents.push(...group.carried.subagents)
+    }
+    const carrying = carried.tasks.length + carried.subagents.length > 0
+    if (owner === null || !owner.alive) return carrying ? ledgerView({ ledger, since: Number.POSITIVE_INFINITY, carried }) : NOT_RUNNING
     if (owner.since === null) return { state: 'unknown', reason: 'unreadable' }
-    return ledgerView({ ledger, since: owner.since })
+    return ledgerView({ ledger, since: owner.since, carried })
   }
   if (!input.advance && prior !== null) return { lifecycle: view(prior), ledger: prior, read: { bytes: 0, ms: 0 } }
   const startedAt = Date.now()
   try {
-    const step = advanceLedger({ file, stat, agent, prior })
+    const step = advanceLedger({ file, stat, agent, prior, generation: input.generation })
     if (step.reset !== null) log('transcript.lifecycle.reset', { agent, reason: step.reset })
     ledgers.set(key, { ledger: step.ledger, cycle, seen: cycle })
     return { lifecycle: view(step.ledger), ledger: step.ledger, read: { bytes: step.bytes, ms: Date.now() - startedAt } }
@@ -994,7 +1221,8 @@ function readMain(input: {
   file: string
   stat: fs.Stats
   agent: TranscriptAgent
-  ref: AgentSessionRef
+  sessionId: string | null
+  /** 같은 파일의 지난 판독만 — 이어 간 새 파일에 옛 파일의 제목·머리·이어 나르기를 넘기지 않는다(LIFE-766). */
   cached: CacheEntry | null
 }): MainRead {
   const { cached } = input
@@ -1011,7 +1239,7 @@ function readMain(input: {
     size: input.stat.size,
     mtimeMs: input.stat.mtimeMs,
     agent: input.agent,
-    sessionId: input.ref.kind === 'id' ? input.ref.id : null,
+    sessionId: input.sessionId,
     // **파일을 건너 이어진다.** 파일이 자라 mtime 이 바뀌어도 "이 파일은 이미 상한까지
     // 훑어봤다" 는 사실은 그대로다 — 안 이으면 갱신마다 2MB 를 다시 읽는다.
     titleScanned: cached?.titleScanned ?? false,
@@ -1071,6 +1299,7 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
   cost: ReadCost
 } {
   const startedAt = Date.now()
+  const continuedBefore = continuedReadBytes()
   cycle += 1
   fileClaims.clear()
   const digests = new Map<string, SessionDigest>()
@@ -1100,6 +1329,11 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
     lifecycleRegistryBytes += read.lifecycle.registryBytes
     const lifecycleKey = read.lifecycle.key
     if (lifecycleKey !== null) lifecycleFileBytes.set(lifecycleKey, (lifecycleFileBytes.get(lifecycleKey) ?? 0) + read.lifecycle.bytes)
+    // 넘김의 옆 파일(LIFE-781)도 같은 계정 — 그 파일 정체성으로 센다(L7 파일 하나·주기 ≤2MB).
+    for (const side of read.lifecycle.linked) {
+      lifecycleBytes += side.bytes
+      lifecycleFileBytes.set(side.key, (lifecycleFileBytes.get(side.key) ?? 0) + side.bytes)
+    }
     if (read.digest.lifecycle.state === 'unknown' && read.digest.lifecycle.reason === 'catching-up') lifecycleCatchingUp += 1
     lifecycleMs += read.lifecycle.ms
     if (lifecycleKey !== null) fileOf.set(id, lifecycleKey)
@@ -1124,6 +1358,7 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
       lifecycleRegistryBytes,
       lifecycleCatchingUp,
       lifecycleMs,
+      continuedBytes: continuedReadBytes() - continuedBefore,
     },
   }
 }

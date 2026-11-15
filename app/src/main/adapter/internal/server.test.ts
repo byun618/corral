@@ -152,6 +152,10 @@ describe('serverEnv (D4·r1 R1-08)', () => {
     })
     expect(env).toEqual({ PATH: '/usr/bin', CODEX_HOME: '/h/.codex', GROK_HOME: '/h/.grok', CLAUDE_CONFIG_DIR: '/h/.claude', FORCE_HYPERLINK: '1' })
   })
+  it('Claude bg 세션 마커 CLAUDE_JOB_DIR 은 pane 셸로 넘기지 않는다 — 넘기면 그 pane 의 포그라운드 claude 훅이 침묵한다 (LIFE-795 fix1 A)', () => {
+    const env = serverEnv({ PATH: '/usr/bin', CLAUDE_JOB_DIR: '/h/.claude/jobs/abc', CLAUDE_CONFIG_DIR: '/h/.claude' })
+    expect(env).toEqual({ PATH: '/usr/bin', CLAUDE_CONFIG_DIR: '/h/.claude', FORCE_HYPERLINK: '1' })
+  })
 })
 
 describe('LIFE-565 C6ⓗ — spawnServer 가 서버를 그 env 로 띄운다 (리뷰 C6R-01)', () => {

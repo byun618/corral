@@ -111,7 +111,7 @@ export function questionLockText(input: { lock: Exclude<QuestionLock, 'open'>; k
     case 'shape':
       return '맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다'
     case 'ended':
-      return input.kind === 'codex' ? 'Codex 가 턴을 마쳤습니다 — 아래 입력창에 답을 지시로 보내 주세요' : '턴이 끝난 질문입니다 — 아래 입력창에 답을 지시로 보내 주세요'
+      return input.kind === 'codex' ? 'Codex 가 턴을 마쳤습니다 — 아래 입력창에 답을 지시로 보내 주세요' : '이 질문이 아직 열려 있는지 맥에서 확인해 주세요 — 닫혔으면 아래 입력창에 지시로 보내 주세요'
     case 'checking':
       return '질문을 확인하는 중…'
     case 'not_waiting':
@@ -275,6 +275,7 @@ export type SentLine = { tone: 'muted' | 'question' | 'dim' | 'error'; text: str
 const REASON: Record<string, string> = {
   mac_draft: '맥 입력창에 쓰던 글이 있어 보내지 않았습니다',
   draft_unknown: '맥 입력창을 확인하지 못해 보내지 않았습니다',
+  agent_view: '맥이 agent view 화면이라 보내지 않았습니다 — 맥에서 대화로 돌아온 뒤 다시 보내 주세요',
   queue_full: '대기 중인 지시가 많아 보내지 않았습니다',
   mobile_off: '맥에서 모바일이 꺼져 보내지 않았습니다',
   closed: '세션이 닫혀 보내지 않았습니다',

@@ -26,6 +26,7 @@
 // - **수명**(R1-A1·A4): 모바일 끔·종료(활성 세대가 바뀜)·그 기기 해지면 그 기기의 끝나지 않은 요청을 끝낸다. 모든 await 뒤와 효과 직전에 다시 본다 —
 //   늦게 온 guard 거절이 끈 뒤의 지시를 큐로 되살리지 않고, 답의 남은 키는 멈춘다(일부 키가 들어갔으면 `unconfirmed`). 연결 끊김(폰 화면 끔)은 수명이 아니다 — 큐는 남는다.
 // - **맥 입력창 초안**(P9): 넣기 직전 보이는 화면의 입력 줄이 비었는지 본다(`keys.ts draftState`). 글이 있거나 판단 못 하면 넣지 않고 실패.
+//   그 앞에 Claude agent view 화면인지 본다(`keys.ts agentViewShown`, LIFE-770) — 그 화면의 입력은 폰이 보던 대화로 가지 않으니(상자는 새 세션, Space 패널은 그 행의 세션) `agent_view` 로 실패.
 //   그 화면은 같은 guard 턴의 입력 revision·조용한 시간과 함께 읽는다(R2-A3) — 화면을 잡을 때 입력이 `quietMs` 이상 조용했어야 믿고, 그 화면의 revision 도 울타리 값이어야 한다.
 //   넣기는 그 울타리 그대로일 때만 같은 App 턴에서 한다(R1-A3). 칸 없는 CLI 제출도 revision 을 올린다(guard).
 // - **질문 답**(P4): 폰은 어느 질문(말풍선 id + 도구 호출 id + 내용 지문)에 어떤 답인지만 보낸다(R1-A2·R2-A1). 서버는 그 질문이 기록의 마지막 대기 질문이고 지문이 같고
@@ -39,11 +40,12 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import type { TerminalIdentity } from '../adapter/index.js'
 import { bodyIdentity, countSubmissions, normalizeBody } from '../../runtime/terminal/agent.js'
-import type { AgentSessionRef } from '../../shared/types.js'
+import { ATTACH_SESSION_SOURCE, type AgentSessionRef } from '../../shared/types.js'
 import { parseGrokUpdates, parseTail } from '../transcript-parse.js'
 import { codexQuestionReplies, grokAnsweredMessage, grokAnswerSegments, lineAtoms, type ChatItem } from '../chat-parse.js'
 import {
   activeQuestion,
+  agentViewShown,
   answerGroups,
   cleanAnswerText,
   cleanBody,
@@ -118,7 +120,12 @@ export type InputMark = { revision: number; idleMs: number }
  * (`store.ts readAgentSession`) source·kind·값으로 맞춘다. `agent` 는 관측 봉투에 없어 쓰지 않는다(source 가 `herdr:<agent>` 라 갈린다).
  */
 export const observedSessionKey = (session: { source: string; kind: string; value: string }): string => `${session.source}\u0000${session.kind}\u0000${session.value}`
-const boundSessionKey = (session: AgentSessionRef): string => observedSessionKey({ source: session.source, kind: session.kind, value: session.kind === 'id' ? session.id : session.path })
+/**
+ * 접수 때 묶는 herdr 관측 키. corral 이 `claude attach` 로 푼 세션(LIFE-769 `ATTACH_SESSION_SOURCE`)은 herdr 가 참조를 주지 않는 pane 의 것이라
+ * 관측 키가 **없음(null)** 이어야 같은 상태다 — herdr 가 그 사이 키를 주기 시작하면 다른 세션으로 보고 거절한다(fail-closed 유지).
+ */
+const boundSessionKey = (session: AgentSessionRef): string | null =>
+  session.source === ATTACH_SESSION_SOURCE ? null : observedSessionKey({ source: session.source, kind: session.kind, value: session.kind === 'id' ? session.id : session.path })
 export type SendResult = 'sent' | 'refused' | 'unknown'
 /** 키 한 번의 결과 — `sent` 면 guard 가 쓴 뒤의 입력 revision(다음 키의 울타리, 울타리 없이 보냈으면 null). */
 export type KeyResult = { kind: 'sent'; revision: number | null; anyRevision: number | null } | { kind: 'refused' } | { kind: 'unknown' }
@@ -152,8 +159,9 @@ export interface InputBackend {
 /**
  * 쓰기용 기록 해소(R1-A13) — `found` 는 **유일한** 후보일 때만. `none` = 훑기 성공·0건(새 세션은 첫 지시 뒤에 파일이 생긴다) ·
  * `error` = 0건을 믿을 수 없다(기다린다) · `ambiguous` = 같은 세션 id 의 파일이 둘 이상(잠근다).
+ * `continuedAs` = 기록이 이어 간 세션 id(LIFE-766) — 커서 뒤 줄은 이 id 로 센다. 없으면 채널 세션 그대로.
  */
-export type FileResolution = { kind: 'found'; file: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous' }
+export type FileResolution = { kind: 'found'; file: string; continuedAs?: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous' }
 
 export type InputHubDeps = {
   read: () => ListInput | null
@@ -167,6 +175,8 @@ export type InputHubDeps = {
   expectedFile?: (input: { channel: ChatChannel; cwd: string }) => string | null
   /** 그 기록의 말풍선(열린 대화의 판독자) — 질문 확인용. 판독자가 없으면 null. */
   questionItems: (file: string) => readonly ChatItem[] | null
+  /** 그 기록의 판독자를 질문 확인 전에 맞춘다(LIFE-766) — 세션이 막 이어 갔으면 열린 대화를 옮기고 색인을 기다린다. 없으면 바로 본다. */
+  questionReady?: (file: string) => Promise<void>
   /** 그 기기가 아직 페어링돼 있나 — 효과 직전마다 본다(R1-A1). 없으면 `revoke()` 로 받은 해지만 본다. */
   deviceValid?: (device: string) => boolean
   log: (tag: string, fields?: Record<string, unknown>) => void
@@ -179,7 +189,7 @@ export type InputHubDeps = {
  * 접수 때 묶은 대상(R1-A5). `observed` = 같은 세션의 herdr 관측 키(LIFE-598 — 효과 직전 `PaneObservation.session` 과 대조).
  * `revision` = 접수 때 herdr 관측의 입력 revision(R0, LIFE-598 r2) — 효과의 울타리는 여기서 허브 자기 쓰기 사슬만 따라간 값(`fenceOf`).
  */
-type Bind = { epoch: string; ptyId: string; session: string; observed: string; revision: number }
+type Bind = { epoch: string; ptyId: string; session: string; observed: string | null; revision: number }
 /** 효과 직전 세션·입력 대조 중 무엇이 걸렸나 — 로그 `mobile.input_target_changed` 에 남겨 실물 회차가 가른다(리뷰 r2 C·R2-C3). */
 type MovedCheck = 'list' | 'pane' | 'herdr_session' | 'input' | 'input_refused'
 /** 허브 자기 쓰기 사슬의 pane 키 — revision 은 PTY 세대마다 새로 센다. */
@@ -769,7 +779,6 @@ export class InputHub {
     const resolved = this.fileFor({ channel, cwd: pane.path })
     if (resolved.kind === 'wait') return 'wait'
     if (resolved.kind === 'fail') return this.fail(entry, resolved.reason)
-    const { file } = resolved
     const first = await backend.observe(pane)
     if (this.dropped(entry)) return 'done'
     // 관리 밖 pane 인데 guard 가 그 갈래를 모른다(설치본 herdr 서버를 재기동하기 전) — 기다려도 넣을 수 없다. 대기로 두면 블랙홀이다(LIFE-597 U5).
@@ -802,6 +811,8 @@ export class InputHub {
     if (shotRead === 'moved') return this.moved(entry, 'input')
     if (shotRead === 'behind') return this.waitTurn(entry, 'gate')
     if (shot.input.idleMs < this.timing.quietMs) return this.waitTurn(entry, 'gate')
+    // agent view 의 입력은 이 대화로 가지 않는다 — 초안 판정보다 먼저(LIFE-770). 자리표시가 흐림이면 draftState 는 빈 입력으로 읽는다.
+    if (agentViewShown({ kind, screen: shot.text })) return this.fail(entry, 'agent_view')
     const draft = draftState({ kind, screen: shot.text })
     if (draft !== 'empty') return this.fail(entry, draft === 'draft' ? 'mac_draft' : 'draft_unknown')
     // LIFE-598: 효과 직전 herdr 를 **다시** 본다 — `second` 뒤 `manifestVerified`·`screen` 동안의 전이·세션 교체도 여기서 잡힌다(세션은 보조).
@@ -814,7 +825,11 @@ export class InputHub {
     if (lastRead === 'moved') return this.moved(entry, 'input')
     if (lastRead === 'behind') return this.waitTurn(entry, 'gate')
     const text = entry.text ?? ''
-    const cursor = tailCursor(file)
+    // 파일과 세션 id 쌍은 커서 직전에 다시 푼다(LIFE-766) — 위 관문을 기다리는 사이에 세션이 이어 갔을 수 있다. 커서와 확인이 이 쌍을 같이 쓴다.
+    const record = this.fileFor({ channel, cwd: pane.path })
+    if (record.kind === 'wait') return 'wait'
+    if (record.kind === 'fail') return this.fail(entry, record.reason)
+    const cursor = tailCursor(record.file)
     if (cursor === null) return this.fail(entry, 'record_unreadable')
     const submittedAtMs = this.now()
     // 여기서부터 취소 불가 — 넣기 시작. 효과 직전 마지막 확인(해지·끔 · 접수 때 묶은 provider 세션 — 목록 R2-A4 + herdr 관측 `last` LIFE-598).
@@ -852,23 +867,23 @@ export class InputHub {
       if (this.fenceRead(bind, after.input.revision) === 'moved') return this.moved(entry, 'input_refused')
       return this.waitTurn(entry, 'turn')
     }
-    await this.confirmSend({ entry, kind, cursor, submittedAtMs, text, sessionId: channel.session.kind === 'id' ? channel.session.id : null })
+    await this.confirmSend({ entry, kind, cursor, submittedAtMs, text, sessionId: record.continuedAs ?? (channel.session.kind === 'id' ? channel.session.id : null) })
     return 'done'
   }
 
   /** 쓰기용 기록 파일 — 유일한 후보, 또는 0건이 확실할 때만 그 세션이 쓸 경로(R1-A13). */
-  private fileFor(input: { channel: ChatChannel; cwd: string }): { kind: 'file'; file: string } | { kind: 'wait' } | { kind: 'fail'; reason: string } {
+  private fileFor(input: { channel: ChatChannel; cwd: string }): { kind: 'file'; file: string; continuedAs: string | null } | { kind: 'wait' } | { kind: 'fail'; reason: string } {
     const resolved = this.deps.resolveFile(input.channel)
     switch (resolved.kind) {
       case 'found':
-        return { kind: 'file', file: resolved.file }
+        return { kind: 'file', file: resolved.file, continuedAs: resolved.continuedAs ?? null }
       case 'ambiguous':
         return { kind: 'fail', reason: 'record_ambiguous' }
       case 'error':
         return { kind: 'wait' }
       case 'none': {
         const expected = this.deps.expectedFile?.(input) ?? null
-        return expected === null ? { kind: 'wait' } : { kind: 'file', file: expected }
+        return expected === null ? { kind: 'wait' } : { kind: 'file', file: expected, continuedAs: null }
       }
     }
   }
@@ -879,6 +894,11 @@ export class InputHub {
    * - herdr 관측(LIFE-598): 효과 호출 바로 앞에서 다시 한 `observe` 의 `agent_session`. 목록보다 빨리 바뀌지만 상한이 없다(리뷰 r2 실측 최대 ≈ 6 s) —
    *   접수 뒤 `/clear` 는 revision 울타리가 막고, 이 대조는 접수 **전** `/clear` 를 herdr 만 먼저 안 때를 줍는다.
    *   관측에 세션이 없으면(null) 같은 세션임을 증명 못 한다 — 바뀐 것으로 본다(fail-closed, 기다리지 않으니 블랙홀도 없다).
+   *   예외: corral 이 `claude attach` 로 푼 세션(LIFE-769)은 묶을 때 관측 키가 null 이다(`boundSessionKey`) — 그 pane 은 herdr 가 참조를 주지 않으므로
+   *   null 이 같은 상태이고, 같은 세션인지는 목록 대조와 revision 울타리가 본다. 목록 값은 해소기가 세션 조회(1.5 s)마다 argv **와 `claude agents` 의 sessionId** 를
+   *   다시 맞춘 값이다(fix1 F1 — attach 안 `/clear` 가 같은 id 의 sessionId 를 바꾼다). 그래서 접수 **전** `/clear` 를 목록이 아직 모르는 창은 한 조회 주기다
+   *   (herdr 관측이 그 창을 메우는 herdr 출처와 다르다 — SURFACE 「attach pane 의 세션 해소」 남는 한계).
+   *   연결이 증명된 옛 참조(fix3 F13)도 같은 출처라 같다 — 목록 값이 S0 이고 기록 파일·센 id 는 이어 가기로 X 다(`resolveTranscriptUnique` 의 `continuedAs`).
    */
   private sessionMoved(entry: Entry, observed: PaneObservation): 'herdr_session' | 'list' | null {
     if (entry.bind === null) return null
@@ -1092,6 +1112,8 @@ export class InputHub {
     const resolved = this.deps.resolveFile(channel)
     if (resolved.kind !== 'found') return this.settle(entry, 'failed', resolved.kind === 'ambiguous' ? 'record_ambiguous' : 'not_ready')
     const { file } = resolved
+    await this.deps.questionReady?.(file)
+    if (this.halted(entry)) return
     const question = this.openQuestion({ file, id: entry.question, call })
     if (question === null) return this.settle(entry, 'failed', 'question_closed')
     if (questionDigest(question.questions) !== digest) return this.settle(entry, 'failed', 'question_changed')

@@ -22,7 +22,8 @@ import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModu
 import { validateFoundation } from '../registry.js'
 import { type Receipt, Receipts, REQUEST_ID, RECEIPT_TTL, readReceipt } from '../terminal/receipts.js'
 import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage, type TerminalDesktop } from '../terminal/index.js'
-import { PROMPT_LEAD } from '../terminal/agent.js'
+import { PROMPT_LEAD, claudeRecordById } from '../terminal/agent.js'
+import { SESSION_ID, followContinued } from '../../main/transcript-continued.js'
 import { socketPath } from '../transport.js'
 import { cliInvocation } from '../desktop-launch.js'
 import { TerminalBackend } from '../../main/adapter/index.js'
@@ -42,8 +43,8 @@ import {
 } from './messages.js'
 import {
   activePaneDispatch, composeBody, emptyWorker, isRetainReason, paneOwner, preambleDigest, releaseDecision, replaceDispatchRecord,
-  resumeDecision, senderError, stopDecision, submissionVerdict, verifySender, withWorker,
-  type CallerClaim, type SenderClaim, type SubmissionVerdict,
+  resumeDecision, senderError, stopDecision, submissionVerdict, verifySender, wantsSessionChain, withWorker,
+  type CallerClaim, type SenderClaim, type SenderProof, type SessionChain, type SubmissionVerdict,
 } from './worker.js'
 
 export const orchestrationSpecs: CommandSpec[] = specs
@@ -662,7 +663,26 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
         return caller.session && backendSession && caller.session === backendSession ? 'session_name' : null
       }
       /** LIFE-556 H1 — what `verifySender` sees of the caller: its claim, plus whether its socket is this backend's. */
-      const senderClaim = (): CallerClaim => ({ paneId: caller.paneId, session: caller.session, socketIsBackend: callerPlacement() === 'socket' })
+      const senderClaim = (): CallerClaim => ({ paneId: caller.paneId, session: caller.session, socketIsBackend: callerPlacement() === 'socket', claudeSession: caller.claudeSession ?? null })
+      /**
+       * LIFE-796. The session chain of the claude session this Dispatch was started with, read only when it could
+       * matter (`wantsSessionChain`: the pane proof failed and the caller named a claude session). It is read from
+       * what the Dispatch froze — the minted id — and that session's own record: the file is found by the id
+       * (`claudeRecordById`), and the hops by the rule `terminal show` uses for the same pane (LIFE-766
+       * `followContinued`, `empty: 'follow'`, same folder, at most `CONTINUED_CHAIN_MAX` hops). Files only — no
+       * backend round trip, no ready gate, no pane — so it neither lengthens the lane it runs in nor depends on the
+       * pane still being there: whether the pane lives is the observation's question, asked after it (a pane that
+       * is gone is `stale_dispatch`). No record found, or not exactly one, is no chain, and the sender is judged as before.
+       */
+      const sessionChainOf = (dispatch: DispatchRecord | undefined, claim: CallerClaim): SessionChain | null => {
+        if (dispatch === undefined || !wantsSessionChain({ dispatch, caller: claim })) return null
+        const minted = dispatch.agent?.sessionId ?? null
+        if (minted === null || !SESSION_ID.test(minted)) return null
+        const file = claudeRecordById({ sessionId: minted })
+        if (file === null) return null
+        const followed = followContinued({ session: { kind: 'id', agent: 'claude', source: dispatch.agent?.sessionIdSource ?? 'client-minted', id: minted }, file, empty: 'follow' })
+        return { minted, continuedIn: followed.hops }
+      }
       /**
        * LIFE-459. The parent of the attempt `worker-start` is about to make: the pane this call came
        * from, with its generation read from the backend when the caller could be placed in it. The
@@ -740,7 +760,7 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
       // --- send (§4.4) -----------------------------------------------------------------------------
       type SendPlan =
         | { kind: 'coordinator'; runId: string }
-        | { kind: 'worker'; runId: string; taskId: string; dispatchId: string; dispatch: DispatchRecord; sessionVerified: boolean }
+        | { kind: 'worker'; runId: string; taskId: string; dispatchId: string; dispatch: DispatchRecord; sessionVerified: boolean; proof: SenderProof }
       const sendCommand = async (state: OrchestrationState): Promise<unknown> => {
         const type = need('type'), subject = need('subject'), body = flag('body') ?? ''
         const payload = messagePayload({
@@ -782,14 +802,16 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           // `session`, whose reconcile pass swept the backend before this line and memoized what it
           // saw. Sweeping again here was a second round trip under a held lane (V24) and bought
           // nothing — the memoized snapshot is from inside this lane, which is exactly the proof
-          // admission needs (§4.5 / LIFE-393's three layers).
+          // admission needs (§4.5 / LIFE-393's three layers). The session chain (LIFE-796) adds no
+          // second trip: `sessionChainOf` reads record files only.
           const observation = found === undefined ? UNOBSERVABLE : observationFor(await observe(), found.target)
           // `worker_done` defers the settled question to `transition`, the only place that can tell
           // "you named a superseded attempt" (stale_dispatch) from "you already reported"
           // (illegal_transition). Every other worker message is refused once the attempt has ended.
-          const verdict = verifySender(state, { taskId, dispatchId, caller: senderClaim(), observation }, type === 'worker_done' ? 'defer' : 'reject')
+          const claim = senderClaim()
+          const verdict = verifySender(state, { taskId, dispatchId, caller: claim, observation, chain: sessionChainOf(found, claim) }, type === 'worker_done' ? 'defer' : 'reject')
           if (!verdict.ok) throw senderError(verdict)
-          return { kind: 'worker', runId: verdict.dispatch.runId, taskId, dispatchId, dispatch: verdict.dispatch, sessionVerified: verdict.sessionVerified }
+          return { kind: 'worker', runId: verdict.dispatch.runId, taskId, dispatchId, dispatch: verdict.dispatch, sessionVerified: verdict.sessionVerified, proof: verdict.proof }
         }
         const plan = async (): Promise<SendPlan> => {
           const target = await addressee()
@@ -812,6 +834,7 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           const at = now()
           const worker = target.kind === 'worker' ? target.dispatch : null
           const sessionVerified = target.kind === 'worker' ? target.sessionVerified : null
+          const proof = target.kind === 'worker' ? target.proof : null
           const common = commonFor(target, at)
           if (type === 'worker_done' && target.kind === 'worker') {
             // One value, one write: the report and the settlement it causes are two fields of the
@@ -821,7 +844,7 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             const next = settled === undefined ? moved.state : revoke(moved.state, settled, 'settled', at)
             ctx.onEffect?.()
             records.write(next)
-            return { message: appended.message, task: moved.task, dispatch: findDispatch(next, target.dispatchId) ?? null, promoted: moved.promoted, settledBy: 'worker_done', sessionVerified }
+            return { message: appended.message, task: moved.task, dispatch: findDispatch(next, target.dispatchId) ?? null, promoted: moved.promoted, settledBy: 'worker_done', sessionVerified, proof }
           }
           if (type === 'heartbeat' && target.kind === 'worker') {
             const appended = appendMessage(state, common, { type: 'heartbeat' })
@@ -829,12 +852,12 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             const next = current === undefined ? appended.state : replaceDispatchRecord(appended.state, withWorker(current, { lastHeartbeatAt: at }, at))
             ctx.onEffect?.()
             records.write(next)
-            return { message: appended.message, dispatch: findDispatch(next, target.dispatchId) ?? null, sessionVerified }
+            return { message: appended.message, dispatch: findDispatch(next, target.dispatchId) ?? null, sessionVerified, proof }
           }
           const appended = appendMessage(state, common, { type: type === 'escalation' ? 'escalation' : 'status' })
           ctx.onEffect?.()
           records.write(appended.state)
-          return { message: appended.message, dispatch: worker === null ? null : findDispatch(appended.state, worker.id) ?? null, sessionVerified }
+          return { message: appended.message, dispatch: worker === null ? null : findDispatch(appended.state, worker.id) ?? null, sessionVerified, proof }
         })
       }
 
@@ -1167,8 +1190,10 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             stages.dispatch = { status: 'completed', dispatchId: dispatch.id, attempt: dispatch.attempt }
             effects.push({ kind: 'dispatch', action: 'created', id: dispatch.id, state: 'dispatched' })
           }
-          const unfinished = () => residualResources.push({ kind: 'dispatch', id: dispatch.id,
-            action: `The attempt exists and holds the pane, with no preamble delivered. corral orchestration worker-start --task ${taskId} --terminal ${target.handle} submits it once the pane is ready; worker-stop --dispatch ${dispatch.id} ends the attempt and closes the pane` })
+          // LIFE-787: an input refused because the pane was in Claude agent view (or took input while corral
+          // looked) wrote nothing; the pane needs a person to press esc before the same call resumes.
+          const unfinished = (error?: unknown) => residualResources.push({ kind: 'dispatch', id: dispatch.id,
+            action: `${error instanceof RuntimeError && (error.code === 'agent_view' || error.code === 'input_changed') ? `The pane refused the input (${error.code}): press esc in it to return to the conversation first. ` : ''}The attempt exists and holds the pane, with no preamble delivered. corral orchestration worker-start --task ${taskId} --terminal ${target.handle} submits it once the pane is ready; worker-stop --dispatch ${dispatch.id} ends the attempt and closes the pane` })
 
           // stage 3 — the one submission
           const input = composeBody({ corral: corralCommand(), runId: start.runId, taskId, dispatchId: dispatch.id, handle: target.handle, spec: start.spec })
@@ -1201,7 +1226,8 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           // the same attempt at once both read `null` in their own snapshots, so only the lane can
           // decide which of them makes the effect. The run that writes the key is the only run that
           // makes it. What a later run may do is then decided from those records and the receipts
-          // they name: corral never reads the pane's screen to answer it (`agent.ts` §4.6), and it
+          // they name: corral never reads the pane's screen to answer it (`agent.ts` §4.6 — the screen is read only to
+          // refuse a write on agent view, LIFE-787), and it
           // never repeats an effect whose outcome it cannot read.
           interface Intent { requestId: string; at: string }
           const claim = async (key: 'lead' | 'prompt', requestId: string): Promise<{ mine: boolean; intent: Intent }> => withDocumentLane(async () => {
@@ -1309,11 +1335,13 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           const leadId = derivedRequestId(parentId, 'lead')
           const leadClaim = await claim('lead', leadId)
           if (leadClaim.mine) {
-            try { await terminalChild('terminal send', { terminal: target.handle, text: PROMPT_LEAD, 'request-id': leadId }, {}) }
+            // LIFE-787: `refuse-agent-view` makes the lead pass the same agent-view judgment and input fence
+            // the body's `terminal prompt` does — so on agent view neither the lead nor the body is typed.
+            try { await terminalChild('terminal send', { terminal: target.handle, text: PROMPT_LEAD, 'request-id': leadId, 'refuse-agent-view': true }, {}) }
             catch (error) {
               const released = await release('lead', error)
               stages.input = { ...stageFailure(error), requestId: leadId, lead: released ? 'released' : 'kept' }
-              unfinished()
+              unfinished(error)
               return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
             }
           } else {
@@ -1327,8 +1355,9 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           /**
            * V38. A diagnostic, and nothing in this command branches on it. `terminal read --screen`
            * returns the provider's drawing: a TUI puts the input line in a box with hint rows under
-           * it, so the end of the screen is not the end of the input line, and corral does not parse
-           * provider screens to decide anything (`agent.ts` §4.6). So this says `true` only when the
+           * it, so the end of the screen is not the end of the input line, and corral reads provider
+           * screens only to refuse a write (agent view, LIFE-787 — `agent.ts` header), never to decide
+           * that anything happened or is clear. So this says `true` only when the
            * lead's text is somewhere on the screen, and `null` — never `false` — otherwise. corral
            * cannot prove an input line is clear, and claiming it is would be the same mistake facing
            * the other way.
@@ -1377,7 +1406,7 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
               } else {
                 const released = await release('prompt', error)
                 stages.input = { ...stageFailure(error), requestId: promptId, submission: released ? 'released' : 'kept' }
-                unfinished()
+                unfinished(error)
                 return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
               }
             }
@@ -1520,9 +1549,11 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           // died during that wait still admitted a question on an attempt corral could no longer
           // reach. One sweep, under the lane that is about to write, and never again — the wait
           // that follows polls the mailbox, not the backend, so a backend that stops answering
-          // cannot turn a ten-minute wait into an `outcome_unknown` (§4.6).
+          // cannot turn a ten-minute wait into an `outcome_unknown` (§4.6). The session chain (LIFE-796)
+          // reads record files only, so it is not a second look at the backend.
           const asking = findDispatch(state, dispatchId)
-          const claim: SenderClaim = { taskId, dispatchId, caller: senderClaim(), observation: asking === undefined ? UNOBSERVABLE : await observeNow(asking.target) }
+          const claimed = senderClaim()
+          const claim: SenderClaim = { taskId, dispatchId, caller: claimed, observation: asking === undefined ? UNOBSERVABLE : await observeNow(asking.target), chain: sessionChainOf(asking, claimed) }
           // A resume names a question that already exists, so the attempt may already have been
           // settled — `defer` lets a worker collect an answer it asked for before it reported.
           const verdict = verifySender(state, claim, resume === undefined ? 'reject' : 'defer')
@@ -1533,7 +1564,7 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             if (question.type !== 'question') return preflight('not_a_question', `Message ${resume} is a ${question.type}`, { messageId: resume, type: question.type })
             if (question.dispatchId !== dispatchId) return preflight('sender_mismatch', `Question ${resume} belongs to dispatch ${String(question.dispatchId)}`,
               { messageId: resume, dispatchId: question.dispatchId, claimedDispatchId: dispatchId, recovery: 'Resume only a question this Dispatch asked' })
-            return { messageId: question.id, runId: question.runId, sessionVerified: verdict.sessionVerified }
+            return { messageId: question.id, runId: question.runId, sessionVerified: verdict.sessionVerified, proof: verdict.proof }
           }
           const draft = (current: OrchestrationState) => appendMessage(current, {
             runId: verdict.dispatch.runId, taskId, dispatchId,
@@ -1551,12 +1582,13 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             // V29. The proof that admitted this question travels with it: `send` reports whether
             // the pane's backend session matched the recorded one, and an answer a worker collects
             // has exactly as much to say about who asked.
-            return { messageId: appended.message.id, runId: verdict.dispatch.runId, sessionVerified: verdict.sessionVerified }
+            return { messageId: appended.message.id, runId: verdict.dispatch.runId, sessionVerified: verdict.sessionVerified, proof: verdict.proof }
           })
         })
         const envelope = isRecord(opened) ? opened : {}
         const messageId = readString(envelope, 'messageId')
         const sessionVerified = envelope.sessionVerified === true
+        const proof = readString(envelope, 'proof')
         if (messageId === null) throw new RuntimeError('operation_failed', 'ask did not record a question id')
         const resumeCommand = `${corralCommand()} orchestration ask --resume ${messageId} --task-id ${taskId} --dispatch-id ${dispatchId} --timeout-ms 600000 --json`
         for (;;) {
@@ -1568,12 +1600,12 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             return reply === null ? null : { question, reply }
           })
           if (answered !== null) return {
-            state: 'answered', messageId, runId: readString(envelope, 'runId'), timedOut: false, sessionVerified,
+            state: 'answered', messageId, runId: readString(envelope, 'runId'), timedOut: false, sessionVerified, proof,
             question: { id: answered.question.id, body: answered.question.body, options: answered.question.question.options, askedAt: answered.question.createdAt },
             reply: { id: answered.reply.id, body: answered.reply.body, subject: answered.reply.subject, answeredAt: answered.reply.createdAt },
           }
           if (Date.now() >= waitDeadline) return {
-            state: 'pending', messageId, runId: readString(envelope, 'runId'), timedOut: true, sessionVerified, question: null, reply: null,
+            state: 'pending', messageId, runId: readString(envelope, 'runId'), timedOut: true, sessionVerified, proof, question: null, reply: null,
             resumeCommand, recovery: 'The question is stored. Run resumeCommand to keep waiting; asking again would create a second question',
           }
           ctx.signal.throwIfAborted()

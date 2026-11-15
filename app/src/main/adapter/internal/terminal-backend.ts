@@ -42,6 +42,8 @@ export interface AgentObservation {
   anyInput?: { revision: number; idleMs: number } | null
   /** LIFE-597: how long the agent state (and detected kind) has held, read by the guard in the agent.get turn. null on a guard without it. */
   stateQuietMs?: number | null
+  /** LIFE-787: herdr's `terminal_title` for the pane (the provider's own tab title, prefix kept). null when herdr has none. */
+  terminalTitle?: string | null
 }
 /** One row of the guard's target-less `server.agent_manifests` read (LIFE-394 §3, D17). */
 export interface AgentManifestObservation {
@@ -300,5 +302,6 @@ function observation(agent: Record<string, unknown> | null, paneId: string): Age
     anyInput: typeof agent.corral_any_input_revision === 'number' && typeof agent.corral_any_input_idle_ms === 'number'
       ? { revision: agent.corral_any_input_revision, idleMs: agent.corral_any_input_idle_ms } : null,
     stateQuietMs: typeof agent.corral_state_quiet_ms === 'number' ? agent.corral_state_quiet_ms : null,
+    terminalTitle: typeof agent.terminal_title === 'string' ? agent.terminal_title : null,
   }
 }

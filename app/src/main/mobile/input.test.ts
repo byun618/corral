@@ -10,6 +10,7 @@ import { CHAT_SESSIONS, chatListState } from './chat-fixture.js'
 import { answerMatches, answerRecords, cleanAnswers, observedSessionKey, recordedAnswers, INPUT_IDS_MAX, INPUT_QUEUE_MAX, InputHub, type FileResolution, type InputBackend, type InputWire, type KeyResult, type PaneObservation, type ScreenRead, type SendResult } from './input.js'
 import { activeQuestion, KEY, matchQuestion, questionDigest } from './keys.js'
 import type { MobileAgentKind } from './list.js'
+import { ATTACH_SESSION_SOURCE } from '../../shared/types.js'
 
 const cleanups: (() => void)[] = []
 afterEach(() => {
@@ -396,6 +397,87 @@ describe('맥 초안 (Z6 · P9)', () => {
     t.backend.screenText = 'no prompt box'
     t.hub.send({ device: 'd1', id: 'msg-llll-0002', channel: 'c1', text: 'x' })
     expect(await t.settled('msg-llll-0002')).toMatchObject({ state: 'failed', reason: 'draft_unknown' })
+  })
+})
+
+describe('Claude agent view (LIFE-770) — 실표본 화면', () => {
+  const view = (name: string): string => fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'agent-view', `${name}.ansi`), 'utf8')
+  it.each(['view-default', 'view-down', 'view-help', 'view-peek', 'view-typed', 'narrow-view-default', 'view-header', 'view-header-collapsed', 'direct-first', 'view-delete-confirm'])('%s → failed/agent_view, 넣기 0회', async (name) => {
+    const t = setup()
+    t.backend.screenText = view(name)
+    t.hub.send({ device: 'd1', id: `l770-${name}`, channel: 'c1', text: 'Reply with exactly: x' })
+    expect(await t.settled(`l770-${name}`)).toMatchObject({ state: 'failed', reason: 'agent_view' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('합성: 자리표시가 흐림이어도(draftState 는 empty) 초안 판정보다 먼저 거절한다', async () => {
+    const t = setup()
+    t.backend.screenText = view('view-default').replace('\x1b[38;2;153;153;153m❯ describe', '\x1b[2m❯ describe')
+    expect(t.backend.screenText).toContain('\x1b[2m❯ describe')
+    t.hub.send({ device: 'd1', id: 'l770-dim-0001', channel: 'c1', text: 'x' })
+    expect(await t.settled('l770-dim-0001')).toMatchObject({ state: 'failed', reason: 'agent_view' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('합성: 32열에서 꺾인 자리표시가 흐림이면 안내를 못 읽어도 거절한다', async () => {
+    const t = setup()
+    t.backend.screenText = view('width32-view-default').replaceAll('\x1b[38;2;153;153;153m❯ describe', '\x1b[2m❯ describe').replaceAll('\x1b[38;2;153;153;153msession', '\x1b[2msession')
+    expect(t.backend.screenText).toContain('\x1b[2msession')
+    t.hub.send({ device: 'd1', id: 'l770-dim-0032', channel: 'c1', text: 'x' })
+    expect(await t.settled('l770-dim-0032')).toMatchObject({ state: 'failed', reason: 'agent_view' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('대화 출력에 표지 글이 인용된 일반 프롬프트 → 들어간다', async () => {
+    const t = setup()
+    t.backend.screenText = view('normal-quoted')
+    t.hub.send({ device: 'd1', id: 'l770-quote-001', channel: 'c1', text: 'x' })
+    expect((await t.settled('l770-quote-001')).state).toBe('delivered')
+    expect(t.backend.prompts).toEqual(['x'])
+  })
+  it('일반 프롬프트에 자리표시 글을 직접 친 화면 → mac_draft 그대로', async () => {
+    const t = setup()
+    t.backend.screenText = view('normal-typed-placeholder')
+    t.hub.send({ device: 'd1', id: 'l770-typed-001', channel: 'c1', text: 'x' })
+    expect(await t.settled('l770-typed-001')).toMatchObject({ state: 'failed', reason: 'mac_draft' })
+  })
+  it('작업 중 접수되어 기다리던 지시 — 맥에서 `←` 로 agent view 에 들어가면 그 키도 맥 입력이라 울타리가 화면을 읽기 전에 failed/mac_input, 넣기 0회', async () => {
+    const t = setup()
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'l770-wait-0001', channel: 'c1', text: 'x' })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(t.last('l770-wait-0001')?.state).toBe('queued')
+    // 실제 guard 실측(LIFE-770 최종 관문 runs.md `d`): `←` 와 함께 화면이 바뀌고 입력 revision 이 오른다(29 → 30).
+    t.backend.screenText = view('view-default')
+    if (t.backend.input !== null) t.backend.input = { ...t.backend.input, revision: t.backend.input.revision + 1 }
+    t.backend.quiet = true
+    expect(await t.settled('l770-wait-0001')).toMatchObject({ state: 'failed', reason: 'mac_input' })
+    expect(t.backend.fences).toHaveLength(0)
+    expect(t.backend.prompts).toHaveLength(0)
+    expect(t.logs.filter((log) => log.tag === 'mobile.input_target_changed').map((log) => log.fields.check)).toEqual(['input'])
+    // 그 뒤 agent view 인 채 새로 보낸 지시는 판별에 닿는다(runs.md `d2`).
+    t.hub.send({ device: 'd1', id: 'l770-wait-0002', channel: 'c1', text: 'x' })
+    expect(await t.settled('l770-wait-0002')).toMatchObject({ state: 'failed', reason: 'agent_view' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('판별 뒤 전환 — 넣는 순간 guard 가 거절하고 다음 관문에서 agent view 를 보면 넣지 않는다', async () => {
+    const t = setup()
+    t.backend.promptResult = 'refused'
+    t.backend.onPrompt = () => { t.backend.screenText = view('view-default') }
+    t.hub.send({ device: 'd1', id: 'l770-race-0001', channel: 'c1', text: 'x' })
+    expect(await t.settled('l770-race-0001')).toMatchObject({ state: 'failed', reason: 'agent_view' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('중단 경로는 이 판별을 쓰지 않는다 — Claude 는 화면과 무관하게 키를 보낸다', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.screenText = view('view-default')
+    t.backend.onSend = () => { t.backend.status = 'idle' }
+    t.hub.stopTurn({ device: 'd1', id: 'l770-stop-0001', channel: 'c1' })
+    expect((await t.settled('l770-stop-0001')).state).toBe('stopped')
+  })
+  it('Codex 는 판별하지 않는다 — 입력 줄을 못 찾아 draft_unknown 그대로', async () => {
+    const t = setup()
+    t.backend.screenText = view('view-default')
+    t.hub.send({ device: 'd1', id: 'l770-cdx-00001', channel: 'c2', text: 'x' })
+    expect(await t.settled('l770-cdx-00001')).toMatchObject({ state: 'failed', reason: 'draft_unknown' })
   })
 })
 
@@ -2756,5 +2838,53 @@ describe('LIFE-754 Claude 2.1.296 문항 글 줄 앞 `│` — 실물 화면(bar
     t.hub.answer({ device: 'd1', id: 'l754-other', channel: 'c1', question: 60, call: 'toolu-other', digest: questionDigest(questionsOf(item)), answers: [{ choices: [0], other: null }] })
     expect(await t.settled('l754-other')).toMatchObject({ state: 'failed', reason: 'question_changed' })
     expect(t.backend.sends).toHaveLength(0)
+  })
+})
+
+describe('LIFE-769 — corral 이 `claude attach` 로 푼 세션의 채널 (합성: herdr 관측이 키 없음인 pane)', () => {
+  // attach pane 은 herdr 가 참조를 주지 않는다(corral-specs LIFE-769 probe2) — 관측 세션은 null 이고, 목록 세션은 해소기가 준 `corral:claude-attach` 참조다.
+  const asAttach = (t: ReturnType<typeof setup>) => {
+    const pane = paneOf(t.state, 'c1')
+    if (pane.agentSession !== null && pane.agentSession.kind === 'id') pane.agentSession = { ...pane.agentSession, source: ATTACH_SESSION_SOURCE }
+    t.backend.observedSession = () => null
+  }
+
+  it('herdr 관측이 null 이어도 같은 상태다 → delivered (base 는 herdr_session 으로 거절)', async () => {
+    const t = setup()
+    asAttach(t)
+    t.hub.send({ device: 'd1', id: 'l769-0000-0001', channel: 'c1', text: 'attach 지시' })
+    expect(await t.settled('l769-0000-0001')).toMatchObject({ state: 'delivered' })
+    expect(t.backend.prompts).toHaveLength(1)
+  })
+
+  it('fix1 F1 — 접수 뒤 해소기가 같은 attach 의 새 sessionId(`/clear`)로 목록을 바꾸면 넣지 않는다(목록 대조)', async () => {
+    const t = setup()
+    asAttach(t)
+    const observe = t.backend.observe.bind(t.backend)
+    let swapped = false
+    t.backend.observe = async (pane) => {
+      const seen = await observe(pane)
+      if (!swapped) {
+        swapped = true
+        const row = paneOf(t.state, 'c1')
+        if (row.agentSession !== null && row.agentSession.kind === 'id') row.agentSession = { ...row.agentSession, id: 'cleared-in-attach' }
+      }
+      return seen
+    }
+    t.hub.send({ device: 'd1', id: 'l769-0000-0003', channel: 'c1', text: 'attach 지시' })
+    expect(await t.settled('l769-0000-0003')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.logs.filter((log) => log.tag === 'mobile.input_target_changed').map((log) => log.fields.check)).toEqual(['list'])
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+
+  it('그 사이 herdr 가 키를 주기 시작하면(다른 세션일 수 있다) 넣지 않는다 — fail-closed 유지', async () => {
+    const t = setup()
+    asAttach(t)
+    let calls = 0
+    t.backend.observedSession = () => ((calls += 1) <= 3 ? null : OLD_SESSION)
+    t.hub.send({ device: 'd1', id: 'l769-0000-0002', channel: 'c1', text: 'attach 지시' })
+    expect(await t.settled('l769-0000-0002')).toMatchObject({ state: 'failed', reason: 'target_changed' })
+    expect(t.logs.filter((log) => log.tag === 'mobile.input_target_changed').map((log) => log.fields.check)).toEqual(['herdr_session'])
+    expect(t.backend.prompts).toHaveLength(0)
   })
 })

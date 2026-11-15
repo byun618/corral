@@ -89,6 +89,106 @@ const claudeScreen = (input: string): string => ['● 답', '', RULE, `❯\u00a0
 const codexScreen = (input: string): string => ['• 답', '', input, '', '  gpt · ~/w'].join('\r\n')
 const grokScreen = (input: string): string => ['╭────────╮', `│ ❯ ${input.padEnd(20)}│`, '╰────────╯'].join('\r\n')
 
+describe('C15 이름 붙은 질문 화면 (LIFE-766 — 실제 pane 화면에서 뜨고 세션 이름을 가린 표본)', () => {
+  const sample = (name: string): string => fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'continued-in', name), 'utf8')
+  // 표본의 맨 끝 이름 줄을 뗀 화면 — 그 줄은 색 코드로 끝난다.
+  const plain = (name: string): string => {
+    const lines = sample(name).trimEnd().split('\n')
+    expect(lines.at(-1)).toContain('세션 이름')
+    const rest = lines.slice(0, -1).join('\n')
+    expect(rest).not.toContain('세션 이름')
+    return `${rest}\n`
+  }
+  const NAMED = `${'─'.repeat(40)} 세션 이름 ─`
+  const QUESTION_NAMES = ['screen-question.ansi', 'screen-named-tabs.ansi', 'screen-named-tabs-2.ansi', 'screen-narrow-question.ansi']
+  const REVIEW_NAMES = ['screen-named-review.ansi', 'screen-narrow-review.ansi']
+
+  it.each(QUESTION_NAMES)('ⓐ 안내 줄 아래 이름 줄이 있는 질문 화면(%s) → 이름 줄을 뗀 화면과 같은 question', (name) => {
+    const named = activeQuestion({ kind: 'claude', screen: sample(name) })
+    expect(named.kind).toBe('question')
+    expect(named).toEqual(activeQuestion({ kind: 'claude', screen: plain(name) }))
+  })
+  it.each(REVIEW_NAMES)('ⓐ 검토 화면(%s) → 이름 줄을 뗀 화면과 같은 review', (name) => {
+    expect(activeQuestion({ kind: 'claude', screen: sample(name) })).toEqual({ kind: 'review' })
+    expect(activeQuestion({ kind: 'claude', screen: plain(name) })).toEqual({ kind: 'review' })
+  })
+  it.each([...QUESTION_NAMES, ...REVIEW_NAMES])('ⓑ 이름 줄 뒤에 글이 더 있거나, 이름 줄 자리가 이름 꼴이 아닌 글이면 none(%s)', (name) => {
+    const body = plain(name).trimEnd()
+    for (const below of [`${NAMED}\n글`, `${NAMED}\n${NAMED}`, `${NAMED}\n  ⏸ manual mode on`, '글', '세션 이름', `  ${NAMED}`, `${'─'.repeat(40)} 세션 이름`, `${'─'.repeat(40)}  ─`, `─ 세션 이름 ─`, RULE]) {
+      expect(activeQuestion({ kind: 'claude', screen: `${body}\n${below}\n` }), below).toEqual({ kind: 'none' })
+    }
+  })
+  it('ⓑ 잘린 이름 줄(좁은 pane 실표본) → none, 키 0회 쪽이다', () => {
+    expect(activeQuestion({ kind: 'claude', screen: sample('screen-narrow-cut-question.ansi') })).toEqual({ kind: 'none' })
+  })
+  it('ⓒ 권한 화면 실표본 → none · 이름 줄이 붙어도 none', () => {
+    const screen = sample('screen-named-permission.ansi')
+    expect(activeQuestion({ kind: 'claude', screen })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'claude', screen: `${screen.trimEnd()}\n${NAMED}\n` })).toEqual({ kind: 'none' })
+  })
+  it('ⓒ 끝난 질문 상자 아래 권한 화면 + 이름 줄 → none (R3-A2 가 막는 순서)', () => {
+    const screen = `${plain('screen-question.ansi').trimEnd()}\n${sample('screen-named-permission.ansi').trimEnd()}\n${NAMED}\n`
+    expect(activeQuestion({ kind: 'claude', screen })).toEqual({ kind: 'none' })
+    const review = `${plain('screen-named-review.ansi').trimEnd()}\n${sample('screen-named-permission.ansi').trimEnd()}\n${NAMED}\n`
+    expect(activeQuestion({ kind: 'claude', screen: review })).toEqual({ kind: 'none' })
+  })
+  it('ⓒ 끝난 질문 상자 아래 이름 붙은 입력 상자 → none', () => {
+    const screen = `${plain('screen-question.ansi').trimEnd()}\n${sample('screen-named-empty.ansi')}`
+    expect(activeQuestion({ kind: 'claude', screen })).toEqual({ kind: 'none' })
+  })
+  it('다른 provider 는 이름 줄을 받지 않는다', () => {
+    const z1 = (name: string): string => fs.readFileSync(path.join(Z1, name), 'utf8')
+    expect(activeQuestion({ kind: 'codex', screen: `${z1('ca-q1-open.txt')}\n${NAMED}` })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'grok', screen: `${z1('ga-q1-screen.txt')}\n${NAMED}` })).toEqual({ kind: 'none' })
+  })
+})
+
+describe('C14 이름 붙은 입력 상자 (LIFE-766 — 실제 pane 화면에서 뜨고 세션 이름을 가린 표본)', () => {
+  const sample = (name: string): string => fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'continued-in', name), 'utf8')
+  const NAMED = `${'─'.repeat(40)} 세션 이름 ─`
+  const box = (input: { top: string; first: string; bottom: string }): string => ['● 답', input.top, input.first, input.bottom, '  ? for shortcuts'].join('\r\n')
+
+  it('ⓐ 윗줄에 이름이 붙은 빈 상자 → empty', () => {
+    expect(draftState({ kind: 'claude', screen: sample('screen-named-empty.ansi') })).toBe('empty')
+  })
+  it('ⓑ 같은 상자에 글 → draft', () => {
+    expect(draftState({ kind: 'claude', screen: sample('screen-named-draft.ansi') })).toBe('draft')
+  })
+  it('ⓒ 아랫줄에 이름이 붙은 모양 → unknown', () => {
+    expect(draftState({ kind: 'claude', screen: box({ top: RULE, first: '❯\u00a0', bottom: NAMED }) })).toBe('unknown')
+    expect(draftState({ kind: 'claude', screen: box({ top: NAMED, first: '❯\u00a0', bottom: NAMED }) })).toBe('unknown')
+  })
+  it('ⓒ 상자 첫 줄이 ❯ 아닌 모양 → unknown', () => {
+    expect(draftState({ kind: 'claude', screen: box({ top: NAMED, first: 'x', bottom: RULE }) })).toBe('unknown')
+  })
+  it('ⓒ 들여 쓴 줄은 이름 윗줄이 아니다 — 여러 줄 초안의 그런 줄이 상자 윗줄이 되지 않는다', () => {
+    const screen = [RULE, '❯\u00a0첫 줄', `  ${NAMED}`, '  ❯ 둘째', RULE].join('\r\n')
+    expect(draftState({ kind: 'claude', screen })).toBe('draft')
+  })
+  it('좁은 pane 실표본 — 이름이 다 들어가면 empty, 긴 이름이 잘려 앞 가로줄이 사라지면 unknown(넣지 않는다)', () => {
+    expect(draftState({ kind: 'claude', screen: sample('screen-narrow-empty.ansi') })).toBe('empty')
+    expect(draftState({ kind: 'claude', screen: sample('screen-narrow-cut-empty.ansi') })).toBe('unknown')
+  })
+  it('이름 줄 꼴 — 앞 가로줄 셋 이상 · 이름 앞뒤 빈칸 · 끝 가로줄 · 이름 자리에 글이 없으면 unknown', () => {
+    const bar = '─'.repeat(40)
+    for (const top of ['─ 이름 ─', '── 이름 ─', `${bar} 이름`, `${bar}  ─`, `${bar}이름 ─`, `${bar} 이름─`]) {
+      expect(draftState({ kind: 'claude', screen: box({ top, first: '❯\u00a0', bottom: RULE }) }), top).toBe('unknown')
+    }
+    expect(draftState({ kind: 'claude', screen: box({ top: '─── 이름 ─', first: '❯\u00a0', bottom: RULE }) })).toBe('empty')
+  })
+  it('ⓓ 이름 없는 표본은 그대로', () => {
+    expect(draftState({ kind: 'claude', screen: sample('screen-plain-empty.ansi') })).toBe('empty')
+    expect(draftState({ kind: 'claude', screen: claudeScreen('글') })).toBe('draft')
+  })
+  it('질문 화면은 입력 상자가 아니다 → unknown (키 경로가 넣지 않는다)', () => {
+    expect(draftState({ kind: 'claude', screen: sample('screen-question.ansi') })).toBe('unknown')
+  })
+  it('다른 도구의 판별은 이름 줄을 모른다', () => {
+    expect(draftState({ kind: 'codex', screen: sample('screen-named-empty.ansi') })).toBe('unknown')
+    expect(draftState({ kind: 'grok', screen: sample('screen-named-empty.ansi') })).toBe('unknown')
+  })
+})
+
 describe('맥 입력창 초안 (Z1ⓔ — 화면 모양 합성)', () => {
   it('Claude — 상자 안 ❯ 뒤가 비면 empty, 글이 있으면 draft, 상자가 없으면 unknown', () => {
     expect(draftState({ kind: 'claude', screen: claudeScreen('') })).toBe('empty')

@@ -19,6 +19,7 @@ import {
   readSessionDigest,
 } from './transcript'
 import type { AgentSessionRef } from '../shared/types'
+import { CONTINUED_TAIL_BYTES } from './transcript-continued'
 
 const SESSION_ID = '11111111-2222-4333-8444-666666666666'
 
@@ -439,9 +440,10 @@ describe('모델·최근 발화 이어 나르기 (T3·T4)', () => {
     fs.appendFileSync(file, jsonl([tool]))
     const { read, actual } = tailReadSync(() => readSessionDigest(ref))
     expect(read.headBytes).toBe(0)
-    // 누적 판독(LIFE-462)은 별도 계정이다 — 실제 읽기 = 꼬리 + 누적, 꼬리 몫만 A6 상한과 본다
-    expect(actual).toBe(read.bytes + read.lifecycle.bytes)
-    expect(actual - read.lifecycle.bytes).toBeLessThanOrEqual(TAIL_MAX_BYTES)
+    // 누적 판독(LIFE-462)·이어 가기 판별(LIFE-766)은 별도 계정이다 — 실제 읽기 = 꼬리 + 누적 + 판별, 꼬리 몫만 A6 상한과 본다
+    expect(actual).toBe(read.bytes + read.lifecycle.bytes + read.continuedBytes)
+    expect(read.continuedBytes).toBeLessThanOrEqual(CONTINUED_TAIL_BYTES)
+    expect(actual - read.lifecycle.bytes - read.continuedBytes).toBeLessThanOrEqual(TAIL_MAX_BYTES)
   })
 
   it('R3-F1 틈 뒤 근거 확인 경로 — 확장이 예산을 다 쓰면 근거 확인 판독을 안 한다: 실제 꼬리 읽기 ≤ TAIL_MAX_BYTES, 값은 null', () => {
@@ -455,9 +457,10 @@ describe('모델·최근 발화 이어 나르기 (T3·T4)', () => {
     fs.appendFileSync(file, jsonl(filler(TAIL_WINDOW_BYTES + 60_000))) // 틈 — 확장이 남은 예산을 다 쓴다
     const { read, actual } = tailReadSync(() => readSessionDigest(ref))
     expect(read.headBytes).toBe(0)
-    // 누적 판독(LIFE-462)은 별도 계정이다 — 실제 읽기 = 꼬리 + 누적, 꼬리 몫만 A6 상한과 본다
-    expect(actual).toBe(read.bytes + read.lifecycle.bytes)
-    expect(actual - read.lifecycle.bytes).toBeLessThanOrEqual(TAIL_MAX_BYTES)
+    // 누적 판독(LIFE-462)·이어 가기 판별(LIFE-766)은 별도 계정이다 — 실제 읽기 = 꼬리 + 누적 + 판별, 꼬리 몫만 A6 상한과 본다
+    expect(actual).toBe(read.bytes + read.lifecycle.bytes + read.continuedBytes)
+    expect(read.continuedBytes).toBeLessThanOrEqual(CONTINUED_TAIL_BYTES)
+    expect(actual - read.lifecycle.bytes - read.continuedBytes).toBeLessThanOrEqual(TAIL_MAX_BYTES)
     // 틈은 덮였지만 근거 줄을 예산 안에서 다시 못 읽는다 — 확인 못 하면 잇지 않는다
     expect(read.digest.model).toBeNull()
     expect(read.digest.lastPrompt).toBeNull()

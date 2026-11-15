@@ -25,7 +25,7 @@ import {
  * herdr names no session in a default-session pane (`HERDR_SESSION` is unset there), so for an attempt recorded
  * under `default` the socket is the only witness that the caller sits in that session. Absent means not shown.
  */
-export interface CallerClaim { paneId: string | null; session: string | null; socketIsBackend?: boolean }
+export interface CallerClaim { paneId: string | null; session: string | null; socketIsBackend?: boolean; claudeSession?: string | null }
 
 /** herdr's own name for the session a pane without `HERDR_SESSION` lives in. */
 const DEFAULT_SESSION = 'default'
@@ -42,8 +42,10 @@ export function callerInSession(input: { recorded: string; caller: CallerClaim }
 }
 
 export type SenderRejectionCode = 'dispatch_not_found' | 'sender_mismatch' | 'stale_dispatch' | 'capability_revoked'
+/** Which of the two proofs admitted the sender: the pane it calls from, or the claude session chain (LIFE-796). */
+export type SenderProof = 'pane' | 'session_chain'
 export type SenderVerdict =
-  | { ok: true; dispatch: DispatchRecord; worker: WorkerBlock; sessionVerified: boolean }
+  | { ok: true; dispatch: DispatchRecord; worker: WorkerBlock; sessionVerified: boolean; proof: SenderProof }
   | { ok: false; code: SenderRejectionCode; message: string; resources: Record<string, unknown> }
 
 /**
@@ -86,7 +88,49 @@ const HARD_REVOCATIONS = new Set(['stopped', 'abandoned', 'released'])
  * "you named a superseded attempt" (`stale_dispatch`) and "you already reported" — the latter is
  * `transition`'s `illegal_transition` and is left to it, which is why `settled: 'defer'` exists.
  */
-export interface SenderClaim { taskId: string; dispatchId: string; caller: CallerClaim; observation: PaneObservation }
+export interface SenderClaim { taskId: string; dispatchId: string; caller: CallerClaim; observation: PaneObservation; chain?: SessionChain | null }
+
+/**
+ * LIFE-796. A claude session moved to the background (`←`, `/bg`) goes on inside Claude Code's account-wide
+ * daemon, whose environment is that of the pane that first started the daemon — so its `HERDR_PANE_ID` names
+ * an unrelated pane and the pane comparison above can never hold. What the session does keep is its own id
+ * (`CLAUDE_CODE_SESSION_ID`, which Claude Code gives every Bash call), and the minted session's record says
+ * where it went: `continued-in` at the end of the minted file, followed by the rule `terminal show` already
+ * uses for the same pane (LIFE-766/771 `followContinued`, at most `CONTINUED_CHAIN_MAX` hops).
+ *
+ * `chain` is that rule's answer for the Dispatch's own pane, read by the caller of `verifySender`: the minted
+ * id corral launched the pane with, and the ids it continued in. It is accepted only for an attempt whose
+ * frozen agent is claude with that same minted id — a chain read from a pane that now carries another session
+ * proves nothing about this attempt.
+ */
+export interface SessionChain { minted: string; continuedIn: readonly string[] }
+
+/** The pane half of the proof: the caller's pane is the Dispatch pane, and its session the recorded one. */
+function paneProves(input: { dispatch: DispatchRecord; worker: WorkerBlock; caller: CallerClaim }): boolean {
+  const { dispatch, worker, caller } = input
+  if (caller.paneId === null || caller.paneId !== dispatch.target.paneId) return false
+  return worker.paneSession === null || callerInSession({ recorded: worker.paneSession, caller })
+}
+
+/**
+ * Whether a session chain could admit this caller at all — the condition under which the runtime goes and
+ * reads the chain. Pane proof failed, the caller named a claude session, and the attempt was launched as a
+ * claude session corral minted. Anything else is judged exactly as before.
+ */
+export function wantsSessionChain(input: { dispatch: DispatchRecord; caller: CallerClaim }): boolean {
+  const { dispatch, caller } = input
+  if (dispatch.worker === null || paneProves({ dispatch, worker: dispatch.worker, caller })) return false
+  return typeof caller.claudeSession === 'string' && caller.claudeSession.length > 0
+    && dispatch.agent?.kind === 'claude' && typeof dispatch.agent.sessionId === 'string' && dispatch.agent.sessionId.length > 0
+}
+
+/** The session half: the caller's claude session is the minted one or one it continued in, for this attempt's minted id. */
+export function sessionChainProves(input: { dispatch: DispatchRecord; caller: CallerClaim; chain: SessionChain | null | undefined }): boolean {
+  const { dispatch, caller, chain } = input
+  if (!wantsSessionChain({ dispatch, caller }) || chain === null || chain === undefined) return false
+  if (chain.minted !== dispatch.agent?.sessionId) return false
+  return caller.claudeSession === chain.minted || chain.continuedIn.includes(caller.claudeSession ?? '')
+}
 
 export function verifySender(state: OrchestrationState, claim: SenderClaim, settled: 'reject' | 'defer'): SenderVerdict {
   const dispatch = findDispatch(state, claim.dispatchId)
@@ -103,11 +147,15 @@ export function verifySender(state: OrchestrationState, claim: SenderClaim, sett
     ok: false, code: 'sender_mismatch', message: `Dispatch ${dispatch.id} was not started as a worker`,
     resources: { dispatchId: dispatch.id, recovery: 'Only an attempt created by corral orchestration worker-start accepts worker reports' },
   }
-  if (claim.caller.paneId === null) return {
+  // LIFE-796: the session chain is a second way through this gate only — it never skips the checks below it,
+  // so a revoked attempt, a pane that is gone and a second report are refused exactly as before.
+  const byPane = paneProves({ dispatch, worker, caller: claim.caller })
+  const byChain = !byPane && sessionChainProves({ dispatch, caller: claim.caller, chain: claim.chain })
+  if (!byPane && !byChain && claim.caller.paneId === null) return {
     ok: false, code: 'sender_mismatch', message: 'This call did not come from a terminal pane',
     resources: { dispatchId: dispatch.id, expectedPaneId: dispatch.target.paneId, observedPaneId: null, recovery: 'Worker reports are accepted only from the pane the Dispatch was bound to' },
   }
-  if (claim.caller.paneId !== dispatch.target.paneId || (worker.paneSession !== null && !callerInSession({ recorded: worker.paneSession, caller: claim.caller }))) return {
+  if (!byPane && !byChain) return {
     ok: false, code: 'sender_mismatch', message: `This pane is not the one dispatch ${dispatch.id} was bound to`,
     resources: { dispatchId: dispatch.id, expectedPaneId: dispatch.target.paneId, observedPaneId: claim.caller.paneId,
       expectedSession: worker.paneSession, observedSession: claim.caller.session,
@@ -138,7 +186,9 @@ export function verifySender(state: OrchestrationState, claim: SenderClaim, sett
   // where `CORRAL_SESSION` was unset has nothing to compare a caller's session against, so the
   // pane id stands alone. That is a weaker proof than the one this command usually makes, and the
   // caller is told which of the two they got rather than left to assume the stronger one.
-  return { ok: true, dispatch, worker, sessionVerified: worker.paneSession !== null }
+  //
+  // A session chain says nothing about the herdr session, so an attempt admitted on it is never `sessionVerified`.
+  return { ok: true, dispatch, worker, sessionVerified: byPane && worker.paneSession !== null, proof: byPane ? 'pane' : 'session_chain' }
 }
 
 export function senderError(verdict: Extract<SenderVerdict, { ok: false }>): RuntimeError {

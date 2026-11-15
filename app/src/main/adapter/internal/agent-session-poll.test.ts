@@ -71,9 +71,11 @@ describe('applyAgentSessions — 저장소 규칙', () => {
     expect(sessionOf(store)).toBe('same')
   })
 
-  it('ⓒ 키가 없는 항목·모양이 아닌 답은 알던 세션을 지우지 않는다 — 키가 있고 null 이면 그게 답이다', () => {
+  // LIFE-769: 키 없는 항목이 알던 세션을 두는 것은 claude 가 아닌 pane 만이다 — claude pane 은 옛 참조 대신 corral 이 푼 값(없으면 null)이 나간다
+  // (게이트 ⓪ 갈래 (가), `attach-session.test.ts` C1ⓘ). 그래서 이 시험의 pane 을 codex 로 둔다.
+  it('ⓒ 키가 없는 항목·모양이 아닌 답은 알던 세션을 지우지 않는다(claude 가 아닌 pane) — 키가 있고 null 이면 그게 답이다', () => {
     const store = new WorkspaceStore()
-    store.applySnapshot(snapshot('kept'))
+    store.applySnapshot(snapshot('kept', 'codex'))
     const later = Date.now() + 1
     expect(store.applyAgentSessions({ result: agentList([{ pane_id: 'w1:p1' }]), requestedAt: later }).changed).toBe(false)
     expect(store.applyAgentSessions({ result: { error: 'x' }, requestedAt: later }).changed).toBe(false)

@@ -198,9 +198,14 @@ describe('LIFE-822 B1 ⌘D·⌘⇧D 의 길 — 파일 탭이면 안내, 동작�
     expect(splitKeyRoute({ activeTabId: 'w1:t1', selectedPane: null })).toEqual({ kind: 'none' })
   })
   it('안내 글은 영역 분할 키(⌘⌥D)로 새 영역에 옮기라고 말한다 · 키가 없으면 메뉴 이름', () => {
-    expect(fileTabSplitHint('⌘⌥D')).toBe('파일 탭은 pane 으로 나눌 수 없다 — ⌘⌥D 로 새 영역에 옮긴다')
-    expect(fileTabSplitHint(null)).toContain('「영역 분할」 로 새 영역에')
-    expect(fileTabSplitHint('')).toContain('「영역 분할」')
+    expect(fileTabSplitHint({ groupSplitKey: '⌘⌥D', tabCount: 2 })).toBe('파일 탭은 pane 으로 나눌 수 없다 — ⌘⌥D 로 새 영역에 옮긴다')
+    expect(fileTabSplitHint({ groupSplitKey: null, tabCount: 3 })).toContain('「영역 분할」 로 새 영역에')
+    expect(fileTabSplitHint({ groupSplitKey: '', tabCount: 2 })).toContain('「영역 분할」')
+  })
+  it('fix1 R1-5 영역에 탭이 하나뿐이면 거절될 ⌘⌥D 로 안내하지 않는다', () => {
+    const hint = fileTabSplitHint({ groupSplitKey: '⌘⌥D', tabCount: 1 })
+    expect(hint).not.toContain('⌘⌥D')
+    expect(hint).toContain('탭이 하나뿐이라 새 영역으로 옮길 수도 없다')
   })
 })
 

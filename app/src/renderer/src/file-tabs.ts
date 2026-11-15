@@ -48,9 +48,13 @@ export function splitKeyRoute(input: { activeTabId: string | null; selectedPane:
   return paneId === null ? { kind: 'none' } : { kind: 'split', paneId }
 }
 
-/** 파일 탭에서 pane 분할(⌘D·⌘⇧D·헤더 ▥▤)을 누를 때의 안내 — 영역 분할 키(`group.split`, 기본 ⌘⌥D)를 알려 준다. 키가 없으면 메뉴 이름으로. */
-export function fileTabSplitHint(groupSplitKey: string | null): string {
-  return `파일 탭은 pane 으로 나눌 수 없다 — ${groupSplitKey === null || groupSplitKey === '' ? '「영역 분할」' : groupSplitKey} 로 새 영역에 옮긴다`
+/**
+ * 파일 탭에서 pane 분할(⌘D·⌘⇧D·헤더 ▥▤)을 누를 때의 안내 — 영역 분할 키(`group.split`, 기본 ⌘⌥D)를 알려 준다. 키가 없으면 메뉴 이름으로.
+ * 영역에 탭이 하나뿐이면 영역 분할도 거절되므로(`ONE_TAB_IN_GROUP`) 그 키로 안내하지 않는다(LIFE-822 fix1 R1-5).
+ */
+export function fileTabSplitHint(input: { groupSplitKey: string | null; tabCount: number }): string {
+  if (input.tabCount < 2) return '파일 탭은 pane 으로 나눌 수 없다 — 이 영역에 탭이 하나뿐이라 새 영역으로 옮길 수도 없다'
+  return `파일 탭은 pane 으로 나눌 수 없다 — ${input.groupSplitKey === null || input.groupSplitKey === '' ? '「영역 분할」' : input.groupSplitKey} 로 새 영역에 옮긴다`
 }
 
 /**

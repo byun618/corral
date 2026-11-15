@@ -88,6 +88,13 @@ describe('C2 헤더 ▥▤ — 파일 탭이 활성이면 흐림 + 사유', () =
     }
     expect(spies.splitPane).not.toHaveBeenCalled()
   })
+  it('fix1 R1-5 영역에 탭이 하나뿐이면 title 이 거절될 ⌘⌥D 로 안내하지 않는다', () => {
+    mount({ items: [file('src/a.ts')], activeTabId: fileTabId('src/a.ts') })
+    const button = el('[data-group-split-right="g1"]')
+    expect(button.hasAttribute('disabled')).toBe(true)
+    expect(button.title).not.toContain('⌘⌥D')
+    expect(button.title).toContain('탭이 하나뿐이라')
+  })
   it('터미널 탭 활성 → 지금과 같다(켜짐·분할 title·누르면 분할)', () => {
     mount({ items: [{ kind: 'terminal', tab: terminal }, file('src/a.ts')], activeTabId: 'w1:t1' })
     const right = el('[data-group-split-right="g1"]')

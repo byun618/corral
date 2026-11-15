@@ -871,7 +871,7 @@ export function GroupHeader({
   const menuModelOf = (tabId: string): TabMenuModel => tabMenuModel({ tabOrder, tabId, pinned: pinnedTabs, dirty: dirtyTabs })
   const activeFileItem = shown.find((item): item is Extract<GroupTabItem, { kind: 'file' }> => item.kind === 'file' && item.tabId === activeTabId) ?? null
   const fileTabActive = activeTabId !== null && isFileTabId(activeTabId)
-  const fileSplitHint = fileTabSplitHint(bindingLabel('group.split'))
+  const fileSplitHint = fileTabSplitHint({ groupSplitKey: bindingLabel('group.split'), tabCount: shown.length })
   // LIFE-689 — 같은 이름 구분 설명은 **이 영역의 파일 탭끼리만** 계산한다(VS Code 는 그룹 단위, 터미널 탭은 파일 이름이 없다).
   const fileDescriptions = fileTabDescriptions(shown.flatMap((item) => (item.kind === 'file' && item.diffLabel === undefined ? [item.rel] : [])))
   // LIFE-683 F2-08 — diff 탭도 같은 규칙(같은 제목끼리).

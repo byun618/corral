@@ -63,29 +63,65 @@ export function tabMenuModel(input: { tabOrder: readonly string[]; tabId: string
   }
 }
 
+/** 닫기 확인 창이 이미 떠 있어 새 터미널 닫기 요청이 받아지지 않을 때의 안내(LIFE-822 fix1 R1-3 — 무음 대신). */
+export const CLOSE_CONFIRM_PENDING = '닫기 확인 창이 이미 열려 있다 — 그 창에 먼저 답한 뒤 다시 닫는다'
+
 /**
- * 파일·터미널이 섞인 여러 탭 닫기의 순서 (LIFE-822 B7) — 수정 파일 확인 → 터미널 닫기 요청 → **터미널이 실제로 닫힌 뒤** 파일 닫기.
- * 어느 확인에서든 취소면 하나도 닫지 않는다(옛 순서는 파일을 먼저 닫아, 터미널 실행 중 확인을 취소하면 파일만 닫힌 채 남았다).
- * 터미널 대상이 없으면 파일만 닫는다. `closeTerminals` 의 `onClosed` 는 실제로 닫힌 뒤에만 불린다(취소·거절이면 안 불린다) —
- * 확인 뒤 닫다가 새 실행 중을 만나 두 번 불려도 파일은 한 번만 닫는다.
+ * 범위 닫기의 대상을 종류별로 (LIFE-822) — 영역 순서에서 **herdr 에 없는 터미널 id 를 먼저 뺀다**(탭바가 그리는 칸과 같은 집합 — 메뉴 활성 판정과
+ * 실행 대상이 같은 것을 본다, fix1 R1-3). 없는 id 를 닫기 요청에 넣으면 main 이 아무것도 안 닫고 끝나 파일만 남는 무음이 된다.
+ */
+export function mixedCloseTargets(input: {
+  tabOrder: readonly string[]
+  tabId: string
+  scope: CloseScope
+  pinned: ReadonlySet<string>
+  dirty?: ReadonlySet<string>
+  isLiveTerminal: (tabId: string) => boolean
+}): { files: string[]; terminals: string[] } {
+  const tabOrder = input.tabOrder.filter((tabId) => isFileTabId(tabId) || input.isLiveTerminal(tabId))
+  const targets = closeScopeTargets({ tabOrder, tabId: input.tabId, scope: input.scope, pinned: input.pinned, ...(input.dirty === undefined ? {} : { dirty: input.dirty }) })
+  return { files: targets.filter((tabId) => isFileTabId(tabId)), terminals: targets.filter((tabId) => !isFileTabId(tabId)) }
+}
+
+/**
+ * 파일·터미널이 섞인 여러 탭 닫기의 순서 (LIFE-822 B7) — 수정 파일 확인 → 터미널 닫기 요청 → **요청한 터미널이 전부 닫힌 뒤** 파일 닫기.
+ * 어느 확인에서든 취소면 파일은 하나도 닫지 않는다(옛 순서는 파일을 먼저 닫아, 터미널 실행 중 확인을 취소하면 파일만 닫힌 채 남았다).
+ *   · `confirmFiles` 는 「저장 안 함」 을 결정만 한다 — 버리기는 `closeFiles` 가 실제로 닫을 때(fix1 R1-1)
+ *   · `onClosed(closed)` 는 닫힌 터미널 id 를 준다 — 확인 뒤 닫다가 새 실행 중을 만나 일부만 닫히고 다시 묻다 취소·거절·오류로 끝나면 파일은 남는다
+ *     (이미 닫힌 터미널은 되돌릴 수 없다, fix1 R1-2). 다시 물어 나머지가 닫히면 그때 파일을 닫는다 — 파일 닫기는 한 번만
+ *   · 닫기 확인 창이 이미 떠 있으면 터미널 요청이 받아지지 않는다 — 묻기 전·후 둘 다 거르고 `onBusy` 로 알린다(무음 금지, fix1 R1-3)
+ * 터미널 대상이 없으면 파일만 닫는다.
  */
 export async function closeMixedTabs(input: {
   fileTabIds: readonly string[]
   terminalTabIds: readonly string[]
+  terminalsBusy: () => boolean
+  onBusy: () => void
   confirmFiles: (tabIds: readonly string[]) => Promise<boolean>
-  closeTerminals: (request: { tabIds: readonly string[]; onClosed: () => void }) => void
+  closeTerminals: (request: { tabIds: readonly string[]; onClosed: (closed: readonly string[]) => void }) => void
   closeFiles: (tabIds: readonly string[]) => void
 }): Promise<void> {
+  const busy = (): boolean => input.terminalTabIds.length > 0 && input.terminalsBusy()
+  if (busy()) {
+    input.onBusy()
+    return
+  }
   if (input.fileTabIds.length > 0 && !(await input.confirmFiles(input.fileTabIds))) return
+  if (busy()) {
+    input.onBusy()
+    return
+  }
   if (input.terminalTabIds.length === 0) {
     input.closeFiles(input.fileTabIds)
     return
   }
+  const closed = new Set<string>()
   let filesClosed = false
   input.closeTerminals({
     tabIds: input.terminalTabIds,
-    onClosed: () => {
-      if (filesClosed) return
+    onClosed: (ids) => {
+      for (const tabId of ids) closed.add(tabId)
+      if (filesClosed || !input.terminalTabIds.every((tabId) => closed.has(tabId))) return
       filesClosed = true
       input.closeFiles(input.fileTabIds)
     },

@@ -78,7 +78,7 @@ import { useOpenTabEntries } from './hooks/useOpenTabEntries.js'
 import { useUnread } from './hooks/useUnread.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
 import { sessionTitle, userLabel } from './session-title.js'
-import { closeMixedTabs, closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
+import { CLOSE_CONFIRM_PENDING, closeMixedTabs, cycleTabTarget, mixedCloseTargets, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
 import { closeFollowTarget, fileTabId, fileTabLabel, fileTabsOf, isFileTabId, previewOf, recordCloseFollow, splitKeyRoute, fileTabSplitHint, tabKindOf, terminalKeyTarget, type CloseFollow } from './file-tabs.js'
@@ -215,8 +215,8 @@ export function App(): React.JSX.Element {
     [],
   )
   /** 그 worktree 의 수정된 문서들을 묻는다(worktree 닫기·마지막 터미널 탭 닫기 — E3ⓓⓔ). 없으면 묻지 않고 true. 대상은 그 worktree 문서 전체를 그때그때(R2-A). */
-  const confirmWorktreeDocs = (root: string): Promise<boolean> =>
-    confirmDiscardOrSave({ targets: () => allDocs().filter((doc) => doc.root === root), deps: saveDepsRef.current })
+  const confirmWorktreeDocs = (root: string, except?: ReadonlySet<string>): Promise<boolean> =>
+    confirmDiscardOrSave({ targets: () => allDocs().filter((doc) => doc.root === root && except?.has(doc.key) !== true), deps: saveDepsRef.current })
   /**
    * worktree 삭제(E3ⓓ) — 지울 파일을 저장할 수는 없으니 「버리고 계속 / 취소」. 계속이면 그 worktree 문서를 전부 버린다.
    * 대화상자를 기다리는 사이 묻지 않은 문서가 새로 수정됐으면 그 목록으로 다시 묻는다(R2-A — 처음 목록만 보고 전부 버리지 않는다, 최대 3 번).
@@ -1188,15 +1188,23 @@ export function App(): React.JSX.Element {
    * 사용자가 탭을 닫는다 (×·중클릭·메뉴·⌘W·bulk) — 실행 중 확인은 대상 전부를 모아 한 번, 핀 탭이 있으면 확인을 거친다(K3ⓒ).
    * 실제로 닫힌 탭만 다시 열기 기록에 넣는다(탭마다 1건). `anchor` = 「다른/오른쪽/왼쪽 탭 닫기」의 기준 탭 — 활성 탭이 닫혔으면 그 탭이 활성이 된다(K2ⓓ).
    */
-  const closeTabsByUser = (input: { tabIds: string[]; anchor?: { groupId: string; tab: TabRow }; guarded?: boolean; onClosed?: () => void }): void => {
+  const closeTabsByUser = (input: {
+    tabIds: string[]
+    anchor?: { groupId: string; tab: TabRow }
+    guarded?: boolean
+    /** 실제로 닫힌 터미널 id 와 함께(일부만일 수 있다) — 섞인 닫기가 「전부 닫혔나」 를 본다(LIFE-822 fix1 R1-2). */
+    onClosed?: (closed: readonly string[]) => void
+    /** 이미 확인을 마친 문서 키(섞인 닫기의 파일 — 「저장 안 함」 은 닫을 때 버리므로 아직 수정 상태다) — 아래 worktree 문서 확인에서 다시 묻지 않는다. */
+    confirmedDocs?: ReadonlySet<string>
+  }): void => {
     if (input.tabIds.length === 0) return
     // LIFE-591 E3ⓔ — 이 닫기로 그 worktree 의 터미널 탭이 하나도 안 남으면 herdr workspace 가 닫히고 파일 탭이 화면에서 사라진다(F2 알려진 한계).
     // 그 worktree 에 수정된 파일이 있으면 먼저 묻는다(저장 / 저장 안 함 / 취소). 묻지 않고 닫히는 경로(셸 `exit` 등)에서는 문서가 저장소에 남아
     // 다시 열면 같은 수정 내용으로 돌아오고, 앱 종료 확인에도 잡힌다.
     const owner = (state?.repos ?? []).flatMap((repo) => repo.worktrees).find((row) => row.workspace?.tabs.some((tab) => input.tabIds.includes(tab.tabId)))
     const closesAll = owner?.workspace?.tabs.every((tab) => input.tabIds.includes(tab.tabId)) === true
-    if (owner !== undefined && closesAll && dirtyDocs().some((doc) => doc.root === owner.path) && !input.guarded) {
-      void confirmWorktreeDocs(owner.path).then((ok) => {
+    if (owner !== undefined && closesAll && dirtyDocs().some((doc) => doc.root === owner.path && input.confirmedDocs?.has(doc.key) !== true) && !input.guarded) {
+      void confirmWorktreeDocs(owner.path, input.confirmedDocs).then((ok) => {
         if (ok) closeTabsByUser({ ...input, guarded: true })
       })
       return
@@ -1214,7 +1222,7 @@ export function App(): React.JSX.Element {
       onClosed: (closed) => {
         for (const entry of snapshots) if (closed.includes(entry.tabId)) recentlyClosedRef.current = pushClosed({ history: recentlyClosedRef.current, snapshot: entry.snapshot })
         if (anchor !== undefined && activeBefore !== null && closed.includes(activeBefore)) activateTab(anchor)
-        input.onClosed?.()
+        input.onClosed?.(closed)
       },
     })
   }
@@ -1234,18 +1242,24 @@ export function App(): React.JSX.Element {
         return worktreePath !== null && kind.kind === 'file' && getDoc(docKey(worktreePath, kind.rel))?.dirty === true
       }),
     )
-    const targets = closeScopeTargets({ tabOrder: group.tabOrder, tabId: input.tabId, scope: input.scope, pinned: pinnedTabs, dirty })
-    const files = targets.filter((tabId) => isFileTabId(tabId))
+    // herdr 에 없는 터미널 id 는 뺀다 — 탭바가 그리는 칸(메뉴 활성 판정)과 같은 집합(fix1 R1-3).
+    const { files, terminals } = mixedCloseTargets({ tabOrder: group.tabOrder, tabId: input.tabId, scope: input.scope, pinned: pinnedTabs, dirty, isLiveTerminal: (tabId) => tabById(tabId) !== null })
     const activeBefore = group.activeTabId
-    // 순서 (LIFE-822 B7): 수정 파일 확인(한 번에, E3ⓐ) → 터미널 닫기 요청(실행 중 확인) → **터미널이 실제로 닫힌 뒤** 파일 닫기.
-    // 어느 확인에서 취소해도 하나도 안 닫힌다 — 옛 순서는 파일을 먼저 닫아 터미널 확인 취소 때 파일만 닫힌 채 남았다.
+    // 순서 (LIFE-822 B7): 수정 파일 확인(한 번에, E3ⓐ — 「저장 안 함」 은 결정만) → 터미널 닫기 요청(실행 중 확인) → **요청한 터미널이 전부 닫힌 뒤** 파일 닫기(그때 버린다).
+    // 어느 확인에서 취소해도 파일·문서는 그대로다 — 옛 순서는 파일을 먼저 닫아 터미널 확인 취소 때 파일만 닫힌 채 남았다.
     const anchorTab = activeWorkspaceRow?.tabs.find((tab) => tab.tabId === input.tabId)
+    const fileDocKeys = new Set(files.flatMap((tabId) => {
+      const kind = tabKindOf(tabId)
+      return worktreePath !== null && kind.kind === 'file' ? [docKey(worktreePath, kind.rel)] : []
+    }))
     void closeMixedTabs({
       fileTabIds: files,
-      terminalTabIds: targets.filter((tabId) => !isFileTabId(tabId)),
-      confirmFiles: (tabIds) => confirmFilesByUser({ worktreePath, tabIds }),
+      terminalTabIds: terminals,
+      terminalsBusy: () => lifecycle.pendingClose !== null,
+      onBusy: () => setGroupHint(CLOSE_CONFIRM_PENDING),
+      confirmFiles: (tabIds) => confirmFilesByUser({ worktreePath, tabIds, deferDiscard: true }),
       closeTerminals: ({ tabIds, onClosed }) =>
-        closeTabsByUser({ tabIds: [...tabIds], onClosed, ...(anchorTab === undefined ? {} : { anchor: { groupId: input.groupId, tab: anchorTab } }) }),
+        closeTabsByUser({ tabIds: [...tabIds], onClosed, confirmedDocs: fileDocKeys, ...(anchorTab === undefined ? {} : { anchor: { groupId: input.groupId, tab: anchorTab } }) }),
       closeFiles: (tabIds) => {
         if (worktreePath === null || tabIds.length === 0) return
         if (isFileTabId(input.tabId) && activeBefore !== null && tabIds.includes(activeBefore)) layout.setActiveTab({ groupId: input.groupId, tabId: input.tabId })
@@ -1272,8 +1286,11 @@ export function App(): React.JSX.Element {
       onClosed?.()
     })
   }
-  /** 수정된 파일 탭 확인만(저장 / 저장 안 함 / 취소) — 닫지는 않는다. 섞인 닫기(`closeScope`)가 터미널을 닫은 뒤에 파일을 닫으려고 나눴다(LIFE-822 B7). */
-  const confirmFilesByUser = (input: { worktreePath: string | null; tabIds: readonly string[] }): Promise<boolean> => {
+  /**
+   * 수정된 파일 탭 확인만(저장 / 저장 안 함 / 취소) — 닫지는 않는다. 섞인 닫기(`closeScope`)가 터미널을 닫은 뒤에 파일을 닫으려고 나눴다(LIFE-822 B7).
+   * `deferDiscard` = 「저장 안 함」 을 여기서 버리지 않고 `closeFileNow` 가 닫을 때 버린다(섞인 닫기만 — fix1 R1-1).
+   */
+  const confirmFilesByUser = (input: { worktreePath: string | null; tabIds: readonly string[]; deferDiscard?: boolean }): Promise<boolean> => {
     const { worktreePath, tabIds } = input
     if (worktreePath === null) return Promise.resolve(false)
     // 대상 문서는 그때그때 찾는다 — 확인·저장을 기다리는 사이 처음엔 문서가 없던 탭(한 번도 안 연 탭)을 열어 편집해도 잡힌다(R2-A).
@@ -1283,7 +1300,7 @@ export function App(): React.JSX.Element {
         const doc = kind.kind === 'file' ? getDoc(docKey(worktreePath, kind.rel)) : undefined
         return doc === undefined ? [] : [doc]
       })
-    return confirmDiscardOrSave({ targets, deps: saveDepsRef.current })
+    return confirmDiscardOrSave({ targets, deps: saveDepsRef.current, deferDiscard: input.deferDiscard === true })
   }
   const closeFileByUser = (tabId: string): void => closeFilesByUser([tabId])
   /** LIFE-691 K2ⓐ — 파일 탭 닫기를 입력 pane 따라가기 대기에 싣는다(위 `closeFollowRef`). 활성 worktree 의 닫기만 실린다. */
@@ -1651,7 +1668,7 @@ export function App(): React.JSX.Element {
       const route = splitKeyRoute({ activeTabId: layoutRef.current.activeTabId, selectedPane: lifecycle.selectedPane })
       if (route.kind === 'file-tab') {
         const key = bindingsFor('group.split', keymap.overrides)[0]
-        setGroupHint(fileTabSplitHint(key == null ? null : formatBinding(key)))
+        setGroupHint(fileTabSplitHint({ groupSplitKey: key == null ? null : formatBinding(key), tabCount: layoutRef.current.activeTabCount }))
         return
       }
       if (route.kind === 'split') void splitPaneAt({ paneId: route.paneId, direction: variant === 1 ? 'down' : 'right' })

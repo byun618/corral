@@ -593,12 +593,20 @@ describe('r3 — 외부 조작·되돌리기·재열기', () => {
     ])
   })
 
-  it('L 열 때 stream 생성이 던져도 openLog 는 던지지 않고 stdout 으로 간다', async () => {
+  it('L 열 때 stream 생성이 던져도 openLog 는 던지지 않고 stdout 으로 간다 — 연 fd 는 닫는다', async () => {
     const out = captureStdout()
     vi.mocked(fs.createWriteStream).mockImplementationOnce(() => {
       throw new Error('injected stream')
     })
+    const fds: number[] = []
+    vi.spyOn(fs, 'openSync').mockImplementation((p, flags, mode) => {
+      const fd = realOpen(p, flags, mode)
+      fds.push(fd)
+      return fd
+    })
     expect(() => openLog(dir)).not.toThrow()
+    expect(fds).toHaveLength(1)
+    expect(() => fs.fstatSync(fds[0] ?? -1)).toThrow(/EBADF/)
     log('t.after', {})
     await flush()
     expect(stdoutTags(out)).toEqual(['log.open.failed', 't.after'])

@@ -265,7 +265,8 @@ const CLAUDE_FOOTER_KNOWN = /^Enter to select(?: · (?:↑\/↓ to navigate|Tab\
 
 /**
  * Claude 안내 줄 — `Enter to select` 로 시작하는 마지막 줄. 그 줄이 이미 `Esc to cancel` 로 끝나면 거기서 멈춘다(R5-A4).
- * 덜 끝났으면(좁은 pane 에서 꺾임 — R4-A2 실측 40열) 다음 줄들을 이어 실측 안내 문구가 될 때까지만 읽는다. 그 뒤는 화면 끝까지 빈 줄만(R3-A2). 아니면 -1.
+ * 덜 끝났으면(좁은 pane 에서 꺾임 — R4-A2 실측 40열) 다음 줄들을 이어 실측 안내 문구가 될 때까지만 읽는다. 그 뒤는 화면 끝까지 빈 줄만(R3-A2)이고, `NAMED_RULE` 꼴 줄 하나(LIFE-766 세션 이름)는 받는다 — 그 밖의 글이 있거나 그 줄 뒤에 글이 있으면 -1.
+ * 이 가드는 **모양만** 본다: 이름인지 가리지 않아 제목 달린 가로줄 한 줄도 받는다. 권한 화면이 못 지나는 것은 안내 줄이 다르고 줄이 여럿인 표본 근거다. 계획 승인 등 다른 대화상자 표본은 없다.
  */
 function claudeFooter(lines: string[]): number {
   const footer = lastIndex(lines, (line) => /^\s*Enter to select\b/.test(line))
@@ -279,13 +280,14 @@ function claudeFooter(lines: string[]): number {
       text = squash(`${text} ${lines[end]!}`)
     }
   }
-  return onlyBlankAfter(lines, end) ? footer : -1
+  const below = lines.slice(end + 1).filter((line) => !blankLine(line))
+  return below.length === 0 || (below.length === 1 && NAMED_RULE.test(below[0]!)) ? footer : -1
 }
 
 /**
  * Claude: 맨 아래 안내 줄(`Enter to select … Esc to cancel`) 위의 두 가로줄 사이 상자. 첫 줄은 머리(` ☐ X` 또는 `←  ☒ A  ☐ B  ✔ Submit  →`),
  * 다음 줄들이 문항 글, `N. 글` 이 선택지(아래 들여쓴 설명 줄·preview 상자는 뺀다). 아래 가로줄과 안내 줄 사이는 `Chat about this` 행뿐,
- * 안내 줄 아래는 빈 줄뿐이어야 한다(R3-A2 — 권한 질문의 `Esc to cancel · Tab to amend` 는 안내 줄이 아니다).
+ * 안내 줄 아래는 빈 줄뿐이거나 `NAMED_RULE` 꼴 줄 하나여야 한다(R3-A2 — 권한 질문의 `Esc to cancel · Tab to amend` 는 안내 줄이 아니다).
  */
 function claudeQuestion(lines: string[]): ActiveQuestion {
   const tabsLine = lastIndex(lines, (line) => /^\s*←\s.*✔\s*Submit\s*→\s*$/.test(line))
@@ -342,7 +344,9 @@ function claudeTitleLines(lines: string[]): string[] {
  * → `1. Submit answers` · `2. Cancel` 로 끝나야 한다(뒤에 안내 줄 하나까지). 그 밖의 줄이 화면 끝까지 하나라도 있으면 아니다(R3-A2).
  */
 function claudeReview(rest: string[]): boolean {
-  const lines = rest.filter((line) => !blankLine(line))
+  const shown = rest.filter((line) => !blankLine(line))
+  // 맨 끝 `NAMED_RULE` 꼴 줄 하나를 뗀다(LIFE-766 세션 이름) — 모양만 보고, 그 뒤에 글이 있으면 아래 끝 줄 검사가 막는다. 검토 갈래는 폰 질문과 글을 대조하지 않는다.
+  const lines = NAMED_RULE.test(shown.at(-1) ?? '') ? shown.slice(0, -1) : shown
   if (lines[0]?.trim() !== 'Review your answers') return false
   const end = lines.length - (CLAUDE_FOOTER.test(lines.at(-1) ?? '') ? 1 : 0)
   if (end < 4) return false
@@ -647,11 +651,13 @@ const plainOf = (runs: Run[]): string => runs.map((run) => run.text).join('')
 /** 보이는 화면(ANSI)의 글만 — 줄 순서 그대로(R1-A2 질문 화면 대조). */
 export const screenPlain = (screen: string): string => screen.split(/\r?\n/).map((line) => plainOf(runsOf(line))).join('\n')
 const RULE = /^\s*─{20,}\s*$/
+/** Claude 입력 상자 윗줄에 세션 이름이 붙은 꼴(`─────… 이름 ─`, 세션을 백그라운드로 옮겼다 돌아온 뒤 — LIFE-766 실측 2.1.296). 첫 칸에서 시작하는 줄만 — 상자 안 여러 줄 초안은 들여 쓰인다. */
+const NAMED_RULE = /^─{3,} \S(?:.*\S)? ─+\s*$/
 
 /**
  * 보이는 화면(ANSI)에서 그 provider 의 입력 줄을 찾아 비었는지 본다(Z1ⓔ 표본 모양). **빈 입력이 확인될 때만 `empty`** —
  * 글이 있으면 `draft`, 입력 줄을 못 찾으면 `unknown`(넣지 않는다, fail-closed).
- * - Claude: 마지막 두 가로줄(─) 사이 상자, 첫 줄이 `❯`. `❯` 뒤와 상자 안 나머지 줄에 진한 글이 없어야 빈 입력(흐린 자리표시 `Try "…"` 는 빈 입력 — 새 세션 첫 화면).
+ * - Claude: 마지막 두 가로줄(─) 사이 상자, 첫 줄이 `❯`. 윗줄은 이름이 붙어도 되고(`NAMED_RULE`) 아랫줄은 글 없는 가로줄이어야 한다. `❯` 뒤와 상자 안 나머지 줄에 진한 글이 없어야 빈 입력(흐린 자리표시 `Try "…"` 는 빈 입력 — 새 세션 첫 화면).
  * - Codex: 마지막 `› ` 줄. 그 뒤 글이 전부 흐림(SGR 2 — 자리표시 `Ask Codex to do anything`)이면 빈 입력. 바로 아래 빈 줄 전까지 이어진 줄이 있으면 여러 줄 초안.
  * - Grok: 마지막 `│ ❯ …│` 줄과 그 아래 `│ … │` 줄(상자 끝 `╰` 전까지)이 비어야 빈 입력. 상자 바로 아래 줄(또는 빈 줄 하나 다음 줄)에 `accept suggestion` 힌트가 있으면
  *   입력칸의 기울임(SGR 3) 글은 Grok 의 다음 문장 제안(ghost)이라 빼고 본다 — 힌트가 없으면 기울임도 초안으로 센다(fail-closed, LIFE-582 최종 관문).
@@ -662,10 +668,11 @@ export function draftState(input: { kind: MobileAgentKind; screen: string }): Dr
   switch (input.kind) {
     case 'claude': {
       const rules: number[] = []
-      plain.forEach((line, index) => { if (RULE.test(line)) rules.push(index) })
+      plain.forEach((line, index) => { if (RULE.test(line) || NAMED_RULE.test(line)) rules.push(index) })
       if (rules.length < 2) return 'unknown'
       const end = rules[rules.length - 1]!
       const start = rules[rules.length - 2]!
+      if (!RULE.test(plain[end]!)) return 'unknown'
       const first = plain[start + 1]
       if (first === undefined || start + 1 >= end || !first.startsWith('❯')) return 'unknown'
       // 흐린 글(SGR 2)은 자리표시(`Try "…"`)다 — 진한 글만 초안으로 센다. 첫 줄 맨 앞 `❯` 는 표식.

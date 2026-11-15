@@ -17,6 +17,9 @@
 // - **세션 교체**(R1-A1): 목록 재료가 바뀌면(`changed`) 구독마다 채널 → 세션 → 파일을 다시 고른다. 파일이 바뀌었으면(`/clear`·새 세션) 새 판독자로 옮겨 `reset`,
 //   채널이 목록에서 사라지면 `chat.unavailable` 뒤 구독 끝. **일시 부재**(상태 못 읽음·세션 참조 아직 없음·파일 아직 없음)는 `chat.unavailable`(`retrying`)만 보내고
 //   구독을 들고 있다가 `CHAT_RETRY_MS` 마다 다시 찾아 회복되면 처음부터 보낸다(R2-A4).
+// - **세션 이어 가기**(LIFE-766): 세션이 백그라운드로 옮겨 가면 참조는 그대로이고 목록도 안 바뀐다 — 붙어 있는 Claude 구독은 `CHAT_FOLLOW_MS` 마다 **참조가 찾은 원본**에서
+//   `followContinued` 로 다시 걷는다(안 바뀐 파일은 stat 만, 폴더 훑기 없음). 파일이 달라지면 그 세션 id 의 판독자로 옮겨 `reset` — 옛 판독자는 유예 뒤 버린다.
+//   대상에 대화가 아직 없으면(첫 입력 때 복사된다) 옮기지 않는다 — 빈 `reset` 을 보내지 않는다.
 // - 보내는 글은 전부 홈 경로를 가린다(`maskPaths` — 목록과 같은 계약, X3) · 한 글 `ITEM_TEXT_MAX` 자, 넘으면 `clipped`(원래 길이)를 붙여 자른다.
 //   말풍선 하나 `ITEM_BYTES_MAX` 바이트 — 질문은 글자 예산 안에서만 싣고 넘치면 `clipped`(R1-A5). 프레임 하나 `MAX_FRAME_BYTES` — 넘으면 페이지를 줄이거나 나눠 보낸다.
 // - 폰이 주는 것은 채널 id·세대·말풍선 id(숫자) 뿐이다 — 파일 경로·세션 id 는 서버 안에서 `chatChannel`(목록과 같은 함수로 만든 목록)로만 고른다.
@@ -25,6 +28,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { AgentSessionRef, SessionQuestion, TranscriptAgent } from '../../shared/types.js'
 import { ChatBuilder, type ChatItem, type ChatTool } from '../chat-parse.js'
+import { followContinued } from '../transcript-continued.js'
 import { questionDigest } from './keys.js'
 import { chatChannel, maskPaths, type ChatChannel, type ListInput } from './list.js'
 
@@ -54,6 +58,10 @@ export const TOOL_NAMES_MAX = 40
 export const CHAT_REFRESH_MS = 100
 /** 일시 부재로 기다리는 구독이 있을 때 다시 찾는 주기 — 기다리는 대화가 열려 있을 때만 돈다(R2-A4). */
 export const CHAT_RETRY_MS = 1000
+/** 붙어 있는 Claude 구독이 세션 이어 가기(`continued-in`)를 확인하는 주기 — 상태 변화 없이도 옮겨 간다(LIFE-766). 3초 예산(X4) 안. */
+export const CHAT_FOLLOW_MS = 500
+/** 질문 답이 판독자 색인을 기다리는 상한(LIFE-766) — 넘으면 지금 있는 항목으로 판단한다(없으면 키를 안 보낸다). */
+export const CHAT_QUESTION_READY_MS = 2000
 /** 조각 읽기 크기. */
 const READ_CHUNK = 1024 * 1024
 /** 덮어쓰기 감지 — 이미 읽은 구간의 앞·뒤 이만큼을 해시로 대 본다. */
@@ -484,7 +492,7 @@ export type ChatSubscription = {
 type ReaderEntry = { reader: ChatReader; subs: Set<Sub>; grace: NodeJS.Timeout | null }
 
 /** 구독이 지금 어디 있나 — 판독자에 붙음 · 일시 부재로 기다림(R2-A4) · 끝. */
-type Link = { kind: 'attached'; entry: ReaderEntry; channel: ChatChannel } | { kind: 'waiting'; reason: ChatUnavailable } | { kind: 'ended' }
+type Link = { kind: 'attached'; entry: ReaderEntry; channel: ChatChannel; origin: string } | { kind: 'waiting'; reason: ChatUnavailable } | { kind: 'ended' }
 
 type Sub = {
   channelId: string
@@ -510,6 +518,7 @@ export type ChatHubDeps = {
   graceMs?: number
   refreshMs?: number
   retryMs?: number
+  followMs?: number
   now?: () => number
 }
 
@@ -518,7 +527,11 @@ export function chatFileOf(input: { agent: TranscriptAgent; transcript: string }
   return input.agent === 'grok' ? path.join(path.dirname(input.transcript), 'updates.jsonl') : input.transcript
 }
 
-type Located = { ok: true; channel: ChatChannel; file: string } | { ok: false; reason: ChatUnavailable }
+/** `origin` = 참조가 찾은 파일, `file`·`sessionId` = 거기서 이어 가기를 따라간 읽을 파일과 그 세션 id(LIFE-766). */
+type Located = { ok: true; channel: ChatChannel; origin: string; file: string; sessionId: string | null } | { ok: false; reason: ChatUnavailable }
+
+/** 이어 가기가 있는 참조 — Claude 의 id 참조(`followContinued` 와 같은 조건). */
+const followable = (session: AgentSessionRef): boolean => session.kind === 'id' && session.agent === 'claude'
 
 const round = (ms: number): number => Math.round(ms * 100) / 100
 
@@ -528,6 +541,7 @@ export class ChatHub {
   private readonly subs = new Set<Sub>()
   private refreshTimer: NodeJS.Timeout | null = null
   private retryTimer: NodeJS.Timeout | null = null
+  private followTimer: NodeJS.Timeout | null = null
 
   constructor(deps: ChatHubDeps) {
     this.deps = deps
@@ -560,7 +574,7 @@ export class ChatHub {
       return none
     }
     this.subs.add(sub)
-    if (found.ok) this.attach({ sub, channel: found.channel, file: found.file })
+    if (found.ok) this.attach({ sub, located: found })
     else this.wait({ sub, reason: found.reason })
     if (sub.link.kind === 'ended') return none
     if (found.ok) this.deps.log('mobile.chat_subscribe', { agent: found.channel.agent, status: found.channel.status, readers: this.readers.size })
@@ -585,6 +599,8 @@ export class ChatHub {
     this.refreshTimer = null
     if (this.retryTimer !== null) clearTimeout(this.retryTimer)
     this.retryTimer = null
+    if (this.followTimer !== null) clearInterval(this.followTimer)
+    this.followTimer = null
     for (const entry of this.readers.values()) {
       entry.reader.stop()
       if (entry.grace !== null) clearTimeout(entry.grace)
@@ -615,18 +631,56 @@ export class ChatHub {
         continue
       }
       if (link.kind === 'attached' && found.file === link.entry.reader.file) {
-        sub.link = { ...link, channel: found.channel }
+        sub.link = { ...link, channel: found.channel, origin: found.origin }
         continue
       }
-      if (link.kind === 'attached') this.deps.log('mobile.chat_session_switch', { agent: found.channel.agent })
+      if (link.kind === 'attached') this.deps.log(found.origin === link.origin ? 'mobile.chat_continued' : 'mobile.chat_session_switch', { agent: found.channel.agent })
       else this.deps.log('mobile.chat_recovered', { agent: found.channel.agent, reason: link.reason })
-      this.leave(sub)
-      sub.started = false
-      sub.resume = null
-      sub.since = performance.now()
-      this.attach({ sub, channel: found.channel, file: found.file })
+      this.moveTo({ sub, located: found })
     }
     if ([...this.subs].some((sub) => sub.link.kind === 'waiting')) this.armRetry()
+  }
+
+  /** 다른 파일로 옮긴다 — 처음부터(`reset`). */
+  private moveTo(input: { sub: Sub; located: Extract<Located, { ok: true }> }): void {
+    const { sub } = input
+    this.leave(sub)
+    sub.started = false
+    sub.resume = null
+    sub.since = performance.now()
+    this.attach(input)
+  }
+
+  /** 붙어 있는 Claude 구독의 이어 가기 확인(LIFE-766) — `changed()` 없이 돈다. 판별만 다시 하고 채널·폴더는 다시 찾지 않는다. 볼 구독이 없으면 멈춘다. */
+  private followTick(): void {
+    let watching = false
+    for (const sub of [...this.subs]) {
+      const link = sub.link
+      if (link.kind !== 'attached' || !followable(link.channel.session)) continue
+      watching = true
+      const followed = followContinued({ session: link.channel.session, file: link.origin, empty: 'stay' })
+      // 원본이 지워졌고 메모도 비었으면(세션 전환의 캐시 비움) 없는 원본이 돌아온다 — 그쪽으로 옮기면 구독이 끝난다. 보던 파일에 머문다.
+      if (followed.file === link.entry.reader.file || !fs.existsSync(followed.file)) continue
+      this.deps.log('mobile.chat_continued', { agent: link.channel.agent, hops: followed.hops.length })
+      this.moveTo({ sub, located: { ok: true, channel: link.channel, origin: link.origin, file: followed.file, sessionId: followed.sessionId } })
+    }
+    if (watching || this.followTimer === null) return
+    clearInterval(this.followTimer)
+    this.followTimer = null
+  }
+
+  /**
+   * 질문 답 직전(LIFE-766) — 확인 주기를 기다리지 않고 이어 가기를 한 번 돌리고, 그 파일의 판독자 색인이 끝나기를 기다린다.
+   * 판독자가 없으면(그 대화를 연 구독 없음) 바로 돌아온다 — 항목이 없으니 키는 나가지 않는다.
+   */
+  async questionReady(file: string): Promise<void> {
+    this.followTick()
+    const deadline = this.now() + CHAT_QUESTION_READY_MS
+    for (;;) {
+      const reader = this.readers.get(file)?.reader
+      if (reader === undefined || reader.state.kind !== 'indexing' || reader.paused || this.now() >= deadline) return
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
   }
 
   private armRetry(): void {
@@ -645,7 +699,8 @@ export class ChatHub {
     if (!found.ok) return found
     const file = this.deps.resolveFile({ session: found.channel.session, agent: found.channel.agent })
     if (file === null || !fs.existsSync(file)) return { ok: false, reason: 'no_file' }
-    return { ok: true, channel: found.channel, file }
+    const followed = followContinued({ session: found.channel.session, file, empty: 'stay' })
+    return { ok: true, channel: found.channel, origin: file, file: followed.file, sessionId: followed.sessionId }
   }
 
   private unavailable(input: { sub: Sub; reason: ChatUnavailable; retrying: boolean }): void {
@@ -666,11 +721,15 @@ export class ChatHub {
   }
 
   /** 구독을 판독자에 붙인다 — 멈춰 있던 판독자면 따라잡은 뒤, 준비됐으면 곧장 첫 페이지. */
-  private attach(input: { sub: Sub; channel: ChatChannel; file: string }): void {
-    const { sub } = input
-    const entry = this.entry({ file: input.file, channel: input.channel })
+  private attach(input: { sub: Sub; located: Extract<Located, { ok: true }> }): void {
+    const { sub, located } = input
+    const entry = this.entry(located)
     entry.subs.add(sub)
-    sub.link = { kind: 'attached', entry, channel: input.channel }
+    sub.link = { kind: 'attached', entry, channel: located.channel, origin: located.origin }
+    if (followable(located.channel.session) && this.followTimer === null) {
+      this.followTimer = setInterval(() => this.followTick(), this.deps.followMs ?? CHAT_FOLLOW_MS)
+      this.followTimer.unref()
+    }
     if (entry.grace !== null) clearTimeout(entry.grace)
     entry.grace = null
     const reader = entry.reader
@@ -713,14 +772,13 @@ export class ChatHub {
     entry.grace.unref()
   }
 
-  private entry(input: { file: string; channel: ChatChannel }): ReaderEntry {
+  private entry(input: { file: string; channel: ChatChannel; sessionId: string | null }): ReaderEntry {
     const existing = this.readers.get(input.file)
     if (existing !== undefined) return existing
-    const session = input.channel.session
     const reader = new ChatReader({
       file: input.file,
       agent: input.channel.agent,
-      sessionId: session.kind === 'id' ? session.id : null,
+      sessionId: input.sessionId,
       deps: { log: this.deps.log, pollMs: this.deps.pollMs ?? CHAT_POLL_MS, now: this.deps.now ?? Date.now },
     })
     const entry: ReaderEntry = { reader, subs: new Set(), grace: null }
@@ -877,6 +935,14 @@ export class ChatHub {
 
   private now(): number {
     return (this.deps.now ?? Date.now)()
+  }
+}
+
+/** 폰 쓰기(`InputHub`)가 질문 항목을 읽는 길 — 열린 대화의 판독자. */
+export function questionSource(chat: ChatHub): { questionItems: (file: string) => readonly ChatItem[] | null; questionReady: (file: string) => Promise<void> } {
+  return {
+    questionItems: (file) => chat.readerFor(file)?.items() ?? null,
+    questionReady: (file) => chat.questionReady(file),
   }
 }
 

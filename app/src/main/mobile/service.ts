@@ -11,7 +11,7 @@ import path from 'node:path'
 import QRCode from 'qrcode'
 import type { MobilePairingResult, MobileStatus } from '../../shared/mobile.js'
 import { ServeExposure } from './exposure.js'
-import { ChatHub, chatFileOf } from './chat.js'
+import { ChatHub, chatFileOf, questionSource } from './chat.js'
 import { InputHub, type InputBackend } from './input.js'
 import { HerdrInputBackend } from './input-backend.js'
 import { ListFeed } from './feed.js'
@@ -98,10 +98,10 @@ export class MobileService {
       backend: inputBackend,
       resolveFile: ({ session, agent }) => {
         const resolved = deps.resolveChatFile === undefined ? resolveTranscriptUnique(session) : uniqueOf(deps.resolveChatFile(session))
-        return resolved.kind === 'found' ? { kind: 'found', file: chatFileOf({ agent, transcript: resolved.file }) } : resolved
+        return resolved.kind === 'found' ? { kind: 'found', file: chatFileOf({ agent, transcript: resolved.file }), continuedAs: resolved.continuedAs } : resolved
       },
       deviceValid: (device) => this.pairing.has(device),
-      questionItems: (file) => chat.readerFor(file)?.items() ?? null,
+      ...questionSource(chat),
       expectedFile: ({ channel, cwd }) => {
         const { session, agent } = channel
         if (session.kind !== 'id' || agent === 'codex') return null

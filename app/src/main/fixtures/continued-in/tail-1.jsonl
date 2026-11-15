@@ -1,0 +1,4 @@
+{"type":"atis-latch","atis":"가림","sessionId":"27c8c655-cfba-5467-a568-0b7e0507d5ef"}
+{"parentUuid":"f751504b-9a5c-5d22-b939-d8f067728833","isSidechain":false,"type":"system","subtype":"informational","content":"가림","isMeta":false,"timestamp":"2026-01-01T00:00:01.000Z","uuid":"0339bc2a-e7f6-594b-92c4-0c486d1af05f","level":"가림","userType":"가림","entrypoint":"가림","cwd":"가림","sessionId":"27c8c655-cfba-5467-a568-0b7e0507d5ef","version":"가림","gitBranch":"가림","slug":"가림"}
+{"type":"cost-state","sessionId":"27c8c655-cfba-5467-a568-0b7e0507d5ef","totalCostUSD":0,"totalAPIDuration":0,"totalAPIDurationWithoutRetries":0,"totalToolDuration":0,"totalLinesAdded":0,"totalLinesRemoved":0,"totalDuration":0,"startTime":0,"modelUsage":{},"hasUnknownModelCost":false}
+{"type":"continued-in","timestamp":"2026-01-01T00:00:02.000Z","sessionId":"27c8c655-cfba-5467-a568-0b7e0507d5ef","continuedInSessionId":"3a32a976-6e56-55d5-83a7-54a462990c0d"}

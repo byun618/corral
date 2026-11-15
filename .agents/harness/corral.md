@@ -98,6 +98,7 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 | **배달 확인** | `terminal prompt` → `result.stage`(`confirmed`)·`result.wait.satisfied`·`result.record.matchCount`·`result.record.unavailableReason`, 그리고 `_meta.outcome`(`completed`). `worker-start` 는 같은 값을 `result.input.*` 아래에 담는다 |
 | 요청 영수증 | `result.requestId`(`r1.<13자리 ms>.<UUID>`)·`result.replayed` |
 | 실제 모델·advisor | `worker-start` → `result.input.agent.{requestedModel,requestedEffort,requestedAdvisor,resolvedModel,argv,sessionId,sessionRecord}` · `terminal show` → `result.process.foreground[].argv` · 배너는 `result.input.delivery.screen` 또는 `corral terminal read --screen` |
+| 세션이 백그라운드로 옮겨 간 뒤의 기록 (claude, LIFE-771) | `…agent.sessionRecord.path`·`terminal prompt` → `result.record.path` 는 **이어 가기 규칙이 마지막으로 닿은 파일**(`continued-in` 을 따라간 끝 — 보통 지금 자라는 파일이지만 hop 상한 8·되살아난 원본·증명 못 한 다음 hop 에서는 아닐 수 있다), `…agent.sessionRecord.continuedIn` 은 거쳐 간 세션 id 들(안 옮겼으면 `[]`), `…agent.sessionId` 는 **민팅한 id 그대로**(pane 정체) — 옮겨 간 뒤 기록을 볼 때 sessionId 로 경로를 짓지 말고 이 경로를 읽는다 |
 | 준비 근거 | `terminal wait` / `worker-start` → `…agent.evidence.{agentStatus,launchPending,interactiveReady,stateChangeSeq,samples,detectManifest}` |
 | 배치·확인 | `check` → `result.deliveryId`(`delivery_<12 hex>`)·`result.count`·`result.timedOut`·`result.deliveryReplayed`·`result.acknowledged`·`result.peeked` |
 | 메시지·질문 id | `check` → `result.messages[].{id,type,subject,body,taskId,dispatchId}` (`msg_<12 hex>`). 질문에 답할 때 그 `id` 를 `corral orchestration reply --id` 에 넣는다 |

@@ -309,7 +309,7 @@ export interface CountResult {
     scanned: ScannedFile[]
 }
 type RowRole = 'user' | 'assistant' | 'other'
-interface Row { index: number; text: string | null; timeSeconds: number | null; role: RowRole }
+interface Row { index: number; text: string | null; timeSeconds: number | null; role: RowRole; uuid: string | null }
 
 const asRecord = (value: unknown): Record<string, unknown> | null => isRecord(value) ? value : null
 const isoSeconds = (value: unknown): number | null => {
@@ -330,6 +330,7 @@ function projectRow(kind: AgentKind, row: Record<string, unknown>): Omit<Row, 'i
             text: human ? String(message?.content) : null,
             timeSeconds: isoSeconds(row.timestamp),
             role: row.type === 'assistant' ? 'assistant' : row.type === 'user' ? 'user' : 'other',
+            uuid: typeof row.uuid === 'string' && row.uuid !== '' ? row.uuid : null,
         }
     }
     if (kind === 'codex') {
@@ -340,7 +341,7 @@ function projectRow(kind: AgentKind, row: Record<string, unknown>): Omit<Row, 'i
             ? parts.filter(part => asRecord(part)?.type === 'input_text').map(part => String(asRecord(part)?.text ?? '')).join('')
             : null
         const role: RowRole = message && payload?.role === 'assistant' ? 'assistant' : message && payload?.role === 'user' ? 'user' : 'other'
-        return { text, timeSeconds: isoSeconds(row.timestamp), role }
+        return { text, timeSeconds: isoSeconds(row.timestamp), role, uuid: null }
     }
     const update = asRecord(asRecord(row.params)?.update) ?? asRecord(row.update)
     const sessionUpdate = update?.sessionUpdate
@@ -351,7 +352,7 @@ function projectRow(kind: AgentKind, row: Record<string, unknown>): Omit<Row, 'i
                 : String(asRecord(content)?.text ?? ''))
         : null
     const role: RowRole = sessionUpdate === 'agent_message_chunk' ? 'assistant' : sessionUpdate === 'user_message_chunk' ? 'user' : 'other'
-    return { text, timeSeconds: typeof row.timestamp === 'number' ? Math.floor(row.timestamp) : isoSeconds(row.timestamp), role }
+    return { text, timeSeconds: typeof row.timestamp === 'number' ? Math.floor(row.timestamp) : isoSeconds(row.timestamp), role, uuid: null }
 }
 /**
  * §4.6 (G6): grok writes the submitted body as `user_message_chunk` rows. A 466-byte, 6-line body
@@ -406,11 +407,18 @@ export interface CountInput {
  * can be empty). A file that is now *shorter* than its cursor was rotated or replaced: it is scanned
  * whole and flagged, and the caller must keep the outcome unknown (C3/D24) because the time bound
  * alone re-counts a previous row from the same second.
+ *
+ * LIFE-771: a claude session moved to the background continues in a new file, and its first input
+ * copies the old conversation there — same `uuid`, original timestamp, new `sessionId`. When the
+ * files are that chain (origin first), a row whose `uuid` an earlier file already holds is that
+ * copy, not a new submission, so it is never counted — whatever timestamp it carries. Only rows
+ * with a `uuid` across *different* files are folded: one file, codex and grok count as before.
  */
 export function countSubmissions(input: CountInput): CountResult {
     const read = input.read ?? ((file: string) => { try { return fs.readFileSync(file, 'utf8') } catch { return null } })
     const second = submissionSecond(input.submittedAtMs)
     const result: CountResult = { matchCount: 0, naiveCount: 0, cursorInvalidated: false, assistantAfter: false, hookBlocked: false, scanned: [] }
+    const earlier = new Set<string>()
     for (const file of input.files) {
         const text = read(file)
         if (text === null) continue
@@ -429,6 +437,7 @@ export function countSubmissions(input: CountInput): CountResult {
         result.scanned.push({ path: file, rows: rows.length, fromLine, whole })
         let lastMatch = -1
         for (const row of rows) {
+            if (row.uuid !== null && earlier.has(row.uuid)) continue
             if (row.text !== null && sameBody(input.identity, row.text)) result.naiveCount++
             if (row.index < fromLine) continue
             if (row.timeSeconds !== null && row.timeSeconds < second) continue
@@ -437,6 +446,7 @@ export function countSubmissions(input: CountInput): CountResult {
             lastMatch = row.index
         }
         if (lastMatch >= 0 && rows.some(row => row.index > lastMatch && row.role === 'assistant')) result.assistantAfter = true
+        for (const row of rows) if (row.uuid !== null) earlier.add(row.uuid)
         if (input.kind === 'grok' && grokSubmitHookBlocked(text)) result.hookBlocked = true
     }
     return result

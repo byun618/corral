@@ -229,12 +229,12 @@ function rotate(): void {
 }
 
 // 회전 성공 정리 — 열 때·도는 중 둘 다 여기서. 옛 stream(있으면)은 남은 쓰기를 밀린 세대로 마저 내보내고 닫힌다.
+// nextRotateAt 은 되돌리지 않는다 — 회전 성공 시점에는 이미 지나 있다(raw/claude/equivalent-mutants.md).
 function rotationSucceeded(next: fs.WriteStream): void {
   stream?.end()
   stream = next
   written = 0
   rotateFailures = 0
-  nextRotateAt = 0
 }
 
 function rotateFailed(phase: 'open' | 'run', error: unknown): void {

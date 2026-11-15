@@ -170,6 +170,39 @@
   `cost-state` 뒤 `continued-in` 이 없으면(정상 종료) 지금처럼 닫고, `continued-in` 뒤 같은 파일에 사람 줄이 이어지면(재개) 넘긴 것을 버린다 — 재개의 옛 세대 제외(LIFE-462 L8)는 그대로다.
   **신호는 2.1.296 관측이지 계약이 아니다**(`cost-state`·`continued-in` 순서, 레지스트리 `sessionId`·`kind`·`jobId`·`startedAt`). 판을 올리면 다시 잰다. 모양이 다르면(보류 없이 온 `continued-in`·모양이 아닌 대상 id) 아무것도 넘기지 않는다 — 고치기 전 동작(빠짐)이다.
   **남는 한계**: ① 옛 소유 프로세스가 이미 죽은 뒤 처음 읽으면(앱 재시작 등) 시작 시각을 몰라 이전 세대를 거르지 못한다 — 강제 종료·재개·`←` 가 겹치고 재개가 `stopped` 를 안 쓴 종류일 때만 거짓 「도는 중」이 될 수 있다(실제 기록 미관측). ② 이어 받은 세션을 `claude stop` 하면 셸이 살아 있어도 빠진다(주인이 없다). ③ bg 프로세스가 레지스트리에 오르기 전 잠깐은 빠질 수 있다. ④ 이어 받은 프로세스가 회수·재시작되는 경우(supervisor)는 LIFE-794. ⑤ pid 재사용은 가리지 못한다. ⑥ 통지 없이 멈춘 비동기 에이전트는 이어 받은 bg 가 사는 동안 남을 수 있다(미확인 — 관측한 멈춤은 모두 `killed`·`failed` 통지가 있었다). ⑦ 연쇄 `←` 는 합성 시험뿐이다 — 실기로 이어 받은 세션에서 새 파일을 만든 경로는 `claude stop` + 대화형 `claude --resume` + `←` 하나였고, 그 재개가 옛 셸을 `stopped` 로 닫아 연쇄로 넘길 열린 작업이 없었다(리뷰어 실기 2회). ⑧ 연쇄 앞쪽 파일 크기에 비례하는 `catching-up`(위).
+- **attach pane 의 세션 해소**(LIFE-769 — 코드 `../adapter/internal/attach-session.ts`·`store.ts` `effectiveSession`): `/bg` 뒤 같은 pane 에서 `claude attach <ref>` 로 붙거나 실행 중인 bg 세션을 `claude --resume` 으로 열면
+  herdr 는 claude 를 잡지만 `agent.list` 항목에 `agent_session` **키를 주지 않는다**(attach 클라이언트는 `SessionStart` 훅을 돌리지 않는다). 그런 claude pane 이면 corral 이 세션 조회(1.5 s)마다
+  그 pane 의 foreground argv(herdr `pane.process_info`)를 보고, `claude attach <ref>` 면 공식 스크립트 출력 `claude agents --json --all` 의 background 행으로 `<ref>` → `sessionId` 를 푼다 — claude 와 같은 우선순위로
+  `id` 가 `<ref>` 로 **시작**하는 행(정확 일치 포함)이 있으면 그 집합만 보고 정확히 1개일 때만, 0개일 때만 `name` 에 (대소문자 무시) 포함되는 행이 **하나일 때만**. 푼 값(출처 `corral:claude-attach`)이 목록·대화·입력·보존 행·데스크톱 지문이 읽는 `pane.agentSession` 이다. **herdr 상태는 쓰지 않는다.**
+  **못 풀면 없음**(`no_session`)이다 — store 에 남은 `/bg` 전 참조를 쓰지 않는다(그 참조는 다른 bg 세션일 수 있다). herdr 가 키를 주는 pane 은 그 값이 이긴다(해소를 부르지 않는다).
+  **예외 — 연결이 증명된 옛 참조**(fix3 F13): 푼 값 X 를 얻은 판에서 옛 참조 S0 의 기록이 이어 가기 따라가기(LIFE-766 `followContinued`, `empty: 'follow'`)로 **정확히 X 에 닿으면** 밖으로 S0(출처 `corral:claude-attach`)을 내보낸다.
+  `/bg` 직후 X 파일은 첫 입력 전 메타 줄뿐이라 X 를 바로 내보내면 대화가 빈다(최종 관문 final-2) — S0 을 내보내면 대화는 X 가 빌 동안 S0, 자라면 X(766 `empty: 'stay'`). 입력 확인은 따라가기가 `continued-in` 을 넘으면(hop) X 파일·X id(`continuedAs`)다 —
+  hop 이 없으면(따라가기가 `continued-in` 을 못 보면) 확인 id 는 채널 id S0 이고 새 글은 X 에만 쓰이므로 확인이 비는 쪽이다(다른 세션으로 확인하지 않는다).
+  증명 범위는 766 따라가기가 닿는 범위(같은 폴더, 연쇄 8까지)이고 끝이 X 여야 한다. 연결 없음·다른 대상(경우 ③)·attach 안 `/clear` 뒤 X′(S0 은 X′ 에 안 닿는다)·파일 없음·모름·읽기 오류면 X 그대로다.
+  판 시작 때의 옛 참조가 적용 때 바뀌었으면 적지 않는다(해소 세대 대조와 함께).
+  비용: 조건(claude · 키 없음)을 만족하는 pane 이 없으면 아무것도 부르지 않는다. 있으면 조회마다 그 pane 의 `pane.process_info` 한 건, `claude agents` 는 argv 가 attach 인 pane 이 있을 때만 조회마다 실행 파일당 한 번(pane 들이 나눠 쓴다), 시한 3 s.
+  실측(리뷰 r2, Claude Code 2.1.296 — corral-specs LIFE-769 `raw/review/claude-r2-agents-cost-time.txt`·`claude-r2-ps-sampler1.out`·`grok-r2-poll-cost.txt`): 호출당 real ≈0.1 s · **0.11 CPU-s** · 최대 RSS **≈160 MB**,
+  1.5 s 마다 → **attach pane 이 붙어 있는 동안 상시** 한 코어의 ≈7 %(시간당 ≈2,400회 기동·종료). 실행 파일당 1회라 attach pane 수와 무관하고, 겹침은 없다(동시 최대 1, 좀비 0).
+  연결 증명(fix3 F13)은 푼 값이 있고 옛 참조가 있는 pane 에서 판마다: 옛 참조 파일 위치는 id 마다 기억하고(처음 한 번 `~/.claude/projects` 목록 + 폴더당 stat 1 — 실측 폴더 517개, 못 찾으면 30 s 뒤 다시),
+  그 뒤는 766 판별이 안 바뀐 파일을 stat 만 하므로 stat 몇 번이다(바뀌었으면 끝 창 8~64 KiB 한 번 — 대화 화면이 이미 쓰는 크기).
+  후보가 0 이면(모든 claude pane 에 herdr 키가 있으면) 0 이다 — 정상 상태 비용은 base 와 같다. 주기를 늦추면 attach 안 `/clear` 를 잡는 창이 그만큼 늘고 그 창의 폰 입력은 목록 대조가 못 본다.
+  **푼 값을 캐시하지 않는다** — argv 가 같아도 attach 안 `/clear` 가 같은 `id` 행의 `sessionId` 를 바꾸므로(옛 파일에 `continued-in` 없음) 조회마다 다시 맞춘다.
+  해소 판은 `agent.list` 조회가 실패해도 돈다(후보는 store 가 안다) — 실패가 이어져도 **이미 키 없음인 pane** 은 갱신 상한이 한 주기다. 전환 push 를 놓치고 조회도 계속 실패하면
+  키 없음이 서지 않아 `/bg` 전 참조가 남는다 — 조회가 회복될 때까지(`/bg` 의 떠남은 받고 attach 검출만 놓쳤으면 재동기 스냅샷 30 s 가 전환을 보인다). 실행 파일은 argv[0] 가 절대경로면 그것, 아니면 로그인 셸 PATH·설치 폴더 감지(`agent-detection.ts`)가 찾은 claude — 못 찾으면 없음.
+  입력: 이 출처의 세션은 herdr 관측 세션이 null 인 것이 같은 상태다(`input.ts` `boundSessionKey`) — herdr 가 그 사이 키를 주기 시작하면 다른 세션으로 보고 넣지 않는다.
+  **신호는 Claude Code 2.1.296 · herdr 0.9.0 관측이지 계약이 아니다**: `--resume <실행 중 bg>` 가 argv 를 `claude attach <짧은 id>` 로 바꾸는 것, agent view(`←`)에서 argv 가 `claude agents` 로 바뀌는 것은 문서에 없다(corral-specs LIFE-769 `raw/coordinator/probe1/` P6·P7·P9).
+  **남는 한계**: ① attach 클라이언트가 agent view 를 거치면 argv 가 `claude agents` 로 남아 **없음**이다 — Enter 로 같은 세션에 돌아와도(그 pane 이 어느 세션을 띄우는지 알 공식 신호가 없다).
+  ② agent view 에서 argv 를 **바꾸지 않는** 버전이 나오면 argv 의 옛 ref 가 다른 세션을 가리킬 수 있다. ③ claude 가 새로 붙는 순간(push·스냅샷) 키 없음으로 시작해 `/bg` 전 참조는 새지 않는다 — 다음 해소 판(상한 약 1.5 s + 해소 시한)까지는 없음이다. 이보다 먼저 요청된
+  스냅샷의 옛 키는 세션 시계가 막는다. 정상 claude 기동도 훅이 키를 줄 때까지(약 1 s) 없음이다. **같은 attach 안 `/clear` 는 다음 판까지(약 1.5 s) 옛 세션이 보일 수 있다**
+  — 그 창에 접수된 폰 입력은 목록 대조·revision 울타리만 본다(herdr 관측이 없다). push 를 놓쳐 전환을 못 본 경우는 다음 `agent.list` 가 키 없음을 세운다.
+  ④ `claude attach` 의 대조 규칙은 문서에 없다 — id 접두가 이름보다 먼저인 것은 2.1.296 실측(리뷰 r1)이다. 접두가 둘 이상이거나, 접두가 없고 이름이 둘 이상 걸리면 없음이다(claude 는 고를 수 있어도).
+  ⑤ 푼 pane 에서 `pane.process_info`(시한 1 s) 또는 `claude agents`(시한 3 s)가 한 번 일시 실패하면 그 판은 없음이다(캐시가 없어 판마다 노출) — 채널 키·LA 활동 열쇠가 한 박자 흔들려
+  같은 질문 대기 활동이 LA 에 두 번 남을 수 있다(관측 못 한 판에 직전 값을 붙들면 그 사이 다른 세션으로 바뀐 경우를 다시 연다 — 「모르면 없음」).
+  ⑥ 연결을 증명할 옛 참조가 없거나(corral 재시작 뒤 attach pane 등 경우 ②) 옛 참조가 그 세션에 닿지 않으면(다른 pane 에서 `/bg` 한 세션에 attach 등) X 를 내보낸다 — **첫 입력 전에는 대화가 비어 있다**. 앞 세션을 찾으려고 폴더를 훑지 않는다.
+  **`/rename` 뒤 `/bg` 한 세션**은 X 기록 파일이 첫 입력 때 생긴다(관측 1쌍, Claude Code 2.1.296 — 최종 관문 final2-rn) — 대상 파일이 없어 766 따라가기가 hop 을 세우지 않으므로
+  증명이 안 서고 **첫 입력 전 폰 대화가 빈다**(`no_file`). 첫 입력은 X 로 들어가 확인되고 그 뒤 증명이 선다(S0 → X). 수정 전 코드는 이 경로에서 S0 대화를 보였다(퇴행) —
+  다른 세션 노출은 없다. 사용자 결정(2026-11-10)으로 받아들였다.
+  연결 증명으로 S0 을 내보내는 동안 채널 키는 S0·`corral:claude-attach` 출처로 정해진다 — `/bg` 전 herdr 출처 S0 채널과 키가 다르다(그 사이 agent 가 빠져 채널이 한 번 끊기는 것은 base 와 같다).
 - 판독: 처음 한 번 파일 전체를 1 MiB 조각으로 **비동기** 읽어 색인(조각 사이 이벤트 루프 양보 — 동기 전체 읽기 없음), 그 뒤 250 ms(`CHAT_POLL_MS`)마다 stat 해 늘어난 바이트만 이어 읽는다.
   개행으로 끝나지 않은 마지막 줄은 개행이 올 때까지 보류한다.
 - **말풍선** `items[]` — 기록 순서(id 오름차순). `id` = 그 말풍선 첫 줄의 바이트 오프셋(한 줄에서 여럿이 나오면 소수 `+0.1`) — 같은 파일·같은 내용이면 다시 색인해도 같은 id.

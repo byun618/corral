@@ -23,6 +23,10 @@ import { SUBSCRIPTION_TYPES, agentStatusSubscriptions, subjectOf, type PushFrame
 import { HerdrRequestError, request } from './request.js'
 import { Subscription } from './subscription.js'
 import { WorkspaceStore } from './store.js'
+import { AttachSessionResolver, makeContinuedProof, makeRunClaudeAgents, type AgentsRun, type ContinuedProof } from './attach-session.js'
+
+/** attach 해소의 `pane.process_info` 한 건 시한 — 세션 조회와 같다. */
+const ATTACH_PROCESS_INFO_TIMEOUT_MS = 1_000
 
 /** 백오프: equal jitter. 간격이 실제로 벌어지면서 매번 값이 다르다. */
 const BACKOFF_BASE_MS = 200
@@ -115,6 +119,15 @@ export type SessionLinkHooks = {
    * 안 되던 정황을 이 훅이 덮는다. 걷어 낸 드리프트의 note 를 재동기 기록에 함께 싣는다.
    */
   onResync?: (reason: string) => Promise<{ changed: boolean; note: string | null }>
+  /**
+   * `claude attach` pane 의 세션 해소(LIFE-769)에 쓸 claude 실행 파일 — argv[0] 가 절대경로가 아닐 때(보통 `claude`).
+   * 로그인 셸 PATH·설치 폴더 감지 결과를 준다. 없거나 null 이면 그 pane 은 없음.
+   */
+  claudeExecutable?: () => string | null
+  /** 시험용 — `claude agents --json --all` 실행기를 바꾼다. */
+  runClaudeAgents?: AgentsRun
+  /** 시험용 — 옛 참조 → 푼 값 연결 증명(fix3 F13)을 바꾼다. */
+  proveContinued?: ContinuedProof
 }
 
 export class SessionLink {
@@ -170,8 +183,18 @@ export class SessionLink {
     droppingPush: false,
   }
 
+  /** herdr 가 참조를 주지 않는 claude pane 의 세션 해소 (LIFE-769) — 세션 조회 한 번마다 한 판(`resolveAttachSessions`). */
+  readonly attach: AttachSessionResolver
+  private readonly proveContinued: ContinuedProof
+
   constructor(hooks: SessionLinkHooks) {
     this.hooks = hooks
+    this.proveContinued = hooks.proveContinued ?? makeContinuedProof()
+    this.attach = new AttachSessionResolver({
+      processInfo: (paneId) => this.processInfo(paneId),
+      runAgents: hooks.runClaudeAgents ?? makeRunClaudeAgents(),
+      claudeExecutable: () => hooks.claudeExecutable?.() ?? null,
+    })
   }
 
   linkState(): LinkState {
@@ -544,8 +567,52 @@ export class SessionLink {
       clearTimeout(deadline.timer)
       if (this.sessionPollDeadline === deadline) this.sessionPollDeadline = null
       this.sessionPolling = false
+      // 키 없는 claude pane 이 있으면 그 세션을 푼다(LIFE-769). 기다리지 않는다 — 조회 주기를 늦추지 않게(해소기는 겹쳐 돌지 않는다).
+      // **조회가 실패해도 돈다**(fix1 F3) — 후보는 store 가 이미 안다(전환 push·봉투에서 키 없음으로 시작). 실패가 이어져도 **이미 키 없음인 pane** 은
+      // 푼 값의 갱신 상한이 한 주기다. 전환 push 를 놓치고 조회도 계속 실패하면 그 pane 은 키 없음이 서지 않아 `/bg` 전 키가 남는다 —
+      // 상한 없음 — 조회가 회복될 때까지다. 예외: `/bg` 의 떠남은 받았고 attach 검출만 놓쳤으면 재동기 스냅샷(30 s)이 agent 전환을 보여 키 없음이 선다(fix2 F12).
+      if (!this.stopped && generation === this.generation) void this.resolveAttachSessions(generation)
       // 한 주기를 넘지 않게 묶는다 — 벽시계가 되감기면 `startedAt + 주기 - now` 가 되감긴 만큼 커져 체인이 멎는다(리뷰 r3 1).
       this.scheduleSessionPoll(Math.min(AGENT_SESSION_POLL_MS, Math.max(0, startedAt + AGENT_SESSION_POLL_MS - Date.now())))
+    }
+  }
+
+  // --- attach 세션 해소 (LIFE-769) ---------------------------------------------
+
+  private async processInfo(paneId: string): Promise<unknown> {
+    const session = this.session
+    if (session === null) throw new Error('세션 없음')
+    const response = await request(session.socketPath, 'pane.process_info', { pane_id: paneId }, {
+      reason: 'attach-session', timeoutMs: ATTACH_PROCESS_INFO_TIMEOUT_MS, quiet: true,
+    })
+    if (response.error) throw new HerdrRequestError(response.error.code ?? 'error', response.error.message ?? '')
+    return response.result
+  }
+
+  /**
+   * 키 없는 claude pane 마다 argv 를 보고 `claude attach <ref>` 면 세션을 푼다(`attach-session.ts`). 후보가 없으면 아무것도 부르지 않는다.
+   * 바뀐 것이 있을 때만 `onChange`·로그. 세대가 바뀌었으면(끊김·close) 버린다.
+   */
+  async resolveAttachSessions(generation: number = this.generation): Promise<void> {
+    try {
+      // 판 시작 때의 해소 세대를 들고 간다 — 적용 때 같은 pane 만 적는다(fix2 F11).
+      const candidates = new Map(this.store.attachCandidates().map((candidate) => [candidate.paneId, candidate]))
+      const results = await this.attach.round([...candidates.keys()])
+      if (results === null || generation !== this.generation || this.stopped) return
+      // 연결이 증명된 옛 참조(fix3 F13) — 판 시작 때의 옛 참조가 푼 값에 `continued-in` 으로 닿으면 그 id 를 내보낸다. 파일 읽기는 store 밖(여기)에서.
+      const applying = results.flatMap((result) => {
+        const candidate = candidates.get(result.paneId)
+        if (candidate === undefined) return []
+        const { previous, epoch } = candidate
+        const provenId = result.sessionId !== null && previous !== null ? this.proveContinued({ previous, resolvedId: result.sessionId }) : null
+        return [{ ...result, epoch, sessionId: provenId ?? result.sessionId, proven: provenId === null ? null : previous, resolved: result.sessionId }]
+      })
+      const applied = this.store.applyAttachSessions(applying)
+      if (!applied.changed) return
+      log('attach_session.applied', { note: applied.note, results: applying.map(({ paneId, sessionId, resolved, reason }) => ({ paneId, sessionId, resolved, reason })) })
+      this.hooks.onChange()
+    } catch (error) {
+      log('attach_session.failed', { error: String(error) })
     }
   }
 

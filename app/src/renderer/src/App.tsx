@@ -279,6 +279,10 @@ export function App(): React.JSX.Element {
   const [removeError, setRemoveError] = useState<string | null>(null)
 
   const lifecycle = useLifecycleActions(state)
+  // LIFE-822 fix2 N1 — 섞인 닫기는 파일 확인을 기다린 **뒤에도** 닫기 확인 창이 떠 있나를 본다. 클릭 렌더의 `lifecycle.pendingClose` 는 그 순간 값으로 굳어 있어
+  // await 사이 새로 뜬 창을 못 본다 — 매 렌더 최신 값을 담는 ref 로 읽는다.
+  const pendingCloseRef = useRef(lifecycle.pendingClose)
+  pendingCloseRef.current = lifecycle.pendingClose
   const windowChrome = useWindowChrome()
   // LIFE-527 D5 — 떠 있는 머리(접힘)의 컨트롤 줄 폭 → 왼쪽 위 탭 줄 no-drag 여백 폭(Orca `--collapsed-sidebar-header-width`, `App.tsx:82`).
   // 줌·전체화면으로 폭이 바뀌면 따라간다(ResizeObserver). 터미널 외관 변수와 같이 루트에 건다.
@@ -1255,7 +1259,7 @@ export function App(): React.JSX.Element {
     void closeMixedTabs({
       fileTabIds: files,
       terminalTabIds: terminals,
-      terminalsBusy: () => lifecycle.pendingClose !== null,
+      terminalsBusy: () => pendingCloseRef.current !== null,
       onBusy: () => setGroupHint(CLOSE_CONFIRM_PENDING),
       confirmFiles: (tabIds) => confirmFilesByUser({ worktreePath, tabIds, deferDiscard: true }),
       closeTerminals: ({ tabIds, onClosed }) =>

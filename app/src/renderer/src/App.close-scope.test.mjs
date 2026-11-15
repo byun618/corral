@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-/* global window, document, setTimeout */
+/* global window, document, setTimeout, KeyboardEvent */
 // LIFE-822 fix1 R1-6 — 섞인 범위 닫기의 **배선**을 실제 App 마운트로 거친다:
 //   파일 탭 우클릭 「모두 닫기」 → App `closeScope` → `closeMixedTabs` → 수정 파일 확인(`confirmFilesByUser` deferDiscard)
 //   → `closeTabsByUser`(onClosed 에 닫힌 id) → `lifecycle.closeTabs` → main 게이트 함수 `closeTabsGated` 그대로 → 확인 창(실제 `ConfirmClose`).
@@ -63,14 +63,15 @@ function miniModel(text) {
 }
 
 /** `running` = 처음 실행 중인 pane. `startOnConfirm` = 첫 확인 뒤(닫는 사이) 새로 실행되는 pane — main 이 일부만 닫고 다시 묻는 길. */
-async function mount({ running = [], startOnConfirm = [], dialog = 'discard' } = {}) {
+/** `dialog: 'held'` = 수정 파일 확인 응답을 테스트가 `releaseDialog(choice)` 로 놓을 때까지 기다린다. `layout` = 저장 배치 루트(기본: 한 영역 t1·파일·t2). */
+async function mount({ running = [], startOnConfirm = [], dialog = 'discard', layout = null } = {}) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'l822-app-'))
   const store = new KeybindingStore(folder)
   store.load()
   const prefs = {
     ...new UiPrefsStore(folder).get(),
     sidebarCollapsed: false,
-    groupLayouts: [{ worktreePath: '/r', layoutFormat: LAYOUT_FORMAT, layout: { root: { kind: 'leaf', group: { groupId: 'g1', tabOrder: ['t1', FILE, 't2'], activeTabId: 't1' } }, activeGroupId: 'g1' } }],
+    groupLayouts: [{ worktreePath: '/r', layoutFormat: LAYOUT_FORMAT, layout: layout ?? { root: { kind: 'leaf', group: { groupId: 'g1', tabOrder: ['t1', FILE, 't2'], activeTabId: 't1' } }, activeGroupId: 'g1' } }],
   }
   const gitStatus = { branch: 'main', upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false }
   const tabs = [tabOf('t1', 1, [paneOf('p1', 't1')]), tabOf('t2', 2, [paneOf('p2', 't2'), paneOf('p3', 't2')])]
@@ -85,6 +86,8 @@ async function mount({ running = [], startOnConfirm = [], dialog = 'discard' } =
   const closeCalls = []
   const closed = []
   const dialogs = []
+  const heldDialogs = []
+  const splits = []
   const api = {
     getState: async () => state,
     onState: () => () => {},
@@ -92,7 +95,11 @@ async function mount({ running = [], startOnConfirm = [], dialog = 'discard' } =
     getKeybindings: async () => store.get(),
     getSettingsSync: () => DEFAULT_SETTINGS,
     setSettings: async () => ({ status: 'saved', settings: DEFAULT_SETTINGS }),
-    fileDialog: async (request) => { dialogs.push(request); return dialog },
+    fileDialog: async (request) => {
+      dialogs.push(request)
+      return dialog === 'held' ? new Promise((resolve) => { heldDialogs.push(resolve) }) : dialog
+    },
+    splitPane: async (input) => { splits.push(input); return { ok: false, error: 'test', paneId: null } },
     writeFile: async () => ({ ok: true, stamp: 's1', hash: 'h1' }),
     closeTabs: async (input) => {
       closeCalls.push({ ...input })
@@ -125,7 +132,17 @@ async function mount({ running = [], startOnConfirm = [], dialog = 'discard' } =
     await settle()
   }
   return {
-    q, click, settle, closeCalls, closed, dialogs,
+    q, click, settle, closeCalls, closed, dialogs, splits,
+    releaseDialog: async (choice) => {
+      const resolve = heldDialogs.shift()
+      if (resolve === undefined) throw new Error('대기 중인 확인 없음')
+      await act(async () => { resolve(choice) })
+      await settle()
+    },
+    key: async (init) => {
+      await act(async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })) })
+      await settle()
+    },
     /** 파일 탭 우클릭 → 메뉴 항목. */
     fileMenu: async (action) => {
       const tab = q(`[data-main-tab="${FILE}"]`)
@@ -216,4 +233,43 @@ it('fix1 R1-3 닫기 확인 창이 이미 떠 있으면 → 파일 확인도 터
   expect(app.closeCalls).toHaveLength(calls)
   expect(app.fileTabShown()).toBe(true)
   expect(app.notice()).toBe(CLOSE_CONFIRM_PENDING)
+})
+
+it('fix2 N1 파일 확인을 기다리는 사이 다른 닫기 확인 창이 떴으면 → 확인 뒤 터미널 요청 없이 안내 · 파일·문서 그대로', async () => {
+  const app = await mount({ running: ['p2'], dialog: 'held' })
+  const { doc, model } = app.dirtyDoc()
+  await app.fileMenu('close-all')
+  expect(app.dialogs).toHaveLength(1)
+  // 파일 확인이 열린 사이 — 오른쪽 탭 닫기(t2 실행 중)로 닫기 확인 창이 뜬다
+  await app.fileMenu('close-right')
+  expect(app.modal()).not.toBeNull()
+  const calls = app.closeCalls.length
+  await app.releaseDialog('discard')
+  expect(app.closeCalls).toHaveLength(calls)
+  expect(app.notice()).toBe(CLOSE_CONFIRM_PENDING)
+  expect(app.fileTabShown()).toBe(true)
+  expect(getDoc(doc.key)).toBe(doc)
+  expect(doc.dirty).toBe(true)
+  expect(model.disposed).toBe(false)
+})
+
+const splitLayout = (groups) => ({
+  root: { kind: 'split', direction: 'row', ratio: 0.5, first: { kind: 'leaf', group: groups[0] }, second: { kind: 'leaf', group: groups[1] } },
+  activeGroupId: groups[1].groupId,
+})
+
+it('fix2 N2 ⌘D 배선 — 탭 1개 영역의 파일 탭이면 ⌘⌥D 로 안내하지 않는다 · splitPane 없음', async () => {
+  const app = await mount({ layout: splitLayout([{ groupId: 'g1', tabOrder: ['t1', 't2'], activeTabId: 't1' }, { groupId: 'g2', tabOrder: [FILE], activeTabId: FILE }]) })
+  expect(app.q('[data-render-error]')).toBeNull()
+  await app.key({ key: 'd', code: 'KeyD', metaKey: true })
+  expect(app.notice()).toContain('탭이 하나뿐이라 새 영역으로 옮길 수도 없다')
+  expect(app.notice()).not.toContain('⌘⌥D')
+  expect(app.splits).toEqual([])
+})
+
+it('fix2 N2 ⌘D 배선 — 탭 2개 이상 영역의 파일 탭이면 ⌘⌥D 로 새 영역 안내 · splitPane 없음', async () => {
+  const app = await mount({ layout: splitLayout([{ groupId: 'g1', tabOrder: ['t1'], activeTabId: 't1' }, { groupId: 'g2', tabOrder: [FILE, 't2'], activeTabId: FILE }]) })
+  await app.key({ key: 'd', code: 'KeyD', metaKey: true })
+  expect(app.notice()).toBe('파일 탭은 pane 으로 나눌 수 없다 — ⌘⌥D 로 새 영역에 옮긴다')
+  expect(app.splits).toEqual([])
 })

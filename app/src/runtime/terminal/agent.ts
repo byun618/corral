@@ -2,9 +2,12 @@
  * LIFE-394 — agent launch, readiness and prompt-delivery rules (03-design §2~§4.7).
  *
  * Everything here is either a pure function or a small file-backed store, so the l394 verification
- * scripts run the same rules the product runs (§4.6). corral never parses provider screens and
- * never reads provider trust records: readiness comes from herdr's own agent state machine, and a
- * submission is only "accepted" when the provider's session record contains the body once.
+ * scripts run the same rules the product runs (§4.6). corral never reads provider trust records:
+ * readiness comes from herdr's own agent state machine, and a submission is only "accepted" when the
+ * provider's session record contains the body once. Provider screens are read in one direction only
+ * (LIFE-787): to *refuse* a body on a screen it must not go into — never to decide a pane is ready,
+ * delivered, or that its input line is clear (`agentViewSeen` below; V38's lead diagnostic still
+ * branches on nothing).
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -13,10 +16,50 @@ import { createHash } from 'node:crypto'
 import { RuntimeError } from '../contracts.js'
 import { isRecord } from '../../shared/json.js'
 import { atomicWrite, privateDirectory, readFile } from '../storage.js'
+import { agentViewShown } from '../../main/mobile/keys.js'
 
 export type AgentKind = 'claude' | 'codex' | 'grok'
 export const AGENT_KINDS: readonly AgentKind[] = ['claude', 'codex', 'grok']
 export const isAgentKind = (value: unknown): value is AgentKind => AGENT_KINDS.some(kind => kind === value)
+
+// --- LIFE-787 agent view ------------------------------------------------------------------------
+
+/**
+ * Claude Code's agent view (`←` on an empty prompt) sets the tab title to `claude agents`, or
+ * `N awaiting input · claude agents` when sessions wait for input (agent view docs; 2.1.296 measured
+ * `6 awaiting input · claude agents`, LIFE-787 probe1 21-title). An ordinary session titles the tab
+ * with its own name, so only the documented tail is taken — not any title that happens to contain it.
+ */
+const AGENT_VIEW_TITLE = /(?:^|· )claude agents$/
+export const agentViewTitle = (title: string | null): boolean => title !== null && AGENT_VIEW_TITLE.test(title.trim())
+/**
+ * Is a Claude pane showing agent view, where a submitted body starts a **new** background session
+ * (or, in the Space panel, goes to that row's session) instead of the conversation corral launched?
+ * herdr reads that screen as `idle`, so the ready gate cannot tell. Two independent marks, either of
+ * which refuses: the phone path's screen judgment (LIFE-770 `agentViewShown`, one implementation for
+ * both paths) and the tab title — which `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` turns off, hence the
+ * screen. Only Claude has the view; any other kind reads `[]` whatever its screen or title says.
+ * The answer is the list of marks that matched, so a refusal can say what it saw.
+ */
+export function agentViewSeen(input: { kind: AgentKind; screen: string; title: string | null }): Array<'screen' | 'title'> {
+  if (input.kind !== 'claude') return []
+  const marks: Array<'screen' | 'title'> = []
+  if (agentViewShown({ kind: input.kind, screen: input.screen })) marks.push('screen')
+  if (agentViewTitle(input.title)) marks.push('title')
+  return marks
+}
+
+/**
+ * LIFE-787 D: the two pane refusals whose recovery is a person's act on the pane, not a retry. The
+ * receipt and the socket envelope otherwise put one generic `recovery` on every terminal error; for
+ * these codes they put this one instead, so a caller that reads only `recovery` still sees `esc`.
+ * Every other code keeps the generic text it had.
+ */
+export function paneRecovery(code: string): string | null {
+  if (code === 'agent_view') return 'press esc in the pane to return to the conversation, then retry (the same --request-id may be reused)'
+  if (code === 'input_changed') return 'look at the pane (press esc if it shows agent view), then retry (the same --request-id may be reused)'
+  return null
+}
 
 export type AgentPhase = 'launching' | 'blocked' | 'ready' | 'accepted' | 'responded' | 'exited'
 /** herdr's startup deadline (src/terminal/state.rs); a human may sit on a trust screen for minutes. */

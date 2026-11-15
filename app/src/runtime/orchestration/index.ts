@@ -1167,8 +1167,10 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
             stages.dispatch = { status: 'completed', dispatchId: dispatch.id, attempt: dispatch.attempt }
             effects.push({ kind: 'dispatch', action: 'created', id: dispatch.id, state: 'dispatched' })
           }
-          const unfinished = () => residualResources.push({ kind: 'dispatch', id: dispatch.id,
-            action: `The attempt exists and holds the pane, with no preamble delivered. corral orchestration worker-start --task ${taskId} --terminal ${target.handle} submits it once the pane is ready; worker-stop --dispatch ${dispatch.id} ends the attempt and closes the pane` })
+          // LIFE-787: an input refused because the pane was in Claude agent view (or took input while corral
+          // looked) wrote nothing; the pane needs a person to press esc before the same call resumes.
+          const unfinished = (error?: unknown) => residualResources.push({ kind: 'dispatch', id: dispatch.id,
+            action: `${error instanceof RuntimeError && (error.code === 'agent_view' || error.code === 'input_changed') ? `The pane refused the input (${error.code}): press esc in it to return to the conversation first. ` : ''}The attempt exists and holds the pane, with no preamble delivered. corral orchestration worker-start --task ${taskId} --terminal ${target.handle} submits it once the pane is ready; worker-stop --dispatch ${dispatch.id} ends the attempt and closes the pane` })
 
           // stage 3 — the one submission
           const input = composeBody({ corral: corralCommand(), runId: start.runId, taskId, dispatchId: dispatch.id, handle: target.handle, spec: start.spec })
@@ -1201,7 +1203,8 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           // the same attempt at once both read `null` in their own snapshots, so only the lane can
           // decide which of them makes the effect. The run that writes the key is the only run that
           // makes it. What a later run may do is then decided from those records and the receipts
-          // they name: corral never reads the pane's screen to answer it (`agent.ts` §4.6), and it
+          // they name: corral never reads the pane's screen to answer it (`agent.ts` §4.6 — the screen is read only to
+          // refuse a write on agent view, LIFE-787), and it
           // never repeats an effect whose outcome it cannot read.
           interface Intent { requestId: string; at: string }
           const claim = async (key: 'lead' | 'prompt', requestId: string): Promise<{ mine: boolean; intent: Intent }> => withDocumentLane(async () => {
@@ -1309,11 +1312,13 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           const leadId = derivedRequestId(parentId, 'lead')
           const leadClaim = await claim('lead', leadId)
           if (leadClaim.mine) {
-            try { await terminalChild('terminal send', { terminal: target.handle, text: PROMPT_LEAD, 'request-id': leadId }, {}) }
+            // LIFE-787: `refuse-agent-view` makes the lead pass the same agent-view judgment and input fence
+            // the body's `terminal prompt` does — so on agent view neither the lead nor the body is typed.
+            try { await terminalChild('terminal send', { terminal: target.handle, text: PROMPT_LEAD, 'request-id': leadId, 'refuse-agent-view': true }, {}) }
             catch (error) {
               const released = await release('lead', error)
               stages.input = { ...stageFailure(error), requestId: leadId, lead: released ? 'released' : 'kept' }
-              unfinished()
+              unfinished(error)
               return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
             }
           } else {
@@ -1327,8 +1332,9 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
           /**
            * V38. A diagnostic, and nothing in this command branches on it. `terminal read --screen`
            * returns the provider's drawing: a TUI puts the input line in a box with hint rows under
-           * it, so the end of the screen is not the end of the input line, and corral does not parse
-           * provider screens to decide anything (`agent.ts` §4.6). So this says `true` only when the
+           * it, so the end of the screen is not the end of the input line, and corral reads provider
+           * screens only to refuse a write (agent view, LIFE-787 — `agent.ts` header), never to decide
+           * that anything happened or is clear. So this says `true` only when the
            * lead's text is somewhere on the screen, and `null` — never `false` — otherwise. corral
            * cannot prove an input line is clear, and claiming it is would be the same mistake facing
            * the other way.
@@ -1377,7 +1383,7 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
               } else {
                 const released = await release('prompt', error)
                 stages.input = { ...stageFailure(error), requestId: promptId, submission: released ? 'released' : 'kept' }
-                unfinished()
+                unfinished(error)
                 return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
               }
             }

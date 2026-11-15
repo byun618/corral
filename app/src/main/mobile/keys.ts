@@ -654,6 +654,33 @@ const RULE = /^\s*─{20,}\s*$/
 /** Claude 입력 상자 윗줄에 세션 이름이 붙은 꼴(`─────… 이름 ─`, 세션을 백그라운드로 옮겼다 돌아온 뒤 — LIFE-766 실측 2.1.296). 첫 칸에서 시작하는 줄만 — 상자 안 여러 줄 초안은 들여 쓰인다. */
 const NAMED_RULE = /^─{3,} \S(?:.*\S)? ─+\s*$/
 
+/** Claude 입력 상자 — 마지막 두 가로줄. 윗줄은 이름이 붙어도 되고 아랫줄은 글 없는 가로줄, 첫 줄은 `❯`. 없으면 null. */
+function claudeBox(plain: string[]): { start: number; end: number } | null {
+  const rules: number[] = []
+  plain.forEach((line, index) => { if (RULE.test(line) || NAMED_RULE.test(line)) rules.push(index) })
+  if (rules.length < 2) return null
+  const end = rules[rules.length - 1]!
+  const start = rules[rules.length - 2]!
+  if (!RULE.test(plain[end]!)) return null
+  const first = plain[start + 1]
+  if (first === undefined || start + 1 >= end || !first.startsWith('❯')) return null
+  return { start, end }
+}
+
+/** 흐린 글(SGR 2)은 자리표시(`Try "…"`)다 — 진한 글만 초안으로 센다. 첫 줄 맨 앞 `❯` 는 표식. */
+function claudeBoxTyped(input: { lines: Run[][]; box: { start: number; end: number } }): boolean {
+  const { start, end } = input.box
+  for (let index = start + 1; index < end; index += 1) {
+    let skip = index === start + 1 ? 1 : 0
+    for (const run of input.lines[index]!) {
+      const body = run.text.slice(Math.min(skip, run.text.length))
+      skip = Math.max(0, skip - run.text.length)
+      if (!run.dim && body.replace(/[\s\u00a0]+/g, '').length > 0) return true
+    }
+  }
+  return false
+}
+
 /**
  * 보이는 화면(ANSI)에서 그 provider 의 입력 줄을 찾아 비었는지 본다(Z1ⓔ 표본 모양). **빈 입력이 확인될 때만 `empty`** —
  * 글이 있으면 `draft`, 입력 줄을 못 찾으면 `unknown`(넣지 않는다, fail-closed).
@@ -667,25 +694,9 @@ export function draftState(input: { kind: MobileAgentKind; screen: string }): Dr
   const plain = lines.map(plainOf)
   switch (input.kind) {
     case 'claude': {
-      const rules: number[] = []
-      plain.forEach((line, index) => { if (RULE.test(line) || NAMED_RULE.test(line)) rules.push(index) })
-      if (rules.length < 2) return 'unknown'
-      const end = rules[rules.length - 1]!
-      const start = rules[rules.length - 2]!
-      if (!RULE.test(plain[end]!)) return 'unknown'
-      const first = plain[start + 1]
-      if (first === undefined || start + 1 >= end || !first.startsWith('❯')) return 'unknown'
-      // 흐린 글(SGR 2)은 자리표시(`Try "…"`)다 — 진한 글만 초안으로 센다. 첫 줄 맨 앞 `❯` 는 표식.
-      let typed = false
-      for (let index = start + 1; index < end; index += 1) {
-        let skip = index === start + 1 ? 1 : 0
-        for (const run of lines[index]!) {
-          const body = run.text.slice(Math.min(skip, run.text.length))
-          skip = Math.max(0, skip - run.text.length)
-          if (!run.dim && body.replace(/[\s\u00a0]+/g, '').length > 0) typed = true
-        }
-      }
-      return typed ? 'draft' : 'empty'
+      const box = claudeBox(plain)
+      if (box === null) return 'unknown'
+      return claudeBoxTyped({ lines, box }) ? 'draft' : 'empty'
     }
     case 'codex': {
       let at = -1
@@ -728,4 +739,55 @@ export function draftState(input: { kind: MobileAgentKind; screen: string }): Dr
       return content.trim().length === 0 ? 'empty' : 'draft'
     }
   }
+}
+
+// --- Claude agent view (LIFE-770) -----------------------------------------------------------------
+
+const AGENT_VIEW_PLACEHOLDER = 'describe a task for a new session'
+/** 입력 상자 바로 아래 안내 줄의 한 칸 — 뒤가 ` ·` 또는 줄 끝(`enter to open the file` 은 아니다). 2.1.296 실측. */
+const AGENT_VIEW_HINT = /(?:^|· )(?:space to reply|enter to (?:return|open|create|collapse|expand|show all)|ctrl\+x to confirm)(?: ·|$)/
+/** 잘린 안내 — `…` 가 줄 끝. 폭 스윕(24~56열)에 동사 앞부분이 한 글자까지 다 나왔다(`enter to r…`, `enter to return…`, `enter to return …`, `enter to show a…`). `enter to …` 부터는 동사가 없어 받지 않는다. */
+const AGENT_VIEW_CUT = /(?:^|· )enter to ([^·…]+?) ?…$/
+const AGENT_VIEW_VERBS = ['return', 'open', 'create', 'collapse', 'expand', 'show all']
+/** `?` 안내표 — 넓으면 세 줄, 좁으면 한 줄에 하나씩이고 끝은 늘 `? to close`. 여러 줄을 잇는다. */
+const AGENT_VIEW_HELP = /ctrl\+s to switch views.*\? to close$/
+/** Space 패널(`╭…╯` 안 `❯ reply`) 아래 안내 — 좁으면 낱말 사이로 꺾여(`enter to open · space to` / `close · …`) 줄을 잇는다. 글을 치면 `enter to send · esc to close` 로 바뀐다. */
+const AGENT_VIEW_PANEL_HINT = /(?:^|· )(?:space to close|enter to send · esc to close)(?: ·|$)/
+const PANEL_BOTTOM = /^\s*╰─+╯\s*$/
+
+/** 입력 상자 아래 첫 줄이 agent view 안내인가. 첫 줄만 본다 — 안내는 한 줄로 잘리고, 그 아래는 메뉴·표다. `/` 로 시작하면 명령 메뉴 행이다. */
+function agentViewHintLine(line: string): boolean {
+  if (line.startsWith('/')) return false
+  if (AGENT_VIEW_HINT.test(line)) return true
+  const cut = AGENT_VIEW_CUT.exec(line)?.[1]
+  return cut !== undefined && AGENT_VIEW_VERBS.some((verb) => verb.startsWith(cut))
+}
+
+/**
+ * 보이는 화면이 Claude agent view 인가(LIFE-770) — 폰 지시를 넣으면 안 되는 화면이다: 맨 아래 입력 상자는 **새 세션을 만들고**, Space 패널의 입력은 **그 행의 세션으로** 간다. 어느 쪽도 폰이 보던 대화가 아니다.
+ * herdr 는 `idle`(`live_prompt_box`)로 읽어 상태로는 못 가린다. 공식 신호가 없어 글자로 본다.
+ * 표지는 맨 아래 상자와 그 아래 줄에서만 찾는다 — 대화 출력에 인용된 글은 상자 위라 잡히지 않고, 상자 **안**의 글은 안내로 세지 않는다.
+ * - 하단 안내: 행·헤더 선택, 글 친 상태, 삭제 확인, `?` 안내표, Space 패널. 색을 보지 않는다.
+ * - 자리표시: 안내를 못 읽어도(좁은 폭·문구 변경) `draftState` 가 빈 입력으로 읽을 화면(글이 흐림뿐)이면 잡는다. 좁으면 상자 안에서 꺾이니 줄을 잇는다. 일반 프롬프트에 사람이 친 같은 글은 진하니 `mac_draft` 로 남는다.
+ * 다 못 잡으면 `draftState` 판정으로 떨어진다. 글자·색이 모두 바뀐 판은 `empty` 로 읽혀 들어갈 수 있다(SURFACE.md 한계).
+ */
+export function agentViewShown(input: { kind: MobileAgentKind; screen: string }): boolean {
+  if (input.kind !== 'claude') return false
+  const lines = input.screen.split(/\r?\n/).map(runsOf)
+  const plain = lines.map(plainOf)
+  const below = (at: number): string[] => plain.slice(at + 1).map((line) => line.trim()).filter((line) => line.length > 0)
+  const box = claudeBox(plain)
+  let panel = -1
+  plain.forEach((line, index) => { if (PANEL_BOTTOM.test(line)) panel = index })
+  if (panel > (box?.end ?? -1)) {
+    let top = panel - 1
+    while (top >= 0 && !/^\s*╭/.test(plain[top]!)) top -= 1
+    return plain.slice(top + 1, panel).some((line) => /^\s*│ ❯/.test(line)) && AGENT_VIEW_PANEL_HINT.test(below(panel).join(' '))
+  }
+  if (box === null) return false
+  const footer = below(box.end)
+  if (footer[0] !== undefined && agentViewHintLine(footer[0])) return true
+  if (AGENT_VIEW_HELP.test(footer.join(' '))) return true
+  const body = plain.slice(box.start + 1, box.end).join(' ').slice(1).replace(/[\s\u00a0]+/g, ' ').trim()
+  return body === AGENT_VIEW_PLACEHOLDER && !claudeBoxTyped({ lines, box })
 }

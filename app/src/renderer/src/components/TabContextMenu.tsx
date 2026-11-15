@@ -49,14 +49,17 @@ const MOVE_ITEMS: { direction: MoveDirection; label: string; icon: TabMenuIconKi
   { direction: 'up', label: '위 영역', icon: 'arrow-up' },
 ]
 
-const CLOSE_SCOPE_ITEMS: { scope: CloseScope; label: string; icon: TabMenuIconKind; enabled: (model: TabMenuModel) => boolean }[] = [
-  { scope: 'others', label: '다른 탭 닫기', icon: 'list-x', enabled: (model) => model.canCloseOthers },
-  { scope: 'right', label: '오른쪽 탭 닫기', icon: 'panel-right-close', enabled: (model) => model.canCloseRight },
-  { scope: 'left', label: '왼쪽 탭 닫기', icon: 'panel-left-close', enabled: (model) => model.canCloseLeft },
-]
-
 /** 닫을 대상이 없을 때의 사유 — 비활성 항목의 툴팁. */
 const NOTHING_TO_CLOSE = '닫을 탭이 없다 (고정된 탭은 닫지 않는다)'
+
+// LIFE-822 — 「모두 닫기」「저장된 탭 닫기」를 파일 탭 메뉴(`MainTabBar` `FileTabMenu`)와 같은 이름·순서로 둔다.
+const CLOSE_SCOPE_ITEMS: { scope: CloseScope; label: string; icon: TabMenuIconKind; enabled: (model: TabMenuModel) => boolean; disabledTitle: string }[] = [
+  { scope: 'others', label: '다른 탭 닫기', icon: 'list-x', enabled: (model) => model.canCloseOthers, disabledTitle: NOTHING_TO_CLOSE },
+  { scope: 'right', label: '오른쪽 탭 닫기', icon: 'panel-right-close', enabled: (model) => model.canCloseRight, disabledTitle: NOTHING_TO_CLOSE },
+  { scope: 'left', label: '왼쪽 탭 닫기', icon: 'panel-left-close', enabled: (model) => model.canCloseLeft, disabledTitle: NOTHING_TO_CLOSE },
+  { scope: 'all', label: '모두 닫기', icon: 'x', enabled: (model) => model.canCloseAll, disabledTitle: NOTHING_TO_CLOSE },
+  { scope: 'saved', label: '저장된 탭 닫기', icon: 'list-x', enabled: (model) => model.canCloseSaved, disabledTitle: '닫을 저장된 파일 탭이 없다 (수정된 탭·터미널 탭·고정된 탭은 닫지 않는다)' },
+]
 
 export function TabContextMenu({
   anchor,
@@ -263,7 +266,7 @@ export function TabContextMenu({
           icon: scope.icon,
           label: scope.label,
           enabled: scope.enabled(model),
-          disabledTitle: NOTHING_TO_CLOSE,
+          disabledTitle: scope.disabledTitle,
           run: () => onCloseScope(scope.scope),
         }),
       )}

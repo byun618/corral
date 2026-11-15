@@ -2,22 +2,35 @@
 //
 // 대상은 언제나 **한 영역의 시각 순서**(`TabGroup.tabOrder`)다 — 다른 영역의 탭은 닫지도 고르지도 않는다(220 `useTabGroupCloseScopeCommands`
 // 가 활성 group 의 `tabOrder` 로 자르는 것과 같다). 화면·IPC 는 이 파일 밖이다.
-
-export type CloseScope = 'others' | 'right' | 'left'
+import { isFileTabId } from './group-tree.js'
 
 /**
- * 「다른 탭 닫기 / 오른쪽 탭 닫기 / 왼쪽 탭 닫기」가 닫을 탭 (K2ⓐ) — **핀 탭은 뺀다**(220·VS Code 관례).
- * 기준 탭이 그 영역에 없으면 빈 목록이다.
+ * `all` = 모두 닫기(VS Code `closeAllEditors({ excludeSticky: true })`) · `saved` = 저장된 탭 닫기(`savedOnly` — 수정 안 된 파일·diff 탭만, 터미널 제외) — LIFE-822.
  */
-export function closeScopeTargets(input: { tabOrder: readonly string[]; tabId: string; scope: CloseScope; pinned: ReadonlySet<string> }): string[] {
+export type CloseScope = 'others' | 'right' | 'left' | 'all' | 'saved'
+
+/**
+ * 「다른 / 오른쪽 / 왼쪽 탭 닫기 · 모두 닫기 · 저장된 탭 닫기」가 닫을 탭 (K2ⓐ) — **핀 탭은 뺀다**(220·VS Code 관례).
+ * 기준 탭이 그 영역에 없으면 빈 목록이다. `dirty` = 수정된 파일 탭 id(「저장된 탭 닫기」만 본다, 없으면 빈 집합).
+ */
+export function closeScopeTargets(input: { tabOrder: readonly string[]; tabId: string; scope: CloseScope; pinned: ReadonlySet<string>; dirty?: ReadonlySet<string> }): string[] {
   const index = input.tabOrder.indexOf(input.tabId)
   if (index === -1) return []
-  const range =
-    input.scope === 'others'
-      ? input.tabOrder.filter((tabId) => tabId !== input.tabId)
-      : input.scope === 'right'
-        ? input.tabOrder.slice(index + 1)
-        : input.tabOrder.slice(0, index)
+  const dirty = input.dirty ?? new Set<string>()
+  const range = ((): readonly string[] => {
+    switch (input.scope) {
+      case 'others':
+        return input.tabOrder.filter((tabId) => tabId !== input.tabId)
+      case 'right':
+        return input.tabOrder.slice(index + 1)
+      case 'left':
+        return input.tabOrder.slice(0, index)
+      case 'all':
+        return input.tabOrder
+      case 'saved':
+        return input.tabOrder.filter((tabId) => isFileTabId(tabId) && !dirty.has(tabId))
+    }
+  })()
   return range.filter((tabId) => !input.pinned.has(tabId))
 }
 
@@ -28,11 +41,14 @@ export type TabMenuModel = {
   canCloseOthers: boolean
   canCloseRight: boolean
   canCloseLeft: boolean
+  /** LIFE-822 — 모두 닫기·저장된 탭 닫기. */
+  canCloseAll: boolean
+  canCloseSaved: boolean
   /** 새 영역으로 옮기기 — 영역에 탭이 하나뿐이면 빈 영역을 만드는 경로가 되므로 비활성(LIFE-373). */
   canMoveToNewGroup: boolean
 }
 
-export function tabMenuModel(input: { tabOrder: readonly string[]; tabId: string; pinned: ReadonlySet<string> }): TabMenuModel {
+export function tabMenuModel(input: { tabOrder: readonly string[]; tabId: string; pinned: ReadonlySet<string>; dirty?: ReadonlySet<string> }): TabMenuModel {
   const count = (scope: CloseScope): number => closeScopeTargets({ ...input, scope }).length
   const pinned = input.pinned.has(input.tabId)
   return {
@@ -41,8 +57,39 @@ export function tabMenuModel(input: { tabOrder: readonly string[]; tabId: string
     canCloseOthers: count('others') > 0,
     canCloseRight: count('right') > 0,
     canCloseLeft: count('left') > 0,
+    canCloseAll: count('all') > 0,
+    canCloseSaved: count('saved') > 0,
     canMoveToNewGroup: input.tabOrder.length > 1,
   }
+}
+
+/**
+ * 파일·터미널이 섞인 여러 탭 닫기의 순서 (LIFE-822 B7) — 수정 파일 확인 → 터미널 닫기 요청 → **터미널이 실제로 닫힌 뒤** 파일 닫기.
+ * 어느 확인에서든 취소면 하나도 닫지 않는다(옛 순서는 파일을 먼저 닫아, 터미널 실행 중 확인을 취소하면 파일만 닫힌 채 남았다).
+ * 터미널 대상이 없으면 파일만 닫는다. `closeTerminals` 의 `onClosed` 는 실제로 닫힌 뒤에만 불린다(취소·거절이면 안 불린다) —
+ * 확인 뒤 닫다가 새 실행 중을 만나 두 번 불려도 파일은 한 번만 닫는다.
+ */
+export async function closeMixedTabs(input: {
+  fileTabIds: readonly string[]
+  terminalTabIds: readonly string[]
+  confirmFiles: (tabIds: readonly string[]) => Promise<boolean>
+  closeTerminals: (request: { tabIds: readonly string[]; onClosed: () => void }) => void
+  closeFiles: (tabIds: readonly string[]) => void
+}): Promise<void> {
+  if (input.fileTabIds.length > 0 && !(await input.confirmFiles(input.fileTabIds))) return
+  if (input.terminalTabIds.length === 0) {
+    input.closeFiles(input.fileTabIds)
+    return
+  }
+  let filesClosed = false
+  input.closeTerminals({
+    tabIds: input.terminalTabIds,
+    onClosed: () => {
+      if (filesClosed) return
+      filesClosed = true
+      input.closeFiles(input.fileTabIds)
+    },
+  })
 }
 
 /** ⌘⇧[ ]·⌘⌥[ ]·⌃PgUp/Dn (K7ⓑⓒ) — 활성 영역 안에서 감긴다. 활성 탭이 없으면 첫(다음)·끝(이전) 탭. */

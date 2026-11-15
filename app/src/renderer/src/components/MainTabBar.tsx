@@ -44,8 +44,9 @@ import { FILLED_BELL_PATH } from './WorktreeStatusSlot.js'
 import { sessionTitle, tabAgent, userLabel } from '../session-title.js'
 import { tabOrdinals } from '../fallback-ordinal.js'
 import { TabContextMenu, type MoveDirection, type TabMenuAnchor } from './TabContextMenu.js'
+import { ONE_TAB_IN_GROUP } from '../group-tree.js'
 import { TabMenuIcon } from './TabMenuIcon.js'
-import { closeScopeTargets, tabMenuModel, type CloseScope } from '../tab-actions.js'
+import { tabMenuModel, type CloseScope, type TabMenuModel } from '../tab-actions.js'
 import { SplitIcon } from './SplitIcon.js'
 import { TabStripScrollIndicator } from './TabStripScrollIndicator.js'
 import { useTabStripOverflow, type TabStripOverflow } from '../hooks/useTabStripOverflow.js'
@@ -54,7 +55,7 @@ import type { LaunchAgent, OpenTabSearchEntry } from '../tab-create-menu.js'
 import { TabCreateMenu } from './TabCreateMenu.js'
 import { FileIcon } from './ExplorerIcons.js'
 import { ContextMenu, type MenuEntry } from './ContextMenu.js'
-import { diffTabDescriptions, fileTabDescriptions, fileTabLabel } from '../file-tabs.js'
+import { diffTabDescriptions, fileTabDescriptions, fileTabLabel, fileTabSplitHint, isFileTabId } from '../file-tabs.js'
 import './file-view.css'
 
 /**
@@ -128,6 +129,7 @@ function MainTab({
   hasTabsToRight,
   groupTabOrder,
   pinnedTabs,
+  dirtyTabs,
   color,
   renameRequest,
   onSelect,
@@ -168,6 +170,8 @@ function MainTab({
   /** LIFE-495 — 이 영역의 시각 순서·핀 탭(메뉴 항목 상태 `tabMenuModel` 의 입력). */
   groupTabOrder: readonly string[]
   pinnedTabs: ReadonlySet<string>
+  /** LIFE-822 — 이 영역의 수정된 파일 탭(「저장된 탭 닫기」 대상 계산). */
+  dirtyTabs: ReadonlySet<string>
   /** LIFE-495 K4 — 탭 색(없으면 null). 제목 뒤 8px 점. */
   color: string | null
   /** LIFE-495 — 이름 편집 요청(⌘R·헤더 메뉴 「제목 바꾸기」). 값이 바뀔 때마다 편집을 연다 — 0 은 요청 없음. */
@@ -399,7 +403,7 @@ function MainTab({
       {menu === null || menuHost === null ? null : createPortal(
         <TabContextMenu
           anchor={menu}
-          model={tabMenuModel({ tabOrder: groupTabOrder, tabId: tab.tabId, pinned: pinnedTabs })}
+          model={tabMenuModel({ tabOrder: groupTabOrder, tabId: tab.tabId, pinned: pinnedTabs, dirty: dirtyTabs })}
           hasUserName={userLabel({ tab, tabCount }) !== null}
           color={color}
           otherGroups={otherGroups}
@@ -429,7 +433,93 @@ export type GroupTabItem =
   // LIFE-683 — `diffLabel` 이 있으면 diff 탭(소스 제어): 제목은 그 글(`a.ts (작업 트리)` — VS Code `getTitle`), 아이콘은 `rel` 의 파일 아이콘, 같은 이름 설명은 같은 제목 diff 탭끼리(F2-08 `diffTabDescriptions`).
   | { kind: 'file'; tabId: string; rel: string; preview: boolean; deleted: boolean; dirty: boolean; diffLabel?: string }
 
-type FileTabMenuAction = 'close' | 'keep' | 'close-others' | 'close-right' | 'split-right' | 'split-down' | `move:${string}`
+type FileTabMenuAction = 'close' | 'keep' | `close-${CloseScope}` | 'split-right' | 'split-down' | `move:${string}`
+
+/** 범위 닫기 항목 — 이름·순서는 터미널 탭 메뉴(`TabContextMenu` `CLOSE_SCOPE_ITEMS`)와 같다(같은 영역의 같은 동작, LIFE-822). */
+const FILE_CLOSE_SCOPES: { scope: CloseScope; label: string; enabled: (model: TabMenuModel) => boolean; disabledTitle: string }[] = [
+  { scope: 'others', label: '다른 탭 닫기', enabled: (model) => model.canCloseOthers, disabledTitle: '닫을 탭이 없다 (고정된 탭은 닫지 않는다)' },
+  { scope: 'right', label: '오른쪽 탭 닫기', enabled: (model) => model.canCloseRight, disabledTitle: '닫을 탭이 없다 (고정된 탭은 닫지 않는다)' },
+  { scope: 'left', label: '왼쪽 탭 닫기', enabled: (model) => model.canCloseLeft, disabledTitle: '닫을 탭이 없다 (고정된 탭은 닫지 않는다)' },
+  { scope: 'all', label: '모두 닫기', enabled: (model) => model.canCloseAll, disabledTitle: '닫을 탭이 없다 (고정된 탭은 닫지 않는다)' },
+  { scope: 'saved', label: '저장된 탭 닫기', enabled: (model) => model.canCloseSaved, disabledTitle: '닫을 저장된 파일 탭이 없다 (수정된 탭·터미널 탭·고정된 탭은 닫지 않는다)' },
+]
+
+/**
+ * 파일 탭 메뉴 — 탭 우클릭과 헤더(⊞·탭바 빈 곳 우클릭, 파일 탭이 활성일 때 — LIFE-822 B2)가 같이 쓴다. 헤더 모드면 맨 위에 대상 탭 이름 머리줄.
+ * 「새 영역으로 옮기기」는 영역 탭이 하나뿐이면 흐림 + 사유(터미널 탭 메뉴와 같은 `ONE_TAB_IN_GROUP`, LIFE-822 B3).
+ */
+function FileTabMenu({
+  x,
+  y,
+  item,
+  model,
+  otherGroups,
+  headerMode,
+  onDismiss,
+  onClose,
+  onKeep,
+  onCloseScope,
+  onMoveToGroup,
+  onMoveToOtherGroup,
+}: {
+  x: number
+  y: number
+  item: Extract<GroupTabItem, { kind: 'file' }>
+  model: TabMenuModel
+  otherGroups: { groupId: string; label: string }[]
+  headerMode?: boolean
+  onDismiss: () => void
+  onClose: () => void
+  onKeep: () => void
+  onCloseScope: (scope: CloseScope) => void
+  onMoveToGroup: (direction: MoveDirection) => void
+  onMoveToOtherGroup: (targetGroupId: string) => void
+}): React.JSX.Element {
+  const label = item.diffLabel ?? fileTabLabel(item.rel)
+  const move = { disabled: !model.canMoveToNewGroup, ...(model.canMoveToNewGroup ? {} : { title: ONE_TAB_IN_GROUP }) }
+  const entries: MenuEntry<FileTabMenuAction>[] = [
+    ...(headerMode === true ? [{ kind: 'label' as const, key: 'header', label: `탭 · ${label}` }, { kind: 'sep' as const, key: 'header-sep' }] : []),
+    { kind: 'item', action: 'close', label: '닫기' },
+    ...FILE_CLOSE_SCOPES.map((entry) => ({
+      kind: 'item' as const,
+      action: `close-${entry.scope}` as const,
+      label: entry.label,
+      disabled: !entry.enabled(model),
+      ...(entry.enabled(model) ? {} : { title: entry.disabledTitle }),
+    })),
+    ...(item.preview ? [{ kind: 'item' as const, action: 'keep' as const, label: '고정(미리보기 끄기)' }] : []),
+    { kind: 'sep', key: 'split' },
+    { kind: 'item', action: 'split-right', label: '오른쪽 새 영역으로 옮기기', ...move },
+    { kind: 'item', action: 'split-down', label: '아래 새 영역으로 옮기기', ...move },
+    ...(otherGroups.length === 0
+      ? []
+      : [
+          { kind: 'sep' as const, key: 'other' },
+          ...otherGroups.map((group) => ({ kind: 'item' as const, action: `move:${group.groupId}` as const, label: `영역으로 옮기기 — ${group.label}` })),
+        ]),
+  ]
+  return (
+    <ContextMenu
+      x={x}
+      y={y}
+      entries={entries}
+      attrs={{ 'data-file-tab-menu': item.rel, ...(headerMode === true ? { 'data-file-tab-menu-header-mode': item.tabId } : {}) }}
+      onClose={onDismiss}
+      onAction={(action) => {
+        onDismiss()
+        if (action === 'close') onClose()
+        else if (action === 'keep') onKeep()
+        else if (action === 'split-right') onMoveToGroup('right')
+        else if (action === 'split-down') onMoveToGroup('down')
+        else if (action.startsWith('move:')) onMoveToOtherGroup(action.slice('move:'.length))
+        else {
+          const scope = FILE_CLOSE_SCOPES.find((entry) => action === `close-${entry.scope}`)?.scope
+          if (scope !== undefined) onCloseScope(scope)
+        }
+      }}
+    />
+  )
+}
 
 /**
  * 파일 탭 (LIFE-590 E2·E10) — 칸·높이·활성 표시·닫기 자리는 터미널 탭(`.main-tab`)과 같고, 안쪽은 VS Code 편집기 탭:
@@ -447,7 +537,7 @@ function FileTab({
   onSelect,
   onClose,
   onKeep,
-  closeScopes,
+  model,
   onCloseScope,
   onMoveToGroup,
   onMoveToOtherGroup,
@@ -463,30 +553,15 @@ function FileTab({
   onSelect: () => void
   onClose: () => void
   onKeep: () => void
-  /** 「다른/오른쪽 탭 닫기」를 누를 수 있나 — 닫을 대상이 없으면 비활성(터미널 탭 메뉴와 같은 규칙, K2ⓑ). */
-  closeScopes: { others: boolean; right: boolean }
-  onCloseScope: (scope: 'others' | 'right') => void
+  /** 메뉴 항목 상태 — 범위 닫기는 닫을 대상이 없으면 비활성(터미널 탭 메뉴와 같은 `tabMenuModel`, K2ⓑ). */
+  model: TabMenuModel
+  onCloseScope: (scope: CloseScope) => void
   onMoveToGroup: (direction: MoveDirection) => void
   onMoveToOtherGroup: (targetGroupId: string) => void
   onDragStart: (event: React.MouseEvent) => void
 }): React.JSX.Element {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const label = item.diffLabel ?? fileTabLabel(item.rel)
-  const entries: MenuEntry<FileTabMenuAction>[] = [
-    { kind: 'item', action: 'close', label: '닫기' },
-    { kind: 'item', action: 'close-others', label: '다른 탭 닫기', disabled: !closeScopes.others },
-    { kind: 'item', action: 'close-right', label: '오른쪽 탭 닫기', disabled: !closeScopes.right },
-    ...(item.preview ? [{ kind: 'item' as const, action: 'keep' as const, label: '고정(미리보기 끄기)' }] : []),
-    { kind: 'sep', key: 'split' },
-    { kind: 'item', action: 'split-right', label: '오른쪽 새 영역으로 옮기기' },
-    { kind: 'item', action: 'split-down', label: '아래 새 영역으로 옮기기' },
-    ...(otherGroups.length === 0
-      ? []
-      : [
-          { kind: 'sep' as const, key: 'other' },
-          ...otherGroups.map((group) => ({ kind: 'item' as const, action: `move:${group.groupId}` as const, label: `영역으로 옮기기 — ${group.label}` })),
-        ]),
-  ]
   return (
     <div
       className={`main-tab main-tab-file ${active ? 'is-active' : ''} ${hasTabsToRight ? 'has-right' : ''} ${item.preview ? 'is-preview' : ''} ${item.deleted ? 'is-deleted' : ''} ${item.dirty ? 'is-dirty' : ''} ${description === null ? '' : 'has-desc'}`}
@@ -549,22 +624,18 @@ function FileTab({
         </svg>
       </button>
       {menu === null ? null : (
-        <ContextMenu
+        <FileTabMenu
           x={menu.x}
           y={menu.y}
-          entries={entries}
-          attrs={{ 'data-file-tab-menu': item.rel }}
-          onClose={() => setMenu(null)}
-          onAction={(action) => {
-            setMenu(null)
-            if (action === 'close') onClose()
-            else if (action === 'keep') onKeep()
-            else if (action === 'close-others') onCloseScope('others')
-            else if (action === 'close-right') onCloseScope('right')
-            else if (action === 'split-right') onMoveToGroup('right')
-            else if (action === 'split-down') onMoveToGroup('down')
-            else onMoveToOtherGroup(action.slice('move:'.length))
-          }}
+          item={item}
+          model={model}
+          otherGroups={otherGroups}
+          onDismiss={() => setMenu(null)}
+          onClose={onClose}
+          onKeep={onKeep}
+          onCloseScope={onCloseScope}
+          onMoveToGroup={onMoveToGroup}
+          onMoveToOtherGroup={onMoveToOtherGroup}
         />
       )}
     </div>
@@ -709,8 +780,8 @@ export function GroupHeader({
   onCloseFileTab?: (tabId: string) => void
   /** 미리보기 파일 탭 고정(탭 더블클릭·메뉴). */
   onKeepFileTab?: (tabId: string) => void
-  /** 파일 탭 메뉴의 「다른/오른쪽 탭 닫기」 — 섞인 탭(파일·터미널)을 App 이 종류별로 나눠 닫는다. */
-  onCloseFileScope?: (input: { tabId: string; scope: 'others' | 'right' }) => void
+  /** 파일 탭 메뉴의 범위 닫기(다른·오른쪽·왼쪽·모두·저장된) — 섞인 탭(파일·터미널)을 App 이 종류별로 나눠 닫는다. */
+  onCloseFileScope?: (input: { tabId: string; scope: CloseScope }) => void
   /** herdr 기본 위치 라벨 판별용 — **워크스페이스 전체** 탭 수다 (G7, `tabs.length` 와 다르다 —
    * `tabs` 는 이 영역 로컬이라 그 길이를 쓰면 범위가 좁아져 기본 label 이 이름으로 샌다). */
   workspaceTabCount: number
@@ -795,6 +866,12 @@ export function GroupHeader({
   const activeTab = tabs.find((tab) => tab.tabId === activeTabId) ?? null
   const activeTabLabel = activeTab?.label ?? ''
   const tabOrder = shown.map((item) => (item.kind === 'terminal' ? item.tab.tabId : item.tabId))
+  // LIFE-822 — 「저장된 탭 닫기」가 빼는 수정된 파일 탭. 파일 탭이 활성이면 헤더 ▥▤ 는 흐림+사유, ⊞·빈 곳 우클릭은 파일 탭 메뉴(헤더 모드).
+  const dirtyTabs = new Set(shown.flatMap((item) => (item.kind === 'file' && item.dirty ? [item.tabId] : [])))
+  const menuModelOf = (tabId: string): TabMenuModel => tabMenuModel({ tabOrder, tabId, pinned: pinnedTabs, dirty: dirtyTabs })
+  const activeFileItem = shown.find((item): item is Extract<GroupTabItem, { kind: 'file' }> => item.kind === 'file' && item.tabId === activeTabId) ?? null
+  const fileTabActive = activeTabId !== null && isFileTabId(activeTabId)
+  const fileSplitHint = fileTabSplitHint(bindingLabel('group.split'))
   // LIFE-689 — 같은 이름 구분 설명은 **이 영역의 파일 탭끼리만** 계산한다(VS Code 는 그룹 단위, 터미널 탭은 파일 이름이 없다).
   const fileDescriptions = fileTabDescriptions(shown.flatMap((item) => (item.kind === 'file' && item.diffLabel === undefined ? [item.rel] : [])))
   // LIFE-683 F2-08 — diff 탭도 같은 규칙(같은 제목끼리).
@@ -842,10 +919,7 @@ export function GroupHeader({
               onSelect={() => onSelectFileTab?.(item.tabId)}
               onClose={() => onCloseFileTab?.(item.tabId)}
               onKeep={() => onKeepFileTab?.(item.tabId)}
-              closeScopes={{
-                others: closeScopeTargets({ tabOrder, tabId: item.tabId, scope: 'others', pinned: pinnedTabs }).length > 0,
-                right: closeScopeTargets({ tabOrder, tabId: item.tabId, scope: 'right', pinned: pinnedTabs }).length > 0,
-              }}
+              model={menuModelOf(item.tabId)}
               onCloseScope={(scope) => onCloseFileScope?.({ tabId: item.tabId, scope })}
               onMoveToGroup={(direction) => onMoveToGroup({ tabId: item.tabId, direction })}
               onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: item.tabId, targetGroupId })}
@@ -869,6 +943,7 @@ export function GroupHeader({
               hasTabsToRight={index < shown.length - 1}
               groupTabOrder={tabOrder}
               pinnedTabs={pinnedTabs}
+              dirtyTabs={dirtyTabs}
               color={tabColorOf(tab.tabId)}
               renameRequest={renameRequest !== null && renameRequest.tabId === tab.tabId ? renameRequest.token : 0}
               onSelect={() => onSelectTab(tab)}
@@ -953,10 +1028,22 @@ export function GroupHeader({
           </span>
         ) : null}
         <div className="group-actions" data-group-actions={groupId}>
-          <button className="group-action" data-group-split-right={groupId} title={`오른쪽으로 pane 분할 (${bindingLabel('terminal.split')})`} onClick={() => onSplitPane('right')}>
+          <button
+            className="group-action"
+            data-group-split-right={groupId}
+            disabled={fileTabActive}
+            title={fileTabActive ? fileSplitHint : `오른쪽으로 pane 분할 (${bindingLabel('terminal.split')})`}
+            onClick={() => onSplitPane('right')}
+          >
             <SplitIcon kind="pane-right" />
           </button>
-          <button className="group-action" data-group-split-down={groupId} title={`아래로 pane 분할 (${bindingLabel('terminal.split', 1)})`} onClick={() => onSplitPane('down')}>
+          <button
+            className="group-action"
+            data-group-split-down={groupId}
+            disabled={fileTabActive}
+            title={fileTabActive ? fileSplitHint : `아래로 pane 분할 (${bindingLabel('terminal.split', 1)})`}
+            onClick={() => onSplitPane('down')}
+          >
             <SplitIcon kind="pane-down" />
           </button>
           {/* LIFE-387 B1 F-B1-1 — 영역 분할에는 상시 버튼이 하나도 없었다(▥▤는 pane 급).
@@ -998,7 +1085,7 @@ export function GroupHeader({
       {headerMenu === null || activeTab === null ? null : (
         <TabContextMenu
           anchor={headerMenu}
-          model={tabMenuModel({ tabOrder, tabId: activeTab.tabId, pinned: pinnedTabs })}
+          model={menuModelOf(activeTab.tabId)}
           hasUserName={userLabel({ tab: activeTab, tabCount: workspaceTabCount }) !== null}
           color={tabColorOf(activeTab.tabId)}
           otherGroups={otherGroups}
@@ -1013,6 +1100,22 @@ export function GroupHeader({
           onCloseScope={(scope) => onCloseScope({ tab: activeTab, scope })}
           onSetColor={(color) => onSetTabColor({ tab: activeTab, color })}
           onDismiss={() => setHeaderMenu(null)}
+        />
+      )}
+      {headerMenu === null || activeFileItem === null ? null : (
+        <FileTabMenu
+          x={headerMenu.x}
+          y={headerMenu.y}
+          item={activeFileItem}
+          model={menuModelOf(activeFileItem.tabId)}
+          otherGroups={otherGroups}
+          headerMode
+          onDismiss={() => setHeaderMenu(null)}
+          onClose={() => onCloseFileTab?.(activeFileItem.tabId)}
+          onKeep={() => onKeepFileTab?.(activeFileItem.tabId)}
+          onCloseScope={(scope) => onCloseFileScope?.({ tabId: activeFileItem.tabId, scope })}
+          onMoveToGroup={(direction) => onMoveToGroup({ tabId: activeFileItem.tabId, direction })}
+          onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: activeFileItem.tabId, targetGroupId })}
         />
       )}
     </div>

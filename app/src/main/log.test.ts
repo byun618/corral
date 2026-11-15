@@ -433,3 +433,223 @@ describe('C4 회전 실패 내성', () => {
     expect(fs.existsSync(`${file}.next`)).toBe(false)
   })
 })
+
+// LIFE-788 r3 (리뷰 r2 H~M) — 회전 뒤 외부 조작·되돌리기 멈춤·재열기·생존 변이 판별
+describe('r3 — 외부 조작·되돌리기·재열기', () => {
+  const pad = 'p'.repeat(100)
+  const burst = (): void => {
+    for (let i = 0; i < 8; i++) expect(() => log('t.x', { i, pad })).not.toThrow()
+  }
+  const realOpen = fs.openSync
+  const realRename = fs.renameSync
+
+  function failRename(pred: (from: string, to: string) => boolean): void {
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (pred(String(from), String(to))) throw Object.assign(new Error('injected rename'), { code: 'EIO' })
+      realRename(from, to)
+    })
+  }
+
+  // 지금까지 받은 쓰기가 전부 파일에 닿을 때까지(stream 은 열어 둔 채).
+  async function drain(): Promise<void> {
+    await vi.waitFor(() => {
+      for (const s of streams) expect(s.writableLength).toBe(0)
+    })
+  }
+
+  function captureStdout(): string[] {
+    const out: string[] = []
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk))
+      return true
+    })
+    return out
+  }
+
+  function stdoutTags(out: string[]): unknown[] {
+    return out.map((l) => {
+      const v: unknown = JSON.parse(l)
+      return typeof v === 'object' && v !== null && 'tag' in v ? v.tag : undefined
+    })
+  }
+
+  function allText(): string {
+    return fs
+      .readdirSync(dir)
+      .map((n) => fs.readFileSync(path.join(dir, n), 'utf8'))
+      .join('')
+  }
+
+  it('H 회전 뒤 외부에서 현재 파일을 0 으로 잘라도 다음 줄은 NUL 없이 맨 앞에 붙는다(O_APPEND)', async () => {
+    openLog(dir)
+    burst()
+    expect(fs.existsSync(`${file}.1`)).toBe(true)
+    await drain()
+    expect(fs.statSync(file).size).toBeGreaterThan(0)
+    fs.truncateSync(file, 0)
+    log('t.after', {})
+    await flush()
+    const text = fs.readFileSync(file, 'utf8')
+    expect(text.includes('\u0000')).toBe(false)
+    expect(tags(file)).toEqual(['t.after'])
+  })
+
+  it('H 남아 있던 .next 의 내용은 새 로그 머리에 오지 않는다(O_TRUNC)', async () => {
+    fs.writeFileSync(`${file}.next`, '{"tag":"stale"}\n'.repeat(5))
+    openLog(dir)
+    burst()
+    await flush()
+    expect(tags(file)[0]).toBe('log.rotated')
+    expect(tags(file)).not.toContain('stale')
+    expect(fs.existsSync(`${file}.next`)).toBe(false)
+  })
+
+  it('I .next → 현재 실패 + .1 → 현재 되돌리기 실패 — 되돌리기를 멈춰 활성 세대 본문이 남는다', async () => {
+    fs.writeFileSync(`${file}.2`, '{"tag":"gen2"}\n')
+    fs.writeFileSync(`${file}.1`, '{"tag":"gen1"}\n')
+    openLog(dir)
+    failRename((from, to) => from === `${file}.next` || (from === `${file}.1` && to === file))
+    burst()
+    await flush()
+    // 현재 파일 내용은 .1 에(옛 stream 이 계속 쓴다), 옛 .1 은 .2 에 — 되돌리기를 이어 갔다면 .2 → .1 이 활성 세대를 덮었다
+    expect(tags(`${file}.1`).filter((t) => t === 't.x')).toHaveLength(8)
+    expect(tags(`${file}.2`)).toEqual(['gen1'])
+    expect(fs.existsSync(file)).toBe(false)
+    expect(fs.existsSync(`${file}.next`)).toBe(false)
+    expect(allText().split('\n').filter((l) => l.includes('"t.x"'))).toHaveLength(8)
+  })
+
+  it('M .next → 현재 실패 — 전부 되돌려 세대·현재 파일 그대로, .next 의 fd 는 닫힌다', async () => {
+    fs.writeFileSync(`${file}.2`, '{"tag":"gen2"}\n')
+    fs.writeFileSync(`${file}.1`, '{"tag":"gen1"}\n')
+    openLog(dir)
+    const fds: number[] = []
+    vi.spyOn(fs, 'openSync').mockImplementation((p, flags, mode) => {
+      const fd = realOpen(p, flags, mode)
+      if (String(p).endsWith('.next')) fds.push(fd)
+      return fd
+    })
+    failRename((from) => from === `${file}.next`)
+    burst()
+    expect(fds).toHaveLength(1)
+    expect(() => fs.fstatSync(fds[0] ?? -1)).toThrow(/EBADF/)
+    await flush()
+    expect(tags(`${file}.1`)).toEqual(['gen1'])
+    expect(fs.existsSync(`${file}.2`)).toBe(false) // .1 → .2 가 덮은 이전 .2 — 주석의 잔여
+    expect(tags(file).filter((t) => t === 't.x')).toHaveLength(8)
+    expect(fs.existsSync(`${file}.next`)).toBe(false)
+  })
+
+  it('J 회전 뒤 현재 파일이 외부에서 지워지면 다음 회전은 세대를 밀지 않고 새 현재 파일을 만든다', async () => {
+    fs.writeFileSync(`${file}.2`, '{"tag":"gen2"}\n')
+    fs.writeFileSync(`${file}.1`, '{"tag":"gen1"}\n')
+    openLog(dir)
+    burst()
+    await drain()
+    const gens = [`${file}.1`, `${file}.2`].map(sha)
+    fs.rmSync(file)
+    // 새 현재 파일이 생길 때까지만(그 회전 하나) 쓴다
+    for (let i = 0; i < 10 && !fs.existsSync(file); i++) log('t.x', { i, pad })
+    expect(fs.existsSync(file)).toBe(true)
+    await flush()
+    expect([`${file}.1`, `${file}.2`].map(sha)).toEqual(gens)
+    expect(tags(file)[0]).toBe('log.rotated')
+    expect(lines(file).filter((l) => l.tag === 'log.rotate.failed')).toEqual([])
+  })
+
+  it('K 열기 실패 뒤 재시도 시각 전에는 열지 않고, 해소되면 다시 열어 이전 실패를 파일에 남긴다', async () => {
+    fs.chmodSync(dir, 0o555)
+    const out = captureStdout()
+    openLog(dir)
+    expect(stdoutTags(out)).toEqual(['log.open.failed'])
+    const open = vi.spyOn(fs, 'openSync')
+    vi.setSystemTime(T0.getTime() + ROTATE_RETRY_MS - 1)
+    log('t.before', {})
+    expect(open).not.toHaveBeenCalled()
+    expect(fs.existsSync(file)).toBe(false)
+    fs.chmodSync(dir, 0o755)
+    vi.setSystemTime(T0.getTime() + ROTATE_RETRY_MS)
+    log('t.back', {})
+    expect(open).toHaveBeenCalledTimes(1)
+    await flush()
+    expect(stdoutTags(out)).toEqual(['log.open.failed', 't.before'])
+    expect(tags(file)).toEqual(['log.open.recovered', 't.back'])
+    expect(lines(file)[0]).toMatchObject({ failures: 1 })
+    expect(String(lines(file)[0]?.error)).toMatch(/EACCES|EPERM/)
+  })
+
+  it('L 회전 성공 경로에서 stream 생성이 던져도 log 는 던지지 않고, 되돌려 줄은 현재 파일에 남는다', async () => {
+    openLog(dir)
+    vi.mocked(fs.createWriteStream).mockImplementationOnce(() => {
+      throw new Error('injected stream')
+    })
+    burst()
+    await flush()
+    expect(fs.existsSync(`${file}.1`)).toBe(false)
+    expect(fs.existsSync(`${file}.next`)).toBe(false)
+    expect(tags(file).filter((t) => t === 't.x')).toHaveLength(8)
+    expect(lines(file).filter((l) => l.tag === 'log.rotate.failed')).toEqual([
+      expect.objectContaining({ phase: 'run', error: 'injected stream' })
+    ])
+  })
+
+  it('L 열 때 stream 생성이 던져도 openLog 는 던지지 않고 stdout 으로 간다', async () => {
+    const out = captureStdout()
+    vi.mocked(fs.createWriteStream).mockImplementationOnce(() => {
+      throw new Error('injected stream')
+    })
+    expect(() => openLog(dir)).not.toThrow()
+    log('t.after', {})
+    await flush()
+    expect(stdoutTags(out)).toEqual(['log.open.failed', 't.after'])
+  })
+
+  it('M mkdir 실패 — openLog 는 던지지 않고 stdout 에 실패를 남긴다', async () => {
+    const out = captureStdout()
+    vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {
+      throw Object.assign(new Error('injected mkdir'), { code: 'EACCES' })
+    })
+    expect(() => openLog(dir)).not.toThrow()
+    log('t.after', {})
+    await flush()
+    expect(stdoutTags(out)).toEqual(['log.open.failed', 't.after'])
+  })
+
+  it('M 다시 openLog 하면 이전 stream 을 끝낸다', async () => {
+    openLog(dir)
+    const first = streams[0]
+    openLog(dir)
+    expect(first?.writableEnded).toBe(true)
+    await flush()
+  })
+
+  it('M 쓰기 경로(상한 아래)는 동기 fs 호출을 하나도 하지 않는다', () => {
+    openLog(dir)
+    type FsMethod = { [K in keyof typeof fs]: (typeof fs)[K] extends (...args: never[]) => unknown ? K : never }[keyof typeof fs]
+    const isSyncMethod = (name: string): name is FsMethod =>
+      name.endsWith('Sync') && name in fs && typeof Reflect.get(fs, name) === 'function'
+    const spies = Object.keys(fs)
+      .filter(isSyncMethod)
+      .map((name) => ({ name, spy: vi.spyOn(fs, name) }))
+    for (let i = 0; i < 4; i++) log('t.x', { i })
+    expect(spies.filter((s) => s.spy.mock.calls.length > 0).map((s) => s.name)).toEqual([])
+    expect(spies.length).toBeGreaterThan(30)
+  })
+
+  it('M closeLog 뒤 log 는 stdout 으로만 — 회전 대기 중이었어도 파일을 건드리지 않는다', async () => {
+    openLog(dir)
+    failRename((from) => from === file)
+    burst()
+    closeLog()
+    vi.mocked(fs.renameSync).mockClear()
+    vi.setSystemTime(T0.getTime() + ROTATE_RETRY_MAX_MS)
+    const open = vi.spyOn(fs, 'openSync')
+    const out = captureStdout()
+    log('t.closed', {})
+    expect(stdoutTags(out)).toEqual(['t.closed'])
+    expect(fs.renameSync).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+    await flush()
+    expect(fs.existsSync(`${file}.1`)).toBe(false)
+  })
+})

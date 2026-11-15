@@ -118,8 +118,7 @@ function openFile(): void {
   if (size > maxBytes) {
     const rotated = rotateFiles()
     if (rotated.ok) {
-      stream = rotated.stream
-      written = 0
+      rotationSucceeded(rotated.stream)
       opened()
       writeLine(entry('log.rotated', { phase: 'open', bytes: size, maxBytes }))
       return
@@ -142,18 +141,16 @@ function openAppend(size: number): boolean {
     return true
   } catch (e) {
     if (fd !== null) closeQuietly(fd)
-    stream = null
     openFailed(e)
     return false
   }
 }
 
 // 열기에 성공했다 — 앞서 실패했으면 그 사실을 파일에 한 줄 남긴다(GUI 에서는 stdout 이 안 보인다).
+// 열기 상태(openFailures·nextOpenAt·lastOpenError)는 되돌리지 않는다 — stream 이 생기면 다음 openLog 가
+// 초기화할 때까지 openFile 이 다시 불리지 않아 읽히지 않는다(raw/claude/equivalent-mutants.md).
 function opened(): void {
   if (openFailures > 0) writeLine(entry('log.open.recovered', { failures: openFailures, error: lastOpenError }))
-  openFailures = 0
-  nextOpenAt = 0
-  lastOpenError = ''
 }
 
 function openFailed(error: unknown): void {
@@ -227,12 +224,17 @@ function rotate(): void {
     rotateFailed('run', rotated.error)
     return
   }
+  rotationSucceeded(rotated.stream)
+  writeLine(entry('log.rotated', { phase: 'run', bytes, maxBytes }))
+}
+
+// 회전 성공 정리 — 열 때·도는 중 둘 다 여기서. 옛 stream(있으면)은 남은 쓰기를 밀린 세대로 마저 내보내고 닫힌다.
+function rotationSucceeded(next: fs.WriteStream): void {
   stream?.end()
-  stream = rotated.stream
+  stream = next
   written = 0
   rotateFailures = 0
   nextRotateAt = 0
-  writeLine(entry('log.rotated', { phase: 'run', bytes, maxBytes }))
 }
 
 function rotateFailed(phase: 'open' | 'run', error: unknown): void {

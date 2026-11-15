@@ -84,6 +84,18 @@ function fill(p: string, bytes: number): void {
   expect(fs.statSync(p).size).toBe(bytes)
 }
 
+// fs 의 모든 *Sync 함수를 스파이하고, 불린 이름 목록을 돌려주는 함수를 준다.
+function spySyncAll(): () => string[] {
+  type FsMethod = { [K in keyof typeof fs]: (typeof fs)[K] extends (...args: never[]) => unknown ? K : never }[keyof typeof fs]
+  const isSyncMethod = (name: string): name is FsMethod =>
+    name.endsWith('Sync') && name in fs && typeof Reflect.get(fs, name) === 'function'
+  const spies = Object.keys(fs)
+    .filter(isSyncMethod)
+    .map((name) => ({ name, spy: vi.spyOn(fs, name) }))
+  expect(spies.length).toBeGreaterThan(30)
+  return () => spies.filter((s) => s.spy.mock.calls.length > 0).map((s) => s.name)
+}
+
 describe('maxBytesFromEnv — 잘못된 값은 기본값', () => {
   it.each([undefined, '', '  ', 'abc', '0', '-5', '1.5', 'NaN', 'Infinity', '9007199254740993'])('%s → 기본값', (v) => {
     expect(maxBytesFromEnv(v)).toBe(DEFAULT_MAX_BYTES)
@@ -184,6 +196,7 @@ describe('도는 중 회전 경계', () => {
     expect(fs.statSync(`${file}.1`).size).toBe(1000 + lineBytes('t.y', {}))
     expect(tags(`${file}.1`).slice(-2)).toEqual(['t.x', 't.y'])
     expect(tags(file)).toEqual(['log.rotated', 't.z'])
+    expect(lines(file)[0]).toMatchObject({ phase: 'run', bytes: 1000 + lineBytes('t.y', {}), maxBytes: 1000 })
   })
 
   it('쓰기마다 stat 하지 않는다', () => {
@@ -633,15 +646,9 @@ describe('r3 — 외부 조작·되돌리기·재열기', () => {
 
   it('M 쓰기 경로(상한 아래)는 동기 fs 호출을 하나도 하지 않는다', () => {
     openLog(dir)
-    type FsMethod = { [K in keyof typeof fs]: (typeof fs)[K] extends (...args: never[]) => unknown ? K : never }[keyof typeof fs]
-    const isSyncMethod = (name: string): name is FsMethod =>
-      name.endsWith('Sync') && name in fs && typeof Reflect.get(fs, name) === 'function'
-    const spies = Object.keys(fs)
-      .filter(isSyncMethod)
-      .map((name) => ({ name, spy: vi.spyOn(fs, name) }))
+    const called = spySyncAll()
     for (let i = 0; i < 4; i++) log('t.x', { i })
-    expect(spies.filter((s) => s.spy.mock.calls.length > 0).map((s) => s.name)).toEqual([])
-    expect(spies.length).toBeGreaterThan(30)
+    expect(called()).toEqual([])
   })
 
   it('M closeLog 뒤 log 는 stdout 으로만 — 회전 대기 중이었어도 파일을 건드리지 않는다', async () => {
@@ -659,5 +666,101 @@ describe('r3 — 외부 조작·되돌리기·재열기', () => {
     expect(open).not.toHaveBeenCalled()
     await flush()
     expect(fs.existsSync(`${file}.1`)).toBe(false)
+  })
+})
+
+// LIFE-788 r4 (리뷰 r3 Q·R) — 열 때 회전과 재열기의 맞물림·대기 구간·undo [현재,next]
+describe('r4 — 열 때 회전 + 재열기', () => {
+  const pad = 'p'.repeat(100)
+  const burst = (): void => {
+    for (let i = 0; i < 8; i++) expect(() => log('t.x', { i, pad })).not.toThrow()
+  }
+
+  function captureStdout(): string[] {
+    const out: string[] = []
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk))
+      return true
+    })
+    return out
+  }
+
+  function stdoutTags(out: string[]): unknown[] {
+    return out.map((l) => {
+      const v: unknown = JSON.parse(l)
+      return typeof v === 'object' && v !== null && 'tag' in v ? v.tag : undefined
+    })
+  }
+
+  // 상한 초과 파일 + 파일·디렉터리 쓰기 불가로 openLog — 회전도 append 도 실패해 stdout 대체.
+  function openBlocked(): string[] {
+    fill(file, 1500)
+    fs.chmodSync(file, 0o444)
+    fs.chmodSync(dir, 0o555)
+    const out = captureStdout()
+    openLog(dir)
+    expect(stdoutTags(out)).toEqual(['log.open.failed', 'log.rotate.failed'])
+    return out
+  }
+
+  it('Q·R① 복구 뒤 재열기가 열 때 회전으로 열리면 recovered → rotated(open) → 다음 줄, .1 보존, 회전 실패 상태도 초기화', async () => {
+    openBlocked()
+    fs.chmodSync(dir, 0o755)
+    fs.chmodSync(file, 0o644)
+    const before = sha(file)
+    vi.setSystemTime(T0.getTime() + ROTATE_RETRY_MS)
+    log('t.back', {})
+    expect(fs.existsSync(`${file}.1`)).toBe(true)
+    // .next 자리를 디렉터리로 막아 도는 중 회전을 실패시킨다 — 복구 뒤 첫 실패는 failures 1·1분
+    fs.mkdirSync(`${file}.next`)
+    burst()
+    await flush()
+    expect(sha(`${file}.1`)).toBe(before)
+    expect(fs.statSync(`${file}.1`).size).toBe(1500)
+    expect(tags(file).slice(0, 3)).toEqual(['log.open.recovered', 'log.rotated', 't.back'])
+    expect(lines(file)[1]).toMatchObject({ phase: 'open', bytes: 1500, maxBytes: 1000 })
+    expect(lines(file).filter((l) => l.tag === 'log.rotate.failed')).toEqual([
+      expect.objectContaining({ phase: 'run', failures: 1, retryInMs: ROTATE_RETRY_MS })
+    ])
+  })
+
+  it('R① 복구 뒤 재열기에서 열 때 회전은 또 실패하고 append 만 되면 — recovered 줄 다음에 rotate.failed', async () => {
+    openBlocked()
+    fs.chmodSync(file, 0o644) // 디렉터리는 계속 쓰기 불가 — .next 를 못 만든다
+    vi.setSystemTime(T0.getTime() + ROTATE_RETRY_MS)
+    log('t.back', {})
+    fs.chmodSync(dir, 0o755)
+    await flush()
+    expect(fs.existsSync(`${file}.1`)).toBe(false)
+    expect(tags(file)).toEqual(['t.old', 'log.open.recovered', 'log.rotate.failed', 't.back'])
+    expect(lines(file)[2]).toMatchObject({ phase: 'open', failures: 2 })
+  })
+
+  it('R② 재열기 대기 중 log() 는 동기 fs 호출을 하나도 하지 않는다', async () => {
+    openBlocked()
+    const called = spySyncAll()
+    vi.setSystemTime(T0.getTime() + ROTATE_RETRY_MS - 1)
+    for (let i = 0; i < 4; i++) log('t.wait', { i })
+    expect(called()).toEqual([])
+    await flush()
+  })
+
+  it('R③ 현재 파일 없음(J) + stream 생성 실패 — .next → 현재를 되돌려 빈 현재 파일을 남기지 않고, 다음 시각에 회전', async () => {
+    fs.writeFileSync(`${file}.2`, '{"tag":"gen2"}\n')
+    fs.writeFileSync(`${file}.1`, '{"tag":"gen1"}\n')
+    openLog(dir)
+    fs.rmSync(file)
+    vi.mocked(fs.createWriteStream).mockImplementationOnce(() => {
+      throw new Error('injected stream')
+    })
+    burst()
+    expect(fs.existsSync(file)).toBe(false)
+    expect(fs.existsSync(`${file}.next`)).toBe(false)
+    vi.setSystemTime(T0.getTime() + ROTATE_RETRY_MS)
+    log('t.after', {})
+    await flush()
+    expect(tags(`${file}.1`)).toEqual(['gen1'])
+    expect(tags(`${file}.2`)).toEqual(['gen2'])
+    expect(tags(file)).toEqual(['log.rotated'])
   })
 })

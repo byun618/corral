@@ -1,0 +1,45 @@
+{"type":"last-prompt","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"mode","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"permission-mode","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"atis-latch","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:00.000Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:00.060Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:00.061Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"file-history-snapshot"}
+{"type":"user","timestamp":"2026-01-01T00:00:06.198Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba","message":{"role":"user","content":"가린 지시 8"}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.197Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.226Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.226Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.226Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.227Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.228Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:06.228Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"last-prompt","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"mode","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"permission-mode","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"atis-latch","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"ai-title","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"assistant","timestamp":"2026-01-01T00:00:08.986Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu-0","name":"Agent","input":{"description":"가린 설명 27","run_in_background":"true","subagent_type":"가림"}}]}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.010Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"user","timestamp":"2026-01-01T00:00:09.059Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-0","content":"가린 결과"}]},"toolUseResult":{"agentId":"task-0","status":"async_launched","isAsync":true}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.058Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.062Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"last-prompt","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"ai-title","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"mode","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"permission-mode","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"atis-latch","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"attachment","timestamp":"2026-01-01T00:00:09.074Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"assistant","timestamp":"2026-01-01T00:00:10.396Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba","message":{"role":"assistant","content":[{"type":"text","text":"가린 글 38"}]}}
+{"type":"attachment","timestamp":"2026-01-01T00:00:10.428Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"system","subtype":"stop_hook_summary","timestamp":"2026-01-01T00:00:10.429Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"system","subtype":"turn_duration","timestamp":"2026-01-01T00:00:10.432Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"cost-state","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-01-01T00:00:42.660Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba","content":"<task-notification>\n<task-id>task-0</task-id>\n<status>killed</status>\n<summary>가림</summary>\n</task-notification>"}
+{"type":"continued-in","timestamp":"2026-01-01T00:00:43.030Z","sessionId":"831054f3-b55d-502e-af0a-0b4c1bbc15ba","continuedInSessionId":"3e78d5bb-055a-5973-85b6-d03c75a0875e"}

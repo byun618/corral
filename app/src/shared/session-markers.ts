@@ -6,8 +6,13 @@
  * provider then treats itself as a nested session and stops writing a record (§8.2, findings E11).
  * The removal is an allowlist, not a pattern: CODEX_HOME, GROK_HOME and CLAUDE_CONFIG_DIR must
  * survive or the child writes somewhere corral is not looking.
+ *
+ * `CLAUDE_JOB_DIR` is the background-session marker (LIFE-795): Claude Code gives it to every background session
+ * and no foreground one, and the bundled herdr's Claude hook stays silent where it is set. corral started from a
+ * background session's shell would otherwise hand it to every pane shell it starts, and the foreground claude in
+ * those panes would never report its session (fail silent).
  */
-export const SESSION_MARKER_NAMES: readonly string[] = ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT']
+export const SESSION_MARKER_NAMES: readonly string[] = ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT', 'CLAUDE_JOB_DIR']
 export const SESSION_MARKER_PREFIXES: readonly string[] = ['CLAUDE_CODE_', 'ORCA_AGENT_HOOK_']
 export function isSessionMarker(name: string): boolean {
     return SESSION_MARKER_NAMES.some(marker => marker === name) || SESSION_MARKER_PREFIXES.some(prefix => name.startsWith(prefix))

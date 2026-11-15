@@ -61,7 +61,7 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 | --- | --- | --- |
 | 본문이 정확히 한 번 전달됐다 | **증명(소유 증명 가능한 세션 기록이 있을 때)** — 기록이 없거나 둘 이상이면 `unknown`(공백)이다 | `corral terminal prompt --wait accepted` 의 `outcome: completed` + `record.matchCount: 1` + `wait.satisfied`. 제출 창 안에서 정확히 1건 일치일 때만 `stage: confirmed`·`phase: accepted`. 2건 이상은 "확인된 1회" 가 아니라 **한 입력 규칙이 깨진 것**으로 보고된다 |
 | 이 pane 이 맡긴 그 pane 이다 (세대 불변) | **증명** | handle 에 프로필·backend 부팅·PTY 세대가 묶여 있고, reconcile 이 `pane_gone`·`pty_replaced`·`epoch_changed` 로 시도를 `unknown` 으로 정산한다. 정리는 닫기 직전 같은 세대를 다시 관측하고 같은 lane 안에서 닫는다 |
-| 보고가 오래된 시도에서 온 게 아니다 | **증명** | 워커 보고는 `--task-id`·`--dispatch-id` + pane 신원(`HERDR_PANE_ID`·`HERDR_SESSION`)으로 검사된다. 다른 pane = `sender_mismatch`, 사라진 pane·교체된 시도 = `stale_dispatch`, 두 번째 완료 보고 = `illegal_transition`, 정산·중단·회수된 시도 = `capability_revoked`. **거절은 아무것도 저장하지 않는다** |
+| 보고가 오래된 시도에서 온 게 아니다 | **증명** | 워커 보고는 `--task-id`·`--dispatch-id` + pane 신원(`HERDR_PANE_ID`·`HERDR_SESSION`)으로 검사된다. 다른 pane = `sender_mismatch`, 사라진 pane·교체된 시도 = `stale_dispatch`, 두 번째 완료 보고 = `illegal_transition`, 정산·중단·회수된 시도 = `capability_revoked`. **거절은 아무것도 저장하지 않는다**. `←`·`/bg` 로 옮긴 claude 워커는 pane 신원 대신 세션 사슬(`CLAUDE_CODE_SESSION_ID` 가 그 Dispatch 의 민팅 세션이거나 `continued-in` 대상)로 받는다(답의 `proof: session_chain`, LIFE-796). **사슬 증명은 호출자가 싣는 세션 id 다 — 혼동 방지이지 인증이 아니다**(`sessionVerified: false`). 한계: claude 시도만 · bg 안 `/clear` 뒤는 사슬이 끊겨 `sender_mismatch` · pane 생존 관측은 그대로(사라진 pane 은 `stale_dispatch`) |
 | 사람 개입 흔적 | **관측** | `terminal read` 화면뿐(H2). 구조화된 조회는 GUI 직접 입력을 보지 못한다. `corral orchestration worker-retain --reason user_takeover` 는 **사람이 선언하는 기록**이지 감지가 아니다 |
 
 ## 이 매핑의 근거 — 실행으로 확인한 것 / 계약만 읽은 것
@@ -192,7 +192,7 @@ PATH 와 다른 프로필(`--socket`·`--instance`)은 이 점검 밖이다. `st
 - **부분 실패**: 광고에는 있는데 실제 호출이 거절되면 광고가 아니라 **실측을 믿는다** — 거절 원문을 원자료로
   남기고 이 매핑을 고친다.
 - **복구**: 런타임이 꺼져 있으면 사용자가 데스크톱 앱을 띄운다. 런타임·backend 는
-  `CLAUDE_CODE_*`·`CLAUDECODE`·`CLAUDE_PID`·`CLAUDE_EFFORT`·`ORCA_AGENT_HOOK_*` 를 **제거한 env** 로 띄운다
+  `CLAUDE_CODE_*`·`CLAUDECODE`·`CLAUDE_PID`·`CLAUDE_EFFORT`·`CLAUDE_JOB_DIR`·`ORCA_AGENT_HOOK_*` 를 **제거한 env** 로 띄운다
   (`app/scripts/harness-env/env.mjs` 규칙). pane 이 backend 에서 env 를 상속하므로 마커가 남으면 provider 가 세션
   기록을 쓰지 않아 『본문 주입』의 배달 판정이 조용히 무력화된다 — `record.unavailableReason` 이 null 이 아니면
   마커 상속부터 의심한다.

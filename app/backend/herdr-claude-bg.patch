@@ -1,0 +1,16 @@
+diff --git a/src/integration/assets/claude/herdr-agent-state.sh b/src/integration/assets/claude/herdr-agent-state.sh
+--- a/src/integration/assets/claude/herdr-agent-state.sh
++++ b/src/integration/assets/claude/herdr-agent-state.sh
+@@ -20,6 +20,12 @@
+ [ "${HERDR_ENV:-}" = "1" ] || exit 0
+ [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
+ [ -n "${HERDR_PANE_ID:-}" ] || exit 0
++# corral (LIFE-795): a Claude Code background session (`←`, `/bg`, agent view) runs in the account-wide
++# daemon, whose HERDR_PANE_ID is the pane that first started the daemon, not a pane this session owns.
++# Reporting from there overwrites that unrelated pane's agent session. Claude Code gives every background
++# session CLAUDE_JOB_DIR and a foreground session none (measured on 2.1.296), so a non-empty value means
++# "no pane of ours": stay silent. Empty or absent reports as before (fails open if the name changes).
++[ -z "${CLAUDE_JOB_DIR:-}" ] || exit 0
+ command -v python3 >/dev/null 2>&1 || exit 0
+ 
+ HERDR_ACTION="$action" HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'

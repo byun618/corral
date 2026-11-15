@@ -654,6 +654,30 @@ export function sessionRecordPaths(kind: AgentKind, options: RecordLocationInput
     return codexRolloutFiles(options.t0Ms, options.nowMs, codexHome(home))
 }
 
+/**
+ * LIFE-796. The record of a claude session corral minted, found by its id alone — for a caller that no longer has
+ * the pane (and so its cwd) that `sessionRecordPaths` derives the folder from. The id is a UUID corral generated,
+ * so the folder is found by looking for `<id>.jsonl` under each project folder of the same `CLAUDE_CONFIG_DIR`;
+ * exactly one match is the record, none or several (or a folder that cannot be read) is no answer. It reads
+ * directory entries only — no backend, no pane.
+ */
+export function claudeRecordById(input: { sessionId: string; home?: string }): string | null {
+    const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(input.home ?? os.homedir(), '.claude')
+    const projects = path.join(configDir, 'projects')
+    let folders: fs.Dirent[]
+    try { folders = fs.readdirSync(projects, { withFileTypes: true }) } catch { return null }
+    const found: string[] = []
+    for (const folder of folders) {
+        if (!folder.isDirectory()) continue
+        const file = path.join(projects, folder.name, input.sessionId + '.jsonl')
+        try { if (fs.statSync(file).isFile()) found.push(file) } catch (error) {
+            const code = error instanceof Error && 'code' in error ? error.code : null
+            if (code !== 'ENOENT' && code !== 'ENOTDIR') return null
+        }
+    }
+    return found.length === 1 ? found[0] ?? null : null
+}
+
 // --- §8.2 provider session markers --------------------------------------------------------------
 
 // 목록 원본은 shared 로 옮겼다(LIFE-555) — main 의 herdr 서버 env 도 같은 목록을 쓴다.

@@ -32,7 +32,7 @@ export const CONTINUED_CHAIN_MAX = 8
 const MEMO_MAX = 512
 
 /** 대상 id 는 경로에 들어간다 — 이 모양이 아니면 따라가지 않는다(`../` 차단). */
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+export const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /** 판별 결과 — `target` 대상 있음 · `none` 확실히 없음 · `unknown` 모름(`continued-in` 뒤의 읽지 못하는 줄 등) · `window` 잘린 창의 줄을 다 봐도 결론이 없다. */
 export type ContinuedVerdict = { kind: 'target'; id: string } | { kind: 'none' } | { kind: 'unknown' } | { kind: 'window' }

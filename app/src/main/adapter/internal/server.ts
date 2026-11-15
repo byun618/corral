@@ -2,6 +2,13 @@
 //
 // 무엇을 띄울지·언제 띄울지는 여기서 정하지 않는다 — 결정은 main 의 `backend-start.ts` 순수 함수다.
 // 이 파일은 herdr 를 아는 손만 갖는다: 어떤 파일을 읽어 재개 대상을 세는지, 어떤 argv 로 서버를 띄우는지.
+//
+// 재개 참조 고쳐 쓰기 (LIFE-772 — 코드 `restore-rewrite.ts`, 문서 `../../mobile/SURFACE.md` 「herdr 재시작 재개 참조」): corral 이 멈춘 `default` 를 띄울 때는 spawn 바로 앞
+// (`BackendStarter.beforeSpawn`, 안 돎 확인 뒤)에 같은 `session.json` 의 claude 참조를 백그라운드 전환(`continued-in`) 끝의 **대화가 있는** id 로 고쳐 쓴다 — herdr 는 저장 참조
+// 그대로 `claude --resume <id>` 로 재개하므로, 옛 id 로 두면 전환 시점에 멈춘 사본이 열리고 대화가 갈라진다. 판별은 LIFE-766 `followContinued`(`empty: 'stay'`) 한 벌이다.
+// 예외: 다른 pane 이 이미 쥔 id 로는 옮기지 않는다(herdr 가 같은 세션을 한 번만 재개해 한 pane 이 참조를 잃는다 — K10). 바뀐 참조는 작업 활동 사건 열쇠도 바꾼다(결과 한 줄 중복 가능 — 소비자 6).
+// 안전한 실패: 구조 모름·판별 결론 없음·기록 위치가 유일하지 않음·쓰기 실패면 파일 그대로 지금처럼 띄운다. 계수(`countRestoreTargets`)는 값만 바뀌므로 전후 같다.
+// 남는 창은 멈춤 확인부터 rename 까지 전체다(남긴 자식 정리 대기 포함) — 그 사이 다른 손이 띄운 서버는 지금처럼 옛 id 로 재개한다. 그 밖의 남는 한계는 SURFACE 절에 적었다.
 
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -204,6 +211,30 @@ export function countRestoreTargets(text: string | null): RestoreSummary {
   } catch {
     return { known: false, reason: 'session.json 을 JSON 으로 읽지 못했다' }
   }
+  const walked = restorePaneMaps(session)
+  if (!walked.known) return walked
+  const counts = new Map<string, number>()
+  let total = 0
+  for (const panes of walked.paneMaps)
+    for (const pane of Object.values(panes)) {
+      // 객체가 아닌 pane·객체도 null 도 아닌 agent_session 은 건너뛰지 않는다 — 셀 수 없는 것을 0 으로 세면 자동 기동이 재개를 일으킨다(r1 R1-02·G-2).
+      if (!isRecord(pane)) return { known: false, reason: 'pane 이 객체가 아니다' }
+      const agentSession = pane['agent_session']
+      if (agentSession === undefined || agentSession === null) continue
+      if (!isRecord(agentSession)) return { known: false, reason: 'agent_session 이 객체가 아니다' }
+      total += 1
+      const kind = typeof agentSession['agent'] === 'string' ? agentSession['agent'] : 'unknown'
+      counts.set(kind, (counts.get(kind) ?? 0) + 1)
+    }
+  const agents = [...counts.entries()].map(([kind, count]) => ({ kind, count })).sort((a, b) => a.kind.localeCompare(b.kind))
+  return { known: true, total, agents }
+}
+
+/**
+ * 파싱한 session.json 에서 pane 맵들을 모은다 — 계수(`countRestoreTargets`)와 재개 참조 고쳐 쓰기(LIFE-772 `restore-rewrite.ts`)가 같은 형식 판별을 쓴다.
+ * 모르는 구조는 `known:false` 와 사유.
+ */
+export function restorePaneMaps(session: unknown): { known: true; paneMaps: Record<string, unknown>[] } | { known: false; reason: string } {
   if (!isRecord(session)) return { known: false, reason: 'session 이 객체가 아니다' }
   // 비어 있지 않은 파일인데 workspaces 가 없으면 0 이 아니라 모름이다 — 키 이름이 바뀐 버전일 수 있다(r1 R1-02). 파일 없음만 0.
   if (!('workspaces' in session)) return { known: false, reason: 'workspaces 가 없다' }
@@ -227,21 +258,7 @@ export function countRestoreTargets(text: string | null): RestoreSummary {
       return { known: false, reason: `workspace ${index} 구조를 모른다` }
     }
   }
-  const counts = new Map<string, number>()
-  let total = 0
-  for (const panes of paneMaps)
-    for (const pane of Object.values(panes)) {
-      // 객체가 아닌 pane·객체도 null 도 아닌 agent_session 은 건너뛰지 않는다 — 셀 수 없는 것을 0 으로 세면 자동 기동이 재개를 일으킨다(r1 R1-02·G-2).
-      if (!isRecord(pane)) return { known: false, reason: 'pane 이 객체가 아니다' }
-      const agentSession = pane['agent_session']
-      if (agentSession === undefined || agentSession === null) continue
-      if (!isRecord(agentSession)) return { known: false, reason: 'agent_session 이 객체가 아니다' }
-      total += 1
-      const kind = typeof agentSession['agent'] === 'string' ? agentSession['agent'] : 'unknown'
-      counts.set(kind, (counts.get(kind) ?? 0) + 1)
-    }
-  const agents = [...counts.entries()].map(([kind, count]) => ({ kind, count })).sort((a, b) => a.kind.localeCompare(b.kind))
-  return { known: true, total, agents }
+  return { known: true, paneMaps }
 }
 
 /** 세션 디렉터리의 session.json 을 읽어 센다. 디렉터리를 모르면(조회 실패) 모름이다 — 0 으로 흘리지 않는다. */

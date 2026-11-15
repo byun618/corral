@@ -233,6 +233,7 @@ codex 는 기동 응답에서 `sessionRecord`·`sessionId` 가 null 이고, 경�
 기록하고 **요청값과 관측값을 구분해 적는다.** 별칭(`opus`·`fable`)은 버전 고정이 아니다.
 
 ### 상황 → 행동
+- **격리 시험 pane 의 셸**: 시험용 셸 pane 은 `/bin/sh` 로 띄운다 — 사용자 zsh 의 oh-my-zsh 업데이트 질문이 명령 첫 글자를 먹는다. 코디·워커 기동은 해당 없음 (LIFE-769·771·772·787).
 - **차단 화면**: `--prompt` 를 함께 준 경우, 차단이 먼저 뜨면 create 는 거기서 끝나고(complete) 본문을 들고
   있지 않는다 — 별도 `terminal prompt` 로 자기 `--request-id` 아래 다시 넣는다.
 - **타임아웃·빈 결과**: `terminal create` 응답 타임아웃은 실패가 아니라 **지연일 수 있다.** 같은 worktree 의
@@ -471,6 +472,7 @@ Run 은 미확인 Delivery 를 **하나만** 갖고, `--ack` 전까지 같은 �
 (배치 최대 50건, 그 사이 도착한 메시지는 섞이지 않는다). 파일 존재·TUI idle·프로세스 종료는 완료가 아니다.
 
 ### 상황 → 행동
+- **대기 루프**: 위 명령 그대로(`--block`·`--types`·`--timeout-ms` 상한 600000 안) 돌리고, 빈 결과가 너무 빨리 오거나 `ok:false` 면 루프를 멈추고 원인을 본다. 셸 `&` 가 아니라 도구의 백그라운드 실행으로 띄운다 (LIFE-769·787·795).
 - **차단 화면**: **provider 차단 화면은 `question` 이 아니다** — `question` 은 워커의 『질의응답』만 만든다.
   차단은 기동이 `agent_blocked` 로 거절하거나 대기가 즉시 `satisfied: false` 로 돌아오는 것으로 나타난다.
 - **타임아웃·빈 결과**: `--block` 의 마감은 `count: 0`·`timedOut: true` 로 오는 **정상 답**이다.
@@ -575,6 +577,7 @@ honours the retain once, reports retained with this reason, and clears it; a fur
 the pane on its own merits." 즉 **`worker-release` 를 두 번 부르면 두 번째는 pane 을 닫는다.** `worker-abandon` 은 pane 을 보지도 닫지도 않는다.
 
 ### 상황 → 행동
+- **시험 bg 세션 정리**: `claude stop`·`claude rm` 은 id 앞 8자로 준다(전체 uuid 는 「No job matching」). rc≠0 은 실패로 적고, 정리 뒤 `claude agents --json --all` 로 다시 본다. bg 안 `/clear` 뒤에는 처음 job id 만 받는다 (LIFE-771·772·795).
 - **차단 화면**: 해당 없음 — 정리 명령은 화면을 대답하지 않는다.
 - **타임아웃·빈 결과**: `worker-release` 를 열린 시도에 부르면 `dispatch_active` 이고 효과가 없다 — 취소는
   `worker-stop` 이다. 이미 회수된 시도에 다시 부르면 기록에서 답하고 아무것도 쓰지 않는다.

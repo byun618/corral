@@ -160,18 +160,22 @@ export const agentName = (paneId: string): string => 'corral-' + createHash('sha
 
 // --- §3 detect manifest gate (D17, C2) ----------------------------------------------------------
 
-export interface ManifestExpectation { version: string; sourceKind: string; localOverrideShadowingRemote: boolean }
+export interface ManifestExpectation { version: string; priorVersions: readonly string[]; sourceKind: string; localOverrideShadowingRemote: boolean }
 /**
  * What the guard's `server.agent_manifests` must report before corral will submit for a provider.
- * codex and grok carry the versions `app/backend/herdr-detect.patch` sets; claude is not patched, so
- * its expectation is the stock bundled version. All three are gated by the same code (C2/D23): "we
- * did not patch it" is not a guarantee that the provider's trust rule is still present — review r4
- * showed a claude override that drops the rule reports the real trust screen as Idle.
+ * All three carry the versions `app/backend/herdr-detect.patch` sets, and all three are gated by the
+ * same code (C2/D23): review r4 showed a claude override that drops the trust rule reports the real
+ * trust screen as Idle.
+ *
+ * `priorVersions` are bundled manifests corral already verified. A new app can talk to a herdr server
+ * that has not restarted yet, and refusing it there would stop every Claude pane, coordinators included
+ * (LIFE-651·665·670 hit this with grok). Claude's stock version stays accepted until the next bump
+ * (LIFE-780): such a server only keeps the named-session misreading it already had.
  */
 export const EXPECTED_MANIFESTS: Readonly<Record<AgentKind, ManifestExpectation>> = {
-    claude: { version: '2026.09.04.1', sourceKind: 'bundled', localOverrideShadowingRemote: false },
-    codex: { version: '2026.10.28.1', sourceKind: 'bundled', localOverrideShadowingRemote: false },
-    grok: { version: '2026.10.15.2', sourceKind: 'bundled', localOverrideShadowingRemote: false },
+    claude: { version: '2026.11.03.1', priorVersions: ['2026.09.04.1'], sourceKind: 'bundled', localOverrideShadowingRemote: false },
+    codex: { version: '2026.10.28.1', priorVersions: [], sourceKind: 'bundled', localOverrideShadowingRemote: false },
+    grok: { version: '2026.10.15.2', priorVersions: [], sourceKind: 'bundled', localOverrideShadowingRemote: false },
 }
 export interface ManifestReport { agent?: unknown; source_kind?: unknown; active_version?: unknown; local_override_shadowing_remote?: unknown }
 export interface DetectManifestObservation {
@@ -196,7 +200,8 @@ export function evaluateManifest(kind: AgentKind, manifests: ManifestReport[] | 
     const sourceKind = typeof entry.source_kind === 'string' ? entry.source_kind : null
     const activeVersion = typeof entry.active_version === 'string' ? entry.active_version : null
     const shadowing = typeof entry.local_override_shadowing_remote === 'boolean' ? entry.local_override_shadowing_remote : null
-    const verified = sourceKind === expected.sourceKind && activeVersion === expected.version && shadowing === expected.localOverrideShadowingRemote
+    const versionKnown = activeVersion !== null && (activeVersion === expected.version || expected.priorVersions.includes(activeVersion))
+    const verified = sourceKind === expected.sourceKind && versionKnown && shadowing === expected.localOverrideShadowingRemote
     return { sourceKind, activeVersion, expectedVersion: expected.version, localOverrideShadowingRemote: shadowing, verified, queryError: null }
 }
 export function manifestGateError(kind: AgentKind, observation: DetectManifestObservation): RuntimeError {

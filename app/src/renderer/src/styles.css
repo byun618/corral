@@ -950,7 +950,8 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 .inline-notice-dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; background: var(--st-ok); }
 .inline-notice.tone-rejected .inline-notice-dot { background: var(--st-dirty); }
 .inline-notice.tone-error .inline-notice-dot { background: var(--st-error); }
-.inline-notice-text { min-width: 0; font-size: 11.5px; color: var(--fg); overflow-wrap: anywhere; }
+/* LIFE-822 G1-2 — 28px 고정 높이라 한 줄로 고정한다(넘치면 말줄임, 전문은 title). 해제 단추는 flex 0 0 으로 늘 보인다. */
+.inline-notice-text { min-width: 0; font-size: 11.5px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .inline-notice.tone-rejected .inline-notice-text, .inline-notice.tone-error .inline-notice-text { color: var(--fg-notice); }
 .inline-notice-spacer { flex: 1; }
 .inline-notice-dismiss {

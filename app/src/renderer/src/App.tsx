@@ -1530,6 +1530,15 @@ export function App(): React.JSX.Element {
   const [paneError, setPaneError] = useState<string | null>(null)
   /** 거절이 아니라 **안내** 한 줄 (G3′) — 실패 문구(`실패: …`)로 감싸지 않는다. */
   const [groupHint, setGroupHint] = useState<string | null>(null)
+  // LIFE-822 G1-1 — 안내는 띄운 맥락(worktree·활성 영역·그 영역의 활성 탭)에 묶인다 — 맥락이 바뀌면 지운다.
+  // `paneError`·라이프사이클 알림은 여기서 안 지운다(수명 불변).
+  const hintContext = `${activeWorktreeRow?.path ?? ''}\n${layoutMirror.activeGroupId ?? ''}\n${layoutMirror.activeTabId ?? ''}`
+  const hintContextRef = useRef(hintContext)
+  useEffect(() => {
+    if (hintContextRef.current === hintContext) return
+    hintContextRef.current = hintContext
+    setGroupHint(null)
+  }, [hintContext])
   const splitPaneAt = useCallback(
     async (target: { paneId: string | null; direction: PaneSplitDirection }): Promise<void> => {
       if (target.paneId === null) return

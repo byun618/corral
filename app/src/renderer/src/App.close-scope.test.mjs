@@ -275,3 +275,34 @@ it('fix2 N2 ⌘D 배선 — 탭 2개 이상 영역의 파일 탭이면 ⌘⌥D �
   expect(app.notice()).toBe('파일 탭은 pane 으로 나눌 수 없다 — ⌘⌥D 로 새 영역에 옮긴다')
   expect(app.splits).toEqual([])
 })
+
+it('G1-1 안내 수명 — 같은 맥락(같은 탭 다시 누름·같은 영역 머리)이면 남고, 탭 전환·영역 전환이면 사라진다 · 다시 누르면 다시 뜬다', async () => {
+  const app = await mount({ layout: splitLayout([{ groupId: 'g1', tabOrder: ['t1'], activeTabId: 't1' }, { groupId: 'g2', tabOrder: [FILE, 't2'], activeTabId: FILE }]) })
+  const HINT = '파일 탭은 pane 으로 나눌 수 없다 — ⌘⌥D 로 새 영역에 옮긴다'
+  const headerDown = async (groupId) => {
+    const header = app.q(`[data-group-header="${groupId}"]`)
+    if (header === null) throw new Error(`머리 없음: ${groupId}`)
+    await act(async () => { header.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })) })
+    await app.settle()
+  }
+  await app.key({ key: 'd', code: 'KeyD', metaKey: true })
+  expect(app.notice()).toBe(HINT)
+  // 같은 맥락 — 활성 파일 탭을 다시 누르고, 같은 영역 머리를 눌러도 남는다
+  await app.click(`[data-main-tab="${FILE}"]`)
+  await headerDown('g2')
+  expect(app.notice()).toBe(HINT)
+  // 탭 전환 → 사라짐
+  await app.click('[data-main-tab="t2"]')
+  expect(app.notice()).toBeNull()
+  // 같은 조작을 다시 하면 다시 뜬다
+  await app.click(`[data-main-tab="${FILE}"]`)
+  expect(app.notice()).toBeNull()
+  await app.key({ key: 'd', code: 'KeyD', metaKey: true })
+  expect(app.notice()).toBe(HINT)
+  // 영역 전환 → 사라짐(돌아와도 다시 안 뜬다)
+  await headerDown('g1')
+  expect(app.notice()).toBeNull()
+  await headerDown('g2')
+  expect(app.notice()).toBeNull()
+  expect(app.splits).toEqual([])
+})

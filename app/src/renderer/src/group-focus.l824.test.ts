@@ -1,7 +1,7 @@
 // LIFE-824 — 영역 간 포커스·전환의 이름 있는 순수 판정(이웃 영역 네 방향·영역 넘는 이전/다음 탭·⌃` 후보·영역 MRU·MRU 편집기 키·줌 해제·worktree 복귀·편집기 양보).
 import { describe, expect, it } from 'vitest'
 import { matchBinding, yieldsToEditor } from '../../shared/keybindings.js'
-import { editorMruKey, groupBodyKind, parseEditorMruKey, terminalEditorToggleTarget, toggleNoneHint, touchGroupMru, zoomedGroupOf, zoomHiding } from './group-focus.js'
+import { editorMruKey, groupBodyKind, parseEditorMruKey, pruneGroupMru, terminalEditorToggleTarget, toggleNoneHint, touchGroupMru, zoomedGroupOf, zoomHiding } from './group-focus.js'
 import { neighborGroupId, neighborGroups, rightNeighborGroupId, type GroupDirection, type GroupNode } from './group-tree.js'
 import { cycleAcrossGroups, cycleTabTarget } from './tab-actions.js'
 import { worktreeReturnTarget } from './worktree-activate.js'
@@ -183,5 +183,16 @@ describe('yieldsToEditor — 편집기 양보는 방향·조합 단위(C1ⓓ)', 
     expect(at('Mod+D')).toBe(true)
     expect(at('Mod+Shift+Z')).toBe(true)
     expect(at('Control+`')).toBe(false)
+  })
+})
+
+describe('pruneGroupMru — 배치에 없는 영역 id 를 뺀다 (fix1 A7)', () => {
+  it('닫힌 영역 id 는 빠지고 순서는 그대로', () => {
+    expect(pruneGroupMru({ history: ['C', 'A', 'B'], liveGroupIds: ['A', 'B'] })).toEqual(['A', 'B'])
+  })
+  it('닫혔다가 같은 id 로 다시 생긴 영역은 옛 순위를 물려받지 않는다(빠진 뒤 새로 찍힘)', () => {
+    const pruned = pruneGroupMru({ history: ['B', 'A'], liveGroupIds: ['A'] })
+    expect(touchGroupMru({ history: pruned, groupId: 'A' })).toEqual(['A'])
+    expect(terminalEditorToggleTarget({ groups: [{ groupId: 'A', activeTabId: 't1' }, { groupId: 'B', activeTabId: 'file:x' }, { groupId: 'C', activeTabId: 'file:y' }], activeGroupId: 'A', recent: pruned })).toEqual({ kind: 'go', groupId: 'B' })
   })
 })

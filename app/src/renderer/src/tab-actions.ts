@@ -150,17 +150,17 @@ export function cycleAcrossGroups(input: {
 }): { groupId: string; tabId: string } | null {
   const { groups, direction } = input
   const start = groups.findIndex((group) => group.groupId === input.activeGroupId)
-  if (start === -1) return null
-  const own = groups[start]!
+  const own = groups[start]
+  if (own === undefined) return null
   const index = input.activeTabId === null ? -1 : own.tabOrder.indexOf(input.activeTabId)
   // 활성 탭이 없는데 탭이 있으면 그 영역의 첫(다음)·끝(이전) — `cycleTabTarget` 과 같다.
   const inside = index === -1 ? (direction === 1 ? own.tabOrder[0] : own.tabOrder.at(-1)) : own.tabOrder[index + direction]
   if (inside !== undefined && inside !== null) return { groupId: own.groupId, tabId: inside }
   // 영역 끝 — 다음(이전) 영역부터 감아 돈다. 자기 영역까지 돌아오면 자기 첫(끝) 탭이다(영역 하나면 영역 안 순환).
   for (let step = 1; step <= groups.length; step++) {
-    const group = groups[(start + direction * step + groups.length * step) % groups.length]!
-    const tabId = direction === 1 ? group.tabOrder[0] : group.tabOrder.at(-1)
-    if (tabId === undefined) continue
+    const group = groups[(start + direction * step + groups.length * step) % groups.length]
+    const tabId = group === undefined ? undefined : direction === 1 ? group.tabOrder[0] : group.tabOrder.at(-1)
+    if (group === undefined || tabId === undefined) continue
     if (group.groupId === own.groupId && tabId === input.activeTabId) return null
     return { groupId: group.groupId, tabId }
   }

@@ -11,7 +11,7 @@ import { TasksPage, type TasksFocus } from './components/TasksPage.js'
 import type { WorktreeTaskLine } from './components/WorktreeTask.js'
 import { linkTitleId, useLinkTitles, type LinkTitleReread } from './hooks/useLinkTitles.js'
 import { activateWorktreeCard, worktreeReturnTarget } from './worktree-activate.js'
-import { editorMruKey, parseEditorMruKey, terminalEditorToggleTarget, toggleNoneHint, touchGroupMru, zoomedGroupOf, zoomHiding } from './group-focus.js'
+import { editorMruKey, parseEditorMruKey, pruneGroupMru, terminalEditorToggleTarget, toggleNoneHint, touchGroupMru, zoomedGroupOf, zoomHiding } from './group-focus.js'
 import { DEFAULT_SETTINGS_SECTION, SETTINGS_SECTIONS, type SettingsSectionId } from './settings-registry.js'
 // 화면 오케스트레이터 — `repo → worktree → tab → pane` 4단 데이터를 Orca 배치(사이드바 카드 +
 // 메인 탭바 + 상태바)로 그린다 (LIFE-357, Orca 직접 포팅 브랜치). 트리는 그리기, 동작은 IPC 로
@@ -145,6 +145,11 @@ const AGENT_LAUNCH_LABEL = { claude: 'Claude', codex: 'Codex', grok: 'Grok' } as
 const NO_REPOS: AppState['repos'] = []
 const NO_ROOTS: string[] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
+/** LIFE-824 fix1 A1 — 다른 worktree 로 미뤄 둔 편집기 포커스를 기다리는 상한. 넘도록 그 worktree 배치가 안 오면 버린다. */
+const PENDING_FOCUS_MS = 2_000
+/** LIFE-824 fix1 A2 — ⌘⌥방향 줄 세우기: 고른 결과가 그려지길 기다리는 상한(바뀐 것이 없어 커밋이 안 오는 회차). */
+const DIRECTION_SETTLE_MS = 150
+const PANE_DIRECTIONS: readonly PaneDirection[] = ['left', 'right', 'up', 'down']
 /** 작업 페이지가 열린 동안에도 사는 단축키 (LIFE-601 C4) — 나머지 워크스페이스 단축키는 삼키기만 한다. */
 // LIFE-682 A8 — 오른쪽 패널은 페이지와 무관한 전역 패널이라 작업 페이지에서도 ⌘L·⌘⇧E 가 돈다. 탐색기 범위 액션(필터·삭제·기록)은 트리 포커스에서만 오므로 같이 산다.
 const TASKS_PAGE_SHORTCUTS: readonly ActionId[] = ['tasks.toggle', 'settings.open', 'sidebar.toggle', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'explorer.filter', 'explorer.delete', 'explorer.undo', 'explorer.redo']
@@ -507,6 +512,15 @@ export function App(): React.JSX.Element {
    * 탭을 누른 뒤 곧바로 타건하는 흐름이 끊기지 않게 하는 자리다.
    */
   const [focusToken, setFocusToken] = useState(0)
+  /**
+   * LIFE-824 fix1 A1·A8 — 포커스 이동 순번. 새 이동(키·클릭·MRU·팔레트·세션 클릭)이 시작될 때마다 오른다. 본문 포커스 대기 루프(`focusOpenedFile`·`focusGroupBody`)와
+   * 다른 worktree 로 미뤄 둔 편집기 포커스(`pendingFocusRef`)는 자기 순번이 아직 마지막일 때만 포커스를 옮긴다 — 늦게 붙은 편집기가 뒤 이동을 덮지 않게.
+   */
+  const focusSeqRef = useRef(0)
+  const beginFocusMove = (): number => {
+    focusSeqRef.current += 1
+    return focusSeqRef.current
+  }
   const selectPane = useCallback(
     (paneId: string) => {
       lifecycle.selectPane(paneId)
@@ -602,6 +616,7 @@ export function App(): React.JSX.Element {
         .flatMap((worktree) => worktree.workspace?.tabs ?? [])
         .find((tab) => tab.panes.some((pane) => pane.paneId === paneId))
       pendingRevealRef.current = owner === undefined || layoutRef.current.revealTab(owner.tabId) ? null : owner.tabId
+      focusSeqRef.current += 1
       selectPane(paneId)
     },
     [selectPane],
@@ -993,26 +1008,31 @@ export function App(): React.JSX.Element {
 
   /** 최근 포커스 순서 (앞이 최근). pane 을 고르는 **모든 길**이 여기 찍힌다 — 선택 자체를 보므로. */
   const mruHistoryRef = useRef<string[]>([])
-  useEffect(() => {
-    if (lifecycle.selectedPane === null) return
-    mruHistoryRef.current = touchMru({ history: mruHistoryRef.current, paneId: lifecycle.selectedPane })
-  }, [lifecycle.selectedPane])
   /**
    * LIFE-824 C4ⓐ — 파일·diff 탭도 **활성된 순서로** 같은 기록에 찍는다(키 = `editorMruKey`, worktree 경로 + 탭 id). 편집기 탭에서 터미널 탭으로 돌아오면
    * 선택 pane 이 그대로여도 다시 찍는다 — 안 그러면 방금 떠난 파일이 지금 보는 터미널보다 최근으로 남는다.
    */
   const activeEditorKey = activeWorktreeRow !== null && activeTabIdForReveal !== null && isFileTabId(activeTabIdForReveal) ? editorMruKey({ worktreePath: activeWorktreeRow.path, tabId: activeTabIdForReveal }) : null
   useEffect(() => {
+    if (lifecycle.selectedPane === null) return
+    mruHistoryRef.current = touchMru({ history: mruHistoryRef.current, paneId: lifecycle.selectedPane })
+    // fix1 A3 — 편집기 탭이 활성인 채 선택 pane 만 바뀌면(닫기 따라가기·워크스페이스 전환 자동 선택 등) 맨 앞은 지금 보는 편집기 그대로다 — ⌃Tab 이 제자리로 가지 않게.
+    if (activeEditorKey !== null) mruHistoryRef.current = touchMru({ history: mruHistoryRef.current, paneId: activeEditorKey })
+  }, [lifecycle.selectedPane])
+  useEffect(() => {
     const key = activeEditorKey ?? lifecycle.selectedPane
     if (key !== null) mruHistoryRef.current = touchMru({ history: mruHistoryRef.current, paneId: key })
   }, [activeEditorKey])
   /** LIFE-824 C2 — 영역 MRU(worktree 경로별, 메모리 전용 — 영속 0). 영역이 활성될 때마다 맨 앞. ⌃` 후보 고르기가 읽는다(`group-focus.ts`). */
   const groupMruRef = useRef<Map<string, string[]>>(new Map())
+  // fix1 A7 — 배치에 없는 영역 id 는 걸러 낸다(닫힌 영역 id 가 재사용되면 새 영역이 옛 순위를 물려받는다). 영역 구성이 바뀔 때도 다시 본다.
+  const liveGroupIds = layout.groups.map((group) => group.groupId).join('\0')
   useEffect(() => {
     const path = activeWorktreeRow?.path ?? null
     if (path === null || layout.activeGroupId === null) return
-    groupMruRef.current.set(path, touchGroupMru({ history: groupMruRef.current.get(path) ?? [], groupId: layout.activeGroupId }))
-  }, [activeWorktreeRow?.path, layout.activeGroupId])
+    const pruned = pruneGroupMru({ history: groupMruRef.current.get(path) ?? [], liveGroupIds: liveGroupIds.split('\0') })
+    groupMruRef.current.set(path, touchGroupMru({ history: pruned, groupId: layout.activeGroupId }))
+  }, [activeWorktreeRow?.path, layout.activeGroupId, liveGroupIds])
 
   // LIFE-478 — 카드 메뉴의 App 층(고정·삭제·정보 수정 대화·⌘⌥R·⌘⇧⌫).
   const cardActions = useCardActions({
@@ -1111,8 +1131,14 @@ export function App(): React.JSX.Element {
   }, [state, lifecycle.activeWorkspaceId, layout.layout, layout.layoutOf, pinnedTabs])
   const mruEditorsRef = useRef(mruEditors)
   mruEditorsRef.current = mruEditors
-  /** MRU 가 세는 전부 — 터미널 pane 먼저(옛 순서 그대로), 편집기 탭은 그 뒤. */
-  const mruLiveIds = (): string[] => [...mruPanesRef.current.map((pane) => pane.paneId), ...mruEditorsRef.current.map((editor) => editor.key)]
+  /**
+   * MRU 가 세는 전부 — 터미널 pane 먼저(옛 순서 그대로), 편집기 탭은 그 뒤. fix1 A6 — 편집기 탭은 **활성된 적 있는**(기록에 있는) 것만 —
+   * 안 본 편집기 탭이 꼬리에 붙으면 ⌃⇧Tab·팔레트 「이전」 이 가장 오래된 터미널 대신 그리로 간다(C4ⓔ 터미널 순서 회귀 0).
+   */
+  const mruLiveIds = (): string[] => [
+    ...mruPanesRef.current.map((pane) => pane.paneId),
+    ...mruEditorsRef.current.map((editor) => editor.key).filter((key) => mruHistoryRef.current.includes(key)),
+  ]
   /** MRU 항목으로 간다 — 편집기 키면 그 탭(다른 worktree 면 전환 뒤), 아니면 pane(옛 길 `revealPane`). */
   const goToMruEntry = (key: string): void => {
     const editor = parseEditorMruKey(key)
@@ -1548,7 +1574,10 @@ export function App(): React.JSX.Element {
   const focusOpenedFile = (input: { worktreePath: string; rel: string }): void => {
     const tabId = fileTabId(input.rel)
     const startedAt = performance.now()
+    const seq = beginFocusMove()
     const attempt = (): void => {
+      // fix1 A8 — 그 사이 다른 포커스 이동이 시작됐으면 그만둔다(늦게 붙은 편집기가 포커스를 가져가지 않게).
+      if (focusSeqRef.current !== seq) return
       if (focusLiveEditor({ store: fileViewStatesOf(input.worktreePath), tabId })) return
       const view = document.querySelector<HTMLElement>(`.file-group[data-file-view="${CSS.escape(input.rel)}"]`)
       const waiting = view === null || view.querySelector('[data-file-editor], [data-file-notice="loading"]') !== null
@@ -1576,6 +1605,7 @@ export function App(): React.JSX.Element {
       case 'terminal': {
         const tab = tabById(target.tabId)
         if (tab === null) return
+        beginFocusMove()
         layout.setActiveTab({ groupId: target.groupId, tabId: target.tabId })
         const paneId = tab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? pickPane(tab)?.paneId ?? null
         if (paneId !== null) selectPane(paneId)
@@ -1594,7 +1624,9 @@ export function App(): React.JSX.Element {
   /** 편집기가 아닌 본문(diff 보기·빈 영역)에 포커스 — 다음 렌더에 그려지므로 프레임마다 다시 본다(최대 약 1 s, `focusOpenedFile` 과 같은 결). */
   const focusGroupBody = (input: { groupId: string; selector: string }): void => {
     const startedAt = performance.now()
+    const seq = beginFocusMove()
     const attempt = (): void => {
+      if (focusSeqRef.current !== seq) return
       const body = document.querySelector<HTMLElement>(`[data-tab-group="${CSS.escape(input.groupId)}"] ${input.selector}`)
       if (body !== null) body.focus({ preventScroll: true })
       else if (performance.now() - startedAt < 1_000) requestAnimationFrame(attempt)
@@ -1605,8 +1637,13 @@ export function App(): React.JSX.Element {
    * 편집기 탭(파일·diff)으로 — 어느 worktree 든(C4 MRU·팔레트·C7 복귀). 활성 worktree 면 바로 `focusGroupTab`, 아니면 그 worktree 를 활성으로 하고
    * 배치가 그 worktree 로 바뀐 렌더에서 편다(`pendingFocusRef` — `pendingRevealRef` 와 같은 이유: 같은 틱의 배치는 아직 옛 worktree 의 것).
    */
-  const pendingFocusRef = useRef<{ worktreePath: string; tabId: string } | null>(null)
+  /**
+   * fix1 A1 — 미뤄 둔 편집기 포커스의 **수명**: 순번(`seq` — 그 뒤 다른 이동이 시작되면 무효) · 떠난 자리(`fromPath` — 활성 worktree 가 그 둘 아닌 곳으로 가면 무효)
+   * · 기한(`deadline` — 전환이 끝내 안 일어나면 무효). 셋 중 하나라도 어긋나면 지운다 — 나중에 그 worktree 로 들어갈 때 옛 편집기가 포커스를 가져가지 않게.
+   */
+  const pendingFocusRef = useRef<{ worktreePath: string; tabId: string; fromPath: string | null; seq: number; deadline: number } | null>(null)
   const focusEditorTabIn = (target: { worktreePath: string; tabId: string }): void => {
+    pendingFocusRef.current = null
     if ((activeWorktreeRowRef.current?.path ?? null) === target.worktreePath) {
       const owner = layout.layout === null ? null : groupOfTab(layout.layout.root, target.tabId)
       if (owner !== null) focusGroupTab({ groupId: owner.groupId, tabId: target.tabId })
@@ -1614,14 +1651,20 @@ export function App(): React.JSX.Element {
     }
     const workspace = stateRef.current?.repos.flatMap((repo) => repo.worktrees).find((row) => row.path === target.worktreePath)?.workspace ?? null
     if (workspace === null) return
-    pendingFocusRef.current = target
+    pendingFocusRef.current = { ...target, fromPath: activeWorktreeRowRef.current?.path ?? null, seq: beginFocusMove(), deadline: performance.now() + PENDING_FOCUS_MS }
     lifecycle.actions.activateWorkspace(workspace.workspaceId)
   }
   const focusGroupTabRef = useRef(focusGroupTab)
   focusGroupTabRef.current = focusGroupTab
   useEffect(() => {
     const pending = pendingFocusRef.current
-    if (pending === null || layout.layout === null || (activeWorktreeRow?.path ?? null) !== pending.worktreePath) return
+    if (pending === null) return
+    const path = activeWorktreeRow?.path ?? null
+    if (pending.seq !== focusSeqRef.current || performance.now() > pending.deadline || (path !== pending.worktreePath && path !== pending.fromPath)) {
+      pendingFocusRef.current = null
+      return
+    }
+    if (layout.layout === null || path !== pending.worktreePath) return
     pendingFocusRef.current = null
     const owner = groupOfTab(layout.layout.root, pending.tabId)
     if (owner !== null) focusGroupTabRef.current({ groupId: owner.groupId, tabId: pending.tabId })
@@ -1728,6 +1771,7 @@ export function App(): React.JSX.Element {
    */
   const activateGroup = useCallback(
     (target: { groupId: string; paneId: string | null }): void => {
+      focusSeqRef.current += 1
       layout.setActiveGroup(target.groupId)
       if (target.paneId !== null) selectPane(target.paneId)
     },
@@ -1833,12 +1877,33 @@ export function App(): React.JSX.Element {
    * LIFE-824 C1·P1 — 같은 탭에 그 방향 이웃 pane 이 있으면 그 pane(위 그대로), 없으면(경계·파일·diff·빈 영역) 그 방향 **이웃 영역**으로(`neighborGroupId` —
    * 배치 사각형). 그 방향에 영역도 없으면 무동작(base 와 같다). 대상 pane 은 활성 영역 활성 탭의 선택 pane 이다 — 창 전체 선택 pane 이 다른 영역에 있으면 쓰지 않는다.
    */
-  const focusDirection = async (direction: PaneDirection): Promise<void> => {
+  /**
+   * fix1 A2 — ⌘⌥방향 연타·응답 전 다른 조작. 호출을 **한 줄로 세우고**(앞 호출이 고른 결과가 그려진 뒤 다음 호출이 그 상태를 읽는다), 상태는 렌더에 갇히지 않게
+   * 거울(`layoutRef`·`selectedPaneRef`·`activeWorktreeRowRef`)에서 읽는다. `pane.neighbor` 응답을 기다리는 사이 활성 영역·worktree·선택 pane 이 바뀌었으면
+   * (사용자가 다른 곳을 눌렀다) 늦은 응답은 버린다 — 뒤 조작을 덮지 않는다.
+   */
+  const selectedPaneRef = useRef(lifecycle.selectedPane)
+  selectedPaneRef.current = lifecycle.selectedPane
+  const commitWaitersRef = useRef<(() => void)[]>([])
+  useEffect(() => {
+    for (const resolve of commitWaitersRef.current.splice(0)) resolve()
+  })
+  /** 다음 커밋(렌더 반영)까지 — 바뀐 것이 없어 커밋이 안 오면 짧은 상한 뒤 넘어간다. */
+  const nextCommit = (): Promise<void> =>
+    new Promise((resolve) => {
+      commitWaitersRef.current.push(resolve)
+      setTimeout(resolve, DIRECTION_SETTLE_MS)
+    })
+  const directionChainRef = useRef<Promise<void>>(Promise.resolve())
+  const focusDirectionOnce = async (direction: PaneDirection): Promise<void> => {
+    const snapshot = (): string => [activeWorktreeRowRef.current?.path ?? '', layoutRef.current.activeGroupId ?? '', selectedPaneRef.current ?? ''].join('\0')
+    const before = snapshot()
     const { activeTabId } = layoutRef.current
-    const tab = activeTabId === null || isFileTabId(activeTabId) ? null : tabById(activeTabId)
-    const paneId = tab === null ? null : (tab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? pickPane(tab)?.paneId ?? null)
+    const tab = activeTabId === null || isFileTabId(activeTabId) ? null : tabByIdRef.current(activeTabId)
+    const paneId = tab === null ? null : (tab.panes.find((pane) => pane.paneId === selectedPaneRef.current)?.paneId ?? pickPane(tab)?.paneId ?? null)
     if (paneId !== null) {
       const result = await window.corral.focusPaneDirection({ paneId, direction })
+      if (snapshot() !== before) return
       if (!result.ok) {
         setPaneError(result.error)
         return
@@ -1849,6 +1914,7 @@ export function App(): React.JSX.Element {
         const zoomed = zoomHiding({ groups: zoomGroupsNow(), paneId: result.paneId })
         if (zoomed !== null) toggleZoom({ groupId: zoomed, paneId: null })
         selectPane(result.paneId)
+        await nextCommit()
         return
       }
     }
@@ -1856,7 +1922,14 @@ export function App(): React.JSX.Element {
     if (activeGroupId === null || root === null) return
     const neighbor = neighborGroupId({ root, groupId: activeGroupId, direction })
     const group = neighbor === null ? undefined : groups.find((row) => row.groupId === neighbor)
-    if (group !== undefined) focusGroupTabRef.current({ groupId: group.groupId, tabId: group.activeTabId })
+    if (group === undefined) return
+    focusGroupTabRef.current({ groupId: group.groupId, tabId: group.activeTabId })
+    await nextCommit()
+  }
+  const focusDirectionOnceRef = useRef(focusDirectionOnce)
+  focusDirectionOnceRef.current = focusDirectionOnce
+  const focusDirection = (direction: PaneDirection): void => {
+    directionChainRef.current = directionChainRef.current.then(() => focusDirectionOnceRef.current(direction)).catch(() => undefined)
   }
   const closePaneAt = useCallback(async (paneId: string | null): Promise<void> => {
     if (paneId === null) return
@@ -1950,7 +2023,10 @@ export function App(): React.JSX.Element {
       setGroupHint(null)
       layoutRef.current.splitGroup({ groupId, tabId, direction: variant === 1 ? 'column' : 'row' })
     },
-    'terminal.focus': (variant) => void focusDirection((['left', 'right', 'up', 'down'] as const)[variant]!),
+    'terminal.focus': (variant) => {
+      const direction = PANE_DIRECTIONS[variant]
+      if (direction !== undefined) focusDirection(direction)
+    },
     'group.close': () => {
       const groupId = layoutRef.current.activeGroupId
       if (groupId !== null) layoutRef.current.closeGroup(groupId)
@@ -2498,7 +2574,7 @@ export function App(): React.JSX.Element {
       const id = action.id
       paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
         shortcut: bindingsFor(id, keymap.overrides).flatMap((binding, index) => (binding !== null && action.bindingVariants[index] === variant ? [formatBinding(binding)] : [])).join(' / '),
-        disabled: id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : GROUP_FOCUS_ACTIONS.has(id) ? undefined : !palettePaneAlive ? '선택된 pane이 없습니다' : activeFileRel !== null && TERMINAL_PANE_ACTIONS.has(id) ? '파일 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
+        disabled: id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : GROUP_FOCUS_ACTIONS.has(id) ? undefined : !palettePaneAlive ? '선택된 pane이 없습니다' : activeTabIdForReveal !== null && isFileTabId(activeTabIdForReveal) && TERMINAL_PANE_ACTIONS.has(id) ? '파일·diff 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
         run: () => {
           if (id === 'mru.open') {
             const other = orderMru({ history: mruHistoryRef.current, livePaneIds: mruLiveIds() }).filter(id => id !== (activeEditorKey ?? lifecycle.selectedPane))

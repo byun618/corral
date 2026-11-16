@@ -10,6 +10,11 @@ export function touchGroupMru(input: { history: readonly string[]; groupId: stri
   return [input.groupId, ...input.history.filter((groupId) => groupId !== input.groupId)]
 }
 
+/** 영역 MRU 에서 배치에 없는 영역 id 를 뺀다 (fix1 A7 — 닫힌 영역 id 가 재사용돼 옛 순위를 물려받지 않게). */
+export function pruneGroupMru(input: { history: readonly string[]; liveGroupIds: readonly string[] }): string[] {
+  return input.history.filter((groupId) => input.liveGroupIds.includes(groupId))
+}
+
 /** 영역의 활성 탭 종류 — ⌃` 가 「터미널」과 「편집기(파일·diff)」를 가른다. 활성 탭이 없으면 `empty`. */
 export type GroupBodyKind = 'terminal' | 'editor' | 'empty'
 
@@ -30,9 +35,10 @@ export function terminalEditorToggleTarget(input: {
   const current = input.groups.find((group) => group.groupId === input.activeGroupId)
   const want = current !== undefined && groupBodyKind(current.activeTabId) === 'terminal' ? 'editor' : 'terminal'
   const candidates = input.groups.filter((group) => group.groupId !== input.activeGroupId && groupBodyKind(group.activeTabId) === want).map((group) => group.groupId)
-  if (candidates.length === 0) return { kind: 'none', want }
+  const [first] = candidates
+  if (first === undefined) return { kind: 'none', want }
   const recent = input.recent.find((groupId) => candidates.includes(groupId))
-  return { kind: 'go', groupId: recent ?? candidates[0]! }
+  return { kind: 'go', groupId: recent ?? first }
 }
 
 /** ⌃` 후보가 없을 때의 안내 한 줄. */

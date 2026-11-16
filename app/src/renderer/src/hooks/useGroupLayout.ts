@@ -8,7 +8,7 @@
 // 배치는 **worktree 마다 따로** 산다 — 창은 한 번에 하나만 보이지만(R3-f) 나머지도 보존된다.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { closeFileTab, keepFileTab, openFileTab, reopenFileTab, retargetFileTabs } from '../file-tabs.js'
+import { closeFileTab, keepFileTab, openFileTab, placeFileTab, reopenFileTab, retargetFileTabs, type FilePlacement, type PlaceFileResult } from '../file-tabs.js'
 import {
   closeGroup as closeGroupIn,
   dropDeadTabs,
@@ -71,6 +71,11 @@ export type GroupLayoutApi = {
    */
   /** 파일 탭을 연다 — `tabId` 를 주면 그 id 의 편집기 탭(LIFE-683 diff 탭)을 같은 규칙으로. 밀려난 탭은 `replaced.tabId` 로 종류를 가른다. */
   openFile: (input: { rel: string; preview: boolean; tabId?: string; onReplaced?: (replaced: { rel: string; groupId: string; index: number; tabId: string }) => void }) => void
+  /**
+   * LIFE-823 — 파일을 고른 자리(탭바 삽입·가장자리 분할·가운데·옆으로)에 **고정 탭**으로 연다. 이미 열려 있으면 그 탭 활성(+ 고정)만.
+   * 결과는 화면 배치로 미리 셈해 돌려준다(`openFile` 의 밀려난 탭 알림과 같은 결) — 부르는 쪽이 안내 한 줄(P2)을 정한다.
+   */
+  placeFile: (input: { rel: string; placement: FilePlacement }) => PlaceFileResult
   /** 미리보기 파일 탭 고정(탭 더블클릭). */
   keepFile: (tabId: string) => void
   /** 파일 탭 닫기 — 닫기 전 자리를 `onClosed` 로(⌘⇧T 기록). */
@@ -317,6 +322,17 @@ export function useGroupLayout(input: {
     [mutate, layout],
   )
 
+  const placeFile = useCallback(
+    (target: { rel: string; placement: FilePlacement }): PlaceFileResult => {
+      const place = (current: GroupLayout) =>
+        placeFileTab({ layout: current, rel: target.rel, placement: target.placement, newGroupId: nextGroupId(listGroups(current.root).map((group) => group.groupId)) })
+      const result = layout === null ? ({ kind: 'none' } satisfies PlaceFileResult) : place(layout).result
+      mutate((current) => place(current).layout)
+      return result
+    },
+    [mutate, layout],
+  )
+
   const keepFile = useCallback((tabId: string) => mutate((current) => keepFileTab({ layout: current, tabId })), [mutate])
 
   const closeFile = useCallback(
@@ -391,6 +407,7 @@ export function useGroupLayout(input: {
     splitGroupWithForeignTab,
     placeTab,
     openFile,
+    placeFile,
     keepFile,
     closeFile,
     reopenFile,

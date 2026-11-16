@@ -9,6 +9,7 @@ import {
   isWithinTabbarGrace,
   resolveBodyDropTarget,
   resolveBodyZone,
+  resolveFileBodyDropTarget,
   resolveTabbarIndex,
   type DropTarget,
   type Point,
@@ -20,6 +21,8 @@ export type TabDragVisual =
   | { kind: 'split'; groupId: string; zone: 'left' | 'right' | 'up' | 'down'; bodyRect: DOMRect }
   | { kind: 'merge'; groupId: string; bodyRect: DOMRect; empty: boolean }
   | { kind: 'invalid' | 'self-noop' }
+  /** LIFE-823 C2 — 폴더를 탭 영역 위로 끈다: 존 강조 없음, 고스트 + not-allowed 커서만. */
+  | { kind: 'blocked' }
 
 export type TabDragState = {
   tabId: string
@@ -41,12 +44,20 @@ export type TabDragApi = {
   consumeClick: () => boolean
 }
 
-/** 드래그 중인 탭 자신의 그룹 컨테이너(`[data-tab-group]`)를 찾아 헤더/본문 사각형을 잰다. */
-function resolveDropTarget(input: {
-  point: Point
-  fromGroupId: string
-  ownTabCountOf: (groupId: string) => number
-}): { target: DropTarget; visual: TabDragVisual } {
+/**
+ * 끄는 것 — 탭(출발 영역이 있다) 또는 탐색기 파일(LIFE-823, 출발 영역이 없다). 두 끌기가 판정·오버레이를 **공유**한다 —
+ * 본문 셀렉터가 두 벌이 되면 B5 같은 어긋남이 다시 난다.
+ */
+export type DragSource = { kind: 'tab'; fromGroupId: string; ownTabCountOf: (groupId: string) => number } | { kind: 'file' }
+
+/**
+ * 영역 본문이 되는 요소 — 터미널·빈 영역·파일(LIFE-590)·diff(LIFE-823 B5 — `DiffView` 의 `data-diff-group`).
+ * 넷 다 같은 드롭 판정(가장자리 = 분할, 가운데 = 병합/열기)을 받는다.
+ */
+export const DROP_BODY_SELECTOR = '[data-term-group], [data-empty-group], [data-file-group], [data-diff-group]'
+
+/** 포인터 아래 그룹 컨테이너(`[data-tab-group]`)를 찾아 헤더/본문 사각형을 재고 판정한다. */
+export function resolveDropTarget(input: { point: Point; source: DragSource }): { target: DropTarget; visual: TabDragVisual } {
   const invalid = { target: { kind: 'invalid' as const }, visual: { kind: 'invalid' as const } }
   const container = document
     .elementsFromPoint(input.point.x, input.point.y)
@@ -68,18 +79,22 @@ function resolveDropTarget(input: {
   }
 
   // LIFE-590 — 파일 탭 본문(`[data-file-group]`)도 터미널 본문과 같은 드롭 판정(가장자리 = 분할, 가운데 = 병합)을 받는다.
-  const bodyEl = container.querySelector('[data-term-group], [data-empty-group], [data-file-group]')
+  const bodyEl = container.querySelector(DROP_BODY_SELECTOR)
   if (bodyEl === null) return invalid
   const bodyRect = bodyEl.getBoundingClientRect()
   const targetIsEmpty = bodyEl.matches('[data-empty-group]')
   const zone = resolveBodyZone({ bodyRect, point: input.point })
-  const target = resolveBodyDropTarget({
-    zone,
-    targetGroupId: groupId,
-    fromGroupId: input.fromGroupId,
-    ownTabCount: input.ownTabCountOf(input.fromGroupId),
-    targetIsEmpty,
-  })
+  const { source } = input
+  const target =
+    source.kind === 'file'
+      ? resolveFileBodyDropTarget({ zone, targetGroupId: groupId, targetIsEmpty })
+      : resolveBodyDropTarget({
+          zone,
+          targetGroupId: groupId,
+          fromGroupId: source.fromGroupId,
+          ownTabCount: source.ownTabCountOf(source.fromGroupId),
+          targetIsEmpty,
+        })
   const visual: TabDragVisual =
     target.kind === 'split' && zone !== 'center'
       ? { kind: 'split', groupId, zone, bodyRect }
@@ -131,7 +146,7 @@ export function useTabDrag(input: {
       }
     }
     const resolveAt = (point: Point): void => {
-      const { target, visual } = resolveDropTarget({ point, fromGroupId: armInput.fromGroupId, ownTabCountOf: inputRef.current.ownTabCountOf })
+      const { target, visual } = resolveDropTarget({ point, source: { kind: 'tab', fromGroupId: armInput.fromGroupId, ownTabCountOf: inputRef.current.ownTabCountOf } })
       const next: TabDragState = { tabId: armInput.tabId, fromGroupId: armInput.fromGroupId, point, target, visual }
       stateRef.current = next
       setDragState(next)

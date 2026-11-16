@@ -732,3 +732,126 @@ export function placeTab(input: { layout: GroupLayout; tabId: string; groupId: s
   if (from === null || findGroup(layout.root, input.groupId) === null) return layout
   return moveTabWithinTabbar(layout, { tabId: input.tabId, fromGroupId: from.groupId, toGroupId: input.groupId, index: input.index })
 }
+
+// --- 배치에 없던 탭을 놓는다 (LIFE-823 — 탐색기 파일 끌어서 열기·옆으로 열기) ---------------------------------------------
+//
+// 위 이동 함수(`moveTabWithinTabbar`·`mergeTabIntoGroup`·`splitGroupWithForeignTab`)는 **이미 어느 영역에 있는 탭**을 옮긴다.
+// 아래 셋은 **배치 어디에도 없는 탭**을 새로 들인다 — 출발 영역이 없으니 원 영역 빼기·접기가 없고, 대상이 탭 1개·빈 영역이어도 된다.
+// 탭이 이미 배치에 있으면(어느 영역이든) 배치를 그대로 돌려준다 — 같은 탭이 두 곳에 실리지 않는다. 이미 열린 탭의 처리는 부르는 쪽(`file-tabs.ts` `placeFileTab`)이 한다.
+
+/** 배치 어디에든 그 탭이 있나. */
+function hasTab(layout: GroupLayout, tabId: string): boolean {
+  return groupOfTab(layout.root, tabId) !== null
+}
+
+/** 탭바 삽입 — 그 영역의 `index`(0 ~ 길이, 벗어나면 끝으로 clamp) 자리에 끼우고 그 영역·그 탭을 활성으로. */
+export function insertNewTabAt(input: { layout: GroupLayout; tabId: string; groupId: string; index: number }): GroupLayout {
+  const { layout, tabId } = input
+  if (hasTab(layout, tabId) || findGroup(layout.root, input.groupId) === null) return layout
+  const inserted = updateGroup(layout, input.groupId, (group) => {
+    const at = Math.max(0, Math.min(input.index, group.tabOrder.length))
+    return { ...group, tabOrder: [...group.tabOrder.slice(0, at), tabId, ...group.tabOrder.slice(at)], activeTabId: tabId }
+  })
+  return { ...inserted, activeGroupId: input.groupId }
+}
+
+/** 가운데 열기 — 그 영역의 활성 탭 바로 오른쪽(활성이 없으면 끝)에 넣고 그 영역·그 탭을 활성으로(VS Code `openPositioning: right`). */
+export function openNewTabInGroup(input: { layout: GroupLayout; tabId: string; groupId: string }): GroupLayout {
+  const group = findGroup(input.layout.root, input.groupId)
+  if (group === null) return input.layout
+  const activeAt = group.activeTabId === null ? -1 : group.tabOrder.indexOf(group.activeTabId)
+  return insertNewTabAt({ layout: input.layout, tabId: input.tabId, groupId: input.groupId, index: activeAt < 0 ? group.tabOrder.length : activeAt + 1 })
+}
+
+/**
+ * 가장자리 분할 — 대상 영역 옆(`direction`·`edge` 는 `splitGroup` 과 같은 뜻)에 그 탭 하나만 든 새 영역을 만들고 새 영역을 활성으로.
+ * 대상 영역의 탭 수는 보지 않는다(탭 1개도 된다). 단 대상이 **빈 영역**이면 그 빈 형제는 화면 배치(`reconcileLayout` 의 빈 영역 접기)에서 접혀
+ * 한 영역이 된다 — 그래서 탐색기 끌기는 빈 영역 가장자리를 분할로 판정하지 않는다(`tab-drag.ts` `resolveFileBodyDropTarget`, C1ⓑ 정정 r1).
+ */
+export function splitGroupWithNewTab(input: {
+  layout: GroupLayout
+  tabId: string
+  targetGroupId: string
+  direction: 'row' | 'column'
+  edge: 'before' | 'after'
+  newGroupId: string
+}): GroupLayout {
+  const { layout } = input
+  if (hasTab(layout, input.tabId) || findGroup(layout.root, input.targetGroupId) === null || findGroup(layout.root, input.newGroupId) !== null) return layout
+  const added = leaf({ groupId: input.newGroupId, tabOrder: [input.tabId], activeTabId: input.tabId })
+  const replace = (node: GroupNode): GroupNode => {
+    switch (node.kind) {
+      case 'leaf':
+        if (node.group.groupId !== input.targetGroupId) return node
+        return input.edge === 'before'
+          ? { kind: 'split', direction: input.direction, ratio: 0.5, first: added, second: node }
+          : { kind: 'split', direction: input.direction, ratio: 0.5, first: node, second: added }
+      case 'split': {
+        const first = replace(node.first)
+        const second = replace(node.second)
+        return first === node.first && second === node.second ? node : { ...node, first, second }
+      }
+    }
+  }
+  return { root: replace(layout.root), activeGroupId: input.newGroupId }
+}
+
+/** 영역 사각형 — 루트를 단위 정사각형(0~1)으로 놓고 분할 비율로 나눈 자리. 화면 픽셀이 아니라 배치 모양만 본다. */
+export type GroupRect = { left: number; top: number; width: number; height: number }
+
+/** 영역마다 사각형 (LIFE-823 F2) — `ratio` 는 앞(`first`) 쪽 몫이다(`PaneGrid` 와 같다). row = 좌우, column = 위아래. */
+export function groupRects(root: GroupNode): Map<string, GroupRect> {
+  const rects = new Map<string, GroupRect>()
+  const walk = (node: GroupNode, rect: GroupRect): void => {
+    switch (node.kind) {
+      case 'leaf':
+        rects.set(node.group.groupId, rect)
+        return
+      case 'split': {
+        const ratio = clampRatio(node.ratio)
+        if (node.direction === 'row') {
+          walk(node.first, { ...rect, width: rect.width * ratio })
+          walk(node.second, { ...rect, left: rect.left + rect.width * ratio, width: rect.width * (1 - ratio) })
+        } else {
+          walk(node.first, { ...rect, height: rect.height * ratio })
+          walk(node.second, { ...rect, top: rect.top + rect.height * ratio, height: rect.height * (1 - ratio) })
+        }
+        return
+      }
+    }
+  }
+  walk(root, { left: 0, top: 0, width: 1, height: 1 })
+  return rects
+}
+
+/** 부동소수 비교 여유 — 비율 곱셈 오차. */
+const RECT_EPSILON = 1e-9
+
+/**
+ * 그 영역의 **오른쪽 이웃들** (LIFE-823 F2 — VS Code `grid.ts` `getNeighborViews`): 왼쪽 변이 그 영역의 오른쪽 변에 닿고 세로 구간이 **겹치는** 영역
+ * (끝점만 닿는 것은 이웃이 아니다). 겹친 길이(`overlap`)와 사각형을 같이 돌려준다 — 고르는 규칙은 부르는 쪽(`rightNeighborGroupId`).
+ */
+export function rightNeighborGroups(input: { root: GroupNode; groupId: string }): { groupId: string; overlap: number; rect: GroupRect }[] {
+  const { groupId } = input
+  const rects = groupRects(input.root)
+  const from = rects.get(groupId)
+  if (from === undefined) return []
+  const edge = from.left + from.width
+  const neighbors: { groupId: string; overlap: number; rect: GroupRect }[] = []
+  for (const [id, rect] of rects) {
+    if (id === groupId || Math.abs(rect.left - edge) > RECT_EPSILON) continue
+    const overlap = Math.min(from.top + from.height, rect.top + rect.height) - Math.max(from.top, rect.top)
+    if (overlap > RECT_EPSILON) neighbors.push({ groupId: id, overlap, rect })
+  }
+  return neighbors
+}
+
+/**
+ * 「옆으로 열기」 대상 영역 (LIFE-823 P3·F2 — VS Code `SIDE_GROUP` 의 `findGroup({ direction: right })`). 오른쪽 이웃들 중 겹침이 큰 것, 같으면 위.
+ * 이웃이 없으면(가장 오른쪽 열) null. VS Code 는 여럿이면 영역 MRU 로 고르지만 corral 배치에는 영역 MRU 가 없다(R2-L3 — 들이면 그때 이 자리에).
+ */
+export function rightNeighborGroupId(input: { root: GroupNode; groupId: string }): string | null {
+  const neighbors = rightNeighborGroups(input)
+  const sorted = [...neighbors].sort((a, b) => (Math.abs(b.overlap - a.overlap) > RECT_EPSILON ? b.overlap - a.overlap : a.rect.top - b.rect.top))
+  return sorted[0]?.groupId ?? null
+}

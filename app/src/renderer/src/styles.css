@@ -1612,3 +1612,7 @@ body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
   background: color-mix(in srgb, var(--ring-sidebar) 14%, transparent);
   box-shadow: 0 0 0 1px var(--ring-sidebar);
 }
+
+/* LIFE-823 C2 — 폴더를 탭 영역 위로 끄는 중: 존 강조 없이 불가 커서(탭 끌기 `grabbing` 보다 뒤에 둬 이긴다). */
+body.is-tab-drag.is-file-drag-blocked,
+body.is-tab-drag.is-file-drag-blocked * { cursor: not-allowed; }

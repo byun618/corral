@@ -899,7 +899,8 @@ export function GroupHeader({
           떠 있는 머리의 토글이 눌리려면 그 밑 탭 줄에 같은 폭의 no-drag 자리가 있어야 한다. 폭은 떠 있는 머리를 잰 값(--collapsed-sidebar-header-width). */}
       {headSpacer ? <div className="main-tabbar-head-spacer" data-collapsed-head-spacer="" /> : null}
       {overflow.metrics.hasOverflow ? <TabStripChevron groupId={groupId} direction="start" overflow={overflow} dragActive={tabDragActive} /> : null}
-      <div className="main-tab-strip-wrap" data-main-tab-strip-wrap={groupId}>
+      {/* LIFE-823 R2-L1 — 끌기 모드 표지(탭·탐색기 파일 끌기 둘 다 — `useTabStripOverflow` 의 `dragActive` 와 같은 값). 시험·관측이 본다. */}
+      <div className="main-tab-strip-wrap" data-main-tab-strip-wrap={groupId} data-tab-drag-active={tabDragActive ? '' : undefined}>
         <div
           className={`main-tab-strip ${tabStripMaskClassName({ metrics: overflow.metrics, dockedSide: overflow.dockSide })}`}
           data-main-tab-strip={groupId}

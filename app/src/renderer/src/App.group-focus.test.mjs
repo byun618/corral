@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-/* global window, document, setTimeout, KeyboardEvent, MouseEvent */
+/* global window, document, setTimeout, console, KeyboardEvent, MouseEvent */
 // LIFE-824 — App 배선을 실제 마운트로 거친다(App.drag-open.test.mjs 와 같은 걸음). 영역 3개(가로·세로 섞임, 터미널·파일·diff 섞임):
 //   g1(왼쪽, 터미널 t1·t2) | g2(오른쪽 위, 파일 a.ts) / g3(오른쪽 아래, diff)
 //   · C1 ⌘⌥방향 영역 넘기(경계·파일·diff·편집기 안 ←→·끝 무동작)·이웃 pane 우선·팔레트 항목 켜짐  · C2 ⌃` 영역 MRU·후보 0 안내
@@ -50,11 +50,11 @@ const THREE = (activeGroupId = 'g1') => ({
 const view = (paneId, x) => ({ paneId, rect: { x, y: 0, width: 40, height: 24 }, innerRect: { x, y: 0, width: 40, height: 24 }, focused: false, mouseReporting: false })
 
 /** 둘째 이후 worktree(fix1 A1 — 교차 worktree): `{ path, workspaceId, panes, layout }`. 첫 worktree 는 `/r`·`w1`(활성). */
-async function mount({ layout = THREE(), panes = { t1: ['p1'], t2: ['p2'] }, terminalGroups = [], others = [], readFile = null, neighborOf = null, neighborDelayMs = 0 } = {}) {
+async function mount({ layout = THREE(), panes = { t1: ['p1'], t2: ['p2'] }, terminalGroups = [], others = [], readFile = null, neighborOf = null, neighborDelayMs = 0, neighborRejects = 0 } = {}) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'l824-app-'))
   const store = new KeybindingStore(folder)
   store.load()
-  const prefs = { ...new UiPrefsStore(folder).get(), sidebarCollapsed: false, rightPanelOpen: false, rightPanelView: 'explorer', groupLayouts: [{ worktreePath: '/r', layoutFormat: LAYOUT_FORMAT, layout }, ...others.map((other) => ({ worktreePath: other.path, layoutFormat: LAYOUT_FORMAT, layout: other.layout }))] }
+  const prefs = { ...new UiPrefsStore(folder).get(), sidebarCollapsed: false, rightPanelOpen: false, rightPanelView: 'explorer', groupLayouts: [{ worktreePath: '/r', layoutFormat: LAYOUT_FORMAT, layout }, ...others.filter((other) => other.layout !== undefined).map((other) => ({ worktreePath: other.path, layoutFormat: LAYOUT_FORMAT, layout: other.layout }))] }
   const gitStatus = { branch: 'main', upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false }
   const tabs = Object.entries(panes).map(([tabId, ids], index) => tabOf(tabId, index + 1, ids.map((paneId) => paneOf(paneId, tabId))))
   const otherRows = others.map((other, index) => ({
@@ -86,11 +86,14 @@ async function mount({ layout = THREE(), panes = { t1: ['p1'], t2: ['p2'] }, ter
       calls.neighbor.push(input)
       calls.order.push('neighbor')
       if (neighborDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, neighborDelayMs))
+      if (calls.neighbor.length <= neighborRejects) throw new Error('ipc rejected')
       return { ok: true, paneId: neighborOf === null ? neighbor.next : (neighborOf[`${input.paneId}:${input.direction}`] ?? null) }
     },
     termZoom: (input) => { calls.zoom.push(input); calls.order.push(`zoom:${input.paneId}`) },
     splitPane: async (input) => { calls.split.push(input); calls.order.push('split'); return { ok: true, paneId: null } },
   }
+  const listeners = {}
+  api.onRevealPane = (listener) => { listeners.revealPane = listener; return () => {} }
   Reflect.set(window, 'corral', new Proxy(api, { get: (target, key) => (typeof key === 'string' && key in target ? target[key] : String(key).startsWith('on') ? () => () => {} : async () => null) }))
   resetSettingsStoreForTest(null)
   const host = document.createElement('div')
@@ -113,6 +116,8 @@ async function mount({ layout = THREE(), panes = { t1: ['p1'], t2: ['p2'] }, ter
   }
   return {
     q, settle, key, keyUp, calls, neighbor,
+    /** main 이 보낸 pane 이동 요청(CLI·Resource 「이동」 — `requestedPane` 길, 포커스 순번을 안 올린다). */
+    reveal: async (paneId) => { await act(async () => { listeners.revealPane(paneId) }); await settle(5) },
     active: () => q('.tab-group.is-active-group')?.getAttribute('data-tab-group') ?? null,
     focused: () => document.activeElement?.closest('[data-tab-group]')?.getAttribute('data-tab-group') ?? null,
     activeTabOf: (groupId) => q(`[data-tab-group="${groupId}"] [data-main-tab][data-active="true"]`)?.getAttribute('data-main-tab') ?? null,
@@ -445,4 +450,144 @@ it('fix1 A12 — 팔레트 줌·분할은 파일·diff 탭 둘 다에서 흐림 
     expect(entry?.textContent).toContain('파일·diff 탭에서는 쓸 수 없습니다')
   }
   expect(app.q('[data-palette-entry="terminal.focus:0"]')?.getAttribute('aria-disabled')).toBe('false')
+})
+
+// --- fix2 (r2 리뷰 반영) ---------------------------------------------------------------------------------------------------------
+
+/** g1 = 터미널 t1 + 파일 a.ts | g2 = 터미널 t2. */
+const MIXED = () => ({ root: { kind: 'split', direction: 'row', ratio: 0.5, first: leaf('g1', ['t1', FILE], 't1'), second: leaf('g2', ['t2']) }, activeGroupId: 'g1' })
+const pressLater = async (direction, then) => {
+  await act(async () => {
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...cmdAlt(direction) }))
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    then()
+  })
+}
+
+it('fix2 B1 — ⌘⌥→ 응답 전에 같은 영역 파일 탭을 누르면 늦은 null 응답이 활성 영역을 옮기지 않는다', async () => {
+  const app = await mount({ layout: MIXED(), neighborOf: {}, neighborDelayMs: 200 })
+  const tab = app.q(`[data-tab-group="g1"] [data-main-tab="${FILE}"]`)
+  await pressLater('right', () => {
+    tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }))
+    tab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))
+  })
+  await app.settle(15)
+  expect(app.calls.neighbor).toEqual([{ paneId: 'p1', direction: 'right' }])
+  expect(app.active()).toBe('g1')
+  expect(app.activeTabOf('g1')).toBe(FILE)
+  expect(app.focused()).toBe('g1')
+})
+
+it('fix2 B1·B2 — ⌘⌥→ 응답 전에 ⌃2(같은 영역 파일 탭)를 누르면 늦은 null 응답이 활성 영역을 옮기지 않는다', async () => {
+  const app = await mount({ layout: MIXED(), neighborOf: {}, neighborDelayMs: 200 })
+  await pressLater('right', () => {
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: '2', code: 'Digit2', ctrlKey: true }))
+  })
+  await app.settle(15)
+  expect(app.calls.neighbor).toHaveLength(1)
+  expect(app.active()).toBe('g1')
+  expect(app.activeTabOf('g1')).toBe(FILE)
+})
+
+it('fix2 B2 — 파일을 기다리는 동안 터미널 탭을 마우스로 누르면 늦게 붙은 파일 보기가 포커스를 가져가지 않는다', async () => {
+  const app = await mount({ readFile: () => new Promise((resolve) => setTimeout(() => resolve({ ok: true, kind: 'binary', size: 1, bytesRead: 1, stamp: 's0' }), 200)) })
+  await app.mouse('click', app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`))
+  expect(app.q('[data-tab-group="g2"] [data-file-notice="loading"]')).not.toBeNull()
+  await app.mouse('click', app.q('[data-tab-group="g1"] [data-main-tab="t2"]'))
+  expect(app.active()).toBe('g1')
+  await app.settle(15)
+  expect(app.q('[data-tab-group="g2"] [data-file-notice="loading"]')).toBeNull()
+  expect(app.active()).toBe('g1')
+  expect(app.focused()).not.toBe('g2')
+})
+
+const R3_EMPTY = { path: '/r3', workspaceId: 'w3', panes: {} }
+const pickEditorB = () => [...document.querySelectorAll('[data-palette-entry^="editor.switch:"]')].find((row) => row.getAttribute('data-palette-entry')?.endsWith(FILE_B))
+
+it('fix2 B3 떠난 자리 — 순번을 안 올리는 이탈(첫 탭 규칙 카드)로 다른 worktree 에 갔다가, 순번 없이(requestedPane) 목적지에 들어가도 옛 편집기가 펼쳐지지 않는다', async () => {
+  const app = await mount({ others: [{ ...R2, layout: r2Layout('h1') }, R3_EMPTY] })
+  await app.key({ key: 'k', code: 'KeyK', metaKey: true })
+  const entry = pickEditorB()
+  await act(async () => {
+    entry.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))
+    card(app, '/r3').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })) // 탭 0 → 옛 규칙(activateWorkspace 만)
+  })
+  await app.settle(5)
+  expect(app.q('[data-tab-group="h2"]')).toBeNull() // /r2 에 아직 안 들어갔다
+  await app.reveal('p3') // /r2 의 터미널 pane 으로 — 순번 안 오름
+  expect(app.active()).toBe('h1')
+  expect(app.activeTabOf('h2')).toBe(FILE_B)
+  expect(app.focused()).not.toBe('h2')
+})
+
+it('fix2 B3 순번 — 같은 worktree 안 탭 클릭(순번 오름)으로 떠나지 않고 다른 이동을 했으면, 뒤에 순번 없이 목적지에 들어가도 펼쳐지지 않는다', async () => {
+  const app = await mount({ others: [{ ...R2, layout: r2Layout('h1') }] })
+  await app.key({ key: 'k', code: 'KeyK', metaKey: true })
+  const entry = pickEditorB()
+  await act(async () => {
+    entry.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))
+    app.q('[data-tab-group="g1"] [data-main-tab="t2"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))
+  })
+  await app.settle(5)
+  expect(app.active()).toBe('g1') // 떠난 자리(/r)에 머문다 — 떠난 자리 조건으로는 안 버려진다
+  await app.reveal('p3')
+  expect(app.active()).toBe('h1')
+  expect(app.focused()).not.toBe('h2')
+})
+
+it('fix2 B4 — focusPaneDirection 이 거절돼도 경고를 남기고 다음 ⌘⌥방향은 그대로 동작한다', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    const app = await mount({ neighborOf: {}, neighborRejects: 1 })
+    await app.key(cmdAlt('right'))
+    expect(app.active()).toBe('g1')
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('인접 pane / 영역 포커스 실패'))).toBe(true)
+    await app.key(cmdAlt('right'))
+    await app.settle(5)
+    expect(app.calls.neighbor).toHaveLength(2)
+    expect(app.active()).toBe('g2')
+  } finally {
+    warn.mockRestore()
+  }
+})
+
+it('fix2 B4 — 키 반복이 줄에 쌓이지 않는다(진행 중 하나 + 대기 하나까지)', async () => {
+  const app = await mount({ panes: { t1: ['p1', 'p9'], t2: ['p2'] }, neighborOf: { 'p1:down': 'p9', 'p9:down': 'p1' }, neighborDelayMs: 60 })
+  await act(async () => {
+    for (let i = 0; i < 5; i += 1) document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...cmdAlt('down') }))
+  })
+  await app.settle(20)
+  expect(app.calls.neighbor).toHaveLength(2)
+})
+
+it('fix2 B5 — 영역을 닫고 같은 id 로 새 영역이 생겨도 ⌃` 후보는 지금 영역의 최근 순서', async () => {
+  const FILE_C = 'file:c.ts'
+  const layout = { root: { kind: 'split', direction: 'row', ratio: 0.5, first: leaf('g1', ['t1']), second: { kind: 'split', direction: 'column', ratio: 0.5, first: leaf('g2', [DIFF]), second: leaf('g3', [FILE, FILE_C], FILE_C) } }, activeGroupId: 'g1' }
+  const app = await mount({ layout })
+  await app.mouse('mousedown', app.q('[data-diff-group="g2"]')) // 영역 MRU: g2 가 g3 보다 최근
+  await app.mouse('click', app.q('[data-tab-group="g1"] [data-main-tab="t1"]'))
+  await app.key({ key: '`', code: 'Backquote', ctrlKey: true })
+  expect(app.active()).toBe('g2')
+  await app.key({ key: 'w', code: 'KeyW', metaKey: true, altKey: true }) // g2 닫기
+  expect(app.q('[data-tab-group="g2"]')).toBeNull()
+  await app.mouse('click', app.q(`[data-tab-group="g3"] [data-main-tab="${FILE_C}"]`))
+  await app.key({ key: 'd', code: 'KeyD', metaKey: true, altKey: true }) // c.ts 를 새 영역으로 — 비어 있는 id g2 를 다시 쓴다
+  expect(app.activeTabOf('g2')).toBe(FILE_C)
+  await app.mouse('click', app.q(`[data-tab-group="g3"] [data-main-tab="${FILE}"]`)) // 지금은 g3 가 새 g2 보다 최근
+  await app.mouse('click', app.q('[data-tab-group="g1"] [data-main-tab="t1"]'))
+  await app.key({ key: '`', code: 'Backquote', ctrlKey: true })
+  expect(app.active()).toBe('g3')
+})
+
+it('fix2 B2 — ⌃1–9 로 터미널 탭(activateTab 길)으로 옮기면 순번이 올라, 미뤄 둔 편집기 포커스가 뒤에 순번 없이 목적지에 들어가도 펼쳐지지 않는다', async () => {
+  const app = await mount({ others: [{ ...R2, layout: r2Layout('h2') }] })
+  await act(async () => {
+    card(app, '/r2').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })) // 저장 활성 = 파일 → 미뤄 둔 포커스
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: '2', code: 'Digit2', ctrlKey: true })) // 그 전에 /r 에서 ⌃2
+  })
+  await app.settle(5)
+  expect(app.activeTabOf('g1')).toBe('t2')
+  await app.reveal('p3') // 순번 없이 /r2 의 터미널로 — 옛 편집기(h2)로 가지 않는다
+  expect(app.active()).toBe('h1')
+  expect(app.focused()).not.toBe('h2')
 })

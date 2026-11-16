@@ -15,6 +15,25 @@ export function pruneGroupMru(input: { history: readonly string[]; liveGroupIds:
   return input.history.filter((groupId) => input.liveGroupIds.includes(groupId))
 }
 
+/**
+ * 다른 worktree 로 미뤄 둔 편집기 포커스(A1·fix2 B3)를 지금 펼지·버릴지·기다릴지. 버리는 조건은 셋이고 각각 따로 막는다:
+ * 순번(그 뒤 다른 포커스 이동이 시작됐다) · 기한(전환이 끝내 안 왔다) · 떠난 자리(활성 worktree 가 떠난 곳·목적지 아닌 데로 갔다 — 순번을 안 올리는 이동,
+ * 예: `requestedPane`·첫 탭 규칙 카드 활성). 목적지에 배치가 서면 `go`.
+ */
+export function pendingFocusVerdict(input: {
+  pending: { worktreePath: string; fromPath: string | null; seq: number; deadline: number }
+  seq: number
+  now: number
+  path: string | null
+  layoutReady: boolean
+}): 'go' | 'wait' | 'drop' {
+  const { pending, path } = input
+  if (pending.seq !== input.seq) return 'drop'
+  if (input.now > pending.deadline) return 'drop'
+  if (path !== pending.worktreePath && path !== pending.fromPath) return 'drop'
+  return path === pending.worktreePath && input.layoutReady ? 'go' : 'wait'
+}
+
 /** 영역의 활성 탭 종류 — ⌃` 가 「터미널」과 「편집기(파일·diff)」를 가른다. 활성 탭이 없으면 `empty`. */
 export type GroupBodyKind = 'terminal' | 'editor' | 'empty'
 

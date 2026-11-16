@@ -11,7 +11,7 @@ import { TasksPage, type TasksFocus } from './components/TasksPage.js'
 import type { WorktreeTaskLine } from './components/WorktreeTask.js'
 import { linkTitleId, useLinkTitles, type LinkTitleReread } from './hooks/useLinkTitles.js'
 import { activateWorktreeCard, worktreeReturnTarget } from './worktree-activate.js'
-import { editorMruKey, parseEditorMruKey, pruneGroupMru, terminalEditorToggleTarget, toggleNoneHint, touchGroupMru, zoomedGroupOf, zoomHiding } from './group-focus.js'
+import { editorMruKey, parseEditorMruKey, pendingFocusVerdict, pruneGroupMru, terminalEditorToggleTarget, toggleNoneHint, touchGroupMru, zoomedGroupOf, zoomHiding } from './group-focus.js'
 import { DEFAULT_SETTINGS_SECTION, SETTINGS_SECTIONS, type SettingsSectionId } from './settings-registry.js'
 // 화면 오케스트레이터 — `repo → worktree → tab → pane` 4단 데이터를 Orca 배치(사이드바 카드 +
 // 메인 탭바 + 상태바)로 그린다 (LIFE-357, Orca 직접 포팅 브랜치). 트리는 그리기, 동작은 IPC 로
@@ -149,6 +149,7 @@ const MRU_HOLD_TIMEOUT_MS = 10_000
 const PENDING_FOCUS_MS = 2_000
 /** LIFE-824 fix1 A2 — ⌘⌥방향 줄 세우기: 고른 결과가 그려지길 기다리는 상한(바뀐 것이 없어 커밋이 안 오는 회차). */
 const DIRECTION_SETTLE_MS = 150
+const DIRECTION_QUEUE_MAX = 2
 const PANE_DIRECTIONS: readonly PaneDirection[] = ['left', 'right', 'up', 'down']
 /** 작업 페이지가 열린 동안에도 사는 단축키 (LIFE-601 C4) — 나머지 워크스페이스 단축키는 삼키기만 한다. */
 // LIFE-682 A8 — 오른쪽 패널은 페이지와 무관한 전역 패널이라 작업 페이지에서도 ⌘L·⌘⇧E 가 돈다. 탐색기 범위 액션(필터·삭제·기록)은 트리 포커스에서만 오므로 같이 산다.
@@ -1289,6 +1290,7 @@ export function App(): React.JSX.Element {
 
   /** 탭 하나를 그 영역에서 활성으로 + 그 탭의 pane 으로 포커스(탭 클릭과 같은 길). */
   const activateTab = (input: { groupId: string; tab: TabRow }): void => {
+    beginFocusMove()
     layout.setActiveTab({ groupId: input.groupId, tabId: input.tab.tabId })
     const pane = pickPane(input.tab)
     if (pane !== null) selectPane(pane.paneId)
@@ -1659,13 +1661,10 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     const pending = pendingFocusRef.current
     if (pending === null) return
-    const path = activeWorktreeRow?.path ?? null
-    if (pending.seq !== focusSeqRef.current || performance.now() > pending.deadline || (path !== pending.worktreePath && path !== pending.fromPath)) {
-      pendingFocusRef.current = null
-      return
-    }
-    if (layout.layout === null || path !== pending.worktreePath) return
+    const verdict = pendingFocusVerdict({ pending, seq: focusSeqRef.current, now: performance.now(), path: activeWorktreeRow?.path ?? null, layoutReady: layout.layout !== null })
+    if (verdict === 'wait') return
     pendingFocusRef.current = null
+    if (verdict === 'drop' || layout.layout === null) return
     const owner = groupOfTab(layout.layout.root, pending.tabId)
     if (owner !== null) focusGroupTabRef.current({ groupId: owner.groupId, tabId: pending.tabId })
   }, [layout.layout, activeWorktreeRow?.path])
@@ -1755,6 +1754,7 @@ export function App(): React.JSX.Element {
     if (picked === null || picked === activeTabId) return
     // LIFE-590 E3ⓐ — 순환·⌃1–9 는 파일 탭도 센다(시각 순서 그대로). 파일 탭은 pane 이 없어 영역 활성 탭만 바꾼다.
     if (isFileTabId(picked)) {
+      beginFocusMove()
       layout.setActiveTab({ groupId: activeGroupId, tabId: picked })
       return
     }
@@ -1896,7 +1896,8 @@ export function App(): React.JSX.Element {
     })
   const directionChainRef = useRef<Promise<void>>(Promise.resolve())
   const focusDirectionOnce = async (direction: PaneDirection): Promise<void> => {
-    const snapshot = (): string => [activeWorktreeRowRef.current?.path ?? '', layoutRef.current.activeGroupId ?? '', selectedPaneRef.current ?? ''].join('\0')
+    // fix2 B1 — 세대에 포커스 이동 순번을 넣는다: 같은 영역 탭 클릭·⌃1–9 처럼 셋(worktree·활성 영역·선택 pane)을 안 바꾸는 사용자 이동도 늦은 응답을 버리게.
+    const snapshot = (): string => [activeWorktreeRowRef.current?.path ?? '', layoutRef.current.activeGroupId ?? '', selectedPaneRef.current ?? '', focusSeqRef.current].join('\0')
     const before = snapshot()
     const { activeTabId } = layoutRef.current
     const tab = activeTabId === null || isFileTabId(activeTabId) ? null : tabByIdRef.current(activeTabId)
@@ -1913,6 +1914,7 @@ export function App(): React.JSX.Element {
         // LIFE-824 Zⓑ — 줌에 가려진 pane 을 고르면 줌을 풀고 간다.
         const zoomed = zoomHiding({ groups: zoomGroupsNow(), paneId: result.paneId })
         if (zoomed !== null) toggleZoom({ groupId: zoomed, paneId: null })
+        beginFocusMove()
         selectPane(result.paneId)
         await nextCommit()
         return
@@ -1928,8 +1930,20 @@ export function App(): React.JSX.Element {
   }
   const focusDirectionOnceRef = useRef(focusDirectionOnce)
   focusDirectionOnceRef.current = focusDirectionOnce
+  /**
+   * fix2 B4 — 줄에는 「진행 중 하나 + 대기 하나」 까지만 — 키를 누르고 있으면(반복) 무응답 herdr 앞에 호출이 쌓여 손을 뗀 뒤에도 수 초 움직인다.
+   * 한 회차가 던져도(IPC 거절) 줄은 풀린다 — 경고를 남기고 다음 키는 그대로 동작한다.
+   */
+  const directionQueuedRef = useRef(0)
   const focusDirection = (direction: PaneDirection): void => {
-    directionChainRef.current = directionChainRef.current.then(() => focusDirectionOnceRef.current(direction)).catch(() => undefined)
+    if (directionQueuedRef.current >= DIRECTION_QUEUE_MAX) return
+    directionQueuedRef.current += 1
+    directionChainRef.current = directionChainRef.current
+      .then(() => focusDirectionOnceRef.current(direction))
+      .catch((error: unknown) => console.warn('[corral] 인접 pane / 영역 포커스 실패', error))
+      .finally(() => {
+        directionQueuedRef.current -= 1
+      })
   }
   const closePaneAt = useCallback(async (paneId: string | null): Promise<void> => {
     if (paneId === null) return
@@ -2282,6 +2296,7 @@ export function App(): React.JSX.Element {
           onSelectTab={(tab) => {
             // LIFE-387 A1 — 문턱을 넘긴 드래그 뒤에 따라오는 click 하나는 활성화로 치지 않는다.
             if (tabDrag.consumeClick()) return
+            beginFocusMove()
             layout.setActiveTab({ groupId: group.groupId, tabId: tab.tabId })
             const pane = pickPane(tab)
             if (pane !== null) selectPane(pane.paneId)

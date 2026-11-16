@@ -1,7 +1,7 @@
 // LIFE-824 — 영역 간 포커스·전환의 이름 있는 순수 판정(이웃 영역 네 방향·영역 넘는 이전/다음 탭·⌃` 후보·영역 MRU·MRU 편집기 키·줌 해제·worktree 복귀·편집기 양보).
 import { describe, expect, it } from 'vitest'
 import { matchBinding, yieldsToEditor } from '../../shared/keybindings.js'
-import { editorMruKey, groupBodyKind, parseEditorMruKey, pruneGroupMru, terminalEditorToggleTarget, toggleNoneHint, touchGroupMru, zoomedGroupOf, zoomHiding } from './group-focus.js'
+import { editorMruKey, groupBodyKind, parseEditorMruKey, pendingFocusVerdict, pruneGroupMru, terminalEditorToggleTarget, toggleNoneHint, touchGroupMru, zoomedGroupOf, zoomHiding } from './group-focus.js'
 import { neighborGroupId, neighborGroups, rightNeighborGroupId, type GroupDirection, type GroupNode } from './group-tree.js'
 import { cycleAcrossGroups, cycleTabTarget } from './tab-actions.js'
 import { worktreeReturnTarget } from './worktree-activate.js'
@@ -194,5 +194,27 @@ describe('pruneGroupMru — 배치에 없는 영역 id 를 뺀다 (fix1 A7)', ()
     const pruned = pruneGroupMru({ history: ['B', 'A'], liveGroupIds: ['A'] })
     expect(touchGroupMru({ history: pruned, groupId: 'A' })).toEqual(['A'])
     expect(terminalEditorToggleTarget({ groups: [{ groupId: 'A', activeTabId: 't1' }, { groupId: 'B', activeTabId: 'file:x' }, { groupId: 'C', activeTabId: 'file:y' }], activeGroupId: 'A', recent: pruned })).toEqual({ kind: 'go', groupId: 'B' })
+  })
+})
+
+describe('pendingFocusVerdict — 미뤄 둔 편집기 포커스의 수명, 조건마다 따로 (fix2 B3)', () => {
+  const pending = { worktreePath: '/r2', fromPath: '/r', seq: 5, deadline: 2_000 }
+  const at = (over: Partial<{ seq: number; now: number; path: string | null; layoutReady: boolean }>) =>
+    pendingFocusVerdict({ pending, seq: 5, now: 1_000, path: '/r2', layoutReady: true, ...over })
+  it('목적지에 배치가 서면 go, 아직이면(떠난 자리·배치 없음) wait', () => {
+    expect(at({})).toBe('go')
+    expect(at({ path: '/r' })).toBe('wait')
+    expect(at({ layoutReady: false })).toBe('wait')
+  })
+  it('순번 — 그 뒤 다른 포커스 이동이 시작됐으면 목적지여도 drop', () => {
+    expect(at({ seq: 6 })).toBe('drop')
+  })
+  it('기한 — 시계가 기한을 넘기면 목적지여도 drop(가짜 시계)', () => {
+    expect(at({ now: 2_000 })).toBe('go')
+    expect(at({ now: 2_001 })).toBe('drop')
+  })
+  it('떠난 자리 — 떠난 곳도 목적지도 아닌 worktree 면 drop(순번·기한이 멀쩡해도)', () => {
+    expect(at({ path: '/r3' })).toBe('drop')
+    expect(at({ path: null })).toBe('drop')
   })
 })

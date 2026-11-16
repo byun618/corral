@@ -364,3 +364,28 @@ describe('줌 깃발 정리의 시간 초과·같은 탭 재선택 (LIFE-824 fix
     expect(session.zoomedPane).toBe('p1')
   })
 })
+
+describe('일반 endpoint 명령의 시간 초과는 세션을 닫는다 (기존 동작 — fix2 B6, 줌 깃발과 대비)', () => {
+  it('pane.focus 가 상한을 넘기면 거절되고 세션이 닫혀 다음 명령도 거절된다', async () => {
+    const { client, session } = await attachedSession({ panes: [{ paneId: 'p1', x: 0, width: 20 }] })
+    const original = client.callEndpoint.bind(client)
+    client.callEndpoint = async (method, params) => {
+      if (method === 'pane.focus') {
+        client.calls.push({ method, params })
+        return new Promise<unknown>(() => {})
+      }
+      return original(method, params)
+    }
+    vi.useFakeTimers()
+    try {
+      const moving = session.focusTab({ tabId: 't2', paneId: 'p3' })
+      const settled = moving.then(() => null, (error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(10_000 + 10)
+      const error = await settled
+      expect(error instanceof Error ? error.message : String(error)).toContain('timed out')
+    } finally {
+      vi.useRealTimers()
+    }
+    await expect(session.focusTab({ tabId: 't2', paneId: 'p3' })).rejects.toThrow('group session is closed')
+  })
+})

@@ -427,6 +427,14 @@ export function Explorer({
   latestOps.current = { ops, explorer }
   const onFileDragRef = useRef(onFileDrag)
   onFileDragRef.current = onFileDrag
+  // 끌기 중 탐색기가 사라지면(오른쪽 패널 본문 교체 등) 오버레이·몸 표지가 남지 않게 끝을 알린다(LIFE-823 F6). **언마운트 전용** —
+  // 아래 끌기 effect 의 cleanup 은 행 목록이 바뀔 때도 돌아 거기 두면 끌기 도중에 끝난다.
+  useEffect(
+    () => () => {
+      if (dragRef.current?.phase === 'dragging') onFileDragRef.current?.({ kind: 'end' })
+    },
+    [],
+  )
   /** 포인터가 트리(스크롤 영역) 밖인가 — 밖이면 트리 안 이동이 아니라 탭 영역 끌기다(LIFE-823). */
   const outsideTree = useCallback((x: number, y: number): boolean => {
     const hit = document.elementFromPoint(x, y)

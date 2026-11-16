@@ -89,12 +89,13 @@ describe('탐색기 파일 끌기 판정(C1)', () => {
     move({ x: 200, y: 240 })
     expect(probe.state?.target).toEqual({ kind: 'merge', groupId: 'g1' })
   })
-  it('빈 영역도 가장자리는 분할(탭 끌기와 다르다), 가운데는 열기', () => {
+  it('F1 빈 영역은 가장자리 구분 없이 본문 전체 = 그 영역에 열기(강조 = 영역 전체, 탭 끌기 빈 영역과 같은 모양)', () => {
     buildGroup('data-empty-group')
-    move({ x: 390, y: 240 })
-    expect(probe.state?.target).toEqual({ kind: 'split', groupId: 'g1', direction: 'row', edge: 'after' })
-    move({ x: 200, y: 240 })
-    expect(probe.state?.visual).toMatchObject({ kind: 'merge', empty: true })
+    for (const point of [{ x: 390, y: 240 }, { x: 10, y: 240 }, { x: 200, y: 50 }, { x: 200, y: 430 }, { x: 200, y: 240 }]) {
+      move(point)
+      expect(probe.state?.target).toEqual({ kind: 'merge', groupId: 'g1' })
+      expect(probe.state?.visual).toMatchObject({ kind: 'merge', empty: true })
+    }
   })
   it('diff 본문(B5)도 같은 판정', () => {
     buildGroup('data-diff-group')

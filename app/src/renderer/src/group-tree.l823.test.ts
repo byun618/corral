@@ -2,7 +2,19 @@
 // 이미 배치에 있는 탭은 건드리지 않는다(같은 탭이 두 곳에 실리지 않는다 — C2 탭 id 중복 0 의 모델 쪽).
 
 import { describe, expect, it } from 'vitest'
-import { insertNewTabAt, listGroups, openNewTabInGroup, rightNeighborGroupId, singleLayout, splitGroupWithNewTab, type GroupLayout, type GroupNode } from './group-tree.js'
+import {
+  groupRects,
+  insertNewTabAt,
+  listGroups,
+  openNewTabInGroup,
+  reconcileLayout,
+  rightNeighborGroupId,
+  rightNeighborGroups,
+  singleLayout,
+  splitGroupWithNewTab,
+  type GroupLayout,
+  type GroupNode,
+} from './group-tree.js'
 
 const leafNode = (groupId: string, tabOrder: string[], activeTabId: string | null = tabOrder[0] ?? null): GroupNode => ({ kind: 'leaf', group: { groupId, tabOrder, activeTabId } })
 const two = (): GroupLayout => ({
@@ -75,12 +87,18 @@ describe('splitGroupWithNewTab — 가장자리 분할', () => {
     const down = splitGroupWithNewTab({ layout: two(), tabId: 'x', targetGroupId: 'g2', direction: 'column', edge: 'after', newGroupId: 'g3' })
     expect(down.root.kind === 'split' ? down.root.second : null).toMatchObject({ kind: 'split', direction: 'column', first: { group: { groupId: 'g2' } }, second: { group: { groupId: 'g3' } } })
   })
-  it('탭 1개 영역·빈 영역 가장자리도 된다 — 원 영역의 탭은 그대로', () => {
+  it('탭 1개 영역 가장자리도 된다 — 화면 배치(reconcileLayout)를 거쳐도 두 영역', () => {
     const one = singleLayout({ groupId: 'g1', tabOrder: ['t1'], activeTabId: 't1' })
-    const next = splitGroupWithNewTab({ layout: one, tabId: 'x', targetGroupId: 'g1', direction: 'row', edge: 'after', newGroupId: 'g2' })
-    expect(listGroups(next.root).map((group) => group.tabOrder)).toEqual([['t1'], ['x']])
+    const next = splitGroupWithNewTab({ layout: one, tabId: 'file:x.ts', targetGroupId: 'g1', direction: 'row', edge: 'after', newGroupId: 'g2' })
+    const shown = reconcileLayout({ layout: next, liveTabIds: ['t1'] })
+    expect(listGroups(shown.root).map((group) => group.tabOrder)).toEqual([['t1'], ['file:x.ts']])
+  })
+  it('F1 빈 영역 가장자리 분할은 화면 배치에서 한 영역으로 접힌다 — 그래서 끌기 판정이 빈 영역을 열기로 본다(tab-drag)', () => {
     const empty: GroupLayout = { root: leafNode('g1', [], null), activeGroupId: 'g1' }
-    expect(listGroups(splitGroupWithNewTab({ layout: empty, tabId: 'x', targetGroupId: 'g1', direction: 'row', edge: 'before', newGroupId: 'g2' }).root).map((group) => group.tabOrder)).toEqual([['x'], []])
+    const split = splitGroupWithNewTab({ layout: empty, tabId: 'file:x.ts', targetGroupId: 'g1', direction: 'row', edge: 'before', newGroupId: 'g2' })
+    expect(listGroups(reconcileLayout({ layout: split, liveTabIds: [] }).root).map((group) => group.tabOrder)).toEqual([['file:x.ts']])
+    const opened = openNewTabInGroup({ layout: empty, tabId: 'file:x.ts', groupId: 'g1' })
+    expect(listGroups(reconcileLayout({ layout: opened, liveTabIds: [] }).root).map((group) => ({ groupId: group.groupId, tabs: group.tabOrder }))).toEqual([{ groupId: 'g1', tabs: ['file:x.ts'] }])
   })
   it('이미 있는 탭·없는 대상·이미 쓰는 새 영역 id 면 그대로', () => {
     const layout = two()
@@ -94,34 +112,66 @@ describe('splitGroupWithNewTab — 가장자리 분할', () => {
   })
 })
 
-describe('rightNeighborGroupId — 옆으로 열기 대상(P3)', () => {
-  it('가로 분할의 앞쪽이면 뒤쪽 서브트리의 가장 왼쪽·위 영역', () => {
-    expect(rightNeighborGroupId(two().root, 'g1')).toBe('g2')
-    const nested: GroupNode = {
-      kind: 'split',
-      direction: 'row',
-      ratio: 0.5,
-      first: leafNode('g1', ['t1']),
-      second: { kind: 'split', direction: 'column', ratio: 0.5, first: leafNode('g2', ['t2']), second: leafNode('g3', ['t3']) },
-    }
-    expect(rightNeighborGroupId(nested, 'g1')).toBe('g2')
+const split = (direction: 'row' | 'column', first: GroupNode, second: GroupNode, ratio = 0.5): GroupNode => ({ kind: 'split', direction, ratio, first, second })
+const right = (root: GroupNode, groupId: string): string | null => rightNeighborGroupId({ root, groupId })
+
+describe('groupRects — 분할 비율로 영역 사각형', () => {
+  it('row 는 좌우·column 은 위아래, ratio 는 앞쪽 몫', () => {
+    const rects = groupRects(split('row', leafNode('A', ['a']), split('column', leafNode('B', ['b']), leafNode('C', ['c']), 0.25), 0.4))
+    expect(rects.get('A')).toEqual({ left: 0, top: 0, width: 0.4, height: 1 })
+    expect(rects.get('B')?.top).toBe(0)
+    expect(rects.get('B')?.height).toBeCloseTo(0.25)
+    expect(rects.get('C')?.left).toBeCloseTo(0.4)
+    expect(rects.get('C')?.top).toBeCloseTo(0.25)
   })
-  it('가장 오른쪽 열·한 영역·세로 분할만이면 null', () => {
-    expect(rightNeighborGroupId(two().root, 'g2')).toBeNull()
-    expect(rightNeighborGroupId(leafNode('g1', ['t1']), 'g1')).toBeNull()
-    const column: GroupNode = { kind: 'split', direction: 'column', ratio: 0.5, first: leafNode('g1', ['t1']), second: leafNode('g2', ['t2']) }
-    expect(rightNeighborGroupId(column, 'g1')).toBeNull()
+})
+
+describe('rightNeighborGroupId — 옆으로 열기 대상(P3·F2): 오른쪽 변과 세로 구간이 겹치는 영역', () => {
+  it('좌우 둘 — 왼쪽의 오른쪽 이웃은 오른쪽, 가장 오른쪽은 null', () => {
+    expect(right(two().root, 'g1')).toBe('g2')
+    expect(right(two().root, 'g2')).toBeNull()
   })
-  it('세로 분할 안쪽 영역은 바깥 가로 분할의 오른쪽으로', () => {
-    const tree: GroupNode = {
-      kind: 'split',
-      direction: 'row',
-      ratio: 0.5,
-      first: { kind: 'split', direction: 'column', ratio: 0.5, first: leafNode('g1', ['t1']), second: leafNode('g2', ['t2']) },
-      second: leafNode('g3', ['t3']),
-    }
-    expect(rightNeighborGroupId(tree, 'g2')).toBe('g3')
-    expect(rightNeighborGroupId(tree, 'g3')).toBeNull()
-    expect(rightNeighborGroupId(tree, 'g9')).toBeNull()
+  it('한 영역·위아래만이면 null', () => {
+    expect(right(leafNode('g1', ['t1']), 'g1')).toBeNull()
+    expect(right(split('column', leafNode('g1', ['t1']), leafNode('g2', ['t2'])), 'g1')).toBeNull()
+  })
+  it('F2 2×2 (row(column(A,C), column(B,D))) — 아래-왼쪽 C 의 이웃은 아래-오른쪽 D, 위-왼쪽 A 는 B', () => {
+    const grid = split('row', split('column', leafNode('A', ['a']), leafNode('C', ['c'])), split('column', leafNode('B', ['b']), leafNode('D', ['d'])))
+    expect(right(grid, 'C')).toBe('D')
+    expect(right(grid, 'A')).toBe('B')
+    expect(right(grid, 'B')).toBeNull()
+  })
+  it('2×2 (column(row(A,B), row(C,D))) — C → D', () => {
+    const grid = split('column', split('row', leafNode('A', ['a']), leafNode('B', ['b'])), split('row', leafNode('C', ['c']), leafNode('D', ['d'])))
+    expect(right(grid, 'C')).toBe('D')
+    expect(right(grid, 'A')).toBe('B')
+  })
+  it('꽉 찬 왼쪽 → 오른쪽 열 둘 다 이웃, 겹침이 같으면 위', () => {
+    const tree = split('row', leafNode('g1', ['t1']), split('column', leafNode('g2', ['t2']), leafNode('g3', ['t3'])))
+    expect(rightNeighborGroups(tree, 'g1').map((neighbor) => neighbor.groupId).sort()).toEqual(['g2', 'g3'])
+    expect(right(tree, 'g1')).toBe('g2')
+  })
+  it('겹침이 큰 쪽 — 오른쪽 열이 30:70 이면 아래', () => {
+    const tree = split('row', leafNode('g1', ['t1']), split('column', leafNode('g2', ['t2']), leafNode('g3', ['t3']), 0.3))
+    expect(right(tree, 'g1')).toBe('g3')
+  })
+  it('MRU 를 주면 MRU(끝이 최근) — 이웃이 아닌 id 는 건너뛴다', () => {
+    const tree = split('row', leafNode('g1', ['t1']), split('column', leafNode('g2', ['t2']), leafNode('g3', ['t3']), 0.3))
+    expect(rightNeighborGroupId({ root: tree, groupId: 'g1', recentGroupIds: ['g3', 'g2', 'g1'] })).toBe('g2')
+  })
+  it('끝점만 닿는 것은 이웃이 아니다 — 위 칸끼리 다른 비율이어도 겹침으로', () => {
+    // 왼쪽 열 위 50% · 오른쪽 열 위 50% 경계가 같으면 아래-왼쪽과 위-오른쪽은 끝점만 닿는다
+    const grid = split('row', split('column', leafNode('A', ['a']), leafNode('C', ['c'])), split('column', leafNode('B', ['b']), leafNode('D', ['d'])))
+    expect(rightNeighborGroups(grid, 'C').map((neighbor) => neighbor.groupId)).toEqual(['D'])
+    // 오른쪽 열을 60:40 으로 — 아래-왼쪽(0.5~1)은 B(0~0.6)와 0.1, D(0.6~1)와 0.4 겹친다 → D
+    const skew = split('row', split('column', leafNode('A', ['a']), leafNode('C', ['c'])), split('column', leafNode('B', ['b']), leafNode('D', ['d']), 0.6))
+    expect(rightNeighborGroups(skew, 'C').map((neighbor) => neighbor.groupId).sort()).toEqual(['B', 'D'])
+    expect(right(skew, 'C')).toBe('D')
+  })
+  it('세로 분할 안쪽 영역은 바깥 가로 분할의 오른쪽으로, 없는 영역은 null', () => {
+    const tree = split('row', split('column', leafNode('g1', ['t1']), leafNode('g2', ['t2'])), leafNode('g3', ['t3']))
+    expect(right(tree, 'g2')).toBe('g3')
+    expect(right(tree, 'g3')).toBeNull()
+    expect(right(tree, 'g9')).toBeNull()
   })
 })

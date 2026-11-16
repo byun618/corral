@@ -1996,7 +1996,8 @@ export function App(): React.JSX.Element {
           zoomed={groupState?.zoomedPaneId != null}
           onActivate={() => activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })}
           onTabDragStart={(event, tabId) => tabDrag.onArm(event, { tabId, fromGroupId: group.groupId })}
-          tabDragActive={tabDrag.dragState !== null}
+          // LIFE-823 F4 — 탐색기 파일 끌기도 탭바 넘침 끌기 모드(chevron 호버 스크롤·활성 탭 스크롤 억제)를 켠다.
+          tabDragActive={tabDrag.dragState !== null || fileDrag.dragState !== null}
           onSelectTab={(tab) => {
             // LIFE-387 A1 — 문턱을 넘긴 드래그 뒤에 따라오는 click 하나는 활성화로 치지 않는다.
             if (tabDrag.consumeClick()) return

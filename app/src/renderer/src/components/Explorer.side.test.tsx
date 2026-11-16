@@ -96,7 +96,7 @@ const row = (rel: string): HTMLElement => {
   if (element === null) throw new Error(`row ${rel} 없음`)
   return element
 }
-const pointer = (input: { type: 'pointerdown' | 'pointermove' | 'pointerup'; target: EventTarget; x: number; y: number }): void =>
+const pointer = (input: { type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel'; target: EventTarget; x: number; y: number }): void =>
   act(() => void input.target.dispatchEvent(new PointerEvent(input.type, { bubbles: true, cancelable: true, button: 0, clientX: input.x, clientY: input.y })))
 const key = (input: { key: string; ctrlKey?: boolean; metaKey?: boolean }): void =>
   act(
@@ -199,6 +199,31 @@ describe('트리 밖 끌기(C1·C2)', () => {
     pointer({ type: 'pointerup', target: document, x: -40, y: 10 })
     expect(calls.drag.filter((event) => event.kind === 'drop')).toEqual([])
     expect(calls.move).toEqual([])
+  })
+  it('F6 pointercancel — end, 놓기·이동 없음', () => {
+    pointer({ type: 'pointerdown', target: row('a.ts'), x: 10, y: 10 })
+    pointer({ type: 'pointermove', target: document, x: -40, y: 10 })
+    pointer({ type: 'pointercancel', target: document, x: -40, y: 10 })
+    expect(calls.drag.at(-1)).toEqual({ kind: 'end' })
+    pointer({ type: 'pointerup', target: document, x: -40, y: 10 })
+    expect(calls.drag.filter((event) => event.kind === 'drop')).toEqual([])
+    expect(calls.move).toEqual([])
+  })
+  it('F6 끌기 중 탐색기가 사라지면 end — 행 목록이 바뀌는 것만으로는 끝나지 않는다', () => {
+    pointer({ type: 'pointerdown', target: row('a.ts'), x: 10, y: 10 })
+    pointer({ type: 'pointermove', target: document, x: -40, y: 10 })
+    render()
+    expect(calls.drag.at(-1)).toMatchObject({ kind: 'move' })
+    pointer({ type: 'pointermove', target: document, x: -50, y: 10 })
+    expect(calls.drag.at(-1)).toMatchObject({ kind: 'move', point: { x: -50, y: 10 } })
+    act(() => root.unmount())
+    expect(calls.drag.at(-1)).toEqual({ kind: 'end' })
+    root = createRoot(host)
+  })
+  it('끌기 아닌 때 언마운트 — 알림 없음', () => {
+    act(() => root.unmount())
+    expect(calls.drag).toEqual([])
+    root = createRoot(host)
   })
   it('ⓕ 창 blur — end', () => {
     pointer({ type: 'pointerdown', target: row('a.ts'), x: 10, y: 10 })

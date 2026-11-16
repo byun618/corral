@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { alreadyOpenHint, dragGhostLabel, hintAfterContextChange, hintContextKey, placeFileTab, type FilePlacement } from './file-tabs.js'
-import { listGroups, type GroupLayout, type GroupNode, type TabGroup } from './group-tree.js'
+import { listGroups, reconcileLayout, type GroupLayout, type GroupNode, type TabGroup } from './group-tree.js'
 import { diffTabId } from '../../shared/scm.js'
 
 const node = (group: TabGroup): GroupNode => ({ kind: 'leaf', group })
@@ -59,10 +59,12 @@ describe('placeFileTab — 새로 여는 파일(C1)', () => {
     expect(result).toEqual({ kind: 'none' })
     expect(next).toBe(before)
   })
-  it('diff 탭 id 도 같은 규칙', () => {
-    const tabId = diffTabId({ mode: 'wt', rel: 'b.ts', orig: null })
-    const { layout: next } = placeFileTab({ layout: layout(), rel: 'b.ts', tabId, placement: { kind: 'center', groupId: 'g2' }, newGroupId: 'g3' })
-    expect(groups(next)[1]?.tabOrder).toEqual(['file:a.ts', tabId])
+  it('F1 빈 영역(배치에 하나뿐) 가운데 열기 — 화면 배치(reconcileLayout)를 거쳐도 그 영역 하나에 그 파일', () => {
+    const empty: GroupLayout = { root: node({ groupId: 'g1', tabOrder: [], activeTabId: null }), activeGroupId: 'g1' }
+    const { layout: next } = place({ layout: empty, rel: 'b.ts', placement: { kind: 'center', groupId: 'g1' } })
+    expect(groups(reconcileLayout({ layout: next, liveTabIds: [] })).map((group) => ({ groupId: group.groupId, tabs: group.tabOrder, active: group.activeTabId }))).toEqual([
+      { groupId: 'g1', tabs: ['file:b.ts'], active: 'file:b.ts' },
+    ])
   })
 })
 
@@ -91,9 +93,20 @@ describe('placeFileTab — 이미 열린 파일(C2)', () => {
     expect(moved.result).toMatchObject({ elsewhere: true })
     expect(groups(moved.layout)[0]?.tabOrder).toEqual(['t1', 'file:p.ts'])
   })
-  it('옆으로 열기 — 오른쪽 이웃에 이미 있으면 같은 자리, 활성 영역에 있으면 elsewhere', () => {
+  it('F5 옆으로 열기 — 오른쪽 이웃·활성 영역에 이미 있으면 같은 자리(안내 없음), 그 밖의 영역이면 elsewhere', () => {
     expect(place({ rel: 'a.ts', placement: { kind: 'side' } }).result).toEqual({ kind: 'already-open', groupId: 'g2', elsewhere: false })
-    expect(place({ rel: 'p.ts', placement: { kind: 'side' } }).result).toEqual({ kind: 'already-open', groupId: 'g1', elsewhere: true })
+    expect(place({ rel: 'p.ts', placement: { kind: 'side' } }).result).toEqual({ kind: 'already-open', groupId: 'g1', elsewhere: false })
+    // 활성 g2(가장 오른쪽 — 이웃 없음)에서 g1 에 있는 p.ts 를 옆으로 열면 다른 자리
+    const fromRight = { ...layout(), activeGroupId: 'g2' }
+    expect(place({ layout: fromRight, rel: 'p.ts', placement: { kind: 'side' } }).result).toEqual({ kind: 'already-open', groupId: 'g1', elsewhere: true })
+  })
+  it('F5 ⌥연속 클릭 — 두 번째 옆으로 열기는 같은 자리(탭 수·영역 수 그대로)', () => {
+    const one: GroupLayout = { root: node({ groupId: 'g1', tabOrder: ['t1'], activeTabId: 't1' }), activeGroupId: 'g1' }
+    const first = place({ layout: one, rel: 'b.ts', placement: { kind: 'side' } })
+    expect(first.result).toEqual({ kind: 'opened', groupId: 'g3' })
+    const second = placeFileTab({ layout: first.layout, rel: 'b.ts', placement: { kind: 'side' }, newGroupId: 'g4' })
+    expect(second.result).toEqual({ kind: 'already-open', groupId: 'g3', elsewhere: false })
+    expect(groups(second.layout)).toHaveLength(2)
   })
 })
 

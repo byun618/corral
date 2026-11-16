@@ -87,7 +87,7 @@ export function resolveDropTarget(input: { point: Point; source: DragSource }): 
   const { source } = input
   const target =
     source.kind === 'file'
-      ? resolveFileBodyDropTarget({ zone, targetGroupId: groupId })
+      ? resolveFileBodyDropTarget({ zone, targetGroupId: groupId, targetIsEmpty })
       : resolveBodyDropTarget({
           zone,
           targetGroupId: groupId,

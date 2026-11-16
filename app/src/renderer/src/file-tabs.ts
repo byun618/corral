@@ -333,10 +333,13 @@ export type PlaceFileResult = { kind: 'opened'; groupId: string } | { kind: 'alr
 function sideGroupOf(layout: GroupLayout): { anchor: string; neighbor: string | null } | null {
   const anchor = findGroup(layout.root, layout.activeGroupId) ?? listGroups(layout.root)[0]
   if (anchor === undefined) return null
-  return { anchor: anchor.groupId, neighbor: rightNeighborGroupId(layout.root, anchor.groupId) }
+  return { anchor: anchor.groupId, neighbor: rightNeighborGroupId({ root: layout.root, groupId: anchor.groupId }) }
 }
 
-/** 이미 열린 탭을 그 자리에 놓았다면 지금 자리와 같은가 — 같은 영역 탭바의 자기 앞·뒤 칸, 같은 영역 가운데, 오른쪽 이웃이 그 영역인 옆으로 열기. 분할은 늘 다르다. */
+/**
+ * 이미 열린 탭을 그 자리에 놓았다면 지금 자리와 같은가 — 같은 영역 탭바의 자기 앞·뒤 칸, 같은 영역 가운데, 분할은 늘 다르다.
+ * 옆으로 열기는 그 탭이 **활성 영역 또는 고른 오른쪽 이웃**에 있으면 같은 자리다(F5 — ⌥연속 클릭·⌃Enter 반복에 안내를 띄우지 않는다).
+ */
 function samePlace(input: { layout: GroupLayout; owner: TabGroup; tabId: string; placement: FilePlacement }): boolean {
   const { owner, placement } = input
   switch (placement.kind) {
@@ -348,8 +351,10 @@ function samePlace(input: { layout: GroupLayout; owner: TabGroup; tabId: string;
       return placement.groupId === owner.groupId
     case 'split':
       return false
-    case 'side':
-      return sideGroupOf(input.layout)?.neighbor === owner.groupId
+    case 'side': {
+      const side = sideGroupOf(input.layout)
+      return side !== null && (side.anchor === owner.groupId || side.neighbor === owner.groupId)
+    }
   }
 }
 
@@ -357,11 +362,10 @@ function samePlace(input: { layout: GroupLayout; owner: TabGroup; tabId: string;
  * 파일 탭을 고른 자리에 연다 (LIFE-823 C1·C2·C3). 연 탭은 **고정**이다(P1 — VS Code 끌어 놓기·옆으로 열기 `pinned: true`) — 놓은 영역의 미리보기 탭은 그대로 남는다.
  *   · 이미 열려 있으면(어느 영역이든) 옮기지 않고 그 영역에서 그 탭을 활성 + 미리보기였으면 고정(P1') — `elsewhere` 로 자리가 달랐는지 알린다(P2)
  *   · 새로 열면 `insertNewTabAt`(탭바) · `splitGroupWithNewTab`(가장자리, `newGroupId`) · `openNewTabInGroup`(가운데) — 그 영역(분할은 새 영역)이 활성
- * `tabId` 를 주면 그 id 의 편집기 탭(diff 탭)도 같은 규칙이다.
  */
-export function placeFileTab(input: { layout: GroupLayout; rel: string; tabId?: string; placement: FilePlacement; newGroupId: string }): { layout: GroupLayout; result: PlaceFileResult } {
+export function placeFileTab(input: { layout: GroupLayout; rel: string; placement: FilePlacement; newGroupId: string }): { layout: GroupLayout; result: PlaceFileResult } {
   const { layout, placement, newGroupId } = input
-  const tabId = input.tabId ?? fileTabId(input.rel)
+  const tabId = fileTabId(input.rel)
   const owner = groupOfTab(layout.root, tabId)
   if (owner !== null) {
     const elsewhere = !samePlace({ layout, owner, tabId, placement })

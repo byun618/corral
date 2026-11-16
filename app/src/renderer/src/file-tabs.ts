@@ -39,6 +39,25 @@ export function terminalKeyTarget(input: { activeTabId: string | null; selectedP
 }
 
 /**
+ * ⌘D·⌘⇧D(pane 분할)의 길 (LIFE-822 B1) — 파일 탭이 활성이면 무음 대신 **안내**(`fileTabSplitHint`), 동작은 붙이지 않는다(814 게이트 ⓪).
+ * 대상 pane 은 `terminalKeyTarget` 그대로다 — null 신호의 다른 소비자(⌘⌥방향·⌘⇧Z·팔레트)는 바뀌지 않는다.
+ */
+export function splitKeyRoute(input: { activeTabId: string | null; selectedPane: string | null }): { kind: 'split'; paneId: string } | { kind: 'file-tab' } | { kind: 'none' } {
+  if (input.activeTabId !== null && isFileTabId(input.activeTabId)) return { kind: 'file-tab' }
+  const paneId = terminalKeyTarget(input)
+  return paneId === null ? { kind: 'none' } : { kind: 'split', paneId }
+}
+
+/**
+ * 파일 탭에서 pane 분할(⌘D·⌘⇧D·헤더 ▥▤)을 누를 때의 안내 — 영역 분할 키(`group.split`, 기본 ⌘⌥D)를 알려 준다. 키가 없으면 메뉴 이름으로.
+ * 영역에 탭이 하나뿐이면 영역 분할도 거절되므로(`ONE_TAB_IN_GROUP`) 그 키로 안내하지 않는다(LIFE-822 fix1 R1-5).
+ */
+export function fileTabSplitHint(input: { groupSplitKey: string | null; tabCount: number }): string {
+  if (input.tabCount < 2) return '파일 탭은 pane 으로 나눌 수 없다 — 이 영역에 탭이 하나뿐이라 새 영역으로 옮길 수도 없다'
+  return `파일 탭은 pane 으로 나눌 수 없다 — ${input.groupSplitKey === null || input.groupSplitKey === '' ? '「영역 분할」' : input.groupSplitKey} 로 새 영역에 옮긴다`
+}
+
+/**
  * 파일 탭 닫기 뒤 입력 pane 따라가기의 대기 기록 (LIFE-691 K2ⓐ · f1 C·D) — 어느 worktree 에서, 닫기 직전 **활성 영역의 활성 탭**이 무엇이었고, 무엇을 닫았나.
  * 닫기 경로 둘(탭 닫기 `closeFileNow` · 탐색기 삭제/이동 `closeFiles`)이 같이 쓴다.
  */

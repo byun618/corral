@@ -752,6 +752,8 @@ describe('LIFE-495 탭 메뉴·핀·색 (K1·K2·K3·K4)', () => {
       'data-tab-menu-split-right', 'data-tab-menu-split-down',
       'data-tab-menu-pin',
       'data-tab-menu-close', 'data-tab-menu-close-others', 'data-tab-menu-close-right', 'data-tab-menu-close-left',
+      // LIFE-822 — 모두 닫기·저장된 탭 닫기(VS Code 닫기 묶음 끝, 파일 탭 메뉴와 같은 순서)
+      'data-tab-menu-close-all', 'data-tab-menu-close-saved',
       'data-tab-menu-rename', 'data-tab-menu-clear',
     ])
     expect(menu.querySelectorAll('[data-tab-menu-color]')).toHaveLength(10)

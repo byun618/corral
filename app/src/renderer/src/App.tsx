@@ -1570,6 +1570,20 @@ export function App(): React.JSX.Element {
   const openFromQuickOpen = (rel: string): void => openListedFile({ rel, preview: false, focus: true })
   const openFromQuickOpenToSide = (rel: string): void => openListedFile({ rel, preview: false, focus: true, side: true })
   /**
+   * fix3 C-1 — 본문 포커스 대기 루프의 목적지 감시. 목적지(활성 탭·영역)가 한 번 선 뒤 다른 데로 바뀌면 거짓 — 순번을 안 올리는 이동
+   * (`requestedPane`·닫기 따라가기·lifecycle 자동 선택)도 경로마다 막지 않고 여기서 한 번에 막는다. 아직 안 섰으면(배치 반영 전) 참으로 기다린다.
+   */
+  const destinationHeld = (here: () => boolean): (() => boolean) => {
+    let reached = false
+    return () => {
+      if (here()) {
+        reached = true
+        return true
+      }
+      return !reached
+    }
+  }
+  /**
    * 연 파일 탭에 포커스(수정 r1 R1-C-01·R1-C-06) — 편집기가 붙으면 편집기 핸들의 `focus()`(Monaco 0.57 은 EditContext — 입력 요소가 textarea 가 아니다).
    * 편집기가 없는 보기(이미지·바이너리·상한 초과·오류·Markdown 미리보기)면 그 보기 자리(`[data-file-view]`, tabIndex -1)에. 편집기는 비동기로 붙으므로 프레임마다 다시 본다(최대 약 2 s).
    */
@@ -1577,9 +1591,12 @@ export function App(): React.JSX.Element {
     const tabId = fileTabId(input.rel)
     const startedAt = performance.now()
     const seq = beginFocusMove()
+    const aimed = destinationHeld(() => activeWorktreeRowRef.current?.path === input.worktreePath && layoutRef.current.activeTabId === tabId)
     const attempt = (): void => {
       // fix1 A8 — 그 사이 다른 포커스 이동이 시작됐으면 그만둔다(늦게 붙은 편집기가 포커스를 가져가지 않게).
       if (focusSeqRef.current !== seq) return
+      // fix3 C-1 — 순번을 안 올리는 프로그램 이동(`requestedPane` 등)이 활성 탭을 바꿔도 그만둔다.
+      if (!aimed()) return
       if (focusLiveEditor({ store: fileViewStatesOf(input.worktreePath), tabId })) return
       const view = document.querySelector<HTMLElement>(`.file-group[data-file-view="${CSS.escape(input.rel)}"]`)
       const waiting = view === null || view.querySelector('[data-file-editor], [data-file-notice="loading"]') !== null
@@ -1627,8 +1644,10 @@ export function App(): React.JSX.Element {
   const focusGroupBody = (input: { groupId: string; selector: string }): void => {
     const startedAt = performance.now()
     const seq = beginFocusMove()
+    const aimed = destinationHeld(() => layoutRef.current.activeGroupId === input.groupId)
     const attempt = (): void => {
       if (focusSeqRef.current !== seq) return
+      if (!aimed()) return
       const body = document.querySelector<HTMLElement>(`[data-tab-group="${CSS.escape(input.groupId)}"] ${input.selector}`)
       if (body !== null) body.focus({ preventScroll: true })
       else if (performance.now() - startedAt < 1_000) requestAnimationFrame(attempt)
@@ -1895,7 +1914,13 @@ export function App(): React.JSX.Element {
       setTimeout(resolve, DIRECTION_SETTLE_MS)
     })
   const directionChainRef = useRef<Promise<void>>(Promise.resolve())
+  /**
+   * fix3 C-3 — 줄의 세대. 키를 누를 때 지금 순번을 잡고, 줄 안의 회차가 스스로 옮기면(방향 이동) 그 순번으로 고친다. 대기하던 회차는 시작할 때
+   * 순번이 그 값이 아니면(그 사이 클릭·탭 선택 등 다른 포커스 이동) 버린다 — 클릭한 상태에서 옛 키가 실행되지 않게.
+   */
+  const directionSeqRef = useRef(0)
   const focusDirectionOnce = async (direction: PaneDirection): Promise<void> => {
+    if (focusSeqRef.current !== directionSeqRef.current) return
     // fix2 B1 — 세대에 포커스 이동 순번을 넣는다: 같은 영역 탭 클릭·⌃1–9 처럼 셋(worktree·활성 영역·선택 pane)을 안 바꾸는 사용자 이동도 늦은 응답을 버리게.
     const snapshot = (): string => [activeWorktreeRowRef.current?.path ?? '', layoutRef.current.activeGroupId ?? '', selectedPaneRef.current ?? '', focusSeqRef.current].join('\0')
     const before = snapshot()
@@ -1914,7 +1939,7 @@ export function App(): React.JSX.Element {
         // LIFE-824 Zⓑ — 줌에 가려진 pane 을 고르면 줌을 풀고 간다.
         const zoomed = zoomHiding({ groups: zoomGroupsNow(), paneId: result.paneId })
         if (zoomed !== null) toggleZoom({ groupId: zoomed, paneId: null })
-        beginFocusMove()
+        directionSeqRef.current = beginFocusMove()
         selectPane(result.paneId)
         await nextCommit()
         return
@@ -1926,6 +1951,7 @@ export function App(): React.JSX.Element {
     const group = neighbor === null ? undefined : groups.find((row) => row.groupId === neighbor)
     if (group === undefined) return
     focusGroupTabRef.current({ groupId: group.groupId, tabId: group.activeTabId })
+    directionSeqRef.current = focusSeqRef.current
     await nextCommit()
   }
   const focusDirectionOnceRef = useRef(focusDirectionOnce)
@@ -1938,6 +1964,7 @@ export function App(): React.JSX.Element {
   const focusDirection = (direction: PaneDirection): void => {
     if (directionQueuedRef.current >= DIRECTION_QUEUE_MAX) return
     directionQueuedRef.current += 1
+    directionSeqRef.current = focusSeqRef.current
     directionChainRef.current = directionChainRef.current
       .then(() => focusDirectionOnceRef.current(direction))
       .catch((error: unknown) => console.warn('[corral] 인접 pane / 영역 포커스 실패', error))

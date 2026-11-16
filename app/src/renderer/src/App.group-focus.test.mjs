@@ -591,3 +591,69 @@ it('fix2 B2 — ⌃1–9 로 터미널 탭(activateTab 길)으로 옮기면 순�
   expect(app.active()).toBe('h1')
   expect(app.focused()).not.toBe('h2')
 })
+
+// --- fix3 (r3 리뷰 반영) ---------------------------------------------------------------------------------------------------------
+
+const slowFile = () => new Promise((resolve) => setTimeout(() => resolve({ ok: true, kind: 'binary', size: 1, bytesRead: 1, stamp: 's0' }), 200))
+
+it('fix3 C-1 — 파일을 기다리는 동안 main 의 pane 이동 요청(requestedPane, 순번 안 오름)이 다른 영역으로 옮기면 늦게 붙은 파일 보기가 포커스를 가져가지 않는다', async () => {
+  const app = await mount({ readFile: slowFile })
+  await app.mouse('click', app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`))
+  expect(app.q('[data-tab-group="g2"] [data-file-notice="loading"]')).not.toBeNull()
+  await app.reveal('p1')
+  expect(app.active()).toBe('g1')
+  await app.settle(15)
+  expect(app.q('[data-tab-group="g2"] [data-file-notice="loading"]')).toBeNull()
+  expect(app.active()).toBe('g1')
+  expect(app.focused()).not.toBe('g2')
+})
+
+it('fix3 C-2① — 파일을 기다리는 동안 ⌃` 로 터미널 영역에 가면 늦게 붙은 파일 보기가 포커스를 가져가지 않는다', async () => {
+  const app = await mount({ readFile: slowFile })
+  await app.mouse('click', app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`))
+  await app.key({ key: '`', code: 'Backquote', ctrlKey: true })
+  expect(app.active()).toBe('g1')
+  await app.settle(15)
+  expect(app.q('[data-tab-group="g2"] [data-file-notice="loading"]')).toBeNull()
+  expect(app.active()).toBe('g1')
+  expect(app.focused()).not.toBe('g2')
+})
+
+it('fix3 C-2① — 파일을 기다리는 동안 ⌘⌥ 로 다른 영역 터미널에 가서 이웃 pane 으로 옮겨도 늦게 붙은 파일 보기가 포커스를 가져가지 않는다', async () => {
+  const app = await mount({ readFile: slowFile, panes: { t1: ['p1', 'p9'], t2: ['p2'] }, neighborOf: { 'p1:down': 'p9' } })
+  await app.mouse('click', app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`))
+  await app.key(cmdAlt('left')) // g2 → g1 (터미널)
+  await app.key(cmdAlt('down')) // 같은 탭 이웃 pane p9
+  expect(app.calls.neighbor.at(-1)).toEqual({ paneId: 'p1', direction: 'down' })
+  expect(app.active()).toBe('g1')
+  await app.settle(15)
+  expect(app.active()).toBe('g1')
+  expect(app.focused()).not.toBe('g2')
+})
+
+it('fix3 C-2② — 미뤄 둔 편집기 포커스가 drop 인 채(그 사이 다른 포커스 이동) 목적지 worktree 에 들어오면 펼치지 않는다', async () => {
+  const app = await mount({ others: [{ ...R2, layout: r2Layout('h1') }] })
+  await app.key({ key: 'k', code: 'KeyK', metaKey: true })
+  const entry = pickEditorB()
+  await act(async () => {
+    entry.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })) // /r2 로 전환 시작 + 미뤄 둔 포커스
+    app.q('[data-diff-group="g3"]').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })) // 같은 틱 다른 포커스 이동(순번 오름, worktree 는 그대로 /r2 로 간다)
+  })
+  await app.settle(5)
+  expect(app.q('[data-tab-group="h1"]')).not.toBeNull() // 목적지(/r2)에 들어왔다
+  expect(app.active()).toBe('h1')
+  expect(app.focused()).not.toBe('h2')
+})
+
+it('fix3 C-3 — 줄에 대기 중인 ⌘⌥ 키는 그 사이 클릭이 있으면 버린다(클릭한 상태에서 옛 키가 실행되지 않음)', async () => {
+  const app = await mount({ neighborOf: {}, neighborDelayMs: 60 })
+  await act(async () => {
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...cmdAlt('left') }))
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...cmdAlt('left') })) // 줄에 대기
+  })
+  await app.mouse('mousedown', app.q('[data-diff-group="g3"]')) // 응답 전에 g3 클릭
+  expect(app.active()).toBe('g3')
+  await app.settle(10)
+  expect(app.calls.neighbor).toHaveLength(1)
+  expect(app.active()).toBe('g3') // 옛 둘째 키가 g3 에서 ← 로 g1 에 가지 않는다
+})

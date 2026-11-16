@@ -100,3 +100,13 @@ export function resolveBodyDropTarget(input: {
   const { direction, edge } = splitParamsOfZone(zone)
   return { kind: 'split', groupId: targetGroupId, direction, edge }
 }
+
+/**
+ * 탐색기 파일 끌기의 본문 판정 (LIFE-823 C1) — 출발 영역이 없으니 자기 영역·탭 1개 무효가 없다. 가장자리 4방향 = 분할(빈 영역·탭 1개 영역도), 가운데 = 그 영역에 열기(`merge`).
+ * 탭 끌기(`resolveBodyDropTarget`)와 달리 빈 영역도 가장자리가 분할이다(01-criteria C1ⓑ).
+ */
+export function resolveFileBodyDropTarget(input: { zone: BodyZone; targetGroupId: string }): DropTarget {
+  if (input.zone === 'center') return { kind: 'merge', groupId: input.targetGroupId }
+  const { direction, edge } = splitParamsOfZone(input.zone)
+  return { kind: 'split', groupId: input.targetGroupId, direction, edge }
+}

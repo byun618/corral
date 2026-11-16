@@ -8,9 +8,23 @@
 //
 // 문자열 id 를 유지하는 이유(하위 방향 E1ⓓ): 기준 commit 빌드가 새 형식 `ui-prefs.json` 을 읽으면 파일 탭 id 는 herdr 에 없는 탭으로 걸러지고
 // 터미널 탭 배치·핀·색은 그대로 남는다 — 구 앱이 죽거나 터미널 배치를 버릴 모양(객체 id 등)을 만들지 않는다.
-import { FILE_TAB_PREFIX, findGroup, groupOfTab, isFileTabId, listGroups, removeTabFromGroup, updateGroup, type GroupLayout, type TabGroup } from './group-tree.js'
+import {
+  FILE_TAB_PREFIX,
+  findGroup,
+  groupOfTab,
+  insertNewTabAt,
+  isFileTabId,
+  listGroups,
+  openNewTabInGroup,
+  removeTabFromGroup,
+  rightNeighborGroupId,
+  splitGroupWithNewTab,
+  updateGroup,
+  type GroupLayout,
+  type TabGroup,
+} from './group-tree.js'
 import { remapRel } from '../../shared/explorer-ops.js'
-import { DIFF_TAB_PREFIX, parseDiffTabId, type ScmDiffTarget } from '../../shared/scm.js'
+import { DIFF_TAB_PREFIX, diffTitle, parseDiffTabId, type ScmDiffTarget } from '../../shared/scm.js'
 
 export { FILE_TAB_PREFIX, isFileTabId }
 
@@ -90,6 +104,40 @@ export function closeFollowTarget(input: { pending: CloseFollow | null; worktree
 export function fileTabLabel(rel: string): string {
   const parts = rel.split('/')
   return parts[parts.length - 1] ?? rel
+}
+
+/**
+ * 탭 끌기 고스트 글자 (LIFE-823 B4) — 파일 탭은 파일 이름, diff 탭은 diff 제목(탭바와 같은 글자), 터미널 탭은 부르는 쪽이 준 탭 이름(`terminalLabel`, herdr 행).
+ * 터미널 행을 못 찾으면 빈 글자다(기존과 같다).
+ */
+export function dragGhostLabel(input: { tabId: string; terminalLabel: string | null }): string {
+  const kind = tabKindOf(input.tabId)
+  switch (kind.kind) {
+    case 'file':
+      return fileTabLabel(kind.rel)
+    case 'diff':
+      return kind.target === null ? '(diff)' : diffTitle(kind.target)
+    case 'terminal':
+      return input.terminalLabel ?? ''
+  }
+}
+
+/** 이미 열린 파일을 다른 자리에 놓았을 때의 안내 한 줄 (LIFE-823 P2) — 놓은 자리로 옮기지 않고 그 탭으로 갔다. */
+export function alreadyOpenHint(rel: string): string {
+  return `${fileTabLabel(rel)} 은(는) 이미 열려 있다 — 그 탭으로 갔다`
+}
+
+/** 안내 한 줄의 맥락 키 (LIFE-822 G1-1) — worktree·활성 영역·그 영역의 활성 탭. 바뀌면 안내를 지운다. */
+export function hintContextKey(input: { worktreePath: string | null; groupId: string | null; tabId: string | null }): string {
+  return `${input.worktreePath ?? ''}\n${input.groupId ?? ''}\n${input.tabId ?? ''}`
+}
+
+/** 맥락을 바꾸는 동작이 그 **바뀐 뒤 맥락**에 띄울 안내 (LIFE-823 P2 — 이미 열린 탭으로 가면서 띄우는 안내는 맥락 변경 지우기에 먹히면 안 된다). */
+export type CarriedHint = { message: string; context: string }
+
+/** 맥락이 바뀐 뒤 보일 안내 — 실어 둔 안내가 바로 그 맥락의 것이면 그 문구, 아니면 null(822 의 지우기 그대로). */
+export function hintAfterContextChange(input: { carry: CarriedHint | null; context: string }): string | null {
+  return input.carry !== null && input.carry.context === input.context ? input.carry.message : null
 }
 
 /** 부모 폴더(worktree 루트 기준 상대) — 루트 파일은 `''`(VS Code `labelService.getUriLabel(dirname, { relative: true })` 와 같다). */
@@ -263,6 +311,82 @@ export function openFileTab(input: { layout: GroupLayout; rel: string; preview: 
     return { ...group, tabOrder, activeTabId: tabId, previewTabId: preview ? tabId : (group.previewTabId ?? null) }
   })
   return { layout: { ...next, activeGroupId: target.groupId }, replaced }
+}
+
+/**
+ * 파일을 **고른 자리**에 여는 길 (LIFE-823) — 탐색기 끌어 놓기(탭바 삽입·본문 가장자리 분할·본문 가운데)와 「옆으로 열기」(`side`).
+ * `side` 는 VS Code `SIDE_GROUP`(P3): 활성 영역의 오른쪽 이웃 영역이 있으면 그 영역 가운데 열기, 없으면 활성 영역 오른쪽에 새 분할.
+ */
+export type FilePlacement =
+  | { kind: 'tabbar'; groupId: string; index: number }
+  | { kind: 'split'; groupId: string; direction: 'row' | 'column'; edge: 'before' | 'after' }
+  | { kind: 'center'; groupId: string }
+  | { kind: 'side' }
+
+/**
+ * 놓은 결과 — `already-open` 이면 배치를 옮기지 않았다(814 게이트 ⓪: 그 탭 활성화). `elsewhere` = 놓은 자리가 지금 자리와 달랐다(P2 — 안내 한 줄을 띄울 근거).
+ * `none` = 대상 영역이 없어 아무것도 안 했다.
+ */
+export type PlaceFileResult = { kind: 'opened'; groupId: string } | { kind: 'already-open'; groupId: string; elsewhere: boolean } | { kind: 'none' }
+
+/** 「옆으로 열기」 의 대상 영역 — 오른쪽 이웃이 있으면 그 id, 없으면 null(새로 분할). */
+function sideGroupOf(layout: GroupLayout): { anchor: string; neighbor: string | null } | null {
+  const anchor = findGroup(layout.root, layout.activeGroupId) ?? listGroups(layout.root)[0]
+  if (anchor === undefined) return null
+  return { anchor: anchor.groupId, neighbor: rightNeighborGroupId(layout.root, anchor.groupId) }
+}
+
+/** 이미 열린 탭을 그 자리에 놓았다면 지금 자리와 같은가 — 같은 영역 탭바의 자기 앞·뒤 칸, 같은 영역 가운데, 오른쪽 이웃이 그 영역인 옆으로 열기. 분할은 늘 다르다. */
+function samePlace(input: { layout: GroupLayout; owner: TabGroup; tabId: string; placement: FilePlacement }): boolean {
+  const { owner, placement } = input
+  switch (placement.kind) {
+    case 'tabbar': {
+      const at = owner.tabOrder.indexOf(input.tabId)
+      return placement.groupId === owner.groupId && (placement.index === at || placement.index === at + 1)
+    }
+    case 'center':
+      return placement.groupId === owner.groupId
+    case 'split':
+      return false
+    case 'side':
+      return sideGroupOf(input.layout)?.neighbor === owner.groupId
+  }
+}
+
+/**
+ * 파일 탭을 고른 자리에 연다 (LIFE-823 C1·C2·C3). 연 탭은 **고정**이다(P1 — VS Code 끌어 놓기·옆으로 열기 `pinned: true`) — 놓은 영역의 미리보기 탭은 그대로 남는다.
+ *   · 이미 열려 있으면(어느 영역이든) 옮기지 않고 그 영역에서 그 탭을 활성 + 미리보기였으면 고정(P1') — `elsewhere` 로 자리가 달랐는지 알린다(P2)
+ *   · 새로 열면 `insertNewTabAt`(탭바) · `splitGroupWithNewTab`(가장자리, `newGroupId`) · `openNewTabInGroup`(가운데) — 그 영역(분할은 새 영역)이 활성
+ * `tabId` 를 주면 그 id 의 편집기 탭(diff 탭)도 같은 규칙이다.
+ */
+export function placeFileTab(input: { layout: GroupLayout; rel: string; tabId?: string; placement: FilePlacement; newGroupId: string }): { layout: GroupLayout; result: PlaceFileResult } {
+  const { layout, placement, newGroupId } = input
+  const tabId = input.tabId ?? fileTabId(input.rel)
+  const owner = groupOfTab(layout.root, tabId)
+  if (owner !== null) {
+    const elsewhere = !samePlace({ layout, owner, tabId, placement })
+    const next = updateGroup(layout, owner.groupId, (group) => ({ ...group, activeTabId: tabId, ...(previewOf(group) === tabId ? { previewTabId: null } : {}) }))
+    return { layout: { ...next, activeGroupId: owner.groupId }, result: { kind: 'already-open', groupId: owner.groupId, elsewhere } }
+  }
+  const placed = ((): GroupLayout => {
+    switch (placement.kind) {
+      case 'tabbar':
+        return insertNewTabAt({ layout, tabId, groupId: placement.groupId, index: placement.index })
+      case 'center':
+        return openNewTabInGroup({ layout, tabId, groupId: placement.groupId })
+      case 'split':
+        return splitGroupWithNewTab({ layout, tabId, targetGroupId: placement.groupId, direction: placement.direction, edge: placement.edge, newGroupId })
+      case 'side': {
+        const side = sideGroupOf(layout)
+        if (side === null) return layout
+        return side.neighbor !== null
+          ? openNewTabInGroup({ layout, tabId, groupId: side.neighbor })
+          : splitGroupWithNewTab({ layout, tabId, targetGroupId: side.anchor, direction: 'row', edge: 'after', newGroupId })
+      }
+    }
+  })()
+  if (placed === layout) return { layout, result: { kind: 'none' } }
+  return { layout: placed, result: { kind: 'opened', groupId: placed.activeGroupId } }
 }
 
 /** 미리보기 탭을 고정한다(탭 더블클릭·탐색기 더블클릭 — E2ⓐ). 미리보기가 아니면 그대로. */

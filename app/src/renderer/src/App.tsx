@@ -73,6 +73,7 @@ import { DiffView } from './components/DiffView.js'
 import { diffTabId, diffTitle, openOf, type ScmChange } from '../../shared/scm.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
+import { useFileDrag } from './hooks/useFileDrag.js'
 import { paneToFollow, pickPane } from './pane-utils.js'
 import { useOpenTabEntries } from './hooks/useOpenTabEntries.js'
 import { useUnread } from './hooks/useUnread.js'
@@ -81,7 +82,26 @@ import { sessionTitle, userLabel } from './session-title.js'
 import { CLOSE_CONFIRM_PENDING, closeMixedTabs, cycleTabTarget, mixedCloseTargets, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
-import { closeFollowTarget, fileTabId, fileTabLabel, fileTabsOf, isFileTabId, previewOf, recordCloseFollow, splitKeyRoute, fileTabSplitHint, tabKindOf, terminalKeyTarget, type CloseFollow } from './file-tabs.js'
+import {
+  alreadyOpenHint,
+  closeFollowTarget,
+  dragGhostLabel,
+  fileTabId,
+  fileTabLabel,
+  fileTabsOf,
+  hintAfterContextChange,
+  hintContextKey,
+  isFileTabId,
+  previewOf,
+  recordCloseFollow,
+  splitKeyRoute,
+  fileTabSplitHint,
+  tabKindOf,
+  terminalKeyTarget,
+  type CarriedHint,
+  type CloseFollow,
+  type FilePlacement,
+} from './file-tabs.js'
 import { FileView, focusLiveEditor, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
 import { createMarkdownToggleHandler } from './markdown-toggle.js'
 import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, thawEditing, type FileDoc } from './file-docs.js'
@@ -730,6 +750,29 @@ export function App(): React.JSX.Element {
     },
   })
 
+  /**
+   * LIFE-823 C1·C2 — 탐색기 파일 끌어서 열기. 판정·오버레이는 탭 끌기와 같다(`resolveDropTarget` source file) — 커밋만 배치 없는 탭을 들이는 길(`placeFileAt`)이다.
+   * 탭바 = 삽입, 가장자리 = 새 영역, 가운데(merge) = 그 영역 활성 탭 오른쪽. 폴더는 `useFileDrag` 가 거른다.
+   */
+  const fileDrag = useFileDrag({
+    onDrop: ({ rel, target }) => {
+      switch (target.kind) {
+        case 'tabbar':
+          placeFileAt({ rel, placement: { kind: 'tabbar', groupId: target.groupId, index: target.index } })
+          return
+        case 'split':
+          placeFileAt({ rel, placement: { kind: 'split', groupId: target.groupId, direction: target.direction, edge: target.edge } })
+          return
+        case 'merge':
+          placeFileAt({ rel, placement: { kind: 'center', groupId: target.groupId } })
+          return
+        case 'self-noop':
+        case 'invalid':
+          return
+      }
+    },
+  })
+
   // A CLI-created tab may arrive before the destination worktree layout has been restored.
   // Keep the request until both workspace and tab placement exist, then select the keyboard target.
   useEffect(() => {
@@ -1357,6 +1400,20 @@ export function App(): React.JSX.Element {
   }
 
   /**
+   * LIFE-823 — 파일을 고른 자리에 연다(탐색기 끌어 놓기·옆으로 열기) — 고정 탭(P1). 이미 열린 파일이면 옮기지 않고 그 탭으로 가고(814 게이트 ⓪),
+   * 놓은 자리가 지금 자리와 달랐으면 안내 한 줄(P2 — 오버레이가 보여 준 분할 등이 안 난 이유).
+   */
+  const placeFileAt = (input: { rel: string; placement: FilePlacement }): void => {
+    const worktreePath = activeWorktreeRow?.path ?? null
+    if (worktreePath === null) return
+    const result = layout.placeFile(input)
+    if (result.kind === 'already-open' && result.elsewhere)
+      showHintAt({ message: alreadyOpenHint(input.rel), context: hintContextKey({ worktreePath, groupId: result.groupId, tabId: fileTabId(input.rel) }) })
+  }
+  /** 옆으로 열기(LIFE-823 C3·P3) — 탐색기 메뉴·⌥클릭·⌃Enter·⌘P ⌥Enter. */
+  const openFileToSide = (rel: string): void => placeFileAt({ rel, placement: { kind: 'side' } })
+
+  /**
    * LIFE-683 S5 — 소스 제어 행 열기. 추적 안 함·충돌·intent-to-add 는 보통 파일 탭(탐색기와 같은 경로), 나머지는 diff 탭(같은 미리보기·고정 규칙 — `openFileTab`).
    * 같은 대상은 같은 탭 id 라 다시 누르면 그 탭이 활성(중복 0). 밀려난 미리보기가 파일 탭이면 탐색기 열기와 같게 문서·닫은 탭 기록을 다룬다.
    */
@@ -1391,7 +1448,7 @@ export function App(): React.JSX.Element {
    * 수정 r1 R1-C-02 — NFC 로 같은 파일 탭이 이미 있으면 그 경로로 연다(같은 탭). R1-C-05 — 부모 폴더 목록에서 그 이름이 폴더(폴더 링크)면 열지 않고 안내만 한다
    * (git 목록은 untracked·무시된 링크의 종류를 모른다). `focus` 면 연 뒤 포커스는 `focusOpenedFile`.
    */
-  const openListedFile = (input: { rel: string; preview: boolean; focus: boolean }): void => {
+  const openListedFile = (input: { rel: string; preview: boolean; focus: boolean; side?: boolean }): void => {
     const worktreePath = activeWorktreeRow?.path ?? null
     if (worktreePath === null) return
     const nfc = input.rel.normalize('NFC')
@@ -1410,11 +1467,13 @@ export function App(): React.JSX.Element {
         notify(`${target} 은(는) 폴더(링크)라 파일로 열지 않습니다`)
         return
       }
-      openFileFromExplorer({ rel: target, preview: input.preview })
+      if (input.side === true) openFileToSide(target)
+      else openFileFromExplorer({ rel: target, preview: input.preview })
       if (input.focus) focusOpenedFile({ worktreePath, rel: target })
     })
   }
   const openFromQuickOpen = (rel: string): void => openListedFile({ rel, preview: false, focus: true })
+  const openFromQuickOpenToSide = (rel: string): void => openListedFile({ rel, preview: false, focus: true, side: true })
   /**
    * 연 파일 탭에 포커스(수정 r1 R1-C-01·R1-C-06) — 편집기가 붙으면 편집기 핸들의 `focus()`(Monaco 0.57 은 EditContext — 입력 요소가 textarea 가 아니다).
    * 편집기가 없는 보기(이미지·바이너리·상한 초과·오류·Markdown 미리보기)면 그 보기 자리(`[data-file-view]`, tabIndex -1)에. 편집기는 비동기로 붙으므로 프레임마다 다시 본다(최대 약 2 s).
@@ -1532,13 +1591,25 @@ export function App(): React.JSX.Element {
   const [groupHint, setGroupHint] = useState<string | null>(null)
   // LIFE-822 G1-1 — 안내는 띄운 맥락(worktree·활성 영역·그 영역의 활성 탭)에 묶인다 — 맥락이 바뀌면 지운다.
   // `paneError`·라이프사이클 알림은 여기서 안 지운다(수명 불변).
-  const hintContext = `${activeWorktreeRow?.path ?? ''}\n${layoutMirror.activeGroupId ?? ''}\n${layoutMirror.activeTabId ?? ''}`
+  const hintContext = hintContextKey({ worktreePath: activeWorktreeRow?.path ?? null, groupId: layoutMirror.activeGroupId, tabId: layoutMirror.activeTabId })
   const hintContextRef = useRef(hintContext)
+  /** LIFE-823 P2 — 맥락을 바꾸며 띄우는 안내(이미 열린 탭으로 감)는 바뀐 뒤 맥락에 싣는다. */
+  const carriedHintRef = useRef<CarriedHint | null>(null)
   useEffect(() => {
     if (hintContextRef.current === hintContext) return
     hintContextRef.current = hintContext
-    setGroupHint(null)
+    setGroupHint(hintAfterContextChange({ carry: carriedHintRef.current, context: hintContext }))
+    carriedHintRef.current = null
   }, [hintContext])
+  /** 맥락(`context`)에 안내를 띄운다 — 지금 맥락이면 바로, 아니면 그 맥락으로 바뀔 때. */
+  const showHintAt = (input: CarriedHint): void => {
+    if (input.context === hintContextRef.current) {
+      carriedHintRef.current = null
+      setGroupHint(input.message)
+      return
+    }
+    carriedHintRef.current = input
+  }
   const splitPaneAt = useCallback(
     async (target: { paneId: string | null; direction: PaneSplitDirection }): Promise<void> => {
       if (target.paneId === null) return
@@ -2002,6 +2073,7 @@ export function App(): React.JSX.Element {
             // fix r1 R1-01 — 영역에 보이는 diff 탭은 그 루트 감시를 잡는다(작업 페이지·설정이 덮으면 안 보임 → 해제).
             watch={!tasksOpen && settingsView === null}
             onOpenFile={(rel) => openFileFromExplorer({ rel, preview: false })}
+            groupId={group.groupId}
           />
         ) : activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (
           <FileView
@@ -2024,11 +2096,7 @@ export function App(): React.JSX.Element {
             onCreateShell={() => lifecycle.actions.createRow(workspaceId, 'shell')}
             onCloseGroup={canCloseGroup}
             // LIFE-387 B1 F-B1-6 — 빈 영역이 드래그의 유효 병합 타깃일 때만 켠다(§2 EmptyGroup).
-            isDropTarget={
-              tabDrag.dragState !== null &&
-              tabDrag.dragState.target.kind === 'merge' &&
-              tabDrag.dragState.target.groupId === group.groupId
-            }
+            isDropTarget={[tabDrag.dragState, fileDrag.dragState].some((drag) => drag !== null && drag.target.kind === 'merge' && drag.target.groupId === group.groupId)}
           />
         ) : (
           <div
@@ -2402,7 +2470,7 @@ export function App(): React.JSX.Element {
           onToggle={rightPanel.toggle}
           onResizeStart={rightPanel.onHandleMouseDown}
           bodies={{
-            explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} ops={fileOps} notify={notify} />,
+            explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} onOpenToSide={openFileToSide} onFileDrag={fileDrag.onExplorerDrag} ops={fileOps} notify={notify} />,
             scm: <ScmView scm={scm} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} mode={scm.mode} onChangeMode={scm.setMode} focusToken={scmFocusToken} onOpen={openScmChange} />,
             detail: <div ref={setDetailSlot} className="right-panel-detail" data-right-panel-detail="" />,
           }}
@@ -2439,6 +2507,7 @@ export function App(): React.JSX.Element {
           includeIgnored={quickOpenIgnored}
           onIncludeIgnored={setQuickOpenIgnored}
           onOpen={openFromQuickOpen}
+          onOpenToSide={openFromQuickOpenToSide}
           onClose={(restore) => {
             setQuickOpenOpen(false)
             if (restore) requestAnimationFrame(() => { if (quickOpenReturn.current?.isConnected) quickOpenReturn.current.focus(); else setFocusToken((value) => value + 1) })
@@ -2529,10 +2598,12 @@ export function App(): React.JSX.Element {
       {tabDrag.dragState === null ? null : (
         <DropZoneOverlay
           state={tabDrag.dragState}
-          tabLabel={tabById(tabDrag.dragState.tabId)?.label ?? ''}
+          tabLabel={dragGhostLabel({ tabId: tabDrag.dragState.tabId, terminalLabel: tabById(tabDrag.dragState.tabId)?.label ?? null })}
           tabColor={((tab) => (tab === null ? null : (markOf({ marks: tabMarks, tabId: tab.tabId, workspaceId: tab.workspaceId })?.color ?? null)))(tabById(tabDrag.dragState.tabId))}
         />
       )}
+      {/* LIFE-823 — 탐색기 파일을 트리 밖으로 끄는 중: 같은 오버레이, 고스트 = 파일·폴더 이름. */}
+      {fileDrag.dragState === null ? null : <DropZoneOverlay state={fileDrag.dragState} tabLabel={fileTabLabel(fileDrag.dragState.rel)} />}
     </div>
     </BindingLabels.Provider>
   )

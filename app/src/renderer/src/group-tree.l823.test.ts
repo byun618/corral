@@ -1,0 +1,127 @@
+// LIFE-823 C1·C3 — 배치에 없던 탭을 들이는 이름 있는 배치 함수(삽입·가운데·분할)와 옆으로 열기의 오른쪽 이웃.
+// 이미 배치에 있는 탭은 건드리지 않는다(같은 탭이 두 곳에 실리지 않는다 — C2 탭 id 중복 0 의 모델 쪽).
+
+import { describe, expect, it } from 'vitest'
+import { insertNewTabAt, listGroups, openNewTabInGroup, rightNeighborGroupId, singleLayout, splitGroupWithNewTab, type GroupLayout, type GroupNode } from './group-tree.js'
+
+const leafNode = (groupId: string, tabOrder: string[], activeTabId: string | null = tabOrder[0] ?? null): GroupNode => ({ kind: 'leaf', group: { groupId, tabOrder, activeTabId } })
+const two = (): GroupLayout => ({
+  root: { kind: 'split', direction: 'row', ratio: 0.5, first: leafNode('g1', ['t1', 't2', 't3'], 't2'), second: leafNode('g2', ['t4'], 't4') },
+  activeGroupId: 'g1',
+})
+const allTabs = (layout: GroupLayout): string[] => listGroups(layout.root).flatMap((group) => group.tabOrder)
+
+describe('insertNewTabAt — 탭바 삽입', () => {
+  it('그 영역의 index 자리에 끼우고 그 영역·그 탭이 활성', () => {
+    const next = insertNewTabAt({ layout: two(), tabId: 'file:a.ts', groupId: 'g1', index: 1 })
+    expect(listGroups(next.root)[0]).toMatchObject({ tabOrder: ['t1', 'file:a.ts', 't2', 't3'], activeTabId: 'file:a.ts' })
+    expect(next.activeGroupId).toBe('g1')
+  })
+  it('다른(비활성) 영역에도 — 맨 앞·맨 끝, 벗어난 index 는 clamp', () => {
+    expect(listGroups(insertNewTabAt({ layout: two(), tabId: 'x', groupId: 'g2', index: 0 }).root)[1]?.tabOrder).toEqual(['x', 't4'])
+    const end = insertNewTabAt({ layout: two(), tabId: 'x', groupId: 'g2', index: 99 })
+    expect(listGroups(end.root)[1]?.tabOrder).toEqual(['t4', 'x'])
+    expect(end.activeGroupId).toBe('g2')
+    expect(listGroups(insertNewTabAt({ layout: two(), tabId: 'x', groupId: 'g2', index: -3 }).root)[1]?.tabOrder).toEqual(['x', 't4'])
+  })
+  it('이미 배치에 있는 탭이면(다른 영역이어도) 그대로 — 끼워 넣지 않는다', () => {
+    const layout = two()
+    expect(insertNewTabAt({ layout, tabId: 't4', groupId: 'g1', index: 0 })).toBe(layout)
+    expect(insertNewTabAt({ layout, tabId: 't1', groupId: 'g1', index: 3 })).toBe(layout)
+  })
+  it('없는 영역이면 그대로', () => {
+    const layout = two()
+    expect(insertNewTabAt({ layout, tabId: 'x', groupId: 'g9', index: 0 })).toBe(layout)
+  })
+  it('미리보기 표시는 건드리지 않는다', () => {
+    const withPreview: GroupLayout = { root: { kind: 'leaf', group: { groupId: 'g1', tabOrder: ['file:p.ts'], activeTabId: 'file:p.ts', previewTabId: 'file:p.ts' } }, activeGroupId: 'g1' }
+    const next = insertNewTabAt({ layout: withPreview, tabId: 'file:q.ts', groupId: 'g1', index: 1 })
+    expect(listGroups(next.root)[0]?.previewTabId).toBe('file:p.ts')
+  })
+})
+
+describe('openNewTabInGroup — 가운데 열기', () => {
+  it('그 영역의 활성 탭 바로 오른쪽', () => {
+    const next = openNewTabInGroup({ layout: two(), tabId: 'x', groupId: 'g1' })
+    expect(listGroups(next.root)[0]).toMatchObject({ tabOrder: ['t1', 't2', 'x', 't3'], activeTabId: 'x' })
+    expect(next.activeGroupId).toBe('g1')
+  })
+  it('비활성 영역이면 그 영역을 활성으로', () => {
+    const next = openNewTabInGroup({ layout: two(), tabId: 'x', groupId: 'g2' })
+    expect(listGroups(next.root)[1]).toMatchObject({ tabOrder: ['t4', 'x'], activeTabId: 'x' })
+    expect(next.activeGroupId).toBe('g2')
+  })
+  it('빈 영역(활성 탭 없음)이면 끝에', () => {
+    const layout: GroupLayout = { root: leafNode('g1', [], null), activeGroupId: 'g1' }
+    expect(listGroups(openNewTabInGroup({ layout, tabId: 'x', groupId: 'g1' }).root)[0]).toMatchObject({ tabOrder: ['x'], activeTabId: 'x' })
+  })
+  it('이미 있는 탭·없는 영역이면 그대로', () => {
+    const layout = two()
+    expect(openNewTabInGroup({ layout, tabId: 't3', groupId: 'g2' })).toBe(layout)
+    expect(openNewTabInGroup({ layout, tabId: 'x', groupId: 'g9' })).toBe(layout)
+  })
+})
+
+describe('splitGroupWithNewTab — 가장자리 분할', () => {
+  it('네 방향 — right/down 은 뒤, left/up 은 앞에 새 영역, 새 영역 활성', () => {
+    const right = splitGroupWithNewTab({ layout: two(), tabId: 'x', targetGroupId: 'g2', direction: 'row', edge: 'after', newGroupId: 'g3' })
+    expect(listGroups(right.root).map((group) => group.groupId)).toEqual(['g1', 'g2', 'g3'])
+    expect(right.activeGroupId).toBe('g3')
+    expect(listGroups(right.root)[2]).toMatchObject({ tabOrder: ['x'], activeTabId: 'x' })
+    const up = splitGroupWithNewTab({ layout: two(), tabId: 'x', targetGroupId: 'g1', direction: 'column', edge: 'before', newGroupId: 'g3' })
+    expect(up.root.kind === 'split' && up.root.first.kind === 'split' ? up.root.first : null).toMatchObject({ direction: 'column', first: { group: { groupId: 'g3' } }, second: { group: { groupId: 'g1' } } })
+    const left = splitGroupWithNewTab({ layout: two(), tabId: 'x', targetGroupId: 'g2', direction: 'row', edge: 'before', newGroupId: 'g3' })
+    expect(listGroups(left.root).map((group) => group.groupId)).toEqual(['g1', 'g3', 'g2'])
+    const down = splitGroupWithNewTab({ layout: two(), tabId: 'x', targetGroupId: 'g2', direction: 'column', edge: 'after', newGroupId: 'g3' })
+    expect(down.root.kind === 'split' ? down.root.second : null).toMatchObject({ kind: 'split', direction: 'column', first: { group: { groupId: 'g2' } }, second: { group: { groupId: 'g3' } } })
+  })
+  it('탭 1개 영역·빈 영역 가장자리도 된다 — 원 영역의 탭은 그대로', () => {
+    const one = singleLayout({ groupId: 'g1', tabOrder: ['t1'], activeTabId: 't1' })
+    const next = splitGroupWithNewTab({ layout: one, tabId: 'x', targetGroupId: 'g1', direction: 'row', edge: 'after', newGroupId: 'g2' })
+    expect(listGroups(next.root).map((group) => group.tabOrder)).toEqual([['t1'], ['x']])
+    const empty: GroupLayout = { root: leafNode('g1', [], null), activeGroupId: 'g1' }
+    expect(listGroups(splitGroupWithNewTab({ layout: empty, tabId: 'x', targetGroupId: 'g1', direction: 'row', edge: 'before', newGroupId: 'g2' }).root).map((group) => group.tabOrder)).toEqual([['x'], []])
+  })
+  it('이미 있는 탭·없는 대상·이미 쓰는 새 영역 id 면 그대로', () => {
+    const layout = two()
+    expect(splitGroupWithNewTab({ layout, tabId: 't1', targetGroupId: 'g2', direction: 'row', edge: 'after', newGroupId: 'g3' })).toBe(layout)
+    expect(splitGroupWithNewTab({ layout, tabId: 'x', targetGroupId: 'g9', direction: 'row', edge: 'after', newGroupId: 'g3' })).toBe(layout)
+    expect(splitGroupWithNewTab({ layout, tabId: 'x', targetGroupId: 'g1', direction: 'row', edge: 'after', newGroupId: 'g2' })).toBe(layout)
+  })
+  it('탭 수 보존 — 새 탭 하나만 늘고 중복 없음', () => {
+    const next = splitGroupWithNewTab({ layout: two(), tabId: 'x', targetGroupId: 'g1', direction: 'row', edge: 'after', newGroupId: 'g3' })
+    expect(allTabs(next).sort()).toEqual(['t1', 't2', 't3', 't4', 'x'])
+  })
+})
+
+describe('rightNeighborGroupId — 옆으로 열기 대상(P3)', () => {
+  it('가로 분할의 앞쪽이면 뒤쪽 서브트리의 가장 왼쪽·위 영역', () => {
+    expect(rightNeighborGroupId(two().root, 'g1')).toBe('g2')
+    const nested: GroupNode = {
+      kind: 'split',
+      direction: 'row',
+      ratio: 0.5,
+      first: leafNode('g1', ['t1']),
+      second: { kind: 'split', direction: 'column', ratio: 0.5, first: leafNode('g2', ['t2']), second: leafNode('g3', ['t3']) },
+    }
+    expect(rightNeighborGroupId(nested, 'g1')).toBe('g2')
+  })
+  it('가장 오른쪽 열·한 영역·세로 분할만이면 null', () => {
+    expect(rightNeighborGroupId(two().root, 'g2')).toBeNull()
+    expect(rightNeighborGroupId(leafNode('g1', ['t1']), 'g1')).toBeNull()
+    const column: GroupNode = { kind: 'split', direction: 'column', ratio: 0.5, first: leafNode('g1', ['t1']), second: leafNode('g2', ['t2']) }
+    expect(rightNeighborGroupId(column, 'g1')).toBeNull()
+  })
+  it('세로 분할 안쪽 영역은 바깥 가로 분할의 오른쪽으로', () => {
+    const tree: GroupNode = {
+      kind: 'split',
+      direction: 'row',
+      ratio: 0.5,
+      first: { kind: 'split', direction: 'column', ratio: 0.5, first: leafNode('g1', ['t1']), second: leafNode('g2', ['t2']) },
+      second: leafNode('g3', ['t3']),
+    }
+    expect(rightNeighborGroupId(tree, 'g2')).toBe('g3')
+    expect(rightNeighborGroupId(tree, 'g3')).toBeNull()
+    expect(rightNeighborGroupId(tree, 'g9')).toBeNull()
+  })
+})

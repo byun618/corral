@@ -732,3 +732,98 @@ export function placeTab(input: { layout: GroupLayout; tabId: string; groupId: s
   if (from === null || findGroup(layout.root, input.groupId) === null) return layout
   return moveTabWithinTabbar(layout, { tabId: input.tabId, fromGroupId: from.groupId, toGroupId: input.groupId, index: input.index })
 }
+
+// --- 배치에 없던 탭을 놓는다 (LIFE-823 — 탐색기 파일 끌어서 열기·옆으로 열기) ---------------------------------------------
+//
+// 위 이동 함수(`moveTabWithinTabbar`·`mergeTabIntoGroup`·`splitGroupWithForeignTab`)는 **이미 어느 영역에 있는 탭**을 옮긴다.
+// 아래 셋은 **배치 어디에도 없는 탭**을 새로 들인다 — 출발 영역이 없으니 원 영역 빼기·접기가 없고, 대상이 탭 1개·빈 영역이어도 된다.
+// 탭이 이미 배치에 있으면(어느 영역이든) 배치를 그대로 돌려준다 — 같은 탭이 두 곳에 실리지 않는다. 이미 열린 탭의 처리는 부르는 쪽(`file-tabs.ts` `placeFileTab`)이 한다.
+
+/** 배치 어디에든 그 탭이 있나. */
+function hasTab(layout: GroupLayout, tabId: string): boolean {
+  return groupOfTab(layout.root, tabId) !== null
+}
+
+/** 탭바 삽입 — 그 영역의 `index`(0 ~ 길이, 벗어나면 끝으로 clamp) 자리에 끼우고 그 영역·그 탭을 활성으로. */
+export function insertNewTabAt(input: { layout: GroupLayout; tabId: string; groupId: string; index: number }): GroupLayout {
+  const { layout, tabId } = input
+  if (hasTab(layout, tabId) || findGroup(layout.root, input.groupId) === null) return layout
+  const inserted = updateGroup(layout, input.groupId, (group) => {
+    const at = Math.max(0, Math.min(input.index, group.tabOrder.length))
+    return { ...group, tabOrder: [...group.tabOrder.slice(0, at), tabId, ...group.tabOrder.slice(at)], activeTabId: tabId }
+  })
+  return { ...inserted, activeGroupId: input.groupId }
+}
+
+/** 가운데 열기 — 그 영역의 활성 탭 바로 오른쪽(활성이 없으면 끝)에 넣고 그 영역·그 탭을 활성으로(VS Code `openPositioning: right`). */
+export function openNewTabInGroup(input: { layout: GroupLayout; tabId: string; groupId: string }): GroupLayout {
+  const group = findGroup(input.layout.root, input.groupId)
+  if (group === null) return input.layout
+  const activeAt = group.activeTabId === null ? -1 : group.tabOrder.indexOf(group.activeTabId)
+  return insertNewTabAt({ layout: input.layout, tabId: input.tabId, groupId: input.groupId, index: activeAt < 0 ? group.tabOrder.length : activeAt + 1 })
+}
+
+/**
+ * 가장자리 분할 — 대상 영역 옆(`direction`·`edge` 는 `splitGroup` 과 같은 뜻)에 그 탭 하나만 든 새 영역을 만들고 새 영역을 활성으로.
+ * 대상 영역의 탭 수는 보지 않는다(탭 1개·빈 영역도 된다 — 출발 영역이 없어 빈 영역이 생기는 길이 아니다).
+ */
+export function splitGroupWithNewTab(input: {
+  layout: GroupLayout
+  tabId: string
+  targetGroupId: string
+  direction: 'row' | 'column'
+  edge: 'before' | 'after'
+  newGroupId: string
+}): GroupLayout {
+  const { layout } = input
+  if (hasTab(layout, input.tabId) || findGroup(layout.root, input.targetGroupId) === null || findGroup(layout.root, input.newGroupId) !== null) return layout
+  const added = leaf({ groupId: input.newGroupId, tabOrder: [input.tabId], activeTabId: input.tabId })
+  const replace = (node: GroupNode): GroupNode => {
+    switch (node.kind) {
+      case 'leaf':
+        if (node.group.groupId !== input.targetGroupId) return node
+        return input.edge === 'before'
+          ? { kind: 'split', direction: input.direction, ratio: 0.5, first: added, second: node }
+          : { kind: 'split', direction: input.direction, ratio: 0.5, first: node, second: added }
+      case 'split': {
+        const first = replace(node.first)
+        const second = replace(node.second)
+        return first === node.first && second === node.second ? node : { ...node, first, second }
+      }
+    }
+  }
+  return { root: replace(layout.root), activeGroupId: input.newGroupId }
+}
+
+/** 트리에서 가장 왼쪽·위 영역 — 오른쪽 이웃 서브트리로 들어갈 때 닿는 첫 영역. */
+function leftmostGroupId(node: GroupNode): string {
+  switch (node.kind) {
+    case 'leaf':
+      return node.group.groupId
+    case 'split':
+      return leftmostGroupId(node.first)
+  }
+}
+
+/**
+ * 그 영역의 **오른쪽 이웃** 영역 (LIFE-823 P3 「옆으로 열기」 — VS Code `SIDE_GROUP` 의 `findGroup({ direction: right })`).
+ * 그 영역을 `first` 쪽에 둔 가장 가까운 가로(`row`) 분할의 `second` 서브트리에서 가장 왼쪽·위 영역이다. 없으면(가장 오른쪽 열) null.
+ * VS Code 는 기하로 가장 가까운 칸을 고르지만, 오른쪽 서브트리에 세로 분할이 있을 때 위 칸을 고르는 것으로 단순화했다.
+ */
+export function rightNeighborGroupId(root: GroupNode, groupId: string): string | null {
+  const walk = (node: GroupNode): { found: boolean; neighbor: string | null } => {
+    switch (node.kind) {
+      case 'leaf':
+        return { found: node.group.groupId === groupId, neighbor: null }
+      case 'split': {
+        const first = walk(node.first)
+        if (first.found) {
+          if (first.neighbor !== null || node.direction !== 'row') return first
+          return { found: true, neighbor: leftmostGroupId(node.second) }
+        }
+        return walk(node.second)
+      }
+    }
+  }
+  return walk(root).neighbor
+}

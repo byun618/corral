@@ -831,8 +831,9 @@ const RECT_EPSILON = 1e-9
  * 그 영역의 **오른쪽 이웃들** (LIFE-823 F2 — VS Code `grid.ts` `getNeighborViews`): 왼쪽 변이 그 영역의 오른쪽 변에 닿고 세로 구간이 **겹치는** 영역
  * (끝점만 닿는 것은 이웃이 아니다). 겹친 길이(`overlap`)와 사각형을 같이 돌려준다 — 고르는 규칙은 부르는 쪽(`rightNeighborGroupId`).
  */
-export function rightNeighborGroups(root: GroupNode, groupId: string): { groupId: string; overlap: number; rect: GroupRect }[] {
-  const rects = groupRects(root)
+export function rightNeighborGroups(input: { root: GroupNode; groupId: string }): { groupId: string; overlap: number; rect: GroupRect }[] {
+  const { groupId } = input
+  const rects = groupRects(input.root)
   const from = rects.get(groupId)
   if (from === undefined) return []
   const edge = from.left + from.width
@@ -846,13 +847,11 @@ export function rightNeighborGroups(root: GroupNode, groupId: string): { groupId
 }
 
 /**
- * 「옆으로 열기」 대상 영역 (LIFE-823 P3·F2 — VS Code `SIDE_GROUP` 의 `findGroup({ direction: right })`). 오른쪽 이웃들 중
- * `recentGroupIds`(영역 MRU, 끝이 가장 최근)를 주면 가장 최근 것, 없거나 거기 없으면 겹침이 큰 것, 같으면 위. 이웃이 없으면(가장 오른쪽 열) null.
+ * 「옆으로 열기」 대상 영역 (LIFE-823 P3·F2 — VS Code `SIDE_GROUP` 의 `findGroup({ direction: right })`). 오른쪽 이웃들 중 겹침이 큰 것, 같으면 위.
+ * 이웃이 없으면(가장 오른쪽 열) null. VS Code 는 여럿이면 영역 MRU 로 고르지만 corral 배치에는 영역 MRU 가 없다(R2-L3 — 들이면 그때 이 자리에).
  */
-export function rightNeighborGroupId(input: { root: GroupNode; groupId: string; recentGroupIds?: readonly string[] }): string | null {
-  const neighbors = rightNeighborGroups(input.root, input.groupId)
-  const recent = [...(input.recentGroupIds ?? [])].reverse().find((id) => neighbors.some((neighbor) => neighbor.groupId === id))
-  if (recent !== undefined) return recent
+export function rightNeighborGroupId(input: { root: GroupNode; groupId: string }): string | null {
+  const neighbors = rightNeighborGroups(input)
   const sorted = [...neighbors].sort((a, b) => (Math.abs(b.overlap - a.overlap) > RECT_EPSILON ? b.overlap - a.overlap : a.rect.top - b.rect.top))
   return sorted[0]?.groupId ?? null
 }

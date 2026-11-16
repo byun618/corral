@@ -148,24 +148,20 @@ describe('rightNeighborGroupId — 옆으로 열기 대상(P3·F2): 오른쪽 �
   })
   it('꽉 찬 왼쪽 → 오른쪽 열 둘 다 이웃, 겹침이 같으면 위', () => {
     const tree = split('row', leafNode('g1', ['t1']), split('column', leafNode('g2', ['t2']), leafNode('g3', ['t3'])))
-    expect(rightNeighborGroups(tree, 'g1').map((neighbor) => neighbor.groupId).sort()).toEqual(['g2', 'g3'])
+    expect(rightNeighborGroups({ root: tree, groupId: 'g1' }).map((neighbor) => neighbor.groupId).sort()).toEqual(['g2', 'g3'])
     expect(right(tree, 'g1')).toBe('g2')
   })
   it('겹침이 큰 쪽 — 오른쪽 열이 30:70 이면 아래', () => {
     const tree = split('row', leafNode('g1', ['t1']), split('column', leafNode('g2', ['t2']), leafNode('g3', ['t3']), 0.3))
     expect(right(tree, 'g1')).toBe('g3')
   })
-  it('MRU 를 주면 MRU(끝이 최근) — 이웃이 아닌 id 는 건너뛴다', () => {
-    const tree = split('row', leafNode('g1', ['t1']), split('column', leafNode('g2', ['t2']), leafNode('g3', ['t3']), 0.3))
-    expect(rightNeighborGroupId({ root: tree, groupId: 'g1', recentGroupIds: ['g3', 'g2', 'g1'] })).toBe('g2')
-  })
   it('끝점만 닿는 것은 이웃이 아니다 — 위 칸끼리 다른 비율이어도 겹침으로', () => {
     // 왼쪽 열 위 50% · 오른쪽 열 위 50% 경계가 같으면 아래-왼쪽과 위-오른쪽은 끝점만 닿는다
     const grid = split('row', split('column', leafNode('A', ['a']), leafNode('C', ['c'])), split('column', leafNode('B', ['b']), leafNode('D', ['d'])))
-    expect(rightNeighborGroups(grid, 'C').map((neighbor) => neighbor.groupId)).toEqual(['D'])
+    expect(rightNeighborGroups({ root: grid, groupId: 'C' }).map((neighbor) => neighbor.groupId)).toEqual(['D'])
     // 오른쪽 열을 60:40 으로 — 아래-왼쪽(0.5~1)은 B(0~0.6)와 0.1, D(0.6~1)와 0.4 겹친다 → D
     const skew = split('row', split('column', leafNode('A', ['a']), leafNode('C', ['c'])), split('column', leafNode('B', ['b']), leafNode('D', ['d']), 0.6))
-    expect(rightNeighborGroups(skew, 'C').map((neighbor) => neighbor.groupId).sort()).toEqual(['B', 'D'])
+    expect(rightNeighborGroups({ root: skew, groupId: 'C' }).map((neighbor) => neighbor.groupId).sort()).toEqual(['B', 'D'])
     expect(right(skew, 'C')).toBe('D')
   })
   it('세로 분할 안쪽 영역은 바깥 가로 분할의 오른쪽으로, 없는 영역은 null', () => {

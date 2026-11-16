@@ -133,7 +133,12 @@ async function mount({ layout = ONE_GROUP, tabIds = ['t1'], rightPanelOpen = fal
       await pointer('pointerdown', row, 1000, 10)
       await pointer('pointermove', document, x + 30, y + 30)
       await pointer('pointermove', document, x, y)
-      const during = { ghost: q('[data-tab-drag-ghost]')?.textContent ?? null, fill: q('[data-dropzone-fill], [data-dropzone-tabbar-marker]') !== null }
+      const during = {
+        ghost: q('[data-tab-drag-ghost]')?.textContent ?? null,
+        fill: q('[data-dropzone-fill], [data-dropzone-tabbar-marker]') !== null,
+        // R2-L1 — 끌기 중 탭바 넘침 끌기 모드(`tabDragActive`)가 켜졌나
+        dragActive: q(`[data-main-tab-strip-wrap="${groupId}"]`)?.hasAttribute('data-tab-drag-active') ?? null,
+      }
       await pointer('pointerup', document, x, y)
       await settle()
       aim.groupId = null
@@ -216,8 +221,9 @@ it('F3 B5 — 탐색기 파일을 diff 본문 가장자리에 놓으면 분할',
 it('F3 C1ⓐ 트리 밖 끌기 → 탭바 index 0 자리에 고정 탭, 끌기 중 고스트·삽입선', async () => {
   const app = await mount({ rightPanelOpen: true })
   const during = await app.dragFromExplorer({ rel: 'b.ts', groupId: 'g1', x: 20, y: 10 })
-  expect(during).toEqual({ ghost: 'b.ts', fill: true })
+  expect(during).toEqual({ ghost: 'b.ts', fill: true, dragActive: true })
   expect(app.groups()).toEqual([{ groupId: 'g1', tabs: ['file:b.ts', 't1', FILE] }])
+  expect(app.q('[data-main-tab-strip-wrap="g1"]')?.hasAttribute('data-tab-drag-active')).toBe(false)
   expect(app.q('[data-main-tab="file:b.ts"]')?.getAttribute('data-tab-preview')).toBe('false')
   expect(app.q('[data-drop-zone-overlay]')).toBeNull()
 })
@@ -234,6 +240,12 @@ it('F3 C1ⓑ 가장자리(아래) → 새 영역', async () => {
   expect(app.groups()).toEqual([{ groupId: 'g1', tabs: ['t1', FILE] }, { groupId: 'g2', tabs: ['file:b.ts'] }])
 })
 
+it('R2-L2 C1ⓑ 왼쪽 가장자리 → 새 영역이 대상 앞(왼쪽)에', async () => {
+  const app = await mount({ rightPanelOpen: true })
+  await app.dragFromExplorer({ rel: 'b.ts', groupId: 'g1', x: 10, y: 240 })
+  expect(app.groups()).toEqual([{ groupId: 'g2', tabs: ['file:b.ts'] }, { groupId: 'g1', tabs: ['t1', FILE] }])
+})
+
 it('F3·F1 빈 영역(탭 0) — 가장자리에 놓아도 그 영역에 열린다(한 영역)', async () => {
   const app = await mount({ layout: { root: { kind: 'leaf', group: { groupId: 'g1', tabOrder: [], activeTabId: null } }, activeGroupId: 'g1' }, tabIds: [], rightPanelOpen: true })
   expect(app.q('[data-empty-group]')).not.toBeNull()
@@ -244,6 +256,6 @@ it('F3·F1 빈 영역(탭 0) — 가장자리에 놓아도 그 영역에 열린�
 it('C2 폴더를 끌어 놓으면 배치 그대로', async () => {
   const app = await mount({ rightPanelOpen: true })
   const during = await app.dragFromExplorer({ rel: 'src', groupId: 'g1', x: 200, y: 240 })
-  expect(during).toEqual({ ghost: 'src', fill: false })
+  expect(during).toEqual({ ghost: 'src', fill: false, dragActive: true })
   expect(app.groups()).toEqual([{ groupId: 'g1', tabs: ['t1', FILE] }])
 })

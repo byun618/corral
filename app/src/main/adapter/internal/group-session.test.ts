@@ -283,3 +283,48 @@ describe('연결 내 자기정합 (S6 — §10-R14)', () => {
     expect(countInconsistencies(frame, [pane({ x: 0, width: 10 })])).toBeGreaterThan(0)
   })
 })
+
+describe('줌 깃발 — 탭을 떠나면 herdr 깃발도 끈다 (LIFE-824 Zⓒ)', () => {
+  // base 실측(corral-specs LIFE-824 raw/claude/z-base-2.jsonl): 로컬 줌만 풀리고 herdr `pane.zoom` 깃발은 켜진 채 남았다.
+  it('줌 중 다른 탭으로 옮기면 pane.focus 앞에 떠나는 pane 의 pane.zoom off 를 보낸다', async () => {
+    const { client, session } = await attachedSession({
+      panes: [
+        { paneId: 'p1', x: 0, width: 10 },
+        { paneId: 'p2', x: 10, width: 10 },
+      ],
+    })
+    session.zoom({ paneId: 'p1', boxGrid: { cols: 20, rows: 3 } })
+    expect(session.zoomedPane).toBe('p1')
+    client.onFocusSurface = makeSurface({ width: 20, height: 3, panes: [{ paneId: 'p3', x: 0, width: 20 }], full: true })
+    const before = client.calls.length
+    await session.focusTab({ tabId: 't2', paneId: 'p3' })
+    expect(client.calls.slice(before)).toEqual([
+      { method: 'pane.zoom', params: { pane_id: 'p1', mode: 'off' } },
+      { method: 'pane.focus', params: { pane_id: 'p3' } },
+    ])
+    expect(session.zoomedPane).toBeNull()
+  })
+
+  it('줌이 없거나 같은 탭 안이면 pane.zoom 을 보내지 않는다(기존 경로 회귀 0)', async () => {
+    const { client, session } = await attachedSession({ panes: [{ paneId: 'p1', x: 0, width: 10 }, { paneId: 'p2', x: 10, width: 10 }] })
+    client.onFocusSurface = makeSurface({ width: 20, height: 3, panes: [{ paneId: 'p3', x: 0, width: 20 }], full: true })
+    await session.focusTab({ tabId: 't2', paneId: 'p3' })
+    expect(client.calls.some((call) => call.method === 'pane.zoom')).toBe(false)
+    session.zoom({ paneId: 'p3', boxGrid: { cols: 20, rows: 3 } })
+    await session.focusTab({ tabId: 't2', paneId: 'p3' })
+    expect(client.calls.some((call) => call.method === 'pane.zoom')).toBe(false)
+  })
+
+  it('깃발 끄기가 실패해도 탭 전환은 계속한다', async () => {
+    const { client, session } = await attachedSession({ panes: [{ paneId: 'p1', x: 0, width: 10 }, { paneId: 'p2', x: 10, width: 10 }] })
+    session.zoom({ paneId: 'p1', boxGrid: { cols: 20, rows: 3 } })
+    const original = client.callEndpoint.bind(client)
+    client.callEndpoint = async (method, params) => {
+      if (method === 'pane.zoom') throw new Error('gone')
+      return original(method, params)
+    }
+    client.onFocusSurface = makeSurface({ width: 20, height: 3, panes: [{ paneId: 'p3', x: 0, width: 20 }], full: true })
+    await session.focusTab({ tabId: 't2', paneId: 'p3' })
+    expect(client.calls.at(-1)).toEqual({ method: 'pane.focus', params: { pane_id: 'p3' } })
+  })
+})

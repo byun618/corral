@@ -263,6 +263,9 @@ export class GroupSession {
    */
   async focusTab(input: { tabId: string; paneId: string }): Promise<void> {
     if (this.closed) throw new Error('group session is closed')
+    // LIFE-824 Zⓒ — 줌을 든 채 탭을 떠나면 로컬 줌만 풀리고 herdr `pane.zoom` 깃발은 켜진 채 남았다(base 실측 `raw/claude/z-base-2.jsonl`:
+    // 탭 전환 뒤 local=null · herdr zoomed=true, 돌아와도 그대로). 떠나는 탭의 깃발도 끈다 — 붙기 전(`attaching` 동안이라 그 사이 서피스는 버린다).
+    const leavingZoom = this.attachedTabId !== input.tabId ? this.zoomedPaneId : null
     if (this.attachedTabId !== input.tabId) {
       for (const paneId of [...this.io.keys()]) this.evictIo(paneId)
       this.meta.clear()
@@ -271,6 +274,12 @@ export class GroupSession {
     this.zoomedPaneId = null
     this.attaching = true
     try {
+      if (leavingZoom !== null) {
+        await this.enqueue(() => this.client.callEndpoint('pane.zoom', { pane_id: leavingZoom, mode: 'off' })).catch((error: unknown) => {
+          // 깃발 정리는 정합용이다 — 실패해도 탭 전환은 계속한다(그림은 클라이언트가 그린다).
+          this.logger.warn('zoom flag off on tab leave failed', { paneId: leavingZoom, error: error instanceof Error ? error.message : String(error) })
+        })
+      }
       await this.enqueue(() => this.client.callEndpoint('pane.focus', { pane_id: input.paneId }))
     } finally {
       this.attaching = false

@@ -58,3 +58,26 @@ describe('useOpenTabEntries — 번호 복원 뒤 제목 (R1-05)', () => {
     expect(seen[0]?.title).toContain('7')
   })
 })
+
+describe('useOpenTabEntries — 파일·diff 탭도 싣는다 (LIFE-824 C4ⓑ)', () => {
+  it('영역 순서·탭 순서대로 터미널 사이에 파일·diff 탭, 제목은 탭 스트립과 같은 이름, 현재 탭 표지', () => {
+    const mixed: TabGroup[] = [
+      { groupId: 'g1', tabOrder: ['t1', 'file:src/a.ts'], activeTabId: 'file:src/a.ts' },
+      { groupId: 'g2', tabOrder: ['diff:["wt","b.ts",null]', 't2'], activeTabId: 't2' },
+    ]
+    function Mixed(): null {
+      seen = useOpenTabEntries({ workspace, worktree: null, groups: mixed, activeGroupId: 'g1', home: null, selectedPane: null, ordinalsReady: true })
+      return null
+    }
+    act(() => root.render(createElement(Mixed)))
+    expect(seen.map((entry) => [entry.tabId, entry.groupId, entry.groupIndex, entry.tabIndex])).toEqual([
+      ['t1', 'g1', 0, 0],
+      ['file:src/a.ts', 'g1', 0, 1],
+      ['diff:["wt","b.ts",null]', 'g2', 1, 0],
+      ['t2', 'g2', 1, 1],
+    ])
+    const file = seen.find((entry) => entry.tabId === 'file:src/a.ts')
+    expect(file).toMatchObject({ title: 'a.ts', agent: null, isCurrent: true })
+    expect(seen.find((entry) => entry.tabId.startsWith('diff:'))?.title).toContain('b.ts')
+  })
+})

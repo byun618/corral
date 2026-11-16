@@ -83,6 +83,7 @@ export function Sidebar({
   activeWorkspaceId,
   selectedPane,
   selectPane,
+  returnToWorktree,
   closePane,
   actions,
   manualOrder,
@@ -119,6 +120,8 @@ export function Sidebar({
   activeWorkspaceId: string | null
   selectedPane: string | null
   selectPane: (paneId: string) => void
+  /** LIFE-824 C7 — 카드 클릭이 그 worktree 배치가 보던 탭으로 돌아간다(갔으면 참). 없으면 옛 규칙(첫 탭). */
+  returnToWorktree?: (worktree: WorktreeRow) => boolean
   closePane: (paneId: string) => void
   actions: LifecycleActions
   /** 레포·워크트리 수동 순서 (LIFE-469) — 표시 순서는 여기서 나온다. */
@@ -331,7 +334,7 @@ export function Sidebar({
   }
   const activateRow = (input: { repoRoot: string; worktree: WorktreeRow }): void => {
     leaveTasks()
-    activateWorktreeCard({ actions, repoRoot: input.repoRoot, worktree: input.worktree, selectPane })
+    activateWorktreeCard({ actions, repoRoot: input.repoRoot, worktree: input.worktree, selectPane, returnTo: returnToWorktree })
   }
 
   const runMenuAction = (input: { path: string; action: CardMenuAction }): void => {

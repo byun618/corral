@@ -12,7 +12,7 @@ describe('shortcut catalog and compatibility', () => {
     // LIFE-593: + quickOpen.open(⌘P) · explorer.filter(⌘⌥F — 탐색기 범위)
     // LIFE-601: + tasks.toggle(⌘I)
     // LIFE-629: + markdown.togglePreview(⇧⌘V)
-    expect(ACTIONS).toHaveLength(30) // LIFE-683: + ⌘⇧G 소스 제어 보이기
+    expect(ACTIONS).toHaveLength(31) // LIFE-683: + ⌘⇧G 소스 제어 보이기 · LIFE-824: + ⌃` 터미널 ↔ 편집기 전환
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()

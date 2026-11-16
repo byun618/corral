@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { bindingFromEvent, EDITOR_YIELD_ACTIONS, matchBinding, NON_REPEATING_ACTIONS, yieldsOutsideMarkdown, type ActionId, type Keybindings, type ShortcutMatch } from '../../../shared/keybindings.js'
+import { bindingFromEvent, matchBinding, NON_REPEATING_ACTIONS, yieldsOutsideMarkdown, yieldsToEditor, type ActionId, type Keybindings, type ShortcutMatch } from '../../../shared/keybindings.js'
 import { EDITOR_KEYS } from '../markdown.js'
 
 export type ShortcutHandlers = Record<ActionId, (variant: number) => void>
@@ -40,7 +40,8 @@ export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onI
       // LIFE-478: 카드 인라인 rename 입력(`data-inline-rename`)에도 양보한다(K3ⓐ).
       if (event.target instanceof Element && event.target.closest('.main-tab-rename, [data-inline-rename]')) return
       // LIFE-591 — 파일 탭 편집기 안이면 터미널 pane 대상 단축키(파일 탭에서 무동작)를 편집기에 넘긴다(⌘⇧Z 다시 실행 등 — `EDITOR_YIELD_ACTIONS`).
-      if (EDITOR_YIELD_ACTIONS.includes(match.id) && event.target instanceof Element && event.target.closest('[data-file-editor]')) return
+      // LIFE-824 C1ⓓ — 단 ⌘⌥←→ 는 앱이 가져가 영역을 옮긴다(`yieldsToEditor` — 방향·조합 단위).
+      if (binding !== null && yieldsToEditor({ match, binding }) && event.target instanceof Element && event.target.closest('[data-file-editor]')) return
       // LIFE-629 — ⇧⌘V 는 Markdown 보기 안에서만 가져간다(터미널·다른 파일 탭·입력칸이면 그 자리의 키로 그대로 간다).
       if (yieldsOutsideMarkdown({ id: match.id, inMarkdownView: inMarkdownView(event.target) })) return
       event.preventDefault()

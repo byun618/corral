@@ -265,3 +265,36 @@ describe('fix1 B5 — 기억 없는 도착의 갈래 이름', () => {
     expect(unrememberedArrivalBranch({ firstSeen: false, reopening: true })).toBeNull()
   })
 })
+
+describe('fix2 D3 — 기준 탭이 없거나(빈 영역) 사라진 연속 요청도 화면 순서 = 요청 순서', () => {
+  /** 도착 = reconcile 착지 뒤 기억 자리로 옮기고, 그 탭을 활성으로(App 의 reveal). 앞·뒤 요청 탭은 App 장부가 주는 그대로. */
+  const arrive = (input: { layout: GroupLayout; slot: { groupId: string; afterTabId: string | null }; tabId: string; preceding: string[]; following: string[] }): GroupLayout => {
+    const live = [...listGroups(input.layout.root).flatMap((group) => group.tabOrder), input.tabId]
+    const landed = reconcileLayout({ layout: input.layout, liveTabIds: live })
+    const target = newTabPlacement({ layout: landed, slot: input.slot, tabId: input.tabId, precedingTabIds: input.preceding, followingTabIds: input.following })
+    const group = findGroup(landed.root, 'g1')
+    const order = (group?.tabOrder ?? []).filter((id) => id !== input.tabId)
+    const index = target?.index ?? order.length
+    return { ...landed, root: leaf('g1', [...order.slice(0, index), input.tabId, ...order.slice(index)], input.tabId) }
+  }
+  const emptyGroup: GroupLayout = { root: leaf('g1', [], null), activeGroupId: 'g1' }
+  const anchorGone: GroupLayout = { root: leaf('g1', ['x'], 'x'), activeGroupId: 'g1' }
+  const cases = [
+    { name: '빈 영역(기준 탭 없음)', layout: emptyGroup, slot: { groupId: 'g1', afterTabId: null }, expected: ['a', 'b'] },
+    { name: '기준 탭 t1 이 두 탭 도착 전 사라짐', layout: anchorGone, slot: { groupId: 'g1', afterTabId: 't1' }, expected: ['x', 'a', 'b'] },
+  ]
+  for (const c of cases) {
+    it(`${c.name} — 앞 요청(a) 먼저 도착 → 뒤 요청(b)`, () => {
+      const afterA = arrive({ layout: c.layout, slot: c.slot, tabId: 'a', preceding: [], following: [] })
+      expect(findGroup(arrive({ layout: afterA, slot: c.slot, tabId: 'b', preceding: ['a'], following: [] }).root, 'g1')?.tabOrder).toEqual(c.expected)
+    })
+    it(`${c.name} — 뒤 요청(b) 먼저 도착·활성 → 앞 요청(a)은 b 앞에`, () => {
+      const afterB = arrive({ layout: c.layout, slot: c.slot, tabId: 'b', preceding: ['a'], following: [] })
+      expect(findGroup(arrive({ layout: afterB, slot: c.slot, tabId: 'a', preceding: [], following: ['b'] }).root, 'g1')?.tabOrder).toEqual(c.expected)
+    })
+  }
+  it('앞뒤 요청이 없으면 C5ⓑ 그대로 — 기준 탭이 사라졌으면 활성 탭 오른쪽', () => {
+    const layout: GroupLayout = { root: leaf('g1', ['x', 'y'], 'x'), activeGroupId: 'g1' }
+    expect(newTabPlacement({ layout, slot: { groupId: 'g1', afterTabId: 't1' }, tabId: 'n', precedingTabIds: [], followingTabIds: [] })).toEqual({ groupId: 'g1', index: 1 })
+  })
+})

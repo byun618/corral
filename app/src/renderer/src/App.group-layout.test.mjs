@@ -9,7 +9,7 @@ import { createRoot } from 'react-dom/client'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { KeybindingStore } from '../../main/keybindings.js'
 import { UiPrefsStore } from '../../main/ui-prefs.js'
 import { DEFAULT_SETTINGS } from '../../shared/terminal-settings.js'
@@ -19,7 +19,28 @@ import { resetSettingsStoreForTest } from './settings-store.js'
 import { LAYOUT_FORMAT } from './group-tree.js'
 import { diffTabId } from '../../shared/scm.js'
 
-vi.mock('./TerminalPane.js', () => ({ TerminalPane: () => null, keepTerminalFocus: () => {} }))
+/**
+ * 가짜 TerminalPane — 진짜와 같은 규칙(`focusToken` 이 바뀌고 0 이 아니며 `focusable` 일 때 포커스, TerminalPane.tsx:551-557)으로 **포커스 가능한 본문**을 낸다(fix2 D2).
+ * 포커스한 pane 은 `termFocusLog` 에 남는다 — 「메뉴 닫힘이 본문 포커스 길(focusGroupTab → selectPane → focusToken)을 탔나」를 본다.
+ */
+const termFocusLog = []
+vi.mock('./TerminalPane.js', async () => {
+  const React = await import('react')
+  return {
+    TerminalPane: ({ paneId, focusable = false, focusToken = 0 }) => {
+      const ref = React.useRef(null)
+      const focusableRef = React.useRef(focusable)
+      focusableRef.current = focusable
+      React.useEffect(() => {
+        if (focusToken === 0 || !focusableRef.current) return
+        termFocusLog.push(paneId)
+        ref.current?.focus()
+      }, [focusToken])
+      return React.createElement('div', { ref, tabIndex: -1, 'data-fake-term': paneId })
+    },
+    keepTerminalFocus: () => {},
+  }
+})
 vi.mock('./editor/monaco.js', () => {
   const editor = () => ({ setModel: () => {}, saveViewState: () => null, restoreViewState: () => {}, dispose: () => {} })
   return { languageFor: async () => 'plaintext', createModel: ({ text }) => ({ getValue: () => text, setValue: () => {}, dispose: () => {} }), createEditor: editor, createDiffEditor: editor }
@@ -67,7 +88,7 @@ async function mount({ layout = THREE(), panes = { t1: ['p1'], t2: ['p2'] }, ter
     terminal: { paneId: null, phase: 'idle', cols: null, rows: null, lastError: null, mouseReporting: false }, terminalGroups, integrations: [],
     retainedAgents: [], diagnostics: false, home: folder, orchestrationLineage: { state: 'ready', entries: [] }, herdrTabIds: null,
   }
-  const calls = { neighbor: [], zoom: [], split: [], order: [], create: [], prefs: [], sync: [] }
+  const calls = { neighbor: [], zoom: [], split: [], order: [], create: [], prefs: [], sync: [], closeTabs: [] }
   const neighbor = { next: null }
   const api = {
     getState: async () => state,
@@ -90,6 +111,7 @@ async function mount({ layout = THREE(), panes = { t1: ['p1'], t2: ['p2'] }, ter
       return { ok: true, paneId: neighborOf === null ? neighbor.next : (neighborOf[`${input.paneId}:${input.direction}`] ?? null) }
     },
     termZoom: (input) => { calls.zoom.push(input); calls.order.push(`zoom:${input.paneId}`) },
+    closeTabs: async (input) => { calls.closeTabs.push(input.tabIds); return { outcome: 'closed', closed: [] } },
     splitPane: async (input) => { calls.split.push(input); calls.order.push('split'); return { ok: true, paneId: null } },
   }
   const listeners = {}
@@ -510,4 +532,77 @@ it('fix1 B2 — 연속 ⌘T 2회 뒤 첫 탭이 먼저 도착·활성되고 둘�
   await act(async () => { gates[1]?.() })
   await app.arrive(['t1', 't2', 't9', 't10'])
   expect(app.tabsOf('g1')).toEqual(['t1', 't9', 't10', 't2'])
+})
+
+/**
+ * fix2 D1·D2 — 비활성 영역 우클릭 메뉴 셋 × 메뉴가 열린 동안의 다른 이동 넷. 시작: g3(diff) 활성·본문 포커스.
+ * 메뉴: 터미널 탭(g1 t1) · 헤더(g1 — 터미널 활성) · 파일 탭(g2 FILE). 이동은 React 핸들러가 있는 실제 요소에 쏜다.
+ */
+const MENUS = {
+  terminalTab: { groupId: 'g1', target: (app) => app.q('[data-tab-group="g1"] [data-main-tab="t1"]'), open: '[data-tab-menu="t1"]' },
+  terminalHeader: { groupId: 'g1', target: (app) => app.q('[data-main-tab-strip="g1"]'), open: '[data-tab-menu-header-mode]' },
+  fileTab: { groupId: 'g2', target: (app) => app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`), open: '[data-file-tab-menu]' },
+}
+const MOVES = {
+  // 다른 영역 탭바의 탭 클릭(824 C6 — 활성 + 본문 포커스). 탭바 빈 곳 왼쪽 클릭은 base 부터 활성만이라(본문 포커스 안 옮김) 탭을 누른다.
+  tabbarClick: async (app, from) => {
+    const tab = from === 'g1' ? app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`) : app.q('[data-tab-group="g1"] [data-main-tab="t1"]')
+    await app.mouse('mousedown', tab)
+    await app.mouse('mouseup', tab)
+    await app.mouse('click', tab)
+  },
+  bodyMouseDown: async (app) => { await app.mouse('mousedown', app.q('[data-diff-group="g3"]')) },
+  cmdAltArrow: async (app, from) => { await app.key(cmdAlt(from === 'g1' ? 'right' : 'left')) },
+  ctrlBackquote: async (app) => { await app.key({ key: '`', code: 'Backquote', ctrlKey: true }) },
+}
+const closeMenu = async (app, menu) => { if (app.q(menu.open) !== null) await app.key({ key: 'Escape' }) }
+/** 그 영역 본문에 포커스가 있나 — 터미널은 가짜 본문, 파일·diff 는 보기 자리. */
+const bodyFocusIn = () => document.activeElement?.closest('[data-fake-term], [data-file-view], [data-diff-group]')?.closest('[data-tab-group]')?.getAttribute('data-tab-group') ?? null
+const openFromG3 = async (menu) => {
+  const app = await mount({ layout: THREE('g2') })
+  await app.key(cmdAlt('down'))
+  expect(app.active()).toBe('g3')
+  const target = menu.target(app)
+  await app.mouse('mousedown', target, { button: 2 })
+  await app.mouse('contextmenu', target, { button: 2 })
+  expect(app.active()).toBe(menu.groupId)
+  expect(app.q(menu.open)).not.toBeNull()
+  return app
+}
+
+describe('fix2 D1 — 우클릭으로 미뤄 둔 본문 포커스는 메뉴가 열린 동안의 다른 이동을 덮지 않는다', () => {
+  for (const [menuName, menu] of Object.entries(MENUS)) {
+    // 파일 탭 메뉴(ContextMenu)는 열린 동안 방향키를 메뉴 이동으로 먹는다(base, ContextMenu.tsx 키 처리) — ⌘⌥방향은 메뉴를 못 지나가 이 조합은 없다.
+    for (const [moveName, move] of Object.entries(MOVES).filter(([name]) => !(menuName === 'fileTab' && name === 'cmdAltArrow'))) {
+      it(`${menuName} × ${moveName}: 닫힌 뒤 활성·본문 포커스·⌘W 대상 = 옮겨 간 영역`, async () => {
+        const app = await openFromG3(menu)
+        await move(app, menu.groupId)
+        const moved = app.active()
+        expect(moved).not.toBe(menu.groupId)
+        await closeMenu(app, menu)
+        expect(app.q(menu.open)).toBeNull()
+        expect(app.active()).toBe(moved)
+        expect(bodyFocusIn()).toBe(moved)
+        const movedTab = app.activeTabOf(moved)
+        await app.key({ key: 'w', code: 'KeyW', metaKey: true })
+        if (moved === 'g1') expect(app.calls.closeTabs).toEqual([[movedTab]])
+        else expect(app.tabsOf(moved)).not.toContain(movedTab)
+        expect(app.calls.closeTabs.flat()).not.toContain(menu.groupId === 'g1' ? 't1' : FILE)
+        if (menu.groupId === 'g2' && moved !== 'g2') expect(app.tabsOf('g2')).toEqual([FILE])
+      })
+    }
+    it(`${menuName} → Esc 만: 우클릭한 영역이 활성·본문 포커스, ⌘W 대상`, async () => {
+      const app = await openFromG3(menu)
+      const before = termFocusLog.length
+      await app.key({ key: 'Escape' })
+      expect(app.q(menu.open)).toBeNull()
+      expect(app.active()).toBe(menu.groupId)
+      expect(bodyFocusIn()).toBe(menu.groupId)
+      // fix2 D2 — 터미널 갈래는 닫힘 알림이 본문 포커스 길(focusGroupTab → selectPane → focusToken)을 타서 가짜 본문이 한 번 더 포커스를 받는다.
+      if (menu.groupId === 'g1') expect(termFocusLog.slice(before)).toEqual(['p1'])
+      await app.key({ key: 'w', code: 'KeyW', metaKey: true })
+      if (menu.groupId === 'g1') expect(app.calls.closeTabs).toEqual([['t1']])
+      else expect(app.tabsOf('g2')).toEqual([])
+    })
+  }
 })

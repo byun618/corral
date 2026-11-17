@@ -589,8 +589,10 @@ export function newTabSlotKey(slot: NewTabSlot): string {
  * 기억한 영역이 사라졌으면 null — 도착 때 자리(`reconcileLayout` 고아 착지 = 활성 영역·활성 탭 오른쪽) 그대로 둔다. `index` 는 `placeTab` 의 뜻(새 탭을 뺀 순서 기준).
  * fix1 B2 — `precedingTabIds` = 같은 자리를 **먼저** 요청한(이 요청을 할 때 아직 안 놓인) 탭들. 기준 탭 바로 뒤에 그 탭들이 이어 서 있으면 그 뒤로 간다 —
  * 도착 순서와 무관하게 화면 순서 = 요청 순서(VS Code 와 같은 결: 연속으로 연 탭은 차례로 오른쪽에).
+ * fix2 D3 — `followingTabIds` = 같은 자리를 **나중에** 요청해 이미 도착한 탭들. 기준 탭이 없거나(빈 영역) 사라져 활성 탭(= 먼저 도착한 뒤 요청 탭) 오른쪽으로
+ * 떨어질 때도 그 탭들 **앞**에 선다. 앞뒤 요청이 없으면 C5ⓑ 그대로.
  */
-export function newTabPlacement(input: { layout: GroupLayout; slot: NewTabSlot; tabId: string; precedingTabIds?: readonly string[] }): { groupId: string; index: number } | null {
+export function newTabPlacement(input: { layout: GroupLayout; slot: NewTabSlot; tabId: string; precedingTabIds?: readonly string[]; followingTabIds?: readonly string[] }): { groupId: string; index: number } | null {
   const group = findGroup(input.layout.root, input.slot.groupId)
   if (group === null) return null
   const order = group.tabOrder.filter((tabId) => tabId !== input.tabId)
@@ -598,6 +600,8 @@ export function newTabPlacement(input: { layout: GroupLayout; slot: NewTabSlot; 
   let index = after === null ? order.length : order.indexOf(after) + 1
   const preceding = input.precedingTabIds ?? []
   while (index < order.length && preceding.includes(order[index] ?? '')) index += 1
+  const followingAt = (input.followingTabIds ?? []).map((tabId) => order.indexOf(tabId)).filter((at) => at >= 0)
+  index = Math.min(index, ...followingAt)
   return { groupId: group.groupId, index }
 }
 

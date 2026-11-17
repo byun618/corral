@@ -518,6 +518,8 @@ export function App(): React.JSX.Element {
    * 다른 worktree 로 미뤄 둔 편집기 포커스(`pendingFocusRef`)는 자기 순번이 아직 마지막일 때만 포커스를 옮긴다 — 늦게 붙은 편집기가 뒤 이동을 덮지 않게.
    */
   const focusSeqRef = useRef(0)
+  /** LIFE-825 fix2 D1 — 비활성 영역 우클릭으로 미뤄 둔 본문 포커스(메뉴가 닫힐 때). 그때의 순번이 아직 마지막일 때만 옮긴다. */
+  const menuDeferredFocusRef = useRef<{ groupId: string; seq: number } | null>(null)
   const beginFocusMove = (): number => {
     focusSeqRef.current += 1
     return focusSeqRef.current
@@ -822,7 +824,7 @@ export function App(): React.JSX.Element {
    * 활성 영역·활성 탭을 잡고(`newTabSlotOf`), 탭 id 가 오면 여기 둔다. 아래 「방금 만든 탭을 편다」 effect 가 탭이 도착하면 그 자리로 옮긴다(`newTabPlacement`).
    * 메모리 전용·탭 id 별(연속 ⌘T 가 앞 요청 자리를 덮지 않는다). 요청 없이 도착한 탭은 `reconcileLayout` 이 도착 때 활성 탭 오른쪽에 둔다.
    */
-  const pendingNewTabSlotsRef = useRef<Map<string, { workspaceId: string; slot: NewTabSlot; precedingTokens: readonly number[] }>>(new Map())
+  const pendingNewTabSlotsRef = useRef<Map<string, { workspaceId: string; slot: NewTabSlot; token: number; precedingTokens: readonly number[] }>>(new Map())
   /**
    * fix1 B2 — 요청 순서 장부(토큰 = 요청 순번). `tabId` 는 응답에 채우고, `settled` 는 도착해 자리를 정했으면 참. 새 요청은 같은 자리를 잡은 **아직 안 놓인** 앞
    * 요청의 토큰을 들고 간다 — 도착 때 그 토큰의 탭 뒤로 선다(`newTabPlacement` `precedingTabIds`). 메모리 전용, 요청 수만큼(B7 알려진 한계와 같은 결).
@@ -846,7 +848,7 @@ export function App(): React.JSX.Element {
     return (tabId) => {
       const request = requests.byToken.get(token)
       if (request !== undefined) request.tabId = tabId
-      pendingNewTabSlotsRef.current = new Map([...pendingNewTabSlotsRef.current, [tabId, { workspaceId, slot, precedingTokens }]])
+      pendingNewTabSlotsRef.current = new Map([...pendingNewTabSlotsRef.current, [tabId, { workspaceId, slot, token, precedingTokens }]])
     }
   }
   /** C5ⓗ 경합 갈래 계수용 — 활성 workspace 에서 지난 렌더까지 본 탭(새로 도착한 탭을 가른다). */
@@ -891,7 +893,10 @@ export function App(): React.JSX.Element {
         const request = newTabRequestsRef.current.byToken.get(token)
         return request?.tabId == null ? [] : [request.tabId]
       })
-      const target = newTabPlacement({ layout: layout.layout, slot: remembered.slot, tabId, precedingTabIds })
+      // fix2 D3 — 같은 자리를 나중에 요청해 이미 응답이 온 탭(그 요청은 이 탭이 안 놓였을 때 생겼다) — 이 탭은 그 앞에 선다.
+      const key = newTabSlotKey(remembered.slot)
+      const followingTabIds = [...newTabRequestsRef.current.byToken].flatMap(([token, request]) => (token > remembered.token && request.workspaceId === remembered.workspaceId && request.key === key && request.tabId !== null ? [request.tabId] : []))
+      const target = newTabPlacement({ layout: layout.layout, slot: remembered.slot, tabId, precedingTabIds, followingTabIds })
       if (target === null) {
         console.info('[corral] LIFE-825 새 탭 자리: 기억 영역 사라짐 → 도착 때 자리', tabId)
         continue
@@ -2440,8 +2445,17 @@ export function App(): React.JSX.Element {
           grid={gridOfSelected}
           zoomed={groupState?.zoomedPaneId != null}
           onActivate={() => activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })}
-          onActivateOnly={() => activateGroup({ groupId: group.groupId, paneId: null })}
-          onActivateFocus={() => focusGroupTab({ groupId: group.groupId, tabId: group.activeTabId })}
+          onActivateOnly={() => {
+            activateGroup({ groupId: group.groupId, paneId: null })
+            menuDeferredFocusRef.current = { groupId: group.groupId, seq: focusSeqRef.current }
+          }}
+          onActivateFocus={() => {
+            const deferred = menuDeferredFocusRef.current
+            menuDeferredFocusRef.current = null
+            // fix2 D1 — 메뉴가 열린 동안 다른 이동(탭바·본문 클릭·⌘⌥방향·⌃` 등 순번을 올리는 모든 이동)이 있었으면 미뤄 둔 포커스는 버린다(824 순번 규칙).
+            if (deferred === null || deferred.groupId !== group.groupId || deferred.seq !== focusSeqRef.current) return
+            focusGroupTab({ groupId: group.groupId, tabId: group.activeTabId })
+          }}
           maximized={layout.maximizedGroupId === group.groupId}
           groupLayout={groupLayoutMenu}
           onTabDragStart={(event, tabId) => tabDrag.onArm(event, { tabId, fromGroupId: group.groupId })}

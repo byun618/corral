@@ -224,6 +224,14 @@ export function yieldsToEditor(input: { match: ShortcutMatch; binding: string })
 }
 
 /**
+ * LIFE-825 — ⌘⌥Enter(`group.maximize`)는 Monaco 0.57 찾기 위젯이 **열린** 편집기 안에서 「모두 바꾸기」(`editor.action.replaceAll` — 찾기 위젯이 보일 때만)다.
+ * 그때만 편집기에 넘기고, 그 밖(찾기 위젯이 닫힌 편집기·터미널·파일 보기)에서는 앱이 가져가 영역을 최대화한다. 순수 판정.
+ */
+export function yieldsToEditorFind(input: { id: ActionId; findWidgetVisible: boolean }): boolean {
+  return input.id === 'group.maximize' && input.findWidgetVisible
+}
+
+/**
  * 포커스가 Markdown 보기(파일 탭의 원문 편집기·미리보기) 밖이면 **키를 가져가지 않는** 액션인가 (LIFE-629). VS Code `markdown.togglePreview` when 절
  * (`!terminalFocus && (markdown 편집기 포커스 || 미리보기 활성)`)을 옮긴다 — 터미널 ⇧⌘V·입력칸 붙여넣기·다른 파일 탭의 같은 조합을 삼키지 않는다. 순수 판정.
  */

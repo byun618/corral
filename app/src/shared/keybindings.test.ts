@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIONS, bindingConflict, EDITOR_YIELD_ACTIONS, bindingFromEvent, bindingsFor, explorerKeyShortcut, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, scopeOf, validateOverrides, yieldsOutsideMarkdown } from './keybindings.js'
+import { ACTIONS, bindingConflict, EDITOR_YIELD_ACTIONS, bindingFromEvent, bindingsFor, explorerKeyShortcut, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, scopeOf, validateOverrides, yieldsOutsideMarkdown, yieldsToEditorFind } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
   it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
     // LIFE-478: + workspace.rename(⌘⌥R) · workspace.delete(⌘⇧⌫)
@@ -386,5 +386,19 @@ describe('LIFE-629 ⇧⌘V Markdown 미리보기 전환', () => {
 describe('LIFE-683 F2-05 (R1-03 되돌림)', () => {
   it('scm.show 는 편집기 양보 목록에 들지 않는다 — 편집기 포커스에서도 ⌘⇧G = 소스 제어', () => {
     expect(EDITOR_YIELD_ACTIONS).not.toContain('scm.show')
+  })
+})
+
+describe('LIFE-825 — ⌘⌥Enter 영역 최대화', () => {
+  it('기본 조합 Mod+Alt+Enter 는 group.maximize, 균등화는 키 없음(매칭 0)·누르고 있어도 한 번', () => {
+    expect(matchBinding('Mod+Alt+Enter', {})).toEqual({ id: 'group.maximize', variant: 0 })
+    expect(ACTIONS.find((action) => action.id === 'group.even')?.defaultBinding).toEqual([])
+    expect(bindingsFor('group.even', {})).toEqual([])
+    expect(NON_REPEATING_ACTIONS).toContain('group.maximize')
+  })
+  it('yieldsToEditorFind — 찾기 위젯이 열린 편집기에서만 Monaco 「모두 바꾸기」에 양보', () => {
+    expect(yieldsToEditorFind({ id: 'group.maximize', findWidgetVisible: true })).toBe(true)
+    expect(yieldsToEditorFind({ id: 'group.maximize', findWidgetVisible: false })).toBe(false)
+    expect(yieldsToEditorFind({ id: 'group.close', findWidgetVisible: true })).toBe(false)
   })
 })

@@ -407,3 +407,23 @@ it('C6·C7 — 비활성 영역 탭바 우클릭: 그 영역 활성 + 본문 포
   expect(app.active()).toBe('g2')
   expect(app.focused()).toBe('g2')
 })
+
+it('C4 — 편집기 안 ⌘⌥Enter: 찾기 위젯이 열려 있으면 Monaco 「모두 바꾸기」에 양보(키 안 삼킴), 닫혀 있으면 앱이 최대화', async () => {
+  const app = await mount({ layout: THREE('g2') })
+  await app.mouse('click', app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`))
+  const editor = document.createElement('div')
+  editor.setAttribute('data-file-editor', '')
+  const find = document.createElement('div')
+  find.className = 'editor-widget find-widget visible'
+  const input = document.createElement('textarea')
+  find.append(input)
+  editor.append(find)
+  app.q('[data-tab-group="g2"] [data-file-view]')?.append(editor)
+  const yielded = await app.key(cmdAltEnter, input)
+  expect(yielded.defaultPrevented).toBe(false)
+  expect(app.q('.pane-grid.has-maximized')).toBeNull()
+  find.classList.remove('visible')
+  const taken = await app.key(cmdAltEnter, editor)
+  expect(taken.defaultPrevented).toBe(true)
+  expect(app.q('[data-pane-grid]')?.getAttribute('data-maximized-group')).toBe('g2')
+})

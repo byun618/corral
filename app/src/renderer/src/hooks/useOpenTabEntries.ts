@@ -1,9 +1,12 @@
 // LIFE-496 D36 — `+` 메뉴 omnibox 가 찾는 열린 탭 (App.tsx 에서 옮김 — 리뷰 r1 R1-05 테스트 자리).
 // Orca 처럼 **현재 worktree 하나**의 탭을 **모든 영역**에서 모은다.
 // 제목은 탭 스트립과 같은 `sessionTitle`, 위치는 영역 순서·탭 순서, 현재 탭 = 활성 영역의 활성 탭.
+// LIFE-824 C4ⓑ — 파일·diff 탭도 같은 자리에 싣는다(제목 = 탭 스트립과 같은 파일 이름·diff 제목, 에이전트 없음).
 import { useMemo } from 'react'
+import { diffTitle } from '../../../shared/scm.js'
 import type { WorkspaceRow, WorktreeRow } from '../../../shared/types.js'
 import { tabOrdinals } from '../fallback-ordinal.js'
+import { fileTabLabel, tabKindOf } from '../file-tabs.js'
 import type { TabGroup } from '../group-tree.js'
 import { sessionTitle, tabAgent } from '../session-title.js'
 import type { OpenTabSearchEntry } from '../tab-create-menu.js'
@@ -30,6 +33,19 @@ export function useOpenTabEntries(input: {
     const activeTabId = groups.find((group) => group.groupId === activeGroupId)?.activeTabId ?? null
     return groups.flatMap((group, groupIndex) =>
       group.tabOrder.flatMap((tabId, tabIndex) => {
+        const kind = tabKindOf(tabId)
+        if (kind.kind !== 'terminal') {
+          return [{
+            tabId,
+            groupId: group.groupId,
+            title: kind.kind === 'file' ? fileTabLabel(kind.rel) : kind.target === null ? '(diff)' : diffTitle(kind.target),
+            branch: worktree === null ? null : worktreeSearchContainer(worktree),
+            agent: null,
+            groupIndex,
+            tabIndex,
+            isCurrent: group.groupId === activeGroupId && tabId === activeTabId,
+          }]
+        }
         const tab = workspace.tabs.find((row) => row.tabId === tabId)
         if (tab === undefined) return []
         const ordinal = tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId })

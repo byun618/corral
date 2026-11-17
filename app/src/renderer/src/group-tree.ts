@@ -827,31 +827,57 @@ export function groupRects(root: GroupNode): Map<string, GroupRect> {
 /** 부동소수 비교 여유 — 비율 곱셈 오차. */
 const RECT_EPSILON = 1e-9
 
+/** 영역 이웃 방향 (LIFE-824 — ⌘⌥방향키 영역 이동). `PaneDirection` 과 같은 이름이다. */
+export type GroupDirection = 'left' | 'right' | 'up' | 'down'
+
 /**
- * 그 영역의 **오른쪽 이웃들** (LIFE-823 F2 — VS Code `grid.ts` `getNeighborViews`): 왼쪽 변이 그 영역의 오른쪽 변에 닿고 세로 구간이 **겹치는** 영역
- * (끝점만 닿는 것은 이웃이 아니다). 겹친 길이(`overlap`)와 사각형을 같이 돌려준다 — 고르는 규칙은 부르는 쪽(`rightNeighborGroupId`).
+ * 그 영역의 **d 쪽 이웃들** (LIFE-823 F2 → LIFE-824 네 방향 일반화 — VS Code `grid.ts` `getNeighborViews`): 기준 영역의 d 쪽 변에 맞닿은 변을 가졌고
+ * 수직 구간(좌우면 세로, 위아래면 가로)이 **겹치는** 영역(끝점만 닿는 것은 이웃이 아니다). 겹친 길이(`overlap`)와 사각형을 같이 돌려준다 — 고르는 규칙은 `neighborGroupId`.
  */
-export function rightNeighborGroups(input: { root: GroupNode; groupId: string }): { groupId: string; overlap: number; rect: GroupRect }[] {
-  const { groupId } = input
+export function neighborGroups(input: { root: GroupNode; groupId: string; direction: GroupDirection }): { groupId: string; overlap: number; rect: GroupRect }[] {
+  const { groupId, direction } = input
   const rects = groupRects(input.root)
   const from = rects.get(groupId)
   if (from === undefined) return []
-  const edge = from.left + from.width
+  const horizontal = direction === 'left' || direction === 'right'
   const neighbors: { groupId: string; overlap: number; rect: GroupRect }[] = []
   for (const [id, rect] of rects) {
-    if (id === groupId || Math.abs(rect.left - edge) > RECT_EPSILON) continue
-    const overlap = Math.min(from.top + from.height, rect.top + rect.height) - Math.max(from.top, rect.top)
+    if (id === groupId) continue
+    const touches =
+      direction === 'right' ? Math.abs(rect.left - (from.left + from.width)) <= RECT_EPSILON
+      : direction === 'left' ? Math.abs(rect.left + rect.width - from.left) <= RECT_EPSILON
+      : direction === 'down' ? Math.abs(rect.top - (from.top + from.height)) <= RECT_EPSILON
+      : Math.abs(rect.top + rect.height - from.top) <= RECT_EPSILON
+    if (!touches) continue
+    const overlap = horizontal
+      ? Math.min(from.top + from.height, rect.top + rect.height) - Math.max(from.top, rect.top)
+      : Math.min(from.left + from.width, rect.left + rect.width) - Math.max(from.left, rect.left)
     if (overlap > RECT_EPSILON) neighbors.push({ groupId: id, overlap, rect })
   }
   return neighbors
 }
 
 /**
+ * d 쪽 **이웃 영역 하나** (LIFE-824 01-criteria 용어 「이웃 영역」) — 이웃들 중 겹침이 큰 것, 같으면 위(좌우 이동)·왼쪽(위아래 이동). 없으면 null(그 방향 끝).
+ * 823 「옆으로 열기」의 `rightNeighborGroupId` 는 이 함수의 오른쪽 판이다(결과 무변경).
+ */
+export function neighborGroupId(input: { root: GroupNode; groupId: string; direction: GroupDirection }): string | null {
+  const horizontal = input.direction === 'left' || input.direction === 'right'
+  const sorted = [...neighborGroups(input)].sort((a, b) =>
+    Math.abs(b.overlap - a.overlap) > RECT_EPSILON ? b.overlap - a.overlap : horizontal ? a.rect.top - b.rect.top : a.rect.left - b.rect.left,
+  )
+  return sorted[0]?.groupId ?? null
+}
+
+/** 그 영역의 **오른쪽 이웃들** (LIFE-823 F2) — `neighborGroups` 의 오른쪽 판. */
+export function rightNeighborGroups(input: { root: GroupNode; groupId: string }): { groupId: string; overlap: number; rect: GroupRect }[] {
+  return neighborGroups({ ...input, direction: 'right' })
+}
+
+/**
  * 「옆으로 열기」 대상 영역 (LIFE-823 P3·F2 — VS Code `SIDE_GROUP` 의 `findGroup({ direction: right })`). 오른쪽 이웃들 중 겹침이 큰 것, 같으면 위.
- * 이웃이 없으면(가장 오른쪽 열) null. VS Code 는 여럿이면 영역 MRU 로 고르지만 corral 배치에는 영역 MRU 가 없다(R2-L3 — 들이면 그때 이 자리에).
+ * 이웃이 없으면(가장 오른쪽 열) null. VS Code 는 여럿이면 영역 MRU 로 고르지만 823 결과를 바꾸지 않으려고 여기는 겹침 규칙 그대로 둔다(영역 MRU 는 LIFE-824 `group-focus.ts`).
  */
 export function rightNeighborGroupId(input: { root: GroupNode; groupId: string }): string | null {
-  const neighbors = rightNeighborGroups(input)
-  const sorted = [...neighbors].sort((a, b) => (Math.abs(b.overlap - a.overlap) > RECT_EPSILON ? b.overlap - a.overlap : a.rect.top - b.rect.top))
-  return sorted[0]?.groupId ?? null
+  return neighborGroupId({ ...input, direction: 'right' })
 }

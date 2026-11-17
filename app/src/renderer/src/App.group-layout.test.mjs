@@ -558,8 +558,8 @@ const MOVES = {
 const closeMenu = async (app, menu) => { if (app.q(menu.open) !== null) await app.key({ key: 'Escape' }) }
 /** 그 영역 본문에 포커스가 있나 — 터미널은 가짜 본문, 파일·diff 는 보기 자리. */
 const bodyFocusIn = () => document.activeElement?.closest('[data-fake-term], [data-file-view], [data-diff-group]')?.closest('[data-tab-group]')?.getAttribute('data-tab-group') ?? null
-const openFromG3 = async (menu) => {
-  const app = await mount({ layout: THREE('g2') })
+const openFromG3 = async (menu, options = {}) => {
+  const app = await mount({ layout: THREE('g2'), ...options })
   await app.key(cmdAlt('down'))
   expect(app.active()).toBe('g3')
   const target = menu.target(app)
@@ -747,4 +747,41 @@ describe('fix3 E4 — D3 App 배선: 기준 탭 없음·사라짐·다른 자리
     expect(app.tabsOf('g1')).toEqual(['t1', 'nc', 't2', 'na'])
     expect(app.tabsOf('g2')).toEqual([FILE, 'nx'])
   })
+})
+
+describe('fix4 F1 — 메뉴를 연 채 이동 없이 끝난 ⌘⌥방향(가장자리·IPC 거절)은 미뤄 둔 포커스를 지우지 않는다: 닫힘 뒤 활성 = 본문 포커스 = 우클릭한 영역', () => {
+  const wait = async (app, ms) => {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)) })
+    await app.settle(5)
+  }
+  const CASES = {
+    // g1 은 왼쪽 이웃이 없다. 이웃 pane 도 없음(neighbor.next null).
+    edge: { options: {}, key: 'left' },
+    // 오른쪽엔 이웃 영역(g2)이 있지만 IPC 가 던져 이동 없이 끝난다.
+    rejected: { options: { neighborRejects: 1 }, key: 'right' },
+    // 지연 IPC 가장자리 — 응답 전에 메뉴를 닫는다(닫힘의 몫은 응답 뒤 이동 없음이 확인될 때 돈다).
+    delayedEdge: { options: { neighborDelayMs: 200 }, key: 'left' },
+  }
+  for (const menuName of ['terminalTab', 'terminalHeader']) {
+    const menu = MENUS[menuName]
+    for (const [caseName, testCase] of Object.entries(CASES)) {
+      it(`${menuName} × ${caseName}`, async () => {
+        const app = await openFromG3(menu, testCase.options)
+        await app.key(cmdAlt(testCase.key))
+        expect(app.calls.neighbor).toHaveLength(1)
+        if (caseName !== 'delayedEdge') await wait(app, 0)
+        expect(app.active()).toBe('g1')
+        await closeMenu(app, menu)
+        expect(app.q(menu.open)).toBeNull()
+        if (caseName === 'delayedEdge') {
+          expect(bodyFocusIn()).not.toBe('g1') // 응답 전 — 아직 돌지 않는다
+          await wait(app, 300)
+        }
+        expect(app.active()).toBe('g1')
+        expect(bodyFocusIn()).toBe('g1')
+        await app.key({ key: 'w', code: 'KeyW', metaKey: true })
+        expect(app.calls.closeTabs).toEqual([['t1']])
+      })
+    }
+  }
 })

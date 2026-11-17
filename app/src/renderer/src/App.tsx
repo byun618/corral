@@ -519,11 +519,12 @@ export function App(): React.JSX.Element {
    */
   const focusSeqRef = useRef(0)
   /**
-   * LIFE-825 미뤄 둔 메뉴 포커스 (fix3 정리) — **규칙 한 줄**: 탭바 우클릭은 활성 영역만 옮기고 토큰 하나를 남긴다. 그 우클릭이 연 메뉴가 닫힐 때, 그 토큰이
-   * 아직 마지막 우클릭의 것이고 그 뒤 시작된 이동(포커스 순번 상승·⌘⌥방향 요청)이 없으면 그 영역 본문에 포커스한다 — 아니면 아무것도 안 한다.
-   * 칸은 하나(마지막 우클릭)다. 다른 우클릭이 덮어쓰고, 방향 요청이 시작되면 비운다(`focusDirection`).
+   * LIFE-825 미뤄 둔 메뉴 포커스 (fix3 정리·fix4 F1) — **규칙 한 줄**: 탭바 우클릭은 활성 영역만 옮기고 토큰 하나를 남긴다. 그 우클릭이 연 메뉴가 닫힐 때
+   * (⌘⌥방향 요청이 진행 중이면 그 요청이 끝날 때까지 미뤄), 그 토큰이 아직 마지막 우클릭의 것이고 그 뒤 실제로 일어난 이동(포커스 순번 상승·⌘⌥방향 이동)이
+   * 없으면 그 영역 본문에 포커스한다 — 아니면 아무것도 안 한다.
+   * 칸은 하나(마지막 우클릭)다. 다른 우클릭이 덮어쓰고, 방향 이동이 실제로 일어나는 자리에서 비운다(`focusDirectionOnce`). 이동 없이 끝난 방향 요청(가장자리·거절)은 칸을 남긴다.
    */
-  const menuDeferredFocusRef = useRef<{ token: number; seq: number } | null>(null)
+  const menuDeferredFocusRef = useRef<{ token: number; seq: number; groupId: string; closed: boolean } | null>(null)
   const menuTokenSeqRef = useRef(0)
   const beginFocusMove = (): number => {
     focusSeqRef.current += 1
@@ -2060,6 +2061,7 @@ export function App(): React.JSX.Element {
         // LIFE-824 Zⓑ — 줌에 가려진 pane 을 고르면 줌을 풀고 간다.
         const zoomed = zoomHiding({ groups: zoomGroupsNow(), paneId: result.paneId })
         if (zoomed !== null) toggleZoom({ groupId: zoomed, paneId: null })
+        menuDeferredFocusRef.current = null
         directionSeqRef.current = beginFocusMove()
         selectPane(result.paneId)
         await nextCommit()
@@ -2071,6 +2073,7 @@ export function App(): React.JSX.Element {
     const neighbor = neighborGroupId({ root, groupId: activeGroupId, direction })
     const group = neighbor === null ? undefined : groups.find((row) => row.groupId === neighbor)
     if (group === undefined) return
+    menuDeferredFocusRef.current = null
     focusGroupTabRef.current({ groupId: group.groupId, tabId: group.activeTabId })
     directionSeqRef.current = focusSeqRef.current
     await nextCommit()
@@ -2085,15 +2088,28 @@ export function App(): React.JSX.Element {
   const focusDirection = (direction: PaneDirection): void => {
     if (directionQueuedRef.current >= DIRECTION_QUEUE_MAX) return
     directionQueuedRef.current += 1
-    // fix3 E2 — 시작된 방향 이동은 미뤄 둔 메뉴 포커스를 이긴다(IPC 응답 전에 메뉴가 닫혀도 — 순번은 응답 뒤에야 오르므로 칸을 여기서 비운다).
-    menuDeferredFocusRef.current = null
     directionSeqRef.current = focusSeqRef.current
     directionChainRef.current = directionChainRef.current
       .then(() => focusDirectionOnceRef.current(direction))
       .catch((error: unknown) => console.warn('[corral] 인접 pane / 영역 포커스 실패', error))
       .finally(() => {
         directionQueuedRef.current -= 1
+        // fix4 F1 — 요청 중에 닫힌 메뉴의 몫. 줄이 비었는데 칸이 남아 있으면(이동 없이 끝남) 그때 돈다.
+        const deferred = menuDeferredFocusRef.current
+        if (directionQueuedRef.current === 0 && deferred !== null && deferred.closed) settleMenuDeferredFocus(deferred)
       })
+  }
+  /**
+   * 미뤄 둔 메뉴 포커스를 끝낸다 — 칸을 비우고, 그 뒤 순번이 안 올랐으면 그 영역 본문에. fix4 F1 — 방향 요청이 진행 중이면 메뉴가 닫혀도 여기 오지 않고
+   * 칸에 「닫힘」 만 적는다: 지금 포커스하면 순번이 올라 그 요청의 응답이 늦은 응답으로 버려지기 때문이다(E2). 응답이 이동하면 칸이 비고, 이동 없이 끝나면 위 `finally` 가 부른다.
+   */
+  const settleMenuDeferredFocus = (deferred: { seq: number; groupId: string }): void => {
+    menuDeferredFocusRef.current = null
+    // fix2 D1 — 메뉴가 열린 동안 다른 이동(탭바·본문 클릭·⌃` 등 순번을 올리는 모든 이동)이 있었으면 버린다(824 순번 규칙).
+    if (deferred.seq !== focusSeqRef.current) return
+    const group = layoutRef.current.groups.find((row) => row.groupId === deferred.groupId)
+    if (group === undefined) return
+    focusGroupTabRef.current({ groupId: group.groupId, tabId: group.activeTabId })
   }
   const closePaneAt = useCallback(async (paneId: string | null): Promise<void> => {
     if (paneId === null) return
@@ -2455,17 +2471,18 @@ export function App(): React.JSX.Element {
           onActivateOnly={() => {
             activateGroup({ groupId: group.groupId, paneId: null })
             menuTokenSeqRef.current += 1
-            menuDeferredFocusRef.current = { token: menuTokenSeqRef.current, seq: focusSeqRef.current }
+            menuDeferredFocusRef.current = { token: menuTokenSeqRef.current, seq: focusSeqRef.current, groupId: group.groupId, closed: false }
             return menuTokenSeqRef.current
           }}
           onActivateFocus={(token) => {
             const deferred = menuDeferredFocusRef.current
             // fix3 E1 — 다른 우클릭의 칸이면 건드리지 않는다(겹친 메뉴에서 앞 메뉴의 닫힘이 뒤 우클릭의 몫을 지우거나 쓰지 않게).
             if (deferred === null || deferred.token !== token) return
-            menuDeferredFocusRef.current = null
-            // fix2 D1 — 메뉴가 열린 동안 다른 이동(탭바·본문 클릭·⌃` 등 순번을 올리는 모든 이동)이 있었으면 버린다(824 순번 규칙).
-            if (deferred.seq !== focusSeqRef.current) return
-            focusGroupTab({ groupId: group.groupId, tabId: group.activeTabId })
+            if (directionQueuedRef.current > 0) {
+              menuDeferredFocusRef.current = { ...deferred, closed: true }
+              return
+            }
+            settleMenuDeferredFocus(deferred)
           }}
           maximized={layout.maximizedGroupId === group.groupId}
           groupLayout={groupLayoutMenu}

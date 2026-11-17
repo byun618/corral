@@ -494,3 +494,20 @@ it('C2(fix1 B6) — 더블클릭의 둘째 누름은 드래그 고스트를 띄�
   expect(app.q('.group-divider-ghost')).toBeNull()
   await app.mouse('mouseup', document, { detail: 2 })
 })
+
+it('fix1 B2 — 연속 ⌘T 2회 뒤 첫 탭이 먼저 도착·활성되고 둘째가 나중에 도착해도 둘째는 첫째 뒤(t1, 첫째, 둘째, t2)', async () => {
+  const gates = []
+  const ids = ['t9', 't10']
+  let calls = 0
+  const app = await mount({ createRow: async () => { const tabId = ids[calls]; calls += 1; await new Promise((resolve) => gates.push(resolve)); return { ok: true, tabId, paneId: `p-${tabId}` } } })
+  await app.key({ key: 't', code: 'KeyT', metaKey: true })
+  await app.key({ key: 't', code: 'KeyT', metaKey: true }) // 두 요청 다 기준 탭 t1
+  expect(app.calls.create).toHaveLength(2)
+  await act(async () => { gates[0]?.() })
+  await app.arrive(['t1', 't2', 't9'])
+  expect(app.tabsOf('g1')).toEqual(['t1', 't9', 't2'])
+  expect(app.activeTabOf('g1')).toBe('t9')
+  await act(async () => { gates[1]?.() })
+  await app.arrive(['t1', 't2', 't9', 't10'])
+  expect(app.tabsOf('g1')).toEqual(['t1', 't9', 't10', 't2'])
+})

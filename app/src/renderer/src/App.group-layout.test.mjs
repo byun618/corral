@@ -48,11 +48,11 @@ const THREE = (activeGroupId = 'g1') => ({
 })
 
 /** 둘째 이후 worktree(fix1 A1 — 교차 worktree): `{ path, workspaceId, panes, layout }`. 첫 worktree 는 `/r`·`w1`(활성). */
-async function mount({ layout = THREE(), panes = { t1: ['p1'], t2: ['p2'] }, terminalGroups = [], others = [], readFile = null, neighborOf = null, neighborDelayMs = 0, neighborRejects = 0, createRow = null } = {}) {
+async function mount({ layout = THREE(), panes = { t1: ['p1'], t2: ['p2'] }, terminalGroups = [], others = [], readFile = null, neighborOf = null, neighborDelayMs = 0, neighborRejects = 0, createRow = null, prefsPatch = {} } = {}) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'l825-app-'))
   const store = new KeybindingStore(folder)
   store.load()
-  const prefs = { ...new UiPrefsStore(folder).get(), sidebarCollapsed: false, rightPanelOpen: false, rightPanelView: 'explorer', groupLayouts: [{ worktreePath: '/r', layoutFormat: LAYOUT_FORMAT, layout }, ...others.filter((other) => other.layout !== undefined).map((other) => ({ worktreePath: other.path, layoutFormat: LAYOUT_FORMAT, layout: other.layout }))] }
+  const prefs = { ...new UiPrefsStore(folder).get(), sidebarCollapsed: false, rightPanelOpen: false, rightPanelView: 'explorer', groupLayouts: [{ worktreePath: '/r', layoutFormat: LAYOUT_FORMAT, layout }, ...others.filter((other) => other.layout !== undefined).map((other) => ({ worktreePath: other.path, layoutFormat: LAYOUT_FORMAT, layout: other.layout }))], ...prefsPatch }
   const gitStatus = { branch: 'main', upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false }
   const tabs = Object.entries(panes).map(([tabId, ids], index) => tabOf(tabId, index + 1, ids.map((paneId) => paneOf(paneId, tabId))))
   const otherRows = others.map((other, index) => ({
@@ -142,6 +142,8 @@ const cmdAltW = { key: 'w', code: 'KeyW', metaKey: true, altKey: true }
 const cmdAltEnter = { key: 'Enter', code: 'Enter', metaKey: true, altKey: true }
 /** 분할 마디 비율 — 화면 flex-basis 첫 쪽(%)에서 읽는다. */
 const basisOf = (splitId) => document.querySelector(`[data-group-split="${splitId}"] > .group-split-side`)?.style.flexBasis ?? null
+/** 그 영역 **본문**(파일 보기 — 편집기 자리)에 포커스가 있나 — 헤더의 탭 요소가 받은 포커스와 가른다. */
+const bodyFocused = (groupId) => document.querySelector(`[data-tab-group="${groupId}"] [data-file-view]`)?.contains(document.activeElement) ?? false
 const openHeaderMenu = async (app, groupId) => {
   await app.mouse('mousedown', app.q(`[data-group-menu="${groupId}"]`))
   await app.mouse('click', app.q(`[data-group-menu="${groupId}"]`))
@@ -387,27 +389,6 @@ it('C5ⓑ — 기억한 영역이 그사이 사라졌으면 도착 때 활성 �
   expect(app.tabsOf('g2')).toEqual([FILE])
 })
 
-it('C6·C7 — 비활성 영역 탭바 우클릭: 그 영역 활성 + 본문 포커스(메뉴가 닫혀도 그 영역), 왼쪽 누름은 base 그대로', async () => {
-  const app = await mount({ layout: THREE('g3') })
-  await app.mouse('mousedown', app.q('[data-diff-group="g3"]'))
-  expect(app.active()).toBe('g3')
-  const strip = app.q('[data-main-tab-strip="g2"]')
-  await app.mouse('mousedown', strip, { button: 2 })
-  await app.mouse('contextmenu', strip, { button: 2 })
-  expect(app.active()).toBe('g2')
-  expect(app.focused()).toBe('g2')
-  await app.key({ key: 'Escape' })
-  expect(app.active()).toBe('g2')
-  expect(app.focused()).toBe('g2')
-  // 비활성 영역 **탭** 우클릭도 같다(탭 mousedown 이 탭바로 올라간다)
-  await app.mouse('mousedown', app.q('[data-diff-group="g3"]'))
-  const tab = app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`)
-  await app.mouse('mousedown', tab, { button: 2 })
-  await app.mouse('contextmenu', tab, { button: 2 })
-  expect(app.active()).toBe('g2')
-  expect(app.focused()).toBe('g2')
-})
-
 it('C4 — 편집기 안 ⌘⌥Enter: 찾기 위젯이 열려 있으면 Monaco 「모두 바꾸기」에 양보(키 안 삼킴), 닫혀 있으면 앱이 최대화', async () => {
   const app = await mount({ layout: THREE('g2') })
   await app.mouse('click', app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`))
@@ -426,4 +407,90 @@ it('C4 — 편집기 안 ⌘⌥Enter: 찾기 위젯이 열려 있으면 Monaco �
   const taken = await app.key(cmdAltEnter, editor)
   expect(taken.defaultPrevented).toBe(true)
   expect(app.q('[data-pane-grid]')?.getAttribute('data-maximized-group')).toBe('g2')
+})
+
+it('C6·C7(fix1 B3) — 비활성 영역 파일 탭 우클릭: 누를 때는 활성만(메뉴는 열린 채), Esc 로 닫으면 본문 포커스가 그 영역, 그 상태 ⌘W 는 그 영역 탭', async () => {
+  const app = await mount({ layout: THREE('g2') })
+  await app.key(cmdAlt('down')) // 본문 포커스를 g3(diff)로 — 시작 포커스를 g2 본문 밖에 둔다
+  expect(app.focused()).toBe('g3')
+  const tab = app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`)
+  await app.mouse('mousedown', tab, { button: 2 })
+  await app.mouse('contextmenu', tab, { button: 2 })
+  expect(app.active()).toBe('g2')
+  expect(app.q('[data-file-tab-menu]')).not.toBeNull() // 메뉴가 열려 있다(누르는 순간 편집기 포커스로 닫히지 않음)
+  expect(bodyFocused('g2')).toBe(false) // 본문 포커스는 아직 — 메뉴가 닫힐 때(누른 탭 요소가 받는 포커스는 브라우저 기본)
+  await app.key({ key: 'Escape' })
+  expect(app.q('[data-file-tab-menu]')).toBeNull()
+  expect(app.active()).toBe('g2')
+  expect(bodyFocused('g2')).toBe(true)
+  await app.key({ key: 'w', code: 'KeyW', metaKey: true })
+  expect(app.tabsOf('g2')).toEqual([])
+  expect(app.tabsOf('g3')).toEqual([DIFF])
+})
+
+it('C6(fix1 B3) — 비활성 영역 터미널 탭 우클릭·탭바 빈 곳 우클릭: 메뉴 열린 채 활성만, 바깥 클릭·Esc 로 닫으면 그 영역 본문', async () => {
+  const app = await mount({ layout: THREE('g3') })
+  await app.mouse('mousedown', app.q('[data-diff-group="g3"]'))
+  const t1 = app.q('[data-tab-group="g1"] [data-main-tab="t1"]')
+  await app.mouse('mousedown', t1, { button: 2 })
+  await app.mouse('contextmenu', t1, { button: 2 })
+  expect(app.active()).toBe('g1')
+  expect(app.q('[data-tab-menu="t1"]')).not.toBeNull()
+  await app.key({ key: 'Escape' })
+  expect(app.q('[data-tab-menu="t1"]')).toBeNull()
+  expect(app.active()).toBe('g1') // 터미널 본문 포커스는 TerminalPane(가짜)라 활성까지만 — focusGroupTab 경유는 아래 빈 곳 갈래가 본다
+  await app.mouse('mousedown', app.q('[data-diff-group="g3"]'))
+  const strip = app.q('[data-main-tab-strip="g2"]')
+  await app.mouse('mousedown', strip, { button: 2 })
+  await app.mouse('contextmenu', strip, { button: 2 })
+  expect(app.active()).toBe('g2')
+  expect(app.q('[data-file-tab-menu-header-mode]')).not.toBeNull()
+  expect(bodyFocused('g2')).toBe(false)
+  await app.mouse('mousedown', document.body) // 바깥 클릭
+  expect(app.q('[data-file-tab-menu-header-mode]')).toBeNull()
+  expect(bodyFocused('g2')).toBe(true)
+})
+
+it('fix1 B1 — 최대화 중에는 접힌 사이드바 머리 여백·「오른쪽 패널 열기」가 최대화 영역에, 해제하면 원래 영역으로', async () => {
+  const app = await mount({ layout: THREE('g3'), prefsPatch: { sidebarCollapsed: true, rightPanelOpen: false } })
+  const spacerIn = () => app.q('[data-collapsed-head-spacer]')?.closest('[data-tab-group]')?.getAttribute('data-tab-group') ?? null
+  const toggleIn = () => app.q('[data-right-panel-toggle="tabbar"]')?.closest('[data-tab-group]')?.getAttribute('data-tab-group') ?? null
+  expect(spacerIn()).toBe('g1')
+  expect(toggleIn()).toBe('g2')
+  await app.mouse('mousedown', app.q('[data-diff-group="g3"]'))
+  await app.key(cmdAltEnter) // 비모서리 g3 최대화
+  expect(app.q('[data-pane-grid]')?.getAttribute('data-maximized-group')).toBe('g3')
+  expect(spacerIn()).toBe('g3')
+  expect(toggleIn()).toBe('g3')
+  expect(document.querySelectorAll('[data-collapsed-head-spacer]')).toHaveLength(1)
+  expect(document.querySelectorAll('[data-right-panel-toggle="tabbar"]')).toHaveLength(1)
+  await app.key(cmdAltEnter)
+  expect(spacerIn()).toBe('g1')
+  expect(toggleIn()).toBe('g2')
+})
+
+it('fix1 B2 — 앞 탭 도착 전 연속 ⌘T 2회: 화면 순서 = 요청 순서(t1, 첫째, 둘째, t2)', async () => {
+  const gates = []
+  const ids = ['t9', 't10']
+  let calls = 0
+  const app = await mount({ createRow: async () => { const tabId = ids[calls]; calls += 1; await new Promise((resolve) => gates.push(resolve)); return { ok: true, tabId, paneId: `p-${tabId}` } } })
+  await app.key({ key: 't', code: 'KeyT', metaKey: true })
+  await app.key({ key: 't', code: 'KeyT', metaKey: true })
+  expect(app.calls.create).toHaveLength(2)
+  await app.arrive(['t1', 't2', 't10', 't9']) // 둘 다 응답보다 먼저, 뒤 요청이 먼저 도착
+  await act(async () => { for (const resolve of gates) resolve() })
+  await app.settle(5)
+  expect(app.tabsOf('g1')).toEqual(['t1', 't9', 't10', 't2'])
+})
+
+it('C2(fix1 B6) — 더블클릭의 둘째 누름은 드래그 고스트를 띄우지 않는다(첫 누름은 띄운다 — 양성 대조)', async () => {
+  const app = await mount()
+  const divider = app.q('[data-group-divider="g1|g2"]')
+  await app.mouse('mousedown', divider, { detail: 1 })
+  expect(app.q('.group-divider-ghost')).not.toBeNull()
+  await app.mouse('mouseup', document, { detail: 1 })
+  expect(app.q('.group-divider-ghost')).toBeNull()
+  await app.mouse('mousedown', divider, { detail: 2 })
+  expect(app.q('.group-divider-ghost')).toBeNull()
+  await app.mouse('mouseup', document, { detail: 2 })
 })

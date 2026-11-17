@@ -571,15 +571,34 @@ export function newTabSlotOf(layout: GroupLayout): NewTabSlot | null {
 }
 
 /**
+ * 기억한 자리가 없는 탭이 도착했을 때 C5ⓗ 갈래 로그의 이름 (fix1 B5). 이번에 처음 본 탭이 아니면 null(로그 없음).
+ * ⌘⇧T 다시 열기 탭은 자기 자리(닫을 때의 영역·자리)로 가므로 「기억 없음」이 아니라 「다시 열기」 갈래다 — G1 갈래 계수를 흐리지 않게.
+ */
+export function unrememberedArrivalBranch(input: { firstSeen: boolean; reopening: boolean }): 'reopen' | 'unremembered' | null {
+  if (!input.firstSeen) return null
+  return input.reopening ? 'reopen' : 'unremembered'
+}
+
+/** 같은 자리(영역·기준 탭)를 잡은 요청인가 — 연속 요청 순서(fix1 B2)를 가르는 키. */
+export function newTabSlotKey(slot: NewTabSlot): string {
+  return `${slot.groupId}\u0000${slot.afterTabId ?? ''}`
+}
+
+/**
  * 도착한 새 탭을 기억한 자리로 놓을 곳 (C5ⓐⓑ) — 영역이 있으면 그 영역에서 기억한 탭 바로 오른쪽(그 탭이 사라졌으면 그 영역의 지금 활성 탭 오른쪽, 그것도 없으면 끝).
  * 기억한 영역이 사라졌으면 null — 도착 때 자리(`reconcileLayout` 고아 착지 = 활성 영역·활성 탭 오른쪽) 그대로 둔다. `index` 는 `placeTab` 의 뜻(새 탭을 뺀 순서 기준).
+ * fix1 B2 — `precedingTabIds` = 같은 자리를 **먼저** 요청한(이 요청을 할 때 아직 안 놓인) 탭들. 기준 탭 바로 뒤에 그 탭들이 이어 서 있으면 그 뒤로 간다 —
+ * 도착 순서와 무관하게 화면 순서 = 요청 순서(VS Code 와 같은 결: 연속으로 연 탭은 차례로 오른쪽에).
  */
-export function newTabPlacement(input: { layout: GroupLayout; slot: NewTabSlot; tabId: string }): { groupId: string; index: number } | null {
+export function newTabPlacement(input: { layout: GroupLayout; slot: NewTabSlot; tabId: string; precedingTabIds?: readonly string[] }): { groupId: string; index: number } | null {
   const group = findGroup(input.layout.root, input.slot.groupId)
   if (group === null) return null
   const order = group.tabOrder.filter((tabId) => tabId !== input.tabId)
   const after = [input.slot.afterTabId, group.activeTabId === input.tabId ? null : group.activeTabId].find((tabId) => tabId !== null && order.includes(tabId)) ?? null
-  return { groupId: group.groupId, index: after === null ? order.length : order.indexOf(after) + 1 }
+  let index = after === null ? order.length : order.indexOf(after) + 1
+  const preceding = input.precedingTabIds ?? []
+  while (index < order.length && preceding.includes(order[index] ?? '')) index += 1
+  return { groupId: group.groupId, index }
 }
 
 /** 탭 목록에서 `after` 바로 오른쪽에 `added` 를 끼운다(없으면 끝). 순수 — 고아 착지(`reconcileLayout`)가 쓴다. */

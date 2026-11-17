@@ -200,7 +200,8 @@ function GridNode({
             data-group-divider={splitId}
             onMouseDown={(event) => {
               event.preventDefault()
-              // LIFE-825 C2 — 더블클릭의 둘째 누름은 드래그를 걸지 않는다(그 mouseup 커밋이 리셋 뒤에 오지 않게). 리셋은 `onDoubleClick` 이 한다.
+              // LIFE-825 C2(fix1 B6) — 더블클릭의 둘째 누름은 드래그를 걸지 않는다: 걸면 리셋 직전에 고스트·셀 배지가 한 번 뜨고 mouseup 이 셀 스냅된
+              // 옛 비율을 한 번 더 커밋한다(저장 1회 + 격자 요청 1회 — 바로 뒤 리셋이 덮지만 헛일). 리셋은 `onDoubleClick` 이 한다(mouseup 뒤라 늘 마지막).
               if (event.detail >= 2) return
               const element = boxRef.current
               if (element === null) return

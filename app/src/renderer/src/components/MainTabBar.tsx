@@ -146,6 +146,7 @@ function MainTab({
   onSetColor,
   onDragStart,
   menuHost,
+  onMenuClosed,
 }: {
   tab: TabRow
   /**
@@ -204,6 +205,8 @@ function MainTab({
    * 포털이라 React 이벤트 버블링(탭의 onClick·onMouseDown 등)은 그대로다.
    */
   menuHost: HTMLElement | null
+  /** LIFE-825 fix1 B3 — 우클릭 메뉴가 닫혔다(Esc·항목 실행·바깥 클릭). */
+  onMenuClosed?: () => void
 }): React.JSX.Element {
   // LIFE-366 F2 — 우클릭 메뉴. 좌표를 들고 있는다(탭바에는 `⋯` 버튼을 놓을 폭이 없다).
   const [menu, setMenu] = useState<TabMenuAnchor | null>(null)
@@ -416,7 +419,10 @@ function MainTab({
           onClose={onClose}
           onCloseScope={onCloseScope}
           onSetColor={onSetColor}
-          onDismiss={() => setMenu(null)}
+          onDismiss={() => {
+            setMenu(null)
+            onMenuClosed?.()
+          }}
         />,
         menuHost,
       )}
@@ -561,6 +567,7 @@ function FileTab({
   onMoveToGroup,
   onMoveToOtherGroup,
   onDragStart,
+  onMenuClosed,
 }: {
   item: Extract<GroupTabItem, { kind: 'file' }>
   /** 같은 영역에 같은 이름 파일 탭이 있을 때 붙는 부모 폴더 설명(LIFE-689 — `fileTabDescriptions`). 없으면 null. */
@@ -578,6 +585,8 @@ function FileTab({
   onMoveToGroup: (direction: MoveDirection) => void
   onMoveToOtherGroup: (targetGroupId: string) => void
   onDragStart: (event: React.MouseEvent) => void
+  /** LIFE-825 fix1 B3 — 우클릭 메뉴가 닫혔다. */
+  onMenuClosed?: () => void
 }): React.JSX.Element {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const label = item.diffLabel ?? fileTabLabel(item.rel)
@@ -649,7 +658,10 @@ function FileTab({
           item={item}
           model={model}
           otherGroups={otherGroups}
-          onDismiss={() => setMenu(null)}
+          onDismiss={() => {
+            setMenu(null)
+            onMenuClosed?.()
+          }}
           onClose={onClose}
           onKeep={onKeep}
           onCloseScope={onCloseScope}
@@ -784,6 +796,7 @@ export function GroupHeader({
   onActivateOpenTab,
   maximized = false,
   groupLayout,
+  onActivateOnly,
   onActivateFocus,
 }: {
   groupId: string
@@ -866,9 +879,11 @@ export function GroupHeader({
   /** LIFE-825 C3·C4 — 헤더 모드 메뉴의 영역 배치 항목. */
   groupLayout?: GroupLayoutMenu
   /**
-   * LIFE-825 C6 — 비활성 영역 탭바·탭 **우클릭**은 활성만이 아니라 본문 포커스까지 그 영역으로(824 「본문 포커스 한 길」). 메뉴는 포커스를 가져가지 않으므로
-   * 메뉴가 닫히면(Esc·항목·바깥 클릭) 포커스가 그 영역 본문에 있다. 없으면 base(`onActivate`).
+   * LIFE-825 C6(fix1 B3) — 비활성 영역 탭바·탭 **우클릭**: 누르는 순간은 활성 영역만 옮기고(`onActivateOnly` — 포커스 순번 포함, 본문 포커스는 그대로 —
+   * 누르는 순간 편집기에 포커스를 주면 그 스크롤이 막 연 메뉴를 닫을 수 있다), 메뉴가 닫힐 때(Esc·항목 실행·바깥 클릭) 본문 포커스(`onActivateFocus`
+   * = 824 「본문 포커스 한 길」). 항목은 닫힘 뒤에 돌므로 자기 포커스를 정하는 항목(이름 바꾸기·닫기 따라가기 등)이 이긴다. 둘 중 하나라도 없으면 base(`onActivate`).
    */
+  onActivateOnly?: () => void
   onActivateFocus?: () => void
 }): React.JSX.Element {
   const bindingLabel = useBindingLabel()
@@ -888,6 +903,13 @@ export function GroupHeader({
   // LIFE-387 B1 F-B1-1·F-B1-3 — 헤더 모드 메뉴(⊞ · 탭바 빈 곳 우클릭). 활성 탭이 없으면 안 연다
   // (§2 GroupHeader 우클릭 "빈 영역은 열지 않음").
   const [headerMenu, setHeaderMenu] = useState<TabMenuAnchor | null>(null)
+  /** fix1 B3 — 비활성 영역 우클릭으로 연 메뉴가 닫히면 본문 포커스를 그 영역으로(한 번). */
+  const focusOnMenuCloseRef = useRef(false)
+  const menuClosed = (): void => {
+    if (!focusOnMenuCloseRef.current) return
+    focusOnMenuCloseRef.current = false
+    onActivateFocus?.()
+  }
   // 탭 메뉴 포털 자리(`MainTab.menuHost`) — 렌더 중에 DOM 을 읽지 않으려고 콜백 ref 로 state 에 받는다.
   const [menuHost, setMenuHost] = useState<HTMLDivElement | null>(null)
   const openHeaderMenu = (point: { x: number; y: number }): void => {
@@ -915,8 +937,14 @@ export function GroupHeader({
       data-group-header={groupId}
       onMouseDown={(event) => {
         keepFocusOnHeaderBackground(event)
-        if (event.button === 2 && !activeGroup && onActivateFocus !== undefined) onActivateFocus()
-        else onActivate()
+        if (event.button === 2 && !activeGroup && onActivateOnly !== undefined && onActivateFocus !== undefined) {
+          focusOnMenuCloseRef.current = true
+          onActivateOnly()
+        } else {
+          // 다른 누름이 오면 기다리던 「메뉴 닫힘 뒤 포커스」는 버린다(그 누름이 자기 포커스를 정한다).
+          if (event.button === 0) focusOnMenuCloseRef.current = false
+          onActivate()
+        }
       }}
       // LIFE-387 B1 F-B1-3 — 탭바 빈 곳 우클릭 = 헤더 모드 메뉴(VS Code 관용). 탭 자체 우클릭은
       // `MainTab` 이 `stopPropagation` 으로 먼저 가로채므로 여기 안 닿는다.
@@ -957,6 +985,7 @@ export function GroupHeader({
               onMoveToGroup={(direction) => onMoveToGroup({ tabId: item.tabId, direction })}
               onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: item.tabId, targetGroupId })}
               onDragStart={(event) => onTabDragStart(event, item.tabId)}
+              onMenuClosed={menuClosed}
             />
             )
             const tab = item.tab
@@ -993,6 +1022,7 @@ export function GroupHeader({
               onSetColor={(color) => onSetTabColor({ tab, color })}
               onDragStart={(event) => onTabDragStart(event, tab.tabId)}
               menuHost={menuHost}
+              onMenuClosed={menuClosed}
             />
             )
           })}
@@ -1145,7 +1175,10 @@ export function GroupHeader({
           onClose={() => onCloseTab(activeTab)}
           onCloseScope={(scope) => onCloseScope({ tab: activeTab, scope })}
           onSetColor={(color) => onSetTabColor({ tab: activeTab, color })}
-          onDismiss={() => setHeaderMenu(null)}
+          onDismiss={() => {
+            setHeaderMenu(null)
+            menuClosed()
+          }}
         />
       )}
       {headerMenu === null || activeFileItem === null ? null : (
@@ -1157,7 +1190,10 @@ export function GroupHeader({
           otherGroups={otherGroups}
           headerMode
           {...(groupLayout === undefined ? {} : { groupLayout })}
-          onDismiss={() => setHeaderMenu(null)}
+          onDismiss={() => {
+            setHeaderMenu(null)
+            menuClosed()
+          }}
           onClose={() => onCloseFileTab?.(activeFileItem.tabId)}
           onKeep={() => onKeepFileTab?.(activeFileItem.tabId)}
           onCloseScope={(scope) => onCloseFileScope?.({ tabId: activeFileItem.tabId, scope })}

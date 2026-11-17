@@ -36,7 +36,7 @@ import { groupGlyphs, MRU_LIMIT, openMru, orderMru, stepMru, touchMru } from './
 import { numbersOf } from './pane-geometry.js'
 import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
-import { closeGroup as closeGroupIn, findGroup, neighborGroupId, newTabPlacement, newTabSlotOf, ONE_GROUP, ONE_TAB_IN_GROUP, topRightGroupId, type NewTabSlot } from './group-tree.js'
+import { closeGroup as closeGroupIn, findGroup, neighborGroupId, newTabPlacement, newTabSlotKey, newTabSlotOf, ONE_GROUP, ONE_TAB_IN_GROUP, topRightGroupId, unrememberedArrivalBranch, type NewTabSlot } from './group-tree.js'
 import type { TabGroup } from './group-tree.js'
 import type { LifecycleNotice } from './lifecycle-types.js'
 import { paneTitleFrames, stabilizePaneTitles } from './pane-title-frames.js'
@@ -822,7 +822,12 @@ export function App(): React.JSX.Element {
    * 활성 영역·활성 탭을 잡고(`newTabSlotOf`), 탭 id 가 오면 여기 둔다. 아래 「방금 만든 탭을 편다」 effect 가 탭이 도착하면 그 자리로 옮긴다(`newTabPlacement`).
    * 메모리 전용·탭 id 별(연속 ⌘T 가 앞 요청 자리를 덮지 않는다). 요청 없이 도착한 탭은 `reconcileLayout` 이 도착 때 활성 탭 오른쪽에 둔다.
    */
-  const pendingNewTabSlotsRef = useRef<Map<string, { workspaceId: string; slot: NewTabSlot }>>(new Map())
+  const pendingNewTabSlotsRef = useRef<Map<string, { workspaceId: string; slot: NewTabSlot; precedingTokens: readonly number[] }>>(new Map())
+  /**
+   * fix1 B2 — 요청 순서 장부(토큰 = 요청 순번). `tabId` 는 응답에 채우고, `settled` 는 도착해 자리를 정했으면 참. 새 요청은 같은 자리를 잡은 **아직 안 놓인** 앞
+   * 요청의 토큰을 들고 간다 — 도착 때 그 토큰의 탭 뒤로 선다(`newTabPlacement` `precedingTabIds`). 메모리 전용, 요청 수만큼(B7 알려진 한계와 같은 결).
+   */
+  const newTabRequestsRef = useRef<{ next: number; byToken: Map<number, { workspaceId: string; key: string; tabId: string | null; settled: boolean }> }>({ next: 0, byToken: new Map() })
   lifecycle.newTabRequestRef.current = (workspaceId) => {
     const worktree = stateRef.current?.repos.flatMap((repo) => repo.worktrees).find((row) => row.workspace?.workspaceId === workspaceId) ?? null
     if (worktree === null || worktree.workspace === null) return null
@@ -832,8 +837,16 @@ export function App(): React.JSX.Element {
         : layout.layoutOf({ worktreePath: worktree.path, liveTabIds: worktree.workspace.tabs.map((tab) => tab.tabId), pinned: pinnedTabs })
     const slot = shown === null ? null : newTabSlotOf(shown)
     if (slot === null) return null
+    const requests = newTabRequestsRef.current
+    const key = newTabSlotKey(slot)
+    const precedingTokens = [...requests.byToken].filter(([, request]) => request.workspaceId === workspaceId && request.key === key && !request.settled).map(([token]) => token)
+    const token = requests.next
+    requests.next += 1
+    requests.byToken.set(token, { workspaceId, key, tabId: null, settled: false })
     return (tabId) => {
-      pendingNewTabSlotsRef.current = new Map([...pendingNewTabSlotsRef.current, [tabId, { workspaceId, slot }]])
+      const request = requests.byToken.get(token)
+      if (request !== undefined) request.tabId = tabId
+      pendingNewTabSlotsRef.current = new Map([...pendingNewTabSlotsRef.current, [tabId, { workspaceId, slot, precedingTokens }]])
     }
   }
   /** C5ⓗ 경합 갈래 계수용 — 활성 workspace 에서 지난 렌더까지 본 탭(새로 도착한 탭을 가른다). */
@@ -861,15 +874,24 @@ export function App(): React.JSX.Element {
     // 갈래마다 한 줄 로그(C5ⓗ — G1 이 세어 증상과 짝짓는다).
     const seen = seenLiveTabsRef.current
     const workspaceId = activeWorkspaceRow?.workspaceId ?? null
+    // fix1 B5 — ⌘⇧T 다시 열기 탭은 자기 자리(`pendingPlacementsRef`)로 간다 — 이 렌더에 꺼낸 것(`taken.ready`)·아직 기다리는 것 모두 「기억 없음」 갈래가 아니다.
+    const reopening = new Set([...taken.ready.map((placement) => placement.tabId), ...pendingPlacementsRef.current.keys()])
     for (const tabId of liveTabIds) {
       const remembered = pendingNewTabSlotsRef.current.get(tabId)
       if (remembered === undefined) {
-        if (seen.workspaceId === workspaceId && !seen.tabIds.has(tabId) && !pendingPlacementsRef.current.has(tabId)) console.info('[corral] LIFE-825 새 탭 자리: 기억 없음 → 도착 때 자리', tabId)
+        const branch = unrememberedArrivalBranch({ firstSeen: seen.workspaceId === workspaceId && !seen.tabIds.has(tabId), reopening: reopening.has(tabId) })
+        if (branch === 'reopen') console.info('[corral] LIFE-825 새 탭 자리: 다시 열기 자리(⌘⇧T)', tabId)
+        else if (branch === 'unremembered') console.info('[corral] LIFE-825 새 탭 자리: 기억 없음 → 도착 때 자리', tabId)
         continue
       }
       if (remembered.workspaceId !== workspaceId || layout.layout === null) continue
       pendingNewTabSlotsRef.current = new Map([...pendingNewTabSlotsRef.current].filter(([id]) => id !== tabId))
-      const target = newTabPlacement({ layout: layout.layout, slot: remembered.slot, tabId })
+      for (const request of newTabRequestsRef.current.byToken.values()) if (request.tabId === tabId) request.settled = true
+      const precedingTabIds = remembered.precedingTokens.flatMap((token) => {
+        const request = newTabRequestsRef.current.byToken.get(token)
+        return request?.tabId == null ? [] : [request.tabId]
+      })
+      const target = newTabPlacement({ layout: layout.layout, slot: remembered.slot, tabId, precedingTabIds })
       if (target === null) {
         console.info('[corral] LIFE-825 새 탭 자리: 기억 영역 사라짐 → 도착 때 자리', tabId)
         continue
@@ -2359,7 +2381,7 @@ export function App(): React.JSX.Element {
     const groupLayoutMenu = {
       maximized: layout.maximizedGroupId === group.groupId,
       disabledTitle: layout.groups.length > 1 ? null : ONE_GROUP,
-      maximizeShortcut: ((binding) => (binding == null ? '' : formatBinding(binding)))(bindingsFor('group.maximize', keymap.overrides)[0]),
+      maximizeShortcut: groupMaximizeShortcut,
       onToggleMaximize: () => toggleMaximizeAndFocus(group.groupId),
       onEven: () => evenGroupsAndFocus(),
     }
@@ -2392,9 +2414,9 @@ export function App(): React.JSX.Element {
       <div className={`tab-group ${isActiveGroup ? 'is-active-group' : ''}${layout.maximizedGroupId === group.groupId ? ' is-maximized' : ''}`} data-tab-group={group.groupId} key={group.groupId}>
         <GroupHeader
           groupId={group.groupId}
-          headSpacer={sidebarCollapsed && settingsView === null && layout.groups[0]?.groupId === group.groupId}
+          headSpacer={sidebarCollapsed && settingsView === null && headSpacerGroupId === group.groupId}
           tailToggle={
-            rightPanel.ready && !rightPanel.open && layout.layout !== null && topRightGroupId(layout.layout.root) === group.groupId ? (
+            rightPanel.ready && !rightPanel.open && tailToggleGroupId === group.groupId ? (
               <RightPanelToggle label="오른쪽 패널 열기" shortcut={rightPanelToggleShortcut} onToggle={rightPanel.toggle} placement="tabbar" />
             ) : null
           }
@@ -2418,6 +2440,7 @@ export function App(): React.JSX.Element {
           grid={gridOfSelected}
           zoomed={groupState?.zoomedPaneId != null}
           onActivate={() => activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })}
+          onActivateOnly={() => activateGroup({ groupId: group.groupId, paneId: null })}
           onActivateFocus={() => focusGroupTab({ groupId: group.groupId, tabId: group.activeTabId })}
           maximized={layout.maximizedGroupId === group.groupId}
           groupLayout={groupLayoutMenu}
@@ -2765,6 +2788,15 @@ export function App(): React.JSX.Element {
   // 사이드바 토글의 단축키 표시 — 비운 칸(null, fix2 R2-01)이면 툴팁에 단축키를 싣지 않는다.
   const sidebarToggleShortcut = ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('sidebar.toggle', keymap.overrides)[0])
   const rightPanelToggleShortcut = ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('rightPanel.toggle', keymap.overrides)[0])
+  const groupMaximizeBinding = bindingsFor('group.maximize', keymap.overrides)[0]
+  /** LIFE-825 — 영역 최대화 키 표시(⊞ 메뉴·헤더 해제 단추). 키를 끄면 빈 문자열. */
+  const groupMaximizeShortcut = groupMaximizeBinding == null ? '' : formatBinding(groupMaximizeBinding)
+  /**
+   * LIFE-825 fix1 B1 — 접힌 사이드바 머리 여백·「오른쪽 패널 열기」 단추가 서는 영역. 평소는 맨 왼쪽 위(첫 영역)·맨 오른쪽 위 영역이고,
+   * 최대화 중이면 화면에 보이는 영역이 그것 하나뿐이라 최대화 영역이다(숨은 영역에 남으면 탭 줄이 머리 밑으로 들어가고 단추가 사라진다).
+   */
+  const headSpacerGroupId = layout.maximizedGroupId ?? layout.groups[0]?.groupId ?? null
+  const tailToggleGroupId = layout.maximizedGroupId ?? (layout.layout === null ? null : topRightGroupId(layout.layout.root))
 
   return (
     <BindingLabels.Provider value={keymap.overrides}>

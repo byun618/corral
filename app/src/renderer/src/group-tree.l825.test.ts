@@ -10,12 +10,14 @@ import {
   listGroups,
   maximizedGroupOf,
   newTabPlacement,
+  newTabSlotKey,
   newTabSlotOf,
   partitionPinnedLayout,
   RATIO_MIN,
   reconcileLayout,
   removeTabFromGroup,
   splitIdOf,
+  unrememberedArrivalBranch,
   type GroupLayout,
   type GroupNode,
 } from './group-tree.js'
@@ -219,5 +221,47 @@ describe('C5 새 터미널 탭 자리', () => {
     const layout: GroupLayout = { root: leaf('g1', ['p1', 'p2', 'a'], 'p1'), activeGroupId: 'g1' }
     const shown = partitionPinnedLayout({ layout: reconcileLayout({ layout, liveTabIds: ['p1', 'p2', 'a', 'n'], pinned }), pinned })
     expect(findGroup(shown.root, 'g1')?.tabOrder).toEqual(['p1', 'p2', 'n', 'a'])
+  })
+})
+
+describe('fix1 B2 — 연속 새 탭 요청: 화면 순서 = 요청 순서(도착 순서 무관)', () => {
+  const slot = { groupId: 'g1', afterTabId: 't1' }
+  const base: GroupLayout = { root: leaf('g1', ['t1', 't2'], 't1'), activeGroupId: 'g1' }
+  /** 도착 = reconcile 착지(활성 탭 오른쪽) 뒤 기억 자리로 옮긴다 — App 의 두 단계를 순수 함수로 그대로. */
+  const arrive = (layout: GroupLayout, tabId: string, precedingTabIds: string[]): GroupLayout => {
+    const live = [...listGroups(layout.root).flatMap((group) => group.tabOrder), tabId]
+    const landed = reconcileLayout({ layout, liveTabIds: live })
+    const target = newTabPlacement({ layout: landed, slot, tabId, precedingTabIds })
+    if (target === null) return landed
+    const group = findGroup(landed.root, target.groupId)
+    const order = (group?.tabOrder ?? []).filter((id) => id !== tabId)
+    return { ...landed, root: leaf('g1', [...order.slice(0, target.index), tabId, ...order.slice(target.index)], 't1') }
+  }
+  it('첫 요청(a) 먼저 도착 → 둘째(b, 앞선 a) 도착: t1, a, b, t2', () => {
+    const afterA = arrive(base, 'a', [])
+    expect(findGroup(afterA.root, 'g1')?.tabOrder).toEqual(['t1', 'a', 't2'])
+    expect(findGroup(arrive(afterA, 'b', ['a']).root, 'g1')?.tabOrder).toEqual(['t1', 'a', 'b', 't2'])
+  })
+  it('둘째(b) 먼저 도착 → 첫 요청(a) 도착: 역시 t1, a, b, t2', () => {
+    const afterB = arrive(base, 'b', ['a'])
+    expect(findGroup(afterB.root, 'g1')?.tabOrder).toEqual(['t1', 'b', 't2'])
+    expect(findGroup(arrive(afterB, 'a', []).root, 'g1')?.tabOrder).toEqual(['t1', 'a', 'b', 't2'])
+  })
+  it('앞선 요청 탭이 기준 탭 바로 뒤에 이어 서 있지 않으면(사용자가 옮김) 기준 탭 바로 뒤', () => {
+    const moved: GroupLayout = { root: leaf('g1', ['t1', 't2', 'a'], 't1'), activeGroupId: 'g1' }
+    expect(newTabPlacement({ layout: moved, slot, tabId: 'b', precedingTabIds: ['a'] })).toEqual({ groupId: 'g1', index: 1 })
+  })
+  it('자리 키 — 영역·기준 탭이 같으면 같은 키', () => {
+    expect(newTabSlotKey(slot)).toBe(newTabSlotKey({ groupId: 'g1', afterTabId: 't1' }))
+    expect(newTabSlotKey(slot)).not.toBe(newTabSlotKey({ groupId: 'g1', afterTabId: 't2' }))
+    expect(newTabSlotKey({ groupId: 'g1', afterTabId: null })).not.toBe(newTabSlotKey(slot))
+  })
+})
+
+describe('fix1 B5 — 기억 없는 도착의 갈래 이름', () => {
+  it('⌘⇧T 다시 열기 탭은 「다시 열기」, 그 밖 처음 본 탭은 「기억 없음」, 이미 본 탭은 로그 없음', () => {
+    expect(unrememberedArrivalBranch({ firstSeen: true, reopening: true })).toBe('reopen')
+    expect(unrememberedArrivalBranch({ firstSeen: true, reopening: false })).toBe('unremembered')
+    expect(unrememberedArrivalBranch({ firstSeen: false, reopening: true })).toBeNull()
   })
 })

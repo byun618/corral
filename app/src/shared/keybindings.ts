@@ -76,7 +76,8 @@ export const ACTIONS = [
   // LIFE-825 C4 — VS Code `toggleMaximizeEditorGroup`(⌘K ⌘M 은 연속 키라 못 쓴다 — 레지스트리는 연속 키를 받지 않는다). 영역 키 ⌘⌥ 줄기(⌘⌥D 분할·⌘⌥W 닫기·⌘⌥방향 이동).
   // ⌘⇧Enter 는 Monaco 「위에 줄 삽입」과 겹친다. 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
   { id: 'group.maximize', group: '터미널 pane', title: '영역 최대화 / 해제', defaultBinding: ['Mod+Alt+Enter'], bindingVariants: [0], variants: ['전환'] },
-  // LIFE-825 C3 — VS Code `workbench.action.evenEditorWidths`(기본 키 없음). **키 없는 액션** — 기본 조합 0칸(팔레트·⊞ 메뉴로만). 설정 › 단축키에는 칸 없이 「없음」으로 선다.
+  // LIFE-825 C3 — VS Code `workbench.action.evenEditorWidths`(기본 키 없음). **키 없는 액션** — 기본 조합 0칸(팔레트·⊞ 메뉴로만). 설정 › 단축키 표에는 행만 서고
+  // 칸이 없어 키를 걸 수 없다(「끄기」도 꺼짐). keybindings.json 에 손으로 칸을 적어도 칸 수가 기본(0)과 달라 로드 때 버려진다(`validateOverrides(…, true)`). 키를 열려면 칸 모델 변경이 든다.
   { id: 'group.even', group: '터미널 pane', title: '영역 크기 균등화', defaultBinding: [], bindingVariants: [], variants: ['균등화'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']

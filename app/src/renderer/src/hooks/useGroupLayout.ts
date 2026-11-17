@@ -12,8 +12,12 @@ import { closeFileTab, keepFileTab, openFileTab, placeFileTab, reopenFileTab, re
 import {
   closeGroup as closeGroupIn,
   dropDeadTabs,
+  evenAllGroups,
+  evenGroupRunAt,
   LAYOUT_FORMAT,
+  layoutShapeKey,
   listGroups,
+  maximizedGroupOf,
   mergeTabIntoGroup as mergeTabIntoGroupIn,
   moveTabWithinTabbar as moveTabWithinTabbarIn,
   partitionPinnedLayout,
@@ -28,6 +32,7 @@ import {
   updateGroup,
   withoutRecentTabs,
   type GroupLayout,
+  type GroupMaximize,
   type TabGroup,
 } from '../group-tree.js'
 
@@ -49,8 +54,20 @@ export type GroupLayoutApi = {
   /** 그 탭이 있는 영역을 활성으로 + 그 영역의 활성 탭으로 (R3-e reveal). 없으면 false. */
   revealTab: (tabId: string) => boolean
   splitGroup: (input: { groupId: string; tabId: string; direction: 'row' | 'column'; edge?: 'before' | 'after' }) => void
-  closeGroup: (groupId: string) => void
+  /** LIFE-825 C1 — `recent` = 그 worktree 의 영역 MRU(앞이 최근). 남은 탭·활성은 MRU → 공간 이웃(`closeGroupHeir`). */
+  closeGroup: (groupId: string, options?: { recent?: readonly string[] }) => void
   setRatio: (input: { splitId: string; ratio: number }) => void
+  /** LIFE-825 C2 — 경계 더블클릭: 그 경계의 같은 방향 줄을 고르게. */
+  evenRunAt: (splitId: string) => void
+  /** LIFE-825 C3 — 영역 크기 균등화(모든 줄). 최대화도 푼다. */
+  evenAll: () => void
+  /**
+   * LIFE-825 C4 — 지금 worktree 에서 최대화된 영역(없으면 null). **메모리 전용**(`byWorktree`·저장 JSON 밖) — worktree 마다 기억하고 재기동하면 없다.
+   * 모양이 바뀌거나 다른 영역이 활성되면 풀린 것으로 본다(`maximizedGroupOf`).
+   */
+  maximizedGroupId: string | null
+  /** 그 영역을 최대화(이미 그 영역이 최대화면 해제). 영역이 하나면 무동작. */
+  toggleMaximize: (groupId: string) => void
   /** LIFE-387 A1 — 탭바 안 드롭(재정렬/크로스그룹 이동). */
   moveTabWithinTabbar: (input: { tabId: string; fromGroupId: string; toGroupId: string; index: number }) => void
   /** LIFE-387 A1 — 본문 중앙/빈 영역 드롭(병합, corral 에 없던 "기존 영역으로 이동"). */
@@ -124,6 +141,8 @@ export function useGroupLayout(input: {
   herdrTabIds: readonly string[] | null
 }): GroupLayoutApi {
   const [byWorktree, setByWorktree] = useState<Record<string, GroupLayout>>({})
+  /** LIFE-825 C4 — worktree 경로 → 영역 최대화. `byWorktree` 와 따로 둔다 — 저장 effect 가 보지 않는다(C4ⓓ). */
+  const [maximized, setMaximized] = useState<Record<string, GroupMaximize>>({})
   const hydrated = useRef(false)
 
   // 저장값을 한 번만 싣는다. 이후의 진실은 화면이 들고 있다.
@@ -275,7 +294,56 @@ export function useGroupLayout(input: {
     [mutate],
   )
 
-  const closeGroup = useCallback((groupId: string) => mutate((current) => closeGroupIn(current, groupId)), [mutate])
+  const closeGroup = useCallback(
+    (groupId: string, options?: { recent?: readonly string[] }) => mutate((current) => closeGroupIn(current, groupId, options)),
+    [mutate],
+  )
+
+  const maximizedGroupId = useMemo(
+    () => (layout === null || input.worktreePath === null ? null : maximizedGroupOf({ layout, maximize: maximized[input.worktreePath] })),
+    [layout, maximized, input.worktreePath],
+  )
+  const clearMaximize = useCallback(() => {
+    const worktreePath = input.worktreePath
+    if (worktreePath === null) return
+    setMaximized((previous) => {
+      if (previous[worktreePath] === undefined) return previous
+      const next = { ...previous }
+      delete next[worktreePath]
+      return next
+    })
+  }, [input.worktreePath])
+  // 풀린 기록은 지운다 — 남겨 두면 숨었던 영역에서 최대화했던 영역으로 돌아올 때 다시 최대화된다(VS Code 해제는 일회).
+  useEffect(() => {
+    if (input.worktreePath === null || layout === null) return
+    if (maximized[input.worktreePath] !== undefined && maximizedGroupId === null) clearMaximize()
+  }, [input.worktreePath, layout, maximized, maximizedGroupId, clearMaximize])
+
+  const toggleMaximize = useCallback(
+    (groupId: string) => {
+      const worktreePath = input.worktreePath
+      if (worktreePath === null || layout === null || listGroups(layout.root).length < 2) return
+      if (maximizedGroupId === groupId) {
+        clearMaximize()
+        return
+      }
+      setMaximized((previous) => ({ ...previous, [worktreePath]: { groupId, shape: layoutShapeKey(layout.root) } }))
+    },
+    [input.worktreePath, layout, maximizedGroupId, clearMaximize],
+  )
+
+  const evenRunAt = useCallback(
+    (splitId: string) => {
+      clearMaximize()
+      mutate((current) => evenGroupRunAt(current, splitId))
+    },
+    [mutate, clearMaximize],
+  )
+
+  const evenAll = useCallback(() => {
+    clearMaximize()
+    mutate((current) => evenAllGroups(current))
+  }, [mutate, clearMaximize])
 
   const setRatio = useCallback(
     (target: { splitId: string; ratio: number }) => mutate((current) => setRatioIn(current, target.splitId, target.ratio)),
@@ -402,6 +470,10 @@ export function useGroupLayout(input: {
     splitGroup,
     closeGroup,
     setRatio,
+    evenRunAt,
+    evenAll,
+    maximizedGroupId,
+    toggleMaximize,
     moveTabWithinTabbar,
     mergeTabIntoGroup,
     splitGroupWithForeignTab,

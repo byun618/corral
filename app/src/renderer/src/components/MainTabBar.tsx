@@ -43,7 +43,7 @@ import { AgentStateDot, PlusIcon } from './AgentStateDot.js'
 import { FILLED_BELL_PATH } from './WorktreeStatusSlot.js'
 import { sessionTitle, tabAgent, userLabel } from '../session-title.js'
 import { tabOrdinals } from '../fallback-ordinal.js'
-import { TabContextMenu, type MoveDirection, type TabMenuAnchor } from './TabContextMenu.js'
+import { groupLayoutMenuItems, TabContextMenu, type GroupLayoutMenu, type MoveDirection, type TabMenuAnchor } from './TabContextMenu.js'
 import { ONE_TAB_IN_GROUP } from '../group-tree.js'
 import { TabMenuIcon } from './TabMenuIcon.js'
 import { tabMenuModel, type CloseScope, type TabMenuModel } from '../tab-actions.js'
@@ -433,7 +433,7 @@ export type GroupTabItem =
   // LIFE-683 — `diffLabel` 이 있으면 diff 탭(소스 제어): 제목은 그 글(`a.ts (작업 트리)` — VS Code `getTitle`), 아이콘은 `rel` 의 파일 아이콘, 같은 이름 설명은 같은 제목 diff 탭끼리(F2-08 `diffTabDescriptions`).
   | { kind: 'file'; tabId: string; rel: string; preview: boolean; deleted: boolean; dirty: boolean; diffLabel?: string }
 
-type FileTabMenuAction = 'close' | 'keep' | `close-${CloseScope}` | 'split-right' | 'split-down' | `move:${string}`
+type FileTabMenuAction = 'close' | 'keep' | `close-${CloseScope}` | 'split-right' | 'split-down' | `move:${string}` | 'layout-maximize' | 'layout-even'
 
 /** 범위 닫기 항목 — 이름·순서는 터미널 탭 메뉴(`TabContextMenu` `CLOSE_SCOPE_ITEMS`)와 같다(같은 영역의 같은 동작, LIFE-822). */
 const FILE_CLOSE_SCOPES: { scope: CloseScope; label: string; enabled: (model: TabMenuModel) => boolean; disabledTitle: string }[] = [
@@ -455,6 +455,7 @@ function FileTabMenu({
   model,
   otherGroups,
   headerMode,
+  groupLayout,
   onDismiss,
   onClose,
   onKeep,
@@ -468,6 +469,8 @@ function FileTabMenu({
   model: TabMenuModel
   otherGroups: { groupId: string; label: string }[]
   headerMode?: boolean
+  /** LIFE-825 — 헤더 모드의 영역 배치 항목(터미널 탭 메뉴와 같은 두 줄). */
+  groupLayout?: GroupLayoutMenu
   onDismiss: () => void
   onClose: () => void
   onKeep: () => void
@@ -479,6 +482,20 @@ function FileTabMenu({
   const move = { disabled: !model.canMoveToNewGroup, ...(model.canMoveToNewGroup ? {} : { title: ONE_TAB_IN_GROUP }) }
   const entries: MenuEntry<FileTabMenuAction>[] = [
     ...(headerMode === true ? [{ kind: 'label' as const, key: 'header', label: `탭 · ${label}` }, { kind: 'sep' as const, key: 'header-sep' }] : []),
+    ...(headerMode === true && groupLayout !== undefined
+      ? [
+          { kind: 'label' as const, key: 'layout', label: '영역' },
+          ...groupLayoutMenuItems(groupLayout).map((entry) => ({
+            kind: 'item' as const,
+            action: `layout-${entry.key}` as const,
+            label: entry.label,
+            shortcut: entry.shortcut === '' ? null : entry.shortcut,
+            disabled: groupLayout.disabledTitle !== null,
+            ...(groupLayout.disabledTitle === null ? {} : { title: groupLayout.disabledTitle }),
+          })),
+          { kind: 'sep' as const, key: 'layout-sep' },
+        ]
+      : []),
     { kind: 'item', action: 'close', label: '닫기' },
     ...FILE_CLOSE_SCOPES.map((entry) => ({
       kind: 'item' as const,
@@ -509,6 +526,8 @@ function FileTabMenu({
         onDismiss()
         if (action === 'close') onClose()
         else if (action === 'keep') onKeep()
+        else if (action === 'layout-maximize') groupLayout?.onToggleMaximize()
+        else if (action === 'layout-even') groupLayout?.onEven()
         else if (action === 'split-right') onMoveToGroup('right')
         else if (action === 'split-down') onMoveToGroup('down')
         else if (action.startsWith('move:')) onMoveToOtherGroup(action.slice('move:'.length))
@@ -763,6 +782,9 @@ export function GroupHeader({
   onLaunchAgent,
   onOpenAgentSettings,
   onActivateOpenTab,
+  maximized = false,
+  groupLayout,
+  onActivateFocus,
 }: {
   groupId: string
   /** LIFE-527 D5 — 사이드바가 접혀 머리가 이 탭 줄 위에 떠 있다(왼쪽 위 영역만). 머리 폭만큼 no-drag 여백을 앞에 둔다. */
@@ -839,6 +861,15 @@ export function GroupHeader({
   onOpenAgentSettings: () => void
   /** LIFE-496 D36 — omnibox 에서 고른 탭을 그 탭이 속한 영역에서 활성으로 만들고 포커스를 준다. */
   onActivateOpenTab: (target: { tabId: string; groupId: string }) => void
+  /** LIFE-825 C4ⓕ — 이 영역이 최대화돼 있다(헤더에 해제 단추가 선다). */
+  maximized?: boolean
+  /** LIFE-825 C3·C4 — 헤더 모드 메뉴의 영역 배치 항목. */
+  groupLayout?: GroupLayoutMenu
+  /**
+   * LIFE-825 C6 — 비활성 영역 탭바·탭 **우클릭**은 활성만이 아니라 본문 포커스까지 그 영역으로(824 「본문 포커스 한 길」). 메뉴는 포커스를 가져가지 않으므로
+   * 메뉴가 닫히면(Esc·항목·바깥 클릭) 포커스가 그 영역 본문에 있다. 없으면 base(`onActivate`).
+   */
+  onActivateFocus?: () => void
 }): React.JSX.Element {
   const bindingLabel = useBindingLabel()
   // LIFE-496 — `+` 드롭다운. 열린 동안 `+` 의 화면 자리를 들고 있다(메뉴가 그 아래 왼쪽 정렬로 선다).
@@ -884,7 +915,8 @@ export function GroupHeader({
       data-group-header={groupId}
       onMouseDown={(event) => {
         keepFocusOnHeaderBackground(event)
-        onActivate()
+        if (event.button === 2 && !activeGroup && onActivateFocus !== undefined) onActivateFocus()
+        else onActivate()
       }}
       // LIFE-387 B1 F-B1-3 — 탭바 빈 곳 우클릭 = 헤더 모드 메뉴(VS Code 관용). 탭 자체 우클릭은
       // `MainTab` 이 `stopPropagation` 으로 먼저 가로채므로 여기 안 닿는다.
@@ -1060,6 +1092,19 @@ export function GroupHeader({
           >
             ⊞
           </button>
+          {maximized && groupLayout !== undefined ? (
+            <button
+              className="group-action is-on"
+              data-group-maximized={groupId}
+              title={`영역 최대화 해제${groupLayout.maximizeShortcut === '' ? '' : ` (${groupLayout.maximizeShortcut})`}`}
+              onClick={(event) => {
+                event.stopPropagation()
+                groupLayout.onToggleMaximize()
+              }}
+            >
+              <TabMenuIcon kind="minimize" />
+            </button>
+          ) : null}
           {paneCount > 1 ? (
             <button
               className={`group-action ${zoomed ? 'is-on' : ''}`}
@@ -1090,7 +1135,7 @@ export function GroupHeader({
           hasUserName={userLabel({ tab: activeTab, tabCount: workspaceTabCount }) !== null}
           color={tabColorOf(activeTab.tabId)}
           otherGroups={otherGroups}
-          headerMode={{ activeTabLabel }}
+          headerMode={{ activeTabLabel, ...(groupLayout === undefined ? {} : { groupLayout }) }}
           onRename={() => onRequestRename(activeTab.tabId)}
           onClearName={() => onClearTabName(activeTab)}
           onSplitPane={(direction) => onSplitTab({ tab: activeTab, direction })}
@@ -1111,6 +1156,7 @@ export function GroupHeader({
           model={menuModelOf(activeFileItem.tabId)}
           otherGroups={otherGroups}
           headerMode
+          {...(groupLayout === undefined ? {} : { groupLayout })}
           onDismiss={() => setHeaderMenu(null)}
           onClose={() => onCloseFileTab?.(activeFileItem.tabId)}
           onKeep={() => onKeepFileTab?.(activeFileItem.tabId)}

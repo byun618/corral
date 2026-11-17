@@ -70,12 +70,21 @@ export function PaneGrid({
   cell,
   renderGroup,
   onCommitRatio,
+  onResetRun,
+  maximizedGroupId,
 }: {
   root: GroupNode
   /** 셀 한 칸 px — 경계를 셀에 붙이는 데 쓴다 (F1-2). */
   cell: CellSize
   renderGroup: (group: TabGroup) => React.JSX.Element
   onCommitRatio: GroupDragCommit
+  /** LIFE-825 C2 — 경계 더블클릭: 그 경계를 가진 같은 방향 줄을 고르게. */
+  onResetRun: (splitId: string) => void
+  /**
+   * LIFE-825 C4 — 최대화된 영역. 그 영역 상자만 격자 전체를 덮고(`.tab-group.is-maximized` 절대 배치) 나머지 영역·경계는 `visibility: hidden` —
+   * 숨은 영역 상자의 크기는 그대로라 격자 요청이 안 나간다(display:none·0 크기면 cols 2·rows 1 이 나간다 — 설정 페이지 덮기와 같은 이유).
+   */
+  maximizedGroupId: string | null
 }): React.JSX.Element {
   const [drag, setDrag] = useState<DragState | null>(null)
   const dragRef = useRef<DragState | null>(null)
@@ -134,8 +143,8 @@ export function PaneGrid({
   useEffect(() => () => document.body.classList.remove('is-group-drag'), [])
 
   return (
-    <div className="pane-grid" data-pane-grid>
-      <GridNode node={root} renderGroup={renderGroup} drag={drag} beginDrag={beginDrag} />
+    <div className={`pane-grid${maximizedGroupId === null ? '' : ' has-maximized'}`} data-pane-grid data-maximized-group={maximizedGroupId ?? undefined}>
+      <GridNode node={root} renderGroup={renderGroup} drag={drag} beginDrag={beginDrag} onResetRun={onResetRun} />
     </div>
   )
 }
@@ -164,11 +173,13 @@ function GridNode({
   renderGroup,
   drag,
   beginDrag,
+  onResetRun,
 }: {
   node: GroupNode
   renderGroup: (group: TabGroup) => React.JSX.Element
   drag: DragState | null
   beginDrag: BeginDrag
+  onResetRun: (splitId: string) => void
 }): React.JSX.Element {
   const boxRef = useRef<HTMLDivElement | null>(null)
   switch (node.kind) {
@@ -182,13 +193,15 @@ function GridNode({
       return (
         <div className={`group-split dir-${node.direction}`} data-group-split={splitId} ref={boxRef}>
           <div className="group-split-side" style={{ flexBasis: percent }}>
-            <GridNode node={node.first} renderGroup={renderGroup} drag={drag} beginDrag={beginDrag} />
+            <GridNode node={node.first} renderGroup={renderGroup} drag={drag} beginDrag={beginDrag} onResetRun={onResetRun} />
           </div>
           <div
             className={`group-divider dir-${node.direction} ${dragging ? 'is-dragging' : ''}`}
             data-group-divider={splitId}
             onMouseDown={(event) => {
               event.preventDefault()
+              // LIFE-825 C2 — 더블클릭의 둘째 누름은 드래그를 걸지 않는다(그 mouseup 커밋이 리셋 뒤에 오지 않게). 리셋은 `onDoubleClick` 이 한다.
+              if (event.detail >= 2) return
               const element = boxRef.current
               if (element === null) return
               beginDrag({
@@ -199,11 +212,15 @@ function GridNode({
                 metrics: overheadOf({ box: element, direction: node.direction }),
               })
             }}
+            onDoubleClick={(event) => {
+              event.preventDefault()
+              onResetRun(splitId)
+            }}
           >
             <div className="group-divider-line" />
           </div>
           <div className="group-split-side" style={{ flexBasis: `${(100 - node.ratio * 100).toFixed(4)}%` }}>
-            <GridNode node={node.second} renderGroup={renderGroup} drag={drag} beginDrag={beginDrag} />
+            <GridNode node={node.second} renderGroup={renderGroup} drag={drag} beginDrag={beginDrag} onResetRun={onResetRun} />
           </div>
           {/* 고스트·배지는 **분할 상자 기준**이다 — 12px 히트 띠 안에 두면 끌어도 안 따라온다. */}
           {dragging && drag !== null ? <DragGhost drag={drag} /> : null}

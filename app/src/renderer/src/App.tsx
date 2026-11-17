@@ -36,7 +36,7 @@ import { groupGlyphs, MRU_LIMIT, openMru, orderMru, stepMru, touchMru } from './
 import { numbersOf } from './pane-geometry.js'
 import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
-import { neighborGroupId, ONE_TAB_IN_GROUP, topRightGroupId } from './group-tree.js'
+import { closeGroup as closeGroupIn, findGroup, neighborGroupId, newTabPlacement, newTabSlotOf, ONE_GROUP, ONE_TAB_IN_GROUP, topRightGroupId, type NewTabSlot } from './group-tree.js'
 import type { TabGroup } from './group-tree.js'
 import type { LifecycleNotice } from './lifecycle-types.js'
 import { paneTitleFrames, stabilizePaneTitles } from './pane-title-frames.js'
@@ -818,6 +818,28 @@ export function App(): React.JSX.Element {
   }, [layout.revealTab, liveTabIds])
 
   /**
+   * LIFE-825 C5·P6 — 새 터미널 탭 자리 기억. 요청한 순간(`createRow` — ⌘T·⌘⌥T·탭바 `+`·빈 영역 「새 탭」·사이드바 카드 `+`·팔레트 에이전트) 그 worktree 의
+   * 활성 영역·활성 탭을 잡고(`newTabSlotOf`), 탭 id 가 오면 여기 둔다. 아래 「방금 만든 탭을 편다」 effect 가 탭이 도착하면 그 자리로 옮긴다(`newTabPlacement`).
+   * 메모리 전용·탭 id 별(연속 ⌘T 가 앞 요청 자리를 덮지 않는다). 요청 없이 도착한 탭은 `reconcileLayout` 이 도착 때 활성 탭 오른쪽에 둔다.
+   */
+  const pendingNewTabSlotsRef = useRef<Map<string, { workspaceId: string; slot: NewTabSlot }>>(new Map())
+  lifecycle.newTabRequestRef.current = (workspaceId) => {
+    const worktree = stateRef.current?.repos.flatMap((repo) => repo.worktrees).find((row) => row.workspace?.workspaceId === workspaceId) ?? null
+    if (worktree === null || worktree.workspace === null) return null
+    const shown =
+      worktree.path === activeWorktreeRowRef.current?.path
+        ? layoutRef.current.layout
+        : layout.layoutOf({ worktreePath: worktree.path, liveTabIds: worktree.workspace.tabs.map((tab) => tab.tabId), pinned: pinnedTabs })
+    const slot = shown === null ? null : newTabSlotOf(shown)
+    if (slot === null) return null
+    return (tabId) => {
+      pendingNewTabSlotsRef.current = new Map([...pendingNewTabSlotsRef.current, [tabId, { workspaceId, slot }]])
+    }
+  }
+  /** C5ⓗ 경합 갈래 계수용 — 활성 workspace 에서 지난 렌더까지 본 탭(새로 도착한 탭을 가른다). */
+  const seenLiveTabsRef = useRef<{ workspaceId: string | null; tabIds: ReadonlySet<string> }>({ workspaceId: null, tabIds: new Set() })
+
+  /**
    * **방금 만든 탭을 편다** (G2′ · §10-R35-1) — `⌘T`·사이드바 `+`·메뉴 **세 경로 전부**가 여기로 온다.
    *
    * `createRow` 는 pane 선택만 예약했고 `activeTabId` 는 안 건드렸다. 이 앱은 **영역이 활성 탭을
@@ -835,6 +857,28 @@ export function App(): React.JSX.Element {
     const taken = takeLivePlacements({ pending: pendingPlacementsRef.current, liveTabIds })
     pendingPlacementsRef.current = taken.pending
     const placed = new Set<string>()
+    // LIFE-825 C5 — 기억한 자리로. 영역이 사라졌으면(ⓑ) 도착 때 자리(`reconcileLayout` 고아 착지 — 활성 영역·활성 탭 오른쪽) 그대로.
+    // 갈래마다 한 줄 로그(C5ⓗ — G1 이 세어 증상과 짝짓는다).
+    const seen = seenLiveTabsRef.current
+    const workspaceId = activeWorkspaceRow?.workspaceId ?? null
+    for (const tabId of liveTabIds) {
+      const remembered = pendingNewTabSlotsRef.current.get(tabId)
+      if (remembered === undefined) {
+        if (seen.workspaceId === workspaceId && !seen.tabIds.has(tabId) && !pendingPlacementsRef.current.has(tabId)) console.info('[corral] LIFE-825 새 탭 자리: 기억 없음 → 도착 때 자리', tabId)
+        continue
+      }
+      if (remembered.workspaceId !== workspaceId || layout.layout === null) continue
+      pendingNewTabSlotsRef.current = new Map([...pendingNewTabSlotsRef.current].filter(([id]) => id !== tabId))
+      const target = newTabPlacement({ layout: layout.layout, slot: remembered.slot, tabId })
+      if (target === null) {
+        console.info('[corral] LIFE-825 새 탭 자리: 기억 영역 사라짐 → 도착 때 자리', tabId)
+        continue
+      }
+      console.info('[corral] LIFE-825 새 탭 자리: 기억한 자리로 놓음', tabId, target.groupId, target.index)
+      layout.placeTab({ tabId, groupId: target.groupId, index: target.index })
+      placed.add(tabId)
+    }
+    seenLiveTabsRef.current = { workspaceId, tabIds: new Set(liveTabIds) }
     for (const placement of taken.ready) {
       const { tabId, workspaceId, color } = placement
       if (color !== null) setTabMarks((marks) => setTabColor({ marks, tabId, workspaceId, color }))
@@ -984,6 +1028,10 @@ export function App(): React.JSX.Element {
     splitGroup: layout.splitGroup,
     closeGroup: layout.closeGroup,
     revealTab: layout.revealTab,
+    /** LIFE-825 — 영역 닫기·최대화·균등화가 보는 화면 배치와 그 조작. */
+    layout: layout.layout,
+    toggleMaximize: layout.toggleMaximize,
+    evenAll: layout.evenAll,
     /** LIFE-824 — 영역 넘는 이동(⌘⌥방향·⌃`·이전/다음 탭)이 보는 배치 전체. */
     groups: layout.groups,
     root: layout.layout?.root ?? null,
@@ -1677,6 +1725,47 @@ export function App(): React.JSX.Element {
   }
   const focusGroupTabRef = useRef(focusGroupTab)
   focusGroupTabRef.current = focusGroupTab
+  /**
+   * LIFE-825 C1·C7 — 영역 닫기 한 길(⌘⌥W·팔레트·헤더 ✕·빈 영역 단추). 받는 영역 = 영역 MRU → 공간 이웃(`closeGroupHeir`). 닫는 영역이 활성이었으면
+   * 받는 영역의 활성 탭으로 본문 포커스까지(`focusGroupTab`) — 닫힌 영역 DOM 의 포커스가 사라져 활성 영역 ≠ 포커스 영역이 되지 않게(00-analysis L1′).
+   */
+  const closeGroupAndFocus = (groupId: string): void => {
+    const current = layoutRef.current.layout
+    if (current === null) return
+    const path = activeWorktreeRowRef.current?.path ?? null
+    const recent = path === null ? [] : (groupMruRef.current.get(path) ?? [])
+    const next = closeGroupIn(current, groupId, { recent })
+    if (next === current) return
+    layoutRef.current.closeGroup(groupId, { recent })
+    if (current.activeGroupId !== groupId) return
+    const heir = findGroup(next.root, next.activeGroupId)
+    if (heir !== null) focusGroupTab({ groupId: heir.groupId, tabId: heir.activeTabId })
+  }
+  /** LIFE-825 C4·C7 — 영역 최대화 토글(⌘⌥Enter·팔레트·⊞ 메뉴·헤더 해제 단추). 그 영역이 활성 + 본문 포커스. 영역이 하나면 안내 한 줄(C4ⓖ). */
+  const toggleMaximizeAndFocus = (groupId: string): void => {
+    const current = layoutRef.current.layout
+    if (current === null) return
+    const group = findGroup(current.root, groupId)
+    if (group === null) return
+    if (listGroups(current.root).length < 2) {
+      setGroupHint(ONE_GROUP)
+      return
+    }
+    layoutRef.current.toggleMaximize(groupId)
+    focusGroupTab({ groupId, tabId: group.activeTabId })
+  }
+  /** LIFE-825 C3·C7 — 영역 크기 균등화(팔레트·⊞ 메뉴, 키 없음). 최대화도 풀린다. 활성 영역 본문 포커스. 영역이 하나면 안내 한 줄. */
+  const evenGroupsAndFocus = (): void => {
+    const current = layoutRef.current.layout
+    if (current === null) return
+    if (listGroups(current.root).length < 2) {
+      setGroupHint(ONE_GROUP)
+      return
+    }
+    layoutRef.current.evenAll()
+    const active = findGroup(current.root, current.activeGroupId)
+    if (active !== null) focusGroupTab({ groupId: active.groupId, tabId: active.activeTabId })
+  }
   useEffect(() => {
     const pending = pendingFocusRef.current
     if (pending === null) return
@@ -2070,8 +2159,13 @@ export function App(): React.JSX.Element {
     },
     'group.close': () => {
       const groupId = layoutRef.current.activeGroupId
-      if (groupId !== null) layoutRef.current.closeGroup(groupId)
+      if (groupId !== null) closeGroupAndFocus(groupId)
     },
+    'group.maximize': () => {
+      const groupId = layoutRef.current.activeGroupId
+      if (groupId !== null) toggleMaximizeAndFocus(groupId)
+    },
+    'group.even': () => evenGroupsAndFocus(),
     'terminal.zoom': () => {
       const groupId = layoutRef.current.activeGroupId
       const activeTabId = layoutRef.current.activeTabId
@@ -2261,7 +2355,14 @@ export function App(): React.JSX.Element {
     const groupActiveTab = tabById(group.activeTabId)
     const groupPane = groupActiveTab === null ? null : pickPane(groupActiveTab)
     const isActiveGroup = group.groupId === layout.activeGroupId
-    const canCloseGroup = layout.groups.length > 1 ? () => layout.closeGroup(group.groupId) : null
+    const canCloseGroup = layout.groups.length > 1 ? () => closeGroupAndFocus(group.groupId) : null
+    const groupLayoutMenu = {
+      maximized: layout.maximizedGroupId === group.groupId,
+      disabledTitle: layout.groups.length > 1 ? null : ONE_GROUP,
+      maximizeShortcut: ((binding) => (binding == null ? '' : formatBinding(binding)))(bindingsFor('group.maximize', keymap.overrides)[0]),
+      onToggleMaximize: () => toggleMaximizeAndFocus(group.groupId),
+      onEven: () => evenGroupsAndFocus(),
+    }
     const groupState = state.terminalGroups.find((row) => row.groupId === group.groupId) ?? null
     /**
      * **이 영역의 선택 pane** — 헤더 액션·포커스가 겨누는 대상이다 (② 에서 pane 이 여럿이 된다).
@@ -2288,7 +2389,7 @@ export function App(): React.JSX.Element {
             number: paneNumbers.get(view.paneId) ?? 0,
           }))
     return (
-      <div className={`tab-group ${isActiveGroup ? 'is-active-group' : ''}`} data-tab-group={group.groupId} key={group.groupId}>
+      <div className={`tab-group ${isActiveGroup ? 'is-active-group' : ''}${layout.maximizedGroupId === group.groupId ? ' is-maximized' : ''}`} data-tab-group={group.groupId} key={group.groupId}>
         <GroupHeader
           groupId={group.groupId}
           headSpacer={sidebarCollapsed && settingsView === null && layout.groups[0]?.groupId === group.groupId}
@@ -2317,6 +2418,9 @@ export function App(): React.JSX.Element {
           grid={gridOfSelected}
           zoomed={groupState?.zoomedPaneId != null}
           onActivate={() => activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })}
+          onActivateFocus={() => focusGroupTab({ groupId: group.groupId, tabId: group.activeTabId })}
+          maximized={layout.maximizedGroupId === group.groupId}
+          groupLayout={groupLayoutMenu}
           onTabDragStart={(event, tabId) => tabDrag.onArm(event, { tabId, fromGroupId: group.groupId })}
           // LIFE-823 F4 — 탐색기 파일 끌기도 탭바 넘침 끌기 모드(chevron 호버 스크롤·활성 탭 스크롤 억제)를 켠다.
           tabDragActive={tabDrag.dragState !== null || fileDrag.dragState !== null}
@@ -2608,6 +2712,8 @@ export function App(): React.JSX.Element {
   const TERMINAL_PANE_ACTIONS = new Set<string>(['terminal.split', 'terminal.zoom'])
   /** pane 없이도 도는 영역 이동(⌘⌥방향 — 이웃 영역·⌃`) — 선택 pane 이 없어도 켠다. */
   const GROUP_FOCUS_ACTIONS = new Set<string>(['terminal.focus', 'focus.toggleTerminalEditor'])
+  /** LIFE-825 — 영역 배치 조작(최대화·균등화)은 pane 없이 돈다. 영역이 하나면 흐림 + 이유(C3·C4ⓖ). */
+  const GROUP_LAYOUT_ACTIONS = new Set<string>(['group.maximize', 'group.even'])
   const palettePaneAlive = !!activeWorkspace?.tabs.some(tab => tab.panes.some(pane => pane.paneId === lifecycle.selectedPane))
   for (const action of ACTIONS) {
     // ⌘⇧⌫ 는 hover 중인 카드가 대상이라 팔레트에서 부를 대상이 없다.
@@ -2616,7 +2722,7 @@ export function App(): React.JSX.Element {
       const id = action.id
       paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
         shortcut: bindingsFor(id, keymap.overrides).flatMap((binding, index) => (binding !== null && action.bindingVariants[index] === variant ? [formatBinding(binding)] : [])).join(' / '),
-        disabled: id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : GROUP_FOCUS_ACTIONS.has(id) ? undefined : !palettePaneAlive ? '선택된 pane이 없습니다' : activeTabIdForReveal !== null && isFileTabId(activeTabIdForReveal) && TERMINAL_PANE_ACTIONS.has(id) ? '파일·diff 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
+        disabled: id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : GROUP_LAYOUT_ACTIONS.has(id) ? (layout.groups.length < 2 ? ONE_GROUP : undefined) : GROUP_FOCUS_ACTIONS.has(id) ? undefined : !palettePaneAlive ? '선택된 pane이 없습니다' : activeTabIdForReveal !== null && isFileTabId(activeTabIdForReveal) && TERMINAL_PANE_ACTIONS.has(id) ? '파일·diff 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
         run: () => {
           if (id === 'mru.open') {
             const other = orderMru({ history: mruHistoryRef.current, livePaneIds: mruLiveIds() }).filter(id => id !== (activeEditorKey ?? lifecycle.selectedPane))
@@ -2767,6 +2873,8 @@ export function App(): React.JSX.Element {
               <PaneGrid
                 root={layout.layout.root}
                 onCommitRatio={layout.setRatio}
+                onResetRun={layout.evenRunAt}
+                maximizedGroupId={layout.maximizedGroupId}
                 cell={cell}
                 renderGroup={(group) => renderGroup({ group, workspaceId: activeWorkspace.workspaceId })}
               />

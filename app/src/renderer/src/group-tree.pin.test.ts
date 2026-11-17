@@ -52,9 +52,9 @@ describe('partitionPinnedLayout — 순서 변경 경우별', () => {
     const dragged = partitionPinnedLayout({ layout: moveTabWithinTabbar(pinnedBase, { tabId: 'd', fromGroupId: 'g1', toGroupId: 'g1', index: 0 }), pinned })
     expect(orderOf(dragged)).toEqual(['a', 'b', 'd', 'c'])
   })
-  it('새 탭 — 끝에 붙는다(핀 구간 밖)', () => {
+  it('새 탭 — 활성 탭(핀) 오른쪽 → 핀 경계로(LIFE-825 C5ⓕ — 옛 규칙은 영역 끝)', () => {
     const grown = partitionPinnedLayout({ layout: reconcileLayout({ layout: pinnedBase, liveTabIds: ['a', 'b', 'c', 'd', 'e'] }), pinned })
-    expect(orderOf(grown)).toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(orderOf(grown)).toEqual(['a', 'b', 'e', 'c', 'd'])
   })
   it('다시 열기(자리 복원) — 핀 구간 안쪽 자리면 경계로 clamp', () => {
     const live = reconcileLayout({ layout: pinnedBase, liveTabIds: ['a', 'b', 'c', 'd', 'r'] })

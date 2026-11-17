@@ -517,6 +517,45 @@ it('C2(fix1 B6) — 더블클릭의 둘째 누름은 드래그 고스트를 띄�
   await app.mouse('mouseup', document, { detail: 2 })
 })
 
+describe('fix5 E5 — 끈 직후 더블클릭 시간·거리 안 둘째 누름(detail 2)도 움직이면 드래그, 안 움직이면 리셋만', () => {
+  const ratioSaved = (app) => JSON.parse(app.savedLayouts().at(-1) ?? 'null')?.[0]?.layout.root.ratio ?? null
+  it('detail 2 누름 + 문턱 넘는 움직임 → 고스트(드래그) → 뒤따른 dblclick 은 리셋하지 않는다(happy-dom 상자 0 이라 커밋 비율 값은 G1 몫)', async () => {
+    const layout = { root: { kind: 'split', direction: 'row', ratio: 0.3, first: leaf('g1', ['t1', 't2']), second: leaf('g2', [FILE]) }, activeGroupId: 'g1' }
+    const app = await mount({ layout })
+    const divider = app.q('[data-group-divider="g1|g2"]')
+    await app.mouse('mousedown', divider, { detail: 1, clientX: 100, clientY: 50 })
+    await app.mouse('mouseup', document, { detail: 1, clientX: 100, clientY: 50 })
+    await app.mouse('mousedown', divider, { detail: 2, clientX: 100, clientY: 50 })
+    expect(app.q('.group-divider-ghost')).toBeNull() // 누른 순간은 아직 아니다
+    await app.mouse('mousemove', document, { clientX: 140, clientY: 50, buttons: 1 })
+    expect(app.q('.group-divider-ghost')).not.toBeNull()
+    await app.mouse('mouseup', document, { detail: 2, clientX: 140, clientY: 50 })
+    await app.mouse('dblclick', divider, { detail: 2 })
+    expect(app.q('.group-divider-ghost')).toBeNull()
+    expect(basisOf('g1|g2')).not.toBe('50.0000%') // 리셋이 끈 결과를 덮지 않았다
+    expect(ratioSaved(app) === 0.5).toBe(false)
+  })
+  it('detail 2 누름 + 문턱 아래 움직임(2px) + dblclick → 고스트·커밋 0, 리셋만(최종 비율 = 리셋값)', async () => {
+    const layout = { root: { kind: 'split', direction: 'row', ratio: 0.3, first: leaf('g1', ['t1', 't2']), second: leaf('g2', [FILE]) }, activeGroupId: 'g1' }
+    const app = await mount({ layout })
+    const divider = app.q('[data-group-divider="g1|g2"]')
+    await app.mouse('mousedown', divider, { detail: 1, clientX: 100, clientY: 50 })
+    await app.mouse('mouseup', document, { detail: 1, clientX: 100, clientY: 50 })
+    const savesAfterFirst = app.savedLayouts().length
+    await app.mouse('mousedown', divider, { detail: 2, clientX: 100, clientY: 50 })
+    await app.mouse('mousemove', document, { clientX: 102, clientY: 50, buttons: 1 })
+    expect(app.q('.group-divider-ghost')).toBeNull()
+    await app.mouse('mouseup', document, { detail: 2, clientX: 102, clientY: 50 })
+    expect(app.savedLayouts().length).toBe(savesAfterFirst) // 둘째 누름의 mouseup 커밋 0
+    await app.mouse('dblclick', divider, { detail: 2 })
+    expect(basisOf('g1|g2')).toBe('50.0000%')
+    expect(ratioSaved(app)).toBe(0.5)
+    // 리셋 뒤 움직임은 드래그를 걸지 않는다(둘째 누름 대기는 mouseup 에서 풀렸다)
+    await app.mouse('mousemove', document, { clientX: 160, clientY: 50, buttons: 0 })
+    expect(app.q('.group-divider-ghost')).toBeNull()
+  })
+})
+
 it('fix1 B2 — 연속 ⌘T 2회 뒤 첫 탭이 먼저 도착·활성되고 둘째가 나중에 도착해도 둘째는 첫째 뒤(t1, 첫째, 둘째, t2)', async () => {
   const gates = []
   const ids = ['t9', 't10']
@@ -920,4 +959,22 @@ it('low H3 — 줄에 두 요청(가장자리 ← 뒤 이동 →), 첫 응답 �
   await app.settle(5)
   expect(app.active()).toBe('g2')
   expect(bodyFocusIn()).toBe('g2')
+})
+
+describe('fix5 ⑧ — 열린 메뉴 안을 우클릭해도 그 메뉴의 토큰이 지워지지 않는다: Esc 뒤 활성 = 포커스 = 우클릭한 영역 본문', () => {
+  // G1 final-g1-6 — 같은 영역 오른쪽 이웃 탭(≈190px)이 앞 메뉴(≈195px 폭) 안에 들어 둘째 우클릭이 메뉴 항목 위에서 났다.
+  // contextmenu 가 포털을 거쳐 탭(·탭바)의 onContextMenu 로 올라가 메뉴를 다시 열며 토큰을 null 로 덮었다 → Esc 닫힘이 본문 포커스를 안 했다.
+  for (const [name, menu] of Object.entries(MENUS)) {
+    it(name, async () => {
+      const app = await openFromG3(menu)
+      const item = app.q(menu.open).closest('[data-tab-menu], [data-file-tab-menu]').querySelector('[data-menu-action], [data-disabled]')
+      expect(item).not.toBeNull()
+      await rightClick(app, item)
+      expect(app.q(menu.open)).not.toBeNull()
+      await app.key({ key: 'Escape' })
+      expect(app.q(menu.open)).toBeNull()
+      expect(app.active()).toBe(menu.groupId)
+      expect(bodyFocusIn()).toBe(menu.groupId)
+    })
+  }
 })

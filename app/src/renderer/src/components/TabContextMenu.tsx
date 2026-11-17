@@ -212,7 +212,12 @@ export function TabContextMenu({
         event.stopPropagation()
         if (event.target instanceof Element && event.target.closest('button, input, textarea, select, a[href], [contenteditable="true"], [tabindex]') === null) event.preventDefault()
       }}
-      onContextMenu={(event) => event.preventDefault()}
+      // LIFE-825 fix5 ⑧ — 우클릭도 끊는다: 메뉴 안 우클릭이 연 탭·탭바의 onContextMenu 로 올라가면 메뉴를 그 자리에 다시 열며 우클릭 토큰을 null 로 덮어
+      // Esc 닫힘이 본문 포커스를 안 한다(활성 ≠ 포커스).
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+      }}
     >
       {headerMode === undefined ? null : (
         <>

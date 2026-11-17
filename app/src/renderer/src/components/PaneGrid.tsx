@@ -65,6 +65,9 @@ function overheadOf(input: { box: HTMLElement; direction: 'row' | 'column' }): S
 
 type SideMetrics = { overhead: { first: number; second: number }; leaf: { first: boolean; second: boolean } }
 
+/** fix5 E5 — 더블클릭 둘째 누름을 드래그로 보는 움직임 문턱(px). OS 더블클릭 거리 허용(몇 px)보다 크게. */
+const DRAG_SLOP_PX = 4
+
 export function PaneGrid({
   root,
   cell,
@@ -95,7 +98,7 @@ export function PaneGrid({
    * xterm 이 마우스를 가로채지 않게 해야 한다(`.is-group-drag` 가 pointer-events 를 끈다).
    */
   const beginDrag = useCallback(
-    (input: { splitId: string; direction: 'row' | 'column'; box: DOMRect; ratio: number; metrics: SideMetrics }) => {
+    (input: { splitId: string; direction: 'row' | 'column'; box: DOMRect; ratio: number; metrics: SideMetrics; pointer?: { x: number; y: number } }) => {
       const row = input.direction === 'row'
       const total = Math.max(1, row ? input.box.width : input.box.height)
       const unit = Math.max(1, row ? cell.width : cell.height)
@@ -120,7 +123,8 @@ export function PaneGrid({
         }
         return { ...head, ratio: Math.min(Math.max(wanted / total, RATIO_MIN), RATIO_MAX), first: 0, second: 0 }
       }
-      setDrag(snap(total * input.ratio))
+      // fix5 — 늦게 건 드래그(더블클릭 둘째 누름 뒤 움직임)는 이미 움직인 자리에서 시작한다.
+      setDrag(snap(input.pointer === undefined ? total * input.ratio : row ? input.pointer.x - input.box.left : input.pointer.y - input.box.top))
       document.body.classList.add('is-group-drag')
       const onMove = (event: MouseEvent): void => {
         setDrag(snap(row ? event.clientX - input.box.left : event.clientY - input.box.top))
@@ -166,7 +170,7 @@ function DragGhost({ drag }: { drag: DragState }): React.JSX.Element {
   )
 }
 
-type BeginDrag = (input: { splitId: string; direction: 'row' | 'column'; box: DOMRect; ratio: number; metrics: SideMetrics }) => void
+type BeginDrag = (input: { splitId: string; direction: 'row' | 'column'; box: DOMRect; ratio: number; metrics: SideMetrics; pointer?: { x: number; y: number } }) => void
 
 function GridNode({
   node,
@@ -182,6 +186,8 @@ function GridNode({
   onResetRun: (splitId: string) => void
 }): React.JSX.Element {
   const boxRef = useRef<HTMLDivElement | null>(null)
+  // fix5 — 더블클릭의 둘째 누름에서 드래그가 시작됐으면 그 뒤 dblclick 은 리셋하지 않는다(끈 결과를 덮지 않게).
+  const draggedSinceSecondPressRef = useRef(false)
   switch (node.kind) {
     case 'leaf':
       return renderGroup(node.group)
@@ -200,21 +206,42 @@ function GridNode({
             data-group-divider={splitId}
             onMouseDown={(event) => {
               event.preventDefault()
-              // LIFE-825 C2(fix1 B6) — 더블클릭의 둘째 누름은 드래그를 걸지 않는다: 걸면 리셋 직전에 고스트·셀 배지가 한 번 뜨고 mouseup 이 셀 스냅된
-              // 옛 비율을 한 번 더 커밋한다(저장 1회 + 격자 요청 1회 — 바로 뒤 리셋이 덮지만 헛일). 리셋은 `onDoubleClick` 이 한다(mouseup 뒤라 늘 마지막).
-              if (event.detail >= 2) return
               const element = boxRef.current
               if (element === null) return
-              beginDrag({
-                splitId,
-                direction: node.direction,
-                box: element.getBoundingClientRect(),
-                ratio: node.ratio,
-                metrics: overheadOf({ box: element, direction: node.direction }),
-              })
+              const start = (pointer?: { x: number; y: number }): void =>
+                beginDrag({
+                  splitId,
+                  direction: node.direction,
+                  box: element.getBoundingClientRect(),
+                  ratio: node.ratio,
+                  metrics: overheadOf({ box: element, direction: node.direction }),
+                  ...(pointer === undefined ? {} : { pointer }),
+                })
+              draggedSinceSecondPressRef.current = false
+              if (event.detail < 2) {
+                start()
+                return
+              }
+              // LIFE-825 C2(fix1 B6·fix5 E5) — 더블클릭의 둘째 누름은 바로 드래그를 걸지 않는다: 걸면 리셋 직전에 고스트·셀 배지가 한 번 뜨고 mouseup 이
+              // 셀 스냅된 옛 비율을 한 번 더 커밋한다(저장 1회 + 격자 요청 1회 — 바로 뒤 리셋이 덮지만 헛일). 리셋은 `onDoubleClick` 이 한다(mouseup 뒤라 늘 마지막).
+              // 다만 끈 직후 같은 자리를 다시 눌러 끄는 손(OS 가 둘째 누름으로 센다)은 드래그여야 한다 — 누른 채 `DRAG_SLOP_PX` 넘게 움직이면 그때 드래그를 건다.
+              const origin = { x: event.clientX, y: event.clientY }
+              const onMove = (move: MouseEvent): void => {
+                if (Math.hypot(move.clientX - origin.x, move.clientY - origin.y) < DRAG_SLOP_PX) return
+                release()
+                draggedSinceSecondPressRef.current = true
+                start({ x: move.clientX, y: move.clientY })
+              }
+              const release = (): void => {
+                document.removeEventListener('mousemove', onMove)
+                document.removeEventListener('mouseup', release)
+              }
+              document.addEventListener('mousemove', onMove)
+              document.addEventListener('mouseup', release)
             }}
             onDoubleClick={(event) => {
               event.preventDefault()
+              if (draggedSinceSecondPressRef.current) return
               onResetRun(splitId)
             }}
           >

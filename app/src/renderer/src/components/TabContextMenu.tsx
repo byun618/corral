@@ -115,7 +115,8 @@ export function TabContextMenu({
   onClose: () => void
   onCloseScope: (scope: CloseScope) => void
   onSetColor: (color: string | null) => void
-  onDismiss: () => void
+  /** LIFE-825 low H1 — 항목 실행으로 닫히면 `'item'`(Esc·바깥 클릭·다른 메뉴는 인자 없음). */
+  onDismiss: (reason?: 'item') => void
 }): React.JSX.Element {
   const bindingLabel = useBindingLabel()
   const ref = useRef<HTMLDivElement | null>(null)
@@ -181,7 +182,7 @@ export function TabContextMenu({
         title={enabled ? undefined : input.disabledTitle}
         onClick={() => {
           if (!enabled) return
-          onDismiss()
+          onDismiss('item')
           input.run()
         }}
       >
@@ -259,7 +260,7 @@ export function TabContextMenu({
               className="repo-row-menu-item"
               data-tab-menu-move-other={group.groupId}
               onClick={() => {
-                onDismiss()
+                onDismiss('item')
                 onMoveToOtherGroup(group.groupId)
               }}
             >
@@ -325,7 +326,7 @@ export function TabContextMenu({
               aria-label={`탭 색 ${entry.label}`}
               style={entry.value === null ? undefined : { backgroundColor: entry.value }}
               onClick={() => {
-                onDismiss()
+                onDismiss('item')
                 onSetColor(entry.value)
               }}
             />

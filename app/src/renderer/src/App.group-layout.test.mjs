@@ -785,3 +785,115 @@ describe('fix4 F1 — 메뉴를 연 채 이동 없이 끝난 ⌘⌥방향(가장
     }
   }
 })
+
+describe('low H1 — 메뉴를 연 채 ⌘⌥방향(가장자리) 요청 중 항목 실행 = 요청 없이 같은 항목 실행', () => {
+  const wait = async (app, ms) => {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)) })
+    await app.settle(5)
+  }
+  const openTerm2 = async (options) => {
+    const app = await mount({ layout: TERM2('g2'), ...options })
+    await app.key(cmdAlt('down'))
+    await wait(app, (options.neighborDelayMs ?? 0) + 100) // 시작 이동도 지연 IPC 를 탄다
+    expect(app.active()).toBe('g3')
+    await rightClick(app, app.q('[data-tab-group="g1"] [data-main-tab="t1"]'))
+    expect(app.q('[data-tab-menu="t1"]')).not.toBeNull()
+    return app
+  }
+  const ITEMS = {
+    rename: {
+      open: (options) => openFromG3(MENUS.terminalTab, options),
+      item: '[data-tab-menu-rename="t1"]',
+      check: (app) => {
+        const input = app.q('.main-tab-rename.is-editing')
+        expect(input).not.toBeNull()
+        expect(document.activeElement).toBe(input)
+      },
+    },
+    // 오른쪽 새 영역으로 옮기기 — 새 영역이 활성·본문.
+    moveRight: {
+      open: (options) => openFromG3(MENUS.terminalTab, options),
+      item: '[data-tab-menu-move-right="t1"]',
+      check: (app) => {
+        expect(['g1', 'g2', 'g3']).not.toContain(app.active())
+        expect(app.tabsOf(app.active())).toEqual(['t1'])
+        expect(bodyFocusIn()).toBe(app.active())
+      },
+    },
+    // 유일한 탭을 다른 영역으로 — 원 영역이 사라지고 받은 영역이 활성·본문(키 포커스가 body 로 남지 않게).
+    moveOnlyTab: {
+      open: (options) => openTerm2(options),
+      item: '[data-tab-menu-move-other="g2"]',
+      check: (app) => {
+        expect(app.active()).toBe('g2')
+        expect(app.tabsOf('g2')).toContain('t1')
+        expect(document.activeElement).not.toBe(document.body)
+        expect(bodyFocusIn()).toBe('g2')
+      },
+    },
+  }
+  for (const [itemName, entry] of Object.entries(ITEMS)) {
+    for (const during of [true, false]) {
+      it(`${itemName} × ${during ? '가장자리 요청 중(지연 300ms)' : '요청 없음(대조)'}`, async () => {
+        const app = await entry.open({ neighborDelayMs: 300 })
+        if (during) {
+          const sent = app.calls.neighbor.length
+          await app.key(cmdAlt('left')) // g1 은 왼쪽 이웃이 없다
+          expect(app.calls.neighbor).toHaveLength(sent + 1)
+        }
+        await app.mouse('click', app.q(entry.item))
+        await app.settle(5)
+        entry.check(app)
+        await wait(app, 500) // 응답(이동 없음) 뒤에도 그대로
+        entry.check(app)
+      })
+    }
+  }
+})
+
+describe('low H2 — CLI reveal 은 실제로 일어난 이동: 미뤄 둔 메뉴 포커스가 닫힘 때 되돌리지 않는다', () => {
+  const wait = async (app, ms) => {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)) })
+    await app.settle(5)
+  }
+  const openTerm2 = async (options) => {
+    const app = await mount({ layout: TERM2('g2'), ...options })
+    await app.key(cmdAlt('down'))
+    await wait(app, (options.neighborDelayMs ?? 0) + 100) // 시작 이동도 지연 IPC 를 탄다
+    expect(app.active()).toBe('g3')
+    await rightClick(app, app.q('[data-tab-group="g1"] [data-main-tab="t1"]'))
+    expect(app.active()).toBe('g1')
+    return app
+  }
+  it('메뉴 열린 채 reveal(g2 의 p2) → Esc: 활성·본문 = g2', async () => {
+    const app = await openTerm2({})
+    await app.reveal('p2')
+    expect(app.active()).toBe('g2')
+    await app.key({ key: 'Escape' })
+    expect(app.q('[data-tab-menu="t1"]')).toBeNull()
+    expect(app.active()).toBe('g2')
+    expect(bodyFocusIn()).toBe('g2')
+  })
+  it('가장자리 요청 중 Esc(닫힘이 요청 끝으로 미뤄짐) 뒤 reveal → 요청 끝: 활성·본문 = g2', async () => {
+    const app = await openTerm2({ neighborDelayMs: 300 })
+    await app.key(cmdAlt('left'))
+    await app.key({ key: 'Escape' })
+    await app.reveal('p2')
+    expect(app.active()).toBe('g2')
+    await wait(app, 500)
+    expect(app.active()).toBe('g2')
+    expect(bodyFocusIn()).toBe('g2')
+  })
+})
+
+it('low H3 — 줄에 두 요청(가장자리 ← 뒤 이동 →), 첫 응답 전 Esc: 줄이 빌 때까지 미뤄 → 이동한 영역이 활성·본문', async () => {
+  const app = await openFromG3(MENUS.terminalTab, { neighborDelayMs: 200 })
+  await app.key(cmdAlt('left'))
+  await app.key(cmdAlt('right'))
+  expect(app.calls.neighbor).toHaveLength(1)
+  await app.key({ key: 'Escape' })
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)) })
+  await app.settle(5)
+  expect(app.active()).toBe('g2')
+  expect(bodyFocusIn()).toBe('g2')
+})

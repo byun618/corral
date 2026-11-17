@@ -209,7 +209,7 @@ function MainTab({
   /** LIFE-825 fix3 — 이 메뉴를 연 우클릭의 토큰을 받는다(헤더가 그 누름에서 받은 것, 없으면 null). */
   takeMenuToken?: () => number | null
   /** LIFE-825 fix1 B3·fix3 — 우클릭 메뉴가 닫혔다(Esc·항목 실행·바깥 클릭). 연 우클릭의 토큰을 돌려준다. */
-  onMenuClosed?: (token: number | null) => void
+  onMenuClosed?: (input: { token: number | null; byItem: boolean }) => void
 }): React.JSX.Element {
   // LIFE-366 F2 — 우클릭 메뉴. 좌표를 들고 있는다(탭바에는 `⋯` 버튼을 놓을 폭이 없다).
   const [menu, setMenu] = useState<TabMenuAnchor | null>(null)
@@ -424,9 +424,9 @@ function MainTab({
           onClose={onClose}
           onCloseScope={onCloseScope}
           onSetColor={onSetColor}
-          onDismiss={() => {
+          onDismiss={(reason) => {
             setMenu(null)
-            onMenuClosed?.(menuTokenRef.current)
+            onMenuClosed?.({ token: menuTokenRef.current, byItem: reason === 'item' })
             menuTokenRef.current = null
           }}
         />,
@@ -483,7 +483,8 @@ function FileTabMenu({
   headerMode?: boolean
   /** LIFE-825 — 헤더 모드의 영역 배치 항목(터미널 탭 메뉴와 같은 두 줄). */
   groupLayout?: GroupLayoutMenu
-  onDismiss: () => void
+  /** LIFE-825 low H1 — 항목 실행으로 닫히면 `'item'`. */
+  onDismiss: (reason?: 'item') => void
   onClose: () => void
   onKeep: () => void
   onCloseScope: (scope: CloseScope) => void
@@ -533,9 +534,9 @@ function FileTabMenu({
       y={y}
       entries={entries}
       attrs={{ 'data-file-tab-menu': item.rel, ...(headerMode === true ? { 'data-file-tab-menu-header-mode': item.tabId } : {}) }}
-      onClose={onDismiss}
+      onClose={() => onDismiss()}
       onAction={(action) => {
-        onDismiss()
+        onDismiss('item')
         if (action === 'close') onClose()
         else if (action === 'keep') onKeep()
         else if (action === 'layout-maximize') groupLayout?.onToggleMaximize()
@@ -595,7 +596,7 @@ function FileTab({
   /** LIFE-825 fix3 — 이 메뉴를 연 우클릭의 토큰. */
   takeMenuToken?: () => number | null
   /** LIFE-825 fix1 B3·fix3 — 우클릭 메뉴가 닫혔다. 연 우클릭의 토큰을 돌려준다. */
-  onMenuClosed?: (token: number | null) => void
+  onMenuClosed?: (input: { token: number | null; byItem: boolean }) => void
 }): React.JSX.Element {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const menuTokenRef = useRef<number | null>(null)
@@ -669,9 +670,9 @@ function FileTab({
           item={item}
           model={model}
           otherGroups={otherGroups}
-          onDismiss={() => {
+          onDismiss={(reason) => {
             setMenu(null)
-            onMenuClosed?.(menuTokenRef.current)
+            onMenuClosed?.({ token: menuTokenRef.current, byItem: reason === 'item' })
             menuTokenRef.current = null
           }}
           onClose={onClose}
@@ -891,12 +892,12 @@ export function GroupHeader({
   /** LIFE-825 C3·C4 — 헤더 모드 메뉴의 영역 배치 항목. */
   groupLayout?: GroupLayoutMenu
   /**
-   * LIFE-825 C6(fix1 B3) — 비활성 영역 탭바·탭 **우클릭**: 누르는 순간은 활성 영역만 옮기고(`onActivateOnly` — 포커스 순번 포함, 본문 포커스는 그대로 —
+   * LIFE-825 C6(fix1 B3·fix3 E3) — 탭바·탭 **우클릭**(활성·비활성 영역 모두): 누르는 순간은 활성 영역만 옮기고(`onActivateOnly` — 포커스 순번 포함, 본문 포커스는 그대로 —
    * 누르는 순간 편집기에 포커스를 주면 그 스크롤이 막 연 메뉴를 닫을 수 있다), 메뉴가 닫힐 때(Esc·항목 실행·바깥 클릭) 본문 포커스(`onActivateFocus`
    * = 824 「본문 포커스 한 길」). 항목은 닫힘 뒤에 돌므로 자기 포커스를 정하는 항목(이름 바꾸기·닫기 따라가기 등)이 이긴다. 둘 중 하나라도 없으면 base(`onActivate`).
    */
   onActivateOnly?: () => number
-  onActivateFocus?: (token: number) => void
+  onActivateFocus?: (input: { token: number; byItem: boolean }) => void
 }): React.JSX.Element {
   const bindingLabel = useBindingLabel()
   // LIFE-496 — `+` 드롭다운. 열린 동안 `+` 의 화면 자리를 들고 있다(메뉴가 그 아래 왼쪽 정렬로 선다).
@@ -926,8 +927,8 @@ export function GroupHeader({
     return token
   }
   const headerMenuTokenRef = useRef<number | null>(null)
-  const menuClosed = (token: number | null): void => {
-    if (token !== null) onActivateFocus?.(token)
+  const menuClosed = ({ token, byItem }: { token: number | null; byItem: boolean }): void => {
+    if (token !== null) onActivateFocus?.({ token, byItem })
   }
   // 탭 메뉴 포털 자리(`MainTab.menuHost`) — 렌더 중에 DOM 을 읽지 않으려고 콜백 ref 로 state 에 받는다.
   const [menuHost, setMenuHost] = useState<HTMLDivElement | null>(null)
@@ -1196,9 +1197,9 @@ export function GroupHeader({
           onClose={() => onCloseTab(activeTab)}
           onCloseScope={(scope) => onCloseScope({ tab: activeTab, scope })}
           onSetColor={(color) => onSetTabColor({ tab: activeTab, color })}
-          onDismiss={() => {
+          onDismiss={(reason) => {
             setHeaderMenu(null)
-            menuClosed(headerMenuTokenRef.current)
+            menuClosed({ token: headerMenuTokenRef.current, byItem: reason === 'item' })
             headerMenuTokenRef.current = null
           }}
         />
@@ -1212,9 +1213,9 @@ export function GroupHeader({
           otherGroups={otherGroups}
           headerMode
           {...(groupLayout === undefined ? {} : { groupLayout })}
-          onDismiss={() => {
+          onDismiss={(reason) => {
             setHeaderMenu(null)
-            menuClosed(headerMenuTokenRef.current)
+            menuClosed({ token: headerMenuTokenRef.current, byItem: reason === 'item' })
             headerMenuTokenRef.current = null
           }}
           onClose={() => onCloseFileTab?.(activeFileItem.tabId)}

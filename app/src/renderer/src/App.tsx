@@ -519,10 +519,10 @@ export function App(): React.JSX.Element {
    */
   const focusSeqRef = useRef(0)
   /**
-   * LIFE-825 미뤄 둔 메뉴 포커스 (fix3 정리·fix4 F1) — **규칙 한 줄**: 탭바 우클릭은 활성 영역만 옮기고 토큰 하나를 남긴다. 그 우클릭이 연 메뉴가 닫힐 때
-   * (⌘⌥방향 요청이 진행 중이면 그 요청이 끝날 때까지 미뤄), 그 토큰이 아직 마지막 우클릭의 것이고 그 뒤 실제로 일어난 이동(포커스 순번 상승·⌘⌥방향 이동)이
-   * 없으면 그 영역 본문에 포커스한다 — 아니면 아무것도 안 한다.
-   * 칸은 하나(마지막 우클릭)다. 다른 우클릭이 덮어쓰고, 방향 이동이 실제로 일어나는 자리에서 비운다(`focusDirectionOnce`). 이동 없이 끝난 방향 요청(가장자리·거절)은 칸을 남긴다.
+   * LIFE-825 미뤄 둔 메뉴 포커스 (fix3 정리·fix4 F1·low H1·H2) — **규칙 한 줄**: 탭바 우클릭은 활성 영역만 옮기고 토큰 하나를 남긴다. 그 우클릭이 연 메뉴가 닫힐 때
+   * (Esc·바깥 클릭으로 닫혔고 ⌘⌥방향 요청이 진행 중이면 그 요청이 끝날 때까지 미뤄 — 항목 실행으로 닫히면 미루지 않는다), 그 토큰이 아직 마지막 우클릭의 것이고
+   * 그 뒤 실제로 일어난 이동(포커스 순번 상승·⌘⌥방향 이동·CLI reveal)이 없으면 그 영역 본문에 포커스한다 — 아니면 아무것도 안 한다. 항목은 그 뒤에 돈다.
+   * 칸은 하나(마지막 우클릭)다. 다른 우클릭이 덮어쓰고, 방향 이동(`focusDirectionOnce`)·reveal(`requestedPane`)이 실제로 일어나는 자리에서 비운다. 이동 없이 끝난 방향 요청(가장자리·거절)은 칸을 남긴다.
    */
   const menuDeferredFocusRef = useRef<{ token: number; seq: number; groupId: string; closed: boolean } | null>(null)
   const menuTokenSeqRef = useRef(0)
@@ -807,8 +807,10 @@ export function App(): React.JSX.Element {
     const owner = state?.repos.flatMap(repo => repo.worktrees).flatMap(row => row.workspace?.tabs ?? [])
       .find(tab => tab.panes.some(pane => pane.paneId === requestedPane))
     if (!owner) return
-    if (lifecycle.activeWorkspaceId !== owner.workspaceId) { selectPane(requestedPane); return }
+    // low H2 — CLI·main reveal 은 순번을 안 올리지만 실제로 일어난 이동이다: 미뤄 둔 메뉴 포커스가 닫힘 때 되돌리지 않게 칸을 비운다.
+    if (lifecycle.activeWorkspaceId !== owner.workspaceId) { menuDeferredFocusRef.current = null; selectPane(requestedPane); return }
     if (!layout.revealTab(owner.tabId)) return
+    menuDeferredFocusRef.current = null
     selectPane(requestedPane)
     setRequestedPane(null)
   }, [requestedPane, state, lifecycle.activeWorkspaceId, layout.revealTab, selectPane])
@@ -2474,11 +2476,12 @@ export function App(): React.JSX.Element {
             menuDeferredFocusRef.current = { token: menuTokenSeqRef.current, seq: focusSeqRef.current, groupId: group.groupId, closed: false }
             return menuTokenSeqRef.current
           }}
-          onActivateFocus={(token) => {
+          onActivateFocus={({ token, byItem }) => {
             const deferred = menuDeferredFocusRef.current
             // fix3 E1 — 다른 우클릭의 칸이면 건드리지 않는다(겹친 메뉴에서 앞 메뉴의 닫힘이 뒤 우클릭의 몫을 지우거나 쓰지 않게).
             if (deferred === null || deferred.token !== token) return
-            if (directionQueuedRef.current > 0) {
+            // low H1 — 항목 실행으로 닫히면 요청 중이어도 미루지 않는다(요청 없음과 같은 순서: 본문 포커스 → 항목이 자기 포커스·영역을 정한다).
+            if (directionQueuedRef.current > 0 && !byItem) {
               menuDeferredFocusRef.current = { ...deferred, closed: true }
               return
             }

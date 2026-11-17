@@ -146,6 +146,7 @@ function MainTab({
   onSetColor,
   onDragStart,
   menuHost,
+  takeMenuToken,
   onMenuClosed,
 }: {
   tab: TabRow
@@ -205,11 +206,14 @@ function MainTab({
    * 포털이라 React 이벤트 버블링(탭의 onClick·onMouseDown 등)은 그대로다.
    */
   menuHost: HTMLElement | null
-  /** LIFE-825 fix1 B3 — 우클릭 메뉴가 닫혔다(Esc·항목 실행·바깥 클릭). */
-  onMenuClosed?: () => void
+  /** LIFE-825 fix3 — 이 메뉴를 연 우클릭의 토큰을 받는다(헤더가 그 누름에서 받은 것, 없으면 null). */
+  takeMenuToken?: () => number | null
+  /** LIFE-825 fix1 B3·fix3 — 우클릭 메뉴가 닫혔다(Esc·항목 실행·바깥 클릭). 연 우클릭의 토큰을 돌려준다. */
+  onMenuClosed?: (token: number | null) => void
 }): React.JSX.Element {
   // LIFE-366 F2 — 우클릭 메뉴. 좌표를 들고 있는다(탭바에는 `⋯` 버튼을 놓을 폭이 없다).
   const [menu, setMenu] = useState<TabMenuAnchor | null>(null)
+  const menuTokenRef = useRef<number | null>(null)
   // 인라인 리네임 (I-7). **입력칸은 항상 DOM 에 있다** — 조건부 렌더링하면 좌표 클릭 계측이
   // 없는 요소를 못 누른다(MainTab 닫기 버튼·SessionRow 와 같은 결). 대신 평소엔 투명하고
   // `pointer-events: none` 이라 라벨 클릭을 가로채지 않는다.
@@ -341,6 +345,7 @@ function MainTab({
       onContextMenu={(event) => {
         event.preventDefault()
         event.stopPropagation()
+        menuTokenRef.current = takeMenuToken?.() ?? null
         setMenu({ tabId: tab.tabId, x: event.clientX, y: event.clientY })
       }}
     >
@@ -421,7 +426,8 @@ function MainTab({
           onSetColor={onSetColor}
           onDismiss={() => {
             setMenu(null)
-            onMenuClosed?.()
+            onMenuClosed?.(menuTokenRef.current)
+            menuTokenRef.current = null
           }}
         />,
         menuHost,
@@ -567,6 +573,7 @@ function FileTab({
   onMoveToGroup,
   onMoveToOtherGroup,
   onDragStart,
+  takeMenuToken,
   onMenuClosed,
 }: {
   item: Extract<GroupTabItem, { kind: 'file' }>
@@ -585,10 +592,13 @@ function FileTab({
   onMoveToGroup: (direction: MoveDirection) => void
   onMoveToOtherGroup: (targetGroupId: string) => void
   onDragStart: (event: React.MouseEvent) => void
-  /** LIFE-825 fix1 B3 — 우클릭 메뉴가 닫혔다. */
-  onMenuClosed?: () => void
+  /** LIFE-825 fix3 — 이 메뉴를 연 우클릭의 토큰. */
+  takeMenuToken?: () => number | null
+  /** LIFE-825 fix1 B3·fix3 — 우클릭 메뉴가 닫혔다. 연 우클릭의 토큰을 돌려준다. */
+  onMenuClosed?: (token: number | null) => void
 }): React.JSX.Element {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const menuTokenRef = useRef<number | null>(null)
   const label = item.diffLabel ?? fileTabLabel(item.rel)
   return (
     <div
@@ -624,6 +634,7 @@ function FileTab({
         event.preventDefault()
         event.stopPropagation()
         window.corral.activateWindow()
+        menuTokenRef.current = takeMenuToken?.() ?? null
         setMenu({ x: event.clientX, y: event.clientY })
       }}
     >
@@ -660,7 +671,8 @@ function FileTab({
           otherGroups={otherGroups}
           onDismiss={() => {
             setMenu(null)
-            onMenuClosed?.()
+            onMenuClosed?.(menuTokenRef.current)
+            menuTokenRef.current = null
           }}
           onClose={onClose}
           onKeep={onKeep}
@@ -883,8 +895,8 @@ export function GroupHeader({
    * 누르는 순간 편집기에 포커스를 주면 그 스크롤이 막 연 메뉴를 닫을 수 있다), 메뉴가 닫힐 때(Esc·항목 실행·바깥 클릭) 본문 포커스(`onActivateFocus`
    * = 824 「본문 포커스 한 길」). 항목은 닫힘 뒤에 돌므로 자기 포커스를 정하는 항목(이름 바꾸기·닫기 따라가기 등)이 이긴다. 둘 중 하나라도 없으면 base(`onActivate`).
    */
-  onActivateOnly?: () => void
-  onActivateFocus?: () => void
+  onActivateOnly?: () => number
+  onActivateFocus?: (token: number) => void
 }): React.JSX.Element {
   const bindingLabel = useBindingLabel()
   // LIFE-496 — `+` 드롭다운. 열린 동안 `+` 의 화면 자리를 들고 있다(메뉴가 그 아래 왼쪽 정렬로 선다).
@@ -903,17 +915,25 @@ export function GroupHeader({
   // LIFE-387 B1 F-B1-1·F-B1-3 — 헤더 모드 메뉴(⊞ · 탭바 빈 곳 우클릭). 활성 탭이 없으면 안 연다
   // (§2 GroupHeader 우클릭 "빈 영역은 열지 않음").
   const [headerMenu, setHeaderMenu] = useState<TabMenuAnchor | null>(null)
-  /** fix1 B3 — 비활성 영역 우클릭으로 연 메뉴가 닫히면 본문 포커스를 그 영역으로(한 번). */
-  const focusOnMenuCloseRef = useRef(false)
-  const menuClosed = (): void => {
-    if (!focusOnMenuCloseRef.current) return
-    focusOnMenuCloseRef.current = false
-    onActivateFocus?.()
+  /**
+   * fix3 — 우클릭 한 번 = 토큰 하나(App 이 준다). 누름에서 받은 토큰을 그 누름이 연 메뉴가 가져가고(`takeMenuToken`), 그 메뉴가 닫힐 때 돌려준다.
+   * 메뉴마다 자기 토큰을 들고 있어 겹친 메뉴(A 열린 채 B 우클릭)·같은 영역 연속 우클릭에서 앞 메뉴의 닫힘이 뒤 우클릭의 몫을 건드리지 않는다.
+   */
+  const pendingMenuTokenRef = useRef<number | null>(null)
+  const takeMenuToken = (): number | null => {
+    const token = pendingMenuTokenRef.current
+    pendingMenuTokenRef.current = null
+    return token
+  }
+  const headerMenuTokenRef = useRef<number | null>(null)
+  const menuClosed = (token: number | null): void => {
+    if (token !== null) onActivateFocus?.(token)
   }
   // 탭 메뉴 포털 자리(`MainTab.menuHost`) — 렌더 중에 DOM 을 읽지 않으려고 콜백 ref 로 state 에 받는다.
   const [menuHost, setMenuHost] = useState<HTMLDivElement | null>(null)
   const openHeaderMenu = (point: { x: number; y: number }): void => {
     if (activeTabId === null) return
+    headerMenuTokenRef.current = takeMenuToken()
     setHeaderMenu({ tabId: activeTabId, x: point.x, y: point.y })
   }
   const activeTab = tabs.find((tab) => tab.tabId === activeTabId) ?? null
@@ -937,12 +957,11 @@ export function GroupHeader({
       data-group-header={groupId}
       onMouseDown={(event) => {
         keepFocusOnHeaderBackground(event)
-        if (event.button === 2 && !activeGroup && onActivateOnly !== undefined && onActivateFocus !== undefined) {
-          focusOnMenuCloseRef.current = true
-          onActivateOnly()
+        // fix3 — 활성 영역이어도 같은 규칙(E3 같은 영역 연속 우클릭): 우클릭은 활성만 옮기고 토큰을 받는다.
+        if (event.button === 2 && onActivateOnly !== undefined && onActivateFocus !== undefined) {
+          pendingMenuTokenRef.current = onActivateOnly()
         } else {
-          // 다른 누름이 오면 기다리던 「메뉴 닫힘 뒤 포커스」는 버린다(그 누름이 자기 포커스를 정한다).
-          if (event.button === 0) focusOnMenuCloseRef.current = false
+          if (event.button === 0) pendingMenuTokenRef.current = null
           onActivate()
         }
       }}
@@ -985,6 +1004,7 @@ export function GroupHeader({
               onMoveToGroup={(direction) => onMoveToGroup({ tabId: item.tabId, direction })}
               onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: item.tabId, targetGroupId })}
               onDragStart={(event) => onTabDragStart(event, item.tabId)}
+              takeMenuToken={takeMenuToken}
               onMenuClosed={menuClosed}
             />
             )
@@ -1022,6 +1042,7 @@ export function GroupHeader({
               onSetColor={(color) => onSetTabColor({ tab, color })}
               onDragStart={(event) => onTabDragStart(event, tab.tabId)}
               menuHost={menuHost}
+              takeMenuToken={takeMenuToken}
               onMenuClosed={menuClosed}
             />
             )
@@ -1177,7 +1198,8 @@ export function GroupHeader({
           onSetColor={(color) => onSetTabColor({ tab: activeTab, color })}
           onDismiss={() => {
             setHeaderMenu(null)
-            menuClosed()
+            menuClosed(headerMenuTokenRef.current)
+            headerMenuTokenRef.current = null
           }}
         />
       )}
@@ -1192,7 +1214,8 @@ export function GroupHeader({
           {...(groupLayout === undefined ? {} : { groupLayout })}
           onDismiss={() => {
             setHeaderMenu(null)
-            menuClosed()
+            menuClosed(headerMenuTokenRef.current)
+            headerMenuTokenRef.current = null
           }}
           onClose={() => onCloseFileTab?.(activeFileItem.tabId)}
           onKeep={() => onKeepFileTab?.(activeFileItem.tabId)}

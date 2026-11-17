@@ -606,3 +606,145 @@ describe('fix2 D1 — 우클릭으로 미뤄 둔 본문 포커스는 메뉴가 �
     })
   }
 })
+
+const rightClick = async (app, target) => {
+  await app.mouse('mousedown', target, { button: 2 })
+  await app.mouse('contextmenu', target, { button: 2 })
+}
+const TERM2 = (activeGroupId) => ({
+  root: { kind: 'split', direction: 'row', ratio: 0.5, first: leaf('g1', ['t1']), second: { kind: 'split', direction: 'column', ratio: 0.5, first: leaf('g2', ['t2']), second: leaf('g3', [DIFF]) } },
+  activeGroupId,
+})
+
+describe('fix3 E1 — 메뉴가 열린 채 다른 비활성 영역 우클릭 → 닫힘: 활성·본문 포커스·⌘W 대상 = 뒤 영역', () => {
+  it('터미널(g1 t1) → 파일(g2)', async () => {
+    const app = await openFromG3(MENUS.terminalTab)
+    await rightClick(app, app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`))
+    expect(app.q('[data-file-tab-menu]')).not.toBeNull()
+    await closeMenu(app, MENUS.fileTab)
+    expect(app.active()).toBe('g2')
+    expect(bodyFocusIn()).toBe('g2')
+    await app.key({ key: 'w', code: 'KeyW', metaKey: true })
+    expect(app.tabsOf('g2')).toEqual([])
+    expect(app.calls.closeTabs).toEqual([])
+  })
+  it('파일(g2) → 터미널(g1 t1)', async () => {
+    const app = await openFromG3(MENUS.fileTab)
+    await rightClick(app, app.q('[data-tab-group="g1"] [data-main-tab="t1"]'))
+    expect(app.q('[data-tab-menu="t1"]')).not.toBeNull()
+    await closeMenu(app, MENUS.terminalTab)
+    expect(app.active()).toBe('g1')
+    expect(bodyFocusIn()).toBe('g1')
+    await app.key({ key: 'w', code: 'KeyW', metaKey: true })
+    expect(app.calls.closeTabs).toEqual([['t1']])
+    expect(app.tabsOf('g2')).toEqual([FILE])
+  })
+  it('터미널(g1 t1) → 터미널(g2 t2)', async () => {
+    const app = await mount({ layout: TERM2('g2') })
+    await app.key(cmdAlt('down'))
+    expect(app.active()).toBe('g3')
+    await rightClick(app, app.q('[data-tab-group="g1"] [data-main-tab="t1"]'))
+    expect(app.q('[data-tab-menu="t1"]')).not.toBeNull()
+    await rightClick(app, app.q('[data-tab-group="g2"] [data-main-tab="t2"]'))
+    expect(app.q('[data-tab-menu="t2"]')).not.toBeNull()
+    await app.key({ key: 'Escape' })
+    expect(app.q('[data-tab-menu="t2"]')).toBeNull()
+    expect(app.active()).toBe('g2')
+    expect(bodyFocusIn()).toBe('g2')
+    await app.key({ key: 'w', code: 'KeyW', metaKey: true })
+    expect(app.calls.closeTabs).toEqual([['t2']])
+  })
+})
+
+it('fix3 E2 — 메뉴가 열린 채 누른 ⌘⌥방향은 IPC 응답 전에 메뉴를 닫아도 이긴다: 응답 뒤 활성·본문 포커스 = 이웃 영역', async () => {
+  const app = await mount({ layout: THREE('g2'), neighborDelayMs: 200 })
+  await app.key(cmdAlt('down'))
+  expect(app.active()).toBe('g3')
+  await rightClick(app, app.q('[data-tab-group="g1"] [data-main-tab="t1"]'))
+  expect(app.active()).toBe('g1')
+  await app.key(cmdAlt('right')) // 터미널 활성이라 이웃 pane IPC 가 먼저 나간다(200ms 지연)
+  expect(app.calls.neighbor).toHaveLength(1)
+  await app.key({ key: 'Escape' }) // 응답 전에 메뉴를 닫는다
+  expect(app.q('[data-tab-menu="t1"]')).toBeNull()
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
+  await app.settle(5)
+  const moved = app.active()
+  expect(moved).not.toBe('g1')
+  expect(bodyFocusIn()).toBe(moved)
+})
+
+it('fix3 E3 — 같은 영역에서 우클릭을 연달아(파일 탭 a → b) 해도 메뉴가 닫히면 그 영역 본문', async () => {
+  const FILE_B = 'file:b.ts'
+  const layout = { root: { kind: 'split', direction: 'row', ratio: 0.5, first: leaf('g1', ['t1', 't2']), second: { kind: 'split', direction: 'column', ratio: 0.5, first: leaf('g2', [FILE, FILE_B]), second: leaf('g3', [DIFF]) } }, activeGroupId: 'g2' }
+  const app = await mount({ layout })
+  await app.key(cmdAlt('down'))
+  expect(app.active()).toBe('g3')
+  await rightClick(app, app.q(`[data-tab-group="g2"] [data-main-tab="${FILE}"]`))
+  expect(app.active()).toBe('g2')
+  await rightClick(app, app.q(`[data-tab-group="g2"] [data-main-tab="${FILE_B}"]`))
+  expect(app.q('[data-file-tab-menu]')).not.toBeNull()
+  await app.key({ key: 'Escape' })
+  expect(app.q('[data-file-tab-menu]')).toBeNull()
+  expect(app.active()).toBe('g2')
+  expect(bodyFocusIn()).toBe('g2')
+})
+
+describe('fix3 E4 — D3 App 배선: 기준 탭 없음·사라짐·다른 자리 요청 섞임에도 화면 순서 = 요청 순서', () => {
+  /** createRow 를 요청 순서대로 tabIds 로 답하되 문을 열 때까지 붙든다. */
+  const gated = (ids) => {
+    const gates = []
+    let calls = 0
+    return { gates, createRow: async () => { const tabId = ids[calls]; calls += 1; await new Promise((resolve) => gates.push(resolve)); return { ok: true, tabId, paneId: `p-${tabId}` } } }
+  }
+  const cmdT = { key: 't', code: 'KeyT', metaKey: true }
+  // App 에서 빈 영역은 영역이 하나뿐일 때만 선다(둘 이상이면 배치가 빈 영역을 접는다 — App.group-focus C8 과 같은 사실). 그래서 탭 0 인 worktree 의 한 영역으로 본다.
+  it('빈 영역(탭 0, 기준 탭 없음) — 뒤 요청(n2) 먼저 도착 → 앞 요청(n1): n1, n2', async () => {
+    const g = gated(['n1', 'n2'])
+    const app = await mount({ layout: { root: leaf('g1', [], null), activeGroupId: 'g1' }, panes: {}, createRow: g.createRow })
+    expect(app.q('[data-empty-group="g1"]')).not.toBeNull()
+    await app.key(cmdT)
+    await app.key(cmdT)
+    expect(app.calls.create).toHaveLength(2)
+    await act(async () => { for (const resolve of g.gates) resolve() })
+    await app.settle(3)
+    await app.arrive(['n2'])
+    expect(app.tabsOf('g1')).toEqual(['n2'])
+    await app.arrive(['n2', 'n1'])
+    expect(app.tabsOf('g1')).toEqual(['n1', 'n2'])
+  })
+  it('기준 탭(t1)이 두 탭 도착 전 사라짐 — 뒤 요청 먼저 도착: t2, n1, n2', async () => {
+    const g = gated(['n1', 'n2'])
+    const app = await mount({ createRow: g.createRow })
+    await app.key(cmdT)
+    await app.key(cmdT)
+    await act(async () => { for (const resolve of g.gates) resolve() })
+    await app.settle(3)
+    await app.arrive(['t2', 'n2'])
+    expect(app.tabsOf('g1')).toEqual(['t2', 'n2'])
+    await app.arrive(['t2', 'n2', 'n1'])
+    expect(app.tabsOf('g1')).toEqual(['t2', 'n1', 'n2'])
+  })
+  it('같은 영역 다른 기준 탭 요청·다른 영역 요청이 섞여도 각자 자리: g1 t1, nc, t2, na / g2 FILE, nx', async () => {
+    const g = gated(['na', 'nx', 'nc'])
+    const layout = { root: { kind: 'split', direction: 'row', ratio: 0.5, first: leaf('g1', ['t1', 't2'], 't2'), second: leaf('g2', [FILE]) }, activeGroupId: 'g1' }
+    const app = await mount({ layout, createRow: g.createRow })
+    await app.key(cmdT) // na — g1 기준 t2
+    await app.key(cmdAlt('right'))
+    expect(app.active()).toBe('g2')
+    await app.key(cmdT) // nx — g2 기준 FILE
+    const t1 = app.q('[data-tab-group="g1"] [data-main-tab="t1"]')
+    await app.mouse('mousedown', t1)
+    await app.mouse('click', t1)
+    expect(app.active()).toBe('g1')
+    expect(app.activeTabOf('g1')).toBe('t1')
+    await app.key(cmdT) // nc — g1 기준 t1 (na 보다 뒤 요청, 다른 자리 키)
+    expect(app.calls.create).toHaveLength(3)
+    await act(async () => { for (const resolve of g.gates) resolve() })
+    await app.settle(3)
+    await app.arrive(['t1', 't2', 'nc'])
+    await app.arrive(['t1', 't2', 'nc', 'nx'])
+    await app.arrive(['t1', 't2', 'nc', 'nx', 'na'])
+    expect(app.tabsOf('g1')).toEqual(['t1', 'nc', 't2', 'na'])
+    expect(app.tabsOf('g2')).toEqual([FILE, 'nx'])
+  })
+})

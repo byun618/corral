@@ -747,6 +747,30 @@ describe('fix3 E4 — D3 App 배선: 기준 탭 없음·사라짐·다른 자리
     expect(app.tabsOf('g1')).toEqual(['t1', 'nc', 't2', 'na'])
     expect(app.tabsOf('g2')).toEqual([FILE, 'nx'])
   })
+  // low F4 — 다른 workspace 요청 섞임(회귀 방지). workspace 조건은 현실 입력에서 동치 변이다(newTabPlacement 가 이 영역 tabOrder 밖 id 를 버리고 herdr 탭 id 는 전역 유일 — worklog low 절).
+  it('다른 workspace(/r2) 요청이 사이에 섞여도 w1 은 요청 순서: g1 t1, t2, na, nb', async () => {
+    const g = gated(['na', 'nw', 'nb'])
+    const layout = { root: leaf('g1', ['t1', 't2'], 't2'), activeGroupId: 'g1' }
+    const r2 = { path: '/r2', workspaceId: 'w2', panes: { t3: ['p3'] }, layout: { root: leaf('h1', ['t3']), activeGroupId: 'h1' } }
+    const app = await mount({ layout, others: [r2], createRow: g.createRow })
+    const card = (worktreePath) => app.q(`[data-worktree="${worktreePath}"] [data-worktree-card-surface]`)
+    await app.key(cmdT) // na — w1 g1 기준 t2
+    await app.mouse('click', card('/r2'))
+    await app.settle(5)
+    expect(app.active()).toBe('h1')
+    await app.key(cmdT) // nw — w2 h1 기준 t3
+    await app.mouse('click', card('/r'))
+    await app.settle(5)
+    expect(app.active()).toBe('g1')
+    await app.key(cmdT) // nb — w1 g1 기준 t2 (na 와 같은 자리, 뒤 요청)
+    expect(app.calls.create).toHaveLength(3)
+    expect(app.calls.create.map((input) => input.workspaceId)).toEqual(['w1', 'w2', 'w1'])
+    await act(async () => { for (const resolve of g.gates) resolve() })
+    await app.settle(3)
+    await app.arrive(['t1', 't2', 'nb'])
+    await app.arrive(['t1', 't2', 'nb', 'na'])
+    expect(app.tabsOf('g1')).toEqual(['t1', 't2', 'na', 'nb'])
+  })
 })
 
 describe('fix4 F1 — 메뉴를 연 채 이동 없이 끝난 ⌘⌥방향(가장자리·IPC 거절)은 미뤄 둔 포커스를 지우지 않는다: 닫힘 뒤 활성 = 본문 포커스 = 우클릭한 영역', () => {

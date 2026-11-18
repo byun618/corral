@@ -1090,6 +1090,179 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
       expect(countSubmissions({ kind: 'codex', files: [a, b], identity, submittedAtMs, cursor: [], read: reader({ [a]: codexRow('u-1'), [b]: codexRow('u-1') }) }).matchCount).toBe(2)
     })
   })
+
+  // LIFE-797 — a claude pane whose session was parked by `←` before it held a conversation. There is no
+  // minted file to leave `continued-in` in, and after `esc` the pane writes on in the background job's own
+  // file. Every case is 「합성」: the registry entries and record files are written by hand in the shape the
+  // coordinator measured on Claude Code 2.1.296 (LIFE-797 analysis §3 e1: the pane's interactive entry keeps the
+  // minted `sessionId` and gains `parkedJobId`; the job's entry is `kind: "bg"` with `jobId` and the job's
+  // `sessionId`; the job's file appears at the first input). They prove the one-hop rule and its fail-closed
+  // edges, not that Claude Code writes that shape.
+  describe('LIFE-797 합성 — an empty pane parked by ← is followed through the registry\'s parkedJobId', () => {
+    const NEW = 'Reply with exactly: P797-B1'
+    const userRow = (input: { body: string; at: string; session: string }) =>
+      JSON.stringify({ type: 'user', origin: { kind: 'human' }, uuid: randomUUID(), sessionId: input.session, timestamp: input.at, message: { content: input.body } }) + '\n'
+    const metaRows = (session: string) => JSON.stringify({ type: 'agent-name', agentName: 'synthetic', sessionId: session }) + '\n'
+    const continuedRow = (from: string, to: string) =>
+      JSON.stringify({ type: 'continued-in', timestamp: new Date().toISOString(), sessionId: from, continuedInSessionId: to }) + '\n'
+    const past = new Date(Date.now() - 60_000).toISOString()
+    type Entry = Record<string, unknown>
+    /** The pane's minted session `a` (no file), parked as job `job` running session `b` (file created on the first input unless `bgFile`). */
+    function parked(options: { bgFile?: boolean } = {}) {
+      clearContinuedMemo()
+      const f = agentFixture('claude')
+      const a = f.record.sessionId!, b = randomUUID(), job = b.slice(0, 8)
+      const fileA = f.recordFile(), fileB = path.join(path.dirname(fileA), `${b}.jsonl`)
+      const sessions = path.join(f.dir, 'claude', 'sessions')
+      const pane: Entry = { pid: 100, sessionId: a, cwd: f.cwd, kind: 'interactive', entrypoint: 'cli', status: 'idle', parkedJobId: job }
+      const bg: Entry = { pid: 200, sessionId: b, cwd: f.cwd, kind: 'bg', entrypoint: 'cli', status: 'idle', jobId: job }
+      const registry = (entries: Entry[]) => {
+        fs.rmSync(sessions, { recursive: true, force: true })
+        fs.mkdirSync(sessions, { recursive: true })
+        for (const [index, entry] of entries.entries()) fs.writeFileSync(path.join(sessions, `${index + 100}.json`), JSON.stringify(entry))
+      }
+      registry([pane, bg])
+      fs.mkdirSync(path.dirname(fileA), { recursive: true })
+      if (options.bgFile) put(fileB, metaRows(b))
+      /** Claude Code's first input after `esc`: it lands in the job's file. */
+      const lands = (body: string) => fs.appendFileSync(fileB, (fs.existsSync(fileB) ? '' : metaRows(b)) + userRow({ body, at: new Date().toISOString(), session: b }))
+      return { f, a, b, job, fileA, fileB, sessions, pane, bg, registry, lands }
+    }
+    const refusal = (promise: Promise<unknown>) => promise.then(() => { throw new Error('expected a refusal') }, (error: unknown) => error)
+
+    it('C5 배달 확인·agent 블록: the body that lands in the job\'s new file is confirmed there, and the chain names the job\'s session', async () => {
+      const p = parked()
+      p.f.state.onPrompt = () => p.lands(NEW)
+      const result = asObject(await p.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect([result.stage, result.outcome]).toEqual(['confirmed', 'completed'])
+      expect(nested(result, 'record')).toMatchObject({ path: p.fileB, matchCount: 1, unavailableReason: null })
+      // The minted id still names the pane; the record is the job's file.
+      expect(nested(result, 'agent')).toMatchObject({ sessionId: p.a, sessionIdSource: 'client-minted' })
+      expect(nested(result, 'agent', 'sessionRecord')).toEqual({ path: p.fileB, exists: true, continuedIn: [p.b] })
+      expect(submissionVerdict(result)).toEqual({ kind: 'delivered', confirmed: 'wait_satisfied' })
+      // `terminal show` reads the same chain.
+      const shown = asObject(await p.f.run('terminal show', {}, 4000))
+      expect(nested(shown, 'agent', 'sessionRecord')).toEqual({ path: p.fileB, exists: true, continuedIn: [p.b] })
+    }, 20000)
+
+    it('fix1 A: unrelated entries in the registry (another pane parked as another job, that job\'s bg entry) do not stop the hop to this job', async () => {
+      const p = parked()
+      const other = randomUUID(), otherBg = randomUUID(), otherJob = otherBg.slice(0, 8)
+      p.registry([
+        { ...p.pane, pid: 300, sessionId: other, parkedJobId: otherJob },
+        { ...p.bg, pid: 301, sessionId: otherBg, jobId: otherJob },
+        p.pane, p.bg,
+        { pid: 302, sessionId: randomUUID(), kind: 'interactive', entrypoint: 'cli', status: 'idle' },
+      ])
+      p.f.state.onPrompt = () => p.lands(NEW)
+      const result = asObject(await p.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect(result.outcome).toBe('completed')
+      expect(nested(result, 'record')).toMatchObject({ path: p.fileB, matchCount: 1, unavailableReason: null })
+      expect(nested(result, 'agent', 'sessionRecord')).toEqual({ path: p.fileB, exists: true, continuedIn: [p.b] })
+    }, 20000)
+
+    it('C5 배달 확인: a job file that already exists at submit is in the cursor and confirms the same way', async () => {
+      const p = parked({ bgFile: true })
+      p.f.state.onPrompt = () => p.lands(NEW)
+      const result = asObject(await p.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect(result.outcome).toBe('completed')
+      expect(nested(result, 'record')).toMatchObject({ path: p.fileB, matchCount: 1, unavailableReason: null })
+      expect(p.f.store.read('pane', 'e', 'p')!.lastSubmission!.cursor.map(entry => entry.path)).toEqual([p.fileA, p.fileB])
+    }, 20000)
+
+    it('C5 중복 사전검사: a body already in the job\'s file is refused (prompt_already_delivered) and not sent again', async () => {
+      const p = parked()
+      put(p.fileB, metaRows(p.b) + userRow({ body: NEW, at: past, session: p.b }))
+      let submitted = 0
+      p.f.state.onPrompt = () => { submitted++ }
+      expect(await refusal(p.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 3000)))
+        .toMatchObject({ code: 'prompt_already_delivered', resources: { detail: { matchCount: 1 } } })
+      expect(submitted).toBe(0)
+    }, 20000)
+
+    it('C5 이어 가기: a job file that ends with continued-in is followed on by the 771 rule', async () => {
+      const p = parked()
+      const c = randomUUID(), fileC = path.join(path.dirname(p.fileA), `${c}.jsonl`)
+      put(p.fileB, metaRows(p.b) + userRow({ body: 'first after esc', at: past, session: p.b }) + continuedRow(p.b, c))
+      put(fileC, metaRows(c))
+      p.f.state.onPrompt = () => fs.appendFileSync(fileC, userRow({ body: NEW, at: new Date().toISOString(), session: c }))
+      const result = asObject(await p.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect(result.outcome).toBe('completed')
+      expect(nested(result, 'record')).toMatchObject({ path: fileC, matchCount: 1 })
+      expect(nested(result, 'agent', 'sessionRecord')).toEqual({ path: fileC, exists: true, continuedIn: [p.b, c] })
+      expect(p.f.store.read('pane', 'e', 'p')!.lastSubmission!.cursor.map(entry => entry.path)).toEqual([p.fileA, p.fileB, fileC])
+    }, 20000)
+
+    // C4: every way the hop must not stand. Each answers what corral answered before LIFE-797 for this pane — the
+    // minted file alone, `not_found`, no chain — although the body did land in the job's file.
+    type Case = { name: string; arrange: (p: ReturnType<typeof parked>) => void }
+    const failClosed: Case[] = [
+      { name: 'no registry folder', arrange: p => fs.rmSync(p.sessions, { recursive: true, force: true }) },
+      { name: 'a registry entry that cannot be parsed', arrange: p => fs.writeFileSync(path.join(p.sessions, '999.json'), '{"pid":') },
+      { name: 'a registry entry that cannot be read', arrange: p => fs.mkdirSync(path.join(p.sessions, '999.json')) },
+      { name: 'no interactive entry with the minted id', arrange: p => p.registry([{ ...p.pane, sessionId: randomUUID() }, p.bg]) },
+      { name: 'two interactive entries with the minted id', arrange: p => p.registry([p.pane, { ...p.pane, pid: 101 }, p.bg]) },
+      { name: 'the minted id\'s entry is not interactive', arrange: p => p.registry([{ ...p.pane, kind: 'bg' }, p.bg]) },
+      { name: 'no parkedJobId', arrange: p => p.registry([{ ...p.pane, parkedJobId: undefined }, p.bg]) },
+      { name: 'a parkedJobId that is not a string', arrange: p => p.registry([{ ...p.pane, parkedJobId: 12345678 }, p.bg]) },
+      { name: 'a parkedJobId that is not a job id', arrange: p => p.registry([{ ...p.pane, parkedJobId: '../x' }, p.bg]) },
+      { name: 'no bg entry for the job', arrange: p => p.registry([p.pane]) },
+      { name: 'fix1 A: a bg entry with the job\'s session (same prefix) but another jobId', arrange: p => p.registry([p.pane, { ...p.bg, jobId: p.job === 'abcdef01' ? 'abcdef02' : 'abcdef01' }]) },
+      { name: 'fix1 C: an empty parkedJobId and an empty jobId', arrange: p => p.registry([{ ...p.pane, parkedJobId: '' }, { ...p.bg, jobId: '' }]) },
+      { name: 'fix1 D(m7): a job session id that is a path into the job\'s real file', arrange: p => p.registry([p.pane, { ...p.bg, sessionId: `${p.b}/../${p.b}` }]) },
+      { name: 'fix1 D(m11): a registry entry that is JSON but an array', arrange: p => fs.writeFileSync(path.join(p.sessions, '999.json'), '[]') },
+      { name: 'fix1 D(m11): a registry entry that is JSON null', arrange: p => fs.writeFileSync(path.join(p.sessions, '999.json'), 'null') },
+      { name: 'fix1 D(m11): a registry entry that is a JSON string', arrange: p => fs.writeFileSync(path.join(p.sessions, '999.json'), '"x"') },
+      { name: 'fix1 D(m16): a folder where the job\'s file should be', arrange: p => { fs.mkdirSync(p.fileB); p.lands = () => {} } },
+      { name: 'two bg entries for the job', arrange: p => p.registry([p.pane, p.bg, { ...p.bg, pid: 201 }]) },
+      { name: 'the job\'s entry is not bg', arrange: p => p.registry([p.pane, { ...p.bg, kind: 'interactive' }]) },
+      { name: 'a bg session id that is not a UUID', arrange: p => p.registry([p.pane, { ...p.bg, sessionId: `${p.job}-x` }]) },
+      { name: 'a bg session id that does not begin with the job id', arrange: p => {
+        const other = p.job === '00000000' ? '11111111' : '00000000'
+        p.registry([{ ...p.pane, parkedJobId: other }, { ...p.bg, jobId: other }])
+      } },
+      { name: 'the job\'s file is not in the minted file\'s folder', arrange: p => {
+        // The job's own file lives in another project folder; the pane's folder has nothing under its id.
+        p.lands = body => put(path.join(path.dirname(path.dirname(p.fileA)), 'elsewhere', `${p.b}.jsonl`), metaRows(p.b) + userRow({ body, at: new Date().toISOString(), session: p.b }))
+      } },
+    ]
+    for (const { name, arrange } of failClosed) {
+      it(`C4 합성: ${name} → no hop, the answer before LIFE-797`, async () => {
+        const p = parked()
+        arrange(p)
+        let submitted = 0
+        p.f.state.onPrompt = () => { submitted++; p.lands(NEW) }
+        const result = asObject(await p.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 1500))
+        expect(submitted).toBe(1)
+        expect([result.stage, result.outcome]).toEqual(['submitted', 'unknown'])
+        expect(nested(result, 'record')).toMatchObject({ path: p.fileA, matchCount: 0, unavailableReason: 'not_found' })
+        expect(nested(result, 'agent', 'sessionRecord')).toEqual({ path: p.fileA, exists: false, continuedIn: [] })
+      }, 20000)
+    }
+
+    it('C4 합성: a minted file that exists is the record — the registry hop is not taken even when it would stand', async () => {
+      const p = parked()
+      put(p.fileA, metaRows(p.a))
+      let submitted = 0
+      p.f.state.onPrompt = () => { submitted++; p.lands(NEW) }
+      const result = asObject(await p.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 1500))
+      expect(submitted).toBe(1)
+      expect(result.outcome).toBe('unknown')
+      expect(nested(result, 'record')).toMatchObject({ path: p.fileA, matchCount: 0 })
+      expect(nested(result, 'agent', 'sessionRecord')).toEqual({ path: p.fileA, exists: true, continuedIn: [] })
+    }, 20000)
+
+    it('C4 합성: a body already in a job file the hop cannot reach is not refused (the pre-check reads the minted file alone)', async () => {
+      const p = parked()
+      p.registry([p.pane])
+      put(p.fileB, metaRows(p.b) + userRow({ body: NEW, at: past, session: p.b }))
+      let submitted = 0
+      p.f.state.onPrompt = () => { submitted++ }
+      const result = asObject(await p.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 1500))
+      expect(submitted).toBe(1)
+      expect(nested(result, 'record')).toMatchObject({ path: p.fileA, matchCount: 0, unavailableReason: 'not_found' })
+    }, 20000)
+  })
 })
 
 

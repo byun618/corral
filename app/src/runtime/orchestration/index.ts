@@ -22,7 +22,7 @@ import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModu
 import { validateFoundation } from '../registry.js'
 import { type Receipt, Receipts, REQUEST_ID, RECEIPT_TTL, readReceipt } from '../terminal/receipts.js'
 import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage, type TerminalDesktop } from '../terminal/index.js'
-import { PROMPT_LEAD, claudeRecordById } from '../terminal/agent.js'
+import { PROMPT_LEAD, claudeParkedSession, claudeRecordById } from '../terminal/agent.js'
 import { SESSION_ID, followContinued } from '../../main/transcript-continued.js'
 import { socketPath } from '../transport.js'
 import { cliInvocation } from '../desktop-launch.js'
@@ -679,9 +679,14 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
         const minted = dispatch.agent?.sessionId ?? null
         if (minted === null || !SESSION_ID.test(minted)) return null
         const file = claudeRecordById({ sessionId: minted })
-        if (file === null) return null
-        const followed = followContinued({ session: { kind: 'id', agent: 'claude', source: dispatch.agent?.sessionIdSource ?? 'client-minted', id: minted }, file, empty: 'follow' })
-        return { minted, continuedIn: followed.hops }
+        // LIFE-797: no minted record at all — a session parked by `←` before it held a conversation — takes the
+        // registry's one hop to the job's session (`claudeParkedSession`, fail-closed), and the rule follows on (at most
+        // 1 + `CONTINUED_CHAIN_MAX` hops). `file === null` overlaps the helper's own "no minted file" check; it only skips a second scan.
+        const parked = file === null ? claudeParkedSession({ sessionId: minted, folder: null }) : null
+        const start = file !== null ? { id: minted, file, hops: [] } : parked !== null ? { id: parked.sessionId, file: parked.file, hops: [parked.sessionId] } : null
+        if (start === null) return null
+        const followed = followContinued({ session: { kind: 'id', agent: 'claude', source: dispatch.agent?.sessionIdSource ?? 'client-minted', id: start.id }, file: start.file, empty: 'follow' })
+        return { minted, continuedIn: [...start.hops, ...followed.hops] }
       }
       /**
        * LIFE-459. The parent of the attempt `worker-start` is about to make: the pane this call came

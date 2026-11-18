@@ -1,6 +1,6 @@
 # harness learnings
 
-Last reviewed: 2026-11-18
+Last reviewed: 2026-11-19
 
 ## 감독 기동의 120초 `outcome_unknown` 은 도구마다 뜻이 다르다
 
@@ -44,13 +44,6 @@ Last reviewed: 2026-11-18
 - **Evidence:** LIFE-711 — 가드 불가로 멈췄다가 trace 검출로 통과.
 - **Disposition:** `.agents/harness/corral.md` 설치본 관문 절 또는 validation.md 네이티브 관문 줄.
 
-## 설치본 관문은 최소 환경으로 띄우고 교체·종료·해시를 한 절차로 묶는다
-
-- **Scope:** 설치본을 dev 패키지로 바꾸거나 재기동하는 네이티브 관문(macOS, 병렬 일감이 같은 설치본을 씀)
-- **Learning:** 셸의 `open -a` 는 호출 셸 환경(PATH 포함)을 앱에 넘기므로 PATH 가 판정 조건이면 `env -i HOME USER LOGNAME TMPDIR PATH=/usr/bin:/bin:/usr/sbin:/sbin open -a …` 로 띄우고 `ps eww` 로 앱 PATH 를 찍는다. 공유 설치본은 끈 사이 다른 주체가 띄울 수 있어 종료→교체→기동을 한 명령으로 묶고, 교체 전 GUI 잠금을 잡아 형제 코디에게 알린다. 설치본 해시는 방식까지 적고, 새 기동은 새 pid 로 단언한다. 앱만 재기동하는 블록은 코디가 세션을 떼어(setsid·nohup, 출력은 파일) 직접 돌릴 수 있다 — herdr 서버가 앱과 별개라 코디 pane 이 산다. 손 넘김은 GUI 조작·외부 쓰기·herdr 서버 재기동만.
-- **Evidence:** LIFE-624 — `open` 기동이 셸 PATH 로 떠 무효. LIFE-520 — 일감마다 해시 방식이 달랐고 종료 중 인스턴스에 붙어 무효. LIFE-813 — 재기동 7회 동안 코디 pane 생존.
-- **Disposition:** `.agents/harness/corral.md` 설치본 네이티브 관문 절 — 다시 나면.
-
 ## TUI 선택 프롬프트는 선택 상태를 다시 읽은 뒤 Enter 를 보낸다
 
 - **Scope:** 하네스·워커가 에이전트 TUI 를 키 입력으로 넘기는 자리(신뢰·업데이트 프롬프트)
@@ -71,3 +64,10 @@ Last reviewed: 2026-11-18
 - **Learning:** pane 안 셸의 `HERDR_*`(소켓·pane id)가 `XDG_CONFIG_HOME` 보다 앞서서, 격리 서버를 띄워도 herdr CLI 를 그냥 치면 사용자 herdr 를 읽거나 누른다. env 를 지우는 래퍼로 모든 herdr 호출을 감싸고, 키를 보내기 전 그 서버의 pane 목록을 확인한다.
 - **Evidence:** LIFE-797 — `pane list` 가 사용자 herdr 를 읽었다(읽기라 무해).
 - **Disposition:** `.agents/harness/corral.md` 격리 실측 절 또는 킥오프 레시피 — 다시 나면.
+
+## 공유 specs 레포의 push 거절은 fetch 뒤 다시 push 한다
+
+- **Scope:** AGENTS.md 「쓰기와 커밋」 — 여러 일감 코디가 같은 corral-specs 를 같은 시각에 push
+- **Learning:** 병렬 일감이 같은 순간 push 하면 `cannot lock ref` 로 거절된다. 자기 폴더만 커밋하므로 fetch 뒤 다시 push 하면 된다 — 거절을 커밋 실패로 읽고 다시 커밋하지 않는다.
+- **Evidence:** LIFE-811 — 다른 일감 세션과 겹친 첫 push 가 거절, fetch 뒤 재push 성공.
+- **Disposition:** 다시 나면 AGENTS.md 「쓰기와 커밋」 의 `index.lock` 재시도 줄 옆.

@@ -32,6 +32,7 @@ import { searchPane, type SearchCall } from './search.js'
 import {
   revealOffset,
   viewportTop,
+  type TerminalRevealRequest,
   type TerminalRevealResult,
   type TerminalSearchRequest,
   type TerminalSearchResult,
@@ -118,6 +119,8 @@ type PaneIo = {
   seq: number
   /** 마지막으로 xterm 에 실은 크롭의 지문 (P1 판정자). null = 아직 실은 적 없음. */
   hash: { a: number; b: number } | null
+  /** 마지막으로 실은 프레임의 scrollTop (LIFE-812 fix1 R1-1) — 내용이 같아도 이것이 바뀌면 프레임을 다시 싣는다. */
+  scrollTop: number | null
 }
 
 export type GroupCounters = {
@@ -191,6 +194,9 @@ export class GroupSession {
    */
   private attaching = false
   private commandChain: Promise<unknown> = Promise.resolve()
+  /** LIFE-812 — pane 별 마지막 검색 표(새 검색·취소마다 새로 뗀다). */
+  private readonly searchTokens = new Map<string, number>()
+  private searchSerial = 0
   private counters: GroupCounters = {
     surfaces: 0,
     candidates: 0,
@@ -530,32 +536,53 @@ export class GroupSession {
   search(request: TerminalSearchRequest): Promise<TerminalSearchResult> {
     const pane = this.meta.get(request.paneId)
     if (this.closed || pane === undefined) return Promise.resolve({ kind: 'error', message: 'pane 이 이 연결에 없습니다' })
+    // 표를 뗀다 — 이 pane 의 앞선 검색(재시도 대기 중)과 그 결과의 이동 요청은 이 순간 낡는다(fix1 R1-2·R1-4).
+    const token = this.nextSearchToken(request.paneId)
     const call: SearchCall = (method, params) => {
       this.client.assertMethod(method)
       return this.enqueueBounded({ run: () => this.client.callEndpoint(method, params), timeoutMs: SEARCH_TIMEOUT_MS, closeOnTimeout: false })
     }
     // 새 질의는 지금 뷰포트 바닥 바로 아래에서 위로 찾는다 — 화면에 보이는 것부터.
     const bottom = pane.scroll === null ? pane.innerRect.height - 1 : viewportTop(pane.scroll) + pane.innerRect.height - 1
-    return searchPane({ request, viewportCursor: { row: bottom + 1, col: 0 }, call })
+    return searchPane({ request, viewportCursor: { row: bottom + 1, col: 0 }, call, token, alive: () => this.searchLive({ paneId: request.paneId, token }) })
+  }
+
+  /** LIFE-812 fix1 R1-4 — 막대 닫기·질의 변경·탭 전환. 이 pane 의 대기 중 재시도와 이미 보낸 이동 요청을 낡게 한다. */
+  cancelSearch(paneId: string): void {
+    this.nextSearchToken(paneId)
+  }
+
+  private nextSearchToken(paneId: string): number {
+    this.searchSerial += 1
+    this.searchTokens.set(paneId, this.searchSerial)
+    return this.searchSerial
+  }
+
+  /** 적용 시점 확인 — 세션이 살아 있고 그 표가 이 pane 의 마지막 표인가. */
+  private searchLive(input: { paneId: string; token: number }): boolean {
+    return !this.closed && this.searchTokens.get(input.paneId) === input.token
   }
 
   /**
    * LIFE-812 — 절대 행을 보이게 한다(`pane.scroll` 절대 오프셋). 이미 보이면 요청하지 않는다(C2).
    * 휠 스크롤과 같은 로컬 상태(`pane.scroll`)를 고쳐 다음 휠이 이 자리에서 이어지게 한다.
    */
-  async reveal(input: { paneId: string; row: number }): Promise<TerminalRevealResult> {
-    const pane = this.meta.get(input.paneId)
-    if (this.closed || pane === undefined || pane.scroll === null) return { scrolled: false, top: null }
-    const offset = revealOffset({ row: input.row, scroll: pane.scroll, rows: pane.innerRect.height })
-    if (offset === null) return { scrolled: false, top: viewportTop(pane.scroll) }
-    this.client.assertMethod('pane.scroll')
-    pane.scroll = { ...pane.scroll, offsetFromBottom: offset }
-    await this.enqueueBounded({
-      run: () => this.client.callEndpoint('pane.scroll', { pane_id: input.paneId, offset_from_bottom: offset }),
+  async reveal(input: TerminalRevealRequest): Promise<TerminalRevealResult> {
+    // 적용 시점은 **큐에서 차례가 온 때**다 — 기다리는 사이 닫기·새 질의·탭 전환(취소)이 오면 움직이지 않는다(fix1 R1-4).
+    return this.enqueueBounded({
+      run: async (): Promise<TerminalRevealResult> => {
+        const pane = this.meta.get(input.paneId)
+        if (!this.searchLive(input) || pane === undefined || pane.scroll === null) return { scrolled: false, top: null }
+        const offset = revealOffset({ row: input.row, scroll: pane.scroll, rows: pane.innerRect.height })
+        if (offset === null) return { scrolled: false, top: viewportTop(pane.scroll) }
+        this.client.assertMethod('pane.scroll')
+        pane.scroll = { ...pane.scroll, offsetFromBottom: offset }
+        await this.client.callEndpoint('pane.scroll', { pane_id: input.paneId, offset_from_bottom: offset })
+        return { scrolled: true, top: viewportTop(pane.scroll) }
+      },
       timeoutMs: SEARCH_TIMEOUT_MS,
       closeOnTimeout: false,
     })
-    return { scrolled: true, top: viewportTop(pane.scroll) }
   }
 
   /** control 층이 pane 소실을 봤다 — 다음 전체 서피스를 기다리지 않고 명부에서 뺀다 (R16 축출). */
@@ -603,11 +630,14 @@ export class GroupSession {
       const io = this.ioFor(pane.paneId)
       // P1 — 판정자는 크롭 셀 해시다. 서버가 이 pane 을 실어 보냈다는 사실은 후보일 뿐이다.
       const hash = hashCrop(surface.frame, pane.innerRect)
-      if (io.hash !== null && io.hash.a === hash.a && io.hash.b === hash.b) {
+      // LIFE-812 fix1 R1-1 — 같은 줄이 반복되는 화면은 스크롤해도 크롭이 같다. 그때도 검색 강조의 기준 행(scrollTop)은 바뀌므로 그것까지 같을 때만 건너뛴다.
+      const scrollTop = pane.scroll === null ? null : viewportTop(pane.scroll)
+      if (io.hash !== null && io.hash.a === hash.a && io.hash.b === hash.b && io.scrollTop === scrollTop) {
         this.counters.skipped += 1
         continue
       }
       io.hash = hash
+      io.scrollTop = scrollTop
       io.seq += 1
       const cropped = cropFrame(surface.frame, pane.innerRect)
       this.hooks.onFrame({
@@ -616,7 +646,7 @@ export class GroupSession {
         cols: cropped.width,
         rows: cropped.height,
         mouseReporting: pane.mouseReporting,
-        scrollTop: pane.scroll === null ? null : viewportTop(pane.scroll),
+        scrollTop,
         bytes: Buffer.from(frameToAnsi(cropped), 'utf8'),
       })
       layoutChanged = true
@@ -684,6 +714,7 @@ export class GroupSession {
       escFlushTimer: null,
       seq: 0,
       hash: null,
+      scrollTop: null,
     }
     this.io.set(paneId, created)
     return created

@@ -12,7 +12,7 @@ import { addInstallCliMenu } from './install-cli-menu.js'
 import { KeybindingStore } from './keybindings.js'
 import { withRetentionSuppressed } from './close-retention.js'
 import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
-import { parseRevealRequest, parseSearchRequest, type TerminalRevealResult, type TerminalSearchResult } from '../shared/terminal-search.js'
+import { parsePaneTarget, parseRevealRequest, parseSearchRequest, type TerminalRevealResult, type TerminalSearchResult } from '../shared/terminal-search.js'
 import { closeTabsGated, runningForeground } from './close-tabs.js'
 import { footprintHelperPath, homesOf, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
 import { confirmedDeadSlot, directoryNow, keepRetention, prunableRetained, slotStateNow, slotStateOf } from './retention.js'
@@ -2550,6 +2550,10 @@ app.whenReady().then(async () => {
     const request = fromOurWindow(event) ? parseRevealRequest(input) : null
     if (request === null) return { scrolled: false, top: null }
     return stream.reveal(request)
+  })
+  ipcMain.on('corral:termSearchCancel', (event, input: unknown) => {
+    const target = fromOurWindow(event) ? parsePaneTarget(input) : null
+    if (target !== null) stream.cancelSearch(target.paneId)
   })
   ipcMain.on('corral:termScroll', (event, scroll: { paneId: string } & TerminalScroll) => {
     // termInput 과 같은 결로 모양을 검증한다 (수정 1회차 L8) — 렌더러가 신뢰 경계지만

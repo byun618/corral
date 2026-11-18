@@ -4,6 +4,7 @@ import {
   TERMINAL_SEARCH_MAX_QUERY_BYTES,
   highlightSegments,
   isCaseSensitive,
+  parsePaneTarget,
   parseRevealRequest,
   parseSearchRequest,
   queryBytes,
@@ -87,8 +88,14 @@ describe('IPC 검증', () => {
     expect(parseSearchRequest(null)).toBeNull()
   })
   it('이동 요청', () => {
-    expect(parseRevealRequest({ paneId: 'p', row: 3 })).toEqual({ paneId: 'p', row: 3 })
-    expect(parseRevealRequest({ paneId: 'p', row: -1 })).toBeNull()
-    expect(parseRevealRequest({ paneId: 'p', row: 1.5 })).toBeNull()
+    expect(parseRevealRequest({ paneId: 'p', row: 3, token: 2 })).toEqual({ paneId: 'p', row: 3, token: 2 })
+    expect(parseRevealRequest({ paneId: 'p', row: 3 })).toBeNull()
+    expect(parseRevealRequest({ paneId: 'p', row: -1, token: 2 })).toBeNull()
+    expect(parseRevealRequest({ paneId: 'p', row: 1.5, token: 2 })).toBeNull()
+  })
+  it('검색 취소', () => {
+    expect(parsePaneTarget({ paneId: 'p' })).toEqual({ paneId: 'p' })
+    expect(parsePaneTarget({ paneId: 3 })).toBeNull()
+    expect(parsePaneTarget(null)).toBeNull()
   })
 })

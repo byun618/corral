@@ -35,7 +35,7 @@ import type {
 import type { Settings, SettingsWriteResult } from '../shared/terminal-settings.js'
 import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
-import type { TerminalRevealResult, TerminalSearchRequest, TerminalSearchResult } from '../shared/terminal-search.js'
+import type { TerminalRevealRequest, TerminalRevealResult, TerminalSearchRequest, TerminalSearchResult } from '../shared/terminal-search.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
 import type { ResourceCloseResult, ResourceCloseRoute, ResourceOrphanCloseResult, ResourceSnapshot } from '../shared/resource.js'
 import type { UsageSnapshot } from '../shared/usage.js'
@@ -125,6 +125,7 @@ const EXPOSED = [
   'termScroll',
   'termSearch',
   'termReveal',
+  'termSearchCancel',
   'termZoom',
   'repaintPane',
   'splitPane',
@@ -364,7 +365,8 @@ const api: CorralApi = {
   },
   termScroll: (input: { paneId: string } & TerminalScroll) => ipcRenderer.send('corral:termScroll', input),
   termSearch: (request: TerminalSearchRequest): Promise<TerminalSearchResult> => ipcRenderer.invoke('corral:termSearch', request),
-  termReveal: (input: { paneId: string; row: number }): Promise<TerminalRevealResult> => ipcRenderer.invoke('corral:termReveal', input),
+  termReveal: (input: TerminalRevealRequest): Promise<TerminalRevealResult> => ipcRenderer.invoke('corral:termReveal', input),
+  termSearchCancel: (input: { paneId: string }) => ipcRenderer.send('corral:termSearchCancel', input),
   termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) =>
     ipcRenderer.send('corral:termZoom', input),
   repaintPane: (input: { paneId: string }): Promise<void> => ipcRenderer.invoke('corral:repaintPane', input),

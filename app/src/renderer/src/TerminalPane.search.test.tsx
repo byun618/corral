@@ -69,6 +69,7 @@ let searches: TerminalSearchRequest[]
 let nextResult: TerminalSearchResult
 const termInput = vi.fn()
 const termReveal = vi.fn(async () => ({ scrolled: false, top: 0 }))
+const termSearchCancel = vi.fn()
 
 const range = (row: number, col: number, endCol: number) => ({ start: { row, col }, end: { row, col: endCol } })
 
@@ -76,9 +77,10 @@ beforeEach(() => {
   vi.useFakeTimers()
   frameListener = null
   searches = []
-  nextResult = { kind: 'found', total: 2, index: 0, current: range(101, 1, 3), matches: [range(101, 1, 3), range(102, 4, 6)], attempts: 1 }
+  nextResult = { kind: 'found', total: 2, index: 0, current: range(101, 1, 3), matches: [range(101, 1, 3), range(102, 4, 6)], attempts: 1, token: 3 }
   termInput.mockClear()
   termReveal.mockClear()
+  termSearchCancel.mockClear()
   Reflect.set(window, 'corral', {
     selectPane: vi.fn(async () => {}),
     repaintPane: vi.fn(async () => {}),
@@ -94,6 +96,7 @@ beforeEach(() => {
       return nextResult
     }),
     termReveal,
+    termSearchCancel,
     saveClipboardImage: vi.fn(),
   })
   host = document.createElement('div')
@@ -154,7 +157,7 @@ describe('LIFE-812 C4 검색 막대', () => {
     await settle()
     expect(searches).toEqual([{ paneId: 'p1', query: 'ab', direction: 'backward', from: 'viewport' }])
     expect(host.querySelector('[data-term-search-status]')?.textContent).toBe('1 / 2')
-    expect(termReveal).toHaveBeenCalledWith({ paneId: 'p1', row: 101 })
+    expect(termReveal).toHaveBeenCalledWith({ paneId: 'p1', row: 101, token: 3 })
     // 강조 — 프레임 top 100 기준 뷰포트 행 1·2, 현재 일치 구분(C3)
     expect(hits()).toEqual(['1,1,3*', '2,4,3'])
     // 휠 등으로 top 이 바뀐 프레임이 오면 강조가 글자를 따라간다(C3ⓓ)
@@ -204,6 +207,8 @@ describe('LIFE-812 C4 검색 막대', () => {
     expect(document.activeElement?.className).toBe('xterm-helper-textarea')
     expect(document.activeElement?.closest('[data-term-pane]')?.getAttribute('data-term-pane')).toBe('p1')
     expect(termInput).not.toHaveBeenCalled()
+    // 닫기는 main 에 그 pane 의 검색 취소를 보낸다 — 이미 보낸 이동도 낡는다(fix1 R1-4)
+    expect(termSearchCancel).toHaveBeenCalledWith({ paneId: 'p1' })
   })
 
   it('ⓕ 빈 질의는 강조 0·요청 0 · ⓗ busy 면 상태 문구가 보인다', async () => {
@@ -235,5 +240,39 @@ describe('LIFE-812 C4 검색 막대', () => {
       root.render(createElement('div', null, createElement('div', { key: 'p1', className: 'term-pane-inner', 'data-box': 'p1' }, createElement(TerminalPane, { paneId: 'p9', diagnostics: false, focusable: true, focusToken: 0, announceFocus: false }))))
     })
     expect(bar()).toBeNull()
+  })
+
+  it('fix1 R1-6 — 셀 수가 같은 픽셀 크기 변화에도 강조 좌표를 다시 잰다(ResizeObserver)', async () => {
+    const observers: Array<() => void> = []
+    class FakeResizeObserver {
+      private readonly callback: () => void
+      constructor(callback: () => void) {
+        this.callback = callback
+      }
+      observe(): void {
+        observers.push(this.callback)
+      }
+      disconnect(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+    try {
+      renderPanes(['p1'])
+      let width = 100
+      const screen = host.querySelector('.xterm-screen')
+      if (screen === null) throw new Error('screen 없음')
+      screen.getBoundingClientRect = () => new DOMRect(0, 0, width, 40)
+      frame({ scrollTop: 100 })
+      act(() => requestTerminalFind('p1'))
+      type(input() ?? document.createElement('input'), 'ab')
+      await settle()
+      const left = (): string[] => [...host.querySelectorAll<HTMLElement>('[data-term-search-hit]')].map((element) => element.style.left)
+      expect(left()).toEqual(['10px', '40px']) // 셀 폭 100/10 = 10px · 열 1·4
+      expect(observers).toHaveLength(1)
+      width = 200 // 셀 수(10×4)는 그대로, 픽셀만 두 배
+      act(() => observers.forEach((notify) => notify()))
+      expect(left()).toEqual(['20px', '80px'])
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

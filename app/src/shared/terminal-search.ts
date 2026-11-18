@@ -34,10 +34,17 @@ export type TerminalSearchResult =
       current: TerminalTextRange
       /** 현재 일치 주변의 일치 창(최대 1024) — 강조는 이 안에서 보이는 것만. */
       matches: TerminalTextRange[]
+      /**
+       * 이 검색의 표(main 이 뗀다, LIFE-812 fix1 R1-4). 결과로 이동(`termReveal`)에 그대로 실어 보낸다 — 그 사이 같은 pane 에 새 검색·취소가 오면
+       * main 이 이동을 버린다(닫기·질의 변경·탭 전환 뒤 이미 보낸 이동이 뷰포트를 움직이지 않게).
+       */
+      token: number
     } & TerminalSearchAttempts)
   | ({ kind: 'none' } & TerminalSearchAttempts)
   /** 출력이 계속 바뀌어 재시도 상한까지 거절됐다(C4ⓗ). */
   | ({ kind: 'busy' } & TerminalSearchAttempts)
+  /** 같은 pane 에 새 검색·취소가 와서 재시도를 멈췄다(LIFE-812 fix1 R1-2) — 렌더러는 이미 버린 요청이다. */
+  | ({ kind: 'cancelled' } & TerminalSearchAttempts)
   | { kind: 'error'; message: string }
 
 /** 결과로 이동 — `top` 은 이동 뒤 뷰포트 맨 위의 절대 행. 스크롤 상태를 모르는 pane(alt-screen 등)은 `null`. */
@@ -135,10 +142,21 @@ export function parseSearchRequest(value: unknown): TerminalSearchRequest | null
   return range === null ? null : { paneId, query, direction, from: range }
 }
 
+/** 결과로 이동 요청 — `token` 은 그 결과를 낸 검색의 표. */
+export type TerminalRevealRequest = { paneId: string; row: number; token: number }
+
 /** IPC 경계 검증 — 결과로 이동 요청. */
-export function parseRevealRequest(value: unknown): { paneId: string; row: number } | null {
+export function parseRevealRequest(value: unknown): TerminalRevealRequest | null {
   if (value === null || typeof value !== 'object') return null
   const paneId = Reflect.get(value, 'paneId')
   const row = readCell(value, 'row')
-  return typeof paneId === 'string' && row !== null ? { paneId, row } : null
+  const token = readCell(value, 'token')
+  return typeof paneId === 'string' && row !== null && token !== null ? { paneId, row, token } : null
+}
+
+/** IPC 경계 검증 — 검색 취소(막대 닫기·질의 변경·탭 전환). */
+export function parsePaneTarget(value: unknown): { paneId: string } | null {
+  if (value === null || typeof value !== 'object') return null
+  const paneId = Reflect.get(value, 'paneId')
+  return typeof paneId === 'string' ? { paneId } : null
 }

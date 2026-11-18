@@ -196,6 +196,8 @@ export function TerminalPane({
   /** 마지막으로 **xterm 에 다 쓴** 프레임의 뷰포트 — 강조는 화면에 실제로 그려진 것과 같은 기준으로 그린다(C3ⓓⓔ). */
   const frameViewRef = useRef<FrameView>({ top: null, rows: 0, cols: 0 })
   const [view, setView] = useState<FrameView>(frameViewRef.current)
+  /** 셀 수가 그대로인 픽셀 크기 변화(창·영역 경계 드래그)에도 강조 좌표를 다시 잰다(fix1 R1-6) — 값은 다시 그리게 하는 신호일 뿐이다. */
+  const [, setLayoutTick] = useState(0)
 
   useEffect(() => {
     const container = containerRef.current
@@ -571,6 +573,7 @@ export function TerminalPane({
       paneId,
       search: (request) => window.corral.termSearch(request),
       reveal: (input) => window.corral.termReveal(input),
+      cancel: () => window.corral.termSearchCancel({ paneId }),
       onChange: setSearch,
     })
     searchRef.current = controller
@@ -593,6 +596,14 @@ export function TerminalPane({
       setSearch(CLOSED_SEARCH)
     }
   }, [paneId])
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!search.open || container === null || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => setLayoutTick((value) => value + 1))
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [search.open])
 
   const closeSearch = (): void => {
     searchRef.current?.close()

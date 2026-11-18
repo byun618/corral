@@ -25,7 +25,7 @@ import type {
   TerminalScroll,
   TerminalState,
 } from '../../../shared/types.js'
-import type { TerminalRevealResult, TerminalSearchRequest, TerminalSearchResult } from '../../../shared/terminal-search.js'
+import type { TerminalRevealRequest, TerminalRevealResult, TerminalSearchRequest, TerminalSearchResult } from '../../../shared/terminal-search.js'
 import { log } from '../../log.js'
 
 const BSU = '\x1b[?2026h'
@@ -386,10 +386,15 @@ export class TerminalStreams {
   }
 
   /** LIFE-812 — 절대 행을 보이게 스크롤한다(이미 보이면 그대로). */
-  async reveal(request: { paneId: string; row: number }): Promise<TerminalRevealResult> {
+  async reveal(request: TerminalRevealRequest): Promise<TerminalRevealResult> {
     const entry = this.entryForPane(request.paneId)
     if (entry === undefined) return { scrolled: false, top: null }
     return entry.session.reveal(request)
+  }
+
+  /** LIFE-812 fix1 — 막대 닫기·질의 변경·탭 전환: 그 pane 의 대기 중 재시도·이동을 낡게 한다. 붙든 연결이 없으면 할 일이 없다. */
+  cancelSearch(paneId: string): void {
+    this.entryForPane(paneId)?.session.cancelSearch(paneId)
   }
 
   /** 이 영역이 지금 줌 중인 pane — 해제 시 서버 플래그를 끌 대상이다. */

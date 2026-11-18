@@ -17,8 +17,13 @@ import {
   type TerminalTextRange,
 } from '../../../shared/terminal-search.js'
 
-/** 재시도 상한 — 첫 시도 포함. */
-export const SEARCH_ATTEMPTS = 4
+/**
+ * 재시도 사이 대기(LIFE-812 fix1 R1-2) — 점증·상한, 합 750ms. 간격 없이 몰아 묻던 r1 은 출력이 잠깐 쉬는 틈도 못 잡았다.
+ * 출력이 수백 행/초로 쉬지 않고 흐르면 그래도 busy 일 수 있다 — herdr 가 `content_revision` 을 필수로 요구해 건너뛸 길이 없다(리뷰 r1-pr-6).
+ */
+export const SEARCH_RETRY_DELAYS_MS: readonly number[] = [50, 100, 200, 400]
+/** 시도 상한 — 첫 시도 포함. */
+export const SEARCH_ATTEMPTS = SEARCH_RETRY_DELAYS_MS.length + 1
 
 /** endpoint 메서드 하나 부르기 — 광고 확인·줄 세우기·시간 상한은 부르는 쪽(GroupSession)이 진다. */
 export type SearchCall = (method: string, params: Record<string, unknown>) => Promise<unknown>
@@ -55,7 +60,8 @@ function errorMessage(error: unknown): string {
 }
 
 /** `copy_search` 응답 → 결과. 모양이 어긋나면 null(오류로 올린다). */
-export function readSearchResponse(value: unknown, attempts: number): TerminalSearchResult | null {
+export function readSearchResponse(value: unknown, input: { attempts: number; token: number }): TerminalSearchResult | null {
+  const { attempts, token } = input
   const total = readCount(field(value, 'total'))
   const raw = field(value, 'matches')
   if (total === null || !Array.isArray(raw)) return null
@@ -70,7 +76,7 @@ export function readSearchResponse(value: unknown, attempts: number): TerminalSe
   const index = readCount(field(value, 'current_global'))
   const current = local === null ? undefined : matches[local]
   if (index === null || current === undefined) return null
-  return { kind: 'found', total, index, current, matches, attempts }
+  return { kind: 'found', total, index, current, matches, attempts, token }
 }
 
 export async function searchPane(input: {
@@ -78,13 +84,22 @@ export async function searchPane(input: {
   /** `from: 'viewport'` 일 때 커서 — 뷰포트 바닥 바로 아래(그 위로 가장 가까운 일치를 찾는다). */
   viewportCursor: TerminalTextPoint
   call: SearchCall
+  /** 이 검색의 표 — 결과에 실어 돌려준다. */
+  token: number
+  /** 아직 이 pane 의 마지막 검색인가 — 아니면(새 검색·취소) 다음 시도를 하지 않는다(R1-2). */
+  alive: () => boolean
+  /** 재시도 대기 — 시험이 바꿔 끼운다. */
+  wait?: (ms: number) => Promise<void>
 }): Promise<TerminalSearchResult> {
+  const wait = input.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   const { request } = input
   if (request.query === '') return { kind: 'none', attempts: 0 }
   if (queryBytes(request.query) > TERMINAL_SEARCH_MAX_QUERY_BYTES) return { kind: 'error', message: '검색어가 너무 깁니다' }
   const cursor = request.from === 'viewport' ? input.viewportCursor : request.from.start
   const previous = request.from === 'viewport' ? null : request.from
   for (let attempt = 1; attempt <= SEARCH_ATTEMPTS; attempt++) {
+    if (attempt > 1) await wait(SEARCH_RETRY_DELAYS_MS[attempt - 2] ?? 0)
+    if (!input.alive()) return { kind: 'cancelled', attempts: attempt - 1 }
     try {
       const motion = await input.call('pane.copy_motion', { pane_id: request.paneId, cursor: { row: 0, col: 0 }, motion: 'line_end' })
       const revision = readCount(field(motion, 'content_revision'))
@@ -97,7 +112,7 @@ export async function searchPane(input: {
         previous,
         content_revision: revision,
       })
-      return readSearchResponse(response, attempt) ?? { kind: 'error', message: '검색 응답을 읽지 못했습니다' }
+      return readSearchResponse(response, { attempts: attempt, token: input.token }) ?? { kind: 'error', message: '검색 응답을 읽지 못했습니다' }
     } catch (error) {
       if (errorCode(error) === STALE) continue
       return { kind: 'error', message: errorMessage(error) }

@@ -1,7 +1,7 @@
 import type { Settings, SettingsWriteResult } from './terminal-settings.js'
 import type { GhosttyImportPreview } from './ghostty-import.js'
 import type { Keybindings, ShortcutMatch } from './keybindings.js'
-import type { TerminalRevealResult, TerminalSearchRequest, TerminalSearchResult } from './terminal-search.js'
+import type { TerminalRevealRequest, TerminalRevealResult, TerminalSearchRequest, TerminalSearchResult } from './terminal-search.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
@@ -1157,7 +1157,9 @@ export type CorralApi = {
   /** LIFE-812 — 스크롤백 전체 검색(서버측). 출력이 계속 바뀌면 재시도 상한 뒤 `busy`. */
   termSearch: (request: TerminalSearchRequest) => Promise<TerminalSearchResult>
   /** LIFE-812 — 절대 행을 보이게 스크롤한다(이미 보이면 그대로). */
-  termReveal: (input: { paneId: string; row: number }) => Promise<TerminalRevealResult>
+  termReveal: (input: TerminalRevealRequest) => Promise<TerminalRevealResult>
+  /** LIFE-812 fix1 — 막대 닫기·질의 변경·탭 전환: 그 pane 의 대기 중 검색 재시도·이동 요청을 버리게 한다. */
+  termSearchCancel: (input: { paneId: string }) => void
   /** 줌 — paneId null 이면 해제. 그리는 건 클라이언트, 격자만 역산해 요청한다 (F2-3). */
   termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) => void
   // --- pane 분할 (② — herdr 소유) ---

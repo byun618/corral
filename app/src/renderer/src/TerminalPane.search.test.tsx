@@ -141,8 +141,8 @@ async function settle(): Promise<void> {
   })
 }
 
-function frame(input: { scrollTop: number | null }): void {
-  act(() => frameListener?.({ paneId: 'p1', seq: 1, cols: 10, rows: 4, mouseReporting: false, scrollTop: input.scrollTop, data: new Uint8Array() }))
+function frame(input: { scrollTop: number | null; cols?: number }): void {
+  act(() => frameListener?.({ paneId: 'p1', seq: 1, cols: input.cols ?? 10, rows: 4, mouseReporting: false, scrollTop: input.scrollTop, data: new Uint8Array() }))
 }
 
 describe('LIFE-812 C4 검색 막대', () => {
@@ -367,3 +367,83 @@ describe('fix2 R2-2 — 단추를 눌러도 Esc·⇧Enter 는 막대 키로 돈�
     expect(searches[2]?.from).not.toBe('viewport')
   })
 })
+
+describe('fix3 R3-1 — 막대 안을 눌러도 포커스·선택을 덮지 않는다', () => {
+  /** Chromium 처럼 — 막히지 않은 mousedown 이 포커스 못 받는 요소에 떨어지면 포커스는 body 로 빠진다. */
+  const chromiumBlur = (event: Event): void => {
+    if (event.defaultPrevented || !(event.target instanceof HTMLElement)) return
+    if (event.target.matches('input, textarea, button')) return
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  }
+  beforeEach(() => document.addEventListener('mousedown', chromiumBlur))
+  afterEach(() => document.removeEventListener('mousedown', chromiumBlur))
+  const mousedown = (target: Element): void => {
+    act(() => { target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })) })
+  }
+
+  it('입력칸이 포커스인 채 입력칸 가운데를 누르면 캐럿이 그 자리에 남는다(전체 선택으로 덮지 않음)', () => {
+    act(() => root.render(createElement(GroupWrapper)))
+    act(() => requestTerminalFind('p1'))
+    const field = input() ?? document.createElement('input')
+    type(field, 'needle-wrap-test')
+    field.setSelectionRange(6, 6) // 브라우저가 클릭 자리에 놓은 캐럿
+    mousedown(field) // 그룹 핸들러가 focusToken 을 올린다
+    expect(document.activeElement).toBe(field)
+    expect([field.selectionStart, field.selectionEnd]).toEqual([6, 6])
+  })
+
+  it('입력칸이 포커스인 채 상태 문구를 눌러도 입력칸 포커스가 남는다', () => {
+    act(() => root.render(createElement(GroupWrapper)))
+    act(() => requestTerminalFind('p1'))
+    const status = host.querySelector('[data-term-search-status]')
+    if (status === null) throw new Error('상태 문구 없음')
+    mousedown(status)
+    expect(document.activeElement).toBe(input())
+  })
+
+  it('터미널이 포커스인 채 상태 문구를 누르면 터미널이 그대로(body 로 빠지지 않음)', () => {
+    act(() => root.render(createElement(GroupWrapper)))
+    const body = xtermBody()
+    act(() => requestTerminalFind('p1'))
+    act(() => { body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })) })
+    expect(document.activeElement?.className).toBe('xterm-helper-textarea')
+    const status = host.querySelector('[data-term-search-status]')
+    if (status === null) throw new Error('상태 문구 없음')
+    mousedown(status)
+    expect(document.activeElement?.className).toBe('xterm-helper-textarea')
+  })
+
+  it('양성 대조 — 팔레트 경로(포커스 body)에서 올라온 focusToken 은 여전히 막대로 전체 선택', () => {
+    act(() => root.render(createElement(GroupWrapper)))
+    act(() => requestTerminalFind('p1'))
+    const field = input() ?? document.createElement('input')
+    type(field, 'abc')
+    field.blur()
+    act(() => bumpToken())
+    expect(document.activeElement).toBe(field)
+    expect([field.selectionStart, field.selectionEnd]).toEqual([0, 3])
+  })
+})
+
+describe('fix3 R3-2 — 열 수가 바뀌면(reflow) 같은 질의를 다시 묻는다', () => {
+  it('막대가 열린 채 프레임 cols 가 바뀌면 결과를 지우고 뷰포트 기준으로 다시 검색, 행 수·top 만 바뀌면 다시 묻지 않는다', async () => {
+    renderPanes(['p1'])
+    frame({ scrollTop: 100, cols: 10 })
+    act(() => requestTerminalFind('p1'))
+    type(input() ?? document.createElement('input'), 'ab')
+    await settle()
+    expect(searches).toHaveLength(1)
+    frame({ scrollTop: 101, cols: 10 })
+    await settle()
+    expect(searches).toHaveLength(1)
+    frame({ scrollTop: 300, cols: 6 })
+    expect(hits()).toEqual([]) // 낡은 결과는 바로 지운다
+    await settle()
+    expect(searches).toEqual([
+      { paneId: 'p1', query: 'ab', direction: 'backward', from: 'viewport' },
+      { paneId: 'p1', query: 'ab', direction: 'backward', from: 'viewport' },
+    ])
+    expect(host.querySelector('[data-term-search-status]')?.textContent).toBe('1 / 2')
+  })
+})
+

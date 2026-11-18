@@ -54,8 +54,14 @@ describe('shortcut catalog and compatibility', () => {
       seen.add(key)
     }
     expect(bindingConflict({})).toBeNull()
-    // 나중 기본값이라 양보한다 — ⌘F 를 전역 액션에 재정의해 둔 사용자의 설정은 버려지지 않는다(범위가 달라 충돌도 아니다)
-    expect(bindingConflict(validateOverrides({ 'palette.open': ['Mod+F'] }))).toBeNull()
+    // 나중 기본값이라 양보한다(fix3 R3-3) — ⌘F 를 전역 액션에 직접 건 사용자의 설정은 버려지지 않고(충돌 아님), 터미널 포커스에서도 그 액션이 돈다
+    const palette = validateOverrides({ 'palette.open': ['Mod+F'] })
+    expect(bindingConflict(palette)).toBeNull()
+    expect(bindingsFor('terminal.find', palette)).toEqual([null])
+    expect(matchBinding('Mod+F', palette, 'terminal')).toEqual({ id: 'palette.open', variant: 0 })
+    expect(matchBinding('Mod+F', palette)).toEqual({ id: 'palette.open', variant: 0 })
+    // 탐색기 범위는 그대로 — 트리 안에서는 탐색기 기본값이 전역 재정의보다 앞선다(base 동작)
+    expect(matchBinding('Mod+Z', validateOverrides({ 'palette.open': ['Mod+Z'] }), 'explorer')).toEqual({ id: 'explorer.undo', variant: 0 })
     // 같은 터미널 범위에 다른 조합으로 옮길 수 있다
     expect(matchBinding('Mod+Shift+F', validateOverrides({ 'terminal.find': ['Mod+Shift+F'] }), 'terminal')).toEqual({ id: 'terminal.find', variant: 0 })
   })

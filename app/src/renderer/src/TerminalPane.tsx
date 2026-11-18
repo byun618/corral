@@ -90,6 +90,12 @@ function terminalHoldsFocus(container: HTMLElement | null): boolean {
   const active = document.activeElement
   return container !== null && active !== null && container.contains(active)
 }
+/** 이 pane 의 검색 막대(xterm 컨테이너의 형제)가 지금 포커스를 쥐었나 (LIFE-812 fix3 R3-1). */
+function barHoldsFocus(container: HTMLElement | null): boolean {
+  const active = document.activeElement
+  const bar = container?.parentElement?.querySelector('[data-term-search]') ?? null
+  return bar !== null && active !== null && bar.contains(active)
+}
 function inlineEditHoldsFocus(): boolean {
   const active = document.activeElement
   return active instanceof Element && active.closest(INLINE_EDIT_SELECTOR) !== null
@@ -285,6 +291,8 @@ export function TerminalPane({
           const previousView = frameViewRef.current
           frameViewRef.current = nextView
           if (searchOpenRef.current && (previousView.top !== nextView.top || previousView.rows !== nextView.rows || previousView.cols !== nextView.cols)) setView(nextView)
+          // fix3 R3-2 — 열 수가 바뀌면 herdr 가 스크롤백을 reflow 해 일치 좌표가 낡는다 — 같은 질의를 다시 묻는다(상태 표 「질의 변경」과 같은 규칙).
+          if (searchOpenRef.current && previousView.cols !== 0 && previousView.cols !== nextView.cols) searchRef.current?.refresh()
           // 쓰기 **완료** 시각 — S2 의 renderer 쪽 끝점. 프로브(term-read)가 읽어 간다.
           // 진단(계측) 실행에서만 링에 쌓는다 (수정 1회차 L7) — 평시엔 이 링을 안 만든다.
           if (diagnostics) {
@@ -623,6 +631,8 @@ export function TerminalPane({
     if (focusToken === 0 || !focusableRef.current || inlineEditHoldsFocus()) return
     // LIFE-812 — 검색 막대가 열려 있으면 막대로(팔레트에서 「터미널에서 찾기」를 고른 뒤 포커스 복귀가 막대를 덮지 않게).
     // fix2 R2-1 — 단 이 pane 의 터미널이 이미 포커스를 가졌으면 그대로 둔다: 사용자가 본문을 눌렀다(xterm 이 mousedown 에서 먼저 포커스를 가져간다).
+    // fix3 R3-1 — 막대 자신(입력칸)이 이미 포커스를 쥐었으면 아무것도 안 한다: 막대를 누른 것이다(전체 선택이 캐럿을 덮지 않게).
+    if (searchOpenRef.current && barHoldsFocus(containerRef.current)) return
     if (searchOpenRef.current && !terminalHoldsFocus(containerRef.current)) {
       setSelectToken((value) => value + 1)
       return

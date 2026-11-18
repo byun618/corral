@@ -228,6 +228,36 @@ describe('C5 상태 표', () => {
     expect(controller.snapshot.result).toEqual(found(1 + MAX_QUEUED_STEPS, 1 + MAX_QUEUED_STEPS))
   })
 
+  it('fix3 R3-2 — refresh(열 수 변경)는 질의 변경과 같은 규칙: 결과를 지우고, 앞 응답은 버리고, 같은 질의를 다시 묻는다', async () => {
+    const { controller, searches, cancels } = harness()
+    controller.open()
+    controller.setQuery('x')
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS)
+    controller.refresh()
+    expect(controller.snapshot.result).toBeNull()
+    expect(cancels).toEqual([1])
+    searches[0]?.reply.resolve(found(3, 0)) // reflow 전 응답 — 낡았다
+    await flush()
+    expect(controller.snapshot.result).toBeNull()
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS)
+    expect(searches.map((entry) => entry.request)).toEqual([
+      { paneId: 'p1', query: 'x', direction: 'backward', from: 'viewport' },
+      { paneId: 'p1', query: 'x', direction: 'backward', from: 'viewport' },
+    ])
+    searches[1]?.reply.resolve(found(9, 1))
+    await flush()
+    expect(controller.snapshot.result).toEqual(found(9, 1))
+  })
+
+  it('fix3 R3-2 — 빈 질의·닫힌 막대에서는 refresh 가 묻지 않는다', () => {
+    const { controller, searches } = harness()
+    controller.refresh()
+    controller.open()
+    controller.refresh()
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS)
+    expect(searches).toHaveLength(0)
+  })
+
   it('fix1 R1-3 — 쌓인 다음/이전은 닫기·질의 변경·결과 없음에서 버린다', async () => {
     const { controller, searches } = harness()
     controller.open()

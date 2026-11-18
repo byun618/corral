@@ -79,7 +79,8 @@ export const ACTIONS = [
   // LIFE-825 C3 — VS Code `workbench.action.evenEditorWidths`(기본 키 없음). **키 없는 액션** — 기본 조합 0칸(팔레트·⊞ 메뉴로만). 설정 › 단축키 표에는 행만 서고
   // 칸이 없어 키를 걸 수 없다(「끄기」도 꺼짐). keybindings.json 에 손으로 칸을 적어도 칸 수가 기본(0)과 달라 로드 때 버려진다(`validateOverrides(…, true)`). 키를 열려면 칸 모델 변경이 든다.
   // LIFE-812 — 터미널 화면 내 검색(VS Code 터미널 `find`·Orca 터미널 ⌘F). **터미널 포커스에서만** 매칭된다(`scope: 'terminal'`) — 파일 탭 Monaco 찾기·설정 검색칸의
-  // ⌘F 는 그 자리의 것으로 그대로 간다. 열린 막대 안의 ⌘F(전체 선택)·Enter·Esc 는 막대 입력칸이 받는다. 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
+  // ⌘F 는 그 자리의 것으로 그대로 간다. 열린 막대 안의 ⌘F(전체 선택)·Enter·Esc 는 막대 입력칸이 받는다. 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS) —
+  // 사용자가 ⌘F 를 다른 액션(전역 포함)에 직접 걸었으면 이 기본값은 「없음」이 되고 터미널에서도 사용자가 건 액션이 돈다(fix3 R3-3).
   { id: 'terminal.find', group: '터미널 pane', title: '터미널에서 찾기', defaultBinding: ['Mod+F'], bindingVariants: [0], variants: ['열기'], scope: 'terminal' },
   { id: 'group.even', group: '터미널 pane', title: '영역 크기 균등화', defaultBinding: [], bindingVariants: [], variants: ['균등화'] },
 ] as const
@@ -169,7 +170,10 @@ const scopeOfId = (id: string): ActionScope => {
 function claimedByOtherOverrides(input: { id: ActionId; overrides: Keybindings }): Set<string> {
   const claimed = new Set<string>()
   const scope = scopeOfId(input.id)
-  for (const [owner, bindings] of Object.entries(input.overrides)) if (owner !== input.id && scopeOfId(owner) === scope && Array.isArray(bindings)) for (const binding of bindings) if (binding !== null) claimed.add(binding)
+  // LIFE-812 fix3 R3-3 — 터미널 범위 기본값은 사용자가 그 조합을 **전역** 액션에 직접 건 재정의에도 비켜 선다(사용자 재정의가 이긴다).
+  // 범위가 달라 충돌은 아니지만, 비켜 서지 않으면 터미널 포커스에서 그 키가 사용자가 고른 액션 대신 찾기를 연다. 탐색기 범위는 그대로(트리 안에서 앞선다).
+  const yieldsTo = (ownerScope: ActionScope): boolean => ownerScope === scope || (scope === 'terminal' && ownerScope === 'global')
+  for (const [owner, bindings] of Object.entries(input.overrides)) if (owner !== input.id && yieldsTo(scopeOfId(owner)) && Array.isArray(bindings)) for (const binding of bindings) if (binding !== null) claimed.add(binding)
   return claimed
 }
 

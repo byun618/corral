@@ -10,7 +10,7 @@
 //
 // | 사건 | 세우는 것 | 지우는 것 | 적용 시점 확인 |
 // | 열기 | open, 막대 포커스(컴포넌트) | — | — |
-// | 질의 변경 | 새 표 | 이전 결과(강조·k/총) | 응답 표 = 마지막 표 · 열림 |
+// | 질의 변경·열 수 변경(reflow — fix3 R3-2) | 새 표 | 이전 결과(강조·k/총) | 응답 표 = 마지막 표 · 열림 |
 // | 검색 응답 | 결과 | — | 같은 확인 |
 // | 다음/이전 | 대기 중이면 줄에 쌓음 · 아니면 새 표 → 응답 뒤 현재 일치, 줄이 비면 결과로 이동 요청 | — | 같은 확인 |
 // | 이동(스크롤) 응답 | (강조는 다음 프레임의 scrollTop 으로 다시 그린다) | — | main: 그 검색 표가 아직 그 pane 의 마지막 표인가 |
@@ -97,6 +97,20 @@ export class TerminalSearchController {
     const tooLong = queryBytes(query) > TERMINAL_SEARCH_MAX_QUERY_BYTES
     this.set({ ...this.state, query, result: null, pending: false, tooLong })
     if (query === '' || tooLong) return
+    this.timer = setTimeout(() => {
+      this.timer = null
+      this.request({ direction: 'backward', from: 'viewport' })
+    }, SEARCH_DEBOUNCE_MS)
+  }
+
+  /**
+   * 열 수가 바뀌었다(fix3 R3-2) — reflow 로 일치 좌표가 낡았다. 「질의 변경」과 같은 규칙으로 결과를 지우고 같은 질의를 다시 묻는다.
+   * 창·경계 드래그로 연달아 와도 지연 타이머 하나로 모인다.
+   */
+  refresh(): void {
+    if (!this.state.open || this.state.query === '' || this.state.tooLong) return
+    this.invalidate()
+    this.set({ ...this.state, result: null, pending: false })
     this.timer = setTimeout(() => {
       this.timer = null
       this.request({ direction: 'backward', from: 'viewport' })

@@ -32,8 +32,9 @@ export function TerminalSearchBar({
       data-term-search=""
       role="search"
       // fix2 R2-2 — 단추를 눌러도 포커스는 입력칸에 남긴다(Chromium 은 누른 단추에 포커스를 준다 — 그러면 Esc·⇧Enter 가 입력칸 처리를 못 탄다). 클릭은 그대로 간다.
+      // fix3 R3-1 — 상태 문구·여백도 같다(포커스 못 받는 요소라 기본 동작이 포커스를 body 로 뺀다). 입력칸 안만 기본 동작(캐럿·선택)을 쓴다.
       onMouseDown={(event) => {
-        if (event.target instanceof Element && event.target.closest('button') !== null) event.preventDefault()
+        if (event.target instanceof Element && event.target.closest('[data-term-search-input]') === null) event.preventDefault()
       }}
     >
       <input

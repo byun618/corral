@@ -111,7 +111,7 @@ describe('C6 표시 요소 (#14858 씨앗)', () => {
     expect(q('[data-pr-thread-location]')?.textContent).toBe('acceptance/testdata/repo/repo-delete-private-forks.txtar:15')
     expect(q('[data-pr-badge="resolved"]')?.textContent).toBe('해소됨')
     expect(q('[data-pr-badge="outdated"]')).toBeNull()
-    expect(thread[0]?.hasAttribute('data-pr-open')).toBe(false)
+    expect(thread[0]?.hasAttribute('data-pr-thread-open')).toBe(false)
     expect(all('[data-pr-thread-comment]')).toHaveLength(0)
     act(() => q('.pr-thread-head')?.click())
     expect(all('[data-pr-thread-comment] [data-pr-author]').map((el) => el.textContent)).toEqual(['copilot-pull-request-reviewer', 'BagToad'])
@@ -143,6 +143,23 @@ describe('C6 표시 요소 (#14858 씨앗)', () => {
     expect(all('[data-pr-thread-comment] [data-pr-hidden]')).toHaveLength(1)
     expect(all('[data-pr-hidden]')).toHaveLength(4)
   })
+  it('해소 → 미해소로 바뀐 스레드는 펼쳐지고 배지가 사라진다 · 사용자가 고른 접힘은 유지(리뷰 r2 B1)', async () => {
+    const thread = (resolved: boolean): PrComments => ({ ...EMPTY, threads: [{ id: 't', path: 'a.go', line: 1, resolved, outdated: false, comments: [{ id: 'c', author: 'a', body: 'reply body', at: null, url: 'https://github.com/cli/cli/pull/1#discussion_r1', minimized: false }], more: 0 }] })
+    await shown(ok(thread(true)))
+    expect(q('[data-pr-thread]')?.hasAttribute('data-pr-thread-open')).toBe(false)
+    act(() => q('[data-pr-refresh]')?.click())
+    await flush()
+    await answer(calls.at(-1), ok(thread(false)))
+    expect(q('[data-pr-thread]')?.hasAttribute('data-pr-thread-open')).toBe(true)
+    expect(q('[data-pr-badge="resolved"]')).toBeNull()
+    expect(host.textContent).toContain('reply body')
+    // 사용자가 접으면 그 선택이 새로고침 뒤에도 남는다.
+    act(() => q('.pr-thread-head')?.click())
+    act(() => q('[data-pr-refresh]')?.click())
+    await flush()
+    await answer(calls.at(-1), ok(thread(false)))
+    expect(q('[data-pr-thread]')?.hasAttribute('data-pr-thread-open')).toBe(false)
+  })
   it('미해소 · outdated · 줄 없음 스레드는 펼쳐진 채, 「N건 더」 는 PR URL', async () => {
     const comments: PrComments = {
       ...EMPTY,
@@ -152,7 +169,7 @@ describe('C6 표시 요소 (#14858 씨앗)', () => {
     await shown(ok(comments))
     expect(q('[data-pr-thread-location]')?.textContent).toBe('a.go · 줄 없음')
     expect(q('[data-pr-badge="outdated"]')?.textContent).toBe('outdated')
-    expect(q('[data-pr-thread]')?.hasAttribute('data-pr-open')).toBe(true)
+    expect(q('[data-pr-thread]')?.hasAttribute('data-pr-thread-open')).toBe(true)
     expect(q('[data-pr-thread-comment] [data-pr-author]')?.textContent).toBe('ghost')
     const more = q('[data-pr-section="comments"] [data-pr-more]')
     expect(more?.textContent).toBe('55건 더 — GitHub 에서 보기')

@@ -158,12 +158,13 @@ export function threadLocation(thread: Pick<PrThread, 'path' | 'line'>): string 
 }
 
 function ThreadView({ thread }: { thread: PrThread }): React.JSX.Element {
-  // 해소된 스레드는 기본 접힘(C6).
-  const [open, setOpen] = useState(!thread.resolved)
+  // 해소된 스레드는 기본 접힘(C6). 사용자가 직접 접거나 펼치기 전까지는 `resolved` 에서 파생 — 새로고침으로 해소↔미해소가 바뀌면 따라간다(리뷰 r2 B1).
+  const [chosen, setChosen] = useState<boolean | null>(null)
+  const open = chosen ?? !thread.resolved
   const first = thread.comments[0]
   return (
-    <article className="pr-thread" data-pr-thread={thread.id} data-pr-resolved={thread.resolved ? '' : undefined} data-pr-outdated={thread.outdated ? '' : undefined} data-pr-open={open ? '' : undefined}>
-      <button type="button" className="pr-thread-head" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+    <article className="pr-thread" data-pr-thread={thread.id} data-pr-resolved={thread.resolved ? '' : undefined} data-pr-outdated={thread.outdated ? '' : undefined} data-pr-thread-open={open ? '' : undefined}>
+      <button type="button" className="pr-thread-head" aria-expanded={open} onClick={() => setChosen(!open)}>
         <span className={`explorer-twistie is-collapsible${open ? '' : ' is-collapsed'}`}>
           <Codicon name="chevron-down" />
         </span>

@@ -18,6 +18,8 @@ export interface RepoRecord {
   worktreeBasePath?: string | null
   gitUsername?: string | null
   method: string
+  /** LIFE-813: the command `worktree create`/`worktree setup` run in a new worktree. Absent = none. */
+  setupCommand?: string | null
 }
 export interface SetupRecord {
   id: string
@@ -228,6 +230,7 @@ export function repoRootOf(input: string): string {
 
 function isRepo(value: unknown): value is RepoRecord {
   return isRecord(value) && ['id', 'path', 'name', 'projectId', 'method'].every(key => typeof value[key] === 'string') && (value.baseRef === null || typeof value.baseRef === 'string')
+    && (value.setupCommand === undefined || value.setupCommand === null || typeof value.setupCommand === 'string')
 }
 function isSetup(value: unknown): value is SetupRecord {
   return isRecord(value) && ['id', 'projectId', 'hostId', 'kind', 'state', 'method'].every(key => typeof value[key] === 'string') && ['path', 'displayName', 'worktreeBasePath', 'gitUsername'].every(key => value[key] === null || typeof value[key] === 'string')

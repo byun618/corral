@@ -3,8 +3,9 @@
 // - **하네스를 다시 만들지 않는다**: worktree · pane · 에이전트 기동 · ready 판정 · 초안/제출은 런타임 명령 하나(`worktree create --agent …`)가 한다.
 //   빈 터미널은 `worktree create`(에이전트 없음) 뒤 `terminal create`(런타임 명령 그대로).
 // - **한 시도 = 요청 id 하나**(`attemptId`). 같은 id 의 두 번째 요청은 진행 중이면 그 약속에 합류하고, 끝났으면 기록을 돌려준다(main 메모리).
-//   런타임도 같은 id 를 영수증으로 replay 한다(에이전트 경로) — 앱을 다시 띄운 뒤의 같은 id 도 하나다.
-//   같은 작업 · 같은 레포 · 같은 이름의 진행 중 시도가 있으면 id 가 달라도 그것에 합류한다(빈 터미널은 영수증이 없어 이 합류가 유일한 방패다).
+//   런타임도 같은 id 를 영수증으로 replay 한다 — 에이전트 경로와, LIFE-813 부터 빈 터미널의 `worktree create`(id 가 있으면 영수증) 둘 다. 앱을 다시 띄운 뒤의 같은 id 도 하나다.
+//   git 전 거절(already_exists 등)은 `not_started` 라 id 를 쓰지 않는다 — 원인을 고친 같은 id 는 다시 돈다. 빈 터미널의 뒤 `terminal create` 는 파생 id 로 따로 영수증을 받는다.
+//   같은 작업 · 같은 레포 · 같은 이름의 진행 중 시도가 있으면 id 가 달라도 그것에 합류한다(id 가 다른 두 시도를 막는 방패).
 // - **호출자 timeout 은 실패가 아니다**: `request_cancelled` 면 같은 id 로 다시 묻는다(줄에서 기다리다 끊긴 요청은 영수증이 풀려 다시 돈다).
 //   `outcome_unknown`(효과가 시작된 뒤 끊겨 영수증이 pending)은 **다시 묻지 않는다** — 같은 답이 영원히 온다(R1-B). 단계는 `unknown` 이고,
 //   예정 경로에 worktree 가 있으면 그것을 링크한다(없으면 미확정 기록이 남아 나중에 나타나면 붙인다 — `recover`).
@@ -45,6 +46,8 @@ export type StartDeps = {
 type Attempt = { input: StartWorkInput; promise: Promise<StartWorkResult>; result: StartWorkResult | null }
 
 const RETRY_CODES = new Set(['request_cancelled'])
+/** LIFE-813 — setup 명령 실패. 런타임은 worktree 를 만든 뒤에만 이 코드를 낸다(만든 것은 이 시도의 것). */
+const SETUP_CODES = new Set(['setup_failed', 'setup_timed_out'])
 const UNKNOWN_CODES = new Set(['request_cancelled', 'outcome_unknown'])
 /** 끝난 시도를 몇 개까지 기억하나(R1-Q) — 작업마다 마지막 시도는 늘 남긴다. */
 const KEEP_FINISHED = 50
@@ -67,10 +70,23 @@ const PROMPT_REASON: Record<string, string> = {
   empty_after_sanitize: '정제한 뒤 남은 본문이 없습니다.',
 }
 
-/** 런타임 `worktree create --agent` 결과의 단계 → 모달 3단계. */
-export function mapAgentStages(result: unknown): { stages: Record<StartStageName, StartStage>; path: string | null } {
+/**
+ * setup 명령 결과(LIFE-813) → 모달 단계. `stages.setup`(에이전트 경로) · `setupReceipt`(빈 터미널) 둘 다 읽는다.
+ * 건너뜀(등록 없음 · skip)이면 단계를 그리지 않는다.
+ */
+export function mapSetupStage(value: unknown): StartStage | undefined {
+  if (!isRecord(value) || typeof value.status !== 'string' || value.status === 'skipped') return undefined
+  if (value.status === 'completed') return stage('completed')
+  const read = (key: string) => (typeof value[key] === 'string' ? String(value[key]) : null)
+  const code = read('error') ?? (value.status === 'timed_out' ? 'setup_timed_out' : 'setup_failed')
+  const log = read('logPath')
+  return stage('failed', code, read('message') ?? `setup 명령이 ${value.status === 'timed_out' || code === 'setup_timed_out' ? '시간 안에 끝나지 않았습니다' : '실패했습니다'}${log === null ? '' : ` — 로그: ${log}`}`)
+}
+
+/** 런타임 `worktree create --agent` 결과의 단계 → 모달 3단계(+ setup). */
+export function mapAgentStages(result: unknown): { stages: Record<StartStageName, StartStage>; setup: StartStage | undefined; path: string | null } {
   const stages = initialStages()
-  if (!isRecord(result) || !isRecord(result.stages)) return { stages: { worktree: stage('unknown'), agent: stage('unknown'), prompt: stage('unknown') }, path: null }
+  if (!isRecord(result) || !isRecord(result.stages)) return { stages: { worktree: stage('unknown'), agent: stage('unknown'), prompt: stage('unknown') }, setup: undefined, path: null }
   const raw = result.stages
   const worktree = stageOf(raw.worktree), terminal = stageOf(raw.terminal), agent = stageOf(raw.agent), prompt = stageOf(raw.prompt)
   const path = isRecord(raw.worktree) && typeof raw.worktree.path === 'string' ? raw.worktree.path : isRecord(result.worktree) && typeof result.worktree.path === 'string' ? result.worktree.path : null
@@ -85,7 +101,7 @@ export function mapAgentStages(result: unknown): { stages: Record<StartStageName
   else if (prompt.status === 'queued') stages.prompt = stage('queued')
   else if (prompt.status === 'not_started') stages.prompt = stage('failed', prompt.reason ?? 'not_started', PROMPT_REASON[prompt.reason ?? ''] ?? '초안을 넣지 않았습니다.')
   else stages.prompt = stage(prompt.status === 'unknown' ? 'unknown' : 'failed', prompt.error, prompt.message)
-  return { stages, path }
+  return { stages, setup: mapSetupStage(raw.setup), path }
 }
 
 export class StartService {
@@ -234,7 +250,8 @@ export class StartService {
 
   /**
    * 같은 id 로 이어 묻는다 — `request_cancelled`(호출자 timeout)만. 기한이 지나면 마지막 응답 그대로.
-   * `retried` = 한 번이라도 끊겼다 — 그 뒤의 `already_exists`(빈 터미널은 영수증이 없다)는 이 시도가 만든 것일 수 있다.
+   * `retried` = 한 번이라도 끊겼다 — 그 뒤의 `already_exists` 는 이 시도가 만든 것일 수 있다. LIFE-813 뒤로 런타임은 효과가 시작된 끊김엔
+   * `outcome_unknown` 을 주므로 이 갈래는 주로 영수증 밖 경로(옛 런타임 · 줄에서 끊겨 영수증이 풀린 뒤 남이 만든 자리)에서 온다.
    */
   private async call(invocation: Invocation): Promise<{ response: RpcResponse | null; retried: boolean }> {
     const deadline = this.now() + (this.deps.deadlineMs ?? INVOKE_TIMEOUT_MS)
@@ -274,7 +291,11 @@ export class StartService {
     this.deps.pending?.add(pendingOf({ input, path: expected, now: this.now(), preexisting }))
     const { response, retried } = await this.call({ command: 'worktree create', flags, args: [], cwd: this.deps.cwd })
     let stages = initialStages()
+    let setup: StartStage | undefined
     let path: string | null = null
+    // 빈 터미널 경로의 setup 실패(LIFE-813 D3) — worktree 는 이 시도가 만들었다. 실패로 끝내지 않고 터미널까지 연다.
+    const setupFailedAt = response !== null && !response.ok && SETUP_CODES.has(response.error?.code ?? '') && isRecord(response.error?.resources) && typeof response.error.resources.path === 'string'
+      ? response.error.resources.path : null
     const unknown = (code: string, message: string): { path: string | null; stages: Record<StartStageName, StartStage> } => {
       // 결과 미확정 — 예정 경로에 worktree 가 있으면 그것을 이 시도의 것으로 링크하고 「worktree 열기」 를 준다(R1-B).
       // 시도 전부터 있던 자리면 붙이지 않는다(R2-A) — 다른 작업의 링크 · 떼기 예외일 수 있다.
@@ -292,7 +313,7 @@ export class StartService {
     }
     if (response === null) {
       ({ path, stages } = unknown('runtime_unavailable', '런타임이 사라졌습니다'))
-    } else if (!response.ok) {
+    } else if (!response.ok && setupFailedAt === null) {
       const code = response.error?.code ?? 'operation_failed', message = response.error?.message ?? '알 수 없는 오류'
       const resources = response.error?.resources
       const created = isRecord(resources) && typeof resources.path === 'string' ? resources.path : null
@@ -303,7 +324,7 @@ export class StartService {
         const note = '이 작업에 이미 만든 worktree 입니다 — 새로 만들지 않았습니다.'
         stages = { worktree: stage('skipped', 'already_linked', note), agent: stage('skipped', 'already_linked', input.agent === 'shell' ? '터미널을 열지 않았습니다.' : '에이전트를 띄우지 않았습니다.'), prompt: stage('skipped', 'already_linked', null) }
       } else if (code === 'already_exists' && retried && !preexisting) {
-        // 끊긴 뒤의 재시도가 자기 결과에 부딪혔다(빈 터미널은 영수증이 없다) — 시도 전엔 없던 자리라 이 시도가 만든 것일 수 있어 미확정으로 링크한다.
+        // 끊긴 뒤의 재시도가 `already_exists` 에 부딪혔다 — 시도 전엔 없던 자리라 이 시도가 만든 것일 수 있어 미확정으로 링크한다(영수증이 있는 런타임은 이 경우 대개 `outcome_unknown` 을 준다).
         // 시도 전부터 있던 자리면(R2-A) 아래 일반 실패 갈래 — 「이름을 바꿔 다시 시작」.
         ({ path, stages } = unknown('outcome_unknown', '앞 요청이 끊긴 뒤 같은 이름이 이미 있습니다'))
       } else {
@@ -314,8 +335,14 @@ export class StartService {
           ? { worktree: stage('failed', code, message), agent: stage('skipped'), prompt: stage('skipped') }
           : { worktree: stage('unknown', code, 'worktree 는 있지만 런타임이 오류로 끝나 이 시도가 만든 것인지 확정하지 못했습니다.'), agent: stage('failed', code, message), prompt: stage('skipped') }
       }
-    } else if (shell) {
-      path = isRecord(response.result) && isRecord(response.result.worktree) && typeof response.result.worktree.path === 'string' ? response.result.worktree.path : null
+    } else if (shell || setupFailedAt !== null) {
+      if (setupFailedAt !== null) {
+        path = setupFailedAt
+        setup = stage('failed', response.error?.code ?? 'setup_failed', response.error?.message ?? 'setup 명령이 실패했습니다.')
+      } else {
+        path = isRecord(response.result) && isRecord(response.result.worktree) && typeof response.result.worktree.path === 'string' ? response.result.worktree.path : null
+        setup = isRecord(response.result) ? mapSetupStage(response.result.setupReceipt) : undefined
+      }
       stages.worktree = stage('completed')
       stages.prompt = stage('skipped')
       if (path !== null) {
@@ -325,6 +352,7 @@ export class StartService {
     } else {
       const mapped = mapAgentStages(response.result)
       stages = mapped.stages
+      setup = mapped.setup
       path = mapped.path
     }
     // 링크는 새로 만들었거나(completed) 미확정이지만 그 자리에 있을 때(unknown + 경로). 이미 붙은 합류는 다시 적지 않는다.
@@ -345,8 +373,8 @@ export class StartService {
     // 기록을 남기는 경우: 미확정인데 시도 전엔 없던 자리라 나중에 나타날 수 있음 · 링크 저장 실패. 그 밖엔 지운다.
     const keep = !held && ((stages.worktree.status === 'unknown' && path === null && !preexisting) || (linkable && !linkSaved))
     if (!keep) this.deps.pending?.remove(input.attemptId)
-    const result: StartWorkResult = { attemptId: input.attemptId, joined: false, done: true, stages, worktreePath: path, linkSaved, sourceLink, refused: null }
-    this.deps.log('work.start_done', { attemptId: input.attemptId, stages: Object.fromEntries(Object.entries(stages).map(([key, value]) => [key, value.status])), linkSaved, sourceLink: sourceLink?.state ?? null })
+    const result: StartWorkResult = { attemptId: input.attemptId, joined: false, done: true, stages, ...(setup === undefined ? {} : { setup }), worktreePath: path, linkSaved, sourceLink, refused: null }
+    this.deps.log('work.start_done', { attemptId: input.attemptId, stages: Object.fromEntries(Object.entries(stages).map(([key, value]) => [key, value.status])), setup: setup?.status ?? null, linkSaved, sourceLink: sourceLink?.state ?? null })
     return result
   }
 

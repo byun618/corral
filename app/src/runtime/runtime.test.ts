@@ -28,12 +28,13 @@ function fixture() {
 }
 const invocation = (command = 'status') => ({ command, flags: {}, args: [], cwd: '/tmp' })
 describe('first release boundary and ownership', () => {
-  it('has five foundation plus nineteen workspace commands and rejects future commands and unsupported options', () => {
+  it('has five foundation plus twenty-one workspace commands and rejects future commands and unsupported options', () => {
     const registry = new CommandRegistry()
     registry.register({ specs: foundationSpecs, validate: validateFoundation, execute: async () => null })
     expect(registry.schema().commands.map(s => s.command)).toEqual(['open','serve','status','agent-context','diagnostics memory'])
     registry.register(workspaceModule('/tmp/metadata-only'))
-    expect(registry.schema().commandCount).toBe(24)
+    // LIFE-813 adds repo set-setup-command and worktree setup.
+    expect(registry.schema().commandCount).toBe(26)
     expect(registry.parse(['repo', 'add', '--path', '/tmp/repo'], '/tmp').command).toBe('repo add')
     for (const args of [['terminal','list'],['environment','list'],['repo','add'],['status','--host','local'],['serve','--port','0'],['status','--timeout-ms','0'],['status','--json','--json'],['status','unexpected']]) expect(() => registry.parse(args, '/tmp')).toThrow()
   })

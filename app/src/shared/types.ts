@@ -15,6 +15,7 @@ import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer
 import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
 import type { ScmReadInput, ScmReadResult } from './scm.js'
 import type { PrBranchesResult, PrItemRefreshResult } from './pr-status.js'
+import type { PrCommentsResult } from './pr-comments.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
@@ -803,7 +804,7 @@ export type UiPrefs = {
 } & SidebarViewPrefs
 
 /** 오른쪽 패널 보기 (LIFE-682) — 목록·아이콘·제목은 렌더러 `right-panel-views.ts` 한 곳. */
-export type RightPanelView = 'explorer' | 'scm' | 'detail'
+export type RightPanelView = 'explorer' | 'scm' | 'pr' | 'detail'
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
 
@@ -1228,6 +1229,8 @@ export type CorralApi = {
   prBranches: (input: { paths: string[] }) => Promise<PrBranchesResult>
   /** 작업 하나의 열린 PR 을 URL 로 다시 본다(LIFE-624 C10) — 사라진 worktree 의 머지·닫힘을 활동에 남긴다. */
   prRefreshItem: (query: WorkActivityQuery) => Promise<PrItemRefreshResult>
+  /** PR 리뷰 코멘트(LIFE-811) — 알려진 worktree 경로 하나의 PR 의 리뷰·스레드·일반 코멘트. `refresh` 면 TTL 무시. 「PR」 보기가 보일 때만 부른다. */
+  prComments: (input: { path: string; refresh?: boolean }) => Promise<PrCommentsResult>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }
 

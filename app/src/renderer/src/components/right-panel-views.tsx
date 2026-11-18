@@ -23,10 +23,17 @@ function SourceControlIcon({ className }: { className: string }): React.JSX.Elem
   return <span className={`codicon ${className} is-codicon is-source-control`} data-codicon="source-control" aria-hidden />
 }
 
+/** PR 아이콘 (LIFE-811) — codicon `git-pull-request`(0xea64). 소스 제어 아이콘과 같은 방식. */
+function PrIcon({ className }: { className: string }): React.JSX.Element {
+  return <span className={`codicon ${className} is-codicon is-pr`} data-codicon="git-pull-request" aria-hidden />
+}
+
 export const RIGHT_PANEL_VIEWS: readonly RightPanelViewDef[] = [
   { id: 'explorer', title: '탐색기', action: 'explorer.show', icon: FilesIcon, widthToken: '--right-panel-w', widthFallback: 300 },
   // LIFE-683 — 폭은 탐색기 폭 칸을 같이 쓴다(`useRightPanel` `widthSlotOf`) — 토큰도 같은 것.
   { id: 'scm', title: '소스 제어', action: 'scm.show', icon: SourceControlIcon, widthToken: '--right-panel-w', widthFallback: 300 },
+  // LIFE-811 — 활성 worktree 의 PR 리뷰 코멘트. 단축키 없음(범위 최소). 폭은 탐색기 칸 공용.
+  { id: 'pr', title: 'PR', action: null, icon: PrIcon, widthToken: '--right-panel-w', widthFallback: 300 },
   { id: 'detail', title: '작업 상세', action: null, icon: TasksIcon, widthToken: '--right-panel-detail-w', widthFallback: 560 },
 ]
 

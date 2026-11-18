@@ -565,6 +565,19 @@ describe('오른쪽 패널 보기·보기별 폭 영속 (LIFE-682 A3)', () => {
     third.load()
     expect(third.get()).toMatchObject({ rightPanelView: 'scm', scmViewMode: 'list' })
   })
+  it('LIFE-811 C10 — PR 보기를 쓰고 새 스토어로 읽으면 같은 값, 파일에 적힌 `pr` 도 읽는다, 모르는 이름은 여전히 탐색기', () => {
+    const first = new UiPrefsStore(dir)
+    first.load()
+    first.update({ rightPanelOpen: true, rightPanelView: 'pr' })
+    const second = new UiPrefsStore(dir)
+    second.load()
+    expect(second.get()).toMatchObject({ rightPanelOpen: true, rightPanelView: 'pr' })
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).rightPanelView).toBe('pr')
+    fs.writeFileSync(file, '{"version":1,"rightPanelView":"PR"}')
+    const third = new UiPrefsStore(dir)
+    third.load()
+    expect(third.get()).toMatchObject({ rightPanelView: 'explorer' })
+  })
 })
 
 describe('최근 연 파일 영속 (LIFE-593 E5ⓓⓔ)', () => {

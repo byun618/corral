@@ -64,12 +64,14 @@ import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useRightPanel } from './hooks/useRightPanel.js'
 import { useExplorer } from './hooks/useExplorer.js'
 import { useScm } from './hooks/useScm.js'
+import { usePrComments } from './hooks/usePrComments.js'
 import { useFileOps } from './hooks/useFileOps.js'
 import { createWatchHold, forgetMissing, type WatchPush } from './watch-hold.js'
 import { RightPanel, RightPanelToggle } from './components/RightPanel.js'
 import { RIGHT_PANEL_VIEWS } from './components/right-panel-views.js'
 import { Explorer } from './components/Explorer.js'
 import { ScmView } from './components/ScmView.js'
+import { PrCommentsView } from './components/PrCommentsView.js'
 import { DiffView } from './components/DiffView.js'
 import { diffTabId, diffTitle, openOf, type ScmChange } from '../../shared/scm.js'
 import { useCardActions } from './hooks/useCardActions.js'
@@ -334,6 +336,7 @@ export function App(): React.JSX.Element {
   const explorerVisible = rightPanel.open && rightPanel.view === 'explorer'
   // LIFE-683 — 소스 제어 보기. 감시·git 은 이 보기가 보일 때만(탐색기와 같은 루트면 한 벌 — S8).
   const scmVisible = rightPanel.open && rightPanel.view === 'scm'
+  const prVisible = rightPanel.open && rightPanel.view === 'pr'
   const [scmFocusToken, setScmFocusToken] = useState(0)
   const [explorerFocusToken, setExplorerFocusToken] = useState(0)
   const repoCollapse = usePersistentCollapse('collapsedRepos')
@@ -681,6 +684,7 @@ export function App(): React.JSX.Element {
 
   const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: explorerVisible })
   const scm = useScm({ root: activeWorktreeRow?.path ?? null, active: scmVisible })
+  const prComments = usePrComments({ path: activeWorktreeRow?.path ?? null, branch: activeWorktreeRow?.branch ?? null, active: prVisible })
 
   const activeWorkspaceRow = useMemo(
     () => (state === null ? null : findWorkspace(state, lifecycle.activeWorkspaceId)),
@@ -3016,6 +3020,7 @@ export function App(): React.JSX.Element {
           bodies={{
             explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} onOpenToSide={openFileToSide} onFileDrag={fileDrag.onExplorerDrag} ops={fileOps} notify={notify} />,
             scm: <ScmView scm={scm} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} mode={scm.mode} onChangeMode={scm.setMode} focusToken={scmFocusToken} onOpen={openScmChange} />,
+            pr: <PrCommentsView api={prComments} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} />,
             detail: <div ref={setDetailSlot} className="right-panel-detail" data-right-panel-detail="" />,
           }}
         />

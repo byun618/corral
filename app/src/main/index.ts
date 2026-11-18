@@ -2159,6 +2159,7 @@ app.whenReady().then(async () => {
   const prStatus = new PrStatus({ repos: () => currentState().repos, work: () => work, log })
   ipcMain.handle('corral:prBranches', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.branches(input) : { lookups: {}, recorded: 0 }))
   ipcMain.handle('corral:prRefreshItem', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.refreshItem(input) : { ok: false, reason: '허용되지 않은 발신자' }))
+  ipcMain.handle('corral:prComments', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.comments(input) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
 
   // --- 라이프사이클 (R3) ---
   const denied = { ok: false as const, error: '허용되지 않은 발신자' }

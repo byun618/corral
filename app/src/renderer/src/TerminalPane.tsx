@@ -19,7 +19,7 @@
 // 서버가 준 pane `innerRect` 가 프레임의 cols·rows 로 내려온다 — xterm 은 그 값으로 resize 된다.
 // 왕복이 사라져 요청이 연결당 1회로 수렴하고(S3), 픽셀→cols 역산이 한 군데로 줄었다.
 
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
@@ -41,6 +41,9 @@ import {
   settleWithin,
   shouldPasteClipboardImage,
 } from '../../shared/terminal-paste.js'
+import { highlightSegments } from '../../shared/terminal-search.js'
+import { CLOSED_SEARCH, TerminalSearchController, onTerminalFind, type TerminalSearchState } from './terminal-search-controller.js'
+import { TerminalSearchBar } from './components/TerminalSearchBar.js'
 
 const decoder = new TextDecoder()
 
@@ -65,7 +68,8 @@ const decoder = new TextDecoder()
  * `mousedown` 으로 닫는 메뉴(RepoRowMenu·TabContextMenu)가 안 닫힌다.
  */
 export function keepTerminalFocus(event: React.MouseEvent): void {
-  if (event.target instanceof Element && event.target.closest('[data-term-pane]') !== null) return
+  // LIFE-812 — 검색 막대(입력칸·단추)도 기본 동작(포커스·선택)을 그대로 쓴다.
+  if (event.target instanceof Element && event.target.closest('[data-term-pane], [data-term-search]') !== null) return
   event.preventDefault()
 }
 
@@ -183,6 +187,15 @@ export function TerminalPane({
   const appearanceRef = useRef<TerminalAppearanceOptions>(appearance)
   appearanceRef.current = appearance
   const appearanceWrites = useRef<Array<{ at: number; keys: string[] }>>([])
+  // --- LIFE-812 검색 막대 — 주인은 이 pane. 상태 규칙은 `terminal-search-controller.ts` 한 곳.
+  const [search, setSearch] = useState<TerminalSearchState>(CLOSED_SEARCH)
+  const [selectToken, setSelectToken] = useState(0)
+  const searchRef = useRef<TerminalSearchController | null>(null)
+  const searchOpenRef = useRef(false)
+  searchOpenRef.current = search.open
+  /** 마지막으로 **xterm 에 다 쓴** 프레임의 뷰포트 — 강조는 화면에 실제로 그려진 것과 같은 기준으로 그린다(C3ⓓⓔ). */
+  const frameViewRef = useRef<FrameView>({ top: null, rows: 0, cols: 0 })
+  const [view, setView] = useState<FrameView>(frameViewRef.current)
 
   useEffect(() => {
     const container = containerRef.current
@@ -261,6 +274,10 @@ export function TerminalPane({
         if (disposed) return
         if (frame !== null) {
           lastSeq = frame.seq
+          const nextView = { top: frame.scrollTop, rows: frame.rows, cols: frame.cols }
+          const previousView = frameViewRef.current
+          frameViewRef.current = nextView
+          if (searchOpenRef.current && (previousView.top !== nextView.top || previousView.rows !== nextView.rows || previousView.cols !== nextView.cols)) setView(nextView)
           // 쓰기 **완료** 시각 — S2 의 renderer 쪽 끝점. 프로브(term-read)가 읽어 간다.
           // 진단(계측) 실행에서만 링에 쌓는다 (수정 1회차 L7) — 평시엔 이 링을 안 만든다.
           if (diagnostics) {
@@ -548,13 +565,105 @@ export function TerminalPane({
     void window.corral.selectPane({ paneId })
   }, [announceFocus, paneId])
 
+  // LIFE-812 — 검색 컨트롤러는 pane 하나에 하나. pane 이 바뀌거나 내려가면(탭 전환·pane 닫힘·worktree 전환) 버린다 — 대기 요청의 적용 권리도 같이 사라진다.
+  useEffect(() => {
+    const controller = new TerminalSearchController({
+      paneId,
+      search: (request) => window.corral.termSearch(request),
+      reveal: (input) => window.corral.termReveal(input),
+      onChange: setSearch,
+    })
+    searchRef.current = controller
+    const offFind = onTerminalFind((target) => {
+      // 막대는 한 번에 하나 — 다른 pane 의 막대가 열리면 닫는다.
+      if (target !== paneId) {
+        controller.close()
+        return
+      }
+      if (!controller.snapshot.open) {
+        setView(frameViewRef.current)
+        controller.open()
+      }
+      setSelectToken((value) => value + 1)
+    })
+    return () => {
+      offFind()
+      controller.dispose()
+      if (searchRef.current === controller) searchRef.current = null
+      setSearch(CLOSED_SEARCH)
+    }
+  }, [paneId])
+
+  const closeSearch = (): void => {
+    searchRef.current?.close()
+    // 막대는 이 pane 안에 있으니 닫는 순간의 주인은 늘 이 pane 이다 — 본문으로 돌아간다(C4ⓓ).
+    if (!inlineEditHoldsFocus()) termRef.current?.focus()
+  }
+
   // 다시 고른 순간 터미널로 포커스를 돌린다 (위 focusToken 주석).
   // `0` 은 신호가 아니다 — 비활성 영역이 받는 값이라, 여기서 포커스를 주면 **비활성 영역이
   // 활성 영역 뒤에 포커스를 훔친다**(effect 순서는 활성 순서가 아니라 트리 순서다).
   useEffect(() => {
     if (focusToken === 0 || !focusableRef.current || inlineEditHoldsFocus()) return
+    // LIFE-812 — 검색 막대가 열려 있으면 막대로(팔레트에서 「터미널에서 찾기」를 고른 뒤 포커스 복귀가 막대를 덮지 않게).
+    if (searchOpenRef.current) {
+      setSelectToken((value) => value + 1)
+      return
+    }
     termRef.current?.focus()
   }, [focusToken])
 
-  return <div className="term-host" data-term-pane={paneId} ref={containerRef} />
+  return (
+    <>
+      <div className="term-host" data-term-pane={paneId} ref={containerRef} />
+      {search.open ? (
+        <>
+          <SearchHighlights container={containerRef.current} search={search} view={view} />
+          <TerminalSearchBar
+            state={search}
+            selectToken={selectToken}
+            onQuery={(query) => searchRef.current?.setQuery(query)}
+            onStep={(direction) => searchRef.current?.step(direction)}
+            onClose={closeSearch}
+          />
+        </>
+      ) : null}
+    </>
+  )
+}
+
+type FrameView = { top: number | null; rows: number; cols: number }
+
+/**
+ * 검색 강조층 (LIFE-812 C3) — xterm 화면(`.xterm-screen`) 위에 셀 단위 상자를 그린다. xterm 버퍼는 뷰포트뿐이라 애드온을 못 쓴다.
+ * 일치는 절대 행이고, `view.top`(마지막으로 그린 프레임의 뷰포트 맨 위 행)을 빼서 뷰포트 행으로 옮긴다. 스크롤 상태를 모르는 pane 은 0 으로 본다.
+ */
+function SearchHighlights({ container, search, view }: { container: HTMLDivElement | null; search: TerminalSearchState; view: FrameView }): React.JSX.Element | null {
+  const result = search.result
+  if (container === null || result === null || result.kind !== 'found' || view.rows < 1 || view.cols < 1) return null
+  const screen = container.querySelector('.xterm-screen')
+  const parent = container.parentElement
+  if (screen === null || parent === null) return null
+  const screenRect = screen.getBoundingClientRect()
+  const parentRect = parent.getBoundingClientRect()
+  const cellWidth = screenRect.width / view.cols
+  const cellHeight = screenRect.height / view.rows
+  const segments = highlightSegments({ matches: result.matches, current: result.current, top: view.top ?? 0, rows: view.rows, cols: view.cols })
+  return (
+    <div className="term-search-layer" data-term-search-layer="" aria-hidden>
+      {segments.map((segment) => (
+        <span
+          key={`${segment.row}:${segment.col}`}
+          className={`term-search-hit${segment.current ? ' is-current' : ''}`}
+          data-term-search-hit={`${segment.row},${segment.col},${segment.width}`}
+          style={{
+            left: screenRect.left - parentRect.left + segment.col * cellWidth,
+            top: screenRect.top - parentRect.top + segment.row * cellHeight,
+            width: segment.width * cellWidth,
+            height: cellHeight,
+          }}
+        />
+      ))}
+    </div>
+  )
 }

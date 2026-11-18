@@ -28,6 +28,14 @@ import { frameToAnsi } from './vendor/frame-to-ansi.js'
 import type { FrameData } from './vendor/frame-types.js'
 import type { Logger } from './vendor/logger.js'
 import { MOUSE_KIND, VtInputClassifier, type PaneInputEvent } from './vendor/vt-input-classifier.js'
+import { searchPane, type SearchCall } from './search.js'
+import {
+  revealOffset,
+  viewportTop,
+  type TerminalRevealResult,
+  type TerminalSearchRequest,
+  type TerminalSearchResult,
+} from '../../../shared/terminal-search.js'
 
 /**
  * 이 클래스가 실제로 쓰는 endpoint 클라이언트의 표면.
@@ -61,6 +69,11 @@ const COMMAND_TIMEOUT_MS = 10_000
  * (일반 명령 상한 `COMMAND_TIMEOUT_MS` 은 넘으면 세션을 닫는다 — 그 길을 타면 뒤 `pane.focus` 까지 실패한다).
  */
 export const ZOOM_FLAG_TIMEOUT_MS = 2_000
+/**
+ * LIFE-812 — 검색·결과 이동 요청의 상한. 넘어도 **세션을 닫지 않는다**(검색은 보조 기능이라 터미널 연결을 끊을 이유가 아니다) —
+ * 막대가 오류를 보이고 사용자가 다시 묻는다.
+ */
+export const SEARCH_TIMEOUT_MS = 3_000
 
 export type CellRect = { x: number; y: number; width: number; height: number }
 
@@ -82,6 +95,8 @@ export type GroupFrame = {
   cols: number
   rows: number
   mouseReporting: boolean
+  /** 이 프레임의 뷰포트 맨 위 절대 행 — 검색 강조가 일치 행을 뷰포트 행으로 옮기는 기준(LIFE-812). 스크롤 상태가 없으면 null. */
+  scrollTop: number | null
   bytes: Buffer
 }
 
@@ -507,6 +522,42 @@ export class GroupSession {
     )
   }
 
+  /**
+   * LIFE-812 — 스크롤백 전체 검색. 서버(`copy_search`)가 찾고, 출력이 바뀌어 거절되면 새 revision 으로 다시 묻는다(상한 — `search.ts`).
+   * 붙은 탭 밖 pane 은 묻지 않는다(S1 가드와 같은 이유 — 서버가 다른 탭 pane 을 찾아 줄 수는 있어도 이 연결이 그 화면을 못 그린다).
+   * 요청은 다른 endpoint 명령과 한 줄로 서고, 시간 상한을 넘어도 세션을 닫지 않는다.
+   */
+  search(request: TerminalSearchRequest): Promise<TerminalSearchResult> {
+    const pane = this.meta.get(request.paneId)
+    if (this.closed || pane === undefined) return Promise.resolve({ kind: 'error', message: 'pane 이 이 연결에 없습니다' })
+    const call: SearchCall = (method, params) => {
+      this.client.assertMethod(method)
+      return this.enqueueBounded({ run: () => this.client.callEndpoint(method, params), timeoutMs: SEARCH_TIMEOUT_MS, closeOnTimeout: false })
+    }
+    // 새 질의는 지금 뷰포트 바닥 바로 아래에서 위로 찾는다 — 화면에 보이는 것부터.
+    const bottom = pane.scroll === null ? pane.innerRect.height - 1 : viewportTop(pane.scroll) + pane.innerRect.height - 1
+    return searchPane({ request, viewportCursor: { row: bottom + 1, col: 0 }, call })
+  }
+
+  /**
+   * LIFE-812 — 절대 행을 보이게 한다(`pane.scroll` 절대 오프셋). 이미 보이면 요청하지 않는다(C2).
+   * 휠 스크롤과 같은 로컬 상태(`pane.scroll`)를 고쳐 다음 휠이 이 자리에서 이어지게 한다.
+   */
+  async reveal(input: { paneId: string; row: number }): Promise<TerminalRevealResult> {
+    const pane = this.meta.get(input.paneId)
+    if (this.closed || pane === undefined || pane.scroll === null) return { scrolled: false, top: null }
+    const offset = revealOffset({ row: input.row, scroll: pane.scroll, rows: pane.innerRect.height })
+    if (offset === null) return { scrolled: false, top: viewportTop(pane.scroll) }
+    this.client.assertMethod('pane.scroll')
+    pane.scroll = { ...pane.scroll, offsetFromBottom: offset }
+    await this.enqueueBounded({
+      run: () => this.client.callEndpoint('pane.scroll', { pane_id: input.paneId, offset_from_bottom: offset }),
+      timeoutMs: SEARCH_TIMEOUT_MS,
+      closeOnTimeout: false,
+    })
+    return { scrolled: true, top: viewportTop(pane.scroll) }
+  }
+
   /** control 층이 pane 소실을 봤다 — 다음 전체 서피스를 기다리지 않고 명부에서 뺀다 (R16 축출). */
   evictPanes(paneIds: readonly string[]): void {
     for (const paneId of paneIds) {
@@ -565,6 +616,7 @@ export class GroupSession {
         cols: cropped.width,
         rows: cropped.height,
         mouseReporting: pane.mouseReporting,
+        scrollTop: pane.scroll === null ? null : viewportTop(pane.scroll),
         bytes: Buffer.from(frameToAnsi(cropped), 'utf8'),
       })
       layoutChanged = true

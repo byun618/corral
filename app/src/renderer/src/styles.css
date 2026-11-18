@@ -1173,6 +1173,18 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
 .tab-group:not(.is-active-group) .main-tab-indicator { display: none; }
 .main-area:has(.tab-group:not(.is-active-group)) .tab-group.is-active-group .main-tab.is-active .main-tab-indicator { background: var(--accent); }
 .term-pane-inner { position: absolute; display: flex; overflow: hidden; }
+/* LIFE-812 — 터미널 검색 막대(오른쪽 위)와 강조층. 입력 모양은 탐색기 이름 필터(explorer.css)와 같은 토큰. 강조는 accent 를 섞어 글자가 비치게 한다. */
+.term-search {
+  position: absolute; top: 6px; right: 14px; z-index: 3; display: flex; align-items: center; gap: 4px;
+  height: 28px; padding: 0 4px 0 6px; background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-keycap); box-shadow: var(--shadow-menu);
+  font-family: var(--font-ui); font-size: 12px; color: var(--fg);
+}
+.term-search-input { width: 200px; height: 20px; padding: 0 6px; font: inherit; color: var(--fg); background: var(--bg-input); border: 1px solid var(--line-strong); border-radius: 3px; outline: none; }
+.term-search-input:focus { border-color: var(--accent); }
+.term-search-status { min-width: 52px; font-size: var(--fs-meta); color: var(--fg-muted); white-space: nowrap; text-align: right; }
+.term-search-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.term-search-hit { position: absolute; background: color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 1px; }
+.term-search-hit.is-current { background: color-mix(in srgb, var(--accent) 55%, transparent); outline: 1px solid var(--accent); }
 /* LIFE-512 U5 — xterm.css 가 viewport 바탕을 #000 으로 박는다. 밝은 테마·소수 픽셀 위치(pane 폭은 소수가 된다)에서 그 검정 층이
    위아래 1px 선으로 비친다 — Orca `terminal.css:47` 과 같은 선택자로 투명하게 두고 테마 배경이 비치게 한다. */
 .xterm:not(.allow-transparency) .xterm-viewport { background-color: transparent; }

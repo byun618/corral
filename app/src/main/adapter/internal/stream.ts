@@ -25,6 +25,7 @@ import type {
   TerminalScroll,
   TerminalState,
 } from '../../../shared/types.js'
+import type { TerminalRevealResult, TerminalSearchRequest, TerminalSearchResult } from '../../../shared/terminal-search.js'
 import { log } from '../../log.js'
 
 const BSU = '\x1b[?2026h'
@@ -303,6 +304,7 @@ export class TerminalStreams {
       cols: frame.cols,
       rows: frame.rows,
       mouseReporting: frame.mouseReporting,
+      scrollTop: frame.scrollTop,
       data,
     })
     if (changed) this.hooks.onState()
@@ -363,6 +365,31 @@ export class TerminalStreams {
       column: request.column,
       row: request.row,
     })
+  }
+
+  /**
+   * LIFE-812 — pane 의 스크롤백 검색. 그 pane 을 붙든 연결이 없으면 묻지 않는다(입력·스크롤과 같은 S1 이유).
+   * 한 줄 로그는 결과 갈래·시도 수만 남긴다(질의 내용은 남기지 않는다) — 출력이 흐르는 pane 의 재시도 계수(C7ⓒ)가 여기서 나온다.
+   */
+  async search(request: TerminalSearchRequest): Promise<TerminalSearchResult> {
+    const entry = this.entryForPane(request.paneId)
+    const result: TerminalSearchResult =
+      entry === undefined ? { kind: 'error', message: '이 pane 을 보고 있는 연결이 없습니다' } : await entry.session.search(request)
+    log('stream.search', {
+      paneId: request.paneId,
+      direction: request.direction,
+      from: request.from === 'viewport' ? 'viewport' : 'match',
+      kind: result.kind,
+      attempts: result.kind === 'error' ? null : result.attempts,
+    })
+    return result
+  }
+
+  /** LIFE-812 — 절대 행을 보이게 스크롤한다(이미 보이면 그대로). */
+  async reveal(request: { paneId: string; row: number }): Promise<TerminalRevealResult> {
+    const entry = this.entryForPane(request.paneId)
+    if (entry === undefined) return { scrolled: false, top: null }
+    return entry.session.reveal(request)
   }
 
   /** 이 영역이 지금 줌 중인 pane — 해제 시 서버 플래그를 끌 대상이다. */

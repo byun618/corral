@@ -192,6 +192,23 @@ describe('LIFE-813 worktree setup command', () => {
     expect(fs.existsSync(worktreePath('slow'))).toBe(true)
   })
 
+  it('C5: a TERM-ignoring child past the budget dies with its group once the leader exits — the grace timer is not what kills it', async () => {
+    const { root, id, data, register, worktreePath } = await fixture()
+    const pids = path.join(root, 'pids')
+    // The leader dies on TERM; the child ignores TERM. Only the SIGKILL sent when the leader exits reaches it
+    // (the 300 ms grace timer is cleared once the leader has exited).
+    await register(`sh -c 'trap "" TERM; echo $$ >> "${pids}"; exec sleep 60' & wait`)
+    const parser = new CommandRegistry()
+    parser.register(workspaceModule(data))
+    const response = await localCall(socketPath(data), request(parser.parse(['worktree', 'create', '--name', 'stubborn', '--repo', id, '--timeout-ms', '3000'], root)))
+    expect(response).toMatchObject({ ok: false, error: { code: 'setup_timed_out' } })
+    const listed = pidsIn(pids)
+    expect(listed).toHaveLength(1)
+    await new Promise(resolve => setTimeout(resolve, 600))
+    expect(listed.map(running)).toEqual([false])
+    expect(fs.existsSync(worktreePath('stubborn'))).toBe(true)
+  })
+
   it('C7: worktree setup runs the command in an existing worktree made by plain git; no command is refused without effect', async () => {
     const { root, real, git, repo, register, call, logs } = await fixture()
     const outside = path.join(root, 'by-git')

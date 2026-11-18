@@ -275,7 +275,7 @@ describe('workspace commands against real git and local socket', () => {
     expect(typeof payload.worktree.path).toBe('string')
     expect(fs.existsSync(path.join(String(payload.worktree.path), '.git'))).toBe(true)
     expect(Object.fromEntries(Object.entries(payload.stages).map(([key, stage]) => [key, isRecord(stage) ? stage.status : null])))
-      .toEqual({ worktree: 'completed', terminal: 'failed', agent: 'not_started', prompt: 'not_started' })
+      .toEqual({ worktree: 'completed', setup: 'skipped', terminal: 'failed', agent: 'not_started', prompt: 'not_started' })
     expect(payload.stages.terminal).toMatchObject({ error: 'backend_unavailable', requestId: expect.stringMatching(/^r1\./) })
     expect(payload.outcome).toBe('completed')
     expect(payload.agent).toBe(null)

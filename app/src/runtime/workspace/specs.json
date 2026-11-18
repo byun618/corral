@@ -20,7 +20,7 @@
       "corral project list [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -50,7 +50,7 @@
       "corral project setup-clone --project <id> --host <host-id> --url <clone-url> --destination <path> [--display-name <name>] [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -85,7 +85,7 @@
       "corral project setup-create --project <id> --host <host-id> [--setup-id <id>] [--path <path>] [--kind git|folder] [--display-name <name>] [--worktree-base-path <path>] [--git-username <name>] [--state ready|not-set-up|setting-up|error|unsupported] [--method imported-existing-folder|cloned|provisioned] [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -111,7 +111,7 @@
       "corral project setup-delete --setup <setup-id> [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -141,7 +141,7 @@
       "corral project setup-existing-folder --project <id> --host <host-id> --path <path> [--kind git|folder] [--display-name <name>] [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -174,7 +174,7 @@
       "corral project setup-update --setup <setup-id> [--display-name <name>] [--path <path>] [--worktree-base-path <path>] [--git-username <name>] [--kind git|folder] [--state ready|not-set-up|setting-up|error|unsupported] [--method legacy-repo|imported-existing-folder|cloned|provisioned] [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -201,7 +201,7 @@
       "corral project setups [--project <id>] [--host <host-id>] [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -227,7 +227,7 @@
       "corral repo add --path <path> [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -252,7 +252,8 @@
       "corral repo list [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported.",
+      "Each repo carries setupCommand: the registered setup command, or null when none is registered (including records written before LIFE-813)."
     ],
     "booleanFlags": []
   },
@@ -280,7 +281,7 @@
       "corral repo search-refs --repo <selector> --query <text> [--limit <n>] [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -307,7 +308,37 @@
       "corral repo set-base-ref --repo <selector> --ref <ref> [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "repo set-setup-command",
+    "path": [
+      "repo",
+      "set-setup-command"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Register or clear the repo's worktree setup command",
+    "usage": "corral repo set-setup-command --repo <selector> --command <text>|null [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "repo",
+      "command"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral repo set-setup-command --repo corral --command 'npm ci --prefix app && npm ci --prefix mobile'",
+      "corral repo set-setup-command --repo corral --command null"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported.",
+      "--command is one non-blank line without NUL or line breaks, at most 4096 bytes; null removes the command. An invalid value is refused before anything is written.",
+      "Setup command (LIFE-813): a repo's setup command is the one line registered with corral repo set-setup-command and stored in that repo's record in repos.json — nothing inside the repository (orca.yaml, conductor.json, .corral/) is ever read or run, and a newly added repo has none (setupCommand null). It runs as /bin/sh -c <command> in its own process group with cwd = the worktree, stdin closed, CORRAL_WORKTREE_PATH = the worktree and CORRAL_ROOT_PATH = the repo's main checkout, and PATH taken from the user's login shell ($SHELL -ilc; receipt pathSource login_shell, or process when that probe fails). stdout and stderr go to one log file under <userData>/logs/worktree-setup/, never into the worktree; the receipt carries policy, status (completed, failed, timed_out or skipped), exitCode, signal, durationMs and logPath. It runs inside the request budget (--timeout-ms, default 10000, at most 120000; about one second is kept back to report): past it the whole process group is killed and the result is timed_out. Give installs such as npm ci a larger --timeout-ms."
     ],
     "booleanFlags": []
   },
@@ -333,7 +364,8 @@
       "corral repo show --repo <selector> [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported.",
+      "Each repo carries setupCommand: the registered setup command, or null when none is registered (including records written before LIFE-813)."
     ],
     "booleanFlags": []
   },
@@ -383,7 +415,9 @@
       "corral worktree create --name LIFE-603-start --repo corral --agent claude --prompt-file prompt.md --draft --request-id <id> --timeout-ms 120000 --json"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Setup/archive hooks: LIFE-412.",
+      "Local host only. Remote routing: LIFE-403. Archive hooks are not supported.",
+      "--setup inherit (default) runs the registered setup command when the repo has one and does nothing otherwise; --setup skip never runs it; --setup run requires one and is refused with setup_not_configured before git runs when there is none. The command runs after git worktree add and before --activate and any terminal stage, and the request waits for it. A failed or timed-out setup never removes the worktree or branch and is not retried: without --agent the request fails with setup_failed or setup_timed_out and resources path, branch, logPath and setupReceipt; with --agent stages.setup is failed (reason failed or timed_out, logPath) and the terminal, agent and prompt stages still run. Replaying the same --request-id returns the recorded result and does not run the command again. --run-hooks is not supported.",
+      "Setup command (LIFE-813): a repo's setup command is the one line registered with corral repo set-setup-command and stored in that repo's record in repos.json — nothing inside the repository (orca.yaml, conductor.json, .corral/) is ever read or run, and a newly added repo has none (setupCommand null). It runs as /bin/sh -c <command> in its own process group with cwd = the worktree, stdin closed, CORRAL_WORKTREE_PATH = the worktree and CORRAL_ROOT_PATH = the repo's main checkout, and PATH taken from the user's login shell ($SHELL -ilc; receipt pathSource login_shell, or process when that probe fails). stdout and stderr go to one log file under <userData>/logs/worktree-setup/, never into the worktree; the receipt carries policy, status (completed, failed, timed_out or skipped), exitCode, signal, durationMs and logPath. It runs inside the request budget (--timeout-ms, default 10000, at most 120000; about one second is kept back to report): past it the whole process group is killed and the result is timed_out. Give installs such as npm ci a larger --timeout-ms.",
       "--agent claude|codex|grok synthesizes terminal create --agent in the new worktree after git succeeds; it is the same command and the same contract, not a second launch path. --model/--effort/--advisor/--prompt/--prompt-file require --agent and --advisor applies to --agent claude only. --prompt-file is resolved against the directory this command was invoked in, not the new worktree, and is read before the receipt is admitted and before git runs: an unreadable file is an effect-free invalid_argument, the body is part of the receipt fingerprint so the same request id with a changed file is request_conflict rather than a replay, and the child receives the verified body rather than the path.",
       "Stages are reported one by one (worktree, terminal, agent, prompt) with status completed, queued, unknown, failed or not_started, and each stage keeps the handle and child request id it reached. A created git worktree is never removed because a later stage failed, and a stage whose effect is unobserved stays unknown and is not retried. stages.*.status is the authoritative answer: the synthesized top-level outcome is the coarser of the two and reads unknown when ANY stage is unknown, so an effect-free agent rejection (a refused submission, an unverified detect manifest) can sit under an outcome of unknown that belongs to a different stage. Read the stage before deciding what to retry.",
       "Replay is by request id: the same --request-id replays the same partial result instead of re-running finished stages, failing with already_exists or creating a second terminal. Child stages derive their ids from it, so the composition is deterministic across runtime restarts.",
@@ -417,7 +451,7 @@
       "corral worktree current [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -444,7 +478,7 @@
       "corral worktree list [--repo <selector>] [--limit <n>] [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -470,7 +504,7 @@
       "corral worktree ps [--limit <n>] [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   },
@@ -507,7 +541,8 @@
       "corral worktree rm --worktree <selector> [--force] [--run-hooks] [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported.",
+      "--run-hooks (archive hooks) is not supported and is refused with unsupported."
     ],
     "booleanFlags": [
       "force",
@@ -543,11 +578,40 @@
       "corral worktree set --worktree <selector> [--display-name <name>] [--issue <number|null>] [--linear-issue <identifier-or-url|null>] [--comment <text>] [--workspace-status <id>] [--parent-worktree <selector>|--no-parent] [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": [
       "no-parent"
     ]
+  },
+  {
+    "command": "worktree setup",
+    "path": [
+      "worktree",
+      "setup"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Run the repo's registered setup command in an existing worktree",
+    "usage": "corral worktree setup --worktree <selector> [--timeout-ms <ms>] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "worktree",
+      "timeout-ms"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral worktree setup --worktree path:. --timeout-ms 120000 [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported.",
+      "Works for any worktree of a registered repo, including one made with git worktree add. With no registered command it is refused with setup_not_configured and runs nothing. Success returns worktree and setupReceipt; a non-zero exit fails with setup_failed and an expired budget with setup_timed_out, both with resources path, branch, logPath and setupReceipt. Nothing is undone or retried.",
+      "Setup command (LIFE-813): a repo's setup command is the one line registered with corral repo set-setup-command and stored in that repo's record in repos.json — nothing inside the repository (orca.yaml, conductor.json, .corral/) is ever read or run, and a newly added repo has none (setupCommand null). It runs as /bin/sh -c <command> in its own process group with cwd = the worktree, stdin closed, CORRAL_WORKTREE_PATH = the worktree and CORRAL_ROOT_PATH = the repo's main checkout, and PATH taken from the user's login shell ($SHELL -ilc; receipt pathSource login_shell, or process when that probe fails). stdout and stderr go to one log file under <userData>/logs/worktree-setup/, never into the worktree; the receipt carries policy, status (completed, failed, timed_out or skipped), exitCode, signal, durationMs and logPath. It runs inside the request budget (--timeout-ms, default 10000, at most 120000; about one second is kept back to report): past it the whole process group is killed and the result is timed_out. Give installs such as npm ci a larger --timeout-ms."
+    ],
+    "booleanFlags": []
   },
   {
     "command": "worktree show",
@@ -571,7 +635,7 @@
       "corral worktree show --worktree <selector> [--json]"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Archive hooks are not supported."
     ],
     "booleanFlags": []
   }

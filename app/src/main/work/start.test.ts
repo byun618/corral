@@ -13,7 +13,7 @@ import { testRepo, testWorktree } from '../../shared/test-rows.js'
 import type { RepoRow } from '../../shared/types.js'
 import type { StoredWorkLink } from '../../shared/work-link.js'
 import type { WorkActivityChange } from '../../shared/work.js'
-import { StartService, mapAgentStages } from './start.js'
+import { StartService, mapAgentStages, mapSetupStage } from './start.js'
 import { MemoryPending } from './start-pending.js'
 import type { ClaimResult, LinkWorkPort } from './links.js'
 
@@ -730,5 +730,40 @@ describe('LIFE-635 C6 일반 시작 — 출처 링크 저장 실패', () => {
     const h = harness({ answer: () => created({}) })
     await h.service.start(input())
     expect(h.events.filter((row) => row.change.field === 'run' && row.change.event === 'source_link_failed')).toEqual([])
+  })
+})
+
+describe('LIFE-813 C9 — setup 명령 결과가 모달 결과에 실린다', () => {
+  it('에이전트 경로 — stages.setup 실패는 setup 단계 실패로, 뒤 단계는 그대로 그린다', async () => {
+    const h = harness({ answer: () => created({ setup: { status: 'failed', reason: 'failed', error: 'setup_failed', exitCode: 3, logPath: '/u/logs/a.log', message: 'Setup command failed (exit 3); log: /u/logs/a.log' } }) })
+    const result = await h.service.start(input())
+    expect(result.setup).toEqual({ status: 'failed', code: 'setup_failed', message: 'Setup command failed (exit 3); log: /u/logs/a.log' })
+    expect(result.stages.agent.status).toBe('completed')
+    expect(result).toMatchObject({ worktreePath: PATH, linkSaved: true })
+  })
+  it('에이전트 경로 — 완료면 completed, 건너뜀(등록 없음)이면 setup 칸 자체가 없다', async () => {
+    expect((await harness({ answer: () => created({ setup: { status: 'completed', exitCode: 0, logPath: '/u/l' } }) }).service.start(input())).setup).toEqual({ status: 'completed', code: null, message: null })
+    expect('setup' in (await harness({ answer: () => created({ setup: { status: 'skipped', reason: 'no_command' } }) }).service.start(input()))).toBe(false)
+  })
+  it('빈 터미널 경로 — setup_failed 응답은 이 시도가 만든 worktree: 링크하고 터미널을 연다, setup 은 실패', async () => {
+    const h = harness({ answer: (invocation) => invocation.command === 'worktree create'
+      ? fail('setup_timed_out', 'Setup command timed out; worktree kept at x; log: /u/logs/b.log', { path: PATH, branch: NAME, logPath: '/u/logs/b.log' })
+      : ok({ terminal: { handle: 't' }, stage: 'pty_created' }) })
+    const result = await h.service.start(input({ agent: 'shell', prompt: '' }))
+    expect(h.calls.map((call) => call.command)).toEqual(['worktree create', 'terminal create'])
+    expect(result.stages.worktree.status).toBe('completed')
+    expect(result.stages.agent.status).toBe('completed')
+    expect(result.setup).toMatchObject({ status: 'failed', code: 'setup_timed_out' })
+    expect(result).toMatchObject({ worktreePath: PATH, linkSaved: true })
+  })
+  it('빈 터미널 경로 — 성공 응답의 setupReceipt 를 읽는다 · 경로 없는 setup 오류는 일반 실패', async () => {
+    const okRun = harness({ answer: (invocation) => invocation.command === 'worktree create' ? ok({ worktree: { path: PATH }, setupReceipt: { policy: 'inherit', status: 'completed', exitCode: 0 } }) : ok({ terminal: { handle: 't' } }) })
+    expect((await okRun.service.start(input({ agent: 'shell', prompt: '' }))).setup).toEqual({ status: 'completed', code: null, message: null })
+    const bare = harness({ answer: () => fail('setup_failed') })
+    expect((await bare.service.start(input({ agent: 'shell', prompt: '' }))).stages.worktree).toMatchObject({ status: 'failed', code: 'setup_failed' })
+  })
+  it('mapSetupStage — timed_out 영수증은 failed + setup_timed_out', () => {
+    expect(mapSetupStage({ status: 'timed_out', logPath: '/u/l' })).toMatchObject({ status: 'failed', code: 'setup_timed_out' })
+    expect(mapSetupStage(undefined)).toBeUndefined()
   })
 })

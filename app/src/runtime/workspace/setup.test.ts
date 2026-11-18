@@ -1,0 +1,223 @@
+// LIFE-813 — the registered worktree setup command, against real Git and the local socket.
+// Each case names the criterion (01-criteria C1~C8, C10) it covers.
+import { afterEach, describe, expect, it } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { startRuntime } from '../server.js'
+import { localCall, request, socketPath } from '../transport.js'
+import { CommandRegistry } from '../registry.js'
+import { workspaceModule } from './index.js'
+import { RepoRegistry } from '../../main/registry.js'
+import { isRecord } from '../../shared/json.js'
+import { RuntimeError } from '../contracts.js'
+import { setupLogDirectory } from './setup.js'
+
+const env = { ...process.env }
+const cleanups: (() => void | Promise<void>)[] = []
+afterEach(async () => {
+  for (const cleanup of cleanups.reverse()) await cleanup()
+  cleanups.length = 0
+  process.env = { ...env }
+})
+
+/** A fake login shell: `$SHELL -ilc <cmd>` → prepend a marker directory to PATH, then run <cmd>. */
+function fakeShell(root: string, prefix: string): string {
+  const file = path.join(root, 'fake-login-shell')
+  fs.writeFileSync(file, `#!/bin/sh\nPATH='${prefix}':"$PATH"; export PATH\nexec /bin/sh -c "$2"\n`, { mode: 0o755 })
+  return file
+}
+
+async function fixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'l813-')), data = path.join(root, 'data'), repo = path.join(root, 'repo')
+  cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }))
+  for (const key of ['CORRAL_RUNTIME_SOCKET', 'CORRAL_SESSION', 'CORRAL_BACKEND_SOCKET', 'CORRAL_WORKTREE_PATH', 'CORRAL_ROOT_PATH']) delete process.env[key]
+  process.env.CORRAL_REGISTRY = path.join(data, 'repos.json')
+  process.env.SHELL = fakeShell(root, path.join(root, 'login-bin'))
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  fs.mkdirSync(repo)
+  git(repo, 'init', '-b', 'main'); git(repo, 'commit', '--allow-empty', '-m', 'one')
+  let runtime = await startRuntime({ userData: data })
+  cleanups.push(() => runtime.close())
+  const parser = new CommandRegistry()
+  parser.register(workspaceModule(data))
+  const call = (...args: string[]) => localCall(socketPath(data), request(parser.parse(args, repo)))
+  const rejected = async (...args: string[]): Promise<string | undefined> => {
+    try { return (await call(...args)).error?.code } catch (error) { return error instanceof RuntimeError ? error.code : String(error) }
+  }
+  const restart = async () => { await runtime.close(); runtime = await startRuntime({ userData: data }) }
+  const real = fs.realpathSync(repo)
+  const worktreePath = (name: string) => path.join(real, '.claude/worktrees', name)
+  const branchExists = (name: string) => git(repo, 'for-each-ref', '--format=%(refname)', `refs/heads/${name}`) !== ''
+  const logs = () => { try { return fs.readdirSync(setupLogDirectory(data)) } catch { return [] } }
+  expect((await call('repo', 'add', '--path', repo)).ok).toBe(true)
+  const id = new RepoRegistry(data).records()[0]!.id
+  const register = async (command: string) => expect((await call('repo', 'set-setup-command', '--repo', id, '--command', command)).ok).toBe(true)
+  return { root, data, repo, real, id, git, call, rejected, restart, worktreePath, branchExists, logs, register }
+}
+const receiptOf = (result: unknown): Record<string, unknown> => (isRecord(result) && isRecord(result.setupReceipt) ? result.setupReceipt : {})
+const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
+
+describe('LIFE-813 worktree setup command', () => {
+  it('C1: registers, shows, clears and survives restart; old records read as null; bad values change nothing', async () => {
+    const { data, id, call, rejected, restart, register } = await fixture()
+    const file = path.join(data, 'repos.json')
+    // An old record has no setupCommand at all and still reads, as null.
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).repos[0]).not.toHaveProperty('setupCommand')
+    const before = fs.readFileSync(file)
+    expect(await call('repo', 'show', '--repo', id)).toMatchObject({ ok: true, result: { repo: { id, setupCommand: null } } })
+    expect(await call('repo', 'list')).toMatchObject({ ok: true, result: { repos: [{ id, setupCommand: null }] } })
+    for (const bad of ['', '   ', 'a\nb', 'x'.repeat(4097)]) {
+      expect([JSON.stringify(bad.slice(0, 8)), await rejected('repo', 'set-setup-command', '--repo', id, '--command', bad)]).toEqual([JSON.stringify(bad.slice(0, 8)), 'invalid_argument'])
+    }
+    expect(await rejected('repo', 'set-setup-command', '--repo', id, '--command', 'a\0b')).toBe('invalid_argument')
+    expect(fs.readFileSync(file).equals(before)).toBe(true)
+    await register('npm ci --prefix app && npm ci --prefix mobile')
+    await restart()
+    expect(await call('repo', 'show', '--repo', id)).toMatchObject({ result: { repo: { setupCommand: 'npm ci --prefix app && npm ci --prefix mobile' } } })
+    expect(await call('repo', 'list')).toMatchObject({ result: { repos: [{ setupCommand: 'npm ci --prefix app && npm ci --prefix mobile' }] } })
+    expect((await call('repo', 'set-setup-command', '--repo', id, '--command', 'null')).ok).toBe(true)
+    expect(await call('repo', 'show', '--repo', id)).toMatchObject({ result: { repo: { setupCommand: null } } })
+    // Clearing removes the field: the record is byte-identical to before registration.
+    expect(fs.readFileSync(file).equals(before)).toBe(true)
+  })
+
+  it('C2·C3·C6: inherit runs the registered command after git, in the worktree, with corral env and the login-shell PATH; output goes to a log under userData', async () => {
+    const { root, real, register, call, worktreePath, git } = await fixture()
+    await register('pwd > "$CORRAL_WORKTREE_PATH/../../../../marker-cwd"; echo "$CORRAL_WORKTREE_PATH|$CORRAL_ROOT_PATH|$PATH" > ../../../../marker-env; git -C "$CORRAL_WORKTREE_PATH" rev-parse --abbrev-ref HEAD > ../../../../marker-branch; echo to-stdout; echo to-stderr >&2')
+    const created = await call('worktree', 'create', '--name', 'wt-a')
+    expect(created.ok).toBe(true)
+    const receipt = receiptOf(created.result)
+    expect(receipt).toMatchObject({ policy: 'inherit', status: 'completed', exitCode: 0, signal: null, pathSource: 'login_shell', error: null })
+    expect(typeof receipt.durationMs).toBe('number')
+    const target = worktreePath('wt-a')
+    const [worktreeEnv, rootEnv, pathEnv] = fs.readFileSync(path.join(root, 'marker-env'), 'utf8').trim().split('|')
+    expect(fs.realpathSync(fs.readFileSync(path.join(root, 'marker-cwd'), 'utf8').trim())).toBe(target)
+    expect([worktreeEnv, rootEnv]).toEqual([target, real])
+    expect(pathEnv?.startsWith(path.join(root, 'login-bin') + ':')).toBe(true)
+    // The command ran after `git worktree add`: the branch was already checked out.
+    expect(fs.readFileSync(path.join(root, 'marker-branch'), 'utf8').trim()).toBe('wt-a')
+    const log = String(receipt.logPath)
+    expect(log.startsWith(setupLogDirectory(path.join(root, 'data')) + path.sep)).toBe(true)
+    const text = fs.readFileSync(log, 'utf8')
+    expect(text).toContain('to-stdout')
+    expect(text).toContain('to-stderr')
+    expect(git(target, 'status', '--porcelain', '--untracked-files=all')).toBe('')
+  })
+
+  it('C2: skip runs nothing; inherit without a command runs nothing; run without a command is refused before git', async () => {
+    const { root, id, call, rejected, register, worktreePath, branchExists, logs } = await fixture()
+    expect(receiptOf((await call('worktree', 'create', '--name', 'none')).result)).toEqual({ policy: 'inherit', status: 'skipped', reason: 'no_command', command: null, logPath: null })
+    const refused = await call('worktree', 'create', '--name', 'must-run', '--setup', 'run')
+    expect(refused).toMatchObject({ ok: false, error: { code: 'setup_not_configured' }, _meta: { outcome: 'not_started' } })
+    expect([fs.existsSync(worktreePath('must-run')), branchExists('must-run'), logs()]).toEqual([false, false, []])
+    expect(await rejected('worktree', 'create', '--name', 'bad', '--setup', 'always')).toBe('invalid_argument')
+    await register(`echo ran >> '${path.join(root, 'count')}'`)
+    expect(receiptOf((await call('worktree', 'create', '--name', 'skipped', '--setup', 'skip')).result)).toMatchObject({ policy: 'skip', status: 'skipped', reason: 'policy_skip' })
+    expect(fs.existsSync(path.join(root, 'count'))).toBe(false)
+    expect(receiptOf((await call('worktree', 'create', '--name', 'ran', '--setup', 'run')).result)).toMatchObject({ policy: 'run', status: 'completed' })
+    expect(fs.readFileSync(path.join(root, 'count'), 'utf8')).toBe('ran\n')
+    expect((await call('repo', 'show', '--repo', id)).ok).toBe(true)
+  })
+
+  it('C3: when the login shell probe fails, the runtime PATH is used and the receipt says so', async () => {
+    const { root, register, call } = await fixture()
+    const broken = path.join(root, 'broken-shell')
+    fs.writeFileSync(broken, '#!/bin/sh\nexit 7\n', { mode: 0o755 })
+    process.env.SHELL = broken
+    await register('true')
+    expect(receiptOf((await call('worktree', 'create', '--name', 'p')).result)).toMatchObject({ status: 'completed', pathSource: 'process' })
+  })
+
+  it('C4: a failing command keeps the worktree and branch and fails with setup_failed and its resources', async () => {
+    const { register, call, worktreePath, branchExists } = await fixture()
+    await register('echo boom >&2; exit 3')
+    const response = await call('worktree', 'create', '--name', 'broken')
+    expect(response).toMatchObject({ ok: false, error: { code: 'setup_failed', resources: { path: worktreePath('broken'), branch: 'broken', setupReceipt: { status: 'failed', exitCode: 3 } } } })
+    const resources = isRecord(response.error?.resources) ? response.error.resources : {}
+    expect(response.error?.message).toContain(String(resources.logPath))
+    expect(fs.readFileSync(String(resources.logPath), 'utf8')).toContain('boom')
+    expect([fs.existsSync(path.join(worktreePath('broken'), '.git')), branchExists('broken')]).toEqual([true, true])
+  })
+
+  it('C4: with --agent a failed setup is stages.setup failed, later stages still run, and a replay does not run it again', async () => {
+    const { root, register, call } = await fixture()
+    const counter = path.join(root, 'counter')
+    await register(`echo run >> '${counter}'; exit 5`)
+    const args = ['worktree', 'create', '--name', 'agent-wt', '--agent', 'claude', '--request-id', `r1.${Date.now()}.${randomUUID()}`]
+    const first = await call(...args)
+    expect(first.ok).toBe(true)
+    const stages = isRecord(first.result) && isRecord(first.result.stages) ? first.result.stages : {}
+    expect(Object.keys(stages)).toEqual(['worktree', 'setup', 'terminal', 'agent', 'prompt'])
+    expect(stages.setup).toMatchObject({ status: 'failed', reason: 'failed', error: 'setup_failed', exitCode: 5 })
+    // The fixture has no terminal backend: the terminal stage was attempted after the failed setup.
+    expect(stages.terminal).toMatchObject({ status: 'failed', error: 'backend_unavailable' })
+    expect(fs.readFileSync(counter, 'utf8')).toBe('run\n')
+    expect(await call(...args)).toMatchObject({ ok: true, result: { replayed: true, stages: { setup: { status: 'failed' } } } })
+    expect(fs.readFileSync(counter, 'utf8')).toBe('run\n')
+  })
+
+  it('C5: past the request budget the whole process group is killed and the worktree stays', async () => {
+    const { root, data, id, register, worktreePath } = await fixture()
+    const pids = path.join(root, 'pids')
+    await register(`echo $$ >> '${pids}'; sleep 60 & echo $! >> '${pids}'; sleep 60`)
+    const parser = new CommandRegistry()
+    parser.register(workspaceModule(data))
+    const started = Date.now()
+    const response = await localCall(socketPath(data), request(parser.parse(['worktree', 'create', '--name', 'slow', '--repo', id, '--timeout-ms', '3000'], root)))
+    expect(Date.now() - started).toBeLessThan(3000)
+    expect(response).toMatchObject({ ok: false, error: { code: 'setup_timed_out', resources: { path: worktreePath('slow'), setupReceipt: { status: 'timed_out' } } } })
+    const listed = fs.readFileSync(pids, 'utf8').trim().split('\n').map(Number)
+    expect(listed).toHaveLength(2)
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(listed.map(alive)).toEqual([false, false])
+    expect(fs.existsSync(worktreePath('slow'))).toBe(true)
+  })
+
+  it('C7: worktree setup runs the command in an existing worktree made by plain git; no command is refused without effect', async () => {
+    const { root, real, git, repo, register, call, logs } = await fixture()
+    const outside = path.join(root, 'by-git')
+    git(repo, 'worktree', 'add', '-b', 'by-git', outside)
+    const none = await call('worktree', 'setup', '--worktree', `path:${outside}`)
+    expect(none).toMatchObject({ ok: false, error: { code: 'setup_not_configured' }, _meta: { outcome: 'not_started' } })
+    expect(logs()).toEqual([])
+    await register('echo "$CORRAL_WORKTREE_PATH|$CORRAL_ROOT_PATH" > marker')
+    const done = await call('worktree', 'setup', '--worktree', `path:${outside}`)
+    expect(done).toMatchObject({ ok: true, result: { worktree: { path: fs.realpathSync(outside) }, setupReceipt: { policy: 'run', status: 'completed', exitCode: 0 } } })
+    expect(fs.readFileSync(path.join(outside, 'marker'), 'utf8').trim()).toBe(`${fs.realpathSync(outside)}|${real}`)
+    await register('exit 9')
+    expect(await call('worktree', 'setup', '--worktree', `path:${outside}`)).toMatchObject({ ok: false, error: { code: 'setup_failed', resources: { path: fs.realpathSync(outside), branch: 'by-git', setupReceipt: { exitCode: 9 } } } })
+  })
+
+  it('C8: files inside the repository never become the command', async () => {
+    const { root, repo, git, data, call } = await fixture()
+    const marker = (name: string) => path.join(root, `marker-${name}`)
+    fs.writeFileSync(path.join(repo, 'orca.yaml'), `scripts:\n  setup: touch '${marker('orca')}'\n`)
+    fs.writeFileSync(path.join(repo, 'conductor.json'), JSON.stringify({ scripts: { setup: `touch '${marker('conductor')}'` } }))
+    fs.mkdirSync(path.join(repo, '.corral'))
+    fs.writeFileSync(path.join(repo, '.corral', 'setup.sh'), `#!/bin/sh\ntouch '${marker('corral')}'\n`, { mode: 0o755 })
+    git(repo, 'add', '.'); git(repo, 'commit', '-m', 'hooks in repo')
+    // A second, newly registered repo carrying the same files.
+    const other = path.join(root, 'other')
+    git(root, 'clone', '-q', repo, other)
+    expect((await call('repo', 'add', '--path', other)).result).toMatchObject({ repo: { setupCommand: null } })
+    const otherId = new RepoRegistry(data).records().find(row => row.path === fs.realpathSync(other))!.id
+    const targets: [string, string][] = [[otherId, 'fresh'], [new RepoRegistry(data).records()[0]!.id, 'first']]
+    for (const [repoId, name] of targets) {
+      expect(receiptOf((await call('worktree', 'create', '--name', name, '--repo', repoId)).result)).toMatchObject({ status: 'skipped', reason: 'no_command' })
+    }
+    expect((await call('worktree', 'setup', '--worktree', 'branch:fresh')).error?.code).toBe('setup_not_configured')
+    expect(['orca', 'conductor', 'corral'].map(name => fs.existsSync(marker(name)))).toEqual([false, false, false])
+  })
+
+  it('C10: --run-hooks stays unsupported without naming LIFE-412', async () => {
+    const { call, rejected } = await fixture()
+    expect((await call('worktree', 'create', '--name', 'x')).ok).toBe(true)
+    for (const args of [['worktree', 'rm', '--worktree', 'branch:x', '--run-hooks'], ['worktree', 'create', '--name', 'y', '--run-hooks']]) {
+      expect(await rejected(...args)).toBe('unsupported')
+      try { await call(...args) } catch (error) { expect(String(error instanceof Error ? error.message : error)).not.toContain('LIFE-412') }
+    }
+  })
+})

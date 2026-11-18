@@ -8,13 +8,14 @@ import { contains, git, projects, repoSelect, repoSetup, resolvePath, unique, Wo
 import { isRecord } from '../../shared/json.js'
 import { Receipts, REQUEST_ID } from '../terminal/receipts.js'
 import { AGENT_OPTIONS, MAX_INPUT, derivedRequestId, stageFailure, terminalModule, validateAgentFlags } from '../terminal/index.js'
+import { SETUP_POLICIES, readSetupCommand, runSetupCommand, setupError, type SetupPolicy, type SetupReceipt } from './setup.js'
 
 export const workspaceSpecs: CommandSpec[] = specs
 const required: Record<string, string[]> = {
-  'repo add': ['path'], 'repo show': ['repo'], 'repo search-refs': ['repo', 'query'], 'repo set-base-ref': ['repo', 'ref'],
+  'repo add': ['path'], 'repo show': ['repo'], 'repo search-refs': ['repo', 'query'], 'repo set-base-ref': ['repo', 'ref'], 'repo set-setup-command': ['repo', 'command'],
   'project setup-existing-folder': ['project', 'path'], 'project setup-clone': ['project', 'url', 'destination'],
   'project setup-create': ['project', 'host'], 'project setup-update': ['setup'], 'project setup-delete': ['setup'],
-  'worktree create': ['name'], 'worktree set': ['worktree'], 'worktree show': ['worktree'], 'worktree rm': ['worktree'],
+  'worktree create': ['name'], 'worktree set': ['worktree'], 'worktree show': ['worktree'], 'worktree rm': ['worktree'], 'worktree setup': ['worktree'],
 }
 export function validateWorkspace(inv: Invocation): void {
   const f = inv.flags
@@ -26,7 +27,8 @@ export function validateWorkspace(inv: Invocation): void {
   // LIFE-603 D8: a draft is a prompt the runtime types but does not submit — it needs a body to type.
   if (f.draft && (f.agent === undefined || (f.prompt === undefined && f['prompt-file'] === undefined))) throw new RuntimeError('invalid_request', '--draft requires --agent and --prompt or --prompt-file')
   if (f['request-id'] !== undefined && !REQUEST_ID.test(String(f['request-id']))) reject('--request-id must be r1.<13-digit Unix milliseconds>.<UUID>')
-  if (f['run-hooks'] || (inv.command === 'worktree create' && f.setup === 'run')) throw new RuntimeError('unsupported', 'Setup/archive hooks require LIFE-412')
+  // LIFE-813 D9: archive hooks stay unsupported. On create the registered setup command is chosen with --setup.
+  if (f['run-hooks']) throw new RuntimeError('unsupported', inv.command === 'worktree create' ? '--run-hooks is not supported; the registered setup command runs by --setup run|skip|inherit' : 'Archive hooks are not supported')
   for (const key of required[inv.command] ?? []) stringFlag(f, key, true)
   if (f['no-parent'] && f['parent-worktree'] !== undefined) reject('--parent-worktree and --no-parent are mutually exclusive')
   if (f.limit !== undefined && (!/^\d+$/.test(String(f.limit)) || Number(f.limit) < 1 || Number(f.limit) > 10000)) reject('--limit must be 1..10000')
@@ -36,8 +38,9 @@ export function validateWorkspace(inv: Invocation): void {
   }
   if (inv.command === 'worktree create') {
     if (['repo', 'project', 'project-host-setup'].filter(key => key in f).length > 1) reject('Choose one repo/project/setup selector')
-    if (f.setup !== undefined && !['skip', 'inherit'].includes(String(f.setup))) reject('--setup must be skip or inherit')
+    if (f.setup !== undefined && !SETUP_POLICIES.some(policy => policy === f.setup)) reject('--setup must be run, skip or inherit')
   }
+  if (inv.command === 'repo set-setup-command') readSetupCommand(String(f.command))
   if (f['linear-issue'] !== undefined) parseLinear(String(f['linear-issue']))
 }
 function parseLinear(value: string): Metadata['linkedLinearIssue'] {
@@ -87,9 +90,9 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
       }
       let result: unknown
       switch (inv.command) {
-        case 'repo list': return { repos: allRepos }
-        case 'repo show': return { repo: selectRepo(need('repo')) }
-        case 'repo add': result = { repo: addRepo(need('path')) }; break
+        case 'repo list': return { repos: allRepos.map(repoView) }
+        case 'repo show': return { repo: repoView(selectRepo(need('repo'))) }
+        case 'repo add': result = { repo: repoView(addRepo(need('path'))) }; break
         case 'repo search-refs': {
           const repo = selectRepo(need('repo'))
           const names = (await git(repo.path, ['for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes', 'refs/tags'], ctx.signal)).split('\n').filter(name => name && name.toLowerCase().includes(need('query').toLowerCase()))
@@ -100,7 +103,17 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
           const repo = selectRepo(need('repo')), ref = need('ref')
           await verifyRef(repo.path, ref, ctx)
           registry.change(data => { data.repos.find(row => row.id === repo.id)!.baseRef = ref })
-          result = { repo: selectRepo(repo.id) }; break
+          result = { repo: repoView(selectRepo(repo.id)) }; break
+        }
+        case 'repo set-setup-command': {
+          const repo = selectRepo(need('repo')), command = readSetupCommand(need('command'))
+          // Clearing removes the field, so a repo that never had a command keeps its record bytes.
+          registry.change(data => {
+            const row = data.repos.find(item => item.id === repo.id)!
+            if (command === null) delete row.setupCommand
+            else row.setupCommand = command
+          })
+          result = { repo: repoView(selectRepo(repo.id)) }; break
         }
         case 'project list': return { projects: projects(registry) }
         case 'project setups': {
@@ -190,6 +203,14 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
     },
   }
 }
+/** Old records have no `setupCommand`; every read answers it as `null`. */
+function repoView(repo: RepoRecord): RepoRecord & { setupCommand: string | null } {
+  return { ...repo, setupCommand: repo.setupCommand ?? null }
+}
+function setupPolicy(value: string | undefined): SetupPolicy {
+  return SETUP_POLICIES.find(policy => policy === value) ?? 'inherit'
+}
+const isSetupError = (error: unknown) => error instanceof RuntimeError && (error.code === 'setup_failed' || error.code === 'setup_timed_out')
 /** The prompt body a `worktree create --agent` was given by path, read in the caller's directory. */
 function readPromptFile(cwd: string, value: string): string {
   const file = path.resolve(cwd, value)
@@ -198,6 +219,14 @@ function readPromptFile(cwd: string, value: string): string {
   try { content = fs.readFileSync(file, 'utf8') } catch (error) { return refuse(`Cannot read prompt file: ${String(error)}`) }
   if (content.includes('\0') || Buffer.byteLength(content) > MAX_INPUT) refuse(`--prompt-file must be NUL-free UTF-8, at most ${MAX_INPUT} bytes`)
   return content
+}
+/** `stages.setup` of `worktree create --agent` — a failed setup does not stop the later stages (D3). */
+function setupStage(receipt: SetupReceipt): Record<string, unknown> {
+  if (receipt.status === 'skipped') return { status: 'skipped', reason: receipt.reason }
+  if (receipt.status === 'completed') return { status: 'completed', exitCode: receipt.exitCode, durationMs: receipt.durationMs, logPath: receipt.logPath }
+  const timedOut = receipt.status === 'timed_out'
+  return { status: 'failed', reason: receipt.status, error: timedOut ? 'setup_timed_out' : 'setup_failed', exitCode: receipt.exitCode, signal: receipt.signal, durationMs: receipt.durationMs, logPath: receipt.logPath,
+    message: `${timedOut ? 'Setup command timed out' : `Setup command failed (exit ${receipt.exitCode ?? receipt.signal ?? 'none'})`}; log: ${receipt.logPath}` }
 }
 async function verifyRef(root: string, ref: string, ctx: CommandContext): Promise<void> {
   try { await git(root, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], ctx.signal) }
@@ -247,6 +276,15 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
     metadata.put(target.path, { ...await updateMetadata(target), repoId: target.repoId })
     return { worktree: (await metadata.list(repos, ctx.signal)).find(row => row.id === target.id) }
   }
+  if (inv.command === 'worktree setup') {
+    const target = await select(need('worktree')), repo = repos.find(row => row.id === target.repoId)!
+    const command = repo.setupCommand ?? null
+    if (command === null) throw new RuntimeError('setup_not_configured', `No setup command registered for ${repo.name}; set one with corral repo set-setup-command`, { repo: repo.id }, undefined, 'not_started')
+    const run = await runSetupCommand({ command, worktreePath: target.path, rootPath: repo.path, userData: ctx.userData, deadlineAt: ctx.deadlineAt, signal: ctx.signal })
+    const setupReceipt: SetupReceipt = { policy: 'run', ...run }
+    if (run.status !== 'completed') throw setupError(run, { path: target.path, branch: target.branch?.replace(/^refs\/heads\//, '') ?? null, logPath: run.logPath, setupReceipt })
+    return { worktree: target, setupReceipt }
+  }
   if (inv.command === 'worktree create') {
     if (f.activate && !desktop) throw new RuntimeError('ui_unavailable', '--activate requires a desktop')
     if (f.activate) await desktop!.observe() // Connection preflight before git effects.
@@ -271,19 +309,27 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
     if (fs.existsSync(target) || records.some(row => row.path === target) || existingBranch) throw new RuntimeError('already_exists', `Branch or path exists: ${name}`)
     const base = flag('base-branch') ?? repo.baseRef ?? 'HEAD'
     await verifyRef(repo.path, base, ctx)
+    // LIFE-813 D2: the command is the repo's registered one and nothing else. `run` without one is refused before git.
+    const policy = setupPolicy(flag('setup')), setupCommand = repo.setupCommand ?? null
+    if (policy === 'run' && setupCommand === null) throw new RuntimeError('setup_not_configured', `--setup run: no setup command registered for ${repo.name}; set one with corral repo set-setup-command`, { repo: repo.id }, undefined, 'not_started')
     const update = await updateMetadata()
     let added = false
     try {
       await git(repo.path, ['worktree', 'add', '-b', name, target, base], ctx.signal)
       added = true
       metadata.create(target, { ...update, repoId: repo.id, createdBranch: true })
+      // LIFE-813 D4: after git, before activation and before any terminal stage; the caller waits for it.
+      let setupReceipt: SetupReceipt = { policy, status: 'skipped', reason: policy === 'skip' ? 'policy_skip' : 'no_command', command: null, logPath: null }
+      if (policy !== 'skip' && setupCommand !== null) setupReceipt = { policy, ...await runSetupCommand({ command: setupCommand, worktreePath: target, rootPath: repo.path, userData: ctx.userData, deadlineAt: ctx.deadlineAt, signal: ctx.signal }) }
+      // D3: without later stages a failed setup is the request's error; the worktree and branch stay.
+      if ((setupReceipt.status === 'failed' || setupReceipt.status === 'timed_out') && f.agent === undefined) throw setupError(setupReceipt, { path: target, branch: name, logPath: setupReceipt.logPath, setupReceipt })
       const activated = f.activate ? await desktop!.activate(repo.path, target) : undefined
       const worktree = (await metadata.list(repos, ctx.signal)).find(row => row.path === target)!
-      const created = { worktree, lineage: { parentWorktreeId: worktree.parentWorktreeId, childWorktreeIds: worktree.childWorktreeIds }, warnings: [], setupReceipt: { policy: flag('setup') ?? 'inherit', status: 'skipped', ...(activated ?? {}) } }
+      const created = { worktree, lineage: { parentWorktreeId: worktree.parentWorktreeId, childWorktreeIds: worktree.childWorktreeIds }, warnings: [], setupReceipt: { ...setupReceipt, ...(activated ?? {}) } }
       if (f.agent === undefined) return created
       // §4.1 D15: the git worktree stays whatever happens next, and every later stage reports its own
       // status instead of collapsing into one outcome. Nothing here is undone and nothing is retried.
-      const stages: Record<string, unknown> = { worktree: { status: 'completed', path: target }, terminal: { status: 'not_started' }, agent: { status: 'not_started' }, prompt: { status: 'not_started' } }
+      const stages: Record<string, unknown> = { worktree: { status: 'completed', path: target }, setup: setupStage(setupReceipt), terminal: { status: 'not_started' }, agent: { status: 'not_started' }, prompt: { status: 'not_started' } }
       const requestId = derivedRequestId(need('request-id'), 'terminal')
       const forwarded: Flags = { worktree: worktree.id, agent: need('agent'), 'request-id': requestId }
       for (const key of AGENT_OPTIONS) if (f[key] !== undefined) forwarded[key] = f[key]!
@@ -299,6 +345,8 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
       return { ...created, stages, outcome: unresolved ? 'unknown' : 'completed',
         terminal: isRecord(child) ? child.terminal ?? null : null, agent: isRecord(child) ? child.agent ?? null : null, prompt: isRecord(child) ? child.prompt ?? null : null }
     } catch (error) {
+      // The setup error already names what stays (path, branch, log).
+      if (isSetupError(error)) throw error
       // Inspect without the cancelled request signal: Git may have created the
       // branch before failing checkout. Both names were absent at preflight.
       const resources: Record<string, unknown> = {}

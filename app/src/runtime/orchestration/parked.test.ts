@@ -25,7 +25,7 @@ import { createRun, createTask, emptyState } from './model.js'
 import { TerminalBackend, type AgentObservation, type TerminalIdentity } from '../../main/adapter/index.js'
 import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, agentName, claudeParkedSession, sessionRecordPaths } from '../terminal/agent.js'
 import { Tokens } from '../terminal/tokens.js'
-import { CONTINUED_CHAIN_MAX, clearContinuedMemo } from '../../main/transcript-continued.js'
+import { clearContinuedMemo } from '../../main/transcript-continued.js'
 
 const cleanups: (() => void)[] = []
 const previous = { ...process.env }
@@ -158,13 +158,12 @@ describe('LIFE-797 C5 합성 — worker-start and the worker\'s reports through 
     expect([beat.error, beat.proof]).toEqual([undefined, 'session_chain'])
   }, 60000)
 
-  it('fix2 L: the chain reaches 1 + CONTINUED_CHAIN_MAX sessions past the minted one — the 9th is admitted, the 10th is not', async () => {
+  it('fix2 L: the chain reaches 1 + 8 sessions past the minted one — the 9th is admitted, the 10th is not', async () => {
     const f = setup()
     const started = await workerStart(f)
     const dispatchId = String(started.dispatchId)
     // bg (the park hop) → c1 … c9 by continued-in: c1…c8 are the rule's 8 hops, c9 is one past the cap. The counts are
     // literal so a changed cap shows up as the 10th being admitted, not as a different chain being built.
-    expect(CONTINUED_CHAIN_MAX).toBe(8)
     const continued = Array.from({ length: 9 }, () => randomUUID())
     let previous = f.bg
     for (const id of continued) {

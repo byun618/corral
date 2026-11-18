@@ -25,7 +25,7 @@ import { createRun, createTask, emptyState } from './model.js'
 import { TerminalBackend, type AgentObservation, type TerminalIdentity } from '../../main/adapter/index.js'
 import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, agentName, claudeParkedSession, sessionRecordPaths } from '../terminal/agent.js'
 import { Tokens } from '../terminal/tokens.js'
-import { clearContinuedMemo } from '../../main/transcript-continued.js'
+import { CONTINUED_CHAIN_MAX, clearContinuedMemo } from '../../main/transcript-continued.js'
 
 const cleanups: (() => void)[] = []
 const previous = { ...process.env }
@@ -147,6 +147,35 @@ describe('LIFE-797 C5 합성 — worker-start and the worker\'s reports through 
     ])
     const beat = await report(f, { dispatchId: String(started.dispatchId), type: 'heartbeat', claudeSession: f.bg })
     expect([beat.error, beat.proof]).toEqual([undefined, 'session_chain'])
+  }, 60000)
+
+  it('fix2 M: a non-JSON neighbour in the registry folder (`<pid>.<hex>.key`, as Claude Code writes) does not stop the hop', async () => {
+    const f = setup()
+    fs.writeFileSync(path.join(f.sessions, '47330.d08f5eb51ed2.key'), 'not json at all')
+    const started = await workerStart(f)
+    expect(asRecord(asRecord(started.input).record)).toMatchObject({ path: f.fileBg, matchCount: 1, unavailableReason: null })
+    const beat = await report(f, { dispatchId: String(started.dispatchId), type: 'heartbeat', claudeSession: f.bg })
+    expect([beat.error, beat.proof]).toEqual([undefined, 'session_chain'])
+  }, 60000)
+
+  it('fix2 L: the chain reaches 1 + CONTINUED_CHAIN_MAX sessions past the minted one — the 9th is admitted, the 10th is not', async () => {
+    const f = setup()
+    const started = await workerStart(f)
+    const dispatchId = String(started.dispatchId)
+    // bg (the park hop) → c1 … c9 by continued-in: c1…c8 are the rule's 8 hops, c9 is one past the cap.
+    const continued = Array.from({ length: CONTINUED_CHAIN_MAX + 1 }, () => randomUUID())
+    let previous = f.bg
+    for (const id of continued) {
+      fs.appendFileSync(path.join(f.folder, `${previous}.jsonl`), continuedRow(previous, id))
+      fs.writeFileSync(path.join(f.folder, `${id}.jsonl`), metaRows(id))
+      previous = id
+    }
+    const chain = [f.bg, ...continued]
+    expect(chain).toHaveLength(10)
+    const ninth = await report(f, { dispatchId, type: 'heartbeat', claudeSession: chain[8]! })
+    expect([ninth.error, ninth.proof]).toEqual([undefined, 'session_chain'])
+    const tenth = await report(f, { dispatchId, type: 'heartbeat', claudeSession: chain[9]! })
+    expect(tenth.error).toBe('sender_mismatch')
   }, 60000)
 
   it('a job file that ends with continued-in is followed on — the later session is admitted too', async () => {

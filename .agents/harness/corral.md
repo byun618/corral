@@ -98,7 +98,7 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 | **배달 확인** | `terminal prompt` → `result.stage`(`confirmed`)·`result.wait.satisfied`·`result.record.matchCount`·`result.record.unavailableReason`, 그리고 `_meta.outcome`(`completed`). `worker-start` 는 같은 값을 `result.input.*` 아래에 담는다 |
 | 요청 영수증 | `result.requestId`(`r1.<13자리 ms>.<UUID>`)·`result.replayed` |
 | 실제 모델·advisor | `worker-start` → `result.input.agent.{requestedModel,requestedEffort,requestedAdvisor,resolvedModel,argv,sessionId,sessionRecord}` · `terminal show` → `result.process.foreground[].argv` · 배너는 `result.input.delivery.screen` 또는 `corral terminal read --screen` |
-| 세션이 백그라운드로 옮겨 간 뒤의 기록 (claude, LIFE-771) | `…agent.sessionRecord.path`·`terminal prompt` → `result.record.path` 는 **이어 가기 규칙이 마지막으로 닿은 파일**(`continued-in` 을 따라간 끝 — 보통 지금 자라는 파일이지만 hop 상한 8·되살아난 원본·증명 못 한 다음 hop 에서는 아닐 수 있다), `…agent.sessionRecord.continuedIn` 은 거쳐 간 세션 id 들(안 옮겼으면 `[]`. 대화 없이 `←` 로 park 된 pane 은 레지스트리 hop 의 bg 세션 id 가 첫 칸 — LIFE-797), `…agent.sessionId` 는 **민팅한 id 그대로**(pane 정체) — 옮겨 간 뒤 기록을 볼 때 sessionId 로 경로를 짓지 말고 이 경로를 읽는다 |
+| 세션이 백그라운드로 옮겨 간 뒤의 기록 (claude, LIFE-771) | `…agent.sessionRecord.path`·`terminal prompt` → `result.record.path` 는 **이어 가기 규칙이 마지막으로 닿은 파일**(`continued-in` 을 따라간 끝 — 보통 지금 자라는 파일이지만 hop 상한 8(대화 없이 `←` 로 park 된 pane 은 레지스트리 hop 1 을 더해 9 — LIFE-797)·되살아난 원본·증명 못 한 다음 hop 에서는 아닐 수 있다), `…agent.sessionRecord.continuedIn` 은 거쳐 간 세션 id 들(안 옮겼으면 `[]`. 대화 없이 `←` 로 park 된 pane 은 레지스트리 hop 의 bg 세션 id 가 첫 칸 — LIFE-797), `…agent.sessionId` 는 **민팅한 id 그대로**(pane 정체) — 옮겨 간 뒤 기록을 볼 때 sessionId 로 경로를 짓지 말고 이 경로를 읽는다 |
 | 준비 근거 | `terminal wait` / `worker-start` → `…agent.evidence.{agentStatus,launchPending,interactiveReady,stateChangeSeq,samples,detectManifest}` |
 | 배치·확인 | `check` → `result.deliveryId`(`delivery_<12 hex>`)·`result.count`·`result.timedOut`·`result.deliveryReplayed`·`result.acknowledged`·`result.peeked` |
 | 메시지·질문 id | `check` → `result.messages[].{id,type,subject,body,taskId,dispatchId}` (`msg_<12 hex>`). 질문에 답할 때 그 `id` 를 `corral orchestration reply --id` 에 넣는다 |
@@ -394,11 +394,12 @@ corral worktree set --worktree path:<구현 worktree 절대경로> --parent-work
   `parkedJobId` → 그 job 의 `kind: "bg"` 항목 하나의 `sessionId`(job id 로 시작하는 세션 id 꼴) → 그 파일(LIFE-797). 파일을 찾는 곳은 둘이 다르다:
   - **배달 hop**(`terminal prompt`·`terminal show`·`orchestration worker-start` 입력 판정): pane cwd 로 정한 민팅 파일의 폴더 하나 — 그 폴더에 민팅 파일이 없고 bg 파일이 있어야 한다.
   - **보고자 hop**(`orchestration send`·`orchestration ask` 의 `proof: session_chain`): pane 없이 Dispatch 의 민팅 id 만 있어서 모든 project 폴더를 본다 — 민팅 id 파일이 어느 폴더에도 없고(못 읽는 폴더가 하나라도 있으면 hop 없음) bg 세션 파일이 정확히 한 폴더에 있어야 한다.
-  - 비대칭: 보고자 hop 은 bg 파일이 pane 폴더가 아닌 다른 project 폴더 하나에만 있어도 서지만, 배달 hop 은 서지 않는다(배달 쪽이 더 좁다).
+  - 비대칭은 양방향이다: bg 파일이 pane 폴더가 아닌 다른 project 폴더 하나에만 있으면 보고자 hop 만 서고, 민팅 id 파일이 다른 project 폴더에만 있고 bg 파일이 pane 폴더에 있으면 배달 hop 만 선다(보고자 쪽은 민팅 id 를 모든 폴더에서 0개로 본다).
   hop 뒤에는 `continued-in` 규칙이 그 bg 파일에서 다시 최대 8 hop 따라가므로 사슬은 민팅 뒤로 최대 1 + 8 = 9 세션이다.
   격리 실측 스모크 1회(2026-11-18, 2.1.296 Haiku 5.5 low — `corral-specs/LIFE-797-empty-pane-outcome/raw/claude/smoke1/`)에서 재개가 `ready`·`confirmed`·matchCount 1(`agent.sessionRecord.continuedIn` 첫 칸 = bg 세션 id)이고
   그 워커의 `worker_done` 이 `proof: session_chain` 으로 수락됐다 — 판정 회차(3회)는 최종 관문 몫이다. **남는 한계**: hop 의 어느 고리든 없거나·둘 이상이거나·모양이 다르면 hop 없음 — 이 일감 전과 같은 답
-  (`incomplete`·`dispatch_input_unconfirmed`·`unavailableReason: not_found`, 예산을 다 쓰고 돌아옴 · 워커 보고 `sender_mismatch`)이다. 레지스트리 항목 하나라도 못 읽으면(쓰는 중 포함) 그 순간 hop 이 없다.
+  (`incomplete`·`dispatch_input_unconfirmed`·`unavailableReason: not_found`, 예산을 다 쓰고 돌아옴 · 워커 보고 `sender_mismatch`)이다. 레지스트리 항목 하나라도 못 읽으면(쓰는 중 포함) 그 순간 hop 이 없고, 깨진 `.json` 항목이 영구히 남아 있으면 그동안 모든 빈 pane park 의 hop 이 없다(건너뛰면 무관한 항목이 아니라 같은 pane 항목을 숨길 수 있어 fail-closed 를 택했다).
+  이 hop 은 runtime 판정(`terminal prompt`·`terminal show`·`orchestration worker-start`·보고자)만 따른다 — 채팅 뷰·폰 입력은 따르지 않는다(빈 pane park 뒤에도 민팅 경로를 본다). 민팅 파일은 있으나 대화가 빈 채로 park 된 경우(민팅 파일에 메타 줄만, `continued-in` 없음)는 확인하지 않았다 — 그때는 민팅 파일이 있으므로 hop 을 쓰지 않는다.
   형식은 Claude Code 2.1.296 에서 관측한 것뿐이다 — 더 새 버전(2.1.325 cwd 변경·2.1.326 빈 대화 `←` 뒤 Ctrl+C·Ctrl+D 두 번·`/exit` 로 세션 종료)의 park 동작은 확인하지 않았다.
   빈 idle bg 세션은 데몬이 약 5분 뒤 정리한다(v2.1.141 changelog 출처, 2.1.296 에서 관측하지 않음) — 그 뒤에는 hop 이 사라질 수 있다. agent view 에서 다른 행에 붙은 pane·bg 안 `/clear` 뒤는 다루지 않는다.
   그 답이 오면 `dispatch-show` 와 pane 을 먼저 보고 다시 넣지 않는다.

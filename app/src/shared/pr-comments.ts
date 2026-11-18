@@ -1,6 +1,7 @@
 // PR 리뷰 코멘트 (LIFE-811) — main 이 `gh api graphql` 읽기 query 하나로 받아 렌더러 「PR」 보기에 주는 값. 판독은 순수 함수(시험 대상).
 //
-// - 출처 셋(C3): 리뷰(본문 있는 것 — 본문이 빈 COMMENTED 리뷰는 줄 코멘트 묶음일 뿐이라 뺀다) · 줄 코멘트 스레드(해소·outdated·경로·줄·답글) · 일반 코멘트(숨김 표시).
+// - 출처 셋(C3): 리뷰(본문 있는 것 — 본문이 빈 COMMENTED 리뷰는 줄 코멘트 묶음일 뿐이라 뺀다) · 줄 코멘트 스레드(해소·outdated·경로·줄·답글) · 일반 코멘트.
+//   숨김(minimized)은 셋 모두 — 리뷰·리뷰 코멘트도 GraphQL `Minimizable` 이다(리뷰 r1 A4).
 // - 상한(C4): 각 목록 최근 100건 · 스레드 답글 50건. `more` = totalCount − 받은 수 → 화면 「N건 더 — GitHub 에서 보기」.
 // - 모르는 모양은 던지지 않고 null — main 이 「못 읽음」 오류 값으로 바꾼다.
 import { isRecord, safeParse } from './json.js'
@@ -15,10 +16,10 @@ export const PR_THREAD_COMMENTS_LIMIT = 50
  */
 export const PR_COMMENTS_QUERY =
   'query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){' +
-  `reviews(last:${PR_COMMENTS_LIMIT}){totalCount nodes{id author{login} state body submittedAt url}} ` +
+  `reviews(last:${PR_COMMENTS_LIMIT}){totalCount nodes{id author{login} state body submittedAt url isMinimized}} ` +
   `comments(last:${PR_COMMENTS_LIMIT}){totalCount nodes{id author{login} body createdAt url isMinimized}} ` +
   `reviewThreads(last:${PR_COMMENTS_LIMIT}){totalCount nodes{id isResolved isOutdated path line ` +
-  `comments(first:${PR_THREAD_COMMENTS_LIMIT}){totalCount nodes{id author{login} body createdAt url}}}}}}}`
+  `comments(first:${PR_THREAD_COMMENTS_LIMIT}){totalCount nodes{id author{login} body createdAt url isMinimized}}}}}}}`
 
 export type PrReviewState = 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | 'DISMISSED' | 'PENDING'
 
@@ -30,16 +31,15 @@ export const PR_REVIEW_STATE_LABEL: Record<PrReviewState, string> = {
   PENDING: '대기',
 }
 
-/** 작성자 — 지워진 계정은 GraphQL 이 author null 을 준다(GitHub 화면의 「ghost」). */
-export type PrComment = { id: string; author: string | null; body: string; at: string | null; url: string }
+/** 작성자 — 지워진 계정은 GraphQL 이 author null 을 준다(GitHub 화면의 「ghost」). `minimized` = GitHub 에서 숨긴 코멘트(본문 대신 숨김 표시). */
+export type PrComment = { id: string; author: string | null; body: string; at: string | null; url: string; minimized: boolean }
 export type PrReview = PrComment & { state: PrReviewState }
-export type PrIssueComment = PrComment & { minimized: boolean }
 export type PrThread = { id: string; path: string; line: number | null; resolved: boolean; outdated: boolean; comments: PrComment[]; more: number }
 
 export type PrComments = {
   reviews: PrReview[]
   threads: PrThread[]
-  comments: PrIssueComment[]
+  comments: PrComment[]
   /** 상한 밖으로 빠진 수(받은 노드 기준 — 빈 본문 리뷰를 뺀 수가 아니다). */
   more: { reviews: number; threads: number; comments: number }
 }
@@ -80,8 +80,8 @@ function readComment({ node, timeField }: { node: unknown; timeField: 'createdAt
   if (!isRecord(node)) return null
   const author = authorOf(node.author)
   const at = timeOf(node[timeField])
-  if (typeof node.id !== 'string' || author === undefined || at === undefined || typeof node.body !== 'string' || typeof node.url !== 'string') return null
-  return { id: node.id, author, body: node.body, at, url: node.url }
+  if (typeof node.id !== 'string' || author === undefined || at === undefined || typeof node.body !== 'string' || typeof node.url !== 'string' || typeof node.isMinimized !== 'boolean') return null
+  return { id: node.id, author, body: node.body, at, url: node.url, minimized: node.isMinimized }
 }
 
 function readReviewState(value: unknown): PrReviewState | null {
@@ -134,14 +134,7 @@ export function readPrComments(stdout: string): PrComments | null {
       return comment === null || state === null ? null : { ...comment, state }
     },
   })
-  const comments = readConnection({
-    value: pr.comments,
-    read: (node): PrIssueComment | null => {
-      const comment = readComment({ node, timeField: 'createdAt' })
-      const minimized = isRecord(node) ? node.isMinimized : undefined
-      return comment === null || typeof minimized !== 'boolean' ? null : { ...comment, minimized }
-    },
-  })
+  const comments = readConnection({ value: pr.comments, read: (node) => readComment({ node, timeField: 'createdAt' }) })
   const threads = readConnection({ value: pr.reviewThreads, read: readThread })
   if (reviews === null || comments === null || threads === null) return null
   return {

@@ -15,7 +15,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { isRecord, safeParse } from '../shared/json.js'
-import { PR_COMMENTS_QUERY, prUrlParts, readPrComments, type PrCommentsResult } from '../shared/pr-comments.js'
+import { PR_COMMENTS_QUERY, prUrlParts, readPrComments, type PrComments, type PrCommentsResult } from '../shared/pr-comments.js'
 import { isPrUrl, type PrBranchesResult, type PrErrorKind, type PrInfo, type PrItemRefreshResult, type PrLookup, type PrState } from '../shared/pr-status.js'
 import type { RepoRow, WorktreeRow } from '../shared/types.js'
 import { readWorkActivityQuery, type WorkActivityChange, type WorkActivityResult } from '../shared/work.js'
@@ -241,18 +241,22 @@ export type PrStatusDeps = {
 const branchName = (branch: string | null): string | null => (branch === null ? null : branch.replace(/^refs\/heads\//, ''))
 
 /**
- * 코멘트 query 의 gh 인자(C2) — `api graphql` + 변수 셋 + query 하나. owner·name 은 `-f`(문자열 그대로 — `-F` 는 `true`·숫자 이름을 형 변환한다),
- * 번호만 `-F`(정수). GitHub 쓰기 인자(`-X`·`--method`·mutation)는 없다.
+ * 코멘트 query 의 gh 인자(C2) — `api graphql` + 호스트 + 변수 셋 + query 하나. owner·name 은 `-f`(문자열 그대로 — `-F` 는 `true`·숫자 이름을 형 변환한다),
+ * 번호만 `-F`(정수). 호스트는 `github.com` 고정 — PR URL 이 `isPrUrl` 로 github.com 임을 확인한 값이라 `GH_HOST` 를 따르지 않는다(리뷰 r1 A8).
+ * GitHub 쓰기 인자(`-X`·`--method`·mutation)는 없다.
  */
 export function prCommentsArgs({ owner, name, number }: { owner: string; name: string; number: number }): string[] {
-  return ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${number}`, '-f', `query=${PR_COMMENTS_QUERY}`]
+  return ['api', 'graphql', '--hostname', 'github.com', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${number}`, '-f', `query=${PR_COMMENTS_QUERY}`]
 }
 
-/** 코멘트 query 의 gh 결과 → 결과 값. PR 조회로 찾은 번호를 GraphQL 이 못 찾으면(지워진 PR — 실측 a5 exit 1) 「PR 없음」. */
-export function readCommentsOutcome({ outcome, pr }: { outcome: GhOutcome; pr: PrInfo }): PrCommentsResult {
+/** 코멘트 캐시 값 — 코멘트만(리뷰 r1 A3). 머리의 PR 상태는 매 호출의 최신 브랜치 조회에서 덧붙인다. */
+export type CommentsOutcome = { kind: 'comments'; comments: PrComments } | { kind: 'none' } | PrFailure
+
+/** 코멘트 query 의 gh 결과 → 캐시 값. PR 조회로 찾은 번호를 GraphQL 이 못 찾으면(지워진 PR — 실측 a5 exit 1) 「PR 없음」. */
+export function readCommentsOutcome(outcome: GhOutcome): CommentsOutcome {
   if (outcome.kind === 'exit' && outcome.code === 0) {
     const comments = readPrComments(outcome.stdout)
-    return comments === null ? fail('failed', 'gh 출력 모양이 다릅니다') : { kind: 'comments', pr, comments }
+    return comments === null ? fail('failed', 'gh 출력 모양이 다릅니다') : { kind: 'comments', comments }
   }
   if (outcome.kind === 'exit' && /Could not resolve to a PullRequest/i.test(outcome.stderr)) return { kind: 'none' }
   return classifyFailure(outcome)
@@ -262,7 +266,7 @@ type CacheEntry<T> = { at: number; ttl: number; value: Promise<T> }
 
 export class PrStatus {
   private readonly cache = new Map<string, CacheEntry<PrLookup>>()
-  private readonly commentsCache = new Map<string, CacheEntry<PrCommentsResult>>()
+  private readonly commentsCache = new Map<string, CacheEntry<CommentsOutcome>>()
   private running = 0
   private readonly queue: (() => void)[] = []
   private lastGh: string | null | undefined = undefined
@@ -278,7 +282,7 @@ export class PrStatus {
     const lookups: Record<string, PrLookup> = {}
     let recorded = 0
     await Promise.all([...new Set(paths)].map(async (worktreePath) => {
-      const one = await this.lookupPath({ worktreePath, rows, force: false })
+      const one = await this.lookupPath({ worktreePath, rows, force: false, record: true })
       lookups[worktreePath] = one.lookup
       recorded += one.recorded
     }))
@@ -288,28 +292,30 @@ export class PrStatus {
   /**
    * 코멘트 조회(LIFE-811 C1) — 입력은 지금 트리의 worktree 경로 하나. 경로 → 브랜치 → PR 은 `branches` 와 같은 길·캐시,
    * 코멘트 query 의 owner·repo·번호는 그 결과의 `pr.url`(`isPrUrl` 통과값)에서만 얻는다. `refresh` 면 두 조회 모두 TTL 을 무시한다(C8).
+   * 활동은 남기지 않는다 — 기록과 그 수(`recorded` → 작업 상세 재읽기)는 base 대로 `branches()` 만(리뷰 r1 A2).
    */
   async comments(input: unknown): Promise<PrCommentsResult> {
     const worktreePath = isRecord(input) && typeof input.path === 'string' ? input.path : null
     if (worktreePath === null) return { kind: 'rejected', reason: '요청 모양이 잘못됐습니다' }
     const force = isRecord(input) && input.refresh === true
-    const { lookup } = await this.lookupPath({ worktreePath, rows: this.worktreeRows(), force })
+    const { lookup } = await this.lookupPath({ worktreePath, rows: this.worktreeRows(), force, record: false })
     if (lookup.kind !== 'pr') return lookup
     const pr = lookup.pr
     const parts = prUrlParts(pr.url)
     if (parts === null) return fail('failed', 'PR 주소를 읽지 못했습니다')
-    return this.cached({
+    const outcome = await this.cached({
       store: this.commentsCache,
       key: `c:${pr.url}`,
       force,
       task: async () => {
         const launched = await this.launch({ args: prCommentsArgs(parts), cwd: '/', run: this.deps.run ?? runGhComments })
-        const result = launched.kind === 'error' ? launched : readCommentsOutcome({ outcome: launched, pr })
+        const result = launched.kind === 'error' ? launched : readCommentsOutcome(launched)
         this.deps.log?.('pr.comments', { result: result.kind, ...(result.kind === 'error' ? { error: result.error } : {}) })
         return result
       },
       onThrow: (message) => fail('failed', message),
     })
+    return outcome.kind === 'comments' ? { kind: 'comments', pr, comments: outcome.comments } : outcome
   }
 
   private worktreeRows(): Map<string, WorktreeRow> {
@@ -318,8 +324,8 @@ export class PrStatus {
     return rows
   }
 
-  /** 경로 하나의 브랜치 조회 — 링크된 worktree 면 활동에 남긴다(같은 PR 은 `eventKey` 로 한 번만). */
-  private async lookupPath({ worktreePath, rows, force }: { worktreePath: string; rows: Map<string, WorktreeRow>; force: boolean }): Promise<{ lookup: PrLookup; recorded: number }> {
+  /** 경로 하나의 브랜치 조회 — `record` 이고 링크된 worktree 면 활동에 남긴다(같은 PR 은 `eventKey` 로 한 번만). */
+  private async lookupPath({ worktreePath, rows, force, record }: { worktreePath: string; rows: Map<string, WorktreeRow>; force: boolean; record: boolean }): Promise<{ lookup: PrLookup; recorded: number }> {
     const row = rows.get(worktreePath)
     if (row === undefined) return { lookup: { kind: 'rejected', reason: '알려진 worktree 가 아닙니다' }, recorded: 0 }
     const branch = branchName(row.branch)
@@ -332,7 +338,7 @@ export class PrStatus {
       force,
     })
     const link = row.workLink ?? null
-    if (lookup.kind === 'pr' && link !== null && link.connected) {
+    if (record && lookup.kind === 'pr' && link !== null && link.connected) {
       return { lookup, recorded: this.record({ pr: lookup.pr, scope: { connectionId: link.connectionId, itemId: link.itemId, itemKey: link.key, worktree: worktreePath } }) }
     }
     return { lookup, recorded: 0 }

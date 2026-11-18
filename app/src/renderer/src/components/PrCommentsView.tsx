@@ -87,9 +87,9 @@ function PrCommentsBody({ pr, comments }: { pr: PrInfo; comments: PrComments }):
     <div className="pr-body" data-pr-body="">
       <Section id="reviews" title="리뷰" count={comments.reviews.length} more={comments.more.reviews} url={pr.url}>
         {comments.reviews.map((review) => (
-          <article key={review.id} className="pr-item" data-pr-review={review.state}>
+          <article key={review.id} className="pr-item" data-pr-review={review.state} data-pr-minimized={review.minimized ? '' : undefined}>
             <ItemHead comment={review} badge={<span className={`pr-badge is-${review.state.toLowerCase()}`} data-pr-review-state="">{PR_REVIEW_STATE_LABEL[review.state]}</span>} />
-            {review.body.trim() === '' ? null : <Body source={review.body} />}
+            {review.body.trim() === '' && !review.minimized ? null : <CommentBody comment={review} />}
           </article>
         ))}
       </Section>
@@ -100,7 +100,7 @@ function PrCommentsBody({ pr, comments }: { pr: PrInfo; comments: PrComments }):
         {comments.comments.map((comment) => (
           <article key={comment.id} className="pr-item" data-pr-comment="" data-pr-minimized={comment.minimized ? '' : undefined}>
             <ItemHead comment={comment} badge={null} />
-            {comment.minimized ? <div className="pr-hidden" data-pr-hidden="">숨긴 코멘트 — GitHub 에서 보기</div> : <Body source={comment.body} />}
+            <CommentBody comment={comment} />
           </article>
         ))}
       </Section>
@@ -148,6 +148,11 @@ function Body({ source }: { source: string }): React.JSX.Element {
   return <MarkdownView source={source} keyPattern={null} onOpenKey={NO_KEY} className="pr-md" />
 }
 
+/** GitHub 에서 숨긴(minimized) 코멘트는 본문 대신 숨김 표시 — 리뷰·스레드 답글·일반 코멘트 모두(리뷰 r1 A4). */
+function CommentBody({ comment }: { comment: PrComment }): React.JSX.Element {
+  return comment.minimized ? <div className="pr-hidden" data-pr-hidden="">숨긴 코멘트 — GitHub 에서 보기</div> : <Body source={comment.body} />
+}
+
 export function threadLocation(thread: Pick<PrThread, 'path' | 'line'>): string {
   return thread.line === null ? `${thread.path} · 줄 없음` : `${thread.path}:${thread.line}`
 }
@@ -172,9 +177,9 @@ function ThreadView({ thread }: { thread: PrThread }): React.JSX.Element {
       {open ? (
         <div className="pr-thread-body">
           {thread.comments.map((comment) => (
-            <div key={comment.id} className="pr-item is-reply" data-pr-thread-comment="">
+            <div key={comment.id} className="pr-item is-reply" data-pr-thread-comment="" data-pr-minimized={comment.minimized ? '' : undefined}>
               <ItemHead comment={comment} badge={null} />
-              <Body source={comment.body} />
+              <CommentBody comment={comment} />
             </div>
           ))}
           {thread.more > 0 && first !== undefined ? <MoreLink count={thread.more} url={first.url} /> : null}

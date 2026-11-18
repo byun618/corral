@@ -684,7 +684,7 @@ export function App(): React.JSX.Element {
 
   const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: explorerVisible })
   const scm = useScm({ root: activeWorktreeRow?.path ?? null, active: scmVisible })
-  const prComments = usePrComments({ path: activeWorktreeRow?.path ?? null, active: prVisible })
+  const prComments = usePrComments({ path: activeWorktreeRow?.path ?? null, branch: activeWorktreeRow?.branch ?? null, active: prVisible })
 
   const activeWorkspaceRow = useMemo(
     () => (state === null ? null : findWorkspace(state, lifecycle.activeWorkspaceId)),

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// LIFE-811 C5·C6·C7·C8(렌더러)·C9·C10 — PR 보기: 상태별 글, #14858 씨앗 표시 요소, 본문 안전, 보일 때만 묻기·전환·새로고침, 늦은 응답, 보기 등록.
+// LIFE-811 C5·C6·C7·C8(렌더러)·C9·C10 — PR 보기: 상태별 글, #14858 씨앗 표시 요소, 본문 안전, 보일 때만 묻기·전환(경로·브랜치)·새로고침, 늦은 응답, 보기 등록.
 import fs from 'node:fs'
 import path from 'node:path'
 import { act, createElement } from 'react'
@@ -40,11 +40,12 @@ afterEach(() => {
   host.remove()
 })
 
-function Harness({ path: target, active }: { path: string | null; active: boolean }): React.JSX.Element {
-  const api = usePrComments({ path: target, active })
+type Props = { path: string | null; branch?: string | null; active: boolean }
+function Harness({ path: target, branch = 'main', active }: Props): React.JSX.Element {
+  const api = usePrComments({ path: target, branch, active })
   return createElement(PrCommentsView, { api, title: target })
 }
-const render = (props: { path: string | null; active: boolean }): void => act(() => root.render(createElement(Harness, props)))
+const render = (props: Props): void => act(() => root.render(createElement(Harness, props)))
 const flush = async (): Promise<void> => { await act(async () => { await Promise.resolve(); await Promise.resolve() }) }
 const answer = async (call: Call | undefined, result: PrCommentsResult): Promise<void> => {
   await act(async () => { call?.resolve(result); await Promise.resolve(); await Promise.resolve() })
@@ -125,10 +126,27 @@ describe('C6 표시 요소 (#14858 씨앗)', () => {
     act(() => q('[data-pr-open]')?.click())
     expect(opened).toEqual(['https://github.com/cli/cli/pull/14858'])
   })
+  it('숨긴 리뷰·숨긴 스레드 답글도 본문 대신 숨김 표시(리뷰 r1 A4)', async () => {
+    expect(SEED).not.toBeNull()
+    if (SEED === null) return
+    const hidden: PrComments = {
+      ...SEED,
+      reviews: SEED.reviews.map((review) => (review.author === 'babakks' ? { ...review, minimized: true } : review)),
+      threads: SEED.threads.map((thread) => ({ ...thread, comments: thread.comments.map((comment) => (comment.author === 'BagToad' ? { ...comment, minimized: true } : comment)) })),
+    }
+    await shown(ok(hidden))
+    expect(all('[data-pr-review]').map((el) => el.hasAttribute('data-pr-minimized'))).toEqual([false, true, false])
+    expect(q('[data-pr-review="APPROVED"] [data-pr-hidden]')?.textContent).toBe('숨긴 코멘트 — GitHub 에서 보기')
+    expect(host.textContent).not.toContain('LGTM!')
+    act(() => q('.pr-thread-head')?.click())
+    expect(all('[data-pr-thread-comment]').map((el) => el.hasAttribute('data-pr-minimized'))).toEqual([false, true])
+    expect(all('[data-pr-thread-comment] [data-pr-hidden]')).toHaveLength(1)
+    expect(all('[data-pr-hidden]')).toHaveLength(4)
+  })
   it('미해소 · outdated · 줄 없음 스레드는 펼쳐진 채, 「N건 더」 는 PR URL', async () => {
     const comments: PrComments = {
       ...EMPTY,
-      threads: [{ id: 't', path: 'a.go', line: null, resolved: false, outdated: true, comments: [{ id: 'c', author: null, body: 'hi', at: '2026-01-01T00:00:00Z', url: 'https://github.com/cli/cli/pull/1#discussion_r1' }], more: 0 }],
+      threads: [{ id: 't', path: 'a.go', line: null, resolved: false, outdated: true, comments: [{ id: 'c', author: null, body: 'hi', at: '2026-01-01T00:00:00Z', url: 'https://github.com/cli/cli/pull/1#discussion_r1', minimized: false }], more: 0 }],
       more: { reviews: 0, threads: 0, comments: 55 },
     }
     await shown(ok(comments))
@@ -190,6 +208,25 @@ describe('C8 갱신 시점 (렌더러)', () => {
     expect(calls).toHaveLength(4)
     expect(calls[3]).toMatchObject({ path: '/w/b', refresh: true })
   })
+  it('같은 worktree 에서 브랜치(→ PR)가 바뀌면 재조회 1회 · 보이지 않을 때는 0회(리뷰 r1 A1)', async () => {
+    render({ path: '/w/a', branch: 'one', active: true })
+    await flush()
+    await answer(calls[0], ok(EMPTY))
+    render({ path: '/w/a', branch: 'two', active: true })
+    await flush()
+    expect(calls.map((call) => [call.path, call.refresh])).toEqual([['/w/a', undefined], ['/w/a', undefined]])
+    await answer(calls[1], ok(EMPTY))
+    render({ path: '/w/a', branch: 'two', active: true })
+    await flush()
+    expect(calls).toHaveLength(2)
+    render({ path: '/w/a', branch: 'two', active: false })
+    render({ path: '/w/a', branch: 'three', active: false })
+    await flush()
+    expect(calls).toHaveLength(2)
+    render({ path: '/w/a', branch: 'three', active: true })
+    await flush()
+    expect(calls).toHaveLength(3)
+  })
 })
 
 describe('C9 늦은 응답', () => {
@@ -229,6 +266,23 @@ describe('C9 늦은 응답', () => {
     await answer(calls[1], ok(one('older')))
     expect(q('[data-pr-comment] [data-pr-author]')?.textContent).toBe('newest')
     expect(q('[data-pr-view]')?.hasAttribute('data-pr-busy')).toBe(false)
+  })
+  it('같은 경로에서 브랜치를 바꾼 뒤 옛 브랜치 응답이 늦게 와도 버린다 · 바꾸는 즉시 옛 내용을 지운다(리뷰 r1 A1)', async () => {
+    render({ path: '/w/a', branch: 'one', active: true })
+    await flush()
+    await answer(calls[0], ok(one('first')))
+    act(() => q('[data-pr-refresh]')?.click())
+    await flush()
+    render({ path: '/w/a', branch: 'two', active: true })
+    expect(host.textContent).not.toContain('from first')
+    expect(empty()).toBe('PR 코멘트를 불러오는 중…')
+    await flush()
+    expect(calls).toHaveLength(3)
+    await answer(calls[1], ok(one('stale')))
+    expect(empty()).toBe('PR 코멘트를 불러오는 중…')
+    await answer(calls[2], ok(one('second')))
+    expect(q('[data-pr-comment] [data-pr-author]')?.textContent).toBe('second')
+    expect(host.textContent).not.toContain('from stale')
   })
   it('B 로 바꾸면 A 의 내용은 즉시 지운다', async () => {
     render({ path: '/w/a', active: true })

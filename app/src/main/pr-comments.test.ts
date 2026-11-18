@@ -1,5 +1,5 @@
 // LIFE-811 C1·C2·C3·C4·C5(분류)·C8(main) — PR 리뷰 코멘트 출처(`gh api graphql`). 씨앗 = 실측 원문 cli/cli #14858(corral-specs LIFE-811
-// raw/coordinator/a4-graphql-14858.json — 본문만 120자로 줄인 사본, 필드명 그대로) · 오류 원문 a5-graphql-errors.txt.
+// raw/coordinator/a4-graphql-14858.json — 본문만 120자로 줄인 사본, 필드명 그대로. 리뷰·스레드 코멘트의 isMinimized 는 fix1 에서 같은 노드를 읽기 query 로 실측해 더함 — raw/claude/r2-e00) · 오류 원문 a5-graphql-errors.txt.
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -9,7 +9,8 @@ import { PrStatus, prCommentsArgs, readCommentsOutcome, type GhOutcome, type GhR
 
 const SEED_14858 = fs.readFileSync(path.join(import.meta.dirname, 'fixtures', 'pr-comments-14858.json'), 'utf8')
 const PR_14858 = { baseRefName: 'trunk', closedAt: '2026-10-29T17:00:00Z', createdAt: '2026-10-28T19:00:00Z', headRefName: 'bagtoad/private-fork-deletion-guard', isDraft: false, mergedAt: '2026-10-29T17:00:00Z', number: 14858, state: 'MERGED', url: 'https://github.com/cli/cli/pull/14858', isCrossRepository: false }
-const PR_INFO = { number: 14858, state: 'merged' as const, url: 'https://github.com/cli/cli/pull/14858', headRefName: 'x', baseRefName: 'trunk', createdAt: null, mergedAt: null, closedAt: null }
+// C2 — 이 query 문자열 전체가 gh 에 그대로 간다(리터럴 단언).
+const QUERY_ARG = 'query=query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviews(last:100){totalCount nodes{id author{login} state body submittedAt url isMinimized}} comments(last:100){totalCount nodes{id author{login} body createdAt url isMinimized}} reviewThreads(last:100){totalCount nodes{id isResolved isOutdated path line comments(first:50){totalCount nodes{id author{login} body createdAt url isMinimized}}}}}}}'
 // a5 원문 그대로.
 const A5 = {
   unauth: { code: 4, stderr: 'To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n' },
@@ -20,8 +21,8 @@ const A5 = {
 const exit = (code: number, stdout: string, stderr = ''): GhOutcome => ({ kind: 'exit', code, stdout, stderr })
 
 const CLEAN: GitStatusSummary = { branch: null, upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null }
-const row = ({ path: p, branch }: { path: string; branch: string | null }): WorktreeRow => ({
-  path: p, branch, head: null, repoName: 'cli', isLinked: true, openWorkspaceId: null, workspace: null, gitStatus: CLEAN, displayName: null, comment: null, parentPath: null, workLink: null,
+const row = ({ path: p, branch, workLink = null }: { path: string; branch: string | null; workLink?: WorktreeRow['workLink'] }): WorktreeRow => ({
+  path: p, branch, head: null, repoName: 'cli', isLinked: true, openWorkspaceId: null, workspace: null, gitStatus: CLEAN, displayName: null, comment: null, parentPath: null, workLink,
 })
 const repos = (): RepoRow[] => [{ root: '/w', name: 'cli', error: null, worktrees: [row({ path: '/w/a', branch: 'refs/heads/bagtoad/private-fork-deletion-guard' }), row({ path: '/w/b', branch: 'other' }), row({ path: '/w/detached', branch: null })] }]
 
@@ -55,7 +56,9 @@ describe('C1 조회 대상', () => {
     const result = await status.comments({ path: '/w/a' })
     expect(result.kind).toBe('comments')
     expect(run.calls[0]).toEqual(['pr', 'list', '--head', 'bagtoad/private-fork-deletion-guard', '--state', 'all', '--json', 'number,state,isDraft,url,headRefName,baseRefName,createdAt,mergedAt,closedAt,isCrossRepository', '--limit', '50'])
-    expect(run.calls[1]?.slice(0, 8)).toEqual(['api', 'graphql', '-f', 'owner=cli', '-f', 'name=cli', '-F', 'n=14858'])
+    // comments() 가 실제로 넘기는 인자 배열 전체(query 포함 — 리뷰 r1 A6).
+    expect(run.calls[1]).toEqual(['api', 'graphql', '--hostname', 'github.com', '-f', 'owner=cli', '-f', 'name=cli', '-F', 'n=14858', '-f', QUERY_ARG])
+    expect(run.calls).toHaveLength(2)
   })
   it('브랜치 없음(detached)·PR 없음은 「PR 없음」, 코멘트 query 를 띄우지 않는다', async () => {
     const { status, run } = harness({ graphql: exit(0, SEED_14858), list: exit(0, '[]') })
@@ -71,20 +74,21 @@ describe('C1 조회 대상', () => {
 })
 
 describe('C2 읽기 전용', () => {
-  it('gh 인자 배열 전체 — api graphql + 변수 셋 + query 하나', () => {
+  it('gh 인자 배열 전체 — api graphql + 호스트 + 변수 셋 + query 하나', () => {
     expect(prCommentsArgs({ owner: 'cli', name: 'cli', number: 14858 })).toEqual([
       'api', 'graphql',
+      '--hostname', 'github.com',
       '-f', 'owner=cli',
       '-f', 'name=cli',
       '-F', 'n=14858',
-      '-f', 'query=query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviews(last:100){totalCount nodes{id author{login} state body submittedAt url}} comments(last:100){totalCount nodes{id author{login} body createdAt url isMinimized}} reviewThreads(last:100){totalCount nodes{id isResolved isOutdated path line comments(first:50){totalCount nodes{id author{login} body createdAt url}}}}}}}',
+      '-f', QUERY_ARG,
     ])
   })
   it('query 에 mutation 이 없고, 인자에 -X·--method 가 없다', () => {
     expect(PR_COMMENTS_QUERY).not.toMatch(/mutation/i)
     expect(PR_COMMENTS_QUERY.startsWith('query(')).toBe(true)
     const args = prCommentsArgs({ owner: 'o', name: 'n', number: 1 })
-    expect(args.some((arg) => arg === '-X' || arg.startsWith('--method') || arg.startsWith('-X'))).toBe(false)
+    expect(args.filter((arg) => /^(-X|--method)/.test(arg))).toEqual([])
   })
 })
 
@@ -103,6 +107,18 @@ describe('C3 세 출처 판독 (#14858 실측 원문)', () => {
     const thread = read?.threads[0]
     expect(thread).toMatchObject({ path: 'acceptance/testdata/repo/repo-delete-private-forks.txtar', line: 15, resolved: true, outdated: false, more: 0 })
     expect(thread?.comments.map((comment) => comment.author)).toEqual(['copilot-pull-request-reviewer', 'BagToad'])
+  })
+  it('숨김(minimized) — 리뷰·스레드 답글도 읽는다(리뷰 r1 A4, 실측은 모두 false — r2-e00)', () => {
+    expect(read?.reviews.map((review) => review.minimized)).toEqual([false, false, false])
+    expect(read?.threads[0]?.comments.map((comment) => comment.minimized)).toEqual([false, false])
+    const seed = JSON.parse(SEED_14858)
+    seed.data.repository.pullRequest.reviews.nodes[2].isMinimized = true
+    seed.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes[1].isMinimized = true
+    const hidden = readPrComments(JSON.stringify(seed))
+    expect(hidden?.reviews.map((review) => [review.author, review.minimized])).toEqual([['copilot-pull-request-reviewer', false], ['babakks', true], ['9nzhc899wn-maker', false]])
+    expect(hidden?.threads[0]?.comments.map((comment) => [comment.author, comment.minimized])).toEqual([['copilot-pull-request-reviewer', false], ['BagToad', true]])
+    delete seed.data.repository.pullRequest.reviews.nodes[0].isMinimized
+    expect(readPrComments(JSON.stringify(seed))).toBeNull()
   })
   it('일반 코멘트 — 3건, minimized 표시', () => {
     expect(read?.comments.map((comment) => [comment.author, comment.minimized])).toEqual([
@@ -127,7 +143,7 @@ describe('C3 세 출처 판독 (#14858 실측 원문)', () => {
     const seed = JSON.parse(SEED_14858)
     seed.data.repository.pullRequest.reviews.nodes[0].state = 'SOMETHING_NEW'
     expect(readPrComments(JSON.stringify(seed))).toBeNull()
-    expect(readCommentsOutcome({ outcome: exit(0, '{}'), pr: PR_INFO })).toEqual({ kind: 'error', error: 'failed', message: 'gh 출력 모양이 다릅니다' })
+    expect(readCommentsOutcome(exit(0, '{}'))).toEqual({ kind: 'error', error: 'failed', message: 'gh 출력 모양이 다릅니다' })
   })
 })
 
@@ -146,12 +162,12 @@ describe('C4 상한·더 있음', () => {
     expect(readPrComments(JSON.stringify(seed))?.threads[0]?.more).toBe(50)
   })
   it('출력 상한 초과(overflow)는 오류 값', () => {
-    expect(readCommentsOutcome({ outcome: { kind: 'overflow' }, pr: PR_INFO })).toEqual({ kind: 'error', error: 'failed', message: '출력이 너무 큽니다' })
+    expect(readCommentsOutcome({ kind: 'overflow' })).toEqual({ kind: 'error', error: 'failed', message: '출력이 너무 큽니다' })
   })
 })
 
 describe('C5 오류 분류 (a5 원문·종료 코드)', () => {
-  const classify = (outcome: GhOutcome) => readCommentsOutcome({ outcome, pr: PR_INFO })
+  const classify = readCommentsOutcome
   it('미인증 exit 4 · 잘못된 토큰 401 · 레포 없음 · PR 없음 · 시간 초과 · gh 없음', () => {
     expect(classify(exit(A5.unauth.code, '', A5.unauth.stderr))).toMatchObject({ kind: 'error', error: 'unauthenticated' })
     expect(classify(exit(A5.badToken.code, '', A5.badToken.stderr))).toMatchObject({ kind: 'error', error: 'unauthenticated' })
@@ -182,5 +198,39 @@ describe('C8 main 캐시 — TTL 재열기 0회 · 새로고침은 TTL 무시', 
     clock += 61_000
     await status.comments({ path: '/w/a' })
     expect(run.calls.filter((args) => args[0] === 'api')).toHaveLength(3)
+  })
+})
+
+describe('기존 동작 보존 — 활동 기록·머리 PR 상태 (리뷰 r1 A2·A3)', () => {
+  const link: WorktreeRow['workLink'] = { mode: 'auto', sourceId: 'la', connectionId: 'c1', key: 'LIFE-9', itemId: null, connected: true }
+  const prJson = (state: 'OPEN' | 'MERGED') => JSON.stringify([{ ...PR_14858, state, headRefName: 'x' }])
+  const linkedRepos = (): RepoRow[] => [{ root: '/w', name: 'cli', error: null, worktrees: [row({ path: '/w/a', branch: 'x', workLink: link })] }]
+
+  it('A2 comments() 는 활동을 남기지 않는다 — 이어진 branches() 가 기록하고 recorded = 1', async () => {
+    const keys: string[] = []
+    const work = { recordEvent: ({ eventKey }: { eventKey: string }) => { if (keys.includes(eventKey)) return false; keys.push(eventKey); return true }, activity: () => ({ ok: true as const, records: [] }) }
+    const run = fakeRun((args) => (args[0] === 'api' ? exit(0, SEED_14858) : exit(0, prJson('OPEN'))))
+    const status = new PrStatus({ repos: linkedRepos, work: () => work, gh: () => '/g', run, cwdExists: () => true })
+    expect((await status.comments({ path: '/w/a' })).kind).toBe('comments')
+    await status.comments({ path: '/w/a', refresh: true })
+    expect(keys).toEqual([])
+    const after = await status.branches({ paths: ['/w/a'] })
+    expect(after.recorded).toBe(1)
+    expect(keys).toEqual(['run:pr:c1:LIFE-9:https://github.com/cli/cli/pull/14858:open'])
+  })
+
+  it('A3 머리 PR 상태는 매 호출의 최신 브랜치 조회 — 코멘트 캐시가 살아 있어도 머지됨', async () => {
+    let clock = 0
+    let state: 'OPEN' | 'MERGED' = 'OPEN'
+    const run = fakeRun((args) => (args[0] === 'api' ? exit(0, SEED_14858) : exit(0, prJson(state))))
+    const status = new PrStatus({ repos: linkedRepos, work: () => null, gh: () => '/g', run, now: () => clock, cwdExists: () => true })
+    await status.branches({ paths: ['/w/a'] }) // t=0 칩이 브랜치 조회(60초)
+    clock = 50_000
+    await status.comments({ path: '/w/a' }) // t=50 보기 — 브랜치는 캐시 적중, 코멘트 query 는 t=50 부터 60초
+    state = 'MERGED'
+    clock = 70_000 // 브랜치 조회만 만료
+    const result = await status.comments({ path: '/w/a' })
+    expect(result.kind === 'comments' ? result.pr.state : result.kind).toBe('merged')
+    expect(run.calls.map((args) => args[0])).toEqual(['pr', 'api', 'pr'])
   })
 })

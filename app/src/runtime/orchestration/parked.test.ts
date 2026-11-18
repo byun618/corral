@@ -162,8 +162,10 @@ describe('LIFE-797 C5 합성 — worker-start and the worker\'s reports through 
     const f = setup()
     const started = await workerStart(f)
     const dispatchId = String(started.dispatchId)
-    // bg (the park hop) → c1 … c9 by continued-in: c1…c8 are the rule's 8 hops, c9 is one past the cap.
-    const continued = Array.from({ length: CONTINUED_CHAIN_MAX + 1 }, () => randomUUID())
+    // bg (the park hop) → c1 … c9 by continued-in: c1…c8 are the rule's 8 hops, c9 is one past the cap. The counts are
+    // literal so a changed cap shows up as the 10th being admitted, not as a different chain being built.
+    expect(CONTINUED_CHAIN_MAX).toBe(8)
+    const continued = Array.from({ length: 9 }, () => randomUUID())
     let previous = f.bg
     for (const id of continued) {
       fs.appendFileSync(path.join(f.folder, `${previous}.jsonl`), continuedRow(previous, id))

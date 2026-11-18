@@ -14,7 +14,7 @@
 | `vt-input-classifier.ts` | `server/src/bridge/vt-input-classifier.ts` | **무수정** |
 | `terminal-clipboard.ts` | `server/src/bridge/terminal-clipboard.ts` | **무수정** |
 | `frame-types.ts` | `server/src/bridge/thin-client.ts` **발췌** | `CellData`·`CursorState`·`FrameData`·`readCellData`·`readFrameData` 다섯 개만. thin-client.ts 본체(레거시 프로토콜 클라이언트)는 02-rebuild-plan §2 "안 봄" — 벤더하지 않는다. 발췌 본문 무수정 |
-| `endpoint-client.ts` | `server/src/bridge/endpoint-client.ts` | ① import 경로 1건 (`./thin-client` → `./frame-types`) ② **`EndpointSurface.full: boolean`** — `handleSurface` 는 `true`, `handlePatch` 는 `false` 로 채운다 (LIFE-373 §10-R7). 원본은 두 경로가 `panes` 를 통째로 교체하는데 patch 의 `panes` 는 **바뀐 pane 만** 실어 온다 — 소비자가 "이 탭에 없다"와 "이번엔 안 바뀌었다"를 구분할 방법이 없었다. 필드 추가뿐, 로직 무변경. 그 외 본문 무수정 |
+| `endpoint-client.ts` | `server/src/bridge/endpoint-client.ts` | ① import 경로 1건 (`./thin-client` → `./frame-types`) ② **`EndpointSurface.full: boolean`** — `handleSurface` 는 `true`, `handlePatch` 는 `false` 로 채운다 (LIFE-373 §10-R7). 원본은 두 경로가 `panes` 를 통째로 교체하는데 patch 의 `panes` 는 **바뀐 pane 만** 실어 온다 — 소비자가 "이 탭에 없다"와 "이번엔 안 바뀌었다"를 구분할 방법이 없었다. 필드 추가뿐, 로직 무변경. ③ **오류 응답의 `code` 를 Error 에 싣는다** (LIFE-812) — `pending.reject(Object.assign(new Error(message), { code }))`. 검색(`search.ts`)이 `stale_content` 를 가려 새 revision 으로 다시 묻는다. 재동기화 때 빠지면 재시도가 조용히 `error` 로 떨어지므로 벤더 시험 「rejects endpoint error responses with the error code attached」가 지킨다. 그 외 본문 무수정 |
 | `frame-to-ansi.ts` | `server/src/bridge/frame-to-ansi.ts` | ① import 경로 (`./thin-client` → `./frame-types`) ② **`Bun.stringWidth` → `./string-width` 의 `stringWidth`** (Node 대체 — 00-analysis §4-2). 그 외 본문 무수정 |
 | `endpoint-terminal-session.ts` | `server/src/bridge/endpoint-terminal-session.ts` | ① import 경로 (`./thin-client` → `./frame-types`, `../utils/logger` → `./logger`) ② **`create()` 메서드 + `endpoint-creation` import strip** — 탭/워크스페이스 생성은 R3 범위 (00-analysis §4-2·§4-3 권고 그대로. `endpoint-creation.ts` 는 벤더하지 않음) ③ **계측 `logger.debug` 3줄** — `client.resize` 호출 2지점(`"resize request"`)과 `onSurface` 1지점(`"surface"`). 기준 S5 오라클(요청 횟수·innerRect 서버 응답)의 원자료. 로직 무변경. 그 외 본문 무수정 |
 
@@ -42,7 +42,7 @@ import 경로(`./thin-client` → `./frame-types`, `../utils/logger` → `./logg
 | --- | --- |
 | `frame-to-ansi.test.ts` | 공통 수정 외 무수정 |
 | `vt-input-classifier.test.ts` | 공통 수정 외 무수정 |
-| `endpoint-client.test.ts` | 공통 수정 + "rejects when the welcome carries a handshake error" 에 `client.on("error", () => {})` 1줄 — Node(vitest) 는 리스너 없는 `'error'` emit 을 unhandled 로 띄운다 (bun:test 는 러너가 흡수). 그 외 무수정 |
+| `endpoint-client.test.ts` | 공통 수정 + "rejects when the welcome carries a handshake error" 에 `client.on("error", () => {})` 1줄 — Node(vitest) 는 리스너 없는 `'error'` emit 을 unhandled 로 띄운다 (bun:test 는 러너가 흡수). + LIFE-812 시험 1건 「rejects endpoint error responses with the error code attached」(수정 ③). 그 외 무수정 |
 | `frame-to-ansi.test.ts` (추가) | bun:test 전용 매처 `toStartWith`/`toEndWith` 2곳 → `startsWith`/`endsWith` + `toBe(true)` 동치 변환 |
 | `endpoint-terminal-session.test.ts` | 공통 수정 + **strip**: 원본 2361줄 중 `createTerminalBridge`/`ServerWebSocket`(bun)/`session.create()`/`EndpointCreationDeadline` 에 의존하는 테스트 전량 — terminal-bridge 는 벤더 금지(코디네이터 지시: 참고만, 얇게 재작성), `create()` 는 R3 범위라 세션에서 strip 됨. **남긴 것**: 헬퍼 전체(1–334) + `describe("EndpointTerminalSession")` 전체(336–780) + top-level 마우스 테스트 2건(781–945) + `describe("cropFrame")`(1382–1411). **strip 한 것**(원본 줄 번호): 946–1381 (bridge 팬아웃·클립보드 소유권·재접속 광고 5건 + spyOn 기반 2건), 1414–2361 (creation·bridge RPC 계열 전부) |
 

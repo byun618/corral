@@ -12,6 +12,7 @@ import { addInstallCliMenu } from './install-cli-menu.js'
 import { KeybindingStore } from './keybindings.js'
 import { withRetentionSuppressed } from './close-retention.js'
 import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
+import { parsePaneTarget, parseRevealRequest, parseSearchRequest, type TerminalRevealResult, type TerminalSearchResult } from '../shared/terminal-search.js'
 import { closeTabsGated, runningForeground } from './close-tabs.js'
 import { footprintHelperPath, homesOf, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
 import { confirmedDeadSlot, directoryNow, keepRetention, prunableRetained, slotStateNow, slotStateOf } from './retention.js'
@@ -2538,6 +2539,22 @@ app.whenReady().then(async () => {
     })
     log('paste.clipboard_image', { ...result, types })
     return result
+  })
+  // LIFE-812 — 터미널 화면 내 검색. 검색·이동은 어댑터가 herdr 서버에 묻는다(렌더러 xterm 은 뷰포트뿐이다).
+  ipcMain.handle('corral:termSearch', async (event, input: unknown): Promise<TerminalSearchResult> => {
+    if (!fromOurWindow(event)) return { kind: 'error', message: '허용되지 않은 창' }
+    const request = parseSearchRequest(input)
+    if (request === null) return { kind: 'error', message: '잘못된 검색 요청' }
+    return stream.search(request)
+  })
+  ipcMain.handle('corral:termReveal', async (event, input: unknown): Promise<TerminalRevealResult> => {
+    const request = fromOurWindow(event) ? parseRevealRequest(input) : null
+    if (request === null) return { scrolled: false, top: null }
+    return stream.reveal(request)
+  })
+  ipcMain.on('corral:termSearchCancel', (event, input: unknown) => {
+    const target = fromOurWindow(event) ? parsePaneTarget(input) : null
+    if (target !== null) stream.cancelSearch(target.paneId)
   })
   ipcMain.on('corral:termScroll', (event, scroll: { paneId: string } & TerminalScroll) => {
     // termInput 과 같은 결로 모양을 검증한다 (수정 1회차 L8) — 렌더러가 신뢰 경계지만

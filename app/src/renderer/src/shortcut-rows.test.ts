@@ -12,8 +12,8 @@ describe('그룹 매핑', () => {
     const listed = SHORTCUT_GROUPS.flatMap((group) => group.ids)
     expect([...listed].sort()).toEqual(ACTIONS.map((action) => action.id).sort())
     expect(new Set(listed).size).toBe(listed.length)
-    // LIFE-593: 전역 + quickOpen.open(⌘P) · 탐색기 + explorer.filter(⌥⌘F). LIFE-601: 전역 + tasks.toggle(⌘I). LIFE-629: 탭 + markdown.togglePreview(⇧⌘V). LIFE-824: 탭 이동 + focus.toggleTerminalEditor(⌃`).
-    expect(SHORTCUT_GROUPS.map((group) => [group.title, group.ids.length])).toEqual([['전역', 11], ['탭', 6], ['탭 이동', 4], ['터미널 pane', 8], ['탐색기', 4]])
+    // LIFE-593: 전역 + quickOpen.open(⌘P) · 탐색기 + explorer.filter(⌥⌘F). LIFE-601: 전역 + tasks.toggle(⌘I). LIFE-629: 탭 + markdown.togglePreview(⇧⌘V). LIFE-824: 탭 이동 + focus.toggleTerminalEditor(⌃`). LIFE-812: 터미널 pane + terminal.find(⌘F).
+    expect(SHORTCUT_GROUPS.map((group) => [group.title, group.ids.length])).toEqual([['전역', 11], ['탭', 6], ['탭 이동', 4], ['터미널 pane', 9], ['탐색기', 4]])
   })
   it('행 칸 수 = 기본 조합 수, 칸 이름 = variants', () => {
     const focus = shortcutRows({}).find((row) => row.action.id === 'terminal.focus')!

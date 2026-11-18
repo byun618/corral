@@ -1,4 +1,4 @@
-// 벤더 테스트 수정 (LIFE-353 — PROVENANCE.md): bun:test → vitest, Bun.sleep → 로컬 sleep, ./thin-client → ./frame-types. 그 외 무수정.
+// 벤더 테스트 수정 (LIFE-353 — PROVENANCE.md): bun:test → vitest, Bun.sleep → 로컬 sleep, ./thin-client → ./frame-types. LIFE-812: 오류 code 시험 1건 추가. 그 외 무수정.
 import { afterEach, describe, expect, test } from "vitest";
 import * as net from "node:net";
 import * as path from "node:path";
@@ -423,6 +423,37 @@ describe("EndpointClient (endpoint generation 1)", () => {
       }
     },
   );
+
+  // corral 수정 ③ (LIFE-812 — PROVENANCE.md): 오류 응답의 `code` 를 Error 에 실어 reject 한다 — 검색이 `stale_content` 를 가려 다시 묻는다.
+  test("rejects endpoint error responses with the error code attached", async () => {
+    const socketPath = await startEndpointServer(
+      () => {},
+      (variant, reader, socket) => {
+        if (variant !== 15) return;
+        const bootId = reader.string();
+        const request = JSON.parse(reader.string());
+        const w = new BinWriter();
+        w.variant(18);
+        w.string(bootId);
+        w.string(request.id);
+        w.bool(true);
+        w.bytes(Buffer.from(JSON.stringify({ id: request.id, error: { code: "stale_content", message: "pane content changed" } })));
+        socket.write(encodeFrame(w.toBuffer()));
+      },
+    );
+    const client = new EndpointClient(socketPath);
+    try {
+      await client.connect(80, 24);
+      const error = await client.callEndpoint("pane.focus", { pane_id: "w1:p1" }).then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toMatchObject({ message: "pane content changed", code: "stale_content" });
+    } finally {
+      client.close();
+    }
+  });
 
   test("composes full surfaces and applies patches on the matching base", async () => {
     const base: FrameData = {

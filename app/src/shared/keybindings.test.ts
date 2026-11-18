@@ -12,7 +12,7 @@ describe('shortcut catalog and compatibility', () => {
     // LIFE-593: + quickOpen.open(⌘P) · explorer.filter(⌘⌥F — 탐색기 범위)
     // LIFE-601: + tasks.toggle(⌘I)
     // LIFE-629: + markdown.togglePreview(⇧⌘V)
-    expect(ACTIONS).toHaveLength(33) // LIFE-683: + ⌘⇧G 소스 제어 보이기 · LIFE-824: + ⌃` 터미널 ↔ 편집기 전환 · LIFE-825: + ⌘⌥↩ 영역 최대화·영역 크기 균등화(키 없음)
+    expect(ACTIONS).toHaveLength(34) // LIFE-683: + ⌘⇧G 소스 제어 보이기 · LIFE-824: + ⌃` 터미널 ↔ 편집기 전환 · LIFE-825: + ⌘⌥↩ 영역 최대화·영역 크기 균등화(키 없음) · LIFE-812: + ⌘F 터미널에서 찾기(터미널 범위)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -36,6 +36,34 @@ describe('shortcut catalog and compatibility', () => {
     const moved = validateOverrides({ 'explorer.redo': ['Mod+Y'] })
     expect(matchBinding('Mod+Y', moved, 'explorer')).toEqual({ id: 'explorer.redo', variant: 0 })
     expect(matchBinding('Mod+Shift+Z', moved, 'explorer')).toEqual({ id: 'terminal.zoom', variant: 0 })
+  })
+  it('LIFE-812 터미널 범위 — ⌘F 는 터미널 포커스에서만, 기본값 중복·충돌 0(C6ⓓ)', () => {
+    // 터미널 밖(Monaco·설정 검색칸·입력칸)은 ⌘F 를 가져가지 않는다 — 그 자리의 찾기로 간다
+    expect(matchBinding('Mod+F', {})).toBeNull()
+    expect(matchBinding('Mod+F', {}, 'explorer')).toBeNull()
+    expect(matchBinding('Mod+F', {}, 'terminal')).toEqual({ id: 'terminal.find', variant: 0 })
+    // 터미널 안에서도 전역 액션은 그대로 — ⌥⌘F(탐색기 이름 필터)는 트리 범위라 터미널에서 매칭되지 않는다(base 그대로)
+    expect(matchBinding('Mod+K', {}, 'terminal')).toEqual({ id: 'palette.open', variant: 0 })
+    expect(matchBinding('Mod+Alt+F', {}, 'terminal')).toBeNull()
+    expect(matchBinding('Mod+Alt+F', {}, 'explorer')).toEqual({ id: 'explorer.filter', variant: 0 })
+    // 기본 조합 중복 0 — 범위별로 센다
+    const seen = new Set<string>()
+    for (const action of ACTIONS) for (const binding of action.defaultBinding) {
+      const key = `${scopeOf(action)}\0${binding}`
+      expect(seen.has(key)).toBe(false)
+      seen.add(key)
+    }
+    expect(bindingConflict({})).toBeNull()
+    // 나중 기본값이라 양보한다(fix3 R3-3) — ⌘F 를 전역 액션에 직접 건 사용자의 설정은 버려지지 않고(충돌 아님), 터미널 포커스에서도 그 액션이 돈다
+    const palette = validateOverrides({ 'palette.open': ['Mod+F'] })
+    expect(bindingConflict(palette)).toBeNull()
+    expect(bindingsFor('terminal.find', palette)).toEqual([null])
+    expect(matchBinding('Mod+F', palette, 'terminal')).toEqual({ id: 'palette.open', variant: 0 })
+    expect(matchBinding('Mod+F', palette)).toEqual({ id: 'palette.open', variant: 0 })
+    // 탐색기 범위는 그대로 — 트리 안에서는 탐색기 기본값이 전역 재정의보다 앞선다(base 동작)
+    expect(matchBinding('Mod+Z', validateOverrides({ 'palette.open': ['Mod+Z'] }), 'explorer')).toEqual({ id: 'explorer.undo', variant: 0 })
+    // 같은 터미널 범위에 다른 조합으로 옮길 수 있다
+    expect(matchBinding('Mod+Shift+F', validateOverrides({ 'terminal.find': ['Mod+Shift+F'] }), 'terminal')).toEqual({ id: 'terminal.find', variant: 0 })
   })
   it('LIFE-592 explorerKeyShortcut — 트리 포커스 표지가 켜졌을 때 ⌘Z·⌘⇧Z 만 main 이 가져온다', () => {
     const key = (input: { key: string; shift?: boolean; focused: boolean; overrides?: object }) =>

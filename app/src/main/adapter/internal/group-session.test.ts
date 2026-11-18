@@ -5,8 +5,8 @@
 // S1 가드·격자 요청 1회(R13)·줌 격자 복원(F2-3c)·자기정합 계산(S6).
 
 import { EventEmitter } from 'node:events'
-import { describe, expect, it } from 'vitest'
-import { GroupSession, countInconsistencies, type EndpointClientLike } from './group-session.js'
+import { describe, expect, it, vi } from 'vitest'
+import { GroupSession, ZOOM_FLAG_TIMEOUT_MS, countInconsistencies, type EndpointClientLike } from './group-session.js'
 import type { EndpointSurface } from './vendor/endpoint-client.js'
 import type { CellData, FrameData } from './vendor/frame-types.js'
 import { silentLogger } from './vendor/logger.js'
@@ -281,5 +281,111 @@ describe('연결 내 자기정합 (S6 — §10-R14)', () => {
 
   it('합이 프레임을 못 채우면 잡는다 (stale rect)', () => {
     expect(countInconsistencies(frame, [pane({ x: 0, width: 10 })])).toBeGreaterThan(0)
+  })
+})
+
+describe('줌 깃발 — 탭을 떠나면 herdr 깃발도 끈다 (LIFE-824 Zⓒ)', () => {
+  // base 실측(corral-specs LIFE-824 raw/claude/z-base-2.jsonl): 로컬 줌만 풀리고 herdr `pane.zoom` 깃발은 켜진 채 남았다.
+  it('줌 중 다른 탭으로 옮기면 pane.focus 앞에 떠나는 pane 의 pane.zoom off 를 보낸다', async () => {
+    const { client, session } = await attachedSession({
+      panes: [
+        { paneId: 'p1', x: 0, width: 10 },
+        { paneId: 'p2', x: 10, width: 10 },
+      ],
+    })
+    session.zoom({ paneId: 'p1', boxGrid: { cols: 20, rows: 3 } })
+    expect(session.zoomedPane).toBe('p1')
+    client.onFocusSurface = makeSurface({ width: 20, height: 3, panes: [{ paneId: 'p3', x: 0, width: 20 }], full: true })
+    const before = client.calls.length
+    await session.focusTab({ tabId: 't2', paneId: 'p3' })
+    expect(client.calls.slice(before)).toEqual([
+      { method: 'pane.zoom', params: { pane_id: 'p1', mode: 'off' } },
+      { method: 'pane.focus', params: { pane_id: 'p3' } },
+    ])
+    expect(session.zoomedPane).toBeNull()
+  })
+
+  it('줌이 없거나 같은 탭 안이면 pane.zoom 을 보내지 않는다(기존 경로 회귀 0)', async () => {
+    const { client, session } = await attachedSession({ panes: [{ paneId: 'p1', x: 0, width: 10 }, { paneId: 'p2', x: 10, width: 10 }] })
+    client.onFocusSurface = makeSurface({ width: 20, height: 3, panes: [{ paneId: 'p3', x: 0, width: 20 }], full: true })
+    await session.focusTab({ tabId: 't2', paneId: 'p3' })
+    expect(client.calls.some((call) => call.method === 'pane.zoom')).toBe(false)
+    session.zoom({ paneId: 'p3', boxGrid: { cols: 20, rows: 3 } })
+    await session.focusTab({ tabId: 't2', paneId: 'p3' })
+    expect(client.calls.some((call) => call.method === 'pane.zoom')).toBe(false)
+  })
+
+  it('깃발 끄기가 실패해도 탭 전환은 계속한다', async () => {
+    const { client, session } = await attachedSession({ panes: [{ paneId: 'p1', x: 0, width: 10 }, { paneId: 'p2', x: 10, width: 10 }] })
+    session.zoom({ paneId: 'p1', boxGrid: { cols: 20, rows: 3 } })
+    const original = client.callEndpoint.bind(client)
+    client.callEndpoint = async (method, params) => {
+      if (method === 'pane.zoom') throw new Error('gone')
+      return original(method, params)
+    }
+    client.onFocusSurface = makeSurface({ width: 20, height: 3, panes: [{ paneId: 'p3', x: 0, width: 20 }], full: true })
+    await session.focusTab({ tabId: 't2', paneId: 'p3' })
+    expect(client.calls.at(-1)).toEqual({ method: 'pane.focus', params: { pane_id: 'p3' } })
+  })
+})
+
+describe('줌 깃발 정리의 시간 초과·같은 탭 재선택 (LIFE-824 fix1 A4)', () => {
+  it('깃발 끄기가 답이 없어도(시간 초과) 세션을 닫지 않고 다음 탭으로 붙는다', async () => {
+    const { client, session } = await attachedSession({ panes: [{ paneId: 'p1', x: 0, width: 10 }, { paneId: 'p2', x: 10, width: 10 }] })
+    session.zoom({ paneId: 'p1', boxGrid: { cols: 20, rows: 3 } })
+    const original = client.callEndpoint.bind(client)
+    client.callEndpoint = async (method, params) => {
+      if (method === 'pane.zoom') {
+        client.calls.push({ method, params })
+        return new Promise<unknown>(() => {}) // herdr 가 끝내 답하지 않는다
+      }
+      return original(method, params)
+    }
+    client.onFocusSurface = makeSurface({ width: 20, height: 3, panes: [{ paneId: 'p3', x: 0, width: 20 }], full: true })
+    vi.useFakeTimers()
+    try {
+      const moving = session.focusTab({ tabId: 't2', paneId: 'p3' })
+      await vi.advanceTimersByTimeAsync(ZOOM_FLAG_TIMEOUT_MS + 10)
+      await moving
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(client.calls.slice(-2).map((call) => call.method)).toEqual(['pane.zoom', 'pane.focus'])
+    expect(session.hasPane('p3')).toBe(true)
+    // 세션이 살아 있다 — 다음 명령도 나간다
+    await session.focusTab({ tabId: 't2', paneId: 'p3' })
+    expect(client.calls.at(-1)).toEqual({ method: 'pane.focus', params: { pane_id: 'p3' } })
+  })
+
+  it('같은 탭을 다시 고르면 줌을 비우지 않는다(탭이 바뀔 때만)', async () => {
+    const { session } = await attachedSession({ panes: [{ paneId: 'p1', x: 0, width: 10 }, { paneId: 'p2', x: 10, width: 10 }] })
+    session.zoom({ paneId: 'p1', boxGrid: { cols: 20, rows: 3 } })
+    await session.focusTab({ tabId: 't1', paneId: 'p1' })
+    expect(session.zoomedPane).toBe('p1')
+  })
+})
+
+describe('일반 endpoint 명령의 시간 초과는 세션을 닫는다 (기존 동작 — fix2 B6, 줌 깃발과 대비)', () => {
+  it('pane.focus 가 상한을 넘기면 거절되고 세션이 닫혀 다음 명령도 거절된다', async () => {
+    const { client, session } = await attachedSession({ panes: [{ paneId: 'p1', x: 0, width: 20 }] })
+    const original = client.callEndpoint.bind(client)
+    client.callEndpoint = async (method, params) => {
+      if (method === 'pane.focus') {
+        client.calls.push({ method, params })
+        return new Promise<unknown>(() => {})
+      }
+      return original(method, params)
+    }
+    vi.useFakeTimers()
+    try {
+      const moving = session.focusTab({ tabId: 't2', paneId: 'p3' })
+      const settled = moving.then(() => null, (error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(10_000 + 10)
+      const error = await settled
+      expect(error instanceof Error ? error.message : String(error)).toContain('timed out')
+    } finally {
+      vi.useRealTimers()
+    }
+    await expect(session.focusTab({ tabId: 't2', paneId: 'p3' })).rejects.toThrow('group session is closed')
   })
 })

@@ -264,7 +264,11 @@ export function ContextMenu<A extends string>({
         data-context-menu=""
         {...attrs}
         style={{ left: position.left, top: position.top }}
-        onContextMenu={(event) => event.preventDefault()}
+        // LIFE-825 fix5 ⑧ — 메뉴 안 우클릭이 포털을 거쳐 연 탭의 onContextMenu 로 올라가지 않게(메뉴를 다시 열며 우클릭 토큰을 덮는다).
+        onContextMenu={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+        }}
         onMouseDown={(event) => event.stopPropagation()}
       >
         {renderEntries(entries, 'root')}
@@ -277,7 +281,10 @@ export function ContextMenu<A extends string>({
           data-context-menu=""
           data-context-submenu={sub.action}
           style={subPosition === null ? { left: -9999, top: -9999 } : { left: subPosition.left, top: subPosition.top }}
-          onContextMenu={(event) => event.preventDefault()}
+          onContextMenu={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
           onMouseDown={(event) => event.stopPropagation()}
         >
           {renderEntries(sub.submenu, 'sub')}

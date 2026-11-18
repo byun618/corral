@@ -10,7 +10,8 @@ import { SettingsPage } from './components/SettingsPage.js'
 import { TasksPage, type TasksFocus } from './components/TasksPage.js'
 import type { WorktreeTaskLine } from './components/WorktreeTask.js'
 import { linkTitleId, useLinkTitles, type LinkTitleReread } from './hooks/useLinkTitles.js'
-import { activateWorktreeCard } from './worktree-activate.js'
+import { activateWorktreeCard, worktreeReturnTarget } from './worktree-activate.js'
+import { editorMruKey, parseEditorMruKey, pendingFocusVerdict, pruneGroupMru, terminalEditorToggleTarget, toggleNoneHint, touchGroupMru, zoomedGroupOf, zoomHiding } from './group-focus.js'
 import { DEFAULT_SETTINGS_SECTION, SETTINGS_SECTIONS, type SettingsSectionId } from './settings-registry.js'
 // 화면 오케스트레이터 — `repo → worktree → tab → pane` 4단 데이터를 Orca 배치(사이드바 카드 +
 // 메인 탭바 + 상태바)로 그린다 (LIFE-357, Orca 직접 포팅 브랜치). 트리는 그리기, 동작은 IPC 로
@@ -35,7 +36,7 @@ import { groupGlyphs, MRU_LIMIT, openMru, orderMru, stepMru, touchMru } from './
 import { numbersOf } from './pane-geometry.js'
 import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
-import { ONE_TAB_IN_GROUP, topRightGroupId } from './group-tree.js'
+import { closeGroup as closeGroupIn, findGroup, neighborGroupId, newTabPlacement, newTabSlotKey, newTabSlotOf, ONE_GROUP, ONE_TAB_IN_GROUP, topRightGroupId, unrememberedArrivalBranch, type NewTabSlot } from './group-tree.js'
 import type { TabGroup } from './group-tree.js'
 import type { LifecycleNotice } from './lifecycle-types.js'
 import { paneTitleFrames, stabilizePaneTitles } from './pane-title-frames.js'
@@ -73,15 +74,34 @@ import { DiffView } from './components/DiffView.js'
 import { diffTabId, diffTitle, openOf, type ScmChange } from '../../shared/scm.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
+import { useFileDrag } from './hooks/useFileDrag.js'
 import { paneToFollow, pickPane } from './pane-utils.js'
 import { useOpenTabEntries } from './hooks/useOpenTabEntries.js'
 import { useUnread } from './hooks/useUnread.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
 import { sessionTitle, userLabel } from './session-title.js'
-import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
+import { CLOSE_CONFIRM_PENDING, closeMixedTabs, cycleAcrossGroups, mixedCloseTargets, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
-import { closeFollowTarget, fileTabId, fileTabLabel, fileTabsOf, isFileTabId, previewOf, recordCloseFollow, tabKindOf, terminalKeyTarget, type CloseFollow } from './file-tabs.js'
+import {
+  alreadyOpenHint,
+  closeFollowTarget,
+  dragGhostLabel,
+  fileTabId,
+  fileTabLabel,
+  fileTabsOf,
+  hintAfterContextChange,
+  hintContextKey,
+  isFileTabId,
+  previewOf,
+  recordCloseFollow,
+  splitKeyRoute,
+  fileTabSplitHint,
+  tabKindOf,
+  type CarriedHint,
+  type CloseFollow,
+  type FilePlacement,
+} from './file-tabs.js'
 import { FileView, focusLiveEditor, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
 import { createMarkdownToggleHandler } from './markdown-toggle.js'
 import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, thawEditing, type FileDoc } from './file-docs.js'
@@ -125,6 +145,12 @@ const AGENT_LAUNCH_LABEL = { claude: 'Claude', codex: 'Codex', grok: 'Grok' } as
 const NO_REPOS: AppState['repos'] = []
 const NO_ROOTS: string[] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
+/** LIFE-824 fix1 A1 — 다른 worktree 로 미뤄 둔 편집기 포커스를 기다리는 상한. 넘도록 그 worktree 배치가 안 오면 버린다. */
+const PENDING_FOCUS_MS = 2_000
+/** LIFE-824 fix1 A2 — ⌘⌥방향 줄 세우기: 고른 결과가 그려지길 기다리는 상한(바뀐 것이 없어 커밋이 안 오는 회차). */
+const DIRECTION_SETTLE_MS = 150
+const DIRECTION_QUEUE_MAX = 2
+const PANE_DIRECTIONS: readonly PaneDirection[] = ['left', 'right', 'up', 'down']
 /** 작업 페이지가 열린 동안에도 사는 단축키 (LIFE-601 C4) — 나머지 워크스페이스 단축키는 삼키기만 한다. */
 // LIFE-682 A8 — 오른쪽 패널은 페이지와 무관한 전역 패널이라 작업 페이지에서도 ⌘L·⌘⇧E 가 돈다. 탐색기 범위 액션(필터·삭제·기록)은 트리 포커스에서만 오므로 같이 산다.
 const TASKS_PAGE_SHORTCUTS: readonly ActionId[] = ['tasks.toggle', 'settings.open', 'sidebar.toggle', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'explorer.filter', 'explorer.delete', 'explorer.undo', 'explorer.redo']
@@ -215,8 +241,8 @@ export function App(): React.JSX.Element {
     [],
   )
   /** 그 worktree 의 수정된 문서들을 묻는다(worktree 닫기·마지막 터미널 탭 닫기 — E3ⓓⓔ). 없으면 묻지 않고 true. 대상은 그 worktree 문서 전체를 그때그때(R2-A). */
-  const confirmWorktreeDocs = (root: string): Promise<boolean> =>
-    confirmDiscardOrSave({ targets: () => allDocs().filter((doc) => doc.root === root), deps: saveDepsRef.current })
+  const confirmWorktreeDocs = (root: string, except?: ReadonlySet<string>): Promise<boolean> =>
+    confirmDiscardOrSave({ targets: () => allDocs().filter((doc) => doc.root === root && except?.has(doc.key) !== true), deps: saveDepsRef.current })
   /**
    * worktree 삭제(E3ⓓ) — 지울 파일을 저장할 수는 없으니 「버리고 계속 / 취소」. 계속이면 그 worktree 문서를 전부 버린다.
    * 대화상자를 기다리는 사이 묻지 않은 문서가 새로 수정됐으면 그 목록으로 다시 묻는다(R2-A — 처음 목록만 보고 전부 버리지 않는다, 최대 3 번).
@@ -279,6 +305,10 @@ export function App(): React.JSX.Element {
   const [removeError, setRemoveError] = useState<string | null>(null)
 
   const lifecycle = useLifecycleActions(state)
+  // LIFE-822 fix2 N1 — 섞인 닫기는 파일 확인을 기다린 **뒤에도** 닫기 확인 창이 떠 있나를 본다. 클릭 렌더의 `lifecycle.pendingClose` 는 그 순간 값으로 굳어 있어
+  // await 사이 새로 뜬 창을 못 본다 — 매 렌더 최신 값을 담는 ref 로 읽는다.
+  const pendingCloseRef = useRef(lifecycle.pendingClose)
+  pendingCloseRef.current = lifecycle.pendingClose
   const windowChrome = useWindowChrome()
   // LIFE-527 D5 — 떠 있는 머리(접힘)의 컨트롤 줄 폭 → 왼쪽 위 탭 줄 no-drag 여백 폭(Orca `--collapsed-sidebar-header-width`, `App.tsx:82`).
   // 줌·전체화면으로 폭이 바뀌면 따라간다(ResizeObserver). 터미널 외관 변수와 같이 루트에 건다.
@@ -483,6 +513,23 @@ export function App(): React.JSX.Element {
    * 탭을 누른 뒤 곧바로 타건하는 흐름이 끊기지 않게 하는 자리다.
    */
   const [focusToken, setFocusToken] = useState(0)
+  /**
+   * LIFE-824 fix1 A1·A8 — 포커스 이동 순번. 새 이동(키·클릭·MRU·팔레트·세션 클릭)이 시작될 때마다 오른다. 본문 포커스 대기 루프(`focusOpenedFile`·`focusGroupBody`)와
+   * 다른 worktree 로 미뤄 둔 편집기 포커스(`pendingFocusRef`)는 자기 순번이 아직 마지막일 때만 포커스를 옮긴다 — 늦게 붙은 편집기가 뒤 이동을 덮지 않게.
+   */
+  const focusSeqRef = useRef(0)
+  /**
+   * LIFE-825 미뤄 둔 메뉴 포커스 (fix3 정리·fix4 F1·low H1·H2) — **규칙 한 줄**: 탭바 우클릭은 활성 영역만 옮기고 토큰 하나를 남긴다. 그 우클릭이 연 메뉴가 닫힐 때
+   * (Esc·바깥 클릭으로 닫혔고 ⌘⌥방향 요청이 진행 중이면 그 요청이 끝날 때까지 미뤄 — 항목 실행으로 닫히면 미루지 않는다), 그 토큰이 아직 마지막 우클릭의 것이고
+   * 그 뒤 실제로 일어난 이동(포커스 순번 상승·⌘⌥방향 이동·CLI reveal)이 없으면 그 영역 본문에 포커스한다 — 아니면 아무것도 안 한다. 항목은 그 뒤에 돈다.
+   * 칸은 하나(마지막 우클릭)다. 다른 우클릭이 덮어쓰고, 방향 이동(`focusDirectionOnce`)·reveal(`requestedPane`)이 실제로 일어나는 자리에서 비운다. 이동 없이 끝난 방향 요청(가장자리·거절)은 칸을 남긴다.
+   */
+  const menuDeferredFocusRef = useRef<{ token: number; seq: number; groupId: string; closed: boolean } | null>(null)
+  const menuTokenSeqRef = useRef(0)
+  const beginFocusMove = (): number => {
+    focusSeqRef.current += 1
+    return focusSeqRef.current
+  }
   const selectPane = useCallback(
     (paneId: string) => {
       lifecycle.selectPane(paneId)
@@ -578,6 +625,7 @@ export function App(): React.JSX.Element {
         .flatMap((worktree) => worktree.workspace?.tabs ?? [])
         .find((tab) => tab.panes.some((pane) => pane.paneId === paneId))
       pendingRevealRef.current = owner === undefined || layoutRef.current.revealTab(owner.tabId) ? null : owner.tabId
+      focusSeqRef.current += 1
       selectPane(paneId)
     },
     [selectPane],
@@ -650,6 +698,8 @@ export function App(): React.JSX.Element {
   })
 
   const tabById = useCallback((tabId: string | null) => activeWorkspaceRow?.tabs.find((tab) => tab.tabId === tabId) ?? null, [activeWorkspaceRow])
+  const tabByIdRef = useRef(tabById)
+  tabByIdRef.current = tabById
 
   /** LIFE-496 D36 — `+` 메뉴 omnibox 가 찾는 열린 탭(현재 worktree · 모든 영역). */
   const openTabEntries = useOpenTabEntries({
@@ -726,6 +776,29 @@ export function App(): React.JSX.Element {
     },
   })
 
+  /**
+   * LIFE-823 C1·C2 — 탐색기 파일 끌어서 열기. 판정·오버레이는 탭 끌기와 같다(`resolveDropTarget` source file) — 커밋만 배치 없는 탭을 들이는 길(`placeFileAt`)이다.
+   * 탭바 = 삽입, 가장자리 = 새 영역, 가운데(merge) = 그 영역 활성 탭 오른쪽. 폴더는 `useFileDrag` 가 거른다.
+   */
+  const fileDrag = useFileDrag({
+    onDrop: ({ rel, target }) => {
+      switch (target.kind) {
+        case 'tabbar':
+          placeFileAt({ rel, placement: { kind: 'tabbar', groupId: target.groupId, index: target.index } })
+          return
+        case 'split':
+          placeFileAt({ rel, placement: { kind: 'split', groupId: target.groupId, direction: target.direction, edge: target.edge } })
+          return
+        case 'merge':
+          placeFileAt({ rel, placement: { kind: 'center', groupId: target.groupId } })
+          return
+        case 'self-noop':
+        case 'invalid':
+          return
+      }
+    },
+  })
+
   // A CLI-created tab may arrive before the destination worktree layout has been restored.
   // Keep the request until both workspace and tab placement exist, then select the keyboard target.
   useEffect(() => {
@@ -734,8 +807,10 @@ export function App(): React.JSX.Element {
     const owner = state?.repos.flatMap(repo => repo.worktrees).flatMap(row => row.workspace?.tabs ?? [])
       .find(tab => tab.panes.some(pane => pane.paneId === requestedPane))
     if (!owner) return
-    if (lifecycle.activeWorkspaceId !== owner.workspaceId) { selectPane(requestedPane); return }
+    // low H2 — CLI·main reveal 은 순번을 안 올리지만 실제로 일어난 이동이다: 미뤄 둔 메뉴 포커스가 닫힘 때 되돌리지 않게 칸을 비운다.
+    if (lifecycle.activeWorkspaceId !== owner.workspaceId) { menuDeferredFocusRef.current = null; selectPane(requestedPane); return }
     if (!layout.revealTab(owner.tabId)) return
+    menuDeferredFocusRef.current = null
     selectPane(requestedPane)
     setRequestedPane(null)
   }, [requestedPane, state, lifecycle.activeWorkspaceId, layout.revealTab, selectPane])
@@ -751,6 +826,41 @@ export function App(): React.JSX.Element {
     if (tabId === null) return
     if (layout.revealTab(tabId) || !liveTabIds.includes(tabId)) pendingRevealRef.current = null
   }, [layout.revealTab, liveTabIds])
+
+  /**
+   * LIFE-825 C5·P6 — 새 터미널 탭 자리 기억. 요청한 순간(`createRow` — ⌘T·⌘⌥T·탭바 `+`·빈 영역 「새 탭」·사이드바 카드 `+`·팔레트 에이전트) 그 worktree 의
+   * 활성 영역·활성 탭을 잡고(`newTabSlotOf`), 탭 id 가 오면 여기 둔다. 아래 「방금 만든 탭을 편다」 effect 가 탭이 도착하면 그 자리로 옮긴다(`newTabPlacement`).
+   * 메모리 전용·탭 id 별(연속 ⌘T 가 앞 요청 자리를 덮지 않는다). 요청 없이 도착한 탭은 `reconcileLayout` 이 도착 때 활성 탭 오른쪽에 둔다.
+   */
+  const pendingNewTabSlotsRef = useRef<Map<string, { workspaceId: string; slot: NewTabSlot; token: number; precedingTokens: readonly number[] }>>(new Map())
+  /**
+   * fix1 B2 — 요청 순서 장부(토큰 = 요청 순번). `tabId` 는 응답에 채우고, `settled` 는 도착해 자리를 정했으면 참. 새 요청은 같은 자리를 잡은 **아직 안 놓인** 앞
+   * 요청의 토큰을 들고 간다 — 도착 때 그 토큰의 탭 뒤로 선다(`newTabPlacement` `precedingTabIds`). 메모리 전용, 요청 수만큼(B7 알려진 한계와 같은 결).
+   */
+  const newTabRequestsRef = useRef<{ next: number; byToken: Map<number, { workspaceId: string; key: string; tabId: string | null; settled: boolean }> }>({ next: 0, byToken: new Map() })
+  lifecycle.newTabRequestRef.current = (workspaceId) => {
+    const worktree = stateRef.current?.repos.flatMap((repo) => repo.worktrees).find((row) => row.workspace?.workspaceId === workspaceId) ?? null
+    if (worktree === null || worktree.workspace === null) return null
+    const shown =
+      worktree.path === activeWorktreeRowRef.current?.path
+        ? layoutRef.current.layout
+        : layout.layoutOf({ worktreePath: worktree.path, liveTabIds: worktree.workspace.tabs.map((tab) => tab.tabId), pinned: pinnedTabs })
+    const slot = shown === null ? null : newTabSlotOf(shown)
+    if (slot === null) return null
+    const requests = newTabRequestsRef.current
+    const key = newTabSlotKey(slot)
+    const precedingTokens = [...requests.byToken].filter(([, request]) => request.workspaceId === workspaceId && request.key === key && !request.settled).map(([token]) => token)
+    const token = requests.next
+    requests.next += 1
+    requests.byToken.set(token, { workspaceId, key, tabId: null, settled: false })
+    return (tabId) => {
+      const request = requests.byToken.get(token)
+      if (request !== undefined) request.tabId = tabId
+      pendingNewTabSlotsRef.current = new Map([...pendingNewTabSlotsRef.current, [tabId, { workspaceId, slot, token, precedingTokens }]])
+    }
+  }
+  /** C5ⓗ 경합 갈래 계수용 — 활성 workspace 에서 지난 렌더까지 본 탭(새로 도착한 탭을 가른다). */
+  const seenLiveTabsRef = useRef<{ workspaceId: string | null; tabIds: ReadonlySet<string> }>({ workspaceId: null, tabIds: new Set() })
 
   /**
    * **방금 만든 탭을 편다** (G2′ · §10-R35-1) — `⌘T`·사이드바 `+`·메뉴 **세 경로 전부**가 여기로 온다.
@@ -770,6 +880,40 @@ export function App(): React.JSX.Element {
     const taken = takeLivePlacements({ pending: pendingPlacementsRef.current, liveTabIds })
     pendingPlacementsRef.current = taken.pending
     const placed = new Set<string>()
+    // LIFE-825 C5 — 기억한 자리로. 영역이 사라졌으면(ⓑ) 도착 때 자리(`reconcileLayout` 고아 착지 — 활성 영역·활성 탭 오른쪽) 그대로.
+    // 갈래마다 한 줄 로그(C5ⓗ — G1 이 세어 증상과 짝짓는다).
+    const seen = seenLiveTabsRef.current
+    const workspaceId = activeWorkspaceRow?.workspaceId ?? null
+    // fix1 B5 — ⌘⇧T 다시 열기 탭은 자기 자리(`pendingPlacementsRef`)로 간다 — 이 렌더에 꺼낸 것(`taken.ready`)·아직 기다리는 것 모두 「기억 없음」 갈래가 아니다.
+    const reopening = new Set([...taken.ready.map((placement) => placement.tabId), ...pendingPlacementsRef.current.keys()])
+    for (const tabId of liveTabIds) {
+      const remembered = pendingNewTabSlotsRef.current.get(tabId)
+      if (remembered === undefined) {
+        const branch = unrememberedArrivalBranch({ firstSeen: seen.workspaceId === workspaceId && !seen.tabIds.has(tabId), reopening: reopening.has(tabId) })
+        if (branch === 'reopen') console.info('[corral] LIFE-825 새 탭 자리: 다시 열기 자리(⌘⇧T)', tabId)
+        else if (branch === 'unremembered') console.info('[corral] LIFE-825 새 탭 자리: 기억 없음 → 도착 때 자리', tabId)
+        continue
+      }
+      if (remembered.workspaceId !== workspaceId || layout.layout === null) continue
+      pendingNewTabSlotsRef.current = new Map([...pendingNewTabSlotsRef.current].filter(([id]) => id !== tabId))
+      for (const request of newTabRequestsRef.current.byToken.values()) if (request.tabId === tabId) request.settled = true
+      const precedingTabIds = remembered.precedingTokens.flatMap((token) => {
+        const request = newTabRequestsRef.current.byToken.get(token)
+        return request?.tabId == null ? [] : [request.tabId]
+      })
+      // fix2 D3 — 같은 자리를 나중에 요청해 이미 응답이 온 탭(그 요청은 이 탭이 안 놓였을 때 생겼다) — 이 탭은 그 앞에 선다.
+      const key = newTabSlotKey(remembered.slot)
+      const followingTabIds = [...newTabRequestsRef.current.byToken].flatMap(([token, request]) => (token > remembered.token && request.workspaceId === remembered.workspaceId && request.key === key && request.tabId !== null ? [request.tabId] : []))
+      const target = newTabPlacement({ layout: layout.layout, slot: remembered.slot, tabId, precedingTabIds, followingTabIds })
+      if (target === null) {
+        console.info('[corral] LIFE-825 새 탭 자리: 기억 영역 사라짐 → 도착 때 자리', tabId)
+        continue
+      }
+      console.info('[corral] LIFE-825 새 탭 자리: 기억한 자리로 놓음', tabId, target.groupId, target.index)
+      layout.placeTab({ tabId, groupId: target.groupId, index: target.index })
+      placed.add(tabId)
+    }
+    seenLiveTabsRef.current = { workspaceId, tabIds: new Set(liveTabIds) }
     for (const placement of taken.ready) {
       const { tabId, workspaceId, color } = placement
       if (color !== null) setTabMarks((marks) => setTabColor({ marks, tabId, workspaceId, color }))
@@ -919,6 +1063,13 @@ export function App(): React.JSX.Element {
     splitGroup: layout.splitGroup,
     closeGroup: layout.closeGroup,
     revealTab: layout.revealTab,
+    /** LIFE-825 — 영역 닫기·최대화·균등화가 보는 화면 배치와 그 조작. */
+    layout: layout.layout,
+    toggleMaximize: layout.toggleMaximize,
+    evenAll: layout.evenAll,
+    /** LIFE-824 — 영역 넘는 이동(⌘⌥방향·⌃`·이전/다음 탭)이 보는 배치 전체. */
+    groups: layout.groups,
+    root: layout.layout?.root ?? null,
   }
   const layoutRef = useRef(layoutMirror)
   layoutRef.current = layoutMirror
@@ -941,10 +1092,31 @@ export function App(): React.JSX.Element {
 
   /** 최근 포커스 순서 (앞이 최근). pane 을 고르는 **모든 길**이 여기 찍힌다 — 선택 자체를 보므로. */
   const mruHistoryRef = useRef<string[]>([])
+  /**
+   * LIFE-824 C4ⓐ — 파일·diff 탭도 **활성된 순서로** 같은 기록에 찍는다(키 = `editorMruKey`, worktree 경로 + 탭 id). 편집기 탭에서 터미널 탭으로 돌아오면
+   * 선택 pane 이 그대로여도 다시 찍는다 — 안 그러면 방금 떠난 파일이 지금 보는 터미널보다 최근으로 남는다.
+   */
+  const activeEditorKey = activeWorktreeRow !== null && activeTabIdForReveal !== null && isFileTabId(activeTabIdForReveal) ? editorMruKey({ worktreePath: activeWorktreeRow.path, tabId: activeTabIdForReveal }) : null
   useEffect(() => {
     if (lifecycle.selectedPane === null) return
     mruHistoryRef.current = touchMru({ history: mruHistoryRef.current, paneId: lifecycle.selectedPane })
+    // fix1 A3 — 편집기 탭이 활성인 채 선택 pane 만 바뀌면(닫기 따라가기·워크스페이스 전환 자동 선택 등) 맨 앞은 지금 보는 편집기 그대로다 — ⌃Tab 이 제자리로 가지 않게.
+    if (activeEditorKey !== null) mruHistoryRef.current = touchMru({ history: mruHistoryRef.current, paneId: activeEditorKey })
   }, [lifecycle.selectedPane])
+  useEffect(() => {
+    const key = activeEditorKey ?? lifecycle.selectedPane
+    if (key !== null) mruHistoryRef.current = touchMru({ history: mruHistoryRef.current, paneId: key })
+  }, [activeEditorKey])
+  /** LIFE-824 C2 — 영역 MRU(worktree 경로별, 메모리 전용 — 영속 0). 영역이 활성될 때마다 맨 앞. ⌃` 후보 고르기가 읽는다(`group-focus.ts`). */
+  const groupMruRef = useRef<Map<string, string[]>>(new Map())
+  // fix1 A7 — 배치에 없는 영역 id 는 걸러 낸다(닫힌 영역 id 가 재사용되면 새 영역이 옛 순위를 물려받는다). 영역 구성이 바뀔 때도 다시 본다.
+  const liveGroupIds = layout.groups.map((group) => group.groupId).join('\0')
+  useEffect(() => {
+    const path = activeWorktreeRow?.path ?? null
+    if (path === null || layout.activeGroupId === null) return
+    const pruned = pruneGroupMru({ history: groupMruRef.current.get(path) ?? [], liveGroupIds: liveGroupIds.split('\0') })
+    groupMruRef.current.set(path, touchGroupMru({ history: pruned, groupId: layout.activeGroupId }))
+  }, [activeWorktreeRow?.path, layout.activeGroupId, liveGroupIds])
 
   // LIFE-478 — 카드 메뉴의 App 층(고정·삭제·정보 수정 대화·⌘⌥R·⌘⇧⌫).
   const cardActions = useCardActions({
@@ -1007,6 +1179,58 @@ export function App(): React.JSX.Element {
   }, [state, lifecycle.activeWorkspaceId])
   const mruPanesRef = useRef(mruPanes)
   mruPanesRef.current = mruPanes
+  /**
+   * LIFE-824 C4 — MRU·팔레트가 세는 **편집기 탭**(파일·diff) — 열린 모든 worktree 의 보이는 배치(활성은 지금 배치, 나머지는 저장 배치) 그대로.
+   * 키는 `editorMruKey`. 터미널 행(`mruPanes`)과 순서·모양은 따로 둔다 — 터미널 항목·순서 회귀 0.
+   */
+  const mruEditors = useMemo(() => {
+    if (state === null) return []
+    const rows: { key: string; worktreePath: string; tabId: string; groupId: string; title: string; kindLabel: string; worktree: string; sameWorktree: boolean }[] = []
+    for (const repo of state.repos) {
+      for (const worktree of repo.worktrees) {
+        const workspace = worktree.workspace
+        if (workspace === null) continue
+        const sameWorktree = workspace.workspaceId === lifecycle.activeWorkspaceId
+        const shown = sameWorktree ? layout.layout : layout.layoutOf({ worktreePath: worktree.path, liveTabIds: workspace.tabs.map((tab) => tab.tabId), pinned: pinnedTabs })
+        if (shown === null) continue
+        for (const group of listGroups(shown.root)) {
+          for (const tabId of group.tabOrder) {
+            const kind = tabKindOf(tabId)
+            if (kind.kind === 'terminal') continue
+            rows.push({
+              key: editorMruKey({ worktreePath: worktree.path, tabId }),
+              worktreePath: worktree.path,
+              tabId,
+              groupId: group.groupId,
+              title: kind.kind === 'file' ? fileTabLabel(kind.rel) : kind.target === null ? '(diff)' : diffTitle(kind.target),
+              kindLabel: kind.kind === 'file' ? '파일' : 'diff',
+              worktree: worktreeDisplayName(worktree),
+              sameWorktree,
+            })
+          }
+        }
+      }
+    }
+    return rows
+  }, [state, lifecycle.activeWorkspaceId, layout.layout, layout.layoutOf, pinnedTabs])
+  const mruEditorsRef = useRef(mruEditors)
+  mruEditorsRef.current = mruEditors
+  /**
+   * MRU 가 세는 전부 — 터미널 pane 먼저(옛 순서 그대로), 편집기 탭은 그 뒤. fix1 A6 — 편집기 탭은 **활성된 적 있는**(기록에 있는) 것만 —
+   * 안 본 편집기 탭이 꼬리에 붙으면 ⌃⇧Tab·팔레트 「이전」 이 가장 오래된 터미널 대신 그리로 간다(C4ⓔ 터미널 순서 회귀 0).
+   */
+  const mruLiveIds = (): string[] => [
+    ...mruPanesRef.current.map((pane) => pane.paneId),
+    ...mruEditorsRef.current.map((editor) => editor.key).filter((key) => mruHistoryRef.current.includes(key)),
+  ]
+  /** MRU 항목으로 간다 — 편집기 키면 그 탭(다른 worktree 면 전환 뒤), 아니면 pane(옛 길 `revealPane`). */
+  const goToMruEntry = (key: string): void => {
+    const editor = parseEditorMruKey(key)
+    if (editor === null) revealPane(key)
+    else focusEditorTabIn(editor)
+  }
+  const goToMruEntryRef = useRef(goToMruEntry)
+  goToMruEntryRef.current = goToMruEntry
 
 
   /** 홀드를 접고 포커스만 돌려준다 — **상태는 하나도 안 건드린다** (F3-5 취소 무결성). */
@@ -1030,12 +1254,12 @@ export function App(): React.JSX.Element {
     mruRef.current = null
     setMru(null)
     const paneId = current.order[current.index]
-    if (paneId === undefined || !mruPanesRef.current.some((pane) => pane.paneId === paneId)) {
+    if (paneId === undefined || !mruLiveIds().includes(paneId)) {
       setFocusToken((token) => token + 1)
       return
     }
-    revealPane(paneId)
-  }, [revealPane])
+    goToMruEntryRef.current(paneId)
+  }, [])
 
   /**
    * 홀드 **무동작 상한** (F3-3 폴백). `Control` keyup 도 blur 도 못 받은 회차가 이 자리에 온다.
@@ -1074,7 +1298,7 @@ export function App(): React.JSX.Element {
       setMru(next)
       return
     }
-    const order = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanesRef.current.map((pane) => pane.paneId) })
+    const order = orderMru({ history: mruHistoryRef.current, livePaneIds: mruLiveIds() })
     if (order.length === 0) return
     blurTerminal()
     const opened = { order, index: openMru({ count: order.length, backward }), at: Date.now() }
@@ -1149,6 +1373,7 @@ export function App(): React.JSX.Element {
 
   /** 탭 하나를 그 영역에서 활성으로 + 그 탭의 pane 으로 포커스(탭 클릭과 같은 길). */
   const activateTab = (input: { groupId: string; tab: TabRow }): void => {
+    beginFocusMove()
     layout.setActiveTab({ groupId: input.groupId, tabId: input.tab.tabId })
     const pane = pickPane(input.tab)
     if (pane !== null) selectPane(pane.paneId)
@@ -1188,15 +1413,23 @@ export function App(): React.JSX.Element {
    * 사용자가 탭을 닫는다 (×·중클릭·메뉴·⌘W·bulk) — 실행 중 확인은 대상 전부를 모아 한 번, 핀 탭이 있으면 확인을 거친다(K3ⓒ).
    * 실제로 닫힌 탭만 다시 열기 기록에 넣는다(탭마다 1건). `anchor` = 「다른/오른쪽/왼쪽 탭 닫기」의 기준 탭 — 활성 탭이 닫혔으면 그 탭이 활성이 된다(K2ⓓ).
    */
-  const closeTabsByUser = (input: { tabIds: string[]; anchor?: { groupId: string; tab: TabRow }; guarded?: boolean }): void => {
+  const closeTabsByUser = (input: {
+    tabIds: string[]
+    anchor?: { groupId: string; tab: TabRow }
+    guarded?: boolean
+    /** 실제로 닫힌 터미널 id 와 함께(일부만일 수 있다) — 섞인 닫기가 「전부 닫혔나」 를 본다(LIFE-822 fix1 R1-2). */
+    onClosed?: (closed: readonly string[]) => void
+    /** 이미 확인을 마친 문서 키(섞인 닫기의 파일 — 「저장 안 함」 은 닫을 때 버리므로 아직 수정 상태다) — 아래 worktree 문서 확인에서 다시 묻지 않는다. */
+    confirmedDocs?: ReadonlySet<string>
+  }): void => {
     if (input.tabIds.length === 0) return
     // LIFE-591 E3ⓔ — 이 닫기로 그 worktree 의 터미널 탭이 하나도 안 남으면 herdr workspace 가 닫히고 파일 탭이 화면에서 사라진다(F2 알려진 한계).
     // 그 worktree 에 수정된 파일이 있으면 먼저 묻는다(저장 / 저장 안 함 / 취소). 묻지 않고 닫히는 경로(셸 `exit` 등)에서는 문서가 저장소에 남아
     // 다시 열면 같은 수정 내용으로 돌아오고, 앱 종료 확인에도 잡힌다.
     const owner = (state?.repos ?? []).flatMap((repo) => repo.worktrees).find((row) => row.workspace?.tabs.some((tab) => input.tabIds.includes(tab.tabId)))
     const closesAll = owner?.workspace?.tabs.every((tab) => input.tabIds.includes(tab.tabId)) === true
-    if (owner !== undefined && closesAll && dirtyDocs().some((doc) => doc.root === owner.path) && !input.guarded) {
-      void confirmWorktreeDocs(owner.path).then((ok) => {
+    if (owner !== undefined && closesAll && dirtyDocs().some((doc) => doc.root === owner.path && input.confirmedDocs?.has(doc.key) !== true) && !input.guarded) {
+      void confirmWorktreeDocs(owner.path, input.confirmedDocs).then((ok) => {
         if (ok) closeTabsByUser({ ...input, guarded: true })
       })
       return
@@ -1214,6 +1447,7 @@ export function App(): React.JSX.Element {
       onClosed: (closed) => {
         for (const entry of snapshots) if (closed.includes(entry.tabId)) recentlyClosedRef.current = pushClosed({ history: recentlyClosedRef.current, snapshot: entry.snapshot })
         if (anchor !== undefined && activeBefore !== null && closed.includes(activeBefore)) activateTab(anchor)
+        input.onClosed?.(closed)
       },
     })
   }
@@ -1225,15 +1459,37 @@ export function App(): React.JSX.Element {
   const closeScope = (input: { groupId: string; tabId: string; scope: CloseScope }): void => {
     const group = layout.groups.find((row) => row.groupId === input.groupId)
     if (group === undefined) return
-    const targets = closeScopeTargets({ tabOrder: group.tabOrder, tabId: input.tabId, scope: input.scope, pinned: pinnedTabs })
-    const files = targets.filter((tabId) => isFileTabId(tabId))
+    const worktreePath = activeWorktreeRow?.path ?? null
+    // LIFE-822 — 「저장된 탭 닫기」는 수정된 파일 탭을 뺀다(diff 탭은 문서가 없어 늘 저장됨).
+    const dirty = new Set(
+      group.tabOrder.filter((tabId) => {
+        const kind = tabKindOf(tabId)
+        return worktreePath !== null && kind.kind === 'file' && getDoc(docKey(worktreePath, kind.rel))?.dirty === true
+      }),
+    )
+    // herdr 에 없는 터미널 id 는 뺀다 — 탭바가 그리는 칸(메뉴 활성 판정)과 같은 집합(fix1 R1-3).
+    const { files, terminals } = mixedCloseTargets({ tabOrder: group.tabOrder, tabId: input.tabId, scope: input.scope, pinned: pinnedTabs, dirty, isLiveTerminal: (tabId) => tabById(tabId) !== null })
     const activeBefore = group.activeTabId
-    // 수정된 파일 탭이 섞였으면 한 번에 묻는다(E3ⓐ 여러 개 닫기 — 파일 목록). 한 닫기 작업이라 확인을 다 마친 뒤에 닫는다 —
-    // 취소면 파일 탭도 터미널 탭도 하나도 닫지 않는다(수정 r1 R1-J: 옛 코드는 확인을 기다리지 않고 터미널 탭부터 닫았다). 수정된 파일이 없으면 지금처럼 바로 닫힌다.
+    // 순서 (LIFE-822 B7): 수정 파일 확인(한 번에, E3ⓐ — 「저장 안 함」 은 결정만) → 터미널 닫기 요청(실행 중 확인) → **요청한 터미널이 전부 닫힌 뒤** 파일 닫기(그때 버린다).
+    // 어느 확인에서 취소해도 파일·문서는 그대로다 — 옛 순서는 파일을 먼저 닫아 터미널 확인 취소 때 파일만 닫힌 채 남았다.
     const anchorTab = activeWorkspaceRow?.tabs.find((tab) => tab.tabId === input.tabId)
-    closeFilesByUser(files, () => {
-      if (isFileTabId(input.tabId) && activeBefore !== null && files.includes(activeBefore)) layout.setActiveTab({ groupId: input.groupId, tabId: input.tabId })
-      closeTabsByUser({ tabIds: targets.filter((tabId) => !isFileTabId(tabId)), ...(anchorTab === undefined ? {} : { anchor: { groupId: input.groupId, tab: anchorTab } }) })
+    const fileDocKeys = new Set(files.flatMap((tabId) => {
+      const kind = tabKindOf(tabId)
+      return worktreePath !== null && kind.kind === 'file' ? [docKey(worktreePath, kind.rel)] : []
+    }))
+    void closeMixedTabs({
+      fileTabIds: files,
+      terminalTabIds: terminals,
+      terminalsBusy: () => pendingCloseRef.current !== null,
+      onBusy: () => setGroupHint(CLOSE_CONFIRM_PENDING),
+      confirmFiles: (tabIds) => confirmFilesByUser({ worktreePath, tabIds, deferDiscard: true }),
+      closeTerminals: ({ tabIds, onClosed }) =>
+        closeTabsByUser({ tabIds: [...tabIds], onClosed, confirmedDocs: fileDocKeys, ...(anchorTab === undefined ? {} : { anchor: { groupId: input.groupId, tab: anchorTab } }) }),
+      closeFiles: (tabIds) => {
+        if (worktreePath === null || tabIds.length === 0) return
+        if (isFileTabId(input.tabId) && activeBefore !== null && tabIds.includes(activeBefore)) layout.setActiveTab({ groupId: input.groupId, tabId: input.tabId })
+        for (const tabId of tabIds) closeFileNow({ worktreePath, tabId })
+      },
     })
   }
 
@@ -1249,6 +1505,19 @@ export function App(): React.JSX.Element {
       return
     }
     if (worktreePath === null) return
+    void confirmFilesByUser({ worktreePath, tabIds }).then((ok) => {
+      if (!ok) return
+      for (const tabId of tabIds) closeFileNow({ worktreePath, tabId })
+      onClosed?.()
+    })
+  }
+  /**
+   * 수정된 파일 탭 확인만(저장 / 저장 안 함 / 취소) — 닫지는 않는다. 섞인 닫기(`closeScope`)가 터미널을 닫은 뒤에 파일을 닫으려고 나눴다(LIFE-822 B7).
+   * `deferDiscard` = 「저장 안 함」 을 여기서 버리지 않고 `closeFileNow` 가 닫을 때 버린다(섞인 닫기만 — fix1 R1-1).
+   */
+  const confirmFilesByUser = (input: { worktreePath: string | null; tabIds: readonly string[]; deferDiscard?: boolean }): Promise<boolean> => {
+    const { worktreePath, tabIds } = input
+    if (worktreePath === null) return Promise.resolve(false)
     // 대상 문서는 그때그때 찾는다 — 확인·저장을 기다리는 사이 처음엔 문서가 없던 탭(한 번도 안 연 탭)을 열어 편집해도 잡힌다(R2-A).
     const targets = (): FileDoc[] =>
       tabIds.flatMap((tabId) => {
@@ -1256,11 +1525,7 @@ export function App(): React.JSX.Element {
         const doc = kind.kind === 'file' ? getDoc(docKey(worktreePath, kind.rel)) : undefined
         return doc === undefined ? [] : [doc]
       })
-    void confirmDiscardOrSave({ targets, deps: saveDepsRef.current }).then((ok) => {
-      if (!ok) return
-      for (const tabId of tabIds) closeFileNow({ worktreePath, tabId })
-      onClosed?.()
-    })
+    return confirmDiscardOrSave({ targets, deps: saveDepsRef.current, deferDiscard: input.deferDiscard === true })
   }
   const closeFileByUser = (tabId: string): void => closeFilesByUser([tabId])
   /** LIFE-691 K2ⓐ — 파일 탭 닫기를 입력 pane 따라가기 대기에 싣는다(위 `closeFollowRef`). 활성 worktree 의 닫기만 실린다. */
@@ -1313,6 +1578,20 @@ export function App(): React.JSX.Element {
   }
 
   /**
+   * LIFE-823 — 파일을 고른 자리에 연다(탐색기 끌어 놓기·옆으로 열기) — 고정 탭(P1). 이미 열린 파일이면 옮기지 않고 그 탭으로 가고(814 게이트 ⓪),
+   * 놓은 자리가 지금 자리와 달랐으면 안내 한 줄(P2 — 오버레이가 보여 준 분할 등이 안 난 이유).
+   */
+  const placeFileAt = (input: { rel: string; placement: FilePlacement }): void => {
+    const worktreePath = activeWorktreeRow?.path ?? null
+    if (worktreePath === null) return
+    const result = layout.placeFile(input)
+    if (result.kind === 'already-open' && result.elsewhere)
+      showHintAt({ message: alreadyOpenHint(input.rel), context: hintContextKey({ worktreePath, groupId: result.groupId, tabId: fileTabId(input.rel) }) })
+  }
+  /** 옆으로 열기(LIFE-823 C3·P3) — 탐색기 메뉴·⌥클릭·⌃Enter·⌘P ⌥Enter. */
+  const openFileToSide = (rel: string): void => placeFileAt({ rel, placement: { kind: 'side' } })
+
+  /**
    * LIFE-683 S5 — 소스 제어 행 열기. 추적 안 함·충돌·intent-to-add 는 보통 파일 탭(탐색기와 같은 경로), 나머지는 diff 탭(같은 미리보기·고정 규칙 — `openFileTab`).
    * 같은 대상은 같은 탭 id 라 다시 누르면 그 탭이 활성(중복 0). 밀려난 미리보기가 파일 탭이면 탐색기 열기와 같게 문서·닫은 탭 기록을 다룬다.
    */
@@ -1347,7 +1626,7 @@ export function App(): React.JSX.Element {
    * 수정 r1 R1-C-02 — NFC 로 같은 파일 탭이 이미 있으면 그 경로로 연다(같은 탭). R1-C-05 — 부모 폴더 목록에서 그 이름이 폴더(폴더 링크)면 열지 않고 안내만 한다
    * (git 목록은 untracked·무시된 링크의 종류를 모른다). `focus` 면 연 뒤 포커스는 `focusOpenedFile`.
    */
-  const openListedFile = (input: { rel: string; preview: boolean; focus: boolean }): void => {
+  const openListedFile = (input: { rel: string; preview: boolean; focus: boolean; side?: boolean }): void => {
     const worktreePath = activeWorktreeRow?.path ?? null
     if (worktreePath === null) return
     const nfc = input.rel.normalize('NFC')
@@ -1366,11 +1645,27 @@ export function App(): React.JSX.Element {
         notify(`${target} 은(는) 폴더(링크)라 파일로 열지 않습니다`)
         return
       }
-      openFileFromExplorer({ rel: target, preview: input.preview })
+      if (input.side === true) openFileToSide(target)
+      else openFileFromExplorer({ rel: target, preview: input.preview })
       if (input.focus) focusOpenedFile({ worktreePath, rel: target })
     })
   }
   const openFromQuickOpen = (rel: string): void => openListedFile({ rel, preview: false, focus: true })
+  const openFromQuickOpenToSide = (rel: string): void => openListedFile({ rel, preview: false, focus: true, side: true })
+  /**
+   * fix3 C-1 — 본문 포커스 대기 루프의 목적지 감시. 목적지(활성 탭·영역)가 한 번 선 뒤 다른 데로 바뀌면 거짓 — 순번을 안 올리는 이동
+   * (`requestedPane`·닫기 따라가기·lifecycle 자동 선택)도 경로마다 막지 않고 여기서 한 번에 막는다. 아직 안 섰으면(배치 반영 전) 참으로 기다린다.
+   */
+  const destinationHeld = (here: () => boolean): (() => boolean) => {
+    let reached = false
+    return () => {
+      if (here()) {
+        reached = true
+        return true
+      }
+      return !reached
+    }
+  }
   /**
    * 연 파일 탭에 포커스(수정 r1 R1-C-01·R1-C-06) — 편집기가 붙으면 편집기 핸들의 `focus()`(Monaco 0.57 은 EditContext — 입력 요소가 textarea 가 아니다).
    * 편집기가 없는 보기(이미지·바이너리·상한 초과·오류·Markdown 미리보기)면 그 보기 자리(`[data-file-view]`, tabIndex -1)에. 편집기는 비동기로 붙으므로 프레임마다 다시 본다(최대 약 2 s).
@@ -1378,7 +1673,13 @@ export function App(): React.JSX.Element {
   const focusOpenedFile = (input: { worktreePath: string; rel: string }): void => {
     const tabId = fileTabId(input.rel)
     const startedAt = performance.now()
+    const seq = beginFocusMove()
+    const aimed = destinationHeld(() => activeWorktreeRowRef.current?.path === input.worktreePath && layoutRef.current.activeTabId === tabId)
     const attempt = (): void => {
+      // fix1 A8 — 그 사이 다른 포커스 이동이 시작됐으면 그만둔다(늦게 붙은 편집기가 포커스를 가져가지 않게).
+      if (focusSeqRef.current !== seq) return
+      // fix3 C-1 — 순번을 안 올리는 프로그램 이동(`requestedPane` 등)이 활성 탭을 바꿔도 그만둔다.
+      if (!aimed()) return
       if (focusLiveEditor({ store: fileViewStatesOf(input.worktreePath), tabId })) return
       const view = document.querySelector<HTMLElement>(`.file-group[data-file-view="${CSS.escape(input.rel)}"]`)
       const waiting = view === null || view.querySelector('[data-file-editor], [data-file-notice="loading"]') !== null
@@ -1387,6 +1688,149 @@ export function App(): React.JSX.Element {
       else view?.focus({ preventScroll: true })
     }
     requestAnimationFrame(attempt)
+  }
+
+  /**
+   * LIFE-824 — **영역 활성 + 본문 포커스** 한 길(C1 ⌘⌥방향·C2 ⌃`·C4 MRU·열린 탭·팔레트·C5 이전/다음 탭·C6 탭 클릭·C7 worktree 복귀). 경로마다 따로 짜면
+   * 활성 영역(⌘W 대상)과 포커스 영역이 경로 수만큼 어긋난다(C8). 본문 = 터미널 탭이면 그 탭에서 보던 pane(`selectPane` → focusToken), 파일 탭이면 편집기
+   * (`focusOpenedFile` — 커서·스크롤은 편집기가 지킨다), diff 탭이면 diff 보기, 탭 없는 영역이면 빈 영역 상자. 활성 worktree 안에서만 — 다른 worktree 는 `focusEditorTabIn`.
+   */
+  const focusGroupTab = (target: { groupId: string; tabId: string | null }): void => {
+    const worktreePath = activeWorktreeRowRef.current?.path ?? null
+    const kind = target.tabId === null ? null : tabKindOf(target.tabId)
+    if (target.tabId === null || kind === null) {
+      layout.setActiveGroup(target.groupId)
+      focusGroupBody({ groupId: target.groupId, selector: `[data-empty-group="${CSS.escape(target.groupId)}"]` })
+      return
+    }
+    switch (kind.kind) {
+      case 'terminal': {
+        const tab = tabById(target.tabId)
+        if (tab === null) return
+        beginFocusMove()
+        layout.setActiveTab({ groupId: target.groupId, tabId: target.tabId })
+        const paneId = tab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? pickPane(tab)?.paneId ?? null
+        if (paneId !== null) selectPane(paneId)
+        return
+      }
+      case 'file':
+        layout.setActiveTab({ groupId: target.groupId, tabId: target.tabId })
+        if (worktreePath !== null) focusOpenedFile({ worktreePath, rel: kind.rel })
+        return
+      case 'diff':
+        layout.setActiveTab({ groupId: target.groupId, tabId: target.tabId })
+        focusGroupBody({ groupId: target.groupId, selector: `[data-diff-group="${CSS.escape(target.groupId)}"]` })
+        return
+    }
+  }
+  /** 편집기가 아닌 본문(diff 보기·빈 영역)에 포커스 — 다음 렌더에 그려지므로 프레임마다 다시 본다(최대 약 1 s, `focusOpenedFile` 과 같은 결). */
+  const focusGroupBody = (input: { groupId: string; selector: string }): void => {
+    const startedAt = performance.now()
+    const seq = beginFocusMove()
+    const aimed = destinationHeld(() => layoutRef.current.activeGroupId === input.groupId)
+    const attempt = (): void => {
+      if (focusSeqRef.current !== seq) return
+      if (!aimed()) return
+      const body = document.querySelector<HTMLElement>(`[data-tab-group="${CSS.escape(input.groupId)}"] ${input.selector}`)
+      if (body !== null) body.focus({ preventScroll: true })
+      else if (performance.now() - startedAt < 1_000) requestAnimationFrame(attempt)
+    }
+    requestAnimationFrame(attempt)
+  }
+  /**
+   * 편집기 탭(파일·diff)으로 — 어느 worktree 든(C4 MRU·팔레트·C7 복귀). 활성 worktree 면 바로 `focusGroupTab`, 아니면 그 worktree 를 활성으로 하고
+   * 배치가 그 worktree 로 바뀐 렌더에서 편다(`pendingFocusRef` — `pendingRevealRef` 와 같은 이유: 같은 틱의 배치는 아직 옛 worktree 의 것).
+   */
+  /**
+   * fix1 A1 — 미뤄 둔 편집기 포커스의 **수명**: 순번(`seq` — 그 뒤 다른 이동이 시작되면 무효) · 떠난 자리(`fromPath` — 활성 worktree 가 그 둘 아닌 곳으로 가면 무효)
+   * · 기한(`deadline` — 전환이 끝내 안 일어나면 무효). 셋 중 하나라도 어긋나면 지운다 — 나중에 그 worktree 로 들어갈 때 옛 편집기가 포커스를 가져가지 않게.
+   */
+  const pendingFocusRef = useRef<{ worktreePath: string; tabId: string; fromPath: string | null; seq: number; deadline: number } | null>(null)
+  const focusEditorTabIn = (target: { worktreePath: string; tabId: string }): void => {
+    pendingFocusRef.current = null
+    if ((activeWorktreeRowRef.current?.path ?? null) === target.worktreePath) {
+      const owner = layout.layout === null ? null : groupOfTab(layout.layout.root, target.tabId)
+      if (owner !== null) focusGroupTab({ groupId: owner.groupId, tabId: target.tabId })
+      return
+    }
+    const workspace = stateRef.current?.repos.flatMap((repo) => repo.worktrees).find((row) => row.path === target.worktreePath)?.workspace ?? null
+    if (workspace === null) return
+    pendingFocusRef.current = { ...target, fromPath: activeWorktreeRowRef.current?.path ?? null, seq: beginFocusMove(), deadline: performance.now() + PENDING_FOCUS_MS }
+    lifecycle.actions.activateWorkspace(workspace.workspaceId)
+  }
+  const focusGroupTabRef = useRef(focusGroupTab)
+  focusGroupTabRef.current = focusGroupTab
+  /**
+   * LIFE-825 C1·C7 — 영역 닫기 한 길(⌘⌥W·팔레트·헤더 ✕·빈 영역 단추). 받는 영역 = 영역 MRU → 공간 이웃(`closeGroupHeir`). 닫는 영역이 활성이었으면
+   * 받는 영역의 활성 탭으로 본문 포커스까지(`focusGroupTab`) — 닫힌 영역 DOM 의 포커스가 사라져 활성 영역 ≠ 포커스 영역이 되지 않게(00-analysis L1′).
+   */
+  const closeGroupAndFocus = (groupId: string): void => {
+    const current = layoutRef.current.layout
+    if (current === null) return
+    const path = activeWorktreeRowRef.current?.path ?? null
+    const recent = path === null ? [] : (groupMruRef.current.get(path) ?? [])
+    const next = closeGroupIn(current, groupId, { recent })
+    if (next === current) return
+    layoutRef.current.closeGroup(groupId, { recent })
+    if (current.activeGroupId !== groupId) return
+    const heir = findGroup(next.root, next.activeGroupId)
+    if (heir !== null) focusGroupTab({ groupId: heir.groupId, tabId: heir.activeTabId })
+  }
+  /** LIFE-825 C4·C7 — 영역 최대화 토글(⌘⌥Enter·팔레트·⊞ 메뉴·헤더 해제 단추). 그 영역이 활성 + 본문 포커스. 영역이 하나면 안내 한 줄(C4ⓖ). */
+  const toggleMaximizeAndFocus = (groupId: string): void => {
+    const current = layoutRef.current.layout
+    if (current === null) return
+    const group = findGroup(current.root, groupId)
+    if (group === null) return
+    if (listGroups(current.root).length < 2) {
+      setGroupHint(ONE_GROUP)
+      return
+    }
+    layoutRef.current.toggleMaximize(groupId)
+    focusGroupTab({ groupId, tabId: group.activeTabId })
+  }
+  /** LIFE-825 C3·C7 — 영역 크기 균등화(팔레트·⊞ 메뉴, 키 없음). 최대화도 풀린다. 활성 영역 본문 포커스. 영역이 하나면 안내 한 줄. */
+  const evenGroupsAndFocus = (): void => {
+    const current = layoutRef.current.layout
+    if (current === null) return
+    if (listGroups(current.root).length < 2) {
+      setGroupHint(ONE_GROUP)
+      return
+    }
+    layoutRef.current.evenAll()
+    const active = findGroup(current.root, current.activeGroupId)
+    if (active !== null) focusGroupTab({ groupId: active.groupId, tabId: active.activeTabId })
+  }
+  useEffect(() => {
+    const pending = pendingFocusRef.current
+    if (pending === null) return
+    const verdict = pendingFocusVerdict({ pending, seq: focusSeqRef.current, now: performance.now(), path: activeWorktreeRow?.path ?? null, layoutReady: layout.layout !== null })
+    if (verdict === 'wait') return
+    pendingFocusRef.current = null
+    if (verdict === 'drop' || layout.layout === null) return
+    const owner = groupOfTab(layout.layout.root, pending.tabId)
+    if (owner !== null) focusGroupTabRef.current({ groupId: owner.groupId, tabId: pending.tabId })
+  }, [layout.layout, activeWorktreeRow?.path])
+  /**
+   * LIFE-824 C7·P4 — worktree 카드(활성·비활성 재클릭 포함)·작업 페이지 줄: 그 worktree 배치가 보던 활성 영역·활성 탭으로 돌아간다(파일 탭이어도 덮지 않는다).
+   * 배치가 없거나 활성 탭이 없으면 거짓 — `activateWorktreeCard` 가 옛 규칙(첫 탭)으로 간다. 사이드바 세션(pane) 클릭은 이 길이 아니다(그 pane 으로 — base).
+   */
+  const returnToWorktree = (worktree: WorktreeRow): boolean => {
+    const workspace = worktree.workspace
+    if (workspace === null) return false
+    const liveTabIds = workspace.tabs.map((tab) => tab.tabId)
+    const shown = worktree.path === activeWorktreeRowRef.current?.path ? layout.layout : layout.layoutOf({ worktreePath: worktree.path, liveTabIds, pinned: pinnedTabs })
+    const target = worktreeReturnTarget({ layout: shown, liveTabIds })
+    if (target === null) return false
+    if (isFileTabId(target.tabId)) {
+      focusEditorTabIn({ worktreePath: worktree.path, tabId: target.tabId })
+      return true
+    }
+    const tab = workspace.tabs.find((row) => row.tabId === target.tabId)
+    const pane = tab === undefined ? null : (tab.panes.find((row) => row.paneId === lifecycle.selectedPane) ?? pickPane(tab))
+    if (pane === null) return false
+    revealPane(pane.paneId)
+    return true
   }
 
   // LIFE-592 F4 — 탐색기 파일 조작(만들기·이름 바꾸기·이동·삭제·복제·가져오기·실행 취소).
@@ -1453,6 +1897,7 @@ export function App(): React.JSX.Element {
     if (picked === null || picked === activeTabId) return
     // LIFE-590 E3ⓐ — 순환·⌃1–9 는 파일 탭도 센다(시각 순서 그대로). 파일 탭은 pane 이 없어 영역 활성 탭만 바꾼다.
     if (isFileTabId(picked)) {
+      beginFocusMove()
       layout.setActiveTab({ groupId: activeGroupId, tabId: picked })
       return
     }
@@ -1469,6 +1914,7 @@ export function App(): React.JSX.Element {
    */
   const activateGroup = useCallback(
     (target: { groupId: string; paneId: string | null }): void => {
+      focusSeqRef.current += 1
       layout.setActiveGroup(target.groupId)
       if (target.paneId !== null) selectPane(target.paneId)
     },
@@ -1486,52 +1932,27 @@ export function App(): React.JSX.Element {
   const [paneError, setPaneError] = useState<string | null>(null)
   /** 거절이 아니라 **안내** 한 줄 (G3′) — 실패 문구(`실패: …`)로 감싸지 않는다. */
   const [groupHint, setGroupHint] = useState<string | null>(null)
-  const splitPaneAt = useCallback(
-    async (target: { paneId: string | null; direction: PaneSplitDirection }): Promise<void> => {
-      if (target.paneId === null) return
-      const result = await window.corral.splitPane({ paneId: target.paneId, direction: target.direction })
-      setPaneError(result.ok ? null : result.error)
-      // **분할 직후 새 pane 으로 선택을 옮긴다** (F2-7 — 게이트 ① 사용자 지적 1).
-      // 서버 포커스는 계속 `focus: false` 다: 옮기는 것은 **렌더러의 선택**이고, herdr 세션 전역
-      // 포커스는 안 끌고 간다 (F2-4 `pane.neighbor` 와 같은 논거). 새 pane 이 store 에 도착한
-      // 뒤에 선택해야 자동 선택 이펙트가 그것을 덮지 않는다 — `selectPaneWhenReady` 가 그 자리다.
-      if (result.ok && result.paneId !== null) lifecycle.selectPaneWhenReady(result.paneId)
-    },
-    [lifecycle.selectPaneWhenReady],
-  )
-  /** 경계 드래그 끝(F2-2). 끄는 동안은 아무것도 안 보내고 여기서 1회다. */
-  const resizePaneAt = useCallback(
-    async (input: { paneId: string; direction: PaneDirection; amount: number }): Promise<void> => {
-      const result = await window.corral.resizePane(input)
-      setPaneError(result.ok ? null : result.error)
-    },
-    [],
-  )
-  /**
-   * 인접 pane 으로 포커스 (F2-4). **누가 이웃인지는 서버가 정한다** — 화면 좌표로 고르지 않는다.
-   *
-   * `terminal.focus_direction` 이 아니라 `pane.neighbor` 다(main 쪽 주석): focus_direction 은 herdr
-   * 세션 전역 포커스를 움직여 사용자의 TUI 클라이언트까지 끌고 간다. 이웃이 없으면 아무것도 안 한다.
-   */
-  const focusNeighbor = useCallback(
-    async (target: { paneId: string | null; direction: PaneDirection }): Promise<void> => {
-      if (target.paneId === null) return
-      const result = await window.corral.focusPaneDirection({ paneId: target.paneId, direction: target.direction })
-      if (!result.ok) {
-        setPaneError(result.error)
-        return
-      }
-      setPaneError(null)
-      if (result.paneId !== null) selectPane(result.paneId)
-    },
-    [selectPane],
-  )
-  const closePaneAt = useCallback(async (paneId: string | null): Promise<void> => {
-    if (paneId === null) return
-    const result = await window.corral.closePane({ paneId })
-    setPaneError(result.ok ? null : result.error)
-  }, [])
-
+  // LIFE-822 G1-1 — 안내는 띄운 맥락(worktree·활성 영역·그 영역의 활성 탭)에 묶인다 — 맥락이 바뀌면 지운다.
+  // `paneError`·라이프사이클 알림은 여기서 안 지운다(수명 불변).
+  const hintContext = hintContextKey({ worktreePath: activeWorktreeRow?.path ?? null, groupId: layoutMirror.activeGroupId, tabId: layoutMirror.activeTabId })
+  const hintContextRef = useRef(hintContext)
+  /** LIFE-823 P2 — 맥락을 바꾸며 띄우는 안내(이미 열린 탭으로 감)는 바뀐 뒤 맥락에 싣는다. */
+  const carriedHintRef = useRef<CarriedHint | null>(null)
+  useEffect(() => {
+    if (hintContextRef.current === hintContext) return
+    hintContextRef.current = hintContext
+    setGroupHint(hintAfterContextChange({ carry: carriedHintRef.current, context: hintContext }))
+    carriedHintRef.current = null
+  }, [hintContext])
+  /** 맥락(`context`)에 안내를 띄운다 — 지금 맥락이면 바로, 아니면 그 맥락으로 바뀔 때. */
+  const showHintAt = (input: CarriedHint): void => {
+    if (input.context === hintContextRef.current) {
+      carriedHintRef.current = null
+      setGroupHint(input.message)
+      return
+    }
+    carriedHintRef.current = input
+  }
   /**
    * 줌 토글 (F2-3) — 이 영역 상자의 **지금 격자를 그대로** 같이 보낸다.
    *
@@ -1552,6 +1973,152 @@ export function App(): React.JSX.Element {
     },
     [termSync],
   )
+  /**
+   * LIFE-824 P6 — 줌 판정에 쓰는 영역별 상태: 그 영역 활성 탭의 pane 전부(herdr 탭 행 — 줌 중 스트림은 줌한 pane 하나만 싣는다) + 줌 중인 pane.
+   * 렌더에 갇히지 않게 거울(`layoutRef`·`stateRef`)에서 읽는다.
+   */
+  const zoomGroupsNow = useCallback(
+    () =>
+      layoutRef.current.groups.map((group) => ({
+        groupId: group.groupId,
+        panes: tabByIdRef.current(group.activeTabId)?.panes ?? [],
+        zoomedPaneId: stateRef.current?.terminalGroups.find((row) => row.groupId === group.groupId)?.zoomedPaneId ?? null,
+      })),
+    [],
+  )
+  const splitPaneAt = useCallback(
+    async (target: { paneId: string | null; direction: PaneSplitDirection }): Promise<void> => {
+      if (target.paneId === null) return
+      // LIFE-824 Zⓐ — 줌 중에 쪼개면 새 pane 이 가려진 채 선택된다 — 줌을 먼저 푼다(tmux 와 같은 규칙).
+      const zoomed = zoomedGroupOf({ groups: zoomGroupsNow(), paneId: target.paneId })
+      if (zoomed !== null) toggleZoom({ groupId: zoomed, paneId: null })
+      const result = await window.corral.splitPane({ paneId: target.paneId, direction: target.direction })
+      setPaneError(result.ok ? null : result.error)
+      // **분할 직후 새 pane 으로 선택을 옮긴다** (F2-7 — 게이트 ① 사용자 지적 1).
+      // 서버 포커스는 계속 `focus: false` 다: 옮기는 것은 **렌더러의 선택**이고, herdr 세션 전역
+      // 포커스는 안 끌고 간다 (F2-4 `pane.neighbor` 와 같은 논거). 새 pane 이 store 에 도착한
+      // 뒤에 선택해야 자동 선택 이펙트가 그것을 덮지 않는다 — `selectPaneWhenReady` 가 그 자리다.
+      if (result.ok && result.paneId !== null) lifecycle.selectPaneWhenReady(result.paneId)
+    },
+    [lifecycle.selectPaneWhenReady, zoomGroupsNow, toggleZoom],
+  )
+  /** 경계 드래그 끝(F2-2). 끄는 동안은 아무것도 안 보내고 여기서 1회다. */
+  const resizePaneAt = useCallback(
+    async (input: { paneId: string; direction: PaneDirection; amount: number }): Promise<void> => {
+      const result = await window.corral.resizePane(input)
+      setPaneError(result.ok ? null : result.error)
+    },
+    [],
+  )
+  /**
+   * 인접 pane 으로 포커스 (F2-4). **누가 이웃인지는 서버가 정한다** — 화면 좌표로 고르지 않는다.
+   *
+   * `terminal.focus_direction` 이 아니라 `pane.neighbor` 다(main 쪽 주석): focus_direction 은 herdr
+   * 세션 전역 포커스를 움직여 사용자의 TUI 클라이언트까지 끌고 간다. 이웃이 없으면 아무것도 안 한다.
+   */
+  /**
+   * LIFE-824 C1·P1 — 같은 탭에 그 방향 이웃 pane 이 있으면 그 pane(위 그대로), 없으면(경계·파일·diff·빈 영역) 그 방향 **이웃 영역**으로(`neighborGroupId` —
+   * 배치 사각형). 그 방향에 영역도 없으면 무동작(base 와 같다). 대상 pane 은 활성 영역 활성 탭의 선택 pane 이다 — 창 전체 선택 pane 이 다른 영역에 있으면 쓰지 않는다.
+   */
+  /**
+   * fix1 A2 — ⌘⌥방향 연타·응답 전 다른 조작. 호출을 **한 줄로 세우고**(앞 호출이 고른 결과가 그려진 뒤 다음 호출이 그 상태를 읽는다), 상태는 렌더에 갇히지 않게
+   * 거울(`layoutRef`·`selectedPaneRef`·`activeWorktreeRowRef`)에서 읽는다. `pane.neighbor` 응답을 기다리는 사이 활성 영역·worktree·선택 pane 이 바뀌었으면
+   * (사용자가 다른 곳을 눌렀다) 늦은 응답은 버린다 — 뒤 조작을 덮지 않는다.
+   */
+  const selectedPaneRef = useRef(lifecycle.selectedPane)
+  selectedPaneRef.current = lifecycle.selectedPane
+  const commitWaitersRef = useRef<(() => void)[]>([])
+  useEffect(() => {
+    for (const resolve of commitWaitersRef.current.splice(0)) resolve()
+  })
+  /** 다음 커밋(렌더 반영)까지 — 바뀐 것이 없어 커밋이 안 오면 짧은 상한 뒤 넘어간다. */
+  const nextCommit = (): Promise<void> =>
+    new Promise((resolve) => {
+      commitWaitersRef.current.push(resolve)
+      setTimeout(resolve, DIRECTION_SETTLE_MS)
+    })
+  const directionChainRef = useRef<Promise<void>>(Promise.resolve())
+  /**
+   * fix3 C-3 — 줄의 세대. 키를 누를 때 지금 순번을 잡고, 줄 안의 회차가 스스로 옮기면(방향 이동) 그 순번으로 고친다. 대기하던 회차는 시작할 때
+   * 순번이 그 값이 아니면(그 사이 클릭·탭 선택 등 다른 포커스 이동) 버린다 — 클릭한 상태에서 옛 키가 실행되지 않게.
+   */
+  const directionSeqRef = useRef(0)
+  const focusDirectionOnce = async (direction: PaneDirection): Promise<void> => {
+    if (focusSeqRef.current !== directionSeqRef.current) return
+    // fix2 B1 — 세대에 포커스 이동 순번을 넣는다: 같은 영역 탭 클릭·⌃1–9 처럼 셋(worktree·활성 영역·선택 pane)을 안 바꾸는 사용자 이동도 늦은 응답을 버리게.
+    const snapshot = (): string => [activeWorktreeRowRef.current?.path ?? '', layoutRef.current.activeGroupId ?? '', selectedPaneRef.current ?? '', focusSeqRef.current].join('\0')
+    const before = snapshot()
+    const { activeTabId } = layoutRef.current
+    const tab = activeTabId === null || isFileTabId(activeTabId) ? null : tabByIdRef.current(activeTabId)
+    const paneId = tab === null ? null : (tab.panes.find((pane) => pane.paneId === selectedPaneRef.current)?.paneId ?? pickPane(tab)?.paneId ?? null)
+    if (paneId !== null) {
+      const result = await window.corral.focusPaneDirection({ paneId, direction })
+      if (snapshot() !== before) return
+      if (!result.ok) {
+        setPaneError(result.error)
+        return
+      }
+      setPaneError(null)
+      if (result.paneId !== null) {
+        // LIFE-824 Zⓑ — 줌에 가려진 pane 을 고르면 줌을 풀고 간다.
+        const zoomed = zoomHiding({ groups: zoomGroupsNow(), paneId: result.paneId })
+        if (zoomed !== null) toggleZoom({ groupId: zoomed, paneId: null })
+        menuDeferredFocusRef.current = null
+        directionSeqRef.current = beginFocusMove()
+        selectPane(result.paneId)
+        await nextCommit()
+        return
+      }
+    }
+    const { activeGroupId, root, groups } = layoutRef.current
+    if (activeGroupId === null || root === null) return
+    const neighbor = neighborGroupId({ root, groupId: activeGroupId, direction })
+    const group = neighbor === null ? undefined : groups.find((row) => row.groupId === neighbor)
+    if (group === undefined) return
+    menuDeferredFocusRef.current = null
+    focusGroupTabRef.current({ groupId: group.groupId, tabId: group.activeTabId })
+    directionSeqRef.current = focusSeqRef.current
+    await nextCommit()
+  }
+  const focusDirectionOnceRef = useRef(focusDirectionOnce)
+  focusDirectionOnceRef.current = focusDirectionOnce
+  /**
+   * fix2 B4 — 줄에는 「진행 중 하나 + 대기 하나」 까지만 — 키를 누르고 있으면(반복) 무응답 herdr 앞에 호출이 쌓여 손을 뗀 뒤에도 수 초 움직인다.
+   * 한 회차가 던져도(IPC 거절) 줄은 풀린다 — 경고를 남기고 다음 키는 그대로 동작한다.
+   */
+  const directionQueuedRef = useRef(0)
+  const focusDirection = (direction: PaneDirection): void => {
+    if (directionQueuedRef.current >= DIRECTION_QUEUE_MAX) return
+    directionQueuedRef.current += 1
+    directionSeqRef.current = focusSeqRef.current
+    directionChainRef.current = directionChainRef.current
+      .then(() => focusDirectionOnceRef.current(direction))
+      .catch((error: unknown) => console.warn('[corral] 인접 pane / 영역 포커스 실패', error))
+      .finally(() => {
+        directionQueuedRef.current -= 1
+        // fix4 F1 — 요청 중에 닫힌 메뉴의 몫. 줄이 비었는데 칸이 남아 있으면(이동 없이 끝남) 그때 돈다.
+        const deferred = menuDeferredFocusRef.current
+        if (directionQueuedRef.current === 0 && deferred !== null && deferred.closed) settleMenuDeferredFocus(deferred)
+      })
+  }
+  /**
+   * 미뤄 둔 메뉴 포커스를 끝낸다 — 칸을 비우고, 그 뒤 순번이 안 올랐으면 그 영역 본문에. fix4 F1 — 방향 요청이 진행 중이면 메뉴가 닫혀도 여기 오지 않고
+   * 칸에 「닫힘」 만 적는다: 지금 포커스하면 순번이 올라 그 요청의 응답이 늦은 응답으로 버려지기 때문이다(E2). 응답이 이동하면 칸이 비고, 이동 없이 끝나면 위 `finally` 가 부른다.
+   */
+  const settleMenuDeferredFocus = (deferred: { seq: number; groupId: string }): void => {
+    menuDeferredFocusRef.current = null
+    // fix2 D1 — 메뉴가 열린 동안 다른 이동(탭바·본문 클릭·⌃` 등 순번을 올리는 모든 이동)이 있었으면 버린다(824 순번 규칙).
+    if (deferred.seq !== focusSeqRef.current) return
+    const group = layoutRef.current.groups.find((row) => row.groupId === deferred.groupId)
+    if (group === undefined) return
+    focusGroupTabRef.current({ groupId: group.groupId, tabId: group.activeTabId })
+  }
+  const closePaneAt = useCallback(async (paneId: string | null): Promise<void> => {
+    if (paneId === null) return
+    const result = await window.corral.closePane({ paneId })
+    setPaneError(result.ok ? null : result.error)
+  }, [])
+
 
   // A single action lookup serves renderer keys and the existing main Cmd+W channel.
   const modalBlocked = settingsView !== null || modalOpen || pendingRemove !== null || lifecycle.pendingClose !== null || lifecycle.worktreeModal !== null || cardActions.blocked
@@ -1610,8 +2177,6 @@ export function App(): React.JSX.Element {
     if (tasksOpen) closeTasks()
     else openTasks()
   }
-  // 터미널 pane 대상 단축키의 대상 — 파일 탭이 활성이면 null(무동작, 수정 r1 R1-B). ⌘W 는 `closeTargetRef` 가 종류를 따로 본다.
-  const terminalTarget = (): string | null => terminalKeyTarget({ activeTabId: layoutRef.current.activeTabId, selectedPane: lifecycle.selectedPane })
   const handlers: ShortcutHandlers = {
     'palette.open': openPalette,
     'quickOpen.open': openQuickOpen,
@@ -1623,7 +2188,16 @@ export function App(): React.JSX.Element {
     },
     'terminal.new': () => lifecycle.createShell(),
     'mru.open': (variant) => stepMruHold(variant === 1),
-    'terminal.split': (variant) => void splitPaneAt({ paneId: terminalTarget(), direction: variant === 1 ? 'down' : 'right' }),
+    'terminal.split': (variant) => {
+      // LIFE-822 B1 — 파일 탭이 활성이면 무음 대신 안내 한 줄(동작은 붙이지 않는다). 편집기 안 ⌘D 는 여기 안 온다(EDITOR_YIELD_ACTIONS).
+      const route = splitKeyRoute({ activeTabId: layoutRef.current.activeTabId, selectedPane: lifecycle.selectedPane })
+      if (route.kind === 'file-tab') {
+        const key = bindingsFor('group.split', keymap.overrides)[0]
+        setGroupHint(fileTabSplitHint({ groupSplitKey: key == null ? null : formatBinding(key), tabCount: layoutRef.current.activeTabCount }))
+        return
+      }
+      if (route.kind === 'split') void splitPaneAt({ paneId: route.paneId, direction: variant === 1 ? 'down' : 'right' })
+    },
     'group.split': (variant) => {
       const { activeGroupId: groupId, activeTabId: tabId, activeTabCount } = layoutRef.current
       if (groupId === null || tabId === null) return
@@ -1631,11 +2205,19 @@ export function App(): React.JSX.Element {
       setGroupHint(null)
       layoutRef.current.splitGroup({ groupId, tabId, direction: variant === 1 ? 'column' : 'row' })
     },
-    'terminal.focus': (variant) => void focusNeighbor({ paneId: terminalTarget(), direction: (['left', 'right', 'up', 'down'] as const)[variant]! }),
+    'terminal.focus': (variant) => {
+      const direction = PANE_DIRECTIONS[variant]
+      if (direction !== undefined) focusDirection(direction)
+    },
     'group.close': () => {
       const groupId = layoutRef.current.activeGroupId
-      if (groupId !== null) layoutRef.current.closeGroup(groupId)
+      if (groupId !== null) closeGroupAndFocus(groupId)
     },
+    'group.maximize': () => {
+      const groupId = layoutRef.current.activeGroupId
+      if (groupId !== null) toggleMaximizeAndFocus(groupId)
+    },
+    'group.even': () => evenGroupsAndFocus(),
     'terminal.zoom': () => {
       const groupId = layoutRef.current.activeGroupId
       const activeTabId = layoutRef.current.activeTabId
@@ -1661,7 +2243,25 @@ export function App(): React.JSX.Element {
       const tabId = layoutRef.current.activeTabId
       if (tabId !== null) requestRename(tabId)
     },
-    'tab.cycle': (variant) => selectTabInActiveGroup(({ tabOrder, activeTabId }) => cycleTabTarget({ tabOrder, activeTabId, direction: variant === 1 ? -1 : 1 })),
+    // LIFE-824 C5·P5 — 영역 끝이면 다음(이전) 영역으로 넘는다(VS Code nextEditor). herdr 에 아직 없는 터미널 id 는 탭바처럼 뺀다. 고른 탭은 본문 포커스.
+    'tab.cycle': (variant) => {
+      const { groups, activeGroupId, activeTabId } = layoutRef.current
+      const shown = groups.map((group) => ({ groupId: group.groupId, tabOrder: group.tabOrder.filter((tabId) => isFileTabId(tabId) || tabById(tabId) !== null) }))
+      const picked = cycleAcrossGroups({ groups: shown, activeGroupId, activeTabId, direction: variant === 1 ? -1 : 1 })
+      if (picked !== null) focusGroupTab(picked)
+    },
+    // LIFE-824 C2·P2 — 터미널 ↔ 편집기(파일·diff) 영역. 후보가 없으면 안내 한 줄(무음 실패 0).
+    'focus.toggleTerminalEditor': () => {
+      const { groups, activeGroupId } = layoutRef.current
+      const path = activeWorktreeRowRef.current?.path ?? null
+      const target = terminalEditorToggleTarget({ groups, activeGroupId, recent: path === null ? [] : (groupMruRef.current.get(path) ?? []) })
+      if (target.kind === 'none') {
+        setGroupHint(toggleNoneHint(target.want))
+        return
+      }
+      const group = groups.find((row) => row.groupId === target.groupId)
+      if (group !== undefined) focusGroupTab({ groupId: group.groupId, tabId: group.activeTabId })
+    },
     'tab.selectByIndex': (variant) => selectTabInActiveGroup(({ tabOrder }) => tabAtIndex({ tabOrder, index: variant })),
     'settings.open': () => openSettings(),
     'tasks.toggle': toggleTasks,
@@ -1807,7 +2407,14 @@ export function App(): React.JSX.Element {
     const groupActiveTab = tabById(group.activeTabId)
     const groupPane = groupActiveTab === null ? null : pickPane(groupActiveTab)
     const isActiveGroup = group.groupId === layout.activeGroupId
-    const canCloseGroup = layout.groups.length > 1 ? () => layout.closeGroup(group.groupId) : null
+    const canCloseGroup = layout.groups.length > 1 ? () => closeGroupAndFocus(group.groupId) : null
+    const groupLayoutMenu = {
+      maximized: layout.maximizedGroupId === group.groupId,
+      disabledTitle: layout.groups.length > 1 ? null : ONE_GROUP,
+      maximizeShortcut: groupMaximizeShortcut,
+      onToggleMaximize: () => toggleMaximizeAndFocus(group.groupId),
+      onEven: () => evenGroupsAndFocus(),
+    }
     const groupState = state.terminalGroups.find((row) => row.groupId === group.groupId) ?? null
     /**
      * **이 영역의 선택 pane** — 헤더 액션·포커스가 겨누는 대상이다 (② 에서 pane 이 여럿이 된다).
@@ -1834,12 +2441,12 @@ export function App(): React.JSX.Element {
             number: paneNumbers.get(view.paneId) ?? 0,
           }))
     return (
-      <div className={`tab-group ${isActiveGroup ? 'is-active-group' : ''}`} data-tab-group={group.groupId} key={group.groupId}>
+      <div className={`tab-group ${isActiveGroup ? 'is-active-group' : ''}${layout.maximizedGroupId === group.groupId ? ' is-maximized' : ''}`} data-tab-group={group.groupId} key={group.groupId}>
         <GroupHeader
           groupId={group.groupId}
-          headSpacer={sidebarCollapsed && settingsView === null && layout.groups[0]?.groupId === group.groupId}
+          headSpacer={sidebarCollapsed && settingsView === null && headSpacerGroupId === group.groupId}
           tailToggle={
-            rightPanel.ready && !rightPanel.open && layout.layout !== null && topRightGroupId(layout.layout.root) === group.groupId ? (
+            rightPanel.ready && !rightPanel.open && tailToggleGroupId === group.groupId ? (
               <RightPanelToggle label="오른쪽 패널 열기" shortcut={rightPanelToggleShortcut} onToggle={rightPanel.toggle} placement="tabbar" />
             ) : null
           }
@@ -1847,7 +2454,8 @@ export function App(): React.JSX.Element {
           items={groupItems}
           onSelectFileTab={(tabId) => {
             if (tabDrag.consumeClick()) return
-            layout.setActiveTab({ groupId: group.groupId, tabId })
+            // LIFE-824 C6 — 탭 클릭도 본문 포커스(편집기 커서·스크롤은 편집기가 지킨다).
+            focusGroupTab({ groupId: group.groupId, tabId })
           }}
           onCloseFileTab={closeFileByUser}
           onKeepFileTab={layout.keepFile}
@@ -1862,11 +2470,32 @@ export function App(): React.JSX.Element {
           grid={gridOfSelected}
           zoomed={groupState?.zoomedPaneId != null}
           onActivate={() => activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })}
+          onActivateOnly={() => {
+            activateGroup({ groupId: group.groupId, paneId: null })
+            menuTokenSeqRef.current += 1
+            menuDeferredFocusRef.current = { token: menuTokenSeqRef.current, seq: focusSeqRef.current, groupId: group.groupId, closed: false }
+            return menuTokenSeqRef.current
+          }}
+          onActivateFocus={({ token, byItem }) => {
+            const deferred = menuDeferredFocusRef.current
+            // fix3 E1 — 다른 우클릭의 칸이면 건드리지 않는다(겹친 메뉴에서 앞 메뉴의 닫힘이 뒤 우클릭의 몫을 지우거나 쓰지 않게).
+            if (deferred === null || deferred.token !== token) return
+            // low H1 — 항목 실행으로 닫히면 요청 중이어도 미루지 않는다(요청 없음과 같은 순서: 본문 포커스 → 항목이 자기 포커스·영역을 정한다).
+            if (directionQueuedRef.current > 0 && !byItem) {
+              menuDeferredFocusRef.current = { ...deferred, closed: true }
+              return
+            }
+            settleMenuDeferredFocus(deferred)
+          }}
+          maximized={layout.maximizedGroupId === group.groupId}
+          groupLayout={groupLayoutMenu}
           onTabDragStart={(event, tabId) => tabDrag.onArm(event, { tabId, fromGroupId: group.groupId })}
-          tabDragActive={tabDrag.dragState !== null}
+          // LIFE-823 F4 — 탐색기 파일 끌기도 탭바 넘침 끌기 모드(chevron 호버 스크롤·활성 탭 스크롤 억제)를 켠다.
+          tabDragActive={tabDrag.dragState !== null || fileDrag.dragState !== null}
           onSelectTab={(tab) => {
             // LIFE-387 A1 — 문턱을 넘긴 드래그 뒤에 따라오는 click 하나는 활성화로 치지 않는다.
             if (tabDrag.consumeClick()) return
+            beginFocusMove()
             layout.setActiveTab({ groupId: group.groupId, tabId: tab.tabId })
             const pane = pickPane(tab)
             if (pane !== null) selectPane(pane.paneId)
@@ -1875,7 +2504,12 @@ export function App(): React.JSX.Element {
           openTabEntries={openTabEntries}
           onLaunchAgent={(kind) => lifecycle.actions.launchAgent({ workspaceId, kind, label: AGENT_LAUNCH_LABEL[kind] })}
           onOpenAgentSettings={() => openSettings('agents')}
-          onActivateOpenTab={({ tabId }) => {
+          onActivateOpenTab={({ tabId, groupId }) => {
+            // LIFE-824 C4ⓑ — 파일·diff 탭은 그 영역 활성 + 본문 포커스.
+            if (isFileTabId(tabId)) {
+              focusGroupTab({ groupId, tabId })
+              return
+            }
             // 그 탭이 속한 영역에서 활성으로 + pane 선택(포커스 토큰) — 사이드바 세션 클릭과 같은 길(revealPane)이다.
             const target = tabById(tabId)
             const pane = target === null ? null : pickPane(target)
@@ -1940,6 +2574,9 @@ export function App(): React.JSX.Element {
             // fix r1 R1-01 — 영역에 보이는 diff 탭은 그 루트 감시를 잡는다(작업 페이지·설정이 덮으면 안 보임 → 해제).
             watch={!tasksOpen && settingsView === null}
             onOpenFile={(rel) => openFileFromExplorer({ rel, preview: false })}
+            groupId={group.groupId}
+            // LIFE-824 C8 — diff 본문을 눌러도 그 영역이 활성(base 누락).
+            onActivate={() => activateGroup({ groupId: group.groupId, paneId: null })}
           />
         ) : activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (
           <FileView
@@ -1959,14 +2596,12 @@ export function App(): React.JSX.Element {
           <EmptyGroup
             groupId={group.groupId}
             activeGroup={isActiveGroup}
+            // LIFE-824 C8 — 빈 영역 본문을 눌러도 그 영역이 활성(base 누락).
+            onActivate={() => activateGroup({ groupId: group.groupId, paneId: null })}
             onCreateShell={() => lifecycle.actions.createRow(workspaceId, 'shell')}
             onCloseGroup={canCloseGroup}
             // LIFE-387 B1 F-B1-6 — 빈 영역이 드래그의 유효 병합 타깃일 때만 켠다(§2 EmptyGroup).
-            isDropTarget={
-              tabDrag.dragState !== null &&
-              tabDrag.dragState.target.kind === 'merge' &&
-              tabDrag.dragState.target.groupId === group.groupId
-            }
+            isDropTarget={[tabDrag.dragState, fileDrag.dragState].some((drag) => drag !== null && drag.target.kind === 'merge' && drag.target.groupId === group.groupId)}
           />
         ) : (
           <div
@@ -2088,6 +2723,21 @@ export function App(): React.JSX.Element {
     })
     for (const paneId of mru.order.slice(0, MRU_LIMIT)) {
       const entry = mruPanes.find((pane) => pane.paneId === paneId)
+      // LIFE-824 C4ⓐ — 편집기 탭(파일·diff) 행. 상태 점·경과는 없다(에이전트가 아니다 — 지어낸 값 대신 부재).
+      const editor = entry === undefined ? mruEditors.find((row) => row.key === paneId) : undefined
+      if (editor !== undefined) {
+        mruRows.push({
+          paneId,
+          title: editor.title,
+          groupGlyph: editor.sameWorktree ? (glyphs.get(editor.groupId) ?? '') : '⇄',
+          otherWorktree: !editor.sameWorktree,
+          status: null,
+          paneDesc: editor.kindLabel,
+          worktree: editor.worktree,
+          elapsed: null,
+        })
+        continue
+      }
       if (entry === undefined) continue // 홀드 사이에 죽은 pane — 없는 줄을 그리지 않는다
       const owner = entry.sameWorktree ? layout.groups.find((group) => group.tabOrder.includes(entry.tab.tabId)) : undefined
       const number = numbers.get(paneId) ?? entry.paneIndex + 1
@@ -2126,7 +2776,12 @@ export function App(): React.JSX.Element {
   const paletteEntries: PaletteEntry[] = []
   const connected = state.link.phase === 'live'
   // 수정 r1 R1-B — 파일 탭이 활성이면 pane 대상 명령은 무동작이라 팔레트에서도 막아 둔다.
-  const TERMINAL_PANE_ACTIONS = new Set<string>(['terminal.split', 'terminal.focus', 'terminal.zoom'])
+  // LIFE-824 C1ⓕ — `terminal.focus` 는 파일·diff·빈 영역에서도 영역을 옮기므로 여기서 빠진다(diff 탭에서 켜진 채 무동작이던 무음 실패도 같이 사라진다).
+  const TERMINAL_PANE_ACTIONS = new Set<string>(['terminal.split', 'terminal.zoom'])
+  /** pane 없이도 도는 영역 이동(⌘⌥방향 — 이웃 영역·⌃`) — 선택 pane 이 없어도 켠다. */
+  const GROUP_FOCUS_ACTIONS = new Set<string>(['terminal.focus', 'focus.toggleTerminalEditor'])
+  /** LIFE-825 — 영역 배치 조작(최대화·균등화)은 pane 없이 돈다. 영역이 하나면 흐림 + 이유(C3·C4ⓖ). */
+  const GROUP_LAYOUT_ACTIONS = new Set<string>(['group.maximize', 'group.even'])
   const palettePaneAlive = !!activeWorkspace?.tabs.some(tab => tab.panes.some(pane => pane.paneId === lifecycle.selectedPane))
   for (const action of ACTIONS) {
     // ⌘⇧⌫ 는 hover 중인 카드가 대상이라 팔레트에서 부를 대상이 없다.
@@ -2135,12 +2790,12 @@ export function App(): React.JSX.Element {
       const id = action.id
       paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
         shortcut: bindingsFor(id, keymap.overrides).flatMap((binding, index) => (binding !== null && action.bindingVariants[index] === variant ? [formatBinding(binding)] : [])).join(' / '),
-        disabled: id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : !palettePaneAlive ? '선택된 pane이 없습니다' : activeFileRel !== null && TERMINAL_PANE_ACTIONS.has(id) ? '파일 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
+        disabled: id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : GROUP_LAYOUT_ACTIONS.has(id) ? (layout.groups.length < 2 ? ONE_GROUP : undefined) : GROUP_FOCUS_ACTIONS.has(id) ? undefined : !palettePaneAlive ? '선택된 pane이 없습니다' : activeTabIdForReveal !== null && isFileTabId(activeTabIdForReveal) && TERMINAL_PANE_ACTIONS.has(id) ? '파일·diff 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
         run: () => {
           if (id === 'mru.open') {
-            const other = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanes.map(pane => pane.paneId) }).filter(id => id !== lifecycle.selectedPane)
+            const other = orderMru({ history: mruHistoryRef.current, livePaneIds: mruLiveIds() }).filter(id => id !== (activeEditorKey ?? lifecycle.selectedPane))
             const paneId = variant === 1 ? other.at(-1) : other[0]
-            if (paneId) revealPane(paneId)
+            if (paneId) goToMruEntry(paneId)
           } else handlers[id](variant)
           setFocusToken(value => value + 1)
         },
@@ -2167,10 +2822,26 @@ export function App(): React.JSX.Element {
       } })
     }
   }
+  // LIFE-824 C4ⓒ — 파일·diff 탭 전환 항목(터미널 `pane.switch` 와 나란히, 열린 모든 worktree). 탭 id 체계는 그대로 — 항목 id 만 worktree 경로를 싣는다.
+  for (const editor of mruEditors) {
+    paletteEntries.push({ id: `editor.switch:${editor.key}`, title: editor.title, detail: `${editor.worktreePath} · ${editor.tabId} · ${editor.kindLabel}`, keywords: 'file diff editor tab switch 파일 탭 전환', run: () => {
+      if (!mruEditorsRef.current.some((row) => row.key === editor.key)) { notify('대상 탭이 사라졌습니다'); return }
+      focusEditorTabIn({ worktreePath: editor.worktreePath, tabId: editor.tabId })
+    } })
+  }
 
   // 사이드바 토글의 단축키 표시 — 비운 칸(null, fix2 R2-01)이면 툴팁에 단축키를 싣지 않는다.
   const sidebarToggleShortcut = ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('sidebar.toggle', keymap.overrides)[0])
   const rightPanelToggleShortcut = ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('rightPanel.toggle', keymap.overrides)[0])
+  const groupMaximizeBinding = bindingsFor('group.maximize', keymap.overrides)[0]
+  /** LIFE-825 — 영역 최대화 키 표시(⊞ 메뉴·헤더 해제 단추). 키를 끄면 빈 문자열. */
+  const groupMaximizeShortcut = groupMaximizeBinding == null ? '' : formatBinding(groupMaximizeBinding)
+  /**
+   * LIFE-825 fix1 B1 — 접힌 사이드바 머리 여백·「오른쪽 패널 열기」 단추가 서는 영역. 평소는 맨 왼쪽 위(첫 영역)·맨 오른쪽 위 영역이고,
+   * 최대화 중이면 화면에 보이는 영역이 그것 하나뿐이라 최대화 영역이다(숨은 영역에 남으면 탭 줄이 머리 밑으로 들어가고 단추가 사라진다).
+   */
+  const headSpacerGroupId = layout.maximizedGroupId ?? layout.groups[0]?.groupId ?? null
+  const tailToggleGroupId = layout.maximizedGroupId ?? (layout.layout === null ? null : topRightGroupId(layout.layout.root))
 
   return (
     <BindingLabels.Provider value={keymap.overrides}>
@@ -2193,6 +2864,7 @@ export function App(): React.JSX.Element {
           activeWorkspaceId={lifecycle.activeWorkspaceId}
           selectedPane={lifecycle.selectedPane}
           selectPane={revealPane}
+          returnToWorktree={returnToWorktree}
           closePane={(paneId) => {
             // LIFE-495 K3ⓒ — 고정된 탭의 마지막 pane 을 사이드바에서 닫으면 탭이 닫히므로 탭 닫기 길(고정 확인·게이트·다시 열기 기록)로 보낸다.
             // 소유 탭은 전체 state 에서 찾는다(fix1 R1-02 — 활성이 아닌 워크스페이스의 핀 탭이 확인 없이 닫혔다).
@@ -2278,6 +2950,8 @@ export function App(): React.JSX.Element {
               <PaneGrid
                 root={layout.layout.root}
                 onCommitRatio={layout.setRatio}
+                onResetRun={layout.evenRunAt}
+                maximizedGroupId={layout.maximizedGroupId}
                 cell={cell}
                 renderGroup={(group) => renderGroup({ group, workspaceId: activeWorkspace.workspaceId })}
               />
@@ -2294,7 +2968,7 @@ export function App(): React.JSX.Element {
               moreCount={Math.max(0, mru.order.length - MRU_LIMIT)}
               onPick={(paneId) => {
                 setMru(null)
-                revealPane(paneId)
+                goToMruEntry(paneId)
               }}
             />
           )}
@@ -2311,7 +2985,7 @@ export function App(): React.JSX.Element {
               // 작업 중 줄 클릭 = 페이지 닫힘 + 그 worktree 활성 + 첫 세션 선택 — 사이드바 카드 클릭과 같은 함수(C11).
               const worktree = state.repos.find((repo) => repo.root === tree.repoRoot)?.worktrees.find((entry) => entry.path === tree.path)
               closeTasks()
-              if (worktree !== undefined) activateWorktreeCard({ actions: lifecycle.actions, repoRoot: tree.repoRoot, worktree, selectPane: revealPane })
+              if (worktree !== undefined) activateWorktreeCard({ actions: lifecycle.actions, repoRoot: tree.repoRoot, worktree, selectPane: revealPane, returnTo: returnToWorktree })
             }}
             unreadPanes={unread.panes}
             onRevealPane={(paneId) => {
@@ -2340,7 +3014,7 @@ export function App(): React.JSX.Element {
           onToggle={rightPanel.toggle}
           onResizeStart={rightPanel.onHandleMouseDown}
           bodies={{
-            explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} ops={fileOps} notify={notify} />,
+            explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} onOpenToSide={openFileToSide} onFileDrag={fileDrag.onExplorerDrag} ops={fileOps} notify={notify} />,
             scm: <ScmView scm={scm} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} mode={scm.mode} onChangeMode={scm.setMode} focusToken={scmFocusToken} onOpen={openScmChange} />,
             detail: <div ref={setDetailSlot} className="right-panel-detail" data-right-panel-detail="" />,
           }}
@@ -2377,6 +3051,7 @@ export function App(): React.JSX.Element {
           includeIgnored={quickOpenIgnored}
           onIncludeIgnored={setQuickOpenIgnored}
           onOpen={openFromQuickOpen}
+          onOpenToSide={openFromQuickOpenToSide}
           onClose={(restore) => {
             setQuickOpenOpen(false)
             if (restore) requestAnimationFrame(() => { if (quickOpenReturn.current?.isConnected) quickOpenReturn.current.focus(); else setFocusToken((value) => value + 1) })
@@ -2467,10 +3142,12 @@ export function App(): React.JSX.Element {
       {tabDrag.dragState === null ? null : (
         <DropZoneOverlay
           state={tabDrag.dragState}
-          tabLabel={tabById(tabDrag.dragState.tabId)?.label ?? ''}
+          tabLabel={dragGhostLabel({ tabId: tabDrag.dragState.tabId, terminalLabel: tabById(tabDrag.dragState.tabId)?.label ?? null })}
           tabColor={((tab) => (tab === null ? null : (markOf({ marks: tabMarks, tabId: tab.tabId, workspaceId: tab.workspaceId })?.color ?? null)))(tabById(tabDrag.dragState.tabId))}
         />
       )}
+      {/* LIFE-823 — 탐색기 파일을 트리 밖으로 끄는 중: 같은 오버레이, 고스트 = 파일·폴더 이름. */}
+      {fileDrag.dragState === null ? null : <DropZoneOverlay state={fileDrag.dragState} tabLabel={fileTabLabel(fileDrag.dragState.rel)} />}
     </div>
     </BindingLabels.Provider>
   )

@@ -16,6 +16,7 @@ import { depthOf, keyAction, parentRel, projectRows, visibleRange, type Explorer
 import { isAtOrUnder, nameError, splitNewName } from '../../../shared/explorer-ops.js'
 import { folderMarks, GIT_DECORATION, isIgnoredPath, type GitMark } from '../../../shared/explorer-git.js'
 import type { ExplorerApi } from '../hooks/useExplorer.js'
+import type { ExplorerDragEvent } from '../hooks/useFileDrag.js'
 import { requestFileList, type FileListOk } from '../file-list-client.js'
 import { filterRows, filterTreeSteps, filterWords, type FilterTree } from '../explorer-filter.js'
 import { drainSliced } from '../sliced.js'
@@ -39,7 +40,7 @@ const FILTER_RELOAD_GAP_MS = 2_000
 
 type ViewMenuAction = 'toggle-dotfiles' | 'toggle-ignored'
 type FileOpMenuAction = 'newFile' | 'newFolder' | 'rename' | 'duplicate' | 'trash'
-type RowMenuAction = ExplorerAction | 'collapse' | FileOpMenuAction
+type RowMenuAction = ExplorerAction | 'collapse' | FileOpMenuAction | 'openToSide'
 type EmptyMenuAction = 'newFile' | 'newFolder'
 
 /** 탐색기가 부르는 파일 조작(`useFileOps`). 입력 행 확정은 실패 문구(입력 행 안에 보인다)를, 성공이면 null 을 돌려준다. */
@@ -56,8 +57,8 @@ type InlineEdit = { kind: 'create'; dir: string; type: 'file' | 'dir'; token: nu
 
 /** 트리 안 끌기 — 누른 뒤 문턱을 넘기 전(`pending`)과 끄는 중(`dragging`). */
 type TreeDrag =
-  | { phase: 'pending'; rel: string; x: number; y: number }
-  | { phase: 'dragging'; rel: string; target: string | null }
+  | { phase: 'pending'; rel: string; isDir: boolean; x: number; y: number }
+  | { phase: 'dragging'; rel: string; isDir: boolean; target: string | null }
 
 /** 끌어 놓을 수 있는가 — 자기 자신·자기 하위·같은 부모(무동작)는 아니다(E6ⓑ). */
 export function canDropOn(input: { from: string; dir: string }): boolean {
@@ -104,6 +105,14 @@ export function rowMenuEntries(row: { kind: 'dir' | 'file'; expanded: boolean })
   return entries
 }
 
+/**
+ * 행 메뉴 맨 위 열기 묶음 (LIFE-823 C3) — 파일만 「옆으로 열기」(VS Code 탐색기 「Open to the Side」, 폴더는 거른다). 폴더는 빈 목록.
+ * `rowMenuEntries` 앞에 붙인다(VS Code `navigation` 묶음이 맨 위인 것과 같다).
+ */
+export function openMenuEntries(row: { kind: 'dir' | 'file' }): MenuEntry<'openToSide'>[] {
+  return row.kind === 'file' ? [{ kind: 'item', action: 'openToSide', label: '옆으로 열기' }, { kind: 'sep', key: 'open' }] : []
+}
+
 const EMPTY_MENU: MenuEntry<EmptyMenuAction>[] = [
   { kind: 'item', action: 'newFile', label: '새 파일…' },
   { kind: 'item', action: 'newFolder', label: '새 폴더…' },
@@ -118,6 +127,8 @@ export function Explorer({
   revealRequest,
   onOpenFile,
   onOpenListed,
+  onOpenToSide,
+  onFileDrag,
   ops,
   notify,
 }: {
@@ -140,6 +151,10 @@ export function Explorer({
    * 없으면 `onOpenFile`.
    */
   onOpenListed?: (input: { rel: string; preview: boolean }) => void
+  /** 옆으로 열기(LIFE-823 C3) — 행 메뉴 「옆으로 열기」·⌥클릭·⌃Enter. 파일만 부른다. 없으면 그 길이 없다. */
+  onOpenToSide?: (rel: string) => void
+  /** 트리 밖으로 끈 파일·폴더(LIFE-823 C1·C2) — 탭 영역 판정·놓기는 받는 쪽(`useFileDrag`)이 한다. */
+  onFileDrag?: (event: ExplorerDragEvent) => void
   /**
    * auto reveal(LIFE-590 E6) — 바뀌면 그 행이 보이는 곳으로 스크롤한다(조상 펼침·선택은 `explorer.reveal` 이 이미 했다). 조상 목록을 읽는 동안은 행이 없으니
    * 행이 생길 때까지 기다렸다가 한 번만 스크롤한다. **포커스는 옮기지 않는다**(VS Code `revealInExplorer` 아닌 auto reveal 과 같다).
@@ -410,6 +425,22 @@ export function Explorer({
   const edgeDelta = useRef(0)
   const latestOps = useRef({ ops, explorer })
   latestOps.current = { ops, explorer }
+  const onFileDragRef = useRef(onFileDrag)
+  onFileDragRef.current = onFileDrag
+  // 끌기 중 탐색기가 사라지면(오른쪽 패널 본문 교체 등) 오버레이·몸 표지가 남지 않게 끝을 알린다(LIFE-823 F6). **언마운트 전용** —
+  // 아래 끌기 effect 의 cleanup 은 행 목록이 바뀔 때도 돌아 거기 두면 끌기 도중에 끝난다.
+  useEffect(
+    () => () => {
+      if (dragRef.current?.phase === 'dragging') onFileDragRef.current?.({ kind: 'end' })
+    },
+    [],
+  )
+  /** 포인터가 트리(스크롤 영역) 밖인가 — 밖이면 트리 안 이동이 아니라 탭 영역 끌기다(LIFE-823). */
+  const outsideTree = useCallback((x: number, y: number): boolean => {
+    const hit = document.elementFromPoint(x, y)
+    const scroll = scrollRef.current
+    return scroll === null || !(hit instanceof Element) || !scroll.contains(hit)
+  }, [])
   const dropDirAt = useCallback((x: number, y: number): string | null => {
     const hit = document.elementFromPoint(x, y)
     const scroll = scrollRef.current
@@ -435,7 +466,10 @@ export function Explorer({
       }
       const raw = dropDirAt(event.clientX, event.clientY)
       const target = raw !== null && canDropOn({ from: current.rel, dir: raw }) ? raw : null
-      setDrag({ phase: 'dragging', rel: current.rel, target })
+      const outside = outsideTree(event.clientX, event.clientY)
+      setDrag({ phase: 'dragging', rel: current.rel, isDir: current.isDir, target })
+      // 트리 밖이면 탭 영역 끌어서 열기(LIFE-823) — 판정·오버레이는 `onFileDrag` 쪽이 한다. 트리 안으로 돌아오면 끝.
+      onFileDragRef.current?.(outside ? { kind: 'move', rel: current.rel, isDir: current.isDir, point: { x: event.clientX, y: event.clientY } } : { kind: 'end' })
       // 접힌 폴더 위에 머무르면 펼친다.
       const row = raw === null ? undefined : rows.find((item) => item.rel === raw)
       if (row !== undefined && row.kind === 'dir' && !row.expanded && target !== null) {
@@ -469,6 +503,11 @@ export function Explorer({
       setTimeout(() => {
         suppressClick.current = false
       }, 0)
+      if (outsideTree(event.clientX, event.clientY)) {
+        onFileDragRef.current?.({ kind: 'drop', rel: current.rel, isDir: current.isDir, point: { x: event.clientX, y: event.clientY } })
+        return
+      }
+      onFileDragRef.current?.({ kind: 'end' })
       const raw = dropDirAt(event.clientX, event.clientY)
       if (raw !== null && canDropOn({ from: current.rel, dir: raw })) void latestOps.current.ops.move({ from: current.rel, toDir: raw })
     }
@@ -478,10 +517,12 @@ export function Explorer({
       event.stopPropagation()
       stopTimers()
       setDrag(null)
+      onFileDragRef.current?.({ kind: 'end' })
     }
     const onCancel = (): void => {
       stopTimers()
       setDrag(null)
+      onFileDragRef.current?.({ kind: 'end' })
     }
     document.addEventListener('pointermove', onMove, true)
     document.addEventListener('pointerup', onUp, true)
@@ -495,7 +536,7 @@ export function Explorer({
       document.removeEventListener('keydown', onKey, true)
       window.removeEventListener('blur', onCancel)
     }
-  }, [dragging, dropDirAt, rows])
+  }, [dragging, dropDirAt, outsideTree, rows])
   const dragTarget = drag?.phase === 'dragging' ? drag.target : null
   /** 놓일 자리 강조 — 대상 폴더 행과 그 펼친 하위(VS Code 처럼 폴더 영역), 루트면 트리 전체. */
   const highlightDir = drag?.phase === 'dragging' ? dragTarget : osDropDir
@@ -537,6 +578,9 @@ export function Explorer({
 
   const runRowAction = (action: RowMenuAction, row: ExplorerRow): void => {
     switch (action) {
+      case 'openToSide':
+        if (row.kind === 'file') onOpenToSide?.(row.rel)
+        return
       case 'collapse':
         fold(row.rel, false)
         return
@@ -573,6 +617,15 @@ export function Explorer({
       event.preventDefault()
       event.stopPropagation()
       openRow({ rel: row.rel, preview: false })
+      return
+    }
+    // ⌃Enter — VS Code macOS 「옆으로 열기」(explorer.openToSide, LIFE-823 P4). 파일만 — 폴더는 무동작.
+    if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === 'Enter') {
+      const row = rows.find((item) => item.rel === selected)
+      if (row === undefined || row.kind !== 'file' || onOpenToSide === undefined) return
+      event.preventDefault()
+      event.stopPropagation()
+      onOpenToSide(row.rel)
       return
     }
     if (event.metaKey || event.ctrlKey || event.altKey) return
@@ -826,12 +879,14 @@ export function Explorer({
               }
               onPointerDown={(event) => {
                 if (event.button !== 0 || edit !== null) return
-                setDrag({ phase: 'pending', rel: row.rel, x: event.clientX, y: event.clientY })
+                setDrag({ phase: 'pending', rel: row.rel, isDir: row.kind === 'dir', x: event.clientX, y: event.clientY })
               }}
-              onClick={() => {
+              onClick={(event) => {
                 if (suppressClick.current) return
                 explorer.select(row.rel)
                 if (row.kind === 'dir') toggleFold(row)
+                // ⌥클릭 = 옆으로 열기(LIFE-823 P4 — VS Code 목록 sideBySide, mac ⌘클릭은 다중 선택 수식키라 ⌥).
+                else if (event.altKey && onOpenToSide !== undefined) onOpenToSide(row.rel)
                 else openRow({ rel: row.rel, preview: true })
               }}
               onDoubleClick={() => {
@@ -859,7 +914,7 @@ export function Explorer({
         <ContextMenu
           x={rowMenu.x}
           y={rowMenu.y}
-          entries={rowMenuEntries(rowMenu.row)}
+          entries={onOpenToSide === undefined ? rowMenuEntries(rowMenu.row) : [...openMenuEntries(rowMenu.row), ...rowMenuEntries(rowMenu.row)]}
           attrs={{ 'data-explorer-row-menu': rowMenu.row.rel }}
           onClose={() => {
             setRowMenu(null)
@@ -936,7 +991,7 @@ function ExplorerRowView({
   /** 이름 바꾸기 입력 행(이 행 자리) — 있으면 이름 대신 입력을 그린다. */
   editor: React.ReactNode
   onPointerDown: (event: React.PointerEvent) => void
-  onClick: () => void
+  onClick: (event: React.MouseEvent) => void
   onDoubleClick: () => void
   onContextMenu: (event: React.MouseEvent) => void
 }): React.JSX.Element {

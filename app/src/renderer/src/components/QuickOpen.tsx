@@ -91,6 +91,7 @@ export function QuickOpen({
   includeIgnored,
   onIncludeIgnored,
   onOpen,
+  onOpenToSide,
   onClose,
 }: {
   /** 활성 worktree 경로 — null 이면 안내만(E1ⓔ). */
@@ -100,6 +101,8 @@ export function QuickOpen({
   includeIgnored: boolean
   onIncludeIgnored: (next: boolean) => void
   onOpen: (rel: string) => void
+  /** ⌥Enter — 옆으로 열기(LIFE-823 P4, VS Code ⌘P `keyMods.alt`). 없으면 ⌥Enter 도 Enter 와 같다. */
+  onOpenToSide?: (rel: string) => void
   onClose: (restore: boolean) => void
 }): React.JSX.Element {
   const [query, setQuery] = useState('')
@@ -115,7 +118,7 @@ export function QuickOpen({
   const executed = useRef(false)
   const previous = useRef<{ index: FileIndex; result: QuickOpenResult } | null>(null)
   /** 결과가 따라잡기 전에 누른 Enter — 그때의 질의·선택 위치. 그 질의의 결과가 오면 연다, 질의가 바뀌면 버린다. */
-  const pendingEnter = useRef<{ query: string; index: number } | null>(null)
+  const pendingEnter = useRef<{ query: string; index: number; side: boolean } | null>(null)
   useAnnounceDialog()
   const noRoot = root === null
   // D1 — 열린 worktree 가 없으면 입력칸·토글이 꺼져 있어 포커스를 못 받는다. 그때는 대화상자 자체가 받아 Esc·키가 여기서 멈춘다.
@@ -176,11 +179,13 @@ export function QuickOpen({
     }
   }, [list])
 
-  const open = (row: QuickOpenRow | undefined): void => {
+  const open = (input: { row: QuickOpenRow | undefined; side: boolean }): void => {
+    const { row } = input
     if (row === undefined || executed.current) return
     executed.current = true
     onClose(false)
-    onOpen(row.rel)
+    if (input.side && onOpenToSide !== undefined) onOpenToSide(row.rel)
+    else onOpen(row.rel)
   }
   const openRef = useRef(open)
   openRef.current = open
@@ -197,7 +202,7 @@ export function QuickOpen({
       const pending = pendingEnter.current
       if (pending !== null && next.query === pending.query) {
         pendingEnter.current = null
-        openRef.current(next.rows[Math.min(pending.index, Math.max(0, next.rows.length - 1))])
+        openRef.current({ row: next.rows[Math.min(pending.index, Math.max(0, next.rows.length - 1))], side: pending.side })
       }
     })
     return () => {
@@ -242,8 +247,10 @@ export function QuickOpen({
             setSelected((current + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length)
           } else if (event.key === 'Enter' && event.target === input.current) {
             event.preventDefault()
-            if (index !== null && result !== null && result.query === query) open(rows[current])
-            else pendingEnter.current = { query, index: current }
+            // ⌥Enter = 옆으로 열기(LIFE-823 P4). ⌘Enter 는 더하지 않는다 — Enter 가 이미 고정 탭이다.
+            const side = event.altKey && !event.metaKey && !event.ctrlKey
+            if (index !== null && result !== null && result.query === query) open({ row: rows[current], side })
+            else pendingEnter.current = { query, index: current, side }
           }
         }}
       >
@@ -298,7 +305,7 @@ export function QuickOpen({
               <div key={row.rel} className="quick-open-item">
                 {i === 0 && hasRecent ? <div className="quick-open-group" data-quick-open-heading="recent">최근 연 파일</div> : null}
                 {i === firstFile && hasRecent ? <div className="quick-open-group" data-quick-open-heading="file">파일</div> : null}
-                <Row row={row} index={i} selected={i === current} onOpen={() => open(row)} />
+                <Row row={row} index={i} selected={i === current} onOpen={() => open({ row, side: false })} />
               </div>
             ))
           )}

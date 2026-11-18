@@ -950,7 +950,8 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 .inline-notice-dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; background: var(--st-ok); }
 .inline-notice.tone-rejected .inline-notice-dot { background: var(--st-dirty); }
 .inline-notice.tone-error .inline-notice-dot { background: var(--st-error); }
-.inline-notice-text { min-width: 0; font-size: 11.5px; color: var(--fg); overflow-wrap: anywhere; }
+/* LIFE-822 G1-2 — 28px 고정 높이라 한 줄로 고정한다(넘치면 말줄임, 전문은 title). 해제 단추는 flex 0 0 으로 늘 보인다. */
+.inline-notice-text { min-width: 0; font-size: 11.5px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .inline-notice.tone-rejected .inline-notice-text, .inline-notice.tone-error .inline-notice-text { color: var(--fg-notice); }
 .inline-notice-spacer { flex: 1; }
 .inline-notice-dismiss {
@@ -992,6 +993,13 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 /* 비율은 basis 로 준다 — grow 는 내용 크기가 섞여 들어와 같은 비율이 창마다 다른 px 이 된다. */
 .group-split-side { min-width: 0; min-height: 0; display: flex; flex-grow: 0; flex-shrink: 1; }
 .tab-group { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
+/* LIFE-825 C4 — 영역 최대화(메모리 전용). 최대화한 영역만 격자 전체를 덮고(절대 배치 — 그 영역 상자만 커진다), 나머지 영역·경계는 visibility 로 숨긴다.
+   숨은 영역의 상자 크기는 그대로다(분할 쪽 flex-basis 가 정한다) → 그 영역 ResizeObserver 미발화 → 격자 요청 0. display:none·0 크기면 cols 2·rows 1 이
+   나간다(설정 페이지 덮기 `.app-body.is-covered` 와 같은 이유). 분할 상자의 position 을 풀어 절대 배치의 기준을 `.pane-grid` 로 올린다(크기는 안 바뀐다). */
+.pane-grid.has-maximized { position: relative; }
+.pane-grid.has-maximized .group-split { position: static; }
+.pane-grid.has-maximized .tab-group.is-maximized { position: absolute; inset: 0; z-index: 4; }
+.pane-grid.has-maximized .tab-group:not(.is-maximized), .pane-grid.has-maximized .group-divider { visibility: hidden; }
 
 /* 영역 경계선 — 1px 선에 12px 히트(사이드바 리사이저와 같은 토큰, 핸드오프 B). 탭바를 관통한다. */
 .group-divider { position: relative; flex: 0 0 auto; z-index: 3; }
@@ -1080,6 +1088,9 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
   font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); cursor: pointer;
 }
 .group-action:hover { border-color: var(--line); color: var(--fg); }
+/* LIFE-822 B2 — 파일 탭이 활성이면 ▥▤ 는 흐림(사유는 title). */
+.group-action:disabled { opacity: 0.4; cursor: default; }
+.group-action:disabled:hover { border-color: transparent; color: var(--fg-muted); }
 .group-action.is-on { color: var(--accent); }
 .group-action.is-danger:hover { color: var(--st-error); }
 .group-zoom-chip { display: flex; align-items: center; padding: 0 8px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--accent); }
@@ -1154,6 +1165,13 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
 .term-pane { opacity: var(--term-active-opacity); transition: opacity var(--term-opacity-transition) ease; }
 .term-group[data-pane-count="1"] > .term-pane-stack > .term-pane { opacity: var(--term-active-opacity); }
 .term-pane:not(.is-selected) { opacity: var(--term-inactive-opacity); }
+/* LIFE-824 C3 — 활성 영역 표시. 영역이 둘 이상일 때만(비활성 영역이 있을 때 — 영역이 하나면 늘 활성이라 아래 규칙이 안 걸려 base 그대로):
+   ⓐ 밝은 선택 pane 은 활성 영역에만 — 비활성 영역의 선택 pane(pane 1개 영역 포함)은 비활성 투명도 ⓑ 활성 탭 하단 선은 활성 영역에만, 기존 accent 토큰.
+   비활성 영역의 활성 탭은 배경만 남는다. 표지는 전부 `.tab-group.is-active-group` 에서 나온다 — 새 토큰 0. */
+.tab-group:not(.is-active-group) .term-pane,
+.tab-group:not(.is-active-group) .term-group[data-pane-count="1"] > .term-pane-stack > .term-pane { opacity: var(--term-inactive-opacity); }
+.tab-group:not(.is-active-group) .main-tab-indicator { display: none; }
+.main-area:has(.tab-group:not(.is-active-group)) .tab-group.is-active-group .main-tab.is-active .main-tab-indicator { background: var(--accent); }
 .term-pane-inner { position: absolute; display: flex; overflow: hidden; }
 /* LIFE-512 U5 — xterm.css 가 viewport 바탕을 #000 으로 박는다. 밝은 테마·소수 픽셀 위치(pane 폭은 소수가 된다)에서 그 검정 층이
    위아래 1px 선으로 비친다 — Orca `terminal.css:47` 과 같은 선택자로 투명하게 두고 테마 배경이 비치게 한다. */
@@ -1608,3 +1626,7 @@ body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
   background: color-mix(in srgb, var(--ring-sidebar) 14%, transparent);
   box-shadow: 0 0 0 1px var(--ring-sidebar);
 }
+
+/* LIFE-823 C2 — 폴더를 탭 영역 위로 끄는 중: 존 강조 없이 불가 커서(탭 끌기 `grabbing` 보다 뒤에 둬 이긴다). */
+body.is-tab-drag.is-file-drag-blocked,
+body.is-tab-drag.is-file-drag-blocked * { cursor: not-allowed; }

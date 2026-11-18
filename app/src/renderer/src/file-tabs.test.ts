@@ -1,7 +1,7 @@
 // LIFE-590 E1·E2 — 파일 탭 종류 구분·정리 생존·미리보기 규칙·영속 형식 양방향(단위).
 // 하위 방향(E1ⓓ)은 기준 commit `bd2fca411` 의 `group-tree.ts` 사본(`legacy/group-tree.bd2fca411.ts` — 바이트 그대로)에 새 형식을 넣어 본다.
 import { describe, expect, it } from 'vitest'
-import { closeFileTab, fileTabId, fileTabsOf, fileTabsUnder, keepFileTab, openFileTab, previewOf, reopenFileTab, retargetFileTabs, tabKindOf, terminalKeyTarget } from './file-tabs.js'
+import { closeFileTab, fileTabId, fileTabsOf, fileTabsUnder, keepFileTab, openFileTab, previewOf, reopenFileTab, retargetFileTabs, tabKindOf, terminalKeyTarget, splitKeyRoute, fileTabSplitHint } from './file-tabs.js'
 import { dropDeadTabs, LAYOUT_FORMAT, listGroups, mergeTabIntoGroup, moveTabWithinTabbar, readStoredLayouts, reconcileLayout, singleLayout, splitGroup, type GroupLayout } from './group-tree.js'
 import * as legacy from './legacy/group-tree.bd2fca411.js'
 
@@ -184,6 +184,28 @@ describe('수정 r1 R1-B 터미널 대상 단축키 — 파일 탭이 활성이�
   it('터미널 탭 활성·활성 탭 없음 → 이전과 같이 selectedPane', () => {
     expect(terminalKeyTarget({ activeTabId: 'w1:t1', selectedPane: 'w1:p1' })).toBe('w1:p1')
     expect(terminalKeyTarget({ activeTabId: null, selectedPane: 'w1:p1' })).toBe('w1:p1')
+  })
+})
+
+describe('LIFE-822 B1 ⌘D·⌘⇧D 의 길 — 파일 탭이면 안내, 동작은 없다', () => {
+  it('파일 탭·diff 탭 활성 → file-tab(분할 대상 없음 — splitPane 을 부르지 않는다)', () => {
+    expect(splitKeyRoute({ activeTabId: C, selectedPane: 'w1:p1' })).toEqual({ kind: 'file-tab' })
+    expect(splitKeyRoute({ activeTabId: 'diff:working:src/a.ts', selectedPane: 'w1:p1' })).toEqual({ kind: 'file-tab' })
+  })
+  it('터미널 탭 활성 → 지금처럼 선택 pane 분할(회귀 0) · 선택 pane 이 없으면 none', () => {
+    expect(splitKeyRoute({ activeTabId: 'w1:t1', selectedPane: 'w1:p1' })).toEqual({ kind: 'split', paneId: 'w1:p1' })
+    expect(splitKeyRoute({ activeTabId: null, selectedPane: 'w1:p1' })).toEqual({ kind: 'split', paneId: 'w1:p1' })
+    expect(splitKeyRoute({ activeTabId: 'w1:t1', selectedPane: null })).toEqual({ kind: 'none' })
+  })
+  it('안내 글은 영역 분할 키(⌘⌥D)로 새 영역에 옮기라고 말한다 · 키가 없으면 메뉴 이름', () => {
+    expect(fileTabSplitHint({ groupSplitKey: '⌘⌥D', tabCount: 2 })).toBe('파일 탭은 pane 으로 나눌 수 없다 — ⌘⌥D 로 새 영역에 옮긴다')
+    expect(fileTabSplitHint({ groupSplitKey: null, tabCount: 3 })).toContain('「영역 분할」 로 새 영역에')
+    expect(fileTabSplitHint({ groupSplitKey: '', tabCount: 2 })).toContain('「영역 분할」')
+  })
+  it('fix1 R1-5 영역에 탭이 하나뿐이면 거절될 ⌘⌥D 로 안내하지 않는다', () => {
+    const hint = fileTabSplitHint({ groupSplitKey: '⌘⌥D', tabCount: 1 })
+    expect(hint).not.toContain('⌘⌥D')
+    expect(hint).toContain('탭이 하나뿐이라 새 영역으로 옮길 수도 없다')
   })
 })
 

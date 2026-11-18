@@ -48,7 +48,8 @@ export function shortcutRows(overrides: Keybindings): ShortcutRow[] {
       groupTitle: group.title,
       slots,
       modified: overrides[id] !== undefined,
-      unassigned: slots.every((slot) => slot.binding === null),
+      // 키 없는 액션(LIFE-825 `group.even` — 기본 칸 0)은 「끈」 것이 아니다 — 끌 칸이 없다.
+      unassigned: slots.length > 0 && slots.every((slot) => slot.binding === null),
       conflicts: slots.flatMap((slot) => (slot.binding !== null && (holders.get(holderKey(action, slot.binding)) ?? 0) > 1 ? [formatBinding(slot.binding)] : [])),
     }
   }))

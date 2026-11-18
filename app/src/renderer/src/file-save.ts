@@ -121,10 +121,13 @@ export function saveDoc(doc: FileDoc, deps: SaveDeps): Promise<SaveOutcome> {
  *   그 뒤 대상 전체를 다시 보고, **묻지 않았던 문서가 새로 수정돼 있으면 그 문서들로 다시 묻는다**(조용히 저장하지도 버리지도 않는다). 묻기는 최대 3 번 — 그래도 남으면 닫지 않는다.
  * true 를 돌려주는 순간 대상 전체가 수정 없음이고, 부른 쪽은 같은 마이크로태스크 안에서 닫는다(입력 이벤트는 그 사이에 끼지 못한다).
  * `label` = 대화상자에 보일 이름(여러 worktree 를 묻는 종료 확인은 worktree 이름을 붙인다).
+ * `deferDiscard` (LIFE-822) = 「저장 안 함」 문서를 **여기서 버리지 않는다** — 결정만 하고, 부른 쪽이 파일을 실제로 닫을 때 버린다(`closeFileNow` 의 `disposeDoc`).
+ *   닫기 사이에 다른 확인(터미널 실행 중 등)이 끼는 섞인 닫기용이다 — 그 확인이 취소되면 문서·편집 내용이 그대로 남는다. 이때 true 는 「버리기로 한 문서를 뺀 나머지가 수정 없음」 이다.
  */
-export async function confirmDiscardOrSave(input: { targets: () => readonly FileDoc[]; deps: SaveDeps; label?: (doc: FileDoc) => string }): Promise<boolean> {
+export async function confirmDiscardOrSave(input: { targets: () => readonly FileDoc[]; deps: SaveDeps; label?: (doc: FileDoc) => string; deferDiscard?: boolean }): Promise<boolean> {
   const label = input.label ?? ((doc: FileDoc) => doc.rel)
-  const dirtyNow = (): FileDoc[] => input.targets().filter((doc) => doc.dirty && getDoc(doc.key) === doc)
+  const deferred = new Set<string>()
+  const dirtyNow = (): FileDoc[] => input.targets().filter((doc) => doc.dirty && getDoc(doc.key) === doc && !deferred.has(doc.key))
   for (let ask = 0; ask < 3; ask += 1) {
     const asked = dirtyNow()
     if (asked.length === 0) return true
@@ -141,7 +144,8 @@ export async function confirmDiscardOrSave(input: { targets: () => readonly File
         return false
       }
     } else if (choice === 'discard') {
-      for (const doc of asked) disposeDoc(doc.key)
+      if (input.deferDiscard === true) for (const doc of asked) deferred.add(doc.key)
+      else for (const doc of asked) disposeDoc(doc.key)
     } else return false
   }
   const left = dirtyNow()

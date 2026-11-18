@@ -163,3 +163,15 @@ describe('감시 구독 (S8 정정 r1 · R1-01 · 682 A11)', () => {
     expect(watchCalls).toEqual([])
   })
 })
+
+describe('본문 드롭 표지 (LIFE-823 B5)', () => {
+  it('diff 본문 루트에 영역 id(`data-diff-group`) — 탭 끌기 본문 셀렉터가 잡는다, 손상된 탭도', async () => {
+    files.set('a.ts', 'w\n')
+    act(() => root.render(createElement(DiffView, { root: '/r', target: WT, stamp: 1, watch: false, onOpenFile: () => {}, groupId: 'g2' })))
+    await flush()
+    expect(host.querySelector('[data-scm-diff]')?.getAttribute('data-diff-group')).toBe('g2')
+    act(() => root.render(createElement(DiffView, { root: '/r', target: null, stamp: 1, watch: false, onOpenFile: () => {}, groupId: 'g2' })))
+    await flush()
+    expect(host.querySelector('.scm-diff-message')?.getAttribute('data-diff-group')).toBe('g2')
+  })
+})

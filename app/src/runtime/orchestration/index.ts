@@ -680,7 +680,8 @@ export function orchestrationModule(userData: string, options: { terminalDesktop
         if (minted === null || !SESSION_ID.test(minted)) return null
         const file = claudeRecordById({ sessionId: minted })
         // LIFE-797: no minted record at all — a session parked by `←` before it held a conversation — takes the
-        // registry's one hop to the job's session (`claudeParkedSession`, fail-closed), and the rule follows on.
+        // registry's one hop to the job's session (`claudeParkedSession`, fail-closed), and the rule follows on (at most
+        // 1 + `CONTINUED_CHAIN_MAX` hops). `file === null` overlaps the helper's own "no minted file" check; it only skips a second scan.
         const parked = file === null ? claudeParkedSession({ sessionId: minted, folder: null }) : null
         const start = file !== null ? { id: minted, file, hops: [] } : parked !== null ? { id: parked.sessionId, file: parked.file, hops: [parked.sessionId] } : null
         if (start === null) return null

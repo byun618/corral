@@ -1145,6 +1145,22 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
       expect(nested(shown, 'agent', 'sessionRecord')).toEqual({ path: p.fileB, exists: true, continuedIn: [p.b] })
     }, 20000)
 
+    it('fix1 A: unrelated entries in the registry (another pane parked as another job, that job\'s bg entry) do not stop the hop to this job', async () => {
+      const p = parked()
+      const other = randomUUID(), otherBg = randomUUID(), otherJob = otherBg.slice(0, 8)
+      p.registry([
+        { ...p.pane, pid: 300, sessionId: other, parkedJobId: otherJob },
+        { ...p.bg, pid: 301, sessionId: otherBg, jobId: otherJob },
+        p.pane, p.bg,
+        { pid: 302, sessionId: randomUUID(), kind: 'interactive', entrypoint: 'cli', status: 'idle' },
+      ])
+      p.f.state.onPrompt = () => p.lands(NEW)
+      const result = asObject(await p.f.run('terminal prompt', { text: NEW, wait: 'accepted' }, 4000))
+      expect(result.outcome).toBe('completed')
+      expect(nested(result, 'record')).toMatchObject({ path: p.fileB, matchCount: 1, unavailableReason: null })
+      expect(nested(result, 'agent', 'sessionRecord')).toEqual({ path: p.fileB, exists: true, continuedIn: [p.b] })
+    }, 20000)
+
     it('C5 배달 확인: a job file that already exists at submit is in the cursor and confirms the same way', async () => {
       const p = parked({ bgFile: true })
       p.f.state.onPrompt = () => p.lands(NEW)
@@ -1191,6 +1207,13 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
       { name: 'a parkedJobId that is not a string', arrange: p => p.registry([{ ...p.pane, parkedJobId: 12345678 }, p.bg]) },
       { name: 'a parkedJobId that is not a job id', arrange: p => p.registry([{ ...p.pane, parkedJobId: '../x' }, p.bg]) },
       { name: 'no bg entry for the job', arrange: p => p.registry([p.pane]) },
+      { name: 'fix1 A: a bg entry with the job\'s session (same prefix) but another jobId', arrange: p => p.registry([p.pane, { ...p.bg, jobId: p.job === 'abcdef01' ? 'abcdef02' : 'abcdef01' }]) },
+      { name: 'fix1 C: an empty parkedJobId and an empty jobId', arrange: p => p.registry([{ ...p.pane, parkedJobId: '' }, { ...p.bg, jobId: '' }]) },
+      { name: 'fix1 D(m7): a job session id that is a path into the job\'s real file', arrange: p => p.registry([p.pane, { ...p.bg, sessionId: `${p.b}/../${p.b}` }]) },
+      { name: 'fix1 D(m11): a registry entry that is JSON but an array', arrange: p => fs.writeFileSync(path.join(p.sessions, '999.json'), '[]') },
+      { name: 'fix1 D(m11): a registry entry that is JSON null', arrange: p => fs.writeFileSync(path.join(p.sessions, '999.json'), 'null') },
+      { name: 'fix1 D(m11): a registry entry that is a JSON string', arrange: p => fs.writeFileSync(path.join(p.sessions, '999.json'), '"x"') },
+      { name: 'fix1 D(m16): a folder where the job\'s file should be', arrange: p => { fs.mkdirSync(p.fileB); p.lands = () => {} } },
       { name: 'two bg entries for the job', arrange: p => p.registry([p.pane, p.bg, { ...p.bg, pid: 201 }]) },
       { name: 'the job\'s entry is not bg', arrange: p => p.registry([p.pane, { ...p.bg, kind: 'interactive' }]) },
       { name: 'a bg session id that is not a UUID', arrange: p => p.registry([p.pane, { ...p.bg, sessionId: `${p.job}-x` }]) },

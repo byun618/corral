@@ -704,11 +704,14 @@ const JOB_ID = /^[0-9a-f]+$/
  * session file. What is left to say where it went is Claude Code's session registry
  * (`<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`, observed on 2.1.296, not a contract): the pane's interactive entry
  * keeps the minted `sessionId` and gains `parkedJobId`, and the job's entry (`kind: "bg"`, `jobId`) names the
- * session it runs. That is one hop: minted id → `parkedJobId` → the bg entry's `sessionId` → its file.
+ * session it runs. That is one hop: minted id → `parkedJobId` → the bg entry's `sessionId` → its file. The `continued-in`
+ * rule then follows on from that file with its own `CONTINUED_CHAIN_MAX` (8), so a chain that starts here can reach
+ * 1 + 8 = 9 sessions past the minted one.
  *
  * The hop is taken only when the minted file does **not** exist (its `continued-in` is the record otherwise), and
  * only when every link is exactly one: one interactive entry with the minted id, a `parkedJobId` in the job id
- * shape, one bg entry with that job id, a session id in the UUID shape that begins with the job id, and its file —
+ * shape, one bg entry with that job id, a session id in the UUID shape that begins with the job id (so not the
+ * minted id, whose file was just found missing), and its file —
  * in `folder` when the caller knows the minted file's folder, or the one `<id>.jsonl` under the project folders
  * when it does not. A registry or project folder that cannot be read, an entry that cannot be parsed, a field
  * missing or of another shape, 0 or 2+ at any link: no hop, and the caller answers exactly as before (fail-closed).
@@ -725,7 +728,7 @@ export function claudeParkedSession(input: { sessionId: string; folder: string |
     if (parked === null || !JOB_ID.test(parked)) return null
     const jobs = entries.filter(entry => entry.kind === 'bg' && entry.jobId === parked)
     const job = jobs.length === 1 ? jobs[0]?.sessionId ?? null : null
-    if (job === null || !SESSION_ID.test(job) || !job.startsWith(parked) || job === input.sessionId) return null
+    if (job === null || !SESSION_ID.test(job) || !job.startsWith(parked)) return null
     const file = input.folder === null ? claudeRecordById({ sessionId: job, home: input.home }) : path.join(input.folder, job + '.jsonl')
     return file !== null && fileState(file) === 'file' ? { sessionId: job, file } : null
 }

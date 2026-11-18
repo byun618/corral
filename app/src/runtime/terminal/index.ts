@@ -355,7 +355,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         }
         // LIFE-797: a minted session parked by `←` before it held a conversation has no file to leave
         // `continued-in` in; the registry's one hop (`claudeParkedSession`, fail-closed) starts the chain at
-        // the job's file instead, and the rule above follows on from there.
+        // the job's file instead, and the rule above follows on from there (so at most 1 + `CONTINUED_CHAIN_MAX` hops).
         const parked = claudeParkedSession({ sessionId: record.sessionId, folder: path.dirname(file) })
         const start = parked === null ? { id: record.sessionId, file, hops: [] } : { id: parked.sessionId, file: parked.file, hops: [parked.sessionId] }
         const followed = followContinued({ session: { kind: 'id', agent: 'claude', source: record.sessionIdSource ?? 'client-minted', id: start.id }, file: start.file, empty: 'follow' })

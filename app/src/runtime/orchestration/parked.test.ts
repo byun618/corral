@@ -134,6 +134,21 @@ describe('LIFE-797 C5 합성 — worker-start and the worker\'s reports through 
     expect([done.error, done.proof, done.settledBy]).toEqual([undefined, 'session_chain', 'worker_done'])
   }, 60000)
 
+  it('fix1 A: unrelated entries in the registry (another pane parked as another job, that job\'s bg entry) do not stop the chain to this job', async () => {
+    const f = setup()
+    const started = await workerStart(f)
+    expect(started.state).toBe('ready')
+    const other = randomUUID(), otherBg = randomUUID(), otherJob = otherBg.slice(0, 8)
+    f.registry([
+      { ...f.pane, pid: 300, sessionId: other, parkedJobId: otherJob },
+      { ...f.bgEntry, pid: 301, sessionId: otherBg, jobId: otherJob },
+      f.pane, f.bgEntry,
+      { pid: 302, sessionId: randomUUID(), kind: 'interactive', entrypoint: 'cli', status: 'idle' },
+    ])
+    const beat = await report(f, { dispatchId: String(started.dispatchId), type: 'heartbeat', claudeSession: f.bg })
+    expect([beat.error, beat.proof]).toEqual([undefined, 'session_chain'])
+  }, 60000)
+
   it('a job file that ends with continued-in is followed on — the later session is admitted too', async () => {
     const f = setup()
     const started = await workerStart(f)
@@ -159,6 +174,18 @@ const failClosed: Case[] = [
   { name: 'a parkedJobId that is not a string', arrange: f => f.registry([{ ...f.pane, parkedJobId: 12345678 }, f.bgEntry]) },
   { name: 'a parkedJobId that is not a job id', arrange: f => f.registry([{ ...f.pane, parkedJobId: '../x' }, f.bgEntry]) },
   { name: 'no bg entry for the job', arrange: f => f.registry([f.pane]) },
+  { name: 'fix1 A: a bg entry with the job\'s session (same prefix) but another jobId', arrange: f => f.registry([f.pane, { ...f.bgEntry, jobId: f.job === 'abcdef01' ? 'abcdef02' : 'abcdef01' }]) },
+  { name: 'fix1 C: an empty parkedJobId and an empty jobId', arrange: f => f.registry([{ ...f.pane, parkedJobId: '' }, { ...f.bgEntry, jobId: '' }]) },
+  { name: 'fix1 D(m11): a registry entry that is JSON but an array', arrange: f => fs.writeFileSync(path.join(f.sessions, '999.json'), '[]') },
+  { name: 'fix1 D(m11): a registry entry that is JSON null', arrange: f => fs.writeFileSync(path.join(f.sessions, '999.json'), 'null') },
+  { name: 'fix1 D(m11): a registry entry that is a JSON string', arrange: f => fs.writeFileSync(path.join(f.sessions, '999.json'), '"x"') },
+  { name: 'fix1 B: a project folder whose <id>.jsonl place cannot be looked at (EACCES — not "no file")', arrange: f => {
+    // Unreadable is not "none": the minted id could be in there, so the "no minted file" link cannot be proven.
+    const locked = path.join(path.dirname(f.folder), 'locked')
+    fs.mkdirSync(locked)
+    fs.chmodSync(locked, 0o000)
+    cleanups.push(() => fs.chmodSync(locked, 0o700))
+  } },
   { name: 'two bg entries for the job', arrange: f => f.registry([f.pane, f.bgEntry, { ...f.bgEntry, pid: 201 }]) },
   { name: 'the job\'s entry is not bg', arrange: f => f.registry([f.pane, { ...f.bgEntry, kind: 'interactive' }]) },
   { name: 'a bg session id that is not a UUID', arrange: f => f.registry([f.pane, { ...f.bgEntry, sessionId: `${f.job}-x` }]) },
@@ -221,5 +248,19 @@ describe('LIFE-797 claudeParkedSession — the rule itself', () => {
     fs.rmdirSync(f.fileMinted)
     f.registry([{ ...f.pane, parkedJobId: f.minted.slice(0, 8) }, { ...f.bgEntry, jobId: f.minted.slice(0, 8), sessionId: f.minted }])
     expect(claudeParkedSession({ sessionId: f.minted, folder: f.folder })).toBeNull()
+  })
+  it('fix1 D(m7): a job session id that is a path is not joined into one, even when it would land on the real job file', () => {
+    const f = setup()
+    fs.writeFileSync(f.fileBg, metaRows(f.bg))
+    f.registry([f.pane, { ...f.bgEntry, sessionId: `${f.bg}/../${f.bg}` }])
+    expect(fs.existsSync(path.join(f.folder, `${f.bg}/../${f.bg}.jsonl`))).toBe(true)
+    expect(claudeParkedSession({ sessionId: f.minted, folder: f.folder })).toBeNull()
+    expect(claudeParkedSession({ sessionId: f.minted, folder: null })).toBeNull()
+  })
+  it('fix1 D(m16): a folder where the job\'s file should be is not a file', () => {
+    const f = setup()
+    fs.mkdirSync(f.fileBg)
+    expect(claudeParkedSession({ sessionId: f.minted, folder: f.folder })).toBeNull()
+    expect(claudeParkedSession({ sessionId: f.minted, folder: null })).toBeNull()
   })
 })

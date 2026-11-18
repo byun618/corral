@@ -391,10 +391,16 @@ corral worktree set --worktree path:<구현 worktree 절대경로> --parent-work
   `corral orchestration worker-start --task <t> --terminal <handle>` 을 다시 부르면 같은 Dispatch 로 재개된다(`launch: resumed`). 재개 중 본문 단계에서 걸려도 같다.
   아직 대화 기록이 없는 pane(민팅 세션 파일 없음)은 `←` 가 세션을 데몬의 bg 세션으로 park 하고, `esc` 뒤 본문은 그 bg 세션 파일에 들어간다(관측 Claude Code 2.1.296).
   corral 은 민팅 파일이 **없을 때만** Claude 세션 레지스트리(`~/.claude/sessions/<pid>.json`, 문서화되지 않은 내부 형식)를 한 hop 따라간다 — 민팅 id 의 대화형 항목 하나의
-  `parkedJobId` → 그 job 의 `kind: "bg"` 항목 하나의 `sessionId` → 같은 폴더의 그 파일(LIFE-797). 그래서 재개가 `ready`·`confirmed`·matchCount 1 이고(`agent.sessionRecord.continuedIn` 첫 칸 = bg 세션 id)
-  그 워커의 `worker_done` 도 `proof: session_chain` 으로 받는다. **남는 한계**: hop 의 어느 고리든 없거나·둘 이상이거나·모양이 다르면 hop 없음 — 이 일감 전과 같은 답
-  (`incomplete`·`dispatch_input_unconfirmed`·`unavailableReason: not_found`, 예산을 다 쓰고 돌아옴 · 워커 보고 `sender_mismatch`)이다. 형식이 Claude Code 버전마다 바뀔 수 있고(관측 2.1.296),
-  빈 idle bg 세션은 데몬이 약 5분 뒤 정리해 그 뒤에는 hop 이 사라질 수 있다. agent view 에서 다른 행에 붙은 pane·bg 안 `/clear` 뒤는 다루지 않는다.
+  `parkedJobId` → 그 job 의 `kind: "bg"` 항목 하나의 `sessionId`(job id 로 시작하는 세션 id 꼴) → 그 파일(LIFE-797). 파일을 찾는 곳은 둘이 다르다:
+  - **배달 hop**(`terminal prompt`·`terminal show`·`orchestration worker-start` 입력 판정): pane cwd 로 정한 민팅 파일의 폴더 하나 — 그 폴더에 민팅 파일이 없고 bg 파일이 있어야 한다.
+  - **보고자 hop**(`orchestration send`·`orchestration ask` 의 `proof: session_chain`): pane 없이 Dispatch 의 민팅 id 만 있어서 모든 project 폴더를 본다 — 민팅 id 파일이 어느 폴더에도 없고(못 읽는 폴더가 하나라도 있으면 hop 없음) bg 세션 파일이 정확히 한 폴더에 있어야 한다.
+  - 비대칭: 보고자 hop 은 bg 파일이 pane 폴더가 아닌 다른 project 폴더 하나에만 있어도 서지만, 배달 hop 은 서지 않는다(배달 쪽이 더 좁다).
+  hop 뒤에는 `continued-in` 규칙이 그 bg 파일에서 다시 최대 8 hop 따라가므로 사슬은 민팅 뒤로 최대 1 + 8 = 9 세션이다.
+  격리 실측 스모크 1회(2026-11-18, 2.1.296 Haiku 5.5 low — `corral-specs/LIFE-797-empty-pane-outcome/raw/claude/smoke1/`)에서 재개가 `ready`·`confirmed`·matchCount 1(`agent.sessionRecord.continuedIn` 첫 칸 = bg 세션 id)이고
+  그 워커의 `worker_done` 이 `proof: session_chain` 으로 수락됐다 — 판정 회차(3회)는 최종 관문 몫이다. **남는 한계**: hop 의 어느 고리든 없거나·둘 이상이거나·모양이 다르면 hop 없음 — 이 일감 전과 같은 답
+  (`incomplete`·`dispatch_input_unconfirmed`·`unavailableReason: not_found`, 예산을 다 쓰고 돌아옴 · 워커 보고 `sender_mismatch`)이다. 레지스트리 항목 하나라도 못 읽으면(쓰는 중 포함) 그 순간 hop 이 없다.
+  형식은 Claude Code 2.1.296 에서 관측한 것뿐이다 — 더 새 버전(2.1.325 cwd 변경·2.1.326 빈 대화 `←` 뒤 Ctrl+C·Ctrl+D 두 번·`/exit` 로 세션 종료)의 park 동작은 확인하지 않았다.
+  빈 idle bg 세션은 데몬이 약 5분 뒤 정리한다(v2.1.141 changelog 출처, 2.1.296 에서 관측하지 않음) — 그 뒤에는 hop 이 사라질 수 있다. agent view 에서 다른 행에 붙은 pane·bg 안 `/clear` 뒤는 다루지 않는다.
   그 답이 오면 `dispatch-show` 와 pane 을 먼저 보고 다시 넣지 않는다.
 - **셸 rc 의 대화형 질문**: pane 셸이 rc 에서 질문(업데이트 확인 등)을 띄우면 주입한 기동 줄 첫 글자가 그 답으로 먹혀 provider 이름이 깨지고
   `agent_not_ready`·`incomplete` 로 끝난다. 같은 Task 를 `worker-stop` 으로 멈추고 새로 기동한다 — 반복되면 사용자에게 셸 쪽 질문을 먼저 끝내 달라고 한다(LIFE-719 외 매핑 밖 두 번째).

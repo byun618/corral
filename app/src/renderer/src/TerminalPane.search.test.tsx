@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // LIFE-812 C4 — 터미널 검색 막대: ⌘F 열기·포커스, 입력 → 검색·k/총, Enter/⇧Enter, 다시 ⌘F 전체 선택, Esc 닫기 → pane 포커스, 강조 0, 막대 하나.
 // 막대 키가 PTY 로 가지 않는다(termInput 0)는 여기서는 약한 확인이다 — 실물 확인은 G1·N1(C6ⓐ).
-import { act, createElement } from 'react'
+import { act, createElement, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TerminalFrame } from '../../shared/types.js'
@@ -274,5 +274,96 @@ describe('LIFE-812 C4 검색 막대', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+
+})
+
+/** App 의 그룹 onMouseDown → activateGroup → selectPane → setFocusToken(+1) 을 흉내낸다(리뷰 r2 프로브 꼴). `bump` 로 바깥에서도 올린다(팔레트 닫힘). */
+let bumpToken: () => void = () => {}
+function GroupWrapper(): React.JSX.Element {
+  const [token, setToken] = useState(1)
+  bumpToken = () => setToken((value) => value + 1)
+  return createElement('div', { 'data-box': 'p1', className: 'term-pane-inner', onMouseDown: () => setToken((value) => value + 1) },
+    createElement(TerminalPane, { paneId: 'p1', diagnostics: false, focusable: true, focusToken: token, announceFocus: false }))
+}
+
+/** xterm 6.0.0 의 화면 mousedown(`preventDefault` + `focus()`)을 붙인다. */
+function xtermBody(): HTMLElement {
+  const screen = host.querySelector('.xterm-screen')
+  const textarea = host.querySelector('.xterm-helper-textarea')
+  if (!(screen instanceof HTMLElement) || !(textarea instanceof HTMLElement)) throw new Error('xterm 없음')
+  screen.addEventListener('mousedown', (event) => {
+    event.preventDefault()
+    textarea.focus()
+  })
+  return screen
+}
+
+describe('fix2 R2-1 — 막대가 열린 채 터미널 본문을 누르면 포커스는 터미널에 남는다', () => {
+  it('본문 클릭(xterm 포커스 → 그룹 핸들러 focusToken+1) 뒤 활성 요소 = 터미널, 막대는 열린 채', () => {
+    act(() => root.render(createElement(GroupWrapper)))
+    const body = xtermBody()
+    act(() => requestTerminalFind('p1'))
+    expect(document.activeElement).toBe(input())
+    act(() => { body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })) })
+    expect(document.activeElement?.className).toBe('xterm-helper-textarea')
+    expect(bar()).not.toBeNull()
+  })
+  it('양성 대조 — 막대가 닫혀 있으면 같은 클릭 뒤 터미널', () => {
+    act(() => root.render(createElement(GroupWrapper)))
+    const body = xtermBody()
+    act(() => { body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })) })
+    expect(document.activeElement?.className).toBe('xterm-helper-textarea')
+  })
+  it('팔레트 경로 유지 — 포커스가 터미널 밖(팔레트가 닫혀 body)일 때 올라온 focusToken 은 막대로', () => {
+    act(() => root.render(createElement(GroupWrapper)))
+    act(() => requestTerminalFind('p1'))
+    act(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined))
+    expect(document.activeElement).toBe(document.body)
+    act(() => bumpToken())
+    expect(document.activeElement).toBe(input())
+  })
+})
+
+describe('fix2 R2-2 — 단추를 눌러도 Esc·⇧Enter 는 막대 키로 돈다', () => {
+  /** Chromium 처럼 — mousedown 기본 동작이 막히지 않았으면 누른 단추가 포커스를 가진다. */
+  const chromiumButtonFocus = (event: Event): void => {
+    if (!event.defaultPrevented && event.target instanceof HTMLButtonElement) event.target.focus()
+  }
+  beforeEach(() => document.addEventListener('mousedown', chromiumButtonFocus))
+  afterEach(() => document.removeEventListener('mousedown', chromiumButtonFocus))
+
+  const press = (selector: string): void => {
+    const button = host.querySelector(selector)
+    if (!(button instanceof HTMLButtonElement)) throw new Error(`${selector} 없음`)
+    act(() => {
+      button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }))
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))
+    })
+  }
+
+  it('「다음」 단추 클릭 뒤 Esc → 막대가 닫힌다', async () => {
+    renderPanes(['p1'])
+    act(() => requestTerminalFind('p1'))
+    type(input() ?? document.createElement('input'), 'ab')
+    await settle()
+    press('[data-term-search-next]')
+    await settle()
+    expect(document.activeElement).toBe(input())
+    key(document.activeElement ?? document.body, { key: 'Escape' })
+    expect(bar()).toBeNull()
+  })
+
+  it('「다음」 단추 클릭 뒤 ⇧Enter → 이전(backward)', async () => {
+    renderPanes(['p1'])
+    act(() => requestTerminalFind('p1'))
+    type(input() ?? document.createElement('input'), 'ab')
+    await settle()
+    press('[data-term-search-next]')
+    await settle()
+    key(document.activeElement ?? document.body, { key: 'Enter', shiftKey: true })
+    await settle()
+    expect(searches.map((request) => request.direction)).toEqual(['backward', 'forward', 'backward'])
+    expect(searches[2]?.from).not.toBe('viewport')
   })
 })

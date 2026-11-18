@@ -27,6 +27,11 @@ import {
 } from '../../shared/terminal-search.js'
 
 export const SEARCH_DEBOUNCE_MS = 120
+/**
+ * 응답 대기 중 쌓아 두는 다음/이전의 상한(fix2 R2-3). 의도적 연타 몇 번은 그대로 칸 수가 되고(대기 1 + 쌓임 4 = 5칸),
+ * 느린 pane 에서 키를 누르고 있어 반복 키가 수십 개 와도 뗀 뒤 몇 초씩 계속 넘어가지 않는다 — 넘친 것은 버린다.
+ */
+export const MAX_QUEUED_STEPS = 4
 
 export type TerminalSearchState = {
   open: boolean
@@ -103,7 +108,7 @@ export class TerminalSearchController {
     if (!this.state.open || this.state.query === '' || this.state.tooLong) return
     // 응답 대기 중이면 줄에 쌓는다 — 지금 현재 일치는 낡았다(그 위에서 다시 물으면 같은 칸을 또 묻는다).
     if (this.state.pending) {
-      this.queued.push(direction)
+      if (this.queued.length < MAX_QUEUED_STEPS) this.queued.push(direction)
       return
     }
     this.cancelTimer()

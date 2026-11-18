@@ -27,7 +27,15 @@ export function TerminalSearchBar({
   const status = searchStatusText(state)
   const caseNote = isCaseSensitive(state.query) ? '대소문자 구분 (대문자가 있음)' : '대소문자 무시 (대문자를 넣으면 구분)'
   return (
-    <div className="term-search" data-term-search="" role="search">
+    <div
+      className="term-search"
+      data-term-search=""
+      role="search"
+      // fix2 R2-2 — 단추를 눌러도 포커스는 입력칸에 남긴다(Chromium 은 누른 단추에 포커스를 준다 — 그러면 Esc·⇧Enter 가 입력칸 처리를 못 탄다). 클릭은 그대로 간다.
+      onMouseDown={(event) => {
+        if (event.target instanceof Element && event.target.closest('button') !== null) event.preventDefault()
+      }}
+    >
       <input
         ref={inputRef}
         className="term-search-input"

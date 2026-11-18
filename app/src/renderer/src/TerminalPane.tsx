@@ -85,6 +85,11 @@ export function keepTerminalFocus(event: React.MouseEvent): void {
  * 가져가야 한다 — 그 클릭이 사용자의 뜻이다.
  */
 export const INLINE_EDIT_SELECTOR = '.main-tab-rename.is-editing, [data-inline-rename]'
+/** 이 pane 의 xterm(컨테이너 안)이 지금 포커스를 쥐었나 (LIFE-812 fix2 R2-1). */
+function terminalHoldsFocus(container: HTMLElement | null): boolean {
+  const active = document.activeElement
+  return container !== null && active !== null && container.contains(active)
+}
 function inlineEditHoldsFocus(): boolean {
   const active = document.activeElement
   return active instanceof Element && active.closest(INLINE_EDIT_SELECTOR) !== null
@@ -617,7 +622,8 @@ export function TerminalPane({
   useEffect(() => {
     if (focusToken === 0 || !focusableRef.current || inlineEditHoldsFocus()) return
     // LIFE-812 — 검색 막대가 열려 있으면 막대로(팔레트에서 「터미널에서 찾기」를 고른 뒤 포커스 복귀가 막대를 덮지 않게).
-    if (searchOpenRef.current) {
+    // fix2 R2-1 — 단 이 pane 의 터미널이 이미 포커스를 가졌으면 그대로 둔다: 사용자가 본문을 눌렀다(xterm 이 mousedown 에서 먼저 포커스를 가져간다).
+    if (searchOpenRef.current && !terminalHoldsFocus(containerRef.current)) {
       setSelectToken((value) => value + 1)
       return
     }

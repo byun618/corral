@@ -1,7 +1,7 @@
 // LIFE-812 C5 — 검색 막대 상태 표를 행마다 잰다. 규칙 하나: 응답은 적용 순간 「열려 있고 · 마지막으로 뗀 표」일 때만.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TerminalRevealResult, TerminalSearchRequest, TerminalSearchResult, TerminalTextRange } from '../../shared/terminal-search.js'
-import { SEARCH_DEBOUNCE_MS, TerminalSearchController, searchStatusText, type TerminalSearchState } from './terminal-search-controller.js'
+import { MAX_QUEUED_STEPS, SEARCH_DEBOUNCE_MS, TerminalSearchController, searchStatusText, type TerminalSearchState } from './terminal-search-controller.js'
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void }
 function deferred<T>(): Deferred<T> {
@@ -207,6 +207,25 @@ describe('C5 상태 표', () => {
     controller.step('backward')
     await vi.advanceTimersByTimeAsync(30 * 3)
     expect(controller.snapshot.result).toEqual(found(0, 0))
+  })
+
+  it('fix2 R2-3 — 대기 중 쌓는 다음/이전은 상한까지만(키 반복이 끝없이 쌓이지 않는다)', async () => {
+    const { controller, searches } = harness()
+    controller.open()
+    controller.setQuery('x')
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS)
+    searches[0]?.reply.resolve(found(0, 0))
+    await flush()
+    controller.step('forward') // 나감(대기)
+    for (let i = 0; i < 30; i++) controller.step('forward') // 키를 누르고 있다 — 반복 30개
+    for (let row = 1; row <= 1 + MAX_QUEUED_STEPS + 2; row++) {
+      searches.at(-1)?.reply.resolve(found(row, row))
+      await flush()
+    }
+    // 대기 1 + 쌓임 상한 4 = 5칸에서 멈춘다
+    expect(MAX_QUEUED_STEPS).toBe(4)
+    expect(searches).toHaveLength(1 + 1 + MAX_QUEUED_STEPS)
+    expect(controller.snapshot.result).toEqual(found(1 + MAX_QUEUED_STEPS, 1 + MAX_QUEUED_STEPS))
   })
 
   it('fix1 R1-3 — 쌓인 다음/이전은 닫기·질의 변경·결과 없음에서 버린다', async () => {

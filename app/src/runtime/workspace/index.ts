@@ -8,7 +8,7 @@ import { contains, git, projects, repoSelect, repoSetup, resolvePath, unique, Wo
 import { isRecord } from '../../shared/json.js'
 import { Receipts, REQUEST_ID } from '../terminal/receipts.js'
 import { AGENT_OPTIONS, MAX_INPUT, derivedRequestId, stageFailure, terminalModule, validateAgentFlags } from '../terminal/index.js'
-import { SETUP_POLICIES, readSetupCommand, runSetupCommand, setupError, type SetupPolicy, type SetupReceipt } from './setup.js'
+import { SETUP_POLICIES, readSetupCommand, registeredSetupCommand, runSetupCommand, setupError, type SetupPolicy, type SetupReceipt } from './setup.js'
 
 export const workspaceSpecs: CommandSpec[] = specs
 const required: Record<string, string[]> = {
@@ -60,7 +60,9 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
   const terminal = terminalModule(userData), receipts = new Receipts(userData, Date.now())
   return {
     specs: workspaceSpecs, validate: validateWorkspace, isMutation,
-    serialKey: () => 'workspace',
+    // LIFE-813 A1: reads take no lane (as terminal reads do), so a setup command holding the lane for
+    // its whole run does not hold up `repo list` or `worktree list`. Mutations still queue behind it.
+    serialKey: inv => reads.has(inv.command) ? undefined : 'workspace',
     async execute(inv, ctx) {
       const f = inv.flags, flag = (key: string) => stringFlag(f, key), need = (key: string) => stringFlag(f, key, true)!
       const allRepos = registry.records()
@@ -195,6 +197,10 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
             const composed: Invocation = { ...inv, flags: { ...f, 'request-id': f['request-id'] ?? `r1.${Date.now()}.${randomUUID()}` },
               ...(body === undefined ? {} : { stdin: body }) }
             result = await receipts.run(composed, () => executeWorktree(composed, ctx, registry, metadata, terminal, desktop, body))
+          } else if ((inv.command === 'worktree create' || inv.command === 'worktree setup') && f['request-id'] !== undefined) {
+            // LIFE-813 A4: a request id makes the setup command run once. The receipt keeps a failed
+            // setup as a result too, so the same id answers the same failure and never runs it again.
+            result = await runWithSetupReceipt(inv, receipts, () => executeWorktree(inv, ctx, registry, metadata, terminal, desktop))
           } else result = await executeWorktree(inv, ctx, registry, metadata, terminal, desktop)
         }
       }
@@ -210,7 +216,31 @@ function repoView(repo: RepoRecord): RepoRecord & { setupCommand: string | null 
 function setupPolicy(value: string | undefined): SetupPolicy {
   return SETUP_POLICIES.find(policy => policy === value) ?? 'inherit'
 }
-const isSetupError = (error: unknown) => error instanceof RuntimeError && (error.code === 'setup_failed' || error.code === 'setup_timed_out')
+const isSetupError = (error: unknown): error is RuntimeError => error instanceof RuntimeError && (error.code === 'setup_failed' || error.code === 'setup_timed_out')
+/**
+ * `worktree create` without `--agent` and `worktree setup`, under a request id. A setup failure is
+ * stored as the receipt's result and thrown again from it, on the first answer and on every replay.
+ * Other errors come back with the resources the command gave them, as without a request id.
+ */
+async function runWithSetupReceipt(inv: Invocation, receipts: Receipts, execute: () => Promise<unknown>): Promise<unknown> {
+  let value: unknown
+  try {
+    value = await receipts.run(inv, async () => {
+      try { return await execute() } catch (error) {
+        if (isSetupError(error)) return { setupFailure: { code: error.code, message: error.message, resources: error.resources ?? null } }
+        throw error
+      }
+    })
+  } catch (error) {
+    if (!(error instanceof RuntimeError) || !isRecord(error.resources) || !('detail' in error.resources)) throw error
+    const detail = error.resources.detail
+    throw new RuntimeError(error.code, error.message, { ...(isRecord(detail) ? detail : {}), requestId: error.resources.requestId }, undefined, error.outcome)
+  }
+  if (!isRecord(value) || !isRecord(value.setupFailure)) return value
+  const failure = value.setupFailure
+  throw new RuntimeError(typeof failure.code === 'string' ? failure.code : 'setup_failed', typeof failure.message === 'string' ? failure.message : 'Setup command failed',
+    { ...(isRecord(failure.resources) ? failure.resources : {}), requestId: value.requestId, replayed: value.replayed })
+}
 /** The prompt body a `worktree create --agent` was given by path, read in the caller's directory. */
 function readPromptFile(cwd: string, value: string): string {
   const file = path.resolve(cwd, value)
@@ -278,7 +308,7 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
   }
   if (inv.command === 'worktree setup') {
     const target = await select(need('worktree')), repo = repos.find(row => row.id === target.repoId)!
-    const command = repo.setupCommand ?? null
+    const command = registeredSetupCommand(repo)
     if (command === null) throw new RuntimeError('setup_not_configured', `No setup command registered for ${repo.name}; set one with corral repo set-setup-command`, { repo: repo.id }, undefined, 'not_started')
     const run = await runSetupCommand({ command, worktreePath: target.path, rootPath: repo.path, userData: ctx.userData, deadlineAt: ctx.deadlineAt, signal: ctx.signal })
     const setupReceipt: SetupReceipt = { policy: 'run', ...run }
@@ -310,7 +340,7 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
     const base = flag('base-branch') ?? repo.baseRef ?? 'HEAD'
     await verifyRef(repo.path, base, ctx)
     // LIFE-813 D2: the command is the repo's registered one and nothing else. `run` without one is refused before git.
-    const policy = setupPolicy(flag('setup')), setupCommand = repo.setupCommand ?? null
+    const policy = setupPolicy(flag('setup')), setupCommand = policy === 'skip' ? null : registeredSetupCommand(repo)
     if (policy === 'run' && setupCommand === null) throw new RuntimeError('setup_not_configured', `--setup run: no setup command registered for ${repo.name}; set one with corral repo set-setup-command`, { repo: repo.id }, undefined, 'not_started')
     const update = await updateMetadata()
     let added = false

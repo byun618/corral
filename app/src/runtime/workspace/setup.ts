@@ -9,7 +9,12 @@
 //   started from Finder has the launchd PATH and would not find npm (D5). If the probe fails the
 //   runtime's own PATH is used and the receipt says so.
 // - It runs inside the request budget. Past it the whole process group is killed and the worktree is
-//   left as it is (D3·D6).
+//   left as it is (D3·D6). A cancelled request or a closing runtime kills the group at once, without
+//   a timer, so an app that exits right after closing its runtime leaves no setup process behind.
+// - The login shell probe gets at most a third of the budget (and 5 s): a hanging rc file costs that
+//   share and the command still starts with the runtime PATH.
+// - What it cannot reach: a child that left the group (`setsid`) and background children still
+//   running after the command exited normally.
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -23,7 +28,7 @@ export type SetupPolicy = 'inherit' | 'skip' | 'run'
 export const SETUP_POLICIES: SetupPolicy[] = ['inherit', 'skip', 'run']
 /** Kept back from the request budget so a timed-out setup is still reported before the request itself expires. */
 const RESERVE_MS = 1000
-const PROBE_TIMEOUT_MS = 10_000
+const PROBE_TIMEOUT_MS = 5_000
 const TERM_GRACE_MS = 300
 
 export type SetupRun = {
@@ -34,17 +39,34 @@ export type SetupRun = {
   durationMs: number
   logPath: string
   pathSource: 'login_shell' | 'process'
-  error: string | null
+  /** The error code a failed run reports (`setup_failed`·`setup_timed_out`), the same as `stages.setup.error`; null on success. */
+  error: 'setup_failed' | 'setup_timed_out' | null
+  /** What happened beyond the exit status (spawn error, cancellation, budget); null when there is nothing to add. */
+  detail: string | null
 }
 export type SetupReceipt =
   | { policy: SetupPolicy; status: 'skipped'; reason: 'policy_skip' | 'no_command'; command: null; logPath: null }
   | ({ policy: SetupPolicy } & SetupRun)
 
+const COMMAND_RULE = `one non-blank line without NUL, at most ${SETUP_COMMAND_MAX} bytes`
+const validCommand = (value: string) => !!value.trim() && !value.includes('\0') && !/[\r\n]/.test(value) && Buffer.byteLength(value) <= SETUP_COMMAND_MAX
+
 /** `null` clears; anything else must be one non-blank line within the byte limit. */
 export function readSetupCommand(value: string): string | null {
   if (value === 'null') return null
-  if (!value.trim() || value.includes('\0') || /[\r\n]/.test(value) || Buffer.byteLength(value) > SETUP_COMMAND_MAX) {
-    throw new RuntimeError('invalid_argument', `--command must be one non-blank line without NUL, at most ${SETUP_COMMAND_MAX} bytes, or null`, undefined, undefined, 'not_started')
+  if (!validCommand(value)) throw new RuntimeError('invalid_argument', `--command must be ${COMMAND_RULE}, or null`, undefined, undefined, 'not_started')
+  return value
+}
+
+/**
+ * The repo's command as it stands in repos.json when it is about to run. A hand-edited value is held to
+ * the same rule as `set-setup-command`; an invalid one is refused before any effect and never run.
+ */
+export function registeredSetupCommand(repo: { name: string; id: string; setupCommand?: unknown }): string | null {
+  const value = repo.setupCommand
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string' || !validCommand(value)) {
+    throw new RuntimeError('setup_command_invalid', `The setup command registered for ${repo.name} in repos.json is not ${COMMAND_RULE}; it was not run. Fix it with corral repo set-setup-command`, { repo: repo.id }, undefined, 'not_started')
   }
   return value
 }
@@ -76,19 +98,21 @@ export async function runSetupCommand(input: { command: string; worktreePath: st
   const log = fs.openSync(logPath, 'a', 0o600)
   const note = (line: string) => fs.writeSync(log, `[corral] ${line}\n`)
   const remaining = () => input.deadlineAt - RESERVE_MS - Date.now()
-  const finish = (run: Omit<SetupRun, 'command' | 'logPath' | 'durationMs'>): SetupRun => {
+  type Outcome = { status: SetupRun['status']; exitCode: number | null; signal: string | null; detail: string | null }
+  const finish = (run: Outcome): SetupRun => {
     const durationMs = Date.now() - started
-    note(`${run.status} exit=${run.exitCode ?? 'null'} signal=${run.signal ?? 'null'} duration=${durationMs}ms${run.error ? ` error=${run.error}` : ''}`)
+    note(`${run.status} exit=${run.exitCode ?? 'null'} signal=${run.signal ?? 'null'} duration=${durationMs}ms${run.detail ? ` detail=${run.detail}` : ''}`)
     fs.closeSync(log)
-    return { ...run, command: input.command, logPath, durationMs }
+    const error = run.status === 'completed' ? null : run.status === 'timed_out' ? 'setup_timed_out' : 'setup_failed'
+    return { ...run, error, pathSource, command: input.command, logPath, durationMs }
   }
   note(`setup command: ${input.command}`)
   note(`cwd: ${input.worktreePath}`)
-  const probe = await probeLoginShellPath({ shell: userShell(), timeoutMs: Math.max(1, Math.min(PROBE_TIMEOUT_MS, remaining())), env: process.env, signal: input.signal })
-  const pathSource = probe.pathValue === null ? 'process' : 'login_shell'
+  const probe = await probeLoginShellPath({ shell: userShell(), timeoutMs: Math.max(1, Math.min(PROBE_TIMEOUT_MS, Math.floor(remaining() / 3))), env: process.env, signal: input.signal })
+  const pathSource: SetupRun['pathSource'] = probe.pathValue === null ? 'process' : 'login_shell'
   note(probe.pathValue === null ? `login shell PATH unavailable (${probe.outcome.ok ? 'ok' : probe.outcome.reason}); using the runtime PATH` : 'PATH from the login shell')
-  if (input.signal.aborted) return finish({ status: 'failed', exitCode: null, signal: null, pathSource, error: 'cancelled' })
-  if (remaining() <= 0) return finish({ status: 'timed_out', exitCode: null, signal: null, pathSource, error: 'request budget exhausted before the command started' })
+  if (input.signal.aborted) return finish({ status: 'failed', exitCode: null, signal: null, detail: 'cancelled' })
+  if (remaining() <= 0) return finish({ status: 'timed_out', exitCode: null, signal: null, detail: 'request budget exhausted before the command started' })
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: probe.pathValue ?? process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin', CORRAL_WORKTREE_PATH: input.worktreePath, CORRAL_ROOT_PATH: input.rootPath }
   return await new Promise<SetupRun>((resolve) => {
     let settled = false, expired: 'timed_out' | 'cancelled' | null = null
@@ -96,10 +120,10 @@ export async function runSetupCommand(input: { command: string; worktreePath: st
     try {
       child = spawn('/bin/sh', ['-c', input.command], { cwd: input.worktreePath, env, stdio: ['ignore', log, log], detached: true })
     } catch (error) {
-      resolve(finish({ status: 'failed', exitCode: null, signal: null, pathSource, error: String(error) }))
+      resolve(finish({ status: 'failed', exitCode: null, signal: null, detail: String(error) }))
       return
     }
-    const settle = (run: Omit<SetupRun, 'command' | 'logPath' | 'durationMs'>) => {
+    const settle = (run: Outcome) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -110,19 +134,22 @@ export async function runSetupCommand(input: { command: string; worktreePath: st
     const stop = (reason: 'timed_out' | 'cancelled') => {
       if (expired) return
       expired = reason
+      // Past the budget the runtime is still alive, so the group gets a short TERM grace. A cancelled
+      // request or a closing runtime (whose process may exit on the next tick) gets SIGKILL now.
+      if (reason === 'cancelled') { killGroup(child.pid, 'SIGKILL'); return }
       killGroup(child.pid, 'SIGTERM')
       setTimeout(() => killGroup(child.pid, 'SIGKILL'), TERM_GRACE_MS)
     }
     const timer = setTimeout(() => stop('timed_out'), remaining())
     const onAbort = () => stop('cancelled')
     input.signal.addEventListener('abort', onAbort, { once: true })
-    child.on('error', (error) => settle({ status: 'failed', exitCode: null, signal: null, pathSource, error: String(error) }))
+    child.on('error', (error) => settle({ status: 'failed', exitCode: null, signal: null, detail: String(error) }))
     child.on('exit', (code, signal) => {
       // After a kill the leader may exit before its children; finish the group before reporting.
       if (expired) {
         killGroup(child.pid, 'SIGKILL')
-        settle({ status: expired === 'timed_out' ? 'timed_out' : 'failed', exitCode: code, signal, pathSource, error: expired === 'timed_out' ? 'request budget exceeded; process group killed' : 'cancelled; process group killed' })
-      } else settle({ status: code === 0 ? 'completed' : 'failed', exitCode: code, signal, pathSource, error: null })
+        settle({ status: expired === 'timed_out' ? 'timed_out' : 'failed', exitCode: code, signal, detail: expired === 'timed_out' ? 'request budget exceeded; process group killed' : 'cancelled; process group killed' })
+      } else settle({ status: code === 0 ? 'completed' : 'failed', exitCode: code, signal, detail: null })
     })
   })
 }
@@ -130,5 +157,5 @@ export async function runSetupCommand(input: { command: string; worktreePath: st
 /** The error a failed or timed-out setup becomes when there is no later stage to carry it. */
 export function setupError(run: SetupRun, resources: Record<string, unknown>): RuntimeError {
   const what = run.status === 'timed_out' ? 'Setup command timed out' : `Setup command failed (exit ${run.exitCode ?? run.signal ?? 'none'})`
-  return new RuntimeError(run.status === 'timed_out' ? 'setup_timed_out' : 'setup_failed', `${what}; worktree kept at ${String(resources.path)}; log: ${run.logPath}`, resources)
+  return new RuntimeError(run.error ?? 'setup_failed', `${what}; worktree kept at ${String(resources.path)}; log: ${run.logPath}`, resources)
 }

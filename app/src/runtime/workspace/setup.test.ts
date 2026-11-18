@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { startRuntime } from '../server.js'
 import { localCall, request, socketPath } from '../transport.js'
@@ -14,6 +15,7 @@ import { RepoRegistry } from '../../main/registry.js'
 import { isRecord } from '../../shared/json.js'
 import { RuntimeError } from '../contracts.js'
 import { setupLogDirectory } from './setup.js'
+import { WorktreePoller } from '../../main/worktree-watch.js'
 
 const env = { ...process.env }
 const cleanups: (() => void | Promise<void>)[] = []
@@ -40,7 +42,7 @@ async function fixture() {
   fs.mkdirSync(repo)
   git(repo, 'init', '-b', 'main'); git(repo, 'commit', '--allow-empty', '-m', 'one')
   let runtime = await startRuntime({ userData: data })
-  cleanups.push(() => runtime.close())
+  cleanups.push(() => runtime.close().catch(() => {}))
   const parser = new CommandRegistry()
   parser.register(workspaceModule(data))
   const call = (...args: string[]) => localCall(socketPath(data), request(parser.parse(args, repo)))
@@ -48,6 +50,8 @@ async function fixture() {
     try { return (await call(...args)).error?.code } catch (error) { return error instanceof RuntimeError ? error.code : String(error) }
   }
   const restart = async () => { await runtime.close(); runtime = await startRuntime({ userData: data }) }
+  const close = () => runtime.close()
+  const callWithin = (ms: number, ...args: string[]) => localCall(socketPath(data), request(parser.parse(args, repo), undefined, ms))
   const real = fs.realpathSync(repo)
   const worktreePath = (name: string) => path.join(real, '.claude/worktrees', name)
   const branchExists = (name: string) => git(repo, 'for-each-ref', '--format=%(refname)', `refs/heads/${name}`) !== ''
@@ -55,10 +59,14 @@ async function fixture() {
   expect((await call('repo', 'add', '--path', repo)).ok).toBe(true)
   const id = new RepoRegistry(data).records()[0]!.id
   const register = async (command: string) => expect((await call('repo', 'set-setup-command', '--repo', id, '--command', command)).ok).toBe(true)
-  return { root, data, repo, real, id, git, call, rejected, restart, worktreePath, branchExists, logs, register }
+  return { root, data, repo, real, id, git, call, callWithin, rejected, restart, close, worktreePath, branchExists, logs, register }
 }
 const receiptOf = (result: unknown): Record<string, unknown> => (isRecord(result) && isRecord(result.setupReceipt) ? result.setupReceipt : {})
 const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
+/** Running, not a zombie waiting to be reaped — read synchronously so no timer can run in between. */
+const running = (pid: number) => { try { return !execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim().startsWith('Z') } catch { return false } }
+const until = async (check: () => boolean, ms = 10000) => { const end = Date.now() + ms; while (!check()) { if (Date.now() > end) throw new Error('timed out waiting'); await new Promise(resolve => setTimeout(resolve, 50)) } }
+const pidsIn = (file: string) => { try { return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(Number) } catch { return [] } }
 
 describe('LIFE-813 worktree setup command', () => {
   it('C1: registers, shows, clears and survives restart; old records read as null; bad values change nothing', async () => {
@@ -219,5 +227,114 @@ describe('LIFE-813 worktree setup command', () => {
       expect(await rejected(...args)).toBe('unsupported')
       try { await call(...args) } catch (error) { expect(String(error instanceof Error ? error.message : error)).not.toContain('LIFE-412') }
     }
+  })
+
+  it('A1 C2+: workspace reads answer at once while a setup command holds the lane', async () => {
+    const { register, call, callWithin } = await fixture()
+    await register('sleep 3')
+    const creating = callWithin(15000, 'worktree', 'create', '--name', 'slow-read', '--timeout-ms', '15000')
+    await new Promise(resolve => setTimeout(resolve, 700))
+    for (const args of [['repo', 'list'], ['worktree', 'list'], ['repo', 'show', '--repo', 'repo']]) {
+      const started = Date.now()
+      expect((await call(...args)).ok).toBe(true)
+      expect([args.join(' '), Date.now() - started < 1000]).toEqual([args.join(' '), true])
+    }
+    expect(await creating).toMatchObject({ ok: true, result: { setupReceipt: { status: 'completed' } } })
+  })
+
+  it('A3 C3+: a login shell that hangs costs only part of the budget; the command starts with the runtime PATH', async () => {
+    const { root, register, callWithin } = await fixture()
+    const hang = path.join(root, 'hanging-shell')
+    fs.writeFileSync(hang, '#!/bin/sh\nsleep 60\n', { mode: 0o755 })
+    process.env.SHELL = hang
+    await register(`echo started > '${path.join(root, 'started')}'`)
+    const begun = Date.now()
+    const response = await callWithin(6000, 'worktree', 'create', '--name', 'hang', '--timeout-ms', '6000')
+    expect(response).toMatchObject({ ok: true, result: { setupReceipt: { status: 'completed', pathSource: 'process' } } })
+    expect(Date.now() - begun).toBeLessThan(4000)
+    expect(fs.readFileSync(path.join(root, 'started'), 'utf8')).toBe('started\n')
+  })
+
+  it('A4 C4+: with a request id, create without --agent and worktree setup replay the recorded result — present or removed', async () => {
+    const { root, git, repo, register, call, worktreePath } = await fixture()
+    const counter = path.join(root, 'counter')
+    await register(`echo run >> '${counter}'`)
+    const id = `r1.${Date.now()}.${randomUUID()}`
+    const first = await call('worktree', 'create', '--name', 'once', '--request-id', id)
+    expect(first).toMatchObject({ ok: true, result: { replayed: false, setupReceipt: { status: 'completed' } } })
+    expect(await call('worktree', 'create', '--name', 'once', '--request-id', id)).toMatchObject({ ok: true, result: { replayed: true } })
+    expect((await call('worktree', 'rm', '--worktree', 'branch:once', '--force')).ok).toBe(true)
+    expect(fs.existsSync(worktreePath('once'))).toBe(false)
+    expect(await call('worktree', 'create', '--name', 'once', '--request-id', id)).toMatchObject({ ok: true, result: { replayed: true } })
+    expect(fs.existsSync(worktreePath('once'))).toBe(false)
+    expect(fs.readFileSync(counter, 'utf8')).toBe('run\n')
+    // A failure is recorded too: the same id answers the same setup_failed, without running again.
+    await register(`echo fail >> '${counter}'; exit 2`)
+    const failId = `r1.${Date.now()}.${randomUUID()}`
+    const failed = await call('worktree', 'create', '--name', 'fails', '--request-id', failId)
+    expect(failed).toMatchObject({ ok: false, error: { code: 'setup_failed', resources: { path: worktreePath('fails'), branch: 'fails', replayed: false } } })
+    expect((await call('worktree', 'rm', '--worktree', 'branch:fails', '--force')).ok).toBe(true)
+    expect(await call('worktree', 'create', '--name', 'fails', '--request-id', failId)).toMatchObject({ ok: false, error: { code: 'setup_failed', resources: { replayed: true, setupReceipt: { exitCode: 2 } } } })
+    expect(fs.readFileSync(counter, 'utf8')).toBe('run\nfail\n')
+    // worktree setup: same id, one run.
+    const outside = path.join(root, 'by-git')
+    git(repo, 'worktree', 'add', '-b', 'by-git', outside)
+    const setupId = `r1.${Date.now()}.${randomUUID()}`
+    expect((await call('worktree', 'setup', '--worktree', `path:${outside}`, '--request-id', setupId)).error?.code).toBe('setup_failed')
+    expect((await call('worktree', 'setup', '--worktree', `path:${outside}`, '--request-id', setupId)).error?.resources).toMatchObject({ replayed: true })
+    expect(fs.readFileSync(counter, 'utf8')).toBe('run\nfail\nfail\n')
+    // A refusal that ran nothing does not spend the id (not_started releases it).
+    await register('null')
+    const refusedId = `r1.${Date.now()}.${randomUUID()}`
+    expect((await call('worktree', 'setup', '--worktree', `path:${outside}`, '--request-id', refusedId)).error?.code).toBe('setup_not_configured')
+  })
+
+  it('A5 C5+: closing the runtime kills the setup group at once — a TERM-ignoring child is gone with no timer having run', async () => {
+    const { root, register, callWithin, close } = await fixture()
+    const pids = path.join(root, 'pids')
+    await register(`trap "" TERM; echo $$ >> '${pids}'; sleep 60 & echo $! >> '${pids}'; wait`)
+    const creating = callWithin(30000, 'worktree', 'create', '--name', 'quit', '--timeout-ms', '30000').catch(error => error)
+    await until(() => pidsIn(pids).length === 2)
+    const listed = pidsIn(pids)
+    expect(listed.map(running)).toEqual([true, true])
+    const closing = close()
+    // The app exits right after close: block the event loop so no timer (TERM grace) can fire.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300)
+    expect(listed.map(running)).toEqual([false, false])
+    await closing.catch(() => {})
+    await creating
+  })
+
+  it('A8 C1+: a hand-edited invalid command in repos.json is refused with setup_command_invalid and never runs', async () => {
+    const { data, root, call, worktreePath, branchExists } = await fixture()
+    const registry = new RepoRegistry(data)
+    for (const bad of ['', '   ', `touch '${path.join(root, 'nl')}'\nx`, `touch '${path.join(root, 'nul')}'\0`, 'x'.repeat(4097)]) {
+      registry.change(state => { state.repos[0]!.setupCommand = bad })
+      const response = await call('worktree', 'create', '--name', 'bad-cmd')
+      expect([JSON.stringify(bad.slice(0, 6)), response.error?.code, response._meta?.outcome]).toEqual([JSON.stringify(bad.slice(0, 6)), 'setup_command_invalid', 'not_started'])
+      expect([fs.existsSync(worktreePath('bad-cmd')), branchExists('bad-cmd')]).toEqual([false, false])
+      expect((await call('worktree', 'setup', '--worktree', `path:${fs.realpathSync(path.join(root, 'repo'))}`)).error?.code).toBe('setup_command_invalid')
+    }
+    expect([fs.existsSync(path.join(root, 'nl')), fs.existsSync(path.join(root, 'nul'))]).toEqual([false, false])
+    // skip never reads it.
+    expect((await call('worktree', 'create', '--name', 'skip-bad', '--setup', 'skip')).ok).toBe(true)
+  })
+
+  it('A2 C10+: the external worktree watcher sees a git worktree add and nothing runs the setup command', async () => {
+    const { root, real, git, repo, register, logs } = await fixture()
+    const marker = path.join(root, 'watch-marker')
+    await register(`touch '${marker}'`)
+    const seen: string[][] = []
+    const poller = new WorktreePoller({ roots: () => [real], onChange: changed => { seen.push(changed) } })
+    await poller.tick()
+    git(repo, 'worktree', 'add', '-b', 'external', path.join(root, 'external'))
+    expect(await poller.tick()).toEqual([real])
+    expect(seen.at(-1)).toEqual([real])
+    await new Promise(resolve => setTimeout(resolve, 300))
+    expect([fs.existsSync(marker), logs()]).toEqual([false, []])
+    // The only caller of the runner is the runtime workspace module (create / worktree setup).
+    const src = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+    const callers = execFileSync('grep', ['-rl', '--include=*.ts', 'runSetupCommand(', src], { encoding: 'utf8' }).trim().split('\n').map(file => path.relative(src, file)).filter(file => !file.endsWith('.test.ts')).sort()
+    expect(callers).toEqual(['runtime/workspace/index.ts', 'runtime/workspace/setup.ts'])
   })
 })

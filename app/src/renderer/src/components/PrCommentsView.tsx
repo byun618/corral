@@ -162,14 +162,20 @@ function ThreadView({ thread }: { thread: PrThread }): React.JSX.Element {
   const [chosen, setChosen] = useState<boolean | null>(null)
   const open = chosen ?? !thread.resolved
   const first = thread.comments[0]
+  // 좁은 패널에서 줄 표시는 잘리지 않고, 경로는 디렉터리가 먼저 줄고 파일 이름이 그다음에 준다(게이트 ① 수정 1).
+  const cut = thread.path.lastIndexOf('/') + 1
+  const dir = thread.path.slice(0, cut)
+  const file = thread.path.slice(cut)
   return (
     <article className="pr-thread" data-pr-thread={thread.id} data-pr-resolved={thread.resolved ? '' : undefined} data-pr-outdated={thread.outdated ? '' : undefined} data-pr-thread-open={open ? '' : undefined}>
       <button type="button" className="pr-thread-head" aria-expanded={open} onClick={() => setChosen(!open)}>
         <span className={`explorer-twistie is-collapsible${open ? '' : ' is-collapsed'}`}>
           <Codicon name="chevron-down" />
         </span>
-        <span className="pr-thread-path" data-pr-thread-location="" title={thread.path}>
-          {threadLocation(thread)}
+        <span className="pr-thread-path" data-pr-thread-location="" title={threadLocation(thread)}>
+          <span className="pr-thread-dir">{dir}</span>
+          <span className="pr-thread-file">{file}</span>
+          <span className="pr-thread-line" data-pr-thread-line="">{thread.line === null ? ' · 줄 없음' : `:${thread.line}`}</span>
         </span>
         {thread.resolved ? <span className="pr-badge is-resolved" data-pr-badge="resolved">해소됨</span> : null}
         {thread.outdated ? <span className="pr-badge is-outdated" data-pr-badge="outdated">outdated</span> : null}

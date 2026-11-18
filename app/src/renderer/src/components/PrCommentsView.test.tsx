@@ -109,6 +109,8 @@ describe('C6 표시 요소 (#14858 씨앗)', () => {
     const thread = all('[data-pr-thread]')
     expect(thread).toHaveLength(1)
     expect(q('[data-pr-thread-location]')?.textContent).toBe('acceptance/testdata/repo/repo-delete-private-forks.txtar:15')
+    expect(q('[data-pr-thread-location]')?.getAttribute('title')).toBe('acceptance/testdata/repo/repo-delete-private-forks.txtar:15')
+    expect(q('[data-pr-thread-line]')?.textContent?.trim()).toBe(':15')
     expect(q('[data-pr-badge="resolved"]')?.textContent).toBe('해소됨')
     expect(q('[data-pr-badge="outdated"]')).toBeNull()
     expect(thread[0]?.hasAttribute('data-pr-thread-open')).toBe(false)
@@ -168,6 +170,8 @@ describe('C6 표시 요소 (#14858 씨앗)', () => {
     }
     await shown(ok(comments))
     expect(q('[data-pr-thread-location]')?.textContent).toBe('a.go · 줄 없음')
+    expect(q('[data-pr-thread-location]')?.getAttribute('title')).toBe('a.go · 줄 없음')
+    expect(q('[data-pr-thread-line]')?.textContent?.trim()).toBe('· 줄 없음')
     expect(q('[data-pr-badge="outdated"]')?.textContent).toBe('outdated')
     expect(q('[data-pr-thread]')?.hasAttribute('data-pr-thread-open')).toBe(true)
     expect(q('[data-pr-thread-comment] [data-pr-author]')?.textContent).toBe('ghost')

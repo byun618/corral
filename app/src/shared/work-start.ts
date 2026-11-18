@@ -45,6 +45,8 @@ export type StartWorkResult = {
   joined: boolean
   done: boolean
   stages: Record<StartStageName, StartStage>
+  /** LIFE-813 레포에 등록한 setup 명령 — worktree 뒤 · 에이전트 앞에 돈다. 없으면(등록 없음 · 결과 전) 빠진다. 실패는 성공으로 세지 않는다. */
+  setup?: StartStage
   worktreePath: string | null
   /** 로컬 명시 링크를 저장했나(worktree 가 생겼으면 언제나 시도한다). */
   linkSaved: boolean

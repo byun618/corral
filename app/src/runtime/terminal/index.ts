@@ -20,7 +20,7 @@ import { INPUT_TIMING } from '../../main/mobile/input.js'
 import {
   AGENT_START_TIMEOUT_MS, AgentStore, READY_SAMPLES, READY_SAMPLE_INTERVAL_MS, SCREEN_EXCERPT_BYTES,
   agentName, agentViewSeen, bodyIdentity, paneRecovery, captureCursor, classifyCount, codexCandidates, codexRolloutFiles, countSubmissions,
-  evaluateManifest, isAgentKind, manifestGateError, mintsSessionId, normalizeBody, providerArgv, readySatisfied, resolvedIdentity, sessionRecordPaths,
+  claudeParkedSession, evaluateManifest, isAgentKind, manifestGateError, mintsSessionId, normalizeBody, providerArgv, readySatisfied, resolvedIdentity, sessionRecordPaths,
   type AgentKind, type AgentPhase, type AgentRecord, type CursorEntry, type DetectManifestObservation,
 } from './agent.js'
 export const terminalSpecs: CommandSpec[] = specs
@@ -353,9 +353,15 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         if (file === null || record.kind !== 'claude' || record.sessionId === null) {
           return { proven: true, files: file === null ? [] : [file], sessionId: record.sessionId, source: record.sessionIdSource, path: file, continuedIn: [] }
         }
-        const followed = followContinued({ session: { kind: 'id', agent: 'claude', source: record.sessionIdSource ?? 'client-minted', id: record.sessionId }, file, empty: 'follow' })
-        const files = [file, ...followed.hops.map(id => path.join(path.dirname(file), `${id}.jsonl`))]
-        return { proven: true, files, sessionId: record.sessionId, source: record.sessionIdSource, path: followed.file, continuedIn: followed.hops }
+        // LIFE-797: a minted session parked by `←` before it held a conversation has no file to leave
+        // `continued-in` in; the registry's one hop (`claudeParkedSession`, fail-closed) starts the chain at
+        // the job's file instead, and the rule above follows on from there (so at most 1 + `CONTINUED_CHAIN_MAX` hops).
+        const parked = claudeParkedSession({ sessionId: record.sessionId, folder: path.dirname(file) })
+        const start = parked === null ? { id: record.sessionId, file, hops: [] } : { id: parked.sessionId, file: parked.file, hops: [parked.sessionId] }
+        const followed = followContinued({ session: { kind: 'id', agent: 'claude', source: record.sessionIdSource ?? 'client-minted', id: start.id }, file: start.file, empty: 'follow' })
+        const hops = [...start.hops, ...followed.hops]
+        const files = [file, ...hops.map(id => path.join(path.dirname(file), `${id}.jsonl`))]
+        return { proven: true, files, sessionId: record.sessionId, source: record.sessionIdSource, path: followed.file, continuedIn: hops }
       }
       /**
        * The rule id behind a blocked screen, or `null` when herdr cannot say (F3).

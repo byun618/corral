@@ -33,7 +33,8 @@ export function initialStartAgent({ preferred, detection }: { preferred: StartAg
   return autoAgent(detection) ?? 'shell'
 }
 
-export type ProgressRow = { name: StartStageName; label: string; status: StartStage['status']; note: string | null }
+/** `setup` = 레포에 등록한 setup 명령(LIFE-813) — 결과에 있을 때만 worktree 다음 줄에 그린다. */
+export type ProgressRow = { name: StartStageName | 'setup'; label: string; status: StartStage['status']; note: string | null }
 
 /**
  * 이미 이 작업에 만든 worktree 에 합류했나(R1-A) — main 이 `already_linked` 로 worktree · 에이전트 · 프롬프트를 `skipped` 로 돌려준다.
@@ -63,11 +64,14 @@ export function progressRows({ result, running, agent, submit, worktreeSeen }: {
   const names: StartStageName[] = shell ? ['worktree', 'agent'] : ['worktree', 'agent', 'prompt']
   if (result !== null) {
     const joined = alreadyLinked(result)
-    return names.map((name) => {
+    const rows: ProgressRow[] = names.map((name) => {
       const entry = result.stages[name]
       const fallback = entry.status === 'queued' ? QUEUED_NOTE : joined && entry.status === 'skipped' ? SKIPPED_NOTE : null
       return { name, label: joined && name === 'worktree' ? '이미 있음' : labels[name], status: entry.status, note: entry.message ?? fallback }
     })
+    const setup = result.setup
+    if (setup !== undefined) rows.splice(1, 0, { name: 'setup', label: 'setup 명령', status: setup.status, note: setup.message })
+    return rows
   }
   if (!running) return names.map((name) => ({ name, label: labels[name], status: 'pending', note: null }))
   return names.map((name, index) => {
@@ -88,15 +92,18 @@ export function failureActions(result: StartWorkResult | null): FailureAction[] 
   if (worktree.status === 'failed' || worktree.status === 'unknown') return atPath ? [{ kind: 'open' }, { kind: 'relaunch' }] : [{ kind: 'rename' }]
   if (agent.status === 'failed' || agent.status === 'unknown') return atPath ? [{ kind: 'relaunch' }, { kind: 'open' }] : []
   if (prompt.status === 'failed' || prompt.status === 'unknown') return atPath ? [{ kind: 'open' }] : []
+  // setup 명령 실패(LIFE-813) — worktree 는 남아 있다. 열어서 고친다(`corral worktree setup` 으로 다시 돌릴 수 있다).
+  if (result.setup !== undefined && (result.setup.status === 'failed' || result.setup.status === 'unknown')) return atPath ? [{ kind: 'open' }] : []
   // 링크 저장 실패(R2-B) — 만든 것은 다 됐지만 작업에 안 붙었다. 성공으로 그리지 않고 열기만 남긴다(다음 상태 갱신이 다시 붙인다).
   if (!result.linkSaved && atPath) return [{ kind: 'open' }]
   return []
 }
 
-/** 끝까지 갔나 — worktree 를 이번에 만들었고(합류 아님) 링크도 저장했고(R2-B) 실패·미확정 단계가 없다. 「줄에 넣음」 은 실패가 아니다. */
+/** 끝까지 갔나 — worktree 를 이번에 만들었고(합류 아님) 링크도 저장했고(R2-B) 실패·미확정 단계가 없다(setup 명령 포함 — LIFE-813). 「줄에 넣음」 은 실패가 아니다. */
 export function startSucceeded(result: StartWorkResult | null): boolean {
   if (result === null || result.refused !== null || result.stages.worktree.status !== 'completed' || !result.linkSaved) return false
-  return Object.values(result.stages).every((entry) => entry.status === 'completed' || entry.status === 'skipped' || entry.status === 'queued')
+  const entries = result.setup === undefined ? Object.values(result.stages) : [...Object.values(result.stages), result.setup]
+  return entries.every((entry) => entry.status === 'completed' || entry.status === 'skipped' || entry.status === 'queued')
 }
 
 /**

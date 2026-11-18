@@ -1,7 +1,7 @@
 // LIFE-603 C2·C6 — 시작 모달 순수 모델: 기본 레포 고르는 순서 · 진행 단계 · 실패 행동.
 import { describe, expect, it } from 'vitest'
 import { testRepo, testWorktree } from '../../shared/test-rows.js'
-import type { StartWorkResult } from '../../shared/work-start.js'
+import type { StartStage, StartWorkResult } from '../../shared/work-start.js'
 import { alreadyLinked, defaultStartRepo, failureActions, progressRows, startSignature, startSucceeded, uniqueStartName } from './start-work-model.js'
 
 const repos = [testRepo({ root: '/a', worktrees: [] }), testRepo({ root: '/b', worktrees: [] })]
@@ -73,5 +73,24 @@ describe('fix1 R1-A·B·P — 합류 · 미확정 · 줄에 넣음 · 이름 유
     const taken = [testRepo({ root: '/a', worktrees: [testWorktree({ path: '/a/wt/K-1', branch: 'refs/heads/K-1' }), testWorktree({ path: '/a/wt/K-1-2', branch: 'other' })] })]
     expect(uniqueStartName({ base: 'K-1', repos: taken })).toBe('K-1-3')
     expect(uniqueStartName({ base: 'K-9', repos: taken })).toBe('K-9')
+  })
+})
+
+describe('LIFE-813 C9 — setup 명령 실패는 성공으로 세지 않는다', () => {
+  const failed: StartStage = { status: 'failed', code: 'setup_failed', message: 'Setup command failed (exit 1); log: /u/logs/x.log' }
+  it('세 단계가 다 완료여도 setup 이 실패면 성공이 아니다 · 완료 · 건너뜀(없음)은 성공 그대로', () => {
+    expect(startSucceeded(done())).toBe(true)
+    expect(startSucceeded({ ...done(), setup: failed })).toBe(false)
+    expect(startSucceeded({ ...done(), setup: { status: 'unknown', code: null, message: null } })).toBe(false)
+    expect(startSucceeded({ ...done(), setup: { status: 'completed', code: null, message: null } })).toBe(true)
+  })
+  it('진행 줄에 worktree 다음 setup 줄이 메시지(로그 경로)와 함께 보인다 · 결과에 없으면 줄도 없다', () => {
+    const rows = progressRows({ result: { ...done(), setup: failed }, running: false, agent: 'claude', submit: false, worktreeSeen: true })
+    expect(rows.map((row) => [row.name, row.status])).toEqual([['worktree', 'completed'], ['setup', 'failed'], ['agent', 'completed'], ['prompt', 'completed']])
+    expect(rows[1]?.note).toContain('/u/logs/x.log')
+    expect(progressRows({ result: done(), running: false, agent: 'claude', submit: false, worktreeSeen: true }).map((row) => row.name)).toEqual(['worktree', 'agent', 'prompt'])
+  })
+  it('실패 행동 — worktree 가 있으면 열기', () => {
+    expect(failureActions({ ...done(), setup: failed })).toEqual([{ kind: 'open' }])
   })
 })

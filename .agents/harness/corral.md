@@ -61,7 +61,7 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 | --- | --- | --- |
 | 본문이 정확히 한 번 전달됐다 | **증명(소유 증명 가능한 세션 기록이 있을 때)** — 기록이 없거나 둘 이상이면 `unknown`(공백)이다 | `corral terminal prompt --wait accepted` 의 `outcome: completed` + `record.matchCount: 1` + `wait.satisfied`. 제출 창 안에서 정확히 1건 일치일 때만 `stage: confirmed`·`phase: accepted`. 2건 이상은 "확인된 1회" 가 아니라 **한 입력 규칙이 깨진 것**으로 보고된다 |
 | 이 pane 이 맡긴 그 pane 이다 (세대 불변) | **증명** | handle 에 프로필·backend 부팅·PTY 세대가 묶여 있고, reconcile 이 `pane_gone`·`pty_replaced`·`epoch_changed` 로 시도를 `unknown` 으로 정산한다. 정리는 닫기 직전 같은 세대를 다시 관측하고 같은 lane 안에서 닫는다 |
-| 보고가 오래된 시도에서 온 게 아니다 | **증명** | 워커 보고는 `--task-id`·`--dispatch-id` + pane 신원(`HERDR_PANE_ID`·`HERDR_SESSION`)으로 검사된다. 다른 pane = `sender_mismatch`, 사라진 pane·교체된 시도 = `stale_dispatch`, 두 번째 완료 보고 = `illegal_transition`, 정산·중단·회수된 시도 = `capability_revoked`. **거절은 아무것도 저장하지 않는다**. `←`·`/bg` 로 옮긴 claude 워커는 pane 신원 대신 세션 사슬(`CLAUDE_CODE_SESSION_ID` 가 그 Dispatch 의 민팅 세션이거나 `continued-in` 대상)로 받는다(답의 `proof: session_chain`, LIFE-796). **사슬 증명은 호출자가 싣는 세션 id 다 — 혼동 방지이지 인증이 아니다**(`sessionVerified: false`). 한계: claude 시도만 · bg 안 `/clear` 뒤는 사슬이 끊겨 `sender_mismatch` · pane 생존 관측은 그대로(사라진 pane 은 `stale_dispatch`) |
+| 보고가 오래된 시도에서 온 게 아니다 | **증명** | 워커 보고는 `--task-id`·`--dispatch-id` + pane 신원(`HERDR_PANE_ID`·`HERDR_SESSION`)으로 검사된다. 다른 pane = `sender_mismatch`, 사라진 pane·교체된 시도 = `stale_dispatch`, 두 번째 완료 보고 = `illegal_transition`, 정산·중단·회수된 시도 = `capability_revoked`. **거절은 아무것도 저장하지 않는다**. `←`·`/bg` 로 옮긴 claude 워커는 pane 신원 대신 세션 사슬(`CLAUDE_CODE_SESSION_ID` 가 그 Dispatch 의 민팅 세션이거나 `continued-in` 대상)로 받는다(답의 `proof: session_chain`, LIFE-796). 대화가 없던 pane 을 `←` 로 보낸 경우는 민팅 기록이 없어 `continued-in` 이 없다 — 그때만 Claude 세션 레지스트리의 `parkedJobId` 한 hop 으로 bg 세션을 사슬에 넣는다(LIFE-797, 아래 『감독 워커 기동』 agent view 줄). **사슬 증명은 호출자가 싣는 세션 id 다 — 혼동 방지이지 인증이 아니다**(`sessionVerified: false`). 한계: claude 시도만 · bg 안 `/clear` 뒤는 사슬이 끊겨 `sender_mismatch` · pane 생존 관측은 그대로(사라진 pane 은 `stale_dispatch`) |
 | 사람 개입 흔적 | **관측** | `terminal read` 화면뿐(H2). 구조화된 조회는 GUI 직접 입력을 보지 못한다. `corral orchestration worker-retain --reason user_takeover` 는 **사람이 선언하는 기록**이지 감지가 아니다 |
 
 ## 이 매핑의 근거 — 실행으로 확인한 것 / 계약만 읽은 것
@@ -98,7 +98,7 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 | **배달 확인** | `terminal prompt` → `result.stage`(`confirmed`)·`result.wait.satisfied`·`result.record.matchCount`·`result.record.unavailableReason`, 그리고 `_meta.outcome`(`completed`). `worker-start` 는 같은 값을 `result.input.*` 아래에 담는다 |
 | 요청 영수증 | `result.requestId`(`r1.<13자리 ms>.<UUID>`)·`result.replayed` |
 | 실제 모델·advisor | `worker-start` → `result.input.agent.{requestedModel,requestedEffort,requestedAdvisor,resolvedModel,argv,sessionId,sessionRecord}` · `terminal show` → `result.process.foreground[].argv` · 배너는 `result.input.delivery.screen` 또는 `corral terminal read --screen` |
-| 세션이 백그라운드로 옮겨 간 뒤의 기록 (claude, LIFE-771) | `…agent.sessionRecord.path`·`terminal prompt` → `result.record.path` 는 **이어 가기 규칙이 마지막으로 닿은 파일**(`continued-in` 을 따라간 끝 — 보통 지금 자라는 파일이지만 hop 상한 8·되살아난 원본·증명 못 한 다음 hop 에서는 아닐 수 있다), `…agent.sessionRecord.continuedIn` 은 거쳐 간 세션 id 들(안 옮겼으면 `[]`), `…agent.sessionId` 는 **민팅한 id 그대로**(pane 정체) — 옮겨 간 뒤 기록을 볼 때 sessionId 로 경로를 짓지 말고 이 경로를 읽는다 |
+| 세션이 백그라운드로 옮겨 간 뒤의 기록 (claude, LIFE-771) | `…agent.sessionRecord.path`·`terminal prompt` → `result.record.path` 는 **이어 가기 규칙이 마지막으로 닿은 파일**(`continued-in` 을 따라간 끝 — 보통 지금 자라는 파일이지만 hop 상한 8·되살아난 원본·증명 못 한 다음 hop 에서는 아닐 수 있다), `…agent.sessionRecord.continuedIn` 은 거쳐 간 세션 id 들(안 옮겼으면 `[]`. 대화 없이 `←` 로 park 된 pane 은 레지스트리 hop 의 bg 세션 id 가 첫 칸 — LIFE-797), `…agent.sessionId` 는 **민팅한 id 그대로**(pane 정체) — 옮겨 간 뒤 기록을 볼 때 sessionId 로 경로를 짓지 말고 이 경로를 읽는다 |
 | 준비 근거 | `terminal wait` / `worker-start` → `…agent.evidence.{agentStatus,launchPending,interactiveReady,stateChangeSeq,samples,detectManifest}` |
 | 배치·확인 | `check` → `result.deliveryId`(`delivery_<12 hex>`)·`result.count`·`result.timedOut`·`result.deliveryReplayed`·`result.acknowledged`·`result.peeked` |
 | 메시지·질문 id | `check` → `result.messages[].{id,type,subject,body,taskId,dispatchId}` (`msg_<12 hex>`). 질문에 답할 때 그 `id` 를 `corral orchestration reply --id` 에 넣는다 |
@@ -389,7 +389,13 @@ corral worktree set --worktree path:<구현 worktree 절대경로> --parent-work
 - **agent view(LIFE-787)**: 워커 pane 이 Claude agent view 면 `worker-start` 가 리드 줄을 치기 **전에** 거절한다 — `incomplete`·`stage: dispatch_input`·
   `stages.input.error: agent_view`, pane 에는 아무것도 쓰지 않는다. 사람이 그 pane 에서 `esc` 로 대화로 돌아온 뒤 **같은 Task 에**
   `corral orchestration worker-start --task <t> --terminal <handle>` 을 다시 부르면 같은 Dispatch 로 재개된다(`launch: resumed`). 재개 중 본문 단계에서 걸려도 같다.
-  아직 대화 기록이 없는 pane(민팅 세션 파일 없음)은 재개 배달이 1회여도 `outcome_unknown` 으로 올 수 있다(LIFE-771 영역) — `dispatch-show` 와 pane 을 먼저 보고 다시 넣지 않는다.
+  아직 대화 기록이 없는 pane(민팅 세션 파일 없음)은 `←` 가 세션을 데몬의 bg 세션으로 park 하고, `esc` 뒤 본문은 그 bg 세션 파일에 들어간다(관측 Claude Code 2.1.296).
+  corral 은 민팅 파일이 **없을 때만** Claude 세션 레지스트리(`~/.claude/sessions/<pid>.json`, 문서화되지 않은 내부 형식)를 한 hop 따라간다 — 민팅 id 의 대화형 항목 하나의
+  `parkedJobId` → 그 job 의 `kind: "bg"` 항목 하나의 `sessionId` → 같은 폴더의 그 파일(LIFE-797). 그래서 재개가 `ready`·`confirmed`·matchCount 1 이고(`agent.sessionRecord.continuedIn` 첫 칸 = bg 세션 id)
+  그 워커의 `worker_done` 도 `proof: session_chain` 으로 받는다. **남는 한계**: hop 의 어느 고리든 없거나·둘 이상이거나·모양이 다르면 hop 없음 — 이 일감 전과 같은 답
+  (`incomplete`·`dispatch_input_unconfirmed`·`unavailableReason: not_found`, 예산을 다 쓰고 돌아옴 · 워커 보고 `sender_mismatch`)이다. 형식이 Claude Code 버전마다 바뀔 수 있고(관측 2.1.296),
+  빈 idle bg 세션은 데몬이 약 5분 뒤 정리해 그 뒤에는 hop 이 사라질 수 있다. agent view 에서 다른 행에 붙은 pane·bg 안 `/clear` 뒤는 다루지 않는다.
+  그 답이 오면 `dispatch-show` 와 pane 을 먼저 보고 다시 넣지 않는다.
 - **셸 rc 의 대화형 질문**: pane 셸이 rc 에서 질문(업데이트 확인 등)을 띄우면 주입한 기동 줄 첫 글자가 그 답으로 먹혀 provider 이름이 깨지고
   `agent_not_ready`·`incomplete` 로 끝난다. 같은 Task 를 `worker-stop` 으로 멈추고 새로 기동한다 — 반복되면 사용자에게 셸 쪽 질문을 먼저 끝내 달라고 한다(LIFE-719 외 매핑 밖 두 번째).
 - **타임아웃·빈 결과**: 대기 예산은 `--timeout-ms` 로 주고 상한은 120000 이다. codex 는 같은 과제에서 Claude 보다

@@ -17,6 +17,7 @@ import { RuntimeError } from '../contracts.js'
 import { isRecord } from '../../shared/json.js'
 import { atomicWrite, privateDirectory, readFile } from '../storage.js'
 import { agentViewShown } from '../../main/mobile/keys.js'
+import { SESSION_ID } from '../../main/transcript-continued.js'
 
 export type AgentKind = 'claude' | 'codex' | 'grok'
 export const AGENT_KINDS: readonly AgentKind[] = ['claude', 'codex', 'grok']
@@ -662,8 +663,13 @@ export function sessionRecordPaths(kind: AgentKind, options: RecordLocationInput
  * directory entries only — no backend, no pane.
  */
 export function claudeRecordById(input: { sessionId: string; home?: string }): string | null {
-    const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(input.home ?? os.homedir(), '.claude')
-    const projects = path.join(configDir, 'projects')
+    const found = claudeRecordsById(input)
+    return found !== null && found.length === 1 ? found[0] ?? null : null
+}
+
+/** Every `<id>.jsonl` under the project folders — `null` when a folder cannot be read (no answer, not "none"). */
+function claudeRecordsById(input: { sessionId: string; home?: string }): string[] | null {
+    const projects = path.join(claudeConfigDir(input.home), 'projects')
     let folders: fs.Dirent[]
     try { folders = fs.readdirSync(projects, { withFileTypes: true }) } catch { return null }
     const found: string[] = []
@@ -671,11 +677,80 @@ export function claudeRecordById(input: { sessionId: string; home?: string }): s
         if (!folder.isDirectory()) continue
         const file = path.join(projects, folder.name, input.sessionId + '.jsonl')
         try { if (fs.statSync(file).isFile()) found.push(file) } catch (error) {
-            const code = error instanceof Error && 'code' in error ? error.code : null
-            if (code !== 'ENOENT' && code !== 'ENOTDIR') return null
+            if (!missing(error)) return null
         }
     }
-    return found.length === 1 ? found[0] ?? null : null
+    return found
+}
+
+const claudeConfigDir = (home: string | undefined): string => process.env.CLAUDE_CONFIG_DIR ?? path.join(home ?? os.homedir(), '.claude')
+const missing = (error: unknown): boolean => {
+    const code = error instanceof Error && 'code' in error ? error.code : null
+    return code === 'ENOENT' || code === 'ENOTDIR'
+}
+/** `ENOENT` is "no file"; anything else (a folder in its place, a read error) is "cannot tell". */
+const fileState = (file: string): 'file' | 'none' | 'unknown' => {
+    try { return fs.statSync(file).isFile() ? 'file' : 'unknown' } catch (error) { return missing(error) ? 'none' : 'unknown' }
+}
+/** Claude Code's job ids are the leading hex of the session id (`1ca6225d` ↔ `1ca6225d-5ee7-…`, 2.1.296). */
+const JOB_ID = /^[0-9a-f]+$/
+
+/**
+ * LIFE-797. Where a claude session that never held a conversation went when `←` parked it.
+ *
+ * `←` on an empty prompt hands the session to Claude Code's daemon as a background job. When the minted session
+ * already had a conversation its file ends with `continued-in` and LIFE-771/796 follow that. When it had none,
+ * there is no minted file to write `continued-in` into, and after `esc` the pane writes on in the job's own
+ * session file. What is left to say where it went is Claude Code's session registry
+ * (`<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`, observed on 2.1.296, not a contract): the pane's interactive entry
+ * keeps the minted `sessionId` and gains `parkedJobId`, and the job's entry (`kind: "bg"`, `jobId`) names the
+ * session it runs. That is one hop: minted id → `parkedJobId` → the bg entry's `sessionId` → its file.
+ *
+ * The hop is taken only when the minted file does **not** exist (its `continued-in` is the record otherwise), and
+ * only when every link is exactly one: one interactive entry with the minted id, a `parkedJobId` in the job id
+ * shape, one bg entry with that job id, a session id in the UUID shape that begins with the job id, and its file —
+ * in `folder` when the caller knows the minted file's folder, or the one `<id>.jsonl` under the project folders
+ * when it does not. A registry or project folder that cannot be read, an entry that cannot be parsed, a field
+ * missing or of another shape, 0 or 2+ at any link: no hop, and the caller answers exactly as before (fail-closed).
+ * It reads files only and never writes them.
+ */
+export function claudeParkedSession(input: { sessionId: string; folder: string | null; home?: string }): { sessionId: string; file: string } | null {
+    if (!SESSION_ID.test(input.sessionId)) return null
+    const minted = input.folder === null ? claudeRecordsById(input)?.length ?? null : fileState(path.join(input.folder, input.sessionId + '.jsonl')) === 'none' ? 0 : null
+    if (minted !== 0) return null
+    const entries = claudeRegistry(input.home)
+    if (entries === null) return null
+    const panes = entries.filter(entry => entry.sessionId === input.sessionId && entry.kind === 'interactive')
+    const parked = panes.length === 1 ? panes[0]?.parkedJobId ?? null : null
+    if (parked === null || !JOB_ID.test(parked)) return null
+    const jobs = entries.filter(entry => entry.kind === 'bg' && entry.jobId === parked)
+    const job = jobs.length === 1 ? jobs[0]?.sessionId ?? null : null
+    if (job === null || !SESSION_ID.test(job) || !job.startsWith(parked) || job === input.sessionId) return null
+    const file = input.folder === null ? claudeRecordById({ sessionId: job, home: input.home }) : path.join(input.folder, job + '.jsonl')
+    return file !== null && fileState(file) === 'file' ? { sessionId: job, file } : null
+}
+
+interface RegistryEntry { sessionId: string | null; kind: string | null; jobId: string | null; parkedJobId: string | null }
+/** The registry's entries, or `null` when the folder or any entry cannot be read — an entry gone between list and read is skipped. */
+function claudeRegistry(home: string | undefined): RegistryEntry[] | null {
+    const dir = path.join(claudeConfigDir(home), 'sessions')
+    let names: string[]
+    try { names = fs.readdirSync(dir).filter(name => name.endsWith('.json')) } catch { return null }
+    const entries: RegistryEntry[] = []
+    for (const name of names) {
+        let text: string
+        try { text = fs.readFileSync(path.join(dir, name), 'utf8') } catch (error) {
+            if (missing(error)) continue
+            return null
+        }
+        let parsed: unknown
+        try { parsed = JSON.parse(text) } catch { return null }
+        if (!isRecord(parsed)) return null
+        const entry = parsed
+        const field = (key: string): string | null => { const value = entry[key]; return typeof value === 'string' ? value : null }
+        entries.push({ sessionId: field('sessionId'), kind: field('kind'), jobId: field('jobId'), parkedJobId: field('parkedJobId') })
+    }
+    return entries
 }
 
 // --- §8.2 provider session markers --------------------------------------------------------------

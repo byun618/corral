@@ -16,6 +16,10 @@ import { isRecord } from '../../shared/json.js'
 import { RuntimeError } from '../contracts.js'
 import { setupLogDirectory } from './setup.js'
 import { WorktreePoller } from '../../main/worktree-watch.js'
+import { StartService } from '../../main/work/start.js'
+import { newAttemptId, type StartSourceLink, type StartWorkInput } from '../../shared/work-start.js'
+import type { ClaimResult } from '../../main/work/links.js'
+import { testRepo } from '../../shared/test-rows.js'
 
 const env = { ...process.env }
 const cleanups: (() => void | Promise<void>)[] = []
@@ -51,6 +55,7 @@ async function fixture() {
   }
   const restart = async () => { await runtime.close(); runtime = await startRuntime({ userData: data }) }
   const close = () => runtime.close()
+  const invoke = () => runtime.invoke
   const callWithin = (ms: number, ...args: string[]) => localCall(socketPath(data), request(parser.parse(args, repo), undefined, ms))
   const real = fs.realpathSync(repo)
   const worktreePath = (name: string) => path.join(real, '.claude/worktrees', name)
@@ -59,7 +64,7 @@ async function fixture() {
   expect((await call('repo', 'add', '--path', repo)).ok).toBe(true)
   const id = new RepoRegistry(data).records()[0]!.id
   const register = async (command: string) => expect((await call('repo', 'set-setup-command', '--repo', id, '--command', command)).ok).toBe(true)
-  return { root, data, repo, real, id, git, call, callWithin, rejected, restart, close, worktreePath, branchExists, logs, register }
+  return { root, data, repo, real, id, git, call, callWithin, rejected, restart, close, invoke, worktreePath, branchExists, logs, register }
 }
 const receiptOf = (result: unknown): Record<string, unknown> => (isRecord(result) && isRecord(result.setupReceipt) ? result.setupReceipt : {})
 const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
@@ -336,5 +341,110 @@ describe('LIFE-813 worktree setup command', () => {
     const src = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
     const callers = execFileSync('grep', ['-rl', '--include=*.ts', 'runSetupCommand(', src], { encoding: 'utf8' }).trim().split('\n').map(file => path.relative(src, file)).filter(file => !file.endsWith('.test.ts')).sort()
     expect(callers).toEqual(['runtime/workspace/index.ts', 'runtime/workspace/setup.ts'])
+  })
+
+  it('B1 C4++: with a request id, every refusal before git or the command is not_started — the same id repeats it, and runs once the cause is fixed', async () => {
+    const { root, git, repo, data, register, call, worktreePath } = await fixture()
+    const rid = () => `r1.${Date.now()}.${randomUUID()}`
+    const twice = async (args: string[], code: string) => {
+      for (const n of [1, 2]) {
+        const response = await call(...args)
+        expect([n, args.join(' '), response.error?.code, response._meta?.outcome]).toEqual([n, args.join(' '), code, 'not_started'])
+      }
+    }
+    // already_exists (a branch of that name) — with and without --agent.
+    git(repo, 'branch', 'taken')
+    const plain = ['worktree', 'create', '--name', 'taken', '--request-id', rid()]
+    const agent = ['worktree', 'create', '--name', 'taken', '--agent', 'claude', '--request-id', rid()]
+    await twice(plain, 'already_exists')
+    await twice(agent, 'already_exists')
+    git(repo, 'branch', '-D', 'taken')
+    expect((await call(...plain)).ok).toBe(true)
+    git(repo, 'worktree', 'remove', '--force', worktreePath('taken')); git(repo, 'branch', '-D', 'taken')
+    expect(await call(...agent)).toMatchObject({ ok: true, result: { replayed: false, stages: { worktree: { status: 'completed' } } } })
+    // A missing base ref, then the ref appears.
+    const noRef = ['worktree', 'create', '--name', 'from-ref', '--base-branch', 'later', '--request-id', rid()]
+    await twice(noRef, 'invalid_argument')
+    git(repo, 'branch', 'later')
+    expect((await call(...noRef)).ok).toBe(true)
+    // An invalid branch name and an unknown repo selector repeat their refusal.
+    await twice(['worktree', 'create', '--name', 'bad..name', '--request-id', rid()], 'invalid_argument')
+    await twice(['worktree', 'create', '--name', 'x', '--repo', 'no-such-repo', '--request-id', rid()], 'not_found')
+    // --setup run without a command, then a command is registered.
+    const counter = path.join(root, 'counter')
+    const mustRun = ['worktree', 'create', '--name', 'must-run', '--setup', 'run', '--request-id', rid()]
+    await twice(mustRun, 'setup_not_configured')
+    await register(`echo run >> '${counter}'`)
+    expect(await call(...mustRun)).toMatchObject({ ok: true, result: { setupReceipt: { status: 'completed' } } })
+    // An invalid hand-edited command, then it is fixed — worktree setup this time.
+    const outside = path.join(root, 'by-git')
+    git(repo, 'worktree', 'add', '-b', 'by-git', outside)
+    new RepoRegistry(data).change(state => { state.repos[0]!.setupCommand = '   ' })
+    const setupArgs = ['worktree', 'setup', '--worktree', `path:${outside}`, '--request-id', rid()]
+    await twice(setupArgs, 'setup_command_invalid')
+    await register(`echo run >> '${counter}'`)
+    expect(await call(...setupArgs)).toMatchObject({ ok: true, result: { replayed: false, setupReceipt: { status: 'completed' } } })
+    expect(await call(...setupArgs)).toMatchObject({ ok: true, result: { replayed: true } })
+    expect(fs.readFileSync(counter, 'utf8')).toBe('run\nrun\n')
+  })
+
+  it('B2 C4++: a setup cut short by cancellation is not recorded as a failure — the same id answers outcome_unknown and never runs it again', async () => {
+    const { root, register, callWithin, close, restart, call, worktreePath } = await fixture()
+    const pids = path.join(root, 'pids'), counter = path.join(root, 'counter')
+    await register(`echo run >> '${counter}'; echo $$ >> '${pids}'; sleep 60`)
+    const id = `r1.${Date.now()}.${randomUUID()}`
+    const args = ['worktree', 'create', '--name', 'cut', '--request-id', id, '--timeout-ms', '30000']
+    const first = callWithin(30000, ...args).catch(error => error)
+    await until(() => pidsIn(pids).length === 1)
+    await close()
+    await first
+    await restart()
+    const again = await call(...args)
+    expect(again).toMatchObject({ ok: false, error: { code: 'outcome_unknown' } })
+    expect(fs.readFileSync(counter, 'utf8')).toBe('run\n')
+    expect(fs.existsSync(worktreePath('cut'))).toBe(true)
+    // The log says it was cancelled, not that the command failed on its own.
+    const logs = fs.readdirSync(setupLogDirectory(path.join(root, 'data')))
+    expect(fs.readFileSync(path.join(setupLogDirectory(path.join(root, 'data')), logs[0]!), 'utf8')).toContain('cancelled')
+  })
+
+  it('B6: 「작업에서 시작」 retrying the same attemptId after an app restart — a fixed refusal runs, a cancelled setup is unknown and linked', async () => {
+    const { root, real, git, repo, register, invoke, close, restart, worktreePath } = await fixture()
+    const saved: string[] = []
+    const links = {
+      saveExplicit: ({ path: at }: { path: string }) => { saved.push(at); return true },
+      claimExplicit: ({ path: at }: { path: string }): ClaimResult => { saved.push(at); return 'saved' },
+      sourceSave: async (): Promise<StartSourceLink> => ({ state: 'skipped', message: null }),
+    }
+    // A closed runtime answers request_cancelled at once, and the service retries that until its deadline — keep both short.
+    const service = () => new StartService({ invoke: () => invoke(), repos: () => [testRepo({ root: real, worktrees: [] })], links: () => links, work: () => null, log: () => {}, cwd: root, sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 100))), deadlineMs: 2000, worktreeExists: at => fs.existsSync(at) })
+    const given = (name: string): StartWorkInput => ({ attemptId: newAttemptId({ now: Date.now(), uuid: randomUUID() }), connectionId: 'c', sourceId: 's', itemId: name, itemKey: 'K-1', repoRoot: real, name, agent: 'shell', model: '', effort: '', prompt: '', submit: false })
+    // A name taken by a branch: the attempt fails before git. After the branch is gone, the same id (new service = app restart) creates it.
+    git(repo, 'branch', 'busy')
+    const busy = given('busy')
+    expect((await service().start(busy)).stages.worktree).toMatchObject({ status: 'failed', code: 'already_exists' })
+    git(repo, 'branch', '-D', 'busy')
+    const retried = await service().start(busy)
+    expect(retried.stages.worktree.status).toBe('completed')
+    expect(retried.worktreePath).toBe(worktreePath('busy'))
+    // A setup cut by the runtime closing: the same id after restart is outcome_unknown — worktree unknown but linked, nothing re-run.
+    const counter = path.join(root, 'counter')
+    await register(`echo run >> '${counter}'; sleep 60`)
+    const cut = given('cut')
+    const pending = service().start(cut)
+    await until(() => fs.existsSync(counter))
+    await close()
+    // The attempt that was cut: its result is unknown, and the worktree it made is linked (it was not there before).
+    const cutResult = await pending
+    expect(cutResult.stages.worktree.status).toBe('unknown')
+    expect(cutResult.worktreePath).toBe(worktreePath('cut'))
+    expect(saved).toContain(worktreePath('cut'))
+    await restart()
+    // The same id after restart: the runtime answers outcome_unknown (pending receipt) — not a replayed failure, not a second run.
+    // This service saw the worktree before asking, so it does not link it again (R2-A); the first attempt already did.
+    const after = await service().start(cut)
+    expect(after.stages.worktree).toMatchObject({ status: 'unknown', code: 'outcome_unknown' })
+    expect(after.worktreePath).toBe(null)
+    expect(fs.readFileSync(counter, 'utf8')).toBe('run\n')
   })
 })

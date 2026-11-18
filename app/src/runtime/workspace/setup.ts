@@ -62,10 +62,11 @@ export function readSetupCommand(value: string): string | null {
  * The repo's command as it stands in repos.json when it is about to run. A hand-edited value is held to
  * the same rule as `set-setup-command`; an invalid one is refused before any effect and never run.
  */
-export function registeredSetupCommand(repo: { name: string; id: string; setupCommand?: unknown }): string | null {
+export function registeredSetupCommand(repo: { name: string; id: string; setupCommand?: string | null }): string | null {
   const value = repo.setupCommand
   if (value === undefined || value === null) return null
-  if (typeof value !== 'string' || !validCommand(value)) {
+  // A non-string never gets here: the registry read refuses the whole record (`isRepo`).
+  if (!validCommand(value)) {
     throw new RuntimeError('setup_command_invalid', `The setup command registered for ${repo.name} in repos.json is not ${COMMAND_RULE}; it was not run. Fix it with corral repo set-setup-command`, { repo: repo.id }, undefined, 'not_started')
   }
   return value
@@ -115,7 +116,7 @@ export async function runSetupCommand(input: { command: string; worktreePath: st
   if (remaining() <= 0) return finish({ status: 'timed_out', exitCode: null, signal: null, detail: 'request budget exhausted before the command started' })
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: probe.pathValue ?? process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin', CORRAL_WORKTREE_PATH: input.worktreePath, CORRAL_ROOT_PATH: input.rootPath }
   return await new Promise<SetupRun>((resolve) => {
-    let settled = false, expired: 'timed_out' | 'cancelled' | null = null
+    let settled = false, expired: 'timed_out' | 'cancelled' | null = null, grace: NodeJS.Timeout | undefined
     let child: ReturnType<typeof spawn>
     try {
       child = spawn('/bin/sh', ['-c', input.command], { cwd: input.worktreePath, env, stdio: ['ignore', log, log], detached: true })
@@ -127,6 +128,7 @@ export async function runSetupCommand(input: { command: string; worktreePath: st
       if (settled) return
       settled = true
       clearTimeout(timer)
+      clearTimeout(grace)
       input.signal.removeEventListener('abort', onAbort)
       resolve(finish(run))
     }
@@ -134,11 +136,13 @@ export async function runSetupCommand(input: { command: string; worktreePath: st
     const stop = (reason: 'timed_out' | 'cancelled') => {
       if (expired) return
       expired = reason
-      // Past the budget the runtime is still alive, so the group gets a short TERM grace. A cancelled
-      // request or a closing runtime (whose process may exit on the next tick) gets SIGKILL now.
+      // Past the budget: TERM, then SIGKILL after 300 ms if the leader is still there. The leader's exit
+      // ends that grace — the rest of the group is SIGKILLed at once (see 'exit'), so children get no
+      // more than the leader took. A cancelled request or a closing runtime (whose process may exit on
+      // the next tick) gets SIGKILL now, with no timer.
       if (reason === 'cancelled') { killGroup(child.pid, 'SIGKILL'); return }
       killGroup(child.pid, 'SIGTERM')
-      setTimeout(() => killGroup(child.pid, 'SIGKILL'), TERM_GRACE_MS)
+      grace = setTimeout(() => killGroup(child.pid, 'SIGKILL'), TERM_GRACE_MS)
     }
     const timer = setTimeout(() => stop('timed_out'), remaining())
     const onAbort = () => stop('cancelled')
@@ -156,6 +160,6 @@ export async function runSetupCommand(input: { command: string; worktreePath: st
 
 /** The error a failed or timed-out setup becomes when there is no later stage to carry it. */
 export function setupError(run: SetupRun, resources: Record<string, unknown>): RuntimeError {
-  const what = run.status === 'timed_out' ? 'Setup command timed out' : `Setup command failed (exit ${run.exitCode ?? run.signal ?? 'none'})`
+  const what = run.status === 'timed_out' ? 'Setup command timed out' : `Setup command failed (exit ${run.exitCode ?? run.signal ?? 'none'}${run.detail ? `; ${run.detail}` : ''})`
   return new RuntimeError(run.error ?? 'setup_failed', `${what}; worktree kept at ${String(resources.path)}; log: ${run.logPath}`, resources)
 }

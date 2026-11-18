@@ -3,8 +3,9 @@
 // - **하네스를 다시 만들지 않는다**: worktree · pane · 에이전트 기동 · ready 판정 · 초안/제출은 런타임 명령 하나(`worktree create --agent …`)가 한다.
 //   빈 터미널은 `worktree create`(에이전트 없음) 뒤 `terminal create`(런타임 명령 그대로).
 // - **한 시도 = 요청 id 하나**(`attemptId`). 같은 id 의 두 번째 요청은 진행 중이면 그 약속에 합류하고, 끝났으면 기록을 돌려준다(main 메모리).
-//   런타임도 같은 id 를 영수증으로 replay 한다(에이전트 경로) — 앱을 다시 띄운 뒤의 같은 id 도 하나다.
-//   같은 작업 · 같은 레포 · 같은 이름의 진행 중 시도가 있으면 id 가 달라도 그것에 합류한다(빈 터미널은 영수증이 없어 이 합류가 유일한 방패다).
+//   런타임도 같은 id 를 영수증으로 replay 한다 — 에이전트 경로와, LIFE-813 부터 빈 터미널의 `worktree create`(id 가 있으면 영수증) 둘 다. 앱을 다시 띄운 뒤의 같은 id 도 하나다.
+//   git 전 거절(already_exists 등)은 `not_started` 라 id 를 쓰지 않는다 — 원인을 고친 같은 id 는 다시 돈다. 빈 터미널의 뒤 `terminal create` 는 파생 id 로 따로 영수증을 받는다.
+//   같은 작업 · 같은 레포 · 같은 이름의 진행 중 시도가 있으면 id 가 달라도 그것에 합류한다(id 가 다른 두 시도를 막는 방패).
 // - **호출자 timeout 은 실패가 아니다**: `request_cancelled` 면 같은 id 로 다시 묻는다(줄에서 기다리다 끊긴 요청은 영수증이 풀려 다시 돈다).
 //   `outcome_unknown`(효과가 시작된 뒤 끊겨 영수증이 pending)은 **다시 묻지 않는다** — 같은 답이 영원히 온다(R1-B). 단계는 `unknown` 이고,
 //   예정 경로에 worktree 가 있으면 그것을 링크한다(없으면 미확정 기록이 남아 나중에 나타나면 붙인다 — `recover`).
@@ -249,7 +250,8 @@ export class StartService {
 
   /**
    * 같은 id 로 이어 묻는다 — `request_cancelled`(호출자 timeout)만. 기한이 지나면 마지막 응답 그대로.
-   * `retried` = 한 번이라도 끊겼다 — 그 뒤의 `already_exists`(빈 터미널은 영수증이 없다)는 이 시도가 만든 것일 수 있다.
+   * `retried` = 한 번이라도 끊겼다 — 그 뒤의 `already_exists` 는 이 시도가 만든 것일 수 있다. LIFE-813 뒤로 런타임은 효과가 시작된 끊김엔
+   * `outcome_unknown` 을 주므로 이 갈래는 주로 영수증 밖 경로(옛 런타임 · 줄에서 끊겨 영수증이 풀린 뒤 남이 만든 자리)에서 온다.
    */
   private async call(invocation: Invocation): Promise<{ response: RpcResponse | null; retried: boolean }> {
     const deadline = this.now() + (this.deps.deadlineMs ?? INVOKE_TIMEOUT_MS)
@@ -322,7 +324,7 @@ export class StartService {
         const note = '이 작업에 이미 만든 worktree 입니다 — 새로 만들지 않았습니다.'
         stages = { worktree: stage('skipped', 'already_linked', note), agent: stage('skipped', 'already_linked', input.agent === 'shell' ? '터미널을 열지 않았습니다.' : '에이전트를 띄우지 않았습니다.'), prompt: stage('skipped', 'already_linked', null) }
       } else if (code === 'already_exists' && retried && !preexisting) {
-        // 끊긴 뒤의 재시도가 자기 결과에 부딪혔다(빈 터미널은 영수증이 없다) — 시도 전엔 없던 자리라 이 시도가 만든 것일 수 있어 미확정으로 링크한다.
+        // 끊긴 뒤의 재시도가 `already_exists` 에 부딪혔다 — 시도 전엔 없던 자리라 이 시도가 만든 것일 수 있어 미확정으로 링크한다(영수증이 있는 런타임은 이 경우 대개 `outcome_unknown` 을 준다).
         // 시도 전부터 있던 자리면(R2-A) 아래 일반 실패 갈래 — 「이름을 바꿔 다시 시작」.
         ({ path, stages } = unknown('outcome_unknown', '앞 요청이 끊긴 뒤 같은 이름이 이미 있습니다'))
       } else {

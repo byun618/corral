@@ -196,11 +196,13 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
             const body = promptFile === undefined ? undefined : readPromptFile(inv.cwd, promptFile)
             const composed: Invocation = { ...inv, flags: { ...f, 'request-id': f['request-id'] ?? `r1.${Date.now()}.${randomUUID()}` },
               ...(body === undefined ? {} : { stdin: body }) }
-            result = await receipts.run(composed, () => executeWorktree(composed, ctx, registry, metadata, terminal, desktop, body))
+            const effect: Effect = { began: false }
+            result = await receipts.run(composed, () => notStartedBefore(effect, () => executeWorktree(composed, ctx, registry, metadata, terminal, desktop, body, effect)))
           } else if ((inv.command === 'worktree create' || inv.command === 'worktree setup') && f['request-id'] !== undefined) {
             // LIFE-813 A4: a request id makes the setup command run once. The receipt keeps a failed
             // setup as a result too, so the same id answers the same failure and never runs it again.
-            result = await runWithSetupReceipt(inv, receipts, () => executeWorktree(inv, ctx, registry, metadata, terminal, desktop))
+            const effect: Effect = { began: false }
+            result = await runWithSetupReceipt(inv, receipts, () => notStartedBefore(effect, () => executeWorktree(inv, ctx, registry, metadata, terminal, desktop, undefined, effect)))
           } else result = await executeWorktree(inv, ctx, registry, metadata, terminal, desktop)
         }
       }
@@ -217,6 +219,21 @@ function setupPolicy(value: string | undefined): SetupPolicy {
   return SETUP_POLICIES.find(policy => policy === value) ?? 'inherit'
 }
 const isSetupError = (error: unknown): error is RuntimeError => error instanceof RuntimeError && (error.code === 'setup_failed' || error.code === 'setup_timed_out')
+/** Set just before the first effect (`git worktree add`, the setup command). Until then nothing has happened. */
+type Effect = { began: boolean }
+/**
+ * LIFE-813 B1: under a receipt, a refusal before the first effect (selector, name, path, ref,
+ * already_exists, missing or invalid command) is `not_started`, so the receipt releases the id
+ * (LIFE-423) and the same id runs once the condition is fixed. After the effect began, errors keep
+ * whatever outcome they carry.
+ */
+async function notStartedBefore(effect: Effect, run: () => Promise<unknown>): Promise<unknown> {
+  try { return await run() } catch (error) {
+    if (effect.began || (error instanceof RuntimeError && error.outcome !== undefined)) throw error
+    if (error instanceof RuntimeError) throw new RuntimeError(error.code, error.message, error.resources, error.stage, 'not_started')
+    throw new RuntimeError('operation_failed', error instanceof Error ? error.message : String(error), undefined, undefined, 'not_started')
+  }
+}
 /**
  * `worktree create` without `--agent` and `worktree setup`, under a request id. A setup failure is
  * stored as the receipt's result and thrown again from it, on the first answer and on every replay.
@@ -250,6 +267,14 @@ function readPromptFile(cwd: string, value: string): string {
   if (content.includes('\0') || Buffer.byteLength(content) > MAX_INPUT) refuse(`--prompt-file must be NUL-free UTF-8, at most ${MAX_INPUT} bytes`)
   return content
 }
+/**
+ * LIFE-813 B2: a setup the request's cancellation (or a closing runtime) cut short is not a result.
+ * It is thrown with no outcome, so a receipt stays pending and the same id answers outcome_unknown
+ * instead of replaying a made-up failure.
+ */
+function cancelledSetup(run: { logPath: string }, resources: Record<string, unknown>): RuntimeError {
+  return new RuntimeError('request_cancelled', `Setup command cancelled (request cancelled or runtime closing); process group killed; worktree kept; log: ${run.logPath}`, resources)
+}
 /** `stages.setup` of `worktree create --agent` — a failed setup does not stop the later stages (D3). */
 function setupStage(receipt: SetupReceipt): Record<string, unknown> {
   if (receipt.status === 'skipped') return { status: 'skipped', reason: receipt.reason }
@@ -262,7 +287,7 @@ async function verifyRef(root: string, ref: string, ctx: CommandContext): Promis
   try { await git(root, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], ctx.signal) }
   catch { reject(`Invalid commit ref: ${ref}`) }
 }
-async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: RepoRegistry, metadata: WorktreeMetadata, terminal: CommandModule, desktop?: WorkspaceDesktop, promptBody?: string): Promise<unknown> {
+async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: RepoRegistry, metadata: WorktreeMetadata, terminal: CommandModule, desktop?: WorkspaceDesktop, promptBody?: string, effect: Effect = { began: false }): Promise<unknown> {
   const f = inv.flags, flag = (key: string) => stringFlag(f, key), need = (key: string) => stringFlag(f, key, true)!
   const repos = registry.records(), records = await metadata.list(repos, ctx.signal)
   const select = async (value: string) => worktreeSelect(records, value, inv.cwd, value === 'active' && desktop ? (await desktop.observe()).find(row => row.isActive)?.path ?? '' : undefined)
@@ -310,7 +335,9 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
     const target = await select(need('worktree')), repo = repos.find(row => row.id === target.repoId)!
     const command = registeredSetupCommand(repo)
     if (command === null) throw new RuntimeError('setup_not_configured', `No setup command registered for ${repo.name}; set one with corral repo set-setup-command`, { repo: repo.id }, undefined, 'not_started')
+    effect.began = true
     const run = await runSetupCommand({ command, worktreePath: target.path, rootPath: repo.path, userData: ctx.userData, deadlineAt: ctx.deadlineAt, signal: ctx.signal })
+    if (ctx.signal.aborted) throw cancelledSetup(run, { path: target.path, logPath: run.logPath })
     const setupReceipt: SetupReceipt = { policy: 'run', ...run }
     if (run.status !== 'completed') throw setupError(run, { path: target.path, branch: target.branch?.replace(/^refs\/heads\//, '') ?? null, logPath: run.logPath, setupReceipt })
     return { worktree: target, setupReceipt }
@@ -344,13 +371,18 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
     if (policy === 'run' && setupCommand === null) throw new RuntimeError('setup_not_configured', `--setup run: no setup command registered for ${repo.name}; set one with corral repo set-setup-command`, { repo: repo.id }, undefined, 'not_started')
     const update = await updateMetadata()
     let added = false
+    effect.began = true
     try {
       await git(repo.path, ['worktree', 'add', '-b', name, target, base], ctx.signal)
       added = true
       metadata.create(target, { ...update, repoId: repo.id, createdBranch: true })
       // LIFE-813 D4: after git, before activation and before any terminal stage; the caller waits for it.
       let setupReceipt: SetupReceipt = { policy, status: 'skipped', reason: policy === 'skip' ? 'policy_skip' : 'no_command', command: null, logPath: null }
-      if (policy !== 'skip' && setupCommand !== null) setupReceipt = { policy, ...await runSetupCommand({ command: setupCommand, worktreePath: target, rootPath: repo.path, userData: ctx.userData, deadlineAt: ctx.deadlineAt, signal: ctx.signal }) }
+      if (policy !== 'skip' && setupCommand !== null) {
+        const run = await runSetupCommand({ command: setupCommand, worktreePath: target, rootPath: repo.path, userData: ctx.userData, deadlineAt: ctx.deadlineAt, signal: ctx.signal })
+        if (ctx.signal.aborted) throw cancelledSetup(run, { path: target, branch: name, logPath: run.logPath })
+        setupReceipt = { policy, ...run }
+      }
       // D3: without later stages a failed setup is the request's error; the worktree and branch stay.
       if ((setupReceipt.status === 'failed' || setupReceipt.status === 'timed_out') && f.agent === undefined) throw setupError(setupReceipt, { path: target, branch: name, logPath: setupReceipt.logPath, setupReceipt })
       const activated = f.activate ? await desktop!.activate(repo.path, target) : undefined
@@ -375,8 +407,8 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
       return { ...created, stages, outcome: unresolved ? 'unknown' : 'completed',
         terminal: isRecord(child) ? child.terminal ?? null : null, agent: isRecord(child) ? child.agent ?? null : null, prompt: isRecord(child) ? child.prompt ?? null : null }
     } catch (error) {
-      // The setup error already names what stays (path, branch, log).
-      if (isSetupError(error)) throw error
+      // The setup error already names what stays (path, branch, log); so does a cancelled one.
+      if (isSetupError(error) || (error instanceof RuntimeError && error.code === 'request_cancelled')) throw error
       // Inspect without the cancelled request signal: Git may have created the
       // branch before failing checkout. Both names were absent at preflight.
       const resources: Record<string, unknown> = {}

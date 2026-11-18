@@ -17,7 +17,7 @@ function surface(input: { text: string; scroll: { offsetFromBottom: number; maxO
     frame: { cells, width, height, cursor: null, hyperlinks: [] },
     surfaceRevision: 1,
     full: true,
-    panes: [{ paneId: 'p1', rect: { x: 0, y: 0, width, height }, innerRect: { x: 0, y: 0, width, height }, scroll: input.scroll, focused: true, mouseReporting: false }],
+    panes: [{ paneId: 'p1', rect: { x: 0, y: 0, width, height }, innerRect: { x: 0, y: 0, width, height }, scroll: input.scroll === null ? null : { ...input.scroll, viewportRows: height }, focused: true, mouseReporting: false }],
   }
 }
 

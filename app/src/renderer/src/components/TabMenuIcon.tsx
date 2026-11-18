@@ -16,9 +16,16 @@ export type TabMenuIconKind =
   | 'panel-left-close'
   | 'pencil'
   | 'eraser'
+  | 'maximize'
+  | 'minimize'
+  | 'columns'
 
 const PATHS: Record<TabMenuIconKind, string[]> = {
   'arrow-right': ['M5 12h14', 'm12 5 7 7-7 7'],
+  // LIFE-825 — Maximize2 / Minimize2 / Columns3 (영역 최대화·해제·균등화).
+  maximize: ['M15 3h6v6', 'M9 21H3v-6', 'm21 3-7 7', 'm3 21 7-7'],
+  minimize: ['m14 10 7-7', 'M20 10h-6V4', 'm3 21 7-7', 'M4 14h6v6'],
+  columns: ['M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z', 'M9 3v18', 'M15 3v18'],
   'arrow-left': ['m12 19-7-7 7-7', 'M19 12H5'],
   'arrow-down': ['M12 5v14', 'm19 12-7 7-7-7'],
   'arrow-up': ['m5 12 7-7 7 7', 'M12 19V5'],

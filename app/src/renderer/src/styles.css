@@ -993,6 +993,13 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 /* 비율은 basis 로 준다 — grow 는 내용 크기가 섞여 들어와 같은 비율이 창마다 다른 px 이 된다. */
 .group-split-side { min-width: 0; min-height: 0; display: flex; flex-grow: 0; flex-shrink: 1; }
 .tab-group { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
+/* LIFE-825 C4 — 영역 최대화(메모리 전용). 최대화한 영역만 격자 전체를 덮고(절대 배치 — 그 영역 상자만 커진다), 나머지 영역·경계는 visibility 로 숨긴다.
+   숨은 영역의 상자 크기는 그대로다(분할 쪽 flex-basis 가 정한다) → 그 영역 ResizeObserver 미발화 → 격자 요청 0. display:none·0 크기면 cols 2·rows 1 이
+   나간다(설정 페이지 덮기 `.app-body.is-covered` 와 같은 이유). 분할 상자의 position 을 풀어 절대 배치의 기준을 `.pane-grid` 로 올린다(크기는 안 바뀐다). */
+.pane-grid.has-maximized { position: relative; }
+.pane-grid.has-maximized .group-split { position: static; }
+.pane-grid.has-maximized .tab-group.is-maximized { position: absolute; inset: 0; z-index: 4; }
+.pane-grid.has-maximized .tab-group:not(.is-maximized), .pane-grid.has-maximized .group-divider { visibility: hidden; }
 
 /* 영역 경계선 — 1px 선에 12px 히트(사이드바 리사이저와 같은 토큰, 핸드오프 B). 탭바를 관통한다. */
 .group-divider { position: relative; flex: 0 0 auto; z-index: 3; }

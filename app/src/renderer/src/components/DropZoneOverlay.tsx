@@ -5,7 +5,11 @@
 //
 // 판정(`DropTarget`)은 이미 끝나 왔다 — 여기는 그 결과가 가리키는 사각형만 그린다.
 
-import type { TabDragState } from '../hooks/useTabDrag.js'
+import type { TabDragVisual } from '../hooks/useTabDrag.js'
+import type { Point } from '../tab-drag.js'
+
+/** 그릴 것 — 탭 끌기(`TabDragState`)·탐색기 파일 끌기(`FileDragState`, LIFE-823) 둘 다 이 모양을 든다. */
+type OverlayState = { point: Point; visual: TabDragVisual }
 
 /**
  * 미리보기 사각형 크기 — **판정 폭(`DROPZONE_BAND` 0.25, `tab-drag.ts` `resolveBodyZone`)과는
@@ -35,8 +39,8 @@ function rectStyle(rect: DOMRect): React.CSSProperties {
   return { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
 }
 
-/** 존 강조 — split 은 가장자리 띠, merge 는 본문 전체, tabbar 는 삽입선, invalid/self-noop 은 없음. */
-function DropZoneFill({ state }: { state: TabDragState }): React.JSX.Element | null {
+/** 존 강조 — split 은 가장자리 띠, merge 는 본문 전체, tabbar 는 삽입선, invalid 는 포인터 둘레, self-noop·blocked(폴더 — LIFE-823) 은 없음. */
+function DropZoneFill({ state }: { state: OverlayState }): React.JSX.Element | null {
   const { visual } = state
   switch (visual.kind) {
     case 'split':
@@ -54,12 +58,13 @@ function DropZoneFill({ state }: { state: TabDragState }): React.JSX.Element | n
     case 'invalid':
       return <div className="dropzone-fill is-invalid" data-dropzone-fill style={{ left: state.point.x - 60, top: state.point.y - 20, width: 120, height: 40 }} />
     case 'self-noop':
+    case 'blocked':
       return null
   }
 }
 
 /** 드래그 중인 탭 자신 — 커서를 따라간다("얼굴"). */
-export function DropZoneOverlay({ state, tabLabel, tabColor = null }: { state: TabDragState; tabLabel: string; tabColor?: string | null }): React.JSX.Element {
+export function DropZoneOverlay({ state, tabLabel, tabColor = null }: { state: OverlayState; tabLabel: string; tabColor?: string | null }): React.JSX.Element {
   return (
     <div className="drop-zone-overlay" data-drop-zone-overlay aria-hidden="true">
       <DropZoneFill state={state} />

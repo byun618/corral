@@ -10,12 +10,15 @@
 export function EmptyGroup({
   groupId,
   activeGroup,
+  onActivate,
   onCreateShell,
   onCloseGroup,
   isDropTarget,
 }: {
   groupId: string
   activeGroup: boolean
+  /** 본문을 누르면 이 영역을 활성으로 (LIFE-824 C8). */
+  onActivate: () => void
   onCreateShell: () => void
   /** 영역이 하나뿐이면 `null` — 닫을 수 없다 (F1-5). */
   onCloseGroup: (() => void) | null
@@ -26,6 +29,9 @@ export function EmptyGroup({
     <div
       className={`empty-group ${activeGroup ? 'is-active-group' : ''} ${isDropTarget ? 'is-drop-target' : ''}`}
       data-empty-group={groupId}
+      // LIFE-824 — 키보드로 이 영역에 오면(⌘⌥방향·⌃`·이전/다음 탭) 포커스가 머물 자리. Tab 순회에는 들지 않는다.
+      tabIndex={-1}
+      onMouseDown={onActivate}
     >
       <div className="empty-group-card">
         <span className="empty-group-title">탭이 없습니다</span>

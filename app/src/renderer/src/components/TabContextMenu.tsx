@@ -29,6 +29,20 @@ export type TabMenuAnchor = { tabId: string; x: number; y: number }
 
 /** 새 영역으로 옮기기 4방향 (K1ⓒ) — `group-tree.splitGroup` 의 방향·가장자리로 옮긴다(왼쪽·위 = 앞 가장자리). */
 export type MoveDirection = 'right' | 'left' | 'down' | 'up'
+
+/**
+ * LIFE-825 C3·C4 — 헤더 모드 메뉴(⊞·탭바 빈 곳 우클릭)의 영역 배치 항목. 터미널 탭 메뉴·파일 탭 메뉴가 같이 쓴다.
+ * `disabledTitle` 이 있으면(영역이 하나뿐) 두 항목 다 흐림 + 그 이유(무음 실패 0).
+ */
+export type GroupLayoutMenu = { maximized: boolean; disabledTitle: string | null; maximizeShortcut: string; onToggleMaximize: () => void; onEven: () => void }
+
+/** 영역 배치 항목 두 줄의 문구·아이콘 — 두 메뉴가 같은 말을 하게 한 자리에서. */
+export function groupLayoutMenuItems(menu: GroupLayoutMenu): { key: 'maximize' | 'even'; label: string; icon: TabMenuIconKind; shortcut: string; run: () => void }[] {
+  return [
+    { key: 'maximize', label: menu.maximized ? '영역 최대화 해제' : '영역 최대화', icon: menu.maximized ? 'minimize' : 'maximize', shortcut: menu.maximizeShortcut, run: menu.onToggleMaximize },
+    { key: 'even', label: '영역 크기 균등화', icon: 'columns', shortcut: '', run: menu.onEven },
+  ]
+}
 export function moveDirectionToSplit(direction: MoveDirection): { direction: 'row' | 'column'; edge: 'before' | 'after' } {
   switch (direction) {
     case 'right':
@@ -49,14 +63,17 @@ const MOVE_ITEMS: { direction: MoveDirection; label: string; icon: TabMenuIconKi
   { direction: 'up', label: '위 영역', icon: 'arrow-up' },
 ]
 
-const CLOSE_SCOPE_ITEMS: { scope: CloseScope; label: string; icon: TabMenuIconKind; enabled: (model: TabMenuModel) => boolean }[] = [
-  { scope: 'others', label: '다른 탭 닫기', icon: 'list-x', enabled: (model) => model.canCloseOthers },
-  { scope: 'right', label: '오른쪽 탭 닫기', icon: 'panel-right-close', enabled: (model) => model.canCloseRight },
-  { scope: 'left', label: '왼쪽 탭 닫기', icon: 'panel-left-close', enabled: (model) => model.canCloseLeft },
-]
-
 /** 닫을 대상이 없을 때의 사유 — 비활성 항목의 툴팁. */
 const NOTHING_TO_CLOSE = '닫을 탭이 없다 (고정된 탭은 닫지 않는다)'
+
+// LIFE-822 — 「모두 닫기」「저장된 탭 닫기」를 파일 탭 메뉴(`MainTabBar` `FileTabMenu`)와 같은 이름·순서로 둔다.
+const CLOSE_SCOPE_ITEMS: { scope: CloseScope; label: string; icon: TabMenuIconKind; enabled: (model: TabMenuModel) => boolean; disabledTitle: string }[] = [
+  { scope: 'others', label: '다른 탭 닫기', icon: 'list-x', enabled: (model) => model.canCloseOthers, disabledTitle: NOTHING_TO_CLOSE },
+  { scope: 'right', label: '오른쪽 탭 닫기', icon: 'panel-right-close', enabled: (model) => model.canCloseRight, disabledTitle: NOTHING_TO_CLOSE },
+  { scope: 'left', label: '왼쪽 탭 닫기', icon: 'panel-left-close', enabled: (model) => model.canCloseLeft, disabledTitle: NOTHING_TO_CLOSE },
+  { scope: 'all', label: '모두 닫기', icon: 'x', enabled: (model) => model.canCloseAll, disabledTitle: NOTHING_TO_CLOSE },
+  { scope: 'saved', label: '저장된 탭 닫기', icon: 'list-x', enabled: (model) => model.canCloseSaved, disabledTitle: '닫을 저장된 파일 탭이 없다 (수정된 탭·터미널 탭·고정된 탭은 닫지 않는다)' },
+]
 
 export function TabContextMenu({
   anchor,
@@ -88,7 +105,7 @@ export function TabContextMenu({
   /**
    * LIFE-387 B1 — 헤더(`⊞`)·탭바 빈 곳 우클릭에서 열린 "헤더 모드". 대상은 그 영역의 **활성 탭**이다 — 항목은 탭 메뉴와 같다(K1ⓓ).
    */
-  headerMode?: { activeTabLabel: string }
+  headerMode?: { activeTabLabel: string; groupLayout?: GroupLayoutMenu }
   onRename: () => void
   onClearName: () => void
   onSplitPane: (direction: 'right' | 'down') => void
@@ -98,7 +115,8 @@ export function TabContextMenu({
   onClose: () => void
   onCloseScope: (scope: CloseScope) => void
   onSetColor: (color: string | null) => void
-  onDismiss: () => void
+  /** LIFE-825 low H1 — 항목 실행으로 닫히면 `'item'`(Esc·바깥 클릭·다른 메뉴는 인자 없음). */
+  onDismiss: (reason?: 'item') => void
 }): React.JSX.Element {
   const bindingLabel = useBindingLabel()
   const ref = useRef<HTMLDivElement | null>(null)
@@ -164,7 +182,7 @@ export function TabContextMenu({
         title={enabled ? undefined : input.disabledTitle}
         onClick={() => {
           if (!enabled) return
-          onDismiss()
+          onDismiss('item')
           input.run()
         }}
       >
@@ -194,7 +212,12 @@ export function TabContextMenu({
         event.stopPropagation()
         if (event.target instanceof Element && event.target.closest('button, input, textarea, select, a[href], [contenteditable="true"], [tabindex]') === null) event.preventDefault()
       }}
-      onContextMenu={(event) => event.preventDefault()}
+      // LIFE-825 fix5 ⑧ — 우클릭도 끊는다: 메뉴 안 우클릭이 연 탭·탭바의 onContextMenu 로 올라가면 메뉴를 그 자리에 다시 열며 우클릭 토큰을 null 로 덮어
+      // Esc 닫힘이 본문 포커스를 안 한다(활성 ≠ 포커스).
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+      }}
     >
       {headerMode === undefined ? null : (
         <>
@@ -202,6 +225,23 @@ export function TabContextMenu({
             탭 · {headerMode.activeTabLabel}
           </div>
           <div className="repo-row-menu-sep" />
+          {headerMode.groupLayout === undefined ? null : (
+            <>
+              <div className="tab-menu-section">영역</div>
+              {groupLayoutMenuItems(headerMode.groupLayout).map((entry) =>
+                item({
+                  attr: { [`data-group-layout-${entry.key}`]: anchor.tabId },
+                  icon: entry.icon,
+                  label: entry.label,
+                  enabled: headerMode.groupLayout?.disabledTitle === null,
+                  disabledTitle: headerMode.groupLayout?.disabledTitle ?? undefined,
+                  run: entry.run,
+                  shortcut: entry.shortcut,
+                }),
+              )}
+              <div className="repo-row-menu-sep" />
+            </>
+          )}
         </>
       )}
       <div className="tab-menu-section">이 탭을 새 영역으로 옮기기</div>
@@ -225,7 +265,7 @@ export function TabContextMenu({
               className="repo-row-menu-item"
               data-tab-menu-move-other={group.groupId}
               onClick={() => {
-                onDismiss()
+                onDismiss('item')
                 onMoveToOtherGroup(group.groupId)
               }}
             >
@@ -263,7 +303,7 @@ export function TabContextMenu({
           icon: scope.icon,
           label: scope.label,
           enabled: scope.enabled(model),
-          disabledTitle: NOTHING_TO_CLOSE,
+          disabledTitle: scope.disabledTitle,
           run: () => onCloseScope(scope.scope),
         }),
       )}
@@ -291,7 +331,7 @@ export function TabContextMenu({
               aria-label={`탭 색 ${entry.label}`}
               style={entry.value === null ? undefined : { backgroundColor: entry.value }}
               onClick={() => {
-                onDismiss()
+                onDismiss('item')
                 onSetColor(entry.value)
               }}
             />

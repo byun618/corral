@@ -56,6 +56,11 @@ export interface EndpointClientLike {
 const ESC_FLUSH_MS = 25
 const FIRST_SURFACE_WAIT_MS = 10_000
 const COMMAND_TIMEOUT_MS = 10_000
+/**
+ * LIFE-824 fix1 A4 — 탭을 떠날 때 줌 깃발 끄기의 상한. 깃발은 정합용이라 늦거나 실패해도 **세션을 닫지 않고** 탭 전환을 계속한다
+ * (일반 명령 상한 `COMMAND_TIMEOUT_MS` 은 넘으면 세션을 닫는다 — 그 길을 타면 뒤 `pane.focus` 까지 실패한다).
+ */
+export const ZOOM_FLAG_TIMEOUT_MS = 2_000
 
 export type CellRect = { x: number; y: number; width: number; height: number }
 
@@ -263,14 +268,29 @@ export class GroupSession {
    */
   async focusTab(input: { tabId: string; paneId: string }): Promise<void> {
     if (this.closed) throw new Error('group session is closed')
-    if (this.attachedTabId !== input.tabId) {
+    // LIFE-824 Zⓒ — 줌을 든 채 탭을 떠나면 로컬 줌만 풀리고 herdr `pane.zoom` 깃발은 켜진 채 남았다(base 실측 `raw/claude/z-base-2.jsonl`:
+    // 탭 전환 뒤 local=null · herdr zoomed=true, 돌아와도 그대로). 떠나는 탭의 깃발도 끈다 — 붙기 전(`attaching` 동안이라 그 사이 서피스는 버린다).
+    // fix1 A4 — 같은 탭을 다시 고르면(재부착) 줌을 그대로 둔다. 비우는 것은 탭이 바뀔 때만이다.
+    const changingTab = this.attachedTabId !== input.tabId
+    const leavingZoom = changingTab ? this.zoomedPaneId : null
+    if (changingTab) {
       for (const paneId of [...this.io.keys()]) this.evictIo(paneId)
       this.meta.clear()
+      this.zoomedPaneId = null
     }
     this.attachedTabId = input.tabId
-    this.zoomedPaneId = null
     this.attaching = true
     try {
+      if (leavingZoom !== null) {
+        // 깃발 정리는 정합용이다 — 실패·시간 초과(세션을 닫지 않는 상한)여도 탭 전환은 계속한다(그림은 클라이언트가 그린다).
+        await this.enqueueBounded({
+          run: () => this.client.callEndpoint('pane.zoom', { pane_id: leavingZoom, mode: 'off' }),
+          timeoutMs: ZOOM_FLAG_TIMEOUT_MS,
+          closeOnTimeout: false,
+        }).catch((error: unknown) => {
+          this.logger.warn('zoom flag off on tab leave failed', { paneId: leavingZoom, error: error instanceof Error ? error.message : String(error) })
+        })
+      }
       await this.enqueue(() => this.client.callEndpoint('pane.focus', { pane_id: input.paneId }))
     } finally {
       this.attaching = false
@@ -652,6 +672,12 @@ export class GroupSession {
 
   /** endpoint RPC 는 한 줄로 세우고 시간 상한을 건다 — 벤더 세션의 `enqueueCommand` 와 같은 수법. */
   private enqueue<T>(run: () => Promise<T>): Promise<T> {
+    return this.enqueueBounded({ run, timeoutMs: COMMAND_TIMEOUT_MS, closeOnTimeout: true })
+  }
+
+  /** 명령을 줄 세운다 — 상한을 넘으면 거절하고, `closeOnTimeout` 이면 세션도 닫는다(일반 명령). */
+  private enqueueBounded<T>(input: { run: () => Promise<T>; timeoutMs: number; closeOnTimeout: boolean }): Promise<T> {
+    const { run } = input
     const bounded = async (): Promise<T> => {
       if (this.closed) throw new Error('group session is closed')
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -661,8 +687,8 @@ export class GroupSession {
           new Promise<never>((_, reject) => {
             timer = setTimeout(() => {
               reject(new Error('Endpoint command timed out; check Herdr before retrying.'))
-              this.close()
-            }, COMMAND_TIMEOUT_MS)
+              if (input.closeOnTimeout) this.close()
+            }, input.timeoutMs)
           }),
         ])
       } finally {

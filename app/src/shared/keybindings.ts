@@ -9,7 +9,7 @@ export const ACTIONS = [
   { id: 'mru.open', group: '탭 이동', title: '최근 pane 전환', defaultBinding: ['Control+Tab', 'Control+Shift+Tab'], bindingVariants: [0, 1], variants: ['다음', '이전'] },
   { id: 'terminal.split', group: '터미널 pane', title: 'pane 분할', defaultBinding: ['Mod+D', 'Mod+Shift+D'], bindingVariants: [0, 1], variants: ['오른쪽', '아래'] },
   { id: 'group.split', group: '터미널 pane', title: '영역 분할', defaultBinding: ['Mod+Alt+D', 'Mod+Alt+Shift+D'], bindingVariants: [0, 1], variants: ['오른쪽', '아래'] },
-  { id: 'terminal.focus', group: '터미널 pane', title: '인접 pane 포커스', defaultBinding: ['Mod+Alt+ArrowLeft', 'Mod+Alt+ArrowRight', 'Mod+Alt+ArrowUp', 'Mod+Alt+ArrowDown', 'Mod+Alt+Shift+ArrowLeft', 'Mod+Alt+Shift+ArrowRight', 'Mod+Alt+Shift+ArrowUp', 'Mod+Alt+Shift+ArrowDown'], bindingVariants: [0, 1, 2, 3, 0, 1, 2, 3], variants: ['왼쪽', '오른쪽', '위', '아래'] },
+  { id: 'terminal.focus', group: '터미널 pane', title: '인접 pane / 영역 포커스', defaultBinding: ['Mod+Alt+ArrowLeft', 'Mod+Alt+ArrowRight', 'Mod+Alt+ArrowUp', 'Mod+Alt+ArrowDown', 'Mod+Alt+Shift+ArrowLeft', 'Mod+Alt+Shift+ArrowRight', 'Mod+Alt+Shift+ArrowUp', 'Mod+Alt+Shift+ArrowDown'], bindingVariants: [0, 1, 2, 3, 0, 1, 2, 3], variants: ['왼쪽', '오른쪽', '위', '아래'] },
   { id: 'group.close', group: '터미널 pane', title: '활성 영역 닫기', defaultBinding: ['Mod+Alt+W', 'Mod+Alt+Shift+W'], bindingVariants: [0, 0], variants: ['닫기'] },
   { id: 'terminal.zoom', group: '터미널 pane', title: 'pane 줌 전환', defaultBinding: ['Mod+Shift+Z', 'Mod+Alt+Shift+Z'], bindingVariants: [0, 0], variants: ['전환'] },
   { id: 'terminal.close', group: '터미널 pane', title: 'pane / 탭 닫기', defaultBinding: ['Mod+W'], bindingVariants: [0], variants: ['닫기'] },
@@ -70,6 +70,15 @@ export const ACTIONS = [
   // (`renderer/markdown-toggle.ts` — 파일 뷰 버튼과 같은 상태 경로). 포커스가 그 보기 밖이면 키를 가져가지 않는다 — 터미널(붙여넣기)·다른 파일 탭·입력칸
   // (`yieldsOutsideMarkdown` — `useKeybindings` 가 부른다). 커맨드 팔레트 항목은 포커스 무관 — 활성 탭이 Markdown 이면 그 탭. 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
   { id: 'markdown.togglePreview', group: '탭', title: 'Markdown 미리보기 전환', defaultBinding: ['Mod+Shift+V'], bindingVariants: [0], variants: ['Markdown 보기'] },
+  // LIFE-824 C2 — VS Code mac 터미널 토글 ⌃`(`workbench.action.terminal.toggleTerminal`). 포커스 영역이 터미널이면 편집기(파일·diff) 영역으로, 아니면 터미널 영역으로(영역 MRU 최근).
+  // 편집기 안에서도 가져간다(Monaco 바인딩 없음 — LIFE-824 raw/claude/monaco-cmd-alt-arrows.txt). 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
+  { id: 'focus.toggleTerminalEditor', group: '탭 이동', title: '터미널 ↔ 편집기 전환', defaultBinding: ['Control+`'], bindingVariants: [0], variants: ['전환'] },
+  // LIFE-825 C4 — VS Code `toggleMaximizeEditorGroup`(⌘K ⌘M 은 연속 키라 못 쓴다 — 레지스트리는 연속 키를 받지 않는다). 영역 키 ⌘⌥ 줄기(⌘⌥D 분할·⌘⌥W 닫기·⌘⌥방향 이동).
+  // ⌘⇧Enter 는 Monaco 「위에 줄 삽입」과 겹친다. 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
+  { id: 'group.maximize', group: '터미널 pane', title: '영역 최대화 / 해제', defaultBinding: ['Mod+Alt+Enter'], bindingVariants: [0], variants: ['전환'] },
+  // LIFE-825 C3 — VS Code `workbench.action.evenEditorWidths`(기본 키 없음). **키 없는 액션** — 기본 조합 0칸(팔레트·⊞ 메뉴로만). 설정 › 단축키 표에는 행만 서고
+  // 칸이 없어 키를 걸 수 없다(「끄기」도 꺼짐). keybindings.json 에 손으로 칸을 적어도 칸 수가 기본(0)과 달라 로드 때 버려진다(`validateOverrides(…, true)`). 키를 열려면 칸 모델 변경이 든다.
+  { id: 'group.even', group: '터미널 pane', title: '영역 크기 균등화', defaultBinding: [], bindingVariants: [], variants: ['균등화'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
 /** 액션이 매칭되는 자리 — `global` 어디서나 · `explorer` 탐색기 트리 포커스에서만(LIFE-592). */
@@ -108,7 +117,7 @@ export function bindingFromEvent(event: KeyInput): string | null {
  * 재정의해 둔 사용자의 `keybindings.json` 이 충돌로 버려지지 않게 한다(재정의가 이기고, 이 액션은 조합 없음으로 남는다 —
  * 단축키 설정에서 다시 배정할 수 있다). 처음부터 있던 액션의 기본값은 지금처럼 재정의보다 앞선다.
  */
-const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'explorer.undo', 'explorer.redo', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview']
+const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'explorer.undo', 'explorer.redo', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview', 'focus.toggleTerminalEditor', 'group.maximize']
 
 /**
  * 기본 조합 **개수가 바뀐** 액션의 옛 기본값 (LIFE-495 K7ⓘ). 칸 수가 다른 재정의는 아래 검사에서 버려지므로, 옛 칸 수 그대로인 재정의를
@@ -194,7 +203,7 @@ export function matchBinding(binding: string, overrides: Keybindings, scope: Act
   return null
 }
 /** 누르고 있어도 한 번만 도는 액션 (LIFE-495 K6ⓔ) — 렌더러 keydown·main 메뉴 키 두 길이 같은 목록을 본다(fix1 R1-06). */
-export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview']
+export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview', 'focus.toggleTerminalEditor', 'group.maximize']
 
 /**
  * 편집기(파일 탭 Monaco)에 포커스가 있으면 **편집기에 양보하는** 액션 (LIFE-591). 터미널 pane 을 겨누는 단축키는 파일 탭이 활성이면 무동작이라(590 수정 r1 R1-B — `terminalKeyTarget`)
@@ -202,6 +211,26 @@ export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', '
  */
 // LIFE-683 F2-05 — ⌘⇧G `scm.show` 는 양보하지 않는다(편집기 포커스에서도 소스 제어 — S1 · Orca `scope: 'global'`). Monaco ⇧⌘G 이전 찾기는 찾기 위젯 ⇧Enter 로 남는다(D1).
 export const EDITOR_YIELD_ACTIONS: readonly ActionId[] = ['terminal.zoom', 'terminal.split', 'terminal.focus']
+
+/**
+ * 편집기 안에서 난 키를 편집기에 넘기는가 (LIFE-824 C1ⓓ — 액션이 아니라 **방향·조합 단위**). `EDITOR_YIELD_ACTIONS` 는 넘기되, `terminal.focus` 의
+ * **왼쪽·오른쪽(variant 0·1)이고 Shift 없는 조합**(기본 ⌘⌥←→)만은 앱이 가져가 영역을 옮긴다 — 편집기에서 빠져나갈 키. Monaco 0.57 은 ⌘⌥←→ 를 안 쓰고
+ * ⌘⌥↑↓(커서 추가)·⌘⌥⇧방향(열 선택)만 쓴다 — 그 둘은 그대로 넘긴다. 순수 판정.
+ */
+export function yieldsToEditor(input: { match: ShortcutMatch; binding: string }): boolean {
+  if (!EDITOR_YIELD_ACTIONS.includes(input.match.id)) return false
+  if (input.match.id !== 'terminal.focus') return true
+  const sideways = input.match.variant === 0 || input.match.variant === 1
+  return !(sideways && !input.binding.split('+').includes('Shift'))
+}
+
+/**
+ * LIFE-825 — ⌘⌥Enter(`group.maximize`)는 Monaco 0.57 찾기 위젯이 **열린** 편집기 안에서 「모두 바꾸기」(`editor.action.replaceAll` — 찾기 위젯이 보일 때만)다.
+ * 그때만 편집기에 넘기고, 그 밖(찾기 위젯이 닫힌 편집기·터미널·파일 보기)에서는 앱이 가져가 영역을 최대화한다. 순수 판정.
+ */
+export function yieldsToEditorFind(input: { id: ActionId; findWidgetVisible: boolean }): boolean {
+  return input.id === 'group.maximize' && input.findWidgetVisible
+}
 
 /**
  * 포커스가 Markdown 보기(파일 탭의 원문 편집기·미리보기) 밖이면 **키를 가져가지 않는** 액션인가 (LIFE-629). VS Code `markdown.togglePreview` when 절

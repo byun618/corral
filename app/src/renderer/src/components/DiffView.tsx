@@ -44,7 +44,25 @@ export function blockingNotice(sides: readonly SideContent[]): string | null {
 
 const textOf = (side: SideContent): string => (side.kind === 'text' ? side.text : '')
 
-export function DiffView({ root, target, stamp, watch, onOpenFile }: { root: string; target: ScmDiffTarget | null; stamp: number; watch: boolean; onOpenFile: (rel: string) => void }): React.JSX.Element {
+export function DiffView({
+  root,
+  target,
+  stamp,
+  watch,
+  onOpenFile,
+  groupId,
+  onActivate,
+}: {
+  root: string
+  target: ScmDiffTarget | null
+  stamp: number
+  watch: boolean
+  onOpenFile: (rel: string) => void
+  /** 이 diff 가 선 영역 — 본문 드롭 대상 표지(`data-diff-group`, LIFE-823 B5 — 탭 끌기 `DROP_BODY_SELECTOR`). */
+  groupId?: string
+  /** 본문을 누르면 이 영역을 활성으로 (LIFE-824 C8 — base 누락). */
+  onActivate?: () => void
+}): React.JSX.Element {
   useEffect(() => {
     if (!watch) return
     return acquireExplorerWatch(root)
@@ -143,12 +161,13 @@ export function DiffView({ root, target, stamp, watch, onOpenFile }: { root: str
     editorRef.current.update({ left: contents.left === null ? '' : textOf(contents.left), right: textOf(contents.right) })
   }, [contents, ready])
 
-  if (target === null) return <div className="scm-diff-message">이 diff 탭의 대상을 읽지 못했습니다(손상된 탭).</div>
+  // LIFE-824 — tabIndex -1: 키보드로 이 diff 탭에 오면(⌘⌥방향·⌃`·이전/다음 탭·탭 클릭) 포커스가 머물 자리. Tab 순회에는 들지 않는다.
+  if (target === null) return <div className="scm-diff-message" data-diff-group={groupId} tabIndex={-1} onMouseDown={onActivate}>이 diff 탭의 대상을 읽지 못했습니다(손상된 탭).</div>
   const sides = sidesOf(target)
   const unchanged = contents !== null && notice === null && contents.left !== null && textOf(contents.left) === textOf(contents.right)
   const missing = contents !== null && contents.right.kind === 'missing'
   return (
-    <div className="scm-diff" data-scm-diff={target.mode} data-scm-diff-rel={target.rel}>
+    <div className="scm-diff" data-scm-diff={target.mode} data-scm-diff-rel={target.rel} data-diff-group={groupId} tabIndex={-1} onMouseDown={onActivate}>
       <div className="scm-diff-head">
         <span className="scm-diff-sides" title={diffTitle(target)}>
           {sides.left === null ? `${SIDE_LABEL[sides.right.side]} · ${target.rel}` : `${SIDE_LABEL[sides.left.side]}${sides.left.rel === sides.right.rel ? '' : ` ${sides.left.rel}`} ↔ ${SIDE_LABEL[sides.right.side]} · ${target.rel}`} · 읽기 전용

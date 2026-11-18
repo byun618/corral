@@ -109,7 +109,7 @@ export function ShortcutsSection({ overrides, onChange }: { overrides: Keybindin
                       {row.modified ? <span className="shortcut-badge" data-shortcut-modified>Modified</span> : null}
                       {row.unassigned ? <span className="shortcut-badge is-muted" data-shortcut-unassigned>없음</span> : null}
                       <span className="shortcut-block-actions">
-                        <button type="button" className="shortcut-text-button" data-disable={id} disabled={busy || recording !== null || row.unassigned} onClick={() => void save({ next: { ...overrides, [id]: row.slots.map(() => null) }, done: `「${row.action.title}」 단축키를 껐습니다.` })}>끄기</button>
+                        <button type="button" className="shortcut-text-button" data-disable={id} disabled={busy || recording !== null || row.unassigned || row.slots.length === 0} onClick={() => void save({ next: { ...overrides, [id]: row.slots.map(() => null) }, done: `「${row.action.title}」 단축키를 껐습니다.` })}>끄기</button>
                         <button type="button" className="shortcut-text-button" data-reset={id} disabled={busy || recording !== null || !row.modified} onClick={() => {
                           const next = { ...overrides }
                           delete next[id]

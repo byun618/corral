@@ -16,7 +16,8 @@ export type MruRow = {
   /** 같은 worktree 면 그 탭이 배정된 영역 글리프(영역 1개면 빈 문자열), 다른 worktree 면 `⇄`. */
   groupGlyph: string
   otherWorktree: boolean
-  status: AgentStatus
+  /** 에이전트 상태 — 편집기 탭(파일·diff, LIFE-824 C4)은 null(점 없음). */
+  status: AgentStatus | null
   /** `pane {n} · {종류}` — pane 이 하나뿐인 탭이면 종류만. */
   paneDesc: string
   worktree: string
@@ -70,9 +71,13 @@ export function MruSwitcher({
             >
               {row.groupGlyph}
             </span>
-            <span className={`mru-row-status tone-${GLYPH[row.status].tone}`} title={STATUS_LABEL[row.status]}>
-              {GLYPH[row.status].glyph}
-            </span>
+            {row.status === null ? (
+              <span className="mru-row-status" />
+            ) : (
+              <span className={`mru-row-status tone-${GLYPH[row.status].tone}`} title={STATUS_LABEL[row.status]}>
+                {GLYPH[row.status].glyph}
+              </span>
+            )}
             <span className="mru-row-title">{row.title}</span>
             <span className="mru-row-pane">{row.paneDesc}</span>
             <div className="mru-row-spacer" />

@@ -160,6 +160,9 @@ export function withoutRecentTabs(layout: GroupLayout): GroupLayout {
  */
 export const ONE_TAB_IN_GROUP = '이 영역에 탭이 하나뿐이다'
 
+/** 영역 최대화·균등화가 안 되는 이유 (LIFE-825 C3·C4ⓖ) — 키·팔레트·⊞ 메뉴가 같은 문구를 쓴다. */
+export const ONE_GROUP = '영역이 하나뿐이다'
+
 export function singleLayout(input: { groupId: string; tabOrder: string[]; activeTabId: string | null }): GroupLayout {
   return {
     root: leaf({ groupId: input.groupId, tabOrder: [...input.tabOrder], activeTabId: input.activeTabId }),
@@ -406,16 +409,44 @@ export function mergeTabIntoGroup(
 }
 
 /**
+ * 닫는 영역의 탭·활성이 갈 영역 (LIFE-825 C1·P1 — VS Code `doRemoveGroupWithEditors`). 영역이 하나뿐이거나 모르는 영역이면 null.
+ *   · 영역 MRU(`recent`, 앞이 최근)에서 닫는 영역 다음으로 최근인 살아 있는 영역 — 닫는 영역이 활성이면 MRU 둘째, 아니면 첫째(= 활성 영역)
+ *   · MRU 에 후보가 없으면(재기동 직후 등) **공간 이웃** — 닫는 영역 자리를 차지하는 형제 쪽에서 닫는 영역과 맞닿은 영역(`neighborGroupId`, 겹침 최대·동점 위·왼쪽)
+ */
+export function closeGroupHeir(input: { root: GroupNode; groupId: string; recent: readonly string[] }): string | null {
+  const live = listGroups(input.root).map((group) => group.groupId)
+  if (live.length < 2 || !live.includes(input.groupId)) return null
+  const recent = input.recent.find((groupId) => groupId !== input.groupId && live.includes(groupId))
+  if (recent !== undefined) return recent
+  const side = siblingSideOf({ node: input.root, groupId: input.groupId })
+  return side === null ? null : neighborGroupId({ root: input.root, groupId: input.groupId, direction: side })
+}
+
+/** 그 영역(리프)의 형제가 어느 쪽에 있나 — 부모 분할이 row 면 앞 = 오른쪽 형제, 뒤 = 왼쪽 형제. column 이면 아래·위. 루트 리프면 null. */
+function siblingSideOf(input: { node: GroupNode; groupId: string }): GroupDirection | null {
+  const { node, groupId } = input
+  if (node.kind === 'leaf') return null
+  const isTarget = (child: GroupNode): boolean => child.kind === 'leaf' && child.group.groupId === groupId
+  if (isTarget(node.first)) return node.direction === 'row' ? 'right' : 'down'
+  if (isTarget(node.second)) return node.direction === 'row' ? 'left' : 'up'
+  return siblingSideOf({ node: node.first, groupId }) ?? siblingSideOf({ node: node.second, groupId })
+}
+
+/**
  * 영역을 없애고 형제가 자리를 차지한다 (F1-5). 영역이 하나면 무효.
  *
- * 남아 있던 탭은 **형제 영역으로 넘긴다** — 영역을 닫는 것이 탭을 닫는 것이 되면 안 된다
- * (§4 는 빈 영역 닫기만 말하지만, 닫기 경로가 탭을 삼키는 구멍은 막아 둔다).
+ * 남아 있던 탭은 **받는 영역**(`closeGroupHeir` — 영역 MRU → 공간 이웃, LIFE-825 C1)의 `tabOrder` 끝으로 넘긴다 — 영역을 닫는 것이 탭을 닫는 것이 되면 안 된다.
+ * 닫는 영역이 활성이었으면 받는 영역이 활성이 되고, 닫는 영역의 활성 탭이 받는 영역의 활성 탭이 된다(C1ⓒ). 활성이 아니었으면 받는 영역의 활성 탭은 그대로다.
+ * `recent` 를 안 주면 MRU 없음 — 공간 이웃이다.
  */
-export function closeGroup(layout: GroupLayout, groupId: string): GroupLayout {
+export function closeGroup(layout: GroupLayout, groupId: string, options?: { recent?: readonly string[] }): GroupLayout {
   const groups = listGroups(layout.root)
   if (groups.length < 2) return layout
   const closing = groups.find((group) => group.groupId === groupId)
   if (closing === undefined) return layout
+  const heirId = closeGroupHeir({ root: layout.root, groupId, recent: options?.recent ?? [] })
+  if (heirId === null) return layout
+  const wasActive = layout.activeGroupId === groupId
 
   const drop = (node: GroupNode): GroupNode | null => {
     switch (node.kind) {
@@ -434,21 +465,151 @@ export function closeGroup(layout: GroupLayout, groupId: string): GroupLayout {
   if (pruned === null) return layout
   const adopted = closing.tabOrder
 
-  const heir = listGroups(pruned)[0]
-  if (heir === undefined) return layout
   const withTabs =
     adopted.length === 0
       ? pruned
-      : mapGroup(pruned, heir.groupId, (group) => ({
+      : mapGroup(pruned, heirId, (group) => ({
           ...group,
           tabOrder: [...group.tabOrder, ...adopted.filter((tabId) => !group.tabOrder.includes(tabId))],
-          activeTabId: group.activeTabId ?? (adopted[0] ?? null),
+          activeTabId: wasActive && closing.activeTabId !== null ? closing.activeTabId : (group.activeTabId ?? (adopted[0] ?? null)),
         }))
 
-  const nextActive = listGroups(withTabs).some((group) => group.groupId === layout.activeGroupId)
-    ? layout.activeGroupId
-    : heir.groupId
-  return { root: withTabs, activeGroupId: nextActive }
+  return { root: withTabs, activeGroupId: wasActive ? heirId : layout.activeGroupId }
+}
+
+/**
+ * 같은 방향 줄의 한 분할 마디가 가질 비율 — 앞 쪽에 든 줄 칸 수 / 이 마디 아래 줄 칸 수 (LIFE-825 C2·C3). 줄 칸 = 같은 방향 분할을 따라 내려가 만나는
+ * 리프·반대 방향 분할(VS Code grid branch 의 자식). 줄의 모든 마디에 이 값을 주면 칸마다 1/n 이 된다. `RATIO_MIN·MAX` 는 `setRatio` 와 같이 클램프한다.
+ */
+function evenRatioOf(node: { direction: 'row' | 'column'; first: GroupNode; second: GroupNode }): number {
+  const cells = (child: GroupNode): number => (child.kind === 'split' && child.direction === node.direction ? cells(child.first) + cells(child.second) : 1)
+  const first = cells(node.first)
+  return clampRatio(first / (first + cells(node.second)))
+}
+
+/** 줄의 분할 마디들(같은 방향으로 이어진 것)에 균등 비율을 준다. 반대 방향 분할 아래는 건드리지 않는다. */
+function evenRun(node: GroupNode, direction: 'row' | 'column'): GroupNode {
+  if (node.kind === 'leaf' || node.direction !== direction) return node
+  const first = evenRun(node.first, direction)
+  const second = evenRun(node.second, direction)
+  const ratio = evenRatioOf(node)
+  return ratio === node.ratio && first === node.first && second === node.second ? node : { ...node, ratio, first, second }
+}
+
+/**
+ * 경계 더블클릭 리셋 (LIFE-825 C2 — VS Code `grid.ts` `onDidSashReset` → `distributeViewSizes(parentLocation)`, 재귀 아님): 그 경계(`splitId`)를 가진
+ * **같은 방향 줄**의 칸들을 같은 크기로. 줄의 맨 위 마디 = 그 마디에서 같은 방향 부모를 따라 올라간 끝. 다른 줄은 그대로. 바뀐 것이 없으면 같은 객체.
+ */
+export function evenGroupRunAt(layout: GroupLayout, splitId: string): GroupLayout {
+  const apply = (node: GroupNode, parentDirection: 'row' | 'column' | null): GroupNode => {
+    if (node.kind === 'leaf') return node
+    if (node.direction !== parentDirection && runContains(node, splitId)) return evenRun(node, node.direction)
+    const first = apply(node.first, node.direction)
+    const second = apply(node.second, node.direction)
+    return first === node.first && second === node.second ? node : { ...node, first, second }
+  }
+  const root = apply(layout.root, null)
+  return root === layout.root ? layout : { ...layout, root }
+}
+
+/** 그 줄(같은 방향으로 이어진 마디들) 안에 그 분할이 있나. */
+function runContains(node: GroupNode, splitId: string): boolean {
+  if (node.kind === 'leaf') return false
+  if (splitIdOf(node) === splitId) return true
+  const inRun = (child: GroupNode): boolean => child.kind === 'split' && child.direction === node.direction && runContains(child, splitId)
+  return inRun(node.first) || inRun(node.second)
+}
+
+/** 영역 크기 균등화 (LIFE-825 C3 — VS Code `evenEditorWidths` → `distributeViewSizes()` 재귀): **모든** 같은 방향 줄을 고르게. 바뀐 것이 없으면 같은 객체. */
+export function evenAllGroups(layout: GroupLayout): GroupLayout {
+  const apply = (node: GroupNode): GroupNode => {
+    if (node.kind === 'leaf') return node
+    const first = apply(node.first)
+    const second = apply(node.second)
+    const ratio = evenRatioOf(node)
+    return ratio === node.ratio && first === node.first && second === node.second ? node : { ...node, ratio, first, second }
+  }
+  const root = apply(layout.root)
+  return root === layout.root ? layout : { ...layout, root }
+}
+
+/**
+ * 배치 **모양** 키 (LIFE-825 C4) — 영역 id 와 분할 방향만, 비율·탭은 뺀다. 영역 최대화는 이 키가 바뀌면(분할·닫기·끌어서 영역 생성·접힘) 풀린다.
+ */
+export function layoutShapeKey(node: GroupNode): string {
+  switch (node.kind) {
+    case 'leaf':
+      return node.group.groupId
+    case 'split':
+      return `${node.direction}(${layoutShapeKey(node.first)},${layoutShapeKey(node.second)})`
+  }
+}
+
+/** 메모리 전용 영역 최대화 기록 (LIFE-825 C4 — 저장 배치 밖). `shape` = 최대화한 순간의 `layoutShapeKey`. */
+export type GroupMaximize = { groupId: string; shape: string }
+
+/**
+ * 지금 화면에서 최대화된 영역 (C4ⓔ 해제 조건을 한 자리에서): 기록이 있고 · 영역이 둘 이상이고 · 모양이 그대로이고 · 그 영역이 **활성**일 때만.
+ * 숨은 영역이 활성되면(⌘⌥방향·⌃`·⌃Tab·reveal·사이드바 세션 클릭 …) 활성이 바뀌어 풀린다(VS Code `doRestoreGroup`). 아니면 null.
+ */
+export function maximizedGroupOf(input: { layout: GroupLayout; maximize: GroupMaximize | undefined }): string | null {
+  const { layout, maximize } = input
+  if (maximize === undefined) return null
+  if (listGroups(layout.root).length < 2) return null
+  if (layoutShapeKey(layout.root) !== maximize.shape) return null
+  return layout.activeGroupId === maximize.groupId ? maximize.groupId : null
+}
+
+/** 새 터미널 탭 자리 (LIFE-825 C5·P6) — 요청한 순간의 활성 영역과 그 활성 탭(없으면 null = 영역 끝). */
+export type NewTabSlot = { groupId: string; afterTabId: string | null }
+
+/** 요청한 순간의 자리를 잡는다 — 그 worktree 배치의 활성 영역·활성 탭. */
+export function newTabSlotOf(layout: GroupLayout): NewTabSlot | null {
+  const group = findGroup(layout.root, layout.activeGroupId)
+  if (group === null) return null
+  return { groupId: group.groupId, afterTabId: group.activeTabId }
+}
+
+/**
+ * 기억한 자리가 없는 탭이 도착했을 때 C5ⓗ 갈래 로그의 이름 (fix1 B5). 이번에 처음 본 탭이 아니면 null(로그 없음).
+ * ⌘⇧T 다시 열기 탭은 자기 자리(닫을 때의 영역·자리)로 가므로 「기억 없음」이 아니라 「다시 열기」 갈래다 — G1 갈래 계수를 흐리지 않게.
+ */
+export function unrememberedArrivalBranch(input: { firstSeen: boolean; reopening: boolean }): 'reopen' | 'unremembered' | null {
+  if (!input.firstSeen) return null
+  return input.reopening ? 'reopen' : 'unremembered'
+}
+
+/** 같은 자리(영역·기준 탭)를 잡은 요청인가 — 연속 요청 순서(fix1 B2)를 가르는 키. */
+export function newTabSlotKey(slot: NewTabSlot): string {
+  return `${slot.groupId}\u0000${slot.afterTabId ?? ''}`
+}
+
+/**
+ * 도착한 새 탭을 기억한 자리로 놓을 곳 (C5ⓐⓑ) — 영역이 있으면 그 영역에서 기억한 탭 바로 오른쪽(그 탭이 사라졌으면 그 영역의 지금 활성 탭 오른쪽, 그것도 없으면 끝).
+ * 기억한 영역이 사라졌으면 null — 도착 때 자리(`reconcileLayout` 고아 착지 = 활성 영역·활성 탭 오른쪽) 그대로 둔다. `index` 는 `placeTab` 의 뜻(새 탭을 뺀 순서 기준).
+ * fix1 B2 — `precedingTabIds` = 같은 자리를 **먼저** 요청한(이 요청을 할 때 아직 안 놓인) 탭들. 기준 탭 바로 뒤에 그 탭들이 이어 서 있으면 그 뒤로 간다 —
+ * 도착 순서와 무관하게 화면 순서 = 요청 순서(VS Code 와 같은 결: 연속으로 연 탭은 차례로 오른쪽에).
+ * fix2 D3 — `followingTabIds` = 같은 자리를 **나중에** 요청해 이미 도착한 탭들. 기준 탭이 없거나(빈 영역) 사라져 활성 탭(= 먼저 도착한 뒤 요청 탭) 오른쪽으로
+ * 떨어질 때도 그 탭들 **앞**에 선다. 앞뒤 요청이 없으면 C5ⓑ 그대로.
+ */
+export function newTabPlacement(input: { layout: GroupLayout; slot: NewTabSlot; tabId: string; precedingTabIds?: readonly string[]; followingTabIds?: readonly string[] }): { groupId: string; index: number } | null {
+  const group = findGroup(input.layout.root, input.slot.groupId)
+  if (group === null) return null
+  const order = group.tabOrder.filter((tabId) => tabId !== input.tabId)
+  const after = [input.slot.afterTabId, group.activeTabId === input.tabId ? null : group.activeTabId].find((tabId) => tabId !== null && order.includes(tabId)) ?? null
+  let index = after === null ? order.length : order.indexOf(after) + 1
+  const preceding = input.precedingTabIds ?? []
+  while (index < order.length && preceding.includes(order[index] ?? '')) index += 1
+  const followingAt = (input.followingTabIds ?? []).map((tabId) => order.indexOf(tabId)).filter((at) => at >= 0)
+  index = Math.min(index, ...followingAt)
+  return { groupId: group.groupId, index }
+}
+
+/** 탭 목록에서 `after` 바로 오른쪽에 `added` 를 끼운다(없으면 끝). 순수 — 고아 착지(`reconcileLayout`)가 쓴다. */
+function insertAfter(input: { tabOrder: readonly string[]; after: string | null; added: readonly string[] }): string[] {
+  const at = input.after === null ? -1 : input.tabOrder.indexOf(input.after)
+  if (at < 0) return [...input.tabOrder, ...input.added]
+  return [...input.tabOrder.slice(0, at + 1), ...input.added, ...input.tabOrder.slice(at + 1)]
 }
 
 /** 분할 하나의 비율을 바꾼다 (F1-2 — mouseup 1회 커밋). 분할은 **자기 자식 id 쌍**으로 가린다. */
@@ -546,7 +707,8 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
       ? pruned
       : mapGroup(pruned, landing.groupId, (group) => ({
           ...group,
-          tabOrder: [...group.tabOrder, ...orphans],
+          // LIFE-825 C5ⓒ — 새 탭(요청 없이 도착한 탭 포함)은 착지 영역의 **활성 탭 바로 오른쪽**(파일 탭 `openNewTabInGroup` 과 같은 규칙). 복원 실패 회차는 base 그대로 끝(C5ⓓ).
+          tabOrder: restoreFailed ? [...group.tabOrder, ...orphans] : insertAfter({ tabOrder: group.tabOrder, after: group.activeTabId, added: orphans }),
           activeTabId: group.activeTabId ?? orphans[0] ?? null,
         }))
   /**
@@ -731,4 +893,153 @@ export function placeTab(input: { layout: GroupLayout; tabId: string; groupId: s
   const from = groupOfTab(layout.root, input.tabId)
   if (from === null || findGroup(layout.root, input.groupId) === null) return layout
   return moveTabWithinTabbar(layout, { tabId: input.tabId, fromGroupId: from.groupId, toGroupId: input.groupId, index: input.index })
+}
+
+// --- 배치에 없던 탭을 놓는다 (LIFE-823 — 탐색기 파일 끌어서 열기·옆으로 열기) ---------------------------------------------
+//
+// 위 이동 함수(`moveTabWithinTabbar`·`mergeTabIntoGroup`·`splitGroupWithForeignTab`)는 **이미 어느 영역에 있는 탭**을 옮긴다.
+// 아래 셋은 **배치 어디에도 없는 탭**을 새로 들인다 — 출발 영역이 없으니 원 영역 빼기·접기가 없고, 대상이 탭 1개·빈 영역이어도 된다.
+// 탭이 이미 배치에 있으면(어느 영역이든) 배치를 그대로 돌려준다 — 같은 탭이 두 곳에 실리지 않는다. 이미 열린 탭의 처리는 부르는 쪽(`file-tabs.ts` `placeFileTab`)이 한다.
+
+/** 배치 어디에든 그 탭이 있나. */
+function hasTab(layout: GroupLayout, tabId: string): boolean {
+  return groupOfTab(layout.root, tabId) !== null
+}
+
+/** 탭바 삽입 — 그 영역의 `index`(0 ~ 길이, 벗어나면 끝으로 clamp) 자리에 끼우고 그 영역·그 탭을 활성으로. */
+export function insertNewTabAt(input: { layout: GroupLayout; tabId: string; groupId: string; index: number }): GroupLayout {
+  const { layout, tabId } = input
+  if (hasTab(layout, tabId) || findGroup(layout.root, input.groupId) === null) return layout
+  const inserted = updateGroup(layout, input.groupId, (group) => {
+    const at = Math.max(0, Math.min(input.index, group.tabOrder.length))
+    return { ...group, tabOrder: [...group.tabOrder.slice(0, at), tabId, ...group.tabOrder.slice(at)], activeTabId: tabId }
+  })
+  return { ...inserted, activeGroupId: input.groupId }
+}
+
+/** 가운데 열기 — 그 영역의 활성 탭 바로 오른쪽(활성이 없으면 끝)에 넣고 그 영역·그 탭을 활성으로(VS Code `openPositioning: right`). */
+export function openNewTabInGroup(input: { layout: GroupLayout; tabId: string; groupId: string }): GroupLayout {
+  const group = findGroup(input.layout.root, input.groupId)
+  if (group === null) return input.layout
+  const activeAt = group.activeTabId === null ? -1 : group.tabOrder.indexOf(group.activeTabId)
+  return insertNewTabAt({ layout: input.layout, tabId: input.tabId, groupId: input.groupId, index: activeAt < 0 ? group.tabOrder.length : activeAt + 1 })
+}
+
+/**
+ * 가장자리 분할 — 대상 영역 옆(`direction`·`edge` 는 `splitGroup` 과 같은 뜻)에 그 탭 하나만 든 새 영역을 만들고 새 영역을 활성으로.
+ * 대상 영역의 탭 수는 보지 않는다(탭 1개도 된다). 단 대상이 **빈 영역**이면 그 빈 형제는 화면 배치(`reconcileLayout` 의 빈 영역 접기)에서 접혀
+ * 한 영역이 된다 — 그래서 탐색기 끌기는 빈 영역 가장자리를 분할로 판정하지 않는다(`tab-drag.ts` `resolveFileBodyDropTarget`, C1ⓑ 정정 r1).
+ */
+export function splitGroupWithNewTab(input: {
+  layout: GroupLayout
+  tabId: string
+  targetGroupId: string
+  direction: 'row' | 'column'
+  edge: 'before' | 'after'
+  newGroupId: string
+}): GroupLayout {
+  const { layout } = input
+  if (hasTab(layout, input.tabId) || findGroup(layout.root, input.targetGroupId) === null || findGroup(layout.root, input.newGroupId) !== null) return layout
+  const added = leaf({ groupId: input.newGroupId, tabOrder: [input.tabId], activeTabId: input.tabId })
+  const replace = (node: GroupNode): GroupNode => {
+    switch (node.kind) {
+      case 'leaf':
+        if (node.group.groupId !== input.targetGroupId) return node
+        return input.edge === 'before'
+          ? { kind: 'split', direction: input.direction, ratio: 0.5, first: added, second: node }
+          : { kind: 'split', direction: input.direction, ratio: 0.5, first: node, second: added }
+      case 'split': {
+        const first = replace(node.first)
+        const second = replace(node.second)
+        return first === node.first && second === node.second ? node : { ...node, first, second }
+      }
+    }
+  }
+  return { root: replace(layout.root), activeGroupId: input.newGroupId }
+}
+
+/** 영역 사각형 — 루트를 단위 정사각형(0~1)으로 놓고 분할 비율로 나눈 자리. 화면 픽셀이 아니라 배치 모양만 본다. */
+export type GroupRect = { left: number; top: number; width: number; height: number }
+
+/** 영역마다 사각형 (LIFE-823 F2) — `ratio` 는 앞(`first`) 쪽 몫이다(`PaneGrid` 와 같다). row = 좌우, column = 위아래. */
+export function groupRects(root: GroupNode): Map<string, GroupRect> {
+  const rects = new Map<string, GroupRect>()
+  const walk = (node: GroupNode, rect: GroupRect): void => {
+    switch (node.kind) {
+      case 'leaf':
+        rects.set(node.group.groupId, rect)
+        return
+      case 'split': {
+        const ratio = clampRatio(node.ratio)
+        if (node.direction === 'row') {
+          walk(node.first, { ...rect, width: rect.width * ratio })
+          walk(node.second, { ...rect, left: rect.left + rect.width * ratio, width: rect.width * (1 - ratio) })
+        } else {
+          walk(node.first, { ...rect, height: rect.height * ratio })
+          walk(node.second, { ...rect, top: rect.top + rect.height * ratio, height: rect.height * (1 - ratio) })
+        }
+        return
+      }
+    }
+  }
+  walk(root, { left: 0, top: 0, width: 1, height: 1 })
+  return rects
+}
+
+/** 부동소수 비교 여유 — 비율 곱셈 오차. */
+const RECT_EPSILON = 1e-9
+
+/** 영역 이웃 방향 (LIFE-824 — ⌘⌥방향키 영역 이동). `PaneDirection` 과 같은 이름이다. */
+export type GroupDirection = 'left' | 'right' | 'up' | 'down'
+
+/**
+ * 그 영역의 **d 쪽 이웃들** (LIFE-823 F2 → LIFE-824 네 방향 일반화 — VS Code `grid.ts` `getNeighborViews`): 기준 영역의 d 쪽 변에 맞닿은 변을 가졌고
+ * 수직 구간(좌우면 세로, 위아래면 가로)이 **겹치는** 영역(끝점만 닿는 것은 이웃이 아니다). 겹친 길이(`overlap`)와 사각형을 같이 돌려준다 — 고르는 규칙은 `neighborGroupId`.
+ */
+export function neighborGroups(input: { root: GroupNode; groupId: string; direction: GroupDirection }): { groupId: string; overlap: number; rect: GroupRect }[] {
+  const { groupId, direction } = input
+  const rects = groupRects(input.root)
+  const from = rects.get(groupId)
+  if (from === undefined) return []
+  const horizontal = direction === 'left' || direction === 'right'
+  const neighbors: { groupId: string; overlap: number; rect: GroupRect }[] = []
+  for (const [id, rect] of rects) {
+    if (id === groupId) continue
+    const touches =
+      direction === 'right' ? Math.abs(rect.left - (from.left + from.width)) <= RECT_EPSILON
+      : direction === 'left' ? Math.abs(rect.left + rect.width - from.left) <= RECT_EPSILON
+      : direction === 'down' ? Math.abs(rect.top - (from.top + from.height)) <= RECT_EPSILON
+      : Math.abs(rect.top + rect.height - from.top) <= RECT_EPSILON
+    if (!touches) continue
+    const overlap = horizontal
+      ? Math.min(from.top + from.height, rect.top + rect.height) - Math.max(from.top, rect.top)
+      : Math.min(from.left + from.width, rect.left + rect.width) - Math.max(from.left, rect.left)
+    if (overlap > RECT_EPSILON) neighbors.push({ groupId: id, overlap, rect })
+  }
+  return neighbors
+}
+
+/**
+ * d 쪽 **이웃 영역 하나** (LIFE-824 01-criteria 용어 「이웃 영역」) — 이웃들 중 겹침이 큰 것, 같으면 위(좌우 이동)·왼쪽(위아래 이동). 없으면 null(그 방향 끝).
+ * 823 「옆으로 열기」의 `rightNeighborGroupId` 는 이 함수의 오른쪽 판이다(결과 무변경).
+ */
+export function neighborGroupId(input: { root: GroupNode; groupId: string; direction: GroupDirection }): string | null {
+  const horizontal = input.direction === 'left' || input.direction === 'right'
+  const sorted = [...neighborGroups(input)].sort((a, b) =>
+    Math.abs(b.overlap - a.overlap) > RECT_EPSILON ? b.overlap - a.overlap : horizontal ? a.rect.top - b.rect.top : a.rect.left - b.rect.left,
+  )
+  return sorted[0]?.groupId ?? null
+}
+
+/** 그 영역의 **오른쪽 이웃들** (LIFE-823 F2) — `neighborGroups` 의 오른쪽 판. */
+export function rightNeighborGroups(input: { root: GroupNode; groupId: string }): { groupId: string; overlap: number; rect: GroupRect }[] {
+  return neighborGroups({ ...input, direction: 'right' })
+}
+
+/**
+ * 「옆으로 열기」 대상 영역 (LIFE-823 P3·F2 — VS Code `SIDE_GROUP` 의 `findGroup({ direction: right })`). 오른쪽 이웃들 중 겹침이 큰 것, 같으면 위.
+ * 이웃이 없으면(가장 오른쪽 열) null. VS Code 는 여럿이면 영역 MRU 로 고르지만 823 결과를 바꾸지 않으려고 여기는 겹침 규칙 그대로 둔다(영역 MRU 는 LIFE-824 `group-focus.ts`).
+ */
+export function rightNeighborGroupId(input: { root: GroupNode; groupId: string }): string | null {
+  return neighborGroupId({ ...input, direction: 'right' })
 }

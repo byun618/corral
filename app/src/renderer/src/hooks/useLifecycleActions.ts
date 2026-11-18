@@ -30,6 +30,11 @@ export function useLifecycleActions(state: AppState | null): {
    * 선택 pane 이 그 탭째 닫히면 이 탭의 pane 으로 승격한다(화면 활성 탭 ≠ 입력 pane 의 탭이 남지 않게). 파일 탭이 활성이면 null.
    */
   shownTabRef: { current: string | null }
+  /**
+   * LIFE-825 C5·P6 — 새 탭을 **요청하는 순간** 부른다(App 이 렌더마다 채운다 — 배치는 App 이 안다). 그 workspace 의 지금 자리(활성 영역·활성 탭)를 잡아
+   * 두고, 탭 id 가 오면 받는 함수를 돌려준다(탭 id 는 응답에야 오고 탭은 그 전후로 herdr 에서 도착한다). 다시 열기(⌘⇧T)는 자기 자리가 있어 부르지 않는다.
+   */
+  newTabRequestRef: { current: ((workspaceId: string) => ((tabId: string) => void) | null) | null }
   selectPane: (paneId: string) => void
   /** 아직 store 에 없는 pane 을 **도착하면** 선택한다 (분할 직후 — F2-7). */
   selectPaneWhenReady: (paneId: string) => void
@@ -63,6 +68,7 @@ export function useLifecycleActions(state: AppState | null): {
   /** 그 탭의 워크스페이스 — 「선택했던 탭이 **이 워크스페이스에서** 통째로 닫혔다」를 가린다(LIFE-691 f1 A). */
   const selectedWorkspaceRef = useRef<string | null>(null)
   const shownTabRef = useRef<string | null>(null)
+  const newTabRequestRef = useRef<((workspaceId: string) => ((tabId: string) => void) | null) | null>(null)
   const [activeWorkspaceId, setActiveWorkspaceIdState] = useState<string | null>(null)
   const [lifecycleNotice, setLifecycleNotice] = useState<LifecycleNotice | null>(null)
   const [pendingClose, setPendingClose] = useState<PendingClose | null>(null)
@@ -434,6 +440,8 @@ export function useLifecycleActions(state: AppState | null): {
       reopen?: { cwd: string | null; label: string | null; onTab: (tabId: string) => void; onFailed: () => void }
     }): Promise<string | null> => {
       const { workspaceId, kind, reopen } = input
+      // LIFE-825 C5 — 자리는 요청한 이 순간의 것이다(응답·도착 전에 사용자가 다른 탭·영역으로 옮겨도 요청 자리에).
+      const bindNewTab = reopen === undefined ? (newTabRequestRef.current?.(workspaceId) ?? null) : null
       setActive(workspaceId) // G2: 상호작용한 workspace 를 ⌘T 대상 + 메인 탭바 대상으로 기록
       setLifecycleNotice(null)
       const result = await window.corral.createRow({
@@ -457,6 +465,7 @@ export function useLifecycleActions(state: AppState | null): {
       // 이게 없으면 탭은 만들어지고 **뒤에 조용히 숨어 있다** — 게이트 ① 에서 사용자가 잡은 것.
       if (result.tabId === null) reopen?.onFailed()
       else reopen?.onTab(result.tabId)
+      if (result.tabId !== null) bindNewTab?.(result.tabId)
       if (result.tabId !== null) setPendingRevealTab(result.tabId)
       return result.paneId
     },
@@ -617,6 +626,7 @@ export function useLifecycleActions(state: AppState | null): {
     createAgentTab,
     selectedPane,
     shownTabRef,
+    newTabRequestRef,
     selectPane,
     selectPaneWhenReady,
     pendingRevealTab,

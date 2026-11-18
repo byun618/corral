@@ -149,6 +149,7 @@ const EXPOSED = [
   'detachWorkLink',
   'prBranches',
   'prRefreshItem',
+  'prComments',
   'preloadEnv',
 ]
 
@@ -476,6 +477,7 @@ const api: CorralApi = {
   detachWorkLink: (input) => ipcRenderer.invoke('corral:detachWorkLink', input),
   prBranches: (input) => ipcRenderer.invoke('corral:prBranches', input),
   prRefreshItem: (query) => ipcRenderer.invoke('corral:prRefreshItem', query),
+  prComments: (input) => ipcRenderer.invoke('corral:prComments', input),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

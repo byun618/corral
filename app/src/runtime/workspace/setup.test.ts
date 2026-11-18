@@ -56,6 +56,9 @@ async function fixture() {
   const restart = async () => { await runtime.close(); runtime = await startRuntime({ userData: data }) }
   const close = () => runtime.close()
   const invoke = () => runtime.invoke
+  const parse = (args: string[]) => parser.parse(args, repo)
+  /** A client that hangs up mid-request — the socket closes and the same runtime cancels the request. */
+  const callCancelled = (signal: AbortSignal, ...args: string[]) => localCall(socketPath(data), request(parser.parse(args, repo), undefined, 30000), 30000, signal).catch(error => error)
   const callWithin = (ms: number, ...args: string[]) => localCall(socketPath(data), request(parser.parse(args, repo), undefined, ms))
   const real = fs.realpathSync(repo)
   const worktreePath = (name: string) => path.join(real, '.claude/worktrees', name)
@@ -64,7 +67,7 @@ async function fixture() {
   expect((await call('repo', 'add', '--path', repo)).ok).toBe(true)
   const id = new RepoRegistry(data).records()[0]!.id
   const register = async (command: string) => expect((await call('repo', 'set-setup-command', '--repo', id, '--command', command)).ok).toBe(true)
-  return { root, data, repo, real, id, git, call, callWithin, rejected, restart, close, invoke, worktreePath, branchExists, logs, register }
+  return { root, data, repo, real, id, git, call, callWithin, callCancelled, parse, rejected, restart, close, invoke, worktreePath, branchExists, logs, register }
 }
 const receiptOf = (result: unknown): Record<string, unknown> => (isRecord(result) && isRecord(result.setupReceipt) ? result.setupReceipt : {})
 const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
@@ -446,5 +449,84 @@ describe('LIFE-813 worktree setup command', () => {
     expect(after.stages.worktree).toMatchObject({ status: 'unknown', code: 'outcome_unknown' })
     expect(after.worktreePath).toBe(null)
     expect(fs.readFileSync(counter, 'utf8')).toBe('run\n')
+  })
+
+  // LIFE-813 r3 C1 — the same runtime, no restart: a restart answers outcome_unknown for any older id
+  // whatever its receipt says, so only a same-runtime retry tells pending from released or recorded.
+  describe('r3 C1: same-runtime cancellation and failure after the effect keep the receipt pending', () => {
+    const cases: [string, (outside: string) => string[]][] = [
+      ['worktree setup', outside => ['worktree', 'setup', '--worktree', `path:${outside}`, '--timeout-ms', '30000']],
+      ['worktree create', () => ['worktree', 'create', '--name', 'cut', '--timeout-ms', '30000']],
+      ['worktree create --agent', () => ['worktree', 'create', '--name', 'cut', '--agent', 'claude', '--timeout-ms', '30000']],
+    ]
+    for (const [label, argsOf] of cases) {
+      it(`${label}: a client that hangs up mid-setup — the group dies and the same id is outcome_unknown, never run again`, async () => {
+        const { root, git, repo, register, callCancelled, call } = await fixture()
+        const outside = path.join(root, 'by-git')
+        git(repo, 'worktree', 'add', '-b', 'by-git', outside)
+        const pids = path.join(root, 'pids'), counter = path.join(root, 'counter')
+        await register(`echo run >> '${counter}'; echo $$ >> '${pids}'; sleep 60`)
+        const args = [...argsOf(outside), '--request-id', `r1.${Date.now()}.${randomUUID()}`]
+        const hangUp = new AbortController()
+        const first = callCancelled(hangUp.signal, ...args)
+        await until(() => pidsIn(pids).length === 1)
+        hangUp.abort()
+        await first
+        await until(() => !running(pidsIn(pids)[0]!))
+        const again = await call(...args)
+        expect([label, again.error?.code]).toEqual([label, 'outcome_unknown'])
+        expect(fs.readFileSync(counter, 'utf8')).toBe('run\n')
+      })
+    }
+
+    it('a cancelled setup answers request_cancelled with its own message and the log path (create and create --agent)', async () => {
+      const { root, register, invoke, close, parse } = await fixture()
+      const counter = path.join(root, 'counter')
+      await register(`echo run >> '${counter}'; sleep 60`)
+      const dispatch = invoke()
+      const answer = dispatch(parse(['worktree', 'create', '--name', 'cut-plain', '--request-id', `r1.${Date.now()}.${randomUUID()}`]), 30000)
+      await until(() => fs.existsSync(counter))
+      void close()
+      const response = await answer
+      expect(response.error?.code).toBe('request_cancelled')
+      expect(response.error?.message.startsWith('Setup command cancelled')).toBe(true)
+      expect(response.error?.resources).toMatchObject({ branch: 'cut-plain', logPath: expect.stringContaining('worktree-setup') })
+    })
+
+    it('… and with --agent the cancellation is rethrown, not folded into stages', async () => {
+      const { root, register, invoke, close, parse } = await fixture()
+      const counter = path.join(root, 'counter')
+      await register(`echo run >> '${counter}'; sleep 60`)
+      const answer = invoke()(parse(['worktree', 'create', '--name', 'cut-agent', '--agent', 'claude', '--request-id', `r1.${Date.now()}.${randomUUID()}`]), 30000)
+      await until(() => fs.existsSync(counter))
+      void close()
+      const response = await answer
+      expect(response.ok).toBe(false)
+      expect(response.error?.code).toBe('request_cancelled')
+      expect(response.error?.message.startsWith('Setup command cancelled')).toBe(true)
+    })
+
+    it('git worktree add failing after it began (a post-checkout hook) keeps the id pending — the same id is outcome_unknown', async () => {
+      const { repo, call, worktreePath } = await fixture()
+      const hook = path.join(repo, '.git', 'hooks', 'post-checkout')
+      fs.writeFileSync(hook, '#!/bin/sh\nexit 3\n', { mode: 0o755 })
+      const args = ['worktree', 'create', '--name', 'hooked', '--request-id', `r1.${Date.now()}.${randomUUID()}`]
+      const first = await call(...args)
+      expect(first.error?.code).toBe('git_failed')
+      expect(first._meta?.outcome).not.toBe('not_started')
+      expect(fs.existsSync(worktreePath('hooked'))).toBe(true)
+      fs.rmSync(hook)
+      expect((await call(...args)).error?.code).toBe('outcome_unknown')
+    })
+
+    it('a released id is runnable in the same runtime only — after a restart the same id is outcome_unknown (documented)', async () => {
+      const { git, repo, call, restart } = await fixture()
+      git(repo, 'branch', 'taken')
+      const args = ['worktree', 'create', '--name', 'taken', '--request-id', `r1.${Date.now()}.${randomUUID()}`]
+      expect(await call(...args)).toMatchObject({ ok: false, error: { code: 'already_exists' }, _meta: { outcome: 'not_started' } })
+      await restart()
+      git(repo, 'branch', '-D', 'taken')
+      expect((await call(...args)).error?.code).toBe('outcome_unknown')
+    })
   })
 })

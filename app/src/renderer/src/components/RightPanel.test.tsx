@@ -221,7 +221,7 @@ describe('LIFE-755 머리 단추 DOM 툴팁 (C1·C3·C4)', () => {
   it('C4 바꾼 단추에 title 이 없고 aria-label 은 base 값 그대로', () => {
     render({ view: 'explorer' })
     for (const selector of ALL) expect(q(selector)?.hasAttribute('title')).toBe(false)
-    expect(buttons().map((button) => button.getAttribute('aria-label'))).toEqual(['탐색기 (⌘⇧E)', '소스 제어', 'PR', '작업 상세'])
+    expect(buttons().map((button) => button.getAttribute('aria-label'))).toEqual(['탐색기 (⌘⇧E)', '소스 제어', '검색', 'PR', '작업 상세'])
     expect(q('[data-right-panel-toggle="head"]')?.getAttribute('aria-label')).toBe('오른쪽 패널 닫기')
   })
   it('C4 RightPanelToggle 세 자리(머리·탭 줄·작업 페이지 머리) 모두 같은 툴팁 — title 없음, 단축키 없으면 이름만', () => {

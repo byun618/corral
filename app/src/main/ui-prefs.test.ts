@@ -578,6 +578,19 @@ describe('오른쪽 패널 보기·보기별 폭 영속 (LIFE-682 A3)', () => {
     third.load()
     expect(third.get()).toMatchObject({ rightPanelView: 'explorer' })
   })
+  it('LIFE-803 C4ⓖ — 검색 보기를 쓰고 새 스토어로 읽으면 같은 값, 파일에 적힌 `search` 도 읽는다, 모르는 이름은 여전히 탐색기', () => {
+    const first = new UiPrefsStore(dir)
+    first.load()
+    first.update({ rightPanelOpen: true, rightPanelView: 'search' })
+    const second = new UiPrefsStore(dir)
+    second.load()
+    expect(second.get()).toMatchObject({ rightPanelOpen: true, rightPanelView: 'search' })
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).rightPanelView).toBe('search')
+    fs.writeFileSync(file, '{"version":1,"rightPanelView":"Search"}')
+    const third = new UiPrefsStore(dir)
+    third.load()
+    expect(third.get()).toMatchObject({ rightPanelView: 'explorer' })
+  })
 })
 
 describe('최근 연 파일 영속 (LIFE-593 E5ⓓⓔ)', () => {

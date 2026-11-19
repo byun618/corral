@@ -35,7 +35,7 @@ function render({ view, open = true, explorerShortcut = '⌘⇧E' }: { view: Rig
     shortcutOf: (id) => (id === 'explorer' ? explorerShortcut : null),
     onSelectView: (id) => { selected.push(id) },
     panelRef: null, toggleShortcut: '⌘L', onToggle: () => { toggles += 1 }, onResizeStart: () => {},
-    bodies: { explorer: createElement('div', { 'data-probe': 'explorer' }), scm: createElement('div', { 'data-probe': 'scm' }), pr: createElement('div', { 'data-probe': 'pr' }), detail: createElement('div', { 'data-probe': 'detail' }) },
+    bodies: { explorer: createElement('div', { 'data-probe': 'explorer' }), scm: createElement('div', { 'data-probe': 'scm' }), search: createElement('div', { 'data-probe': 'search' }), pr: createElement('div', { 'data-probe': 'pr' }), detail: createElement('div', { 'data-probe': 'detail' }) },
   })))
 }
 const q = (selector: string): HTMLElement | null => host.querySelector<HTMLElement>(selector)
@@ -57,8 +57,8 @@ describe('activity bar (A1·A2)', () => {
     render({ view: 'explorer' })
     const head = q('[data-right-panel-head]')
     expect(buttons().map((button) => button.dataset.rightPanelViewBtn)).toEqual(RIGHT_PANEL_VIEWS.map((entry) => entry.id))
-    // LIFE-683 — 소스 제어 보기가 탐색기 다음에 더해졌다(3개). LIFE-811 — PR 보기가 작업 상세 앞에(4개).
-    expect(buttons()).toHaveLength(4)
+    // LIFE-683 — 소스 제어 보기가 탐색기 다음에 더해졌다(3개). LIFE-811 — PR 보기가 작업 상세 앞에(4개). LIFE-803 — 검색 보기가 소스 제어 다음에(5개).
+    expect(buttons()).toHaveLength(5)
     expect(head?.lastElementChild?.getAttribute('data-right-panel-toggle')).toBe('head')
     expect(head?.lastElementChild?.classList.contains('right-panel-toggle')).toBe(true)
     expect(q('.right-panel-title')).toBeNull()

@@ -24,6 +24,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { imageMimeOf, LARGE_FILE_BYTES, type FileReadResult, type ImageReadResult } from '../../../shared/file-view.js'
 import { adoptDoc, disposeDoc, docKey, docsVersion, editingFrozen, getDoc, readMatchesDoc, reloadDoc, revertDoc, setComposing, setExternal, subscribeDocs, type DiskState, type FileDoc, type ReadOnlyReason } from '../file-docs.js'
+import { applyReveal, revealSlot } from '../file-reveal.js'
 import './file-view.css'
 
 type MonacoModule = typeof import('../editor/monaco.js')
@@ -77,6 +78,19 @@ export function focusLiveEditor(input: { store: ViewStateStore; tabId: string })
   for (const live of liveEditorsOf(input.store)) {
     if (live.tabId !== input.tabId) continue
     live.editor.focus()
+    return true
+  }
+  return false
+}
+/**
+ * LIFE-803 C5 — 이미 붙어 있는 그 탭의 편집기에 대기 중인 줄 열기를 적용한다(요청이 그 탭의 것일 때만 — `file-reveal.ts`). 붙어 있지 않으면 거짓 —
+ * 그때는 첫 마운트가 보기 상태 복원 뒤에 적용한다.
+ */
+export function revealInLiveEditor(input: { store: ViewStateStore; tabId: string }): boolean {
+  for (const live of liveEditorsOf(input.store)) {
+    if (live.tabId !== input.tabId) continue
+    const target = revealSlot.take({ store: input.store, tabId: input.tabId })
+    if (target !== null) applyReveal(live.editor, target)
     return true
   }
   return false
@@ -422,6 +436,9 @@ function TextBody({
       editor.onDidCompositionEnd(() => setComposing(owner, false))
       live = { tabId, editor }
       liveEditorsOf(viewStates).add(live)
+      // LIFE-803 C5 — 첫 마운트의 줄 열기는 보기 상태 복원 **다음**에(복원이 위치를 덮지 않게). 요청이 아직 이 탭의 것일 때만(`file-reveal.ts`).
+      const reveal = revealSlot.take({ store: viewStates, tabId })
+      if (reveal !== null) applyReveal(editor, reveal)
       editorRef.current = editor
       mountedRef.current = { editor, host }
       host.dataset.editorReady = model.getLanguageId()

@@ -143,6 +143,7 @@ import type { WorkActionResult, WorkError } from '../shared/work.js'
 import { listDir } from './explorer-fs.js'
 import { ExplorerHub } from './explorer-hub.js'
 import { FileLister, resolveGit } from './file-list.js'
+import { ContentSearcher } from './content-search.js'
 import { explorerAction } from './explorer-actions.js'
 import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
 import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
@@ -283,6 +284,7 @@ let uiPrefs: UiPrefsStore | null = null
 let explorerHub: ExplorerHub | null = null
 /** LIFE-593 — ⌘P·탐색기 이름 필터의 전체 파일 목록(git). 종료 때 진행 중 자식을 끝낸다. */
 let fileLister: FileLister | null = null
+let contentSearcher: ContentSearcher | null = null
 let fileWatch: FileWatch | null = null
 /** 사용자 설정 (LIFE-512 S11) — 외관. ui-prefs(화면 상태)와 다른 파일·다른 칸이다(U8). */
 let settings: SettingsStore | null = null
@@ -2293,6 +2295,19 @@ app.whenReady().then(async () => {
   ipcMain.on('corral:fileListCancel', (event, requestId: unknown) => {
     if (fromOurWindow(event)) fileLister?.cancel(requestId)
   })
+  // --- 내용 전체 검색 (LIFE-803) — 읽기 전용 `git grep`, 루트·git 고르기는 전체 파일 목록과 같다(`content-search.ts` — confine · 셸 없는 git · 상한 · 취소) ---
+  contentSearcher = new ContentSearcher({
+    roots: explorerRoots,
+    git: (roots) => resolveGit({ pathEnv: process.env.PATH, roots }),
+    log,
+  })
+  ipcMain.handle('corral:contentSearch', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || contentSearcher === null) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    return contentSearcher.search(input)
+  })
+  ipcMain.on('corral:contentSearchCancel', (event, requestId: unknown) => {
+    if (fromOurWindow(event)) contentSearcher?.cancel(requestId)
+  })
   // --- 파일 탭 (LIFE-590 F2) — 내용 읽기 전용. 루트는 탐색기와 같은 「지금 열린 worktree」 만, 가둠은 F1 `confine`(읽기). 쓰기 핸들러는 없다(F3) ---
   ipcMain.handle('corral:fileRead', async (event, input: unknown) => {
     if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
@@ -2785,6 +2800,7 @@ app.on('before-quit', event => {
   }
   // LIFE-593 수정 r2 R2-C-01 — 가로챔을 지난 종료(⌘Q·창 닫힘)에서는 `window-all-closed` 가 오지 않는다. 진행 중 목록 git 그룹을 여기서 동기로 끝낸다(타이머 없이 SIGKILL).
   fileLister?.killAll()
+  contentSearcher?.killAll()
   // LIFE-520 fix1 R1-06 — 진행 중 감지 셸(새 프로세스 그룹)을 끝낸다. 앱 타이머가 멈추면 시한 kill 이 오지 않는다.
   agentDetector?.killAll()
   // 런타임 정리(Mobile serve 제거 + 런타임 닫기)는 **한 번만** 돌리고, 정리 중 다시 온 종료 요청(창 파기 → `window-all-closed` 의 `app.quit()` 등)도
@@ -2810,6 +2826,7 @@ app.on('window-all-closed', () => {
   usage = null
   explorerHub?.dispose()
   fileLister?.killAll()
+  contentSearcher?.killAll()
   fileWatch?.dispose()
   if (digestTimer !== null) clearInterval(digestTimer)
   digestTimer = null

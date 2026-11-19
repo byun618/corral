@@ -320,7 +320,7 @@ describe('C9 늦은 응답', () => {
 
 describe('C10 보기 등록', () => {
   it('RIGHT_PANEL_VIEWS 에 pr — 제목 「PR」, 단축키 없음, 작업 상세 앞', () => {
-    expect(RIGHT_PANEL_VIEWS.map((view) => view.id)).toEqual(['explorer', 'scm', 'pr', 'detail'])
+    expect(RIGHT_PANEL_VIEWS.map((view) => view.id)).toEqual(['explorer', 'scm', 'search', 'pr', 'detail'])
     expect(RIGHT_PANEL_VIEWS.find((view) => view.id === 'pr')).toMatchObject({ title: 'PR', action: null, widthToken: '--right-panel-w' })
   })
 })

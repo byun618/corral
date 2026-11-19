@@ -27,10 +27,13 @@ import {
   RECENT_TURNS,
   TURN_TEXT_MAX,
   isPathWithin,
+  isSessionId,
+  openPaneOf,
   readSessionKey,
   resumeArgv,
   resumeCommandText,
   type HistoryProvider,
+  type PaneSession,
   type ResumePlan,
   type SessionHistoryDetailResult,
   type SessionHistoryListResult,
@@ -42,6 +45,7 @@ import {
 } from '../shared/session-history.js'
 import { ChatBuilder } from './chat-parse.js'
 import {
+  CLAUDE_NON_HUMAN_TEXT_MARKERS,
   claudeHumanText,
   claudeLastPrompt,
   claudeModel,
@@ -67,7 +71,11 @@ const CODEX_INTERACTIVE = 'codex-tui'
 
 export type HistoryRoots = { claudeDir: string; codexDir: string }
 
-/** 기록 루트 — `CLAUDE_CONFIG_DIR`·`CODEX_HOME` 를 존중한다(C1). */
+/**
+ * 기록 루트 — `CLAUDE_CONFIG_DIR`·`CODEX_HOME` 를 존중한다(C1).
+ * 제한(R1-11): 보는 것은 **Electron main 프로세스의 env** 뿐이다. 설치본을 Finder·Dock 으로 띄우면 셸 rc 에서 export 한 값이 main 에 없어,
+ * 셸에서만 그 변수를 쓰는 사용자는 pane 안의 에이전트가 쓰는 기록 위치와 여기서 읽는 위치가 다를 수 있다(그때는 기본 `~/.claude`·`~/.codex`).
+ */
 export function historyRoots(input: { env: NodeJS.ProcessEnv; home: string }): HistoryRoots {
   const claude = input.env['CLAUDE_CONFIG_DIR']
   const codex = input.env['CODEX_HOME']
@@ -94,7 +102,8 @@ type Windows = { head: string; tail: string; tailPartial: boolean; headCut: stri
  */
 export function looksLikeCutHumanLine(cut: string): boolean {
   if (!cut.includes('"type":"user"')) return false
-  return !['tool_result', '"isMeta":true', '"isCompactSummary":true', '<command-', '<local-command-stdout>', '<task-notification>'].some((marker) => cut.includes(marker))
+  // 레코드 칸 표지(도구 결과·메타·압축 요약) + `claudeHumanText` 와 같은 텍스트 봉투 목록(R1-10 — 목록을 복제하지 않는다).
+  return !['tool_result', '"isMeta":true', '"isCompactSummary":true', ...CLAUDE_NON_HUMAN_TEXT_MARKERS].some((marker) => cut.includes(marker))
 }
 
 const errorCode = (error: unknown): unknown => (isRecord(error) ? error['code'] : undefined)
@@ -234,7 +243,7 @@ export type SessionHistoryDeps = {
   roots: () => HistoryRoots
   /**
    * Codex 가 원래 cwd 가 없을 때도 재개되나(C7 Codex 분기). false 면 그 세션은 재개 비활성 + 사유(복사만).
-   * 값은 C12 ⓑ 실측이 정한다 — 실측 전 기본은 Claude 와 같은 정책.
+   * 값은 C12 ⓑ 실측이 정한다 — 지금 `main/index.ts` 는 false(R1-7 실측이 막혀 미확인 — 근거 주석은 그 자리).
    */
   codexResumesWithoutCwd: boolean
 }
@@ -245,6 +254,8 @@ export class SessionHistory {
   private readonly cache = new Map<string, CacheEntry>()
   private codexIndex: { size: number; mtimeMs: number; names: Map<string, string> } | null = null
   private rows = new Map<string, SessionHistoryRow>()
+  /** 진행 중 재개(R1-2) — `provider:id` → 이 시각(ms)까지. 그 세션의 열린 pane 이 보이거나 기동이 실패하면 지운다. */
+  private readonly resuming = new Map<string, number>()
   /** 시험용 계측 — 목록 스캔이 읽은 바이트·파싱한 파일 수, 상세가 읽은 바이트. */
   stats = { scanBytes: 0, parsed: 0, detailBytes: 0, scans: 0 }
 
@@ -257,7 +268,22 @@ export class SessionHistory {
     return this.rows.get(`${key.provider}:${key.id}`) ?? null
   }
 
-  async list(input: unknown): Promise<SessionHistoryListResult> {
+  /** 진행 중 재개 표지(R1-2). */
+  resumeInFlight(input: { key: string; now: number }): boolean {
+    const until = this.resuming.get(input.key)
+    if (until === undefined) return false
+    if (until > input.now) return true
+    this.resuming.delete(input.key)
+    return false
+  }
+  beginResume(input: { key: string; until: number }): void {
+    this.resuming.set(input.key, input.until)
+  }
+  endResume(key: string): void {
+    this.resuming.delete(key)
+  }
+
+  async list(input: unknown, context: ResumeContext = { repos: [], home: os.homedir() }): Promise<SessionHistoryListResult> {
     const providers = readProviders(input)
     if (providers === null) return { kind: 'error', message: '잘못된 요청' }
     this.stats.scans += 1
@@ -268,7 +294,8 @@ export class SessionHistory {
       const seen = new Set<string>()
       const realMemo = new Map<string, Promise<{ key: string; exists: boolean }>>()
       for (const provider of providers) {
-        const files = provider === 'claude' ? await claudeFiles(roots.claudeDir) : await codexFiles(roots.codexDir)
+        // Claude 파일 이름 = 세션 id. UUID 꼴이 아닌 이름(`<uuid>.orphaned-<n>.jsonl` 등)은 재개·상세가 받지 못하므로 제외로 센다(R1-3) — 읽지도 않는다.
+        const files = provider === 'claude' ? (await claudeFiles(roots.claudeDir)).filter((file) => isSessionId(path.basename(file, '.jsonl'))) : await codexFiles(roots.codexDir)
         const names = provider === 'codex' ? await this.readCodexIndex(roots.codexDir) : new Map<string, string>()
         const outcomes = await mapLimit(files, SCAN_CONCURRENCY, (file) => this.scanFile({ provider, file }))
         for (const [index, outcome] of outcomes.entries()) {
@@ -293,7 +320,13 @@ export class SessionHistory {
       for (const file of [...this.cache.keys()]) if (!seen.has(file) && providers.some((provider) => file.startsWith(rootOf(roots, provider)))) this.cache.delete(file)
       rows.sort((a, b) => b.lastActivityAt - a.lastActivityAt)
       this.rows = new Map(rows.map((row) => [`${row.provider}:${row.id}`, row]))
-      return { kind: 'ok', rows, unreadable }
+      const realpaths: Record<string, string> = {}
+      for (const repo of context.repos)
+        for (const dir of [repo.root, ...repo.worktrees]) {
+          const identity = await memo(realMemo, dir, cwdIdentity)
+          if (identity.exists) realpaths[dir] = identity.key
+        }
+      return { kind: 'ok', rows, unreadable, realpaths }
     } catch (error) {
       return { kind: 'error', message: String(error instanceof Error ? error.message : error).slice(0, 300) }
     }
@@ -556,13 +589,17 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, work: (item: T
 
 // --- 재개·Finder (C7·C8·C19) — IPC 처리부가 부르는 순수에 가까운 함수 ------------------------------------
 
-export type OpenPane = { paneId: string; agent: string | null; sessionId: string | null }
+/** 재개가 시작된 뒤 그 세션의 pane 이 에이전트로 보일 때까지 기다리는 상한 — 그 사이 같은 재개는 새 프로세스를 만들지 않는다(R1-2). */
+export const RESUME_PENDING_MS = 30_000
+
+export type OpenPane = PaneSession
 
 export type ResumeDeps = {
   history: SessionHistory
   context: () => ResumeContext
-  /** 지금 corral pane 들의 세션 참조 — 같은 id 가 열려 있으면 새 프로세스를 띄우지 않는다(C8). */
+  /** 지금 corral pane 들의 감지된 에이전트·세션 참조 — 같은 세션이 열려 있으면 새 프로세스를 띄우지 않는다(C8, `isOpenSession`). */
   openPanes: () => OpenPane[]
+  now?: () => number
   /** 에이전트 탭 기동 — 기존 `createRow`(tab.create → agent.start) 경로에 cwd·args 를 더한 것. */
   createRow: (input: { workspaceId: string; kind: HistoryProvider; cwd: string; args: string[] }) => Promise<{ ok: boolean; paneId: string | null; error: string | null }>
 }
@@ -575,14 +612,25 @@ export async function resumeSession(input: unknown, deps: ResumeDeps): Promise<S
   if (typeof workspaceId !== 'string' || workspaceId.length === 0) return { kind: 'rejected', reason: '열린 worktree 가 없습니다' }
   const row = deps.history.findRow(key)
   if (row === null) return { kind: 'rejected', reason: '목록에 없는 세션입니다 — 새로고침하세요' }
-  const open = deps.openPanes().find((pane) => pane.sessionId === row.id && (pane.agent === null || pane.agent === row.provider))
-  if (open !== undefined) return { kind: 'open', paneId: open.paneId }
+  const flight = `${row.provider}:${row.id}`
+  const open = openPaneOf({ panes: deps.openPanes(), key: row })
+  if (open !== null) {
+    deps.history.endResume(flight)
+    return { kind: 'open', paneId: open }
+  }
+  const now = (deps.now ?? Date.now)()
+  if (deps.history.resumeInFlight({ key: flight, now })) return { kind: 'pending' }
   const plan = deps.history.resumePlan({ row, context: deps.context() })
   if (plan.disabled !== null) return { kind: 'rejected', reason: plan.disabled }
+  // 표지는 기동을 걸기 **전에** 세운다 — tab.create·agent.start 가 수 초 걸리는 동안 들어온 두 번째 요청도 막는다.
+  deps.history.beginResume({ key: flight, until: now + RESUME_PENDING_MS })
   try {
     const created = await deps.createRow({ workspaceId, kind: row.provider, cwd: plan.cwd, args: plan.argv.slice(1) })
-    return created.ok ? { kind: 'started', paneId: created.paneId } : { kind: 'error', message: created.error ?? '탭을 만들지 못했습니다' }
+    if (created.ok) return { kind: 'started', paneId: created.paneId }
+    deps.history.endResume(flight)
+    return { kind: 'error', message: created.error ?? '탭을 만들지 못했습니다' }
   } catch (error) {
+    deps.history.endResume(flight)
     return { kind: 'error', message: String(error).slice(0, 200) }
   }
 }

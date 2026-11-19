@@ -38,7 +38,8 @@ export const PREVIEW_MAX = 300
 
 export type SessionHistoryListInput = { providers: HistoryProvider[] }
 export type SessionHistoryListResult =
-  | { kind: 'ok'; rows: SessionHistoryRow[]; unreadable: number }
+  /** `realpaths` = 등록 레포 root·worktree 경로 → realpath (C4 R1-8 — 렌더러가 활성 worktree 를 행 `cwdKey` 와 같은 눈으로 비교한다). */
+  | { kind: 'ok'; rows: SessionHistoryRow[]; unreadable: number; realpaths: Record<string, string> }
   | { kind: 'error'; message: string }
 
 /** 상세의 한 턴 — 사람 발화 또는 응답 말풍선. */
@@ -76,6 +77,8 @@ export type SessionHistoryDetailResult = { kind: 'ok'; detail: SessionHistoryDet
 export type SessionHistoryResumeInput = SessionKey & { workspaceId: string }
 export type SessionHistoryResumeResult =
   | { kind: 'started'; paneId: string | null }
+  /** 같은 세션의 재개가 이미 진행 중이다(R1-2) — 새 프로세스를 만들지 않았다. */
+  | { kind: 'pending' }
   | { kind: 'open'; paneId: string }
   | { kind: 'rejected'; reason: string }
   | { kind: 'error'; message: string }
@@ -129,6 +132,24 @@ export function resumeCommandText(plan: Pick<ResumePlan, 'argv' | 'cwd'>): strin
   return `cd ${shellQuote(plan.cwd)} && ${plan.argv.map(shellQuote).join(' ')}`
 }
 
+// --- 열림(C8) -----------------------------------------------------------------------------------
+
+/** 열림 판정 재료 — pane 하나의 감지된 에이전트와 세션 참조 id. */
+export type PaneSession = { paneId: string; agent: string | null; sessionId: string | null }
+
+/**
+ * 「열림」(C8 · R1-1) = **에이전트가 감지된** pane(`agent` 가 그 행의 provider)이고 세션 id 가 같을 때만. 에이전트가 끝나 세션 참조만
+ * 남은 pane(`agent: null`)·다른 provider 의 pane 은 열림이 아니다 — 그 세션은 재개할 수 있다. main 가드와 렌더러 표지가 이 함수 하나를 쓴다.
+ */
+export function isOpenSession({ pane, key }: { pane: PaneSession; key: SessionKey }): boolean {
+  return pane.agent !== null && pane.agent === key.provider && pane.sessionId === key.id
+}
+
+/** 그 세션이 열린 pane — 없으면 null. */
+export function openPaneOf({ panes, key }: { panes: readonly PaneSession[]; key: SessionKey }): string | null {
+  return panes.find((pane) => isOpenSession({ pane, key }))?.paneId ?? null
+}
+
 // --- 범위(C4) -----------------------------------------------------------------------------------
 
 export type HistoryScope = 'worktree' | 'project' | 'machine'
@@ -155,7 +176,8 @@ export type ScopeContext = {
 export type ScopedRows = { kind: 'rows'; rows: SessionHistoryRow[] } | { kind: 'no-worktree' }
 
 /**
- * 범위 거르기(C4). 현재 worktree = cwd 가 활성 worktree 와 같거나 그 아래 · 프로젝트 = 그 레포 root 아래(지운
+ * 범위 거르기(C4). 현재 worktree = cwd 가 활성 worktree 와 같거나 그 아래 — 단 그 아래에 있는 **다른 등록 worktree** 아래의 행은 뺀다
+ * (R1-8 — 루트 체크아웃이 활성일 때 `<root>/.claude/worktrees/*` 세션이 섞이지 않게) · 프로젝트 = 그 레포 root 아래(지운
  * `<root>/.claude/worktrees/X` 의 세션도 root 접두로 묶인다) 또는 연결 worktree 중 하나의 아래 · 머신 전체 = 전부.
  * 활성 worktree 가 없으면 현재 worktree·프로젝트 범위는 빈 목록이 아니라 `no-worktree` 다.
  */
@@ -166,7 +188,12 @@ export function scopeRows({ rows, scope, context }: { rows: readonly SessionHist
     case 'worktree': {
       const worktree = context.worktree
       if (worktree === null) return { kind: 'no-worktree' }
-      return { kind: 'rows', rows: rows.filter((row) => row.cwdKey !== null && isPathWithin({ child: row.cwdKey, parent: worktree })) }
+      const others = context.repo === null ? [] : [context.repo.root, ...context.repo.worktrees]
+      const nested = others.filter((other) => other !== worktree && isPathWithin({ child: other, parent: worktree }))
+      return {
+        kind: 'rows',
+        rows: rows.filter((row) => row.cwdKey !== null && isPathWithin({ child: row.cwdKey, parent: worktree }) && !nested.some((parent) => isPathWithin({ child: row.cwdKey ?? '', parent }))),
+      }
     }
     case 'project': {
       if (context.worktree === null) return { kind: 'no-worktree' }

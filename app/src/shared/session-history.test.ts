@@ -42,6 +42,10 @@ describe('C4 범위 전환', () => {
     expect(scopeRows({ rows: all, scope: 'project', context: none })).toEqual({ kind: 'no-worktree' })
     expect(idsOf(scopeRows({ rows: all, scope: 'machine', context: none }))).toHaveLength(9)
   })
+  it('R1-8 루트 체크아웃이 활성이면 그 아래 다른 등록 worktree 의 세션은 「현재 worktree」 에서 빠진다(지운 worktree 는 남는다)', () => {
+    const atRoot = { worktree: root, repo: context.repo }
+    expect(idsOf(scopeRows({ rows: all, scope: 'worktree', context: atRoot }))).toEqual([rows.sibling.id, rows.deletedWt.id, rows.rootItself.id])
+  })
   it('경로 경계', () => {
     expect(isPathWithin({ child: '/a/foo', parent: '/a/foo' })).toBe(true)
     expect(isPathWithin({ child: '/a/foo/b', parent: '/a/foo/' })).toBe(true)

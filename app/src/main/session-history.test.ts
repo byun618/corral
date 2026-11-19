@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { filterRows, resumeCommandText, type SessionHistoryListResult, type SessionHistoryRow } from '../shared/session-history.js'
-import { SCAN_HEAD_BYTES, SCAN_TAIL_BYTES, SessionHistory, historyRoots, resumeSession, revealSession, type OpenPane, type ResumeContext } from './session-history.js'
+import { RESUME_PENDING_MS, SCAN_HEAD_BYTES, SCAN_TAIL_BYTES, SessionHistory, historyRoots, resumeSession, revealSession, type OpenPane, type ResumeContext } from './session-history.js'
 
 // --- fixture ------------------------------------------------------------------------------------------
 
@@ -93,6 +93,8 @@ function seed(): void {
   put(path.join(claudeDir, 'projects', proj, ID.custom, 'subagents', 'agent-1.jsonl'), claudeSession({ id: ID.custom, cwd: repo, turns: [{ prompt: 'subagent prompt', reply: 'ok' }] }))
   put(claudeFile(proj, ID.broken), '{not json\n' + claudeSession({ id: ID.broken, cwd: repo, turns: [{ prompt: 'broken file prompt', reply: 'ok' }] }) + '{"type":"user", trailing garbage\n')
   put(claudeFile(proj, ID.zero), '')
+  // R1-3 — 파일 이름이 UUID 꼴이 아닌 기록(사용자 기록에 실재하는 `<uuid>.orphaned-<n>` 꼴) — 대화형 내용이어도 제외.
+  put(path.join(claudeDir, 'projects', proj, `${ID.custom}.orphaned-1.jsonl`), claudeSession({ id: ID.custom, cwd: repo, turns: [{ prompt: 'orphaned prompt', reply: 'ok' }] }))
   put(claudeFile(proj, ID.meta), jsonl([{ type: 'last-prompt', sessionId: ID.meta }, { type: 'mode', sessionId: ID.meta, mode: 'normal' }, { type: 'permission-mode', sessionId: ID.meta, permissionMode: 'default' }]))
   put(codexFile(ID.codexNamed), codexSession({ id: ID.codexNamed, originator: 'codex-tui', cwd: repo, prompts: ['codex named prompt', 'codex second'] }))
   put(codexFile(ID.codexPlain), codexSession({ id: ID.codexPlain, originator: 'codex-tui', cwd: '/nonexistent/codex', prompts: ['refactor the parser module'] }))
@@ -133,6 +135,7 @@ describe('C1 스캔 대상·제외', () => {
     expect(ids(result)).not.toContain(ID.sdk)
     expect(ids(result)).not.toContain(ID.codexExec)
     expect(rowsOf(result).filter((row) => row.file.includes('subagents'))).toHaveLength(0)
+    expect(rowsOf(result).filter((row) => row.file.includes('.orphaned-'))).toHaveLength(0)
   })
   it('CLAUDE_CONFIG_DIR·CODEX_HOME 를 존중한다', () => {
     expect(historyRoots({ env: { CLAUDE_CONFIG_DIR: '/c', CODEX_HOME: '/x' }, home: '/h' })).toEqual({ claudeDir: '/c', codexDir: '/x' })
@@ -140,7 +143,7 @@ describe('C1 스캔 대상·제외', () => {
   })
   it('기록 디렉터리가 없으면 오류가 아니라 0건', async () => {
     const empty = new SessionHistory({ roots: () => ({ claudeDir: path.join(base, 'none-c'), codexDir: path.join(base, 'none-x') }), codexResumesWithoutCwd: true })
-    expect(await empty.list({ providers: ['claude', 'codex'] })).toEqual({ kind: 'ok', rows: [], unreadable: 0 })
+    expect(await empty.list({ providers: ['claude', 'codex'] })).toEqual({ kind: 'ok', rows: [], unreadable: 0, realpaths: {} })
   })
   it('읽을 수 없는 projects 디렉터리는 던지지 않고 오류 값', async () => {
     const projects = path.join(claudeDir, 'projects')
@@ -207,6 +210,15 @@ function snapshot(root: string): Snapshot[] {
   walk(root)
   return out.sort((a, b) => a.path.localeCompare(b.path))
 }
+
+describe('R1-8 등록 경로 realpath', () => {
+  it('목록 결과에 등록 레포 root·worktree 의 realpath 를 싣는다 — 심링크 경로는 실제 경로로, 없는 경로는 빠진다', async () => {
+    const link = path.join(base, 'link')
+    fs.symlinkSync(work, link)
+    const result = await newHistory().list({ providers: ['codex'] }, { repos: [{ root: link, worktrees: [link, path.join(link, 'repo'), path.join(link, 'gone')] }], home: base })
+    expect(result.kind === 'ok' ? result.realpaths : null).toEqual({ [link]: work, [path.join(link, 'repo')]: path.join(work, 'repo') })
+  })
+})
 
 describe('C3 읽기 전용', () => {
   it('스캔·상세·재개 계획 조립 전후 fixture HOME 의 (경로·크기·mtime·sha256) 목록이 같다', async () => {
@@ -349,12 +361,66 @@ describe('C7 재개 명령·cwd 정책', () => {
 })
 
 describe('C8 이미 열린 세션 (main 가드)', () => {
-  it('같은 id 의 pane 이 있으면 새 프로세스 0 · 그 pane 을 돌려준다', async () => {
+  it('열림 3칸 — agent null(에이전트 끝남) → 재개 · 다른 provider → 재개 · 같은 provider → 열림(새 프로세스 0)', async () => {
+    const cases: [OpenPane, string][] = [
+      [{ paneId: 'w2:p1', agent: null, sessionId: ID.custom }, 'started'],
+      [{ paneId: 'w2:p1', agent: 'codex', sessionId: ID.custom }, 'started'],
+      [{ paneId: 'w2:p1', agent: 'claude', sessionId: ID.custom }, 'open'],
+    ]
+    const seen: string[] = []
+    for (const [pane] of cases) {
+      const history = newHistory()
+      await history.list({ providers: ['claude'] })
+      const { created, deps } = resumeDeps({ history, context: { repos: [], home: base }, panes: [pane] })
+      const result = await resumeSession({ provider: 'claude', id: ID.custom, workspaceId: 'w1' }, deps)
+      seen.push(`${result.kind}:${created.length}`)
+    }
+    expect(seen).toEqual(['started:1', 'started:1', 'open:0'])
+    expect(cases.map(([, kind]) => kind)).toEqual(['started', 'started', 'open'])
+  })
+  it('R1-2 진행 중 재개 — 동시 2회 → createRow 1 · 두 번째는 pending · 제한 시간 뒤엔 다시 재개 · 기동 실패면 바로 풀린다', async () => {
     const history = newHistory()
     await history.list({ providers: ['claude'] })
-    const { created, deps } = resumeDeps({ history, context: { repos: [], home: base }, panes: [{ paneId: 'w2:p1', agent: 'claude', sessionId: ID.custom }] })
-    expect(await resumeSession({ provider: 'claude', id: ID.custom, workspaceId: 'w1' }, deps)).toEqual({ kind: 'open', paneId: 'w2:p1' })
-    expect(created).toHaveLength(0)
+    let clock = 1_000
+    let release: () => void = () => undefined
+    const created: string[] = []
+    let fail = false
+    const deps: Parameters<typeof resumeSession>[1] = {
+      history, context: () => ({ repos: [], home: base }), openPanes: () => [], now: () => clock,
+      createRow: (row) => {
+        created.push(row.cwd)
+        if (fail) return Promise.resolve({ ok: false, paneId: null, error: 'agent_pane_busy' })
+        return new Promise((resolve) => { release = () => resolve({ ok: true, paneId: 'w1:p9', error: null }) })
+      },
+    }
+    const input = { provider: 'claude', id: ID.custom, workspaceId: 'w1' }
+    const first = resumeSession(input, deps)
+    const second = await resumeSession(input, deps)
+    release()
+    expect([await first, second]).toEqual([{ kind: 'started', paneId: 'w1:p9' }, { kind: 'pending' }])
+    expect(created).toHaveLength(1)
+    // 기동 뒤에도 pane 이 보일 때까지는 pending
+    expect(await resumeSession(input, deps)).toEqual({ kind: 'pending' })
+    expect(created).toHaveLength(1)
+    // 제한 시간이 지나면 다시 재개할 수 있다 — 이번엔 기동 실패 → 표지가 바로 풀려 다음 요청이 또 기동한다
+    clock += RESUME_PENDING_MS
+    fail = true
+    expect((await resumeSession(input, deps)).kind).toBe('error')
+    expect((await resumeSession(input, deps)).kind).toBe('error')
+    expect(created).toHaveLength(3)
+  })
+  it('R1-2 진행 중이어도 그 세션의 pane 이 에이전트로 보이면 open 으로 답하고 표지를 지운다', async () => {
+    const history = newHistory()
+    await history.list({ providers: ['claude'] })
+    let panes: OpenPane[] = []
+    const { created, deps } = resumeDeps({ history, context: { repos: [], home: base } })
+    deps.openPanes = () => panes
+    expect((await resumeSession({ provider: 'claude', id: ID.custom, workspaceId: 'w1' }, deps)).kind).toBe('started')
+    panes = [{ paneId: 'w1:p9', agent: 'claude', sessionId: ID.custom }]
+    expect(await resumeSession({ provider: 'claude', id: ID.custom, workspaceId: 'w1' }, deps)).toEqual({ kind: 'open', paneId: 'w1:p9' })
+    panes = []
+    expect((await resumeSession({ provider: 'claude', id: ID.custom, workspaceId: 'w1' }, deps)).kind).toBe('started')
+    expect(created).toHaveLength(2)
   })
 })
 

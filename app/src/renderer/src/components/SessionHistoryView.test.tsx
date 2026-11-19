@@ -25,7 +25,7 @@ const ROWS: SessionHistoryRow[] = [
   row({ id: ROW_ID.gamma, provider: 'claude', title: 'Gamma', cwd: '/w/b', at: 2 }),
   row({ id: ROW_ID.empty, provider: 'claude', title: 'Empty', cwd: '/w/a', empty: true, at: 1 }),
 ]
-const ok = (rows: SessionHistoryRow[] = ROWS): SessionHistoryListResult => ({ kind: 'ok', rows, unreadable: 0 })
+const ok = (rows: SessionHistoryRow[] = ROWS, realpaths: Record<string, string> = {}): SessionHistoryListResult => ({ kind: 'ok', rows, unreadable: 0, realpaths })
 function detailOf(key: SessionKey): SessionHistoryDetail {
   return {
     provider: key.provider, id: key.id, file: `/h/.${key.provider}/${key.id}.jsonl`, firstPrompt: `first of ${key.id}`, recent: [{ role: 'prompt', text: 'p', at: null }, { role: 'reply', text: 'r', at: null }],
@@ -72,7 +72,7 @@ afterEach(() => {
   host.remove()
 })
 
-const REPOS: HistoryRepo[] = [{ root: '/w', worktrees: [{ path: '/w/a', workspace: { tabs: [{ panes: [{ paneId: 'w1:p1', agentSession: { kind: 'id', agent: 'codex', source: 'herdr:codex', id: ROW_ID.beta } }] }] } }, { path: '/w/b', workspace: null }] }]
+const REPOS: HistoryRepo[] = [{ root: '/w', worktrees: [{ path: '/w/a', workspace: { tabs: [{ panes: [{ paneId: 'w1:p1', agent: 'codex', agentSession: { kind: 'id', agent: 'codex', source: 'herdr:codex', id: ROW_ID.beta } }, { paneId: 'w1:p2', agent: null, agentSession: { kind: 'id', agent: 'claude', source: 'herdr:claude', id: ROW_ID.alpha } }, { paneId: 'w1:p3', agent: 'codex', agentSession: { kind: 'id', agent: 'claude', source: 'herdr:claude', id: ROW_ID.alpha } }] }] } }, { path: '/w/b', workspace: null }] }]
 type Props = { active: boolean; worktree?: string | null; repos?: HistoryRepo[]; workspaceId?: string | null }
 function Harness({ active, worktree = '/w/a', repos = REPOS, workspaceId = 'w1' }: Props): React.JSX.Element {
   const api = useSessionHistory({ active })
@@ -203,6 +203,14 @@ describe('C8 이미 열린 세션 (화면)', () => {
     expect(revealedPanes).toEqual(['w1:p1'])
     expect(resumes).toHaveLength(0)
   })
+  it('R1-1 에이전트가 끝나 세션 참조만 남은 pane(agent null)·다른 provider pane 의 같은 id 는 열림이 아니다 — 재개 단추', async () => {
+    await shown()
+    expect(q(`[data-history-row="claude:${ROW_ID.alpha}"] [data-history-open]`)).toBeNull()
+    await click(`[data-history-row="claude:${ROW_ID.alpha}"]`)
+    await settle(details.at(-1), { kind: 'ok', detail: detailOf({ provider: 'claude', id: ROW_ID.alpha }) })
+    expect(q('[data-history-goto]')).toBeNull()
+    expect(q('[data-history-resume]')).not.toBeNull()
+  })
   it('열리지 않은 세션은 재개 단추 — 식별자와 workspace 만 보낸다', async () => {
     await shown()
     await click(`[data-history-row="claude:${ROW_ID.alpha}"]`)
@@ -211,6 +219,27 @@ describe('C8 이미 열린 세션 (화면)', () => {
     await click('[data-history-resume]')
     expect(resumes).toEqual([{ provider: 'claude', id: ROW_ID.alpha, workspaceId: 'w1' }])
     expect(q('[data-history-message]')?.textContent).toBe('새 탭에서 재개했습니다')
+    // R1-6(e) — 시작되면 새 탭으로 이동한다.
+    expect(revealedPanes).toEqual(['w1:p5'])
+  })
+  it('R1-2 요청 중에는 재개 단추가 막힌다 — 연타해도 요청 1', async () => {
+    let finish: (result: SessionHistoryResumeResult) => void = () => undefined
+    Reflect.set(window.corral, 'sessionHistoryResume', (input: { provider: HistoryProvider; id: string; workspaceId: string }) => {
+      resumes.push(input)
+      return new Promise<SessionHistoryResumeResult>((resolve) => { finish = resolve })
+    })
+    await shown()
+    await click(`[data-history-row="claude:${ROW_ID.alpha}"]`)
+    await settle(details.at(-1), { kind: 'ok', detail: detailOf({ provider: 'claude', id: ROW_ID.alpha }) })
+    await click('[data-history-resume]')
+    await click('[data-history-resume]')
+    const button = q('[data-history-resume]')
+    expect(button instanceof HTMLButtonElement ? button.disabled : null).toBe(true)
+    expect(resumes).toHaveLength(1)
+    await act(async () => { finish({ kind: 'pending' }); for (let i = 0; i < 5; i += 1) await Promise.resolve() })
+    expect(q('[data-history-message]')?.textContent).toBe('이 세션의 재개가 이미 진행 중입니다')
+    const after = q('[data-history-resume]')
+    expect(after instanceof HTMLButtonElement ? after.disabled : null).toBe(false)
   })
 })
 
@@ -226,6 +255,41 @@ describe('C9·C19 복사·Finder (화면)', () => {
     expect(copied).toEqual([q('[data-history-command]')?.textContent, ROW_ID.alpha, `/h/.claude/${ROW_ID.alpha}.jsonl`])
     expect(copied[0]).toBe(`cd /w && claude --resume ${ROW_ID.alpha}`)
     expect(reveals).toEqual([{ provider: 'claude', id: ROW_ID.alpha }])
+  })
+})
+
+describe('R1-4 선택 행이 보이는 목록에서 빠지면 선택·상세를 지운다', () => {
+  it('Codex 행을 고른 채 Codex 를 끄면 상세가 사라지고, 다시 켜도 선택은 돌아오지 않는다 · 검색으로 빠져도 같다', async () => {
+    await shown()
+    await click(`[data-history-row="codex:${ROW_ID.beta}"]`)
+    await settle(details.at(-1), { kind: 'ok', detail: detailOf({ provider: 'codex', id: ROW_ID.beta }) })
+    expect(q('[data-history-detail]')).not.toBeNull()
+    await click('[data-history-agent="codex"]')
+    expect(q('[data-history-detail]')).toBeNull()
+    expect(all('.history-row.is-selected')).toHaveLength(0)
+    await click('[data-history-agent="codex"]')
+    await settle(lists.at(-1), ok())
+    expect(q('[data-history-detail]')).toBeNull()
+    await click(`[data-history-row="claude:${ROW_ID.alpha}"]`)
+    await settle(details.at(-1), { kind: 'ok', detail: detailOf({ provider: 'claude', id: ROW_ID.alpha }) })
+    await type('beta')
+    expect(q('[data-history-detail]')).toBeNull()
+  })
+})
+
+describe('R1-8 현재 worktree 범위 — realpath · 하위 등록 worktree 제외 (화면)', () => {
+  it('루트 체크아웃이 활성이면 `.claude/worktrees/x` 세션은 빠진다 · 활성 경로는 main 이 준 realpath 로 비교', async () => {
+    const rootRows = [
+      row({ id: ROW_ID.alpha, provider: 'claude', title: 'RootSession', cwd: '/real/corral/app', at: 3 }),
+      row({ id: ROW_ID.beta, provider: 'claude', title: 'NestedSession', cwd: '/real/corral/.claude/worktrees/x', at: 2 }),
+    ]
+    const repos: HistoryRepo[] = [{ root: '/link/corral', worktrees: [{ path: '/link/corral', workspace: null }, { path: '/link/corral/.claude/worktrees/x', workspace: null }] }]
+    render({ active: true, worktree: '/link/corral', repos })
+    await flush()
+    await settle(lists.at(-1), ok(rootRows, { '/link/corral': '/real/corral', '/link/corral/.claude/worktrees/x': '/real/corral/.claude/worktrees/x' }))
+    expect(titles()).toEqual(['RootSession'])
+    await click('[data-history-scope="project"]')
+    expect(titles()).toEqual(['RootSession', 'NestedSession'])
   })
 })
 

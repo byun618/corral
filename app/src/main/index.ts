@@ -2163,10 +2163,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('corral:prRefreshItem', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.refreshItem(input) : { ok: false, reason: '허용되지 않은 발신자' }))
   ipcMain.handle('corral:prComments', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.comments(input) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
   // LIFE-808 — 세션 히스토리: 목록·상세·재개·Finder. 렌더러는 식별자만 준다(경로·argv 는 main 이 스캔 결과에서).
-  const sessionHistory = new SessionHistory({ roots: defaultHistoryRoots, codexResumesWithoutCwd: true })
+  // Codex 는 원래 cwd 가 없으면 재개 비활성(복사만) — R1-7 실측이 막혀(버리는 세션의 첫 턴이 시작되지 않음) 다른 cwd 재개를 확인하지 못했다.
+  // 근거 corral-specs LIFE-808 raw/claude/c12/c12-r1-codex-attempts.txt. 실측이 되면 이 값과 근거를 같은 커밋에서 바꾼다.
+  const sessionHistory = new SessionHistory({ roots: defaultHistoryRoots, codexResumesWithoutCwd: false })
   const historyContext = () => ({ repos: currentState().repos.map((repo) => ({ root: repo.root, worktrees: repo.worktrees.map((worktree) => worktree.path) })), home: os.homedir() })
   const historyPanes = () => currentState().repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes).map((pane) => ({ paneId: pane.paneId, agent: pane.agent, sessionId: pane.agentSession?.kind === 'id' ? pane.agentSession.id : null }))
-  ipcMain.handle('corral:sessionHistoryList', async (event, input: unknown) => (fromOurWindow(event) ? sessionHistory.list(input) : { kind: 'error', message: '허용되지 않은 발신자' }))
+  ipcMain.handle('corral:sessionHistoryList', async (event, input: unknown) => (fromOurWindow(event) ? sessionHistory.list(input, historyContext()) : { kind: 'error', message: '허용되지 않은 발신자' }))
   ipcMain.handle('corral:sessionHistoryDetail', async (event, input: unknown) => (fromOurWindow(event) ? sessionHistory.detail(input, historyContext()) : { kind: 'error', message: '허용되지 않은 발신자' }))
   ipcMain.handle('corral:sessionHistoryResume', async (event, input: unknown) => (fromOurWindow(event) ? resumeSession(input, { history: sessionHistory, context: historyContext, openPanes: historyPanes, createRow: createRowInWorkspace }) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
   ipcMain.handle('corral:sessionHistoryReveal', async (event, input: unknown) => (fromOurWindow(event) ? revealSession(input, { history: sessionHistory, show: (file) => shell.showItemInFolder(file) }) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))

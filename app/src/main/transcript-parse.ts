@@ -323,6 +323,12 @@ export function hasToolResult(message: Record<string, unknown>): boolean {
  * | `<task-notification>` (하네스가 넣는 백그라운드 작업 통지) | 꼬리 791 |
  * | `isCompactSummary: true` (대화 압축 요약) | 꼬리 288 |
  */
+/**
+ * 사람 발화가 아닌 claude user 텍스트의 표지 — `claudeHumanText` 가 건너뛰는 봉투(아래 표). 세션 히스토리의 잘린 줄 판정
+ * (`main/session-history.ts` `looksLikeCutHumanLine`, LIFE-808)도 이 목록을 쓴다 — 규칙이 바뀌면 두 자리가 같이 바뀐다.
+ */
+export const CLAUDE_NON_HUMAN_TEXT_MARKERS: readonly string[] = ['<command-message>', '<command-name>', '<local-command-stdout>', '<task-notification>']
+
 export function claudeHumanText(input: { record: Record<string, unknown>; sessionId: string | null }): string | null {
   const { record } = input
   if (input.sessionId === null) return null
@@ -335,9 +341,7 @@ export function claudeHumanText(input: { record: Record<string, unknown>; sessio
   if (hasToolResult(message)) return null
   const text = textFromContent(message['content'])
   if (text === null) return null
-  if (text.includes('<command-message>') || text.includes('<command-name>')) return null
-  if (text.includes('<local-command-stdout>')) return null
-  if (text.includes('<task-notification>')) return null
+  if (CLAUDE_NON_HUMAN_TEXT_MARKERS.some((marker) => text.includes(marker))) return null
   if (CLAUDE_INTERRUPT_MARKERS.includes(text.trim())) return null
   return text
 }

@@ -4,16 +4,18 @@
 // · 상태마다 다른 글(C10) — 불러오는 중 · 기록 0건 · 검색 결과 0건 · worktree 선택 없음 · 스캔 실패 · 에이전트 0개.
 // · 행: 제목·시각(줄지 않는 칸) / cwd·provider·「열림」. 이미 열린 세션은 재개 대신 그 탭으로 이동(C8).
 // · 상세: 첫 프롬프트 전문 · 최근 턴 · 메시지 수 · 재개 명령 미리보기 · 재개 · 명령/ID/기록 경로 복사 · Finder 에서 보기(C6·C7·C9·C19).
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { AgentSessionRef } from '../../../shared/types.js'
 import {
   HISTORY_PROVIDERS,
   HISTORY_SCOPES,
   enabledProviders,
   filterRows,
+  openPaneOf,
   scopeRows,
   searchRows,
   type HistoryProvider,
+  type PaneSession,
   type ScopeContext,
   type SessionHistoryDetail,
   type SessionHistoryRow,
@@ -23,6 +25,7 @@ import { Codicon } from './ExplorerIcons.js'
 import './session-history.css'
 
 const PROVIDER_LABEL: Record<HistoryProvider, string> = { claude: 'Claude', codex: 'Codex' }
+const NO_REALPATHS: Readonly<Record<string, string>> = {}
 
 /** 목록 시각 — 오늘이면 시:분, 아니면 날짜. */
 function timeLabel(at: number, now: number): string {
@@ -54,25 +57,30 @@ export function sessionHistoryBody({ api, context }: { api: Pick<SessionHistoryA
 /** 이 보기가 읽는 레포 모양 — `RepoRow` 의 부분(범위 재료·열린 세션). */
 export type HistoryRepo = {
   root: string
-  worktrees: readonly { path: string; workspace: { tabs: readonly { panes: readonly { paneId: string; agentSession: AgentSessionRef | null }[] }[] } | null }[]
+  worktrees: readonly { path: string; workspace: { tabs: readonly { panes: readonly { paneId: string; agent: string | null; agentSession: AgentSessionRef | null }[] }[] } | null }[]
 }
 
-/** 범위 재료(C4) — 활성 worktree 와 그것이 속한 등록 레포. */
-export function historyScopeContext({ repos, worktree }: { repos: readonly HistoryRepo[]; worktree: string | null }): ScopeContext {
+/**
+ * 범위 재료(C4) — 활성 worktree 와 그것이 속한 등록 레포. 경로는 main 이 준 realpath 로 바꿔(R1-8) 행 `cwdKey`(realpath)와 같은 눈으로 비교한다.
+ */
+export function historyScopeContext({ repos, worktree, realpaths }: { repos: readonly HistoryRepo[]; worktree: string | null; realpaths: Readonly<Record<string, string>> }): ScopeContext {
   if (worktree === null) return { worktree: null, repo: null }
+  const real = (dir: string): string => realpaths[dir] ?? dir
   const repo = repos.find((entry) => entry.root === worktree || entry.worktrees.some((row) => row.path === worktree)) ?? null
-  return { worktree, repo: repo === null ? null : { root: repo.root, worktrees: repo.worktrees.map((row) => row.path) } }
+  return { worktree: real(worktree), repo: repo === null ? null : { root: real(repo.root), worktrees: repo.worktrees.map((row) => real(row.path)) } }
 }
 
-/** 지금 열린 세션 id → paneId (C8) — pane 이 밝힌 세션 참조(`agentSession` id) 기준. */
-export function openSessionPanes(repos: readonly HistoryRepo[]): Map<string, string> {
-  const out = new Map<string, string>()
+/** 지금 pane 들의 감지된 에이전트·세션 참조 (C8) — 열림 판정은 main 과 같은 `openPaneOf`. */
+export function historyPanes(repos: readonly HistoryRepo[]): PaneSession[] {
+  const out: PaneSession[] = []
   for (const repo of repos)
     for (const worktree of repo.worktrees)
       for (const tab of worktree.workspace?.tabs ?? [])
-        for (const pane of tab.panes) if (pane.agentSession?.kind === 'id') out.set(pane.agentSession.id, pane.paneId)
+        for (const pane of tab.panes) out.push({ paneId: pane.paneId, agent: pane.agent, sessionId: pane.agentSession?.kind === 'id' ? pane.agentSession.id : null })
   return out
 }
+
+const sameRow = (row: SessionHistoryRow, key: { provider: HistoryProvider; id: string }): boolean => row.provider === key.provider && row.id === key.id
 
 export type SessionHistoryViewProps = {
   api: SessionHistoryApi
@@ -85,9 +93,17 @@ export type SessionHistoryViewProps = {
 }
 
 export function SessionHistoryView({ api, repos, worktree, workspaceId, onRevealPane }: SessionHistoryViewProps): React.JSX.Element {
-  const context = useMemo(() => historyScopeContext({ repos, worktree }), [repos, worktree])
-  const openSessions = useMemo(() => openSessionPanes(repos), [repos])
+  const realpaths = api.list.kind === 'ready' && api.list.result.kind === 'ok' ? api.list.result.realpaths : NO_REALPATHS
+  const context = useMemo(() => historyScopeContext({ repos, worktree, realpaths }), [repos, worktree, realpaths])
+  const panes = useMemo(() => historyPanes(repos), [repos])
   const body = sessionHistoryBody({ api, context })
+  // R1-4 — 선택 행이 보이는 목록(범위·검색·필터·빈 세션)에서 빠지면 선택·상세를 지운다. 새로고침 중에는 이전 목록이 보이므로 지우지 않는다.
+  const selected = api.selected
+  const selectedVisible = selected === null || (body.kind === 'rows' && body.rows.some((row) => sameRow(row, selected)))
+  const select = api.select
+  useEffect(() => {
+    if (!selectedVisible) select(null)
+  }, [selectedVisible, select])
   const busy = api.list.kind === 'loading' || (api.list.kind === 'ready' && api.list.refreshing)
   const now = Date.now()
   return (
@@ -129,8 +145,8 @@ export function SessionHistoryView({ api, repos, worktree, workspaceId, onReveal
           </div>
         ) : (
           body.rows.map((row) => {
-            const selected = api.selected !== null && api.selected.provider === row.provider && api.selected.id === row.id
-            const open = openSessions.has(row.id)
+            const selected = api.selected !== null && sameRow(row, api.selected)
+            const open = openPaneOf({ panes, key: row }) !== null
             return (
               <button key={`${row.provider}:${row.id}`} type="button" className={`history-row${selected ? ' is-selected' : ''}`} data-history-row={`${row.provider}:${row.id}`} aria-pressed={selected} onClick={() => api.select({ provider: row.provider, id: row.id })}>
                 <span className="history-row-line">
@@ -153,7 +169,7 @@ export function SessionHistoryView({ api, repos, worktree, workspaceId, onReveal
           })
         )}
       </div>
-      {api.selected === null ? null : <HistoryDetailPane api={api} openPaneId={openSessions.get(api.selected.id) ?? null} workspaceId={workspaceId} onRevealPane={onRevealPane} />}
+      {api.selected === null || !selectedVisible ? null : <HistoryDetailPane api={api} openPaneId={openPaneOf({ panes, key: api.selected })} workspaceId={workspaceId} onRevealPane={onRevealPane} />}
     </div>
   )
 }
@@ -179,6 +195,8 @@ function HistoryDetailPane({ api, openPaneId, workspaceId, onRevealPane }: { api
 
 function DetailBody({ detail, openPaneId, workspaceId, onRevealPane }: { detail: SessionHistoryDetail; openPaneId: string | null; workspaceId: string | null; onRevealPane: (paneId: string) => void }): React.JSX.Element {
   const [message, setMessage] = useState<string | null>(null)
+  /** 재개 요청 중 — 단추를 막는다(R1-2). main 도 같은 세션의 진행 중 재개를 막는다. */
+  const [resuming, setResuming] = useState(false)
   const copy = (input: { text: string; label: string }): void => {
     void Promise.resolve()
       .then(() => navigator.clipboard.writeText(input.text))
@@ -188,13 +206,18 @@ function DetailBody({ detail, openPaneId, workspaceId, onRevealPane }: { detail:
   const key = { provider: detail.provider, id: detail.id }
   const resumeBlocked = detail.resume.disabled ?? (workspaceId === null ? '열린 worktree 가 없어 새 탭을 만들 수 없습니다' : null)
   const resume = (): void => {
-    if (workspaceId === null) return
+    if (workspaceId === null || resuming) return
+    setResuming(true)
     void Promise.resolve()
       .then(() => window.corral.sessionHistoryResume({ ...key, workspaceId }))
       .then((result) => {
         switch (result.kind) {
           case 'started':
+            // R1-6(e) — 새 탭으로 이동(「탭으로 이동」 과 같은 경로).
+            if (result.paneId !== null) onRevealPane(result.paneId)
             return setMessage('새 탭에서 재개했습니다')
+          case 'pending':
+            return setMessage('이 세션의 재개가 이미 진행 중입니다')
           case 'open':
             return onRevealPane(result.paneId)
           case 'rejected':
@@ -204,6 +227,7 @@ function DetailBody({ detail, openPaneId, workspaceId, onRevealPane }: { detail:
         }
       })
       .catch((error: unknown) => setMessage(`재개하지 못했습니다 — ${String(error).slice(0, 200)}`))
+      .finally(() => setResuming(false))
   }
   const reveal = (): void => {
     void Promise.resolve()
@@ -231,7 +255,7 @@ function DetailBody({ detail, openPaneId, workspaceId, onRevealPane }: { detail:
             탭으로 이동
           </button>
         ) : (
-          <button type="button" className="history-action is-primary" data-history-resume="" disabled={resumeBlocked !== null} title={resumeBlocked ?? undefined} onClick={resume}>
+          <button type="button" className="history-action is-primary" data-history-resume="" disabled={resumeBlocked !== null || resuming} title={resumeBlocked ?? undefined} onClick={resume}>
             재개
           </button>
         )}

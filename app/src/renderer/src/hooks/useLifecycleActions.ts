@@ -68,9 +68,6 @@ export function useLifecycleActions(state: AppState | null): {
   actions: LifecycleActions
 } {
   const [selectedPane, setSelectedPane] = useState<string | null>(null)
-  /** 요청 시점 포커스 표식(R2-1 `reserveCreatedRow`)이 읽는 거울. */
-  const selectedPaneRef = useRef<string | null>(selectedPane)
-  selectedPaneRef.current = selectedPane
   /** 선택 pane 이 속한 탭 — 그 pane 이 닫힌 뒤 승격 자리를 고르는 데 쓴다(LIFE-508, 아래 첫 pane 자동 선택 effect). */
   const selectedTabRef = useRef<string | null>(null)
   /** 그 탭의 워크스페이스 — 「선택했던 탭이 **이 워크스페이스에서** 통째로 닫혔다」를 가린다(LIFE-691 f1 A). */
@@ -540,12 +537,14 @@ export function useLifecycleActions(state: AppState | null): {
 
   /**
    * LIFE-808 R2-1 — `createRow` 뒷부분과 같은 장치(`pendingSelectRef` · `setActive` · `setPendingRevealTab`). 응답 즉시 선택하지 않는다(위 경합).
-   * 적용 시점: 요청 때 잡은 의도 순번·선택 pane·화면 탭이 그대로일 때만 — 기다리는 사이 사용자가 고른 것이 이긴다.
+   * 적용 시점: 요청 때 잡은 의도 순번·화면 탭이 그대로일 때만 — 기다리는 사이 사용자가 고른 것이 이긴다.
+   * 표식 둘(R3-2): 의도 순번 = pane·탭·worktree 고르기(`selectPane` 도 `setActive` 로 올린다), 화면 탭 = 선택 pane 을 안 바꾸는 탭 전환(파일 탭).
+   * 선택 pane 표식은 뺐다 — 사용자의 선택 변경은 늘 의도 순번을 올려 중복이고, 순번 없이 pane 만 바뀌는 것은 자동 승격(사용자 이동 아님)뿐이다.
    */
   const reserveCreatedRow = useCallback((): ((created: { paneId: string | null; tabId: string | null; workspaceId: string }) => boolean) => {
-    const mark = { seq: intentSeq.current, pane: selectedPaneRef.current, tab: shownTabRef.current }
+    const mark = { seq: intentSeq.current, tab: shownTabRef.current }
     return (created) => {
-      if (mark.seq !== intentSeq.current || mark.pane !== selectedPaneRef.current || mark.tab !== shownTabRef.current) return false
+      if (mark.seq !== intentSeq.current || mark.tab !== shownTabRef.current) return false
       if (created.paneId !== null) pendingSelectRef.current = created.paneId
       setActive(created.workspaceId)
       if (created.tabId !== null) setPendingRevealTab(created.tabId)

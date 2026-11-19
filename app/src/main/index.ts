@@ -2166,11 +2166,16 @@ app.whenReady().then(async () => {
   // Codex 는 원래 cwd 가 없으면 재개 비활성(복사만) — R1-7 실측이 막혀(버리는 세션의 첫 턴이 시작되지 않음) 다른 cwd 재개를 확인하지 못했다.
   // 근거 corral-specs LIFE-808 raw/claude/c12/c12-r1-codex-attempts.txt. 실측이 되면 이 값과 근거를 같은 커밋에서 바꾼다.
   const sessionHistory = new SessionHistory({ roots: defaultHistoryRoots, codexResumesWithoutCwd: false })
-  const historyContext = () => ({ repos: currentState().repos.map((repo) => ({ root: repo.root, worktrees: repo.worktrees.map((worktree) => worktree.path) })), home: os.homedir() })
-  const historyPanes = () => currentState().repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes).map((pane) => ({ paneId: pane.paneId, agent: pane.agent, sessionId: pane.agentSession?.kind === 'id' ? pane.agentSession.id : null }))
+  // R3-5 — IPC 한 번에 상태 조립(`currentState`)은 한 번: 재개는 문맥·pane 을 같은 읽기에서 뽑는다.
+  const historyContext = (state = currentState()) => ({ repos: state.repos.map((repo) => ({ root: repo.root, worktrees: repo.worktrees.map((worktree) => worktree.path) })), home: os.homedir() })
+  const historyPanes = (state = currentState()) => state.repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes).map((pane) => ({ paneId: pane.paneId, agent: pane.agent, sessionId: pane.agentSession?.kind === 'id' ? pane.agentSession.id : null }))
+  const resumeWithState = (input: unknown) => {
+    const state = currentState()
+    return resumeSession(input, { history: sessionHistory, context: () => historyContext(state), openPanes: () => historyPanes(state), createRow: createRowInWorkspace })
+  }
   ipcMain.handle('corral:sessionHistoryList', async (event, input: unknown) => (fromOurWindow(event) ? sessionHistory.list(input, historyContext()) : { kind: 'error', message: '허용되지 않은 발신자' }))
   ipcMain.handle('corral:sessionHistoryDetail', async (event, input: unknown) => (fromOurWindow(event) ? sessionHistory.detail(input, historyContext()) : { kind: 'error', message: '허용되지 않은 발신자' }))
-  ipcMain.handle('corral:sessionHistoryResume', async (event, input: unknown) => (fromOurWindow(event) ? resumeSession(input, { history: sessionHistory, context: historyContext, openPanes: historyPanes, createRow: createRowInWorkspace }) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
+  ipcMain.handle('corral:sessionHistoryResume', async (event, input: unknown) => (fromOurWindow(event) ? resumeWithState(input) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
   ipcMain.handle('corral:sessionHistoryReveal', async (event, input: unknown) => (fromOurWindow(event) ? revealSession(input, { history: sessionHistory, show: (file) => shell.showItemInFolder(file) }) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
 
   // --- 라이프사이클 (R3) ---

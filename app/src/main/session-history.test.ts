@@ -225,6 +225,18 @@ describe('R1-8 등록 경로 realpath', () => {
   })
 })
 
+describe('R3-4 provider 별 행 — 겹친 스캔이 끝난 순서와 무관', () => {
+  it('[claude,codex] 스캔이 먼저 끝나고 [claude] 스캔이 뒤에 끝나도 Codex 행을 찾는다 · 각 스캔은 자기 provider 만 갈아 끼운다', async () => {
+    // 행은 스캔이 **끝날 때** 갈아 끼운다 — 그래서 겹침의 결과는 끝난 순서로 정해진다. 그 순서를 결정적으로 재현한다:
+    // 렌더러가 마지막으로 요청한 [claude,codex] 가 먼저 끝나고, 앞서 요청한 [claude] 가 뒤에 끝난다.
+    const history = newHistory()
+    await history.list({ providers: ['claude', 'codex'] })
+    await history.list({ providers: ['claude'] })
+    expect(history.findRow({ provider: 'codex', id: ID.codexNamed })?.id).toBe(ID.codexNamed)
+    expect(history.findRow({ provider: 'claude', id: ID.custom })?.id).toBe(ID.custom)
+  })
+})
+
 describe('C3 읽기 전용', () => {
   it('스캔·상세·재개 계획 조립 전후 fixture HOME 의 (경로·크기·mtime·sha256) 목록이 같다', async () => {
     const before = { claude: snapshot(claudeDir), codex: snapshot(codexDir) }
@@ -337,6 +349,21 @@ describe('C7 재개 명령·cwd 정책', () => {
     expect(history.resumePlan({ row: plain, context: { repos: [{ root: repoRoot, worktrees: [path.join(work, 'gone', 'wt')] }], home: base } })).toEqual({ argv: ['claude', '--resume', ID.plain], cwd: repoRoot, fallback: true, disabled: null })
     expect(history.resumePlan({ row: plain, context: { repos: [], home: base } }).cwd).toBe(work)
     expect(history.resumePlan({ row: desktop, context: { repos: [], home: base } }).cwd).toBe('/')
+  })
+  it('R3-1 목록 뒤 원래 cwd 가 지워지면 재개·상세는 그 시점 디스크로 — fallback·대체 cwd, Codex 는 정책 false 면 비활성(프로세스 0)', async () => {
+    const context = { repos: [{ root: work, worktrees: [work] }], home: base }
+    const history = newHistory(false)
+    await history.list({ providers: ['claude', 'codex'] })
+    fs.rmSync(path.join(work, 'repo'), { recursive: true, force: true })
+    const { created, deps } = resumeDeps({ history, context })
+    expect(await resumeSession({ provider: 'claude', id: ID.custom, workspaceId: 'w1' }, deps)).toEqual({ kind: 'started', paneId: 'w1:p9', tabId: 'w1:t9', workspaceId: 'w1' })
+    expect(await resumeSession({ provider: 'codex', id: ID.codexNamed, workspaceId: 'w1' }, deps)).toEqual({ kind: 'rejected', reason: 'Codex 의 다른 폴더 재개가 아직 확인되지 않아 막아 두었습니다 — 명령만 복사하세요' })
+    expect(created).toEqual([{ workspaceId: 'w1', kind: 'claude', cwd: work, args: ['--resume', ID.custom] }])
+    const detail = await history.detail({ provider: 'claude', id: ID.custom }, context)
+    expect(detail.kind === 'ok' ? { resume: detail.detail.resume, command: detail.detail.command } : null).toEqual({
+      resume: { argv: ['claude', '--resume', ID.custom], cwd: work, fallback: true, disabled: null },
+      command: `cd ${work} && claude --resume ${ID.custom}`,
+    })
   })
   it('R2-6 등록 root 가 심링크 경로여도 realpath 로 비교한다 — 지운 worktree 세션은 그 등록 root 에서', async () => {
     const history = newHistory()

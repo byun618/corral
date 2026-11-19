@@ -61,10 +61,24 @@ export type HistoryRepo = {
   worktrees: readonly { path: string; workspace: { tabs: readonly { panes: readonly { paneId: string; agent: string | null; agentSession: AgentSessionRef | null }[] }[] } | null }[]
 }
 
+/** 범위 재료가 쓰는 레포 모양 — 경로만. */
+type ScopeRepo = { root: string; worktrees: readonly { path: string }[] }
+
+/** 레포 경로 열쇠(R3-5) — state push 마다 새 배열이 와도 경로가 같으면 범위 재료·몸통을 다시 계산하지 않는다. */
+function scopeRepoKey(repos: readonly ScopeRepo[]): string {
+  return repos.map((repo) => [repo.root, ...repo.worktrees.map((row) => row.path)].join('\u0000')).join('\u0001')
+}
+function scopeReposOf(key: string): ScopeRepo[] {
+  return key.length === 0 ? [] : key.split('\u0001').map((part) => {
+    const [root = '', ...paths] = part.split('\u0000')
+    return { root, worktrees: paths.map((path) => ({ path })) }
+  })
+}
+
 /**
  * 범위 재료(C4) — 활성 worktree 와 그것이 속한 등록 레포. 경로는 main 이 준 realpath 로 바꿔(R1-8) 행 `cwdKey`(realpath)와 같은 눈으로 비교한다.
  */
-export function historyScopeContext({ repos, worktree, realpaths }: { repos: readonly HistoryRepo[]; worktree: string | null; realpaths: Readonly<Record<string, string>> }): ScopeContext {
+export function historyScopeContext({ repos, worktree, realpaths }: { repos: readonly ScopeRepo[]; worktree: string | null; realpaths: Readonly<Record<string, string>> }): ScopeContext {
   if (worktree === null) return { worktree: null, repo: null }
   const real = (dir: string): string => realpaths[dir] ?? dir
   const repo = repos.find((entry) => entry.root === worktree || entry.worktrees.some((row) => row.path === worktree)) ?? null
@@ -102,9 +116,12 @@ export type SessionHistoryViewProps = {
 
 export function SessionHistoryView({ api, repos, worktree, workspaceId, onRevealPane, onReserveCreatedRow }: SessionHistoryViewProps): React.JSX.Element {
   const realpaths = api.list.kind === 'ready' && api.list.result.kind === 'ok' ? api.list.result.realpaths : NO_REALPATHS
-  const context = useMemo(() => historyScopeContext({ repos, worktree, realpaths }), [repos, worktree, realpaths])
+  const repoKey = scopeRepoKey(repos)
+  const context = useMemo(() => historyScopeContext({ repos: scopeReposOf(repoKey), worktree, realpaths }), [repoKey, worktree, realpaths])
   const panes = useMemo(() => historyPanes(repos), [repos])
-  const body = sessionHistoryBody({ api, context })
+  // R3-5 — 몸통(범위·필터·검색을 행 전체에)은 그 입력이 바뀔 때만. App 의 state push 재렌더는 건너뛴다.
+  const { list, agents, hideEmpty, scope, query } = api
+  const body = useMemo(() => sessionHistoryBody({ api: { list, agents, hideEmpty, scope, query }, context }), [list, agents, hideEmpty, scope, query, context])
   // R1-4 — 선택 행이 보이는 목록(범위·검색·필터·빈 세션)에서 빠지면 선택·상세를 지운다. 새로고침 중에는 이전 목록이 보이므로 지우지 않는다.
   const selected = api.selected
   const selectedVisible = selected === null || (body.kind === 'rows' && body.rows.some((row) => sameRow(row, selected)))

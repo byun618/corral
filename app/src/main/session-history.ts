@@ -102,7 +102,10 @@ type Windows = { head: string; tail: string; tailPartial: boolean; headCut: stri
  */
 export function looksLikeCutHumanLine(cut: string): boolean {
   if (!cut.includes('"type":"user"')) return false
-  // 레코드 칸 표지(도구 결과·메타·압축 요약) + `claudeHumanText` 와 같은 텍스트 봉투 목록(R1-10 — 목록을 복제하지 않는다).
+  // 레코드 칸 표지는 `claudeHumanText` 의 세 줄을 원문 부분 문자열로 복제한다(잘린 줄은 JSON 으로 못 읽는다):
+  //   `record['isMeta'] === true` → `"isMeta":true` · `record['isCompactSummary'] === true` → `"isCompactSummary":true` · `hasToolResult(message)` → `tool_result`.
+  // 텍스트 봉투는 같은 목록(`CLAUDE_NON_HUMAN_TEXT_MARKERS`)을 쓴다. 판독기 규칙이 바뀌면 이 줄도 같이 본다.
+  // 복제하지 않은 것: `type` 이 user 가 아님(위 줄의 `"type":"user"` 가 대신) · sessionId 일치(본문 뒤라 안 보인다) · 중단 표지(텍스트 전체 비교라 잘린 줄에서 못 본다).
   return !['tool_result', '"isMeta":true', '"isCompactSummary":true', ...CLAUDE_NON_HUMAN_TEXT_MARKERS].some((marker) => cut.includes(marker))
 }
 
@@ -257,7 +260,8 @@ export class SessionHistory {
   private readonly deps: SessionHistoryDeps
   private readonly cache = new Map<string, CacheEntry>()
   private codexIndex: { size: number; mtimeMs: number; names: Map<string, string> } | null = null
-  private rows = new Map<string, SessionHistoryRow>()
+  /** provider 별 마지막 스캔 행(R3-4) — 스캔은 자기가 훑은 provider 만 바꾼다. 겹친 스캔이 어떤 순서로 끝나도 다른 provider 의 행을 지우지 않는다. */
+  private readonly rows = new Map<HistoryProvider, Map<string, SessionHistoryRow>>()
   /** 진행 중 재개(R1-2·R2-3) — `provider:id` → 그 재개가 만든 pane 과 관측. 규칙은 `resumeFlight`. */
   private readonly resuming = new Map<string, ResumeFlight>()
   /** 시험용 계측 — 목록 스캔이 읽은 바이트·파싱한 파일 수, 상세가 읽은 바이트. */
@@ -269,7 +273,7 @@ export class SessionHistory {
 
   /** 마지막 스캔에서 본 행. 목록에 없으면 null(거절 근거 — C19). */
   findRow(key: SessionKey): SessionHistoryRow | null {
-    return this.rows.get(`${key.provider}:${key.id}`) ?? null
+    return this.rows.get(key.provider)?.get(key.id) ?? null
   }
 
   /**
@@ -340,7 +344,7 @@ export class SessionHistory {
       // 사라진 파일의 캐시는 버린다 — 끈 provider 의 캐시는 남겨 둔다(다시 켜면 다시 쓴다).
       for (const file of [...this.cache.keys()]) if (!seen.has(file) && providers.some((provider) => file.startsWith(rootOf(roots, provider)))) this.cache.delete(file)
       rows.sort((a, b) => b.lastActivityAt - a.lastActivityAt)
-      this.rows = new Map(rows.map((row) => [`${row.provider}:${row.id}`, row]))
+      for (const provider of providers) this.rows.set(provider, new Map(rows.filter((row) => row.provider === provider).map((row) => [row.id, row])))
       const realpaths: Record<string, string> = {}
       for (const repo of context.repos)
         for (const dir of [repo.root, ...repo.worktrees]) {
@@ -455,7 +459,8 @@ export class SessionHistory {
   resumePlan(input: { row: SessionHistoryRow; context: ResumeContext }): ResumePlan {
     const { row, context } = input
     const argv = resumeArgv(row)
-    if (row.cwd !== null && row.cwdExists) return { argv, cwd: row.cwd, fallback: false, disabled: null }
+    // R3-1 — 스캔 때의 `cwdExists` 가 아니라 **지금** 디스크를 본다(목록 뒤 지운 worktree 를 원래 cwd 로 내보내지 않게).
+    if (row.cwd !== null && isDirectory(row.cwd)) return { argv, cwd: row.cwd, fallback: false, disabled: null }
     const cwd = fallbackCwd({ cwd: row.cwdKey ?? row.cwd, context })
     const disabled = row.provider === 'codex' && !this.deps.codexResumesWithoutCwd ? CODEX_RESUME_UNCONFIRMED : null
     return { argv, cwd, fallback: true, disabled }

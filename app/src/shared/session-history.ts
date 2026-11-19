@@ -76,7 +76,8 @@ export type SessionKey = { provider: HistoryProvider; id: string }
 export type SessionHistoryDetailResult = { kind: 'ok'; detail: SessionHistoryDetail } | { kind: 'error'; message: string }
 export type SessionHistoryResumeInput = SessionKey & { workspaceId: string }
 export type SessionHistoryResumeResult =
-  | { kind: 'started'; paneId: string | null }
+  /** 새 탭을 만들었다 — 렌더러는 그 pane 이 상태에 도착한 뒤 선택·탭 펴기를 한다(R2-1, 새 탭 경로와 같은 장치). */
+  | { kind: 'started'; paneId: string | null; tabId: string | null; workspaceId: string }
   /** 같은 세션의 재개가 이미 진행 중이다(R1-2) — 새 프로세스를 만들지 않았다. */
   | { kind: 'pending' }
   | { kind: 'open'; paneId: string }

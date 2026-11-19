@@ -2,6 +2,9 @@
 .history-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; font-family: var(--font-ui); font-size: 13px; color: var(--fg); }
 .history-view:hover .explorer-toolbar, .history-view:focus-within .explorer-toolbar { opacity: 1; }
 .history-view[data-history-busy] .explorer-section-title { opacity: 0.6; }
+.history-loading { margin-left: 8px; color: var(--fg-muted); font-size: 11px; animation: history-pulse 1.2s ease-in-out infinite; }
+@keyframes history-pulse { 50% { opacity: 0.4; } }
+.history-note.is-warn { padding: 4px 12px; color: var(--fg-muted); }
 .right-panel-activity-icon.is-sessions::before { content: '\ea82'; }
 .history-controls { display: flex; flex-direction: column; gap: 6px; padding: 4px 12px 8px; border-bottom: 1px solid var(--line); }
 .history-scopes, .history-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }

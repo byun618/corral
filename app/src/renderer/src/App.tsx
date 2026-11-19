@@ -3034,7 +3034,7 @@ export function App(): React.JSX.Element {
             explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} onOpenToSide={openFileToSide} onFileDrag={fileDrag.onExplorerDrag} ops={fileOps} notify={notify} />,
             scm: <ScmView scm={scm} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} mode={scm.mode} onChangeMode={scm.setMode} focusToken={scmFocusToken} onOpen={openScmChange} />,
             pr: <PrCommentsView api={prComments} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} />,
-            sessions: <SessionHistoryView api={sessionHistory} repos={state?.repos ?? []} worktree={activeWorktreeRow?.path ?? null} workspaceId={lifecycle.activeWorkspaceId} onRevealPane={revealPane} />,
+            sessions: <SessionHistoryView api={sessionHistory} repos={state?.repos ?? []} worktree={activeWorktreeRow?.path ?? null} workspaceId={lifecycle.activeWorkspaceId} onRevealPane={revealPane} onReserveCreatedRow={lifecycle.reserveCreatedRow} />,
             detail: <div ref={setDetailSlot} className="right-panel-detail" data-right-panel-detail="" />,
           }}
         />

@@ -199,6 +199,8 @@ export function parseCodexSession(input: { fileId: string | null; file: string; 
   if (readString(payload, 'originator') !== CODEX_INTERACTIVE) return { kind: 'excluded' }
   const id = readString(payload, 'id') ?? input.fileId
   if (id === null) return { kind: 'unreadable' }
+  // R2-8 — UUID 꼴이 아닌 id 는 상세·재개·Finder 가 받지 못하므로 Claude(R1-3)와 같이 제외로 센다.
+  if (!isSessionId(id)) return { kind: 'excluded' }
   const first = firstOf(head, codexHumanText) ?? (input.windows.tailPartial ? firstOf(tail, codexHumanText) : null)
   const last = codexLastPrompt(tail) ?? (input.windows.tailPartial ? codexLastPrompt(head) : null)
   const started = [...head, ...tail].some((record) => codexEventType(record) === 'task_started')
@@ -233,6 +235,8 @@ function codexFileId(file: string): string | null {
   return match?.[1] ?? null
 }
 
+type ResumeFlight = { until: number; paneId: string | null; paneSeen: boolean; agentSeen: boolean }
+
 export type ResumeContext = {
   /** 등록 레포 — 원래 cwd 가 없을 때 그 세션이 속한 레포 root 에서 재개한다(C7). */
   repos: readonly { root: string; worktrees: readonly string[] }[]
@@ -254,8 +258,8 @@ export class SessionHistory {
   private readonly cache = new Map<string, CacheEntry>()
   private codexIndex: { size: number; mtimeMs: number; names: Map<string, string> } | null = null
   private rows = new Map<string, SessionHistoryRow>()
-  /** 진행 중 재개(R1-2) — `provider:id` → 이 시각(ms)까지. 그 세션의 열린 pane 이 보이거나 기동이 실패하면 지운다. */
-  private readonly resuming = new Map<string, number>()
+  /** 진행 중 재개(R1-2·R2-3) — `provider:id` → 그 재개가 만든 pane 과 관측. 규칙은 `resumeFlight`. */
+  private readonly resuming = new Map<string, ResumeFlight>()
   /** 시험용 계측 — 목록 스캔이 읽은 바이트·파싱한 파일 수, 상세가 읽은 바이트. */
   stats = { scanBytes: 0, parsed: 0, detailBytes: 0, scans: 0 }
 
@@ -268,16 +272,33 @@ export class SessionHistory {
     return this.rows.get(`${key.provider}:${key.id}`) ?? null
   }
 
-  /** 진행 중 재개 표지(R1-2). */
-  resumeInFlight(input: { key: string; now: number }): boolean {
-    const until = this.resuming.get(input.key)
-    if (until === undefined) return false
-    if (until > input.now) return true
+  /**
+   * 진행 중 재개 표지(R1-2·R2-3) — 재개가 만든 pane 에 묶는다.
+   * · 기동 중(pane 모름) · 만든 pane 이 아직 안 보이거나 에이전트가 아직 안 뜸 → `until` 까지 pending(상한은 끝내 안 나타날 때만 쓰인다)
+   * · 만든 pane 이 있고 그 provider 에이전트가 감지됨 → open(그 pane) — 세션 참조가 다른 id 여도 중복 재개하지 않는다
+   * · 한 번 보인 pane 이 사라졌거나, 감지됐던 에이전트가 끝남 → 바로 푼다(none)
+   */
+  resumeFlight(input: { key: string; provider: HistoryProvider; panes: readonly PaneSession[]; now: number }): { kind: 'none' } | { kind: 'pending' } | { kind: 'open'; paneId: string } {
+    const flight = this.resuming.get(input.key)
+    if (flight === undefined) return { kind: 'none' }
+    const pane = flight.paneId === null ? undefined : input.panes.find((entry) => entry.paneId === flight.paneId)
+    if (pane !== undefined) flight.paneSeen = true
+    if (pane !== undefined && pane.agent === input.provider) {
+      flight.agentSeen = true
+      return { kind: 'open', paneId: pane.paneId }
+    }
+    const gone = flight.paneSeen && (pane === undefined || flight.agentSeen)
+    if (!gone && flight.until > input.now) return { kind: 'pending' }
     this.resuming.delete(input.key)
-    return false
+    return { kind: 'none' }
   }
   beginResume(input: { key: string; until: number }): void {
-    this.resuming.set(input.key, input.until)
+    this.resuming.set(input.key, { until: input.until, paneId: null, paneSeen: false, agentSeen: false })
+  }
+  /** 기동이 pane 을 돌려줬다 — 표지를 그 pane 에 묶는다. */
+  attachResume(input: { key: string; paneId: string }): void {
+    const flight = this.resuming.get(input.key)
+    if (flight !== undefined) flight.paneId = input.paneId
   }
   endResume(key: string): void {
     this.resuming.delete(key)
@@ -436,17 +457,29 @@ export class SessionHistory {
     const argv = resumeArgv(row)
     if (row.cwd !== null && row.cwdExists) return { argv, cwd: row.cwd, fallback: false, disabled: null }
     const cwd = fallbackCwd({ cwd: row.cwdKey ?? row.cwd, context })
-    const disabled = row.provider === 'codex' && !this.deps.codexResumesWithoutCwd ? 'Codex 는 원래 폴더가 없으면 재개할 수 없습니다 — 명령만 복사하세요' : null
+    const disabled = row.provider === 'codex' && !this.deps.codexResumesWithoutCwd ? CODEX_RESUME_UNCONFIRMED : null
     return { argv, cwd, fallback: true, disabled }
   }
 }
 
-/** 원래 폴더가 없을 때의 재개 자리. */
+/** R2-2 — 미실측(C12 ⓑ)이라 「안 된다」 가 아니라 「확인되지 않음」 이다. */
+export const CODEX_RESUME_UNCONFIRMED = 'Codex 의 다른 폴더 재개가 아직 확인되지 않아 막아 두었습니다 — 명령만 복사하세요'
+
+/** 있는 경로면 realpath, 아니면 그대로(R2-6 — 행 `cwdKey` 와 같은 눈). */
+function realOrSelf(dir: string): string {
+  try {
+    return fs.realpathSync.native(dir)
+  } catch {
+    return dir
+  }
+}
+
+/** 원래 폴더가 없을 때의 재개 자리. 등록 root·worktree 는 realpath 로도 비교한다(R2-6). */
 function fallbackCwd(input: { cwd: string | null; context: ResumeContext }): string {
   const { cwd, context } = input
   if (cwd === null) return context.home
   for (const repo of context.repos) {
-    const bases = [repo.root, ...repo.worktrees]
+    const bases = [repo.root, ...repo.worktrees].flatMap((dir) => [dir, realOrSelf(dir)])
     if (bases.some((parent) => isPathWithin({ child: cwd, parent })) && isDirectory(repo.root)) return repo.root
   }
   let probe = path.dirname(cwd)
@@ -589,7 +622,7 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, work: (item: T
 
 // --- 재개·Finder (C7·C8·C19) — IPC 처리부가 부르는 순수에 가까운 함수 ------------------------------------
 
-/** 재개가 시작된 뒤 그 세션의 pane 이 에이전트로 보일 때까지 기다리는 상한 — 그 사이 같은 재개는 새 프로세스를 만들지 않는다(R1-2). */
+/** 재개가 만든 pane 이 에이전트로 보일 때까지 기다리는 상한 — 끝내 안 나타날 때만 쓰인다(R2-3). 그 사이 같은 재개는 새 프로세스를 만들지 않는다. */
 export const RESUME_PENDING_MS = 30_000
 
 export type OpenPane = PaneSession
@@ -601,7 +634,7 @@ export type ResumeDeps = {
   openPanes: () => OpenPane[]
   now?: () => number
   /** 에이전트 탭 기동 — 기존 `createRow`(tab.create → agent.start) 경로에 cwd·args 를 더한 것. */
-  createRow: (input: { workspaceId: string; kind: HistoryProvider; cwd: string; args: string[] }) => Promise<{ ok: boolean; paneId: string | null; error: string | null }>
+  createRow: (input: { workspaceId: string; kind: HistoryProvider; cwd: string; args: string[] }) => Promise<{ ok: boolean; paneId: string | null; tabId: string | null; error: string | null }>
 }
 
 /** 재개(C7·C8) — 렌더러는 식별자만 준다. argv·cwd 는 main 이 스캔 결과로 다시 정한다. */
@@ -613,20 +646,25 @@ export async function resumeSession(input: unknown, deps: ResumeDeps): Promise<S
   const row = deps.history.findRow(key)
   if (row === null) return { kind: 'rejected', reason: '목록에 없는 세션입니다 — 새로고침하세요' }
   const flight = `${row.provider}:${row.id}`
-  const open = openPaneOf({ panes: deps.openPanes(), key: row })
+  const panes = deps.openPanes()
+  const open = openPaneOf({ panes, key: row })
   if (open !== null) {
     deps.history.endResume(flight)
     return { kind: 'open', paneId: open }
   }
   const now = (deps.now ?? Date.now)()
-  if (deps.history.resumeInFlight({ key: flight, now })) return { kind: 'pending' }
+  const inFlight = deps.history.resumeFlight({ key: flight, provider: row.provider, panes, now })
+  if (inFlight.kind !== 'none') return inFlight
   const plan = deps.history.resumePlan({ row, context: deps.context() })
   if (plan.disabled !== null) return { kind: 'rejected', reason: plan.disabled }
   // 표지는 기동을 걸기 **전에** 세운다 — tab.create·agent.start 가 수 초 걸리는 동안 들어온 두 번째 요청도 막는다.
   deps.history.beginResume({ key: flight, until: now + RESUME_PENDING_MS })
   try {
     const created = await deps.createRow({ workspaceId, kind: row.provider, cwd: plan.cwd, args: plan.argv.slice(1) })
-    if (created.ok) return { kind: 'started', paneId: created.paneId }
+    if (created.ok) {
+      if (created.paneId !== null) deps.history.attachResume({ key: flight, paneId: created.paneId })
+      return { kind: 'started', paneId: created.paneId, tabId: created.tabId, workspaceId }
+    }
     deps.history.endResume(flight)
     return { kind: 'error', message: created.error ?? '탭을 만들지 못했습니다' }
   } catch (error) {

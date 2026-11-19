@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { filterRows, resumeCommandText, type SessionHistoryListResult, type SessionHistoryRow } from '../shared/session-history.js'
-import { RESUME_PENDING_MS, SCAN_HEAD_BYTES, SCAN_TAIL_BYTES, SessionHistory, historyRoots, resumeSession, revealSession, type OpenPane, type ResumeContext } from './session-history.js'
+import { RESUME_PENDING_MS, SCAN_HEAD_BYTES, SCAN_TAIL_BYTES, SessionHistory, historyRoots, parseCodexSession, resumeSession, revealSession, type OpenPane, type ResumeContext } from './session-history.js'
 
 // --- fixture ------------------------------------------------------------------------------------------
 
@@ -126,6 +126,11 @@ afterEach(() => {
 // --- C1 -------------------------------------------------------------------------------------------------
 
 describe('C1 스캔 대상·제외', () => {
+  it('R2-8 Codex session_meta.payload.id 가 UUID 꼴이 아니면 제외 — UUID 면 행', () => {
+    const meta = (id: string): string => `${JSON.stringify({ type: 'session_meta', payload: { id, originator: 'codex-tui', cwd: '/w' } })}\n`
+    const parse = (id: string): string => parseCodexSession({ fileId: null, file: '/h/r.jsonl', windows: { head: meta(id), tail: '', tailPartial: false, headCut: null }, mtimeMs: 1 }).kind
+    expect([parse('not-a-uuid'), parse('../x'), parse(ID.codexNamed)]).toEqual(['excluded', 'excluded', 'row'])
+  })
   it('대화형만 — sdk-cli·codex_exec·subagent 0건, 깨진 줄 섞인 파일은 행, 빈 파일·첫 줄이 session_meta 아닌 파일은 「읽기 실패」 로 센다', async () => {
     const result = await newHistory().list({ providers: ['claude', 'codex'] })
     expect(result.kind).toBe('ok')
@@ -228,7 +233,7 @@ describe('C3 읽기 전용', () => {
     for (const id of [ID.custom, ID.aiTail, ID.plain, ID.codexNamed, ID.codexPlain]) {
       const provider = id.startsWith('a') || id.startsWith('b') ? 'codex' : 'claude'
       await history.detail({ provider, id }, { repos: [], home: base })
-      await resumeSession({ provider, id, workspaceId: 'w1' }, { history, context: () => ({ repos: [], home: base }), openPanes: () => [], createRow: async () => ({ ok: true, paneId: 'p', error: null }) })
+      await resumeSession({ provider, id, workspaceId: 'w1' }, { history, context: () => ({ repos: [], home: base }), openPanes: () => [], createRow: async () => ({ ok: true, paneId: 'p', tabId: 't', error: null }) })
     }
     await history.list({ providers: ['claude', 'codex'] })
     expect({ claude: snapshot(claudeDir), codex: snapshot(codexDir) }).toEqual(before)
@@ -302,7 +307,7 @@ function resumeDeps(input: { history: SessionHistory; context: ResumeContext; pa
       openPanes: () => input.panes ?? [],
       createRow: async (row) => {
         created.push(row)
-        return { ok: true, paneId: 'w1:p9', error: null }
+        return { ok: true, paneId: 'w1:p9', tabId: 'w1:t9', error: null }
       },
     },
   }
@@ -313,8 +318,8 @@ describe('C7 재개 명령·cwd 정책', () => {
     const history = newHistory()
     await history.list({ providers: ['claude', 'codex'] })
     const { created, deps } = resumeDeps({ history, context: { repos: [], home: base } })
-    expect(await resumeSession({ provider: 'claude', id: ID.custom, workspaceId: 'w1' }, deps)).toEqual({ kind: 'started', paneId: 'w1:p9' })
-    expect(await resumeSession({ provider: 'codex', id: ID.codexNamed, workspaceId: 'w1' }, deps)).toEqual({ kind: 'started', paneId: 'w1:p9' })
+    expect(await resumeSession({ provider: 'claude', id: ID.custom, workspaceId: 'w1' }, deps)).toEqual({ kind: 'started', paneId: 'w1:p9', tabId: 'w1:t9', workspaceId: 'w1' })
+    expect(await resumeSession({ provider: 'codex', id: ID.codexNamed, workspaceId: 'w1' }, deps)).toEqual({ kind: 'started', paneId: 'w1:p9', tabId: 'w1:t9', workspaceId: 'w1' })
     expect(created).toEqual([
       { workspaceId: 'w1', kind: 'claude', cwd: path.join(work, 'repo'), args: ['--resume', ID.custom] },
       { workspaceId: 'w1', kind: 'codex', cwd: path.join(work, 'repo'), args: ['resume', ID.codexNamed] },
@@ -333,15 +338,28 @@ describe('C7 재개 명령·cwd 정책', () => {
     expect(history.resumePlan({ row: plain, context: { repos: [], home: base } }).cwd).toBe(work)
     expect(history.resumePlan({ row: desktop, context: { repos: [], home: base } }).cwd).toBe('/')
   })
+  it('R2-6 등록 root 가 심링크 경로여도 realpath 로 비교한다 — 지운 worktree 세션은 그 등록 root 에서', async () => {
+    const history = newHistory()
+    const result = await history.list({ providers: ['claude'] })
+    const plain = rowOf(result, ID.plain)
+    if (plain === undefined) throw new Error('fixture')
+    fs.mkdirSync(path.join(base, 'r26-real'))
+    const real = fs.realpathSync(path.join(base, 'r26-real'))
+    const link = path.join(base, 'r26-link')
+    fs.symlinkSync(real, link)
+    const gone = path.join(real, '.claude', 'worktrees', 'x')
+    const row = { ...plain, cwd: gone, cwdKey: gone, cwdExists: false }
+    expect(history.resumePlan({ row, context: { repos: [{ root: link, worktrees: [link] }], home: base } }).cwd).toBe(link)
+  })
   it('Codex 가 원래 cwd 없이 재개되지 않는 정책이면 그 세션은 재개 비활성 + 사유, 프로세스 0', async () => {
     const history = newHistory(false)
     await history.list({ providers: ['codex'] })
     const { created, deps } = resumeDeps({ history, context: { repos: [], home: base } })
     const result = await resumeSession({ provider: 'codex', id: ID.codexPlain, workspaceId: 'w1' }, deps)
-    expect(result).toEqual({ kind: 'rejected', reason: 'Codex 는 원래 폴더가 없으면 재개할 수 없습니다 — 명령만 복사하세요' })
+    expect(result).toEqual({ kind: 'rejected', reason: 'Codex 의 다른 폴더 재개가 아직 확인되지 않아 막아 두었습니다 — 명령만 복사하세요' })
     expect(created).toHaveLength(0)
     const detail = await history.detail({ provider: 'codex', id: ID.codexPlain }, { repos: [], home: base })
-    expect(detail.kind === 'ok' ? detail.detail.resume.disabled : null).toBe('Codex 는 원래 폴더가 없으면 재개할 수 없습니다 — 명령만 복사하세요')
+    expect(detail.kind === 'ok' ? detail.detail.resume.disabled : null).toBe('Codex 의 다른 폴더 재개가 아직 확인되지 않아 막아 두었습니다 — 명령만 복사하세요')
   })
   it('세션 id 는 UUID 꼴만 — 그 밖의 값은 거절, 프로세스 0', async () => {
     const history = newHistory()
@@ -361,6 +379,31 @@ describe('C7 재개 명령·cwd 정책', () => {
 })
 
 describe('C8 이미 열린 세션 (main 가드)', () => {
+  it('R2-3 진행 표지는 재개가 만든 pane 에 묶인다 — 나타남 → 열림(세션 참조가 다른 id 여도 중복 0) · 사라짐·에이전트 끝남 → 바로 재개', async () => {
+    const history = newHistory()
+    await history.list({ providers: ['claude'] })
+    let panes: OpenPane[] = []
+    const { created, deps } = resumeDeps({ history, context: { repos: [], home: base } })
+    deps.openPanes = () => panes
+    deps.now = () => 1_000
+    const input = { provider: 'claude', id: ID.custom, workspaceId: 'w1' }
+    const seen: string[] = []
+    const step = async (): Promise<void> => {
+      const result = await resumeSession(input, deps)
+      seen.push(`${result.kind}${result.kind === 'open' ? `@${result.paneId}` : ''}:${created.length}`)
+    }
+    await step()
+    await step() // pane 이 아직 상태에 없다 — 진행 중
+    panes = [{ paneId: 'w1:p9', agent: 'claude', sessionId: '99999999-9999-4999-8999-999999999999' }]
+    await step() // 만든 pane 이 에이전트로 보인다 — 세션 참조가 다른 id 여도 열림
+    panes = []
+    await step() // 그 pane 이 사라졌다 — 시간 경과 없이 바로 재개
+    panes = [{ paneId: 'w1:p9', agent: 'claude', sessionId: null }]
+    await step()
+    panes = [{ paneId: 'w1:p9', agent: null, sessionId: null }]
+    await step() // 감지됐던 에이전트가 끝났다 — 바로 재개
+    expect(seen).toEqual(['started:1', 'pending:1', 'open@w1:p9:1', 'started:2', 'open@w1:p9:2', 'started:3'])
+  })
   it('열림 3칸 — agent null(에이전트 끝남) → 재개 · 다른 provider → 재개 · 같은 provider → 열림(새 프로세스 0)', async () => {
     const cases: [OpenPane, string][] = [
       [{ paneId: 'w2:p1', agent: null, sessionId: ID.custom }, 'started'],
@@ -389,15 +432,15 @@ describe('C8 이미 열린 세션 (main 가드)', () => {
       history, context: () => ({ repos: [], home: base }), openPanes: () => [], now: () => clock,
       createRow: (row) => {
         created.push(row.cwd)
-        if (fail) return Promise.resolve({ ok: false, paneId: null, error: 'agent_pane_busy' })
-        return new Promise((resolve) => { release = () => resolve({ ok: true, paneId: 'w1:p9', error: null }) })
+        if (fail) return Promise.resolve({ ok: false, paneId: null, tabId: null, error: 'agent_pane_busy' })
+        return new Promise((resolve) => { release = () => resolve({ ok: true, paneId: 'w1:p9', tabId: 'w1:t9', error: null }) })
       },
     }
     const input = { provider: 'claude', id: ID.custom, workspaceId: 'w1' }
     const first = resumeSession(input, deps)
     const second = await resumeSession(input, deps)
     release()
-    expect([await first, second]).toEqual([{ kind: 'started', paneId: 'w1:p9' }, { kind: 'pending' }])
+    expect([await first, second]).toEqual([{ kind: 'started', paneId: 'w1:p9', tabId: 'w1:t9', workspaceId: 'w1' }, { kind: 'pending' }])
     expect(created).toHaveLength(1)
     // 기동 뒤에도 pane 이 보일 때까지는 pending
     expect(await resumeSession(input, deps)).toEqual({ kind: 'pending' })

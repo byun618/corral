@@ -7,6 +7,7 @@
 //     적용 시점: 응답의 요청 번호 = 마지막 요청 번호일 때만.
 //   · 상세 = 「현재 선택 세션」의 마지막 응답. 선택이 실제로 바뀔 때만 이전 상세를 지운다.
 //     적용 시점: 응답의 세션 = 현재 선택이고 그 요청이 그 선택의 마지막 요청일 때만, 아니면 버린다.
+//     새로고침은 선택이 있으면 상세도 같은 번호 규칙으로 다시 묻는다(R2-5 — 오류로 끝난 상세 포함). 응답 전까지 이전 상세를 둔다.
 //   · 범위·검색어 = 사용자 입력(동기 — 목록에 바로 적용).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
@@ -101,10 +102,25 @@ export function useSessionHistory({ active }: { active: boolean }): SessionHisto
     scan(providers)
   }, [active, prefsReady, providerKey, scan])
 
+  /** 상세 요청 — 번호를 올리고, 응답은 그 번호·현재 선택이 그대로일 때만 적용한다. */
+  const requestDetail = useCallback((key: SessionKey) => {
+    detailSeq.current += 1
+    const mine = detailSeq.current
+    const apply = (result: SessionHistoryDetailResult): void => {
+      if (mine !== detailSeq.current || !sameKey(key, selectedRef.current)) return
+      setDetail({ kind: 'ready', key, result })
+    }
+    void Promise.resolve()
+      .then(() => window.corral.sessionHistoryDetail(key))
+      .then(apply)
+      .catch((error: unknown) => apply({ kind: 'error', message: String(error).slice(0, 200) }))
+  }, [])
+
   const refresh = useCallback(() => {
     const providers = enabledProviders(agents)
     if (providers.length > 0) scan(providers)
-  }, [agents, scan])
+    if (selectedRef.current !== null) requestDetail(selectedRef.current)
+  }, [agents, scan, requestDetail])
 
   const setAgent = useCallback(({ provider, on }: { provider: HistoryProvider; on: boolean }) => {
     const next = { ...agents, [provider]: on }
@@ -121,22 +137,14 @@ export function useSessionHistory({ active }: { active: boolean }): SessionHisto
     if (sameKey(key, selectedRef.current)) return
     selectedRef.current = key
     setSelected(key)
-    detailSeq.current += 1
-    const mine = detailSeq.current
     if (key === null) {
+      detailSeq.current += 1
       setDetail({ kind: 'none' })
       return
     }
     setDetail({ kind: 'loading', key })
-    const apply = (result: SessionHistoryDetailResult): void => {
-      if (mine !== detailSeq.current || !sameKey(key, selectedRef.current)) return
-      setDetail({ kind: 'ready', key, result })
-    }
-    void Promise.resolve()
-      .then(() => window.corral.sessionHistoryDetail(key))
-      .then(apply)
-      .catch((error: unknown) => apply({ kind: 'error', message: String(error).slice(0, 200) }))
-  }, [])
+    requestDetail(key)
+  }, [requestDetail])
 
   return { list, agents, setAgent, hideEmpty, setHideEmpty, scope, setScope, query, setQuery, refresh, selected, select, detail }
 }

@@ -39,6 +39,11 @@ export function useLifecycleActions(state: AppState | null): {
   /** 아직 store 에 없는 pane 을 **도착하면** 선택한다 (분할 직후 — F2-7). */
   selectPaneWhenReady: (paneId: string) => void
   /**
+   * LIFE-808 R2-1 — 다른 경로(세션 재개)가 main 에서 만든 탭을 새 탭 경로와 **같은 장치**로 받는다. 요청하는 순간 부르고, 응답이 오면 돌려받은 함수에
+   * 만든 pane·탭을 넘긴다. 그 사이 사용자가 다른 탭·pane·worktree 를 골랐으면 아무것도 안 한다(false).
+   */
+  reserveCreatedRow: () => (created: { paneId: string | null; tabId: string | null; workspaceId: string }) => boolean
+  /**
    * 방금 만든 **탭** — 배치에 들어오면 App 이 그 탭을 편다 (G2′ · §10-R35-1).
    *
    * pane 선택만으로는 부족하다: 이 앱은 **영역이 활성 탭을 정한다**(R3-a). 배치를 아는 것은
@@ -63,6 +68,9 @@ export function useLifecycleActions(state: AppState | null): {
   actions: LifecycleActions
 } {
   const [selectedPane, setSelectedPane] = useState<string | null>(null)
+  /** 요청 시점 포커스 표식(R2-1 `reserveCreatedRow`)이 읽는 거울. */
+  const selectedPaneRef = useRef<string | null>(selectedPane)
+  selectedPaneRef.current = selectedPane
   /** 선택 pane 이 속한 탭 — 그 pane 이 닫힌 뒤 승격 자리를 고르는 데 쓴다(LIFE-508, 아래 첫 pane 자동 선택 effect). */
   const selectedTabRef = useRef<string | null>(null)
   /** 그 탭의 워크스페이스 — 「선택했던 탭이 **이 워크스페이스에서** 통째로 닫혔다」를 가린다(LIFE-691 f1 A). */
@@ -530,6 +538,21 @@ export function useLifecycleActions(state: AppState | null): {
     pendingSelectRef.current = paneId
   }, [])
 
+  /**
+   * LIFE-808 R2-1 — `createRow` 뒷부분과 같은 장치(`pendingSelectRef` · `setActive` · `setPendingRevealTab`). 응답 즉시 선택하지 않는다(위 경합).
+   * 적용 시점: 요청 때 잡은 의도 순번·선택 pane·화면 탭이 그대로일 때만 — 기다리는 사이 사용자가 고른 것이 이긴다.
+   */
+  const reserveCreatedRow = useCallback((): ((created: { paneId: string | null; tabId: string | null; workspaceId: string }) => boolean) => {
+    const mark = { seq: intentSeq.current, pane: selectedPaneRef.current, tab: shownTabRef.current }
+    return (created) => {
+      if (mark.seq !== intentSeq.current || mark.pane !== selectedPaneRef.current || mark.tab !== shownTabRef.current) return false
+      if (created.paneId !== null) pendingSelectRef.current = created.paneId
+      setActive(created.workspaceId)
+      if (created.tabId !== null) setPendingRevealTab(created.tabId)
+      return true
+    }
+  }, [setActive])
+
   const openWorktree = useCallback(
     async (repoRoot: string, worktree: WorktreeRow): Promise<void> => {
       // in-flight 재클릭 무시 (M5) — 진행 중이면 두 번째는 아무것도 안 한다 (고아 workspace 방지).
@@ -629,6 +652,7 @@ export function useLifecycleActions(state: AppState | null): {
     newTabRequestRef,
     selectPane,
     selectPaneWhenReady,
+    reserveCreatedRow,
     pendingRevealTab,
     revealTabHandled,
     activeWorkspaceId,

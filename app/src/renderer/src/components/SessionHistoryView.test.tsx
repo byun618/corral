@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { HistoryProvider, SessionHistoryDetail, SessionHistoryDetailResult, SessionHistoryListResult, SessionHistoryResumeResult, SessionHistoryRow, SessionKey } from '../../../shared/session-history.js'
 import { useSessionHistory } from '../hooks/useSessionHistory.js'
 import { RIGHT_PANEL_VIEWS } from './right-panel-views.js'
-import { SessionHistoryView, type HistoryRepo } from './SessionHistoryView.js'
+import { SessionHistoryView, type CreatedRow, type HistoryRepo } from './SessionHistoryView.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -41,6 +41,7 @@ let reveals: SessionKey[] = []
 let prefWrites: unknown[] = []
 let copied: string[] = []
 let revealedPanes: string[] = []
+let adopted: CreatedRow[] = []
 let storedPrefs: Record<string, unknown> = {}
 let host: HTMLDivElement
 let root: Root
@@ -53,13 +54,14 @@ beforeEach(() => {
   prefWrites = []
   copied = []
   revealedPanes = []
+  adopted = []
   storedPrefs = {}
   Reflect.set(window, 'corral', {
     getUiPrefs: () => Promise.resolve(storedPrefs),
     setUiPrefs: (patch: unknown) => { prefWrites.push(patch) },
     sessionHistoryList: (input: { providers: HistoryProvider[] }) => new Promise<SessionHistoryListResult>((resolve) => { lists.push({ input, resolve }) }),
     sessionHistoryDetail: (input: SessionKey) => new Promise<SessionHistoryDetailResult>((resolve) => { details.push({ input, resolve }) }),
-    sessionHistoryResume: (input: { provider: HistoryProvider; id: string; workspaceId: string }): Promise<SessionHistoryResumeResult> => { resumes.push(input); return Promise.resolve({ kind: 'started', paneId: 'w1:p5' }) },
+    sessionHistoryResume: (input: { provider: HistoryProvider; id: string; workspaceId: string }): Promise<SessionHistoryResumeResult> => { resumes.push(input); return Promise.resolve({ kind: 'started', paneId: 'w1:p5', tabId: 'w1:t5', workspaceId: 'w1' }) },
     sessionHistoryReveal: (input: SessionKey) => { reveals.push(input); return Promise.resolve({ kind: 'ok' }) },
   })
   Reflect.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (text: string) => { copied.push(text); return Promise.resolve() } } })
@@ -76,7 +78,7 @@ const REPOS: HistoryRepo[] = [{ root: '/w', worktrees: [{ path: '/w/a', workspac
 type Props = { active: boolean; worktree?: string | null; repos?: HistoryRepo[]; workspaceId?: string | null }
 function Harness({ active, worktree = '/w/a', repos = REPOS, workspaceId = 'w1' }: Props): React.JSX.Element {
   const api = useSessionHistory({ active })
-  return createElement(SessionHistoryView, { api, repos, worktree, workspaceId, onRevealPane: (paneId: string) => { revealedPanes.push(paneId) } })
+  return createElement(SessionHistoryView, { api, repos, worktree, workspaceId, onRevealPane: (paneId: string) => { revealedPanes.push(paneId) }, onReserveCreatedRow: () => (created: CreatedRow) => { adopted.push(created); return true } })
 }
 const render = (props: Props): void => act(() => root.render(createElement(Harness, props)))
 const flush = async (): Promise<void> => { await act(async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve() }) }
@@ -219,8 +221,9 @@ describe('C8 이미 열린 세션 (화면)', () => {
     await click('[data-history-resume]')
     expect(resumes).toEqual([{ provider: 'claude', id: ROW_ID.alpha, workspaceId: 'w1' }])
     expect(q('[data-history-message]')?.textContent).toBe('새 탭에서 재개했습니다')
-    // R1-6(e) — 시작되면 새 탭으로 이동한다.
-    expect(revealedPanes).toEqual(['w1:p5'])
+    // R2-1 — 응답 즉시 이동하지 않고, 만든 pane·탭을 앱의 새 탭 장치에 넘긴다(실제 장치 경로는 SessionHistoryView.resume-focus.test.tsx).
+    expect(revealedPanes).toEqual([])
+    expect(adopted).toEqual([{ paneId: 'w1:p5', tabId: 'w1:t5', workspaceId: 'w1' }])
   })
   it('R1-2 요청 중에는 재개 단추가 막힌다 — 연타해도 요청 1', async () => {
     let finish: (result: SessionHistoryResumeResult) => void = () => undefined
@@ -240,6 +243,55 @@ describe('C8 이미 열린 세션 (화면)', () => {
     expect(q('[data-history-message]')?.textContent).toBe('이 세션의 재개가 이미 진행 중입니다')
     const after = q('[data-history-resume]')
     expect(after instanceof HTMLButtonElement ? after.disabled : null).toBe(false)
+  })
+})
+
+describe('R2-4·R2-5·R2-8 화면 보강', () => {
+  it('R2-4 읽지 못한 기록이 있으면 건수 한 줄 — 없으면 줄 없음, 세션 0건 글과 따로', async () => {
+    render({ active: true })
+    await flush()
+    await settle(lists.at(-1), { kind: 'ok', rows: [], unreadable: 3, realpaths: {} })
+    expect(q('[data-history-unreadable]')?.textContent).toBe('읽지 못한 기록 3개')
+    expect(empty()).toBe('세션 기록이 없습니다.')
+    await click('[data-history-refresh]')
+    await settle(lists.at(-1), ok())
+    expect(q('[data-history-unreadable]')).toBeNull()
+  })
+  it('R2-5 새로고침은 선택된 상세도 다시 묻는다 — 오류로 끝난 상세가 새 응답으로 바뀐다 · 늦은 이전 응답은 버린다 · R2-8 불러오는 중 표지', async () => {
+    await shown()
+    await click(`[data-history-row="claude:${ROW_ID.alpha}"]`)
+    await settle(details.at(-1), { kind: 'error', message: '기록 파일이 사라졌습니다' })
+    expect(q('[data-history-detail-empty]')?.textContent).toBe('기록 파일이 사라졌습니다')
+    expect(details).toHaveLength(1)
+    await click('[data-history-refresh]')
+    expect(q('[data-history-loading]')?.textContent).toBe('불러오는 중…')
+    await click('[data-history-refresh]')
+    expect(details).toHaveLength(3)
+    await settle(details[2], { kind: 'ok', detail: detailOf({ provider: 'claude', id: ROW_ID.alpha }) })
+    await settle(details[1], { kind: 'error', message: '늦은 이전 응답' })
+    expect(q('[data-history-detail-id]')?.textContent).toBe(`Claude · ${ROW_ID.alpha}`)
+    await settle(lists.at(-1), ok())
+    expect(q('[data-history-loading]')).toBeNull()
+  })
+  it('R2-8 다른 worktree 의 세션은 「현재 worktree 의 탭으로 열립니다」 — 상세와 결과 글 · 같은 worktree 세션은 없음', async () => {
+    await shown()
+    await click('[data-history-scope="project"]')
+    await click(`[data-history-row="claude:${ROW_ID.gamma}"]`)
+    await settle(details.at(-1), { kind: 'ok', detail: detailOf({ provider: 'claude', id: ROW_ID.gamma }) })
+    expect(q('[data-history-elsewhere]')?.textContent).toBe('다른 worktree 의 세션입니다 — 현재 worktree 의 탭으로 열립니다')
+    await click('[data-history-resume]')
+    expect(q('[data-history-message]')?.textContent).toBe('새 탭에서 재개했습니다 — 다른 worktree 의 세션입니다 — 현재 worktree 의 탭으로 열립니다')
+    await click(`[data-history-row="claude:${ROW_ID.alpha}"]`)
+    await settle(details.at(-1), { kind: 'ok', detail: detailOf({ provider: 'claude', id: ROW_ID.alpha }) })
+    expect(q('[data-history-elsewhere]')).toBeNull()
+  })
+  it('R2-8 재개 비활성 사유는 한 번만 보인다(단추 title 에 같은 문장을 다시 싣지 않는다)', async () => {
+    await shown()
+    await click(`[data-history-row="claude:${ROW_ID.alpha}"]`)
+    const blocked = detailOf({ provider: 'claude', id: ROW_ID.alpha })
+    await settle(details.at(-1), { kind: 'ok', detail: { ...blocked, resume: { ...blocked.resume, disabled: '막힌 사유' } } })
+    expect(host.textContent?.split('막힌 사유').length).toBe(2)
+    expect(q('[data-history-resume]')?.getAttribute('title')).toBeNull()
   })
 })
 

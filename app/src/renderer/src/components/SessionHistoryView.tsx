@@ -26,6 +26,7 @@ import './session-history.css'
 
 const PROVIDER_LABEL: Record<HistoryProvider, string> = { claude: 'Claude', codex: 'Codex' }
 const NO_REALPATHS: Readonly<Record<string, string>> = {}
+const ELSEWHERE_NOTE = '다른 worktree 의 세션입니다 — 현재 worktree 의 탭으로 열립니다'
 
 /** 목록 시각 — 오늘이면 시:분, 아니면 날짜. */
 function timeLabel(at: number, now: number): string {
@@ -82,6 +83,11 @@ export function historyPanes(repos: readonly HistoryRepo[]): PaneSession[] {
 
 const sameRow = (row: SessionHistoryRow, key: { provider: HistoryProvider; id: string }): boolean => row.provider === key.provider && row.id === key.id
 
+/** 재개 응답 `started` 의 새 탭 — 요청 순간 받은 함수에 넘긴다(R2-1). */
+export type CreatedRow = { paneId: string | null; tabId: string | null; workspaceId: string }
+/** 재개를 요청하는 순간 부른다 — 앱의 새 탭 장치(`useLifecycleActions.reserveCreatedRow`)가 그 순간의 포커스를 잡아 두고 돌려준 함수가 응답 때 채택한다. */
+export type ReserveCreatedRow = () => (created: CreatedRow) => boolean
+
 export type SessionHistoryViewProps = {
   api: SessionHistoryApi
   repos: readonly HistoryRepo[]
@@ -89,10 +95,12 @@ export type SessionHistoryViewProps = {
   worktree: string | null
   /** 새 탭을 만들 workspace — 활성 worktree 가 없으면 null(재개 비활성). */
   workspaceId: string | null
+  /** 이미 있는 pane 으로 이동(열림·「탭으로 이동」). */
   onRevealPane: (paneId: string) => void
+  onReserveCreatedRow: ReserveCreatedRow
 }
 
-export function SessionHistoryView({ api, repos, worktree, workspaceId, onRevealPane }: SessionHistoryViewProps): React.JSX.Element {
+export function SessionHistoryView({ api, repos, worktree, workspaceId, onRevealPane, onReserveCreatedRow }: SessionHistoryViewProps): React.JSX.Element {
   const realpaths = api.list.kind === 'ready' && api.list.result.kind === 'ok' ? api.list.result.realpaths : NO_REALPATHS
   const context = useMemo(() => historyScopeContext({ repos, worktree, realpaths }), [repos, worktree, realpaths])
   const panes = useMemo(() => historyPanes(repos), [repos])
@@ -105,12 +113,22 @@ export function SessionHistoryView({ api, repos, worktree, workspaceId, onReveal
     if (!selectedVisible) select(null)
   }, [selectedVisible, select])
   const busy = api.list.kind === 'loading' || (api.list.kind === 'ready' && api.list.refreshing)
+  const unreadable = api.list.kind === 'ready' && api.list.result.kind === 'ok' ? api.list.result.unreadable : 0
+  // R2-8 — 현재 worktree 범위 밖의 세션은 cwd 만 그 세션 것이고 탭은 활성 worktree 에 열린다.
+  const selectedRow = selected === null || body.kind !== 'rows' ? undefined : body.rows.find((row) => sameRow(row, selected))
+  const inWorktree = selectedRow === undefined ? null : scopeRows({ rows: [selectedRow], scope: 'worktree', context })
+  const elsewhere = inWorktree?.kind === 'rows' && inWorktree.rows.length === 0 ? ELSEWHERE_NOTE : null
   const now = Date.now()
   return (
     <div className="history-view" data-history-view="" data-history-busy={busy ? '' : undefined}>
       <div className="explorer-section-head" data-history-head="">
         <span className="explorer-section-twistie" />
         <span className="explorer-section-title">세션</span>
+        {busy ? (
+          <span className="history-loading" data-history-loading="" role="status">
+            불러오는 중…
+          </span>
+        ) : null}
         <div className="explorer-toolbar">
           <button type="button" className="explorer-tool" data-history-refresh="" title="새로고침" aria-label="새로고침" onClick={api.refresh}>
             <Codicon name="refresh" />
@@ -138,6 +156,11 @@ export function SessionHistoryView({ api, repos, worktree, workspaceId, onReveal
           </label>
         </div>
       </div>
+      {unreadable > 0 ? (
+        <div className="history-note is-warn" data-history-unreadable="">
+          읽지 못한 기록 {unreadable}개
+        </div>
+      ) : null}
       <div className="explorer-scroll history-list" data-history-list="">
         {body.kind === 'notice' ? (
           <div className="explorer-empty" data-history-empty="">
@@ -169,12 +192,14 @@ export function SessionHistoryView({ api, repos, worktree, workspaceId, onReveal
           })
         )}
       </div>
-      {api.selected === null || !selectedVisible ? null : <HistoryDetailPane api={api} openPaneId={openPaneOf({ panes, key: api.selected })} workspaceId={workspaceId} onRevealPane={onRevealPane} />}
+      {api.selected === null || !selectedVisible ? null : <HistoryDetailPane api={api} openPaneId={openPaneOf({ panes, key: api.selected })} workspaceId={workspaceId} elsewhere={elsewhere} onRevealPane={onRevealPane} onReserveCreatedRow={onReserveCreatedRow} />}
     </div>
   )
 }
 
-function HistoryDetailPane({ api, openPaneId, workspaceId, onRevealPane }: { api: SessionHistoryApi; openPaneId: string | null; workspaceId: string | null; onRevealPane: (paneId: string) => void }): React.JSX.Element {
+type DetailActions = { openPaneId: string | null; workspaceId: string | null; elsewhere: string | null; onRevealPane: (paneId: string) => void; onReserveCreatedRow: ReserveCreatedRow }
+
+function HistoryDetailPane({ api, ...actions }: { api: SessionHistoryApi } & DetailActions): React.JSX.Element {
   const state = api.detail
   return (
     <div className="history-detail" data-history-detail="">
@@ -187,13 +212,13 @@ function HistoryDetailPane({ api, openPaneId, workspaceId, onRevealPane }: { api
           {state.result.message}
         </div>
       ) : (
-        <DetailBody key={`${state.key.provider}:${state.key.id}`} detail={state.result.detail} openPaneId={openPaneId} workspaceId={workspaceId} onRevealPane={onRevealPane} />
+        <DetailBody key={`${state.key.provider}:${state.key.id}`} detail={state.result.detail} {...actions} />
       )}
     </div>
   )
 }
 
-function DetailBody({ detail, openPaneId, workspaceId, onRevealPane }: { detail: SessionHistoryDetail; openPaneId: string | null; workspaceId: string | null; onRevealPane: (paneId: string) => void }): React.JSX.Element {
+function DetailBody({ detail, openPaneId, workspaceId, elsewhere, onRevealPane, onReserveCreatedRow }: { detail: SessionHistoryDetail } & DetailActions): React.JSX.Element {
   const [message, setMessage] = useState<string | null>(null)
   /** 재개 요청 중 — 단추를 막는다(R1-2). main 도 같은 세션의 진행 중 재개를 막는다. */
   const [resuming, setResuming] = useState(false)
@@ -208,14 +233,15 @@ function DetailBody({ detail, openPaneId, workspaceId, onRevealPane }: { detail:
   const resume = (): void => {
     if (workspaceId === null || resuming) return
     setResuming(true)
+    // R2-1 — 요청 순간의 포커스를 잡아 둔다. 응답 즉시 선택하지 않는다: 새 pane 이 상태에 도착한 뒤 앱의 새 탭 장치가 선택·탭 펴기를 한다.
+    const adopt = onReserveCreatedRow()
     void Promise.resolve()
       .then(() => window.corral.sessionHistoryResume({ ...key, workspaceId }))
       .then((result) => {
         switch (result.kind) {
           case 'started':
-            // R1-6(e) — 새 탭으로 이동(「탭으로 이동」 과 같은 경로).
-            if (result.paneId !== null) onRevealPane(result.paneId)
-            return setMessage('새 탭에서 재개했습니다')
+            adopt({ paneId: result.paneId, tabId: result.tabId, workspaceId: result.workspaceId })
+            return setMessage(elsewhere === null ? '새 탭에서 재개했습니다' : `새 탭에서 재개했습니다 — ${ELSEWHERE_NOTE}`)
           case 'pending':
             return setMessage('이 세션의 재개가 이미 진행 중입니다')
           case 'open':
@@ -255,7 +281,7 @@ function DetailBody({ detail, openPaneId, workspaceId, onRevealPane }: { detail:
             탭으로 이동
           </button>
         ) : (
-          <button type="button" className="history-action is-primary" data-history-resume="" disabled={resumeBlocked !== null || resuming} title={resumeBlocked ?? undefined} onClick={resume}>
+          <button type="button" className="history-action is-primary" data-history-resume="" disabled={resumeBlocked !== null || resuming} onClick={resume}>
             재개
           </button>
         )}
@@ -275,6 +301,11 @@ function DetailBody({ detail, openPaneId, workspaceId, onRevealPane }: { detail:
       {resumeBlocked !== null && openPaneId === null ? (
         <div className="history-note" data-history-blocked="">
           {resumeBlocked}
+        </div>
+      ) : null}
+      {elsewhere !== null && openPaneId === null && resumeBlocked === null ? (
+        <div className="history-note" data-history-elsewhere="">
+          {elsewhere}
         </div>
       ) : null}
       {message !== null ? (

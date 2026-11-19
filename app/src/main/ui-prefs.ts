@@ -17,6 +17,7 @@ import { DEFAULT_SIDEBAR_VIEW, readSidebarView, sidebarViewToPrefs, type Sidebar
 import { log } from './log.js'
 import { readRecentFiles, type RecentFiles } from '../shared/recent-files.js'
 import type { RightPanelView } from '../shared/types.js'
+import { DEFAULT_HISTORY_AGENTS, readHistoryAgents, type HistoryAgents } from '../shared/session-history.js'
 
 /** 폴백 번호 배정 한 칸 (LIFE-366 C13) — `shared/types.ts` 의 `TabOrdinal` 과 같은 모양이다. */
 export type TabOrdinal = { tabId: string; groupId: string; ordinal: number }
@@ -88,6 +89,9 @@ export type UiPrefs = {
   explorerShowIgnored: boolean
   /** 소스 제어 보기 모드 (LIFE-683) — `shared/types.ts` 의 같은 칸 주석. */
   scmViewMode: 'list' | 'tree'
+  /** 세션 히스토리 (LIFE-808) — `shared/types.ts` 의 같은 칸 주석. */
+  sessionHistoryHideEmpty: boolean
+  sessionHistoryAgents: HistoryAgents
   /** 최근 연 파일 (LIFE-593) — `shared/types.ts` 의 같은 칸 주석. 읽을 때 `readRecentFiles` 로 모양을 본다. */
   recentFiles: RecentFiles
 } & SidebarViewPrefs
@@ -115,13 +119,15 @@ const DEFAULT_PREFS: UiPrefs = {
   explorerShowDotfiles: true,
   explorerShowIgnored: true,
   scmViewMode: 'list',
+  sessionHistoryHideEmpty: true,
+  sessionHistoryAgents: { ...DEFAULT_HISTORY_AGENTS },
   recentFiles: {},
   // Workspace options (LIFE-470) — 칸 이름·기본값·읽기 규칙은 `shared/sidebar-view.ts` 한 곳.
   ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW),
 }
 
 /** 영속 보기 값 — 아는 값만, 그 밖(옛·모르는 값)은 탐색기. */
-const KNOWN_RIGHT_PANEL_VIEWS: readonly RightPanelView[] = ['explorer', 'scm', 'search', 'pr', 'detail']
+const KNOWN_RIGHT_PANEL_VIEWS: readonly RightPanelView[] = ['explorer', 'scm', 'search', 'pr', 'sessions', 'detail']
 function rightPanelViewOf(value: unknown): RightPanelView {
   return KNOWN_RIGHT_PANEL_VIEWS.find((view) => view === value) ?? 'explorer'
 }
@@ -197,12 +203,15 @@ export class UiPrefsStore {
         rightPanelOpen: parsed['rightPanelOpen'] === true,
         rightPanelWidth: typeof parsed['rightPanelWidth'] === 'number' && Number.isFinite(parsed['rightPanelWidth']) ? parsed['rightPanelWidth'] : null,
         // LIFE-682 — 모르는 보기 이름·숫자 아닌 폭은 기본(탐색기 · 토큰 폭). 범위 clamp 는 토큰을 아는 렌더러가 한다(rightPanelWidth 와 같다).
-        // LIFE-683 — `'scm'`(소스 제어)도 안다. LIFE-811 — `'pr'` 도. LIFE-803 — `'search'`(내용 검색)도. 그 밖의 값은 여전히 탐색기.
+        // LIFE-683 — `'scm'`(소스 제어)도 안다. LIFE-811 — `'pr'` 도. LIFE-803 — `'search'`(내용 검색)도. LIFE-808 — `'sessions'`(세션 히스토리)도. 그 밖의 값은 여전히 탐색기.
         rightPanelView: rightPanelViewOf(parsed['rightPanelView']),
         rightPanelDetailWidth: typeof parsed['rightPanelDetailWidth'] === 'number' && Number.isFinite(parsed['rightPanelDetailWidth']) ? parsed['rightPanelDetailWidth'] : null,
         explorerShowDotfiles: parsed['explorerShowDotfiles'] !== false,
         explorerShowIgnored: parsed['explorerShowIgnored'] !== false,
         scmViewMode: parsed['scmViewMode'] === 'tree' ? 'tree' : 'list',
+        // LIFE-808 — 불리언이 아니면 기본(숨김), 에이전트 필터는 칸마다 따로 기본(켬).
+        sessionHistoryHideEmpty: parsed['sessionHistoryHideEmpty'] !== false,
+        sessionHistoryAgents: readHistoryAgents(parsed['sessionHistoryAgents']),
         // LIFE-593 — 칸 모양이 틀리면 그 칸(또는 그 worktree)만 버린다. 다른 칸은 그대로.
         recentFiles: readRecentFiles(parsed['recentFiles']),
         // 칸마다 따로 기본값으로 떨어진다 — 손상된 모드 문자열이 다른 칸을 버리지 않게(LIFE-470 K9ⓓ).
@@ -233,6 +242,7 @@ export class UiPrefsStore {
       recentFiles: Object.fromEntries(Object.entries(this.prefs.recentFiles).map(([key, list]) => [key, [...list]])),
       sidebarRepoFilter: [...this.prefs.sidebarRepoFilter],
       sidebarCardProperties: [...this.prefs.sidebarCardProperties],
+      sessionHistoryAgents: { ...this.prefs.sessionHistoryAgents },
     }
   }
 

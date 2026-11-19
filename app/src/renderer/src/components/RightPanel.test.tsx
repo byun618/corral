@@ -35,7 +35,7 @@ function render({ view, open = true, explorerShortcut = '⌘⇧E' }: { view: Rig
     shortcutOf: (id) => (id === 'explorer' ? explorerShortcut : null),
     onSelectView: (id) => { selected.push(id) },
     panelRef: null, toggleShortcut: '⌘L', onToggle: () => { toggles += 1 }, onResizeStart: () => {},
-    bodies: { explorer: createElement('div', { 'data-probe': 'explorer' }), scm: createElement('div', { 'data-probe': 'scm' }), search: createElement('div', { 'data-probe': 'search' }), pr: createElement('div', { 'data-probe': 'pr' }), detail: createElement('div', { 'data-probe': 'detail' }) },
+    bodies: { explorer: createElement('div', { 'data-probe': 'explorer' }), scm: createElement('div', { 'data-probe': 'scm' }), search: createElement('div', { 'data-probe': 'search' }), pr: createElement('div', { 'data-probe': 'pr' }), sessions: createElement('div', { 'data-probe': 'sessions' }), detail: createElement('div', { 'data-probe': 'detail' }) },
   })))
 }
 const q = (selector: string): HTMLElement | null => host.querySelector<HTMLElement>(selector)
@@ -57,8 +57,8 @@ describe('activity bar (A1·A2)', () => {
     render({ view: 'explorer' })
     const head = q('[data-right-panel-head]')
     expect(buttons().map((button) => button.dataset.rightPanelViewBtn)).toEqual(RIGHT_PANEL_VIEWS.map((entry) => entry.id))
-    // LIFE-683 — 소스 제어 보기가 탐색기 다음에 더해졌다(3개). LIFE-811 — PR 보기가 작업 상세 앞에(4개). LIFE-803 — 검색 보기가 소스 제어 다음에(5개).
-    expect(buttons()).toHaveLength(5)
+    // LIFE-683 — 소스 제어 보기가 탐색기 다음에 더해졌다(3개). LIFE-811 — PR 보기가 작업 상세 앞에(4개). LIFE-803 — 검색 보기가 소스 제어 다음에(5개). LIFE-808 — 세션 보기가 PR 다음에(6개).
+    expect(buttons()).toHaveLength(6)
     expect(head?.lastElementChild?.getAttribute('data-right-panel-toggle')).toBe('head')
     expect(head?.lastElementChild?.classList.contains('right-panel-toggle')).toBe(true)
     expect(q('.right-panel-title')).toBeNull()
@@ -221,7 +221,7 @@ describe('LIFE-755 머리 단추 DOM 툴팁 (C1·C3·C4)', () => {
   it('C4 바꾼 단추에 title 이 없고 aria-label 은 base 값 그대로', () => {
     render({ view: 'explorer' })
     for (const selector of ALL) expect(q(selector)?.hasAttribute('title')).toBe(false)
-    expect(buttons().map((button) => button.getAttribute('aria-label'))).toEqual(['탐색기 (⌘⇧E)', '소스 제어', '검색', 'PR', '작업 상세'])
+    expect(buttons().map((button) => button.getAttribute('aria-label'))).toEqual(['탐색기 (⌘⇧E)', '소스 제어', '검색', 'PR', '세션', '작업 상세'])
     expect(q('[data-right-panel-toggle="head"]')?.getAttribute('aria-label')).toBe('오른쪽 패널 닫기')
   })
   it('C4 RightPanelToggle 세 자리(머리·탭 줄·작업 페이지 머리) 모두 같은 툴팁 — title 없음, 단축키 없으면 이름만', () => {

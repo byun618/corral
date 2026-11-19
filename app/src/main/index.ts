@@ -109,6 +109,7 @@ import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, cardlessGate, collectSessionRefs, joinTree, readClaimedWorkspaceIds, type RepoSkeleton } from './tree.js'
 import { createRebuildScheduler, skeletonHealth } from './rebuild-retry.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
+import { SessionHistory, defaultHistoryRoots, resumeSession, revealSession } from './session-history.js'
 import { UiPrefsStore } from './ui-prefs.js'
 import { SettingsStore } from './settings.js'
 import { UsageService } from './usage/service.js'
@@ -297,6 +298,8 @@ let work: WorkService | null = null
 /** LIFE-603 — 작업 링크(해석·쓰기·사건)와 「작업에서 시작」. 작업 서비스와 같이 선다. */
 let workLinks: WorkLinks | null = null
 let workStarts: StartService | null = null
+/** LIFE-808 R7 — 상태를 발행할 때마다 진행 중 재개 표지에 지금 pane 을 먹인다(요청 없이 끝난 에이전트도 표지가 안다). 세션 히스토리와 같이 선다. */
+let observeResumes: ((state: AppState) => void) | null = null
 /** C7 대조용 — 계측 실행(제어 소켓)에서 `CORRAL_WORK_IPC_TRACE` 가 있을 때만 작업 IPC 응답·push 를 NDJSON 으로 남긴다. */
 function traceWork({ channel, value }: { channel: string; value: unknown }): void {
   const file = process.env.CORRAL_WORK_IPC_TRACE
@@ -733,6 +736,7 @@ function scheduleEmit(): void {
     window?.webContents.send('corral:state', state)
     // LIFE-603 — 링크된 worktree 의 사건(자동 연결 · 질문 · 턴 결과)을 활동에 남긴다. 화면이 닫혀 있어도 여기서 남는다.
     workLinks?.observe(state.repos)
+    observeResumes?.(state)
     // 응답 전에 끝났거나 결과가 미확정이던 시작을 트리와 맞춰 링크한다(R1-C·R1-B).
     void workStarts?.recover(state.repos).catch((error: unknown) => log('work.start_recover_failed', { error: String(error) }))
     // 폰 목록(LIFE-580) — 방금 만든 상태를 그대로 쓴다(두 번 만들지 않는다). 구독자가 없으면 아무 일도 안 한다.
@@ -1069,7 +1073,7 @@ async function resolveParentWorkspace(repoRoot: string): Promise<ParentResult> {
 }
 
 /** 열린 workspace 에 새 행을 만든다 (L1·L2). store 가 push 로 곧 반영한다. */
-async function createRowInWorkspace(input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string }): Promise<CreateRowResult> {
+async function createRowInWorkspace(input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string; args?: string[] }): Promise<CreateRowResult> {
   const socketPath = currentSocketPath()
   if (socketPath === null) return { ok: false, paneId: null, tabId: null, retries: 0, error: '세션이 없다' }
   const outcome = await createRow(socketPath, input)
@@ -2163,6 +2167,22 @@ app.whenReady().then(async () => {
   ipcMain.handle('corral:prBranches', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.branches(input) : { lookups: {}, recorded: 0 }))
   ipcMain.handle('corral:prRefreshItem', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.refreshItem(input) : { ok: false, reason: '허용되지 않은 발신자' }))
   ipcMain.handle('corral:prComments', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.comments(input) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
+  // LIFE-808 — 세션 히스토리: 목록·상세·재개·Finder. 렌더러는 식별자만 준다(경로·argv 는 main 이 스캔 결과에서).
+  // Codex 도 원래 cwd 가 없으면 대체 cwd 에서 재개한다 — C12 ⓑ 실측(corral-specs LIFE-808 raw/claude/c12f/c12-b2-codex-cwd-removed.txt):
+  // `codex resume <id>` 는 원래 폴더 없이도 된다. 단 Codex 가 「Working directory · resume」 를 묻고 기본이 지운 폴더라, 화면이 「현재 폴더」 안내를 보인다.
+  const sessionHistory = new SessionHistory({ roots: defaultHistoryRoots, codexResumesWithoutCwd: true })
+  // R3-5 — IPC 한 번에 상태 조립(`currentState`)은 한 번: 재개는 문맥·pane 을 같은 읽기에서 뽑는다.
+  const historyContext = (state = currentState()) => ({ repos: state.repos.map((repo) => ({ root: repo.root, worktrees: repo.worktrees.map((worktree) => worktree.path) })), home: os.homedir() })
+  const historyPanes = (state = currentState()) => state.repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes).map((pane) => ({ paneId: pane.paneId, agent: pane.agent, sessionId: pane.agentSession?.kind === 'id' ? pane.agentSession.id : null }))
+  observeResumes = (state) => sessionHistory.observeResumes(historyPanes(state))
+  const resumeWithState = (input: unknown) => {
+    const state = currentState()
+    return resumeSession(input, { history: sessionHistory, context: () => historyContext(state), openPanes: () => historyPanes(state), createRow: createRowInWorkspace })
+  }
+  ipcMain.handle('corral:sessionHistoryList', async (event, input: unknown) => (fromOurWindow(event) ? sessionHistory.list(input, historyContext()) : { kind: 'error', message: '허용되지 않은 발신자' }))
+  ipcMain.handle('corral:sessionHistoryDetail', async (event, input: unknown) => (fromOurWindow(event) ? sessionHistory.detail(input, historyContext()) : { kind: 'error', message: '허용되지 않은 발신자' }))
+  ipcMain.handle('corral:sessionHistoryResume', async (event, input: unknown) => (fromOurWindow(event) ? resumeWithState(input) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
+  ipcMain.handle('corral:sessionHistoryReveal', async (event, input: unknown) => (fromOurWindow(event) ? revealSession(input, { history: sessionHistory, show: (file) => shell.showItemInFolder(file) }) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
 
   // --- 라이프사이클 (R3) ---
   const denied = { ok: false as const, error: '허용되지 않은 발신자' }

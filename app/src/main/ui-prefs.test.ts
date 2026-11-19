@@ -22,7 +22,8 @@ import { UiPrefsStore, type UiPrefs } from './ui-prefs.js'
 // LIFE-593: 최근 연 파일 칸(`recentFiles`)도 옛 파일에서는 빈 기록으로 선다.
 // LIFE-682: 오른쪽 패널 보기·상세 폭 칸도 옛 파일에서는 탐색기 보기·기본 폭으로 선다.
 // LIFE-683: 소스 제어 보기 모드 칸(`scmViewMode`)도 옛 파일에서는 목록으로 선다.
-const L589_DEFAULTS = { rightPanelOpen: false, rightPanelWidth: null, rightPanelView: 'explorer', rightPanelDetailWidth: null, explorerShowDotfiles: true, explorerShowIgnored: true, scmViewMode: 'list', recentFiles: {} }
+// LIFE-808: 세션 히스토리 칸(빈 세션 숨김 켬 · 에이전트 둘 다 켬)도 옛 파일에서는 기본값으로 선다.
+const L589_DEFAULTS = { rightPanelOpen: false, rightPanelWidth: null, rightPanelView: 'explorer', rightPanelDetailWidth: null, explorerShowDotfiles: true, explorerShowIgnored: true, scmViewMode: 'list', sessionHistoryHideEmpty: true, sessionHistoryAgents: { claude: true, codex: true }, recentFiles: {} }
 const L470_DEFAULTS = { manualFlatOrder: [], pinnedWorktrees: [], collapsedLineage: [], unreadWorktrees: [], tabMarks: [], ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW), ...L589_DEFAULTS }
 
 let dir = ''
@@ -590,6 +591,36 @@ describe('오른쪽 패널 보기·보기별 폭 영속 (LIFE-682 A3)', () => {
     const third = new UiPrefsStore(dir)
     third.load()
     expect(third.get()).toMatchObject({ rightPanelView: 'explorer' })
+  })
+})
+
+describe('세션 히스토리 보기·필터 영속 (LIFE-808 C14)', () => {
+  it('세션 보기·빈 세션 숨기기·에이전트 필터를 쓰고 새 스토어로 읽으면 같은 값 — 파일 칸도 같다', () => {
+    const first = new UiPrefsStore(dir)
+    first.load()
+    expect(first.get()).toMatchObject({ rightPanelView: 'explorer', sessionHistoryHideEmpty: true, sessionHistoryAgents: { claude: true, codex: true } })
+    first.update({ rightPanelOpen: true, rightPanelView: 'sessions', sessionHistoryHideEmpty: false, sessionHistoryAgents: { claude: false, codex: true } })
+    const second = new UiPrefsStore(dir)
+    second.load()
+    expect(second.get()).toMatchObject({ rightPanelOpen: true, rightPanelView: 'sessions', sessionHistoryHideEmpty: false, sessionHistoryAgents: { claude: false, codex: true } })
+    const written = JSON.parse(fs.readFileSync(file, 'utf8'))
+    expect([written.rightPanelView, written.sessionHistoryHideEmpty, written.sessionHistoryAgents]).toEqual(['sessions', false, { claude: false, codex: true }])
+  })
+  it('깨진·모르는 값은 기본값 — 보기 이름 `Sessions` 는 탐색기, 숨김 문자열은 켬, 에이전트 칸은 칸마다 기본(켬)', () => {
+    fs.writeFileSync(file, '{"version":1,"rightPanelView":"Sessions","sessionHistoryHideEmpty":"no","sessionHistoryAgents":{"claude":"off","codex":false}}')
+    const store = new UiPrefsStore(dir)
+    store.load()
+    expect(store.get()).toMatchObject({ rightPanelView: 'explorer', sessionHistoryHideEmpty: true, sessionHistoryAgents: { claude: true, codex: false } })
+    fs.writeFileSync(file, '{"version":1,"sessionHistoryAgents":[true,false]}')
+    const third = new UiPrefsStore(dir)
+    third.load()
+    expect(third.get()).toMatchObject({ sessionHistoryAgents: { claude: true, codex: true } })
+  })
+  it('get() 은 에이전트 필터 사본을 준다 — 받은 쪽이 고쳐도 스토어 값은 그대로', () => {
+    const store = new UiPrefsStore(dir)
+    store.load()
+    store.get().sessionHistoryAgents.claude = false
+    expect(store.get().sessionHistoryAgents).toEqual({ claude: true, codex: true })
   })
 })
 

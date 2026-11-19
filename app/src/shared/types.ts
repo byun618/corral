@@ -18,6 +18,7 @@ import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute
 import type { ScmReadInput, ScmReadResult } from './scm.js'
 import type { PrBranchesResult, PrItemRefreshResult } from './pr-status.js'
 import type { PrCommentsResult } from './pr-comments.js'
+import type { HistoryAgents, SessionHistoryDetailResult, SessionHistoryListInput, SessionHistoryListResult, SessionHistoryResumeInput, SessionHistoryResumeResult, SessionHistoryRevealResult, SessionKey } from './session-history.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
@@ -797,6 +798,9 @@ export type UiPrefs = {
   explorerShowIgnored: boolean
   /** 소스 제어 보기 모드 (LIFE-683 S4 · Q6) — 전역. 기본 목록(VS Code `scm.defaultViewMode: list`). 기준 빌드는 모르는 칸이라 다음 저장 때 버린다. */
   scmViewMode: 'list' | 'tree'
+  /** 세션 히스토리 (LIFE-808 C17·C18) — 빈 세션 숨기기(기본 켬) · 에이전트 필터(기본 둘 다 켬). 전역. 기준 빌드는 모르는 칸이라 다음 저장 때 버린다. */
+  sessionHistoryHideEmpty: boolean
+  sessionHistoryAgents: HistoryAgents
   /**
    * 최근 연 파일 (LIFE-593 E5 · Q5) — worktree 경로 → 루트 상대 경로 목록(최근이 앞, worktree 마다 50). 어느 경로로 열든 파일 탭이 활성이 되면 맨 앞에 온다.
    * 키 경로인 이유는 `groupLayouts` 와 같다. 모양 검사는 main `ui-prefs.ts` 가 읽을 때 한다(상대 경로만 — 열 때 `file-read.ts` 가 다시 가둔다).
@@ -806,7 +810,7 @@ export type UiPrefs = {
 } & SidebarViewPrefs
 
 /** 오른쪽 패널 보기 (LIFE-682) — 목록·아이콘·제목은 렌더러 `right-panel-views.ts` 한 곳. */
-export type RightPanelView = 'explorer' | 'scm' | 'search' | 'pr' | 'detail'
+export type RightPanelView = 'explorer' | 'scm' | 'search' | 'pr' | 'sessions' | 'detail'
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
 
@@ -1245,6 +1249,11 @@ export type CorralApi = {
   prRefreshItem: (query: WorkActivityQuery) => Promise<PrItemRefreshResult>
   /** PR 리뷰 코멘트(LIFE-811) — 알려진 worktree 경로 하나의 PR 의 리뷰·스레드·일반 코멘트. `refresh` 면 TTL 무시. 「PR」 보기가 보일 때만 부른다. */
   prComments: (input: { path: string; refresh?: boolean }) => Promise<PrCommentsResult>
+  /** 세션 히스토리(LIFE-808) — 목록(켠 provider 만 훑는다)·상세·재개·Finder 에서 보기. 「세션」 보기가 보일 때만 부른다. */
+  sessionHistoryList: (input: SessionHistoryListInput) => Promise<SessionHistoryListResult>
+  sessionHistoryDetail: (input: SessionKey) => Promise<SessionHistoryDetailResult>
+  sessionHistoryResume: (input: SessionHistoryResumeInput) => Promise<SessionHistoryResumeResult>
+  sessionHistoryReveal: (input: SessionKey) => Promise<SessionHistoryRevealResult>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }
 

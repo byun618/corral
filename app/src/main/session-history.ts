@@ -265,7 +265,7 @@ export class SessionHistory {
   /** 진행 중 재개(R1-2·R2-3) — `provider:id` → 그 재개가 만든 pane 과 관측. 규칙은 `resumeFlight`. */
   private readonly resuming = new Map<string, ResumeFlight>()
   /** 시험용 계측 — 목록 스캔이 읽은 바이트·파싱한 파일 수, 상세가 읽은 바이트. */
-  stats = { scanBytes: 0, parsed: 0, detailBytes: 0, scans: 0 }
+  stats = { scanBytes: 0, parsed: 0, detailBytes: 0, scans: 0, duplicates: 0 }
 
   constructor(deps: SessionHistoryDeps) {
     this.deps = deps
@@ -323,6 +323,8 @@ export class SessionHistory {
         const files = provider === 'claude' ? (await claudeFiles(roots.claudeDir)).filter((file) => isSessionId(path.basename(file, '.jsonl'))) : await codexFiles(roots.codexDir)
         const names = provider === 'codex' ? await this.readCodexIndex(roots.codexDir) : new Map<string, string>()
         const outcomes = await mapLimit(files, SCAN_CONCURRENCY, (file) => this.scanFile({ provider, file }))
+        // R4-1 — 같은 세션 id 의 기록이 여러 파일(두 프로젝트 폴더 등)이면 행 하나만: 마지막 활동 → mtime → 크기가 큰 쪽. 나머지는 제외로 센다.
+        const kept = new Map<string, { row: SessionHistoryRow; mtimeMs: number; size: number }>()
         for (const [index, outcome] of outcomes.entries()) {
           const file = files[index]
           if (file !== undefined) seen.add(file)
@@ -333,13 +335,21 @@ export class SessionHistory {
           }
           const parsed = outcome.row
           const cwd = parsed.cwd === null ? null : await memo(realMemo, parsed.cwd, cwdIdentity)
-          rows.push({
-            ...parsed,
-            title: (provider === 'codex' ? names.get(parsed.id) : undefined) ?? parsed.title,
-            cwdKey: cwd?.key ?? null,
-            cwdExists: cwd?.exists ?? false,
-          })
+          const stat = file === undefined ? undefined : this.cache.get(file)
+          const candidate = {
+            row: { ...parsed, title: (provider === 'codex' ? names.get(parsed.id) : undefined) ?? parsed.title, cwdKey: cwd?.key ?? null, cwdExists: cwd?.exists ?? false },
+            mtimeMs: stat?.mtimeMs ?? 0,
+            size: stat?.size ?? 0,
+          }
+          const current = kept.get(parsed.id)
+          if (current !== undefined) {
+            this.stats.duplicates += 1
+            const order = [candidate.row.lastActivityAt - current.row.lastActivityAt, candidate.mtimeMs - current.mtimeMs, candidate.size - current.size].find((diff) => diff !== 0) ?? 0
+            if (order <= 0) continue
+          }
+          kept.set(parsed.id, candidate)
         }
+        for (const entry of kept.values()) rows.push(entry.row)
       }
       // 사라진 파일의 캐시는 버린다 — 끈 provider 의 캐시는 남겨 둔다(다시 켜면 다시 쓴다).
       for (const file of [...this.cache.keys()]) if (!seen.has(file) && providers.some((provider) => file.startsWith(rootOf(roots, provider)))) this.cache.delete(file)

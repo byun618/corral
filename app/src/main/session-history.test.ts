@@ -225,6 +225,36 @@ describe('R1-8 등록 경로 realpath', () => {
   })
 })
 
+describe('R4-1 같은 세션 id 가 여러 파일이면 행 하나', () => {
+  it('두 프로젝트 폴더에 같은 id — 활동이 늦은 쪽(같으면 mtime) 하나만 · 나머지는 제외(읽기 실패 아님) · findRow·상세 파일 = 남긴 행 · 목록 순서와 일치', async () => {
+    const before = await newHistory().list({ providers: ['claude'] })
+    // plain: 다른 폴더의 사본이 활동이 더 늦다(턴 3개 — 마지막 시각이 뒤) → 사본이 남는다
+    const newer = claudeFile('-w-other', ID.plain)
+    put(newer, claudeSession({ id: ID.plain, cwd: path.join(work, 'gone', 'wt'), turns: [{ prompt: 'a', reply: 'b' }, { prompt: 'c', reply: 'd' }, { prompt: 'e', reply: 'f' }] }))
+    // desktop: 같은 내용의 사본(활동 시각 같음) — mtime 이 더 오래돼 원본이 남는다
+    const older = claudeFile('-w-old', ID.desktop)
+    put(older, claudeSession({ id: ID.desktop, entrypoint: 'claude-desktop', cwd: '/nonexistent/desk', turns: [{ prompt: 'desktop prompt', reply: 'ok' }] }))
+    fs.utimesSync(older, new Date(Date.UTC(2020, 0, 1)), new Date(Date.UTC(2020, 0, 1)))
+    const history = newHistory()
+    const result = await history.list({ providers: ['claude'] })
+    const keys = rowsOf(result).map((row) => `${row.provider}:${row.id}`)
+    expect(keys).toHaveLength(rowsOf(before).length)
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(result.kind === 'ok' && before.kind === 'ok' ? [result.unreadable, before.unreadable] : null).toEqual([1, 1])
+    expect(history.stats.duplicates).toBe(2)
+    const plain = rowOf(result, ID.plain)
+    expect(plain?.file).toBe(newer)
+    expect(history.findRow({ provider: 'claude', id: ID.plain })?.file).toBe(newer)
+    expect(rowOf(result, ID.desktop)?.file).toBe(claudeFile('-w-desk', ID.desktop))
+    expect(history.findRow({ provider: 'claude', id: ID.desktop })?.file).toBe(claudeFile('-w-desk', ID.desktop))
+    const detail = await history.detail({ provider: 'claude', id: ID.plain }, { repos: [], home: base })
+    expect(detail.kind === 'ok' ? [detail.detail.file, detail.detail.messageCount] : null).toEqual([newer, 6])
+    // 목록 순서: 활동순 정렬을 그대로 지킨다
+    const at = rowsOf(result).map((row) => row.lastActivityAt)
+    expect(at).toEqual([...at].sort((x, y) => y - x))
+  })
+})
+
 describe('R3-4 provider 별 행 — 겹친 스캔이 끝난 순서와 무관', () => {
   it('[claude,codex] 스캔이 먼저 끝나고 [claude] 스캔이 뒤에 끝나도 Codex 행을 찾는다 · 각 스캔은 자기 provider 만 갈아 끼운다', async () => {
     // 행은 스캔이 **끝날 때** 갈아 끼운다 — 그래서 겹침의 결과는 끝난 순서로 정해진다. 그 순서를 결정적으로 재현한다:

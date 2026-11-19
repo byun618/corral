@@ -451,6 +451,17 @@ describe('C7 재개 명령·cwd 정책', () => {
       command: `cd ${work} && claude --resume ${ID.custom}`,
     })
   })
+  it('R6-2 켠 값(true · 출고값)이면 Codex 도 원래 cwd 삭제 뒤 대체 cwd 로 재개 — started · fallback · disabled null · createRow 는 resume <id>', async () => {
+    const context = { repos: [{ root: work, worktrees: [work] }], home: base }
+    const history = newHistory(true)
+    await history.list({ providers: ['codex'] })
+    fs.rmSync(path.join(work, 'repo'), { recursive: true, force: true })
+    const { created, deps } = resumeDeps({ history, context })
+    expect(await resumeSession({ provider: 'codex', id: ID.codexNamed, workspaceId: 'w1' }, deps)).toEqual({ kind: 'started', paneId: 'w1:p9', tabId: 'w1:t9', workspaceId: 'w1' })
+    expect(created).toEqual([{ workspaceId: 'w1', kind: 'codex', cwd: work, args: ['resume', ID.codexNamed] }])
+    const detail = await history.detail({ provider: 'codex', id: ID.codexNamed }, context)
+    expect(detail.kind === 'ok' ? detail.detail.resume : null).toEqual({ argv: ['codex', 'resume', ID.codexNamed], cwd: work, fallback: true, disabled: null })
+  })
   it('R2-6 등록 root 가 심링크 경로여도 realpath 로 비교한다 — 지운 worktree 세션은 그 등록 root 에서', async () => {
     const history = newHistory()
     const result = await history.list({ providers: ['claude'] })

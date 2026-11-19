@@ -176,5 +176,5 @@ it('필터 레일 — 카운트와 필터 · 섹션 안 검색 · 결과 없음'
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
   act(() => { setValue.call(input, '설정'); input.dispatchEvent(new Event('input', { bubbles: true })) })
   expect([...view.querySelectorAll('[data-shortcut-action]')].map((row) => row.getAttribute('data-shortcut-action'))).toEqual(['settings.open'])
-  expect(view.querySelector('[data-shortcuts-visible-count]')?.textContent).toBe('1/34')
+  expect(view.querySelector('[data-shortcuts-visible-count]')?.textContent).toBe('1/35')
 })

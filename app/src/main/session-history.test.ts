@@ -443,7 +443,7 @@ describe('C7 재개 명령·cwd 정책', () => {
     fs.rmSync(path.join(work, 'repo'), { recursive: true, force: true })
     const { created, deps } = resumeDeps({ history, context })
     expect(await resumeSession({ provider: 'claude', id: ID.custom, workspaceId: 'w1' }, deps)).toEqual({ kind: 'started', paneId: 'w1:p9', tabId: 'w1:t9', workspaceId: 'w1' })
-    expect(await resumeSession({ provider: 'codex', id: ID.codexNamed, workspaceId: 'w1' }, deps)).toEqual({ kind: 'rejected', reason: 'Codex 의 다른 폴더 재개가 아직 확인되지 않아 막아 두었습니다 — 명령만 복사하세요' })
+    expect(await resumeSession({ provider: 'codex', id: ID.codexNamed, workspaceId: 'w1' }, deps)).toEqual({ kind: 'rejected', reason: 'Codex 의 다른 폴더 재개를 꺼 두었습니다 — 명령만 복사하세요' })
     expect(created).toEqual([{ workspaceId: 'w1', kind: 'claude', cwd: work, args: ['--resume', ID.custom] }])
     const detail = await history.detail({ provider: 'claude', id: ID.custom }, context)
     expect(detail.kind === 'ok' ? { resume: detail.detail.resume, command: detail.detail.command } : null).toEqual({
@@ -469,10 +469,10 @@ describe('C7 재개 명령·cwd 정책', () => {
     await history.list({ providers: ['codex'] })
     const { created, deps } = resumeDeps({ history, context: { repos: [], home: base } })
     const result = await resumeSession({ provider: 'codex', id: ID.codexPlain, workspaceId: 'w1' }, deps)
-    expect(result).toEqual({ kind: 'rejected', reason: 'Codex 의 다른 폴더 재개가 아직 확인되지 않아 막아 두었습니다 — 명령만 복사하세요' })
+    expect(result).toEqual({ kind: 'rejected', reason: 'Codex 의 다른 폴더 재개를 꺼 두었습니다 — 명령만 복사하세요' })
     expect(created).toHaveLength(0)
     const detail = await history.detail({ provider: 'codex', id: ID.codexPlain }, { repos: [], home: base })
-    expect(detail.kind === 'ok' ? detail.detail.resume.disabled : null).toBe('Codex 의 다른 폴더 재개가 아직 확인되지 않아 막아 두었습니다 — 명령만 복사하세요')
+    expect(detail.kind === 'ok' ? detail.detail.resume.disabled : null).toBe('Codex 의 다른 폴더 재개를 꺼 두었습니다 — 명령만 복사하세요')
   })
   it('세션 id 는 UUID 꼴만 — 그 밖의 값은 거절, 프로세스 0', async () => {
     const history = newHistory()

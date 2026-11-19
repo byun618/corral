@@ -295,6 +295,32 @@ describe('R2-4·R2-5·R2-8 화면 보강', () => {
   })
 })
 
+describe('C7 Codex 대체 cwd 재개 안내 (최종 관문 뒤 수정)', () => {
+  it('Codex · 대체 cwd → 안내(상세·재개 결과 글) · Codex · 원래 cwd → 없음 · Claude · 대체 cwd → 없음', async () => {
+    const note = 'Codex 가 폴더를 물으면 「현재 폴더(Use current directory)」 를 고르세요 — 기본값은 지워진 원래 폴더입니다'
+    await shown()
+    await click('[data-history-scope="machine"]')
+    const seen: (string | null)[] = []
+    const codex = detailOf({ provider: 'codex', id: ROW_ID.beta })
+    await click(`[data-history-row="codex:${ROW_ID.beta}"]`)
+    await settle(details.at(-1), { kind: 'ok', detail: { ...codex, resume: { ...codex.resume, argv: ['codex', 'resume', ROW_ID.beta] } } })
+    // 이 fixture 의 Codex 행은 열린 pane(w1:p1)이 있어 「탭으로 이동」 이다 — 안내는 재개 단추가 있을 때만이라, 열림이 아닌 상태로 다시 그린다
+    render({ active: true, repos: [{ root: '/w', worktrees: [{ path: '/w/a', workspace: null }, { path: '/w/b', workspace: null }] }] })
+    await flush()
+    seen.push(q('[data-history-codex-folder]')?.textContent ?? null)
+    await click('[data-history-resume]')
+    expect(q('[data-history-message]')?.textContent).toBe(`새 탭에서 재개했습니다 · ${note}`)
+    await click(`[data-history-row="claude:${ROW_ID.gamma}"]`)
+    await click(`[data-history-row="codex:${ROW_ID.beta}"]`)
+    await settle(details.at(-1), { kind: 'ok', detail: { ...codex, cwd: '/w/a/sub', cwdExists: true, resume: { argv: ['codex', 'resume', ROW_ID.beta], cwd: '/w/a/sub', fallback: false, disabled: null } } })
+    seen.push(q('[data-history-codex-folder]')?.textContent ?? null)
+    await click(`[data-history-row="claude:${ROW_ID.alpha}"]`)
+    await settle(details.at(-1), { kind: 'ok', detail: detailOf({ provider: 'claude', id: ROW_ID.alpha }) })
+    seen.push(q('[data-history-codex-folder]')?.textContent ?? null)
+    expect(seen).toEqual([note, null, null])
+  })
+})
+
 describe('C9·C19 복사·Finder (화면)', () => {
   it('명령 복사 = 상세의 명령 글과 바이트 같음 · ID 복사 = 세션 id · 기록 경로 복사 = 파일 경로 · Finder 는 식별자만', async () => {
     await shown()

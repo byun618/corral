@@ -257,7 +257,7 @@ export type SessionHistoryDeps = {
   roots: () => HistoryRoots
   /**
    * Codex 가 원래 cwd 가 없을 때도 재개되나(C7 Codex 분기). false 면 그 세션은 재개 비활성 + 사유(복사만).
-   * 값은 C12 ⓑ 실측이 정한다 — 지금 `main/index.ts` 는 false(R1-7 실측이 막혀 미확인 — 근거 주석은 그 자리).
+   * 값은 C12 ⓑ 실측이 정했다 — `main/index.ts` 는 true(원래 cwd 없이도 재개된다 — 근거 주석은 그 자리). false 는 끄는 길로만 남긴다.
    */
   codexResumesWithoutCwd: boolean
 }
@@ -478,13 +478,13 @@ export class SessionHistory {
     // R3-1 — 스캔 때의 `cwdExists` 가 아니라 **지금** 디스크를 본다(목록 뒤 지운 worktree 를 원래 cwd 로 내보내지 않게).
     if (row.cwd !== null && isDirectory(row.cwd)) return { argv, cwd: row.cwd, fallback: false, disabled: null }
     const cwd = fallbackCwd({ cwd: row.cwdKey ?? row.cwd, context })
-    const disabled = row.provider === 'codex' && !this.deps.codexResumesWithoutCwd ? CODEX_RESUME_UNCONFIRMED : null
+    const disabled = row.provider === 'codex' && !this.deps.codexResumesWithoutCwd ? CODEX_RESUME_DISABLED : null
     return { argv, cwd, fallback: true, disabled }
   }
 }
 
-/** R2-2 — 미실측(C12 ⓑ)이라 「안 된다」 가 아니라 「확인되지 않음」 이다. */
-export const CODEX_RESUME_UNCONFIRMED = 'Codex 의 다른 폴더 재개가 아직 확인되지 않아 막아 두었습니다 — 명령만 복사하세요'
+/** `codexResumesWithoutCwd=false` 일 때의 사유 — 끈 것이지 「안 된다」 가 아니다(C12 ⓑ 실측상 된다). */
+export const CODEX_RESUME_DISABLED = 'Codex 의 다른 폴더 재개를 꺼 두었습니다 — 명령만 복사하세요'
 
 /** 있는 경로면 realpath, 아니면 그대로(R2-6 — 행 `cwdKey` 와 같은 눈). */
 function realOrSelf(dir: string): string {

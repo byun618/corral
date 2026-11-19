@@ -27,6 +27,11 @@ import './session-history.css'
 const PROVIDER_LABEL: Record<HistoryProvider, string> = { claude: 'Claude', codex: 'Codex' }
 const NO_REALPATHS: Readonly<Record<string, string>> = {}
 const ELSEWHERE_NOTE = '다른 worktree 의 세션입니다 — 현재 worktree 의 탭으로 열립니다'
+/**
+ * Codex 를 원래 폴더 없이(대체 cwd) 재개하면 Codex 가 「Working directory · resume」 를 묻고 기본이 지운 원래 폴더다 — 그대로면 훅 오류
+ * (C12 ⓑ 실측 `raw/claude/c12f/c12-b2-codex-cwd-removed.txt`). argv 는 `codex resume <id>` 그대로(C7)라 화면이 안내한다.
+ */
+export const CODEX_FOLDER_NOTE = 'Codex 가 폴더를 물으면 「현재 폴더(Use current directory)」 를 고르세요 — 기본값은 지워진 원래 폴더입니다'
 
 /** 목록 시각 — 오늘이면 시:분, 아니면 날짜. */
 function timeLabel(at: number, now: number): string {
@@ -247,6 +252,7 @@ function DetailBody({ detail, openPaneId, workspaceId, elsewhere, onRevealPane, 
   }
   const key = { provider: detail.provider, id: detail.id }
   const resumeBlocked = detail.resume.disabled ?? (workspaceId === null ? '열린 worktree 가 없어 새 탭을 만들 수 없습니다' : null)
+  const folderNote = detail.provider === 'codex' && detail.resume.fallback && resumeBlocked === null ? CODEX_FOLDER_NOTE : null
   const resume = (): void => {
     if (workspaceId === null || resuming) return
     setResuming(true)
@@ -258,7 +264,7 @@ function DetailBody({ detail, openPaneId, workspaceId, elsewhere, onRevealPane, 
         switch (result.kind) {
           case 'started':
             adopt({ paneId: result.paneId, tabId: result.tabId, workspaceId: result.workspaceId })
-            return setMessage(elsewhere === null ? '새 탭에서 재개했습니다' : `새 탭에서 재개했습니다 — ${ELSEWHERE_NOTE}`)
+            return setMessage([elsewhere === null ? '새 탭에서 재개했습니다' : `새 탭에서 재개했습니다 — ${ELSEWHERE_NOTE}`, ...(folderNote === null ? [] : [folderNote])].join(' · '))
           case 'pending':
             return setMessage('이 세션의 재개가 이미 진행 중입니다')
           case 'open':
@@ -318,6 +324,11 @@ function DetailBody({ detail, openPaneId, workspaceId, elsewhere, onRevealPane, 
       {resumeBlocked !== null && openPaneId === null ? (
         <div className="history-note" data-history-blocked="">
           {resumeBlocked}
+        </div>
+      ) : null}
+      {folderNote !== null && openPaneId === null ? (
+        <div className="history-note" data-history-codex-folder="">
+          {folderNote}
         </div>
       ) : null}
       {elsewhere !== null && openPaneId === null && resumeBlocked === null ? (

@@ -2163,9 +2163,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('corral:prRefreshItem', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.refreshItem(input) : { ok: false, reason: '허용되지 않은 발신자' }))
   ipcMain.handle('corral:prComments', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.comments(input) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
   // LIFE-808 — 세션 히스토리: 목록·상세·재개·Finder. 렌더러는 식별자만 준다(경로·argv 는 main 이 스캔 결과에서).
-  // Codex 는 원래 cwd 가 없으면 재개 비활성(복사만) — R1-7 실측이 막혀(버리는 세션의 첫 턴이 시작되지 않음) 다른 cwd 재개를 확인하지 못했다.
-  // 근거 corral-specs LIFE-808 raw/claude/c12/c12-r1-codex-attempts.txt. 실측이 되면 이 값과 근거를 같은 커밋에서 바꾼다.
-  const sessionHistory = new SessionHistory({ roots: defaultHistoryRoots, codexResumesWithoutCwd: false })
+  // Codex 도 원래 cwd 가 없으면 대체 cwd 에서 재개한다 — C12 ⓑ 실측(corral-specs LIFE-808 raw/claude/c12f/c12-b2-codex-cwd-removed.txt):
+  // `codex resume <id>` 는 원래 폴더 없이도 된다. 단 Codex 가 「Working directory · resume」 를 묻고 기본이 지운 폴더라, 화면이 「현재 폴더」 안내를 보인다.
+  const sessionHistory = new SessionHistory({ roots: defaultHistoryRoots, codexResumesWithoutCwd: true })
   // R3-5 — IPC 한 번에 상태 조립(`currentState`)은 한 번: 재개는 문맥·pane 을 같은 읽기에서 뽑는다.
   const historyContext = (state = currentState()) => ({ repos: state.repos.map((repo) => ({ root: repo.root, worktrees: repo.worktrees.map((worktree) => worktree.path) })), home: os.homedir() })
   const historyPanes = (state = currentState()) => state.repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes).map((pane) => ({ paneId: pane.paneId, agent: pane.agent, sessionId: pane.agentSession?.kind === 'id' ? pane.agentSession.id : null }))

@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { filterRows, resumeCommandText, type SessionHistoryListResult, type SessionHistoryRow } from '../shared/session-history.js'
-import { RESUME_PENDING_MS, SCAN_HEAD_BYTES, SCAN_TAIL_BYTES, SessionHistory, historyRoots, parseCodexSession, resumeSession, revealSession, type OpenPane, type ResumeContext } from './session-history.js'
+import { RESUME_PENDING_MS, SCAN_HEAD_BYTES, SCAN_TAIL_BYTES, SessionHistory, historyRoots, parseCodexSession, preferRecord, resumeSession, revealSession, type OpenPane, type ResumeContext } from './session-history.js'
 
 // --- fixture ------------------------------------------------------------------------------------------
 
@@ -252,6 +252,62 @@ describe('R4-1 같은 세션 id 가 여러 파일이면 행 하나', () => {
     // 목록 순서: 활동순 정렬을 그대로 지킨다
     const at = rowsOf(result).map((row) => row.lastActivityAt)
     expect(at).toEqual([...at].sort((x, y) => y - x))
+  })
+})
+
+describe('R5-1·R5-2 남길 기록 고르기 — 단계마다 따로 가린다', () => {
+  // 단계마다 정답 위치를 뒤집은 두 쌍(`-a-` 폴더가 정답 · `-z-` 폴더가 정답) — `readdir` 순서가 어떻든 한 쌍은 정답이 먼저 본 파일이 아니다.
+  const uid = (n: number): string => `e${n}e${n}e${n}e${n}-0000-4000-8000-00000000000${n}`
+  const old = new Date(Date.UTC(2020, 0, 1))
+  const newer = new Date(Date.UTC(2021, 0, 1))
+  type Copy = { turns: number; pad?: number; mtime: Date }
+  function plant(input: { id: string; answer: Copy; other: Copy; answerDir: string; otherDir: string }): string {
+    const write = (dir: string, copy: Copy): string => {
+      const file = claudeFile(dir, input.id)
+      const turns = Array.from({ length: copy.turns }, (_, n) => ({ prompt: `p${n}`, reply: `r${n}` }))
+      put(file, claudeSession({ id: input.id, cwd: work, turns, ...(copy.pad === undefined ? {} : { pad: copy.pad }) }))
+      fs.utimesSync(file, copy.mtime, copy.mtime)
+      return file
+    }
+    write(input.otherDir, input.other)
+    return write(input.answerDir, input.answer)
+  }
+  it('① 활동이 늦으면 mtime 이 오래돼도 · ② 활동 같으면 mtime 이 늦은 쪽(크기가 작아도) · ③ 활동·mtime 같으면 크기가 큰 쪽', async () => {
+    const stages: { name: string; answer: Copy; other: Copy }[] = [
+      { name: 'activity', answer: { turns: 3, mtime: old }, other: { turns: 1, mtime: newer } },
+      { name: 'mtime', answer: { turns: 1, mtime: newer }, other: { turns: 1, pad: 4096, mtime: old } },
+      { name: 'size', answer: { turns: 1, pad: 4096, mtime: old }, other: { turns: 1, mtime: old } },
+    ]
+    const expected: Record<string, string> = {}
+    stages.forEach((stage, index) => {
+      const late = uid(index * 2 + 1)
+      const early = uid(index * 2 + 2)
+      expected[`${stage.name}:z`] = plant({ id: late, answer: stage.answer, other: stage.other, answerDir: `-z-${stage.name}`, otherDir: `-a-${stage.name}` })
+      expected[`${stage.name}:a`] = plant({ id: early, answer: stage.answer, other: stage.other, answerDir: `-a-${stage.name}`, otherDir: `-z-${stage.name}` })
+    })
+    const history = newHistory()
+    const result = await history.list({ providers: ['claude'] })
+    const got: Record<string, string> = {}
+    stages.forEach((stage, index) => {
+      got[`${stage.name}:z`] = history.findRow({ provider: 'claude', id: uid(index * 2 + 1) })?.file ?? ''
+      got[`${stage.name}:a`] = history.findRow({ provider: 'claude', id: uid(index * 2 + 2) })?.file ?? ''
+    })
+    expect(got).toEqual(expected)
+    expect(rowsOf(result).filter((row) => row.id.startsWith('e'))).toHaveLength(6)
+  })
+  it('R5-2 활동·mtime·크기가 모두 같으면 경로가 앞선 쪽 — 비교 순서(인자 순서)와 무관', async () => {
+    const at = { row: { lastActivityAt: 5, file: '/p/-a-x/s.jsonl' }, mtimeMs: 7, size: 9 }
+    const zt = { row: { lastActivityAt: 5, file: '/p/-z-x/s.jsonl' }, mtimeMs: 7, size: 9 }
+    expect([preferRecord({ candidate: at, current: zt }), preferRecord({ candidate: zt, current: at })]).toEqual([true, false])
+    const id = uid(7)
+    const same = claudeSession({ id, cwd: work, turns: [{ prompt: 'p', reply: 'r' }] })
+    for (const dir of ['-z-tie', '-a-tie']) {
+      put(claudeFile(dir, id), same)
+      fs.utimesSync(claudeFile(dir, id), old, old)
+    }
+    const history = newHistory()
+    await history.list({ providers: ['claude'] })
+    expect(history.findRow({ provider: 'claude', id })?.file).toBe(claudeFile('-a-tie', id))
   })
 })
 

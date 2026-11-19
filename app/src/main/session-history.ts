@@ -238,6 +238,13 @@ function codexFileId(file: string): string | null {
   return match?.[1] ?? null
 }
 
+/** 같은 세션 id 의 두 기록 중 무엇을 남기나(R4-1·R5-2) — 마지막 활동 → mtime → 크기가 큰 쪽, 모두 같으면 경로가 앞선 쪽(`readdir` 순서와 무관). */
+export type RecordChoice = { row: { lastActivityAt: number; file: string }; mtimeMs: number; size: number }
+export function preferRecord({ candidate, current }: { candidate: RecordChoice; current: RecordChoice }): boolean {
+  const order = [candidate.row.lastActivityAt - current.row.lastActivityAt, candidate.mtimeMs - current.mtimeMs, candidate.size - current.size].find((diff) => diff !== 0)
+  return order === undefined ? candidate.row.file < current.row.file : order > 0
+}
+
 type ResumeFlight = { until: number; paneId: string | null; paneSeen: boolean; agentSeen: boolean }
 
 export type ResumeContext = {
@@ -344,8 +351,7 @@ export class SessionHistory {
           const current = kept.get(parsed.id)
           if (current !== undefined) {
             this.stats.duplicates += 1
-            const order = [candidate.row.lastActivityAt - current.row.lastActivityAt, candidate.mtimeMs - current.mtimeMs, candidate.size - current.size].find((diff) => diff !== 0) ?? 0
-            if (order <= 0) continue
+            if (!preferRecord({ candidate, current })) continue
           }
           kept.set(parsed.id, candidate)
         }

@@ -3,8 +3,9 @@
 // · 백엔드 = `git grep --untracked -I`(02-kickoff D1 — 추적 + 미추적, `.gitignore` 대상·바이너리 제외). 셸 없이 인자 배열로, 질의는 `-e <질의>` 한 칸, 끝에 `--`.
 //   git 실행 파일·안전 설정(`core.fsmonitor=false`·`core.quotePath=false`·`GIT_OPTIONAL_LOCKS=0`)·프로세스 그룹 종료는 `file-list.ts` 와 같은 규칙이다.
 // · 한 번 찾을 때 git 을 **둘** 띄운다 — ① 일치 줄(`-n --column -z` — 줄 글과 첫 일치의 바이트 열) ② 일치마다 한 행(`-o` — 일치 글).
-//   ② 의 **열은 위치 원천으로 쓰지 않는다** — 두 번째 일치부터 실제 시작이 아니고(`raw/claude/r1/git-o-column-probe.txt`), 탐색 창 시작에서 앞 문맥을 못 봐
-//   가짜 행도 낸다(리뷰 r1 R1-01). fix2(리뷰 r2 R2-03)부터 위치는:
+//   대소문자 구분 리터럴(단어 단위 포함)은 후보가 질의 그대로라 ② 를 쓰지 않으므로 띄우지 않는다(r3 R3-04).
+//   ② 의 열로 **위치를 정하지 않는다** — 두 번째 일치부터 실제 시작이 아니고(`raw/claude/r1/git-o-column-probe.txt`), 탐색 창 시작에서 앞 문맥을 못 봐
+//   가짜 행도 낸다(리뷰 r1 R1-01). 위치는 줄 바이트와 ① 의 첫 열에서만 나온다(fix2 리뷰 r2 R2-03). ② 의 열은 정규식 첫 행을 ① 첫 열과 **대조**하는 데만 쓴다:
 //   · 리터럴(단어 단위 포함) — 줄을 JS 로 처음부터 훑어 확정한다(`scanRanges` — 단어 단위면 git `-w` 와 같은 경계 판정만 더한다). 정규식을 새로 쓰지 않는다.
 //     ② 는 대소문자 무시일 때 **후보 글 모양**(실제로 일치한 글)만 준다. 대소문자 구분이면 질의 그대로가 후보다.
 //   · 정규식 — ② 첫 행(줄 처음부터 찾은 일치라 가짜가 아니다)을 ① 의 첫 열·바이트로 대조해 그 하나만. 둘째 이후는 모름(C3ⓔ — JS 로 정규식을 다시 돌리지 않는다).
@@ -132,6 +133,20 @@ export function isWideCodePoint(code: number): boolean {
   )
 }
 
+const REPLACEMENT_UTF8 = Buffer.from([0xef, 0xbf, 0xbd])
+
+/** `at` 바로 앞 글자(코드 포인트)와 그 바이트 수 — 올바른 UTF-8 이 아니면 바이트 하나를 폭 1 글자(U+FFFD)로 본다. */
+function codePointBefore(input: { text: Buffer; at: number }): { code: number; size: number } {
+  let from = input.at - 1
+  while (from > 0 && input.at - from < 4 && isContinuation(input.text[from])) from -= 1
+  const chunk = input.text.subarray(from, input.at)
+  const decoded = chunk.toString('utf8')
+  const code = decoded.codePointAt(0)
+  const one = code !== undefined && decoded.length === (code > 0xffff ? 2 : 1)
+  if (one && (code !== 0xfffd || chunk.equals(REPLACEMENT_UTF8))) return { code, size: chunk.length }
+  return { code: 0xfffd, size: 1 }
+}
+
 /**
  * 일치 줄 하나의 미리보기 — 첫 일치(바이트 열 `column`) 앞 문맥은 표시 폭 `leadCells` 칸까지만 남기고(넘으면 앞이 잘린 줄 — 렌더러가 「…」),
  * 거기서부터 `maxBytes` 바이트까지 글자 경계로 자른다. 좁은 패널에서도 첫 일치가 미리보기 앞쪽에 온다(r1 R1-08 · r2 R2-02 — 한글 줄은 2칸으로 센다).
@@ -143,19 +158,17 @@ export function previewOf(input: { text: Buffer; column: number; maxBytes: numbe
   if (text.length > 0 && text[text.length - 1] === 13) text = text.subarray(0, text.length - 1)
   const firstByte = Math.min(input.column - 1, text.length)
   const prefix = text.subarray(0, firstByte).toString('utf8')
-  // 첫 일치에서 뒤로 걸으며 폭을 더한다 — 상한을 넘기 직전 글자에서 멈춘 자리가 시작.
-  let keep = prefix.length
+  // 첫 일치에서 **원 바이트**를 뒤로 걸으며 폭을 더한다 — 상한을 넘기 직전 글자에서 멈춘 자리가 시작.
+  // 디코드한 글자를 다시 인코딩해 바이트 자리를 구하지 않는다 — UTF-8 이 아닌 줄(CP949·Latin-1)은 잘못된 바이트 하나가 U+FFFD(3바이트)로 바뀌어 어긋난다(r3 R3-01).
+  let start = firstByte
   let cells = 0
-  while (keep > 0) {
-    const low = prefix.charCodeAt(keep - 1)
-    const pair = keep >= 2 && low >= 0xdc00 && low <= 0xdfff ? 2 : 1
-    const code = prefix.codePointAt(keep - pair) ?? low
-    const width = isWideCodePoint(code) ? 2 : 1
+  while (start > 0) {
+    const before = codePointBefore({ text, at: start })
+    const width = isWideCodePoint(before.code) ? 2 : 1
     if (cells + width > input.leadCells) break
     cells += width
-    keep -= pair
+    start -= before.size
   }
-  const start = keep === 0 ? 0 : Buffer.byteLength(prefix.slice(0, keep))
   let end = Math.min(text.length, start + input.maxBytes)
   while (end < text.length && end > start && isContinuation(text[end])) end -= 1
   return { bytes: Buffer.from(text.subarray(start, end)), start, end, column: prefix.length + 1 }
@@ -551,7 +564,9 @@ export class ContentSearcher {
         if (failureOf(outcome, limits.timeoutMs) !== null) stopMatches.abort()
         return outcome
       })
-      const [lineOutcome, matchOutcome] = await Promise.all([lineRun, run({ onlyMatching: true, signal: stopMatches.signal, parser: matchParser, onRecord: onMatch })])
+      const needsMatches = matchModeOf(options) === 'regex' || !caseSensitive
+      const NOT_RUN: StreamOutcome = { kind: 'exited', code: 0, stderr: '' }
+      const [lineOutcome, matchOutcome] = await Promise.all([lineRun, needsMatches ? run({ onlyMatching: true, signal: stopMatches.signal, parser: matchParser, onRecord: onMatch }) : NOT_RUN])
       if (controller.signal.aborted) return CANCELLED
       const failure = failureOf(lineOutcome, limits.timeoutMs)
       if (failure !== null) {

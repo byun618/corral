@@ -262,10 +262,11 @@ export function FileView({
     }
   }, [togglable, markdownModes, tabId])
 
-  // LIFE-803 r1 C5ⓗ — 편집기를 붙이지 않는 상태(마크다운 미리보기·읽기 실패·바이너리·상한 초과·이미지)면 이 탭의 줄 열기 요청을 남기지 않는다(`file-reveal.ts`).
+  // LIFE-803 r1 C5ⓗ — 편집기를 붙이지 않는 상태(마크다운 미리보기·읽기 실패·바이너리·상한 초과·이미지)면 이 탭의 줄 열기 요청을 남기지 않는다 — 그 상태인 동안 다시 누른 결과도(r3 R3-03, `file-reveal.ts` `refuse`).
   const noEditor = editable ? markdown && mode === 'preview' : read !== null
   useEffect(() => {
-    if (noEditor) revealSlot.discard({ store: viewStates, tabId })
+    if (noEditor) return revealSlot.refuse({ store: viewStates, tabId })
+    return undefined
   }, [noEditor, viewStates, tabId])
 
   let body: React.JSX.Element

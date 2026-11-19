@@ -144,6 +144,18 @@ describe('r1 보강 C5ⓗ — 편집기를 붙이지 않는 탭은 요청을 남
     expect(revealSlot.current).toBeNull()
     expect(host.querySelector('[data-file-notice="not_found"]')).not.toBeNull()
   })
+  it('r3 R3-03 — 이미 읽기 실패로 열린 탭의 결과를 다시 눌러도 요청이 남지 않는다', async () => {
+    Reflect.set(window, 'corral', { readFile: async () => ({ ok: false, code: 'not_found', error: '없음' }) })
+    const viewStates: ViewStateStore = new Map()
+    await mount(viewStates)
+    expect(host.querySelector('[data-file-notice="not_found"]')).not.toBeNull()
+    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 1 }, mayFocus: () => true })
+    expect(revealSlot.current).toBeNull()
+    act(() => root.unmount())
+    root = createRoot(host)
+    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 1 }, mayFocus: () => true })
+    expect(revealSlot.current?.tabId).toBe('file:a.ts')
+  })
   it('다른 탭의 요청은 건드리지 않는다', async () => {
     const viewStates: ViewStateStore = new Map()
     revealSlot.request({ store: viewStates, tabId: 'file:b.ts', target: { line: 2, column: 1 }, mayFocus: () => true })

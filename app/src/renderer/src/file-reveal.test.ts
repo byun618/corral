@@ -106,3 +106,18 @@ describe('r1 보강 — focusMovedAway(요청 뒤 포커스가 옮겨 갔는가)
     expect(focusMovedAway({ from, now: box('data-search-view'), body })).toBe(true)
   })
 })
+
+describe('r3 R3-03 — 편집기를 붙이지 않는 동안은 다시 온 요청도 받지 않는다', () => {
+  it('refuse 동안 그 탭 요청은 남지 않고(앞 요청은 대체), 풀면 다시 받는다', () => {
+    const slot = new RevealSlot()
+    const store = new Map()
+    slot.request({ store, tabId: 'file:b.ts', target: { line: 1, column: 1 }, mayFocus: yes })
+    const release = slot.refuse({ store, tabId: 'file:a.ts' })
+    expect(slot.current?.tabId).toBe('file:b.ts')
+    slot.request({ store, tabId: 'file:a.ts', target: { line: 2, column: 1 }, mayFocus: yes })
+    expect(slot.current).toBeNull()
+    release()
+    slot.request({ store, tabId: 'file:a.ts', target: { line: 3, column: 1 }, mayFocus: yes })
+    expect(slot.current?.target).toEqual({ line: 3, column: 1 })
+  })
+})

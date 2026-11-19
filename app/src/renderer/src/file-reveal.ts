@@ -7,6 +7,7 @@
 //   FileView 는 그룹의 활성 탭만 그리므로 편집기가 붙어 있다 = 그 탭이 그 그룹의 활성 탭이다.
 // · 포커스(r1 보강) — 커서·보이기는 늘 적용하되 포커스는 요청이 든 `mayFocus` 가 참일 때만(요청 뒤 포커스가 옮겨 갔으면 거짓 — App 의 포커스 순번 규칙과 같은 판정).
 // · 그 탭이 편집기를 붙이지 않는 상태(마크다운 미리보기·읽기 실패·바이너리·상한 초과·이미지) → `discard` — 요청을 남기지 않는다(나중에 원문으로 바꿔도 적용 0).
+//   그 상태인 동안은 `refuse` 로 표시해 두어, 이미 그 상태로 열린 탭의 결과를 **다시** 눌러도 요청을 받지 않는다(r3 R3-03).
 // 위치 인자는 일반형(줄·UTF-16 열, 둘 다 1부터 — Monaco 와 같다) — 뒤 일감(⌘P `:line`·터미널 경로)이 같은 길을 쓸 수 있다.
 
 export type RevealTarget = { line: number; column: number }
@@ -16,13 +17,16 @@ export type RevealTaken = { target: RevealTarget; mayFocus: () => boolean }
 
 export class RevealSlot {
   private pending: RevealRequest | null = null
+  /** 지금 편집기를 붙이지 않는 탭(저장소·탭 id) — 이 탭으로 온 요청은 남기지 않는다. */
+  private refused: { store: object; tabId: string }[] = []
 
   get current(): RevealRequest | null {
     return this.pending
   }
 
+  /** 앞 요청을 대체한다. 편집기를 붙이지 않는 탭으로 온 요청이면 대체만 하고 남기지 않는다. */
   request(next: RevealRequest): void {
-    this.pending = next
+    this.pending = this.refused.some((entry) => entry.store === next.store && entry.tabId === next.tabId) ? null : next
   }
 
   /** 활성 탭이 바뀌었다(지금 worktree 저장소·활성 탭 id) — 대기 요청의 탭이 아니면 지운다. */
@@ -42,6 +46,16 @@ export class RevealSlot {
   /** 그 탭이 편집기를 붙이지 않는다 — 그 탭의 요청이면 버린다. */
   discard(input: { store: object; tabId: string }): void {
     this.take(input)
+  }
+
+  /** 그 탭이 편집기를 붙이지 않는 동안 — 지금 요청을 버리고, 돌려준 함수를 부를 때까지 그 탭으로 오는 요청도 받지 않는다. */
+  refuse(input: { store: object; tabId: string }): () => void {
+    this.discard(input)
+    const entry = { store: input.store, tabId: input.tabId }
+    this.refused.push(entry)
+    return () => {
+      this.refused = this.refused.filter((item) => item !== entry)
+    }
   }
 }
 

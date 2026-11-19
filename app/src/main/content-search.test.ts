@@ -70,6 +70,10 @@ beforeAll(() => {
   write('lead.txt', `${'a'.repeat(60)} needle tail\n`)
   write('hangul-lead.txt', `${'가'.repeat(30)}needle\n`)
   write('bom.txt', '\uFEFFFoo start\nsecond Foo\n')
+  // r3 R3-01 — UTF-8 아닌 긴 줄(Latin-1 é 40 바이트). R3-02 — -o 상한이 줄 가운데(zed), 400 바이트 경계에 걸친 다바이트 줄.
+  write('latin1.txt', Buffer.concat([Buffer.alloc(40, 0xe9), Buffer.from(' needle\n')]))
+  write('zed.txt', 'Zed zed ZED\n')
+  write('wide.txt', `needle${'가'.repeat(200)}\n`)
   write('dash.txt', '--help is text\n')
   write('long.txt', `${'x'.repeat(1024 * 1024)}needle${'y'.repeat(100)}\n`)
   write('bin.dat', Buffer.from([0x66, 0x6f, 0x6f, 0x00, 0x01, 0x02]))
@@ -558,5 +562,66 @@ describe('r2 R2-05 G — 정규식 첫 일치 바이트 가드(①·② 사이 �
     const rows = [{ column: 1, text: Buffer.from('bar') }]
     expect(lineMatches({ text: Buffer.from('foo x'), firstColumn: 1, rows, rowsComplete: true, mode: 'regex', query: 'f..|b..', caseSensitive: true }).ranges).toEqual([])
     expect(lineMatches({ text: Buffer.from('bar x'), firstColumn: 1, rows, rowsComplete: true, mode: 'regex', query: 'f..|b..', caseSensitive: true }).ranges).toEqual([{ start: 0, end: 3 }])
+  })
+})
+
+describe('r3 R3-01 — UTF-8 아닌 줄의 앞 문맥도 원 바이트로 자른다', () => {
+  it('previewOf — 0xE9×40 + needle: start ≤ 줄 길이, 미리보기 비지 않음', () => {
+    const text = Buffer.concat([Buffer.alloc(40, 0xe9), Buffer.from(' needle')])
+    const preview = previewOf({ text, column: 42, maxBytes: 400, leadCells: SEARCH_PREVIEW_LEAD_CELLS })
+    expect(preview.start).toBe(42 - 1 - SEARCH_PREVIEW_LEAD_CELLS)
+    expect(preview.start).toBeLessThanOrEqual(text.length)
+    expect(preview.bytes.toString('latin1').endsWith(' needle')).toBe(true)
+    expect(preview.column).toBe(42)
+  })
+  it('실제 git — latin1.txt 결과 행에 미리보기와 강조가 있다', async () => {
+    const line = lineOf(await find({ query: 'needle' }), 'latin1.txt', 1)
+    expect(line?.clippedStart).toBe(true)
+    expect(line?.preview.endsWith(' needle')).toBe(true)
+    expect(line && marked(line.preview, line.ranges)).toEqual(['needle'])
+  })
+})
+
+describe('r3 R3-02 — 시험 공백', () => {
+  it('W7·W16 — -o 상한이 줄 가운데: Zed zed ZED + maxMatches 2 → 그 줄 matchesExact 거짓·강조 2', async () => {
+    const result = await find({ query: 'zed', caseSensitive: false, limits: { maxMatches: 2 } })
+    const line = lineOf(result, 'zed.txt', 1)
+    expect(line?.ranges).toHaveLength(2)
+    expect(line?.matchesExact).toBe(false)
+    expect(result.ok && result.matchCountExact).toBe(false)
+  })
+  it('W13 — CRLF 줄은 뒤가 잘린 줄이 아니다', async () => {
+    const line = lineOf(await find({ query: 'crlf' }), 'crlf.txt', 1)
+    expect(line?.clippedEnd).toBe(false)
+  })
+  it('W15 — 400 바이트 경계가 다바이트 글자 가운데면 그 글자 앞에서 자른다', async () => {
+    const line = lineOf(await find({ query: 'needle' }), 'wide.txt', 1)
+    expect(line?.preview).toBe(`needle${'가'.repeat(131)}`)
+    expect(line?.preview.includes('\uFFFD')).toBe(false)
+    expect(line?.clippedEnd).toBe(true)
+  })
+})
+
+describe('r3 R3-04 — 대소문자 구분 리터럴은 ② 를 띄우지 않는다', () => {
+  const counted = (name: string): { git: string; calls: () => number } => {
+    const log = path.join(base, `${name}.calls`)
+    fs.rmSync(log, { force: true })
+    const git = fakeGit(name, { lines: `echo 1 >> ${log}; exec ${gitBin} "$@"`, matches: `echo 2 >> ${log}; exec ${gitBin} "$@"` })
+    return { git, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').length : 0) }
+  }
+  it('리터럴·단어 단위(구분) → git 1번, 결과·강조는 그대로', async () => {
+    for (const wholeWord of [false, true]) {
+      const probe = counted(`count-cs-${wholeWord}`)
+      const result = await searcher(undefined, { git: () => probe.git }).search({ root, query: 'foo', caseSensitive: true, wholeWord, regex: false, requestId: `cs-${wholeWord}` })
+      expect(probe.calls()).toBe(1)
+      expect(lineOf(result, 'words.txt', 2)?.ranges).toEqual([{ start: 0, end: 3 }, { start: 8, end: 11 }])
+    }
+  })
+  it('대소문자 무시·정규식은 2번', async () => {
+    for (const [index, options] of [{ caseSensitive: false, wholeWord: false, regex: false }, { caseSensitive: true, wholeWord: false, regex: true }].entries()) {
+      const probe = counted(`count-two-${index}`)
+      await searcher(undefined, { git: () => probe.git }).search({ root, query: 'foo', ...options, requestId: `two-${index}` })
+      expect(probe.calls()).toBe(2)
+    }
   })
 })

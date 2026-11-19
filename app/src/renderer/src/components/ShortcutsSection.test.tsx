@@ -165,7 +165,7 @@ it('저장이 main 에서 거절되면 그 문구를 status 에 보인다', asyn
 it('필터 레일 — 카운트와 필터 · 섹션 안 검색 · 결과 없음', async () => {
   const { view } = mount(validateOverrides({ 'terminal.zoom': [null, null] }))
   const count = (id: string): string => view.querySelector(`[data-shortcuts-filter-count="${id}"]`)?.textContent ?? ''
-  expect([count('all'), count('modified'), count('unassigned'), count('conflicts')]).toEqual(['34', '1', '1', '0']) // LIFE-812: + ⌘F 터미널에서 찾기 = 34 · LIFE-593: 액션 27(⌘P·⌥⌘F) · LIFE-601: + ⌘I = 28 · LIFE-629: + ⇧⌘V = 29 · LIFE-683: + ⌘⇧G = 30 · LIFE-824: + ⌃` = 31 · LIFE-825: + ⌘⌥↩·균등화 = 33
+  expect([count('all'), count('modified'), count('unassigned'), count('conflicts')]).toEqual(['35', '1', '1', '0']) // LIFE-803: + ⌘⇧F 검색 보이기 = 35 · LIFE-812: + ⌘F 터미널에서 찾기 = 34 · LIFE-593: 액션 27(⌘P·⌥⌘F) · LIFE-601: + ⌘I = 28 · LIFE-629: + ⇧⌘V = 29 · LIFE-683: + ⌘⇧G = 30 · LIFE-824: + ⌃` = 31 · LIFE-825: + ⌘⌥↩·균등화 = 33
   act(() => view.querySelector<HTMLButtonElement>('[data-shortcuts-filter="unassigned"]')!.click())
   expect(view.querySelector('[data-shortcuts-filter="unassigned"]')?.getAttribute('aria-pressed')).toBe('true')
   expect([...view.querySelectorAll('[data-shortcut-action]')].map((row) => row.getAttribute('data-shortcut-action'))).toEqual(['terminal.zoom'])

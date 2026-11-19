@@ -55,7 +55,7 @@ export type CreateRowOutcome = {
  */
 export async function createRow(
   socketPath: string,
-  input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string },
+  input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string; args?: string[] },
 ): Promise<CreateRowOutcome> {
   // LIFE-495 K6 — 닫은 탭 다시 열기는 같은 시작 디렉터리·사용자 이름으로 새 셸을 연다(herdr `tab.create` 의 `cwd`·`label`).
   const params = {
@@ -87,7 +87,8 @@ export async function createRow(
     const started = await request(
       socketPath,
       'agent.start',
-      { name, kind: herdrKind(input.kind), pane_id: paneId },
+      // LIFE-808 — 세션 재개는 provider 인자(`--resume <id>`·`resume <id>`)를 싣는다. CLI 기동과 같은 `args` 칸이다.
+      { name, kind: herdrKind(input.kind), pane_id: paneId, ...(input.args === undefined ? {} : { args: input.args }) },
       { reason: 'create-row' },
     )
     if (!started.error) {

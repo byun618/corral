@@ -154,6 +154,10 @@ const EXPOSED = [
   'prBranches',
   'prRefreshItem',
   'prComments',
+  'sessionHistoryList',
+  'sessionHistoryDetail',
+  'sessionHistoryResume',
+  'sessionHistoryReveal',
   'preloadEnv',
 ]
 
@@ -485,6 +489,10 @@ const api: CorralApi = {
   prBranches: (input) => ipcRenderer.invoke('corral:prBranches', input),
   prRefreshItem: (query) => ipcRenderer.invoke('corral:prRefreshItem', query),
   prComments: (input) => ipcRenderer.invoke('corral:prComments', input),
+  sessionHistoryList: (input) => ipcRenderer.invoke('corral:sessionHistoryList', input),
+  sessionHistoryDetail: (input) => ipcRenderer.invoke('corral:sessionHistoryDetail', input),
+  sessionHistoryResume: (input) => ipcRenderer.invoke('corral:sessionHistoryResume', input),
+  sessionHistoryReveal: (input) => ipcRenderer.invoke('corral:sessionHistoryReveal', input),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

@@ -65,6 +65,7 @@ import { useRightPanel } from './hooks/useRightPanel.js'
 import { useExplorer } from './hooks/useExplorer.js'
 import { useScm } from './hooks/useScm.js'
 import { usePrComments } from './hooks/usePrComments.js'
+import { useSessionHistory } from './hooks/useSessionHistory.js'
 import { useFileOps } from './hooks/useFileOps.js'
 import { createWatchHold, forgetMissing, type WatchPush } from './watch-hold.js'
 import { RightPanel, RightPanelToggle } from './components/RightPanel.js'
@@ -72,6 +73,7 @@ import { RIGHT_PANEL_VIEWS } from './components/right-panel-views.js'
 import { Explorer } from './components/Explorer.js'
 import { ScmView } from './components/ScmView.js'
 import { PrCommentsView } from './components/PrCommentsView.js'
+import { SessionHistoryView } from './components/SessionHistoryView.js'
 import { DiffView } from './components/DiffView.js'
 import { diffTabId, diffTitle, openOf, type ScmChange } from '../../shared/scm.js'
 import { useCardActions } from './hooks/useCardActions.js'
@@ -338,6 +340,7 @@ export function App(): React.JSX.Element {
   // LIFE-683 — 소스 제어 보기. 감시·git 은 이 보기가 보일 때만(탐색기와 같은 루트면 한 벌 — S8).
   const scmVisible = rightPanel.open && rightPanel.view === 'scm'
   const prVisible = rightPanel.open && rightPanel.view === 'pr'
+  const sessionsVisible = rightPanel.open && rightPanel.view === 'sessions'
   const [scmFocusToken, setScmFocusToken] = useState(0)
   const [explorerFocusToken, setExplorerFocusToken] = useState(0)
   const repoCollapse = usePersistentCollapse('collapsedRepos')
@@ -686,6 +689,7 @@ export function App(): React.JSX.Element {
   const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: explorerVisible })
   const scm = useScm({ root: activeWorktreeRow?.path ?? null, active: scmVisible })
   const prComments = usePrComments({ path: activeWorktreeRow?.path ?? null, branch: activeWorktreeRow?.branch ?? null, active: prVisible })
+  const sessionHistory = useSessionHistory({ active: sessionsVisible })
 
   const activeWorkspaceRow = useMemo(
     () => (state === null ? null : findWorkspace(state, lifecycle.activeWorkspaceId)),
@@ -2814,6 +2818,7 @@ export function App(): React.JSX.Element {
       })
     }
   }
+  paletteEntries.push({ id: 'sessions.show', title: '세션 히스토리', detail: '지난 에이전트 세션 목록·검색·재개', keywords: 'session history resume 세션 기록 재개', run: () => rightPanel.show('sessions') })
   paletteEntries.push({ id: 'repo.add', title: '레포 등록', detail: '폴더 선택', keywords: 'add repository register', run: () => setModalOpen(true) })
   // 설정 섹션 — 내비와 같은 레지스트리(K1ⓒ). 옛 「단축키 설정」 항목은 「설정 › 단축키」 로 간다.
   for (const section of SETTINGS_SECTIONS) {
@@ -3029,6 +3034,7 @@ export function App(): React.JSX.Element {
             explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} onOpenToSide={openFileToSide} onFileDrag={fileDrag.onExplorerDrag} ops={fileOps} notify={notify} />,
             scm: <ScmView scm={scm} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} mode={scm.mode} onChangeMode={scm.setMode} focusToken={scmFocusToken} onOpen={openScmChange} />,
             pr: <PrCommentsView api={prComments} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} />,
+            sessions: <SessionHistoryView api={sessionHistory} repos={state?.repos ?? []} worktree={activeWorktreeRow?.path ?? null} workspaceId={lifecycle.activeWorkspaceId} onRevealPane={revealPane} />,
             detail: <div ref={setDetailSlot} className="right-panel-detail" data-right-panel-detail="" />,
           }}
         />

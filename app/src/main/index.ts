@@ -109,6 +109,7 @@ import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, cardlessGate, collectSessionRefs, joinTree, readClaimedWorkspaceIds, type RepoSkeleton } from './tree.js'
 import { createRebuildScheduler, skeletonHealth } from './rebuild-retry.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
+import { SessionHistory, defaultHistoryRoots, resumeSession, revealSession } from './session-history.js'
 import { UiPrefsStore } from './ui-prefs.js'
 import { SettingsStore } from './settings.js'
 import { UsageService } from './usage/service.js'
@@ -1067,7 +1068,7 @@ async function resolveParentWorkspace(repoRoot: string): Promise<ParentResult> {
 }
 
 /** 열린 workspace 에 새 행을 만든다 (L1·L2). store 가 push 로 곧 반영한다. */
-async function createRowInWorkspace(input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string }): Promise<CreateRowResult> {
+async function createRowInWorkspace(input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string; args?: string[] }): Promise<CreateRowResult> {
   const socketPath = currentSocketPath()
   if (socketPath === null) return { ok: false, paneId: null, tabId: null, retries: 0, error: '세션이 없다' }
   const outcome = await createRow(socketPath, input)
@@ -2161,6 +2162,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('corral:prBranches', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.branches(input) : { lookups: {}, recorded: 0 }))
   ipcMain.handle('corral:prRefreshItem', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.refreshItem(input) : { ok: false, reason: '허용되지 않은 발신자' }))
   ipcMain.handle('corral:prComments', async (event, input: unknown) => (fromOurWindow(event) ? prStatus.comments(input) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
+  // LIFE-808 — 세션 히스토리: 목록·상세·재개·Finder. 렌더러는 식별자만 준다(경로·argv 는 main 이 스캔 결과에서).
+  const sessionHistory = new SessionHistory({ roots: defaultHistoryRoots, codexResumesWithoutCwd: true })
+  const historyContext = () => ({ repos: currentState().repos.map((repo) => ({ root: repo.root, worktrees: repo.worktrees.map((worktree) => worktree.path) })), home: os.homedir() })
+  const historyPanes = () => currentState().repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes).map((pane) => ({ paneId: pane.paneId, agent: pane.agent, sessionId: pane.agentSession?.kind === 'id' ? pane.agentSession.id : null }))
+  ipcMain.handle('corral:sessionHistoryList', async (event, input: unknown) => (fromOurWindow(event) ? sessionHistory.list(input) : { kind: 'error', message: '허용되지 않은 발신자' }))
+  ipcMain.handle('corral:sessionHistoryDetail', async (event, input: unknown) => (fromOurWindow(event) ? sessionHistory.detail(input, historyContext()) : { kind: 'error', message: '허용되지 않은 발신자' }))
+  ipcMain.handle('corral:sessionHistoryResume', async (event, input: unknown) => (fromOurWindow(event) ? resumeSession(input, { history: sessionHistory, context: historyContext, openPanes: historyPanes, createRow: createRowInWorkspace }) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
+  ipcMain.handle('corral:sessionHistoryReveal', async (event, input: unknown) => (fromOurWindow(event) ? revealSession(input, { history: sessionHistory, show: (file) => shell.showItemInFolder(file) }) : { kind: 'rejected', reason: '허용되지 않은 발신자' }))
 
   // --- 라이프사이클 (R3) ---
   const denied = { ok: false as const, error: '허용되지 않은 발신자' }

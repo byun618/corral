@@ -303,6 +303,18 @@ export class SessionHistory {
     this.resuming.delete(input.key)
     return { kind: 'none' }
   }
+  /**
+   * R7 — 요청과 무관하게 만든 pane 을 관측한다(main 이 상태를 발행할 때마다). 재개한 탭의 에이전트가 떴다가 다음 요청 전에 끝나도
+   * `agentSeen` 이 남아, 다음 `resumeFlight` 가 상한을 기다리지 않고 바로 푼다.
+   */
+  observeResumes(panes: readonly PaneSession[]): void {
+    for (const [key, flight] of this.resuming) {
+      const pane = flight.paneId === null ? undefined : panes.find((entry) => entry.paneId === flight.paneId)
+      if (pane === undefined) continue
+      flight.paneSeen = true
+      if (pane.agent !== null && key.startsWith(`${pane.agent}:`)) flight.agentSeen = true // key = `provider:id`
+    }
+  }
   beginResume(input: { key: string; until: number }): void {
     this.resuming.set(input.key, { until: input.until, paneId: null, paneSeen: false, agentSeen: false })
   }

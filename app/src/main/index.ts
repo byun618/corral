@@ -296,6 +296,8 @@ let work: WorkService | null = null
 /** LIFE-603 — 작업 링크(해석·쓰기·사건)와 「작업에서 시작」. 작업 서비스와 같이 선다. */
 let workLinks: WorkLinks | null = null
 let workStarts: StartService | null = null
+/** LIFE-808 R7 — 상태를 발행할 때마다 진행 중 재개 표지에 지금 pane 을 먹인다(요청 없이 끝난 에이전트도 표지가 안다). 세션 히스토리와 같이 선다. */
+let observeResumes: ((state: AppState) => void) | null = null
 /** C7 대조용 — 계측 실행(제어 소켓)에서 `CORRAL_WORK_IPC_TRACE` 가 있을 때만 작업 IPC 응답·push 를 NDJSON 으로 남긴다. */
 function traceWork({ channel, value }: { channel: string; value: unknown }): void {
   const file = process.env.CORRAL_WORK_IPC_TRACE
@@ -732,6 +734,7 @@ function scheduleEmit(): void {
     window?.webContents.send('corral:state', state)
     // LIFE-603 — 링크된 worktree 의 사건(자동 연결 · 질문 · 턴 결과)을 활동에 남긴다. 화면이 닫혀 있어도 여기서 남는다.
     workLinks?.observe(state.repos)
+    observeResumes?.(state)
     // 응답 전에 끝났거나 결과가 미확정이던 시작을 트리와 맞춰 링크한다(R1-C·R1-B).
     void workStarts?.recover(state.repos).catch((error: unknown) => log('work.start_recover_failed', { error: String(error) }))
     // 폰 목록(LIFE-580) — 방금 만든 상태를 그대로 쓴다(두 번 만들지 않는다). 구독자가 없으면 아무 일도 안 한다.
@@ -2169,6 +2172,7 @@ app.whenReady().then(async () => {
   // R3-5 — IPC 한 번에 상태 조립(`currentState`)은 한 번: 재개는 문맥·pane 을 같은 읽기에서 뽑는다.
   const historyContext = (state = currentState()) => ({ repos: state.repos.map((repo) => ({ root: repo.root, worktrees: repo.worktrees.map((worktree) => worktree.path) })), home: os.homedir() })
   const historyPanes = (state = currentState()) => state.repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes).map((pane) => ({ paneId: pane.paneId, agent: pane.agent, sessionId: pane.agentSession?.kind === 'id' ? pane.agentSession.id : null }))
+  observeResumes = (state) => sessionHistory.observeResumes(historyPanes(state))
   const resumeWithState = (input: unknown) => {
     const state = currentState()
     return resumeSession(input, { history: sessionHistory, context: () => historyContext(state), openPanes: () => historyPanes(state), createRow: createRowInWorkspace })

@@ -528,6 +528,42 @@ describe('C8 이미 열린 세션 (main 가드)', () => {
     await step() // 감지됐던 에이전트가 끝났다 — 바로 재개
     expect(seen).toEqual(['started:1', 'pending:1', 'open@w1:p9:1', 'started:2', 'open@w1:p9:2', 'started:3'])
   })
+  it('R7 요청 없이 관측한 에이전트가 끝나면 상한 전이어도 바로 재개 · 관측이 없으면 pane 끝내 안 나타남·에이전트 아직 안 뜸은 상한까지 pending', async () => {
+    const history = newHistory()
+    await history.list({ providers: ['claude'] })
+    let clock = 1_000
+    let panes: OpenPane[] = []
+    const { created, deps } = resumeDeps({ history, context: { repos: [], home: base } })
+    deps.openPanes = () => panes
+    deps.now = () => clock
+    const input = { provider: 'claude', id: ID.custom, workspaceId: 'w1' }
+    const kind = async (): Promise<string> => (await resumeSession(input, deps)).kind
+    expect(await kind()).toBe('started')
+    // 요청 없이 — 상태 발행만: pane 나타남(에이전트 아직) → 에이전트 감지 → 에이전트 끝남
+    history.observeResumes([{ paneId: 'w1:p9', agent: null, sessionId: null }])
+    history.observeResumes([{ paneId: 'w1:p9', agent: 'claude', sessionId: ID.custom }])
+    panes = [{ paneId: 'w1:p9', agent: null, sessionId: ID.custom }]
+    history.observeResumes(panes)
+    clock += 1_000 // 상한(RESUME_PENDING_MS) 훨씬 전
+    expect(await kind()).toBe('started')
+    expect(created).toHaveLength(2)
+    // 에이전트가 아직 안 뜬 만든 pane — 관측해도 pending, 상한이 지나야 풀린다
+    panes = [{ paneId: 'w1:p9', agent: null, sessionId: null }]
+    history.observeResumes(panes)
+    expect(await kind()).toBe('pending')
+    clock += RESUME_PENDING_MS - 1
+    expect(await kind()).toBe('pending')
+    clock += 1
+    expect(await kind()).toBe('started')
+    // pane 이 끝내 안 나타남 — 다른 pane 만 관측돼도 상한까지 pending
+    panes = [{ paneId: 'w1:p1', agent: 'claude', sessionId: null }]
+    history.observeResumes(panes)
+    clock += RESUME_PENDING_MS - 1
+    expect(await kind()).toBe('pending')
+    clock += 1
+    expect(await kind()).toBe('started')
+    expect(created).toHaveLength(4)
+  })
   it('열림 3칸 — agent null(에이전트 끝남) → 재개 · 다른 provider → 재개 · 같은 provider → 열림(새 프로세스 0)', async () => {
     const cases: [OpenPane, string][] = [
       [{ paneId: 'w2:p1', agent: null, sessionId: ID.custom }, 'started'],

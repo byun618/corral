@@ -164,6 +164,47 @@ describe('상태 표 — 활성 worktree 전환', () => {
   })
 })
 
+describe('r2 R2-05 H — setRoot 는 숨김·루트 null 에서도 앞 요청·대기를 끊는다', () => {
+  it('숨김 중 루트 전환 → 진행 중 요청 취소', () => {
+    const { session, calls } = harness()
+    session.setRoot('/a')
+    session.setQuery('foo')
+    session.submit()
+    session.setActive(false)
+    session.setRoot('/b')
+    expect(calls[0]?.cancelled).toBe(true)
+  })
+  it('루트 null(worktree 닫힘) → 진행 중 요청 취소·대기 타이머 해제', () => {
+    const { session, calls, timers } = harness()
+    session.setRoot('/a')
+    session.setQuery('foo')
+    session.submit()
+    session.setQuery('foob')
+    session.setRoot(null)
+    expect(calls[0]?.cancelled).toBe(true)
+    expect(timers.at(-1)?.cleared).toBe(true)
+    timers.at(-1)?.run()
+    expect(calls).toHaveLength(1)
+  })
+})
+
+describe('r2 R2-05 W — 새 결과는 접힘을 초기화한다', () => {
+  it('접은 파일이 있어도 다음 결과에선 펼친 상태', async () => {
+    const { session, calls } = harness()
+    session.setRoot('/a')
+    session.setQuery('foo')
+    session.submit()
+    calls[0]?.resolve(ok('/a', 'a.txt'))
+    await flush()
+    session.toggleCollapsed('a.txt')
+    expect(session.state.collapsed.has('a.txt')).toBe(true)
+    session.submit()
+    calls[1]?.resolve(ok('/a', 'a.txt'))
+    await flush()
+    expect(session.state.collapsed.size).toBe(0)
+  })
+})
+
 describe('r1 R1-09 — 보기가 숨어 있으면 worktree 전환에 git 을 띄우지 않는다', () => {
   it('숨김 중 루트 전환 → 요청 0, 결과는 지움, 보이면 그때 한 번 찾는다', async () => {
     const { session, calls } = harness()

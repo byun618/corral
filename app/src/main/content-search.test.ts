@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { ContentSearcher, gitEnv, GrepRecordParser, grepArgs, lineMatches, matchByteRanges, previewOf, wordRanges } from './content-search.js'
+import { ContentSearcher, gitEnv, GrepRecordParser, grepArgs, isWideCodePoint, lineMatches, previewOf, scanRanges, SEARCH_PREVIEW_LEAD_CELLS, uniqueCandidates, withoutBom } from './content-search.js'
 import { resolveGit } from './file-list.js'
 import type { ContentSearchResult } from '../shared/content-search.js'
 
@@ -25,6 +25,19 @@ const fakeGit = (name: string, input: { lines: string; matches: string }): strin
   return file
 }
 const OFF = { caseSensitive: false, wholeWord: false, regex: false }
+/** 조건이 참이 될 때까지 10 ms 간격(상한 `ms` — 넘으면 그대로 돌아오고 뒤 단언이 실패한다). */
+const until = async (ready: () => boolean, ms = 5_000): Promise<void> => {
+  for (const started = Date.now(); !ready() && Date.now() - started < ms; ) await new Promise((resolve) => setTimeout(resolve, 10))
+}
+/** PID 가 살아 있는가(`kill -0`). */
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
 let sequence = 0
 const find = (input: { query: string; caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean; at?: string; limits?: Parameters<typeof searcher>[0]; env?: Deps['env'] }): Promise<ContentSearchResult> =>
   searcher(input.limits, { env: input.env }).search({ root: input.at ?? root, query: input.query, caseSensitive: input.caseSensitive ?? true, wholeWord: input.wholeWord ?? false, regex: input.regex ?? false, requestId: `t-${(sequence += 1)}` })
@@ -55,6 +68,8 @@ beforeAll(() => {
   write('word2.txt', 'foo foo foobar\n')
   write('loc.txt', 'CAFÉ café\nx 한글 y\n')
   write('lead.txt', `${'a'.repeat(60)} needle tail\n`)
+  write('hangul-lead.txt', `${'가'.repeat(30)}needle\n`)
+  write('bom.txt', '\uFEFFFoo start\nsecond Foo\n')
   write('dash.txt', '--help is text\n')
   write('long.txt', `${'x'.repeat(1024 * 1024)}needle${'y'.repeat(100)}\n`)
   write('bin.dat', Buffer.from([0x66, 0x6f, 0x6f, 0x00, 0x01, 0x02]))
@@ -88,7 +103,7 @@ describe('C1 git grep 백엔드', () => {
   it('ⓑ 대소문자 구분 켬/끔이 결과를 가른다', async () => {
     const on = hits(await find({ query: 'Foo', caseSensitive: true }))
     const off = hits(await find({ query: 'Foo', caseSensitive: false }))
-    expect(on).toEqual(['a.txt:1:10', 'a.txt:2:8'])
+    expect(on).toEqual(['a.txt:1:10', 'a.txt:2:8', 'bom.txt:1:1', 'bom.txt:2:8'])
     expect(off).toContain('words.txt:1:1')
     expect(off).toContain('a.txt:2:1')
   })
@@ -255,7 +270,7 @@ describe('C3 줄 안 일치 강조', () => {
 
   it('ⓕ 잘린 미리보기 기준 범위', () => {
     const text = Buffer.from(`${'가'.repeat(30)}abc${'z'.repeat(30)}`)
-    const preview = previewOf({ text, column: 91, maxBytes: 20, leadChars: 2 })
+    const preview = previewOf({ text, column: 91, maxBytes: 20, leadCells: 4 })
     expect(preview.bytes.toString('utf8').startsWith('가가abc')).toBe(true)
     expect(preview.column).toBe(31)
   })
@@ -300,8 +315,8 @@ describe('r1 R1-02 — 리터럴 + 단어 단위는 JS 로 훑어 둘째 이후�
     const line = lineOf(await find({ query: 'FOO', wholeWord: true, caseSensitive: false }), 'word2.txt', 1)
     expect(line?.ranges).toEqual([{ start: 0, end: 3 }, { start: 4, end: 7 }])
   })
-  it('wordRanges — 단어 글자(영숫자·_) 경계, 비 ASCII 는 경계', () => {
-    expect(wordRanges({ text: Buffer.from('foo_x foo1 xfoo foo 한foo'), candidates: [Buffer.from('foo')] })).toEqual([
+  it('scanRanges — 단어 글자(영숫자·_) 경계, 비 ASCII 는 경계', () => {
+    expect(scanRanges({ text: Buffer.from('foo_x foo1 xfoo foo 한foo'), candidates: [Buffer.from('foo')], wordBoundary: true })).toEqual([
       { start: 16, end: 19 },
       { start: 23, end: 26 },
     ])
@@ -349,15 +364,16 @@ describe('r1 R1-06 — 두 git 호출의 교차 실패', () => {
 })
 
 describe('r1 R1-07 — killAll 은 SIGTERM 을 무시하는 자식도 바로 끝낸다', () => {
-  it('trap TERM 무시 자식 — killAll 뒤 300 ms 안에 끝(SIGTERM 뒤 SIGKILL 유예 500 ms 를 기다리지 않는다)', async () => {
-    const git = fakeGit('ignore-term', { lines: "trap '' TERM; exec sleep 30", matches: "trap '' TERM; exec sleep 30" })
+  // r2 R2-05 — 시간 의존 제거: 두 자식이 trap 을 건 **뒤** 표식 파일을 만들고, 시험은 표식을 본 뒤에 killAll 한다.
+  it('trap TERM 무시 자식 — 무시 설치 확인 뒤 killAll, 300 ms 안에 끝(SIGTERM 뒤 SIGKILL 유예 500 ms 를 기다리지 않는다)', async () => {
+    const ready = path.join(base, 'ignore-term-ready')
+    fs.rmSync(`${ready}-1`, { force: true })
+    fs.rmSync(`${ready}-2`, { force: true })
+    const git = fakeGit('ignore-term', { lines: `trap '' TERM; touch ${ready}-1; exec sleep 30`, matches: `trap '' TERM; touch ${ready}-2; exec sleep 30` })
     const shared = searcher({ timeoutMs: 20_000 }, { git: () => git })
     const pending = shared.search({ root, query: 'foo', ...OFF, requestId: 'ignore-term' })
-    for (let tries = 0; tries < 100 && shared.livePids.length < 2; tries += 1) await new Promise((resolve) => setTimeout(resolve, 10))
-    // trap 이 걸릴 틈.
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    const pids = shared.livePids
-    expect(pids).toHaveLength(2)
+    await until(() => fs.existsSync(`${ready}-1`) && fs.existsSync(`${ready}-2`))
+    expect(shared.livePids).toHaveLength(2)
     const startedAt = Date.now()
     shared.killAll()
     const result = await pending
@@ -367,29 +383,70 @@ describe('r1 R1-07 — killAll 은 SIGTERM 을 무시하는 자식도 바로 끝
   })
 })
 
+describe('r2 R2-05 — 취소 연결·프로세스 그룹', () => {
+  it('M — ① 이 먼저 끝나고 ② 만 도는 중 새 검색 → 앞 검색의 ② 도 끝난다', async () => {
+    const ready = path.join(base, 'aux-only-ready')
+    fs.rmSync(ready, { force: true })
+    const git = fakeGit('aux-only', { lines: "printf 'a.txt\\0001\\0001\\000foo\\n'; exit 0", matches: `echo $$ > ${ready}.tmp; mv ${ready}.tmp ${ready}; exec sleep 30` })
+    const shared = searcher({ timeoutMs: 20_000 }, { git: () => git })
+    const first = shared.search({ root, query: 'foo', ...OFF, requestId: 'aux-a' })
+    await until(() => fs.existsSync(ready) && shared.livePids.length === 1)
+    const auxPid = Number(fs.readFileSync(ready, 'utf8').trim())
+    fs.rmSync(ready)
+    const startedAt = Date.now()
+    const second = shared.search({ root, query: 'foo', ...OFF, requestId: 'aux-b' })
+    const result = await first
+    expect(result.ok === false && result.code).toBe('cancelled')
+    expect(Date.now() - startedAt).toBeLessThan(2_000)
+    await until(() => !alive(auxPid))
+    shared.killAll()
+    await second
+  })
+  it('S17·S18 — 취소는 프로세스 그룹째: git 이 띄운 손자도 끝난다', async () => {
+    const grand = path.join(base, 'grand.pid')
+    fs.rmSync(grand, { force: true })
+    const git = fakeGit('grandchild', { lines: `sleep 30 & echo $! > ${grand}.tmp; mv ${grand}.tmp ${grand}; wait`, matches: 'exec sleep 30' })
+    const shared = searcher({ timeoutMs: 20_000 }, { git: () => git })
+    const pending = shared.search({ root, query: 'foo', ...OFF, requestId: 'grand' })
+    await until(() => fs.existsSync(grand))
+    const pid = Number(fs.readFileSync(grand, 'utf8').trim())
+    expect(alive(pid)).toBe(true)
+    expect(shared.cancel('grand')).toBe(true)
+    const result = await pending
+    expect(result.ok === false && result.code).toBe('cancelled')
+    await until(() => !alive(pid), 3_000)
+    expect(alive(pid)).toBe(false)
+  })
+})
+
 describe('r1 R1-08 — 긴 앞 문맥은 줄여 첫 일치가 미리보기 앞쪽에', () => {
-  it('앞 60 글자 → 앞이 잘리고 첫 일치는 24 글자 안', async () => {
+  it('앞 60 글자 → 앞이 잘리고 첫 일치는 상한 칸 안', async () => {
     const line = lineOf(await find({ query: 'needle' }), 'lead.txt', 1)
     expect(line?.clippedStart).toBe(true)
-    expect(line?.ranges[0]?.start).toBe(24)
+    expect(line?.ranges[0]?.start).toBe(SEARCH_PREVIEW_LEAD_CELLS)
     expect(line?.column).toBe(62)
     expect(line?.preview.endsWith('needle tail')).toBe(true)
   })
   it('previewOf — 앞 문맥이 상한 이하면 줄 처음부터', () => {
-    expect(previewOf({ text: Buffer.from('ab needle'), column: 4, maxBytes: 400, leadChars: 24 })).toMatchObject({ start: 0, column: 4 })
+    expect(previewOf({ text: Buffer.from('ab needle'), column: 4, maxBytes: 400, leadCells: 24 })).toMatchObject({ start: 0, column: 4 })
   })
   it('previewOf — 서로게이트 쌍 가운데를 자르지 않는다', () => {
     const text = Buffer.from(`${'😀'.repeat(20)}x`)
-    const preview = previewOf({ text, column: 81, maxBytes: 400, leadChars: 3 })
+    const preview = previewOf({ text, column: 81, maxBytes: 400, leadCells: 3 })
     expect(preview.bytes.toString('utf8')).toBe('😀x')
   })
 })
 
 describe('r1 R1-10 — -o 상한이면 일치 수가 부분값임을 알린다', () => {
-  it('maxMatches 1 — 둘째 일치를 못 본 줄은 matchesExact 거짓, 결과 전체도', async () => {
-    const result = await find({ query: 'foo', limits: { maxMatches: 1 } })
+  it('maxMatches 1 — 대소문자 무시면 둘째 일치 글 모양을 못 본 줄은 matchesExact 거짓, 결과 전체도', async () => {
+    const result = await find({ query: 'foo', caseSensitive: false, limits: { maxMatches: 1 } })
     expect(result.ok && result.matchCountExact).toBe(false)
     expect(lineOf(result, 'words.txt', 2)?.matchesExact).toBe(false)
+  })
+  it('r2 R2-03 — 대소문자 구분 리터럴은 -o 상한과 무관하게 정확(줄 바이트만 훑는다)', async () => {
+    const result = await find({ query: 'foo', limits: { maxMatches: 1 } })
+    expect(result.ok && result.matchCountExact).toBe(true)
+    expect(lineOf(result, 'words.txt', 2)?.ranges).toEqual([{ start: 0, end: 3 }, { start: 8, end: 11 }])
   })
   it('상한이 없으면 정확', async () => {
     const result = await find({ query: 'needle' })
@@ -397,15 +454,26 @@ describe('r1 R1-10 — -o 상한이면 일치 수가 부분값임을 알린다',
   })
 })
 
-describe('-o 열 되찾기 (raw/claude/r1/git-o-column-probe.txt 의 실측 열)', () => {
+describe('r2 R2-03 — 리터럴 위치는 줄 바이트에서만(-o 열 무관)', () => {
   const rows = (pairs: [number, string][]) => pairs.map(([column, text]) => ({ column, text: Buffer.from(text) }))
-  it('리터럴 — 두 번째 이후 일치의 실제 자리', () => {
-    expect(matchByteRanges({ text: Buffer.from('hello 한글 Foo foo'), rows: rows([[14, 'Foo'], [30, 'foo']]) })).toEqual([{ start: 13, end: 16 }, { start: 17, end: 20 }])
-    expect(matchByteRanges({ text: Buffer.from('foo bar foo'), rows: rows([[1, 'foo'], [4, 'foo']]) })).toEqual([{ start: 0, end: 3 }, { start: 8, end: 11 }])
-    expect(matchByteRanges({ text: Buffer.from('foobar foo foobar'), rows: rows([[1, 'foo'], [4, 'foo'], [11, 'foo']]) })).toEqual([{ start: 0, end: 3 }, { start: 7, end: 10 }, { start: 11, end: 14 }])
+  const literal = (input: { text: string; query: string; rows: [number, string][]; caseSensitive: boolean }) =>
+    lineMatches({ text: Buffer.from(input.text), firstColumn: 1, rows: rows(input.rows), rowsComplete: true, mode: 'literal', query: input.query, caseSensitive: input.caseSensitive })
+  it('babaa aa 에서 a — 열 값이 진짜 시작(고쳐진 git 가정)이든 지금 git 공식이든 같은 정답', () => {
+    const want = [1, 3, 4, 6, 7].map((start) => ({ start, end: start + 1 }))
+    const real: [number, string][] = [[2, 'a'], [4, 'a'], [5, 'a'], [7, 'a'], [8, 'a']]
+    const odd: [number, string][] = [[2, 'a'], [3, 'a'], [4, 'a'], [5, 'a'], [6, 'a']]
+    const junk: [number, string][] = [[99, 'a'], [1, 'a'], [1, 'a'], [1, 'a'], [1, 'a']]
+    for (const pairs of [real, odd, junk]) {
+      expect(literal({ text: 'babaa aa', query: 'a', rows: pairs, caseSensitive: true }).ranges).toEqual(want)
+      expect(literal({ text: 'babaa aa', query: 'A', rows: pairs, caseSensitive: false }).ranges).toEqual(want)
+    }
   })
-  it('자리의 바이트가 일치 글과 다르면 null', () => {
-    expect(matchByteRanges({ text: Buffer.from('abc'), rows: rows([[2, 'zz']]) })).toEqual([null])
+  it('대소문자 무시 — 후보는 ② 의 일치 글 모양(열 무시), 같은 자리면 긴 것', () => {
+    expect(literal({ text: 'hello 한글 Foo foo', query: 'FOO', rows: [[14, 'Foo'], [30, 'foo']], caseSensitive: false }).ranges).toEqual([{ start: 13, end: 16 }, { start: 17, end: 20 }])
+    expect(scanRanges({ text: Buffer.from('aab'), candidates: [Buffer.from('a'), Buffer.from('aa')], wordBoundary: false })).toEqual([{ start: 0, end: 2 }])
+  })
+  it('대소문자 무시인데 ② 가 그 줄을 못 봤으면 강조 0·수 모름', () => {
+    expect(lineMatches({ text: Buffer.from('Foo'), firstColumn: 1, rows: undefined, rowsComplete: false, mode: 'literal', query: 'foo', caseSensitive: false })).toEqual({ ranges: [], matches: 1, exact: false })
   })
   it('실제 git — foobar foo foobar 정규식 줄은 첫 일치만 강조, 수는 「이상」', async () => {
     const line = lineOf(await find({ query: 'fo+(?=bar)', regex: true }), 'words.txt', 3)
@@ -423,5 +491,72 @@ describe('출력 해석기', () => {
     const all = Buffer.from('a\nb\x001\x002\x00text\nc\x003\x004\x00more\n')
     for (let index = 0; index < all.length; index += 3) parser.push(all.subarray(index, index + 3), (record) => (seen.push(`${record.path.toString()}|${record.line}|${record.column}|${record.text.toString()}`), true))
     expect(seen).toEqual(['a\nb|1|2|text', 'c|3|4|more'])
+  })
+})
+
+describe('r2 R2-01 — 단어 단위 + 대소문자 무시, 한 줄 다수 일치도 선형', () => {
+  it('foo ×50000(-o 상한) 한 줄 — lineMatches 동기 시간 1 초 미만, 범위 50000 개', () => {
+    const n = 50_000
+    const text = Buffer.from('foo '.repeat(n))
+    const rows = Array.from({ length: n }, (_, index) => ({ column: 1 + index * 4, text: Buffer.from('foo') }))
+    const started = performance.now()
+    const found = lineMatches({ text, firstColumn: 1, rows, rowsComplete: true, mode: 'literalWord', query: 'FOO', caseSensitive: false })
+    const elapsed = performance.now() - started
+    expect(found.ranges).toHaveLength(n)
+    expect(found.ranges[n - 1]).toEqual({ start: (n - 1) * 4, end: (n - 1) * 4 + 3 })
+    expect(found.exact).toBe(true)
+    expect(elapsed).toBeLessThan(1000)
+  })
+  it('uniqueCandidates — 같은 바이트열은 하나, 빈 것은 버림', () => {
+    expect(uniqueCandidates([Buffer.from('foo'), Buffer.from('Foo'), Buffer.from('foo'), Buffer.from('')]).map((b) => b.toString())).toEqual(['foo', 'Foo'])
+  })
+})
+
+describe('r2 R2-02 — 앞 문맥 상한은 표시 폭(전각 2칸)', () => {
+  it('한글 30자 + 일치 — 첫 일치 앞 폭이 상한 칸 안', () => {
+    const text = Buffer.from(`${'가'.repeat(30)}needle`)
+    const preview = previewOf({ text, column: 91, maxBytes: 400, leadCells: SEARCH_PREVIEW_LEAD_CELLS })
+    const lead = preview.bytes.toString('utf8').slice(0, preview.bytes.toString('utf8').indexOf('needle'))
+    const cells = [...lead].reduce((sum, char) => sum + (isWideCodePoint(char.codePointAt(0) ?? 0) ? 2 : 1), 0)
+    expect(preview.start).toBeGreaterThan(0)
+    expect(cells).toBeLessThanOrEqual(SEARCH_PREVIEW_LEAD_CELLS)
+    expect(lead).toBe('가'.repeat(SEARCH_PREVIEW_LEAD_CELLS / 2))
+    expect(preview.column).toBe(31)
+  })
+  it('실제 git — 한글 앞 문맥 줄', async () => {
+    const line = lineOf(await find({ query: 'needle' }), 'hangul-lead.txt', 1)
+    expect(line?.clippedStart).toBe(true)
+    expect(line?.ranges[0]?.start).toBe(SEARCH_PREVIEW_LEAD_CELLS / 2)
+    expect(line?.column).toBe(31)
+  })
+})
+
+describe('r2 R2-04 — UTF-8 BOM 첫 줄', () => {
+  it('BOM Foo start → 열 1, 미리보기에 U+FEFF 없음, 둘째 줄 정상', async () => {
+    const result = await find({ query: 'Foo', caseSensitive: true })
+    const first = lineOf(result, 'bom.txt', 1)
+    expect(first?.column).toBe(1)
+    expect(first?.preview.startsWith('\uFEFF')).toBe(false)
+    expect(first?.preview).toBe('Foo start')
+    expect(first?.ranges).toEqual([{ start: 0, end: 3 }])
+    expect(lineOf(result, 'bom.txt', 2)?.column).toBe(8)
+  })
+  it('정규식 첫 일치도 BOM 만큼 맞춘다', async () => {
+    const first = lineOf(await find({ query: 'F.o', regex: true, caseSensitive: true }), 'bom.txt', 1)
+    expect(first?.ranges).toEqual([{ start: 0, end: 3 }])
+    expect(first?.column).toBe(1)
+  })
+  it('withoutBom — 첫 줄만, BOM 없으면 그대로', () => {
+    const bom = Buffer.from([0xef, 0xbb, 0xbf, 0x61])
+    expect(withoutBom({ line: 1, text: bom, column: 4 })).toMatchObject({ column: 1, bom: 3 })
+    expect(withoutBom({ line: 2, text: bom, column: 4 })).toMatchObject({ column: 4, bom: 0 })
+  })
+})
+
+describe('r2 R2-05 G — 정규식 첫 일치 바이트 가드(①·② 사이 파일 변경)', () => {
+  it('② 첫 행 열은 같지만 글이 줄 바이트와 다르면 강조 0', () => {
+    const rows = [{ column: 1, text: Buffer.from('bar') }]
+    expect(lineMatches({ text: Buffer.from('foo x'), firstColumn: 1, rows, rowsComplete: true, mode: 'regex', query: 'f..|b..', caseSensitive: true }).ranges).toEqual([])
+    expect(lineMatches({ text: Buffer.from('bar x'), firstColumn: 1, rows, rowsComplete: true, mode: 'regex', query: 'f..|b..', caseSensitive: true }).ranges).toEqual([{ start: 0, end: 3 }])
   })
 })

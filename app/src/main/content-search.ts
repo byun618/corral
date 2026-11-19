@@ -3,10 +3,12 @@
 // · 백엔드 = `git grep --untracked -I`(02-kickoff D1 — 추적 + 미추적, `.gitignore` 대상·바이너리 제외). 셸 없이 인자 배열로, 질의는 `-e <질의>` 한 칸, 끝에 `--`.
 //   git 실행 파일·안전 설정(`core.fsmonitor=false`·`core.quotePath=false`·`GIT_OPTIONAL_LOCKS=0`)·프로세스 그룹 종료는 `file-list.ts` 와 같은 규칙이다.
 // · 한 번 찾을 때 git 을 **둘** 띄운다 — ① 일치 줄(`-n --column -z` — 줄 글과 첫 일치의 바이트 열) ② 일치마다 한 행(`-o` — 일치 글).
-//   기본 출력은 줄당 첫 일치만 주므로(00-analysis S3) 줄 안 강조 범위는 ② 로 정한다 — 정규식(PCRE)을 JS 로 다시 돌리지 않는다(C3ⓔ).
-//   ② 의 열은 두 번째 일치부터 실제 시작이 아니다(`raw/claude/r1/git-o-column-probe.txt` — git 은 첫 열에 앞 일치의 「탐색 창 기준 끝」 을 계속 더한다).
-//   그래서 k 번째 일치의 끝 = (k+1 번째 열 − 첫 열) 로 되찾고(`matchByteRanges`), 마지막 일치만은 앞 일치 끝 뒤에서 일치 글을 찾는다 — 리터럴이면 첫 등장이 곧 그 자리,
-//   단어 단위·정규식이면 등장이 하나일 때만(아니면 그 일치는 강조하지 않는다 — 잘못된 자리 강조보다 안 하는 쪽). ② 가 상한으로 잘려 모르는 줄도 강조하지 않는다.
+//   ② 의 **열은 위치 원천으로 쓰지 않는다** — 두 번째 일치부터 실제 시작이 아니고(`raw/claude/r1/git-o-column-probe.txt`), 탐색 창 시작에서 앞 문맥을 못 봐
+//   가짜 행도 낸다(리뷰 r1 R1-01). fix2(리뷰 r2 R2-03)부터 위치는:
+//   · 리터럴(단어 단위 포함) — 줄을 JS 로 처음부터 훑어 확정한다(`scanRanges` — 단어 단위면 git `-w` 와 같은 경계 판정만 더한다). 정규식을 새로 쓰지 않는다.
+//     ② 는 대소문자 무시일 때 **후보 글 모양**(실제로 일치한 글)만 준다. 대소문자 구분이면 질의 그대로가 후보다.
+//   · 정규식 — ② 첫 행(줄 처음부터 찾은 일치라 가짜가 아니다)을 ① 의 첫 열·바이트로 대조해 그 하나만. 둘째 이후는 모름(C3ⓔ — JS 로 정규식을 다시 돌리지 않는다).
+//   ② 가 상한·실패로 그 줄을 못 봤으면(대소문자 무시 후보가 없으면) 강조하지 않는다.
 // · git 열은 1부터의 **바이트** 오프셋이다(S2) — UTF-16(Monaco 열)으로 바꾼다. 긴 줄은 첫 일치 둘레 `SEARCH_PREVIEW_MAX_BYTES` 만 미리보기로 싣는다.
 // · 상한: 일치 줄 수·`-o` 일치 수·출력 바이트·시간. 줄 수·바이트 상한에 닿으면 git 을 끝내고 잘린 결과(`truncated`), 시간 상한이면 오류(`timeout`).
 // · 새 검색은 진행 중인 앞 검색을 모두 취소한다(창 하나 — 검색 보기 하나). 앱 종료 때 `killAll`.
@@ -26,8 +28,8 @@ export const SEARCH_MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 export const SEARCH_TIMEOUT_MS = 15_000
 /** 한 줄 미리보기 바이트 상한(미리보기 시작부터). */
 export const SEARCH_PREVIEW_MAX_BYTES = 400
-/** 첫 일치 앞에 남기는 문맥(UTF-16 글자) — 넘으면 앞을 자른다(좁은 패널에서도 첫 일치가 보이게 — r1 R1-08). */
-export const SEARCH_PREVIEW_LEAD_CHARS = 24
+/** 첫 일치 앞에 남기는 문맥의 **표시 폭**(칸 — 전각·한글 2칸, 그 밖 1칸) — 넘으면 앞을 자른다(좁은 패널에서도 첫 일치가 보이게 — r1 R1-08·r2 R2-02). */
+export const SEARCH_PREVIEW_LEAD_CELLS = 20
 /** git 자식 로캘 — 앱 환경에 UTF-8 로캘이 없을 때(Finder 로 띄운 설치본은 `LANG`·`LC_*` 가 없다) 넣는다. C 로캘이면 `-i`·`-P` 가 바이트 단위가 된다(r1 R1-05). */
 export const GIT_UTF8_LOCALE = 'en_US.UTF-8'
 
@@ -111,72 +113,102 @@ const isContinuation = (byte: number | undefined): boolean => byte !== undefined
 /** UTF-8 바이트 열 → UTF-16 길이(앞 `bytes` 바이트). */
 const utf16Length = (bytes: Buffer, end: number): number => bytes.subarray(0, Math.max(0, Math.min(end, bytes.length))).toString('utf8').length
 
+/** 전각(동아시아 넓은 글자) — 한글·CJK·가나·전각 기호. 표시 폭 2칸으로 센다(근사 — 미리보기 앞 문맥 자르기에만 쓴다). */
+export function isWideCodePoint(code: number): boolean {
+  return (
+    (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0x303e) ||
+    (code >= 0x3041 && code <= 0x33ff) ||
+    (code >= 0x3400 && code <= 0x4dbf) ||
+    (code >= 0x4e00 && code <= 0x9fff) ||
+    (code >= 0xa960 && code <= 0xa97f) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe30 && code <= 0xfe4f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    (code >= 0x1f300 && code <= 0x1faff) ||
+    (code >= 0x20000 && code <= 0x3fffd)
+  )
+}
+
 /**
- * 일치 줄 하나의 미리보기 — 첫 일치(바이트 열 `column`) 앞 문맥은 `leadChars`(UTF-16) 글자까지만 남기고(넘으면 앞이 잘린 줄 — 렌더러가 「…」),
- * 거기서부터 `maxBytes` 바이트까지 글자 경계로 자른다. 좁은 패널에서도 첫 일치가 미리보기 앞쪽에 온다(r1 R1-08).
+ * 일치 줄 하나의 미리보기 — 첫 일치(바이트 열 `column`) 앞 문맥은 표시 폭 `leadCells` 칸까지만 남기고(넘으면 앞이 잘린 줄 — 렌더러가 「…」),
+ * 거기서부터 `maxBytes` 바이트까지 글자 경계로 자른다. 좁은 패널에서도 첫 일치가 미리보기 앞쪽에 온다(r1 R1-08 · r2 R2-02 — 한글 줄은 2칸으로 센다).
+ * 코드 포인트 단위로 자르므로 서로게이트 쌍 가운데를 자르지 않는다.
  */
-export function previewOf(input: { text: Buffer; column: number; maxBytes: number; leadChars: number }): { bytes: Buffer; start: number; end: number; column: number } {
+export function previewOf(input: { text: Buffer; column: number; maxBytes: number; leadCells: number }): { bytes: Buffer; start: number; end: number; column: number } {
   let text = input.text
   // CRLF 파일의 줄 끝 `\r` 은 미리보기에서 뺀다.
   if (text.length > 0 && text[text.length - 1] === 13) text = text.subarray(0, text.length - 1)
   const firstByte = Math.min(input.column - 1, text.length)
   const prefix = text.subarray(0, firstByte).toString('utf8')
-  let start = 0
-  if (prefix.length > input.leadChars) {
-    let cut = prefix.length - input.leadChars
-    // 서로게이트 쌍 가운데를 자르지 않는다.
-    const code = prefix.charCodeAt(cut)
-    if (code >= 0xdc00 && code <= 0xdfff) cut += 1
-    start = Buffer.byteLength(prefix.slice(0, cut))
+  // 첫 일치에서 뒤로 걸으며 폭을 더한다 — 상한을 넘기 직전 글자에서 멈춘 자리가 시작.
+  let keep = prefix.length
+  let cells = 0
+  while (keep > 0) {
+    const low = prefix.charCodeAt(keep - 1)
+    const pair = keep >= 2 && low >= 0xdc00 && low <= 0xdfff ? 2 : 1
+    const code = prefix.codePointAt(keep - pair) ?? low
+    const width = isWideCodePoint(code) ? 2 : 1
+    if (cells + width > input.leadCells) break
+    cells += width
+    keep -= pair
   }
+  const start = keep === 0 ? 0 : Buffer.byteLength(prefix.slice(0, keep))
   let end = Math.min(text.length, start + input.maxBytes)
   while (end < text.length && end > start && isContinuation(text[end])) end -= 1
   return { bytes: Buffer.from(text.subarray(start, end)), start, end, column: prefix.length + 1 }
 }
 
-type LineEntry = { rel: Buffer; line: number; column: number; byteColumn: number; text: Buffer; preview: Buffer; start: number; end: number; fullLength: number }
-export type MatchRow = { column: number; text: Buffer }
-type ByteRange = { start: number; end: number }
+const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf])
 
 /**
- * **리터럴(단어 단위 아님)** — ② 의 행들(한 줄, git 출력 순서) → 일치 바이트 범위(0부터, 끝 제외). 확정할 수 없는 일치는 null.
- * git 은 k+1 번째 행의 열 = k 번째 열 + (k 번째 일치의 탐색 창 기준 끝)이라 k 번째 끝 = 열[k+1] − 열[1] 이다. 첫 일치 시작 = 열[1] − 1.
- * 마지막 일치는 다음 열이 없다 — 앞 일치 끝부터 일치 글의 처음 등장(리터럴이라 그것이 곧 가장 왼쪽 일치). 찾은 자리 바이트가 일치 글과 다르면 null.
- * 리터럴은 앞 문맥을 보지 않으므로 git 의 탐색 창이 가짜 일치를 만들지 않는다(r1 리뷰 퍼징 — 잘못된 강조 0).
+ * UTF-8 BOM 파일 첫 줄 — git 열은 BOM 3바이트를 세지만 편집기 텍스트는 BOM 을 뗀다(`file-read.ts` `decodeText`). 줄 글·열에서 BOM 을 뺀다(r2 R2-04).
+ * `bom` = 뺀 바이트 수(② 의 열도 같은 만큼 줄인다). 첫 일치가 BOM 안이면(정규식이 BOM 을 집은 경우) 열은 1.
  */
-export function matchByteRanges(input: { text: Buffer; rows: readonly MatchRow[] }): (ByteRange | null)[] {
-  const rows = input.rows
-  const first = rows[0]?.column ?? 1
-  const verified = (start: number, row: MatchRow): ByteRange | null => {
-    const end = start + row.text.length
-    return start >= 0 && end <= input.text.length && input.text.subarray(start, end).equals(row.text) ? { start, end } : null
-  }
-  return rows.map((row, index) => {
-    if (index === 0) return verified(first - 1, row)
-    const next = rows[index + 1]
-    if (next !== undefined) return verified(next.column - first - row.text.length, row)
-    const at = input.text.indexOf(row.text, row.column - first)
-    return at === -1 ? null : verified(at, row)
-  })
+export function withoutBom(input: { line: number; text: Buffer; column: number }): { text: Buffer; column: number; bom: number } {
+  if (input.line !== 1 || !input.text.subarray(0, 3).equals(UTF8_BOM)) return { text: input.text, column: input.column, bom: 0 }
+  return { text: input.text.subarray(3), column: Math.max(1, input.column - 3), bom: 3 }
 }
+
+type LineEntry = { rel: Buffer; line: number; column: number; byteColumn: number; bom: number; text: Buffer; preview: Buffer; start: number; end: number; fullLength: number }
+export type MatchRow = { column: number; text: Buffer }
+type ByteRange = { start: number; end: number }
 
 /** git `-w` 의 단어 글자 — ASCII 영숫자와 `_`(바이트 단위, 비 ASCII 바이트는 단어 글자가 아니다). */
 const isWordByte = (byte: number | undefined): boolean =>
   byte !== undefined && ((byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a) || byte === 0x5f)
 
+/** 같은 바이트열 후보는 하나로(r2 R2-01 — 일치 행마다 같은 글이 오면 훑기가 이차 시간이 된다). 빈 후보는 버린다. */
+export function uniqueCandidates(candidates: readonly Buffer[]): Buffer[] {
+  const seen = new Map<string, Buffer>()
+  for (const candidate of candidates) if (candidate.length > 0) seen.set(candidate.toString('latin1'), candidate)
+  return [...seen.values()]
+}
+
 /**
- * **리터럴 + 단어 단위**(r1 R1-02) — 줄을 JS 로 처음부터 훑어 `candidates`(일치 글의 바이트 모양들) 중 가장 앞 등장을 찾고, 앞·뒤 바이트가 단어 글자가 아니면 일치.
- * 정규식을 새로 쓰지 않는다. `-w` 의 `-o` 둘째 이후 행은 탐색 창 시작에서 앞 글자를 못 봐 가짜일 수 있어 위치 원천으로 쓰지 않는다(R1-01).
+ * **리터럴** 줄 훑기(단어 단위 포함 — r1 R1-02 · r2 R2-03) — 줄을 처음부터 훑어 후보 중 가장 앞 등장(같은 자리면 긴 것)을 고르고,
+ * `wordBoundary` 면 앞·뒤 바이트가 git `-w` 단어 글자가 아닐 때만 일치. 일치 뒤에서 이어 찾는다(git 의 겹치지 않는 왼쪽부터 일치와 같다).
+ * 후보마다 다음 등장 자리를 기억해 지난 자리일 때만 다시 찾는다 — 일치 n 개·후보 k 개에 대략 O(줄 길이 × k).
+ * git `-o` 의 열 값에 기대지 않는다 — 위치는 줄 바이트에서만 나온다.
  */
-export function wordRanges(input: { text: Buffer; candidates: readonly Buffer[] }): ByteRange[] {
-  const candidates = input.candidates.filter((candidate) => candidate.length > 0)
+export function scanRanges(input: { text: Buffer; candidates: readonly Buffer[]; wordBoundary: boolean }): ByteRange[] {
+  const candidates = uniqueCandidates(input.candidates)
+  const next = candidates.map(() => -2)
   const ranges: ByteRange[] = []
   let from = 0
   for (;;) {
     let at = -1
     let length = 0
-    for (const candidate of candidates) {
-      const found = input.text.indexOf(candidate, from)
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index]
+      if (candidate === undefined) continue
+      let found = next[index] ?? -2
+      if (found !== -1 && found < from) {
+        found = input.text.indexOf(candidate, from)
+        next[index] = found
+      }
       if (found !== -1 && (at === -1 || found < at || (found === at && candidate.length > length))) {
         at = found
         length = candidate.length
@@ -184,7 +216,7 @@ export function wordRanges(input: { text: Buffer; candidates: readonly Buffer[] 
     }
     if (at === -1) return ranges
     const end = at + length
-    if (!isWordByte(input.text[at - 1]) && !isWordByte(input.text[end])) {
+    if (!input.wordBoundary || (!isWordByte(input.text[at - 1]) && !isWordByte(input.text[end]))) {
       ranges.push({ start: at, end })
       from = end
     } else from = at + 1
@@ -196,9 +228,10 @@ export const matchModeOf = (options: ContentSearchOptions): MatchMode => (option
 
 /**
  * 한 줄의 강조 범위·일치 수. `rows` = ② 의 그 줄 행(없으면 undefined), `rowsComplete` = ② 가 상한·실패 없이 끝났는가.
- * · 리터럴: ② 의 열로 모두 확정(`matchByteRanges`), 수 = 행 수.
- * · 리터럴 + 단어: JS 로 훑는다(`wordRanges`) — 대소문자 구분이면 질의 그대로, 무시면 ② 가 준 일치 글 모양들.
- * · 정규식(단어 단위 포함): 첫 일치만 확정(② 첫 행 = 줄 처음부터 찾은 일치라 가짜가 아니다), 둘째 이후는 모름. 수는 행이 하나일 때만 정확(가짜 행은 늘리기만 한다).
+ * · 리터럴(단어 단위 포함): JS 줄 훑기(`scanRanges`). 후보 = 대소문자 구분이면 질의 그대로, 무시면 ② 가 준 일치 글 모양들. 수 = 찾은 수.
+ *   대소문자 구분이면 ② 와 무관하게 정확하고, 무시면 ② 가 그 줄을 끝까지 줬을 때만 정확(후보 모양이 빠질 수 있다).
+ * · 정규식(단어 단위 포함): 첫 일치만 확정 — ② 첫 행의 열이 ① 첫 열과 같고 그 자리 바이트가 일치 글과 같을 때(①·② 사이 파일이 바뀌면 강조 0).
+ *   수는 행이 하나일 때만 정확(가짜 행은 늘리기만 한다).
  */
 export function lineMatches(input: { text: Buffer; firstColumn: number; rows: readonly MatchRow[] | undefined; rowsComplete: boolean; mode: MatchMode; query: string; caseSensitive: boolean }): {
   ranges: ByteRange[]
@@ -207,15 +240,12 @@ export function lineMatches(input: { text: Buffer; firstColumn: number; rows: re
 } {
   const rows = input.rows
   switch (input.mode) {
-    case 'literal': {
-      if (rows === undefined) return { ranges: [], matches: 1, exact: false }
-      return { ranges: matchByteRanges({ text: input.text, rows }).flatMap((range) => (range === null ? [] : [range])), matches: rows.length, exact: input.rowsComplete }
-    }
+    case 'literal':
     case 'literalWord': {
       const candidates = input.caseSensitive ? [Buffer.from(input.query)] : (rows ?? []).map((row) => row.text)
-      const ranges = wordRanges({ text: input.text, candidates })
+      const ranges = scanRanges({ text: input.text, candidates, wordBoundary: input.mode === 'literalWord' })
       if (ranges.length === 0) return { ranges, matches: 1, exact: false }
-      return { ranges, matches: ranges.length, exact: input.caseSensitive || input.rowsComplete }
+      return { ranges, matches: ranges.length, exact: input.caseSensitive || (rows !== undefined && input.rowsComplete) }
     }
     case 'regex': {
       const head = rows?.[0]
@@ -227,7 +257,7 @@ export function lineMatches(input: { text: Buffer; firstColumn: number; rows: re
 }
 
 /** ① 의 줄과 그 줄의 일치(바이트 범위)를 합쳐 결과 행으로 — 범위는 미리보기 기준 UTF-16 으로 옮긴다(미리보기 밖은 버린다). */
-export function toResultLine(entry: Omit<LineEntry, 'rel' | 'text' | 'byteColumn'>, found: { ranges: readonly ByteRange[]; matches: number; exact: boolean }): ContentSearchLine {
+export function toResultLine(entry: Omit<LineEntry, 'rel' | 'text' | 'byteColumn' | 'bom'>, found: { ranges: readonly ByteRange[]; matches: number; exact: boolean }): ContentSearchLine {
   const ranges: { start: number; end: number }[] = []
   for (const match of found.ranges) {
     if (match.end <= entry.start || match.start >= entry.end) continue
@@ -376,7 +406,7 @@ export type ContentSearchDeps = {
   /** git 자식에 줄 부모 환경 — 기본 `process.env`(시험이 로캘 없는 환경을 준다). */
   env?: () => NodeJS.ProcessEnv
   /** 시험용 — 기본은 위 상수. */
-  limits?: Partial<{ maxLines: number; maxMatches: number; maxBytes: number; timeoutMs: number; previewMaxBytes: number; previewLeadChars: number }>
+  limits?: Partial<{ maxLines: number; maxMatches: number; maxBytes: number; timeoutMs: number; previewMaxBytes: number; previewLeadCells: number }>
 }
 
 const CANCELLED: ContentSearchFailure = { ok: false, code: 'cancelled', error: '취소됨' }
@@ -457,7 +487,7 @@ export class ContentSearcher {
       maxBytes: this.deps.limits?.maxBytes ?? SEARCH_MAX_OUTPUT_BYTES,
       timeoutMs: this.deps.limits?.timeoutMs ?? SEARCH_TIMEOUT_MS,
       previewMaxBytes: this.deps.limits?.previewMaxBytes ?? SEARCH_PREVIEW_MAX_BYTES,
-      previewLeadChars: this.deps.limits?.previewLeadChars ?? SEARCH_PREVIEW_LEAD_CHARS,
+      previewLeadCells: this.deps.limits?.previewLeadCells ?? SEARCH_PREVIEW_LEAD_CELLS,
     }
     const now = this.deps.now ?? (() => performance.now())
     const startedAt = now()
@@ -482,9 +512,10 @@ export class ContentSearcher {
           truncated = true
           return false
         }
-        const preview = previewOf({ text: record.text, column: record.column, maxBytes: limits.previewMaxBytes, leadChars: limits.previewLeadChars })
-        const fullLength = record.text.length > 0 && record.text[record.text.length - 1] === 13 ? record.text.length - 1 : record.text.length
-        lines.push({ rel: Buffer.from(record.path), line: record.line, column: preview.column, byteColumn: record.column, text: Buffer.from(record.text), preview: preview.bytes, start: preview.start, end: preview.end, fullLength })
+        const { text, column, bom } = withoutBom({ line: record.line, text: record.text, column: record.column })
+        const preview = previewOf({ text, column, maxBytes: limits.previewMaxBytes, leadCells: limits.previewLeadCells })
+        const fullLength = text.length > 0 && text[text.length - 1] === 13 ? text.length - 1 : text.length
+        lines.push({ rel: Buffer.from(record.path), line: record.line, column: preview.column, byteColumn: column, bom, text: Buffer.from(text), preview: preview.bytes, start: preview.start, end: preview.end, fullLength })
         return true
       }
       const matches = new Map<string, MatchRow[]>()
@@ -540,7 +571,8 @@ export class ContentSearcher {
       for (const entry of lines) {
         const rel = entry.rel.toString('utf8')
         if (!isSafeRel(rel)) continue
-        const rows = matches.get(`${entry.rel.toString('latin1')}\0${entry.line}`)
+        const raw = matches.get(`${entry.rel.toString('latin1')}\0${entry.line}`)
+        const rows = entry.bom === 0 ? raw : raw?.map((row) => ({ column: row.column - entry.bom, text: row.text }))
         const result = toResultLine(entry, lineMatches({ text: entry.text, firstColumn: entry.byteColumn, rows, rowsComplete: matchesComplete, mode, query, caseSensitive }))
         if (!result.matchesExact) matchCountExact = false
         matchCount += result.matches

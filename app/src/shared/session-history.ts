@@ -174,6 +174,9 @@ export type ScopeContext = {
   repo: { root: string; worktrees: string[] } | null
 }
 
+/** corral 이 worktree 를 두는 자리(AGENTS.md 「worktree 는 전부 .claude/worktrees/ 아래」) — 루트 기준 상대. */
+export const CORRAL_WORKTREES_DIR = '.claude/worktrees'
+
 export type ScopedRows = { kind: 'rows'; rows: SessionHistoryRow[] } | { kind: 'no-worktree' }
 
 /**
@@ -191,6 +194,8 @@ export function scopeRows({ rows, scope, context }: { rows: readonly SessionHist
       if (worktree === null) return { kind: 'no-worktree' }
       const others = context.repo === null ? [] : [context.repo.root, ...context.repo.worktrees]
       const nested = others.filter((other) => other !== worktree && isPathWithin({ child: other, parent: worktree }))
+      // R2-7 — 루트 체크아웃이 활성이면 `<root>/.claude/worktrees/` 아래는 등록 여부와 무관하게 뺀다(지운 worktree 의 세션 포함).
+      if (context.repo !== null && context.repo.root === worktree) nested.push(`${worktree === '/' ? '' : worktree}/${CORRAL_WORKTREES_DIR}`)
       return {
         kind: 'rows',
         rows: rows.filter((row) => row.cwdKey !== null && isPathWithin({ child: row.cwdKey, parent: worktree }) && !nested.some((parent) => isPathWithin({ child: row.cwdKey ?? '', parent }))),

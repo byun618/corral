@@ -1,0 +1,142 @@
+{
+ "data": {
+  "rateLimit": {
+   "cost": 1,
+   "remaining": 4938
+  },
+  "repository": {
+   "pullRequest": {
+    "number": 14858,
+    "url": "https://github.com/cli/cli/pull/14858",
+    "reviewDecision": "APPROVED",
+    "reviews": {
+     "totalCount": 4,
+     "nodes": [
+      {
+       "id": "PRR_kwDODKw3uc8AAAABUxD2Cg",
+       "author": {
+        "login": "copilot-pull-request-reviewer"
+       },
+       "state": "COMMENTED",
+       "body": "<!-- ccr-overview-v2 -->\n\n### 🟡 Changes recommended\n\nThe test’s fixed five-second sleep can cause failure before either ",
+       "submittedAt": "2026-10-28T19:34:27Z",
+       "url": "https://github.com/cli/cli/pull/14858#pullrequestreview-5688587786",
+       "isMinimized": false
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABUzEHfg",
+       "author": {
+        "login": "BagToad"
+       },
+       "state": "COMMENTED",
+       "body": "",
+       "submittedAt": "2026-10-28T22:45:08Z",
+       "url": "https://github.com/cli/cli/pull/14858#pullrequestreview-5690689406",
+       "isMinimized": false
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABU9FAFA",
+       "author": {
+        "login": "babakks"
+       },
+       "state": "APPROVED",
+       "body": "LGTM!",
+       "submittedAt": "2026-10-29T16:21:54Z",
+       "url": "https://github.com/cli/cli/pull/14858#pullrequestreview-5701189652",
+       "isMinimized": false
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABWnM1Bw",
+       "author": {
+        "login": "9nzhc899wn-maker"
+       },
+       "state": "COMMENTED",
+       "body": "here ",
+       "submittedAt": "2026-11-07T13:29:35Z",
+       "url": "https://github.com/cli/cli/pull/14858#pullrequestreview-5812466951",
+       "isMinimized": false
+      }
+     ]
+    },
+    "comments": {
+     "totalCount": 3,
+     "nodes": [
+      {
+       "id": "IC_kwDODKw3uc8AAAABkAdN0Q",
+       "author": {
+        "login": "Ufktarimarge"
+       },
+       "body": "Bana para lazım\r\n",
+       "createdAt": "2026-11-07T18:30:46Z",
+       "url": "https://github.com/cli/cli/pull/14858#issuecomment-6711365073",
+       "isMinimized": false
+      },
+      {
+       "id": "IC_kwDODKw3uc8AAAABmiwIXA",
+       "author": {
+        "login": "biggiebarker8-cloud"
+       },
+       "body": "@copilot Fix the code for all comments in [this review thread](https://github.com/cli/cli/pull/14858#pullrequestreview-5",
+       "createdAt": "2026-11-14T17:35:33Z",
+       "url": "https://github.com/cli/cli/pull/14858#issuecomment-6881544284",
+       "isMinimized": true
+      },
+      {
+       "id": "IC_kwDODKw3uc8AAAABmiwRBA",
+       "author": {
+        "login": "biggiebarker8-cloud"
+       },
+       "body": "Fix it",
+       "createdAt": "2026-11-14T17:35:43Z",
+       "url": "https://github.com/cli/cli/pull/14858#issuecomment-6881546500",
+       "isMinimized": true
+      }
+     ]
+    },
+    "reviewThreads": {
+     "totalCount": 1,
+     "nodes": [
+      {
+       "id": "PRRT_kwDODKw3uc6xSgGc",
+       "isResolved": true,
+       "isOutdated": false,
+       "path": "acceptance/testdata/repo/repo-delete-private-forks.txtar",
+       "line": 15,
+       "originalLine": 15,
+       "diffSide": "RIGHT",
+       "comments": {
+        "totalCount": 2,
+        "nodes": [
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABBpIcrA",
+          "author": {
+           "login": "copilot-pull-request-reviewer"
+          },
+          "body": "🛑 Requirement: Poll for the fork count instead of using a fixed sleep\n\nIf GitHub takes more than five seconds to update ",
+          "createdAt": "2026-10-28T19:34:26Z",
+          "url": "https://github.com/cli/cli/pull/14858#discussion_r4405206188",
+          "isMinimized": false,
+          "replyTo": null
+         },
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABBqus7A",
+          "author": {
+           "login": "BagToad"
+          },
+          "body": "I mean, yeah but this is a problem with a bunch of tests already so gonna leave it",
+          "createdAt": "2026-10-28T22:45:08Z",
+          "url": "https://github.com/cli/cli/pull/14858#discussion_r4406881516",
+          "isMinimized": false,
+          "replyTo": {
+           "id": "PRRC_kwDODKw3uc8AAAABBpIcrA"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

@@ -22,6 +22,12 @@ export const CODICON = {
   'list-tree': 0xeb86,
   'go-to-file': 0xea94,
   'chevron-right': 0xeab6,
+  // LIFE-811 — PR 보기(activity bar·GitHub 열기).
+  'git-pull-request': 0xea64,
+  'link-external': 0xeb14,
+  // LIFE-812 — 터미널 검색 막대 이전·다음.
+  'arrow-up': 0xeaa1,
+  'arrow-down': 0xea9a,
 } as const
 
 export type CodiconName = keyof typeof CODICON

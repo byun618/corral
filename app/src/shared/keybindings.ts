@@ -78,11 +78,15 @@ export const ACTIONS = [
   { id: 'group.maximize', group: '터미널 pane', title: '영역 최대화 / 해제', defaultBinding: ['Mod+Alt+Enter'], bindingVariants: [0], variants: ['전환'] },
   // LIFE-825 C3 — VS Code `workbench.action.evenEditorWidths`(기본 키 없음). **키 없는 액션** — 기본 조합 0칸(팔레트·⊞ 메뉴로만). 설정 › 단축키 표에는 행만 서고
   // 칸이 없어 키를 걸 수 없다(「끄기」도 꺼짐). keybindings.json 에 손으로 칸을 적어도 칸 수가 기본(0)과 달라 로드 때 버려진다(`validateOverrides(…, true)`). 키를 열려면 칸 모델 변경이 든다.
+  // LIFE-812 — 터미널 화면 내 검색(VS Code 터미널 `find`·Orca 터미널 ⌘F). **터미널 포커스에서만** 매칭된다(`scope: 'terminal'`) — 파일 탭 Monaco 찾기·설정 검색칸의
+  // ⌘F 는 그 자리의 것으로 그대로 간다. 열린 막대 안의 ⌘F(전체 선택)·Enter·Esc 는 막대 입력칸이 받는다. 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS) —
+  // 사용자가 ⌘F 를 다른 액션(전역 포함)에 직접 걸었으면 이 기본값은 「없음」이 되고 터미널에서도 사용자가 건 액션이 돈다(fix3 R3-3).
+  { id: 'terminal.find', group: '터미널 pane', title: '터미널에서 찾기', defaultBinding: ['Mod+F'], bindingVariants: [0], variants: ['열기'], scope: 'terminal' },
   { id: 'group.even', group: '터미널 pane', title: '영역 크기 균등화', defaultBinding: [], bindingVariants: [], variants: ['균등화'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
-/** 액션이 매칭되는 자리 — `global` 어디서나 · `explorer` 탐색기 트리 포커스에서만(LIFE-592). */
-export type ActionScope = 'global' | 'explorer'
+/** 액션이 매칭되는 자리 — `global` 어디서나 · `explorer` 탐색기 트리 포커스에서만(LIFE-592) · `terminal` 터미널 pane 포커스에서만(LIFE-812). */
+export type ActionScope = 'global' | 'explorer' | 'terminal'
 export const scopeOf = (action: (typeof ACTIONS)[number]): ActionScope => ('scope' in action ? action.scope : 'global')
 /** 칸 위치 = `defaultBinding` 칸. `null` = 그 칸 조합 없음(비켜 선 칸을 그대로 둔 채 다른 칸만 고쳐 저장한 경우 — LIFE-495 fix2 R2-01). */
 export type Keybindings = Partial<Record<ActionId, (string | null)[]>>
@@ -117,7 +121,7 @@ export function bindingFromEvent(event: KeyInput): string | null {
  * 재정의해 둔 사용자의 `keybindings.json` 이 충돌로 버려지지 않게 한다(재정의가 이기고, 이 액션은 조합 없음으로 남는다 —
  * 단축키 설정에서 다시 배정할 수 있다). 처음부터 있던 액션의 기본값은 지금처럼 재정의보다 앞선다.
  */
-const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'explorer.undo', 'explorer.redo', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview', 'focus.toggleTerminalEditor', 'group.maximize']
+const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'explorer.undo', 'explorer.redo', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview', 'focus.toggleTerminalEditor', 'group.maximize', 'terminal.find']
 
 /**
  * 기본 조합 **개수가 바뀐** 액션의 옛 기본값 (LIFE-495 K7ⓘ). 칸 수가 다른 재정의는 아래 검사에서 버려지므로, 옛 칸 수 그대로인 재정의를
@@ -166,7 +170,10 @@ const scopeOfId = (id: string): ActionScope => {
 function claimedByOtherOverrides(input: { id: ActionId; overrides: Keybindings }): Set<string> {
   const claimed = new Set<string>()
   const scope = scopeOfId(input.id)
-  for (const [owner, bindings] of Object.entries(input.overrides)) if (owner !== input.id && scopeOfId(owner) === scope && Array.isArray(bindings)) for (const binding of bindings) if (binding !== null) claimed.add(binding)
+  // LIFE-812 fix3 R3-3 — 터미널 범위 기본값은 사용자가 그 조합을 **전역** 액션에 직접 건 재정의에도 비켜 선다(사용자 재정의가 이긴다).
+  // 범위가 달라 충돌은 아니지만, 비켜 서지 않으면 터미널 포커스에서 그 키가 사용자가 고른 액션 대신 찾기를 연다. 탐색기 범위는 그대로(트리 안에서 앞선다).
+  const yieldsTo = (ownerScope: ActionScope): boolean => ownerScope === scope || (scope === 'terminal' && ownerScope === 'global')
+  for (const [owner, bindings] of Object.entries(input.overrides)) if (owner !== input.id && yieldsTo(scopeOfId(owner)) && Array.isArray(bindings)) for (const binding of bindings) if (binding !== null) claimed.add(binding)
   return claimed
 }
 
@@ -188,10 +195,10 @@ export function bindingsFor(id: ActionId, overrides: Keybindings): readonly (str
 
 /**
  * Matching and collision checks use exactly the displayed/stored chords.
- * `scope` = 키가 난 자리(LIFE-592). `explorer` 면 탐색기 범위 액션을 먼저 보고 없으면 전역 액션, 그 밖(기본 `global`)이면 전역 액션만 본다.
+ * `scope` = 키가 난 자리(LIFE-592). `explorer`·`terminal` 이면 그 범위 액션을 먼저 보고 없으면 전역 액션, 그 밖(기본 `global`)이면 전역 액션만 본다.
  */
 export function matchBinding(binding: string, overrides: Keybindings, scope: ActionScope = 'global'): ShortcutMatch | null {
-  const order: ActionScope[] = scope === 'explorer' ? ['explorer', 'global'] : ['global']
+  const order: ActionScope[] = scope === 'global' ? ['global'] : [scope, 'global']
   for (const wanted of order) {
     for (const action of ACTIONS) {
       if (scopeOf(action) !== wanted) continue
@@ -203,7 +210,7 @@ export function matchBinding(binding: string, overrides: Keybindings, scope: Act
   return null
 }
 /** 누르고 있어도 한 번만 도는 액션 (LIFE-495 K6ⓔ) — 렌더러 keydown·main 메뉴 키 두 길이 같은 목록을 본다(fix1 R1-06). */
-export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview', 'focus.toggleTerminalEditor', 'group.maximize']
+export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview', 'focus.toggleTerminalEditor', 'group.maximize', 'terminal.find']
 
 /**
  * 편집기(파일 탭 Monaco)에 포커스가 있으면 **편집기에 양보하는** 액션 (LIFE-591). 터미널 pane 을 겨누는 단축키는 파일 탭이 활성이면 무동작이라(590 수정 r1 R1-B — `terminalKeyTarget`)

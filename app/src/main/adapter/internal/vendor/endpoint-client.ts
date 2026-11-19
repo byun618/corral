@@ -354,8 +354,12 @@ export class EndpointClient extends EventEmitter {
             try {
               const parsed = JSON.parse(pending.chunks.join(""));
               if (parsed.error) {
+                // corral: 오류 코드를 실어 보낸다 — 검색은 `stale_content` 를 가려 다시 묻는다(LIFE-812).
                 pending.reject(
-                  new Error(parsed.error.message ?? "endpoint request failed"),
+                  Object.assign(
+                    new Error(parsed.error.message ?? "endpoint request failed"),
+                    { code: typeof parsed.error.code === "string" ? parsed.error.code : null },
+                  ),
                 );
               } else {
                 pending.resolve(parsed.result);

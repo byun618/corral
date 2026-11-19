@@ -33,7 +33,8 @@ export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onI
       // LIFE-602 수정 1 R1-F: 편집 칸(본문 편집기·코멘트 입력)이 쓰는 조합은 그 칸에 양보한다 — 칸 밖에서는 그대로 전역 동작.
       if (binding !== null && EDITOR_KEYS.includes(binding) && event.target instanceof Element && event.target.closest('[data-editor-keys]')) return
       // LIFE-592 — 탐색기 트리 자체가 키를 받았으면 탐색기 범위 액션(⌘⌫·⌘Z·⌘⇧Z)을 먼저 본다. 트리 안 입력 행(새 이름·이름 변경)은 트리가 아니라 입력이다.
-      const scope = event.target instanceof Element && event.target.matches('[data-explorer-tree]') ? 'explorer' : 'global'
+      // LIFE-812 — 터미널 pane(xterm 입력칸)이 키를 받았으면 터미널 범위 액션(⌘F 찾기)을 먼저 본다.
+      const scope = !(event.target instanceof Element) ? 'global' : event.target.matches('[data-explorer-tree]') ? 'explorer' : event.target.closest('[data-term-pane]') !== null ? 'terminal' : 'global'
       const match = binding === null ? null : matchBinding(binding, latest.current.overrides, scope)
       if (match === null) return
       // Coordinator clarification: every keyboard action yields to tab renaming, including MRU.

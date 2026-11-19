@@ -191,8 +191,8 @@ export class UiPrefsStore {
         rightPanelOpen: parsed['rightPanelOpen'] === true,
         rightPanelWidth: typeof parsed['rightPanelWidth'] === 'number' && Number.isFinite(parsed['rightPanelWidth']) ? parsed['rightPanelWidth'] : null,
         // LIFE-682 — 모르는 보기 이름·숫자 아닌 폭은 기본(탐색기 · 토큰 폭). 범위 clamp 는 토큰을 아는 렌더러가 한다(rightPanelWidth 와 같다).
-        // LIFE-683 — `'scm'`(소스 제어)도 안다. 그 밖의 값은 여전히 탐색기.
-        rightPanelView: parsed['rightPanelView'] === 'detail' ? 'detail' : parsed['rightPanelView'] === 'scm' ? 'scm' : 'explorer',
+        // LIFE-683 — `'scm'`(소스 제어)도 안다. LIFE-811 — `'pr'` 도. 그 밖의 값은 여전히 탐색기.
+        rightPanelView: parsed['rightPanelView'] === 'detail' ? 'detail' : parsed['rightPanelView'] === 'scm' ? 'scm' : parsed['rightPanelView'] === 'pr' ? 'pr' : 'explorer',
         rightPanelDetailWidth: typeof parsed['rightPanelDetailWidth'] === 'number' && Number.isFinite(parsed['rightPanelDetailWidth']) ? parsed['rightPanelDetailWidth'] : null,
         explorerShowDotfiles: parsed['explorerShowDotfiles'] !== false,
         explorerShowIgnored: parsed['explorerShowIgnored'] !== false,

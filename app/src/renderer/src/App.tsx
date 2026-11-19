@@ -64,18 +64,21 @@ import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useRightPanel } from './hooks/useRightPanel.js'
 import { useExplorer } from './hooks/useExplorer.js'
 import { useScm } from './hooks/useScm.js'
+import { usePrComments } from './hooks/usePrComments.js'
 import { useFileOps } from './hooks/useFileOps.js'
 import { createWatchHold, forgetMissing, type WatchPush } from './watch-hold.js'
 import { RightPanel, RightPanelToggle } from './components/RightPanel.js'
 import { RIGHT_PANEL_VIEWS } from './components/right-panel-views.js'
 import { Explorer } from './components/Explorer.js'
 import { ScmView } from './components/ScmView.js'
+import { PrCommentsView } from './components/PrCommentsView.js'
 import { DiffView } from './components/DiffView.js'
 import { diffTabId, diffTitle, openOf, type ScmChange } from '../../shared/scm.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
 import { useFileDrag } from './hooks/useFileDrag.js'
 import { paneToFollow, pickPane } from './pane-utils.js'
+import { requestTerminalFind } from './terminal-search-controller.js'
 import { useOpenTabEntries } from './hooks/useOpenTabEntries.js'
 import { useUnread } from './hooks/useUnread.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
@@ -334,6 +337,7 @@ export function App(): React.JSX.Element {
   const explorerVisible = rightPanel.open && rightPanel.view === 'explorer'
   // LIFE-683 — 소스 제어 보기. 감시·git 은 이 보기가 보일 때만(탐색기와 같은 루트면 한 벌 — S8).
   const scmVisible = rightPanel.open && rightPanel.view === 'scm'
+  const prVisible = rightPanel.open && rightPanel.view === 'pr'
   const [scmFocusToken, setScmFocusToken] = useState(0)
   const [explorerFocusToken, setExplorerFocusToken] = useState(0)
   const repoCollapse = usePersistentCollapse('collapsedRepos')
@@ -681,6 +685,7 @@ export function App(): React.JSX.Element {
 
   const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: explorerVisible })
   const scm = useScm({ root: activeWorktreeRow?.path ?? null, active: scmVisible })
+  const prComments = usePrComments({ path: activeWorktreeRow?.path ?? null, branch: activeWorktreeRow?.branch ?? null, active: prVisible })
 
   const activeWorkspaceRow = useMemo(
     () => (state === null ? null : findWorkspace(state, lifecycle.activeWorkspaceId)),
@@ -2218,6 +2223,13 @@ export function App(): React.JSX.Element {
       if (groupId !== null) toggleMaximizeAndFocus(groupId)
     },
     'group.even': () => evenGroupsAndFocus(),
+    // LIFE-812 — 키는 터미널 포커스에서만 온다(범위 'terminal') — 키를 받은 그 pane. 팔레트에서 고르면 선택 pane.
+    'terminal.find': () => {
+      const activeTabId = layoutRef.current.activeTabId
+      const focused = document.activeElement instanceof Element ? document.activeElement.closest('[data-term-pane]')?.getAttribute('data-term-pane') ?? null : null
+      const paneId = focused ?? (activeTabId !== null && isFileTabId(activeTabId) ? null : lifecycle.selectedPane)
+      if (paneId !== null) requestTerminalFind(paneId)
+    },
     'terminal.zoom': () => {
       const groupId = layoutRef.current.activeGroupId
       const activeTabId = layoutRef.current.activeTabId
@@ -2777,7 +2789,7 @@ export function App(): React.JSX.Element {
   const connected = state.link.phase === 'live'
   // 수정 r1 R1-B — 파일 탭이 활성이면 pane 대상 명령은 무동작이라 팔레트에서도 막아 둔다.
   // LIFE-824 C1ⓕ — `terminal.focus` 는 파일·diff·빈 영역에서도 영역을 옮기므로 여기서 빠진다(diff 탭에서 켜진 채 무동작이던 무음 실패도 같이 사라진다).
-  const TERMINAL_PANE_ACTIONS = new Set<string>(['terminal.split', 'terminal.zoom'])
+  const TERMINAL_PANE_ACTIONS = new Set<string>(['terminal.split', 'terminal.zoom', 'terminal.find'])
   /** pane 없이도 도는 영역 이동(⌘⌥방향 — 이웃 영역·⌃`) — 선택 pane 이 없어도 켠다. */
   const GROUP_FOCUS_ACTIONS = new Set<string>(['terminal.focus', 'focus.toggleTerminalEditor'])
   /** LIFE-825 — 영역 배치 조작(최대화·균등화)은 pane 없이 돈다. 영역이 하나면 흐림 + 이유(C3·C4ⓖ). */
@@ -3016,6 +3028,7 @@ export function App(): React.JSX.Element {
           bodies={{
             explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} onOpenToSide={openFileToSide} onFileDrag={fileDrag.onExplorerDrag} ops={fileOps} notify={notify} />,
             scm: <ScmView scm={scm} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} mode={scm.mode} onChangeMode={scm.setMode} focusToken={scmFocusToken} onOpen={openScmChange} />,
+            pr: <PrCommentsView api={prComments} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} />,
             detail: <div ref={setDetailSlot} className="right-panel-detail" data-right-panel-detail="" />,
           }}
         />

@@ -1,6 +1,7 @@
 import type { Settings, SettingsWriteResult } from './terminal-settings.js'
 import type { GhosttyImportPreview } from './ghostty-import.js'
 import type { Keybindings, ShortcutMatch } from './keybindings.js'
+import type { TerminalRevealRequest, TerminalRevealResult, TerminalSearchRequest, TerminalSearchResult } from './terminal-search.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
@@ -15,6 +16,7 @@ import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer
 import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
 import type { ScmReadInput, ScmReadResult } from './scm.js'
 import type { PrBranchesResult, PrItemRefreshResult } from './pr-status.js'
+import type { PrCommentsResult } from './pr-comments.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
@@ -803,7 +805,7 @@ export type UiPrefs = {
 } & SidebarViewPrefs
 
 /** 오른쪽 패널 보기 (LIFE-682) — 목록·아이콘·제목은 렌더러 `right-panel-views.ts` 한 곳. */
-export type RightPanelView = 'explorer' | 'scm' | 'detail'
+export type RightPanelView = 'explorer' | 'scm' | 'pr' | 'detail'
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
 
@@ -835,6 +837,8 @@ export type TerminalFrame = {
   cols: number
   rows: number
   mouseReporting: boolean
+  /** 뷰포트 맨 위의 절대 행(0 = 스크롤백 맨 위) — 검색 강조의 기준(LIFE-812). 스크롤 상태가 없는 pane 은 null. */
+  scrollTop: number | null
   data: Uint8Array
 }
 
@@ -1151,6 +1155,12 @@ export type CorralApi = {
   onFileDrop: (listener: (drop: TerminalFileDrop) => void) => () => void
   /** 영역 상자가 정한 **탭 격자**를 1회 요청한다 (pane 단위가 아니다 — §10-R13). */
   termScroll: (input: { paneId: string } & TerminalScroll) => void
+  /** LIFE-812 — 스크롤백 전체 검색(서버측). 출력이 계속 바뀌면 재시도 상한 뒤 `busy`. */
+  termSearch: (request: TerminalSearchRequest) => Promise<TerminalSearchResult>
+  /** LIFE-812 — 절대 행을 보이게 스크롤한다(이미 보이면 그대로). */
+  termReveal: (input: TerminalRevealRequest) => Promise<TerminalRevealResult>
+  /** LIFE-812 fix1 — 막대 닫기·질의 변경·탭 전환: 그 pane 의 대기 중 검색 재시도·이동 요청을 버리게 한다. */
+  termSearchCancel: (input: { paneId: string }) => void
   /** 줌 — paneId null 이면 해제. 그리는 건 클라이언트, 격자만 역산해 요청한다 (F2-3). */
   termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) => void
   // --- pane 분할 (② — herdr 소유) ---
@@ -1228,6 +1238,8 @@ export type CorralApi = {
   prBranches: (input: { paths: string[] }) => Promise<PrBranchesResult>
   /** 작업 하나의 열린 PR 을 URL 로 다시 본다(LIFE-624 C10) — 사라진 worktree 의 머지·닫힘을 활동에 남긴다. */
   prRefreshItem: (query: WorkActivityQuery) => Promise<PrItemRefreshResult>
+  /** PR 리뷰 코멘트(LIFE-811) — 알려진 worktree 경로 하나의 PR 의 리뷰·스레드·일반 코멘트. `refresh` 면 TTL 무시. 「PR」 보기가 보일 때만 부른다. */
+  prComments: (input: { path: string; refresh?: boolean }) => Promise<PrCommentsResult>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }
 

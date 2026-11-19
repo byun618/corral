@@ -35,6 +35,7 @@ import type {
 import type { Settings, SettingsWriteResult } from '../shared/terminal-settings.js'
 import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
+import type { TerminalRevealRequest, TerminalRevealResult, TerminalSearchRequest, TerminalSearchResult } from '../shared/terminal-search.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
 import type { ResourceCloseResult, ResourceCloseRoute, ResourceOrphanCloseResult, ResourceSnapshot } from '../shared/resource.js'
 import type { UsageSnapshot } from '../shared/usage.js'
@@ -122,6 +123,9 @@ const EXPOSED = [
   'saveClipboardImage',
   'onFileDrop',
   'termScroll',
+  'termSearch',
+  'termReveal',
+  'termSearchCancel',
   'termZoom',
   'repaintPane',
   'splitPane',
@@ -149,6 +153,7 @@ const EXPOSED = [
   'detachWorkLink',
   'prBranches',
   'prRefreshItem',
+  'prComments',
   'preloadEnv',
 ]
 
@@ -360,6 +365,9 @@ const api: CorralApi = {
     }
   },
   termScroll: (input: { paneId: string } & TerminalScroll) => ipcRenderer.send('corral:termScroll', input),
+  termSearch: (request: TerminalSearchRequest): Promise<TerminalSearchResult> => ipcRenderer.invoke('corral:termSearch', request),
+  termReveal: (input: TerminalRevealRequest): Promise<TerminalRevealResult> => ipcRenderer.invoke('corral:termReveal', input),
+  termSearchCancel: (input: { paneId: string }) => ipcRenderer.send('corral:termSearchCancel', input),
   termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) =>
     ipcRenderer.send('corral:termZoom', input),
   repaintPane: (input: { paneId: string }): Promise<void> => ipcRenderer.invoke('corral:repaintPane', input),
@@ -476,6 +484,7 @@ const api: CorralApi = {
   detachWorkLink: (input) => ipcRenderer.invoke('corral:detachWorkLink', input),
   prBranches: (input) => ipcRenderer.invoke('corral:prBranches', input),
   prRefreshItem: (query) => ipcRenderer.invoke('corral:prRefreshItem', query),
+  prComments: (input) => ipcRenderer.invoke('corral:prComments', input),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

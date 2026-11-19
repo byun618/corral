@@ -10,10 +10,12 @@
 //   동시 실행을 상한 아래로 줄 세운다.
 // - **활동**(C8·C10): 링크된 worktree 의 PR 을 보면 그 작업에 열림(+ 머지/닫힘) 줄을 PR 의 시각으로 남긴다 — `eventKey` 로 한 번만.
 //   worktree 가 사라진 뒤에도 머지를 잡도록, 열림만 있는 PR 은 상세가 열릴 때 URL 로 다시 본다(`refreshItem`).
+// - **코멘트**(LIFE-811): worktree 경로 → 위 브랜치 조회 결과의 `pr.url` → `gh api graphql` 읽기 query 하나(`comments`). gh 고르기·실행기·분류·TTL·동시 상한은 같은 장치.
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { isRecord, safeParse } from '../shared/json.js'
+import { PR_COMMENTS_QUERY, prUrlParts, readPrComments, type PrComments, type PrCommentsResult } from '../shared/pr-comments.js'
 import { isPrUrl, type PrBranchesResult, type PrErrorKind, type PrInfo, type PrItemRefreshResult, type PrLookup, type PrState } from '../shared/pr-status.js'
 import type { RepoRow, WorktreeRow } from '../shared/types.js'
 import { readWorkActivityQuery, type WorkActivityChange, type WorkActivityResult } from '../shared/work.js'
@@ -35,6 +37,11 @@ export const PR_JSON_FIELDS = 'number,state,isDraft,url,headRefName,baseRefName,
  * 그래도 포크 PR 이 이보다 많고 같은 레포 PR 이 그 뒤에 있으면 「PR 없음」 이 된다(gh 는 최근 것부터 준다).
  */
 export const PR_LIST_LIMIT = 50
+/**
+ * 코멘트 query 출력 상한(LIFE-811) — 1 MiB 는 일반 코멘트 100건 PR(cli/cli #14963)이 206 KB 라 목록 셋이 다 차면 넘을 수 있다
+ * (리뷰 100 + 일반 100 + 스레드 100 × 답글 50). 넘으면 「출력이 너무 큽니다」 오류 값.
+ */
+export const GH_COMMENTS_MAX_BYTES = 8 * 1024 * 1024
 
 const realOr = (file: string): string => {
   try {
@@ -113,13 +120,15 @@ export const makeRunGh = ({ timeoutMs = GH_TIMEOUT_MS, maxBytes = GH_MAX_BYTES }
 })
 
 export const runGh: GhRun = makeRunGh()
+const runGhComments: GhRun = makeRunGh({ maxBytes: GH_COMMENTS_MAX_BYTES })
 
 const firstLine = (text: string): string => text.split('\n').map((line) => line.trim()).find((line) => line.length > 0)?.slice(0, 200) ?? ''
 
-const fail = (error: PrErrorKind, message: string): PrLookup => ({ kind: 'error', error, message })
+type PrFailure = { kind: 'error'; error: PrErrorKind; message: string }
+const fail = (error: PrErrorKind, message: string): PrFailure => ({ kind: 'error', error, message })
 
 /** 실패 분류(F3) — 성공(exit 0)은 `readOutput` 이 받는다. */
-export function classifyFailure(outcome: GhOutcome): PrLookup {
+export function classifyFailure(outcome: GhOutcome): PrFailure {
   switch (outcome.kind) {
     case 'spawn_error':
       return outcome.code === 'ENOENT' || outcome.code === 'EACCES' ? fail('no_gh', outcome.message) : fail('failed', outcome.message)
@@ -231,8 +240,33 @@ export type PrStatusDeps = {
 
 const branchName = (branch: string | null): string | null => (branch === null ? null : branch.replace(/^refs\/heads\//, ''))
 
+/**
+ * 코멘트 query 의 gh 인자(C2) — `api graphql` + 호스트 + 변수 셋 + query 하나. owner·name 은 `-f`(문자열 그대로 — `-F` 는 `true`·숫자 이름을 형 변환한다),
+ * 번호만 `-F`(정수). 호스트는 `github.com` 고정 — PR URL 이 `isPrUrl` 로 github.com 임을 확인한 값이라 `GH_HOST` 를 따르지 않는다(리뷰 r1 A8).
+ * GitHub 쓰기 인자(`-X`·`--method`·mutation)는 없다.
+ */
+export function prCommentsArgs({ owner, name, number }: { owner: string; name: string; number: number }): string[] {
+  return ['api', 'graphql', '--hostname', 'github.com', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${number}`, '-f', `query=${PR_COMMENTS_QUERY}`]
+}
+
+/** 코멘트 캐시 값 — 코멘트만(리뷰 r1 A3). 머리의 PR 상태는 매 호출의 최신 브랜치 조회에서 덧붙인다. */
+export type CommentsOutcome = { kind: 'comments'; comments: PrComments } | { kind: 'none' } | PrFailure
+
+/** 코멘트 query 의 gh 결과 → 캐시 값. PR 조회로 찾은 번호를 GraphQL 이 못 찾으면(지워진 PR — 실측 a5 exit 1) 「PR 없음」. */
+export function readCommentsOutcome(outcome: GhOutcome): CommentsOutcome {
+  if (outcome.kind === 'exit' && outcome.code === 0) {
+    const comments = readPrComments(outcome.stdout)
+    return comments === null ? fail('failed', 'gh 출력 모양이 다릅니다') : { kind: 'comments', comments }
+  }
+  if (outcome.kind === 'exit' && /Could not resolve to a PullRequest/i.test(outcome.stderr)) return { kind: 'none' }
+  return classifyFailure(outcome)
+}
+
+type CacheEntry<T> = { at: number; ttl: number; value: Promise<T> }
+
 export class PrStatus {
-  private readonly cache = new Map<string, { at: number; ttl: number; value: Promise<PrLookup> }>()
+  private readonly cache = new Map<string, CacheEntry<PrLookup>>()
+  private readonly commentsCache = new Map<string, CacheEntry<CommentsOutcome>>()
   private running = 0
   private readonly queue: (() => void)[] = []
   private lastGh: string | null | undefined = undefined
@@ -244,35 +278,76 @@ export class PrStatus {
   /** 브랜치 조회(C5) — 알려진 worktree 경로만. 링크된 worktree 면 활동에 남긴다. */
   async branches(input: unknown): Promise<PrBranchesResult> {
     const paths = isRecord(input) && Array.isArray(input.paths) ? input.paths.filter((value): value is string => typeof value === 'string').slice(0, PR_MAX_PATHS) : []
-    const repos = this.deps.repos()
-    const rows = new Map<string, WorktreeRow>()
-    for (const repo of repos) for (const row of repo.worktrees) rows.set(row.path, row)
+    const rows = this.worktreeRows()
     const lookups: Record<string, PrLookup> = {}
     let recorded = 0
     await Promise.all([...new Set(paths)].map(async (worktreePath) => {
-      const row = rows.get(worktreePath)
-      if (row === undefined) { lookups[worktreePath] = { kind: 'rejected', reason: '알려진 worktree 가 아닙니다' }; return }
-      const branch = branchName(row.branch)
-      if (branch === null) { lookups[worktreePath] = { kind: 'none' }; return }
-      const result = await this.cached({
-        key: `b:${worktreePath}\n${branch}`,
-        args: ['pr', 'list', '--head', branch, '--state', 'all', '--json', PR_JSON_FIELDS, '--limit', String(PR_LIST_LIMIT)],
-        cwd: worktreePath,
-        many: true,
-      })
-      lookups[worktreePath] = result
-      const link = row.workLink ?? null
-      if (result.kind === 'pr' && link !== null && link.connected) {
-        recorded += this.record({ pr: result.pr, scope: { connectionId: link.connectionId, itemId: link.itemId, itemKey: link.key, worktree: worktreePath } })
-      }
+      const one = await this.lookupPath({ worktreePath, rows, force: false, record: true })
+      lookups[worktreePath] = one.lookup
+      recorded += one.recorded
     }))
     return { lookups, recorded }
+  }
+
+  /**
+   * 코멘트 조회(LIFE-811 C1) — 입력은 지금 트리의 worktree 경로 하나. 경로 → 브랜치 → PR 은 `branches` 와 같은 길·캐시,
+   * 코멘트 query 의 owner·repo·번호는 그 결과의 `pr.url`(`isPrUrl` 통과값)에서만 얻는다. `refresh` 면 두 조회 모두 TTL 을 무시한다(C8).
+   * 활동은 남기지 않는다 — 기록과 그 수(`recorded` → 작업 상세 재읽기)는 base 대로 `branches()` 만(리뷰 r1 A2).
+   */
+  async comments(input: unknown): Promise<PrCommentsResult> {
+    const worktreePath = isRecord(input) && typeof input.path === 'string' ? input.path : null
+    if (worktreePath === null) return { kind: 'rejected', reason: '요청 모양이 잘못됐습니다' }
+    const force = isRecord(input) && input.refresh === true
+    const { lookup } = await this.lookupPath({ worktreePath, rows: this.worktreeRows(), force, record: false })
+    if (lookup.kind !== 'pr') return lookup
+    const pr = lookup.pr
+    const parts = prUrlParts(pr.url)
+    if (parts === null) return fail('failed', 'PR 주소를 읽지 못했습니다')
+    const outcome = await this.cached({
+      store: this.commentsCache,
+      key: `c:${pr.url}`,
+      force,
+      task: async () => {
+        const launched = await this.launch({ args: prCommentsArgs(parts), cwd: '/', run: this.deps.run ?? runGhComments })
+        const result = launched.kind === 'error' ? launched : readCommentsOutcome(launched)
+        this.deps.log?.('pr.comments', { result: result.kind, ...(result.kind === 'error' ? { error: result.error } : {}) })
+        return result
+      },
+      onThrow: (message) => fail('failed', message),
+    })
+    return outcome.kind === 'comments' ? { kind: 'comments', pr, comments: outcome.comments } : outcome
+  }
+
+  private worktreeRows(): Map<string, WorktreeRow> {
+    const rows = new Map<string, WorktreeRow>()
+    for (const repo of this.deps.repos()) for (const row of repo.worktrees) rows.set(row.path, row)
+    return rows
+  }
+
+  /** 경로 하나의 브랜치 조회 — `record` 이고 링크된 worktree 면 활동에 남긴다(같은 PR 은 `eventKey` 로 한 번만). */
+  private async lookupPath({ worktreePath, rows, force, record }: { worktreePath: string; rows: Map<string, WorktreeRow>; force: boolean; record: boolean }): Promise<{ lookup: PrLookup; recorded: number }> {
+    const row = rows.get(worktreePath)
+    if (row === undefined) return { lookup: { kind: 'rejected', reason: '알려진 worktree 가 아닙니다' }, recorded: 0 }
+    const branch = branchName(row.branch)
+    if (branch === null) return { lookup: { kind: 'none' }, recorded: 0 }
+    const lookup = await this.cachedLookup({
+      key: `b:${worktreePath}\n${branch}`,
+      args: ['pr', 'list', '--head', branch, '--state', 'all', '--json', PR_JSON_FIELDS, '--limit', String(PR_LIST_LIMIT)],
+      cwd: worktreePath,
+      many: true,
+      force,
+    })
+    const link = row.workLink ?? null
+    if (record && lookup.kind === 'pr' && link !== null && link.connected) {
+      return { lookup, recorded: this.record({ pr: lookup.pr, scope: { connectionId: link.connectionId, itemId: link.itemId, itemKey: link.key, worktree: worktreePath } }) }
+    }
+    return { lookup, recorded: 0 }
   }
 
   /** URL 조회(C5) — GitHub PR URL 꼴만. 레포 밖 cwd 에서도 된다(실측 a4 I). */
   byUrl(url: unknown): Promise<PrLookup> {
     if (!isPrUrl(url)) return Promise.resolve({ kind: 'rejected', reason: 'GitHub PR URL 이 아닙니다' })
-    return this.cached({ key: `u:${url}`, args: ['pr', 'view', url, '--json', PR_JSON_FIELDS], cwd: '/', many: false })
+    return this.cachedLookup({ key: `u:${url}`, args: ['pr', 'view', url, '--json', PR_JSON_FIELDS], cwd: '/', many: false, force: false })
   }
 
   /** 작업 하나의 열린 PR 재조회(C10) — 활동에 열림이 있고 머지가 없는 PR 을 URL 로 다시 본다. 닫힘 기록도 다시 본다 — 다시 열려 머지될 수 있다(r1 c1-2). */
@@ -317,17 +392,21 @@ export class PrStatus {
     return count
   }
 
-  /** TTL 캐시 + 진행 중 합치기. */
-  private cached({ key, args, cwd, many }: { key: string; args: string[]; cwd: string; many: boolean }): Promise<PrLookup> {
+  private cachedLookup({ key, args, cwd, many, force }: { key: string; args: string[]; cwd: string; many: boolean; force: boolean }): Promise<PrLookup> {
+    return this.cached({ store: this.cache, key, force, task: () => this.execute({ args, cwd, many }), onThrow: (message) => fail('failed', message) })
+  }
+
+  /** TTL 캐시 + 진행 중 합치기. `force`(새로고침 — LIFE-811 C8)는 TTL 을 무시하고 새로 띄운다. */
+  private cached<T extends { kind: string }>({ store, key, force, task, onThrow }: { store: Map<string, CacheEntry<T>>; key: string; force: boolean; task: () => Promise<T>; onThrow: (message: string) => T }): Promise<T> {
     const now = (this.deps.now ?? Date.now)()
-    const hit = this.cache.get(key)
-    if (hit !== undefined && now - hit.at < hit.ttl) return hit.value
+    const hit = store.get(key)
+    if (!force && hit !== undefined && now - hit.at < hit.ttl) return hit.value
     // 오래된 항목 정리 — 키가 무한히 늘지 않게.
-    for (const [old, entry] of this.cache) if (now - entry.at >= entry.ttl) this.cache.delete(old)
+    for (const [old, entry] of store) if (now - entry.at >= entry.ttl) store.delete(old)
     // 진행 중에는 성공 TTL 로 합치고, 끝나면 TTL 을 **완료 시각**부터 다시 센다(리뷰 r2 c2-4 — 오래 걸린 실행·줄 선 요청이 끝나자마자 만료되지 않게).
     // 오류로 끝나면 그 항목만 짧은 TTL(r1 c1-5).
-    const entry = { at: now, ttl: this.deps.ttlMs ?? PR_TTL_MS, value: this.limited(() => this.execute({ args, cwd, many })) }
-    this.cache.set(key, entry)
+    const entry: CacheEntry<T> = { at: now, ttl: this.deps.ttlMs ?? PR_TTL_MS, value: this.limited({ task, onThrow }) }
+    store.set(key, entry)
     void entry.value.then((result) => {
       entry.at = (this.deps.now ?? Date.now)()
       if (result.kind === 'error') entry.ttl = Math.min(entry.ttl, this.deps.errorTtlMs ?? PR_ERROR_TTL_MS)
@@ -335,7 +414,8 @@ export class PrStatus {
     return entry.value
   }
 
-  private async execute({ args, cwd, many }: { args: string[]; cwd: string; many: boolean }): Promise<PrLookup> {
+  /** gh 를 골라 띄운다 — 못 띄울 사정(gh 없음·cwd 없음)은 분류 값. */
+  private async launch({ args, cwd, run }: { args: string[]; cwd: string; run: GhRun }): Promise<GhOutcome | PrFailure> {
     const roots = this.deps.repos().flatMap((repo) => repo.worktrees.map((row) => row.path))
     const gh = (this.deps.gh ?? ((known: string[]) => resolveGh({ pathEnv: process.env.PATH, roots: known })))(roots)
     if (gh !== this.lastGh) {
@@ -346,20 +426,24 @@ export class PrStatus {
     // 없는 cwd 는 execFile 이 ENOENT 로 끝내 「gh 없음」 과 같은 모양이 된다(r1 c1-1) — 띄우기 전에 가른다(트리에서 막 지워진 worktree 등).
     if (!(this.deps.cwdExists ?? isDirectory)(cwd)) return fail('failed', 'worktree 경로가 없습니다')
     this.calls += 1
-    const outcome = await (this.deps.run ?? runGh)({ gh, args, cwd })
-    const result = outcome.kind === 'exit' && outcome.code === 0 ? readOutput({ stdout: outcome.stdout, many }) : classifyFailure(outcome)
+    return run({ gh, args, cwd })
+  }
+
+  private async execute({ args, cwd, many }: { args: string[]; cwd: string; many: boolean }): Promise<PrLookup> {
+    const outcome = await this.launch({ args, cwd, run: this.deps.run ?? runGh })
+    const result = outcome.kind === 'error' ? outcome : outcome.kind === 'exit' && outcome.code === 0 ? readOutput({ stdout: outcome.stdout, many }) : classifyFailure(outcome)
     this.deps.log?.('pr.lookup', { op: args[1], result: result.kind, ...(result.kind === 'error' ? { error: result.error } : {}) })
     return result
   }
 
-  /** 동시 실행 상한 — 넘는 요청은 줄 선다. 던져도 분류 값으로 끝낸다. */
-  private limited(task: () => Promise<PrLookup>): Promise<PrLookup> {
+  /** 동시 실행 상한 — 넘는 요청은 줄 선다. 던져도 분류 값으로 끝낸다. 목록·코멘트 조회가 같은 상한을 나눠 쓴다. */
+  private limited<T>({ task, onThrow }: { task: () => Promise<T>; onThrow: (message: string) => T }): Promise<T> {
     const max = this.deps.maxConcurrent ?? PR_MAX_CONCURRENT
-    return new Promise<PrLookup>((resolve) => {
+    return new Promise<T>((resolve) => {
       const start = (): void => {
         this.running += 1
         void task()
-          .catch((error: unknown) => fail('failed', String(error).slice(0, 200)))
+          .catch((error: unknown) => onThrow(String(error).slice(0, 200)))
           .then(resolve)
           .finally(() => {
             this.running -= 1

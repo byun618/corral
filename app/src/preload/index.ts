@@ -44,6 +44,7 @@ import type { WorkSettingsState } from '../shared/work.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
 import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerOpResult } from '../shared/explorer-ops.js'
 import type { FileListInput, FileListResult } from '../shared/file-list.js'
+import type { ContentSearchInput, ContentSearchResult } from '../shared/content-search.js'
 import type { ScmReadInput, ScmReadResult } from '../shared/scm.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
 
@@ -102,6 +103,8 @@ const EXPOSED = [
   'onExplorerEvent',
   'fileList',
   'fileListCancel',
+  'contentSearch',
+  'contentSearchCancel',
   'readFile',
   'fileWatch',
   'readImage',
@@ -275,6 +278,8 @@ const api: CorralApi = {
   explorerFocus: (focused: boolean) => ipcRenderer.send('corral:explorerFocus', focused),
   fileList: (input: FileListInput): Promise<FileListResult> => ipcRenderer.invoke('corral:fileList', input),
   fileListCancel: (requestId: string) => ipcRenderer.send('corral:fileListCancel', requestId),
+  contentSearch: (input: ContentSearchInput): Promise<ContentSearchResult> => ipcRenderer.invoke('corral:contentSearch', input),
+  contentSearchCancel: (requestId: string) => ipcRenderer.send('corral:contentSearchCancel', requestId),
   onExplorerDrop: (listener: (drop: ExplorerDrop) => void) => {
     explorerDropListeners.add(listener)
     return () => {

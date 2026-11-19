@@ -105,7 +105,10 @@ import {
   type CloseFollow,
   type FilePlacement,
 } from './file-tabs.js'
-import { FileView, focusLiveEditor, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
+import { FileView, focusLiveEditor, revealInLiveEditor, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
+import { SearchView } from './components/SearchView.js'
+import { useContentSearch } from './hooks/useContentSearch.js'
+import { useSearchOpen } from './hooks/useSearchOpen.js'
 import { createMarkdownToggleHandler } from './markdown-toggle.js'
 import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, thawEditing, type FileDoc } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, type SaveDeps } from './file-save.js'
@@ -156,7 +159,7 @@ const DIRECTION_QUEUE_MAX = 2
 const PANE_DIRECTIONS: readonly PaneDirection[] = ['left', 'right', 'up', 'down']
 /** 작업 페이지가 열린 동안에도 사는 단축키 (LIFE-601 C4) — 나머지 워크스페이스 단축키는 삼키기만 한다. */
 // LIFE-682 A8 — 오른쪽 패널은 페이지와 무관한 전역 패널이라 작업 페이지에서도 ⌘L·⌘⇧E 가 돈다. 탐색기 범위 액션(필터·삭제·기록)은 트리 포커스에서만 오므로 같이 산다.
-const TASKS_PAGE_SHORTCUTS: readonly ActionId[] = ['tasks.toggle', 'settings.open', 'sidebar.toggle', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'explorer.filter', 'explorer.delete', 'explorer.undo', 'explorer.redo']
+const TASKS_PAGE_SHORTCUTS: readonly ActionId[] = ['tasks.toggle', 'settings.open', 'sidebar.toggle', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'search.show', 'explorer.filter', 'explorer.delete', 'explorer.undo', 'explorer.redo']
 /** LIFE-592 — 탐색기 이동 뒤 옛·새 경로 감시 push 를 더 버리는 시간(감시 디바운스보다 길게). */
 const WATCH_HOLD_GRACE_MS = 1_000
 /** LIFE-593 수정 r2 R2-G-04 — 저장된 배치(앱 시작 복원)에서 worktree 별 활성 파일 탭 경로. 처음 보일 때 한 번 최근 기록을 건너뛴다(사용자가 연 것이 아니다). */
@@ -339,6 +342,8 @@ export function App(): React.JSX.Element {
   const scmVisible = rightPanel.open && rightPanel.view === 'scm'
   const prVisible = rightPanel.open && rightPanel.view === 'pr'
   const [scmFocusToken, setScmFocusToken] = useState(0)
+  // LIFE-803 — 검색 보기 입력칸 포커스 토큰(⌘⇧F).
+  const [searchFocusToken, setSearchFocusToken] = useState(0)
   const [explorerFocusToken, setExplorerFocusToken] = useState(0)
   const repoCollapse = usePersistentCollapse('collapsedRepos')
   // LIFE-467: 알약은 기본 **접힘**(Orca 와 같다) — 펼친 worktree 만 영속한다. 옛 `collapsedGroups`(기본 펼침)는 안 읽는다.
@@ -685,6 +690,8 @@ export function App(): React.JSX.Element {
 
   const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: explorerVisible })
   const scm = useScm({ root: activeWorktreeRow?.path ?? null, active: scmVisible })
+  // LIFE-803 — 내용 전체 검색 세션. 패널을 숨겨도 질의·결과가 남고, 활성 worktree 가 바뀌면 그 루트로(C6).
+  const contentSearch = useContentSearch({ root: activeWorktreeRow?.path ?? null, visible: rightPanel.open && rightPanel.view === 'search' })
   const prComments = usePrComments({ path: activeWorktreeRow?.path ?? null, branch: activeWorktreeRow?.branch ?? null, active: prVisible })
 
   const activeWorkspaceRow = useMemo(
@@ -1655,6 +1662,22 @@ export function App(): React.JSX.Element {
       if (input.focus) focusOpenedFile({ worktreePath, rel: target })
     })
   }
+  /**
+   * LIFE-803 C5·C6 — 검색 결과 행 열기: 탐색기 한 번 클릭과 같은 열기(미리보기 규칙 그대로) + 그 줄:열 요청. 활성 탭 감시·적용 시점 확인·포커스 규칙은
+   * `useSearchOpen`(r1 R1-03·R1-04 — App 연결을 시험이 직접 본다). 포커스는 ⌘P 열기와 같은 `focusOpenedFile`(포커스 순번).
+   */
+  const openSearchResult = useSearchOpen({
+    worktreePath: activeWorktreeRow?.path ?? null,
+    store: activeWorktreeRow === null ? null : fileViewStatesOf(activeWorktreeRow.path),
+    activeTabId: activeTabIdForReveal,
+    currentWorktreePath: () => activeWorktreeRowRef.current?.path ?? null,
+    markdownPreview: ({ worktreePath, tabId }) => markdownModesOf(worktreePath).get(tabId) === 'preview',
+    openFile: openFileFromExplorer,
+    // 아래에 선언된 함수라 부를 때 찾는다.
+    focusOpened: (input) => focusOpenedFile(input),
+    focusSeq: () => focusSeqRef.current,
+    revealLive: revealInLiveEditor,
+  })
   const openFromQuickOpen = (rel: string): void => openListedFile({ rel, preview: false, focus: true })
   const openFromQuickOpenToSide = (rel: string): void => openListedFile({ rel, preview: false, focus: true, side: true })
   /**
@@ -1675,7 +1698,7 @@ export function App(): React.JSX.Element {
    * 연 파일 탭에 포커스(수정 r1 R1-C-01·R1-C-06) — 편집기가 붙으면 편집기 핸들의 `focus()`(Monaco 0.57 은 EditContext — 입력 요소가 textarea 가 아니다).
    * 편집기가 없는 보기(이미지·바이너리·상한 초과·오류·Markdown 미리보기)면 그 보기 자리(`[data-file-view]`, tabIndex -1)에. 편집기는 비동기로 붙으므로 프레임마다 다시 본다(최대 약 2 s).
    */
-  const focusOpenedFile = (input: { worktreePath: string; rel: string }): void => {
+  const focusOpenedFile = (input: { worktreePath: string; rel: string; held?: () => boolean }): number => {
     const tabId = fileTabId(input.rel)
     const startedAt = performance.now()
     const seq = beginFocusMove()
@@ -1685,6 +1708,8 @@ export function App(): React.JSX.Element {
       if (focusSeqRef.current !== seq) return
       // fix3 C-1 — 순번을 안 올리는 프로그램 이동(`requestedPane` 등)이 활성 탭을 바꿔도 그만둔다.
       if (!aimed()) return
+      // LIFE-803 r1 R1-03 — 부른 쪽이 「그 사이 포커스가 옮겨 갔다」 고 보면 그만둔다(검색 결과 열기 — `useSearchOpen`).
+      if (input.held !== undefined && !input.held()) return
       if (focusLiveEditor({ store: fileViewStatesOf(input.worktreePath), tabId })) return
       const view = document.querySelector<HTMLElement>(`.file-group[data-file-view="${CSS.escape(input.rel)}"]`)
       const waiting = view === null || view.querySelector('[data-file-editor], [data-file-notice="loading"]') !== null
@@ -1693,6 +1718,7 @@ export function App(): React.JSX.Element {
       else view?.focus({ preventScroll: true })
     }
     requestAnimationFrame(attempt)
+    return seq
   }
 
   /**
@@ -2312,6 +2338,13 @@ export function App(): React.JSX.Element {
     'scm.show': () => {
       rightPanel.show('scm')
       requestAnimationFrame(() => setScmFocusToken((value) => value + 1))
+    },
+    // LIFE-803 — VS Code `workbench.view.search`: 닫혀 있으면 열고 검색 보기로, 입력칸 포커스·기존 글 전체 선택.
+    'search.show': () => {
+      // r1 R1-03 — 포커스 이동으로 센다: 기다리던 연 파일 포커스(`focusOpenedFile`)·열기 요청의 포커스가 입력칸을 빼앗지 않게.
+      beginFocusMove()
+      rightPanel.show('search')
+      requestAnimationFrame(() => setSearchFocusToken((value) => value + 1))
     },
     // LIFE-515 — 기본 Agent 로 새 탭. ⌘T 와 같은 대상 workspace·같은 생성 경로(createRow), 에이전트 갈래는 Quick-launch 와 같은 launchAgent(워치독).
     'terminal.newAgent': () => {
@@ -3028,6 +3061,7 @@ export function App(): React.JSX.Element {
           bodies={{
             explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} onOpenToSide={openFileToSide} onFileDrag={fileDrag.onExplorerDrag} ops={fileOps} notify={notify} />,
             scm: <ScmView scm={scm} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} mode={scm.mode} onChangeMode={scm.setMode} focusToken={scmFocusToken} onOpen={openScmChange} />,
+            search: <SearchView api={contentSearch} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={searchFocusToken} onOpen={openSearchResult} />,
             pr: <PrCommentsView api={prComments} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} />,
             detail: <div ref={setDetailSlot} className="right-panel-detail" data-right-panel-detail="" />,
           }}

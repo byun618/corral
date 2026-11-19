@@ -11,6 +11,7 @@ import type { WorktreeWorkLink } from './work-link.js'
 import type { RelaunchAgentInput, StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
 import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
 import type { FileListInput, FileListResult } from './file-list.js'
+import type { ContentSearchInput, ContentSearchResult } from './content-search.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
 import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
@@ -805,7 +806,7 @@ export type UiPrefs = {
 } & SidebarViewPrefs
 
 /** 오른쪽 패널 보기 (LIFE-682) — 목록·아이콘·제목은 렌더러 `right-panel-views.ts` 한 곳. */
-export type RightPanelView = 'explorer' | 'scm' | 'pr' | 'detail'
+export type RightPanelView = 'explorer' | 'scm' | 'search' | 'pr' | 'detail'
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
 
@@ -1101,6 +1102,10 @@ export type CorralApi = {
   fileList: (input: FileListInput) => Promise<FileListResult>
   /** 진행 중 목록 작업을 끝낸다(대화상자 닫기·worktree 전환 — E7ⓓ). */
   fileListCancel: (requestId: string) => void
+  // --- 내용 전체 검색 (LIFE-803) — 읽기 전용 `git grep`. 루트는 열린 worktree 만, 넘기는 것은 루트·질의·토글 3개·요청 id 뿐(main `content-search.ts`) ---
+  contentSearch: (input: ContentSearchInput) => Promise<ContentSearchResult>
+  /** 진행 중 검색을 끝낸다(새 검색·빈 질의·worktree 전환). */
+  contentSearchCancel: (requestId: string) => void
   // --- 탐색기 파일 조작 (LIFE-592 F4) — 만들기·이름 변경/이동·휴지통·되살리기·복제·가져오기. 가둠·덮어쓰기 금지·휴지통은 main(`explorer-ops.ts`) ---
   explorerOp: (input: ExplorerOpInput) => Promise<ExplorerOpResult>
   /** 탐색기 트리가 활성 요소가 됐다/떠났다 — main 이 그동안만 ⌘Z·⌘⇧Z 를 탐색기 실행 취소로 가져온다(`raw/claude/undo-routing.md`). */

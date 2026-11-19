@@ -89,8 +89,8 @@ export function focusLiveEditor(input: { store: ViewStateStore; tabId: string })
 export function revealInLiveEditor(input: { store: ViewStateStore; tabId: string }): boolean {
   for (const live of liveEditorsOf(input.store)) {
     if (live.tabId !== input.tabId) continue
-    const target = revealSlot.take({ store: input.store, tabId: input.tabId })
-    if (target !== null) applyReveal(live.editor, target)
+    const taken = revealSlot.take({ store: input.store, tabId: input.tabId })
+    if (taken !== null) applyReveal(live.editor, taken)
     return true
   }
   return false
@@ -261,6 +261,12 @@ export function FileView({
       if (toggles.get(tabId) === toggle) toggles.delete(tabId)
     }
   }, [togglable, markdownModes, tabId])
+
+  // LIFE-803 r1 C5ⓗ — 편집기를 붙이지 않는 상태(마크다운 미리보기·읽기 실패·바이너리·상한 초과·이미지)면 이 탭의 줄 열기 요청을 남기지 않는다(`file-reveal.ts`).
+  const noEditor = editable ? markdown && mode === 'preview' : read !== null
+  useEffect(() => {
+    if (noEditor) revealSlot.discard({ store: viewStates, tabId })
+  }, [noEditor, viewStates, tabId])
 
   let body: React.JSX.Element
   const readOnly = doc?.readOnly ?? (textRead === null ? null : readOnlyReasonOf(textRead))

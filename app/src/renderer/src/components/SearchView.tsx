@@ -29,15 +29,15 @@ export function searchNotice(state: Pick<SearchState, 'root' | 'query' | 'status
   return null
 }
 
-/** 요약 — 「N개 파일에서 M개 결과」. 결과가 없으면 null. */
-export function searchSummary(state: Pick<SearchState, 'files' | 'matchCount'>): string | null {
-  return state.files.length === 0 ? null : `${state.files.length}개 파일에서 ${state.matchCount}개 결과`
+/** 요약 — 「N개 파일에서 M개 결과」(일치 수가 부분값이면 「M개 이상」 — r1 R1-10). 결과가 없으면 null. */
+export function searchSummary(state: Pick<SearchState, 'files' | 'matchCount' | 'matchCountExact'>): string | null {
+  return state.files.length === 0 ? null : `${state.files.length}개 파일에서 ${state.matchCount}개${state.matchCountExact ? '' : ' 이상'} 결과`
 }
 
 export type PreviewSegment = { text: string; hit: boolean }
 
-/** 미리보기 → 조각(강조 여부). 앞 공백은 첫 일치 앞까지만 걷는다. 앞이 잘린 줄은 「…」 로 시작한다. */
-export function previewSegments(line: Pick<ContentSearchLine, 'preview' | 'ranges' | 'clippedStart'>): PreviewSegment[] {
+/** 미리보기 → 조각(강조 여부). 앞 공백은 첫 일치 앞까지만 걷는다. 앞이 잘린 줄은 「…」 로 시작하고 뒤가 잘린 줄은 「…」 로 끝난다. */
+export function previewSegments(line: Pick<ContentSearchLine, 'preview' | 'ranges' | 'clippedStart' | 'clippedEnd'>): PreviewSegment[] {
   const firstHit = line.ranges.reduce((least, range) => Math.min(least, range.start), line.preview.length)
   let skip = 0
   while (skip < firstHit && (line.preview[skip] === ' ' || line.preview[skip] === '\t')) skip += 1
@@ -51,6 +51,7 @@ export function previewSegments(line: Pick<ContentSearchLine, 'preview' | 'range
     at = range.end
   }
   if (at < line.preview.length) segments.push({ text: line.preview.slice(at), hit: false })
+  if (line.clippedEnd) segments.push({ text: '…', hit: false })
   return segments
 }
 
@@ -111,6 +112,7 @@ export function SearchView({ api, title, focusToken, onOpen }: { api: ContentSea
           </div>
         </div>
       </div>
+      {state.status === 'searching' ? <div className="search-progress" data-search-progress="" role="progressbar" aria-label="검색 중" /> : null}
       {summary === null ? null : (
         <div className="search-summary" data-search-summary="">
           <span>{summary}</span>
@@ -143,6 +145,7 @@ function FileGroup({ file, collapsed, onToggle, onOpen }: { file: ContentSearchF
   const name = file.rel.slice(slash + 1)
   const dir = slash === -1 ? '' : file.rel.slice(0, slash)
   const count = file.lines.reduce((sum, line) => sum + line.matches, 0)
+  const exact = file.lines.every((line) => line.matchesExact)
   return (
     <div className="search-file" data-search-file={file.rel}>
       <button type="button" className="search-file-head" aria-expanded={!collapsed} title={file.rel} onClick={onToggle}>
@@ -154,8 +157,8 @@ function FileGroup({ file, collapsed, onToggle, onOpen }: { file: ContentSearchF
           <span className="search-file-name">{name}</span>
           <span className="search-file-dir">{dir}</span>
         </span>
-        <span className="search-file-count" data-search-file-count={count}>
-          {count}
+        <span className="search-file-count" data-search-file-count={count} data-search-file-count-exact={exact ? 'true' : 'false'}>
+          {exact ? count : `${count}+`}
         </span>
       </button>
       {collapsed

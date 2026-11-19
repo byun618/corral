@@ -3,7 +3,8 @@
 // 상태 표(01-criteria C6) 한 규칙 — **검색 세대**:
 // · 질의·토글 변경 → 세대 +1, 앞 요청 취소(main 이 git 을 끝낸다), 빈 질의가 아니면 새 요청(질의는 `SEARCH_DEBOUNCE_MS` 뒤, 토글·Enter 는 바로).
 // · 빈 질의 → 세대 +1, 결과·진행 중 요청을 지운다(git 호출 0 — C4ⓓ).
-// · 활성 worktree 전환 → 세대 +1, 진행 중 요청 취소, 앞 루트 결과를 지운다. 질의가 있으면 새 루트로 바로 다시 찾는다.
+// · 활성 worktree 전환 → 세대 +1, 진행 중 요청 취소, 앞 루트 결과를 지운다. 질의가 있으면 새 루트로 바로 다시 찾는다 — 보기가 숨어 있으면
+//   찾지 않고 보일 때 찾는다(r1 R1-09 — 안 보이는 곳에서 git 을 띄우지 않는다).
 // · 검색 응답 → **응답의 세대 = 지금 세대 그리고 응답의 루트 = 지금 루트** 일 때만 적용한다.
 // · 패널 숨김·다시 보임 → 아무것도 안 한다(세션은 App 이 들고 있다 — C4ⓘ).
 import type { ContentSearchFile, ContentSearchInput, ContentSearchOptions, ContentSearchResult } from '../../shared/content-search.js'
@@ -21,6 +22,8 @@ export type SearchState = {
   files: readonly ContentSearchFile[]
   lineCount: number
   matchCount: number
+  /** 거짓이면 실제 일치 수는 `matchCount` 이상(정규식 둘째 이후·`-o` 상한 — r1 R1-10). */
+  matchCountExact: boolean
   truncated: boolean
   error: string | null
   /** 접은 파일(rel). */
@@ -35,10 +38,11 @@ export type SearchSessionDeps = {
   debounceMs?: number
 }
 
-const EMPTY: Pick<SearchState, 'files' | 'lineCount' | 'matchCount' | 'truncated' | 'error' | 'collapsed'> = {
+const EMPTY: Pick<SearchState, 'files' | 'lineCount' | 'matchCount' | 'matchCountExact' | 'truncated' | 'error' | 'collapsed'> = {
   files: [],
   lineCount: 0,
   matchCount: 0,
+  matchCountExact: true,
   truncated: false,
   error: null,
   collapsed: new Set(),
@@ -48,6 +52,9 @@ export class SearchSession {
   private generation = 0
   private inflight: { cancel: () => void } | null = null
   private timer: unknown = null
+  /** 보기가 보이는가 — 숨은 동안 worktree 가 바뀌면 `refreshOnShow` 를 세우고 보일 때 찾는다. */
+  private active = true
+  private refreshOnShow = false
   private listeners = new Set<() => void>()
   private snapshot: SearchState = { query: '', options: { caseSensitive: false, wholeWord: false, regex: false }, root: null, status: 'idle', ...EMPTY }
 
@@ -111,7 +118,7 @@ export class SearchSession {
       this.inflight = null
       if (result.ok) {
         if (result.root !== root) return
-        this.set({ status: 'done', files: result.files, lineCount: result.lineCount, matchCount: result.matchCount, truncated: result.truncated, error: null, collapsed: new Set() })
+        this.set({ status: 'done', files: result.files, lineCount: result.lineCount, matchCount: result.matchCount, matchCountExact: result.matchCountExact, truncated: result.truncated, error: null, collapsed: new Set() })
         return
       }
       if (result.code === 'cancelled') return
@@ -141,7 +148,17 @@ export class SearchSession {
     if (root === this.snapshot.root) return
     this.bump()
     this.set({ root, status: 'idle', ...EMPTY })
-    if (this.snapshot.query !== '' && root !== null) this.changed('now')
+    const wanted = this.snapshot.query !== '' && root !== null
+    this.refreshOnShow = wanted && !this.active
+    if (wanted && this.active) this.changed('now')
+  }
+
+  /** 보기가 보인다/숨는다. 숨은 동안 루트가 바뀌어 미뤄 둔 검색이 있으면 보일 때 찾는다. 같은 루트로 숨겼다 보이면 아무것도 안 한다(C4ⓘ). */
+  setActive(active: boolean): void {
+    this.active = active
+    if (!active || !this.refreshOnShow) return
+    this.refreshOnShow = false
+    this.changed('now')
   }
 
   toggleCollapsed(rel: string): void {
@@ -152,6 +169,7 @@ export class SearchSession {
   }
 
   dispose(): void {
+    this.refreshOnShow = false
     this.bump()
   }
 }

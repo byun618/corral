@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { ContentSearcher, GrepRecordParser, grepArgs, matchByteRanges, previewOf } from './content-search.js'
+import { ContentSearcher, gitEnv, GrepRecordParser, grepArgs, lineMatches, matchByteRanges, previewOf, wordRanges } from './content-search.js'
 import { resolveGit } from './file-list.js'
 import type { ContentSearchResult } from '../shared/content-search.js'
 
@@ -13,12 +13,21 @@ let root = ''
 let plain = ''
 const gitBin = resolveGit({ pathEnv: process.env.PATH })
 const git = (args: string[], cwd = root): string => execFileSync(gitBin, args, { cwd, encoding: 'utf8' })
-const searcher = (limits?: ConstructorParameters<typeof ContentSearcher>[0]['limits']): ContentSearcher =>
-  new ContentSearcher({ roots: () => [root, plain, path.join(base, 'gone')], git: () => gitBin, log: () => undefined, limits })
+type Deps = ConstructorParameters<typeof ContentSearcher>[0]
+const searcher = (limits?: Deps['limits'], extra?: Partial<Pick<Deps, 'env' | 'git'>>): ContentSearcher =>
+  new ContentSearcher({ roots: () => [root, plain, path.join(base, 'gone')], git: extra?.git ?? (() => gitBin), env: extra?.env, log: () => undefined, limits })
+/** `LANG`·`LC_*` 를 뺀 부모 환경 — Finder 로 띄운 설치본 main 과 같은 조건(코디 확인 `raw/coordinator/installed-app-env-keys.txt`). */
+const noLocale = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'LANG' && !key.startsWith('LC_')))
+/** 가짜 git — `-o` 가 있는 호출(②)과 없는 호출(①)에 다른 셸 동작. */
+const fakeGit = (name: string, input: { lines: string; matches: string }): string => {
+  const file = path.join(base, `${name}.sh`)
+  fs.writeFileSync(file, `#!/bin/bash\nonly=\nfor a in "$@"; do [ "$a" = "-o" ] && only=1; done\nif [ -n "$only" ]; then\n${input.matches}\nelse\n${input.lines}\nfi\n`, { mode: 0o755 })
+  return file
+}
 const OFF = { caseSensitive: false, wholeWord: false, regex: false }
 let sequence = 0
-const find = (input: { query: string; caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean; at?: string; limits?: Parameters<typeof searcher>[0] }): Promise<ContentSearchResult> =>
-  searcher(input.limits).search({ root: input.at ?? root, query: input.query, caseSensitive: input.caseSensitive ?? true, wholeWord: input.wholeWord ?? false, regex: input.regex ?? false, requestId: `t-${(sequence += 1)}` })
+const find = (input: { query: string; caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean; at?: string; limits?: Parameters<typeof searcher>[0]; env?: Deps['env'] }): Promise<ContentSearchResult> =>
+  searcher(input.limits, { env: input.env }).search({ root: input.at ?? root, query: input.query, caseSensitive: input.caseSensitive ?? true, wholeWord: input.wholeWord ?? false, regex: input.regex ?? false, requestId: `t-${(sequence += 1)}` })
 const hits = (result: ContentSearchResult): string[] => (result.ok ? result.files.flatMap((file) => file.lines.map((line) => `${file.rel}:${line.line}:${line.column}`)) : [])
 const lineOf = (result: ContentSearchResult, rel: string, line: number) => (result.ok ? result.files.find((file) => file.rel === rel)?.lines.find((item) => item.line === line) : undefined)
 const marked = (preview: string, ranges: readonly { start: number; end: number }[]): string[] => ranges.map((range) => preview.slice(range.start, range.end))
@@ -41,6 +50,11 @@ beforeAll(() => {
   write('words.txt', 'foo foobar\nfoo bar foo\nfoobar foo foobar\n')
   write('sp ace/한글 이름.txt', 'foo in space\n')
   write('crlf.txt', 'foo crlf\r\n')
+  // r1 R1-01 — 앞 문맥에 기대는 정규식(리뷰 재현 claude-r1-repro-c3.txt). R1-02 — 단어 단위 둘째 일치. R1-05 — 로캘. R1-08 — 긴 앞 문맥.
+  write('ctx.txt', 'foofoo bar\nbb\nab\nb.\n')
+  write('word2.txt', 'foo foo foobar\n')
+  write('loc.txt', 'CAFÉ café\nx 한글 y\n')
+  write('lead.txt', `${'a'.repeat(60)} needle tail\n`)
   write('dash.txt', '--help is text\n')
   write('long.txt', `${'x'.repeat(1024 * 1024)}needle${'y'.repeat(100)}\n`)
   write('bin.dat', Buffer.from([0x66, 0x6f, 0x6f, 0x00, 0x01, 0x02]))
@@ -87,7 +101,7 @@ describe('C1 git grep 백엔드', () => {
   })
 
   it('ⓓ 정규식 = PCRE — fo+(?=bar) 는 foobar 만', async () => {
-    expect(hits(await find({ query: 'fo+(?=bar)', regex: true }))).toEqual(['a.txt:2:1', 'words.txt:1:5', 'words.txt:3:1'])
+    expect(hits(await find({ query: 'fo+(?=bar)', regex: true }))).toEqual(['a.txt:2:1', 'word2.txt:1:9', 'words.txt:1:5', 'words.txt:3:1'])
   })
 
   it('ⓔ 잘못된 정규식 → 오류(git 메시지)', async () => {
@@ -241,29 +255,162 @@ describe('C3 줄 안 일치 강조', () => {
 
   it('ⓕ 잘린 미리보기 기준 범위', () => {
     const text = Buffer.from(`${'가'.repeat(30)}abc${'z'.repeat(30)}`)
-    const preview = previewOf({ text, column: 91, maxBytes: 20, leadBytes: 6 })
+    const preview = previewOf({ text, column: 91, maxBytes: 20, leadChars: 2 })
     expect(preview.bytes.toString('utf8').startsWith('가가abc')).toBe(true)
     expect(preview.column).toBe(31)
+  })
+})
+
+describe('r1 R1-01 — 정규식·단어 단위는 git -o 의 둘째 이후 행을 위치로 쓰지 않는다(가짜 일치 강조 0)', () => {
+  const at = async (query: string, line: number, options: { wholeWord?: boolean } = {}) => lineOf(await find({ query, regex: true, ...options }), 'ctx.txt', line)
+  it('\\bfoo on foofoo bar → foo@0 만', async () => {
+    const line = await at('\\bfoo', 1)
+    expect(line?.ranges).toEqual([{ start: 0, end: 3 }])
+    expect(line?.matchesExact).toBe(false)
+  })
+  it('\\bb on bb → b@0 만', async () => {
+    expect((await at('\\bb', 2))?.ranges).toEqual([{ start: 0, end: 1 }])
+  })
+  it('(?<!a)b|a on ab → a@0 만', async () => {
+    expect((await at('(?<!a)b|a', 3))?.ranges).toEqual([{ start: 0, end: 1 }])
+  })
+  it('-w \\.|b on b. → b@0 만', async () => {
+    expect((await at('\\.|b', 4, { wholeWord: true }))?.ranges).toEqual([{ start: 0, end: 1 }])
+  })
+  it('정규식 줄에 git -o 행이 하나뿐이면 일치 수가 정확하다', async () => {
+    const line = lineOf(await find({ query: 'fo+(?=bar)', regex: true }), 'words.txt', 1)
+    expect(line?.matches).toBe(1)
+    expect(line?.matchesExact).toBe(true)
+  })
+  it('lineMatches(regex) — -o 행이 몇 개든 첫 행만, 첫 행 열이 ① 과 다르면 강조 0', () => {
+    const rows = [{ column: 1, text: Buffer.from('foo') }, { column: 4, text: Buffer.from('foo') }]
+    expect(lineMatches({ text: Buffer.from('foofoo bar'), firstColumn: 1, rows, rowsComplete: true, mode: 'regex', query: '\\bfoo', caseSensitive: true })).toEqual({ ranges: [{ start: 0, end: 3 }], matches: 1, exact: false })
+    expect(lineMatches({ text: Buffer.from('foofoo bar'), firstColumn: 2, rows, rowsComplete: true, mode: 'regex', query: 'x', caseSensitive: true }).ranges).toEqual([])
+  })
+})
+
+describe('r1 R1-02 — 리터럴 + 단어 단위는 JS 로 훑어 둘째 이후도 확정', () => {
+  it('foo foo foobar → foo@0·foo@4 (대소문자 구분)', async () => {
+    const line = lineOf(await find({ query: 'foo', wholeWord: true }), 'word2.txt', 1)
+    expect(line?.ranges).toEqual([{ start: 0, end: 3 }, { start: 4, end: 7 }])
+    expect(line?.matches).toBe(2)
+    expect(line?.matchesExact).toBe(true)
+  })
+  it('대소문자 무시도 같다(일치 글 모양은 git 이 준 것)', async () => {
+    const line = lineOf(await find({ query: 'FOO', wholeWord: true, caseSensitive: false }), 'word2.txt', 1)
+    expect(line?.ranges).toEqual([{ start: 0, end: 3 }, { start: 4, end: 7 }])
+  })
+  it('wordRanges — 단어 글자(영숫자·_) 경계, 비 ASCII 는 경계', () => {
+    expect(wordRanges({ text: Buffer.from('foo_x foo1 xfoo foo 한foo'), candidates: [Buffer.from('foo')] })).toEqual([
+      { start: 16, end: 19 },
+      { start: 23, end: 26 },
+    ])
+  })
+})
+
+describe('r1 R1-05 — git 자식 로캘(LANG·LC_* 없는 env)', () => {
+  it('gitEnv — UTF-8 로캘이 없으면 LC_ALL 을 넣고, 있으면 그대로', () => {
+    expect(gitEnv({ PATH: '/bin' })).toMatchObject({ LC_ALL: 'en_US.UTF-8', GIT_OPTIONAL_LOCKS: '0' })
+    expect(gitEnv({ LC_ALL: 'C', LANG: 'ko_KR.UTF-8' }).LC_ALL).toBe('en_US.UTF-8')
+    expect(gitEnv({ LANG: 'ko_KR.UTF-8' }).LC_ALL).toBeUndefined()
+    expect(gitEnv({ LC_CTYPE: 'UTF-8' }).LC_ALL).toBeUndefined()
+  })
+  it('-i 비ASCII — CAFÉ 로 찾으면 CAFÉ·café 둘 다', async () => {
+    const line = lineOf(await find({ query: 'CAFÉ', caseSensitive: false, env: noLocale }), 'loc.txt', 1)
+    expect(line && marked(line.preview, line.ranges)).toEqual(['CAFÉ', 'café'])
+    expect(line?.matches).toBe(2)
+  })
+  it('-P \\w+ — 한글 단어가 한 덩어리', async () => {
+    const line = lineOf(await find({ query: '한\\w+', regex: true, env: noLocale }), 'loc.txt', 2)
+    expect(line && marked(line.preview, line.ranges)).toEqual(['한글'])
+  })
+})
+
+describe('r1 R1-06 — 두 git 호출의 교차 실패', () => {
+  it('① 실패 → ② 를 끝내고 바로 오류(② 는 30 s 잠)', async () => {
+    const git = fakeGit('lines-fail', { lines: 'echo "fatal: boom" >&2; exit 128', matches: 'exec sleep 30' })
+    const shared = searcher({ timeoutMs: 20_000 }, { git: () => git })
+    const startedAt = Date.now()
+    const result = await shared.search({ root, query: 'foo', ...OFF, requestId: 'lines-fail' })
+    expect(result.ok === false && result.code).toBe('git_failed')
+    expect(result.ok === false && result.error).toContain('fatal: boom')
+    expect(Date.now() - startedAt).toBeLessThan(3_000)
+    expect(shared.livePids).toEqual([])
+  })
+  it('② 실패 → 결과는 그대로, 강조·일치 수만 모름', async () => {
+    const git = fakeGit('matches-fail', { lines: "printf 'a.txt\\0001\\0001\\000foo foo\\n'; exit 0", matches: 'echo "fatal: aux" >&2; exit 128' })
+    const result = await searcher(undefined, { git: () => git }).search({ root, query: 'foo', ...OFF, requestId: 'matches-fail' })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.files.map((file) => file.rel)).toEqual(['a.txt'])
+    expect(result.files[0]?.lines[0]).toMatchObject({ line: 1, column: 1, ranges: [], matchesExact: false })
+    expect(result.matchCountExact).toBe(false)
+  })
+})
+
+describe('r1 R1-07 — killAll 은 SIGTERM 을 무시하는 자식도 바로 끝낸다', () => {
+  it('trap TERM 무시 자식 — killAll 뒤 300 ms 안에 끝(SIGTERM 뒤 SIGKILL 유예 500 ms 를 기다리지 않는다)', async () => {
+    const git = fakeGit('ignore-term', { lines: "trap '' TERM; exec sleep 30", matches: "trap '' TERM; exec sleep 30" })
+    const shared = searcher({ timeoutMs: 20_000 }, { git: () => git })
+    const pending = shared.search({ root, query: 'foo', ...OFF, requestId: 'ignore-term' })
+    for (let tries = 0; tries < 100 && shared.livePids.length < 2; tries += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+    // trap 이 걸릴 틈.
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const pids = shared.livePids
+    expect(pids).toHaveLength(2)
+    const startedAt = Date.now()
+    shared.killAll()
+    const result = await pending
+    expect(Date.now() - startedAt).toBeLessThan(300)
+    expect(result.ok === false && result.code).toBe('cancelled')
+    expect(shared.livePids).toEqual([])
+  })
+})
+
+describe('r1 R1-08 — 긴 앞 문맥은 줄여 첫 일치가 미리보기 앞쪽에', () => {
+  it('앞 60 글자 → 앞이 잘리고 첫 일치는 24 글자 안', async () => {
+    const line = lineOf(await find({ query: 'needle' }), 'lead.txt', 1)
+    expect(line?.clippedStart).toBe(true)
+    expect(line?.ranges[0]?.start).toBe(24)
+    expect(line?.column).toBe(62)
+    expect(line?.preview.endsWith('needle tail')).toBe(true)
+  })
+  it('previewOf — 앞 문맥이 상한 이하면 줄 처음부터', () => {
+    expect(previewOf({ text: Buffer.from('ab needle'), column: 4, maxBytes: 400, leadChars: 24 })).toMatchObject({ start: 0, column: 4 })
+  })
+  it('previewOf — 서로게이트 쌍 가운데를 자르지 않는다', () => {
+    const text = Buffer.from(`${'😀'.repeat(20)}x`)
+    const preview = previewOf({ text, column: 81, maxBytes: 400, leadChars: 3 })
+    expect(preview.bytes.toString('utf8')).toBe('😀x')
+  })
+})
+
+describe('r1 R1-10 — -o 상한이면 일치 수가 부분값임을 알린다', () => {
+  it('maxMatches 1 — 둘째 일치를 못 본 줄은 matchesExact 거짓, 결과 전체도', async () => {
+    const result = await find({ query: 'foo', limits: { maxMatches: 1 } })
+    expect(result.ok && result.matchCountExact).toBe(false)
+    expect(lineOf(result, 'words.txt', 2)?.matchesExact).toBe(false)
+  })
+  it('상한이 없으면 정확', async () => {
+    const result = await find({ query: 'needle' })
+    expect(result.ok && result.matchCountExact).toBe(true)
   })
 })
 
 describe('-o 열 되찾기 (raw/claude/r1/git-o-column-probe.txt 의 실측 열)', () => {
   const rows = (pairs: [number, string][]) => pairs.map(([column, text]) => ({ column, text: Buffer.from(text) }))
   it('리터럴 — 두 번째 이후 일치의 실제 자리', () => {
-    expect(matchByteRanges({ text: Buffer.from('hello 한글 Foo foo'), rows: rows([[14, 'Foo'], [30, 'foo']]), exact: true })).toEqual([{ start: 13, end: 16 }, { start: 17, end: 20 }])
-    expect(matchByteRanges({ text: Buffer.from('foo bar foo'), rows: rows([[1, 'foo'], [4, 'foo']]), exact: true })).toEqual([{ start: 0, end: 3 }, { start: 8, end: 11 }])
-    expect(matchByteRanges({ text: Buffer.from('foobar foo foobar'), rows: rows([[1, 'foo'], [4, 'foo'], [11, 'foo']]), exact: true })).toEqual([{ start: 0, end: 3 }, { start: 7, end: 10 }, { start: 11, end: 14 }])
-  })
-  it('정규식 — 마지막 일치 글이 뒤에 여럿이면 모른다(null), 하나면 그 자리', () => {
-    expect(matchByteRanges({ text: Buffer.from('foobar foo foobar'), rows: rows([[1, 'foo'], [4, 'foo']]), exact: false })).toEqual([{ start: 0, end: 3 }, null])
-    expect(matchByteRanges({ text: Buffer.from('foobar x foobar'), rows: rows([[1, 'foo'], [4, 'foo']]), exact: false })).toEqual([{ start: 0, end: 3 }, { start: 9, end: 12 }])
+    expect(matchByteRanges({ text: Buffer.from('hello 한글 Foo foo'), rows: rows([[14, 'Foo'], [30, 'foo']]) })).toEqual([{ start: 13, end: 16 }, { start: 17, end: 20 }])
+    expect(matchByteRanges({ text: Buffer.from('foo bar foo'), rows: rows([[1, 'foo'], [4, 'foo']]) })).toEqual([{ start: 0, end: 3 }, { start: 8, end: 11 }])
+    expect(matchByteRanges({ text: Buffer.from('foobar foo foobar'), rows: rows([[1, 'foo'], [4, 'foo'], [11, 'foo']]) })).toEqual([{ start: 0, end: 3 }, { start: 7, end: 10 }, { start: 11, end: 14 }])
   })
   it('자리의 바이트가 일치 글과 다르면 null', () => {
-    expect(matchByteRanges({ text: Buffer.from('abc'), rows: rows([[2, 'zz']]), exact: true })).toEqual([null])
+    expect(matchByteRanges({ text: Buffer.from('abc'), rows: rows([[2, 'zz']]) })).toEqual([null])
   })
-  it('실제 git — foobar foo foobar 정규식 줄은 확정된 범위만 강조', async () => {
+  it('실제 git — foobar foo foobar 정규식 줄은 첫 일치만 강조, 수는 「이상」', async () => {
     const line = lineOf(await find({ query: 'fo+(?=bar)', regex: true }), 'words.txt', 3)
-    expect(line?.matches).toBe(2)
+    expect(line?.matches).toBe(1)
+    expect(line?.matchesExact).toBe(false)
     expect(line && marked(line.preview, line.ranges)).toEqual(['foo'])
     expect(line?.ranges[0]).toEqual({ start: 0, end: 3 })
   })

@@ -42,6 +42,8 @@ vi.mock('../editor/monaco.js', () => {
   }
 })
 
+vi.mock('../editor/markdown.js', () => ({ renderMarkdown: () => '<p>미리보기</p>', slugOf: () => '', resolveMarkdownTarget: () => null }))
+
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
 let host: HTMLDivElement
@@ -62,12 +64,13 @@ afterEach(() => {
   act(() => root.unmount())
   host.remove()
   disposeDoc(docKey('/w', 'a.ts'))
+  disposeDoc(docKey('/w', 'a.md'))
   revealSlot.activated({ store: null, tabId: null })
 })
 
-const mount = async (viewStates: ViewStateStore): Promise<void> => {
+const mount = async (viewStates: ViewStateStore, rel = 'a.ts', markdownModes: Map<string, 'source' | 'preview'> = new Map()): Promise<void> => {
   await act(async () => {
-    root.render(<FileView root="/w" rel="a.ts" tabId="file:a.ts" groupId="g1" viewStates={viewStates} markdownModes={new Map()} watched={null} onActivate={() => {}} onOpenFile={() => {}} />)
+    root.render(<FileView root="/w" rel={rel} tabId={`file:${rel}`} groupId="g1" viewStates={viewStates} markdownModes={markdownModes} watched={null} onActivate={() => {}} onOpenFile={() => {}} />)
     await pause(30)
   })
 }
@@ -76,21 +79,21 @@ describe('첫 마운트 (C5ⓐⓒ)', () => {
   it('저장된 보기 상태가 있어도 복원 다음에 위치를 적용한다(한글 뒤 UTF-16 열 그대로)', async () => {
     const viewStates: ViewStateStore = new Map()
     viewStates.set('file:a.ts', { cursorState: [], viewState: { scrollLeft: 0, firstPosition: { lineNumber: 40, column: 1 }, firstPositionDeltaTop: 0 }, contributionsState: {} })
-    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 10 } })
+    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 10 }, mayFocus: () => true })
     await mount(viewStates)
     expect(log).toEqual(['setModel', 'restoreViewState', 'setPosition 2:10', 'reveal 2:10', 'focus'])
     expect(revealSlot.current).toBeNull()
   })
   it('보기 상태가 없어도 적용', async () => {
     const viewStates: ViewStateStore = new Map()
-    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 10 } })
+    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 10 }, mayFocus: () => true })
     await mount(viewStates)
     expect(log).toEqual(['setModel', 'setPosition 2:10', 'reveal 2:10', 'focus'])
   })
   it('마지막 요청이 다른 탭 것이면 적용 0(C5ⓔ)', async () => {
     const viewStates: ViewStateStore = new Map()
-    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 10 } })
-    revealSlot.request({ store: viewStates, tabId: 'file:b.ts', target: { line: 1, column: 1 } })
+    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 10 }, mayFocus: () => true })
+    revealSlot.request({ store: viewStates, tabId: 'file:b.ts', target: { line: 1, column: 1 }, mayFocus: () => true })
     await mount(viewStates)
     expect(log).toEqual(['setModel'])
     expect(revealSlot.current?.tabId).toBe('file:b.ts')
@@ -106,12 +109,45 @@ describe('이미 붙은 편집기 (C5ⓑ)', () => {
     const viewStates: ViewStateStore = new Map()
     await mount(viewStates)
     log.length = 0
-    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 7 } })
+    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 7 }, mayFocus: () => true })
     expect(revealInLiveEditor({ store: viewStates, tabId: 'file:a.ts' })).toBe(true)
     expect(log).toEqual(['setPosition 2:7', 'reveal 2:7', 'focus'])
     expect(revealSlot.current).toBeNull()
   })
   it('붙은 편집기가 없는 탭이면 거짓(첫 마운트가 맡는다)', () => {
     expect(revealInLiveEditor({ store: new Map(), tabId: 'file:zz.ts' })).toBe(false)
+  })
+})
+
+describe('r1 보강 — 포커스는 요청이 허락할 때만', () => {
+  it('첫 마운트 — mayFocus 거짓이면 커서·보이기만(요청 뒤 포커스가 옮겨 감)', async () => {
+    const viewStates: ViewStateStore = new Map()
+    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 10 }, mayFocus: () => false })
+    await mount(viewStates)
+    expect(log).toEqual(['setModel', 'setPosition 2:10', 'reveal 2:10'])
+  })
+})
+
+describe('r1 보강 C5ⓗ — 편집기를 붙이지 않는 탭은 요청을 남기지 않는다', () => {
+  it('마크다운 미리보기 모드 — 요청을 버리고 편집기 적용 0', async () => {
+    const viewStates: ViewStateStore = new Map()
+    revealSlot.request({ store: viewStates, tabId: 'file:a.md', target: { line: 2, column: 1 }, mayFocus: () => true })
+    await mount(viewStates, 'a.md', new Map([['file:a.md', 'preview']]))
+    expect(revealSlot.current).toBeNull()
+    expect(log).toEqual([])
+  })
+  it('읽기 실패 — 요청을 버린다', async () => {
+    Reflect.set(window, 'corral', { readFile: async () => ({ ok: false, code: 'not_found', error: '없음' }) })
+    const viewStates: ViewStateStore = new Map()
+    revealSlot.request({ store: viewStates, tabId: 'file:a.ts', target: { line: 2, column: 1 }, mayFocus: () => true })
+    await mount(viewStates)
+    expect(revealSlot.current).toBeNull()
+    expect(host.querySelector('[data-file-notice="not_found"]')).not.toBeNull()
+  })
+  it('다른 탭의 요청은 건드리지 않는다', async () => {
+    const viewStates: ViewStateStore = new Map()
+    revealSlot.request({ store: viewStates, tabId: 'file:b.ts', target: { line: 2, column: 1 }, mayFocus: () => true })
+    await mount(viewStates, 'a.md', new Map([['file:a.md', 'preview']]))
+    expect(revealSlot.current?.tabId).toBe('file:b.ts')
   })
 })

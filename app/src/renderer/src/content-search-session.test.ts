@@ -33,7 +33,7 @@ function harness() {
   }
   return { session, calls, timers, fire }
 }
-const ok = (root: string, rel: string): Extract<ContentSearchResult, { ok: true }> => ({ ok: true, root, files: [{ rel, lines: [{ line: 1, column: 1, preview: 'foo', ranges: [{ start: 0, end: 3 }], matches: 1, clippedStart: false, clippedEnd: false }] }], lineCount: 1, matchCount: 1, truncated: false, ms: 1 })
+const ok = (root: string, rel: string): Extract<ContentSearchResult, { ok: true }> => ({ ok: true, root, files: [{ rel, lines: [{ line: 1, column: 1, preview: 'foo', ranges: [{ start: 0, end: 3 }], matches: 1, matchesExact: true, clippedStart: false, clippedEnd: false }] }], lineCount: 1, matchCount: 1, matchCountExact: true, truncated: false, ms: 1 })
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('상태 표 — 질의·토글 변경', () => {
@@ -161,6 +161,45 @@ describe('상태 표 — 활성 worktree 전환', () => {
     session.submit()
     expect(calls).toHaveLength(0)
     expect(session.state.status).toBe('idle')
+  })
+})
+
+describe('r1 R1-09 — 보기가 숨어 있으면 worktree 전환에 git 을 띄우지 않는다', () => {
+  it('숨김 중 루트 전환 → 요청 0, 결과는 지움, 보이면 그때 한 번 찾는다', async () => {
+    const { session, calls } = harness()
+    session.setRoot('/a')
+    session.setQuery('foo')
+    session.submit()
+    calls[0]?.resolve(ok('/a', 'from-a.txt'))
+    await flush()
+    session.setActive(false)
+    session.setRoot('/b')
+    expect(calls).toHaveLength(1)
+    expect(session.state.files).toEqual([])
+    session.setActive(true)
+    expect(calls.map((call) => call.input.root)).toEqual(['/a', '/b'])
+    session.setActive(false)
+    session.setActive(true)
+    expect(calls).toHaveLength(2)
+  })
+  it('같은 루트로 숨겼다 보이면 다시 찾지 않고 결과 유지(C4ⓘ)', async () => {
+    const { session, calls } = harness()
+    session.setRoot('/a')
+    session.setQuery('foo')
+    session.submit()
+    calls[0]?.resolve(ok('/a', 'a.txt'))
+    await flush()
+    session.setActive(false)
+    session.setActive(true)
+    expect(calls).toHaveLength(1)
+    expect(session.state.files).toHaveLength(1)
+  })
+  it('숨김 중 빈 질의면 보일 때도 요청 0', () => {
+    const { session, calls } = harness()
+    session.setActive(false)
+    session.setRoot('/a')
+    session.setActive(true)
+    expect(calls).toHaveLength(0)
   })
 })
 

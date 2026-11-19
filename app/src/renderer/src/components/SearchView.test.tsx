@@ -34,14 +34,15 @@ const RESULT: ContentSearchResult = {
     {
       rel: 'very/long/directory/name/that/keeps/going/and/going/file-with-a-long-name.ts',
       lines: [
-        { line: 12345, column: 10, preview: '    hello 한글 Foo foo', ranges: [{ start: 13, end: 16 }, { start: 17, end: 20 }], matches: 2, clippedStart: false, clippedEnd: false },
-        { line: 20, column: 1, preview: 'foo', ranges: [{ start: 0, end: 3 }], matches: 1, clippedStart: false, clippedEnd: false },
+        { line: 12345, column: 10, preview: '    hello 한글 Foo foo', ranges: [{ start: 13, end: 16 }, { start: 17, end: 20 }], matches: 2, matchesExact: true, clippedStart: false, clippedEnd: false },
+        { line: 20, column: 1, preview: 'foo', ranges: [{ start: 0, end: 3 }], matches: 1, matchesExact: true, clippedStart: false, clippedEnd: false },
       ],
     },
-    { rel: 'b.txt', lines: [{ line: 1, column: 1, preview: 'foo', ranges: [], matches: 1, clippedStart: false, clippedEnd: false }] },
+    { rel: 'b.txt', lines: [{ line: 1, column: 1, preview: 'foo', ranges: [], matches: 1, matchesExact: true, clippedStart: false, clippedEnd: false }] },
   ],
   lineCount: 3,
   matchCount: 4,
+  matchCountExact: true,
   truncated: true,
   ms: 3,
 }
@@ -188,7 +189,7 @@ describe('상태 글 (C4ⓔ)', () => {
     expect(searchNotice({ ...base, status: 'done' })).toBe('결과가 없습니다.')
     expect(searchNotice({ ...base, status: 'error', error: "fatal: -e option, 'fo(': missing closing parenthesis" })).toBe("검색할 수 없습니다 — fatal: -e option, 'fo(': missing closing parenthesis")
     expect(searchNotice({ ...base, query: '', status: 'idle' })).toBeNull()
-    expect(searchSummary({ files: [], matchCount: 0 })).toBeNull()
+    expect(searchSummary({ files: [], matchCount: 0, matchCountExact: true })).toBeNull()
   })
   it('오류가 화면에 보인다', async () => {
     render()
@@ -203,9 +204,43 @@ describe('상태 글 (C4ⓔ)', () => {
   })
 })
 
+describe('r1 R1-10 — 진행 표시·뒤 잘림·부분 일치 수', () => {
+  it('뒤가 잘린 줄은 … 로 끝난다', () => {
+    expect(previewSegments({ preview: 'abc', ranges: [{ start: 0, end: 1 }], clippedStart: false, clippedEnd: true }).at(-1)).toEqual({ text: '…', hit: false })
+  })
+  it('일치 수가 부분값이면 요약은 「이상」, 파일 머리는 「+」', async () => {
+    expect(searchSummary({ files: RESULT.ok ? RESULT.files : [], matchCount: 4, matchCountExact: false })).toBe('2개 파일에서 4개 이상 결과')
+    render()
+    type('foo')
+    key({ key: 'Enter' })
+    await act(async () => {
+      requests[0]?.resolve({ ...RESULT, matchCountExact: false, files: [{ rel: 'c.txt', lines: [{ line: 1, column: 1, preview: 'foo', ranges: [], matches: 1, matchesExact: false, clippedStart: false, clippedEnd: false }] }] })
+      await pause(0)
+    })
+    render()
+    expect(q('[data-search-file-count]')?.textContent).toBe('1+')
+    expect(q('[data-search-summary]')?.textContent).toContain('1개 파일에서 4개 이상 결과')
+  })
+  it('검색 중이면 이전 결과가 있어도 진행 표시', async () => {
+    render()
+    type('foo')
+    key({ key: 'Enter' })
+    expect(q('[data-search-progress]')).not.toBeNull()
+    await act(async () => {
+      requests[0]?.resolve(RESULT)
+      await pause(0)
+    })
+    render()
+    expect(q('[data-search-progress]')).toBeNull()
+    key({ key: 'Enter' })
+    expect(all('[data-search-file]')).toHaveLength(2)
+    expect(q('[data-search-progress]')).not.toBeNull()
+  })
+})
+
 describe('previewSegments (C3ⓕ)', () => {
   it('앞이 잘린 줄은 … 로 시작, 범위는 미리보기 기준', () => {
-    expect(previewSegments({ preview: 'xxneedleyy', ranges: [{ start: 2, end: 8 }], clippedStart: true })).toEqual([
+    expect(previewSegments({ preview: 'xxneedleyy', ranges: [{ start: 2, end: 8 }], clippedStart: true, clippedEnd: false })).toEqual([
       { text: '…', hit: false },
       { text: 'xx', hit: false },
       { text: 'needle', hit: true },
@@ -213,7 +248,7 @@ describe('previewSegments (C3ⓕ)', () => {
     ])
   })
   it('겹치는 범위는 한 번만', () => {
-    expect(previewSegments({ preview: 'abcdef', ranges: [{ start: 0, end: 3 }, { start: 2, end: 4 }], clippedStart: false })).toEqual([
+    expect(previewSegments({ preview: 'abcdef', ranges: [{ start: 0, end: 3 }, { start: 2, end: 4 }], clippedStart: false, clippedEnd: false })).toEqual([
       { text: 'abc', hit: true },
       { text: 'd', hit: true },
       { text: 'ef', hit: false },

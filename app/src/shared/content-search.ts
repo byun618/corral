@@ -17,12 +17,13 @@ export type ContentSearchRange = { start: number; end: number }
 /**
  * 일치 줄 하나. `line` 1부터, `column` = 그 줄 첫 일치의 UTF-16 열(1부터 — Monaco `setPosition` 그대로).
  * `preview` 는 줄 글(긴 줄은 첫 일치 둘레만 — `clippedStart`·`clippedEnd`), `ranges` 는 그 미리보기 기준. 일치 위치를 모르면 `ranges` 는 비고 강조하지 않는다.
- * `matches` = 그 줄의 일치 수(미리보기 밖 일치 포함, 모르면 1).
+ * `matches` = 그 줄의 일치 수(미리보기 밖 일치 포함, 모르면 확정된 수 — 적어도 1). `matchesExact` 가 거짓이면 실제 수는 그 이상일 수 있다
+ * (정규식 모드의 둘째 이후 일치·`-o` 상한·보조 호출 실패 — r1 R1-01·R1-06·R1-10).
  */
-export type ContentSearchLine = { line: number; column: number; preview: string; ranges: ContentSearchRange[]; matches: number; clippedStart: boolean; clippedEnd: boolean }
+export type ContentSearchLine = { line: number; column: number; preview: string; ranges: ContentSearchRange[]; matches: number; matchesExact: boolean; clippedStart: boolean; clippedEnd: boolean }
 export type ContentSearchFile = { rel: string; lines: ContentSearchLine[] }
 
 export type ContentSearchFailure = { ok: false; code: ExplorerRefusal | 'cancelled' | 'git_failed' | 'timeout'; error: string }
 export type ContentSearchResult =
-  | { ok: true; root: string; files: ContentSearchFile[]; lineCount: number; matchCount: number; truncated: boolean; ms: number }
+  | { ok: true; root: string; files: ContentSearchFile[]; lineCount: number; matchCount: number; matchCountExact: boolean; truncated: boolean; ms: number }
   | ContentSearchFailure

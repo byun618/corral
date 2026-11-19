@@ -10,6 +10,9 @@
 .search-toggle .codicon { font-size: 14px; }
 .search-toggle:hover { background: var(--bg-row-hover); color: var(--fg); }
 .search-toggle[aria-pressed='true'] { color: var(--accent); border-color: var(--accent); background: var(--bg-accent); }
+.search-progress { flex: 0 0 auto; height: 2px; margin: 0 8px 2px 12px; background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 40% 100%; background-repeat: no-repeat; animation: search-progress 1s linear infinite; }
+@keyframes search-progress { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+.search-view[data-search-status='searching'] .search-results { opacity: 0.6; }
 .search-summary { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 2px 8px; padding: 0 12px 4px 20px; font-size: 11px; color: var(--fg-muted); }
 .search-truncated { color: var(--st-dirty); }
 .search-results { padding-bottom: 8px; }

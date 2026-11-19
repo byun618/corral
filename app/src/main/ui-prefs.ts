@@ -120,13 +120,13 @@ const DEFAULT_PREFS: UiPrefs = {
   ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW),
 }
 
-/** 문자열 목록 — 문자열 아닌 칸·빈 문자열·중복은 버린다(손상된 칸이 다른 칸까지 깨뜨리지 않게, LIFE-469 K4ⓓ). */
 /** 영속 보기 값 — 아는 값만, 그 밖(옛·모르는 값)은 탐색기. */
 const KNOWN_RIGHT_PANEL_VIEWS: readonly RightPanelView[] = ['explorer', 'scm', 'search', 'pr', 'detail']
 function rightPanelViewOf(value: unknown): RightPanelView {
   return KNOWN_RIGHT_PANEL_VIEWS.find((view) => view === value) ?? 'explorer'
 }
 
+/** 문자열 목록 — 문자열 아닌 칸·빈 문자열·중복은 버린다(손상된 칸이 다른 칸까지 깨뜨리지 않게, LIFE-469 K4ⓓ). */
 function readKeyList(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return [...new Set(value.filter((item): item is string => typeof item === 'string' && item.length > 0))]

@@ -24,15 +24,28 @@ export const SEARCH_MAX_MATCHES = 50_000
 export const SEARCH_MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 /** 시간 상한 — 넘으면 git 을 끝내고 오류. */
 export const SEARCH_TIMEOUT_MS = 15_000
-/** 한 줄 미리보기 바이트 상한 — 넘는 줄은 첫 일치 앞 `SEARCH_PREVIEW_LEAD_BYTES` 부터 이만큼. */
+/** 한 줄 미리보기 바이트 상한(미리보기 시작부터). */
 export const SEARCH_PREVIEW_MAX_BYTES = 400
-export const SEARCH_PREVIEW_LEAD_BYTES = 40
+/** 첫 일치 앞에 남기는 문맥(UTF-16 글자) — 넘으면 앞을 자른다(좁은 패널에서도 첫 일치가 보이게 — r1 R1-08). */
+export const SEARCH_PREVIEW_LEAD_CHARS = 24
+/** git 자식 로캘 — 앱 환경에 UTF-8 로캘이 없을 때(Finder 로 띄운 설치본은 `LANG`·`LC_*` 가 없다) 넣는다. C 로캘이면 `-i`·`-P` 가 바이트 단위가 된다(r1 R1-05). */
+export const GIT_UTF8_LOCALE = 'en_US.UTF-8'
 
 const KILL_GRACE_MS = 500
 const STOP_CLOSE_MS = 1_500
 const TOMBSTONE_MS = 30_000
 const TOMBSTONE_MAX = 64
 const GIT_SAFE_CONFIG = ['-c', 'core.fsmonitor=false', '-c', 'core.quotePath=false']
+
+/**
+ * git 자식 환경 — 부모 환경 + `GIT_OPTIONAL_LOCKS=0`. 실제로 쓰일 로캘(`LC_ALL` → `LC_CTYPE` → `LANG` 중 처음 비지 않은 것)이 UTF-8 이 아니면
+ * `LC_ALL=GIT_UTF8_LOCALE` 를 넣는다. 사용자가 이미 UTF-8 로캘을 줬으면 그대로 둔다.
+ */
+export function gitEnv(parent: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const effective = [parent.LC_ALL, parent.LC_CTYPE, parent.LANG].find((value) => value !== undefined && value !== '') ?? ''
+  const utf8 = /utf-?8/i.test(effective)
+  return { ...parent, GIT_OPTIONAL_LOCKS: '0', ...(utf8 ? {} : { LC_ALL: GIT_UTF8_LOCALE }) }
+}
 
 /** git grep 인자(`-C <루트>` 뒤). `onlyMatching` = ② 일치마다 한 행. */
 export function grepArgs(input: ContentSearchOptions & { query: string; onlyMatching: boolean }): string[] {
@@ -98,36 +111,43 @@ const isContinuation = (byte: number | undefined): boolean => byte !== undefined
 /** UTF-8 바이트 열 → UTF-16 길이(앞 `bytes` 바이트). */
 const utf16Length = (bytes: Buffer, end: number): number => bytes.subarray(0, Math.max(0, Math.min(end, bytes.length))).toString('utf8').length
 
-/** 일치 줄 하나의 미리보기 — 첫 일치(바이트 열 `column`) 둘레를 상한 안에서 글자 경계로 자른다. */
-export function previewOf(input: { text: Buffer; column: number; maxBytes: number; leadBytes: number }): { bytes: Buffer; start: number; end: number; column: number } {
+/**
+ * 일치 줄 하나의 미리보기 — 첫 일치(바이트 열 `column`) 앞 문맥은 `leadChars`(UTF-16) 글자까지만 남기고(넘으면 앞이 잘린 줄 — 렌더러가 「…」),
+ * 거기서부터 `maxBytes` 바이트까지 글자 경계로 자른다. 좁은 패널에서도 첫 일치가 미리보기 앞쪽에 온다(r1 R1-08).
+ */
+export function previewOf(input: { text: Buffer; column: number; maxBytes: number; leadChars: number }): { bytes: Buffer; start: number; end: number; column: number } {
   let text = input.text
   // CRLF 파일의 줄 끝 `\r` 은 미리보기에서 뺀다.
   if (text.length > 0 && text[text.length - 1] === 13) text = text.subarray(0, text.length - 1)
   const firstByte = Math.min(input.column - 1, text.length)
+  const prefix = text.subarray(0, firstByte).toString('utf8')
   let start = 0
-  let end = text.length
-  if (text.length > input.maxBytes) {
-    start = Math.max(0, firstByte - input.leadBytes)
-    while (start > 0 && start < text.length && isContinuation(text[start])) start += 1
-    end = Math.min(text.length, start + input.maxBytes)
-    while (end < text.length && end > start && isContinuation(text[end])) end -= 1
+  if (prefix.length > input.leadChars) {
+    let cut = prefix.length - input.leadChars
+    // 서로게이트 쌍 가운데를 자르지 않는다.
+    const code = prefix.charCodeAt(cut)
+    if (code >= 0xdc00 && code <= 0xdfff) cut += 1
+    start = Buffer.byteLength(prefix.slice(0, cut))
   }
-  return { bytes: Buffer.from(text.subarray(start, end)), start, end, column: utf16Length(text, firstByte) + 1 }
+  let end = Math.min(text.length, start + input.maxBytes)
+  while (end < text.length && end > start && isContinuation(text[end])) end -= 1
+  return { bytes: Buffer.from(text.subarray(start, end)), start, end, column: prefix.length + 1 }
 }
 
-type LineEntry = { rel: Buffer; line: number; column: number; text: Buffer; preview: Buffer; start: number; end: number; fullLength: number }
+type LineEntry = { rel: Buffer; line: number; column: number; byteColumn: number; text: Buffer; preview: Buffer; start: number; end: number; fullLength: number }
 export type MatchRow = { column: number; text: Buffer }
+type ByteRange = { start: number; end: number }
 
 /**
- * ② 의 행들(한 줄, git 출력 순서) → 그 줄의 일치 바이트 범위(0부터, 끝 제외). 위치를 확정할 수 없는 일치는 null.
+ * **리터럴(단어 단위 아님)** — ② 의 행들(한 줄, git 출력 순서) → 일치 바이트 범위(0부터, 끝 제외). 확정할 수 없는 일치는 null.
  * git 은 k+1 번째 행의 열 = k 번째 열 + (k 번째 일치의 탐색 창 기준 끝)이라 k 번째 끝 = 열[k+1] − 열[1] 이다. 첫 일치 시작 = 열[1] − 1.
- * 마지막 일치는 다음 열이 없다 — 앞 일치 끝부터 일치 글을 찾되 `exact`(리터럴 — 처음 등장이 곧 가장 왼쪽 일치)가 아니면 등장이 하나일 때만.
- * 찾은 자리의 바이트가 일치 글과 다르면 null(가정이 깨진 경우 강조하지 않는다).
+ * 마지막 일치는 다음 열이 없다 — 앞 일치 끝부터 일치 글의 처음 등장(리터럴이라 그것이 곧 가장 왼쪽 일치). 찾은 자리 바이트가 일치 글과 다르면 null.
+ * 리터럴은 앞 문맥을 보지 않으므로 git 의 탐색 창이 가짜 일치를 만들지 않는다(r1 리뷰 퍼징 — 잘못된 강조 0).
  */
-export function matchByteRanges(input: { text: Buffer; rows: readonly MatchRow[]; exact: boolean }): ({ start: number; end: number } | null)[] {
+export function matchByteRanges(input: { text: Buffer; rows: readonly MatchRow[] }): (ByteRange | null)[] {
   const rows = input.rows
   const first = rows[0]?.column ?? 1
-  const verified = (start: number, row: MatchRow): { start: number; end: number } | null => {
+  const verified = (start: number, row: MatchRow): ByteRange | null => {
     const end = start + row.text.length
     return start >= 0 && end <= input.text.length && input.text.subarray(start, end).equals(row.text) ? { start, end } : null
   }
@@ -135,19 +155,82 @@ export function matchByteRanges(input: { text: Buffer; rows: readonly MatchRow[]
     if (index === 0) return verified(first - 1, row)
     const next = rows[index + 1]
     if (next !== undefined) return verified(next.column - first - row.text.length, row)
-    const from = row.column - first
-    const at = input.text.indexOf(row.text, from)
-    if (at === -1) return null
-    if (!input.exact && input.text.indexOf(row.text, at + 1) !== -1) return null
-    return verified(at, row)
+    const at = input.text.indexOf(row.text, row.column - first)
+    return at === -1 ? null : verified(at, row)
   })
 }
 
-/** ① 의 줄과 ② 의 일치(바이트 범위 — 모르는 것은 null)를 합쳐 결과 행으로. ② 에 그 줄이 없으면 범위 없음(강조하지 않음). */
-export function toResultLine(entry: Omit<LineEntry, 'rel' | 'text'>, matches: readonly ({ start: number; end: number } | null)[] | undefined): ContentSearchLine {
+/** git `-w` 의 단어 글자 — ASCII 영숫자와 `_`(바이트 단위, 비 ASCII 바이트는 단어 글자가 아니다). */
+const isWordByte = (byte: number | undefined): boolean =>
+  byte !== undefined && ((byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a) || byte === 0x5f)
+
+/**
+ * **리터럴 + 단어 단위**(r1 R1-02) — 줄을 JS 로 처음부터 훑어 `candidates`(일치 글의 바이트 모양들) 중 가장 앞 등장을 찾고, 앞·뒤 바이트가 단어 글자가 아니면 일치.
+ * 정규식을 새로 쓰지 않는다. `-w` 의 `-o` 둘째 이후 행은 탐색 창 시작에서 앞 글자를 못 봐 가짜일 수 있어 위치 원천으로 쓰지 않는다(R1-01).
+ */
+export function wordRanges(input: { text: Buffer; candidates: readonly Buffer[] }): ByteRange[] {
+  const candidates = input.candidates.filter((candidate) => candidate.length > 0)
+  const ranges: ByteRange[] = []
+  let from = 0
+  for (;;) {
+    let at = -1
+    let length = 0
+    for (const candidate of candidates) {
+      const found = input.text.indexOf(candidate, from)
+      if (found !== -1 && (at === -1 || found < at || (found === at && candidate.length > length))) {
+        at = found
+        length = candidate.length
+      }
+    }
+    if (at === -1) return ranges
+    const end = at + length
+    if (!isWordByte(input.text[at - 1]) && !isWordByte(input.text[end])) {
+      ranges.push({ start: at, end })
+      from = end
+    } else from = at + 1
+  }
+}
+
+export type MatchMode = 'literal' | 'literalWord' | 'regex'
+export const matchModeOf = (options: ContentSearchOptions): MatchMode => (options.regex ? 'regex' : options.wholeWord ? 'literalWord' : 'literal')
+
+/**
+ * 한 줄의 강조 범위·일치 수. `rows` = ② 의 그 줄 행(없으면 undefined), `rowsComplete` = ② 가 상한·실패 없이 끝났는가.
+ * · 리터럴: ② 의 열로 모두 확정(`matchByteRanges`), 수 = 행 수.
+ * · 리터럴 + 단어: JS 로 훑는다(`wordRanges`) — 대소문자 구분이면 질의 그대로, 무시면 ② 가 준 일치 글 모양들.
+ * · 정규식(단어 단위 포함): 첫 일치만 확정(② 첫 행 = 줄 처음부터 찾은 일치라 가짜가 아니다), 둘째 이후는 모름. 수는 행이 하나일 때만 정확(가짜 행은 늘리기만 한다).
+ */
+export function lineMatches(input: { text: Buffer; firstColumn: number; rows: readonly MatchRow[] | undefined; rowsComplete: boolean; mode: MatchMode; query: string; caseSensitive: boolean }): {
+  ranges: ByteRange[]
+  matches: number
+  exact: boolean
+} {
+  const rows = input.rows
+  switch (input.mode) {
+    case 'literal': {
+      if (rows === undefined) return { ranges: [], matches: 1, exact: false }
+      return { ranges: matchByteRanges({ text: input.text, rows }).flatMap((range) => (range === null ? [] : [range])), matches: rows.length, exact: input.rowsComplete }
+    }
+    case 'literalWord': {
+      const candidates = input.caseSensitive ? [Buffer.from(input.query)] : (rows ?? []).map((row) => row.text)
+      const ranges = wordRanges({ text: input.text, candidates })
+      if (ranges.length === 0) return { ranges, matches: 1, exact: false }
+      return { ranges, matches: ranges.length, exact: input.caseSensitive || input.rowsComplete }
+    }
+    case 'regex': {
+      const head = rows?.[0]
+      const start = input.firstColumn - 1
+      const ranges = head !== undefined && head.column === input.firstColumn && input.text.subarray(start, start + head.text.length).equals(head.text) && head.text.length > 0 ? [{ start, end: start + head.text.length }] : []
+      return { ranges, matches: 1, exact: rows !== undefined && rows.length === 1 && input.rowsComplete }
+    }
+  }
+}
+
+/** ① 의 줄과 그 줄의 일치(바이트 범위)를 합쳐 결과 행으로 — 범위는 미리보기 기준 UTF-16 으로 옮긴다(미리보기 밖은 버린다). */
+export function toResultLine(entry: Omit<LineEntry, 'rel' | 'text' | 'byteColumn'>, found: { ranges: readonly ByteRange[]; matches: number; exact: boolean }): ContentSearchLine {
   const ranges: { start: number; end: number }[] = []
-  for (const match of matches ?? []) {
-    if (match === null || match.end <= entry.start || match.start >= entry.end) continue
+  for (const match of found.ranges) {
+    if (match.end <= entry.start || match.start >= entry.end) continue
     const start = utf16Length(entry.preview, Math.max(match.start, entry.start) - entry.start)
     const end = utf16Length(entry.preview, Math.min(match.end, entry.end) - entry.start)
     if (end > start) ranges.push({ start, end })
@@ -157,7 +240,8 @@ export function toResultLine(entry: Omit<LineEntry, 'rel' | 'text'>, matches: re
     column: entry.column,
     preview: entry.preview.toString('utf8'),
     ranges,
-    matches: Math.max(1, matches?.length ?? 1),
+    matches: Math.max(1, found.matches),
+    matchesExact: found.exact,
     clippedStart: entry.start > 0,
     clippedEnd: entry.end < entry.fullLength,
   }
@@ -169,6 +253,7 @@ type StreamOutcome = { kind: 'exited'; code: number | null; stderr: string } | {
 /** git 한 번 — 셸 없이 자기 프로세스 그룹으로. 출력은 조각마다 `onData` 로 넘기고, 거짓이면 「충분」으로 멈춘다. 멈춤 = 그룹 SIGTERM → `KILL_GRACE_MS` 뒤 SIGKILL. */
 function runStream(input: {
   git: string
+  env: NodeJS.ProcessEnv
   cwd: string
   args: readonly string[]
   signal: AbortSignal
@@ -188,7 +273,7 @@ function runStream(input: {
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+        env: input.env,
       })
     } catch (error) {
       resolve({ kind: 'spawn_failed', error: String(error).slice(0, 300) })
@@ -288,8 +373,10 @@ export type ContentSearchDeps = {
   git: (roots: readonly string[]) => string
   log: (event: string, data?: Record<string, unknown>) => void
   now?: () => number
+  /** git 자식에 줄 부모 환경 — 기본 `process.env`(시험이 로캘 없는 환경을 준다). */
+  env?: () => NodeJS.ProcessEnv
   /** 시험용 — 기본은 위 상수. */
-  limits?: Partial<{ maxLines: number; maxMatches: number; maxBytes: number; timeoutMs: number; previewMaxBytes: number; previewLeadBytes: number }>
+  limits?: Partial<{ maxLines: number; maxMatches: number; maxBytes: number; timeoutMs: number; previewMaxBytes: number; previewLeadChars: number }>
 }
 
 const CANCELLED: ContentSearchFailure = { ok: false, code: 'cancelled', error: '취소됨' }
@@ -370,7 +457,7 @@ export class ContentSearcher {
       maxBytes: this.deps.limits?.maxBytes ?? SEARCH_MAX_OUTPUT_BYTES,
       timeoutMs: this.deps.limits?.timeoutMs ?? SEARCH_TIMEOUT_MS,
       previewMaxBytes: this.deps.limits?.previewMaxBytes ?? SEARCH_PREVIEW_MAX_BYTES,
-      previewLeadBytes: this.deps.limits?.previewLeadBytes ?? SEARCH_PREVIEW_LEAD_BYTES,
+      previewLeadChars: this.deps.limits?.previewLeadChars ?? SEARCH_PREVIEW_LEAD_CHARS,
     }
     const now = this.deps.now ?? (() => performance.now())
     const startedAt = now()
@@ -382,9 +469,10 @@ export class ContentSearcher {
       if (!confined.ok) return { ok: false, code: confined.code, error: confined.error }
       const options = { caseSensitive, wholeWord, regex }
       const git = this.deps.git(roots)
-      // 하나가 실패하면 다른 하나도 끝낸다(사용자 취소와 가른다).
-      const stopBoth = new AbortController()
-      controller.signal.addEventListener('abort', () => stopBoth.abort(), { once: true })
+      const env = gitEnv(this.deps.env?.() ?? process.env)
+      // ① 이 실패하면 ② 도 끝낸다(결과가 없으니 강조도 쓸 데 없다). ② 의 실패·시간 초과·상한은 강조만 포기하고 ① 을 기다린다(r1 R1-06).
+      const stopMatches = new AbortController()
+      controller.signal.addEventListener('abort', () => stopMatches.abort(), { once: true })
 
       const lines: LineEntry[] = []
       let truncated = false
@@ -394,9 +482,9 @@ export class ContentSearcher {
           truncated = true
           return false
         }
-        const preview = previewOf({ text: record.text, column: record.column, maxBytes: limits.previewMaxBytes, leadBytes: limits.previewLeadBytes })
+        const preview = previewOf({ text: record.text, column: record.column, maxBytes: limits.previewMaxBytes, leadChars: limits.previewLeadChars })
         const fullLength = record.text.length > 0 && record.text[record.text.length - 1] === 13 ? record.text.length - 1 : record.text.length
-        lines.push({ rel: Buffer.from(record.path), line: record.line, column: preview.column, text: Buffer.from(record.text), preview: preview.bytes, start: preview.start, end: preview.end, fullLength })
+        lines.push({ rel: Buffer.from(record.path), line: record.line, column: preview.column, byteColumn: record.column, text: Buffer.from(record.text), preview: preview.bytes, start: preview.start, end: preview.end, fullLength })
         return true
       }
       const matches = new Map<string, MatchRow[]>()
@@ -416,46 +504,45 @@ export class ContentSearcher {
         else list.push(match)
         return true
       }
-      const run = (run: { onlyMatching: boolean; parser: GrepRecordParser; onRecord: (record: GrepRecord) => boolean }): Promise<StreamOutcome> =>
+      const run = (run: { onlyMatching: boolean; signal: AbortSignal; parser: GrepRecordParser; onRecord: (record: GrepRecord) => boolean }): Promise<StreamOutcome> =>
         runStream({
           git,
+          env,
           cwd: confined.realRoot,
           args: grepArgs({ query, ...options, onlyMatching: run.onlyMatching }),
-          signal: stopBoth.signal,
+          signal: run.signal,
           timeoutMs: limits.timeoutMs,
           maxBytes: limits.maxBytes,
           children: this.children,
           onData: (chunk) => run.parser.push(chunk, run.onRecord),
-        }).then((outcome) => {
-          const failure = failureOf(outcome, limits.timeoutMs)
-          if (failure !== null && failure.code !== 'cancelled') stopBoth.abort()
-          return outcome
         })
-      const [lineOutcome, matchOutcome] = await Promise.all([run({ onlyMatching: false, parser: lineParser, onRecord: onLine }), run({ onlyMatching: true, parser: matchParser, onRecord: onMatch })])
+      const lineRun = run({ onlyMatching: false, signal: controller.signal, parser: lineParser, onRecord: onLine }).then((outcome) => {
+        if (failureOf(outcome, limits.timeoutMs) !== null) stopMatches.abort()
+        return outcome
+      })
+      const [lineOutcome, matchOutcome] = await Promise.all([lineRun, run({ onlyMatching: true, signal: stopMatches.signal, parser: matchParser, onRecord: onMatch })])
       if (controller.signal.aborted) return CANCELLED
-      const lineFailure = failureOf(lineOutcome, limits.timeoutMs)
-      const matchFailure = failureOf(matchOutcome, limits.timeoutMs)
-      // 실제 실패(취소가 아닌 것)를 먼저 — 한쪽 실패가 다른 쪽을 「취소」 로 끝냈을 수 있다.
-      const failure = [lineFailure, matchFailure].find((item) => item !== null && item.code !== 'cancelled') ?? lineFailure ?? matchFailure
-      if (failure !== null && failure !== undefined) {
+      const failure = failureOf(lineOutcome, limits.timeoutMs)
+      if (failure !== null) {
         this.deps.log('content.search', { ok: false, code: failure.code, ms: ms() })
         return failure
       }
       if (lineOutcome.kind === 'stopped' && lineOutcome.why === 'too_large') truncated = true
-      if (matchOutcome.kind === 'stopped') matchesComplete = false
+      // ② 가 끝까지 못 갔으면(상한·실패·시간 초과) 그 뒤 줄의 강조·일치 수는 모른다.
+      if (matchOutcome.kind !== 'exited' || (matchOutcome.code !== 0 && matchOutcome.code !== 1)) matchesComplete = false
 
       // 파일별로 묶는다(git 출력 순서 = 경로 순).
       const byFile = new Map<string, ContentSearchLine[]>()
       let matchCount = 0
+      let matchCountExact = true
       let lineCount = 0
+      const mode = matchModeOf(options)
       for (const entry of lines) {
         const rel = entry.rel.toString('utf8')
         if (!isSafeRel(rel)) continue
         const rows = matches.get(`${entry.rel.toString('latin1')}\0${entry.line}`)
-        const result = toResultLine(entry, rows === undefined ? undefined : matchByteRanges({ text: entry.text, rows, exact: !regex && !wholeWord }))
-        const found = rows
-        // ② 가 잘려 이 줄을 못 봤으면 강조하지 않는다(일치 수는 1로 센다).
-        if (found === undefined && !matchesComplete) result.ranges = []
+        const result = toResultLine(entry, lineMatches({ text: entry.text, firstColumn: entry.byteColumn, rows, rowsComplete: matchesComplete, mode, query, caseSensitive }))
+        if (!result.matchesExact) matchCountExact = false
         matchCount += result.matches
         lineCount += 1
         const list = byFile.get(rel)
@@ -467,8 +554,8 @@ export class ContentSearcher {
       await toDiskNames({ realRoot: confined.realRoot, files: diskRels, signal: controller.signal })
       if (controller.signal.aborted) return CANCELLED
       const files: ContentSearchFile[] = rels.map((rel, index) => ({ rel: diskRels[index] ?? rel, lines: byFile.get(rel) ?? [] }))
-      this.deps.log('content.search', { ok: true, files: files.length, lines: lineCount, matches: matchCount, truncated, ms: ms() })
-      return { ok: true, root: typeof root === 'string' ? root : '', files, lineCount, matchCount, truncated, ms: ms() }
+      this.deps.log('content.search', { ok: true, files: files.length, lines: lineCount, matches: matchCount, matchCountExact, truncated, ms: ms() })
+      return { ok: true, root: typeof root === 'string' ? root : '', files, lineCount, matchCount, matchCountExact, truncated, ms: ms() }
     } finally {
       if (this.running.get(requestId) === controller) this.running.delete(requestId)
     }

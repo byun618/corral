@@ -106,9 +106,9 @@ import {
   type FilePlacement,
 } from './file-tabs.js'
 import { FileView, focusLiveEditor, revealInLiveEditor, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
-import { SearchView, type SearchOpenInput } from './components/SearchView.js'
+import { SearchView } from './components/SearchView.js'
 import { useContentSearch } from './hooks/useContentSearch.js'
-import { revealSlot } from './file-reveal.js'
+import { useSearchOpen } from './hooks/useSearchOpen.js'
 import { createMarkdownToggleHandler } from './markdown-toggle.js'
 import { allDocs, dirtyDocs, disposeDoc, docKey, docsVersion, freezeEditing, getDoc, subscribeDocs, thawEditing, type FileDoc } from './file-docs.js'
 import { confirmDiscardOrSave, dirtyFilesOf, saveDoc, type SaveDeps } from './file-save.js'
@@ -691,7 +691,7 @@ export function App(): React.JSX.Element {
   const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: explorerVisible })
   const scm = useScm({ root: activeWorktreeRow?.path ?? null, active: scmVisible })
   // LIFE-803 — 내용 전체 검색 세션. 패널을 숨겨도 질의·결과가 남고, 활성 worktree 가 바뀌면 그 루트로(C6).
-  const contentSearch = useContentSearch(activeWorktreeRow?.path ?? null)
+  const contentSearch = useContentSearch({ root: activeWorktreeRow?.path ?? null, visible: rightPanel.open && rightPanel.view === 'search' })
   const prComments = usePrComments({ path: activeWorktreeRow?.path ?? null, branch: activeWorktreeRow?.branch ?? null, active: prVisible })
 
   const activeWorkspaceRow = useMemo(
@@ -1005,11 +1005,6 @@ export function App(): React.JSX.Element {
   const activeTabIdForReveal = layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null
   const activeTabKind = activeTabIdForReveal === null ? null : tabKindOf(activeTabIdForReveal)
   const activeFileRel = activeTabKind?.kind === 'file' ? activeTabKind.rel : null
-  // LIFE-803 C6 — 활성 탭(또는 worktree)이 대기 중인 줄 열기의 탭이 아니게 되면 그 요청의 적용 권리를 지운다(`file-reveal.ts`).
-  const revealStore = activeWorktreeRow === null ? null : fileViewStatesOf(activeWorktreeRow.path)
-  useEffect(() => {
-    revealSlot.activated({ store: revealStore, tabId: activeTabIdForReveal })
-  }, [revealStore, activeTabIdForReveal])
   const [revealRequest, setRevealRequest] = useState<{ rel: string; token: number } | null>(null)
   const revealFile = explorer.reveal
   useEffect(() => {
@@ -1668,22 +1663,21 @@ export function App(): React.JSX.Element {
     })
   }
   /**
-   * LIFE-803 C5 — 검색 결과 행 열기: 탐색기 한 번 클릭과 같은 열기(미리보기 규칙 그대로) + 그 줄:열 요청. 요청은 앞 요청을 대체하고(`revealSlot`),
-   * 편집기가 이미 붙어 있으면 다음 프레임에 바로, 첫 마운트면 FileView 가 보기 상태 복원 뒤에 적용한다. 포커스는 ⌘P 열기와 같은 `focusOpenedFile`.
+   * LIFE-803 C5·C6 — 검색 결과 행 열기: 탐색기 한 번 클릭과 같은 열기(미리보기 규칙 그대로) + 그 줄:열 요청. 활성 탭 감시·적용 시점 확인·포커스 규칙은
+   * `useSearchOpen`(r1 R1-03·R1-04 — App 연결을 시험이 직접 본다). 포커스는 ⌘P 열기와 같은 `focusOpenedFile`(포커스 순번).
    */
-  const openSearchResult = (input: SearchOpenInput): void => {
-    const worktreePath = activeWorktreeRow?.path ?? null
-    if (worktreePath === null) return
-    const store = fileViewStatesOf(worktreePath)
-    const tabId = fileTabId(input.rel)
-    revealSlot.request({ store, tabId, target: { line: input.line, column: input.column } })
-    openFileFromExplorer({ rel: input.rel, preview: input.preview })
-    requestAnimationFrame(() => {
-      if (revealSlot.current?.tabId !== tabId || (activeWorktreeRowRef.current?.path ?? null) !== worktreePath) return
-      revealInLiveEditor({ store, tabId })
-    })
-    focusOpenedFile({ worktreePath, rel: input.rel })
-  }
+  const openSearchResult = useSearchOpen({
+    worktreePath: activeWorktreeRow?.path ?? null,
+    store: activeWorktreeRow === null ? null : fileViewStatesOf(activeWorktreeRow.path),
+    activeTabId: activeTabIdForReveal,
+    currentWorktreePath: () => activeWorktreeRowRef.current?.path ?? null,
+    markdownPreview: ({ worktreePath, tabId }) => markdownModesOf(worktreePath).get(tabId) === 'preview',
+    openFile: openFileFromExplorer,
+    // 아래에 선언된 함수라 부를 때 찾는다.
+    focusOpened: (input) => focusOpenedFile(input),
+    focusSeq: () => focusSeqRef.current,
+    revealLive: revealInLiveEditor,
+  })
   const openFromQuickOpen = (rel: string): void => openListedFile({ rel, preview: false, focus: true })
   const openFromQuickOpenToSide = (rel: string): void => openListedFile({ rel, preview: false, focus: true, side: true })
   /**
@@ -1704,7 +1698,7 @@ export function App(): React.JSX.Element {
    * 연 파일 탭에 포커스(수정 r1 R1-C-01·R1-C-06) — 편집기가 붙으면 편집기 핸들의 `focus()`(Monaco 0.57 은 EditContext — 입력 요소가 textarea 가 아니다).
    * 편집기가 없는 보기(이미지·바이너리·상한 초과·오류·Markdown 미리보기)면 그 보기 자리(`[data-file-view]`, tabIndex -1)에. 편집기는 비동기로 붙으므로 프레임마다 다시 본다(최대 약 2 s).
    */
-  const focusOpenedFile = (input: { worktreePath: string; rel: string }): void => {
+  const focusOpenedFile = (input: { worktreePath: string; rel: string; held?: () => boolean }): number => {
     const tabId = fileTabId(input.rel)
     const startedAt = performance.now()
     const seq = beginFocusMove()
@@ -1714,6 +1708,8 @@ export function App(): React.JSX.Element {
       if (focusSeqRef.current !== seq) return
       // fix3 C-1 — 순번을 안 올리는 프로그램 이동(`requestedPane` 등)이 활성 탭을 바꿔도 그만둔다.
       if (!aimed()) return
+      // LIFE-803 r1 R1-03 — 부른 쪽이 「그 사이 포커스가 옮겨 갔다」 고 보면 그만둔다(검색 결과 열기 — `useSearchOpen`).
+      if (input.held !== undefined && !input.held()) return
       if (focusLiveEditor({ store: fileViewStatesOf(input.worktreePath), tabId })) return
       const view = document.querySelector<HTMLElement>(`.file-group[data-file-view="${CSS.escape(input.rel)}"]`)
       const waiting = view === null || view.querySelector('[data-file-editor], [data-file-notice="loading"]') !== null
@@ -1722,6 +1718,7 @@ export function App(): React.JSX.Element {
       else view?.focus({ preventScroll: true })
     }
     requestAnimationFrame(attempt)
+    return seq
   }
 
   /**
@@ -2344,6 +2341,8 @@ export function App(): React.JSX.Element {
     },
     // LIFE-803 — VS Code `workbench.view.search`: 닫혀 있으면 열고 검색 보기로, 입력칸 포커스·기존 글 전체 선택.
     'search.show': () => {
+      // r1 R1-03 — 포커스 이동으로 센다: 기다리던 연 파일 포커스(`focusOpenedFile`)·열기 요청의 포커스가 입력칸을 빼앗지 않게.
+      beginFocusMove()
       rightPanel.show('search')
       requestAnimationFrame(() => setSearchFocusToken((value) => value + 1))
     },

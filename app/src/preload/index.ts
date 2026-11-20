@@ -44,6 +44,7 @@ import type { WorkSettingsState } from '../shared/work.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
 import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerOpResult } from '../shared/explorer-ops.js'
 import type { FileListInput, FileListResult } from '../shared/file-list.js'
+import type { ContentSearchInput, ContentSearchResult } from '../shared/content-search.js'
 import type { ScmReadInput, ScmReadResult } from '../shared/scm.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
 
@@ -102,6 +103,8 @@ const EXPOSED = [
   'onExplorerEvent',
   'fileList',
   'fileListCancel',
+  'contentSearch',
+  'contentSearchCancel',
   'readFile',
   'fileWatch',
   'readImage',
@@ -154,6 +157,10 @@ const EXPOSED = [
   'prBranches',
   'prRefreshItem',
   'prComments',
+  'sessionHistoryList',
+  'sessionHistoryDetail',
+  'sessionHistoryResume',
+  'sessionHistoryReveal',
   'preloadEnv',
 ]
 
@@ -275,6 +282,8 @@ const api: CorralApi = {
   explorerFocus: (focused: boolean) => ipcRenderer.send('corral:explorerFocus', focused),
   fileList: (input: FileListInput): Promise<FileListResult> => ipcRenderer.invoke('corral:fileList', input),
   fileListCancel: (requestId: string) => ipcRenderer.send('corral:fileListCancel', requestId),
+  contentSearch: (input: ContentSearchInput): Promise<ContentSearchResult> => ipcRenderer.invoke('corral:contentSearch', input),
+  contentSearchCancel: (requestId: string) => ipcRenderer.send('corral:contentSearchCancel', requestId),
   onExplorerDrop: (listener: (drop: ExplorerDrop) => void) => {
     explorerDropListeners.add(listener)
     return () => {
@@ -485,6 +494,10 @@ const api: CorralApi = {
   prBranches: (input) => ipcRenderer.invoke('corral:prBranches', input),
   prRefreshItem: (query) => ipcRenderer.invoke('corral:prRefreshItem', query),
   prComments: (input) => ipcRenderer.invoke('corral:prComments', input),
+  sessionHistoryList: (input) => ipcRenderer.invoke('corral:sessionHistoryList', input),
+  sessionHistoryDetail: (input) => ipcRenderer.invoke('corral:sessionHistoryDetail', input),
+  sessionHistoryResume: (input) => ipcRenderer.invoke('corral:sessionHistoryResume', input),
+  sessionHistoryReveal: (input) => ipcRenderer.invoke('corral:sessionHistoryReveal', input),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

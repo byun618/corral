@@ -306,6 +306,12 @@ export function hasToolResult(message: Record<string, unknown>): boolean {
 }
 
 /**
+ * 사람 발화가 아닌 claude user 텍스트의 표지 — `claudeHumanText` 가 건너뛰는 봉투(`claudeHumanText` 주석의 표). 세션 히스토리의 잘린 줄 판정
+ * (`main/session-history.ts` `looksLikeCutHumanLine`, LIFE-808)도 이 목록을 쓴다 — 규칙이 바뀌면 두 자리가 같이 바뀐다.
+ */
+export const CLAUDE_NON_HUMAN_TEXT_MARKERS: readonly string[] = ['<command-message>', '<command-name>', '<local-command-stdout>', '<task-notification>']
+
+/**
  * claude **사람 발화** 판정 — 머리(첫 발화)와 꼬리(마지막 발화)가 **같은 규칙**을 쓴다 (T4, 두 벌 금지).
  * 사람 발화면 원문, 아니면 null.
  *
@@ -335,9 +341,7 @@ export function claudeHumanText(input: { record: Record<string, unknown>; sessio
   if (hasToolResult(message)) return null
   const text = textFromContent(message['content'])
   if (text === null) return null
-  if (text.includes('<command-message>') || text.includes('<command-name>')) return null
-  if (text.includes('<local-command-stdout>')) return null
-  if (text.includes('<task-notification>')) return null
+  if (CLAUDE_NON_HUMAN_TEXT_MARKERS.some((marker) => text.includes(marker))) return null
   if (CLAUDE_INTERRUPT_MARKERS.includes(text.trim())) return null
   return text
 }

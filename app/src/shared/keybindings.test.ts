@@ -12,7 +12,7 @@ describe('shortcut catalog and compatibility', () => {
     // LIFE-593: + quickOpen.open(⌘P) · explorer.filter(⌘⌥F — 탐색기 범위)
     // LIFE-601: + tasks.toggle(⌘I)
     // LIFE-629: + markdown.togglePreview(⇧⌘V)
-    expect(ACTIONS).toHaveLength(34) // LIFE-683: + ⌘⇧G 소스 제어 보이기 · LIFE-824: + ⌃` 터미널 ↔ 편집기 전환 · LIFE-825: + ⌘⌥↩ 영역 최대화·영역 크기 균등화(키 없음) · LIFE-812: + ⌘F 터미널에서 찾기(터미널 범위)
+    expect(ACTIONS).toHaveLength(35) // LIFE-803: + ⌘⇧F 검색 보이기 · LIFE-683: + ⌘⇧G 소스 제어 보이기 · LIFE-824: + ⌃` 터미널 ↔ 편집기 전환 · LIFE-825: + ⌘⌥↩ 영역 최대화·영역 크기 균등화(키 없음) · LIFE-812: + ⌘F 터미널에서 찾기(터미널 범위)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -37,6 +37,33 @@ describe('shortcut catalog and compatibility', () => {
     expect(matchBinding('Mod+Y', moved, 'explorer')).toEqual({ id: 'explorer.redo', variant: 0 })
     expect(matchBinding('Mod+Shift+Z', moved, 'explorer')).toEqual({ id: 'terminal.zoom', variant: 0 })
   })
+  it('LIFE-803 C7ⓓ — ⌘⇧F 검색 보이기는 전역(터미널·트리·편집기 포커스 어디서나), 기본값 중복·충돌 0, 기존 재정의가 ⌘⇧F 를 쓰면 비켜 선다', () => {
+    expect(matchBinding('Mod+Shift+F', {})).toEqual({ id: 'search.show', variant: 0 })
+    expect(matchBinding('Mod+Shift+F', {}, 'terminal')).toEqual({ id: 'search.show', variant: 0 })
+    expect(matchBinding('Mod+Shift+F', {}, 'explorer')).toEqual({ id: 'search.show', variant: 0 })
+    // 기존 키는 그대로 — ⌘F(터미널 찾기, 터미널 범위만)·⌥⌘F(탐색기 이름 필터, 트리 범위만)
+    expect(matchBinding('Mod+F', {}, 'terminal')).toEqual({ id: 'terminal.find', variant: 0 })
+    expect(matchBinding('Mod+Alt+F', {}, 'explorer')).toEqual({ id: 'explorer.filter', variant: 0 })
+    expect(matchBinding('Mod+F', {})).toBeNull()
+    const seen = new Set<string>()
+    for (const action of ACTIONS) for (const binding of action.defaultBinding) {
+      const key = `${scopeOf(action)}\0${binding}`
+      expect(seen.has(key)).toBe(false)
+      seen.add(key)
+    }
+    expect(bindingConflict({})).toBeNull()
+    // 나중 기본값이라 양보한다 — ⌘⇧F 를 다른 액션에 건 사용자의 설정이 버려지지 않는다
+    const user = validateOverrides({ 'palette.open': ['Mod+Shift+F'] })
+    expect(bindingConflict(user)).toBeNull()
+    expect(bindingsFor('search.show', user)).toEqual([null])
+    expect(matchBinding('Mod+Shift+F', user)).toEqual({ id: 'palette.open', variant: 0 })
+    // 편집기 양보·Markdown 양보 대상이 아니다(편집기 포커스에서도 앱이 가져간다), 누르고 있어도 한 번
+    expect(EDITOR_YIELD_ACTIONS).not.toContain('search.show')
+    expect(NON_REPEATING_ACTIONS).toContain('search.show')
+    expect(bindingFromEvent({ key: 'F', code: 'KeyF', metaKey: true, ctrlKey: false, altKey: false, shiftKey: true })).toBe('Mod+Shift+F')
+    expect(bindingFromEvent({ key: 'ㄹ', code: 'KeyF', metaKey: true, ctrlKey: false, altKey: false, shiftKey: true })).toBe('Mod+Shift+F')
+  })
+
   it('LIFE-812 터미널 범위 — ⌘F 는 터미널 포커스에서만, 기본값 중복·충돌 0(C6ⓓ)', () => {
     // 터미널 밖(Monaco·설정 검색칸·입력칸)은 ⌘F 를 가져가지 않는다 — 그 자리의 찾기로 간다
     expect(matchBinding('Mod+F', {})).toBeNull()

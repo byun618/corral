@@ -83,6 +83,9 @@ export const ACTIONS = [
   // 사용자가 ⌘F 를 다른 액션(전역 포함)에 직접 걸었으면 이 기본값은 「없음」이 되고 터미널에서도 사용자가 건 액션이 돈다(fix3 R3-3).
   { id: 'terminal.find', group: '터미널 pane', title: '터미널에서 찾기', defaultBinding: ['Mod+F'], bindingVariants: [0], variants: ['열기'], scope: 'terminal' },
   { id: 'group.even', group: '터미널 pane', title: '영역 크기 균등화', defaultBinding: [], bindingVariants: [], variants: ['균등화'] },
+  // LIFE-803 — VS Code `workbench.view.search`(⇧⌘F). 「검색 보이기」: 닫혀 있으면 열고 검색 보기로, 입력칸 포커스·기존 글 전체 선택. 어느 포커스에서든(터미널·편집기·트리)
+  // 캡처 단계에서 삼켜 PTY·Monaco 로 가지 않는다(Monaco 0.57 기본 ⇧⌘F 바인딩 없음). 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
+  { id: 'search.show', group: '전역', title: '검색 보이기 (내용)', defaultBinding: ['Mod+Shift+F'], bindingVariants: [0], variants: ['보이기'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
 /** 액션이 매칭되는 자리 — `global` 어디서나 · `explorer` 탐색기 트리 포커스에서만(LIFE-592) · `terminal` 터미널 pane 포커스에서만(LIFE-812). */
@@ -121,7 +124,7 @@ export function bindingFromEvent(event: KeyInput): string | null {
  * 재정의해 둔 사용자의 `keybindings.json` 이 충돌로 버려지지 않게 한다(재정의가 이기고, 이 액션은 조합 없음으로 남는다 —
  * 단축키 설정에서 다시 배정할 수 있다). 처음부터 있던 액션의 기본값은 지금처럼 재정의보다 앞선다.
  */
-const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'explorer.undo', 'explorer.redo', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview', 'focus.toggleTerminalEditor', 'group.maximize', 'terminal.find']
+const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'explorer.undo', 'explorer.redo', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview', 'focus.toggleTerminalEditor', 'group.maximize', 'terminal.find', 'search.show']
 
 /**
  * 기본 조합 **개수가 바뀐** 액션의 옛 기본값 (LIFE-495 K7ⓘ). 칸 수가 다른 재정의는 아래 검사에서 버려지므로, 옛 칸 수 그대로인 재정의를
@@ -210,7 +213,7 @@ export function matchBinding(binding: string, overrides: Keybindings, scope: Act
   return null
 }
 /** 누르고 있어도 한 번만 도는 액션 (LIFE-495 K6ⓔ) — 렌더러 keydown·main 메뉴 키 두 길이 같은 목록을 본다(fix1 R1-06). */
-export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview', 'focus.toggleTerminalEditor', 'group.maximize', 'terminal.find']
+export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename', 'terminal.newAgent', 'rightPanel.toggle', 'explorer.show', 'scm.show', 'file.save', 'explorer.delete', 'quickOpen.open', 'explorer.filter', 'tasks.toggle', 'markdown.togglePreview', 'focus.toggleTerminalEditor', 'group.maximize', 'terminal.find', 'search.show']
 
 /**
  * 편집기(파일 탭 Monaco)에 포커스가 있으면 **편집기에 양보하는** 액션 (LIFE-591). 터미널 pane 을 겨누는 단축키는 파일 탭이 활성이면 무동작이라(590 수정 r1 R1-B — `terminalKeyTarget`)

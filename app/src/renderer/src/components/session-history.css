@@ -1,0 +1,55 @@
+/* 세션 보기 (LIFE-808) — 머리·빈 글·스크롤은 탐색기 클래스를 그대로 쓰고 다른 것만 여기. */
+.history-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; font-family: var(--font-ui); font-size: 13px; color: var(--fg); }
+.history-view:hover .explorer-toolbar, .history-view:focus-within .explorer-toolbar { opacity: 1; }
+.history-view[data-history-busy] .explorer-section-title { opacity: 0.6; }
+.history-loading { margin-left: 8px; color: var(--fg-muted); font-size: 11px; animation: history-pulse 1.2s ease-in-out infinite; }
+@keyframes history-pulse { 50% { opacity: 0.4; } }
+.history-note.is-warn { padding: 4px 12px; color: var(--fg-muted); }
+.right-panel-activity-icon.is-sessions::before { content: '\ea82'; }
+.history-controls { display: flex; flex-direction: column; gap: 6px; padding: 4px 12px 8px; border-bottom: 1px solid var(--line); }
+.history-scopes, .history-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.history-chip {
+  flex-shrink: 0; padding: 0 8px; height: 20px; border: 1px solid var(--line); border-radius: 10px; background: none;
+  color: var(--fg-muted); font: inherit; font-size: 11.5px; cursor: pointer;
+}
+.history-chip:hover { background: var(--bg-row-hover); }
+.history-chip.is-on { background: var(--bg-selected); color: var(--fg); border-color: var(--line-strong); }
+.history-search { width: 100%; box-sizing: border-box; height: 24px; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg-input); color: var(--fg); font: inherit; font-size: 12px; }
+.history-hide-empty { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; color: var(--fg-muted); font-size: 11.5px; cursor: pointer; white-space: nowrap; }
+.history-list { padding: 2px 0; }
+.history-row {
+  display: flex; flex-direction: column; gap: 1px; width: 100%; padding: 4px 12px; border: none; background: none;
+  color: var(--fg); font: inherit; text-align: left; cursor: pointer;
+}
+.history-row:hover { background: var(--bg-row-hover); }
+.history-row.is-selected { background: var(--bg-selected); }
+.history-row-line { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
+.history-row-line.is-second { font-size: 11.5px; color: var(--fg-muted); }
+/* 꼭 보여야 할 꼬리(시각·표지)는 줄지 않는 칸, 제목·경로가 줄어든다(learnings ui). */
+.history-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.history-row-time { flex: 0 0 auto; color: var(--fg-dim); font-size: 11px; }
+.history-row-cwd { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 11px; }
+.history-row-cwd.is-missing { color: var(--fg-dim); text-decoration: line-through; }
+.history-badge { flex: 0 0 auto; padding: 0 6px; border-radius: 9px; font-size: var(--fs-badge); line-height: 16px; background: var(--bg-chip); color: var(--fg-muted); }
+.history-badge.is-open { color: var(--st-ok); }
+.history-detail { flex: 0 1 auto; max-height: 55%; min-height: 0; overflow-y: auto; border-top: 1px solid var(--line-strong); }
+.history-detail-body { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px 12px; font-size: 12px; }
+.history-detail-meta { display: flex; gap: 8px; justify-content: space-between; color: var(--fg-muted); font-size: 11.5px; }
+.history-detail-meta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-detail-meta > span:last-child { flex-shrink: 0; }
+.history-detail-cwd { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); word-break: break-all; }
+.history-command { display: block; padding: 4px 6px; border-radius: 4px; background: var(--bg-chip); font-family: var(--font-mono); font-size: 11px; word-break: break-all; user-select: text; }
+.history-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.history-action { height: 22px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg-raised); color: var(--fg); font: inherit; font-size: 11.5px; cursor: pointer; }
+.history-action:hover:not(:disabled) { background: var(--bg-row-hover); }
+.history-action:disabled { opacity: 0.5; cursor: default; }
+.history-action.is-primary { background: var(--accent); border-color: var(--accent); color: var(--fg-on-accent); }
+.history-note { color: var(--fg-muted); font-size: 11.5px; }
+.history-detail-label { margin-top: 4px; font-weight: 600; font-size: 11.5px; color: var(--fg-muted); }
+.history-first { margin: 0; max-height: 160px; overflow: auto; padding: 4px 6px; border-radius: 4px; background: var(--bg-chip); font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; word-break: break-word; user-select: text; }
+.history-turns { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.history-turn { display: flex; gap: 6px; }
+.history-turn-role { flex: 0 0 auto; width: 28px; color: var(--fg-dim); font-size: 11px; }
+.history-turn-text { flex: 1 1 auto; min-width: 0; max-height: 80px; overflow: hidden; white-space: pre-wrap; word-break: break-word; }
+.history-turn.is-prompt .history-turn-text { color: var(--fg); }
+.history-turn.is-reply .history-turn-text { color: var(--fg-muted); }

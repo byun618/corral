@@ -28,6 +28,11 @@ export const CODICON = {
   // LIFE-812 — 터미널 검색 막대 이전·다음.
   'arrow-up': 0xeaa1,
   'arrow-down': 0xea9a,
+  // LIFE-803 — 검색 보기(activity bar·토글 3개).
+  search: 0xea6d,
+  'case-sensitive': 0xeab1,
+  'whole-word': 0xeb7e,
+  regex: 0xeb38,
 } as const
 
 export type CodiconName = keyof typeof CODICON

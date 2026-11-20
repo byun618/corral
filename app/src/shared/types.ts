@@ -11,12 +11,14 @@ import type { WorktreeWorkLink } from './work-link.js'
 import type { RelaunchAgentInput, StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
 import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
 import type { FileListInput, FileListResult } from './file-list.js'
+import type { ContentSearchInput, ContentSearchResult } from './content-search.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
 import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
 import type { ScmReadInput, ScmReadResult } from './scm.js'
 import type { PrBranchesResult, PrItemRefreshResult } from './pr-status.js'
 import type { PrCommentsResult } from './pr-comments.js'
+import type { HistoryAgents, SessionHistoryDetailResult, SessionHistoryListInput, SessionHistoryListResult, SessionHistoryResumeInput, SessionHistoryResumeResult, SessionHistoryRevealResult, SessionKey } from './session-history.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
@@ -796,6 +798,9 @@ export type UiPrefs = {
   explorerShowIgnored: boolean
   /** 소스 제어 보기 모드 (LIFE-683 S4 · Q6) — 전역. 기본 목록(VS Code `scm.defaultViewMode: list`). 기준 빌드는 모르는 칸이라 다음 저장 때 버린다. */
   scmViewMode: 'list' | 'tree'
+  /** 세션 히스토리 (LIFE-808 C17·C18) — 빈 세션 숨기기(기본 켬) · 에이전트 필터(기본 둘 다 켬). 전역. 기준 빌드는 모르는 칸이라 다음 저장 때 버린다. */
+  sessionHistoryHideEmpty: boolean
+  sessionHistoryAgents: HistoryAgents
   /**
    * 최근 연 파일 (LIFE-593 E5 · Q5) — worktree 경로 → 루트 상대 경로 목록(최근이 앞, worktree 마다 50). 어느 경로로 열든 파일 탭이 활성이 되면 맨 앞에 온다.
    * 키 경로인 이유는 `groupLayouts` 와 같다. 모양 검사는 main `ui-prefs.ts` 가 읽을 때 한다(상대 경로만 — 열 때 `file-read.ts` 가 다시 가둔다).
@@ -805,7 +810,7 @@ export type UiPrefs = {
 } & SidebarViewPrefs
 
 /** 오른쪽 패널 보기 (LIFE-682) — 목록·아이콘·제목은 렌더러 `right-panel-views.ts` 한 곳. */
-export type RightPanelView = 'explorer' | 'scm' | 'pr' | 'detail'
+export type RightPanelView = 'explorer' | 'scm' | 'search' | 'pr' | 'sessions' | 'detail'
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
 
@@ -1101,6 +1106,10 @@ export type CorralApi = {
   fileList: (input: FileListInput) => Promise<FileListResult>
   /** 진행 중 목록 작업을 끝낸다(대화상자 닫기·worktree 전환 — E7ⓓ). */
   fileListCancel: (requestId: string) => void
+  // --- 내용 전체 검색 (LIFE-803) — 읽기 전용 `git grep`. 루트는 열린 worktree 만, 넘기는 것은 루트·질의·토글 3개·요청 id 뿐(main `content-search.ts`) ---
+  contentSearch: (input: ContentSearchInput) => Promise<ContentSearchResult>
+  /** 진행 중 검색을 끝낸다(새 검색·빈 질의·worktree 전환). */
+  contentSearchCancel: (requestId: string) => void
   // --- 탐색기 파일 조작 (LIFE-592 F4) — 만들기·이름 변경/이동·휴지통·되살리기·복제·가져오기. 가둠·덮어쓰기 금지·휴지통은 main(`explorer-ops.ts`) ---
   explorerOp: (input: ExplorerOpInput) => Promise<ExplorerOpResult>
   /** 탐색기 트리가 활성 요소가 됐다/떠났다 — main 이 그동안만 ⌘Z·⌘⇧Z 를 탐색기 실행 취소로 가져온다(`raw/claude/undo-routing.md`). */
@@ -1240,6 +1249,11 @@ export type CorralApi = {
   prRefreshItem: (query: WorkActivityQuery) => Promise<PrItemRefreshResult>
   /** PR 리뷰 코멘트(LIFE-811) — 알려진 worktree 경로 하나의 PR 의 리뷰·스레드·일반 코멘트. `refresh` 면 TTL 무시. 「PR」 보기가 보일 때만 부른다. */
   prComments: (input: { path: string; refresh?: boolean }) => Promise<PrCommentsResult>
+  /** 세션 히스토리(LIFE-808) — 목록(켠 provider 만 훑는다)·상세·재개·Finder 에서 보기. 「세션」 보기가 보일 때만 부른다. */
+  sessionHistoryList: (input: SessionHistoryListInput) => Promise<SessionHistoryListResult>
+  sessionHistoryDetail: (input: SessionKey) => Promise<SessionHistoryDetailResult>
+  sessionHistoryResume: (input: SessionHistoryResumeInput) => Promise<SessionHistoryResumeResult>
+  sessionHistoryReveal: (input: SessionKey) => Promise<SessionHistoryRevealResult>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }
 

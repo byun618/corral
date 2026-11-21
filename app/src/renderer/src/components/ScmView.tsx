@@ -5,9 +5,25 @@
 // · 목록 / 트리(폴더 압축) 전환은 머리 단추 — 선택은 ui-prefs `scmViewMode` 에 영속(Q6). 접기 상태는 메모리(VS Code 와 같다 — 세션 동안).
 // · 행이 많을 수 있어(상한 10 000 — `git.statusLimit`) 22px 고정 높이로 보이는 칸만 그린다.
 // · 키보드는 탐색기와 같은 관례: ↑↓ Home End 이동 · ← 접기/부모 · → 펼치기 · Enter 열기(고정) · Space 열기(미리보기).
+// · 비교 기준(LIFE-830) — 머리 단추로 「작업 트리」 ↔ 「base 대비」(루트별, `scm.compare`). base 대비는 그룹 하나(merge-base ↔ 작업 트리 + 추적 안 함)와
+//   머리 아래 한 줄(base 이름 · 출처 · merge-base 짧은 해시 — 이름만 줄고 출처·해시는 안 준다)을 그린다. 목록·트리·정렬·접기·키보드·상한은 같은 장치.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { GIT_DECORATION } from '../../../shared/explorer-git.js'
-import { buildTree, flattenTree, groupChanges, SCM_STATUS_LIMIT, scmErrorKind, SCM_STATUS_TEXT, scmMark, scmStrike, type ScmChange, type ScmGroupId } from '../../../shared/scm.js'
+import {
+  buildTree,
+  flattenTree,
+  groupChanges,
+  SCM_BASE_SOURCE_TEXT,
+  SCM_NO_BASE_HELP,
+  SCM_STATUS_LIMIT,
+  scmErrorKind,
+  SCM_STATUS_TEXT,
+  scmMark,
+  scmStrike,
+  type ScmBasePush,
+  type ScmChange,
+  type ScmGroupId,
+} from '../../../shared/scm.js'
 import type { ScmApi } from '../hooks/useScm.js'
 import { Codicon, FileIcon } from './ExplorerIcons.js'
 import './scm.css'
@@ -53,6 +69,20 @@ export function scmRowTitle(change: ScmChange): string {
   return change.orig === null ? `${change.rel} • ${status}` : `${change.rel} • ${status} (원래 ${change.orig})`
 }
 
+/** base 대비 모드의 안내 — 목록을 그릴 수 있으면 null(빈 목록 문구는 따로). */
+export function scmBaseNotice(base: ScmBasePush | null): string | null {
+  if (base === null) return 'base 대비 목록을 읽는 중…'
+  if (base.ok) return base.changes.length === 0 ? 'base 대비 변경 사항 없음' : null
+  switch (base.reason) {
+    case 'no_base':
+      return SCM_NO_BASE_HELP
+    case 'no_merge_base':
+      return `base 와 공통 조상이 없어 비교할 수 없습니다 — ${base.error}`
+    case 'git_error':
+      return `base 대비 목록을 읽지 못했습니다 — ${base.error}`
+  }
+}
+
 export function ScmView({
   scm,
   title,
@@ -78,10 +108,12 @@ export function ScmView({
   const listRef = useRef<HTMLDivElement | null>(null)
 
   const root = scm.root
-  const changes = scm.state?.changes ?? null
+  const compare = scm.compare
+  const base = scm.state?.base ?? null
+  const changes = compare === 'base' ? (base !== null && base.ok ? base.changes : null) : (scm.state?.changes ?? null)
   const collapsed = useMemo(() => (root === null ? new Set<string>() : (collapsedByRoot.get(root) ?? new Set<string>())), [collapsedByRoot, root])
   const selected = root === null ? null : (selectedByRoot.get(root) ?? null)
-  const changesTotal = scm.state?.total ?? 0
+  const changesTotal = compare === 'base' ? (base !== null && base.ok ? base.total : 0) : (scm.state?.total ?? 0)
   const { rows, total, truncated } = useMemo(() => (changes === null ? { rows: [], total: 0, truncated: false } : scmRows({ changes, mode, collapsed, total: changesTotal })), [changes, mode, collapsed, changesTotal])
 
   useLayoutEffect(() => {
@@ -196,18 +228,32 @@ export function ScmView({
             scmErrorKind(scm.state.error) === 'not_repo'
             ? '현재 열린 폴더에 Git 리포지토리가 없습니다.'
             : `Git 상태를 읽지 못했습니다 — ${scm.state.error.split('\n').find((line) => line.trim() !== '' && !line.startsWith('Command failed')) ?? scm.state.error}`
-          : changes !== null && changes.length === 0
-            ? '변경 사항 없음'
-            : null
+          : compare === 'base'
+            ? scmBaseNotice(base)
+            : changes !== null && changes.length === 0
+              ? '변경 사항 없음'
+              : null
 
   return (
-    <div className="scm" data-scm="" data-scm-mode={mode}>
+    <div className="scm" data-scm="" data-scm-mode={mode} data-scm-compare={compare}>
       <div className="explorer-section-head" data-scm-head="">
         <span className="explorer-section-twistie" />
         <span className="explorer-section-title" title={title ?? undefined}>
           소스 제어
         </span>
         <div className="explorer-toolbar">
+          <button
+            type="button"
+            className={`explorer-tool${compare === 'base' ? ' is-active' : ''}`}
+            data-scm-compare-toggle={compare === 'base' ? 'working' : 'base'}
+            title={compare === 'base' ? '작업 트리로 보기' : 'base 대비로 보기'}
+            aria-label={compare === 'base' ? '작업 트리로 보기' : 'base 대비로 보기'}
+            aria-pressed={compare === 'base'}
+            disabled={root === null}
+            onClick={() => scm.setCompare(compare === 'base' ? 'working' : 'base')}
+          >
+            <Codicon name="git-compare" />
+          </button>
           <button
             type="button"
             className="explorer-tool"
@@ -226,6 +272,19 @@ export function ScmView({
           </button>
         </div>
       </div>
+      {compare === 'base' && base !== null && base.ok ? (
+        <div className="scm-base" data-scm-base="" data-scm-base-source={base.info.source} title={`base ${base.info.name} · ${SCM_BASE_SOURCE_TEXT[base.info.source]} · merge-base ${base.info.mergeBase}`}>
+          <span className="scm-base-name" data-scm-base-name="">
+            base {base.info.name}
+          </span>
+          <span className="scm-base-tail">
+            <span className="scm-base-source">{SCM_BASE_SOURCE_TEXT[base.info.source]}</span>
+            <span className="scm-base-hash" data-scm-base-hash={base.info.mergeBase.slice(0, 7)}>
+              {base.info.mergeBase.slice(0, 7)}
+            </span>
+          </span>
+        </div>
+      ) : null}
       {truncated ? (
         <div className="scm-banner" data-scm-truncated="">
           변경이 너무 많아 처음 {SCM_STATUS_LIMIT.toLocaleString()}개만 표시합니다(전체 {total.toLocaleString()}개).

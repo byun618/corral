@@ -85,3 +85,44 @@ describe('readScmContent', () => {
     expect(stamp()).not.toBe(before)
   })
 })
+
+// LIFE-830 B5·B7 — side `base` 는 main 이 푼 merge-base 로 읽는다. 렌더러가 보낸 ref·리비전 문자열은 side 로 거절되고 git 을 부르지 않는다.
+describe('readScmContent — side base (LIFE-830)', () => {
+  const headOid = (): string => git('rev-parse', 'HEAD').trim()
+  it('resolveBase 가 준 merge-base 쪽 blob 을 읽고 그 base 를 결과에 싣는다(원래 경로도)', async () => {
+    const info = { name: 'main', source: 'repo' as const, mergeBase: headOid() }
+    const asked: { root: string; realRoot: string }[] = []
+    const resolveBase = async (input: { root: string; realRoot: string }) => {
+      asked.push(input)
+      return { ok: true as const, info }
+    }
+    expect(await readScmContent({ roots: roots(), root, rel: 'a.ts', side: 'base', resolveBase })).toEqual({ ok: true, kind: 'text', text: git('show', `${info.mergeBase}:a.ts`), size: 5, base: info })
+    expect(await readScmContent({ roots: roots(), root, rel: 'added.ts', side: 'base', resolveBase })).toEqual({ ok: true, kind: 'missing', base: info })
+    expect(asked).toEqual([
+      { root, realRoot: root },
+      { root, realRoot: root },
+    ])
+  })
+  it('풀이 실패·hex 아닌 merge-base·resolveBase 없음은 거절, 가둠 밖 루트는 풀이 전에 거절', async () => {
+    let calls = 0
+    const failing = async () => {
+      calls += 1
+      return { ok: false as const, reason: 'no_base' as const, error: 'none' }
+    }
+    expect(await readScmContent({ roots: roots(), root, rel: 'a.ts', side: 'base', resolveBase: failing })).toMatchObject({ ok: false, code: 'git_error' })
+    const notHex = async () => ({ ok: true as const, info: { name: 'x', source: 'repo' as const, mergeBase: 'HEAD~1' } })
+    expect(await readScmContent({ roots: roots(), root, rel: 'a.ts', side: 'base', resolveBase: notHex })).toMatchObject({ ok: false, code: 'git_error' })
+    expect(await readScmContent({ roots: roots(), root, rel: 'a.ts', side: 'base' })).toMatchObject({ ok: false, code: 'bad_path' })
+    expect(await readScmContent({ roots: [], root, rel: 'a.ts', side: 'base', resolveBase: failing })).toMatchObject({ ok: false, code: 'not_worktree' })
+    expect(calls).toBe(1)
+  })
+  it('ref·리비전 모양 side 는 resolveBase 가 있어도 거절 — 풀이 0 회', async () => {
+    let calls = 0
+    const resolveBase = async () => {
+      calls += 1
+      return { ok: true as const, info: { name: 'x', source: 'repo' as const, mergeBase: headOid() } }
+    }
+    for (const side of ['HEAD~1', 'refs/heads/main', 'origin/main', 'base:main', ['base'], { side: 'base' }, '--output=/tmp/x', 'BASE']) expect(await readScmContent({ roots: roots(), root, rel: 'a.ts', side, resolveBase })).toMatchObject({ ok: false, code: 'bad_path' })
+    expect(calls).toBe(0)
+  })
+})

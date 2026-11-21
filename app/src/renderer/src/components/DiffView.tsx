@@ -3,11 +3,13 @@
 // · 읽기: 작업 파일 = 기존 파일 읽기 IPC(`readFile` — 가둠·상한·바이너리), HEAD·인덱스 = `scmRead`(main 이 고정 argv). 렌더러는 ref 를 고르지 않는다.
 // · 갱신(S6): 그 루트의 git push 차례(`stamp`)가 바뀌면 양쪽을 다시 읽어, 내용이 달라진 모델만 바꾼다 — view state(스크롤)를 저장했다 되살린다.
 //   대상이 변경 목록에서 사라져도 탭은 남고 같은 대상을 다시 읽는다. 양쪽이 같아지면 「변경 없음」 안내 띠.
+// · base 대비(LIFE-830): `base` 쪽은 main 이 그 루트에서 푼 merge-base 로 읽고, 읽은 결과에 실린 base(이름·해시)로 머리에 「base <이름>(<해시>)」 를 그린다.
+//   추가·추적 안 함은 왼쪽(merge-base 쪽)이 없는 빈 왼쪽 diff 다 — 「base 쪽에 이 파일이 없습니다」 띠를 보인다.
 // · Monaco 는 파일 탭과 같은 지연 로딩(`../editor/monaco.js` 동적 import)·같은 편집기 worker. 한쪽이라도 20 MB 를 넘으면 파일 탭과 같은 대용량 처리(fix r1 R1-10).
 // · 감시(fix r1 R1-01 · S8 정정 r1): 영역에 보이는 diff 탭(`watch`)은 그 루트 허브 구독을 잡는다 — 패널이 닫혔거나 상세 보기여도 git push(= 갱신 신호)가 온다.
 //   참조 셈(`explorer-watch-refs.ts`)이라 탐색기·소스 제어와 같은 루트면 한 벌이고, 탭이 안 보이면(탭 전환·닫음·작업 페이지·설정) 해제한다.
 import { useEffect, useRef, useState } from 'react'
-import { diffTitle, sidesOf, type ScmDiffTarget, type ScmSide } from '../../../shared/scm.js'
+import { diffTitle, sidesOf, type ScmBaseInfo, type ScmDiffTarget, type ScmSide } from '../../../shared/scm.js'
 import { LARGE_FILE_BYTES } from '../../../shared/file-view.js'
 import { acquireExplorerWatch } from '../explorer-watch-refs.js'
 import { Codicon } from './ExplorerIcons.js'
@@ -16,9 +18,16 @@ import './scm.css'
 type MonacoModule = typeof import('../editor/monaco.js')
 type Model = ReturnType<MonacoModule['createModel']>
 
-export type SideContent = { kind: 'text'; text: string; size: number } | { kind: 'missing' } | { kind: 'binary' } | { kind: 'too_large' } | { kind: 'error'; message: string }
+/** `base` — side `base` 로 읽었을 때 main 이 쓴 base(머리 표지용, LIFE-830). */
+export type SideContent = ({ kind: 'text'; text: string; size: number } | { kind: 'missing' } | { kind: 'binary' } | { kind: 'too_large' } | { kind: 'error'; message: string }) & { base?: ScmBaseInfo }
 
-const SIDE_LABEL: Readonly<Record<ScmSide, string>> = { head: 'HEAD', index: '인덱스', working: '작업 트리' }
+const SIDE_LABEL: Readonly<Record<ScmSide, string>> = { head: 'HEAD', index: '인덱스', working: '작업 트리', base: 'base' }
+
+/** 머리 표지의 한 쪽 — base 쪽은 읽은 base 가 있으면 「base <이름>(<짧은 해시>)」. */
+export function sideLabel(side: ScmSide, content: SideContent | null): string {
+  if (side !== 'base' || content?.base === undefined) return SIDE_LABEL[side]
+  return `base ${content.base.name}(${content.base.mergeBase.slice(0, 7)})`
+}
 
 /** 한 쪽 읽기 — 작업 파일은 `readFile`, 나머지는 `scmRead`. */
 export async function readSide(input: { root: string; side: ScmSide; rel: string }): Promise<SideContent> {
@@ -29,7 +38,8 @@ export async function readSide(input: { root: string; side: ScmSide; rel: string
   }
   const result = await window.corral.scmRead({ root: input.root, rel: input.rel, side: input.side })
   if (!result.ok) return { kind: 'error', message: result.error }
-  return result.kind === 'text' ? { kind: 'text', text: result.text, size: result.size } : { kind: result.kind }
+  const base = result.base === undefined ? {} : { base: result.base }
+  return result.kind === 'text' ? { kind: 'text', text: result.text, size: result.size, ...base } : { kind: result.kind, ...base }
 }
 
 /** 편집기 대신 보일 안내 — 둘 중 하나라도 글이 아니면(없음은 빈 글로 본다). 없으면 null. */
@@ -164,15 +174,19 @@ export function DiffView({
   // LIFE-824 — tabIndex -1: 키보드로 이 diff 탭에 오면(⌘⌥방향·⌃`·이전/다음 탭·탭 클릭) 포커스가 머물 자리. Tab 순회에는 들지 않는다.
   if (target === null) return <div className="scm-diff-message" data-diff-group={groupId} tabIndex={-1} onMouseDown={onActivate}>이 diff 탭의 대상을 읽지 못했습니다(손상된 탭).</div>
   const sides = sidesOf(target)
-  const unchanged = contents !== null && notice === null && contents.left !== null && textOf(contents.left) === textOf(contents.right)
+  // base 대비 추가·추적 안 함 — 왼쪽(merge-base 쪽)에 없다. 빈 왼쪽과 「같음」 으로 보지 않는다.
+  const leftMissing = contents !== null && sides.left?.side === 'base' && contents.left?.kind === 'missing'
+  const unchanged = contents !== null && notice === null && contents.left !== null && !leftMissing && textOf(contents.left) === textOf(contents.right)
   const missing = contents !== null && contents.right.kind === 'missing'
+  const leftLabel = sides.left === null ? '' : sideLabel(sides.left.side, contents?.left ?? null)
+  const rightLabel = sideLabel(sides.right.side, contents?.right ?? null)
   return (
     <div className="scm-diff" data-scm-diff={target.mode} data-scm-diff-rel={target.rel} data-diff-group={groupId} tabIndex={-1} onMouseDown={onActivate}>
       <div className="scm-diff-head">
         <span className="scm-diff-sides" title={diffTitle(target)}>
-          {sides.left === null ? `${SIDE_LABEL[sides.right.side]} · ${target.rel}` : `${SIDE_LABEL[sides.left.side]}${sides.left.rel === sides.right.rel ? '' : ` ${sides.left.rel}`} ↔ ${SIDE_LABEL[sides.right.side]} · ${target.rel}`} · 읽기 전용
+          {sides.left === null ? `${rightLabel} · ${target.rel}` : `${leftLabel}${sides.left.rel === sides.right.rel ? '' : ` ${sides.left.rel}`} ↔ ${rightLabel} · ${target.rel}`} · 읽기 전용
         </span>
-        {target.mode === 'deleted' ? null : (
+        {target.mode === 'deleted' || target.mode === 'baseDeleted' ? null : (
           <button type="button" className="scm-diff-open" data-scm-diff-open="" title="파일 열기" onClick={() => onOpenFile(target.rel)}>
             <Codicon name="go-to-file" />
             파일 열기
@@ -184,9 +198,14 @@ export function DiffView({
           변경 없음 — 양쪽 내용이 같습니다.
         </div>
       ) : null}
+      {leftMissing && notice === null ? (
+        <div className="scm-diff-notice" data-scm-diff-left-missing="">
+          base 쪽에 이 파일이 없습니다(추가됨).
+        </div>
+      ) : null}
       {missing && notice === null ? (
         <div className="scm-diff-notice" data-scm-diff-missing="">
-          {SIDE_LABEL[sides.right.side]} 쪽에 이 파일이 없습니다.
+          {rightLabel} 쪽에 이 파일이 없습니다.
         </div>
       ) : null}
       {notice !== null ? (

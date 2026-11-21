@@ -8,7 +8,7 @@
 //   있으면 diff. ref 는 HEAD·인덱스만(S7) — 충돌 단계(`~1`~`~3`)는 읽지 않는다(D1).
 import type { GitMark } from './explorer-git.js'
 
-export type ScmGroupId = 'merge' | 'index' | 'workingTree'
+export type ScmGroupId = 'merge' | 'index' | 'workingTree' | 'base'
 
 export type ScmStatus =
   | 'INDEX_MODIFIED'
@@ -30,6 +30,9 @@ export type ScmStatus =
   | 'DELETED_BY_US'
   | 'BOTH_ADDED'
   | 'BOTH_MODIFIED'
+  // LIFE-830 — base 대비 목록(`git diff --raw` 의 A·R) 전용. 나머지 글자는 위 값(MODIFIED·DELETED·TYPE_CHANGED·UNTRACKED·BOTH_MODIFIED)을 같이 쓴다.
+  | 'ADDED'
+  | 'RENAMED'
 
 /**
  * 변경 한 줄 — `rel` 은 보이는 경로(이름 바뀜은 새 경로), `orig` 는 이름 바뀜·복사의 원래 경로(없으면 null).
@@ -42,6 +45,8 @@ export const SCM_GROUPS: readonly { id: ScmGroupId; title: string }[] = [
   { id: 'merge', title: '병합 변경 사항' },
   { id: 'index', title: '스테이징된 변경 사항' },
   { id: 'workingTree', title: '변경 사항' },
+  // LIFE-830 — base 대비 모드의 그룹 하나(작업 트리 모드 목록에는 이 그룹 변경이 없다).
+  { id: 'base', title: 'base 대비 변경 사항' },
 ]
 
 /** VS Code `git.statusLimit` 기본(`package.json:4017-4021`) — 넘으면 앞 것만 그리고 안내. */
@@ -116,12 +121,14 @@ export function scmMark(status: ScmStatus): GitMark {
       return 'M'
     case 'INDEX_ADDED':
     case 'INTENT_TO_ADD':
+    case 'ADDED':
       return 'A'
     case 'INDEX_DELETED':
     case 'DELETED':
       return 'D'
     case 'INDEX_RENAMED':
     case 'INTENT_TO_RENAME':
+    case 'RENAMED':
       return 'R'
     case 'INDEX_TYPE_CHANGED':
     case 'TYPE_CHANGED':
@@ -162,6 +169,8 @@ export const SCM_STATUS_TEXT: Readonly<Record<ScmStatus, string>> = {
   DELETED_BY_US: '충돌: 우리가 삭제',
   BOTH_ADDED: '충돌: 둘 다 추가',
   BOTH_MODIFIED: '충돌: 둘 다 수정',
+  ADDED: '추가됨',
+  RENAMED: '이름 바뀜',
 }
 
 /** 취소선 — VS Code `strikeThrough`(`repository.ts:251-262`). */
@@ -260,8 +269,11 @@ export function flattenTree(nodes: readonly ScmTreeNode[], collapsed: ReadonlySe
 
 // --- 클릭 대상 (S5) ---------------------------------------------------------------
 
-/** 읽을 쪽 — `working` 은 작업 파일(기존 파일 읽기 IPC), 나머지는 git 객체(`scmRead`). */
-export type ScmSide = 'head' | 'index' | 'working'
+/**
+ * 읽을 쪽 — `working` 은 작업 파일(기존 파일 읽기 IPC), 나머지는 git 객체(`scmRead`).
+ * `base` = base 대비의 merge-base 커밋(LIFE-830) — 렌더러는 이 고정 값만 보내고 base·merge-base 는 main 이 그 루트에서 푼다.
+ */
+export type ScmSide = 'head' | 'index' | 'working' | 'base'
 
 /**
  * diff 탭의 모드 — 탭 id 에 실려 영속된다. 제목 꼬리는 VS Code `getTitle`.
@@ -272,8 +284,10 @@ export type ScmSide = 'head' | 'index' | 'working'
  *   · `idx`      HEAD(원래 경로 또는 같은 경로) ↔ 인덱스, (인덱스)
  *   · `idxOnly`  인덱스 단일, (인덱스)
  *   · `deleted`  HEAD 단일, (삭제됨)
+ *   · `base`        merge-base(원래 경로 또는 같은 경로) ↔ 작업 파일, (base 대비) — LIFE-830. 추가·추적 안 함도 이 모드(왼쪽이 없어 빈 왼쪽 diff)
+ *   · `baseDeleted` merge-base 단일, (base 대비 · 삭제됨) — LIFE-830
  */
-export type ScmDiffMode = 'wt' | 'wtType' | 'wtRename' | 'idx' | 'idxOnly' | 'deleted'
+export type ScmDiffMode = 'wt' | 'wtType' | 'wtRename' | 'idx' | 'idxOnly' | 'deleted' | 'base' | 'baseDeleted'
 export type ScmDiffTarget = { mode: ScmDiffMode; rel: string; orig: string | null }
 
 export type ScmOpen = { kind: 'diff'; target: ScmDiffTarget } | { kind: 'file'; rel: string } | { kind: 'notice'; message: string }
@@ -286,6 +300,7 @@ export type ScmOpen = { kind: 'diff'; target: ScmDiffTarget } | { kind: 'file'; 
 export function openOf(change: ScmChange): ScmOpen {
   const { rel, orig } = change
   if (change.submodule === true) return { kind: 'notice', message: `${rel} 은(는) 하위 모듈입니다 — 소스 제어 보기는 하위 모듈의 내용 비교를 보여 주지 않습니다.` }
+  if (change.group === 'base') return openOfBase(change)
   switch (change.status) {
     case 'MODIFIED':
       return { kind: 'diff', target: { mode: 'wt', rel, orig: null } }
@@ -313,7 +328,27 @@ export function openOf(change: ScmChange): ScmOpen {
     case 'DELETED_BY_US':
     case 'BOTH_ADDED':
     case 'BOTH_MODIFIED':
+    case 'ADDED':
+    case 'RENAMED':
       return { kind: 'file', rel }
+  }
+}
+
+/**
+ * base 대비 행 클릭(LIFE-830 B5) — 왼쪽은 merge-base 쪽, 오른쪽은 작업 파일. 이름 바뀜은 원래 경로 ↔ 새 경로.
+ * 추가·추적 안 함은 같은 `base` 모드(merge-base 쪽에 없어 빈 왼쪽 diff), 삭제는 merge-base 단일, 충돌은 작업 파일(작업 트리 모드와 같다).
+ */
+function openOfBase(change: ScmChange): ScmOpen {
+  const { rel } = change
+  switch (change.status) {
+    case 'DELETED':
+      return { kind: 'diff', target: { mode: 'baseDeleted', rel, orig: null } }
+    case 'RENAMED':
+      return { kind: 'diff', target: { mode: 'base', rel, orig: change.orig } }
+    case 'BOTH_MODIFIED':
+      return { kind: 'file', rel }
+    default:
+      return { kind: 'diff', target: { mode: 'base', rel, orig: null } }
   }
 }
 
@@ -334,10 +369,23 @@ export function sidesOf(target: ScmDiffTarget): { left: { side: ScmSide; rel: st
       return { left: null, right: { side: 'index', rel } }
     case 'deleted':
       return { left: null, right: { side: 'head', rel } }
+    case 'base':
+      return { left: { side: 'base', rel: orig }, right: { side: 'working', rel } }
+    case 'baseDeleted':
+      return { left: null, right: { side: 'base', rel } }
   }
 }
 
-const TITLE_SUFFIX: Readonly<Record<ScmDiffMode, string>> = { wt: '작업 트리', wtType: '형식 바뀜', wtRename: '이름 바꾸기 예정', idx: '인덱스', idxOnly: '인덱스', deleted: '삭제됨' }
+const TITLE_SUFFIX: Readonly<Record<ScmDiffMode, string>> = {
+  wt: '작업 트리',
+  wtType: '형식 바뀜',
+  wtRename: '이름 바꾸기 예정',
+  idx: '인덱스',
+  idxOnly: '인덱스',
+  deleted: '삭제됨',
+  base: 'base 대비',
+  baseDeleted: 'base 대비 · 삭제됨',
+}
 
 /** 탭 제목 — VS Code `l10n.t('{0} (Index)', basename)` 형식. */
 export function diffTitle(target: ScmDiffTarget): string {
@@ -351,7 +399,8 @@ export function diffTitle(target: ScmDiffTarget): string {
  * 기준 빌드(682)는 `file:` 이 아닌 이 id 를 herdr 에 없는 터미널 탭으로 보고 걷는다 — 터미널 배치는 남는다(S10).
  */
 export const DIFF_TAB_PREFIX = 'diff:'
-const MODES: readonly ScmDiffMode[] = ['wt', 'wtType', 'wtRename', 'idx', 'idxOnly', 'deleted']
+// LIFE-830 — base 두 모드는 뒤에 더했다. 옛 id 는 그대로 읽히고, 기준 빌드(v0.6.0)는 이 모드를 모르는 id 로 보아 `broken` diff 탭으로 그린다(B10).
+const MODES: readonly ScmDiffMode[] = ['wt', 'wtType', 'wtRename', 'idx', 'idxOnly', 'deleted', 'base', 'baseDeleted']
 
 export function diffTabId(target: ScmDiffTarget): string {
   return `${DIFF_TAB_PREFIX}${JSON.stringify([target.mode, target.rel, target.orig])}`
@@ -386,10 +435,63 @@ export function scmErrorKind(error: string): 'not_repo' | 'failed' {
 
 // --- 읽기 IPC (S7) -------------------------------------------------------------------
 
-export type ScmReadInput = { root: string; rel: string; side: 'head' | 'index' }
+export type ScmReadInput = { root: string; rel: string; side: 'head' | 'index' | 'base' }
+/** `base` — side `base` 로 읽었을 때 main 이 실제로 쓴 base(머리 표지용). 다른 side 에는 없다. */
 export type ScmReadResult =
-  | { ok: true; kind: 'text'; text: string; size: number }
-  | { ok: true; kind: 'binary'; size: number }
-  | { ok: true; kind: 'too_large'; size: number; limit: number }
-  | { ok: true; kind: 'missing' }
+  | { ok: true; kind: 'text'; text: string; size: number; base?: ScmBaseInfo }
+  | { ok: true; kind: 'binary'; size: number; base?: ScmBaseInfo }
+  | { ok: true; kind: 'too_large'; size: number; limit: number; base?: ScmBaseInfo }
+  | { ok: true; kind: 'missing'; base?: ScmBaseInfo }
   | { ok: false; code: 'not_worktree' | 'bad_path' | 'git_error'; error: string }
+
+// --- base 대비 (LIFE-830) ---------------------------------------------------------------
+
+/** base 를 어디서 얻었나 — 00-analysis 3.2 순서: 부모 worktree → repo 설정(`baseRef`) → 원격 기본 브랜치 사슬. */
+export type ScmBaseSource = 'parent' | 'repo' | 'default'
+export const SCM_BASE_SOURCE_TEXT: Readonly<Record<ScmBaseSource, string>> = { parent: '부모 worktree', repo: 'repo 설정', default: '원격 기본' }
+
+/** main 이 푼 base — `name` 은 보이는 이름(브랜치·ref 이름, 분리된 HEAD 면 짧은 해시), `mergeBase` 는 merge-base 커밋 전체 해시. */
+export type ScmBaseInfo = { name: string; source: ScmBaseSource; mergeBase: string }
+
+/**
+ * 허브가 base 대비 모드인 루트의 git push 에 싣는 것. `changes` 는 상한 + 1 개까지(작업 트리 목록과 같은 규칙), `total` 은 전체 개수.
+ * 실패: `no_base` — 세 출처 다 커밋으로 안 풀림 · `no_merge_base` — 관련 없는 이력 · `git_error` — 그 밖.
+ */
+export type ScmBasePush = { ok: true; info: ScmBaseInfo; changes: ScmChange[]; total: number } | { ok: false; reason: 'no_base' | 'no_merge_base' | 'git_error'; error: string }
+
+/** base 를 못 정했을 때 안내(B2ⓓ) — 정하는 방법 한 줄. */
+export const SCM_NO_BASE_HELP = 'base 브랜치를 찾지 못했습니다 — `corral worktree set <worktree> --parent-worktree <부모>` 로 부모 worktree 를 지정하거나 `corral repo set-base-ref <repo> <ref>` 로 base 를 정하세요.'
+
+const BASE_STATUS: Readonly<Record<string, ScmStatus>> = { A: 'ADDED', M: 'MODIFIED', D: 'DELETED', R: 'RENAMED', T: 'TYPE_CHANGED', U: 'BOTH_MODIFIED' }
+
+/**
+ * `git diff --raw -z -M <merge-base> --` → base 대비 변경(그룹 `base`). 레코드: `:<모드> <모드> <oid> <oid> <상태>` NUL 경로 [NUL 새 경로(R·C)].
+ * 상태 글자 뒤 점수(`R100`)는 버린다. 어느 쪽 모드든 160000 이면 하위 모듈. 모르는 글자(C·X 등 — `-C` 없이 안 나온다)는 경로만 건너뛴다.
+ */
+export function parseBaseDiff(stdout: string): ScmChange[] {
+  const out: ScmChange[] = []
+  const records = stdout.split('\0')
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i]
+    if (record === undefined || !record.startsWith(':')) continue
+    const fields = record.slice(1).split(' ')
+    const letter = (fields[4] ?? '')[0] ?? ''
+    const sub: { submodule?: true } = fields[0] === '160000' || fields[1] === '160000' ? { submodule: true } : {}
+    const first = records[i + 1] ?? ''
+    i += 1
+    if (letter === 'R' || letter === 'C') {
+      const second = records[i + 1] ?? ''
+      i += 1
+      if (letter === 'R') out.push({ group: 'base', status: 'RENAMED', rel: second, orig: first, ...sub })
+      continue
+    }
+    const status = BASE_STATUS[letter]
+    if (status !== undefined && first !== '') out.push({ group: 'base', status, rel: first, orig: null, ...sub })
+  }
+  return out
+}
+
+/** base 대비 목록 = diff 결과 + 지금 status 의 추적 안 함(diff 는 추적 안 함을 안 준다 — 00-analysis C9). */
+export function withUntracked(input: { diff: readonly ScmChange[]; status: readonly ScmChange[] }): ScmChange[] {
+  return [...input.diff, ...input.status.filter((change) => change.status === 'UNTRACKED').map((change): ScmChange => ({ ...change, group: 'base' }))]
+}

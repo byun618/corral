@@ -19,11 +19,14 @@
 //   `watching` 순간 아직 끝나지 않은 목록은 끝날 때 바로 대조한다(R4-A). 닫힌 루트·dispose 뒤 끝난 목록은 적지 않는다.
 // · 구독이 0 이 되면 감시 프로세스를 300 ms 뒤에 끈다 — worktree 전환(해제 → 바로 구독)이 프로세스를 매번 새로 띄우지 않게. 그 사이 새 구독이 오면 그대로 쓴다.
 //   ref 폴링·재기동 예약은 0 이 되는 즉시 멈춘다. dispose 는 바로 끈다.
+// · base 대비(LIFE-830): 렌더러가 소스 제어 보기를 base 대비로 보는 루트만(`setBaseMode`) 같은 git 회차에 base 결정·merge-base·diff 를 더 돌려
+//   push 의 `base` 로 싣는다. 새 신호·타이머는 없다 — 위 신호(감시 배치·index/HEAD stat·새로고침)로만 돈다. 그 모드가 아닌 루트는 git 추가 0.
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { parsePorcelainV2, toWire, type GitSnapshotWire } from '../shared/explorer-git.js'
-import { parseScmChanges, SCM_STATUS_LIMIT, type ScmChange } from '../shared/scm.js'
+import { parseScmChanges, SCM_STATUS_LIMIT, type ScmBasePush, type ScmChange } from '../shared/scm.js'
+import { computeScmBase, gitRunner, type GitRun, type ScmBaseInputs } from './scm-base.js'
 import type { ExplorerEntry, ExplorerPush } from '../shared/explorer.js'
 import { confine, dirStamp, linkEntry, listDir, newLinkMemo } from './explorer-fs.js'
 import { RESTART_DELAY_MS, RESTART_MAX, RESTART_WINDOW_MS } from './explorer-watch-batch.js'
@@ -42,6 +45,10 @@ export type ExplorerHubDeps = {
   roots: () => readonly string[]
   log: (event: string, data?: Record<string, unknown>) => void
   now?: () => number
+  /** base 대비 재료(LIFE-830) — 루트의 부모 worktree 행·`repo.baseRef`. 없으면 부모·설정 없음으로 본다. */
+  baseInputs?: (root: string) => ScmBaseInputs
+  /** 시험용 git — 없으면 실제 `git -C <실경로>`. */
+  baseRun?: (cwd: string) => GitRun
 }
 
 const GIT_DEBOUNCE_MS = 300
@@ -95,8 +102,10 @@ export class ExplorerHub {
   private restarts: number[] = []
   private stopped = false
   private indexTimer: NodeJS.Timeout | null = null
+  /** base 대비로 보는 루트(LIFE-830) — 렌더러가 켜고 끈다. 구독과 따로 든다(구독 전에 켜도 첫 회차부터 싣는다). */
+  private readonly baseRoots = new Set<string>()
   /** 계측(E4ⓓ·E4ⓕ) — 렌더러로 민 변경 이벤트 수·감시 프로세스가 버린 제외 경로 이벤트 수(마지막 배치 기준 누계). */
-  readonly counters = { pushedChanged: 0, pushedOverflow: 0, pushedGit: 0, excludedSeen: 0, childStarts: 0, childExits: 0, gapChecks: 0, gapChangedDirs: 0, watchErrors: 0 }
+  readonly counters = { pushedChanged: 0, pushedOverflow: 0, pushedGit: 0, excludedSeen: 0, childStarts: 0, childExits: 0, gapChecks: 0, gapChangedDirs: 0, watchErrors: 0, baseRuns: 0 }
 
   constructor(private readonly deps: ExplorerHubDeps) {}
 
@@ -352,6 +361,20 @@ export class ExplorerHub {
     for (const root of new Set([...this.subs.keys(), ...this.wanted.keys()])) if (!roots.includes(root)) this.unsubscribe(root)
     for (const root of [...this.listed.keys()]) if (!roots.includes(root)) this.listed.delete(root)
     for (const root of [...this.watchEpoch.keys()]) if (!roots.includes(root)) this.watchEpoch.delete(root)
+    for (const root of [...this.baseRoots]) if (!roots.includes(root)) this.baseRoots.delete(root)
+  }
+
+  /** base 대비 켜기·끄기(LIFE-830) — 열린 worktree 루트만. 켜면 그 루트를 바로 다시 읽어 `base` 를 싣는다. */
+  setBaseMode(root: unknown, on: unknown): void {
+    if (typeof root !== 'string' || this.stopped) return
+    if (on !== true) {
+      this.baseRoots.delete(root)
+      return
+    }
+    if (!this.deps.roots().includes(root)) return
+    this.baseRoots.add(root)
+    const sub = this.subs.get(root)
+    if (sub !== undefined) this.scheduleGit(sub, 0)
   }
 
   /** 렌더러 안전망·새로고침 — git 상태를 바로 다시 읽는다. */
@@ -375,6 +398,7 @@ export class ExplorerHub {
     this.clearIdle()
     this.listed.clear()
     this.watchEpoch.clear()
+    this.baseRoots.clear()
     for (const sub of this.subs.values()) if (sub.gitTimer !== null) clearTimeout(sub.gitTimer)
     this.subs.clear()
     if (this.indexTimer !== null) clearInterval(this.indexTimer)
@@ -424,6 +448,17 @@ export class ExplorerHub {
     sub.gitTimer = setTimeout(() => void this.runGit(sub), Math.max(0, at - now))
   }
 
+  /** base 대비 한 회차 — 같은 status 출력의 추적 안 함을 합친다. 로그 한 줄(B6 — 모드가 아닐 때 0 회인지 이 줄로 센다). */
+  private async runBase(sub: Subscription, status: readonly ScmChange[]): Promise<ScmBasePush> {
+    const startedAt = this.now()
+    const inputs = this.deps.baseInputs?.(sub.root) ?? { parent: null, baseRef: null }
+    const run = this.deps.baseRun?.(sub.realRoot) ?? gitRunner(sub.realRoot)
+    const base = await computeScmBase({ run, status, limit: SCM_STATUS_LIMIT, ...inputs })
+    this.counters.baseRuns += 1
+    this.deps.log('explorer.scm_base', { root: sub.root, ms: this.now() - startedAt, ok: base.ok, reason: base.ok ? null : base.reason, source: base.ok ? base.info.source : null, changes: base.ok ? base.total : 0 })
+    return base
+  }
+
   private async runGit(sub: Subscription): Promise<void> {
     sub.gitTimer = null
     if (this.subs.get(sub.root) !== sub) return
@@ -432,11 +467,13 @@ export class ExplorerHub {
     sub.gitLastAt = this.now()
     const startedAt = this.now()
     const outcome = await runGitStatus(sub.realRoot)
+    const base = outcome.changes !== null && this.baseRoots.has(sub.root) ? await this.runBase(sub, outcome.changes) : null
     sub.gitRunning = false
     if (this.subs.get(sub.root) !== sub) return
     this.counters.pushedGit += 1
     this.deps.log('explorer.git', { root: sub.root, ms: this.now() - startedAt, ok: outcome.error === null, marks: outcome.git?.marks.length ?? 0, ignored: outcome.git?.ignored.length ?? 0, changes: outcome.changes?.length ?? 0 })
-    this.deps.push({ kind: 'git', root: sub.root, git: outcome.git, error: outcome.error, ...scmPushOf(outcome.changes) })
+    // 그 사이 base 대비를 껐으면 싣지 않는다(렌더러가 작업 트리 모드로 돌아갔다).
+    this.deps.push({ kind: 'git', root: sub.root, git: outcome.git, error: outcome.error, ...scmPushOf(outcome.changes), ...(base !== null && this.baseRoots.has(sub.root) ? { base } : {}) })
     if (sub.gitAgain) {
       sub.gitAgain = false
       this.scheduleGit(sub)

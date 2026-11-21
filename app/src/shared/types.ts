@@ -1122,6 +1122,8 @@ export type CorralApi = {
   readImage: (input: { root: string; rel: string }) => Promise<ImageReadResult>
   /** LIFE-683 S7 — 소스 제어 diff 의 HEAD·인덱스 쪽 내용(읽기 전용, `main/scm-read.ts`). */
   scmRead: (input: ScmReadInput) => Promise<ScmReadResult>
+  /** 소스 제어 base 대비 켜기·끄기 (LIFE-830) — 켠 루트의 git push 에 `base` 가 실린다. ref 는 보내지 않는다. */
+  scmBaseMode: (input: { root: string; on: boolean }) => void
   /** 열린 파일 탭 감시 집합(LIFE-590 E5) — 통째로 바꾼다. */
   fileWatch: (input: { root: string; rels: string[] }) => Promise<{ ok: boolean; count: number }>
   onFileEvent: (listener: (event: FileWatchPush) => void) => () => void

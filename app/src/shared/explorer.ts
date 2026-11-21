@@ -202,5 +202,6 @@ export type ExplorerPush =
   | { kind: 'overflow'; root: string }
   // LIFE-683 — `changes` = 같은 git 출력의 소스 제어 분류(X·Y·원래 경로를 잃지 않는 모양). 탐색기 `git` 은 그대로다.
   // fix r1 R1-05 — `changes` 는 상한(`SCM_STATUS_LIMIT`) + 1 개까지만 싣고 전체 개수는 `changesTotal`.
-  // LIFE-830 — `base` = 그 루트가 base 대비 모드일 때만 싣는 base 대비 목록(없으면 모드 꺼짐).
-  | { kind: 'git'; root: string; git: GitSnapshotWire | null; error: string | null; changes?: ScmChange[]; changesTotal?: number; base?: ScmBasePush }
+  | { kind: 'git'; root: string; git: GitSnapshotWire | null; error: string | null; changes?: ScmChange[]; changesTotal?: number }
+  // LIFE-830 — base 대비 목록. 그 루트가 base 대비 모드일 때만, 같은 git 회차의 `git` push **뒤에** 따로 온다(수정 r1 A6 — 작업 트리·배지를 붙잡지 않는다).
+  | { kind: 'scmBase'; root: string; base: ScmBasePush }

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // LIFE-830 B1·B6 — 비교 기준은 루트별(기본 작업 트리), base 대비 + 활성일 때만 main 에 켜 달라고 하고(ref 없이 루트·켜짐만), 바꾸거나 숨으면 끈다.
-// push 의 `base` 는 루트 상태에 그대로 든다(없으면 null).
+// base 대비 목록은 `git` push 뒤 `scmBase` push 로 따로 와 루트 상태에 든다(수정 r1 A6) — 다음 `git` push 가 지우지 않고, 다시 켤 때 버린다.
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -77,12 +77,21 @@ describe('useScm 비교 기준 (LIFE-830)', () => {
     expect(baseCalls.at(-1)).toEqual({ root: '/a', on: false })
     expect(api?.compare).toBe('base')
   })
-  it('push 의 base 를 루트 상태에 든다 — 없는 push 는 null', () => {
+  it('scmBase push 를 루트 상태에 든다 — 뒤따르는 git push 는 지우지 않고, base 대비를 다시 켜면 버린다', () => {
     render('/a')
     const info = { name: 'main', source: 'default' as const, mergeBase: 'a'.repeat(40) }
-    act(() => listener?.({ kind: 'git', root: '/a', git: { marks: [], ignored: [] }, error: null, changes: [], changesTotal: 0, base: { ok: true, info, changes: [], total: 0 } }))
+    const git: ExplorerPush = { kind: 'git', root: '/a', git: { marks: [], ignored: [] }, error: null, changes: [], changesTotal: 0 }
+    act(() => listener?.({ kind: 'scmBase', root: '/a', base: { ok: true, info, changes: [], total: 0 } }))
+    expect(api?.state).toBeNull()
+    act(() => listener?.(git))
+    expect(api?.state?.base).toBeNull()
+    const stamp = api?.state?.stamp
+    act(() => listener?.({ kind: 'scmBase', root: '/a', base: { ok: true, info, changes: [], total: 0 } }))
     expect(api?.state?.base).toEqual({ ok: true, info, changes: [], total: 0 })
-    act(() => listener?.({ kind: 'git', root: '/a', git: { marks: [], ignored: [] }, error: null, changes: [], changesTotal: 0 }))
+    expect(api?.state?.stamp).toBe(stamp)
+    act(() => listener?.(git))
+    expect(api?.state?.base).toEqual({ ok: true, info, changes: [], total: 0 })
+    act(() => api?.setCompare('base'))
     expect(api?.state?.base).toBeNull()
   })
 })

@@ -150,7 +150,7 @@ import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
 import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
 import { readFileContent, readImageContent } from './file-read.js'
 import { readScmContent } from './scm-read.js'
-import { gitRunner, resolveScmBase, type ScmBaseInputs } from './scm-base.js'
+import { gitRunner, resolveScmBase, scmBaseInputsOf, type ScmBaseInputs } from './scm-base.js'
 import { PrStatus } from './pr-status.js'
 import { createFileWatch, type FileWatch } from './file-watch.js'
 import { loadTestHooks, writeFileContent } from './file-write.js'
@@ -577,23 +577,19 @@ function homeDirReal(): string {
   }
 }
 
-/**
- * base 대비 재료 (LIFE-830) — 루트(열린 worktree 경로)의 부모 worktree 행(지금 브랜치·HEAD)과 그 레포의 `baseRef`. 렌더러 입력은 쓰지 않는다.
- * 부모 행이 트리에 없으면(닫힌 레포·지워진 worktree) 부모 없음으로 보고 다음 출처로 간다.
- */
+/** base 대비 재료 (LIFE-830) — 트리·레지스트리에서 읽어 `scmBaseInputsOf`(같은 레포 부모만, 시험 고정)에 넘긴다. */
 function scmBaseInputs(root: string): ScmBaseInputs {
-  const repos = currentState().repos
-  const repo = repos.find((row) => row.worktrees.some((worktree) => worktree.path === root))
-  const self = repo?.worktrees.find((worktree) => worktree.path === root)
-  const parentPath = self?.parentPath ?? null
-  const parentRow = parentPath === null ? undefined : repos.flatMap((row) => row.worktrees).find((worktree) => worktree.path === parentPath)
-  let baseRef: string | null = null
-  try {
-    baseRef = repo === undefined ? null : (registry?.records().find((record) => record.path === repo.root)?.baseRef ?? null)
-  } catch {
-    baseRef = null
-  }
-  return { parent: parentRow === undefined ? null : { branch: parentRow.branch, head: parentRow.head }, baseRef }
+  return scmBaseInputsOf({
+    repos: currentState().repos,
+    root,
+    baseRefOf: (repoRoot) => {
+      try {
+        return registry?.records().find((record) => record.path === repoRoot)?.baseRef ?? null
+      } catch {
+        return null
+      }
+    },
+  })
 }
 
 /** 레지스트리 워크트리 메타 (LIFE-478) — 못 읽으면 빈 값(레지스트리 오류는 `registry.lastError` 가 따로 보인다). */
@@ -1778,7 +1774,11 @@ function createWindow(): void {
     }
   })
   window.on('closed', () => quitGate.setDirty([]))
-  window.webContents.on('render-process-gone', () => quitGate.setDirty([]))
+  window.webContents.on('render-process-gone', () => {
+    quitGate.setDirty([])
+    // LIFE-830 수정 r1 A5 — 죽은 렌더러가 켜 둔 base 대비를 남기지 않는다(새 렌더러가 필요하면 다시 켠다).
+    explorerHub?.clearBaseModes()
+  })
   /**
    * LIFE-591 E3ⓕ — 렌더러 다시 불러오기(기본 메뉴 View ▸ Force Reload ⌘⇧R 등 — ⌘R 은 위 `before-input-event` 가 가져간다). 렌더러는 수정 파일이 있으면
    * `beforeunload` 를 막는다 → 여기서 묻고, 「다시 불러오기」 면 막음을 무시한다(`preventDefault` = 그래도 내린다 — Electron 문서 패턴). 종료 확인을 이미 지났으면 묻지 않는다.
@@ -1860,6 +1860,8 @@ function createWindow(): void {
    */
   window.webContents.on('did-start-loading', () => {
     shortcutRecording = false
+    // LIFE-830 수정 r1 A5 — 다시 불러오기 전 문서가 켠 base 대비는 그 문서와 함께 끝난다(새 문서의 useScm 이 다시 켠다).
+    explorerHub?.clearBaseModes()
     explorerFocused = false
     window?.webContents.setIgnoreMenuShortcuts(false)
   })

@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { computeScmBase, gitRunner, OID, resolveScmBase, SCM_BASE_ORIGIN_HEAD_ARGS, scmBaseDiffArgs, scmBaseVerifyArgs, scmMergeBaseArgs, type GitRun } from './scm-base.js'
+import { computeScmBase, gitRunner, OID, resolveScmBase, SCM_BASE_ORIGIN_HEAD_ARGS, scmBaseDiffArgs, scmBaseInputsOf, scmBaseVerifyArgs, scmMergeBaseArgs, type GitRun, type ScmBaseTreeRepo } from './scm-base.js'
 import { parseScmChanges, SCM_STATUS_LIMIT } from '../shared/scm.js'
 
 let base = ''
@@ -165,9 +165,13 @@ describe('resolveScmBase — 실제 git (B2 ⓐ~ⓔ · B7ⓒ)', () => {
 
 describe('computeScmBase — 목록 = 오라클 집합 (B4)', () => {
   type Row = { status: string; rel: string; orig: string | null }
+  // 같은 경로 두 줄(D·U)이 있어 경로 다음 상태로 정렬한다.
+  const byRel = (a: Row, b: Row): number => a.rel.localeCompare(b.rel) || a.status.localeCompare(b.status)
   const oracle = (r: { git: (...args: string[]) => string }, baseName: string): Row[] => {
     const rows: Row[] = []
-    const records = r.git('-c', 'core.quotePath=false', 'diff', '--name-status', '-z', '-M', '--merge-base', baseName).split('\0')
+    // 기준 정정 r1 — 오라클 2단계: `git merge-base <base> HEAD` 한 줄 → `git diff --name-status -z -M <oid>`(criss-cross 에서도 exit 0).
+    const mergeBase = r.git('merge-base', baseName, 'HEAD').trim()
+    const records = r.git('-c', 'core.quotePath=false', 'diff', '--name-status', '-z', '-M', mergeBase).split('\0')
     for (let i = 0; i < records.length; i += 1) {
       const letter = records[i]?.[0]
       if (letter === undefined) continue
@@ -180,7 +184,7 @@ describe('computeScmBase — 목록 = 오라클 집합 (B4)', () => {
       }
     }
     for (const record of r.git('-c', 'core.quotePath=false', 'status', '--porcelain=v2', '-z', '--untracked-files=all').split('\0')) if (record.startsWith('? ')) rows.push({ status: 'U', rel: record.slice(2), orig: null })
-    return rows.sort((a, b) => a.rel.localeCompare(b.rel))
+    return rows.sort(byRel)
   }
   const LETTER: Record<string, string> = { ADDED: 'A', MODIFIED: 'M', DELETED: 'D', RENAMED: 'R', TYPE_CHANGED: 'T', UNTRACKED: 'U', BOTH_MODIFIED: 'U' }
   const listed = async (r: { root: string; git: (...args: string[]) => string }): Promise<Row[]> => {
@@ -189,7 +193,7 @@ describe('computeScmBase — 목록 = 오라클 집합 (B4)', () => {
     if (!result.ok) throw new Error(result.error)
     expect(result.changes.every((change) => change.group === 'base')).toBe(true)
     expect(result.total).toBe(result.changes.length)
-    return result.changes.map((change) => ({ status: LETTER[change.status] ?? change.status, rel: change.rel, orig: change.orig })).sort((a, b) => a.rel.localeCompare(b.rel))
+    return result.changes.map((change) => ({ status: LETTER[change.status] ?? change.status, rel: change.rel, orig: change.orig })).sort(byRel)
   }
 
   it('커밋분·커밋 뒤 다시 고침·스테이지만·미스테이지만·추적 안 함·이름 바뀜·삭제·공백·한글 경로 — base 쪽에만 생긴 변경과 merge 한 변경은 없다', async () => {
@@ -239,6 +243,21 @@ describe('computeScmBase — 목록 = 오라클 집합 (B4)', () => {
     expect(after).toEqual(oracle(r, 'main'))
     expect(after.map((row) => row.rel)).not.toContain('main-only.txt')
   })
+  it('B4 정정 r1 — 커밋으로 지운 경로를 추적 안 함으로 다시 만들면 D 와 U 두 줄(오라클 집합 그대로)', async () => {
+    const r = repo('b4-same-path')
+    r.write('again.txt', 'old\n')
+    r.commit('base')
+    r.git('checkout', '-q', '-b', 'feature')
+    r.git('rm', '-q', 'again.txt')
+    r.commit('drop')
+    r.write('again.txt', 'new\n')
+    const rows = await listed(r)
+    expect(rows).toEqual(oracle(r, 'main'))
+    expect(rows.filter((row) => row.rel === 'again.txt')).toEqual([
+      { status: 'D', rel: 'again.txt', orig: null },
+      { status: 'U', rel: 'again.txt', orig: null },
+    ])
+  })
   it('상한 + 1 개까지만 싣고 전체 개수는 따로', async () => {
     const r = repo('limit')
     r.git('checkout', '-q', '-b', 'feature')
@@ -267,5 +286,52 @@ describe('computeScmBase — 목록 = 오라클 집합 (B4)', () => {
     expect(stamp()).toBe(before)
     r.git('add', 'a.txt')
     expect(stamp()).not.toBe(before)
+  })
+})
+
+describe('scmBaseInputsOf — 트리·레지스트리 → base 재료 (수정 r1 A2·A3 · B2ⓕ)', () => {
+  const H = (c: string): string => c.repeat(40)
+  const wt = (p: string, branch: string | null, parentPath: string | null = null, head = H('a')) => ({ path: p, branch, head, parentPath })
+  const repos: ScmBaseTreeRepo[] = [
+    { root: '/r/app', worktrees: [wt('/r/app', 'main'), wt('/r/app-wt', 'feature', '/r/app'), wt('/r/app-cross', 'child', '/r/lib'), wt('/r/app-gone', 'x', '/r/deleted'), wt('/r/app-self', 'y', '/r/app-self')] },
+    { root: '/r/lib', worktrees: [wt('/r/lib', 'main', null, H('b'))] },
+  ]
+  const asked: string[] = []
+  const baseRefOf = (repoRoot: string): string | null => {
+    asked.push(repoRoot)
+    return repoRoot === '/r/app' ? 'develop' : null
+  }
+  it('같은 레포 부모 — 그 행의 브랜치·HEAD, baseRef 는 그 레포 루트로 찾는다', () => {
+    asked.length = 0
+    expect(scmBaseInputsOf({ repos, root: '/r/app-wt', baseRefOf })).toEqual({ parent: { branch: 'main', head: H('a') }, baseRef: 'develop' })
+    expect(asked).toEqual(['/r/app'])
+  })
+  it('다른 레포 부모 — 부모 없음(다음 출처로) · baseRef 는 자기 레포 것', () => {
+    expect(scmBaseInputsOf({ repos, root: '/r/app-cross', baseRefOf })).toEqual({ parent: null, baseRef: 'develop' })
+  })
+  it('부모 없음 · 지워진 부모 · 자기 자신을 부모로 · 트리에 없는 루트', () => {
+    expect(scmBaseInputsOf({ repos, root: '/r/app', baseRefOf })).toEqual({ parent: null, baseRef: 'develop' })
+    expect(scmBaseInputsOf({ repos, root: '/r/app-gone', baseRefOf })).toEqual({ parent: null, baseRef: 'develop' })
+    expect(scmBaseInputsOf({ repos, root: '/r/app-self', baseRefOf })).toEqual({ parent: null, baseRef: 'develop' })
+    expect(scmBaseInputsOf({ repos, root: '/r/lib', baseRefOf })).toEqual({ parent: null, baseRef: null })
+    expect(scmBaseInputsOf({ repos, root: '/nowhere', baseRefOf })).toEqual({ parent: null, baseRef: null })
+  })
+  it('실제 git — 다른 레포 부모의 브랜치와 같은 이름 브랜치가 자식에 있어도 출처 「부모 worktree」 로 풀리지 않는다', async () => {
+    const lib = repo('cross-lib')
+    lib.git('checkout', '-q', '-b', 'shared-name')
+    const app = repo('cross-app')
+    app.git('branch', 'shared-name')
+    app.git('checkout', '-q', '-b', 'child')
+    app.commit('child work')
+    const tree: ScmBaseTreeRepo[] = [
+      { root: app.root, worktrees: [{ path: app.root, branch: 'child', head: app.git('rev-parse', 'HEAD').trim(), parentPath: lib.root }] },
+      { root: lib.root, worktrees: [{ path: lib.root, branch: 'shared-name', head: lib.git('rev-parse', 'HEAD').trim(), parentPath: null }] },
+    ]
+    const inputs = scmBaseInputsOf({ repos: tree, root: app.root, baseRefOf: () => null })
+    expect(inputs.parent).toBeNull()
+    const resolved = await resolveScmBase({ run: gitRunner(app.root), ...inputs })
+    expect(resolved).toMatchObject({ ok: true, info: { source: 'default', name: 'main' } })
+    // 양성 대조 — 같은 레포였다면(옛 배선) 그 이름이 자식에서 부모 출처로 풀린다.
+    expect(await resolveScmBase({ run: gitRunner(app.root), parent: { branch: 'shared-name', head: null }, baseRef: null })).toMatchObject({ ok: true, info: { source: 'parent', name: 'shared-name' } })
   })
 })

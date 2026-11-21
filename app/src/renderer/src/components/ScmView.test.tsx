@@ -202,6 +202,40 @@ describe('ScmView base 대비 (LIFE-830)', () => {
     act(() => host.querySelector<HTMLElement>('[data-scm-file="b.ts"]')?.click())
     expect(onOpen.mock.calls[0]?.[0]).toEqual({ change: BASE_CHANGES[1], preview: true })
   })
+  it('A1 — 같은 경로가 diff 의 D 와 추적 안 함 U 두 줄: 두 줄 유지 · key 고유(목록·트리) · ↓ 가 두 줄을 지나간다', () => {
+    const same: ScmChange[] = [
+      { group: 'base', status: 'DELETED', rel: 'dir/same.txt', orig: null },
+      { group: 'base', status: 'UNTRACKED', rel: 'dir/same.txt', orig: null },
+      { group: 'base', status: 'MODIFIED', rel: 'dir/z.ts', orig: null },
+    ]
+    for (const mode of ['list', 'tree'] as const) {
+      const files = scmRows({ changes: same, mode, collapsed: new Set() }).rows.filter((row) => row.kind === 'file')
+      expect(files).toHaveLength(3)
+      expect(new Set(files.map((row) => row.key)).size).toBe(3)
+    }
+    // 작업 트리 그룹의 key 는 그대로(선택·접기 키 무변경).
+    expect(scmRows({ changes: [{ group: 'workingTree', status: 'MODIFIED', rel: 'a.ts', orig: null }], mode: 'list', collapsed: new Set() }).rows[1]?.key).toBe('f:workingTree:a.ts')
+    const onOpen = vi.fn()
+    view(api({ changes: CHANGES, compare: 'base', base: { ok: true, info, changes: same, total: 3 } }), onOpen)
+    const rows = [...host.querySelectorAll<HTMLElement>('[data-scm-file]')]
+    expect(rows.map((row) => [row.getAttribute('data-scm-file'), row.querySelector('[data-scm-letter]')?.textContent])).toEqual([
+      ['dir/same.txt', 'D'],
+      ['dir/same.txt', 'U'],
+      ['dir/z.ts', 'M'],
+    ])
+    act(() => rows[0]?.click())
+    const list = host.querySelector<HTMLElement>('[data-scm-list]')
+    for (let i = 0; i < 2; i += 1) {
+      act(() => list?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+      act(() => list?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    }
+    expect(onOpen.mock.calls.map(([input]) => [input.change.status, input.change.rel])).toEqual([
+      ['DELETED', 'dir/same.txt'],
+      ['UNTRACKED', 'dir/same.txt'],
+      ['MODIFIED', 'dir/z.ts'],
+    ])
+    expect(host.querySelectorAll('.scm-file.is-selected')).toHaveLength(1)
+  })
   it('안내 — 읽는 중 · base 없음(정하는 방법) · 공통 조상 없음 · 변경 없음', () => {
     view(api({ changes: CHANGES, compare: 'base', base: null }))
     expect(host.querySelector('[data-scm-empty]')?.textContent).toBe('base 대비 목록을 읽는 중…')

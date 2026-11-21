@@ -41,6 +41,12 @@ export type ScmRow =
 const nameOf = (rel: string): string => rel.slice(rel.lastIndexOf('/') + 1)
 const parentOf = (rel: string): string => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
 
+/**
+ * 파일 줄 key — 그룹 + 경로. base 대비 그룹은 같은 경로가 두 줄(diff 의 `D` + 같은 경로의 추적 안 함 `U`)일 수 있어 상태를 더한다(LIFE-830 수정 r1 A1).
+ * 작업 트리 그룹은 그룹 안에서 경로가 하나라 그대로 둔다(선택·접기 키 무변경).
+ */
+const fileKey = (group: ScmChange['group'], change: ScmChange): string => (group === 'base' ? `f:base:${change.status}:${change.rel}` : `f:${group}:${change.rel}`)
+
 /** 그릴 줄 — 그룹 머리 + (목록: 경로순 파일 · 트리: 폴더 먼저 압축 트리). 접힌 그룹·폴더의 자식은 뺀다. 순수 함수(시험 대상). */
 export function scmRows(input: { changes: readonly ScmChange[]; mode: ScmViewMode; collapsed: ReadonlySet<string>; limit?: number; total?: number }): { rows: ScmRow[]; total: number; truncated: boolean } {
   const grouped = groupChanges(input.changes, input.limit ?? SCM_STATUS_LIMIT, input.total ?? input.changes.length)
@@ -51,13 +57,13 @@ export function scmRows(input: { changes: readonly ScmChange[]; mode: ScmViewMod
     rows.push({ kind: 'group', key: groupKey, group: group.id, title: group.title, count: group.changes.length, collapsed: groupCollapsed })
     if (groupCollapsed) continue
     if (input.mode === 'list') {
-      for (const change of group.changes) rows.push({ kind: 'file', key: `f:${group.id}:${change.rel}`, group: group.id, change, name: nameOf(change.rel), parent: parentOf(change.rel), depth: 1 })
+      for (const change of group.changes) rows.push({ kind: 'file', key: fileKey(group.id, change), group: group.id, change, name: nameOf(change.rel), parent: parentOf(change.rel), depth: 1 })
       continue
     }
     const dirCollapsed = new Set([...input.collapsed].filter((key) => key.startsWith(`d:${group.id}:`)).map((key) => key.slice(`d:${group.id}:`.length)))
     for (const row of flattenTree(buildTree(group.changes), dirCollapsed)) {
       if (row.kind === 'dir') rows.push({ kind: 'dir', key: `d:${group.id}:${row.path}`, group: group.id, name: row.name, path: row.path, depth: row.depth, collapsed: row.collapsed })
-      else rows.push({ kind: 'file', key: `f:${group.id}:${row.change.rel}`, group: group.id, change: row.change, name: row.name, parent: '', depth: row.depth })
+      else rows.push({ kind: 'file', key: fileKey(group.id, row.change), group: group.id, change: row.change, name: row.name, parent: '', depth: row.depth })
     }
   }
   return { rows, total: grouped.total, truncated: grouped.truncated }

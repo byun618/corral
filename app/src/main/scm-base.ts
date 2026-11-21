@@ -1,6 +1,6 @@
 // 소스 제어 base 대비 (LIFE-830) — main 쪽 base 결정·merge-base·변경 목록. 전부 읽기 전용 git.
 //
-// · base 순서(00-analysis 3.2): ① 부모 worktree(레지스트리 `parentWorktreeId`)의 지금 브랜치, 분리된 HEAD 면 그 커밋 ② `repo.baseRef`
+// · base 순서(00-analysis 3.2): ① 같은 레포의 부모 worktree(레지스트리 `parentWorktreeId`)의 지금 브랜치, 분리된 HEAD 면 그 커밋 ② `repo.baseRef`
 //   ③ `refs/remotes/origin/HEAD` 가 가리키는 ref → origin/main → origin/master → main → master. 위에서 처음 **커밋으로 풀리는** 것을 쓴다.
 //   PR base·upstream·reflog·fork-point 는 쓰지 않는다. git config·레지스트리에 쓰지 않는다(찾은 base 를 캐시하지 않는다).
 // · 경계(00-analysis 3.3): 렌더러는 ref 를 보내지 않는다 — 이 모듈의 입력은 main 이 레지스트리·트리에서 읽은 값뿐이다.
@@ -32,6 +32,22 @@ export type GitRun = (args: string[]) => Promise<GitResult>
 
 /** main 이 레지스트리·트리에서 읽은 base 재료. `parent` = 부모 worktree 행(없으면 null), `baseRef` = 그 레포의 `repo.baseRef`. */
 export type ScmBaseInputs = { parent: { branch: string | null; head: string | null } | null; baseRef: string | null }
+
+/** 트리 행 중 base 재료에 쓰는 칸만(`RepoRow`·`WorktreeRow` 가 그대로 맞는다). */
+export type ScmBaseTreeRepo = { root: string; worktrees: readonly { path: string; branch: string | null; head: string | null; parentPath: string | null }[] }
+
+/**
+ * base 재료 배선 (LIFE-830 수정 r1 A2·A3) — 루트(열린 worktree 경로)의 부모 worktree 행과 그 레포의 `baseRef`. 렌더러 입력은 쓰지 않는다.
+ * 부모는 **같은 레포 행 안에서만** 찾는다 — 다른 레포의 worktree 를 부모로 적어 두었으면 그 브랜치 이름이 이 레포의 `refs/heads` 로
+ * 엉뚱하게 풀리므로 부모 없음으로 보고 다음 출처로 간다(B2ⓕ). 부모 행이 트리에 없어도(지워진 worktree) 부모 없음.
+ */
+export function scmBaseInputsOf(input: { repos: readonly ScmBaseTreeRepo[]; root: string; baseRefOf: (repoRoot: string) => string | null }): ScmBaseInputs {
+  const repo = input.repos.find((row) => row.worktrees.some((worktree) => worktree.path === input.root))
+  if (repo === undefined) return { parent: null, baseRef: null }
+  const parentPath = repo.worktrees.find((worktree) => worktree.path === input.root)?.parentPath ?? null
+  const parentRow = parentPath === null || parentPath === input.root ? undefined : repo.worktrees.find((worktree) => worktree.path === parentPath)
+  return { parent: parentRow === undefined ? null : { branch: parentRow.branch, head: parentRow.head }, baseRef: input.baseRefOf(repo.root) }
+}
 
 export type ScmBaseResolved = { ok: true; info: ScmBaseInfo } | { ok: false; reason: 'no_base' | 'no_merge_base' | 'git_error'; error: string }
 

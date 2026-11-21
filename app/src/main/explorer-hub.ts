@@ -448,12 +448,20 @@ export class ExplorerHub {
     sub.gitTimer = setTimeout(() => void this.runGit(sub), Math.max(0, at - now))
   }
 
-  /** base 대비 한 회차 — 같은 status 출력의 추적 안 함을 합친다. 로그 한 줄(B6 — 모드가 아닐 때 0 회인지 이 줄로 센다). */
+  /**
+   * base 대비 한 회차 — 같은 status 출력의 추적 안 함을 합친다. 로그 한 줄(B6 — 모드가 아닐 때 0 회인지 이 줄로 센다).
+   * 재료·git 어디서 던져도 `ok:false git_error` 로 내린다(수정 r1 A7 — 예외가 회차를 끊어 `gitRunning` 을 남기지 않게).
+   */
   private async runBase(sub: Subscription, status: readonly ScmChange[]): Promise<ScmBasePush> {
     const startedAt = this.now()
-    const inputs = this.deps.baseInputs?.(sub.root) ?? { parent: null, baseRef: null }
-    const run = this.deps.baseRun?.(sub.realRoot) ?? gitRunner(sub.realRoot)
-    const base = await computeScmBase({ run, status, limit: SCM_STATUS_LIMIT, ...inputs })
+    let base: ScmBasePush
+    try {
+      const inputs = this.deps.baseInputs?.(sub.root) ?? { parent: null, baseRef: null }
+      const run = this.deps.baseRun?.(sub.realRoot) ?? gitRunner(sub.realRoot)
+      base = await computeScmBase({ run, status, limit: SCM_STATUS_LIMIT, ...inputs })
+    } catch (error) {
+      base = { ok: false, reason: 'git_error', error: String(error).slice(0, 300) }
+    }
     this.counters.baseRuns += 1
     this.deps.log('explorer.scm_base', { root: sub.root, ms: this.now() - startedAt, ok: base.ok, reason: base.ok ? null : base.reason, source: base.ok ? base.info.source : null, changes: base.ok ? base.total : 0 })
     return base
@@ -465,19 +473,32 @@ export class ExplorerHub {
     sub.gitRunning = true
     sub.gitFirstAt = null
     sub.gitLastAt = this.now()
-    const startedAt = this.now()
-    const outcome = await runGitStatus(sub.realRoot)
-    const base = outcome.changes !== null && this.baseRoots.has(sub.root) ? await this.runBase(sub, outcome.changes) : null
-    sub.gitRunning = false
-    if (this.subs.get(sub.root) !== sub) return
-    this.counters.pushedGit += 1
-    this.deps.log('explorer.git', { root: sub.root, ms: this.now() - startedAt, ok: outcome.error === null, marks: outcome.git?.marks.length ?? 0, ignored: outcome.git?.ignored.length ?? 0, changes: outcome.changes?.length ?? 0 })
-    // 그 사이 base 대비를 껐으면 싣지 않는다(렌더러가 작업 트리 모드로 돌아갔다).
-    this.deps.push({ kind: 'git', root: sub.root, git: outcome.git, error: outcome.error, ...scmPushOf(outcome.changes), ...(base !== null && this.baseRoots.has(sub.root) ? { base } : {}) })
-    if (sub.gitAgain) {
-      sub.gitAgain = false
-      this.scheduleGit(sub)
+    try {
+      const startedAt = this.now()
+      const outcome = await runGitStatus(sub.realRoot)
+      if (this.subs.get(sub.root) !== sub) return
+      this.counters.pushedGit += 1
+      this.deps.log('explorer.git', { root: sub.root, ms: this.now() - startedAt, ok: outcome.error === null, marks: outcome.git?.marks.length ?? 0, ignored: outcome.git?.ignored.length ?? 0, changes: outcome.changes?.length ?? 0 })
+      // 작업 트리·탐색기 push 가 먼저 — base 계산을 기다리지 않는다(수정 r1 A6).
+      this.deps.push({ kind: 'git', root: sub.root, git: outcome.git, error: outcome.error, ...scmPushOf(outcome.changes) })
+      if (outcome.changes === null || !this.baseRoots.has(sub.root)) return
+      const base = await this.runBase(sub, outcome.changes)
+      // 그 사이 구독이 바뀌었거나 base 대비를 껐으면 싣지 않는다(렌더러가 작업 트리 모드로 돌아갔다).
+      if (this.subs.get(sub.root) !== sub || !this.baseRoots.has(sub.root)) return
+      this.deps.push({ kind: 'scmBase', root: sub.root, base })
+    } finally {
+      // 어느 경로로 끝나든 회차를 푼다(수정 r1 A7).
+      sub.gitRunning = false
+      if (sub.gitAgain && this.subs.get(sub.root) === sub) {
+        sub.gitAgain = false
+        this.scheduleGit(sub)
+      }
     }
+  }
+
+  /** 렌더러 문서가 새로 실리거나(다시 불러오기) 죽었다 — 켜 둔 base 대비를 다 끈다(수정 r1 A5). 새 렌더러가 필요하면 다시 켠다. */
+  clearBaseModes(): void {
+    this.baseRoots.clear()
   }
 }
 

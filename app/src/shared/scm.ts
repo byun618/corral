@@ -446,9 +446,9 @@ export type ScmReadResult =
 
 // --- base 대비 (LIFE-830) ---------------------------------------------------------------
 
-/** base 를 어디서 얻었나 — 00-analysis 3.2 순서: 부모 worktree → repo 설정(`baseRef`) → 원격 기본 브랜치 사슬. */
+/** base 를 어디서 얻었나 — 00-analysis 3.2 순서: 부모 worktree → repo 설정(`baseRef`) → 기본 브랜치 사슬(원격 → 로컬). */
 export type ScmBaseSource = 'parent' | 'repo' | 'default'
-export const SCM_BASE_SOURCE_TEXT: Readonly<Record<ScmBaseSource, string>> = { parent: '부모 worktree', repo: 'repo 설정', default: '원격 기본' }
+export const SCM_BASE_SOURCE_TEXT: Readonly<Record<ScmBaseSource, string>> = { parent: '부모 worktree', repo: 'repo 설정', default: '기본 브랜치' }
 
 /** main 이 푼 base — `name` 은 보이는 이름(브랜치·ref 이름, 분리된 HEAD 면 짧은 해시), `mergeBase` 는 merge-base 커밋 전체 해시. */
 export type ScmBaseInfo = { name: string; source: ScmBaseSource; mergeBase: string }
@@ -462,6 +462,8 @@ export type ScmBasePush = { ok: true; info: ScmBaseInfo; changes: ScmChange[]; t
 /** base 를 못 정했을 때 안내(B2ⓓ) — 정하는 방법 한 줄. */
 export const SCM_NO_BASE_HELP = 'base 브랜치를 찾지 못했습니다 — `corral worktree set <worktree> --parent-worktree <부모>` 로 부모 worktree 를 지정하거나 `corral repo set-base-ref <repo> <ref>` 로 base 를 정하세요.'
 
+// 충돌 중(unmerged) 경로는 `git diff <oid>` 가 `U` 가 아니라 `M`/`A` 로 낸다(Apple git 2.50.1 실측 — 리뷰 r1 L2) → base 목록에선 M/A 행으로 정상 표시된다.
+// 아래 `U` 칸은 그 실측과 다른 git 이 `U` 를 낼 때만 쓰는 안전망이다(그때 충돌 행 — 클릭 = 작업 파일).
 const BASE_STATUS: Readonly<Record<string, ScmStatus>> = { A: 'ADDED', M: 'MODIFIED', D: 'DELETED', R: 'RENAMED', T: 'TYPE_CHANGED', U: 'BOTH_MODIFIED' }
 
 /**

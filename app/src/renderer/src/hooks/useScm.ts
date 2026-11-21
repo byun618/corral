@@ -11,7 +11,7 @@ import type { ScmBasePush, ScmChange } from '../../../shared/scm.js'
 import { acquireExplorerWatch } from '../explorer-watch-refs.js'
 
 /** `total` — main 이 상한 + 1 로 자른 `changes` 의 전체 개수(fix r1 R1-05). */
-/** `base` — 마지막 push 의 base 대비 목록(LIFE-830). 그 push 가 base 대비가 아니었으면 null. */
+/** `base` — 마지막 `scmBase` push 의 base 대비 목록(LIFE-830). 받기 전·base 대비를 다시 켠 직후면 null. */
 export type ScmRootState = { changes: ScmChange[] | null; total: number; error: string | null; stamp: number; base: ScmBasePush | null }
 
 /** 비교 기준 — 작업 트리(지금까지의 보기) / base 대비. */
@@ -61,6 +61,14 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
   useEffect(
     () =>
       window.corral.onExplorerEvent((event) => {
+        if (event.kind === 'scmBase') {
+          // base 대비 목록은 같은 회차의 `git` push 뒤에 따로 온다(수정 r1 A6). 작업 트리 상태·stamp 는 그대로 — 열린 diff 탭은 `git` push 가 다시 읽힌다.
+          const previous = stores.current.get(event.root)
+          if (previous === undefined) return
+          stores.current.set(event.root, { ...previous, base: event.base })
+          bump()
+          return
+        }
         if (event.kind !== 'git') return
         const previous = stores.current.get(event.root)
         // `changes` 가 없는 push(옛 main) 는 git 오류와 같게 본다 — 목록을 지어내지 않는다.
@@ -70,7 +78,8 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
           total: event.changesTotal ?? changes?.length ?? 0,
           error: event.git === null ? (event.error ?? 'git 상태를 읽지 못했다') : null,
           stamp: (previous?.stamp ?? 0) + 1,
-          base: event.base ?? null,
+          // 다음 `scmBase` push 가 올 때까지 앞 목록을 둔다 — 회차마다 「읽는 중」 으로 깜빡이지 않게.
+          base: previous?.base ?? null,
         })
         bump()
       }),
@@ -84,6 +93,12 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
 
   useEffect(() => {
     if (!active || root === null || compare !== 'base') return
+    // 켤 때 앞서 받은 목록(꺼져 있던 동안 낡았다)은 버린다 — 새 `scmBase` push 까지 「읽는 중」.
+    const previous = stores.current.get(root)
+    if (previous !== undefined && previous.base !== null) {
+      stores.current.set(root, { ...previous, base: null })
+      bump()
+    }
     window.corral.scmBaseMode({ root, on: true })
     return () => window.corral.scmBaseMode({ root, on: false })
   }, [active, root, compare])

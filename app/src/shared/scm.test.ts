@@ -18,6 +18,7 @@ import {
   parseBaseDiff,
   parseDiffTabId,
   parseScmChanges,
+  SCM_BASE_SOURCE_TEXT,
   scmErrorKind,
   scmMark,
   scmStrike,
@@ -270,6 +271,9 @@ describe('fix r1 — 중첩 저장소(R1-02) · 하위 모듈(R1-04) · 전체 �
 
 // LIFE-830 B4·B5·B12 — base 대비: `diff --raw -z -M` 파서(이름 바뀜·공백·한글·하위 모듈·충돌), 추적 안 함 합치기, 클릭 대상·양쪽, 탭 id.
 describe('base 대비 (LIFE-830)', () => {
+  it('출처 문구 — 부모 worktree · repo 설정 · 기본 브랜치(기준 B3 정정 r1 — ③ 사슬은 로컬 main·master 까지 내려간다)', () => {
+    expect(SCM_BASE_SOURCE_TEXT).toEqual({ parent: '부모 worktree', repo: 'repo 설정', default: '기본 브랜치' })
+  })
   const raw = (...records: string[]): string => records.join('\0') + '\0'
   const Z = '0'.repeat(40)
   const O = 'a'.repeat(40)

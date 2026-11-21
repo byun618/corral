@@ -3,7 +3,8 @@
 // · 가둠(D13·K11): 루트는 열린 worktree(`roots()` 포함 + `confine` realpath), 경로는 `isPlainRel`·길이(`parseScmWriteInput`), 모르는 동작은 git 없이 거절.
 //   argv 는 동작마다 고정 문자열 + `--literal-pathspecs`(F6 — `:` 로 시작하는 이름이 pathspec 매직으로 읽히지 않게). 경로는 argv 가 아니라
 //   `--pathspec-from-file=- --pathspec-file-nul` 의 stdin(NUL 끝)으로만 넘긴다 — 렌더러가 git 인자를 고를 수 없고, 목록이 길어도 argv 상한에 안 걸린다.
-// · 영구 삭제 0(D2): 이 파일에 `unlink`·`rm`·`git clean` 이 없다. 추적 안 함 discard 는 `deps.trashItem`(main `shell.trashItem`)뿐, 실패하면 안내로 끝.
+// · 영구 삭제 0(D2): 이 파일에 `unlink`·`rm`·`git clean` 이 없다. 작업 트리에만 내용이 있는 파일(추적 안 함·추가 예정 `add -N`)의 discard 는
+//   `deps.trashItem`(main `shell.trashItem`)뿐, 실패하면 실제 결과를 안내로 끝. 휴지통 대상은 main 이 git 으로 다시 분류한다(B2 — 렌더러 분류를 믿지 않는다).
 //   (`git rm --cached` 는 인덱스에서만 뺀다 — 작업 트리 파일은 그대로.)
 // · index.lock(D11·F2): git 이 낸 lock 문구일 때만 VS Code 값(`repository.ts:3026-3046` — 50·n² ms, 10회)으로 다시 돈다. **lock 파일을 지우지 않는다.**
 //   재시도는 `scm.write.retry` 로 따로 센다(K8ⓓ). 앱 자신의 쓰기는 루트마다 직렬(`scm.write.wait` — K9).
@@ -23,7 +24,8 @@ const LITERAL = '--literal-pathspecs'
 const FROM_STDIN = ['--pathspec-from-file=-', '--pathspec-file-nul']
 export const SCM_STAGE_ARGS = [LITERAL, 'add', '-A', ...FROM_STDIN]
 export const SCM_UNSTAGE_ARGS = [LITERAL, 'reset', '-q', 'HEAD', ...FROM_STDIN]
-/** HEAD 없는(첫 커밋 전) 레포의 unstage — `reset HEAD` 가 실패한다(F3). 인덱스에서만 뺀다(`--cached`). VS Code `git.ts:2410-2421`. */
+/** 인덱스에서만 뺀다(`--cached` — 작업 트리 파일은 그대로). 쓰는 곳: HEAD 없는(첫 커밋 전) 레포의 unstage — HEAD 를 풀 수 없어 `reset HEAD` 로는
+ * 「추가」 를 되돌릴 기준이 없다(VS Code `git.ts:2410-2421` 과 같은 갈래) · 휴지통으로 옮긴 추가 예정(`add -N`) 파일의 인덱스 항목 빼기(B1). */
 export const SCM_UNSTAGE_UNBORN_ARGS = [LITERAL, 'rm', '--cached', '-r', '-q', '-f', ...FROM_STDIN]
 export const SCM_DISCARD_ARGS = [LITERAL, 'checkout', '-q', ...FROM_STDIN]
 /** 스마트 커밋(D5) — 추적 안 함 포함 전부. */
@@ -37,18 +39,20 @@ export const scmCommitArgs = (input: { amend: boolean; keepMessage: boolean }): 
   ...(input.amend ? ['--amend'] : []),
   ...(input.keepMessage ? ['--no-edit'] : ['-F', '-']),
 ]
-/** 읽기(lock 안 잡음) — HEAD 있나 · 스테이지된 것 있나 · 변경 있나 · 추적 파일인가. */
+/** 읽기(lock 안 잡음) — HEAD 있나(exit 0 있음 · 1 없음 · 그 밖은 오류 — B4) · 스테이지된 것 있나 · 변경 있나 · 휴지통 대상 분류. */
 export const SCM_HEAD_ARGS = ['--no-optional-locks', 'rev-parse', '--verify', '-q', 'HEAD']
 export const SCM_STAGED_ARGS = ['--no-optional-locks', 'diff', '--cached', '--quiet']
 export const SCM_ANY_CHANGE_ARGS = ['--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=all']
-/** `ls-files` 는 `--pathspec-from-file` 을 받지 않는다 — `--` 뒤 경로(리터럴)로, `TRACKED_CHUNK` 개씩 나눠 argv 상한을 넘지 않게. */
-export const SCM_TRACKED_ARGS = ['--no-optional-locks', LITERAL, 'ls-files', '-z', '--cached', '--']
-const TRACKED_CHUNK = 500
+/** 휴지통 대상 분류(B2) — `? 경로`(추적 안 함, 무시 제외) · `1 .A`(추가 예정)만 허용. `status` 는 `--pathspec-from-file` 을 받지 않는다 — `--` 뒤 경로(리터럴)로,
+ * `CLASSIFY_CHUNK` 개씩 나눠 argv 상한을 넘지 않게. 폴더 경로는 그 아래 파일로 나와 정확히 같은 줄이 없으니 거절된다. */
+export const SCM_CLASSIFY_ARGS = ['--no-optional-locks', LITERAL, 'status', '--porcelain=v2', '-z', '--untracked-files=all', '--no-renames', '--']
+const CLASSIFY_CHUNK = 500
 
 /** VS Code `repository.ts:3026-3046` — n 번째 재시도 전 50·n² ms, 10회(합계 19.25 초 — K8ⓑ 통과선 25 초 안). */
 export const LOCK_RETRY_DELAYS_MS: readonly number[] = Array.from({ length: 10 }, (_, index) => 50 * (index + 1) ** 2)
-/** git 이 낸 lock 문구(F2). 이 문구일 때만 다시 돈다. */
+/** git 이 낸 lock 문구(F2). git 자신의 실패(exit 128)이면서 이 문구일 때만 다시 돈다 — 훅이 같은 문구를 내고 exit 1 이면 다시 돌지 않는다(B6). */
 export const isLockError = (stderr: string): boolean => /Another git process seems to be running|index\.lock': File exists/.test(stderr)
+const GIT_FATAL = 128
 
 const GIT_TIMEOUT_MS = 60_000
 /** 커밋은 훅이 돈다 — 더 길게. */
@@ -312,22 +316,38 @@ export class ScmWriter {
       case 'stageMerge':
         return write(SCM_STAGE_ARGS, nul(input.paths))
       case 'unstage': {
+        // exit 1 만 「HEAD 없음」 — 그 밖의 실패(128·시간 초과 -1)를 HEAD 없음으로 보면 `rm --cached` 가 스테이지된 삭제를 만든다(B4).
         const head = await read(SCM_HEAD_ARGS)
+        if (head.exitCode !== 0 && head.exitCode !== 1) return refused('git_error', errorText(head))
         return write(head.exitCode === 0 ? SCM_UNSTAGE_ARGS : SCM_UNSTAGE_UNBORN_ARGS, nul(input.paths))
       }
       case 'discard': {
+        const trashing = context.discardUntracked && input.untracked.length > 0
+        // 휴지통 대상은 git·휴지통 쓰기 전에 전부 분류한다 — 하나라도 어긋나면 아무것도 하지 않는다(B2).
+        let intent = new Set<string>()
+        if (trashing) {
+          const classified = await this.classifyTrash({ read, rels: input.untracked })
+          if (!classified.ok) return classified.result
+          intent = classified.intent
+        }
         if (input.tracked.length > 0) {
           const restored = await write(SCM_DISCARD_ARGS, nul(input.tracked))
           if (!restored.ok) return restored
         }
-        if (!context.discardUntracked || input.untracked.length === 0) return { ok: true }
-        // 「추적 안 함」 이라고 온 경로가 정말 추적 안 함인가 — 추적 파일을 휴지통으로 보내지 않는다.
-        for (let start = 0; start < input.untracked.length; start += TRACKED_CHUNK) {
-          const tracked = await read([...SCM_TRACKED_ARGS, ...input.untracked.slice(start, start + TRACKED_CHUNK)])
-          if (tracked.exitCode !== 0) return refused('git_error', errorText(tracked))
-          if (tracked.stdout.length > 0) return refused('bad_request', '추적 안 함 목록에 추적 파일이 있다')
-        }
-        return this.trash(input.root, input.untracked)
+        if (!trashing) return { ok: true }
+        const trashed = await this.trash(input.root, input.untracked)
+        // 추가 예정 파일은 휴지통으로 옮긴 것만 인덱스 항목을 뺀다 — 못 옮긴 파일은 그대로 추가 예정으로 남는다(B1).
+        const dropping = trashed.moved.filter((rel) => intent.has(rel))
+        const dropped: ScmWriteResult = dropping.length === 0 ? { ok: true } : await write(SCM_UNSTAGE_UNBORN_ARGS, nul(dropping))
+        if (trashed.failed.length === 0 && dropped.ok) return { ok: true }
+        // 부분 실패(B3) — 실제로 일어난 것을 말한다: 휴지통으로 옮긴 것 · 못 옮겨 남은 것(이유) · 이미 되돌린 추적 파일.
+        const report = [
+          trashed.moved.length > 0 ? `휴지통으로 옮김 ${trashed.moved.length}개:\n${listOf(trashed.moved)}` : '휴지통으로 옮긴 파일 없음.',
+          ...(trashed.failed.length > 0 ? [`옮기지 못해 그대로 남음 ${trashed.failed.length}개:\n${listOf(trashed.failed)}`] : []),
+          ...(dropped.ok ? [] : [`휴지통으로 옮긴 추가 예정 파일 ${dropping.length}개의 인덱스 항목을 빼지 못함:\n${dropped.error}`]),
+          ...(input.tracked.length > 0 ? [`인덱스 내용으로 되돌린 추적 파일 ${input.tracked.length}개:\n${listOf(input.tracked)}`] : []),
+        ].join('\n\n')
+        return refused(trashed.failed.length > 0 ? 'trash_failed' : 'git_error', report.slice(0, ERROR_LIMIT))
       }
       case 'commit': {
         if (!input.amend) {
@@ -363,7 +383,7 @@ export class ScmWriter {
       const run = await input.run()
       if (run.exitCode === 0) return { ok: true }
       const delay = delays[attempt]
-      if (!isLockError(run.stderr) || delay === undefined) return refused('git_error', errorText(run))
+      if (run.exitCode !== GIT_FATAL || !isLockError(run.stderr) || delay === undefined) return refused('git_error', errorText(run))
       input.stats.retries += 1
       this.deps.log('scm.write.retry', { action: input.action, root: rootTag(input.root), attempt: attempt + 1, delayMs: delay })
       await sleep(delay)
@@ -371,8 +391,32 @@ export class ScmWriter {
     }
   }
 
-  /** 추적 안 함 → 휴지통(D2). 경로의 부모만 realpath 로 가두고 그 이름 자체(링크면 링크)를 보낸다 — 링크가 가리키는 대상을 버리지 않는다. */
-  private async trash(root: string, rels: readonly string[]): Promise<ScmWriteResult> {
+  /** 휴지통 대상 분류(B2) — `.git` 성분은 git 없이 거절, 나머지는 git 이 지금 「추적 안 함(무시 제외)」·「추가 예정」 으로 보는 파일과 정확히 같아야 한다.
+   * 추적 파일·무시된 파일·폴더·없는 경로는 거절. 답의 `intent` = 그중 추가 예정(휴지통 뒤 인덱스 항목을 뺄 것). */
+  private async classifyTrash(input: { read: (args: readonly string[]) => Promise<GitRun>; rels: readonly string[] }): Promise<{ ok: true; intent: Set<string> } | { ok: false; result: ScmWriteResult }> {
+    if (input.rels.some((rel) => rel.split('/').some((part) => part.toLowerCase() === '.git'))) return { ok: false, result: refused('bad_request', '휴지통 대상에 .git 경로가 있다') }
+    const untracked = new Set<string>()
+    const intent = new Set<string>()
+    for (let start = 0; start < input.rels.length; start += CLASSIFY_CHUNK) {
+      const run = await input.read([...SCM_CLASSIFY_ARGS, ...input.rels.slice(start, start + CLASSIFY_CHUNK)])
+      if (run.exitCode !== 0) return { ok: false, result: refused('git_error', errorText(run)) }
+      const records = run.stdout.split('\0')
+      for (let index = 0; index < records.length; index += 1) {
+        const record = records[index] ?? ''
+        if (record.startsWith('? ')) untracked.add(record.slice(2))
+        else if (record.startsWith('1 ')) {
+          const fields = record.split(' ')
+          if (fields[1] === '.A') intent.add(fields.slice(8).join(' '))
+        } else if (record.startsWith('2 ')) index += 1 // `--no-renames` 라 오지 않지만, 오면 원래 경로 칸을 건너뛴다.
+      }
+    }
+    if (!input.rels.every((rel) => untracked.has(rel) || intent.has(rel))) return { ok: false, result: refused('bad_request', '휴지통 대상이 추적 안 함·추가 예정 파일이 아니다') }
+    return { ok: true, intent }
+  }
+
+  /** 휴지통으로(D2). 경로의 부모만 realpath 로 가두고 그 이름 자체(링크면 링크)를 보낸다 — 링크가 가리키는 대상을 버리지 않는다. 하나가 실패해도 나머지는 계속한다. */
+  private async trash(root: string, rels: readonly string[]): Promise<{ moved: string[]; failed: string[] }> {
+    const moved: string[] = []
     const failed: string[] = []
     for (const rel of rels) {
       const slash = rel.lastIndexOf('/')
@@ -385,12 +429,13 @@ export class ScmWriter {
       try {
         await fs.lstat(target)
         await this.deps.trashItem(target)
+        moved.push(rel)
       } catch (error) {
         failed.push(`${rel}: ${String(error).slice(0, 300)}`)
       }
     }
     this.deps.log('scm.write.trash', { root: rootTag(root), files: rels.length, failed: failed.length })
-    return failed.length === 0 ? { ok: true } : refused('trash_failed', listOf(failed))
+    return { moved, failed }
   }
 
   /** 로그인 셸 PATH — 성공한 값은 앱이 도는 동안 둔다(VS Code 도 시작 때 한 번 푼다). 실패는 두지 않는다(다음 커밋에 다시 묻는다). */

@@ -105,6 +105,17 @@ describe('inline 단추 (K1·K2 — V1·V2)', () => {
     expect(stageRequest({ root: '/r', group: 'workingTree', changes: [CHANGES[0], CHANGES[0]].filter((item): item is ScmChange => item !== undefined) })).toEqual({ action: 'stage', root: '/r', paths: ['src/a.ts'] })
     expect(discardRequest({ root: '/r', changes: CHANGES })).toEqual({ action: 'discard', root: '/r', tracked: ['src/a.ts'], untracked: ['u.txt'] })
   })
+  it('discardRequest — 추가 예정·이름 바꾸기 예정의 새 경로는 휴지통 쪽, 이름 바꾸기 예정의 원래 경로는 되돌림 쪽(B1)', () => {
+    const changes: ScmChange[] = [
+      { group: 'workingTree', status: 'MODIFIED', rel: 'm.ts', orig: null },
+      { group: 'workingTree', status: 'INTENT_TO_ADD', rel: 'ita.txt', orig: null },
+      { group: 'workingTree', status: 'INTENT_TO_RENAME', rel: 'moved.txt', orig: 'old.txt' },
+      { group: 'workingTree', status: 'DELETED', rel: 'gone.ts', orig: null },
+      { group: 'workingTree', status: 'UNTRACKED', rel: 'u.txt', orig: null },
+      { group: 'index', status: 'INDEX_ADDED', rel: 'staged.ts', orig: null },
+    ]
+    expect(discardRequest({ root: '/r', changes })).toEqual({ action: 'discard', root: '/r', tracked: ['m.ts', 'old.txt', 'gone.ts'], untracked: ['ita.txt', 'moved.txt', 'u.txt'] })
+  })
 })
 
 describe('커밋 입력 (K4·K5)', () => {

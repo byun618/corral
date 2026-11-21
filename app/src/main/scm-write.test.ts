@@ -1,6 +1,7 @@
 // LIFE-829 — 소스 제어 로컬 쓰기: 실제 git·실제 `index.lock` 으로 본다(임시 레포만 — 사용자 레포에 쓰지 않는다).
 // K1 stage·unstage · K2 추적 discard · K3 추적 안 함 휴지통(실패 주입) · K4 커밋 · K5 amend · K6 오류 원문 · K7 로그인 셸 PATH(주입) ·
 // K8 lock 재시도(실제 lock 파일) · K9 루트 직렬 · K11 가둠·argv · K12 대기 중 대상 바뀜.
+// fix r1: B1 추가 예정·이름 바꾸기 예정 = 휴지통 · B2 휴지통 대상 main 분류 · B3 부분 실패 안내 · B4 HEAD 판별 · B6 lock 재시도는 git exit 128 만.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -18,7 +19,7 @@ import {
   SCM_STAGE_ALL_ARGS,
   SCM_STAGE_ARGS,
   SCM_STAGED_ARGS,
-  SCM_TRACKED_ARGS,
+  SCM_CLASSIFY_ARGS,
   SCM_UNSTAGE_ARGS,
   SCM_UNSTAGE_UNBORN_ARGS,
   scmCommitArgs,
@@ -105,7 +106,7 @@ describe('K11 — 가둠·argv 고정', () => {
     expect(scmCommitArgs({ amend: true, keepMessage: true })).toEqual(['--literal-pathspecs', '-c', 'user.useConfigOnly=true', 'commit', '--quiet', '--amend', '--no-edit'])
     expect(scmCommitArgs({ amend: true, keepMessage: false })).toEqual(['--literal-pathspecs', '-c', 'user.useConfigOnly=true', 'commit', '--quiet', '--amend', '-F', '-'])
     // 읽기는 lock 을 잡지 않는다.
-    for (const args of [SCM_HEAD_ARGS, SCM_STAGED_ARGS, SCM_ANY_CHANGE_ARGS, SCM_TRACKED_ARGS]) expect(args[0]).toBe('--no-optional-locks')
+    for (const args of [SCM_HEAD_ARGS, SCM_STAGED_ARGS, SCM_ANY_CHANGE_ARGS, SCM_CLASSIFY_ARGS]) expect(args[0]).toBe('--no-optional-locks')
   })
   it('열린 worktree 가 아닌 루트 · 형 위반 경로(../x·절대·NUL·빈 목록) · 모르는 동작 = git 실행 없이 거절', async () => {
     const root = repo()
@@ -272,7 +273,7 @@ describe('K2·K3 — discard', () => {
     expect(h.trashed.map((file) => hash(file))).toEqual(hashes)
     expect(h.logs.filter((entry) => entry.event === 'scm.write.trash').map((entry) => entry.data)).toEqual([{ root: expect.any(String), files: 2, failed: 0 }])
   })
-  it('추적 안 함만 — 휴지통 문구, 휴지통 실패(주입)면 안내만 하고 파일은 그대로', async () => {
+  it('추적 안 함만 — 휴지통 문구, 휴지통 실패(주입)면 안내만 하고 파일은 그대로(안내도 「옮긴 파일 없음」)', async () => {
     const root = repo()
     write(root, 'u1.txt', 'keep me\n')
     const h = harness({
@@ -287,6 +288,7 @@ describe('K2·K3 — discard', () => {
     const result = await h.writer.write({ action: 'discard', root, tracked: [], untracked: ['u1.txt'] })
     expect(result).toMatchObject({ ok: false, code: 'trash_failed' })
     expect(!result.ok && result.error).toContain('injected trash failure')
+    expect(!result.ok && result.error).toContain('휴지통으로 옮긴 파일 없음.')
     expect(read(root, 'u1.txt')).toBe('keep me\n')
     expect(h.asked[0]?.options).toMatchObject({ message: "추적하지 않는 파일 'u1.txt'을(를) 삭제할까요?", detail: '휴지통에서 복원할 수 있습니다.', buttons: ['휴지통으로 이동', '취소'] })
   })
@@ -314,9 +316,143 @@ describe('K2·K3 — discard', () => {
       .filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*') && !line.trim().startsWith('/**'))
       .join('\n')
     expect(code).not.toMatch(/\bunlink|\brmSync|\brmdir|fs\.rm\b|\.rm\(|'clean'/)
-    // `rm --cached`(인덱스에서만 빼기)만 있다.
+    // `rm --cached`(인덱스에서만 빼기)만 있다 — HEAD 없는 unstage·휴지통으로 옮긴 추가 예정 항목 빼기가 같이 쓴다.
     expect(code.match(/'rm'/g)).toHaveLength(1)
     expect(code).toContain("'rm', '--cached'")
+  })
+})
+
+describe('B1 — 추가 예정·이름 바꾸기 예정 discard = 휴지통 + 인덱스에서만 빼기', () => {
+  it('추가 예정(add -N) — 휴지통 문구, 내용 해시가 휴지통 쪽에 있고 작업 트리·인덱스에서 사라진다', async () => {
+    const root = repo()
+    write(root, 'ita.txt', 'only copy of this content\n')
+    git(root, 'add', '-N', 'ita.txt')
+    expect(status(root)).toBe(' A ita.txt\n')
+    const before = hash(path.join(root, 'ita.txt'))
+    const h = harness({ roots: [root], answers: ['discardAll'] })
+    expect(await h.writer.write({ action: 'discard', root, tracked: [], untracked: ['ita.txt'] })).toEqual({ ok: true })
+    expect(h.asked[0]?.options).toMatchObject({ message: "추적하지 않는 파일 'ita.txt'을(를) 삭제할까요?", detail: '휴지통에서 복원할 수 있습니다.', buttons: ['휴지통으로 이동', '취소'] })
+    expect(h.trashed.map((file) => hash(file))).toEqual([before])
+    expect(fs.existsSync(path.join(root, 'ita.txt'))).toBe(false)
+    expect(git(root, 'ls-files', '--cached', '--', 'ita.txt')).toBe('')
+    expect(status(root)).toBe('')
+  })
+  it('이름 바꾸기 예정(mv + add -N) — 새 경로는 휴지통(내용 그대로), 원래 경로는 되돌아온다', async () => {
+    const root = repo()
+    const original = Array.from({ length: 20 }, (_, index) => `line ${index}\n`).join('')
+    write(root, 'old.txt', original)
+    git(root, 'commit', '-q', '-am', 'long old')
+    fs.renameSync(path.join(root, 'old.txt'), path.join(root, 'moved.txt'))
+    fs.appendFileSync(path.join(root, 'moved.txt'), 'edited after move\n')
+    git(root, 'add', '-N', 'moved.txt')
+    expect(git(root, 'status', '--porcelain=v2', '-z', '--untracked-files=all').split('\0').slice(0, 2)).toEqual([expect.stringMatching(/^2 \.R /), 'old.txt'])
+    const before = hash(path.join(root, 'moved.txt'))
+    const h = harness({ roots: [root], answers: ['discardAll'] })
+    // 렌더러가 만드는 요청 그대로(`discardRequest` 는 ScmView.write.test 가 고정).
+    expect(await h.writer.write({ action: 'discard', root, tracked: ['old.txt'], untracked: ['moved.txt'] })).toEqual({ ok: true })
+    expect(h.trashed.map((file) => hash(file))).toEqual([before])
+    expect(read(root, 'old.txt')).toBe(original)
+    expect(status(root)).toBe('')
+  })
+  it('휴지통 실패면 추가 예정 항목도 그대로(인덱스에서 빼지 않는다)', async () => {
+    const root = repo()
+    write(root, 'ita.txt', 'keep\n')
+    git(root, 'add', '-N', 'ita.txt')
+    const h = harness({
+      roots: [root],
+      answers: ['discardAll'],
+      over: {
+        trashItem: async () => {
+          throw new Error('injected trash failure')
+        },
+      },
+    })
+    expect(await h.writer.write({ action: 'discard', root, tracked: [], untracked: ['ita.txt'] })).toMatchObject({ ok: false, code: 'trash_failed' })
+    expect(read(root, 'ita.txt')).toBe('keep\n')
+    expect(status(root)).toBe(' A ita.txt\n')
+  })
+})
+
+describe('B2 — 휴지통 대상은 main 이 git 으로 분류한다', () => {
+  it('.git·.git/config·무시된 폴더·그 아래 파일·무시된 파일·추적 파일·폴더·없는 경로 = git 쓰기·휴지통 없이 거절(추적 discard 도 하지 않는다)', async () => {
+    const root = repo()
+    write(root, '.gitignore', 'ign/\n*.log\n')
+    git(root, 'add', '.gitignore')
+    git(root, 'commit', '-q', '-m', 'ignore')
+    write(root, 'ign/x.txt', 'ignored\n')
+    write(root, 'build.log', 'log\n')
+    write(root, 'dir/u.txt', 'untracked in dir\n')
+    write(root, 'a.txt', 'a1\n')
+    const indexFile = path.join(root, '.git', 'index')
+    const h = harness({ roots: [root], answers: Array.from({ length: 12 }, (): ScmConfirmChoice => 'discardAll') })
+    const before = { status: status(root), index: hash(indexFile), config: hash(path.join(root, '.git', 'config')), a: read(root, 'a.txt') }
+    for (const rel of ['.git', '.git/config', '.GIT/config', 'ign', 'ign/x.txt', 'build.log', 'b.txt', 'dir', 'missing.txt']) {
+      const result = await h.writer.write({ action: 'discard', root, tracked: ['a.txt'], untracked: [rel] })
+      expect([rel, result]).toEqual([rel, { ok: false, code: 'bad_request', error: expect.any(String) }])
+    }
+    expect(h.trashed).toEqual([])
+    expect({ status: status(root), index: hash(indexFile), config: hash(path.join(root, '.git', 'config')), a: read(root, 'a.txt') }).toEqual(before)
+    expect(fs.existsSync(path.join(root, '.git'))).toBe(true)
+    // 같은 요청에 정상 대상이 섞여도 하나가 어긋나면 그것도 옮기지 않는다.
+    expect(await h.writer.write({ action: 'discard', root, tracked: [], untracked: ['dir/u.txt', 'build.log'] })).toMatchObject({ ok: false, code: 'bad_request' })
+    expect(read(root, 'dir/u.txt')).toBe('untracked in dir\n')
+    // 정상 대상만이면 옮긴다.
+    expect(await h.writer.write({ action: 'discard', root, tracked: [], untracked: ['dir/u.txt'] })).toEqual({ ok: true })
+    expect(h.trashed).toHaveLength(1)
+  })
+})
+
+describe('B3 — 휴지통 부분 실패 안내는 실제 결과를 말한다', () => {
+  it('섞인 discard 에서 둘째 파일만 실패 — 옮긴 것·남은 것(이유)·되돌린 추적 파일을 적고, 파일 상태도 그대로 그렇다', async () => {
+    const root = repo()
+    write(root, 'a.txt', 'a1\n')
+    write(root, 'u1.txt', 'one\n')
+    write(root, 'u2.txt', 'two\n')
+    write(root, 'u3.txt', 'three\n')
+    let calls = 0
+    const moved: string[] = []
+    const h = harness({
+      roots: [root],
+      answers: ['discardAll'],
+      over: {
+        trashItem: async (abs) => {
+          calls += 1
+          if (calls === 2) throw new Error('injected second failure')
+          const to = path.join(base, 'trash', `b3-${calls}-${path.basename(abs)}`)
+          fs.mkdirSync(path.dirname(to), { recursive: true })
+          fs.renameSync(abs, to)
+          moved.push(to)
+        },
+      },
+    })
+    const result = await h.writer.write({ action: 'discard', root, tracked: ['a.txt'], untracked: ['u1.txt', 'u2.txt', 'u3.txt'] })
+    expect(result).toMatchObject({ ok: false, code: 'trash_failed' })
+    const text = result.ok ? '' : result.error
+    expect(text).toBe(
+      ['휴지통으로 옮김 2개:\nu1.txt\nu3.txt', '옮기지 못해 그대로 남음 1개:\nu2.txt: Error: injected second failure', '인덱스 내용으로 되돌린 추적 파일 1개:\na.txt'].join('\n\n'),
+    )
+    expect(text).not.toContain('그대로입니다')
+    expect(read(root, 'a.txt')).toBe('a0\n')
+    expect(read(root, 'u2.txt')).toBe('two\n')
+    expect(fs.existsSync(path.join(root, 'u1.txt')) || fs.existsSync(path.join(root, 'u3.txt'))).toBe(false)
+    expect(moved).toHaveLength(2)
+    expect(h.refreshed).toEqual([root])
+  })
+})
+
+describe('B4 — unstage 의 HEAD 판별은 exit 1 만 「HEAD 없음」', () => {
+  it('rev-parse 만 128 로 실패시키는 래퍼 = git_error, 인덱스 무변화(rm --cached 로 넘어가지 않는다)', async () => {
+    const root = repo()
+    write(root, 'a.txt', 'a1\n')
+    git(root, 'add', 'a.txt')
+    const wrapper = path.join(base, `git-revparse-fails-${seq}`)
+    fs.writeFileSync(wrapper, `#!/bin/sh\nfor arg in "$@"; do [ "$arg" = rev-parse ] && { echo "fatal: injected rev-parse failure" >&2; exit 128; }; done\nexec '${GIT}' "$@"\n`, { mode: 0o755 })
+    const before = { status: status(root), index: hash(path.join(root, '.git', 'index')) }
+    const h = harness({ roots: [root], over: { git: () => wrapper } })
+    const result = await h.writer.write({ action: 'unstage', root, paths: ['a.txt'] })
+    expect(result).toEqual({ ok: false, code: 'git_error', error: 'fatal: injected rev-parse failure' })
+    expect({ status: status(root), index: hash(path.join(root, '.git', 'index')) }).toEqual(before)
+    expect(status(root)).toBe('M  a.txt\n')
   })
 })
 
@@ -552,6 +688,25 @@ describe('K8 — index.lock 경합(실제 lock 파일)', () => {
     const h = harness({ roots: [root] })
     const result = await h.writer.write({ action: 'commit', root, message: 'x', amend: true })
     expect(result).toMatchObject({ ok: false, code: 'git_error' })
+    expect(h.logs.filter((entry) => entry.event === 'scm.write.retry')).toHaveLength(0)
+  })
+  it('B6 — 훅이 lock 문구를 내고 exit 1 이면 다시 돌지 않는다(훅 실행 1회 · 원문 오류)', async () => {
+    const root = repo()
+    const counter = path.join(base, `hook-count-${seq}`)
+    fs.mkdirSync(path.join(root, '.hooks-lock'))
+    fs.writeFileSync(
+      path.join(root, '.hooks-lock', 'pre-commit'),
+      `#!/bin/sh\necho run >> '${counter}'\necho "fatal: Unable to create '/x/.git/index.lock': File exists." >&2\necho "Another git process seems to be running in this repository" >&2\nexit 1\n`,
+      { mode: 0o755 },
+    )
+    git(root, 'config', 'core.hooksPath', '.hooks-lock')
+    write(root, 'a.txt', 'a1\n')
+    git(root, 'add', 'a.txt')
+    const h = harness({ roots: [root] })
+    const result = await h.writer.write({ action: 'commit', root, message: 'x', amend: false })
+    expect(result).toMatchObject({ ok: false, code: 'git_error' })
+    expect(!result.ok && result.error).toContain('Another git process seems to be running')
+    expect(fs.readFileSync(counter, 'utf8')).toBe('run\n')
     expect(h.logs.filter((entry) => entry.event === 'scm.write.retry')).toHaveLength(0)
   })
 })

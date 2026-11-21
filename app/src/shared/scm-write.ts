@@ -10,7 +10,8 @@ export type ScmWriteInput =
   /** 병합 변경 stage — 늘 확인(D4). git 인자는 stage 와 같다. */
   | { action: 'stageMerge'; root: string; paths: string[] }
   | { action: 'unstage'; root: string; paths: string[] }
-  /** 추적 파일 = 인덱스 내용으로 되돌림(`checkout --`), 추적 안 함 = 휴지통(D2·D3). 확인은 main 이 띄운다. */
+  /** 추적 파일 = 인덱스 내용으로 되돌림(`checkout --`), `untracked` = 휴지통 — 작업 트리에만 내용이 있는 추적 안 함·추가 예정(`add -N`) 파일(D2·D3·B1).
+   * 확인은 main 이 띄우고, 휴지통 대상이 정말 그 두 상태인지도 main 이 git 으로 다시 본다(B2). */
   | { action: 'discard'; root: string; tracked: string[]; untracked: string[] }
   /** 빈 메시지 + amend = 직전 메시지 유지(`--no-edit` — D7·D8). */
   | { action: 'commit'; root: string; message: string; amend: boolean }
@@ -26,7 +27,7 @@ export type ScmWriteRefusal =
   | 'nothing_to_commit'
   /** git 이 실패했다 — `error` 는 stderr 원문(훅 출력 포함). */
   | 'git_error'
-  /** 휴지통으로 못 옮겼다 — 영구 삭제로 넘어가지 않는다. 파일은 그대로. */
+  /** 휴지통으로 못 옮긴 파일이 있다 — 영구 삭제로 넘어가지 않는다. `error` 가 실제 결과(옮긴 것·남은 것과 이유·되돌린 추적 파일)를 적는다(B3). */
   | 'trash_failed'
 
 export type ScmWriteResult = { ok: true } | { ok: false; code: ScmWriteRefusal; error: string }
@@ -85,14 +86,19 @@ export function stageRequest(input: { root: string; group: ScmGroupId; changes: 
   }
 }
 
-/** discard 단추(「변경 사항」 그룹만 — V3) — 추적 안 함과 추적 파일을 나눈다. */
+/** 작업 트리에만 내용이 있는 상태 — `checkout` 으로 되돌리면 인덱스의 빈 blob 으로 덮여 내용이 사라진다(B1). 휴지통으로 보낸다(VS Code 와 의도적 차이). */
+const TRASHED: ReadonlySet<ScmChange['status']> = new Set(['UNTRACKED', 'INTENT_TO_ADD', 'INTENT_TO_RENAME'])
+
+/** discard 단추(「변경 사항」 그룹만 — V3) — 휴지통 대상(추적 안 함·추가 예정)과 추적 파일을 나눈다. 이름 바꾸기 예정은 새 경로 = 휴지통, 원래 경로 = 되돌림(복원). */
 export function discardRequest(input: { root: string; changes: readonly ScmChange[] }): ScmWriteInput {
   const changes = input.changes.filter((change) => change.group === 'workingTree')
   return {
     action: 'discard',
     root: input.root,
-    tracked: [...new Set(changes.filter((change) => change.status !== 'UNTRACKED').map((change) => change.rel))],
-    untracked: [...new Set(changes.filter((change) => change.status === 'UNTRACKED').map((change) => change.rel))],
+    tracked: [
+      ...new Set(changes.flatMap((change) => (!TRASHED.has(change.status) ? [change.rel] : change.status === 'INTENT_TO_RENAME' && change.orig !== null ? [change.orig] : []))),
+    ],
+    untracked: [...new Set(changes.filter((change) => TRASHED.has(change.status)).map((change) => change.rel))],
   }
 }
 
@@ -111,7 +117,7 @@ export function scmWriteMessage(result: ScmWriteResult): { kind: 'info' | 'error
     case 'bad_request':
       return { kind: 'error', text: `요청 형식이 올바르지 않습니다.\n${result.error}` }
     case 'trash_failed':
-      return { kind: 'error', text: `휴지통으로 옮기지 못했습니다 — 파일은 그대로입니다.\n${result.error}` }
+      return { kind: 'error', text: `휴지통으로 옮기지 못한 파일이 있습니다(영구 삭제는 하지 않았습니다).\n${result.error}` }
     case 'git_error':
       return { kind: 'error', text: result.error }
   }

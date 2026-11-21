@@ -1,4 +1,5 @@
-// 소스 제어 보기 (LIFE-683 S2~S4·S9) — 오른쪽 패널 몸통. 읽기 전용: 변경 목록 + 클릭 = diff 탭. stage·commit 등 쓰기 입력은 그리지 않는다(S7).
+// 소스 제어 보기 (LIFE-683 S2~S4·S9) — 오른쪽 패널 몸통. 변경 목록 + 클릭 = diff 탭.
+// 쓰기(LIFE-829): 머리 아래 메시지 입력란 + 커밋 단추(▾ 「커밋(수정)」), 행·그룹 inline 단추(VS Code V1·V2 — 행 hover·선택 때 보인다). 확인 대화상자는 main.
 //
 // · 모양은 VS Code SCM 보기(`scmViewPane.ts`) — 그룹 머리(twistie · 제목 · 오른쪽 개수), 22px 행(파일 아이콘 · 이름 · 흐린 부모 경로 · 오른쪽 상태 글자).
 //   글자·색은 탐색기 배지와 같은 표(`GIT_DECORATION`), 이름은 기본 글자색(VS Code `fileDecorations.colors: false`), 삭제는 취소선.
@@ -8,8 +9,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { GIT_DECORATION } from '../../../shared/explorer-git.js'
 import { buildTree, flattenTree, groupChanges, SCM_STATUS_LIMIT, scmErrorKind, SCM_STATUS_TEXT, scmMark, scmStrike, type ScmChange, type ScmGroupId } from '../../../shared/scm.js'
+import { discardRequest, stageRequest } from '../../../shared/scm-write.js'
 import type { ScmApi } from '../hooks/useScm.js'
-import { Codicon, FileIcon } from './ExplorerIcons.js'
+import { Codicon, FileIcon, type CodiconName } from './ExplorerIcons.js'
 import './scm.css'
 
 const ROW_HEIGHT = 22
@@ -47,6 +49,27 @@ export function scmRows(input: { changes: readonly ScmChange[]; mode: ScmViewMod
   return { rows, total: grouped.total, truncated: grouped.truncated }
 }
 
+export type ScmActionId = 'discard' | 'stage' | 'unstage'
+
+/** 행·그룹 inline 단추 — VS Code `package.json` `scm/resourceState/context`·`scm/resourceGroup/context` inline(V1·V2, 「파일 열기」·「변경 보기」 는 뺀다 — D1). */
+export function scmActionsOf(group: ScmGroupId): ScmActionId[] {
+  switch (group) {
+    case 'workingTree':
+      return ['discard', 'stage']
+    case 'index':
+      return ['unstage']
+    case 'merge':
+      return ['stage']
+  }
+}
+
+const ACTION_ICON: Readonly<Record<ScmActionId, CodiconName>> = { discard: 'discard', stage: 'add', unstage: 'remove' }
+const ACTION_TITLE: Readonly<Record<ScmActionId, { row: string; group: string }>> = {
+  discard: { row: '변경 내용 취소', group: '모든 변경 내용 취소' },
+  stage: { row: '변경 내용 스테이징', group: '모든 변경 내용 스테이징' },
+  unstage: { row: '변경 내용 스테이징 취소', group: '모든 변경 내용 스테이징 취소' },
+}
+
 /** 행 툴팁 — 경로 • 상태 문구, 이름 바뀜은 원래 경로(VS Code `getStatusText` + 원래 경로). */
 export function scmRowTitle(change: ScmChange): string {
   const status = SCM_STATUS_TEXT[change.status]
@@ -73,6 +96,8 @@ export function ScmView({
   const [collapsedByRoot, setCollapsedByRoot] = useState(() => new Map<string, Set<string>>())
   const [selectedByRoot, setSelectedByRoot] = useState(() => new Map<string, string>())
   const [scrollTop, setScrollTop] = useState(0)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const [height, setHeight] = useState(400)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
@@ -184,6 +209,22 @@ export function ScmView({
     event.stopPropagation()
   }
 
+  // 쓰기 — 요청의 루트는 누른 때 값이다(K12). 결과는 `scm.run` 이 그 루트의 상태에만 적용한다.
+  const act = (input: { action: ScmActionId; group: ScmGroupId; changes: readonly ScmChange[] }): void => {
+    if (root === null || input.changes.length === 0) return
+    void scm.run(input.action === 'discard' ? discardRequest({ root, changes: input.changes }) : stageRequest({ root, group: input.group, changes: input.changes }))
+  }
+  const groupChangesOf = (group: ScmGroupId): ScmChange[] => (changes ?? []).filter((change) => change.group === group)
+  const commit = (amend: boolean): void => {
+    setMenuOpen(false)
+    if (root === null || scm.write.committing) return
+    // 빈 메시지 커밋은 main 이 git 없이 거절한다(D7) — 입력란으로 포커스를 돌린다.
+    if (!amend && scm.write.message.trim() === '') inputRef.current?.focus()
+    void scm.run({ action: 'commit', root, message: scm.write.message, amend })
+  }
+  const showInput = root !== null && !(scm.state !== null && scm.state.error !== null)
+  const writeNotice = scm.write.notice
+
   const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
   const last = Math.min(rows.length, Math.ceil((scrollTop + height) / ROW_HEIGHT) + OVERSCAN)
   const notice =
@@ -226,6 +267,76 @@ export function ScmView({
           </button>
         </div>
       </div>
+      {showInput ? (
+        <div className="scm-input" data-scm-input="">
+          <textarea
+            ref={inputRef}
+            className="scm-message"
+            data-scm-message=""
+            aria-label="커밋 메시지"
+            placeholder="메시지(⌘Enter 로 커밋)"
+            rows={Math.min(10, Math.max(1, scm.write.message.split('\n').length))}
+            value={scm.write.message}
+            readOnly={scm.write.committing}
+            spellCheck={false}
+            onChange={(event) => scm.setMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+                event.preventDefault()
+                commit(false)
+              }
+            }}
+          />
+          <div
+            className="scm-commit-row"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) setMenuOpen(false)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && menuOpen) {
+                event.preventDefault()
+                setMenuOpen(false)
+              }
+            }}
+          >
+            <button type="button" className="scm-commit" data-scm-commit="" disabled={scm.write.committing} onClick={() => commit(false)}>
+              <Codicon name="check" />
+              <span>{scm.write.committing ? '커밋하는 중…' : '커밋'}</span>
+            </button>
+            <button
+              type="button"
+              className="scm-commit-more"
+              data-scm-commit-more=""
+              title="커밋 동작 더 보기"
+              aria-label="커밋 동작 더 보기"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              disabled={scm.write.committing}
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              <Codicon name="chevron-down" />
+            </button>
+            {menuOpen ? (
+              <div className="scm-commit-menu" role="menu" data-scm-commit-menu="">
+                <button type="button" role="menuitem" data-scm-commit-item="commit" onClick={() => commit(false)}>
+                  커밋
+                </button>
+                <button type="button" role="menuitem" data-scm-commit-item="amend" onClick={() => commit(true)}>
+                  커밋(수정)
+                </button>
+              </div>
+            ) : null}
+          </div>
+          {writeNotice !== null ? (
+            <div className={`scm-notice is-${writeNotice.kind}`} role={writeNotice.kind === 'error' ? 'alert' : 'status'} data-scm-notice={writeNotice.kind}>
+              <pre className="scm-notice-text">{writeNotice.text}</pre>
+              <button type="button" className="explorer-tool scm-notice-close" title="닫기" aria-label="안내 닫기" onClick={scm.dismissNotice}>
+                <Codicon name="close" />
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {truncated ? (
         <div className="scm-banner" data-scm-truncated="">
           변경이 너무 많아 처음 {SCM_STATUS_LIMIT.toLocaleString()}개만 표시합니다(전체 {total.toLocaleString()}개).
@@ -261,6 +372,7 @@ export function ScmView({
                 onDoubleClick={() => {
                   if (row.kind === 'file') onOpen({ change: row.change, preview: false })
                 }}
+                onAction={(action) => act({ action, group: row.group, changes: row.kind === 'file' ? [row.change] : groupChangesOf(row.group) })}
               />
             ))}
           </div>
@@ -270,7 +382,47 @@ export function ScmView({
   )
 }
 
-function ScmRowView({ row, top, selected, onClick, onDoubleClick }: { row: ScmRow; top: number; selected: boolean; onClick: () => void; onDoubleClick: () => void }): React.JSX.Element {
+/** inline 단추 묶음 — 클릭·더블클릭이 행(diff 열기·접기)으로 새지 않는다. */
+function ScmActions({ group, level, onAction }: { group: ScmGroupId; level: 'row' | 'group'; onAction: (action: ScmActionId) => void }): React.JSX.Element {
+  return (
+    <span className="scm-actions" data-scm-actions={level}>
+      {scmActionsOf(group).map((action) => (
+        <button
+          key={action}
+          type="button"
+          className="scm-action"
+          data-scm-action={action}
+          title={ACTION_TITLE[action][level]}
+          aria-label={ACTION_TITLE[action][level]}
+          tabIndex={-1}
+          onClick={(event) => {
+            event.stopPropagation()
+            onAction(action)
+          }}
+          onDoubleClick={(event) => event.stopPropagation()}
+        >
+          <Codicon name={ACTION_ICON[action]} />
+        </button>
+      ))}
+    </span>
+  )
+}
+
+function ScmRowView({
+  row,
+  top,
+  selected,
+  onClick,
+  onDoubleClick,
+  onAction,
+}: {
+  row: ScmRow
+  top: number
+  selected: boolean
+  onClick: () => void
+  onDoubleClick: () => void
+  onAction: (action: ScmActionId) => void
+}): React.JSX.Element {
   if (row.kind === 'group')
     return (
       <div className={`explorer-row scm-group${selected ? ' is-selected' : ''}`} role="treeitem" aria-level={1} aria-expanded={!row.collapsed} aria-selected={selected} data-scm-group={row.group} style={{ top }} onClick={onClick}>
@@ -278,6 +430,7 @@ function ScmRowView({ row, top, selected, onClick, onDoubleClick }: { row: ScmRo
           <Codicon name="chevron-down" />
         </span>
         <span className="explorer-label scm-group-title">{row.title}</span>
+        <ScmActions group={row.group} level="group" onAction={onAction} />
         <span className="scm-count" data-scm-count={row.count}>
           {row.count}
         </span>
@@ -315,6 +468,7 @@ function ScmRowView({ row, top, selected, onClick, onDoubleClick }: { row: ScmRo
         {row.name}
         {row.parent === '' ? null : <span className="scm-desc">{row.parent}</span>}
       </span>
+      <ScmActions group={row.group} level="row" onAction={onAction} />
       <span className="explorer-badge is-git scm-letter" data-scm-letter={decoration.letter} style={{ color: decoration.color }}>
         {decoration.letter}
       </span>

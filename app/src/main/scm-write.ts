@@ -1,0 +1,436 @@
+// 소스 제어 로컬 쓰기 (LIFE-829) — **앱의 첫 git 쓰기 모듈**. stage·unstage·discard·커밋·amend.
+//
+// · 가둠(D13·K11): 루트는 열린 worktree(`roots()` 포함 + `confine` realpath), 경로는 `isPlainRel`·길이(`parseScmWriteInput`), 모르는 동작은 git 없이 거절.
+//   argv 는 동작마다 고정 문자열 + `--literal-pathspecs`(F6 — `:` 로 시작하는 이름이 pathspec 매직으로 읽히지 않게). 경로는 argv 가 아니라
+//   `--pathspec-from-file=- --pathspec-file-nul` 의 stdin(NUL 끝)으로만 넘긴다 — 렌더러가 git 인자를 고를 수 없고, 목록이 길어도 argv 상한에 안 걸린다.
+// · 영구 삭제 0(D2): 이 파일에 `unlink`·`rm`·`git clean` 이 없다. 추적 안 함 discard 는 `deps.trashItem`(main `shell.trashItem`)뿐, 실패하면 안내로 끝.
+//   (`git rm --cached` 는 인덱스에서만 뺀다 — 작업 트리 파일은 그대로.)
+// · index.lock(D11·F2): git 이 낸 lock 문구일 때만 VS Code 값(`repository.ts:3026-3046` — 50·n² ms, 10회)으로 다시 돈다. **lock 파일을 지우지 않는다.**
+//   재시도는 `scm.write.retry` 로 따로 센다(K8ⓓ). 앱 자신의 쓰기는 루트마다 직렬(`scm.write.wait` — K9).
+// · 로그인 셸 PATH(D12·F1): **커밋 git 자식에만** 쓴다 — 훅(gitleaks 등)이 셸 도구를 찾게. 못 얻으면 앱 PATH 그대로 돌리고 오류는 원문으로 보인다.
+// · 대기 중 대상 바뀜(K12): 확인 대화상자가 닫힌 뒤·재시도 대기 뒤마다 요청 루트가 아직 열린 worktree 인지 다시 본다 — 아니면 git 없이 거절.
+// · 로그(제약 7): 동작·결과 코드·걸린 시간·재시도 수·루트 해시만 — 경로·메시지·stderr 원문은 남기지 않는다.
+import crypto from 'node:crypto'
+import { execFile } from 'node:child_process'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { confine } from './explorer-fs.js'
+import { parseScmWriteInput, type ScmWriteAction, type ScmWriteInput, type ScmWriteRefusal, type ScmWriteResult } from '../shared/scm-write.js'
+
+// --- 고정 argv (시험이 고정한다 — K11) --------------------------------------------------------------
+
+const LITERAL = '--literal-pathspecs'
+const FROM_STDIN = ['--pathspec-from-file=-', '--pathspec-file-nul']
+export const SCM_STAGE_ARGS = [LITERAL, 'add', '-A', ...FROM_STDIN]
+export const SCM_UNSTAGE_ARGS = [LITERAL, 'reset', '-q', 'HEAD', ...FROM_STDIN]
+/** HEAD 없는(첫 커밋 전) 레포의 unstage — `reset HEAD` 가 실패한다(F3). 인덱스에서만 뺀다(`--cached`). VS Code `git.ts:2410-2421`. */
+export const SCM_UNSTAGE_UNBORN_ARGS = [LITERAL, 'rm', '--cached', '-r', '-q', '-f', ...FROM_STDIN]
+export const SCM_DISCARD_ARGS = [LITERAL, 'checkout', '-q', ...FROM_STDIN]
+/** 스마트 커밋(D5) — 추적 안 함 포함 전부. */
+export const SCM_STAGE_ALL_ARGS = [LITERAL, 'add', '-A', '--', '.']
+export const scmCommitArgs = (input: { amend: boolean; keepMessage: boolean }): string[] => [
+  LITERAL,
+  '-c',
+  'user.useConfigOnly=true',
+  'commit',
+  '--quiet',
+  ...(input.amend ? ['--amend'] : []),
+  ...(input.keepMessage ? ['--no-edit'] : ['-F', '-']),
+]
+/** 읽기(lock 안 잡음) — HEAD 있나 · 스테이지된 것 있나 · 변경 있나 · 추적 파일인가. */
+export const SCM_HEAD_ARGS = ['--no-optional-locks', 'rev-parse', '--verify', '-q', 'HEAD']
+export const SCM_STAGED_ARGS = ['--no-optional-locks', 'diff', '--cached', '--quiet']
+export const SCM_ANY_CHANGE_ARGS = ['--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=all']
+/** `ls-files` 는 `--pathspec-from-file` 을 받지 않는다 — `--` 뒤 경로(리터럴)로, `TRACKED_CHUNK` 개씩 나눠 argv 상한을 넘지 않게. */
+export const SCM_TRACKED_ARGS = ['--no-optional-locks', LITERAL, 'ls-files', '-z', '--cached', '--']
+const TRACKED_CHUNK = 500
+
+/** VS Code `repository.ts:3026-3046` — n 번째 재시도 전 50·n² ms, 10회(합계 19.25 초 — K8ⓑ 통과선 25 초 안). */
+export const LOCK_RETRY_DELAYS_MS: readonly number[] = Array.from({ length: 10 }, (_, index) => 50 * (index + 1) ** 2)
+/** git 이 낸 lock 문구(F2). 이 문구일 때만 다시 돈다. */
+export const isLockError = (stderr: string): boolean => /Another git process seems to be running|index\.lock': File exists/.test(stderr)
+
+const GIT_TIMEOUT_MS = 60_000
+/** 커밋은 훅이 돈다 — 더 길게. */
+const COMMIT_TIMEOUT_MS = 180_000
+const OUTPUT_LIMIT = 4 * 1024 * 1024
+const ERROR_LIMIT = 16 * 1024
+
+// --- 확인 대화상자 (문구는 main — VS Code V5~V9 의 한국어 결) ------------------------------------------
+
+export type ScmConfirm =
+  | { kind: 'stageMerge'; files: string[] }
+  /** `restore` — 추적 파일이 전부 작업 트리에서 지워진 것(되돌리면 복원 — V5 「restore」 갈래). */
+  | { kind: 'discard'; tracked: string[]; untracked: string[]; restore: boolean }
+  | { kind: 'smartCommit' }
+export type ScmConfirmChoice = 'stage' | 'discardTracked' | 'discardAll' | 'commit' | 'cancel'
+export type ScmConfirmSpec = {
+  kind: ScmConfirm['kind']
+  options: { type: 'warning'; message: string; detail: string; buttons: string[]; defaultId: number; cancelId: number }
+  /** `buttons` 와 같은 자리 — 고른 단추 번호 → 답. */
+  choices: ScmConfirmChoice[]
+}
+
+const nameOf = (rel: string): string => rel.slice(rel.lastIndexOf('/') + 1)
+const listOf = (files: readonly string[]): string => (files.length <= 10 ? files : [...files.slice(0, 10), `외 ${files.length - 10}개`]).join('\n')
+const IRREVERSIBLE = '이 작업은 되돌릴 수 없습니다.'
+const FROM_TRASH = '휴지통에서 복원할 수 있습니다.'
+
+export function scmConfirmSpec(confirm: ScmConfirm): ScmConfirmSpec {
+  switch (confirm.kind) {
+    case 'stageMerge': {
+      const single = confirm.files.length === 1 ? confirm.files[0] : undefined
+      return {
+        kind: 'stageMerge',
+        options: {
+          type: 'warning',
+          message: single === undefined ? `병합 충돌이 있는 ${confirm.files.length}개 파일을 스테이지할까요?` : `'${nameOf(single)}'을(를) 병합 충돌과 함께 스테이지할까요?`,
+          detail: `${single === undefined ? `${listOf(confirm.files)}\n\n` : ''}충돌 표지가 남아 있지 않은지 확인하세요.`,
+          buttons: ['스테이지', '취소'],
+          defaultId: 0,
+          cancelId: 1,
+        },
+        choices: ['stage', 'cancel'],
+      }
+    }
+    case 'smartCommit':
+      return {
+        kind: 'smartCommit',
+        options: {
+          type: 'warning',
+          message: '스테이지된 변경이 없습니다. 모든 변경을 스테이지하고 바로 커밋할까요?',
+          detail: '추적하지 않는 파일도 함께 커밋됩니다.',
+          buttons: ['예', '취소'],
+          defaultId: 0,
+          cancelId: 1,
+        },
+        choices: ['commit', 'cancel'],
+      }
+    case 'discard': {
+      const { tracked, untracked } = confirm
+      const total = tracked.length + untracked.length
+      // V6 — 추적 안 함만.
+      if (tracked.length === 0) {
+        const single = untracked.length === 1 ? untracked[0] : undefined
+        return {
+          kind: 'discard',
+          options: {
+            type: 'warning',
+            message: single === undefined ? `추적하지 않는 파일 ${untracked.length}개를 삭제할까요?` : `추적하지 않는 파일 '${nameOf(single)}'을(를) 삭제할까요?`,
+            detail: single === undefined ? `${listOf(untracked)}\n\n${FROM_TRASH}` : FROM_TRASH,
+            buttons: [single === undefined ? `${untracked.length}개 파일을 휴지통으로 이동` : '휴지통으로 이동', '취소'],
+            defaultId: 0,
+            cancelId: 1,
+          },
+          choices: ['discardAll', 'cancel'],
+        }
+      }
+      // V7 — 섞임: [추적 파일만] · [모두] · 취소.
+      if (untracked.length > 0)
+        return {
+          kind: 'discard',
+          options: {
+            type: 'warning',
+            message: `${total}개 파일의 변경 내용을 버릴까요?`,
+            detail: `추적 파일 ${tracked.length}개는 인덱스 내용으로 돌아갑니다(${IRREVERSIBLE.slice(0, -1)}).\n추적하지 않는 파일 ${untracked.length}개는 휴지통으로 이동합니다(${FROM_TRASH.slice(0, -1)}).`,
+            buttons: [tracked.length === 1 ? '추적 파일 1개 버리기' : `추적 파일 ${tracked.length}개 모두 버리기`, `${total}개 파일 모두 버리기`, '취소'],
+            defaultId: 0,
+            cancelId: 2,
+          },
+          choices: ['discardTracked', 'discardAll', 'cancel'],
+        }
+      // V5 — 추적 파일만(전부 삭제됨이면 「복원」).
+      const single = tracked.length === 1 ? tracked[0] : undefined
+      const message = confirm.restore
+        ? single === undefined
+          ? `${tracked.length}개 파일을 복원할까요?`
+          : `'${nameOf(single)}'을(를) 복원할까요?`
+        : single === undefined
+          ? `${tracked.length}개 파일의 변경 내용을 모두 버릴까요?`
+          : `'${nameOf(single)}'의 변경 내용을 버릴까요?`
+      return {
+        kind: 'discard',
+        options: {
+          type: 'warning',
+          message,
+          detail: single === undefined ? `${listOf(tracked)}\n\n${IRREVERSIBLE}` : IRREVERSIBLE,
+          buttons: [confirm.restore ? (single === undefined ? `${tracked.length}개 파일 복원` : '파일 복원') : single === undefined ? `${tracked.length}개 파일 모두 버리기` : '파일 변경 버리기', '취소'],
+          defaultId: 0,
+          cancelId: 1,
+        },
+        choices: ['discardTracked', 'cancel'],
+      }
+    }
+  }
+}
+
+// --- 실행기 ------------------------------------------------------------------------------------------
+
+export type GitRun = { exitCode: number; stdout: string; stderr: string }
+
+export type ScmWriteDeps = {
+  /** 지금 열린 worktree 루트들. */
+  roots: () => readonly string[]
+  /** git 절대 경로(`resolveGit`). */
+  git: (roots: readonly string[]) => string
+  confirm: (spec: ScmConfirmSpec) => Promise<ScmConfirmChoice>
+  /** main `shell.trashItem` — 실패면 reject. */
+  trashItem: (abs: string) => Promise<void>
+  /** 로그인 셸 PATH — 못 얻으면 null. */
+  loginPath: () => Promise<string | null>
+  /** 쓰기 뒤 즉시 재조회(D14 — 탐색기 허브 `refreshGit`). */
+  refresh: (root: string) => void
+  log: (event: string, data?: Record<string, unknown>) => void
+  /** 시험 주입 — 기본은 VS Code 값·진짜 시계. */
+  retryDelays?: readonly number[]
+  sleep?: (ms: number) => Promise<void>
+  env?: NodeJS.ProcessEnv
+}
+
+/** 로그용 루트 표지 — 경로 대신 해시(K16 대조용). */
+export const rootTag = (root: string): string => crypto.createHash('sha256').update(root).digest('hex').slice(0, 12)
+
+const refused = (code: ScmWriteRefusal, error: string): ScmWriteResult => ({ ok: false, code, error })
+
+function runGit(input: { git: string; cwd: string; args: readonly string[]; stdin: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<GitRun> {
+  return new Promise((resolve) => {
+    const child = execFile(input.git, ['-C', input.cwd, ...input.args], { encoding: 'utf8', timeout: input.timeoutMs, maxBuffer: OUTPUT_LIMIT, env: input.env }, (error, stdout, stderr) => {
+      if (error === null) {
+        resolve({ exitCode: 0, stdout, stderr })
+        return
+      }
+      const code = typeof error.code === 'number' ? error.code : -1
+      const extra = code === -1 ? `\n${error.message}` : ''
+      resolve({ exitCode: code, stdout, stderr: `${stderr}${extra}` })
+    })
+    child.stdin?.on('error', () => {
+      // git 이 stdin 을 다 읽기 전에 끝나면 EPIPE — 결과는 위 콜백이 낸다.
+    })
+    child.stdin?.end(input.stdin)
+  })
+}
+
+const errorText = (run: GitRun): string => {
+  const text = (run.stderr.trim() !== '' ? run.stderr : run.stdout).trim()
+  return (text === '' ? `git 이 코드 ${run.exitCode} 로 끝났습니다.` : text).slice(0, ERROR_LIMIT)
+}
+
+const nul = (list: readonly string[]): string => list.map((item) => `${item}\0`).join('')
+
+export class ScmWriter {
+  private readonly queues = new Map<string, Promise<unknown>>()
+  private loginPathCache: string | null = null
+
+  constructor(private readonly deps: ScmWriteDeps) {}
+
+  /** IPC 입구 — 형 검사 → 확인 → 루트 직렬 실행 → 재조회. 늘 결과로 답한다(throw 없음). */
+  async write(raw: unknown): Promise<ScmWriteResult> {
+    const startedAt = performance.now()
+    const input = parseScmWriteInput(raw)
+    if (input === null) {
+      this.deps.log('scm.write', { action: null, ok: false, code: 'bad_request', ms: 0, retries: 0 })
+      return refused('bad_request', '요청 형 위반')
+    }
+    const stats = { retries: 0, waited: false }
+    let result: ScmWriteResult
+    try {
+      result = await this.handle(input, stats)
+    } catch (error) {
+      result = refused('git_error', String(error).slice(0, ERROR_LIMIT))
+    }
+    this.deps.log('scm.write', {
+      action: input.action,
+      root: rootTag(input.root),
+      ok: result.ok,
+      code: result.ok ? null : result.code,
+      ms: Math.round((performance.now() - startedAt) * 10) / 10,
+      retries: stats.retries,
+      waited: stats.waited,
+    })
+    return result
+  }
+
+  private isOpen(root: string): boolean {
+    return this.deps.roots().includes(root)
+  }
+
+  private async handle(input: ScmWriteInput, stats: { retries: number; waited: boolean }): Promise<ScmWriteResult> {
+    if (!this.isOpen(input.root)) return refused('not_worktree', '열린 worktree 루트가 아니다')
+    // 확인 대화상자(D4·D3) — 루트 직렬 큐 밖에서 묻는다(대화상자가 다른 쓰기를 막지 않게). 커밋의 스마트 확인은 스테이지 상태를 봐야 해서 큐 안.
+    let discardUntracked = false
+    if (input.action === 'stageMerge' || input.action === 'discard') {
+      const confined = await confine({ roots: this.deps.roots(), root: input.root, rel: '' })
+      if (!confined.ok) return refused('not_worktree', confined.error)
+      const confirm: ScmConfirm =
+        input.action === 'stageMerge'
+          ? { kind: 'stageMerge', files: input.paths }
+          : { kind: 'discard', tracked: input.tracked, untracked: input.untracked, restore: input.tracked.length > 0 && (await allMissing(confined.realRoot, input.tracked)) }
+      const spec = scmConfirmSpec(confirm)
+      const choice = await this.deps.confirm(spec)
+      this.deps.log('scm.dialog', { kind: spec.kind, choice })
+      if (choice === 'cancel' || !spec.choices.includes(choice)) return refused('cancelled', '취소됨')
+      discardUntracked = choice === 'discardAll'
+    }
+    if (input.action === 'commit' && input.message.trim() === '' && !input.amend) return refused('empty_message', '빈 메시지')
+    const result = await this.serial(input.root, stats, () => this.execute({ input, discardUntracked, stats }))
+    // 무변화 거절은 재조회할 것이 없다.
+    if (result.ok || result.code === 'git_error' || result.code === 'trash_failed') this.deps.refresh(input.root)
+    return result
+  }
+
+  /** 루트마다 직렬 — 앞 쓰기가 끝나야 다음이 시작한다(K9). 다른 루트는 서로 막지 않는다. */
+  private async serial<T>(root: string, stats: { waited: boolean }, task: () => Promise<T>): Promise<T> {
+    const previous = this.queues.get(root)
+    if (previous !== undefined) {
+      stats.waited = true
+      this.deps.log('scm.write.wait', { root: rootTag(root) })
+    }
+    const next = (previous ?? Promise.resolve()).then(task, task)
+    const settled = next.catch(() => undefined)
+    this.queues.set(root, settled)
+    try {
+      return await next
+    } finally {
+      if (this.queues.get(root) === settled) this.queues.delete(root)
+    }
+  }
+
+  private async execute(context: { input: ScmWriteInput; discardUntracked: boolean; stats: { retries: number } }): Promise<ScmWriteResult> {
+    const { input, stats } = context
+    // K12 — 대화상자·앞 쓰기 대기 뒤에도 그 루트가 아직 열려 있어야 쓴다.
+    const confined = await confine({ roots: this.deps.roots(), root: input.root, rel: '' })
+    if (!confined.ok) return refused('not_worktree', confined.error)
+    const cwd = confined.realRoot
+    const git = this.deps.git(this.deps.roots())
+    const env: NodeJS.ProcessEnv = { ...(this.deps.env ?? process.env), GIT_TERMINAL_PROMPT: '0', LC_ALL: 'en_US.UTF-8', LANG: 'en_US.UTF-8' }
+    const read = (args: readonly string[], stdin = ''): Promise<GitRun> => runGit({ git, cwd, args, stdin, env, timeoutMs: GIT_TIMEOUT_MS })
+    const write = (args: readonly string[], stdin: string, options: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<ScmWriteResult> =>
+      this.withLockRetry({ root: input.root, action: input.action, stats, run: () => runGit({ git, cwd, args, stdin, env: options.env ?? env, timeoutMs: options.timeoutMs ?? GIT_TIMEOUT_MS }) })
+
+    switch (input.action) {
+      case 'stage':
+      case 'stageMerge':
+        return write(SCM_STAGE_ARGS, nul(input.paths))
+      case 'unstage': {
+        const head = await read(SCM_HEAD_ARGS)
+        return write(head.exitCode === 0 ? SCM_UNSTAGE_ARGS : SCM_UNSTAGE_UNBORN_ARGS, nul(input.paths))
+      }
+      case 'discard': {
+        if (input.tracked.length > 0) {
+          const restored = await write(SCM_DISCARD_ARGS, nul(input.tracked))
+          if (!restored.ok) return restored
+        }
+        if (!context.discardUntracked || input.untracked.length === 0) return { ok: true }
+        // 「추적 안 함」 이라고 온 경로가 정말 추적 안 함인가 — 추적 파일을 휴지통으로 보내지 않는다.
+        for (let start = 0; start < input.untracked.length; start += TRACKED_CHUNK) {
+          const tracked = await read([...SCM_TRACKED_ARGS, ...input.untracked.slice(start, start + TRACKED_CHUNK)])
+          if (tracked.exitCode !== 0) return refused('git_error', errorText(tracked))
+          if (tracked.stdout.length > 0) return refused('bad_request', '추적 안 함 목록에 추적 파일이 있다')
+        }
+        return this.trash(input.root, input.untracked)
+      }
+      case 'commit': {
+        if (!input.amend) {
+          const staged = await read(SCM_STAGED_ARGS)
+          if (staged.exitCode !== 0 && staged.exitCode !== 1) return refused('git_error', errorText(staged))
+          if (staged.exitCode === 0) {
+            // 스테이지 없음(D5·D6) — 변경도 없으면 안내로 끝, 있으면 확인 뒤 전부 스테이지.
+            const any = await read(SCM_ANY_CHANGE_ARGS)
+            if (any.exitCode !== 0) return refused('git_error', errorText(any))
+            if (any.stdout.length === 0) return refused('nothing_to_commit', '변경 없음')
+            const spec = scmConfirmSpec({ kind: 'smartCommit' })
+            const choice = await this.deps.confirm(spec)
+            this.deps.log('scm.dialog', { kind: spec.kind, choice })
+            if (choice !== 'commit') return refused('cancelled', '취소됨')
+            if (!this.isOpen(input.root)) return refused('not_worktree', '열린 worktree 루트가 아니다')
+            const added = await write(SCM_STAGE_ALL_ARGS, '')
+            if (!added.ok) return added
+          }
+        }
+        const pathEnv = await this.resolveLoginPath()
+        const commitEnv = pathEnv === null ? env : { ...env, PATH: pathEnv }
+        const keepMessage = input.amend && input.message.trim() === ''
+        return write(scmCommitArgs({ amend: input.amend, keepMessage }), keepMessage ? '' : input.message, { env: commitEnv, timeoutMs: COMMIT_TIMEOUT_MS })
+      }
+    }
+  }
+
+  /** git 한 번 + lock 문구면 유한 재시도(K8). 재시도 대기 뒤에도 루트가 열려 있어야 다시 돈다(K12). lock 파일은 건드리지 않는다. */
+  private async withLockRetry(input: { root: string; action: ScmWriteAction; stats: { retries: number }; run: () => Promise<GitRun> }): Promise<ScmWriteResult> {
+    const delays = this.deps.retryDelays ?? LOCK_RETRY_DELAYS_MS
+    const sleep = this.deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+    for (let attempt = 0; ; attempt += 1) {
+      const run = await input.run()
+      if (run.exitCode === 0) return { ok: true }
+      const delay = delays[attempt]
+      if (!isLockError(run.stderr) || delay === undefined) return refused('git_error', errorText(run))
+      input.stats.retries += 1
+      this.deps.log('scm.write.retry', { action: input.action, root: rootTag(input.root), attempt: attempt + 1, delayMs: delay })
+      await sleep(delay)
+      if (!this.isOpen(input.root)) return refused('not_worktree', '재시도 대기 중 worktree 가 닫혔다')
+    }
+  }
+
+  /** 추적 안 함 → 휴지통(D2). 경로의 부모만 realpath 로 가두고 그 이름 자체(링크면 링크)를 보낸다 — 링크가 가리키는 대상을 버리지 않는다. */
+  private async trash(root: string, rels: readonly string[]): Promise<ScmWriteResult> {
+    const failed: string[] = []
+    for (const rel of rels) {
+      const slash = rel.lastIndexOf('/')
+      const parent = await confine({ roots: this.deps.roots(), root, rel: slash < 0 ? '' : rel.slice(0, slash) })
+      if (!parent.ok) {
+        failed.push(`${rel}: ${parent.error}`)
+        continue
+      }
+      const target = path.join(parent.abs, rel.slice(slash + 1))
+      try {
+        await fs.lstat(target)
+        await this.deps.trashItem(target)
+      } catch (error) {
+        failed.push(`${rel}: ${String(error).slice(0, 300)}`)
+      }
+    }
+    this.deps.log('scm.write.trash', { root: rootTag(root), files: rels.length, failed: failed.length })
+    return failed.length === 0 ? { ok: true } : refused('trash_failed', listOf(failed))
+  }
+
+  /** 로그인 셸 PATH — 성공한 값은 앱이 도는 동안 둔다(VS Code 도 시작 때 한 번 푼다). 실패는 두지 않는다(다음 커밋에 다시 묻는다). */
+  private async resolveLoginPath(): Promise<string | null> {
+    if (this.loginPathCache !== null) return this.loginPathCache
+    const startedAt = performance.now()
+    const value = await this.deps.loginPath().catch(() => null)
+    this.deps.log('scm.write.login_path', { ok: value !== null, ms: Math.round(performance.now() - startedAt) })
+    if (value !== null) this.loginPathCache = value
+    return value
+  }
+}
+
+async function allMissing(realRoot: string, rels: readonly string[]): Promise<boolean> {
+  for (const rel of rels) {
+    try {
+      await fs.lstat(path.join(realRoot, rel))
+      return false
+    } catch {
+      // 없음.
+    }
+  }
+  return true
+}
+
+const PATH_MARK = '__CORRAL_LOGIN_PATH__'
+
+/** `$SHELL -ilc` 로 로그인 셸의 PATH 를 얻는다(선례 `mobile/tailscale.ts` `loginShellTailscale` — 5초 상한). 셸 출력 전체는 남기지 않는다. */
+export function loginShellPath(input: { shell?: string; timeoutMs?: number } = {}): Promise<string | null> {
+  const shell = input.shell ?? (process.env.SHELL !== undefined && path.isAbsolute(process.env.SHELL) ? process.env.SHELL : '/bin/zsh')
+  return new Promise((resolve) => {
+    execFile(shell, ['-ilc', `printf '${PATH_MARK}%s${PATH_MARK}' "$PATH"`], { encoding: 'utf8', timeout: input.timeoutMs ?? 5_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      if (error !== null) {
+        resolve(null)
+        return
+      }
+      const start = stdout.indexOf(PATH_MARK)
+      const end = start < 0 ? -1 : stdout.indexOf(PATH_MARK, start + PATH_MARK.length)
+      const value = end < 0 ? '' : stdout.slice(start + PATH_MARK.length, end).trim()
+      resolve(value.startsWith('/') ? value : null)
+    })
+  })
+}

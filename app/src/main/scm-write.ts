@@ -12,7 +12,7 @@
 // · 대기 중 대상 바뀜(K12): 확인 대화상자가 닫힌 뒤·재시도 대기 뒤마다 요청 루트가 아직 열린 worktree 인지 다시 본다 — 아니면 git 없이 거절.
 // · 로그(제약 7): 동작·결과 코드·걸린 시간·재시도 수·루트 해시만 — 경로·메시지·stderr 원문은 남기지 않는다.
 import crypto from 'node:crypto'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { confine } from './explorer-fs.js'
@@ -42,8 +42,9 @@ export const scmCommitArgs = (input: { amend: boolean; keepMessage: boolean }): 
 /** 읽기(lock 안 잡음) — HEAD 있나(exit 0 있음 · 1 없음 · 그 밖은 오류 — B4) · 스테이지된 것 있나 · 변경 있나 · 휴지통 대상 분류. */
 export const SCM_HEAD_ARGS = ['--no-optional-locks', 'rev-parse', '--verify', '-q', 'HEAD']
 export const SCM_STAGED_ARGS = ['--no-optional-locks', 'diff', '--cached', '--quiet']
-export const SCM_ANY_CHANGE_ARGS = ['--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=all']
-/** 휴지통 대상 분류(B2) — `? 경로`(추적 안 함, 무시 제외) · `1 .A`(추가 예정)만 허용. `status` 는 `--pathspec-from-file` 을 받지 않는다 — `--` 뒤 경로(리터럴)로,
+/** 비었는지만 본다 — 추적 안 함은 폴더 단위로 접어 출력이 작게(`normal`, C4). */
+export const SCM_ANY_CHANGE_ARGS = ['--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=normal']
+/** discard 대상 분류(B2·C2) — `? 경로`(추적 안 함, 무시 제외) · `1 .A`(추가 예정) · `1 ·M/·D/·T`(작업 트리 쪽 추적 변경). `status` 는 `--pathspec-from-file` 을 받지 않는다 — `--` 뒤 경로(리터럴)로,
  * `CLASSIFY_CHUNK` 개씩 나눠 argv 상한을 넘지 않게. 폴더 경로는 그 아래 파일로 나와 정확히 같은 줄이 없으니 거절된다. */
 export const SCM_CLASSIFY_ARGS = ['--no-optional-locks', LITERAL, 'status', '--porcelain=v2', '-z', '--untracked-files=all', '--no-renames', '--']
 const CLASSIFY_CHUNK = 500
@@ -277,8 +278,8 @@ export class ScmWriter {
     }
     if (input.action === 'commit' && input.message.trim() === '' && !input.amend) return refused('empty_message', '빈 메시지')
     const result = await this.serial(input.root, stats, () => this.execute({ input, discardUntracked, stats }))
-    // 무변화 거절은 재조회할 것이 없다.
-    if (result.ok || result.code === 'git_error' || result.code === 'trash_failed') this.deps.refresh(input.root)
+    // 무변화 거절은 재조회할 것이 없다 — 다만 `stale` 은 목록이 낡았다는 뜻이라 다시 읽는다(C3).
+    if (result.ok || result.code === 'git_error' || result.code === 'trash_failed' || result.code === 'stale') this.deps.refresh(input.root)
     return result
   }
 
@@ -323,13 +324,10 @@ export class ScmWriter {
       }
       case 'discard': {
         const trashing = context.discardUntracked && input.untracked.length > 0
-        // 휴지통 대상은 git·휴지통 쓰기 전에 전부 분류한다 — 하나라도 어긋나면 아무것도 하지 않는다(B2).
-        let intent = new Set<string>()
-        if (trashing) {
-          const classified = await this.classifyTrash({ read, rels: input.untracked })
-          if (!classified.ok) return classified.result
-          intent = classified.intent
-        }
+        // 되돌릴 것·휴지통 대상을 git·휴지통 쓰기 전에 전부 분류한다 — 하나라도 어긋나면 아무것도 하지 않는다(B2·C2).
+        const classified = await this.classifyDiscard({ read, tracked: input.tracked, trash: trashing ? input.untracked : [] })
+        if (!classified.ok) return classified.result
+        const intent = classified.intent
         if (input.tracked.length > 0) {
           const restored = await write(SCM_DISCARD_ARGS, nul(input.tracked))
           if (!restored.ok) return restored
@@ -391,14 +389,24 @@ export class ScmWriter {
     }
   }
 
-  /** 휴지통 대상 분류(B2) — `.git` 성분은 git 없이 거절, 나머지는 git 이 지금 「추적 안 함(무시 제외)」·「추가 예정」 으로 보는 파일과 정확히 같아야 한다.
-   * 추적 파일·무시된 파일·폴더·없는 경로는 거절. 답의 `intent` = 그중 추가 예정(휴지통 뒤 인덱스 항목을 뺄 것). */
-  private async classifyTrash(input: { read: (args: readonly string[]) => Promise<GitRun>; rels: readonly string[] }): Promise<{ ok: true; intent: Set<string> } | { ok: false; result: ScmWriteResult }> {
-    if (input.rels.some((rel) => rel.split('/').some((part) => part.toLowerCase() === '.git'))) return { ok: false, result: refused('bad_request', '휴지통 대상에 .git 경로가 있다') }
+  /** discard 대상 분류(B2·C2) — 렌더러 분류를 믿지 않는다. `.git` 성분은 git 없이 `bad_request`, 나머지는 git 이 지금 보는 상태와 **정확히 같은 줄**이 있어야 한다:
+   * · 되돌릴 것(`tracked`) = 작업 트리 쪽 추적 변경(`1 ·M`·`·D`·`·T`) — 추적 안 함·추가 예정(`·A`, 이름 바꾸기 예정의 새 경로도 `--no-renames` 로 이렇게 보인다)은
+   *   `checkout` 이 인덱스의 빈 내용으로 덮으니 아니다. 이름 바꾸기 예정의 원래 경로는 `·D` 라 허용(복원).
+   * · 휴지통(`trash`) = 추적 안 함(`?`, 무시 제외) · 추가 예정(`1 .A`). 추적 파일·무시된 파일·폴더·없는 경로는 아니다.
+   * 어긋나면 목록이 낡았다는 뜻 — `stale`(C3). 답의 `intent` = 휴지통 대상 중 추가 예정(휴지통 뒤 인덱스 항목을 뺄 것). */
+  private async classifyDiscard(input: {
+    read: (args: readonly string[]) => Promise<GitRun>
+    tracked: readonly string[]
+    trash: readonly string[]
+  }): Promise<{ ok: true; intent: Set<string> } | { ok: false; result: ScmWriteResult }> {
+    const rels = [...new Set([...input.tracked, ...input.trash])]
+    if (rels.length === 0) return { ok: true, intent: new Set() }
+    if (rels.some((rel) => rel.split('/').some((part) => part.toLowerCase() === '.git'))) return { ok: false, result: refused('bad_request', 'discard 대상에 .git 경로가 있다') }
     const untracked = new Set<string>()
     const intent = new Set<string>()
-    for (let start = 0; start < input.rels.length; start += CLASSIFY_CHUNK) {
-      const run = await input.read([...SCM_CLASSIFY_ARGS, ...input.rels.slice(start, start + CLASSIFY_CHUNK)])
+    const changed = new Set<string>()
+    for (let start = 0; start < rels.length; start += CLASSIFY_CHUNK) {
+      const run = await input.read([...SCM_CLASSIFY_ARGS, ...rels.slice(start, start + CLASSIFY_CHUNK)])
       if (run.exitCode !== 0) return { ok: false, result: refused('git_error', errorText(run)) }
       const records = run.stdout.split('\0')
       for (let index = 0; index < records.length; index += 1) {
@@ -406,11 +414,15 @@ export class ScmWriter {
         if (record.startsWith('? ')) untracked.add(record.slice(2))
         else if (record.startsWith('1 ')) {
           const fields = record.split(' ')
-          if (fields[1] === '.A') intent.add(fields.slice(8).join(' '))
+          const rel = fields.slice(8).join(' ')
+          const worktree = fields[1]?.[1]
+          if (fields[1] === '.A') intent.add(rel)
+          else if (worktree === 'M' || worktree === 'D' || worktree === 'T') changed.add(rel)
         } else if (record.startsWith('2 ')) index += 1 // `--no-renames` 라 오지 않지만, 오면 원래 경로 칸을 건너뛴다.
       }
     }
-    if (!input.rels.every((rel) => untracked.has(rel) || intent.has(rel))) return { ok: false, result: refused('bad_request', '휴지통 대상이 추적 안 함·추가 예정 파일이 아니다') }
+    if (!input.tracked.every((rel) => changed.has(rel)) || !input.trash.every((rel) => untracked.has(rel) || intent.has(rel)))
+      return { ok: false, result: refused('stale', '보낸 목록과 git 이 지금 보는 상태가 다르다') }
     return { ok: true, intent }
   }
 
@@ -462,20 +474,50 @@ async function allMissing(realRoot: string, rels: readonly string[]): Promise<bo
 }
 
 const PATH_MARK = '__CORRAL_LOGIN_PATH__'
+const LOGIN_OUTPUT_LIMIT = 1024 * 1024
 
-/** `$SHELL -ilc` 로 로그인 셸의 PATH 를 얻는다(선례 `mobile/tailscale.ts` `loginShellTailscale` — 5초 상한). 셸 출력 전체는 남기지 않는다. */
-export function loginShellPath(input: { shell?: string; timeoutMs?: number } = {}): Promise<string | null> {
+/** `$SHELL -ilc` 로 로그인 셸의 PATH 를 얻는다(선례 `mobile/tailscale.ts` `loginShellTailscale` — 5초 상한). 셸 출력 전체는 남기지 않는다.
+ * 상한은 직접 타이머로 확정한다(C1) — 대화형 셸은 SIGTERM 을 무시하고 rc 가 멈출 수 있어 자식 종료를 기다리지 않는다. 셸은 별도 프로세스 그룹
+ * (`detached`)으로 띄워 상한·출력 초과에 그룹 전체를 SIGKILL 하고, stdin 은 처음부터 닫는다(`ignore` — rc 의 `read` 는 바로 EOF).
+ * 값은 표지 두 개가 stdout 에 보이는 즉시 확정한다(rc 가 띄운 자손이 stdout 을 쥐고 있어도 기다리지 않는다). */
+export function loginShellPath(input: { shell?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {}): Promise<string | null> {
   const shell = input.shell ?? (process.env.SHELL !== undefined && path.isAbsolute(process.env.SHELL) ? process.env.SHELL : '/bin/zsh')
   return new Promise((resolve) => {
-    execFile(shell, ['-ilc', `printf '${PATH_MARK}%s${PATH_MARK}' "$PATH"`], { encoding: 'utf8', timeout: input.timeoutMs ?? 5_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
-      if (error !== null) {
-        resolve(null)
-        return
+    let settled = false
+    let stdout = ''
+    const child = spawn(shell, ['-ilc', `printf '${PATH_MARK}%s${PATH_MARK}' "$PATH"`], { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: input.env ?? process.env })
+    const killGroup = (): void => {
+      if (child.pid === undefined) return
+      try {
+        process.kill(-child.pid, 'SIGKILL')
+      } catch {
+        // 그룹이 이미 없다.
       }
-      const start = stdout.indexOf(PATH_MARK)
-      const end = start < 0 ? -1 : stdout.indexOf(PATH_MARK, start + PATH_MARK.length)
-      const value = end < 0 ? '' : stdout.slice(start + PATH_MARK.length, end).trim()
-      resolve(value.startsWith('/') ? value : null)
+    }
+    const finish = (value: string | null, options: { kill: boolean }): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (options.kill) killGroup()
+      child.stdout?.destroy()
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish(null, { kill: true }), input.timeoutMs ?? 5_000)
+    child.on('error', () => finish(null, { kill: false }))
+    // stdout 이 닫히면(셸과 자손이 다 놓으면) 받은 것으로 판정 — 'exit' 는 남은 출력보다 먼저 올 수 있다.
+    child.on('close', () => finish(parseLoginPath(stdout), { kill: false }))
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      stdout += chunk
+      if (stdout.length > LOGIN_OUTPUT_LIMIT) finish(null, { kill: true })
+      else if (parseLoginPath(stdout) !== null) finish(parseLoginPath(stdout), { kill: false })
     })
   })
+}
+
+function parseLoginPath(stdout: string): string | null {
+  const start = stdout.indexOf(PATH_MARK)
+  const end = start < 0 ? -1 : stdout.indexOf(PATH_MARK, start + PATH_MARK.length)
+  const value = end < 0 ? '' : stdout.slice(start + PATH_MARK.length, end).trim()
+  return value.startsWith('/') ? value : null
 }

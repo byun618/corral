@@ -2,6 +2,7 @@
 // K1 stage·unstage · K2 추적 discard · K3 추적 안 함 휴지통(실패 주입) · K4 커밋 · K5 amend · K6 오류 원문 · K7 로그인 셸 PATH(주입) ·
 // K8 lock 재시도(실제 lock 파일) · K9 루트 직렬 · K11 가둠·argv · K12 대기 중 대상 바뀜.
 // fix r1: B1 추가 예정·이름 바꾸기 예정 = 휴지통 · B2 휴지통 대상 main 분류 · B3 부분 실패 안내 · B4 HEAD 판별 · B6 lock 재시도는 git exit 128 만.
+// fix r2: C1 로그인 셸 상한(그룹 SIGKILL·stdin 닫음) · C2 되돌릴 것도 main 분류 · C3 낡은 목록 = stale + 재조회 · C4 「변경 있나」 = untracked normal.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -9,6 +10,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterAll, describe, expect, it } from 'vitest'
 import { resolveGit } from './file-list.js'
+import { scmWriteMessage } from '../shared/scm-write.js'
 import {
   isLockError,
   LOCK_RETRY_DELAYS_MS,
@@ -106,6 +108,8 @@ describe('K11 — 가둠·argv 고정', () => {
     expect(scmCommitArgs({ amend: true, keepMessage: true })).toEqual(['--literal-pathspecs', '-c', 'user.useConfigOnly=true', 'commit', '--quiet', '--amend', '--no-edit'])
     expect(scmCommitArgs({ amend: true, keepMessage: false })).toEqual(['--literal-pathspecs', '-c', 'user.useConfigOnly=true', 'commit', '--quiet', '--amend', '-F', '-'])
     // 읽기는 lock 을 잡지 않는다.
+    expect(SCM_ANY_CHANGE_ARGS).toEqual(['--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=normal'])
+    expect(SCM_CLASSIFY_ARGS).toEqual(['--no-optional-locks', '--literal-pathspecs', 'status', '--porcelain=v2', '-z', '--untracked-files=all', '--no-renames', '--'])
     for (const args of [SCM_HEAD_ARGS, SCM_STAGED_ARGS, SCM_ANY_CHANGE_ARGS, SCM_CLASSIFY_ARGS]) expect(args[0]).toBe('--no-optional-locks')
   })
   it('열린 worktree 가 아닌 루트 · 형 위반 경로(../x·절대·NUL·빈 목록) · 모르는 동작 = git 실행 없이 거절', async () => {
@@ -295,7 +299,7 @@ describe('K2·K3 — discard', () => {
   it('「추적 안 함」 으로 온 추적 파일은 휴지통으로 보내지 않는다', async () => {
     const root = repo()
     const h = harness({ roots: [root], answers: ['discardAll'] })
-    expect(await h.writer.write({ action: 'discard', root, tracked: [], untracked: ['a.txt'] })).toMatchObject({ ok: false, code: 'bad_request' })
+    expect(await h.writer.write({ action: 'discard', root, tracked: [], untracked: ['a.txt'] })).toMatchObject({ ok: false, code: 'stale' })
     expect(read(root, 'a.txt')).toBe('a0\n')
     expect(h.trashed).toEqual([])
   })
@@ -386,15 +390,16 @@ describe('B2 — 휴지통 대상은 main 이 git 으로 분류한다', () => {
     const indexFile = path.join(root, '.git', 'index')
     const h = harness({ roots: [root], answers: Array.from({ length: 12 }, (): ScmConfirmChoice => 'discardAll') })
     const before = { status: status(root), index: hash(indexFile), config: hash(path.join(root, '.git', 'config')), a: read(root, 'a.txt') }
+    // `.git` 성분 = 형 위반(bad_request), 나머지 = git 상태와 어긋남(stale — C3).
     for (const rel of ['.git', '.git/config', '.GIT/config', 'ign', 'ign/x.txt', 'build.log', 'b.txt', 'dir', 'missing.txt']) {
       const result = await h.writer.write({ action: 'discard', root, tracked: ['a.txt'], untracked: [rel] })
-      expect([rel, result]).toEqual([rel, { ok: false, code: 'bad_request', error: expect.any(String) }])
+      expect([rel, result]).toEqual([rel, { ok: false, code: rel.toLowerCase().startsWith('.git') ? 'bad_request' : 'stale', error: expect.any(String) }])
     }
     expect(h.trashed).toEqual([])
     expect({ status: status(root), index: hash(indexFile), config: hash(path.join(root, '.git', 'config')), a: read(root, 'a.txt') }).toEqual(before)
     expect(fs.existsSync(path.join(root, '.git'))).toBe(true)
     // 같은 요청에 정상 대상이 섞여도 하나가 어긋나면 그것도 옮기지 않는다.
-    expect(await h.writer.write({ action: 'discard', root, tracked: [], untracked: ['dir/u.txt', 'build.log'] })).toMatchObject({ ok: false, code: 'bad_request' })
+    expect(await h.writer.write({ action: 'discard', root, tracked: [], untracked: ['dir/u.txt', 'build.log'] })).toMatchObject({ ok: false, code: 'stale' })
     expect(read(root, 'dir/u.txt')).toBe('untracked in dir\n')
     // 정상 대상만이면 옮긴다.
     expect(await h.writer.write({ action: 'discard', root, tracked: [], untracked: ['dir/u.txt'] })).toEqual({ ok: true })
@@ -453,6 +458,67 @@ describe('B4 — unstage 의 HEAD 판별은 exit 1 만 「HEAD 없음」', () =>
     expect(result).toEqual({ ok: false, code: 'git_error', error: 'fatal: injected rev-parse failure' })
     expect({ status: status(root), index: hash(path.join(root, '.git', 'index')) }).toEqual(before)
     expect(status(root)).toBe('M  a.txt\n')
+  })
+})
+
+describe('C2·C3 — 되돌릴 것(tracked)도 main 이 분류 · 어긋나면 stale + 재조회', () => {
+  /** 작업 트리·인덱스 지문 — 거절이면 그대로여야 한다. */
+  const print = (root: string, rels: string[]): Record<string, string> => ({
+    status: status(root),
+    index: hash(path.join(root, '.git', 'index')),
+    ...Object.fromEntries(rels.map((rel) => [rel, fs.existsSync(path.join(root, rel)) ? hash(path.join(root, rel)) : 'MISSING'])),
+  })
+  it('P1 — 추가 예정 파일을 tracked 로 보내면(discardTracked) checkout 없이 stale, 내용 그대로 · 재조회 호출 · 안내 문구', async () => {
+    const root = repo()
+    write(root, 'ita.txt', 'only copy of ita\n')
+    git(root, 'add', '-N', 'ita.txt')
+    const before = print(root, ['ita.txt'])
+    const h = harness({ roots: [root], answers: ['discardTracked'] })
+    const result = await h.writer.write({ action: 'discard', root, tracked: ['ita.txt'], untracked: [] })
+    expect(result).toMatchObject({ ok: false, code: 'stale' })
+    expect(print(root, ['ita.txt'])).toEqual(before)
+    expect(h.refreshed).toEqual([root])
+    expect(scmWriteMessage(result)).toEqual({ kind: 'info', text: '목록이 바뀌었습니다 — 다시 확인한 뒤 눌러 주세요. 아무것도 바꾸지 않았습니다.' })
+  })
+  it('P3 — 섞임(tracked = 추가 예정, untracked = 추적 안 함) discardAll = 둘 다 그대로, 휴지통 0', async () => {
+    const root = repo()
+    write(root, 'ita.txt', 'only copy of ita\n')
+    git(root, 'add', '-N', 'ita.txt')
+    write(root, 'plain.txt', 'plain untracked\n')
+    const before = print(root, ['ita.txt', 'plain.txt'])
+    const h = harness({ roots: [root], answers: ['discardAll'] })
+    expect(await h.writer.write({ action: 'discard', root, tracked: ['ita.txt'], untracked: ['plain.txt'] })).toMatchObject({ ok: false, code: 'stale' })
+    expect(print(root, ['ita.txt', 'plain.txt'])).toEqual(before)
+    expect(h.trashed).toEqual([])
+  })
+  it('P5 — 이름 바꾸기 예정의 새 경로만 tracked 로 = stale, 새·원래 경로 그대로 · 원래 경로(복원 대상)만 tracked 면 허용', async () => {
+    const root = repo()
+    const original = Array.from({ length: 20 }, (_, index) => `line ${index}\n`).join('')
+    write(root, 'old.txt', original)
+    git(root, 'commit', '-q', '-am', 'long old')
+    fs.renameSync(path.join(root, 'old.txt'), path.join(root, 'moved.txt'))
+    fs.appendFileSync(path.join(root, 'moved.txt'), 'edited after move\n')
+    git(root, 'add', '-N', 'moved.txt')
+    const before = print(root, ['moved.txt', 'old.txt'])
+    const h = harness({ roots: [root], answers: ['discardTracked', 'discardTracked'] })
+    expect(await h.writer.write({ action: 'discard', root, tracked: ['moved.txt'], untracked: [] })).toMatchObject({ ok: false, code: 'stale' })
+    expect(print(root, ['moved.txt', 'old.txt'])).toEqual(before)
+    expect(await h.writer.write({ action: 'discard', root, tracked: ['old.txt'], untracked: [] })).toEqual({ ok: true })
+    expect(read(root, 'old.txt')).toBe(original)
+    expect(read(root, 'moved.txt')).toBe(`${original}edited after move\n`)
+  })
+  it('추적 안 함·스테이지만 된 파일·변경 없는 파일·없는 경로·.git 을 tracked 로 = 거절, 무변화', async () => {
+    const root = repo()
+    write(root, 'u.txt', 'untracked\n')
+    write(root, 'a.txt', 'staged only\n')
+    git(root, 'add', 'a.txt')
+    const before = print(root, ['u.txt', 'a.txt', 'b.txt'])
+    const h = harness({ roots: [root], answers: Array.from({ length: 6 }, (): ScmConfirmChoice => 'discardTracked') })
+    for (const [rel, code] of [['u.txt', 'stale'], ['a.txt', 'stale'], ['b.txt', 'stale'], ['missing.txt', 'stale'], ['.git/index', 'bad_request']]) {
+      const result = await h.writer.write({ action: 'discard', root, tracked: [rel ?? ''], untracked: [] })
+      expect([rel, result]).toEqual([rel, { ok: false, code, error: expect.any(String) }])
+    }
+    expect(print(root, ['u.txt', 'a.txt', 'b.txt'])).toEqual(before)
   })
 })
 
@@ -635,6 +701,73 @@ describe('K6·K7 — 훅 실패 원문 · 로그인 셸 PATH(커밋 git 에만)'
     const result = await h.writer.write({ action: 'commit', root, message: 'should fail', amend: false })
     expect(result).toMatchObject({ ok: false, code: 'git_error' })
     expect(!result.ok && result.error).toBe('HOOK_FIXED_FAIL: FAIL_HOOK 표지가 있다')
+  })
+  describe('C1 — 로그인 셸 상한은 실제로 걸린다(가짜 셸 — 사용자 rc 무변경)', () => {
+    /** 띄운 셸·자손 PID 를 셸이 직접 적는다 — 잔존은 그 PID 로 본다. */
+    const alive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    const pidsOf = (file: string): number[] => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(Number) : [])
+    async function settleGone(pids: number[]): Promise<number[]> {
+      // 셸은 우리 자식이라 libuv 가 거둘 때까지 잠깐 좀비로 보일 수 있다 — 2초까지 기다린다.
+      for (let waited = 0; waited < 2000 && pids.some(alive); waited += 50) await new Promise((resolve) => setTimeout(resolve, 50))
+      return pids.filter(alive)
+    }
+    function fakeShells(): { name: string; shell: string; env: NodeJS.ProcessEnv; pids: string; marker?: string }[] {
+      const dir = path.join(base, `fake-shell-${(seq += 1)}`)
+      fs.mkdirSync(dir)
+      const termIgnore = path.join(dir, 'term-ignore.sh')
+      fs.writeFileSync(termIgnore, `#!/bin/sh\ntrap '' TERM\necho $$ >> '${dir}/term.pids'\nsleep 600 &\necho $! >> '${dir}/term.pids'\nwhile :; do wait; done\n`, { mode: 0o755 })
+      const busy = path.join(dir, 'busy.sh')
+      fs.writeFileSync(busy, `#!/bin/sh\necho $$ >> '${dir}/busy.pids'\nwhile :; do :; done\n`, { mode: 0o755 })
+      // 실제 zsh + ZDOTDIR(이 시험 폴더) — rc 가 stdin 을 읽고(닫혀 있으면 바로 EOF) 그 뒤 멈춘다.
+      const zdot = path.join(dir, 'zdot')
+      fs.mkdirSync(zdot)
+      fs.writeFileSync(path.join(zdot, '.zshrc'), `echo $$ >> '${dir}/read.pids'\nread -r line\necho "read-exit=$?" > '${dir}/read.marker'\nsleep 600 &\necho $! >> '${dir}/read.pids'\nwait\n`)
+      return [
+        { name: 'SIGTERM 무시', shell: termIgnore, env: process.env, pids: path.join(dir, 'term.pids') },
+        { name: '무한 반복', shell: busy, env: process.env, pids: path.join(dir, 'busy.pids') },
+        { name: 'rc 가 stdin 읽기(zsh·ZDOTDIR)', shell: '/bin/zsh', env: { ...process.env, ZDOTDIR: zdot }, pids: path.join(dir, 'read.pids'), marker: path.join(dir, 'read.marker') },
+      ]
+    }
+    it('ⓐ 상한 안에 null ⓒ 셸·자손 잔존 0 — SIGTERM 무시·무한 반복·stdin 읽기', async () => {
+      for (const fake of fakeShells()) {
+        const startedAt = performance.now()
+        // 상한은 셸이 PID 를 적을 만큼은 준다(부하 때 400 ms 로는 sh 가 첫 줄 전에 죽어 PID 확인이 빈다 — 개발 반복에서 1회 관측).
+        const value = await loginShellPath({ shell: fake.shell, timeoutMs: 1500, env: fake.env })
+        const ms = performance.now() - startedAt
+        const pids = pidsOf(fake.pids)
+        console.log(`C1 ${fake.name}: value=${value} ms=${ms.toFixed(0)} pids=${pids.join(',')}`)
+        expect([fake.name, value]).toEqual([fake.name, null])
+        expect(ms).toBeLessThan(1500 + 300)
+        expect(pids.length).toBeGreaterThanOrEqual(1)
+        expect([fake.name, await settleGone(pids)]).toEqual([fake.name, []])
+        // stdin 은 닫혀 있다 — rc 의 read 는 바로 EOF(1).
+        if (fake.marker !== undefined) expect(fs.readFileSync(fake.marker, 'utf8')).toBe('read-exit=1\n')
+      }
+    }, 20_000)
+    it('ⓑ 상한에 걸린 뒤 커밋은 앱 PATH 로 진행되고 훅 오류가 원문으로 보인다(셋 다)', async () => {
+      for (const fake of fakeShells()) {
+        const { root } = hookRepo()
+        const h = harness({ roots: [root], over: { env: { ...process.env, PATH: MIN_PATH }, loginPath: () => loginShellPath({ shell: fake.shell, timeoutMs: 1000, env: fake.env }) } })
+        write(root, 'a.txt', 'a1\n')
+        git(root, 'add', 'a.txt')
+        const before = head(root)
+        const startedAt = performance.now()
+        const result = await h.writer.write({ action: 'commit', root, message: 'blocked', amend: false })
+        expect([fake.name, result]).toMatchObject([fake.name, { ok: false, code: 'git_error' }])
+        expect(!result.ok && result.error).toContain('pre-commit: fakeleaks 없음 — brew install fakeleaks')
+        expect(performance.now() - startedAt).toBeLessThan(5_000)
+        expect(head(root)).toBe(before)
+        expect(h.logs.filter((entry) => entry.event === 'scm.write.login_path').map((entry) => entry.data.ok)).toEqual([false])
+        expect([fake.name, await settleGone(pidsOf(fake.pids))]).toEqual([fake.name, []])
+      }
+    }, 30_000)
   })
   it('loginShellPath — 이 기계의 로그인 셸에서 절대 경로 PATH 를 얻는다 · 없는 셸이면 null', async () => {
     const value = await loginShellPath()

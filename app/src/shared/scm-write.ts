@@ -27,6 +27,8 @@ export type ScmWriteRefusal =
   | 'nothing_to_commit'
   /** git 이 실패했다 — `error` 는 stderr 원문(훅 출력 포함). */
   | 'git_error'
+  /** 보낸 목록이 git 이 지금 보는 상태와 다르다(낡은 목록 — C3). git·휴지통 무실행, main 이 재조회를 부른다. */
+  | 'stale'
   /** 휴지통으로 못 옮긴 파일이 있다 — 영구 삭제로 넘어가지 않는다. `error` 가 실제 결과(옮긴 것·남은 것과 이유·되돌린 추적 파일)를 적는다(B3). */
   | 'trash_failed'
 
@@ -114,6 +116,8 @@ export function scmWriteMessage(result: ScmWriteResult): { kind: 'info' | 'error
       return { kind: 'info', text: '커밋할 변경 사항이 없습니다.' }
     case 'not_worktree':
       return { kind: 'error', text: `열린 worktree 가 아니어서 쓰지 않았습니다.\n${result.error}` }
+    case 'stale':
+      return { kind: 'info', text: '목록이 바뀌었습니다 — 다시 확인한 뒤 눌러 주세요. 아무것도 바꾸지 않았습니다.' }
     case 'bad_request':
       return { kind: 'error', text: `요청 형식이 올바르지 않습니다.\n${result.error}` }
     case 'trash_failed':

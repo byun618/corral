@@ -425,7 +425,7 @@ const api: CorralApi = {
   dictationStop: (input: { sessionId: string }) => ipcRenderer.send('corral:dictationStop', input),
   dictationCancel: (input: { sessionId: string }) => ipcRenderer.send('corral:dictationCancel', input),
   dictationOpenPrivacy: (): Promise<void> => ipcRenderer.invoke('corral:dictationOpenPrivacy'),
-  dictationInsert: (input: { paneId: string; text: string }): Promise<DictationInsertResult> => ipcRenderer.invoke('corral:dictationInsert', input),
+  dictationInsert: (input: { sessionId: string; paneId: string; text: string }): Promise<DictationInsertResult> => ipcRenderer.invoke('corral:dictationInsert', input),
   onDictationEvent: (listener: (event: DictationEvent) => void) => {
     const handler = (_event: unknown, dictationEvent: DictationEvent): void => listener(dictationEvent)
     ipcRenderer.on('corral:dictationEvent', handler)

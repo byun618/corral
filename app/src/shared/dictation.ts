@@ -61,7 +61,10 @@ export type DictationEvent =
 
 export type DictationStartResult = { ok: true } | { ok: false; code: DictationErrorCode; message: string }
 
-/** 넣기 한 번의 결과(fix1 G1). `paste` = 붙은 탭 — ⌘V 와 같은 길, `send-text` = 붙지 않은 pane — guard `pane.send_text`. */
+/**
+ * 넣기 한 번의 결과(fix1 G1). `paste` = 붙은 탭 — ⌘V 와 같은 길, `send-text` = 붙지 않은 pane — guard `pane.send_text`.
+ * `code: 'skipped'` = 그 세션이 이미 취소·실패해 보내지 않았다(fix2 C-R2-3) — 알릴 일이 아니다.
+ */
 export type DictationInsertResult = { ok: true; via: 'paste' | 'send-text' } | { ok: false; code: DictationErrorCode; message: string }
 
 /**

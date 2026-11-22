@@ -17,10 +17,10 @@ import { createDictationController, focusedTerminalPane, type DictationNotice, t
 /** 순서 큐(promise 사슬)가 다 나갈 때까지 — 매크로 작업 한 번. */
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
-function harness(options: { start?: () => Promise<DictationStartResult>; insert?: (input: { paneId: string; text: string }) => Promise<DictationInsertResult> } = {}) {
+function harness(options: { start?: () => Promise<DictationStartResult>; insert?: (input: { sessionId: string; paneId: string; text: string }) => Promise<DictationInsertResult> } = {}) {
   /** PTY 로 간 바이트 — 가짜 main 은 붙은 탭의 길(⌘V 와 같은 `clipboardTextPayloads`)을 흉내 낸다. 붙지 않은 탭의 길은 main 시험(dictation-insert*.test.ts). */
   const sent: Array<{ paneId: string; data: string }> = []
-  const inserted: Array<{ paneId: string; text: string }> = []
+  const inserted: Array<{ sessionId: string; paneId: string; text: string }> = []
   const notices: DictationNotice[] = []
   const views: DictationView[] = []
   const calls: string[] = []
@@ -439,5 +439,41 @@ describe('fix1 F2·G4 — 입력 프레임이 끊기면 도우미가 rms 0 을 �
       h.advance(250)
     }
     expect(h.controller.view).toMatchObject({ silent: true })
+  })
+})
+
+describe('fix2 C-R2-3·G-R2-1 — 실패 알림은 세션당 한 번, skipped 는 알리지 않는다', () => {
+  it('정지 중 FINAL 두 개가 모두 실패로 돌아와도 알림 하나', async () => {
+    const h = harness({ insert: () => Promise.resolve({ ok: false, code: 'insert-failed', message: 'x' }) })
+    h.controller.toggle('p1')
+    h.ready()
+    h.controller.toggle('p1')
+    h.final('하나')
+    h.final('둘')
+    await flush()
+    expect(h.notices).toHaveLength(1)
+  })
+  it('main 이 skipped(취소된 세션 항목)로 돌려주면 알리지 않는다', async () => {
+    const h = harness({ insert: () => Promise.resolve({ ok: false, code: 'skipped', message: '' }) })
+    h.controller.toggle('p1')
+    h.ready()
+    h.final('버려질 글')
+    await flush()
+    expect(h.notices).toEqual([])
+    expect(h.controller.view.phase).toBe('listening')
+  })
+  it('넣기 요청에 세션 id 를 싣는다(main 큐가 세션별로 버릴 수 있게)', () => {
+    const seen: string[] = []
+    const h = harness({
+      insert: (input) => {
+        seen.push(`${input.paneId}`)
+        return Promise.resolve({ ok: true, via: 'paste' })
+      },
+    })
+    h.controller.toggle('p1')
+    h.ready()
+    h.final('글')
+    expect(h.inserted).toEqual([{ sessionId: 's1', paneId: 'p1', text: '글' }])
+    expect(seen).toEqual(['p1'])
   })
 })

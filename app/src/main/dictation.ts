@@ -52,6 +52,8 @@ export type DictationDeps = {
   send: (event: DictationEvent) => void
   log: (event: string, fields: Record<string, unknown>) => void
   setTimer: (callback: () => void, ms: number) => { clear: () => void }
+  /** 세션을 취소·정리했다(Esc·새 시작·dispose) — 넣기 큐가 그 세션의 남은 항목을 버린다(fix2 C-R2-3). */
+  onDropped?: (sessionId: string) => void
 }
 
 type Session = {
@@ -116,6 +118,7 @@ export function createDictationManager(deps: DictationDeps) {
   const cancelSession = (session: Session): void => {
     if (session.ended || session.cancelled) return
     session.cancelled = true
+    deps.onDropped?.(session.id)
     session.child.kill('SIGTERM')
   }
 
@@ -176,6 +179,7 @@ export function createDictationManager(deps: DictationDeps) {
       const session = current
       if (session === null) return
       session.cancelled = true
+      deps.onDropped?.(session.id)
       session.child.kill('SIGKILL')
       finish(session, { kind: 'cancelled' }, false)
     },
@@ -188,9 +192,13 @@ export function createDictationManager(deps: DictationDeps) {
 
 export type DictationManager = ReturnType<typeof createDictationManager>
 
-/** 메인 프레임 문서가 바뀌는 이동(재로드·Force Reload)인가 — 그때 세션을 정리한다(fix1 F1·G3). 같은 문서 안 이동·하위 프레임은 아니다. */
-export function dictationDisposesOnNavigation(input: { isMainFrame: boolean; isSameDocument: boolean }): boolean {
-  return input.isMainFrame && !input.isSameDocument
+/**
+ * 메인 프레임 문서가 **바뀌었을 때**(재로드·Force Reload 가 커밋됨) 세션을 정리한다(fix1 F1·G3). `did-navigate` 는 메인 프레임의 커밋된 이동에만 온다 —
+ * `will-navigate` 가 거부한 이동(마크다운 링크 클릭 등)·같은 문서 안 이동(`did-navigate-in-page`)에는 오지 않는다. `did-start-navigation` 은 거부될 이동에도
+ * 먼저 와서 쓰지 않는다(fix2 C-R2-1 — Electron 44.3 재현 `raw/review/claude-r2/nav-probe2.txt`: 거부 단계에 did-start-navigation 뒤 will-navigate(prevented), did-navigate 없음).
+ */
+export function attachDictationNavigationCleanup(input: { webContents: { on: (event: 'did-navigate', listener: () => void) => unknown }; dispose: () => void }): void {
+  input.webContents.on('did-navigate', () => input.dispose())
 }
 
 export type DictationInsertDeps = {
@@ -199,13 +207,25 @@ export type DictationInsertDeps = {
   /** 붙은 pane 의 입력 — `TerminalStreams.input`(⌘V 와 같은 길). */
   paste: (input: { paneId: string; data: string }) => void
   /** 붙지 않은 pane 에 날 글자 — guard `pane.send_text`. 못 보내면 던진다. */
-  sendText: (input: { paneId: string; text: string }) => Promise<void>
+  sendText: (input: { paneId: string; text: string; signal: AbortSignal }) => Promise<void>
   log: (event: string, fields: Record<string, unknown>) => void
 }
 
 export function createDictationInserter(deps: DictationInsertDeps) {
   let tail: Promise<unknown> = Promise.resolve()
-  const insertNow = async (input: { paneId: string; text: string }): Promise<DictationInsertResult> => {
+  /** 세션마다 하나 — 취소·실패하면 끊어(abort) 남은 항목과 진행 중 왕복을 멈춘다(fix2 C-R2-3·G-R2-1). */
+  const sessions = new Map<string, AbortController>()
+  const controllerOf = (sessionId: string): AbortController => {
+    const existing = sessions.get(sessionId)
+    if (existing !== undefined) return existing
+    const created = new AbortController()
+    sessions.set(sessionId, created)
+    return created
+  }
+  const skipped: DictationInsertResult = { ok: false, code: 'skipped', message: '' }
+  const insertNow = async (input: { sessionId: string; paneId: string; text: string }, signal: AbortSignal): Promise<DictationInsertResult> => {
+    // 큐에서 기다리는 사이 그 세션이 취소·실패했으면 아무것도 보내지 않는다.
+    if (signal.aborted) return skipped
     if (deps.heldPaneIds().includes(input.paneId)) {
       for (const data of clipboardTextPayloads(input.text)) deps.paste({ paneId: input.paneId, data })
       deps.log('dictation.insert', { paneId: input.paneId, via: 'paste', length: input.text.length })
@@ -214,10 +234,14 @@ export function createDictationInserter(deps: DictationInsertDeps) {
     const typed = dictationTypedText(input.text)
     if (typed === '') return { ok: true, via: 'send-text' }
     try {
-      await deps.sendText({ paneId: input.paneId, text: typed })
+      await deps.sendText({ paneId: input.paneId, text: typed, signal })
     } catch (error) {
+      // 끊어서 멈춘 왕복은 실패가 아니다(취소한 쪽이 이미 안다). guard 가 이미 썼는지는 모른다 — worklog fix2.
+      if (signal.aborted) return skipped
       const message = error instanceof Error ? error.message : String(error)
       deps.log('dictation.insert_failed', { paneId: input.paneId, via: 'send-text', error: message })
+      // 실패는 세션당 한 번 — 그 세션의 남은 항목은 버린다.
+      controllerOf(input.sessionId).abort()
       return { ok: false, code: 'insert-failed', message }
     }
     deps.log('dictation.insert', { paneId: input.paneId, via: 'send-text', length: typed.length })
@@ -225,24 +249,30 @@ export function createDictationInserter(deps: DictationInsertDeps) {
   }
   return {
     /** 도착 순서대로 하나씩 — 앞 넣기(날 글자 왕복)가 끝나야 다음을 보낸다. */
-    insert(input: { paneId: string; text: string }): Promise<DictationInsertResult> {
-      const result = tail.then(() => insertNow(input))
+    insert(input: { sessionId: string; paneId: string; text: string }): Promise<DictationInsertResult> {
+      const signal = controllerOf(input.sessionId).signal
+      const result = tail.then(() => insertNow(input, signal))
       tail = result.catch(() => undefined)
       return result
+    },
+    /** 세션 취소(Esc·새 시작·dispose) — 그 세션의 남은 항목은 0바이트, 진행 중 send_text 왕복은 끊는다. */
+    dropSession(sessionId: string): void {
+      controllerOf(sessionId).abort()
     },
   }
 }
 
 /** guard `pane.send_text` — 지금 epoch 의 목록에서 그 pane 을 찾아 보낸다. CLI `terminal send` 와 같은 봉투. */
-export async function sendTextToPane(input: { backend: Pick<TerminalBackend, 'epoch' | 'list' | 'send'>; paneId: string; text: string; deadlineMs: number }): Promise<void> {
-  const ctx = (): TerminalOperation => ({ signal: new AbortController().signal, deadlineAt: Date.now() + input.deadlineMs })
+export async function sendTextToPane(input: { backend: Pick<TerminalBackend, 'epoch' | 'list' | 'send'>; paneId: string; text: string; deadlineMs: number; signal: AbortSignal }): Promise<void> {
+  // 세션 취소 신호를 매 호출에 싣는다 — 백엔드가 호출 전에 `throwIfAborted` 로 본다(이미 떠난 쓰기 요청은 못 되돌린다).
+  const ctx = (): TerminalOperation => ({ signal: input.signal, deadlineAt: Date.now() + input.deadlineMs })
   const epoch = await input.backend.epoch(ctx())
   const target = (await input.backend.list(epoch, ctx())).find((pane) => pane.paneId === input.paneId)
   if (target === undefined) throw new Error(`pane 을 찾지 못했다 (${input.paneId})`)
   await input.backend.send(target, input.text, ctx())
 }
 
-export function nodeDictationDeps(input: { helper: string; platform: string; release: string; send: DictationDeps['send']; log: DictationDeps['log'] }): DictationDeps {
+export function nodeDictationDeps(input: { helper: string; platform: string; release: string; send: DictationDeps['send']; log: DictationDeps['log']; onDropped?: DictationDeps['onDropped'] }): DictationDeps {
   return {
     ...input,
     executable: (file) => {

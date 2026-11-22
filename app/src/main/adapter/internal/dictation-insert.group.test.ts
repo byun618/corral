@@ -69,7 +69,7 @@ async function setup() {
     heldPaneIds: () => session.panes().map((pane) => pane.paneId),
     paste: ({ paneId, data }) => session.input({ paneId, data: Buffer.from(data, 'utf8') }),
     sendText: async (input) => {
-      sent.push(input)
+      sent.push({ paneId: input.paneId, text: input.text })
     },
     log: () => undefined,
   })
@@ -79,7 +79,7 @@ async function setup() {
 describe('G1 — 실제 GroupSession: 다른 탭이 붙은 상태에서 고정 pane 으로 보낸 받아쓰기 입력이 막히지 않는다', () => {
   it('붙은 탭(t1)의 고정 pane p1 → stream 길로 들어간다(send_text 안 씀)', async () => {
     const h = await setup()
-    expect(await h.inserter.insert({ paneId: 'p1', text: '워크트리 목록' })).toEqual({ ok: true, via: 'paste' })
+    expect(await h.inserter.insert({ sessionId: 's1', paneId: 'p1', text: '워크트리 목록' })).toEqual({ ok: true, via: 'paste' })
     expect(h.client.inputs.map((input) => input.paneId)).toEqual(['p1'])
     expect(h.sent).toEqual([])
     expect(h.session.counterSnapshot().blockedInputs).toBe(0)
@@ -90,7 +90,7 @@ describe('G1 — 실제 GroupSession: 다른 탭이 붙은 상태에서 고정 p
     await h.session.focusTab({ tabId: 't2', paneId: 'p3' })
     // 전제: 실제 세션은 p1 을 더 이상 쥐지 않는다 — 기존 길이면 여기서 막혀 버려진다
     expect(h.session.hasPane('p1')).toBe(false)
-    expect(await h.inserter.insert({ paneId: 'p1', text: '리뷰 결과를 요약해줘.' })).toEqual({ ok: true, via: 'send-text' })
+    expect(await h.inserter.insert({ sessionId: 's1', paneId: 'p1', text: '리뷰 결과를 요약해줘.' })).toEqual({ ok: true, via: 'send-text' })
     expect(h.sent).toEqual([{ paneId: 'p1', text: '리뷰 결과를 요약해줘.' }])
     expect(h.session.counterSnapshot().blockedInputs).toBe(0)
     // 지금 붙은 p3 로 새지 않는다

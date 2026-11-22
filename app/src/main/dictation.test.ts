@@ -1,9 +1,12 @@
 // LIFE-834 — main 받아쓰기 세션: 도우미 출력·종료를 흉내 낸 가짜 자식 프로세스로 C6(미지원·이상)·정지·취소·정리(고아 없음)를 본다.
 import { EventEmitter } from 'node:events'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { DICTATION_STOP_TIMEOUT_MS, type DictationEvent } from '../shared/dictation.js'
-import { createDictationManager, dictationDisposesOnNavigation, dictationHelperPath, type DictationChild, type DictationDeps } from './dictation.js'
+import { attachDictationNavigationCleanup, createDictationInserter, createDictationManager, dictationHelperPath, type DictationChild, type DictationDeps } from './dictation.js'
 
 class FakeChild extends EventEmitter {
   pid = 4242
@@ -256,12 +259,101 @@ describe('fix1 F4 — 마무리는 close(stdio 닫힌 뒤)', () => {
   })
 })
 
-describe('fix1 F1·G3 — 재로드에서 세션 정리', () => {
-  it.each([
-    [{ isMainFrame: true, isSameDocument: false }, true],
-    [{ isMainFrame: true, isSameDocument: true }, false],
-    [{ isMainFrame: false, isSameDocument: false }, false],
-  ])('%o → %s', (input, expected) => {
-    expect(dictationDisposesOnNavigation(input)).toBe(expected)
+describe('fix2 C-R2-1 — 재로드 정리 배선: 커밋된 메인 프레임 이동에만', () => {
+  // 가짜 webContents — Electron 44.3 이 실제로 내는 순서를 흘린다(raw/review/claude-r2/nav-probe2.txt).
+  function wired() {
+    const webContents = new EventEmitter()
+    let disposed = 0
+    attachDictationNavigationCleanup({ webContents, dispose: () => (disposed += 1) })
+    return { webContents, disposed: () => disposed }
+  }
+  it('거부된 이동(마크다운 링크 클릭 — did-start-navigation 뒤 will-navigate 거부, did-navigate 없음)은 세션을 건드리지 않는다', () => {
+    const h = wired()
+    h.webContents.emit('did-start-loading')
+    h.webContents.emit('did-start-navigation', { url: 'https://example.invalid/x', isMainFrame: true, isSameDocument: false })
+    h.webContents.emit('will-navigate', { preventDefault: () => undefined }, 'https://example.invalid/x')
+    expect(h.disposed()).toBe(0)
+  })
+  it('같은 문서 안 이동(해시 — did-navigate-in-page)도 건드리지 않는다', () => {
+    const h = wired()
+    h.webContents.emit('did-start-navigation', { url: 'file:///a.html#x', isMainFrame: true, isSameDocument: true })
+    h.webContents.emit('did-navigate-in-page', {}, 'file:///a.html#x')
+    expect(h.disposed()).toBe(0)
+  })
+  it('재로드(커밋 — did-start-navigation 뒤 did-navigate)는 한 번 정리한다', () => {
+    const h = wired()
+    h.webContents.emit('did-start-navigation', { url: 'file:///a.html', isMainFrame: true, isSameDocument: false })
+    h.webContents.emit('did-navigate', {}, 'file:///a.html')
+    expect(h.disposed()).toBe(1)
+  })
+  it('index.ts 가 창 webContents 에 이 배선을 건다(배선 줄 존재)', () => {
+    const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'index.ts'), 'utf8')
+    expect(source).toContain('attachDictationNavigationCleanup({ webContents: window.webContents, dispose: () => dictation?.dispose() })')
+    expect(source).not.toContain("on('did-start-navigation'")
+  })
+})
+
+describe('fix2 C-R2-3 — 세션 취소가 넣기 큐의 남은 항목을 버린다(manager → inserter 배선, index.ts 와 같은 모양)', () => {
+  it('send_text 왕복 중 Esc(취소) → 진행 중 왕복은 끊기고 뒤 FINAL 은 0바이트', async () => {
+    const sent: string[] = []
+    const pasted: string[] = []
+    let releaseFirst: () => void = () => undefined
+    const signals: AbortSignal[] = []
+    const inserter = createDictationInserter({
+      heldPaneIds: () => [],
+      paste: (input) => pasted.push(input.data),
+      sendText: (input) =>
+        new Promise<void>((resolve, reject) => {
+          signals.push(input.signal)
+          sent.push(input.text)
+          input.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+          releaseFirst = resolve
+        }),
+      log: () => undefined,
+    })
+    const h = harness({ onDropped: (sessionId) => inserter.dropSession(sessionId) })
+    h.manager.start({ sessionId: 's1' })
+    const first = inserter.insert({ sessionId: 's1', paneId: 'p1', text: '앞 글' })
+    const second = inserter.insert({ sessionId: 's1', paneId: 'p1', text: '뒤 글' })
+    await tick()
+    expect(sent).toEqual(['앞 글'])
+    h.manager.cancel({ sessionId: 's1' }) // Esc
+    expect(signals[0]?.aborted).toBe(true)
+    releaseFirst()
+    expect(await first).toEqual({ ok: false, code: 'skipped', message: '' })
+    expect(await second).toEqual({ ok: false, code: 'skipped', message: '' })
+    expect(sent).toEqual(['앞 글'])
+    expect(pasted).toEqual([])
+  })
+  it('dispose·새 시작도 앞 세션을 버린다', () => {
+    const dropped: string[] = []
+    const h = harness({ onDropped: (sessionId) => dropped.push(sessionId) })
+    h.manager.start({ sessionId: 's1' })
+    h.manager.start({ sessionId: 's2' })
+    h.manager.dispose()
+    expect(dropped).toEqual(['s1', 's2'])
+  })
+  it('다른 세션의 항목은 버리지 않는다', async () => {
+    const pasted: string[] = []
+    const inserter = createDictationInserter({ heldPaneIds: () => ['p1'], paste: (input) => pasted.push(input.data), sendText: async () => undefined, log: () => undefined })
+    inserter.dropSession('s1')
+    expect(await inserter.insert({ sessionId: 's2', paneId: 'p1', text: '새 세션' })).toEqual({ ok: true, via: 'paste' })
+    expect(await inserter.insert({ sessionId: 's1', paneId: 'p1', text: '옛 세션' })).toEqual({ ok: false, code: 'skipped', message: '' })
+    expect(pasted).toHaveLength(1)
+  })
+  it('실패는 세션당 한 번 — 첫 실패 뒤 그 세션의 남은 항목은 보내지 않고 skipped', async () => {
+    let calls = 0
+    const inserter = createDictationInserter({
+      heldPaneIds: () => [],
+      paste: () => undefined,
+      sendText: async () => {
+        calls += 1
+        throw new Error('pane 을 찾지 못했다 (p1)')
+      },
+      log: () => undefined,
+    })
+    const results = await Promise.all([1, 2, 3].map((index) => inserter.insert({ sessionId: 's1', paneId: 'p1', text: `글 ${index}` })))
+    expect(results.map((result) => (result.ok ? 'ok' : result.code))).toEqual(['insert-failed', 'skipped', 'skipped'])
+    expect(calls).toBe(1)
   })
 })

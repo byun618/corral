@@ -25,7 +25,7 @@ function fakeStream(held: string[]) {
   }
 }
 
-function harness(held: string[], sendText?: (input: { paneId: string; text: string }) => Promise<void>) {
+function harness(held: string[], sendText?: (input: { paneId: string; text: string; signal: AbortSignal }) => Promise<void>) {
   const stream = fakeStream(held)
   const sent: Array<{ paneId: string; text: string }> = []
   const inserter = createDictationInserter({
@@ -34,7 +34,7 @@ function harness(held: string[], sendText?: (input: { paneId: string; text: stri
     sendText:
       sendText ??
       (async (input) => {
-        sent.push(input)
+        sent.push({ paneId: input.paneId, text: input.text })
       }),
     log: () => undefined,
   })
@@ -46,7 +46,7 @@ const paste = (text: string): string => `${BRACKETED_PASTE_START}${text}${BRACKE
 describe('G1 — 다른 탭이 붙은 상태에서 고정 pane 으로 보낸 받아쓰기 입력이 막히지 않는다', () => {
   it('고정 pane(p1)이 붙은 탭에 없고 다른 탭(p9)이 붙어 있다 → stream 으로 보내 버려지지 않고 pane.send_text 로 p1 에 간다', async () => {
     const h = harness(['p9'])
-    const result = await h.inserter.insert({ paneId: 'p1', text: '워크트리 목록을 보여주고' })
+    const result = await h.inserter.insert({ sessionId: 's1', paneId: 'p1', text: '워크트리 목록을 보여주고' })
     expect(result).toEqual({ ok: true, via: 'send-text' })
     expect(h.sent).toEqual([{ paneId: 'p1', text: '워크트리 목록을 보여주고' }])
     expect(h.stream.blocked()).toBe(0)
@@ -54,14 +54,14 @@ describe('G1 — 다른 탭이 붙은 상태에서 고정 pane 으로 보낸 받
   })
   it('고정 pane 이 붙은 탭에 있으면 ⌘V 와 같은 길 — 강제 bracketed paste 로 stream 에, send_text 는 안 쓴다', async () => {
     const h = harness(['p1', 'p2'])
-    const result = await h.inserter.insert({ paneId: 'p1', text: '리뷰 결과를 요약해줘.' })
+    const result = await h.inserter.insert({ sessionId: 's1', paneId: 'p1', text: '리뷰 결과를 요약해줘.' })
     expect(result).toEqual({ ok: true, via: 'paste' })
     expect(h.stream.delivered).toEqual([{ paneId: 'p1', data: paste('리뷰 결과를 요약해줘.') }])
     expect(h.sent).toEqual([])
   })
   it('send_text 길은 Enter 가 될 수 있는 것을 뺀다 — 줄바꿈·탭은 공백, ESC·제어 문자는 버림, CR 을 덧붙이지 않는다', async () => {
     const h = harness([])
-    await h.inserter.insert({ paneId: 'p1', text: '첫 줄\r\n둘째\t줄\x1b[201~\x03끝' })
+    await h.inserter.insert({ sessionId: 's1', paneId: 'p1', text: '첫 줄\r\n둘째\t줄\x1b[201~\x03끝' })
     expect(h.sent).toEqual([{ paneId: 'p1', text: '첫 줄 둘째 줄[201~끝' }])
     expect(h.sent[0]?.text.includes('\r')).toBe(false)
     expect(h.sent[0]?.text.includes('\n')).toBe(false)
@@ -73,12 +73,12 @@ describe('G1 — 다른 탭이 붙은 상태에서 고정 pane 으로 보낸 받
       order.push(`send:${input.text}`)
       await new Promise<void>((resolve) => (release = resolve))
     })
-    const first = h.inserter.insert({ paneId: 'p1', text: '하나' })
+    const first = h.inserter.insert({ sessionId: 's1', paneId: 'p1', text: '하나' })
     // 길은 넣는 순간에 정한다 — 첫 넣기가 send_text 로 떠난 뒤 사용자가 원래 탭으로 돌아왔다
     for (let index = 0; index < 10 && order.length === 0; index++) await Promise.resolve()
     expect(order).toEqual(['send:하나'])
     h.stream.held.push('p1')
-    const second = h.inserter.insert({ paneId: 'p1', text: '둘' })
+    const second = h.inserter.insert({ sessionId: 's1', paneId: 'p1', text: '둘' })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(h.stream.delivered).toEqual([])
     release()
@@ -87,12 +87,14 @@ describe('G1 — 다른 탭이 붙은 상태에서 고정 pane 으로 보낸 받
     order.push(...h.stream.delivered.map((item) => `paste:${item.data}`))
     expect(order).toEqual(['send:하나', `paste:${paste('둘')}`])
   })
-  it('보낼 길이 없으면(guard 거절·pane 없음) 조용히 버리지 않고 ok:false insert-failed — 뒤 넣기는 이어 간다', async () => {
+  it('보낼 길이 없으면(guard 거절·pane 없음) 조용히 버리지 않고 ok:false insert-failed — 다음 세션 넣기는 이어 간다', async () => {
     const h = harness(['p2'], async (input) => {
       if (input.text === '실패') throw new Error('pane 을 찾지 못했다 (p1)')
     })
-    expect(await h.inserter.insert({ paneId: 'p1', text: '실패' })).toEqual({ ok: false, code: 'insert-failed', message: 'pane 을 찾지 못했다 (p1)' })
-    expect(await h.inserter.insert({ paneId: 'p2', text: '다음' })).toEqual({ ok: true, via: 'paste' })
+    expect(await h.inserter.insert({ sessionId: 's1', paneId: 'p1', text: '실패' })).toEqual({ ok: false, code: 'insert-failed', message: 'pane 을 찾지 못했다 (p1)' })
+    // 큐는 막히지 않는다 — 다음 세션은 넣는다. 같은 세션의 남은 항목은 버린다(fix2 — 실패 알림 세션당 한 번)
+    expect(await h.inserter.insert({ sessionId: 's2', paneId: 'p2', text: '다음' })).toEqual({ ok: true, via: 'paste' })
+    expect(await h.inserter.insert({ sessionId: 's1', paneId: 'p2', text: '같은 세션' })).toEqual({ ok: false, code: 'skipped', message: '' })
   })
 })
 
@@ -107,7 +109,7 @@ describe('sendTextToPane — guard pane.send_text 봉투', () => {
         calls.push({ target, text, ctx })
       },
     }
-    await sendTextToPane({ backend, paneId: 'p1', text: '글', deadlineMs: 5000 })
+    await sendTextToPane({ backend, paneId: 'p1', text: '글', deadlineMs: 5000, signal: new AbortController().signal })
     expect(calls.map((call) => [call.target.paneId, call.text])).toEqual([['p1', '글']])
     expect(calls[0]?.ctx.deadlineAt).toBeGreaterThan(Date.now())
   })
@@ -120,7 +122,7 @@ describe('sendTextToPane — guard pane.send_text 봉투', () => {
         sent += 1
       },
     }
-    await expect(sendTextToPane({ backend, paneId: 'p1', text: '글', deadlineMs: 5000 })).rejects.toThrow('pane 을 찾지 못했다')
+    await expect(sendTextToPane({ backend, paneId: 'p1', text: '글', deadlineMs: 5000, signal: new AbortController().signal })).rejects.toThrow('pane 을 찾지 못했다')
     expect(sent).toBe(0)
   })
 })

@@ -1195,7 +1195,7 @@ export type CorralApi = {
   dictationCancel: (input: { sessionId: string }) => void
   dictationOpenPrivacy: () => Promise<void>
   /** FINAL 한 번을 고정 대상 pane 에 — 붙은 탭이면 ⌘V 길, 아니면 guard `pane.send_text`(fix1 G1). 결과로 실패를 안다. */
-  dictationInsert: (input: { paneId: string; text: string }) => Promise<DictationInsertResult>
+  dictationInsert: (input: { sessionId: string; paneId: string; text: string }) => Promise<DictationInsertResult>
   onDictationEvent: (listener: (event: DictationEvent) => void) => () => void
   /** LIFE-527 — 창 크롬 상태(macOS 여부·전체화면·줌). 다른 창의 요청이면 null. */
   getWindowChrome: () => Promise<WindowChrome | null>

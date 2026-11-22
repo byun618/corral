@@ -60,7 +60,7 @@ beforeEach(() => {
     dictationCancel: () => calls.push('cancel'),
     dictationOpenPrivacy: () => Promise.resolve(),
     // 가짜 main — 붙은 탭의 길(⌘V 와 같은 `clipboardTextPayloads`)을 흉내 낸다
-    dictationInsert: (input: { paneId: string; text: string }): Promise<DictationInsertResult> => {
+    dictationInsert: (input: { sessionId: string; paneId: string; text: string }): Promise<DictationInsertResult> => {
       for (const data of clipboardTextPayloads(input.text)) termInputs.push({ paneId: input.paneId, data })
       return Promise.resolve({ ok: true, via: 'paste' })
     },
@@ -137,6 +137,51 @@ describe('useDictation — 창 연결', () => {
     emit({ kind: 'final', sessionId, text: '버릴 글' })
     await flush()
     expect(termInputs).toEqual([])
+  })
+  it('fix2 G6 — IME 조합 중 Esc 는 받아쓰기를 취소하지 않고 삼키지도 않는다(조합 취소로 간다)', () => {
+    const pane = terminal('p1')
+    pane.textarea.focus()
+    act(() => toggle())
+    emit({ kind: 'ready', sessionId })
+    const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true })
+    act(() => {
+      pane.textarea.dispatchEvent(esc)
+    })
+    expect(esc.defaultPrevented).toBe(false)
+    expect(pane.keys).toEqual(['Escape'])
+    expect(calls).toEqual(['start'])
+    expect(indicator()?.dataset.dictationIndicator).toBe('listening')
+  })
+  it('fix2 F6 — 대화상자가 열린 채 Esc: 받아쓰기 취소가 먼저(대화상자는 못 받는다), 다음 Esc 는 대화상자가 받는다', () => {
+    const pane = terminal('p1')
+    pane.textarea.focus()
+    act(() => toggle())
+    emit({ kind: 'ready', sessionId })
+    // 대화상자 — 문서에서 Esc 를 듣고 닫힌다(모달들의 흔한 모양). 포커스는 대화상자 입력칸
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    const field = document.createElement('input')
+    dialog.append(field)
+    document.body.append(dialog)
+    const closed: string[] = []
+    const onDialogKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') closed.push('dialog')
+    }
+    document.addEventListener('keydown', onDialogKey)
+    field.focus()
+    const first = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    act(() => {
+      field.dispatchEvent(first)
+    })
+    expect(calls).toEqual(['start', 'cancel'])
+    expect(closed).toEqual([])
+    expect(indicator()).toBeNull()
+    const second = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    act(() => {
+      field.dispatchEvent(second)
+    })
+    expect(closed).toEqual(['dialog'])
+    document.removeEventListener('keydown', onDialogKey)
   })
   it('받아쓰기가 아닐 때 Esc 는 그대로 pane 으로 간다', () => {
     const pane = terminal('p1')

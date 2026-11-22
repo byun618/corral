@@ -36,7 +36,7 @@ export type DictationControllerDeps = {
   stop: (input: { sessionId: string }) => void
   cancel: (input: { sessionId: string }) => void
   /** FINAL 한 번을 대상 pane 에 — main 이 도착 순서대로 넣고 결과를 돌려준다. */
-  insert: (input: { paneId: string; text: string }) => Promise<DictationInsertResult>
+  insert: (input: { sessionId: string; paneId: string; text: string }) => Promise<DictationInsertResult>
   /** 대상 xterm 의 선택을 푼다(화면에 없으면 아무것도 안 한다). */
   clearSelection: (paneId: string) => void
   /** 적용 시점에 대상 pane 이 아직 있나. */
@@ -54,7 +54,8 @@ export function focusedTerminalPane(active: Element | null): string | null {
   return paneId === null || paneId === '' ? null : paneId
 }
 
-type Active = { sessionId: string; paneId: string; silentSince: number | null }
+/** `insertFailed` — 넣기 실패 알림은 세션당 한 번(fix2 G-R2-1). */
+type Active = { sessionId: string; paneId: string; silentSince: number | null; insertFailed: boolean }
 
 export function createDictationController(deps: DictationControllerDeps) {
   let view: DictationView = IDLE_DICTATION
@@ -62,12 +63,15 @@ export function createDictationController(deps: DictationControllerDeps) {
   const insert = (session: Active, text: string): void => {
     deps.clearSelection(session.paneId)
     const failed = (code: string, message: string): void => {
+      if (session.insertFailed) return
+      session.insertFailed = true
       if (active === session) cancelActive()
       deps.notify({ message: dictationErrorMessage({ code, message }), openPrivacy: false })
     }
-    void deps.insert({ paneId: session.paneId, text }).then(
+    void deps.insert({ sessionId: session.sessionId, paneId: session.paneId, text }).then(
       (result) => {
-        if (!result.ok) failed(result.code, result.message)
+        // `skipped` = 그 세션이 이미 취소·실패해 main 이 보내지 않았다 — 알릴 일이 아니다(fix2 C-R2-3).
+        if (!result.ok && result.code !== 'skipped') failed(result.code, result.message)
       },
       (error: unknown) => failed('insert-failed', error instanceof Error ? error.message : String(error)),
     )
@@ -88,7 +92,7 @@ export function createDictationController(deps: DictationControllerDeps) {
   }
 
   const begin = (paneId: string): void => {
-    const session: Active = { sessionId: deps.newSessionId(), paneId, silentSince: null }
+    const session: Active = { sessionId: deps.newSessionId(), paneId, silentSince: null, insertFailed: false }
     active = session
     set({ phase: 'starting', paneId })
     void deps.start({ sessionId: session.sessionId }).then(

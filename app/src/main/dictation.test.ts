@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { DICTATION_STOP_TIMEOUT_MS, type DictationEvent } from '../shared/dictation.js'
-import { attachDictationNavigationCleanup, createDictationInserter, createDictationManager, dictationHelperPath, type DictationChild, type DictationDeps } from './dictation.js'
+import { attachDictationNavigationCleanup, createDictationInserter, createDictationManager, createDictationService, dictationHelperPath, type DictationChild, type DictationDeps } from './dictation.js'
 
 class FakeChild extends EventEmitter {
   pid = 4242
@@ -60,7 +60,7 @@ function harness(overrides: Partial<DictationDeps> = {}) {
     },
     ...overrides,
   }
-  return { manager: createDictationManager(deps), events, children, timers, spawned }
+  return { manager: createDictationManager(deps), deps, events, children, timers, spawned }
 }
 
 describe('dictationHelperPath', () => {
@@ -293,13 +293,19 @@ describe('fix2 C-R2-1 — 재로드 정리 배선: 커밋된 메인 프레임 �
   })
 })
 
-describe('fix2 C-R2-3 — 세션 취소가 넣기 큐의 남은 항목을 버린다(manager → inserter 배선, index.ts 와 같은 모양)', () => {
+describe('fix2 C-R2-3·fix3 R3-1 — 세션 취소가 넣기 큐의 남은 항목을 버린다(production 조립 `createDictationService`)', () => {
+  it('index.ts 는 manager·inserter 를 createDictationService 로만 조립한다', () => {
+    const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'index.ts'), 'utf8')
+    expect(source).toContain('= createDictationService({')
+    expect(source).not.toMatch(/createDictation(Manager|Inserter)\(/)
+  })
   it('send_text 왕복 중 Esc(취소) → 진행 중 왕복은 끊기고 뒤 FINAL 은 0바이트', async () => {
     const sent: string[] = []
     const pasted: string[] = []
     let releaseFirst: () => void = () => undefined
     const signals: AbortSignal[] = []
-    const inserter = createDictationInserter({
+    const h = harness()
+    const { manager, inserter } = createDictationService({ manager: h.deps, inserter: {
       heldPaneIds: () => [],
       paste: (input) => pasted.push(input.data),
       sendText: (input) =>
@@ -310,14 +316,13 @@ describe('fix2 C-R2-3 — 세션 취소가 넣기 큐의 남은 항목을 버린
           releaseFirst = resolve
         }),
       log: () => undefined,
-    })
-    const h = harness({ onDropped: (sessionId) => inserter.dropSession(sessionId) })
-    h.manager.start({ sessionId: 's1' })
+    } })
+    manager.start({ sessionId: 's1' })
     const first = inserter.insert({ sessionId: 's1', paneId: 'p1', text: '앞 글' })
     const second = inserter.insert({ sessionId: 's1', paneId: 'p1', text: '뒤 글' })
     await tick()
     expect(sent).toEqual(['앞 글'])
-    h.manager.cancel({ sessionId: 's1' }) // Esc
+    manager.cancel({ sessionId: 's1' }) // Esc
     expect(signals[0]?.aborted).toBe(true)
     releaseFirst()
     expect(await first).toEqual({ ok: false, code: 'skipped', message: '' })
@@ -355,5 +360,44 @@ describe('fix2 C-R2-3 — 세션 취소가 넣기 큐의 남은 항목을 버린
     const results = await Promise.all([1, 2, 3].map((index) => inserter.insert({ sessionId: 's1', paneId: 'p1', text: `글 ${index}` })))
     expect(results.map((result) => (result.ok ? 'ok' : result.code))).toEqual(['insert-failed', 'skipped', 'skipped'])
     expect(calls).toBe(1)
+  })
+})
+
+describe('fix3 R3-3 — 끝난 세션의 넣기 큐 표지를 지운다', () => {
+  const quietInserter = () => {
+    const pasted: string[] = []
+    const inserter = createDictationInserter({ heldPaneIds: () => ['p1'], paste: (input) => pasted.push(input.data), sendText: async () => undefined, log: () => undefined })
+    return { inserter, pasted }
+  }
+  it('정상 끝(done) — 항목이 다 빠지면 표지 0, 끝난 뒤 늦게 온 FINAL 도 넣고 다시 0', async () => {
+    const h = harness()
+    const { manager, inserter } = createDictationService({ manager: h.deps, inserter: { heldPaneIds: () => ['p1'], paste: () => undefined, sendText: async () => undefined, log: () => undefined } })
+    manager.start({ sessionId: 's1' })
+    const pending = inserter.insert({ sessionId: 's1', paneId: 'p1', text: '글' })
+    h.children[0]?.exit(0)
+    expect(inserter.trackedSessions()).toBe(1)
+    expect(await pending).toEqual({ ok: true, via: 'paste' })
+    expect(inserter.trackedSessions()).toBe(0)
+    expect(await inserter.insert({ sessionId: 's1', paneId: 'p1', text: '늦은 글' })).toEqual({ ok: true, via: 'paste' })
+    expect(inserter.trackedSessions()).toBe(0)
+  })
+  it('취소로 끝난 세션 — 표지를 지운 뒤 늦게 온 항목도 0바이트', async () => {
+    const { inserter, pasted } = quietInserter()
+    inserter.dropSession('s1')
+    inserter.endSession('s1')
+    expect(inserter.trackedSessions()).toBe(0)
+    expect(await inserter.insert({ sessionId: 's1', paneId: 'p1', text: '늦은 글' })).toEqual({ ok: false, code: 'skipped', message: '' })
+    expect(pasted).toEqual([])
+    expect(inserter.trackedSessions()).toBe(0)
+  })
+  it('세션 수십 번 — 표지는 쌓이지 않는다', async () => {
+    const { inserter } = quietInserter()
+    for (let index = 0; index < 40; index += 1) {
+      const id = `s${index}`
+      await inserter.insert({ sessionId: id, paneId: 'p1', text: '글' })
+      if (index % 2 === 0) inserter.dropSession(id)
+      inserter.endSession(id)
+    }
+    expect(inserter.trackedSessions()).toBe(0)
   })
 })

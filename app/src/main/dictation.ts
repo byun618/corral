@@ -54,6 +54,8 @@ export type DictationDeps = {
   setTimer: (callback: () => void, ms: number) => { clear: () => void }
   /** 세션을 취소·정리했다(Esc·새 시작·dispose) — 넣기 큐가 그 세션의 남은 항목을 버린다(fix2 C-R2-3). */
   onDropped?: (sessionId: string) => void
+  /** 세션이 끝났다(done·error·cancelled — `finish`) — 넣기 큐가 그 세션의 표지를 정리한다(fix3 R3-3). */
+  onEnded?: (sessionId: string) => void
 }
 
 type Session = {
@@ -78,6 +80,7 @@ export function createDictationManager(deps: DictationDeps) {
     if (current === session) current = null
     deps.log('dictation.ended', { sessionId: session.id, pid: session.child.pid ?? null, end: end.kind, code: end.kind === 'error' ? end.code : null })
     if (notify) deps.send({ kind: 'ended', sessionId: session.id, end })
+    deps.onEnded?.(session.id)
   }
 
   const onLine = (session: Session, line: string): void => {
@@ -211,16 +214,29 @@ export type DictationInsertDeps = {
   log: (event: string, fields: Record<string, unknown>) => void
 }
 
+/** 끝난 세션을 기억하는 수 — 끝난 뒤 늦게 온 넣기 요청을 그 세션의 상태(버렸나)대로 다룬다. 넘으면 오래된 것부터 잊는다(fix3 R3-3). */
+const RECENT_ENDED_SESSIONS = 16
+
 export function createDictationInserter(deps: DictationInsertDeps) {
   let tail: Promise<unknown> = Promise.resolve()
-  /** 세션마다 하나 — 취소·실패하면 끊어(abort) 남은 항목과 진행 중 왕복을 멈춘다(fix2 C-R2-3·G-R2-1). */
-  const sessions = new Map<string, AbortController>()
-  const controllerOf = (sessionId: string): AbortController => {
+  /** 세션마다 하나 — 취소·실패하면 끊어(abort) 남은 항목과 진행 중 왕복을 멈춘다(fix2 C-R2-3·G-R2-1). `pending` = 큐에 든 그 세션 항목 수. */
+  const sessions = new Map<string, { controller: AbortController; pending: number }>()
+  /** 끝난 세션 — 항목이 다 빠지면 `sessions` 에서 지운다(fix3 R3-3). `dropped` 면 늦게 온 항목도 버린다. */
+  const recentEnded: Array<{ sessionId: string; dropped: boolean }> = []
+  const endedOf = (sessionId: string) => recentEnded.find((entry) => entry.sessionId === sessionId)
+  const entryOf = (sessionId: string) => {
     const existing = sessions.get(sessionId)
     if (existing !== undefined) return existing
-    const created = new AbortController()
+    const created = { controller: new AbortController(), pending: 0 }
+    if (endedOf(sessionId)?.dropped === true) created.controller.abort()
     sessions.set(sessionId, created)
     return created
+  }
+  const release = (sessionId: string): void => {
+    const entry = sessions.get(sessionId)
+    if (entry === undefined) return
+    entry.pending -= 1
+    if (entry.pending === 0 && endedOf(sessionId) !== undefined) sessions.delete(sessionId)
   }
   const skipped: DictationInsertResult = { ok: false, code: 'skipped', message: '' }
   const insertNow = async (input: { sessionId: string; paneId: string; text: string }, signal: AbortSignal): Promise<DictationInsertResult> => {
@@ -241,7 +257,7 @@ export function createDictationInserter(deps: DictationInsertDeps) {
       const message = error instanceof Error ? error.message : String(error)
       deps.log('dictation.insert_failed', { paneId: input.paneId, via: 'send-text', error: message })
       // 실패는 세션당 한 번 — 그 세션의 남은 항목은 버린다.
-      controllerOf(input.sessionId).abort()
+      entryOf(input.sessionId).controller.abort()
       return { ok: false, code: 'insert-failed', message }
     }
     deps.log('dictation.insert', { paneId: input.paneId, via: 'send-text', length: typed.length })
@@ -250,16 +266,45 @@ export function createDictationInserter(deps: DictationInsertDeps) {
   return {
     /** 도착 순서대로 하나씩 — 앞 넣기(날 글자 왕복)가 끝나야 다음을 보낸다. */
     insert(input: { sessionId: string; paneId: string; text: string }): Promise<DictationInsertResult> {
-      const signal = controllerOf(input.sessionId).signal
-      const result = tail.then(() => insertNow(input, signal))
+      const entry = entryOf(input.sessionId)
+      entry.pending += 1
+      const signal = entry.controller.signal
+      const result = tail.then(() => insertNow(input, signal)).finally(() => release(input.sessionId))
       tail = result.catch(() => undefined)
       return result
     },
     /** 세션 취소(Esc·새 시작·dispose) — 그 세션의 남은 항목은 0바이트, 진행 중 send_text 왕복은 끊는다. */
     dropSession(sessionId: string): void {
-      controllerOf(sessionId).abort()
+      entryOf(sessionId).controller.abort()
+    },
+    /** 세션이 끝났다 — 큐에 그 세션 항목이 없으면 바로, 있으면 다 빠진 뒤 표지를 지운다(fix3 R3-3). */
+    endSession(sessionId: string): void {
+      const entry = sessions.get(sessionId)
+      if (endedOf(sessionId) === undefined) {
+        recentEnded.push({ sessionId, dropped: entry?.controller.signal.aborted === true })
+        if (recentEnded.length > RECENT_ENDED_SESSIONS) recentEnded.shift()
+      }
+      if (entry !== undefined && entry.pending === 0) sessions.delete(sessionId)
+    },
+    /** 표지를 들고 있는 세션 수 (관측·시험용). */
+    trackedSessions(): number {
+      return sessions.size
     },
   }
+}
+
+/**
+ * main 의 받아쓰기 조립 — 세션 관리자와 넣기 큐를 잇는다(fix3 R3-1): 취소·정리는 그 세션의 남은 큐 항목을 버리고(`onDropped`),
+ * 끝나면 큐 표지를 정리한다(`onEnded`). `index.ts` 는 이 함수만 부른다 — 이음을 시험이 production 과 같은 코드로 본다.
+ */
+export function createDictationService(input: { manager: DictationDeps; inserter: DictationInsertDeps }) {
+  const inserter = createDictationInserter(input.inserter)
+  const manager = createDictationManager({
+    ...input.manager,
+    onDropped: (sessionId) => inserter.dropSession(sessionId),
+    onEnded: (sessionId) => inserter.endSession(sessionId),
+  })
+  return { manager, inserter }
 }
 
 /** guard `pane.send_text` — 지금 epoch 의 목록에서 그 pane 을 찾아 보낸다. CLI `terminal send` 와 같은 봉투. */
@@ -272,7 +317,7 @@ export async function sendTextToPane(input: { backend: Pick<TerminalBackend, 'ep
   await input.backend.send(target, input.text, ctx())
 }
 
-export function nodeDictationDeps(input: { helper: string; platform: string; release: string; send: DictationDeps['send']; log: DictationDeps['log']; onDropped?: DictationDeps['onDropped'] }): DictationDeps {
+export function nodeDictationDeps(input: { helper: string; platform: string; release: string; send: DictationDeps['send']; log: DictationDeps['log'] }): DictationDeps {
   return {
     ...input,
     executable: (file) => {

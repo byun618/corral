@@ -15,7 +15,7 @@ import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { parsePaneTarget, parseRevealRequest, parseSearchRequest, type TerminalRevealResult, type TerminalSearchResult } from '../shared/terminal-search.js'
 import { closeTabsGated, runningForeground } from './close-tabs.js'
 import { footprintHelperPath, homesOf, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
-import { attachDictationNavigationCleanup, createDictationInserter, createDictationManager, dictationHelperPath, nodeDictationDeps, sendTextToPane, type DictationManager } from './dictation.js'
+import { attachDictationNavigationCleanup, createDictationService, dictationHelperPath, nodeDictationDeps, sendTextToPane, type DictationManager } from './dictation.js'
 import { MIC_PRIVACY_SETTINGS_URL } from '../shared/dictation.js'
 import { confirmedDeadSlot, directoryNow, keepRetention, prunableRetained, slotStateNow, slotStateOf } from './retention.js'
 // Electron main — 소켓을 소유하는 쪽.
@@ -2568,19 +2568,19 @@ app.whenReady().then(async () => {
   })
   // LIFE-834 음성 받아쓰기 — 도우미 기동·정지·취소·이벤트 중계와 넣기.
   // 넣기(fix1 G1) — 붙은 탭이면 ⌘V 와 같은 stream 길, 아니면 guard `pane.send_text`. 결과를 돌려준다(못 넣으면 렌더러가 멈추고 알린다).
-  const dictationInserter = createDictationInserter({
-    heldPaneIds: () => stream.heldPaneIds(),
-    paste: (input) => stream.input(input),
-    sendText: async ({ paneId, text, signal }) => {
-      const socketPath = currentSocketPath()
-      if (socketPath === null) throw new Error('연결된 herdr 세션이 없다')
-      await sendTextToPane({ backend: new TerminalBackend(socketPath), paneId, text, deadlineMs: 5000, signal })
+  // 세션 취소·정리(Esc·새 시작·dispose)는 넣기 큐의 그 세션 항목을 버린다(fix2 C-R2-3) — 이음은 `createDictationService`(fix3 R3-1).
+  const { manager: dictationManager, inserter: dictationInserter } = createDictationService({
+    inserter: {
+      heldPaneIds: () => stream.heldPaneIds(),
+      paste: (input) => stream.input(input),
+      sendText: async ({ paneId, text, signal }) => {
+        const socketPath = currentSocketPath()
+        if (socketPath === null) throw new Error('연결된 herdr 세션이 없다')
+        await sendTextToPane({ backend: new TerminalBackend(socketPath), paneId, text, deadlineMs: 5000, signal })
+      },
+      log,
     },
-    log,
-  })
-  // 세션 취소·정리(Esc·새 시작·dispose)는 넣기 큐의 그 세션 항목을 버린다(fix2 C-R2-3) — `onDropped`.
-  const dictationManager = createDictationManager(
-    nodeDictationDeps({
+    manager: nodeDictationDeps({
       helper: dictationHelperPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, mainDir: here }),
       platform: process.platform,
       release: os.release(),
@@ -2588,9 +2588,8 @@ app.whenReady().then(async () => {
         if (window !== null && !window.isDestroyed()) window.webContents.send('corral:dictationEvent', dictationEvent)
       },
       log,
-      onDropped: (sessionId) => dictationInserter.dropSession(sessionId),
     }),
-  )
+  })
   dictation = dictationManager
   ipcMain.handle('corral:dictationStart', (event, input: { sessionId: string }) => {
     if (!fromOurWindow(event) || typeof input?.sessionId !== 'string') return { ok: false, code: 'rejected', message: '' }

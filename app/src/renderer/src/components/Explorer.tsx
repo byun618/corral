@@ -242,7 +242,7 @@ export function Explorer({
       settle(value, false)
     })
     const off = window.corral.onExplorerEvent((event) => {
-      if (event.root !== root || event.kind === 'git') return
+      if (event.root !== root || event.kind === 'git' || event.kind === 'scmBase') return
       dirty = true
       schedule()
     })

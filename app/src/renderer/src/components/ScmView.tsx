@@ -6,9 +6,25 @@
 // · 목록 / 트리(폴더 압축) 전환은 머리 단추 — 선택은 ui-prefs `scmViewMode` 에 영속(Q6). 접기 상태는 메모리(VS Code 와 같다 — 세션 동안).
 // · 행이 많을 수 있어(상한 10 000 — `git.statusLimit`) 22px 고정 높이로 보이는 칸만 그린다.
 // · 키보드는 탐색기와 같은 관례: ↑↓ Home End 이동 · ← 접기/부모 · → 펼치기 · Enter 열기(고정) · Space 열기(미리보기).
+// · 비교 기준(LIFE-830) — 머리 단추로 「작업 트리」 ↔ 「base 대비」(루트별, `scm.compare`). base 대비는 그룹 하나(merge-base ↔ 작업 트리 + 추적 안 함)와
+//   머리 아래 한 줄(base 이름 · 출처 · merge-base 짧은 해시 — 이름만 줄고 출처·해시는 안 준다)을 그린다. 목록·트리·정렬·접기·키보드·상한은 같은 장치.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { GIT_DECORATION } from '../../../shared/explorer-git.js'
-import { buildTree, flattenTree, groupChanges, SCM_STATUS_LIMIT, scmErrorKind, SCM_STATUS_TEXT, scmMark, scmStrike, type ScmChange, type ScmGroupId } from '../../../shared/scm.js'
+import {
+  buildTree,
+  flattenTree,
+  groupChanges,
+  SCM_BASE_SOURCE_TEXT,
+  SCM_NO_BASE_HELP,
+  SCM_STATUS_LIMIT,
+  scmErrorKind,
+  SCM_STATUS_TEXT,
+  scmMark,
+  scmStrike,
+  type ScmBasePush,
+  type ScmChange,
+  type ScmGroupId,
+} from '../../../shared/scm.js'
 import { discardRequest, stageRequest } from '../../../shared/scm-write.js'
 import type { ScmApi } from '../hooks/useScm.js'
 import { Codicon, FileIcon, type CodiconName } from './ExplorerIcons.js'
@@ -27,6 +43,12 @@ export type ScmRow =
 const nameOf = (rel: string): string => rel.slice(rel.lastIndexOf('/') + 1)
 const parentOf = (rel: string): string => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
 
+/**
+ * 파일 줄 key — 그룹 + 경로. base 대비 그룹은 같은 경로가 두 줄(diff 의 `D` + 같은 경로의 추적 안 함 `U`)일 수 있어 상태를 더한다(LIFE-830 수정 r1 A1).
+ * 작업 트리 그룹은 그룹 안에서 경로가 하나라 그대로 둔다(선택·접기 키 무변경).
+ */
+const fileKey = ({ group, change }: { group: ScmChange['group']; change: ScmChange }): string => (group === 'base' ? `f:base:${change.status}:${change.rel}` : `f:${group}:${change.rel}`)
+
 /** 그릴 줄 — 그룹 머리 + (목록: 경로순 파일 · 트리: 폴더 먼저 압축 트리). 접힌 그룹·폴더의 자식은 뺀다. 순수 함수(시험 대상). */
 export function scmRows(input: { changes: readonly ScmChange[]; mode: ScmViewMode; collapsed: ReadonlySet<string>; limit?: number; total?: number }): { rows: ScmRow[]; total: number; truncated: boolean } {
   const grouped = groupChanges(input.changes, input.limit ?? SCM_STATUS_LIMIT, input.total ?? input.changes.length)
@@ -37,13 +59,13 @@ export function scmRows(input: { changes: readonly ScmChange[]; mode: ScmViewMod
     rows.push({ kind: 'group', key: groupKey, group: group.id, title: group.title, count: group.changes.length, collapsed: groupCollapsed })
     if (groupCollapsed) continue
     if (input.mode === 'list') {
-      for (const change of group.changes) rows.push({ kind: 'file', key: `f:${group.id}:${change.rel}`, group: group.id, change, name: nameOf(change.rel), parent: parentOf(change.rel), depth: 1 })
+      for (const change of group.changes) rows.push({ kind: 'file', key: fileKey({ group: group.id, change }), group: group.id, change, name: nameOf(change.rel), parent: parentOf(change.rel), depth: 1 })
       continue
     }
     const dirCollapsed = new Set([...input.collapsed].filter((key) => key.startsWith(`d:${group.id}:`)).map((key) => key.slice(`d:${group.id}:`.length)))
     for (const row of flattenTree(buildTree(group.changes), dirCollapsed)) {
       if (row.kind === 'dir') rows.push({ kind: 'dir', key: `d:${group.id}:${row.path}`, group: group.id, name: row.name, path: row.path, depth: row.depth, collapsed: row.collapsed })
-      else rows.push({ kind: 'file', key: `f:${group.id}:${row.change.rel}`, group: group.id, change: row.change, name: row.name, parent: '', depth: row.depth })
+      else rows.push({ kind: 'file', key: fileKey({ group: group.id, change: row.change }), group: group.id, change: row.change, name: row.name, parent: '', depth: row.depth })
     }
   }
   return { rows, total: grouped.total, truncated: grouped.truncated }
@@ -60,6 +82,8 @@ export function scmActionsOf(group: ScmGroupId): ScmActionId[] {
       return ['unstage']
     case 'merge':
       return ['stage']
+    case 'base':
+      return []
   }
 }
 
@@ -76,6 +100,20 @@ export const SCM_GROUP_TRUNCATED_TITLE = '변경이 너무 많아 목록이 잘�
 export function scmRowTitle(change: ScmChange): string {
   const status = SCM_STATUS_TEXT[change.status]
   return change.orig === null ? `${change.rel} • ${status}` : `${change.rel} • ${status} (원래 ${change.orig})`
+}
+
+/** base 대비 모드의 안내 — 목록을 그릴 수 있으면 null(빈 목록 문구는 따로). */
+export function scmBaseNotice(base: ScmBasePush | null): string | null {
+  if (base === null) return 'base 대비 목록을 읽는 중…'
+  if (base.ok) return base.changes.length === 0 ? 'base 대비 변경 사항 없음' : null
+  switch (base.reason) {
+    case 'no_base':
+      return SCM_NO_BASE_HELP
+    case 'no_merge_base':
+      return `base 와 공통 조상이 없어 비교할 수 없습니다 — ${base.error}`
+    case 'git_error':
+      return `base 대비 목록을 읽지 못했습니다 — ${base.error}`
+  }
 }
 
 export function ScmView({
@@ -105,10 +143,12 @@ export function ScmView({
   const listRef = useRef<HTMLDivElement | null>(null)
 
   const root = scm.root
-  const changes = scm.state?.changes ?? null
+  const compare = scm.compare
+  const base = scm.state?.base ?? null
+  const changes = compare === 'base' ? (base !== null && base.ok ? base.changes : null) : (scm.state?.changes ?? null)
   const collapsed = useMemo(() => (root === null ? new Set<string>() : (collapsedByRoot.get(root) ?? new Set<string>())), [collapsedByRoot, root])
   const selected = root === null ? null : (selectedByRoot.get(root) ?? null)
-  const changesTotal = scm.state?.total ?? 0
+  const changesTotal = compare === 'base' ? (base !== null && base.ok ? base.total : 0) : (scm.state?.total ?? 0)
   const { rows, total, truncated } = useMemo(() => (changes === null ? { rows: [], total: 0, truncated: false } : scmRows({ changes, mode, collapsed, total: changesTotal })), [changes, mode, collapsed, changesTotal])
 
   useLayoutEffect(() => {
@@ -214,7 +254,8 @@ export function ScmView({
   // 쓰기 — 요청의 루트는 누른 때 값이다(K12). 결과는 `scm.run` 이 그 루트의 상태에만 적용한다.
   const act = (input: { action: ScmActionId; group: ScmGroupId; changes: readonly ScmChange[] }): void => {
     if (root === null || input.changes.length === 0) return
-    void scm.run(input.action === 'discard' ? discardRequest({ root, changes: input.changes }) : stageRequest({ root, group: input.group, changes: input.changes }))
+    const request = input.action === 'discard' ? discardRequest({ root, changes: input.changes }) : stageRequest({ root, group: input.group, changes: input.changes })
+    if (request !== null) void scm.run(request)
   }
   const groupChangesOf = (group: ScmGroupId): ScmChange[] => (changes ?? []).filter((change) => change.group === group)
   const commit = (amend: boolean): void => {
@@ -239,18 +280,32 @@ export function ScmView({
             scmErrorKind(scm.state.error) === 'not_repo'
             ? '현재 열린 폴더에 Git 리포지토리가 없습니다.'
             : `Git 상태를 읽지 못했습니다 — ${scm.state.error.split('\n').find((line) => line.trim() !== '' && !line.startsWith('Command failed')) ?? scm.state.error}`
-          : changes !== null && changes.length === 0
-            ? '변경 사항 없음'
-            : null
+          : compare === 'base'
+            ? scmBaseNotice(base)
+            : changes !== null && changes.length === 0
+              ? '변경 사항 없음'
+              : null
 
   return (
-    <div className="scm" data-scm="" data-scm-mode={mode}>
+    <div className="scm" data-scm="" data-scm-mode={mode} data-scm-compare={compare}>
       <div className="explorer-section-head" data-scm-head="">
         <span className="explorer-section-twistie" />
         <span className="explorer-section-title" title={title ?? undefined}>
           소스 제어
         </span>
         <div className="explorer-toolbar">
+          <button
+            type="button"
+            className={`explorer-tool${compare === 'base' ? ' is-active' : ''}`}
+            data-scm-compare-toggle={compare === 'base' ? 'working' : 'base'}
+            title={compare === 'base' ? '작업 트리로 보기' : 'base 대비로 보기'}
+            aria-label={compare === 'base' ? '작업 트리로 보기' : 'base 대비로 보기'}
+            aria-pressed={compare === 'base'}
+            disabled={root === null}
+            onClick={() => scm.setCompare(compare === 'base' ? 'working' : 'base')}
+          >
+            <Codicon name="git-compare" />
+          </button>
           <button
             type="button"
             className="explorer-tool"
@@ -269,6 +324,19 @@ export function ScmView({
           </button>
         </div>
       </div>
+      {compare === 'base' && base !== null && base.ok ? (
+        <div className="scm-base" data-scm-base="" data-scm-base-source={base.info.source} title={`base ${base.info.name} · ${SCM_BASE_SOURCE_TEXT[base.info.source]} · merge-base ${base.info.mergeBase}`}>
+          <span className="scm-base-name" data-scm-base-name="">
+            base {base.info.name}
+          </span>
+          <span className="scm-base-tail">
+            <span className="scm-base-source">{SCM_BASE_SOURCE_TEXT[base.info.source]}</span>
+            <span className="scm-base-hash" data-scm-base-hash={base.info.mergeBase.slice(0, 7)}>
+              {base.info.mergeBase.slice(0, 7)}
+            </span>
+          </span>
+        </div>
+      ) : null}
       {showInput ? (
         <div className="scm-input" data-scm-input="">
           <textarea

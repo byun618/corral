@@ -22,6 +22,8 @@ export const CODICON = {
   'list-tree': 0xeb86,
   'go-to-file': 0xea94,
   'chevron-right': 0xeab6,
+  // LIFE-830 — 소스 제어 비교 기준 전환(작업 트리 / base 대비).
+  'git-compare': 0xeafd,
   // LIFE-811 — PR 보기(activity bar·GitHub 열기).
   'git-pull-request': 0xea64,
   'link-external': 0xeb14,

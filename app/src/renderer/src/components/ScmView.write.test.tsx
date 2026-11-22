@@ -34,12 +34,14 @@ afterEach(() => {
 
 const api = (input: Partial<ScmApi>): ScmApi => ({
   root: '/r',
-  state: { changes: CHANGES, total: CHANGES.length, error: null, stamp: 1 },
+  state: { changes: CHANGES, total: CHANGES.length, error: null, stamp: 1, base: null },
   version: 1,
   stampOf: () => 1,
   refresh: () => {},
   mode: 'list',
   setMode: () => {},
+  compare: 'working',
+  setCompare: () => {},
   write: { message: '', notice: null, committing: false },
   setMessage: () => {},
   dismissNotice: () => {},
@@ -103,7 +105,7 @@ describe('inline 단추 (K1·K2 — V1·V2)', () => {
   })
   it('목록이 상한에서 잘리면 그룹 단추는 꺼지고 툴팁이 이유를 말한다 — 행 단추는 그대로(D2)', () => {
     const run = vi.fn<(input: ScmWriteInput) => Promise<void>>(async () => {})
-    render(api({ run, state: { changes: CHANGES, total: 20_000, error: null, stamp: 1 } }))
+    render(api({ run, state: { changes: CHANGES, total: 20_000, error: null, stamp: 1, base: null } }))
     expect(host.querySelector('[data-scm-truncated]')).not.toBeNull()
     const groupButtons = [...host.querySelectorAll<HTMLElement>('[data-scm-actions="group"] [data-scm-action]')]
     expect(groupButtons).toHaveLength(4)

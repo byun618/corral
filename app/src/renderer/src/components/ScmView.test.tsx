@@ -4,7 +4,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ScmChange } from '../../../shared/scm.js'
+import type { ScmBasePush, ScmChange } from '../../../shared/scm.js'
 import type { ScmApi } from '../hooks/useScm.js'
 import { widthSlotOf } from '../hooks/useRightPanel.js'
 import { acquireExplorerWatch } from '../explorer-watch-refs.js'
@@ -73,9 +73,12 @@ afterEach(() => {
   host.remove()
 })
 
-const api = (input: Partial<ScmApi> & { changes?: ScmChange[] | null; error?: string | null; total?: number }): ScmApi => ({
+const api = (input: Partial<ScmApi> & { changes?: ScmChange[] | null; error?: string | null; total?: number; base?: ScmBasePush | null }): ScmApi => ({
   root: '/r',
-  state: input.changes === undefined && input.error === undefined ? null : { changes: input.changes ?? null, total: input.total ?? input.changes?.length ?? 0, error: input.error ?? null, stamp: 1 },
+  state:
+    input.changes === undefined && input.error === undefined && input.base === undefined
+      ? null
+      : { changes: input.changes ?? null, total: input.total ?? input.changes?.length ?? 0, error: input.error ?? null, stamp: 1, base: input.base ?? null },
   version: 1,
   stampOf: () => 1,
   refresh: () => {},
@@ -85,6 +88,8 @@ const api = (input: Partial<ScmApi> & { changes?: ScmChange[] | null; error?: st
   setMessage: () => {},
   dismissNotice: () => {},
   run: async () => {},
+  compare: 'working',
+  setCompare: () => {},
   ...input,
 })
 
@@ -100,7 +105,7 @@ describe('ScmView', () => {
     expect(host.querySelector('[data-scm-file="conflict.txt"] [data-scm-letter]')?.textContent).toBe('!')
     expect(host.querySelectorAll('input')).toHaveLength(0)
     expect(host.querySelectorAll('textarea[data-scm-message]')).toHaveLength(1)
-    expect([...host.querySelectorAll('[data-scm-head] button')].map((button) => button.getAttribute('aria-label'))).toEqual(['트리로 보기', '새로고침', '모두 접기'])
+    expect([...host.querySelectorAll('[data-scm-head] button')].map((button) => button.getAttribute('aria-label'))).toEqual(['base 대비로 보기', '트리로 보기', '새로고침', '모두 접기'])
   })
   it('클릭 = 미리보기 열기, 두 번 = 고정, Enter = 고정 · Space = 미리보기, ↓ 이동', () => {
     const onOpen = vi.fn()
@@ -165,5 +170,86 @@ describe('구독 참조 셈 (S8) · 폭 칸 (S1)', () => {
     expect(widthSlotOf('scm')).toBe('explorer')
     expect(widthSlotOf('explorer')).toBe('explorer')
     expect(widthSlotOf('detail')).toBe('detail')
+  })
+})
+
+// LIFE-830 B1·B3·B4·B2ⓓ — 비교 기준 전환 단추 · base 표시(이름 · 출처 · merge-base 짧은 해시) · 그룹 하나 · 안내.
+describe('ScmView base 대비 (LIFE-830)', () => {
+  const info = { name: 'feature/LIFE-802-scm-write', source: 'parent' as const, mergeBase: '0123456789abcdef0123456789abcdef01234567' }
+  const BASE_CHANGES: ScmChange[] = [
+    { group: 'base', status: 'ADDED', rel: 'src/new.ts', orig: null },
+    { group: 'base', status: 'RENAMED', rel: 'b.ts', orig: 'a.ts' },
+    { group: 'base', status: 'UNTRACKED', rel: 'u.txt', orig: null },
+  ]
+  const view = (scm: ScmApi, onOpen: (input: { change: ScmChange; preview: boolean }) => void = () => {}) =>
+    act(() => root.render(createElement(ScmView, { scm, title: null, mode: 'list', onChangeMode: () => {}, focusToken: 0, onOpen })))
+  it('머리 단추가 비교 기준을 바꾼다 — 작업 트리 모드는 base 줄 없음, 지금과 같은 그룹', () => {
+    const setCompare = vi.fn()
+    view(api({ changes: CHANGES, base: { ok: true, info, changes: BASE_CHANGES, total: 3 }, setCompare }))
+    expect(host.querySelector('[data-scm]')?.getAttribute('data-scm-compare')).toBe('working')
+    expect(host.querySelector('[data-scm-base]')).toBeNull()
+    expect([...host.querySelectorAll('[data-scm-group]')].map((group) => group.getAttribute('data-scm-group'))).not.toContain('base')
+    act(() => host.querySelector<HTMLButtonElement>('[data-scm-compare-toggle="base"]')?.click())
+    expect(setCompare).toHaveBeenCalledWith('base')
+  })
+  it('base 대비 — 그룹 하나·개수, base 이름 · 출처 · 짧은 해시, 이름 바뀜 툴팁, 클릭은 base 행을 연다', () => {
+    const onOpen = vi.fn()
+    view(api({ changes: CHANGES, compare: 'base', base: { ok: true, info, changes: BASE_CHANGES, total: 3 } }), onOpen)
+    expect(host.querySelector('[data-scm]')?.getAttribute('data-scm-compare')).toBe('base')
+    expect([...host.querySelectorAll('[data-scm-group]')].map((group) => [group.getAttribute('data-scm-group'), group.querySelector('.scm-group-title')?.textContent, group.querySelector('[data-scm-count]')?.textContent])).toEqual([['base', 'base 대비 변경 사항', '3']])
+    expect(host.querySelector('[data-scm-base-name]')?.textContent).toBe('base feature/LIFE-802-scm-write')
+    expect(host.querySelector('[data-scm-base]')?.getAttribute('data-scm-base-source')).toBe('parent')
+    expect(host.querySelector('.scm-base-source')?.textContent).toBe('부모 worktree')
+    expect(host.querySelector('[data-scm-base-hash]')?.textContent).toBe('0123456')
+    expect(host.querySelector('[data-scm-file="b.ts"]')?.getAttribute('title')).toBe('b.ts • 이름 바뀜 (원래 a.ts)')
+    expect(host.querySelector('[data-scm-file="u.txt"] [data-scm-letter]')?.textContent).toBe('U')
+    expect(host.querySelector('[data-scm-compare-toggle="working"]')?.getAttribute('aria-label')).toBe('작업 트리로 보기')
+    act(() => host.querySelector<HTMLElement>('[data-scm-file="b.ts"]')?.click())
+    expect(onOpen.mock.calls[0]?.[0]).toEqual({ change: BASE_CHANGES[1], preview: true })
+  })
+  it('A1 — 같은 경로가 diff 의 D 와 추적 안 함 U 두 줄: 두 줄 유지 · key 고유(목록·트리) · ↓ 가 두 줄을 지나간다', () => {
+    const same: ScmChange[] = [
+      { group: 'base', status: 'DELETED', rel: 'dir/same.txt', orig: null },
+      { group: 'base', status: 'UNTRACKED', rel: 'dir/same.txt', orig: null },
+      { group: 'base', status: 'MODIFIED', rel: 'dir/z.ts', orig: null },
+    ]
+    for (const mode of ['list', 'tree'] as const) {
+      const files = scmRows({ changes: same, mode, collapsed: new Set() }).rows.filter((row) => row.kind === 'file')
+      expect(files).toHaveLength(3)
+      expect(new Set(files.map((row) => row.key)).size).toBe(3)
+    }
+    // 작업 트리 그룹의 key 는 그대로(선택·접기 키 무변경).
+    expect(scmRows({ changes: [{ group: 'workingTree', status: 'MODIFIED', rel: 'a.ts', orig: null }], mode: 'list', collapsed: new Set() }).rows[1]?.key).toBe('f:workingTree:a.ts')
+    const onOpen = vi.fn()
+    view(api({ changes: CHANGES, compare: 'base', base: { ok: true, info, changes: same, total: 3 } }), onOpen)
+    const rows = [...host.querySelectorAll<HTMLElement>('[data-scm-file]')]
+    expect(rows.map((row) => [row.getAttribute('data-scm-file'), row.querySelector('[data-scm-letter]')?.textContent])).toEqual([
+      ['dir/same.txt', 'D'],
+      ['dir/same.txt', 'U'],
+      ['dir/z.ts', 'M'],
+    ])
+    act(() => rows[0]?.click())
+    const list = host.querySelector<HTMLElement>('[data-scm-list]')
+    for (let i = 0; i < 2; i += 1) {
+      act(() => list?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+      act(() => list?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    }
+    expect(onOpen.mock.calls.map(([input]) => [input.change.status, input.change.rel])).toEqual([
+      ['DELETED', 'dir/same.txt'],
+      ['UNTRACKED', 'dir/same.txt'],
+      ['MODIFIED', 'dir/z.ts'],
+    ])
+    expect(host.querySelectorAll('.scm-file.is-selected')).toHaveLength(1)
+  })
+  it('안내 — 읽는 중 · base 없음(정하는 방법) · 공통 조상 없음 · 변경 없음', () => {
+    view(api({ changes: CHANGES, compare: 'base', base: null }))
+    expect(host.querySelector('[data-scm-empty]')?.textContent).toBe('base 대비 목록을 읽는 중…')
+    view(api({ changes: CHANGES, compare: 'base', base: { ok: false, reason: 'no_base', error: 'x' } }))
+    expect(host.querySelector('[data-scm-empty]')?.textContent).toContain('corral repo set-base-ref')
+    view(api({ changes: CHANGES, compare: 'base', base: { ok: false, reason: 'no_merge_base', error: 'main 와(과) 공통 조상이 없다' } }))
+    expect(host.querySelector('[data-scm-empty]')?.textContent).toContain('공통 조상이 없어')
+    view(api({ changes: CHANGES, compare: 'base', base: { ok: true, info, changes: [], total: 0 } }))
+    expect(host.querySelector('[data-scm-empty]')?.textContent).toBe('base 대비 변경 사항 없음')
+    expect(host.querySelector('[data-scm-base-hash]')?.textContent).toBe('0123456')
   })
 })

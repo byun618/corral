@@ -71,8 +71,8 @@ export function parseScmWriteInput(input: unknown): ScmWriteInput | null {
   }
 }
 
-/** 행·그룹 stage/unstage 단추 — 그룹이 동작을 정한다(V1·V2): 변경 = stage, 스테이지 = unstage(이름 바뀜은 원래 경로도), 병합 = stage(확인). */
-export function stageRequest(input: { root: string; group: ScmGroupId; changes: readonly ScmChange[] }): ScmWriteInput {
+/** 행·그룹 stage/unstage 단추 — 그룹이 동작을 정한다(V1·V2): 변경 = stage, 스테이지 = unstage(이름 바뀜은 원래 경로도), 병합 = stage(확인). base 대비(LIFE-830)는 쓰기 없음 = null. */
+export function stageRequest(input: { root: string; group: ScmGroupId; changes: readonly ScmChange[] }): ScmWriteInput | null {
   const rels = [...new Set(input.changes.map((change) => change.rel))]
   switch (input.group) {
     case 'workingTree':
@@ -85,6 +85,8 @@ export function stageRequest(input: { root: string; group: ScmGroupId; changes: 
         root: input.root,
         paths: [...new Set(input.changes.flatMap((change) => (change.status === 'INDEX_RENAMED' && change.orig !== null ? [change.rel, change.orig] : [change.rel])))],
       }
+    case 'base':
+      return null
   }
 }
 

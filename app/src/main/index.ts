@@ -152,6 +152,7 @@ import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
 import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
 import { readFileContent, readImageContent } from './file-read.js'
 import { readScmContent } from './scm-read.js'
+import { loginShellPath, ScmWriter } from './scm-write.js'
 import { gitRunner, resolveScmBase, scmBaseInputsOf, type ScmBaseInputs } from './scm-base.js'
 import { PrStatus } from './pr-status.js'
 import { createFileWatch, type FileWatch } from './file-watch.js'
@@ -2407,6 +2408,28 @@ app.whenReady().then(async () => {
     log('scm.read', { ok: result.ok, side: side === 'head' || side === 'base' ? side : 'index', kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok && 'size' in result ? result.size : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
     return result
   })
+  // LIFE-829 — 소스 제어 로컬 쓰기(stage·unstage·discard·커밋·amend). 가둠·고정 argv·lock 재시도·루트 직렬·로그인 셸 PATH(쓰기 git 전부 — 시작 뒤 미리 조회)·휴지통은 `ScmWriter`.
+  // 확인 대화상자 문구는 main(`scmConfirmSpec`), 답은 파일 탭 대화상자와 같은 계측 스텁 큐를 쓴다. 로그는 동작·결과·루트 해시만(경로·메시지 없음).
+  const scmWriter = new ScmWriter({
+    roots: explorerRoots,
+    git: (roots) => resolveGit({ pathEnv: process.env.PATH, roots }),
+    confirm: async (spec) => {
+      const stubbed = measuring ? fileDialogAnswers.shift() : undefined
+      if (stubbed !== undefined) {
+        fileDialogAsked.push(`scm:${spec.kind}`)
+        return spec.choices.find((item) => item === stubbed) ?? 'cancel'
+      }
+      if (window === null || window.isDestroyed()) return 'cancel'
+      return spec.choices[(await dialog.showMessageBox(window, spec.options)).response] ?? 'cancel'
+    },
+    trashItem: (abs) => shell.trashItem(abs),
+    loginPath: () => loginShellPath(),
+    refresh: (root) => explorerHub?.refreshGit(root),
+    log,
+  })
+  ipcMain.handle('corral:scmWrite', async (event, input: unknown) => (fromOurWindow(event) ? scmWriter.write(input) : { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }))
+  // 첫 쓰기가 로그인 셸 조회(최대 5 초)를 기다리지 않게 지금 백그라운드로 푼다 — 실패는 두지 않고 다음 쓰기에 다시 묻는다.
+  void scmWriter.prefetchLoginPath()
   // 이미지 바이트(E4ⓔ) — 확장자 목록·가둠·상한은 `readImageContent`. 경로는 남기지 않는다.
   ipcMain.handle('corral:fileReadImage', async (event, input: unknown) => {
     if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }

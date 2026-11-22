@@ -84,13 +84,17 @@ const api = (input: Partial<ScmApi> & { changes?: ScmChange[] | null; error?: st
   refresh: () => {},
   mode: 'list',
   setMode: () => {},
+  write: { message: '', notice: null, committing: false },
+  setMessage: () => {},
+  dismissNotice: () => {},
+  run: async () => {},
   compare: 'working',
   setCompare: () => {},
   ...input,
 })
 
 describe('ScmView', () => {
-  it('행 모양 — 글자·색(탐색기 표)·취소선·흐린 부모 경로, 쓰기 단추·입력 없음', () => {
+  it('행 모양 — 글자·색(탐색기 표)·취소선·흐린 부모 경로, 머리 단추 3개 + 입력란 1개(LIFE-829 — 쓰기 단추는 `ScmView.write.test.tsx`)', () => {
     act(() => root.render(createElement(ScmView, { scm: api({ changes: CHANGES }), title: 'wt', mode: 'list', onChangeMode: () => {}, focusToken: 0, onOpen: () => {} })))
     const deleted = host.querySelector<HTMLElement>('[data-scm-file="gone.ts"]')
     expect(deleted?.querySelector('[data-scm-letter]')?.textContent).toBe('D')
@@ -99,8 +103,9 @@ describe('ScmView', () => {
     expect(nested?.querySelector('.scm-desc')?.textContent).toBe('src/app')
     expect(nested?.querySelector<HTMLElement>('[data-scm-letter]')?.style.color).toBe('#e5ba7d')
     expect(host.querySelector('[data-scm-file="conflict.txt"] [data-scm-letter]')?.textContent).toBe('!')
-    expect(host.querySelectorAll('input, textarea')).toHaveLength(0)
-    expect([...host.querySelectorAll('button')].map((button) => button.getAttribute('aria-label'))).toEqual(['base 대비로 보기', '트리로 보기', '새로고침', '모두 접기'])
+    expect(host.querySelectorAll('input')).toHaveLength(0)
+    expect(host.querySelectorAll('textarea[data-scm-message]')).toHaveLength(1)
+    expect([...host.querySelectorAll('[data-scm-head] button')].map((button) => button.getAttribute('aria-label'))).toEqual(['base 대비로 보기', '트리로 보기', '새로고침', '모두 접기'])
   })
   it('클릭 = 미리보기 열기, 두 번 = 고정, Enter = 고정 · Space = 미리보기, ↓ 이동', () => {
     const onOpen = vi.fn()

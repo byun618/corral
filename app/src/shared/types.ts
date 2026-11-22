@@ -17,6 +17,7 @@ import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer
 import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
 import type { ScmReadInput, ScmReadResult } from './scm.js'
 import type { DiffNotesSendInput, DiffNotesSendResult, DiffNotesState } from './diff-notes.js'
+import type { ScmWriteInput, ScmWriteResult } from './scm-write.js'
 import type { PrBranchesResult, PrItemRefreshResult } from './pr-status.js'
 import type { PrCommentsResult } from './pr-comments.js'
 import type { HistoryAgents, SessionHistoryDetailResult, SessionHistoryListInput, SessionHistoryListResult, SessionHistoryResumeInput, SessionHistoryResumeResult, SessionHistoryRevealResult, SessionKey } from './session-history.js'
@@ -1123,6 +1124,8 @@ export type CorralApi = {
   readImage: (input: { root: string; rel: string }) => Promise<ImageReadResult>
   /** LIFE-683 S7 — 소스 제어 diff 의 HEAD·인덱스 쪽 내용(읽기 전용, `main/scm-read.ts`). */
   scmRead: (input: ScmReadInput) => Promise<ScmReadResult>
+  /** LIFE-829 — 소스 제어 쓰기(stage·unstage·discard·커밋·amend, `main/scm-write.ts`). 확인 대화상자는 main 이 띄운다. */
+  scmWrite: (input: ScmWriteInput) => Promise<ScmWriteResult>
   /** 소스 제어 base 대비 켜기·끄기 (LIFE-830) — 켠 루트의 git push 에 `base` 가 실린다. ref 는 보내지 않는다. */
   scmBaseMode: (input: { root: string; on: boolean }) => void
   /** diff 메모 보내기 (LIFE-832) — 확인 단계 본문 그대로 그 worktree 의 에이전트 pane 에. 결과는 `onDiffNotesState` 로 온다. */

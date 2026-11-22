@@ -6,10 +6,10 @@ import { fixturePane, fixtureWorktree } from './mobile/list-fixture.js'
 import type { ScmDiffMode } from '../shared/scm.js'
 import type { AgentSessionRef } from '../shared/types.js'
 
-/** 본문의 글 칸을 되읽는다 — `"…"` 안의 `\\`·`\"`·`\n` 이스케이프를 푼다. 왕복 시험용. */
+/** 본문의 글 칸을 되읽는다 — `"…"` 안의 `\\`·`\"`·`\n`·`\t` 이스케이프를 푼다. 왕복 시험용. */
 function unquote(field: string): string {
   expect(field.startsWith('"') && field.endsWith('"')).toBe(true)
-  return field.slice(1, -1).replace(/\\(\\|"|n)/g, (_match, char: string) => (char === 'n' ? '\n' : char))
+  return field.slice(1, -1).replace(/\\(\\|"|n|t)/g, (_match, char: string) => (char === 'n' ? '\n' : char === 't' ? '\t' : char))
 }
 
 /** 본문 → 메모 블록(머리 다음부터 빈 줄로 나뉜 네 줄). */
@@ -76,6 +76,10 @@ describe('본문 형식 (L9 · D9)', () => {
     expect(cleanBody(body)).toBe(body)
     // 글 칸 안 줄바꿈은 이스케이프 — 본문의 줄 수는 구조(머리 + 빈 줄 + 네 줄)뿐.
     expect(body.split('\n')).toHaveLength(6)
+    // 탭도 이스케이프 — 본문에 탭이 남지 않는다(claude 기록이 붙여 넣은 탭을 공백으로 바꿔 대조가 깨진다 — 최종 관문 L9).
+    expect(body).not.toContain('\t')
+    expect(body).toContain('Code: "\\tconst s')
+    expect(body).toContain('탭\\t$(rm')
   })
   it('메모 단 때 줄 내용은 상한에서 자른다', () => {
     const long = 'x'.repeat(LINE_TEXT_MAX + 50)

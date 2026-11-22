@@ -2,7 +2,7 @@
 //
 // · 메모 대상 = 오른쪽이 작업 파일인 diff 모드 넷의 오른쪽 줄(00-analysis D1). 줄 번호가 에이전트가 여는 파일과 같다.
 // · 본문(D9) = 머리 한 줄 + 메모마다 `File:`/`Line:`/`Code:`/`Note:` 네 줄, 파일 경로 → 줄 순. 글 칸은 `"…"` 로 감싸고 안의 `\`·`"`·줄바꿈을
-//   이스케이프한다(orca `formatDiffComment` 와 같은 결) — 본문의 줄바꿈은 구조에만 있다. 제어문자는 폰 지시와 같은 `cleanBody` 규칙.
+//   이스케이프한다(orca `formatDiffComment` 와 같은 결) — 본문의 줄바꿈은 구조에만 있다. 탭도 `\t` 로 — claude 기록이 붙여 넣은 탭을 공백으로 바꿔 대조가 깨진다(최종 관문). 제어문자는 폰 지시와 같은 `cleanBody` 규칙.
 // · 대상(D5) = 그 worktree **자기 workspace** 의 에이전트 pane(claude·codex·grok). 부모·main workspace 의 pane 은 그 worktree 행이 아니라 후보에 없다.
 //   세션 참조(`agentSession`)가 없으면 들어감을 확인할 수 없어 고를 수 없다.
 import type { ScmDiffMode } from './scm.js'
@@ -42,10 +42,10 @@ export function wellFormed(text: string): boolean {
  */
 export const DIFF_NOTES_LEAD = '아래에 붙여 넣은 diff 리뷰 메모를 읽고 각 파일·줄에 반영해 주세요:'
 
-/** 글 칸 — 제어문자를 지운 뒤 `"…"` 로 감싸고 `\`·`"`·줄바꿈을 이스케이프한다. 탭은 그대로 둔다. */
+/** 글 칸 — 제어문자를 지운 뒤 `"…"` 로 감싸고 `\`·`"`·줄바꿈·탭을 이스케이프한다(본문에 탭이 남지 않는다 — provider 가 탭을 바꿔 기록하는 일을 타지 않게). */
 function quote(text: string): string {
   const clean = cleanBody(text).replace(LONE_SURROGATE, '\uFFFD')
-  return `"${clean.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`
+  return `"${clean.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t')}"`
 }
 
 /** 경로 → 줄 순(코드 단위 비교 — 로캘에 따라 바뀌지 않는다). */

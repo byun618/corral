@@ -36,7 +36,8 @@ vi.mock('@xterm/xterm', () => {
     }
     registerLinkProvider(provider: unknown): { dispose: () => void } {
       links.register(provider, this)
-      return { dispose: links.dispose }
+      // provider 별로 dispose 를 가른다 — 「각 1회」를 실제로 단언한다(LIFE-835 r1 E①).
+      return { dispose: () => links.dispose(provider) }
     }
     onSelectionChange(): { dispose: () => void } {
       return { dispose: () => {} }
@@ -175,6 +176,9 @@ describe('LIFE-565 R1-06 — 링크 배선', () => {
     release()
     expect(links.dispose).not.toHaveBeenCalled()
     act(() => root.render(createElement('div')))
-    expect(links.dispose).toHaveBeenCalledTimes(2)
+    // 각 provider 가 정확히 1회씩 — 한 provider 가 두 번 거둬지고 다른 하나가 새는 경우를 가른다.
+    expect(links.dispose.mock.calls).toHaveLength(2)
+    expect(links.dispose.mock.calls.filter(([provider]) => provider === urlProvider)).toHaveLength(1)
+    expect(links.dispose.mock.calls.filter(([provider]) => provider === paneProvider)).toHaveLength(1)
   })
 })

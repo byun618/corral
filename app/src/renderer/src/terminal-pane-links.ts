@@ -1,7 +1,7 @@
 // LIFE-835 — 터미널에 찍힌 pane 이름(`wZ3:p1`)을 ⌘+클릭하면 그 pane 으로 간다.
 //
 // 판정(D1): 이름 꼴을 추측하지 않는다 — herdr id 는 base-32 라 `p` 뒤도 글자일 수 있다(`wS:pR`, 00-analysis F1).
-// 느슨한 꼴(`w`+영숫자+`:p`+영숫자, 앞뒤가 영숫자·`_`·`-`·`:` 아님)로 후보를 찾고 **지금 살아 있는 pane 이름과 정확히 같을 때만** 링크다.
+// 느슨한 꼴(`w`+영숫자+`:p`+영숫자, 앞이 영숫자·`_`·`-`·`:` 아님, 뒤는 아래 D1′)로 후보를 찾고 **지금 살아 있는 pane 이름과 정확히 같을 때만** 링크다.
 // 살아 있는지는 후보가 나온 행에서만 묻는다 — 이름 없는 행은 정규식 한 번으로 끝난다(C5ⓒ).
 //
 // 겹침(D5): xterm 은 겹친 링크 중 먼저 등록된 provider 것을 남긴다(`Linkifier._removeIntersectingLinks`). OSC 8 은 xterm 이
@@ -16,7 +16,8 @@ import { worktreeDisplayName } from './worktree-name.js'
 import { numbersOf } from './pane-geometry.js'
 import { terminalRowReader, type LinkCell, type ReadRow } from './terminal-links.js'
 
-const PANE_NAME_CANDIDATE = /(?<![0-9A-Za-z_:-])w[0-9A-Za-z]+:p[0-9A-Za-z]+(?![0-9A-Za-z_:-])/g
+// 뒤 경계(D1′): 이름 글자가 바로 붙으면 막고, `:`·`-` 는 그 다음이 이름 글자일 때만 막는다 — `wZ3:p1: 완료`·행 끝 `wZ3:p1:` 은 링크, `wZ3:p1:x` 는 아님.
+const PANE_NAME_CANDIDATE = /(?<![0-9A-Za-z_:-])w[0-9A-Za-z]+:p[0-9A-Za-z]+(?![0-9A-Za-z_]|[:-][0-9A-Za-z_])/g
 
 /** 툴팁·이동에 쓰는 대상 정보. */
 export type PaneLinkTarget = { paneId: string; worktreeName: string; tabTitle: string; paneNumber: number }
@@ -32,6 +33,22 @@ export type PaneLinkDirectory = {
 }
 
 let directory: PaneLinkDirectory | null = null
+
+// --- 살아 있는 집합이 바뀌면 포인터 아래 링크를 다시 판정한다 (C3ⓓ — coding.md 외부 상태 표지) ---
+// xterm 은 provider 응답을 행 단위로 캐시한다 — 포인터를 안 움직이면 닫힌 pane 의 밑줄이 남고, 같은 행 안 복귀도 낡은 캐시를 본다.
+// 그래서 App 이 상태를 받을 때마다 집합을 발행하고, **집합이 바뀐 때만** 터미널마다 재평가를 부른다. 재평가는 포인터가 그 터미널 안일
+// 때만 provider 를 묻는다(`attachLinkRefresh().reevaluate`) — 집합이 바뀐 갱신 1번에 질의하는 터미널은 많아야 포인터 아래 하나다.
+const liveChangeListeners = new Set<() => void>()
+let liveKey: string | null = null
+
+/** App 이 상태를 받을 때마다 부른다. 집합이 직전과 같으면 아무 터미널도 부르지 않는다. 바뀌었으면 true. */
+export function publishLivePaneIds(paneIds: readonly string[]): boolean {
+  const key = [...paneIds].sort().join('\n')
+  if (key === liveKey) return false
+  liveKey = key
+  for (const listener of liveChangeListeners) listener()
+  return true
+}
 
 /** App 이 마운트 때 잇는다. 반환값으로 끊는다(같은 것이 아직 이어져 있을 때만). */
 export function setPaneLinkDirectory(next: PaneLinkDirectory): () => void {
@@ -122,14 +139,22 @@ export function activatePaneLink(input: { event: Pick<MouseEvent, 'metaKey'>; pa
 const TIP_OFFSET = 14
 const TIP_MARGIN = 8
 let openTip: HTMLDivElement | null = null
+/** 수식키 단독 keydown 은 닫지 않는다 — ⌘ 를 누르는 순간 닫히면 ⌘+클릭 직전에 툴팁이 사라진다(아이콘 툴팁 `Tooltip.tsx` 와 같은 규칙). */
+const MODIFIER_KEYS = new Set(['Shift', 'Meta', 'Alt', 'Control'])
+const onTipKey = (event: KeyboardEvent): void => {
+  if (!MODIFIER_KEYS.has(event.key)) hidePaneLinkTooltip()
+}
 
 export function paneLinkTooltipLines(target: PaneLinkTarget): [string, string] {
   return [`${target.worktreeName} · ${target.tabTitle} · pane ${target.paneNumber}`, '⌘+클릭으로 이동']
 }
 
 export function hidePaneLinkTooltip(): void {
-  openTip?.remove()
+  if (openTip === null) return
+  openTip.remove()
   openTip = null
+  window.removeEventListener('blur', hidePaneLinkTooltip)
+  window.removeEventListener('keydown', onTipKey, true)
 }
 
 /** 포인터 아래에 두고, 창 밖으로 나가면 창 안으로 민다 — 아래 자리가 없으면 포인터 위로 뒤집는다(C4ⓒ). */
@@ -160,20 +185,23 @@ function showPaneLinkTooltip(input: { event: MouseEvent; paneId: string; ownerPa
     tip.append(row)
   }
   document.body.append(tip)
-  const rect = tip.getBoundingClientRect()
+  // 레이아웃 크기로 잰다 — `getBoundingClientRect` 는 진입 애니메이션(scale .95) 중이라 작게 나와 창 끝에서 잘린다(r1 B, `Tooltip.tsx` 와 같게).
   const { left, top } = placeTooltip({
     pointer: { x: input.event.clientX, y: input.event.clientY },
-    size: { width: rect.width, height: rect.height },
+    size: { width: tip.offsetWidth, height: tip.offsetHeight },
     viewport: { width: window.innerWidth, height: window.innerHeight },
   })
   tip.style.left = `${left}px`
   tip.style.top = `${top}px`
   openTip = tip
+  window.addEventListener('blur', hidePaneLinkTooltip)
+  window.addEventListener('keydown', onTipKey, true)
 }
 
 /** pane 이름 provider 를 등록한다. 평문 URL provider **뒤에** 등록해야 URL 이 이긴다(D5). 반환값을 터미널과 함께 dispose 한다. */
-export function registerPaneNameLinks(input: { term: Terminal; paneId: string }): { dispose(): void } {
-  const { term, paneId: ownPaneId } = input
+export function registerPaneNameLinks(input: { term: Terminal; paneId: string; reevaluate: () => void }): { dispose(): void } {
+  const { term, paneId: ownPaneId, reevaluate } = input
+  liveChangeListeners.add(reevaluate)
   const isLive = (paneId: string): boolean => directory?.lookup(paneId) != null
   const readRow = terminalRowReader(term)
   const provider = term.registerLinkProvider({
@@ -192,6 +220,7 @@ export function registerPaneNameLinks(input: { term: Terminal; paneId: string })
   })
   return {
     dispose: () => {
+      liveChangeListeners.delete(reevaluate)
       // 이 터미널이 띄운 툴팁만 걷는다 — 다른 pane 의 툴팁은 그쪽 leave 가 걷는다.
       if (openTip?.dataset.paneLinkOwner === ownPaneId) hidePaneLinkTooltip()
       provider.dispose()

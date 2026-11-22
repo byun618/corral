@@ -240,10 +240,10 @@ export function TerminalPane({
     term.unicode.activeVersion = '15-graphemes'
     term.open(container)
     const links = registerTerminalLinks(term)
-    // pane 이름 ⌘+클릭(LIFE-835) — URL provider 뒤에 등록해야 겹칠 때 URL 이 이긴다(D5).
-    const paneLinks = registerPaneNameLinks({ term, paneId })
     // 행 내용이 바뀌면 링크 캐시를 다시 묻게 한다 — 정지 포인터 아래 새 링크·같은 행 낡은 캐시(LIFE-573).
     const linkRefresh = attachLinkRefresh({ term })
+    // pane 이름 ⌘+클릭(LIFE-835) — URL provider 뒤에 등록해야 겹칠 때 URL 이 이긴다(D5). 살아 있는 집합이 바뀌면 다시 판정한다(C3ⓓ).
+    const paneLinks = registerPaneNameLinks({ term, paneId, reevaluate: linkRefresh.reevaluate })
     termRef.current = term
     // 한글 IME 조합 표시층(LIFE-566) — 조합 상자를 그려진 커서 칸에 맞추고 뒤에 caret 을 그린다.
     const detachIme = attachImeComposition({ term })

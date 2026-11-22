@@ -12,6 +12,8 @@
 //     꼬리 디바운스는 스트리밍이 이어지는 동안 영영 안 울린다. 그래서 상한은 간격당 1회다(C5ⓑ)
 //   · 포인터가 밖이다 → 아무것도 안 한다(질의 0, C5ⓐ)
 //   · `mouseleave` → 마지막 칸·캐시 행을 잊는다(질의 0) — 돌아오는 첫 mousemove 가 같은 칸이어도 다시 묻는다(C6)
+//   · `reevaluate()` — 행 내용은 그대로인데 provider 판정에 쓰는 **외부 상태**가 바뀌었다(LIFE-835 살아 있는 pane 이름 집합).
+//     포인터가 안에 있을 때만: 잡힌 링크를 걷고(밑줄·leave) 캐시를 잊고 그 자리를 즉시 다시 묻는다. 밖이면 질의 0
 // 재평가는 Linkifier 의 mousemove 처리기를 **저장된 마지막 이벤트로 직접** 부른다. DOM 이벤트를 만들지 않으므로
 // xterm 의 마우스 리포트 경로(pane 으로 가는 SGR)를 타지 않는다(제약 3).
 import type { IDisposable, Terminal } from '@xterm/xterm'
@@ -29,6 +31,10 @@ type Linkifier = {
   idleActiveLine(): number | null
   /** 마지막 칸·캐시 행을 잊는다 — 다음 hover 가 provider 를 다시 묻는다. 질의 없음. */
   forget(): void
+  /** 포인터가 터미널 안인가(마지막 mousemove 뒤 mouseleave 없음). */
+  pointerInside(): boolean
+  /** 잡혀 있는 링크를 걷는다 — 밑줄을 지우고 링크의 leave 를 부른다. 없으면 아무것도 안 한다. 질의 없음. */
+  clearCurrent(): void
   /** 저장된 마지막 mousemove 로 hover 를 다시 돈다 — provider 질의. 저장 좌표가 터미널 사각형 밖이면 건너뛴다. */
   rehover(): void
 }
@@ -66,6 +72,13 @@ function readLinkifier(term: object): Linkifier | null {
       const line: unknown = Reflect.get(linkifier, '_activeLine')
       return typeof line === 'number' ? line : null
     },
+    pointerInside: () => shapeOk() && Reflect.get(linkifier, '_isMouseOut') === false,
+    clearCurrent: () => {
+      // 비공개 메서드 — 없으면(모양이 다르면) 걷지 않는다. 그때는 다음 hover 가 걷는다(현재 동작).
+      const clear: unknown = Reflect.get(linkifier, '_clearCurrentLink')
+      if (!shapeOk() || typeof clear !== 'function') return
+      Reflect.apply(clear, linkifier, [])
+    },
     forget: () => {
       if (!shapeOk()) return
       Reflect.set(linkifier, '_activeLine', -1)
@@ -92,10 +105,10 @@ function readLinkifier(term: object): Linkifier | null {
  * 터미널에 링크 캐시 갱신을 붙인다. `term.open` 뒤에 부른다(그 전엔 Linkifier 가 없다).
  * 반환값을 터미널과 함께 dispose 한다 — 타이머·리스너를 함께 거둔다. `active` 는 비공개 모양이 맞아 실제로 붙었는지.
  */
-export function attachLinkRefresh(input: { term: LinkRefreshTerminal }): IDisposable & { active: boolean } {
+export function attachLinkRefresh(input: { term: LinkRefreshTerminal }): IDisposable & { active: boolean; reevaluate(): void } {
   const { term } = input
   const linkifier = readLinkifier(term)
-  if (linkifier === null) return { active: false, dispose: () => {} }
+  if (linkifier === null) return { active: false, reevaluate: () => {}, dispose: () => {} }
 
   let timer: ReturnType<typeof setTimeout> | null = null
   const fire = (): void => {
@@ -124,6 +137,12 @@ export function attachLinkRefresh(input: { term: LinkRefreshTerminal }): IDispos
 
   return {
     active: true,
+    reevaluate: () => {
+      if (!linkifier.pointerInside()) return
+      linkifier.clearCurrent()
+      linkifier.forget()
+      linkifier.rehover()
+    },
     dispose: () => {
       if (timer !== null) clearTimeout(timer)
       timer = null

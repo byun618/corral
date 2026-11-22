@@ -37,30 +37,34 @@ const liveSet = (...ids: string[]) => (paneId: string) => ids.includes(paneId)
 const names = (text: string, ...live: string[]): string[] => findPaneNames({ text, isLive: liveSet(...live) }).map((found) => found.paneId)
 
 describe('findPaneNames — 살아 있는 이름만 링크 (C1ⓐⓑ)', () => {
+  // 기대는 순서 있는 배열이다 — 한 행에 둘이면 둘 다 단언한다(r1 E③).
   it.each([
-    ['숫자형', 'pane wZ3:p1 에서', 'wZ3:p1'],
-    ['base-32 글자형', 'pane wS:pR', 'wS:pR'],
-    ['base-32 끝 글자', 'w11:p1A 끝', 'w11:p1A'],
-    ['맨 앞', 'wZ3:p1', 'wZ3:p1'],
-    ['괄호', '(wZ3:p1)', 'wZ3:p1'],
-    ['따옴표', `'wZ3:p1' "wZ3:p1"`, 'wZ3:p1'],
-    ['백틱', '`wZ3:p1`', 'wZ3:p1'],
-    ['쉼표', 'wZ3:p1, 다음', 'wZ3:p1'],
-    ['마침표', '끝은 wZ3:p1.', 'wZ3:p1'],
-    ['한글 조사 붙음', '지금 wZ3:p1에 있다', 'wZ3:p1'],
-    ['한글 조사 띄움', 'wZ3:p1 이라고', 'wZ3:p1'],
-    ['JSON', '{"paneId":"wZ4:p2"}', 'wZ4:p2'],
+    ['숫자형', 'pane wZ3:p1 에서', ['wZ3:p1']],
+    ['base-32 글자형', 'pane wS:pR', ['wS:pR']],
+    ['base-32 끝 글자', 'w11:p1A 끝', ['w11:p1A']],
+    ['맨 앞', 'wZ3:p1', ['wZ3:p1']],
+    ['괄호', '(wZ3:p1)', ['wZ3:p1']],
+    ['따옴표 둘', `'wZ3:p1' "wZ3:p1"`, ['wZ3:p1', 'wZ3:p1']],
+    ['백틱', '`wZ3:p1`', ['wZ3:p1']],
+    ['쉼표', 'wZ3:p1, 다음', ['wZ3:p1']],
+    ['마침표', '끝은 wZ3:p1.', ['wZ3:p1']],
+    ['한글 조사 붙음', '지금 wZ3:p1에 있다', ['wZ3:p1']],
+    ['한글 조사 띄움', 'wZ3:p1 이라고', ['wZ3:p1']],
+    ['JSON', '{"paneId":"wZ4:p2"}', ['wZ4:p2']],
+    // D1′ — 문장 콜론·대시 뒤가 이름 글자가 아니면 링크
+    ['뒤 문장 콜론', 'wZ3:p1: 완료', ['wZ3:p1']],
+    ['행 끝 콜론', '워커 wZ3:p1:', ['wZ3:p1']],
+    ['뒤 콜론 + 한글', 'wZ3:p1:완료', ['wZ3:p1']],
+    ['뒤 대시 + 공백', 'wZ3:p1 - 끝, wZ3:p1-', ['wZ3:p1', 'wZ3:p1']],
   ])('%s — %s', (_label, text, expected) => {
-    const found = names(text, 'wZ3:p1', 'wS:pR', 'w11:p1A', 'wZ4:p2')
-    expect(found.length).toBeGreaterThan(0)
-    expect(new Set(found)).toEqual(new Set([expected]))
+    expect(names(text, 'wZ3:p1', 'wS:pR', 'w11:p1A', 'wZ4:p2')).toEqual(expected)
   })
 
   it.each([
     ['살아 있지 않은 이름', 'wZ9:p1 은 닫혔다'],
     ['더 긴 이름 안의 접두사', 'wZ3:p1A 는 다른 pane'],
     ['앞에 영숫자', 'xwZ3:p1'],
-    ['뒤에 영숫자 아닌 이름 문자', 'wZ3:p1-x wZ3:p1_x wZ3:p1:x'],
+    ['뒤 `:`·`-`·`_` 다음이 이름 글자', 'wZ3:p1-x wZ3:p1_x wZ3:p1:x wZ3:p1:2 wZ3:p1-_'],
     ['앞에 이름 문자', '_wZ3:p1 -wZ3:p1 :wZ3:p1'],
     ['tab id', 'wZ3:t1'],
     ['workspace id', 'wZ3 하나'],
@@ -299,7 +303,7 @@ describe('registerPaneNameLinks — 실제 xterm 버퍼', () => {
     })
     // TerminalPane 과 같은 순서 — URL 먼저(D5).
     registerTerminalLinks(term)
-    const handle = registerPaneNameLinks({ term, paneId: 'wZ4:p1' })
+    const handle = registerPaneNameLinks({ term, paneId: 'wZ4:p1', reevaluate: () => {} })
     expect(providers).toHaveLength(2)
     await write(term, '\x1b[1;1Hworker wZ3:p1 done')
     const links = await new Promise<Parameters<Parameters<(typeof providers)[number]['provideLinks']>[1]>[0]>((resolve) => providers[1]!.provideLinks(1, resolve))
@@ -324,7 +328,7 @@ describe('registerPaneNameLinks — 실제 xterm 버퍼', () => {
       provider = p
       return { dispose: () => {} }
     })
-    registerPaneNameLinks({ term, paneId: 'wZ4:p1' })
+    registerPaneNameLinks({ term, paneId: 'wZ4:p1', reevaluate: () => {} })
     await write(term, '\x1b[1;1Hno names here')
     const links = await new Promise<unknown>((resolve) => provider?.provideLinks(1, resolve))
     expect(links).toBeUndefined()

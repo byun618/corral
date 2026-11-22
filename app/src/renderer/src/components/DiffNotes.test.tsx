@@ -4,25 +4,39 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { DiffNotesSendInput, DiffNotesState } from '../../../shared/diff-notes.js'
+import { DIFF_NOTES_LEAD, type DiffNotesSendInput, type DiffNotesState } from '../../../shared/diff-notes.js'
 import type { ScmDiffMode, ScmDiffTarget } from '../../../shared/scm.js'
 import type { PaneRow, WorktreeRow } from '../../../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../../../shared/types.js'
 import { emptyAgentState } from '../../../shared/agent-state.js'
 
 type Handler = (event: { target: { type: number; position: { lineNumber: number } | null } }) => void
-const fake: { mouseDown: Handler[]; zones: Map<string, HTMLElement>; zoneSeq: number; lines: string[]; modified: number } = { mouseDown: [], zones: new Map(), zoneSeq: 0, lines: ['line one', 'line two', 'line three'], modified: 0 }
+type Decoration = { options: { glyphMarginClassName?: string } }
+const fake: { mouseDown: Handler[]; mouseMove: Handler[]; contentChanged: (() => void)[]; decorationSets: Decoration[][]; zones: Map<string, HTMLElement>; zoneSeq: number; lines: string[]; modified: number } = {
+  mouseDown: [],
+  mouseMove: [],
+  contentChanged: [],
+  decorationSets: [],
+  zones: new Map(),
+  zoneSeq: 0,
+  lines: ['line one', 'line two', 'line three'],
+  modified: 0,
+}
+const listen = <T,>(list: T[], handler: T) => {
+  list.push(handler)
+  return { dispose: () => list.splice(list.indexOf(handler), 1) }
+}
 
 const codeEditor = () => ({
   updateOptions: () => {},
-  createDecorationsCollection: () => ({ set: () => {}, clear: () => {} }),
-  onMouseMove: () => ({ dispose: () => {} }),
+  createDecorationsCollection: () => ({ set: (items: Decoration[]) => fake.decorationSets.push(items), clear: () => {} }),
+  onMouseMove: (handler: Handler) => listen(fake.mouseMove, handler),
   onMouseLeave: () => ({ dispose: () => {} }),
   onMouseDown: (handler: Handler) => {
     fake.mouseDown.push(handler)
     return { dispose: () => fake.mouseDown.splice(fake.mouseDown.indexOf(handler), 1) }
   },
-  onDidChangeModelContent: () => ({ dispose: () => {} }),
+  onDidChangeModelContent: (handler: () => void) => listen(fake.contentChanged, handler),
   getModel: () => ({ getLineCount: () => fake.lines.length, getLineContent: (line: number) => fake.lines[line - 1] ?? '' }),
   changeViewZones: (run: (accessor: { addZone: (zone: { domNode: HTMLElement }) => string; removeZone: (id: string) => void }) => void) =>
     run({
@@ -102,6 +116,10 @@ const worktreeOf = (panes: PaneRow[]): WorktreeRow => ({
 
 beforeEach(() => {
   fake.mouseDown.length = 0
+  fake.mouseMove.length = 0
+  fake.contentChanged.length = 0
+  fake.decorationSets.length = 0
+  fake.lines = ['line one', 'line two', 'line three']
   fake.zones.clear()
   fake.modified = 0
   sends = []
@@ -215,6 +233,8 @@ describe('달기·고치기·지우기 → 확인 단계 → 보내기 (L1·L3·
     expect(document.querySelector('[data-diff-note="2"]')?.textContent).toContain('고친 메모')
     await click('[data-diff-notes-send]')
     const body = document.querySelector('[data-diff-notes-body]')?.textContent ?? ''
+    // 리드 한 줄과 본문을 같이 보인다(리뷰 r1 A1) — 보내기 IPC 에는 본문만(리드는 main 이 친다).
+    expect(document.querySelector('[data-diff-notes-lead]')?.textContent).toBe(DIFF_NOTES_LEAD)
     expect(body).toBe('diff 리뷰 메모 1개 (비교 기준: base)\n\nFile: "src/a.ts"\nLine: 2\nCode: "line two"\nNote: "고친 메모"')
     // 대상 1개 = 기본 선택.
     expect(document.querySelector<HTMLInputElement>('[data-diff-notes-target="c1"] input')?.checked).toBe(true)
@@ -253,6 +273,13 @@ describe('대상 (L4ⓐ·ⓒ·ⓓ·ⓕ)', () => {
     await click('[data-diff-note-save]')
     await click('[data-diff-notes-send]')
   }
+  it('후보는 있으나 고를 수 있는 pane 0개 → 「고르세요」 가 아니라 그 사유(리뷰 r1 A6)', async () => {
+    await withNote(worktreeOf([pane('c1', 'claude', false), pane('c2', 'codex', false, 2)]))
+    const blocked = document.querySelector('[data-diff-notes-confirm]')?.textContent ?? ''
+    expect(blocked).toContain('고를 수 있는 pane 이 없습니다')
+    expect(blocked).not.toContain('보낼 pane 을 고르세요')
+    expect(document.querySelector('[data-diff-notes-confirm-send]')?.hasAttribute('disabled')).toBe(true)
+  })
   it('ⓐ 에이전트 pane 0개 → 보내기 불가 + 사유', async () => {
     await withNote(worktreeOf([pane('s1', null, false)]))
     expect(document.querySelector('[data-diff-notes-no-target]')).not.toBeNull()
@@ -301,5 +328,65 @@ describe('결과 안내 (L7)', () => {
     worktreePath = `${mine}-other`
     await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
     expect(host.querySelector('[data-diff-notes-result]')).toBeNull()
+  })
+})
+
+describe('리뷰 r1 — 표지·편집·Esc·hover (A4·A7·A10)', () => {
+  const markLines = (): number => (fake.decorationSets.at(-1) ?? []).filter((item) => item.options.glyphMarginClassName?.includes('diff-note-mark')).length
+  it('A4 줄 수가 같은 내용 갱신(setValue)에도 표지를 다시 세운다', async () => {
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    await gutter(2)
+    await type('m')
+    await click('[data-diff-note-save]')
+    expect(markLines()).toBe(1)
+    const before = fake.decorationSets.length
+    // setValue 는 데코레이션을 버린다 — 줄 수 3 그대로 내용만 바뀜.
+    fake.lines = ['LINE ONE', 'LINE TWO', 'LINE THREE']
+    act(() => {
+      for (const handler of [...fake.contentChanged]) handler()
+    })
+    await flush()
+    expect(fake.decorationSets.length).toBeGreaterThan(before)
+    expect(markLines()).toBe(1)
+  })
+  it('A7 저장 안 한 글이 있으면 다른 줄 거터 누름이 편집을 버리지 않는다 · 빈 편집은 옮겨 간다', async () => {
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    await gutter(1)
+    await gutter(3)
+    expect(document.querySelector('[data-diff-note-editor="3"]')).not.toBeNull()
+    await type('쓰던 메모')
+    await gutter(1)
+    expect(document.querySelector('[data-diff-note-editor="3"]')).not.toBeNull()
+    expect(document.querySelector('[data-diff-note-editor="1"]')).toBeNull()
+    expect(document.querySelector<HTMLTextAreaElement>('[data-diff-note-editor] textarea')?.value).toBe('쓰던 메모')
+  })
+  it('A7 확인 단계는 Esc 로 닫힌다 — 보내기 IPC 0', async () => {
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    await gutter(1)
+    await type('m')
+    await click('[data-diff-note-save]')
+    await click('[data-diff-notes-send]')
+    expect(document.querySelector('[data-diff-notes-confirm]')).not.toBeNull()
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    await flush()
+    expect(document.querySelector('[data-diff-notes-confirm]')).toBeNull()
+    expect(sends).toHaveLength(0)
+  })
+  it('A10 같은 줄 위 마우스 이동은 hover 데코레이션을 다시 걸지 않는다', async () => {
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    const move = (line: number): void => {
+      act(() => {
+        for (const handler of [...fake.mouseMove]) handler({ target: { type: 6, position: { lineNumber: line } } })
+      })
+    }
+    const before = fake.decorationSets.length
+    move(2)
+    move(2)
+    move(2)
+    expect(fake.decorationSets.length - before).toBe(1)
+    move(3)
+    expect(fake.decorationSets.length - before).toBe(2)
   })
 })

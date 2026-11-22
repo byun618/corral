@@ -1778,9 +1778,14 @@ function createWindow(): void {
       reshowForConfirm('window-close')
     }
   })
-  window.on('closed', () => quitGate.setDirty([]))
+  window.on('closed', () => {
+    quitGate.setDirty([])
+    // LIFE-832 리뷰 r1 A3 — 그 창의 diff 메모 대기 요청은 보는 화면이 없다. 취소(넣는 중이면 결과만 버림).
+    diffNotes?.rendererGone('window_closed')
+  })
   window.webContents.on('render-process-gone', () => {
     quitGate.setDirty([])
+    diffNotes?.rendererGone('render_process_gone')
     // LIFE-830 수정 r1 A5 — 죽은 렌더러가 켜 둔 base 대비를 남기지 않는다(새 렌더러가 필요하면 다시 켠다).
     explorerHub?.clearBaseModes()
   })
@@ -1867,6 +1872,8 @@ function createWindow(): void {
     shortcutRecording = false
     // LIFE-830 수정 r1 A5 — 다시 불러오기 전 문서가 켠 base 대비는 그 문서와 함께 끝난다(새 문서의 useScm 이 다시 켠다).
     explorerHub?.clearBaseModes()
+    // LIFE-832 리뷰 r1 A3 — 다시 불러오기 전 문서가 낸 diff 메모 요청은 새 문서가 모른다.
+    diffNotes?.rendererGone('reload')
     explorerFocused = false
     window?.webContents.setIgnoreMenuShortcuts(false)
   })

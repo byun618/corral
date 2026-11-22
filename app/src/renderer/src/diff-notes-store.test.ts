@@ -25,8 +25,8 @@ describe('보관 (L1·L2)', () => {
     expect(store.notesOf(W1)).toHaveLength(2)
     expect(store.upsert({ root: W1, rel: 'a.ts', line: 3, lineText: '바뀐 줄', body: '고친 메모', against: 'base main' })).toBe('saved')
     const fixed = store.notesOf(W1).find((note) => note.rel === 'a.ts')
-    // 같은 (파일, 줄)은 한 메모 — 메모 단 때 줄 내용·기준은 처음 값 그대로.
-    expect(fixed).toMatchObject({ body: '고친 메모', lineText: 'a3', against: '인덱스', rev: 2 })
+    // 같은 (파일, 줄)은 한 메모 — 고치면 줄 내용·기준도 지금 값(리뷰 r1 A5).
+    expect(fixed).toMatchObject({ body: '고친 메모', lineText: '바뀐 줄', against: 'base main', rev: 2 })
     expect(store.notesOf(W1)).toHaveLength(2)
   })
   it('지우기', () => {

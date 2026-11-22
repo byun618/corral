@@ -144,3 +144,4 @@
   font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
 }
 .diff-notes-confirm-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.diff-notes-lead { padding: 4px 8px; border-radius: 4px; background: var(--bg-surface); font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; user-select: text; }

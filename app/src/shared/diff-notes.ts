@@ -22,13 +22,29 @@ export type NoteForBody = { rel: string; line: number; lineText: string; body: s
 /** 메모 단 때 줄 내용의 상한(글자) — 긴 줄(번들·한 줄 JSON)이 본문을 채우지 않게. 넘으면 앞부분 + `…`. */
 export const LINE_TEXT_MAX = 300
 
+/** 코드 포인트 단위로 자른다(리뷰 r1 A2) — UTF-16 단위로 자르면 경계의 서로게이트 쌍이 갈려 본문이 ill-formed 가 된다. */
 export function clipLineText(text: string): string {
-  return text.length > LINE_TEXT_MAX ? `${text.slice(0, LINE_TEXT_MAX)}…` : text
+  const points = [...text]
+  return points.length > LINE_TEXT_MAX ? `${points.slice(0, LINE_TEXT_MAX).join('')}…` : text
 }
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+
+/** 짝 없는 서로게이트가 없다(well-formed UTF-16 — UTF-8 로 바꿔도 바이트가 그대로다). */
+export function wellFormed(text: string): boolean {
+  return !new RegExp(LONE_SURROGATE.source).test(text)
+}
+
+/**
+ * 본문 앞에 **타이핑하는** 리드 한 줄(리뷰 r1 A1) — 붙여 넣은 글뿐인 메시지는 provider 가 지시로 따르지 않을 수 있고(claude 는 거절한다),
+ * claude 기록은 붙여 넣은 블록을 리드 아래 `<pasted_content>` 로 싼다. 줄바꿈이 없다 — 제출 Enter 는 본문 하나의 것이다.
+ * 오케스트레이션 `PROMPT_LEAD` 와 뜻이 달라 따로 둔다. main 허브가 이 값을 치고, 확인 단계는 이 값과 본문을 같이 보인다.
+ */
+export const DIFF_NOTES_LEAD = '아래에 붙여 넣은 diff 리뷰 메모를 읽고 각 파일·줄에 반영해 주세요:'
 
 /** 글 칸 — 제어문자를 지운 뒤 `"…"` 로 감싸고 `\`·`"`·줄바꿈을 이스케이프한다. 탭은 그대로 둔다. */
 function quote(text: string): string {
-  const clean = cleanBody(text)
+  const clean = cleanBody(text).replace(LONE_SURROGATE, '\uFFFD')
   return `"${clean.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`
 }
 
@@ -46,7 +62,8 @@ export function formatNotesBody(input: { notes: readonly NoteForBody[]; against:
   const against = [...new Set(input.against.map((text) => cleanBody(text).replace(/\n/g, ' ')))].sort()
   const head = `diff 리뷰 메모 ${input.notes.length}개${against.length === 0 ? '' : ` (비교 기준: ${against.join(', ')})`}`
   const blocks = [...input.notes].sort(compareNotes).map((note) => [`File: ${quote(note.rel)}`, `Line: ${note.line}`, `Code: ${quote(clipLineText(note.lineText))}`, `Note: ${quote(note.body)}`].join('\n'))
-  return cleanBody([head, ...blocks].join('\n\n'))
+  // well-formed 단언(리뷰 r1 A2) — 글 칸은 이미 짝 없는 서로게이트를 U+FFFD 로 바꿨다. 머리(비교 기준 글)까지 같은 규칙으로 닫는다.
+  return cleanBody([head, ...blocks].join('\n\n')).replace(LONE_SURROGATE, '\uFFFD')
 }
 
 /** 본문 상한 검사 — 넘으면 보내기 전에 막는다(L9). */
@@ -108,7 +125,7 @@ export function checkNoteTarget(input: { worktrees: readonly WorktreeRow[]; work
 // --- IPC -------------------------------------------------------------------------------------------------
 
 export type DiffNotesSendInput = { requestId: string; worktree: string; paneId: string; text: string }
-export type DiffNotesRefusal = 'bad_input' | 'too_large' | 'not_clean' | 'empty' | 'not_worktree' | 'not_target' | 'no_session' | 'not_ready'
+export type DiffNotesRefusal = 'bad_input' | 'too_large' | 'not_clean' | 'ill_formed' | 'empty' | 'not_worktree' | 'not_target' | 'no_session' | 'not_ready'
 export type DiffNotesSendResult = { ok: true } | { ok: false; reason: DiffNotesRefusal }
 
 /** 허브 상태(InputHub `InputState` 중 지시가 닿는 것). `unknown` = main 이 모르는 id(재시작 등). */
@@ -156,6 +173,9 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   bad_input: '요청 모양이 맞지 않습니다',
   too_large: `본문이 상한(${MAX_INPUT_BYTES} 바이트)을 넘습니다`,
   not_clean: '본문에 넣을 수 없는 문자가 있습니다',
+  ill_formed: '본문에 짝 없는 서로게이트 문자가 있습니다',
+  lead_stranded: '리드 한 줄만 그 pane 입력창에 남고 본문은 넣지 않았습니다 — 입력창을 지운 뒤 다시 보내세요',
+  lead_unknown: '리드 한 줄이 들어갔는지 확인하지 못해 본문은 넣지 않았습니다 — 그 pane 입력창을 확인하세요',
   not_worktree: '그 worktree 를 찾을 수 없습니다',
   not_target: '그 pane 은 이 worktree 의 에이전트 pane 이 아닙니다',
 }

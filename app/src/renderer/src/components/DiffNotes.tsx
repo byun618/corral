@@ -7,7 +7,7 @@
 // · 확인 단계는 연 순간의 묶음·본문을 붙든다 — 보인 본문이 그대로 나간다. 대상 후보는 렌더마다(= 상태 발행마다) 다시 계산한다.
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
-import { bodyTooLarge, defaultTarget, formatNotesBody, noteTargets, reasonText, type NoteTarget } from '../../../shared/diff-notes.js'
+import { bodyTooLarge, defaultTarget, DIFF_NOTES_LEAD, formatNotesBody, NO_SESSION_TEXT, noteTargets, reasonText, wellFormed, type NoteTarget } from '../../../shared/diff-notes.js'
 import { MAX_INPUT_BYTES } from '../../../shared/input-body.js'
 import type { AgentStatus, WorktreeRow } from '../../../shared/types.js'
 import { cancelDiffNotes, diffNotes, ensureDiffNotesSubscribed, sendDiffNotes, type DiffNote } from '../diff-notes-store.js'
@@ -44,8 +44,12 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
   const [editing, setEditing] = useState<Editing | null>(null)
   const [lineCount, setLineCount] = useState(() => editor.getModel()?.getLineCount() ?? 1)
   const [hosts, setHosts] = useState<ReadonlyMap<string, HTMLElement>>(new Map())
+  /** 모델 내용이 바뀐 차례 — `setValue` 는 모델 데코레이션을 모두 버리므로(Monaco `textModel` 「Destroy all my decorations」) 줄 수가 같아도 표지를 다시 세운다(리뷰 r1 A4). */
+  const [contentVersion, setContentVersion] = useState(0)
   const notesRef = useRef(notes)
   notesRef.current = notes
+  const editingRef = useRef(editing)
+  editingRef.current = editing
 
   // 거터 + · 클릭 · 내용 갱신(줄 수).
   useEffect(() => {
@@ -53,19 +57,33 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
     const hover = editor.createDecorationsCollection()
     const { MouseTargetType } = monaco.editor
     const gutter = (type: number): boolean => type === MouseTargetType.GUTTER_GLYPH_MARGIN || type === MouseTargetType.GUTTER_LINE_NUMBERS
+    // 마우스 줄이 바뀔 때만 데코레이션을 다시 건다(리뷰 r1 A10 — 이동마다 세우지 않는다).
+    let hovered: number | null = null
+    const clearHover = (): void => {
+      hovered = null
+      hover.clear()
+    }
     const move = editor.onMouseMove((event) => {
       const line = event.target.position?.lineNumber
-      if (line === undefined) return hover.clear()
+      if (line === undefined) return clearHover()
+      if (line === hovered) return
+      hovered = line
       hover.set([{ range: new monaco.Range(line, 1, line, 1), options: { glyphMarginClassName: 'diff-note-add codicon codicon-add', glyphMarginHoverMessage: { value: '메모 달기' } } }])
     })
-    const leave = editor.onMouseLeave(() => hover.clear())
+    const leave = editor.onMouseLeave(clearHover)
     const down = editor.onMouseDown((event) => {
       const line = event.target.position?.lineNumber
       if (line === undefined || !gutter(event.target.type)) return
+      // 저장하지 않은 글이 있는 편집을 다른 줄 누름이 버리지 않는다(리뷰 r1 A7) — 저장·취소한 뒤에 옮긴다.
+      const current = editingRef.current
+      if (current !== null && current.line !== line && unsavedRef.current(current)) return
       const existing = notesRef.current.find((note) => note.line === line)
       setEditing({ line, draft: existing?.body ?? '' })
     })
-    const changed = editor.onDidChangeModelContent(() => setLineCount(editor.getModel()?.getLineCount() ?? 1))
+    const changed = editor.onDidChangeModelContent(() => {
+      setLineCount(editor.getModel()?.getLineCount() ?? 1)
+      setContentVersion((value) => value + 1)
+    })
     setLineCount(editor.getModel()?.getLineCount() ?? 1)
     return () => {
       move.dispose()
@@ -87,7 +105,7 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
       }),
     )
     return () => marks.clear()
-  }, [editor, monaco, markSignature, lineCount])
+  }, [editor, monaco, markSignature, lineCount, contentVersion])
 
   // zone — 메모 카드 + (새 줄) 편집. 같은 줄 메모를 고치는 중이면 그 카드 자리가 편집이 된다.
   const zones = [
@@ -117,6 +135,13 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
     // zoneSignature 가 zones 의 값 정체다.
   }, [editor, zoneSignature])
 
+  /** 편집 중인 글이 저장된 메모(없으면 빈 글)와 다르다. */
+  const unsaved = (current: Editing): boolean => {
+    const existing = notesRef.current.find((note) => note.line === current.line)
+    return current.draft.trim() !== '' && current.draft !== (existing?.body ?? '')
+  }
+  const unsavedRef = useRef(unsaved)
+  unsavedRef.current = unsaved
   const save = (input: { line: number; draft: string }): void => {
     const lineText = editor.getModel()?.getLineContent(Math.min(input.line, lineCount)) ?? ''
     if (diffNotes.upsert({ root, rel, line: input.line, lineText, body: input.draft, against }) !== 'empty') setEditing(null)
@@ -262,8 +287,21 @@ export function NotesConfirm({ root, worktree, batch, onClose }: { root: string;
   const chosen = picked ?? defaultTarget(targets)
   const chosenTarget = targets.find((target) => target.paneId === chosen && target.selectable) ?? null
   const tooLarge = bodyTooLarge(batch.body)
+  const illFormed = !wellFormed(batch.body)
   const busy = diffNotes.busy(root)
-  const blocked = targets.length === 0 ? '이 worktree 에 에이전트 pane 이 없어 보낼 수 없습니다' : chosen !== null && chosenTarget === null ? '고른 pane 이 없어졌거나 고를 수 없습니다' : chosen === null ? '보낼 pane 을 고르세요' : tooLarge ? `본문이 상한(${MAX_INPUT_BYTES} 바이트)을 넘어 보낼 수 없습니다 — 메모를 줄이세요` : busy ? '보내는 중입니다' : null
+  // Esc 로 닫기(리뷰 r1 A7) — 취소와 같다(쓰기 0).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onClose()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose])
+  const selectable = targets.filter((target) => target.selectable)
+  // 후보는 있으나 고를 수 있는 것이 없으면 그 사유를 말한다(리뷰 r1 A6) — 「고르세요」 가 아니다.
+  const blocked = targets.length === 0 ? '이 worktree 에 에이전트 pane 이 없어 보낼 수 없습니다' : selectable.length === 0 ? `고를 수 있는 pane 이 없습니다 — ${targets[0]?.reason ?? NO_SESSION_TEXT}` : chosen !== null && chosenTarget === null ? '고른 pane 이 없어졌거나 고를 수 없습니다' : chosen === null ? '보낼 pane 을 고르세요' : tooLarge ? `본문이 상한(${MAX_INPUT_BYTES} 바이트)을 넘어 보낼 수 없습니다 — 메모를 줄이세요` : illFormed ? reasonText('ill_formed') : busy ? '보내는 중입니다' : null
   return (
     <div className="diff-notes-confirm-backdrop" data-diff-notes-confirm="" onMouseDown={(event) => event.stopPropagation()}>
       <div className="diff-notes-confirm" role="dialog" aria-label="메모 보내기 확인">
@@ -278,7 +316,8 @@ export function NotesConfirm({ root, worktree, batch, onClose }: { root: string;
             ))}
           </div>
         )}
-        <div className="diff-notes-confirm-label">보낼 본문</div>
+        <div className="diff-notes-confirm-label">보낼 글 — 리드 한 줄을 친 뒤 본문을 붙여 넣는다</div>
+        <div className="diff-notes-lead" data-diff-notes-lead="">{DIFF_NOTES_LEAD}</div>
         <pre className="diff-notes-body" data-diff-notes-body="">{batch.body}</pre>
         {blocked !== null ? <div className="diff-notes-blocked" data-diff-notes-blocked="">{blocked}</div> : null}
         <div className="diff-notes-confirm-actions">

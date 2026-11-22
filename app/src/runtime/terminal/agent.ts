@@ -153,20 +153,33 @@ const PASTED = /^(?<before>[\s\S]*?)<pasted_content id="(?<id>[^"]*)">\n(?<body>
  * where corral sent one. The count is of opening tags across the whole message, not of the body
  * alone: a first block that differs is still a block, and the old check never looked at it.
  */
-export function unwrapPasted(text: string): string | null {
+export function unwrapPasted(text: string, lead: string = PROMPT_LEAD): string | null {
     if (text.split(PASTED_OPEN).length !== 2) return null
     const groups = PASTED.exec(text)?.groups
     if (groups === undefined || groups.body === undefined) return null
-    if (normalizeBody(groups.before ?? '') !== PROMPT_LEAD) return null
+    if (normalizeBody(groups.before ?? '') !== lead) return null
     return groups.body
 }
-export function sameBody(identity: BodyIdentity, text: string): boolean {
+/**
+ * `lead` (LIFE-832) names a path's own typed line — the desktop diff-notes path types a different
+ * one than orchestration does. When the caller names it, the message must carry that lead: the body
+ * alone no longer matches, and one more encoding of the same submission is read — the lead
+ * immediately followed by the body, unwrapped (a provider that records the pasted text inline rather
+ * than in a block). Without it the rule is exactly the orchestration one.
+ */
+export function sameBody(identity: BodyIdentity, text: string, lead?: string): boolean {
     const other = bodyIdentity(text)
-    if (other.bytes === identity.bytes && other.sha256 === identity.sha256) return true
-    const inner = unwrapPasted(normalizeBody(text))
-    if (inner === null) return false
-    const unwrapped = bodyIdentity(inner)
-    return unwrapped.bytes === identity.bytes && unwrapped.sha256 === identity.sha256
+    // A named lead is part of what the path submits: the body alone, without it, is not that message.
+    if (lead === undefined && other.bytes === identity.bytes && other.sha256 === identity.sha256) return true
+    const normalized = normalizeBody(text)
+    const inner = unwrapPasted(normalized, lead ?? PROMPT_LEAD)
+    if (inner !== null) {
+        const unwrapped = bodyIdentity(inner)
+        if (unwrapped.bytes === identity.bytes && unwrapped.sha256 === identity.sha256) return true
+    }
+    if (lead === undefined || !normalized.startsWith(lead) || normalized.includes(PASTED_OPEN)) return false
+    const inline = bodyIdentity(normalized.slice(lead.length))
+    return inline.bytes === identity.bytes && inline.sha256 === identity.sha256
 }
 
 // --- §4.2 argv and §4.1 validation --------------------------------------------------------------
@@ -442,6 +455,8 @@ export interface CountInput {
     submittedAtMs: number
     cursor: CursorEntry[]
     read?: (file: string) => string | null
+    /** LIFE-832: the typed lead of this path (see `sameBody`). Absent = the orchestration lead. */
+    lead?: string
 }
 /**
  * Count the submitted body in the provider's own record, inside the submission window: at or after
@@ -482,10 +497,10 @@ export function countSubmissions(input: CountInput): CountResult {
         let lastMatch = -1
         for (const row of rows) {
             if (row.uuid !== null && earlier.has(row.uuid)) continue
-            if (row.text !== null && sameBody(input.identity, row.text)) result.naiveCount++
+            if (row.text !== null && sameBody(input.identity, row.text, input.lead)) result.naiveCount++
             if (row.index < fromLine) continue
             if (row.timeSeconds !== null && row.timeSeconds < second) continue
-            if (row.text === null || !sameBody(input.identity, row.text)) continue
+            if (row.text === null || !sameBody(input.identity, row.text, input.lead)) continue
             result.matchCount++
             lastMatch = row.index
         }

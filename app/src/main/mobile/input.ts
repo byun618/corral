@@ -183,6 +183,14 @@ export type InputHubDeps = {
   now?: () => number
   sleep?: (ms: number) => Promise<void>
   timing?: Partial<InputTiming>
+  /**
+   * LIFE-832: 본문을 붙여 넣기 전에 **타이핑하는 리드 한 줄**(줄바꿈 없음). 데스크톱 diff 메모 인스턴스만 준다 — 폰 허브는 없다(동작 그대로).
+   * 리드도 허브 자기 쓰기다: 초안·agent view 검사와 울타리를 다 통과한 뒤 같은 울타리로 `send`(guard `pane.send_text` + revision 비교) 하고,
+   * 본문 `prompt` 는 리드가 올린 revision 을 울타리로 넣는다(사이에 사람 입력이 끼면 guard 가 거절). 리드를 친 뒤엔 다시 기다리지 않는다 —
+   * 입력창에 리드가 남아 다음 관문의 초안 검사가 어차피 막으므로, 본문이 못 들어가면 그 자리에서 실패(`lead_stranded` · 사람 입력이면 `mac_input`).
+   * 기록 대조는 「그 리드 + 붙여 넣은 블록 하나」 를 읽는다(`countSubmissions` 의 `lead`).
+   */
+  lead?: string
 }
 
 /**
@@ -843,32 +851,74 @@ export class InputHub {
     entry.state = 'sending'
     entry.wait = null
     this.emit(entry)
+    // LIFE-832: 리드 한 줄 — 같은 울타리로 먼저 친다. 거절이면 아무것도 쓰지 않았으니 본문 거절과 같이 다룬다.
+    const lead = this.deps.lead
+    let bodyFence = fence
+    if (lead !== undefined) {
+      const typed = await this.typeLead({ backend, pane, bind, fence, seq: last.seq, text: lead })
+      if (typed.kind === 'refused') return this.refusedBeforeWrite({ entry, backend, pane, bind })
+      if (typed.kind === 'unknown') return this.fail(entry, 'lead_unknown')
+      bodyFence = typed.after
+    }
     // r3: 사슬 고리를 쓰기 **전에** 건다(guard 는 같은 턴에서 revision 을 정확히 1 올린다 — `queue_user_input_submission` → `corral_note_input`).
-    const write = this.beginWrite({ pane: bind, before: fence })
+    const write = this.beginWrite({ pane: bind, before: bodyFence })
     // 들어갔으면 다시 관측해 +1 일 때만 확정(R4-C3). 거절은 쓰지 않았으니 거둔다. `unknown`·reject 는 썼을 수 있지만 몇 번인지 모른다 — 거둔다
     // (뒤 항목은 `mac_input`, 쓰지 않는 쪽). reject 도 진행 표시를 남기지 않게 `finally`(R4-C2).
     let sent: SendResult = 'unknown'
     try {
-      sent = await backend.prompt(pane, { text, seq: last.seq, inputRevision: fence, minIdleMs: this.timing.quietMs, unmanagedAgent: last.unmanaged ? kind : null })
+      // 리드 뒤 본문은 조용함을 다시 재지 않는다(리드 자기 쓰기가 방금 입력이다) — 사람 입력은 리드 뒤 revision 울타리가 막는다.
+      sent = await backend.prompt(pane, { text, seq: last.seq, inputRevision: bodyFence, minIdleMs: lead === undefined ? this.timing.quietMs : 0, unmanagedAgent: last.unmanaged ? kind : null })
       if (sent === 'sent') await this.endUnreported({ write, backend, pane })
     } finally {
       this.endWrite(write, sent === 'refused' ? { kind: 'refused' } : { kind: 'unknown' })
     }
     if (sent === 'refused') {
-      // guard 가 거절 — 아무것도 쓰지 않았다. 그 사이 끄거나 해지했으면 끝낸다(되살리지 않는다, R1-A4).
-      const late = this.gone(entry)
-      if (late !== null) return this.fail(entry, late)
-      entry.state = 'queued'
-      // LIFE-598 r2: 거절 이유를 다시 본다 — 입력이 울타리를 넘었으면(접수 뒤 맥 입력) 큐로 돌리지 않고 실패, 아니면(상태 전이) 다음 관문을 기다린다.
-      const after = await backend.observe(pane)
-      if (this.dropped(entry)) return 'done'
-      if (after.input === null) return this.fail(entry, 'guard_outdated')
-      // 비교는 지금의 사슬로(r3 — 거절과 겹친 자기 쓰기가 끝났으면 그 값도 남의 입력이 아니다).
-      if (this.fenceRead(bind, after.input.revision) === 'moved') return this.moved(entry, 'input_refused')
-      return this.waitTurn(entry, 'turn')
+      // LIFE-832: 리드를 친 뒤의 본문 거절 — 입력창에 리드가 남았다. 다시 기다려도 초안 검사가 막으니 지금 끝낸다.
+      if (lead !== undefined) return this.leadStranded({ entry, backend, pane, bind })
+      return this.refusedBeforeWrite({ entry, backend, pane, bind })
     }
     await this.confirmSend({ entry, kind, cursor, submittedAtMs, text, sessionId: record.continuedAs ?? (channel.session.kind === 'id' ? channel.session.id : null) })
     return 'done'
+  }
+
+  /** guard 가 효과를 거절했다 — 아무것도 쓰지 않았다(LIFE-598 r2). 끔·해지면 끝, 접수 뒤 맥 입력이면 실패, 아니면(상태 전이) 다음 관문을 기다린다. */
+  private async refusedBeforeWrite(input: { entry: Entry; backend: InputBackend; pane: TerminalIdentity; bind: Bind }): Promise<'wait' | 'done'> {
+    const { entry, backend, pane, bind } = input
+    // 그 사이 끄거나 해지했으면 끝낸다(되살리지 않는다, R1-A4).
+    const late = this.gone(entry)
+    if (late !== null) return this.fail(entry, late)
+    entry.state = 'queued'
+    const after = await backend.observe(pane)
+    if (this.dropped(entry)) return 'done'
+    if (after.input === null) return this.fail(entry, 'guard_outdated')
+    // 비교는 지금의 사슬로(r3 — 거절과 겹친 자기 쓰기가 끝났으면 그 값도 남의 입력이 아니다).
+    if (this.fenceRead(bind, after.input.revision) === 'moved') return this.moved(entry, 'input_refused')
+    return this.waitTurn(entry, 'turn')
+  }
+
+  /**
+   * LIFE-832: 리드 한 줄을 허브 자기 쓰기로 친다 — 사슬 고리를 쓰기 전에 걸고(`beginWrite`), guard 가 돌려준 쓴 뒤 revision 으로 확정한다.
+   * `sent` 의 `after` 가 본문의 울타리. guard 가 revision 을 돌려주지 않으면 `unknown`(리드가 들어갔을 수 있다 — 본문은 넣지 않는다).
+   */
+  private async typeLead(input: { backend: InputBackend; pane: TerminalIdentity; bind: Bind; fence: number; seq: number; text: string }): Promise<{ kind: 'sent'; after: number } | { kind: 'refused' } | { kind: 'unknown' }> {
+    const write = this.beginWrite({ pane: input.bind, before: input.fence })
+    let typed: KeyResult = { kind: 'unknown' }
+    try {
+      typed = await input.backend.send(input.pane, { text: input.text, seq: input.seq, inputRevision: input.fence, anyInputRevision: null })
+    } finally {
+      this.endWrite(write, typed.kind === 'sent' && typed.revision !== null ? { kind: 'sent', after: typed.revision } : typed.kind === 'refused' ? { kind: 'refused' } : { kind: 'unknown' })
+    }
+    if (typed.kind === 'refused') return { kind: 'refused' }
+    if (typed.kind !== 'sent' || typed.revision === null || typed.revision <= input.fence) return { kind: 'unknown' }
+    return { kind: 'sent', after: typed.revision }
+  }
+
+  /** LIFE-832: 리드는 들어갔고 본문은 거절됐다 — 사람 입력이 끼었으면 `mac_input`, 아니면 `lead_stranded`(입력창에 리드만 남음). 다시 넣지 않는다. */
+  private async leadStranded(input: { entry: Entry; backend: InputBackend; pane: TerminalIdentity; bind: Bind }): Promise<'done'> {
+    const after = await input.backend.observe(input.pane).catch(() => null)
+    const revision = after?.input?.revision ?? null
+    if (revision !== null && this.fenceRead(input.bind, revision) === 'moved') return this.moved(input.entry, 'input_refused')
+    return this.fail(input.entry, 'lead_stranded')
   }
 
   /** 쓰기용 기록 파일 — 유일한 후보, 또는 0건이 확실할 때만 그 세션이 쓸 경로(R1-A13). */
@@ -1074,7 +1124,7 @@ export class InputHub {
       if (tail.rewritten) return this.settle(entry, 'unconfirmed', 'record_rewritten')
       // 이 접수 뒤·이 세션의 줄만 근거로 센다(R3-A4·A5).
       const text = tail.text === null ? null : submissionLines({ kind: input.kind, text: tail.text, sessionId: input.sessionId, sinceMs: input.submittedAtMs })
-      const count = text === null ? null : countSubmissions({ kind: input.kind, files: [cursor.file], identity, submittedAtMs: input.submittedAtMs, cursor: after, read: () => text })
+      const count = text === null ? null : countSubmissions({ kind: input.kind, files: [cursor.file], identity, submittedAtMs: input.submittedAtMs, cursor: after, read: () => text, ...(this.deps.lead === undefined ? {} : { lead: this.deps.lead }) })
       if (count !== null && count.matchCount > 1) return this.settle(entry, 'unconfirmed', 'record_ambiguous')
       if (count !== null && count.matchCount === 1) {
         this.deps.log('mobile.input_delivered', { ms: this.now() - input.submittedAtMs })

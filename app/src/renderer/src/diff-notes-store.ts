@@ -49,7 +49,7 @@ export class DiffNotesStore {
     return send !== null && BUSY.has(send.state)
   }
 
-  /** 달기·고치기 — 빈 메모는 저장하지 않는다. 고치면 rev 가 오르고 「보냄」 이 풀린다. 같은 글이면 그대로. */
+  /** 달기·고치기 — 빈 메모는 저장하지 않는다. 고치면 rev 가 오르고 「보냄」 이 풀리며 줄 내용·기준이 지금 값이 된다. 같은 글이면 그대로. */
   upsert(input: { root: string; rel: string; line: number; lineText: string; body: string; against: string }): 'saved' | 'empty' | 'unchanged' {
     if (input.body.trim() === '') return 'empty'
     const notes = this.notesOf(input.root)
@@ -60,7 +60,8 @@ export class DiffNotesStore {
       return 'saved'
     }
     if (existing.body === input.body) return 'unchanged'
-    this.put(input.root, { notes: notes.map((note) => (note === existing ? { ...note, body: input.body, rev: note.rev + 1, sent: false } : note)) })
+    // 고치면 그 줄 내용·비교 기준도 지금 값으로(리뷰 r1 A5 — 다시 보낼 때 낡은 줄 내용을 싣지 않는다).
+    this.put(input.root, { notes: notes.map((note) => (note === existing ? { ...note, body: input.body, lineText: input.lineText, against: input.against, rev: note.rev + 1, sent: false } : note)) })
     return 'saved'
   }
 

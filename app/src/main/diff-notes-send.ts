@@ -1,36 +1,22 @@
 // diff 메모 보내기의 main 쪽 (LIFE-832 D6) — 폰 지시 허브(`mobile/input.ts` `InputHub`)의 **데스크톱 전용 인스턴스**로 넣는다.
 //
 // · 보장은 폰 경로와 같다 — 접수 때 대상 묶기 · 준비 관문(턴 안에 끼어들지 않음) · 맥 입력 울타리 · 초안·agent view 거절 · 기록 매칭 1건 = 들어감.
-//   허브 코드는 건드리지 않고 인스턴스만 하나 더 둔다. 그래서 모바일 켬·끔(`stop()`)·페어링(`deviceValid`)과 무관하다 — 이 인스턴스는 `stop()` 을 부르지 않고
-//   기기 확인 함수도 주지 않는다. 자기 쓰기 사슬은 인스턴스별이라 폰과 같은 pane 에 거의 동시에 쓰면 뒤 것이 `mac_input` 으로 실패한다(쓰지 않는 쪽 — A10).
+//   인스턴스만 하나 더 둔다 — 허브에 더한 것은 리드 한 줄 선택(`lead`, 리뷰 r1 A1 — 폰 인스턴스는 주지 않아 동작 그대로)뿐이다. 모바일 켬·끔(`stop()`)·
+//   페어링(`deviceValid`)과 무관하다 — 이 인스턴스는 `stop()` 을 부르지 않고 기기 확인 함수도 주지 않는다. 렌더러 수명에는 묶는다(`rendererGone`, A3). 자기 쓰기 사슬은 인스턴스별이라 폰과 같은 pane 에 거의 동시에 쓰면 뒤 것이 `mac_input` 으로 실패한다(쓰지 않는 쪽 — A10).
 // · `corral:termInput`(raw PTY)·CLI `terminal prompt`(AgentRecord 필요) 경로는 쓰지 않는다(A3·A6).
-// · 접수 전에 main 이 다시 본다: 요청 모양 · 본문 상한(65536 바이트) · 본문이 이미 정리된 글인가(확인 단계 글 = 넣는 글) ·
+// · 접수 전에 main 이 다시 본다: 요청 모양 · 본문 상한(65536 바이트) · 본문이 이미 정리된 well-formed 글인가(확인 단계 글 = 넣는 글 — 재조립은 하지 않는다) ·
 //   pane 이 **지금 상태에서** 그 worktree 자기 workspace 의 고를 수 있는 에이전트 pane 인가(렌더러 pane id 를 그대로 믿지 않는다).
 // · electron 을 모른다 — 상태·push·로그를 주입받는다(시험이 가짜 백엔드로 돈다).
-import { normalizeBody, sessionRecordPaths } from '../runtime/terminal/agent.js'
-import { bodyTooLarge, checkNoteTarget, isRequestId, readDiffNotesState, type DiffNotesSendResult, type DiffNotesState } from '../shared/diff-notes.js'
+import { normalizeBody } from '../runtime/terminal/agent.js'
+import { bodyTooLarge, checkNoteTarget, DIFF_NOTES_LEAD, isRequestId, readDiffNotesState, wellFormed, type DiffNotesSendResult, type DiffNotesState } from '../shared/diff-notes.js'
 import { cleanBody } from '../shared/input-body.js'
 import type { WorktreeRow } from '../shared/types.js'
 import { InputHub, type InputBackend, type InputHubDeps } from './mobile/input.js'
+import { inputFileDeps } from './mobile/input-files.js'
 import type { ListInput } from './mobile/list.js'
-import { chatFileOf } from './mobile/chat.js'
-import { resolveTranscriptUnique } from './transcript.js'
 
 /** 허브 안 기기 이름 — 데스크톱 요청은 전부 이 이름 하나로 묶는다(id 는 렌더러가 만든 요청 id). */
 export const DESKTOP_DEVICE = 'desktop'
-
-/** 폰 허브와 같은 기록 찾기 — 대화와 같은 파일이되 유일한 후보만, 아직 없으면 그 세션이 쓸 경로(Claude·Grok). */
-export const desktopFileDeps: Pick<InputHubDeps, 'resolveFile' | 'expectedFile'> = {
-  resolveFile: ({ session, agent }) => {
-    const resolved = resolveTranscriptUnique(session)
-    return resolved.kind === 'found' ? { kind: 'found', file: chatFileOf({ agent, transcript: resolved.file }), continuedAs: resolved.continuedAs } : resolved
-  },
-  expectedFile: ({ channel, cwd }) => {
-    const { session, agent } = channel
-    if (session.kind !== 'id' || agent === 'codex') return null
-    return sessionRecordPaths(agent, { cwd, sessionId: session.id, t0Ms: 0, nowMs: 0 })[0] ?? null
-  },
-}
 
 export type DiffNotesSenderDeps = {
   /** 목록 재료 — 폰과 같은 마지막 상태. 아직 없으면 null. */
@@ -38,13 +24,15 @@ export type DiffNotesSenderDeps = {
   backend: () => InputBackend | null
   push: (state: DiffNotesState) => void
   log: (tag: string, fields?: Record<string, unknown>) => void
-  /** 시험이 기록 찾기·시간을 꽂는다. 없으면 `desktopFileDeps`·실제 시간. */
+  /** 시험이 기록 찾기·시간을 꽂는다. 없으면 `inputFileDeps()`·실제 시간. */
   hub?: Partial<Omit<InputHubDeps, 'read' | 'backend' | 'log'>>
 }
 
 export class DiffNotesSender {
   private readonly deps: DiffNotesSenderDeps
   private readonly hub: InputHub
+  /** 지금 렌더러가 낸, 아직 끝나지 않은 요청 id. */
+  private readonly open = new Set<string>()
 
   constructor(deps: DiffNotesSenderDeps) {
     this.deps = deps
@@ -54,18 +42,36 @@ export class DiffNotesSender {
       read: deps.read,
       backend: deps.backend,
       log,
-      ...desktopFileDeps,
+      // 기록 찾기는 폰 허브와 같은 함수(리뷰 r1 A9).
+      ...inputFileDeps(),
       // 질문 답은 이 인스턴스가 하지 않는다 — 판독자가 없다.
       questionItems: () => null,
+      // 리드 한 줄을 먼저 치고 본문을 붙여 넣는다(리뷰 r1 A1). 확인 단계가 같은 상수를 보인다.
+      lead: DIFF_NOTES_LEAD,
       ...deps.hub,
     })
     this.hub.attach({
       device: DESKTOP_DEVICE,
       sink: (text) => {
         const state = readWire(text)
-        if (state !== null) deps.push(state)
+        // 지금 렌더러가 낸 요청의 결과만 보낸다 — 렌더러가 바뀐 뒤 끝난 옛 요청의 결과는 버린다(리뷰 r1 A3).
+        if (state === null || !this.open.has(state.requestId)) return
+        if (FINAL.has(state.state)) this.open.delete(state.requestId)
+        deps.push(state)
       },
     })
+  }
+
+  /**
+   * 렌더러가 바뀌었다(다시 불러오기·렌더러 죽음·창 닫힘 — 리뷰 r1 A3). 그 렌더러가 낸 요청은 보는 화면도 취소 단추도 없다 —
+   * 대기 중(`queued`)은 취소하고(허브가 넣기 전이면 쓰지 않는다), 이미 넣는 중인 것은 결과만 버린다. 사용자 모르게 나중에 들어가는 쓰기 0.
+   */
+  rendererGone(reason: string): void {
+    const ids = [...this.open]
+    // 먼저 비운다 — 취소가 동기로 내는 `cancelled` 도 새 렌더러에 가지 않는다.
+    this.open.clear()
+    for (const id of ids) this.hub.cancel({ device: DESKTOP_DEVICE, id })
+    if (ids.length > 0) this.deps.log('diff_notes.renderer_gone', { reason, open: ids.length })
   }
 
   /** 보내기 접수 — 거절이면 아무것도 쓰지 않는다. 받으면 결과는 `push` 로 온다(대기·보내는 중·들어감·확인 못 함·실패). */
@@ -78,6 +84,8 @@ export class DiffNotesSender {
     if (bodyTooLarge(text)) return this.refuse('too_large')
     // 확인 단계에 보인 글이 그대로 들어가야 한다 — 허브가 정리해 바뀔 글이면 받지 않는다.
     if (cleanBody(text) !== text) return this.refuse('not_clean')
+    // main 은 본문을 다시 조립하지 않는다 — 형식(정리된 글·well-formed·상한)만 본다(리뷰 r1 A2·A8).
+    if (!wellFormed(text)) return this.refuse('ill_formed')
     if (normalizeBody(text).length === 0) return this.refuse('empty')
     const list = this.deps.read()
     if (list === null) return this.refuse('not_ready')
@@ -85,6 +93,7 @@ export class DiffNotesSender {
     const checked = checkNoteTarget({ worktrees, worktree, paneId })
     if (!checked.ok) return this.refuse(checked.reason)
     this.deps.log('diff_notes.accept', { kind: checked.kind, bytes: Buffer.byteLength(text) })
+    this.open.add(requestId)
     this.hub.send({ device: DESKTOP_DEVICE, id: requestId, channel: paneId, text })
     return { ok: true }
   }
@@ -101,6 +110,8 @@ export class DiffNotesSender {
     return { ok: false, reason }
   }
 }
+
+const FINAL: ReadonlySet<DiffNotesState['state']> = new Set<DiffNotesState['state']>(['delivered', 'unconfirmed', 'failed', 'cancelled', 'unknown'])
 
 function field(input: unknown, name: string): unknown {
   return typeof input === 'object' && input !== null && name in input ? Reflect.get(input, name) : undefined

@@ -1,6 +1,6 @@
 // diff 메모 본문·대상 (LIFE-832 L1·L4ⓐ~ⓔ·L9) — shared 순수 함수. 목록 고정값(main/mobile/list-fixture)을 쓰려고 main 아래 둔다(shared 는 main 을 import 하지 않는다).
 import { describe, expect, it } from 'vitest'
-import { checkNoteTarget, clipLineText, defaultTarget, formatNotesBody, LINE_TEXT_MAX, noteTargets, notesAllowed, readDiffNotesState, bodyTooLarge, type NoteForBody } from '../shared/diff-notes.js'
+import { checkNoteTarget, clipLineText, defaultTarget, DIFF_NOTES_LEAD, formatNotesBody, wellFormed, LINE_TEXT_MAX, noteTargets, notesAllowed, readDiffNotesState, bodyTooLarge, type NoteForBody } from '../shared/diff-notes.js'
 import { cleanBody, MAX_INPUT_BYTES } from '../shared/input-body.js'
 import { fixturePane, fixtureWorktree } from './mobile/list-fixture.js'
 import type { ScmDiffMode } from '../shared/scm.js'
@@ -81,6 +81,21 @@ describe('본문 형식 (L9 · D9)', () => {
     const long = 'x'.repeat(LINE_TEXT_MAX + 50)
     expect(clipLineText(long)).toBe(`${'x'.repeat(LINE_TEXT_MAX)}…`)
     expect(blocks(formatNotesBody({ notes: [{ rel: 'a', line: 1, lineText: long, body: 'm' }], against: [] }))[0]?.code).toBe(clipLineText(long))
+  })
+  it('300자 경계의 비BMP·결합 문자 — 코드 포인트로 잘라 서로게이트를 가르지 않는다 · 본문 well-formed(리뷰 r1 A2)', () => {
+    const emoji = `${'x'.repeat(LINE_TEXT_MAX - 1)}🙂🙂`
+    expect(clipLineText(emoji)).toBe(`${'x'.repeat(LINE_TEXT_MAX - 1)}🙂…`)
+    expect(wellFormed(clipLineText(emoji))).toBe(true)
+    const combining = `${'e\u0301'.repeat(200)}`
+    expect(wellFormed(clipLineText(combining))).toBe(true)
+    const body = formatNotesBody({ notes: [{ rel: 'a', line: 1, lineText: emoji, body: '짝 없는 \uD83D 서로게이트' }], against: ['인덱스'] })
+    expect(wellFormed(body)).toBe(true)
+    expect(body).toContain('짝 없는 \uFFFD 서로게이트')
+    expect(wellFormed('a\uDE00b')).toBe(false)
+  })
+  it('리드는 한 줄 · 정리 규칙 고정점', () => {
+    expect(DIFF_NOTES_LEAD.includes('\n')).toBe(false)
+    expect(cleanBody(DIFF_NOTES_LEAD)).toBe(DIFF_NOTES_LEAD)
   })
   it('상한 — 65536 바이트(UTF-8) 넘으면 막는다', () => {
     expect(bodyTooLarge('a'.repeat(MAX_INPUT_BYTES))).toBe(false)

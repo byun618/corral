@@ -109,6 +109,7 @@ const EXPOSED = [
   'fileWatch',
   'readImage',
   'scmRead',
+  'scmBaseMode',
   'onFileEvent',
   'writeFile',
   'fileDialog',
@@ -301,6 +302,8 @@ const api: CorralApi = {
   readImage: (input: { root: string; rel: string }): Promise<ImageReadResult> => ipcRenderer.invoke('corral:fileReadImage', input),
   // LIFE-683 S7 — 소스 제어 diff 의 HEAD·인덱스 쪽 내용(읽기 전용). ref 는 `side` 두 값뿐 — main 이 고정 argv 로 읽는다.
   scmRead: (input: ScmReadInput): Promise<ScmReadResult> => ipcRenderer.invoke('corral:scmRead', input),
+  // LIFE-830 — base 대비 켜기·끄기. ref 는 보내지 않는다(main 이 그 루트의 base 를 푼다).
+  scmBaseMode: (input: { root: string; on: boolean }) => ipcRenderer.send('corral:scmBaseMode', input),
   fileWatch: (input: { root: string; rels: string[] }): Promise<{ ok: boolean; count: number }> => ipcRenderer.invoke('corral:fileWatch', input),
   onFileEvent: (listener: (event: FileWatchPush) => void) => {
     const handler = (_event: unknown, push: FileWatchPush): void => listener(push)

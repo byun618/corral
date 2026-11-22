@@ -150,6 +150,7 @@ import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
 import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
 import { readFileContent, readImageContent } from './file-read.js'
 import { readScmContent } from './scm-read.js'
+import { gitRunner, resolveScmBase, scmBaseInputsOf, type ScmBaseInputs } from './scm-base.js'
 import { PrStatus } from './pr-status.js'
 import { createFileWatch, type FileWatch } from './file-watch.js'
 import { loadTestHooks, writeFileContent } from './file-write.js'
@@ -574,6 +575,21 @@ function homeDirReal(): string {
   } catch {
     return home
   }
+}
+
+/** base 대비 재료 (LIFE-830) — 트리·레지스트리에서 읽어 `scmBaseInputsOf`(같은 레포 부모만, 시험 고정)에 넘긴다. */
+function scmBaseInputs(root: string): ScmBaseInputs {
+  return scmBaseInputsOf({
+    repos: currentState().repos,
+    root,
+    baseRefOf: (repoRoot) => {
+      try {
+        return registry?.records().find((record) => record.path === repoRoot)?.baseRef ?? null
+      } catch {
+        return null
+      }
+    },
+  })
 }
 
 /** 레지스트리 워크트리 메타 (LIFE-478) — 못 읽으면 빈 값(레지스트리 오류는 `registry.lastError` 가 따로 보인다). */
@@ -1758,7 +1774,11 @@ function createWindow(): void {
     }
   })
   window.on('closed', () => quitGate.setDirty([]))
-  window.webContents.on('render-process-gone', () => quitGate.setDirty([]))
+  window.webContents.on('render-process-gone', () => {
+    quitGate.setDirty([])
+    // LIFE-830 수정 r1 A5 — 죽은 렌더러가 켜 둔 base 대비를 남기지 않는다(새 렌더러가 필요하면 다시 켠다).
+    explorerHub?.clearBaseModes()
+  })
   /**
    * LIFE-591 E3ⓕ — 렌더러 다시 불러오기(기본 메뉴 View ▸ Force Reload ⌘⇧R 등 — ⌘R 은 위 `before-input-event` 가 가져간다). 렌더러는 수정 파일이 있으면
    * `beforeunload` 를 막는다 → 여기서 묻고, 「다시 불러오기」 면 막음을 무시한다(`preventDefault` = 그래도 내린다 — Electron 문서 패턴). 종료 확인을 이미 지났으면 묻지 않는다.
@@ -1840,6 +1860,8 @@ function createWindow(): void {
    */
   window.webContents.on('did-start-loading', () => {
     shortcutRecording = false
+    // LIFE-830 수정 r1 A5 — 다시 불러오기 전 문서가 켠 base 대비는 그 문서와 함께 끝난다(새 문서의 useScm 이 다시 켠다).
+    explorerHub?.clearBaseModes()
     explorerFocused = false
     window?.webContents.setIgnoreMenuShortcuts(false)
   })
@@ -2292,6 +2314,7 @@ app.whenReady().then(async () => {
     },
     roots: explorerRoots,
     log,
+    baseInputs: scmBaseInputs,
   })
   // --- 전체 파일 목록 (LIFE-593 F5) — 읽기 전용, 루트는 탐색기와 같은 「지금 열린 worktree」 만(`file-list.ts` — confine 루트 대조 · 셸 없는 git · 취소) ---
   // git 절대 경로는 부를 때마다 그때 열린 루트로 고른다(PATH 의 절대 항목만, 열린 worktree 아래는 건너뜀 — `resolveGit` · 수정 r1 R1-C-04). 바뀔 때만 적는다.
@@ -2340,12 +2363,20 @@ app.whenReady().then(async () => {
     return result
   })
   // LIFE-683 S7 — 소스 제어 diff 의 HEAD·인덱스 내용. 가둠·argv 고정·상한·바이너리는 `readScmContent`. 경로는 남기지 않는다(쓰기 0 계측은 `scm.read` 수).
+  // LIFE-830 — side `base` 는 main 이 그 루트의 base·merge-base 를 레지스트리 재료로 푼다(렌더러는 ref 를 보내지 않는다).
   ipcMain.handle('corral:scmRead', async (event, input: unknown) => {
     if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
     const field = (name: string): unknown => (typeof input === 'object' && input !== null && name in input ? Reflect.get(input, name) : undefined)
     const startedAt = performance.now()
-    const result = await readScmContent({ roots: explorerRoots(), root: field('root'), rel: field('rel'), side: field('side') })
-    log('scm.read', { ok: result.ok, side: field('side') === 'head' ? 'head' : 'index', kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok && 'size' in result ? result.size : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
+    const result = await readScmContent({
+      roots: explorerRoots(),
+      root: field('root'),
+      rel: field('rel'),
+      side: field('side'),
+      resolveBase: ({ root, realRoot }) => resolveScmBase({ run: gitRunner(realRoot), ...scmBaseInputs(root) }),
+    })
+    const side = field('side')
+    log('scm.read', { ok: result.ok, side: side === 'head' || side === 'base' ? side : 'index', kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok && 'size' in result ? result.size : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
     return result
   })
   // 이미지 바이트(E4ⓔ) — 확장자 목록·가둠·상한은 `readImageContent`. 경로는 남기지 않는다.
@@ -2462,6 +2493,13 @@ app.whenReady().then(async () => {
   })
   ipcMain.on('corral:explorerRefreshGit', (event, root: unknown) => {
     if (fromOurWindow(event)) explorerHub?.refreshGit(root)
+  })
+  // LIFE-830 — 소스 제어 base 대비 켜기·끄기(루트별). 값은 루트와 켜짐 여부뿐 — base 는 main 이 푼다.
+  ipcMain.on('corral:scmBaseMode', (event, input: unknown) => {
+    if (!fromOurWindow(event)) return
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const on = typeof input === 'object' && input !== null && 'on' in input && input.on === true
+    explorerHub?.setBaseMode({ root, on })
   })
   ipcMain.handle('corral:explorerAction', (event, input: unknown) =>
     fromOurWindow(event)

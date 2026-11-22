@@ -37,3 +37,9 @@
 .scm-diff-notice { flex-shrink: 0; padding: 4px 12px; font-family: var(--font-ui); font-size: 12px; color: var(--fg-muted); background: var(--bg-accent); }
 .scm-diff-host { flex: 1 1 auto; min-height: 0; position: relative; }
 .scm-diff-message { padding: 16px; font-family: var(--font-ui); font-size: 13px; color: var(--fg-muted); }
+
+/* --- base 대비 (LIFE-830) — 머리 아래 한 줄: 이름은 줄고(말줄임) 출처·해시는 줄지 않는 칸(learnings ui.md 「줄지 않는 칸」). 띠 모양은 `.scm-banner` 와 같다. */
+.scm-base { flex-shrink: 0; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 12px; font-size: 12px; color: var(--fg-muted); background: var(--bg-accent); }
+.scm-base-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.scm-base-tail { flex: 0 0 auto; display: inline-flex; gap: 6px; white-space: nowrap; }
+.scm-base-hash { font-family: var(--font-mono, monospace); }

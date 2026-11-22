@@ -94,9 +94,9 @@ describe('ExplorerHub base 대비 (LIFE-830)', () => {
     await hub.subscribe(root)
     await nextGit(1)
     hub.setBaseMode(root, true)
-    await nextGit(2)
+    const second = await nextGit(2)
     const on = await nextBase(1)
-    expect(pushed.indexOf(on)).toBeGreaterThan(pushed.indexOf(gitPushes()[1] as GitPush))
+    expect(pushed.indexOf(on)).toBeGreaterThan(pushed.indexOf(second))
     expect(on.base).toMatchObject({ ok: true, info: { name: 'main', source: 'repo' }, total: 2 })
     expect(on.base.ok === true ? on.base.changes.map((change) => [change.status, change.rel]) : null).toEqual([
       ['ADDED', 'b.txt'],

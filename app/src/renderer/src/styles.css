@@ -1644,3 +1644,18 @@ body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
 /* LIFE-823 C2 — 폴더를 탭 영역 위로 끄는 중: 존 강조 없이 불가 커서(탭 끌기 `grabbing` 보다 뒤에 둬 이긴다). */
 body.is-tab-drag.is-file-drag-blocked,
 body.is-tab-drag.is-file-drag-blocked * { cursor: not-allowed; }
+
+/* LIFE-834 — 음성 받아쓰기 녹음 중 표시. 창 아래 가운데 떠 있는 작은 상자(pane 내용을 밀지 않는다). */
+.dictation-indicator {
+  position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%); z-index: 50;
+  max-width: min(560px, calc(100vw - 32px)); padding: 8px 12px; border-radius: var(--radius);
+  background: var(--bg-raised); border: 1px solid var(--line); color: var(--fg);
+  box-shadow: var(--shadow-floating); font-size: 12px; pointer-events: none;
+}
+.dictation-indicator-row { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.dictation-indicator-dot { width: 8px; height: 8px; border-radius: 8px; flex: 0 0 auto; background: var(--st-error); }
+.dictation-indicator.phase-starting .dictation-indicator-dot, .dictation-indicator.phase-stopping .dictation-indicator-dot { background: var(--fg-faint); }
+.dictation-indicator-status { font-weight: 600; }
+.dictation-indicator-hint { margin-left: auto; padding-left: 12px; color: var(--fg-faint); font-family: var(--font-mono); }
+.dictation-indicator-partial { margin-top: 6px; color: var(--fg-muted); overflow-wrap: anywhere; }
+.dictation-indicator-silent { margin-top: 6px; color: var(--fg-notice); }

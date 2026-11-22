@@ -15,6 +15,8 @@ import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { parsePaneTarget, parseRevealRequest, parseSearchRequest, type TerminalRevealResult, type TerminalSearchResult } from '../shared/terminal-search.js'
 import { closeTabsGated, runningForeground } from './close-tabs.js'
 import { footprintHelperPath, homesOf, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
+import { createDictationManager, dictationHelperPath, nodeDictationDeps, type DictationManager } from './dictation.js'
+import { MIC_PRIVACY_SETTINGS_URL } from '../shared/dictation.js'
 import { confirmedDeadSlot, directoryNow, keepRetention, prunableRetained, slotStateNow, slotStateOf } from './retention.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
@@ -293,6 +295,8 @@ let settings: SettingsStore | null = null
 let usage: UsageService | null = null
 /** 에이전트 감지 (LIFE-520) — 기동 때 백그라운드로 한 번. 창·런타임 기동은 이것을 기다리지 않는다(K2ⓑ). */
 let agentDetector: AgentDetector | null = null
+/** 음성 받아쓰기 (LIFE-834) — 도우미는 시작할 때만 뜬다. 창 닫힘·렌더러 소멸·종료에서 바로 끝낸다(고아 없음). */
+let dictation: DictationManager | null = null
 /** 설정 › 작업 연결 (LIFE-600) — 기동 때는 저장 파일만 읽는다. 자격(키체인)은 그 연결이 처음 쓰일 때 푼다(C6). */
 let work: WorkService | null = null
 /** LIFE-603 — 작업 링크(해석·쓰기·사건)와 「작업에서 시작」. 작업 서비스와 같이 선다. */
@@ -1757,8 +1761,14 @@ function createWindow(): void {
       reshowForConfirm('window-close')
     }
   })
-  window.on('closed', () => quitGate.setDirty([]))
-  window.webContents.on('render-process-gone', () => quitGate.setDirty([]))
+  window.on('closed', () => {
+    quitGate.setDirty([])
+    dictation?.dispose()
+  })
+  window.webContents.on('render-process-gone', () => {
+    quitGate.setDirty([])
+    dictation?.dispose()
+  })
   /**
    * LIFE-591 E3ⓕ — 렌더러 다시 불러오기(기본 메뉴 View ▸ Force Reload ⌘⇧R 등 — ⌘R 은 위 `before-input-event` 가 가져간다). 렌더러는 수정 파일이 있으면
    * `beforeunload` 를 막는다 → 여기서 묻고, 「다시 불러오기」 면 막음을 무시한다(`preventDefault` = 그래도 내린다 — Electron 문서 패턴). 종료 확인을 이미 지났으면 묻지 않는다.
@@ -2552,6 +2562,32 @@ app.whenReady().then(async () => {
     if (typeof input?.paneId !== 'string' || typeof input.data !== 'string') return
     stream.input(input)
   })
+  // LIFE-834 음성 받아쓰기 — 넣기는 렌더러가 termInput(붙여넣기 큐)으로 한다. 여기는 도우미 기동·정지·취소와 이벤트 중계만.
+  const dictationManager = createDictationManager(
+    nodeDictationDeps({
+      helper: dictationHelperPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, mainDir: here }),
+      platform: process.platform,
+      release: os.release(),
+      send: (dictationEvent) => {
+        if (window !== null && !window.isDestroyed()) window.webContents.send('corral:dictationEvent', dictationEvent)
+      },
+      log,
+    }),
+  )
+  dictation = dictationManager
+  ipcMain.handle('corral:dictationStart', (event, input: { sessionId: string }) => {
+    if (!fromOurWindow(event) || typeof input?.sessionId !== 'string') return { ok: false, code: 'rejected', message: '' }
+    return dictationManager.start({ sessionId: input.sessionId })
+  })
+  ipcMain.on('corral:dictationStop', (event, input: { sessionId: string }) => {
+    if (fromOurWindow(event) && typeof input?.sessionId === 'string') dictationManager.stop({ sessionId: input.sessionId })
+  })
+  ipcMain.on('corral:dictationCancel', (event, input: { sessionId: string }) => {
+    if (fromOurWindow(event) && typeof input?.sessionId === 'string') dictationManager.cancel({ sessionId: input.sessionId })
+  })
+  ipcMain.handle('corral:dictationOpenPrivacy', async (event) => {
+    if (fromOurWindow(event)) await shell.openExternal(MIC_PRIVACY_SETTINGS_URL)
+  })
   /**
    * ⌘V 이미지 붙여넣기 (LIFE-497 · D41) — 렌더러가 **클립보드에 텍스트가 없을 때만** 부른다.
    * PNG 를 임시 폴더에 쓰고 경로만 돌려준다. PTY 로 쓰는 것은 렌더러가 ⌘V 를 받은 pane 에 termInput 으로 한다 —
@@ -2821,6 +2857,7 @@ app.on('before-quit', event => {
   // LIFE-593 수정 r2 R2-C-01 — 가로챔을 지난 종료(⌘Q·창 닫힘)에서는 `window-all-closed` 가 오지 않는다. 진행 중 목록 git 그룹을 여기서 동기로 끝낸다(타이머 없이 SIGKILL).
   fileLister?.killAll()
   contentSearcher?.killAll()
+  dictation?.dispose()
   // LIFE-520 fix1 R1-06 — 진행 중 감지 셸(새 프로세스 그룹)을 끝낸다. 앱 타이머가 멈추면 시한 kill 이 오지 않는다.
   agentDetector?.killAll()
   // 런타임 정리(Mobile serve 제거 + 런타임 닫기)는 **한 번만** 돌리고, 정리 중 다시 온 종료 요청(창 파기 → `window-all-closed` 의 `app.quit()` 등)도
@@ -2842,6 +2879,7 @@ app.on('before-quit', event => {
 
 app.on('window-all-closed', () => {
   agentDetector?.killAll()
+  dictation?.dispose()
   usage?.dispose()
   usage = null
   explorerHub?.dispose()

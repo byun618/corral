@@ -46,6 +46,7 @@ import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerO
 import type { FileListInput, FileListResult } from '../shared/file-list.js'
 import type { ContentSearchInput, ContentSearchResult } from '../shared/content-search.js'
 import type { ScmReadInput, ScmReadResult } from '../shared/scm.js'
+import type { DictationEvent, DictationStartResult } from '../shared/dictation.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
 
 const EXPOSED = [
@@ -138,6 +139,11 @@ const EXPOSED = [
   'focusPaneDirection',
   'onTermFrame',
   'onShortcut',
+  'dictationStart',
+  'dictationStop',
+  'dictationCancel',
+  'dictationOpenPrivacy',
+  'onDictationEvent',
   'getWindowChrome',
   'onWindowChrome',
   'syncWindowZoom',
@@ -411,6 +417,18 @@ const api: CorralApi = {
     ipcRenderer.on('corral:shortcut', handler)
     return () => {
       ipcRenderer.removeListener('corral:shortcut', handler)
+    }
+  },
+  // LIFE-834 음성 받아쓰기.
+  dictationStart: (input: { sessionId: string }): Promise<DictationStartResult> => ipcRenderer.invoke('corral:dictationStart', input),
+  dictationStop: (input: { sessionId: string }) => ipcRenderer.send('corral:dictationStop', input),
+  dictationCancel: (input: { sessionId: string }) => ipcRenderer.send('corral:dictationCancel', input),
+  dictationOpenPrivacy: (): Promise<void> => ipcRenderer.invoke('corral:dictationOpenPrivacy'),
+  onDictationEvent: (listener: (event: DictationEvent) => void) => {
+    const handler = (_event: unknown, dictationEvent: DictationEvent): void => listener(dictationEvent)
+    ipcRenderer.on('corral:dictationEvent', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:dictationEvent', handler)
     }
   },
   // LIFE-527 — 창 크롬(전체화면·줌). 줌 값은 main 이 자기 webContents 에서 읽는다 — 렌더러는 「바뀌었을지 모른다」만 알린다.

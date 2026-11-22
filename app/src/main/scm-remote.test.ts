@@ -7,14 +7,17 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { resolveGit } from './file-list.js'
 import { ScmWriter, type ScmWriteDeps } from './scm-write.js'
 import {
   SCM_FETCH_ARGS,
   SCM_REMOTE_KILL_GRACE_MS,
+  SCM_REMOTE_SHUTDOWN_MS,
   SCM_REMOTE_TIMEOUT_MS,
   ScmRemote,
+  clipErrorText,
+  runRemoteGit,
   scmPublishArgs,
   scmPullArgs,
   scmPushArgs,
@@ -166,9 +169,9 @@ function hang(root: string): void {
 describe('argv·env 고정 (K1·K2·K3·K4ⓐ·K6ⓒ)', () => {
   it('동작마다 고정 모양 — 그 밖 플래그 없음, 상한 10 분·유예 1 초', () => {
     expect(SCM_FETCH_ARGS).toEqual(['fetch'])
-    expect(scmPullArgs({ remote: 'origin', upstream: 'main' })).toEqual(['pull', 'origin', 'main'])
-    expect(scmPushArgs({ remote: 'origin', branch: 'feat', upstream: 'main' })).toEqual(['push', 'origin', 'feat:main'])
-    expect(scmPublishArgs({ remote: 'second', branch: 'feat' })).toEqual(['push', '-u', 'second', 'feat'])
+    expect(scmPullArgs({ remote: 'origin', upstream: 'main' })).toEqual(['pull', 'origin', 'refs/heads/main'])
+    expect(scmPushArgs({ remote: 'origin', branch: 'feat', upstream: 'main' })).toEqual(['push', 'origin', 'refs/heads/feat:refs/heads/main'])
+    expect(scmPublishArgs({ remote: 'second', branch: 'feat' })).toEqual(['push', '-u', 'second', 'refs/heads/feat'])
     expect(SCM_REMOTE_TIMEOUT_MS).toBe(600_000)
     expect(SCM_REMOTE_KILL_GRACE_MS).toBe(1_000)
   })
@@ -198,7 +201,7 @@ describe('K1 push', () => {
     expect(bareRef(f.bare, 'refs/heads/main')).toBe(rev(f.work))
     expect(ab(f.work)).toBe('+0 -0')
     expect(h.spawns).toHaveLength(1)
-    expect(argvOf(h.spawns[0]!.pid)).toEqual(['push', 'origin', 'main:main'])
+    expect(argvOf(h.spawns[0]!.pid)).toEqual(['push', 'origin', 'refs/heads/main:refs/heads/main'])
     expect(h.refreshed).toEqual([f.work])
     expect(h.statusChanged).toEqual([f.work])
   })
@@ -210,7 +213,7 @@ describe('K1 push', () => {
     expect(await h.remote.run({ action: 'push', root: f.work })).toEqual({ ok: true })
     expect(bareRef(f.bare, 'refs/heads/main')).toBe(rev(f.work))
     expect(bareRef(f.bare, 'refs/heads/feat')).toBeNull()
-    expect(argvOf(h.spawns[0]!.pid)).toEqual(['push', 'origin', 'feat:main'])
+    expect(argvOf(h.spawns[0]!.pid)).toEqual(['push', 'origin', 'refs/heads/feat:refs/heads/main'])
   })
   it('앞선 것 없음(ahead 0) — git 은 한 번 돌고 조용히 성공', async () => {
     const f = fixture()
@@ -233,7 +236,7 @@ describe('K2 브랜치 게시', () => {
     expect(git(f.work, 'config', '--get', 'branch.newb.remote').trim()).toBe('origin')
     expect(git(f.work, 'config', '--get', 'branch.newb.merge').trim()).toBe('refs/heads/newb')
     expect(h.picks).toEqual([])
-    expect(argvOf(h.spawns[0]!.pid)).toEqual(['push', '-u', 'origin', 'newb'])
+    expect(argvOf(h.spawns[0]!.pid)).toEqual(['push', '-u', 'origin', 'refs/heads/newb'])
     // 그 뒤 push 는 upstream 으로 간다(단추가 「밀어넣기」로 돌아온 상태).
     commit(f.work, 'n2.txt', 'n2\n')
     expect(await h.remote.run({ action: 'push', root: f.work })).toEqual({ ok: true })
@@ -255,7 +258,7 @@ describe('K2 브랜치 게시', () => {
     expect(await h.remote.run({ action: 'publish', root: f.work })).toEqual({ ok: true })
     expect(bareRef(second, 'refs/heads/pub2')).toBe(rev(f.work))
     expect(bareRef(f.bare, 'refs/heads/pub2')).toBeNull()
-    expect(argvOf(h.spawns[0]!.pid)).toEqual(['push', '-u', 'second', 'pub2'])
+    expect(argvOf(h.spawns[0]!.pid)).toEqual(['push', '-u', 'second', 'refs/heads/pub2'])
   })
   it('ⓑ 고르기가 목록 밖 이름·옵션 모양을 돌려주면 git 없이 거절(K9)', async () => {
     const f = fixture()
@@ -303,7 +306,7 @@ describe('K3 pull', () => {
     expect(await h.remote.run({ action: 'pull', root: f.work })).toEqual({ ok: true })
     expect(rev(f.work)).toBe(rev(f.work, '@{u}'))
     const argv = argvOf(h.spawns[0]!.pid)
-    expect(argv).toEqual(['pull', 'origin', 'main'])
+    expect(argv).toEqual(['pull', 'origin', 'refs/heads/main'])
     expect(argv.some((arg) => /^--(no-)?rebase|^--ff|^--tags|^--autostash|^-c$/.test(arg))).toBe(false)
   })
   it('ⓑ 갈라짐 + pull.rebase 미설정 — git 이 거절, 분류 안내 + 원문, 상태 무변화(HEAD·인덱스·작업 트리)', async () => {
@@ -466,7 +469,7 @@ describe('K4 fetch·진행·취소·상한', () => {
     expect(git(f.work, 'diff', '--cached', '--name-only').trim()).toBe('y.txt')
   }, 15_000)
 
-  it('큐에서 기다리던 원격 동작의 취소 — git 없이 빠진다', async () => {
+  it('큐에서 기다리던 원격 동작의 취소 — git 없이 빠지고, 결과는 앞 쓰기를 기다리지 않고 바로 온다(수정 r1 C8ⓑ)', async () => {
     const f = fixture()
     let release = (): void => {}
     const gate = new Promise<void>((resolve) => {
@@ -478,10 +481,13 @@ describe('K4 fetch·진행·취소·상한', () => {
     const pending = h.remote.run({ action: 'fetch', root: f.work })
     await new Promise((resolve) => setTimeout(resolve, 100))
     expect(h.remote.cancel({ root: f.work })).toEqual({ ok: true })
-    release()
-    await blocker
+    // 앞 쓰기(gate)는 아직 안 끝났다 — 그래도 결과가 온다.
     const result = await pending
     expect(result.ok ? null : result.code).toBe('cancelled')
+    expect(h.remote.busy(f.work)).toBe(false)
+    release()
+    await blocker
+    await new Promise((resolve) => setTimeout(resolve, 200))
     expect(h.spawns).toEqual([])
     expect(h.logs.find((entry) => entry.event === 'scm.remote.cancel')?.data).toMatchObject({ running: false })
     expect(h.statusChanged).toEqual([])
@@ -644,5 +650,161 @@ describe('K7·K9 재조회 신호·가둠', () => {
     expect(await h.writer.write({ action: 'commit', root: f.work, message: '', amend: false })).toMatchObject({ ok: false, code: 'empty_message' })
     expect(h.statusChanged).toEqual([`commit:${f.work}`, `commit:${f.work}`])
     expect(ab(f.work)).toBe('+1 -0')
+  })
+})
+
+describe('수정 r1', () => {
+  it('C2 브랜치와 같은 이름 태그가 있어도 push·pull·게시가 그 브랜치·upstream 으로 간다', async () => {
+    const f = fixture()
+    git(f.work, 'tag', 'main')
+    commit(f.other, 'o.txt', 'o\n')
+    git(f.other, 'push', '-q')
+    const h = harness({ roots: [f.work] })
+    expect(await h.remote.run({ action: 'pull', root: f.work })).toEqual({ ok: true })
+    expect(rev(f.work)).toBe(rev(f.other))
+    commit(f.work, 'w.txt', 'w\n')
+    expect(await h.remote.run({ action: 'push', root: f.work })).toEqual({ ok: true })
+    expect(bareRef(f.bare, 'refs/heads/main')).toBe(rev(f.work))
+    git(f.work, 'checkout', '-q', '-b', 'rel')
+    git(f.work, 'tag', 'rel')
+    expect(await h.remote.run({ action: 'publish', root: f.work })).toEqual({ ok: true })
+    expect(bareRef(f.bare, 'refs/heads/rel')).toBe(rev(f.work))
+    expect(git(f.work, 'config', '--get', 'branch.rel.merge').trim()).toBe('refs/heads/rel')
+    expect(h.spawns.map((spawned) => argvOf(spawned.pid))).toEqual([
+      ['pull', 'origin', 'refs/heads/main'],
+      ['push', 'origin', 'refs/heads/main:refs/heads/main'],
+      ['push', '-u', 'origin', 'refs/heads/rel'],
+    ])
+  })
+
+  it('C3 앱 종료 — 도는 원격 git 그룹을 끝내고(잔존 0) 상한 안에 돌아온다 · 기다리던 동작은 git 없이 · 종료 뒤 새 동작은 받지 않는다', async () => {
+    const f = fixture()
+    const g2 = fixture()
+    hang(f.work)
+    git(f.work, 'config', 'core.sshCommand', "sh -c 'trap \"\" TERM; sleep 600'") // SIGTERM 을 무시하는 그룹원 — SIGKILL 까지 가야 끝난다
+    const h = harness({ roots: [f.work, g2.work] })
+    const running = h.remote.run({ action: 'fetch', root: f.work })
+    await waitFor(() => h.spawns.length === 1)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const pid = h.spawns[0]!.pid
+    let release = (): void => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const blocker = h.writer.enqueue(g2.work, () => gate)
+    const queued = h.remote.run({ action: 'fetch', root: g2.work })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const startedAt = Date.now()
+    await h.remote.shutdown()
+    expect(Date.now() - startedAt).toBeLessThanOrEqual(SCM_REMOTE_SHUTDOWN_MS + 200)
+    expect(groupAlive(pid)).toBe(false)
+    expect((await running).ok ? null : 'cancelled').toBe('cancelled')
+    expect((await queued).ok ? null : 'cancelled').toBe('cancelled')
+    release()
+    await blocker
+    expect(h.spawns).toHaveLength(1)
+    const after = await h.remote.run({ action: 'fetch', root: g2.work })
+    expect(after.ok ? null : after.code).toBe('cancelled')
+    expect(h.spawns).toHaveLength(1)
+    expect(h.logs.find((entry) => entry.event === 'scm.remote.shutdown')?.data).toMatchObject({ running: 1 })
+    expect(h.logs.filter((entry) => entry.event === 'scm.remote.kill').map((entry) => `${String(entry.data.reason)}:${String(entry.data.signal)}`)).toEqual(['shutdown:SIGTERM', 'shutdown:SIGKILL'])
+    expect(fs.existsSync(path.join(f.work, '.git', 'index.lock'))).toBe(false)
+  }, 15_000)
+
+  it('C3 상한 — 그룹이 안 죽어도 shutdown 은 상한에서 돌아온다(무기한 기다리지 않는다)', async () => {
+    const f = fixture()
+    hang(f.work)
+    const h = harness({ roots: [f.work] })
+    const running = h.remote.run({ action: 'fetch', root: f.work })
+    await waitFor(() => h.spawns.length === 1)
+    const pid = h.spawns[0]!.pid
+    // SIGTERM·SIGKILL 이 닿지 않는 것처럼 — 신호 보내기를 막는다(존재 확인 0 은 그대로).
+    const real = process.kill.bind(process)
+    const spy = vi.spyOn(process, 'kill').mockImplementation((target, signal) => (signal === 0 || signal === undefined ? real(target, signal) : true))
+    const startedAt = Date.now()
+    await h.remote.shutdown(400)
+    const ms = Date.now() - startedAt
+    spy.mockRestore()
+    expect(ms).toBeGreaterThanOrEqual(350)
+    expect(ms).toBeLessThan(1500)
+    expect(groupAlive(pid)).toBe(true)
+    real(-pid, 'SIGKILL')
+    await running
+    await waitFor(() => !groupAlive(pid), 2000)
+  }, 15_000)
+
+  it('C5 pull.rebase=true + 작업 트리 변경 — 「작업 트리의 변경이 …」 안내, 작업 트리 무변화', async () => {
+    const f = fixture()
+    commit(f.other, 'o.txt', 'o\n')
+    git(f.other, 'push', '-q')
+    git(f.work, 'config', 'pull.rebase', 'true')
+    fs.writeFileSync(path.join(f.work, 'a.txt'), 'dirty\n')
+    const before = treeState(f.work)
+    const h = harness({ roots: [f.work] })
+    const result = await h.remote.run({ action: 'pull', root: f.work })
+    expect(result.ok ? '' : result.error).toMatch(/cannot pull with rebase|unstaged changes/)
+    expect(scmRemoteMessage({ action: 'pull', result })?.text).toContain('작업 트리의 변경이 끌어올 변경과 겹칩니다')
+    expect(treeState(f.work)).toBe(before)
+  })
+
+  it('C4 분류 — HTTP 401/403 은 권한·자격 문장, `unable to access` 단독은 분류 없음 · C5 dirty rebase 문구', () => {
+    expect(classifyRemoteError("fatal: unable to access 'https://h/x.git/': The requested URL returned error: 403")).toContain('HTTP 401/403')
+    expect(classifyRemoteError("fatal: unable to access 'https://h/x.git/': The requested URL returned error: 401")).toContain('HTTP 401/403')
+    expect(classifyRemoteError("fatal: unable to access 'https://h/x.git/': SSL certificate problem: unable to get local issuer certificate")).toBeNull()
+    expect(classifyRemoteError("fatal: unable to access 'https://h/x.git/': Could not resolve host: h")).toContain('닿지 못했습니다')
+    expect(classifyRemoteError('error: cannot pull with rebase: You have unstaged changes.\nerror: Please commit or stash them.')).toContain('작업 트리의 변경')
+    expect(classifyRemoteError('error: cannot pull with rebase: Your index contains uncommitted changes.')).toContain('작업 트리의 변경')
+  })
+
+  it('C9 긴 훅 출력 — 꼬리(원인 줄)가 남고 상한 안, 분류는 자르기 전 전체로(hint)', async () => {
+    const f = fixture()
+    fs.mkdirSync(path.join(f.work, '.githooks'))
+    // 앞에 CONFLICT 모양 줄(앞쪽 — 분류 대상)을 두고 40KB 출력 뒤 원인 줄로 끝낸다.
+    fs.writeFileSync(path.join(f.work, '.githooks', 'pre-push'), "#!/bin/sh\necho 'CONFLICT (content): hook says' >&2\nawk 'BEGIN{for(i=0;i<800;i++) print \"hook-noise-line-0123456789-0123456789-0123456789\"}' >&2\necho 'L831_TAIL_REASON' >&2\nexit 1\n", { mode: 0o755 })
+    git(f.work, 'config', 'core.hooksPath', '.githooks')
+    commit(f.work, 't.txt', 't\n')
+    const h = harness({ roots: [f.work] })
+    const result = await h.remote.run({ action: 'push', root: f.work })
+    expect(result.ok).toBe(false)
+    const error = result.ok ? '' : result.error
+    expect(error).toContain('L831_TAIL_REASON')
+    expect(error).toContain('줄임')
+    expect(error.length).toBeLessThan(16 * 1024 + 100)
+    expect(result.ok ? undefined : result.hint).toContain('충돌 1개')
+    expect(clipErrorText('x'.repeat(100))).toBe('x'.repeat(100))
+    const clipped = clipErrorText(`HEAD${'m'.repeat(40_000)}TAIL`)
+    expect(clipped.startsWith('HEAD')).toBe(true)
+    expect(clipped.endsWith('TAIL')).toBe(true)
+    // hint 가 있으면 문구는 그것을 쓴다(null 이면 분류 문장 없이 원문만).
+    expect(scmRemoteMessage({ action: 'push', result: { ok: false, code: 'git_error', error: 'Could not resolve host', hint: null } })?.text).toBe('Could not resolve host')
+  })
+
+  it('C8ⓐ 정상 종료(exit 0)가 먼저면 끝 무렵 온 취소가 성공을 「취소」로 바꾸지 않는다', async () => {
+    const f = fixture()
+    const fake = path.join(f.dir, 'git-fetch-ignore-term.sh')
+    // fetch 만: SIGTERM 을 무시하고 0.4 초 뒤 exit 0(취소가 와도 정상 종료) — 그 밖은 진짜 git.
+    fs.writeFileSync(fake, `#!/bin/sh\nif [ "$3" = fetch ]; then trap '' TERM; sleep 0.4; exit 0; fi\nexec '${REAL_GIT}' "$@"\n`, { mode: 0o755 })
+    const h = harness({ roots: [f.work], over: { git: () => fake, graceMs: 5000 } })
+    const pending = h.remote.run({ action: 'fetch', root: f.work })
+    await waitFor(() => h.spawns.length === 1)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    h.remote.cancel({ root: f.work })
+    expect(await pending).toEqual({ ok: true })
+  }, 15_000)
+
+  it('C7 그룹이 이미 없으면 결과 뒤 유예 SIGKILL 타이머를 지운다(그 뒤 그룹 신호 0)', async () => {
+    const f = fixture()
+    const fake = path.join(f.dir, 'git-sleep.sh')
+    fs.writeFileSync(fake, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 })
+    const running = runRemoteGit({ git: fake, cwd: f.work, args: ['fetch'], env: process.env, timeoutMs: 60_000, graceMs: 300 })
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    running.kill('cancel')
+    const run = await running.done
+    expect(run.killed).toBe('cancel')
+    const spy = vi.spyOn(process, 'kill')
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const calls = spy.mock.calls.length
+    spy.mockRestore()
+    expect(calls).toBe(0)
   })
 })

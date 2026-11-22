@@ -55,6 +55,7 @@ export type ScmApi = {
 
 export function useScm({ root, active }: { root: string | null; active: boolean }): ScmApi {
   const stores = useRef(new Map<string, ScmRootState>())
+  const remotes = useRef(new Map<string, ScmRemoteAction>())
   const [version, bump] = useReducer((value: number) => value + 1, 0)
   const [mode, setModeState] = useState<'list' | 'tree'>('list')
   const [compareByRoot, setCompareByRoot] = useState(() => new Map<string, ScmCompare>())
@@ -112,6 +113,34 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
     return acquireExplorerWatch(root)
   }, [active, root])
 
+  // 원격 진행 상태(수정 r1 C6) — main 이 시작·끝을 민다. 렌더러가 다시 그려졌거나(reload·창 재생성) 루트를 바꿨으면 main 에 물어 되살린다.
+  useEffect(
+    () =>
+      window.corral.onScmRemoteEvent((event) => {
+        if (event.action === null) remotes.current.delete(event.root)
+        else remotes.current.set(event.root, event.action)
+        bump()
+      }),
+    [],
+  )
+  useEffect(() => {
+    if (root === null) return
+    let cancelled = false
+    void window.corral
+      .scmRemoteState({ root })
+      .then((state) => {
+        if (cancelled || state.action === null || remotes.current.has(root)) return
+        remotes.current.set(root, state.action)
+        bump()
+      })
+      .catch(() => {
+        // 모르면 진행 없음으로 둔다 — 누르면 main 이 `busy` 로 답하고 그때 다시 묻는다.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [root])
+
   useEffect(() => {
     if (!active || root === null || compare !== 'base') return
     // 켤 때 앞서 받은 목록(꺼져 있던 동안 낡았다)은 버린다 — 새 `scmBase` push 까지 「읽는 중」.
@@ -138,7 +167,6 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
   }, [root])
 
   const writes = useRef(new Map<string, ScmWriteState>())
-  const remotes = useRef(new Map<string, ScmRemoteAction>())
   const patch = useCallback((key: string, update: (current: ScmWriteState) => ScmWriteState) => {
     writes.current.set(key, update(writes.current.get(key) ?? EMPTY_WRITE))
     bump()
@@ -176,6 +204,11 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
       bump()
       const result = await window.corral.scmRemote(input).catch((error: unknown) => ({ ok: false as const, code: 'git_error' as const, error: String(error) }))
       remotes.current.delete(key)
+      // 이미 진행 중(`busy`) — 이 렌더러가 모르는 동작이 돈다(다시 그려지기 전에 누른 것). main 에 물어 진행 표시·취소를 되살린다(C6).
+      if (!result.ok && result.code === 'busy') {
+        const state = await window.corral.scmRemoteState({ root: key }).catch(() => ({ action: null }))
+        if (state.action !== null && !remotes.current.has(key)) remotes.current.set(key, state.action)
+      }
       // 성공·고르기 닫음은 앞 안내를 지운다(D10 — 목록·숫자 갱신이 결과). 실패·취소·시간 초과는 그 안내로.
       patch(key, (current) => ({ ...current, notice: scmRemoteMessage({ action: input.action, result }) }))
     },

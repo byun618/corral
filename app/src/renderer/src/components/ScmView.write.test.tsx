@@ -178,6 +178,8 @@ describe('K12 — 결과는 요청 루트에만 (useScm)', () => {
     Reflect.set(window, 'corral', {
       getUiPrefs: async () => ({}),
       setUiPrefs: () => {},
+      scmRemoteState: async () => ({ action: null }),
+      onScmRemoteEvent: () => () => {},
       onExplorerEvent: () => () => {},
       explorerWatch: async () => ({ ok: true }),
       explorerRefreshGit: () => {},
@@ -229,6 +231,8 @@ describe('K12 — 결과는 요청 루트에만 (useScm)', () => {
     Reflect.set(window, 'corral', {
       getUiPrefs: async () => ({}),
       setUiPrefs: () => {},
+      scmRemoteState: async () => ({ action: null }),
+      onScmRemoteEvent: () => () => {},
       onExplorerEvent: () => () => {},
       explorerWatch: async () => ({ ok: true }),
       explorerRefreshGit: () => {},
@@ -274,6 +278,8 @@ describe('K14 — base 대비에서는 쓰기 UI 없음 (LIFE-830 맞춤)', () =
     Reflect.set(window, 'corral', {
       getUiPrefs: async () => ({}),
       setUiPrefs: () => {},
+      scmRemoteState: async () => ({ action: null }),
+      onScmRemoteEvent: () => () => {},
       onExplorerEvent: () => () => {},
       explorerWatch: async () => ({ ok: true }),
       explorerRefreshGit: () => {},

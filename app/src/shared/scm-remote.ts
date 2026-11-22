@@ -27,7 +27,8 @@ export type ScmRemoteRefusal =
   /** git 이 실패했다 — `error` 는 stderr 원문(자격 가림). */
   | 'git_error'
 
-export type ScmRemoteResult = { ok: true } | { ok: false; code: ScmRemoteRefusal; error: string }
+/** `hint` — main 이 자르기 전 원문 전체로 고른 분류 문장(없으면 null, 모르면 생략 — 그때는 `error` 로 분류한다). */
+export type ScmRemoteResult = { ok: true } | { ok: false; code: ScmRemoteRefusal; error: string; hint?: string | null }
 
 const ACTIONS: readonly ScmRemoteAction[] = ['fetch', 'pull', 'push', 'publish']
 const isAction = (value: unknown): value is ScmRemoteAction => ACTIONS.some((action) => action === value)
@@ -64,14 +65,16 @@ export function classifyRemoteError(stderr: string): string | null {
   if (conflicts > 0) return `충돌 ${conflicts}개 — 「병합 변경 사항」에서 해결한 뒤 커밋하세요.`
   if (/Need to specify how to reconcile divergent branches/.test(stderr))
     return '브랜치가 갈라졌고 끌어오기 방식(merge·rebase)이 정해져 있지 않아 git 이 멈췄습니다 — 터미널에서 `git config pull.rebase false`(merge) 또는 `true`(rebase) 를 정한 뒤 다시 끌어오세요. 아무것도 바꾸지 않았습니다.'
-  if (/would be overwritten by (merge|checkout)|untracked working tree files would be (overwritten|removed)/.test(stderr))
+  if (/would be overwritten by (merge|checkout)|untracked working tree files would be (overwritten|removed)|cannot (pull|rebase) with rebase|Your index contains uncommitted changes/.test(stderr))
     return '작업 트리의 변경이 끌어올 변경과 겹칩니다 — 커밋하거나 치운 뒤 다시 끌어오세요. 작업 트리는 그대로입니다.'
   if (/\[rejected\][^\n]*\((fetch first|non-fast-forward)\)/.test(stderr)) return '원격에 새 커밋이 있습니다 — 끌어온 뒤 다시 밀어넣으세요.'
   if (/\[(remote )?rejected\]/.test(stderr)) return '원격이 밀어넣기를 거절했습니다.'
   if (/Host key verification failed/.test(stderr)) return '원격 호스트 키를 확인하지 못했습니다 — 터미널에서 한 번 접속해 known_hosts 에 등록한 뒤 다시 하세요.'
   if (/could not read (Username|Password)|Authentication failed|terminal prompts disabled|Permission denied \(publickey|Invalid username or password/i.test(stderr))
     return '원격 인증에 실패했습니다 — 터미널에서 git 자격(키체인·ssh 키)을 설정한 뒤 다시 하세요.'
-  if (/Could not resolve host|Connection timed out|Connection refused|Could not read from remote repository|unable to access/i.test(stderr)) return '원격에 닿지 못했습니다 — 네트워크와 원격 주소를 확인하세요.'
+  if (/returned error: 40[13]\b/.test(stderr)) return '원격이 접근을 거부했습니다(HTTP 401/403) — 자격과 그 저장소 권한을 확인하세요.'
+  // `unable to access` 단독은 여러 원인(TLS·프록시·HTTP 오류)이라 분류하지 않는다 — 원문만(수정 r1 C4).
+  if (/Could not resolve host|Connection timed out|Connection refused|Could not read from remote repository/i.test(stderr)) return '원격에 닿지 못했습니다 — 네트워크와 원격 주소를 확인하세요.'
   return null
 }
 
@@ -103,7 +106,7 @@ export function scmRemoteMessage(input: { action: ScmRemoteAction; result: ScmRe
       return { kind: 'error', text: maskCredentials(result.error) }
     case 'git_error': {
       const raw = maskCredentials(result.error)
-      const sentence = classifyRemoteError(raw)
+      const sentence = result.hint !== undefined ? result.hint : classifyRemoteError(raw)
       return { kind: 'error', text: sentence === null ? raw : `${sentence}\n${raw}` }
     }
   }

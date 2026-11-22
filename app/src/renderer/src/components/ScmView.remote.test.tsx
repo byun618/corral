@@ -99,6 +99,8 @@ describe('K8ⓒ — 원격 결과는 요청 루트에만 (useScm)', () => {
     Reflect.set(window, 'corral', {
       getUiPrefs: async () => ({}),
       setUiPrefs: () => {},
+      scmRemoteState: async () => ({ action: null }),
+      onScmRemoteEvent: () => () => {},
       onExplorerEvent: () => () => {},
       explorerWatch: async () => ({ ok: true }),
       explorerRefreshGit: () => {},
@@ -143,5 +145,40 @@ describe('K8ⓒ — 원격 결과는 요청 루트에만 (useScm)', () => {
     await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-action="pull"]')?.click())
     await act(async () => pending[2]?.resolve({ ok: true }))
     expect(host.querySelector('[data-scm-notice]')).toBeNull()
+  })
+})
+
+describe('수정 r1 C6 — 다시 그려진 렌더러가 main 의 진행 상태를 되살린다', () => {
+  it('마운트 때 진행 중이면 진행 표시·취소 · main 의 끝 알림으로 단추 셋 복귀 · busy 결과면 물어서 진행 표시', async () => {
+    const states = new Map<string, 'fetch' | 'pull' | 'push' | 'publish'>([['/A', 'push']])
+    const listeners: ((event: { root: string; action: 'fetch' | 'pull' | 'push' | 'publish' | null }) => void)[] = []
+    const cancels: { root: string }[] = []
+    Reflect.set(window, 'corral', {
+      getUiPrefs: async () => ({}),
+      setUiPrefs: () => {},
+      onExplorerEvent: () => () => {},
+      explorerWatch: async () => ({ ok: true }),
+      explorerRefreshGit: () => {},
+      scmRemoteState: async ({ root: at }: { root: string }) => ({ action: states.get(at) ?? null }),
+      onScmRemoteEvent: (listener: (typeof listeners)[number]) => (listeners.push(listener), () => {}),
+      scmRemote: async () => ({ ok: false, code: 'busy', error: '원격 동작 진행 중' }),
+      scmRemoteCancel: async (input: { root: string }) => (cancels.push(input), { ok: true }),
+    })
+    const Harness = ({ at }: { at: string }): React.JSX.Element => view(useScm({ root: at, active: false }), status())
+    await act(async () => root.render(createElement(Harness, { at: '/A' })))
+    expect(host.querySelector('[data-scm-remote-progress]')?.getAttribute('data-scm-remote-progress')).toBe('push')
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-cancel]')?.click())
+    expect(cancels).toEqual([{ root: '/A' }])
+    states.delete('/A')
+    await act(async () => listeners.forEach((listener) => listener({ root: '/A', action: null })))
+    expect(actions()).toEqual(['fetch', 'pull', 'push'])
+    // 다른 창(또는 reload 전)이 시작한 동작 — 누르면 busy, 물어서 진행 표시로.
+    states.set('/A', 'fetch')
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-action="pull"]')?.click())
+    expect(host.querySelector('[data-scm-remote-progress]')?.getAttribute('data-scm-remote-progress')).toBe('fetch')
+    expect(host.querySelector('[data-scm-notice="info"] pre')?.textContent).toBe('원격 동작이 이미 진행 중입니다.')
+    // 다른 루트의 알림은 지금 루트에 안 붙는다.
+    await act(async () => listeners.forEach((listener) => listener({ root: '/B', action: 'push' })))
+    expect(host.querySelector('[data-scm-remote-progress]')?.getAttribute('data-scm-remote-progress')).toBe('fetch')
   })
 })

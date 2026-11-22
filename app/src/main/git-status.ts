@@ -26,12 +26,21 @@ export const GIT_STATUS_ARGS = ['--no-optional-locks', 'status', '--porcelain=v2
 
 type CacheEntry = { value: GitStatusSummary; at: number }
 const cache = new Map<string, CacheEntry>()
+/** 경로별 세대(LIFE-831 수정 r1 C1) — 무효화 때 올린다. 읽기는 시작 때 쥔 세대가 끝날 때도 같아야 캐시에 넣는다(무효화 전에 시작한 낡은 읽기가 새 값을 되덮지 않게). */
+const generations = new Map<string, number>()
+/** 값마다 읽기 순번(시작 순 — 나중에 시작한 git status 가 같거나 더 새 상태를 본다). 캐시 적중은 같은 값(같은 순번)을 돌려준다. */
+let readSeq = 0
+const snapshots = new WeakMap<GitStatusSummary, number>()
 
-/** 커밋·체크아웃 등으로 상태가 바뀐 게 확실한 경로의 캐시를 지운다. 지금은 호출부가 없다 —
- * corral 은 아직 그런 이벤트를 안 받는다(주기 재조회로 대신한다, index.ts scheduleTree 폴링).
- * herdr-studio 의 `invalidateGitStatus` 자리를 남겨 둔다. */
+/** 그 값을 만든 읽기의 순번 — `getGitStatus` 가 만든 값이 아니면 undefined. 둘 중 어느 쪽이 더 새 스냅샷인지 비교할 때 쓴다(`worktree-status-refresh.ts`). */
+export function gitStatusSnapshot(value: GitStatusSummary): number | undefined {
+  return snapshots.get(value)
+}
+
+/** 상태가 바뀐 게 확실한 경로(원격 동작·커밋·amend 뒤 — LIFE-831)의 캐시를 지우고 세대를 올린다 — 그 전에 시작해 아직 도는 읽기는 끝나도 캐시에 들어가지 않는다. */
 export function invalidateGitStatus(worktreePath: string): void {
   cache.delete(worktreePath)
+  generations.set(worktreePath, (generations.get(worktreePath) ?? 0) + 1)
 }
 
 export function clearGitStatusCacheForTest(): void {
@@ -47,8 +56,13 @@ export async function getGitStatus(worktreePath: string): Promise<GitStatusSumma
     return cached.value
   }
   log('git_status.run', { path: worktreePath })
+  const generation = generations.get(worktreePath) ?? 0
+  readSeq += 1
+  const seq = readSeq
   const value = await computeGitStatus(worktreePath)
-  cache.set(worktreePath, { value, at: Date.now() })
+  snapshots.set(value, seq)
+  if ((generations.get(worktreePath) ?? 0) === generation) cache.set(worktreePath, { value, at: Date.now() })
+  else log('git_status.stale_drop', { path: worktreePath })
   return value
 }
 

@@ -4,8 +4,9 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DICTATION_NOT_TERMINAL_MESSAGE, type DictationEvent, type DictationStartResult } from '../../../shared/dictation.js'
-import { BRACKETED_PASTE_END, BRACKETED_PASTE_START } from '../../../shared/terminal-paste.js'
+import { DICTATION_NOT_TERMINAL_MESSAGE, type DictationEvent, type DictationInsertResult, type DictationStartResult } from '../../../shared/dictation.js'
+import { BRACKETED_PASTE_END, BRACKETED_PASTE_START, clipboardTextPayloads } from '../../../shared/terminal-paste.js'
+import { registerSelectionClearer } from '../terminal-selection.js'
 import { DictationIndicator, DICTATION_SILENT_TEXT } from '../components/DictationIndicator.js'
 import type { DictationNotice } from '../dictation-controller.js'
 import { useDictation } from './useDictation.js'
@@ -58,7 +59,11 @@ beforeEach(() => {
     dictationStop: () => calls.push('stop'),
     dictationCancel: () => calls.push('cancel'),
     dictationOpenPrivacy: () => Promise.resolve(),
-    termInput: (input: { paneId: string; data: string }) => termInputs.push(input),
+    // 가짜 main — 붙은 탭의 길(⌘V 와 같은 `clipboardTextPayloads`)을 흉내 낸다
+    dictationInsert: (input: { paneId: string; text: string }): Promise<DictationInsertResult> => {
+      for (const data of clipboardTextPayloads(input.text)) termInputs.push({ paneId: input.paneId, data })
+      return Promise.resolve({ ok: true, via: 'paste' })
+    },
     onDictationEvent: (next: (event: DictationEvent) => void) => {
       listener = next
       return () => {
@@ -80,6 +85,10 @@ describe('useDictation — 창 연결', () => {
   it('터미널 pane 에 포커스가 있을 때 토글 → 시작·표시 등장, 다른 pane 으로 포커스가 옮겨도 FINAL 은 처음 pane 에(Enter 없이), 다시 토글 → 정지, ended → 표시 사라짐', async () => {
     const first = terminal('p1')
     const second = terminal('p2')
+    // fix1 G2 — 대상 xterm(p1)의 선택 풀기가 넣기 전에 불린다. p2 의 것은 불리지 않는다
+    const cleared: string[] = []
+    const offFirst = registerSelectionClearer({ paneId: 'p1', clear: () => cleared.push('p1') })
+    const offSecond = registerSelectionClearer({ paneId: 'p2', clear: () => cleared.push('p2') })
     first.textarea.focus()
     act(() => toggle())
     expect(calls).toEqual(['start'])
@@ -93,6 +102,9 @@ describe('useDictation — 창 연결', () => {
     emit({ kind: 'final', sessionId, text: '워크트리 목록' })
     await flush()
     expect(termInputs).toEqual([{ paneId: 'p1', data: `${BRACKETED_PASTE_START}워크트리 목록${BRACKETED_PASTE_END}` }])
+    expect(cleared).toEqual(['p1'])
+    offFirst()
+    offSecond()
     expect(host.querySelector('[data-dictation-partial]')).toBeNull()
     act(() => toggle())
     expect(calls).toEqual(['start', 'stop'])

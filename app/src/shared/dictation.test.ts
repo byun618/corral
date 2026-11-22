@@ -1,6 +1,6 @@
 // LIFE-834 — 도우미 출력 줄 해석·OS 판정·사용자 문구.
 import { describe, expect, it } from 'vitest'
-import { dictationErrorMessage, dictationOsSupported, parseHelperLine } from './dictation.js'
+import { dictationErrorMessage, dictationOsSupported, dictationTypedText, parseHelperLine } from './dictation.js'
 
 describe('parseHelperLine — 도우미 규약', () => {
   it.each([
@@ -40,5 +40,20 @@ describe('dictationErrorMessage — 원인을 말한다', () => {
   })
   it('권한 거부는 설정 위치를 말한다', () => {
     expect(dictationErrorMessage({ code: 'mic-denied', message: '' })).toContain('개인정보 보호 및 보안 › 마이크')
+  })
+})
+
+describe('dictationTypedText — 날 바이트 길(pane.send_text)에서 Enter·키가 될 수 있는 것을 뺀다 (fix1 G1)', () => {
+  it.each([
+    ['워크트리 목록을 보여주고', '워크트리 목록을 보여주고'],
+    ['한 줄\n두 줄', '한 줄 두 줄'],
+    ['끝에 CR\r', '끝에 CR '],
+    ['줄\r\n\r\n바꿈', '줄 바꿈'],
+    ['탭\t사이', '탭 사이'],
+    ['a\x1b[201~b', 'a[201~b'],
+    ['\x03중단\x7f\x9b', '중단'],
+    ['', ''],
+  ])('%j → %j', (input, expected) => {
+    expect(dictationTypedText(input)).toBe(expected)
   })
 })

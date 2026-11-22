@@ -2,9 +2,11 @@
 //
 // · 대상 pane 은 **시작 순간 키보드 포커스가 있던 터미널 pane** 으로 고정한다. 그 뒤 포커스 이동은 대상을 바꾸지 않는다 — 이 모듈은 포커스를 읽기만 하고
 //   세우지도 지우지도 않는다. 시작 순간 포커스가 터미널이 아니면 시작하지 않고 알린다.
-// · FINAL 만 넣는다(partial 은 표시만). 넣기는 ⌘V 와 같은 길 — `clipboardTextPayloads`(강제 bracketed paste) + `createOrderedSender`(도착 순서)
-//   → `termInput`. Enter·CR 을 덧붙이지 않는다.
+// · FINAL 만 넣는다(partial 은 표시만). 넣기 직전에 대상 xterm 의 선택을 풀고(⌘V 와 같은 단계, fix1 G2) main `insert` 로 보낸다 — main 이 도착 순서대로
+//   붙은 탭이면 ⌘V 길(`clipboardTextPayloads` 강제 bracketed paste → `stream.input`), 아니면 guard `pane.send_text`(제어 문자 뺀 글)로 넣는다(fix1 G1 — `main/dictation.ts`).
+//   Enter·CR 을 덧붙이지 않는다.
 // · 적용 시점 확인은 FINAL 이 도착할 때 한 번: 대상이 아직 있으면 넣고, 없으면 넣지 않고 세션을 취소한 뒤 알린다(다른 pane 으로 보내지 않는다).
+//   넣기가 실패로 돌아오면(보낼 길 없음) 조용히 버리지 않는다 — 그 세션이 아직 진행 중이면 멈추고, 언제든 알린다.
 // · 지금 세션이 아닌 이벤트(취소·끝난 세션의 늦은 줄)는 버린다 — Esc 뒤 늦게 온 FINAL 이 들어가지 않는다.
 import {
   DICTATION_NOT_TERMINAL_MESSAGE,
@@ -13,9 +15,9 @@ import {
   DICTATION_TARGET_CLOSED_MESSAGE,
   dictationErrorMessage,
   type DictationEvent,
+  type DictationInsertResult,
   type DictationStartResult,
 } from '../../shared/dictation.js'
-import { clipboardTextPayloads, createOrderedSender } from '../../shared/terminal-paste.js'
 
 export type DictationView =
   | { phase: 'idle' }
@@ -33,7 +35,10 @@ export type DictationControllerDeps = {
   start: (input: { sessionId: string }) => Promise<DictationStartResult>
   stop: (input: { sessionId: string }) => void
   cancel: (input: { sessionId: string }) => void
-  termInput: (input: { paneId: string; data: string }) => void
+  /** FINAL 한 번을 대상 pane 에 — main 이 도착 순서대로 넣고 결과를 돌려준다. */
+  insert: (input: { paneId: string; text: string }) => Promise<DictationInsertResult>
+  /** 대상 xterm 의 선택을 푼다(화면에 없으면 아무것도 안 한다). */
+  clearSelection: (paneId: string) => void
   /** 적용 시점에 대상 pane 이 아직 있나. */
   paneExists: (paneId: string) => boolean
   notify: (notice: DictationNotice) => void
@@ -54,7 +59,19 @@ type Active = { sessionId: string; paneId: string; silentSince: number | null }
 export function createDictationController(deps: DictationControllerDeps) {
   let view: DictationView = IDLE_DICTATION
   let active: Active | null = null
-  const enqueue = createOrderedSender<{ paneId: string; data: string }>((item) => deps.termInput(item))
+  const insert = (session: Active, text: string): void => {
+    deps.clearSelection(session.paneId)
+    const failed = (code: string, message: string): void => {
+      if (active === session) cancelActive()
+      deps.notify({ message: dictationErrorMessage({ code, message }), openPrivacy: false })
+    }
+    void deps.insert({ paneId: session.paneId, text }).then(
+      (result) => {
+        if (!result.ok) failed(result.code, result.message)
+      },
+      (error: unknown) => failed('insert-failed', error instanceof Error ? error.message : String(error)),
+    )
+  }
 
   const set = (next: DictationView): void => {
     view = next
@@ -137,7 +154,7 @@ export function createDictationController(deps: DictationControllerDeps) {
             deps.notify({ message: DICTATION_TARGET_CLOSED_MESSAGE, openPrivacy: false })
             return
           }
-          if (event.text !== '') void enqueue(clipboardTextPayloads(event.text).map((data) => ({ paneId: session.paneId, data })))
+          if (event.text !== '') insert(session, event.text)
           if (view.phase === 'listening' || view.phase === 'stopping') set({ ...view, partial: '' })
           return
         }

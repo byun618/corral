@@ -5,9 +5,10 @@
 //   {"type":"ready"} · {"type":"partial","text":…} · {"type":"final","text":…} · {"type":"level","rms":…}
 //   {"type":"error","code":…,"message":…} (뒤이어 0 이 아닌 종료) · {"type":"done"} (정상 끝, 종료 0)
 //   `--check` = {"type":"check",…} 한 줄 — 마이크를 열지 않고(권한 창도 안 띄운다) 로케일·권한 상태만 읽는다.
+//   `--file <오디오>` = 파일 받아쓰기(FINAL 만, C7). `--simulate-mic <오디오>` = 마이크 대신 파일을 실시간 속도로 — 마이크 모드와 같은 변환·스트림·레벨·stdin stop 경로(fix1 F7).
 // 입력(마이크 모드): stdin 의 `stop` 줄 또는 EOF = 정지 — 마지막 FINAL 까지 확정하고 `done`. 취소는 main 이 SIGTERM 으로 한다.
 // stdin EOF 를 정지로 보므로 main 이 죽어도 도우미가 고아로 남지 않는다.
-import AVFoundation
+@preconcurrency import AVFoundation
 import Foundation
 import Speech
 
@@ -118,64 +119,100 @@ final class LevelMeter: @unchecked Sendable {
   }
 }
 
-func runMic() async {
+/// 받아쓰기 입력 — 마이크(AVAudioEngine tap) 또는 시험용 파일(`--simulate-mic`, fix1 F7). 둘 다 같은 `feed`(레벨·변환·분석기 스트림)로 흘린다.
+enum CaptureSource {
+  case mic
+  case file(String)
+}
+
+func runCapture(_ source: CaptureSource) async {
   await requireLocale()
-  let status = AVCaptureDevice.authorizationStatus(for: .audio)
-  switch status {
-  case .authorized: break
-  case .notDetermined:
-    if !(await AVCaptureDevice.requestAccess(for: .audio)) { fail("mic-denied", "마이크 권한이 거부됐다", status: 3) }
-  default:
-    fail("mic-denied", "마이크 권한이 거부됐다 (\(micStatusName(status)))", status: 3)
+  if case .mic = source {
+    let status = AVCaptureDevice.authorizationStatus(for: .audio)
+    switch status {
+    case .authorized: break
+    case .notDetermined:
+      if !(await AVCaptureDevice.requestAccess(for: .audio)) { fail("mic-denied", "마이크 권한이 거부됐다", status: 3) }
+    default:
+      fail("mic-denied", "마이크 권한이 거부됐다 (\(micStatusName(status)))", status: 3)
+    }
   }
   let transcriber = makeTranscriber(volatile: true)
   let analyzer = SpeechAnalyzer(modules: [transcriber])
   guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else { fail("no-input-format", "인식기 오디오 형식을 정하지 못했다", status: 7) }
   let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-  let engine = AVAudioEngine()
-  let input = engine.inputNode
-  let inputFormat = input.outputFormat(forBus: 0)
-  guard inputFormat.sampleRate > 0, let converter = AVAudioConverter(from: inputFormat, to: format) else { fail("audio-engine", "마이크 입력 형식을 읽지 못했다", status: 7) }
   let meter = LevelMeter()
-  input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
-    meter.add(buffer)
-    let capacity = AVAudioFrameCount(Double(buffer.frameLength) * format.sampleRate / inputFormat.sampleRate) + 16
-    guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }
-    var fed = false
-    _ = converter.convert(to: out, error: nil) { _, state in
-      if fed { state.pointee = .noDataNow; return nil }
-      fed = true; state.pointee = .haveData; return buffer
+  /// 입력 형식이 정해지면 만드는 공통 처리 — 레벨을 재고, 분석기 형식으로 바꿔 스트림에 넣는다.
+  func makeFeed(_ inputFormat: AVAudioFormat) -> (AVAudioPCMBuffer) -> Void {
+    guard inputFormat.sampleRate > 0, let converter = AVAudioConverter(from: inputFormat, to: format) else { fail("audio-engine", "입력 형식을 읽지 못했다", status: 7) }
+    return { buffer in
+      meter.add(buffer)
+      let capacity = AVAudioFrameCount(Double(buffer.frameLength) * format.sampleRate / inputFormat.sampleRate) + 16
+      guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }
+      var fed = false
+      _ = converter.convert(to: out, error: nil) { _, state in
+        if fed { state.pointee = .noDataNow; return nil }
+        fed = true; state.pointee = .haveData; return buffer
+      }
+      continuation.yield(AnalyzerInput(buffer: out))
     }
-    continuation.yield(AnalyzerInput(buffer: out))
   }
+  // 결과 스트림 오류는 정지까지 숨기지 않고 바로 오류 줄로 끝낸다(fix1 F2·G4).
   let reader = Task {
-    for try await result in transcriber.results { emit(["type": result.isFinal ? "final" : "partial", "text": String(result.text.characters)]) }
+    do {
+      for try await result in transcriber.results { emit(["type": result.isFinal ? "final" : "partial", "text": String(result.text.characters)]) }
+    } catch {
+      fail("analyzer", "인식 중 오류: \(error.localizedDescription)", status: 6)
+    }
   }
   do {
     try await analyzer.start(inputSequence: stream)
-    try engine.start()
   } catch {
-    fail("audio-engine", "녹음을 시작하지 못했다: \(error.localizedDescription)", status: 7)
+    fail("analyzer", "인식기를 시작하지 못했다: \(error.localizedDescription)", status: 6)
+  }
+  var stopCapture: () -> Void = {}
+  switch source {
+  case .mic:
+    let engine = AVAudioEngine()
+    let input = engine.inputNode
+    let feed = makeFeed(input.outputFormat(forBus: 0))
+    input.installTap(onBus: 0, bufferSize: 4096, format: input.outputFormat(forBus: 0)) { buffer, _ in feed(buffer) }
+    do { try engine.start() } catch { fail("audio-engine", "녹음을 시작하지 못했다: \(error.localizedDescription)", status: 7) }
+    stopCapture = { engine.stop(); input.removeTap(onBus: 0) }
+  case .file(let path):
+    let file: AVAudioFile
+    do { file = try AVAudioFile(forReading: URL(fileURLWithPath: path)) } catch { fail("file-read", "오디오 파일을 열지 못했다: \(error.localizedDescription)", status: 5) }
+    let feed = makeFeed(file.processingFormat)
+    // 마이크처럼 실시간 속도로 4096 프레임씩 흘리고, 파일이 끝나면 프레임이 끊긴다(입력 끊김과 같은 모양 — 레벨이 0 으로 간다).
+    let pump = Task {
+      while !Task.isCancelled {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { return }
+        do { try file.read(into: buffer, frameCount: 4096) } catch { return }
+        if buffer.frameLength == 0 { return }
+        feed(buffer)
+        try? await Task.sleep(for: .seconds(Double(buffer.frameLength) / file.processingFormat.sampleRate))
+      }
+    }
+    stopCapture = { pump.cancel() }
   }
   emit(["type": "ready"])
-  // 입력 레벨 — main 이 연속 무음을 알린다(C5). 250ms 마다.
+  // 입력 레벨 — main 이 연속 무음을 알린다(C5). 250ms 마다. 그 사이 프레임이 하나도 없었으면(장치 끊김) 0 으로 낸다(fix1 F2·G4).
   let levels = Task {
     while !Task.isCancelled {
       try? await Task.sleep(for: .milliseconds(250))
-      if let rms = meter.take() { emit(["type": "level", "rms": rms]) }
+      emit(["type": "level", "rms": meter.take() ?? 0])
     }
   }
   await waitForStop()
   levels.cancel()
-  engine.stop()
-  input.removeTap(onBus: 0)
+  stopCapture()
   continuation.finish()
   do {
     try await analyzer.finalizeAndFinishThroughEndOfInput()
-    try await reader.value
   } catch {
     fail("analyzer", "인식 중 오류: \(error.localizedDescription)", status: 6)
   }
+  await reader.value
   emit(["type": "done"])
 }
 
@@ -187,7 +224,10 @@ func runMic() async {
     case "--file":
       guard args.count >= 2 else { fail("bad-args", "--file 뒤에 오디오 파일 경로가 필요하다", status: 2) }
       await runFile(args[1])
-    case nil: await runMic()
+    case "--simulate-mic":
+      guard args.count >= 2 else { fail("bad-args", "--simulate-mic 뒤에 오디오 파일 경로가 필요하다", status: 2) }
+      await runCapture(.file(args[1]))
+    case nil: await runCapture(.mic)
     default: fail("bad-args", "알 수 없는 인자: \(args.joined(separator: " "))", status: 2)
     }
     exit(0)

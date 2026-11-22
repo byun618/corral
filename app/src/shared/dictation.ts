@@ -61,6 +61,27 @@ export type DictationEvent =
 
 export type DictationStartResult = { ok: true } | { ok: false; code: DictationErrorCode; message: string }
 
+/** 넣기 한 번의 결과(fix1 G1). `paste` = 붙은 탭 — ⌘V 와 같은 길, `send-text` = 붙지 않은 pane — guard `pane.send_text`. */
+export type DictationInsertResult = { ok: true; via: 'paste' | 'send-text' } | { ok: false; code: DictationErrorCode; message: string }
+
+/**
+ * 날 바이트 경로(`pane.send_text`)로 보낼 글 — 2004 틀 없이 PTY 에 그대로 쓰이므로 Enter·키가 될 수 있는 것을 뺀다:
+ * 줄바꿈·탭 → 공백, 그 밖 C0 제어 문자·DEL·C1 제어 문자(ESC 포함) → 버림. 남는 것은 글자뿐이라 입력줄이 제출되지 않는다.
+ */
+export function dictationTypedText(text: string): string {
+  let out = ''
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0
+    if (char === '\r' || char === '\n' || char === '\t') {
+      if (!out.endsWith(' ')) out += ' '
+      continue
+    }
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) continue
+    out += char
+  }
+  return out
+}
+
 /** 정지를 누른 뒤 마지막 FINAL 확정을 기다리는 상한. 넘으면 main 이 도우미를 끝낸다(`stop-timeout`). */
 export const DICTATION_STOP_TIMEOUT_MS = 5000
 /** 이 시간 동안 입력 레벨이 계속 무음이면 「마이크 입력이 없다」 알림(C5 — 5초 이하). */
@@ -98,6 +119,8 @@ export function dictationErrorMessage(input: { code: DictationErrorCode; message
       return `받아쓰기: 도우미가 비정상 종료했다${input.message === '' ? '' : ` (${input.message})`} — 이미 넣은 글은 그대로다`
     case 'stop-timeout':
       return '받아쓰기: 마지막 글을 기다리다 시간이 넘어 멈췄다'
+    case 'insert-failed':
+      return `받아쓰기: 대상 pane 에 글을 넣지 못해 멈췄다${input.message === '' ? '' : ` (${input.message})`}`
     default:
       return `받아쓰기 오류 (${input.code})${input.message === '' ? '' : `: ${input.message}`}`
   }

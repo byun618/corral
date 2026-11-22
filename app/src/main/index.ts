@@ -15,7 +15,7 @@ import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { parsePaneTarget, parseRevealRequest, parseSearchRequest, type TerminalRevealResult, type TerminalSearchResult } from '../shared/terminal-search.js'
 import { closeTabsGated, runningForeground } from './close-tabs.js'
 import { footprintHelperPath, homesOf, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
-import { createDictationManager, dictationHelperPath, nodeDictationDeps, type DictationManager } from './dictation.js'
+import { createDictationInserter, createDictationManager, dictationDisposesOnNavigation, dictationHelperPath, nodeDictationDeps, sendTextToPane, type DictationManager } from './dictation.js'
 import { MIC_PRIVACY_SETTINGS_URL } from '../shared/dictation.js'
 import { confirmedDeadSlot, directoryNow, keepRetention, prunableRetained, slotStateNow, slotStateOf } from './retention.js'
 // Electron main — 소켓을 소유하는 쪽.
@@ -95,6 +95,7 @@ import {
   splitPane,
   zoomPane,
   type SessionHandle,
+  TerminalBackend,
 } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
 import { canonicalPath } from './canonical-path.js'
@@ -1769,6 +1770,10 @@ function createWindow(): void {
     quitGate.setDirty([])
     dictation?.dispose()
   })
+  // LIFE-834 fix1 F1·G3 — 재로드(Reload·Force Reload)로 메인 프레임 문서가 바뀌면 그 문서가 시작한 받아쓰기 세션도 끝낸다(마이크 해제) — 닫힘·소멸과 같은 규칙.
+  window.webContents.on('did-start-navigation', (details) => {
+    if (dictationDisposesOnNavigation({ isMainFrame: details.isMainFrame, isSameDocument: details.isSameDocument })) dictation?.dispose()
+  })
   /**
    * LIFE-591 E3ⓕ — 렌더러 다시 불러오기(기본 메뉴 View ▸ Force Reload ⌘⇧R 등 — ⌘R 은 위 `before-input-event` 가 가져간다). 렌더러는 수정 파일이 있으면
    * `beforeunload` 를 막는다 → 여기서 묻고, 「다시 불러오기」 면 막음을 무시한다(`preventDefault` = 그래도 내린다 — Electron 문서 패턴). 종료 확인을 이미 지났으면 묻지 않는다.
@@ -2578,6 +2583,21 @@ app.whenReady().then(async () => {
   ipcMain.handle('corral:dictationStart', (event, input: { sessionId: string }) => {
     if (!fromOurWindow(event) || typeof input?.sessionId !== 'string') return { ok: false, code: 'rejected', message: '' }
     return dictationManager.start({ sessionId: input.sessionId })
+  })
+  // 넣기(fix1 G1) — 붙은 탭이면 ⌘V 와 같은 stream 길, 아니면 guard `pane.send_text`. 결과를 돌려준다(못 넣으면 렌더러가 멈추고 알린다).
+  const dictationInserter = createDictationInserter({
+    heldPaneIds: () => stream.heldPaneIds(),
+    paste: (input) => stream.input(input),
+    sendText: async ({ paneId, text }) => {
+      const socketPath = currentSocketPath()
+      if (socketPath === null) throw new Error('연결된 herdr 세션이 없다')
+      await sendTextToPane({ backend: new TerminalBackend(socketPath), paneId, text, deadlineMs: 5000 })
+    },
+    log,
+  })
+  ipcMain.handle('corral:dictationInsert', (event, input: { paneId: string; text: string }) => {
+    if (!fromOurWindow(event) || typeof input?.paneId !== 'string' || typeof input.text !== 'string') return { ok: false, code: 'rejected', message: '' }
+    return dictationInserter.insert({ paneId: input.paneId, text: input.text })
   })
   ipcMain.on('corral:dictationStop', (event, input: { sessionId: string }) => {
     if (fromOurWindow(event) && typeof input?.sessionId === 'string') dictationManager.stop({ sessionId: input.sessionId })

@@ -1,5 +1,6 @@
 // LIFE-834 음성 받아쓰기 — 컨트롤러(`dictation-controller.ts`)를 창에 붙인다: main 이벤트 구독, Esc 취소(캡처 단계 — pane 으로 가지 않는다), 단축키 토글.
 import { useEffect, useRef, useState } from 'react'
+import { clearTerminalSelection } from '../terminal-selection.js'
 import { createDictationController, focusedTerminalPane, IDLE_DICTATION, type DictationController, type DictationNotice, type DictationView } from '../dictation-controller.js'
 
 let sessionCounter = 0
@@ -15,7 +16,8 @@ export function useDictation(input: { paneExists: (paneId: string) => boolean; n
       start: (request) => window.corral.dictationStart(request),
       stop: (request) => window.corral.dictationStop(request),
       cancel: (request) => window.corral.dictationCancel(request),
-      termInput: (request) => window.corral.termInput(request),
+      insert: (request) => window.corral.dictationInsert(request),
+      clearSelection: (paneId) => clearTerminalSelection(paneId),
       paneExists: (paneId) => latest.current.paneExists(paneId),
       notify: (notice) => latest.current.notify(notice),
       onChange: setView,

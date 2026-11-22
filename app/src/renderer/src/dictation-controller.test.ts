@@ -8,16 +8,19 @@ import {
   DICTATION_TARGET_CLOSED_MESSAGE,
   dictationErrorMessage,
   type DictationEnd,
+  type DictationInsertResult,
   type DictationStartResult,
 } from '../../shared/dictation.js'
-import { BRACKETED_PASTE_END, BRACKETED_PASTE_START } from '../../shared/terminal-paste.js'
+import { BRACKETED_PASTE_END, BRACKETED_PASTE_START, clipboardTextPayloads } from '../../shared/terminal-paste.js'
 import { createDictationController, focusedTerminalPane, type DictationNotice, type DictationView } from './dictation-controller.js'
 
 /** 순서 큐(promise 사슬)가 다 나갈 때까지 — 매크로 작업 한 번. */
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
-function harness(options: { start?: () => Promise<DictationStartResult> } = {}) {
+function harness(options: { start?: () => Promise<DictationStartResult>; insert?: (input: { paneId: string; text: string }) => Promise<DictationInsertResult> } = {}) {
+  /** PTY 로 간 바이트 — 가짜 main 은 붙은 탭의 길(⌘V 와 같은 `clipboardTextPayloads`)을 흉내 낸다. 붙지 않은 탭의 길은 main 시험(dictation-insert*.test.ts). */
   const sent: Array<{ paneId: string; data: string }> = []
+  const inserted: Array<{ paneId: string; text: string }> = []
   const notices: DictationNotice[] = []
   const views: DictationView[] = []
   const calls: string[] = []
@@ -31,7 +34,14 @@ function harness(options: { start?: () => Promise<DictationStartResult> } = {}) 
     },
     stop: (input) => calls.push(`stop:${input.sessionId}`),
     cancel: (input) => calls.push(`cancel:${input.sessionId}`),
-    termInput: (input) => sent.push(input),
+    insert: (input) => {
+      calls.push(`insert:${input.paneId}`)
+      inserted.push(input)
+      if (options.insert !== undefined) return options.insert(input)
+      for (const data of clipboardTextPayloads(input.text)) sent.push({ paneId: input.paneId, data })
+      return Promise.resolve({ ok: true, via: 'paste' })
+    },
+    clearSelection: (paneId) => calls.push(`clear:${paneId}`),
     paneExists: (paneId) => live.has(paneId),
     notify: (notice) => notices.push(notice),
     onChange: (view) => views.push(view),
@@ -41,6 +51,7 @@ function harness(options: { start?: () => Promise<DictationStartResult> } = {}) 
   return {
     controller,
     sent,
+    inserted,
     notices,
     views,
     calls,
@@ -186,7 +197,7 @@ describe('C3 대상·상태 표 — 행마다 하나', () => {
     h.final('닫힌 뒤')
     await flush()
     expect(h.sent).toEqual([{ paneId: 'p1', data: paste('닫히기 전') }])
-    expect(h.calls).toEqual(['start:s1', 'cancel:s1'])
+    expect(h.calls).toEqual(['start:s1', 'clear:p1', 'insert:p1', 'cancel:s1'])
     expect(h.controller.view.phase).toBe('idle')
     expect(h.notices).toEqual([{ message: DICTATION_TARGET_CLOSED_MESSAGE, openPrivacy: false }])
     // 취소 뒤 늦게 온 줄도 버린다
@@ -215,7 +226,7 @@ describe('C3 대상·상태 표 — 행마다 하나', () => {
     h.final('이미 넣은 글')
     h.partial('아직 안 넣은')
     expect(h.controller.cancel()).toBe(true)
-    expect(h.calls).toEqual(['start:s1', 'cancel:s1'])
+    expect(h.calls).toEqual(['start:s1', 'clear:p1', 'insert:p1', 'cancel:s1'])
     expect(h.controller.view.phase).toBe('idle')
     h.final('아직 안 넣은 글')
     h.ended({ kind: 'cancelled' })
@@ -366,5 +377,67 @@ describe('focusedTerminalPane — 시작 순간의 포커스 판정', () => {
     expect(focusedTerminalPane(paneElement('p9'))).toBe('p9')
     expect(focusedTerminalPane(document.createElement('input'))).toBeNull()
     expect(focusedTerminalPane(null)).toBeNull()
+  })
+})
+
+describe('fix1 G2 — 넣기 직전에 대상 xterm 의 선택을 푼다(⌘V 와 같은 단계)', () => {
+  it('FINAL 마다 선택 풀기 → 넣기 순서, 대상은 고정 pane(포커스가 옮겨도)', () => {
+    const h = harness()
+    h.controller.toggle('p1')
+    h.ready()
+    h.final('첫째')
+    h.final('둘째')
+    expect(h.calls).toEqual(['start:s1', 'clear:p1', 'insert:p1', 'clear:p1', 'insert:p1'])
+  })
+})
+
+describe('fix1 G1 — 넣기가 실패로 돌아오면 조용히 버리지 않는다', () => {
+  it('진행 중 세션: 멈추고(취소) 「넣지 못해 멈췄다」 알림', async () => {
+    const h = harness({ insert: () => Promise.resolve({ ok: false, code: 'insert-failed', message: 'pane 을 찾지 못했다 (p1)' }) })
+    h.controller.toggle('p1')
+    h.ready()
+    h.final('못 들어갈 글')
+    await flush()
+    expect(h.calls.at(-1)).toBe('cancel:s1')
+    expect(h.controller.view.phase).toBe('idle')
+    expect(h.notices).toEqual([{ message: dictationErrorMessage({ code: 'insert-failed', message: 'pane 을 찾지 못했다 (p1)' }), openPrivacy: false }])
+    expect(h.notices[0]?.message).toContain('넣지 못해 멈췄다')
+  })
+  it('정지로 이미 끝난 뒤 실패가 와도 알린다(취소는 하지 않는다)', async () => {
+    let fail: (result: DictationInsertResult) => void = () => undefined
+    const h = harness({ insert: () => new Promise((resolve) => (fail = resolve)) })
+    h.controller.toggle('p1')
+    h.ready()
+    h.controller.toggle('p1')
+    h.final('마지막')
+    h.ended({ kind: 'done' })
+    fail({ ok: false, code: 'insert-failed', message: 'x' })
+    await flush()
+    expect(h.calls.filter((call) => call.startsWith('cancel'))).toEqual([])
+    expect(h.notices).toHaveLength(1)
+  })
+  it('insert IPC 가 던져도 같은 처리', async () => {
+    const h = harness({ insert: () => Promise.reject(new Error('ipc gone')) })
+    h.controller.toggle('p1')
+    h.ready()
+    h.final('글')
+    await flush()
+    expect(h.controller.view.phase).toBe('idle')
+    expect(h.notices[0]?.message).toContain('ipc gone')
+  })
+})
+
+describe('fix1 F2·G4 — 입력 프레임이 끊기면 도우미가 rms 0 을 내고 무음 알림이 선다', () => {
+  it('소리가 오다가 끊긴 뒤 rms 0 줄만 오면 상한 안에 무음 표시', () => {
+    const h = harness()
+    h.controller.toggle('p1')
+    h.ready()
+    h.level(0.03)
+    h.advance(250)
+    for (let elapsed = 0; elapsed <= DICTATION_SILENCE_NOTICE_MS; elapsed += 250) {
+      h.level(0)
+      h.advance(250)
+    }
+    expect(h.controller.view).toMatchObject({ silent: true })
   })
 })

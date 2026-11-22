@@ -46,7 +46,7 @@ import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerO
 import type { FileListInput, FileListResult } from '../shared/file-list.js'
 import type { ContentSearchInput, ContentSearchResult } from '../shared/content-search.js'
 import type { ScmReadInput, ScmReadResult } from '../shared/scm.js'
-import type { DictationEvent, DictationStartResult } from '../shared/dictation.js'
+import type { DictationEvent, DictationInsertResult, DictationStartResult } from '../shared/dictation.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
 
 const EXPOSED = [
@@ -143,6 +143,7 @@ const EXPOSED = [
   'dictationStop',
   'dictationCancel',
   'dictationOpenPrivacy',
+  'dictationInsert',
   'onDictationEvent',
   'getWindowChrome',
   'onWindowChrome',
@@ -424,6 +425,7 @@ const api: CorralApi = {
   dictationStop: (input: { sessionId: string }) => ipcRenderer.send('corral:dictationStop', input),
   dictationCancel: (input: { sessionId: string }) => ipcRenderer.send('corral:dictationCancel', input),
   dictationOpenPrivacy: (): Promise<void> => ipcRenderer.invoke('corral:dictationOpenPrivacy'),
+  dictationInsert: (input: { paneId: string; text: string }): Promise<DictationInsertResult> => ipcRenderer.invoke('corral:dictationInsert', input),
   onDictationEvent: (listener: (event: DictationEvent) => void) => {
     const handler = (_event: unknown, dictationEvent: DictationEvent): void => listener(dictationEvent)
     ipcRenderer.on('corral:dictationEvent', handler)

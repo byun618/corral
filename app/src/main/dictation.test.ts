@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { DICTATION_STOP_TIMEOUT_MS, type DictationEvent } from '../shared/dictation.js'
-import { createDictationManager, dictationHelperPath, type DictationChild, type DictationDeps } from './dictation.js'
+import { createDictationManager, dictationDisposesOnNavigation, dictationHelperPath, type DictationChild, type DictationDeps } from './dictation.js'
 
 class FakeChild extends EventEmitter {
   pid = 4242
@@ -26,7 +26,7 @@ class FakeChild extends EventEmitter {
     this.stdout.write(`${JSON.stringify(object)}\n`)
   }
   exit(code: number | null, signal: string | null = null): void {
-    this.emit('exit', code, signal)
+    this.emit('close', code, signal)
   }
 }
 
@@ -221,7 +221,7 @@ describe('C6 미지원·이상', () => {
 })
 
 describe('창 닫힘·앱 종료 — 고아 프로세스 없음', () => {
-  it('dispose 는 진행 중 도우미를 SIGKILL 하고 ended cancelled 를 한 번 알린다', () => {
+  it('dispose 는 진행 중 도우미를 SIGKILL 하고 렌더러에는 알리지 않는다(fix1 F5)', () => {
     const h = harness()
     h.manager.start({ sessionId: 's1' })
     const child = h.children[0]
@@ -230,11 +230,38 @@ describe('창 닫힘·앱 종료 — 고아 프로세스 없음', () => {
     expect(child.signals).toEqual(['SIGKILL'])
     expect(h.manager.activePid()).toBeNull()
     child.exit(null, 'SIGKILL')
-    expect(h.events).toEqual([{ kind: 'ended', sessionId: 's1', end: { kind: 'cancelled' } }])
+    // fix1 F5 — 받을 렌더러가 없다(창 닫힘·소멸·재로드·종료) — 알리지 않는다
+    expect(h.events).toEqual([])
   })
   it('세션이 없으면 dispose 는 아무것도 안 한다', () => {
     const h = harness()
     h.manager.dispose()
     expect(h.events).toEqual([])
+  })
+})
+
+describe('fix1 F4 — 마무리는 close(stdio 닫힌 뒤)', () => {
+  it('exit 만 오고 close 가 아직이면 끝내지 않는다 — 그 사이 온 final 도 중계된다', async () => {
+    const h = harness()
+    h.manager.start({ sessionId: 's1' })
+    const child = h.children[0]
+    if (child === undefined) throw new Error('spawn 없음')
+    child.emit('exit', 0, null)
+    child.line({ type: 'final', text: '늦게 읽힌 줄' })
+    child.line({ type: 'done' })
+    await tick()
+    expect(h.events).toEqual([{ kind: 'final', sessionId: 's1', text: '늦게 읽힌 줄' }])
+    child.exit(0)
+    expect(h.events.at(-1)).toEqual({ kind: 'ended', sessionId: 's1', end: { kind: 'done' } })
+  })
+})
+
+describe('fix1 F1·G3 — 재로드에서 세션 정리', () => {
+  it.each([
+    [{ isMainFrame: true, isSameDocument: false }, true],
+    [{ isMainFrame: true, isSameDocument: true }, false],
+    [{ isMainFrame: false, isSameDocument: false }, false],
+  ])('%o → %s', (input, expected) => {
+    expect(dictationDisposesOnNavigation(input)).toBe(expected)
   })
 })

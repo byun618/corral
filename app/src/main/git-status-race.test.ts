@@ -8,9 +8,9 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { resolveGit } from './file-list.js'
-import { clearGitStatusCacheForTest, getGitStatus, gitStatusSnapshot, invalidateGitStatus } from './git-status.js'
+import { clearGitStatusCacheForTest, getGitStatus, invalidateGitStatus, isLaterSnapshot } from './git-status.js'
 import type { RepoSkeleton } from './tree.js'
-import { WorktreeStatusRefresh } from './worktree-status-refresh.js'
+import { patchWorktreeStatus, WorktreeStatusRefresh } from './worktree-status-refresh.js'
 import type { GitStatusSummary } from '../shared/types.js'
 
 const REAL_GIT = resolveGit({ pathEnv: process.env.PATH })
@@ -56,7 +56,7 @@ const commit = (dir: string, name: string): void => {
 const tree = (dir: string, gitStatus: GitStatusSummary): RepoSkeleton[] => [
   { root: dir, name: 'r', error: null, gitError: null, openError: null, worktrees: [{ path: dir, branch: 'main', head: null, isLinked: false, openWorkspaceId: 'w', gitStatus }] },
 ]
-const refresher = (): WorktreeStatusRefresh => new WorktreeStatusRefresh({ read: getGitStatus, invalidate: invalidateGitStatus, snapshotOf: gitStatusSnapshot })
+const refresher = (): WorktreeStatusRefresh => new WorktreeStatusRefresh({ read: getGitStatus, invalidate: invalidateGitStatus, isLater: isLaterSnapshot })
 
 describe('C1 — 진짜 getGitStatus 경합', () => {
   it('① 동작 전 스냅샷을 든 느린 읽기가 늦게 끝나도 다음 읽기(재빌드)는 동작 뒤 값이다 — 캐시를 되덮지 않는다', async () => {
@@ -88,5 +88,33 @@ describe('C1 — 진짜 getGitStatus 경합', () => {
     expect(ahead(refresh.overlay({ built: tree(dir, later) }))).toBe(2)
     // 더 새 값을 본 뒤에는 갱신 값을 버린다 — 그 뒤 낡은 재빌드 값이 와도 덮을 것이 없다(재빌드 결과 그대로).
     expect(ahead(refresh.overlay({ built: tree(dir, before) }))).toBe(0)
+  }, 15_000)
+
+  it('③ 같은 무효화 뒤 두 읽기(같은 세대) — 먼저 시작한 읽기가 늦게 끝나도 캐시는 나중에 시작한 읽기의 값이다(수정 r2 D1)', async () => {
+    const dir = repo()
+    invalidateGitStatus(dir)
+    fs.rmSync(TAKEN, { force: true })
+    fs.writeFileSync(FLAG, '')
+    const slow = getGitStatus(dir) // 먼저 시작 — ahead 0 을 읽고 1 초 늦게 끝난다
+    while (!fs.existsSync(TAKEN)) await new Promise((resolve) => setTimeout(resolve, 10))
+    commit(dir, 'b')
+    const fast = await getGitStatus(dir) // 같은 세대, 나중에 시작 — 바로 ahead 1
+    expect(fast.ahead).toBe(1)
+    expect((await slow).ahead).toBe(0)
+    expect((await getGitStatus(dir)).ahead).toBe(1)
+  }, 15_000)
+  it('④ 경로 갱신 patch 도 같은 규칙 — 골격이 이미 더 나중 스냅샷이면 이른 값으로 바꾸지 않는다, 더 나중 값이면 바꾼다(수정 r2 D1)', async () => {
+    const dir = repo()
+    invalidateGitStatus(dir)
+    fs.rmSync(TAKEN, { force: true })
+    fs.writeFileSync(FLAG, '')
+    const slow = getGitStatus(dir)
+    while (!fs.existsSync(TAKEN)) await new Promise((resolve) => setTimeout(resolve, 10))
+    commit(dir, 'b')
+    const later = await getGitStatus(dir)
+    const older = await slow
+    const ahead = (built: RepoSkeleton[]): number | null | undefined => built[0]?.worktrees[0]?.gitStatus.ahead
+    expect(ahead(patchWorktreeStatus({ skeleton: tree(dir, later), path: dir, value: older, isLater: isLaterSnapshot }).skeleton)).toBe(1)
+    expect(ahead(patchWorktreeStatus({ skeleton: tree(dir, older), path: dir, value: later, isLater: isLaterSnapshot }).skeleton)).toBe(1)
   }, 15_000)
 })

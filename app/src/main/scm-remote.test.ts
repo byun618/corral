@@ -321,6 +321,9 @@ describe('K3 pull', () => {
     const message = scmRemoteMessage({ action: 'pull', result })
     expect(message?.kind).toBe('error')
     expect(message?.text).toContain('끌어오기 방식')
+    // 범위 문구(수정 r2 D3) — fetch 절이 추적 ref 를 바꿨을 수 있어 「아무것도」 라고 하지 않는다.
+    expect(message?.text).toContain('HEAD·작업 트리는 그대로입니다')
+    expect(message?.text).not.toContain('아무것도 바꾸지 않았습니다')
     expect(message?.text).toContain('Need to specify how to reconcile divergent branches')
     expect(treeState(f.work)).toBe(before)
     // 실패해도 다시 읽는다(fetch 부분이 ref 를 바꿨을 수 있다 — D11).
@@ -806,5 +809,32 @@ describe('수정 r1', () => {
     const calls = spy.mock.calls.length
     spy.mockRestore()
     expect(calls).toBe(0)
+  })
+
+  it('D4 게시 — 고를 때의 브랜치와 큐 차례의 HEAD 브랜치가 다르면 git 없이 거절 + 안내(대화상자에 보인 브랜치만 올린다)', async () => {
+    const f = fixture()
+    const second = path.join(f.dir, 'second.git')
+    execFileSync(REAL_GIT, ['init', '-q', '--bare', '-b', 'main', second], { env: fixtureEnv })
+    git(f.work, 'remote', 'add', 'second', second)
+    git(f.work, 'checkout', '-q', '-b', 'shown')
+    // 대화상자가 떠 있는 동안 사용자가 터미널에서 다른 브랜치로 옮긴다.
+    const h = harness({
+      roots: [f.work],
+      pick: () => {
+        git(f.work, 'checkout', '-q', '-b', 'moved')
+        return 'second'
+      },
+    })
+    const result = await h.remote.run({ action: 'publish', root: f.work })
+    expect(result.ok ? null : result.code).toBe('branch_changed')
+    expect(h.picks).toEqual([{ remotes: ['origin', 'second'], branch: 'shown' }])
+    expect(h.spawns).toEqual([])
+    expect(bareRef(second, 'refs/heads/moved')).toBeNull()
+    expect(bareRef(second, 'refs/heads/shown')).toBeNull()
+    expect(scmRemoteMessage({ action: 'publish', result })).toEqual({ kind: 'info', text: "'shown' 브랜치를 게시하려 했지만 지금 브랜치는 'moved' 입니다 — 아무것도 올리지 않았습니다. 다시 눌러 주세요." })
+    // 같은 브랜치면 그대로 게시된다(대조).
+    const ok = harness({ roots: [f.work], pick: () => 'second' })
+    expect(await ok.remote.run({ action: 'publish', root: f.work })).toEqual({ ok: true })
+    expect(bareRef(second, 'refs/heads/moved')).toBe(rev(f.work))
   })
 })

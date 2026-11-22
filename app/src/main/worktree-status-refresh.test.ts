@@ -13,23 +13,28 @@ const aheadOf = (skeleton: RepoSkeleton[], path: string): number | null | undefi
 /** 시험용 스냅샷 순번 — 값마다 붙인다. */
 const snapshots = new WeakMap<GitStatusSummary, number>()
 const at = (value: GitStatusSummary, snapshot: number): GitStatusSummary => (snapshots.set(value, snapshot), value)
+const isLater = (candidate: GitStatusSummary, current: GitStatusSummary | undefined): boolean => current === undefined || (snapshots.get(candidate) ?? -1) > (snapshots.get(current) ?? -1)
 
 describe('WorktreeStatusRefresh (K7)', () => {
   it('그 경로만 캐시를 무효화하고 한 번 읽는다 — 다른 worktree 는 git 0(K7ⓒ), 골격의 그 줄만 바뀐다', async () => {
     const invalidated: string[] = []
     const reads: string[] = []
-    const refresh = new WorktreeStatusRefresh({ invalidate: (path) => invalidated.push(path), read: async (path) => (reads.push(path), st(3)), snapshotOf: (value) => snapshots.get(value) })
+    const refresh = new WorktreeStatusRefresh({ invalidate: (path) => invalidated.push(path), read: async (path) => (reads.push(path), st(3)), isLater })
     const value = await refresh.refresh('/a')
     expect(invalidated).toEqual(['/a'])
     expect(reads).toEqual(['/a'])
-    const patched = patchWorktreeStatus({ skeleton: tree({ '/a': st(1), '/b': st(7) }), path: '/a', value: value ?? st(-1) })
+    const patched = patchWorktreeStatus({ skeleton: tree({ '/a': st(1), '/b': st(7) }), path: '/a', value: value ?? st(-1), isLater: () => true })
     expect(patched.found).toBe(true)
+    expect(patched.changed).toBe(true)
     expect(aheadOf(patched.skeleton, '/a')).toBe(3)
     expect(aheadOf(patched.skeleton, '/b')).toBe(7)
-    expect(patchWorktreeStatus({ skeleton: tree({ '/b': st(7) }), path: '/a', value: st(3) }).found).toBe(false)
+    expect(patchWorktreeStatus({ skeleton: tree({ '/b': st(7) }), path: '/a', value: st(3), isLater: () => true }).found).toBe(false)
+    // 골격이 더 나중 스냅샷이면 바꾸지 않는다(D1).
+    const kept = patchWorktreeStatus({ skeleton: tree({ '/a': at(st(9), 20) }), path: '/a', value: at(st(3), 10), isLater })
+    expect([kept.found, kept.changed, aheadOf(kept.skeleton, '/a')]).toEqual([true, false, 9])
   })
   it('재빌드가 먼저 읽은 값(순번 5)만 덮는다 · 나중에 읽은 값(순번 20)은 그대로 두고 갱신 값을 버린다 · 다른 경로는 건드리지 않는다', async () => {
-    const refresh = new WorktreeStatusRefresh({ invalidate: () => {}, read: async () => at(st(2), 10), snapshotOf: (value) => snapshots.get(value) })
+    const refresh = new WorktreeStatusRefresh({ invalidate: () => {}, read: async () => at(st(2), 10), isLater })
     await refresh.refresh('/a')
     const overlaid = refresh.overlay({ built: tree({ '/a': at(st(1), 5), '/b': at(st(5), 6) }) })
     expect(aheadOf(overlaid, '/a')).toBe(2)
@@ -40,7 +45,7 @@ describe('WorktreeStatusRefresh (K7)', () => {
   })
   it('같은 경로 겹친 요청 — 먼저 부른 것이 늦게 끝나면 버린다(null)', async () => {
     const resolvers: ((value: GitStatusSummary) => void)[] = []
-    const refresh = new WorktreeStatusRefresh({ invalidate: () => {}, read: () => new Promise((resolve) => resolvers.push(resolve)), snapshotOf: (value) => snapshots.get(value) })
+    const refresh = new WorktreeStatusRefresh({ invalidate: () => {}, read: () => new Promise((resolve) => resolvers.push(resolve)), isLater })
     const first = refresh.refresh('/a')
     const second = refresh.refresh('/a')
     resolvers[1]?.(at(st(4), 8))

@@ -56,6 +56,8 @@ export type ScmApi = {
 export function useScm({ root, active }: { root: string | null; active: boolean }): ScmApi {
   const stores = useRef(new Map<string, ScmRootState>())
   const remotes = useRef(new Map<string, ScmRemoteAction>())
+  /** 진행 항목을 세운 요청(`runRemote` 의 표지) — 다른 요청·main 알림이 다시 세우면 바뀐다. */
+  const owners = useRef(new Map<string, symbol>())
   const [version, bump] = useReducer((value: number) => value + 1, 0)
   const [mode, setModeState] = useState<'list' | 'tree'>('list')
   const [compareByRoot, setCompareByRoot] = useState(() => new Map<string, ScmCompare>())
@@ -117,6 +119,8 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
   useEffect(
     () =>
       window.corral.onScmRemoteEvent((event) => {
+        // main 의 알림이 진행 항목의 주인이 된다 — 그 뒤 온 앞 요청의 응답은 이 항목을 지우지 않는다(D2).
+        owners.current.delete(event.root)
         if (event.action === null) remotes.current.delete(event.root)
         else remotes.current.set(event.root, event.action)
         bump()
@@ -200,10 +204,16 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
     async (input: ScmRemoteInput) => {
       const key = input.root
       if (remotes.current.has(key)) return
+      // 이 요청의 진행 항목 표지(수정 r2 D2) — 응답 때 진행 항목이 아직 이 요청의 것일 때만 지운다. main 의 끝 알림 뒤·응답 전 틈에 시작한 다음 동작의 진행 표시를 지우지 않게.
+      const token = Symbol(input.action)
+      owners.current.set(key, token)
       remotes.current.set(key, input.action)
       bump()
       const result = await window.corral.scmRemote(input).catch((error: unknown) => ({ ok: false as const, code: 'git_error' as const, error: String(error) }))
-      remotes.current.delete(key)
+      if (owners.current.get(key) === token) {
+        owners.current.delete(key)
+        remotes.current.delete(key)
+      }
       // 이미 진행 중(`busy`) — 이 렌더러가 모르는 동작이 돈다(다시 그려지기 전에 누른 것). main 에 물어 진행 표시·취소를 되살린다(C6).
       if (!result.ok && result.code === 'busy') {
         const state = await window.corral.scmRemoteState({ root: key }).catch(() => ({ action: null }))

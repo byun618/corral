@@ -152,7 +152,7 @@ import { readFileContent, readImageContent } from './file-read.js'
 import { readScmContent } from './scm-read.js'
 import { loginShellPath, rootTag, ScmWriter } from './scm-write.js'
 import { ScmRemote } from './scm-remote.js'
-import { getGitStatus, gitStatusSnapshot, invalidateGitStatus } from './git-status.js'
+import { getGitStatus, invalidateGitStatus, isLaterSnapshot } from './git-status.js'
 import { patchWorktreeStatus, WorktreeStatusRefresh } from './worktree-status-refresh.js'
 import { gitRunner, resolveScmBase, scmBaseInputsOf, type ScmBaseInputs } from './scm-base.js'
 import { PrStatus } from './pr-status.js'
@@ -769,16 +769,16 @@ function scheduleEmit(): void {
   }, 0)
 }
 
-/** 카드·상태바 git 상태를 **그 경로만** 다시 읽는다 (LIFE-831 K7 — 원격 동작·커밋·amend 뒤). 재빌드가 그보다 먼저 읽은 낡은 값은 `rebuildTree` 가 `overlay` 로 덮는다(스냅샷 순번). */
-const worktreeStatus = new WorktreeStatusRefresh({ read: getGitStatus, invalidate: invalidateGitStatus, snapshotOf: gitStatusSnapshot })
+/** 카드·상태바 git 상태를 **그 경로만** 다시 읽는다 (LIFE-831 K7 — 원격 동작·커밋·amend 뒤). patch·재빌드 overlay·캐시 모두 「나중 스냅샷만 이긴다」(`isLaterSnapshot`). */
+const worktreeStatus = new WorktreeStatusRefresh({ read: getGitStatus, invalidate: invalidateGitStatus, isLater: isLaterSnapshot })
 async function refreshWorktreeStatus(input: { path: string; reason: string }): Promise<void> {
   const startedAt = Date.now()
   const value = await worktreeStatus.refresh(input.path)
   if (value === null) return
-  const patched = patchWorktreeStatus({ skeleton, path: input.path, value })
+  const patched = patchWorktreeStatus({ skeleton, path: input.path, value, isLater: isLaterSnapshot })
   skeleton = patched.skeleton
-  log('scm.status.refresh', { reason: input.reason, root: rootTag(input.path), found: patched.found, ms: Date.now() - startedAt, ahead: value.ahead, behind: value.behind })
-  if (patched.found) scheduleEmit()
+  log('scm.status.refresh', { reason: input.reason, root: rootTag(input.path), found: patched.found, changed: patched.changed, ms: Date.now() - startedAt, ahead: value.ahead, behind: value.behind })
+  if (patched.changed) scheduleEmit()
 }
 
 /** 골격 재조회는 git·herdr 왕복을 낀다 — 흔들릴 때 매번 돌지 않게 한 박자 뭉친다. */

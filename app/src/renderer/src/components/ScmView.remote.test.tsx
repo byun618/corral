@@ -182,3 +182,45 @@ describe('수정 r1 C6 — 다시 그려진 렌더러가 main 의 진행 상태�
     expect(host.querySelector('[data-scm-remote-progress]')?.getAttribute('data-scm-remote-progress')).toBe('fetch')
   })
 })
+
+describe('수정 r2 D2 — 앞 요청의 늦은 응답이 다음 동작의 진행 표시를 지우지 않는다', () => {
+  it('main 끝 알림 뒤·응답 전에 다음 동작을 누르면, 앞 응답이 와도 다음 동작의 진행 표시·취소가 남는다', async () => {
+    const pending: ((result: ScmRemoteResult) => void)[] = []
+    const listeners: ((event: { root: string; action: 'fetch' | 'pull' | 'push' | 'publish' | null }) => void)[] = []
+    const cancels: { root: string }[] = []
+    Reflect.set(window, 'corral', {
+      getUiPrefs: async () => ({}),
+      setUiPrefs: () => {},
+      onExplorerEvent: () => () => {},
+      explorerWatch: async () => ({ ok: true }),
+      explorerRefreshGit: () => {},
+      scmRemoteState: async () => ({ action: null }),
+      onScmRemoteEvent: (listener: (typeof listeners)[number]) => (listeners.push(listener), () => {}),
+      scmRemote: () => new Promise<ScmRemoteResult>((resolve) => pending.push(resolve)),
+      scmRemoteCancel: async (input: { root: string }) => (cancels.push(input), { ok: true }),
+    })
+    const emit = (action: 'fetch' | 'push' | null): void => listeners.forEach((listener) => listener({ root: '/A', action }))
+    const Harness = (): React.JSX.Element => view(useScm({ root: '/A', active: false }), status())
+    await act(async () => root.render(createElement(Harness)))
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-action="push"]')?.click())
+    await act(async () => emit('push'))
+    // main: push 끝 — 슬롯을 지우고 알림(null)을 보낸 뒤 응답은 아직.
+    await act(async () => emit(null))
+    expect(actions()).toEqual(['fetch', 'pull', 'push'])
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-action="fetch"]')?.click())
+    expect(pending).toHaveLength(2)
+    await act(async () => emit('fetch'))
+    // 이제 앞 push 의 응답이 온다.
+    await act(async () => pending[0]?.({ ok: true }))
+    expect(host.querySelector('[data-scm-remote-progress]')?.getAttribute('data-scm-remote-progress')).toBe('fetch')
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-cancel]')?.click())
+    expect(cancels).toEqual([{ root: '/A' }])
+    // 알림이 아직 안 왔을 때(응답만 늦음)도 같다 — 다음 요청이 진행 항목을 세웠으면 앞 응답은 지우지 않는다.
+    await act(async () => emit(null))
+    await act(async () => pending[1]?.({ ok: false, code: 'cancelled', error: '취소됨' }))
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-action="pull"]')?.click())
+    expect(host.querySelector('[data-scm-remote-progress]')?.getAttribute('data-scm-remote-progress')).toBe('pull')
+    await act(async () => pending[2]?.({ ok: true }))
+    expect(actions()).toEqual(['fetch', 'pull', 'push'])
+  })
+})

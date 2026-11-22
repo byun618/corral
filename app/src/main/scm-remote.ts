@@ -306,29 +306,32 @@ export class ScmRemote {
 
   private async handle(input: ScmRemoteInput, slot: Slot): Promise<ScmRemoteResult> {
     // 게시의 원격 고르기는 큐 밖에서 묻는다(대화상자가 다른 쓰기를 막지 않게 — K1 확인 대화상자와 같은 규칙). 실제 argv 는 큐 차례에 다시 읽은 값으로 만든다.
+    // 고를 때의 브랜치(`expected`)를 요청에 싣는다 — 큐 차례에 HEAD 브랜치가 달라졌으면 git 없이 거절한다(수정 r2 D4, coding.md 「적용 시점에 목적지가 아직 현재인가」).
     let picked: string | null = null
+    let expected: string | null = null
     if (input.action === 'publish') {
       const confined = await confine({ roots: this.deps.roots(), root: input.root, rel: '' })
       if (!confined.ok) return refused('not_worktree', confined.error)
       const state = await this.readBranch(confined.realRoot)
       if (!state.ok) return state.result
+      expected = state.value.branch
       if (state.value.remotes.length > 1) {
         picked = await this.deps.pickRemote({ remotes: state.value.remotes, branch: state.value.branch })
         this.deps.log('scm.dialog', { kind: 'pickRemote', choice: picked === null ? 'cancel' : 'remote' })
         if (picked === null) return refused('pick_cancelled', '취소됨')
       }
     }
-    return this.deps.writer.enqueue(input.root, () => this.execute({ input, slot, picked }))
+    return this.deps.writer.enqueue(input.root, () => this.execute({ input, slot, picked, expected }))
   }
 
-  private async execute(context: { input: ScmRemoteInput; slot: Slot; picked: string | null }): Promise<ScmRemoteResult> {
+  private async execute(context: { input: ScmRemoteInput; slot: Slot; picked: string | null; expected: string | null }): Promise<ScmRemoteResult> {
     const { input, slot } = context
     if (slot.cancelled) return refused('cancelled', '기다리는 중 취소됨')
     // 고르기·앞 쓰기 대기 뒤에도 그 루트가 아직 열린 worktree 여야 한다(제약 8).
     const confined = await confine({ roots: this.deps.roots(), root: input.root, rel: '' })
     if (!confined.ok) return refused('not_worktree', confined.error)
     const cwd = confined.realRoot
-    const plan = await this.plan({ cwd, action: input.action, picked: context.picked })
+    const plan = await this.plan({ cwd, action: input.action, picked: context.picked, expected: context.expected })
     if (!plan.ok) return plan.result
     const loginPath = await this.deps.writer.loginPath()
     if (slot.cancelled) return refused('cancelled', '기다리는 중 취소됨')
@@ -359,7 +362,7 @@ export class ScmRemote {
   }
 
   /** 큐 차례의 argv — 브랜치·원격·upstream 을 git 에서 다시 읽는다(K9). git 실행 없이 끝나는 거절(원격 없음·upstream 없음·분리된 HEAD·이름 모양)도 여기. */
-  private async plan(input: { cwd: string; action: ScmRemoteAction; picked: string | null }): Promise<{ ok: true; args: readonly string[] } | { ok: false; result: ScmRemoteResult }> {
+  private async plan(input: { cwd: string; action: ScmRemoteAction; picked: string | null; expected: string | null }): Promise<{ ok: true; args: readonly string[] } | { ok: false; result: ScmRemoteResult }> {
     if (input.action === 'fetch') {
       const remotes = await this.readRemotes(input.cwd)
       if (!remotes.ok) return { ok: false, result: remotes.result }
@@ -371,6 +374,8 @@ export class ScmRemote {
     const { branch, remotes, upstream } = state.value
     switch (input.action) {
       case 'publish': {
+        if (input.expected !== null && input.expected !== branch)
+          return { ok: false, result: refused('branch_changed', `'${input.expected}' 브랜치를 게시하려 했지만 지금 브랜치는 '${branch}' 입니다 — 아무것도 올리지 않았습니다. 다시 눌러 주세요.`) }
         const remote = input.picked ?? (remotes.length === 1 ? remotes[0] : undefined)
         if (remote === undefined) return { ok: false, result: refused('bad_name', '게시할 원격을 고르지 못했습니다 — 원격 목록이 바뀌었습니다. 다시 눌러 주세요.') }
         if (!remotes.includes(remote) || !isSafeRefName(remote)) return { ok: false, result: refused('bad_name', '고른 원격이 더 이상 없습니다 — 다시 눌러 주세요.') }

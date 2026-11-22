@@ -32,9 +32,18 @@ const generations = new Map<string, number>()
 let readSeq = 0
 const snapshots = new WeakMap<GitStatusSummary, number>()
 
-/** 그 값을 만든 읽기의 순번 — `getGitStatus` 가 만든 값이 아니면 undefined. 둘 중 어느 쪽이 더 새 스냅샷인지 비교할 때 쓴다(`worktree-status-refresh.ts`). */
+/** 그 값을 만든 읽기의 순번 — `getGitStatus` 가 만든 값이 아니면 undefined. */
 export function gitStatusSnapshot(value: GitStatusSummary): number | undefined {
   return snapshots.get(value)
+}
+
+/**
+ * **나중 스냅샷만 이긴다** (수정 r2 D1) — `candidate` 가 `current` 보다 나중에 시작한 읽기의 값이면 true. 순번을 모르는 값은 가장 낡은 것으로 본다.
+ * 캐시 쓰기(`getGitStatus`)·경로 갱신 patch·재빌드 overlay(`worktree-status-refresh.ts`) 가 모두 이 한 규칙으로 고른다.
+ */
+export function isLaterSnapshot(candidate: GitStatusSummary, current: GitStatusSummary | undefined): boolean {
+  if (current === undefined) return true
+  return (snapshots.get(candidate) ?? -1) > (snapshots.get(current) ?? -1)
 }
 
 /** 상태가 바뀐 게 확실한 경로(원격 동작·커밋·amend 뒤 — LIFE-831)의 캐시를 지우고 세대를 올린다 — 그 전에 시작해 아직 도는 읽기는 끝나도 캐시에 들어가지 않는다. */
@@ -61,7 +70,8 @@ export async function getGitStatus(worktreePath: string): Promise<GitStatusSumma
   const seq = readSeq
   const value = await computeGitStatus(worktreePath)
   snapshots.set(value, seq)
-  if ((generations.get(worktreePath) ?? 0) === generation) cache.set(worktreePath, { value, at: Date.now() })
+  // 무효화 전에 시작했거나(세대가 바뀜 — C1), 같은 세대에서 더 나중에 시작한 읽기가 이미 넣었으면(D1) 캐시에 넣지 않는다.
+  if ((generations.get(worktreePath) ?? 0) === generation && isLaterSnapshot(value, cache.get(worktreePath)?.value)) cache.set(worktreePath, { value, at: Date.now() })
   else log('git_status.stale_drop', { path: worktreePath })
   return value
 }

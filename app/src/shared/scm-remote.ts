@@ -18,6 +18,8 @@ export type ScmRemoteRefusal =
   | 'detached'
   /** git 이 준 원격·브랜치 이름이 argv 에 넣을 수 없는 모양이거나, 고른 원격이 더 이상 없다(K9). */
   | 'bad_name'
+  /** 게시를 누른(고른) 때의 브랜치와 큐 차례의 HEAD 브랜치가 다르다 — git 0(수정 r2 D4). */
+  | 'branch_changed'
   /** 게시 원격 고르기를 닫았다 — git 0. */
   | 'pick_cancelled'
   /** 사용자가 취소 단추를 눌렀다(진행 중이면 프로세스 그룹 종료, 기다리던 것이면 git 없이 빠짐). */
@@ -64,7 +66,7 @@ export function classifyRemoteError(stderr: string): string | null {
   const conflicts = stderr.match(/^CONFLICT \(/gm)?.length ?? 0
   if (conflicts > 0) return `충돌 ${conflicts}개 — 「병합 변경 사항」에서 해결한 뒤 커밋하세요.`
   if (/Need to specify how to reconcile divergent branches/.test(stderr))
-    return '브랜치가 갈라졌고 끌어오기 방식(merge·rebase)이 정해져 있지 않아 git 이 멈췄습니다 — 터미널에서 `git config pull.rebase false`(merge) 또는 `true`(rebase) 를 정한 뒤 다시 끌어오세요. 아무것도 바꾸지 않았습니다.'
+    return '브랜치가 갈라졌고 끌어오기 방식(merge·rebase)이 정해져 있지 않아 git 이 멈췄습니다 — 터미널에서 `git config pull.rebase false`(merge) 또는 `true`(rebase) 를 정한 뒤 다시 끌어오세요. HEAD·작업 트리는 그대로입니다(원격 추적 브랜치는 가져온 대로 갱신됐을 수 있습니다).'
   if (/would be overwritten by (merge|checkout)|untracked working tree files would be (overwritten|removed)|cannot (pull|rebase) with rebase|Your index contains uncommitted changes/.test(stderr))
     return '작업 트리의 변경이 끌어올 변경과 겹칩니다 — 커밋하거나 치운 뒤 다시 끌어오세요. 작업 트리는 그대로입니다.'
   if (/\[rejected\][^\n]*\((fetch first|non-fast-forward)\)/.test(stderr)) return '원격에 새 커밋이 있습니다 — 끌어온 뒤 다시 밀어넣으세요.'
@@ -104,6 +106,8 @@ export function scmRemoteMessage(input: { action: ScmRemoteAction; result: ScmRe
       return { kind: 'error', text: `요청 형식이 올바르지 않습니다.\n${result.error}` }
     case 'bad_name':
       return { kind: 'error', text: maskCredentials(result.error) }
+    case 'branch_changed':
+      return { kind: 'info', text: result.error }
     case 'git_error': {
       const raw = maskCredentials(result.error)
       const sentence = result.hint !== undefined ? result.hint : classifyRemoteError(raw)

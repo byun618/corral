@@ -36,6 +36,8 @@ import { groupGlyphs, MRU_LIMIT, openMru, orderMru, stepMru, touchMru } from './
 import { numbersOf } from './pane-geometry.js'
 import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
+import { resolvePaneLinkTarget, setPaneLinkDirectory } from './terminal-pane-links.js'
+import { flashPaneRim } from './pane-rim-flash.js'
 import { closeGroup as closeGroupIn, findGroup, neighborGroupId, newTabPlacement, newTabSlotKey, newTabSlotOf, ONE_GROUP, ONE_TAB_IN_GROUP, topRightGroupId, unrememberedArrivalBranch, type NewTabSlot } from './group-tree.js'
 import type { TabGroup } from './group-tree.js'
 import type { LifecycleNotice } from './lifecycle-types.js'
@@ -641,6 +643,24 @@ export function App(): React.JSX.Element {
       selectPane(paneId)
     },
     [selectPane],
+  )
+  // LIFE-835 — 터미널 pane 이름 ⌘+클릭. 이동은 위 `revealPane`(사이드바·팔레트·MRU 와 같은 길) + 사이드바 행과 같은 테두리 번쩍임.
+  // 누른 순간 사라졌으면 팔레트와 같은 안내(D2). 대상 정보는 부를 때마다 최신 상태에서 낸다.
+  useEffect(
+    () =>
+      setPaneLinkDirectory({
+        lookup: (paneId) => {
+          const current = stateRef.current
+          if (current === null) return null
+          return resolvePaneLinkTarget({ state: current, paneId, ordinalFor: (tab) => tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId }) })
+        },
+        reveal: (paneId) => {
+          revealPane(paneId)
+          flashPaneRim(paneId)
+        },
+        notifyGone: () => toast('대상 pane이 사라졌습니다'),
+      }),
+    [revealPane],
   )
 
   const [requestedPane, setRequestedPane] = useState<string | null>(null)

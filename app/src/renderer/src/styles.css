@@ -463,6 +463,9 @@ button, input { font: inherit; letter-spacing: inherit; }
 .tooltip-arrow { position: absolute; width: 10px; height: 10px; margin-left: -5px; background: var(--fg); border-radius: 2px; transform: rotate(45deg); }
 .tooltip[data-side="bottom"] .tooltip-arrow { top: -3px; }
 .tooltip[data-side="top"] .tooltip-arrow { bottom: -3px; }
+/* 터미널 pane 이름 링크 툴팁 (LIFE-835) — 아이콘 툴팁 모양, 화살표 없음. 긴 탭 제목은 줄 끝을 줄인다. */
+.term-pane-link-tip { max-width: min(420px, calc(100vw - 16px)); }
+.term-pane-link-tip > div { overflow: hidden; text-overflow: ellipsis; }
 .hover-card-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 /* identity header(branch-first) — 브랜치 `font-mono text-[11px] leading-snug text-muted-foreground break-words`,
    제목 `mt-1 text-[13px] font-semibold leading-snug`. */

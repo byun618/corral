@@ -28,6 +28,7 @@ import { measureCellSize, readCellSize } from './term-metrics.js'
 import { useSettings } from './settings-store.js'
 import { registerTerminalLinks, terminalLinkHandler } from './terminal-links.js'
 import { attachLinkRefresh } from './terminal-link-refresh.js'
+import { registerPaneNameLinks } from './terminal-pane-links.js'
 import { applyTerminalAppearance, terminalAppearanceOptions, type TerminalAppearanceOptions } from './terminal-appearance.js'
 import { attachImeComposition } from './ime-composition.js'
 import { attachTerminalKeys } from './terminal-keys.js'
@@ -239,6 +240,8 @@ export function TerminalPane({
     term.unicode.activeVersion = '15-graphemes'
     term.open(container)
     const links = registerTerminalLinks(term)
+    // pane 이름 ⌘+클릭(LIFE-835) — URL provider 뒤에 등록해야 겹칠 때 URL 이 이긴다(D5).
+    const paneLinks = registerPaneNameLinks({ term, paneId })
     // 행 내용이 바뀌면 링크 캐시를 다시 묻게 한다 — 정지 포인터 아래 새 링크·같은 행 낡은 캐시(LIFE-573).
     const linkRefresh = attachLinkRefresh({ term })
     termRef.current = term
@@ -545,6 +548,7 @@ export function TerminalPane({
       detachIme()
       detachKeys.dispose()
       links.dispose()
+      paneLinks.dispose()
       linkRefresh.dispose()
       termRef.current = null
       term.dispose()

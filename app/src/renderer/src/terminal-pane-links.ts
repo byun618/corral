@@ -1,7 +1,7 @@
 // LIFE-835 — 터미널에 찍힌 pane 이름(`wZ3:p1`)을 ⌘+클릭하면 그 pane 으로 간다.
 //
 // 판정(D1): 이름 꼴을 추측하지 않는다 — herdr id 는 base-32 라 `p` 뒤도 글자일 수 있다(`wS:pR`, 00-analysis F1).
-// 느슨한 꼴(`w`+영숫자+`:p`+영숫자, 앞이 영숫자·`_`·`-`·`:` 아님, 뒤는 아래 D1′)로 후보를 찾고 **지금 살아 있는 pane 이름과 정확히 같을 때만** 링크다.
+// 느슨한 꼴(`w`+영숫자+`:p`+영숫자, 앞뒤 경계는 아래 D1′·D1″)로 후보를 찾고 **지금 살아 있는 pane 이름과 정확히 같을 때만** 링크다.
 // 살아 있는지는 후보가 나온 행에서만 묻는다 — 이름 없는 행은 정규식 한 번으로 끝난다(C5ⓒ).
 //
 // 겹침(D5): xterm 은 겹친 링크 중 먼저 등록된 provider 것을 남긴다(`Linkifier._removeIntersectingLinks`). OSC 8 은 xterm 이
@@ -10,14 +10,16 @@
 // 이동(D4)은 렌더러의 기존 `revealPane` 길이다 — App 이 `setPaneLinkDirectory` 로 이어 준다. 새 IPC·새 이동 경로는 없다.
 // 행 잇기는 하지 않는다(D6) — 이름은 6~10자라 두 행으로 갈릴 일이 사실상 없다(F9).
 import type { IBufferRange, ILink, Terminal } from '@xterm/xterm'
-import type { AppState, TabRow } from '../../shared/types.js'
+import type { AppState, RepoRow, TabRow } from '../../shared/types.js'
 import { sessionTitle } from './session-title.js'
 import { worktreeDisplayName } from './worktree-name.js'
 import { numbersOf } from './pane-geometry.js'
 import { terminalRowReader, type LinkCell, type ReadRow } from './terminal-links.js'
 
-// 뒤 경계(D1′): 이름 글자가 바로 붙으면 막고, `:`·`-` 는 그 다음이 이름 글자일 때만 막는다 — `wZ3:p1: 완료`·행 끝 `wZ3:p1:` 은 링크, `wZ3:p1:x` 는 아님.
-const PANE_NAME_CANDIDATE = /(?<![0-9A-Za-z_:-])w[0-9A-Za-z]+:p[0-9A-Za-z]+(?![0-9A-Za-z_]|[:-][0-9A-Za-z_])/g
+// 경계는 앞뒤 대칭이다. 이름 글자(`[0-9A-Za-z_]`)가 바로 붙으면 막고, `:`·`-` 는 그 너머가 이름 글자일 때만 막는다.
+//   뒤(D1′): `wZ3:p1: 완료`·행 끝 `wZ3:p1:` 은 링크, `wZ3:p1:x`·`wZ3:p1-x` 는 아님.
+//   앞(D1″): `대상:wZ3:p1`·`(코디:wZ3:p1)`·행 첫머리 `:wZ3:p1` 은 링크, `pane:wZ3:p1`·`x-wZ3:p1` 은 아님. `wZ3:p1:wZ3:p2` 는 둘 다 아님(모호).
+const PANE_NAME_CANDIDATE = /(?<![0-9A-Za-z_]|[0-9A-Za-z_][:-])w[0-9A-Za-z]+:p[0-9A-Za-z]+(?![0-9A-Za-z_]|[:-][0-9A-Za-z_])/g
 
 /** 툴팁·이동에 쓰는 대상 정보. */
 export type PaneLinkTarget = { paneId: string; worktreeName: string; tabTitle: string; paneNumber: number }
@@ -40,6 +42,11 @@ let directory: PaneLinkDirectory | null = null
 // 때만 provider 를 묻는다(`attachLinkRefresh().reevaluate`) — 집합이 바뀐 갱신 1번에 질의하는 터미널은 많아야 포인터 아래 하나다.
 const liveChangeListeners = new Set<() => void>()
 let liveKey: string | null = null
+
+/** 상태 → 살아 있는 pane 이름 목록. 열린 worktree(workspace 있음)의 모든 탭·pane. App 은 이 결과를 발행만 한다(r2 F). */
+export function livePaneIdsOf(repos: readonly RepoRow[]): string[] {
+  return repos.flatMap((repo) => repo.worktrees.flatMap((worktree) => (worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes.map((pane) => pane.paneId))))
+}
 
 /** App 이 상태를 받을 때마다 부른다. 집합이 직전과 같으면 아무 터미널도 부르지 않는다. 바뀌었으면 true. */
 export function publishLivePaneIds(paneIds: readonly string[]): boolean {
@@ -170,20 +177,39 @@ export function placeTooltip(input: {
   return { left, top }
 }
 
+/**
+ * 재평가(집합 변경) 동안 잡아 두는 툴팁 (r2 H). 재평가는 링크를 걷고(leave) 같은 자리를 다시 묻는다(hover) — 그대로 두면 같은 이름이어도
+ * 툴팁이 새 요소로 바뀌어 진입 애니메이션이 다시 돈다. 그래서 재평가 동안 leave 는 걷기를 미루고, 같은 이름으로 다시 잡히면 그 요소를 그대로
+ * 쓰며(글자만 지금 상태로), 재평가가 끝나도 다시 잡히지 않았으면 그때 걷는다. 재평가는 동기다(provider 가 동기로 답한다).
+ */
+let heldTip: HTMLDivElement | null = null
+
+function fillTooltip(input: { tip: HTMLDivElement; target: PaneLinkTarget }): void {
+  input.tip.replaceChildren(
+    ...paneLinkTooltipLines(input.target).map((line) => {
+      const row = document.createElement('div')
+      row.textContent = line
+      return row
+    }),
+  )
+}
+
 function showPaneLinkTooltip(input: { event: MouseEvent; paneId: string; ownerPaneId: string }): void {
-  hidePaneLinkTooltip()
   const target = directory?.lookup(input.paneId) ?? null
+  const held = heldTip
+  heldTip = null
+  if (held !== null && held === openTip && target !== null && held.dataset.paneLinkTip === target.paneId) {
+    fillTooltip({ tip: held, target })
+    return
+  }
+  hidePaneLinkTooltip()
   if (target === null) return
   const tip = document.createElement('div')
   tip.className = 'tooltip term-pane-link-tip'
   tip.setAttribute('role', 'tooltip')
   tip.dataset.paneLinkTip = target.paneId
   tip.dataset.paneLinkOwner = input.ownerPaneId
-  for (const line of paneLinkTooltipLines(target)) {
-    const row = document.createElement('div')
-    row.textContent = line
-    tip.append(row)
-  }
+  fillTooltip({ tip, target })
   document.body.append(tip)
   // 레이아웃 크기로 잰다 — `getBoundingClientRect` 는 진입 애니메이션(scale .95) 중이라 작게 나와 창 끝에서 잘린다(r1 B, `Tooltip.tsx` 와 같게).
   const { left, top } = placeTooltip({
@@ -201,7 +227,16 @@ function showPaneLinkTooltip(input: { event: MouseEvent; paneId: string; ownerPa
 /** pane 이름 provider 를 등록한다. 평문 URL provider **뒤에** 등록해야 URL 이 이긴다(D5). 반환값을 터미널과 함께 dispose 한다. */
 export function registerPaneNameLinks(input: { term: Terminal; paneId: string; reevaluate: () => void }): { dispose(): void } {
   const { term, paneId: ownPaneId, reevaluate } = input
-  liveChangeListeners.add(reevaluate)
+  const onLiveChange = (): void => {
+    heldTip = openTip?.dataset.paneLinkOwner === ownPaneId ? openTip : null
+    reevaluate()
+    // 다시 잡히지 않았다(이름이 빠졌거나 포인터 아래 링크가 바뀌었다) — 이제 걷는다.
+    if (heldTip !== null) {
+      heldTip = null
+      hidePaneLinkTooltip()
+    }
+  }
+  liveChangeListeners.add(onLiveChange)
   const isLive = (paneId: string): boolean => directory?.lookup(paneId) != null
   const readRow = terminalRowReader(term)
   const provider = term.registerLinkProvider({
@@ -213,14 +248,17 @@ export function registerPaneNameLinks(input: { term: Terminal; paneId: string; r
           activatePaneLink({ event, paneId: text, ownPaneId })
         },
         hover: (event, text) => showPaneLinkTooltip({ event, paneId: text, ownerPaneId: ownPaneId }),
-        leave: () => hidePaneLinkTooltip(),
+        leave: () => {
+          if (heldTip !== null && heldTip === openTip) return // 재평가 중 — 다시 잡히는지 본 뒤 정한다
+          hidePaneLinkTooltip()
+        },
       }))
       callback(links.length === 0 ? undefined : links)
     },
   })
   return {
     dispose: () => {
-      liveChangeListeners.delete(reevaluate)
+      liveChangeListeners.delete(onLiveChange)
       // 이 터미널이 띄운 툴팁만 걷는다 — 다른 pane 의 툴팁은 그쪽 leave 가 걷는다.
       if (openTip?.dataset.paneLinkOwner === ownPaneId) hidePaneLinkTooltip()
       provider.dispose()

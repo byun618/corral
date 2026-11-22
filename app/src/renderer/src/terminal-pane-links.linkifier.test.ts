@@ -245,6 +245,54 @@ describe('C3ⓓ — 요청 없이 상태가 오갔다 (실제 Linkifier, r1 E④
   })
 })
 
+describe('툴팁 유지 — 재평가에서 같은 이름이 다시 잡히면 같은 요소 (r2 H)', () => {
+  it('무관한 pane 이 닫히거나 생겨도 포인터 아래 툴팁 요소는 그대로(새 진입 애니메이션 없음)', async () => {
+    const h = harness()
+    h.setLive(['wZ3:p1', 'wZ4:p1', 'wZ5:p1'])
+    await h.write('\x1b[1;1Hgo wZ3:p1 now')
+    h.move(NAME)
+    const before = document.querySelector('[data-pane-link-tip]')
+    expect(before).not.toBeNull()
+    h.setLive(['wZ3:p1', 'wZ4:p1']) // 무관한 것이 닫힘
+    expect(h.current()).toBe('wZ3:p1')
+    expect(document.querySelectorAll('[data-pane-link-tip]')).toHaveLength(1)
+    expect(document.querySelector('[data-pane-link-tip]')).toBe(before)
+    expect(before?.isConnected).toBe(true)
+    h.setLive(['wZ3:p1', 'wZ4:p1', 'wZ6:p1']) // 무관한 것이 생김
+    expect(document.querySelector('[data-pane-link-tip]')).toBe(before)
+    h.dispose()
+  })
+
+  it('그 이름이 빠지면 지금처럼 걷는다', async () => {
+    const h = harness()
+    h.setLive(['wZ3:p1', 'wZ4:p1'])
+    await h.write('\x1b[1;1Hgo wZ3:p1 now')
+    h.move(NAME)
+    const before = document.querySelector('[data-pane-link-tip]')
+    h.setLive(['wZ4:p1'])
+    expect(h.tip()).toBeNull()
+    expect(before?.isConnected).toBe(false)
+    h.dispose()
+  })
+})
+
+describe('C3ⓑ (r2 정정) — 밑줄이 걷힌 뒤 같은 칸 ⌘+클릭은 이동 0·안내 0', () => {
+  it('hover → 집합에서 빠짐(밑줄 걷힘) → 같은 칸 ⌘+클릭 → reveal 0 · notifyGone 0 · URL 열림 0', async () => {
+    const h = harness()
+    h.setLive(['wZ3:p1', 'wZ4:p1'])
+    await h.write('\x1b[1;1Hgo wZ3:p1 now')
+    h.move(NAME)
+    expect(h.current()).toBe('wZ3:p1')
+    h.setLive(['wZ4:p1'])
+    expect(h.current()).toBeNull()
+    h.click(NAME)
+    expect(reveal).not.toHaveBeenCalled()
+    expect(notifyGone).not.toHaveBeenCalled()
+    expect(h.opened).toEqual([])
+    h.dispose()
+  })
+})
+
 describe('변이 대조 — 재평가를 끄면 C3ⓓ 장면이 실패한다 (판별력)', () => {
   it('재평가 없는 배선: 포인터 정지 + 집합에서 빠짐 → 밑줄이 남는다', async () => {
     const h = harness({ refresh: false })

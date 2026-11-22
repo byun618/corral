@@ -36,7 +36,7 @@ import { groupGlyphs, MRU_LIMIT, openMru, orderMru, stepMru, touchMru } from './
 import { numbersOf } from './pane-geometry.js'
 import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
-import { publishLivePaneIds, resolvePaneLinkTarget, setPaneLinkDirectory } from './terminal-pane-links.js'
+import { livePaneIdsOf, publishLivePaneIds, resolvePaneLinkTarget, setPaneLinkDirectory } from './terminal-pane-links.js'
 import { flashPaneRim } from './pane-rim-flash.js'
 import { closeGroup as closeGroupIn, findGroup, neighborGroupId, newTabPlacement, newTabSlotKey, newTabSlotOf, ONE_GROUP, ONE_TAB_IN_GROUP, topRightGroupId, unrememberedArrivalBranch, type NewTabSlot } from './group-tree.js'
 import type { TabGroup } from './group-tree.js'
@@ -665,7 +665,7 @@ export function App(): React.JSX.Element {
   // 상태가 올 때마다 살아 있는 pane 이름 집합을 발행한다 — 바뀐 때만 포인터 아래 링크를 다시 판정한다(C3ⓓ, 다음 mousemove 를 기다리지 않는다).
   useEffect(() => {
     if (state === null) return
-    publishLivePaneIds(state.repos.flatMap((repo) => repo.worktrees.flatMap((worktree) => (worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes.map((pane) => pane.paneId)))))
+    publishLivePaneIds(livePaneIdsOf(state.repos))
   }, [state])
 
   const [requestedPane, setRequestedPane] = useState<string | null>(null)

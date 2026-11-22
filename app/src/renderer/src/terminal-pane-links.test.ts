@@ -2,7 +2,7 @@
 // LIFE-835 — pane 이름 판정(C1ⓐⓑⓒ)·누른 순간 재확인(C3ⓒ)·기존 이동 길(C2ⓘ)·이름 없는 행의 비용(C5ⓒ)·툴팁 자리(C4ⓒ 보조).
 import { Terminal } from '@xterm/xterm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AppState, PaneRow, TabRow, TerminalGroupState, WorktreeRow } from '../../shared/types.js'
+import type { AppState, PaneRow, RepoRow, TabRow, TerminalGroupState, WorktreeRow } from '../../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
 import { emptyAgentState } from '../../shared/agent-state.js'
 import { findLinksOnRow, registerTerminalLinks, type LinkCell, type ReadRow } from './terminal-links.js'
@@ -10,6 +10,8 @@ import {
   activatePaneLink,
   findPaneLinksOnRow,
   findPaneNames,
+  livePaneIdsOf,
+  publishLivePaneIds,
   paneLinkTooltipLines,
   placeTooltip,
   registerPaneNameLinks,
@@ -56,6 +58,11 @@ describe('findPaneNames — 살아 있는 이름만 링크 (C1ⓐⓑ)', () => {
     ['행 끝 콜론', '워커 wZ3:p1:', ['wZ3:p1']],
     ['뒤 콜론 + 한글', 'wZ3:p1:완료', ['wZ3:p1']],
     ['뒤 대시 + 공백', 'wZ3:p1 - 끝, wZ3:p1-', ['wZ3:p1', 'wZ3:p1']],
+    // D1″ — 앞 `:`·`-` 는 그 앞 글자가 이름 글자가 아니면 링크
+    ['앞 레이블 콜론(한글)', '대상:wZ3:p1', ['wZ3:p1']],
+    ['괄호 안 레이블 콜론', '(코디:wZ3:p1)', ['wZ3:p1']],
+    ['행 첫머리 콜론', ':wZ3:p1', ['wZ3:p1']],
+    ['공백 뒤 콜론·대시', 'a :wZ3:p1 b -wZ3:p1', ['wZ3:p1', 'wZ3:p1']],
   ])('%s — %s', (_label, text, expected) => {
     expect(names(text, 'wZ3:p1', 'wS:pR', 'w11:p1A', 'wZ4:p2')).toEqual(expected)
   })
@@ -65,12 +72,17 @@ describe('findPaneNames — 살아 있는 이름만 링크 (C1ⓐⓑ)', () => {
     ['더 긴 이름 안의 접두사', 'wZ3:p1A 는 다른 pane'],
     ['앞에 영숫자', 'xwZ3:p1'],
     ['뒤 `:`·`-`·`_` 다음이 이름 글자', 'wZ3:p1-x wZ3:p1_x wZ3:p1:x wZ3:p1:2 wZ3:p1-_'],
-    ['앞에 이름 문자', '_wZ3:p1 -wZ3:p1 :wZ3:p1'],
+    ['앞에 이름 문자', '_wZ3:p1 1wZ3:p1'],
+    ['앞 `:`·`-` 너머가 이름 글자 (D1″)', 'pane:wZ3:p1 x-wZ3:p1 _:wZ3:p1 9-wZ3:p1'],
     ['tab id', 'wZ3:t1'],
     ['workspace id', 'wZ3 하나'],
     ['대소문자만 다름', 'wz3:p1 WZ3:p1 wZ3:P1'],
   ])('링크 아님 — %s', (_label, text) => {
     expect(names(text, 'wZ3:p1')).toEqual([])
+  })
+
+  it('붙은 두 이름 `wZ3:p1:wZ3:p2` 는 둘 다 아님 (모호, D1″)', () => {
+    expect(names('wZ3:p1:wZ3:p2', 'wZ3:p1', 'wZ3:p2')).toEqual([])
   })
 
   it('한 행에 여럿이면 각각', () => {
@@ -264,6 +276,70 @@ describe('resolvePaneLinkTarget — 툴팁 대상 (D3)', () => {
 
   it('툴팁 문구 — worktree · 탭 · pane 번호 + ⌘+클릭으로 이동', () => {
     expect(paneLinkTooltipLines(target('wZ3:p1'))).toEqual(['main · claude 1 · pane 2', '⌘+클릭으로 이동'])
+  })
+})
+
+describe('livePaneIdsOf — 상태 → 살아 있는 pane 이름 (r2 F①)', () => {
+  const gitStatus = { branch: null, upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null }
+  const worktree = (input: { path: string; workspaceId: string | null; tabs: TabRow[] }): WorktreeRow => ({
+    path: input.path,
+    branch: null,
+    head: null,
+    repoName: 'r',
+    isLinked: true,
+    openWorkspaceId: input.workspaceId,
+    workspace:
+      input.workspaceId === null ? null : { workspaceId: input.workspaceId, label: 'w', number: 1, agentStatus: 'idle', focused: false, tabs: input.tabs },
+    gitStatus,
+    displayName: null,
+    comment: null,
+    parentPath: null,
+  })
+  const repos: RepoRow[] = [
+    {
+      root: '/a',
+      name: 'a',
+      error: null,
+      worktrees: [
+        worktree({
+          path: '/a/main',
+          workspaceId: 'wA',
+          tabs: [tab({ tabId: 'wA:t1', workspaceId: 'wA', label: '1', paneIds: ['wA:p1', 'wA:p2'] }), tab({ tabId: 'wA:t2', workspaceId: 'wA', label: '2', paneIds: ['wA:p3'] })],
+        }),
+        // 열리지 않은 worktree — pane 없음
+        worktree({ path: '/a/closed', workspaceId: null, tabs: [] }),
+      ],
+    },
+    { root: '/b', name: 'b', error: null, worktrees: [worktree({ path: '/b/main', workspaceId: 'wB', tabs: [tab({ tabId: 'wB:t1', workspaceId: 'wB', label: '1', paneIds: ['wB:pR'] })] })] },
+    { root: '/c', name: 'c', error: 'git 실패', worktrees: [] },
+  ]
+
+  it('여러 레포·worktree·탭의 모든 pane, 닫힌 worktree 는 0', () => {
+    expect(livePaneIdsOf(repos)).toEqual(['wA:p1', 'wA:p2', 'wA:p3', 'wB:pR'])
+  })
+
+  it('빈 상태는 빈 목록', () => {
+    expect(livePaneIdsOf([])).toEqual([])
+  })
+})
+
+describe('publishLivePaneIds — 집합이 바뀐 때만 터미널을 부른다 (r2 F②)', () => {
+  it('리스너 호출 수 — 같은 집합 0 · 순서만 다른 집합 0 · 바뀐 집합 1', () => {
+    publishLivePaneIds(['dedupe-reset'])
+    const term = new Terminal({ cols: 20, rows: 2, allowProposedApi: true })
+    const reevaluate = vi.fn()
+    const handle = registerPaneNameLinks({ term, paneId: 'wZ4:p1', reevaluate })
+    publishLivePaneIds(['wZ3:p1', 'wZ4:p1'])
+    expect(reevaluate).toHaveBeenCalledTimes(1)
+    publishLivePaneIds(['wZ3:p1', 'wZ4:p1'])
+    publishLivePaneIds(['wZ4:p1', 'wZ3:p1'])
+    expect(reevaluate).toHaveBeenCalledTimes(1)
+    publishLivePaneIds(['wZ4:p1'])
+    expect(reevaluate).toHaveBeenCalledTimes(2)
+    handle.dispose()
+    publishLivePaneIds(['wZ9:p9'])
+    expect(reevaluate).toHaveBeenCalledTimes(2) // dispose 뒤엔 안 부른다
+    term.dispose()
   })
 })
 

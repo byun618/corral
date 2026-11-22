@@ -242,6 +242,7 @@ function publishRefusal(input: { branch: string; upstream: Upstream }): ScmRemot
     case 'local':
       return refused('already_published', `'${branch}' 브랜치는 로컬 브랜치를 upstream 으로 두고 있습니다 — 게시하지 않았습니다(설정 그대로). 원격에 올리려면 터미널에서 upstream 을 바꾸세요.`)
     case 'incomplete':
+      return refused('already_published', `'${branch}' 브랜치에는 이미 upstream 설정(branch.${branch}.remote)이 있는데 merge 가 비었거나 브랜치가 아닙니다 — 게시하지 않았습니다(설정 그대로). 터미널에서 확인하세요.`)
     case 'unlisted':
       return refused('already_published', `'${branch}' 브랜치에는 이미 upstream 설정(branch.${branch}.remote)이 있습니다 — 원격 목록의 원격이 아니라 게시하지 않았습니다(설정 그대로). 터미널에서 확인하세요.`)
   }

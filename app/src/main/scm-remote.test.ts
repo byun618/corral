@@ -959,4 +959,18 @@ describe('수정 r1', () => {
     expect(bareRef(f.bare, 'refs/heads/byurl')).toBeNull()
     expect(bareRef(other, 'refs/heads/byurl')).toBeNull()
   })
+
+  it('F3 불완전 upstream(원격 목록의 이름 + merge 없음) — 게시는 git 0 + 「merge 가 비었거나」 안내, 설정 그대로', async () => {
+    const f = fixture()
+    git(f.work, 'checkout', '-q', '-b', 'half')
+    git(f.work, 'config', 'branch.half.remote', 'origin')
+    const h = harness({ roots: [f.work] })
+    const result = await h.remote.run({ action: 'publish', root: f.work })
+    expect(result.ok ? null : result.code).toBe('already_published')
+    expect(scmRemoteMessage({ action: 'publish', result })).toEqual({ kind: 'info', text: "'half' 브랜치에는 이미 upstream 설정(branch.half.remote)이 있는데 merge 가 비었거나 브랜치가 아닙니다 — 게시하지 않았습니다(설정 그대로). 터미널에서 확인하세요." })
+    expect(h.spawns).toEqual([])
+    expect(git(f.work, 'config', '--get', 'branch.half.remote').trim()).toBe('origin')
+    expect(() => git(f.work, 'config', '--get', 'branch.half.merge')).toThrow()
+    expect(bareRef(f.bare, 'refs/heads/half')).toBeNull()
+  })
 })

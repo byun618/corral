@@ -72,6 +72,9 @@ type Subscription = {
   gitFirstAt: number | null
   gitRunning: boolean
   gitAgain: boolean
+  /** base 대비 한 칸 직렬(LIFE-830 수정 r2 B-1) — 도는 중이면 다음 회차의 status 는 `baseNext` 에 최신 것 하나만 둔다. */
+  baseRunning: boolean
+  baseNext: readonly ScmChange[] | null
 }
 
 /**
@@ -321,7 +324,7 @@ export class ExplorerHub {
       this.deps.log('explorer.watch.subscribe_cancelled', { root })
       return { ok: false, code: 'cancelled' }
     }
-    const sub: Subscription = { root, realRoot: confined.realRoot, gitDir, indexStamp: indexStamp(gitDir), gitTimer: null, gitLastAt: 0, gitFirstAt: null, gitRunning: false, gitAgain: false }
+    const sub: Subscription = { root, realRoot: confined.realRoot, gitDir, indexStamp: indexStamp(gitDir), gitTimer: null, gitLastAt: 0, gitFirstAt: null, gitRunning: false, gitAgain: false, baseRunning: false, baseNext: null }
     this.subs.set(root, sub)
     if (this.child === null) this.ensureChild()
     else {
@@ -365,7 +368,7 @@ export class ExplorerHub {
   }
 
   /** base 대비 켜기·끄기(LIFE-830) — 열린 worktree 루트만. 켜면 그 루트를 바로 다시 읽어 `base` 를 싣는다. */
-  setBaseMode(root: unknown, on: unknown): void {
+  setBaseMode({ root, on }: { root: unknown; on: unknown }): void {
     if (typeof root !== 'string' || this.stopped) return
     if (on !== true) {
       this.baseRoots.delete(root)
@@ -481,18 +484,39 @@ export class ExplorerHub {
       this.deps.log('explorer.git', { root: sub.root, ms: this.now() - startedAt, ok: outcome.error === null, marks: outcome.git?.marks.length ?? 0, ignored: outcome.git?.ignored.length ?? 0, changes: outcome.changes?.length ?? 0 })
       // 작업 트리·탐색기 push 가 먼저 — base 계산을 기다리지 않는다(수정 r1 A6).
       this.deps.push({ kind: 'git', root: sub.root, git: outcome.git, error: outcome.error, ...scmPushOf(outcome.changes) })
-      if (outcome.changes === null || !this.baseRoots.has(sub.root)) return
-      const base = await this.runBase(sub, outcome.changes)
-      // 그 사이 구독이 바뀌었거나 base 대비를 껐으면 싣지 않는다(렌더러가 작업 트리 모드로 돌아갔다).
-      if (this.subs.get(sub.root) !== sub || !this.baseRoots.has(sub.root)) return
-      this.deps.push({ kind: 'scmBase', root: sub.root, base })
+      if (outcome.changes !== null && this.baseRoots.has(sub.root)) this.requestBase(sub, outcome.changes)
     } finally {
-      // 어느 경로로 끝나든 회차를 푼다(수정 r1 A7).
+      // status 가 끝나면 회차를 푼다 — 다음 status 는 base 계산을 기다리지 않는다(수정 r2 B-1). 어느 경로로 끝나든 푼다(수정 r1 A7).
       sub.gitRunning = false
       if (sub.gitAgain && this.subs.get(sub.root) === sub) {
         sub.gitAgain = false
         this.scheduleGit(sub)
       }
+    }
+  }
+
+  /** base 대비 요청 — 도는 중이면 최신 status 하나만 남겨 두고, 아니면 바로 돈다(수정 r2 B-1). */
+  private requestBase(sub: Subscription, status: readonly ScmChange[]): void {
+    sub.baseNext = status
+    if (!sub.baseRunning) void this.drainBase(sub)
+  }
+
+  /**
+   * base 대비 한 칸 직렬 — 같은 루트에서 겹쳐 돌지 않고, 결과는 요청 순서대로 push 한다(낡은 결과가 새 결과 뒤에 오지 않는다).
+   * 그 사이 구독이 바뀌었거나 base 대비를 껐으면 싣지 않는다(렌더러가 작업 트리 모드로 돌아갔다). `runBase` 는 던지지 않는다(A7).
+   */
+  private async drainBase(sub: Subscription): Promise<void> {
+    sub.baseRunning = true
+    try {
+      while (sub.baseNext !== null) {
+        const status = sub.baseNext
+        sub.baseNext = null
+        if (this.subs.get(sub.root) !== sub || !this.baseRoots.has(sub.root)) continue
+        const base = await this.runBase(sub, status)
+        if (this.subs.get(sub.root) === sub && this.baseRoots.has(sub.root)) this.deps.push({ kind: 'scmBase', root: sub.root, base })
+      }
+    } finally {
+      sub.baseRunning = false
     }
   }
 

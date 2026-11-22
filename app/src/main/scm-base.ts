@@ -56,7 +56,7 @@ type Candidate = { source: ScmBaseSource; name: string; spec: string }
 /** ref 이름 모양 — 빈 값·NUL·줄바꿈은 git 에 넘기지 않는다(옵션 모양은 `--end-of-options` 가 막는다). */
 const usableName = (value: string | null): value is string => value !== null && value.trim() !== '' && !/[\0\n\r]/.test(value)
 
-async function verify(run: GitRun, spec: string): Promise<string | null> {
+async function verify({ run, spec }: { run: GitRun; spec: string }): Promise<string | null> {
   const result = await run(scmBaseVerifyArgs(spec))
   if (!result.ok) return null
   const oid = result.stdout.trim()
@@ -84,7 +84,7 @@ export async function resolveScmBase(input: { run: GitRun } & ScmBaseInputs): Pr
   if (usableName(input.baseRef)) head.push({ source: 'repo', name: input.baseRef, spec: input.baseRef })
   let found: { candidate: Candidate; oid: string } | null = null
   for (const candidate of head) {
-    const oid = await verify(run, candidate.spec)
+    const oid = await verify({ run, spec: candidate.spec })
     if (oid !== null) {
       found = { candidate, oid }
       break
@@ -94,7 +94,7 @@ export async function resolveScmBase(input: { run: GitRun } & ScmBaseInputs): Pr
     // ③ 은 앞 출처가 다 안 풀렸을 때만 묻는다 — 쓰지 않을 symbolic-ref 를 부르지 않는다.
     const chain = [...(await originHead(run)), ...DEFAULT_CHAIN.map((item): Candidate => ({ source: 'default', name: item.name, spec: item.ref }))]
     for (const candidate of chain) {
-      const oid = await verify(run, candidate.spec)
+      const oid = await verify({ run, spec: candidate.spec })
       if (oid !== null) {
         found = { candidate, oid }
         break

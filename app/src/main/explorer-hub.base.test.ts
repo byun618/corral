@@ -93,7 +93,7 @@ describe('ExplorerHub base 대비 (LIFE-830)', () => {
   it('켜면 바로 다시 읽어 git push 뒤 scmBase push(커밋분 + 추적 안 함)를 싣고, 끄면 다음 회차부터 싣지 않는다', async () => {
     await hub.subscribe(root)
     await nextGit(1)
-    hub.setBaseMode(root, true)
+    hub.setBaseMode({ root, on: true })
     const second = await nextGit(2)
     const on = await nextBase(1)
     expect(pushed.indexOf(on)).toBeGreaterThan(pushed.indexOf(second))
@@ -104,7 +104,7 @@ describe('ExplorerHub base 대비 (LIFE-830)', () => {
     ])
     expect(baseCalls.length).toBeGreaterThan(0)
     expect(hub.status().counters.baseRuns).toBe(1)
-    hub.setBaseMode(root, false)
+    hub.setBaseMode({ root, on: false })
     const callsWhenOff = baseCalls.length
     hub.refreshGit(root)
     await nextGit(3)
@@ -113,7 +113,7 @@ describe('ExplorerHub base 대비 (LIFE-830)', () => {
     expect(baseCalls.length).toBe(callsWhenOff)
   })
   it('구독 전에 켜도 첫 회차부터 싣는다 · 다른 루트는 켜지 않으면 git 추가 0', async () => {
-    hub.setBaseMode(root, true)
+    hub.setBaseMode({ root, on: true })
     await hub.subscribe(root)
     await hub.subscribe(other)
     await waitFor('두 루트 git push', () => (gitPushes().length >= 2 ? true : undefined))
@@ -123,9 +123,9 @@ describe('ExplorerHub base 대비 (LIFE-830)', () => {
     expect(logs.filter((line) => line.event === 'explorer.scm_base').map((line) => line.data?.root)).toEqual([root])
   })
   it('열린 worktree 가 아닌 루트·문자열 아닌 값·true 아닌 켜짐 값은 켜지지 않는다', async () => {
-    hub.setBaseMode('/not/open', true)
-    hub.setBaseMode(7, true)
-    hub.setBaseMode(root, 'yes')
+    hub.setBaseMode({ root: '/not/open', on: true })
+    hub.setBaseMode({ root: 7, on: true })
+    hub.setBaseMode({ root, on: 'yes' })
     await hub.subscribe(root)
     await nextGit(1)
     await settle()
@@ -152,7 +152,7 @@ describe('ExplorerHub base 대비 (LIFE-830)', () => {
         }
       },
     })
-    hub.setBaseMode(root, true)
+    hub.setBaseMode({ root, on: true })
     await hub.subscribe(root)
     const first = await nextGit(1)
     expect(first.changes?.map((change) => change.rel)).toEqual(['u.txt'])
@@ -160,6 +160,63 @@ describe('ExplorerHub base 대비 (LIFE-830)', () => {
     expect(basePushes()).toEqual([])
     release()
     expect((await nextBase(1)).base.ok).toBe(true)
+  })
+  it('B-1 — 느린 base 동안 다음 git push 도 기다리지 않는다 · base 는 겹쳐 돌지 않고 최신 status 로 이어 순서대로 push', async () => {
+    hub.dispose()
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let inflight = 0
+    let maxInflight = 0
+    hub = new ExplorerHub({
+      fork: fakeChild,
+      push: (event) => void pushed.push(event),
+      roots: () => [root],
+      log: () => {},
+      baseInputs: () => ({ parent: null, baseRef: 'main' }),
+      baseRun: (cwd): GitRun => {
+        const real = gitRunner(cwd)
+        return async (args) => {
+          inflight += 1
+          maxInflight = Math.max(maxInflight, inflight)
+          try {
+            await gate
+            return await real(args)
+          } finally {
+            inflight -= 1
+          }
+        }
+      },
+    })
+    const extra = path.join(root, 'w.txt')
+    try {
+      hub.setBaseMode({ root, on: true })
+      await hub.subscribe(root)
+      await nextGit(1)
+      hub.refreshGit(root)
+      const second = await nextGit(2)
+      fs.writeFileSync(extra, 'w\n')
+      hub.refreshGit(root)
+      const third = await nextGit(3)
+      // base 첫 회차가 아직 막혀 있는데 git push 두 번이 더 나갔다.
+      expect(basePushes()).toEqual([])
+      expect(second.changes?.map((change) => change.rel)).toEqual(['u.txt'])
+      expect(third.changes?.map((change) => change.rel)).toEqual(['u.txt', 'w.txt'])
+      release()
+      const firstBase = await nextBase(1)
+      const lastBase = await nextBase(2)
+      await settle()
+      const rels = (event: BasePush): string[] | null => (event.base.ok ? event.base.changes.map((change) => change.rel) : null)
+      // 첫 회차(옛 status) → 기다리던 것 중 최신(w.txt 포함) 하나. 둘째 회차 status 는 건너뛴다.
+      expect(rels(firstBase)).toEqual(['b.txt', 'u.txt'])
+      expect(rels(lastBase)).toEqual(['b.txt', 'u.txt', 'w.txt'])
+      expect(basePushes()).toHaveLength(2)
+      expect(pushed.indexOf(lastBase)).toBeGreaterThan(pushed.indexOf(firstBase))
+      expect(maxInflight).toBe(1)
+    } finally {
+      fs.rmSync(extra, { force: true })
+    }
   })
   it('A7 — base 재료가 던져도 ok:false git_error 로 내리고, 그 루트의 다음 git 회차가 계속 돈다', async () => {
     hub.dispose()
@@ -172,7 +229,7 @@ describe('ExplorerHub base 대비 (LIFE-830)', () => {
         throw new Error('registry boom')
       },
     })
-    hub.setBaseMode(root, true)
+    hub.setBaseMode({ root, on: true })
     await hub.subscribe(root)
     await nextGit(1)
     const failed = await nextBase(1)
@@ -183,7 +240,7 @@ describe('ExplorerHub base 대비 (LIFE-830)', () => {
     expect((await nextBase(2)).base.ok).toBe(false)
   })
   it('A5 — clearBaseModes(렌더러 다시 불러오기·죽음) 뒤엔 base git 0', async () => {
-    hub.setBaseMode(root, true)
+    hub.setBaseMode({ root, on: true })
     await hub.subscribe(root)
     await nextBase(1)
     hub.clearBaseModes()

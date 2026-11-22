@@ -24,7 +24,7 @@ export type SideContent = ({ kind: 'text'; text: string; size: number } | { kind
 const SIDE_LABEL: Readonly<Record<ScmSide, string>> = { head: 'HEAD', index: '인덱스', working: '작업 트리', base: 'base' }
 
 /** 머리 표지의 한 쪽 — base 쪽은 읽은 base 가 있으면 「base <이름>(<짧은 해시>)」. */
-export function sideLabel(side: ScmSide, content: SideContent | null): string {
+export function sideLabel({ side, content }: { side: ScmSide; content: SideContent | null }): string {
   if (side !== 'base' || content?.base === undefined) return SIDE_LABEL[side]
   return `base ${content.base.name}(${content.base.mergeBase.slice(0, 7)})`
 }
@@ -178,8 +178,8 @@ export function DiffView({
   const leftMissing = contents !== null && sides.left?.side === 'base' && contents.left?.kind === 'missing'
   const unchanged = contents !== null && notice === null && contents.left !== null && !leftMissing && textOf(contents.left) === textOf(contents.right)
   const missing = contents !== null && contents.right.kind === 'missing'
-  const leftLabel = sides.left === null ? '' : sideLabel(sides.left.side, contents?.left ?? null)
-  const rightLabel = sideLabel(sides.right.side, contents?.right ?? null)
+  const leftLabel = sides.left === null ? '' : sideLabel({ side: sides.left.side, content: contents?.left ?? null })
+  const rightLabel = sideLabel({ side: sides.right.side, content: contents?.right ?? null })
   return (
     <div className="scm-diff" data-scm-diff={target.mode} data-scm-diff-rel={target.rel} data-diff-group={groupId} tabIndex={-1} onMouseDown={onActivate}>
       <div className="scm-diff-head">

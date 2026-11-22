@@ -2499,7 +2499,7 @@ app.whenReady().then(async () => {
     if (!fromOurWindow(event)) return
     const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
     const on = typeof input === 'object' && input !== null && 'on' in input && input.on === true
-    explorerHub?.setBaseMode(root, on)
+    explorerHub?.setBaseMode({ root, on })
   })
   ipcMain.handle('corral:explorerAction', (event, input: unknown) =>
     fromOurWindow(event)

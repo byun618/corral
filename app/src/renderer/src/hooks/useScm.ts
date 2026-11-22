@@ -67,9 +67,15 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
   /** main 에 진행 상태를 물어 되살린다 — 질의 뒤 그 루트의 알림이 왔으면 응답을 버린다(알림이 더 새 상태 — F1). */
   const syncRemoteState = useCallback(async (key: string): Promise<void> => {
     const seen = events.current.get(key) ?? 0
-    const state = await window.corral.scmRemoteState({ root: key }).catch(() => ({ action: null }))
-    if ((events.current.get(key) ?? 0) !== seen || state.action === null || remotes.current.has(key)) return
-    remotes.current.set(key, state.action)
+    let action: ScmRemoteAction | null
+    try {
+      action = (await window.corral.scmRemoteState({ root: key })).action
+    } catch {
+      // 모르면(질의 실패·응답 모양 다름) 진행 없음으로 둔다.
+      return
+    }
+    if ((events.current.get(key) ?? 0) !== seen || action === null || remotes.current.has(key)) return
+    remotes.current.set(key, action)
     bump()
   }, [])
   const [version, bump] = useReducer((value: number) => value + 1, 0)

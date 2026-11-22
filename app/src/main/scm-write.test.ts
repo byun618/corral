@@ -3,6 +3,7 @@
 // K8 lock 재시도(실제 lock 파일) · K9 루트 직렬 · K11 가둠·argv · K12 대기 중 대상 바뀜.
 // fix r1: B1 추가 예정·이름 바꾸기 예정 = 휴지통 · B2 휴지통 대상 main 분류 · B3 부분 실패 안내 · B4 HEAD 판별 · B6 lock 재시도는 git exit 128 만.
 // fix r2: C1 로그인 셸 상한(그룹 SIGKILL·stdin 닫음) · C2 되돌릴 것도 main 분류 · C3 낡은 목록 = stale + 재조회 · C4 「변경 있나」 = untracked normal.
+// fix r3: D1 로그인 셸 PATH 는 쓰기 git 전부·미리 조회·checkout 비0 안내 · D3 동작 단위 lock 재시도 예산.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -612,7 +613,7 @@ describe('K4·K5 — 커밋·amend', () => {
   })
 })
 
-describe('K6·K7 — 훅 실패 원문 · 로그인 셸 PATH(커밋 git 에만)', () => {
+describe('K6·K7 — 훅 실패 원문 · 로그인 셸 PATH(쓰기 git 전부 — r3 D1)', () => {
   /** 이 레포 훅 사본(`command -v gitleaks || exit 1`) — gitleaks 대신 시험용 가짜 도구 이름. + 실패 표지 변형 한 줄. */
   function hookRepo(): { root: string; bin: string } {
     const root = repo()
@@ -639,7 +640,7 @@ describe('K6·K7 — 훅 실패 원문 · 로그인 셸 PATH(커밋 git 에만)'
   }
   const MIN_PATH = '/usr/bin:/bin:/usr/sbin:/sbin'
 
-  it('최소 PATH 앱 + 로그인 셸 PATH 있음 = 훅 통과 커밋, 그 PATH 는 커밋 git 에만', async () => {
+  it('최소 PATH 앱 + 로그인 셸 PATH 있음 = 훅 통과 커밋, 그 PATH 는 쓰기 git 전부(stage·unstage·checkout·rm --cached·add·commit)에만 — 읽기는 앱 PATH', async () => {
     const { root, bin } = hookRepo()
     // git 래퍼 — 부를 때마다 PATH 와 argv 를 적는다(그 뒤 진짜 git).
     const record = path.join(base, `argv-${seq}.log`)
@@ -665,19 +666,27 @@ describe('K6·K7 — 훅 실패 원문 · 로그인 셸 PATH(커밋 git 에만)'
     expect(git(root, 'log', '-1', '--format=%s')).toBe('hooked\n')
     write(root, 'b.txt', 'b1\n')
     expect(await h.writer.write({ action: 'commit', root, message: 'smart hooked', amend: false })).toEqual({ ok: true })
-    // 로그인 셸 조회는 성공값을 둔다(두 번째 커밋은 다시 묻지 않는다).
+    // unstage(reset) · discard(checkout) · 추가 예정 discard(rm --cached)도 쓰기 git.
+    write(root, 'a.txt', 'a2\n')
+    git(root, 'add', 'a.txt')
+    expect(await h.writer.write({ action: 'unstage', root, paths: ['a.txt'] })).toEqual({ ok: true })
+    write(root, 'ita.txt', 'ita\n')
+    git(root, 'add', '-N', 'ita.txt')
+    h.asked.length = 0
+    const discard = harness({ roots: [root], answers: ['discardAll'], over: { git: () => wrapper, env: { ...process.env, PATH: MIN_PATH }, loginPath: async () => loginPath } })
+    expect(await discard.writer.write({ action: 'discard', root, tracked: ['a.txt'], untracked: ['ita.txt'] })).toEqual({ ok: true })
+    // 로그인 셸 조회는 성공값을 둔다(뒤 쓰기는 다시 묻지 않는다).
     expect(lookups).toBe(1)
     const lines = fs.readFileSync(record, 'utf8').trim().split('\n').map((line) => line.split('\t'))
-    const commits = lines.filter(([, argv]) => argv?.includes(' commit '))
-    expect(commits).toHaveLength(2)
-    for (const [pathEnv, argv] of commits) {
-      expect(pathEnv).toBe(loginPath)
-      expect(argv).toContain('-c user.useConfigOnly=true commit --quiet')
-    }
-    // 커밋이 아닌 git(stage·읽기·스마트 커밋의 add)은 앱 PATH 그대로.
-    const others = lines.filter(([, argv]) => !argv?.includes(' commit '))
-    expect(others.length).toBeGreaterThanOrEqual(4)
-    for (const [pathEnv] of others) expect(pathEnv).toBe(MIN_PATH)
+    // 쓰기 = `--no-optional-locks` 가 없는 git — 전부 로그인 PATH.
+    const writes = lines.filter(([, argv]) => !argv?.includes('--no-optional-locks'))
+    const verbOf = (argv: string | undefined): string => (argv ?? '').split(' ').find((word) => ['add', 'commit', 'reset', 'checkout', 'rm'].includes(word)) ?? ''
+    expect(writes.map(([, argv]) => verbOf(argv))).toEqual(['add', 'commit', 'add', 'commit', 'reset', 'checkout', 'rm'])
+    for (const [pathEnv] of writes) expect(pathEnv).toBe(loginPath)
+    // 읽기 git(HEAD·스테이지·변경 조회·discard 분류)은 앱 PATH 그대로.
+    const reads = lines.filter(([, argv]) => argv?.includes('--no-optional-locks'))
+    expect(reads.length).toBeGreaterThanOrEqual(5)
+    for (const [pathEnv] of reads) expect(pathEnv).toBe(MIN_PATH)
     // 쓰기 argv 는 전부 --literal-pathspecs 를 단다.
     for (const [, argv] of lines.filter(([, argv]) => !argv?.includes('--no-optional-locks'))) expect(argv).toContain('--literal-pathspecs')
   })
@@ -774,6 +783,187 @@ describe('K6·K7 — 훅 실패 원문 · 로그인 셸 PATH(커밋 git 에만)'
     expect(value).toMatch(/^\//)
     expect(value?.split(':')).toContain('/usr/bin')
     expect(await loginShellPath({ shell: path.join(base, 'no-such-shell') })).toBeNull()
+  })
+})
+
+describe('D1 — 로그인 셸 PATH 는 쓰기 git 전부 · checkout 비0 = 실제 결과 안내 + 휴지통 안 함(리뷰 r3 재현 p01·p02)', () => {
+  const MIN_PATH = '/usr/bin:/bin:/usr/sbin:/sbin'
+  /** 로그인 PATH 에만 있는 도구 폴더(시험 임시 폴더 — 사용자 PATH·rc 무변경). */
+  function toolBin(names: string[]): string {
+    const bin = path.join(base, `d1-bin-${seq}-${names.join('-')}`)
+    fs.mkdirSync(bin, { recursive: true })
+    for (const name of names) fs.writeFileSync(path.join(bin, name), '#!/bin/sh\ncat\n', { mode: 0o755 })
+    return bin
+  }
+  /** p01 — post-checkout 훅이 로그인 PATH 에만 있는 `fakelfs` 를 요구(git-lfs 훅 꼴). 훅 폴더는 레포 밖(추적 안 함으로 안 보이게). */
+  function postCheckoutRepo(): { root: string; bin: string } {
+    const root = repo()
+    const bin = toolBin(['fakelfs'])
+    const hooks = path.join(base, `d1-hooks-${seq}`)
+    fs.mkdirSync(hooks)
+    fs.writeFileSync(path.join(hooks, 'post-checkout'), '#!/bin/sh\ncommand -v fakelfs >/dev/null 2>&1 || { echo >&2 "post-checkout: fakelfs not found on PATH"; exit 2; }\n', { mode: 0o755 })
+    git(root, 'config', 'core.hooksPath', hooks)
+    write(root, 'a.txt', 'a1\n')
+    write(root, 'u.txt', 'untracked\n')
+    return { root, bin }
+  }
+  /** p02 — clean/smudge 필터 스크립트가 로그인 PATH 에만(시험 레포 로컬 설정 — 전역 git 설정 무변경). */
+  function filterRepo(): { root: string; bin: string; gitWithFilter: (...args: string[]) => string } {
+    const root = repo({ commit: false })
+    const bin = toolBin(['fake-clean', 'fake-smudge'])
+    const gitWithFilter = (...args: string[]): string => execFileSync(GIT, ['-C', root, ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` } })
+    git(root, 'config', 'filter.fakefilter.clean', 'fake-clean')
+    git(root, 'config', 'filter.fakefilter.smudge', 'fake-smudge')
+    git(root, 'config', 'filter.fakefilter.required', 'true')
+    write(root, '.gitattributes', '*.dat filter=fakefilter\n')
+    write(root, 'a.dat', 'base\n')
+    gitWithFilter('add', '-A')
+    gitWithFilter('commit', '-q', '-m', 'base')
+    return { root, bin, gitWithFilter }
+  }
+
+  it('p01 로그인 PATH 있음 = 섞인 discard 성공(추적 파일 되돌림 + 추적 안 함 휴지통)', async () => {
+    const { root, bin } = postCheckoutRepo()
+    const h = harness({ roots: [root], answers: ['discardAll'], over: { env: { ...process.env, PATH: MIN_PATH }, loginPath: async () => `${bin}:${MIN_PATH}` } })
+    const content = hash(path.join(root, 'u.txt'))
+    expect(await h.writer.write({ action: 'discard', root, tracked: ['a.txt'], untracked: ['u.txt'] })).toEqual({ ok: true })
+    expect(read(root, 'a.txt')).toBe('a0\n')
+    expect(h.trashed).toHaveLength(1)
+    expect(hash(h.trashed[0] ?? '')).toBe(content)
+    expect(status(root)).toBe('')
+  })
+  it('p01 로그인 PATH 실패(null) = 훅 오류 원문 + 「되돌린 추적 파일」 + 「휴지통으로 옮기지 않았다」, 휴지통 0 · 추적 안 함 그대로', async () => {
+    const { root } = postCheckoutRepo()
+    const h = harness({ roots: [root], answers: ['discardAll'], over: { env: { ...process.env, PATH: MIN_PATH }, loginPath: async () => null } })
+    const content = hash(path.join(root, 'u.txt'))
+    const result = await h.writer.write({ action: 'discard', root, tracked: ['a.txt'], untracked: ['u.txt'] })
+    expect(result).toMatchObject({ ok: false, code: 'git_error' })
+    const error = result.ok ? '' : result.error
+    expect(error).toContain('post-checkout: fakelfs not found on PATH')
+    expect(error).toContain('인덱스 내용으로 되돌린 추적 파일 1개:\na.txt')
+    expect(error).not.toContain('되돌리지 못한')
+    expect(error).toContain('추적하지 않는 파일 1개는 휴지통으로 옮기지 않았습니다(그대로 있음).')
+    // 실제 상태도 그 안내와 같다 — git 은 파일을 되돌렸고, 휴지통 단계는 돌지 않았다.
+    expect(read(root, 'a.txt')).toBe('a0\n')
+    expect(h.trashed).toHaveLength(0)
+    expect(hash(path.join(root, 'u.txt'))).toBe(content)
+    expect(status(root)).toBe('?? u.txt\n')
+    expect(h.refreshed).toEqual([root])
+  })
+  it('p02 로그인 PATH 있음 = 필터가 도는 stage·discard 성공(인덱스·작업 트리 내용 대조)', async () => {
+    const { root, bin, gitWithFilter } = filterRepo()
+    const h = harness({ roots: [root], answers: ['discardTracked'], over: { env: { ...process.env, PATH: MIN_PATH }, loginPath: async () => `${bin}:${MIN_PATH}` } })
+    write(root, 'a.dat', 'changed\n')
+    expect(await h.writer.write({ action: 'stage', root, paths: ['a.dat'] })).toEqual({ ok: true })
+    expect(git(root, 'show', ':a.dat')).toBe('changed\n')
+    write(root, 'a.dat', 'changed twice\n')
+    expect(await h.writer.write({ action: 'discard', root, tracked: ['a.dat'], untracked: [] })).toEqual({ ok: true })
+    expect(read(root, 'a.dat')).toBe('changed\n')
+    expect(gitWithFilter('status', '--porcelain')).toBe('M  a.dat\n')
+  })
+  it('p02 로그인 PATH 실패(null) = stage 는 필터 오류 원문(인덱스 무변화) · discard 는 원문 + 「되돌리지 못한 추적 파일」(실제로 지워진 채)', async () => {
+    const { root } = filterRepo()
+    const h = harness({ roots: [root], answers: ['discardTracked'], over: { env: { ...process.env, PATH: MIN_PATH }, loginPath: async () => null } })
+    write(root, 'a.dat', 'changed\n')
+    const staged = await h.writer.write({ action: 'stage', root, paths: ['a.dat'] })
+    expect(staged).toMatchObject({ ok: false, code: 'git_error' })
+    expect(staged.ok ? '' : staged.error).toContain("clean filter 'fakefilter' failed")
+    expect(git(root, 'show', ':a.dat')).toBe('base\n')
+    const discarded = await h.writer.write({ action: 'discard', root, tracked: ['a.dat'], untracked: [] })
+    expect(discarded).toMatchObject({ ok: false, code: 'git_error' })
+    const error = discarded.ok ? '' : discarded.error
+    expect(error).toContain('smudge filter fakefilter failed')
+    expect(error).toContain('인덱스 내용으로 되돌린 추적 파일 없음.')
+    expect(error).toContain('되돌리지 못한 추적 파일 1개:\na.dat')
+    expect(error).not.toContain('휴지통')
+    // 안내대로 — 파일은 되돌아오지 않았다(git 이 지운 채 남김, 인덱스는 그대로라 터미널에서 되살릴 수 있다).
+    expect(fs.existsSync(path.join(root, 'a.dat'))).toBe(false)
+    expect(git(root, 'show', ':a.dat')).toBe('base\n')
+  })
+  it('미리 조회 — 조회 1회를 진행 중 쓰기들이 함께 기다리고(다른 루트 동시 stage 둘), 끝난 뒤 쓰기는 다시 묻지 않는다', async () => {
+    const one = repo()
+    const two = repo()
+    const record = path.join(base, `d1-argv-${seq}.log`)
+    const wrapper = path.join(base, `d1-gitwrap-${seq}.sh`)
+    fs.writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\t%s\\n' "$PATH" "$*" >> '${record}'\nexec '${GIT}' "$@"\n`, { mode: 0o755 })
+    const loginPath = `/opt/login-only/bin:${MIN_PATH}`
+    let lookups = 0
+    let release: (value: string) => void = () => {}
+    const h = harness({
+      roots: [one, two],
+      over: {
+        git: () => wrapper,
+        env: { ...process.env, PATH: MIN_PATH },
+        loginPath: () => {
+          lookups += 1
+          return new Promise<string>((resolve) => {
+            release = resolve
+          })
+        },
+      },
+    })
+    const prefetch = h.writer.prefetchLoginPath()
+    write(one, 'a.txt', 'a1\n')
+    write(two, 'a.txt', 'a1\n')
+    const writes = Promise.all([h.writer.write({ action: 'stage', root: one, paths: ['a.txt'] }), h.writer.write({ action: 'stage', root: two, paths: ['a.txt'] })])
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // 조회가 끝나기 전에는 쓰기 git 이 돌지 않았다 — 앱 PATH 로 먼저 나가지 않는다.
+    expect(fs.existsSync(record)).toBe(false)
+    expect(lookups).toBe(1)
+    release(loginPath)
+    expect(await prefetch).toBe(loginPath)
+    expect(await writes).toEqual([{ ok: true }, { ok: true }])
+    // 조회가 끝난 뒤의 쓰기 — 조회 호출 없이 바로 git(첫 stage 가 조회를 기다리지 않는다).
+    write(one, 'b.txt', 'b1\n')
+    const loggedBefore = h.logs.length
+    expect(await h.writer.write({ action: 'stage', root: one, paths: ['b.txt'] })).toEqual({ ok: true })
+    expect(lookups).toBe(1)
+    expect(h.logs.slice(loggedBefore).filter((entry) => entry.event === 'scm.write.login_path')).toHaveLength(0)
+    expect(h.logs.filter((entry) => entry.event === 'scm.write.login_path').map((entry) => entry.data.ok)).toEqual([true])
+    const lines = fs.readFileSync(record, 'utf8').trim().split('\n').map((line) => line.split('\t'))
+    expect(lines).toHaveLength(3)
+    for (const [pathEnv] of lines) expect(pathEnv).toBe(loginPath)
+  })
+})
+
+describe('D3 — 한 동작의 lock 재시도 대기 합계 ≤ 25 초(여러 git 호출이 예산을 함께 쓴다)', () => {
+  it('추가 예정 discard — checkout 이 lock 을 9번 겪고 성공, 휴지통 뒤 rm --cached 도 lock = 합계 예산 안에서 멈추고 원문 오류 · lock 파일 그대로', async () => {
+    const root = repo()
+    write(root, 'a.txt', 'a1\n')
+    write(root, 'ita.txt', 'ita\n')
+    git(root, 'add', '-N', 'ita.txt')
+    const lock = path.join(root, '.git', 'index.lock')
+    fs.writeFileSync(lock, 'held by test\n')
+    const sleeps: number[] = []
+    const h = harness({
+      roots: [root],
+      answers: ['discardAll'],
+      over: {
+        retryDelays: LOCK_RETRY_DELAYS_MS,
+        // 진짜 시계 대신 대기 값만 적는다 — 9번째 대기에 lock 을 놓는다(첫 호출은 10번째 시도에 성공).
+        sleep: async (ms) => {
+          sleeps.push(ms)
+          if (sleeps.length === 9) fs.renameSync(lock, `${lock}.released`)
+        },
+        // 휴지통 = 옮긴 뒤 lock 을 다시 잡는다(둘째 호출 rm --cached 가 lock 을 겪게).
+        trashItem: async (abs) => {
+          fs.renameSync(abs, path.join(base, `d3-trash-${seq}-${path.basename(abs)}`))
+          fs.writeFileSync(lock, 'held again\n')
+        },
+      },
+    })
+    const result = await h.writer.write({ action: 'discard', root, tracked: ['a.txt'], untracked: ['ita.txt'] })
+    expect(result).toMatchObject({ ok: false, code: 'git_error' })
+    expect(result.ok ? '' : result.error).toContain("index.lock': File exists")
+    const total = sleeps.reduce((sum, ms) => sum + ms, 0)
+    // 호출마다 따로였다면 14 250 + 19 250 = 33 500 ms. 동작 합계로 묶여 25 000 안에서 멈춘다.
+    expect(total).toBeLessThanOrEqual(25_000)
+    expect(total).toBeGreaterThan(19_250)
+    expect(sleeps).toEqual([...LOCK_RETRY_DELAYS_MS.slice(0, 9), ...LOCK_RETRY_DELAYS_MS.slice(0, 8)])
+    expect(h.logs.find((entry) => entry.event === 'scm.write')?.data.retries).toBe(17)
+    expect(read(root, 'a.txt')).toBe('a0\n')
+    expect(fs.readFileSync(lock, 'utf8')).toBe('held again\n')
+    console.log(`D3 retry wait total=${total}ms sleeps=${sleeps.length}`)
   })
 })
 

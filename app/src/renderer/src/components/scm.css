@@ -52,6 +52,8 @@
   border: none; border-radius: 4px; background: none; color: var(--fg); cursor: pointer;
 }
 .scm-action:hover { background: var(--bg-accent); }
+.scm-action[aria-disabled='true'] { opacity: 0.4; cursor: default; }
+.scm-action[aria-disabled='true']:hover { background: none; }
 .scm-action .codicon { font-size: 16px; }
 .scm-banner { flex-shrink: 0; padding: 4px 12px; font-size: 12px; color: var(--fg-muted); background: var(--bg-accent); }
 .right-panel-activity-icon.is-source-control::before { content: '\ea68'; }

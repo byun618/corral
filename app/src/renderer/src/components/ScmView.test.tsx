@@ -81,7 +81,7 @@ const api = (input: Partial<ScmApi> & { changes?: ScmChange[] | null; error?: st
   refresh: () => {},
   mode: 'list',
   setMode: () => {},
-  write: { message: '', notice: null, committing: false, pending: 0 },
+  write: { message: '', notice: null, committing: false },
   setMessage: () => {},
   dismissNotice: () => {},
   run: async () => {},

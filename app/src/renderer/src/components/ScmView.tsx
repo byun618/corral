@@ -69,6 +69,8 @@ const ACTION_TITLE: Readonly<Record<ScmActionId, { row: string; group: string }>
   stage: { row: '변경 내용 스테이징', group: '모든 변경 내용 스테이징' },
   unstage: { row: '변경 내용 스테이징 취소', group: '모든 변경 내용 스테이징 취소' },
 }
+/** 목록이 상한에서 잘렸을 때 그룹 단추는 보이는 것만 처리하게 되므로 끈다(D2 — 행 단추는 그대로). `disabled` 는 툴팁이 안 떠서 `aria-disabled`. */
+export const SCM_GROUP_TRUNCATED_TITLE = '변경이 너무 많아 목록이 잘렸습니다 — 그룹 전체 동작은 쓸 수 없습니다(파일별로 하거나 터미널에서 하세요).'
 
 /** 행 툴팁 — 경로 • 상태 문구, 이름 바뀜은 원래 경로(VS Code `getStatusText` + 원래 경로). */
 export function scmRowTitle(change: ScmChange): string {
@@ -372,6 +374,7 @@ export function ScmView({
                 onDoubleClick={() => {
                   if (row.kind === 'file') onOpen({ change: row.change, preview: false })
                 }}
+                truncated={truncated}
                 onAction={(action) => act({ action, group: row.group, changes: row.kind === 'file' ? [row.change] : groupChangesOf(row.group) })}
               />
             ))}
@@ -383,7 +386,7 @@ export function ScmView({
 }
 
 /** inline 단추 묶음 — 클릭·더블클릭이 행(diff 열기·접기)으로 새지 않는다. */
-function ScmActions({ group, level, onAction }: { group: ScmGroupId; level: 'row' | 'group'; onAction: (action: ScmActionId) => void }): React.JSX.Element {
+function ScmActions({ group, level, off, onAction }: { group: ScmGroupId; level: 'row' | 'group'; off: boolean; onAction: (action: ScmActionId) => void }): React.JSX.Element {
   return (
     <span className="scm-actions" data-scm-actions={level}>
       {scmActionsOf(group).map((action) => (
@@ -392,12 +395,13 @@ function ScmActions({ group, level, onAction }: { group: ScmGroupId; level: 'row
           type="button"
           className="scm-action"
           data-scm-action={action}
-          title={ACTION_TITLE[action][level]}
+          title={off ? SCM_GROUP_TRUNCATED_TITLE : ACTION_TITLE[action][level]}
           aria-label={ACTION_TITLE[action][level]}
+          aria-disabled={off ? true : undefined}
           tabIndex={-1}
           onClick={(event) => {
             event.stopPropagation()
-            onAction(action)
+            if (!off) onAction(action)
           }}
           onDoubleClick={(event) => event.stopPropagation()}
         >
@@ -414,6 +418,7 @@ function ScmRowView({
   selected,
   onClick,
   onDoubleClick,
+  truncated,
   onAction,
 }: {
   row: ScmRow
@@ -421,6 +426,7 @@ function ScmRowView({
   selected: boolean
   onClick: () => void
   onDoubleClick: () => void
+  truncated: boolean
   onAction: (action: ScmActionId) => void
 }): React.JSX.Element {
   if (row.kind === 'group')
@@ -430,7 +436,7 @@ function ScmRowView({
           <Codicon name="chevron-down" />
         </span>
         <span className="explorer-label scm-group-title">{row.title}</span>
-        <ScmActions group={row.group} level="group" onAction={onAction} />
+        <ScmActions group={row.group} level="group" off={truncated} onAction={onAction} />
         <span className="scm-count" data-scm-count={row.count}>
           {row.count}
         </span>
@@ -468,7 +474,7 @@ function ScmRowView({
         {row.name}
         {row.parent === '' ? null : <span className="scm-desc">{row.parent}</span>}
       </span>
-      <ScmActions group={row.group} level="row" onAction={onAction} />
+      <ScmActions group={row.group} level="row" off={false} onAction={onAction} />
       <span className="explorer-badge is-git scm-letter" data-scm-letter={decoration.letter} style={{ color: decoration.color }}>
         {decoration.letter}
       </span>

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScmChange } from '../../../shared/scm.js'
 import { discardRequest, stageRequest, type ScmWriteInput, type ScmWriteResult } from '../../../shared/scm-write.js'
 import { useScm, type ScmApi } from '../hooks/useScm.js'
-import { ScmView, scmActionsOf } from './ScmView.js'
+import { SCM_GROUP_TRUNCATED_TITLE, ScmView, scmActionsOf } from './ScmView.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -40,7 +40,7 @@ const api = (input: Partial<ScmApi>): ScmApi => ({
   refresh: () => {},
   mode: 'list',
   setMode: () => {},
-  write: { message: '', notice: null, committing: false, pending: 0 },
+  write: { message: '', notice: null, committing: false },
   setMessage: () => {},
   dismissNotice: () => {},
   run: async () => {},
@@ -101,6 +101,27 @@ describe('inline 단추 (K1·K2 — V1·V2)', () => {
     expect(host.querySelector('[data-scm-group="workingTree"]')?.getAttribute('aria-expanded')).toBe('true')
     expect(host.querySelector('[data-scm-file="u.txt"]')).not.toBeNull()
   })
+  it('목록이 상한에서 잘리면 그룹 단추는 꺼지고 툴팁이 이유를 말한다 — 행 단추는 그대로(D2)', () => {
+    const run = vi.fn<(input: ScmWriteInput) => Promise<void>>(async () => {})
+    render(api({ run, state: { changes: CHANGES, total: 20_000, error: null, stamp: 1 } }))
+    expect(host.querySelector('[data-scm-truncated]')).not.toBeNull()
+    const groupButtons = [...host.querySelectorAll<HTMLElement>('[data-scm-actions="group"] [data-scm-action]')]
+    expect(groupButtons).toHaveLength(4)
+    for (const button of groupButtons) {
+      expect(button.getAttribute('aria-disabled')).toBe('true')
+      expect(button.getAttribute('title')).toBe(SCM_GROUP_TRUNCATED_TITLE)
+      act(() => button.click())
+    }
+    expect(run).not.toHaveBeenCalled()
+    const rowStage = host.querySelector<HTMLElement>('[data-scm-file="u.txt"] [data-scm-action="stage"]')
+    expect(rowStage?.getAttribute('aria-disabled')).toBeNull()
+    expect(rowStage?.getAttribute('title')).toBe('변경 내용 스테이징')
+    act(() => rowStage?.click())
+    expect(run.mock.calls.map(([input]) => input)).toEqual([{ action: 'stage', root: '/r', paths: ['u.txt'] }])
+    // 잘리지 않으면 그룹 단추는 켜져 있다(음성 대조).
+    render(api({ run }))
+    expect(host.querySelectorAll('[data-scm-actions="group"] [aria-disabled]')).toHaveLength(0)
+  })
   it('요청 만들기 — stageRequest·discardRequest', () => {
     expect(stageRequest({ root: '/r', group: 'workingTree', changes: [CHANGES[0], CHANGES[0]].filter((item): item is ScmChange => item !== undefined) })).toEqual({ action: 'stage', root: '/r', paths: ['src/a.ts'] })
     expect(discardRequest({ root: '/r', changes: CHANGES })).toEqual({ action: 'discard', root: '/r', tracked: ['src/a.ts'], untracked: ['u.txt'] })
@@ -121,7 +142,7 @@ describe('inline 단추 (K1·K2 — V1·V2)', () => {
 describe('커밋 입력 (K4·K5)', () => {
   it('⌘Enter = 커밋(누른 때 루트·메시지), 커밋 단추 = 커밋, ▾ 「커밋(수정)」 = amend', () => {
     const run = vi.fn<(input: ScmWriteInput) => Promise<void>>(async () => {})
-    render(api({ run, write: { message: 'msg', notice: null, committing: false, pending: 0 } }))
+    render(api({ run, write: { message: 'msg', notice: null, committing: false } }))
     const input = host.querySelector<HTMLTextAreaElement>('[data-scm-message]')
     act(() => input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true })))
     act(() => input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
@@ -138,7 +159,7 @@ describe('커밋 입력 (K4·K5)', () => {
     ])
   })
   it('커밋 중에는 입력란이 읽기 전용·단추가 꺼진다 · 오류 안내는 원문 그대로 보인다', () => {
-    render(api({ write: { message: 'm', notice: { kind: 'error', text: 'HOOK_FIXED_FAIL: 원문\n둘째 줄' }, committing: true, pending: 1 } }))
+    render(api({ write: { message: 'm', notice: { kind: 'error', text: 'HOOK_FIXED_FAIL: 원문\n둘째 줄' }, committing: true } }))
     expect(host.querySelector<HTMLTextAreaElement>('[data-scm-message]')?.readOnly).toBe(true)
     expect(host.querySelector<HTMLButtonElement>('[data-scm-commit]')?.disabled).toBe(true)
     expect(host.querySelector('[data-scm-notice="error"] pre')?.textContent).toBe('HOOK_FIXED_FAIL: 원문\n둘째 줄')
@@ -173,13 +194,13 @@ describe('K12 — 결과는 요청 루트에만 (useScm)', () => {
     expect(current().write.committing).toBe(true)
     // 사용자가 B 로 옮겨 입력한다.
     await act(async () => root.render(createElement(Harness, { at: '/B' })))
-    expect(current().write).toEqual({ message: '', notice: null, committing: false, pending: 0 })
+    expect(current().write).toEqual({ message: '', notice: null, committing: false })
     act(() => current().setMessage('B 메시지'))
     await act(async () => pending[0]?.resolve({ ok: true }))
     expect(current().root).toBe('/B')
     expect(host.querySelector<HTMLTextAreaElement>('[data-scm-message]')?.value).toBe('B 메시지')
     await act(async () => root.render(createElement(Harness, { at: '/A' })))
-    expect(current().write).toEqual({ message: '', notice: null, committing: false, pending: 0 })
+    expect(current().write).toEqual({ message: '', notice: null, committing: false })
 
     // 실패 — A 에서 누르고 B 에서 실패를 받는다.
     act(() => current().setMessage('A 둘째'))

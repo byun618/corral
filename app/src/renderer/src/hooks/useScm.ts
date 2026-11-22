@@ -14,8 +14,8 @@ import { acquireExplorerWatch } from '../explorer-watch-refs.js'
 export type ScmRootState = { changes: ScmChange[] | null; total: number; error: string | null; stamp: number }
 
 /** 루트별 쓰기 상태 — `committing` 동안은 입력란을 읽기 전용으로 둔다(성공 때 지울 메시지가 보낸 사본과 같게). */
-export type ScmWriteState = { message: string; notice: { kind: 'info' | 'error'; text: string } | null; committing: boolean; pending: number }
-const EMPTY_WRITE: ScmWriteState = { message: '', notice: null, committing: false, pending: 0 }
+export type ScmWriteState = { message: string; notice: { kind: 'info' | 'error'; text: string } | null; committing: boolean }
+const EMPTY_WRITE: ScmWriteState = { message: '', notice: null, committing: false }
 
 export type ScmApi = {
   root: string | null
@@ -100,7 +100,7 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
     async (input: ScmWriteInput) => {
       const key = input.root
       const commit = input.action === 'commit'
-      patch(key, (current) => ({ ...current, pending: current.pending + 1, committing: current.committing || commit }))
+      patch(key, (current) => ({ ...current, committing: current.committing || commit }))
       const result = await window.corral.scmWrite(input).catch((error: unknown) => ({ ok: false as const, code: 'git_error' as const, error: String(error) }))
       const notice = scmWriteMessage(result)
       patch(key, (current) => ({
@@ -108,7 +108,6 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
         // 성공·취소는 앞 안내를 지운다. 실패는 그 안내로 바꾼다.
         notice,
         committing: commit ? false : current.committing,
-        pending: Math.max(0, current.pending - 1),
       }))
     },
     [patch],

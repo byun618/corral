@@ -10,7 +10,7 @@ import { InputHub, observedSessionKey, type InputBackend, type InputWire, type K
 import { CHAT_SESSIONS } from './mobile/chat-fixture.js'
 import { fixturePane, fixtureWorktree, liveLink } from './mobile/list-fixture.js'
 import type { ListState } from './mobile/list.js'
-import { DIFF_NOTES_LEAD, formatNotesBody, type DiffNotesState } from '../shared/diff-notes.js'
+import { DIFF_NOTES_LEAD, formatNotesBody, reasonText, type DiffNotesState } from '../shared/diff-notes.js'
 import { MAX_INPUT_BYTES } from '../shared/input-body.js'
 import type { AgentSessionRef, RepoRow } from '../shared/types.js'
 
@@ -219,13 +219,13 @@ describe('리드 + 본문 기록 대조 (리뷰 r1 A1 — 정정 r1 1)', () => {
     expect(await t.settled(`r-${shape}`)).toMatchObject({ state, reason })
     expect(t.backend.prompts).toHaveLength(1)
   })
-  it('리드 뒤 본문 전에 사람 입력 → 본문 넣지 않음 · failed/mac_input', async () => {
+  it('리드 뒤 본문 전에 사람 입력 → 본문 넣지 않음 · failed/lead_input(리드가 남았을 수 있음 — 리뷰 r2 B4)', async () => {
     const t = setup()
     t.backend.onLead = () => {
       if (t.backend.input !== null) t.backend.input = { ...t.backend.input, revision: t.backend.input.revision + 1 }
     }
     t.sender.send({ requestId: 'r-between', worktree: LINKED, paneId: 'c1', text: BODY })
-    expect(await t.settled('r-between')).toMatchObject({ state: 'failed', reason: 'mac_input' })
+    expect(await t.settled('r-between')).toMatchObject({ state: 'failed', reason: 'lead_input' })
     expect(t.backend.prompts).toHaveLength(0)
     expect(t.backend.leads).toHaveLength(1)
   })
@@ -236,6 +236,21 @@ describe('리드 + 본문 기록 대조 (리뷰 r1 A1 — 정정 r1 1)', () => {
     expect(await t.settled('r-strand')).toMatchObject({ state: 'failed', reason: 'lead_stranded' })
     await new Promise((done) => setTimeout(done, 30))
     expect(t.backend.leads).toHaveLength(1)
+  })
+  it('리드 뒤 pane 이 없어짐 → failed/lead_pane_gone(리뷰 r2 B4)', async () => {
+    const t = setup()
+    t.backend.onLead = () => {
+      t.backend.status = 'none'
+      t.backend.promptRefused = true
+    }
+    t.sender.send({ requestId: 'r-pg', worktree: LINKED, paneId: 'c1', text: BODY })
+    expect(await t.settled('r-pg')).toMatchObject({ state: 'failed', reason: 'lead_pane_gone' })
+    expect(t.backend.prompts).toHaveLength(0)
+  })
+  it('사유 문구 — 리드 뒤 실패는 「리드 한 줄이 남았을 수 있음」, pane 없어짐은 그 사실, 폰 경로 mac_input 문구는 그대로', () => {
+    for (const reason of ['lead_input', 'lead_stranded', 'lead_unknown']) expect(reasonText(reason)).toContain('리드 한 줄이 남았을 수 있습니다')
+    expect(reasonText('lead_pane_gone')).toContain('pane 이 없어져')
+    expect(reasonText('mac_input')).not.toContain('리드')
   })
   it('리드 결과를 모름 → failed/lead_unknown, 본문 0 · 리드 거절(아무것도 안 씀) → 다음 관문을 기다림', async () => {
     const unknown = setup()
@@ -265,18 +280,19 @@ describe('렌더러 수명 (리뷰 r1 A3 — 정정 r1 2)', () => {
     await new Promise((done) => setTimeout(done, 80))
     expect(t.backend.prompts).toHaveLength(0)
     expect(t.backend.leads).toHaveLength(0)
-    expect(t.pushes.length).toBe(before)
+    // 끝 상태 하나(cancelled)는 보낸다 — 오발동이면 살아 있는 렌더러가 「보내는 중」 을 푼다(리뷰 r2 B5). 그 뒤는 0.
+    expect(t.pushes.slice(before).map((pushed) => [pushed.requestId, pushed.state])).toEqual([['r-gone', 'cancelled']])
     expect(t.logs).toContain('diff_notes.renderer_gone')
   })
-  it('넣는 중인 요청은 결과만 버린다 — 이미 시작한 넣기는 끝나도 push 0', async () => {
+  it('넣는 중인 요청은 결과를 버리고 unknown/renderer_gone 하나로 닫는다 — 이미 시작한 넣기의 delivered 는 보내지 않는다(B5)', async () => {
     const t = setup()
     t.backend.onLead = () => t.sender.rendererGone('render_process_gone')
     t.sender.send({ requestId: 'r-mid', worktree: LINKED, paneId: 'c1', text: BODY })
     await new Promise((done) => setTimeout(done, 80))
     expect(t.backend.prompts).toHaveLength(1)
-    const states = t.pushes.filter((pushed) => pushed.requestId === 'r-mid').map((pushed) => pushed.state)
-    expect(states.at(-1)).toBe('sending')
-    expect(states).not.toContain('delivered')
+    const states = t.pushes.filter((pushed) => pushed.requestId === 'r-mid')
+    expect(states.at(-1)).toMatchObject({ state: 'unknown', reason: 'renderer_gone' })
+    expect(states.map((pushed) => pushed.state)).not.toContain('delivered')
   })
 })
 

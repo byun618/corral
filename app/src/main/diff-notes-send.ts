@@ -33,6 +33,8 @@ export class DiffNotesSender {
   private readonly hub: InputHub
   /** 지금 렌더러가 낸, 아직 끝나지 않은 요청 id. */
   private readonly open = new Set<string>()
+  /** 렌더러 교체로 닫는 중인 요청 — 취소가 동기로 내는 끝 상태 하나만 더 보낸다(B5). */
+  private readonly closing = new Set<string>()
 
   constructor(deps: DiffNotesSenderDeps) {
     this.deps = deps
@@ -55,7 +57,13 @@ export class DiffNotesSender {
       sink: (text) => {
         const state = readWire(text)
         // 지금 렌더러가 낸 요청의 결과만 보낸다 — 렌더러가 바뀐 뒤 끝난 옛 요청의 결과는 버린다(리뷰 r1 A3).
-        if (state === null || !this.open.has(state.requestId)) return
+        if (state === null) return
+        if (this.closing.has(state.requestId)) {
+          if (!FINAL.has(state.state)) return
+          this.closing.delete(state.requestId)
+          return deps.push(state)
+        }
+        if (!this.open.has(state.requestId)) return
         if (FINAL.has(state.state)) this.open.delete(state.requestId)
         deps.push(state)
       },
@@ -65,12 +73,19 @@ export class DiffNotesSender {
   /**
    * 렌더러가 바뀌었다(다시 불러오기·렌더러 죽음·창 닫힘 — 리뷰 r1 A3). 그 렌더러가 낸 요청은 보는 화면도 취소 단추도 없다 —
    * 대기 중(`queued`)은 취소하고(허브가 넣기 전이면 쓰지 않는다), 이미 넣는 중인 것은 결과만 버린다. 사용자 모르게 나중에 들어가는 쓰기 0.
+   *
+   * 오발동 대비(리뷰 r2 B5): 렌더러가 실제로는 살아 있을 수 있으니 **끝 상태 하나는 꼭 보낸다** — 취소된 것은 `cancelled`, 넣는 중인 것은
+   * `unknown`/`renderer_gone`. 렌더러 저장소는 끝 상태를 받으면 「보내는 중」 을 풀고, 모르는 id(새 문서)면 무시한다. 그 뒤 허브 결과는 보내지 않는다.
    */
   rendererGone(reason: string): void {
     const ids = [...this.open]
-    // 먼저 비운다 — 취소가 동기로 내는 `cancelled` 도 새 렌더러에 가지 않는다.
     this.open.clear()
-    for (const id of ids) this.hub.cancel({ device: DESKTOP_DEVICE, id })
+    for (const id of ids) {
+      this.closing.add(id)
+      this.hub.cancel({ device: DESKTOP_DEVICE, id })
+      // 취소가 끝 상태를 내지 않았다 = 이미 넣는 중 — 결과는 버리고 「모름」 하나로 닫는다.
+      if (this.closing.delete(id)) this.deps.push({ requestId: id, state: 'unknown', wait: null, reason: 'renderer_gone' })
+    }
     if (ids.length > 0) this.deps.log('diff_notes.renderer_gone', { reason, open: ids.length })
   }
 

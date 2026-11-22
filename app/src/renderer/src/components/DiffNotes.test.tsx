@@ -359,6 +359,9 @@ describe('리뷰 r1 — 표지·편집·Esc·hover (A4·A7·A10)', () => {
     expect(document.querySelector('[data-diff-note-editor="3"]')).not.toBeNull()
     expect(document.querySelector('[data-diff-note-editor="1"]')).toBeNull()
     expect(document.querySelector<HTMLTextAreaElement>('[data-diff-note-editor] textarea')?.value).toBe('쓰던 메모')
+    // 안내 + 편집 칸 포커스(리뷰 r2 B3).
+    expect(document.querySelector('[data-diff-note-held]')).not.toBeNull()
+    expect(document.activeElement).toBe(document.querySelector('[data-diff-note-editor] textarea'))
   })
   it('A7 확인 단계는 Esc 로 닫힌다 — 보내기 IPC 0', async () => {
     await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
@@ -373,6 +376,61 @@ describe('리뷰 r1 — 표지·편집·Esc·hover (A4·A7·A10)', () => {
     await flush()
     expect(document.querySelector('[data-diff-notes-confirm]')).toBeNull()
     expect(sends).toHaveLength(0)
+  })
+  it('B6 조합 중 Esc 는 확인 단계를 닫지 않고, 닫는 Esc 는 아래로 전파하지 않는다', async () => {
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    await gutter(1)
+    await type('m')
+    await click('[data-diff-note-save]')
+    await click('[data-diff-notes-send]')
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }))
+    })
+    await flush()
+    expect(document.querySelector('[data-diff-notes-confirm]')).not.toBeNull()
+    const below = vi.fn()
+    document.addEventListener('keydown', below)
+    act(() => {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    await flush()
+    document.removeEventListener('keydown', below)
+    expect(document.querySelector('[data-diff-notes-confirm]')).toBeNull()
+    expect(below).not.toHaveBeenCalled()
+  })
+  it('B5 렌더러 교체 오발동 — main 의 unknown/renderer_gone 하나로 「보내는 중」 이 풀린다', async () => {
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    await gutter(1)
+    await type('m')
+    await click('[data-diff-note-save]')
+    await click('[data-diff-notes-send]')
+    await click('[data-diff-notes-confirm-send]')
+    const requestId = sends[0]?.requestId ?? ''
+    act(() => diffNotes.apply({ requestId, state: 'sending', wait: null, reason: null }))
+    await flush()
+    expect(diffNotes.busy(worktreePath)).toBe(true)
+    act(() => diffNotes.apply({ requestId, state: 'unknown', wait: null, reason: 'renderer_gone' }))
+    await flush()
+    expect(diffNotes.busy(worktreePath)).toBe(false)
+    expect(host.querySelector('[data-diff-notes-result]')?.textContent).toContain('결과를 받지 못했습니다')
+    expect(host.querySelector('[data-diff-notes-send]')?.hasAttribute('disabled')).toBe(false)
+  })
+  it('B2 내용 갱신 뒤 같은 줄에 머물러도 hover 「+」 를 다시 건다', async () => {
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    const move = (line: number): void => {
+      act(() => {
+        for (const handler of [...fake.mouseMove]) handler({ target: { type: 6, position: { lineNumber: line } } })
+      })
+    }
+    const hovers = (): number => fake.decorationSets.filter((items) => items.some((item) => item.options.glyphMarginClassName?.includes('diff-note-add'))).length
+    move(2)
+    expect(hovers()).toBe(1)
+    act(() => {
+      for (const handler of [...fake.contentChanged]) handler()
+    })
+    await flush()
+    move(2)
+    expect(hovers()).toBe(2)
   })
   it('A10 같은 줄 위 마우스 이동은 hover 데코레이션을 다시 걸지 않는다', async () => {
     await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })

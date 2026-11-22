@@ -857,7 +857,7 @@ export class InputHub {
     if (lead !== undefined) {
       const typed = await this.typeLead({ backend, pane, bind, fence, seq: last.seq, text: lead })
       if (typed.kind === 'refused') return this.refusedBeforeWrite({ entry, backend, pane, bind })
-      if (typed.kind === 'unknown') return this.fail(entry, 'lead_unknown')
+      if (typed.kind === 'unknown') return this.leadStranded({ entry, backend, pane, bind, reason: 'lead_unknown' })
       bodyFence = typed.after
     }
     // r3: 사슬 고리를 쓰기 **전에** 건다(guard 는 같은 턴에서 revision 을 정확히 1 올린다 — `queue_user_input_submission` → `corral_note_input`).
@@ -874,7 +874,7 @@ export class InputHub {
     }
     if (sent === 'refused') {
       // LIFE-832: 리드를 친 뒤의 본문 거절 — 입력창에 리드가 남았다. 다시 기다려도 초안 검사가 막으니 지금 끝낸다.
-      if (lead !== undefined) return this.leadStranded({ entry, backend, pane, bind })
+      if (lead !== undefined) return this.leadStranded({ entry, backend, pane, bind, reason: 'lead_stranded' })
       return this.refusedBeforeWrite({ entry, backend, pane, bind })
     }
     await this.confirmSend({ entry, kind, cursor, submittedAtMs, text, sessionId: record.continuedAs ?? (channel.session.kind === 'id' ? channel.session.id : null) })
@@ -913,12 +913,19 @@ export class InputHub {
     return { kind: 'sent', after: typed.revision }
   }
 
-  /** LIFE-832: 리드는 들어갔고 본문은 거절됐다 — 사람 입력이 끼었으면 `mac_input`, 아니면 `lead_stranded`(입력창에 리드만 남음). 다시 넣지 않는다. */
-  private async leadStranded(input: { entry: Entry; backend: InputBackend; pane: TerminalIdentity; bind: Bind }): Promise<'done'> {
+  /**
+   * LIFE-832: 리드를 쳤거나(본문 거절) 쳤는지 모른다 — 다시 넣지 않는다. 사유는 리드가 남았을 수 있음을 말하는 것으로 가른다(리뷰 r2 B4):
+   * pane 이 없어졌으면 `lead_pane_gone`, 사람 입력이 끼었으면 `lead_input`, 아니면 부른 쪽 사유(`lead_stranded`·`lead_unknown`). 폰 경로(리드 없음)는 여기 오지 않는다.
+   */
+  private async leadStranded(input: { entry: Entry; backend: InputBackend; pane: TerminalIdentity; bind: Bind; reason: 'lead_stranded' | 'lead_unknown' }): Promise<'done'> {
     const after = await input.backend.observe(input.pane).catch(() => null)
-    const revision = after?.input?.revision ?? null
-    if (revision !== null && this.fenceRead(input.bind, revision) === 'moved') return this.moved(input.entry, 'input_refused')
-    return this.fail(input.entry, 'lead_stranded')
+    if (after === null || after.status === 'none') return this.fail(input.entry, 'lead_pane_gone')
+    const revision = after.input?.revision ?? null
+    if (revision !== null && this.fenceRead(input.bind, revision) === 'moved') {
+      this.deps.log('mobile.input_target_changed', { op: input.entry.op, check: 'input_refused', lead: true })
+      return this.fail(input.entry, 'lead_input')
+    }
+    return this.fail(input.entry, input.reason)
   }
 
   /** 쓰기용 기록 파일 — 유일한 후보, 또는 0건이 확실할 때만 그 세션이 쓸 경로(R1-A13). */

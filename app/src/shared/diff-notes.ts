@@ -174,8 +174,10 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   too_large: `본문이 상한(${MAX_INPUT_BYTES} 바이트)을 넘습니다`,
   not_clean: '본문에 넣을 수 없는 문자가 있습니다',
   ill_formed: '본문에 짝 없는 서로게이트 문자가 있습니다',
-  lead_stranded: '리드 한 줄만 그 pane 입력창에 남고 본문은 넣지 않았습니다 — 입력창을 지운 뒤 다시 보내세요',
-  lead_unknown: '리드 한 줄이 들어갔는지 확인하지 못해 본문은 넣지 않았습니다 — 그 pane 입력창을 확인하세요',
+  lead_stranded: '본문은 넣지 않았습니다 — 그 pane 입력창에 리드 한 줄이 남았을 수 있습니다. 지우고 다시 보내세요',
+  lead_unknown: '리드 한 줄이 들어갔는지 확인하지 못해 본문은 넣지 않았습니다 — 그 pane 입력창에 리드 한 줄이 남았을 수 있습니다. 지우고 다시 보내세요',
+  lead_input: '리드를 친 뒤 그 pane 에 다른 입력이 있어 본문은 넣지 않았습니다 — 입력창에 리드 한 줄이 남았을 수 있습니다. 지우고 다시 보내세요',
+  lead_pane_gone: '리드를 친 뒤 그 pane 이 없어져 본문은 넣지 않았습니다',
   not_worktree: '그 worktree 를 찾을 수 없습니다',
   not_target: '그 pane 은 이 worktree 의 에이전트 pane 이 아닙니다',
 }

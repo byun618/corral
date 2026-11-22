@@ -145,3 +145,5 @@
 }
 .diff-notes-confirm-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .diff-notes-lead { padding: 4px 8px; border-radius: 4px; background: var(--bg-surface); font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; user-select: text; }
+.diff-note.is-held { border-color: var(--st-dirty); }
+.diff-note-held { font-size: 12px; color: var(--st-dirty); }

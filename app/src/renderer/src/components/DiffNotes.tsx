@@ -46,6 +46,8 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
   const [hosts, setHosts] = useState<ReadonlyMap<string, HTMLElement>>(new Map())
   /** 모델 내용이 바뀐 차례 — `setValue` 는 모델 데코레이션을 모두 버리므로(Monaco `textModel` 「Destroy all my decorations」) 줄 수가 같아도 표지를 다시 세운다(리뷰 r1 A4). */
   const [contentVersion, setContentVersion] = useState(0)
+  /** 저장 안 한 편집이 있는데 다른 줄을 눌렀다 — 편집 칸이 포커스를 받고 안내를 보인다(리뷰 r2 B3). */
+  const [nudge, setNudge] = useState(0)
   const notesRef = useRef(notes)
   notesRef.current = notes
   const editingRef = useRef(editing)
@@ -76,11 +78,17 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
       if (line === undefined || !gutter(event.target.type)) return
       // 저장하지 않은 글이 있는 편집을 다른 줄 누름이 버리지 않는다(리뷰 r1 A7) — 저장·취소한 뒤에 옮긴다.
       const current = editingRef.current
-      if (current !== null && current.line !== line && unsavedRef.current(current)) return
+      if (current !== null && current.line !== line && unsavedRef.current(current)) {
+        // 버리지 않고, 쓰던 편집 칸으로 돌려보낸다(리뷰 r2 B3) — 포커스 + 잠깐 강조.
+        setNudge((value) => value + 1)
+        return
+      }
       const existing = notesRef.current.find((note) => note.line === line)
       setEditing({ line, draft: existing?.body ?? '' })
     })
     const changed = editor.onDidChangeModelContent(() => {
+      // setValue 가 hover 데코레이션도 버렸다 — 같은 줄에 머물러도 다음 이동에서 다시 건다(리뷰 r2 B2).
+      hovered = null
       setLineCount(editor.getModel()?.getLineCount() ?? 1)
       setContentVersion((value) => value + 1)
     })
@@ -148,7 +156,7 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
   }
   const editorFor = (line: number): React.JSX.Element | null =>
     editing !== null && editing.line === line ? (
-      <NoteEditor line={line} draft={editing.draft} onDraft={(draft) => setEditing({ line, draft })} onSave={() => save(editing)} onCancel={() => setEditing(null)} />
+      <NoteEditor line={line} draft={editing.draft} nudge={nudge} onDraft={(draft) => setEditing({ line, draft })} onSave={() => save(editing)} onCancel={() => setEditing(null)} />
     ) : null
 
   const newHost = hosts.get('new')
@@ -180,12 +188,19 @@ function NoteCard({ note, missing, onEdit, onDelete }: { note: DiffNote; missing
   )
 }
 
-function NoteEditor({ line, draft, onDraft, onSave, onCancel }: { line: number; draft: string; onDraft: (draft: string) => void; onSave: () => void; onCancel: () => void }): React.JSX.Element {
+function NoteEditor({ line, draft, nudge, onDraft, onSave, onCancel }: { line: number; draft: string; nudge: number; onDraft: (draft: string) => void; onSave: () => void; onCancel: () => void }): React.JSX.Element {
   const ref = useRef<HTMLTextAreaElement | null>(null)
-  useEffect(() => ref.current?.focus(), [])
+  const [nudged] = useState(nudge)
+  useEffect(() => ref.current?.focus(), [nudge])
   const empty = draft.trim() === ''
+  const held = nudge !== nudged
   return (
-    <div className="diff-note is-editing" data-diff-note-editor={line}>
+    <div className={`diff-note is-editing${held ? ' is-held' : ''}`} data-diff-note-editor={line}>
+      {held ? (
+        <div className="diff-note-held" data-diff-note-held="">
+          저장하지 않은 메모가 있습니다 — 저장하거나 취소한 뒤 다른 줄에 다세요
+        </div>
+      ) : null}
       <textarea
         ref={ref}
         className="diff-note-input"
@@ -263,7 +278,7 @@ function resultText(send: { state: string; wait: 'turn' | 'gate' | null; reason:
     case 'cancelled':
       return '취소됨 — 아무것도 넣지 않았습니다'
     case 'unknown':
-      return '확인 못 함 — 앱이 이 요청을 모릅니다. 그 pane 을 보고 판단하세요'
+      return send.reason === 'renderer_gone' ? '확인 못 함 — 화면이 다시 그려지는 동안 결과를 받지 못했습니다. 그 pane 을 보고 판단하세요' : '확인 못 함 — 앱이 이 요청을 모릅니다. 그 pane 을 보고 판단하세요'
     default:
       return `실패 — ${reasonText(send.reason)}`
   }
@@ -292,8 +307,11 @@ export function NotesConfirm({ root, worktree, batch, onClose }: { root: string;
   // Esc 로 닫기(리뷰 r1 A7) — 취소와 같다(쓰기 0).
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
+      // 조합 중 Esc 는 입력기 몫(리뷰 r2 B6) — 확인 단계를 닫지 않는다.
+      if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return
       event.preventDefault()
+      // 아래(편집기·터미널·다른 단축키)로 전파하지 않는다(B6).
+      event.stopPropagation()
       onClose()
     }
     window.addEventListener('keydown', onKey, true)

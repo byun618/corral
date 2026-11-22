@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 // LIFE-829 — 소스 제어 쓰기 UI: 행·그룹 inline 단추(V1·V2)가 행 클릭으로 새지 않고 그룹이 정한 요청을 보낸다 · 입력란 ⌘Enter·▾ 「커밋(수정)」 ·
 // K12 — 결과(입력란 비우기·오류 안내)는 요청 루트의 상태에만 적용된다(지금 보이는 다른 루트는 그대로).
+// K14 — base 대비(LIFE-830)에서는 쓰기 단추·입력란이 DOM 에 없고, 작업 트리로 돌아오면 초안·안내·진행 중 쓰기 결과가 그 루트에 그대로다.
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ScmChange } from '../../../shared/scm.js'
+import type { ScmBasePush, ScmChange } from '../../../shared/scm.js'
 import { discardRequest, stageRequest, type ScmWriteInput, type ScmWriteResult } from '../../../shared/scm-write.js'
 import { useScm, type ScmApi } from '../hooks/useScm.js'
 import { SCM_GROUP_TRUNCATED_TITLE, ScmView, scmActionsOf } from './ScmView.js'
@@ -238,5 +239,81 @@ describe('K12 — 결과는 요청 루트에만 (useScm)', () => {
       texts.push(host.querySelector('[data-scm-notice] pre')?.textContent ?? null)
     }
     expect(texts).toEqual(['커밋 메시지를 입력하세요.', '커밋할 변경 사항이 없습니다.', null])
+  })
+})
+
+describe('K14 — base 대비에서는 쓰기 UI 없음 (LIFE-830 맞춤)', () => {
+  const BASE: ScmBasePush = {
+    ok: true,
+    info: { name: 'main', source: 'default', mergeBase: 'a'.repeat(40) },
+    changes: [c('base', 'MODIFIED', 'src/a.ts'), c('base', 'DELETED', 'gone.ts'), c('base', 'UNTRACKED', 'u.txt')],
+    total: 3,
+  }
+  it('base 대비 = [data-scm-action]·[data-scm-input] 0개, 목록·base 줄은 보인다 · ⌘Enter·행 클릭에 쓰기 호출 0', () => {
+    const run = vi.fn<(input: ScmWriteInput) => Promise<void>>(async () => {})
+    render(api({ run, compare: 'base', state: { changes: CHANGES, total: CHANGES.length, error: null, stamp: 1, base: BASE }, write: { message: '초안', notice: { kind: 'error', text: '앞 오류' }, committing: false } }))
+    expect(host.querySelector('[data-scm-compare="base"]')).not.toBeNull()
+    expect(host.querySelector('[data-scm-base]')).not.toBeNull()
+    expect(host.querySelectorAll('[data-scm-file]')).toHaveLength(3)
+    expect(host.querySelectorAll('[data-scm-action]')).toHaveLength(0)
+    expect(host.querySelectorAll('[data-scm-input], [data-scm-message], [data-scm-commit], [data-scm-commit-more], [data-scm-notice]')).toHaveLength(0)
+    expect(scmActionsOf('base')).toEqual([])
+    expect(stageRequest({ root: '/r', group: 'base', changes: BASE.ok ? BASE.changes : [] })).toBeNull()
+    const list = host.querySelector<HTMLElement>('[data-scm-list]')
+    for (const target of [list, host.querySelector<HTMLElement>('[data-scm]'), document.body]) {
+      act(() => target?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true })))
+    }
+    act(() => host.querySelector<HTMLElement>('[data-scm-file="src/a.ts"]')?.click())
+    expect(run).not.toHaveBeenCalled()
+  })
+  it('작업 트리 ↔ base 대비 전환 — 돌아오면 초안·안내 그대로 · 전환 중 진행하던 쓰기 결과는 같은 루트에 반영(K12)', async () => {
+    const pending: { input: ScmWriteInput; resolve: (result: ScmWriteResult) => void }[] = []
+    Reflect.set(window, 'corral', {
+      getUiPrefs: async () => ({}),
+      setUiPrefs: () => {},
+      onExplorerEvent: () => () => {},
+      explorerWatch: async () => ({ ok: true }),
+      explorerRefreshGit: () => {},
+      scmBaseMode: () => {},
+      scmWrite: (input: ScmWriteInput) => new Promise<ScmWriteResult>((resolve) => pending.push({ input, resolve })),
+    })
+    let scm: ScmApi | null = null
+    const Harness = (): React.JSX.Element => {
+      const value = useScm({ root: '/A', active: true })
+      scm = value
+      return createElement(ScmView, { scm: value, title: null, mode: 'list', onChangeMode: () => {}, focusToken: 0, onOpen: () => {} })
+    }
+    const current = (): ScmApi => {
+      if (scm === null) throw new Error('no scm')
+      return scm
+    }
+    const input = (): HTMLTextAreaElement | null => host.querySelector<HTMLTextAreaElement>('[data-scm-message]')
+    await act(async () => root.render(createElement(Harness)))
+    // 초안만 두고 base 대비로 → 돌아오면 그대로.
+    act(() => current().setMessage('초안 1'))
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-compare-toggle="base"]')?.click())
+    expect(current().compare).toBe('base')
+    expect(host.querySelectorAll('[data-scm-input], [data-scm-action]')).toHaveLength(0)
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-compare-toggle="working"]')?.click())
+    expect(input()?.value).toBe('초안 1')
+
+    // 커밋(실패)을 누르고 base 대비로 → 실패 결과 → 돌아오면 안내 + 초안 그대로.
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-commit]')?.click())
+    expect(pending.map((item) => item.input)).toEqual([{ action: 'commit', root: '/A', message: '초안 1', amend: false }])
+    await act(async () => current().setCompare('base'))
+    await act(async () => pending[0]?.resolve({ ok: false, code: 'git_error', error: 'pre-commit 실패 원문' }))
+    expect(host.querySelectorAll('[data-scm-input], [data-scm-notice]')).toHaveLength(0)
+    expect(current().write).toEqual({ message: '초안 1', notice: { kind: 'error', text: 'pre-commit 실패 원문' }, committing: false })
+    await act(async () => current().setCompare('working'))
+    expect(input()?.value).toBe('초안 1')
+    expect(host.querySelector('[data-scm-notice="error"] pre')?.textContent).toBe('pre-commit 실패 원문')
+
+    // 커밋(성공)을 누르고 base 대비로 → 성공 결과 → 돌아오면 입력란이 비어 있다(결과가 그 루트에 반영).
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-commit]')?.click())
+    await act(async () => current().setCompare('base'))
+    await act(async () => pending[1]?.resolve({ ok: true }))
+    await act(async () => current().setCompare('working'))
+    expect(current().write).toEqual({ message: '', notice: null, committing: false })
+    expect(input()?.value).toBe('')
   })
 })

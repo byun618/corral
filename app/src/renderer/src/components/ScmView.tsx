@@ -252,20 +252,22 @@ export function ScmView({
   }
 
   // 쓰기 — 요청의 루트는 누른 때 값이다(K12). 결과는 `scm.run` 이 그 루트의 상태에만 적용한다.
+  // base 대비(LIFE-830)는 읽기 전용 — 쓰기 단추·입력란을 그리지 않는다(K14·B8). 숨김은 상태를 지우지 않는다(초안·안내·진행 중 쓰기는 루트 상태에 그대로).
+  const writable = compare !== 'base'
   const act = (input: { action: ScmActionId; group: ScmGroupId; changes: readonly ScmChange[] }): void => {
-    if (root === null || input.changes.length === 0) return
+    if (root === null || !writable || input.changes.length === 0) return
     const request = input.action === 'discard' ? discardRequest({ root, changes: input.changes }) : stageRequest({ root, group: input.group, changes: input.changes })
     if (request !== null) void scm.run(request)
   }
   const groupChangesOf = (group: ScmGroupId): ScmChange[] => (changes ?? []).filter((change) => change.group === group)
   const commit = (amend: boolean): void => {
     setMenuOpen(false)
-    if (root === null || scm.write.committing) return
+    if (root === null || !writable || scm.write.committing) return
     // 빈 메시지 커밋은 main 이 git 없이 거절한다(D7) — 입력란으로 포커스를 돌린다.
     if (!amend && scm.write.message.trim() === '') inputRef.current?.focus()
     void scm.run({ action: 'commit', root, message: scm.write.message, amend })
   }
-  const showInput = root !== null && !(scm.state !== null && scm.state.error !== null)
+  const showInput = writable && root !== null && !(scm.state !== null && scm.state.error !== null)
   const writeNotice = scm.write.notice
 
   const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)

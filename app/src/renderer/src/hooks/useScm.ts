@@ -58,6 +58,8 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
   const remotes = useRef(new Map<string, ScmRemoteAction>())
   /** 진행 항목을 세운 요청(`runRemote` 의 표지) — 다른 요청·main 알림이 다시 세우면 바뀐다. */
   const owners = useRef(new Map<string, symbol>())
+  /** 루트별 마지막 원격 요청 표지(수정 r3 E1) — 안내는 마지막 요청의 응답만 쓴다. 앞 요청의 늦은 응답이 다음 요청의 안내를 지우거나 지운 안내를 되살리지 않게. */
+  const latest = useRef(new Map<string, symbol>())
   const [version, bump] = useReducer((value: number) => value + 1, 0)
   const [mode, setModeState] = useState<'list' | 'tree'>('list')
   const [compareByRoot, setCompareByRoot] = useState(() => new Map<string, ScmCompare>())
@@ -207,6 +209,7 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
       // 이 요청의 진행 항목 표지(수정 r2 D2) — 응답 때 진행 항목이 아직 이 요청의 것일 때만 지운다. main 의 끝 알림 뒤·응답 전 틈에 시작한 다음 동작의 진행 표시를 지우지 않게.
       const token = Symbol(input.action)
       owners.current.set(key, token)
+      latest.current.set(key, token)
       remotes.current.set(key, input.action)
       bump()
       const result = await window.corral.scmRemote(input).catch((error: unknown) => ({ ok: false as const, code: 'git_error' as const, error: String(error) }))
@@ -219,7 +222,11 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
         const state = await window.corral.scmRemoteState({ root: key }).catch(() => ({ action: null }))
         if (state.action !== null && !remotes.current.has(key)) remotes.current.set(key, state.action)
       }
-      // 성공·고르기 닫음은 앞 안내를 지운다(D10 — 목록·숫자 갱신이 결과). 실패·취소·시간 초과는 그 안내로.
+      // 성공·고르기 닫음은 앞 안내를 지운다(D10 — 목록·숫자 갱신이 결과). 실패·취소·시간 초과는 그 안내로. 그 뒤 같은 루트에 새 요청이 있었으면 쓰지 않는다(E1).
+      if (latest.current.get(key) !== token) {
+        bump()
+        return
+      }
       patch(key, (current) => ({ ...current, notice: scmRemoteMessage({ action: input.action, result }) }))
     },
     [patch],

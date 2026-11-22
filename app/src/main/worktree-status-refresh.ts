@@ -28,7 +28,8 @@ export class WorktreeStatusRefresh {
     return value
   }
 
-  /** 재빌드 결과에서 갱신 값보다 이른(낡은) 경로 값만 갱신 값으로 덮는다. 재빌드가 같거나 더 나중 값을 들고 왔으면 그 경로의 갱신 값은 버린다. */
+  /** 재빌드 결과에서 갱신 값보다 이른(낡은) 경로 값만 갱신 값으로 덮는다. 재빌드가 같거나 더 나중 값을 들고 왔으면 그 경로의 갱신 값은 버린다.
+   * 전제(수정 r3 E5): 재빌드 결과의 반영(publish) 순서 = 재빌드 시작 순서 — `rebuildTree` 의 `treeGeneration` 가드가 늦게 끝난 앞 재빌드를 버린다. 이 가드가 없으면 버린 갱신 값이 필요한 늦은 재빌드가 올 수 있다. */
   overlay(input: { built: RepoSkeleton[] }): RepoSkeleton[] {
     if (this.fresh.size === 0) return input.built
     return input.built.map((repo) => ({

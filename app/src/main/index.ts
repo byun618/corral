@@ -151,7 +151,7 @@ import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer
 import { readFileContent, readImageContent } from './file-read.js'
 import { readScmContent } from './scm-read.js'
 import { loginShellPath, rootTag, ScmWriter } from './scm-write.js'
-import { ScmRemote } from './scm-remote.js'
+import { closeAfterShutdown, ScmRemote } from './scm-remote.js'
 import { getGitStatus, invalidateGitStatus, isLaterSnapshot } from './git-status.js'
 import { patchWorktreeStatus, WorktreeStatusRefresh } from './worktree-status-refresh.js'
 import { gitRunner, resolveScmBase, scmBaseInputsOf, type ScmBaseInputs } from './scm-base.js'
@@ -2955,6 +2955,13 @@ app.on('before-quit', event => {
 })
 
 app.on('window-all-closed', () => {
+  // LIFE-831 수정 r3 E3 — 진행 중 원격 git 정리(`scm.remote.kill`·`.shutdown` 로그)가 로그 닫기보다 먼저 끝나게 기다린 뒤 닫는다(상한 `SCM_REMOTE_SHUTDOWN_MS`).
+  // `before-quit` 도 같은 정리를 부르지만 한 번만 돈다(같은 Promise).
+  void closeAfterShutdown({ shutdown: () => scmRemoteForQuit?.shutdown() ?? Promise.resolve(), close: closeAppAfterAllWindows })
+})
+
+/** 창이 다 닫힌 뒤 앱 자원 정리·로그 닫기·종료(옛 `window-all-closed` 본문 그대로). */
+function closeAppAfterAllWindows(): void {
   agentDetector?.killAll()
   usage?.dispose()
   usage = null
@@ -2970,4 +2977,4 @@ app.on('window-all-closed', () => {
   log('app.quit', { logFile: logFile() })
   closeLog()
   app.quit()
-})
+}

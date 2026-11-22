@@ -224,3 +224,51 @@ describe('수정 r2 D2 — 앞 요청의 늦은 응답이 다음 동작의 진�
     expect(actions()).toEqual(['fetch', 'pull', 'push'])
   })
 })
+
+describe('수정 r3 E1 — 앞 요청의 늦은 응답은 안내를 쓰지 않는다(같은 루트의 마지막 요청만)', () => {
+  const setup = (): { pending: ((result: ScmRemoteResult) => void)[]; emit: (action: 'fetch' | 'push' | null) => void } => {
+    const pending: ((result: ScmRemoteResult) => void)[] = []
+    const listeners: ((event: { root: string; action: 'fetch' | 'push' | null }) => void)[] = []
+    Reflect.set(window, 'corral', {
+      getUiPrefs: async () => ({}),
+      setUiPrefs: () => {},
+      onExplorerEvent: () => () => {},
+      explorerWatch: async () => ({ ok: true }),
+      explorerRefreshGit: () => {},
+      scmRemoteState: async () => ({ action: null }),
+      onScmRemoteEvent: (listener: (typeof listeners)[number]) => (listeners.push(listener), () => {}),
+      scmRemote: () => new Promise<ScmRemoteResult>((resolve) => pending.push(resolve)),
+      scmRemoteCancel: async () => ({ ok: true }),
+    })
+    return { pending, emit: (action) => listeners.forEach((listener) => listener({ root: '/A', action })) }
+  }
+  const notice = (): string | null => host.querySelector('[data-scm-notice]')?.textContent ?? null
+  /** push 시작 → main 끝 알림(응답은 보류) → fetch 시작. 그 뒤 두 응답의 순서를 시험이 정한다. */
+  const pushThenFetch = async (emit: (action: 'fetch' | 'push' | null) => void): Promise<void> => {
+    const Harness = (): React.JSX.Element => view(useScm({ root: '/A', active: false }), status())
+    await act(async () => root.render(createElement(Harness)))
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-action="push"]')?.click())
+    await act(async () => emit('push'))
+    await act(async () => emit(null))
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-action="fetch"]')?.click())
+    await act(async () => emit('fetch'))
+  }
+  it('다음 요청(fetch)의 실패 안내를 앞 요청(push)의 늦은 성공 응답이 지우지 않는다', async () => {
+    const { pending, emit } = setup()
+    await pushThenFetch(emit)
+    await act(async () => pending[1]?.({ ok: false, code: 'git_error', error: 'FETCH_FAILED_MARKER' }))
+    expect(notice()).toContain('FETCH_FAILED_MARKER')
+    await act(async () => emit(null))
+    await act(async () => pending[0]?.({ ok: true }))
+    expect(notice()).toContain('FETCH_FAILED_MARKER')
+  })
+  it('다음 요청이 성공해 비운 안내를 앞 요청의 늦은 실패 응답이 되살리지 않는다', async () => {
+    const { pending, emit } = setup()
+    await pushThenFetch(emit)
+    await act(async () => pending[1]?.({ ok: true }))
+    await act(async () => emit(null))
+    expect(notice()).toBeNull()
+    await act(async () => pending[0]?.({ ok: false, code: 'git_error', error: 'OLD_PUSH_ERROR' }))
+    expect(notice()).toBeNull()
+  })
+})

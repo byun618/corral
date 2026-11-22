@@ -216,6 +216,8 @@ type Slot = {
 }
 
 const refused = (code: ScmRemoteRefusal, error: string): ScmRemoteResult => ({ ok: false, code, error })
+const alreadyPublished = (branch: string, upstream: { remote: string; branch: string }): string =>
+  `'${branch}' 브랜치는 이미 upstream(${upstream.remote}/${upstream.branch}) 이 있습니다 — 게시하지 않았습니다(설정 그대로). 「밀어넣기」로 올리세요.`
 
 type Branch = { branch: string; remotes: string[]; upstream: { remote: string; branch: string } | null }
 
@@ -224,6 +226,7 @@ export class ScmRemote {
   private readonly slots = new Map<string, Slot>()
   /** 앱 종료가 시작됐다 — 새 동작을 받지 않는다(C3). */
   private closed = false
+  private shutting: Promise<void> | null = null
 
   constructor(private readonly deps: ScmRemoteDeps) {}
 
@@ -291,7 +294,13 @@ export class ScmRemote {
   }
 
   /** 앱 종료(C3) — 새 동작을 막고, 기다리는 동작은 git 없이 빼고, 도는 원격 git 그룹은 끝낸다(SIGTERM → 유예 뒤 SIGKILL). 상한 안에 돌아온다. */
-  async shutdown(capMs = SCM_REMOTE_SHUTDOWN_MS): Promise<void> {
+  /** 여러 종료 경로(창 닫기 `window-all-closed` · `before-quit`)가 불러도 정리는 한 번 — 같은 Promise 를 돌려준다(수정 r3 E3). */
+  shutdown(capMs = SCM_REMOTE_SHUTDOWN_MS): Promise<void> {
+    this.shutting ??= this.stopAll(capMs)
+    return this.shutting
+  }
+
+  private async stopAll(capMs: number): Promise<void> {
     this.closed = true
     const startedAt = performance.now()
     const stopping: Promise<void>[] = []
@@ -300,7 +309,11 @@ export class ScmRemote {
       if (slot.terminate === null) slot.abort()
       else stopping.push(slot.terminate(capMs))
     }
-    await Promise.race([Promise.all(stopping), new Promise((resolve) => setTimeout(resolve, capMs))])
+    if (stopping.length > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([Promise.all(stopping), new Promise((resolve) => (timer = setTimeout(resolve, capMs)))])
+      clearTimeout(timer)
+    }
     this.deps.log('scm.remote.shutdown', { running: stopping.length, ms: Math.round(performance.now() - startedAt) })
   }
 
@@ -314,6 +327,8 @@ export class ScmRemote {
       if (!confined.ok) return refused('not_worktree', confined.error)
       const state = await this.readBranch(confined.realRoot)
       if (!state.ok) return state.result
+      // 이미 upstream 이 있으면 게시하지 않는다 — 단추는 낡은 상태로 정해졌을 수 있다(수정 r3 E2). 큐 차례에도 다시 본다(`plan`).
+      if (state.value.upstream !== null) return refused('already_published', alreadyPublished(state.value.branch, state.value.upstream))
       expected = state.value.branch
       if (state.value.remotes.length > 1) {
         picked = await this.deps.pickRemote({ remotes: state.value.remotes, branch: state.value.branch })
@@ -376,6 +391,8 @@ export class ScmRemote {
       case 'publish': {
         if (input.expected !== null && input.expected !== branch)
           return { ok: false, result: refused('branch_changed', `'${input.expected}' 브랜치를 게시하려 했지만 지금 브랜치는 '${branch}' 입니다 — 아무것도 올리지 않았습니다. 다시 눌러 주세요.`) }
+        // 큐 차례에 upstream 이 생겼으면 `push -u` 로 사용자의 `branch.<b>.remote/merge` 를 바꾸지 않는다(E2).
+        if (upstream !== null) return { ok: false, result: refused('already_published', alreadyPublished(branch, upstream)) }
         const remote = input.picked ?? (remotes.length === 1 ? remotes[0] : undefined)
         if (remote === undefined) return { ok: false, result: refused('bad_name', '게시할 원격을 고르지 못했습니다 — 원격 목록이 바뀌었습니다. 다시 눌러 주세요.') }
         if (!remotes.includes(remote) || !isSafeRefName(remote)) return { ok: false, result: refused('bad_name', '고른 원격이 더 이상 없습니다 — 다시 눌러 주세요.') }
@@ -419,5 +436,14 @@ export class ScmRemote {
     const upstreamBranch = mergeRef.startsWith('refs/heads/') ? mergeRef.slice('refs/heads/'.length) : ''
     const upstream = remoteName !== '' && upstreamBranch !== '' && isSafeRefName(remoteName) && isSafeRefName(upstreamBranch) ? { remote: remoteName, branch: upstreamBranch } : null
     return { ok: true, value: { branch, remotes: remotes.value.filter(isSafeRefName), upstream } }
+  }
+}
+
+/** 종료 순서(수정 r3 E3) — 원격 정리가 끝난(또는 상한에 닿은) 뒤에야 닫기(로그 닫기 포함)를 부른다. 정리가 실패해도 닫기는 한다. */
+export async function closeAfterShutdown(input: { shutdown: () => Promise<void>; close: () => void }): Promise<void> {
+  try {
+    await input.shutdown()
+  } finally {
+    input.close()
   }
 }

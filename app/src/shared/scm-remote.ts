@@ -20,6 +20,8 @@ export type ScmRemoteRefusal =
   | 'bad_name'
   /** 게시를 누른(고른) 때의 브랜치와 큐 차례의 HEAD 브랜치가 다르다 — git 0(수정 r2 D4). */
   | 'branch_changed'
+  /** 게시하려는데 upstream 이 이미 있다 — git 0, `branch.<b>.remote/merge` 그대로(수정 r3 E2). */
+  | 'already_published'
   /** 게시 원격 고르기를 닫았다 — git 0. */
   | 'pick_cancelled'
   /** 사용자가 취소 단추를 눌렀다(진행 중이면 프로세스 그룹 종료, 기다리던 것이면 git 없이 빠짐). */
@@ -107,6 +109,7 @@ export function scmRemoteMessage(input: { action: ScmRemoteAction; result: ScmRe
     case 'bad_name':
       return { kind: 'error', text: maskCredentials(result.error) }
     case 'branch_changed':
+    case 'already_published':
       return { kind: 'info', text: result.error }
     case 'git_error': {
       const raw = maskCredentials(result.error)

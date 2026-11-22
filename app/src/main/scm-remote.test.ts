@@ -17,6 +17,7 @@ import {
   SCM_REMOTE_TIMEOUT_MS,
   ScmRemote,
   clipErrorText,
+  closeAfterShutdown,
   runRemoteGit,
   scmPublishArgs,
   scmPullArgs,
@@ -836,5 +837,84 @@ describe('수정 r1', () => {
     const ok = harness({ roots: [f.work], pick: () => 'second' })
     expect(await ok.remote.run({ action: 'publish', root: f.work })).toEqual({ ok: true })
     expect(bareRef(second, 'refs/heads/moved')).toBe(rev(f.work))
+  })
+
+  it('E2 게시 — upstream 이 이미 있으면 git 0 + 안내, branch.<b>.remote·merge 무변화(게시 뒤 다시 게시 · 다른 원격을 골라도)', async () => {
+    const f = fixture()
+    const second = path.join(f.dir, 'second.git')
+    execFileSync(REAL_GIT, ['init', '-q', '--bare', '-b', 'main', second], { env: fixtureEnv })
+    git(f.work, 'checkout', '-q', '-b', 'pub')
+    const first = harness({ roots: [f.work], pick: () => 'origin' })
+    git(f.work, 'remote', 'add', 'second', second)
+    expect(await first.remote.run({ action: 'publish', root: f.work })).toEqual({ ok: true })
+    const config = (): string => `${git(f.work, 'config', '--get', 'branch.pub.remote').trim()} ${git(f.work, 'config', '--get', 'branch.pub.merge').trim()}`
+    expect(config()).toBe('origin refs/heads/pub')
+    // 단추가 낡은 상태(upstream 없음)로 그려져 「브랜치 게시」 를 다시 눌렀다 — 두 번째 원격을 고르게 해 둬도 묻지 않고 거절.
+    const again = harness({ roots: [f.work], pick: () => 'second' })
+    const result = await again.remote.run({ action: 'publish', root: f.work })
+    expect(result.ok ? null : result.code).toBe('already_published')
+    expect(scmRemoteMessage({ action: 'publish', result })).toEqual({ kind: 'info', text: "'pub' 브랜치는 이미 upstream(origin/pub) 이 있습니다 — 게시하지 않았습니다(설정 그대로). 「밀어넣기」로 올리세요." })
+    expect(again.spawns).toEqual([])
+    expect(again.picks).toEqual([])
+    expect(config()).toBe('origin refs/heads/pub')
+    expect(bareRef(second, 'refs/heads/pub')).toBeNull()
+  })
+
+  it('E2 큐 차례 — 고를 때는 upstream 이 없었지만 차례에 생겼으면 git 0 + 안내', async () => {
+    const f = fixture()
+    const second = path.join(f.dir, 'second.git')
+    execFileSync(REAL_GIT, ['init', '-q', '--bare', '-b', 'main', second], { env: fixtureEnv })
+    git(f.work, 'remote', 'add', 'second', second)
+    git(f.work, 'checkout', '-q', '-b', 'late')
+    // 대화상자가 떠 있는 동안 터미널에서 게시했다.
+    const h = harness({
+      roots: [f.work],
+      pick: () => {
+        git(f.work, 'push', '-q', '-u', 'origin', 'late')
+        return 'second'
+      },
+    })
+    const result = await h.remote.run({ action: 'publish', root: f.work })
+    expect(result.ok ? null : result.code).toBe('already_published')
+    expect(h.spawns).toEqual([])
+    expect(git(f.work, 'config', '--get', 'branch.late.remote').trim()).toBe('origin')
+    expect(bareRef(second, 'refs/heads/late')).toBeNull()
+  })
+
+  it('E3 종료 순서 — 닫기(로그 닫기)는 원격 정리가 끝난 뒤 · 두 경로가 불러도 정리는 한 번', async () => {
+    const f = fixture()
+    hang(f.work)
+    const h = harness({ roots: [f.work] })
+    const running = h.remote.run({ action: 'fetch', root: f.work })
+    await waitFor(() => h.spawns.length === 1)
+    const pid = h.spawns[0]!.pid
+    const order: string[] = []
+    const closing = closeAfterShutdown({
+      shutdown: () => h.remote.shutdown().then(() => void order.push(`shutdown:${groupAlive(pid) ? 'alive' : 'gone'}`)),
+      close: () => void order.push(`close:${h.logs.some((entry) => entry.event === 'scm.remote.shutdown') ? 'logged' : 'not-logged'}`),
+    })
+    const second = h.remote.shutdown()
+    await closing
+    await second
+    await running
+    expect(order).toEqual(['shutdown:gone', 'close:logged'])
+    expect(h.logs.filter((entry) => entry.event === 'scm.remote.shutdown')).toHaveLength(1)
+    // 정리가 실패해도 닫기는 한다.
+    let closed = false
+    await expect(closeAfterShutdown({ shutdown: () => Promise.reject(new Error('x')), close: () => void (closed = true) })).rejects.toThrow('x')
+    expect(closed).toBe(true)
+  }, 15_000)
+
+  it('E4 K3ⓐ 미리 fetch 없는 fast-forward 끌어오기 — HEAD·추적 ref == 원격 팁, ahead/behind 0', async () => {
+    const f = fixture()
+    commit(f.other, 'o.txt', 'o\n')
+    git(f.other, 'push', '-q')
+    const tip = bareRef(f.bare, 'refs/heads/main')
+    expect(rev(f.work, 'refs/remotes/origin/main')).not.toBe(tip)
+    const h = harness({ roots: [f.work] })
+    expect(await h.remote.run({ action: 'pull', root: f.work })).toEqual({ ok: true })
+    expect(rev(f.work)).toBe(tip)
+    expect(rev(f.work, 'refs/remotes/origin/main')).toBe(tip)
+    expect(ab(f.work)).toBe('+0 -0')
   })
 })

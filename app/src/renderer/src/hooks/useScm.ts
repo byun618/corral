@@ -8,9 +8,11 @@
 //   **쓰기 단추(K1)가 읽을 자리는 `compare` 하나다** — `'base'` 면 stage·unstage·discard·커밋을 그리지 않는다(B8, D1).
 // · 쓰기(LIFE-829) — 입력란 메시지·안내·진행 상태를 **루트마다** 든다(K12 — 결과는 요청 루트의 상태에만 적용한다. 지금 보이는 루트가 달라도
 //   그 루트의 입력란·안내는 그대로). 요청의 루트는 누른 때 값(`input.root`)이다.
+// · 원격(LIFE-831) — 진행 중 동작(`remote`)도 루트마다 든다. 안내는 쓰기와 같은 칸(`notice`). 끝난 결과는 요청 루트의 상태에만 적용한다(제약 8 상태 표).
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import type { ScmBasePush, ScmChange } from '../../../shared/scm.js'
 import { scmWriteMessage, type ScmWriteInput } from '../../../shared/scm-write.js'
+import { scmRemoteMessage, type ScmRemoteAction, type ScmRemoteInput } from '../../../shared/scm-remote.js'
 import { acquireExplorerWatch } from '../explorer-watch-refs.js'
 
 /** `total` — main 이 상한 + 1 로 자른 `changes` 의 전체 개수(fix r1 R1-05). */
@@ -43,6 +45,12 @@ export type ScmApi = {
   dismissNotice: () => void
   /** 쓰기 하나 — 결과는 `input.root` 의 상태에만 적용한다. 성공한 커밋은 그 루트의 입력란을 비운다(D10). */
   run: (input: ScmWriteInput) => Promise<void>
+  /** 지금 루트에서 진행 중인 원격 동작(LIFE-831) — 없으면 null. */
+  remote: ScmRemoteAction | null
+  /** 원격 동작 하나 — 그 루트에서 진행 중이면 무시한다(main 도 `busy` 로 git 을 더 띄우지 않는다). 결과는 `input.root` 의 상태에만. */
+  runRemote: (input: ScmRemoteInput) => Promise<void>
+  /** 지금 루트의 진행 중 원격 동작 취소. */
+  cancelRemote: () => void
 }
 
 export function useScm({ root, active }: { root: string | null; active: boolean }): ScmApi {
@@ -130,6 +138,7 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
   }, [root])
 
   const writes = useRef(new Map<string, ScmWriteState>())
+  const remotes = useRef(new Map<string, ScmRemoteAction>())
   const patch = useCallback((key: string, update: (current: ScmWriteState) => ScmWriteState) => {
     writes.current.set(key, update(writes.current.get(key) ?? EMPTY_WRITE))
     bump()
@@ -159,6 +168,22 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
     },
     [patch],
   )
+  const runRemote = useCallback(
+    async (input: ScmRemoteInput) => {
+      const key = input.root
+      if (remotes.current.has(key)) return
+      remotes.current.set(key, input.action)
+      bump()
+      const result = await window.corral.scmRemote(input).catch((error: unknown) => ({ ok: false as const, code: 'git_error' as const, error: String(error) }))
+      remotes.current.delete(key)
+      // 성공·고르기 닫음은 앞 안내를 지운다(D10 — 목록·숫자 갱신이 결과). 실패·취소·시간 초과는 그 안내로.
+      patch(key, (current) => ({ ...current, notice: scmRemoteMessage({ action: input.action, result }) }))
+    },
+    [patch],
+  )
+  const cancelRemote = useCallback(() => {
+    if (root !== null && remotes.current.has(root)) void window.corral.scmRemoteCancel({ root })
+  }, [root])
 
   return {
     root,
@@ -172,6 +197,9 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
     setMessage,
     dismissNotice,
     run,
+    remote: root === null ? null : (remotes.current.get(root) ?? null),
+    runRemote,
+    cancelRemote,
     compare,
     setCompare,
   }

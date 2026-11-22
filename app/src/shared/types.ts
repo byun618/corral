@@ -17,6 +17,7 @@ import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer
 import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
 import type { ScmReadInput, ScmReadResult } from './scm.js'
 import type { ScmWriteInput, ScmWriteResult } from './scm-write.js'
+import type { ScmRemoteInput, ScmRemoteResult } from './scm-remote.js'
 import type { PrBranchesResult, PrItemRefreshResult } from './pr-status.js'
 import type { PrCommentsResult } from './pr-comments.js'
 import type { HistoryAgents, SessionHistoryDetailResult, SessionHistoryListInput, SessionHistoryListResult, SessionHistoryResumeInput, SessionHistoryResumeResult, SessionHistoryRevealResult, SessionKey } from './session-history.js'
@@ -1125,6 +1126,10 @@ export type CorralApi = {
   scmRead: (input: ScmReadInput) => Promise<ScmReadResult>
   /** LIFE-829 — 소스 제어 쓰기(stage·unstage·discard·커밋·amend, `main/scm-write.ts`). 확인 대화상자는 main 이 띄운다. */
   scmWrite: (input: ScmWriteInput) => Promise<ScmWriteResult>
+  /** LIFE-831 — 소스 제어 원격(가져오기·끌어오기·밀어넣기·브랜치 게시, `main/scm-remote.ts`). 게시 원격 고르기는 main 이 띄운다. */
+  scmRemote: (input: ScmRemoteInput) => Promise<ScmRemoteResult>
+  /** 그 루트의 원격 동작 취소 — 진행 중이면 프로세스 그룹 종료, 기다리던 것이면 git 없이 빠진다. 없으면 `ok: false`. */
+  scmRemoteCancel: (input: { root: string }) => Promise<{ ok: boolean }>
   /** 소스 제어 base 대비 켜기·끄기 (LIFE-830) — 켠 루트의 git push 에 `base` 가 실린다. ref 는 보내지 않는다. */
   scmBaseMode: (input: { root: string; on: boolean }) => void
   /** 열린 파일 탭 감시 집합(LIFE-590 E5) — 통째로 바꾼다. */

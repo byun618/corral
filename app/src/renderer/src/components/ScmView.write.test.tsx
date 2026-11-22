@@ -47,6 +47,9 @@ const api = (input: Partial<ScmApi>): ScmApi => ({
   setMessage: () => {},
   dismissNotice: () => {},
   run: async () => {},
+  remote: null,
+  runRemote: async () => {},
+  cancelRemote: () => {},
   ...input,
 })
 const render = (scm: ScmApi, onOpen = vi.fn()): void => act(() => root.render(createElement(ScmView, { scm, title: null, mode: 'list', onChangeMode: () => {}, focusToken: 0, onOpen })))

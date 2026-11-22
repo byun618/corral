@@ -60,6 +60,8 @@ export const isLockError = (stderr: string): boolean => /Another git process see
 const GIT_FATAL = 128
 
 const GIT_TIMEOUT_MS = 60_000
+/** 로그인 셸 조회 실패 뒤 다시 묻기까지(E3 — 음성 캐시). */
+export const LOGIN_PATH_RETRY_MS = 60_000
 /** 커밋은 훅이 돈다 — 더 길게. */
 const COMMIT_TIMEOUT_MS = 180_000
 const OUTPUT_LIMIT = 4 * 1024 * 1024
@@ -190,7 +192,8 @@ export type ScmWriteDeps = {
   /** 쓰기 뒤 즉시 재조회(D14 — 탐색기 허브 `refreshGit`). */
   refresh: (root: string) => void
   log: (event: string, data?: Record<string, unknown>) => void
-  /** 시험 주입 — 기본은 VS Code 값·25 초 예산·진짜 시계. */
+  /** 시험 주입 — 기본은 VS Code 값·25 초 예산·진짜 시계(`now` 는 로그인 셸 음성 캐시용). */
+  now?: () => number
   retryDelays?: readonly number[]
   retryBudgetMs?: number
   sleep?: (ms: number) => Promise<void>
@@ -231,6 +234,8 @@ export class ScmWriter {
   private readonly queues = new Map<string, Promise<unknown>>()
   private loginPathCache: string | null = null
   private loginPathPending: Promise<string | null> | null = null
+  /** 마지막 조회 실패 시각 — `LOGIN_PATH_RETRY_MS` 동안은 다시 묻지 않고 앱 PATH 로 돈다(E3 — 셸이 늘 멈추면 쓰기마다 5 초씩 기다리지 않게). */
+  private loginPathFailedAt: number | null = null
 
   constructor(private readonly deps: ScmWriteDeps) {}
 
@@ -473,10 +478,12 @@ export class ScmWriter {
   }
 
   /** 로그인 셸 PATH — 성공한 값은 앱이 도는 동안 둔다(VS Code 도 시작 때 한 번 푼다). 실패는 두지 않는다(다음 쓰기에 다시 묻는다).
-   * 진행 중 조회는 함께 기다린다(R3-5 — 동시 쓰기·미리 조회가 셸을 둘 띄우지 않게). */
+   * 진행 중 조회는 함께 기다린다(R3-5 — 동시 쓰기·미리 조회가 셸을 둘 띄우지 않게). 실패 뒤 `LOGIN_PATH_RETRY_MS` 동안은 묻지 않고 null(E3). */
   private resolveLoginPath(): Promise<string | null> {
     if (this.loginPathCache !== null) return Promise.resolve(this.loginPathCache)
     if (this.loginPathPending !== null) return this.loginPathPending
+    const now = this.deps.now ?? Date.now
+    if (this.loginPathFailedAt !== null && now() - this.loginPathFailedAt < LOGIN_PATH_RETRY_MS) return Promise.resolve(null)
     const startedAt = performance.now()
     const pending = this.deps
       .loginPath()
@@ -484,6 +491,7 @@ export class ScmWriter {
       .then((value) => {
         this.deps.log('scm.write.login_path', { ok: value !== null, ms: Math.round(performance.now() - startedAt) })
         if (value !== null) this.loginPathCache = value
+        this.loginPathFailedAt = value === null ? now() : null
         this.loginPathPending = null
         return value
       })
@@ -539,7 +547,8 @@ const LOGIN_OUTPUT_LIMIT = 1024 * 1024
 /** `$SHELL -ilc` 로 로그인 셸의 PATH 를 얻는다(선례 `mobile/tailscale.ts` `loginShellTailscale` — 5초 상한). 셸 출력 전체는 남기지 않는다.
  * 상한은 직접 타이머로 확정한다(C1) — 대화형 셸은 SIGTERM 을 무시하고 rc 가 멈출 수 있어 자식 종료를 기다리지 않는다. 셸은 별도 프로세스 그룹
  * (`detached`)으로 띄워 상한·출력 초과에 그룹 전체를 SIGKILL 하고, stdin 은 처음부터 닫는다(`ignore` — rc 의 `read` 는 바로 EOF).
- * 값은 표지 두 개가 stdout 에 보이는 즉시 확정한다(rc 가 띄운 자손이 stdout 을 쥐고 있어도 기다리지 않는다). */
+ * 값은 표지 두 개가 stdout 에 보이는 즉시 확정하고 그 그룹도 SIGKILL 한다(E2 — rc 가 띄운 자손이 stdout 을 쥐고 남아 있어도 기다리지도 남기지도 않는다).
+ * (rc 가 `setsid` 로 그룹을 벗어나 띄운 데몬은 그룹 밖이라 닿지 않는다.) */
 export function loginShellPath(input: { shell?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {}): Promise<string | null> {
   const shell = input.shell ?? (process.env.SHELL !== undefined && path.isAbsolute(process.env.SHELL) ? process.env.SHELL : '/bin/zsh')
   return new Promise((resolve) => {
@@ -570,7 +579,8 @@ export function loginShellPath(input: { shell?: string; timeoutMs?: number; env?
     child.stdout?.on('data', (chunk: string) => {
       stdout += chunk
       if (stdout.length > LOGIN_OUTPUT_LIMIT) finish(null, { kill: true })
-      else if (parseLoginPath(stdout) !== null) finish(parseLoginPath(stdout), { kill: false })
+      // 값을 받았으면 셸 그룹은 더 쓸 일이 없다 — rc 가 남긴 자손(`sleep` 등)까지 바로 죽인다(E2).
+      else if (parseLoginPath(stdout) !== null) finish(parseLoginPath(stdout), { kill: true })
     })
   })
 }

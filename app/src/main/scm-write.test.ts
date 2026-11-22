@@ -4,6 +4,7 @@
 // fix r1: B1 추가 예정·이름 바꾸기 예정 = 휴지통 · B2 휴지통 대상 main 분류 · B3 부분 실패 안내 · B4 HEAD 판별 · B6 lock 재시도는 git exit 128 만.
 // fix r2: C1 로그인 셸 상한(그룹 SIGKILL·stdin 닫음) · C2 되돌릴 것도 main 분류 · C3 낡은 목록 = stale + 재조회 · C4 「변경 있나」 = untracked normal.
 // fix r3: D1 로그인 셸 PATH 는 쓰기 git 전부·미리 조회·checkout 비0 안내 · D3 동작 단위 lock 재시도 예산.
+// 낮음 수정(r4): E2 값 확정 뒤 셸 그룹 SIGKILL · E3 조회 실패 음성 캐시 · E4 스마트 커밋 확인 뒤 루트 재확인.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -15,6 +16,7 @@ import { scmWriteMessage } from '../shared/scm-write.js'
 import {
   isLockError,
   LOCK_RETRY_DELAYS_MS,
+  LOGIN_PATH_RETRY_MS,
   loginShellPath,
   SCM_ANY_CHANGE_ARGS,
   SCM_DISCARD_ARGS,
@@ -777,6 +779,23 @@ describe('K6·K7 — 훅 실패 원문 · 로그인 셸 PATH(쓰기 git 전부 �
         expect([fake.name, await settleGone(pidsOf(fake.pids))]).toEqual([fake.name, []])
       }
     }, 30_000)
+    it('E2 값을 낸 뒤에도 끝나지 않는 셸(printf 표지; sleep 120) = 값은 바로 반환되고 셸·자손 잔존 0', async () => {
+      const dir = path.join(base, `fake-shell-e2-${(seq += 1)}`)
+      fs.mkdirSync(dir)
+      const lingering = path.join(dir, 'lingering.sh')
+      const pidFile = path.join(dir, 'lingering.pids')
+      // 자손 sleep 120 을 먼저 띄우고 PID 를 적은 뒤 표지를 내고 기다린다(값을 낸 시점에 셸·자손 둘 다 stdout 을 쥔 채 살아 있다 — 리뷰 p01 꼴).
+      fs.writeFileSync(lingering, `#!/bin/sh\necho $$ >> '${pidFile}'\nsleep 120 &\necho $! >> '${pidFile}'\nprintf '__CORRAL_LOGIN_PATH__%s__CORRAL_LOGIN_PATH__' '/opt/e2/bin:/usr/bin:/bin'\nwait\n`, { mode: 0o755 })
+      const startedAt = performance.now()
+      const value = await loginShellPath({ shell: lingering, timeoutMs: 5000 })
+      const ms = performance.now() - startedAt
+      expect(value).toBe('/opt/e2/bin:/usr/bin:/bin')
+      expect(ms).toBeLessThan(5000)
+      const pids = pidsOf(pidFile)
+      console.log(`E2 value=${value} ms=${ms.toFixed(0)} pids=${pids.join(',')}`)
+      expect(pids).toHaveLength(2)
+      expect(await settleGone(pids)).toEqual([])
+    }, 10_000)
   })
   it('loginShellPath — 이 기계의 로그인 셸에서 절대 경로 PATH 를 얻는다 · 없는 셸이면 null', async () => {
     const value = await loginShellPath()
@@ -923,6 +942,75 @@ describe('D1 — 로그인 셸 PATH 는 쓰기 git 전부 · checkout 비0 = 실
     const lines = fs.readFileSync(record, 'utf8').trim().split('\n').map((line) => line.split('\t'))
     expect(lines).toHaveLength(3)
     for (const [pathEnv] of lines) expect(pathEnv).toBe(loginPath)
+  })
+})
+
+describe('E3 — 로그인 셸 조회 실패는 잠깐 둔다(음성 캐시) · E4 스마트 커밋 확인 뒤 루트 재확인', () => {
+  it('E3 늘 실패하는 조회 + 쓰기 3연속 = 조회 1회, 셋 다 앱 PATH 로 성공 · 시계가 60 초를 넘기면 다시 묻는다 · 성공은 계속 둔다', async () => {
+    const root = repo()
+    let lookups = 0
+    let clock = 1_000_000
+    let answer: string | null = null
+    const h = harness({
+      roots: [root],
+      over: {
+        now: () => clock,
+        loginPath: async () => {
+          lookups += 1
+          return answer
+        },
+      },
+    })
+    for (const name of ['a.txt', 'b.txt', 'old.txt']) {
+      write(root, name, `${name} e3\n`)
+      expect(await h.writer.write({ action: 'stage', root, paths: [name] })).toEqual({ ok: true })
+    }
+    expect(lookups).toBe(1)
+    expect(git(root, 'diff', '--cached', '--name-only')).toBe('a.txt\nb.txt\nold.txt\n')
+    clock += LOGIN_PATH_RETRY_MS - 1
+    expect(await h.writer.write({ action: 'unstage', root, paths: ['a.txt'] })).toEqual({ ok: true })
+    expect(lookups).toBe(1)
+    clock += 1
+    answer = process.env.PATH ?? '/usr/bin:/bin'
+    expect(await h.writer.write({ action: 'unstage', root, paths: ['b.txt'] })).toEqual({ ok: true })
+    expect(lookups).toBe(2)
+    clock += LOGIN_PATH_RETRY_MS * 10
+    expect(await h.writer.write({ action: 'unstage', root, paths: ['old.txt'] })).toEqual({ ok: true })
+    expect(lookups).toBe(2)
+    expect(h.logs.filter((entry) => entry.event === 'scm.write.login_path').map((entry) => entry.data.ok)).toEqual([false, true])
+  })
+  it('E4 스마트 커밋 확인 대화상자 중 그 루트가 닫히면 git 쓰기 없이 거절(add·commit 0, HEAD·인덱스 무변화)', async () => {
+    const root = repo()
+    write(root, 'a.txt', 'a1\n')
+    write(root, 'new.txt', 'n\n')
+    const record = path.join(base, `e4-argv-${seq}.log`)
+    const wrapper = path.join(base, `e4-gitwrap-${seq}.sh`)
+    fs.writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${record}'\nexec '${GIT}' "$@"\n`, { mode: 0o755 })
+    let release: (choice: ScmConfirmChoice) => void = () => {}
+    let asked = 0
+    const h = harness({
+      roots: [root],
+      over: {
+        git: () => wrapper,
+        confirm: (spec) => {
+          asked += 1
+          expect(spec.kind).toBe('smartCommit')
+          return new Promise<ScmConfirmChoice>((resolve) => (release = resolve))
+        },
+      },
+    })
+    const before = { head: head(root), status: status(root) }
+    const pending = h.writer.write({ action: 'commit', root, message: 'smart', amend: false })
+    for (let waited = 0; waited < 2000 && asked === 0; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(asked).toBe(1)
+    h.roots.splice(0, 1)
+    release('commit')
+    expect(await pending).toMatchObject({ ok: false, code: 'not_worktree' })
+    expect({ head: head(root), status: status(root) }).toEqual(before)
+    const lines = fs.readFileSync(record, 'utf8').trim().split('\n')
+    // 대화상자 전 읽기(스테이지 있나·변경 있나)만 — 쓰기 git(add·commit) 0.
+    expect(lines.length).toBe(2)
+    for (const line of lines) expect(line).toContain('--no-optional-locks')
   })
 })
 

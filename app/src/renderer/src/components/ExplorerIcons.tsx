@@ -35,6 +35,10 @@ export const CODICON = {
   'case-sensitive': 0xeab1,
   'whole-word': 0xeb7e,
   regex: 0xeb38,
+  // LIFE-829 — 소스 제어 쓰기(행·그룹 inline 단추).
+  add: 0xea60,
+  remove: 0xeb3b,
+  discard: 0xeae2,
 } as const
 
 export type CodiconName = keyof typeof CODICON

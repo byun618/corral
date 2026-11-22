@@ -15,6 +15,46 @@
 .scm-desc { margin-left: 0.5em; font-size: 0.9em; opacity: 0.7; }
 /* 상태 글자 — semibold(`scm.css:298-309`). */
 .scm-letter { font-weight: 600; }
+/* --- 쓰기 (LIFE-829) — 입력란·커밋 단추(VS Code `scm.css` `.scm-editor`·`.button-container`)·inline 단추(`.actions`) ------------------ */
+.scm-input { flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; padding: 4px 12px 8px 20px; }
+.scm-message {
+  box-sizing: border-box; width: 100%; min-height: 26px; padding: 4px 6px; resize: none; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 2px; background: var(--bg-input); color: var(--fg);
+  font: inherit; font-size: 13px; line-height: 18px; outline: none;
+}
+.scm-message:focus { border-color: #3994bcb3; }
+.scm-message[readonly] { opacity: 0.7; }
+.scm-commit-row { position: relative; display: flex; height: 26px; }
+.scm-commit, .scm-commit-more {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 26px; border: none;
+  background: var(--accent); color: var(--fg-on-accent); font: inherit; font-size: 13px; cursor: pointer;
+}
+.scm-commit { flex: 1 1 auto; min-width: 0; border-radius: 2px 0 0 2px; }
+.scm-commit > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scm-commit-more { flex: 0 0 24px; border-radius: 0 2px 2px 0; border-left: 1px solid rgb(0 0 0 / 0.2); }
+.scm-commit:hover:not(:disabled), .scm-commit-more:hover:not(:disabled) { background: var(--accent-hi); }
+.scm-commit:disabled, .scm-commit-more:disabled { opacity: 0.6; cursor: default; }
+.scm-commit-menu {
+  position: absolute; top: 28px; right: 0; z-index: 5; min-width: 140px; padding: 4px 0; display: flex; flex-direction: column;
+  background: var(--bg-surface); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.36);
+}
+.scm-commit-menu > button { height: 24px; padding: 0 12px; border: none; background: none; color: var(--fg); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.scm-commit-menu > button:hover, .scm-commit-menu > button:focus-visible { background: var(--bg-accent); outline: none; }
+.scm-notice { display: flex; align-items: flex-start; gap: 4px; padding: 4px 4px 4px 8px; border-radius: 2px; background: var(--bg-accent); font-size: 12px; }
+.scm-notice.is-error { border-left: 2px solid var(--st-error); }
+.scm-notice-text { flex: 1 1 auto; min-width: 0; margin: 0; max-height: 160px; overflow: auto; font-family: var(--font-mono, monospace); font-size: 11.5px; line-height: 16px; white-space: pre-wrap; word-break: break-word; user-select: text; }
+.scm-notice-close { flex-shrink: 0; width: 18px; height: 18px; }
+/* inline 단추 — 행 hover·선택 때만 자리를 차지한다. 이름은 줄고(말줄임) 상태 글자·개수는 줄지 않는다(learnings ui.md). */
+.scm-actions { display: none; flex-shrink: 0; align-items: center; margin-right: 4px; }
+.scm .explorer-row:hover .scm-actions, .scm .explorer-row.is-selected .scm-actions { display: inline-flex; }
+.scm-action {
+  width: 20px; height: 20px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 4px; background: none; color: var(--fg); cursor: pointer;
+}
+.scm-action:hover { background: var(--bg-accent); }
+.scm-action[aria-disabled='true'] { opacity: 0.4; cursor: default; }
+.scm-action[aria-disabled='true']:hover { background: none; }
+.scm-action .codicon { font-size: 16px; }
 .scm-banner { flex-shrink: 0; padding: 4px 12px; font-size: 12px; color: var(--fg-muted); background: var(--bg-accent); }
 .right-panel-activity-icon.is-source-control::before { content: '\ea68'; }
 .right-panel-activity-icon.is-codicon { font-size: var(--right-panel-activity-icon); line-height: 1; display: inline-flex; align-items: center; justify-content: center; }

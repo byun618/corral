@@ -6,8 +6,11 @@
 // · 비교 기준(LIFE-830) — 루트별 「작업 트리」(기본) / 「base 대비」. 메모리에만 든다(재시작 복원 없음). base 대비이고 보기가 활성일 때만
 //   main 에 켜 달라고 한다(`scmBaseMode`) — 그때만 허브가 같은 git 회차에 base 대비 목록을 더 읽어 push 의 `base` 로 싣는다.
 //   **쓰기 단추(K1)가 읽을 자리는 `compare` 하나다** — `'base'` 면 stage·unstage·discard·커밋을 그리지 않는다(B8, D1).
+// · 쓰기(LIFE-829) — 입력란 메시지·안내·진행 상태를 **루트마다** 든다(K12 — 결과는 요청 루트의 상태에만 적용한다. 지금 보이는 루트가 달라도
+//   그 루트의 입력란·안내는 그대로). 요청의 루트는 누른 때 값(`input.root`)이다.
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import type { ScmBasePush, ScmChange } from '../../../shared/scm.js'
+import { scmWriteMessage, type ScmWriteInput } from '../../../shared/scm-write.js'
 import { acquireExplorerWatch } from '../explorer-watch-refs.js'
 
 /** `total` — main 이 상한 + 1 로 자른 `changes` 의 전체 개수(fix r1 R1-05). */
@@ -16,6 +19,10 @@ export type ScmRootState = { changes: ScmChange[] | null; total: number; error: 
 
 /** 비교 기준 — 작업 트리(지금까지의 보기) / base 대비. */
 export type ScmCompare = 'working' | 'base'
+
+/** 루트별 쓰기 상태 — `committing` 동안은 입력란을 읽기 전용으로 둔다(성공 때 지울 메시지가 보낸 사본과 같게). */
+export type ScmWriteState = { message: string; notice: { kind: 'info' | 'error'; text: string } | null; committing: boolean }
+const EMPTY_WRITE: ScmWriteState = { message: '', notice: null, committing: false }
 
 export type ScmApi = {
   root: string | null
@@ -30,6 +37,12 @@ export type ScmApi = {
   /** 지금 루트의 비교 기준(LIFE-830) — 기본 작업 트리. K1 쓰기 단추가 읽는 자리. */
   compare: ScmCompare
   setCompare: (compare: ScmCompare) => void
+  /** 지금 루트의 쓰기 상태. */
+  write: ScmWriteState
+  setMessage: (message: string) => void
+  dismissNotice: () => void
+  /** 쓰기 하나 — 결과는 `input.root` 의 상태에만 적용한다. 성공한 커밋은 그 루트의 입력란을 비운다(D10). */
+  run: (input: ScmWriteInput) => Promise<void>
 }
 
 export function useScm({ root, active }: { root: string | null; active: boolean }): ScmApi {
@@ -116,5 +129,50 @@ export function useScm({ root, active }: { root: string | null; active: boolean 
     if (root !== null) window.corral.explorerRefreshGit(root)
   }, [root])
 
-  return { root, state: root === null ? null : (stores.current.get(root) ?? null), version, stampOf, refresh, mode, setMode, compare, setCompare }
+  const writes = useRef(new Map<string, ScmWriteState>())
+  const patch = useCallback((key: string, update: (current: ScmWriteState) => ScmWriteState) => {
+    writes.current.set(key, update(writes.current.get(key) ?? EMPTY_WRITE))
+    bump()
+  }, [])
+  const setMessage = useCallback(
+    (message: string) => {
+      if (root !== null) patch(root, (current) => ({ ...current, message }))
+    },
+    [root, patch],
+  )
+  const dismissNotice = useCallback(() => {
+    if (root !== null) patch(root, (current) => ({ ...current, notice: null }))
+  }, [root, patch])
+  const run = useCallback(
+    async (input: ScmWriteInput) => {
+      const key = input.root
+      const commit = input.action === 'commit'
+      patch(key, (current) => ({ ...current, committing: current.committing || commit }))
+      const result = await window.corral.scmWrite(input).catch((error: unknown) => ({ ok: false as const, code: 'git_error' as const, error: String(error) }))
+      const notice = scmWriteMessage(result)
+      patch(key, (current) => ({
+        message: result.ok && commit ? '' : current.message,
+        // 성공·취소는 앞 안내를 지운다. 실패는 그 안내로 바꾼다.
+        notice,
+        committing: commit ? false : current.committing,
+      }))
+    },
+    [patch],
+  )
+
+  return {
+    root,
+    state: root === null ? null : (stores.current.get(root) ?? null),
+    version,
+    stampOf,
+    refresh,
+    mode,
+    setMode,
+    write: root === null ? EMPTY_WRITE : (writes.current.get(root) ?? EMPTY_WRITE),
+    setMessage,
+    dismissNotice,
+    run,
+    compare,
+    setCompare,
+  }
 }

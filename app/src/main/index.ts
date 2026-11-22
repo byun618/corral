@@ -125,6 +125,8 @@ import { bindStartupZoomSync, pushWindowChrome as pushChrome, syncWindowZoom, wi
 import { observePanes } from '../runtime/orchestration/index.js'
 import { OrchestrationStore } from '../runtime/orchestration/store.js'
 import { MobileService } from './mobile/service.js'
+import { HerdrInputBackend } from './mobile/input-backend.js'
+import { DiffNotesSender } from './diff-notes-send.js'
 import { readMacName } from './mobile/mac-name.js'
 import { persistedMachine } from './work/machine.js'
 import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
@@ -167,6 +169,8 @@ let runtimeStopping: Promise<void> | null = null
 let runtimeStopped = false
 /** 설정 › Mobile (LIFE-577) — 기본 꺼짐. 종료 정리는 `stopRuntime` 체인에 합쳐 기존 `before-quit` 하나가 기다린다. */
 let mobile: MobileService | null = null
+/** diff 메모 보내기 (LIFE-832) — 폰 허브의 데스크톱 전용 인스턴스. 모바일 켬·끔과 무관하게 앱 수명 동안 산다. */
+let diffNotes: DiffNotesSender | null = null
 /** 마지막으로 렌더러에 낸 상태 — 폰 목록이 같은 스냅샷을 읽는다(LIFE-580 F1). 아직 없으면 null. */
 let lastEmittedState: AppState | null = null
 /** 종료 때 serve 항목 제거에 주는 시간 — 넘기면 tailscale 자식을 죽이고 끝낸다(A6ⓕ 10초 안). 남은 항목은 다음 기동 reconcile 이 지운다. */
@@ -1962,6 +1966,21 @@ app.whenReady().then(async () => {
     }),
     run: runTailscale,
   })
+  // diff 메모 보내기 (LIFE-832 D6) — 폰 쓰기와 같은 guard 봉투·같은 조건(목록 세션이 guard 바인딩일 때만). 소켓이 바뀌면 새 백엔드.
+  let diffNotesBackend: { socket: string; backend: HerdrInputBackend } | null = null
+  diffNotes = new DiffNotesSender({
+    read: () => (lastEmittedState === null ? null : { state: lastEmittedState, prefs: uiPrefs?.get() ?? null }),
+    backend: () => {
+      const socket = currentSocketPath()
+      if (socket === null || socket !== backendBinding()?.socket) return null
+      if (diffNotesBackend?.socket !== socket) diffNotesBackend = { socket, backend: new HerdrInputBackend(socket) }
+      return diffNotesBackend.backend
+    },
+    push: (state) => {
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:diffNotesState', state)
+    },
+    log,
+  })
   const workStore = new WorkConnectionStore(app.getPath('userData'))
   workStore.load()
   // LIFE-602 — corral 활동 저장소(성공한 작업 쓰기). 경로 오버라이드 `CORRAL_WORK_ACTIVITY`(격리 실행).
@@ -2151,6 +2170,15 @@ app.whenReady().then(async () => {
     if (!fromOurWindow(event) || mobile === null) return null
     await mobile.recheckNow()
     return mobile.status()
+  })
+
+  // diff 메모 보내기 (LIFE-832) — 입력은 unknown 으로 받아 `DiffNotesSender` 가 모양·상한·대상을 다시 본다. 본문은 로그에 남기지 않는다(바이트 수만).
+  ipcMain.handle('corral:diffNotesSend', (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, reason: 'bad_input' }
+    return diffNotes === null ? { ok: false, reason: 'not_ready' } : diffNotes.send(input)
+  })
+  ipcMain.on('corral:diffNotesCancel', (event, input: unknown) => {
+    if (fromOurWindow(event)) diffNotes?.cancel(input)
   })
 
   // 설정 › 작업 연결 (LIFE-600) — 입력은 unknown 으로 받아 WorkService 가 손검증한다. 응답·push 에 토큰은 없다(끝 4자만).

@@ -2626,6 +2626,8 @@ export function App(): React.JSX.Element {
             groupId={group.groupId}
             // LIFE-824 C8 — diff 본문을 눌러도 그 영역이 활성(base 누락).
             onActivate={() => activateGroup({ groupId: group.groupId, paneId: null })}
+            // LIFE-832 — 줄 메모·보내기. 대상 후보는 이 worktree 자기 workspace 의 에이전트 pane(상태 발행마다 다시 계산).
+            notes={{ worktree: activeWorktreeRow }}
           />
         ) : activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (
           <FileView

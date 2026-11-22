@@ -22,6 +22,8 @@ export type ScmRemoteRefusal =
   | 'branch_changed'
   /** 게시하려는데 upstream 이 이미 있다 — git 0, `branch.<b>.remote/merge` 그대로(수정 r3 E2). */
   | 'already_published'
+  /** upstream 이 로컬 브랜치(`branch.<b>.remote = .`)라 끌어오기·밀어넣기 대상이 아니다 — git 0(수정 r4 F2). */
+  | 'local_upstream'
   /** 게시 원격 고르기를 닫았다 — git 0. */
   | 'pick_cancelled'
   /** 사용자가 취소 단추를 눌렀다(진행 중이면 프로세스 그룹 종료, 기다리던 것이면 git 없이 빠짐). */
@@ -50,8 +52,11 @@ export function parseScmRemoteInput(input: unknown): ScmRemoteInput | null {
 export const isSafeRefName = (name: string): boolean =>
   name.length > 0 && name.length <= 1024 && !name.startsWith('-') && !/[\s:]/.test(name) && [...name].every((char) => char.charCodeAt(0) > 0x1f && char.charCodeAt(0) !== 0x7f)
 
-/** 표시·반환 원문의 URL 자격 가림 — `https://user:secret@host` → `https://***@host`. */
-export const maskCredentials = (text: string): string => text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, '$1***@')
+/** 표시·반환 원문의 URL 자격 가림 — `https://user:secret@host` → `https://***@host`. authority(첫 `/`·공백 전) 안의 **마지막** `@` 까지 가린다 — 비밀번호에 `@` 가 그대로 들어도 꼬리가 남지 않게(수정 r4 F5). */
+export const maskCredentials = (text: string): string => text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s]*@/gi, '$1***@')
+
+/** busy 안내 문구 — 그 루트의 끝 알림이 오면 이 문구일 때만 지운다(수정 r4 F4). */
+export const SCM_REMOTE_BUSY_TEXT = '원격 동작이 이미 진행 중입니다.'
 
 const ACTION_TEXT: Readonly<Record<ScmRemoteAction, { label: string; busy: string }>> = {
   fetch: { label: '가져오기', busy: '가져오는 중…' },
@@ -91,7 +96,7 @@ export function scmRemoteMessage(input: { action: ScmRemoteAction; result: ScmRe
     case 'pick_cancelled':
       return null
     case 'busy':
-      return { kind: 'info', text: '원격 동작이 이미 진행 중입니다.' }
+      return { kind: 'info', text: SCM_REMOTE_BUSY_TEXT }
     case 'no_remote':
       return { kind: 'info', text: `원격이 없습니다 — ${input.action === 'publish' ? '게시할' : label} 원격을 터미널에서 추가하세요(\`git remote add\`).` }
     case 'no_upstream':
@@ -110,6 +115,7 @@ export function scmRemoteMessage(input: { action: ScmRemoteAction; result: ScmRe
       return { kind: 'error', text: maskCredentials(result.error) }
     case 'branch_changed':
     case 'already_published':
+    case 'local_upstream':
       return { kind: 'info', text: result.error }
     case 'git_error': {
       const raw = maskCredentials(result.error)

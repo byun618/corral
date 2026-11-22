@@ -216,10 +216,38 @@ type Slot = {
 }
 
 const refused = (code: ScmRemoteRefusal, error: string): ScmRemoteResult => ({ ok: false, code, error })
-const alreadyPublished = (branch: string, upstream: { remote: string; branch: string }): string =>
-  `'${branch}' 브랜치는 이미 upstream(${upstream.remote}/${upstream.branch}) 이 있습니다 — 게시하지 않았습니다(설정 그대로). 「밀어넣기」로 올리세요.`
+/**
+ * `branch.<b>.remote` 분류(수정 r4 F2·F3 — 한 곳): 비어 있음 = upstream 없음 · `.` = 로컬 브랜치 upstream · 원격 목록의 이름 + `merge` 가 `refs/heads/…` = 원격 upstream ·
+ * 원격 목록의 이름인데 `merge` 를 못 씀 = 불완전 · 그 밖(URL·경로 등 목록에 없는 값) = 목록 밖. 게시는 「없음」 일 때만 한다(그 밖은 설정을 덮지 않는다).
+ */
+type Upstream = { kind: 'none' } | { kind: 'local' } | { kind: 'remote'; remote: string; branch: string } | { kind: 'incomplete' } | { kind: 'unlisted' }
 
-type Branch = { branch: string; remotes: string[]; upstream: { remote: string; branch: string } | null }
+export function classifyUpstream(input: { remoteValue: string; mergeRef: string; remotes: readonly string[] }): Upstream {
+  if (input.remoteValue === '') return { kind: 'none' }
+  if (input.remoteValue === '.') return { kind: 'local' }
+  if (!input.remotes.includes(input.remoteValue) || !isSafeRefName(input.remoteValue)) return { kind: 'unlisted' }
+  const branch = input.mergeRef.startsWith('refs/heads/') ? input.mergeRef.slice('refs/heads/'.length) : ''
+  if (branch === '' || !isSafeRefName(branch)) return { kind: 'incomplete' }
+  return { kind: 'remote', remote: input.remoteValue, branch }
+}
+
+/** 게시 거절(git 0, 설정 그대로) — upstream 설정이 비어 있지 않으면. 원격 목록 밖의 값(URL 등)은 안내에 옮기지 않는다(자격이 들 수 있다). */
+function publishRefusal(input: { branch: string; upstream: Upstream }): ScmRemoteResult | null {
+  const { branch, upstream } = input
+  switch (upstream.kind) {
+    case 'none':
+      return null
+    case 'remote':
+      return refused('already_published', `'${branch}' 브랜치는 이미 upstream(${upstream.remote}/${upstream.branch}) 이 있습니다 — 게시하지 않았습니다(설정 그대로). 「밀어넣기」로 올리세요.`)
+    case 'local':
+      return refused('already_published', `'${branch}' 브랜치는 로컬 브랜치를 upstream 으로 두고 있습니다 — 게시하지 않았습니다(설정 그대로). 원격에 올리려면 터미널에서 upstream 을 바꾸세요.`)
+    case 'incomplete':
+    case 'unlisted':
+      return refused('already_published', `'${branch}' 브랜치에는 이미 upstream 설정(branch.${branch}.remote)이 있습니다 — 원격 목록의 원격이 아니라 게시하지 않았습니다(설정 그대로). 터미널에서 확인하세요.`)
+  }
+}
+
+type Branch = { branch: string; remotes: string[]; upstream: Upstream }
 
 export class ScmRemote {
   /** 루트별 진행 중 원격 동작 — 누른 때 세우고 끝나면 지운다(제약 8 상태 표). */
@@ -327,8 +355,9 @@ export class ScmRemote {
       if (!confined.ok) return refused('not_worktree', confined.error)
       const state = await this.readBranch(confined.realRoot)
       if (!state.ok) return state.result
-      // 이미 upstream 이 있으면 게시하지 않는다 — 단추는 낡은 상태로 정해졌을 수 있다(수정 r3 E2). 큐 차례에도 다시 본다(`plan`).
-      if (state.value.upstream !== null) return refused('already_published', alreadyPublished(state.value.branch, state.value.upstream))
+      // 이미 upstream 설정이 있으면 게시하지 않는다 — 단추는 낡은 상태로 정해졌을 수 있다(수정 r3 E2 · r4 F3 로컬·URL upstream). 큐 차례에도 다시 본다(`plan`).
+      const blocked = publishRefusal({ branch: state.value.branch, upstream: state.value.upstream })
+      if (blocked !== null) return blocked
       expected = state.value.branch
       if (state.value.remotes.length > 1) {
         picked = await this.deps.pickRemote({ remotes: state.value.remotes, branch: state.value.branch })
@@ -391,8 +420,9 @@ export class ScmRemote {
       case 'publish': {
         if (input.expected !== null && input.expected !== branch)
           return { ok: false, result: refused('branch_changed', `'${input.expected}' 브랜치를 게시하려 했지만 지금 브랜치는 '${branch}' 입니다 — 아무것도 올리지 않았습니다. 다시 눌러 주세요.`) }
-        // 큐 차례에 upstream 이 생겼으면 `push -u` 로 사용자의 `branch.<b>.remote/merge` 를 바꾸지 않는다(E2).
-        if (upstream !== null) return { ok: false, result: refused('already_published', alreadyPublished(branch, upstream)) }
+        // 큐 차례에 upstream 설정이 생겼으면 `push -u` 로 사용자의 `branch.<b>.remote/merge` 를 바꾸지 않는다(E2·F3).
+        const blocked = publishRefusal({ branch, upstream })
+        if (blocked !== null) return { ok: false, result: blocked }
         const remote = input.picked ?? (remotes.length === 1 ? remotes[0] : undefined)
         if (remote === undefined) return { ok: false, result: refused('bad_name', '게시할 원격을 고르지 못했습니다 — 원격 목록이 바뀌었습니다. 다시 눌러 주세요.') }
         if (!remotes.includes(remote) || !isSafeRefName(remote)) return { ok: false, result: refused('bad_name', '고른 원격이 더 이상 없습니다 — 다시 눌러 주세요.') }
@@ -400,8 +430,17 @@ export class ScmRemote {
       }
       case 'pull':
       case 'push': {
-        if (upstream === null) return { ok: false, result: refused('no_upstream', 'upstream 없음') }
-        if (!remotes.includes(upstream.remote)) return { ok: false, result: refused('bad_name', 'upstream 원격이 원격 목록에 없습니다 — 터미널에서 확인하세요.') }
+        switch (upstream.kind) {
+          case 'none':
+          case 'incomplete':
+            return { ok: false, result: refused('no_upstream', 'upstream 없음') }
+          case 'local':
+            return { ok: false, result: refused('local_upstream', '로컬 브랜치를 upstream 으로 둔 브랜치라 원격 동작 대상이 아닙니다 — 아무것도 하지 않았습니다. 원격과 주고받으려면 터미널에서 upstream 을 바꾸세요.') }
+          case 'unlisted':
+            return { ok: false, result: refused('bad_name', 'upstream 원격이 원격 목록에 없습니다 — 터미널에서 확인하세요.') }
+          case 'remote':
+            break
+        }
         return { ok: true, args: input.action === 'pull' ? scmPullArgs({ remote: upstream.remote, upstream: upstream.branch }) : scmPushArgs({ remote: upstream.remote, branch, upstream: upstream.branch }) }
       }
     }
@@ -431,11 +470,9 @@ export class ScmRemote {
     if (!isSafeRefName(branch)) return { ok: false, result: refused('bad_name', '브랜치 이름을 argv 에 넣을 수 없는 모양입니다.') }
     const keys = scmUpstreamArgs(branch)
     const [remote, merge] = await Promise.all([this.read(cwd, keys.remote), this.read(cwd, keys.merge)])
-    const remoteName = remote.exitCode === 0 ? remote.stdout.trim() : ''
-    const mergeRef = merge.exitCode === 0 ? merge.stdout.trim() : ''
-    const upstreamBranch = mergeRef.startsWith('refs/heads/') ? mergeRef.slice('refs/heads/'.length) : ''
-    const upstream = remoteName !== '' && upstreamBranch !== '' && isSafeRefName(remoteName) && isSafeRefName(upstreamBranch) ? { remote: remoteName, branch: upstreamBranch } : null
-    return { ok: true, value: { branch, remotes: remotes.value.filter(isSafeRefName), upstream } }
+    const listed = remotes.value.filter(isSafeRefName)
+    const upstream = classifyUpstream({ remoteValue: remote.exitCode === 0 ? remote.stdout.trim() : '', mergeRef: merge.exitCode === 0 ? merge.stdout.trim() : '', remotes: listed })
+    return { ok: true, value: { branch, remotes: listed, upstream } }
   }
 }
 

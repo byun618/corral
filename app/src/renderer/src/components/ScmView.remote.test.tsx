@@ -272,3 +272,71 @@ describe('수정 r3 E1 — 앞 요청의 늦은 응답은 안내를 쓰지 않�
     expect(notice()).toBeNull()
   })
 })
+
+describe('수정 r4 F1·F4 — 상태 응답·취소 실패·busy 안내', () => {
+  type Listener = (event: { root: string; action: 'fetch' | 'push' | null }) => void
+  const setup = (input: { state: () => Promise<{ action: 'fetch' | 'push' | null }>; cancel?: () => Promise<{ ok: boolean }> }): { listeners: Listener[]; pending: ((result: ScmRemoteResult) => void)[]; states: number[] } => {
+    const listeners: Listener[] = []
+    const pending: ((result: ScmRemoteResult) => void)[] = []
+    const states: number[] = []
+    Reflect.set(window, 'corral', {
+      getUiPrefs: async () => ({}),
+      setUiPrefs: () => {},
+      onExplorerEvent: () => () => {},
+      explorerWatch: async () => ({ ok: true }),
+      explorerRefreshGit: () => {},
+      scmRemoteState: () => (states.push(1), input.state()),
+      onScmRemoteEvent: (listener: Listener) => (listeners.push(listener), () => {}),
+      scmRemote: () => new Promise<ScmRemoteResult>((resolve) => pending.push(resolve)),
+      scmRemoteCancel: input.cancel ?? (async () => ({ ok: true })),
+    })
+    return { listeners, pending, states }
+  }
+  const progress = (): string | null => host.querySelector('[data-scm-remote-progress]')?.getAttribute('data-scm-remote-progress') ?? null
+  const notice = (): string | null => host.querySelector('[data-scm-notice]')?.textContent ?? null
+
+  it('F1 상태 응답이 끝 알림보다 늦게 옴 — 낡은 「진행 중」 응답은 버린다(진행 표시 고착 없음)', async () => {
+    let answer: (value: { action: 'fetch' | 'push' | null }) => void = () => {}
+    const { listeners } = setup({ state: () => new Promise((resolve) => (answer = resolve)) })
+    const Harness = (): React.JSX.Element => view(useScm({ root: '/A', active: false }), status())
+    // 마운트(reload 뒤) — 상태를 묻는 동안 main 의 끝 알림이 먼저 온다.
+    await act(async () => root.render(createElement(Harness)))
+    await act(async () => listeners.forEach((listener) => listener({ root: '/A', action: null })))
+    await act(async () => answer({ action: 'push' }))
+    expect(progress()).toBeNull()
+    expect(actions()).toEqual(['fetch', 'pull', 'push'])
+  })
+
+  it('F1 취소가 ok:false(main 에 그 동작 없음) — 진행 항목을 풀고 상태를 다시 묻는다', async () => {
+    let calls = 0
+    const { states } = setup({ state: async () => (calls += 1) === 1 ? { action: 'push' } : { action: null }, cancel: async () => ({ ok: false }) })
+    const Harness = (): React.JSX.Element => view(useScm({ root: '/A', active: false }), status())
+    // 끝 알림을 놓쳐 마운트 때 받은 「진행 중」 이 남은 상태.
+    await act(async () => root.render(createElement(Harness)))
+    expect(progress()).toBe('push')
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-cancel]')?.click())
+    expect(progress()).toBeNull()
+    expect(states).toHaveLength(2)
+    expect(actions()).toEqual(['fetch', 'pull', 'push'])
+  })
+
+  it('F4 끝 알림은 busy 안내만 지운다 — 다른 실패 안내는 그대로', async () => {
+    const { listeners, pending } = setup({ state: async () => ({ action: 'push' }) })
+    const emit = (action: 'fetch' | 'push' | null): void => listeners.forEach((listener) => listener({ root: '/A', action }))
+    const Harness = (): React.JSX.Element => view(useScm({ root: '/A', active: false }), status())
+    await act(async () => root.render(createElement(Harness)))
+    // 렌더러가 모르는 동작이 도는 중 — 끝 알림 뒤 누른 것처럼 진행 항목을 비우고 누르면 busy.
+    await act(async () => emit(null))
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-action="fetch"]')?.click())
+    await act(async () => pending[0]?.({ ok: false, code: 'busy', error: '' }))
+    expect(notice()).toContain('원격 동작이 이미 진행 중입니다.')
+    await act(async () => emit(null))
+    expect(notice()).toBeNull()
+    // 실패 안내는 끝 알림에 지워지지 않는다.
+    await act(async () => host.querySelector<HTMLElement>('[data-scm-remote-action="push"]')?.click())
+    await act(async () => pending[1]?.({ ok: false, code: 'git_error', error: 'PUSH_FAILED_MARKER' }))
+    expect(notice()).toContain('PUSH_FAILED_MARKER')
+    await act(async () => emit(null))
+    expect(notice()).toContain('PUSH_FAILED_MARKER')
+  })
+})

@@ -404,10 +404,76 @@ describe('registerPaneNameLinks — 실제 xterm 버퍼', () => {
       provider = p
       return { dispose: () => {} }
     })
-    registerPaneNameLinks({ term, paneId: 'wZ4:p1', reevaluate: () => {} })
+    const handle = registerPaneNameLinks({ term, paneId: 'wZ4:p1', reevaluate: () => {} })
     await write(term, '\x1b[1;1Hno names here')
     const links = await new Promise<unknown>((resolve) => provider?.provideLinks(1, resolve))
     expect(links).toBeUndefined()
+    handle.dispose() // 집합 변경 리스너가 다음 시험으로 새지 않게(f3 — L2 변이가 이 누수로 가려졌다)
     term.dispose()
+  })
+})
+
+describe('r3 낮음 — 툴팁 소유·예외 안전 (합성, 리뷰 프로브 장면)', () => {
+  type Provider = Parameters<Terminal['registerLinkProvider']>[0]
+  type Links = Parameters<Parameters<Provider['provideLinks']>[1]>[0]
+  let release: (() => void) | null = null
+  afterEach(() => {
+    release?.()
+    release = null
+    document.querySelectorAll('[data-pane-link-tip]').forEach((element) => element.remove())
+  })
+
+  async function paneTerminal(input: { ownPaneId: string; reevaluate: () => void }) {
+    const term = new Terminal({ cols: 40, rows: 2, allowProposedApi: true })
+    let provider: Provider | undefined
+    vi.spyOn(term, 'registerLinkProvider').mockImplementation((p) => {
+      provider = p
+      return { dispose: () => {} }
+    })
+    const handle = registerPaneNameLinks({ term, paneId: input.ownPaneId, reevaluate: input.reevaluate })
+    await new Promise<void>((resolve) => term.write('\x1b[1;1Hgo wZ3:p1 now', resolve))
+    const links = await new Promise<Links>((resolve) => provider?.provideLinks(1, resolve))
+    const link = links?.[0]
+    if (link === undefined) throw new Error('링크 없음')
+    return { term, handle, link }
+  }
+  const tips = (): NodeListOf<HTMLElement> => document.querySelectorAll<HTMLElement>('[data-pane-link-tip]')
+
+  it('L1 — 다른 터미널의 leave 는 이 터미널 툴팁을 걷지 않는다', async () => {
+    release = setPaneLinkDirectory(directoryOf(new Set(['wZ3:p1'])))
+    const a = await paneTerminal({ ownPaneId: 'wZ4:p1', reevaluate: () => {} })
+    const b = await paneTerminal({ ownPaneId: 'wZ5:p1', reevaluate: () => {} })
+    a.link.hover?.(new MouseEvent('mousemove', { clientX: 5, clientY: 1 }), a.link.text)
+    expect(tips()).toHaveLength(1)
+    expect(tips()[0]?.dataset.paneLinkOwner).toBe('wZ4:p1')
+    b.link.leave?.(new MouseEvent('mouseleave'), b.link.text) // mouseleave 를 늦게 받은 남의 터미널
+    expect(tips()).toHaveLength(1)
+    a.link.leave?.(new MouseEvent('mouseleave'), a.link.text)
+    expect(tips()).toHaveLength(0)
+    for (const t of [a, b]) {
+      t.handle.dispose()
+      t.term.dispose()
+    }
+  })
+
+  it('L2 — 재평가가 던져도 잡아 둔 툴팁이 남지 않는다(걷히고, 다음 hover·leave 가 정상)', async () => {
+    release = setPaneLinkDirectory(directoryOf(new Set(['wZ3:p1'])))
+    publishLivePaneIds(['l2-reset'])
+    const a = await paneTerminal({
+      ownPaneId: 'wZ8:p1', // 다른 시험이 남긴 같은 소유 이름과 섞이지 않게
+      reevaluate: () => {
+        throw new Error('재평가 실패(합성)')
+      },
+    })
+    a.link.hover?.(new MouseEvent('mousemove', { clientX: 5, clientY: 1 }), a.link.text)
+    expect(tips()).toHaveLength(1)
+    expect(() => publishLivePaneIds(['wZ3:p1', 'l2-changed'])).toThrow('재평가 실패(합성)')
+    expect(tips()).toHaveLength(0)
+    a.link.hover?.(new MouseEvent('mousemove', { clientX: 5, clientY: 1 }), a.link.text)
+    expect(tips()).toHaveLength(1)
+    a.link.leave?.(new MouseEvent('mouseleave'), a.link.text)
+    expect(tips()).toHaveLength(0)
+    a.handle.dispose()
+    a.term.dispose()
   })
 })

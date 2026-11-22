@@ -229,11 +229,14 @@ export function registerPaneNameLinks(input: { term: Terminal; paneId: string; r
   const { term, paneId: ownPaneId, reevaluate } = input
   const onLiveChange = (): void => {
     heldTip = openTip?.dataset.paneLinkOwner === ownPaneId ? openTip : null
-    reevaluate()
-    // 다시 잡히지 않았다(이름이 빠졌거나 포인터 아래 링크가 바뀌었다) — 이제 걷는다.
-    if (heldTip !== null) {
-      heldTip = null
-      hidePaneLinkTooltip()
+    try {
+      reevaluate()
+    } finally {
+      // 다시 잡히지 않았다(이름이 빠졌거나 포인터 아래 링크가 바뀌었다) — 이제 걷는다. 재평가가 던져도 잡아 둔 툴팁이 남지 않게(r3 L2).
+      if (heldTip !== null) {
+        heldTip = null
+        hidePaneLinkTooltip()
+      }
     }
   }
   liveChangeListeners.add(onLiveChange)
@@ -250,7 +253,8 @@ export function registerPaneNameLinks(input: { term: Terminal; paneId: string; r
         hover: (event, text) => showPaneLinkTooltip({ event, paneId: text, ownerPaneId: ownPaneId }),
         leave: () => {
           if (heldTip !== null && heldTip === openTip) return // 재평가 중 — 다시 잡히는지 본 뒤 정한다
-          hidePaneLinkTooltip()
+          // 이 터미널이 띄운 툴팁만 걷는다 — dispose 와 같은 소유 비교(r3 L1).
+          if (openTip?.dataset.paneLinkOwner === ownPaneId) hidePaneLinkTooltip()
         },
       }))
       callback(links.length === 0 ? undefined : links)

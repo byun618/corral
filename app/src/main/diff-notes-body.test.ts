@@ -6,11 +6,20 @@ import { fixturePane, fixtureWorktree } from './mobile/list-fixture.js'
 import type { ScmDiffMode } from '../shared/scm.js'
 import type { AgentSessionRef } from '../shared/types.js'
 
-/** 본문의 글 칸을 되읽는다 — `"…"` 안의 `\\`·`\"`·`\n`·`\t` 이스케이프를 푼다. 왕복 시험용. */
+/** 본문의 글 칸을 되읽는다 — `"…"` 안의 `\\`·`\"`·`\n`·`\t`·`\u{hex}` 이스케이프를 왼쪽부터 한 번 훑어 푼다. 왕복 시험용. */
 function unquote(field: string): string {
   expect(field.startsWith('"') && field.endsWith('"')).toBe(true)
-  return field.slice(1, -1).replace(/\\(\\|"|n|t)/g, (_match, char: string) => (char === 'n' ? '\n' : char === 't' ? '\t' : char))
+  return field.slice(1, -1).replace(/\\(\\|"|n|t|u\{([0-9a-f]+)\})/g, (_match, char: string, hex: string | undefined) => (hex !== undefined ? String.fromCodePoint(parseInt(hex, 16)) : char === 'n' ? '\n' : char === 't' ? '\t' : char))
 }
+
+/** claude 2.1.296 정리 함수가 지우는 비가시 문자(리뷰 r3 `sanitize-probe.out` 실측 집합 + `k()` 범위) — 시험이 따로 적는다. */
+const CLAUDE_STRIPS: readonly (readonly [number, number])[] = [
+  [0xad, 0xad], [0x34f, 0x34f], [0x61c, 0x61c], [0x115f, 0x1160], [0x17b4, 0x17b5], [0x180b, 0x180f],
+  [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0x3164, 0x3164], [0xfe00, 0xfe0f], [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff0, 0xfffb],
+  [0x1107f, 0x1107f], [0x13430, 0x1343f], [0x16fe4, 0x16fe4], [0x1bca0, 0x1bca3], [0x1d173, 0x1d17a], [0xe0000, 0xe0fff],
+]
+/** claude 가 지울 문자의 코드 포인트(16진) 목록. */
+const strippable = (text: string): string[] => [...text].map((ch) => ch.codePointAt(0) ?? 0).filter((point) => CLAUDE_STRIPS.some(([from, to]) => point >= from && point <= to)).map((point) => point.toString(16))
 
 /** 본문 → 메모 블록(머리 다음부터 빈 줄로 나뉜 네 줄). */
 function blocks(body: string): { file: string; line: number; code: string; note: string }[] {
@@ -80,6 +89,45 @@ describe('본문 형식 (L9 · D9)', () => {
     expect(body).not.toContain('\t')
     expect(body).toContain('Code: "\\tconst s')
     expect(body).toContain('탭\\t$(rm')
+  })
+  it('비가시 문자(r3 C1) — claude 가 지우는 문자는 \\u{hex} 로 보이게 바꾼다(본문에 0) · 이모지 ZWJ 열·이모지 뒤 FE0F 는 그대로 · 되읽기 일치', () => {
+    const invisible = ['\u200b', 'a\u200cb', 'a\u200db', '\ufeff', '\u00ad', '\u200e', '\u200f', '\u2060', '\u3164', '\u115f', '\uffa0', '\u2028', '\u2029', '1\ufe0f', 'a\u{e0041}b', '\u202e', '\u034f']
+    const keep = ['👨\u200d👩\u200d👧', '❤\ufe0f', '👍🏽', 'a\u00a0b', 'e\u0301', '👩🏽\u200d💻', '🏳\ufe0f\u200d🌈']
+    const note = `앞 ${invisible.join(' · ')} | ${keep.join(' · ')} 끝`
+    const code = '\ufeffconst s = "a\u2028b" // \u200eRTL'
+    const body = formatNotesBody({ notes: [{ rel: 'docs/\u200b이름.md', line: 3, lineText: code, body: note }], against: ['base main(abc\u200b1234)', '인덱스\u2028둘'] })
+    // 예외 글을 빼고 나면 claude 가 지울 문자가 하나도 없다
+    expect(strippable(keep.reduce((rest, text) => rest.split(text).join(''), body))).toEqual([])
+    // 이스케이프 전 원문에는 있었다(양성 대조)
+    expect(strippable(note).length).toBeGreaterThan(15)
+    for (const text of keep) expect(body).toContain(text)
+    expect(body).toContain('\\u{200b}')
+    expect(body).toContain('\\u{2028}')
+    expect(body).toContain('\\u{feff}')
+    expect(body).toContain('1\\u{fe0f}')
+    // 머리(비교 기준)도 같은 규칙 · U+2028 은 줄바꿈으로 바꾸지 않는다
+    expect(body.split('\n')[0]).toBe('diff 리뷰 메모 1개 (비교 기준: base main(abc\\u{200b}1234), 인덱스\\u{2028}둘)')
+    expect(body.split('\n')).toHaveLength(6)
+    const [block] = blocks(body)
+    expect(block).toEqual({ file: 'docs/\u200b이름.md', line: 3, code: cleanBody(code), note: cleanBody(note) })
+    expect(cleanBody(body)).toBe(body)
+    expect(wellFormed(body)).toBe(true)
+  })
+  it('원문의 `\\u{200b}` 글자와 이스케이프는 구분된다 — `\\` 가 먼저 겹친다', () => {
+    const literal = 'x\\u{200b}y \u200b z\\'
+    const body = formatNotesBody({ notes: [{ rel: 'a', line: 1, lineText: 'c', body: literal }], against: [] })
+    expect(body).toContain('Note: "x\\\\u{200b}y \\u{200b} z\\\\"')
+    expect(blocks(body)[0]?.note).toBe(literal)
+  })
+  it('상한은 이스케이프로 늘어난 본문으로 잰다 — 원문 30000 B 의 ZWSP 10000 개 → 본문 8 B × 10000 → 막힘', () => {
+    const under = formatNotesBody({ notes: [{ rel: 'a', line: 1, lineText: 'c', body: '\u200b'.repeat(7000) }], against: [] })
+    const over = formatNotesBody({ notes: [{ rel: 'a', line: 1, lineText: 'c', body: '\u200b'.repeat(10000) }], against: [] })
+    expect(Buffer.byteLength('\u200b'.repeat(10000))).toBeLessThan(MAX_INPUT_BYTES)
+    expect(bodyTooLarge(under)).toBe(false)
+    expect(bodyTooLarge(over)).toBe(true)
+    expect(Buffer.byteLength(over)).toBeGreaterThan(80000)
+    // 확인 단계 글 = main 이 넣는 글 — main 의 재정리가 이스케이프 본문을 바꾸지 않는다
+    expect(cleanBody(under)).toBe(under)
   })
   it('메모 단 때 줄 내용은 상한에서 자른다', () => {
     const long = 'x'.repeat(LINE_TEXT_MAX + 50)

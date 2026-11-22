@@ -3,6 +3,7 @@
 // · 메모 대상 = 오른쪽이 작업 파일인 diff 모드 넷의 오른쪽 줄(00-analysis D1). 줄 번호가 에이전트가 여는 파일과 같다.
 // · 본문(D9) = 머리 한 줄 + 메모마다 `File:`/`Line:`/`Code:`/`Note:` 네 줄, 파일 경로 → 줄 순. 글 칸은 `"…"` 로 감싸고 안의 `\`·`"`·줄바꿈을
 //   이스케이프한다(orca `formatDiffComment` 와 같은 결) — 본문의 줄바꿈은 구조에만 있다. 탭도 `\t` 로 — claude 기록이 붙여 넣은 탭을 공백으로 바꿔 대조가 깨진다(최종 관문). 제어문자는 폰 지시와 같은 `cleanBody` 규칙.
+//   provider 가 정리하는 비가시 문자(ZWSP·BOM·U+2028 등)는 `\u{hex}` 로 — claude 는 그 문자를 지우면 제출하지 않고 입력창에 남긴다(r3 C1).
 // · 대상(D5) = 그 worktree **자기 workspace** 의 에이전트 pane(claude·codex·grok). 부모·main workspace 의 pane 은 그 worktree 행이 아니라 후보에 없다.
 //   세션 참조(`agentSession`)가 없으면 들어감을 확인할 수 없어 고를 수 없다.
 import type { ScmDiffMode } from './scm.js'
@@ -42,10 +43,65 @@ export function wellFormed(text: string): boolean {
  */
 export const DIFF_NOTES_LEAD = '아래에 붙여 넣은 diff 리뷰 메모를 읽고 각 파일·줄에 반영해 주세요:'
 
-/** 글 칸 — 제어문자를 지운 뒤 `"…"` 로 감싸고 `\`·`"`·줄바꿈·탭을 이스케이프한다(본문에 탭이 남지 않는다 — provider 가 탭을 바꿔 기록하는 일을 타지 않게). */
+/**
+ * claude(2.1.296) 가 입력에서 지우는 비가시 문자의 코드 포인트 범위 — 그 정리 함수(`k()`)를 따른다. C0·DEL·C1 은 `cleanBody` 가 먼저 지운다.
+ * 이것이 본문에 있으면 claude 는 지운 뒤 제출하지 않고 입력창에 남긴다(r3 C1) — 지우지 않고 보이는 글로 바꾼다.
+ */
+const INVISIBLE_RANGES: readonly (readonly [number, number])[] = [
+  [0xad, 0xad], [0x34f, 0x34f], [0x61c, 0x61c], [0x115f, 0x1160], [0x17b4, 0x17b5], [0x180b, 0x180f],
+  [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0x3164, 0x3164], [0xfe00, 0xfe0f], [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff0, 0xfffb],
+  [0x1107f, 0x1107f], [0x13430, 0x1343f], [0x16fe4, 0x16fe4], [0x1bca0, 0x1bca3], [0x1d173, 0x1d17a], [0xe0000, 0xe0fff],
+]
+const invisible = (ch: string): boolean => {
+  const point = ch.codePointAt(0) ?? 0
+  return INVISIBLE_RANGES.some(([from, to]) => point >= from && point <= to)
+}
+const PICTOGRAPHIC = /^\p{Extended_Pictographic}$/u
+const EMOJI = /^[\p{Emoji}\p{Extended_Pictographic}]$/u
+const ZWJ = '\u200d'
+
+/** ZWJ 앞에서 건너뛰는 글자 — 이모지 표시 선택자·피부색. */
+const emojiModifier = (ch: string | undefined): boolean => ch === '\ufe0f' || (ch !== undefined && /^[\u{1f3fb}-\u{1f3ff}]$/u.test(ch))
+const pictographic = (ch: string | undefined): boolean => ch !== undefined && PICTOGRAPHIC.test(ch)
+
+/**
+ * 비가시 문자 → `\u{hex}`(`\` 는 이미 겹쳐 원문 `\u{…}` 글자와 구분된다). claude 가 보존하는 둘은 그대로 둔다 —
+ * 그림 문자 사이 ZWJ(👨‍👩‍👧 — 앞 그림 문자 뒤에 FE0F·피부색이 끼어도) · Emoji(U+00A9 이상) 바로 뒤 FE0E/FE0F(❤️).
+ */
+function escapeInvisible(text: string): string {
+  const chars = [...text]
+  const kept: string[] = []
+  let lastHidden = false
+  chars.forEach((ch, index) => {
+    if (!invisible(ch)) {
+      kept.push(ch)
+      lastHidden = false
+      return
+    }
+    const previous = kept.at(-1)
+    let keep = false
+    if (ch === ZWJ) {
+      let base = previous
+      if (emojiModifier(base)) base = emojiModifier(kept.at(-2)) ? kept.at(-3) : kept.at(-2)
+      keep = previous !== undefined && previous !== ZWJ && pictographic(base) && pictographic(chars[index + 1])
+    } else if (ch === '\ufe0e' || ch === '\ufe0f') {
+      keep = !lastHidden && previous !== undefined && (previous.codePointAt(0) ?? 0) >= 0xa9 && EMOJI.test(previous)
+    }
+    if (keep) {
+      kept.push(ch)
+      lastHidden = true
+      return
+    }
+    kept.push(...`\\u{${(ch.codePointAt(0) ?? 0).toString(16)}}`)
+    lastHidden = false
+  })
+  return kept.join('')
+}
+
+/** 글 칸 — 제어문자를 지운 뒤 `"…"` 로 감싸고 `\`·`"`·줄바꿈·탭·비가시 문자를 이스케이프한다(provider 가 바꾸거나 지우는 글자가 본문에 남지 않게). */
 function quote(text: string): string {
   const clean = cleanBody(text).replace(LONE_SURROGATE, '\uFFFD')
-  return `"${clean.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t')}"`
+  return `"${escapeInvisible(clean.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t'))}"`
 }
 
 /** 경로 → 줄 순(코드 단위 비교 — 로캘에 따라 바뀌지 않는다). */
@@ -59,7 +115,7 @@ export function compareNotes(a: { rel: string; line: number }, b: { rel: string;
  * 돌려준 글은 이미 `cleanBody` 를 거쳤다 — 확인 단계에 보이는 글 = main 이 넣는 글.
  */
 export function formatNotesBody(input: { notes: readonly NoteForBody[]; against: readonly string[] }): string {
-  const against = [...new Set(input.against.map((text) => cleanBody(text).replace(/\n/g, ' ')))].sort()
+  const against = [...new Set(input.against.map((text) => escapeInvisible(cleanBody(text).replace(/\n/g, ' '))))].sort()
   const head = `diff 리뷰 메모 ${input.notes.length}개${against.length === 0 ? '' : ` (비교 기준: ${against.join(', ')})`}`
   const blocks = [...input.notes].sort(compareNotes).map((note) => [`File: ${quote(note.rel)}`, `Line: ${note.line}`, `Code: ${quote(clipLineText(note.lineText))}`, `Note: ${quote(note.body)}`].join('\n'))
   // well-formed 단언(리뷰 r1 A2) — 글 칸은 이미 짝 없는 서로게이트를 U+FFFD 로 바꿨다. 머리(비교 기준 글)까지 같은 규칙으로 닫는다.

@@ -39,6 +39,8 @@ function cardHeight(body: string): number {
 }
 
 type Editing = { line: number; draft: string }
+/** 사람이 연 차례 — `seq` 가 바뀔 때만 포커스(0 = 이 마운트에서 사람이 연 적 없음). `caretEnd` = 본문이 든 칸을 새로 열었다 — 캐럿을 끝으로(리뷰 r6 F6). */
+type FocusRequest = { seq: number; caretEnd: boolean }
 /**
  * 열려 있던 편집(줄·쓰던 글) — worktree·경로별, 렌더러 메모리만. 다른 탭을 눌렀다 오면 diff 탭이 다시 그려져(NoteLayer 새로 마운트)
  * 쓰던 글이 사라졌다(n1fix 격리 H-b) — 돌아오면 그 칸을 다시 연다. 저장·취소하면 지운다.
@@ -70,7 +72,12 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
    * 사람이 편집을 연 차례(「+」·「고치기」·nudge) — 이것이 바뀔 때만 메모 칸으로 포커스를 옮긴다(정정 r4). 0 = 이 마운트에서 사람이 연 적 없음:
    * 탭·worktree 전환 뒤 복원된 편집은 포커스를 가져가지 않는다 — 다른 영역 터미널에 치던 키가 메모 칸으로 가지 않게(리뷰 r5 M1).
    */
-  const [focusRequest, setFocusRequest] = useState(0)
+  const [focusRequest, setFocusRequest] = useState<FocusRequest>({ seq: 0, caretEnd: false })
+  /** 포커스를 이미 준 요청 차례 — zone 재구성으로 편집 칸이 다시 마운트돼도 같은 요청으로 포커스를 다시 가져가지 않는다(리뷰 r6 F2). */
+  const focusServed = useRef(0)
+  const requestFocus = (caretEnd: boolean): void => setFocusRequest((value) => ({ seq: value.seq + 1, caretEnd }))
+  const requestFocusRef = useRef(requestFocus)
+  requestFocusRef.current = requestFocus
   const notesRef = useRef(notes)
   notesRef.current = notes
   const editingRef = useRef(editing)
@@ -101,15 +108,17 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
       if (line === undefined || !gutter(event.target.type)) return
       // 저장하지 않은 글이 있는 편집을 다른 줄 누름이 버리지 않는다(리뷰 r1 A7) — 저장·취소한 뒤에 옮긴다.
       const current = editingRef.current
-      if (current !== null && current.line !== line && unsavedRef.current(current)) {
+      // 열려 있는 그 줄을 다시 눌렀다 — 쓰던 글을 저장본·빈 칸으로 덮지 않고 포커스만(리뷰 r6 F1 — 복원돼 포커스 없이 열린 편집 포함).
+      if (current !== null && current.line === line) return requestFocusRef.current(false)
+      if (current !== null && unsavedRef.current(current)) {
         // 버리지 않고, 쓰던 편집 칸으로 돌려보낸다(리뷰 r2 B3) — 포커스 + 잠깐 강조.
         setNudge((value) => value + 1)
-        setFocusRequest((value) => value + 1)
+        requestFocusRef.current(false)
         return
       }
       const existing = notesRef.current.find((note) => note.line === line)
       setEditing({ line, draft: existing?.body ?? '' })
-      setFocusRequest((value) => value + 1)
+      requestFocusRef.current(true)
     })
     const changed = editor.onDidChangeModelContent(() => {
       // setValue 가 hover 데코레이션도 버렸다 — 같은 줄에 머물러도 다음 이동에서 다시 건다(리뷰 r2 B2).
@@ -185,7 +194,7 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
   // 포커스도 안내도 안 보인다(리뷰 r5 M2: 탭 왕복 뒤 먼 줄의 쓰던 편집 + 다른 줄 「+」 → 조용히 거절로 보임).
   useEffect(() => {
     const current = editingRef.current
-    if (focusRequest === 0 || current === null) return
+    if (focusRequest.seq === 0 || current === null) return
     const count = editor.getModel()?.getLineCount() ?? 1
     const line = Math.min(current.line, count)
     const top = editor.getTopForLineNumber(line)
@@ -208,7 +217,7 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
   }
   const editorFor = (line: number): React.JSX.Element | null =>
     editing !== null && editing.line === line ? (
-      <NoteEditor line={line} draft={editing.draft} nudge={nudge} focusRequest={focusRequest} onDraft={(draft) => setEditing({ line, draft })} onSave={() => save(editing)} onCancel={() => setEditing(null)} />
+      <NoteEditor line={line} draft={editing.draft} nudge={nudge} focusRequest={focusRequest} focusServed={focusServed} onDraft={(draft) => setEditing({ line, draft })} onSave={() => save(editing)} onCancel={() => setEditing(null)} />
     ) : null
 
   const newHost = hosts.get('new')
@@ -219,7 +228,7 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
         if (dom === undefined) return null
         return createPortal(editorFor(note.line) ?? <NoteCard note={note} missing={note.line > lineCount} onEdit={() => {
             setEditing({ line: note.line, draft: note.body })
-            setFocusRequest((value) => value + 1)
+            requestFocus(true)
           }} onDelete={() => diffNotes.remove({ root, id: note.id })} />, dom, `n${note.id}`)
       })}
       {editing !== null && newHost !== undefined ? createPortal(editorFor(editing.line), newHost, 'new') : null}
@@ -243,23 +252,29 @@ function NoteCard({ note, missing, onEdit, onDelete }: { note: DiffNote; missing
   )
 }
 
-function NoteEditor({ line, draft, nudge, focusRequest, onDraft, onSave, onCancel }: { line: number; draft: string; nudge: number; focusRequest: number; onDraft: (draft: string) => void; onSave: () => void; onCancel: () => void }): React.JSX.Element {
+function NoteEditor({ line, draft, nudge, focusRequest, focusServed, onDraft, onSave, onCancel }: { line: number; draft: string; nudge: number; focusRequest: FocusRequest; focusServed: React.RefObject<number>; onDraft: (draft: string) => void; onSave: () => void; onCancel: () => void }): React.JSX.Element {
   const ref = useRef<HTMLTextAreaElement | null>(null)
   const [nudged] = useState(nudge)
   // Monaco 는 zone 을 붙일 때 숨기고(display none) 다음 그리기에서 보인다 — 포커스가 붙을 때까지 몇 프레임 다시 한다.
+  // 요청 하나에 포커스 한 번 — 붙었거나 다 시도한 뒤에 그 요청을 쓴 것으로 적는다(붙기 전에 재마운트되면 새 칸이 이어서 한다).
   useEffect(() => {
-    if (focusRequest === 0) return
+    const { seq, caretEnd } = focusRequest
+    if (seq === 0 || focusServed.current === seq) return
     let frame = 0
     let tries = 0
     const attempt = (): void => {
       const textarea = ref.current
       if (textarea === null) return
       textarea.focus()
-      if (document.activeElement !== textarea && (tries += 1) < FOCUS_TRIES) frame = requestAnimationFrame(attempt)
+      if (document.activeElement === textarea) {
+        focusServed.current = seq
+        if (caretEnd) textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+      } else if ((tries += 1) < FOCUS_TRIES) frame = requestAnimationFrame(attempt)
+      else focusServed.current = seq
     }
     attempt()
     return () => cancelAnimationFrame(frame)
-  }, [focusRequest])
+  }, [focusRequest, focusServed])
   const empty = draft.trim() === ''
   const held = nudge !== nudged
   return (

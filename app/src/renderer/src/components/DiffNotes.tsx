@@ -37,13 +37,23 @@ function cardHeight(body: string): number {
 }
 
 type Editing = { line: number; draft: string }
+/**
+ * 열려 있던 편집(줄·쓰던 글) — worktree·경로별, 렌더러 메모리만. 다른 탭을 눌렀다 오면 diff 탭이 다시 그려져(NoteLayer 새로 마운트)
+ * 쓰던 글이 사라졌다(n1fix 격리 H-b) — 돌아오면 그 칸을 다시 연다. 저장·취소하면 지운다.
+ */
+const openEditing = new Map<string, Editing>()
 
 /** 오른쪽 편집기 위의 메모 — 거터·카드·편집. */
 export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; root: string; rel: string; against: string }): React.JSX.Element {
   useDiffNotesVersion()
   const { editor, monaco } = host
   const notes = diffNotes.notesOf(root).filter((note) => note.rel === rel)
-  const [editing, setEditing] = useState<Editing | null>(null)
+  const editingKey = `${root}\0${rel}`
+  const [editing, setEditing] = useState<Editing | null>(() => openEditing.get(editingKey) ?? null)
+  useEffect(() => {
+    if (editing === null) openEditing.delete(editingKey)
+    else openEditing.set(editingKey, editing)
+  }, [editingKey, editing])
   const [lineCount, setLineCount] = useState(() => editor.getModel()?.getLineCount() ?? 1)
   const [hosts, setHosts] = useState<ReadonlyMap<string, HTMLElement>>(new Map())
   /** 모델 내용이 바뀐 차례 — `setValue` 는 모델 데코레이션을 모두 버리므로(Monaco `textModel` 「Destroy all my decorations」) 줄 수가 같아도 표지를 다시 세운다(리뷰 r1 A4). */
@@ -145,6 +155,18 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
     }
     // zoneSignature 가 zones 의 값 정체다.
   }, [editor, zoneSignature])
+
+  // zone 은 Monaco 가 가장 긴 줄 폭(scrollWidth)으로 늘린다 — 긴 줄이 있으면 카드·편집 칸 단추가 보이는 폭 밖으로 나가 사람이 못 누른다(n1fix 격리 L9).
+  // 보이는 글 칸 폭으로 묶는다(편집기 크기가 바뀌면 다시).
+  useEffect(() => {
+    const apply = (): void => {
+      const width = `${editor.getLayoutInfo().contentWidth}px`
+      for (const dom of hosts.values()) dom.style.setProperty('--diff-note-width', width)
+    }
+    apply()
+    const layout = editor.onDidLayoutChange(apply)
+    return () => layout.dispose()
+  }, [editor, hosts])
 
   /** 편집 중인 글이 저장된 메모(없으면 빈 글)와 다르다. */
   const unsaved = (current: Editing): boolean => {

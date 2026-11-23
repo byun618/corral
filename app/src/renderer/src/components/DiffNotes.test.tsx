@@ -13,9 +13,11 @@ import { emptyAgentState } from '../../../shared/agent-state.js'
 type Handler = (event: { target: { type: number; position: { lineNumber: number } | null } }) => void
 type Decoration = { options: { glyphMarginClassName?: string } }
 type ZoneOptions = { domNode: HTMLElement; suppressMouseDown?: boolean }
-const fake: { mouseDown: Handler[]; mouseMove: Handler[]; contentChanged: (() => void)[]; decorationSets: Decoration[][]; zones: Map<string, HTMLElement>; zoneSeq: number; zoneOptions: ZoneOptions[]; lateZones: boolean; lines: string[]; modified: number } = {
+const fake: { mouseDown: Handler[]; mouseMove: Handler[]; contentChanged: (() => void)[]; decorationSets: Decoration[][]; zones: Map<string, HTMLElement>; zoneSeq: number; zoneOptions: ZoneOptions[]; lateZones: boolean; contentWidth: number; layoutChanged: (() => void)[]; lines: string[]; modified: number } = {
   zoneOptions: [],
   lateZones: false,
+  contentWidth: 600,
+  layoutChanged: [],
   mouseDown: [],
   mouseMove: [],
   contentChanged: [],
@@ -40,6 +42,8 @@ const codeEditor = () => ({
     return { dispose: () => fake.mouseDown.splice(fake.mouseDown.indexOf(handler), 1) }
   },
   onDidChangeModelContent: (handler: () => void) => listen(fake.contentChanged, handler),
+  getLayoutInfo: () => ({ contentWidth: fake.contentWidth }),
+  onDidLayoutChange: (handler: () => void) => listen(fake.layoutChanged, handler),
   getModel: () => ({ getLineCount: () => fake.lines.length, getLineContent: (line: number) => fake.lines[line - 1] ?? '' }),
   changeViewZones: (run: (accessor: { addZone: (zone: ZoneOptions) => string; removeZone: (id: string) => void }) => void) =>
     run({
@@ -129,6 +133,8 @@ beforeEach(() => {
   fake.lines = ['line one', 'line two', 'line three']
   fake.zones.clear()
   fake.zoneOptions = []
+  fake.contentWidth = 600
+  fake.layoutChanged.length = 0
   fake.modified = 0
   sends = []
   subscriptions = 0
@@ -466,6 +472,33 @@ describe('N1 1회차 — 메모 칸 사람 클릭·첫 포커스', () => {
     await gutter(2)
     expect(fake.zoneOptions.length).toBeGreaterThan(0)
     expect(fake.zoneOptions.every((zone) => zone.suppressMouseDown !== true)).toBe(true)
+  })
+  it('다른 탭을 다녀와 diff 탭이 다시 그려져도 쓰던 편집 칸이 그대로 돌아온다 · 저장하면 다시 그려도 편집 없음', async () => {
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    await gutter(2)
+    await type('쓰던 글')
+    act(() => root.unmount())
+    root = createRoot(host)
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    expect(document.querySelector<HTMLTextAreaElement>('[data-diff-note-editor="2"] textarea')?.value).toBe('쓰던 글')
+    await click('[data-diff-note-save]')
+    act(() => root.unmount())
+    root = createRoot(host)
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    expect(document.querySelector('[data-diff-note-editor]')).toBeNull()
+    expect(document.querySelector('[data-diff-note="2"]')).not.toBeNull()
+  })
+  it('zone 은 보이는 글 칸 폭으로 묶인다(긴 줄이 있어도 단추가 보이게) · 편집기 크기가 바뀌면 다시', async () => {
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    await gutter(2)
+    const zone = document.querySelector('[data-diff-note-editor="2"]')?.closest('.diff-note-zone')
+    if (!(zone instanceof HTMLElement)) throw new Error('zone 없음')
+    expect(zone.style.getPropertyValue('--diff-note-width')).toBe('600px')
+    fake.contentWidth = 420
+    act(() => {
+      for (const handler of [...fake.layoutChanged]) handler()
+    })
+    expect(zone.style.getPropertyValue('--diff-note-width')).toBe('420px')
   })
   it('zone 이 늦게 문서에 붙어도 편집 칸이 첫 포커스를 받는다', async () => {
     fake.lateZones = true

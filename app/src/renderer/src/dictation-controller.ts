@@ -24,6 +24,7 @@ import {
   dictationErrorMessage,
   type DictationEvent,
   type DictationInsertResult,
+  type DictationPressKeys,
   type DictationStartResult,
 } from '../../shared/dictation.js'
 
@@ -72,7 +73,8 @@ export function focusedTerminalPane(active: Element | null): string | null {
 type Active = {
   sessionId: string
   paneId: string
-  startedAt: number
+  /** 듣기 시작(`ready`) 시각 — 탭 세션 60초의 기준점(r5 C-R5-3: 권한 창 대기는 세지 않는다). 듣기 전이면 null. */
+  listeningAt: number | null
   insertFailed: boolean
   heardSound: boolean
   zeroSince: number | null
@@ -131,12 +133,12 @@ export function createDictationController(deps: DictationControllerDeps) {
         return
     }
   }
-  /** 탭 세션의 60초 자동 정지 — 시계 기준(레벨 줄이 끊겨도 센다). 때가 되면 마지막 말소리를 다시 보고, 그 뒤 말소리가 있었으면 다시 잰다. */
+  /** 탭 세션의 60초 자동 정지 — 듣기 시작(`ready`)부터 시계 기준(레벨 줄이 끊겨도 센다). 때가 되면 마지막 말소리를 다시 보고, 그 뒤 말소리가 있었으면 다시 잰다. */
   const watchSilence = (session: Active): void => {
     const check = (): void => {
       session.cancelSilenceStop = null
-      if (active !== session || !session.tapped) return
-      const remaining = Math.max(session.startedAt, session.lastSpeechAt) + DICTATION_AUTO_STOP_SILENCE_MS - deps.now()
+      if (active !== session || !session.tapped || session.listeningAt === null) return
+      const remaining = Math.max(session.listeningAt, session.lastSpeechAt) + DICTATION_AUTO_STOP_SILENCE_MS - deps.now()
       if (remaining > 0) {
         session.cancelSilenceStop = deps.schedule(remaining, check)
         return
@@ -158,7 +160,7 @@ export function createDictationController(deps: DictationControllerDeps) {
     const session: Active = {
       sessionId: deps.newSessionId(),
       paneId,
-      startedAt: now,
+      listeningAt: null,
       insertFailed: false,
       heardSound: false,
       zeroSince: null,
@@ -244,7 +246,10 @@ export function createDictationController(deps: DictationControllerDeps) {
             deps.stop({ sessionId: session.sessionId })
             return
           }
+          session.listeningAt = deps.now()
           if (view.phase === 'starting') set({ phase: 'listening', paneId: session.paneId, partial: '', silent: false })
+          // 듣기 전에 탭으로 뗐으면 60초는 지금부터 잰다
+          if (session.tapped) watchSilence(session)
           return
         case 'partial':
           if (event.text !== '') session.lastSpeechAt = deps.now()
@@ -295,8 +300,7 @@ export function createDictationController(deps: DictationControllerDeps) {
 
 export type DictationController = ReturnType<typeof createDictationController>
 
-/** 받아쓰기를 연 누름의 키 — 뗌을 알아보는 데 쓴다. */
-export type DictationPressKeys = { code: string; meta: boolean; shift: boolean; control: boolean; alt: boolean }
+export type { DictationPressKeys }
 
 const MODIFIER_OF_KEY: Partial<Record<string, keyof Omit<DictationPressKeys, 'code'>>> = { Meta: 'meta', OS: 'meta', Shift: 'shift', Control: 'control', Alt: 'alt', AltGraph: 'alt' }
 

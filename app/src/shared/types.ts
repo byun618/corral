@@ -8,7 +8,7 @@ import type { MobilePairingResult, MobileStatus } from './mobile.js'
 import type { UsageSnapshot } from './usage.js'
 import type { AgentDetectionSnapshot } from './agent-detection.js'
 import type { WorktreeWorkLink } from './work-link.js'
-import type { DictationEvent, DictationInsertResult, DictationStartResult } from './dictation.js'
+import type { DictationEvent, DictationInsertResult, DictationPressKeys, DictationStartResult } from './dictation.js'
 import type { RelaunchAgentInput, StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
 import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
 import type { FileListInput, FileListResult } from './file-list.js'
@@ -1196,6 +1196,8 @@ export type CorralApi = {
   dictationOpenPrivacy: () => Promise<void>
   /** FINAL 한 번을 고정 대상 pane 에 — 붙은 탭이면 ⌘V 길, 아니면 guard `pane.send_text`(fix1 G1). 결과로 실패를 안다. */
   dictationInsert: (input: { sessionId: string; paneId: string; text: string }) => Promise<DictationInsertResult>
+  /** 받아쓰기 단축키를 키보드로 눌렀다 — main 이 그 글쇠의 뗀 뒤 반복을 메뉴 가속키보다 먼저 막는다(LIFE-834 r5 C-R5-2). */
+  dictationPressKeys: (keys: DictationPressKeys) => void
   onDictationEvent: (listener: (event: DictationEvent) => void) => () => void
   /** LIFE-527 — 창 크롬 상태(macOS 여부·전체화면·줌). 다른 창의 요청이면 null. */
   getWindowChrome: () => Promise<WindowChrome | null>

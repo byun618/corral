@@ -102,6 +102,34 @@ export const DICTATION_AUTO_STOP_SILENCE_MS = 60_000
 /** 60초 자동 정지가 보는 「말소리」 RMS 하한 — 조용한 방의 잡음(1e-3 대)은 말소리가 아니다. partial·FINAL 글이 오는 것도 말소리로 센다. */
 export const DICTATION_SPEECH_RMS = 0.01
 export const DICTATION_AUTO_STOPPED_MESSAGE = '60초 동안 소리가 없어 받아쓰기를 멈췄다'
+/** 받아쓰기를 연 누름의 키 — 뗌을 알아보고(렌더러), 뗀 뒤 남은 반복을 막는 데(main) 쓴다. */
+export type DictationPressKeys = { code: string; meta: boolean; shift: boolean; control: boolean; alt: boolean }
+
+/**
+ * main `before-input-event` 의 뗀 뒤 반복 막기(r5 C-R5-2) — 렌더러가 알린 누름의 글쇠가 그 누름의 수식 키 일부를 뗀 채 반복되면 막는다.
+ * 수식 키 하나를 뗀 순간 홀드는 끝났다(`dictationRelease`) — 남은 반복(⇧ 를 먼저 떼면 ⌘M)이 메뉴 가속키(기본 메뉴 Window ▸ Minimize)로 가지 않게 한다.
+ * 렌더러 `preventDefault` 는 메뉴 가속키보다 늦을 수 있어 여기(메뉴보다 먼저)서 막는다. 그 글쇠의 반복이 아닌 keyDown 이 오면 풀린다 — 평소 ⌘M 은 그대로(반복은 늘 같은 글쇠의 non-repeat keyDown 뒤에 온다).
+ */
+export function dictationRepeatGuard(input: { held: DictationPressKeys | null; keyDown: { code: string; isAutoRepeat: boolean; meta: boolean; shift: boolean; control: boolean; alt: boolean } }): { held: DictationPressKeys | null; swallow: boolean } {
+  const { held, keyDown } = input
+  if (held === null || keyDown.code !== held.code) return { held, swallow: false }
+  if (!keyDown.isAutoRepeat) return { held: null, swallow: false }
+  const sameModifiers = keyDown.meta === held.meta && keyDown.shift === held.shift && keyDown.control === held.control && keyDown.alt === held.alt
+  return { held, swallow: !sameModifiers }
+}
+
+/** IPC 로 온 누름 키 — 모양이 다르면 null(main 은 렌더러 값을 믿지 않는다). */
+export function parseDictationPressKeys(value: unknown): DictationPressKeys | null {
+  if (typeof value !== 'object' || value === null) return null
+  const code = Reflect.get(value, 'code')
+  const meta = Reflect.get(value, 'meta')
+  const shift = Reflect.get(value, 'shift')
+  const control = Reflect.get(value, 'control')
+  const alt = Reflect.get(value, 'alt')
+  if (typeof code !== 'string' || code === '' || typeof meta !== 'boolean' || typeof shift !== 'boolean' || typeof control !== 'boolean' || typeof alt !== 'boolean') return null
+  return { code, meta, shift, control, alt }
+}
+
 /** 시스템 설정 › 개인정보 보호 및 보안 › 마이크. */
 export const MIC_PRIVACY_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
 

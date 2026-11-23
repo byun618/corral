@@ -46,7 +46,7 @@ import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerO
 import type { FileListInput, FileListResult } from '../shared/file-list.js'
 import type { ContentSearchInput, ContentSearchResult } from '../shared/content-search.js'
 import type { ScmReadInput, ScmReadResult } from '../shared/scm.js'
-import type { DictationEvent, DictationInsertResult, DictationStartResult } from '../shared/dictation.js'
+import type { DictationEvent, DictationInsertResult, DictationPressKeys, DictationStartResult } from '../shared/dictation.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
 
 const EXPOSED = [
@@ -144,6 +144,7 @@ const EXPOSED = [
   'dictationCancel',
   'dictationOpenPrivacy',
   'dictationInsert',
+  'dictationPressKeys',
   'onDictationEvent',
   'getWindowChrome',
   'onWindowChrome',
@@ -426,6 +427,8 @@ const api: CorralApi = {
   dictationCancel: (input: { sessionId: string }) => ipcRenderer.send('corral:dictationCancel', input),
   dictationOpenPrivacy: (): Promise<void> => ipcRenderer.invoke('corral:dictationOpenPrivacy'),
   dictationInsert: (input: { sessionId: string; paneId: string; text: string }): Promise<DictationInsertResult> => ipcRenderer.invoke('corral:dictationInsert', input),
+  /** 받아쓰기 단축키를 키보드로 눌렀다 — main 이 그 글쇠의 뗀 뒤 반복을 메뉴 가속키보다 먼저 막는다(r5 C-R5-2). */
+  dictationPressKeys: (keys: DictationPressKeys) => ipcRenderer.send('corral:dictationPressKeys', keys),
   onDictationEvent: (listener: (event: DictationEvent) => void) => {
     const handler = (_event: unknown, dictationEvent: DictationEvent): void => listener(dictationEvent)
     ipcRenderer.on('corral:dictationEvent', handler)

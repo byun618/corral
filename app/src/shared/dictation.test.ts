@@ -1,6 +1,6 @@
 // LIFE-834 — 도우미 출력 줄 해석·OS 판정·사용자 문구.
 import { describe, expect, it } from 'vitest'
-import { dictationErrorMessage, dictationOsSupported, dictationTypedText, parseHelperLine } from './dictation.js'
+import { dictationErrorMessage, dictationOsSupported, dictationRepeatGuard, dictationTypedText, parseDictationPressKeys, parseHelperLine } from './dictation.js'
 
 describe('parseHelperLine — 도우미 규약', () => {
   it.each([
@@ -57,5 +57,44 @@ describe('dictationTypedText — 날 바이트 길(pane.send_text)에서 Enter·
     ['', ''],
   ])('%j → %j', (input, expected) => {
     expect(dictationTypedText(input)).toBe(expected)
+  })
+})
+
+describe('r5 C-R5-2 — dictationRepeatGuard: main 이 뗀 뒤 남은 글쇠 반복을 메뉴 가속키보다 먼저 막는다', () => {
+  const held = { code: 'KeyM', meta: true, shift: true, control: false, alt: false }
+  const keyDown = (input: { code?: string; isAutoRepeat: boolean; meta?: boolean; shift?: boolean }) => ({ code: input.code ?? 'KeyM', isAutoRepeat: input.isAutoRepeat, meta: input.meta ?? false, shift: input.shift ?? false, control: false, alt: false })
+  it('⇧ 를 먼저 떼고 남은 ⌘M 반복 — 막는다(Window ▸ Minimize 로 가지 않게), 계속 막는다', () => {
+    const first = dictationRepeatGuard({ held, keyDown: keyDown({ isAutoRepeat: true, meta: true }) })
+    expect(first).toEqual({ held, swallow: true })
+    expect(dictationRepeatGuard({ held: first.held, keyDown: keyDown({ isAutoRepeat: true, meta: true }) }).swallow).toBe(true)
+  })
+  it('⌘ 를 먼저 떼고 남은 ⇧M 반복 — 막는다', () => {
+    expect(dictationRepeatGuard({ held, keyDown: keyDown({ isAutoRepeat: true, shift: true }) }).swallow).toBe(true)
+  })
+  it('누름 그대로(⌘⇧M)의 반복 — 홀드 중이라 막지 않는다(렌더러가 홀드 길이를 잰다)', () => {
+    expect(dictationRepeatGuard({ held, keyDown: keyDown({ isAutoRepeat: true, meta: true, shift: true }) })).toEqual({ held, swallow: false })
+  })
+  it('받아쓰기가 아닐 때(알린 누름 없음) 평소 ⌘M — 첫 누름도 반복도 막지 않는다', () => {
+    expect(dictationRepeatGuard({ held: null, keyDown: keyDown({ isAutoRepeat: false, meta: true }) })).toEqual({ held: null, swallow: false })
+    expect(dictationRepeatGuard({ held: null, keyDown: keyDown({ isAutoRepeat: true, meta: true }) })).toEqual({ held: null, swallow: false })
+  })
+  it('그 글쇠의 새 누름(반복 아님)이 오면 풀린다 — 그 ⌘M 과 이어지는 반복은 평소대로', () => {
+    const fresh = dictationRepeatGuard({ held, keyDown: keyDown({ isAutoRepeat: false, meta: true }) })
+    expect(fresh).toEqual({ held: null, swallow: false })
+    expect(dictationRepeatGuard({ held: fresh.held, keyDown: keyDown({ isAutoRepeat: true, meta: true }) }).swallow).toBe(false)
+  })
+  it('다른 글쇠(Esc 등)의 누름·반복은 막지 않고 표지도 풀지 않는다', () => {
+    expect(dictationRepeatGuard({ held, keyDown: keyDown({ code: 'Escape', isAutoRepeat: false, meta: true }) })).toEqual({ held, swallow: false })
+    expect(dictationRepeatGuard({ held, keyDown: keyDown({ code: 'KeyA', isAutoRepeat: true, meta: true }) })).toEqual({ held, swallow: false })
+  })
+})
+
+describe('parseDictationPressKeys — IPC 로 온 누름 키', () => {
+  it('모양이 맞으면 그대로, 아니면 null', () => {
+    expect(parseDictationPressKeys({ code: 'KeyM', meta: true, shift: true, control: false, alt: false, extra: 1 })).toEqual({ code: 'KeyM', meta: true, shift: true, control: false, alt: false })
+    expect(parseDictationPressKeys({ code: '', meta: true, shift: true, control: false, alt: false })).toBeNull()
+    expect(parseDictationPressKeys({ code: 'KeyM', meta: 'yes', shift: true, control: false, alt: false })).toBeNull()
+    expect(parseDictationPressKeys(null)).toBeNull()
+    expect(parseDictationPressKeys('KeyM')).toBeNull()
   })
 })

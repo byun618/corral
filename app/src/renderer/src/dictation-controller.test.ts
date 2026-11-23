@@ -671,6 +671,22 @@ describe('fix4 F-1 — 홀드·탭(orca Auto): 대상·상태 표 보강 행마�
     expect(h.calls).toEqual(['start:s1', 'cancel:s1'])
     expect(h.controller.view.phase).toBe('idle')
   })
+  it('r5 C-R5-3 (Q1) — 탭 세션 60초는 듣기 시작(ready)부터 센다: ready 전 60초(권한 창 대기)는 자동 정지 아님, ready 뒤 60초 무음이면 정지', () => {
+    const h = harness()
+    h.controller.press('p1')
+    h.advance(80)
+    h.controller.release(true)
+    h.advance(DICTATION_AUTO_STOP_SILENCE_MS + 10_000)
+    expect(h.calls).toEqual(['start:s1'])
+    expect(h.notices).toEqual([])
+    expect(h.controller.view.phase).toBe('starting')
+    h.ready()
+    h.advance(DICTATION_AUTO_STOP_SILENCE_MS - 1)
+    expect(h.calls).toEqual(['start:s1'])
+    h.advance(1)
+    expect(h.calls).toEqual(['start:s1', 'stop:s1'])
+    expect(h.notices).toEqual([{ message: DICTATION_AUTO_STOPPED_MESSAGE, openPrivacy: false }])
+  })
 })
 
 describe('fix4 F-1 — dictationRelease: keyup 이 이 누름의 뗌인가', () => {

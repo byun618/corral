@@ -2,7 +2,7 @@
 //
 // · 요청은 「동작 이름 + 루트(누른 때) + 경로」 뿐이다 — git 인자는 main 이 동작마다 고정 문자열로 만든다(`main/scm-write.ts`).
 // · 행·그룹 단추가 보내는 경로는 여기 함수(`stageRequest`·`discardRequest`)가 변경 목록에서 만든다 — 이름 바뀜 unstage 는 원래 경로도 넘긴다(D4).
-// · K2(LIFE-831 push·pull·fetch)는 `ScmWriteInput` 에 동작을 더한다.
+// · K2(LIFE-831 push·pull·fetch)는 따로 요청형(`shared/scm-remote.ts`)을 두고 같은 루트 직렬 큐(`ScmWriter.enqueue`)를 쓴다.
 import { isPlainRel, type ScmChange, type ScmGroupId } from './scm.js'
 
 export type ScmWriteInput =

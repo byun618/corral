@@ -8,6 +8,8 @@
 // · 키보드는 탐색기와 같은 관례: ↑↓ Home End 이동 · ← 접기/부모 · → 펼치기 · Enter 열기(고정) · Space 열기(미리보기).
 // · 비교 기준(LIFE-830) — 머리 단추로 「작업 트리」 ↔ 「base 대비」(루트별, `scm.compare`). base 대비는 그룹 하나(merge-base ↔ 작업 트리 + 추적 안 함)와
 //   머리 아래 한 줄(base 이름 · 출처 · merge-base 짧은 해시 — 이름만 줄고 출처·해시는 안 준다)을 그린다. 목록·트리·정렬·접기·키보드·상한은 같은 장치.
+// · 원격(LIFE-831) — 머리 아래 한 줄(`data-scm-remote`): 브랜치 이름(줄어든다) · ↓behind ↑ahead(안 준다) · 가져오기·끌어오기·밀어넣기(upstream 없으면 「브랜치 게시」).
+//   진행 중이면 단추 셋 자리에 진행 표시 + 취소. 숫자의 출처는 카드·상태바와 같은 `worktree.gitStatus`(K7). 쓰기와 같이 base 대비·저장소 아님에서는 없다.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { GIT_DECORATION } from '../../../shared/explorer-git.js'
 import {
@@ -26,6 +28,8 @@ import {
   type ScmGroupId,
 } from '../../../shared/scm.js'
 import { discardRequest, stageRequest } from '../../../shared/scm-write.js'
+import { scmRemoteBusyLabel, scmRemoteLabel, type ScmRemoteAction } from '../../../shared/scm-remote.js'
+import type { GitStatusSummary } from '../../../shared/types.js'
 import type { ScmApi } from '../hooks/useScm.js'
 import { Codicon, FileIcon, type CodiconName } from './ExplorerIcons.js'
 import './scm.css'
@@ -123,8 +127,11 @@ export function ScmView({
   onChangeMode,
   focusToken,
   onOpen,
+  status = null,
 }: {
   scm: ScmApi
+  /** 활성 worktree 의 git 상태(카드·상태바와 같은 값 — 브랜치·upstream·ahead/behind). 없으면 원격 줄을 그리지 않는다(LIFE-831). */
+  status?: GitStatusSummary | null
   /** 활성 worktree 이름(머리 툴팁) — 없으면 null. */
   title: string | null
   mode: ScmViewMode
@@ -269,6 +276,13 @@ export function ScmView({
   }
   const showInput = writable && root !== null && !(scm.state !== null && scm.state.error !== null)
   const writeNotice = scm.write.notice
+  // 원격 — 요청의 루트는 누른 때 값(제약 8). push 단추는 upstream 이 없으면 「브랜치 게시」(main 이 다시 확인한다 — K2).
+  const showRemote = showInput && status !== null && status.error === null
+  const pushAction: ScmRemoteAction = status !== null && status.upstream !== null ? 'push' : 'publish'
+  const remote = (action: ScmRemoteAction): void => {
+    if (root === null || !writable || scm.remote !== null) return
+    void scm.runRemote({ action, root })
+  }
 
   const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
   const last = Math.min(rows.length, Math.ceil((scrollTop + height) / ROW_HEIGHT) + OVERSCAN)
@@ -337,6 +351,46 @@ export function ScmView({
               {base.info.mergeBase.slice(0, 7)}
             </span>
           </span>
+        </div>
+      ) : null}
+      {showRemote && status !== null ? (
+        <div className="scm-remote" data-scm-remote="" data-scm-remote-busy={scm.remote ?? undefined}>
+          <span className="scm-remote-branch" data-scm-branch={status.branch ?? ''} title={status.branch === null ? '분리된 HEAD' : status.upstream === null ? `${status.branch} (upstream 없음)` : `${status.branch} → ${status.upstream}`}>
+            {status.branch ?? '(분리된 HEAD)'}
+          </span>
+          {status.upstream !== null && status.ahead !== null && status.behind !== null ? (
+            <span className="scm-remote-ab" data-scm-behind={status.behind} data-scm-ahead={status.ahead} title={`뒤처짐 ${status.behind} · 앞섬 ${status.ahead}`}>
+              ↓{status.behind} ↑{status.ahead}
+            </span>
+          ) : null}
+          {scm.remote !== null ? (
+            <span className="scm-remote-tools">
+              <span className="scm-remote-progress" role="status" data-scm-remote-progress={scm.remote} title={scmRemoteBusyLabel(scm.remote)} aria-label={scmRemoteBusyLabel(scm.remote)}>
+                <Codicon name="loading" className="scm-spin" />
+              </span>
+              <button type="button" className="explorer-tool" data-scm-remote-cancel="" title="취소" aria-label={`${scmRemoteLabel(scm.remote)} 취소`} onClick={scm.cancelRemote}>
+                <Codicon name="stop-circle" />
+              </button>
+            </span>
+          ) : (
+            <span className="scm-remote-tools">
+              {(['fetch', 'pull'] as const).map((action) => (
+                <button key={action} type="button" className="explorer-tool" data-scm-remote-action={action} title={scmRemoteLabel(action)} aria-label={scmRemoteLabel(action)} onClick={() => remote(action)}>
+                  <Codicon name={action === 'fetch' ? 'repo-fetch' : 'repo-pull'} />
+                </button>
+              ))}
+              {pushAction === 'push' ? (
+                <button type="button" className="explorer-tool" data-scm-remote-action="push" title={scmRemoteLabel('push')} aria-label={scmRemoteLabel('push')} onClick={() => remote('push')}>
+                  <Codicon name="repo-push" />
+                </button>
+              ) : (
+                <button type="button" className="scm-publish" data-scm-remote-action="publish" title={scmRemoteLabel('publish')} onClick={() => remote('publish')}>
+                  <Codicon name="cloud-upload" />
+                  <span>{scmRemoteLabel('publish')}</span>
+                </button>
+              )}
+            </span>
+          )}
         </div>
       ) : null}
       {showInput ? (

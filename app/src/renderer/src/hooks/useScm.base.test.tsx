@@ -27,6 +27,8 @@ beforeEach(() => {
   Reflect.set(window, 'corral', {
     explorerWatch: async () => ({ ok: true }),
     explorerRefreshGit: () => {},
+    scmRemoteState: async () => ({ action: null }),
+    onScmRemoteEvent: () => () => {},
     onExplorerEvent: (next: (event: ExplorerPush) => void) => {
       listener = next
       return () => {}

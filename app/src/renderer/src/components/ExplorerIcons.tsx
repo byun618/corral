@@ -39,6 +39,13 @@ export const CODICON = {
   add: 0xea60,
   remove: 0xeb3b,
   discard: 0xeae2,
+  // LIFE-831 — 소스 제어 원격(가져오기·끌어오기·밀어넣기·브랜치 게시·진행·취소).
+  'repo-fetch': 0xec1d,
+  'repo-pull': 0xeb40,
+  'repo-push': 0xeb41,
+  'cloud-upload': 0xeac3,
+  loading: 0xeb19,
+  'stop-circle': 0xeba5,
 } as const
 
 export type CodiconName = keyof typeof CODICON

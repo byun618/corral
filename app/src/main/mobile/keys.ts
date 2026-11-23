@@ -3,6 +3,7 @@
 // 순수 함수만 둔다 — 시험이 provider 없이 돈다.
 import { createHash } from 'node:crypto'
 import type { SessionQuestion } from '../../shared/types.js'
+import { cleanBody, dropControls, MAX_INPUT_BYTES } from '../../shared/input-body.js'
 import type { MobileAgentKind } from './list.js'
 
 export const KEY = {
@@ -50,30 +51,8 @@ export const stopNeedsEmptyInput = (kind: MobileAgentKind): boolean => kind === 
 
 // --- 본문 정리 ------------------------------------------------------------------------------------
 
-/** 지시 본문 상한(UTF-8 바이트) — `terminal prompt` 의 `MAX_INPUT` 과 같다(P7). */
-export const MAX_INPUT_BYTES = 65536
-
-/**
- * 지시 본문 정리(P8 Z9ⓔ) — 본문은 herdr 가 붙여 넣기(bracketed paste)로 넣는다. 본문 안 제어 문자가 키로 작동하지 않게
- * **탭·줄바꿈 말고는 지운다**: C0(ESC `\x1b`·`\x03` 등)·DEL·C1(0x80–0x9f). `\r\n`·`\r` 은 `\n` 으로. 나머지 글자(한글·이모지·앞뒤 공백)는 그대로 —
- * 앞뒤 공백은 기록 대조가 쓰는 `normalizeBody` 가 잘라서 비교한다.
- */
-export function cleanBody(text: string): string {
-  return dropControls({ text: text.replace(/\r\n?/g, '\n'), keep: KEEP_IN_BODY })
-}
-
-const KEEP_IN_BODY: ReadonlySet<number> = new Set([0x09, 0x0a])
-
-/** C0(0x00–0x1f)·DEL·C1(0x7f–0x9f) 중 `keep` 밖을 지운다. */
-function dropControls(input: { text: string; keep: ReadonlySet<number> }): string {
-  let out = ''
-  for (const char of input.text) {
-    const code = char.codePointAt(0) ?? 0
-    const control = code <= 0x1f || (code >= 0x7f && code <= 0x9f)
-    if (!control || input.keep.has(code)) out += char
-  }
-  return out
-}
+// 지시 본문 상한·정리는 diff 메모 보내기(LIFE-832)와 같이 쓰도록 shared 로 옮겼다 — 규칙은 그대로다.
+export { cleanBody, MAX_INPUT_BYTES }
 
 /** 질문 직접 입력 정리 — 한 줄 글이어야 한다(Enter 가 제출이다). 줄바꿈·탭은 공백, 제어 문자는 지우고 앞뒤 공백을 자른다. */
 export function cleanAnswerText(text: string): string {

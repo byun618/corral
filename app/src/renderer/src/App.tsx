@@ -75,7 +75,8 @@ import { ScmView } from './components/ScmView.js'
 import { PrCommentsView } from './components/PrCommentsView.js'
 import { SessionHistoryView } from './components/SessionHistoryView.js'
 import { DiffView } from './components/DiffView.js'
-import { diffTabId, diffTitle, openOf, type ScmChange } from '../../shared/scm.js'
+import { discardNoteDraft } from './components/DiffNotes.js'
+import { diffTabId, diffTitle, openOf, parseDiffTabId, type ScmChange } from '../../shared/scm.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
 import { useFileDrag } from './hooks/useFileDrag.js'
@@ -1554,11 +1555,23 @@ export function App(): React.JSX.Element {
       tabIds: input.tabIds,
     })
   }
+  /**
+   * LIFE-832 정정 r4 — diff 탭을 닫으면(미리보기 교체로 밀려나도) 그 파일의 쓰던 메모 편집 보관을 버린다. 같은 파일의 다른 diff 탭
+   * (작업 트리·base 대비 — 메모를 같이 쓴다)이 남아 있으면 둔다. 탭·worktree 전환은 닫기가 아니라 보관한다.
+   */
+  const dropNoteDraft = (input: { worktreePath: string; tabId: string; keepRel?: string }): void => {
+    const target = parseDiffTabId(input.tabId)
+    if (target === null || target.rel === input.keepRel) return
+    const tree = layout.fileLayoutOf(input.worktreePath)
+    const others = tree === null ? [] : listGroups(tree.root).flatMap((group) => group.tabOrder).filter((tabId) => tabId !== input.tabId && parseDiffTabId(tabId)?.rel === target.rel)
+    if (others.length === 0) discardNoteDraft({ root: input.worktreePath, rel: target.rel })
+  }
   const closeFileNow = (input: { worktreePath: string; tabId: string }): void => {
     const { worktreePath, tabId } = input
     const kind = tabKindOf(tabId)
     // LIFE-683 — diff 탭은 문서가 없다. 닫기만(닫은 탭 기록 ⌘⇧T 는 파일 탭만 — 기록 형식 무변경).
     if (kind.kind === 'diff') {
+      dropNoteDraft({ worktreePath, tabId })
       noteFileClose({ worktreePath, tabIds: [tabId] })
       layout.closeFile({ tabId })
       return
@@ -1583,6 +1596,7 @@ export function App(): React.JSX.Element {
       rel: input.rel,
       preview: input.preview,
       onReplaced: (replaced) => {
+        dropNoteDraft({ worktreePath, tabId: replaced.tabId })
         // LIFE-683 — 밀려난 것이 diff 탭이면 문서·닫은 탭 기록이 없다.
         if (tabKindOf(replaced.tabId).kind !== 'file') return
         // 교체로 밀려난 미리보기 탭의 문서 — 수정된 미리보기는 고정돼 교체되지 않으므로(E1ⓓ) 여기 오는 것은 수정 없는 문서다.
@@ -1629,6 +1643,8 @@ export function App(): React.JSX.Element {
       preview: input.preview,
       tabId: diffTabId(opened.target),
       onReplaced: (replaced) => {
+        // 같은 파일의 다른 비교(작업 트리 ↔ base 대비)로 바뀐 미리보기는 같은 메모 줄이다 — 쓰던 편집을 둔다.
+        dropNoteDraft({ worktreePath, tabId: replaced.tabId, keepRel: opened.target.rel })
         if (tabKindOf(replaced.tabId).kind !== 'file') return
         const replacedDoc = getDoc(docKey(worktreePath, replaced.rel))
         if (replacedDoc !== undefined && !replacedDoc.dirty) disposeDoc(replacedDoc.key)
@@ -2626,6 +2642,8 @@ export function App(): React.JSX.Element {
             groupId={group.groupId}
             // LIFE-824 C8 — diff 본문을 눌러도 그 영역이 활성(base 누락).
             onActivate={() => activateGroup({ groupId: group.groupId, paneId: null })}
+            // LIFE-832 — 줄 메모·보내기. 대상 후보는 이 worktree 자기 workspace 의 에이전트 pane(상태 발행마다 다시 계산).
+            notes={{ worktree: activeWorktreeRow }}
           />
         ) : activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (
           <FileView

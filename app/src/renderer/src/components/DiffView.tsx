@@ -8,8 +8,13 @@
 // · Monaco 는 파일 탭과 같은 지연 로딩(`../editor/monaco.js` 동적 import)·같은 편집기 worker. 한쪽이라도 20 MB 를 넘으면 파일 탭과 같은 대용량 처리(fix r1 R1-10).
 // · 감시(fix r1 R1-01 · S8 정정 r1): 영역에 보이는 diff 탭(`watch`)은 그 루트 허브 구독을 잡는다 — 패널이 닫혔거나 상세 보기여도 git push(= 갱신 신호)가 온다.
 //   참조 셈(`explorer-watch-refs.ts`)이라 탐색기·소스 제어와 같은 루트면 한 벌이고, 탭이 안 보이면(탭 전환·닫음·작업 페이지·설정) 해제한다.
+// · 줄 메모(LIFE-832): 오른쪽이 작업 파일인 모드(`notesAllowed`)에서 `notes` 를 받으면 오른쪽 편집기에 메모 장치(`DiffNotes.tsx`)를 얹는다.
+//   diff 탭은 여전히 읽기 전용이다 — 메모는 편집기 내용이 아니라 view zone 이다. `notes` 가 없으면(시험·다른 자리) 장치도 구독도 없다.
 import { useEffect, useRef, useState } from 'react'
 import { diffTitle, sidesOf, type ScmBaseInfo, type ScmDiffTarget, type ScmSide } from '../../../shared/scm.js'
+import { notesAllowed } from '../../../shared/diff-notes.js'
+import type { WorktreeRow } from '../../../shared/types.js'
+import { confirmBatch, NoteLayer, NotesConfirm, NotesHeadControls, NotesResult, type ConfirmBatch, type NoteEditorHost } from './DiffNotes.js'
 import { LARGE_FILE_BYTES } from '../../../shared/file-view.js'
 import { acquireExplorerWatch } from '../explorer-watch-refs.js'
 import { Codicon } from './ExplorerIcons.js'
@@ -62,6 +67,7 @@ export function DiffView({
   onOpenFile,
   groupId,
   onActivate,
+  notes,
 }: {
   root: string
   target: ScmDiffTarget | null
@@ -72,6 +78,8 @@ export function DiffView({
   groupId?: string
   /** 본문을 누르면 이 영역을 활성으로 (LIFE-824 C8 — base 누락). */
   onActivate?: () => void
+  /** 줄 메모(LIFE-832) — 이 diff 의 worktree 행(대상 후보·보관 키). 없으면 메모 장치를 그리지 않는다. */
+  notes?: { worktree: WorktreeRow }
 }): React.JSX.Element {
   useEffect(() => {
     if (!watch) return
@@ -105,6 +113,10 @@ export function DiffView({
   const editable = contents !== null && notice === null
   const large = contents !== null && [contents.left, contents.right].some((side) => side !== null && side.kind === 'text' && side.size > LARGE_FILE_BYTES)
   const editorRef = useRef<{ kind: 'diff' | 'single'; dispose: () => void; update: (input: { left: string; right: string }) => void } | null>(null)
+  const notesOn = notes !== undefined && target !== null && notesAllowed(target.mode)
+  /** 메모를 얹을 오른쪽 편집기 — diff 편집기가 붙고 메모 모드일 때만. */
+  const [noteHost, setNoteHost] = useState<NoteEditorHost | null>(null)
+  const [confirm, setConfirm] = useState<ConfirmBatch | null>(null)
 
   // 편집기 만들기 — 대상·모양(diff/단일)이 바뀔 때만. 내용 갱신은 아래 효과.
   useEffect(() => {
@@ -140,6 +152,7 @@ export function DiffView({
         const original = model('', 'left')
         const modified = model('', 'right')
         editor.setModel({ original, modified })
+        if (notesOn) setNoteHost({ editor: editor.getModifiedEditor(), monaco: module.monaco })
         editorRef.current = {
           kind: 'diff',
           update: ({ left, right }) => {
@@ -160,11 +173,12 @@ export function DiffView({
     })
     return () => {
       disposed = true
+      setNoteHost(null)
       editorRef.current?.dispose()
       editorRef.current = null
       delete host.dataset.editorReady
     }
-  }, [targetKey, single, editable, large])
+  }, [targetKey, single, editable, large, notesOn])
 
   useEffect(() => {
     if (contents === null || editorRef.current === null) return
@@ -192,7 +206,9 @@ export function DiffView({
             파일 열기
           </button>
         )}
+        {notesOn && notes !== undefined ? <NotesHeadControls root={root} onSend={() => setConfirm(confirmBatch(root))} /> : null}
       </div>
+      {notesOn ? <NotesResult root={root} /> : null}
       {unchanged ? (
         <div className="scm-diff-notice" data-scm-diff-unchanged="">
           변경 없음 — 양쪽 내용이 같습니다.
@@ -215,6 +231,8 @@ export function DiffView({
       ) : (
         <div className="scm-diff-host" ref={hostRef} data-scm-diff-host="" />
       )}
+      {notesOn && noteHost !== null && notice === null ? <NoteLayer host={noteHost} root={root} rel={target.rel} against={leftLabel} /> : null}
+      {notesOn && notes !== undefined && confirm !== null ? <NotesConfirm root={root} worktree={notes.worktree} batch={confirm} onClose={() => setConfirm(null)} /> : null}
     </div>
   )
 }

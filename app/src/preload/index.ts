@@ -46,6 +46,7 @@ import type { ExplorerDrop, ExplorerDropRegistration, ExplorerOpInput, ExplorerO
 import type { FileListInput, FileListResult } from '../shared/file-list.js'
 import type { ContentSearchInput, ContentSearchResult } from '../shared/content-search.js'
 import type { ScmReadInput, ScmReadResult } from '../shared/scm.js'
+import { readDiffNotesState, type DiffNotesSendInput, type DiffNotesSendResult, type DiffNotesState } from '../shared/diff-notes.js'
 import type { ScmWriteInput, ScmWriteResult } from '../shared/scm-write.js'
 import type { ScmRemoteAction, ScmRemoteInput, ScmRemoteResult } from '../shared/scm-remote.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
@@ -117,6 +118,9 @@ const EXPOSED = [
   'scmRemoteState',
   'onScmRemoteEvent',
   'scmBaseMode',
+  'diffNotesSend',
+  'diffNotesCancel',
+  'onDiffNotesState',
   'onFileEvent',
   'writeFile',
   'fileDialog',
@@ -325,6 +329,19 @@ const api: CorralApi = {
   },
   // LIFE-830 — base 대비 켜기·끄기. ref 는 보내지 않는다(main 이 그 루트의 base 를 푼다).
   scmBaseMode: (input: { root: string; on: boolean }) => ipcRenderer.send('corral:scmBaseMode', input),
+  // LIFE-832 — diff 메모 보내기. main 이 모양·상한·대상을 다시 본다.
+  diffNotesSend: (input: DiffNotesSendInput): Promise<DiffNotesSendResult> => ipcRenderer.invoke('corral:diffNotesSend', input),
+  diffNotesCancel: (input: { requestId: string }) => ipcRenderer.send('corral:diffNotesCancel', input),
+  onDiffNotesState: (listener: (state: DiffNotesState) => void) => {
+    const handler = (_event: unknown, push: unknown): void => {
+      const state = readDiffNotesState(push)
+      if (state !== null) listener(state)
+    }
+    ipcRenderer.on('corral:diffNotesState', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:diffNotesState', handler)
+    }
+  },
   fileWatch: (input: { root: string; rels: string[] }): Promise<{ ok: boolean; count: number }> => ipcRenderer.invoke('corral:fileWatch', input),
   onFileEvent: (listener: (event: FileWatchPush) => void) => {
     const handler = (_event: unknown, push: FileWatchPush): void => listener(push)

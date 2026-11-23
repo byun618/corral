@@ -16,6 +16,7 @@ import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, Exp
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
 import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
 import type { ScmReadInput, ScmReadResult } from './scm.js'
+import type { DiffNotesSendInput, DiffNotesSendResult, DiffNotesState } from './diff-notes.js'
 import type { ScmWriteInput, ScmWriteResult } from './scm-write.js'
 import type { ScmRemoteAction, ScmRemoteInput, ScmRemoteResult } from './scm-remote.js'
 import type { PrBranchesResult, PrItemRefreshResult } from './pr-status.js'
@@ -1136,6 +1137,11 @@ export type CorralApi = {
   onScmRemoteEvent: (listener: (event: { root: string; action: ScmRemoteAction | null }) => void) => () => void
   /** 소스 제어 base 대비 켜기·끄기 (LIFE-830) — 켠 루트의 git push 에 `base` 가 실린다. ref 는 보내지 않는다. */
   scmBaseMode: (input: { root: string; on: boolean }) => void
+  /** diff 메모 보내기 (LIFE-832) — 확인 단계 본문 그대로 그 worktree 의 에이전트 pane 에. 결과는 `onDiffNotesState` 로 온다. */
+  diffNotesSend: (input: DiffNotesSendInput) => Promise<DiffNotesSendResult>
+  /** 대기 중인 보내기 취소(넣기 시작 전만). */
+  diffNotesCancel: (input: { requestId: string }) => void
+  onDiffNotesState: (listener: (state: DiffNotesState) => void) => () => void
   /** 열린 파일 탭 감시 집합(LIFE-590 E5) — 통째로 바꾼다. */
   fileWatch: (input: { root: string; rels: string[] }) => Promise<{ ok: boolean; count: number }>
   onFileEvent: (listener: (event: FileWatchPush) => void) => () => void

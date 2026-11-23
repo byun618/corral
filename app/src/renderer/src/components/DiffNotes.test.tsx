@@ -13,11 +13,14 @@ import { emptyAgentState } from '../../../shared/agent-state.js'
 type Handler = (event: { target: { type: number; position: { lineNumber: number } | null } }) => void
 type Decoration = { options: { glyphMarginClassName?: string } }
 type ZoneOptions = { domNode: HTMLElement; suppressMouseDown?: boolean }
-const fake: { mouseDown: Handler[]; mouseMove: Handler[]; contentChanged: (() => void)[]; decorationSets: Decoration[][]; zones: Map<string, HTMLElement>; zoneSeq: number; zoneOptions: ZoneOptions[]; lateZones: boolean; contentWidth: number; layoutChanged: (() => void)[]; lines: string[]; modified: number } = {
+const fake: { mouseDown: Handler[]; mouseMove: Handler[]; contentChanged: (() => void)[]; decorationSets: Decoration[][]; zones: Map<string, HTMLElement>; zoneSeq: number; zoneOptions: ZoneOptions[]; lateZones: boolean; contentWidth: number; layoutChanged: (() => void)[]; viewHeight: number; scrollTop: number; scrolls: number[]; lines: string[]; modified: number } = {
   zoneOptions: [],
   lateZones: false,
   contentWidth: 600,
   layoutChanged: [],
+  viewHeight: 1000,
+  scrollTop: 0,
+  scrolls: [],
   mouseDown: [],
   mouseMove: [],
   contentChanged: [],
@@ -42,7 +45,15 @@ const codeEditor = () => ({
     return { dispose: () => fake.mouseDown.splice(fake.mouseDown.indexOf(handler), 1) }
   },
   onDidChangeModelContent: (handler: () => void) => listen(fake.contentChanged, handler),
-  getLayoutInfo: () => ({ contentWidth: fake.contentWidth }),
+  getLayoutInfo: () => ({ contentWidth: fake.contentWidth, height: fake.viewHeight }),
+  // 줄 높이 18 고정(zone 높이는 세지 않는다 — 스크롤 판단 시험에는 충분)
+  getTopForLineNumber: (line: number) => (line - 1) * 18,
+  getScrollHeight: () => fake.lines.length * 18,
+  getScrollTop: () => fake.scrollTop,
+  setScrollTop: (value: number) => {
+    fake.scrollTop = value
+    fake.scrolls.push(value)
+  },
   onDidLayoutChange: (handler: () => void) => listen(fake.layoutChanged, handler),
   getModel: () => ({ getLineCount: () => fake.lines.length, getLineContent: (line: number) => fake.lines[line - 1] ?? '' }),
   changeViewZones: (run: (accessor: { addZone: (zone: ZoneOptions) => string; removeZone: (id: string) => void }) => void) =>
@@ -80,6 +91,7 @@ vi.mock('../editor/monaco.js', () => ({
 
 const { DiffView } = await import('./DiffView.js')
 const { diffNotes } = await import('../diff-notes-store.js')
+const { discardNoteDraft } = await import('./DiffNotes.js')
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -135,6 +147,9 @@ beforeEach(() => {
   fake.zoneOptions = []
   fake.contentWidth = 600
   fake.layoutChanged.length = 0
+  fake.viewHeight = 1000
+  fake.scrollTop = 0
+  fake.scrolls = []
   fake.modified = 0
   sends = []
   subscriptions = 0
@@ -506,5 +521,147 @@ describe('N1 1회차 — 메모 칸 사람 클릭·첫 포커스', () => {
     await gutter(2)
     for (let i = 0; i < 4; i += 1) await act(async () => await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
     expect(document.activeElement).toBe(document.querySelector('[data-diff-note-editor="2"] textarea'))
+  })
+})
+
+describe('정정 r4 — 쓰던 편집 보관·복원·포커스 (리뷰 r5 E1·E2·E4·E6)', () => {
+  const A = { target: { mode: 'wt' as const, rel: 'a.ts', orig: null } }
+  const remount = async (input = A): Promise<void> => {
+    act(() => root.unmount())
+    root = createRoot(host)
+    await render(input)
+  }
+  const area = (line: number): HTMLTextAreaElement | null => document.querySelector<HTMLTextAreaElement>(`[data-diff-note-editor="${line}"] textarea`)
+  const esc = (): void => {
+    act(() => {
+      area(2)?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+  }
+  it('E1 복원 마운트는 포커스를 옮기지 않는다 — 다른 입력에 있던 포커스 그대로 · 쓰던 글은 그대로 열림', async () => {
+    await render(A)
+    await gutter(2)
+    expect(document.activeElement).toBe(area(2))
+    await type('쓰던 글')
+    act(() => root.unmount())
+    const other = document.createElement('input')
+    document.body.append(other)
+    other.focus()
+    root = createRoot(host)
+    await render(A)
+    for (let i = 0; i < 4; i += 1) await act(async () => await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+    expect(area(2)?.value).toBe('쓰던 글')
+    expect(document.activeElement).toBe(other)
+    other.remove()
+  })
+  it('E1 복원 뒤 다른 줄 「+」(nudge) 는 사람이 연 것 — 쓰던 칸으로 포커스 + 안내', async () => {
+    await render(A)
+    await gutter(2)
+    await type('쓰던 글')
+    const other = document.createElement('input')
+    document.body.append(other)
+    act(() => root.unmount())
+    other.focus()
+    root = createRoot(host)
+    await render(A)
+    await gutter(3)
+    expect(document.activeElement).toBe(area(2))
+    expect(document.querySelector('[data-diff-note-held]')).not.toBeNull()
+    other.remove()
+  })
+  it('E2 사람이 연 편집의 줄이 화면 밖이면 그 줄로 스크롤한 뒤 포커스 — 복원 마운트는 스크롤하지 않는다', async () => {
+    fake.lines = Array.from({ length: 100 }, (_, index) => `line ${index + 1}`)
+    fake.viewHeight = 200
+    await render(A)
+    await gutter(80)
+    expect(fake.scrolls).toEqual([79 * 18 - 40])
+    await type('먼 줄 쓰던 글')
+    fake.scrollTop = 0
+    fake.scrolls = []
+    await remount()
+    expect(area(80)?.value).toBe('먼 줄 쓰던 글')
+    expect(fake.scrolls).toEqual([])
+    // 위쪽 줄 「+」 → 거절되고(nudge) 먼 줄로 스크롤 · 쓰던 칸 포커스
+    await gutter(3)
+    expect(fake.scrolls).toEqual([79 * 18 - 40])
+    expect(document.activeElement).toBe(area(80))
+    expect(area(3)).toBeNull()
+  })
+  it('E2 보이는 줄이면 스크롤하지 않는다', async () => {
+    await render(A)
+    await gutter(2)
+    expect(fake.scrolls).toEqual([])
+  })
+  it('E4 그 diff 탭 닫기 = 보관 버림 — 다시 열면 쓰던 글 없음', async () => {
+    await render(A)
+    await gutter(2)
+    await type('버릴 글')
+    act(() => root.unmount())
+    discardNoteDraft({ root: worktreePath, rel: 'a.ts' })
+    root = createRoot(host)
+    await render(A)
+    expect(document.querySelector('[data-diff-note-editor]')).toBeNull()
+  })
+  it('E6 취소 단추·Esc 뒤 재마운트하면 편집 없음', async () => {
+    await render(A)
+    await gutter(2)
+    await type('취소할 글')
+    await click('[data-diff-note-cancel]')
+    await remount()
+    expect(document.querySelector('[data-diff-note-editor]')).toBeNull()
+    await gutter(2)
+    await type('Esc 할 글')
+    esc()
+    await flush()
+    expect(document.querySelector('[data-diff-note-editor]')).toBeNull()
+    await remount()
+    expect(document.querySelector('[data-diff-note-editor]')).toBeNull()
+  })
+  it('E6 키 분리 — 다른 파일·다른 worktree 의 diff 에는 쓰던 편집이 안 열린다', async () => {
+    await render(A)
+    await gutter(2)
+    await type('a.ts 쓰던 글')
+    await remount({ target: { mode: 'wt', rel: 'b.ts', orig: null } })
+    expect(document.querySelector('[data-diff-note-editor]')).toBeNull()
+    const own = worktreePath
+    worktreePath = `${own}-other`
+    await remount()
+    expect(document.querySelector('[data-diff-note-editor]')).toBeNull()
+    worktreePath = own
+    await remount()
+    expect(area(2)?.value).toBe('a.ts 쓰던 글')
+  })
+  it('E6 고치기 중 복원 — 카드 자리 편집이 고친 글 그대로 다시 열린다(포커스 안 옮김)', async () => {
+    await render(A)
+    await gutter(2)
+    await type('원래 글')
+    await click('[data-diff-note-save]')
+    await click('[data-diff-note="2"] [data-diff-note-edit]')
+    await type('고치던 글')
+    const other = document.createElement('input')
+    document.body.append(other)
+    act(() => root.unmount())
+    other.focus()
+    root = createRoot(host)
+    await render(A)
+    expect(area(2)?.value).toBe('고치던 글')
+    expect(document.querySelector('[data-diff-note="2"]')).toBeNull()
+    expect(document.activeElement).toBe(other)
+    other.remove()
+  })
+  it('E6 보관 중 그 줄 메모가 밖에서 지워지면 — 쓰던 글은 새 줄 편집으로 열린다(카드 없음)', async () => {
+    await render(A)
+    await gutter(2)
+    await type('원래 글')
+    await click('[data-diff-note-save]')
+    await click('[data-diff-note="2"] [data-diff-note-edit]')
+    await type('고치던 글')
+    act(() => root.unmount())
+    const note = diffNotes.notesOf(worktreePath).find((row) => row.line === 2)
+    if (note === undefined) throw new Error('메모 없음')
+    diffNotes.remove({ root: worktreePath, id: note.id })
+    root = createRoot(host)
+    await render(A)
+    expect(area(2)?.value).toBe('고치던 글')
+    expect(document.querySelector('[data-diff-note="2"]')).toBeNull()
   })
 })

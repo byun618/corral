@@ -27,6 +27,8 @@ const CARD_CHARS = 90
 const LINE_PX = 18
 /** 편집 칸 첫 포커스를 다시 해 보는 프레임 수 — zone 이 보이는 데 한두 프레임이면 된다. */
 const FOCUS_TRIES = 10
+/** 화면 밖 편집 줄로 스크롤할 때 그 줄 위에 남기는 여백. */
+const REVEAL_MARGIN_PX = 40
 
 /** 카드 둘레 — zone 여백(위아래 4+4) + 카드 안 여백(6+6)·테두리(2) + 머리 줄(20) + 머리·본문 사이(4). E1 캡처에서 이보다 작게 잡아 본문 스크롤이 생겼다. */
 const CARD_CHROME = 46
@@ -42,6 +44,10 @@ type Editing = { line: number; draft: string }
  * 쓰던 글이 사라졌다(n1fix 격리 H-b) — 돌아오면 그 칸을 다시 연다. 저장·취소하면 지운다.
  */
 const openEditing = new Map<string, Editing>()
+/** 그 diff 탭을 닫았다(미리보기 교체로 밀려남 포함) — 그 파일의 쓰던 편집 보관을 버린다(정정 r4). 탭 전환·worktree 전환은 닫기가 아니다. */
+export function discardNoteDraft(input: { root: string; rel: string }): void {
+  openEditing.delete(`${input.root}\0${input.rel}`)
+}
 
 /** 오른쪽 편집기 위의 메모 — 거터·카드·편집. */
 export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; root: string; rel: string; against: string }): React.JSX.Element {
@@ -60,6 +66,11 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
   const [contentVersion, setContentVersion] = useState(0)
   /** 저장 안 한 편집이 있는데 다른 줄을 눌렀다 — 편집 칸이 포커스를 받고 안내를 보인다(리뷰 r2 B3). */
   const [nudge, setNudge] = useState(0)
+  /**
+   * 사람이 편집을 연 차례(「+」·「고치기」·nudge) — 이것이 바뀔 때만 메모 칸으로 포커스를 옮긴다(정정 r4). 0 = 이 마운트에서 사람이 연 적 없음:
+   * 탭·worktree 전환 뒤 복원된 편집은 포커스를 가져가지 않는다 — 다른 영역 터미널에 치던 키가 메모 칸으로 가지 않게(리뷰 r5 M1).
+   */
+  const [focusRequest, setFocusRequest] = useState(0)
   const notesRef = useRef(notes)
   notesRef.current = notes
   const editingRef = useRef(editing)
@@ -93,10 +104,12 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
       if (current !== null && current.line !== line && unsavedRef.current(current)) {
         // 버리지 않고, 쓰던 편집 칸으로 돌려보낸다(리뷰 r2 B3) — 포커스 + 잠깐 강조.
         setNudge((value) => value + 1)
+        setFocusRequest((value) => value + 1)
         return
       }
       const existing = notesRef.current.find((note) => note.line === line)
       setEditing({ line, draft: existing?.body ?? '' })
+      setFocusRequest((value) => value + 1)
     })
     const changed = editor.onDidChangeModelContent(() => {
       // setValue 가 hover 데코레이션도 버렸다 — 같은 줄에 머물러도 다음 이동에서 다시 건다(리뷰 r2 B2).
@@ -168,6 +181,20 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
     return () => layout.dispose()
   }, [editor, hosts])
 
+  // 사람이 연 편집의 줄(과 그 아래 zone)이 화면 밖이면 먼저 그 줄로 스크롤한다 — Monaco 는 뷰포트 밖 zone 을 display none 으로 두어
+  // 포커스도 안내도 안 보인다(리뷰 r5 M2: 탭 왕복 뒤 먼 줄의 쓰던 편집 + 다른 줄 「+」 → 조용히 거절로 보임).
+  useEffect(() => {
+    const current = editingRef.current
+    if (focusRequest === 0 || current === null) return
+    const count = editor.getModel()?.getLineCount() ?? 1
+    const line = Math.min(current.line, count)
+    const top = editor.getTopForLineNumber(line)
+    const bottom = line < count ? editor.getTopForLineNumber(line + 1) : editor.getScrollHeight()
+    const scrollTop = editor.getScrollTop()
+    if (top >= scrollTop && bottom <= scrollTop + editor.getLayoutInfo().height) return
+    editor.setScrollTop(Math.max(0, top - REVEAL_MARGIN_PX))
+  }, [editor, focusRequest])
+
   /** 편집 중인 글이 저장된 메모(없으면 빈 글)와 다르다. */
   const unsaved = (current: Editing): boolean => {
     const existing = notesRef.current.find((note) => note.line === current.line)
@@ -181,7 +208,7 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
   }
   const editorFor = (line: number): React.JSX.Element | null =>
     editing !== null && editing.line === line ? (
-      <NoteEditor line={line} draft={editing.draft} nudge={nudge} onDraft={(draft) => setEditing({ line, draft })} onSave={() => save(editing)} onCancel={() => setEditing(null)} />
+      <NoteEditor line={line} draft={editing.draft} nudge={nudge} focusRequest={focusRequest} onDraft={(draft) => setEditing({ line, draft })} onSave={() => save(editing)} onCancel={() => setEditing(null)} />
     ) : null
 
   const newHost = hosts.get('new')
@@ -190,7 +217,10 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
       {notes.map((note) => {
         const dom = hosts.get(`n${note.id}`)
         if (dom === undefined) return null
-        return createPortal(editorFor(note.line) ?? <NoteCard note={note} missing={note.line > lineCount} onEdit={() => setEditing({ line: note.line, draft: note.body })} onDelete={() => diffNotes.remove({ root, id: note.id })} />, dom, `n${note.id}`)
+        return createPortal(editorFor(note.line) ?? <NoteCard note={note} missing={note.line > lineCount} onEdit={() => {
+            setEditing({ line: note.line, draft: note.body })
+            setFocusRequest((value) => value + 1)
+          }} onDelete={() => diffNotes.remove({ root, id: note.id })} />, dom, `n${note.id}`)
       })}
       {editing !== null && newHost !== undefined ? createPortal(editorFor(editing.line), newHost, 'new') : null}
     </>
@@ -213,11 +243,12 @@ function NoteCard({ note, missing, onEdit, onDelete }: { note: DiffNote; missing
   )
 }
 
-function NoteEditor({ line, draft, nudge, onDraft, onSave, onCancel }: { line: number; draft: string; nudge: number; onDraft: (draft: string) => void; onSave: () => void; onCancel: () => void }): React.JSX.Element {
+function NoteEditor({ line, draft, nudge, focusRequest, onDraft, onSave, onCancel }: { line: number; draft: string; nudge: number; focusRequest: number; onDraft: (draft: string) => void; onSave: () => void; onCancel: () => void }): React.JSX.Element {
   const ref = useRef<HTMLTextAreaElement | null>(null)
   const [nudged] = useState(nudge)
   // Monaco 는 zone 을 붙일 때 숨기고(display none) 다음 그리기에서 보인다 — 포커스가 붙을 때까지 몇 프레임 다시 한다.
   useEffect(() => {
+    if (focusRequest === 0) return
     let frame = 0
     let tries = 0
     const attempt = (): void => {
@@ -228,7 +259,7 @@ function NoteEditor({ line, draft, nudge, onDraft, onSave, onCancel }: { line: n
     }
     attempt()
     return () => cancelAnimationFrame(frame)
-  }, [nudge])
+  }, [focusRequest])
   const empty = draft.trim() === ''
   const held = nudge !== nudged
   return (

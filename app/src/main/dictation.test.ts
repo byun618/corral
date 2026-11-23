@@ -5,8 +5,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { DICTATION_STOP_TIMEOUT_MS, type DictationEvent } from '../shared/dictation.js'
-import { attachDictationNavigationCleanup, createDictationInserter, createDictationManager, createDictationService, dictationHelperPath, type DictationChild, type DictationDeps } from './dictation.js'
+import { DICTATION_PRESS_KEYS_CHANNEL, DICTATION_STOP_TIMEOUT_MS, type DictationEvent } from '../shared/dictation.js'
+import { attachDictationNavigationCleanup, createDictationInserter, createDictationRepeatGuard, createDictationManager, createDictationService, dictationHelperPath, type DictationChild, type DictationDeps } from './dictation.js'
 
 class FakeChild extends EventEmitter {
   pid = 4242
@@ -400,5 +400,79 @@ describe('fix3 R3-3 — 끝난 세션의 넣기 큐 표지를 지운다', () => 
       inserter.endSession(id)
     }
     expect(inserter.trackedSessions()).toBe(0)
+  })
+})
+
+describe('fix7 R6-1 — ⌘M 가드 배선(production 조립 `createDictationRepeatGuard`): 알림 → 뗀 뒤 반복 막기 → 새 누름 풀림 → 로드 시작 해제', () => {
+  type Ipc = { sender: string }
+  function wired(input: { recording?: boolean } = {}) {
+    const ipc = new EventEmitter()
+    const webContents = new EventEmitter()
+    const logs: string[] = []
+    const guard = createDictationRepeatGuard({ log: (event) => logs.push(event) })
+    guard.registerIpc<Ipc>({ ipc: { on: (channel, listener) => ipc.on(channel, listener) }, fromOurWindow: (event) => event.sender === 'ours' })
+    guard.attach({
+      onDidStartLoading: (listener) => webContents.on('did-start-loading', listener),
+      onBeforeInput: (listener) => webContents.on('before-input-event', listener),
+      recording: () => input.recording === true,
+    })
+    const pressKeys = { code: 'KeyM', meta: true, shift: true, control: false, alt: false }
+    /** keyDown 하나를 흘리고 막혔나(preventDefault)를 돌려준다. */
+    const keyDown = (keys: { code?: string; isAutoRepeat: boolean; meta: boolean; shift: boolean; alt?: boolean; type?: string }): boolean => {
+      let prevented = false
+      webContents.emit('before-input-event', { preventDefault: () => (prevented = true) }, { type: keys.type ?? 'keyDown', code: keys.code ?? 'KeyM', isAutoRepeat: keys.isAutoRepeat, meta: keys.meta, shift: keys.shift, control: false, alt: keys.alt ?? false })
+      return prevented
+    }
+    return { ipc, webContents, logs, pressKeys, keyDown, press: (sender = 'ours') => ipc.emit(DICTATION_PRESS_KEYS_CHANNEL, { sender }, pressKeys) }
+  }
+  it('렌더러가 알린 누름 뒤 ⇧ 를 먼저 뗀 ⌘M 반복은 막는다(계속) — 로그를 남긴다', () => {
+    const h = wired()
+    h.press()
+    expect([h.keyDown({ isAutoRepeat: true, meta: true, shift: false }), h.keyDown({ isAutoRepeat: true, meta: true, shift: false })]).toEqual([true, true])
+    expect(h.logs).toEqual(['dictation.repeat.swallowed', 'dictation.repeat.swallowed'])
+  })
+  it('알림이 없으면(받아쓰기 아님) 평소 ⌘M — 첫 누름도 반복도 막지 않는다', () => {
+    const h = wired()
+    expect([h.keyDown({ isAutoRepeat: false, meta: true, shift: false }), h.keyDown({ isAutoRepeat: true, meta: true, shift: false })]).toEqual([false, false])
+  })
+  it('다른 창(fromOurWindow 거짓)의 알림은 받지 않는다', () => {
+    const h = wired()
+    h.press('other')
+    expect(h.keyDown({ isAutoRepeat: true, meta: true, shift: false })).toBe(false)
+  })
+  it('그 글쇠의 새 누름(반복 아님)이 오면 풀린다 — 그 뒤 ⌘M 반복은 평소대로', () => {
+    const h = wired()
+    h.press()
+    expect(h.keyDown({ isAutoRepeat: false, meta: true, shift: false })).toBe(false)
+    expect(h.keyDown({ isAutoRepeat: true, meta: true, shift: false })).toBe(false)
+  })
+  it('새 문서를 싣기 시작하면(did-start-loading) 놓는다', () => {
+    const h = wired()
+    h.press()
+    h.webContents.emit('did-start-loading')
+    expect(h.keyDown({ isAutoRepeat: true, meta: true, shift: false })).toBe(false)
+  })
+  it('단축키 녹화 중·keyUp 은 손대지 않는다', () => {
+    const recording = wired({ recording: true })
+    recording.press()
+    expect(recording.keyDown({ isAutoRepeat: true, meta: true, shift: false })).toBe(false)
+    const keyUp = wired()
+    keyUp.press()
+    expect(keyUp.keyDown({ type: 'keyUp', isAutoRepeat: false, meta: true, shift: false })).toBe(false)
+  })
+  it('R6-2 — 수식 키를 더한 반복(⌘⇧M 홀드 중 ⌥)은 막지 않는다(홀드가 살아 있다 — 막으면 keyUp 이 사라진다)', () => {
+    const h = wired()
+    h.press()
+    expect(h.keyDown({ isAutoRepeat: true, meta: true, shift: true, alt: true })).toBe(false)
+  })
+  it('index.ts 가 이 조립을 쓴다 — IPC 한 번·창마다 attach(배선 줄 존재), 옛 직접 배선 없음', () => {
+    const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'index.ts'), 'utf8')
+    expect(source).toContain('const dictationRepeatGuard = createDictationRepeatGuard({')
+    expect(source).toContain('dictationRepeatGuard.registerIpc({ ipc: ipcMain, fromOurWindow })')
+    expect(source).toContain("onDidStartLoading: (listener) => window?.webContents.on('did-start-loading', listener),")
+    expect(source).toContain("onBeforeInput: (listener) => window?.webContents.on('before-input-event', listener),")
+    expect(source).toContain('recording: () => shortcutRecording,')
+    expect(source).not.toContain('dictationHeld')
+    expect(source).not.toContain("'corral:dictationPressKeys'")
   })
 })

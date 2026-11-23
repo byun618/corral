@@ -83,6 +83,10 @@ describe('r5 C-R5-2 — dictationRepeatGuard: main 이 뗀 뒤 남은 글쇠 반
     expect(fresh).toEqual({ held: null, swallow: false })
     expect(dictationRepeatGuard({ held: fresh.held, keyDown: keyDown({ isAutoRepeat: true, meta: true }) }).swallow).toBe(false)
   })
+  it('fix7 R6-2 — 수식 키를 더한 반복(⌥·⌃)은 막지 않는다, 하나 떼고 하나 더한 것도(부분 집합이 아님) 막지 않는다', () => {
+    expect(dictationRepeatGuard({ held, keyDown: { ...keyDown({ isAutoRepeat: true, meta: true, shift: true }), alt: true } }).swallow).toBe(false)
+    expect(dictationRepeatGuard({ held, keyDown: { ...keyDown({ isAutoRepeat: true, meta: true }), control: true } }).swallow).toBe(false)
+  })
   it('다른 글쇠(Esc 등)의 누름·반복은 막지 않고 표지도 풀지 않는다', () => {
     expect(dictationRepeatGuard({ held, keyDown: keyDown({ code: 'Escape', isAutoRepeat: false, meta: true }) })).toEqual({ held, swallow: false })
     expect(dictationRepeatGuard({ held, keyDown: keyDown({ code: 'KeyA', isAutoRepeat: true, meta: true }) })).toEqual({ held, swallow: false })

@@ -5,6 +5,10 @@ import { describe, expect, it } from 'vitest'
 import {
   DICTATION_AUTO_STOP_SILENCE_MS,
   DICTATION_AUTO_STOPPED_MESSAGE,
+  DICTATION_HOLD_LIMIT_MESSAGE,
+  DICTATION_HOLD_LIMIT_MS,
+  DICTATION_STOP_PENDING_LIMIT_MESSAGE,
+  DICTATION_STOP_PENDING_LIMIT_MS,
   DICTATION_HOLD_THRESHOLD_MS,
   DICTATION_NOT_TERMINAL_MESSAGE,
   DICTATION_SILENCE_NOTICE_MS,
@@ -686,6 +690,70 @@ describe('fix4 F-1 — 홀드·탭(orca Auto): 대상·상태 표 보강 행마�
     h.advance(1)
     expect(h.calls).toEqual(['start:s1', 'stop:s1'])
     expect(h.notices).toEqual([{ message: DICTATION_AUTO_STOPPED_MESSAGE, openPrivacy: false }])
+  })
+})
+
+describe('fix7 — 상한·거짓 알림 (리뷰 r6 낮음)', () => {
+  it('R6-3 — 탭 세션을 60초 직전에 사용자가 멈췄으면(정지 대기 중) 60초 타이머가 와도 「60초 무음」 알림을 내지 않는다', () => {
+    const h = harness()
+    h.controller.press('p1')
+    h.ready()
+    h.controller.release(true)
+    h.advance(DICTATION_AUTO_STOP_SILENCE_MS - 100)
+    h.controller.press('p1')
+    expect(h.controller.view.phase).toBe('stopping')
+    h.advance(1000)
+    expect(h.calls).toEqual(['start:s1', 'stop:s1'])
+    expect(h.notices).toEqual([])
+  })
+  it('R6-2 — 홀드가 뗌 없이 5분을 넘으면(keyUp 소실) 정지하고 알린다, 그 전에는 홀드 그대로', () => {
+    const h = harness()
+    h.controller.press('p1')
+    h.ready()
+    h.advance(DICTATION_HOLD_LIMIT_MS - 1)
+    expect(h.controller.holding).toBe(true)
+    expect(h.calls).toEqual(['start:s1'])
+    h.advance(1)
+    expect(h.calls).toEqual(['start:s1', 'stop:s1'])
+    expect(h.controller.holding).toBe(false)
+    expect(h.notices).toEqual([{ message: DICTATION_HOLD_LIMIT_MESSAGE, openPrivacy: false }])
+  })
+  it('R6-2 — 홀드를 떼면 상한 예약이 풀린다(탭이면 60초 감시만 남는다)', () => {
+    const h = harness()
+    h.controller.press('p1')
+    h.ready()
+    expect(h.pendingTimers()).toBe(1)
+    h.advance(400)
+    h.controller.release(true)
+    expect(h.pendingTimers()).toBe(0)
+    h.advance(DICTATION_HOLD_LIMIT_MS)
+    expect(h.notices).toEqual([])
+  })
+  it('R6-5 — 듣기 전에 홀드를 떼 정지 예약 뒤 30초 안에 ready 가 없으면 취소하고 알린다', () => {
+    const h = harness()
+    h.controller.press('p1')
+    h.advance(600)
+    h.controller.repeat()
+    h.controller.release(false)
+    h.advance(DICTATION_STOP_PENDING_LIMIT_MS - 1)
+    expect(h.controller.view.phase).toBe('stopping')
+    h.advance(1)
+    expect(h.calls).toEqual(['start:s1', 'cancel:s1'])
+    expect(h.controller.view.phase).toBe('idle')
+    expect(h.notices).toEqual([{ message: DICTATION_STOP_PENDING_LIMIT_MESSAGE, openPrivacy: false }])
+  })
+  it('R6-5 — 상한 안에 ready 가 오면 정지하고 상한 예약은 풀린다', () => {
+    const h = harness()
+    h.controller.press('p1')
+    h.advance(600)
+    h.controller.repeat()
+    h.controller.release(false)
+    h.advance(DICTATION_STOP_PENDING_LIMIT_MS - 1000)
+    h.ready()
+    expect(h.calls).toEqual(['start:s1', 'stop:s1'])
+    expect(h.pendingTimers()).toBe(0)
+    h.advance(DICTATION_STOP_PENDING_LIMIT_MS)
+    expect(h.notices).toEqual([])
   })
 })
 

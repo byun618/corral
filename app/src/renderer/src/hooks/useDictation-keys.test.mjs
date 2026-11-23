@@ -6,8 +6,8 @@
 // ShortcutHandlers 는 ActionId 전부를 요구해 `as` 없이 채우기 어렵다 — 선례(useKeybindings.repeat·menu-scope)처럼 .mjs 로 둔다.
 import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DICTATION_HOLD_THRESHOLD_MS } from '../../../shared/dictation.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DICTATION_AUTO_STOP_SILENCE_MS, DICTATION_HOLD_THRESHOLD_MS } from '../../../shared/dictation.js'
 import { useDictation } from './useDictation.js'
 import { useKeybindings } from './useKeybindings.js'
 
@@ -350,5 +350,22 @@ describe('r5 C-R5-5 — IPC(onShortcut) 길로 온 누름은 홀드 없이 탭',
     expect(calls).toEqual(['start'])
     act(() => shortcut?.({ id: 'dictation.toggle', variant: 0 }))
     expect(calls).toEqual(['start', 'stop'])
+  })
+  it('fix7 R6-4 — IPC 로 켠 세션은 탭이라 ready 뒤 60초 무음이면 스스로 멈춘다', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const pane = terminal('p1')
+      pane.textarea.focus()
+      act(() => shortcut?.({ id: 'dictation.toggle', variant: 0 }))
+      emit({ kind: 'ready', sessionId })
+      clock += DICTATION_AUTO_STOP_SILENCE_MS - 1
+      act(() => vi.advanceTimersByTime(DICTATION_AUTO_STOP_SILENCE_MS - 1))
+      expect(calls).toEqual(['start'])
+      clock += 1
+      act(() => vi.advanceTimersByTime(1))
+      expect(calls).toEqual(['start', 'stop'])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

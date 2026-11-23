@@ -102,6 +102,15 @@ export const DICTATION_AUTO_STOP_SILENCE_MS = 60_000
 /** 60초 자동 정지가 보는 「말소리」 RMS 하한 — 조용한 방의 잡음(1e-3 대)은 말소리가 아니다. partial·FINAL 글이 오는 것도 말소리로 센다. */
 export const DICTATION_SPEECH_RMS = 0.01
 export const DICTATION_AUTO_STOPPED_MESSAGE = '60초 동안 소리가 없어 받아쓰기를 멈췄다'
+/**
+ * 홀드 세션의 안전 상한(fix7 R6-2) — 뗌(keyUp)을 잃어도 마이크가 열린 채 남지 않게. 홀드는 누르고 있는 동안만 말하는 방식이라 몇 분을 넘길 일이 없다 —
+ * 긴 받아쓰기는 탭(60초 무음 자동 정지)으로 한다. 넘으면 정지(확정된 글은 넣는다)하고 알린다.
+ */
+export const DICTATION_HOLD_LIMIT_MS = 5 * 60_000
+export const DICTATION_HOLD_LIMIT_MESSAGE = '단축키를 5분 넘게 누른 채라 받아쓰기를 멈췄다'
+/** 듣기 전(starting)에 홀드를 떼 정지를 예약한 뒤 `ready` 를 기다리는 상한(fix7 R6-5) — 권한 창·인식 자산 준비가 이만큼 끝나지 않으면 취소하고 알린다. */
+export const DICTATION_STOP_PENDING_LIMIT_MS = 30_000
+export const DICTATION_STOP_PENDING_LIMIT_MESSAGE = '받아쓰기 준비가 30초 안에 끝나지 않아 취소했다'
 /** 받아쓰기를 연 누름의 키 — 뗌을 알아보고(렌더러), 뗀 뒤 남은 반복을 막는 데(main) 쓴다. */
 export type DictationPressKeys = { code: string; meta: boolean; shift: boolean; control: boolean; alt: boolean }
 
@@ -114,9 +123,16 @@ export function dictationRepeatGuard(input: { held: DictationPressKeys | null; k
   const { held, keyDown } = input
   if (held === null || keyDown.code !== held.code) return { held, swallow: false }
   if (!keyDown.isAutoRepeat) return { held: null, swallow: false }
-  const sameModifiers = keyDown.meta === held.meta && keyDown.shift === held.shift && keyDown.control === held.control && keyDown.alt === held.alt
-  return { held, swallow: !sameModifiers }
+  // 누를 때 수식 키의 진부분 집합(하나 이상 뗐고 더한 것은 없음)일 때만 — 더한 경우(⌘⇧M 홀드 중 ⌥)는 뗌이 아니라 홀드가 살아 있다.
+  // 거기서 막으면 Chromium 이 다음 keyDown 까지 keyUp 을 버려 홀드가 끝나지 않는다(fix7 R6-2).
+  const pairs = [[keyDown.meta, held.meta], [keyDown.shift, held.shift], [keyDown.control, held.control], [keyDown.alt, held.alt]]
+  const subset = pairs.every(([now, pressed]) => !now || pressed)
+  const released = pairs.some(([now, pressed]) => pressed && !now)
+  return { held, swallow: subset && released }
 }
+
+/** 렌더러 → main: 키보드로 누른 받아쓰기 누름의 키(preload 송신·main 등록이 같은 상수 — fix7 R6-1). */
+export const DICTATION_PRESS_KEYS_CHANNEL = 'corral:dictationPressKeys'
 
 /** IPC 로 온 누름 키 — 모양이 다르면 null(main 은 렌더러 값을 믿지 않는다). */
 export function parseDictationPressKeys(value: unknown): DictationPressKeys | null {

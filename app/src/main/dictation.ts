@@ -17,13 +17,17 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { TerminalBackend, TerminalOperation } from './adapter/index.js'
 import {
+  DICTATION_PRESS_KEYS_CHANNEL,
   DICTATION_STOP_TIMEOUT_MS,
   dictationOsSupported,
+  dictationRepeatGuard,
   dictationTypedText,
+  parseDictationPressKeys,
   parseHelperLine,
   type DictationEnd,
   type DictationEvent,
   type DictationInsertResult,
+  type DictationPressKeys,
   type DictationStartResult,
 } from '../shared/dictation.js'
 import { clipboardTextPayloads } from '../shared/terminal-paste.js'
@@ -305,6 +309,43 @@ export function createDictationService(input: { manager: DictationDeps; inserter
     onEnded: (sessionId) => inserter.endSession(sessionId),
   })
   return { manager, inserter }
+}
+
+/** `before-input-event` 의 입력 중 가드가 보는 칸(Electron `Input` 의 부분). */
+type GuardInput = { type: string; code: string; isAutoRepeat: boolean; meta: boolean; shift: boolean; control: boolean; alt: boolean }
+
+/**
+ * ⌘M 메뉴 가속키 방어 조립(r5 C-R5-2, fix7 R6-1 — `createDictationService` 처럼 배선을 시험할 수 있게 뺐다).
+ * 렌더러가 알린 키보드 누름(`DICTATION_PRESS_KEYS_CHANNEL`)을 쥐고, 창의 `before-input-event` 에서 그 글쇠의 뗀 뒤 반복 keyDown 을 막는다(`dictationRepeatGuard`).
+ * 새 문서를 싣기 시작하면(`did-start-loading`) 놓는다. 단축키 녹화 중에는 손대지 않는다.
+ * IPC 는 앱에 한 번(`registerIpc`), 창 이벤트는 창마다(`attach`) — 창을 다시 만들어도 처리기가 겹치지 않는다.
+ */
+export function createDictationRepeatGuard(input: { log: (event: string, fields: Record<string, unknown>) => void }) {
+  let held: DictationPressKeys | null = null
+  return {
+    registerIpc<E>(ipc: { ipc: { on: (channel: string, listener: (event: E, keys: unknown) => void) => unknown }; fromOurWindow: (event: E) => boolean }): void {
+      ipc.ipc.on(DICTATION_PRESS_KEYS_CHANNEL, (event, keys) => {
+        if (ipc.fromOurWindow(event)) held = parseDictationPressKeys(keys)
+      })
+    },
+    attach(window: {
+      onDidStartLoading: (listener: () => void) => void
+      onBeforeInput: (listener: (event: { preventDefault: () => void }, input: GuardInput) => void) => void
+      recording: () => boolean
+    }): void {
+      window.onDidStartLoading(() => {
+        held = null
+      })
+      window.onBeforeInput((event, keyInput) => {
+        if (window.recording() || keyInput.type !== 'keyDown') return
+        const guard = dictationRepeatGuard({ held, keyDown: keyInput })
+        held = guard.held
+        if (!guard.swallow) return
+        event.preventDefault()
+        input.log('dictation.repeat.swallowed', { code: keyInput.code, meta: keyInput.meta, shift: keyInput.shift })
+      })
+    },
+  }
 }
 
 /** guard `pane.send_text` — 지금 epoch 의 목록에서 그 pane 을 찾아 보낸다. CLI `terminal send` 와 같은 봉투. */

@@ -15,11 +15,15 @@
 import {
   DICTATION_AUTO_STOP_SILENCE_MS,
   DICTATION_AUTO_STOPPED_MESSAGE,
+  DICTATION_HOLD_LIMIT_MESSAGE,
+  DICTATION_HOLD_LIMIT_MS,
   DICTATION_HOLD_THRESHOLD_MS,
   DICTATION_NOT_TERMINAL_MESSAGE,
   DICTATION_SILENCE_NOTICE_MS,
   DICTATION_SILENCE_RMS,
   DICTATION_SPEECH_RMS,
+  DICTATION_STOP_PENDING_LIMIT_MESSAGE,
+  DICTATION_STOP_PENDING_LIMIT_MS,
   DICTATION_TARGET_CLOSED_MESSAGE,
   dictationErrorMessage,
   type DictationEvent,
@@ -85,6 +89,8 @@ type Active = {
   /** 듣기 전(starting)에 홀드를 뗐다 — `ready` 가 오면 바로 정지한다(r4 G-R4-1, orca 처럼 엔진이 뜬 뒤 정지로 마무리). */
   stopPending: boolean
   cancelSilenceStop: (() => void) | null
+  /** 홀드 상한(누르는 동안) 또는 정지 예약 상한(starting 중 뗀 뒤) 예약의 취소 — 둘은 차례로만 걸린다(fix7 R6-2·R6-5). */
+  cancelLimit: (() => void) | null
 }
 
 export function createDictationController(deps: DictationControllerDeps) {
@@ -113,13 +119,20 @@ export function createDictationController(deps: DictationControllerDeps) {
   }
   const end = (): void => {
     active?.cancelSilenceStop?.()
+    active?.cancelLimit?.()
     active = null
     set(IDLE_DICTATION)
+  }
+  /** 홀드가 끝났다 — 홀드 상한 예약을 푼다. */
+  const endHold = (session: Active): void => {
+    session.hold = null
+    session.cancelLimit?.()
+    session.cancelLimit = null
   }
   /** 받아쓰는 중 정지 — 듣기 전이면 확정할 글이 없어 취소와 같다. 이미 정지 중이면 아무것도 안 한다. */
   const stopActive = (): void => {
     if (active === null) return
-    active.hold = null
+    endHold(active)
     switch (view.phase) {
       case 'starting':
         cancelActive()
@@ -170,8 +183,16 @@ export function createDictationController(deps: DictationControllerDeps) {
       tapped: false,
       stopPending: false,
       cancelSilenceStop: null,
+      cancelLimit: null,
     }
     active = session
+    // 뗌(keyUp)을 잃어도 마이크가 열린 채 남지 않게 — 홀드 안전 상한(fix7 R6-2)
+    session.cancelLimit = deps.schedule(DICTATION_HOLD_LIMIT_MS, () => {
+      session.cancelLimit = null
+      if (active !== session || session.hold === null) return
+      stopActive()
+      deps.notify({ message: DICTATION_HOLD_LIMIT_MESSAGE, openPrivacy: false })
+    })
     set({ phase: 'starting', paneId })
     void deps.start({ sessionId: session.sessionId }).then(
       (result) => {
@@ -212,11 +233,18 @@ export function createDictationController(deps: DictationControllerDeps) {
       const session = active
       if (session === null || session.hold === null) return
       const held = (timed ? deps.now() : session.hold.lastDownAt) - session.hold.pressedAt >= DICTATION_HOLD_THRESHOLD_MS
-      session.hold = null
+      endHold(session)
       if (held && view.phase === 'starting') {
         // 듣기 전 — 취소(도우미 SIGTERM)하지 않고 정지를 예약한다. 표시는 「마지막 글 확정 중」, Esc 는 그대로 취소.
         session.stopPending = true
         set({ phase: 'stopping', paneId: session.paneId, partial: '', silent: false })
+        // ready 가 상한 안에 안 오면 취소하고 알린다(fix7 R6-5)
+        session.cancelLimit = deps.schedule(DICTATION_STOP_PENDING_LIMIT_MS, () => {
+          session.cancelLimit = null
+          if (active !== session || !session.stopPending) return
+          cancelActive()
+          deps.notify({ message: DICTATION_STOP_PENDING_LIMIT_MESSAGE, openPrivacy: false })
+        })
         return
       }
       if (held) {
@@ -243,6 +271,8 @@ export function createDictationController(deps: DictationControllerDeps) {
         case 'ready':
           if (session.stopPending) {
             session.stopPending = false
+            session.cancelLimit?.()
+            session.cancelLimit = null
             deps.stop({ sessionId: session.sessionId })
             return
           }

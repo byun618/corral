@@ -15,8 +15,8 @@ import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { parsePaneTarget, parseRevealRequest, parseSearchRequest, type TerminalRevealResult, type TerminalSearchResult } from '../shared/terminal-search.js'
 import { closeTabsGated, runningForeground } from './close-tabs.js'
 import { footprintHelperPath, homesOf, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
-import { attachDictationNavigationCleanup, createDictationService, dictationHelperPath, nodeDictationDeps, sendTextToPane, type DictationManager } from './dictation.js'
-import { dictationRepeatGuard, MIC_PRIVACY_SETTINGS_URL, parseDictationPressKeys, type DictationPressKeys } from '../shared/dictation.js'
+import { attachDictationNavigationCleanup, createDictationRepeatGuard, createDictationService, dictationHelperPath, nodeDictationDeps, sendTextToPane, type DictationManager } from './dictation.js'
+import { MIC_PRIVACY_SETTINGS_URL } from '../shared/dictation.js'
 import { confirmedDeadSlot, directoryNow, keepRetention, prunableRetained, slotStateNow, slotStateOf } from './retention.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
@@ -182,8 +182,8 @@ let shortcutRecording = false
  * 탐색기 실행 취소·다시 실행으로 가져온다 — 꺼져 있으면 손대지 않아 편집기·입력칸·터미널의 ⌘Z 와 메뉴 role 이 그대로다(`raw/claude/undo-routing.md`).
  */
 let explorerFocused = false
-/** LIFE-834 r5 C-R5-2 — 렌더러가 알린 받아쓰기 누름의 키. 그 글쇠의 뗀 뒤 반복(수식 키 일부를 뗀 채)을 메뉴 가속키보다 먼저 막는다(`dictationRepeatGuard`). */
-let dictationHeld: DictationPressKeys | null = null
+/** LIFE-834 r5 C-R5-2 — 렌더러가 알린 받아쓰기 누름의 글쇠가 그 누름의 수식 키 일부를 뗀 채 반복되면 메뉴 가속키보다 먼저 막는다(`main/dictation.ts`). */
+const dictationRepeatGuard = createDictationRepeatGuard({ log: (event, fields) => log(event, fields) })
 /**
  * 탐색기 드롭 원본·가져오기 재생 근거(LIFE-592 E7ⓓ·수정 r2 R2-E). 재생 근거는 렌더러 실행 취소 기록이 가리키는 동안만 쓸모가 있다 —
  * 렌더러가 새로 뜨면(다시 읽기·프로세스 재생성) 그 기록은 사라지므로 붙잡던 근거를 전부 놓는다(수정 r3).
@@ -1857,25 +1857,22 @@ function createWindow(): void {
   window.webContents.on('did-start-loading', () => {
     shortcutRecording = false
     explorerFocused = false
-    dictationHeld = null
     window?.webContents.setIgnoreMenuShortcuts(false)
   })
   // 메인 프레임이 새 문서를 실었다(다시 읽기·렌더러 재생성) — 실행 취소 기록이 사라졌으니 가져오기 재생 근거를 놓는다(LIFE-592 수정 r3).
   window.webContents.on('did-navigate', () => explorerDrops.releaseAll())
+  // LIFE-834 r5 C-R5-2 — 받아쓰기 홀드가 끝난 뒤 남은 글쇠 반복(⇧ 를 먼저 떼면 ⌘M)이 기본 메뉴 Window ▸ Minimize 로 가지 않게(아래 처리기보다 먼저 등록).
+  dictationRepeatGuard.attach({
+    onDidStartLoading: (listener) => window?.webContents.on('did-start-loading', listener),
+    onBeforeInput: (listener) => window?.webContents.on('before-input-event', listener),
+    recording: () => shortcutRecording,
+  })
   window.webContents.on('before-input-event', (event, input) => {
     if (instrumented && (input.type === 'keyUp' || input.control || input.meta || input.alt)) {
       log('input.raw', { type: input.type, key: input.key, control: input.control, meta: input.meta, alt: input.alt, shift: input.shift })
     }
     if (shortcutRecording) return
     if (input.type !== 'keyDown') return
-    // LIFE-834 r5 C-R5-2 — 받아쓰기 홀드가 끝난 뒤 남은 글쇠 반복(⇧ 를 먼저 떼면 ⌘M)이 기본 메뉴 Window ▸ Minimize 로 가지 않게. 홀드는 이미 끝나 keyUp 억제는 상관없다.
-    const repeatGuard = dictationRepeatGuard({ held: dictationHeld, keyDown: input })
-    dictationHeld = repeatGuard.held
-    if (repeatGuard.swallow) {
-      event.preventDefault()
-      log('dictation.repeat.swallowed', { code: input.code, meta: input.meta, shift: input.shift })
-      return
-    }
     // LIFE-592 — 탐색기 트리 포커스의 ⌘Z·⌘⇧Z. 메뉴 role 과 페이지 keydown 의 순서에 기대지 않으려고 여기서(둘보다 먼저) 가져온다. ⌘W 와 같은 수(R23 — 메뉴 재구성 없음).
     const explorerMatch = explorerKeyShortcut({ ...input, overrides: keybindings.get(), explorerFocused })
     if (explorerMatch !== null) {
@@ -2616,9 +2613,7 @@ app.whenReady().then(async () => {
   ipcMain.on('corral:dictationCancel', (event, input: { sessionId: string }) => {
     if (fromOurWindow(event) && typeof input?.sessionId === 'string') dictationManager.cancel({ sessionId: input.sessionId })
   })
-  ipcMain.on('corral:dictationPressKeys', (event, keys: unknown) => {
-    if (fromOurWindow(event)) dictationHeld = parseDictationPressKeys(keys)
-  })
+  dictationRepeatGuard.registerIpc({ ipc: ipcMain, fromOurWindow })
   ipcMain.handle('corral:dictationOpenPrivacy', async (event) => {
     if (fromOurWindow(event)) await shell.openExternal(MIC_PRIVACY_SETTINGS_URL)
   })

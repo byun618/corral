@@ -150,7 +150,10 @@ import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
 import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
 import { readFileContent, readImageContent } from './file-read.js'
 import { readScmContent } from './scm-read.js'
-import { loginShellPath, ScmWriter } from './scm-write.js'
+import { loginShellPath, rootTag, ScmWriter } from './scm-write.js'
+import { closeAfterShutdown, ScmRemote } from './scm-remote.js'
+import { getGitStatus, invalidateGitStatus, isLaterSnapshot } from './git-status.js'
+import { patchWorktreeStatus, WorktreeStatusRefresh } from './worktree-status-refresh.js'
 import { gitRunner, resolveScmBase, scmBaseInputsOf, type ScmBaseInputs } from './scm-base.js'
 import { PrStatus } from './pr-status.js'
 import { createFileWatch, type FileWatch } from './file-watch.js'
@@ -163,6 +166,8 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 /** 측정 실행인가 — control 소켓이 붙었을 때만 참. A4 프레임 로그 같은 계측 잡음을 여기 가둔다. */
 if (process.env.CORRAL_USER_DATA) app.setPath('userData', process.env.CORRAL_USER_DATA)
 let stopRuntime: (() => Promise<void>) | null = null
+/** LIFE-831 수정 r1 C3 — 종료 때 진행 중 원격 git 그룹을 끝내려고 `before-quit` 이 쥔다. */
+let scmRemoteForQuit: ScmRemote | null = null
 /** 종료 정리 진행 중이면 그 Promise(재진입 종료가 같이 기다린다 — LIFE-591 수정 r2 R2-C) · 끝났으면 `runtimeStopped`. */
 let runtimeStopping: Promise<void> | null = null
 let runtimeStopped = false
@@ -764,6 +769,18 @@ function scheduleEmit(): void {
   }, 0)
 }
 
+/** 카드·상태바 git 상태를 **그 경로만** 다시 읽는다 (LIFE-831 K7 — 원격 동작·커밋·amend 뒤). patch·재빌드 overlay·캐시 모두 「나중 스냅샷만 이긴다」(`isLaterSnapshot`). */
+const worktreeStatus = new WorktreeStatusRefresh({ read: getGitStatus, invalidate: invalidateGitStatus, isLater: isLaterSnapshot })
+async function refreshWorktreeStatus(input: { path: string; reason: string }): Promise<void> {
+  const startedAt = Date.now()
+  const value = await worktreeStatus.refresh(input.path)
+  if (value === null) return
+  const patched = patchWorktreeStatus({ skeleton, path: input.path, value, isLater: isLaterSnapshot })
+  skeleton = patched.skeleton
+  log('scm.status.refresh', { reason: input.reason, root: rootTag(input.path), found: patched.found, changed: patched.changed, ms: Date.now() - startedAt, ahead: value.ahead, behind: value.behind })
+  if (patched.changed) scheduleEmit()
+}
+
 /** 골격 재조회는 git·herdr 왕복을 낀다 — 흔들릴 때 매번 돌지 않게 한 박자 뭉친다. */
 function scheduleTree(): void {
   if (treeScheduled) return
@@ -802,7 +819,7 @@ async function rebuildTree(): Promise<void> {
     return
   }
   rebuildRetry.finished(skeletonHealth(built))
-  skeleton = built
+  skeleton = worktreeStatus.overlay({ built })
   skeletonSocket = socketPath
   skeletonStartedAt = startedAt
   log('tree.built', {
@@ -2397,8 +2414,43 @@ app.whenReady().then(async () => {
     trashItem: (abs) => shell.trashItem(abs),
     loginPath: () => loginShellPath(),
     refresh: (root) => explorerHub?.refreshGit(root),
+    statusChanged: (root) => void refreshWorktreeStatus({ path: root, reason: 'commit' }),
     log,
   })
+  // LIFE-831 — 소스 제어 원격(가져오기·끌어오기·밀어넣기·브랜치 게시). 같은 루트 직렬 큐(`scmWriter.enqueue`)·로그인 셸 PATH·새 세션·그룹 종료·상한은 `ScmRemote`.
+  // 게시 원격 고르기는 main 대화상자(목록 = `git remote`) — 계측 중에는 파일 탭 대화상자 스텁 큐의 값이 원격 이름이면 그것을 고른다.
+  const scmRemote = new ScmRemote({
+    writer: scmWriter,
+    roots: explorerRoots,
+    git: (roots) => resolveGit({ pathEnv: process.env.PATH, roots }),
+    pickRemote: async ({ remotes, branch }) => {
+      const stubbed = measuring ? fileDialogAnswers.shift() : undefined
+      if (stubbed !== undefined) {
+        fileDialogAsked.push('scm:pickRemote')
+        return remotes.find((remote) => remote === stubbed) ?? null
+      }
+      if (window === null || window.isDestroyed()) return null
+      const { response } = await dialog.showMessageBox(window, {
+        type: 'question',
+        message: `'${branch}' 브랜치를 게시할 원격을 고르세요.`,
+        buttons: [...remotes, '취소'],
+        defaultId: 0,
+        cancelId: remotes.length,
+      })
+      return remotes[response] ?? null
+    },
+    refresh: (root) => explorerHub?.refreshGit(root),
+    statusChanged: (root) => void refreshWorktreeStatus({ path: root, reason: 'remote' }),
+    // 수정 r1 C6 — 진행 시작·끝을 렌더러에 민다(렌더러가 다시 그려져도 진행 표시·취소를 되살린다).
+    onState: (state) => {
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:scmRemoteEvent', state)
+    },
+    log,
+  })
+  scmRemoteForQuit = scmRemote
+  ipcMain.handle('corral:scmRemoteState', async (event, input: unknown) => (fromOurWindow(event) ? scmRemote.state(input) : { action: null }))
+  ipcMain.handle('corral:scmRemote', async (event, input: unknown) => (fromOurWindow(event) ? scmRemote.run(input) : { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }))
+  ipcMain.handle('corral:scmRemoteCancel', async (event, input: unknown) => (fromOurWindow(event) ? scmRemote.cancel(input) : { ok: false }))
   ipcMain.handle('corral:scmWrite', async (event, input: unknown) => (fromOurWindow(event) ? scmWriter.write(input) : { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }))
   // 첫 쓰기가 로그인 셸 조회(최대 5 초)를 기다리지 않게 지금 백그라운드로 푼다 — 실패는 두지 않고 다음 쓰기에 다시 묻는다.
   void scmWriter.prefetchLoginPath()
@@ -2894,7 +2946,8 @@ app.on('before-quit', event => {
     if (window !== null && !window.isDestroyed()) window.hide()
     const close = stopRuntime
     stopRuntime = null
-    runtimeStopping = (close === null ? Promise.resolve() : close()).finally(() => {
+    // LIFE-831 수정 r1 C3 — 진행 중 원격 git(새 세션이라 앱과 같이 죽지 않는다)도 같은 정리에서 끝낸다(상한 `SCM_REMOTE_SHUTDOWN_MS` — 무기한 기다리지 않는다).
+    runtimeStopping = Promise.allSettled([close === null ? Promise.resolve() : close(), scmRemoteForQuit?.shutdown() ?? Promise.resolve()]).then(() => undefined).finally(() => {
       runtimeStopped = true
     })
   }
@@ -2902,6 +2955,13 @@ app.on('before-quit', event => {
 })
 
 app.on('window-all-closed', () => {
+  // LIFE-831 수정 r3 E3 — 진행 중 원격 git 정리(`scm.remote.kill`·`.shutdown` 로그)가 로그 닫기보다 먼저 끝나게 기다린 뒤 닫는다(상한 `SCM_REMOTE_SHUTDOWN_MS`).
+  // `before-quit` 도 같은 정리를 부르지만 한 번만 돈다(같은 Promise).
+  void closeAfterShutdown({ shutdown: () => scmRemoteForQuit?.shutdown() ?? Promise.resolve(), close: closeAppAfterAllWindows })
+})
+
+/** 창이 다 닫힌 뒤 앱 자원 정리·로그 닫기·종료(옛 `window-all-closed` 본문 그대로). */
+function closeAppAfterAllWindows(): void {
   agentDetector?.killAll()
   usage?.dispose()
   usage = null
@@ -2917,4 +2977,4 @@ app.on('window-all-closed', () => {
   log('app.quit', { logFile: logFile() })
   closeLog()
   app.quit()
-})
+}

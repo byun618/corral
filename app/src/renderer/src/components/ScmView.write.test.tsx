@@ -47,6 +47,9 @@ const api = (input: Partial<ScmApi>): ScmApi => ({
   setMessage: () => {},
   dismissNotice: () => {},
   run: async () => {},
+  remote: null,
+  runRemote: async () => {},
+  cancelRemote: () => {},
   ...input,
 })
 const render = (scm: ScmApi, onOpen = vi.fn()): void => act(() => root.render(createElement(ScmView, { scm, title: null, mode: 'list', onChangeMode: () => {}, focusToken: 0, onOpen })))
@@ -175,6 +178,8 @@ describe('K12 — 결과는 요청 루트에만 (useScm)', () => {
     Reflect.set(window, 'corral', {
       getUiPrefs: async () => ({}),
       setUiPrefs: () => {},
+      scmRemoteState: async () => ({ action: null }),
+      onScmRemoteEvent: () => () => {},
       onExplorerEvent: () => () => {},
       explorerWatch: async () => ({ ok: true }),
       explorerRefreshGit: () => {},
@@ -226,6 +231,8 @@ describe('K12 — 결과는 요청 루트에만 (useScm)', () => {
     Reflect.set(window, 'corral', {
       getUiPrefs: async () => ({}),
       setUiPrefs: () => {},
+      scmRemoteState: async () => ({ action: null }),
+      onScmRemoteEvent: () => () => {},
       onExplorerEvent: () => () => {},
       explorerWatch: async () => ({ ok: true }),
       explorerRefreshGit: () => {},
@@ -271,6 +278,8 @@ describe('K14 — base 대비에서는 쓰기 UI 없음 (LIFE-830 맞춤)', () =
     Reflect.set(window, 'corral', {
       getUiPrefs: async () => ({}),
       setUiPrefs: () => {},
+      scmRemoteState: async () => ({ action: null }),
+      onScmRemoteEvent: () => () => {},
       onExplorerEvent: () => () => {},
       explorerWatch: async () => ({ ok: true }),
       explorerRefreshGit: () => {},

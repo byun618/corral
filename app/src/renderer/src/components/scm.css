@@ -83,3 +83,16 @@
 .scm-base-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 .scm-base-tail { flex: 0 0 auto; display: inline-flex; gap: 6px; white-space: nowrap; }
 .scm-base-hash { font-family: var(--font-mono, monospace); }
+/* --- 원격 (LIFE-831) — 머리 아래 한 줄. 브랜치 이름만 줄고(말줄임) ↓↑ 숫자·단추는 줄지 않는다(learnings ui.md). 단추는 머리 도구와 달리 늘 보인다. --- */
+.scm-remote { flex-shrink: 0; display: flex; align-items: center; gap: 6px; min-width: 0; height: 24px; padding: 0 8px 0 20px; font-size: 12px; }
+.scm-remote-branch { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); }
+.scm-remote-ab { flex: 0 0 auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.scm-remote-tools { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; }
+.scm-remote-progress { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
+.scm-publish {
+  display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 6px; border: none; border-radius: 2px; white-space: nowrap;
+  background: var(--accent); color: var(--fg-on-accent); font: inherit; font-size: 12px; cursor: pointer;
+}
+.scm-publish:hover { background: var(--accent-hi); }
+@keyframes scm-spin { to { transform: rotate(360deg); } }
+.scm-spin { animation: scm-spin 1.2s linear infinite; }

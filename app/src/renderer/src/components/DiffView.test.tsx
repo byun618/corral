@@ -73,6 +73,8 @@ beforeEach(() => {
       return { ok: true }
     },
     explorerRefreshGit: (watched: string) => watchCalls.push(`refresh:${watched}`),
+    scmRemoteState: async () => ({ action: null }),
+    onScmRemoteEvent: () => () => {},
     onExplorerEvent: () => () => {},
     getUiPrefs: async () => ({ scmViewMode: 'list' }),
     setUiPrefs: () => {},

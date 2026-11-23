@@ -191,6 +191,8 @@ export type ScmWriteDeps = {
   loginPath: () => Promise<string | null>
   /** 쓰기 뒤 즉시 재조회(D14 — 탐색기 허브 `refreshGit`). */
   refresh: (root: string) => void
+  /** 커밋·amend 성공 뒤 그 경로의 카드·상태바 git 상태 재조회(LIFE-831 K7 — ahead 가 바뀐다). */
+  statusChanged?: (root: string) => void
   log: (event: string, data?: Record<string, unknown>) => void
   /** 시험 주입 — 기본은 VS Code 값·25 초 예산·진짜 시계(`now` 는 로그인 셸 음성 캐시용). */
   now?: () => number
@@ -205,7 +207,7 @@ export const rootTag = (root: string): string => crypto.createHash('sha256').upd
 
 const refused = (code: ScmWriteRefusal, error: string): ScmWriteResult => ({ ok: false, code, error })
 
-function runGit(input: { git: string; cwd: string; args: readonly string[]; stdin: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<GitRun> {
+export function runGit(input: { git: string; cwd: string; args: readonly string[]; stdin: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<GitRun> {
   return new Promise((resolve) => {
     const child = execFile(input.git, ['-C', input.cwd, ...input.args], { encoding: 'utf8', timeout: input.timeoutMs, maxBuffer: OUTPUT_LIMIT, env: input.env }, (error, stdout, stderr) => {
       if (error === null) {
@@ -223,7 +225,7 @@ function runGit(input: { git: string; cwd: string; args: readonly string[]; stdi
   })
 }
 
-const errorText = (run: GitRun): string => {
+export const errorText = (run: GitRun): string => {
   const text = (run.stderr.trim() !== '' ? run.stderr : run.stdout).trim()
   return (text === '' ? `git 이 코드 ${run.exitCode} 로 끝났습니다.` : text).slice(0, ERROR_LIMIT)
 }
@@ -291,7 +293,18 @@ export class ScmWriter {
     const result = await this.serial(input.root, stats, () => this.execute({ input, discardUntracked, stats }))
     // 무변화 거절은 재조회할 것이 없다 — 다만 `stale` 은 목록이 낡았다는 뜻이라 다시 읽는다(C3).
     if (result.ok || result.code === 'git_error' || result.code === 'trash_failed' || result.code === 'stale') this.deps.refresh(input.root)
+    if (result.ok && input.action === 'commit') this.deps.statusChanged?.(input.root)
     return result
+  }
+
+  /** 원격 동작(LIFE-831 `ScmRemote`)이 같은 루트 직렬 큐에 들어오는 입구(D8) — 앞 쓰기가 끝난 뒤 돈다, 기다리면 `scm.write.wait`. */
+  enqueue<T>(root: string, task: () => Promise<T>): Promise<T> {
+    return this.serial(root, { waited: false }, task)
+  }
+
+  /** 쓰기 git 과 같은 로그인 셸 PATH(캐시·음성 캐시·진행 중 공유 그대로) — 못 얻으면 null. */
+  loginPath(): Promise<string | null> {
+    return this.resolveLoginPath()
   }
 
   /** 루트마다 직렬 — 앞 쓰기가 끝나야 다음이 시작한다(K9). 다른 루트는 서로 막지 않는다. */

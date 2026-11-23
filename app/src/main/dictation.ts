@@ -99,7 +99,7 @@ export function createDictationManager(deps: DictationDeps) {
         deps.send({ kind: parsed.type, sessionId: session.id, text: parsed.text })
         return
       case 'level':
-        deps.send({ kind: 'level', sessionId: session.id, rms: parsed.rms })
+        deps.send({ kind: 'level', sessionId: session.id, rms: parsed.rms, stalled: parsed.stalled })
         return
       case 'error':
         session.error = { code: parsed.code, message: parsed.message }

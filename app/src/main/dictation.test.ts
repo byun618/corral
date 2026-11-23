@@ -81,13 +81,14 @@ describe('정상 흐름 — 줄 중계·정지', () => {
     child.line({ type: 'partial', text: '워크' })
     // 한 줄이 조각으로 나뉘어 와도 줄 단위로 맞춘다
     child.stdout.write('{"type":"final","te')
-    child.stdout.write('xt":"워크트리 목록"}\n{"type":"level","rms":0.01}\n')
+    child.stdout.write('xt":"워크트리 목록"}\n{"type":"level","rms":0.01}\n{"type":"level","rms":0,"stalled":true}\n')
     await tick()
     expect(h.events).toEqual([
       { kind: 'ready', sessionId: 's1' },
       { kind: 'partial', sessionId: 's1', text: '워크' },
       { kind: 'final', sessionId: 's1', text: '워크트리 목록' },
-      { kind: 'level', sessionId: 's1', rms: 0.01 },
+      { kind: 'level', sessionId: 's1', rms: 0.01, stalled: false },
+      { kind: 'level', sessionId: 's1', rms: 0, stalled: true },
     ])
     h.manager.stop({ sessionId: 's1' })
     await tick()

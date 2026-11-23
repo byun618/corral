@@ -8,10 +8,17 @@
 // · 적용 시점 확인은 FINAL 이 도착할 때 한 번: 대상이 아직 있으면 넣고, 없으면 넣지 않고 세션을 취소한 뒤 알린다(다른 pane 으로 보내지 않는다).
 //   넣기가 실패로 돌아오면(보낼 길 없음) 조용히 버리지 않는다 — 그 세션이 아직 진행 중이면 멈추고, 언제든 알린다.
 // · 지금 세션이 아닌 이벤트(취소·끝난 세션의 늦은 줄)는 버린다 — Esc 뒤 늦게 온 FINAL 이 들어가지 않는다.
+// · 켜고 끄기는 orca Auto 방식(fix4 F-1 — 01-criteria 「최종 관문 보강」): 누름(idle) = 시작. 누른 시간 ≥ 300 ms(키 반복 포함)면 홀드 — 뗄 때 정지.
+//   더 짧은 탭이면 켜진 채 두고 다음 누름에 정지. 탭 세션은 마지막 말소리 뒤 60초가 지나면 스스로 정지하고 알린다. 홀드 중 창 포커스를 잃으면 뗌으로 본다.
+//   뗌 시각을 모르면(⌘ 를 누른 채면 macOS 가 글쇠의 keyup 을 버린다 — 수식 키 keyup·blur 로 알게 된다) 마지막 키 반복 시각으로 잰다.
 import {
+  DICTATION_AUTO_STOP_SILENCE_MS,
+  DICTATION_AUTO_STOPPED_MESSAGE,
+  DICTATION_HOLD_THRESHOLD_MS,
   DICTATION_NOT_TERMINAL_MESSAGE,
   DICTATION_SILENCE_NOTICE_MS,
   DICTATION_SILENCE_RMS,
+  DICTATION_SPEECH_RMS,
   DICTATION_TARGET_CLOSED_MESSAGE,
   dictationErrorMessage,
   type DictationEvent,
@@ -44,6 +51,8 @@ export type DictationControllerDeps = {
   notify: (notice: DictationNotice) => void
   onChange: (view: DictationView) => void
   now: () => number
+  /** `ms` 뒤 `run` 을 한 번 — 취소 함수를 돌려준다(60초 자동 정지). */
+  schedule: (ms: number, run: () => void) => () => void
   newSessionId: () => string
 }
 
@@ -54,8 +63,24 @@ export function focusedTerminalPane(active: Element | null): string | null {
   return paneId === null || paneId === '' ? null : paneId
 }
 
-/** `insertFailed` — 넣기 실패 알림은 세션당 한 번(fix2 G-R2-1). */
-type Active = { sessionId: string; paneId: string; silentSince: number | null; insertFailed: boolean }
+/**
+ * `insertFailed` — 넣기 실패 알림은 세션당 한 번(fix2 G-R2-1).
+ * 무음 알림(fix4 F-2): `heardSound` = 시작 뒤 디지털 0 이 아닌 레벨이 한 번이라도 왔나, `zeroSince` = 소리 없이 레벨이 이어진 시작, `stalledSince` = 프레임 끊김이 이어진 시작.
+ * 켜고 끄기(fix4 F-1): `hold` = 이 세션을 연 누름이 아직 눌린 채(`lastDownAt` = 키 반복 포함 마지막 keydown), `tapped` = 탭으로 켜져 60초 자동 정지를 본다.
+ */
+type Active = {
+  sessionId: string
+  paneId: string
+  startedAt: number
+  insertFailed: boolean
+  heardSound: boolean
+  zeroSince: number | null
+  stalledSince: number | null
+  lastSpeechAt: number
+  hold: { pressedAt: number; lastDownAt: number } | null
+  tapped: boolean
+  cancelSilenceStop: (() => void) | null
+}
 
 export function createDictationController(deps: DictationControllerDeps) {
   let view: DictationView = IDLE_DICTATION
@@ -82,8 +107,42 @@ export function createDictationController(deps: DictationControllerDeps) {
     deps.onChange(view)
   }
   const end = (): void => {
+    active?.cancelSilenceStop?.()
     active = null
     set(IDLE_DICTATION)
+  }
+  /** 받아쓰는 중 정지 — 듣기 전이면 확정할 글이 없어 취소와 같다. 이미 정지 중이면 아무것도 안 한다. */
+  const stopActive = (): void => {
+    if (active === null) return
+    active.hold = null
+    switch (view.phase) {
+      case 'starting':
+        cancelActive()
+        return
+      case 'listening':
+        deps.stop({ sessionId: active.sessionId })
+        set({ ...view, phase: 'stopping' })
+        return
+      case 'stopping':
+      case 'idle':
+        return
+    }
+  }
+  /** 탭 세션의 60초 자동 정지 — 시계 기준(레벨 줄이 끊겨도 센다). 때가 되면 마지막 말소리를 다시 보고, 그 뒤 말소리가 있었으면 다시 잰다. */
+  const watchSilence = (session: Active): void => {
+    const check = (): void => {
+      session.cancelSilenceStop = null
+      if (active !== session || !session.tapped) return
+      const remaining = Math.max(session.startedAt, session.lastSpeechAt) + DICTATION_AUTO_STOP_SILENCE_MS - deps.now()
+      if (remaining > 0) {
+        session.cancelSilenceStop = deps.schedule(remaining, check)
+        return
+      }
+      if (view.phase === 'stopping') return
+      stopActive()
+      deps.notify({ message: DICTATION_AUTO_STOPPED_MESSAGE, openPrivacy: false })
+    }
+    check()
   }
   const cancelActive = (): void => {
     if (active === null) return
@@ -92,7 +151,20 @@ export function createDictationController(deps: DictationControllerDeps) {
   }
 
   const begin = (paneId: string): void => {
-    const session: Active = { sessionId: deps.newSessionId(), paneId, silentSince: null, insertFailed: false }
+    const now = deps.now()
+    const session: Active = {
+      sessionId: deps.newSessionId(),
+      paneId,
+      startedAt: now,
+      insertFailed: false,
+      heardSound: false,
+      zeroSince: null,
+      stalledSince: null,
+      lastSpeechAt: now,
+      hold: { pressedAt: now, lastDownAt: now },
+      tapped: false,
+      cancelSilenceStop: null,
+    }
     active = session
     set({ phase: 'starting', paneId })
     void deps.start({ sessionId: session.sessionId }).then(
@@ -113,28 +185,38 @@ export function createDictationController(deps: DictationControllerDeps) {
     get view(): DictationView {
       return view
     },
-    /** 단축키. `focusedPaneId` = 누른 순간 키보드 포커스가 있던 터미널 pane(없으면 null). */
-    toggle(focusedPaneId: string | null): void {
-      switch (view.phase) {
-        case 'idle':
-          if (focusedPaneId === null) {
-            deps.notify({ message: DICTATION_NOT_TERMINAL_MESSAGE, openPrivacy: false })
-            return
-          }
-          begin(focusedPaneId)
-          return
-        // 아직 듣기 전이면 확정할 글이 없다 — 취소와 같다.
-        case 'starting':
-          cancelActive()
-          return
-        case 'listening':
-          if (active === null) return
-          deps.stop({ sessionId: active.sessionId })
-          set({ ...view, phase: 'stopping' })
-          return
-        case 'stopping':
-          return
+    /** 단축키 누름(keydown, 반복 아님). `focusedPaneId` = 누른 순간 키보드 포커스가 있던 터미널 pane(없으면 null). idle 이면 시작(누름이 이어지는 동안 홀드), 받아쓰는 중이면 정지. */
+    press(focusedPaneId: string | null): void {
+      if (view.phase !== 'idle') {
+        stopActive()
+        return
       }
+      if (focusedPaneId === null) {
+        deps.notify({ message: DICTATION_NOT_TERMINAL_MESSAGE, openPrivacy: false })
+        return
+      }
+      begin(focusedPaneId)
+    },
+    /** 눌린 채 키 반복이 왔다 — 홀드 길이를 잰다. */
+    repeat(): void {
+      if (active?.hold != null) active.hold.lastDownAt = deps.now()
+    },
+    /** 이 세션을 연 누름이 끝났다. `timed` = 뗌 시각이 지금이다(글쇠 keyup). 거짓 = 모른다(⌘ keyup·창 포커스 잃음) — 마지막 키 반복 시각으로 잰다. */
+    release(timed: boolean): void {
+      const session = active
+      if (session === null || session.hold === null) return
+      const held = (timed ? deps.now() : session.hold.lastDownAt) - session.hold.pressedAt >= DICTATION_HOLD_THRESHOLD_MS
+      session.hold = null
+      if (held) {
+        stopActive()
+        return
+      }
+      session.tapped = true
+      watchSilence(session)
+    },
+    /** 홀드 중인가 — 창이 뗌을 들어야 하는 동안 참. */
+    get holding(): boolean {
+      return active?.hold != null
     },
     /** Esc — 받아쓰는 중이면 취소하고 참(키를 삼킨다). 아니면 거짓(키는 원래 자리로). */
     cancel(): boolean {
@@ -150,6 +232,7 @@ export function createDictationController(deps: DictationControllerDeps) {
           if (view.phase === 'starting') set({ phase: 'listening', paneId: session.paneId, partial: '', silent: false })
           return
         case 'partial':
+          if (event.text !== '') session.lastSpeechAt = deps.now()
           if (view.phase === 'listening' || view.phase === 'stopping') set({ ...view, partial: event.text })
           return
         case 'final': {
@@ -158,20 +241,28 @@ export function createDictationController(deps: DictationControllerDeps) {
             deps.notify({ message: DICTATION_TARGET_CLOSED_MESSAGE, openPrivacy: false })
             return
           }
-          if (event.text !== '') insert(session, event.text)
+          if (event.text !== '') {
+            session.lastSpeechAt = deps.now()
+            insert(session, event.text)
+          }
           if (view.phase === 'listening' || view.phase === 'stopping') set({ ...view, partial: '' })
           return
         }
         case 'level': {
           if (view.phase !== 'listening' && view.phase !== 'stopping') return
-          if (event.rms > DICTATION_SILENCE_RMS) {
-            session.silentSince = null
-            if (view.silent) set({ ...view, silent: false })
-            return
-          }
           const now = deps.now()
-          session.silentSince ??= now
-          if (!view.silent && now - session.silentSince >= DICTATION_SILENCE_NOTICE_MS) set({ ...view, silent: true })
+          if (event.rms >= DICTATION_SPEECH_RMS) session.lastSpeechAt = now
+          if (event.stalled) {
+            session.stalledSince ??= now
+          } else {
+            session.stalledSince = null
+            if (event.rms > DICTATION_SILENCE_RMS) session.heardSound = true
+            else if (!session.heardSound) session.zeroSince ??= now
+          }
+          const silent =
+            (session.stalledSince !== null && now - session.stalledSince >= DICTATION_SILENCE_NOTICE_MS) ||
+            (!session.heardSound && session.zeroSince !== null && now - session.zeroSince >= DICTATION_SILENCE_NOTICE_MS)
+          if (silent !== view.silent) set({ ...view, silent })
           return
         }
         case 'ended':
@@ -188,3 +279,18 @@ export function createDictationController(deps: DictationControllerDeps) {
 }
 
 export type DictationController = ReturnType<typeof createDictationController>
+
+/** 받아쓰기를 연 누름의 키 — 뗌을 알아보는 데 쓴다. */
+export type DictationPressKeys = { code: string; meta: boolean; shift: boolean; control: boolean; alt: boolean }
+
+const MODIFIER_OF_KEY: Partial<Record<string, keyof Omit<DictationPressKeys, 'code'>>> = { Meta: 'meta', OS: 'meta', Shift: 'shift', Control: 'control', Alt: 'alt', AltGraph: 'alt' }
+
+/**
+ * keyup 이 이 누름의 뗌인가 — 누를 때 잡고 있던 수식 키 하나를 떼거나 같은 글쇠를 떼면 뗌(orca `createHoldDictationReleaseMatcher` 와 같은 규칙).
+ * `timed` = 뗌 시각이 지금인가: ⌘ 를 누른 채면 macOS 가 글쇠 keyup 을 버려 수식 키 keyup 이 늦게 온다 — 그때는 거짓(마지막 키 반복 시각으로 잰다).
+ */
+export function dictationRelease(input: { press: DictationPressKeys; keyup: { key: string; code: string; metaKey: boolean } }): { matches: boolean; timed: boolean } {
+  const modifier = MODIFIER_OF_KEY[input.keyup.key]
+  const matches = modifier !== undefined ? input.press[modifier] : input.keyup.code !== '' && input.keyup.code === input.press.code
+  return { matches, timed: !(input.keyup.metaKey || modifier === 'meta') }
+}

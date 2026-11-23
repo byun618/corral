@@ -8,7 +8,8 @@ export type HelperLine =
   | { type: 'ready' }
   | { type: 'partial'; text: string }
   | { type: 'final'; text: string }
-  | { type: 'level'; rms: number }
+  /** `stalled` = 지난 구간에 오디오 프레임이 하나도 없었다(장치 끊김 — fix4 F-2). 그때 `rms` 는 0 이다 — 디지털 0(노이즈 게이트·워밍업)과 구분한다. */
+  | { type: 'level'; rms: number; stalled: boolean }
   | { type: 'error'; code: string; message: string }
   | { type: 'done' }
 
@@ -31,7 +32,7 @@ export function parseHelperLine(line: string): HelperLine | null {
       return typeof text === 'string' ? { type, text } : null
     case 'level': {
       const rms: unknown = Reflect.get(value, 'rms')
-      return typeof rms === 'number' && Number.isFinite(rms) ? { type, rms } : null
+      return typeof rms === 'number' && Number.isFinite(rms) ? { type, rms, stalled: Reflect.get(value, 'stalled') === true } : null
     }
     case 'error': {
       const code: unknown = Reflect.get(value, 'code')
@@ -56,7 +57,7 @@ export type DictationEvent =
   | { kind: 'ready'; sessionId: string }
   | { kind: 'partial'; sessionId: string; text: string }
   | { kind: 'final'; sessionId: string; text: string }
-  | { kind: 'level'; sessionId: string; rms: number }
+  | { kind: 'level'; sessionId: string; rms: number; stalled: boolean }
   | { kind: 'ended'; sessionId: string; end: DictationEnd }
 
 export type DictationStartResult = { ok: true } | { ok: false; code: DictationErrorCode; message: string }
@@ -87,10 +88,20 @@ export function dictationTypedText(text: string): string {
 
 /** 정지를 누른 뒤 마지막 FINAL 확정을 기다리는 상한. 넘으면 main 이 도우미를 끝낸다(`stop-timeout`). */
 export const DICTATION_STOP_TIMEOUT_MS = 5000
-/** 이 시간 동안 입력 레벨이 계속 무음이면 「마이크 입력이 없다」 알림(C5 — 5초 이하). */
+/**
+ * 「마이크 입력이 없다」 알림까지의 시간(C5 — 5초 이하). 알림은 두 경우만이다(fix4 F-2): 세션 시작 뒤 **한 번도 소리가 없던 채** 이만큼,
+ * 또는 오디오 프레임 끊김(`stalled`)이 이만큼 이어짐. 소리가 한 번 들어온 뒤의 조용함으로는 띄우지 않는다 — 노이즈 게이트·워밍업 마이크의 시작 직후 디지털 0 도 소리가 들어오면 사라진다.
+ */
 export const DICTATION_SILENCE_NOTICE_MS = 3000
 /** 무음으로 보는 RMS 상한 — 덮개 닫은 내장 마이크는 0.00000 을 낸다(00-analysis 7절). 조용한 방의 잡음(1e-3 대)은 무음이 아니다. */
 export const DICTATION_SILENCE_RMS = 1e-5
+/** 단축키를 이만큼 이상 누르고 있었으면 홀드 — 떼면 정지. 더 짧은 탭은 켜진 채 둔다(fix4 F-1, orca Auto `AUTO_HOLD_THRESHOLD_MS`). */
+export const DICTATION_HOLD_THRESHOLD_MS = 300
+/** 탭으로 켠 세션은 마지막 말소리 뒤 이만큼 지나면 스스로 정지한다(fix4 F-1, orca `DEFAULT_STOP_AFTER_SILENCE_SECONDS`). 시계 기준 — 레벨 줄이 끊겨도 센다. */
+export const DICTATION_AUTO_STOP_SILENCE_MS = 60_000
+/** 60초 자동 정지가 보는 「말소리」 RMS 하한 — 조용한 방의 잡음(1e-3 대)은 말소리가 아니다. partial·FINAL 글이 오는 것도 말소리로 센다. */
+export const DICTATION_SPEECH_RMS = 0.01
+export const DICTATION_AUTO_STOPPED_MESSAGE = '60초 동안 소리가 없어 받아쓰기를 멈췄다'
 /** 시스템 설정 › 개인정보 보호 및 보안 › 마이크. */
 export const MIC_PRIVACY_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
 

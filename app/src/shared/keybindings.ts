@@ -87,7 +87,7 @@ export const ACTIONS = [
   // 캡처 단계에서 삼켜 PTY·Monaco 로 가지 않는다(Monaco 0.57 기본 ⇧⌘F 바인딩 없음). 나중에 생긴 기본값이라 양보한다(YIELDING_DEFAULTS).
   { id: 'search.show', group: '전역', title: '검색 보이기 (내용)', defaultBinding: ['Mod+Shift+F'], bindingVariants: [0], variants: ['보이기'] },
   // LIFE-834 — 음성 받아쓰기 토글(게이트 ⓪ ⌘⇧M). 시작은 **터미널 pane 에 키보드 포커스가 있을 때만**(그 pane 이 대상으로 고정된다) — 판정은 렌더러 `dictation-controller.ts`.
-  // 받아쓰는 중 다시 누르면 정지. 범위를 `terminal` 로 좁히지 않는다: 터미널 밖에서 눌러도 「터미널 pane 에서 쓸 수 있다」 알림이 떠야 한다(대상·상태 표). 나중에 생긴 기본값이라 양보한다.
+  // 누른 채(≥ 300 ms) 말하고 떼면 정지, 짧게 탭하면 켜진 채 두고 다음 누름에 정지(fix4 F-1 — 뗌은 렌더러 `useDictation` 이 창 캡처로 듣는다). 범위를 `terminal` 로 좁히지 않는다: 터미널 밖에서 눌러도 「터미널 pane 에서 쓸 수 있다」 알림이 떠야 한다(대상·상태 표). 나중에 생긴 기본값이라 양보한다.
   { id: 'dictation.toggle', group: '터미널 pane', title: '음성 받아쓰기', defaultBinding: ['Mod+Shift+M'], bindingVariants: [0], variants: ['시작 / 정지'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']

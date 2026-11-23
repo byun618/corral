@@ -2354,8 +2354,8 @@ export function App(): React.JSX.Element {
       rightPanel.show('scm')
       requestAnimationFrame(() => setScmFocusToken((value) => value + 1))
     },
-    // LIFE-834 — 음성 받아쓰기 시작·정지(대상은 누른 순간 포커스된 터미널 pane — `dictation-controller.ts`).
-    'dictation.toggle': () => dictation.toggle(),
+    // LIFE-834 — 음성 받아쓰기 누름(대상은 누른 순간 포커스된 터미널 pane, 홀드·탭 판정은 `dictation-controller.ts` — fix4 F-1).
+    'dictation.toggle': () => dictation.press(),
     // LIFE-803 — VS Code `workbench.view.search`: 닫혀 있으면 열고 검색 보기로, 입력칸 포커스·기존 글 전체 선택.
     'search.show': () => {
       // r1 R1-03 — 포커스 이동으로 센다: 기다리던 연 파일 포커스(`focusOpenedFile`)·열기 요청의 포커스가 입력칸을 빼앗지 않게.

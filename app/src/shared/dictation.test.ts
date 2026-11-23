@@ -8,7 +8,9 @@ describe('parseHelperLine — 도우미 규약', () => {
     ['{"type":"done"}', { type: 'done' }],
     ['{"type":"partial","text":"워크"}', { type: 'partial', text: '워크' }],
     ['{"text":"워크트리 목록","type":"final"}', { type: 'final', text: '워크트리 목록' }],
-    ['{"type":"level","rms":0}', { type: 'level', rms: 0 }],
+    ['{"type":"level","rms":0}', { type: 'level', rms: 0, stalled: false }],
+    // fix4 F-2 — 프레임 끊김 표지
+    ['{"type":"level","rms":0,"stalled":true}', { type: 'level', rms: 0, stalled: true }],
     ['{"type":"error","code":"mic-denied","message":"거부"}', { type: 'error', code: 'mic-denied', message: '거부' }],
     ['{"type":"error","code":"x"}', { type: 'error', code: 'x', message: '' }],
   ])('%s', (line, expected) => {

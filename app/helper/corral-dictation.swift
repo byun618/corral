@@ -2,7 +2,7 @@
 // `scripts/build-dictation.mjs` 가 swiftc 로 빌드·ad-hoc 서명한다. main(`src/main/dictation.ts`)이 띄우고 stdout 줄을 읽는다.
 //
 // 출력 = stdout 에 JSON 한 줄씩(규약 원본 `src/shared/dictation.ts`):
-//   {"type":"ready"} · {"type":"partial","text":…} · {"type":"final","text":…} · {"type":"level","rms":…}
+//   {"type":"ready"} · {"type":"partial","text":…} · {"type":"final","text":…} · {"type":"level","rms":…} (프레임이 끊긴 구간은 `"stalled":true` 를 붙인다)
 //   {"type":"error","code":…,"message":…} (뒤이어 0 이 아닌 종료) · {"type":"done"} (정상 끝, 종료 0)
 //   `--check` = {"type":"check",…} 한 줄 — 마이크를 열지 않고(권한 창도 안 띄운다) 로케일·권한 상태만 읽는다.
 //   `--file <오디오>` = 파일 받아쓰기(FINAL 만, C7). `--simulate-mic <오디오>` = 마이크 대신 파일을 실시간 속도로 — 마이크 모드와 같은 변환·스트림·레벨·stdin stop 경로(fix1 F7).
@@ -52,8 +52,10 @@ func requireLocale() async {
   if !state.installed { fail("locale-not-installed", "한국어(ko-KR) 인식 자산이 설치돼 있지 않다", status: 4) }
 }
 
+/// `volatile` = 받아쓰기 입력용 — partial 을 낸다. `.fastResults` 가 없으면 partial 이 실시간으로 오지 않고 정지 때 몰려 온다(fix4 F-3 — `--simulate-mic` 실측:
+/// 10초 음성 동안 0줄·정지 뒤 56줄, 붙이면 정지 전 48줄·약 1초 간격). FINAL 글은 두 경우 같았다.
 func makeTranscriber(volatile: Bool) -> SpeechTranscriber {
-  SpeechTranscriber(locale: koKR, transcriptionOptions: [], reportingOptions: volatile ? [.volatileResults] : [], attributeOptions: [])
+  SpeechTranscriber(locale: koKR, transcriptionOptions: [], reportingOptions: volatile ? [.volatileResults, .fastResults] : [], attributeOptions: [])
 }
 
 func runCheck() async {
@@ -196,11 +198,11 @@ func runCapture(_ source: CaptureSource) async {
     stopCapture = { pump.cancel() }
   }
   emit(["type": "ready"])
-  // 입력 레벨 — main 이 연속 무음을 알린다(C5). 250ms 마다. 그 사이 프레임이 하나도 없었으면(장치 끊김) 0 으로 낸다(fix1 F2·G4).
+  // 입력 레벨 — 렌더러가 무음을 알린다(C5). 250ms 마다. 그 사이 프레임이 하나도 없었으면(장치 끊김) 0 에 `stalled` 를 붙여 디지털 0 과 구분한다(fix1 F2·G4, fix4 F-2).
   let levels = Task {
     while !Task.isCancelled {
       try? await Task.sleep(for: .milliseconds(250))
-      emit(["type": "level", "rms": meter.take() ?? 0])
+      if let rms = meter.take() { emit(["type": "level", "rms": rms]) } else { emit(["type": "level", "rms": 0, "stalled": true]) }
     }
   }
   await waitForStop()

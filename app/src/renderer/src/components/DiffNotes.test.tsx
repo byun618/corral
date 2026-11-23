@@ -12,7 +12,10 @@ import { emptyAgentState } from '../../../shared/agent-state.js'
 
 type Handler = (event: { target: { type: number; position: { lineNumber: number } | null } }) => void
 type Decoration = { options: { glyphMarginClassName?: string } }
-const fake: { mouseDown: Handler[]; mouseMove: Handler[]; contentChanged: (() => void)[]; decorationSets: Decoration[][]; zones: Map<string, HTMLElement>; zoneSeq: number; lines: string[]; modified: number } = {
+type ZoneOptions = { domNode: HTMLElement; suppressMouseDown?: boolean }
+const fake: { mouseDown: Handler[]; mouseMove: Handler[]; contentChanged: (() => void)[]; decorationSets: Decoration[][]; zones: Map<string, HTMLElement>; zoneSeq: number; zoneOptions: ZoneOptions[]; lateZones: boolean; lines: string[]; modified: number } = {
+  zoneOptions: [],
+  lateZones: false,
   mouseDown: [],
   mouseMove: [],
   contentChanged: [],
@@ -38,11 +41,15 @@ const codeEditor = () => ({
   },
   onDidChangeModelContent: (handler: () => void) => listen(fake.contentChanged, handler),
   getModel: () => ({ getLineCount: () => fake.lines.length, getLineContent: (line: number) => fake.lines[line - 1] ?? '' }),
-  changeViewZones: (run: (accessor: { addZone: (zone: { domNode: HTMLElement }) => string; removeZone: (id: string) => void }) => void) =>
+  changeViewZones: (run: (accessor: { addZone: (zone: ZoneOptions) => string; removeZone: (id: string) => void }) => void) =>
     run({
-      addZone: ({ domNode }) => {
+      addZone: (zone) => {
+        const { domNode } = zone
         const id = `z${(fake.zoneSeq += 1)}`
-        document.body.append(domNode)
+        fake.zoneOptions.push(zone)
+        // 실제 Monaco 는 붙인 zone 을 다음 그리기에서야 보인다 — 늦게 붙여 흉내 낸다.
+        if (fake.lateZones) requestAnimationFrame(() => document.body.append(domNode))
+        else document.body.append(domNode)
         fake.zones.set(id, domNode)
         return id
       },
@@ -121,6 +128,7 @@ beforeEach(() => {
   fake.decorationSets.length = 0
   fake.lines = ['line one', 'line two', 'line three']
   fake.zones.clear()
+  fake.zoneOptions = []
   fake.modified = 0
   sends = []
   subscriptions = 0
@@ -446,5 +454,24 @@ describe('리뷰 r1 — 표지·편집·Esc·hover (A4·A7·A10)', () => {
     expect(fake.decorationSets.length - before).toBe(1)
     move(3)
     expect(fake.decorationSets.length - before).toBe(2)
+  })
+})
+
+describe('N1 1회차 — 메모 칸 사람 클릭·첫 포커스', () => {
+  afterEach(() => {
+    fake.lateZones = false
+  })
+  it('zone 이 편집기에 누름을 넘기지 않는다 — suppressMouseDown 이면 Monaco 가 textarea 포커스를 가져간다', async () => {
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    await gutter(2)
+    expect(fake.zoneOptions.length).toBeGreaterThan(0)
+    expect(fake.zoneOptions.every((zone) => zone.suppressMouseDown !== true)).toBe(true)
+  })
+  it('zone 이 늦게 문서에 붙어도 편집 칸이 첫 포커스를 받는다', async () => {
+    fake.lateZones = true
+    await render({ target: { mode: 'wt', rel: 'a.ts', orig: null } })
+    await gutter(2)
+    for (let i = 0; i < 4; i += 1) await act(async () => await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+    expect(document.activeElement).toBe(document.querySelector('[data-diff-note-editor="2"] textarea'))
   })
 })

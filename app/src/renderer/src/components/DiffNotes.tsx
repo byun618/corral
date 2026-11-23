@@ -25,6 +25,8 @@ export function useDiffNotesVersion(): number {
 const EDIT_HEIGHT = 112
 const CARD_CHARS = 90
 const LINE_PX = 18
+/** 편집 칸 첫 포커스를 다시 해 보는 프레임 수 — zone 이 보이는 데 한두 프레임이면 된다. */
+const FOCUS_TRIES = 10
 
 /** 카드 둘레 — zone 여백(위아래 4+4) + 카드 안 여백(6+6)·테두리(2) + 머리 줄(20) + 머리·본문 사이(4). E1 캡처에서 이보다 작게 잡아 본문 스크롤이 생겼다. */
 const CARD_CHROME = 46
@@ -130,7 +132,8 @@ export function NoteLayer({ host, root, rel, against }: { host: NoteEditorHost; 
         dom.className = 'diff-note-zone'
         // 편집기 키 처리(⌘A·찾기 등)로 새지 않게 — React 키 처리는 capture 로 받는다.
         for (const type of ['keydown', 'keyup', 'keypress']) dom.addEventListener(type, (event) => event.stopPropagation())
-        ids.push(accessor.addZone({ afterLineNumber: zone.line, heightInPx: zone.height, domNode: dom, suppressMouseDown: true }))
+        // suppressMouseDown 이면 Monaco 가 zone 안 누름을 preventDefault 하고 편집기 textarea 로 포커스를 가져간다 — 메모 칸 클릭이 먹힌다(N1 1회차).
+        ids.push(accessor.addZone({ afterLineNumber: zone.line, heightInPx: zone.height, domNode: dom, suppressMouseDown: false }))
         next.set(zone.key, dom)
       }
     })
@@ -191,7 +194,19 @@ function NoteCard({ note, missing, onEdit, onDelete }: { note: DiffNote; missing
 function NoteEditor({ line, draft, nudge, onDraft, onSave, onCancel }: { line: number; draft: string; nudge: number; onDraft: (draft: string) => void; onSave: () => void; onCancel: () => void }): React.JSX.Element {
   const ref = useRef<HTMLTextAreaElement | null>(null)
   const [nudged] = useState(nudge)
-  useEffect(() => ref.current?.focus(), [nudge])
+  // Monaco 는 zone 을 붙일 때 숨기고(display none) 다음 그리기에서 보인다 — 포커스가 붙을 때까지 몇 프레임 다시 한다.
+  useEffect(() => {
+    let frame = 0
+    let tries = 0
+    const attempt = (): void => {
+      const textarea = ref.current
+      if (textarea === null) return
+      textarea.focus()
+      if (document.activeElement !== textarea && (tries += 1) < FOCUS_TRIES) frame = requestAnimationFrame(attempt)
+    }
+    attempt()
+    return () => cancelAnimationFrame(frame)
+  }, [nudge])
   const empty = draft.trim() === ''
   const held = nudge !== nudged
   return (

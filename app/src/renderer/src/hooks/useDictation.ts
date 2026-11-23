@@ -15,6 +15,8 @@ export function useDictation(input: { paneExists: (paneId: string) => boolean; n
   /** 창 캡처 단계가 본 마지막 keydown(반복 아님) — 단축키 길의 `press` 가 같은 이벤트 안에서 읽어 이 누름의 키로 삼는다. */
   const lastKeyDown = useRef<DictationPressKeys | null>(null)
   const pressKeys = useRef<DictationPressKeys | null>(null)
+  /** 누름이 끝난(뗌) 뒤 아직 눌려 있을 수 있는 그 글쇠의 code — 그 글쇠의 keyup 이나 새 누름이 올 때까지 반복 keydown 을 삼킨다(r4 C-R4-2). */
+  const swallowRepeats = useRef<string | null>(null)
 
   useEffect(() => {
     const controller = createDictationController({
@@ -43,22 +45,39 @@ export function useDictation(input: { paneExists: (paneId: string) => boolean; n
       event.stopPropagation()
     }
     // 누름 기록·키 반복 — 단축키 길보다 먼저(창 캡처) 돈다. 삼키지 않는다.
+    // 뗌 뒤의 반복은 여기서 삼킨다(문서 캡처의 단축키 길·xterm·메뉴로 가지 않게) — ⌘ 를 먼저 떼면 남은 M 반복이 「M」 으로, ⇧ 를 먼저 떼면 ⌘M 으로 새던 것(C-R4-2).
     const onKeyDown = (event: KeyboardEvent): void => {
       if (!event.repeat) {
+        swallowRepeats.current = null
         lastKeyDown.current = { code: event.code, meta: event.metaKey, shift: event.shiftKey, control: event.ctrlKey, alt: event.altKey }
+        return
+      }
+      if (event.code === swallowRepeats.current) {
+        event.preventDefault()
+        event.stopPropagation()
         return
       }
       if (controller.holding && event.code === pressKeys.current?.code) controller.repeat()
     }
+    /** 홀드를 끝낸다 — 글쇠가 아직 눌려 있을 수 있으니(수식 키를 먼저 뗐다·blur) 그 글쇠의 반복을 삼키기 시작한다. */
+    const release = (timed: boolean): void => {
+      if (!controller.holding) return
+      swallowRepeats.current = pressKeys.current?.code ?? null
+      controller.release(timed)
+    }
     const onKeyUp = (event: KeyboardEvent): void => {
+      if (event.code === swallowRepeats.current) swallowRepeats.current = null
       const press = pressKeys.current
       if (press === null || !controller.holding) return
-      const release = dictationRelease({ press, keyup: event })
-      if (release.matches) controller.release(release.timed)
+      const released = dictationRelease({ press, keyup: event })
+      if (!released.matches) return
+      release(released.timed)
+      // 글쇠 자체를 뗐으면 더 올 반복이 없다
+      if (event.code === press.code) swallowRepeats.current = null
     }
-    const onLost = (): void => controller.release(false)
+    const onLost = (): void => release(false)
     const onVisibility = (): void => {
-      if (document.visibilityState !== 'visible') controller.release(false)
+      if (document.visibilityState !== 'visible') release(false)
     }
     window.addEventListener('keydown', onKey, true)
     window.addEventListener('keydown', onKeyDown, true)

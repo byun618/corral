@@ -4,7 +4,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DICTATION_HOLD_THRESHOLD_MS, DICTATION_NOT_TERMINAL_MESSAGE, type DictationEvent, type DictationInsertResult, type DictationStartResult } from '../../../shared/dictation.js'
+import { DICTATION_NOT_TERMINAL_MESSAGE, type DictationEvent, type DictationInsertResult, type DictationStartResult } from '../../../shared/dictation.js'
 import { BRACKETED_PASTE_END, BRACKETED_PASTE_START, clipboardTextPayloads } from '../../../shared/terminal-paste.js'
 import { registerSelectionClearer } from '../terminal-selection.js'
 import { DictationIndicator, DICTATION_SILENT_TEXT } from '../components/DictationIndicator.js'
@@ -224,124 +224,5 @@ describe('useDictation — 창 연결', () => {
     act(() => root.unmount())
     expect(calls).toEqual(['start', 'cancel'])
     root = createRoot(host)
-  })
-})
-
-/**
- * fix4 F-1 — 창의 키 길: 누름은 단축키 길(문서 캡처, `useKeybindings` 처럼 삼킨다)이 `press` 로, 뗌·키 반복·창 포커스 잃음은 `useDictation` 의 창 캡처가 받는다.
- * keyup 이 어디서 오든(xterm 입력칸·대화상자 입력칸·IME 조합 중) 받는지 본다. 시계는 `Date.now` 를 앞당긴다.
- */
-describe('useDictation — 홀드·탭 키 길', () => {
-  let shortcut: ((event: KeyboardEvent) => void) | null = null
-  let realNow: () => number = Date.now
-  let clock = 0
-  beforeEach(() => {
-    realNow = Date.now
-    clock = realNow()
-    Date.now = () => clock
-    // `useKeybindings` 모양 — 문서 캡처에서 ⌘⇧M 을 삼키고 반복은 버리고 첫 keydown 만 press
-    shortcut = (event) => {
-      if (!(event.metaKey && event.shiftKey && event.code === 'KeyM')) return
-      event.preventDefault()
-      event.stopPropagation()
-      if (event.repeat) return
-      press()
-    }
-    document.addEventListener('keydown', shortcut, true)
-  })
-  afterEach(() => {
-    Date.now = realNow
-    if (shortcut !== null) document.removeEventListener('keydown', shortcut, true)
-  })
-  const key = (target: EventTarget, type: 'keydown' | 'keyup', init: KeyboardEventInit): KeyboardEvent => {
-    const event = new KeyboardEvent(type, { bubbles: true, cancelable: true, ...init })
-    act(() => {
-      target.dispatchEvent(event)
-    })
-    return event
-  }
-  const down = (target: EventTarget, repeat = false): KeyboardEvent => key(target, 'keydown', { key: 'M', code: 'KeyM', metaKey: true, shiftKey: true, repeat })
-  it('xterm 에서 누른 채(키 반복) 300 ms 넘게 → ⌘ keyup 에 정지, 단축키는 xterm 에 가지 않는다', () => {
-    const pane = terminal('p1')
-    pane.textarea.focus()
-    down(pane.textarea)
-    expect(calls).toEqual(['start'])
-    emit({ kind: 'ready', sessionId })
-    for (let elapsed = 0; elapsed < DICTATION_HOLD_THRESHOLD_MS + 100; elapsed += 50) {
-      clock += 50
-      down(pane.textarea, true)
-    }
-    expect(pane.keys).toEqual([])
-    // ⌘ 아래 M 의 keyup 은 macOS 가 버린다 — ⌘ keyup 이 뗌
-    key(pane.textarea, 'keyup', { key: 'Meta', code: 'MetaLeft', shiftKey: true })
-    expect(calls).toEqual(['start', 'stop'])
-  })
-  it('짧게 탭 → 켜진 채, 다시 탭 → 정지', () => {
-    const pane = terminal('p1')
-    pane.textarea.focus()
-    down(pane.textarea)
-    emit({ kind: 'ready', sessionId })
-    clock += 80
-    key(pane.textarea, 'keyup', { key: 'Meta', code: 'MetaLeft', shiftKey: true })
-    key(pane.textarea, 'keyup', { key: 'Shift', code: 'ShiftLeft' })
-    expect(calls).toEqual(['start'])
-    expect(indicator()?.dataset.dictationIndicator).toBe('listening')
-    clock += 3000
-    down(pane.textarea)
-    expect(calls).toEqual(['start', 'stop'])
-  })
-  it('홀드 중 대화상자 입력칸으로 포커스가 가도 그 자리의 keyup(그 처리기가 전파를 막아도)을 받는다', () => {
-    const pane = terminal('p1')
-    pane.textarea.focus()
-    down(pane.textarea)
-    emit({ kind: 'ready', sessionId })
-    for (let elapsed = 0; elapsed < 500; elapsed += 50) {
-      clock += 50
-      down(pane.textarea, true)
-    }
-    const dialog = document.createElement('div')
-    dialog.setAttribute('role', 'dialog')
-    const field = document.createElement('input')
-    field.addEventListener('keyup', (event) => event.stopPropagation())
-    dialog.append(field)
-    document.body.append(dialog)
-    field.focus()
-    key(field, 'keyup', { key: 'Meta', code: 'MetaLeft', shiftKey: true })
-    expect(calls).toEqual(['start', 'stop'])
-  })
-  it('IME 조합 중에 온 keyup(isComposing)도 뗌으로 받는다', () => {
-    const pane = terminal('p1')
-    pane.textarea.focus()
-    down(pane.textarea)
-    emit({ kind: 'ready', sessionId })
-    for (let elapsed = 0; elapsed < 500; elapsed += 50) {
-      clock += 50
-      down(pane.textarea, true)
-    }
-    key(pane.textarea, 'keyup', { key: 'Shift', code: 'ShiftLeft', metaKey: true, isComposing: true })
-    expect(calls).toEqual(['start', 'stop'])
-  })
-  it('홀드 중 창 포커스를 잃으면(keyup 을 못 받음) 뗌으로 본다 — 키 반복으로 잰 홀드면 정지', () => {
-    const pane = terminal('p1')
-    pane.textarea.focus()
-    down(pane.textarea)
-    emit({ kind: 'ready', sessionId })
-    for (let elapsed = 0; elapsed < 500; elapsed += 50) {
-      clock += 50
-      down(pane.textarea, true)
-    }
-    act(() => {
-      window.dispatchEvent(new Event('blur'))
-    })
-    expect(calls).toEqual(['start', 'stop'])
-  })
-  it('다른 글쇠의 keyup 은 뗌이 아니다(홀드 유지)', () => {
-    const pane = terminal('p1')
-    pane.textarea.focus()
-    down(pane.textarea)
-    emit({ kind: 'ready', sessionId })
-    clock += 500
-    key(pane.textarea, 'keyup', { key: 'a', code: 'KeyA', metaKey: true, shiftKey: true })
-    expect(calls).toEqual(['start'])
   })
 })

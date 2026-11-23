@@ -52,10 +52,10 @@ func requireLocale() async {
   if !state.installed { fail("locale-not-installed", "한국어(ko-KR) 인식 자산이 설치돼 있지 않다", status: 4) }
 }
 
-/// `volatile` = 받아쓰기 입력용 — partial 을 낸다. `.fastResults` 가 없으면 partial 이 실시간으로 오지 않고 정지 때 몰려 온다(fix4 F-3 — `--simulate-mic` 실측:
-/// 10초 음성 동안 0줄·정지 뒤 56줄, 붙이면 정지 전 48줄·약 1초 간격). FINAL 글은 두 경우 같았다.
+/// `volatile` = 받아쓰기 입력용 — partial 을 낸다. `.fastResults` 는 쓰지 않는다(r4 — 정확도 우선): 붙이면 partial 이 실시간으로 오지만
+/// 넣는 글(FINAL)이 달라진다(Apple 문서 「faster but also less accurate」, TTS A/B 에서 결정적 차이). 그래서 partial 은 엔진이 내는 만큼만 보인다.
 func makeTranscriber(volatile: Bool) -> SpeechTranscriber {
-  SpeechTranscriber(locale: koKR, transcriptionOptions: [], reportingOptions: volatile ? [.volatileResults, .fastResults] : [], attributeOptions: [])
+  SpeechTranscriber(locale: koKR, transcriptionOptions: [], reportingOptions: volatile ? [.volatileResults] : [], attributeOptions: [])
 }
 
 func runCheck() async {

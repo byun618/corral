@@ -11,6 +11,7 @@
 // · 켜고 끄기는 orca Auto 방식(fix4 F-1 — 01-criteria 「최종 관문 보강」): 누름(idle) = 시작. 누른 시간 ≥ 300 ms(키 반복 포함)면 홀드 — 뗄 때 정지.
 //   더 짧은 탭이면 켜진 채 두고 다음 누름에 정지. 탭 세션은 마지막 말소리 뒤 60초가 지나면 스스로 정지하고 알린다. 홀드 중 창 포커스를 잃으면 뗌으로 본다.
 //   뗌 시각을 모르면(⌘ 를 누른 채면 macOS 가 글쇠의 keyup 을 버린다 — 수식 키 keyup·blur 로 알게 된다) 마지막 키 반복 시각으로 잰다.
+//   듣기 전(starting)의 홀드 뗌은 정지 예약 — `ready` 가 오면 stop(r4 G-R4-1).
 import {
   DICTATION_AUTO_STOP_SILENCE_MS,
   DICTATION_AUTO_STOPPED_MESSAGE,
@@ -79,6 +80,8 @@ type Active = {
   lastSpeechAt: number
   hold: { pressedAt: number; lastDownAt: number } | null
   tapped: boolean
+  /** 듣기 전(starting)에 홀드를 뗐다 — `ready` 가 오면 바로 정지한다(r4 G-R4-1, orca 처럼 엔진이 뜬 뒤 정지로 마무리). */
+  stopPending: boolean
   cancelSilenceStop: (() => void) | null
 }
 
@@ -163,6 +166,7 @@ export function createDictationController(deps: DictationControllerDeps) {
       lastSpeechAt: now,
       hold: { pressedAt: now, lastDownAt: now },
       tapped: false,
+      stopPending: false,
       cancelSilenceStop: null,
     }
     active = session
@@ -207,6 +211,12 @@ export function createDictationController(deps: DictationControllerDeps) {
       if (session === null || session.hold === null) return
       const held = (timed ? deps.now() : session.hold.lastDownAt) - session.hold.pressedAt >= DICTATION_HOLD_THRESHOLD_MS
       session.hold = null
+      if (held && view.phase === 'starting') {
+        // 듣기 전 — 취소(도우미 SIGTERM)하지 않고 정지를 예약한다. 표시는 「마지막 글 확정 중」, Esc 는 그대로 취소.
+        session.stopPending = true
+        set({ phase: 'stopping', paneId: session.paneId, partial: '', silent: false })
+        return
+      }
       if (held) {
         stopActive()
         return
@@ -229,6 +239,11 @@ export function createDictationController(deps: DictationControllerDeps) {
       if (session === null || event.sessionId !== session.sessionId) return
       switch (event.kind) {
         case 'ready':
+          if (session.stopPending) {
+            session.stopPending = false
+            deps.stop({ sessionId: session.sessionId })
+            return
+          }
           if (view.phase === 'starting') set({ phase: 'listening', paneId: session.paneId, partial: '', silent: false })
           return
         case 'partial':

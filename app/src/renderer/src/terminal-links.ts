@@ -146,9 +146,9 @@ export const terminalLinkHandler: ILinkHandler = {
   allowNonHttpProtocols: true,
 }
 
-/** 평문 URL provider 를 등록한다. 반환값을 터미널과 함께 dispose 한다. */
-export function registerTerminalLinks(term: Terminal): { dispose(): void } {
-  const readRow: ReadRow = (y) => {
+/** xterm 활성 버퍼의 행 읽기 — URL·pane 이름 provider 가 같이 쓴다(LIFE-835). */
+export function terminalRowReader(term: Terminal): ReadRow {
+  return (y) => {
     const line = term.buffer.active.getLine(y)
     if (line === undefined) return undefined
     const cells: LinkCell[] = []
@@ -158,6 +158,11 @@ export function registerTerminalLinks(term: Terminal): { dispose(): void } {
     }
     return cells
   }
+}
+
+/** 평문 URL provider 를 등록한다. 반환값을 터미널과 함께 dispose 한다. */
+export function registerTerminalLinks(term: Terminal): { dispose(): void } {
+  const readRow = terminalRowReader(term)
   return term.registerLinkProvider({
     provideLinks: (bufferLineNumber, callback) => {
       const links: ILink[] = findLinksOnRow({ readRow, y: bufferLineNumber - 1 }).map((link) => ({

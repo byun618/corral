@@ -18,6 +18,8 @@ allowed() {
   case "$1" in
     "scripts/release.sh:"*"옛 'release.sh --prs"*) echo "옛 호출을 거절하는 안내 문구 자체" ;;
     ".agents/skills/release/SKILL.md:"*"throwaway \`integration/\` 브랜치를 따로 만들지 않는다"*) echo "출고 통합 확인이 integration/ 를 대체한다는 문장" ;;
+    ".agents/rules/corral.md:"*"integration/<이름>-YYYYMMDD"*) echo "AGENTS.md 에서 옮긴 같은 줄(paddock 적용) — 출고 통합 확인은 release worktree 로 옮겼다고 같은 줄에 적음" ;;
+    ".paddock/design.md:"*"integration/<이름>-YYYYMMDD"*) echo "paddock 적용 때 그 줄을 어디로 옮겼는지 적은 기록" ;;
     "AGENTS.md:"*"integration/<이름>-YYYYMMDD"*) echo "출고 밖의 통합 확인 몫 — 출고 통합 확인은 release worktree 로 옮겼다고 같은 줄에 적음" ;;
     "app/INSTALL.md:"*"「충돌이 나면 (gather exit 3)」"*|"app/INSTALL.md:"*"**충돌이 나면 (gather exit 3)**"*|"app/INSTALL.md:"*"위 「충돌이 나면」"*) echo "새 흐름의 충돌 절(release worktree 에서 해소)" ;;
     *) return 1 ;;

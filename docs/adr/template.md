@@ -8,7 +8,7 @@ decision-makers: <누가 정했나 — 역할로>
 
 ## Context and Problem Statement
 
-<무엇이 문제였나. 2~3문장 또는 질문 하나. 근거 일감은 LIFE 번호로.>
+<무엇이 문제였나. 2~3문장 또는 질문 하나. 근거 일감은 일감 번호로.>
 
 ## Decision Drivers
 
@@ -48,4 +48,4 @@ Chosen option: "<안 N>", because <기준을 가장 잘 맞추거나, 막는 힘
 
 ## More Information
 
-<관련 일감(LIFE 번호)·ADR·다시 볼 조건.>
+<관련 일감(일감 번호)·ADR·다시 볼 조건.>

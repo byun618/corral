@@ -1,14 +1,18 @@
 #!/usr/bin/env node
+// paddock:fixed
 // 하네스 능력 대조 — 절차/매핑/런타임이 서로 어긋나면 멈춘다.
+// 매핑은 이 폴더(.agents/harness/)에 깔린 `<도구>/` 폴더(`00-mapping.md` 가 있는 것) 전부다. 하나만 깔리는 것이 보통이다.
+// 매핑 폴더 = `00-mapping.md`(공통부·보장 요약) + `commands.md`(선언) + 능력마다 파일 하나(capabilities.md 능력 목록 표의 「파일」 칸).
 //
 //   node .agents/harness/capability-check.mjs names
-//     절차 문서가 쓰는 능력 이름 ⊆ capabilities.md 정본 ⊆ 매핑 3개의 절. 매달린 능력 0.
+//     절차 문서가 쓰는 능력 이름 ⊆ capabilities.md 정본 = 깔린 매핑의 능력 파일(파일마다 그 이름의 절 하나). 매달린 능력 0.
+//     절차 문서는 FLOW_DOCS 중 **있는 것만** 본다. 하나도 없으면(작업 흐름 층이 꺼진 레포) 건너뛰고 exit 0.
 //   node .agents/harness/capability-check.mjs shape
-//     매핑의 능력별 절이 명령 · 보장 수준 · 상황→행동(5항목)을 모두 갖는지.
-//     **한계(K9)**: 라벨 존재 · "라벨만 있고 비었나" · 사유 없는 `해당 없음.`(P9) 까지만 본다. 적힌 내용이 그 상황에 맞는 행동인지,
+//     매핑의 능력 파일마다 명령 · 보장 수준 · 상황→행동(5항목)을 모두 갖는지. 공통부에 보장 요약 네 줄.
+//     **한계**: 라벨 존재 · "라벨만 있고 비었나" · 사유 없는 `해당 없음.` 까지만 본다. 적힌 내용이 그 상황에 맞는 행동인지,
 //     보장 수준 칸의 어휘가 실제 보장과 맞는지는 **기계가 보지 않는다 — 리뷰어가 본다.**
 //   node .agents/harness/capability-check.mjs runtime --tool corral|orca|bare
-//     매핑이 **선언한** 명령 ↔ 런타임이 광고하는 것 ↔ 매핑 본문이 실제로 쓰는 명령.
+//     매핑이 **선언한** 명령(commands.md) ↔ 런타임이 광고하는 것 ↔ 매핑 본문(폴더의 모든 파일)이 실제로 쓰는 명령.
 //
 // ── 표기 허용 목록 (이 관문의 핵심) ───────────────────────────────────────────
 // **아는 표기만 허용한다. 목록에 없는 형태는 전부 오류다.** 매핑이 어떤 표기를 꼭 써야 하면
@@ -23,9 +27,10 @@
 //   A6. **플래그 없는 이름 언급** — 접두사를 생략할 수 있으나 레지스트리에서 **유일 해소**돼야 한다
 //       (`check` 는 되고 `send` 는 terminal/orchestration 로 갈려 오류다)
 //   A7. 허용된 **외부 명령** 목록(EXTERNAL)으로 시작하는 줄 — 이 관문의 대상이 아니다
+//   A8. `<오류코드>: <메시지>` 형태의 오류 메시지 인용 — 명령 표기가 아니다
 //
 // 전역옵션은 도구별로 목록(GLOBAL_OPTS)에 있다. **목록에 없는 옵션이 명령 앞에 오면 오류다** —
-// 옛 판은 도구 뒤에 옵션이 오면 스팬 전체를 버려서 `corral --socket … worker-stop --reason` 이 통과했다.
+// 도구 뒤에 옵션이 오면 스팬 전체를 버리는 판은 `corral --socket … worker-stop --reason` 같은 오기를 통과시킨다.
 //
 // 그 위에 선언 대조 규칙:
 //   R1  명령줄(플래그가 있는 스팬)은 A1~A4 중 하나여야 한다. 접두사 없는 명령줄은 오류다.
@@ -34,29 +39,27 @@
 //   R3  해소된 모든 이름은 두 선언 블록 중 하나에 있어야 한다.
 //   R4  `required` ⊆ 광고/레지스트리. `mentioned` 는 광고와 대조하지 않되 **사유 주석이 필수**다.
 //   R5  선언 항목은 본문에 나와야 한다 (죽은 선언 금지).
-// 왜 이렇게 좁히나: 라운드 1·2·3 에서 **"산문에서 명령을 더 똑똑하게 뽑는" 방식이 세 번 연속 새 사각을 냈다**
-// (M1 → L6·N1 → P1). 허용 목록은 반대 방향이다 — 모르는 표기가 통과 쪽으로 떨어지지 않는다.
+// 왜 이렇게 좁히나: **"산문에서 명령을 더 똑똑하게 뽑는" 방식은 새 사각을 계속 냈다.**
+// 허용 목록은 반대 방향이다 — 모르는 표기가 통과 쪽으로 떨어지지 않는다.
 //
 // ── 알려진 한계 (이 관문이 보지 못하는 것) ────────────────────────────────────
 //   L-a. **백틱 없는 산문의 명령줄.** 검사 대상은 인라인 코드 스팬과 펜스 블록 줄이다. 산문에 그냥 쓴
 //        `worker-stop --dispatch <ctx>` 는 어느 규칙에도 걸리지 않는다 → **명령은 반드시 코드 스팬으로 쓴다.**
-//   L-b. **플래그 값의 의미.** 플래그 이름이 그 명령에 있는지는 c3c4-crosscheck 가 보고, 이 관문은 이름만 본다.
-//   L-c. **다른 도구의 명령.** `--tool corral` 로 돌리면 `orca …` 스팬은 외부 명령으로 지난다.
-//        세 도구를 각각 돌려야 세 매핑이 다 검사된다.
-//   L-d. **보장 수준·상황 설명의 내용.** 형식만 본다(K9).
+//   L-b. **플래그 값의 의미.** 플래그 이름이 그 명령에 실제로 있는지는 이 관문이 보지 않는다 — 이름만 본다.
+//   L-c. **다른 도구의 명령.** `--tool corral` 로 돌리면 다른 도구의 CLI 호출 스팬은 외부 명령으로 지난다.
+//        레포에는 매핑이 하나 깔리므로 그 매핑의 도구로 돌린다.
+//   L-d. **보장 수준·상황 설명의 내용.** 형식만 본다.
 //   L-e. **허용 외부 명령 뒤에 오는 도구 명령.** 스팬의 첫 낱말이 EXTERNAL 이면 그 스팬은 검사 대상이 아니다 —
 //        `export PATH=… && corral <그룹> <명령> --플래그` 처럼 한 줄에 이어 붙인 형태는 R1b·R3 를 지난다.
-//        (플래그 오기는 c3c4 대조기가 도구 이름을 줄 어디에서나 찾으므로 그쪽에서 걸린다. 선언 대조만 공백이다)
 //
 // 종료 코드: 0 통과 · 1 불일치(멈춘다) · 2 사용법·읽기 오류 · 3 대조 불가(광고가 없는 도구)
 //   bare 는 규약·선언 검사를 **전부 돌린 뒤** 광고 대조만 공백이라 3 으로 끝난다. 규약을 어기면 1 이다.
-// 뒷문(양성 대조 전용): `--mapping <경로>` 매핑 갈아끼우기 · `--advertised <경로>` 광고 목록 주입.
-// 프로필 선택(K8): `--socket <경로>`·`--instance <id>` 를 주면 그 런타임에 그대로 넘긴다 —
+// 뒷문(양성 대조 전용): `--mapping <폴더>` 매핑 폴더 갈아끼우기 · `--advertised <경로>` 광고 목록 주입 · `--registry <경로>` orca 레지스트리(agent-context JSON) 주입.
+// 프로필 선택: `--socket <경로>`·`--instance <id>` 를 주면 그 런타임에 그대로 넘긴다 —
 //   주지 않으면 기본 프로필을 본다. **다른 프로필을 쓰면서 이 관문을 기본으로 돌리면 쓰지 않는 런타임을 점검한다.**
-//   **corral 전용이다**(P11): orca 는 두 인자를 받지 않고 bare 는 런타임이 없다 —
-//   그 도구에 주면 여기서 exit 2 로 거절한다(그대로 넘겨 orca 가 사용법 오류로 죽는 것보다 원인이 분명하다).
+//   **corral 전용이다**: orca 는 두 인자를 받지 않고 bare 는 런타임이 없다 — 그 도구에 주면 여기서 exit 2 로 거절한다.
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,16 +68,28 @@ const HARNESS_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HARNESS_DIR, '..', '..');
 
 const NAME_RE = /『([^『』]+)』/g;
-const MAPPINGS = { corral: 'corral.md', orca: 'orca.md', bare: 'bare.md' };
+// 깔린 매핑 = 하네스 폴더 아래 `00-mapping.md` 가 있는 폴더. {도구: 폴더 절대경로}
+const COMMON = '00-mapping.md';
+const DECL = 'commands.md';
+function installedMappings() {
+  const out = {};
+  for (const name of readdirSync(HARNESS_DIR).sort()) {
+    const dir = join(HARNESS_DIR, name);
+    if (statSync(dir).isDirectory() && existsSync(join(dir, COMMON))) out[name] = dir;
+  }
+  return out;
+}
 // 절차 문서 — 능력 이름으로만 말해야 하는 쪽. capabilities.md 는 정본이라 따로 센다.
+// 목록은 고정이고, 실제로는 이 레포에 **있는 것만** 본다(모듈을 끈 파일은 없다).
 const FLOW_DOCS = [
   'AGENTS.md',
   '.agents/agents/reviewer.md',
   '.agents/rules/validation.md',
-  '.agents/skills/task-coordinate/SKILL.md',
   '.agents/skills/task-start/SKILL.md',
-  '.agents/defaults.md',
+  '.agents/skills/task-coordinate/SKILL.md',
   '.agents/skills/task-coordinate/references/implementation.md',
+  '.agents/skills/task-coordinate/references/bundle.md',
+  '.agents/defaults.rules.md',
 ];
 const SECTIONS = ['### 명령', '### 보장 수준', '### 상황 → 행동'];
 const SITUATIONS = ['- **차단 화면**', '- **타임아웃·빈 결과**', '- **부분 실패**', '- **복구**', '- **하지 말 우회**'];
@@ -107,16 +122,30 @@ function verdict(label) {
   process.exit(1);
 }
 
-// 정본 능력 목록 = capabilities.md 의 "능력 목록" 표에서 행 머리의 『…』
-function canonicalNames() {
+// 정본 능력 목록 = capabilities.md 의 "능력 목록" 표에서 행 머리의 『…』 와 「파일」 칸
+function canonicalRows() {
   const text = read('.agents/harness/capabilities.md');
-  const names = [];
+  const rows = [];
   for (const line of text.split('\n')) {
-    const m = /^\|\s*『([^『』]+)』\s*\|/.exec(line);
-    if (m) names.push(m[1]);
+    const m = /^\|\s*『([^『』]+)』\s*\|\s*`([^`]+\.md)`\s*\|/.exec(line);
+    if (m) rows.push({ name: m[1], file: m[2] });
   }
-  if (names.length === 0) fail(2, 'capabilities.md 의 능력 목록 표를 찾지 못했다');
-  return names;
+  if (rows.length === 0) fail(2, 'capabilities.md 의 능력 목록 표(능력 | 파일 | …)를 찾지 못했다');
+  return rows;
+}
+// 매핑 폴더의 파일 하나를 읽는다. 없으면 null
+function readIn(dir, file) {
+  const p = join(dir, file);
+  return existsSync(p) ? readFileSync(p, 'utf8') : null;
+}
+// 파일의 `## 『…』` 절 제목들
+function capHeads(text) {
+  const heads = [];
+  for (const line of text.split('\n')) {
+    const m = /^##\s+『([^『』]+)』\s*$/.exec(line);
+    if (m) heads.push(m[1]);
+  }
+  return heads;
 }
 
 function usedNames(text) {
@@ -128,26 +157,44 @@ function usedNames(text) {
 }
 
 function checkNames() {
-  const canon = canonicalNames();
+  const flowDocs = FLOW_DOCS.filter((doc) => existsSync(join(ROOT, doc)));
+  if (flowDocs.length === 0) {
+    note('흐름 문서 없음 — 건너뜀');
+    process.exit(0);
+  }
+  const mappings = installedMappings();
+  if (Object.keys(mappings).length === 0) fail(2, '깔린 매핑이 없다 (.agents/harness/<도구>/00-mapping.md)');
+  const rows = canonicalRows();
+  const canon = rows.map((r) => r.name);
   note(`정본 능력 ${canon.length}개: ${canon.map((n) => `『${n}』`).join(' ')}`);
   const usedInFlow = new Set();
-  for (const doc of FLOW_DOCS) {
+  for (const doc of flowDocs) {
     const used = usedNames(read(doc));
     for (const n of used) {
       usedInFlow.add(n);
       if (!canon.includes(n)) problems.push(`${doc}: 정본에 없는 능력 이름 『${n}』`);
     }
   }
-  for (const [tool, file] of Object.entries(MAPPINGS)) {
-    const text = read(`.agents/harness/${file}`);
-    const heads = new Set();
-    for (const line of text.split('\n')) {
-      const m = /^##\s+『([^『』]+)』\s*$/.exec(line);
-      if (m) heads.add(m[1]);
+  for (const [tool, dir] of Object.entries(mappings)) {
+    let found = 0;
+    for (const { name, file } of rows) {
+      const text = readIn(dir, file);
+      if (text === null) { problems.push(`${tool}/${file}: 능력 『${name}』 의 파일이 없다`); continue; }
+      const heads = capHeads(text);
+      if (heads.length !== 1 || heads[0] !== name) {
+        problems.push(`${tool}/${file}: 절 제목이 『${name}』 하나여야 한다 (있는 것: ${heads.map((h) => `『${h}』`).join(' ') || '없음'})`);
+      } else found += 1;
     }
-    for (const n of canon) if (!heads.has(n)) problems.push(`${file}: 능력 『${n}』 의 절(## 『…』)이 없다`);
-    for (const n of heads) if (!canon.includes(n)) problems.push(`${file}: 정본에 없는 절 『${n}』 (매달린 능력)`);
-    note(`${file}: 능력 절 ${heads.size}개`);
+    // 표에 없는 파일 = 매달린 능력. 공통부·선언 파일만 예외다
+    const known = new Set([COMMON, DECL, ...rows.map((r) => r.file)]);
+    for (const f of readdirSync(dir).sort()) {
+      if (f.endsWith('.md') && !known.has(f)) problems.push(`${tool}/${f}: 정본 능력 목록 표에 없는 파일 (매달린 능력)`);
+    }
+    for (const [file, label] of [[COMMON, '공통부'], [DECL, '선언']]) {
+      const text = readIn(dir, file);
+      if (text !== null && capHeads(text).length > 0) problems.push(`${tool}/${file}: ${label} 파일에 능력 절(## 『…』)이 있다 — 능력은 능력 파일에만`);
+    }
+    note(`${tool}/: 능력 파일 ${found}개 / 정본 ${rows.length}개`);
   }
   for (const n of canon) {
     if (!usedInFlow.has(n)) problems.push(`절차 문서 어디에서도 쓰지 않는 능력 『${n}』 (매달린 능력)`);
@@ -157,42 +204,39 @@ function checkNames() {
 }
 
 function checkShape() {
-  const canon = canonicalNames();
-  for (const [tool, file] of Object.entries(MAPPINGS)) {
-    const text = read(`.agents/harness/${file}`);
+  const mappings = installedMappings();
+  if (Object.keys(mappings).length === 0) fail(2, '깔린 매핑이 없다 (.agents/harness/<도구>/00-mapping.md)');
+  const rows = canonicalRows();
+  for (const [tool, dir] of Object.entries(mappings)) {
+    const common = readIn(dir, COMMON);
     for (const row of PROOF_ROWS) {
-      if (!text.includes(row)) problems.push(`${file}: 보장 요약에 "${row}" 줄이 없다`);
+      if (!common.includes(row)) problems.push(`${tool}/${COMMON}: 보장 요약에 "${row}" 줄이 없다`);
     }
-    const lines = text.split('\n');
-    const starts = [];
-    lines.forEach((line, i) => {
-      const m = /^##\s+『([^『』]+)』\s*$/.exec(line);
-      if (m) starts.push({ name: m[1], at: i });
-    });
+    // 능력 파일 하나 = 절 하나. 파일 유무·제목은 names 가 본다 — 여기서는 있는 파일의 모양만
+    const starts = rows.filter((r) => readIn(dir, r.file) !== null);
     for (let k = 0; k < starts.length; k += 1) {
-      const end = k + 1 < starts.length ? starts[k + 1].at : lines.length;
-      const body = lines.slice(starts[k].at, end).join('\n');
+      const file = `${tool}/${starts[k].file}`;
+      const body = readIn(dir, starts[k].file);
       for (const s of SECTIONS) {
         if (!body.includes(s)) problems.push(`${file} 『${starts[k].name}』: "${s}" 가 없다`);
       }
       for (const s of SITUATIONS) {
         if (!body.includes(s)) { problems.push(`${file} 『${starts[k].name}』: 상황 항목 "${s}" 가 없다`); continue; }
-        // K9 — 라벨만 있고 뒤가 빈 항목을 잡는다. **내용의 타당성은 이 관문이 보지 않는다(리뷰 몫).**
+        // 라벨만 있고 뒤가 빈 항목을 잡는다. **내용의 타당성은 이 관문이 보지 않는다(리뷰 몫).**
         const at = body.indexOf(s) + s.length;
         const rest = body.slice(at, body.indexOf('\n- **', at) === -1 ? undefined : body.indexOf('\n- **', at));
         const filled = rest.replace(/[\s:·.]/g, '');
         // 임계 3자: `해당 없음.` 같은 정당한 짧은 답은 통과시키고 **라벨만 있고 빈 칸**만 잡는다.
-        // 내용이 타당한지는 이 관문이 판단하지 않는다 — 리뷰어 몫이다(K9 의 한계로 문서화).
+        // 내용이 타당한지는 이 관문이 판단하지 않는다 — 리뷰어 몫이다(머리 주석의 한계 L-d).
         if (filled.length < 3) problems.push(`${file} 『${starts[k].name}』: 상황 항목 "${s}" 가 라벨만 있고 비었다(유효 ${filled.length}자)`);
-        // P9 — C2 문구는 **"해당 없음 — 이유"** 다. 사유 없는 `해당 없음.` 은 통과시키지 않는다.
-        // (라운드 3 까지 12칸이 사유 없이 있었고, 옛 판이 그 형태를 의도적으로 통과시켰다)
+        // 문구는 **"해당 없음 — 이유"** 다. 사유 없는 `해당 없음.` 은 통과시키지 않는다.
         else if (/^\s*:?\s*해당\s*없음\s*[.。]?\s*$/.test(rest.split('\n')[0])) {
-          problems.push(`${file} 『${starts[k].name}』: 상황 항목 "${s}" 가 사유 없는 "해당 없음." 이다 — C2 는 \`해당 없음 — 이유\` 를 요구한다`);
+          problems.push(`${file} 『${starts[k].name}』: 상황 항목 "${s}" 가 사유 없는 "해당 없음." 이다 — \`해당 없음 — 이유\` 를 요구한다`);
         }
       }
     }
-    note(`${file}: 절 ${starts.length}개 × (절 3개 + 상황 5개) 검사`);
-    if (starts.length !== canon.length) problems.push(`${file}: 절 수 ${starts.length} ≠ 정본 ${canon.length}`);
+    note(`${tool}/: 능력 파일 ${starts.length}개 × (절 3개 + 상황 5개) 검사`);
+    if (starts.length !== rows.length) problems.push(`${tool}/: 능력 파일 ${starts.length}개 ≠ 정본 ${rows.length}`);
   }
   verdict('shape');
 }
@@ -222,7 +266,7 @@ export function declaredBlock(text, kind) {
 
 // ── 표기 규약 검사 ──────────────────────────────────────────────────────────
 // 펜스 블록과 그 밖의 산문을 갈라 준다. ``` 의 세 번째 백틱이 산문과 짝지어 **가짜 스팬**을 만들기 때문에
-// 인라인 스팬은 반드시 "펜스 밖" 에서만 센다 (라운드 3 에서 실제로 밟았다).
+// 인라인 스팬은 반드시 "펜스 밖" 에서만 센다 .
 export function splitFences(text) {
   const fences = [];
   const outside = text.replace(/```[a-z-]*\n[\s\S]*?```/g, (m) => {
@@ -286,7 +330,7 @@ export function classifySpan(span, tool, lex, declared) {
   }
 
   if (words[0] === toolWord) {
-    // 전역옵션을 먼저 걷어낸다 (옛 판은 여기서 스팬을 버렸다 — P1 의 뿌리)
+    // 전역옵션을 먼저 걷어낸다 (여기서 스팬을 버리면 옵션이 낀 명령줄이 검사를 빠져나간다)
     const opts = GLOBAL_OPTS[toolWord] || { valued: [], plain: [] };
     let i = 1;
     // 값 하나를 먹는다. `<전용 소켓 이름>` 처럼 자리표시자에 공백이 있으면 `>` 까지 먹는다
@@ -325,7 +369,7 @@ export function classifySpan(span, tool, lex, declared) {
       if (lex.names.includes(cand)) return { kind: isLine ? 'line' : 'name', name: cand };
     }
     // 레지스트리에 없다. 선언(언급만)에 있으면 **이름 언급일 때만** 받는다 —
-    // 명령줄이면 R1b 다. 옛 판은 여기서 명령줄을 이름으로 낮춰 R1b 를 건너뛰었다(P1·G1).
+    // 명령줄이면 R1b 다 — 명령줄을 이름으로 낮추면 R1b 를 건너뛴다.
     for (const cand of [two, one]) {
       if (!cand) continue;
       if (declared.has(cand)) {
@@ -394,24 +438,33 @@ function run(cmd, args) {
 
 function checkRuntime() {
   const tool = flag('--tool');
-  if (!tool || !MAPPINGS[tool]) fail(2, 'runtime 모드는 --tool corral|orca|bare 가 필요하다');
-  const mappingPath = flag('--mapping') || join(ROOT, '.agents/harness', MAPPINGS[tool]);
-  const mapping = readFileSync(mappingPath, 'utf8');
+  if (tool !== 'corral' && tool !== 'orca' && tool !== 'bare') fail(2, 'runtime 모드는 --tool corral|orca|bare 가 필요하다');
+  const mappingPath = flag('--mapping') || join(HARNESS_DIR, tool);
+  if (!existsSync(join(mappingPath, COMMON))) fail(2, `깔린 매핑이 아니다(${COMMON} 없음): ${mappingPath}`);
+  const declText = readIn(mappingPath, DECL);
+  if (declText === null) fail(2, `선언 파일이 없다: ${join(mappingPath, DECL)}`);
+  // 본문 = 폴더의 .md 전부(공통부 · 선언 파일의 산문 · 능력 파일). 선언 블록은 아래에서 걷어 낸다
+  const mapping = readdirSync(mappingPath).filter((f) => f.endsWith('.md')).sort()
+    .map((f) => readFileSync(join(mappingPath, f), 'utf8')).join('\n');
   const advFile = flag('--advertised');
   // 실제로 읽은 파일을 적는다 — 뒷문으로 갈아 끼웠는데 원본 이름을 찍으면 양성 대조가 거짓말이 된다
   note(`매핑: ${mappingPath}`);
-  // K8 — 프로필 선택 인자를 그대로 넘긴다. 주지 않으면 기본 프로필이다
+  // 프로필 선택 인자를 그대로 넘긴다. 주지 않으면 기본 프로필이다
   const profile = [];
   if (flag('--socket')) profile.push('--socket', flag('--socket'));
   if (flag('--instance')) profile.push('--instance', flag('--instance'));
   if (profile.length && tool !== 'corral') {
-    fail(2, `${tool} 는 --socket·--instance 를 받지 않는다 — 프로필 선택은 corral 전용이다(P11). 그 축은 ${tool} 에서 공백이다`);
+    fail(2, `${tool} 는 --socket·--instance 를 받지 않는다 — 프로필 선택은 corral 전용이다. 그 축은 ${tool} 에서 공백이다`);
   }
   note(profile.length ? `프로필 인자: ${profile.join(' ')}` : '프로필: 기본 (--socket·--instance 없음)');
 
   // (1) 선언 블록
-  const decl = declaredBlock(mapping, 'required-commands');
-  const ment = declaredBlock(mapping, 'mentioned-commands');
+  // 선언은 commands.md 에서만 읽는다 — 다른 파일에 선언 블록이 있으면 그것은 선언이 아니다
+  const decl = declaredBlock(declText, 'required-commands');
+  const ment = declaredBlock(declText, 'mentioned-commands');
+  if (/```(required-commands|mentioned-commands|required-tokens)\n/.test(mapping.replace(declText, ''))) {
+    problems.push(`선언 블록은 ${DECL} 에만 둔다 — 다른 매핑 파일에 선언 블록이 있다`);
+  }
   if (!decl.found) problems.push('```required-commands 선언 블록이 없다 (요구를 안 적었다)');
   else if (decl.entries.length === 0) problems.push('```required-commands 선언이 비어 있다 — 요구 0개는 통과가 아니다');
   for (const n of ment.noReason) problems.push(`R4 위반 — mentioned-commands \`${n}\` 에 사유 주석이 없다`);
@@ -433,10 +486,11 @@ function checkRuntime() {
     note(`광고 출처: ${tool} status --json${profile.length ? ' ' + profile.join(' ') : ''} (실행)`);
   }
   if (tool === 'orca') {
-    const reg = JSON.parse(run(tool, ['agent-context', '--json', ...profile]));
+    const regFile = flag('--registry');
+    const reg = JSON.parse(regFile ? readFileSync(regFile, 'utf8') : run(tool, ['agent-context', '--json']));
     registry = new Set((reg.commands || []).map((c) => c.command));
     if (registry.size === 0) fail(2, `${tool} agent-context --json 에 commands 가 없다`);
-    note(`명령 레지스트리 ${registry.size}개`);
+    note(`명령 레지스트리 ${registry.size}개${regFile ? ` (주입: ${regFile})` : ''}`);
   } else if (tool === 'corral') {
     registry = advertised; // corral 의 광고가 곧 명령 이름 집합이다
   } else {
@@ -498,13 +552,13 @@ function checkRuntime() {
   for (const n of [...declared].sort()) {
     if (!used.has(n)) problems.push(`R5 위반 — 선언에만 있고 본문에 없는 명령: ${n}`);
   }
-  // (7) orca 기능 토큰
+  // (7) orca 기능 토큰 — orca 의 광고는 명령 이름이 아니라 기능 토큰이다
   if (tool === 'orca') {
-    const tdecl = declaredBlock(mapping, 'required-tokens');
+    const tdecl = declaredBlock(declText, 'required-tokens');
     if (!tdecl.found) problems.push('```required-tokens 선언 블록이 없다 (orca 의 광고는 기능 토큰이다)');
     else if (tdecl.entries.length === 0) problems.push('```required-tokens 선언이 비어 있다');
     note(`선언한 요구 기능 토큰 ${tdecl.entries.length}개`);
-    for (const t of tdecl.entries) if (advertised && !advertised.has(t)) problems.push(`광고에 없는 기능 토큰: ${t}`);
+    for (const t of tdecl.entries) if (!advertised.has(t)) problems.push(`광고에 없는 기능 토큰: ${t}`);
     const proseTokens = new Set();
     for (const m of prose.matchAll(/\b([a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+\.v\d+)\b/g)) proseTokens.add(m[1]);
     for (const t of [...proseTokens].sort()) {
@@ -516,14 +570,14 @@ function checkRuntime() {
     if (problems.length > 0) verdict('runtime --tool bare');
     note('bare: 규약·선언·본문 세 방향은 돌렸다. **광고 대조만 불가**다 —');
     note('  tmux·iTerm2 어느 쪽도 "무엇을 보장하는가" 를 기계가 읽을 형태로 내놓지 않는다.');
-    note('  → 그 한 방향은 공백이다. 판정표에 공백으로 적어라 (bare.md 『전제 점검』).');
+    note('  → 그 한 방향은 공백이다. 판정표에 공백으로 적어라 (bare/preflight.md 『전제 점검』).');
     process.exit(3);
   }
   verdict(`runtime --tool ${tool}`);
 }
 
-// 직접 실행일 때만 검사를 돈다. `c3c4-crosscheck.mjs` 가 **같은 허용 목록**을 쓰도록 import 하기 때문이다 —
-// 목록이 두 벌이면 한쪽만 좁아진다(라운드 1~3 이 그 자리에서 셋 다 샜다).
+// 직접 실행일 때만 검사를 돈다. 다른 도구가 **같은 허용 목록**을 쓰도록 import 할 수 있어야 하기 때문이다 —
+// 목록이 두 벌이면 한쪽만 좁아진다.
 const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedDirectly) {
   if (mode === 'names') checkNames();

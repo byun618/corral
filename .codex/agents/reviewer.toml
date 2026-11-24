@@ -1,3 +1,4 @@
+# paddock:fixed — 역할마다 하나씩 찍어 .codex/agents/reviewer.toml 로 둔다
 name = "reviewer"
 description = "구현 코드 독립 검토"
 

@@ -18,6 +18,8 @@ allowed() {
   case "$1" in
     "scripts/release.sh:"*"옛 'release.sh --prs"*) echo "옛 호출을 거절하는 안내 문구 자체" ;;
     ".agents/skills/release/SKILL.md:"*"throwaway \`integration/\` 브랜치를 따로 만들지 않는다"*) echo "출고 통합 확인이 integration/ 를 대체한다는 문장" ;;
+    ".agents/rules/corral.md:"*"integration/<이름>-YYYYMMDD"*) echo "AGENTS.md 에서 옮긴 같은 줄(paddock 적용) — 출고 통합 확인은 release worktree 로 옮겼다고 같은 줄에 적음" ;;
+    ".paddock/design.md:"*"integration/<이름>-YYYYMMDD"*) echo "paddock 적용 때 그 줄을 어디로 옮겼는지 적은 기록" ;;
     "AGENTS.md:"*"integration/<이름>-YYYYMMDD"*) echo "출고 밖의 통합 확인 몫 — 출고 통합 확인은 release worktree 로 옮겼다고 같은 줄에 적음" ;;
     "app/INSTALL.md:"*"「충돌이 나면 (gather exit 3)」"*|"app/INSTALL.md:"*"**충돌이 나면 (gather exit 3)**"*|"app/INSTALL.md:"*"위 「충돌이 나면」"*) echo "새 흐름의 충돌 절(release worktree 에서 해소)" ;;
     *) return 1 ;;
@@ -66,10 +68,11 @@ HDR="$(sed -n '/^# 종료코드/,/^# 재실행/p' scripts/release.sh | grep -oE 
 # ── 4. AGENTS.md — 흐름 표 8행 · release 브랜치 예외 · main 직접 push(태그만) · 200줄 ──
 A=AGENTS.md
 L="$(wc -l < "$A" | tr -d ' ')"; [ "$L" -le 200 ] && ok "AGENTS.md ${L}줄 ≤ 200" || bad "AGENTS.md ${L}줄"
-grep -qE '^\| 8 출고 — release/vX\.Y\.Z' "$A" && ok "흐름 표 8행 release 브랜치" || bad "흐름 표 8행"
-grep -qF '**release 브랜치 release/vX.Y.Z**' "$A" && grep -q '한 번에 하나' "$A" && ok "브랜치 규약 release 예외(1회 수명·한 번에 하나)" || bad "브랜치 규약 release 예외"
-grep -q 'main 에 직접 올라가는 것은 release.sh 의 태그뿐' "$A" && ok "main 직접 push = 태그만" || bad "main 직접 push 문구"
-grep -q '출고 통합 확인은 release worktree' "$A" && ok "integration/ 줄 정리" || bad "integration/ 줄"
+grep -qE '^\| 8 머지 뒤 마무리 — .*task-close' "$A" && grep -qF '회고(release §4)' .agents/skills/task-close/SKILL.md && ok "흐름 표 8행 task-close → 출고 방식 슬롯이 release 스킬" || bad "흐름 표 8행"
+PR=.agents/rules/corral.md   # 브랜치·출고 규약은 paddock 적용(2026-11-24) 때 AGENTS.md 에서 이리 옮겼다
+grep -qF '**release 브랜치 release/vX.Y.Z**' "$PR" && grep -q '한 번에 하나' "$PR" && ok "브랜치 규약 release 예외(1회 수명·한 번에 하나)" || bad "브랜치 규약 release 예외"
+grep -q 'main 에 직접 올라가는 것은 release.sh 의 태그뿐' "$PR" && ok "main 직접 push = 태그만" || bad "main 직접 push 문구"
+grep -q '출고 통합 확인은 release worktree' "$PR" && ok "integration/ 줄 정리" || bad "integration/ 줄"
 
 # ── 5. release.sh 언급 정합 — 남은 언급 줄 목록(사유는 사람이 보지만, 옛 사용법은 1 에서 이미 막았다) ──
 say "── release.sh 언급(참고 — 하위 명령 없이 부르는 사용법은 1 에서 실패로 잡는다)"

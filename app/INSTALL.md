@@ -146,6 +146,8 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 ## 빌드
 
 전제: **clang(Xcode 명령줄 도구, `xcode-select --install`)** — `npm run build`·`npm run dev`·`package:mac` 이 Resource Manager 메모리 도우미(`helper/corral-footprint.c`)를 `scripts/build-footprint.mjs` 로 빌드한다(LIFE-676). 없으면 빌드가 멈춘다.
+dmg(`package:mac`)는 여기에 **swiftc 와 macOS 26 SDK**(같은 명령줄 도구 — 음성 받아쓰기 도우미 `helper/corral-dictation.swift` 가 SpeechAnalyzer 를 쓴다)가 더 든다 — `scripts/build-dictation.mjs` 가 electron-builder 직전에 빌드·`--check` 하고, 없거나 못 돌면 거기서 멈춘다(LIFE-834).
+`npm run dev`·`npm run build`·`npm test`·typecheck 는 이 도우미를 빌드하지 않는다 — 없어도 그대로 돌고, 받아쓰기만 「도우미 실행 파일이 없다」 알림으로 막힌다(dev 에서 쓰려면 `npm run build:dictation` 한 번).
 
 ```sh
 cd app

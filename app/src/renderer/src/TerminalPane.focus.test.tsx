@@ -35,8 +35,9 @@ vi.mock('@xterm/xterm', () => {
       this.textarea?.focus()
     }
     registerLinkProvider(provider: unknown): { dispose: () => void } {
-      links.register(provider)
-      return { dispose: links.dispose }
+      links.register(provider, this)
+      // provider 별로 dispose 를 가른다 — 「각 1회」를 실제로 단언한다(LIFE-835 r1 E①).
+      return { dispose: () => links.dispose(provider) }
     }
     onSelectionChange(): { dispose: () => void } {
       return { dispose: () => {} }
@@ -64,6 +65,7 @@ vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 
 const { TerminalPane } = await import('./TerminalPane.js')
 const { terminalLinkHandler } = await import('./terminal-links.js')
+const { setPaneLinkDirectory } = await import('./terminal-pane-links.js')
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -155,13 +157,28 @@ describe('LIFE-501 — 편집 중인 입력칸은 터미널 포커스에 지지 
 })
 
 describe('LIFE-565 R1-06 — 링크 배선', () => {
-  it('마운트에 평문 provider 1회 등록 · 생성자에 OSC 8 linkHandler · 언마운트에 dispose 1회', () => {
+  // LIFE-835 — provider 가 둘이 됐다: 평문 URL 먼저, pane 이름 다음(D5 — 겹치면 먼저 등록된 URL 이 이긴다). 각 1회 등록·언마운트에 각 1회 dispose.
+  it('마운트에 평문 provider → pane 이름 provider 순서로 각 1회 등록 · 생성자에 OSC 8 linkHandler · 언마운트에 dispose 각 1회', async () => {
     renderPane({ paneId: 'p1', focusToken: 0 })
     expect(links.constructed).toHaveLength(1)
     expect(links.constructed[0]?.['linkHandler']).toBe(terminalLinkHandler)
-    expect(links.register).toHaveBeenCalledTimes(1)
+    expect(links.register).toHaveBeenCalledTimes(2)
+    // 순서 확인 — 같은 행(`https://x.y/wZ3:p1 wZ3:p1`)에서 첫 provider 는 URL, 둘째는 pane 이름만 낸다.
+    const text = 'https://x.y/wZ3:p1 wZ3:p1'
+    const [urlProvider, term] = links.register.mock.calls[0] ?? []
+    const [paneProvider] = links.register.mock.calls[1] ?? []
+    term.buffer.active.getLine = (y: number) => (y === 0 ? { getCell: (x: number) => ({ getChars: () => text[x] ?? '', getWidth: () => 1 }) } : undefined)
+    const release = setPaneLinkDirectory({ lookup: (paneId) => (paneId === 'wZ3:p1' ? { paneId, worktreeName: 'w', tabTitle: 't', paneNumber: 1 } : null), reveal: () => {}, notifyGone: () => {} })
+    const ask = (provider: { provideLinks: (y: number, done: (links: Array<{ text: string }> | undefined) => void) => void }) =>
+      new Promise<string[]>((resolve) => provider.provideLinks(1, (found) => resolve((found ?? []).map((link) => link.text))))
+    expect(await ask(urlProvider)).toEqual(['https://x.y/wZ3:p1'])
+    expect(await ask(paneProvider)).toEqual(['wZ3:p1', 'wZ3:p1'])
+    release()
     expect(links.dispose).not.toHaveBeenCalled()
     act(() => root.render(createElement('div')))
-    expect(links.dispose).toHaveBeenCalledTimes(1)
+    // 각 provider 가 정확히 1회씩 — 한 provider 가 두 번 거둬지고 다른 하나가 새는 경우를 가른다.
+    expect(links.dispose.mock.calls).toHaveLength(2)
+    expect(links.dispose.mock.calls.filter(([provider]) => provider === urlProvider)).toHaveLength(1)
+    expect(links.dispose.mock.calls.filter(([provider]) => provider === paneProvider)).toHaveLength(1)
   })
 })

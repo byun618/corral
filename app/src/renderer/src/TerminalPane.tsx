@@ -28,6 +28,7 @@ import { measureCellSize, readCellSize } from './term-metrics.js'
 import { useSettings } from './settings-store.js'
 import { registerTerminalLinks, terminalLinkHandler } from './terminal-links.js'
 import { attachLinkRefresh } from './terminal-link-refresh.js'
+import { registerPaneNameLinks } from './terminal-pane-links.js'
 import { applyTerminalAppearance, terminalAppearanceOptions, type TerminalAppearanceOptions } from './terminal-appearance.js'
 import { attachImeComposition } from './ime-composition.js'
 import { attachTerminalKeys } from './terminal-keys.js'
@@ -44,6 +45,7 @@ import {
 import { highlightSegments } from '../../shared/terminal-search.js'
 import { CLOSED_SEARCH, TerminalSearchController, onTerminalFind, type TerminalSearchState } from './terminal-search-controller.js'
 import { TerminalSearchBar } from './components/TerminalSearchBar.js'
+import { registerSelectionClearer } from './terminal-selection.js'
 
 const decoder = new TextDecoder()
 
@@ -241,6 +243,8 @@ export function TerminalPane({
     const links = registerTerminalLinks(term)
     // 행 내용이 바뀌면 링크 캐시를 다시 묻게 한다 — 정지 포인터 아래 새 링크·같은 행 낡은 캐시(LIFE-573).
     const linkRefresh = attachLinkRefresh({ term })
+    // pane 이름 ⌘+클릭(LIFE-835) — URL provider 뒤에 등록해야 겹칠 때 URL 이 이긴다(D5). 살아 있는 집합이 바뀌면 다시 판정한다(C3ⓓ).
+    const paneLinks = registerPaneNameLinks({ term, paneId, reevaluate: linkRefresh.reevaluate })
     termRef.current = term
     // 한글 IME 조합 표시층(LIFE-566) — 조합 상자를 그려진 커서 칸에 맞추고 뒤에 caret 을 그린다.
     const detachIme = attachImeComposition({ term })
@@ -403,6 +407,8 @@ export function TerminalPane({
       )
     }
     container.addEventListener('paste', onPaste, { capture: true })
+    // LIFE-834 fix1 G2 — 받아쓰기 넣기도 ⌘V 처럼 보내기 직전에 이 pane 의 선택을 푼다(`terminal-selection.ts`).
+    const offSelectionClearer = registerSelectionClearer({ paneId, clear: () => term.clearSelection() })
 
     // --- OS 파일 드롭 (LIFE-497 · D43) — preload 가 드롭 지점의 pane 과 경로를 준다 ---------
     const offFileDrop = window.corral.onFileDrop((drop) => {
@@ -538,6 +544,7 @@ export function TerminalPane({
       if (installed !== undefined) paneAppearance.delete(paneId)
       container.removeEventListener('wheel', onWheel, { capture: true })
       container.removeEventListener('paste', onPaste, { capture: true })
+      offSelectionClearer()
       offFileDrop()
       offFrame()
       selectionListener.dispose()
@@ -545,6 +552,7 @@ export function TerminalPane({
       detachIme()
       detachKeys.dispose()
       links.dispose()
+      paneLinks.dispose()
       linkRefresh.dispose()
       termRef.current = null
       term.dispose()

@@ -14,14 +14,14 @@ import { ServeExposure } from './exposure.js'
 import { ChatHub, chatFileOf, questionSource } from './chat.js'
 import { InputHub, type InputBackend } from './input.js'
 import { HerdrInputBackend } from './input-backend.js'
+import { inputFileDeps } from './input-files.js'
 import { ListFeed } from './feed.js'
 import type { ListInput } from './list.js'
 import { fallbackMacName, readMacName } from './mac-name.js'
 import { MAX_DEVICES, PairingStore } from './pairing.js'
 import { pairingPayload } from './protocol.js'
 import type { AgentSessionRef } from '../../shared/types.js'
-import { resolveTranscriptFile, resolveTranscriptUnique, type TranscriptResolution } from '../transcript.js'
-import { sessionRecordPaths } from '../../runtime/terminal/agent.js'
+import { resolveTranscriptFile, type TranscriptResolution } from '../transcript.js'
 import { MobileServer } from './server.js'
 import { MOBILE_HTTPS_PORT, type TailscaleRunner } from './tailscale.js'
 
@@ -92,21 +92,16 @@ export class MobileService {
     // 쓰기(LIFE-582) — 대화와 같은 파일이되 **유일한 후보만**(R1-A13 — 표시용 첫 일치를 소유 증명으로 쓰지 않는다). 질문 확인은 열린 대화 판독자에서만 읽는다.
     const chat = this.chat
     const inputBackend = deps.inputBackend ?? (deps.inputSocket === undefined ? undefined : () => this.herdrBackend())
+    const injected = deps.resolveChatFile
+    const resolveInput = injected === undefined ? undefined : (session: AgentSessionRef) => uniqueOf(injected(session))
     this.input = listSource === undefined || chat === null || inputBackend === undefined ? null : new InputHub({
       read: listSource,
       log: deps.log,
       backend: inputBackend,
-      resolveFile: ({ session, agent }) => {
-        const resolved = deps.resolveChatFile === undefined ? resolveTranscriptUnique(session) : uniqueOf(deps.resolveChatFile(session))
-        return resolved.kind === 'found' ? { kind: 'found', file: chatFileOf({ agent, transcript: resolved.file }), continuedAs: resolved.continuedAs } : resolved
-      },
+      // 기록 찾기 규칙은 데스크톱 diff 메모 허브와 같은 함수(LIFE-832 A9).
+      ...inputFileDeps(resolveInput),
       deviceValid: (device) => this.pairing.has(device),
       ...questionSource(chat),
-      expectedFile: ({ channel, cwd }) => {
-        const { session, agent } = channel
-        if (session.kind !== 'id' || agent === 'codex') return null
-        return sessionRecordPaths(agent, { cwd, sessionId: session.id, t0Ms: 0, nowMs: 0 })[0] ?? null
-      },
     })
     this.server = new MobileServer({
       pairing: this.pairing,

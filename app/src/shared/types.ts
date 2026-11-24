@@ -8,6 +8,7 @@ import type { MobilePairingResult, MobileStatus } from './mobile.js'
 import type { UsageSnapshot } from './usage.js'
 import type { AgentDetectionSnapshot } from './agent-detection.js'
 import type { WorktreeWorkLink } from './work-link.js'
+import type { DictationEvent, DictationInsertResult, DictationPressKeys, DictationStartResult } from './dictation.js'
 import type { RelaunchAgentInput, StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
 import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
 import type { FileListInput, FileListResult } from './file-list.js'
@@ -16,6 +17,9 @@ import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, Exp
 import type { ExplorerDrop, ExplorerOpInput, ExplorerOpResult } from './explorer-ops.js'
 import type { ResourceCloseResult, ResourceOrphanCloseResult, ResourceCloseRoute, ResourceSnapshot } from './resource.js'
 import type { ScmReadInput, ScmReadResult } from './scm.js'
+import type { DiffNotesSendInput, DiffNotesSendResult, DiffNotesState } from './diff-notes.js'
+import type { ScmWriteInput, ScmWriteResult } from './scm-write.js'
+import type { ScmRemoteAction, ScmRemoteInput, ScmRemoteResult } from './scm-remote.js'
 import type { PrBranchesResult, PrItemRefreshResult } from './pr-status.js'
 import type { PrCommentsResult } from './pr-comments.js'
 import type { HistoryAgents, SessionHistoryDetailResult, SessionHistoryListInput, SessionHistoryListResult, SessionHistoryResumeInput, SessionHistoryResumeResult, SessionHistoryRevealResult, SessionKey } from './session-history.js'
@@ -1122,6 +1126,23 @@ export type CorralApi = {
   readImage: (input: { root: string; rel: string }) => Promise<ImageReadResult>
   /** LIFE-683 S7 — 소스 제어 diff 의 HEAD·인덱스 쪽 내용(읽기 전용, `main/scm-read.ts`). */
   scmRead: (input: ScmReadInput) => Promise<ScmReadResult>
+  /** LIFE-829 — 소스 제어 쓰기(stage·unstage·discard·커밋·amend, `main/scm-write.ts`). 확인 대화상자는 main 이 띄운다. */
+  scmWrite: (input: ScmWriteInput) => Promise<ScmWriteResult>
+  /** LIFE-831 — 소스 제어 원격(가져오기·끌어오기·밀어넣기·브랜치 게시, `main/scm-remote.ts`). 게시 원격 고르기는 main 이 띄운다. */
+  scmRemote: (input: ScmRemoteInput) => Promise<ScmRemoteResult>
+  /** 그 루트의 원격 동작 취소 — 진행 중이면 프로세스 그룹 종료, 기다리던 것이면 git 없이 빠진다. 없으면 `ok: false`. */
+  scmRemoteCancel: (input: { root: string }) => Promise<{ ok: boolean }>
+  /** 그 루트의 진행 중 원격 동작(없으면 null) — 렌더러가 다시 그려질 때 진행 표시를 되살린다(LIFE-831 수정 r1 C6). */
+  scmRemoteState: (input: { root: string }) => Promise<{ action: ScmRemoteAction | null }>
+  /** 원격 동작 시작(동작)·끝(null) 알림. */
+  onScmRemoteEvent: (listener: (event: { root: string; action: ScmRemoteAction | null }) => void) => () => void
+  /** 소스 제어 base 대비 켜기·끄기 (LIFE-830) — 켠 루트의 git push 에 `base` 가 실린다. ref 는 보내지 않는다. */
+  scmBaseMode: (input: { root: string; on: boolean }) => void
+  /** diff 메모 보내기 (LIFE-832) — 확인 단계 본문 그대로 그 worktree 의 에이전트 pane 에. 결과는 `onDiffNotesState` 로 온다. */
+  diffNotesSend: (input: DiffNotesSendInput) => Promise<DiffNotesSendResult>
+  /** 대기 중인 보내기 취소(넣기 시작 전만). */
+  diffNotesCancel: (input: { requestId: string }) => void
+  onDiffNotesState: (listener: (state: DiffNotesState) => void) => () => void
   /** 열린 파일 탭 감시 집합(LIFE-590 E5) — 통째로 바꾼다. */
   fileWatch: (input: { root: string; rels: string[] }) => Promise<{ ok: boolean; count: number }>
   onFileEvent: (listener: (event: FileWatchPush) => void) => () => void
@@ -1188,6 +1209,16 @@ export type CorralApi = {
   onTermFrame: (listener: (frame: TerminalFrame) => void) => () => void
   /** 메뉴에서 뺏어 온 단축키가 레지스트리 액션과 방향 번호가 온다 — 키는 main 이 삼키고 여기로 넘긴다. */
   onShortcut: (listener: (shortcut: CorralShortcut) => void) => () => void
+  /** LIFE-834 음성 받아쓰기 — 도우미 시작(세션 id 는 렌더러가 정한다)·정지(마지막 FINAL 까지)·취소·마이크 개인정보 설정 열기·이벤트. */
+  dictationStart: (input: { sessionId: string }) => Promise<DictationStartResult>
+  dictationStop: (input: { sessionId: string }) => void
+  dictationCancel: (input: { sessionId: string }) => void
+  dictationOpenPrivacy: () => Promise<void>
+  /** FINAL 한 번을 고정 대상 pane 에 — 붙은 탭이면 ⌘V 길, 아니면 guard `pane.send_text`(fix1 G1). 결과로 실패를 안다. */
+  dictationInsert: (input: { sessionId: string; paneId: string; text: string }) => Promise<DictationInsertResult>
+  /** 받아쓰기 단축키를 키보드로 눌렀다 — main 이 그 글쇠의 뗀 뒤 반복을 메뉴 가속키보다 먼저 막는다(LIFE-834 r5 C-R5-2). */
+  dictationPressKeys: (keys: DictationPressKeys) => void
+  onDictationEvent: (listener: (event: DictationEvent) => void) => () => void
   /** LIFE-527 — 창 크롬 상태(macOS 여부·전체화면·줌). 다른 창의 요청이면 null. */
   getWindowChrome: () => Promise<WindowChrome | null>
   onWindowChrome: (listener: (chrome: WindowChrome) => void) => () => void

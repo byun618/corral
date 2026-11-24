@@ -33,6 +33,10 @@ extraResources:
   # `package:mac` 이 electron-builder 직전에 `build-footprint.mjs --check` 로 확인한다(없으면 패키징 전에 멈춘다).
   - from: build/helper/corral-footprint
     to: helper/corral-footprint
+  # LIFE-834 — 음성 받아쓰기 도우미(마이크 + SpeechTranscriber ko-KR). 소스 `helper/corral-dictation.swift`, `package:mac` 이 electron-builder 직전에
+  # `build-dictation.mjs` 로 빌드·`--check` 한다(실패하면 패키징 전에 멈춘다).
+  - from: build/helper/corral-dictation
+    to: helper/corral-dictation
   # LIFE-589 — 탐색기 아이콘 글꼴 고지. 글꼴 자체는 렌더러 번들(asar)에 든다: Seti(vscode 1.142.0, MIT + 제3자 고지) · codicons(CC BY 4.0 / 코드 MIT).
   - from: src/renderer/src/assets/seti/VSCODE-LICENSE.txt
     to: licenses/seti/VSCODE-LICENSE.txt
@@ -59,6 +63,10 @@ mac:
   identity: '-'
   hardenedRuntime: false
   gatekeeperAssess: false
+  # LIFE-834 — 마이크 권한 창 문구(Electron 기본 문구 대신). 마이크는 받아쓰기 도우미가 연다 — 권한 주체는 corral.app(00-analysis 7절).
+  # hardened runtime 을 켜는 일감이 오면 `com.apple.security.device.audio-input` entitlement 가 같이 필요하다.
+  extendInfo:
+    NSMicrophoneUsageDescription: 음성 받아쓰기 — 단축키로 켜면 말한 내용을 기기 안에서 글자로 바꿔 터미널 pane 에 넣습니다. 음성은 기기 밖으로 나가지 않습니다.
 dmg:
   writeUpdateInfo: false
 publish: null

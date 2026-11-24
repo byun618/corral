@@ -36,6 +36,8 @@ import { groupGlyphs, MRU_LIMIT, openMru, orderMru, stepMru, touchMru } from './
 import { numbersOf } from './pane-geometry.js'
 import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
+import { livePaneIdsOf, publishLivePaneIds, resolvePaneLinkTarget, setPaneLinkDirectory } from './terminal-pane-links.js'
+import { flashPaneRim } from './pane-rim-flash.js'
 import { closeGroup as closeGroupIn, findGroup, neighborGroupId, newTabPlacement, newTabSlotKey, newTabSlotOf, ONE_GROUP, ONE_TAB_IN_GROUP, topRightGroupId, unrememberedArrivalBranch, type NewTabSlot } from './group-tree.js'
 import type { TabGroup } from './group-tree.js'
 import type { LifecycleNotice } from './lifecycle-types.js'
@@ -75,7 +77,8 @@ import { ScmView } from './components/ScmView.js'
 import { PrCommentsView } from './components/PrCommentsView.js'
 import { SessionHistoryView } from './components/SessionHistoryView.js'
 import { DiffView } from './components/DiffView.js'
-import { diffTabId, diffTitle, openOf, type ScmChange } from '../../shared/scm.js'
+import { discardNoteDraft } from './components/DiffNotes.js'
+import { diffTabId, diffTitle, openOf, parseDiffTabId, type ScmChange } from '../../shared/scm.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
 import { useFileDrag } from './hooks/useFileDrag.js'
@@ -123,6 +126,8 @@ import { isAgentAvailable, resolveNewAgentTab } from './tab-create-menu.js'
 import { DETECTABLE_AGENTS } from '../../shared/agent-detection.js'
 import { useAgentDetection, useRecheckAgentDetectionOnOpen } from './agent-detection-store.js'
 import { terminalCssVars } from './terminal-appearance.js'
+import { useDictation } from './hooks/useDictation.js'
+import { DictationIndicator } from './components/DictationIndicator.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
   if (workspaceId === null) return null
@@ -371,6 +376,15 @@ export function App(): React.JSX.Element {
     stateRef.current = stabilized
     setState(stabilized)
   }, [])
+  // LIFE-834 음성 받아쓰기 — FINAL 이 도착한 순간 대상 pane 이 아직 있는지는 최신 상태로 본다(닫혔으면 넣지 않고 멈춘다).
+  const dictation = useDictation({
+    paneExists: (paneId) =>
+      stateRef.current?.repos.some((repo) => repo.worktrees.some((worktree) => worktree.workspace?.tabs.some((tab) => tab.panes.some((pane) => pane.paneId === paneId)) ?? false)) ?? false,
+    notify: (notice) => {
+      if (notice.openPrivacy) toast(notice.message, { action: { label: '개인정보 설정 열기', onClick: () => void window.corral.dictationOpenPrivacy() }, duration: 15000 })
+      else toast(notice.message)
+    },
+  })
 
   useEffect(() => {
     void window.corral.getState().then(receive)
@@ -642,6 +656,29 @@ export function App(): React.JSX.Element {
     },
     [selectPane],
   )
+  // LIFE-835 — 터미널 pane 이름 ⌘+클릭. 이동은 위 `revealPane`(사이드바·팔레트·MRU 와 같은 길) + 사이드바 행과 같은 테두리 번쩍임.
+  // 누른 순간 사라졌으면 팔레트와 같은 안내(D2). 대상 정보는 부를 때마다 최신 상태에서 낸다.
+  useEffect(
+    () =>
+      setPaneLinkDirectory({
+        lookup: (paneId) => {
+          const current = stateRef.current
+          if (current === null) return null
+          return resolvePaneLinkTarget({ state: current, paneId, ordinalFor: (tab) => tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId }) })
+        },
+        reveal: (paneId) => {
+          revealPane(paneId)
+          flashPaneRim(paneId)
+        },
+        notifyGone: () => toast('대상 pane이 사라졌습니다'),
+      }),
+    [revealPane],
+  )
+  // 상태가 올 때마다 살아 있는 pane 이름 집합을 발행한다 — 바뀐 때만 포인터 아래 링크를 다시 판정한다(C3ⓓ, 다음 mousemove 를 기다리지 않는다).
+  useEffect(() => {
+    if (state === null) return
+    publishLivePaneIds(livePaneIdsOf(state.repos))
+  }, [state])
 
   const [requestedPane, setRequestedPane] = useState<string | null>(null)
   const requestedDeadline = useRef<number | null>(null)
@@ -1554,11 +1591,23 @@ export function App(): React.JSX.Element {
       tabIds: input.tabIds,
     })
   }
+  /**
+   * LIFE-832 정정 r4 — diff 탭을 닫으면(미리보기 교체로 밀려나도) 그 파일의 쓰던 메모 편집 보관을 버린다. 같은 파일의 다른 diff 탭
+   * (작업 트리·base 대비 — 메모를 같이 쓴다)이 남아 있으면 둔다. 탭·worktree 전환은 닫기가 아니라 보관한다.
+   */
+  const dropNoteDraft = (input: { worktreePath: string; tabId: string; keepRel?: string }): void => {
+    const target = parseDiffTabId(input.tabId)
+    if (target === null || target.rel === input.keepRel) return
+    const tree = layout.fileLayoutOf(input.worktreePath)
+    const others = tree === null ? [] : listGroups(tree.root).flatMap((group) => group.tabOrder).filter((tabId) => tabId !== input.tabId && parseDiffTabId(tabId)?.rel === target.rel)
+    if (others.length === 0) discardNoteDraft({ root: input.worktreePath, rel: target.rel })
+  }
   const closeFileNow = (input: { worktreePath: string; tabId: string }): void => {
     const { worktreePath, tabId } = input
     const kind = tabKindOf(tabId)
     // LIFE-683 — diff 탭은 문서가 없다. 닫기만(닫은 탭 기록 ⌘⇧T 는 파일 탭만 — 기록 형식 무변경).
     if (kind.kind === 'diff') {
+      dropNoteDraft({ worktreePath, tabId })
       noteFileClose({ worktreePath, tabIds: [tabId] })
       layout.closeFile({ tabId })
       return
@@ -1583,6 +1632,7 @@ export function App(): React.JSX.Element {
       rel: input.rel,
       preview: input.preview,
       onReplaced: (replaced) => {
+        dropNoteDraft({ worktreePath, tabId: replaced.tabId })
         // LIFE-683 — 밀려난 것이 diff 탭이면 문서·닫은 탭 기록이 없다.
         if (tabKindOf(replaced.tabId).kind !== 'file') return
         // 교체로 밀려난 미리보기 탭의 문서 — 수정된 미리보기는 고정돼 교체되지 않으므로(E1ⓓ) 여기 오는 것은 수정 없는 문서다.
@@ -1629,6 +1679,8 @@ export function App(): React.JSX.Element {
       preview: input.preview,
       tabId: diffTabId(opened.target),
       onReplaced: (replaced) => {
+        // 같은 파일의 다른 비교(작업 트리 ↔ base 대비)로 바뀐 미리보기는 같은 메모 줄이다 — 쓰던 편집을 둔다.
+        dropNoteDraft({ worktreePath, tabId: replaced.tabId, keepRel: opened.target.rel })
         if (tabKindOf(replaced.tabId).kind !== 'file') return
         const replacedDoc = getDoc(docKey(worktreePath, replaced.rel))
         if (replacedDoc !== undefined && !replacedDoc.dirty) disposeDoc(replacedDoc.key)
@@ -2343,6 +2395,8 @@ export function App(): React.JSX.Element {
       rightPanel.show('scm')
       requestAnimationFrame(() => setScmFocusToken((value) => value + 1))
     },
+    // LIFE-834 — 음성 받아쓰기 누름(대상은 누른 순간 포커스된 터미널 pane, 홀드·탭 판정은 `dictation-controller.ts` — fix4 F-1).
+    'dictation.toggle': () => dictation.press(),
     // LIFE-803 — VS Code `workbench.view.search`: 닫혀 있으면 열고 검색 보기로, 입력칸 포커스·기존 글 전체 선택.
     'search.show': () => {
       // r1 R1-03 — 포커스 이동으로 센다: 기다리던 연 파일 포커스(`focusOpenedFile`)·열기 요청의 포커스가 입력칸을 빼앗지 않게.
@@ -2626,6 +2680,8 @@ export function App(): React.JSX.Element {
             groupId={group.groupId}
             // LIFE-824 C8 — diff 본문을 눌러도 그 영역이 활성(base 누락).
             onActivate={() => activateGroup({ groupId: group.groupId, paneId: null })}
+            // LIFE-832 — 줄 메모·보내기. 대상 후보는 이 worktree 자기 workspace 의 에이전트 pane(상태 발행마다 다시 계산).
+            notes={{ worktree: activeWorktreeRow }}
           />
         ) : activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (
           <FileView
@@ -2839,7 +2895,8 @@ export function App(): React.JSX.Element {
       const id = action.id
       paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
         shortcut: bindingsFor(id, keymap.overrides).flatMap((binding, index) => (binding !== null && action.bindingVariants[index] === variant ? [formatBinding(binding)] : [])).join(' / '),
-        disabled: id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : GROUP_LAYOUT_ACTIONS.has(id) ? (layout.groups.length < 2 ? ONE_GROUP : undefined) : GROUP_FOCUS_ACTIONS.has(id) ? undefined : !palettePaneAlive ? '선택된 pane이 없습니다' : activeTabIdForReveal !== null && isFileTabId(activeTabIdForReveal) && TERMINAL_PANE_ACTIONS.has(id) ? '파일·diff 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
+        // LIFE-834 — 받아쓰기는 누른 순간 포커스된 터미널 pane 이 대상이라 팔레트(입력칸 포커스)에서는 시작할 수 없다.
+        disabled: id === 'dictation.toggle' ? '터미널 pane 에서 단축키로 쓴다' : id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : GROUP_LAYOUT_ACTIONS.has(id) ? (layout.groups.length < 2 ? ONE_GROUP : undefined) : GROUP_FOCUS_ACTIONS.has(id) ? undefined : !palettePaneAlive ? '선택된 pane이 없습니다' : activeTabIdForReveal !== null && isFileTabId(activeTabIdForReveal) && TERMINAL_PANE_ACTIONS.has(id) ? '파일·diff 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
         run: () => {
           if (id === 'mru.open') {
             const other = orderMru({ history: mruHistoryRef.current, livePaneIds: mruLiveIds() }).filter(id => id !== (activeEditorKey ?? lifecycle.selectedPane))
@@ -3065,7 +3122,7 @@ export function App(): React.JSX.Element {
           onResizeStart={rightPanel.onHandleMouseDown}
           bodies={{
             explorer: <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} filterToken={explorerFilterToken} visible={explorerVisible} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} onOpenListed={(input) => openListedFile({ ...input, focus: false })} onOpenToSide={openFileToSide} onFileDrag={fileDrag.onExplorerDrag} ops={fileOps} notify={notify} />,
-            scm: <ScmView scm={scm} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} mode={scm.mode} onChangeMode={scm.setMode} focusToken={scmFocusToken} onOpen={openScmChange} />,
+            scm: <ScmView scm={scm} status={activeWorktreeRow?.gitStatus ?? null} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} mode={scm.mode} onChangeMode={scm.setMode} focusToken={scmFocusToken} onOpen={openScmChange} />,
             search: <SearchView api={contentSearch} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={searchFocusToken} onOpen={openSearchResult} />,
             pr: <PrCommentsView api={prComments} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} />,
             sessions: <SessionHistoryView api={sessionHistory} repos={state?.repos ?? []} worktree={activeWorktreeRow?.path ?? null} workspaceId={lifecycle.activeWorkspaceId} onRevealPane={revealPane} onReserveCreatedRow={lifecycle.reserveCreatedRow} />,
@@ -3191,6 +3248,7 @@ export function App(): React.JSX.Element {
       )}
 
       <Toaster />
+      <DictationIndicator view={dictation.view} toggleLabel={((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('dictation.toggle', keymap.overrides)[0])} />
 
       {tabDrag.dragState === null ? null : (
         <DropZoneOverlay

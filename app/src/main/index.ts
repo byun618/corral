@@ -15,6 +15,8 @@ import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { parsePaneTarget, parseRevealRequest, parseSearchRequest, type TerminalRevealResult, type TerminalSearchResult } from '../shared/terminal-search.js'
 import { closeTabsGated, runningForeground } from './close-tabs.js'
 import { footprintHelperPath, homesOf, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
+import { attachDictationNavigationCleanup, createDictationRepeatGuard, createDictationService, dictationHelperPath, nodeDictationDeps, sendTextToPane, type DictationManager } from './dictation.js'
+import { MIC_PRIVACY_SETTINGS_URL } from '../shared/dictation.js'
 import { confirmedDeadSlot, directoryNow, keepRetention, prunableRetained, slotStateNow, slotStateOf } from './retention.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
@@ -93,6 +95,7 @@ import {
   splitPane,
   zoomPane,
   type SessionHandle,
+  TerminalBackend,
 } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
 import { canonicalPath } from './canonical-path.js'
@@ -125,6 +128,8 @@ import { bindStartupZoomSync, pushWindowChrome as pushChrome, syncWindowZoom, wi
 import { observePanes } from '../runtime/orchestration/index.js'
 import { OrchestrationStore } from '../runtime/orchestration/store.js'
 import { MobileService } from './mobile/service.js'
+import { HerdrInputBackend } from './mobile/input-backend.js'
+import { DiffNotesSender } from './diff-notes-send.js'
 import { readMacName } from './mobile/mac-name.js'
 import { persistedMachine } from './work/machine.js'
 import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
@@ -150,6 +155,11 @@ import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
 import { DropStore, loadOpHooks, runExplorerOp, SnapshotStore } from './explorer-ops.js'
 import { readFileContent, readImageContent } from './file-read.js'
 import { readScmContent } from './scm-read.js'
+import { loginShellPath, rootTag, ScmWriter } from './scm-write.js'
+import { closeAfterShutdown, ScmRemote } from './scm-remote.js'
+import { getGitStatus, invalidateGitStatus, isLaterSnapshot } from './git-status.js'
+import { patchWorktreeStatus, WorktreeStatusRefresh } from './worktree-status-refresh.js'
+import { gitRunner, resolveScmBase, scmBaseInputsOf, type ScmBaseInputs } from './scm-base.js'
 import { PrStatus } from './pr-status.js'
 import { createFileWatch, type FileWatch } from './file-watch.js'
 import { loadTestHooks, writeFileContent } from './file-write.js'
@@ -161,11 +171,15 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 /** 측정 실행인가 — control 소켓이 붙었을 때만 참. A4 프레임 로그 같은 계측 잡음을 여기 가둔다. */
 if (process.env.CORRAL_USER_DATA) app.setPath('userData', process.env.CORRAL_USER_DATA)
 let stopRuntime: (() => Promise<void>) | null = null
+/** LIFE-831 수정 r1 C3 — 종료 때 진행 중 원격 git 그룹을 끝내려고 `before-quit` 이 쥔다. */
+let scmRemoteForQuit: ScmRemote | null = null
 /** 종료 정리 진행 중이면 그 Promise(재진입 종료가 같이 기다린다 — LIFE-591 수정 r2 R2-C) · 끝났으면 `runtimeStopped`. */
 let runtimeStopping: Promise<void> | null = null
 let runtimeStopped = false
 /** 설정 › Mobile (LIFE-577) — 기본 꺼짐. 종료 정리는 `stopRuntime` 체인에 합쳐 기존 `before-quit` 하나가 기다린다. */
 let mobile: MobileService | null = null
+/** diff 메모 보내기 (LIFE-832) — 폰 허브의 데스크톱 전용 인스턴스. 모바일 켬·끔과 무관하게 앱 수명 동안 산다. */
+let diffNotes: DiffNotesSender | null = null
 /** 마지막으로 렌더러에 낸 상태 — 폰 목록이 같은 스냅샷을 읽는다(LIFE-580 F1). 아직 없으면 null. */
 let lastEmittedState: AppState | null = null
 /** 종료 때 serve 항목 제거에 주는 시간 — 넘기면 tailscale 자식을 죽이고 끝낸다(A6ⓕ 10초 안). 남은 항목은 다음 기동 reconcile 이 지운다. */
@@ -179,6 +193,8 @@ let shortcutRecording = false
  * 탐색기 실행 취소·다시 실행으로 가져온다 — 꺼져 있으면 손대지 않아 편집기·입력칸·터미널의 ⌘Z 와 메뉴 role 이 그대로다(`raw/claude/undo-routing.md`).
  */
 let explorerFocused = false
+/** LIFE-834 r5 C-R5-2 — 렌더러가 알린 받아쓰기 누름의 글쇠가 그 누름의 수식 키 일부를 뗀 채 반복되면 메뉴 가속키보다 먼저 막는다(`main/dictation.ts`). */
+const dictationRepeatGuard = createDictationRepeatGuard({ log: (event, fields) => log(event, fields) })
 /**
  * 탐색기 드롭 원본·가져오기 재생 근거(LIFE-592 E7ⓓ·수정 r2 R2-E). 재생 근거는 렌더러 실행 취소 기록이 가리키는 동안만 쓸모가 있다 —
  * 렌더러가 새로 뜨면(다시 읽기·프로세스 재생성) 그 기록은 사라지므로 붙잡던 근거를 전부 놓는다(수정 r3).
@@ -293,6 +309,8 @@ let settings: SettingsStore | null = null
 let usage: UsageService | null = null
 /** 에이전트 감지 (LIFE-520) — 기동 때 백그라운드로 한 번. 창·런타임 기동은 이것을 기다리지 않는다(K2ⓑ). */
 let agentDetector: AgentDetector | null = null
+/** 음성 받아쓰기 (LIFE-834) — 도우미는 시작할 때만 뜬다. 창 닫힘·렌더러 소멸·종료에서 바로 끝낸다(고아 없음). */
+let dictation: DictationManager | null = null
 /** 설정 › 작업 연결 (LIFE-600) — 기동 때는 저장 파일만 읽는다. 자격(키체인)은 그 연결이 처음 쓰일 때 푼다(C6). */
 let work: WorkService | null = null
 /** LIFE-603 — 작업 링크(해석·쓰기·사건)와 「작업에서 시작」. 작업 서비스와 같이 선다. */
@@ -576,6 +594,21 @@ function homeDirReal(): string {
   }
 }
 
+/** base 대비 재료 (LIFE-830) — 트리·레지스트리에서 읽어 `scmBaseInputsOf`(같은 레포 부모만, 시험 고정)에 넘긴다. */
+function scmBaseInputs(root: string): ScmBaseInputs {
+  return scmBaseInputsOf({
+    repos: currentState().repos,
+    root,
+    baseRefOf: (repoRoot) => {
+      try {
+        return registry?.records().find((record) => record.path === repoRoot)?.baseRef ?? null
+      } catch {
+        return null
+      }
+    },
+  })
+}
+
 /** 레지스트리 워크트리 메타 (LIFE-478) — 못 읽으면 빈 값(레지스트리 오류는 `registry.lastError` 가 따로 보인다). */
 function registryMetadata(): Record<string, WorktreeMetadataRecord> {
   try {
@@ -747,6 +780,18 @@ function scheduleEmit(): void {
   }, 0)
 }
 
+/** 카드·상태바 git 상태를 **그 경로만** 다시 읽는다 (LIFE-831 K7 — 원격 동작·커밋·amend 뒤). patch·재빌드 overlay·캐시 모두 「나중 스냅샷만 이긴다」(`isLaterSnapshot`). */
+const worktreeStatus = new WorktreeStatusRefresh({ read: getGitStatus, invalidate: invalidateGitStatus, isLater: isLaterSnapshot })
+async function refreshWorktreeStatus(input: { path: string; reason: string }): Promise<void> {
+  const startedAt = Date.now()
+  const value = await worktreeStatus.refresh(input.path)
+  if (value === null) return
+  const patched = patchWorktreeStatus({ skeleton, path: input.path, value, isLater: isLaterSnapshot })
+  skeleton = patched.skeleton
+  log('scm.status.refresh', { reason: input.reason, root: rootTag(input.path), found: patched.found, changed: patched.changed, ms: Date.now() - startedAt, ahead: value.ahead, behind: value.behind })
+  if (patched.changed) scheduleEmit()
+}
+
 /** 골격 재조회는 git·herdr 왕복을 낀다 — 흔들릴 때 매번 돌지 않게 한 박자 뭉친다. */
 function scheduleTree(): void {
   if (treeScheduled) return
@@ -785,7 +830,7 @@ async function rebuildTree(): Promise<void> {
     return
   }
   rebuildRetry.finished(skeletonHealth(built))
-  skeleton = built
+  skeleton = worktreeStatus.overlay({ built })
   skeletonSocket = socketPath
   skeletonStartedAt = startedAt
   log('tree.built', {
@@ -1757,8 +1802,22 @@ function createWindow(): void {
       reshowForConfirm('window-close')
     }
   })
-  window.on('closed', () => quitGate.setDirty([]))
-  window.webContents.on('render-process-gone', () => quitGate.setDirty([]))
+  window.on('closed', () => {
+    quitGate.setDirty([])
+    dictation?.dispose()
+    // LIFE-832 리뷰 r1 A3 — 그 창의 diff 메모 대기 요청은 보는 화면이 없다. 취소(넣는 중이면 결과만 버림).
+    diffNotes?.rendererGone('window_closed')
+  })
+  window.webContents.on('render-process-gone', () => {
+    quitGate.setDirty([])
+    dictation?.dispose()
+    diffNotes?.rendererGone('render_process_gone')
+    // LIFE-830 수정 r1 A5 — 죽은 렌더러가 켜 둔 base 대비를 남기지 않는다(새 렌더러가 필요하면 다시 켠다).
+    explorerHub?.clearBaseModes()
+  })
+  // LIFE-834 fix1 F1·G3 — 재로드(Reload·Force Reload)가 커밋돼 메인 프레임 문서가 바뀌면 그 문서가 시작한 받아쓰기 세션도 끝낸다(마이크 해제) — 닫힘·소멸과 같은 규칙.
+  // fix2 C-R2-1 — 거부된 이동(아래 will-navigate)에는 오지 않는 `did-navigate` 로 잇는다(`attachDictationNavigationCleanup`).
+  attachDictationNavigationCleanup({ webContents: window.webContents, dispose: () => dictation?.dispose() })
   /**
    * LIFE-591 E3ⓕ — 렌더러 다시 불러오기(기본 메뉴 View ▸ Force Reload ⌘⇧R 등 — ⌘R 은 위 `before-input-event` 가 가져간다). 렌더러는 수정 파일이 있으면
    * `beforeunload` 를 막는다 → 여기서 묻고, 「다시 불러오기」 면 막음을 무시한다(`preventDefault` = 그래도 내린다 — Electron 문서 패턴). 종료 확인을 이미 지났으면 묻지 않는다.
@@ -1840,11 +1899,21 @@ function createWindow(): void {
    */
   window.webContents.on('did-start-loading', () => {
     shortcutRecording = false
+    // LIFE-830 수정 r1 A5 — 다시 불러오기 전 문서가 켠 base 대비는 그 문서와 함께 끝난다(새 문서의 useScm 이 다시 켠다).
+    explorerHub?.clearBaseModes()
+    // LIFE-832 리뷰 r1 A3 — 다시 불러오기 전 문서가 낸 diff 메모 요청은 새 문서가 모른다.
+    diffNotes?.rendererGone('reload')
     explorerFocused = false
     window?.webContents.setIgnoreMenuShortcuts(false)
   })
   // 메인 프레임이 새 문서를 실었다(다시 읽기·렌더러 재생성) — 실행 취소 기록이 사라졌으니 가져오기 재생 근거를 놓는다(LIFE-592 수정 r3).
   window.webContents.on('did-navigate', () => explorerDrops.releaseAll())
+  // LIFE-834 r5 C-R5-2 — 받아쓰기 홀드가 끝난 뒤 남은 글쇠 반복(⇧ 를 먼저 떼면 ⌘M)이 기본 메뉴 Window ▸ Minimize 로 가지 않게(아래 처리기보다 먼저 등록).
+  dictationRepeatGuard.attach({
+    onDidStartLoading: (listener) => window?.webContents.on('did-start-loading', listener),
+    onBeforeInput: (listener) => window?.webContents.on('before-input-event', listener),
+    recording: () => shortcutRecording,
+  })
   window.webContents.on('before-input-event', (event, input) => {
     if (instrumented && (input.type === 'keyUp' || input.control || input.meta || input.alt)) {
       log('input.raw', { type: input.type, key: input.key, control: input.control, meta: input.meta, alt: input.alt, shift: input.shift })
@@ -1939,6 +2008,21 @@ app.whenReady().then(async () => {
       loginShellLookup: loginShellTailscale,
     }),
     run: runTailscale,
+  })
+  // diff 메모 보내기 (LIFE-832 D6) — 폰 쓰기와 같은 guard 봉투·같은 조건(목록 세션이 guard 바인딩일 때만). 소켓이 바뀌면 새 백엔드.
+  let diffNotesBackend: { socket: string; backend: HerdrInputBackend } | null = null
+  diffNotes = new DiffNotesSender({
+    read: () => (lastEmittedState === null ? null : { state: lastEmittedState, prefs: uiPrefs?.get() ?? null }),
+    backend: () => {
+      const socket = currentSocketPath()
+      if (socket === null || socket !== backendBinding()?.socket) return null
+      if (diffNotesBackend?.socket !== socket) diffNotesBackend = { socket, backend: new HerdrInputBackend(socket) }
+      return diffNotesBackend.backend
+    },
+    push: (state) => {
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:diffNotesState', state)
+    },
+    log,
   })
   const workStore = new WorkConnectionStore(app.getPath('userData'))
   workStore.load()
@@ -2131,6 +2215,15 @@ app.whenReady().then(async () => {
     return mobile.status()
   })
 
+  // diff 메모 보내기 (LIFE-832) — 입력은 unknown 으로 받아 `DiffNotesSender` 가 모양·상한·대상을 다시 본다. 본문은 로그에 남기지 않는다(바이트 수만).
+  ipcMain.handle('corral:diffNotesSend', (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, reason: 'bad_input' }
+    return diffNotes === null ? { ok: false, reason: 'not_ready' } : diffNotes.send(input)
+  })
+  ipcMain.on('corral:diffNotesCancel', (event, input: unknown) => {
+    if (fromOurWindow(event)) diffNotes?.cancel(input)
+  })
+
   // 설정 › 작업 연결 (LIFE-600) — 입력은 unknown 으로 받아 WorkService 가 손검증한다. 응답·push 에 토큰은 없다(끝 4자만).
   const workDeniedError: WorkError = { kind: 'invalid_request', message: '허용되지 않은 발신자', status: null }
   const workDenied: WorkActionResult = { ok: false, error: workDeniedError }
@@ -2292,6 +2385,7 @@ app.whenReady().then(async () => {
     },
     roots: explorerRoots,
     log,
+    baseInputs: scmBaseInputs,
   })
   // --- 전체 파일 목록 (LIFE-593 F5) — 읽기 전용, 루트는 탐색기와 같은 「지금 열린 worktree」 만(`file-list.ts` — confine 루트 대조 · 셸 없는 git · 취소) ---
   // git 절대 경로는 부를 때마다 그때 열린 루트로 고른다(PATH 의 절대 항목만, 열린 worktree 아래는 건너뜀 — `resolveGit` · 수정 r1 R1-C-04). 바뀔 때만 적는다.
@@ -2340,14 +2434,79 @@ app.whenReady().then(async () => {
     return result
   })
   // LIFE-683 S7 — 소스 제어 diff 의 HEAD·인덱스 내용. 가둠·argv 고정·상한·바이너리는 `readScmContent`. 경로는 남기지 않는다(쓰기 0 계측은 `scm.read` 수).
+  // LIFE-830 — side `base` 는 main 이 그 루트의 base·merge-base 를 레지스트리 재료로 푼다(렌더러는 ref 를 보내지 않는다).
   ipcMain.handle('corral:scmRead', async (event, input: unknown) => {
     if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
     const field = (name: string): unknown => (typeof input === 'object' && input !== null && name in input ? Reflect.get(input, name) : undefined)
     const startedAt = performance.now()
-    const result = await readScmContent({ roots: explorerRoots(), root: field('root'), rel: field('rel'), side: field('side') })
-    log('scm.read', { ok: result.ok, side: field('side') === 'head' ? 'head' : 'index', kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok && 'size' in result ? result.size : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
+    const result = await readScmContent({
+      roots: explorerRoots(),
+      root: field('root'),
+      rel: field('rel'),
+      side: field('side'),
+      resolveBase: ({ root, realRoot }) => resolveScmBase({ run: gitRunner(realRoot), ...scmBaseInputs(root) }),
+    })
+    const side = field('side')
+    log('scm.read', { ok: result.ok, side: side === 'head' || side === 'base' ? side : 'index', kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok && 'size' in result ? result.size : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
     return result
   })
+  // LIFE-829 — 소스 제어 로컬 쓰기(stage·unstage·discard·커밋·amend). 가둠·고정 argv·lock 재시도·루트 직렬·로그인 셸 PATH(쓰기 git 전부 — 시작 뒤 미리 조회)·휴지통은 `ScmWriter`.
+  // 확인 대화상자 문구는 main(`scmConfirmSpec`), 답은 파일 탭 대화상자와 같은 계측 스텁 큐를 쓴다. 로그는 동작·결과·루트 해시만(경로·메시지 없음).
+  const scmWriter = new ScmWriter({
+    roots: explorerRoots,
+    git: (roots) => resolveGit({ pathEnv: process.env.PATH, roots }),
+    confirm: async (spec) => {
+      const stubbed = measuring ? fileDialogAnswers.shift() : undefined
+      if (stubbed !== undefined) {
+        fileDialogAsked.push(`scm:${spec.kind}`)
+        return spec.choices.find((item) => item === stubbed) ?? 'cancel'
+      }
+      if (window === null || window.isDestroyed()) return 'cancel'
+      return spec.choices[(await dialog.showMessageBox(window, spec.options)).response] ?? 'cancel'
+    },
+    trashItem: (abs) => shell.trashItem(abs),
+    loginPath: () => loginShellPath(),
+    refresh: (root) => explorerHub?.refreshGit(root),
+    statusChanged: (root) => void refreshWorktreeStatus({ path: root, reason: 'commit' }),
+    log,
+  })
+  // LIFE-831 — 소스 제어 원격(가져오기·끌어오기·밀어넣기·브랜치 게시). 같은 루트 직렬 큐(`scmWriter.enqueue`)·로그인 셸 PATH·새 세션·그룹 종료·상한은 `ScmRemote`.
+  // 게시 원격 고르기는 main 대화상자(목록 = `git remote`) — 계측 중에는 파일 탭 대화상자 스텁 큐의 값이 원격 이름이면 그것을 고른다.
+  const scmRemote = new ScmRemote({
+    writer: scmWriter,
+    roots: explorerRoots,
+    git: (roots) => resolveGit({ pathEnv: process.env.PATH, roots }),
+    pickRemote: async ({ remotes, branch }) => {
+      const stubbed = measuring ? fileDialogAnswers.shift() : undefined
+      if (stubbed !== undefined) {
+        fileDialogAsked.push('scm:pickRemote')
+        return remotes.find((remote) => remote === stubbed) ?? null
+      }
+      if (window === null || window.isDestroyed()) return null
+      const { response } = await dialog.showMessageBox(window, {
+        type: 'question',
+        message: `'${branch}' 브랜치를 게시할 원격을 고르세요.`,
+        buttons: [...remotes, '취소'],
+        defaultId: 0,
+        cancelId: remotes.length,
+      })
+      return remotes[response] ?? null
+    },
+    refresh: (root) => explorerHub?.refreshGit(root),
+    statusChanged: (root) => void refreshWorktreeStatus({ path: root, reason: 'remote' }),
+    // 수정 r1 C6 — 진행 시작·끝을 렌더러에 민다(렌더러가 다시 그려져도 진행 표시·취소를 되살린다).
+    onState: (state) => {
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:scmRemoteEvent', state)
+    },
+    log,
+  })
+  scmRemoteForQuit = scmRemote
+  ipcMain.handle('corral:scmRemoteState', async (event, input: unknown) => (fromOurWindow(event) ? scmRemote.state(input) : { action: null }))
+  ipcMain.handle('corral:scmRemote', async (event, input: unknown) => (fromOurWindow(event) ? scmRemote.run(input) : { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }))
+  ipcMain.handle('corral:scmRemoteCancel', async (event, input: unknown) => (fromOurWindow(event) ? scmRemote.cancel(input) : { ok: false }))
+  ipcMain.handle('corral:scmWrite', async (event, input: unknown) => (fromOurWindow(event) ? scmWriter.write(input) : { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }))
+  // 첫 쓰기가 로그인 셸 조회(최대 5 초)를 기다리지 않게 지금 백그라운드로 푼다 — 실패는 두지 않고 다음 쓰기에 다시 묻는다.
+  void scmWriter.prefetchLoginPath()
   // 이미지 바이트(E4ⓔ) — 확장자 목록·가둠·상한은 `readImageContent`. 경로는 남기지 않는다.
   ipcMain.handle('corral:fileReadImage', async (event, input: unknown) => {
     if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
@@ -2463,6 +2622,13 @@ app.whenReady().then(async () => {
   ipcMain.on('corral:explorerRefreshGit', (event, root: unknown) => {
     if (fromOurWindow(event)) explorerHub?.refreshGit(root)
   })
+  // LIFE-830 — 소스 제어 base 대비 켜기·끄기(루트별). 값은 루트와 켜짐 여부뿐 — base 는 main 이 푼다.
+  ipcMain.on('corral:scmBaseMode', (event, input: unknown) => {
+    if (!fromOurWindow(event)) return
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const on = typeof input === 'object' && input !== null && 'on' in input && input.on === true
+    explorerHub?.setBaseMode({ root, on })
+  })
   ipcMain.handle('corral:explorerAction', (event, input: unknown) =>
     fromOurWindow(event)
       ? explorerAction(
@@ -2551,6 +2717,49 @@ app.whenReady().then(async () => {
     if (!fromOurWindow(event)) return
     if (typeof input?.paneId !== 'string' || typeof input.data !== 'string') return
     stream.input(input)
+  })
+  // LIFE-834 음성 받아쓰기 — 도우미 기동·정지·취소·이벤트 중계와 넣기.
+  // 넣기(fix1 G1) — 붙은 탭이면 ⌘V 와 같은 stream 길, 아니면 guard `pane.send_text`. 결과를 돌려준다(못 넣으면 렌더러가 멈추고 알린다).
+  // 세션 취소·정리(Esc·새 시작·dispose)는 넣기 큐의 그 세션 항목을 버린다(fix2 C-R2-3) — 이음은 `createDictationService`(fix3 R3-1).
+  const { manager: dictationManager, inserter: dictationInserter } = createDictationService({
+    inserter: {
+      heldPaneIds: () => stream.heldPaneIds(),
+      paste: (input) => stream.input(input),
+      sendText: async ({ paneId, text, signal }) => {
+        const socketPath = currentSocketPath()
+        if (socketPath === null) throw new Error('연결된 herdr 세션이 없다')
+        await sendTextToPane({ backend: new TerminalBackend(socketPath), paneId, text, deadlineMs: 5000, signal })
+      },
+      log,
+    },
+    manager: nodeDictationDeps({
+      helper: dictationHelperPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, mainDir: here }),
+      platform: process.platform,
+      release: os.release(),
+      send: (dictationEvent) => {
+        if (window !== null && !window.isDestroyed()) window.webContents.send('corral:dictationEvent', dictationEvent)
+      },
+      log,
+    }),
+  })
+  dictation = dictationManager
+  ipcMain.handle('corral:dictationStart', (event, input: { sessionId: string }) => {
+    if (!fromOurWindow(event) || typeof input?.sessionId !== 'string') return { ok: false, code: 'rejected', message: '' }
+    return dictationManager.start({ sessionId: input.sessionId })
+  })
+  ipcMain.handle('corral:dictationInsert', (event, input: { sessionId: string; paneId: string; text: string }) => {
+    if (!fromOurWindow(event) || typeof input?.sessionId !== 'string' || typeof input.paneId !== 'string' || typeof input.text !== 'string') return { ok: false, code: 'rejected', message: '' }
+    return dictationInserter.insert({ sessionId: input.sessionId, paneId: input.paneId, text: input.text })
+  })
+  ipcMain.on('corral:dictationStop', (event, input: { sessionId: string }) => {
+    if (fromOurWindow(event) && typeof input?.sessionId === 'string') dictationManager.stop({ sessionId: input.sessionId })
+  })
+  ipcMain.on('corral:dictationCancel', (event, input: { sessionId: string }) => {
+    if (fromOurWindow(event) && typeof input?.sessionId === 'string') dictationManager.cancel({ sessionId: input.sessionId })
+  })
+  dictationRepeatGuard.registerIpc({ ipc: ipcMain, fromOurWindow })
+  ipcMain.handle('corral:dictationOpenPrivacy', async (event) => {
+    if (fromOurWindow(event)) await shell.openExternal(MIC_PRIVACY_SETTINGS_URL)
   })
   /**
    * ⌘V 이미지 붙여넣기 (LIFE-497 · D41) — 렌더러가 **클립보드에 텍스트가 없을 때만** 부른다.
@@ -2821,6 +3030,7 @@ app.on('before-quit', event => {
   // LIFE-593 수정 r2 R2-C-01 — 가로챔을 지난 종료(⌘Q·창 닫힘)에서는 `window-all-closed` 가 오지 않는다. 진행 중 목록 git 그룹을 여기서 동기로 끝낸다(타이머 없이 SIGKILL).
   fileLister?.killAll()
   contentSearcher?.killAll()
+  dictation?.dispose()
   // LIFE-520 fix1 R1-06 — 진행 중 감지 셸(새 프로세스 그룹)을 끝낸다. 앱 타이머가 멈추면 시한 kill 이 오지 않는다.
   agentDetector?.killAll()
   // 런타임 정리(Mobile serve 제거 + 런타임 닫기)는 **한 번만** 돌리고, 정리 중 다시 온 종료 요청(창 파기 → `window-all-closed` 의 `app.quit()` 등)도
@@ -2833,7 +3043,8 @@ app.on('before-quit', event => {
     if (window !== null && !window.isDestroyed()) window.hide()
     const close = stopRuntime
     stopRuntime = null
-    runtimeStopping = (close === null ? Promise.resolve() : close()).finally(() => {
+    // LIFE-831 수정 r1 C3 — 진행 중 원격 git(새 세션이라 앱과 같이 죽지 않는다)도 같은 정리에서 끝낸다(상한 `SCM_REMOTE_SHUTDOWN_MS` — 무기한 기다리지 않는다).
+    runtimeStopping = Promise.allSettled([close === null ? Promise.resolve() : close(), scmRemoteForQuit?.shutdown() ?? Promise.resolve()]).then(() => undefined).finally(() => {
       runtimeStopped = true
     })
   }
@@ -2841,7 +3052,15 @@ app.on('before-quit', event => {
 })
 
 app.on('window-all-closed', () => {
+  // LIFE-831 수정 r3 E3 — 진행 중 원격 git 정리(`scm.remote.kill`·`.shutdown` 로그)가 로그 닫기보다 먼저 끝나게 기다린 뒤 닫는다(상한 `SCM_REMOTE_SHUTDOWN_MS`).
+  // `before-quit` 도 같은 정리를 부르지만 한 번만 돈다(같은 Promise).
+  void closeAfterShutdown({ shutdown: () => scmRemoteForQuit?.shutdown() ?? Promise.resolve(), close: closeAppAfterAllWindows })
+})
+
+/** 창이 다 닫힌 뒤 앱 자원 정리·로그 닫기·종료(옛 `window-all-closed` 본문 그대로). */
+function closeAppAfterAllWindows(): void {
   agentDetector?.killAll()
+  dictation?.dispose()
   usage?.dispose()
   usage = null
   explorerHub?.dispose()
@@ -2856,4 +3075,4 @@ app.on('window-all-closed', () => {
   log('app.quit', { logFile: logFile() })
   closeLog()
   app.quit()
-})
+}

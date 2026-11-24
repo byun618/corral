@@ -1,6 +1,6 @@
 # harness learnings
 
-Last reviewed: 2026-11-19
+Last reviewed: 2026-11-24
 
 ## 감독 기동의 120초 `outcome_unknown` 은 도구마다 뜻이 다르다
 
@@ -40,8 +40,8 @@ Last reviewed: 2026-11-19
 ## 설치본 관문의 「쓰기 0」 은 main 쪽 trace 와 양성 대조로
 
 - **Scope:** 설치본을 CDP 로 관측하는 네이티브 관문(실제 외부 연결 위, 읽기 전용 조건)
-- **Learning:** contextBridge 로 노출된 렌더러 API 는 얼어 있어 렌더러 쪽 쓰기 가드를 걸 수 없다. main 쪽 IPC trace 로 사후 검출하고 양성 대조(읽기 응답 ≥ 1, 보낸 요청 id 전부가 trace 에 있음)를 붙인다. trace 를 거치지 않는 IPC 는 판정표에 공백으로 둔다.
-- **Evidence:** LIFE-711 — 가드 불가로 멈췄다가 trace 검출로 통과.
+- **Learning:** contextBridge 로 노출된 렌더러 API 는 얼어 있어 렌더러 쪽 쓰기 가드를 걸 수 없다. main 쪽 IPC trace 로 사후 검출하고 양성 대조(읽기 응답 ≥ 1, 보낸 요청 id 전부가 trace 에 있음)를 붙인다. trace 를 거치지 않는 IPC 는 판정표에 공백으로 둔다. 파일·ref 해시로 보는 쓰기 0 관문은 관문 안의 모든 git 호출(오라클 포함)에 `--no-optional-locks` 를 붙인다 — 오라클 `git status` 가 index 를 고쳐 써서 제품 탓으로 깨진다.
+- **Evidence:** LIFE-711 — 가드 불가로 멈췄다가 trace 검출로 통과. LIFE-830 — 오라클 git 이 해시를 바꿨다.
 - **Disposition:** `.agents/harness/corral.md` 설치본 관문 절 또는 validation.md 네이티브 관문 줄.
 
 ## TUI 선택 프롬프트는 선택 상태를 다시 읽은 뒤 Enter 를 보낸다

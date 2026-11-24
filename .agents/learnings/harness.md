@@ -4,14 +4,14 @@ Last reviewed: 2026-11-24
 
 ## 감독 기동의 120초 `outcome_unknown` 은 도구마다 뜻이 다르다
 
-- **Scope:** `.agents/harness/corral.md` 『감독 워커 기동』·『세션 기동』 — codex·grok
+- **Scope:** `.agents/harness/corral/` 『감독 워커 기동』·『세션 기동』 — codex·grok
 - **Learning:** codex: corral 이 만드는 argv 에 `-c check_for_update_on_startup=false` 가 없어, 업데이트 안내가 뜨는 버전 간격에서는 모델과 무관하게 기동이 주입 미확정으로 멈춘다 — 띄우기 전에 이 가능성을 본다. grok: CLI 로컬 마감으로 `outcome_unknown` 이 나와도 본문은 들어갔을 수 있다 — 다시 넣지 말고 `dispatch-show --task` 의 heartbeat 와 화면으로 확인한 뒤 완료 보고를 기다린다.
 - **Evidence:** LIFE-713 — codex 안내 화면 아래 감독 기동 3회가 멈췄다. LIFE-797·813 — grok 5회가 같은 모양이었고 5회 다 본문이 도착했다(원인은 가르지 못했다).
 - **Disposition:** corral 매핑 『감독 워커 기동』 「상황 → 행동」 — 별도 일감 후보(codex 기동 `-c`, grok 배달 확인).
 
 ## 공유 프로필에서 Run 이 둘이면 워커의 `ask` 를 쓰지 않는다
 
-- **Scope:** `.agents/harness/corral.md` 『질의응답』·『제어 문맥 격리』, 묶음 형제 동시 진행
+- **Scope:** `.agents/harness/corral/` 『질의응답』·『제어 문맥 격리』, 묶음 형제 동시 진행
 - **Learning:** 같은 프로필에서 두 코디가 Run 을 따로 쓰면 바인딩은 한쪽만 가리킨다. 워커의 `send` 에는 `--run` 을 붙이고, `--run` 을 받지 않는 `ask` 대신 escalation 으로 묻게 한 뒤 코디가 답을 주입한다. 바인딩은 만든 직후 원래 Run 으로 되돌린다.
 - **Evidence:** LIFE-716·717 동시 진행에서 보고가 모두 자기 Run 으로 왔다. escalation 경로는 실측 전.
 - **Disposition:** corral.md 『질의응답』 「하지 말 우회」 — escalation 경로를 한 번 실측한 뒤.
@@ -35,14 +35,14 @@ Last reviewed: 2026-11-24
 - **Scope:** corral 매핑 『완료 감지』 — `orchestration check --block`
 - **Learning:** 같은 프로필의 다른 일감이 설치본을 재기동하면 소켓 주인이 바뀌어 긴 `check --block` 이 `outcome_unknown` 으로 끝난다. ack 없는 대기는 다시 불러도 안전하니 짧은 재연결 루프로 감싸고, 끊김을 손실·워커 이상으로 읽지 않는다. ack 만 하는 대기에도 `--types` 를 붙여 heartbeat 배치가 새 Delivery 로 따라오지 않게 한다. `rpc.sock` 만 사라져 `runtime_unavailable` 이 오래 가면 워커는 보고를 재시도 스크립트로 남기고 코디가 복구 뒤 한 번 돌린다 — 재기동으로 고치지 않는다.
 - **Evidence:** LIFE-626 — 병렬 재기동마다 대기가 끊겼고 `--types` 없는 ack 가 heartbeat 배치를 열었다. LIFE-754 — 재시도 110회 소켓 없음, 복구 뒤 전송.
-- **Disposition:** `.agents/harness/corral.md` 『완료 감지』 복구 절.
+- **Disposition:** `.agents/harness/corral/` 『완료 감지』 복구 절.
 
 ## 설치본 관문의 「쓰기 0」 은 main 쪽 trace 와 양성 대조로
 
 - **Scope:** 설치본을 CDP 로 관측하는 네이티브 관문(실제 외부 연결 위, 읽기 전용 조건)
 - **Learning:** contextBridge 로 노출된 렌더러 API 는 얼어 있어 렌더러 쪽 쓰기 가드를 걸 수 없다. main 쪽 IPC trace 로 사후 검출하고 양성 대조(읽기 응답 ≥ 1, 보낸 요청 id 전부가 trace 에 있음)를 붙인다. trace 를 거치지 않는 IPC 는 판정표에 공백으로 둔다. 파일·ref 해시로 보는 쓰기 0 관문은 관문 안의 모든 git 호출(오라클 포함)에 `--no-optional-locks` 를 붙인다 — 오라클 `git status` 가 index 를 고쳐 써서 제품 탓으로 깨진다.
 - **Evidence:** LIFE-711 — 가드 불가로 멈췄다가 trace 검출로 통과. LIFE-830 — 오라클 git 이 해시를 바꿨다.
-- **Disposition:** `.agents/harness/corral.md` 설치본 관문 절 또는 validation.md 네이티브 관문 줄.
+- **Disposition:** `.agents/harness/corral-notes.md` 설치본 관문 절 또는 validation.md 네이티브 관문 줄.
 
 ## TUI 선택 프롬프트는 선택 상태를 다시 읽은 뒤 Enter 를 보낸다
 
@@ -63,7 +63,7 @@ Last reviewed: 2026-11-24
 - **Scope:** 격리 herdr 를 쓰는 워커·리뷰어·코디 실측, 킥오프 「격리 장치」 레시피
 - **Learning:** pane 안 셸의 `HERDR_*`(소켓·pane id)가 `XDG_CONFIG_HOME` 보다 앞서서, 격리 서버를 띄워도 herdr CLI 를 그냥 치면 사용자 herdr 를 읽거나 누른다. env 를 지우는 래퍼로 모든 herdr 호출을 감싸고, 키를 보내기 전 그 서버의 pane 목록을 확인한다.
 - **Evidence:** LIFE-797 — `pane list` 가 사용자 herdr 를 읽었다(읽기라 무해).
-- **Disposition:** `.agents/harness/corral.md` 격리 실측 절 또는 킥오프 레시피 — 다시 나면.
+- **Disposition:** `.agents/harness/corral-notes.md` 격리 실측 절 또는 킥오프 레시피 — 다시 나면.
 
 ## 공유 specs 레포의 push 거절은 fetch 뒤 다시 push 한다
 

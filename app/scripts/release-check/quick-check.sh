@@ -55,7 +55,9 @@ place() {
     R4) printf '%s\t%s\t%s\n' "$RS" '^## 4\. ' '^## 5\. ' ;;
     R2) printf '%s\t%s\t%s\n' "$RS" '^## 2\. ' '^## 3\. ' ;;
     R7) printf '%s\t%s\t%s\n' "$RS" '^## 7\. ' '' ;;
-    CM) printf '%s\t%s\t%s\n' .agents/harness/corral.md '^## 『세션 기동』' '^## 『준비 대기』' ;;
+    CM) printf '%s\t\t\n' .agents/harness/corral/session-start.md ;;
+    CC) printf '%s\t\t\n' .agents/corral-coordinate.md ;;   # paddock 적용(2026-11-24) 때 task-coordinate §8 에서 옮긴 이 프로젝트 규칙
+    CR) printf '%s\t\t\n' .agents/rules/corral.md ;;        # 같은 때 AGENTS.md 에서 옮긴 브랜치·출고 규약
     TS4) printf '%s\t%s\t%s\n' .agents/skills/task-start/SKILL.md '^4\. ' '^5\. ' ;;
     TS6) printf '%s\t%s\t%s\n' .agents/skills/task-start/SKILL.md '^6\. ' '' ;;
     INST) printf '%s\t%s\t%s\n' app/INSTALL.md '^## 출고' '^## 빌드' ;;
@@ -121,21 +123,21 @@ C1b-number-at-adoption	AR	has	번호는 채택할 때 매긴다
 C1b-when-points-to-skills	AR	has	초안은 게이트 ②(task-coordinate §8)에, 채택은 출고 회고(release §4)에
 C1b-public-points	AR	has	공개 레포 주의는 `.agents/learnings/README.md`
 C1b-not-restated	AR	not	corral-specs 원자료 경로
-C2a-devlog-file	S8	has	**devlog** `devlog.md` (비공개)
+C2a-devlog-file	CC	has	**devlog** `devlog.md` (비공개)
 C2a-devlog-dated	S8	has	날짜별 절(`## YYYY-MM-DD`)
 C2a-view-human-draft	S8	has	**사람**(그날의 결정·승인·지시 원문 — LLM 초안
 C2a-view-human-no-guess	S8	has	감정·의도를 추측해 쓰지 않는다
 C2a-view-llm	S8	has	**LLM**(시도 → 실패 → 원인 → 해결)
-C2a-view-directives	S8	has	**LLM 이 본 지시**(방향을 바꾼 지시, 반복된 지적, 모호했던 지시)
-C2a-retro-3lens	S8	has	문제 정의(처음 정의가 맞았나) · 검증 설계(기준·관문이 결함을 잡았나)
-C2a-retro-3lens-3	S8	has	방식 개선(다음엔 무엇을 바꾸나)
-C2a-sources	S8	has	코디 세션 transcript 와 git log(작업 브랜치·corral-specs)로 대조한다
+C2a-view-directives	CC	has	**LLM 이 본 지시**(방향을 바꾼 지시, 반복된 지적, 모호했던 지시)
+C2a-retro-3lens	CC	has	문제 정의(처음 정의가 맞았나) · 검증 설계(기준·관문이 결함을 잡았나)
+C2a-retro-3lens-3	CC	has	방식 개선(다음엔 무엇을 바꾸나)
+C2a-sources	CC	has	코디 세션 transcript 와 git log(작업 브랜치·corral-specs)로 대조한다
 C2a-sources-reviews	S8	has	`reviews.md` 는 내용 대조에 쓴다 — 시각이 드물어 날짜 축이 되지 못한다
-C2a-record-no-guess	S8	has	경로를 짐작하지 않고(능력 계약 H6)
+C2a-record-no-guess	CC	has	경로를 짐작하지 않고(능력 계약 H6)
 G1-record-from-start	S8	has	`00-start.md` 에 시작 세션이 적은 세션 기록 경로(task-start 4단계
 G1-record-none	S8	has	devlog 에 「코디 기록 없음」을 적은 뒤
-G1-by-mapping	S8	has	기동 응답에 경로를 주지 않는 도구 — 지금 corral 매핑의 Codex 코디, 매핑 『세션 기동』 절
-J1-claude-only	S8	has	transcript 대조는 지금 Claude 코디 일감에서만 된다
+G1-by-mapping	CC	has	기동 응답에 경로를 주지 않는 도구 — 지금 corral 매핑의 Codex 코디, 매핑 『세션 기동』 절
+J1-claude-only	CC	has	transcript 대조는 지금 Claude 코디 일감에서만 된다
 J1-ts4-per-tool	TS4	has	기동 응답에 경로가 있는지는 도구마다 다르다
 J1-mapping-field	CM	has	`result.agent.sessionRecord.path`
 J1-mapping-codex-null	CM	has	codex 는 기동 응답에서 `sessionRecord`·`sessionId` 가 null
@@ -187,7 +189,7 @@ C3b-freeze-exception-r4	R4	has	동결의 예외다(§1)
 C3b-freeze-exception-r1	R1	has	**예외는 §4 회고 커밋 하나다**
 F1-r1-canonical	R1	has	동결과 그 예외의 원본은 이 줄이고
 F1-r2-points	R2	has	직접 고치지 않는다(예외는 §1 — §4 회고 커밋)
-F1-agents-points	AG	has	다시 모은다(예외는 release 스킬 §1)
+F1-agents-points	CR	has	다시 모은다(예외는 release 스킬 §1)
 F1-install-points	INST	has	동결의 예외(회고 커밋)는 release 스킬 §1 이 정한다
 F1-install-flow	INST	has	③' 회고 — 채택한 learnings·ADR 을 release worktree 에서 커밋(release 스킬 4)
 C3b-worked	R4	has	**이전 learnings 가 이번에 작동했나**
@@ -322,7 +324,7 @@ TOTPC="$(grep -c . "$PCS")"
 RANGE="$OUT/range.txt"
 git diff --stat "$BASE...HEAD" > "$RANGE"
 [ -s "$RANGE" ] || bad "diff --stat 이 비었다 ($BASE...HEAD)"
-OUTSIDE="$(git diff --name-only "$BASE...HEAD" | grep -vE '^(AGENTS\.md|\.agents/learnings/|docs/adr/|\.agents/skills/task-coordinate/(SKILL\.md|references/implementation\.md)|\.agents/skills/release/SKILL\.md|app/INSTALL\.md|\.agents/skills/task-start/SKILL\.md|\.agents/harness/corral\.md|app/scripts/release-check/)' || true)"
+OUTSIDE="$(git diff --name-only "$BASE...HEAD" | grep -vE '^(AGENTS\.md|\.agents/learnings/|docs/adr/|\.agents/skills/task-coordinate/(SKILL\.md|references/implementation\.md)|\.agents/skills/release/SKILL\.md|app/INSTALL\.md|\.agents/skills/task-start/SKILL\.md|\.agents/harness/corral/|app/scripts/release-check/)' || true)"
 say "── diff 범위 ($BASE...HEAD): $(tail -1 "$RANGE")"
 [ -z "$OUTSIDE" ] && say "ok   범위 안 (제품 코드 app/src·mobile 무변경, app/INSTALL.md 는 r1 F1·task-start 는 r2 G1·corral.md 는 r4 J1 정합 줄)" || { bad "범위 밖 파일"; echo "$OUTSIDE" | sed 's/^/  /' | tee -a "$SUM"; }
 

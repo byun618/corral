@@ -67,9 +67,10 @@ HDR="$(sed -n '/^# 종료코드/,/^# 재실행/p' scripts/release.sh | grep -oE 
 A=AGENTS.md
 L="$(wc -l < "$A" | tr -d ' ')"; [ "$L" -le 200 ] && ok "AGENTS.md ${L}줄 ≤ 200" || bad "AGENTS.md ${L}줄"
 grep -qE '^\| 8 출고 — release/vX\.Y\.Z' "$A" && ok "흐름 표 8행 release 브랜치" || bad "흐름 표 8행"
-grep -qF '**release 브랜치 release/vX.Y.Z**' "$A" && grep -q '한 번에 하나' "$A" && ok "브랜치 규약 release 예외(1회 수명·한 번에 하나)" || bad "브랜치 규약 release 예외"
-grep -q 'main 에 직접 올라가는 것은 release.sh 의 태그뿐' "$A" && ok "main 직접 push = 태그만" || bad "main 직접 push 문구"
-grep -q '출고 통합 확인은 release worktree' "$A" && ok "integration/ 줄 정리" || bad "integration/ 줄"
+PR=.agents/rules/corral.md   # 브랜치·출고 규약은 paddock 적용(2026-11-24) 때 AGENTS.md 에서 이리 옮겼다
+grep -qF '**release 브랜치 release/vX.Y.Z**' "$PR" && grep -q '한 번에 하나' "$PR" && ok "브랜치 규약 release 예외(1회 수명·한 번에 하나)" || bad "브랜치 규약 release 예외"
+grep -q 'main 에 직접 올라가는 것은 release.sh 의 태그뿐' "$PR" && ok "main 직접 push = 태그만" || bad "main 직접 push 문구"
+grep -q '출고 통합 확인은 release worktree' "$PR" && ok "integration/ 줄 정리" || bad "integration/ 줄"
 
 # ── 5. release.sh 언급 정합 — 남은 언급 줄 목록(사유는 사람이 보지만, 옛 사용법은 1 에서 이미 막았다) ──
 say "── release.sh 언급(참고 — 하위 명령 없이 부르는 사용법은 1 에서 실패로 잡는다)"

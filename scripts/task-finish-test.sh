@@ -86,6 +86,9 @@ setup() { # 새 fixture: origin(bare) · B(본체) · H(도우미 clone) · bin(
   mkdir -p "$B/scripts"; echo /scripts/ >> "$B/.git/info/exclude"
   if [ -n "$MUT" ]; then mutate "$MUT" < "$SCRIPT" > "$B/scripts/task-finish.sh"
   else cp "$SCRIPT" "$B/scripts/task-finish.sh"; fi
+  # 새 task-finish.sh 는 값을 본체의 .paddock/config.sh 에서 읽는다 — 이 레포의 값과 같게 두고 scripts 처럼 커밋하지 않는다
+  mkdir -p "$B/.paddock"; echo /.paddock/ >> "$B/.git/info/exclude"
+  printf '%s\n' 'PADDOCK_MODULES="specs-repo bundle"' 'ISSUE_PREFIX=LIFE' 'BASE_BRANCH=main' 'WORKTREE_DIR=.claude/worktrees' 'BUNDLE_PREFIX=feature/' 'VARIANT_SUFFIXES="-claude"' > "$B/.paddock/config.sh"
   git clone -q "$O" "$H" 2>/dev/null
   cp "$FAKE_GH" "$W/bin/gh"; chmod +x "$W/bin/gh"
   printf '#!/bin/sh\necho "herdr $*" >> "%s/herdr-calls.txt"\n[ "$1 $2" = "session list" ] && echo "NAME STATUS"\nexit 0\n' "$W" > "$W/bin/herdr"; chmod +x "$W/bin/herdr"
@@ -234,9 +237,9 @@ case_C2f-variant() { setup; mk_feature; mk_child LIFE-901-c   # 자식은 지웠
   git -C "$B" worktree add -q "$WT/LIFE-901-c-claude" -b LIFE-901-c-claude LIFE-901-c; git -C "$B" worktree remove "$WT/LIFE-901-c"
   run "$F"; stopped; }
 case_C2g() { setup; mk_feature; mk_child LIFE-901-c; git -C "$B" worktree remove "$WT/LIFE-901-c"; run "$F"; stopped; }
-case_C2h-root() { setup; mk_feature; run --cwd "$FWT" "$F"; stopped; check "사유 = feature worktree 안" has "feature worktree 안에서 실행 금지"; }
+case_C2h-root() { setup; mk_feature; run --cwd "$FWT" "$F"; stopped; check "사유 = feature worktree 안" has "묶음 worktree 안에서 실행 금지"; }
 case_C2h-sub() { setup; mk_feature; mkdir -p "$FWT/sub"; touch "$FWT/sub/.keep"; git -C "$FWT" add -A; git -C "$FWT" commit -qm sub; git -C "$FWT" push -q origin "$F"
-  run --cwd "$FWT/sub" "$F"; stopped; check "사유 = feature worktree 안" has "feature worktree 안에서 실행 금지"; }
+  run --cwd "$FWT/sub" "$F"; stopped; check "사유 = feature worktree 안" has "묶음 worktree 안에서 실행 금지"; }
 case_C2h-elsewhere() { setup; mk_feature; git -C "$B" worktree remove "$FWT"; git -C "$B" worktree add -q "$WT/elsewhere" "$F"; mkdir -p "$WT/elsewhere/sub"   # 기대 경로가 아닌 worktree 하위
   run --cwd "$WT/elsewhere/sub" "$F"; stopped; check "사유 = 체크아웃한 worktree 안" has "체크아웃한 worktree"; check "cwd 그대로" [ -d "$WT/elsewhere/sub" ]; }
 case_C2-main-checkout() { setup; mk_feature; git -C "$B" worktree remove "$FWT"; git -C "$B" checkout -q "$F"

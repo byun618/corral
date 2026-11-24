@@ -8,6 +8,7 @@ import type { MobilePairingResult, MobileStatus } from './mobile.js'
 import type { UsageSnapshot } from './usage.js'
 import type { AgentDetectionSnapshot } from './agent-detection.js'
 import type { WorktreeWorkLink } from './work-link.js'
+import type { DictationEvent, DictationInsertResult, DictationPressKeys, DictationStartResult } from './dictation.js'
 import type { RelaunchAgentInput, StartAttemptView, StartSourceLink, StartWorkInput, StartWorkResult, StartWorkStatusQuery } from './work-start.js'
 import type { WorkActionResult, WorkActivityQuery, WorkActivityResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
 import type { FileListInput, FileListResult } from './file-list.js'
@@ -1188,6 +1189,16 @@ export type CorralApi = {
   onTermFrame: (listener: (frame: TerminalFrame) => void) => () => void
   /** 메뉴에서 뺏어 온 단축키가 레지스트리 액션과 방향 번호가 온다 — 키는 main 이 삼키고 여기로 넘긴다. */
   onShortcut: (listener: (shortcut: CorralShortcut) => void) => () => void
+  /** LIFE-834 음성 받아쓰기 — 도우미 시작(세션 id 는 렌더러가 정한다)·정지(마지막 FINAL 까지)·취소·마이크 개인정보 설정 열기·이벤트. */
+  dictationStart: (input: { sessionId: string }) => Promise<DictationStartResult>
+  dictationStop: (input: { sessionId: string }) => void
+  dictationCancel: (input: { sessionId: string }) => void
+  dictationOpenPrivacy: () => Promise<void>
+  /** FINAL 한 번을 고정 대상 pane 에 — 붙은 탭이면 ⌘V 길, 아니면 guard `pane.send_text`(fix1 G1). 결과로 실패를 안다. */
+  dictationInsert: (input: { sessionId: string; paneId: string; text: string }) => Promise<DictationInsertResult>
+  /** 받아쓰기 단축키를 키보드로 눌렀다 — main 이 그 글쇠의 뗀 뒤 반복을 메뉴 가속키보다 먼저 막는다(LIFE-834 r5 C-R5-2). */
+  dictationPressKeys: (keys: DictationPressKeys) => void
+  onDictationEvent: (listener: (event: DictationEvent) => void) => () => void
   /** LIFE-527 — 창 크롬 상태(macOS 여부·전체화면·줌). 다른 창의 요청이면 null. */
   getWindowChrome: () => Promise<WindowChrome | null>
   onWindowChrome: (listener: (chrome: WindowChrome) => void) => () => void

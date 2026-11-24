@@ -123,6 +123,8 @@ import { isAgentAvailable, resolveNewAgentTab } from './tab-create-menu.js'
 import { DETECTABLE_AGENTS } from '../../shared/agent-detection.js'
 import { useAgentDetection, useRecheckAgentDetectionOnOpen } from './agent-detection-store.js'
 import { terminalCssVars } from './terminal-appearance.js'
+import { useDictation } from './hooks/useDictation.js'
+import { DictationIndicator } from './components/DictationIndicator.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
   if (workspaceId === null) return null
@@ -371,6 +373,15 @@ export function App(): React.JSX.Element {
     stateRef.current = stabilized
     setState(stabilized)
   }, [])
+  // LIFE-834 음성 받아쓰기 — FINAL 이 도착한 순간 대상 pane 이 아직 있는지는 최신 상태로 본다(닫혔으면 넣지 않고 멈춘다).
+  const dictation = useDictation({
+    paneExists: (paneId) =>
+      stateRef.current?.repos.some((repo) => repo.worktrees.some((worktree) => worktree.workspace?.tabs.some((tab) => tab.panes.some((pane) => pane.paneId === paneId)) ?? false)) ?? false,
+    notify: (notice) => {
+      if (notice.openPrivacy) toast(notice.message, { action: { label: '개인정보 설정 열기', onClick: () => void window.corral.dictationOpenPrivacy() }, duration: 15000 })
+      else toast(notice.message)
+    },
+  })
 
   useEffect(() => {
     void window.corral.getState().then(receive)
@@ -2343,6 +2354,8 @@ export function App(): React.JSX.Element {
       rightPanel.show('scm')
       requestAnimationFrame(() => setScmFocusToken((value) => value + 1))
     },
+    // LIFE-834 — 음성 받아쓰기 누름(대상은 누른 순간 포커스된 터미널 pane, 홀드·탭 판정은 `dictation-controller.ts` — fix4 F-1).
+    'dictation.toggle': () => dictation.press(),
     // LIFE-803 — VS Code `workbench.view.search`: 닫혀 있으면 열고 검색 보기로, 입력칸 포커스·기존 글 전체 선택.
     'search.show': () => {
       // r1 R1-03 — 포커스 이동으로 센다: 기다리던 연 파일 포커스(`focusOpenedFile`)·열기 요청의 포커스가 입력칸을 빼앗지 않게.
@@ -2839,7 +2852,8 @@ export function App(): React.JSX.Element {
       const id = action.id
       paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
         shortcut: bindingsFor(id, keymap.overrides).flatMap((binding, index) => (binding !== null && action.bindingVariants[index] === variant ? [formatBinding(binding)] : [])).join(' / '),
-        disabled: id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : GROUP_LAYOUT_ACTIONS.has(id) ? (layout.groups.length < 2 ? ONE_GROUP : undefined) : GROUP_FOCUS_ACTIONS.has(id) ? undefined : !palettePaneAlive ? '선택된 pane이 없습니다' : activeTabIdForReveal !== null && isFileTabId(activeTabIdForReveal) && TERMINAL_PANE_ACTIONS.has(id) ? '파일·diff 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
+        // LIFE-834 — 받아쓰기는 누른 순간 포커스된 터미널 pane 이 대상이라 팔레트(입력칸 포커스)에서는 시작할 수 없다.
+        disabled: id === 'dictation.toggle' ? '터미널 pane 에서 단축키로 쓴다' : id === 'sidebar.toggle' || id === 'settings.open' || id === 'quickOpen.open' || id === 'explorer.filter' ? undefined : !connected ? '연결된 세션이 없습니다' : GROUP_LAYOUT_ACTIONS.has(id) ? (layout.groups.length < 2 ? ONE_GROUP : undefined) : GROUP_FOCUS_ACTIONS.has(id) ? undefined : !palettePaneAlive ? '선택된 pane이 없습니다' : activeTabIdForReveal !== null && isFileTabId(activeTabIdForReveal) && TERMINAL_PANE_ACTIONS.has(id) ? '파일·diff 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
         run: () => {
           if (id === 'mru.open') {
             const other = orderMru({ history: mruHistoryRef.current, livePaneIds: mruLiveIds() }).filter(id => id !== (activeEditorKey ?? lifecycle.selectedPane))
@@ -3191,6 +3205,7 @@ export function App(): React.JSX.Element {
       )}
 
       <Toaster />
+      <DictationIndicator view={dictation.view} toggleLabel={((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('dictation.toggle', keymap.overrides)[0])} />
 
       {tabDrag.dragState === null ? null : (
         <DropZoneOverlay

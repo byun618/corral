@@ -44,6 +44,7 @@ import {
 import { highlightSegments } from '../../shared/terminal-search.js'
 import { CLOSED_SEARCH, TerminalSearchController, onTerminalFind, type TerminalSearchState } from './terminal-search-controller.js'
 import { TerminalSearchBar } from './components/TerminalSearchBar.js'
+import { registerSelectionClearer } from './terminal-selection.js'
 
 const decoder = new TextDecoder()
 
@@ -403,6 +404,8 @@ export function TerminalPane({
       )
     }
     container.addEventListener('paste', onPaste, { capture: true })
+    // LIFE-834 fix1 G2 — 받아쓰기 넣기도 ⌘V 처럼 보내기 직전에 이 pane 의 선택을 푼다(`terminal-selection.ts`).
+    const offSelectionClearer = registerSelectionClearer({ paneId, clear: () => term.clearSelection() })
 
     // --- OS 파일 드롭 (LIFE-497 · D43) — preload 가 드롭 지점의 pane 과 경로를 준다 ---------
     const offFileDrop = window.corral.onFileDrop((drop) => {
@@ -538,6 +541,7 @@ export function TerminalPane({
       if (installed !== undefined) paneAppearance.delete(paneId)
       container.removeEventListener('wheel', onWheel, { capture: true })
       container.removeEventListener('paste', onPaste, { capture: true })
+      offSelectionClearer()
       offFileDrop()
       offFrame()
       selectionListener.dispose()

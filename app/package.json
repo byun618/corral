@@ -20,8 +20,9 @@
     "check:boundary": "node scripts/check-boundary.mjs",
     "build:runtime": "node scripts/build-runtime.mjs",
     "build:footprint": "node scripts/build-footprint.mjs",
+    "build:dictation": "node scripts/build-dictation.mjs",
     "herdr:guard": "node scripts/build-dev-guard.mjs",
-    "package:mac": "npm run build && node scripts/bundle-herdr.mjs && node scripts/build-footprint.mjs --check && electron-builder --mac --arm64"
+    "package:mac": "npm run build && node scripts/bundle-herdr.mjs && node scripts/build-footprint.mjs --check && node scripts/build-dictation.mjs && electron-builder --mac --arm64"
   },
   "devDependencies": {
     "@shikijs/engine-javascript": "4.5.0",

@@ -12,7 +12,7 @@ describe('shortcut catalog and compatibility', () => {
     // LIFE-593: + quickOpen.open(⌘P) · explorer.filter(⌘⌥F — 탐색기 범위)
     // LIFE-601: + tasks.toggle(⌘I)
     // LIFE-629: + markdown.togglePreview(⇧⌘V)
-    expect(ACTIONS).toHaveLength(35) // LIFE-803: + ⌘⇧F 검색 보이기 · LIFE-683: + ⌘⇧G 소스 제어 보이기 · LIFE-824: + ⌃` 터미널 ↔ 편집기 전환 · LIFE-825: + ⌘⌥↩ 영역 최대화·영역 크기 균등화(키 없음) · LIFE-812: + ⌘F 터미널에서 찾기(터미널 범위)
+    expect(ACTIONS).toHaveLength(36) // LIFE-834: + ⌘⇧M 음성 받아쓰기 · LIFE-803: + ⌘⇧F 검색 보이기 · LIFE-683: + ⌘⇧G 소스 제어 보이기 · LIFE-824: + ⌃` 터미널 ↔ 편집기 전환 · LIFE-825: + ⌘⌥↩ 영역 최대화·영역 크기 균등화(키 없음) · LIFE-812: + ⌘F 터미널에서 찾기(터미널 범위)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -36,6 +36,31 @@ describe('shortcut catalog and compatibility', () => {
     const moved = validateOverrides({ 'explorer.redo': ['Mod+Y'] })
     expect(matchBinding('Mod+Y', moved, 'explorer')).toEqual({ id: 'explorer.redo', variant: 0 })
     expect(matchBinding('Mod+Shift+Z', moved, 'explorer')).toEqual({ id: 'terminal.zoom', variant: 0 })
+  })
+  it('LIFE-834 C1 — ⌘⇧M 음성 받아쓰기 토글 1개, 어느 포커스에서든 매칭(비터미널이면 알림은 렌더러가), 기본값 충돌 0, 재지정 가능, 기존 재정의가 ⌘⇧M 을 쓰면 비켜 선다', () => {
+    expect(ACTIONS.filter((action) => action.id === 'dictation.toggle')).toHaveLength(1)
+    expect(bindingsFor('dictation.toggle', {})).toEqual(['Mod+Shift+M'])
+    expect(matchBinding('Mod+Shift+M', {})).toEqual({ id: 'dictation.toggle', variant: 0 })
+    expect(matchBinding('Mod+Shift+M', {}, 'terminal')).toEqual({ id: 'dictation.toggle', variant: 0 })
+    expect(matchBinding('Mod+Shift+M', {}, 'explorer')).toEqual({ id: 'dictation.toggle', variant: 0 })
+    expect(bindingConflict({})).toBeNull()
+    // 한글 자판에서도 물리 키 M
+    expect(bindingFromEvent({ key: 'ㅡ', code: 'KeyM', metaKey: true, ctrlKey: false, altKey: false, shiftKey: true })).toBe('Mod+Shift+M')
+    // 단축키 화면 재지정 — 저장값 검증을 지나고 새 키로 매칭, 옛 키는 풀린다
+    const rebound = validateOverrides({ 'dictation.toggle': ['Mod+Alt+V'] })
+    expect(rebound).toEqual({ 'dictation.toggle': ['Mod+Alt+V'] })
+    expect(matchBinding('Mod+Alt+V', rebound)).toEqual({ id: 'dictation.toggle', variant: 0 })
+    expect(matchBinding('Mod+Shift+M', rebound)).toBeNull()
+    // 끄기(null)도 된다
+    expect(bindingsFor('dictation.toggle', validateOverrides({ 'dictation.toggle': [null] }))).toEqual([null])
+    // 나중 기본값이라 양보한다 — ⌘⇧M 을 다른 액션에 건 사용자의 설정이 버려지지 않는다
+    const user = validateOverrides({ 'palette.open': ['Mod+Shift+M'] })
+    expect(bindingConflict(user)).toBeNull()
+    expect(bindingsFor('dictation.toggle', user)).toEqual([null])
+    expect(matchBinding('Mod+Shift+M', user)).toEqual({ id: 'palette.open', variant: 0 })
+    // 누르고 있어도 한 번(반복 keydown 이 시작·정지를 오가지 않게), 편집기 양보 대상 아님
+    expect(NON_REPEATING_ACTIONS).toContain('dictation.toggle')
+    expect(EDITOR_YIELD_ACTIONS).not.toContain('dictation.toggle')
   })
   it('LIFE-803 C7ⓓ — ⌘⇧F 검색 보이기는 전역(터미널·트리·편집기 포커스 어디서나), 기본값 중복·충돌 0, 기존 재정의가 ⌘⇧F 를 쓰면 비켜 선다', () => {
     expect(matchBinding('Mod+Shift+F', {})).toEqual({ id: 'search.show', variant: 0 })

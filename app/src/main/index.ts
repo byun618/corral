@@ -15,6 +15,8 @@ import { explorerKeyShortcut, menuKeyShortcut } from '../shared/keybindings.js'
 import { parsePaneTarget, parseRevealRequest, parseSearchRequest, type TerminalRevealResult, type TerminalSearchResult } from '../shared/terminal-search.js'
 import { closeTabsGated, runningForeground } from './close-tabs.js'
 import { footprintHelperPath, homesOf, registerResourceIpc, shellProbeOf } from './resource-ipc.js'
+import { attachDictationNavigationCleanup, createDictationRepeatGuard, createDictationService, dictationHelperPath, nodeDictationDeps, sendTextToPane, type DictationManager } from './dictation.js'
+import { MIC_PRIVACY_SETTINGS_URL } from '../shared/dictation.js'
 import { confirmedDeadSlot, directoryNow, keepRetention, prunableRetained, slotStateNow, slotStateOf } from './retention.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
@@ -93,6 +95,7 @@ import {
   splitPane,
   zoomPane,
   type SessionHandle,
+  TerminalBackend,
 } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
 import { canonicalPath } from './canonical-path.js'
@@ -179,6 +182,8 @@ let shortcutRecording = false
  * 탐색기 실행 취소·다시 실행으로 가져온다 — 꺼져 있으면 손대지 않아 편집기·입력칸·터미널의 ⌘Z 와 메뉴 role 이 그대로다(`raw/claude/undo-routing.md`).
  */
 let explorerFocused = false
+/** LIFE-834 r5 C-R5-2 — 렌더러가 알린 받아쓰기 누름의 글쇠가 그 누름의 수식 키 일부를 뗀 채 반복되면 메뉴 가속키보다 먼저 막는다(`main/dictation.ts`). */
+const dictationRepeatGuard = createDictationRepeatGuard({ log: (event, fields) => log(event, fields) })
 /**
  * 탐색기 드롭 원본·가져오기 재생 근거(LIFE-592 E7ⓓ·수정 r2 R2-E). 재생 근거는 렌더러 실행 취소 기록이 가리키는 동안만 쓸모가 있다 —
  * 렌더러가 새로 뜨면(다시 읽기·프로세스 재생성) 그 기록은 사라지므로 붙잡던 근거를 전부 놓는다(수정 r3).
@@ -293,6 +298,8 @@ let settings: SettingsStore | null = null
 let usage: UsageService | null = null
 /** 에이전트 감지 (LIFE-520) — 기동 때 백그라운드로 한 번. 창·런타임 기동은 이것을 기다리지 않는다(K2ⓑ). */
 let agentDetector: AgentDetector | null = null
+/** 음성 받아쓰기 (LIFE-834) — 도우미는 시작할 때만 뜬다. 창 닫힘·렌더러 소멸·종료에서 바로 끝낸다(고아 없음). */
+let dictation: DictationManager | null = null
 /** 설정 › 작업 연결 (LIFE-600) — 기동 때는 저장 파일만 읽는다. 자격(키체인)은 그 연결이 처음 쓰일 때 푼다(C6). */
 let work: WorkService | null = null
 /** LIFE-603 — 작업 링크(해석·쓰기·사건)와 「작업에서 시작」. 작업 서비스와 같이 선다. */
@@ -1757,8 +1764,17 @@ function createWindow(): void {
       reshowForConfirm('window-close')
     }
   })
-  window.on('closed', () => quitGate.setDirty([]))
-  window.webContents.on('render-process-gone', () => quitGate.setDirty([]))
+  window.on('closed', () => {
+    quitGate.setDirty([])
+    dictation?.dispose()
+  })
+  window.webContents.on('render-process-gone', () => {
+    quitGate.setDirty([])
+    dictation?.dispose()
+  })
+  // LIFE-834 fix1 F1·G3 — 재로드(Reload·Force Reload)가 커밋돼 메인 프레임 문서가 바뀌면 그 문서가 시작한 받아쓰기 세션도 끝낸다(마이크 해제) — 닫힘·소멸과 같은 규칙.
+  // fix2 C-R2-1 — 거부된 이동(아래 will-navigate)에는 오지 않는 `did-navigate` 로 잇는다(`attachDictationNavigationCleanup`).
+  attachDictationNavigationCleanup({ webContents: window.webContents, dispose: () => dictation?.dispose() })
   /**
    * LIFE-591 E3ⓕ — 렌더러 다시 불러오기(기본 메뉴 View ▸ Force Reload ⌘⇧R 등 — ⌘R 은 위 `before-input-event` 가 가져간다). 렌더러는 수정 파일이 있으면
    * `beforeunload` 를 막는다 → 여기서 묻고, 「다시 불러오기」 면 막음을 무시한다(`preventDefault` = 그래도 내린다 — Electron 문서 패턴). 종료 확인을 이미 지났으면 묻지 않는다.
@@ -1845,6 +1861,12 @@ function createWindow(): void {
   })
   // 메인 프레임이 새 문서를 실었다(다시 읽기·렌더러 재생성) — 실행 취소 기록이 사라졌으니 가져오기 재생 근거를 놓는다(LIFE-592 수정 r3).
   window.webContents.on('did-navigate', () => explorerDrops.releaseAll())
+  // LIFE-834 r5 C-R5-2 — 받아쓰기 홀드가 끝난 뒤 남은 글쇠 반복(⇧ 를 먼저 떼면 ⌘M)이 기본 메뉴 Window ▸ Minimize 로 가지 않게(아래 처리기보다 먼저 등록).
+  dictationRepeatGuard.attach({
+    onDidStartLoading: (listener) => window?.webContents.on('did-start-loading', listener),
+    onBeforeInput: (listener) => window?.webContents.on('before-input-event', listener),
+    recording: () => shortcutRecording,
+  })
   window.webContents.on('before-input-event', (event, input) => {
     if (instrumented && (input.type === 'keyUp' || input.control || input.meta || input.alt)) {
       log('input.raw', { type: input.type, key: input.key, control: input.control, meta: input.meta, alt: input.alt, shift: input.shift })
@@ -2552,6 +2574,49 @@ app.whenReady().then(async () => {
     if (typeof input?.paneId !== 'string' || typeof input.data !== 'string') return
     stream.input(input)
   })
+  // LIFE-834 음성 받아쓰기 — 도우미 기동·정지·취소·이벤트 중계와 넣기.
+  // 넣기(fix1 G1) — 붙은 탭이면 ⌘V 와 같은 stream 길, 아니면 guard `pane.send_text`. 결과를 돌려준다(못 넣으면 렌더러가 멈추고 알린다).
+  // 세션 취소·정리(Esc·새 시작·dispose)는 넣기 큐의 그 세션 항목을 버린다(fix2 C-R2-3) — 이음은 `createDictationService`(fix3 R3-1).
+  const { manager: dictationManager, inserter: dictationInserter } = createDictationService({
+    inserter: {
+      heldPaneIds: () => stream.heldPaneIds(),
+      paste: (input) => stream.input(input),
+      sendText: async ({ paneId, text, signal }) => {
+        const socketPath = currentSocketPath()
+        if (socketPath === null) throw new Error('연결된 herdr 세션이 없다')
+        await sendTextToPane({ backend: new TerminalBackend(socketPath), paneId, text, deadlineMs: 5000, signal })
+      },
+      log,
+    },
+    manager: nodeDictationDeps({
+      helper: dictationHelperPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, mainDir: here }),
+      platform: process.platform,
+      release: os.release(),
+      send: (dictationEvent) => {
+        if (window !== null && !window.isDestroyed()) window.webContents.send('corral:dictationEvent', dictationEvent)
+      },
+      log,
+    }),
+  })
+  dictation = dictationManager
+  ipcMain.handle('corral:dictationStart', (event, input: { sessionId: string }) => {
+    if (!fromOurWindow(event) || typeof input?.sessionId !== 'string') return { ok: false, code: 'rejected', message: '' }
+    return dictationManager.start({ sessionId: input.sessionId })
+  })
+  ipcMain.handle('corral:dictationInsert', (event, input: { sessionId: string; paneId: string; text: string }) => {
+    if (!fromOurWindow(event) || typeof input?.sessionId !== 'string' || typeof input.paneId !== 'string' || typeof input.text !== 'string') return { ok: false, code: 'rejected', message: '' }
+    return dictationInserter.insert({ sessionId: input.sessionId, paneId: input.paneId, text: input.text })
+  })
+  ipcMain.on('corral:dictationStop', (event, input: { sessionId: string }) => {
+    if (fromOurWindow(event) && typeof input?.sessionId === 'string') dictationManager.stop({ sessionId: input.sessionId })
+  })
+  ipcMain.on('corral:dictationCancel', (event, input: { sessionId: string }) => {
+    if (fromOurWindow(event) && typeof input?.sessionId === 'string') dictationManager.cancel({ sessionId: input.sessionId })
+  })
+  dictationRepeatGuard.registerIpc({ ipc: ipcMain, fromOurWindow })
+  ipcMain.handle('corral:dictationOpenPrivacy', async (event) => {
+    if (fromOurWindow(event)) await shell.openExternal(MIC_PRIVACY_SETTINGS_URL)
+  })
   /**
    * ⌘V 이미지 붙여넣기 (LIFE-497 · D41) — 렌더러가 **클립보드에 텍스트가 없을 때만** 부른다.
    * PNG 를 임시 폴더에 쓰고 경로만 돌려준다. PTY 로 쓰는 것은 렌더러가 ⌘V 를 받은 pane 에 termInput 으로 한다 —
@@ -2821,6 +2886,7 @@ app.on('before-quit', event => {
   // LIFE-593 수정 r2 R2-C-01 — 가로챔을 지난 종료(⌘Q·창 닫힘)에서는 `window-all-closed` 가 오지 않는다. 진행 중 목록 git 그룹을 여기서 동기로 끝낸다(타이머 없이 SIGKILL).
   fileLister?.killAll()
   contentSearcher?.killAll()
+  dictation?.dispose()
   // LIFE-520 fix1 R1-06 — 진행 중 감지 셸(새 프로세스 그룹)을 끝낸다. 앱 타이머가 멈추면 시한 kill 이 오지 않는다.
   agentDetector?.killAll()
   // 런타임 정리(Mobile serve 제거 + 런타임 닫기)는 **한 번만** 돌리고, 정리 중 다시 온 종료 요청(창 파기 → `window-all-closed` 의 `app.quit()` 등)도
@@ -2842,6 +2908,7 @@ app.on('before-quit', event => {
 
 app.on('window-all-closed', () => {
   agentDetector?.killAll()
+  dictation?.dispose()
   usage?.dispose()
   usage = null
   explorerHub?.dispose()

@@ -57,6 +57,7 @@ place() {
     R7) printf '%s\t%s\t%s\n' "$RS" '^## 7\. ' '' ;;
     CM) printf '%s\t\t\n' .agents/harness/corral/session-start.md ;;
     CC) printf '%s\t\t\n' .agents/corral-coordinate.md ;;   # paddock 적용(2026-11-24) 때 task-coordinate §8 에서 옮긴 이 프로젝트 규칙
+    TCL) printf '%s\t\t\n' .agents/skills/task-close/SKILL.md ;;   # 출고 방식 슬롯(D17) — README 들의 「회고」가 가리키는 곳
     CR) printf '%s\t\t\n' .agents/rules/corral.md ;;        # 같은 때 AGENTS.md 에서 옮긴 브랜치·출고 규약
     TS4) printf '%s\t%s\t%s\n' .agents/skills/task-start/SKILL.md '^4\. ' '^5\. ' ;;
     TS6) printf '%s\t%s\t%s\n' .agents/skills/task-start/SKILL.md '^6\. ' '' ;;
@@ -104,9 +105,9 @@ C1a-promote-count-misfits	L	has	안 통하는 자리 세기
 C1a-promote-scenarios	L	has	시나리오 열거
 C1a-read-not-inject	L	has	모든 작업에 주입하지 않는다
 C1a-read-title-scope-first	L	has	제목과 `Scope` 를 먼저 훑고
-C1a-when-points-to-skills	L	has	제안 = task-coordinate §8 게이트 ②, 채택·승격·재검토 = release §4 회고
+C1a-when-points-to-skills	L	has	채택·승격·재검토 = 머지 뒤 회고(task-close §5 — 출고 방식이 맡으면 task-close 머리 D17 이 가리키는 곳)
 C1a-8kb-bytes	L	has	8KB(파일 바이트, `wc -c`
-C1a-90d-fix-at-retro	L	has	**고치는 것은 출고 회고다**(release §4)
+C1a-90d-fix-at-retro	L	has	작업 중에 낡은 파일을 보면 고치지 않고 알린다
 C1a-public-once	L	has	(`docs/adr/` 도 이 줄을 따른다)
 C1b-tpl-title	AT	re	^# <
 C1b-tpl-context	AT	re	^## Context and Problem Statement$
@@ -120,8 +121,8 @@ C1b-status-values	AR	has	`proposed` · `accepted` · `rejected` · `deprecated` 
 C1b-accepted-immutable	AR	has	accepted 뒤에는 본문을 고치지 않는다
 C1b-superseded-only	AR	has	`superseded by ADR-NNNN` 으로 바꾼다
 C1b-number-at-adoption	AR	has	번호는 채택할 때 매긴다
-C1b-when-points-to-skills	AR	has	초안은 게이트 ②(task-coordinate §8)에, 채택은 출고 회고(release §4)에
-C1b-public-points	AR	has	공개 레포 주의는 `.agents/learnings/README.md`
+C1b-when-points-to-skills	AR	has	채택 = 머지 뒤 회고(task-close §5 — 출고 방식이 맡으면 task-close 머리 D17 이 가리키는 곳)
+C1b-public-points	AR	has	공개될 수 있는 레포 주의는 `.agents/learnings/README.md`
 C1b-not-restated	AR	not	corral-specs 원자료 경로
 C2a-devlog-file	CC	has	**devlog** `devlog.md` (비공개)
 C2a-devlog-dated	S8	has	날짜별 절(`## YYYY-MM-DD`)
@@ -143,7 +144,7 @@ J1-mapping-field	CM	has	`result.agent.sessionRecord.path`
 J1-mapping-codex-null	CM	has	codex 는 기동 응답에서 `sessionRecord`·`sessionId` 가 null
 J2-restart-many	S8	has	경로가 여럿이면 날짜순으로 모두 읽는다
 J2-abort-keep-text	R4	has	접기 전에 그 커밋의 diff(사용자와 다듬은 learnings·ADR 최종 문구)를 기록에 붙이고
-J2-readme-points	L	has	별도 LIFE 일감)는 release §4 가 정한다
+J2-readme-points	L	has	재검토 자리는 회고 절차가 정한다
 J2-readme-no-restate	L	not	회고에서 바로 고치지 않고
 G1-no-raw-start	S8	not	raw/start/
 G1-no-codex-branch	S8	not	Codex 코디 등
@@ -165,12 +166,12 @@ G3-abort-find	R4	has	`retro/` 에서 「접음」 머리를 가진 기록을 먼
 C2a-oracle	S8	has	매핑의 『세션 기록 오라클』로
 C2a-no-full-load	S8	has	기록을 통째로 문맥에 싣지 않는다
 C2a-oracle-observation	S8	has	오라클은 관측이라 devlog 사실의 증명이 아니다
-C2a-human-gui-h2	S8	has	(H2 — 『화면 관측』으로만 회수된다)
+C2a-human-gui-h2	S8	has	(contract.md H2 — 『화면 관측』으로만 회수된다)
 C2a-no-home-path	S8	not	.claude/projects
 C2a-compact	S8	has	compact 로 초반이 뭉개진다
 C2b-human-before-finish	S8	has	**사람 절 확인은 정리 전에 끝낸다**
-C2b-commit-with-step1	S8	has	**게이트 ② 기록·인계 문서·PR 원고를 corral-specs 에 커밋·push 한다**
-C2c-not-in-pr	S8	has	PR 에 싣지 않는다. 채택은 출고 회고(release §4)
+C2b-commit-with-step1	S8	has	**게이트 ② 기록·인계 문서·PR 원고를 작업 폴더에 커밋한다**
+C2c-not-in-pr	S8	has	채택은 머지 뒤 회고(task-close §5 — 출고 방식이 맡으면 task-close 머리 D17 이 가리키는 곳)가 하고
 C2c-learnings-proposal	S8	has	**learnings 제안** `learnings-proposal.md`
 C2c-adr-draft	S8	has	**ADR 초안** `adr-draft-<제목-케밥>.md`
 C2c-adr-unnumbered	S8	has	번호 없이 `status: proposed`
@@ -209,7 +210,9 @@ C3b-no-release-pr-line	R4	has	메시지에 `Release-PR:` 줄을 쓰지 않는다
 C3c-no-changelog	RS	not	changelog
 C3c-no-old-placeholder	R4	not	지금은 건너뛴다
 AG-flow-7	AG	re	^\| 7 .*게이트 ②.*devlog\.md
-AG-flow-8	AG	re	^\| 8 출고 — release/vX\.Y\.Z .*회고
+AG-flow-8	AG	re	^\| 8 머지 뒤 마무리 — .*회고.*task-close
+P1-close-points-release	TCL	has	출고는 `release` 스킬(`.agents/skills/release/SKILL.md`)과 `scripts/release.sh` 가 한다
+P1-close-retro-release4	TCL	has	회고(release §4)
 AG-fix-learnings	AGF	has	.agents/learnings/<영역>.md
 AG-fix-adr	AGF	has	docs/adr/
 AG-stub-learnings	AGO	re	rules 스텁.*두 번째에 한 줄씩 — 첫 번째는 \.agents/learnings/

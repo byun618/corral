@@ -66,7 +66,7 @@ HDR="$(sed -n '/^# 종료코드/,/^# 재실행/p' scripts/release.sh | grep -oE 
 # ── 4. AGENTS.md — 흐름 표 8행 · release 브랜치 예외 · main 직접 push(태그만) · 200줄 ──
 A=AGENTS.md
 L="$(wc -l < "$A" | tr -d ' ')"; [ "$L" -le 200 ] && ok "AGENTS.md ${L}줄 ≤ 200" || bad "AGENTS.md ${L}줄"
-grep -qE '^\| 8 출고 — release/vX\.Y\.Z' "$A" && ok "흐름 표 8행 release 브랜치" || bad "흐름 표 8행"
+grep -qE '^\| 8 머지 뒤 마무리 — .*task-close' "$A" && grep -qF '회고(release §4)' .agents/skills/task-close/SKILL.md && ok "흐름 표 8행 task-close → 출고 방식 슬롯이 release 스킬" || bad "흐름 표 8행"
 PR=.agents/rules/corral.md   # 브랜치·출고 규약은 paddock 적용(2026-11-24) 때 AGENTS.md 에서 이리 옮겼다
 grep -qF '**release 브랜치 release/vX.Y.Z**' "$PR" && grep -q '한 번에 하나' "$PR" && ok "브랜치 규약 release 예외(1회 수명·한 번에 하나)" || bad "브랜치 규약 release 예외"
 grep -q 'main 에 직접 올라가는 것은 release.sh 의 태그뿐' "$PR" && ok "main 직접 push = 태그만" || bad "main 직접 push 문구"

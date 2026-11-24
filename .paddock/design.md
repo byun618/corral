@@ -95,7 +95,7 @@
 | 날짜 | 변경 | 대상 | 사유 |
 | --- | --- | --- | --- |
 | 2026-11-24 | adopt 0.11.0 적용 | 전체 | 기존 흐름을 paddock 뼈대로 옮김 |
-| 2026-11-24 | 문서 대조 검사 돌림 | app/scripts/release-check/doc-check.sh · quick-check.sh | 문구가 옮겨 간 행(브랜치·출고 규약 → `.agents/rules/corral.md`, devlog·세션 기록 → `.agents/corral-coordinate.md`, 세션 기동 → `corral/session-start.md`)은 자리를 돌렸다. 문구가 paddock 고정 문장으로 바뀐 행(quick-check 대조표 9개, doc-check 「흐름 표 8행」)은 고치지 않고 실패로 둔다 |
+| 2026-11-24 | 문서 대조 검사 돌림 | app/scripts/release-check/doc-check.sh · quick-check.sh | 문구가 옮겨 간 행(브랜치·출고 규약 → `.agents/rules/corral.md`, devlog·세션 기록 → `.agents/corral-coordinate.md`, 세션 기동 → `corral/session-start.md`)은 자리를 돌렸다. 문구가 paddock 고정 문장으로 바뀐 행(quick-check 대조표 9개, doc-check 「흐름 표 8행」)은 새 문구로 다시 박고, 「회고 = release §4」 사슬은 task-close 출고 슬롯을 보는 행 2개로 잇는다(사용자 결정) |
 | 2026-11-24 | 시험 fixture 에 설정 추가 | scripts/task-finish-test.sh | 새 task-finish.sh 가 값을 `.paddock/config.sh` 에서 읽는다. 56/56 통과 |
 
 ## 덩어리 전수

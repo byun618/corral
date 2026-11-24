@@ -15,6 +15,46 @@
 .scm-desc { margin-left: 0.5em; font-size: 0.9em; opacity: 0.7; }
 /* 상태 글자 — semibold(`scm.css:298-309`). */
 .scm-letter { font-weight: 600; }
+/* --- 쓰기 (LIFE-829) — 입력란·커밋 단추(VS Code `scm.css` `.scm-editor`·`.button-container`)·inline 단추(`.actions`) ------------------ */
+.scm-input { flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; padding: 4px 12px 8px 20px; }
+.scm-message {
+  box-sizing: border-box; width: 100%; min-height: 26px; padding: 4px 6px; resize: none; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 2px; background: var(--bg-input); color: var(--fg);
+  font: inherit; font-size: 13px; line-height: 18px; outline: none;
+}
+.scm-message:focus { border-color: #3994bcb3; }
+.scm-message[readonly] { opacity: 0.7; }
+.scm-commit-row { position: relative; display: flex; height: 26px; }
+.scm-commit, .scm-commit-more {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 26px; border: none;
+  background: var(--accent); color: var(--fg-on-accent); font: inherit; font-size: 13px; cursor: pointer;
+}
+.scm-commit { flex: 1 1 auto; min-width: 0; border-radius: 2px 0 0 2px; }
+.scm-commit > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scm-commit-more { flex: 0 0 24px; border-radius: 0 2px 2px 0; border-left: 1px solid rgb(0 0 0 / 0.2); }
+.scm-commit:hover:not(:disabled), .scm-commit-more:hover:not(:disabled) { background: var(--accent-hi); }
+.scm-commit:disabled, .scm-commit-more:disabled { opacity: 0.6; cursor: default; }
+.scm-commit-menu {
+  position: absolute; top: 28px; right: 0; z-index: 5; min-width: 140px; padding: 4px 0; display: flex; flex-direction: column;
+  background: var(--bg-surface); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.36);
+}
+.scm-commit-menu > button { height: 24px; padding: 0 12px; border: none; background: none; color: var(--fg); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.scm-commit-menu > button:hover, .scm-commit-menu > button:focus-visible { background: var(--bg-accent); outline: none; }
+.scm-notice { display: flex; align-items: flex-start; gap: 4px; padding: 4px 4px 4px 8px; border-radius: 2px; background: var(--bg-accent); font-size: 12px; }
+.scm-notice.is-error { border-left: 2px solid var(--st-error); }
+.scm-notice-text { flex: 1 1 auto; min-width: 0; margin: 0; max-height: 160px; overflow: auto; font-family: var(--font-mono, monospace); font-size: 11.5px; line-height: 16px; white-space: pre-wrap; word-break: break-word; user-select: text; }
+.scm-notice-close { flex-shrink: 0; width: 18px; height: 18px; }
+/* inline 단추 — 행 hover·선택 때만 자리를 차지한다. 이름은 줄고(말줄임) 상태 글자·개수는 줄지 않는다(learnings ui.md). */
+.scm-actions { display: none; flex-shrink: 0; align-items: center; margin-right: 4px; }
+.scm .explorer-row:hover .scm-actions, .scm .explorer-row.is-selected .scm-actions { display: inline-flex; }
+.scm-action {
+  width: 20px; height: 20px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 4px; background: none; color: var(--fg); cursor: pointer;
+}
+.scm-action:hover { background: var(--bg-accent); }
+.scm-action[aria-disabled='true'] { opacity: 0.4; cursor: default; }
+.scm-action[aria-disabled='true']:hover { background: none; }
+.scm-action .codicon { font-size: 16px; }
 .scm-banner { flex-shrink: 0; padding: 4px 12px; font-size: 12px; color: var(--fg-muted); background: var(--bg-accent); }
 .right-panel-activity-icon.is-source-control::before { content: '\ea68'; }
 .right-panel-activity-icon.is-codicon { font-size: var(--right-panel-activity-icon); line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
@@ -37,3 +77,86 @@
 .scm-diff-notice { flex-shrink: 0; padding: 4px 12px; font-family: var(--font-ui); font-size: 12px; color: var(--fg-muted); background: var(--bg-accent); }
 .scm-diff-host { flex: 1 1 auto; min-height: 0; position: relative; }
 .scm-diff-message { padding: 16px; font-family: var(--font-ui); font-size: 13px; color: var(--fg-muted); }
+
+/* --- base 대비 (LIFE-830) — 머리 아래 한 줄: 이름은 줄고(말줄임) 출처·해시는 줄지 않는 칸(learnings ui.md 「줄지 않는 칸」). 띠 모양은 `.scm-banner` 와 같다. */
+.scm-base { flex-shrink: 0; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 12px; font-size: 12px; color: var(--fg-muted); background: var(--bg-accent); }
+.scm-base-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.scm-base-tail { flex: 0 0 auto; display: inline-flex; gap: 6px; white-space: nowrap; }
+.scm-base-hash { font-family: var(--font-mono, monospace); }
+
+/* --- diff 줄 메모 (LIFE-832) -------------------------------------------------------------------- */
+.diff-notes-head { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; }
+.diff-notes-count { color: var(--fg-muted); white-space: nowrap; }
+.scm-diff-open:disabled { opacity: 0.45; cursor: default; background: none; color: var(--fg-muted); }
+.diff-notes-result { display: flex; align-items: center; gap: 8px; }
+.diff-notes-result-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.diff-notes-result.is-delivered .diff-notes-result-text { color: var(--st-ok); }
+.diff-notes-result.is-failed .diff-notes-result-text { color: var(--st-error-hi); }
+.diff-notes-result.is-unconfirmed .diff-notes-result-text, .diff-notes-result.is-unknown .diff-notes-result-text { color: var(--st-dirty); }
+/* 거터 글리프 — 마우스 줄의 + · 메모가 있는 줄의 말풍선. */
+.diff-note-add { color: var(--fg-dim); cursor: pointer; font-size: 14px !important; display: flex !important; align-items: center; justify-content: center; }
+.diff-note-add:hover { color: var(--accent); }
+.diff-note-mark { color: var(--accent); font-size: 13px !important; display: flex !important; align-items: center; justify-content: center; cursor: pointer; }
+.diff-note-mark.is-sent { color: var(--fg-dim); }
+/* view zone 안 카드 — zone 은 편집기 폭 전체, 카드는 왼쪽 여백을 두고 그린다. */
+.diff-note-zone { box-sizing: border-box; padding: 4px 16px 4px 8px; z-index: 5; max-width: var(--diff-note-width, none); }
+.diff-note {
+  box-sizing: border-box; height: 100%; display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--line); border-left: 2px solid var(--accent);
+  border-radius: 4px; background: var(--bg-raised); font-family: var(--font-ui); font-size: 12px; color: var(--fg); overflow: hidden;
+}
+.diff-note-head { display: flex; align-items: center; gap: 6px; color: var(--fg-muted); flex-shrink: 0; }
+.diff-note-sent { padding: 0 6px; border-radius: 8px; background: var(--bg-chip); color: var(--st-ok); }
+.diff-note-missing { color: var(--st-dirty); }
+.diff-note-spacer { flex: 1 1 auto; }
+.diff-note-body { flex: 1 1 auto; min-height: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 18px; user-select: text; }
+.diff-note-btn {
+  flex-shrink: 0; height: 20px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: none; color: var(--fg-muted); font: inherit; font-size: 12px; cursor: pointer;
+}
+.diff-note-btn:hover:not(:disabled) { background: var(--bg-accent); color: var(--fg); }
+.diff-note-btn:disabled { opacity: 0.45; cursor: default; }
+.diff-note-btn.is-primary { border-color: transparent; background: var(--accent); color: var(--fg-on-accent); }
+.diff-note-btn.is-primary:hover:not(:disabled) { background: var(--accent-hi); color: var(--fg-on-accent); }
+.diff-note-input {
+  flex: 1 1 auto; min-height: 0; resize: none; box-sizing: border-box; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--bg-input); color: var(--fg); font-family: var(--font-ui); font-size: 12px; line-height: 18px; outline: none;
+}
+.diff-note-input:focus { border-color: var(--accent); }
+.diff-note-actions { display: flex; justify-content: flex-end; gap: 6px; flex-shrink: 0; }
+/* 확인 단계 — diff 탭 몸통 위를 덮는다(탭바·다른 영역은 덮지 않는다). */
+.diff-notes-confirm-backdrop { position: absolute; inset: 0; z-index: 20; display: flex; align-items: flex-start; justify-content: center; padding: 24px 16px; background: rgb(0 0 0 / 0.45); overflow: auto; }
+.diff-notes-confirm {
+  box-sizing: border-box; width: min(720px, 100%); max-height: 100%; display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--bg-raised); font-family: var(--font-ui); font-size: 12px; color: var(--fg);
+}
+.diff-notes-confirm-title { font-size: 13px; font-weight: 600; }
+.diff-notes-confirm-label { color: var(--fg-muted); }
+.diff-notes-confirm-empty, .diff-notes-blocked { color: var(--st-dirty); }
+.diff-notes-targets { display: flex; flex-direction: column; gap: 2px; }
+.diff-notes-target { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+.diff-notes-target:hover { background: var(--bg-row-hover); }
+.diff-notes-target.is-disabled { cursor: default; color: var(--fg-dim); }
+.diff-notes-target-kind { font-family: var(--font-mono); }
+.diff-notes-target-name { min-width: 0; overflow-wrap: anywhere; }
+.diff-notes-target-status { color: var(--fg-muted); }
+.diff-notes-target-reason { flex-basis: 100%; padding-left: 22px; color: var(--fg-dim); }
+.diff-notes-body {
+  flex: 1 1 auto; min-height: 60px; max-height: 50vh; margin: 0; padding: 8px; overflow: auto; border-radius: 4px; background: var(--bg-surface);
+  font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+}
+.diff-notes-confirm-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.diff-notes-lead { padding: 4px 8px; border-radius: 4px; background: var(--bg-surface); font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; user-select: text; }
+.diff-note.is-held { border-color: var(--st-dirty); }
+.diff-note-held { font-size: 12px; color: var(--st-dirty); }
+/* --- 원격 (LIFE-831) — 머리 아래 한 줄. 브랜치 이름만 줄고(말줄임) ↓↑ 숫자·단추는 줄지 않는다(learnings ui.md). 단추는 머리 도구와 달리 늘 보인다. --- */
+.scm-remote { flex-shrink: 0; display: flex; align-items: center; gap: 6px; min-width: 0; height: 24px; padding: 0 8px 0 20px; font-size: 12px; }
+.scm-remote-branch { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); }
+.scm-remote-ab { flex: 0 0 auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.scm-remote-tools { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; }
+.scm-remote-progress { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
+.scm-publish {
+  display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 6px; border: none; border-radius: 2px; white-space: nowrap;
+  background: var(--accent); color: var(--fg-on-accent); font: inherit; font-size: 12px; cursor: pointer;
+}
+.scm-publish:hover { background: var(--accent-hi); }
+@keyframes scm-spin { to { transform: rotate(360deg); } }
+.scm-spin { animation: scm-spin 1.2s linear infinite; }

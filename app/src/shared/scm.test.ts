@@ -6,7 +6,27 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { parsePorcelainV2 } from './explorer-git.js'
-import { buildTree, comparePaths, diffTabId, diffTitle, flattenTree, groupChanges, isPlainRel, openOf, parseDiffTabId, parseScmChanges, scmErrorKind, scmMark, scmStrike, sidesOf, type ScmChange, type ScmStatus } from './scm.js'
+import {
+  buildTree,
+  comparePaths,
+  diffTabId,
+  diffTitle,
+  flattenTree,
+  groupChanges,
+  isPlainRel,
+  openOf,
+  parseBaseDiff,
+  parseDiffTabId,
+  parseScmChanges,
+  SCM_BASE_SOURCE_TEXT,
+  scmErrorKind,
+  scmMark,
+  scmStrike,
+  sidesOf,
+  withUntracked,
+  type ScmChange,
+  type ScmStatus,
+} from './scm.js'
 
 const v2 = (...records: string[]): string => records.join('\0') + '\0'
 const ordinary = (xy: string, rel: string): string => `1 ${xy} N... 100644 100644 100644 aaaa bbbb ${rel}`
@@ -246,5 +266,87 @@ describe('fix r1 — 중첩 저장소(R1-02) · 하위 모듈(R1-04) · 전체 �
     } finally {
       fs.rmSync(base, { recursive: true, force: true })
     }
+  })
+})
+
+// LIFE-830 B4·B5·B12 — base 대비: `diff --raw -z -M` 파서(이름 바뀜·공백·한글·하위 모듈·충돌), 추적 안 함 합치기, 클릭 대상·양쪽, 탭 id.
+describe('base 대비 (LIFE-830)', () => {
+  it('출처 문구 — 부모 worktree · repo 설정 · 기본 브랜치(기준 B3 정정 r1 — ③ 사슬은 로컬 main·master 까지 내려간다)', () => {
+    expect(SCM_BASE_SOURCE_TEXT).toEqual({ parent: '부모 worktree', repo: 'repo 설정', default: '기본 브랜치' })
+  })
+  const raw = (...records: string[]): string => records.join('\0') + '\0'
+  const Z = '0'.repeat(40)
+  const O = 'a'.repeat(40)
+  it('parseBaseDiff — A·M·D·R(점수 버림, 원래→새 경로)·T·U(충돌)·하위 모듈, 공백·한글 경로', () => {
+    const out = parseBaseDiff(
+      raw(
+        `:000000 100644 ${Z} ${O} A`, 'added 파일.txt',
+        `:100644 100644 ${O} ${Z} M`, 'dir/b c.txt',
+        `:100644 000000 ${O} ${Z} D`, 'gone.txt',
+        `:100644 100644 ${O} ${O} R087`, 'old name.txt', 'dir/새 이름.txt',
+        `:100644 120000 ${O} ${Z} T`, 'link',
+        `:000000 000000 ${Z} ${Z} U`, 'conflict.txt',
+        `:160000 160000 ${O} ${Z} M`, 'sub',
+        `:100644 100644 ${O} ${O} C050`, 'from.txt', 'copy.txt',
+      ),
+    )
+    expect(out).toEqual([
+      { group: 'base', status: 'ADDED', rel: 'added 파일.txt', orig: null },
+      { group: 'base', status: 'MODIFIED', rel: 'dir/b c.txt', orig: null },
+      { group: 'base', status: 'DELETED', rel: 'gone.txt', orig: null },
+      { group: 'base', status: 'RENAMED', rel: 'dir/새 이름.txt', orig: 'old name.txt' },
+      { group: 'base', status: 'TYPE_CHANGED', rel: 'link', orig: null },
+      { group: 'base', status: 'BOTH_MODIFIED', rel: 'conflict.txt', orig: null },
+      { group: 'base', status: 'MODIFIED', rel: 'sub', orig: null, submodule: true },
+    ])
+    expect(parseBaseDiff('')).toEqual([])
+  })
+  it('withUntracked — status 의 추적 안 함만 base 그룹으로 더한다', () => {
+    const status: ScmChange[] = [
+      { group: 'workingTree', status: 'UNTRACKED', rel: 'u.txt', orig: null },
+      { group: 'workingTree', status: 'MODIFIED', rel: 'm.txt', orig: null },
+      { group: 'index', status: 'INDEX_ADDED', rel: 'i.txt', orig: null },
+    ]
+    const diff: ScmChange[] = [{ group: 'base', status: 'MODIFIED', rel: 'm.txt', orig: null }]
+    expect(withUntracked({ diff, status })).toEqual([...diff, { group: 'base', status: 'UNTRACKED', rel: 'u.txt', orig: null }])
+  })
+  it('글자·취소선·그룹 — A·R 은 작업 트리와 같은 글자, 삭제 취소선, 그룹 하나 「base 대비 변경 사항」', () => {
+    expect(scmMark('ADDED')).toBe('A')
+    expect(scmMark('RENAMED')).toBe('R')
+    expect(scmStrike('DELETED')).toBe(true)
+    const grouped = groupChanges([
+      { group: 'base', status: 'MODIFIED', rel: 'b', orig: null },
+      { group: 'base', status: 'UNTRACKED', rel: 'a', orig: null },
+    ])
+    expect(grouped.groups.map((group) => [group.id, group.title, group.changes.map((change) => change.rel)])).toEqual([['base', 'base 대비 변경 사항', ['a', 'b']]])
+  })
+  it('클릭 대상·양쪽 — 수정·추가·추적 안 함 = merge-base ↔ 작업 파일, 이름 바뀜 = 원래 경로 ↔ 새 경로, 삭제 = merge-base 단일, 충돌 = 작업 파일, 하위 모듈 = 안내', () => {
+    const base = (status: ScmStatus, rel: string, orig: string | null = null, extra: { submodule?: true } = {}): ScmChange => ({ group: 'base', status, rel, orig, ...extra })
+    expect(openOf(base('MODIFIED', 'm'))).toEqual({ kind: 'diff', target: { mode: 'base', rel: 'm', orig: null } })
+    expect(openOf(base('ADDED', 'a'))).toEqual({ kind: 'diff', target: { mode: 'base', rel: 'a', orig: null } })
+    expect(openOf(base('UNTRACKED', 'u'))).toEqual({ kind: 'diff', target: { mode: 'base', rel: 'u', orig: null } })
+    expect(openOf(base('TYPE_CHANGED', 't'))).toEqual({ kind: 'diff', target: { mode: 'base', rel: 't', orig: null } })
+    expect(openOf(base('RENAMED', 'new', 'old'))).toEqual({ kind: 'diff', target: { mode: 'base', rel: 'new', orig: 'old' } })
+    expect(openOf(base('DELETED', 'd'))).toEqual({ kind: 'diff', target: { mode: 'baseDeleted', rel: 'd', orig: null } })
+    expect(openOf(base('BOTH_MODIFIED', 'c'))).toEqual({ kind: 'file', rel: 'c' })
+    expect(openOf(base('MODIFIED', 'sub', null, { submodule: true }))).toMatchObject({ kind: 'notice' })
+    expect(sidesOf({ mode: 'base', rel: 'new', orig: 'old' })).toEqual({ left: { side: 'base', rel: 'old' }, right: { side: 'working', rel: 'new' } })
+    expect(sidesOf({ mode: 'base', rel: 'm', orig: null })).toEqual({ left: { side: 'base', rel: 'm' }, right: { side: 'working', rel: 'm' } })
+    expect(sidesOf({ mode: 'baseDeleted', rel: 'd', orig: null })).toEqual({ left: null, right: { side: 'base', rel: 'd' } })
+    expect(diffTitle({ mode: 'base', rel: 'dir/m.ts', orig: null })).toBe('m.ts (base 대비)')
+    // 작업 트리 모드 행은 그대로 — 같은 상태 이름이어도 그룹이 다르면 다른 대상.
+    expect(openOf({ group: 'workingTree', status: 'MODIFIED', rel: 'm', orig: null })).toEqual({ kind: 'diff', target: { mode: 'wt', rel: 'm', orig: null } })
+    expect(openOf({ group: 'workingTree', status: 'UNTRACKED', rel: 'u', orig: null })).toEqual({ kind: 'file', rel: 'u' })
+  })
+  it('탭 id — 새 모드는 작업 트리 탭과 다른 id, 왕복, 옛 id 형식 그대로 읽힘', () => {
+    const target = { mode: 'base' as const, rel: 'm.ts', orig: null }
+    expect(parseDiffTabId(diffTabId(target))).toEqual(target)
+    expect(parseDiffTabId(diffTabId({ mode: 'baseDeleted', rel: 'd', orig: null }))).toEqual({ mode: 'baseDeleted', rel: 'd', orig: null })
+    expect(diffTabId(target)).not.toBe(diffTabId({ ...target, mode: 'wt' }))
+    expect(diffTabId(target)).toBe('diff:["base","m.ts",null]')
+    // v0.6.0 이 쓴 id(문자열 그대로) — 이 빌드도 같은 대상으로 읽는다.
+    expect(parseDiffTabId('diff:["wt","a.ts",null]')).toEqual({ mode: 'wt', rel: 'a.ts', orig: null })
+    expect(parseDiffTabId('diff:["idx","b.ts","a.ts"]')).toEqual({ mode: 'idx', rel: 'b.ts', orig: 'a.ts' })
+    expect(parseDiffTabId('diff:["base","../x",null]')).toBeNull()
   })
 })

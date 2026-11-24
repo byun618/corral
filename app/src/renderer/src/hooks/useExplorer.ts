@@ -262,6 +262,8 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
   useEffect(
     () =>
       window.corral.onExplorerEvent((event) => {
+        // base 대비 목록(LIFE-830)은 소스 제어 보기 몫이다.
+        if (event.kind === 'scmBase') return
         // git 스냅샷은 루트 상태가 아직 없어도 받아 둔다(R3-A) — 목록 변경은 읽어 둔 게 없으면 할 일이 없다.
         const store = event.kind === 'git' ? storeOf(event.root) : stores.current.get(event.root)
         if (store === undefined) return

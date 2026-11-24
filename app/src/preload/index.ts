@@ -47,6 +47,9 @@ import type { FileListInput, FileListResult } from '../shared/file-list.js'
 import type { ContentSearchInput, ContentSearchResult } from '../shared/content-search.js'
 import type { ScmReadInput, ScmReadResult } from '../shared/scm.js'
 import { DICTATION_PRESS_KEYS_CHANNEL, type DictationEvent, type DictationInsertResult, type DictationPressKeys, type DictationStartResult } from '../shared/dictation.js'
+import { readDiffNotesState, type DiffNotesSendInput, type DiffNotesSendResult, type DiffNotesState } from '../shared/diff-notes.js'
+import type { ScmWriteInput, ScmWriteResult } from '../shared/scm-write.js'
+import type { ScmRemoteAction, ScmRemoteInput, ScmRemoteResult } from '../shared/scm-remote.js'
 import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from '../shared/file-view.js'
 
 const EXPOSED = [
@@ -110,6 +113,15 @@ const EXPOSED = [
   'fileWatch',
   'readImage',
   'scmRead',
+  'scmWrite',
+  'scmRemote',
+  'scmRemoteCancel',
+  'scmRemoteState',
+  'onScmRemoteEvent',
+  'scmBaseMode',
+  'diffNotesSend',
+  'diffNotesCancel',
+  'onDiffNotesState',
   'onFileEvent',
   'writeFile',
   'fileDialog',
@@ -309,6 +321,35 @@ const api: CorralApi = {
   readImage: (input: { root: string; rel: string }): Promise<ImageReadResult> => ipcRenderer.invoke('corral:fileReadImage', input),
   // LIFE-683 S7 — 소스 제어 diff 의 HEAD·인덱스 쪽 내용(읽기 전용). ref 는 `side` 두 값뿐 — main 이 고정 argv 로 읽는다.
   scmRead: (input: ScmReadInput): Promise<ScmReadResult> => ipcRenderer.invoke('corral:scmRead', input),
+  // LIFE-829 — 소스 제어 쓰기. 동작 이름·루트·경로만 — git 인자는 main 이 고정한다.
+  scmWrite: (input: ScmWriteInput): Promise<ScmWriteResult> => ipcRenderer.invoke('corral:scmWrite', input),
+  // LIFE-831 — 소스 제어 원격. 동작 이름·루트만 — 원격·브랜치 이름과 git 인자는 main 이 git 에서 읽어 고정한다.
+  scmRemote: (input: ScmRemoteInput): Promise<ScmRemoteResult> => ipcRenderer.invoke('corral:scmRemote', input),
+  scmRemoteCancel: (input: { root: string }): Promise<{ ok: boolean }> => ipcRenderer.invoke('corral:scmRemoteCancel', input),
+  // 수정 r1 C6 — 진행 중 원격 동작 조회·시작/끝 알림(렌더러가 다시 그려져도 진행 표시·취소를 되살린다).
+  scmRemoteState: (input: { root: string }): Promise<{ action: ScmRemoteAction | null }> => ipcRenderer.invoke('corral:scmRemoteState', input),
+  onScmRemoteEvent: (listener: (event: { root: string; action: ScmRemoteAction | null }) => void) => {
+    const handler = (_event: unknown, push: { root: string; action: ScmRemoteAction | null }): void => listener(push)
+    ipcRenderer.on('corral:scmRemoteEvent', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:scmRemoteEvent', handler)
+    }
+  },
+  // LIFE-830 — base 대비 켜기·끄기. ref 는 보내지 않는다(main 이 그 루트의 base 를 푼다).
+  scmBaseMode: (input: { root: string; on: boolean }) => ipcRenderer.send('corral:scmBaseMode', input),
+  // LIFE-832 — diff 메모 보내기. main 이 모양·상한·대상을 다시 본다.
+  diffNotesSend: (input: DiffNotesSendInput): Promise<DiffNotesSendResult> => ipcRenderer.invoke('corral:diffNotesSend', input),
+  diffNotesCancel: (input: { requestId: string }) => ipcRenderer.send('corral:diffNotesCancel', input),
+  onDiffNotesState: (listener: (state: DiffNotesState) => void) => {
+    const handler = (_event: unknown, push: unknown): void => {
+      const state = readDiffNotesState(push)
+      if (state !== null) listener(state)
+    }
+    ipcRenderer.on('corral:diffNotesState', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:diffNotesState', handler)
+    }
+  },
   fileWatch: (input: { root: string; rels: string[] }): Promise<{ ok: boolean; count: number }> => ipcRenderer.invoke('corral:fileWatch', input),
   onFileEvent: (listener: (event: FileWatchPush) => void) => {
     const handler = (_event: unknown, push: FileWatchPush): void => listener(push)

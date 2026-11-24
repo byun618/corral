@@ -73,6 +73,8 @@ beforeEach(() => {
       return { ok: true }
     },
     explorerRefreshGit: (watched: string) => watchCalls.push(`refresh:${watched}`),
+    scmRemoteState: async () => ({ action: null }),
+    onScmRemoteEvent: () => () => {},
     onExplorerEvent: () => () => {},
     getUiPrefs: async () => ({ scmViewMode: 'list' }),
     setUiPrefs: () => {},
@@ -173,5 +175,52 @@ describe('본문 드롭 표지 (LIFE-823 B5)', () => {
     act(() => root.render(createElement(DiffView, { root: '/r', target: null, stamp: 1, watch: false, onOpenFile: () => {}, groupId: 'g2' })))
     await flush()
     expect(host.querySelector('.scm-diff-message')?.getAttribute('data-diff-group')).toBe('g2')
+  })
+})
+
+// LIFE-830 B5 — base 대비 diff 탭: 왼쪽 = merge-base 쪽(scmRead side base — ref 는 보내지 않는다), 오른쪽 = 작업 파일,
+// 머리 표지 「base <이름>(<짧은 해시>) ↔ 작업 트리」, 추가는 빈 왼쪽 diff + 「base 쪽에 없음」 띠, 삭제는 merge-base 단일·파일 열기 없음.
+describe('DiffView base 대비 (LIFE-830)', () => {
+  const info = { name: 'feature/LIFE-802', source: 'parent' as const, mergeBase: 'abcdef0123456789abcdef0123456789abcdef01' }
+  const sent: unknown[] = []
+  beforeEach(() => {
+    sent.length = 0
+    Reflect.set(Reflect.get(window, 'corral'), 'scmRead', async (input: ScmReadInput) => {
+      sent.push(input)
+      reads.push(`${input.side}:${input.rel}`)
+      const text = blobs.get(`${input.side}:${input.rel}`)
+      return text === undefined || text === null ? { ok: true, kind: 'missing', base: info } : { ok: true, kind: 'text', text, size: text.length, base: info }
+    })
+  })
+  const head = (): string => host.querySelector('.scm-diff-sides')?.textContent ?? ''
+  it('수정 — merge-base ↔ 작업 파일, 머리에 base 이름·짧은 해시, IPC 는 고정 side 값만', async () => {
+    blobs.set('base:a.ts', 'base text\n')
+    files.set('a.ts', 'working text\n')
+    await render({ target: { mode: 'base', rel: 'a.ts', orig: null } })
+    expect(made.models.map((model) => model.value)).toEqual(['base text\n', 'working text\n'])
+    expect(head()).toBe('base feature/LIFE-802(abcdef0) ↔ 작업 트리 · a.ts · 읽기 전용')
+    expect(sent).toEqual([{ root: '/r', rel: 'a.ts', side: 'base' }])
+  })
+  it('이름 바뀜 — 원래 경로의 merge-base 쪽 ↔ 새 경로 작업 파일', async () => {
+    blobs.set('base:old.ts', 'old\n')
+    files.set('new.ts', 'new\n')
+    await render({ target: { mode: 'base', rel: 'new.ts', orig: 'old.ts' } })
+    expect(reads).toEqual(expect.arrayContaining(['base:old.ts', 'working:new.ts']))
+    expect(head()).toBe('base feature/LIFE-802(abcdef0) old.ts ↔ 작업 트리 · new.ts · 읽기 전용')
+  })
+  it('추가·추적 안 함 — 빈 왼쪽 diff + 「base 쪽에 없음」 띠, 빈 새 파일도 「변경 없음」 으로 보지 않는다', async () => {
+    files.set('n.ts', '')
+    await render({ target: { mode: 'base', rel: 'n.ts', orig: null } })
+    expect(made.editors.map((editor) => editor.kind)).toEqual(['diff'])
+    expect(host.querySelector('[data-scm-diff-left-missing]')).not.toBeNull()
+    expect(host.querySelector('[data-scm-diff-unchanged]')).toBeNull()
+  })
+  it('삭제 — merge-base 단일, 파일 열기 없음', async () => {
+    blobs.set('base:gone.ts', 'bye\n')
+    await render({ target: { mode: 'baseDeleted', rel: 'gone.ts', orig: null } })
+    expect(made.editors.map((editor) => editor.kind)).toEqual(['single'])
+    expect(made.models.map((model) => model.value)).toEqual(['bye\n'])
+    expect(head()).toBe('base feature/LIFE-802(abcdef0) · gone.ts · 읽기 전용')
+    expect(host.querySelector('[data-scm-diff-open]')).toBeNull()
   })
 })

@@ -99,7 +99,7 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 | 7 | 태그 만들기·push·main fetch 실패(머지는 끝남, 로컬 태그는 지움) | 같은 ship — 태그부터 이어 간다 |
 | 8 | dmg 실패 또는 빌드용 임시 worktree 생성 실패(머지·태그·Release 끝) | 메시지의 「dmg 만 다시」 줄 → 그 뒤 「dmg 뒤 APK」 줄 → 「Release 에 올리기」 줄 |
 | 9 | GitHub Release 실패(머지·태그 끝) | 같은 ship — Release 부터 이어 간다 |
-| 10 | APK 실패(머지·태그·Release·dmg 끝) | 메시지의 「APK 만 다시」 줄 → 「APK 뒤 Release 에 올리기」 줄 |
+| 10 | APK 실패(머지·태그·Release·dmg 끝) | 메시지의 「APK 만 다시」 줄 → 「APK 뒤 Release 에 올리기」 줄. 새 APK 가 `retry-<시각>/` 에 생겼으면 올리기가 멈추고 후보마다 `--apk` 줄을 보인다 — 검증을 통과한 APK 의 줄 |
 | 11 | release 브랜치 push·삭제 실패 | 원인을 보고 같은 명령 |
 | 12 | release PR 생성·조회 실패 | 같은 ship — 열린 release PR 이 있으면 재사용 |
 | 13 | 원래 PR 처리 미완 — MERGED 미확인 또는 head 조회·삭제 실패. 출고 자체(태그·Release·dmg·APK·올리기)는 끝남, 그 head 는 지우지 않음(못 지움) | 아래 「간접 머지가 안 될 때」 · 삭제 실패면 원인(권한·보호)을 풀고 finish |
@@ -122,7 +122,9 @@ Release 에 올리기만 다시(어느 cwd 에서도 — 스크립트가 든 레
 ```sh
 <본체>/scripts/release-upload.sh --tag vX.Y.Z --tag-prefix v --dir <본체>/app/dist/release/vX.Y.Z
 ```
-올리는 폴더는 그 태그의 산출물 폴더 맨 위다(`retry-<시각>/` 아래는 보지 않는다). 폴더 이름이 태그 꼴인데 다른 태그면, 파일 이름 버전이 태그 버전과 다르면, 필요한 파일이 없으면, Release 가 없으면 gh 로 올리기 전에 거절한다.
+올리는 폴더는 그 태그의 산출물 폴더 맨 위다. **`retry-<시각>/` 에 APK 가 있으면 `--apk` 없이는 아무것도 올리지 않는다** — `release-apk.sh` 는 APK 를 쓴 뒤에 검증하므로
+검증에서 거절된 APK 가 맨 위에 남고 다시 만든 APK 는 `retry-<시각>/` 로 간다. 거절 메시지가 후보 APK 마다 sha256·시각과 `--apk <경로>` 를 붙인 명령을 한 줄씩 보인다 —
+`release-apk.sh` 가 「✔ vX.Y.Z apk: <경로>」 로 낸 APK 의 줄을 붙여 넣는다(`--apk` 는 그 폴더 맨 위나 `retry-<시각>/` 바로 아래의 `corral-mobile-X.Y.Z.apk` 만 받는다). 폴더 이름이 태그 꼴인데 다른 태그면, 파일 이름 버전이 태그 버전과 다르면, 필요한 파일이 없으면, Release 가 없으면 gh 로 올리기 전에 거절한다.
 
 끝나면 본체 세션이: 출고된 PR 의 일감마다 LA `완료` 전이(출고 머지 뒤 — D2, 설치를 기다리지 않는다) → dmg 를 아래 「설치」대로 설치 →
 `corral --version` 이 새 버전인지 확인 → 폰에 APK 를 덮어 설치(아래 「폰 APK 설치」) → 남은 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>` → `scripts/release.sh finish`.

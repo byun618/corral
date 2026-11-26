@@ -757,13 +757,14 @@ if [ "$SKIP_APK" = 1 ]; then
   UP_LATER="${UP_LATER:-}${NL}APK 뒤 Release 에 APK 더하기(올라간 dmg 는 건너뛴다):${NL}$UPLOAD_ALL"
 else
   "$TMPWT/scripts/release-apk.sh" --tag-prefix "$PREFIX" --out "$OUT_DIR" \
-    || die "APK 실패 — 머지·태그 $TAG push·Release$([ "$SKIP_BUILD" = 1 ] || echo "·dmg") 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다${NL}APK 만 다시:${NL}$APK_RERUN${NL}APK 뒤 Release 에 올리기:${NL}$UPLOAD_ALL$PR_TAIL" 10
+    || die "APK 실패 — 머지·태그 $TAG push·Release$([ "$SKIP_BUILD" = 1 ] || echo "·dmg") 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다${NL}APK 만 다시:${NL}$APK_RERUN${NL}(맨 위에 APK 가 남아 있으면 새 APK 는 retry-<시각>/ 에 생긴다 — 그때 올리기는 아무것도 올리지 않고 후보 APK 마다 --apk 명령을 보인다. release-apk.sh 가 「✔ $TAG apk: <경로>」 로 낸 것을 고른다)${NL}APK 뒤 Release 에 올리기:${NL}$UPLOAD_ALL$PR_TAIL" 10
 fi
 
 # 10. Release 에 dmg·APK·체크섬 올리기 — dmg 가 있어야 한다(--skip-build 면 위 안내의 명령으로 나중에)
+#     dmg·APK 와 같이 태그 worktree 사본을 부른다. 재실행 안내(UPLOAD_*)는 임시 worktree 정리 뒤에도 남는 $SCRIPT_DIR 사본이다
 UP_FLAG=""; [ "$SKIP_APK" = 0 ] || UP_FLAG=--no-apk # guard:upload-noapk
 if [ "$SKIP_BUILD" = 0 ]; then # guard:upload-run
-  "$SCRIPT_DIR/release-upload.sh" --tag "$TAG" --tag-prefix "$PREFIX" --dir "$OUT_DIR" $UP_FLAG \
+  "$TMPWT/scripts/release-upload.sh" --tag "$TAG" --tag-prefix "$PREFIX" --dir "$OUT_DIR" $UP_FLAG \
     || die "Release 에 올리기 실패 — 머지·태그 $TAG push·Release·dmg$([ "$SKIP_APK" = 1 ] || echo "·APK") 는 끝났다(다시 출고·빌드하지 않는다). 원인을 보고 아래 명령을 그대로 붙여 넣는다(이미 올라간 것은 건너뛴다)${NL}올리기만 다시:${NL}$UPLOAD_RERUN$PR_TAIL" 14 # guard:upload-fail
 fi
 [ -z "${UP_LATER:-}" ] || echo "${UP_LATER#"$NL"}"

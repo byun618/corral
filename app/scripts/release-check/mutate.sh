@@ -59,6 +59,8 @@ upload-fail	ship-build-uploadfail
 P
 )"
 # release-upload.sh(LIFE-729) — 셋째 칸이 비면 die → true. addbad 판정 줄은 「addbad "」 → 「true "」(거절 목록에 넣지 않음)
+# up-verify@state 는 끝 대조의 state 절만 뺀다 — 가짜 gh 가 state≠uploaded asset 의 digest 를 비우므로 FGH_STATE_LIE(digest 는 맞게·state=open)로만 판별된다
+# up-upfail@stdin 은 루프 안 gh 의 </dev/null 을 뺀다 — FGH_UPLOAD_EAT_STDIN 으로 남은 목록이 사라지는지 본다
 PAIRS_UP="$(cat <<'P'
 up-tag-form	upload-badtag	
 up-dir-tag	upload-dirtag	
@@ -72,6 +74,11 @@ up-mismatch	upload-mismatch	/# guard:up-mismatch$/ s/addbad "/true "/
 up-mismatch@sum	upload-mismatch-sum	/# guard:up-mismatch$/ s/addbad "/true "/
 up-reject	upload-mismatch	
 up-verify	upload-verify-lie	
+up-verify@state	upload-verify-state	s/\[ "\$(printf '%s' "\$line" | cut -f2)" = uploaded \] && //
+up-retry	upload-retry-reject	
+up-apk-place	upload-apk-place	
+up-upfail	upload-failmid	
+up-upfail@stdin	upload-stdin	/# guard:up-upfail$/ s| </dev/null||
 P
 )"
 BAD=0

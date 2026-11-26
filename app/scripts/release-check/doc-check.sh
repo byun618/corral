@@ -85,13 +85,16 @@ GL="$(echo "$RM" | grep -nF '그래도 열기' | head -1 | cut -d: -f1)"; XL="$(
 [ -n "$GL" ] && [ -n "$XL" ] && [ "$GL" -lt "$XL" ] && ok "README 「그래도 열기」(1순위)가 xattr 보다 앞" || bad "README 「그래도 열기」·xattr 순서 (그래도 열기 ${GL:-없음} · xattr ${XL:-없음})"
 # 체크섬 파일 이름 = release-upload.sh 가 만드는 이름(<바이너리>.sha256)
 grep -qF '"$WORK/$f.sha256"' scripts/release-upload.sh && ok "체크섬 파일 이름 <바이너리>.sha256 = release-upload.sh" || bad "release-upload.sh 체크섬 파일 이름이 README 와 다르다"
-for w in "scripts/release-upload.sh" "올리기만 다시" "--no-apk" "같은 이름·다른 digest"; do
+for w in "scripts/release-upload.sh" "올리기만 다시" "--no-apk" "같은 이름·다른 digest" "--apk 없이는 아무것도 올리지 않는다" "--apk <경로>"; do
   echo "$SEC" | grep -qF -- "$w" && ok "INSTALL 「출고」에 $w" || bad "INSTALL 「출고」에 $w 없음"
 done
 for w in "올리기만 다시:" "APK 뒤 Release 에 올리기:" "dmg·APK 뒤 Release 에 올리기:"; do
   grep -qF -- "$w" scripts/release.sh && ok "release.sh 안내 문구 $w" || bad "release.sh 안내 문구 $w 없음"
 done
 grep -qF 'scripts/release-upload.sh --tag vX.Y.Z --dir app/dist/release/vX.Y.Z' "$S" && grep -qF '14(올리기 실패)' "$S" && ok "SKILL 에 올리기 명령 블록·14 복구" || bad "SKILL 에 올리기 명령 블록·14 복구 없음"
+# 재시도 APK(R1-1) — 안내 문구 = 스크립트 출력, SKILL 복구 줄
+grep -qF '새 APK 는 retry-<시각>/ 에 생긴다' scripts/release.sh && grep -qF '재시도 APK 가 있다(retry-*/)' scripts/release-upload.sh && ok "재시도 APK 안내 = release.sh·release-upload.sh" || bad "재시도 APK 안내 문구가 스크립트에 없다"
+grep -qF '`retry-<시각>/` 에 만들었으면 올리기는 아무것도 올리지 않고' "$S" && ok "SKILL 에 재시도 APK 고르기" || bad "SKILL 에 재시도 APK 고르기 없음"
 
 # ── 5. release.sh 언급 정합 — 남은 언급 줄 목록(사유는 사람이 보지만, 옛 사용법은 1 에서 이미 막았다) ──
 say "── release.sh 언급(참고 — 하위 명령 없이 부르는 사용법은 1 에서 실패로 잡는다)"

@@ -19,6 +19,9 @@
 #     (--clobber 면 지우고 다시 — 호출은 calls.txt 에 남아 하네스가 0회를 단언한다)
 #   주입: FGH_UPLOAD_FAIL_AT=N(N 번째 upload 호출이 아무것도 만들지 않고 실패) · FGH_UPLOAD_OPEN_AT=N(N 번째 호출이 첫 파일을 state=open·digest null 로 남기고 실패)
 #     FGH_DIGEST_LIE=<이름>(api 가 그 asset digest 를 틀리게 보고) · FGH_DIGEST_NULL=<이름>(api 가 그 asset digest 를 null 로 — digest 도입 전 asset)
+#     FGH_STATE_LIE=<이름>(api 가 그 asset 을 digest 는 맞게 두고 state=open 으로 보고 — 끝 대조의 state 절 판별용)
+#     FGH_UPLOAD_EAT_STDIN=1(upload 가 stdin 을 다 읽는다 — 부른 쪽 루프의 입력을 먹는 명령 흉내)
+#   release delete-asset <태그> <이름> [-y] — 지운다(올리기 스크립트가 부르면 안 되는 호출 — 하네스가 횟수 0 을 직접 단언한다)
 # --jq 는 시스템 jq 로 푼다. 호출은 FGH_STATE/calls.txt 에 한 줄씩 남는다.
 set -uo pipefail
 : "${FGH_STATE:?FGH_STATE}" "${FGH_ORIGIN:?FGH_ORIGIN}"
@@ -167,6 +170,7 @@ case "${1:-} ${2:-}" in
       [ "$st" = uploaded ] || dg=""
       [ "${FGH_DIGEST_LIE:-}" != "$a" ] || dg="sha256:$(printf '0%.0s' $(seq 1 64))"
       [ "${FGH_DIGEST_NULL:-}" != "$a" ] || dg=""
+      [ "${FGH_STATE_LIE:-}" != "$a" ] || st=open
       arr="$(echo "$arr" | jq -c --arg n "$a" --arg st "$st" --argjson sz "$(wc -c < "$f" | tr -d ' ')" --arg dg "$dg" \
         '. + [{name: $n, state: $st, size: $sz, digest: (if $dg == "" then null else $dg end)}]')"
     done
@@ -176,6 +180,7 @@ case "${1:-} ${2:-}" in
   "release upload")
     T="$3"; shift 3
     [ -f "$FGH_STATE/release/$T" ] || fail "release not found"
+    [ "${FGH_UPLOAD_EAT_STDIN:-0}" = 0 ] || cat > /dev/null
     C="$(bump upload)"; CLOB=0; FILES=()
     for a in "$@"; do case "$a" in --clobber) CLOB=1 ;; -*) fail "흉내가 모르는 플래그 $a" ;; *) FILES+=("$a") ;; esac; done
     [ "${#FILES[@]}" -gt 0 ] || fail "파일 없음"
@@ -185,5 +190,9 @@ case "${1:-} ${2:-}" in
     [ "${FGH_UPLOAD_FAIL_AT:-0}" != "$C" ] || fail "흉내 upload 실패(HTTP 502)"
     if [ "${FGH_UPLOAD_OPEN_AT:-0}" = "$C" ]; then cp "${FILES[0]}" "$AD/files/$(basename "${FILES[0]}")"; echo open > "$AD/state/$(basename "${FILES[0]}")"; fail "흉내 upload 도중 끊김"; fi
     for f in "${FILES[@]}"; do cp "$f" "$AD/files/$(basename "$f")"; echo uploaded > "$AD/state/$(basename "$f")"; done ;;
+  "release delete-asset")
+    T="$3"; A="$4"; AD="$FGH_STATE/assets/$T"
+    [ -e "$AD/files/$A" ] || fail "asset $A not found"
+    rm -f "$AD/files/$A" "$AD/state/$A" ;;
   *) fail "모르는 호출 $*" ;;
 esac

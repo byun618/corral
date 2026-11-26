@@ -25,7 +25,8 @@ abort-ok abort-pushed abort-dirty abort-shipped abort-after-merge abort-branchbu
 ns-main-rehearsal ns-throwaway-v ns-base-only ns-prefix-only ns-other-base ns-gather-half ns-ship-half ns-pipe-base ns-pipe-both ns-chars ns-rehearsal ns-rehearsal-default
 fakegh-fidelity
 upload-empty upload-rerun upload-partial upload-mismatch upload-mismatch-sum upload-open upload-nodigest upload-norelease upload-badtag upload-badprefix
-upload-verdiff upload-dirtag upload-noapk-missing upload-apk-later upload-failmid upload-openmid upload-verify-lie upload-dry fakegh-upload-fidelity
+upload-verdiff upload-dirtag upload-noapk-missing upload-apk-later upload-failmid upload-openmid upload-verify-lie upload-dry fakegh-upload-shape
+upload-retry-reject upload-apk-place upload-stdin upload-verify-state ship-build-apkbad
 ship-build-uploadfail ship-build-skipapk ship-skipbuild-upload ship-noupload"
 OUT="${1:?원자료 폴더}"; shift
 CASES="${*:-$ALL}"
@@ -158,7 +159,11 @@ echo "apk \$(dirname "\$0") \$*" >> "$W/stub.log"
 [ -z "\${STUB_APK_FAIL:-}" ] || exit 1
 o=""; while [ \$# -gt 0 ]; do [ "\$1" = --out ] && o="\$2"; shift; done
 v="\$(sed -n 's/^  "version": "\(.*\)",\$/\1/p' "\$(dirname "\$0")/../app/package.json")"
-mkdir -p "\$o" && echo "apk \$v" > "\$o/corral-mobile-\$v.apk"
+# release-apk.sh 처럼 맨 위에 APK 가 있으면 retry-<시각>/ 에 만든다. STUB_APK_BADVERIFY 는 쓴 뒤 검증에서 거절(실제 순서 — 쓰고 나서 검증)
+[ ! -e "\$o/corral-mobile-\$v.apk" ] || o="\$o/retry-\$(date +%Y%m%d-%H%M%S)"
+mkdir -p "\$o" && echo "apk \$v\${STUB_APK_BADVERIFY:+ REJECTED}" > "\$o/corral-mobile-\$v.apk"
+[ -z "\${STUB_APK_BADVERIFY:-}" ] || { echo "✖ 스텁 서명 SHA-256 이 다르다"; exit 1; }
+echo "✔ stub apk: \$o/corral-mobile-\$v.apk"
 S
   chmod +x "$B/scripts/release-dmg.sh" "$B/scripts/release-apk.sh"
   git -C "$B" add -A; git -C "$B" commit -qm "스텁 dmg·apk"; git -C "$B" push -q origin HEAD:main; : > "$W/push-log.txt"; : > "$W/stub.log"
@@ -193,6 +198,7 @@ after() { awk -v k="$1" 'f { print; exit } $0 == k { f = 1 }' "$LAST"; } # after
 nassets() { ls "$W/gh/assets/$UT/files" 2>/dev/null | wc -l | tr -d ' '; }
 upcalls() { grep -c '^gh release upload' "$W/gh/calls.txt" 2>/dev/null || true; }
 clobbers() { grep -c -- '--clobber' "$W/gh/calls.txt" 2>/dev/null || true; }
+deletes() { grep -cE '^gh release delete-asset|^gh api .*(-X|--method) (DELETE|PATCH)' "$W/gh/calls.txt" 2>/dev/null || true; } # 서버 asset 을 지우거나 고치는 호출
 ghcalls() { if [ -f "$W/gh/calls.txt" ]; then wc -l < "$W/gh/calls.txt" | tr -d ' '; else echo 0; fi; }
 astore() { (cd "$W/gh/assets" 2>/dev/null && find . -type f | sort | xargs shasum 2>/dev/null) || true; }
 sdigest() { (cd "$B" && PATH="$W/bin:$PATH" FGH_STATE="$W/gh" FGH_ORIGIN="$O" gh api "repos/o/r/releases/tags/$UT" --jq ".assets[] | select(.name == \"$1\") | .digest"); }
@@ -471,7 +477,13 @@ for CASE in $CASES; do
           rel FGH_INDIRECT=off STUB_DMG_FAIL=1 -- ship --notes "$W/notes.md"
           check "exit 8" eq "$RC" 8; check "dmg 만 다시" has "dmg 만 다시:"; check "APK 는 아직" has "APK 는 아직이다"
           check "PR_TAIL(미해결 PR)" has "그리고 원래 PR 처리가 끝나지 않았다"; check "apk 는 안 돎" eq "$(grep -c '^apk' "$W/stub.log")" 0
-          check "올리기 안내" has "dmg·APK 뒤 Release 에 올리기:"; check "upload 0" eq "$(upcalls)" 0 ;;
+          check "올리기 안내" has "dmg·APK 뒤 Release 에 올리기:"; check "upload 0" eq "$(upcalls)" 0
+          # C2ⓑ exit 8 — 안내 줄을 뽑아 그대로 붙여 넣으면 dmg → 정리 → APK → 올리기로 이어진다
+          D1="$(after "dmg 만 다시:")"; D2="$(after "dmg 가 끝나면 임시 worktree 정리:")"; A1="$(after "APK 는 아직이다 — dmg 뒤 APK:")"; U1="$(after "dmg·APK 뒤 Release 에 올리기:")"
+          paste_run "$D1"; check "exit 8 dmg 붙여 넣기 exit 0" eq "$RC" 0; paste_run "$D2"; check "exit 8 정리 붙여 넣기 exit 0" eq "$RC" 0
+          paste_run "$A1"; check "exit 8 APK 붙여 넣기 exit 0" eq "$RC" 0
+          paste_run "$U1"; check "exit 8 올리기 붙여 넣기 exit 0" eq "$RC" 0; check "exit 8 뒤 asset 4개" eq "$(nassets)" 4; check "exit 8 뒤 받은 파일 통과" dlcheck 2
+          check "_dmg worktree 정리" eq "$(git -C "$B" worktree list | grep -c '_dmg-')" 0 ;;
         ship-build-apkfail)
           rel STUB_APK_FAIL=1 -- ship --notes "$W/notes.md"
           check "exit 10" eq "$RC" 10; check "APK 만 다시" has "APK 만 다시:"; check "dmg 는 끝" grep -q "^dmg" "$W/stub.log"
@@ -513,10 +525,15 @@ for CASE in $CASES; do
       rel -- ship --notes "$W/notes.md" --skip-build --skip-apk
       check "exit 2" eq "$RC" 2; check "base 문구" has "base 가 other 로 바뀌었다"; check "ref 불변" eq "$(snap)" "$S0" ;;
     ship-tmpwt-fail) # G5(Claude r2 낮음 2) — 출고 뒤 임시 worktree 를 못 만들면 안내와 exit 8
-      mkpr 1 LIFE-1-a a.txt a; cutgather 1; chmod a-w "$B/.claude/worktrees"
+      stubs; mkpr 1 LIFE-1-a a.txt a; cutgather 1; chmod a-w "$B/.claude/worktrees"
       rel -- ship --notes "$W/notes.md" --skip-build --skip-apk; chmod u+w "$B/.claude/worktrees"
       check "exit 8" eq "$RC" 8; check "출고는 끝났다 문구" has "임시 worktree 를 만들지 못했다"; check "dmg 명령" has "release-dmg.sh"
-      check "태그는 있음" [ -n "$(oref refs/tags/v0.1.1)" ] ;;
+      check "태그는 있음" [ -n "$(oref refs/tags/v0.1.1)" ]
+      # C2ⓑ exit 8(임시 worktree) — 안내 줄을 그대로 붙여 넣으면 dmg → 정리 → 올리기(--skip-apk 라 --no-apk)
+      D1="$(after "dmg 만:")"; D2="$(after "dmg 가 끝나면 임시 worktree 정리:")"; U1="$(after "dmg·APK 뒤 Release 에 올리기:")"
+      check "올리기 줄 --no-apk" eq "$(echo "$U1" | grep -c -- "--no-apk\$")" 1
+      paste_run "$D1"; check "dmg 붙여 넣기 exit 0" eq "$RC" 0; paste_run "$D2"; check "정리 붙여 넣기 exit 0" eq "$RC" 0
+      paste_run "$U1"; check "올리기 붙여 넣기 exit 0" eq "$RC" 0; check "asset 2개" eq "$(nassets)" 2; check "받은 파일 통과(1)" dlcheck 1 ;;
     ship-rerun-unresolved) # G5(Grok r2 3) — Release 가 있고 미해결이면 재실행 ship 도 dmg·APK 명령을 보인 뒤 13
       mkpr 1 LIFE-1-a a.txt a; cutgather 1
       rel FGH_INDIRECT=off -- ship --notes "$W/notes.md" --skip-build --skip-apk; check "1차 exit 13" eq "$RC" 13
@@ -896,7 +913,8 @@ for CASE in $CASES; do
       mkrel; mkart v0.1.1 0.1.1 dmg apk
       up -- --tag v0.1.1 --dir "$ART" --dry-run
       check "exit 0" eq "$RC" 0; check "올림 예정" has "올림 예정: corral-mobile-0.1.1.apk"; check "올릴 것 4개" has "올릴 것 4개"; check "upload 0" eq "$(upcalls)" 0 ;;
-    fakegh-upload-fidelity) # 가짜 gh 의 asset 흉내 = 실 gh 2.88.1 읽기 조회 꼴: 중복 이름 거절 문구 · 404 · digest 꼴 · release not found
+    fakegh-upload-shape) # 가짜 gh 의 asset 흉내가 낼 꼴을 고정한다. 실 gh 2.88.1 읽기 조회로 본 꼴(digest sha256:<64hex> · 404 본문·문구 · release not found · 탭 줄)만 실 gh 와 대조된 것이다.
+      # 중복 이름 거절 문구는 실 gh 에서 관측하지 않은 흉내 문구(쓰기 금지) — 올리기 스크립트는 그 문구를 파싱하지 않으므로 이 케이스는 그 문구의 충실도를 보증하지 않는다
       mkrel; mkart v0.1.1 0.1.1 dmg
       G() { (cd "$B" && PATH="$W/bin:$PATH" FGH_STATE="$W/gh" FGH_ORIGIN="$O" gh "$@"); }
       LAST="$W/fid.txt"
@@ -911,6 +929,54 @@ for CASE in $CASES; do
       check "없는 Release api 404" has "gh: Not Found (HTTP 404)"; check "release view 없음" has "release not found"
       check "탭 구분 줄 꼴" grep -qE "^corral-0.1.1-arm64.dmg$(printf '\t')uploaded$(printf '\t')sha256:" "$LAST"
       RC=0 ;;
+    upload-retry-reject) # R1-1 — 맨 위 검증 거절본 + retry-*/ 정상본(리뷰어 재현 꼴) → --apk 없이는 거절·gh 0, 사람이 고른 줄을 붙여 넣으면 그 APK 가 올라간다
+      mkrel; mkart v0.1.1 0.1.1 dmg; echo "apk-REJECTED-wrong-cert" > "$ART/corral-mobile-0.1.1.apk"
+      mkdir -p "$ART/retry-20260101-000000"; echo "apk-GOOD-rebuilt" > "$ART/retry-20260101-000000/corral-mobile-0.1.1.apk"
+      up -- --tag v0.1.1 --dir "$ART"
+      check "exit 1" eq "$RC" 1; check "사유" has "재시도 APK 가 있다(retry-*/) — 맨 위 APK 는 검증에서 거절된 것일 수 있어"
+      check "아무것도 올리지 않음" has "아무것도 올리지 않음"; check "gh 호출 0" eq "$(ghcalls)" 0
+      check "후보 맨 위" has "  corral-mobile-0.1.1.apk — sha256 $(shasum -a 256 "$ART/corral-mobile-0.1.1.apk" | cut -d' ' -f1)"
+      check "후보 retry" has "  retry-20260101-000000/corral-mobile-0.1.1.apk — sha256 "
+      CMD="$(after "$(grep '^  retry-20260101-000000/corral-mobile-0.1.1.apk — ' "$LAST")")"
+      check "retry 후보 명령 --apk" eq "$(echo "$CMD" | grep -c -- "--apk '.*/retry-20260101-000000/corral-mobile-0.1.1.apk'\$")" 1
+      paste_run "$CMD"
+      check "고른 줄 exit 0" eq "$RC" 0; check "asset 4개" eq "$(nassets)" 4
+      check "apk 서버 digest = retry 정상본" eq "$(sdigest corral-mobile-0.1.1.apk)" "$(lsha "$ART/retry-20260101-000000/corral-mobile-0.1.1.apk")"
+      check "거절본은 안 올라감" eq "$(grep -c REJECTED "$W/gh/assets/$UT/files/corral-mobile-0.1.1.apk")" 0
+      check "받은 파일 통과(2)" dlcheck 2 ;;
+    upload-apk-place) # R1-1 — --apk 는 그 폴더 맨 위·retry-*/ 바로 아래·그 이름만, --no-apk 와 같이 못 준다
+      mkrel; mkart v0.1.1 0.1.1 dmg apk; mkdir -p "$W/elsewhere"; cp "$ART/corral-mobile-0.1.1.apk" "$W/elsewhere/"
+      up -- --tag v0.1.1 --dir "$ART" --apk "$W/elsewhere/corral-mobile-0.1.1.apk"
+      check "폴더 밖 exit 1" eq "$RC" 1; check "폴더 밖 사유" has "맨 위나 retry-<시각>/ 바로 아래여야 한다"
+      up -- --tag v0.1.1 --dir "$ART" --apk "$ART/corral-mobile-0.1.1.apk" --no-apk
+      check "--no-apk 같이 exit 1" eq "$RC" 1; check "같이 사유" has "--apk 와 --no-apk 는 같이 줄 수 없다"
+      cp "$ART/corral-mobile-0.1.1.apk" "$ART/other.apk"; up -- --tag v0.1.1 --dir "$ART" --apk "$ART/other.apk"
+      check "이름 exit 1" eq "$RC" 1; check "이름 사유" has "--apk 파일 이름이 corral-mobile-0.1.1.apk 가 아니다"
+      check "gh 호출 0" eq "$(ghcalls)" 0
+      up -- --tag v0.1.1 --dir "$ART" --apk "$ART/corral-mobile-0.1.1.apk"
+      check "맨 위 --apk exit 0" eq "$RC" 0; check "asset 4개" eq "$(nassets)" 4 ;;
+    upload-stdin) # R1-3 — upload 가 stdin 을 먹어도 올릴 것 전부가 올라간다(루프 here-doc 을 gh 에 물리지 않는다)
+      mkrel; mkart v0.1.1 0.1.1 dmg apk
+      up FGH_UPLOAD_EAT_STDIN=1 -- --tag v0.1.1 --dir "$ART"
+      check "exit 0" eq "$RC" 0; check "upload 4회" eq "$(upcalls)" 4; check "asset 4개" eq "$(nassets)" 4; check "받은 파일 통과" dlcheck 2 ;;
+    upload-verify-state) # R1-5 — 올린 뒤 digest 는 맞는데 state ≠ uploaded 이면 끝 대조 실패(state 절 판별)
+      mkrel; mkart v0.1.1 0.1.1 dmg apk
+      up FGH_STATE_LIE=corral-mobile-0.1.1.apk -- --tag v0.1.1 --dir "$ART"
+      check "exit 1" eq "$RC" 1; check "대조 실패 문구" has "올린 뒤 대조 실패: corral-mobile-0.1.1.apk"; check "✔ 없음" hasnt "✔ Release" ;;
+    ship-build-apkbad) # R1-1 — APK 가 쓴 뒤 검증에서 거절(exit 10) → 안내대로 「APK 만 다시」 → 「올리기」 를 붙여 넣어도 거절본은 안 올라간다
+      stubs; mkpr 1 LIFE-1-a a.txt a; cutgather 1
+      rel STUB_APK_BADVERIFY=1 -- ship --notes "$W/notes.md"
+      check "exit 10" eq "$RC" 10; check "upload 0" eq "$(upcalls)" 0; check "retry 안내" has "새 APK 는 retry-<시각>/ 에 생긴다"
+      A1="$(after "APK 만 다시:")"; A2="$(after "APK 뒤 Release 에 올리기:")"
+      paste_run "$A1"; check "APK 붙여 넣기 exit 0" eq "$RC" 0
+      check "새 APK 는 retry-*/" eq "$(ls -d "$B/app/dist/release/v0.1.1"/retry-*/corral-mobile-0.1.1.apk | wc -l | tr -d ' ')" 1
+      paste_run "$A2"
+      check "올리기 붙여 넣기 exit 1" eq "$RC" 1; check "사유" has "재시도 APK 가 있다(retry-*/)"; check "upload 0" eq "$(upcalls)" 0
+      GOOD="$(sed -n 's/^✔ stub apk: //p' "$W/run-$((N - 1)).txt")"; check "정상본 경로" [ -f "$GOOD" ]
+      CMD="$(grep -- "--apk '$GOOD'\$" "$LAST")"; check "고를 줄 있음" eq "${CMD:0:1}" "'"
+      paste_run "$CMD"; check "고른 줄 exit 0" eq "$RC" 0; check "asset 4개" eq "$(nassets)" 4
+      check "apk 서버 digest = 정상본" eq "$(sdigest corral-mobile-0.1.1.apk)" "$(lsha "$GOOD")"
+      check "거절본 안 올라감" eq "$(grep -c REJECTED "$W/gh/assets/$UT/files/corral-mobile-0.1.1.apk")" 0 ;;
     ship-build-uploadfail) # C2ⓑ — ship 의 올리기 실패 → exit 14, 머지·태그·Release·dmg·APK 다시 안 함, 출력의 홀로 선 명령을 그대로 붙여 넣으면 이어진다
       stubs; mkpr 1 LIFE-1-a a.txt a; cutgather 1
       rel FGH_UPLOAD_FAIL_AT=1 -- ship --notes "$W/notes.md"
@@ -946,6 +1012,7 @@ for CASE in $CASES; do
       check "release·main push 0" eq "$(grep -c '^refs/heads/release/\|^refs/heads/main ' "$W/push-log.txt")" 0 ;;
     *) echo "모르는 케이스 $CASE" >&2; exit 64 ;;
   esac
+  case "$CASE" in upload-*|ship-build-*|ship-skipbuild-upload|ship-tmpwt-fail) check "서버 asset 지우기·고치기 호출 0" eq "$(deletes)" 0 ;; esac # C1ⓓ 직접 단언
   if [ "$CASE_FAIL" = 0 ]; then R=PASS; else R=FAIL; FAILS=$((FAILS + 1)); fi
   echo "$CASE $R last-exit=$RC runs=$N log=$LOG" | tee -a "$SUMMARY"
 done

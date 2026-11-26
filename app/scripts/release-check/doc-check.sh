@@ -85,7 +85,7 @@ GL="$(echo "$RM" | grep -nF '그래도 열기' | head -1 | cut -d: -f1)"; XL="$(
 [ -n "$GL" ] && [ -n "$XL" ] && [ "$GL" -lt "$XL" ] && ok "README 「그래도 열기」(1순위)가 xattr 보다 앞" || bad "README 「그래도 열기」·xattr 순서 (그래도 열기 ${GL:-없음} · xattr ${XL:-없음})"
 # 체크섬 파일 이름 = release-upload.sh 가 만드는 이름(<바이너리>.sha256)
 grep -qF '"$WORK/$f.sha256"' scripts/release-upload.sh && ok "체크섬 파일 이름 <바이너리>.sha256 = release-upload.sh" || bad "release-upload.sh 체크섬 파일 이름이 README 와 다르다"
-for w in "scripts/release-upload.sh" "올리기만 다시" "--no-apk" "같은 이름·다른 digest" "--apk 없이는 아무것도 올리지 않는다" "--apk <경로>"; do
+for w in "scripts/release-upload.sh" "올리기만 다시" "--no-apk" "같은 이름·다른 digest" "`--apk` 없이는 아무것도 올리지 않는다" "--apk <경로>"; do
   echo "$SEC" | grep -qF -- "$w" && ok "INSTALL 「출고」에 $w" || bad "INSTALL 「출고」에 $w 없음"
 done
 for w in "올리기만 다시:" "APK 뒤 Release 에 올리기:" "dmg·APK 뒤 Release 에 올리기:"; do

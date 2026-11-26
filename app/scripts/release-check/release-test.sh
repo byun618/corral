@@ -198,7 +198,7 @@ after() { awk -v k="$1" 'f { print; exit } $0 == k { f = 1 }' "$LAST"; } # after
 nassets() { ls "$W/gh/assets/$UT/files" 2>/dev/null | wc -l | tr -d ' '; }
 upcalls() { grep -c '^gh release upload' "$W/gh/calls.txt" 2>/dev/null || true; }
 clobbers() { grep -c -- '--clobber' "$W/gh/calls.txt" 2>/dev/null || true; }
-deletes() { grep -cE '^gh release delete-asset|^gh api .*(-X|--method) (DELETE|PATCH)' "$W/gh/calls.txt" 2>/dev/null || true; } # 서버 asset 을 지우거나 고치는 호출
+deletes() { if [ -f "$W/gh/calls.txt" ]; then grep -cE '^gh release delete-asset|^gh api .*(-X|--method) (DELETE|PATCH)' "$W/gh/calls.txt" || true; else echo 0; fi; } # 서버 asset 을 지우거나 고치는 호출
 ghcalls() { if [ -f "$W/gh/calls.txt" ]; then wc -l < "$W/gh/calls.txt" | tr -d ' '; else echo 0; fi; }
 astore() { (cd "$W/gh/assets" 2>/dev/null && find . -type f | sort | xargs shasum 2>/dev/null) || true; }
 sdigest() { (cd "$B" && PATH="$W/bin:$PATH" FGH_STATE="$W/gh" FGH_ORIGIN="$O" gh api "repos/o/r/releases/tags/$UT" --jq ".assets[] | select(.name == \"$1\") | .digest"); }

@@ -13,6 +13,12 @@
 #   FGH_HOOK_ON(인자 줄 glob) + FGH_HOOK_CMD(bash 명령) — 처음 맞는 호출 직전에 한 번 돌린다(예: 판정 조회 때 PR head 이동)
 # 실 gh 흉내(gh 2.88.1): --jq 결과의 null 은 빈 줄 · 모르는 --json 필드는 실패 · release create 는 --verify-tag 가 없고 태그가 없으면
 #   기본 브랜치 끝에 태그를 만든다(그래서 --verify-tag 가 빠지면 하네스가 잡는다).
+# Release asset (LIFE-729): FGH_STATE/assets/<태그>/files/<이름>(내용) · state/<이름>(uploaded|open). digest 는 내용의 sha256 으로 매번 계산한다.
+#   api repos/<o>/<r>/releases/tags/<태그> — {tag_name, assets:[{name,state,size,digest}]}, Release 없으면 404 본문 + 「gh: Not Found (HTTP 404)」 exit 1
+#   release upload <태그> <파일…> [--clobber] — 실 gh 처럼 올리기 전에 같은 이름을 전부 보고 하나라도 있으면 「asset under the same name already exists: [이름]」
+#     (--clobber 면 지우고 다시 — 호출은 calls.txt 에 남아 하네스가 0회를 단언한다)
+#   주입: FGH_UPLOAD_FAIL_AT=N(N 번째 upload 호출이 아무것도 만들지 않고 실패) · FGH_UPLOAD_OPEN_AT=N(N 번째 호출이 첫 파일을 state=open·digest null 로 남기고 실패)
+#     FGH_DIGEST_LIE=<이름>(api 가 그 asset digest 를 틀리게 보고) · FGH_DIGEST_NULL=<이름>(api 가 그 asset digest 를 null 로 — digest 도입 전 asset)
 # --jq 는 시스템 jq 로 푼다. 호출은 FGH_STATE/calls.txt 에 한 줄씩 남는다.
 set -uo pipefail
 : "${FGH_STATE:?FGH_STATE}" "${FGH_ORIGIN:?FGH_ORIGIN}"
@@ -146,5 +152,38 @@ case "${1:-} ${2:-}" in
     echo "$pre" > "$FGH_STATE/release/$T"
     [ -z "${FGH_ON_RELEASE_CREATE:-}" ] || bash -c "$FGH_ON_RELEASE_CREATE" || exit 1
     echo "https://github.example/o/r/releases/tag/$T" ;;
+  "api "*)
+    P="$2"; shift 2
+    case "$P" in repos/*/*/releases/tags/*) T="${P##*/releases/tags/}" ;; *) fail "모르는 api 경로 $P" ;; esac
+    if [ ! -f "$FGH_STATE/release/$T" ]; then
+      echo '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/releases/releases#get-a-release-by-tag-name","status":"404"}'
+      echo "gh: Not Found (HTTP 404)" >&2; exit 1
+    fi
+    AD="$FGH_STATE/assets/$T"; arr="[]"
+    for f in "$AD"/files/*; do
+      [ -f "$f" ] || continue
+      a="$(basename "$f")"; st="$(cat "$AD/state/$a" 2>/dev/null || echo uploaded)"
+      dg="sha256:$(shasum -a 256 "$f" | cut -d' ' -f1)"
+      [ "$st" = uploaded ] || dg=""
+      [ "${FGH_DIGEST_LIE:-}" != "$a" ] || dg="sha256:$(printf '0%.0s' $(seq 1 64))"
+      [ "${FGH_DIGEST_NULL:-}" != "$a" ] || dg=""
+      arr="$(echo "$arr" | jq -c --arg n "$a" --arg st "$st" --argjson sz "$(wc -c < "$f" | tr -d ' ')" --arg dg "$dg" \
+        '. + [{name: $n, state: $st, size: $sz, digest: (if $dg == "" then null else $dg end)}]')"
+    done
+    J="$(jq -n --arg t "$T" --argjson a "$arr" '{tag_name: $t, assets: $a}')"
+    Q="$(opt --jq "$@" || true)"
+    if [ -n "$Q" ]; then echo "$J" | jq -r "$Q" | sed 's/^null$//'; else echo "$J"; fi ;;
+  "release upload")
+    T="$3"; shift 3
+    [ -f "$FGH_STATE/release/$T" ] || fail "release not found"
+    C="$(bump upload)"; CLOB=0; FILES=()
+    for a in "$@"; do case "$a" in --clobber) CLOB=1 ;; -*) fail "흉내가 모르는 플래그 $a" ;; *) FILES+=("$a") ;; esac; done
+    [ "${#FILES[@]}" -gt 0 ] || fail "파일 없음"
+    AD="$FGH_STATE/assets/$T"; mkdir -p "$AD/files" "$AD/state"
+    EX=""; for f in "${FILES[@]}"; do [ -f "$f" ] || fail "$f: no such file"; [ ! -e "$AD/files/$(basename "$f")" ] || EX="$EX${EX:+ }$(basename "$f")"; done
+    [ -z "$EX" ] || [ "$CLOB" = 1 ] || fail "asset under the same name already exists: [$EX]"
+    [ "${FGH_UPLOAD_FAIL_AT:-0}" != "$C" ] || fail "흉내 upload 실패(HTTP 502)"
+    if [ "${FGH_UPLOAD_OPEN_AT:-0}" = "$C" ]; then cp "${FILES[0]}" "$AD/files/$(basename "${FILES[0]}")"; echo open > "$AD/state/$(basename "${FILES[0]}")"; fail "흉내 upload 도중 끊김"; fi
+    for f in "${FILES[@]}"; do cp "$f" "$AD/files/$(basename "$f")"; echo uploaded > "$AD/state/$(basename "$f")"; done ;;
   *) fail "모르는 호출 $*" ;;
 esac

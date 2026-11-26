@@ -2,7 +2,7 @@
 # release.sh <하위 명령> [인자]   — 출고 (LIFE-574 → LIFE-703 release 브랜치 흐름)
 #   cut    [--bump patch|minor|major | --version X.Y.Z] [--dry-run]       ① 자르기 — origin/main 끝에서 release/vX.Y.Z + worktree, 버전 커밋
 #   gather --prs "<번호> <번호> …" [--dry-run]                            ② 모으기 — 고른 PR head 를 release 브랜치에 로컬 merge(merge commit)
-#   ship   --notes <릴리즈 노트 파일> [--skip-build] [--skip-apk] [--dry-run] ③ 출고 — release→main PR 머지 · 태그 · Release · ff · 원래 PR 처리 · dmg · APK
+#   ship   --notes <릴리즈 노트 파일> [--skip-build] [--skip-apk] [--dry-run] ③ 출고 — release→main PR 머지 · 태그 · Release · ff · 원래 PR 처리 · dmg · APK · Release 에 올리기
 #   finish [--leave-open]                                                ④ 정리 — 출고 확인 뒤 release 브랜치(로컬·원격)·worktree 삭제
 #          (--leave-open: MERGED 로 확인 안 된 원래 PR 이 남아도 그 head 는 두고 release 브랜치만 정리 — 사람이 확인한 뒤에만)
 #   abort                                                                ⑤ 접기 — 출고 전 release 브랜치(로컬·원격)·worktree 삭제, PR 은 열린 채
@@ -31,10 +31,11 @@
 #   0 완료 · 1 인자·환경 오류(ref·push 전) · 2 점검 거절(대부분 변경 0 — ship 머지 직전 재확인은 push·PR 생성 뒤) · 3 충돌(gather: release worktree 에 남김 / ship: release PR 충돌)
 #   5 머지 가능 판정 없음 · 6 release PR 머지 거절·결과 이상 · 7 태그 만들기·push·fetch 실패 · 8 dmg·임시 worktree 실패 · 9 GitHub Release 실패 · 10 APK 실패
 #   11 release 브랜치 push·삭제 실패 · 12 release PR 생성·조회 실패 · 13 원래 PR 처리 미완 — MERGED 미확인·head 조회/삭제 실패(출고 자체는 끝남)
+#   14 Release 에 dmg·APK 올리기 실패(머지·태그·Release·dmg·APK 끝)
 # 재실행 안내의 명령은 설명과 다른 줄에 홀로, 경로는 단일 따옴표로 인용한다(LIFE-599).
 #
 # 검사 없이 순서 머지다 — PR CI(LIFE-575)는 참고 신호라 여기서 보지 않는다(모으기 전 확인은 release 스킬 2). ruleset 「main 보호」(LIFE-718)는 private 동안 효력이 없고 required check 도 없다.
-# 본체 checkout fast-forward 는 release-ff.sh(LIFE-672), dmg 는 release-dmg.sh, APK 는 release-apk.sh — 셋 다 태그 하나를 입력으로 받는다.
+# 본체 checkout fast-forward 는 release-ff.sh(LIFE-672), dmg 는 release-dmg.sh, APK 는 release-apk.sh, Release 에 올리기는 release-upload.sh(LIFE-729) — 넷 다 태그 하나를 입력으로 받는다.
 set -euo pipefail
 
 die() { local code="${2:-1}"; echo "✖ $1" >&2; exit "$code"; }
@@ -564,6 +565,9 @@ if [ "$WILL_BUILD" = 1 ] && [ "$SKIP_APK" = 0 ]; then
     || die "APK 전제 미달 — 아무것도 머지하지 않음(APK 를 빼려면 --skip-apk): $(echo "$APK_PRE" | tail -1)" 2
   APK_PRE="$(echo "$APK_PRE" | grep '^· APK 전제' | head -1 || true)"
 fi
+if [ "$WILL_BUILD" = 1 ]; then
+  [ -x "$SCRIPT_DIR/release-upload.sh" ] || die "scripts/release-upload.sh 가 없다 — dmg·APK 를 Release 에 올릴 수 없다 — 아무것도 머지하지 않음" 2 # guard:upload-present
+fi
 
 # 기록된 PR 마다 지금 head 가 release 끝(TIP)에 들어 있는가 → MOVED(움직인 PR 목록)·PRLIST(PR 본문용). 닫힘·base 변경은 exit 2
 check_heads() {
@@ -611,6 +615,7 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "$RECORD" | while read -r n sha; do [ -n "$n" ] && echo "  출고 집합 #$n @ ${sha:0:7}"; done
   [ "$SKIP_BUILD" = 1 ] && echo "dmg: 건너뜀(--skip-build)" || echo "dmg: node ${NODE_V:-?} 로 빌드 예정"
   [ "$SKIP_APK" = 1 ] && echo "APK: 건너뜀(--skip-apk)" || echo "APK: 매 출고 빌드 예정(preview 로컬 빌드, dmg 뒤) — ${APK_PRE:-전제 점검 생략(이미 Release 까지 끝남)}"
+  [ "$SKIP_BUILD" = 1 ] && echo "올리기: 건너뜀(--skip-build — dmg 뒤 명령 안내)" || echo "올리기: dmg$([ "$SKIP_APK" = 1 ] || echo "·APK") 뒤 Release 에(release-upload.sh)"
   [ -n "$NOTES" ] && echo "릴리즈 노트: $NOTES" || echo "릴리즈 노트: 아직 없음 — 실 실행에는 --notes 필수"
   exit 0
 fi
@@ -623,6 +628,9 @@ rerun_cmds() {
   wt="$WT_ROOT/_dmg-$tag-$(date +%Y%m%d-%H%M%S)"
   DMG_RERUN="git -C $(shq "$REPO") fetch origin $(shq "refs/tags/$tag:refs/tags/$tag") && git -C $(shq "$REPO") worktree add --detach $(shq "$wt") $(shq "refs/tags/$tag") && $(shq "$wt/scripts/release-dmg.sh") --tag-prefix $(shq "$PREFIX") --out $(shq "$OUT_DIR")"
   DMG_DONE="git -C $(shq "$REPO") worktree remove --force $(shq "$wt")"
+  # Release 에 올리기 — UPLOAD_ALL 은 dmg·APK 둘 다, UPLOAD_RERUN 은 이번 플래그대로(--skip-apk 면 dmg 만)
+  UPLOAD_ALL="$(shq "$SCRIPT_DIR/release-upload.sh") --tag $(shq "$tag") --tag-prefix $(shq "$PREFIX") --dir $(shq "$OUT_DIR")"
+  UPLOAD_RERUN="$UPLOAD_ALL$([ "$SKIP_APK" = 0 ] || echo ' --no-apk')"
 }
 SHIP_RERUN="$(shq "$SCRIPT_DIR/release.sh") ship --notes $(shq "${NOTES:-<파일>}")$RARGS$([ "$SKIP_BUILD" = 0 ] || echo ' --skip-build')$([ "$SKIP_APK" = 0 ] || echo ' --skip-apk')"
 
@@ -719,6 +727,7 @@ if [ -n "$REL_URL" ]; then
   echo "✔ 출고 $TAG 는 이미 끝났다 — dmg·APK 가 빠졌다면 아래 명령을 그대로 붙여 넣는다"
   echo "dmg 만:"; echo "$DMG_RERUN"; echo "dmg 가 끝나면 임시 worktree 정리:"; echo "$DMG_DONE"
   echo "APK 만:"; echo "$APK_RERUN"
+  echo "dmg·APK 뒤 Release 에 올리기(이미 올라간 것은 건너뛴다):"; echo "$UPLOAD_RERUN"
   [ -z "$UNRESOLVED" ] || die "$(unresolved_msg)" 13
   echo "□ 다음: 설치 확인 뒤 $(shq "$SCRIPT_DIR/release.sh") finish$RARGS"
   exit 0
@@ -730,25 +739,36 @@ TMPWT="$WT_ROOT/_release-$(date +%Y%m%d-%H%M%S)"
 cleanup() { [ -d "$TMPWT" ] && git -C "$REPO" worktree remove --force "$TMPWT" >/dev/null 2>&1; git -C "$REPO" worktree prune; }
 trap cleanup EXIT
 git worktree add -q --detach "$TMPWT" "refs/tags/$TAG" \
-  || die "dmg·APK 용 임시 worktree 를 만들지 못했다($TMPWT) — 머지·태그 $TAG push·Release 는 끝났다(다시 출고하지 않는다). 원인(디스크·권한)을 풀고 아래 명령을 그대로 붙여 넣는다${NL}dmg 만:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE${NL}APK 만:${NL}$APK_RERUN$PR_TAIL" 8
+  || die "dmg·APK 용 임시 worktree 를 만들지 못했다($TMPWT) — 머지·태그 $TAG push·Release 는 끝났다(다시 출고하지 않는다). 원인(디스크·권한)을 풀고 아래 명령을 그대로 붙여 넣는다${NL}dmg 만:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE${NL}APK 만:${NL}$APK_RERUN${NL}dmg·APK 뒤 Release 에 올리기:${NL}$UPLOAD_RERUN$PR_TAIL" 8
 if [ "$SKIP_BUILD" = 1 ]; then
   note "--skip-build — dmg 는 나중에(그대로 붙여 넣는다):"
   echo "$DMG_RERUN"
   echo "$DMG_DONE"
+  UP_LATER="${NL}dmg$([ "$SKIP_APK" = 1 ] || echo "·APK") 뒤 Release 에 올리기:${NL}$UPLOAD_RERUN"
 else
   APK_TAIL=""; [ "$SKIP_APK" = 1 ] || APK_TAIL="${NL}APK 는 아직이다 — dmg 뒤 APK:${NL}$APK_RERUN"
+  APK_TAIL="$APK_TAIL${NL}dmg$([ "$SKIP_APK" = 1 ] || echo "·APK") 뒤 Release 에 올리기:${NL}$UPLOAD_RERUN"
   "$TMPWT/scripts/release-dmg.sh" --tag-prefix "$PREFIX" --out "$OUT_DIR" \
     || die "dmg 실패 — 머지·태그 $TAG push·Release 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다${NL}dmg 만 다시:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE$APK_TAIL$PR_TAIL" 8
 fi
 if [ "$SKIP_APK" = 1 ]; then
   note "--skip-apk — APK 는 나중에(그대로 붙여 넣는다):"
   echo "$APK_RERUN"
+  UP_LATER="${UP_LATER:-}${NL}APK 뒤 Release 에 APK 더하기(올라간 dmg 는 건너뛴다):${NL}$UPLOAD_ALL"
 else
   "$TMPWT/scripts/release-apk.sh" --tag-prefix "$PREFIX" --out "$OUT_DIR" \
-    || die "APK 실패 — 머지·태그 $TAG push·Release$([ "$SKIP_BUILD" = 1 ] || echo "·dmg") 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다${NL}APK 만 다시:${NL}$APK_RERUN$PR_TAIL" 10
+    || die "APK 실패 — 머지·태그 $TAG push·Release$([ "$SKIP_BUILD" = 1 ] || echo "·dmg") 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다${NL}APK 만 다시:${NL}$APK_RERUN${NL}APK 뒤 Release 에 올리기:${NL}$UPLOAD_ALL$PR_TAIL" 10
 fi
 
-[ -z "$UNRESOLVED" ] || die "출고 $TAG 는 끝났다(태그·Release$([ "$SKIP_BUILD" = 1 ] || echo "·dmg")$([ "$SKIP_APK" = 1 ] || echo "·APK")). 그런데 $(unresolved_msg)" 13
+# 10. Release 에 dmg·APK·체크섬 올리기 — dmg 가 있어야 한다(--skip-build 면 위 안내의 명령으로 나중에)
+UP_FLAG=""; [ "$SKIP_APK" = 0 ] || UP_FLAG=--no-apk # guard:upload-noapk
+if [ "$SKIP_BUILD" = 0 ]; then # guard:upload-run
+  "$SCRIPT_DIR/release-upload.sh" --tag "$TAG" --tag-prefix "$PREFIX" --dir "$OUT_DIR" $UP_FLAG \
+    || die "Release 에 올리기 실패 — 머지·태그 $TAG push·Release·dmg$([ "$SKIP_APK" = 1 ] || echo "·APK") 는 끝났다(다시 출고·빌드하지 않는다). 원인을 보고 아래 명령을 그대로 붙여 넣는다(이미 올라간 것은 건너뛴다)${NL}올리기만 다시:${NL}$UPLOAD_RERUN$PR_TAIL" 14 # guard:upload-fail
+fi
+[ -z "${UP_LATER:-}" ] || echo "${UP_LATER#"$NL"}"
+
+[ -z "$UNRESOLVED" ] || die "출고 $TAG 는 끝났다(태그·Release$([ "$SKIP_BUILD" = 1 ] || echo "·dmg")$([ "$SKIP_APK" = 1 ] || echo "·APK")$([ "$SKIP_BUILD" = 1 ] || echo "·올리기")). 그런데 $(unresolved_msg)" 13
 APK_LATER=""; [ "$SKIP_APK" = 0 ] || APK_LATER=" — --skip-apk 였으니 APK 를 먼저 만든다"
 echo "✔ 출고 $TAG —$(echo "$RECORD" | awk '{printf " #%s", $1}')"
 echo "□ 다음: ① 출고된 PR 의 LIFE 일감마다 LA '완료' 전이 ② dmg 설치(app/INSTALL.md 「설치」) ③ 폰 APK 덮어 설치 scripts/release-apk-install.sh --serial <폰 시리얼> --apk $OUT_DIR/corral-mobile-$VER.apk (서명 대조 뒤 install -r$APK_LATER) ④ release 브랜치·worktree 정리 $(shq "$SCRIPT_DIR/release.sh") finish$RARGS ⑤ 남은 로컬 정리 scripts/task-finish.sh <LIFE-NNN-슬러그>"

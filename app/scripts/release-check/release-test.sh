@@ -165,15 +165,15 @@ S
 }
 
 # ── Release 올리기(LIFE-729) 도우미 ──
-T1=v0.1.1
-mkrel() { echo full > "$W/gh/release/$T1"; } # GitHub Release v0.1.1 흉내
+UT=v0.1.1 # 올리기 케이스의 태그 — T1(다른 케이스의 release 끝 SHA)과 이름을 나눈다
+mkrel() { echo full > "$W/gh/release/$UT"; } # GitHub Release v0.1.1 흉내
 mkart() { # mkart <폴더 이름> <버전> <dmg|apk …> — $W/art/<폴더>/ 에 산출물 흉내. ART = 그 폴더
   local d="$1" v="$2" x; shift 2; ART="$W/art/$d"; mkdir -p "$ART"
   for x in "$@"; do case "$x" in
     dmg) echo "dmg $v $CASE" > "$ART/corral-$v-arm64.dmg" ;; apk) echo "apk $v $CASE" > "$ART/corral-mobile-$v.apk" ;; esac; done
 }
 seedasset() { # seedasset <이름> <내용 파일> [state] — Release 에 이미 있는 asset
-  mkdir -p "$W/gh/assets/$T1/files" "$W/gh/assets/$T1/state"; cp "$2" "$W/gh/assets/$T1/files/$1"; echo "${3:-uploaded}" > "$W/gh/assets/$T1/state/$1"
+  mkdir -p "$W/gh/assets/$UT/files" "$W/gh/assets/$UT/state"; cp "$2" "$W/gh/assets/$UT/files/$1"; echo "${3:-uploaded}" > "$W/gh/assets/$UT/state/$1"
 }
 up() { # up [env …] -- <인자…> — B 의 release-upload.sh 사본. RC·LAST
   local envs=()
@@ -190,21 +190,21 @@ paste_run() { # paste_run <명령 줄> — 안내에서 뽑은 줄을 그대로 
   { echo "── run $N: (붙여 넣기) $1 → exit $RC"; sed 's/^/    /' "$LAST"; } >> "$LOG"
 }
 after() { awk -v k="$1" 'f { print; exit } $0 == k { f = 1 }' "$LAST"; } # after <줄> — 출력에서 그 줄 바로 다음 줄
-nassets() { ls "$W/gh/assets/$T1/files" 2>/dev/null | wc -l | tr -d ' '; }
+nassets() { ls "$W/gh/assets/$UT/files" 2>/dev/null | wc -l | tr -d ' '; }
 upcalls() { grep -c '^gh release upload' "$W/gh/calls.txt" 2>/dev/null || true; }
 clobbers() { grep -c -- '--clobber' "$W/gh/calls.txt" 2>/dev/null || true; }
 ghcalls() { if [ -f "$W/gh/calls.txt" ]; then wc -l < "$W/gh/calls.txt" | tr -d ' '; else echo 0; fi; }
 astore() { (cd "$W/gh/assets" 2>/dev/null && find . -type f | sort | xargs shasum 2>/dev/null) || true; }
-sdigest() { (cd "$B" && PATH="$W/bin:$PATH" FGH_STATE="$W/gh" FGH_ORIGIN="$O" gh api "repos/o/r/releases/tags/$T1" --jq ".assets[] | select(.name == \"$1\") | .digest"); }
+sdigest() { (cd "$B" && PATH="$W/bin:$PATH" FGH_STATE="$W/gh" FGH_ORIGIN="$O" gh api "repos/o/r/releases/tags/$UT" --jq ".assets[] | select(.name == \"$1\") | .digest"); }
 lsha() { echo "sha256:$(shasum -a 256 "$1" | cut -d' ' -f1)"; }
 # 받는 사람 흉내(C1ⓗ) — 서버 asset 을 새 폴더에 「받아」 체크섬 파일마다 shasum -a 256 -c. 체크섬 파일이 없으면 실패
 dlcheck() {
-  local d="$W/dl-$N" f n=0; rm -rf "$d"; mkdir -p "$d"; cp "$W/gh/assets/$T1/files/"* "$d/" || return 1
+  local d="$W/dl-$N" f n=0; rm -rf "$d"; mkdir -p "$d"; cp "$W/gh/assets/$UT/files/"* "$d/" || return 1
   for f in "$d"/*.sha256; do [ -f "$f" ] || return 1; (cd "$d" && shasum -a 256 -c "$(basename "$f")") >> "$LOG" 2>&1 || return 1; n=$((n + 1)); done
   [ "$n" = "${1:-2}" ]
 }
 # 체크섬 파일이 바이너리 전부를 덮는가 — 서버의 바이너리마다 <이름>.sha256 이 있다
-covered() { local f; for f in "$W/gh/assets/$T1/files/"*; do case "$f" in *.sha256) ;; *) [ -f "$f.sha256" ] || return 1 ;; esac; done; }
+covered() { local f; for f in "$W/gh/assets/$UT/files/"*; do case "$f" in *.sha256) ;; *) [ -f "$f.sha256" ] || return 1 ;; esac; done; }
 
 for CASE in $CASES; do
   LOG="$OUT/$CASE.log"; : > "$LOG"; CASE_FAIL=0
@@ -824,10 +824,10 @@ for CASE in $CASES; do
       check "exit 0" eq "$RC" 0; check "asset 4개" eq "$(nassets)" 4; check "upload 4회" eq "$(upcalls)" 4; check "clobber 0" eq "$(clobbers)" 0
       check "dmg 서버 digest = 로컬" eq "$(sdigest corral-0.1.1-arm64.dmg)" "$(lsha "$ART/corral-0.1.1-arm64.dmg")"
       check "apk 서버 digest = 로컬" eq "$(sdigest corral-mobile-0.1.1.apk)" "$(lsha "$ART/corral-mobile-0.1.1.apk")"
-      check "체크섬 파일 꼴" eq "$(cat "$W/gh/assets/$T1/files/corral-0.1.1-arm64.dmg.sha256")" "$(shasum -a 256 "$ART/corral-0.1.1-arm64.dmg" | cut -d' ' -f1)  corral-0.1.1-arm64.dmg"
+      check "체크섬 파일 꼴" eq "$(cat "$W/gh/assets/$UT/files/corral-0.1.1-arm64.dmg.sha256")" "$(shasum -a 256 "$ART/corral-0.1.1-arm64.dmg" | cut -d' ' -f1)  corral-0.1.1-arm64.dmg"
       check "확인 문구" has "✔ Release v0.1.1 asset — 서버 digest = 로컬 sha256"
       check "받은 파일 shasum -c 통과(2)" dlcheck 2; check "바이너리 전부 덮음" covered
-      echo tampered >> "$W/gh/assets/$T1/files/corral-0.1.1-arm64.dmg"; check "양성 대조: 바뀐 dmg 는 shasum -c 실패" not dlcheck 2 ;;
+      echo tampered >> "$W/gh/assets/$UT/files/corral-0.1.1-arm64.dmg"; check "양성 대조: 바뀐 dmg 는 shasum -c 실패" not dlcheck 2 ;;
     upload-rerun) # C1ⓑ — 같은 명령 재실행 → upload 0·exit 0
       mkrel; mkart v0.1.1 0.1.1 dmg apk
       up -- --tag v0.1.1 --dir "$ART"; S0="$(astore)"

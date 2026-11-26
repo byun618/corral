@@ -34,7 +34,7 @@
 #   14 Release 에 dmg·APK 올리기 실패(머지·태그·Release·dmg·APK 끝)
 # 재실행 안내의 명령은 설명과 다른 줄에 홀로, 경로는 단일 따옴표로 인용한다(LIFE-599).
 #
-# 검사 없이 순서 머지다 — PR CI(LIFE-575)는 참고 신호라 여기서 보지 않는다(모으기 전 확인은 release 스킬 2). ruleset 「main 보호」(LIFE-718)는 private 동안 효력이 없고 required check 도 없다.
+# 검사 없이 순서 머지다 — PR CI(LIFE-575)는 참고 신호라 여기서 보지 않는다(모으기 전 확인은 release 스킬 2). ruleset 「main 보호」(LIFE-718)는 서버에서 강제되고(공개 뒤 — LIFE-729), required check 는 걸지 않는다 — ship 이 release PR 을 만든 직후 머지하고 CI 를 기다리지 않는다(LIFE-707).
 # 본체 checkout fast-forward 는 release-ff.sh(LIFE-672), dmg 는 release-dmg.sh, APK 는 release-apk.sh, Release 에 올리기는 release-upload.sh(LIFE-729) — 넷 다 태그 하나를 입력으로 받는다.
 set -euo pipefail
 

@@ -27,7 +27,7 @@ scripts/release.sh finish [--leave-open]                # ⑤ 정리 — 출고 
 scripts/release.sh abort                                # 접기 — 출고 전 release 브랜치·worktree 만 삭제, PR 은 열린 채
 ```
 
-**검사 없이 순서 머지다.** PR CI(`.github/workflows/pr-ci.yml` — 맥미니 self-hosted 러너, LIFE-575)는 참고 신호다 — `release.sh` 는 체크를 보지 않고 required check 도 없다(private 동안 걸 수 없다). 모으기 전에 대상 PR 의 체크를 사람이 본다(release 스킬 2). release→main PR 의 CI 는 PR 이 생기고 곧바로 머지된 뒤에 오므로 통합 확인을 대신하지 않는다 — 검증 근거는 각 PR 의 판정문(리뷰·관문)과 release worktree 통합 확인이다.
+**검사 없이 순서 머지다.** PR CI(`.github/workflows/pr-ci.yml` — 맥미니 self-hosted 러너, LIFE-575)는 참고 신호다 — `release.sh` 는 체크를 보지 않고 required check 도 걸지 않는다(`release.sh ship` 이 release PR 을 만든 직후 머지하고 CI 를 기다리지 않는다 — CI 를 출고 경로에 넣는 것은 LIFE-707). 모으기 전에 대상 PR 의 체크를 사람이 본다(release 스킬 2). release→main PR 의 CI 는 PR 이 생기고 곧바로 머지된 뒤에 오므로 통합 확인을 대신하지 않는다 — 검증 근거는 각 PR 의 판정문(리뷰·관문)과 release worktree 통합 확인이다.
 
 **① cut** — origin/main 끝의 `app/package.json` 에서 다음 버전을 정하고(`--bump`·`--version`) 다음 버전 ≤ 지금 버전 · 원격 태그 존재 ·
 열린 release 브랜치(로컬·원격 `release/v*`) 있음 · 다른 레포 안에서 부름 중 하나라도면 아무것도 만들지 않는다(exit 2). 만들면 release 브랜치에
@@ -133,8 +133,8 @@ Release 에 올리기만 다시(어느 cwd 에서도 — 스크립트가 든 레
 ③ 같을 때만 `adb install -r`(데이터·페어링 유지) ④ `dumpsys` 로 versionName·`lastUpdateTime` 이 바뀌었는지 보고 APK sha256 을 출력한다 — 출고 보고에 넣는다.
 설치본을 지우고 새로 까는 길은 없다 — 지우면 페어링 토큰·기록이 사라진다. 서명이 다르거나 설치본이 없으면(첫 설치) 멈추고 사용자에게 보고한다(첫 설치는 `mobile/README.md` §3).
 
-- **자르기·모으기·머지·태그는 `release.sh` 로만 한다.** ruleset 「main 보호」(LIFE-718)는 main 직접 push·force push·삭제를 막도록 걸려 있지만 레포가 private 인 동안 서버에서 효력이 없다(공개 뒤 효력 — LIFE-729). required check 도 private 동안 걸 수 없어 없고, 웹 UI 머지는 공개 뒤에도 막지 않는다 —
-  웹 UI 머지(release PR 포함 — 웹으로 머지하면 태그·Release·dmg·APK 가 안 돈다)·main 직접 push 를 하지 않는 것은 규약이다. squash·rebase 머지는 레포 설정에서 꺼 두었다(merge commit 만).
+- **자르기·모으기·머지·태그는 `release.sh` 로만 한다.** ruleset 「main 보호」(LIFE-718 — 삭제·force push 금지, PR 필수(승인 0·merge commit 만), 우회 없음)는 서버에서 강제된다(레포 공개 뒤 — LIFE-729) — main 직접 push·force push·삭제는 서버가 막는다.
+  웹 UI 머지는 막지 않는다 — 웹 UI 머지(release PR 포함 — 웹으로 머지하면 태그·Release·dmg·APK 가 안 돈다)를 하지 않는 것은 규약이다. required check 는 걸지 않는다(위 「검사 없이 순서 머지다」). squash·rebase 머지는 레포 설정에서 꺼 두었다(merge commit 만).
 - 태그 밖에서 dmg 를 만들어야 하면(개발 빌드) 「빌드」를 손으로 돌린다 — 그 dmg 는 출고본이 아니다. 출고 dmg 는 `release-dmg.sh` 가 HEAD = 태그·깨끗한 트리·
   태그 버전 = package.json 버전을 확인할 때만 만든다(`--check-only` 로 가드만 본다).
 - 리허설: 모든 하위 명령에 `--base throwaway/<이름> --tag-prefix rehearsal-<이름>-v` 를 준다 — release 브랜치는 `throwaway/<이름>-release/rehearsal-…X.Y.Z`,

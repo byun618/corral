@@ -1,6 +1,6 @@
 # harness learnings
 
-Last reviewed: 2026-11-24
+Last reviewed: 2026-11-27
 
 ## 감독 기동의 120초 `outcome_unknown` 은 도구마다 뜻이 다르다
 
@@ -57,13 +57,6 @@ Last reviewed: 2026-11-24
 - **Learning:** 사용자가 붙여 넣을 블록은 문법 검사·스텁으로 끝내지 않고, 실제 값을 채워 비파괴 부분을 코디가 먼저 친다. zsh 는 큰따옴표 안 `"$v:s…"` 를 수식자로 읽으니 변수 뒤에 콜론이 오면 `${v}` 로 쓴다.
 - **Evidence:** LIFE-575 — 리뷰 네 라운드가 못 잡은 수식자 오류가 사용자 첫 실행에서 깨졌다.
 - **Disposition:** task-coordinate §5 — 다시 나면.
-
-## 격리 herdr 장치는 모든 herdr CLI 호출의 env 를 지운다
-
-- **Scope:** 격리 herdr 를 쓰는 워커·리뷰어·코디 실측, 킥오프 「격리 장치」 레시피
-- **Learning:** pane 안 셸의 `HERDR_*`(소켓·pane id)가 `XDG_CONFIG_HOME` 보다 앞서서, 격리 서버를 띄워도 herdr CLI 를 그냥 치면 사용자 herdr 를 읽거나 누른다. env 를 지우는 래퍼로 모든 herdr 호출을 감싸고, 키를 보내기 전 그 서버의 pane 목록을 확인한다.
-- **Evidence:** LIFE-797 — `pane list` 가 사용자 herdr 를 읽었다(읽기라 무해).
-- **Disposition:** `.agents/harness/corral-notes.md` 격리 실측 절 또는 킥오프 레시피 — 다시 나면.
 
 ## 공유 specs 레포의 push 거절은 fetch 뒤 다시 push 한다
 

@@ -50,6 +50,7 @@ paddock 매핑(`.agents/harness/corral/`)에 없는 것만 둔다. 매핑 파일
 
 - **시험 bg 세션 정리**: `claude stop`·`claude rm` 은 id 앞 8자로 준다(전체 uuid 는 「No job matching」). rc≠0 은 실패로 적고, 정리 뒤 `claude agents --json --all` 로 다시 본다. bg 안 `/clear` 뒤에는 처음 job id 만 받는다 (LIFE-771·772·795).
 - 격리 herdr 세션(`life<NNN>*`)은 `scripts/task-finish.sh` 가 더는 멈추지 않는다(paddock 판은 corral pane 후보만 알린다) — 띄운 세션은 띄운 쪽이 `herdr session list` 로 찾아 `herdr session stop <이름>` 으로 멈추고 stopped 를 확인한다. pane 이 많으면 stop 이 15초 안에 안 끝날 수 있어(실측 233 pane 에 4회) 다시 친다. 사용자 default 세션은 건드리지 않는다.
+- **격리 인스턴스·격리 herdr 를 띄우는 셸은 먼저 `HERDR_*` 를 unset 한다** — pane 안 셸의 `HERDR_*`(소켓·pane id)가 `XDG_CONFIG_HOME` 보다 앞서서, 그냥 치면 사용자 herdr 를 읽거나 누른다. `env | grep ^HERDR` 0줄을 원자료로 남기고, 키를 보내기 전 그 서버의 pane 목록을 확인한다. `herdr server stop` 은 치지 않는다 — 격리 서버는 명령줄을 확인한 PID 로 TERM 만 하고, 사용자 herdr 서버 PID 를 전후 대조한다. 위 이름 지정 `session stop` 도 env 를 지운 셸에서만 친다. 사용자가 일부러 자기 서버를 다루는 손 넘김은 대상 밖 (LIFE-797·729).
 
 ## 『세션 기록 오라클』
 

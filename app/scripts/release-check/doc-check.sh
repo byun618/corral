@@ -122,17 +122,34 @@ for w in "macOS 13 이상" '`LSMinimumSystemVersion`)이 13.0' "macOS 26" "git" 
   echo "$RP" | grep -qF -- "$w" && ok "README 「준비물」에 $w" || bad "README 「준비물」에 $w 없음"
 done
 RF="$(sed -n '/^## 처음 쓰기$/,/^## 설치·빌드$/p' README.md)"
-# 「처음 쓰기」 가 인용한 화면 문구 → 그 문구가 든 렌더러 소스(문구가 바뀌면 여기서 걸린다)
-while IFS='|' read -r w f; do
-  echo "$RF" | grep -qF -- "$w" && grep -qF -- "$w" "$f" && ok "「처음 쓰기」 화면 문구 = $f: $w" || bad "「처음 쓰기」 화면 문구가 README·$f 에 함께 없다: $w"
+# 「처음 쓰기」 가 인용한 화면 문구 → 그 문구를 그리는 렌더러·main 소스 조각(문구가 바뀌면 여기서 걸린다)
+# 칸: README 문구 | 소스 파일 | 소스 조각. 짧은 단어는 흔해서 판별력이 없으므로 소스 조각은 그 화면 요소에만 있는 긴 꼴(속성·이웃 문자열 포함)로 적는다.
+# 비교는 공백·줄바꿈을 한 칸으로 접은 뒤 고정 문자열로 한다(JSX 가 여러 줄에 걸친다)
+fold() { tr -s ' \n\t' '   ' < "$1"; }
+RFF="$(echo "$RF" | tr -s ' \n\t' '   ')"
+while IFS='|' read -r w f src; do
+  echo "$RFF" | grep -qF -- "$w" && fold "$f" | grep -qF -- "$src" && ok "「처음 쓰기」 화면 문구 = $f: $w" || bad "「처음 쓰기」 화면 문구가 README·$f 에 함께 없다: $w (소스 조각 $src)"
 done <<'UI'
-등록된 레포가 없다. 위의 「+」 로 폴더를 고른다.|app/src/renderer/src/components/Sidebar.tsx
-프로젝트 추가|app/src/renderer/src/components/ReposSectionHeader.tsx
-워크트리 생성|app/src/renderer/src/components/RepoRowActions.tsx
-브랜치|app/src/renderer/src/components/CreateWorktreeModal.tsx
-새 탭|app/src/renderer/src/components/TerminalChrome.tsx
-감지된 agents가 없습니다|app/src/renderer/src/components/TabCreateMenu.tsx
+「등록된 레포가 없다. 위의 「+」 로 폴더를 고른다.」|app/src/renderer/src/components/Sidebar.tsx|등록된 레포가 없다. 위의 「+」 로 폴더를 고른다.
+**+**(툴팁 「프로젝트 추가」)|app/src/renderer/src/components/ReposSectionHeader.tsx|repos-header-add" data-add-repo onClick={onAddRepo} title="프로젝트 추가" aria-label="프로젝트 추가"
+「프로젝트 추가」 창이 뜬다 — **폴더 찾아보기**|app/src/renderer/src/components/AddRepoModal.tsx|data-modal-title> 프로젝트 추가 </h2>
+**폴더 찾아보기**|app/src/renderer/src/components/AddRepoModal.tsx|<span className="modal-item-name">폴더 찾아보기</span>
+**이 폴더 선택**|app/src/main/index.ts|buttonLabel: '이 폴더 선택',
+**+**(툴팁 「워크트리 생성」)|app/src/renderer/src/components/RepoRowActions.tsx|data-create-worktree={repoRoot} title="워크트리 생성" aria-label="워크트리 생성"
+**브랜치** 에 새 브랜치 이름|app/src/renderer/src/components/CreateWorktreeModal.tsx|<span className="field-label">브랜치</span>
+**경로** 는 브랜치 이름에서 자동으로|app/src/renderer/src/components/CreateWorktreeModal.tsx|<span className="field-hint">브랜치 이름에서 자동 생성 — 필요하면 수정</span>
+**생성** — 그 브랜치의 worktree|app/src/renderer/src/components/CreateWorktreeModal.tsx|data-worktree-create-submit disabled={busy} onClick={() => void submit()}> 생성 </button>
+**+**(툴팁 「새 탭」)|app/src/renderer/src/components/MainTabBar.tsx|className="main-tab-add" data-main-tabbar-add={groupId} type="button" title="새 탭" aria-label="새 탭"
+「감지된 agents가 없습니다」|app/src/renderer/src/components/TabCreateMenu.tsx|감지된 agents가 없습니다
+에이전트 없이 열려 있으면 「열림」|app/src/renderer/src/worktree-status.ts|active: '열림',
+「작업중」|app/src/renderer/src/worktree-status.ts|working: '작업중',
+「입력 대기」|app/src/renderer/src/worktree-status.ts|permission: '입력 대기',
+「완료」 등|app/src/renderer/src/worktree-status.ts|done: '완료',
 UI
+# 화면에 없는 옛 문구(리허설 c10-r2 에서 어긋남) — 다시 들어오면 실패
+for w in "답을 기다림" "+**(프로젝트 추가)로 git 레포 폴더를 고른다"; do
+  echo "$RF" | grep -qF -- "$w" && bad "「처음 쓰기」 에 화면에 없는 옛 문구: $w" || ok "「처음 쓰기」 옛 문구 없음: $w"
+done
 SHOT=docs/images/corral-screenshot.png
 grep -qF "]($SHOT)" README.md && [ -f "$SHOT" ] && [ "$(wc -c < "$SHOT")" -le 512000 ] && ok "스크린샷 $SHOT — README 가 가리키고 500KB 이하($(wc -c < "$SHOT" | tr -d ' ') B)" || bad "스크린샷 $SHOT 이 없거나 README 가 안 가리키거나 500KB 초과"
 

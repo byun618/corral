@@ -131,6 +131,12 @@ av-npm	apk-drop-npm
 av-nosrc	apk-emptymap	
 P
 )"
+# EAS 아카이브 규칙(.easignore, LIFE-729 R3-1) — notice-test.sh eas-archive 로 판별. 가드 표지는 규칙 바로 위 주석 줄이라 셋째 칸에 그 규칙 줄을 지우는 sed 를 적는다
+PAIRS_EAS="$(cat <<'P'
+eas-lib	eas-archive	s|^!/app/scripts/notices-lib\.mjs$|# (변이) 공용 lib 예외 뺌|
+eas-spdx	eas-archive	s|^!/app/scripts/spdx$|# (변이) SPDX 예외 뺌|
+P
+)"
 BAD=0
 # run_pairs <대상 파일> <L703_MUTANT_TARGET> <쌍 목록> [하네스 — 기본 release-test.sh] [빈 셋째 칸의 기본 sed 꼴 — 기본 die → true]
 run_pairs() {
@@ -160,5 +166,6 @@ run_pairs "$REL" release "$PAIRS"
 run_pairs "$UPL" upload "$PAIRS_UP"
 run_pairs "$HERE/../verify-notices.mjs" notice-dmg "$PAIRS_NV" "$HERE/notice-test.sh" 's/bad(/void(/'
 run_pairs "$HERE/../../../mobile/scripts/verify-notices.mjs" notice-apk "$PAIRS_AV" "$HERE/notice-test.sh" 's/bad(/void(/'
+run_pairs "$HERE/../../../.easignore" notice-eas "$PAIRS_EAS" "$HERE/notice-test.sh"
 echo "나쁜 쌍 $BAD" | tee -a "$SUM"
 [ "$BAD" = 0 ]

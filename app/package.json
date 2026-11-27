@@ -1,6 +1,6 @@
 {
   "name": "corral",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "private": true,
   "type": "module",
   "description": "corral — herdr 기반 AI 워크스페이스 미션 컨트롤 (LIFE-351 R1: 앱 골격 + 어댑터 control 층)",

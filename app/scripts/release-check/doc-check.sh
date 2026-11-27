@@ -113,6 +113,29 @@ grep -qF '    to: licenses/third-party' app/electron-builder.yml && ok "dmg 고�
 grep -qF "'app/src/main/assets/licenses/third-party'" mobile/scripts/build-notices.mjs && grep -qF "const NOTICE = 'assets/licenses/third-party/'" mobile/scripts/verify-notices.mjs && ok "APK 고지 자리 = 생성기·대조기(assets/licenses/third-party)" || bad "APK 고지 자리가 생성기·대조기와 문서가 다르다"
 grep -qF 'licenses/third-party/THIRD-PARTY-NOTICES.txt' app/scripts/bundle-herdr.mjs && ok "NOTICE-herdr.md 가 crate 고지 자리를 가리킨다" || bad "NOTICE-herdr.md(bundle-herdr.mjs) 가 crate 고지 자리를 가리키지 않는다"
 
+# ── 8. README 보강(LIFE-729 C10) — 절 순서 · 준비물 값 · 「처음 쓰기」 UI 문구 = 렌더러 소스의 실제 문자열 · 스크린샷 ──
+L_PRE="$(grep -n '^## 준비물$' README.md | cut -d: -f1)"; L_GET="$(grep -n '^## 받아서 쓰기$' README.md | cut -d: -f1)"; L_FIRST="$(grep -n '^## 처음 쓰기$' README.md | cut -d: -f1)"
+[ -n "$L_PRE" ] && [ -n "$L_GET" ] && [ -n "$L_FIRST" ] && [ "$L_PRE" -lt "$L_GET" ] && [ "$L_GET" -lt "$L_FIRST" ] && ok "README 절 순서 준비물 → 받아서 쓰기 → 처음 쓰기" || bad "README 절 순서 (준비물 ${L_PRE:-없음} · 받아서 쓰기 ${L_GET:-없음} · 처음 쓰기 ${L_FIRST:-없음})"
+RP="$(sed -n '/^## 준비물$/,/^## 받아서 쓰기$/p' README.md)"
+# 최소 macOS = 빌드 산출물 Info.plist 의 LSMinimumSystemVersion(13.0 — 근거는 작업 원자료, 실빌드 값은 최종 관문에서 다시 본다)
+for w in "macOS 13 이상" '`LSMinimumSystemVersion`)이 13.0' "macOS 26" "git" "Claude Code" "Codex" "Grok" "따로 설치하고 로그인" "Tailscale"; do
+  echo "$RP" | grep -qF -- "$w" && ok "README 「준비물」에 $w" || bad "README 「준비물」에 $w 없음"
+done
+RF="$(sed -n '/^## 처음 쓰기$/,/^## 설치·빌드$/p' README.md)"
+# 「처음 쓰기」 가 인용한 화면 문구 → 그 문구가 든 렌더러 소스(문구가 바뀌면 여기서 걸린다)
+while IFS='|' read -r w f; do
+  echo "$RF" | grep -qF -- "$w" && grep -qF -- "$w" "$f" && ok "「처음 쓰기」 화면 문구 = $f: $w" || bad "「처음 쓰기」 화면 문구가 README·$f 에 함께 없다: $w"
+done <<'UI'
+등록된 레포가 없다. 위의 「+」 로 폴더를 고른다.|app/src/renderer/src/components/Sidebar.tsx
+프로젝트 추가|app/src/renderer/src/components/ReposSectionHeader.tsx
+워크트리 생성|app/src/renderer/src/components/RepoRowActions.tsx
+브랜치|app/src/renderer/src/components/CreateWorktreeModal.tsx
+새 탭|app/src/renderer/src/components/TerminalChrome.tsx
+감지된 agents가 없습니다|app/src/renderer/src/components/TabCreateMenu.tsx
+UI
+SHOT=docs/images/corral-screenshot.png
+grep -qF "]($SHOT)" README.md && [ -f "$SHOT" ] && [ "$(wc -c < "$SHOT")" -le 512000 ] && ok "스크린샷 $SHOT — README 가 가리키고 500KB 이하($(wc -c < "$SHOT" | tr -d ' ') B)" || bad "스크린샷 $SHOT 이 없거나 README 가 안 가리키거나 500KB 초과"
+
 # ── 5. release.sh 언급 정합 — 남은 언급 줄 목록(사유는 사람이 보지만, 옛 사용법은 1 에서 이미 막았다) ──
 say "── release.sh 언급(참고 — 하위 명령 없이 부르는 사용법은 1 에서 실패로 잡는다)"
 git grep -n 'release\.sh' -- . ':!app/scripts/release-check' ':!app/src' ':!scripts/release.sh' | sed 's/^/  /' | tee -a "$R" >/dev/null

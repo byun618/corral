@@ -3,6 +3,8 @@
 AI 코딩 에이전트(Claude Code·Codex·Grok) 세션과 일감을 한 화면에 모아 보는 macOS 데스크톱 워크스페이스.
 A macOS desktop workspace that gathers AI coding agent sessions (Claude Code, Codex, Grok) and their tasks in one place.
 
+![corral — 왼쪽은 프로젝트·worktree 목록, 가운데는 선택한 worktree 의 터미널 pane, 오른쪽은 파일 탐색기](docs/images/corral-screenshot.png)
+
 ## 무엇인가
 
 - **바닥 레이어는 [herdr](https://github.com/herdrdev/herdr)** — 터미널(PTY) 소유·세션 영속·에이전트 상태 감지·git worktree 를 herdr 가 맡고, corral 은 그 위의 GUI(Electron + React)다.
@@ -14,6 +16,13 @@ A macOS desktop workspace that gathers AI coding agent sessions (Claude Code, Co
 
 개인 프로젝트이고 작성자 한 사람의 환경에 맞춰 만든다. 지원 범위는 **Apple Silicon(arm64) macOS** 뿐이고, 앱 서명은 ad-hoc 이며 자동 업데이트는 없다.
 기능·저장 형식은 예고 없이 바뀔 수 있다.
+
+## 준비물
+
+- **macOS 13 이상, Apple Silicon(arm64)** — 앱의 최소 버전(`LSMinimumSystemVersion`)이 13.0 이다. 음성 받아쓰기만 macOS 26 이상(받아쓰기 도우미가 macOS 26 용으로 빌드된다).
+- **git** — 레포·worktree·소스 제어 화면이 git 으로 돈다(macOS 의 Xcode Command Line Tools 에 들어 있다).
+- **에이전트 CLI 는 따로 설치하고 로그인한다** — Claude Code(`claude`)·Codex(`codex`)·Grok(`grok`) 가운데 쓸 것. corral 은 설치된 CLI 를 터미널 pane 에서 띄울 뿐 계정·설치를 대신하지 않는다.
+- **모바일 앱을 쓰려면 Tailscale** — 맥과 Android 폰이 같은 tailnet 에 로그인해 있어야 한다(자세한 준비물은 [`mobile/README.md`](mobile/README.md)).
 
 ## 받아서 쓰기
 
@@ -41,6 +50,13 @@ A macOS desktop workspace that gathers AI coding agent sessions (Claude Code, Co
 - 지원 범위: **Apple Silicon(arm64) macOS** 만 · 서명 ad-hoc · 공증 없음 · **자동 업데이트 없음** — 새 버전은 Releases 에서 다시 받아 덮어 설치한다.
 - **Android APK**(`corral-mobile-X.Y.Z.apk`)는 같은 Tailscale 망에 있는 **자기 맥의 corral 과 짝지어 쓰는 앱**이다 — 맥 없이 혼자 도는 앱이 아니다.
   체크섬은 같은 방식(`shasum -a 256 -c corral-mobile-*.apk.sha256`), 준비물·첫 설치는 [`mobile/README.md`](mobile/README.md).
+
+## 처음 쓰기
+
+1. 앱을 열면 왼쪽 **프로젝트** 가 비어 있다(「등록된 레포가 없다. 위의 「+」 로 폴더를 고른다.」). **프로젝트** 옆 **+**(프로젝트 추가)로 git 레포 폴더를 고른다.
+2. 레포 이름 줄에 포인터를 올리면 나오는 **워크트리 생성** 을 누르고 **브랜치** 에 새 브랜치 이름을 넣은 뒤 **생성** — 그 브랜치의 worktree 가 목록에 생기고 셸 pane 하나가 열린다.
+3. 탭 줄의 **+**(새 탭)에서 에이전트를 고르면 새 터미널에서 그 에이전트가 뜬다. 목록에는 설치된 CLI 만 보인다 — 「감지된 agents가 없습니다」 가 나오면 준비물의 에이전트 CLI 를 설치·로그인한 뒤 다시 연다.
+4. 왼쪽 목록이 에이전트 상태(작업중·답을 기다림·완료 등)를 점으로 보여 준다. 다른 worktree 카드를 누르면 가운데가 그 worktree 의 pane 으로 바뀐다.
 
 이 레포의 AI 작업 흐름(`AGENTS.md`·`.agents/`)은 [paddock](https://github.com/byun618/paddock) 으로 깐 것이다. 일감마다의 작업 산출물(분석·판정·원자료)은 별도의 비공개 레포에 두므로,
 문서에 나오는 `corral-specs/` 경로는 이 레포에 없다.

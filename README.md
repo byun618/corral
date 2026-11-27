@@ -69,4 +69,7 @@ A macOS desktop workspace that gathers AI coding agent sessions (Claude Code, Co
 
 앱에 동봉되는 herdr 는 Apache License 2.0 이다. 설치된 앱의 `corral.app/Contents/Resources/backend/` 에 상류 라이선스 원문(`LICENSE-herdr`)과 수정 사실 고지(`NOTICE-herdr.md`)가 들어 있고, 수정 내용은 [`app/backend/*.patch`](app/backend/) 다.
 
+제3자 고지는 배포본 안에 있다 — 앱은 `corral.app/Contents/Resources/licenses/third-party/THIRD-PARTY-NOTICES.txt`(동봉 herdr 의 Rust crate·libghostty-vt 등 정적 코드, Electron·Chromium(`electron/LICENSES.chromium.html`), 앱 번들의 npm 패키지, 글꼴·아이콘),
+Android APK 는 `assets/licenses/third-party/THIRD-PARTY-NOTICES.txt`(npm 패키지·Android 라이브러리). 기계용 목록은 같은 폴더의 `third-party.json`.
+
 이슈·기여 안내는 [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -102,6 +102,17 @@ grep -qF '`retry-<시각>/` 에 만들었으면 올리기는 아무것도 올리
 # exit 10 은 APK·올리기를 && 로 묶은 한 줄(리뷰 r2 R2-1) — INSTALL 표·SKILL
 echo "$SEC" | grep -qF '「APK 만 다시 → Release 에 올리기」 한 줄' && grep -qF '「APK 만 다시 → Release 에 올리기」 아래 한 줄' "$S" && ok "exit 10 묶은 한 줄 = INSTALL·SKILL" || bad "exit 10 묶은 한 줄 문구가 INSTALL·SKILL 에 없다"
 
+# ── 7. 제3자 고지 위치(LIFE-729 C9ⓕ) — README 「라이선스」·INSTALL 이 적은 자리 = 패키징·생성기가 싣는 자리 ──
+RL="$(sed -n '/^## 라이선스/,$p' README.md)"
+for w in "corral.app/Contents/Resources/licenses/third-party/THIRD-PARTY-NOTICES.txt" "electron/LICENSES.chromium.html" "assets/licenses/third-party/THIRD-PARTY-NOTICES.txt" "third-party.json"; do
+  echo "$RL" | grep -qF -- "$w" && ok "README 「라이선스」에 $w" || bad "README 「라이선스」에 $w 없음"
+done
+grep -qF '/Applications/corral.app/Contents/Resources/licenses/third-party/' app/INSTALL.md && grep -qF 'scripts/verify-notices.mjs' app/INSTALL.md && ok "INSTALL 에 제3자 고지 위치·대조" || bad "INSTALL 에 제3자 고지 위치·대조 없음"
+grep -qF '공개 배포를 다시 열 때 다룬다' app/INSTALL.md && bad "INSTALL 에 옛 「의존 crate 고지는 공개 배포를 다시 열 때 다룬다」 가 남았다" || ok "INSTALL 옛 고지 미룸 문장 없음"
+grep -qF '    to: licenses/third-party' app/electron-builder.yml && ok "dmg 고지 자리 = electron-builder.yml(licenses/third-party)" || bad "electron-builder.yml 의 고지 자리가 문서와 다르다"
+grep -qF "'app/src/main/assets/licenses/third-party'" mobile/scripts/build-notices.mjs && grep -qF "const NOTICE = 'assets/licenses/third-party/'" mobile/scripts/verify-notices.mjs && ok "APK 고지 자리 = 생성기·대조기(assets/licenses/third-party)" || bad "APK 고지 자리가 생성기·대조기와 문서가 다르다"
+grep -qF 'licenses/third-party/THIRD-PARTY-NOTICES.txt' app/scripts/bundle-herdr.mjs && ok "NOTICE-herdr.md 가 crate 고지 자리를 가리킨다" || bad "NOTICE-herdr.md(bundle-herdr.mjs) 가 crate 고지 자리를 가리키지 않는다"
+
 # ── 5. release.sh 언급 정합 — 남은 언급 줄 목록(사유는 사람이 보지만, 옛 사용법은 1 에서 이미 막았다) ──
 say "── release.sh 언급(참고 — 하위 명령 없이 부르는 사용법은 1 에서 실패로 잡는다)"
 git grep -n 'release\.sh' -- . ':!app/scripts/release-check' ':!app/src' ':!scripts/release.sh' | sed 's/^/  /' | tee -a "$R" >/dev/null

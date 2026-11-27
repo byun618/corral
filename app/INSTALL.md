@@ -210,7 +210,11 @@ PATH 에서 `~/.local/bin` 보다 앞이면, 그 node 를 쓰는 셸에서는 `c
 - **전환 안내 (brew herdr 를 쓰던 경우)**: 설치본은 따로 설치한 herdr 의 `default` 세션에 더 붙지 않는다 — 거기 열려 있던 터미널은
   넘어오지 않으니 한 번 다시 연다. brew herdr 는 corral 에 더 필요 없으므로 지워도 된다(`brew uninstall herdr`). 그 서버가 돌고 있으면 먼저 `herdr server stop`.
 - **Apache-2.0 고지**: 동봉 herdr 의 라이선스 사본과 상류·수정 사실 고지는 `/Applications/corral.app/Contents/Resources/backend/` 의
-  `LICENSE-herdr`·`NOTICE-herdr.md` 에 있다. 의존 crate 고지는 공개 배포를 다시 열 때 다룬다(LIFE-446 T3 취소).
+  `LICENSE-herdr`·`NOTICE-herdr.md` 에 있다.
+- **제3자 고지** (LIFE-729): `/Applications/corral.app/Contents/Resources/licenses/third-party/` 의 `THIRD-PARTY-NOTICES.txt`(원문) · `third-party.json`(목록) ·
+  `electron/`(Electron `LICENSE`·Chromium `LICENSES.chromium.html`) — 동봉 herdr 의 crate·비-Rust 정적 코드(libghostty-vt 등)·Electron/Chromium·앱 번들 npm·반입 자산.
+  `npm run package:mac` 이 electron-builder 앞에 만들고(`scripts/build-notices.mjs`) 뒤에 만든 앱 안 실물과 대조한다(`scripts/verify-notices.mjs` — 어긋나면 멈춘다).
+  APK 는 `assets/licenses/third-party/` — 빌드 훅(`mobile/scripts/build-notices.mjs`)이 싣고 `scripts/release-apk.sh` 가 대조한다.
 
 ## 지우기
 

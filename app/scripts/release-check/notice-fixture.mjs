@@ -203,7 +203,26 @@ if (kind === 'dmg') {
     entries['assets/licenses/third-party/THIRD-PARTY-NOTICES.txt'] = fs.readFileSync(path.join(tmp, 'THIRD-PARTY-NOTICES.txt'))
   }
   w(path.join(dir, 'app.apk'), zip(entries))
+} else if (kind === 'gen') {
+  // APK 고지 생성기(mobile/scripts/build-notices.mjs --inputs)의 입력 — notices.init.gradle 출력 꼴 + gradle 캐시·로컬 maven 저장소·android 폴더
+  // clean · artfail(ARTFAIL 줄) · noart(ART 줄 없는 옛 출력)
+  const gh = path.join(dir, 'gradle/caches/modules-2/files-2.1')
+  const pom = path.join(gh, 'com.example/lib/1.0/p0/lib-1.0.pom')
+  w(pom, '<project><licenses><license><name>MIT</name><url>https://opensource.org/licenses/MIT</url></license></licenses><developers><developer><name>Example Dev</name></developer></developers></project>')
+  const aar = path.join(gh, 'com.example/lib/1.0/a0/lib-1.0.aar')
+  w(aar, zip({ 'classes.jar': zip({ 'com/example/lib/Foo.class': 'cafe', 'META-INF/LICENSE': 'MIT — com.example:lib' }) }))
+  const local = path.join(dir, 'nm/node_modules/expo-thing/local-maven-repo/expo/modules/thing/1.0/thing-1.0.aar')
+  w(local, zip({ 'classes.jar': zip({ 'expo/modules/thing/T.class': 'cafe' }) }))
+  w(path.join(dir, 'android/app/build.gradle'), '// fixture\n')
+  w(path.join(dir, 'inputs.txt'), [
+    `HOME ${path.join(dir, 'gradle')}`,
+    'COMP com.example:lib:1.0', 'COMP com.example:umbrella:1.0', 'COMP expo.modules.thing:thing:1.0', 'PROJ :expo-thing',
+    `POM com.example:lib:1.0 ${pom}`,
+    ...(variant === 'noart' ? [] : [`ART com.example:lib:1.0 ${aar}`, `ART expo.modules.thing:thing:1.0 ${local}`]),
+    ...(variant === 'artfail' ? ['ARTFAIL Could not find com.example:gone:2.0.'] : []),
+    '',
+  ].join('\n'))
 } else {
-  console.error('사용: node notice-fixture.mjs dmg|apk <폴더> <변형>')
+  console.error('사용: node notice-fixture.mjs dmg|apk|gen <폴더> <변형>')
   process.exit(2)
 }

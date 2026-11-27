@@ -2,7 +2,7 @@
 // EAS 빌드 훅 `eas-build-post-install`(prebuild 뒤·gradle 빌드 앞)이 부른다 — `scripts/release-apk.sh` 의 로컬 빌드도 같은 길을 탄다.
 // 입력(이 빌드의 실물):
 //   - npm: package-lock 의 dev 아닌 패키지(JS 번들·네이티브 모듈 소스가 여기서 온다)
-//   - Android 런타임 의존: `gradlew :app:dependencies --configuration releaseRuntimeClasspath` 가 해석한 maven 좌표 → gradle 캐시의 POM(라이선스·저작권자)·아티팩트 안 LICENSE/NOTICE
+//   - Android 런타임 의존: notices.init.gradle 이 releaseRuntimeClasspath 를 해석한 maven 좌표 → POM(라이선스·저작권자)·해석한 아티팩트 안 LICENSE/NOTICE
 //   - NDK libc++(libc++_shared.so) · 반입 글꼴(assets/fonts/*-OFL.txt)
 // 끝나면 `verify-notices.mjs` 가 만든 APK 안 실물(dex 클래스·.so·assets·JS 소스맵)과 따로 대조한다.
 // node scripts/build-notices.mjs [--android <android 폴더, 기본 ./android>] [--inputs <notices.init.gradle 출력 파일 — 주면 gradle 을 돌리지 않는다>]
@@ -32,6 +32,8 @@ const inputsText = opt('--inputs', null)
 const coords = new Set()
 const projects = new Set()
 const poms = new Map()
+const arts = new Map() // 그룹:이름:버전 → 해석한 아티팩트 파일
+const artFails = []
 let gradleHome = process.env.GRADLE_USER_HOME ?? path.join(os.homedir(), '.gradle')
 for (const line of inputsText.split('\n')) {
   const [t, a] = line.split(' ')
@@ -39,14 +41,13 @@ for (const line of inputsText.split('\n')) {
   else if (t === 'PROJ') projects.add(a)
   else if (t === 'POM') poms.set(a, line.slice(t.length + a.length + 2))
   else if (t === 'HOME') gradleHome = line.slice(5)
+  else if (t === 'ART') arts.set(a, [...(arts.get(a) ?? []), line.slice(t.length + a.length + 2)])
+  else if (t === 'ARTFAIL') artFails.push(line.slice(8))
 }
 if (!coords.size) fail('gradle 해석 결과에 maven 좌표가 하나도 없다')
+if (artFails.length) fail(`gradle 이 아티팩트를 받지 못했다 ${artFails.length}건 — 고지를 만들 수 없다(네트워크·저장소 설정): ${artFails.slice(0, 3).join(' · ')}`) // # guard:gn-artfail
+if (!arts.size) fail('gradle 해석 결과에 ART 줄이 없다 — notices.init.gradle 이 아티팩트를 해석하지 않은 옛 출력이다') // # guard:gn-noart
 const cache = path.join(gradleHome, 'caches/modules-2/files-2.1')
-const cacheFiles = (g, a, v) => {
-  const d = path.join(cache, g, a, v)
-  if (!fs.existsSync(d)) return []
-  return fs.readdirSync(d).flatMap((h) => fs.readdirSync(path.join(d, h)).map((f) => path.join(d, h, f)))
-}
 // POM 을 저장소에서 못 받는 모듈 — react-native 저장소에서 빌드돼 같은 npm 패키지 안 원문을 쓴다
 const NO_POM = {
   'com.facebook.react:react-android': { license: 'MIT', source: 'https://github.com/facebook/react-native', npm: 'react-native' },
@@ -100,11 +101,15 @@ const maven = []
 const skipped = []
 for (const c of [...coords].sort()) {
   const [g, a, v] = c.split(':')
-  const files = cacheFiles(g, a, v)
-  const hasBinary = files.some((f) => /\.(aar|jar)$/.test(f))
-  if (!hasBinary) {
-    // 아티팩트 없는 모듈 — BOM(platform)·Kotlin 멀티플랫폼 우산·다른 좌표로 옮겨 둔 모듈(Gradle 모듈 메타데이터 available-at). 실물 좌표가 따로 고지된다
+  const files = (arts.get(c) ?? []).filter((f) => /\.(aar|jar)$/.test(f))
+  if (!files.length) {
+    // gradle 이 실패 없이 아티팩트 0 으로 해석한 모듈 — BOM(platform)·Kotlin 멀티플랫폼 우산·다른 좌표로 옮겨 둔 모듈(Gradle 모듈 메타데이터 available-at). 실물 좌표가 따로 고지된다
     skipped.push(`${c} — 아티팩트 없음(${a.endsWith('-bom') ? 'BOM' : '메타데이터 모듈'})`)
+    continue
+  }
+  if (files.every((f) => !f.startsWith(`${cache}/`) && f.includes('/node_modules/'))) {
+    // npm 패키지 안의 로컬 maven 저장소(expo 모듈의 local-maven-repo 등) — 그 npm 패키지 고지가 덮고, 대조기는 그 패키지의 android 소스로 클래스를 귀속한다
+    skipped.push(`${c} — 로컬 maven 저장소(npm ${files[0].match(/.*\/node_modules\/((?:@[^/]+\/)?[^/]+)\//)[1]})`)
     continue
   }
   const pom = pomOf(g, a, v)

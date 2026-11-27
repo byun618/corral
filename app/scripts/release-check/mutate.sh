@@ -144,6 +144,12 @@ eas-lib	eas-archive	s|^!/app/scripts/notices-lib\.mjs$|# (변이) 공용 lib 예
 eas-spdx	eas-archive	s|^!/app/scripts/spdx$|# (변이) SPDX 예외 뺌|
 P
 )"
+# APK 고지 생성기(LIFE-729 R3-3) — notice-test.sh gen-apk-* 로 판별. 셋째 칸이 비면 가드 줄의 fail( 을 void( 로(멈추지 않고 이어 감)
+PAIRS_GN="$(cat <<'P'
+gn-artfail	gen-apk-artfail	
+gn-noart	gen-apk-noart	
+P
+)"
 BAD=0
 # run_pairs <대상 파일> <L703_MUTANT_TARGET> <쌍 목록> [하네스 — 기본 release-test.sh] [빈 셋째 칸의 기본 sed 꼴 — 기본 die → true]
 run_pairs() {
@@ -174,5 +180,6 @@ run_pairs "$UPL" upload "$PAIRS_UP"
 run_pairs "$HERE/../verify-notices.mjs" notice-dmg "$PAIRS_NV" "$HERE/notice-test.sh" 's/bad(/void(/'
 run_pairs "$HERE/../../../mobile/scripts/verify-notices.mjs" notice-apk "$PAIRS_AV" "$HERE/notice-test.sh" 's/bad(/void(/'
 run_pairs "$HERE/../../../.easignore" notice-eas "$PAIRS_EAS" "$HERE/notice-test.sh"
+run_pairs "$HERE/../../../mobile/scripts/build-notices.mjs" notice-gen "$PAIRS_GN" "$HERE/notice-test.sh" 's/fail(/void(/'
 echo "나쁜 쌍 $BAD" | tee -a "$SUM"
 [ "$BAD" = 0 ]

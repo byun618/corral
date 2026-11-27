@@ -4,14 +4,15 @@
 # 케이스마다: 깨끗한 픽스처는 exit 0(음성), 한 건을 빼거나 바꾼 픽스처는 exit 1 + 사유 문구(리터럴)를 단언한다(양성).
 # stale-* 는 C9ⓔ — 의존을 올렸는데 고지를 다시 만들지 않은 빌드를 대조기가 멈추는지. wired 는 빌드 경로(package:mac·release-apk.sh)가 대조기를 부르는지.
 # eas-archive 는 EAS 아카이브(.easignore — gitignore 의미, EAS CLI 는 ignore 패키지로 같은 규칙을 쓴다) 안에 APK 고지 훅이 읽는 파일이 다 드는지.
-# 양성 대조: L703_MUTANT_SED 를 L703_MUTANT_TARGET(notice-dmg | notice-apk | notice-eas)의 사본에 적용한다(mutate.sh 가 쓴다).
+# gen-apk-* 는 APK 고지 생성기(R3-3) — 해석한 아티팩트(ART)로 고지를 만들고, 받지 못한 아티팩트(ARTFAIL)·ART 없는 옛 출력은 멈추는지.
+# 양성 대조: L703_MUTANT_SED 를 L703_MUTANT_TARGET(notice-dmg | notice-apk | notice-eas | notice-gen)의 사본에 적용한다(mutate.sh 가 쓴다).
 # 임시 폴더는 /tmp/l729n.XXXXXX. 끝나면 지운다. 사용자 gradle 캐시·앱 무접촉(GRADLE_USER_HOME 은 픽스처).
 set -uo pipefail
 
 ALL="dmg-clean dmg-drop-asar dmg-drop-map dmg-drop-hash dmg-drop-vendored dmg-unmapped dmg-tie dmg-nomap dmg-nores dmg-unres dmg-rebased dmg-placeholder dmg-drop-crate dmg-drop-sym dmg-nosym
 dmg-drop-std dmg-drop-cppns dmg-drop-native dmg-electron dmg-drop-chromium dmg-nofw dmg-notext dmg-txthead dmg-filesha dmg-stale dmg-nolist
 apk-clean apk-class apk-noclass apk-drop-libcxx apk-so apk-appmodules apk-packagelist apk-version apk-asset apk-drop-font apk-drop-npm apk-tie apk-nowork apk-nomapfile
-apk-emptymap apk-nores apk-unres apk-rebased apk-placeholder apk-notext apk-reason apk-google apk-txthead apk-nocache apk-stale apk-nonotice wired eas-archive gen-texts"
+apk-emptymap apk-nores apk-unres apk-rebased apk-placeholder apk-notext apk-reason apk-google apk-txthead apk-nocache apk-stale apk-nonotice wired eas-archive gen-texts gen-apk-clean gen-apk-artfail gen-apk-noart"
 OUT="${1:?원자료 폴더}"; shift
 CASES="${*:-$ALL}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,11 +27,15 @@ S="$WORK/src"; mkdir -p "$S/app/scripts" "$S/mobile/scripts"
 cp "$ROOT/app/scripts/notices-lib.mjs" "$ROOT/app/scripts/verify-notices.mjs" "$S/app/scripts/"
 cp "$ROOT/mobile/scripts/verify-notices.mjs" "$S/mobile/scripts/"
 cp "$ROOT/.easignore" "$S/.easignore"
+# APK 고지 생성기 사본 — 자기 위치의 mobile/ 을 읽으므로 레포 입력(package-lock·node_modules·assets)은 링크, 원문(spdx·notice-texts)·버전은 복사
+cp "$ROOT/mobile/scripts/build-notices.mjs" "$S/mobile/scripts/"; cp -R "$ROOT/mobile/scripts/notice-texts" "$S/mobile/scripts/"; cp -R "$ROOT/app/scripts/spdx" "$S/app/scripts/"; cp "$ROOT/app/package.json" "$S/app/"
+for f in package-lock.json node_modules assets; do ln -s "$ROOT/mobile/$f" "$S/mobile/$f"; done
 MUT_SED="${L703_MUTANT_SED:-}"
 case "${L703_MUTANT_TARGET:-}" in
   notice-dmg) [ -n "$MUT_SED" ] && sed "$MUT_SED" "$ROOT/app/scripts/verify-notices.mjs" > "$S/app/scripts/verify-notices.mjs" ;;
   notice-apk) [ -n "$MUT_SED" ] && sed "$MUT_SED" "$ROOT/mobile/scripts/verify-notices.mjs" > "$S/mobile/scripts/verify-notices.mjs" ;;
   notice-eas) [ -n "$MUT_SED" ] && sed "$MUT_SED" "$ROOT/.easignore" > "$S/.easignore" ;;
+  notice-gen) [ -n "$MUT_SED" ] && sed "$MUT_SED" "$ROOT/mobile/scripts/build-notices.mjs" > "$S/mobile/scripts/build-notices.mjs" ;;
 esac
 echo "# notice-test $(date '+%F %T') · node $(node -v) · app verify sha1 $(shasum < "$ROOT/app/scripts/verify-notices.mjs" | cut -c1-12) · apk verify sha1 $(shasum < "$ROOT/mobile/scripts/verify-notices.mjs" | cut -c1-12)${L703_MUTANT:+ · 변이 $L703_MUTANT}" | tee -a "$SUMMARY"
 
@@ -149,6 +154,19 @@ for CASE in $CASES; do
       for f in $UP; do echo "upstream $f $(wc -c < "$ROOT/mobile/scripts/notice-texts/$f" 2>/dev/null || echo 없음)" >> "$LAST"
         case "$f" in *-LICENSE.txt) check "$f — BSD 조건·면책" eq "$(grep -c 'Redistributions in binary form must reproduce\|PROVIDED BY THE COPYRIGHT HOLDERS' "$ROOT/mobile/scripts/notice-texts/$f")" 2 ;;
           *) check "$f 있음" test -s "$ROOT/mobile/scripts/notice-texts/$f" ;; esac; done ;;
+    gen-apk-*) # R3-3 — 생성기는 캐시를 훑지 않고 init 스크립트가 해석한 아티팩트를 읽는다. 캐시에 없어도(콜드) 해석이 받았으면 고지, 받지 못했으면 멈춘다
+      d="$WORK/$CASE"; node "$HERE/notice-fixture.mjs" gen "$d" "${CASE#gen-apk-}" >> "$LOG" 2>&1 || { echo "  FAIL 픽스처" >> "$LOG"; CASE_FAIL=1; }
+      LAST="$OUT/$CASE.out"; GRADLE_USER_HOME="$d/gradle" node "$S/mobile/scripts/build-notices.mjs" --android "$d/android" --inputs "$d/inputs.txt" > "$LAST" 2>&1; RC=$?
+      J="$d/android/app/src/main/assets/licenses/third-party/third-party.json"
+      case "$CASE" in
+        gen-apk-clean) check "exit 0" eq "$RC" 0
+          check "해석한 아티팩트의 모듈을 고지" eq "$(node -e 'const j=require(process.argv[1]); const c=j.components.find(x=>x.name==="com.example:lib"); console.log(c && c.texts.some(t=>t.file==="classes.jar!/META-INF/LICENSE") ? 1 : 0)' "$J" 2>> "$LOG")" 1
+          check "아티팩트 0 모듈은 메타데이터로 건너뜀" eq "$(grep -c '"com.example:umbrella:1.0 — 아티팩트 없음(메타데이터 모듈)"' "$J")" 1
+          check "로컬 maven 저장소 모듈은 npm 쪽으로 건너뜀" eq "$(grep -c '"expo.modules.thing:thing:1.0 — 로컬 maven 저장소(npm expo-thing)"' "$J")" 1
+          check "건너뛴 좌표 2" has "건너뛴 좌표 2" ;;
+        gen-apk-artfail) bad1 "gradle 이 아티팩트를 받지 못했다 1건" ;;
+        gen-apk-noart) bad1 "gradle 해석 결과에 ART 줄이 없다" ;;
+      esac ;;
     *) echo "모르는 케이스 $CASE" >&2; exit 64 ;;
   esac
   if [ "$CASE_FAIL" = 0 ]; then R=PASS; else R=FAIL; FAILS=$((FAILS + 1)); fi

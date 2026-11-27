@@ -63,18 +63,20 @@ else
  cargo build --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml"
 fi
 build_seconds=$(( $(date +%s) - started ))
+# LIFE-729 C9 — 이 빌드의 의존 해석(aarch64-apple-darwin 만). scripts/build-notices.mjs 가 동봉 crate 고지를 만든다. 같은 lock·소스라 --offline 으로 다시 받지 않는다
+cargo metadata --locked --offline --format-version 1 --filter-platform aarch64-apple-darwin --manifest-path "$work/herdr-0.9.0/Cargo.toml" > "$work/herdr-0.9.0/target/$profile/herdr.metadata.json"
 if [ "${CORRAL_BACKEND_TEST:-0}" = 1 ]; then
  cargo test --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml" --bin herdr corral_terminal_ -- --nocapture --test-threads=1
  cargo test --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml" --bin herdr trust_directory_requires_live_chooser -- --nocapture --test-threads=1
 fi
 printf 'Managed proof binary: %s\n' "$work/herdr-0.9.0/target/$profile/herdr"
-node --input-type=module - "$repo_root" "$work" "$profile" "$build_seconds" <<'JS'
+node --input-type=module - "$repo_root" "$work" "$profile" "$build_seconds" "$tools" <<'JS'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-const [root, work, profile, buildSeconds] = process.argv.slice(2)
+const [root, work, profile, buildSeconds, tools] = process.argv.slice(2)
 const binary = path.join(work, `herdr-0.9.0/target/${profile}/herdr`)
 const hash = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex')
 const source = JSON.parse(fs.readFileSync(path.join(root, 'app/backend/source.json')))
-fs.writeFileSync(binary + '.json', JSON.stringify({ ...source, profile, buildSeconds: Number(buildSeconds), binaryBytes: fs.statSync(binary).size, binary, binarySHA256: hash(binary), patches: source.patches.map(name => ({ name, sha256: hash(path.join(root, 'app/backend', name)) })) }, null, 2) + '\n')
+fs.writeFileSync(binary + '.json', JSON.stringify({ ...source, profile, buildSeconds: Number(buildSeconds), binaryBytes: fs.statSync(binary).size, binary, binarySHA256: hash(binary), metadataSHA256: hash(binary + '.metadata.json'), toolchainRoot: tools, patches: source.patches.map(name => ({ name, sha256: hash(path.join(root, 'app/backend', name)) })) }, null, 2) + '\n')
 JS

@@ -57,7 +57,7 @@ const notice = [
   '',
   ...source.patches.flatMap((name) => [`  - \`${name}\` (sha256 ${source.patchSHA256[name]}) — 수정한 파일:`, ...modified(name).map((file) => `    - \`${file}\``)]),
   '',
-  '- 의존 crate 의 고지는 이 빌드에 싣지 않았다 — 공개 배포(LIFE-446 T3)에서 다룬다.',
+  '- 의존 crate·비-Rust 정적 코드(libghostty-vt 등)의 고지는 `Contents/Resources/licenses/third-party/THIRD-PARTY-NOTICES.txt` 에 있다.',
   '',
 ].join('\n')
 fs.writeFileSync(path.join(out, 'NOTICE-herdr.md'), notice)

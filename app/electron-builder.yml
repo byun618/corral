@@ -49,6 +49,10 @@ extraResources:
   # LIFE-572 — 편집기 TextMate 문법·테마 고지(LIFE-590 반입, vscode MIT + 문법별 원저작 cgmanifest). 문법·테마 자체는 렌더러 번들에 든다.
   - from: src/renderer/src/assets/textmate/notices
     to: licenses/textmate
+  # LIFE-729 — 제3자 고지(동봉 herdr 의 crate·비-Rust 정적 코드 · Electron/Chromium · 앱 번들 npm · 반입 자산). `package:mac` 이
+  # electron-builder 직전에 `build-notices.mjs` 로 만들고, 직후에 `verify-notices.mjs` 가 만든 앱 안 실물과 대조한다(없으면 패키징 전에 멈춘다).
+  - from: build/notices
+    to: licenses/third-party
 # 렌더러·main 번들 외 네이티브 모듈 없음
 npmRebuild: false
 mac:

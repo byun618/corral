@@ -26,3 +26,5 @@ app/dist/
 app/build/backend/
 # LIFE-676 Resource Manager 메모리 도우미 — scripts/build-footprint.mjs 가 helper/corral-footprint.c 에서 빌드한다
 app/build/helper/
+app/build/notices/
+app/build/notices-input/

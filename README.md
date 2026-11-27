@@ -3,6 +3,8 @@
 AI 코딩 에이전트(Claude Code·Codex·Grok) 세션과 일감을 한 화면에 모아 보는 macOS 데스크톱 워크스페이스.
 A macOS desktop workspace that gathers AI coding agent sessions (Claude Code, Codex, Grok) and their tasks in one place.
 
+![corral — 왼쪽은 프로젝트·worktree 목록, 가운데는 선택한 worktree 의 터미널 pane, 오른쪽은 파일 탐색기](docs/images/corral-screenshot.png)
+
 ## 무엇인가
 
 - **바닥 레이어는 [herdr](https://github.com/herdrdev/herdr)** — 터미널(PTY) 소유·세션 영속·에이전트 상태 감지·git worktree 를 herdr 가 맡고, corral 은 그 위의 GUI(Electron + React)다.
@@ -15,9 +17,53 @@ A macOS desktop workspace that gathers AI coding agent sessions (Claude Code, Co
 개인 프로젝트이고 작성자 한 사람의 환경에 맞춰 만든다. 지원 범위는 **Apple Silicon(arm64) macOS** 뿐이고, 앱 서명은 ad-hoc 이며 자동 업데이트는 없다.
 기능·저장 형식은 예고 없이 바뀔 수 있다.
 
+## 준비물
+
+- **macOS 13 이상, Apple Silicon(arm64)** — 앱의 최소 버전(`LSMinimumSystemVersion`)이 13.0 이다. 음성 받아쓰기만 macOS 26 이상(받아쓰기 도우미가 macOS 26 용으로 빌드된다).
+- **git** — 레포·worktree·소스 제어 화면이 git 으로 돈다(macOS 의 Xcode Command Line Tools 에 들어 있다).
+- **에이전트 CLI 는 따로 설치하고 로그인한다** — Claude Code(`claude`)·Codex(`codex`)·Grok(`grok`) 가운데 쓸 것. corral 은 설치된 CLI 를 터미널 pane 에서 띄울 뿐 계정·설치를 대신하지 않는다.
+- **모바일 앱을 쓰려면 Tailscale** — 맥과 Android 폰이 같은 tailnet 에 로그인해 있어야 한다(자세한 준비물은 [`mobile/README.md`](mobile/README.md)).
+
+## 받아서 쓰기
+
+출고마다 [Releases](https://github.com/byun618/corral/releases) 에 dmg·Android APK 와 파일마다 체크섬 파일(`<파일>.sha256`)을 올린다.
+
+1. 최신 Release 에서 `corral-X.Y.Z-arm64.dmg` 와 `corral-X.Y.Z-arm64.dmg.sha256` 을 같은 폴더에 받는다.
+   `gh` 를 쓰면 `gh release download --repo byun618/corral --pattern 'corral-*-arm64.dmg*'`.
+2. 받은 폴더에서 체크섬을 확인한다 — `OK` 가 나와야 한다:
+   ```sh
+   shasum -a 256 -c corral-*-arm64.dmg.sha256
+   ```
+3. dmg 를 열고 `corral.app` 을 `/Applications` 로 끌어 놓는다.
+4. **브라우저로 받았다면 첫 실행을 macOS 가 막는다** — 앱이 ad-hoc 서명이고 공증을 받지 않아서다(「확인되지 않은 개발자」 류 경고).
+   브라우저는 받은 파일에 다운로드 표시(quarantine)를 달고, macOS 는 그 표시가 있는 앱을 처음 열 때 검사한다.
+   `gh release download` 로 받은 파일에는 이 표시가 붙지 않는다 — 그래도 막히면 아래대로 한다.
+   macOS 15 이상은 Control-클릭 → 열기 우회가 없다. 한 번 열어 보고 막히면 **시스템 설정 → 개인정보 보호 및 보안** 맨 아래의
+   **그래도 열기** 를 누른 뒤 다시 연다(차단 직후 한동안만 보인다).
+   그 버튼이 없으면 터미널에서 다운로드 표시(quarantine)를 지운 뒤 연다:
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/corral.app
+   ```
+5. 앱 메뉴 **corral ▸ Install 'corral' Command in PATH…** 로 `corral` CLI 를 연결한다(`~/.local/bin/corral` 심링크 하나 — 자세한 것은 [`app/INSTALL.md`](app/INSTALL.md) 「설치」).
+
+- **herdr 는 앱에 들어 있다** — 따로 설치하지 않는다(동봉 herdr 의 빌드 입력은 [`app/backend/`](app/backend/)).
+- 지원 범위: **Apple Silicon(arm64) macOS** 만 · 서명 ad-hoc · 공증 없음 · **자동 업데이트 없음** — 새 버전은 Releases 에서 다시 받아 덮어 설치한다.
+- **Android APK**(`corral-mobile-X.Y.Z.apk`)는 같은 Tailscale 망에 있는 **자기 맥의 corral 과 짝지어 쓰는 앱**이다 — 맥 없이 혼자 도는 앱이 아니다.
+  체크섬은 같은 방식(`shasum -a 256 -c corral-mobile-*.apk.sha256`), 준비물·첫 설치는 [`mobile/README.md`](mobile/README.md).
+
+## 처음 쓰기
+
+1. 앱을 열면 왼쪽 **프로젝트** 가 비어 있다(「등록된 레포가 없다. 위의 「+」 로 폴더를 고른다.」). **프로젝트** 옆 **+**(툴팁 「프로젝트 추가」)를 누르면 「프로젝트 추가」 창이 뜬다 — **폴더 찾아보기** 를 누르고 macOS 폴더 대화상자에서 git 레포 폴더를 고른 뒤 **이 폴더 선택**.
+2. 레포 이름 줄에 포인터를 올리면 줄 오른쪽에 아이콘이 나타난다. 그중 **+**(툴팁 「워크트리 생성」)를 누르고 **브랜치** 에 새 브랜치 이름을 넣은 뒤(**경로** 는 브랜치 이름에서 자동으로 채워진다) **생성** — 그 브랜치의 worktree 가 목록에 생기고 셸 pane 하나가 열린다.
+3. 탭 줄 오른쪽의 **+**(툴팁 「새 탭」)에서 에이전트를 고르면 새 터미널에서 그 에이전트가 뜬다. 목록에는 설치된 CLI 만 보인다 — 「감지된 agents가 없습니다」 가 나오면 준비물의 에이전트 CLI 를 설치·로그인한 뒤 다시 연다.
+4. 왼쪽 worktree 카드의 점이 상태를 보여 준다 — 에이전트 없이 열려 있으면 「열림」, 에이전트가 돌면 「작업중」·「입력 대기」·「완료」 등(점에 포인터를 올리면 이름이 보인다). 다른 worktree 카드를 누르면 가운데가 그 worktree 의 pane 으로 바뀐다.
+
+이 레포의 AI 작업 흐름(`AGENTS.md`·`.agents/`)은 [paddock](https://github.com/byun618/paddock) 으로 깐 것이다. 일감마다의 작업 산출물(분석·판정·원자료)은 별도의 비공개 레포에 두므로,
+문서에 나오는 `corral-specs/` 경로는 이 레포에 없다.
+
 ## 설치·빌드
 
-- 빌드와 설치 절차: [`app/INSTALL.md`](app/INSTALL.md) — 동봉 herdr 빌드 → `npm run package:mac` → dmg 설치 → CLI 를 PATH 에 연결.
+- 직접 빌드하려면 — 빌드와 설치 절차: [`app/INSTALL.md`](app/INSTALL.md) — 동봉 herdr 빌드 → `npm run package:mac` → dmg 설치 → CLI 를 PATH 에 연결.
 - 모바일 앱: [`mobile/README.md`](mobile/README.md).
 - 동봉 herdr 의 빌드 입력(상류 commit·패치): [`app/backend/`](app/backend/).
 
@@ -38,5 +84,8 @@ A macOS desktop workspace that gathers AI coding agent sessions (Claude Code, Co
 [MIT](LICENSE).
 
 앱에 동봉되는 herdr 는 Apache License 2.0 이다. 설치된 앱의 `corral.app/Contents/Resources/backend/` 에 상류 라이선스 원문(`LICENSE-herdr`)과 수정 사실 고지(`NOTICE-herdr.md`)가 들어 있고, 수정 내용은 [`app/backend/*.patch`](app/backend/) 다.
+
+제3자 고지는 배포본 안에 있다 — 앱은 `corral.app/Contents/Resources/licenses/third-party/THIRD-PARTY-NOTICES.txt`(동봉 herdr 의 Rust crate·libghostty-vt 등 정적 코드, Electron·Chromium(`electron/LICENSES.chromium.html`), 앱 번들의 npm 패키지, 글꼴·아이콘),
+Android APK 는 `assets/licenses/third-party/THIRD-PARTY-NOTICES.txt`(npm 패키지·Android 라이브러리). 기계용 목록은 같은 폴더의 `third-party.json`.
 
 이슈·기여 안내는 [CONTRIBUTING.md](CONTRIBUTING.md).

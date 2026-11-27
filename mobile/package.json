@@ -17,7 +17,8 @@
     "build:local:preview": "eas build -p android --profile preview --local",
     "build:local:prod": "eas build -p android --profile production --local",
     "apk:install": "adb install -r $(ls -t build-*.apk | head -1)",
-    "ios": "expo run:ios"
+    "ios": "expo run:ios",
+    "eas-build-post-install": "node scripts/build-notices.mjs"
   },
   "dependencies": {
     "@react-native-community/netinfo": "11.4.1",

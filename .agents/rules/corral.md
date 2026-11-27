@@ -14,7 +14,8 @@ paddock 고정 문서에 없는 이 프로젝트 규칙. 옛 AGENTS.md·validati
 - **main 반영은 PR 머지로만** — 출고 때 scripts/release.sh 가 고른 PR 을 release 브랜치에 순서대로 모으고(검사 없이 순서 merge, 충돌이면 멈춤)
   release → main PR 하나를 merge commit 으로 머지한다 — 원래 PR 은 기본 브랜치에서 간접 머지로 MERGED 를 가정하고 확인 안 되면 exit 13(C14 실측 전, squash·rebase 머지는 레포 설정으로 꺼 둠).
   PR CI(.github/workflows/pr-ci.yml — 맥미니 self-hosted 러너, LIFE-575)는 참고 신호다 — release.sh 는 보지 않고, release→main PR 의 CI 는 머지 뒤에 와서 통합 확인을 대신하지 않는다. main 직접 push·웹 UI 머지 금지 — main 에 직접 올라가는 것은 release.sh 의 태그뿐이다.
-  ruleset 「main 보호」(main 삭제·force push 금지, PR 필수(승인 0·merge commit 만), 우회 없음 — LIFE-718)는 레포가 private 인 동안 서버에서 효력이 없다(공개 뒤 효력 — LIFE-729). 그때까지는 규약이다. required check 도 private 동안 걸 수 없어 없다
+  ruleset 「main 보호」(main 삭제·force push 금지, PR 필수(승인 0·merge commit 만), 우회 없음 — LIFE-718)는 서버에서 강제된다(레포 공개 뒤 — LIFE-729) — main 직접 push·force push·삭제는 서버가 막는다. 웹 UI 머지는 막지 않으므로 규약이다.
+  required check 는 걸지 않는다 — release.sh ship 이 release PR 을 만든 직후 머지하고 CI 를 기다리지 않는다(CI 를 출고 경로에 넣는 것은 LIFE-707)
 - **release 브랜치 release/vX.Y.Z** (예외, 단명 원칙 안): 출고 1회 수명·한 번에 하나. main 에서 자르고(.claude/worktrees/release-vX.Y.Z)
   PR 을 모아 통합 확인 뒤 main 머지, 출고 확인 뒤 삭제(접으면 삭제·PR 은 열린 채). 자른 뒤엔 출고를 막는 수정만 — 수정은 일감 브랜치에서 고쳐 다시 모은다(예외는 release 스킬 §1)
 - 출고 통합 확인은 release worktree 에서 한다. 그 밖의 통합 확인은 throwaway: integration/<이름>-YYYYMMDD 에 합쳐 테스트 후 삭제. 유지 금지

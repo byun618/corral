@@ -1,0 +1,43 @@
+// LIFE-729 C9ⓑ — scripts/build-notices.mjs 가 `gradlew -q -I <이 파일> :app:corralNoticeInputs` 로 부른다.
+// releaseRuntimeClasspath 의 해석 결과(모듈·프로젝트)와 모듈마다 POM 파일(부모 POM 까지)을 한 줄씩 낸다:
+//   COMP <그룹:이름:버전> · PROJ <프로젝트 경로> · POM <그룹:이름:버전> <파일> · NOPOM <그룹:이름:버전> · HOME <gradle 사용자 폴더>
+//   ART <그룹:이름:버전> <파일> · ARTFAIL <사유 첫 줄>
+// POM 은 빌드와 같은 저장소 설정으로 받는다(분리된 configuration, 전이 없음) — gradle 캐시에 .module 만 있는 모듈도 POM 이 생긴다.
+// ART 는 같은 configuration 의 외부 모듈 아티팩트(aar·jar)를 실제로 해석한 결과다 — 훅은 gradle 빌드 앞에 돌아 캐시가 차갑다(처음 빌드·의존을 올린 직후).
+// 해석이 아티팩트를 받아 캐시를 채우고, 생성기는 캐시를 훑지 않고 이 줄의 파일을 읽는다. 받지 못한 아티팩트는 ARTFAIL 로 내 생성기를 멈춘다.
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
+
+allprojects { p ->
+  if (p.path != ':app') return
+  p.tasks.register('corralNoticeInputs') {
+    doLast {
+      println "HOME ${p.gradle.gradleUserHomeDir}"
+      def queue = []
+      p.configurations.getByName('releaseRuntimeClasspath').incoming.resolutionResult.allComponents.each { c ->
+        def id = c.id
+        if (id instanceof ModuleComponentIdentifier) { println "COMP ${id.group}:${id.module}:${id.version}"; queue << "${id.group}:${id.module}:${id.version}" }
+        else if (id instanceof ProjectComponentIdentifier) println "PROJ ${id.projectPath}"
+      }
+      def view = p.configurations.getByName('releaseRuntimeClasspath').incoming.artifactView { v ->
+        v.lenient(true)
+        v.componentFilter { it instanceof ModuleComponentIdentifier }
+      }.artifacts
+      view.artifacts.each { a -> def id = a.id.componentIdentifier; println "ART ${id.group}:${id.module}:${id.version} ${a.file}" }
+      view.failures.each { f -> println "ARTFAIL ${(f.message ?: f.class.name).readLines()[0]}" }
+      def seen = [] as Set
+      while (queue) {
+        def gav = queue.remove(0)
+        if (!seen.add(gav)) continue
+        def cfg = p.configurations.detachedConfiguration(p.dependencies.create("${gav}@pom"))
+        cfg.transitive = false
+        def files = cfg.resolvedConfiguration.lenientConfiguration.files
+        if (!files) { println "NOPOM ${gav}"; continue }
+        def pom = files.iterator().next()
+        println "POM ${gav} ${pom}"
+        def x = new groovy.xml.XmlSlurper().parse(pom)
+        if (x.parent.size()) queue << "${x.parent.groupId.text()}:${x.parent.artifactId.text()}:${x.parent.version.text()}"
+      }
+    }
+  }
+}

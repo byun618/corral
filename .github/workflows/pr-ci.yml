@@ -1,7 +1,8 @@
 # PR CI (LIFE-575) — main 대상 PR 에 app/ 의 npm ci → typecheck → test.
 # 러너: 맥미니 macOS 호스트 self-hosted 러너(전용 비관리자 사용자 + LaunchDaemon) —
 # 설치·제거는 homelab-infra services/_runner-macos/. 패키징·네이티브 관문·자동 재시도는 하지 않는다.
-# 참고 신호다 — required check 는 없다(private 동안 ruleset·required check 불가).
+# 참고 신호다 — required check 는 걸지 않는다(release.sh ship 이 release PR 을 만든 직후 머지하고 CI 를 기다리지 않는다 — 출고 경로에 넣는 것은 LIFE-707).
+# 공개 레포의 self-hosted 러너다 — 외부 PR 의 코드가 승인 없이 이 러너에서 돌지 않는 것은 레포 서버 설정에 기댄다: fork PR 워크플로 승인 all_external_contributors · PR 생성 collaborators_only(LIFE-729). 둘을 풀면 이 러너를 다시 본다.
 name: 🧪 PR CI
 
 on:

@@ -2,19 +2,41 @@
 // **기본 활성**으로 바꿨다 (수정 1회차 L10 — grok L1). 그래서 플러그인을 걷어냈다.
 // 1회차에도 빌드는 통과했지만(N1 exit 0), 5.x 안에서 경고 대상이고 차기 메이저 제거 후보다.
 
+import fs from 'node:fs'
 import { resolve } from 'node:path'
 import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
+import type { Plugin } from 'vite'
+
+/**
+ * LIFE-729 C9 — 번들에 든 모듈 id 목록을 `build/notices-input/<이름>.json` 에 쓴다(제3자 고지 생성기 `scripts/build-notices.mjs` 의 입력).
+ * out/ 밖이라 패키지에 들지 않는다. 대조기(`scripts/verify-notices.mjs`)는 이 목록이 아니라 숨은 소스맵(`sourcemap: 'hidden'` — 아래 세 곳)과
+ * 패키지 안 자산 해시로 따로 뽑는다. 소스맵은 `electron-builder.yml` 의 `!out/**\/*.map` 으로 패키지에서 빠진다.
+ */
+function moduleList(name: string): Plugin {
+  return {
+    name: 'corral-module-list',
+    apply: 'build',
+    generateBundle() {
+      const dir = resolve(__dirname, 'build/notices-input')
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(resolve(dir, `${name}.json`), JSON.stringify([...this.getModuleIds()].sort(), null, 1) + '\n')
+    },
+  }
+}
 
 export default defineConfig({
   main: {
+    plugins: [moduleList('main')],
     // LIFE-589 — 탐색기 감시 프로세스(utility process) 입구를 같은 폴더에 따로 낸다(`out/main/explorer-watcher.js`).
-    build: { rollupOptions: { input: { index: resolve(__dirname, 'src/main/index.ts'), 'explorer-watcher': resolve(__dirname, 'src/main/explorer-watcher.ts') } } },
+    build: { sourcemap: 'hidden', rollupOptions: { input: { index: resolve(__dirname, 'src/main/index.ts'), 'explorer-watcher': resolve(__dirname, 'src/main/explorer-watcher.ts') } } },
   },
   preload: {
+    plugins: [moduleList('preload')],
     // sandbox:true 인 렌더러의 preload 는 **단일 CJS 번들**이어야 로드된다 (ESM preload 는 조용히 실패).
     // 분석 §5 U2 가 확인한 현행 제약이다.
     build: {
+      sourcemap: 'hidden',
       rollupOptions: {
         input: resolve(__dirname, 'src/preload/index.ts'),
         output: { format: 'cjs', entryFileNames: '[name].cjs' },
@@ -23,8 +45,11 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
-    plugins: [react()],
+    plugins: [react(), moduleList('renderer')],
+    // Monaco 편집기 worker(`?worker`)는 따로 번들된다 — 모듈 목록을 거기서도 낸다(소스맵은 build.sourcemap 을 따른다, LIFE-729 C9)
+    worker: { plugins: () => [moduleList('renderer-worker')] },
     build: {
+      sourcemap: 'hidden',
       rollupOptions: { input: resolve(__dirname, 'src/renderer/index.html') },
       /**
        * xterm #5800 (열림) 회피 — R2 (LIFE-353).

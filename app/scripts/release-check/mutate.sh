@@ -56,11 +56,13 @@ upload-present	ship-noupload
 upload-noapk	ship-build-skipapk	/# guard:upload-noapk$/ s/|| UP_FLAG=--no-apk/|| true/
 upload-run	ship-build-ok	/# guard:upload-run$/ s/if \[ "\$SKIP_BUILD" = 0 \]; then/if false; then/
 upload-fail	ship-build-uploadfail	
+apk-chain	ship-build-apkbad	/# guard:apk-chain$/ s/\$APK_RERUN \&\& \$UPLOAD_ALL/$APK_RERUN ; $UPLOAD_ALL/
 P
 )"
 # release-upload.sh(LIFE-729) — 셋째 칸이 비면 die → true. addbad 판정 줄은 「addbad "」 → 「true "」(거절 목록에 넣지 않음)
 # up-verify@state 는 끝 대조의 state 절만 뺀다 — 가짜 gh 가 state≠uploaded asset 의 digest 를 비우므로 FGH_STATE_LIE(digest 는 맞게·state=open)로만 판별된다
 # up-upfail@stdin 은 루프 안 gh 의 </dev/null 을 뺀다 — FGH_UPLOAD_EAT_STDIN 으로 남은 목록이 사라지는지 본다
+# 「--apk 파일이 없다」 die 는 쌍(표지)이 없다 — 빼도 바로 뒤 MISSING 점검이 같은 파일을 「필요한 파일이 없다」 로 거절하는 동치 변이라 판별할 케이스가 없다
 PAIRS_UP="$(cat <<'P'
 up-tag-form	upload-badtag	
 up-dir-tag	upload-dirtag	
@@ -79,6 +81,8 @@ up-retry	upload-retry-reject
 up-apk-place	upload-apk-place	
 up-upfail	upload-failmid	
 up-upfail@stdin	upload-stdin	/# guard:up-upfail$/ s| </dev/null||
+up-apk-conflict	upload-apk-place	
+up-apk-name	upload-apk-place	
 P
 )"
 BAD=0

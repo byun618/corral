@@ -38,7 +38,7 @@ done
 # --dir 은 부른 곳 기준 — 아래에서 cd 하므로 절대경로로
 case "$DIR" in /*) ;; *) DIR="$PWD/$DIR" ;; esac
 case "$APK_PICK" in ""|/*) ;; *) APK_PICK="$PWD/$APK_PICK" ;; esac
-[ -z "$APK_PICK" ] || [ "$NO_APK" = 0 ] || die "--apk 와 --no-apk 는 같이 줄 수 없다"
+[ -z "$APK_PICK" ] || [ "$NO_APK" = 0 ] || die "--apk 와 --no-apk 는 같이 줄 수 없다" # guard:up-apk-conflict
 shq() { local s="$1" q="'\\''"; printf "'%s'" "${s//\'/$q}"; } # release.sh 와 같다
 
 # 가드 — 태그 형식 · 폴더 · 파일 이름 버전 = 태그 버전 · 필요한 파일. 전부 gh 호출 전
@@ -57,7 +57,7 @@ if [ "$NO_APK" = 0 ]; then
   RETRIES="$(cd "$DIR" && ls -1d retry-*/"$APK" 2>/dev/null || true)"
   if [ -n "$APK_PICK" ]; then
     [ -f "$APK_PICK" ] || die "--apk 파일이 없다: $APK_PICK"
-    [ "$(basename "$APK_PICK")" = "$APK" ] || die "--apk 파일 이름이 $APK 가 아니다: $APK_PICK"
+    [ "$(basename "$APK_PICK")" = "$APK" ] || die "--apk 파일 이름이 $APK 가 아니다: $APK_PICK" # guard:up-apk-name
     PD="$(cd "$(dirname "$APK_PICK")" && pwd -P)"; DD="$(cd "$DIR" && pwd -P)"
     { [ "$PD" = "$DD" ] || { [ "$(dirname "$PD")" = "$DD" ] && case "$(basename "$PD")" in retry-*) true ;; *) false ;; esac; }; } \
       || die "--apk 는 산출물 폴더($DIR) 맨 위나 retry-<시각>/ 바로 아래여야 한다: $APK_PICK" # guard:up-apk-place

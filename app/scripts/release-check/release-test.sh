@@ -157,6 +157,7 @@ S
 if [ "\${1:-}" = --preflight ]; then echo "preflight" >> "$W/stub.log"; [ -z "\${STUB_APK_PRE_FAIL:-}" ] || { echo "✖ 스텁 전제 미달"; exit 1; }; echo "· APK 전제 스텁 통과"; exit 0; fi
 echo "apk \$(dirname "\$0") \$*" >> "$W/stub.log"
 [ -z "\${STUB_APK_FAIL:-}" ] || exit 1
+[ ! -e "$W/stub-apk-fail" ] || { echo "✖ 스텁 APK 실패(파일 표지)"; exit 1; } # 붙여 넣은 줄 안의 APK 를 실패시킨다(env 가 안 넘어가는 자리)
 o=""; while [ \$# -gt 0 ]; do [ "\$1" = --out ] && o="\$2"; shift; done
 v="\$(sed -n 's/^  "version": "\(.*\)",\$/\1/p' "\$(dirname "\$0")/../app/package.json")"
 # release-apk.sh 처럼 맨 위에 APK 가 있으면 retry-<시각>/ 에 만든다. STUB_APK_BADVERIFY 는 쓴 뒤 검증에서 거절(실제 순서 — 쓰고 나서 검증)
@@ -486,11 +487,10 @@ for CASE in $CASES; do
           check "_dmg worktree 정리" eq "$(git -C "$B" worktree list | grep -c '_dmg-')" 0 ;;
         ship-build-apkfail)
           rel STUB_APK_FAIL=1 -- ship --notes "$W/notes.md"
-          check "exit 10" eq "$RC" 10; check "APK 만 다시" has "APK 만 다시:"; check "dmg 는 끝" grep -q "^dmg" "$W/stub.log"
+          check "exit 10" eq "$RC" 10; check "APK 만 다시 → 올리기" has "APK 만 다시 → Release 에 올리기:"; check "dmg 는 끝" grep -q "^dmg" "$W/stub.log"
           check "upload 0" eq "$(upcalls)" 0
-          A1="$(after "APK 만 다시:")"; A2="$(after "APK 뒤 Release 에 올리기:")"
-          paste_run "$A1"; check "APK 붙여 넣기 exit 0" eq "$RC" 0
-          paste_run "$A2"; check "올리기 붙여 넣기 exit 0" eq "$RC" 0; check "asset 4개" eq "$(nassets)" 4 ;;
+          A1="$(after "APK 만 다시 → Release 에 올리기:")"
+          paste_run "$A1"; check "APK·올리기 한 줄 붙여 넣기 exit 0" eq "$RC" 0; check "asset 4개" eq "$(nassets)" 4 ;;
         ship-build-prefail)
           rel STUB_APK_PRE_FAIL=1 -- ship --notes "$W/notes.md"
           check "exit 2" eq "$RC" 2; check "APK 전제 미달 문구" has "APK 전제 미달"; check "main 불변" eq "$(oref refs/heads/main)" "$M0"
@@ -963,16 +963,20 @@ for CASE in $CASES; do
       mkrel; mkart v0.1.1 0.1.1 dmg apk
       up FGH_STATE_LIE=corral-mobile-0.1.1.apk -- --tag v0.1.1 --dir "$ART"
       check "exit 1" eq "$RC" 1; check "대조 실패 문구" has "올린 뒤 대조 실패: corral-mobile-0.1.1.apk"; check "✔ 없음" hasnt "✔ Release" ;;
-    ship-build-apkbad) # R1-1 — APK 가 쓴 뒤 검증에서 거절(exit 10) → 안내대로 「APK 만 다시」 → 「올리기」 를 붙여 넣어도 거절본은 안 올라간다
+    ship-build-apkbad) # R1-1·R2-1 — APK 가 쓴 뒤 검증에서 거절(exit 10) → 안내의 묶은 한 줄(APK 만 다시 && 올리기)을 붙여 넣어도 거절본은 안 올라간다
       stubs; mkpr 1 LIFE-1-a a.txt a; cutgather 1
       rel STUB_APK_BADVERIFY=1 -- ship --notes "$W/notes.md"
       check "exit 10" eq "$RC" 10; check "upload 0" eq "$(upcalls)" 0; check "retry 안내" has "새 APK 는 retry-<시각>/ 에 생긴다"
-      A1="$(after "APK 만 다시:")"; A2="$(after "APK 뒤 Release 에 올리기:")"
-      paste_run "$A1"; check "APK 붙여 넣기 exit 0" eq "$RC" 0
+      # R2-1 — 「APK 만 다시」 와 「올리기」 는 && 로 묶인 한 줄뿐이다(올리기만 따로 붙여 넣을 줄이 없다)
+      A1="$(after "APK 만 다시 → Release 에 올리기:")"
+      check "묶은 한 줄(APK && 올리기)" eq "$(echo "$A1" | grep -c "^'.*/release-apk.sh' .* && '.*/release-upload.sh' ")" 1
+      check "올리기만 선 줄 없음" eq "$(grep -c "^'[^']*/release-upload.sh' " "$LAST")" 0
+      touch "$W/stub-apk-fail"; paste_run "$A1"; rm -f "$W/stub-apk-fail"
+      check "묶은 줄: APK 실패면 exit≠0" [ "$RC" != 0 ]; check "묶은 줄: APK 실패면 upload 0" eq "$(upcalls)" 0
+      paste_run "$A1"
       check "새 APK 는 retry-*/" eq "$(ls -d "$B/app/dist/release/v0.1.1"/retry-*/corral-mobile-0.1.1.apk | wc -l | tr -d ' ')" 1
-      paste_run "$A2"
-      check "올리기 붙여 넣기 exit 1" eq "$RC" 1; check "사유" has "재시도 APK 가 있다(retry-*/)"; check "upload 0" eq "$(upcalls)" 0
-      GOOD="$(sed -n 's/^✔ stub apk: //p' "$W/run-$((N - 1)).txt")"; check "정상본 경로" [ -f "$GOOD" ]
+      check "묶은 줄: APK 성공 + retry 면 올리기 거절 exit 1" eq "$RC" 1; check "사유" has "재시도 APK 가 있다(retry-*/)"; check "upload 0" eq "$(upcalls)" 0
+      GOOD="$(sed -n 's/^✔ stub apk: //p' "$LAST")"; check "정상본 경로" [ -f "$GOOD" ]
       CMD="$(grep -- "--apk '$GOOD'\$" "$LAST")"; check "고를 줄 있음" eq "${CMD:0:1}" "'"
       paste_run "$CMD"; check "고른 줄 exit 0" eq "$RC" 0; check "asset 4개" eq "$(nassets)" 4
       check "apk 서버 digest = 정상본" eq "$(sdigest corral-mobile-0.1.1.apk)" "$(lsha "$GOOD")"

@@ -757,7 +757,7 @@ if [ "$SKIP_APK" = 1 ]; then
   UP_LATER="${UP_LATER:-}${NL}APK 뒤 Release 에 APK 더하기(올라간 dmg 는 건너뛴다):${NL}$UPLOAD_ALL"
 else
   "$TMPWT/scripts/release-apk.sh" --tag-prefix "$PREFIX" --out "$OUT_DIR" \
-    || die "APK 실패 — 머지·태그 $TAG push·Release$([ "$SKIP_BUILD" = 1 ] || echo "·dmg") 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다${NL}APK 만 다시:${NL}$APK_RERUN${NL}(맨 위에 APK 가 남아 있으면 새 APK 는 retry-<시각>/ 에 생긴다 — 그때 올리기는 아무것도 올리지 않고 후보 APK 마다 --apk 명령을 보인다. release-apk.sh 가 「✔ $TAG apk: <경로>」 로 낸 것을 고른다)${NL}APK 뒤 Release 에 올리기:${NL}$UPLOAD_ALL$PR_TAIL" 10
+    || die "APK 실패 — 머지·태그 $TAG push·Release$([ "$SKIP_BUILD" = 1 ] || echo "·dmg") 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다 — APK 가 끝나야 올린다(&&, 올리기만 따로 치지 않는다: 맨 위 APK 는 검증에서 거절된 것일 수 있다)${NL}(맨 위에 APK 가 남아 있으면 새 APK 는 retry-<시각>/ 에 생긴다 — 그때 올리기는 아무것도 올리지 않고 후보 APK 마다 --apk 명령을 보인다. release-apk.sh 가 「✔ $TAG apk: <경로>」 로 낸 것을 고른다)${NL}APK 만 다시 → Release 에 올리기:${NL}$APK_RERUN && $UPLOAD_ALL$PR_TAIL" 10 # guard:apk-chain
 fi
 
 # 10. Release 에 dmg·APK·체크섬 올리기 — dmg 가 있어야 한다(--skip-build 면 위 안내의 명령으로 나중에)

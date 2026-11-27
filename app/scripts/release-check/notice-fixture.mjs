@@ -149,7 +149,7 @@ if (kind === 'dmg') {
     comp('crate', 'serde', '1.0.0'),
     // foo — 패키지 파일 원문에 템플릿 자리표시자가 그대로 있는 꼴(상류 그대로라 허용) · baz — SPDX 표준 원문(placeholder 변형은 자리표시자 줄이 남음)
     comp('npm', 'foo', '1.0.0', { texts: [{ file: 'LICENSE', text: 'MIT License\n\nCopyright (c) <year> <copyright holders>\n\nPermission is hereby granted' }] }),
-    comp('npm', 'baz', '2.0.0', { textFrom: 'spdx', copyright: 'Baz Author (package.json author)', texts: [{ file: 'SPDX:MIT', text: `MIT License\n\n${variant === 'placeholder' ? 'Copyright (c) <year> <copyright holders>\n\n' : ''}Permission is hereby granted` }] }),
+    comp('npm', 'baz', '2.0.0', { textFrom: 'spdx', copyright: variant === 'nohold' ? '저작권자 표기 없음 — 패키지 메타데이터(author·authors)가 비었다. 출처는 source 줄' : 'Baz Author (package.json author)', texts: [{ file: 'SPDX:MIT', text: `MIT License\n\n${variant === 'placeholder' ? 'Copyright (c) <year> <copyright holders>\n\n' : ''}Permission is hereby granted` }] }),
     comp('npm', 'bar', '3.0.0', variant === 'notext' ? { texts: [] } : {}),
     comp('asset', 'Geist (font)', 'Geist-Variable.woff2'),
   ])
@@ -192,11 +192,13 @@ if (kind === 'dmg') {
       comp('native', 'LLVM libc++ (Android NDK libc++_shared.so)', 'NDK 27'),
       comp('maven', 'com.example:lib', '1.0'),
       comp('npm', 'npmmod', '4.0.0', { texts: [{ file: 'LICENSE', text: 'MIT License\n\nCopyright (c) <year> <copyright holders>\n\nPermission is hereby granted' }] }),
-      comp('npm', 'jsdep', '1.0.0', { textFrom: 'spdx', copyright: 'Jsdep Author (package.json author)', texts: [{ file: 'SPDX:MIT', text: `MIT License\n\n${variant === 'placeholder' ? 'Copyright (c) <year> <copyright holders>\n\n' : ''}Permission is hereby granted` }] }),
+      comp('npm', 'jsdep', '1.0.0', { textFrom: 'spdx', copyright: variant === 'nohold' ? '저작권자 표기 없음 — 패키지 메타데이터(author·authors)가 비었다. 출처는 source 줄' : 'Jsdep Author (package.json author)', texts: [{ file: 'SPDX:MIT', text: `MIT License\n\n${variant === 'placeholder' ? 'Copyright (c) <year> <copyright holders>\n\n' : ''}Permission is hereby granted` }] }),
       comp('asset', 'Geist (font)', 'assets/fonts'),
       ...(variant === 'notext' ? [comp('maven', 'com.example:closed', '2.0', { texts: [] })] : []),
       ...(variant === 'nocache' ? [comp('maven', 'com.example:ghost', '9.9')] : []),
       ...(variant === 'reason' ? [comp('maven', 'com.example:closed', '2.0', { license: 'Closed', texts: [], missingReason: 'SPDX 로 옮길 수 없는 라이선스: Closed <https://example.invalid>' })] : []),
+      // holderok — 저작권자를 확인할 수 없어 허용 목록에 든 이름(client-only)은 폴백이어도 통과·보고
+      ...(variant === 'holderok' ? [comp('npm', 'client-only', '0.0.1', { textFrom: 'spdx', copyright: '저작권자 표기 없음 — 패키지 메타데이터(author·authors)가 비었다. 출처는 source 줄', texts: [{ file: 'SPDX:MIT', text: 'MIT License\n\nPermission is hereby granted' }] })] : []),
       ...(variant === 'google' ? [comp('maven', 'com.example:closed', '2.0', { license: 'ML Kit Terms of Service', texts: [], missingReason: 'SPDX 로 옮길 수 없는 라이선스: ML Kit Terms of Service <https://example.invalid/terms>' })] : []),
     ])
     entries['assets/licenses/third-party/third-party.json'] = fs.readFileSync(path.join(tmp, 'third-party.json'))

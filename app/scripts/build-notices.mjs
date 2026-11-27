@@ -12,7 +12,7 @@
 // 원문을 못 찾은 건은 고지에 「License text not found」 로 남기고 stderr 에 목록을 낸다(exit 0 — 대조기가 빈 원문을 실패로 센다).
 import fs from 'node:fs'
 import path from 'node:path'
-import { key, npmComponent, packageRootOf, renderJson, renderText, resolveTexts, licenseFiles, spdxText, sha256 } from './notices-lib.mjs'
+import { key, needsHolder, npmComponent, packageRootOf, renderJson, renderText, resolveTexts, licenseFiles, spdxText, sha256 } from './notices-lib.mjs'
 
 const app = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const fail = (message) => {
@@ -168,4 +168,6 @@ fs.writeFileSync(path.join(out, 'third-party.json'), renderJson({ target: 'dmg',
 const missing = components.filter((c) => c.missingReason)
 for (const c of missing) console.error(`build-notices: 원문 없음 ${key(c)} — ${c.missingReason}`)
 const count = (k) => components.filter((c) => c.kind === k).length
-console.log(`build-notices: build/notices — crate ${count('crate')} · native ${count('native')} · electron ${count('electron')} · npm ${count('npm')} · asset ${count('asset')} · 원문 없음 ${missing.length}`)
+const noHolder = components.filter(needsHolder)
+for (const c of noHolder) console.error(`build-notices: 저작권자 없음(MIT·BSD 계열 SPDX 원문) ${key(c)}`)
+console.log(`build-notices: build/notices — crate ${count('crate')} · native ${count('native')} · electron ${count('electron')} · npm ${count('npm')} · asset ${count('asset')} · 원문 없음 ${missing.length} · 저작권자 없음(MIT·BSD) ${noHolder.length}`)

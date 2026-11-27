@@ -61,6 +61,21 @@ const placeholderIn = []
 }
 if (placeholderIn.length) bad(`고지의 SPDX 표준 원문에 저작권 자리표시자가 남았다 ${placeholderIn.length}건 — 예: ${placeholderIn.slice(0, 3).join(', ')}`) // # guard:av-placeholder
 
+// C9ⓒ 저작권 줄 — MIT·ISC·BSD 계열을 SPDX 표준 원문으로 실은 건은 저작권자 줄이 있어야 한다(폴백 「저작권자 표기 없음」 은 실패).
+// 상류 어디에서도 저작권자를 확인할 수 없는 건만 아래 허용 목록(이름 → 이유)으로 통과시키고 보고한다
+const HOLDER_OK = new Map([
+  ['client-only', 'npm 메타데이터에 repository·author 없음(homepage reactjs.org) — 상류 LICENSE 를 찾을 수 없다. 서버/클라이언트 경계 표지용 빈 모듈'],
+  ['server-only', 'npm 메타데이터에 repository·author 없음(homepage reactjs.org) — 상류 LICENSE 를 찾을 수 없다. 서버/클라이언트 경계 표지용 빈 모듈'],
+  ['@expo/ws-tunnel', 'npm 메타데이터에 repository·author 없음, expo/expo 레포에도 그 패키지 폴더가 없다 — 상류 LICENSE 를 찾을 수 없다'],
+  ['jimp-compact', '상류 레포(nuxt-community/jimp-compact)에 LICENSE 파일이 없다 — 저작권 줄 출처가 없다. expo CLI 아이콘 처리용 빌드 도구'],
+])
+for (const c of comps) {
+  const needs = c.textFrom === 'spdx' && c.texts?.length && /(^|[\s(])(MIT|ISC|BSD-[234]-Clause[\w-]*)\b/.test(c.license ?? '') && (!c.copyright || c.copyright.startsWith('저작권자 표기 없음'))
+  if (!needs) continue
+  if (HOLDER_OK.has(c.name)) notes.push(`저작권자 없음(허용 목록): ${c.name}@${c.version} — ${HOLDER_OK.get(c.name)}`)
+  else bad(`저작권 줄이 필요한 라이선스(${c.license})인데 저작권자가 없다: ${c.kind} ${c.name}@${c.version}`) // # guard:av-holder
+}
+
 // 고지된 maven 모듈의 아티팩트 내용 — 클래스·jni·assets 색인
 const gradleHome = process.env.GRADLE_USER_HOME ?? path.join(os.homedir(), '.gradle')
 const cache = path.join(gradleHome, 'caches/modules-2/files-2.1')

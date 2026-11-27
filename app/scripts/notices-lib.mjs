@@ -52,6 +52,9 @@ export function resolveTexts({ dir, license, copyright }) {
 }
 
 export const key = (c) => `${c.kind}:${c.name}@${c.version}`
+// 저작권 고지 복제가 조건인 라이선스(MIT·ISC·BSD 계열) — SPDX 표준 원문으로 실을 때 저작권자 줄이 있어야 한다
+export const HOLDER_FALLBACK = '저작권자 표기 없음'
+export const needsHolder = (c) => c.textFrom === 'spdx' && c.texts.length > 0 && /(^|[\s(])(MIT|ISC|BSD-[234]-Clause[\w-]*)\b/.test(c.license ?? '') && (!c.copyright || c.copyright.startsWith(HOLDER_FALLBACK))
 
 // 고지 원문 — 사람이 읽는 한 파일. 건마다 머리줄(이름·버전·라이선스·출처) 뒤에 원문
 export function renderText(title, components) {
@@ -82,6 +85,21 @@ export function renderJson(meta, components) {
   )
 }
 
+// 패키지에 LICENSE 파일도 author 도 없을 때 — package.json repository 가 가리키는 상류 레포 LICENSE 의 저작권 줄(그 레포 원문에서 확인한 줄만, 확인한 ref 를 같이 적는다).
+// MIT·BSD 는 저작권 고지 복제가 조건이라 SPDX 표준 원문만으로는 모자란다. 레포를 더하려면 상류 LICENSE 원문을 먼저 확인한다
+export const UPSTREAM_COPYRIGHT = {
+  'facebook/react-native': 'Copyright (c) Meta Platforms, Inc. and affiliates. (upstream LICENSE, github.com/facebook/react-native @ v0.81.5)',
+  'facebook/metro': 'Copyright (c) Meta Platforms, Inc. and affiliates. (upstream LICENSE, github.com/facebook/metro @ v0.83.3·v0.83.8)',
+  'react/metro': 'Copyright (c) Meta Platforms, Inc. and affiliates. (upstream LICENSE, github.com/facebook/metro @ v0.83.3·v0.83.8 — repository 가 옮긴 이름 react/metro)',
+  'facebook/react': 'Copyright (c) Meta Platforms, Inc. and affiliates. (upstream LICENSE, github.com/facebook/react @ v19.1.0·main)',
+  'radix-ui/primitives': 'Copyright (c) 2022 WorkOS (upstream LICENSE, github.com/radix-ui/primitives @ main — 2022-06 뒤 무변경)',
+  'expo/expo': 'Copyright (c) 2015-present 650 Industries, Inc. (aka Expo) (upstream LICENSE, github.com/expo/expo @ sdk-54)',
+}
+export function repoSlug(repo) {
+  const m = String(repo ?? '').match(/github\.com[/:]([^/]+)\/([^/#]+?)(?:\.git)?(?:[/#]|$)/) ?? String(repo ?? '').match(/^(?:github:)?([\w.-]+)\/([\w.-]+?)(?:\.git)?$/)
+  return m ? `${m[1]}/${m[2]}` : null
+}
+
 // npm 패키지 한 건 — 폴더의 package.json 에서
 export function npmComponent(kind, dir) {
   const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
@@ -89,7 +107,8 @@ export function npmComponent(kind, dir) {
   const author = typeof pkg.author === 'string' ? pkg.author : pkg.author?.name
   const repo = typeof pkg.repository === 'string' ? pkg.repository : pkg.repository?.url
   const source = repo ?? pkg.homepage ?? `https://www.npmjs.com/package/${pkg.name}`
-  return { kind, name: pkg.name, version: pkg.version, license, source, ...resolveTexts({ dir, license, copyright: author ? `${author} (package.json author)` : '' }) }
+  const copyright = author ? `${author} (package.json author)` : UPSTREAM_COPYRIGHT[repoSlug(repo)] ?? ''
+  return { kind, name: pkg.name, version: pkg.version, license, source, ...resolveTexts({ dir, license, copyright }) }
 }
 
 // 모듈 파일 경로 → 그 파일이 든 npm 패키지 폴더(마지막 node_modules/<이름> 또는 node_modules/@범위/<이름>). node_modules 밖이면 null

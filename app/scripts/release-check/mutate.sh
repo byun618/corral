@@ -90,6 +90,7 @@ P
 PAIRS_NV="$(cat <<'P'
 nv-text	dmg-notext	
 nv-placeholder	dmg-placeholder	
+nv-holder	dmg-nohold	
 nv-header	dmg-txthead	
 nv-file	dmg-filesha	
 nv-tie	dmg-tie	
@@ -117,6 +118,7 @@ PAIRS_AV="$(cat <<'P'
 av-text	apk-notext	
 av-text@reason	apk-reason	
 av-placeholder	apk-placeholder	
+av-holder	apk-nohold	
 av-header	apk-txthead	
 av-cache	apk-nocache	
 av-classowner	apk-packagelist	

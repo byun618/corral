@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { key, licenseFiles, npmComponent, readZip, renderJson, renderText, spdxText } from '../../app/scripts/notices-lib.mjs'
+import { key, licenseFiles, needsHolder, npmComponent, readZip, renderJson, renderText, spdxText } from '../../app/scripts/notices-lib.mjs'
 
 const mobile = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const args = process.argv.slice(2)
@@ -58,6 +58,10 @@ const NO_POM = {
 const UPSTREAM_TEXT = {
   'com.facebook.device.yearclass:yearclass@2.1.0': { license: 'BSD-3-Clause', files: ['yearclass-LICENSE.txt', 'yearclass-PATENTS.txt'], copyright: 'Facebook, Inc. (upstream LICENSE)', source: 'https://github.com/facebook/device-year-class' },
   'com.parse.bolts:bolts-tasks@1.4.0': { license: 'BSD-3-Clause', files: ['bolts-tasks-LICENSE.txt', 'bolts-tasks-PATENTS.txt'], copyright: 'Facebook, Inc. (upstream LICENSE)', source: 'https://github.com/BoltsFramework/Bolts-Android (tag 1.4.0)' },
+}
+// POM 에 developers·organization 이 없는 MIT·BSD 모듈 — 상류 레포 LICENSE 의 저작권 줄(그 원문에서 확인한 것만)
+const UPSTREAM_HOLDER = {
+  'com.facebook.infer.annotation:infer-annotation': 'Copyright (c) Facebook, Inc. and its affiliates. (upstream LICENSE, github.com/facebook/infer @ v0.17.0·main — v0.18.0 태그 없음)',
 }
 const tag = (xml, t) => [...xml.matchAll(new RegExp(`<${t}>([\\s\\S]*?)</${t}>`, 'g'))].map((m) => m[1].trim())
 const pomOf = (g, a, v, depth = 0) => {
@@ -123,7 +127,7 @@ for (const c of [...coords].sort()) {
   const licenses = pom?.licenses ?? []
   const license = licenses.map((l) => spdxOf(l) ?? (l.name || l.url)).join(' OR ') || null
   const copyright = pom ? [pom.org, ...pom.developers].filter(Boolean).join(', ') : ''
-  const comp = { kind: 'maven', name: `${g}:${a}`, version: v, license, source: pom?.url ?? `https://mvnrepository.com/artifact/${g}/${a}/${v}`, copyright: copyright ? `${copyright} (POM)` : '' }
+  const comp = { kind: 'maven', name: `${g}:${a}`, version: v, license, source: pom?.url ?? `https://mvnrepository.com/artifact/${g}/${a}/${v}`, copyright: copyright ? `${copyright} (POM)` : UPSTREAM_HOLDER[`${g}:${a}`] ?? '' }
   const upstream = UPSTREAM_TEXT[`${g}:${a}@${v}`]
   if (own.length) Object.assign(comp, { texts: own, textFrom: 'package' })
   else if (upstream) Object.assign(comp, { license: upstream.license, source: upstream.source, copyright: upstream.copyright, textFrom: 'upstream', texts: upstream.files.map((f) => ({ file: f, text: fs.readFileSync(path.join(mobile, 'scripts/notice-texts', f), 'utf8') })) })
@@ -172,5 +176,7 @@ fs.writeFileSync(path.join(out, 'THIRD-PARTY-NOTICES.txt'), renderText(`corral m
 fs.writeFileSync(path.join(out, 'third-party.json'), renderJson({ target: 'apk', appVersion, gradleProjects: [...projects].sort(), skippedCoordinates: skipped }, components))
 const missing = components.filter((c) => c.missingReason)
 for (const c of missing) console.error(`build-notices(mobile): 원문 없음 ${key(c)} — ${c.missingReason}`)
+const noHolder = components.filter(needsHolder)
+for (const c of noHolder) console.error(`build-notices(mobile): 저작권자 없음(MIT·BSD 계열 SPDX 원문) ${key(c)}`)
 const count = (k) => components.filter((c) => c.kind === k).length
-console.log(`build-notices(mobile): <android>/${path.relative(android, out)} — maven ${count('maven')} · npm ${count('npm')} · native ${count('native')} · asset ${count('asset')} · 건너뛴 좌표 ${skipped.length} · 원문 없음 ${missing.length}`)
+console.log(`build-notices(mobile): <android>/${path.relative(android, out)} — maven ${count('maven')} · npm ${count('npm')} · native ${count('native')} · asset ${count('asset')} · 건너뛴 좌표 ${skipped.length} · 원문 없음 ${missing.length} · 저작권자 없음(MIT·BSD) ${noHolder.length}`)

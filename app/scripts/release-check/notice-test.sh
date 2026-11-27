@@ -9,10 +9,10 @@
 # 임시 폴더는 /tmp/l729n.XXXXXX. 끝나면 지운다. 사용자 gradle 캐시·앱 무접촉(GRADLE_USER_HOME 은 픽스처).
 set -uo pipefail
 
-ALL="dmg-clean dmg-drop-asar dmg-drop-map dmg-drop-hash dmg-drop-vendored dmg-unmapped dmg-tie dmg-nomap dmg-nores dmg-unres dmg-rebased dmg-placeholder dmg-drop-crate dmg-drop-sym dmg-nosym
+ALL="dmg-clean dmg-drop-asar dmg-drop-map dmg-drop-hash dmg-drop-vendored dmg-unmapped dmg-tie dmg-nomap dmg-nores dmg-unres dmg-rebased dmg-placeholder dmg-nohold dmg-drop-crate dmg-drop-sym dmg-nosym
 dmg-drop-std dmg-drop-cppns dmg-drop-native dmg-electron dmg-drop-chromium dmg-nofw dmg-notext dmg-txthead dmg-filesha dmg-stale dmg-nolist
 apk-clean apk-class apk-noclass apk-drop-libcxx apk-so apk-appmodules apk-packagelist apk-version apk-asset apk-drop-font apk-drop-npm apk-tie apk-nowork apk-nomapfile
-apk-emptymap apk-nores apk-unres apk-rebased apk-placeholder apk-notext apk-reason apk-google apk-txthead apk-nocache apk-stale apk-nonotice wired eas-archive gen-texts gen-apk-clean gen-apk-artfail gen-apk-noart"
+apk-emptymap apk-nores apk-unres apk-rebased apk-placeholder apk-nohold apk-holderok apk-notext apk-reason apk-google apk-txthead apk-nocache apk-stale apk-nonotice wired eas-archive gen-texts gen-apk-clean gen-apk-artfail gen-apk-noart"
 OUT="${1:?원자료 폴더}"; shift
 CASES="${*:-$ALL}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -67,6 +67,7 @@ for CASE in $CASES; do
     dmg-unres) dmg unres; bad1 "✖ 소스맵 sources 의 npm 패키지(package.json)를 못 찾았다 1건 — 예: out/main/index.js: ../../node_modules/ghost/index.js" ;;
     dmg-rebased) dmg rebased; ok0; check "조상 폴더 해석 보고" has "· 맵 위치 기준이 어긋나 빌드 트리 조상 폴더에서 실제 파일로 찾은 sources 1"; check "baz 를 소스맵으로 봄" has "npm 해석 1)" ;;
     dmg-placeholder) dmg placeholder; bad1 "✖ 고지의 SPDX 표준 원문에 저작권 자리표시자가 남았다 1건 — 예: baz 2.0.0" ;;
+    dmg-nohold) dmg nohold; bad1 "✖ 저작권 줄이 필요한 라이선스(MIT)인데 저작권자가 없다: npm baz@2.0.0" ;;
     dmg-drop-crate) dmg drop:tokio; bad1 "✖ crate 고지 누락: tokio@1.2.3 (herdr 문자열의 소스 경로)" ;;
     dmg-drop-sym) dmg drop:serde; bad1 "✖ crate 고지 누락: serde (herdr 심볼)" ;;
     dmg-nosym) dmg nosym; bad1 "✖ herdr 에서 crate 표지(심볼·소스 경로)를 못 읽었다" ;;
@@ -101,6 +102,8 @@ for CASE in $CASES; do
     apk-unres) apk unres $(W_); bad1 "✖ 소스맵 sources 의 npm 패키지(package.json)를 못 찾았다 1건 — 예: ../../../../../../../node_modules/ghost/index.js" ;;
     apk-rebased) apk rebased $(W_); ok0; check "조상 폴더 해석 보고" has "· 맵 위치 기준이 어긋나 작업 폴더 조상 폴더에서 실제 파일로 찾은 sources 1"; check "jsdep 를 소스맵으로 봄" has "npm 해석 1)" ;;
     apk-placeholder) apk placeholder $(W_); bad1 "✖ 고지의 SPDX 표준 원문에 저작권 자리표시자가 남았다 1건 — 예: jsdep 1.0.0" ;;
+    apk-nohold) apk nohold $(W_); bad1 "✖ 저작권 줄이 필요한 라이선스(MIT)인데 저작권자가 없다: npm jsdep@1.0.0" ;;
+    apk-holderok) apk holderok $(W_); ok0; check "허용 목록 보고" has "· 저작권자 없음(허용 목록): client-only@0.0.1 — " ;;
     apk-notext) apk notext $(W_); bad1 "✖ 원문 없음: maven com.example:closed@2.0" ;;
     apk-reason) apk reason $(W_); bad1 "✖ 원문 없음: maven com.example:closed@2.0 — 허용 목록(Google 약관) 밖의 라이선스: Closed" ;;
     apk-google) apk google $(W_); ok0; check "Google 약관 사유 보고" has "· 원문 없음(Google 약관, 사유 기록): com.example:closed@2.0 — SPDX 로 옮길 수 없는 라이선스: ML Kit Terms of Service" ;;
@@ -163,7 +166,12 @@ for CASE in $CASES; do
           check "해석한 아티팩트의 모듈을 고지" eq "$(node -e 'const j=require(process.argv[1]); const c=j.components.find(x=>x.name==="com.example:lib"); console.log(c && c.texts.some(t=>t.file==="classes.jar!/META-INF/LICENSE") ? 1 : 0)' "$J" 2>> "$LOG")" 1
           check "아티팩트 0 모듈은 메타데이터로 건너뜀" eq "$(grep -c '"com.example:umbrella:1.0 — 아티팩트 없음(메타데이터 모듈)"' "$J")" 1
           check "로컬 maven 저장소 모듈은 npm 쪽으로 건너뜀" eq "$(grep -c '"expo.modules.thing:thing:1.0 — 로컬 maven 저장소(npm expo-thing)"' "$J")" 1
-          check "건너뛴 좌표 2" has "건너뛴 좌표 2" ;;
+          check "건너뛴 좌표 2" has "건너뛴 좌표 2"
+          # 실제 mobile/package-lock 의 npm 고지 — MIT·BSD 를 SPDX 원문으로 싣는데 저작권자가 없는 건은 대조기 허용 목록 4건뿐(R4-1)
+          check "저작권자 없음(MIT·BSD) = 허용 목록 4건" eq "$(grep -c '저작권자 없음(MIT·BSD 계열 SPDX 원문) npm:\(client-only\|server-only\|@expo/ws-tunnel\|jimp-compact\)@' "$LAST")/$(grep -c '저작권자 없음(MIT·BSD 계열 SPDX 원문)' "$LAST")" 4/4
+          RN="$(grep -o '"copyright": "Copyright (c) Meta Platforms, Inc. and affiliates. (upstream LICENSE, github.com/facebook/react-native @ v0.81.5)"' "$J" | grep -c .)"
+          echo "    상류 LICENSE(react-native) 저작권 줄로 채운 고지 $RN" >> "$LOG"
+          check "상류 LICENSE 저작권 줄로 채운 건(react-native, ≥ 10)" eq "$([ "$RN" -ge 10 ] && echo 1 || echo 0)" 1 ;;
         gen-apk-artfail) bad1 "gradle 이 아티팩트를 받지 못했다 1건" ;;
         gen-apk-noart) bad1 "gradle 해석 결과에 ART 줄이 없다" ;;
       esac ;;

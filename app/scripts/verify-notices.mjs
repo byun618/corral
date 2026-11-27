@@ -66,6 +66,16 @@ const placeholderIn = []
 }
 if (placeholderIn.length) bad(`고지의 SPDX 표준 원문에 저작권 자리표시자가 남았다 ${placeholderIn.length}건 — 예: ${placeholderIn.slice(0, 3).join(', ')}`) // # guard:nv-placeholder
 
+// C9ⓒ 저작권 줄 — MIT·ISC·BSD 계열을 SPDX 표준 원문으로 실은 건은 저작권자 줄이 있어야 한다(폴백 「저작권자 표기 없음」 은 실패).
+// 상류 어디에서도 저작권자를 확인할 수 없는 건만 아래 허용 목록(이름 → 이유)으로 통과시키고 보고한다
+const HOLDER_OK = new Map([])
+for (const c of comps) {
+  const needs = c.textFrom === 'spdx' && c.texts?.length && /(^|[\s(])(MIT|ISC|BSD-[234]-Clause[\w-]*)\b/.test(c.license ?? '') && (!c.copyright || c.copyright.startsWith('저작권자 표기 없음'))
+  if (!needs) continue
+  if (HOLDER_OK.has(c.name)) notes.push(`저작권자 없음(허용 목록): ${c.name}@${c.version} — ${HOLDER_OK.get(c.name)}`)
+  else bad(`저작권 줄이 필요한 라이선스(${c.license})인데 저작권자가 없다: ${c.kind} ${c.name}@${c.version}`) // # guard:nv-holder
+}
+
 // ① asar node_modules
 const asarFile = path.join(res, 'app.asar')
 const asar = readAsar(asarFile)

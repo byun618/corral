@@ -26,7 +26,9 @@ A macOS desktop workspace that gathers AI coding agent sessions (Claude Code, Co
    shasum -a 256 -c corral-*-arm64.dmg.sha256
    ```
 3. dmg 를 열고 `corral.app` 을 `/Applications` 로 끌어 놓는다.
-4. **첫 실행은 macOS 가 막는다** — 앱이 ad-hoc 서명이고 공증을 받지 않아서다(「확인되지 않은 개발자」 류 경고).
+4. **브라우저로 받았다면 첫 실행을 macOS 가 막는다** — 앱이 ad-hoc 서명이고 공증을 받지 않아서다(「확인되지 않은 개발자」 류 경고).
+   브라우저는 받은 파일에 다운로드 표시(quarantine)를 달고, macOS 는 그 표시가 있는 앱을 처음 열 때 검사한다.
+   `gh release download` 로 받은 파일에는 이 표시가 붙지 않는다 — 그래도 막히면 아래대로 한다.
    macOS 15 이상은 Control-클릭 → 열기 우회가 없다. 한 번 열어 보고 막히면 **시스템 설정 → 개인정보 보호 및 보안** 맨 아래의
    **그래도 열기** 를 누른 뒤 다시 연다(차단 직후 한동안만 보인다).
    그 버튼이 없으면 터미널에서 다운로드 표시(quarantine)를 지운 뒤 연다:

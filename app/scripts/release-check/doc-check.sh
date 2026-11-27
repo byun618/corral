@@ -81,6 +81,10 @@ for w in "releases" "shasum -a 256 -c corral-*-arm64.dmg.sha256" "개인정보 �
          "corral-mobile-X.Y.Z.apk" "Tailscale" "paddock" "비공개"; do
   echo "$RM" | grep -qF -- "$w" && ok "README 「받아서 쓰기」에 $w" || bad "README 「받아서 쓰기」에 $w 없음"
 done
+# 첫 실행 차단은 받은 경로로 가른다(LIFE-729 C5ⓒ — gh 로 받은 파일에 quarantine 없음 관측)
+for w in "브라우저로 받았다면 첫 실행을 macOS 가 막는다" '`gh release download` 로 받은 파일에는 이 표시가 붙지 않는다'; do
+  echo "$RM" | grep -qF -- "$w" && ok "README 받은 경로별 첫 실행: $w" || bad "README 받은 경로별 첫 실행 문구 없음: $w"
+done
 GL="$(echo "$RM" | grep -nF '그래도 열기' | head -1 | cut -d: -f1)"; XL="$(echo "$RM" | grep -nF 'xattr -dr' | head -1 | cut -d: -f1)"
 [ -n "$GL" ] && [ -n "$XL" ] && [ "$GL" -lt "$XL" ] && ok "README 「그래도 열기」(1순위)가 xattr 보다 앞" || bad "README 「그래도 열기」·xattr 순서 (그래도 열기 ${GL:-없음} · xattr ${XL:-없음})"
 # 체크섬 파일 이름 = release-upload.sh 가 만드는 이름(<바이너리>.sha256)

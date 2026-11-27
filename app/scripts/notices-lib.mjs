@@ -1,6 +1,7 @@
 // LIFE-729 C9 — 제3자 고지 공용 함수. dmg 쪽(`build-notices.mjs`·`verify-notices.mjs`)과 APK 쪽(`mobile/scripts/*-notices.mjs`)이 같이 쓴다.
-// 고지 한 건 = { kind, name, version, license, source, texts: [{ file, text }], textFrom: 'package' | 'spdx', copyright? }
+// 고지 한 건 = { kind, name, version, license, source, texts: [{ file, text }], textFrom: 'package' | 'spdx' | 'upstream', copyright? }
 //   textFrom 'package' = 패키지 안 LICENSE·COPYING·NOTICE 파일 원문. 'spdx' = 패키지에 파일이 없어 `spdx/<id>.txt` 표준 원문 + copyright(메타데이터의 저작권자 출처).
+//   'upstream' = 아티팩트에 파일이 없어 상류 레포의 원문 사본(mobile/scripts/notice-texts/).
 //   원문을 어느 쪽으로도 못 만든 건은 texts 가 비고 missingReason 이 붙는다 — 생성기는 그 목록을 따로 내고, 대조기는 빈 원문을 실패로 센다.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -30,9 +31,12 @@ export function spdxIds(expr) {
   return [...new Set(String(expr ?? '').split(/[\s()/]+/).filter((t) => t && !/^(AND|OR|WITH)$/i.test(t)))]
 }
 
+// SPDX 표준 원문의 저작권 자리표시자 줄(MIT 「Copyright (c) <year> <copyright holders>」·BSD 「Copyright (c) <year> <owner>.」) — 고지에는 빼고,
+// 저작권자는 그 건의 머리줄 「Copyright:」(패키지 메타데이터 출처)가 맡는다. 대조기는 고지의 SPDX 원문 구간에 이 꼴이 남으면 실패로 센다
+export const SPDX_PLACEHOLDER = /^Copyright \(c\) <year> <[^>\n]+>\.? *$/m
 export function spdxText(id) {
   const file = path.join(here, 'spdx', `${id}.txt`)
-  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').replace(new RegExp(`${SPDX_PLACEHOLDER.source}\\n?`, 'm'), '').replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n') : null
 }
 
 // 패키지 파일이 있으면 그 원문, 없으면 SPDX 표준 원문 + 저작권 줄 출처. 둘 다 안 되면 missingReason
@@ -55,7 +59,8 @@ export function renderText(title, components) {
   for (const c of components) {
     out.push('='.repeat(78), `${c.name} ${c.version}`, `License: ${c.license ?? 'UNKNOWN'}`, `Source: ${c.source ?? '-'}`)
     if (c.copyright) out.push(`Copyright: ${c.copyright}`)
-    if (c.textFrom === 'spdx' && c.texts.length) out.push('(No license file in the package — SPDX standard text below.)')
+    if (c.textFrom === 'spdx' && c.texts.length) out.push('(No license file in the package — SPDX standard text below; the copyright holder is the Copyright line above.)')
+    if (c.textFrom === 'upstream') out.push('(No license file in the artifact — text copied from the upstream repository named in Source.)')
     if (c.missingReason) out.push(`(License text not found: ${c.missingReason})`)
     out.push('')
     for (const t of c.texts) out.push(`--- ${t.file} ---`, t.text.trimEnd(), '')

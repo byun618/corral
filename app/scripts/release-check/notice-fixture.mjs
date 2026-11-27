@@ -147,8 +147,9 @@ if (kind === 'dmg') {
     comp('native', 'simdutf', '9.0.0'),
     comp('crate', 'tokio', '1.2.3'),
     comp('crate', 'serde', '1.0.0'),
-    comp('npm', 'foo', '1.0.0'),
-    comp('npm', 'baz', '2.0.0'),
+    // foo — 패키지 파일 원문에 템플릿 자리표시자가 그대로 있는 꼴(상류 그대로라 허용) · baz — SPDX 표준 원문(placeholder 변형은 자리표시자 줄이 남음)
+    comp('npm', 'foo', '1.0.0', { texts: [{ file: 'LICENSE', text: 'MIT License\n\nCopyright (c) <year> <copyright holders>\n\nPermission is hereby granted' }] }),
+    comp('npm', 'baz', '2.0.0', { textFrom: 'spdx', copyright: 'Baz Author (package.json author)', texts: [{ file: 'SPDX:MIT', text: `MIT License\n\n${variant === 'placeholder' ? 'Copyright (c) <year> <copyright holders>\n\n' : ''}Permission is hereby granted` }] }),
     comp('npm', 'bar', '3.0.0', variant === 'notext' ? { texts: [] } : {}),
     comp('asset', 'Geist (font)', 'Geist-Variable.woff2'),
   ])
@@ -190,12 +191,13 @@ if (kind === 'dmg') {
     writeNotices(tmp, [
       comp('native', 'LLVM libc++ (Android NDK libc++_shared.so)', 'NDK 27'),
       comp('maven', 'com.example:lib', '1.0'),
-      comp('npm', 'npmmod', '4.0.0'),
-      comp('npm', 'jsdep', '1.0.0'),
+      comp('npm', 'npmmod', '4.0.0', { texts: [{ file: 'LICENSE', text: 'MIT License\n\nCopyright (c) <year> <copyright holders>\n\nPermission is hereby granted' }] }),
+      comp('npm', 'jsdep', '1.0.0', { textFrom: 'spdx', copyright: 'Jsdep Author (package.json author)', texts: [{ file: 'SPDX:MIT', text: `MIT License\n\n${variant === 'placeholder' ? 'Copyright (c) <year> <copyright holders>\n\n' : ''}Permission is hereby granted` }] }),
       comp('asset', 'Geist (font)', 'assets/fonts'),
       ...(variant === 'notext' ? [comp('maven', 'com.example:closed', '2.0', { texts: [] })] : []),
       ...(variant === 'nocache' ? [comp('maven', 'com.example:ghost', '9.9')] : []),
-      ...(variant === 'reason' ? [comp('maven', 'com.example:closed', '2.0', { texts: [], missingReason: 'SPDX 로 옮길 수 없는 라이선스: Closed <https://example.invalid>' })] : []),
+      ...(variant === 'reason' ? [comp('maven', 'com.example:closed', '2.0', { license: 'Closed', texts: [], missingReason: 'SPDX 로 옮길 수 없는 라이선스: Closed <https://example.invalid>' })] : []),
+      ...(variant === 'google' ? [comp('maven', 'com.example:closed', '2.0', { license: 'ML Kit Terms of Service', texts: [], missingReason: 'SPDX 로 옮길 수 없는 라이선스: ML Kit Terms of Service <https://example.invalid/terms>' })] : []),
     ])
     entries['assets/licenses/third-party/third-party.json'] = fs.readFileSync(path.join(tmp, 'third-party.json'))
     entries['assets/licenses/third-party/THIRD-PARTY-NOTICES.txt'] = fs.readFileSync(path.join(tmp, 'THIRD-PARTY-NOTICES.txt'))

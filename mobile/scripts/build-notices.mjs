@@ -52,6 +52,12 @@ const NO_POM = {
   'com.facebook.react:react-android': { license: 'MIT', source: 'https://github.com/facebook/react-native', npm: 'react-native' },
   'com.facebook.react:hermes-android': { license: 'MIT', source: 'https://github.com/facebook/hermes', copyright: 'Meta Platforms, Inc. and affiliates (hermes LICENSE — not in the aar)' },
 }
+// 아티팩트에 원문이 없고 POM 이 SPDX 로 옮길 수 없는 「BSD License」 URL 만 주는 모듈 — 그 URL 이 가리키는 상류 레포의 원문 사본(scripts/notice-texts/).
+// 사본은 POM 의 license URL 레포에서 그 버전 시점(태그 또는 LICENSE 마지막 변경 커밋)의 LICENSE·PATENTS 를 그대로 옮긴 것. 버전이 바뀌면 원문을 다시 확인한다
+const UPSTREAM_TEXT = {
+  'com.facebook.device.yearclass:yearclass@2.1.0': { license: 'BSD-3-Clause', files: ['yearclass-LICENSE.txt', 'yearclass-PATENTS.txt'], copyright: 'Facebook, Inc. (upstream LICENSE)', source: 'https://github.com/facebook/device-year-class' },
+  'com.parse.bolts:bolts-tasks@1.4.0': { license: 'BSD-3-Clause', files: ['bolts-tasks-LICENSE.txt', 'bolts-tasks-PATENTS.txt'], copyright: 'Facebook, Inc. (upstream LICENSE)', source: 'https://github.com/BoltsFramework/Bolts-Android (tag 1.4.0)' },
+}
 const tag = (xml, t) => [...xml.matchAll(new RegExp(`<${t}>([\\s\\S]*?)</${t}>`, 'g'))].map((m) => m[1].trim())
 const pomOf = (g, a, v, depth = 0) => {
   const file = poms.get(`${g}:${a}:${v}`)
@@ -113,7 +119,9 @@ for (const c of [...coords].sort()) {
   const license = licenses.map((l) => spdxOf(l) ?? (l.name || l.url)).join(' OR ') || null
   const copyright = pom ? [pom.org, ...pom.developers].filter(Boolean).join(', ') : ''
   const comp = { kind: 'maven', name: `${g}:${a}`, version: v, license, source: pom?.url ?? `https://mvnrepository.com/artifact/${g}/${a}/${v}`, copyright: copyright ? `${copyright} (POM)` : '' }
+  const upstream = UPSTREAM_TEXT[`${g}:${a}@${v}`]
   if (own.length) Object.assign(comp, { texts: own, textFrom: 'package' })
+  else if (upstream) Object.assign(comp, { license: upstream.license, source: upstream.source, copyright: upstream.copyright, textFrom: 'upstream', texts: upstream.files.map((f) => ({ file: f, text: fs.readFileSync(path.join(mobile, 'scripts/notice-texts', f), 'utf8') })) })
   else {
     const ids = licenses.map(spdxOf)
     const texts = ids.filter(Boolean).map((id) => ({ file: `SPDX:${id}`, text: spdxText(id) }))

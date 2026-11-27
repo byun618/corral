@@ -8,10 +8,10 @@
 # 임시 폴더는 /tmp/l729n.XXXXXX. 끝나면 지운다. 사용자 gradle 캐시·앱 무접촉(GRADLE_USER_HOME 은 픽스처).
 set -uo pipefail
 
-ALL="dmg-clean dmg-drop-asar dmg-drop-map dmg-drop-hash dmg-drop-vendored dmg-unmapped dmg-tie dmg-nomap dmg-nores dmg-unres dmg-rebased dmg-drop-crate dmg-drop-sym dmg-nosym
+ALL="dmg-clean dmg-drop-asar dmg-drop-map dmg-drop-hash dmg-drop-vendored dmg-unmapped dmg-tie dmg-nomap dmg-nores dmg-unres dmg-rebased dmg-placeholder dmg-drop-crate dmg-drop-sym dmg-nosym
 dmg-drop-std dmg-drop-cppns dmg-drop-native dmg-electron dmg-drop-chromium dmg-nofw dmg-notext dmg-txthead dmg-filesha dmg-stale dmg-nolist
 apk-clean apk-class apk-noclass apk-drop-libcxx apk-so apk-appmodules apk-packagelist apk-version apk-asset apk-drop-font apk-drop-npm apk-tie apk-nowork apk-nomapfile
-apk-emptymap apk-nores apk-unres apk-rebased apk-notext apk-reason apk-txthead apk-nocache apk-stale apk-nonotice wired eas-archive"
+apk-emptymap apk-nores apk-unres apk-rebased apk-placeholder apk-notext apk-reason apk-google apk-txthead apk-nocache apk-stale apk-nonotice wired eas-archive gen-texts"
 OUT="${1:?원자료 폴더}"; shift
 CASES="${*:-$ALL}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,6 +61,7 @@ for CASE in $CASES; do
     dmg-nores) dmg nores; bad1 "✖ 소스맵 sources 1 중 npm 패키지로 해석된 것이 0" ;;
     dmg-unres) dmg unres; bad1 "✖ 소스맵 sources 의 npm 패키지(package.json)를 못 찾았다 1건 — 예: out/main/index.js: ../../node_modules/ghost/index.js" ;;
     dmg-rebased) dmg rebased; ok0; check "조상 폴더 해석 보고" has "· 맵 위치 기준이 어긋나 빌드 트리 조상 폴더에서 실제 파일로 찾은 sources 1"; check "baz 를 소스맵으로 봄" has "npm 해석 1)" ;;
+    dmg-placeholder) dmg placeholder; bad1 "✖ 고지의 SPDX 표준 원문에 저작권 자리표시자가 남았다 1건 — 예: baz 2.0.0" ;;
     dmg-drop-crate) dmg drop:tokio; bad1 "✖ crate 고지 누락: tokio@1.2.3 (herdr 문자열의 소스 경로)" ;;
     dmg-drop-sym) dmg drop:serde; bad1 "✖ crate 고지 누락: serde (herdr 심볼)" ;;
     dmg-nosym) dmg nosym; bad1 "✖ herdr 에서 crate 표지(심볼·소스 경로)를 못 읽었다" ;;
@@ -94,8 +95,10 @@ for CASE in $CASES; do
     apk-nores) apk nores $(W_); bad1 "✖ 소스맵 sources 1 중 npm 패키지로 해석된 것이 0" ;;
     apk-unres) apk unres $(W_); bad1 "✖ 소스맵 sources 의 npm 패키지(package.json)를 못 찾았다 1건 — 예: ../../../../../../../node_modules/ghost/index.js" ;;
     apk-rebased) apk rebased $(W_); ok0; check "조상 폴더 해석 보고" has "· 맵 위치 기준이 어긋나 작업 폴더 조상 폴더에서 실제 파일로 찾은 sources 1"; check "jsdep 를 소스맵으로 봄" has "npm 해석 1)" ;;
-    apk-notext) apk notext $(W_); bad1 "✖ 원문도 사유도 없다: maven com.example:closed@2.0" ;;
-    apk-reason) apk reason $(W_); ok0; check "사유 보고" has "· 원문 없음(사유 기록): com.example:closed@2.0 — SPDX 로 옮길 수 없는 라이선스" ;;
+    apk-placeholder) apk placeholder $(W_); bad1 "✖ 고지의 SPDX 표준 원문에 저작권 자리표시자가 남았다 1건 — 예: jsdep 1.0.0" ;;
+    apk-notext) apk notext $(W_); bad1 "✖ 원문 없음: maven com.example:closed@2.0" ;;
+    apk-reason) apk reason $(W_); bad1 "✖ 원문 없음: maven com.example:closed@2.0 — 허용 목록(Google 약관) 밖의 라이선스: Closed" ;;
+    apk-google) apk google $(W_); ok0; check "Google 약관 사유 보고" has "· 원문 없음(Google 약관, 사유 기록): com.example:closed@2.0 — SPDX 로 옮길 수 없는 라이선스: ML Kit Terms of Service" ;;
     apk-txthead) apk txthead $(W_); bad1 "✖ THIRD-PARTY-NOTICES.txt 에 머리줄이 없다: LLVM libc++ (Android NDK libc++_shared.so) NDK 27" ;;
     apk-nocache) apk nocache $(W_); bad1 "✖ 고지된 maven 모듈의 아티팩트가 gradle 캐시에 없다 — 대조 불가: com.example:ghost@9.9" ;;
     apk-stale) apk stale $(W_); bad1 "✖ maven 고지 누락·버전 다름: com.example:lib@1.1 (META-INF/com.example_lib.version)" ;;
@@ -117,7 +120,7 @@ for CASE in $CASES; do
         const go = (rel) => { if (seen.has(rel)) return; seen.add(rel)
           for (const m of fs.readFileSync(path.join(root, rel), "utf8").matchAll(/from \x27(\.{1,2}\/[^\x27]+)\x27/g)) go(path.relative(root, path.resolve(path.dirname(path.join(root, rel)), m[1]))) }
         go("mobile/scripts/build-notices.mjs"); console.log([...seen].join("\n"))' "$ROOT" > "$WORK/$CASE/need.txt" 2>> "$LOG"
-      { git -C "$ROOT" ls-files app/scripts/spdx; echo app/package.json; echo mobile/scripts/notices.init.gradle; } >> "$WORK/$CASE/need.txt"
+      { git -C "$ROOT" ls-files app/scripts/spdx mobile/scripts/notice-texts; echo app/package.json; echo mobile/scripts/notices.init.gradle; } >> "$WORK/$CASE/need.txt"
       check "import 사슬이 공용 lib 까지 닿는다" eq "$(grep -cx 'app/scripts/notices-lib.mjs' "$WORK/$CASE/need.txt")" 1
       # 빠져야 하는 대조 경로 — 판정 장치가 실제로 거르는지(양성 대조)
       CTRL="app/src/main/index.ts app/scripts/build-notices.mjs app/scripts/release-check/notice-test.sh mobile/node_modules/x/package.json"
@@ -131,6 +134,21 @@ for CASE in $CASES; do
       LEAK=0; for f in $CTRL; do { grep -qxF -- "$f" "$WORK/$CASE/in.txt" || ! grep -qxF -- "$f" "$WORK/$CASE/del.txt"; } && { echo "새는 대조 경로 $f" >> "$LAST"; LEAK=$((LEAK + 1)); }; done
       check "훅 입력이 아카이브에서 빠지지 않는다($(grep -c '' "$WORK/$CASE/need.txt")개, 두 복사 길)" eq "$MISS" 0
       check "대조 경로는 빠진다(판정 장치 양성, 두 복사 길)" eq "$LEAK" 0 ;;
+    gen-texts) # 생성기가 싣는 원문 — SPDX 표준 원문에 저작권 자리표시자 줄이 없고(R3-6) 본문은 남는다 · 상류 원문 사본(R3-5)이 다 있고 BSD 조건을 담는다
+      LAST="$OUT/$CASE.out"; RC=0
+      node --input-type=module -e '
+        import fs from "node:fs"
+        const lib = await import(process.argv[1] + "/app/scripts/notices-lib.mjs")
+        for (const f of fs.readdirSync(process.argv[1] + "/app/scripts/spdx")) { const id = f.replace(/\.txt$/, ""), t = lib.spdxText(id)
+          console.log(`spdx ${id} placeholder=${/<year>|<copyright holders>|<owner>/.test(t) ? 1 : 0} body=${/permission|redistribution|licensed|provided|exception/i.test(t) ? 1 : 0} raw-placeholder=${/<year>/.test(fs.readFileSync(process.argv[1] + "/app/scripts/spdx/" + f, "utf8")) ? 1 : 0}`) }' "$ROOT" > "$LAST" 2>&1
+      check "SPDX 원문 자리표시자 0" eq "$(grep -c ' placeholder=1' "$LAST")" 0
+      check "SPDX 원문 본문 남음" eq "$(grep -c 'body=0' "$LAST")" 0
+      check "자리표시자가 있던 원문(MIT·BSD-3)을 실제로 거쳤다" eq "$(grep -c 'raw-placeholder=1' "$LAST")" 2
+      UP="$(grep -oE "files: \[[^]]*\]" "$ROOT/mobile/scripts/build-notices.mjs" | grep -oE "'[^']+'" | tr -d "'")"
+      check "상류 원문 사본 목록(4개)" eq "$(echo "$UP" | grep -c .)" 4
+      for f in $UP; do echo "upstream $f $(wc -c < "$ROOT/mobile/scripts/notice-texts/$f" 2>/dev/null || echo 없음)" >> "$LAST"
+        case "$f" in *-LICENSE.txt) check "$f — BSD 조건·면책" eq "$(grep -c 'Redistributions in binary form must reproduce\|PROVIDED BY THE COPYRIGHT HOLDERS' "$ROOT/mobile/scripts/notice-texts/$f")" 2 ;;
+          *) check "$f 있음" test -s "$ROOT/mobile/scripts/notice-texts/$f" ;; esac; done ;;
     *) echo "모르는 케이스 $CASE" >&2; exit 64 ;;
   esac
   if [ "$CASE_FAIL" = 0 ]; then R=PASS; else R=FAIL; FAILS=$((FAILS + 1)); fi

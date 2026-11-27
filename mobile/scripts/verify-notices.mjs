@@ -5,7 +5,7 @@
 //   ③ META-INF/<그룹>_<이름>.version → 그 maven 모듈·버전
 //   ④ assets/* → 내용 sha256 이 같은 aar 엔트리·반입 글꼴
 //   ⑤ assets/index.android.bundle → 같은 빌드의 소스맵(번들 바이트가 같을 때만)의 sources → npm 패키지
-// 그리고 고지마다 원문이 있거나 「원문 없음」 사유가 있는지(C9ⓒ). res/ 는 aapt 가 이름·내용을 바꿔 대조 공백으로 보고한다.
+// 그리고 고지마다 원문이 있는지(C9ⓒ — Google 약관 사유 건만 예외). res/ 는 aapt 가 이름·내용을 바꿔 대조 공백으로 보고한다.
 // node scripts/verify-notices.mjs <apk> [--work <EAS 작업 폴더 — 번들·소스맵을 찾는다>] [--no-js] [--mobile <mobile 폴더>] [--report <파일>]
 import fs from 'node:fs'
 import os from 'node:os'
@@ -38,12 +38,28 @@ const text = apk.read(`${NOTICE}THIRD-PARTY-NOTICES.txt`).toString('utf8')
 const comps = list.components
 const has = (kind, name, version) => comps.some((c) => c.kind === kind && c.name === name && (version === undefined || c.version === version))
 
-// C9ⓒ — 원문 또는 「원문 없음」 사유
+// C9ⓒ — 원문이 빈 고지는 실패(dmg 대조기와 같다). 예외는 Google 독점 약관(Android SDK License·ML Kit ToS — 재배포 원문 동봉 의무가 없는 서비스 약관)으로 사유가 적힌 건만
+const TERMS_ONLY = new Set(['Android Software Development Kit License', 'ML Kit Terms of Service'])
 for (const c of comps) {
-  if (!c.texts?.length && !c.missingReason) bad(`원문도 사유도 없다: ${c.kind} ${c.name}@${c.version}`) // # guard:av-text
-  if (!c.texts?.length) notes.push(`원문 없음(사유 기록): ${c.name}@${c.version} — ${c.missingReason}`)
+  const termsOnly = TERMS_ONLY.has(c.license) && Boolean(c.missingReason)
+  if (!c.texts?.length && !termsOnly) bad(`원문 없음: ${c.kind} ${c.name}@${c.version}${c.missingReason ? ` — 허용 목록(Google 약관) 밖의 라이선스: ${c.license}` : ''}`) // # guard:av-text
+  if (!c.texts?.length && termsOnly) notes.push(`원문 없음(Google 약관, 사유 기록): ${c.name}@${c.version} — ${c.missingReason}`)
   if (!text.includes(`\n${c.name} ${c.version}\nLicense: `)) bad(`THIRD-PARTY-NOTICES.txt 에 머리줄이 없다: ${c.name} ${c.version}`) // # guard:av-header
 }
+
+// SPDX 표준 원문 구간(「--- SPDX:<id> ---」 뒤 다음 구간까지)에 남은 템플릿 자리표시자(<year> 등) — 저작권 줄은 머리줄 Copyright: 가 맡아야 한다
+const placeholderIn = []
+{
+  let cur = null, inSpdx = false, prev = ''
+  for (const line of text.split('\n')) {
+    if (prev === '='.repeat(78)) cur = line
+    if (line.startsWith('--- ')) inSpdx = line.startsWith('--- SPDX:')
+    else if (line === '='.repeat(78)) inSpdx = false
+    else if (inSpdx && /<year>|<copyright holders>|<owner>/.test(line) && !placeholderIn.includes(cur)) placeholderIn.push(cur)
+    prev = line
+  }
+}
+if (placeholderIn.length) bad(`고지의 SPDX 표준 원문에 저작권 자리표시자가 남았다 ${placeholderIn.length}건 — 예: ${placeholderIn.slice(0, 3).join(', ')}`) // # guard:av-placeholder
 
 // 고지된 maven 모듈의 아티팩트 내용 — 클래스·jni·assets 색인
 const gradleHome = process.env.GRADLE_USER_HOME ?? path.join(os.homedir(), '.gradle')

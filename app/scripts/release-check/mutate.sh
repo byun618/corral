@@ -89,6 +89,7 @@ P
 # 「고지 목록이 없다」 exit(대조기 머리)는 쌍이 없다 — 빼도 바로 뒤 원문 파일 읽기가 같은 exit 1 로 끝나는 동치 변이다
 PAIRS_NV="$(cat <<'P'
 nv-text	dmg-notext	
+nv-placeholder	dmg-placeholder	
 nv-header	dmg-txthead	
 nv-file	dmg-filesha	
 nv-tie	dmg-tie	
@@ -114,6 +115,8 @@ P
 )"
 PAIRS_AV="$(cat <<'P'
 av-text	apk-notext	
+av-text@reason	apk-reason	
+av-placeholder	apk-placeholder	
 av-header	apk-txthead	
 av-cache	apk-nocache	
 av-classowner	apk-packagelist	

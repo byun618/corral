@@ -52,6 +52,20 @@ for (const c of comps) {
   }
 }
 
+// SPDX 표준 원문 구간(「--- SPDX:<id> ---」 뒤 다음 구간까지)에 남은 템플릿 자리표시자(<year> 등) — 저작권 줄은 머리줄 Copyright: 가 맡아야 한다
+const placeholderIn = []
+{
+  let cur = null, inSpdx = false, prev = ''
+  for (const line of text.split('\n')) {
+    if (prev === '='.repeat(78)) cur = line
+    if (line.startsWith('--- ')) inSpdx = line.startsWith('--- SPDX:')
+    else if (line === '='.repeat(78)) inSpdx = false
+    else if (inSpdx && /<year>|<copyright holders>|<owner>/.test(line) && !placeholderIn.includes(cur)) placeholderIn.push(cur)
+    prev = line
+  }
+}
+if (placeholderIn.length) bad(`고지의 SPDX 표준 원문에 저작권 자리표시자가 남았다 ${placeholderIn.length}건 — 예: ${placeholderIn.slice(0, 3).join(', ')}`) // # guard:nv-placeholder
+
 // ① asar node_modules
 const asarFile = path.join(res, 'app.asar')
 const asar = readAsar(asarFile)

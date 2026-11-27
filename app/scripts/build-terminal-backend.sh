@@ -63,7 +63,9 @@ else
  cargo build --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml"
 fi
 build_seconds=$(( $(date +%s) - started ))
-# LIFE-729 C9 — 이 빌드의 의존 해석(aarch64-apple-darwin 만). scripts/build-notices.mjs 가 동봉 crate 고지를 만든다. 같은 lock·소스라 --offline 으로 다시 받지 않는다
+# LIFE-729 C9 — 이 빌드의 의존 해석(aarch64-apple-darwin 만). scripts/build-notices.mjs 가 동봉 crate 고지를 만든다. 같은 lock·소스라 --offline 으로 다시 받지 않는다.
+# 전제: herdr 루트 Cargo.toml 에 [dev-dependencies] 가 없다(v0.9.0 확인). cargo build 는 dev 의존을 받지 않지만 metadata 는 해석에 넣으므로,
+# 상류를 올려 dev 의존이 생기면 여기서 「--offline was specified」 로 멈춘다 — 그때는 --offline 을 빼고(--locked 는 유지) 받게 한다.
 cargo metadata --locked --offline --format-version 1 --filter-platform aarch64-apple-darwin --manifest-path "$work/herdr-0.9.0/Cargo.toml" > "$work/herdr-0.9.0/target/$profile/herdr.metadata.json"
 if [ "${CORRAL_BACKEND_TEST:-0}" = 1 ]; then
  cargo test --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml" --bin herdr corral_terminal_ -- --nocapture --test-threads=1

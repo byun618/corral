@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LIFE-703 C8 양성 대조(LIFE-729 에 release-upload.sh 쌍 추가) — release.sh·release-upload.sh 의 가드 하나를 빼면 그 가드를 보는 케이스가 FAIL 로 바뀌는지 본다.
+# LIFE-703 C8 양성 대조(LIFE-729 에 release-upload.sh·제3자 고지 대조기 쌍 추가) — release.sh·release-upload.sh 의 가드 하나를 빼면 그 가드를 보는 케이스가 FAIL 로 바뀌는지 본다.
 # app/scripts/release-check/mutate.sh <원자료 폴더> [가드 이름 …]   (생략 = 전부)
 # 쌍마다: 대조(변이 없음) PASS + 변이 FAIL 이어야 그 쌍이 통과다. 변이가 사본을 실제로 바꿨는지(diff 줄 수)도 본다. 하나라도 아니면 exit 1.
 # 변이: 셋째 칸이 비면 「# guard:<이름>」 줄의 die 를 true 로(거절 가드), 아니면 그 sed 스크립트(루프·재계산·플래그 — die 가 아닌 가드).
@@ -85,10 +85,56 @@ up-apk-conflict	upload-apk-place
 up-apk-name	upload-apk-place	
 P
 )"
+# 제3자 고지 대조기(LIFE-729 C9ⓓⓔ) — notice-test.sh 로 판별. 셋째 칸이 비면 가드 줄의 bad( 를 void( 로(그 사유를 세지 않음)
+# 「고지 목록이 없다」 exit(대조기 머리)는 쌍이 없다 — 빼도 바로 뒤 원문 파일 읽기가 같은 exit 1 로 끝나는 동치 변이다
+PAIRS_NV="$(cat <<'P'
+nv-text	dmg-notext	
+nv-header	dmg-txthead	
+nv-file	dmg-filesha	
+nv-tie	dmg-tie	
+nv-vendored	dmg-drop-vendored	
+nv-unmapped	dmg-unmapped	
+nv-npm	dmg-drop-asar	
+nv-npm@map	dmg-drop-map	
+nv-npm@hash	dmg-drop-hash	
+nv-npm@stale	dmg-stale	
+nv-nomap	dmg-nomap	
+nv-crate	dmg-drop-crate	
+nv-std	dmg-drop-std	
+nv-cppns	dmg-drop-cppns	
+nv-sym	dmg-drop-sym	
+nv-nosym	dmg-nosym	
+nv-native	dmg-drop-native	
+nv-electron	dmg-electron	
+nv-chromium	dmg-drop-chromium	
+nv-fw	dmg-nofw	
+P
+)"
+PAIRS_AV="$(cat <<'P'
+av-text	apk-notext	
+av-header	apk-txthead	
+av-cache	apk-nocache	
+av-classowner	apk-packagelist	
+av-class	apk-class	
+av-noclass	apk-noclass	
+av-libcxx	apk-drop-libcxx	
+av-so	apk-so	
+av-soowner	apk-appmodules	
+av-version	apk-version	
+av-version@stale	apk-stale	
+av-asset	apk-asset	
+av-assetowner	apk-drop-font	
+av-nowork	apk-nowork	
+av-find	apk-nomapfile	
+av-tie	apk-tie	
+av-npm	apk-drop-npm	
+av-nosrc	apk-emptymap	
+P
+)"
 BAD=0
-# run_pairs <대상 파일> <L703_MUTANT_TARGET> <쌍 목록>
+# run_pairs <대상 파일> <L703_MUTANT_TARGET> <쌍 목록> [하네스 — 기본 release-test.sh] [빈 셋째 칸의 기본 sed 꼴 — 기본 die → true]
 run_pairs() {
-local F="$1" TGT="$2" PL="$3"
+local F="$1" TGT="$2" PL="$3" RUN="${4:-$HERE/release-test.sh}" DEF="${5:-s/die \"/true \"/}"
 # 가드 이름 집합 = 쌍 목록의 가드 이름 집합 — 표시만 하고 쌍이 없는 가드(또는 그 반대)가 생기면 실패
 GS="$(grep -oE '# guard:[a-z0-9-]+$' "$F" | sed 's/# guard://' | sort -u | tr '\n' ' ')"
 PS="$(echo "$PL" | cut -f1 | sed 's/@.*//' | grep . | sort -u | tr '\n' ' ')"
@@ -99,10 +145,10 @@ while IFS="$(printf '\t')" read -r g c sedx; do
   [ -z "$ONLY" ] || case " $ONLY " in *" $g "*) ;; *) continue ;; esac
   gm="${g%%@*}"; n="$(grep -c "# guard:$gm\$" "$F")"
   [ "$gm" = verify-tag ] || [ "$n" = 1 ] || { echo "BAD guard:$g — 가드 줄이 $n 개(1개여야 한다)" | tee -a "$SUM"; BAD=$((BAD + 1)); continue; }
-  [ -n "$sedx" ] || sedx="/# guard:$gm\$/ s/die \"/true \"/"
+  [ -n "$sedx" ] || sedx="/# guard:$gm\$/ $DEF"
   changed="$(sed "$sedx" "$F" | diff "$F" - | grep -c '^>' || true)"
-  "$HERE/release-test.sh" "$OUT/control-$g" "$c" > /dev/null 2>&1; crc=$?
-  L703_MUTANT="$g" L703_MUTANT_SED="$sedx" L703_MUTANT_TARGET="$TGT" "$HERE/release-test.sh" "$OUT/mutant-$g" "$c" > /dev/null 2>&1; mrc=$?
+  "$RUN" "$OUT/control-$g" "$c" > /dev/null 2>&1; crc=$?
+  L703_MUTANT="$g" L703_MUTANT_SED="$sedx" L703_MUTANT_TARGET="$TGT" "$RUN" "$OUT/mutant-$g" "$c" > /dev/null 2>&1; mrc=$?
   cl="$(grep "^$c " "$OUT/control-$g/summary.txt" | cut -d' ' -f2)"; ml="$(grep "^$c " "$OUT/mutant-$g/summary.txt" | cut -d' ' -f2)"
   if [ "$changed" -ge 1 ] && [ "$crc" = 0 ] && [ "$cl" = PASS ] && [ "$mrc" != 0 ] && [ "$ml" = FAIL ]; then r=ok; else r=BAD; BAD=$((BAD + 1)); fi
   echo "$r guard:$g case:$c 변이줄=$changed control=$cl(exit $crc) mutant=$ml(exit $mrc) — $(grep -h '  FAIL ' "$OUT/mutant-$g/$c.log" | head -3 | sed 's/^ *FAIL //' | tr '\n' ';')" | tee -a "$SUM"
@@ -112,5 +158,7 @@ EOF2
 }
 run_pairs "$REL" release "$PAIRS"
 run_pairs "$UPL" upload "$PAIRS_UP"
+run_pairs "$HERE/../verify-notices.mjs" notice-dmg "$PAIRS_NV" "$HERE/notice-test.sh" 's/bad(/void(/'
+run_pairs "$HERE/../../../mobile/scripts/verify-notices.mjs" notice-apk "$PAIRS_AV" "$HERE/notice-test.sh" 's/bad(/void(/'
 echo "나쁜 쌍 $BAD" | tee -a "$SUM"
 [ "$BAD" = 0 ]

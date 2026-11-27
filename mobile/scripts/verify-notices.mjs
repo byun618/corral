@@ -42,7 +42,7 @@ const has = (kind, name, version) => comps.some((c) => c.kind === kind && c.name
 for (const c of comps) {
   if (!c.texts?.length && !c.missingReason) bad(`원문도 사유도 없다: ${c.kind} ${c.name}@${c.version}`) // # guard:av-text
   if (!c.texts?.length) notes.push(`원문 없음(사유 기록): ${c.name}@${c.version} — ${c.missingReason}`)
-  if (!text.includes(`\n${c.name} ${c.version}\nLicense: `)) bad(`THIRD-PARTY-NOTICES.txt 에 머리줄이 없다: ${c.name} ${c.version}`)
+  if (!text.includes(`\n${c.name} ${c.version}\nLicense: `)) bad(`THIRD-PARTY-NOTICES.txt 에 머리줄이 없다: ${c.name} ${c.version}`) // # guard:av-header
 }
 
 // 고지된 maven 모듈의 아티팩트 내용 — 클래스·jni·assets 색인
@@ -66,16 +66,17 @@ let indexed = 0
 for (const c of comps.filter((x) => x.kind === 'maven')) {
   const [g, a] = c.name.split(':')
   const d = path.join(cache, g, a, c.version)
-  if (!fs.existsSync(d)) { bad(`고지된 maven 모듈의 아티팩트가 gradle 캐시에 없다 — 대조 불가: ${c.name}@${c.version}`); continue }
+  if (!fs.existsSync(d)) { bad(`고지된 maven 모듈의 아티팩트가 gradle 캐시에 없다 — 대조 불가: ${c.name}@${c.version}`); continue } // # guard:av-cache
   for (const h of fs.readdirSync(d)) for (const f of fs.readdirSync(path.join(d, h))) if (/\.(aar|jar)$/.test(f)) { indexZip(readZip(fs.readFileSync(path.join(d, h, f))), c.name); indexed++ }
 }
 // 고지된 npm 패키지의 네이티브 모듈 — android/ 소스의 package 선언·build.gradle namespace·CMake add_library
 const pkgDecl = new Map() // 'com/foo' → npm 이름
-const walk = (dir, fn) => {
+// skip = 건너뛸 폴더 이름(npm 패키지 android/ 를 볼 때는 build·node_modules — 빌드 산출물·중첩 의존을 소스로 세지 않는다)
+const walk = (dir, fn, skip = ['build', 'node_modules']) => {
   if (!fs.existsSync(dir)) return
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const f = path.join(dir, e.name)
-    if (e.isDirectory()) { if (e.name !== 'build' && e.name !== 'node_modules') walk(f, fn) }
+    if (e.isDirectory()) { if (!skip.includes(e.name)) walk(f, fn, skip) }
     else fn(f)
   }
 }
@@ -140,7 +141,7 @@ for (const name of [...apk.entries.keys()].filter((n) => /^classes\d*\.dex$/.tes
     if (cls.startsWith(`${appPackage}/`)) continue // 앱 자신(MainActivity·생성 R/BuildConfig)
     const owner = ownerOfClass(cls)
     if (owner === null) { const k = cls.includes('/') ? cls.slice(0, cls.lastIndexOf('/')).replace(/\//g, '.') : '(기본 패키지)'; unowned.set(k, (unowned.get(k) ?? 0) + 1); continue }
-    if (!comps.some((c) => c.name === owner)) bad(`클래스 주인이 고지에 없다: ${owner} (${cls})`)
+    if (!comps.some((c) => c.name === owner)) bad(`클래스 주인이 고지에 없다: ${owner} (${cls})`) // # guard:av-classowner
   }
 }
 for (const [k, n] of unowned) bad(`주인을 못 찾은 dex 클래스: ${k}.* ${n}개`) // # guard:av-class
@@ -150,11 +151,11 @@ if (classes === 0 || indexed === 0) bad('dex 클래스·고지 아티팩트를 �
 const LIBCXX = 'LLVM libc++ (Android NDK libc++_shared.so)'
 for (const name of [...apk.entries.keys()].filter((n) => /^lib\/[^/]+\/[^/]+\.so$/.test(n))) {
   const so = path.basename(name)
-  if (so === 'libc++_shared.so') { if (!comps.some((c) => c.name === LIBCXX)) bad(`NDK libc++ 고지 누락 (${name})`); continue }
+  if (so === 'libc++_shared.so') { if (!comps.some((c) => c.name === LIBCXX)) bad(`NDK libc++ 고지 누락 (${name})`); continue } // # guard:av-libcxx
   // RN 앱 템플릿 CMake(react-native/ReactAndroid/cmake-utils)가 앱 빌드에서 만드는 라이브러리 — react-native 고지
   const owner = soOwner.get(so) ?? (so === 'libappmodules.so' || so.startsWith('libreact_codegen_') ? 'react-native' : null)
   if (!owner) bad(`주인을 못 찾은 네이티브 라이브러리: ${name}`) // # guard:av-so
-  else if (!comps.some((c) => c.name === owner)) bad(`네이티브 라이브러리 주인이 고지에 없다: ${owner} (${name})`)
+  else if (!comps.some((c) => c.name === owner)) bad(`네이티브 라이브러리 주인이 고지에 없다: ${owner} (${name})`) // # guard:av-soowner
 }
 
 // ③ META-INF/*.version
@@ -177,21 +178,21 @@ for (const name of [...apk.entries.keys()].filter((n) => n.startsWith('assets/')
   const h = sha256(apk.read(name))
   const owner = assetOwner.get(h) ?? fontOwner.get(h)
   if (!owner) bad(`주인을 못 찾은 asset: ${name}`) // # guard:av-asset
-  else if (!comps.some((c) => c.name === owner)) bad(`asset 주인이 고지에 없다: ${owner} (${name})`)
+  else if (!comps.some((c) => c.name === owner)) bad(`asset 주인이 고지에 없다: ${owner} (${name})`) // # guard:av-assetowner
 }
 
 // ⑤ JS 번들
 const work = opt('--work', null)
 let mapped = 0
 if (args.includes('--no-js')) notes.push('JS 번들 대조 건너뜀(--no-js) — 소스맵 없이 돌린 회차')
-else if (!work) bad('JS 번들 대조에 --work(EAS 작업 폴더)가 필요하다 — 생략하려면 --no-js')
+else if (!work) bad('JS 번들 대조에 --work(EAS 작업 폴더)가 필요하다 — 생략하려면 --no-js') // # guard:av-nowork
 else {
   const found = { map: [], bundle: [] }
   walk(work, (f) => {
     if (f.endsWith('/sourcemaps/react/release/index.android.bundle.map')) found.map.push(f)
     if (/\/generated\/assets\/[^/]+\/release\/index\.android\.bundle$/.test(f)) found.bundle.push(f)
-  })
-  if (found.map.length !== 1 || found.bundle.length !== 1) bad(`작업 폴더에서 번들·소스맵을 하나씩 찾지 못했다(번들 ${found.bundle.length} · 소스맵 ${found.map.length})`)
+  }, ['node_modules'])
+  if (found.map.length !== 1 || found.bundle.length !== 1) bad(`작업 폴더에서 번들·소스맵을 하나씩 찾지 못했다(번들 ${found.bundle.length} · 소스맵 ${found.map.length})`) // # guard:av-find
   else if (sha256(fs.readFileSync(found.bundle[0])) !== sha256(apk.read('assets/index.android.bundle'))) bad('작업 폴더의 번들이 APK 의 assets/index.android.bundle 과 다르다 — 다른 빌드의 소스맵으로 대조하지 않는다') // # guard:av-tie
   else {
     const map = JSON.parse(fs.readFileSync(found.map[0], 'utf8'))
@@ -204,7 +205,7 @@ else {
       const pkg = JSON.parse(fs.readFileSync(path.join(m[1], 'package.json'), 'utf8'))
       if (!has('npm', pkg.name, pkg.version)) bad(`npm 고지 누락: ${pkg.name}@${pkg.version} (JS 번들 소스맵)`) // # guard:av-npm
     }
-    if (mapped === 0) bad('소스맵 sources 가 비었다 — 대조 불가')
+    if (mapped === 0) bad('소스맵 sources 가 비었다 — 대조 불가') // # guard:av-nosrc
   }
 }
 const resCount = [...apk.entries.keys()].filter((n) => n.startsWith('res/')).length

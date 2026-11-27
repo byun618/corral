@@ -44,11 +44,11 @@ const has = (kind, name, version) => comps.some((c) => c.kind === kind && c.name
 // C9ⓒ — 원문이 빈 고지·원문 sha256 이 비거나 원문 파일과 다른 고지
 for (const c of comps) {
   if (!c.texts?.length) bad(`원문 없음: ${c.kind} ${c.name}@${c.version}`) // # guard:nv-text
-  if (!text.includes(`\n${c.name} ${c.version}\nLicense: `)) bad(`THIRD-PARTY-NOTICES.txt 에 머리줄이 없다: ${c.name} ${c.version}`)
+  if (!text.includes(`\n${c.name} ${c.version}\nLicense: `)) bad(`THIRD-PARTY-NOTICES.txt 에 머리줄이 없다: ${c.name} ${c.version}`) // # guard:nv-header
   for (const t of c.texts ?? []) {
     if (!t.file.startsWith('electron/')) continue
     const f = path.join(noticeDir, t.file)
-    if (!fs.existsSync(f) || sha256(fs.readFileSync(f)) !== t.sha256) bad(`고지 원문 파일이 목록의 sha256 과 다르거나 없다: ${t.file}`)
+    if (!fs.existsSync(f) || sha256(fs.readFileSync(f)) !== t.sha256) bad(`고지 원문 파일이 목록의 sha256 과 다르거나 없다: ${t.file}`) // # guard:nv-file
   }
 }
 
@@ -120,7 +120,7 @@ for (const { p, body } of unmapped) {
   const fromPkg = hits.map(pkgOfSource).find(Boolean)
   if (fromPkg) { seeNpm(fromPkg.name, fromPkg.version, `hash:${p}`); continue }
   const v = hits.map(vendoredOf).find(Boolean)
-  if (v && v !== 'own') { if (!has('asset', v)) bad(`반입 자산 고지가 없다: ${v} (${p})`); continue }
+  if (v && v !== 'own') { if (!has('asset', v)) bad(`반입 자산 고지가 없다: ${v} (${p})`); continue } // # guard:nv-vendored
   if (v === 'own') { notes.push(`앱 자체 파일: ${p}`); continue }
   // 번들러가 만든 CSS 는 소스맵이 없어 출처를 못 가린다 — 공백으로 보고한다(같은 패키지가 JS 로도 들어와 ②에서 보인다)
   if (p.endsWith('.css')) { notes.push(`출처 대조 공백(생성 CSS, 소스맵 없음): ${p}`); continue }
@@ -158,10 +158,10 @@ for (const s of syms) {
 let symHits = 0
 for (const name of symCrates) {
   if (!/^[a-z][a-z0-9_]*$/.test(name) || name === 'herdr') continue
-  if (STD.has(name)) { symHits++; if (!has('native', 'Rust standard library')) bad(`Rust 표준 라이브러리 고지 누락 (심볼 ${name})`); continue }
+  if (STD.has(name)) { symHits++; if (!has('native', 'Rust standard library')) bad(`Rust 표준 라이브러리 고지 누락 (심볼 ${name})`); continue } // # guard:nv-std
   if (crateNames.has(name)) { symHits++; continue }
   // 같은 꼴(Itanium)로 맹글된 C++ 네임스페이스 — libghostty-vt 의 C++ 코드와 SIMD 의존
-  if (CPP_NS[name]) { if (!has('native', CPP_NS[name])) bad(`비-Rust 고지 누락: ${CPP_NS[name]} (herdr 심볼 ${name}::)`); continue }
+  if (CPP_NS[name]) { if (!has('native', CPP_NS[name])) bad(`비-Rust 고지 누락: ${CPP_NS[name]} (herdr 심볼 ${name}::)`); continue } // # guard:nv-cppns
   // v0 꼴 매칭은 crate 가 아닌 경로 조각도 잡는다 — 레지스트리 경로·legacy 심볼로 본 crate 만 누락으로 센다
   if ([...syms].some((s) => s.startsWith(`__ZN${name.length}${name}`))) bad(`crate 고지 누락: ${name} (herdr 심볼)`) // # guard:nv-sym
 }
@@ -182,8 +182,8 @@ if (fs.existsSync(fw)) {
   const plist = fs.readFileSync(fw, 'utf8')
   const ver = plist.match(/<key>CFBundleVersion<\/key>\s*<string>([^<]+)<\/string>/)?.[1]
   if (!has('electron', 'Electron', ver)) bad(`Electron 고지 누락·버전 다름: Electron Framework ${ver}`) // # guard:nv-electron
-  if (!has('electron', 'Chromium and its third-party components (in Electron)', ver)) bad(`Chromium 고지 누락·버전 다름: ${ver}`)
-} else bad('Electron Framework 가 없다 — corral.app 경로를 확인한다')
+  if (!has('electron', 'Chromium and its third-party components (in Electron)', ver)) bad(`Chromium 고지 누락·버전 다름: ${ver}`) // # guard:nv-chromium
+} else bad('Electron Framework 가 없다 — corral.app 경로를 확인한다') // # guard:nv-fw
 
 const summary = [
   `고지 ${comps.length}건 · asar/소스맵/해시로 본 npm ${npmSeen.size} · 소스맵 sources ${mappedSources} · herdr 경로 crate ${crateSeen.size} · 심볼 crate ${symHits}`,

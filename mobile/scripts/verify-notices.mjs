@@ -10,7 +10,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { readZip, sha256 } from '../../app/scripts/notices-lib.mjs'
+import { readZip, sha256, sourcePackage } from '../../app/scripts/notices-lib.mjs'
 
 const args = process.argv.slice(2)
 const opt = (name, fallback) => {
@@ -184,6 +184,7 @@ for (const name of [...apk.entries.keys()].filter((n) => n.startsWith('assets/')
 // ⑤ JS 번들
 const work = opt('--work', null)
 let mapped = 0
+let resolvedJs = 0
 if (args.includes('--no-js')) notes.push('JS 번들 대조 건너뜀(--no-js) — 소스맵 없이 돌린 회차')
 else if (!work) bad('JS 번들 대조에 --work(EAS 작업 폴더)가 필요하다 — 생략하려면 --no-js') // # guard:av-nowork
 else {
@@ -197,22 +198,30 @@ else {
   else {
     const map = JSON.parse(fs.readFileSync(found.map[0], 'utf8'))
     const root = path.dirname(found.map[0])
+    // node_modules 아래 source 는 그 패키지 폴더의 package.json 으로 해석돼야 한다 — 못 찾으면 건너뛰지 않고 센다(경로가 어긋난 소스맵은 대조를 비운다)
+    const unresolved = []
+    let rebased = 0
     for (const s of map.sources) {
       mapped++
-      const abs = path.resolve(root, map.sourceRoot ?? '', s)
-      const m = abs.match(/^(.*\/node_modules\/(?:@[^/]+\/)?[^/]+)\//)
-      if (!m || !fs.existsSync(path.join(m[1], 'package.json'))) continue
-      const pkg = JSON.parse(fs.readFileSync(path.join(m[1], 'package.json'), 'utf8'))
+      const r = sourcePackage({ mapDir: root, sourceRoot: map.sourceRoot, source: s, stopAt: work })
+      if (r?.outside) continue // node_modules 밖 — 앱 자신의 소스
+      if (!r) { unresolved.push(s); continue }
+      resolvedJs++
+      if (r.via === 'ancestor') rebased++
+      const pkg = JSON.parse(fs.readFileSync(path.join(r.dir, 'package.json'), 'utf8'))
       if (!has('npm', pkg.name, pkg.version)) bad(`npm 고지 누락: ${pkg.name}@${pkg.version} (JS 번들 소스맵)`) // # guard:av-npm
     }
     if (mapped === 0) bad('소스맵 sources 가 비었다 — 대조 불가') // # guard:av-nosrc
+    else if (resolvedJs === 0) bad(`소스맵 sources ${mapped} 중 npm 패키지로 해석된 것이 0 — 경로가 어긋난 소스맵, 대조 불가`) // # guard:av-nores
+    if (rebased) notes.push(`맵 위치 기준이 어긋나 작업 폴더 조상 폴더에서 실제 파일로 찾은 sources ${rebased}`)
+    if (unresolved.length) bad(`소스맵 sources 의 npm 패키지(package.json)를 못 찾았다 ${unresolved.length}건 — 예: ${unresolved.slice(0, 3).join(', ')}`) // # guard:av-unres
   }
 }
 const resCount = [...apk.entries.keys()].filter((n) => n.startsWith('res/')).length
 notes.push(`res/ ${resCount}개 — aapt 가 이름·내용을 바꿔 출처 대조 공백`)
 
 const summary = [
-  `고지 ${comps.length}건 · dex 클래스 ${classes} · 색인 아티팩트 ${indexed} · 소스맵 sources ${mapped}`,
+  `고지 ${comps.length}건 · dex 클래스 ${classes} · 색인 아티팩트 ${indexed} · 소스맵 sources ${mapped}(npm 해석 ${resolvedJs})`,
   ...notes.map((n) => `· ${n}`),
   ...problems.map((p) => `✖ ${p}`),
   problems.length ? `✖ 고지 대조 실패 ${problems.length}건` : '✔ 고지 대조 통과 — APK 안에서 본 것 ⊆ 고지 목록',

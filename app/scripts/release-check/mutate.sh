@@ -99,6 +99,8 @@ nv-npm@map	dmg-drop-map
 nv-npm@hash	dmg-drop-hash	
 nv-npm@stale	dmg-stale	
 nv-nomap	dmg-nomap	
+nv-nores	dmg-nores	
+nv-unres	dmg-unres	
 nv-crate	dmg-drop-crate	
 nv-std	dmg-drop-std	
 nv-cppns	dmg-drop-cppns	
@@ -129,6 +131,8 @@ av-find	apk-nomapfile
 av-tie	apk-tie	
 av-npm	apk-drop-npm	
 av-nosrc	apk-emptymap	
+av-nores	apk-nores	
+av-unres	apk-unres	
 P
 )"
 # EAS 아카이브 규칙(.easignore, LIFE-729 R3-1) — notice-test.sh eas-archive 로 판별. 가드 표지는 규칙 바로 위 주석 줄이라 셋째 칸에 그 규칙 줄을 지우는 sed 를 적는다

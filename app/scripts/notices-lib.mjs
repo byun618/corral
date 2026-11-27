@@ -99,6 +99,28 @@ export function packageRootOf(file) {
   return dir && fs.existsSync(path.join(dir, 'package.json')) ? dir : null
 }
 
+// 소스맵 source 한 줄 → 그 파일이 든 npm 패키지 폴더. 대조기(dmg·APK)가 같이 쓴다
+//   { outside: true } = node_modules 밖(앱 자신의 소스) · { dir, via: 'map' } = 맵 위치(+sourceRoot) 기준으로 찾음
+//   { dir, via: 'ancestor' } = 맵 위치 기준으로는 없고, 맵 폴더의 조상(stopAt 까지)에 source 의 「node_modules/…」 꼬리 경로가 실제 파일로 있다
+//     (번들러가 다른 기준 폴더로 쓴 맵 — vite worker 번들의 맵은 sources 가 출력 폴더가 아니라 한 단계 위 기준이다)
+//   null = node_modules 아래인데 어디서도 못 찾음 — 대조기는 건너뛰지 않고 실패로 센다
+export function sourcePackage({ mapDir, sourceRoot, source, stopAt }) {
+  const abs = path.resolve(mapDir, sourceRoot ?? '', source)
+  if (!/\/node_modules\//.test(abs)) return { outside: true }
+  const direct = packageRootOf(abs)
+  if (direct) return { dir: direct, via: 'map' }
+  const i = source.indexOf('node_modules/')
+  if (i < 0) return null
+  const tail = source.slice(i)
+  const stop = path.resolve(stopAt)
+  for (let anc = path.resolve(mapDir); ; anc = path.dirname(anc)) {
+    const cand = path.join(anc, tail)
+    const dir = fs.existsSync(cand) && fs.statSync(cand).isFile() ? packageRootOf(cand) : null
+    if (dir) return { dir, via: 'ancestor' }
+    if (anc === stop || anc === path.dirname(anc) || !anc.startsWith(stop)) return null
+  }
+}
+
 // zip 읽기(APK·aar·jar) — 중앙 디렉터리만 보고 본문은 꺼낼 때 푼다(stored·deflate). 의존 패키지 없이
 export function readZip(buf) {
   let eocd = buf.length - 22

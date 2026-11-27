@@ -106,7 +106,9 @@ if (kind === 'dmg') {
   }
   writeAsar(path.join(app, 'Resources/app.asar'), asarFiles)
   w(path.join(build, 'out/main/index.js'), variant === 'tie' ? Buffer.from('console.log("other build")\n') : js)
-  if (variant !== 'nomap') w(path.join(build, 'out/main/index.js.map'), JSON.stringify({ version: 3, sources: ['../../node_modules/baz/index.js', '../../src/main/own.ts'], mappings: '' }))
+  // nores — sources 는 있는데 npm 으로 해석되는 것이 없다 · unres — 못 찾는 npm source 하나 · rebased — 맵 위치가 아니라 한 단계 위 기준으로 쓴 맵(vite worker 꼴)
+  const dmgSources = { nores: ['../../src/main/own.ts'], unres: ['../../node_modules/baz/index.js', '../../node_modules/ghost/index.js', '../../src/main/own.ts'], rebased: ['../node_modules/baz/index.js', '../../src/main/own.ts'] }[variant] ?? ['../../node_modules/baz/index.js', '../../src/main/own.ts']
+  if (variant !== 'nomap') w(path.join(build, 'out/main/index.js.map'), JSON.stringify({ version: 3, sources: dmgSources, mappings: '' }))
   w(path.join(build, 'node_modules/baz/package.json'), JSON.stringify({ name: 'baz', version: '2.0.0' }))
   w(path.join(build, 'node_modules/baz/index.js'), 'x')
   w(path.join(build, 'node_modules/bar/package.json'), JSON.stringify({ name: 'bar', version: '3.0.0' }))
@@ -163,7 +165,9 @@ if (kind === 'dmg') {
   const bundle = Buffer.from('HBC-bundle')
   const work = path.join(dir, 'work/build/mobile/android/app/build/generated')
   w(path.join(work, 'assets/createBundleReleaseJsAndAssets/release/index.android.bundle'), variant === 'tie' ? 'HBC-other' : bundle)
-  if (variant !== 'nomapfile') w(path.join(work, 'sourcemaps/react/release/index.android.bundle.map'), JSON.stringify({ version: 3, sources: variant === 'emptymap' ? [] : ['../../../../../../../node_modules/jsdep/index.js'], mappings: '' }))
+  const up = '../../../../../../../'
+  const apkSources = { emptymap: [], nores: [`${up}src/App.tsx`], unres: [`${up}node_modules/jsdep/index.js`, `${up}node_modules/ghost/index.js`], rebased: ['../node_modules/jsdep/index.js'] }[variant] ?? [`${up}node_modules/jsdep/index.js`]
+  if (variant !== 'nomapfile') w(path.join(work, 'sourcemaps/react/release/index.android.bundle.map'), JSON.stringify({ version: 3, sources: apkSources, mappings: '' }))
   w(path.join(dir, 'work/build/mobile/node_modules/jsdep/package.json'), JSON.stringify({ name: 'jsdep', version: '1.0.0' }))
   w(path.join(dir, 'work/build/mobile/node_modules/jsdep/index.js'), 'x')
   const classes = ['Lcom/example/lib/Foo;', 'Lcom/example/lib/Foo$Inner;', 'Lcom/example/lib/Foo-IA;', 'Lcom/example/lib/R$string;', 'Lcom/npm/Mod;', 'Lio/github/byun618/corral/mobile/MainActivity;', ...(variant === 'packagelist' ? ['Lcom/facebook/react/PackageList;'] : [])]

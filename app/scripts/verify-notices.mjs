@@ -10,7 +10,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { readAsar, sha256 } from './notices-lib.mjs'
+import { readAsar, sha256, sourcePackage } from './notices-lib.mjs'
 
 const args = process.argv.slice(2)
 const opt = (name, fallback) => {
@@ -78,6 +78,9 @@ const pkgOfSource = (abs) => {
 const outFiles = [...asar.entries.keys()].filter((p) => p.startsWith('out/'))
 const unmapped = []
 let mappedSources = 0
+let resolvedSources = 0
+let rebasedSources = 0
+const unresolvedSources = []
 for (const p of outFiles) {
   const body = asar.read(p)
   const built = path.join(buildDir, p)
@@ -86,10 +89,15 @@ for (const p of outFiles) {
     if (sha256(fs.readFileSync(built)) !== sha256(body)) { bad(`빌드 트리의 ${p} 가 앱 안 파일과 다르다 — --build 가 이 앱의 빌드가 아니다`); continue } // # guard:nv-tie
     const map = JSON.parse(fs.readFileSync(`${built}.map`, 'utf8'))
     for (const s of map.sources) {
-      const abs = path.resolve(path.dirname(built), map.sourceRoot ?? '', s)
       mappedSources++
-      const pkg = pkgOfSource(abs)
-      if (pkg) seeNpm(pkg.name, pkg.version, `sourcemap:${p}`)
+      // node_modules 아래인데 패키지를 못 찾은 source 는 건너뛰지 않고 센다 — 경로가 어긋난 소스맵은 대조를 비운다
+      const r = sourcePackage({ mapDir: path.dirname(built), sourceRoot: map.sourceRoot, source: s, stopAt: buildDir })
+      if (r?.outside) continue
+      if (!r) { unresolvedSources.push(`${p}: ${s}`); continue }
+      resolvedSources++
+      if (r.via === 'ancestor') rebasedSources++
+      const pkg = JSON.parse(fs.readFileSync(path.join(r.dir, 'package.json'), 'utf8'))
+      seeNpm(pkg.name, pkg.version, `sourcemap:${p}`)
     }
   } else unmapped.push({ p, body })
 }
@@ -133,6 +141,9 @@ for (const [k, where] of npmSeen) {
   if (!has('npm', k.slice(0, at), k.slice(at + 1))) bad(`npm 고지 누락: ${k} (${where})`) // # guard:nv-npm
 }
 if (mappedSources === 0) bad('소스맵 sources 를 하나도 못 읽었다 — 대조 불가(빌드 트리에 숨은 소스맵이 없다)') // # guard:nv-nomap
+else if (resolvedSources === 0) bad(`소스맵 sources ${mappedSources} 중 npm 패키지로 해석된 것이 0 — 경로가 어긋난 소스맵, 대조 불가`) // # guard:nv-nores
+if (rebasedSources) notes.push(`맵 위치 기준이 어긋나 빌드 트리 조상 폴더에서 실제 파일로 찾은 sources ${rebasedSources}`)
+if (unresolvedSources.length) bad(`소스맵 sources 의 npm 패키지(package.json)를 못 찾았다 ${unresolvedSources.length}건 — 예: ${unresolvedSources.slice(0, 3).join(', ')}`) // # guard:nv-unres
 
 // ③ 동봉 herdr
 const herdr = path.join(res, 'backend/herdr')
@@ -186,7 +197,7 @@ if (fs.existsSync(fw)) {
 } else bad('Electron Framework 가 없다 — corral.app 경로를 확인한다') // # guard:nv-fw
 
 const summary = [
-  `고지 ${comps.length}건 · asar/소스맵/해시로 본 npm ${npmSeen.size} · 소스맵 sources ${mappedSources} · herdr 경로 crate ${crateSeen.size} · 심볼 crate ${symHits}`,
+  `고지 ${comps.length}건 · asar/소스맵/해시로 본 npm ${npmSeen.size} · 소스맵 sources ${mappedSources}(npm 해석 ${resolvedSources}) · herdr 경로 crate ${crateSeen.size} · 심볼 crate ${symHits}`,
   ...notes.map((n) => `· ${n}`),
   ...problems.map((p) => `✖ ${p}`),
   problems.length ? `✖ 고지 대조 실패 ${problems.length}건` : '✔ 고지 대조 통과 — 앱 안에서 본 것 ⊆ 고지 목록',

@@ -8,10 +8,10 @@
 # 임시 폴더는 /tmp/l729n.XXXXXX. 끝나면 지운다. 사용자 gradle 캐시·앱 무접촉(GRADLE_USER_HOME 은 픽스처).
 set -uo pipefail
 
-ALL="dmg-clean dmg-drop-asar dmg-drop-map dmg-drop-hash dmg-drop-vendored dmg-unmapped dmg-tie dmg-nomap dmg-drop-crate dmg-drop-sym dmg-nosym
+ALL="dmg-clean dmg-drop-asar dmg-drop-map dmg-drop-hash dmg-drop-vendored dmg-unmapped dmg-tie dmg-nomap dmg-nores dmg-unres dmg-rebased dmg-drop-crate dmg-drop-sym dmg-nosym
 dmg-drop-std dmg-drop-cppns dmg-drop-native dmg-electron dmg-drop-chromium dmg-nofw dmg-notext dmg-txthead dmg-filesha dmg-stale dmg-nolist
 apk-clean apk-class apk-noclass apk-drop-libcxx apk-so apk-appmodules apk-packagelist apk-version apk-asset apk-drop-font apk-drop-npm apk-tie apk-nowork apk-nomapfile
-apk-emptymap apk-notext apk-reason apk-txthead apk-nocache apk-stale apk-nonotice wired eas-archive"
+apk-emptymap apk-nores apk-unres apk-rebased apk-notext apk-reason apk-txthead apk-nocache apk-stale apk-nonotice wired eas-archive"
 OUT="${1:?원자료 폴더}"; shift
 CASES="${*:-$ALL}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,6 +58,9 @@ for CASE in $CASES; do
     dmg-unmapped) dmg unmapped; bad1 "✖ 출처를 못 찾은 번들 파일: out/renderer/assets/mystery.bin" ;;
     dmg-tie) dmg tie; bad1 "✖ 빌드 트리의 out/main/index.js 가 앱 안 파일과 다르다" ;;
     dmg-nomap) dmg nomap; bad1 "✖ 소스맵 sources 를 하나도 못 읽었다" ;;
+    dmg-nores) dmg nores; bad1 "✖ 소스맵 sources 1 중 npm 패키지로 해석된 것이 0" ;;
+    dmg-unres) dmg unres; bad1 "✖ 소스맵 sources 의 npm 패키지(package.json)를 못 찾았다 1건 — 예: out/main/index.js: ../../node_modules/ghost/index.js" ;;
+    dmg-rebased) dmg rebased; ok0; check "조상 폴더 해석 보고" has "· 맵 위치 기준이 어긋나 빌드 트리 조상 폴더에서 실제 파일로 찾은 sources 1"; check "baz 를 소스맵으로 봄" has "npm 해석 1)" ;;
     dmg-drop-crate) dmg drop:tokio; bad1 "✖ crate 고지 누락: tokio@1.2.3 (herdr 문자열의 소스 경로)" ;;
     dmg-drop-sym) dmg drop:serde; bad1 "✖ crate 고지 누락: serde (herdr 심볼)" ;;
     dmg-nosym) dmg nosym; bad1 "✖ herdr 에서 crate 표지(심볼·소스 경로)를 못 읽었다" ;;
@@ -88,6 +91,9 @@ for CASE in $CASES; do
     apk-nowork) apk clean; bad1 "✖ JS 번들 대조에 --work(EAS 작업 폴더)가 필요하다" ;;
     apk-nomapfile) apk nomapfile $(W_); bad1 "✖ 작업 폴더에서 번들·소스맵을 하나씩 찾지 못했다(번들 1 · 소스맵 0)" ;;
     apk-emptymap) apk emptymap $(W_); bad1 "✖ 소스맵 sources 가 비었다" ;;
+    apk-nores) apk nores $(W_); bad1 "✖ 소스맵 sources 1 중 npm 패키지로 해석된 것이 0" ;;
+    apk-unres) apk unres $(W_); bad1 "✖ 소스맵 sources 의 npm 패키지(package.json)를 못 찾았다 1건 — 예: ../../../../../../../node_modules/ghost/index.js" ;;
+    apk-rebased) apk rebased $(W_); ok0; check "조상 폴더 해석 보고" has "· 맵 위치 기준이 어긋나 작업 폴더 조상 폴더에서 실제 파일로 찾은 sources 1"; check "jsdep 를 소스맵으로 봄" has "npm 해석 1)" ;;
     apk-notext) apk notext $(W_); bad1 "✖ 원문도 사유도 없다: maven com.example:closed@2.0" ;;
     apk-reason) apk reason $(W_); ok0; check "사유 보고" has "· 원문 없음(사유 기록): com.example:closed@2.0 — SPDX 로 옮길 수 없는 라이선스" ;;
     apk-txthead) apk txthead $(W_); bad1 "✖ THIRD-PARTY-NOTICES.txt 에 머리줄이 없다: LLVM libc++ (Android NDK libc++_shared.so) NDK 27" ;;

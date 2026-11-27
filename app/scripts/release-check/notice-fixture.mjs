@@ -165,7 +165,10 @@ if (kind === 'dmg') {
   w(path.join(mobile, 'node_modules/npmmod/android/CMakeLists.txt'), 'set(PACKAGE_NAME "npmnative")\nadd_library(${PACKAGE_NAME} SHARED x.cpp)\n')
   const bundle = Buffer.from('HBC-bundle')
   const work = path.join(dir, 'work/build/mobile/android/app/build/generated')
-  w(path.join(work, 'assets/createBundleReleaseJsAndAssets/release/index.android.bundle'), variant === 'tie' ? 'HBC-other' : bundle)
+  // 번들 자리 — 실빌드(RN 0.81) 꼴은 generated/assets/createBundleReleaseJsAndAssets/index.android.bundle. oldpath = 옛 꼴(…/release/), twobundle = 둘 다(「하나씩」 규칙이 거절)
+  const bundleAt = (rel) => w(path.join(work, rel), variant === 'tie' ? 'HBC-other' : bundle)
+  if (variant !== 'oldpath') bundleAt('assets/createBundleReleaseJsAndAssets/index.android.bundle')
+  if (variant === 'oldpath' || variant === 'twobundle') bundleAt('assets/createBundleReleaseJsAndAssets/release/index.android.bundle')
   const up = '../../../../../../../'
   const apkSources = { emptymap: [], nores: [`${up}src/App.tsx`], unres: [`${up}node_modules/jsdep/index.js`, `${up}node_modules/ghost/index.js`], rebased: ['../node_modules/jsdep/index.js'] }[variant] ?? [`${up}node_modules/jsdep/index.js`]
   if (variant !== 'nomapfile') w(path.join(work, 'sourcemaps/react/release/index.android.bundle.map'), JSON.stringify({ version: 3, sources: apkSources, mappings: '' }))

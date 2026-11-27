@@ -11,7 +11,7 @@ set -uo pipefail
 
 ALL="dmg-clean dmg-drop-asar dmg-drop-map dmg-drop-hash dmg-drop-vendored dmg-unmapped dmg-tie dmg-nomap dmg-nores dmg-unres dmg-rebased dmg-placeholder dmg-nohold dmg-drop-crate dmg-drop-sym dmg-nosym
 dmg-drop-std dmg-drop-cppns dmg-drop-native dmg-electron dmg-drop-chromium dmg-nofw dmg-notext dmg-txthead dmg-filesha dmg-stale dmg-nolist
-apk-clean apk-class apk-noclass apk-drop-libcxx apk-so apk-appmodules apk-packagelist apk-version apk-asset apk-drop-font apk-drop-npm apk-tie apk-nowork apk-nomapfile
+apk-clean apk-class apk-noclass apk-drop-libcxx apk-so apk-appmodules apk-packagelist apk-version apk-asset apk-drop-font apk-drop-npm apk-tie apk-oldpath apk-twobundle apk-nowork apk-nomapfile
 apk-emptymap apk-nores apk-unres apk-rebased apk-placeholder apk-nohold apk-holderok apk-notext apk-reason apk-google apk-txthead apk-nocache apk-stale apk-nonotice wired eas-archive gen-texts gen-apk-clean gen-apk-artfail gen-apk-noart"
 OUT="${1:?원자료 폴더}"; shift
 CASES="${*:-$ALL}"
@@ -95,6 +95,8 @@ for CASE in $CASES; do
     apk-drop-font) apk "drop:Geist (font)" $(W_); bad1 "✖ asset 주인이 고지에 없다: Geist (font) (assets/fonts/Geist_400Regular.ttf)" ;;
     apk-drop-npm) apk drop:jsdep $(W_); bad1 "✖ npm 고지 누락: jsdep@1.0.0 (JS 번들 소스맵)" ;;
     apk-tie) apk tie $(W_); bad1 "✖ 작업 폴더의 번들이 APK 의 assets/index.android.bundle 과 다르다" ;;
+    apk-oldpath) apk oldpath $(W_); ok0; check "옛 꼴 번들로 소스맵 대조" has "소스맵 sources 1(npm 해석 1)" ;;
+    apk-twobundle) apk twobundle $(W_); bad1 "✖ 작업 폴더에서 번들·소스맵을 하나씩 찾지 못했다(번들 2 · 소스맵 1)" ;;
     apk-nowork) apk clean; bad1 "✖ JS 번들 대조에 --work(EAS 작업 폴더)가 필요하다" ;;
     apk-nomapfile) apk nomapfile $(W_); bad1 "✖ 작업 폴더에서 번들·소스맵을 하나씩 찾지 못했다(번들 1 · 소스맵 0)" ;;
     apk-emptymap) apk emptymap $(W_); bad1 "✖ 소스맵 sources 가 비었다" ;;

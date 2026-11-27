@@ -5,6 +5,7 @@
 //   ③ META-INF/<그룹>_<이름>.version → 그 maven 모듈·버전
 //   ④ assets/* → 내용 sha256 이 같은 aar 엔트리·반입 글꼴
 //   ⑤ assets/index.android.bundle → 같은 빌드의 소스맵(번들 바이트가 같을 때만)의 sources → npm 패키지
+//      (작업 폴더의 android/app/build/generated/assets/<태스크>/index.android.bundle · generated/sourcemaps/react/release/index.android.bundle.map)
 // 그리고 고지마다 원문이 있는지(C9ⓒ — Google 약관 사유 건만 예외). res/ 는 aapt 가 이름·내용을 바꿔 대조 공백으로 보고한다.
 // node scripts/verify-notices.mjs <apk> [--work <EAS 작업 폴더 — 번들·소스맵을 찾는다>] [--no-js] [--mobile <mobile 폴더>] [--report <파일>]
 import fs from 'node:fs'
@@ -222,7 +223,8 @@ else {
   const found = { map: [], bundle: [] }
   walk(work, (f) => {
     if (f.endsWith('/sourcemaps/react/release/index.android.bundle.map')) found.map.push(f)
-    if (/\/generated\/assets\/[^/]+\/release\/index\.android\.bundle$/.test(f)) found.bundle.push(f)
+    // RN 0.81 실빌드는 generated/assets/createBundleReleaseJsAndAssets/index.android.bundle(가운데 release/ 없음). 옛 꼴(…/release/)도 받는다
+    if (/\/generated\/assets\/[^/]+\/(?:release\/)?index\.android\.bundle$/.test(f)) found.bundle.push(f)
   }, ['node_modules'])
   if (found.map.length !== 1 || found.bundle.length !== 1) bad(`작업 폴더에서 번들·소스맵을 하나씩 찾지 못했다(번들 ${found.bundle.length} · 소스맵 ${found.map.length})`) // # guard:av-find
   else if (sha256(fs.readFileSync(found.bundle[0])) !== sha256(apk.read('assets/index.android.bundle'))) bad('작업 폴더의 번들이 APK 의 assets/index.android.bundle 과 다르다 — 다른 빌드의 소스맵으로 대조하지 않는다') // # guard:av-tie

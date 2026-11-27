@@ -5,6 +5,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import zlib from 'node:zlib'
 
 const here = path.dirname(new URL(import.meta.url).pathname)
 export const sha256 = (data) => createHash('sha256').update(data).digest('hex')
@@ -96,6 +97,38 @@ export function packageDirOf(file) {
 export function packageRootOf(file) {
   const dir = packageDirOf(file)
   return dir && fs.existsSync(path.join(dir, 'package.json')) ? dir : null
+}
+
+// zip 읽기(APK·aar·jar) — 중앙 디렉터리만 보고 본문은 꺼낼 때 푼다(stored·deflate). 의존 패키지 없이
+export function readZip(buf) {
+  let eocd = buf.length - 22
+  while (eocd >= 0 && buf.readUInt32LE(eocd) !== 0x06054b50) eocd--
+  if (eocd < 0) throw new Error('zip 끝 레코드가 없다')
+  const count = buf.readUInt16LE(eocd + 10)
+  let o = buf.readUInt32LE(eocd + 16)
+  const entries = new Map()
+  for (let i = 0; i < count; i++) {
+    if (buf.readUInt32LE(o) !== 0x02014b50) throw new Error('zip 중앙 디렉터리가 깨졌다')
+    const method = buf.readUInt16LE(o + 10)
+    const csize = buf.readUInt32LE(o + 20)
+    const nlen = buf.readUInt16LE(o + 28)
+    const xlen = buf.readUInt16LE(o + 30)
+    const clen = buf.readUInt16LE(o + 32)
+    const local = buf.readUInt32LE(o + 42)
+    const name = buf.toString('utf8', o + 46, o + 46 + nlen)
+    entries.set(name, { method, csize, local })
+    o += 46 + nlen + xlen + clen
+  }
+  const read = (name) => {
+    const e = entries.get(name)
+    if (!e) return null
+    const start = e.local + 30 + buf.readUInt16LE(e.local + 26) + buf.readUInt16LE(e.local + 28)
+    const raw = buf.subarray(start, start + e.csize)
+    if (e.method === 0) return Buffer.from(raw)
+    if (e.method === 8) return zlib.inflateRawSync(raw)
+    throw new Error(`zip 압축 방식 ${e.method} 를 못 푼다: ${name}`)
+  }
+  return { entries, read }
 }
 
 // asar 읽기 — 형식: [4 크기][4 헤더 크기][4][4 JSON 길이][JSON] 뒤가 파일 본문. 의존 패키지 없이 목록·본문만 꺼낸다

@@ -1,0 +1,34 @@
+// LIFE-729 C9ⓑ — scripts/build-notices.mjs 가 `gradlew -q -I <이 파일> :app:corralNoticeInputs` 로 부른다.
+// releaseRuntimeClasspath 의 해석 결과(모듈·프로젝트)와 모듈마다 POM 파일(부모 POM 까지)을 한 줄씩 낸다:
+//   COMP <그룹:이름:버전> · PROJ <프로젝트 경로> · POM <그룹:이름:버전> <파일> · NOPOM <그룹:이름:버전> · HOME <gradle 사용자 폴더>
+// POM 은 빌드와 같은 저장소 설정으로 받는다(분리된 configuration, 전이 없음) — gradle 캐시에 .module 만 있는 모듈도 POM 이 생긴다.
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
+
+allprojects { p ->
+  if (p.path != ':app') return
+  p.tasks.register('corralNoticeInputs') {
+    doLast {
+      println "HOME ${p.gradle.gradleUserHomeDir}"
+      def queue = []
+      p.configurations.getByName('releaseRuntimeClasspath').incoming.resolutionResult.allComponents.each { c ->
+        def id = c.id
+        if (id instanceof ModuleComponentIdentifier) { println "COMP ${id.group}:${id.module}:${id.version}"; queue << "${id.group}:${id.module}:${id.version}" }
+        else if (id instanceof ProjectComponentIdentifier) println "PROJ ${id.projectPath}"
+      }
+      def seen = [] as Set
+      while (queue) {
+        def gav = queue.remove(0)
+        if (!seen.add(gav)) continue
+        def cfg = p.configurations.detachedConfiguration(p.dependencies.create("${gav}@pom"))
+        cfg.transitive = false
+        def files = cfg.resolvedConfiguration.lenientConfiguration.files
+        if (!files) { println "NOPOM ${gav}"; continue }
+        def pom = files.iterator().next()
+        println "POM ${gav} ${pom}"
+        def x = new groovy.xml.XmlSlurper().parse(pom)
+        if (x.parent.size()) queue << "${x.parent.groupId.text()}:${x.parent.artifactId.text()}:${x.parent.version.text()}"
+      }
+    }
+  }
+}

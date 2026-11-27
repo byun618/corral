@@ -22,12 +22,12 @@ scripts/release.sh cut [--bump minor|major | --version X.Y.Z] [--dry-run]   # �
 scripts/release.sh gather --prs "12 15" [--dry-run]     # ② 모으기 — 고른 순서대로 release 브랜치에 로컬 merge(merge commit)
 #                                                         ③ 통합 확인 — release worktree 에서 빌드·실행(release 스킬 3)
 #                                                         ③' 회고 — 채택한 learnings·ADR 을 release worktree 에서 커밋(release 스킬 4)
-scripts/release.sh ship --notes <노트 파일> [--dry-run]  # ④ 출고 — release→main 머지 · 태그 · Release · 본체 ff · 원래 PR 처리 · dmg · APK
+scripts/release.sh ship --notes <노트 파일> [--dry-run]  # ④ 출고 — release→main 머지 · 태그 · Release · 본체 ff · 원래 PR 처리 · dmg · APK · Release 에 올리기
 scripts/release.sh finish [--leave-open]                # ⑤ 정리 — 출고 확인 뒤 release 브랜치(로컬·원격)·worktree 삭제
 scripts/release.sh abort                                # 접기 — 출고 전 release 브랜치·worktree 만 삭제, PR 은 열린 채
 ```
 
-**검사 없이 순서 머지다.** PR CI(`.github/workflows/pr-ci.yml` — 맥미니 self-hosted 러너, LIFE-575)는 참고 신호다 — `release.sh` 는 체크를 보지 않고 required check 도 없다(private 동안 걸 수 없다). 모으기 전에 대상 PR 의 체크를 사람이 본다(release 스킬 2). release→main PR 의 CI 는 PR 이 생기고 곧바로 머지된 뒤에 오므로 통합 확인을 대신하지 않는다 — 검증 근거는 각 PR 의 판정문(리뷰·관문)과 release worktree 통합 확인이다.
+**검사 없이 순서 머지다.** PR CI(`.github/workflows/pr-ci.yml` — 맥미니 self-hosted 러너, LIFE-575)는 참고 신호다 — `release.sh` 는 체크를 보지 않고 required check 도 걸지 않는다(`release.sh ship` 이 release PR 을 만든 직후 머지하고 CI 를 기다리지 않는다 — CI 를 출고 경로에 넣는 것은 LIFE-707). 모으기 전에 대상 PR 의 체크를 사람이 본다(release 스킬 2). release→main PR 의 CI 는 PR 이 생기고 곧바로 머지된 뒤에 오므로 통합 확인을 대신하지 않는다 — 검증 근거는 각 PR 의 판정문(리뷰·관문)과 release worktree 통합 확인이다.
 
 **① cut** — origin/main 끝의 `app/package.json` 에서 다음 버전을 정하고(`--bump`·`--version`) 다음 버전 ≤ 지금 버전 · 원격 태그 존재 ·
 열린 release 브랜치(로컬·원격 `release/v*`) 있음 · 다른 레포 안에서 부름 중 하나라도면 아무것도 만들지 않는다(exit 2). 만들면 release 브랜치에
@@ -72,6 +72,11 @@ head 가 그 사이 다른 커밋으로 움직였으면 지우지 않는다(그 
 ⓖ 그 태그 위 깨끗한 임시 worktree(`.claude/worktrees/_release-*`)에서 `scripts/release-dmg.sh` 로 아래 「빌드」를 돌려 dmg 를 `app/dist/release/vX.Y.Z/` 에 둔다(`--skip-build` 면 생략)
 ⓗ 같은 worktree 에서 `scripts/release-apk.sh` 로 모바일 APK(`preview` 프로필 로컬 빌드 — EAS 쿼터 소모 없음, 서명 = EAS 원격 자격증명)를 `app/dist/release/vX.Y.Z/corral-mobile-X.Y.Z.apk` 에 둔다
 (**매 출고 기본**, `--skip-apk` 면 생략). `--skip-build` 는 dmg 만, `--skip-apk` 는 APK 만 뺀다.
+ⓘ **Release 에 올리기**(LIFE-729) — `scripts/release-upload.sh` 가 dmg·APK 와 파일마다 체크섬 파일 `<파일>.sha256`(`shasum -a 256` 출력 꼴)을 그 태그의 GitHub Release 에 올린다.
+올리기 전에 서버 asset 의 `digest`(`sha256:…`)로 전부 판정한다 — 없으면 올리고, 같은 이름·같은 digest 면 건너뛰고, **같은 이름·다른 digest·digest 없음·올리기가 끝나지 않은 asset 이 하나라도 있으면 아무것도 올리지 않고 거절**한다
+(지우거나 덮어쓰지 않는다 — `gh release upload --clobber` 는 지운 뒤 올려 실패하면 원본을 잃는다. 그런 asset 은 사람이 보고 지운 뒤 같은 명령). 올린 뒤 서버 digest = 로컬 sha256 을 다시 확인한다.
+체크섬을 파일마다 따로 두는 것은 한 번 올린 asset 을 다시 쓰지 않기 위해서다 — `--skip-apk` 로 dmg 만 올린 뒤 APK 를 더해도 이미 올린 파일은 그대로다. zip 은 올리지 않는다(자동 업데이트 없음).
+`--skip-build` 면 올리지 않고(dmg 가 없다) 명령만 안내한다. `--skip-apk` 면 dmg 만 올리고(`--no-apk`) APK 를 더하는 명령을 안내한다.
 **멱등**: 단계마다 원격 상태(원격 태그 · release PR 상태 · Release 유무)로 어디까지 됐는지 보고 이어 간다 — 같은 `ship` 명령을 다시 치면 끝난 단계는 건너뛴다.
 Release 까지 끝난 뒤 다시 치면 빌드하지 않고 원래 PR 처리만 다시 본 뒤 dmg·APK 명령을 보여 준다. 「이미 태그됨」은 원격 태그가 출고 머지 커밋일 때만이다 —
 다른 커밋(예: release 브랜치 끝)을 가리키면 출고하지 않고 exit 2 로 멈춘다(태그를 직접 확인). 「머지된 release PR」은 같은 이름이면서 그 head 가 지금 release 브랜치 안에 있는 것만 센다 — 리허설을 같은 이름으로 다시 돌려도 옛 회차의 머지 PR 을 읽지 않는다.
@@ -92,12 +97,13 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 | 5 | release PR 머지 가능 판정이 안 나옴 | 잠시 뒤 같은 ship |
 | 6 | release PR 머지 거절·머지 결과 이상(부모·버전). main 이 막 움직여 충돌이 아직 판정되지 않은 경우 포함(GitHub 의 첫 mergeable 이 옛 값 MERGEABLE 이라 머지가 「merge conflicts」로 거절된다) | PR 상태를 보고 같은 ship — 그 경우 다시 치면 2(main 이동)·3(충돌) 의 `merge origin/main` 안내로 이어진다 |
 | 7 | 태그 만들기·push·main fetch 실패(머지는 끝남, 로컬 태그는 지움) | 같은 ship — 태그부터 이어 간다 |
-| 8 | dmg 실패 또는 빌드용 임시 worktree 생성 실패(머지·태그·Release 끝) | 메시지의 「dmg 만 다시」 줄 → 그 뒤 「dmg 뒤 APK」 줄 |
+| 8 | dmg 실패 또는 빌드용 임시 worktree 생성 실패(머지·태그·Release 끝) | 메시지의 「dmg 만 다시」 줄 → 그 뒤 「dmg 뒤 APK」 줄 → 「Release 에 올리기」 줄 |
 | 9 | GitHub Release 실패(머지·태그 끝) | 같은 ship — Release 부터 이어 간다 |
-| 10 | APK 실패(머지·태그·Release·dmg 끝) | 메시지의 「APK 만 다시」 줄 |
+| 10 | APK 실패(머지·태그·Release·dmg 끝) | 메시지의 「APK 만 다시 → Release 에 올리기」 한 줄(`&&` — APK 가 끝나야 올린다. 올리기만 따로 치지 않는다 — 맨 위 APK 는 검증 거절본일 수 있다). 새 APK 가 `retry-<시각>/` 에 생겼으면 올리기가 멈추고 후보마다 `--apk` 줄을 보인다 — 검증을 통과한 APK 의 줄 |
 | 11 | release 브랜치 push·삭제 실패 | 원인을 보고 같은 명령 |
 | 12 | release PR 생성·조회 실패 | 같은 ship — 열린 release PR 이 있으면 재사용 |
-| 13 | 원래 PR 처리 미완 — MERGED 미확인 또는 head 조회·삭제 실패. 출고 자체(태그·Release·dmg·APK)는 끝남, 그 head 는 지우지 않음(못 지움) | 아래 「간접 머지가 안 될 때」 · 삭제 실패면 원인(권한·보호)을 풀고 finish |
+| 13 | 원래 PR 처리 미완 — MERGED 미확인 또는 head 조회·삭제 실패. 출고 자체(태그·Release·dmg·APK·올리기)는 끝남, 그 head 는 지우지 않음(못 지움) | 아래 「간접 머지가 안 될 때」 · 삭제 실패면 원인(권한·보호)을 풀고 finish |
+| 14 | Release 에 올리기 실패 — 업로드 실패·서버 asset 대조 거절(같은 이름·다른 digest 등)·올린 뒤 대조 실패(머지·태그·Release·dmg·APK 끝) | 메시지의 「올리기만 다시」 줄 — 이미 올라간 것은 건너뛴다. 대조 거절이면 그 asset 을 먼저 직접 본다 |
 
 **간접 머지가 안 될 때 (exit 13)** — GitHub 문서는 「PR 의 head 커밋이 다른 PR 머지로 기본 브랜치에 닿으면 merged」라고만 적고 지연 상한은 없다.
 메시지의 `gh pr view <번호> --json state,mergedAt,mergeCommit` 로 상태를 보고, 시간이 지나 MERGED 가 되면 `scripts/release.sh finish` 가 head 를 지우고 정리한다.
@@ -112,6 +118,13 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 ```
 `--from-tag` 는 원격에서 그 태그를 정확히 fetch 하고(로컬 태그가 없어도 된다) 매번 새 임시 worktree(`.claude/worktrees/_apk-<태그>-<시각>-<pid>`)에서 빌드한 뒤 그 worktree 만 지운다(다른 worktree 등록은 건드리지 않고, 못 지우면 남은 경로를 알린다) —
 앞선 시도가 남긴 worktree 와 겹치지 않는다. 산출물 자리에 이미 APK 가 있으면 지우지 않고 그 아래 `retry-<시각>/` 에 새로 만든다. 같은 명령을 몇 번 다시 돌려도 된다.
+Release 에 올리기만 다시(어느 cwd 에서도 — 스크립트가 든 레포가 대상이다. `--no-apk` 는 dmg 만, `--dry-run` 은 판정만):
+```sh
+<본체>/scripts/release-upload.sh --tag vX.Y.Z --tag-prefix v --dir <본체>/app/dist/release/vX.Y.Z
+```
+올리는 폴더는 그 태그의 산출물 폴더 맨 위다. **`retry-<시각>/` 에 APK 가 있으면 `--apk` 없이는 아무것도 올리지 않는다** — `release-apk.sh` 는 APK 를 쓴 뒤에 검증하므로
+검증에서 거절된 APK 가 맨 위에 남고 다시 만든 APK 는 `retry-<시각>/` 로 간다. 거절 메시지가 후보 APK 마다 sha256·시각과 `--apk <경로>` 를 붙인 명령을 한 줄씩 보인다 —
+`release-apk.sh` 가 「✔ vX.Y.Z apk: <경로>」 로 낸 APK 의 줄을 붙여 넣는다(`--apk` 는 그 폴더 맨 위나 `retry-<시각>/` 바로 아래의 `corral-mobile-X.Y.Z.apk` 만 받는다). 폴더 이름이 태그 꼴인데 다른 태그면, 파일 이름 버전이 태그 버전과 다르면, 필요한 파일이 없으면, Release 가 없으면 gh 로 올리기 전에 거절한다.
 
 끝나면 본체 세션이: 출고된 PR 의 일감마다 LA `완료` 전이(출고 머지 뒤 — D2, 설치를 기다리지 않는다) → dmg 를 아래 「설치」대로 설치 →
 `corral --version` 이 새 버전인지 확인 → 폰에 APK 를 덮어 설치(아래 「폰 APK 설치」) → 남은 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>` → `scripts/release.sh finish`.
@@ -122,8 +135,8 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 ③ 같을 때만 `adb install -r`(데이터·페어링 유지) ④ `dumpsys` 로 versionName·`lastUpdateTime` 이 바뀌었는지 보고 APK sha256 을 출력한다 — 출고 보고에 넣는다.
 설치본을 지우고 새로 까는 길은 없다 — 지우면 페어링 토큰·기록이 사라진다. 서명이 다르거나 설치본이 없으면(첫 설치) 멈추고 사용자에게 보고한다(첫 설치는 `mobile/README.md` §3).
 
-- **자르기·모으기·머지·태그는 `release.sh` 로만 한다.** ruleset 「main 보호」(LIFE-718)는 main 직접 push·force push·삭제를 막도록 걸려 있지만 레포가 private 인 동안 서버에서 효력이 없다(공개 뒤 효력 — LIFE-729). required check 도 private 동안 걸 수 없어 없고, 웹 UI 머지는 공개 뒤에도 막지 않는다 —
-  웹 UI 머지(release PR 포함 — 웹으로 머지하면 태그·Release·dmg·APK 가 안 돈다)·main 직접 push 를 하지 않는 것은 규약이다. squash·rebase 머지는 레포 설정에서 꺼 두었다(merge commit 만).
+- **자르기·모으기·머지·태그는 `release.sh` 로만 한다.** ruleset 「main 보호」(LIFE-718 — 삭제·force push 금지, PR 필수(승인 0·merge commit 만), 우회 없음)는 서버에서 강제된다(레포 공개 뒤 — LIFE-729) — main 직접 push·force push·삭제는 서버가 막는다.
+  웹 UI 머지는 막지 않는다 — 웹 UI 머지(release PR 포함 — 웹으로 머지하면 태그·Release·dmg·APK 가 안 돈다)를 하지 않는 것은 규약이다. required check 는 걸지 않는다(위 「검사 없이 순서 머지다」). squash·rebase 머지는 레포 설정에서 꺼 두었다(merge commit 만).
 - 태그 밖에서 dmg 를 만들어야 하면(개발 빌드) 「빌드」를 손으로 돌린다 — 그 dmg 는 출고본이 아니다. 출고 dmg 는 `release-dmg.sh` 가 HEAD = 태그·깨끗한 트리·
   태그 버전 = package.json 버전을 확인할 때만 만든다(`--check-only` 로 가드만 본다).
 - 리허설: 모든 하위 명령에 `--base throwaway/<이름> --tag-prefix rehearsal-<이름>-v` 를 준다 — release 브랜치는 `throwaway/<이름>-release/rehearsal-…X.Y.Z`,
@@ -140,7 +153,7 @@ release 브랜치(로컬·원격)·worktree 를 지운다. release worktree 에 
 - 서명 확인은 `apksigner verify` 성공 + 서명자 정확히 1개 + SHA-256 일치일 때만 통과한다(출고 정책 = EAS 단일 키) — 빌드 뒤 확인과 폰 설치 전 대조 모두 같다.
 - PR CI 는 `.github/workflows/pr-ci.yml`(LIFE-575) — main 대상 PR 에 `app/` 의 `npm ci`·typecheck·test 를 맥미니 macOS self-hosted 러너에서 돌린다(설치·제거는 homelab-infra `services/_runner-macos/`). 참고 신호다(required check 없음). 원격 CD(main 머지 시 GitHub Actions 로 태그·dmg·APK)는 LIFE-707 — 지금 CD 는 로컬 `release.sh ship` 이다.
   574 구현 r0 의 ubuntu workflow 초안(`ffb08b9`, 계정 결제 잠금으로 한 번도 돌지 못했다)은 레포 재생성(LIFE-705)으로 커밋이 사라졌다 — 남은 것은 corral-specs `LIFE-574-pr-release/raw/` 의 정적 단언뿐이다.
-- 오프라인 하네스: `app/scripts/release-check/release-test.sh <원자료 폴더>`(로컬 bare 원격 + 가짜 gh 로 하위 명령 분기·exit 코드) · `mutate.sh`(가드를 빼면 케이스가 실패로 바뀌는지).
+- 오프라인 하네스: `app/scripts/release-check/release-test.sh <원자료 폴더>`(로컬 bare 원격 + 가짜 gh 로 하위 명령 분기·exit 코드, `upload-*` 는 Release asset 흉내 위의 올리기) · `mutate.sh`(release.sh·release-upload.sh 의 가드를 빼면 케이스가 실패로 바뀌는지).
 - 574 출고 전후 과도기(565·566·564 와 첫 출고 순서)는 `corral-specs/LIFE-574-pr-release/transition.md`.
 
 ## 빌드
@@ -197,7 +210,11 @@ PATH 에서 `~/.local/bin` 보다 앞이면, 그 node 를 쓰는 셸에서는 `c
 - **전환 안내 (brew herdr 를 쓰던 경우)**: 설치본은 따로 설치한 herdr 의 `default` 세션에 더 붙지 않는다 — 거기 열려 있던 터미널은
   넘어오지 않으니 한 번 다시 연다. brew herdr 는 corral 에 더 필요 없으므로 지워도 된다(`brew uninstall herdr`). 그 서버가 돌고 있으면 먼저 `herdr server stop`.
 - **Apache-2.0 고지**: 동봉 herdr 의 라이선스 사본과 상류·수정 사실 고지는 `/Applications/corral.app/Contents/Resources/backend/` 의
-  `LICENSE-herdr`·`NOTICE-herdr.md` 에 있다. 의존 crate 고지는 공개 배포를 다시 열 때 다룬다(LIFE-446 T3 취소).
+  `LICENSE-herdr`·`NOTICE-herdr.md` 에 있다.
+- **제3자 고지** (LIFE-729): `/Applications/corral.app/Contents/Resources/licenses/third-party/` 의 `THIRD-PARTY-NOTICES.txt`(원문) · `third-party.json`(목록) ·
+  `electron/`(Electron `LICENSE`·Chromium `LICENSES.chromium.html`) — 동봉 herdr 의 crate·비-Rust 정적 코드(libghostty-vt 등)·Electron/Chromium·앱 번들 npm·반입 자산.
+  `npm run package:mac` 이 electron-builder 앞에 만들고(`scripts/build-notices.mjs`) 뒤에 만든 앱 안 실물과 대조한다(`scripts/verify-notices.mjs` — 어긋나면 멈춘다).
+  APK 는 `assets/licenses/third-party/` — 빌드 훅(`mobile/scripts/build-notices.mjs`)이 싣고 `scripts/release-apk.sh` 가 대조한다.
 
 ## 지우기
 

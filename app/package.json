@@ -1,6 +1,6 @@
 {
   "name": "corral",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "private": true,
   "type": "module",
   "description": "corral — herdr 기반 AI 워크스페이스 미션 컨트롤 (LIFE-351 R1: 앱 골격 + 어댑터 control 층)",
@@ -22,7 +22,7 @@
     "build:footprint": "node scripts/build-footprint.mjs",
     "build:dictation": "node scripts/build-dictation.mjs",
     "herdr:guard": "node scripts/build-dev-guard.mjs",
-    "package:mac": "npm run build && node scripts/bundle-herdr.mjs && node scripts/build-footprint.mjs --check && node scripts/build-dictation.mjs && electron-builder --mac --arm64"
+    "package:mac": "npm run build && node scripts/bundle-herdr.mjs && node scripts/build-notices.mjs && node scripts/build-footprint.mjs --check && node scripts/build-dictation.mjs && electron-builder --mac --arm64 && node scripts/verify-notices.mjs dist/mac-arm64/corral.app"
   },
   "devDependencies": {
     "@shikijs/engine-javascript": "4.5.0",

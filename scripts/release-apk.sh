@@ -5,6 +5,7 @@
 # 트리가 깨끗하며 X.Y.Z = app/package.json 버전이고 원격 태그가 같은 커밋일 때만 빌드한다. 가드는 npm ci·eas 보다 먼저 걸린다.
 # 빌드는 mobile/ 의 preview 프로필 로컬 빌드(eas build --local, EAS 쿼터 소모 없음, 서명 = EAS 원격 자격증명).
 # versionName = app/package.json 버전(mobile/app.config.ts 가 읽는다) — 태그 버전과 같다. versionCode 는 EAS remote 그대로.
+# 제3자 고지(LIFE-729): 빌드 훅 eas-build-post-install(mobile/scripts/build-notices.mjs)이 APK assets 에 싣고, 서명 확인 뒤 mobile/scripts/verify-notices.mjs 가 APK 안 실물과 대조한다(어긋나면 멈춤).
 #   --out        APK 를 둘 폴더. 없으면 app/dist/release/<태그>/ (git 무시)
 #   --check-only 가드 + 툴체인 전제만 보고 빌드하지 않는다
 #   --preflight  툴체인 전제만 본다(태그 가드 없음) — release.sh 가 머지 전에 부른다
@@ -182,6 +183,8 @@ CERT="$(single_signer "$APK")" || exit 1
 [ "$GOT_PKG" = "$PACKAGE" ] || die "패키지가 $GOT_PKG — $PACKAGE 여야 한다($APK)"
 [ "$GOT_VNAME" = "$VERSION" ] || die "versionName 이 $GOT_VNAME — 태그 버전 $VERSION 이어야 한다($APK)"
 [ "$CERT" = "$RELEASE_CERT_SHA256" ] || die "서명 SHA-256 이 ${CERT:-없음} — EAS 원격 자격증명($RELEASE_CERT_SHA256)이 아니다. 폰에 덮어 설치할 수 없다($APK)"
+# 제3자 고지(LIFE-729) — 빌드 훅(eas-build-post-install)이 실은 고지 ⊇ APK 안 실물(dex 클래스·.so·assets·JS 소스맵). 작업 폴더의 번들·소스맵을 쓰므로 지우기 전에
+node mobile/scripts/verify-notices.mjs "$APK" --work "$WORK/build" --mobile "$ROOT/mobile" || die "APK 제3자 고지 대조 실패 — 작업 폴더를 남겼다: $WORK ($APK)"
 # 성공 — 이번 호출이 만든 작업 폴더만 지운다
 if is_own_work "$WORK"; then rm -rf "$WORK"; else note "⚠ 작업 폴더 $WORK 가 기대 자리가 아니라 지우지 않았다"; fi
 

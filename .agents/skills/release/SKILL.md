@@ -92,11 +92,17 @@ description: >-
 ## 6. 출고
 
 - `scripts/release.sh ship --notes <노트 파일> --dry-run` → `scripts/release.sh ship --notes <노트 파일>` — release 브랜치 push → release→main PR 머지
-  → 태그 → GitHub Release → 본체 ff → 원래 PR 처리 → dmg → APK. PR 집합은 release 브랜치 기록에서 읽는다(다시 고르지 않는다).
+  → 태그 → GitHub Release → 본체 ff → 원래 PR 처리 → dmg → APK → Release 에 dmg·APK·체크섬 올리기(`scripts/release-upload.sh`). PR 집합은 release 브랜치 기록에서 읽는다(다시 고르지 않는다).
 - APK 는 **매 출고** 만든다(모바일이 안 바뀐 출고도 — 폰 버전 = 맥 버전). APK 전제(JDK·Android SDK·`eas` 로그인)가 이 맥에 없으면 사용자에게 묻고,
   빼기로 하면 `--skip-apk` — 보고에 「APK 없음」을 적는다. 브랜치 APK 는 dev 빌드, 정식본은 출고 태그 빌드다.
 - 실패하면 멈추고 원문을 보고한다. exit 코드별 복구는 `app/INSTALL.md` 「출고」 표와 스크립트 메시지를 따른다 —
-  7·9·11·12 는 같은 `ship` 명령 재실행이 이어 간다. 8·10 은 메시지의 「dmg 만 다시」·「APK 만 다시」 아래 줄을 그대로 붙여 넣는다.
+  7·9·11·12 는 같은 `ship` 명령 재실행이 이어 간다. 8 은 메시지의 「dmg 만 다시」 아래 줄부터 안내 순서대로(정리 → APK → Release 에 올리기) 그대로 붙여 넣는다.
+  10 은 「APK 만 다시 → Release 에 올리기」 아래 한 줄(`&&` 로 묶임)을 붙여 넣는다 — 올리기만 따로 치지 않는다(맨 위 APK 는 검증 거절본일 수 있다). 그 줄의 APK 단계가 새 APK 를 `retry-<시각>/` 에 만들었으면 올리기는 아무것도 올리지 않고 후보 APK 마다 `--apk` 줄을 보인다 — 「✔ vX.Y.Z apk: <경로>」 로 검증을 통과한 APK 의 줄을 붙여 넣는다.
+  14(올리기 실패)는 출고·빌드가 끝난 상태다 — 메시지의 「올리기만 다시」 아래 줄을 붙여 넣는다(이미 올라간 것은 건너뛴다). 「같은 이름·다른 digest」 거절이면 붙여 넣기 전에 사용자에게 보고한다 — asset 을 지우는 것은 사용자 판단이다.
+  `--skip-build`·`--skip-apk` 로 뺀 산출물을 나중에 만들었으면 안내의 올리기 줄을 붙여 넣는다. 손으로 칠 때(판정만 보려면 `--dry-run`):
+  ```sh
+  scripts/release-upload.sh --tag vX.Y.Z --dir app/dist/release/vX.Y.Z
+  ```
   원래 PR 의 MERGED 는 기본 브랜치에서의 간접 머지를 가정한 것이다(C14 실측 전) — 확인 안 되면 13.
   13(원래 PR 이 MERGED 로 확인 안 됨)은 출고 자체는 끝난 상태다 — 보고하고 마무리를 진행하되 5번 정리는 MERGED 확인 뒤.
 
@@ -115,6 +121,6 @@ description: >-
    묶음 PR(head `feature/LIFE-MMM-<슬러그>`)의 feature worktree·로컬 feature 브랜치가 남았으면 `scripts/task-finish.sh feature/LIFE-MMM-<슬러그>` — 정리는 묶음 코디가 PR 생성 직후 하므로(`task-coordinate/references/bundle.md` 6) 이것은 안전망이다.
 5. `scripts/release.sh finish` — 원래 PR 이 MERGED 인지 다시 보고(head 삭제) release 브랜치(로컬·원격)·worktree 를 지운다. 13 이면 남겨 두고 보고한다.
 6. 회고 결정 기록이 있으면 §4 「결정 기록」 대로 corral-specs 에 커밋·push 한다.
-7. 보고: 태그·Release URL·출고된 PR(MERGED 여부)·LA 전이 결과·맥 설치 버전·폰 설치 결과(versionName·`lastUpdateTime`)·**APK 경로와 sha256**·release 브랜치 정리. 빠진 단계가 있으면 그렇다고 적는다.
+7. 보고: 태그·Release URL·출고된 PR(MERGED 여부)·LA 전이 결과·맥 설치 버전·폰 설치 결과(versionName·`lastUpdateTime`)·**APK 경로와 sha256**·**Release asset 과 digest**(ship 출력의 「✔ Release … asset」 줄, 또는 `gh release view vX.Y.Z --json assets --jq '.assets[] | "\(.name) \(.digest)"'`)·release 브랜치 정리. 빠진 단계가 있으면 그렇다고 적는다.
 
 출고를 접을 때(출고 전): `scripts/release.sh abort` — release 브랜치·worktree 만 지우고 PR 은 열린 채 남는다. 회고를 했으면 결정 기록 처리는 §4.

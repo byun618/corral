@@ -74,6 +74,85 @@ grep -qF '**release 브랜치 release/vX.Y.Z**' "$PR" && grep -q '한 번에 하
 grep -q 'main 에 직접 올라가는 것은 release.sh 의 태그뿐' "$PR" && ok "main 직접 push = 태그만" || bad "main 직접 push 문구"
 grep -q '출고 통합 확인은 release worktree' "$PR" && ok "integration/ 줄 정리" || bad "integration/ 줄"
 
+# ── 6. Release 올리기(LIFE-729) — README 「받아서 쓰기」 필수 문구·순서 · INSTALL·SKILL 의 올리기 단계 · 안내 문구 = 스크립트 출력 ──
+RM="$(sed -n '/^## 받아서 쓰기/,/^## 설치·빌드/p' README.md)"
+for w in "releases" "shasum -a 256 -c corral-*-arm64.dmg.sha256" "개인정보 보호 및 보안" "그래도 열기" "xattr -dr com.apple.quarantine /Applications/corral.app" \
+         "Install 'corral' Command in PATH" "herdr 는 앱에 들어 있다" "Apple Silicon" "ad-hoc" "공증 없음" "자동 업데이트 없음" \
+         "corral-mobile-X.Y.Z.apk" "Tailscale" "paddock" "비공개"; do
+  echo "$RM" | grep -qF -- "$w" && ok "README 「받아서 쓰기」에 $w" || bad "README 「받아서 쓰기」에 $w 없음"
+done
+# 첫 실행 차단은 받은 경로로 가른다(LIFE-729 C5ⓒ — gh 로 받은 파일에 quarantine 없음 관측)
+for w in "브라우저로 받았다면 첫 실행을 macOS 가 막는다" '`gh release download` 로 받은 파일에는 이 표시가 붙지 않는다'; do
+  echo "$RM" | grep -qF -- "$w" && ok "README 받은 경로별 첫 실행: $w" || bad "README 받은 경로별 첫 실행 문구 없음: $w"
+done
+GL="$(echo "$RM" | grep -nF '그래도 열기' | head -1 | cut -d: -f1)"; XL="$(echo "$RM" | grep -nF 'xattr -dr' | head -1 | cut -d: -f1)"
+[ -n "$GL" ] && [ -n "$XL" ] && [ "$GL" -lt "$XL" ] && ok "README 「그래도 열기」(1순위)가 xattr 보다 앞" || bad "README 「그래도 열기」·xattr 순서 (그래도 열기 ${GL:-없음} · xattr ${XL:-없음})"
+# 체크섬 파일 이름 = release-upload.sh 가 만드는 이름(<바이너리>.sha256)
+grep -qF '"$WORK/$f.sha256"' scripts/release-upload.sh && ok "체크섬 파일 이름 <바이너리>.sha256 = release-upload.sh" || bad "release-upload.sh 체크섬 파일 이름이 README 와 다르다"
+for w in "scripts/release-upload.sh" "올리기만 다시" "--no-apk" "같은 이름·다른 digest" "`--apk` 없이는 아무것도 올리지 않는다" "--apk <경로>"; do
+  echo "$SEC" | grep -qF -- "$w" && ok "INSTALL 「출고」에 $w" || bad "INSTALL 「출고」에 $w 없음"
+done
+for w in "올리기만 다시:" "APK 만 다시 → Release 에 올리기:" "\$APK_RERUN && \$UPLOAD_ALL" "dmg·APK 뒤 Release 에 올리기:"; do
+  grep -qF -- "$w" scripts/release.sh && ok "release.sh 안내 문구 $w" || bad "release.sh 안내 문구 $w 없음"
+done
+grep -qF 'scripts/release-upload.sh --tag vX.Y.Z --dir app/dist/release/vX.Y.Z' "$S" && grep -qF '14(올리기 실패)' "$S" && ok "SKILL 에 올리기 명령 블록·14 복구" || bad "SKILL 에 올리기 명령 블록·14 복구 없음"
+# 재시도 APK(R1-1) — 안내 문구 = 스크립트 출력, SKILL 복구 줄
+grep -qF '새 APK 는 retry-<시각>/ 에 생긴다' scripts/release.sh && grep -qF '재시도 APK 가 있다(retry-*/)' scripts/release-upload.sh && ok "재시도 APK 안내 = release.sh·release-upload.sh" || bad "재시도 APK 안내 문구가 스크립트에 없다"
+grep -qF '`retry-<시각>/` 에 만들었으면 올리기는 아무것도 올리지 않고' "$S" && ok "SKILL 에 재시도 APK 고르기" || bad "SKILL 에 재시도 APK 고르기 없음"
+# exit 10 은 APK·올리기를 && 로 묶은 한 줄(리뷰 r2 R2-1) — INSTALL 표·SKILL
+echo "$SEC" | grep -qF '「APK 만 다시 → Release 에 올리기」 한 줄' && grep -qF '「APK 만 다시 → Release 에 올리기」 아래 한 줄' "$S" && ok "exit 10 묶은 한 줄 = INSTALL·SKILL" || bad "exit 10 묶은 한 줄 문구가 INSTALL·SKILL 에 없다"
+
+# ── 7. 제3자 고지 위치(LIFE-729 C9ⓕ) — README 「라이선스」·INSTALL 이 적은 자리 = 패키징·생성기가 싣는 자리 ──
+RL="$(sed -n '/^## 라이선스/,$p' README.md)"
+for w in "corral.app/Contents/Resources/licenses/third-party/THIRD-PARTY-NOTICES.txt" "electron/LICENSES.chromium.html" "assets/licenses/third-party/THIRD-PARTY-NOTICES.txt" "third-party.json"; do
+  echo "$RL" | grep -qF -- "$w" && ok "README 「라이선스」에 $w" || bad "README 「라이선스」에 $w 없음"
+done
+grep -qF '/Applications/corral.app/Contents/Resources/licenses/third-party/' app/INSTALL.md && grep -qF 'scripts/verify-notices.mjs' app/INSTALL.md && ok "INSTALL 에 제3자 고지 위치·대조" || bad "INSTALL 에 제3자 고지 위치·대조 없음"
+grep -qF '공개 배포를 다시 열 때 다룬다' app/INSTALL.md && bad "INSTALL 에 옛 「의존 crate 고지는 공개 배포를 다시 열 때 다룬다」 가 남았다" || ok "INSTALL 옛 고지 미룸 문장 없음"
+grep -qF '    to: licenses/third-party' app/electron-builder.yml && ok "dmg 고지 자리 = electron-builder.yml(licenses/third-party)" || bad "electron-builder.yml 의 고지 자리가 문서와 다르다"
+grep -qF "'app/src/main/assets/licenses/third-party'" mobile/scripts/build-notices.mjs && grep -qF "const NOTICE = 'assets/licenses/third-party/'" mobile/scripts/verify-notices.mjs && ok "APK 고지 자리 = 생성기·대조기(assets/licenses/third-party)" || bad "APK 고지 자리가 생성기·대조기와 문서가 다르다"
+grep -qF 'licenses/third-party/THIRD-PARTY-NOTICES.txt' app/scripts/bundle-herdr.mjs && ok "NOTICE-herdr.md 가 crate 고지 자리를 가리킨다" || bad "NOTICE-herdr.md(bundle-herdr.mjs) 가 crate 고지 자리를 가리키지 않는다"
+
+# ── 8. README 보강(LIFE-729 C10) — 절 순서 · 준비물 값 · 「처음 쓰기」 UI 문구 = 렌더러 소스의 실제 문자열 · 스크린샷 ──
+L_PRE="$(grep -n '^## 준비물$' README.md | cut -d: -f1)"; L_GET="$(grep -n '^## 받아서 쓰기$' README.md | cut -d: -f1)"; L_FIRST="$(grep -n '^## 처음 쓰기$' README.md | cut -d: -f1)"
+[ -n "$L_PRE" ] && [ -n "$L_GET" ] && [ -n "$L_FIRST" ] && [ "$L_PRE" -lt "$L_GET" ] && [ "$L_GET" -lt "$L_FIRST" ] && ok "README 절 순서 준비물 → 받아서 쓰기 → 처음 쓰기" || bad "README 절 순서 (준비물 ${L_PRE:-없음} · 받아서 쓰기 ${L_GET:-없음} · 처음 쓰기 ${L_FIRST:-없음})"
+RP="$(sed -n '/^## 준비물$/,/^## 받아서 쓰기$/p' README.md)"
+# 최소 macOS = 빌드 산출물 Info.plist 의 LSMinimumSystemVersion(13.0 — 근거는 작업 원자료, 실빌드 값은 최종 관문에서 다시 본다)
+for w in "macOS 13 이상" '`LSMinimumSystemVersion`)이 13.0' "macOS 26" "git" "Claude Code" "Codex" "Grok" "따로 설치하고 로그인" "Tailscale"; do
+  echo "$RP" | grep -qF -- "$w" && ok "README 「준비물」에 $w" || bad "README 「준비물」에 $w 없음"
+done
+RF="$(sed -n '/^## 처음 쓰기$/,/^## 설치·빌드$/p' README.md)"
+# 「처음 쓰기」 가 인용한 화면 문구 → 그 문구를 그리는 렌더러·main 소스 조각(문구가 바뀌면 여기서 걸린다)
+# 칸: README 문구 | 소스 파일 | 소스 조각. 짧은 단어는 흔해서 판별력이 없으므로 소스 조각은 그 화면 요소에만 있는 긴 꼴(속성·이웃 문자열 포함)로 적는다.
+# 비교는 공백·줄바꿈을 한 칸으로 접은 뒤 고정 문자열로 한다(JSX 가 여러 줄에 걸친다)
+fold() { tr -s ' \n\t' '   ' < "$1"; }
+RFF="$(echo "$RF" | tr -s ' \n\t' '   ')"
+while IFS='|' read -r w f src; do
+  echo "$RFF" | grep -qF -- "$w" && fold "$f" | grep -qF -- "$src" && ok "「처음 쓰기」 화면 문구 = $f: $w" || bad "「처음 쓰기」 화면 문구가 README·$f 에 함께 없다: $w (소스 조각 $src)"
+done <<'UI'
+「등록된 레포가 없다. 위의 「+」 로 폴더를 고른다.」|app/src/renderer/src/components/Sidebar.tsx|등록된 레포가 없다. 위의 「+」 로 폴더를 고른다.
+**+**(툴팁 「프로젝트 추가」)|app/src/renderer/src/components/ReposSectionHeader.tsx|repos-header-add" data-add-repo onClick={onAddRepo} title="프로젝트 추가" aria-label="프로젝트 추가"
+「프로젝트 추가」 창이 뜬다 — **폴더 찾아보기**|app/src/renderer/src/components/AddRepoModal.tsx|data-modal-title> 프로젝트 추가 </h2>
+**폴더 찾아보기**|app/src/renderer/src/components/AddRepoModal.tsx|<span className="modal-item-name">폴더 찾아보기</span>
+**이 폴더 선택**|app/src/main/index.ts|buttonLabel: '이 폴더 선택',
+**+**(툴팁 「워크트리 생성」)|app/src/renderer/src/components/RepoRowActions.tsx|data-create-worktree={repoRoot} title="워크트리 생성" aria-label="워크트리 생성"
+**브랜치** 에 새 브랜치 이름|app/src/renderer/src/components/CreateWorktreeModal.tsx|<span className="field-label">브랜치</span>
+**경로** 는 브랜치 이름에서 자동으로|app/src/renderer/src/components/CreateWorktreeModal.tsx|<span className="field-hint">브랜치 이름에서 자동 생성 — 필요하면 수정</span>
+**생성** — 그 브랜치의 worktree|app/src/renderer/src/components/CreateWorktreeModal.tsx|data-worktree-create-submit disabled={busy} onClick={() => void submit()}> 생성 </button>
+**+**(툴팁 「새 탭」)|app/src/renderer/src/components/MainTabBar.tsx|className="main-tab-add" data-main-tabbar-add={groupId} type="button" title="새 탭" aria-label="새 탭"
+「감지된 agents가 없습니다」|app/src/renderer/src/components/TabCreateMenu.tsx|감지된 agents가 없습니다
+에이전트 없이 열려 있으면 「열림」|app/src/renderer/src/worktree-status.ts|active: '열림',
+「작업중」|app/src/renderer/src/worktree-status.ts|working: '작업중',
+「입력 대기」|app/src/renderer/src/worktree-status.ts|permission: '입력 대기',
+「완료」 등|app/src/renderer/src/worktree-status.ts|done: '완료',
+UI
+# 화면에 없는 옛 문구(리허설 c10-r2 에서 어긋남) — 다시 들어오면 실패
+for w in "답을 기다림" "+**(프로젝트 추가)로 git 레포 폴더를 고른다"; do
+  echo "$RF" | grep -qF -- "$w" && bad "「처음 쓰기」 에 화면에 없는 옛 문구: $w" || ok "「처음 쓰기」 옛 문구 없음: $w"
+done
+SHOT=docs/images/corral-screenshot.png
+grep -qF "]($SHOT)" README.md && [ -f "$SHOT" ] && [ "$(wc -c < "$SHOT")" -le 512000 ] && ok "스크린샷 $SHOT — README 가 가리키고 500KB 이하($(wc -c < "$SHOT" | tr -d ' ') B)" || bad "스크린샷 $SHOT 이 없거나 README 가 안 가리키거나 500KB 초과"
+
 # ── 5. release.sh 언급 정합 — 남은 언급 줄 목록(사유는 사람이 보지만, 옛 사용법은 1 에서 이미 막았다) ──
 say "── release.sh 언급(참고 — 하위 명령 없이 부르는 사용법은 1 에서 실패로 잡는다)"
 git grep -n 'release\.sh' -- . ':!app/scripts/release-check' ':!app/src' ':!scripts/release.sh' | sed 's/^/  /' | tee -a "$R" >/dev/null
